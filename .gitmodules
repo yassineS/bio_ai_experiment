@@ -133,3 +133,18 @@
 [submodule "reference_code/admixtools"]
 	path = reference_code/admixtools
 	url = https://github.com/DReichLab/AdmixTools
+[submodule "reference_code/stringtie"]
+	path = reference_code/stringtie
+	url = https://github.com/gpertea/stringtie
+[submodule "reference_code/minia"]
+	path = reference_code/minia
+	url = https://github.com/GATB/minia
+[submodule "reference_code/plink"]
+	path = reference_code/plink
+	url = https://github.com/chrchang/plink-ng
+[submodule "reference_code/star"]
+	path = reference_code/star
+	url = https://github.com/alexdobin/STAR
+[submodule "reference_code/manta"]
+	path = reference_code/manta
+	url = https://github.com/Illumina/manta

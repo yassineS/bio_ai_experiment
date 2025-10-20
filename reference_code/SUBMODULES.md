@@ -1,6 +1,6 @@
 # Git Submodules - Bioinformatics Tools
 
-**Total Submodules**: 45
+**Total Submodules**: 50
 **Last Updated**: 2025-10-20
 
 ## Alignment
@@ -10,6 +10,7 @@
 | BWA | C | DNA sequence alignment | N/A | `reference_code/bwa` |
 | Bowtie2 | C++ | Fast read alignment | N/A | `reference_code/bowtie2` |
 | DIAMOND | C++ | Fast protein alignment | N/A | `reference_code/diamond` |
+| STAR | C | Ultrafast RNA-seq aligner | 2.6.0a-681-gb1edc12 | `reference_code/star` |
 | Subread | C | Read alignment and counting | N/A | `reference_code/subread` |
 | minimap2 | C | Long-read alignment | N/A | `reference_code/minimap2` |
 
@@ -30,8 +31,9 @@
 | Tool Name | Language | Primary Use | Version/Tag | Path |
 |-----------|----------|-------------|-------------|------|
 | Canu | Perl/C++ | Long-read assembly | N/A | `reference_code/canu` |
-| DISCOVAR | C++ | Variant detection assembly | heads/master | `reference_code/discovar` |
+| DISCOVAR | C++ | Variant detection assembly | N/A | `reference_code/discovar` |
 | IDBA | C++ | Multiple k-mer assembly | N/A | `reference_code/idba` |
+| Minia | C++ | Short-read de Bruijn graph assembler | v3.2.6-11-g7b7239c | `reference_code/minia` |
 | Ray | C++ | Parallel assembly | N/A | `reference_code/ray` |
 | wtdbg2 | C | Long-read assembly | N/A | `reference_code/wtdbg2` |
 
@@ -63,11 +65,12 @@
 
 | Tool Name | Language | Primary Use | Version/Tag | Path |
 |-----------|----------|-------------|-------------|------|
-| AdmixTools | C | Admixture testing and population genetics | v8.0.2 | `reference_code/admixtools` |
+| AdmixTools | C | Admixture testing | N/A | `reference_code/admixtools` |
 | EIGENSOFT | C | Population stratification | N/A | `reference_code/eigensoft` |
 | PHASE | C | Haplotype reconstruction | N/A | `reference_code/phase` |
+| PLINK | C | Whole genome association analysis | 2019-1113-gc7aeb709 | `reference_code/plink` |
 | VCFtools | C++/Perl | VCF manipulation | N/A | `reference_code/vcftools` |
-| fineSTRUCTURE | C | Population structure analysis (includes Chromopainter) | heads/main | `reference_code/finestructure` |
+| fineSTRUCTURE | C | Population structure analysis | N/A | `reference_code/finestructure` |
 
 ## Qc
 
@@ -86,6 +89,7 @@
 |-----------|----------|-------------|-------------|------|
 | Cuffdiff | C++ | Differential expression | N/A | `reference_code/cuffdiff` |
 | Cufflinks | C++ | Transcript assembly | N/A | `reference_code/cufflinks` |
+| StringTie | C++ | Transcript assembly and quantification | v3.0.2 | `reference_code/stringtie` |
 | limma | R | Differential expression | N/A | `reference_code/limma` |
 
 ## Variant Calling
@@ -96,5 +100,6 @@
 | DeepVariant | Python/C++ | Deep learning variant caller | N/A | `reference_code/deepvariant` |
 | LUMPY | C++ | Structural variant caller | N/A | `reference_code/lumpy` |
 | LoFreq | C | Low-frequency variant caller | N/A | `reference_code/lofreq` |
+| Manta | C++ | Structural variant caller | v1.6.0-6-g2a9eeafa | `reference_code/manta` |
 | Strelka | C++ | Small variant caller | N/A | `reference_code/strelka` |
 

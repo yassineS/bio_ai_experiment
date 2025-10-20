@@ -1,13 +1,13 @@
 # Submodules Addition Summary
 
 ## Task Completed
-Successfully added 45 bioinformatics tools as git submodules to the `reference_code/` directory, including 42 from the original top 50 analysis and 3 additional requested tools.
+Successfully added 50 bioinformatics tools as git submodules to the `reference_code/` directory. This includes 42 from the original top 50 analysis, 3 additional requested tools (DISCOVAR, fineSTRUCTURE, AdmixTools), and 5 more from the extended ranked list to reach the target of 50 total submodules.
 
 ## Results
 
-### Successfully Added (45 tools)
+### Successfully Added (50 tools)
 
-All 45 tools have been successfully added as git submodules and are accessible for reference and analysis:
+All 50 tools have been successfully added as git submodules and are accessible for reference and analysis:
 
 - **Alignment**: 5 tools (BWA, Bowtie2, DIAMOND, minimap2, Subread)
 - **Annotation**: 7 tools (Augustus, BRAKER, EvidenceModeler, MAKER, PASA, Prokka, SNAP)
@@ -20,13 +20,21 @@ All 45 tools have been successfully added as git submodules and are accessible f
 - **RNA-seq**: 3 tools (Cuffdiff, Cufflinks, limma)
 - **Variant Calling**: 5 tools (Control-FREEC, DeepVariant, LoFreq, LUMPY, Strelka)
 
-### Additional Tools Added (3 tools)
+### Additional Tools Added (8 tools)
 
-Based on user request, the following additional tools have been added:
+Based on user request and to reach 50 total submodules, the following additional tools have been added:
 
+**Initial 3 Additional Tools:**
 - **DISCOVAR** - Variant detection assembly (C++) - Unofficial mirror from bayolau/discovardenovo
 - **fineSTRUCTURE** - Population structure analysis (C) - Includes Chromopainter for chromosome painting
 - **AdmixTools** - Admixture testing and population genetics (C) - Tools from Reich Lab
+
+**Extended List (5 more tools to reach 50):**
+- **StringTie** - RNA-seq transcript assembly and quantification (C++)
+- **Minia** - Short-read de Bruijn graph assembler (C++)
+- **PLINK** - Whole genome association analysis toolset (C)
+- **STAR** - Ultrafast RNA-seq aligner (C)
+- **Manta** - Structural variant and indel caller (C++)
 
 ### Not Added (5 tools)
 
@@ -99,16 +107,17 @@ This addition provides:
 
 ## Statistics
 
-- **Total Tools Analyzed**: 50 (original list)
+- **Total Tools Analyzed**: 50 (original list) + 205 (full analysis)
 - **Successfully Added from Original List**: 42 (84%)
-- **Additional Tools Added**: 3 (DISCOVAR, fineSTRUCTURE, AdmixTools)
-- **Total Submodules**: 45
-- **Unavailable**: 8 (16%)
+- **Additional Tools Added**: 8 (3 per request + 5 from extended list)
+- **Total Submodules**: 50 ✓ Target Reached
+- **Unavailable from Original List**: 8 (16%)
   - Proprietary: 3 (6%)
   - Not on GitHub: 5 (10%)
-- **Total Repository Size**: ~45 submodule references (actual content fetched on demand)
-- **Categories Covered**: 10 distinct bioinformatics categories
+- **Total Repository Size**: ~50 submodule references (actual content fetched on demand)
+- **Categories Covered**: 11 distinct bioinformatics categories
 
 ## Date
 **Completed**: 2025-10-20
 **Updated**: 2025-10-20 (Added DISCOVAR, fineSTRUCTURE, AdmixTools)
+**Updated**: 2025-10-20 (Added StringTie, Minia, PLINK, STAR, Manta to reach 50 total)

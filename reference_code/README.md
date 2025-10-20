@@ -4,9 +4,9 @@ This directory contains the original source code for bioinformatics tools identi
 
 ## Overview
 
-Based on the comprehensive analysis in [`analysis/top_50_packages_for_improvement.md`](../analysis/top_50_packages_for_improvement.md), we identified 50 bioinformatics packages that would benefit most from code rewrites and improved documentation. Of these 50 packages, 42 are available as open-source projects on GitHub and have been added as submodules. Additionally, 3 more tools were added based on user request (DISCOVAR, fineSTRUCTURE with Chromopainter, and AdmixTools), bringing the total to 45 submodules.
+Based on the comprehensive analysis in [`analysis/top_50_packages_for_improvement.md`](../analysis/top_50_packages_for_improvement.md), we identified 50 bioinformatics packages that would benefit most from code rewrites and improved documentation. Of these 50 packages, 42 are available as open-source projects on GitHub and have been added as submodules. Additionally, 8 more tools were added (3 per user request and 5 from the extended ranked list) to reach a total of 50 submodules.
 
-## Successfully Added Tools (45/50+)
+## Successfully Added Tools (50 total)
 
 The following 42 tools have been successfully added as git submodules:
 
@@ -205,6 +205,33 @@ The following 42 tools have been successfully added as git submodules:
     - Path: `reference_code/admixtools/`
     - Note: Tools to test whether admixture occurred and related population genetics analyses
 
+### Extended List Tools (5 tools to reach 50)
+
+46. **StringTie** - RNA-seq transcript assembly and quantification (C++)
+    - Repository: [gpertea/stringtie](https://github.com/gpertea/stringtie)
+    - Path: `reference_code/stringtie/`
+    - Note: Transcript assembly and quantification for RNA-Seq data
+
+47. **Minia** - Short-read de Bruijn graph assembler (C++)
+    - Repository: [GATB/minia](https://github.com/GATB/minia)
+    - Path: `reference_code/minia/`
+    - Note: Memory-efficient genome assembler based on a de Bruijn graph
+
+48. **PLINK** - Whole genome association analysis toolset (C)
+    - Repository: [chrchang/plink-ng](https://github.com/chrchang/plink-ng)
+    - Path: `reference_code/plink/`
+    - Note: Free, open-source whole genome association analysis toolset
+
+49. **STAR** - Ultrafast RNA-seq aligner (C)
+    - Repository: [alexdobin/STAR](https://github.com/alexdobin/STAR)
+    - Path: `reference_code/star/`
+    - Note: Spliced Transcripts Alignment to a Reference
+
+50. **Manta** - Structural variant and indel caller (C++)
+    - Repository: [Illumina/manta](https://github.com/Illumina/manta)
+    - Path: `reference_code/manta/`
+    - Note: Structural variant and indel caller for mapped sequencing data
+
 ## Unavailable Tools (8/50+)
 
 The following 8 tools could not be added as submodules for the reasons listed:
@@ -310,6 +337,6 @@ reference_code/
 
 ---
 
-**Last Updated**: 2025-10-20 (Updated with DISCOVAR, fineSTRUCTURE, and AdmixTools)  
-**Total Submodules**: 45  
+**Last Updated**: 2025-10-20 (Updated with 5 more tools: StringTie, Minia, PLINK, STAR, Manta)  
+**Total Submodules**: 50 ✓ Target Reached  
 **Status**: Active Development

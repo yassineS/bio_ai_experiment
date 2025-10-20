@@ -2,6 +2,7 @@ Tool Name,Category,Language,Primary Use,Submodule Path,Current Version/Tag,Commi
 BWA,alignment,C,DNA sequence alignment,reference_code/bwa,N/A,-b92993c1161e73167181558856567ef2f367e3f0
 Bowtie2,alignment,C++,Fast read alignment,reference_code/bowtie2,N/A,-b7e97e99065d2b21339d8cb107c2f39b394467ea
 DIAMOND,alignment,C++,Fast protein alignment,reference_code/diamond,N/A,-08b3cbc5dc35ca1d3ab0a33eb5ee331b9a468df5
+STAR,alignment,C,Ultrafast RNA-seq aligner,reference_code/star,2.6.0a-681-gb1edc12,b1edc1208d91a53bf40ebae8669f71d50b994851
 Subread,alignment,C,Read alignment and counting,reference_code/subread,N/A,-55dc154f6e5a6813998d2f81039ad0e906bd2c02
 minimap2,alignment,C,Long-read alignment,reference_code/minimap2,N/A,-6d49eb690f3c32ae2b95a796951397bf598396f0
 Augustus,annotation,C++,Gene prediction,reference_code/augustus,N/A,-122867cbc2c5693c232ba0c1d2885afcfdca4845
@@ -12,8 +13,9 @@ PASA,annotation,Perl/C++,Transcript assembly,reference_code/pasa,N/A,-cc1f8d7fb6
 Prokka,annotation,Perl,Prokaryotic annotation,reference_code/prokka,N/A,-c335b7a6539a960ff4d98af6d2c6eb9bc1b7ebde
 SNAP,annotation,C,Gene prediction,reference_code/snap,N/A,-4ad1e957cd8e68b63857cc1cb3380d39a7b518b1
 Canu,assembly,Perl/C++,Long-read assembly,reference_code/canu,N/A,-fb43b3c196a8cbd66a6cd0d3178e7e879eeb918d
-DISCOVAR,assembly,C++,Variant detection assembly,reference_code/discovar,heads/master,3b1906883d4cb27f17f15868e79c328927c3ae79
+DISCOVAR,assembly,C++,Variant detection assembly,reference_code/discovar,N/A,-3b1906883d4cb27f17f15868e79c328927c3ae79
 IDBA,assembly,C++,Multiple k-mer assembly,reference_code/idba,N/A,-a1bafe6b012912cd9a76926ec75a98aee6213af6
+Minia,assembly,C++,Short-read de Bruijn graph assembler,reference_code/minia,v3.2.6-11-g7b7239c,7b7239c69ecc63534a20fc0d0c2de30f0f67e31c
 Ray,assembly,C++,Parallel assembly,reference_code/ray,N/A,-621dfe8454dc96d49f405e413cb759d3f48790b2
 wtdbg2,assembly,C,Long-read assembly,reference_code/wtdbg2,N/A,-b77c5657c8095412317e4a20fe3668f5bde6b1ac
 Bismark,epigenomics,Perl,Bisulfite-seq alignment,reference_code/bismark,N/A,-44618d29b70c26dff0b419d2a2c1bbcb8a02cfd8
@@ -25,11 +27,12 @@ IQ-TREE,phylogenetics,C++,Phylogenetic inference,reference_code/iq_tree,N/A,-a00
 MrBayes,phylogenetics,C,Bayesian phylogenetics,reference_code/mrbayes,N/A,-bb09fffbf9967cba62a4e8af2d487f443e9438d9
 PhyML,phylogenetics,C,Maximum likelihood,reference_code/phyml,N/A,-563fa2e4b771c77b70de4bda30201d2552bafdc6
 RAxML,phylogenetics,C,Maximum likelihood trees,reference_code/raxml,N/A,-36ec36110631c34692abcd4f24ca7b3e2fea742a
-AdmixTools,population_genetics,C,Admixture testing and population genetics,reference_code/admixtools,v8.0.2,b10ddcfdf43792125052c8bc8b8a96cf5335eb56
+AdmixTools,population_genetics,C,Admixture testing,reference_code/admixtools,N/A,-b10ddcfdf43792125052c8bc8b8a96cf5335eb56
 EIGENSOFT,population_genetics,C,Population stratification,reference_code/eigensoft,N/A,-09ed563fdec05648a66c206ba1fc37a198395cd7
 PHASE,population_genetics,C,Haplotype reconstruction,reference_code/phase,N/A,-40ec45338c3938472c54619d44f8c8468fb92763
+PLINK,population_genetics,C,Whole genome association analysis,reference_code/plink,2019-1113-gc7aeb709,c7aeb7097eba5bd24597b639728b66624820c3d5
 VCFtools,population_genetics,C++/Perl,VCF manipulation,reference_code/vcftools,N/A,-1f87a83402ffd17ea2723a456b7edf5d80b4a22c
-fineSTRUCTURE,population_genetics,C,Population structure analysis (includes Chromopainter),reference_code/finestructure,heads/main,7b3efe070db304335ba3b133fa6a197599fc2179
+fineSTRUCTURE,population_genetics,C,Population structure analysis,reference_code/finestructure,N/A,-7b3efe070db304335ba3b133fa6a197599fc2179
 PRINSEQ,qc,Perl,Sequence quality control,reference_code/prinseq,N/A,-e5b97d95a02db1eb5574737664d5304a1167ae0c
 Sickle,qc,C,Quality trimming,reference_code/sickle,N/A,-f3d6ae3460e94ed8162d314b74fb470c27624432
 Skewer,qc,C++,Adapter trimming,reference_code/skewer,N/A,-978e8e46cba44595ece623e5387749284a86b74b
@@ -38,9 +41,11 @@ fastx_toolkit,qc,C++,FASTA/Q processing,reference_code/fastx_toolkit,N/A,-ea0ca8
 seqtk,qc,C,FASTA/Q processing,reference_code/seqtk,N/A,-94e707082d39b0a038f234df676e32d9802c0dc7
 Cuffdiff,rnaseq,C++,Differential expression,reference_code/cuffdiff,N/A,-dc3b0cb72a4ac2b6bbc887099e71fc0c21e107b7
 Cufflinks,rnaseq,C++,Transcript assembly,reference_code/cufflinks,N/A,-dc3b0cb72a4ac2b6bbc887099e71fc0c21e107b7
+StringTie,rnaseq,C++,Transcript assembly and quantification,reference_code/stringtie,v3.0.2,8653184e862df6ec013abf3b5af55c2747baff3c
 limma,rnaseq,R,Differential expression,reference_code/limma,N/A,-1b51b3a5295f9feedb72a0df97e9c3e236592464
 Control-FREEC,variant_calling,C++,CNV detection,reference_code/control_freec,N/A,-21ddba0175e5760573354db59b0341cc230d836f
 DeepVariant,variant_calling,Python/C++,Deep learning variant caller,reference_code/deepvariant,N/A,-be7ee2c6f36dd6fc6a07ed48979a6f1e82d307f7
 LUMPY,variant_calling,C++,Structural variant caller,reference_code/lumpy,N/A,-f24085f5d7865579e390add664ebbd9383fa0536
 LoFreq,variant_calling,C,Low-frequency variant caller,reference_code/lofreq,N/A,-46bd58d7f5b2c38c5b422820ece82b119830e4b7
+Manta,variant_calling,C++,Structural variant caller,reference_code/manta,v1.6.0-6-g2a9eeafa,2a9eeafaedd1b5020057cc21524ae0af1b7067b3
 Strelka,variant_calling,C++,Small variant caller,reference_code/strelka,N/A,-d7377443b62319f7c7bd70c241c4b2df3459e29a
