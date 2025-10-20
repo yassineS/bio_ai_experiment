@@ -21,14 +21,29 @@ FASTA is a text-based format for representing nucleotide or peptide sequences.
 import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
 
 // Reading
-file, _ := os.Open("sequences.fasta")
+file, err := os.Open("sequences.fasta")
+if err != nil {
+    return err
+}
+defer file.Close()
+
 reader := fasta.NewReader(file)
-records, _ := reader.ReadAll()
+records, err := reader.ReadAll()
+if err != nil {
+    return err
+}
 
 // Writing
-output, _ := os.Create("output.fasta")
+output, err := os.Create("output.fasta")
+if err != nil {
+    return err
+}
+defer output.Close()
+
 writer := fasta.NewWriter(output, 80) // 80 chars per line
-writer.WriteAll(records)
+if err := writer.WriteAll(records); err != nil {
+    return err
+}
 
 // Utilities
 gcContent := records[0].GCContent()
@@ -51,9 +66,17 @@ FASTQ stores biological sequences with quality scores.
 import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 
 // Reading with Phred+33 encoding
-file, _ := os.Open("reads.fastq")
+file, err := os.Open("reads.fastq")
+if err != nil {
+    return err
+}
+defer file.Close()
+
 reader := fastq.NewReader(file, fastq.Phred33)
-records, _ := reader.ReadAll()
+records, err := reader.ReadAll()
+if err != nil {
+    return err
+}
 
 // Quality analysis
 avgQual := records[0].AverageQuality(fastq.Phred33)
@@ -63,9 +86,16 @@ minQual := records[0].MinQuality(fastq.Phred33)
 trimmed := records[0].Trim(20, fastq.Phred33)
 
 // Writing
-output, _ := os.Create("output.fastq")
+output, err := os.Create("output.fastq")
+if err != nil {
+    return err
+}
+defer output.Close()
+
 writer := fastq.NewWriter(output, fastq.Phred33)
-writer.WriteAll(records)
+if err := writer.WriteAll(records); err != nil {
+    return err
+}
 ```
 
 ### 3. VCF (`pkg/bioformats/vcf`)
@@ -84,16 +114,33 @@ VCF (Variant Call Format) stores gene sequence variations.
 import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
 
 // Reading
-file, _ := os.Open("variants.vcf")
+file, err := os.Open("variants.vcf")
+if err != nil {
+    return err
+}
+defer file.Close()
+
 reader := vcf.NewReader(file)
-header, _ := reader.ReadHeader()
-variants, _ := reader.ReadAll()
+header, err := reader.ReadHeader()
+if err != nil {
+    return err
+}
+variants, err := reader.ReadAll()
+if err != nil {
+    return err
+}
 
 // Querying
 for _, variant := range variants {
     // Get INFO values
-    dp, _ := variant.GetInfoInt("DP")
-    af, _ := variant.GetInfoFloat("AF")
+    dp, err := variant.GetInfoInt("DP")
+    if err != nil {
+        continue
+    }
+    af, err := variant.GetInfoFloat("AF")
+    if err != nil {
+        continue
+    }
     
     // Check genotypes
     if variant.IsHeterozygous("sample1") {
@@ -102,10 +149,19 @@ for _, variant := range variants {
 }
 
 // Writing
-output, _ := os.Create("output.vcf")
+output, err := os.Create("output.vcf")
+if err != nil {
+    return err
+}
+defer output.Close()
+
 writer := vcf.NewWriter(output, header)
-writer.WriteHeader()
-writer.WriteAll(variants)
+if err := writer.WriteHeader(); err != nil {
+    return err
+}
+if err := writer.WriteAll(variants); err != nil {
+    return err
+}
 ```
 
 ### 4. BED (`pkg/bioformats/bed`)
@@ -123,9 +179,17 @@ BED (Browser Extensible Data) represents genomic regions.
 import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
 
 // Reading
-file, _ := os.Open("regions.bed")
+file, err := os.Open("regions.bed")
+if err != nil {
+    return err
+}
+defer file.Close()
+
 reader := bed.NewReader(file)
-records, _ := reader.ReadAll()
+records, err := reader.ReadAll()
+if err != nil {
+    return err
+}
 
 // Interval operations
 region1 := records[0]
@@ -142,9 +206,16 @@ if region1.Contains(region2) {
 length := region1.Length()
 
 // Writing
-output, _ := os.Create("output.bed")
+output, err := os.Create("output.bed")
+if err != nil {
+    return err
+}
+defer output.Close()
+
 writer := bed.NewWriter(output)
-writer.WriteAll(records)
+if err := writer.WriteAll(records); err != nil {
+    return err
+}
 ```
 
 ## Design Principles
@@ -242,11 +313,15 @@ import (
 )
 
 func processFastq(input string) error {
-    file, _ := os.Open(input)
+    file, err := os.Open(input)
+    if err != nil {
+        return err
+    }
     defer file.Close()
     
     reader := fastq.NewReader(file, fastq.Phred33)
     // ... processing
+    return nil
 }
 ```
 
