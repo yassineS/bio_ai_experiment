@@ -1,0 +1,51 @@
+Tool Name,Category,Language,Primary Use,Submodule Path,Current Version/Tag,Commit SHA
+BWA,alignment,C,DNA sequence alignment,reference_code/bwa,N/A,-b92993c1161e73167181558856567ef2f367e3f0
+Bowtie2,alignment,C++,Fast read alignment,reference_code/bowtie2,N/A,-b7e97e99065d2b21339d8cb107c2f39b394467ea
+DIAMOND,alignment,C++,Fast protein alignment,reference_code/diamond,N/A,-08b3cbc5dc35ca1d3ab0a33eb5ee331b9a468df5
+STAR,alignment,C,RNA-seq aligner,reference_code/star,N/A,-b1edc1208d91a53bf40ebae8669f71d50b994851
+Subread,alignment,C,Read alignment and counting,reference_code/subread,N/A,-55dc154f6e5a6813998d2f81039ad0e906bd2c02
+minimap2,alignment,C,Long-read alignment,reference_code/minimap2,N/A,-6d49eb690f3c32ae2b95a796951397bf598396f0
+Augustus,annotation,C++,Gene prediction,reference_code/augustus,N/A,-122867cbc2c5693c232ba0c1d2885afcfdca4845
+BRAKER,annotation,Perl,Gene prediction pipeline,reference_code/braker,N/A,-7062625a67e11b7f91c1803b9182e5b30a1a2edd
+EvidenceModeler,annotation,Perl,Gene structure combination,reference_code/evidencemodeler,N/A,-2d02f3f526449614d14d656ecbb25c6abb6cb1e1
+MAKER,annotation,Perl,Genome annotation pipeline,reference_code/maker,N/A,-4bf3085ae8df4680468646a63c635094a0a3dc2a
+PASA,annotation,Perl/C++,Transcript assembly,reference_code/pasa,N/A,-cc1f8d7fb6f0ab3ce585bbbffb9d82da0390ed75
+Prokka,annotation,Perl,Prokaryotic annotation,reference_code/prokka,N/A,-c335b7a6539a960ff4d98af6d2c6eb9bc1b7ebde
+SNAP,annotation,C,Gene prediction,reference_code/snap,N/A,-4ad1e957cd8e68b63857cc1cb3380d39a7b518b1
+Canu,assembly,Perl/C++,Long-read assembly,reference_code/canu,N/A,-fb43b3c196a8cbd66a6cd0d3178e7e879eeb918d
+DISCOVAR,assembly,C++,Variant detection assembly,reference_code/discovar,N/A,-3b1906883d4cb27f17f15868e79c328927c3ae79
+MEGAHIT,assembly,C++,Metagenome assembler,reference_code/megahit,fix_num_tip_overflow-360-g3821b10,3821b10b33bd6f19e3c0e944db6f6519be798968
+Minia,assembly,C++,Short-read assembler,reference_code/minia,N/A,-7b7239c69ecc63534a20fc0d0c2de30f0f67e31c
+SPAdes,assembly,C++,Genome assembler,reference_code/spades,continuous-4-gffa170f6a,ffa170f6a2700a929e13ff888e4b108405229501
+wtdbg2,assembly,C,Long-read assembly,reference_code/wtdbg2,N/A,-b77c5657c8095412317e4a20fe3668f5bde6b1ac
+Bismark,epigenomics,Perl,Bisulfite-seq alignment,reference_code/bismark,N/A,-44618d29b70c26dff0b419d2a2c1bbcb8a02cfd8
+Segway,epigenomics,Python,Genome segmentation,reference_code/segway,N/A,-5386c2b5fdb7b472d6d1a379de9388e7818ffee4
+methylKit,epigenomics,R,DNA methylation,reference_code/methylkit,N/A,-ecf85842bdd5252161fa5bbe6aa0d285c87e1f77
+Kraken2,metagenomics,C++,Taxonomic classification,reference_code/kraken2,v2.1.6-8-g3ec1891,3ec1891d1e93009fd388d31394ae4bc490ad9fc5
+mothur,metagenomics,C++,Microbial ecology,reference_code/mothur,N/A,-7644285f6f9d3939f4ba44e8a05f007308e97f8a
+IQ-TREE,phylogenetics,C++,Phylogenetic inference,reference_code/iq_tree,N/A,-a00094e03d1ae984e1497e16738f91514df8c366
+MrBayes,phylogenetics,C,Bayesian phylogenetics,reference_code/mrbayes,N/A,-bb09fffbf9967cba62a4e8af2d487f443e9438d9
+PhyML,phylogenetics,C,Maximum likelihood,reference_code/phyml,N/A,-563fa2e4b771c77b70de4bda30201d2552bafdc6
+RAxML,phylogenetics,C,Maximum likelihood trees,reference_code/raxml,N/A,-36ec36110631c34692abcd4f24ca7b3e2fea742a
+AdmixTools,population_genetics,C,Admixture testing,reference_code/admixtools,N/A,-b10ddcfdf43792125052c8bc8b8a96cf5335eb56
+EIGENSOFT,population_genetics,C,Population stratification,reference_code/eigensoft,N/A,-09ed563fdec05648a66c206ba1fc37a198395cd7
+PHASE,population_genetics,C,Haplotype reconstruction,reference_code/phase,N/A,-40ec45338c3938472c54619d44f8c8468fb92763
+PLINK,population_genetics,C,Whole genome association analysis,reference_code/plink,N/A,-c7aeb7097eba5bd24597b639728b66624820c3d5
+VCFtools,population_genetics,C++/Perl,VCF manipulation,reference_code/vcftools,N/A,-1f87a83402ffd17ea2723a456b7edf5d80b4a22c
+fineSTRUCTURE,population_genetics,C,Population structure analysis,reference_code/finestructure,N/A,-7b3efe070db304335ba3b133fa6a197599fc2179
+PRINSEQ,qc,Perl,Sequence quality control,reference_code/prinseq,N/A,-e5b97d95a02db1eb5574737664d5304a1167ae0c
+Sickle,qc,C,Quality trimming,reference_code/sickle,N/A,-f3d6ae3460e94ed8162d314b74fb470c27624432
+Skewer,qc,C++,Adapter trimming,reference_code/skewer,N/A,-978e8e46cba44595ece623e5387749284a86b74b
+Trim Galore,qc,Perl,Quality and adapter trimming,reference_code/trim_galore,N/A,-a46184bb012b249ebc3ae86064468d728bfddb54
+fastp,qc,C++,Fast QC and preprocessing,reference_code/fastp,v1.0.1-16-g2d3d3de,2d3d3dec5dd580f761280ad9fb5fadbb513149e9
+seqtk,qc,C,FASTA/Q processing,reference_code/seqtk,N/A,-94e707082d39b0a038f234df676e32d9802c0dc7
+Salmon,rnaseq,C++,RNA-seq quantification,reference_code/salmon,v1.10.3,a2f6912b3f9f9af91e3a4b0d74adcb3bdc4c9a32
+StringTie,rnaseq,C++,Transcript assembly and quantification,reference_code/stringtie,N/A,-8653184e862df6ec013abf3b5af55c2747baff3c
+limma,rnaseq,R,Differential expression,reference_code/limma,N/A,-1b51b3a5295f9feedb72a0df97e9c3e236592464
+BEDTools,utilities,C++,Genomic interval operations,reference_code/bedtools,v2.31.1-7-gdd570590,dd570590d216595dd1d1fea818bae84a5ff960ed
+samtools,utilities,C,SAM/BAM file manipulation,reference_code/samtools,1.22.1-19-ge406d9e,e406d9eb0f7051b04c98a00f9aeb8f3de11b85dc
+Control-FREEC,variant_calling,C++,CNV detection,reference_code/control_freec,N/A,-21ddba0175e5760573354db59b0341cc230d836f
+LUMPY,variant_calling,C++,Structural variant caller,reference_code/lumpy,N/A,-f24085f5d7865579e390add664ebbd9383fa0536
+LoFreq,variant_calling,C,Low-frequency variant caller,reference_code/lofreq,N/A,-46bd58d7f5b2c38c5b422820ece82b119830e4b7
+Manta,variant_calling,C++,Structural variant caller,reference_code/manta,N/A,-2a9eeafaedd1b5020057cc21524ae0af1b7067b3
+Strelka,variant_calling,C++,Small variant caller,reference_code/strelka,N/A,-d7377443b62319f7c7bd70c241c4b2df3459e29a
