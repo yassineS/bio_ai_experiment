@@ -1,13 +1,13 @@
 # Submodules Addition Summary
 
 ## Task Completed
-Successfully added 42 out of 50 bioinformatics tools identified in the analysis as git submodules to the `reference_code/` directory.
+Successfully added 45 bioinformatics tools as git submodules to the `reference_code/` directory, including 42 from the original top 50 analysis and 3 additional requested tools.
 
 ## Results
 
-### Successfully Added (42 tools)
+### Successfully Added (45 tools)
 
-All 42 tools have been successfully added as git submodules and are accessible for reference and analysis:
+All 45 tools have been successfully added as git submodules and are accessible for reference and analysis:
 
 - **Alignment**: 5 tools (BWA, Bowtie2, DIAMOND, minimap2, Subread)
 - **Annotation**: 7 tools (Augustus, BRAKER, EvidenceModeler, MAKER, PASA, Prokka, SNAP)
@@ -20,7 +20,15 @@ All 42 tools have been successfully added as git submodules and are accessible f
 - **RNA-seq**: 3 tools (Cuffdiff, Cufflinks, limma)
 - **Variant Calling**: 5 tools (Control-FREEC, DeepVariant, LoFreq, LUMPY, Strelka)
 
-### Not Added (8 tools)
+### Additional Tools Added (3 tools)
+
+Based on user request, the following additional tools have been added:
+
+- **DISCOVAR** - Variant detection assembly (C++) - Unofficial mirror from bayolau/discovardenovo
+- **fineSTRUCTURE** - Population structure analysis (C) - Includes Chromopainter for chromosome painting
+- **AdmixTools** - Admixture testing and population genetics (C) - Tools from Reich Lab
+
+### Not Added (5 tools)
 
 **Proprietary/Commercial (3 tools)**
 - NovoAlign - Commercial software
@@ -28,11 +36,11 @@ All 42 tools have been successfully added as git submodules and are accessible f
 - FGENESH - Commercial software
 
 **Not Available on GitHub (5 tools)**
-- MaxBin - Original on SourceForge; GitHub repos inactive/moved
-- STRUCTURE - Proprietary software from Stanford
-- Homer - Official distribution only (homer.ucsd.edu)
-- RAST - Web service-based; no standalone repo readily available
-- DISCOVAR - Broad Institute project; official repo archived
+- MaxBin - Original on SourceForge; GitHub repos appear to be removed or made private
+- STRUCTURE - Proprietary software from Stanford (no public repository)
+- Homer - Official distribution only (homer.ucsd.edu, tarball distribution)
+- RAST - Web service-based; standalone repo has access restrictions
+- sourcefind - Not a bioinformatics tool (appears to be radio astronomy software)
 
 ## Files Created
 
@@ -91,13 +99,16 @@ This addition provides:
 
 ## Statistics
 
-- **Total Tools Analyzed**: 50
-- **Successfully Added**: 42 (84%)
+- **Total Tools Analyzed**: 50 (original list)
+- **Successfully Added from Original List**: 42 (84%)
+- **Additional Tools Added**: 3 (DISCOVAR, fineSTRUCTURE, AdmixTools)
+- **Total Submodules**: 45
 - **Unavailable**: 8 (16%)
   - Proprietary: 3 (6%)
   - Not on GitHub: 5 (10%)
-- **Total Repository Size**: ~42 submodule references (actual content fetched on demand)
+- **Total Repository Size**: ~45 submodule references (actual content fetched on demand)
 - **Categories Covered**: 10 distinct bioinformatics categories
 
 ## Date
 **Completed**: 2025-10-20
+**Updated**: 2025-10-20 (Added DISCOVAR, fineSTRUCTURE, AdmixTools)

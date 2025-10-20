@@ -1,12 +1,12 @@
 # Reference Code Directory
 
-This directory contains the original source code for the top 50 bioinformatics tools identified for improvement in our analysis. These tools have been added as git submodules to allow easy access to their source code for analysis, comparison, and reference during the rewrite process.
+This directory contains the original source code for bioinformatics tools identified for improvement in our analysis. These tools have been added as git submodules to allow easy access to their source code for analysis, comparison, and reference during the rewrite process.
 
 ## Overview
 
-Based on the comprehensive analysis in [`analysis/top_50_packages_for_improvement.md`](../analysis/top_50_packages_for_improvement.md), we identified 50 bioinformatics packages that would benefit most from code rewrites and improved documentation. Of these 50 packages, 42 are available as open-source projects on GitHub and have been added as submodules to this repository.
+Based on the comprehensive analysis in [`analysis/top_50_packages_for_improvement.md`](../analysis/top_50_packages_for_improvement.md), we identified 50 bioinformatics packages that would benefit most from code rewrites and improved documentation. Of these 50 packages, 42 are available as open-source projects on GitHub and have been added as submodules. Additionally, 3 more tools were added based on user request (DISCOVAR, fineSTRUCTURE with Chromopainter, and AdmixTools), bringing the total to 45 submodules.
 
-## Successfully Added Tools (42/50)
+## Successfully Added Tools (45/50+)
 
 The following 42 tools have been successfully added as git submodules:
 
@@ -188,7 +188,24 @@ The following 42 tools have been successfully added as git submodules:
     - Repository: [Illumina/strelka](https://github.com/Illumina/strelka)
     - Path: `reference_code/strelka/`
 
-## Unavailable Tools (8/50)
+### Additional Tools (3)
+
+43. **DISCOVAR** - Variant detection assembly (C++)
+    - Repository: [bayolau/discovardenovo](https://github.com/bayolau/discovardenovo) (unofficial mirror)
+    - Path: `reference_code/discovar/`
+    - Note: Unofficial Git tracking of DISCOVAR-denovo from Broad Institute
+
+44. **fineSTRUCTURE** - Population structure analysis (C)
+    - Repository: [danjlawson/finestructure4](https://github.com/danjlawson/finestructure4)
+    - Path: `reference_code/finestructure/`
+    - Note: Includes Chromopainter for chromosome painting analysis
+
+45. **AdmixTools** - Admixture testing and population genetics (C)
+    - Repository: [DReichLab/AdmixTools](https://github.com/DReichLab/AdmixTools)
+    - Path: `reference_code/admixtools/`
+    - Note: Tools to test whether admixture occurred and related population genetics analyses
+
+## Unavailable Tools (8/50+)
 
 The following 8 tools could not be added as submodules for the reasons listed:
 
@@ -198,11 +215,13 @@ The following 8 tools could not be added as submodules for the reasons listed:
 3. **FGENESH** - Commercial gene prediction software, license required
 
 ### Not Available on GitHub (5)
-4. **MaxBin** - Original version on SourceForge, GitHub repos appear to be inactive or moved
-5. **STRUCTURE** - Proprietary population genetics software from Stanford (web.stanford.edu/group/pritchardlab/structure.html)
-6. **Homer** - Official distribution at homer.ucsd.edu, no maintained GitHub mirror
-7. **RAST** - Web service-based annotation system, standalone version not readily available
-8. **DISCOVAR** - Broad Institute project, official repository archived or removed (unofficial mirrors exist)
+4. **MaxBin** - Original version on SourceForge, GitHub repos appear to be removed or made private
+5. **STRUCTURE** - Proprietary population genetics software from Stanford (web.stanford.edu/group/pritchardlab/structure.html); no public repository available
+6. **Homer** - Official distribution at homer.ucsd.edu, no maintained GitHub mirror, distributed as tarball
+7. **RAST** - Web service-based annotation system, standalone repository has access restrictions
+8. **sourcefind** - Not a bioinformatics tool (appears to be radio astronomy software); request may have been in error
+
+**Note**: vcftools was already included in the original 42 tools. DISCOVAR was successfully added as an unofficial mirror.
 
 ## Working with Submodules
 
@@ -291,6 +310,6 @@ reference_code/
 
 ---
 
-**Last Updated**: 2025-10-20  
-**Total Submodules**: 42  
+**Last Updated**: 2025-10-20 (Updated with DISCOVAR, fineSTRUCTURE, and AdmixTools)  
+**Total Submodules**: 45  
 **Status**: Active Development

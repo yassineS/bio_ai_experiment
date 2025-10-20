@@ -1,43 +1,46 @@
 Tool Name,Category,Language,Primary Use,Submodule Path,Current Version/Tag,Commit SHA
-BWA,alignment,C,DNA sequence alignment,reference_code/bwa,shortchain-final-413-gb92993c,b92993c1161e73167181558856567ef2f367e3f0
-Bowtie2,alignment,C++,Fast read alignment,reference_code/bowtie2,v2.4.5-214-gb7e97e9,b7e97e99065d2b21339d8cb107c2f39b394467ea
-DIAMOND,alignment,C++,Fast protein alignment,reference_code/diamond,v2.1.14,08b3cbc5dc35ca1d3ab0a33eb5ee331b9a468df5
-Subread,alignment,C,Read alignment and counting,reference_code/subread,2.0.2-30-g55dc154,55dc154f6e5a6813998d2f81039ad0e906bd2c02
-minimap2,alignment,C,Long-read alignment,reference_code/minimap2,v2.30-3-g6d49eb6,6d49eb690f3c32ae2b95a796951397bf598396f0
-Augustus,annotation,C++,Gene prediction,reference_code/augustus,v3.3.1-tag1-1235-g122867cb,122867cbc2c5693c232ba0c1d2885afcfdca4845
-BRAKER,annotation,Perl,Gene prediction pipeline,reference_code/braker,v2.1.1-tag1-774-g7062625,7062625a67e11b7f91c1803b9182e5b30a1a2edd
-EvidenceModeler,annotation,Perl,Gene structure combination,reference_code/evidencemodeler,EVidenceModeler-v2.1.0-5-g2d02f3f,2d02f3f526449614d14d656ecbb25c6abb6cb1e1
-MAKER,annotation,Perl,Genome annotation pipeline,reference_code/maker,Version_3.01.04-4-g4bf3085,4bf3085ae8df4680468646a63c635094a0a3dc2a
-PASA,annotation,Perl/C++,Transcript assembly,reference_code/pasa,pasa-v2.5.3-2-gcc1f8d7,cc1f8d7fb6f0ab3ce585bbbffb9d82da0390ed75
-Prokka,annotation,Perl,Prokaryotic annotation,reference_code/prokka,v1.14.6-6-gc335b7a,c335b7a6539a960ff4d98af6d2c6eb9bc1b7ebde
-SNAP,annotation,C,Gene prediction,reference_code/snap,heads/master,4ad1e957cd8e68b63857cc1cb3380d39a7b518b1
-Canu,assembly,Perl/C++,Long-read assembly,reference_code/canu,v2.4-development-28-gfb43b3c19,fb43b3c196a8cbd66a6cd0d3178e7e879eeb918d
-IDBA,assembly,C++,Multiple k-mer assembly,reference_code/idba,1.1.3-2-ga1bafe6,a1bafe6b012912cd9a76926ec75a98aee6213af6
-Ray,assembly,C++,Parallel assembly,reference_code/ray,v2.3.1-38-g621dfe84,621dfe8454dc96d49f405e413cb759d3f48790b2
-wtdbg2,assembly,C,Long-read assembly,reference_code/wtdbg2,v2.5-20-gb77c565,b77c5657c8095412317e4a20fe3668f5bde6b1ac
-Bismark,epigenomics,Perl,Bisulfite-seq alignment,reference_code/bismark,0.14.5-781-g44618d2,44618d29b70c26dff0b419d2a2c1bbcb8a02cfd8
-Segway,epigenomics,Python,Genome segmentation,reference_code/segway,3.0.4-27-g5386c2b5,5386c2b5fdb7b472d6d1a379de9388e7818ffee4
-methylKit,epigenomics,R,DNA methylation,reference_code/methylkit,v0.99.2-515-gecf8584,ecf85842bdd5252161fa5bbe6aa0d285c87e1f77
-MEGAN,metagenomics,Java,Metagenome analysis,reference_code/megan,V6.21.1-149-g9b365235,9b365235a2ff542e75be1081ac1888e886a4e019
-mothur,metagenomics,C++,Microbial ecology,reference_code/mothur,v1.35.0-2115-g7644285f,7644285f6f9d3939f4ba44e8a05f007308e97f8a
-IQ-TREE,phylogenetics,C++,Phylogenetic inference,reference_code/iq_tree,v2.3.4-212-ga00094e0,a00094e03d1ae984e1497e16738f91514df8c366
-MrBayes,phylogenetics,C,Bayesian phylogenetics,reference_code/mrbayes,v3.2.7a-419-gbb09fff,bb09fffbf9967cba62a4e8af2d487f443e9438d9
-PhyML,phylogenetics,C,Maximum likelihood,reference_code/phyml,phyrexcv-128-g563fa2e,563fa2e4b771c77b70de4bda30201d2552bafdc6
-RAxML,phylogenetics,C,Maximum likelihood trees,reference_code/raxml,v8.2.12-19-g36ec361,36ec36110631c34692abcd4f24ca7b3e2fea742a
-EIGENSOFT,population_genetics,C,Population stratification,reference_code/eigensoft,v8.0.0,09ed563fdec05648a66c206ba1fc37a198395cd7
-PHASE,population_genetics,C,Haplotype reconstruction,reference_code/phase,heads/master,40ec45338c3938472c54619d44f8c8468fb92763
-VCFtools,population_genetics,C++/Perl,VCF manipulation,reference_code/vcftools,v0.1.14-71-g1f87a83,1f87a83402ffd17ea2723a456b7edf5d80b4a22c
-PRINSEQ,qc,Perl,Sequence quality control,reference_code/prinseq,heads/master,e5b97d95a02db1eb5574737664d5304a1167ae0c
-Sickle,qc,C,Quality trimming,reference_code/sickle,v1.2-37-gf3d6ae3,f3d6ae3460e94ed8162d314b74fb470c27624432
-Skewer,qc,C++,Adapter trimming,reference_code/skewer,0.2.2,978e8e46cba44595ece623e5387749284a86b74b
-Trim Galore,qc,Perl,Quality and adapter trimming,reference_code/trim_galore,0.6.10-11-ga46184b,a46184bb012b249ebc3ae86064468d728bfddb54
-fastx_toolkit,qc,C++,FASTA/Q processing,reference_code/fastx_toolkit,0.0.14-6-gea0ca83,ea0ca83ba24dce80c20ca589b838a281fe5deb0c
-seqtk,qc,C,FASTA/Q processing,reference_code/seqtk,v1.5,94e707082d39b0a038f234df676e32d9802c0dc7
-Cuffdiff,rnaseq,C++,Differential expression,reference_code/cuffdiff,v2.2.1-89-gdc3b0cb,dc3b0cb72a4ac2b6bbc887099e71fc0c21e107b7
-Cufflinks,rnaseq,C++,Transcript assembly,reference_code/cufflinks,v2.2.1-89-gdc3b0cb,dc3b0cb72a4ac2b6bbc887099e71fc0c21e107b7
-limma,rnaseq,R,Differential expression,reference_code/limma,2.10.7,1b51b3a5295f9feedb72a0df97e9c3e236592464
-Control-FREEC,variant_calling,C++,CNV detection,reference_code/control_freec,v11.6b-3-g21ddba0,21ddba0175e5760573354db59b0341cc230d836f
-DeepVariant,variant_calling,Python/C++,Deep learning variant caller,reference_code/deepvariant,r1.8.0-230-gbe7ee2c6,be7ee2c6f36dd6fc6a07ed48979a6f1e82d307f7
-LUMPY,variant_calling,C++,Structural variant caller,reference_code/lumpy,v0.1.5-431-gf24085f,f24085f5d7865579e390add664ebbd9383fa0536
-LoFreq,variant_calling,C,Low-frequency variant caller,reference_code/lofreq,v2.1.5-30-g46bd58d,46bd58d7f5b2c38c5b422820ece82b119830e4b7
-Strelka,variant_calling,C++,Small variant caller,reference_code/strelka,v2.9.10-4-gd7377443,d7377443b62319f7c7bd70c241c4b2df3459e29a
+BWA,alignment,C,DNA sequence alignment,reference_code/bwa,N/A,-b92993c1161e73167181558856567ef2f367e3f0
+Bowtie2,alignment,C++,Fast read alignment,reference_code/bowtie2,N/A,-b7e97e99065d2b21339d8cb107c2f39b394467ea
+DIAMOND,alignment,C++,Fast protein alignment,reference_code/diamond,N/A,-08b3cbc5dc35ca1d3ab0a33eb5ee331b9a468df5
+Subread,alignment,C,Read alignment and counting,reference_code/subread,N/A,-55dc154f6e5a6813998d2f81039ad0e906bd2c02
+minimap2,alignment,C,Long-read alignment,reference_code/minimap2,N/A,-6d49eb690f3c32ae2b95a796951397bf598396f0
+Augustus,annotation,C++,Gene prediction,reference_code/augustus,N/A,-122867cbc2c5693c232ba0c1d2885afcfdca4845
+BRAKER,annotation,Perl,Gene prediction pipeline,reference_code/braker,N/A,-7062625a67e11b7f91c1803b9182e5b30a1a2edd
+EvidenceModeler,annotation,Perl,Gene structure combination,reference_code/evidencemodeler,N/A,-2d02f3f526449614d14d656ecbb25c6abb6cb1e1
+MAKER,annotation,Perl,Genome annotation pipeline,reference_code/maker,N/A,-4bf3085ae8df4680468646a63c635094a0a3dc2a
+PASA,annotation,Perl/C++,Transcript assembly,reference_code/pasa,N/A,-cc1f8d7fb6f0ab3ce585bbbffb9d82da0390ed75
+Prokka,annotation,Perl,Prokaryotic annotation,reference_code/prokka,N/A,-c335b7a6539a960ff4d98af6d2c6eb9bc1b7ebde
+SNAP,annotation,C,Gene prediction,reference_code/snap,N/A,-4ad1e957cd8e68b63857cc1cb3380d39a7b518b1
+Canu,assembly,Perl/C++,Long-read assembly,reference_code/canu,N/A,-fb43b3c196a8cbd66a6cd0d3178e7e879eeb918d
+DISCOVAR,assembly,C++,Variant detection assembly,reference_code/discovar,heads/master,3b1906883d4cb27f17f15868e79c328927c3ae79
+IDBA,assembly,C++,Multiple k-mer assembly,reference_code/idba,N/A,-a1bafe6b012912cd9a76926ec75a98aee6213af6
+Ray,assembly,C++,Parallel assembly,reference_code/ray,N/A,-621dfe8454dc96d49f405e413cb759d3f48790b2
+wtdbg2,assembly,C,Long-read assembly,reference_code/wtdbg2,N/A,-b77c5657c8095412317e4a20fe3668f5bde6b1ac
+Bismark,epigenomics,Perl,Bisulfite-seq alignment,reference_code/bismark,N/A,-44618d29b70c26dff0b419d2a2c1bbcb8a02cfd8
+Segway,epigenomics,Python,Genome segmentation,reference_code/segway,N/A,-5386c2b5fdb7b472d6d1a379de9388e7818ffee4
+methylKit,epigenomics,R,DNA methylation,reference_code/methylkit,N/A,-ecf85842bdd5252161fa5bbe6aa0d285c87e1f77
+MEGAN,metagenomics,Java,Metagenome analysis,reference_code/megan,N/A,-9b365235a2ff542e75be1081ac1888e886a4e019
+mothur,metagenomics,C++,Microbial ecology,reference_code/mothur,N/A,-7644285f6f9d3939f4ba44e8a05f007308e97f8a
+IQ-TREE,phylogenetics,C++,Phylogenetic inference,reference_code/iq_tree,N/A,-a00094e03d1ae984e1497e16738f91514df8c366
+MrBayes,phylogenetics,C,Bayesian phylogenetics,reference_code/mrbayes,N/A,-bb09fffbf9967cba62a4e8af2d487f443e9438d9
+PhyML,phylogenetics,C,Maximum likelihood,reference_code/phyml,N/A,-563fa2e4b771c77b70de4bda30201d2552bafdc6
+RAxML,phylogenetics,C,Maximum likelihood trees,reference_code/raxml,N/A,-36ec36110631c34692abcd4f24ca7b3e2fea742a
+AdmixTools,population_genetics,C,Admixture testing and population genetics,reference_code/admixtools,v8.0.2,b10ddcfdf43792125052c8bc8b8a96cf5335eb56
+EIGENSOFT,population_genetics,C,Population stratification,reference_code/eigensoft,N/A,-09ed563fdec05648a66c206ba1fc37a198395cd7
+PHASE,population_genetics,C,Haplotype reconstruction,reference_code/phase,N/A,-40ec45338c3938472c54619d44f8c8468fb92763
+VCFtools,population_genetics,C++/Perl,VCF manipulation,reference_code/vcftools,N/A,-1f87a83402ffd17ea2723a456b7edf5d80b4a22c
+fineSTRUCTURE,population_genetics,C,Population structure analysis (includes Chromopainter),reference_code/finestructure,heads/main,7b3efe070db304335ba3b133fa6a197599fc2179
+PRINSEQ,qc,Perl,Sequence quality control,reference_code/prinseq,N/A,-e5b97d95a02db1eb5574737664d5304a1167ae0c
+Sickle,qc,C,Quality trimming,reference_code/sickle,N/A,-f3d6ae3460e94ed8162d314b74fb470c27624432
+Skewer,qc,C++,Adapter trimming,reference_code/skewer,N/A,-978e8e46cba44595ece623e5387749284a86b74b
+Trim Galore,qc,Perl,Quality and adapter trimming,reference_code/trim_galore,N/A,-a46184bb012b249ebc3ae86064468d728bfddb54
+fastx_toolkit,qc,C++,FASTA/Q processing,reference_code/fastx_toolkit,N/A,-ea0ca83ba24dce80c20ca589b838a281fe5deb0c
+seqtk,qc,C,FASTA/Q processing,reference_code/seqtk,N/A,-94e707082d39b0a038f234df676e32d9802c0dc7
+Cuffdiff,rnaseq,C++,Differential expression,reference_code/cuffdiff,N/A,-dc3b0cb72a4ac2b6bbc887099e71fc0c21e107b7
+Cufflinks,rnaseq,C++,Transcript assembly,reference_code/cufflinks,N/A,-dc3b0cb72a4ac2b6bbc887099e71fc0c21e107b7
+limma,rnaseq,R,Differential expression,reference_code/limma,N/A,-1b51b3a5295f9feedb72a0df97e9c3e236592464
+Control-FREEC,variant_calling,C++,CNV detection,reference_code/control_freec,N/A,-21ddba0175e5760573354db59b0341cc230d836f
+DeepVariant,variant_calling,Python/C++,Deep learning variant caller,reference_code/deepvariant,N/A,-be7ee2c6f36dd6fc6a07ed48979a6f1e82d307f7
+LUMPY,variant_calling,C++,Structural variant caller,reference_code/lumpy,N/A,-f24085f5d7865579e390add664ebbd9383fa0536
+LoFreq,variant_calling,C,Low-frequency variant caller,reference_code/lofreq,N/A,-46bd58d7f5b2c38c5b422820ece82b119830e4b7
+Strelka,variant_calling,C++,Small variant caller,reference_code/strelka,N/A,-d7377443b62319f7c7bd70c241c4b2df3459e29a

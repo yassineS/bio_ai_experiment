@@ -124,3 +124,12 @@
 [submodule "reference_code/methylkit"]
 	path = reference_code/methylkit
 	url = https://github.com/al2na/methylKit
+[submodule "reference_code/discovar"]
+	path = reference_code/discovar
+	url = https://github.com/bayolau/discovardenovo
+[submodule "reference_code/finestructure"]
+	path = reference_code/finestructure
+	url = https://github.com/danjlawson/finestructure4
+[submodule "reference_code/admixtools"]
+	path = reference_code/admixtools
+	url = https://github.com/DReichLab/AdmixTools
