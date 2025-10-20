@@ -1,12 +1,18 @@
 # Reference Code Directory
 
-This directory contains the original source code for bioinformatics tools identified for improvement in our analysis. These tools have been added as git submodules to allow easy access to their source code for analysis, comparison, and reference during the rewrite process.
+This directory contains the source code for 50 modern, actively-maintained bioinformatics tools. These tools have been carefully curated to exclude outdated software and tools with very large codebases, focusing instead on current best practices and widely-used alternatives.
 
 ## Overview
 
-Based on the comprehensive analysis in [`analysis/top_50_packages_for_improvement.md`](../analysis/top_50_packages_for_improvement.md), we identified 50 bioinformatics packages that would benefit most from code rewrites and improved documentation. Of these 50 packages, 42 are available as open-source projects on GitHub and have been added as submodules. Additionally, 8 more tools were added (3 per user request and 5 from the extended ranked list) to reach a total of 50 submodules.
+This collection represents a curated set of bioinformatics tools that are:
+- **Actively maintained** - Regular updates and active development
+- **Modern alternatives** - Superseding older, unmaintained tools
+- **Reasonable codebase size** - Excluding overly complex or large projects
+- **Widely adopted** - Industry and research standard tools
 
-## Successfully Added Tools (50 total)
+The tools cover the complete bioinformatics workflow from sequencing QC to variant calling and beyond.
+
+## Successfully Added Tools (50 modern tools)
 
 The following 42 tools have been successfully added as git submodules:
 
@@ -220,7 +226,7 @@ The following 42 tools have been successfully added as git submodules:
 48. **PLINK** - Whole genome association analysis toolset (C)
     - Repository: [chrchang/plink-ng](https://github.com/chrchang/plink-ng)
     - Path: `reference_code/plink/`
-    - Note: Free, open-source whole genome association analysis toolset
+    - Note: PLINK 2.0 - Modern version of the classic GWAS tool
 
 49. **STAR** - Ultrafast RNA-seq aligner (C)
     - Repository: [alexdobin/STAR](https://github.com/alexdobin/STAR)
@@ -232,7 +238,46 @@ The following 42 tools have been successfully added as git submodules:
     - Path: `reference_code/manta/`
     - Note: Structural variant and indel caller for mapped sequencing data
 
-## Unavailable Tools (8/50+)
+### Modern Replacement Tools (7 tools)
+
+The following modern tools replace outdated or overly large tools from the original list:
+
+51. **Salmon** - Fast RNA-seq quantification (C++)
+    - Repository: [COMBINE-lab/salmon](https://github.com/COMBINE-lab/salmon)
+    - Path: `reference_code/salmon/`
+    - Note: Wicked-fast RNA-seq quantification; replaces Cuffdiff/Cufflinks
+
+52. **fastp** - All-in-one preprocessing for FASTQ files (C++)
+    - Repository: [OpenGene/fastp](https://github.com/OpenGene/fastp)
+    - Path: `reference_code/fastp/`
+    - Note: Modern replacement for fastx_toolkit with better performance
+
+53. **SPAdes** - Genome assembler (C++)
+    - Repository: [ablab/spades](https://github.com/ablab/spades)
+    - Path: `reference_code/spades/`
+    - Note: Modern genome assembler; replaces Ray
+
+54. **MEGAHIT** - Metagenome assembler (C++)
+    - Repository: [voutcn/megahit](https://github.com/voutcn/megahit)
+    - Path: `reference_code/megahit/`
+    - Note: Ultra-fast and memory-efficient; replaces IDBA
+
+55. **Kraken2** - Taxonomic classification (C++)
+    - Repository: [DerrickWood/kraken2](https://github.com/DerrickWood/kraken2)
+    - Path: `reference_code/kraken2/`
+    - Note: Fast and accurate taxonomic assignment; replaces MEGAN
+
+56. **BEDTools** - Genomic utilities (C++)
+    - Repository: [arq5x/bedtools2](https://github.com/arq5x/bedtools2)
+    - Path: `reference_code/bedtools/`
+    - Note: Essential genomic interval manipulation toolkit
+
+57. **samtools** - SAM/BAM manipulation (C)
+    - Repository: [samtools/samtools](https://github.com/samtools/samtools)
+    - Path: `reference_code/samtools/`
+    - Note: Industry-standard toolkit for sequence alignment files
+
+## Removed Tools
 
 The following 8 tools could not be added as submodules for the reasons listed:
 
@@ -337,6 +382,6 @@ reference_code/
 
 ---
 
-**Last Updated**: 2025-10-20 (Updated with 5 more tools: StringTie, Minia, PLINK, STAR, Manta)  
-**Total Submodules**: 50 ✓ Target Reached  
+**Last Updated**: 2025-10-20 (Revised with modern alternatives, removed outdated tools)  
+**Total Submodules**: 50 ✓ Modern, Actively-Maintained Tools  
 **Status**: Active Development

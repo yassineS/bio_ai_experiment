@@ -1,7 +1,7 @@
 # Git Submodules - Bioinformatics Tools
 
 **Total Submodules**: 50
-**Last Updated**: 2025-10-20
+**Last Updated**: 2025-10-20 (Revised to exclude outdated tools)
 
 ## Alignment
 
@@ -10,7 +10,7 @@
 | BWA | C | DNA sequence alignment | N/A | `reference_code/bwa` |
 | Bowtie2 | C++ | Fast read alignment | N/A | `reference_code/bowtie2` |
 | DIAMOND | C++ | Fast protein alignment | N/A | `reference_code/diamond` |
-| STAR | C | Ultrafast RNA-seq aligner | 2.6.0a-681-gb1edc12 | `reference_code/star` |
+| STAR | C | RNA-seq aligner | N/A | `reference_code/star` |
 | Subread | C | Read alignment and counting | N/A | `reference_code/subread` |
 | minimap2 | C | Long-read alignment | N/A | `reference_code/minimap2` |
 
@@ -32,9 +32,9 @@
 |-----------|----------|-------------|-------------|------|
 | Canu | Perl/C++ | Long-read assembly | N/A | `reference_code/canu` |
 | DISCOVAR | C++ | Variant detection assembly | N/A | `reference_code/discovar` |
-| IDBA | C++ | Multiple k-mer assembly | N/A | `reference_code/idba` |
-| Minia | C++ | Short-read de Bruijn graph assembler | v3.2.6-11-g7b7239c | `reference_code/minia` |
-| Ray | C++ | Parallel assembly | N/A | `reference_code/ray` |
+| MEGAHIT | C++ | Metagenome assembler | fix_num_tip_overflow-360-g3821b10 | `reference_code/megahit` |
+| Minia | C++ | Short-read assembler | N/A | `reference_code/minia` |
+| SPAdes | C++ | Genome assembler | continuous-4-gffa170f6a | `reference_code/spades` |
 | wtdbg2 | C | Long-read assembly | N/A | `reference_code/wtdbg2` |
 
 ## Epigenomics
@@ -49,7 +49,7 @@
 
 | Tool Name | Language | Primary Use | Version/Tag | Path |
 |-----------|----------|-------------|-------------|------|
-| MEGAN | Java | Metagenome analysis | N/A | `reference_code/megan` |
+| Kraken2 | C++ | Taxonomic classification | v2.1.6-8-g3ec1891 | `reference_code/kraken2` |
 | mothur | C++ | Microbial ecology | N/A | `reference_code/mothur` |
 
 ## Phylogenetics
@@ -68,7 +68,7 @@
 | AdmixTools | C | Admixture testing | N/A | `reference_code/admixtools` |
 | EIGENSOFT | C | Population stratification | N/A | `reference_code/eigensoft` |
 | PHASE | C | Haplotype reconstruction | N/A | `reference_code/phase` |
-| PLINK | C | Whole genome association analysis | 2019-1113-gc7aeb709 | `reference_code/plink` |
+| PLINK | C | Whole genome association analysis | N/A | `reference_code/plink` |
 | VCFtools | C++/Perl | VCF manipulation | N/A | `reference_code/vcftools` |
 | fineSTRUCTURE | C | Population structure analysis | N/A | `reference_code/finestructure` |
 
@@ -80,26 +80,31 @@
 | Sickle | C | Quality trimming | N/A | `reference_code/sickle` |
 | Skewer | C++ | Adapter trimming | N/A | `reference_code/skewer` |
 | Trim Galore | Perl | Quality and adapter trimming | N/A | `reference_code/trim_galore` |
-| fastx_toolkit | C++ | FASTA/Q processing | N/A | `reference_code/fastx_toolkit` |
+| fastp | C++ | Fast QC and preprocessing | v1.0.1-16-g2d3d3de | `reference_code/fastp` |
 | seqtk | C | FASTA/Q processing | N/A | `reference_code/seqtk` |
 
 ## Rnaseq
 
 | Tool Name | Language | Primary Use | Version/Tag | Path |
 |-----------|----------|-------------|-------------|------|
-| Cuffdiff | C++ | Differential expression | N/A | `reference_code/cuffdiff` |
-| Cufflinks | C++ | Transcript assembly | N/A | `reference_code/cufflinks` |
-| StringTie | C++ | Transcript assembly and quantification | v3.0.2 | `reference_code/stringtie` |
+| Salmon | C++ | RNA-seq quantification | v1.10.3 | `reference_code/salmon` |
+| StringTie | C++ | Transcript assembly and quantification | N/A | `reference_code/stringtie` |
 | limma | R | Differential expression | N/A | `reference_code/limma` |
+
+## Utilities
+
+| Tool Name | Language | Primary Use | Version/Tag | Path |
+|-----------|----------|-------------|-------------|------|
+| BEDTools | C++ | Genomic interval operations | v2.31.1-7-gdd570590 | `reference_code/bedtools` |
+| samtools | C | SAM/BAM file manipulation | 1.22.1-19-ge406d9e | `reference_code/samtools` |
 
 ## Variant Calling
 
 | Tool Name | Language | Primary Use | Version/Tag | Path |
 |-----------|----------|-------------|-------------|------|
 | Control-FREEC | C++ | CNV detection | N/A | `reference_code/control_freec` |
-| DeepVariant | Python/C++ | Deep learning variant caller | N/A | `reference_code/deepvariant` |
 | LUMPY | C++ | Structural variant caller | N/A | `reference_code/lumpy` |
 | LoFreq | C | Low-frequency variant caller | N/A | `reference_code/lofreq` |
-| Manta | C++ | Structural variant caller | v1.6.0-6-g2a9eeafa | `reference_code/manta` |
+| Manta | C++ | Structural variant caller | N/A | `reference_code/manta` |
 | Strelka | C++ | Small variant caller | N/A | `reference_code/strelka` |
 
