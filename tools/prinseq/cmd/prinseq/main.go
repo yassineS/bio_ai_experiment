@@ -3,12 +3,21 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/yassineS/bio_ai_experiment/tools/prinseq/pkg/prinseq"
 )
 
 const version = "1.0.0"
+
+// openInput opens the input file or returns stdin if filename is "-"
+func openInput(filename string) (io.ReadCloser, error) {
+	if filename == "-" {
+		return io.NopCloser(os.Stdin), nil
+	}
+	return os.Open(filename)
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -99,9 +108,9 @@ Options:`)
 	}
 
 	// Calculate statistics
-	stats, err := prinseq.CalculateStats(reader, isFastq)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error calculating statistics: %v\n", err)
+	stats, err2 := prinseq.CalculateStats(reader, isFastq)
+	if err2 != nil {
+		fmt.Fprintf(os.Stderr, "Error calculating statistics: %v\n", err2)
 		os.Exit(1)
 	}
 
@@ -167,25 +176,18 @@ Options:`)
 	}
 
 	// Open input file
-	var reader *os.File
-	if inputFile == "-" {
-		reader = os.Stdin
-	} else {
-		var err error
-		reader, err = os.Open(inputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
-			os.Exit(1)
-		}
-		defer reader.Close()
+	reader, err := openInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+		os.Exit(1)
 	}
+	defer reader.Close()
 
 	// Open output file
-	var writer *os.File
+	var writer io.WriteCloser
 	if *outGood == "" {
 		writer = os.Stdout
 	} else {
-		var err error
 		writer, err = os.Create(*outGood)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
@@ -207,8 +209,8 @@ Options:`)
 	}
 
 	// Filter sequences
-	if err := prinseq.Filter(reader, writer, isFastq, opts); err != nil {
-		fmt.Fprintf(os.Stderr, "Error filtering sequences: %v\n", err)
+	if err2 := prinseq.Filter(reader, writer, isFastq, opts); err2 != nil {
+		fmt.Fprintf(os.Stderr, "Error filtering sequences: %v\n", err2)
 		os.Exit(1)
 	}
 }
