@@ -1,0 +1,126 @@
+[submodule "reference_code/phase"]
+	path = reference_code/phase
+	url = https://github.com/stephens999/phase
+[submodule "reference_code/braker"]
+	path = reference_code/braker
+	url = https://github.com/Gaius-Augustus/BRAKER
+[submodule "reference_code/prinseq"]
+	path = reference_code/prinseq
+	url = https://github.com/uwb-linux/prinseq
+[submodule "reference_code/bismark"]
+	path = reference_code/bismark
+	url = https://github.com/FelixKrueger/Bismark
+[submodule "reference_code/raxml"]
+	path = reference_code/raxml
+	url = https://github.com/stamatak/standard-RAxML
+[submodule "reference_code/vcftools"]
+	path = reference_code/vcftools
+	url = https://github.com/vcftools/vcftools
+[submodule "reference_code/maker"]
+	path = reference_code/maker
+	url = https://github.com/Yandell-Lab/maker
+[submodule "reference_code/lofreq"]
+	path = reference_code/lofreq
+	url = https://github.com/CSB5/lofreq
+[submodule "reference_code/phyml"]
+	path = reference_code/phyml
+	url = https://github.com/stephaneguindon/phyml
+[submodule "reference_code/prokka"]
+	path = reference_code/prokka
+	url = https://github.com/tseemann/prokka
+[submodule "reference_code/bowtie2"]
+	path = reference_code/bowtie2
+	url = https://github.com/BenLangmead/bowtie2
+[submodule "reference_code/diamond"]
+	path = reference_code/diamond
+	url = https://github.com/bbuchfink/diamond
+[submodule "reference_code/skewer"]
+	path = reference_code/skewer
+	url = https://github.com/relipmoc/skewer
+[submodule "reference_code/evidencemodeler"]
+	path = reference_code/evidencemodeler
+	url = https://github.com/EVidenceModeler/EVidenceModeler
+[submodule "reference_code/pasa"]
+	path = reference_code/pasa
+	url = https://github.com/PASApipeline/PASApipeline
+[submodule "reference_code/canu"]
+	path = reference_code/canu
+	url = https://github.com/marbl/canu
+[submodule "reference_code/segway"]
+	path = reference_code/segway
+	url = https://github.com/hoffmangroup/segway
+[submodule "reference_code/lumpy"]
+	path = reference_code/lumpy
+	url = https://github.com/arq5x/lumpy-sv
+[submodule "reference_code/cuffdiff"]
+	path = reference_code/cuffdiff
+	url = https://github.com/cole-trapnell-lab/cufflinks
+[submodule "reference_code/augustus"]
+	path = reference_code/augustus
+	url = https://github.com/Gaius-Augustus/Augustus
+[submodule "reference_code/ray"]
+	path = reference_code/ray
+	url = https://github.com/sebhtml/ray
+[submodule "reference_code/seqtk"]
+	path = reference_code/seqtk
+	url = https://github.com/lh3/seqtk
+[submodule "reference_code/minimap2"]
+	path = reference_code/minimap2
+	url = https://github.com/lh3/minimap2
+[submodule "reference_code/subread"]
+	path = reference_code/subread
+	url = https://github.com/ShiLab-Bioinformatics/subread
+[submodule "reference_code/trim_galore"]
+	path = reference_code/trim_galore
+	url = https://github.com/FelixKrueger/TrimGalore
+[submodule "reference_code/wtdbg2"]
+	path = reference_code/wtdbg2
+	url = https://github.com/ruanjue/wtdbg2
+[submodule "reference_code/bwa"]
+	path = reference_code/bwa
+	url = https://github.com/lh3/bwa
+[submodule "reference_code/limma"]
+	path = reference_code/limma
+	url = https://github.com/cran/limma
+[submodule "reference_code/mothur"]
+	path = reference_code/mothur
+	url = https://github.com/mothur/mothur
+[submodule "reference_code/sickle"]
+	path = reference_code/sickle
+	url = https://github.com/najoshi/sickle
+[submodule "reference_code/deepvariant"]
+	path = reference_code/deepvariant
+	url = https://github.com/google/deepvariant
+[submodule "reference_code/control_freec"]
+	path = reference_code/control_freec
+	url = https://github.com/BoevaLab/FREEC
+[submodule "reference_code/iq_tree"]
+	path = reference_code/iq_tree
+	url = https://github.com/iqtree/iqtree2
+[submodule "reference_code/fastx_toolkit"]
+	path = reference_code/fastx_toolkit
+	url = https://github.com/agordon/fastx_toolkit
+[submodule "reference_code/strelka"]
+	path = reference_code/strelka
+	url = https://github.com/Illumina/strelka
+[submodule "reference_code/eigensoft"]
+	path = reference_code/eigensoft
+	url = https://github.com/DReichLab/EIG
+[submodule "reference_code/idba"]
+	path = reference_code/idba
+	url = https://github.com/loneknightpy/idba
+[submodule "reference_code/cufflinks"]
+	path = reference_code/cufflinks
+	url = https://github.com/cole-trapnell-lab/cufflinks
+[submodule "reference_code/snap"]
+	path = reference_code/snap
+	url = https://github.com/KorfLab/SNAP
+[submodule "reference_code/megan"]
+	path = reference_code/megan
+	url = https://github.com/husonlab/megan-ce
+[submodule "reference_code/mrbayes"]
+	path = reference_code/mrbayes
+	url = https://github.com/NBISweden/MrBayes
+[submodule "reference_code/methylkit"]
+	path = reference_code/methylkit
+	url = https://github.com/al2na/methylKit
