@@ -1,0 +1,22 @@
+# Python dependencies for the analysis scripts
+# All packages use only Python standard library
+# No external dependencies required
+
+# The following scripts are included:
+# - top_200_packages.py: Main analysis script
+# - visualize_results.py: Visualization script
+
+# Python 3.7+ is required
+# Standard library modules used:
+# - json
+# - csv
+# - datetime
+# - typing
+# - collections
+# - random
+
+# To run the analysis:
+# python3 top_200_packages.py
+
+# To visualize results:
+# python3 visualize_results.py

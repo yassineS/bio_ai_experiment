@@ -99,3 +99,9 @@ Thumbs.db
 docs/_build/
 docs/.doctrees/
 site/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
