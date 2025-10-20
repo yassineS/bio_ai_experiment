@@ -133,7 +133,10 @@ func runFilter(args []string) {
 	// Input/output options
 	fastq := fs.String("fastq", "", "Input FASTQ file (use '-' for stdin)")
 	fasta := fs.String("fasta", "", "Input FASTA file (use '-' for stdin)")
+	fastq2 := fs.String("fastq2", "", "Input paired-end FASTQ file 2")
+	fasta2 := fs.String("fasta2", "", "Input paired-end FASTA file 2")
 	outGood := fs.String("out_good", "", "Output file for filtered sequences (default: stdout)")
+	outGood2 := fs.String("out_good2", "", "Output file for paired-end file 2 (required with fastq2/fasta2)")
 
 	// Filter options
 	minLen := fs.Int("min_len", 0, "Minimum sequence length")
@@ -144,6 +147,22 @@ func runFilter(args []string) {
 	maxQualMean := fs.Float64("max_qual_mean", 0, "Maximum mean quality score")
 	maxNsP := fs.Float64("ns_max_p", 0, "Maximum percentage of Ns allowed")
 	maxNsN := fs.Int("ns_max_n", 0, "Maximum number of Ns allowed")
+
+	// Trimming options
+	trimLeft := fs.Int("trim_left", 0, "Trim bases from 5' end")
+	trimRight := fs.Int("trim_right", 0, "Trim bases from 3' end")
+	trimLeftP := fs.Int("trim_left_p", 0, "Trim percentage from 5' end")
+	trimRightP := fs.Int("trim_right_p", 0, "Trim percentage from 3' end")
+	trimQualL := fs.Int("trim_qual_left", 0, "Trim 5' end by quality threshold")
+	trimQualR := fs.Int("trim_qual_right", 0, "Trim 3' end by quality threshold")
+	trimNsLeft := fs.Int("trim_ns_left", 0, "Trim poly-N tail from 5' end (min length)")
+	trimNsRight := fs.Int("trim_ns_right", 0, "Trim poly-N tail from 3' end (min length)")
+	trimTailLeft := fs.Int("trim_tail_left", 0, "Trim poly-A/T tail from 5' end (min length)")
+	trimTailRight := fs.Int("trim_tail_right", 0, "Trim poly-A/T tail from 3' end (min length)")
+
+	// Duplicate removal options
+	derep := fs.Int("derep", 0, "Remove duplicates: 1=exact, 4=reverse complement, 5=both")
+	derepMin := fs.Int("derep_min", 2, "Minimum number of duplicates to keep")
 
 	fs.Usage = func() {
 		fmt.Println(`Usage: prinseq filter [options]
@@ -159,15 +178,20 @@ Options:`)
 		os.Exit(1)
 	}
 
+	// Check for paired-end mode
+	isPaired := (*fastq2 != "" || *fasta2 != "")
+
 	// Determine input file and format
-	var inputFile string
+	var inputFile, inputFile2 string
 	var isFastq bool
 
 	if *fastq != "" {
 		inputFile = *fastq
+		inputFile2 = *fastq2
 		isFastq = true
 	} else if *fasta != "" {
 		inputFile = *fasta
+		inputFile2 = *fasta2
 		isFastq = false
 	} else {
 		fmt.Fprintln(os.Stderr, "Error: Either -fastq or -fasta must be specified")
@@ -175,42 +199,101 @@ Options:`)
 		os.Exit(1)
 	}
 
-	// Open input file
-	reader, err := openInput(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+	// Validate paired-end requirements
+	if isPaired && *outGood2 == "" {
+		fmt.Fprintln(os.Stderr, "Error: -out_good2 required when using paired-end input")
 		os.Exit(1)
-	}
-	defer reader.Close()
-
-	// Open output file
-	var writer io.WriteCloser
-	if *outGood == "" {
-		writer = os.Stdout
-	} else {
-		writer, err = os.Create(*outGood)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-			os.Exit(1)
-		}
-		defer writer.Close()
 	}
 
 	// Set filter options
 	opts := prinseq.FilterOptions{
-		MinLen:      *minLen,
-		MaxLen:      *maxLen,
-		MinGC:       *minGC,
-		MaxGC:       *maxGC,
-		MinQualMean: *minQualMean,
-		MaxQualMean: *maxQualMean,
-		MaxNsP:      *maxNsP,
-		MaxNsN:      *maxNsN,
+		MinLen:        *minLen,
+		MaxLen:        *maxLen,
+		MinGC:         *minGC,
+		MaxGC:         *maxGC,
+		MinQualMean:   *minQualMean,
+		MaxQualMean:   *maxQualMean,
+		MaxNsP:        *maxNsP,
+		MaxNsN:        *maxNsN,
+		TrimLeft:      *trimLeft,
+		TrimRight:     *trimRight,
+		TrimLeftP:     *trimLeftP,
+		TrimRightP:    *trimRightP,
+		TrimQualL:     *trimQualL,
+		TrimQualR:     *trimQualR,
+		TrimNsLeft:    *trimNsLeft,
+		TrimNsRight:   *trimNsRight,
+		TrimTailLeft:  *trimTailLeft,
+		TrimTailRight: *trimTailRight,
+		Derep:         *derep,
+		DerepMin:      *derepMin,
 	}
 
-	// Filter sequences
-	if err2 := prinseq.Filter(reader, writer, isFastq, opts); err2 != nil {
-		fmt.Fprintf(os.Stderr, "Error filtering sequences: %v\n", err2)
-		os.Exit(1)
+	if isPaired {
+		// Paired-end mode
+		reader1, err := openInput(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening file 1: %v\n", err)
+			os.Exit(1)
+		}
+		defer reader1.Close()
+
+		reader2, err := openInput(inputFile2)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening file 2: %v\n", err)
+			os.Exit(1)
+		}
+		defer reader2.Close()
+
+		var writer1, writer2 io.WriteCloser
+		if *outGood == "" {
+			writer1 = os.Stdout
+		} else {
+			writer1, err = os.Create(*outGood)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating output file 1: %v\n", err)
+				os.Exit(1)
+			}
+			defer writer1.Close()
+		}
+
+		writer2, err = os.Create(*outGood2)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output file 2: %v\n", err)
+			os.Exit(1)
+		}
+		defer writer2.Close()
+
+		// Filter paired sequences
+		if err := prinseq.FilterPaired(reader1, reader2, writer1, writer2, isFastq, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Error filtering paired sequences: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Single-end mode
+		reader, err := openInput(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+			os.Exit(1)
+		}
+		defer reader.Close()
+
+		var writer io.WriteCloser
+		if *outGood == "" {
+			writer = os.Stdout
+		} else {
+			writer, err = os.Create(*outGood)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+				os.Exit(1)
+			}
+			defer writer.Close()
+		}
+
+		// Filter sequences
+		if err2 := prinseq.Filter(reader, writer, isFastq, opts); err2 != nil {
+			fmt.Fprintf(os.Stderr, "Error filtering sequences: %v\n", err2)
+			os.Exit(1)
+		}
 	}
 }

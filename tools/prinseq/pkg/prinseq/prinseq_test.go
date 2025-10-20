@@ -277,3 +277,202 @@ ACGT
 		})
 	}
 }
+
+func TestTrimLeft(t *testing.T) {
+	input := `>seq1
+ACGTACGTACGT
+`
+	var output bytes.Buffer
+	opts := FilterOptions{
+		TrimLeft: 4,
+	}
+
+	err := Filter(strings.NewReader(input), &output, false, opts)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+
+	result := output.String()
+	if !strings.Contains(result, "ACGTACGT") {
+		t.Error("Expected trimmed sequence ACGTACGT")
+	}
+	if strings.Contains(result, "ACGTACGTACGT") {
+		t.Error("Expected sequence to be trimmed")
+	}
+}
+
+func TestTrimRight(t *testing.T) {
+	input := `>seq1
+ACGTACGTACGT
+`
+	var output bytes.Buffer
+	opts := FilterOptions{
+		TrimRight: 4,
+	}
+
+	err := Filter(strings.NewReader(input), &output, false, opts)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+
+	result := output.String()
+	if !strings.Contains(result, "ACGTACGT") {
+		t.Error("Expected trimmed sequence ACGTACGT")
+	}
+}
+
+func TestTrimQuality(t *testing.T) {
+	input := `@seq1
+ACGTACGTACGT
++
+###IIIIIII##
+`
+	var output bytes.Buffer
+	opts := FilterOptions{
+		TrimQualL: 20, // Trim low quality from left
+		TrimQualR: 20, // Trim low quality from right
+	}
+
+	err := Filter(strings.NewReader(input), &output, true, opts)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+
+	result := output.String()
+	// Should trim the ### parts (quality 2) and keep the III parts (quality 40)
+	// Actually trims to TACGTAC with quality IIIIIII
+	if !strings.Contains(result, "TACGTAC") || !strings.Contains(result, "IIIIIII") {
+		t.Errorf("Expected quality-trimmed sequence, got: %s", result)
+	}
+}
+
+func TestTrimPolyN(t *testing.T) {
+	input := `>seq1
+NNNNNACGTACGTNNNNN
+`
+	var output bytes.Buffer
+	opts := FilterOptions{
+		TrimNsLeft:  3,
+		TrimNsRight: 3,
+	}
+
+	err := Filter(strings.NewReader(input), &output, false, opts)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+
+	result := output.String()
+	if !strings.Contains(result, "ACGTACGT") {
+		t.Error("Expected poly-N trimmed sequence ACGTACGT")
+	}
+	if strings.Contains(result, "NNNN") {
+		t.Error("Expected Ns to be trimmed")
+	}
+}
+
+func TestTrimPolyAT(t *testing.T) {
+	input := `>seq1
+AAAAACGTACGTTTTT
+`
+	var output bytes.Buffer
+	opts := FilterOptions{
+		TrimTailLeft:  3,
+		TrimTailRight: 3,
+	}
+
+	err := Filter(strings.NewReader(input), &output, false, opts)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+
+	result := output.String()
+	// Should trim AAAAA from left and TTTT from right, leaving CGTACG
+	if !strings.Contains(result, "CGTACG") {
+		t.Errorf("Expected poly-A/T trimmed sequence, got: %s", result)
+	}
+	if strings.Contains(result, "AAAA") || strings.Contains(result, "TTTT") {
+		t.Error("Expected poly-A/T to be trimmed")
+	}
+}
+
+func TestDerepExact(t *testing.T) {
+	input := `>seq1
+ACGTACGT
+>seq2
+GGCCGGCC
+>seq3
+ACGTACGT
+>seq4
+ACGTACGT
+`
+	var output bytes.Buffer
+	opts := FilterOptions{
+		Derep:    1, // Exact duplicates
+		DerepMin: 2, // Keep sequences that appear less than 2 times
+	}
+
+	err := Filter(strings.NewReader(input), &output, false, opts)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+
+	result := output.String()
+	// Should keep first ACGTACGT and GGCCGGCC, filter subsequent ACGTACGT
+	seqCount := strings.Count(result, ">seq")
+	if seqCount != 2 {
+		t.Errorf("Expected 2 sequences, got %d", seqCount)
+	}
+}
+
+func TestReverseComplement(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"ACGT", "ACGT"},
+		{"AAAA", "TTTT"},
+		{"GCGC", "GCGC"},
+		{"ATCG", "CGAT"},
+	}
+
+	for _, tt := range tests {
+		result := reverseComplement(tt.input)
+		if result != tt.expected {
+			t.Errorf("reverseComplement(%s) = %s, want %s", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestFilterPaired(t *testing.T) {
+	input1 := `>seq1_1
+ACGTACGTACGT
+>seq2_1
+GGCCGGCCGGCC
+`
+	input2 := `>seq1_2
+TTTTTTTTTTTT
+>seq2_2
+CCCCCCCCCCCC
+`
+
+	var output1, output2 bytes.Buffer
+	opts := FilterOptions{
+		MinLen: 10,
+	}
+
+	err := FilterPaired(strings.NewReader(input1), strings.NewReader(input2), &output1, &output2, false, opts)
+	if err != nil {
+		t.Fatalf("FilterPaired failed: %v", err)
+	}
+
+	result1 := output1.String()
+	result2 := output2.String()
+
+	// Both files should have 2 sequences
+	if strings.Count(result1, ">seq") != 2 {
+		t.Error("Expected 2 sequences in output 1")
+	}
+	if strings.Count(result2, ">seq") != 2 {
+		t.Error("Expected 2 sequences in output 2")
+	}
+}

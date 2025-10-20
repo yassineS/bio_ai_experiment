@@ -15,6 +15,20 @@ A fast and efficient sequence quality control and preprocessing tool reimplement
   - GC content filtering
   - N content filtering (percentage and absolute count)
   - Quality score filtering (mean quality)
+- **Trimming Operations**:
+  - Fixed position trimming (left/right)
+  - Percentage-based trimming
+  - Quality-based trimming
+  - Poly-N tail trimming
+  - Poly-A/T tail trimming
+- **Duplicate Removal**:
+  - Exact duplicate detection
+  - Reverse complement duplicate detection
+  - Configurable duplicate threshold
+- **Paired-End Support**:
+  - Filter paired FASTA/FASTQ files
+  - Maintains read pairing
+  - Synchronized filtering
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -93,6 +107,23 @@ prinseq filter -fastq reads.fastq -min_qual_mean 20 > filtered.fastq
 prinseq filter -fastq reads.fastq -ns_max_p 10 > filtered.fastq  # Max 10% Ns
 prinseq filter -fastq reads.fastq -ns_max_n 5 > filtered.fastq   # Max 5 Ns
 
+# Trim sequences
+prinseq filter -fastq reads.fastq -trim_left 10 -trim_right 10 > trimmed.fastq
+prinseq filter -fastq reads.fastq -trim_qual_left 20 -trim_qual_right 20 > trimmed.fastq
+prinseq filter -fastq reads.fastq -trim_ns_left 5 -trim_ns_right 5 > trimmed.fastq
+prinseq filter -fastq reads.fastq -trim_tail_left 5 -trim_tail_right 5 > trimmed.fastq
+
+# Remove duplicates
+prinseq filter -fasta sequences.fasta -derep 1 -derep_min 2 > unique.fasta  # Exact duplicates
+prinseq filter -fasta sequences.fasta -derep 4 -derep_min 2 > unique.fasta  # Reverse complement
+prinseq filter -fasta sequences.fasta -derep 5 -derep_min 2 > unique.fasta  # Both
+
+# Paired-end filtering
+prinseq filter -fastq reads_R1.fastq -fastq2 reads_R2.fastq \
+  -min_len 100 \
+  -out_good filtered_R1.fastq \
+  -out_good2 filtered_R2.fastq
+
 # Combined filters
 prinseq filter -fastq reads.fastq \
   -min_len 100 \
@@ -100,13 +131,19 @@ prinseq filter -fastq reads.fastq \
   -max_gc 60 \
   -min_qual_mean 20 \
   -ns_max_p 5 \
+  -trim_qual_left 20 \
+  -trim_qual_right 20 \
+  -derep 1 \
   -out_good filtered.fastq
 ```
 
 Options:
 - `-fastq FILE`: Input FASTQ file (use `-` for stdin)
 - `-fasta FILE`: Input FASTA file (use `-` for stdin)
+- `-fastq2 FILE`: Input paired-end FASTQ file 2
+- `-fasta2 FILE`: Input paired-end FASTA file 2
 - `-out_good FILE`: Output file for passing sequences (default: stdout)
+- `-out_good2 FILE`: Output file for paired-end file 2
 - `-min_len INT`: Minimum sequence length
 - `-max_len INT`: Maximum sequence length
 - `-min_gc FLOAT`: Minimum GC content (0-100)
@@ -115,6 +152,18 @@ Options:
 - `-max_qual_mean FLOAT`: Maximum mean quality score
 - `-ns_max_p FLOAT`: Maximum percentage of Ns allowed (0-100)
 - `-ns_max_n INT`: Maximum number of Ns allowed
+- `-trim_left INT`: Trim bases from 5' end
+- `-trim_right INT`: Trim bases from 3' end
+- `-trim_left_p INT`: Trim percentage from 5' end
+- `-trim_right_p INT`: Trim percentage from 3' end
+- `-trim_qual_left INT`: Quality threshold for 5' trimming
+- `-trim_qual_right INT`: Quality threshold for 3' trimming
+- `-trim_ns_left INT`: Trim poly-N tail from 5' end (min length)
+- `-trim_ns_right INT`: Trim poly-N tail from 3' end (min length)
+- `-trim_tail_left INT`: Trim poly-A/T tail from 5' end (min length)
+- `-trim_tail_right INT`: Trim poly-A/T tail from 3' end (min length)
+- `-derep INT`: Remove duplicates (1=exact, 4=reverse complement, 5=both)
+- `-derep_min INT`: Minimum occurrences to keep (default: 2)
 
 ## Comparison with Original PRINSEQ
 
@@ -128,15 +177,16 @@ This Go implementation focuses on the core filtering and statistics functionalit
 - ✅ Quality score filtering
 - ✅ FASTA and FASTQ support
 - ✅ Streaming processing for memory efficiency
+- ✅ Trimming operations (fixed position, percentage, quality-based)
+- ✅ Poly-N and poly-A/T tail trimming
+- ✅ Duplicate removal (exact and reverse complement)
+- ✅ Paired-end support
 
 ### Not Yet Implemented (from original PRINSEQ)
-- Trimming operations (left/right, quality-based)
-- Duplicate removal
 - Complexity filtering
 - Output of rejected sequences
 - Graph generation
 - Phred+64 encoding support
-- Paired-end support
 
 ### Performance
 
@@ -230,18 +280,19 @@ prinseq filter -fastq reads.fastq \
 - ✅ Multi-criteria filtering
 - ✅ FASTA/FASTQ support
 - ✅ Comprehensive tests
+- ✅ Trimming operations
+- ✅ Duplicate removal
+- ✅ Paired-end support
 
 ### Version 1.1.0 (Planned)
-- [ ] Trimming operations
 - [ ] Phred+64 encoding support
-- [ ] Duplicate detection and removal
-- [ ] Paired-end support
+- [ ] Bad sequence output
+- [ ] Statistics export (JSON/CSV)
 
 ### Version 1.2.0 (Planned)
 - [ ] Complexity filtering
-- [ ] Bad sequence output
-- [ ] Statistics export (JSON/CSV)
 - [ ] Performance benchmarking suite
+- [ ] Additional statistics
 
 ### Version 2.0.0 (Future)
 - [ ] Graph generation
