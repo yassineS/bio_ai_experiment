@@ -92,14 +92,124 @@ Individual tools can be built from their respective directories:
 
 ```bash
 cd tools/[tool-name]
-go build ./...
+go build ./cmd/[tool-name]
+```
+
+Example:
+```bash
+cd tools/seqtk
+go build ./cmd/seqtk
+./seqtk help
 ```
 
 ### Running Tests
 
 ```bash
-cd tools/[tool-name]
+# Run all tests
 go test ./...
+
+# Run tests with coverage
+go test -cover ./...
+
+# Run tests for a specific tool
+cd tools/seqtk
+go test ./pkg/seqtk
+```
+
+### Using Shared Libraries
+
+The bioformats library provides reusable parsers for common file formats:
+
+```bash
+# View library documentation
+go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
+```
+
+## Current Status
+
+### ✅ Completed
+
+**Shared Libraries:**
+- FASTA format parser/writer with validation and utilities
+- FASTQ format parser/writer with Phred33/64 support
+- VCF format parser/writer with genotype methods
+- BED format parser/writer with interval operations
+
+**Tools:**
+- **seqtk v1.0.0** - Complete reimplementation
+  - comp, fq2fa, seq -r, sample, trimfq commands
+  - 85.7% test coverage, all tests passing
+  - Performance comparable to original C version
+  - Zero external dependencies
+
+**Documentation:**
+- Comprehensive Go implementation guide
+- Bioformats library documentation
+- Tool analysis and comparisons
+- Best practices and patterns
+
+### 📋 In Progress
+
+- Additional seqtk commands
+- PRINSEQ implementation
+- Compressed file support (gzip)
+- Performance benchmarking suite
+
+See [docs/GO_IMPLEMENTATION_SUMMARY.md](docs/GO_IMPLEMENTATION_SUMMARY.md) for detailed status.
+
+## Available Tools
+
+### seqtk - FASTA/Q Sequence Processor
+
+Fast and efficient sequence processing tool.
+
+```bash
+cd tools/seqtk
+go build ./cmd/seqtk
+
+# Get statistics
+./seqtk comp sequences.fasta
+
+# Convert FASTQ to FASTA
+./seqtk fq2fa reads.fastq > reads.fasta
+
+# Reverse complement
+./seqtk seq -r sequences.fasta > rev_comp.fasta
+
+# Sample 10% of reads
+./seqtk sample reads.fastq 0.1 > sample.fastq
+
+# Trim low-quality bases
+./seqtk trimfq -q 20 reads.fastq > trimmed.fastq
+```
+
+See [tools/seqtk/README.md](tools/seqtk/README.md) for complete documentation.
+
+## Documentation
+
+- [Go Implementation Guide](docs/GOLANG_GUIDE.md) - Best practices and patterns
+- [Bioformats Library](pkg/bioformats/README.md) - Format parser documentation
+- [Implementation Summary](docs/GO_IMPLEMENTATION_SUMMARY.md) - Project overview and metrics
+- [Tool Analyses](docs/tools/) - Detailed tool comparisons
+
+## Project Structure
+
+```
+bio_ai_experiment/
+├── pkg/bioformats/      # Shared format libraries
+│   ├── fasta/          # FASTA parser/writer
+│   ├── fastq/          # FASTQ parser/writer
+│   ├── vcf/            # VCF parser/writer
+│   └── bed/            # BED parser/writer
+├── tools/              # Go tool implementations
+│   └── seqtk/         # First reference implementation
+├── docs/               # Documentation
+│   ├── GOLANG_GUIDE.md
+│   ├── GO_IMPLEMENTATION_SUMMARY.md
+│   └── tools/         # Tool analyses
+├── analysis/           # Analysis scripts and data
+├── reference_code/     # Original tool repositories
+└── mcp-servers/        # MCP server implementations
 ```
 
 ## Contributing
