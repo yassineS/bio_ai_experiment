@@ -1,6 +1,7 @@
 # Tool Analysis Template
 
-Use this template to document analysis of bioinformatics tools.
+Use this template to document detailed analysis of individual bioinformatics tools.
+For the comprehensive package analysis, see the generated reports in this directory.
 
 ## Tool Information
 

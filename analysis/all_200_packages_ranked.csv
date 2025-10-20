@@ -1,0 +1,206 @@
+name,category,language,primary_use,doc_quality_score,code_quality_score,popularity_estimate,improvement_potential,test_coverage_estimate,last_active,composite_improvement_score
+PHASE,population_genetics,C,Haplotype reconstruction,4.05,4.76,7.3,7.06,2.5,active,63.17
+BRAKER,annotation,Perl,Gene prediction pipeline,4.34,4.38,7.6,7.16,2.94,active,63.16
+MaxBin,metagenomics,Perl,Genome binning,4.08,5.62,8.2,6.79,2.58,active,62.14
+PRINSEQ,qc,Perl,Sequence quality control,5.47,5.26,9.1,6.45,2.78,active,60.45
+Bismark,epigenomics,Perl,Bisulfite-seq alignment,5.37,4.04,8.8,7.05,4.59,active,60.19
+RAxML,phylogenetics,C,Maximum likelihood trees,4.21,6.46,9.7,6.6,3.79,active,59.81
+VCFtools,population_genetics,C++/Perl,VCF manipulation,5.3,5.01,9.7,6.79,4.49,active,59.49
+MAKER,annotation,Perl,Genome annotation pipeline,3.96,5.36,8.2,6.98,4.84,active,58.76
+LoFreq,variant_calling,C,Low-frequency variant caller,4.18,6.78,9.4,6.4,3.7,active,58.52
+PhyML,phylogenetics,C,Maximum likelihood,4.18,5.88,8.8,6.73,4.83,active,57.76
+Prokka,annotation,Perl,Prokaryotic annotation,4.92,5.27,8.5,6.6,4.58,active,57.27
+Bowtie2,alignment,C++,Fast read alignment,4.7,5.9,9.7,6.64,5.2,active,57.2
+STRUCTURE,population_genetics,C,Population structure,4.46,5.58,8.8,6.74,5.44,active,56.6
+DIAMOND,alignment,C++,Fast protein alignment,5.58,5.36,8.2,6.17,3.6,active,56.38
+Skewer,qc,C++,Adapter trimming,5.33,5.49,8.5,6.29,4.27,active,56.0
+EvidenceModeler,annotation,Perl,Gene structure combination,5.24,4.94,6.1,6.13,2.88,active,55.9
+NovoAlign,alignment,C,Short read alignment,4.35,5.36,5.2,6.19,2.76,active,55.75
+PASA,annotation,Perl/C++,Transcript assembly,4.41,5.55,6.4,6.3,3.59,active,55.74
+Canu,assembly,Perl/C++,Long-read assembly,5.32,5.09,5.5,5.89,2.12,active,55.53
+Segway,epigenomics,Python,Genome segmentation,6.43,5.99,9.4,5.67,3.09,active,55.36
+LUMPY,variant_calling,C++,Structural variant caller,4.74,6.29,7.9,6.06,3.9,active,54.91
+Homer,epigenomics,Perl/C++,Motif discovery,4.92,4.37,3.7,6.09,2.31,active,54.91
+Cuffdiff,rnaseq,C++,Differential expression,6.61,5.2,7.9,5.67,2.8,active,54.77
+Augustus,annotation,C++,Gene prediction,5.0,6.35,7.9,5.9,3.58,active,54.59
+RAST,annotation,Perl,Rapid annotation,4.67,4.79,5.2,6.31,3.85,active,54.32
+Ray,assembly,C++,Parallel assembly,6.46,5.98,9.4,5.66,3.64,active,54.2
+seqtk,qc,C,FASTA/Q processing,4.21,5.57,7.6,6.63,5.95,active,53.96
+minimap2,alignment,C,Long-read alignment,4.48,6.12,8.8,6.46,5.96,active,53.88
+DISCOVAR,assembly,C++,Variant detection assembly,4.6,6.05,9.1,6.49,6.24,maintenance,53.77
+Subread,alignment,C,Read alignment and counting,5.2,5.02,4.6,5.81,2.48,active,53.58
+Trim Galore,qc,Perl,Quality and adapter trimming,5.08,6.48,10.0,6.22,6.06,active,53.2
+wtdbg2,assembly,C,Long-read assembly,5.07,5.39,4.9,5.75,2.72,active,52.98
+BWA,alignment,C,DNA sequence alignment,4.34,7.36,10.0,6.15,6.07,active,52.76
+limma,rnaseq,R,Differential expression,6.77,6.11,9.4,5.44,3.83,active,52.5
+mothur,metagenomics,C++,Microbial ecology,5.12,6.5,9.1,6.01,5.48,active,52.38
+Sickle,qc,C,Quality trimming,5.8,6.01,8.8,5.85,4.94,active,52.29
+DeepVariant,variant_calling,Python/C++,Deep learning variant caller,7.22,5.85,8.8,5.22,3.21,active,51.97
+Control-FREEC,variant_calling,C++,CNV detection,4.78,5.21,5.2,6.04,4.34,active,51.75
+IQ-TREE,phylogenetics,C++,Phylogenetic inference,5.68,6.3,9.4,5.89,5.75,active,51.36
+GeneMark,annotation,C,Gene prediction,5.3,5.52,7.3,6.05,5.43,active,51.28
+FGENESH,annotation,C,Gene prediction,4.0,4.55,3.1,6.34,4.64,active,51.27
+fastx_toolkit,qc,C++,FASTA/Q processing,7.25,5.57,7.3,5.05,2.57,active,51.0
+Strelka,variant_calling,C++,Small variant caller,7.13,6.41,10.0,5.23,4.32,active,50.74
+EIGENSOFT,population_genetics,C,Population stratification,6.35,6.6,9.4,5.4,4.82,active,50.31
+IDBA,assembly,C++,Multiple k-mer assembly,4.81,7.93,10.0,5.63,5.82,active,50.14
+Cufflinks,rnaseq,C++,Transcript assembly,6.99,6.2,9.1,5.22,4.28,active,50.07
+SNAP,annotation,C,Gene prediction,6.36,5.02,7.0,5.71,5.04,active,49.78
+MEGAN,metagenomics,Java,Metagenome analysis,6.75,6.3,10.0,5.47,5.55,active,49.75
+MrBayes,phylogenetics,C,Bayesian phylogenetics,5.68,6.54,9.1,5.71,5.92,maintenance,49.7
+methylKit,epigenomics,R,DNA methylation,6.86,6.92,9.1,4.93,3.64,active,49.58
+BLAT,alignment,C,Fast sequence alignment,5.27,7.47,7.9,5.21,4.28,active,49.02
+BLAST,alignment,C++,Sequence similarity search,5.38,7.27,8.5,5.37,5.02,maintenance,49.01
+AfterQC,qc,Python,Automatic filtering,6.11,7.01,8.2,5.08,4.03,active,48.98
+IGV,visualization,Java,Genome browser,5.96,6.61,7.0,5.12,3.86,active,48.57
+RSEM,alignment,C++,RNA-seq quantification,5.47,6.04,7.0,5.64,5.46,active,48.55
+ChromHMM,epigenomics,Java,Chromatin state,5.98,6.52,9.7,5.69,6.78,active,48.34
+transdecoder,annotation,Perl,Coding region identification,4.45,6.09,3.7,5.47,3.77,maintenance,48.24
+CLARK,metagenomics,C++,Taxonomic classification,5.73,5.34,3.1,5.08,2.42,active,48.15
+Dsuite,population_genetics,C++,Introgression analysis,5.21,6.13,4.0,5.13,2.94,maintenance,48.1
+FastTree,phylogenetics,C,Fast tree inference,5.47,6.83,8.5,5.55,6.1,active,47.9
+Octopus,variant_calling,C++,Bayesian variant caller,7.23,6.56,8.5,4.81,3.91,active,47.81
+BEAST,phylogenetics,Java,Bayesian evolution,6.05,7.68,10.0,5.13,5.6,active,47.61
+kallisto,alignment,C++,RNA-seq quantification,6.36,6.84,7.6,4.92,4.0,active,47.6
+SURVIVOR,variant_calling,C++,SV integration,5.13,7.49,6.7,5.03,4.06,active,47.42
+MEGA,phylogenetics,C++,Molecular evolution,5.76,7.14,7.9,5.13,4.92,active,47.26
+PeakRanger,epigenomics,C++,Peak calling,4.8,6.24,3.1,5.1,3.01,active,47.06
+Bracken,metagenomics,Python,Abundance estimation,6.48,6.87,7.3,4.79,3.76,active,47.03
+GMAP/GSNAP,alignment,C,Genomic alignment,5.19,6.66,6.4,5.36,5.12,active,47.01
+PAML,phylogenetics,C,Molecular evolution,6.93,6.87,8.2,4.74,4.13,active,46.74
+Minia,assembly,C++,Low-memory assembly,7.23,5.99,8.8,5.15,5.61,active,46.72
+PLINK,population_genetics,C/C++,GWAS analysis,6.75,6.56,10.0,5.34,6.69,active,46.69
+featureCounts,rnaseq,C,Read counting,6.97,5.91,8.2,5.2,5.54,active,46.68
+BreakDancer,variant_calling,C++,SV detection,7.4,5.25,5.5,4.77,3.22,active,46.61
+Arlequin,population_genetics,C++,Population genetics analysis,7.49,6.03,7.0,4.64,3.46,active,46.52
+GeneWise,annotation,C,Gene prediction,4.7,5.02,2.8,5.7,4.98,active,46.48
+segemehl,alignment,C,Short read alignment,4.34,6.34,4.3,5.52,5.07,active,46.42
+rMATS,rnaseq,Python/C,Alternative splicing,6.92,6.03,6.4,4.8,3.8,active,46.35
+edgeR,rnaseq,R,Differential expression,8.09,6.42,9.7,4.68,4.85,maintenance,46.17
+CONCOCT,metagenomics,Python,Genome binning,7.36,6.26,7.9,4.77,4.41,active,46.12
+Salmon,alignment,C++,RNA-seq quantification,7.31,6.36,7.3,4.63,3.77,active,46.05
+DESeq2,rnaseq,R,Differential expression,7.54,6.14,10.0,5.16,6.47,active,46.02
+IMPUTE2,population_genetics,C++,Genotype imputation,5.87,7.24,7.9,5.03,5.29,active,45.89
+Circos,visualization,Perl,Circular visualization,6.06,6.0,6.7,5.31,5.67,maintenance,45.88
+SPAdes,assembly,C++,Genome assembly,7.48,6.31,7.0,4.5,3.43,active,45.77
+GEMMA,population_genetics,C++,Mixed model association,4.65,6.53,5.5,5.51,5.88,active,45.7
+DnaSP,population_genetics,C++,DNA polymorphism analysis,7.23,6.39,6.7,4.53,3.63,active,45.28
+CheckM,metagenomics,Python,Genome quality,7.38,5.61,7.6,5.03,5.5,active,45.23
+MetaBAT,metagenomics,C++,Genome binning,6.56,7.65,8.5,4.6,4.61,active,45.15
+Artemis,visualization,Java,Genome viewer,6.02,6.86,5.8,4.72,4.0,active,44.96
+NanoSV,variant_calling,Python,Long-read SV caller,8.08,5.9,6.1,4.23,2.75,active,44.76
+eXpress,rnaseq,C++,Transcript quantification,6.35,5.11,4.6,5.19,5.03,active,44.76
+SAMtools,variant_calling,C,SAM/BAM manipulation,5.73,4.87,3.7,5.44,5.5,active,44.6
+SHAPEIT,population_genetics,C++,Haplotype phasing,7.24,6.84,7.6,4.48,4.29,active,44.38
+fastp,qc,C++,All-in-one preprocessing,7.19,5.17,3.1,4.44,2.42,active,44.28
+tximport,rnaseq,R,Quantification import,7.65,6.54,7.0,4.31,3.69,active,44.05
+BBDuk,qc,Java,Contamination filtering,5.39,8.9,9.7,4.79,6.28,active,43.97
+ABySS,assembly,C++,Large genome assembly,6.53,6.3,6.4,4.86,5.18,active,43.95
+VarDict,variant_calling,Java/Perl,Variant caller,7.08,7.12,8.2,4.54,4.97,active,43.86
+MaSuRCA,assembly,C++/Perl,Genome assembly,5.14,6.68,3.4,4.77,3.76,active,43.82
+QIIME2,metagenomics,Python,Microbiome analysis,7.26,6.79,9.4,4.86,6.42,active,43.81
+Scanpy,single_cell,Python,Single-cell analysis,8.7,5.91,6.7,4.03,2.91,active,43.75
+DiffBind,epigenomics,R,Differential binding,6.78,8.19,10.0,4.52,5.73,active,43.63
+IsoEM,rnaseq,C++,Isoform expression,6.99,5.41,5.2,4.84,4.81,active,43.58
+MOSAIK,alignment,C++,Reference-guided aligner,7.27,5.82,5.5,4.55,4.16,active,43.41
+rnaSPAdes,assembly,C++,RNA-seq assembly,5.22,5.79,4.0,5.29,5.91,active,43.15
+BEAGLE,population_genetics,Java,Genotype imputation,7.09,6.82,8.2,4.69,5.81,active,43.05
+RSEM-GBM,rnaseq,R,Gene network inference,7.47,5.88,4.3,4.18,3.0,active,42.55
+mrsFAST,alignment,C,Micro-read alignment,6.64,6.64,4.9,4.34,3.74,active,42.48
+Newbler,assembly,C++,454 assembly (deprecated),5.8,7.86,9.7,5.11,8.01,active,42.4
+sleuth,rnaseq,R,Differential expression,6.89,6.91,7.3,4.56,5.4,active,42.4
+MUSCLE,phylogenetics,C++,Multiple sequence alignment,6.44,6.38,7.3,5.05,7.02,active,42.1
+STAR,alignment,C++,RNA-seq aligner,5.71,7.89,9.4,5.08,8.0,active,42.0
+GRIDSS,variant_calling,Java,SV detection,5.05,7.91,4.9,4.5,4.5,active,41.92
+BEDTools,utilities,C++,Genomic interval operations,7.0,6.0,5.2,4.54,4.75,active,41.9
+JBrowse,visualization,JavaScript,Web-based browser,6.18,7.73,6.1,4.27,4.32,active,41.83
+GlimmerHMM,annotation,C++,Gene prediction,5.02,7.52,6.7,5.07,6.98,active,41.82
+HUMAnN,metagenomics,Python,Functional profiling,7.5,7.84,9.7,4.27,5.79,active,41.8
+HISAT2,alignment,C++,RNA-seq alignment,5.92,7.56,9.1,5.08,8.0,active,41.76
+Haploview,population_genetics,Java,LD and haplotype analysis,5.59,6.71,6.1,5.07,6.77,active,41.76
+Picard,qc,Java,SAM/BAM manipulation,5.47,8.47,9.4,4.91,7.79,active,41.4
+fwdpp,population_genetics,C++,Forward simulation library,5.38,6.29,2.8,4.72,4.65,maintenance,41.29
+SLiM,population_genetics,C++,Forward-time simulation,5.66,6.32,3.1,4.63,4.52,active,41.22
+MuTect2,variant_calling,Java,Somatic variant calling,7.67,7.68,9.7,4.26,6.09,active,41.17
+PAUP,phylogenetics,C,Phylogenetic analysis,6.81,7.24,7.6,4.49,5.99,active,41.07
+Manta,variant_calling,C++,Structural variant caller,6.04,7.8,7.3,4.54,6.01,active,41.06
+CNVnator,variant_calling,C++,CNV detection,6.11,7.46,7.0,4.62,6.18,active,40.93
+BioConductor,utilities,R,Bioinformatics packages,6.69,5.51,4.3,4.76,5.54,active,40.92
+GCTA,population_genetics,C++,Complex trait analysis,5.35,7.75,4.9,4.43,4.86,active,40.78
+Delly,variant_calling,C++,Structural variant caller,7.42,6.91,7.6,4.35,5.74,active,40.73
+Pindel,variant_calling,C++,Breakpoint detection,6.99,5.96,5.8,4.69,6.08,maintenance,40.59
+BitSeq,rnaseq,C++,Transcript expression,5.51,6.32,4.9,5.07,6.99,active,40.33
+Cell Ranger,single_cell,Python/C++,10x Genomics pipeline,8.98,6.3,6.1,3.58,3.08,active,40.2
+Cutadapt,qc,Python/C,Adapter trimming,8.09,5.6,3.4,3.84,2.83,active,40.07
+Platanus,assembly,C++,Heterozygous genome assembly,6.57,5.13,2.8,4.71,5.24,active,40.02
+UCSC Genome Browser,visualization,C,Genome browser,5.23,7.34,6.4,4.99,7.56,active,39.97
+BCFtools,variant_calling,C,VCF/BCF manipulation,5.37,6.35,3.4,4.82,5.85,active,39.94
+StringTie,rnaseq,C++,Transcript assembly,7.01,7.3,8.8,4.6,7.39,maintenance,39.89
+SOAPdenovo,assembly,C,Genome assembly,5.79,7.41,6.1,4.62,6.45,active,39.7
+Kraken2,metagenomics,C++,Taxonomic classification,6.56,6.55,4.0,4.24,4.51,active,39.65
+Platypus,variant_calling,Python/C,Haplotype-based caller,6.64,8.3,9.1,4.35,6.92,active,39.54
+MEGAHIT,assembly,C++,Metagenome assembly,6.75,6.63,5.8,4.47,6.03,active,39.4
+SNIFFLES,variant_calling,C++,Long-read SV caller,6.18,7.85,6.4,4.27,5.75,active,39.21
+SICER,epigenomics,Python,Histone modification,8.18,5.73,3.4,3.72,2.93,active,39.21
+Cellranger-ATAC,single_cell,Python,scATAC-seq analysis,7.21,6.94,5.8,4.08,4.99,active,39.17
+LeafCutter,rnaseq,R/Python,Splicing quantification,7.95,5.93,5.5,4.16,5.1,active,39.16
+HTSeq,rnaseq,Python,Read counting,8.47,7.48,8.5,3.73,5.02,active,39.11
+Geneious,visualization,Java,Sequence analysis suite,5.58,8.02,5.5,4.3,5.56,maintenance,39.08
+fastSTRUCTURE,population_genetics,Python/C,Fast structure analysis,8.38,7.23,8.5,3.89,5.57,active,39.03
+Flye,assembly,Python/C++,Long-read assembly,7.29,6.71,5.2,4.04,4.69,active,39.02
+ANGSD,population_genetics,C++,NGS population genetics,7.4,6.64,4.6,3.9,4.21,maintenance,38.66
+ADMIXTURE,population_genetics,C++,Ancestry estimation,7.09,7.6,9.1,4.48,7.89,active,38.35
+Harmony,single_cell,R,Batch correction,7.03,7.15,4.3,3.77,3.95,active,38.16
+Velvet,assembly,C,De novo assembly,6.72,6.91,6.7,4.53,7.37,active,37.77
+ms,population_genetics,C,Coalescent simulation,4.8,7.43,3.7,4.63,6.58,active,37.55
+SeqKit,qc,Go,FASTA/Q manipulation,9.23,7.04,7.9,3.45,4.79,active,37.41
+InterProScan,annotation,Java,Protein function annotation,7.31,6.64,4.3,3.88,4.76,maintenance,37.23
+Biopython,utilities,Python,Bioinformatics library,8.95,5.94,4.6,3.47,3.74,active,37.05
+scVelo,single_cell,Python,RNA velocity,6.47,8.09,5.2,3.76,4.85,active,37.02
+BBMap,alignment,Java,Short read aligner,7.28,6.93,6.1,4.11,6.32,active,36.93
+PGAP,annotation,C++/Python,NCBI annotation pipeline,6.13,7.22,4.9,4.31,6.71,active,36.33
+TopHat,alignment,C++,RNA-seq alignment (deprecated),6.66,7.78,6.7,4.12,7.01,active,36.06
+msprime,population_genetics,Python/C,Coalescent simulation,6.3,7.67,3.4,3.69,4.44,active,36.01
+Bakta,annotation,Python,Bacterial annotation,8.71,6.8,5.5,3.34,4.24,maintenance,35.99
+Trimmomatic,qc,Java,Read trimming,7.42,7.09,3.7,3.49,4.2,active,35.47
+CWL,utilities,YAML,Workflow specification,6.4,6.28,2.8,4.22,6.08,active,35.4
+TreeMix,population_genetics,C++,Population tree inference,6.14,7.38,4.3,4.1,6.41,active,35.22
+Trinity,assembly,C++/Java,RNA-seq assembly,7.24,7.3,4.3,3.59,4.91,active,35.16
+Stampy,alignment,Python/C,Divergent genome alignment,7.26,7.06,5.8,4.0,6.75,active,35.14
+MetaEuk,annotation,C++,Eukaryotic gene prediction,7.27,7.33,3.4,3.38,3.97,active,35.06
+Kaiju,metagenomics,C++,Taxonomic classification,7.34,6.68,2.8,3.55,4.34,active,34.86
+ZINBA,epigenomics,R,ChIP-seq enrichment,7.75,5.69,2.8,3.84,5.21,active,34.86
+Nextflow,utilities,Groovy,Workflow management,5.63,7.76,3.1,3.93,5.6,active,34.83
+ALLPATHS-LG,assembly,C++,Genome assembly,5.72,7.59,3.1,3.96,5.84,active,34.59
+deepTools,utilities,Python,NGS data analysis,8.35,7.16,4.9,3.22,4.56,active,34.15
+GATK,variant_calling,Java,Variant discovery,5.04,8.4,4.0,4.08,6.77,active,34.14
+Galaxy,utilities,Python,Workflow platform,8.54,6.1,3.7,3.42,4.91,active,33.66
+SvABA,variant_calling,C++,SV detection,5.65,7.57,4.6,4.31,7.95,active,33.64
+SUPPA,rnaseq,Python,Alternative splicing,8.18,7.4,5.8,3.37,5.65,active,33.56
+Funannotate,annotation,Python,Fungal genome annotation,6.39,8.3,5.8,3.82,7.02,active,33.49
+PopGenome,population_genetics,R/C++,Population genomics,7.59,8.06,6.4,3.46,6.23,active,33.39
+DADA2,metagenomics,R,Amplicon sequencing,8.77,7.96,8.8,3.39,7.02,active,33.37
+Centrifuge,metagenomics,C++,Taxonomic classification,6.87,6.97,3.4,3.76,6.03,active,33.22
+Seurat,single_cell,R,Single-cell RNA-seq,8.35,8.11,7.0,3.17,5.76,active,33.1
+SOAPdenovo-Trans,assembly,C,Transcriptome assembly,5.9,7.19,3.7,4.19,7.52,active,33.09
+BUSCO,annotation,Python,Genome completeness,7.15,8.27,4.6,3.21,4.94,active,33.06
+TASSEL,population_genetics,Java,Association mapping,7.41,8.68,5.8,3.11,5.27,maintenance,32.79
+FreeBayes,variant_calling,C++,Haplotype-based variant caller,7.32,7.13,3.1,3.39,5.1,active,32.65
+Velocyto,single_cell,Python,RNA velocity,7.88,8.32,5.5,3.0,5.17,active,32.06
+FaST-LMM,population_genetics,Python,Mixed model GWAS,8.1,6.73,5.2,3.63,7.06,active,31.79
+MISO,rnaseq,Python/C,Alternative splicing,7.42,8.48,6.7,3.39,7.01,active,31.68
+MultiQC,qc,Python,Aggregate QC reports,8.98,6.68,2.8,2.73,3.57,active,31.48
+MAJIQ,rnaseq,Python,Alternative splicing,8.23,7.31,6.1,3.45,7.15,active,31.28
+FastQC,qc,Java,Quality control for sequencing data,7.78,6.97,4.0,3.43,6.49,active,30.77
+scater,single_cell,R,QC and visualization,7.66,8.16,4.9,3.07,5.85,maintenance,30.64
+Monocle,single_cell,R,Trajectory analysis,9.11,8.47,6.4,2.49,4.78,active,30.5
+Ballgown,rnaseq,R,Differential expression,9.02,8.34,7.6,2.84,6.34,active,30.44
+MACS2,epigenomics,Python,ChIP-seq peak calling,7.12,7.56,4.0,3.46,6.9,active,30.16
+Unicycler,assembly,Python/C++,Hybrid assembly,7.54,8.01,4.6,3.15,6.48,active,29.59
+VarScan,variant_calling,Java,Variant calling,7.58,7.88,2.8,2.83,4.84,active,29.54
+Snakemake,utilities,Python,Workflow management,7.73,7.08,3.4,3.28,6.68,active,29.01
+eggNOG-mapper,annotation,Python,Functional annotation,8.01,7.92,4.0,2.84,6.25,active,27.71
+MetaPhlAn,metagenomics,Python,Taxonomic profiling,7.89,7.28,3.7,3.16,7.12,active,27.65
+SingleR,single_cell,R,Cell type annotation,7.69,8.43,4.6,2.86,6.82,active,27.2
+Bioconda,utilities,Python,Package distribution,7.67,7.9,4.0,3.01,7.63,active,26.03
+smoove,variant_calling,Go,SV caller wrapper,7.49,9.86,4.3,2.18,6.08,active,24.39
