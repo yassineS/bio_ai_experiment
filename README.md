@@ -142,16 +142,23 @@ go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
   - Performance comparable to original C version
   - Zero external dependencies
 
+- **prinseq v1.0.0** - Core functionality implemented
+  - Statistics calculation (reads, bases, lengths, GC, N content, quality)
+  - Multi-criteria filtering (length, GC, N content, quality)
+  - 90.2% test coverage, all tests passing
+  - 20-26% faster than original Perl version
+  - Zero external dependencies
+
 **Documentation:**
 - Comprehensive Go implementation guide
 - Bioformats library documentation
-- Tool analysis and comparisons
+- Tool analysis and comparisons (seqtk, prinseq)
 - Best practices and patterns
 
 ### 📋 In Progress
 
 - Additional seqtk commands
-- PRINSEQ implementation
+- PRINSEQ trimming and duplicate removal
 - Compressed file support (gzip)
 - Performance benchmarking suite
 
@@ -184,6 +191,38 @@ go build ./cmd/seqtk
 ```
 
 See [tools/seqtk/README.md](tools/seqtk/README.md) for complete documentation.
+
+### prinseq - Sequence Quality Control
+
+Sequence quality control and preprocessing tool.
+
+```bash
+cd tools/prinseq
+go build ./cmd/prinseq
+
+# Get statistics
+./prinseq stats -fastq reads.fastq
+
+# Filter by length
+./prinseq filter -fastq reads.fastq -min_len 100 > filtered.fastq
+
+# Filter by GC content
+./prinseq filter -fastq reads.fastq -min_gc 40 -max_gc 60 > filtered.fastq
+
+# Filter by quality
+./prinseq filter -fastq reads.fastq -min_qual_mean 20 > filtered.fastq
+
+# Combined filters
+./prinseq filter -fastq reads.fastq \
+  -min_len 100 \
+  -min_gc 40 \
+  -max_gc 60 \
+  -min_qual_mean 20 \
+  -ns_max_p 5 \
+  -out_good filtered.fastq
+```
+
+See [tools/prinseq/README.md](tools/prinseq/README.md) for complete documentation.
 
 ## Documentation
 
