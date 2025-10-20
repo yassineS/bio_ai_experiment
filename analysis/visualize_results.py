@@ -2,11 +2,20 @@
 """
 Simple script to generate text-based visualizations of the analysis results.
 This creates ASCII charts for the top packages analysis.
+
+Usage:
+    python3 visualize_results.py [csv_file]
+    
+If no csv_file is provided, defaults to 'all_200_packages_ranked.csv'
 """
 
 import csv
 import json
+import sys
 from collections import Counter
+
+# Default data file
+DEFAULT_CSV_FILE = 'all_200_packages_ranked.csv'
 
 
 def load_csv_data(filename):
@@ -176,10 +185,18 @@ def print_comparison_table(packages):
 
 def main():
     """Main execution function."""
+    # Get filename from command line or use default
+    csv_file = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CSV_FILE
+    
     # Load data
-    print("\nLoading package data...")
-    packages = load_csv_data('all_200_packages_ranked.csv')
-    print(f"Loaded {len(packages)} packages\n")
+    print(f"\nLoading package data from {csv_file}...")
+    try:
+        packages = load_csv_data(csv_file)
+        print(f"Loaded {len(packages)} packages\n")
+    except FileNotFoundError:
+        print(f"Error: File '{csv_file}' not found.")
+        print(f"Usage: python3 {sys.argv[0]} [csv_file]")
+        sys.exit(1)
     
     # Generate visualizations
     print_top_packages_chart(packages, top_n=15)
