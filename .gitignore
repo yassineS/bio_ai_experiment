@@ -1,0 +1,101 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# Go build cache
+.cache/
+
+# Binary output directories
+bin/
+build/
+dist/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Test coverage
+coverage.txt
+coverage.html
+*.coverprofile
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Log files
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Compiled Object files
+*.o
+*.a
+
+# Debug files
+debug
+__debug_bin
+
+# Output from tools
+*.prof
+*.pprof
+
+# Test data (large files)
+testdata/**/*.gz
+testdata/**/*.zip
+testdata/**/*.bam
+testdata/**/*.sam
+testdata/**/*.fastq
+testdata/**/*.fasta
+*.fastq.gz
+*.fasta.gz
+
+# MCP build artifacts
+mcp-servers/*/dist/
+mcp-servers/*/node_modules/
+
+# OS-specific files
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Documentation build artifacts
+docs/_build/
+docs/.doctrees/
+site/
