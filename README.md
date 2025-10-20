@@ -134,6 +134,7 @@ go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
 - FASTQ format parser/writer with Phred33/64 support
 - VCF format parser/writer with genotype methods
 - BED format parser/writer with interval operations
+- **cliflag** library for consistent CLI flag handling (short and long options)
 
 **Tools:**
 - **seqtk v1.0.0** - Complete reimplementation
@@ -141,6 +142,7 @@ go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
   - 85.7% test coverage, all tests passing
   - Performance comparable to original C version
   - Zero external dependencies
+  - **New**: Consistent CLI with both short and long option flags
 
 - **prinseq v1.0.0** - Core functionality implemented
   - Statistics calculation (reads, bases, lengths, GC, N content, quality)
@@ -148,6 +150,7 @@ go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
   - 90.2% test coverage, all tests passing
   - 20-26% faster than original Perl version
   - Zero external dependencies
+  - Consistent CLI with both short and long option flags
 
 **Documentation:**
 - Comprehensive Go implementation guide
@@ -168,7 +171,7 @@ See [docs/GO_IMPLEMENTATION_SUMMARY.md](docs/GO_IMPLEMENTATION_SUMMARY.md) for d
 
 ### seqtk - FASTA/Q Sequence Processor
 
-Fast and efficient sequence processing tool.
+Fast and efficient sequence processing tool with consistent CLI flags.
 
 ```bash
 cd tools/seqtk
@@ -177,17 +180,22 @@ go build ./cmd/seqtk
 # Get statistics
 ./seqtk comp sequences.fasta
 
-# Convert FASTQ to FASTA
+# Convert FASTQ to FASTA (short options)
 ./seqtk fq2fa reads.fastq > reads.fasta
+
+# Convert FASTQ to FASTA (long options)
+./seqtk fq2fa --output reads.fasta reads.fastq
 
 # Reverse complement
 ./seqtk seq -r sequences.fasta > rev_comp.fasta
+./seqtk seq --reverse sequences.fasta > rev_comp.fasta
 
 # Sample 10% of reads
 ./seqtk sample reads.fastq 0.1 > sample.fastq
 
 # Trim low-quality bases
 ./seqtk trimfq -q 20 reads.fastq > trimmed.fastq
+./seqtk trimfq --quality 20 reads.fastq > trimmed.fastq
 ```
 
 See [tools/seqtk/README.md](tools/seqtk/README.md) for complete documentation.

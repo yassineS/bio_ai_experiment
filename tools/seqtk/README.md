@@ -9,6 +9,7 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
 - **Comprehensive Format Support**: 
   - FASTA format reading/writing
   - FASTQ format reading/writing (Phred+33 and Phred+64 encodings)
+- **Consistent CLI**: Uses cliflag library for both short and long option names
 - **Standard Operations**:
   - Sequence statistics and composition
   - FASTQ to FASTA conversion
@@ -66,11 +67,13 @@ Convert FASTQ files to FASTA format:
 ```bash
 seqtk fq2fa reads.fastq > reads.fasta
 seqtk fq2fa -o reads.fasta reads.fastq
+# Using long options
+seqtk fq2fa --output reads.fasta reads.fastq
 ```
 
 Options:
-- `-6`: Use Phred+64 encoding (default: Phred+33)
-- `-o FILE`: Output file (default: stdout)
+- `-6, --phred64`: Use Phred+64 encoding (default: Phred+33)
+- `-o, --output FILE`: Output file (default: stdout)
 
 #### 3. Reverse Complement (`seq`)
 
@@ -79,12 +82,14 @@ Generate reverse complement of sequences:
 ```bash
 seqtk seq -r sequences.fasta > rev_comp.fasta
 seqtk seq -r reads.fastq > rev_comp.fastq
+# Using long options
+seqtk seq --reverse sequences.fasta > rev_comp.fasta
 ```
 
 Options:
-- `-r`: Reverse complement
-- `-6`: Use Phred+64 encoding for FASTQ
-- `-o FILE`: Output file
+- `-r, --reverse`: Reverse complement
+- `-6, --phred64`: Use Phred+64 encoding for FASTQ
+- `-o, --output FILE`: Output file
 
 #### 4. Random Sampling (`sample`)
 
@@ -93,11 +98,13 @@ Randomly subsample sequences:
 ```bash
 seqtk sample reads.fastq 0.1 > sample.fastq    # Sample 10%
 seqtk sample reads.fastq 0.5 > sample.fastq    # Sample 50%
+# Using long options
+seqtk sample --output sample.fastq reads.fastq 0.1
 ```
 
 Options:
-- `-6`: Use Phred+64 encoding for FASTQ
-- `-o FILE`: Output file
+- `-6, --phred64`: Use Phred+64 encoding for FASTQ
+- `-o, --output FILE`: Output file
 
 #### 5. Quality Trimming (`trimfq`)
 
@@ -106,12 +113,14 @@ Trim FASTQ sequences based on quality scores:
 ```bash
 seqtk trimfq reads.fastq > trimmed.fastq
 seqtk trimfq -q 30 reads.fastq > high_quality.fastq
+# Using long options
+seqtk trimfq --quality 30 --output trimmed.fastq reads.fastq
 ```
 
 Options:
-- `-q INT`: Minimum quality threshold (default: 20)
-- `-6`: Use Phred+64 encoding
-- `-o FILE`: Output file
+- `-q, --quality INT`: Minimum quality threshold (default: 20)
+- `-6, --phred64`: Use Phred+64 encoding
+- `-o, --output FILE`: Output file
 
 ## Examples
 
