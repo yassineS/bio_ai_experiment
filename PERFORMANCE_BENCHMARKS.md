@@ -106,11 +106,13 @@ The Go implementation provides:
 ### prinseq (Go vs Original Perl)
 
 The Go implementation provides:
-- **20-26% faster**: Improved performance over Perl version
+- **20-26% faster**: Based on benchmarks with 1M read files (as noted in tools/prinseq/README.md)
 - **Lower memory usage**: Streaming instead of loading entire file
 - **Better error handling**: Clear error messages
 - **Cross-platform**: Single binary for all platforms
 - **Feature parity**: Core functionality matches original
+
+*Note: The 20-26% performance improvement is documented in the prinseq README based on earlier benchmarks with larger datasets (1M reads). The benchmarks in this document use 10K reads for quick verification.*
 
 ## Conclusions
 
