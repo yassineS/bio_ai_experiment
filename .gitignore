@@ -5,6 +5,12 @@
 *.so
 *.dylib
 
+# Tool binaries (ignore built executables in tool directories)
+tools/*/cmd/*/[!main.go]*
+tools/*/*[!.go]
+tools/seqtk/seqtk
+tools/prinseq/prinseq
+
 # Test binary, built with `go test -c`
 *.test
 
