@@ -8,9 +8,10 @@ A fast and efficient sequence quality control and preprocessing tool reimplement
 - **Memory Efficient**: Streaming processing for large files
 - **Comprehensive Format Support**: 
   - FASTA format reading/writing
-  - FASTQ format reading/writing (Phred+33 encoding)
+  - FASTQ format reading/writing (Phred+33 and Phred+64 encoding)
 - **Quality Control Operations**:
   - Sequence statistics (length, GC content, quality scores, N content)
+  - Enhanced statistics (base composition, dinucleotide frequencies, distributions)
   - Length-based filtering (min/max length)
   - GC content filtering
   - N content filtering (percentage and absolute count)
@@ -29,6 +30,22 @@ A fast and efficient sequence quality control and preprocessing tool reimplement
   - Filter paired FASTA/FASTQ files
   - Maintains read pairing
   - Synchronized filtering
+- **Visualization & Reporting**:
+  - ASCII and SVG graph generation
+  - Length distribution graphs
+  - GC content visualization
+  - Quality score distribution (FASTQ)
+  - Dinucleotide frequency analysis
+  - Positional quality graphs
+  - HTML reports with embedded graphs
+- **Performance Tools**:
+  - Comprehensive benchmarking suite
+  - Throughput measurements (MB/s, reads/s)
+  - Performance profiling
+- **Integration Features**:
+  - JSON statistics output for pipelines
+  - REST API server for programmatic access
+  - Parallel batch processing for multiple files
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -137,6 +154,239 @@ prinseq filter -fastq reads.fastq \
   -out_good filtered.fastq
 ```
 
+#### 3. Generate Quality Graphs (`graph`)
+
+Generate visual representations of sequence quality metrics:
+
+```bash
+# Generate ASCII length distribution graph
+prinseq graph --fastq reads.fastq --type length
+
+# Generate GC content graph
+prinseq graph --fastq reads.fastq --type gc
+
+# Generate quality score distribution
+prinseq graph --fastq reads.fastq --type quality
+
+# Generate dinucleotide frequency graph
+prinseq graph --fastq reads.fastq --type dinucleotides
+
+# Generate positional quality graph
+prinseq graph --fastq reads.fastq --type positional_quality
+
+# Generate SVG graphs (for embedding in reports)
+prinseq graph --fastq reads.fastq --svg -o graphs.svg
+
+# Save graph to file
+prinseq graph --fastq reads.fastq --type length -o length_dist.txt
+```
+
+Graph types:
+- `length`: Length distribution histogram
+- `gc`: GC vs AT content visualization
+- `quality`: Quality score distribution (FASTQ only)
+- `dinucleotides`: Dinucleotide frequency analysis
+- `positional_quality`: Per-position quality scores (FASTQ only)
+
+#### 4. Generate HTML Reports (`report`)
+
+Create comprehensive HTML quality reports with embedded graphs:
+
+```bash
+# Generate HTML report
+prinseq report --fastq reads.fastq -o report.html
+
+# Report includes:
+# - Summary statistics cards
+# - Detailed statistics table
+# - Embedded SVG graphs
+# - JSON data export
+```
+
+The HTML report includes:
+- Summary statistics with visual cards
+- Length distribution graph
+- Quality score distribution (FASTQ)
+- Positional quality graph (FASTQ)
+- Complete statistics in JSON format
+- Professional styling and layout
+
+#### 5. Performance Benchmarking (`benchmark`)
+
+Benchmark prinseq operations for performance analysis:
+
+```bash
+# Run benchmark suite
+prinseq benchmark --fastq reads.fastq
+
+# Output in JSON format
+prinseq benchmark --fastq reads.fastq --json > benchmark.json
+```
+
+Benchmarks include:
+- Statistics calculation
+- Enhanced statistics with distributions
+- Filtering operations (length, GC, quality, combined)
+- Throughput measurements (MB/s, reads/s)
+- Timing information
+
+Example output:
+```
+Benchmark Results
+=================
+
+Operation            |     Duration |   Throughput |       Reads/sec
+--------------------------------------------------------------------------------
+stats                |       2.50 ms |  150.00 MB/s |   50000 reads/s
+enhanced_stats       |       4.20 ms |   90.00 MB/s |   30000 reads/s
+filter_length        |       3.10 ms |  120.00 MB/s |               -
+filter_gc            |       3.80 ms |  100.00 MB/s |               -
+filter_quality       |       4.50 ms |   85.00 MB/s |               -
+filter_combined      |       5.20 ms |   75.00 MB/s |               -
+```
+
+#### 6. Batch Processing (`batch`)
+
+Process multiple files in parallel:
+
+```bash
+# Process multiple files with 8 workers
+prinseq batch --fastq -o output_dir -w 8 *.fastq
+
+# Generate reports for each file
+prinseq batch --fastq -o output_dir -r *.fastq
+
+# Apply filters during batch processing
+prinseq batch --fastq -o output_dir -w 4 \
+  --min-length 100 \
+  --min-gc 40 \
+  --max-gc 60 \
+  *.fastq
+```
+
+Options:
+- `-o, --output DIR`: Output directory for filtered files and reports
+- `-w, --workers N`: Number of parallel workers (default: 4)
+- `-r, --report`: Generate HTML reports for each file
+- Filter options: Apply filtering criteria to all files
+
+#### 7. Web API Server (`api`)
+
+Start a REST API server for programmatic access:
+
+```bash
+# Start API server on default port 8080
+prinseq api
+
+# Start on custom port
+prinseq api --addr :9000
+prinseq api --addr localhost:8080
+```
+
+API Endpoints:
+
+**POST /api/stats**
+Calculate sequence statistics
+```bash
+curl -X POST -d @reads.fastq "http://localhost:8080/api/stats?format=fastq&enhanced=true"
+```
+
+**POST /api/filter**
+Filter sequences
+```bash
+curl -X POST -d @reads.fastq \
+  "http://localhost:8080/api/filter?format=fastq&min_len=100&min_qual=20" \
+  > filtered.fastq
+```
+
+**POST /api/benchmark**
+Run performance benchmarks
+```bash
+curl -X POST -d @reads.fastq \
+  "http://localhost:8080/api/benchmark?format=fastq"
+```
+
+**POST /api/report**
+Generate HTML report
+```bash
+curl -X POST -d @reads.fastq \
+  "http://localhost:8080/api/report?format=fastq" \
+  > report.html
+```
+
+**POST /api/graph**
+Generate graphs
+```bash
+# ASCII graph
+curl -X POST -d @reads.fastq \
+  "http://localhost:8080/api/graph?format=fastq&type=length"
+
+# SVG graph
+curl -X POST -d @reads.fastq \
+  "http://localhost:8080/api/graph?format=fastq&svg=true" \
+  > graph.svg
+```
+
+**GET /health**
+Health check
+```bash
+curl http://localhost:8080/health
+```
+
+**GET /**
+API documentation (HTML)
+
+#### 8. JSON Statistics Output
+
+Export statistics in JSON format for integration with other tools:
+
+```bash
+# Basic statistics as JSON
+prinseq stats --fastq reads.fastq --json
+
+# Enhanced statistics as JSON (includes distributions)
+prinseq stats --fastq reads.fastq --json --enhanced
+```
+
+Example JSON output:
+```json
+{
+  "num_reads": 1000,
+  "total_bases": 150000,
+  "min_length": 50,
+  "max_length": 250,
+  "avg_length": 150,
+  "gc_content": 48.5,
+  "avg_quality": 35.2,
+  "num_ns": 120,
+  "length_distribution": {
+    "50": 10,
+    "100": 200,
+    "150": 580,
+    "200": 180,
+    "250": 30
+  },
+  "quality_distribution": {
+    "30": 100,
+    "35": 450,
+    "40": 450
+  },
+  "base_composition": {
+    "A": 37500,
+    "C": 36375,
+    "G": 36375,
+    "T": 37500,
+    "N": 120
+  },
+  "dinucleotides": {
+    "AA": 9375,
+    "AC": 9375,
+    ...
+  },
+  "positional_quality": [35.2, 35.5, 35.8, ...]
+}
+```
+
 Options:
 - `-fastq FILE`: Input FASTQ file (use `-` for stdin)
 - `-fasta FILE`: Input FASTA file (use `-` for stdin)
@@ -171,6 +421,7 @@ This Go implementation focuses on the core filtering and statistics functionalit
 
 ### Implemented Features
 - ✅ Sequence statistics (length, GC, N content, quality)
+- ✅ Enhanced statistics (base composition, dinucleotides, distributions)
 - ✅ Length-based filtering
 - ✅ GC content filtering
 - ✅ N content filtering
@@ -181,9 +432,17 @@ This Go implementation focuses on the core filtering and statistics functionalit
 - ✅ Poly-N and poly-A/T tail trimming
 - ✅ Duplicate removal (exact and reverse complement)
 - ✅ Paired-end support
+- ✅ Graph generation (ASCII and SVG formats)
+- ✅ HTML report generation
+- ✅ Performance benchmarking suite
+- ✅ JSON statistics output
+- ✅ REST API server
+- ✅ Parallel batch processing
 
 ### Not Yet Implemented (from original PRINSEQ)
-- Graph generation (use separate visualization tools)
+- ⏳ Sequence ID manipulation
+- ⏳ Custom graph styling
+- ⏳ Interactive reports
 
 ### Performance
 
@@ -284,20 +543,19 @@ prinseq filter -fastq reads.fastq \
 - ✅ Bad sequence output
 - ✅ Complexity filtering (DUST and entropy methods)
 
-### Version 1.1.0 (Planned)
-- [ ] Graph generation (optional)
-- [ ] JSON statistics output
-- [ ] Performance benchmarking suite
+### Version 1.1.0 (Current)
+- ✅ Graph generation (ASCII and SVG formats)
+- ✅ JSON statistics output
+- ✅ Performance benchmarking suite
+- ✅ Additional statistics (dinucleotides, base composition, distributions)
+- ✅ HTML report generation with embedded graphs
+- ✅ Parallel processing for multiple files
+- ✅ Web API interface
 
 ### Version 1.2.0 (Planned)
-- [ ] Additional statistics
-- [ ] Web API interface
-
-### Version 2.0.0 (Future)
-- [ ] Graph generation
-- [ ] HTML report generation
-- [ ] Parallel processing for multiple files
-- [ ] Web API interface
+- [ ] Additional graph customization options
+- [ ] Interactive HTML reports
+- [ ] Pipeline integration examples
 
 ## Contributing
 
