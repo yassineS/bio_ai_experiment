@@ -136,13 +136,14 @@ func runFilter(args []string) {
 	fs := flag.NewFlagSet("filter", flag.ExitOnError)
 	
 	// Input/output options
-	var input1, input2, output1, output2 string
+	var input1, input2, output1, output2, outBad string
 	var fasta, fastq bool
 	
 	cliflag.StringVar(fs, &input1, "i", "input", "", "Primary input file (use '-' for stdin)")
 	cliflag.StringVar(fs, &input2, "", "input2", "", "Paired-end input file 2")
 	cliflag.StringVar(fs, &output1, "o", "output", "", "Output file for filtered sequences (default: stdout)")
 	cliflag.StringVar(fs, &output2, "", "output2", "", "Output file for paired-end file 2")
+	cliflag.StringVar(fs, &outBad, "", "out-bad", "", "Output file for rejected sequences")
 	cliflag.BoolVar(fs, &fasta, "", "fasta", false, "Input is FASTA format")
 	cliflag.BoolVar(fs, &fastq, "", "fastq", false, "Input is FASTQ format")
 
@@ -194,6 +195,7 @@ Input/Output Options:
   --input2 FILE             Paired-end input file 2
   -o, --output FILE         Output file (default: stdout)
   --output2 FILE            Output file for paired-end file 2
+  --out-bad FILE            Output file for rejected sequences
   --fasta                   Input is FASTA format
   --fastq                   Input is FASTQ format
 
@@ -317,6 +319,17 @@ Examples:
 		Derep:         derep,
 		DerepMin:      derepMin,
 		QualType:      qualType,
+	}
+	
+	// Open bad output file if specified
+	if outBad != "" {
+		badWriter, err := os.Create(outBad)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating bad output file: %v\n", err)
+			os.Exit(1)
+		}
+		defer badWriter.Close()
+		opts.OutBad = badWriter
 	}
 
 	if isPaired {

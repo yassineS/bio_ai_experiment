@@ -399,6 +399,7 @@ type FilterOptions struct {
 	Derep        int     // Duplicate removal mode (1=exact, 4=reverse complement)
 	DerepMin     int     // Minimum occurrences to keep
 	QualType     string  // Quality encoding type: "sanger" (Phred+33) or "illumina" (Phred+64)
+	OutBad       io.Writer // Writer for rejected sequences (optional)
 }
 
 // Filter filters a FASTA/FASTQ file based on the given options
@@ -420,6 +421,11 @@ func getQualityEncoding(qualType string) fastq.QualityEncoding {
 func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	fastaReader := fasta.NewReader(reader)
 	fastaWriter := fasta.NewWriter(writer, 80)
+	
+	var badWriter *fasta.Writer
+	if opts.OutBad != nil {
+		badWriter = fasta.NewWriter(opts.OutBad, 80)
+	}
 
 	seenSeqs := make(map[string]int) // For duplicate tracking
 
@@ -440,12 +446,25 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
 			if shouldFilterDuplicate(seq, seenSeqs, opts) {
+				if badWriter != nil {
+					record.Sequence = []byte(seq)
+					if err := badWriter.Write(record); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 		}
 
 		// Apply filters
 		if shouldFilterSequence(seq, "", opts) {
+			// Write to bad output if enabled
+			if badWriter != nil {
+				record.Sequence = []byte(seq)
+				if err := badWriter.Write(record); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 
@@ -458,13 +477,24 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		}
 	}
 
-	return fastaWriter.Flush()
+	if err := fastaWriter.Flush(); err != nil {
+		return err
+	}
+	if badWriter != nil {
+		return badWriter.Flush()
+	}
+	return nil
 }
 
 func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	encoding := getQualityEncoding(opts.QualType)
 	fastqReader := fastq.NewReader(reader, encoding)
 	fastqWriter := fastq.NewWriter(writer, encoding)
+	
+	var badWriter *fastq.Writer
+	if opts.OutBad != nil {
+		badWriter = fastq.NewWriter(opts.OutBad, encoding)
+	}
 
 	seenSeqs := make(map[string]int) // For duplicate tracking
 
@@ -486,12 +516,27 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
 			if shouldFilterDuplicate(seq, seenSeqs, opts) {
+				if badWriter != nil {
+					record.Sequence = []byte(seq)
+					record.Quality = []byte(qual)
+					if err := badWriter.Write(record); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 		}
 
 		// Apply filters
 		if shouldFilterSequence(seq, qual, opts) {
+			// Write to bad output if enabled
+			if badWriter != nil {
+				record.Sequence = []byte(seq)
+				record.Quality = []byte(qual)
+				if err := badWriter.Write(record); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 
@@ -505,7 +550,13 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		}
 	}
 
-	return fastqWriter.Flush()
+	if err := fastqWriter.Flush(); err != nil {
+		return err
+	}
+	if badWriter != nil {
+		return badWriter.Flush()
+	}
+	return nil
 }
 
 func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
