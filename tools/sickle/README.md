@@ -393,6 +393,9 @@ The test suite includes:
 - N-truncation tests
 - Quality threshold tests
 - Length threshold tests
+- Custom window size tests
+- Progress reporting tests
+- Quality recalibration tests
 - Edge cases and error handling
 
 ## Use Cases
@@ -460,11 +463,11 @@ spades.py -1 clean_R1.fastq -2 clean_R2.fastq -o assembly/
 
 Contributions are welcome! Areas for improvement:
 
-1. Implement automatic quality encoding detection
-2. Add parallel processing capabilities
-3. Improve sliding window algorithm efficiency
-4. Add more comprehensive statistics
-5. Add JSON output format for statistics
+1. Machine learning-based quality recalibration
+2. Support for additional quality encodings (Solexa)
+3. Advanced filtering options (GC content, complexity)
+4. Interactive web-based report viewer
+5. Performance optimizations for the sliding window algorithm
 
 See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 
