@@ -19,6 +19,10 @@ type IntersectOptions struct {
 	WriteA       bool    // Write original A entry (default: write intersection)
 	WriteB       bool    // Write B entry instead of A
 	Count        bool    // For each A, report count of B overlaps
+	Reciprocal   bool    // Require reciprocal overlap (both -f and -F must be satisfied)
+	Distance     bool    // Report distance to nearest B feature
+	Closest      bool    // Report closest B feature for each A
+	UseTree      bool    // Use interval tree for large B files
 }
 
 // Intersect finds intervals in A that overlap with intervals in B.
@@ -46,10 +50,19 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 		return intervalsB[i].ChromStart < intervalsB[j].ChromStart
 	})
 
-	// Create interval tree index for each chromosome
+	// Create chromosome index and optionally interval trees
 	chromIndex := make(map[string][]*bed.Record)
+	chromTrees := make(map[string]*IntervalTree)
+	
 	for _, interval := range intervalsB {
 		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
+	}
+	
+	// Build interval trees for each chromosome if UseTree is enabled
+	if opts.UseTree {
+		for chrom, intervals := range chromIndex {
+			chromTrees[chrom] = NewIntervalTree(intervals)
+		}
 	}
 
 	// Process A intervals
@@ -66,8 +79,57 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 			return 0, fmt.Errorf("error reading A intervals: %w", err)
 		}
 
-		// Find overlaps
-		overlaps := findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
+		// Handle distance and closest modes
+		if opts.Distance || opts.Closest {
+			closest, dist := findClosest(recordA, chromIndex[recordA.Chrom], opts)
+			if closest != nil {
+				if opts.Distance {
+					// Write A interval with distance in name field
+					result := &bed.Record{
+						Chrom:      recordA.Chrom,
+						ChromStart: recordA.ChromStart,
+						ChromEnd:   recordA.ChromEnd,
+						Name:       fmt.Sprintf("%d", dist),
+					}
+					if err := bedWriter.Write(result); err != nil {
+						return 0, fmt.Errorf("error writing result: %w", err)
+					}
+					count++
+				} else if opts.Closest {
+					// Write the closest B interval
+					if err := bedWriter.Write(closest); err != nil {
+						return 0, fmt.Errorf("error writing result: %w", err)
+					}
+					count++
+				}
+			} else {
+				// No B intervals on this chromosome
+				if opts.Distance {
+					result := &bed.Record{
+						Chrom:      recordA.Chrom,
+						ChromStart: recordA.ChromStart,
+						ChromEnd:   recordA.ChromEnd,
+						Name:       "-1",
+					}
+					if err := bedWriter.Write(result); err != nil {
+						return 0, fmt.Errorf("error writing result: %w", err)
+					}
+					count++
+				}
+			}
+			continue
+		}
+
+		// Find overlaps using interval tree or linear search
+		var overlaps []*Overlap
+		if opts.UseTree {
+			if tree, ok := chromTrees[recordA.Chrom]; ok {
+				candidates := tree.Query(recordA)
+				overlaps = findOverlaps(recordA, candidates, opts)
+			}
+		} else {
+			overlaps = findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
+		}
 
 		if opts.NoOverlap {
 			// Report if no overlaps found
@@ -160,19 +222,25 @@ func findOverlaps(a *bed.Record, bIntervals []*bed.Record, opts IntersectOptions
 		}
 
 		// Check fraction of A that overlaps
-		if opts.FractionA > 0 {
-			lenA := a.ChromEnd - a.ChromStart
-			fracA := float64(overlapLen) / float64(lenA)
-			if fracA < opts.FractionA {
-				continue
-			}
+		lenA := a.ChromEnd - a.ChromStart
+		fracA := float64(overlapLen) / float64(lenA)
+		if opts.FractionA > 0 && fracA < opts.FractionA {
+			continue
 		}
 
 		// Check fraction of B that overlaps
-		if opts.FractionB > 0 {
-			lenB := b.ChromEnd - b.ChromStart
-			fracB := float64(overlapLen) / float64(lenB)
-			if fracB < opts.FractionB {
+		lenB := b.ChromEnd - b.ChromStart
+		fracB := float64(overlapLen) / float64(lenB)
+		if opts.FractionB > 0 && fracB < opts.FractionB {
+			continue
+		}
+
+		// For reciprocal mode, both fractions must be satisfied
+		if opts.Reciprocal {
+			if opts.FractionA > 0 && fracA < opts.FractionA {
+				continue
+			}
+			if opts.FractionB > 0 && fracB < opts.FractionB {
 				continue
 			}
 		}
@@ -185,6 +253,48 @@ func findOverlaps(a *bed.Record, bIntervals []*bed.Record, opts IntersectOptions
 	}
 
 	return overlaps
+}
+
+// findClosest finds the closest interval in B to A and returns the distance.
+// Returns the closest interval and distance (0 if overlapping, positive if upstream/downstream).
+func findClosest(a *bed.Record, bIntervals []*bed.Record, opts IntersectOptions) (*bed.Record, int) {
+	var closest *bed.Record
+	minDist := -1
+
+	for _, b := range bIntervals {
+		// Skip if chromosomes don't match
+		if a.Chrom != b.Chrom {
+			continue
+		}
+
+		// Check strand if required
+		if opts.StrandSpec {
+			if a.Strand != "" && b.Strand != "" && a.Strand != b.Strand {
+				continue
+			}
+		}
+
+		// Calculate distance
+		var dist int
+		if a.ChromEnd <= b.ChromStart {
+			// A is upstream of B
+			dist = b.ChromStart - a.ChromEnd
+		} else if b.ChromEnd <= a.ChromStart {
+			// B is upstream of A
+			dist = a.ChromStart - b.ChromEnd
+		} else {
+			// Overlapping
+			dist = 0
+		}
+
+		// Update closest if this is closer
+		if minDist == -1 || dist < minDist {
+			minDist = dist
+			closest = b
+		}
+	}
+
+	return closest, minDist
 }
 
 // Stats contains statistics about the intersect operation.
@@ -221,8 +331,17 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 	})
 
 	chromIndex := make(map[string][]*bed.Record)
+	chromTrees := make(map[string]*IntervalTree)
+	
 	for _, interval := range intervalsB {
 		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
+	}
+	
+	// Build interval trees for each chromosome if UseTree is enabled
+	if opts.UseTree {
+		for chrom, intervals := range chromIndex {
+			chromTrees[chrom] = NewIntervalTree(intervals)
+		}
 	}
 
 	stats := &Stats{
@@ -243,7 +362,54 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 		}
 
 		stats.IntervalsA++
-		overlaps := findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
+
+		// Handle distance and closest modes
+		if opts.Distance || opts.Closest {
+			closest, dist := findClosest(recordA, chromIndex[recordA.Chrom], opts)
+			if closest != nil {
+				stats.IntervalsAHit++
+				if opts.Distance {
+					result := &bed.Record{
+						Chrom:      recordA.Chrom,
+						ChromStart: recordA.ChromStart,
+						ChromEnd:   recordA.ChromEnd,
+						Name:       fmt.Sprintf("%d", dist),
+					}
+					if err := bedWriter.Write(result); err != nil {
+						return nil, fmt.Errorf("error writing result: %w", err)
+					}
+				} else if opts.Closest {
+					if err := bedWriter.Write(closest); err != nil {
+						return nil, fmt.Errorf("error writing result: %w", err)
+					}
+				}
+			} else {
+				stats.IntervalsAMiss++
+				if opts.Distance {
+					result := &bed.Record{
+						Chrom:      recordA.Chrom,
+						ChromStart: recordA.ChromStart,
+						ChromEnd:   recordA.ChromEnd,
+						Name:       "-1",
+					}
+					if err := bedWriter.Write(result); err != nil {
+						return nil, fmt.Errorf("error writing result: %w", err)
+					}
+				}
+			}
+			continue
+		}
+
+		// Find overlaps using interval tree or linear search
+		var overlaps []*Overlap
+		if opts.UseTree {
+			if tree, ok := chromTrees[recordA.Chrom]; ok {
+				candidates := tree.Query(recordA)
+				overlaps = findOverlaps(recordA, candidates, opts)
+			}
+		} else {
+			overlaps = findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
+		}
 
 		if len(overlaps) > 0 {
 			stats.IntervalsAHit++

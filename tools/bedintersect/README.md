@@ -4,12 +4,15 @@ A fast tool to find intersecting intervals between two BED files, implemented in
 
 ## Features
 
-- **Fast performance**: Efficient interval searching with chromosome indexing
-- **Flexible output**: Report intersections, original entries, or counts
-- **Multiple filter options**: Minimum overlap, fraction overlap, strand-specific
+- **Fast performance**: Efficient interval searching with chromosome indexing and optional interval tree
+- **Flexible output**: Report intersections, original entries, counts, distance, or closest feature
+- **Multiple filter options**: Minimum overlap, fraction overlap, reciprocal overlap, strand-specific
+- **Advanced modes**: Distance to nearest feature, closest feature reporting
+- **Interval tree**: Optional interval tree data structure for very large B files
 - **Standard BED format**: Compatible with bedtools intersect
 - **Built-in gzip support**: Automatic handling of .gz files
 - **Statistics**: Optional intersection statistics output
+- **Streaming**: File A is processed in streaming fashion (memory-efficient)
 
 ## Installation
 
@@ -42,11 +45,15 @@ bedintersect -a genes.bed -b peaks.bed > overlaps.bed
 - `-m, --min-overlap INT` - Minimum overlap required (default: 1)
 - `-f, --fraction-a NUM` - Minimum fraction of A that must overlap (0.0-1.0)
 - `-F, --fraction-b NUM` - Minimum fraction of B that must overlap (0.0-1.0)
+- `-r, --reciprocal` - Require reciprocal overlap (both -f and -F must be satisfied)
 - `-s, --strand` - Only report hits on same strand
 - `-v, --invert` - Report A entries with NO overlap with B
 - `-wa, --write-a` - Write original A entry (default: write intersection)
 - `-wb, --write-b` - Write B entry instead of A
 - `-c, --count` - Report count of B overlaps for each A
+- `-d, --distance` - Report distance to nearest B feature
+- `-k, --closest` - Output closest B feature for each A
+- `-t, --tree` - Use interval tree for large B files (better performance)
 - `-S, --stats` - Print statistics to stderr
 - `-h, --help` - Show help message
 
@@ -132,6 +139,38 @@ bedintersect -a genes.bed -b peaks.bed -s > overlaps.bed
 
 Only reports overlaps on the same strand (requires strand column in both files).
 
+#### Require reciprocal overlap
+
+```bash
+bedintersect -a genes.bed -b peaks.bed -f 0.5 -F 0.5 -r > overlaps.bed
+```
+
+Requires that at least 50% of both the gene and the peak overlap each other.
+
+#### Report distance to nearest feature
+
+```bash
+bedintersect -a genes.bed -b peaks.bed -d > distances.bed
+```
+
+Outputs each gene with the distance to its nearest peak in the name field (0 for overlapping).
+
+#### Report closest feature
+
+```bash
+bedintersect -a genes.bed -b peaks.bed -k > closest_peaks.bed
+```
+
+Outputs the closest peak for each gene.
+
+#### Use interval tree for large files
+
+```bash
+bedintersect -a genes.bed -b large_database.bed -t > overlaps.bed
+```
+
+Uses an interval tree data structure for improved performance with very large B files.
+
 #### Show statistics
 
 ```bash
@@ -201,10 +240,15 @@ chr1	300	400	1
 
 1. **Read B file** completely into memory
 2. **Index B intervals** by chromosome
-3. **For each A interval**:
+3. **Build interval trees** (optional, with -t flag) for O(log n) query time
+4. **For each A interval** (streaming):
    - Find candidate B intervals on same chromosome
+   - Use interval tree or linear search to find overlaps
    - Check for overlap considering options
-   - Output according to mode (-wa, -wb, -c, default)
+   - Output according to mode (-wa, -wb, -c, -d, -k, default)
+
+With interval tree enabled (-t), query complexity is O(log n + k) where k is the number of results.
+Without interval tree, query complexity is O(n) where n is the number of B intervals per chromosome.
 
 ## Performance
 
@@ -243,6 +287,26 @@ bedintersect -a regions.bed -b features.bed -m 100 -f 0.5 > significant.bed
 bedintersect -a genes.bed -b reads.bed -s -c > sense_coverage.bed
 ```
 
+### Find reciprocal best hits
+```bash
+bedintersect -a genes.bed -b orthologs.bed -f 0.8 -F 0.8 -r > reciprocal_hits.bed
+```
+
+### Find nearest regulatory elements
+```bash
+bedintersect -a genes.bed -b enhancers.bed -d > gene_enhancer_distances.bed
+```
+
+### Get closest transcription factor binding site
+```bash
+bedintersect -a genes.bed -b tfbs.bed -k > closest_tfbs.bed
+```
+
+### Process very large feature databases
+```bash
+bedintersect -a queries.bed -b large_database.bed -t > results.bed
+```
+
 ## Comparison with bedtools
 
 ### Similarities
@@ -259,7 +323,11 @@ bedintersect -a genes.bed -b reads.bed -s -c > sense_coverage.bed
 | Memory usage | Lower | Higher |
 | Speed | Comparable | Comparable |
 | Built-in gzip | Yes | No |
-| Advanced options | Basic | Extensive |
+| Interval tree | Yes (optional) | No |
+| Reciprocal mode | Yes | Yes |
+| Distance mode | Yes | No |
+| Closest feature | Yes | Via separate tool |
+| Advanced options | Growing | Extensive |
 | Sorted requirement | No | No |
 
 **Use bedintersect when:**
@@ -267,11 +335,14 @@ bedintersect -a genes.bed -b reads.bed -s -c > sense_coverage.bed
 - You want built-in gzip support
 - You prefer Go tools
 - You use common intersection operations
+- You need distance or closest feature functionality
+- You're working with very large B files (use -t flag)
+- You need reciprocal overlap filtering
 
 **Use bedtools intersect when:**
-- You need advanced options (wao, sorted, reciprocal, etc.)
+- You need advanced options (wao, sorted optimization, etc.)
 - You're already using bedtools suite
-- You need perfect output compatibility
+- You need perfect output compatibility with existing pipelines
 
 ## Testing
 
@@ -297,19 +368,21 @@ go test -cover ./pkg/bedintersect
 
 ## Limitations
 
-- Loads B file completely into memory
-- Linear search (no interval tree)
-- No reciprocal best hit mode
-- No sorted file optimization
-- No output of distance to nearest feature
+- Loads B file completely into memory (necessary for random access)
+- No sorted file optimization for memory-constrained environments
+
+## Recent Enhancements
+
+- ✅ Interval tree for very large B files (use -t flag)
+- ✅ Reciprocal overlap mode (use -r flag with -f and -F)
+- ✅ Distance to nearest feature (use -d flag)
+- ✅ Output closest feature (use -k flag)
+- ✅ Streaming mode for file A (always enabled)
 
 ## Future Enhancements
 
-- [ ] Interval tree for very large B files
-- [ ] Reciprocal overlap mode
-- [ ] Distance to nearest feature
-- [ ] Output closest feature
-- [ ] Streaming mode
+- [ ] Sorted file optimization to reduce memory usage for B file
+- [ ] Parallel processing for multi-core systems
 
 ## Contributing
 
