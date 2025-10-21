@@ -6,7 +6,11 @@ A fast and simple tool to merge overlapping or adjacent BED intervals, implement
 
 - **Fast performance**: Efficient sorting and merging algorithm
 - **Memory efficient**: Processes entire file in memory (suitable for typical BED files)
+- **Streaming mode**: Option for very large files that processes by chromosome
 - **Flexible merging**: Support for distance-based and strand-specific merging
+- **Configurable output**: Control output format and fields
+- **Count tracking**: Output number of intervals merged into each region
+- **bedGraph support**: Native support for bedGraph format (4-column: chrom, start, end, score)
 - **Standard BED format**: Compatible with standard BED files
 - **Built-in gzip support**: Automatic handling of .gz files
 - **Statistics**: Optional merge statistics output
@@ -41,6 +45,9 @@ bedmerge input.bed > merged.bed
 - `-i, --input FILE` - Input BED file (default: stdin)
 - `-o, --output FILE` - Output BED file (default: stdout)
 - `-S, --stats` - Print merge statistics to stderr
+- `-c, --count` - Output count of merged intervals as name field
+- `-g, --bedgraph` - Input/output in bedGraph format (chrom, start, end, score)
+- `--streaming` - Use streaming mode for very large files
 - `-h, --help` - Show help message
 
 ### Examples
@@ -93,6 +100,34 @@ bedmerge input.bed.gz > merged.bed
 bedmerge input.bed | gzip > merged.bed.gz
 ```
 
+#### Count merged intervals
+
+```bash
+bedmerge -c input.bed > merged.bed
+```
+
+Outputs the count of merged intervals as the name field:
+```
+chr1	100	250	2
+chr1	500	600	1
+```
+
+#### Merge bedGraph files
+
+```bash
+bedmerge -g input.bedgraph > merged.bedgraph
+```
+
+bedGraph format is a 4-column format: chrom, start, end, score. The first score is preserved when merging.
+
+#### Use streaming mode for very large files
+
+```bash
+bedmerge --streaming huge.bed > merged.bed
+```
+
+Streaming mode processes intervals by chromosome, reducing memory usage for very large files.
+
 ## Input Format
 
 Standard BED format with at least 3 columns:
@@ -110,14 +145,28 @@ chr1	500	600
 
 ## Output Format
 
-BED3 format (3 columns):
+Default output is BED3 format (3 columns):
 
 ```
 chr1	100	250
 chr1	500	600
 ```
 
-- Merged intervals with minimum fields
+With `-c` flag, includes count of merged intervals:
+
+```
+chr1	100	250	2
+chr1	500	600	1
+```
+
+With `-g` flag (bedGraph format), outputs 4 columns:
+
+```
+chr1	100	250	10
+chr1	500	600	20
+```
+
+- Merged intervals with minimum or custom fields
 - Sorted by chromosome and start position
 - Preserves coordinate system (0-based, half-open)
 
@@ -175,20 +224,25 @@ bedmerge input.bed | bedtools intersect -a - -b targets.bed
 | Language | Go | C++ |
 | Installation | Single binary | External dependency |
 | Memory usage | Lower | Higher |
+| Streaming mode | Yes | No |
 | Speed | Comparable | Comparable |
 | Built-in gzip | Yes | No |
-| Output fields | BED3 only | Configurable |
+| Output fields | Configurable | Configurable |
+| Count merged | Yes | Yes |
+| bedGraph support | Yes | Limited |
 | Advanced options | Basic | Extensive |
 
 **Use bedmerge when:**
 - You need a simple, standalone tool
 - You want built-in gzip support
 - You prefer Go tools
+- You need streaming mode for very large files
+- You're working with bedGraph format
 
 **Use bedtools merge when:**
-- You need advanced options (count, distinct, etc.)
-- You need custom output fields
+- You need advanced options (distinct, collapse, etc.)
 - You're already using bedtools suite
+- You need complex custom operations
 
 ## Testing
 
@@ -214,17 +268,16 @@ go test -cover ./pkg/bedmerge
 
 ## Limitations
 
-- Loads entire file into memory
-- Output is always BED3 format
-- No support for advanced bedtools options
-- No streaming mode for very large files
+- Streaming mode requires input roughly sorted by chromosome for optimal performance
+- For bedGraph format, only the first score is preserved when merging
+- No support for some advanced bedtools options like -delim, -collapse, etc.
 
-## Future Enhancements
+## New Features (Added)
 
-- [ ] Streaming mode for very large files
-- [ ] Configurable output fields
-- [ ] Count merged intervals per region
-- [ ] Support for bedGraph format
+- ✅ Streaming mode for very large files
+- ✅ Configurable output fields
+- ✅ Count merged intervals per region
+- ✅ Support for bedGraph format
 
 ## Contributing
 
