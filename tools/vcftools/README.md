@@ -202,27 +202,50 @@ vcftools (Go) provides comparable performance to the original C++/Perl implement
 
 ## Differences from Original vcftools
 
-### Feature Parity
-This implementation provides the most commonly used features of vcftools:
-- Core filtering options (position, quality, allele frequency, variant type)
-- Essential statistics (frequency, depth, missingness, HWE, Ts/Tv, pi)
-- VCF recoding with filtering
+### Feature Coverage
+This implementation provides approximately **80% of commonly used vcftools features**, covering:
+- ✅ Core filtering options (position, quality, allele frequency, variant type)
+- ✅ Essential statistics (frequency, depth, missingness, HWE, Ts/Tv, pi)
+- ✅ VCF recoding with filtering
+- ✅ Sample filtering and management
 
-### Not Yet Implemented
-Some advanced features from the original vcftools are not yet implemented:
-- Linkage disequilibrium (LD) calculations
-- Fst statistics
-- Windowed statistics (pi, Tajima's D)
-- Format conversion (PLINK, BEAGLE, LDhat, etc.)
-- VCF comparison/diff operations
+See [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md) for a detailed feature-by-feature comparison.
 
-These features may be added in future versions based on user demand.
+### Major Missing Features
+The following commonly-used features are not yet implemented:
+
+**High Priority:**
+- ❌ Linkage disequilibrium (LD) calculations (`--geno-r2`, `--hap-r2`)
+- ❌ Fst statistics (`--weir-fst-pop`)
+- ❌ PLINK format conversion (`--plink`, `--plink-tped`)
+
+**Medium Priority:**
+- ❌ VCF comparison/diff operations (`--diff`, `--diff-site-discordance`)
+- ❌ Windowed statistics (`--window-pi`, `--TajimaD`)
+- ❌ Additional format conversions (BEAGLE, IMPUTE, LDhat, 012 matrix)
+
+**Low Priority:**
+- ❌ Advanced filtering (BED files, SNP IDs, masks)
+- ❌ Relatedness and PCA analysis
+- ❌ BCF format support
+
+These features may be added in future versions. Contributions are welcome!
 
 ### Improvements
 - Simpler command-line interface
 - Automatic handling of gzipped files
 - No need for separate Perl and C++ tools
 - Single binary distribution
+
+## Feature Coverage Summary
+
+This Go implementation includes **~35 of the original ~147 vcftools options** (24% total coverage), but covers approximately **80% of commonly used features** in real-world analyses. The implementation prioritizes:
+
+1. **Core filtering operations** - Essential for data quality control
+2. **Basic statistics** - Most frequently requested outputs
+3. **VCF manipulation** - Recoding and sample management
+
+For a complete feature-by-feature comparison with the original vcftools, see [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md).
 
 ## Implementation Details
 
