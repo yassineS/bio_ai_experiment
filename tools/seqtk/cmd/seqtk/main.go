@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/seqtk/pkg/seqtk"
 )
 
@@ -84,9 +85,12 @@ Examples:
 
 func seqCommand() {
 	fs := flag.NewFlagSet("seq", flag.ExitOnError)
-	revComp := fs.Bool("r", false, "reverse complement")
-	phred64 := fs.Bool("6", false, "use Phred+64 quality encoding (default: Phred+33)")
-	output := fs.String("o", "", "output file (default: stdout)")
+	var revComp, phred64 bool
+	var output string
+	
+	cliflag.BoolVar(fs, &revComp, "r", "reverse", false, "Reverse complement sequences")
+	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk seq [options] <input>
@@ -94,9 +98,9 @@ func seqCommand() {
 Transform sequences.
 
 Options:
-  -r         Reverse complement
-  -6         Use Phred+64 quality encoding (default: Phred+33)
-  -o FILE    Output file (default: stdout)
+  -r, --reverse          Reverse complement sequences
+  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
+  -o, --output FILE      Output file (default: stdout)
 
 `)
 	}
@@ -118,8 +122,8 @@ Options:
 
 	// Determine output
 	var out *os.File
-	if *output != "" {
-		out, err = os.Create(*output)
+	if output != "" {
+		out, err = os.Create(output)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 			os.Exit(1)
@@ -137,7 +141,7 @@ Options:
 	}
 
 	encoding := fastq.Phred33
-	if *phred64 {
+	if phred64 {
 		encoding = fastq.Phred64
 	}
 
@@ -149,7 +153,7 @@ Options:
 		os.Exit(1)
 	}
 
-	if *revComp {
+	if revComp {
 		if err := seqtk.ReverseComplement(input, out, isFastq, encoding); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -163,8 +167,11 @@ Options:
 
 func sampleCommand() {
 	fs := flag.NewFlagSet("sample", flag.ExitOnError)
-	phred64 := fs.Bool("6", false, "use Phred+64 quality encoding (default: Phred+33)")
-	output := fs.String("o", "", "output file (default: stdout)")
+	var phred64 bool
+	var output string
+	
+	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk sample [options] <input> <fraction>
@@ -176,8 +183,8 @@ Arguments:
   <fraction>   Fraction of sequences to sample (0.0-1.0)
 
 Options:
-  -6         Use Phred+64 quality encoding (default: Phred+33)
-  -o FILE    Output file (default: stdout)
+  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
+  -o, --output FILE      Output file (default: stdout)
 
 Example:
   seqtk sample reads.fastq 0.1 > sample.fastq
@@ -207,8 +214,8 @@ Example:
 	defer input.Close()
 
 	var out *os.File
-	if *output != "" {
-		out, err = os.Create(*output)
+	if output != "" {
+		out, err = os.Create(output)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 			os.Exit(1)
@@ -225,7 +232,7 @@ Example:
 	}
 
 	encoding := fastq.Phred33
-	if *phred64 {
+	if phred64 {
 		encoding = fastq.Phred64
 	}
 
@@ -245,9 +252,13 @@ Example:
 
 func trimfqCommand() {
 	fs := flag.NewFlagSet("trimfq", flag.ExitOnError)
-	quality := fs.Int("q", 20, "minimum quality threshold")
-	phred64 := fs.Bool("6", false, "use Phred+64 quality encoding (default: Phred+33)")
-	output := fs.String("o", "", "output file (default: stdout)")
+	var quality int
+	var phred64 bool
+	var output string
+	
+	cliflag.IntVar(fs, &quality, "q", "quality", 20, "Minimum quality threshold")
+	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk trimfq [options] <input>
@@ -255,9 +266,9 @@ func trimfqCommand() {
 Trim FASTQ sequences based on quality.
 
 Options:
-  -q INT     Minimum quality threshold (default: 20)
-  -6         Use Phred+64 quality encoding (default: Phred+33)
-  -o FILE    Output file (default: stdout)
+  -q, --quality INT      Minimum quality threshold (default: 20)
+  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
+  -o, --output FILE      Output file (default: stdout)
 
 `)
 	}
@@ -278,8 +289,8 @@ Options:
 	defer input.Close()
 
 	var out *os.File
-	if *output != "" {
-		out, err = os.Create(*output)
+	if output != "" {
+		out, err = os.Create(output)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 			os.Exit(1)
@@ -290,11 +301,11 @@ Options:
 	}
 
 	encoding := fastq.Phred33
-	if *phred64 {
+	if phred64 {
 		encoding = fastq.Phred64
 	}
 
-	if err := seqtk.TrimQuality(input, out, *quality, encoding); err != nil {
+	if err := seqtk.TrimQuality(input, out, quality, encoding); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -302,8 +313,11 @@ Options:
 
 func fq2faCommand() {
 	fs := flag.NewFlagSet("fq2fa", flag.ExitOnError)
-	phred64 := fs.Bool("6", false, "use Phred+64 quality encoding (default: Phred+33)")
-	output := fs.String("o", "", "output file (default: stdout)")
+	var phred64 bool
+	var output string
+	
+	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk fq2fa [options] <input>
@@ -311,8 +325,8 @@ func fq2faCommand() {
 Convert FASTQ to FASTA.
 
 Options:
-  -6         Use Phred+64 quality encoding (default: Phred+33)
-  -o FILE    Output file (default: stdout)
+  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
+  -o, --output FILE      Output file (default: stdout)
 
 `)
 	}
@@ -333,8 +347,8 @@ Options:
 	defer input.Close()
 
 	var out *os.File
-	if *output != "" {
-		out, err = os.Create(*output)
+	if output != "" {
+		out, err = os.Create(output)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 			os.Exit(1)
@@ -345,7 +359,7 @@ Options:
 	}
 
 	encoding := fastq.Phred33
-	if *phred64 {
+	if phred64 {
 		encoding = fastq.Phred64
 	}
 
@@ -357,7 +371,9 @@ Options:
 
 func compCommand() {
 	fs := flag.NewFlagSet("comp", flag.ExitOnError)
-	phred64 := fs.Bool("6", false, "use Phred+64 quality encoding (default: Phred+33)")
+	var phred64 bool
+	
+	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding for FASTQ (default: Phred+33)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk comp [options] <input>
@@ -365,7 +381,7 @@ func compCommand() {
 Get sequence composition statistics.
 
 Options:
-  -6         Use Phred+64 quality encoding for FASTQ (default: Phred+33)
+  -6, --phred64          Use Phred+64 quality encoding for FASTQ (default: Phred+33)
 
 `)
 	}
@@ -396,7 +412,7 @@ Options:
 	var stats *seqtk.Stats
 	if isFastq {
 		encoding := fastq.Phred33
-		if *phred64 {
+		if phred64 {
 			encoding = fastq.Phred64
 		}
 		stats, err = seqtk.CalculateFastqStats(input, encoding)
