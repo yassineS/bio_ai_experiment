@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
@@ -400,6 +401,8 @@ type FilterOptions struct {
 	DerepMin     int     // Minimum occurrences to keep
 	QualType     string  // Quality encoding type: "sanger" (Phred+33) or "illumina" (Phred+64)
 	OutBad       io.Writer // Writer for rejected sequences (optional)
+	LcMethod     string  // Low complexity method: "dust" or "entropy"
+	LcThreshold  float64 // Low complexity threshold (7 for dust, 70 for entropy)
 }
 
 // Filter filters a FASTA/FASTQ file based on the given options
@@ -614,7 +617,80 @@ func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
 		}
 	}
 
+	// Complexity filter
+	if opts.LcMethod != "" && opts.LcThreshold > 0 {
+		if opts.LcMethod == "dust" {
+			score := calculateDustScore(seq)
+			if score > opts.LcThreshold {
+				return true
+			}
+		} else if opts.LcMethod == "entropy" {
+			score := calculateEntropy(seq)
+			if score < opts.LcThreshold {
+				return true
+			}
+		}
+	}
+
 	return false
+}
+
+// calculateDustScore computes DUST score for low-complexity filtering
+// Lower scores indicate higher complexity; higher scores indicate low complexity
+func calculateDustScore(seq string) float64 {
+	if len(seq) < 3 {
+		return 0.0
+	}
+
+	// Count triplet frequencies
+	triplets := make(map[string]int)
+	for i := 0; i <= len(seq)-3; i++ {
+		triplet := seq[i : i+3]
+		triplets[triplet]++
+	}
+
+	// Calculate DUST score as sum of (count * (count-1) / 2) for each triplet
+	score := 0.0
+	for _, count := range triplets {
+		if count > 1 {
+			score += float64(count * (count - 1) / 2)
+		}
+	}
+
+	// Normalize by sequence length
+	if len(seq) > 0 {
+		score = score / float64(len(seq)-2) * 10.0
+	}
+
+	return score
+}
+
+// calculateEntropy computes Shannon entropy for complexity filtering
+// Higher scores indicate higher complexity; lower scores indicate low complexity
+func calculateEntropy(seq string) float64 {
+	if len(seq) == 0 {
+		return 0.0
+	}
+
+	// Count base frequencies
+	counts := make(map[rune]int)
+	for _, base := range seq {
+		counts[base]++
+	}
+
+	// Calculate Shannon entropy
+	entropy := 0.0
+	length := float64(len(seq))
+	for _, count := range counts {
+		if count > 0 {
+			p := float64(count) / length
+			entropy -= p * math.Log2(p)
+		}
+	}
+
+	// Normalize to percentage (0-100)
+	// Maximum entropy for DNA is log2(4) = 2.0, so normalize to 100
+	return (entropy / 2.0) * 100.0
 }
 
 func shouldFilterDuplicate(seq string, seenSeqs map[string]int, opts FilterOptions) bool {
