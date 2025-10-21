@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
@@ -18,12 +20,14 @@ Usage:
   skewer <command> [options]
 
 Commands:
-  se    Trim single-end reads
-  pe    Trim paired-end reads
+  se      Trim single-end reads
+  pe      Trim paired-end reads
+  batch   Process multiple files in parallel
 
 For command-specific help:
   skewer se -h
   skewer pe -h
+  skewer batch -h
 
 Version: 1.0.0 (Go implementation)
 `
@@ -40,6 +44,8 @@ func main() {
 		runSingleEnd()
 	case "pe":
 		runPairedEnd()
+	case "batch":
+		runBatch()
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(0)
@@ -413,4 +419,170 @@ func printStats(stats *skewer.TrimStats, mode string) {
 		stats.TrimmedBases, 
 		100.0*float64(stats.TrimmedBases)/float64(stats.TotalBases))
 	fmt.Fprintln(os.Stderr)
+}
+
+func runBatch() {
+	fs := flag.NewFlagSet("skewer batch", flag.ExitOnError)
+	
+	var (
+		fileList       string
+		outputDir      string
+		adapter3       string
+		adapter5       string
+		qualType       string
+		minLength      int
+		qualThreshold  int
+		minOverlap     int
+		errorRate      float64
+		workers        int
+		quiet          bool
+		autoDetect     bool
+		jsonOutput     bool
+	)
+	
+	cliflag.StringVar(fs, &fileList, "f", "file-list", "", "File containing list of input files (one per line, or pairs separated by comma)")
+	cliflag.StringVar(fs, &outputDir, "d", "output-dir", ".", "Output directory for trimmed files")
+	cliflag.StringVar(fs, &adapter3, "x", "adapter3", "", "3' adapter sequence")
+	cliflag.StringVar(fs, &adapter5, "y", "adapter5", "", "5' adapter sequence")
+	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina")
+	cliflag.IntVar(fs, &minLength, "l", "min-length", 18, "Minimum read length")
+	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 0, "Quality threshold for trimming")
+	cliflag.IntVar(fs, &minOverlap, "m", "min-overlap", 3, "Minimum overlap for adapter detection")
+	cliflag.Float64Var(fs, &errorRate, "r", "error-rate", 0.1, "Maximum error rate")
+	cliflag.IntVar(fs, &workers, "w", "workers", 4, "Number of parallel workers (default: 4)")
+	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
+	cliflag.BoolVar(fs, &jsonOutput, "", "json-summary", false, "Output summary as JSON")
+	
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: skewer batch [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Process multiple FASTQ files in parallel.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "  -f, --file-list FILE      File containing list of input files (required)\n")
+		fmt.Fprintf(os.Stderr, "  -d, --output-dir DIR      Output directory (default: current directory)\n")
+		fmt.Fprintf(os.Stderr, "  -x, --adapter3 SEQ        3' adapter sequence\n")
+		fmt.Fprintf(os.Stderr, "  -y, --adapter5 SEQ        5' adapter sequence\n")
+		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE      Quality type: sanger, illumina\n")
+		fmt.Fprintf(os.Stderr, "  -l, --min-length INT      Minimum read length\n")
+		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT  Quality threshold for trimming\n")
+		fmt.Fprintf(os.Stderr, "  -m, --min-overlap INT     Minimum overlap for adapter detection\n")
+		fmt.Fprintf(os.Stderr, "  -r, --error-rate FLOAT    Maximum error rate\n")
+		fmt.Fprintf(os.Stderr, "  -w, --workers INT         Number of parallel workers (default: 4)\n")
+		fmt.Fprintf(os.Stderr, "  -a, --auto-detect         Auto-detect adapter sequences\n")
+		fmt.Fprintf(os.Stderr, "  --json-summary            Output summary as JSON\n")
+		fmt.Fprintf(os.Stderr, "  --quiet                   Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "\nFile list format (one file per line):\n")
+		fmt.Fprintf(os.Stderr, "  input1.fastq\n")
+		fmt.Fprintf(os.Stderr, "  input2.fastq\n")
+		fmt.Fprintf(os.Stderr, "  input3.fastq\n")
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  skewer batch -f files.txt -d output/ -x AGATCGGAAGAGC -w 8\n")
+	}
+	
+	fs.Parse(os.Args[2:])
+	
+	// Validate required arguments
+	if fileList == "" {
+		fmt.Fprintln(os.Stderr, "Error: -f/--file-list is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+	
+	// Read file list
+	filesData, err := os.ReadFile(fileList)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading file list: %v\n", err)
+		os.Exit(1)
+	}
+	
+	// Parse file list
+	lines := strings.Split(string(filesData), "\n")
+	var jobs []skewer.BatchJob
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		
+		inputFile := line
+		outputFile := outputDir + "/" + strings.Replace(inputFile, ".fastq", ".trimmed.fastq", 1)
+		
+		jobs = append(jobs, skewer.BatchJob{
+			InputFile:  inputFile,
+			OutputFile: outputFile,
+			Index:      i,
+		})
+	}
+	
+	if len(jobs) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: no files to process")
+		os.Exit(1)
+	}
+	
+	// Determine quality encoding
+	encoding := getQualityEncoding(qualType)
+	
+	// Set up trim options
+	opts := skewer.TrimOptions{
+		Adapter3:       adapter3,
+		Adapter5:       adapter5,
+		MinLength:      minLength,
+		QualThreshold:  qualThreshold,
+		MinOverlap:     minOverlap,
+		ErrorRate:      errorRate,
+		AutoDetect:     autoDetect,
+	}
+	
+	// Process files in parallel
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "Processing %d files with %d workers...\n", len(jobs), workers)
+	}
+	
+	results, err := skewer.ProcessBatch(jobs, encoding, opts, workers)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error during batch processing: %v\n", err)
+		os.Exit(1)
+	}
+	
+	// Print results
+	successCount := 0
+	failCount := 0
+	
+	for _, result := range results {
+		if result.Error != nil {
+			failCount++
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "Failed: %s - %v\n", result.Job.InputFile, result.Error)
+			}
+		} else {
+			successCount++
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "Processed: %s -> %s (%d reads)\n", 
+					result.Job.InputFile, result.Job.OutputFile, result.Stats.TotalReads)
+			}
+		}
+	}
+	
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "\nBatch Summary:\n")
+		fmt.Fprintf(os.Stderr, "  Total files:    %d\n", len(jobs))
+		fmt.Fprintf(os.Stderr, "  Successful:     %d\n", successCount)
+		fmt.Fprintf(os.Stderr, "  Failed:         %d\n", failCount)
+	}
+	
+	if jsonOutput {
+		// Output JSON summary
+		type Summary struct {
+			TotalFiles int `json:"total_files"`
+			Successful int `json:"successful"`
+			Failed     int `json:"failed"`
+		}
+		summary := Summary{
+			TotalFiles: len(jobs),
+			Successful: successCount,
+			Failed:     failCount,
+		}
+		jsonData, _ := json.Marshal(summary)
+		fmt.Println(string(jsonData))
+	}
 }
