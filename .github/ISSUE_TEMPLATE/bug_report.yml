@@ -1,0 +1,140 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this bug! Please fill out the form below to help us investigate and fix the issue.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which component is affected by this bug?
+      options:
+        - Tool Implementation (seqtk, prinseq, etc.)
+        - Bioformats Library (FASTA, FASTQ, VCF, BED)
+        - MCP Server
+        - Documentation
+        - Build/CI System
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: tool
+    attributes:
+      label: Specific Tool (if applicable)
+      description: If this affects a specific tool, which one?
+      placeholder: "e.g., seqtk, prinseq, fastp"
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of the bug
+      placeholder: What went wrong?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: Describe what should have happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+      placeholder: Describe what actually happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps to reproduce the bug
+      placeholder: |
+        1. Run command '...'
+        2. With input file '...'
+        3. Observe error '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command Line (if applicable)
+      description: The exact command you ran
+      render: shell
+      placeholder: "./seqtk comp input.fasta"
+    validations:
+      required: false
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error Message/Output
+      description: Full error message or unexpected output
+      render: shell
+      placeholder: Paste error message or output here
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Your environment details
+      value: |
+        - OS: [e.g., Ubuntu 22.04, macOS 13, Windows 11]
+        - Go Version: [e.g., 1.21.5]
+        - Tool Version: [e.g., v1.0.0]
+        - Installation Method: [source, go install, binary]
+    validations:
+      required: true
+
+  - type: textarea
+    id: sample_data
+    attributes:
+      label: Sample Data (if applicable)
+      description: Small sample input that reproduces the issue
+      placeholder: |
+        If the issue is reproducible with a small input file, please provide:
+        - A minimal example file
+        - Or a link to test data
+        - Or describe the data characteristics
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context about the problem
+      placeholder: Screenshots, workarounds, related issues, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission Checklist
+      description: Please verify these items before submitting
+      options:
+        - label: I have searched for similar issues and this appears to be a new bug
+          required: true
+        - label: I have provided all required information above
+          required: true
+        - label: I have included steps to reproduce the issue
+          required: true

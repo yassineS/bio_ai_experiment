@@ -1,0 +1,201 @@
+name: Tool Analysis Request
+description: Request analysis of a bioinformatics tool for potential recoding
+title: "[Analysis]: "
+labels: ["analysis", "tool-evaluation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to request analysis of a bioinformatics tool that could benefit from recoding in Go.
+        The analysis will use our standardized TEMPLATE.md format to evaluate the tool comprehensively.
+
+  - type: input
+    id: tool_name
+    attributes:
+      label: Tool Name
+      description: Name of the bioinformatics tool
+      placeholder: "e.g., FastQC, BWA, SAMtools"
+    validations:
+      required: true
+
+  - type: input
+    id: repository
+    attributes:
+      label: Repository URL
+      description: Link to the tool's repository or website
+      placeholder: "https://github.com/..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Tool Category
+      description: What type of bioinformatics tool is this?
+      options:
+        - Sequence Alignment/Mapping
+        - Variant Calling
+        - Quality Control
+        - De Novo Assembly
+        - Genome Annotation
+        - Population Genetics
+        - RNA-seq Analysis
+        - Metagenomics
+        - Phylogenetics
+        - Visualization
+        - File Format Conversion
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: language
+    attributes:
+      label: Current Programming Language
+      description: What language is the tool currently written in?
+      placeholder: "e.g., Perl, C, C++, Python, Java"
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Why Should This Tool Be Analyzed?
+      description: Explain why this tool is a good candidate for recoding
+      placeholder: |
+        Consider:
+        - Popularity/usage (citations, downloads)
+        - Known issues (performance, bugs, maintenance)
+        - Community need
+        - Technical debt
+        - Opportunity for improvement
+    validations:
+      required: true
+
+  - type: textarea
+    id: issues
+    attributes:
+      label: Known Issues
+      description: What problems or limitations does this tool have?
+      placeholder: |
+        List any known issues:
+        - Performance problems
+        - Installation difficulties
+        - Bugs or edge cases
+        - Poor documentation
+        - Maintenance concerns
+    validations:
+      required: false
+
+  - type: input
+    id: popularity
+    attributes:
+      label: Popularity Indicators
+      description: Citations, downloads, stars, or other usage metrics
+      placeholder: "e.g., 1000+ citations, 50K+ downloads, 2K GitHub stars"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Analysis Priority
+      description: How urgently should this tool be analyzed?
+      options:
+        - High (critical tool with major issues)
+        - Medium (important tool with some issues)
+        - Low (nice to have analysis)
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_cases
+    attributes:
+      label: Primary Use Cases
+      description: What are the main use cases for this tool?
+      placeholder: |
+        1. Use case 1
+        2. Use case 2
+        3. Use case 3
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Tools
+      description: Are there similar tools that could be compared?
+      placeholder: |
+        List similar or competing tools:
+        - Tool A: [description]
+        - Tool B: [description]
+    validations:
+      required: false
+
+  - type: dropdown
+    id: complexity
+    attributes:
+      label: Estimated Recoding Complexity
+      description: If recoded, how complex would the implementation be?
+      options:
+        - Low (simple tool, straightforward algorithms)
+        - Medium (moderate complexity, some challenges)
+        - High (complex algorithms, many dependencies)
+        - Unknown (needs analysis to determine)
+    validations:
+      required: true
+
+  - type: textarea
+    id: features
+    attributes:
+      label: Key Features to Preserve
+      description: What are the most important features that must be maintained?
+      placeholder: |
+        List critical features:
+        - Feature 1
+        - Feature 2
+        - Feature 3
+    validations:
+      required: false
+
+  - type: textarea
+    id: improvements
+    attributes:
+      label: Potential Improvements
+      description: What improvements could a Go rewrite bring?
+      placeholder: |
+        Ideas for improvements:
+        - Better performance
+        - Easier installation
+        - Better error handling
+        - Additional features
+    validations:
+      required: false
+
+  - type: textarea
+    id: resources
+    attributes:
+      label: Additional Resources
+      description: Links to papers, documentation, benchmarks, discussions
+      placeholder: |
+        - Paper: [citation/link]
+        - Documentation: [link]
+        - Benchmarks: [link]
+        - Community discussions: [link]
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission Checklist
+      description: Please verify these items before submitting
+      options:
+        - label: I have checked that this tool is not already analyzed or implemented
+          required: true
+        - label: I have provided justification for why this tool should be analyzed
+          required: true
+        - label: I have included basic information about the tool
+          required: true
+        - label: This tool aligns with the project's goals (improving bioinformatics software)
+          required: true
