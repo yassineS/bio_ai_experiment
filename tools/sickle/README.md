@@ -43,6 +43,7 @@ sickle <command> [options]
 
 - `se` - Trim single-end reads
 - `pe` - Trim paired-end reads
+- `batch` - Trim multiple files in parallel
 
 ### Single-End Mode (`se`)
 
@@ -58,9 +59,15 @@ Options:
 - `-t, --qual-type TYPE` - Quality type: sanger, illumina, solexa (default: sanger)
 - `-q, --qual-threshold INT` - Threshold for trimming (default: 20)
 - `-l, --length-threshold INT` - Minimum length to keep (default: 20)
+- `-w, --window-size INT` - Window size for quality assessment (default: 10)
 - `-x, --no-fiveprime` - Don't trim 5' end
 - `-n, --trunc-n` - Truncate sequences at position of first N
 - `--quiet` - Don't print statistics
+- `--json FILE` - Output statistics in JSON format to file
+- `--html FILE` - Generate HTML report to file
+- `--progress` - Show progress reporting
+- `--auto-detect` - Auto-detect quality encoding
+- `--recalibrate` - Recalibrate quality scores
 
 ### Paired-End Mode (`pe`)
 
@@ -79,9 +86,15 @@ Options:
 - `-t, --qual-type TYPE` - Quality type: sanger, illumina, solexa (default: sanger)
 - `-q, --qual-threshold INT` - Threshold for trimming (default: 20)
 - `-l, --length-threshold INT` - Minimum length to keep (default: 20)
+- `-w, --window-size INT` - Window size for quality assessment (default: 10)
 - `-x, --no-fiveprime` - Don't trim 5' end
 - `-n, --trunc-n` - Truncate sequences at position of first N
 - `--quiet` - Don't print statistics
+- `--json FILE` - Output statistics in JSON format to file
+- `--html FILE` - Generate HTML report to file
+- `--progress` - Show progress reporting
+- `--auto-detect` - Auto-detect quality encoding
+- `--recalibrate` - Recalibrate quality scores
 
 ## Examples
 
@@ -99,6 +112,121 @@ sickle se -f raw_reads.fastq -o trimmed.fastq -q 20 -l 50
 
 # Truncate at first N base
 sickle se -f raw_reads.fastq -o trimmed.fastq -n
+```
+
+### Paired-End Trimming
+
+```bash
+# Trim paired-end reads
+sickle pe -f reads_R1.fastq -r reads_R2.fastq \
+  -o trimmed_R1.fastq -p trimmed_R2.fastq
+
+# Include output for orphaned reads (when only one read passes)
+sickle pe -f reads_R1.fastq -r reads_R2.fastq \
+  -o trimmed_R1.fastq -p trimmed_R2.fastq \
+  -s singles.fastq
+
+# Use stricter settings
+sickle pe -f reads_R1.fastq -r reads_R2.fastq \
+  -o trimmed_R1.fastq -p trimmed_R2.fastq \
+  -q 30 -l 50
+```
+
+### Batch Mode - Process Multiple Files in Parallel
+
+```bash
+# Create a file list (one FASTQ file per line)
+echo "sample1.fastq" > files.txt
+echo "sample2.fastq" >> files.txt
+echo "sample3.fastq" >> files.txt
+
+# Process all files with 8 parallel workers
+sickle batch -i files.txt -o trimmed_output -j 8
+
+# Generate JSON and HTML reports for each file
+sickle batch -i files.txt -o trimmed_output -j 8 --json --html
+
+# Use auto-detection and recalibration for batch processing
+sickle batch -i files.txt -o trimmed_output -j 4 --auto-detect --recalibrate
+```
+
+Batch mode options:
+- `-i, --input-list FILE` - File containing list of input FASTQ files (required)
+- `-o, --output-dir DIR` - Output directory for trimmed files (default: .)
+- `-j, --jobs INT` - Number of parallel workers (default: 4)
+- All other options from single-end mode are supported
+
+### New Features Examples
+
+#### Automatic Quality Encoding Detection
+
+```bash
+# Automatically detect if file uses Phred+33 or Phred+64
+sickle se -f unknown_encoding.fastq -o trimmed.fastq --auto-detect
+```
+
+#### JSON Statistics Output
+
+```bash
+# Save trimming statistics in JSON format
+sickle se -f input.fastq -o output.fastq --json stats.json
+
+# Example JSON output:
+# {
+#   "total_reads": 1000,
+#   "trimmed_reads": 750,
+#   "trimmed_percent": 75.0,
+#   "discarded_reads": 50,
+#   "discarded_percent": 5.0,
+#   "kept_reads": 950,
+#   "kept_percent": 95.0,
+#   "total_bases": 150000,
+#   "trimmed_bases": 12000,
+#   "trimmed_bases_percent": 8.0
+# }
+```
+
+#### HTML Report Generation
+
+```bash
+# Generate a visual HTML report with statistics and charts
+sickle se -f input.fastq -o output.fastq --html report.html
+
+# The HTML report includes:
+# - Total reads, kept reads, discarded reads
+# - Trimming percentages with progress bars
+# - Base statistics
+# - Visual charts for easy interpretation
+```
+
+#### Progress Reporting
+
+```bash
+# Show real-time progress for large files
+sickle se -f large_file.fastq -o output.fastq --progress
+
+# Output shows: "Processed 10000 reads..." every 10,000 reads
+```
+
+#### Custom Window Size
+
+```bash
+# Use smaller window for more sensitive trimming
+sickle se -f input.fastq -o output.fastq -w 5
+
+# Use larger window for more conservative trimming
+sickle se -f input.fastq -o output.fastq -w 15
+```
+
+#### Quality Score Recalibration
+
+```bash
+# Apply empirical base quality recalibration
+sickle se -f input.fastq -o output.fastq --recalibrate
+
+# Recalibration adjusts quality scores based on:
+# - Position in read (quality degrades at ends)
+# - Sequence context (homopolymers are error-prone)
 ```
 
 ### Paired-End Trimming
@@ -208,7 +336,16 @@ This Go implementation aims for functional parity with the original C implementa
 | Performance | Fast | Comparable | Go adds safety |
 
 ### Not Yet Implemented
-- ❌ Automatic quality type detection
+- None - all planned features have been implemented!
+
+### New Features in v1.2.0
+✅ **Automatic quality encoding detection** - Use `--auto-detect` to automatically detect Phred+33 or Phred+64
+✅ **JSON statistics output** - Use `--json FILE` to save statistics in JSON format
+✅ **HTML report generation** - Use `--html FILE` to generate a visual HTML report
+✅ **Progress reporting** - Use `--progress` to show real-time progress for large files
+✅ **Custom window size** - Use `-w/--window-size INT` to configure the sliding window size
+✅ **Quality score recalibration** - Use `--recalibrate` to apply empirical base quality recalibration
+✅ **Parallel batch processing** - Use `sickle batch` to process multiple files in parallel
 
 ### Advantages of Go Implementation
 1. **Better Error Messages**: More descriptive error reporting
@@ -256,6 +393,9 @@ The test suite includes:
 - N-truncation tests
 - Quality threshold tests
 - Length threshold tests
+- Custom window size tests
+- Progress reporting tests
+- Quality recalibration tests
 - Edge cases and error handling
 
 ## Use Cases
@@ -296,7 +436,7 @@ spades.py -1 clean_R1.fastq -2 clean_R2.fastq -o assembly/
 
 ## Development Roadmap
 
-### Version 1.1.0 (Current)
+### Version 1.2.0 (Current)
 - ✅ Single-end and paired-end trimming
 - ✅ Quality-based sliding window algorithm
 - ✅ Length threshold filtering
@@ -305,27 +445,29 @@ spades.py -1 clean_R1.fastq -2 clean_R2.fastq -o assembly/
 - ✅ Built-in gzip support for input and output files
 - ✅ Comprehensive tests (>90% coverage)
 - ✅ Detailed statistics
+- ✅ **Automatic quality encoding detection**
+- ✅ **JSON statistics output**
+- ✅ **HTML report generation**
+- ✅ **Progress reporting for large files**
+- ✅ **Custom window size configuration**
+- ✅ **Quality score recalibration**
+- ✅ **Parallel batch processing for multiple files**
 
-### Version 1.2.0 (Planned)
-- [ ] Automatic quality encoding detection
-- [ ] Additional output formats (JSON statistics)
-- [ ] Progress reporting for large files
-
-### Version 1.2.0 (Future)
-- [ ] Parallel processing for multiple files
-- [ ] Custom window size configuration
-- [ ] Quality score recalibration
-- [ ] HTML report generation
+### Future Enhancements
+- [ ] Machine learning-based quality recalibration
+- [ ] Support for additional quality encodings (Solexa)
+- [ ] Advanced filtering options (GC content, complexity)
+- [ ] Interactive web-based report viewer
 
 ## Contributing
 
 Contributions are welcome! Areas for improvement:
 
-1. Implement automatic quality encoding detection
-2. Add parallel processing capabilities
-3. Improve sliding window algorithm efficiency
-4. Add more comprehensive statistics
-5. Add JSON output format for statistics
+1. Machine learning-based quality recalibration
+2. Support for additional quality encodings (Solexa)
+3. Advanced filtering options (GC content, complexity)
+4. Interactive web-based report viewer
+5. Performance optimizations for the sliding window algorithm
 
 See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 

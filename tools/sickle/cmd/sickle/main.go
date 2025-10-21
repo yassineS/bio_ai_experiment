@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
@@ -20,10 +25,12 @@ Usage:
 Commands:
   se    Trim single-end reads
   pe    Trim paired-end reads
+  batch Trim multiple files in parallel
 
 For command-specific help:
   sickle se -h
   sickle pe -h
+  sickle batch -h
 
 Version: 1.0.0 (Go implementation)
 `
@@ -40,6 +47,8 @@ func main() {
 		runSingleEnd()
 	case "pe":
 		runPairedEnd()
+	case "batch":
+		runBatch()
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(0)
@@ -62,9 +71,15 @@ func runSingleEnd() {
 		qualType       string
 		qualThreshold  int
 		lengthThreshold int
+		windowSize     int
 		noFivePrime    bool
 		truncateN      bool
 		quiet          bool
+		jsonOutput     string
+		htmlReport     string
+		progress       bool
+		autoDetect     bool
+		recalibrate    bool
 	)
 	
 	cliflag.StringVar(fs, &fastqFile, "f", "fastq-file", "", "Input FASTQ file (required)")
@@ -72,9 +87,15 @@ func runSingleEnd() {
 	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 20, "Threshold for trimming (default: 20)")
 	cliflag.IntVar(fs, &lengthThreshold, "l", "length-threshold", 20, "Minimum length to keep (default: 20)")
+	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
 	cliflag.BoolVar(fs, &noFivePrime, "x", "no-fiveprime", false, "Don't trim 5' end")
 	cliflag.BoolVar(fs, &truncateN, "n", "trunc-n", false, "Truncate sequences at position of first N")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics in JSON format to file")
+	cliflag.StringVar(fs, &htmlReport, "", "html", "", "Generate HTML report to file")
+	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
+	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
+	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
 	
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: sickle se [options]\n\n")
@@ -84,9 +105,15 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: sanger, illumina, solexa (default: sanger)\n")
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT    Threshold for trimming (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  -l, --length-threshold INT  Minimum length to keep (default: 20)\n")
+		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
 		fmt.Fprintf(os.Stderr, "  -x, --no-fiveprime          Don't trim 5' end\n")
 		fmt.Fprintf(os.Stderr, "  -n, --trunc-n               Truncate sequences at position of first N\n")
 		fmt.Fprintf(os.Stderr, "  --quiet                     Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "  --json FILE                 Output statistics in JSON format to file\n")
+		fmt.Fprintf(os.Stderr, "  --html FILE                 Generate HTML report to file\n")
+		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
+		fmt.Fprintf(os.Stderr, "  --auto-detect               Auto-detect quality encoding\n")
+		fmt.Fprintf(os.Stderr, "  --recalibrate               Recalibrate quality scores\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  sickle se -f input.fastq -o output.fastq -q 20 -l 20\n")
 	}
@@ -101,7 +128,24 @@ func runSingleEnd() {
 	}
 	
 	// Determine quality encoding
-	encoding := getQualityEncoding(qualType)
+	var encoding fastq.QualityEncoding
+	if autoDetect {
+		detected, err := detectQualityEncoding(fastqFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error auto-detecting quality encoding: %v\n", err)
+			os.Exit(1)
+		}
+		encoding = detected
+		if !quiet {
+			encodingName := "Phred+33 (Sanger)"
+			if detected == fastq.Phred64 {
+				encodingName = "Phred+64 (Illumina)"
+			}
+			fmt.Fprintf(os.Stderr, "Auto-detected quality encoding: %s\n", encodingName)
+		}
+	} else {
+		encoding = getQualityEncoding(qualType)
+	}
 	
 	// Open input file (with automatic gzip support)
 	inputFile, err := iohelper.OpenReader(fastqFile)
@@ -129,7 +173,9 @@ func runSingleEnd() {
 		LengthThreshold: lengthThreshold,
 		NoFivePrime:     noFivePrime,
 		TruncateN:       truncateN,
-		WindowSize:      10,
+		WindowSize:      windowSize,
+		Progress:        progress,
+		Recalibrate:     recalibrate,
 	}
 	
 	// Perform trimming
@@ -142,6 +188,22 @@ func runSingleEnd() {
 	// Print statistics
 	if !quiet {
 		printStats(stats, "SE")
+	}
+	
+	// Save JSON statistics
+	if jsonOutput != "" {
+		if err := saveJSONStats(stats, jsonOutput); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving JSON statistics: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	
+	// Generate HTML report
+	if htmlReport != "" {
+		if err := generateHTMLReport(stats, htmlReport, "SE"); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating HTML report: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -157,9 +219,15 @@ func runPairedEnd() {
 		qualType        string
 		qualThreshold   int
 		lengthThreshold int
+		windowSize      int
 		noFivePrime     bool
 		truncateN       bool
 		quiet           bool
+		jsonOutput      string
+		htmlReport      string
+		progress        bool
+		autoDetect      bool
+		recalibrate     bool
 	)
 	
 	cliflag.StringVar(fs, &fastqFile1, "f", "fastq-file", "", "First input FASTQ file (required)")
@@ -170,9 +238,15 @@ func runPairedEnd() {
 	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 20, "Threshold for trimming (default: 20)")
 	cliflag.IntVar(fs, &lengthThreshold, "l", "length-threshold", 20, "Minimum length to keep (default: 20)")
+	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
 	cliflag.BoolVar(fs, &noFivePrime, "x", "no-fiveprime", false, "Don't trim 5' end")
 	cliflag.BoolVar(fs, &truncateN, "n", "trunc-n", false, "Truncate sequences at position of first N")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics in JSON format to file")
+	cliflag.StringVar(fs, &htmlReport, "", "html", "", "Generate HTML report to file")
+	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
+	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
+	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
 	
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: sickle pe [options]\n\n")
@@ -185,9 +259,15 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: sanger, illumina, solexa (default: sanger)\n")
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT    Threshold for trimming (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  -l, --length-threshold INT  Minimum length to keep (default: 20)\n")
+		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
 		fmt.Fprintf(os.Stderr, "  -x, --no-fiveprime          Don't trim 5' end\n")
 		fmt.Fprintf(os.Stderr, "  -n, --trunc-n               Truncate sequences at position of first N\n")
 		fmt.Fprintf(os.Stderr, "  --quiet                     Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "  --json FILE                 Output statistics in JSON format to file\n")
+		fmt.Fprintf(os.Stderr, "  --html FILE                 Generate HTML report to file\n")
+		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
+		fmt.Fprintf(os.Stderr, "  --auto-detect               Auto-detect quality encoding\n")
+		fmt.Fprintf(os.Stderr, "  --recalibrate               Recalibrate quality scores\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  sickle pe -f input1.fastq -r input2.fastq -o output1.fastq -p output2.fastq -s singles.fastq\n")
 	}
@@ -207,7 +287,24 @@ func runPairedEnd() {
 	}
 	
 	// Determine quality encoding
-	encoding := getQualityEncoding(qualType)
+	var encoding fastq.QualityEncoding
+	if autoDetect {
+		detected, err := detectQualityEncoding(fastqFile1)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error auto-detecting quality encoding: %v\n", err)
+			os.Exit(1)
+		}
+		encoding = detected
+		if !quiet {
+			encodingName := "Phred+33 (Sanger)"
+			if detected == fastq.Phred64 {
+				encodingName = "Phred+64 (Illumina)"
+			}
+			fmt.Fprintf(os.Stderr, "Auto-detected quality encoding: %s\n", encodingName)
+		}
+	} else {
+		encoding = getQualityEncoding(qualType)
+	}
 	
 	// Open input files (with automatic gzip support)
 	f1, err := iohelper.OpenReader(fastqFile1)
@@ -257,7 +354,9 @@ func runPairedEnd() {
 		LengthThreshold: lengthThreshold,
 		NoFivePrime:     noFivePrime,
 		TruncateN:       truncateN,
-		WindowSize:      10,
+		WindowSize:      windowSize,
+		Progress:        progress,
+		Recalibrate:     recalibrate,
 	}
 	
 	// Perform trimming
@@ -270,6 +369,259 @@ func runPairedEnd() {
 	// Print statistics
 	if !quiet {
 		printStats(stats, "PE")
+	}
+	
+	// Save JSON statistics
+	if jsonOutput != "" {
+		if err := saveJSONStats(stats, jsonOutput); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving JSON statistics: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	
+	// Generate HTML report
+	if htmlReport != "" {
+		if err := generateHTMLReport(stats, htmlReport, "PE"); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating HTML report: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func runBatch() {
+	fs := flag.NewFlagSet("sickle batch", flag.ExitOnError)
+	
+	var (
+		fileList        string
+		outputDir       string
+		qualType        string
+		qualThreshold   int
+		lengthThreshold int
+		windowSize      int
+		noFivePrime     bool
+		truncateN       bool
+		quiet           bool
+		jsonOutput      bool
+		htmlReport      bool
+		progress        bool
+		autoDetect      bool
+		recalibrate     bool
+		numWorkers      int
+	)
+	
+	cliflag.StringVar(fs, &fileList, "i", "input-list", "", "File containing list of input FASTQ files (one per line)")
+	cliflag.StringVar(fs, &outputDir, "o", "output-dir", ".", "Output directory for trimmed files")
+	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
+	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 20, "Threshold for trimming (default: 20)")
+	cliflag.IntVar(fs, &lengthThreshold, "l", "length-threshold", 20, "Minimum length to keep (default: 20)")
+	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
+	cliflag.IntVar(fs, &numWorkers, "j", "jobs", 4, "Number of parallel workers (default: 4)")
+	cliflag.BoolVar(fs, &noFivePrime, "x", "no-fiveprime", false, "Don't trim 5' end")
+	cliflag.BoolVar(fs, &truncateN, "n", "trunc-n", false, "Truncate sequences at position of first N")
+	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &jsonOutput, "", "json", false, "Output statistics in JSON format for each file")
+	cliflag.BoolVar(fs, &htmlReport, "", "html", false, "Generate HTML report for each file")
+	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
+	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
+	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
+	
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: sickle batch [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Batch mode processes multiple FASTQ files in parallel.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "  -i, --input-list FILE       File containing list of input FASTQ files (required)\n")
+		fmt.Fprintf(os.Stderr, "  -o, --output-dir DIR        Output directory for trimmed files (default: .)\n")
+		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: sanger, illumina, solexa (default: sanger)\n")
+		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT    Threshold for trimming (default: 20)\n")
+		fmt.Fprintf(os.Stderr, "  -l, --length-threshold INT  Minimum length to keep (default: 20)\n")
+		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
+		fmt.Fprintf(os.Stderr, "  -j, --jobs INT              Number of parallel workers (default: 4)\n")
+		fmt.Fprintf(os.Stderr, "  -x, --no-fiveprime          Don't trim 5' end\n")
+		fmt.Fprintf(os.Stderr, "  -n, --trunc-n               Truncate sequences at position of first N\n")
+		fmt.Fprintf(os.Stderr, "  --quiet                     Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "  --json                      Output statistics in JSON format for each file\n")
+		fmt.Fprintf(os.Stderr, "  --html                      Generate HTML report for each file\n")
+		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
+		fmt.Fprintf(os.Stderr, "  --auto-detect               Auto-detect quality encoding\n")
+		fmt.Fprintf(os.Stderr, "  --recalibrate               Recalibrate quality scores\n")
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  sickle batch -i files.txt -o trimmed_output -j 8\n")
+		fmt.Fprintf(os.Stderr, "\nThe input list file should contain one FASTQ file path per line.\n")
+	}
+	
+	fs.Parse(os.Args[2:])
+	
+	// Validate required arguments
+	if fileList == "" {
+		fmt.Fprintln(os.Stderr, "Error: -i/--input-list is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+	
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
+		os.Exit(1)
+	}
+	
+	// Read file list
+	f, err := os.Open(fileList)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file list: %v\n", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	
+	var files []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			files = append(files, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading file list: %v\n", err)
+		os.Exit(1)
+	}
+	
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: no files found in input list")
+		os.Exit(1)
+	}
+	
+	fmt.Fprintf(os.Stderr, "Processing %d files with %d workers...\n", len(files), numWorkers)
+	
+	// Set up worker pool
+	type job struct {
+		inputFile string
+		index     int
+	}
+	
+	type result struct {
+		inputFile  string
+		outputFile string
+		stats      *sickle.TrimStats
+		err        error
+	}
+	
+	jobs := make(chan job, len(files))
+	results := make(chan result, len(files))
+	
+	var wg sync.WaitGroup
+	
+	// Start workers
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				// Determine quality encoding
+				var encoding fastq.QualityEncoding
+				if autoDetect {
+					detected, err := detectQualityEncoding(j.inputFile)
+					if err != nil {
+						results <- result{inputFile: j.inputFile, err: err}
+						continue
+					}
+					encoding = detected
+				} else {
+					encoding = getQualityEncoding(qualType)
+				}
+				
+				// Generate output filename
+				baseName := filepath.Base(j.inputFile)
+				outputFile := filepath.Join(outputDir, "trimmed_"+baseName)
+				
+				// Open files
+				input, err := iohelper.OpenReader(j.inputFile)
+				if err != nil {
+					results <- result{inputFile: j.inputFile, err: err}
+					continue
+				}
+				
+				output, err := iohelper.OpenWriter(outputFile)
+				if err != nil {
+					input.Close()
+					results <- result{inputFile: j.inputFile, err: err}
+					continue
+				}
+				
+				// Set up trim options
+				opts := sickle.TrimOptions{
+					QualThreshold:   qualThreshold,
+					LengthThreshold: lengthThreshold,
+					NoFivePrime:     noFivePrime,
+					TruncateN:       truncateN,
+					WindowSize:      windowSize,
+					Progress:        progress,
+					Recalibrate:     recalibrate,
+				}
+				
+				// Perform trimming
+				stats, err := sickle.TrimSingleEnd(input, output, encoding, opts)
+				input.Close()
+				output.Close()
+				
+				if err != nil {
+					results <- result{inputFile: j.inputFile, outputFile: outputFile, err: err}
+					continue
+				}
+				
+				// Save JSON if requested
+				if jsonOutput {
+					jsonFile := outputFile + ".json"
+					if err := saveJSONStats(stats, jsonFile); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to save JSON for %s: %v\n", j.inputFile, err)
+					}
+				}
+				
+				// Generate HTML if requested
+				if htmlReport {
+					htmlFile := outputFile + ".html"
+					if err := generateHTMLReport(stats, htmlFile, "SE"); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to generate HTML for %s: %v\n", j.inputFile, err)
+					}
+				}
+				
+				results <- result{inputFile: j.inputFile, outputFile: outputFile, stats: stats, err: nil}
+			}
+		}()
+	}
+	
+	// Send jobs
+	for i, file := range files {
+		jobs <- job{inputFile: file, index: i}
+	}
+	close(jobs)
+	
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	
+	// Collect results
+	successCount := 0
+	failCount := 0
+	for r := range results {
+		if r.err != nil {
+			fmt.Fprintf(os.Stderr, "Error processing %s: %v\n", r.inputFile, r.err)
+			failCount++
+		} else {
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "✓ %s -> %s (kept %d/%d reads)\n", 
+					r.inputFile, r.outputFile,
+					r.stats.TotalReads-r.stats.DiscardedReads, r.stats.TotalReads)
+			}
+			successCount++
+		}
+	}
+	
+	fmt.Fprintf(os.Stderr, "\nBatch processing complete: %d succeeded, %d failed\n", successCount, failCount)
+	
+	if failCount > 0 {
+		os.Exit(1)
 	}
 }
 
@@ -305,4 +657,236 @@ func printStats(stats *sickle.TrimStats, mode string) {
 		stats.TrimmedBases, 
 		100.0*float64(stats.TrimmedBases)/float64(stats.TotalBases))
 	fmt.Fprintln(os.Stderr)
+}
+
+// detectQualityEncoding automatically detects the quality encoding from a FASTQ file
+func detectQualityEncoding(filename string) (fastq.QualityEncoding, error) {
+	f, err := iohelper.OpenReader(filename)
+	if err != nil {
+		return fastq.Phred33, err
+	}
+	defer f.Close()
+	
+	// Read a sample of records to detect encoding
+	reader := fastq.NewReader(f, fastq.Phred33) // Start with Phred33 for reading
+	minQual := 255
+	maxQual := 0
+	samplesRead := 0
+	maxSamples := 10000 // Sample first 10k reads
+	
+	for samplesRead < maxSamples {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fastq.Phred33, err
+		}
+		
+		for _, q := range record.Quality {
+			if int(q) < minQual {
+				minQual = int(q)
+			}
+			if int(q) > maxQual {
+				maxQual = int(q)
+			}
+		}
+		samplesRead++
+	}
+	
+	// Phred+33 range: 33-126 (quality 0-93)
+	// Phred+64 range: 64-126 (quality 0-62)
+	// If we see chars < 59 (which would be quality -5 in Phred+64), it's Phred+33
+	// If all chars >= 64, it's likely Phred+64
+	if minQual < 59 {
+		return fastq.Phred33, nil
+	}
+	return fastq.Phred64, nil
+}
+
+// saveJSONStats saves trimming statistics to a JSON file
+func saveJSONStats(stats *sickle.TrimStats, filename string) error {
+	type JSONStats struct {
+		TotalReads     int     `json:"total_reads"`
+		TrimmedReads   int     `json:"trimmed_reads"`
+		TrimmedPercent float64 `json:"trimmed_percent"`
+		DiscardedReads int     `json:"discarded_reads"`
+		DiscardedPercent float64 `json:"discarded_percent"`
+		KeptReads      int     `json:"kept_reads"`
+		KeptPercent    float64 `json:"kept_percent"`
+		TotalBases     int64   `json:"total_bases"`
+		TrimmedBases   int64   `json:"trimmed_bases"`
+		TrimmedBasesPercent float64 `json:"trimmed_bases_percent"`
+	}
+	
+	jsonStats := JSONStats{
+		TotalReads:     stats.TotalReads,
+		TrimmedReads:   stats.TrimmedReads,
+		TrimmedPercent: 100.0 * float64(stats.TrimmedReads) / float64(stats.TotalReads),
+		DiscardedReads: stats.DiscardedReads,
+		DiscardedPercent: 100.0 * float64(stats.DiscardedReads) / float64(stats.TotalReads),
+		KeptReads:      stats.TotalReads - stats.DiscardedReads,
+		KeptPercent:    100.0 * float64(stats.TotalReads-stats.DiscardedReads) / float64(stats.TotalReads),
+		TotalBases:     stats.TotalBases,
+		TrimmedBases:   stats.TrimmedBases,
+		TrimmedBasesPercent: 100.0 * float64(stats.TrimmedBases) / float64(stats.TotalBases),
+	}
+	
+	data, err := json.MarshalIndent(jsonStats, "", "  ")
+	if err != nil {
+		return err
+	}
+	
+	return os.WriteFile(filename, data, 0644)
+}
+
+// generateHTMLReport generates an HTML report with trimming statistics
+func generateHTMLReport(stats *sickle.TrimStats, filename, mode string) error {
+	htmlTemplate := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sickle Trimming Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .stat-box {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 4px;
+            border-left: 4px solid #4CAF50;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #333;
+        }
+        .stat-percent {
+            font-size: 16px;
+            color: #4CAF50;
+            margin-left: 10px;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background-color: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50 0%, #45a049 100%);
+            transition: width 0.3s ease;
+        }
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            color: #666;
+            font-size: 12px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Sickle %s Trimming Report</h1>
+        
+        <div class="stats-grid">
+            <div class="stat-box">
+                <div class="stat-label">Total Reads</div>
+                <div class="stat-value">%d</div>
+            </div>
+            
+            <div class="stat-box">
+                <div class="stat-label">Kept Reads</div>
+                <div class="stat-value">%d<span class="stat-percent">(%.2f%%)</span></div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: %.2f%%"></div>
+                </div>
+            </div>
+            
+            <div class="stat-box">
+                <div class="stat-label">Trimmed Reads</div>
+                <div class="stat-value">%d<span class="stat-percent">(%.2f%%)</span></div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: %.2f%%"></div>
+                </div>
+            </div>
+            
+            <div class="stat-box">
+                <div class="stat-label">Discarded Reads</div>
+                <div class="stat-value">%d<span class="stat-percent">(%.2f%%)</span></div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: %.2f%%; background: linear-gradient(90deg, #f44336 0%, #da190b 100%);"></div>
+                </div>
+            </div>
+            
+            <div class="stat-box">
+                <div class="stat-label">Total Bases</div>
+                <div class="stat-value">%d</div>
+            </div>
+            
+            <div class="stat-box">
+                <div class="stat-label">Trimmed Bases</div>
+                <div class="stat-value">%d<span class="stat-percent">(%.2f%%)</span></div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: %.2f%%"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            Generated by Sickle v1.0.0 (Go implementation)
+        </div>
+    </div>
+</body>
+</html>`
+
+	keptReads := stats.TotalReads - stats.DiscardedReads
+	keptPercent := 100.0 * float64(keptReads) / float64(stats.TotalReads)
+	trimmedPercent := 100.0 * float64(stats.TrimmedReads) / float64(stats.TotalReads)
+	discardedPercent := 100.0 * float64(stats.DiscardedReads) / float64(stats.TotalReads)
+	trimmedBasesPercent := 100.0 * float64(stats.TrimmedBases) / float64(stats.TotalBases)
+	
+	html := fmt.Sprintf(htmlTemplate,
+		mode,
+		stats.TotalReads,
+		keptReads, keptPercent, keptPercent,
+		stats.TrimmedReads, trimmedPercent, trimmedPercent,
+		stats.DiscardedReads, discardedPercent, discardedPercent,
+		stats.TotalBases,
+		stats.TrimmedBases, trimmedBasesPercent, trimmedBasesPercent,
+	)
+	
+	return os.WriteFile(filename, []byte(html), 0644)
 }
