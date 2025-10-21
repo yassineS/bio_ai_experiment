@@ -23,6 +23,11 @@ type Stats struct {
 
 // CalculateStats computes statistics for FASTA or FASTQ files
 func CalculateStats(reader io.Reader, isFastq bool) (*Stats, error) {
+	return CalculateStatsWithEncoding(reader, isFastq, "sanger")
+}
+
+// CalculateStatsWithEncoding computes statistics with a specific quality encoding
+func CalculateStatsWithEncoding(reader io.Reader, isFastq bool, qualType string) (*Stats, error) {
 	stats := &Stats{
 		MinLength: -1,
 	}
@@ -31,7 +36,11 @@ func CalculateStats(reader io.Reader, isFastq bool) (*Stats, error) {
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB buffer
 
 	if isFastq {
-		return calculateFastqStats(scanner, stats)
+		offset := 33
+		if qualType == "illumina" {
+			offset = 64
+		}
+		return calculateFastqStatsWithOffset(scanner, stats, offset)
 	}
 	return calculateFastaStats(scanner, stats)
 }
@@ -76,6 +85,10 @@ func calculateFastaStats(scanner *bufio.Scanner, stats *Stats) (*Stats, error) {
 }
 
 func calculateFastqStats(scanner *bufio.Scanner, stats *Stats) (*Stats, error) {
+	return calculateFastqStatsWithOffset(scanner, stats, 33)
+}
+
+func calculateFastqStatsWithOffset(scanner *bufio.Scanner, stats *Stats, offset int) (*Stats, error) {
 	gcCount := 0
 	totalQuality := 0.0
 	lineNum := 0
@@ -106,7 +119,7 @@ func calculateFastqStats(scanner *bufio.Scanner, stats *Stats) (*Stats, error) {
 			}
 			// Process the complete FASTQ record
 			processSequence(seq, &gcCount, stats)
-			totalQuality += calculateAvgQualityScore(qual)
+			totalQuality += calculateAvgQualityScoreWithOffset(qual, offset)
 			seq = ""
 			qual = ""
 		}
@@ -157,14 +170,18 @@ func processSequence(seq string, gcCount *int, stats *Stats) {
 }
 
 func calculateAvgQualityScore(qual string) float64 {
+	return calculateAvgQualityScoreWithOffset(qual, 33)
+}
+
+func calculateAvgQualityScoreWithOffset(qual string, offset int) float64 {
 	if len(qual) == 0 {
 		return 0.0
 	}
 
 	total := 0
 	for _, q := range qual {
-		// Assume Phred+33 encoding
-		total += int(q) - 33
+		// Use specified offset (33 for Phred+33, 64 for Phred+64)
+		total += int(q) - offset
 	}
 	return float64(total) / float64(len(qual))
 }
@@ -381,6 +398,7 @@ type FilterOptions struct {
 	MaxQualMean  float64
 	Derep        int     // Duplicate removal mode (1=exact, 4=reverse complement)
 	DerepMin     int     // Minimum occurrences to keep
+	QualType     string  // Quality encoding type: "sanger" (Phred+33) or "illumina" (Phred+64)
 }
 
 // Filter filters a FASTA/FASTQ file based on the given options
@@ -389,6 +407,14 @@ func Filter(reader io.Reader, writer io.Writer, isFastq bool, opts FilterOptions
 		return filterFastq(reader, writer, opts)
 	}
 	return filterFasta(reader, writer, opts)
+}
+
+// getQualityEncoding returns the appropriate quality encoding based on options
+func getQualityEncoding(qualType string) fastq.QualityEncoding {
+	if qualType == "illumina" {
+		return fastq.Phred64
+	}
+	return fastq.Phred33 // Default to sanger
 }
 
 func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
@@ -436,8 +462,9 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 }
 
 func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
-	fastqReader := fastq.NewReader(reader, fastq.Phred33)
-	fastqWriter := fastq.NewWriter(writer, fastq.Phred33)
+	encoding := getQualityEncoding(opts.QualType)
+	fastqReader := fastq.NewReader(reader, encoding)
+	fastqWriter := fastq.NewWriter(writer, encoding)
 
 	seenSeqs := make(map[string]int) // For duplicate tracking
 
@@ -655,10 +682,11 @@ func filterPairedFasta(reader1, reader2 io.Reader, writer1, writer2 io.Writer, o
 }
 
 func filterPairedFastq(reader1, reader2 io.Reader, writer1, writer2 io.Writer, opts FilterOptions) error {
-	fastqReader1 := fastq.NewReader(reader1, fastq.Phred33)
-	fastqReader2 := fastq.NewReader(reader2, fastq.Phred33)
-	fastqWriter1 := fastq.NewWriter(writer1, fastq.Phred33)
-	fastqWriter2 := fastq.NewWriter(writer2, fastq.Phred33)
+	encoding := getQualityEncoding(opts.QualType)
+	fastqReader1 := fastq.NewReader(reader1, encoding)
+	fastqReader2 := fastq.NewReader(reader2, encoding)
+	fastqWriter1 := fastq.NewWriter(writer1, encoding)
+	fastqWriter2 := fastq.NewWriter(writer2, encoding)
 
 	seenSeqs := make(map[string]int)
 

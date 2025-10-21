@@ -180,6 +180,10 @@ func runFilter(args []string) {
 	cliflag.IntVar(fs, &derep, "d", "derep", 0, "Remove duplicates: 1=exact, 4=revcomp, 5=both")
 	cliflag.IntVar(fs, &derepMin, "", "derep-min", 2, "Minimum occurrences to keep")
 
+	// Quality encoding option
+	var qualType string
+	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger (Phred+33) or illumina (Phred+64)")
+
 	fs.Usage = func() {
 		fmt.Print(`Usage: prinseq filter [options]
 
@@ -219,6 +223,9 @@ Duplicate Removal Options:
   -d, --derep MODE          Remove duplicates (1=exact, 4=revcomp, 5=both)
   --derep-min INT           Minimum occurrences to keep (default: 2)
 
+Quality Encoding:
+  -t, --qual-type TYPE      Quality encoding: sanger (Phred+33, default) or illumina (Phred+64)
+
 Examples:
   # Filter by length using short options
   prinseq filter -i reads.fastq -o filtered.fastq -l 100 -L 500
@@ -234,6 +241,9 @@ Examples:
 
   # Remove duplicates
   prinseq filter -i seqs.fasta -d 1 --derep-min 2 -o unique.fasta
+  
+  # Use Phred+64 encoding (Illumina 1.3-1.7)
+  prinseq filter -i reads.fastq -o filtered.fastq -t illumina -l 100
 `)
 	}
 
@@ -306,6 +316,7 @@ Examples:
 		TrimTailRight: trimTailRight,
 		Derep:         derep,
 		DerepMin:      derepMin,
+		QualType:      qualType,
 	}
 
 	if isPaired {
