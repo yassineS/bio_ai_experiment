@@ -273,12 +273,12 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 	}
 
 	// Allele frequency filters
-	if params.Maf > 0 || params.MaxMaf < 1 || params.Mac > 0 || params.MaxMac > 0 {
+	if params.Maf > 0 || params.MaxMaf > 0 || params.Mac > 0 || params.MaxMac > 0 {
 		maf, mac := calculateMAF(v)
 		if params.Maf > 0 && maf < params.Maf {
 			return false
 		}
-		if params.MaxMaf < 1 && maf > params.MaxMaf {
+		if params.MaxMaf > 0 && maf > params.MaxMaf {
 			return false
 		}
 		if params.Mac > 0 && mac < params.Mac {
