@@ -12,19 +12,19 @@ import (
 
 // Stats holds sequence statistics
 type Stats struct {
-	NumReads          int                `json:"num_reads"`
-	TotalBases        int                `json:"total_bases"`
-	MinLength         int                `json:"min_length"`
-	MaxLength         int                `json:"max_length"`
-	AvgLength         float64            `json:"avg_length"`
-	GCContent         float64            `json:"gc_content"`
-	AvgQuality        float64            `json:"avg_quality,omitempty"` // Only for FASTQ
-	NumNs             int                `json:"num_ns"`
-	LengthDistribution map[int]int       `json:"length_distribution,omitempty"`
-	QualityDistribution map[int]int      `json:"quality_distribution,omitempty"`
-	BaseComposition   map[string]int     `json:"base_composition,omitempty"`
-	Dinucleotides     map[string]int     `json:"dinucleotides,omitempty"`
-	PositionalQuality []float64          `json:"positional_quality,omitempty"`
+	NumReads            int            `json:"num_reads"`
+	TotalBases          int            `json:"total_bases"`
+	MinLength           int            `json:"min_length"`
+	MaxLength           int            `json:"max_length"`
+	AvgLength           float64        `json:"avg_length"`
+	GCContent           float64        `json:"gc_content"`
+	AvgQuality          float64        `json:"avg_quality,omitempty"` // Only for FASTQ
+	NumNs               int            `json:"num_ns"`
+	LengthDistribution  map[int]int    `json:"length_distribution,omitempty"`
+	QualityDistribution map[int]int    `json:"quality_distribution,omitempty"`
+	BaseComposition     map[string]int `json:"base_composition,omitempty"`
+	Dinucleotides       map[string]int `json:"dinucleotides,omitempty"`
+	PositionalQuality   []float64      `json:"positional_quality,omitempty"`
 }
 
 // CalculateStats computes statistics for FASTA or FASTQ files
@@ -383,31 +383,31 @@ func trimQualityRight(seq, qual []byte, threshold int) ([]byte, []byte) {
 
 // FilterOptions holds filtering parameters
 type FilterOptions struct {
-	MinLen       int
-	MaxLen       int
-	MinGC        float64
-	MaxGC        float64
-	MinQual      float64
-	MaxNsP       float64 // Max percentage of Ns
-	MaxNsN       int     // Max number of Ns
-	TrimLeft     int
-	TrimRight    int
-	TrimLeftP    int     // Trim percentage from left
-	TrimRightP   int     // Trim percentage from right
-	TrimQualL    int     // Quality threshold for left trimming
-	TrimQualR    int     // Quality threshold for right trimming
-	TrimNsLeft   int     // Trim poly-N from left
-	TrimNsRight  int     // Trim poly-N from right
-	TrimTailLeft int     // Trim poly-A/T from left
-	TrimTailRight int    // Trim poly-A/T from right
-	MinQualMean  float64
-	MaxQualMean  float64
-	Derep        int     // Duplicate removal mode (1=exact, 4=reverse complement)
-	DerepMin     int     // Minimum occurrences to keep
-	QualType     string  // Quality encoding type: "sanger" (Phred+33) or "illumina" (Phred+64)
-	OutBad       io.Writer // Writer for rejected sequences (optional)
-	LcMethod     string  // Low complexity method: "dust" or "entropy"
-	LcThreshold  float64 // Low complexity threshold (7 for dust, 70 for entropy)
+	MinLen        int
+	MaxLen        int
+	MinGC         float64
+	MaxGC         float64
+	MinQual       float64
+	MaxNsP        float64 // Max percentage of Ns
+	MaxNsN        int     // Max number of Ns
+	TrimLeft      int
+	TrimRight     int
+	TrimLeftP     int // Trim percentage from left
+	TrimRightP    int // Trim percentage from right
+	TrimQualL     int // Quality threshold for left trimming
+	TrimQualR     int // Quality threshold for right trimming
+	TrimNsLeft    int // Trim poly-N from left
+	TrimNsRight   int // Trim poly-N from right
+	TrimTailLeft  int // Trim poly-A/T from left
+	TrimTailRight int // Trim poly-A/T from right
+	MinQualMean   float64
+	MaxQualMean   float64
+	Derep         int       // Duplicate removal mode (1=exact, 4=reverse complement)
+	DerepMin      int       // Minimum occurrences to keep
+	QualType      string    // Quality encoding type: "sanger" (Phred+33) or "illumina" (Phred+64)
+	OutBad        io.Writer // Writer for rejected sequences (optional)
+	LcMethod      string    // Low complexity method: "dust" or "entropy"
+	LcThreshold   float64   // Low complexity threshold (7 for dust, 70 for entropy)
 }
 
 // Filter filters a FASTA/FASTQ file based on the given options
@@ -429,7 +429,7 @@ func getQualityEncoding(qualType string) fastq.QualityEncoding {
 func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	fastaReader := fasta.NewReader(reader)
 	fastaWriter := fasta.NewWriter(writer, 80)
-	
+
 	var badWriter *fasta.Writer
 	if opts.OutBad != nil {
 		badWriter = fasta.NewWriter(opts.OutBad, 80)
@@ -447,10 +447,10 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		}
 
 		seq := string(record.Sequence)
-		
+
 		// Apply trimming
 		seq, _ = trimSequence(seq, "", opts)
-		
+
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
 			if shouldFilterDuplicate(seq, seenSeqs, opts) {
@@ -498,7 +498,7 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	encoding := getQualityEncoding(opts.QualType)
 	fastqReader := fastq.NewReader(reader, encoding)
 	fastqWriter := fastq.NewWriter(writer, encoding)
-	
+
 	var badWriter *fastq.Writer
 	if opts.OutBad != nil {
 		badWriter = fastq.NewWriter(opts.OutBad, encoding)
@@ -517,10 +517,10 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 
 		seq := string(record.Sequence)
 		qual := string(record.Quality)
-		
+
 		// Apply trimming
 		seq, qual = trimSequence(seq, qual, opts)
-		
+
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
 			if shouldFilterDuplicate(seq, seenSeqs, opts) {
@@ -983,11 +983,11 @@ func calculateEnhancedFastqStats(scanner *bufio.Scanner, stats *Stats, offset in
 			processEnhancedSequence(seq, qual, &gcCount, stats)
 			avgQual := calculateAvgQualityScoreWithOffset(qual, offset)
 			totalQuality += avgQual
-			
+
 			// Update quality distribution
 			qualInt := int(avgQual)
 			stats.QualityDistribution[qualInt]++
-			
+
 			// Update positional quality
 			if len(seq) > maxLen {
 				maxLen = len(seq)
@@ -1002,7 +1002,7 @@ func calculateEnhancedFastqStats(scanner *bufio.Scanner, stats *Stats, offset in
 					stats.PositionalQuality[i] += qualVal
 				}
 			}
-			
+
 			seq = ""
 			qual = ""
 		}
@@ -1024,7 +1024,7 @@ func calculateEnhancedFastqStats(scanner *bufio.Scanner, stats *Stats, offset in
 		stats.AvgLength = float64(stats.TotalBases) / float64(stats.NumReads)
 		stats.GCContent = float64(gcCount) / float64(stats.TotalBases) * 100.0
 		stats.AvgQuality = totalQuality / float64(stats.NumReads)
-		
+
 		// Average positional quality
 		for i := range stats.PositionalQuality {
 			stats.PositionalQuality[i] /= float64(stats.NumReads)
@@ -1055,14 +1055,14 @@ func processEnhancedSequence(seq, qual string, gcCount *int, stats *Stats) {
 		// Base composition
 		baseStr := string(base)
 		stats.BaseComposition[baseStr]++
-		
+
 		switch base {
 		case 'G', 'C', 'g', 'c':
 			*gcCount++
 		case 'N', 'n':
 			stats.NumNs++
 		}
-		
+
 		// Dinucleotides
 		if i > 0 {
 			dinuc := string([]byte{prevBase, byte(base)})

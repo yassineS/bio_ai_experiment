@@ -116,24 +116,24 @@ func generateLengthGraph(stats *Stats, writer io.Writer) error {
 
 func generateGCGraph(stats *Stats, writer io.Writer) error {
 	fmt.Fprintf(writer, "GC Content: %.2f%%\n", stats.GCContent)
-	
+
 	// Create a simple bar representation
 	gcPercent := int(stats.GCContent)
 	atPercent := 100 - gcPercent
-	
+
 	fmt.Fprintf(writer, "\n")
 	fmt.Fprintf(writer, "GC: [")
 	for i := 0; i < gcPercent/2; i++ {
 		fmt.Fprintf(writer, "█")
 	}
 	fmt.Fprintf(writer, "] %.1f%%\n", stats.GCContent)
-	
+
 	fmt.Fprintf(writer, "AT: [")
 	for i := 0; i < atPercent/2; i++ {
 		fmt.Fprintf(writer, "█")
 	}
 	fmt.Fprintf(writer, "] %.1f%%\n", 100.0-stats.GCContent)
-	
+
 	return nil
 }
 
@@ -263,7 +263,7 @@ func generateLengthSVG(stats *Stats, writer io.Writer, x, y int) error {
 
 	width := 500
 	height := 300
-	
+
 	fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
     <text class="title" x="%d" y="0">Length Distribution</text>
 `, x, y, width/2)
@@ -304,7 +304,7 @@ func generateQualitySVG(stats *Stats, writer io.Writer, x, y int) error {
 
 	width := 500
 	height := 300
-	
+
 	fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
     <text class="title" x="%d" y="0">Quality Score Distribution</text>
 `, x, y, width/2)
@@ -332,7 +332,7 @@ func generateQualitySVG(stats *Stats, writer io.Writer, x, y int) error {
 func generatePositionalQualitySVG(stats *Stats, writer io.Writer, x, y int) error {
 	width := 1100
 	height := 300
-	
+
 	fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
     <text class="title" x="%d" y="0">Positional Quality Scores</text>
 `, x, y, width/2)

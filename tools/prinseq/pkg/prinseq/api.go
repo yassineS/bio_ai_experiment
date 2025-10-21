@@ -230,7 +230,7 @@ func (s *APIServer) handleGraph(w http.ResponseWriter, r *http.Request) {
 func (s *APIServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"status": "healthy",
+		"status":  "healthy",
 		"version": "1.1.0",
 	})
 }

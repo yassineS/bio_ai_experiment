@@ -189,8 +189,8 @@ func GenerateHTMLReport(stats *Stats, writer io.Writer) error {
                 <td>Number of Ns</td>
                 <td>%d</td>
             </tr>
-`, 
-		stats.NumReads, 
+`,
+		stats.NumReads,
 		stats.TotalBases,
 		stats.AvgLength,
 		stats.GCContent,
@@ -202,7 +202,7 @@ func GenerateHTMLReport(stats *Stats, writer io.Writer) error {
 		stats.GCContent,
 		stats.NumNs,
 	)
-	
+
 	if err != nil {
 		return err
 	}

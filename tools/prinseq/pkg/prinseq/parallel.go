@@ -156,12 +156,12 @@ func filterSingleFile(inputPath, outputPath string, isFastq bool, opts FilterOpt
 
 // BatchProcessConfig holds configuration for batch processing
 type BatchProcessConfig struct {
-	InputFiles  []string
-	OutputDir   string
-	IsFastq     bool
-	Workers     int
-	FilterOpts  FilterOptions
-	GenerateStats bool
+	InputFiles     []string
+	OutputDir      string
+	IsFastq        bool
+	Workers        int
+	FilterOpts     FilterOptions
+	GenerateStats  bool
 	GenerateReport bool
 }
 
@@ -187,7 +187,7 @@ func BatchProcess(config BatchProcessConfig) ([]ParallelResult, error) {
 		index    int
 	}
 	jobs := make(chan job, len(config.InputFiles))
-	
+
 	// Start workers
 	var wg sync.WaitGroup
 	for i := 0; i < config.Workers; i++ {
@@ -243,7 +243,7 @@ func processBatchFile(filename string, config BatchProcessConfig) ParallelResult
 
 	// Generate report if requested
 	if config.GenerateReport && config.OutputDir != "" {
-		reportPath := filepath.Join(config.OutputDir, 
+		reportPath := filepath.Join(config.OutputDir,
 			filepath.Base(filename)+".html")
 		reportFile, err := os.Create(reportPath)
 		if err != nil {
@@ -261,8 +261,8 @@ func processBatchFile(filename string, config BatchProcessConfig) ParallelResult
 	// Filter if output directory is specified
 	if config.OutputDir != "" {
 		input.Seek(0, io.SeekStart) // Reset file pointer
-		
-		outputPath := filepath.Join(config.OutputDir, 
+
+		outputPath := filepath.Join(config.OutputDir,
 			"filtered_"+filepath.Base(filename))
 		output, err := os.Create(outputPath)
 		if err != nil {

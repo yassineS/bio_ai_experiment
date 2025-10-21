@@ -77,7 +77,7 @@ Use "prinseq <command> -h" for more information about a command.`)
 
 func runStats(args []string) {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
-	
+
 	var fastq, fasta string
 	var jsonOutput, enhanced bool
 	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file (use '-' for stdin)")
@@ -141,7 +141,7 @@ Options:
 	} else {
 		stats, err2 = prinseq.CalculateStats(reader, isFastq)
 	}
-	
+
 	if err2 != nil {
 		fmt.Fprintf(os.Stderr, "Error calculating statistics: %v\n", err2)
 		os.Exit(1)
@@ -171,11 +171,11 @@ Options:
 
 func runFilter(args []string) {
 	fs := flag.NewFlagSet("filter", flag.ExitOnError)
-	
+
 	// Input/output options
 	var input1, input2, output1, output2, outBad string
 	var fasta, fastq bool
-	
+
 	cliflag.StringVar(fs, &input1, "i", "input", "", "Primary input file (use '-' for stdin)")
 	cliflag.StringVar(fs, &input2, "", "input2", "", "Paired-end input file 2")
 	cliflag.StringVar(fs, &output1, "o", "output", "", "Output file for filtered sequences (default: stdout)")
@@ -187,7 +187,7 @@ func runFilter(args []string) {
 	// Filter options
 	var minLen, maxLen, maxNsN int
 	var minGC, maxGC, minQualMean, maxQualMean, maxNsP float64
-	
+
 	cliflag.IntVar(fs, &minLen, "l", "min-length", 0, "Minimum sequence length")
 	cliflag.IntVar(fs, &maxLen, "L", "max-length", 0, "Maximum sequence length")
 	cliflag.Float64Var(fs, &minGC, "g", "min-gc", 0, "Minimum GC content percentage (0-100)")
@@ -201,7 +201,7 @@ func runFilter(args []string) {
 	var trimLeft, trimRight, trimLeftP, trimRightP int
 	var trimQualL, trimQualR, trimNsLeft, trimNsRight int
 	var trimTailLeft, trimTailRight int
-	
+
 	cliflag.IntVar(fs, &trimLeft, "", "trim-left", 0, "Trim bases from 5' end")
 	cliflag.IntVar(fs, &trimRight, "", "trim-right", 0, "Trim bases from 3' end")
 	cliflag.IntVar(fs, &trimLeftP, "", "trim-left-p", 0, "Trim percentage from 5' end")
@@ -221,7 +221,7 @@ func runFilter(args []string) {
 	// Quality encoding option
 	var qualType string
 	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger (Phred+33) or illumina (Phred+64)")
-	
+
 	// Complexity filtering options
 	var lcMethod string
 	var lcThreshold float64
@@ -381,7 +381,7 @@ Examples:
 		LcMethod:      lcMethod,
 		LcThreshold:   lcThreshold,
 	}
-	
+
 	// Open bad output file if specified
 	if outBad != "" {
 		badWriter, err := os.Create(outBad)
@@ -474,7 +474,7 @@ func hasSuffix(s string, suffixes ...string) bool {
 
 func runGraph(args []string) {
 	fs := flag.NewFlagSet("graph", flag.ExitOnError)
-	
+
 	var fastq, fasta, graphType, output string
 	var svg bool
 	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file")
@@ -553,7 +553,7 @@ Options:
 
 func runReport(args []string) {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
-	
+
 	var fastq, fasta, output string
 	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file")
 	cliflag.StringVar(fs, &fasta, "", "fasta", "", "Input FASTA file")
@@ -621,7 +621,7 @@ Options:
 
 func runBenchmark(args []string) {
 	fs := flag.NewFlagSet("benchmark", flag.ExitOnError)
-	
+
 	var fastq, fasta string
 	var jsonOutput bool
 	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file")
@@ -686,7 +686,7 @@ Options:
 
 func runAPI(args []string) {
 	fs := flag.NewFlagSet("api", flag.ExitOnError)
-	
+
 	var addr string
 	cliflag.StringVar(fs, &addr, "a", "addr", ":8080", "Server address")
 
@@ -718,14 +718,14 @@ Examples:
 
 func runBatch(args []string) {
 	fs := flag.NewFlagSet("batch", flag.ExitOnError)
-	
+
 	var outputDir string
 	var workers int
 	var generateReport bool
 	var isFastq bool
 	var minLen int
 	var minGC, maxGC float64
-	
+
 	cliflag.StringVar(fs, &outputDir, "o", "output", "", "Output directory")
 	cliflag.IntVar(fs, &workers, "w", "workers", 4, "Number of parallel workers")
 	cliflag.BoolVar(fs, &generateReport, "r", "report", false, "Generate HTML reports")
@@ -780,7 +780,7 @@ Examples:
 	}
 
 	fmt.Printf("Processing %d files with %d workers...\n", len(inputFiles), workers)
-	
+
 	results, err := prinseq.BatchProcess(config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error in batch processing: %v\n", err)
@@ -790,12 +790,12 @@ Examples:
 	// Print summary
 	fmt.Printf("\nProcessing complete!\n")
 	fmt.Printf("Successfully processed: %d files\n", len(results))
-	
+
 	for _, result := range results {
 		if result.Error != nil {
 			fmt.Printf("  ✗ %s: %v\n", result.Filename, result.Error)
 		} else {
-			fmt.Printf("  ✓ %s: %d reads, %.2f avg length\n", 
+			fmt.Printf("  ✓ %s: %d reads, %.2f avg length\n",
 				result.Filename, result.Stats.NumReads, result.Stats.AvgLength)
 		}
 	}
