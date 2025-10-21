@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/sickle/pkg/sickle"
 )
@@ -102,33 +103,25 @@ func runSingleEnd() {
 	// Determine quality encoding
 	encoding := getQualityEncoding(qualType)
 	
-	// Open input file
-	var input io.Reader
-	if fastqFile == "-" {
-		input = os.Stdin
-	} else {
-		f, err := os.Open(fastqFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
-			os.Exit(1)
-		}
-		defer f.Close()
-		input = f
+	// Open input file (with automatic gzip support)
+	inputFile, err := iohelper.OpenReader(fastqFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
 	}
+	defer inputFile.Close()
 	
-	// Open output file
-	var output io.Writer
-	if outputFile == "" || outputFile == "-" {
-		output = os.Stdout
-	} else {
-		f, err := os.Create(outputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-			os.Exit(1)
-		}
-		defer f.Close()
-		output = f
+	// Open output file (with automatic gzip support)
+	outFileName := outputFile
+	if outFileName == "" {
+		outFileName = "-"
 	}
+	outFile, err := iohelper.OpenWriter(outFileName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer outFile.Close()
 	
 	// Set up trim options
 	opts := sickle.TrimOptions{
@@ -140,7 +133,7 @@ func runSingleEnd() {
 	}
 	
 	// Perform trimming
-	stats, err := sickle.TrimSingleEnd(input, output, encoding, opts)
+	stats, err := sickle.TrimSingleEnd(inputFile, outFile, encoding, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
@@ -216,40 +209,40 @@ func runPairedEnd() {
 	// Determine quality encoding
 	encoding := getQualityEncoding(qualType)
 	
-	// Open input files
-	f1, err := os.Open(fastqFile1)
+	// Open input files (with automatic gzip support)
+	f1, err := iohelper.OpenReader(fastqFile1)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening first input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer f1.Close()
 	
-	f2, err := os.Open(fastqFile2)
+	f2, err := iohelper.OpenReader(fastqFile2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening second input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer f2.Close()
 	
-	// Open output files
-	out1, err := os.Create(outputFile1)
+	// Open output files (with automatic gzip support)
+	out1, err := iohelper.OpenWriter(outputFile1)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating first output file: %v\n", err)
 		os.Exit(1)
 	}
 	defer out1.Close()
 	
-	out2, err := os.Create(outputFile2)
+	out2, err := iohelper.OpenWriter(outputFile2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating second output file: %v\n", err)
 		os.Exit(1)
 	}
 	defer out2.Close()
 	
-	// Open optional single output file
+	// Open optional single output file (with automatic gzip support)
 	var outSingle io.Writer
 	if outputSingle != "" {
-		f, err := os.Create(outputSingle)
+		f, err := iohelper.OpenWriter(outputSingle)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating single output file: %v\n", err)
 			os.Exit(1)
