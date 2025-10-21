@@ -26,6 +26,9 @@ Options:
   -i, --input FILE      Input BED file (default: stdin)
   -o, --output FILE     Output BED file (default: stdout)
   -S, --stats           Print merge statistics to stderr
+  -c, --count           Output count of merged intervals as name field
+  -g, --bedgraph        Input/output in bedGraph format (chrom, start, end, score)
+  --streaming           Use streaming mode for very large files
   -h, --help            Show this help message
 
 Examples:
@@ -41,18 +44,29 @@ Examples:
   # Show statistics
   bedmerge -S input.bed > merged.bed
 
+  # Output with merge count
+  bedmerge -c input.bed > merged.bed
+
+  # Merge bedGraph files
+  bedmerge -g input.bedgraph > merged.bedgraph
+
+  # Use streaming mode for large files
+  bedmerge --streaming large.bed > merged.bed
+
   # Use stdin/stdout
   cat input.bed | bedmerge > merged.bed
 
 Format:
   Input: BED format (tab-delimited, minimum 3 columns: chrom, start, end)
-  Output: BED3 format (chrom, start, end)
+         or bedGraph format with -g flag (4 columns: chrom, start, end, score)
+  Output: BED3 format (chrom, start, end) or custom format with options
 
 Notes:
   - Coordinates are 0-based, half-open [start, end)
   - Input does not need to be sorted
   - Adjacent intervals (touching but not overlapping) are merged by default
   - Use -d to merge nearby intervals within specified distance
+  - Streaming mode processes by chromosome and is more memory efficient
 `
 
 func main() {
@@ -71,6 +85,14 @@ func main() {
 	
 	showStats := flag.Bool("S", false, "Print merge statistics to stderr")
 	flag.BoolVar(showStats, "stats", false, "Print merge statistics to stderr")
+	
+	showCount := flag.Bool("c", false, "Output count of merged intervals as name field")
+	flag.BoolVar(showCount, "count", false, "Output count of merged intervals as name field")
+	
+	bedGraph := flag.Bool("g", false, "Input/output in bedGraph format")
+	flag.BoolVar(bedGraph, "bedgraph", false, "Input/output in bedGraph format")
+	
+	streaming := flag.Bool("streaming", false, "Use streaming mode for very large files")
 	
 	help := flag.Bool("h", false, "Show help message")
 	flag.BoolVar(help, "help", false, "Show help message")
@@ -108,6 +130,11 @@ func main() {
 	opts := bedmerge.MergeOptions{
 		MaxDistance: *distance,
 		StrandSpec:  *strandSpec,
+		Streaming:   *streaming,
+		OutputFields: bedmerge.OutputFields{
+			Count:    *showCount,
+			BedGraph: *bedGraph,
+		},
 	}
 
 	// Perform merge
