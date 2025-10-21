@@ -11,6 +11,7 @@ A windowed adaptive trimming tool for FASTQ files using quality scores, reimplem
 - **N-Truncation**: Option to truncate at first N base
 - **5' Trimming Control**: Option to disable 5' end trimming
 - **Multiple Quality Encodings**: Supports Sanger (Phred+33) and Illumina (Phred+64)
+- **Built-in Gzip Support**: Automatically handles .gz compressed files
 - **Memory Efficient**: Streaming processing for large files
 - **Clear Statistics**: Detailed trimming statistics output
 - **Consistent CLI**: Uses cliflag library for both short and long options
@@ -128,14 +129,28 @@ sickle se -f illumina_reads.fastq -o trimmed.fastq -t illumina
 sickle se -f sanger_reads.fastq -o trimmed.fastq -t sanger
 ```
 
+### Working with Gzip Files
+
+```bash
+# Automatically reads and writes gzip files
+sickle se -f raw_reads.fastq.gz -o trimmed.fastq.gz -q 20
+
+# Mix compressed and uncompressed
+sickle se -f raw.fastq.gz -o trimmed.fastq -q 20
+
+# Paired-end with gzip
+sickle pe -f reads_R1.fastq.gz -r reads_R2.fastq.gz \
+  -o trimmed_R1.fastq.gz -p trimmed_R2.fastq.gz
+```
+
 ### Pipeline Integration
 
 ```bash
 # Use with stdin/stdout
-cat raw_reads.fastq | sickle se -f - -o - -q 20 | gzip > trimmed.fastq.gz
+cat raw_reads.fastq | sickle se -f - -o - -q 20 > trimmed.fastq
 
 # Chain with other tools
-sickle se -f raw.fastq -o - -q 25 | seqtk fq2fa - > trimmed.fasta
+sickle se -f raw.fastq.gz -o - -q 25 | seqtk fq2fa - > trimmed.fasta
 ```
 
 ## Algorithm
@@ -186,14 +201,13 @@ This Go implementation aims for functional parity with the original C implementa
 |---------|----------------|-------------------|-------|
 | CLI Options | Short only (-f, -o) | Short and long (--fastq-file) | More user-friendly |
 | Quality Types | sanger, illumina, solexa | sanger, illumina, solexa | Same support |
-| Gzip Output | Built-in (-g flag) | External piping | Use `| gzip` |
+| Gzip Support | Built-in (-g flag) | Built-in (automatic by .gz extension) | Automatic detection |
 | Statistics | Basic counts | Detailed percentages | More informative |
 | Error Messages | Minimal | Detailed | Better debugging |
 | Memory Usage | Similar | Similar | Both use streaming |
 | Performance | Fast | Comparable | Go adds safety |
 
 ### Not Yet Implemented
-- ❌ Gzip input/output handling (use external tools)
 - ❌ Automatic quality type detection
 
 ### Advantages of Go Implementation
@@ -282,17 +296,17 @@ spades.py -1 clean_R1.fastq -2 clean_R2.fastq -o assembly/
 
 ## Development Roadmap
 
-### Version 1.0.0 (Current)
+### Version 1.1.0 (Current)
 - ✅ Single-end and paired-end trimming
 - ✅ Quality-based sliding window algorithm
 - ✅ Length threshold filtering
 - ✅ N-truncation support
 - ✅ Multiple quality encodings
+- ✅ Built-in gzip support for input and output files
 - ✅ Comprehensive tests (>90% coverage)
 - ✅ Detailed statistics
 
-### Version 1.1.0 (Planned)
-- [ ] Gzip input/output support
+### Version 1.2.0 (Planned)
 - [ ] Automatic quality encoding detection
 - [ ] Additional output formats (JSON statistics)
 - [ ] Progress reporting for large files
@@ -307,11 +321,11 @@ spades.py -1 clean_R1.fastq -2 clean_R2.fastq -o assembly/
 
 Contributions are welcome! Areas for improvement:
 
-1. Add gzip support for compressed files
-2. Implement automatic quality encoding detection
-3. Add parallel processing capabilities
-4. Improve sliding window algorithm efficiency
-5. Add more comprehensive statistics
+1. Implement automatic quality encoding detection
+2. Add parallel processing capabilities
+3. Improve sliding window algorithm efficiency
+4. Add more comprehensive statistics
+5. Add JSON output format for statistics
 
 See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 
