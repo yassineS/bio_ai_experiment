@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
@@ -21,10 +25,12 @@ Usage:
 Commands:
   se    Trim single-end reads
   pe    Trim paired-end reads
+  batch Trim multiple files in parallel
 
 For command-specific help:
   sickle se -h
   sickle pe -h
+  sickle batch -h
 
 Version: 1.0.0 (Go implementation)
 `
@@ -41,6 +47,8 @@ func main() {
 		runSingleEnd()
 	case "pe":
 		runPairedEnd()
+	case "batch":
+		runBatch()
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		os.Exit(0)
@@ -377,6 +385,243 @@ func runPairedEnd() {
 			fmt.Fprintf(os.Stderr, "Error generating HTML report: %v\n", err)
 			os.Exit(1)
 		}
+	}
+}
+
+func runBatch() {
+	fs := flag.NewFlagSet("sickle batch", flag.ExitOnError)
+	
+	var (
+		fileList        string
+		outputDir       string
+		qualType        string
+		qualThreshold   int
+		lengthThreshold int
+		windowSize      int
+		noFivePrime     bool
+		truncateN       bool
+		quiet           bool
+		jsonOutput      bool
+		htmlReport      bool
+		progress        bool
+		autoDetect      bool
+		recalibrate     bool
+		numWorkers      int
+	)
+	
+	cliflag.StringVar(fs, &fileList, "i", "input-list", "", "File containing list of input FASTQ files (one per line)")
+	cliflag.StringVar(fs, &outputDir, "o", "output-dir", ".", "Output directory for trimmed files")
+	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
+	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 20, "Threshold for trimming (default: 20)")
+	cliflag.IntVar(fs, &lengthThreshold, "l", "length-threshold", 20, "Minimum length to keep (default: 20)")
+	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
+	cliflag.IntVar(fs, &numWorkers, "j", "jobs", 4, "Number of parallel workers (default: 4)")
+	cliflag.BoolVar(fs, &noFivePrime, "x", "no-fiveprime", false, "Don't trim 5' end")
+	cliflag.BoolVar(fs, &truncateN, "n", "trunc-n", false, "Truncate sequences at position of first N")
+	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &jsonOutput, "", "json", false, "Output statistics in JSON format for each file")
+	cliflag.BoolVar(fs, &htmlReport, "", "html", false, "Generate HTML report for each file")
+	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
+	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
+	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
+	
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: sickle batch [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Batch mode processes multiple FASTQ files in parallel.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "  -i, --input-list FILE       File containing list of input FASTQ files (required)\n")
+		fmt.Fprintf(os.Stderr, "  -o, --output-dir DIR        Output directory for trimmed files (default: .)\n")
+		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: sanger, illumina, solexa (default: sanger)\n")
+		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT    Threshold for trimming (default: 20)\n")
+		fmt.Fprintf(os.Stderr, "  -l, --length-threshold INT  Minimum length to keep (default: 20)\n")
+		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
+		fmt.Fprintf(os.Stderr, "  -j, --jobs INT              Number of parallel workers (default: 4)\n")
+		fmt.Fprintf(os.Stderr, "  -x, --no-fiveprime          Don't trim 5' end\n")
+		fmt.Fprintf(os.Stderr, "  -n, --trunc-n               Truncate sequences at position of first N\n")
+		fmt.Fprintf(os.Stderr, "  --quiet                     Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "  --json                      Output statistics in JSON format for each file\n")
+		fmt.Fprintf(os.Stderr, "  --html                      Generate HTML report for each file\n")
+		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
+		fmt.Fprintf(os.Stderr, "  --auto-detect               Auto-detect quality encoding\n")
+		fmt.Fprintf(os.Stderr, "  --recalibrate               Recalibrate quality scores\n")
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  sickle batch -i files.txt -o trimmed_output -j 8\n")
+		fmt.Fprintf(os.Stderr, "\nThe input list file should contain one FASTQ file path per line.\n")
+	}
+	
+	fs.Parse(os.Args[2:])
+	
+	// Validate required arguments
+	if fileList == "" {
+		fmt.Fprintln(os.Stderr, "Error: -i/--input-list is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+	
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
+		os.Exit(1)
+	}
+	
+	// Read file list
+	f, err := os.Open(fileList)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file list: %v\n", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	
+	var files []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			files = append(files, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading file list: %v\n", err)
+		os.Exit(1)
+	}
+	
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: no files found in input list")
+		os.Exit(1)
+	}
+	
+	fmt.Fprintf(os.Stderr, "Processing %d files with %d workers...\n", len(files), numWorkers)
+	
+	// Set up worker pool
+	type job struct {
+		inputFile string
+		index     int
+	}
+	
+	type result struct {
+		inputFile  string
+		outputFile string
+		stats      *sickle.TrimStats
+		err        error
+	}
+	
+	jobs := make(chan job, len(files))
+	results := make(chan result, len(files))
+	
+	var wg sync.WaitGroup
+	
+	// Start workers
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				// Determine quality encoding
+				var encoding fastq.QualityEncoding
+				if autoDetect {
+					detected, err := detectQualityEncoding(j.inputFile)
+					if err != nil {
+						results <- result{inputFile: j.inputFile, err: err}
+						continue
+					}
+					encoding = detected
+				} else {
+					encoding = getQualityEncoding(qualType)
+				}
+				
+				// Generate output filename
+				baseName := filepath.Base(j.inputFile)
+				outputFile := filepath.Join(outputDir, "trimmed_"+baseName)
+				
+				// Open files
+				input, err := iohelper.OpenReader(j.inputFile)
+				if err != nil {
+					results <- result{inputFile: j.inputFile, err: err}
+					continue
+				}
+				
+				output, err := iohelper.OpenWriter(outputFile)
+				if err != nil {
+					input.Close()
+					results <- result{inputFile: j.inputFile, err: err}
+					continue
+				}
+				
+				// Set up trim options
+				opts := sickle.TrimOptions{
+					QualThreshold:   qualThreshold,
+					LengthThreshold: lengthThreshold,
+					NoFivePrime:     noFivePrime,
+					TruncateN:       truncateN,
+					WindowSize:      windowSize,
+					Progress:        progress,
+					Recalibrate:     recalibrate,
+				}
+				
+				// Perform trimming
+				stats, err := sickle.TrimSingleEnd(input, output, encoding, opts)
+				input.Close()
+				output.Close()
+				
+				if err != nil {
+					results <- result{inputFile: j.inputFile, outputFile: outputFile, err: err}
+					continue
+				}
+				
+				// Save JSON if requested
+				if jsonOutput {
+					jsonFile := outputFile + ".json"
+					if err := saveJSONStats(stats, jsonFile); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to save JSON for %s: %v\n", j.inputFile, err)
+					}
+				}
+				
+				// Generate HTML if requested
+				if htmlReport {
+					htmlFile := outputFile + ".html"
+					if err := generateHTMLReport(stats, htmlFile, "SE"); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to generate HTML for %s: %v\n", j.inputFile, err)
+					}
+				}
+				
+				results <- result{inputFile: j.inputFile, outputFile: outputFile, stats: stats, err: nil}
+			}
+		}()
+	}
+	
+	// Send jobs
+	for i, file := range files {
+		jobs <- job{inputFile: file, index: i}
+	}
+	close(jobs)
+	
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	
+	// Collect results
+	successCount := 0
+	failCount := 0
+	for r := range results {
+		if r.err != nil {
+			fmt.Fprintf(os.Stderr, "Error processing %s: %v\n", r.inputFile, r.err)
+			failCount++
+		} else {
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "✓ %s -> %s (kept %d/%d reads)\n", 
+					r.inputFile, r.outputFile,
+					r.stats.TotalReads-r.stats.DiscardedReads, r.stats.TotalReads)
+			}
+			successCount++
+		}
+	}
+	
+	fmt.Fprintf(os.Stderr, "\nBatch processing complete: %d succeeded, %d failed\n", successCount, failCount)
+	
+	if failCount > 0 {
+		os.Exit(1)
 	}
 }
 
