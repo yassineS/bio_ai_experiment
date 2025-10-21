@@ -10,10 +10,14 @@
 /prinseq
 
 # Tool binaries (ignore built executables in tool directories)
-tools/*/cmd/*/[!main.go]*
-tools/*/*[!.go]
+# Only ignore executable binaries in tool root directories
 tools/seqtk/seqtk
 tools/prinseq/prinseq
+tools/sickle/sickle
+tools/skewer/skewer
+tools/fastp/fastp
+tools/bedmerge/bedmerge
+tools/bedintersect/bedintersect
 
 # Test binary, built with `go test -c`
 *.test
