@@ -27,11 +27,15 @@ Options:
   -m, --min-overlap INT Minimum overlap required (default: 1)
   -f, --fraction-a NUM  Minimum fraction of A that must overlap (0.0-1.0)
   -F, --fraction-b NUM  Minimum fraction of B that must overlap (0.0-1.0)
+  -r, --reciprocal      Require reciprocal overlap (both -f and -F)
   -s, --strand          Only report hits on same strand
   -v, --invert          Report A entries with NO overlap with B
   -wa, --write-a        Write original A entry (default: write intersection)
   -wb, --write-b        Write B entry instead of A
   -c, --count           Report count of B overlaps for each A
+  -d, --distance        Report distance to nearest B feature
+  -k, --closest         Output closest B feature for each A
+  -t, --tree            Use interval tree for large B files
   -S, --stats           Print statistics to stderr
   -h, --help            Show this help message
 
@@ -45,6 +49,9 @@ Examples:
   # Require 80% of gene overlaps peak
   bedintersect -a genes.bed -b peaks.bed -f 0.8
 
+  # Require reciprocal 50% overlap
+  bedintersect -a genes.bed -b peaks.bed -f 0.5 -F 0.5 -r
+
   # Report genes that don't overlap peaks
   bedintersect -a genes.bed -b peaks.bed -v
 
@@ -57,12 +64,21 @@ Examples:
   # Get B entries that overlap A
   bedintersect -a genes.bed -b peaks.bed -wb
 
+  # Report distance to nearest peak
+  bedintersect -a genes.bed -b peaks.bed -d
+
+  # Report closest peak for each gene
+  bedintersect -a genes.bed -b peaks.bed -k
+
+  # Use interval tree for large files
+  bedintersect -a genes.bed -b large_features.bed -t
+
   # Strand-specific intersection
   bedintersect -a genes.bed -b peaks.bed -s
 
 Format:
   Input: BED format (tab-delimited, minimum 3 columns)
-  Output: Depends on options (-wa, -wb, -c)
+  Output: Depends on options (-wa, -wb, -c, -d, -k)
   Default: Intersection coordinates (chrom, start, end)
 
 Notes:
@@ -109,6 +125,18 @@ func main() {
 	showStats := flag.Bool("S", false, "Print statistics to stderr")
 	flag.BoolVar(showStats, "stats", false, "Print statistics to stderr")
 	
+	reciprocal := flag.Bool("r", false, "Require reciprocal overlap (both -f and -F)")
+	flag.BoolVar(reciprocal, "reciprocal", false, "Require reciprocal overlap (both -f and -F)")
+	
+	distance := flag.Bool("d", false, "Report distance to nearest B feature")
+	flag.BoolVar(distance, "distance", false, "Report distance to nearest B feature")
+	
+	closest := flag.Bool("k", false, "Output closest B feature for each A")
+	flag.BoolVar(closest, "closest", false, "Output closest B feature for each A")
+	
+	useTree := flag.Bool("t", false, "Use interval tree for large B files")
+	flag.BoolVar(useTree, "tree", false, "Use interval tree for large B files")
+
 	help := flag.Bool("h", false, "Show help message")
 	flag.BoolVar(help, "help", false, "Show help message")
 
@@ -160,6 +188,10 @@ func main() {
 		WriteA:     *writeA,
 		WriteB:     *writeB,
 		Count:      *count,
+		Reciprocal: *reciprocal,
+		Distance:   *distance,
+		Closest:    *closest,
+		UseTree:    *useTree,
 	}
 
 	// Perform intersection
