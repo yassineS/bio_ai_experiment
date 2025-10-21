@@ -54,6 +54,8 @@ type Params struct {
 	// Statistics output
 	Freq          bool
 	Counts        bool
+	Freq2         bool
+	Counts2       bool
 	Depth         bool
 	SiteDepth     bool
 	SiteMeanDepth bool
@@ -63,7 +65,13 @@ type Params struct {
 	Hardy         bool
 	TsTvSummary   bool
 	TsTvBinSize   int
+	TsTvByCount   bool
+	TsTvByQual    bool
 	SitePi        bool
+	Het           bool
+	Singletons    bool
+	HistIndelLen  bool
+	GenoDepth     bool
 
 	// Sample filtering
 	IndvList       []string
