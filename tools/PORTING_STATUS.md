@@ -164,9 +164,19 @@ Based on the top 50 analysis, these tools are recommended for future porting:
    - High performance requirements
    - Large codebase
 
-7. **BWA** (C) - Short-read alignment
-   - Complex algorithm
-   - Reference implementation well-maintained
+### Analyzed But Not Recommended for Porting
+
+7. **BWA** (C) - Short-read alignment ❌ **NOT RECOMMENDED**
+   - **Status**: Analyzed in detail (2025-10-21)
+   - **Decision**: Do not port
+   - **Reasons**:
+     - Extremely complex: ~17,000 lines of code
+     - Already well-maintained and highly optimized
+     - Already includes multi-threading and batch processing
+     - Better alternatives exist (BWA-MEM2, minimap2)
+     - Scope far exceeds project "minimal changes" philosophy
+   - **See**: [BWA Implementation Decision](BWA_IMPLEMENTATION_DECISION.md) for full analysis
+   - **Alternatives**: Use original BWA, BWA-MEM2, or create MCP wrapper
 
 ---
 
