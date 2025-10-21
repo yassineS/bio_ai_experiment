@@ -2,6 +2,7 @@ package seqtk
 
 import (
 	"bytes"
+	"compress/gzip"
 	"os"
 	"strings"
 	"testing"
@@ -196,5 +197,183 @@ func TestGetFileType(t *testing.T) {
 	}
 	if !isFastq {
 		t.Error("FASTQ file not detected as FASTQ")
+	}
+}
+
+func TestDecompressReader(t *testing.T) {
+	testData := "test data content"
+	
+	// Test gzip
+	var gzBuf bytes.Buffer
+	gzWriter := gzip.NewWriter(&gzBuf)
+	gzWriter.Write([]byte(testData))
+	gzWriter.Close()
+	
+	reader, err := DecompressReader(&gzBuf, "test.gz")
+	if err != nil {
+		t.Fatalf("DecompressReader failed for gzip: %v", err)
+	}
+	
+	var output bytes.Buffer
+	output.ReadFrom(reader)
+	if output.String() != testData {
+		t.Errorf("Decompressed data doesn't match: got %q, want %q", output.String(), testData)
+	}
+	
+	// Test plain file
+	plainReader := strings.NewReader(testData)
+	reader, err = DecompressReader(plainReader, "test.txt")
+	if err != nil {
+		t.Fatalf("DecompressReader failed for plain file: %v", err)
+	}
+	
+	output.Reset()
+	output.ReadFrom(reader)
+	if output.String() != testData {
+		t.Errorf("Plain data doesn't match: got %q, want %q", output.String(), testData)
+	}
+}
+
+func TestCompressWriter(t *testing.T) {
+	testData := "test data content"
+	
+	// Test gzip
+	var gzBuf bytes.Buffer
+	writer, err := CompressWriter(&gzBuf, "test.gz")
+	if err != nil {
+		t.Fatalf("CompressWriter failed for gzip: %v", err)
+	}
+	
+	writer.Write([]byte(testData))
+	writer.Close()
+	
+	// Verify compressed data can be read back
+	reader, err := gzip.NewReader(&gzBuf)
+	if err != nil {
+		t.Fatalf("Failed to create gzip reader: %v", err)
+	}
+	
+	var output bytes.Buffer
+	output.ReadFrom(reader)
+	if output.String() != testData {
+		t.Errorf("Compressed/decompressed data doesn't match: got %q, want %q", output.String(), testData)
+	}
+	
+	// Test plain file
+	var plainBuf bytes.Buffer
+	writer, err = CompressWriter(&plainBuf, "test.txt")
+	if err != nil {
+		t.Fatalf("CompressWriter failed for plain file: %v", err)
+	}
+	
+	writer.Write([]byte(testData))
+	writer.Close()
+	
+	if plainBuf.String() != testData {
+		t.Errorf("Plain data doesn't match: got %q, want %q", plainBuf.String(), testData)
+	}
+}
+
+func TestOpenInputOutput(t *testing.T) {
+	// Test with compressed file
+	testData := "@read1\nACGT\n+\nIIII\n"
+	tmpFile := "/tmp/test_input.fastq.gz"
+	
+	// Create compressed test file
+	file, err := os.Create(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	
+	gzWriter := gzip.NewWriter(file)
+	gzWriter.Write([]byte(testData))
+	gzWriter.Close()
+	file.Close()
+	defer os.Remove(tmpFile)
+	
+	// Test OpenInput
+	input, err := OpenInput(tmpFile)
+	if err != nil {
+		t.Fatalf("OpenInput failed: %v", err)
+	}
+	defer input.Close()
+	
+	var buf bytes.Buffer
+	buf.ReadFrom(input)
+	if buf.String() != testData {
+		t.Errorf("Input data doesn't match: got %q, want %q", buf.String(), testData)
+	}
+	
+	// Test OpenOutput
+	outputFile := "/tmp/test_output.fastq.gz"
+	defer os.Remove(outputFile)
+	
+	output, err := OpenOutput(outputFile)
+	if err != nil {
+		t.Fatalf("OpenOutput failed: %v", err)
+	}
+	
+	output.Write([]byte(testData))
+	output.Close()
+	
+	// Verify output file
+	input2, err := OpenInput(outputFile)
+	if err != nil {
+		t.Fatalf("Failed to reopen output file: %v", err)
+	}
+	defer input2.Close()
+	
+	buf.Reset()
+	buf.ReadFrom(input2)
+	if buf.String() != testData {
+		t.Errorf("Output data doesn't match: got %q, want %q", buf.String(), testData)
+	}
+}
+
+func TestGetFileTypeCompressed(t *testing.T) {
+	// Create compressed FASTQ file
+	fastqContent := []byte("@seq1\nACGT\n+\nIIII\n")
+	fastqFile := "/tmp/test_compressed.fastq.gz"
+	
+	file, err := os.Create(fastqFile)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	
+	gzWriter := gzip.NewWriter(file)
+	gzWriter.Write(fastqContent)
+	gzWriter.Close()
+	file.Close()
+	defer os.Remove(fastqFile)
+	
+	isFastq, err := GetFileType(fastqFile)
+	if err != nil {
+		t.Fatalf("GetFileType failed: %v", err)
+	}
+	if !isFastq {
+		t.Error("Compressed FASTQ file not detected as FASTQ")
+	}
+	
+	// Create compressed FASTA file
+	fastaContent := []byte(">seq1\nACGT\n")
+	fastaFile := "/tmp/test_compressed.fasta.gz"
+	
+	file, err = os.Create(fastaFile)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	
+	gzWriter = gzip.NewWriter(file)
+	gzWriter.Write(fastaContent)
+	gzWriter.Close()
+	file.Close()
+	defer os.Remove(fastaFile)
+	
+	isFastq, err = GetFileType(fastaFile)
+	if err != nil {
+		t.Fatalf("GetFileType failed: %v", err)
+	}
+	if isFastq {
+		t.Error("Compressed FASTA file detected as FASTQ")
 	}
 }

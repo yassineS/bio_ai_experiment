@@ -97,10 +97,13 @@ func seqCommand() {
 
 Transform sequences.
 
+Arguments:
+  <input>    Input file (use '-' for stdin, supports .gz and .bz2)
+
 Options:
   -r, --reverse          Reverse complement sequences
   -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
-  -o, --output FILE      Output file (default: stdout)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
 
 `)
 	}
@@ -113,44 +116,40 @@ Options:
 	}
 
 	inputFile := fs.Arg(0)
-	input, err := os.Open(inputFile)
+	
+	// Detect file type (before opening to avoid consuming stdin)
+	var isFastq bool
+	var err error
+	if inputFile != "-" {
+		isFastq, err = seqtk.GetFileType(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// For stdin, assume FASTQ (could be improved with buffered detection)
+		isFastq = true
+	}
+
+	// Open input with compression support
+	input, err := seqtk.OpenInput(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer input.Close()
 
-	// Determine output
-	var out *os.File
-	if output != "" {
-		out, err = os.Create(output)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-			os.Exit(1)
-		}
-		defer out.Close()
-	} else {
-		out = os.Stdout
-	}
-
-	// Detect file type
-	isFastq, err := seqtk.GetFileType(inputFile)
+	// Open output with compression support
+	out, err := seqtk.OpenOutput(output)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 		os.Exit(1)
 	}
+	defer out.Close()
 
 	encoding := fastq.Phred33
 	if phred64 {
 		encoding = fastq.Phred64
-	}
-
-	// Reopen file for processing
-	input.Close()
-	input, err = os.Open(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
-		os.Exit(1)
 	}
 
 	if revComp {
@@ -179,15 +178,16 @@ func sampleCommand() {
 Subsample sequences randomly.
 
 Arguments:
-  <input>      Input FASTA/FASTQ file
+  <input>      Input FASTA/FASTQ file (use '-' for stdin, supports .gz and .bz2)
   <fraction>   Fraction of sequences to sample (0.0-1.0)
 
 Options:
   -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
-  -o, --output FILE      Output file (default: stdout)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
 
 Example:
   seqtk sample reads.fastq 0.1 > sample.fastq
+  cat reads.fastq.gz | seqtk sample - 0.1 > sample.fastq
 
 `)
 	}
@@ -206,42 +206,38 @@ Example:
 		os.Exit(1)
 	}
 
-	input, err := os.Open(inputFile)
+	// Detect file type
+	var isFastq bool
+	var err error
+	if inputFile != "-" {
+		isFastq, err = seqtk.GetFileType(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		isFastq = true // Default to FASTQ for stdin
+	}
+
+	// Open input with compression support
+	input, err := seqtk.OpenInput(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer input.Close()
 
-	var out *os.File
-	if output != "" {
-		out, err = os.Create(output)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-			os.Exit(1)
-		}
-		defer out.Close()
-	} else {
-		out = os.Stdout
-	}
-
-	isFastq, err := seqtk.GetFileType(inputFile)
+	// Open output with compression support
+	out, err := seqtk.OpenOutput(output)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 		os.Exit(1)
 	}
+	defer out.Close()
 
 	encoding := fastq.Phred33
 	if phred64 {
 		encoding = fastq.Phred64
-	}
-
-	// Reopen for processing
-	input.Close()
-	input, err = os.Open(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
-		os.Exit(1)
 	}
 
 	if err := seqtk.Sample(input, out, fraction, isFastq, encoding); err != nil {
@@ -265,10 +261,13 @@ func trimfqCommand() {
 
 Trim FASTQ sequences based on quality.
 
+Arguments:
+  <input>    Input FASTQ file (use '-' for stdin, supports .gz and .bz2)
+
 Options:
   -q, --quality INT      Minimum quality threshold (default: 20)
   -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
-  -o, --output FILE      Output file (default: stdout)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
 
 `)
 	}
@@ -281,24 +280,22 @@ Options:
 	}
 
 	inputFile := fs.Arg(0)
-	input, err := os.Open(inputFile)
+	
+	// Open input with compression support
+	input, err := seqtk.OpenInput(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer input.Close()
 
-	var out *os.File
-	if output != "" {
-		out, err = os.Create(output)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-			os.Exit(1)
-		}
-		defer out.Close()
-	} else {
-		out = os.Stdout
+	// Open output with compression support
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
 	}
+	defer out.Close()
 
 	encoding := fastq.Phred33
 	if phred64 {
@@ -324,9 +321,12 @@ func fq2faCommand() {
 
 Convert FASTQ to FASTA.
 
+Arguments:
+  <input>    Input FASTQ file (use '-' for stdin, supports .gz and .bz2)
+
 Options:
   -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
-  -o, --output FILE      Output file (default: stdout)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
 
 `)
 	}
@@ -339,24 +339,22 @@ Options:
 	}
 
 	inputFile := fs.Arg(0)
-	input, err := os.Open(inputFile)
+	
+	// Open input with compression support
+	input, err := seqtk.OpenInput(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer input.Close()
 
-	var out *os.File
-	if output != "" {
-		out, err = os.Create(output)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-			os.Exit(1)
-		}
-		defer out.Close()
-	} else {
-		out = os.Stdout
+	// Open output with compression support
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
 	}
+	defer out.Close()
 
 	encoding := fastq.Phred33
 	if phred64 {
@@ -380,6 +378,9 @@ func compCommand() {
 
 Get sequence composition statistics.
 
+Arguments:
+  <input>    Input file (use '-' for stdin, supports .gz and .bz2)
+
 Options:
   -6, --phred64          Use Phred+64 quality encoding for FASTQ (default: Phred+33)
 
@@ -395,14 +396,21 @@ Options:
 
 	inputFile := fs.Arg(0)
 
-	isFastq, err := seqtk.GetFileType(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
-		os.Exit(1)
+	// Detect file type
+	var isFastq bool
+	var err error
+	if inputFile != "-" {
+		isFastq, err = seqtk.GetFileType(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		isFastq = true // Default to FASTQ for stdin
 	}
 
-	// Open file fresh for reading
-	input, err := os.Open(inputFile)
+	// Open input with compression support
+	input, err := seqtk.OpenInput(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
 		os.Exit(1)

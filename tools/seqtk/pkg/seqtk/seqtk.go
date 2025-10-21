@@ -3,9 +3,13 @@
 package seqtk
 
 import (
+	"compress/bzip2"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
@@ -298,6 +302,7 @@ func TrimQuality(input io.Reader, output io.Writer, threshold int, encoding fast
 }
 
 // GetFileType determines if a file is FASTA or FASTQ.
+// Handles compressed files (.gz, .bz2) automatically.
 func GetFileType(filename string) (bool, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -305,12 +310,141 @@ func GetFileType(filename string) (bool, error) {
 	}
 	defer file.Close()
 
+	reader, err := DecompressReader(file, filename)
+	if err != nil {
+		return false, err
+	}
+
 	buf := make([]byte, 1)
-	_, err = file.Read(buf)
+	_, err = reader.Read(buf)
 	if err != nil {
 		return false, err
 	}
 
 	// FASTQ starts with '@', FASTA with '>'
 	return buf[0] == '@', nil
+}
+
+// DecompressReader wraps a reader with decompression based on file extension.
+// Supports .gz (gzip) and .bz2 (bzip2) compression.
+func DecompressReader(r io.Reader, filename string) (io.Reader, error) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	
+	switch ext {
+	case ".gz":
+		return gzip.NewReader(r)
+	case ".bz2":
+		return bzip2.NewReader(r), nil
+	default:
+		return r, nil
+	}
+}
+
+// CompressWriter wraps a writer with compression based on file extension.
+// Supports .gz (gzip) compression.
+func CompressWriter(w io.Writer, filename string) (io.WriteCloser, error) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	
+	switch ext {
+	case ".gz":
+		return gzip.NewWriter(w), nil
+	case ".bz2":
+		return nil, fmt.Errorf("bzip2 compression not supported for writing")
+	default:
+		return &nopCloser{w}, nil
+	}
+}
+
+// nopCloser wraps a Writer to provide a no-op Close method
+type nopCloser struct {
+	io.Writer
+}
+
+func (nopCloser) Close() error { return nil }
+
+// OpenInput opens a file for reading with automatic decompression support.
+// If filename is "-", reads from stdin.
+func OpenInput(filename string) (io.ReadCloser, error) {
+	if filename == "-" {
+		// For stdin, we can't decompress based on filename, so try to detect
+		return io.NopCloser(os.Stdin), nil
+	}
+	
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	
+	reader, err := DecompressReader(file, filename)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	
+	// If reader is not the file itself, wrap in a composite closer
+	if reader != file {
+		return &compositeCloser{reader: reader, file: file}, nil
+	}
+	
+	return file, nil
+}
+
+// compositeCloser closes both the reader and underlying file
+type compositeCloser struct {
+	reader io.Reader
+	file   *os.File
+}
+
+func (c *compositeCloser) Read(p []byte) (n int, err error) {
+	return c.reader.Read(p)
+}
+
+func (c *compositeCloser) Close() error {
+	// Close file first (reader might need it)
+	return c.file.Close()
+}
+
+// OpenOutput opens a file for writing with automatic compression support.
+// If filename is "-" or empty, writes to stdout.
+func OpenOutput(filename string) (io.WriteCloser, error) {
+	if filename == "-" || filename == "" {
+		return &nopCloser{os.Stdout}, nil
+	}
+	
+	file, err := os.Create(filename)
+	if err != nil {
+		return nil, err
+	}
+	
+	writer, err := CompressWriter(file, filename)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	
+	// If writer is not the file itself, wrap in a composite closer
+	if writer != file {
+		return &compositeWriter{writer: writer, file: file}, nil
+	}
+	
+	return file, nil
+}
+
+// compositeWriter closes both the writer and underlying file
+type compositeWriter struct {
+	writer io.WriteCloser
+	file   *os.File
+}
+
+func (c *compositeWriter) Write(p []byte) (n int, err error) {
+	return c.writer.Write(p)
+}
+
+func (c *compositeWriter) Close() error {
+	// Close writer first (to flush), then file
+	if err := c.writer.Close(); err != nil {
+		c.file.Close()
+		return err
+	}
+	return c.file.Close()
 }
