@@ -15,11 +15,16 @@ const usage = `fastp - All-in-one FASTQ preprocessor
 
 Usage:
   fastp -i input.fastq -o output.fastq [options]
+  fastp -I read1.fastq -O out1.fastq --in2 read2.fastq --out2 out2.fastq [options]
 
 Options:
   Input/Output:
-    -i, --input FILE          Input FASTQ file (required)
-    -o, --output FILE         Output FASTQ file (required)
+    -i, --input FILE          Input FASTQ file (single-end, required)
+    -o, --output FILE         Output FASTQ file (single-end, required)
+    -I, --in1 FILE            Input FASTQ file read 1 (paired-end)
+    --in2 FILE                Input FASTQ file read 2 (paired-end)
+    -O, --out1 FILE           Output FASTQ file read 1 (paired-end)
+    --out2 FILE               Output FASTQ file read 2 (paired-end)
   
   Adapter Trimming:
     -x, --adapter3 SEQ        3' adapter sequence
@@ -71,6 +76,10 @@ func main() {
 	var (
 		inputFile           string
 		outputFile          string
+		in1File             string
+		in2File             string
+		out1File            string
+		out2File            string
 		adapter3            string
 		adapter5            string
 		qualType            string
@@ -89,8 +98,12 @@ func main() {
 	)
 	
 	// Input/Output
-	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input FASTQ file (required)")
-	cliflag.StringVar(fs, &outputFile, "o", "output", "", "Output FASTQ file (required)")
+	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input FASTQ file (single-end)")
+	cliflag.StringVar(fs, &outputFile, "o", "output", "", "Output FASTQ file (single-end)")
+	cliflag.StringVar(fs, &in1File, "I", "in1", "", "Input FASTQ file read 1 (paired-end)")
+	cliflag.StringVar(fs, &in2File, "", "in2", "", "Input FASTQ file read 2 (paired-end)")
+	cliflag.StringVar(fs, &out1File, "O", "out1", "", "Output FASTQ file read 1 (paired-end)")
+	cliflag.StringVar(fs, &out2File, "", "out2", "", "Output FASTQ file read 2 (paired-end)")
 	
 	// Adapter trimming
 	cliflag.StringVar(fs, &adapter3, "x", "adapter3", "", "3' adapter sequence")
@@ -132,31 +145,25 @@ func main() {
 	
 	fs.Parse(os.Args[1:])
 	
-	// Validate required arguments
-	if inputFile == "" || outputFile == "" {
-		fmt.Fprintln(os.Stderr, "Error: both -i/--input and -o/--output are required")
+	// Determine mode: paired-end or single-end
+	isPaired := (in1File != "" && in2File != "" && out1File != "" && out2File != "")
+	isSingle := (inputFile != "" && outputFile != "")
+	
+	if !isPaired && !isSingle {
+		fmt.Fprintln(os.Stderr, "Error: must specify either:")
+		fmt.Fprintln(os.Stderr, "  Single-end: -i/--input and -o/--output")
+		fmt.Fprintln(os.Stderr, "  Paired-end: -I/--in1, --in2, -O/--out1, --out2")
 		fs.Usage()
+		os.Exit(1)
+	}
+	
+	if isPaired && isSingle {
+		fmt.Fprintln(os.Stderr, "Error: cannot specify both single-end and paired-end options")
 		os.Exit(1)
 	}
 	
 	// Determine quality encoding
 	encoding := getQualityEncoding(qualType)
-	
-	// Open input file (with automatic gzip support)
-	input, err := iohelper.OpenReader(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
-		os.Exit(1)
-	}
-	defer input.Close()
-	
-	// Open output file (with automatic gzip support)
-	output, err := iohelper.OpenWriter(outputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-		os.Exit(1)
-	}
-	defer output.Close()
 	
 	// Set up processing options
 	opts := fastp.ProcessOptions{
@@ -177,8 +184,59 @@ func main() {
 		LengthLimit:         maxLength,
 	}
 	
-	// Perform processing
-	stats, err := fastp.ProcessSingleEnd(input, output, encoding, opts)
+	var stats *fastp.ProcessStats
+	var err error
+	
+	if isPaired {
+		// Paired-end mode
+		input1, err := iohelper.OpenReader(in1File)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening input file 1: %v\n", err)
+			os.Exit(1)
+		}
+		defer input1.Close()
+		
+		input2, err := iohelper.OpenReader(in2File)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening input file 2: %v\n", err)
+			os.Exit(1)
+		}
+		defer input2.Close()
+		
+		output1, err := iohelper.OpenWriter(out1File)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output file 1: %v\n", err)
+			os.Exit(1)
+		}
+		defer output1.Close()
+		
+		output2, err := iohelper.OpenWriter(out2File)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output file 2: %v\n", err)
+			os.Exit(1)
+		}
+		defer output2.Close()
+		
+		stats, err = fastp.ProcessPairedEnd(input1, input2, output1, output2, encoding, opts)
+	} else {
+		// Single-end mode
+		input, err := iohelper.OpenReader(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+			os.Exit(1)
+		}
+		defer input.Close()
+		
+		output, err := iohelper.OpenWriter(outputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+			os.Exit(1)
+		}
+		defer output.Close()
+		
+		stats, err = fastp.ProcessSingleEnd(input, output, encoding, opts)
+	}
+	
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during processing: %v\n", err)
 		os.Exit(1)

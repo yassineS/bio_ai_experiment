@@ -79,7 +79,64 @@ type ProcessStats struct {
 	PolyGTrimmedBases   int64
 }
 
-// ProcessSingleEnd processes single-end FASTQ reads with all filters.
+// ProcessPairedEnd processes paired-end FASTQ reads with all filters.
+func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
+	reader1 := fastq.NewReader(input1, encoding)
+	reader2 := fastq.NewReader(input2, encoding)
+	writer1 := fastq.NewWriter(output1, encoding)
+	writer2 := fastq.NewWriter(output2, encoding)
+	
+	stats := &ProcessStats{}
+	
+	for {
+		// Read both pairs
+		record1, err1 := reader1.Read()
+		record2, err2 := reader2.Read()
+		
+		// Check for EOF
+		if err1 == io.EOF && err2 == io.EOF {
+			break
+		}
+		if err1 == io.EOF || err2 == io.EOF {
+			return stats, fmt.Errorf("paired files have different number of reads")
+		}
+		if err1 != nil {
+			return stats, fmt.Errorf("error reading read1: %w", err1)
+		}
+		if err2 != nil {
+			return stats, fmt.Errorf("error reading read2: %w", err2)
+		}
+		
+		stats.TotalReads += 2
+		stats.TotalBases += int64(len(record1.Sequence) + len(record2.Sequence))
+		
+		// Process both records
+		processed1, pass1 := processRecord(record1, opts, stats, encoding)
+		processed2, pass2 := processRecord(record2, opts, stats, encoding)
+		
+		// Both must pass for the pair to be kept
+		if pass1 && pass2 {
+			if err := writer1.Write(processed1); err != nil {
+				return stats, fmt.Errorf("error writing read1: %w", err)
+			}
+			if err := writer2.Write(processed2); err != nil {
+				return stats, fmt.Errorf("error writing read2: %w", err)
+			}
+			stats.CleanReads += 2
+			stats.CleanBases += int64(len(processed1.Sequence) + len(processed2.Sequence))
+		}
+	}
+	
+	// Flush writers
+	if err := writer1.Flush(); err != nil {
+		return stats, fmt.Errorf("error flushing output1: %w", err)
+	}
+	if err := writer2.Flush(); err != nil {
+		return stats, fmt.Errorf("error flushing output2: %w", err)
+	}
+	
+	return stats, nil
+}
 func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
 	reader := fastq.NewReader(input, encoding)
 	writer := fastq.NewWriter(output, encoding)
