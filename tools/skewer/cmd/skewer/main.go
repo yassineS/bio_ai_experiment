@@ -67,6 +67,12 @@ func runSingleEnd() {
 		minOverlap     int
 		errorRate      float64
 		quiet          bool
+		autoDetect     bool
+		jsonOutput     string
+		htmlReport     string
+		progress       bool
+		umiLength      int
+		umiPosition    string
 	)
 	
 	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input FASTQ file (required)")
@@ -79,6 +85,12 @@ func runSingleEnd() {
 	cliflag.IntVar(fs, &minOverlap, "m", "min-overlap", 3, "Minimum overlap for adapter detection (default: 3)")
 	cliflag.Float64Var(fs, &errorRate, "r", "error-rate", 0.1, "Maximum error rate (default: 0.1)")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
+	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics as JSON to file")
+	cliflag.StringVar(fs, &htmlReport, "", "html-report", "", "Generate HTML report to file")
+	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress during processing")
+	cliflag.IntVar(fs, &umiLength, "", "umi-length", 0, "UMI length to extract (0 = disabled)")
+	cliflag.StringVar(fs, &umiPosition, "", "umi-position", "5prime", "UMI position: 5prime or 3prime")
 	
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skewer se [options]\n\n")
@@ -92,10 +104,17 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT  Quality threshold for trimming (default: 0)\n")
 		fmt.Fprintf(os.Stderr, "  -m, --min-overlap INT     Minimum overlap for adapter detection (default: 3)\n")
 		fmt.Fprintf(os.Stderr, "  -r, --error-rate FLOAT    Maximum error rate (default: 0.1)\n")
+		fmt.Fprintf(os.Stderr, "  -a, --auto-detect         Auto-detect adapter sequences\n")
+		fmt.Fprintf(os.Stderr, "  --json FILE               Output statistics as JSON to file\n")
+		fmt.Fprintf(os.Stderr, "  --html-report FILE        Generate HTML report to file\n")
+		fmt.Fprintf(os.Stderr, "  --progress                Show progress during processing\n")
+		fmt.Fprintf(os.Stderr, "  --umi-length INT          UMI length to extract (0 = disabled)\n")
+		fmt.Fprintf(os.Stderr, "  --umi-position POS        UMI position: 5prime or 3prime (default: 5prime)\n")
 		fmt.Fprintf(os.Stderr, "  --quiet                   Don't print statistics\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC\n")
-		fmt.Fprintf(os.Stderr, "  skewer se -i input.fastq.gz -o output.fastq.gz -x AGATCGGAAGAGC -l 20\n")
+		fmt.Fprintf(os.Stderr, "  skewer se -i input.fastq.gz -o output.fastq.gz --auto-detect --progress\n")
+		fmt.Fprintf(os.Stderr, "  skewer se -i input.fastq -o output.fastq --umi-length 8 --json stats.json\n")
 	}
 	
 	fs.Parse(os.Args[2:])
@@ -132,12 +151,17 @@ func runSingleEnd() {
 	
 	// Set up trim options
 	opts := skewer.TrimOptions{
-		Adapter3:      adapter3,
-		Adapter5:      adapter5,
-		MinLength:     minLength,
-		QualThreshold: qualThreshold,
-		MinOverlap:    minOverlap,
-		ErrorRate:     errorRate,
+		Adapter3:         adapter3,
+		Adapter5:         adapter5,
+		MinLength:        minLength,
+		QualThreshold:    qualThreshold,
+		MinOverlap:       minOverlap,
+		ErrorRate:        errorRate,
+		AutoDetect:       autoDetect,
+		ProgressReport:   progress,
+		ProgressInterval: 100000,
+		UMILength:        umiLength,
+		UMIPosition:      umiPosition,
 	}
 	
 	// Perform trimming
@@ -145,6 +169,27 @@ func runSingleEnd() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
+	}
+	
+	// Output statistics in various formats
+	if jsonOutput != "" {
+		jsonData, err := stats.ToJSON()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating JSON: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(jsonOutput, []byte(jsonData), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing JSON file: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	
+	if htmlReport != "" {
+		htmlData := stats.ToHTML()
+		if err := os.WriteFile(htmlReport, []byte(htmlData), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing HTML report: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	
 	// Print statistics
@@ -170,6 +215,12 @@ func runPairedEnd() {
 		minOverlap     int
 		errorRate      float64
 		quiet          bool
+		autoDetect     bool
+		jsonOutput     string
+		htmlReport     string
+		progress       bool
+		umiLength      int
+		umiPosition    string
 	)
 	
 	cliflag.StringVar(fs, &inputFile1, "i", "input1", "", "First input FASTQ file (required)")
@@ -185,6 +236,12 @@ func runPairedEnd() {
 	cliflag.IntVar(fs, &minOverlap, "m", "min-overlap", 3, "Minimum overlap for adapter detection (default: 3)")
 	cliflag.Float64Var(fs, &errorRate, "r", "error-rate", 0.1, "Maximum error rate (default: 0.1)")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
+	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics as JSON to file")
+	cliflag.StringVar(fs, &htmlReport, "", "html-report", "", "Generate HTML report to file")
+	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress during processing")
+	cliflag.IntVar(fs, &umiLength, "", "umi-length", 0, "UMI length to extract (0 = disabled)")
+	cliflag.StringVar(fs, &umiPosition, "", "umi-position", "5prime", "UMI position: 5prime or 3prime")
 	
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skewer pe [options]\n\n")
@@ -201,9 +258,16 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT  Quality threshold for trimming (default: 0)\n")
 		fmt.Fprintf(os.Stderr, "  -m, --min-overlap INT     Minimum overlap for adapter detection (default: 3)\n")
 		fmt.Fprintf(os.Stderr, "  -r, --error-rate FLOAT    Maximum error rate (default: 0.1)\n")
+		fmt.Fprintf(os.Stderr, "  -a, --auto-detect         Auto-detect adapter sequences\n")
+		fmt.Fprintf(os.Stderr, "  --json FILE               Output statistics as JSON to file\n")
+		fmt.Fprintf(os.Stderr, "  --html-report FILE        Generate HTML report to file\n")
+		fmt.Fprintf(os.Stderr, "  --progress                Show progress during processing\n")
+		fmt.Fprintf(os.Stderr, "  --umi-length INT          UMI length to extract (0 = disabled)\n")
+		fmt.Fprintf(os.Stderr, "  --umi-position POS        UMI position: 5prime or 3prime (default: 5prime)\n")
 		fmt.Fprintf(os.Stderr, "  --quiet                   Don't print statistics\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  skewer pe -i R1.fastq -j R2.fastq -o R1_trim.fastq -p R2_trim.fastq -x AGATCGGAAGAGC\n")
+		fmt.Fprintf(os.Stderr, "  skewer pe -i R1.fastq -j R2.fastq -o R1_trim.fastq -p R2_trim.fastq --auto-detect\n")
 	}
 	
 	fs.Parse(os.Args[2:])
@@ -267,12 +331,17 @@ func runPairedEnd() {
 	
 	// Set up trim options
 	opts := skewer.TrimOptions{
-		Adapter3:      adapter3,
-		Adapter5:      adapter5,
-		MinLength:     minLength,
-		QualThreshold: qualThreshold,
-		MinOverlap:    minOverlap,
-		ErrorRate:     errorRate,
+		Adapter3:         adapter3,
+		Adapter5:         adapter5,
+		MinLength:        minLength,
+		QualThreshold:    qualThreshold,
+		MinOverlap:       minOverlap,
+		ErrorRate:        errorRate,
+		AutoDetect:       autoDetect,
+		ProgressReport:   progress,
+		ProgressInterval: 100000,
+		UMILength:        umiLength,
+		UMIPosition:      umiPosition,
 	}
 	
 	// Perform trimming
@@ -280,6 +349,27 @@ func runPairedEnd() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
+	}
+	
+	// Output statistics in various formats
+	if jsonOutput != "" {
+		jsonData, err := stats.ToJSON()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating JSON: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(jsonOutput, []byte(jsonData), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing JSON file: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	
+	if htmlReport != "" {
+		htmlData := stats.ToHTML()
+		if err := os.WriteFile(htmlReport, []byte(htmlData), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing HTML report: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	
 	// Print statistics
