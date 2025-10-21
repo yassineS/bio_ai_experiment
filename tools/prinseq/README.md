@@ -183,10 +183,7 @@ This Go implementation focuses on the core filtering and statistics functionalit
 - ✅ Paired-end support
 
 ### Not Yet Implemented (from original PRINSEQ)
-- Complexity filtering
-- Output of rejected sequences
-- Graph generation
-- Phred+64 encoding support
+- Graph generation (use separate visualization tools)
 
 ### Performance
 
@@ -283,16 +280,18 @@ prinseq filter -fastq reads.fastq \
 - ✅ Trimming operations
 - ✅ Duplicate removal
 - ✅ Paired-end support
+- ✅ Phred+64 encoding support
+- ✅ Bad sequence output
+- ✅ Complexity filtering (DUST and entropy methods)
 
 ### Version 1.1.0 (Planned)
-- [ ] Phred+64 encoding support
-- [ ] Bad sequence output
-- [ ] Statistics export (JSON/CSV)
+- [ ] Graph generation (optional)
+- [ ] JSON statistics output
+- [ ] Performance benchmarking suite
 
 ### Version 1.2.0 (Planned)
-- [ ] Complexity filtering
-- [ ] Performance benchmarking suite
 - [ ] Additional statistics
+- [ ] Web API interface
 
 ### Version 2.0.0 (Future)
 - [ ] Graph generation

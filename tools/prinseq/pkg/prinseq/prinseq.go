@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
@@ -23,6 +24,11 @@ type Stats struct {
 
 // CalculateStats computes statistics for FASTA or FASTQ files
 func CalculateStats(reader io.Reader, isFastq bool) (*Stats, error) {
+	return CalculateStatsWithEncoding(reader, isFastq, "sanger")
+}
+
+// CalculateStatsWithEncoding computes statistics with a specific quality encoding
+func CalculateStatsWithEncoding(reader io.Reader, isFastq bool, qualType string) (*Stats, error) {
 	stats := &Stats{
 		MinLength: -1,
 	}
@@ -31,7 +37,11 @@ func CalculateStats(reader io.Reader, isFastq bool) (*Stats, error) {
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB buffer
 
 	if isFastq {
-		return calculateFastqStats(scanner, stats)
+		offset := 33
+		if qualType == "illumina" {
+			offset = 64
+		}
+		return calculateFastqStatsWithOffset(scanner, stats, offset)
 	}
 	return calculateFastaStats(scanner, stats)
 }
@@ -76,6 +86,10 @@ func calculateFastaStats(scanner *bufio.Scanner, stats *Stats) (*Stats, error) {
 }
 
 func calculateFastqStats(scanner *bufio.Scanner, stats *Stats) (*Stats, error) {
+	return calculateFastqStatsWithOffset(scanner, stats, 33)
+}
+
+func calculateFastqStatsWithOffset(scanner *bufio.Scanner, stats *Stats, offset int) (*Stats, error) {
 	gcCount := 0
 	totalQuality := 0.0
 	lineNum := 0
@@ -106,7 +120,7 @@ func calculateFastqStats(scanner *bufio.Scanner, stats *Stats) (*Stats, error) {
 			}
 			// Process the complete FASTQ record
 			processSequence(seq, &gcCount, stats)
-			totalQuality += calculateAvgQualityScore(qual)
+			totalQuality += calculateAvgQualityScoreWithOffset(qual, offset)
 			seq = ""
 			qual = ""
 		}
@@ -157,14 +171,18 @@ func processSequence(seq string, gcCount *int, stats *Stats) {
 }
 
 func calculateAvgQualityScore(qual string) float64 {
+	return calculateAvgQualityScoreWithOffset(qual, 33)
+}
+
+func calculateAvgQualityScoreWithOffset(qual string, offset int) float64 {
 	if len(qual) == 0 {
 		return 0.0
 	}
 
 	total := 0
 	for _, q := range qual {
-		// Assume Phred+33 encoding
-		total += int(q) - 33
+		// Use specified offset (33 for Phred+33, 64 for Phred+64)
+		total += int(q) - offset
 	}
 	return float64(total) / float64(len(qual))
 }
@@ -381,6 +399,10 @@ type FilterOptions struct {
 	MaxQualMean  float64
 	Derep        int     // Duplicate removal mode (1=exact, 4=reverse complement)
 	DerepMin     int     // Minimum occurrences to keep
+	QualType     string  // Quality encoding type: "sanger" (Phred+33) or "illumina" (Phred+64)
+	OutBad       io.Writer // Writer for rejected sequences (optional)
+	LcMethod     string  // Low complexity method: "dust" or "entropy"
+	LcThreshold  float64 // Low complexity threshold (7 for dust, 70 for entropy)
 }
 
 // Filter filters a FASTA/FASTQ file based on the given options
@@ -391,9 +413,22 @@ func Filter(reader io.Reader, writer io.Writer, isFastq bool, opts FilterOptions
 	return filterFasta(reader, writer, opts)
 }
 
+// getQualityEncoding returns the appropriate quality encoding based on options
+func getQualityEncoding(qualType string) fastq.QualityEncoding {
+	if qualType == "illumina" {
+		return fastq.Phred64
+	}
+	return fastq.Phred33 // Default to sanger
+}
+
 func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	fastaReader := fasta.NewReader(reader)
 	fastaWriter := fasta.NewWriter(writer, 80)
+	
+	var badWriter *fasta.Writer
+	if opts.OutBad != nil {
+		badWriter = fasta.NewWriter(opts.OutBad, 80)
+	}
 
 	seenSeqs := make(map[string]int) // For duplicate tracking
 
@@ -414,12 +449,25 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
 			if shouldFilterDuplicate(seq, seenSeqs, opts) {
+				if badWriter != nil {
+					record.Sequence = []byte(seq)
+					if err := badWriter.Write(record); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 		}
 
 		// Apply filters
 		if shouldFilterSequence(seq, "", opts) {
+			// Write to bad output if enabled
+			if badWriter != nil {
+				record.Sequence = []byte(seq)
+				if err := badWriter.Write(record); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 
@@ -432,12 +480,24 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		}
 	}
 
-	return fastaWriter.Flush()
+	if err := fastaWriter.Flush(); err != nil {
+		return err
+	}
+	if badWriter != nil {
+		return badWriter.Flush()
+	}
+	return nil
 }
 
 func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
-	fastqReader := fastq.NewReader(reader, fastq.Phred33)
-	fastqWriter := fastq.NewWriter(writer, fastq.Phred33)
+	encoding := getQualityEncoding(opts.QualType)
+	fastqReader := fastq.NewReader(reader, encoding)
+	fastqWriter := fastq.NewWriter(writer, encoding)
+	
+	var badWriter *fastq.Writer
+	if opts.OutBad != nil {
+		badWriter = fastq.NewWriter(opts.OutBad, encoding)
+	}
 
 	seenSeqs := make(map[string]int) // For duplicate tracking
 
@@ -459,12 +519,27 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
 			if shouldFilterDuplicate(seq, seenSeqs, opts) {
+				if badWriter != nil {
+					record.Sequence = []byte(seq)
+					record.Quality = []byte(qual)
+					if err := badWriter.Write(record); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 		}
 
 		// Apply filters
 		if shouldFilterSequence(seq, qual, opts) {
+			// Write to bad output if enabled
+			if badWriter != nil {
+				record.Sequence = []byte(seq)
+				record.Quality = []byte(qual)
+				if err := badWriter.Write(record); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 
@@ -478,7 +553,13 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		}
 	}
 
-	return fastqWriter.Flush()
+	if err := fastqWriter.Flush(); err != nil {
+		return err
+	}
+	if badWriter != nil {
+		return badWriter.Flush()
+	}
+	return nil
 }
 
 func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
@@ -536,7 +617,80 @@ func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
 		}
 	}
 
+	// Complexity filter
+	if opts.LcMethod != "" && opts.LcThreshold > 0 {
+		if opts.LcMethod == "dust" {
+			score := calculateDustScore(seq)
+			if score > opts.LcThreshold {
+				return true
+			}
+		} else if opts.LcMethod == "entropy" {
+			score := calculateEntropy(seq)
+			if score < opts.LcThreshold {
+				return true
+			}
+		}
+	}
+
 	return false
+}
+
+// calculateDustScore computes DUST score for low-complexity filtering
+// Lower scores indicate higher complexity; higher scores indicate low complexity
+func calculateDustScore(seq string) float64 {
+	if len(seq) < 3 {
+		return 0.0
+	}
+
+	// Count triplet frequencies
+	triplets := make(map[string]int)
+	for i := 0; i <= len(seq)-3; i++ {
+		triplet := seq[i : i+3]
+		triplets[triplet]++
+	}
+
+	// Calculate DUST score as sum of (count * (count-1) / 2) for each triplet
+	score := 0.0
+	for _, count := range triplets {
+		if count > 1 {
+			score += float64(count * (count - 1) / 2)
+		}
+	}
+
+	// Normalize by sequence length
+	if len(seq) > 0 {
+		score = score / float64(len(seq)-2) * 10.0
+	}
+
+	return score
+}
+
+// calculateEntropy computes Shannon entropy for complexity filtering
+// Higher scores indicate higher complexity; lower scores indicate low complexity
+func calculateEntropy(seq string) float64 {
+	if len(seq) == 0 {
+		return 0.0
+	}
+
+	// Count base frequencies
+	counts := make(map[rune]int)
+	for _, base := range seq {
+		counts[base]++
+	}
+
+	// Calculate Shannon entropy
+	entropy := 0.0
+	length := float64(len(seq))
+	for _, count := range counts {
+		if count > 0 {
+			p := float64(count) / length
+			entropy -= p * math.Log2(p)
+		}
+	}
+
+	// Normalize to percentage (0-100)
+	// Maximum entropy for DNA is log2(4) = 2.0, so normalize to 100
+	return (entropy / 2.0) * 100.0
 }
 
 func shouldFilterDuplicate(seq string, seenSeqs map[string]int, opts FilterOptions) bool {
@@ -655,10 +809,11 @@ func filterPairedFasta(reader1, reader2 io.Reader, writer1, writer2 io.Writer, o
 }
 
 func filterPairedFastq(reader1, reader2 io.Reader, writer1, writer2 io.Writer, opts FilterOptions) error {
-	fastqReader1 := fastq.NewReader(reader1, fastq.Phred33)
-	fastqReader2 := fastq.NewReader(reader2, fastq.Phred33)
-	fastqWriter1 := fastq.NewWriter(writer1, fastq.Phred33)
-	fastqWriter2 := fastq.NewWriter(writer2, fastq.Phred33)
+	encoding := getQualityEncoding(opts.QualType)
+	fastqReader1 := fastq.NewReader(reader1, encoding)
+	fastqReader2 := fastq.NewReader(reader2, encoding)
+	fastqWriter1 := fastq.NewWriter(writer1, encoding)
+	fastqWriter2 := fastq.NewWriter(writer2, encoding)
 
 	seenSeqs := make(map[string]int)
 

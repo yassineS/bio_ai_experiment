@@ -136,13 +136,14 @@ func runFilter(args []string) {
 	fs := flag.NewFlagSet("filter", flag.ExitOnError)
 	
 	// Input/output options
-	var input1, input2, output1, output2 string
+	var input1, input2, output1, output2, outBad string
 	var fasta, fastq bool
 	
 	cliflag.StringVar(fs, &input1, "i", "input", "", "Primary input file (use '-' for stdin)")
 	cliflag.StringVar(fs, &input2, "", "input2", "", "Paired-end input file 2")
 	cliflag.StringVar(fs, &output1, "o", "output", "", "Output file for filtered sequences (default: stdout)")
 	cliflag.StringVar(fs, &output2, "", "output2", "", "Output file for paired-end file 2")
+	cliflag.StringVar(fs, &outBad, "", "out-bad", "", "Output file for rejected sequences")
 	cliflag.BoolVar(fs, &fasta, "", "fasta", false, "Input is FASTA format")
 	cliflag.BoolVar(fs, &fastq, "", "fastq", false, "Input is FASTQ format")
 
@@ -180,6 +181,16 @@ func runFilter(args []string) {
 	cliflag.IntVar(fs, &derep, "d", "derep", 0, "Remove duplicates: 1=exact, 4=revcomp, 5=both")
 	cliflag.IntVar(fs, &derepMin, "", "derep-min", 2, "Minimum occurrences to keep")
 
+	// Quality encoding option
+	var qualType string
+	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger (Phred+33) or illumina (Phred+64)")
+	
+	// Complexity filtering options
+	var lcMethod string
+	var lcThreshold float64
+	cliflag.StringVar(fs, &lcMethod, "", "lc-method", "", "Low complexity filter method: dust or entropy")
+	cliflag.Float64Var(fs, &lcThreshold, "", "lc-threshold", 0, "Low complexity threshold (default: 7 for dust, 70 for entropy)")
+
 	fs.Usage = func() {
 		fmt.Print(`Usage: prinseq filter [options]
 
@@ -190,6 +201,7 @@ Input/Output Options:
   --input2 FILE             Paired-end input file 2
   -o, --output FILE         Output file (default: stdout)
   --output2 FILE            Output file for paired-end file 2
+  --out-bad FILE            Output file for rejected sequences
   --fasta                   Input is FASTA format
   --fastq                   Input is FASTQ format
 
@@ -219,6 +231,13 @@ Duplicate Removal Options:
   -d, --derep MODE          Remove duplicates (1=exact, 4=revcomp, 5=both)
   --derep-min INT           Minimum occurrences to keep (default: 2)
 
+Quality Encoding:
+  -t, --qual-type TYPE      Quality encoding: sanger (Phred+33, default) or illumina (Phred+64)
+
+Complexity Filtering:
+  --lc-method METHOD        Low complexity method: dust or entropy
+  --lc-threshold FLOAT      Low complexity threshold (default: 7 for dust, 70 for entropy)
+
 Examples:
   # Filter by length using short options
   prinseq filter -i reads.fastq -o filtered.fastq -l 100 -L 500
@@ -234,6 +253,12 @@ Examples:
 
   # Remove duplicates
   prinseq filter -i seqs.fasta -d 1 --derep-min 2 -o unique.fasta
+  
+  # Use Phred+64 encoding (Illumina 1.3-1.7)
+  prinseq filter -i reads.fastq -o filtered.fastq -t illumina -l 100
+  
+  # Filter low complexity sequences
+  prinseq filter -i seqs.fasta -o filtered.fasta --lc-method dust --lc-threshold 7
 `)
 	}
 
@@ -284,6 +309,15 @@ Examples:
 		os.Exit(1)
 	}
 
+	// Set default thresholds for complexity filtering if method is specified
+	if lcMethod != "" && lcThreshold == 0 {
+		if lcMethod == "dust" {
+			lcThreshold = 7
+		} else if lcMethod == "entropy" {
+			lcThreshold = 70
+		}
+	}
+
 	// Set filter options
 	opts := prinseq.FilterOptions{
 		MinLen:        minLen,
@@ -306,6 +340,20 @@ Examples:
 		TrimTailRight: trimTailRight,
 		Derep:         derep,
 		DerepMin:      derepMin,
+		QualType:      qualType,
+		LcMethod:      lcMethod,
+		LcThreshold:   lcThreshold,
+	}
+	
+	// Open bad output file if specified
+	if outBad != "" {
+		badWriter, err := os.Create(outBad)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating bad output file: %v\n", err)
+			os.Exit(1)
+		}
+		defer badWriter.Close()
+		opts.OutBad = badWriter
 	}
 
 	if isPaired {

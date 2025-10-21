@@ -23,10 +23,16 @@ go build ./cmd/fastp
 
 ## Usage
 
-### Basic Usage
+### Basic Usage (Single-End)
 
 ```bash
 fastp -i input.fastq -o output.fastq
+```
+
+### Paired-End Usage
+
+```bash
+fastp -I read1.fastq -O out1.fastq --in2 read2.fastq --out2 out2.fastq
 ```
 
 ### With Adapter Trimming
@@ -55,8 +61,12 @@ fastp -i input.fastq.gz -o output.fastq.gz -x AGATCGGAAGAGC
 ## Options
 
 ### Input/Output
-- `-i, --input FILE` - Input FASTQ file (required)
-- `-o, --output FILE` - Output FASTQ file (required)
+- `-i, --input FILE` - Input FASTQ file (single-end)
+- `-o, --output FILE` - Output FASTQ file (single-end)
+- `-I, --in1 FILE` - Input FASTQ file read 1 (paired-end)
+- `--in2 FILE` - Input FASTQ file read 2 (paired-end)
+- `-O, --out1 FILE` - Output FASTQ file read 1 (paired-end)
+- `--out2 FILE` - Output FASTQ file read 2 (paired-end)
 
 ### Adapter Trimming
 - `-x, --adapter3 SEQ` - 3' adapter sequence
@@ -103,6 +113,18 @@ fastp -i input.fastq -o output.fastq \
   --max-n-count 0
 ```
 
+### Paired-End Preprocessing
+
+```bash
+# Comprehensive paired-end preprocessing
+fastp -I R1.fastq.gz -O clean_R1.fastq.gz \
+      --in2 R2.fastq.gz --out2 clean_R2.fastq.gz \
+      -x AGATCGGAAGAGC \
+      -q 20 -l 30 \
+      --trim-poly-g \
+      --max-n-count 2
+```
+
 ### Complete Preprocessing Pipeline
 
 ```bash
@@ -144,6 +166,7 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ Poly-G/X tail trimming
 - ✅ Complexity filtering
 - ✅ Built-in gzip support
+- ✅ Paired-end read support
 
 ### Not Implemented (from original)
 - ❌ Automatic adapter detection
@@ -213,9 +236,9 @@ fastp -i raw.fastq -o qc.fastq \
 - ✅ Complexity filtering
 - ✅ Built-in gzip support
 - ✅ Comprehensive tests (>85% coverage)
+- ✅ Paired-end read support
 
 ### Version 1.1.0 (Planned)
-- [ ] Paired-end support
 - [ ] Automatic adapter detection
 - [ ] JSON statistics output
 - [ ] Progress reporting
