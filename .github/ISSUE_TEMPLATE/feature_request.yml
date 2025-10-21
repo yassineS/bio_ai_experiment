@@ -1,0 +1,155 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! Please provide details below to help us understand and evaluate your request.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which component would this feature affect?
+      options:
+        - Tool Implementation (seqtk, prinseq, etc.)
+        - New Tool (not yet implemented)
+        - Bioformats Library (FASTA, FASTQ, VCF, BED)
+        - MCP Server
+        - Documentation
+        - Build/CI System
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: tool
+    attributes:
+      label: Specific Tool (if applicable)
+      description: If this feature is for a specific tool, which one?
+      placeholder: "e.g., seqtk, prinseq, fastp"
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve?
+      placeholder: Describe the problem or limitation you're facing
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like this problem to be solved?
+      placeholder: Describe your ideal solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other solutions have you considered?
+      placeholder: Describe alternative approaches you've thought about
+    validations:
+      required: false
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use Case
+      description: How would you use this feature?
+      placeholder: |
+        Provide a concrete example:
+        1. I want to...
+        2. So that I can...
+        3. Which will help me...
+    validations:
+      required: true
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Example Usage (if applicable)
+      description: Show how you would use this feature
+      render: shell
+      placeholder: |
+        # Example command
+        ./tool command --new-flag value input.fasta
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature to you?
+      options:
+        - Critical (blocking my work)
+        - High (would significantly improve my workflow)
+        - Medium (nice to have)
+        - Low (minor improvement)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Expected Impact
+      description: How many users would benefit from this feature?
+      options:
+        - Wide (most users would benefit)
+        - Moderate (many users in specific use cases)
+        - Narrow (specialized use case)
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Implementation Ideas (optional)
+      description: If you have thoughts on how to implement this, share them here
+      placeholder: Technical details, approaches, considerations
+    validations:
+      required: false
+
+  - type: textarea
+    id: resources
+    attributes:
+      label: Related Resources
+      description: Links to similar features in other tools, papers, documentation
+      placeholder: |
+        - Tool X has similar feature: [link]
+        - Paper describing this approach: [citation]
+        - Discussion in community: [link]
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context about the feature request
+      placeholder: Screenshots, diagrams, examples, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission Checklist
+      description: Please verify these items before submitting
+      options:
+        - label: I have searched for similar feature requests
+          required: true
+        - label: I have described a clear use case for this feature
+          required: true
+        - label: I have considered how this fits with the project goals
+          required: true

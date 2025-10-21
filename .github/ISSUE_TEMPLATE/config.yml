@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussions
+    url: https://github.com/yassineS/bio_ai_experiment/discussions
+    about: Ask questions, share ideas, or discuss the project with the community
+  - name: 📚 Documentation
+    url: https://github.com/yassineS/bio_ai_experiment/tree/main/docs
+    about: Read the project documentation, guides, and implementation details
+  - name: 🤝 Contributing Guide
+    url: https://github.com/yassineS/bio_ai_experiment/blob/main/CONTRIBUTING.md
+    about: Learn how to contribute to the project

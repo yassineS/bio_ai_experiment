@@ -278,6 +278,15 @@ Contributions are welcome! This project is designed to be collaborative and bene
 - Update documentation as needed
 - Ensure all tests pass before submitting PR
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
+
+### Getting Help
+
+- 💬 [Discussions](https://github.com/yassineS/bio_ai_experiment/discussions) - Ask questions, share ideas
+- 🐛 [Issues](https://github.com/yassineS/bio_ai_experiment/issues) - Report bugs, request features
+- 📖 [Documentation](docs/) - Guides and references
+- 📋 [Analysis](analysis/) - Tool analyses and evaluations
+
 ## License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.

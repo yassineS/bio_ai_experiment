@@ -214,6 +214,54 @@ The analysis covers tools across major bioinformatics domains:
 
 For detailed analysis of specific tools, use the `TEMPLATE.md` file to create comprehensive individual reports. Each tool selected for recoding should receive a detailed analysis following that template.
 
+### Using the Analysis Template
+
+The `TEMPLATE.md` provides a standardized structure for in-depth tool analysis:
+
+1. **Copy the template**: `cp TEMPLATE.md TOOLNAME_ANALYSIS.md`
+2. **Fill in all sections**: Use the template as a guide to ensure comprehensive coverage
+3. **Document thoroughly**: Include metrics, benchmarks, and specific examples
+4. **Identify improvements**: Clearly document opportunities for enhancement
+
+### Completed Analyses
+
+We have completed in-depth analyses for the following tools:
+
+- **PRINSEQ_ANALYSIS.md** - Comprehensive analysis of PRINSEQ implementation
+  - Current status and completed features
+  - Performance benchmarks and comparisons
+  - Code quality metrics (85%+ test coverage)
+  - Specific improvement opportunities identified
+  - MCP server design proposals
+  - Future development roadmap
+
+### Analysis Process
+
+1. **Tool Selection**: Choose from top 50 list or propose new tool
+2. **Initial Research**: Gather information (repository, citations, usage)
+3. **Code Review**: Analyze original implementation
+4. **Testing**: Run tool with various inputs, note edge cases
+5. **Benchmarking**: Compare performance with alternatives
+6. **Documentation**: Complete TEMPLATE.md with findings
+7. **Decision**: Recommend for development or not
+
+### Template Sections
+
+The analysis template covers:
+
+- Tool information and metadata
+- Description and use cases
+- Code quality assessment
+- Performance analysis
+- Documentation assessment
+- Edge cases and limitations
+- Dependencies
+- User feedback
+- Recoding assessment (priority, complexity, effort)
+- Go implementation considerations
+- MCP server design
+- Conclusion and recommendations
+
 ## Next Steps
 
 1. **Select First Tool**: Choose from top 10 for initial rewrite
