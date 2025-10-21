@@ -29,6 +29,7 @@ Options:
   Adapter Trimming:
     -x, --adapter3 SEQ        3' adapter sequence
     -y, --adapter5 SEQ        5' adapter sequence
+    --detect-adapter          Auto-detect adapter sequences
   
   Quality Filtering:
     -q, --qual-threshold INT  Quality threshold (default: 15)
@@ -51,6 +52,26 @@ Options:
     --low-complexity          Enable complexity filtering
     --complexity-threshold FLOAT  Complexity threshold (default: 0.3)
   
+  UMI/Barcode Processing:
+    --umi-length INT          UMI length (0 = disabled)
+    --umi-location STRING     UMI location: read1, read2 (default: read1)
+    --umi-skip INT            Bases to skip before UMI (default: 0)
+  
+  Base Correction:
+    --base-correction         Enable base correction
+    --correction-threshold INT  Base correction quality threshold (default: 20)
+  
+  Overlap Analysis (Paired-end):
+    --merge-overlap           Merge overlapping paired-end reads
+    --min-overlap INT         Minimum overlap length (default: 30)
+    --max-mismatch INT        Maximum mismatches in overlap (default: 5)
+  
+  Performance:
+    -w, --threads INT         Number of threads (default: 1)
+  
+  Reporting:
+    -h, --html FILE           HTML report output file
+  
   Other:
     -t, --qual-type TYPE      Quality type: sanger, illumina (default: sanger)
     --quiet                   Don't print statistics
@@ -59,13 +80,26 @@ Examples:
   # Basic adapter trimming and filtering
   fastp -i input.fastq -o output.fastq -x AGATCGGAAGAGC
   
+  # Auto-detect adapter
+  fastp -i input.fastq -o output.fastq --detect-adapter
+  
+  # With UMI extraction
+  fastp -i input.fastq -o output.fastq --umi-length 8
+  
+  # Base correction
+  fastp -i input.fastq -o output.fastq --base-correction
+  
+  # Merge overlapping paired-end reads
+  fastp -I R1.fastq -O out1.fastq --in2 R2.fastq --out2 out2.fastq --merge-overlap
+  
+  # Multi-threaded with HTML report
+  fastp -i input.fastq -o output.fastq -w 4 -h report.html
+  
   # Comprehensive preprocessing
   fastp -i input.fastq -o output.fastq \
     -x AGATCGGAAGAGC -q 20 -l 30 \
-    --trim-poly-g --max-n-count 3
-  
-  # With gzip files
-  fastp -i input.fastq.gz -o output.fastq.gz -x AGATCGGAAGAGC
+    --trim-poly-g --max-n-count 3 \
+    --base-correction -w 4 -h report.html
 
 Version: 1.0.0 (Go implementation)
 `
@@ -82,6 +116,7 @@ func main() {
 		out2File            string
 		adapter3            string
 		adapter5            string
+		detectAdapter       bool
 		qualType            string
 		qualThreshold       int
 		qualPercent         int
@@ -95,6 +130,17 @@ func main() {
 		lowComplexity       bool
 		complexityThreshold float64
 		quiet               bool
+		// New features
+		umiLength           int
+		umiLocation         string
+		umiSkip             int
+		baseCorrection      bool
+		correctionThreshold int
+		mergeOverlap        bool
+		minOverlap          int
+		maxMismatch         int
+		threads             int
+		htmlReport          string
 	)
 	
 	// Input/Output
@@ -108,6 +154,7 @@ func main() {
 	// Adapter trimming
 	cliflag.StringVar(fs, &adapter3, "x", "adapter3", "", "3' adapter sequence")
 	cliflag.StringVar(fs, &adapter5, "y", "adapter5", "", "5' adapter sequence")
+	cliflag.BoolVar(fs, &detectAdapter, "", "detect-adapter", false, "Auto-detect adapter sequences")
 	
 	// Quality filtering
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 15, "Quality threshold (default: 15)")
@@ -129,6 +176,26 @@ func main() {
 	// Complexity filtering
 	cliflag.BoolVar(fs, &lowComplexity, "", "low-complexity", false, "Enable complexity filtering")
 	cliflag.Float64Var(fs, &complexityThreshold, "", "complexity-threshold", 0.3, "Complexity threshold (default: 0.3)")
+	
+	// UMI/barcode processing
+	cliflag.IntVar(fs, &umiLength, "", "umi-length", 0, "UMI length (0 = disabled)")
+	cliflag.StringVar(fs, &umiLocation, "", "umi-location", "read1", "UMI location: read1, read2")
+	cliflag.IntVar(fs, &umiSkip, "", "umi-skip", 0, "Bases to skip before UMI")
+	
+	// Base correction
+	cliflag.BoolVar(fs, &baseCorrection, "", "base-correction", false, "Enable base correction")
+	cliflag.IntVar(fs, &correctionThreshold, "", "correction-threshold", 20, "Base correction quality threshold")
+	
+	// Overlap analysis (paired-end)
+	cliflag.BoolVar(fs, &mergeOverlap, "", "merge-overlap", false, "Merge overlapping paired-end reads")
+	cliflag.IntVar(fs, &minOverlap, "", "min-overlap", 30, "Minimum overlap length")
+	cliflag.IntVar(fs, &maxMismatch, "", "max-mismatch", 5, "Maximum mismatches in overlap")
+	
+	// Multi-threading
+	cliflag.IntVar(fs, &threads, "w", "threads", 1, "Number of threads (default: 1)")
+	
+	// HTML report
+	cliflag.StringVar(fs, &htmlReport, "h", "html", "", "HTML report output file")
 	
 	// Other
 	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina (default: sanger)")
@@ -169,6 +236,7 @@ func main() {
 	opts := fastp.ProcessOptions{
 		Adapter3:            adapter3,
 		Adapter5:            adapter5,
+		DetectAdapter:       detectAdapter,
 		QualThreshold:       qualThreshold,
 		MinLength:           minLength,
 		MaxLength:           maxLength,
@@ -182,6 +250,16 @@ func main() {
 		MaxNPercent:         maxNPercent,
 		LengthRequired:      minLength,
 		LengthLimit:         maxLength,
+		UMILength:           umiLength,
+		UMILocation:         umiLocation,
+		UMISkip:             umiSkip,
+		BaseCorrection:      baseCorrection,
+		CorrectionThreshold: correctionThreshold,
+		MergeOverlap:        mergeOverlap,
+		MinOverlap:          minOverlap,
+		MaxMismatch:         maxMismatch,
+		Threads:             threads,
+		HTMLReport:          htmlReport,
 	}
 	
 	var stats *fastp.ProcessStats
@@ -242,6 +320,17 @@ func main() {
 		os.Exit(1)
 	}
 	
+	// Generate HTML report if requested
+	if htmlReport != "" {
+		if err := fastp.GenerateHTMLReport(stats, opts, htmlReport); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating HTML report: %v\n", err)
+			os.Exit(1)
+		}
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "HTML report written to: %s\n", htmlReport)
+		}
+	}
+	
 	// Print statistics
 	if !quiet {
 		printStats(stats)
@@ -271,6 +360,10 @@ func printStats(stats *fastp.ProcessStats) {
 		stats.CleanBases,
 		100.0*float64(stats.CleanBases)/float64(stats.TotalBases))
 	
+	if stats.DetectedAdapter != "" {
+		fmt.Fprintf(os.Stderr, "  Detected adapter:      %s\n", stats.DetectedAdapter)
+	}
+	
 	if stats.AdapterTrimmedReads > 0 {
 		fmt.Fprintf(os.Stderr, "  Adapter trimmed:       %d (%.2f%%)\n",
 			stats.AdapterTrimmedReads,
@@ -283,6 +376,20 @@ func printStats(stats *fastp.ProcessStats) {
 			stats.PolyGTrimmedReads,
 			100.0*float64(stats.PolyGTrimmedReads)/float64(stats.TotalReads))
 		fmt.Fprintf(os.Stderr, "  Poly-G bases removed:  %d\n", stats.PolyGTrimmedBases)
+	}
+	
+	if stats.UMIExtracted > 0 {
+		fmt.Fprintf(os.Stderr, "  UMIs extracted:        %d\n", stats.UMIExtracted)
+	}
+	
+	if stats.BasesCorrected > 0 {
+		fmt.Fprintf(os.Stderr, "  Bases corrected:       %d\n", stats.BasesCorrected)
+	}
+	
+	if stats.MergedReads > 0 {
+		fmt.Fprintf(os.Stderr, "  Overlapping merged:    %d (%.2f%%)\n",
+			stats.MergedReads,
+			100.0*float64(stats.MergedReads)/float64(stats.TotalReads/2))
 	}
 	
 	if stats.LowQualityReads > 0 {
