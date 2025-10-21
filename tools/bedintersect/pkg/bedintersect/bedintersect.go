@@ -50,10 +50,19 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 		return intervalsB[i].ChromStart < intervalsB[j].ChromStart
 	})
 
-	// Create interval tree index for each chromosome
+	// Create chromosome index and optionally interval trees
 	chromIndex := make(map[string][]*bed.Record)
+	chromTrees := make(map[string]*IntervalTree)
+	
 	for _, interval := range intervalsB {
 		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
+	}
+	
+	// Build interval trees for each chromosome if UseTree is enabled
+	if opts.UseTree {
+		for chrom, intervals := range chromIndex {
+			chromTrees[chrom] = NewIntervalTree(intervals)
+		}
 	}
 
 	// Process A intervals
@@ -111,8 +120,16 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 			continue
 		}
 
-		// Find overlaps
-		overlaps := findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
+		// Find overlaps using interval tree or linear search
+		var overlaps []*Overlap
+		if opts.UseTree {
+			if tree, ok := chromTrees[recordA.Chrom]; ok {
+				candidates := tree.Query(recordA)
+				overlaps = findOverlaps(recordA, candidates, opts)
+			}
+		} else {
+			overlaps = findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
+		}
 
 		if opts.NoOverlap {
 			// Report if no overlaps found
@@ -314,8 +331,17 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 	})
 
 	chromIndex := make(map[string][]*bed.Record)
+	chromTrees := make(map[string]*IntervalTree)
+	
 	for _, interval := range intervalsB {
 		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
+	}
+	
+	// Build interval trees for each chromosome if UseTree is enabled
+	if opts.UseTree {
+		for chrom, intervals := range chromIndex {
+			chromTrees[chrom] = NewIntervalTree(intervals)
+		}
 	}
 
 	stats := &Stats{
@@ -374,7 +400,16 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 			continue
 		}
 
-		overlaps := findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
+		// Find overlaps using interval tree or linear search
+		var overlaps []*Overlap
+		if opts.UseTree {
+			if tree, ok := chromTrees[recordA.Chrom]; ok {
+				candidates := tree.Query(recordA)
+				overlaps = findOverlaps(recordA, candidates, opts)
+			}
+		} else {
+			overlaps = findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
+		}
 
 		if len(overlaps) > 0 {
 			stats.IntervalsAHit++

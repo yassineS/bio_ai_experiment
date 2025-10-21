@@ -444,3 +444,42 @@ chr1	350	380
 		t.Errorf("Output mismatch.\nExpected:\n%s\nGot:\n%s", expected, buf.String())
 	}
 }
+
+func TestIntersectWithIntervalTree(t *testing.T) {
+	fileA := `chr1	100	200
+chr1	300	400
+chr2	100	200`
+
+	fileB := `chr1	150	250
+chr1	350	450
+chr2	150	250`
+
+	// Test with linear search
+	readerA1 := strings.NewReader(fileA)
+	readerB1 := strings.NewReader(fileB)
+	var buf1 bytes.Buffer
+	
+	count1, err := Intersect(readerA1, readerB1, &buf1, IntersectOptions{MinOverlap: 1, UseTree: false})
+	if err != nil {
+		t.Fatalf("Intersect (linear) failed: %v", err)
+	}
+
+	// Test with interval tree
+	readerA2 := strings.NewReader(fileA)
+	readerB2 := strings.NewReader(fileB)
+	var buf2 bytes.Buffer
+	
+	count2, err := Intersect(readerA2, readerB2, &buf2, IntersectOptions{MinOverlap: 1, UseTree: true})
+	if err != nil {
+		t.Fatalf("Intersect (tree) failed: %v", err)
+	}
+
+	// Results should be identical
+	if count1 != count2 {
+		t.Errorf("Count mismatch: linear=%d, tree=%d", count1, count2)
+	}
+
+	if buf1.String() != buf2.String() {
+		t.Errorf("Output mismatch.\nLinear:\n%s\nTree:\n%s", buf1.String(), buf2.String())
+	}
+}
