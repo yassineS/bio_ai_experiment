@@ -644,6 +644,7 @@ func DecompressReader(r io.Reader, filename string) (io.Reader, error) {
 
 // CompressWriter wraps a writer with compression based on file extension.
 // Supports .gz (gzip) compression.
+// Returns nil if no compression is needed (caller should use original writer).
 func CompressWriter(w io.Writer, filename string) (io.WriteCloser, error) {
 	ext := strings.ToLower(filepath.Ext(filename))
 	
@@ -653,7 +654,7 @@ func CompressWriter(w io.Writer, filename string) (io.WriteCloser, error) {
 	case ".bz2":
 		return nil, fmt.Errorf("bzip2 compression not supported for writing")
 	default:
-		return &nopCloser{w}, nil
+		return nil, nil
 	}
 }
 
@@ -724,12 +725,13 @@ func OpenOutput(filename string) (io.WriteCloser, error) {
 		return nil, err
 	}
 	
-	// If writer is not the file itself, wrap in a composite closer
-	if writer != file {
-		return &compositeWriter{writer: writer, file: file}, nil
+	// If writer is nil (no compression), just use the file
+	if writer == nil {
+		return file, nil
 	}
 	
-	return file, nil
+	// Otherwise wrap in a composite closer
+	return &compositeWriter{writer: writer, file: file}, nil
 }
 
 // compositeWriter closes both the writer and underlying file
