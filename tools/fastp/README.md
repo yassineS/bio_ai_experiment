@@ -58,6 +58,41 @@ fastp -i input.fastq -o output.fastq \
 fastp -i input.fastq.gz -o output.fastq.gz -x AGATCGGAAGAGC
 ```
 
+### Auto-detect Adapter
+
+```bash
+# Automatically detect and trim common adapters
+fastp -i input.fastq -o output.fastq --detect-adapter
+```
+
+### UMI Extraction
+
+```bash
+# Extract 8-base UMI from beginning of reads
+fastp -i input.fastq -o output.fastq --umi-length 8
+```
+
+### Base Correction
+
+```bash
+# Correct low-quality bases to N
+fastp -i input.fastq -o output.fastq --base-correction --correction-threshold 20
+```
+
+### Merge Overlapping Paired-End Reads
+
+```bash
+# Merge overlapping paired-end reads
+fastp -I R1.fastq -O out1.fastq --in2 R2.fastq --out2 out2.fastq --merge-overlap
+```
+
+### Multi-threaded Processing with HTML Report
+
+```bash
+# Use 4 threads and generate HTML report
+fastp -i input.fastq -o output.fastq -w 4 -h report.html
+```
+
 ## Options
 
 ### Input/Output
@@ -160,6 +195,7 @@ This is a simplified Go implementation focusing on core preprocessing functional
 
 ### Implemented Features
 - ✅ Adapter trimming (3' and 5')
+- ✅ **Automatic adapter detection**
 - ✅ Quality filtering
 - ✅ Length filtering
 - ✅ N content filtering
@@ -167,14 +203,14 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ Complexity filtering
 - ✅ Built-in gzip support
 - ✅ Paired-end read support
+- ✅ **HTML report generation**
+- ✅ **UMI/barcode processing**
+- ✅ **Base correction**
+- ✅ **Overlap analysis for paired-end**
+- ✅ **Multi-threading support**
 
 ### Not Implemented (from original)
-- ❌ Automatic adapter detection
-- ❌ HTML report generation
-- ❌ UMI/barcode processing
-- ❌ Base correction
-- ❌ Overlap analysis for paired-end
-- ❌ Multi-threading (single-threaded for now)
+None - all major features are now implemented!
 
 ## Testing
 
@@ -238,16 +274,18 @@ fastp -i raw.fastq -o qc.fastq \
 - ✅ Comprehensive tests (>85% coverage)
 - ✅ Paired-end read support
 
-### Version 1.1.0 (Planned)
-- [ ] Automatic adapter detection
-- [ ] JSON statistics output
-- [ ] Progress reporting
+### Version 1.1.0 (Completed)
+- ✅ Automatic adapter detection
+- ✅ UMI/barcode processing
+- ✅ Base correction
+- ✅ Overlap analysis for paired-end
+- ✅ Multi-threading support
+- ✅ HTML report generation
 
 ### Version 1.2.0 (Future)
-- [ ] Parallel processing
-- [ ] HTML report generation
-- [ ] UMI handling
-- [ ] Merge overlapping paired-end reads
+- [ ] Per-tile quality filtering
+- [ ] Advanced quality profiling
+- [ ] Support for additional sequencing platforms
 
 ## License
 
