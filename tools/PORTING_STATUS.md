@@ -49,10 +49,18 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Quality score handling
 - Memory-efficient streaming
 
+**Recent Updates** (2025-10-21):
+- ✅ All core functionality complete
+- ✅ Trimming, duplicate removal, paired-end support implemented
+- ✅ Phred+64 encoding support added
+- ✅ Bad sequence output added
+- ✅ Complexity filtering (DUST and entropy) added
+
 **Migration Notes**:
-- Backward compatible
-- All major commands work identically
-- Long options added for clarity
+- Command structure changed (subcommands instead of flags)
+- Core functionality identical
+- Output format compatible
+- Now feature-complete with all major PRINSEQ-lite features
 
 ---
 
@@ -80,11 +88,15 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Poly-N and poly-A/T tail trimming
 - Duplicate removal
 - Paired-end support
+- Phred+64 encoding support (Illumina 1.3-1.7)
+- Bad sequence output
+- Complexity filtering (DUST and entropy methods)
 
 **Migration Notes**:
 - Command structure changed (subcommands instead of flags)
 - Core functionality identical
 - Output format compatible
+- Feature-complete with original PRINSEQ-lite
 
 ---
 
@@ -386,9 +398,9 @@ Use consistent datasets for comparison:
 - No built-in gzip support (planned for v1.1)
 
 **PRINSEQ**:
-- Phred+64 encoding not yet supported (planned v1.1)
-- No graph generation (use separate tools)
-- No built-in gzip support (planned for v1.1)
+- ✅ **Full feature parity achieved!** All major features implemented
+- ✅ Trimming, duplicates, paired-end, Phred+64, bad output, complexity filtering
+- Graph generation not included (use separate visualization tools)
 
 **sickle**:
 - ✓ Built-in gzip support added in v1.1
@@ -399,9 +411,10 @@ Use consistent datasets for comparison:
 - No automatic adapter detection (planned v1.1)
 
 **fastp**:
-- Simplified version (core features only)
+- ✅ **Paired-end support now implemented!**
+- ✅ Core preprocessing features complete
 - No HTML reports (planned v1.2)
-- No paired-end support yet (planned v1.1)
+- No automatic adapter detection (planned v1.1)
 - Single-threaded (parallel processing planned v1.2)
 
 ### General Limitations
