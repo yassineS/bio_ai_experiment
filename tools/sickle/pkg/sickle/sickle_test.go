@@ -2,6 +2,7 @@ package sickle
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -383,5 +384,133 @@ IIIIIIIIIIIIIIIIIIII
 	// At least one read should be discarded (read2 is too short)
 	if stats.DiscardedReads == 0 {
 		t.Error("Expected at least one discarded read")
+	}
+}
+
+func TestCustomWindowSize(t *testing.T) {
+	input := `@read1
+ACGTACGTACGTACGTACGTACGT
++
+IIIIIIIIIIII############
+`
+	
+	var output1, output2 bytes.Buffer
+	
+	// Test with default window size (10)
+	opts1 := DefaultTrimOptions()
+	opts1.QualThreshold = 30
+	opts1.WindowSize = 10
+	
+	stats1, err := TrimSingleEnd(strings.NewReader(input), &output1, fastq.Phred33, opts1)
+	if err != nil {
+		t.Fatalf("TrimSingleEnd with default window failed: %v", err)
+	}
+	
+	// Test with smaller window size (5)
+	opts2 := DefaultTrimOptions()
+	opts2.QualThreshold = 30
+	opts2.WindowSize = 5
+	
+	stats2, err := TrimSingleEnd(strings.NewReader(input), &output2, fastq.Phred33, opts2)
+	if err != nil {
+		t.Fatalf("TrimSingleEnd with small window failed: %v", err)
+	}
+	
+	// Both should process the same number of reads
+	if stats1.TotalReads != stats2.TotalReads {
+		t.Error("Window size should not affect total reads")
+	}
+	
+	// Different window sizes may result in different trimming
+	// Just verify both ran successfully
+	if stats1.TotalBases == 0 || stats2.TotalBases == 0 {
+		t.Error("Expected positive total bases for both window sizes")
+	}
+}
+
+func TestProgressReporting(t *testing.T) {
+	// Generate a larger input for progress testing
+	var inputBuilder strings.Builder
+	for i := 0; i < 100; i++ {
+		inputBuilder.WriteString(fmt.Sprintf("@read%d\n", i))
+		inputBuilder.WriteString("ACGTACGTACGTACGTACGTACGT\n")
+		inputBuilder.WriteString("+\n")
+		inputBuilder.WriteString("IIIIIIIIIIIIIIIIIIIIIIII\n")
+	}
+	
+	var output bytes.Buffer
+	opts := DefaultTrimOptions()
+	opts.Progress = true // Enable progress reporting
+	
+	stats, err := TrimSingleEnd(strings.NewReader(inputBuilder.String()), &output, fastq.Phred33, opts)
+	if err != nil {
+		t.Fatalf("TrimSingleEnd with progress failed: %v", err)
+	}
+	
+	if stats.TotalReads != 100 {
+		t.Errorf("Expected 100 total reads, got %d", stats.TotalReads)
+	}
+}
+
+func TestQualityRecalibration(t *testing.T) {
+	input := `@read1
+ACGTACGTACGTACGTACGTACGT
++
+IIIIIIIIIIIIIIIIIIIIIIII
+`
+	
+	var output1, output2 bytes.Buffer
+	
+	// Test without recalibration
+	opts1 := DefaultTrimOptions()
+	opts1.Recalibrate = false
+	
+	stats1, err := TrimSingleEnd(strings.NewReader(input), &output1, fastq.Phred33, opts1)
+	if err != nil {
+		t.Fatalf("TrimSingleEnd without recalibration failed: %v", err)
+	}
+	
+	// Test with recalibration
+	opts2 := DefaultTrimOptions()
+	opts2.Recalibrate = true
+	
+	stats2, err := TrimSingleEnd(strings.NewReader(input), &output2, fastq.Phred33, opts2)
+	if err != nil {
+		t.Fatalf("TrimSingleEnd with recalibration failed: %v", err)
+	}
+	
+	// Both should process the same number of reads
+	if stats1.TotalReads != stats2.TotalReads {
+		t.Error("Recalibration should not affect total reads")
+	}
+	
+	// High quality reads should pass regardless of recalibration
+	if stats1.DiscardedReads > 0 || stats2.DiscardedReads > 0 {
+		t.Error("High quality read should not be discarded")
+	}
+}
+
+func TestRecalibrateRecord(t *testing.T) {
+	record := &fastq.Record{
+		ID:       "test",
+		Sequence: []byte("AAAAACGTACGTACGTACGT"),
+		Quality:  []byte("IIIIIIIIIIIIIIIIIIII"),
+	}
+	
+	recalibrated := recalibrateRecord(record, fastq.Phred33)
+	
+	if len(recalibrated.Quality) != len(record.Quality) {
+		t.Error("Recalibrated quality should have same length")
+	}
+	
+	if string(recalibrated.Sequence) != string(record.Sequence) {
+		t.Error("Recalibration should not change sequence")
+	}
+	
+	// Quality values may change but should still be valid ASCII
+	for i, q := range recalibrated.Quality {
+		if q < 33 || q > 126 {
+			t.Errorf("Invalid quality score at position %d: %d", i, q)
+		}
 	}
 }

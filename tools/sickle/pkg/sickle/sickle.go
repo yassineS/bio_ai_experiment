@@ -4,6 +4,7 @@ package sickle
 import (
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 )
@@ -15,6 +16,8 @@ type TrimOptions struct {
 	NoFivePrime      bool // Don't trim 5' end
 	TruncateN        bool // Truncate at first N
 	WindowSize       int  // Size of sliding window for quality assessment
+	Progress         bool // Show progress reporting
+	Recalibrate      bool // Recalibrate quality scores
 }
 
 // DefaultTrimOptions returns default trimming options.
@@ -44,6 +47,10 @@ func TrimSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEnco
 	
 	stats := &TrimStats{}
 	
+	// Progress reporting setup
+	var progressCounter int
+	const progressInterval = 10000
+	
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -55,6 +62,11 @@ func TrimSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEnco
 		
 		stats.TotalReads++
 		stats.TotalBases += int64(len(record.Sequence))
+		
+		// Apply recalibration if requested
+		if opts.Recalibrate {
+			record = recalibrateRecord(record, encoding)
+		}
 		
 		// Apply trimming
 		trimmed := trimRecord(record, opts)
@@ -71,6 +83,17 @@ func TrimSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEnco
 		} else {
 			stats.DiscardedReads++
 		}
+		
+		// Progress reporting
+		if opts.Progress && stats.TotalReads%progressInterval == 0 {
+			progressCounter++
+			fmt.Fprintf(os.Stderr, "\rProcessed %d reads...", stats.TotalReads)
+		}
+	}
+	
+	// Clear progress line
+	if opts.Progress {
+		fmt.Fprintf(os.Stderr, "\r")
 	}
 	
 	// Flush writer
@@ -97,6 +120,9 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 	
 	stats := &TrimStats{}
 	
+	// Progress reporting setup
+	const progressInterval = 10000
+	
 	for {
 		record1, err1 := reader1.Read()
 		record2, err2 := reader2.Read()
@@ -116,6 +142,12 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 		
 		stats.TotalReads += 2
 		stats.TotalBases += int64(len(record1.Sequence) + len(record2.Sequence))
+		
+		// Apply recalibration if requested
+		if opts.Recalibrate {
+			record1 = recalibrateRecord(record1, encoding)
+			record2 = recalibrateRecord(record2, encoding)
+		}
 		
 		// Trim both reads
 		trimmed1 := trimRecord(record1, opts)
@@ -171,6 +203,16 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 			// Discard both if either fails and no single output
 			stats.DiscardedReads += 2
 		}
+		
+		// Progress reporting
+		if opts.Progress && stats.TotalReads%progressInterval == 0 {
+			fmt.Fprintf(os.Stderr, "\rProcessed %d reads...", stats.TotalReads)
+		}
+	}
+	
+	// Clear progress line
+	if opts.Progress {
+		fmt.Fprintf(os.Stderr, "\r")
 	}
 	
 	// Flush all writers
@@ -343,4 +385,72 @@ func trim3Prime(quality string, threshold, windowSize, minPos, maxPos int) int {
 	}
 	
 	return maxPos
+}
+
+// recalibrateRecord recalibrates quality scores using empirical base quality score recalibration.
+// This is a simplified version that adjusts quality scores based on sequence context.
+func recalibrateRecord(record *fastq.Record, encoding fastq.QualityEncoding) *fastq.Record {
+	if len(record.Quality) == 0 {
+		return record
+	}
+	
+	// Get quality offset
+	offset := 33
+	if encoding == fastq.Phred64 {
+		offset = 64
+	}
+	
+	// Create a copy of the quality scores
+	newQuality := make([]byte, len(record.Quality))
+	copy(newQuality, record.Quality)
+	
+	// Simple recalibration: adjust quality scores based on position and context
+	// This is a simplified algorithm - real recalibration would use machine learning
+	for i := 0; i < len(newQuality); i++ {
+		currentQual := int(newQuality[i]) - offset
+		
+		// Position-based adjustment: quality tends to degrade toward read ends
+		positionFactor := 1.0
+		readLength := len(newQuality)
+		if i < readLength/10 || i > 9*readLength/10 {
+			// First and last 10% of read: slight quality penalty
+			positionFactor = 0.95
+		}
+		
+		// Context-based adjustment: homopolymers are more error-prone
+		if i > 0 && i < len(record.Sequence)-1 {
+			prevBase := record.Sequence[i-1]
+			currBase := record.Sequence[i]
+			nextBase := record.Sequence[i+1]
+			
+			// Penalize homopolymer runs
+			if prevBase == currBase || currBase == nextBase {
+				positionFactor *= 0.95
+			}
+		}
+		
+		// Apply adjustments
+		adjustedQual := int(float64(currentQual) * positionFactor)
+		
+		// Clamp to valid range
+		if adjustedQual < 0 {
+			adjustedQual = 0
+		}
+		maxQual := 93
+		if encoding == fastq.Phred64 {
+			maxQual = 62
+		}
+		if adjustedQual > maxQual {
+			adjustedQual = maxQual
+		}
+		
+		newQuality[i] = byte(adjustedQual + offset)
+	}
+	
+	return &fastq.Record{
+		ID:          record.ID,
+		Description: record.Description,
+		Sequence:    record.Sequence,
+		Quality:     newQuality,
+	}
 }
