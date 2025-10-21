@@ -149,6 +149,8 @@ func main() {
 	// Statistics output
 	freq := flag.Bool("freq", false, "Output allele frequency")
 	counts := flag.Bool("counts", false, "Output allele counts")
+	freq2 := flag.Bool("freq2", false, "Alternative frequency output format")
+	counts2 := flag.Bool("counts2", false, "Alternative counts output format")
 	depth := flag.Bool("depth", false, "Output mean depth per site")
 	siteDepth := flag.Bool("site-depth", false, "Output depth for each site")
 	siteMeanDepth := flag.Bool("site-mean-depth", false, "Output mean depth per site")
@@ -158,7 +160,13 @@ func main() {
 	hardy := flag.Bool("hardy", false, "Hardy-Weinberg equilibrium test")
 	tsTvSummary := flag.Bool("TsTv-summary", false, "Ts/Tv ratio summary")
 	tsTvBinSize := flag.Int("TsTv", 0, "Ts/Tv in bins of this size")
+	tsTvByCount := flag.Bool("TsTv-by-count", false, "Ts/Tv by allele count")
+	tsTvByQual := flag.Bool("TsTv-by-qual", false, "Ts/Tv by quality score")
 	sitePi := flag.Bool("site-pi", false, "Nucleotide diversity per site")
+	het := flag.Bool("het", false, "Heterozygosity statistics")
+	singletons := flag.Bool("singletons", false, "Singleton site analysis")
+	histIndelLen := flag.Bool("hist-indel-len", false, "Indel length histogram")
+	genoDepth := flag.Bool("geno-depth", false, "Genotype depth distribution")
 
 	// Sample filtering
 	var indvList, removeIndvList []string
