@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -33,6 +34,16 @@ func main() {
 		runStats(os.Args[2:])
 	case "filter":
 		runFilter(os.Args[2:])
+	case "graph":
+		runGraph(os.Args[2:])
+	case "report":
+		runReport(os.Args[2:])
+	case "benchmark":
+		runBenchmark(os.Args[2:])
+	case "api":
+		runAPI(os.Args[2:])
+	case "batch":
+		runBatch(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Printf("prinseq version %s\n", version)
 	case "help", "-h", "--help":
@@ -53,6 +64,11 @@ Usage:
 Commands:
   stats     Calculate sequence statistics
   filter    Filter sequences based on quality criteria
+  graph     Generate quality graphs
+  report    Generate HTML quality report
+  benchmark Run performance benchmarks
+  api       Start REST API server
+  batch     Process multiple files in parallel
   version   Print version information
   help      Print this help message
 
@@ -63,8 +79,11 @@ func runStats(args []string) {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
 	
 	var fastq, fasta string
+	var jsonOutput, enhanced bool
 	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file (use '-' for stdin)")
 	cliflag.StringVar(fs, &fasta, "", "fasta", "", "Input FASTA file (use '-' for stdin)")
+	cliflag.BoolVar(fs, &jsonOutput, "j", "json", false, "Output statistics in JSON format")
+	cliflag.BoolVar(fs, &enhanced, "e", "enhanced", false, "Calculate enhanced statistics (distributions, dinucleotides)")
 
 	fs.Usage = func() {
 		fmt.Print(`Usage: prinseq stats [options]
@@ -74,6 +93,8 @@ Calculate sequence statistics for FASTA or FASTQ files.
 Options:
   --fasta FILE              Input FASTA file (use '-' for stdin)
   --fastq FILE              Input FASTQ file (use '-' for stdin)
+  -j, --json                Output statistics in JSON format
+  -e, --enhanced            Calculate enhanced statistics
 `)
 	}
 
@@ -113,22 +134,38 @@ Options:
 	}
 
 	// Calculate statistics
-	stats, err2 := prinseq.CalculateStats(reader, isFastq)
+	var stats *prinseq.Stats
+	var err2 error
+	if enhanced {
+		stats, err2 = prinseq.CalculateEnhancedStats(reader, isFastq)
+	} else {
+		stats, err2 = prinseq.CalculateStats(reader, isFastq)
+	}
+	
 	if err2 != nil {
 		fmt.Fprintf(os.Stderr, "Error calculating statistics: %v\n", err2)
 		os.Exit(1)
 	}
 
 	// Print statistics
-	fmt.Printf("Number of reads: %d\n", stats.NumReads)
-	fmt.Printf("Total bases: %d\n", stats.TotalBases)
-	fmt.Printf("Min length: %d\n", stats.MinLength)
-	fmt.Printf("Max length: %d\n", stats.MaxLength)
-	fmt.Printf("Average length: %.2f\n", stats.AvgLength)
-	fmt.Printf("GC content: %.2f%%\n", stats.GCContent)
-	fmt.Printf("Number of Ns: %d\n", stats.NumNs)
-	if isFastq {
-		fmt.Printf("Average quality: %.2f\n", stats.AvgQuality)
+	if jsonOutput {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(stats); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Printf("Number of reads: %d\n", stats.NumReads)
+		fmt.Printf("Total bases: %d\n", stats.TotalBases)
+		fmt.Printf("Min length: %d\n", stats.MinLength)
+		fmt.Printf("Max length: %d\n", stats.MaxLength)
+		fmt.Printf("Average length: %.2f\n", stats.AvgLength)
+		fmt.Printf("GC content: %.2f%%\n", stats.GCContent)
+		fmt.Printf("Number of Ns: %d\n", stats.NumNs)
+		if isFastq {
+			fmt.Printf("Average quality: %.2f\n", stats.AvgQuality)
+		}
 	}
 }
 
@@ -433,4 +470,333 @@ func hasSuffix(s string, suffixes ...string) bool {
 		}
 	}
 	return false
+}
+
+func runGraph(args []string) {
+	fs := flag.NewFlagSet("graph", flag.ExitOnError)
+	
+	var fastq, fasta, graphType, output string
+	var svg bool
+	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file")
+	cliflag.StringVar(fs, &fasta, "", "fasta", "", "Input FASTA file")
+	cliflag.StringVar(fs, &graphType, "t", "type", "length", "Graph type: length, gc, quality, dinucleotides, positional_quality")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
+	cliflag.BoolVar(fs, &svg, "", "svg", false, "Generate SVG output")
+
+	fs.Usage = func() {
+		fmt.Print(`Usage: prinseq graph [options]
+
+Generate quality graphs from sequence statistics.
+
+Options:
+  --fasta FILE       Input FASTA file
+  --fastq FILE       Input FASTQ file
+  -t, --type TYPE    Graph type (length, gc, quality, dinucleotides, positional_quality)
+  -o, --output FILE  Output file (default: stdout)
+  --svg              Generate SVG output (default: ASCII)
+`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var inputFile string
+	var isFastq bool
+	if fastq != "" {
+		inputFile = fastq
+		isFastq = true
+	} else if fasta != "" {
+		inputFile = fasta
+		isFastq = false
+	} else {
+		fmt.Fprintln(os.Stderr, "Error: Either --fastq or --fasta must be specified")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	reader, err := os.Open(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+		os.Exit(1)
+	}
+	defer reader.Close()
+
+	stats, err := prinseq.CalculateEnhancedStats(reader, isFastq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error calculating stats: %v\n", err)
+		os.Exit(1)
+	}
+
+	var writer io.WriteCloser = os.Stdout
+	if output != "" {
+		writer, err = os.Create(output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+			os.Exit(1)
+		}
+		defer writer.Close()
+	}
+
+	if svg {
+		err = prinseq.GenerateSVG(stats, writer)
+	} else {
+		err = prinseq.GenerateGraph(stats, prinseq.GraphType(graphType), writer)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating graph: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runReport(args []string) {
+	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	
+	var fastq, fasta, output string
+	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file")
+	cliflag.StringVar(fs, &fasta, "", "fasta", "", "Input FASTA file")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output HTML file (default: stdout)")
+
+	fs.Usage = func() {
+		fmt.Print(`Usage: prinseq report [options]
+
+Generate an HTML quality report with embedded graphs.
+
+Options:
+  --fasta FILE       Input FASTA file
+  --fastq FILE       Input FASTQ file
+  -o, --output FILE  Output HTML file (default: stdout)
+`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var inputFile string
+	var isFastq bool
+	if fastq != "" {
+		inputFile = fastq
+		isFastq = true
+	} else if fasta != "" {
+		inputFile = fasta
+		isFastq = false
+	} else {
+		fmt.Fprintln(os.Stderr, "Error: Either --fastq or --fasta must be specified")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	reader, err := os.Open(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+		os.Exit(1)
+	}
+	defer reader.Close()
+
+	stats, err := prinseq.CalculateEnhancedStats(reader, isFastq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error calculating stats: %v\n", err)
+		os.Exit(1)
+	}
+
+	var writer io.WriteCloser = os.Stdout
+	if output != "" {
+		writer, err = os.Create(output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+			os.Exit(1)
+		}
+		defer writer.Close()
+	}
+
+	if err := prinseq.GenerateHTMLReport(stats, writer); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating report: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runBenchmark(args []string) {
+	fs := flag.NewFlagSet("benchmark", flag.ExitOnError)
+	
+	var fastq, fasta string
+	var jsonOutput bool
+	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file")
+	cliflag.StringVar(fs, &fasta, "", "fasta", "", "Input FASTA file")
+	cliflag.BoolVar(fs, &jsonOutput, "j", "json", false, "Output results in JSON format")
+
+	fs.Usage = func() {
+		fmt.Print(`Usage: prinseq benchmark [options]
+
+Run performance benchmarks on sequence processing operations.
+
+Options:
+  --fasta FILE       Input FASTA file
+  --fastq FILE       Input FASTQ file
+  -j, --json         Output results in JSON format
+`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var inputFile string
+	var isFastq bool
+	if fastq != "" {
+		inputFile = fastq
+		isFastq = true
+	} else if fasta != "" {
+		inputFile = fasta
+		isFastq = false
+	} else {
+		fmt.Fprintln(os.Stderr, "Error: Either --fastq or --fasta must be specified")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	reader, err := os.Open(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+		os.Exit(1)
+	}
+	defer reader.Close()
+
+	results, err := prinseq.RunBenchmarkSuite(reader, isFastq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error running benchmark: %v\n", err)
+		os.Exit(1)
+	}
+
+	if jsonOutput {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(results); err != nil {
+			fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Print(prinseq.FormatBenchmarkResults(results))
+	}
+}
+
+func runAPI(args []string) {
+	fs := flag.NewFlagSet("api", flag.ExitOnError)
+	
+	var addr string
+	cliflag.StringVar(fs, &addr, "a", "addr", ":8080", "Server address")
+
+	fs.Usage = func() {
+		fmt.Print(`Usage: prinseq api [options]
+
+Start a REST API server for PRINSEQ operations.
+
+Options:
+  -a, --addr ADDR    Server address (default: :8080)
+
+Examples:
+  prinseq api --addr :8080
+  prinseq api --addr localhost:9000
+`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	server := prinseq.NewAPIServer(addr)
+	if err := server.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting server: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runBatch(args []string) {
+	fs := flag.NewFlagSet("batch", flag.ExitOnError)
+	
+	var outputDir string
+	var workers int
+	var generateReport bool
+	var isFastq bool
+	var minLen int
+	var minGC, maxGC float64
+	
+	cliflag.StringVar(fs, &outputDir, "o", "output", "", "Output directory")
+	cliflag.IntVar(fs, &workers, "w", "workers", 4, "Number of parallel workers")
+	cliflag.BoolVar(fs, &generateReport, "r", "report", false, "Generate HTML reports")
+	cliflag.BoolVar(fs, &isFastq, "", "fastq", false, "Input files are FASTQ format")
+	cliflag.IntVar(fs, &minLen, "l", "min-length", 0, "Minimum sequence length for filtering")
+	cliflag.Float64Var(fs, &minGC, "g", "min-gc", 0, "Minimum GC content")
+	cliflag.Float64Var(fs, &maxGC, "G", "max-gc", 0, "Maximum GC content")
+
+	fs.Usage = func() {
+		fmt.Print(`Usage: prinseq batch [options] <input_files...>
+
+Process multiple files in parallel.
+
+Options:
+  -o, --output DIR      Output directory
+  -w, --workers N       Number of parallel workers (default: 4)
+  -r, --report          Generate HTML reports
+  --fastq               Input files are FASTQ format
+  -l, --min-length INT  Minimum sequence length for filtering
+  -g, --min-gc FLOAT    Minimum GC content
+  -G, --max-gc FLOAT    Maximum GC content
+
+Examples:
+  prinseq batch --fastq -o output -w 8 *.fastq
+  prinseq batch --fastq -o output -r *.fastq
+`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	inputFiles := fs.Args()
+	if len(inputFiles) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: No input files specified")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	config := prinseq.BatchProcessConfig{
+		InputFiles:     inputFiles,
+		OutputDir:      outputDir,
+		IsFastq:        isFastq,
+		Workers:        workers,
+		GenerateReport: generateReport,
+		FilterOpts: prinseq.FilterOptions{
+			MinLen: minLen,
+			MinGC:  minGC,
+			MaxGC:  maxGC,
+		},
+	}
+
+	fmt.Printf("Processing %d files with %d workers...\n", len(inputFiles), workers)
+	
+	results, err := prinseq.BatchProcess(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error in batch processing: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Print summary
+	fmt.Printf("\nProcessing complete!\n")
+	fmt.Printf("Successfully processed: %d files\n", len(results))
+	
+	for _, result := range results {
+		if result.Error != nil {
+			fmt.Printf("  ✗ %s: %v\n", result.Filename, result.Error)
+		} else {
+			fmt.Printf("  ✓ %s: %d reads, %.2f avg length\n", 
+				result.Filename, result.Stats.NumReads, result.Stats.AvgLength)
+		}
+	}
 }

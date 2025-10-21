@@ -12,14 +12,19 @@ import (
 
 // Stats holds sequence statistics
 type Stats struct {
-	NumReads   int
-	TotalBases int
-	MinLength  int
-	MaxLength  int
-	AvgLength  float64
-	GCContent  float64
-	AvgQuality float64 // Only for FASTQ
-	NumNs      int
+	NumReads          int                `json:"num_reads"`
+	TotalBases        int                `json:"total_bases"`
+	MinLength         int                `json:"min_length"`
+	MaxLength         int                `json:"max_length"`
+	AvgLength         float64            `json:"avg_length"`
+	GCContent         float64            `json:"gc_content"`
+	AvgQuality        float64            `json:"avg_quality,omitempty"` // Only for FASTQ
+	NumNs             int                `json:"num_ns"`
+	LengthDistribution map[int]int       `json:"length_distribution,omitempty"`
+	QualityDistribution map[int]int      `json:"quality_distribution,omitempty"`
+	BaseComposition   map[string]int     `json:"base_composition,omitempty"`
+	Dinucleotides     map[string]int     `json:"dinucleotides,omitempty"`
+	PositionalQuality []float64          `json:"positional_quality,omitempty"`
 }
 
 // CalculateStats computes statistics for FASTA or FASTQ files
@@ -875,4 +880,194 @@ func filterPairedFastq(reader1, reader2 io.Reader, writer1, writer2 io.Writer, o
 		return err
 	}
 	return fastqWriter2.Flush()
+}
+
+// CalculateEnhancedStats computes enhanced statistics including distributions and dinucleotides
+func CalculateEnhancedStats(reader io.Reader, isFastq bool) (*Stats, error) {
+	return CalculateEnhancedStatsWithEncoding(reader, isFastq, "sanger")
+}
+
+// CalculateEnhancedStatsWithEncoding computes enhanced statistics with specific quality encoding
+func CalculateEnhancedStatsWithEncoding(reader io.Reader, isFastq bool, qualType string) (*Stats, error) {
+	stats := &Stats{
+		MinLength:           -1,
+		LengthDistribution:  make(map[int]int),
+		QualityDistribution: make(map[int]int),
+		BaseComposition:     make(map[string]int),
+		Dinucleotides:       make(map[string]int),
+	}
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB buffer
+
+	if isFastq {
+		offset := 33
+		if qualType == "illumina" {
+			offset = 64
+		}
+		return calculateEnhancedFastqStats(scanner, stats, offset)
+	}
+	return calculateEnhancedFastaStats(scanner, stats)
+}
+
+func calculateEnhancedFastaStats(scanner *bufio.Scanner, stats *Stats) (*Stats, error) {
+	var currentSeq string
+	gcCount := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
+		}
+
+		if line[0] == '>' {
+			// Process previous sequence
+			if currentSeq != "" {
+				processEnhancedSequence(currentSeq, "", &gcCount, stats)
+				currentSeq = ""
+			}
+		} else {
+			currentSeq += line
+		}
+	}
+
+	// Process last sequence
+	if currentSeq != "" {
+		processEnhancedSequence(currentSeq, "", &gcCount, stats)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading file: %w", err)
+	}
+
+	// Calculate averages
+	if stats.NumReads > 0 {
+		stats.AvgLength = float64(stats.TotalBases) / float64(stats.NumReads)
+		stats.GCContent = float64(gcCount) / float64(stats.TotalBases) * 100.0
+	}
+
+	return stats, nil
+}
+
+func calculateEnhancedFastqStats(scanner *bufio.Scanner, stats *Stats, offset int) (*Stats, error) {
+	gcCount := 0
+	totalQuality := 0.0
+	lineNum := 0
+	maxLen := 0
+
+	var seq string
+	var qual string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		mod := lineNum % 4
+
+		switch mod {
+		case 0: // Header line
+			if len(line) == 0 || line[0] != '@' {
+				return nil, fmt.Errorf("invalid FASTQ format at line %d", lineNum+1)
+			}
+		case 1: // Sequence line
+			seq = line
+		case 2: // Plus line
+			if len(line) == 0 || line[0] != '+' {
+				return nil, fmt.Errorf("invalid FASTQ format at line %d", lineNum+1)
+			}
+		case 3: // Quality line
+			qual = line
+			if len(qual) != len(seq) {
+				return nil, fmt.Errorf("quality length (%d) doesn't match sequence length (%d) at line %d",
+					len(qual), len(seq), lineNum+1)
+			}
+			// Process the complete FASTQ record
+			processEnhancedSequence(seq, qual, &gcCount, stats)
+			avgQual := calculateAvgQualityScoreWithOffset(qual, offset)
+			totalQuality += avgQual
+			
+			// Update quality distribution
+			qualInt := int(avgQual)
+			stats.QualityDistribution[qualInt]++
+			
+			// Update positional quality
+			if len(seq) > maxLen {
+				maxLen = len(seq)
+				// Extend positional quality array
+				for len(stats.PositionalQuality) < maxLen {
+					stats.PositionalQuality = append(stats.PositionalQuality, 0)
+				}
+			}
+			for i, q := range qual {
+				qualVal := float64(int(q) - offset)
+				if i < len(stats.PositionalQuality) {
+					stats.PositionalQuality[i] += qualVal
+				}
+			}
+			
+			seq = ""
+			qual = ""
+		}
+
+		lineNum++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading file: %w", err)
+	}
+
+	// Check if we have incomplete records
+	if lineNum%4 != 0 {
+		return nil, fmt.Errorf("incomplete FASTQ record")
+	}
+
+	// Calculate averages
+	if stats.NumReads > 0 {
+		stats.AvgLength = float64(stats.TotalBases) / float64(stats.NumReads)
+		stats.GCContent = float64(gcCount) / float64(stats.TotalBases) * 100.0
+		stats.AvgQuality = totalQuality / float64(stats.NumReads)
+		
+		// Average positional quality
+		for i := range stats.PositionalQuality {
+			stats.PositionalQuality[i] /= float64(stats.NumReads)
+		}
+	}
+
+	return stats, nil
+}
+
+func processEnhancedSequence(seq, qual string, gcCount *int, stats *Stats) {
+	seqLen := len(seq)
+	stats.NumReads++
+	stats.TotalBases += seqLen
+
+	if stats.MinLength == -1 || seqLen < stats.MinLength {
+		stats.MinLength = seqLen
+	}
+	if seqLen > stats.MaxLength {
+		stats.MaxLength = seqLen
+	}
+
+	// Update length distribution
+	stats.LengthDistribution[seqLen]++
+
+	// Count bases, GC, Ns, and dinucleotides
+	var prevBase byte
+	for i, base := range seq {
+		// Base composition
+		baseStr := string(base)
+		stats.BaseComposition[baseStr]++
+		
+		switch base {
+		case 'G', 'C', 'g', 'c':
+			*gcCount++
+		case 'N', 'n':
+			stats.NumNs++
+		}
+		
+		// Dinucleotides
+		if i > 0 {
+			dinuc := string([]byte{prevBase, byte(base)})
+			stats.Dinucleotides[dinuc]++
+		}
+		prevBase = byte(base)
+	}
 }
