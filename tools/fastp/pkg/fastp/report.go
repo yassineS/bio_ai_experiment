@@ -13,7 +13,7 @@ func GenerateHTMLReport(stats *ProcessStats, opts ProcessOptions, outputPath str
 		return fmt.Errorf("failed to create HTML report: %w", err)
 	}
 	defer f.Close()
-	
+
 	html := generateHTMLContent(stats, opts)
 	_, err = f.WriteString(html)
 	return err
@@ -21,29 +21,29 @@ func GenerateHTMLReport(stats *ProcessStats, opts ProcessOptions, outputPath str
 
 func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	
+
 	// Calculate percentages
 	cleanPercent := 0.0
 	if stats.TotalReads > 0 {
 		cleanPercent = 100.0 * float64(stats.CleanReads) / float64(stats.TotalReads)
 	}
-	
+
 	adapterPercent := 0.0
 	if stats.TotalReads > 0 && stats.AdapterTrimmedReads > 0 {
 		adapterPercent = 100.0 * float64(stats.AdapterTrimmedReads) / float64(stats.TotalReads)
 	}
-	
+
 	polyGPercent := 0.0
 	if stats.TotalReads > 0 && stats.PolyGTrimmedReads > 0 {
 		polyGPercent = 100.0 * float64(stats.PolyGTrimmedReads) / float64(stats.TotalReads)
 	}
-	
+
 	filteredPercent := 0.0
 	if stats.TotalReads > 0 {
 		filtered := stats.TotalReads - stats.CleanReads
 		filteredPercent = 100.0 * float64(filtered) / float64(stats.TotalReads)
 	}
-	
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -247,7 +247,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
 		stats.TooLongReads, 100.0*float64(stats.TooLongReads)/float64(stats.TotalReads),
 		stats.TooManyNReads, 100.0*float64(stats.TooManyNReads)/float64(stats.TotalReads),
 	)
-	
+
 	// Adapter trimming row
 	if stats.AdapterTrimmedReads > 0 {
 		html += fmt.Sprintf(`
@@ -262,7 +262,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
 			adapterPercent,
 		)
 	}
-	
+
 	// Poly-G trimming row
 	if stats.PolyGTrimmedReads > 0 {
 		html += fmt.Sprintf(`
@@ -277,10 +277,10 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
 			polyGPercent,
 		)
 	}
-	
+
 	html += `
         </table>`
-	
+
 	// Add new features section
 	if stats.DetectedAdapter != "" || stats.UMIExtracted > 0 || stats.BasesCorrected > 0 || stats.MergedReads > 0 {
 		html += `
@@ -290,7 +290,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <th>Feature</th>
                 <th>Value</th>
             </tr>`
-		
+
 		if stats.DetectedAdapter != "" {
 			html += fmt.Sprintf(`
             <tr>
@@ -298,7 +298,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>%s</td>
             </tr>`, stats.DetectedAdapter)
 		}
-		
+
 		if stats.UMIExtracted > 0 {
 			html += fmt.Sprintf(`
             <tr>
@@ -306,7 +306,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>%d reads</td>
             </tr>`, stats.UMIExtracted)
 		}
-		
+
 		if stats.BasesCorrected > 0 {
 			html += fmt.Sprintf(`
             <tr>
@@ -314,7 +314,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>%d bases</td>
             </tr>`, stats.BasesCorrected)
 		}
-		
+
 		if stats.MergedReads > 0 {
 			html += fmt.Sprintf(`
             <tr>
@@ -322,11 +322,11 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>%d pairs (%.2f%%)</td>
             </tr>`, stats.MergedReads, 100.0*float64(stats.MergedReads)/float64(stats.TotalReads/2))
 		}
-		
+
 		html += `
         </table>`
 	}
-	
+
 	// Configuration section
 	html += `
         <h2>Configuration</h2>
@@ -335,7 +335,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <th>Parameter</th>
                 <th>Value</th>
             </tr>`
-	
+
 	if opts.Adapter3 != "" {
 		html += fmt.Sprintf(`
             <tr>
@@ -343,7 +343,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>%s</td>
             </tr>`, opts.Adapter3)
 	}
-	
+
 	if opts.Adapter5 != "" {
 		html += fmt.Sprintf(`
             <tr>
@@ -351,7 +351,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>%s</td>
             </tr>`, opts.Adapter5)
 	}
-	
+
 	html += fmt.Sprintf(`
             <tr>
                 <td>Quality threshold</td>
@@ -374,7 +374,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
 		opts.MaxNCount,
 		opts.Threads,
 	)
-	
+
 	if opts.TrimPolyG {
 		html += `
             <tr>
@@ -382,7 +382,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>Enabled</td>
             </tr>`
 	}
-	
+
 	if opts.LowComplexity {
 		html += fmt.Sprintf(`
             <tr>
@@ -390,7 +390,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>Enabled (threshold: %.2f)</td>
             </tr>`, opts.ComplexityThreshold)
 	}
-	
+
 	if opts.BaseCorrection {
 		html += `
             <tr>
@@ -398,7 +398,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>Enabled</td>
             </tr>`
 	}
-	
+
 	if opts.MergeOverlap {
 		html += fmt.Sprintf(`
             <tr>
@@ -406,7 +406,7 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
                 <td>Enabled (min overlap: %d, max mismatch: %d)</td>
             </tr>`, opts.MinOverlap, opts.MaxMismatch)
 	}
-	
+
 	html += `
         </table>
         
@@ -417,6 +417,6 @@ func generateHTMLContent(stats *ProcessStats, opts ProcessOptions) string {
     </div>
 </body>
 </html>`
-	
+
 	return html
 }
