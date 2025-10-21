@@ -377,3 +377,175 @@ func TestGetFileTypeCompressed(t *testing.T) {
 		t.Error("Compressed FASTA file detected as FASTQ")
 	}
 }
+
+func TestFilter(t *testing.T) {
+	// Test length filtering
+	fasta := `>seq1
+ACGT
+>seq2
+ACGTACGTACGT
+>seq3
+ACGTACGTACGTACGT
+`
+	r := strings.NewReader(fasta)
+	var buf bytes.Buffer
+	
+	opts := FilterOptions{
+		MinLength: 8,
+		MaxLength: 12,
+	}
+	
+	err := Filter(r, &buf, opts, false, fastq.Phred33)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+	
+	output := buf.String()
+	if strings.Contains(output, "seq1") {
+		t.Error("seq1 (length 4) should be filtered out")
+	}
+	if !strings.Contains(output, "seq2") {
+		t.Error("seq2 (length 12) should be included")
+	}
+	if strings.Contains(output, "seq3") {
+		t.Error("seq3 (length 16) should be filtered out")
+	}
+}
+
+func TestFilterPattern(t *testing.T) {
+	fasta := `>chr1_seq1
+ACGT
+>chr2_seq2
+GCTA
+>chr1_seq3
+TGCA
+`
+	r := strings.NewReader(fasta)
+	var buf bytes.Buffer
+	
+	opts := FilterOptions{
+		Pattern: "chr1",
+	}
+	
+	err := Filter(r, &buf, opts, false, fastq.Phred33)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+	
+	output := buf.String()
+	if !strings.Contains(output, "chr1_seq1") {
+		t.Error("chr1_seq1 should be included")
+	}
+	if strings.Contains(output, "chr2_seq2") {
+		t.Error("chr2_seq2 should be filtered out")
+	}
+	if !strings.Contains(output, "chr1_seq3") {
+		t.Error("chr1_seq3 should be included")
+	}
+}
+
+func TestFilterCombined(t *testing.T) {
+	fasta := `>chr1_short
+ACG
+>chr1_long
+ACGTACGTACGT
+>chr2_medium
+ACGTACGT
+`
+	r := strings.NewReader(fasta)
+	var buf bytes.Buffer
+	
+	opts := FilterOptions{
+		MinLength: 8,
+		Pattern:   "chr1",
+	}
+	
+	err := Filter(r, &buf, opts, false, fastq.Phred33)
+	if err != nil {
+		t.Fatalf("Filter failed: %v", err)
+	}
+	
+	output := buf.String()
+	if strings.Contains(output, "chr1_short") {
+		t.Error("chr1_short should be filtered out (too short)")
+	}
+	if !strings.Contains(output, "chr1_long") {
+		t.Error("chr1_long should be included")
+	}
+	if strings.Contains(output, "chr2_medium") {
+		t.Error("chr2_medium should be filtered out (wrong pattern)")
+	}
+}
+
+func TestSubseq(t *testing.T) {
+	fasta := `>seq1
+ACGTACGTACGT
+>seq2
+GCGCGCGCGCGC
+`
+	
+	// Test basic subsequence extraction
+	r := strings.NewReader(fasta)
+	var buf bytes.Buffer
+	
+	err := Subseq(r, &buf, 1, 4, false, fastq.Phred33)
+	if err != nil {
+		t.Fatalf("Subseq failed: %v", err)
+	}
+	
+	output := buf.String()
+	if !strings.Contains(output, "ACGT") {
+		t.Error("Expected ACGT in output")
+	}
+	if !strings.Contains(output, "GCGC") {
+		t.Error("Expected GCGC in output")
+	}
+}
+
+func TestSubseqNegativeIndex(t *testing.T) {
+	fasta := `>seq1
+ACGTACGTACGT
+`
+	
+	// Test negative index (last 4 bases)
+	r := strings.NewReader(fasta)
+	var buf bytes.Buffer
+	
+	err := Subseq(r, &buf, -4, -1, false, fastq.Phred33)
+	if err != nil {
+		t.Fatalf("Subseq failed: %v", err)
+	}
+	
+	output := buf.String()
+	if !strings.Contains(output, "ACGT") {
+		t.Error("Expected ACGT (last 4 bases) in output")
+	}
+}
+
+func TestSubseqFastq(t *testing.T) {
+	fastqData := `@read1
+ACGTACGTACGT
++
+IIIIIIIIIIII
+`
+	
+	r := strings.NewReader(fastqData)
+	var buf bytes.Buffer
+	
+	err := Subseq(r, &buf, 1, 4, true, fastq.Phred33)
+	if err != nil {
+		t.Fatalf("Subseq failed: %v", err)
+	}
+	
+	output := buf.String()
+	if !strings.Contains(output, "ACGT") {
+		t.Error("Expected ACGT in output")
+	}
+	if !strings.Contains(output, "IIII") {
+		t.Error("Expected quality IIII in output")
+	}
+	// Should not contain full sequence
+	if strings.Contains(output, "ACGTACGTACGT") {
+		t.Error("Should not contain full sequence")
+	}
+}

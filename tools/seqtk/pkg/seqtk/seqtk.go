@@ -68,7 +68,108 @@ func CalculateFastaStats(r io.Reader) (*Stats, error) {
 
 	stats.TotalBases = totalBases
 	stats.AvgLength = float64(totalBases) / float64(len(records))
-	stats.GCContent = float64(totalGC) / float64(totalBases) * 100
+	if totalBases > 0 {
+		stats.GCContent = float64(totalGC) / float64(totalBases) * 100
+	}
+
+	return stats, nil
+}
+
+// CalculateFastaStatsParallel calculates statistics for a FASTA file using parallel processing.
+func CalculateFastaStatsParallel(r io.Reader, workers int) (*Stats, error) {
+	reader := fasta.NewReader(r)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(records) == 0 {
+		return &Stats{}, nil
+	}
+
+	// For small files, use sequential processing
+	if len(records) < 100 || workers <= 1 {
+		return CalculateFastaStats(r)
+	}
+
+	// Split work among workers
+	chunkSize := (len(records) + workers - 1) / workers
+	type result struct {
+		totalBases int64
+		totalGC    int64
+		minLen     int
+		maxLen     int
+	}
+	
+	resultChan := make(chan result, workers)
+	
+	for i := 0; i < workers; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		if end > len(records) {
+			end = len(records)
+		}
+		if start >= len(records) {
+			break
+		}
+		
+		go func(chunk []*fasta.Record) {
+			var r result
+			r.minLen = chunk[0].Length()
+			r.maxLen = chunk[0].Length()
+			
+			for _, record := range chunk {
+				length := record.Length()
+				r.totalBases += int64(length)
+				
+				if length < r.minLen {
+					r.minLen = length
+				}
+				if length > r.maxLen {
+					r.maxLen = length
+				}
+				
+				for _, b := range record.Sequence {
+					if b == 'G' || b == 'C' || b == 'g' || b == 'c' {
+						r.totalGC++
+					}
+				}
+			}
+			resultChan <- r
+		}(records[start:end])
+	}
+	
+	// Collect results
+	stats := &Stats{
+		NumSequences: len(records),
+		MinLength:    records[0].Length(),
+		MaxLength:    records[0].Length(),
+	}
+	
+	var totalBases int64
+	var totalGC int64
+	activeWorkers := workers
+	if len(records) < workers*chunkSize {
+		activeWorkers = (len(records) + chunkSize - 1) / chunkSize
+	}
+	
+	for i := 0; i < activeWorkers; i++ {
+		r := <-resultChan
+		totalBases += r.totalBases
+		totalGC += r.totalGC
+		if r.minLen < stats.MinLength {
+			stats.MinLength = r.minLen
+		}
+		if r.maxLen > stats.MaxLength {
+			stats.MaxLength = r.maxLen
+		}
+	}
+	
+	stats.TotalBases = totalBases
+	stats.AvgLength = float64(totalBases) / float64(len(records))
+	if totalBases > 0 {
+		stats.GCContent = float64(totalGC) / float64(totalBases) * 100
+	}
 
 	return stats, nil
 }
@@ -159,6 +260,207 @@ func ReverseComplement(input io.Reader, output io.Writer, isFastq bool, encoding
 		return reverseComplementFastq(input, output, encoding)
 	}
 	return reverseComplementFasta(input, output)
+}
+
+// FilterOptions contains options for sequence filtering.
+type FilterOptions struct {
+	MinLength int      // Minimum sequence length (0 = no filter)
+	MaxLength int      // Maximum sequence length (0 = no filter)
+	Pattern   string   // Pattern to match in sequence ID (empty = no filter)
+}
+
+// Filter sequences based on filter options.
+func Filter(input io.Reader, output io.Writer, opts FilterOptions, isFastq bool, encoding fastq.QualityEncoding) error {
+	if isFastq {
+		return filterFastq(input, output, opts, encoding)
+	}
+	return filterFasta(input, output, opts)
+}
+
+func filterFasta(input io.Reader, output io.Writer, opts FilterOptions) error {
+	reader := fasta.NewReader(input)
+	writer := fasta.NewWriter(output, 80)
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Apply filters
+		if !passesFilter(record.ID, record.Length(), opts) {
+			continue
+		}
+
+		if err := writer.Write(record); err != nil {
+			return err
+		}
+	}
+
+	return writer.Flush()
+}
+
+func filterFastq(input io.Reader, output io.Writer, opts FilterOptions, encoding fastq.QualityEncoding) error {
+	reader := fastq.NewReader(input, encoding)
+	writer := fastq.NewWriter(output, encoding)
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Apply filters
+		if !passesFilter(record.ID, record.Length(), opts) {
+			continue
+		}
+
+		if err := writer.Write(record); err != nil {
+			return err
+		}
+	}
+
+	return writer.Flush()
+}
+
+func passesFilter(id string, length int, opts FilterOptions) bool {
+	// Check length filters
+	if opts.MinLength > 0 && length < opts.MinLength {
+		return false
+	}
+	if opts.MaxLength > 0 && length > opts.MaxLength {
+		return false
+	}
+	
+	// Check pattern filter
+	if opts.Pattern != "" && !strings.Contains(id, opts.Pattern) {
+		return false
+	}
+	
+	return true
+}
+
+// Subseq extracts a subsequence from each sequence.
+func Subseq(input io.Reader, output io.Writer, start, end int, isFastq bool, encoding fastq.QualityEncoding) error {
+	if isFastq {
+		return subseqFastq(input, output, start, end, encoding)
+	}
+	return subseqFasta(input, output, start, end)
+}
+
+func subseqFasta(input io.Reader, output io.Writer, start, end int) error {
+	reader := fasta.NewReader(input)
+	writer := fasta.NewWriter(output, 80)
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Extract subsequence (1-based indexing, inclusive)
+		length := record.Length()
+		
+		// Adjust negative indices (from end)
+		if end < 0 {
+			end = length + end + 1
+		}
+		if start < 0 {
+			start = length + start + 1
+		}
+		
+		// Convert to 0-based indexing
+		startIdx := start - 1
+		endIdx := end
+		
+		// Bounds checking
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if endIdx > length {
+			endIdx = length
+		}
+		if startIdx >= length || startIdx >= endIdx {
+			continue // Skip this sequence
+		}
+
+		// Create new record with subsequence
+		subRecord := &fasta.Record{
+			ID:          record.ID,
+			Description: record.Description,
+			Sequence:    record.Sequence[startIdx:endIdx],
+		}
+
+		if err := writer.Write(subRecord); err != nil {
+			return err
+		}
+	}
+
+	return writer.Flush()
+}
+
+func subseqFastq(input io.Reader, output io.Writer, start, end int, encoding fastq.QualityEncoding) error {
+	reader := fastq.NewReader(input, encoding)
+	writer := fastq.NewWriter(output, encoding)
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Extract subsequence (1-based indexing, inclusive)
+		length := record.Length()
+		
+		// Adjust negative indices (from end)
+		if end < 0 {
+			end = length + end + 1
+		}
+		if start < 0 {
+			start = length + start + 1
+		}
+		
+		// Convert to 0-based indexing
+		startIdx := start - 1
+		endIdx := end
+		
+		// Bounds checking
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if endIdx > length {
+			endIdx = length
+		}
+		if startIdx >= length || startIdx >= endIdx {
+			continue // Skip this sequence
+		}
+
+		// Create new record with subsequence
+		subRecord := &fastq.Record{
+			ID:          record.ID,
+			Description: record.Description,
+			Sequence:    record.Sequence[startIdx:endIdx],
+			Quality:     record.Quality[startIdx:endIdx],
+		}
+
+		if err := writer.Write(subRecord); err != nil {
+			return err
+		}
+	}
+
+	return writer.Flush()
 }
 
 func reverseComplementFasta(input io.Reader, output io.Writer) error {
