@@ -43,6 +43,7 @@ skewer <command> [options]
 
 - `se` - Trim single-end reads
 - `pe` - Trim paired-end reads
+- `batch` - Process multiple files in parallel
 
 ### Single-End Mode (`se`)
 
@@ -62,6 +63,12 @@ Options:
 - `-q, --qual-threshold INT` - Quality threshold for trimming (default: 0)
 - `-m, --min-overlap INT` - Minimum overlap for adapter detection (default: 3)
 - `-r, --error-rate FLOAT` - Maximum error rate (default: 0.1)
+- `-a, --auto-detect` - Auto-detect adapter sequences
+- `--json FILE` - Output statistics as JSON to file
+- `--html-report FILE` - Generate HTML report to file
+- `--progress` - Show progress during processing
+- `--umi-length INT` - UMI length to extract (0 = disabled)
+- `--umi-position POS` - UMI position: 5prime or 3prime (default: 5prime)
 - `--quiet` - Don't print statistics
 
 ### Paired-End Mode (`pe`)
@@ -85,6 +92,12 @@ Options:
 - `-q, --qual-threshold INT` - Quality threshold for trimming (default: 0)
 - `-m, --min-overlap INT` - Minimum overlap for adapter detection (default: 3)
 - `-r, --error-rate FLOAT` - Maximum error rate (default: 0.1)
+- `-a, --auto-detect` - Auto-detect adapter sequences
+- `--json FILE` - Output statistics as JSON to file
+- `--html-report FILE` - Generate HTML report to file
+- `--progress` - Show progress during processing
+- `--umi-length INT` - UMI length to extract (0 = disabled)
+- `--umi-position POS` - UMI position: 5prime or 3prime (default: 5prime)
 - `--quiet` - Don't print statistics
 
 ## Examples
@@ -148,6 +161,63 @@ skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC -q 20
 
 # Keep longer reads only
 skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC -l 30
+```
+
+### New Features (v1.1.0)
+
+#### Auto-Detect Adapters
+
+```bash
+# Automatically detect and trim common adapter sequences
+skewer se -i input.fastq -o output.fastq --auto-detect
+
+# Auto-detect with progress reporting
+skewer se -i input.fastq -o output.fastq --auto-detect --progress
+```
+
+#### JSON and HTML Reports
+
+```bash
+# Generate JSON statistics
+skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC --json stats.json
+
+# Generate HTML report
+skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC --html-report report.html
+
+# Generate both
+skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC \
+  --json stats.json --html-report report.html
+```
+
+#### UMI/Barcode Extraction
+
+```bash
+# Extract 8bp UMI from 5' end
+skewer se -i input.fastq -o output.fastq --umi-length 8
+
+# Extract 12bp UMI from 3' end
+skewer se -i input.fastq -o output.fastq --umi-length 12 --umi-position 3prime
+
+# UMI extraction with adapter trimming
+skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC \
+  --umi-length 8 --json stats.json
+```
+
+#### Batch Processing
+
+```bash
+# Create file list
+cat > files.txt << EOF
+sample1.fastq
+sample2.fastq
+sample3.fastq
+EOF
+
+# Process multiple files in parallel
+skewer batch -f files.txt -d output/ -x AGATCGGAAGAGC -w 4
+
+# Batch with auto-detection and JSON summary
+skewer batch -f files.txt -d output/ --auto-detect --json-summary -w 8
 ```
 
 ### Pipeline Integration
@@ -344,17 +414,14 @@ skewer se -i raw.fastq -o - -x AGATCGGAAGAGC | \
 - ✅ Comprehensive tests (>85% coverage)
 - ✅ Detailed statistics
 
-### Version 1.1.0 (Planned)
-- [ ] Automatic adapter detection
-- [ ] Improved adapter matching algorithm
-- [ ] Additional output formats (JSON statistics)
-- [ ] Progress reporting for large files
-
-### Version 1.2.0 (Future)
-- [ ] Parallel processing for multiple files
-- [ ] Adapter auto-detection from reads
-- [ ] UMI/barcode handling
-- [ ] HTML report generation
+### Version 1.1.0 (Current - NEW Features)
+- ✅ Automatic adapter detection
+- ✅ Improved adapter matching algorithm with scoring
+- ✅ Additional output formats (JSON statistics)
+- ✅ Progress reporting for large files
+- ✅ Parallel processing for multiple files (batch mode)
+- ✅ UMI/barcode handling and extraction
+- ✅ HTML report generation
 
 ## Contributing
 
