@@ -702,6 +702,42 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 	return nil
 }
 
+// outputFrequency2 outputs alternative allele frequency format
+func (s *statistics) outputFrequency2(prefix string) error {
+	f, err := iohelper.OpenWriter(prefix + ".frq2")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "CHROM\tPOS\tN_CHR\tREF_FREQ\tALT_FREQ")
+
+	for _, stat := range s.siteFrequencies {
+		fmt.Fprintf(f, "%s\t%d\t%d\t%.6f\t%.6f\n",
+			stat.chrom, stat.pos, stat.nChr, stat.refFreq, stat.altFreq)
+	}
+
+	return nil
+}
+
+// outputCounts2 outputs alternative allele counts format
+func (s *statistics) outputCounts2(prefix string) error {
+	f, err := iohelper.OpenWriter(prefix + ".frq.count2")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "CHROM\tPOS\tN_CHR\tREF_COUNT\tALT_COUNT")
+
+	for _, stat := range s.siteFrequencies {
+		fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\n",
+			stat.chrom, stat.pos, stat.nChr, stat.refCount, stat.altCount)
+	}
+
+	return nil
+}
+
 // outputSiteMeanDepth outputs mean depth per site
 func (s *statistics) outputSiteMeanDepth(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".ldepth.mean")

@@ -630,6 +630,18 @@ func outputStatistics(stats *statistics, params *Params) error {
 			return err
 		}
 	}
+	
+	if params.Freq2 {
+		if err := stats.outputFrequency2(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+	
+	if params.Counts2 {
+		if err := stats.outputCounts2(params.OutPrefix); err != nil {
+			return err
+		}
+	}
 
 	if params.SiteMeanDepth {
 		if err := stats.outputSiteMeanDepth(params.OutPrefix); err != nil {
