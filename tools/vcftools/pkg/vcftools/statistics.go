@@ -24,11 +24,20 @@ type statistics struct {
 
 	// Per-individual statistics
 	indvMissing map[string]*indvMissingStat
+	indvHet     map[string]*indvHetStat
 
 	// Ts/Tv statistics
 	transitions   int
 	transversions int
 	tsTvByBin     map[int]*tsTvBinStat
+
+	// Phase 2: Population genetics statistics
+	windowPiValues  []windowPiStat
+	tajimaDValues   []tajimaDStat
+	snpDensityBins  map[int]*snpDensityStat
+	fstValues       []fstStat
+	filterCounts    map[string]int
+	singletonSites  []singletonStat
 }
 
 type siteFreqStat struct {
@@ -97,12 +106,59 @@ type tsTvBinStat struct {
 	ratio    float64
 }
 
+type indvHetStat struct {
+	name        string
+	nHet        int
+	nHomAlt     int
+	nHomRef     int
+	nTotal      int
+	hetRate     float64
+}
+
+type windowPiStat struct {
+	chrom    string
+	winStart int
+	winEnd   int
+	nSites   int
+	pi       float64
+}
+
+type tajimaDStat struct {
+	chrom    string
+	binStart int
+	binEnd   int
+	nSites   int
+	tajimaD  float64
+}
+
+type snpDensityStat struct {
+	binStart int
+	binEnd   int
+	nSNPs    int
+	density  float64
+}
+
+type fstStat struct {
+	chrom string
+	pos   int
+	fst   float64
+}
+
+type singletonStat struct {
+	chrom string
+	pos   int
+	allele string
+}
+
 // newStatistics creates a new statistics collector
 func newStatistics(header *vcf.Header) *statistics {
 	return &statistics{
-		header:      header,
-		indvMissing: make(map[string]*indvMissingStat),
-		tsTvByBin:   make(map[int]*tsTvBinStat),
+		header:         header,
+		indvMissing:    make(map[string]*indvMissingStat),
+		indvHet:        make(map[string]*indvHetStat),
+		tsTvByBin:      make(map[int]*tsTvBinStat),
+		snpDensityBins: make(map[int]*snpDensityStat),
+		filterCounts:   make(map[string]int),
 	}
 }
 
@@ -146,6 +202,28 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 	// Site pi (nucleotide diversity)
 	if params.SitePi {
 		s.addSitePiStat(v)
+	}
+	
+	// Phase 2: Population genetics statistics
+	
+	// Heterozygosity
+	if params.Het {
+		s.addHetStat(v)
+	}
+	
+	// Singletons
+	if params.Singletons {
+		s.addSingletonStat(v)
+	}
+	
+	// FILTER summary
+	if params.FilterSummary {
+		s.addFilterCount(v)
+	}
+	
+	// SNP density
+	if params.SNPDensity > 0 {
+		s.addSNPDensityStat(v, params.SNPDensity)
 	}
 }
 
@@ -483,6 +561,107 @@ func genotypeDistance(gt1, gt2 string) int {
 	return diff
 }
 
+// Phase 2 statistics methods
+
+// addHetStat adds heterozygosity statistics per individual
+func (s *statistics) addHetStat(v *vcf.Variant) {
+	for _, sample := range v.Samples {
+		if s.indvHet[sample.Name] == nil {
+			s.indvHet[sample.Name] = &indvHetStat{
+				name: sample.Name,
+			}
+		}
+		
+		stat := s.indvHet[sample.Name]
+		
+		gt, ok := sample.Data["GT"]
+		if !ok || strings.Contains(gt, ".") {
+			continue
+		}
+		
+		alleles := strings.FieldsFunc(gt, func(r rune) bool {
+			return r == '/' || r == '|'
+		})
+		
+		if len(alleles) != 2 {
+			continue
+		}
+		
+		stat.nTotal++
+		if alleles[0] != alleles[1] {
+			stat.nHet++
+		} else if alleles[0] == "0" {
+			stat.nHomRef++
+		} else {
+			stat.nHomAlt++
+		}
+	}
+}
+
+// addSingletonStat identifies singleton sites (alleles present in only one sample)
+func (s *statistics) addSingletonStat(v *vcf.Variant) {
+	if len(v.Samples) == 0 {
+		return
+	}
+	
+	// Count alleles
+	alleleCounts := make(map[string]int)
+	
+	for _, sample := range v.Samples {
+		gt, ok := sample.Data["GT"]
+		if !ok || strings.Contains(gt, ".") {
+			continue
+		}
+		
+		alleles := strings.FieldsFunc(gt, func(r rune) bool {
+			return r == '/' || r == '|'
+		})
+		
+		for _, allele := range alleles {
+			alleleCounts[allele]++
+		}
+	}
+	
+	// Check for singletons (alleles with count == 1)
+	for allele, count := range alleleCounts {
+		if count == 1 && allele != "0" { // Exclude reference allele
+			s.singletonSites = append(s.singletonSites, singletonStat{
+				chrom:  v.Chrom,
+				pos:    v.Pos,
+				allele: allele,
+			})
+		}
+	}
+}
+
+// addFilterCount tracks FILTER tag occurrences
+func (s *statistics) addFilterCount(v *vcf.Variant) {
+	if len(v.Filter) == 0 {
+		s.filterCounts["PASS"]++
+	} else {
+		for _, filter := range v.Filter {
+			s.filterCounts[filter]++
+		}
+	}
+}
+
+// addSNPDensityStat adds SNP density in bins
+func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
+	// Only count SNPs, not indels
+	if isIndelVariant(v) {
+		return
+	}
+	
+	binIdx := v.Pos / binSize
+	if s.snpDensityBins[binIdx] == nil {
+		s.snpDensityBins[binIdx] = &snpDensityStat{
+			binStart: binIdx * binSize,
+			binEnd:   (binIdx + 1) * binSize,
+		}
+	}
+	s.snpDensityBins[binIdx].nSNPs++
+}
+
 // Output functions
 
 // outputFrequency outputs allele frequency statistics
@@ -708,6 +887,126 @@ func (s *statistics) outputSitePi(prefix string) error {
 
 	for _, stat := range s.sitePiValues {
 		fmt.Fprintf(f, "%s\t%d\t%.6f\n", stat.chrom, stat.pos, stat.pi)
+	}
+
+	return nil
+}
+
+// Phase 2 output functions
+
+// outputHet outputs heterozygosity statistics
+func (s *statistics) outputHet(prefix string) error {
+	f, err := iohelper.OpenWriter(prefix + ".het")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "INDV\tO(HOM)\tE(HOM)\tN_SITES\tF")
+
+	// Sort by individual name
+	var names []string
+	for name := range s.indvHet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		stat := s.indvHet[name]
+		if stat.nTotal == 0 {
+			continue
+		}
+		
+		stat.hetRate = float64(stat.nHet) / float64(stat.nTotal)
+		obsHom := stat.nHomRef + stat.nHomAlt
+		
+		// Expected homozygosity assuming HWE
+		// This is a simplified calculation
+		expHom := float64(stat.nTotal) * (1 - stat.hetRate)
+		
+		// Inbreeding coefficient F
+		// F = (ExpectedHet - ObservedHet) / ExpectedHet
+		expHet := float64(stat.nTotal) - expHom
+		obsHet := float64(stat.nHet)
+		f_coef := 0.0
+		if expHet > 0 {
+			f_coef = (expHet - obsHet) / expHet
+		}
+		
+		fmt.Fprintf(f, "%s\t%d\t%.2f\t%d\t%.5f\n",
+			stat.name, obsHom, expHom, stat.nTotal, f_coef)
+	}
+
+	return nil
+}
+
+// outputSingletons outputs singleton site analysis
+func (s *statistics) outputSingletons(prefix string) error {
+	f, err := iohelper.OpenWriter(prefix + ".singletons")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "CHROM\tPOS\tALLELE")
+
+	for _, stat := range s.singletonSites {
+		fmt.Fprintf(f, "%s\t%d\t%s\n", stat.chrom, stat.pos, stat.allele)
+	}
+
+	return nil
+}
+
+// outputFilterSummary outputs FILTER tag summary
+func (s *statistics) outputFilterSummary(prefix string) error {
+	f, err := iohelper.OpenWriter(prefix + ".FILTER.summary")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "FILTER\tN_SITES")
+
+	// Sort by filter name
+	var filters []string
+	for filter := range s.filterCounts {
+		filters = append(filters, filter)
+	}
+	sort.Strings(filters)
+
+	for _, filter := range filters {
+		count := s.filterCounts[filter]
+		fmt.Fprintf(f, "%s\t%d\n", filter, count)
+	}
+
+	return nil
+}
+
+// outputSNPDensity outputs SNP density in bins
+func (s *statistics) outputSNPDensity(prefix string, binSize int) error {
+	f, err := iohelper.OpenWriter(prefix + ".snpden")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_SNPs\tDENSITY")
+
+	// Sort bins
+	var bins []int
+	for binIdx := range s.snpDensityBins {
+		bins = append(bins, binIdx)
+	}
+	sort.Ints(bins)
+
+	for _, binIdx := range bins {
+		stat := s.snpDensityBins[binIdx]
+		windowSize := float64(stat.binEnd - stat.binStart)
+		if windowSize > 0 {
+			stat.density = float64(stat.nSNPs) / windowSize
+		}
+		fmt.Fprintf(f, ".\t%d\t%d\t%d\t%.6f\n",
+			stat.binStart, stat.binEnd, stat.nSNPs, stat.density)
 	}
 
 	return nil

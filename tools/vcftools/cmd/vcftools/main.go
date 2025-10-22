@@ -167,6 +167,20 @@ func main() {
 	singletons := flag.Bool("singletons", false, "Singleton site analysis")
 	histIndelLen := flag.Bool("hist-indel-len", false, "Indel length histogram")
 	genoDepth := flag.Bool("geno-depth", false, "Genotype depth distribution")
+	
+	// Phase 2: Population genetics statistics
+	windowPi := flag.Int("window-pi", 0, "Nucleotide diversity in windows of this size")
+	windowPiStep := flag.Int("window-pi-step", 0, "Step size for pi windows")
+	tajimaD := flag.Int("TajimaD", 0, "Tajima's D in bins of this size")
+	snpDensity := flag.Int("SNPdensity", 0, "SNP density in bins of this size")
+	var weirFstPop []string
+	flag.Func("weir-fst-pop", "Population file for Fst calculation (can use multiple times)", func(s string) error {
+		weirFstPop = append(weirFstPop, s)
+		return nil
+	})
+	fstWindowSize := flag.Int("fst-window-size", 0, "Window size for Fst")
+	fstWindowStep := flag.Int("fst-window-step", 0, "Step size for Fst windows")
+	filterSummary := flag.Bool("FILTER-summary", false, "FILTER tag summary")
 
 	// Sample filtering
 	var indvList, removeIndvList []string
@@ -277,6 +291,14 @@ func main() {
 		Singletons:      *singletons,
 		HistIndelLen:    *histIndelLen,
 		GenoDepth:       *genoDepth,
+		WindowPi:        *windowPi,
+		WindowPiStep:    *windowPiStep,
+		TajimaD:         *tajimaD,
+		SNPDensity:      *snpDensity,
+		WeirFstPop:      weirFstPop,
+		FstWindowSize:   *fstWindowSize,
+		FstWindowStep:   *fstWindowStep,
+		FilterSummary:   *filterSummary,
 		IndvList:        indvList,
 		RemoveIndvList:  removeIndvList,
 		KeepFile:        *keepFile,

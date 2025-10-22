@@ -72,6 +72,16 @@ type Params struct {
 	Singletons    bool
 	HistIndelLen  bool
 	GenoDepth     bool
+	
+	// Phase 2: Population genetics statistics
+	WindowPi       int
+	WindowPiStep   int
+	TajimaD        int
+	SNPDensity     int
+	WeirFstPop     []string
+	FstWindowSize  int
+	FstWindowStep  int
+	FilterSummary  bool
 
 	// Sample filtering
 	IndvList       []string
@@ -654,6 +664,32 @@ func outputStatistics(stats *statistics, params *Params) error {
 
 	if params.SitePi {
 		if err := stats.outputSitePi(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+	
+	// Phase 2: Population genetics statistics
+	
+	if params.Het {
+		if err := stats.outputHet(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+	
+	if params.Singletons {
+		if err := stats.outputSingletons(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+	
+	if params.FilterSummary {
+		if err := stats.outputFilterSummary(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+	
+	if params.SNPDensity > 0 {
+		if err := stats.outputSNPDensity(params.OutPrefix, params.SNPDensity); err != nil {
 			return err
 		}
 	}
