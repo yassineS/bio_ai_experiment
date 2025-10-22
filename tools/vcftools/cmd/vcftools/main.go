@@ -181,6 +181,12 @@ func main() {
 	fstWindowSize := flag.Int("fst-window-size", 0, "Window size for Fst")
 	fstWindowStep := flag.Int("fst-window-step", 0, "Step size for Fst windows")
 	filterSummary := flag.Bool("FILTER-summary", false, "FILTER tag summary")
+	
+	// Phase 4: Format conversions
+	output012 := flag.Bool("012", false, "Output genotypes as 0/1/2 matrix")
+	outputPlink := flag.Bool("plink", false, "Output PLINK PED/MAP format")
+	outputPlinkTped := flag.Bool("plink-tped", false, "Output PLINK TPED/TFAM format")
+	chromMap := flag.String("chrom-map", "", "Chromosome name to integer mapping file")
 
 	// Sample filtering
 	var indvList, removeIndvList []string
@@ -299,6 +305,10 @@ func main() {
 		FstWindowSize:   *fstWindowSize,
 		FstWindowStep:   *fstWindowStep,
 		FilterSummary:   *filterSummary,
+		Output012:       *output012,
+		OutputPlink:     *outputPlink,
+		OutputPlinkTped: *outputPlinkTped,
+		ChromMap:        *chromMap,
 		IndvList:        indvList,
 		RemoveIndvList:  removeIndvList,
 		KeepFile:        *keepFile,

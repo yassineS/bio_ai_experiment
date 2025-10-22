@@ -82,6 +82,12 @@ type Params struct {
 	FstWindowSize  int
 	FstWindowStep  int
 	FilterSummary  bool
+	
+	// Phase 4: Format conversions
+	Output012      bool
+	OutputPlink    bool
+	OutputPlinkTped bool
+	ChromMap       string
 
 	// Sample filtering
 	IndvList       []string
@@ -153,6 +159,7 @@ func Run(input io.Reader, params *Params) error {
 	// Process variants
 	keptSites := 0
 	totalSites := 0
+	var allVariants []*vcf.Variant // For format conversions that need all data
 
 	for {
 		variant, err := reader.Read()
@@ -175,6 +182,11 @@ func Run(input io.Reader, params *Params) error {
 
 		// Update statistics
 		stats.addVariant(filteredVariant, params)
+		
+		// Collect variants for format conversions
+		if params.Output012 || params.OutputPlink || params.OutputPlinkTped {
+			allVariants = append(allVariants, filteredVariant)
+		}
 
 		// Write to output if recoding
 		if params.Recode {
@@ -219,6 +231,11 @@ func Run(input io.Reader, params *Params) error {
 	// Output statistics
 	if err := outputStatistics(stats, params); err != nil {
 		return fmt.Errorf("outputting statistics: %w", err)
+	}
+	
+	// Output format conversions
+	if err := outputFormatConversions(allVariants, filteredHeader, params); err != nil {
+		return fmt.Errorf("outputting format conversions: %w", err)
 	}
 
 	return nil
@@ -694,6 +711,37 @@ func outputStatistics(stats *statistics, params *Params) error {
 		}
 	}
 
+	return nil
+}
+
+// outputFormatConversions outputs requested format conversions
+func outputFormatConversions(variants []*vcf.Variant, header *vcf.Header, params *Params) error {
+	if params.Output012 {
+		if err := output012Matrix(variants, header, params.OutPrefix); err != nil {
+			return err
+		}
+	}
+	
+	if params.OutputPlink || params.OutputPlinkTped {
+		// Load chromosome map if provided
+		chromMap, err := loadChromMap(params.ChromMap)
+		if err != nil {
+			return fmt.Errorf("loading chromosome map: %w", err)
+		}
+		
+		if params.OutputPlink {
+			if err := outputPlink(variants, header, params.OutPrefix, chromMap); err != nil {
+				return err
+			}
+		}
+		
+		if params.OutputPlinkTped {
+			if err := outputPlinkTped(variants, header, params.OutPrefix, chromMap); err != nil {
+				return err
+			}
+		}
+	}
+	
 	return nil
 }
 

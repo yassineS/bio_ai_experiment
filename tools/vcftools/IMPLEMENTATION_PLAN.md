@@ -102,30 +102,29 @@ This document tracks the implementation of all 112 missing features from the ori
 
 ---
 
-## Phase 4: Format Conversions (12 features)
+### Phase 4: Format Conversions (3/12 features) - IN PROGRESS
 
-### PLINK Format (3 features)
-- [ ] `--plink` - Convert to PLINK PED/MAP
-- [ ] `--plink-tped` - Convert to PLINK transposed format
-- [ ] `--chrom-map` - Chromosome name mapping
+**Status**: In Progress  
+**Started**: 2025-10-22
 
-### Genotype Matrix (1 feature)
-- [ ] `--012` - Output 0/1/2 matrix
+#### Basic Format Conversions
+- [x] `--012` - Output 0/1/2 genotype matrix (✅ **IMPLEMENTED**)
+- [x] `--plink` - Convert to PLINK PED/MAP format (✅ **IMPLEMENTED**)  
+- [x] `--plink-tped` - Convert to PLINK TPED/TFAM format (✅ **IMPLEMENTED**)
+- [x] `--chrom-map` - Chromosome name to integer mapping (✅ **IMPLEMENTED**)
 
-### Imputation Formats (4 features)
+#### Remaining Format Conversions (8 features)
 - [ ] `--BEAGLE-GL` - BEAGLE genotype likelihoods (GL)
 - [ ] `--BEAGLE-PL` - BEAGLE genotype likelihoods (PL)
 - [ ] `--IMPUTE` - IMPUTE format
 - [ ] `--ldhat` - LDhat format
 - [ ] `--ldhat-geno` - LDhat genotype format
 - [ ] `--ldhelmet` - LDhelmet format
-
-### Additional INFO Extraction (2 features)
 - [ ] `--get-INFO` - Extract INFO field values
 - [ ] `--extract-FORMAT-info` - Extract FORMAT field values
 - [ ] `--recode-INFO` - Recode with specific INFO fields
 
-**Estimated Time**: 6-7 days  
+**Progress**: 3/12 features fully implemented
 **Priority**: MEDIUM-HIGH
 
 ---
@@ -277,15 +276,20 @@ Update this section as features are implemented.
 **Phase 1**: 8/20 features (40%) - CLI flags added, implementation in progress  
 **Phase 2**: 4/10 features (40%) - Het, singletons, FILTER-summary, SNP density implemented  
 **Phase 3**: 0/12 features (0%)  
-**Phase 4**: 0/12 features (0%)  
+**Phase 4**: 3/12 features (25%) - 012 matrix, PLINK PED/MAP, PLINK TPED/TFAM implemented  
 **Phase 5**: 0/10 features (0%)  
 **Phase 6**: 0/10 features (0%)  
 **Phase 7**: 0/25 features (0%)  
 **Phase 8**: 0/3 features (0%)
 
-**Overall**: 47/147 features (32%) - Up from 35/147 (24%)
+**Overall**: 50/147 features (34%) - Up from 47/147 (32%)
 
-**Recent Progress** (2025-10-22):
+**Recent Progress** (2025-10-22 - Session 2):
+- Implemented 3 format conversion features (012 matrix, PLINK PED/MAP, PLINK TPED/TFAM)
+- Added chromosome mapping support for PLINK formats
+- Progress: 50/147 (34%)
+
+**Recent Progress** (2025-10-22 - Session 1):
 - Started Phase 2 implementation
 - Added 12 new CLI flags for population genetics
 - Implemented heterozygosity statistics (--het)
