@@ -57,6 +57,9 @@ type Params struct {
 	MaxMissing float64
 	MinMeanDP  float64
 	MaxMeanDP  float64
+	MinDP      int
+	MaxDP      int
+	MinGQ      int
 
 	// Statistics output
 	Freq          bool
@@ -218,6 +221,9 @@ func Run(input io.Reader, params *Params) error {
 
 		// Filter samples
 		filteredVariant := filterVariantSamples(variant, keepSamples)
+		
+		// Apply genotype-level filters
+		filteredVariant = filterGenotypes(filteredVariant, params)
 
 		// Update statistics
 		stats.addVariant(filteredVariant, params)
@@ -692,6 +698,82 @@ func filterVariantSamples(v *vcf.Variant, keepSamples map[string]bool) *vcf.Vari
 		}
 	}
 
+	return filtered
+}
+
+// filterGenotypes applies genotype-level filters (sets genotypes to missing if they fail filters)
+func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
+	// If no genotype filters specified, return as-is
+	if params.MinDP == 0 && params.MaxDP == 0 && params.MinGQ == 0 {
+		return v
+	}
+	
+	// Create a copy to avoid modifying original
+	filtered := &vcf.Variant{
+		Chrom:  v.Chrom,
+		Pos:    v.Pos,
+		ID:     v.ID,
+		Ref:    v.Ref,
+		Alt:    v.Alt,
+		Qual:   v.Qual,
+		Filter: v.Filter,
+		Info:   v.Info,
+		Format: v.Format,
+	}
+	
+	for _, sample := range v.Samples {
+		// Check DP (depth) filter
+		if params.MinDP > 0 || params.MaxDP > 0 {
+			if dpStr, ok := sample.Data["DP"]; ok {
+				if dp, err := strconv.Atoi(dpStr); err == nil {
+					if (params.MinDP > 0 && dp < params.MinDP) || (params.MaxDP > 0 && dp > params.MaxDP) {
+						// Set genotype to missing
+						newSample := vcf.Sample{
+							Name: sample.Name,
+							Data: make(map[string]string),
+						}
+						for k, v := range sample.Data {
+							if k == "GT" {
+								newSample.Data[k] = "./."
+							} else {
+								newSample.Data[k] = v
+							}
+						}
+						filtered.Samples = append(filtered.Samples, newSample)
+						continue
+					}
+				}
+			}
+		}
+		
+		// Check GQ (genotype quality) filter
+		if params.MinGQ > 0 {
+			if gqStr, ok := sample.Data["GQ"]; ok {
+				if gq, err := strconv.Atoi(gqStr); err == nil {
+					if gq < params.MinGQ {
+						// Set genotype to missing
+						newSample := vcf.Sample{
+							Name: sample.Name,
+							Data: make(map[string]string),
+						}
+						for k, v := range sample.Data {
+							if k == "GT" {
+								newSample.Data[k] = "./."
+							} else {
+								newSample.Data[k] = v
+							}
+						}
+						filtered.Samples = append(filtered.Samples, newSample)
+						continue
+					}
+				}
+			}
+		}
+		
+		// Genotype passes filters, keep as-is
+		filtered.Samples = append(filtered.Samples, sample)
+	}
+	
 	return filtered
 }
 

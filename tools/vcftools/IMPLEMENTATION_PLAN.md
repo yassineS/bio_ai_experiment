@@ -23,9 +23,9 @@ This document tracks the implementation of all 112 missing features from the ori
 - [x] `--thin` - Thin sites by distance (✅ **IMPLEMENTED**)
 
 ### Advanced Quality/Genotype Filters (6 features)
-- [ ] `--minDP` - Minimum depth per genotype
-- [ ] `--maxDP` - Maximum depth per genotype
-- [ ] `--minGQ` - Minimum genotype quality
+- [x] `--minDP` - Minimum depth per genotype (✅ **IMPLEMENTED**)
+- [x] `--maxDP` - Maximum depth per genotype (✅ **IMPLEMENTED**)
+- [x] `--minGQ` - Minimum genotype quality (✅ **IMPLEMENTED**)
 - [ ] `--remove-filtered` - Remove specific FILTER flags
 - [ ] `--keep-filtered` - Keep specific FILTER flags
 - [ ] `--keep-INFO` - Keep sites with INFO flag
@@ -273,7 +273,7 @@ This document tracks the implementation of all 112 missing features from the ori
 
 Update this section as features are implemented.
 
-**Phase 1**: 14/20 features (70%) - SNP ID filtering, freq2/counts2, het, singletons implemented  
+**Phase 1**: 17/20 features (85%) - SNP ID filtering, genotype filters, freq2/counts2, het, singletons implemented  
 **Phase 2**: 4/10 features (40%) - Het, singletons, FILTER-summary, SNP density implemented  
 **Phase 3**: 0/12 features (0%)  
 **Phase 4**: 3/12 features (25%) - 012 matrix, PLINK PED/MAP, PLINK TPED/TFAM implemented  
@@ -282,12 +282,12 @@ Update this section as features are implemented.
 **Phase 7**: 0/25 features (0%)  
 **Phase 8**: 0/3 features (0%)
 
-**Overall**: 56/147 features (38%) - Up from 50/147 (34%)
+**Overall**: 59/147 features (40%) - Up from 56/147 (38%)
 
-**Recent Progress** (2025-10-23):
-- Implemented SNP ID filtering: --snp, --snps, --exclude, --exclude-snps (4 features)
-- Implemented thinning: --thin (1 feature)
-- Progress: 52 → 56 features (35% → 38%)
+**Recent Progress** (2025-10-23 - Session 2):
+- Implemented genotype-level filtering: --minDP, --maxDP, --minGQ (3 features)
+- Genotypes failing filters are set to missing (./.)
+- Progress: 56 → 59 features (38% → 40%)
 
 **Recent Progress** (2025-10-22 - Session 2):
 - Implemented 3 format conversion features (012 matrix, PLINK PED/MAP, PLINK TPED/TFAM)

@@ -152,6 +152,9 @@ func main() {
 	maxMissing := flag.Float64("max-missing", 1, "Maximum proportion of missing data")
 	minMeanDP := flag.Float64("min-meanDP", 0, "Minimum mean depth")
 	maxMeanDP := flag.Float64("max-meanDP", 0, "Maximum mean depth")
+	minDP := flag.Int("minDP", 0, "Minimum depth per genotype")
+	maxDP := flag.Int("maxDP", 0, "Maximum depth per genotype")
+	minGQ := flag.Int("minGQ", 0, "Minimum genotype quality")
 
 	// Statistics output
 	freq := flag.Bool("freq", false, "Output allele frequency")
@@ -289,6 +292,9 @@ func main() {
 		MaxMissing:      *maxMissing,
 		MinMeanDP:       *minMeanDP,
 		MaxMeanDP:       *maxMeanDP,
+		MinDP:           *minDP,
+		MaxDP:           *maxDP,
+		MinGQ:           *minGQ,
 		Freq:            *freq,
 		Counts:          *counts,
 		Freq2:           *freq2,
