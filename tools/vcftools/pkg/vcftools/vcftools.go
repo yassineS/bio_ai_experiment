@@ -29,6 +29,13 @@ type Params struct {
 	ToBp                 int
 	PositionsFile        string
 	ExcludePositionsFile string
+	
+	// SNP ID filtering
+	SNP             string
+	SNPs            string
+	ExcludeSNP      string
+	ExcludeSNPs     string
+	Thin            int
 
 	// Variant type filtering
 	KeepOnlyIndels bool
@@ -122,6 +129,29 @@ func Run(input io.Reader, params *Params) error {
 			return fmt.Errorf("loading exclude positions file: %w", err)
 		}
 	}
+	
+	// Load SNP ID filters
+	var includeSNPs, excludeSNPs map[string]bool
+	if params.SNP != "" {
+		includeSNPs = make(map[string]bool)
+		includeSNPs[params.SNP] = true
+	}
+	if params.SNPs != "" {
+		includeSNPs, err = loadSNPIDs(params.SNPs)
+		if err != nil {
+			return fmt.Errorf("loading SNPs file: %w", err)
+		}
+	}
+	if params.ExcludeSNP != "" {
+		excludeSNPs = make(map[string]bool)
+		excludeSNPs[params.ExcludeSNP] = true
+	}
+	if params.ExcludeSNPs != "" {
+		excludeSNPs, err = loadSNPIDs(params.ExcludeSNPs)
+		if err != nil {
+			return fmt.Errorf("loading exclude SNPs file: %w", err)
+		}
+	}
 
 	// Build sample filter set
 	keepSamples, err := buildSampleFilter(header, params)
@@ -159,6 +189,7 @@ func Run(input io.Reader, params *Params) error {
 	// Process variants
 	keptSites := 0
 	totalSites := 0
+	thinCounter := 0
 	var allVariants []*vcf.Variant // For format conversions that need all data
 
 	for {
@@ -171,9 +202,17 @@ func Run(input io.Reader, params *Params) error {
 		}
 
 		totalSites++
+		
+		// Apply thinning filter
+		if params.Thin > 0 {
+			thinCounter++
+			if thinCounter%params.Thin != 0 {
+				continue
+			}
+		}
 
 		// Apply filters
-		if !passFilters(variant, params, includePositions, excludePositions) {
+		if !passFilters(variant, params, includePositions, excludePositions, includeSNPs, excludeSNPs) {
 			continue
 		}
 
@@ -242,7 +281,19 @@ func Run(input io.Reader, params *Params) error {
 }
 
 // passFilters checks if a variant passes all filters
-func passFilters(v *vcf.Variant, params *Params, includePos, excludePos positionSet) bool {
+func passFilters(v *vcf.Variant, params *Params, includePos, excludePos positionSet, includeSNPs, excludeSNPs map[string]bool) bool {
+	// SNP ID filters
+	if includeSNPs != nil && len(includeSNPs) > 0 {
+		if !includeSNPs[v.ID] {
+			return false
+		}
+	}
+	if excludeSNPs != nil && len(excludeSNPs) > 0 {
+		if excludeSNPs[v.ID] {
+			return false
+		}
+	}
+	
 	// Position filters
 	if params.Chr != "" && v.Chrom != params.Chr {
 		return false
@@ -488,6 +539,33 @@ func loadPositions(filename string) (positionSet, error) {
 	}
 
 	return positions, scanner.Err()
+}
+
+// loadSNPIDs loads SNP IDs from a file
+func loadSNPIDs(filename string) (map[string]bool, error) {
+	f, err := iohelper.OpenReader(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	snpIDs := make(map[string]bool)
+	scanner := bufio.NewScanner(f)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// SNP ID is the first field (or whole line if no whitespace)
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			snpIDs[fields[0]] = true
+		}
+	}
+
+	return snpIDs, scanner.Err()
 }
 
 // buildSampleFilter builds a set of samples to keep

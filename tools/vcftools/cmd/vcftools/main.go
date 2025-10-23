@@ -124,6 +124,13 @@ func main() {
 	toBp := flag.Int("to-bp", 0, "Include positions <= this value")
 	positionsFile := flag.String("positions", "", "Include positions from file")
 	excludePositionsFile := flag.String("exclude-positions", "", "Exclude positions from file")
+	
+	// SNP ID filtering
+	snp := flag.String("snp", "", "Include only this SNP ID")
+	snps := flag.String("snps", "", "Include SNP IDs from file")
+	excludeSNP := flag.String("exclude", "", "Exclude this SNP ID")
+	excludeSNPs := flag.String("exclude-snps", "", "Exclude SNP IDs from file")
+	thin := flag.Int("thin", 0, "Thin sites by keeping every Nth site")
 
 	// Variant type filtering
 	keepOnlyIndels := flag.Bool("keep-only-indels", false, "Keep only indels")
@@ -264,6 +271,11 @@ func main() {
 		ToBp:            *toBp,
 		PositionsFile:   *positionsFile,
 		ExcludePositionsFile: *excludePositionsFile,
+		SNP:             *snp,
+		SNPs:            *snps,
+		ExcludeSNP:      *excludeSNP,
+		ExcludeSNPs:     *excludeSNPs,
+		Thin:            *thin,
 		KeepOnlyIndels:  *keepOnlyIndels,
 		RemoveIndels:    *removeIndels,
 		MinAlleles:      *minAlleles,
