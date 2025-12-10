@@ -18,6 +18,7 @@ tools/skewer/skewer
 tools/fastp/fastp
 tools/bedmerge/bedmerge
 tools/bedintersect/bedintersect
+tools/vcftools/vcftools
 
 # Test binary, built with `go test -c`
 *.test

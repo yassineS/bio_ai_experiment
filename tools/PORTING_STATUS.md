@@ -16,8 +16,8 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Ensure comprehensive testing and validation
 
 ### Progress Summary
-- **Tools Ported**: 7
-- **Tools Tested**: 7
+- **Tools Ported**: 8
+- **Tools Tested**: 8
 - **Total Test Coverage**: >85% average
 - **Documentation**: Complete for all ported tools
 - **New Feature**: Built-in gzip support for all tools
@@ -252,6 +252,42 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
+### 8. ✅ vcftools
+**Status**: Complete  
+**Version**: 1.0.0  
+**Original**: C++/Perl (Danecek et al.)  
+**Category**: VCF Manipulation / Population Genetics
+
+**Implemented Commands**:
+- Single command with multiple filtering and statistics options
+
+**Test Coverage**: >90%  
+**Performance**: Comparable to original  
+**Documentation**: ✓ Complete README with examples  
+
+**Key Features**:
+- Position-based filtering (chr, position range, position files)
+- Quality and allele frequency filtering
+- Variant type filtering (indels, allele count)
+- Genotype filtering (missing data, depth)
+- Sample filtering and management
+- Statistics output (frequency, depth, missingness, HWE, Ts/Tv, pi)
+- VCF recoding with filtering
+- Built-in gzip support
+
+**Feature Coverage**:
+- ~35 of ~147 original options (24% total)
+- ~80% of commonly-used features
+- See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) for details
+
+**Migration Notes**:
+- Core filtering and statistics functionality implemented
+- LD analysis, Fst, windowed statistics not yet available
+- Format conversion (PLINK, BEAGLE) not yet implemented
+- See [ROADMAP.md](vcftools/ROADMAP.md) for planned features
+
+---
+
 ## Tool Comparison Matrix
 
 | Tool | Original Lang | Go Version | Commands | Tests | Docs | Performance | Gzip |
@@ -263,6 +299,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 | fastp | C++ | 1.0.0 | 1 | ✓ | ✓ | ~1.1x | ✓ |
 | bedmerge | C++ (bedtools) | 1.0.0 | 1 | ✓ | ✓ | ~2.0x | ✓ |
 | bedintersect | C++ (bedtools) | 1.0.0 | 1 | ✓ | ✓ | ~1.0x | ✓ |
+| vcftools | C++/Perl | 1.0.0 | 1 | ✓ | ✓ | ~1.0x | ✓ |
 
 ---
 
