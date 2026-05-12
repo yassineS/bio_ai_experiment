@@ -50,19 +50,19 @@ func output012Matrix(variants []*vcf.Variant, header *vcf.Header, prefix string)
 	// Write genotype matrix (one row per sample)
 	for sampleIdx, sample := range header.Samples {
 		fmt.Fprintf(f012, "%s", sample)
-		
+
 		for _, v := range variants {
 			genotype := -1 // missing by default
-			
+
 			if sampleIdx < len(v.Samples) {
 				sampleData := v.Samples[sampleIdx]
 				gt, ok := sampleData.Data["GT"]
-				
+
 				if ok && !strings.Contains(gt, ".") {
 					alleles := strings.FieldsFunc(gt, func(r rune) bool {
 						return r == '/' || r == '|'
 					})
-					
+
 					if len(alleles) == 2 {
 						a1, a2 := alleles[0], alleles[1]
 						if a1 == "0" && a2 == "0" {
@@ -75,7 +75,7 @@ func output012Matrix(variants []*vcf.Variant, header *vcf.Header, prefix string)
 					}
 				}
 			}
-			
+
 			fmt.Fprintf(f012, "\t%d", genotype)
 		}
 		fmt.Fprintln(f012)
@@ -116,20 +116,20 @@ func outputPlink(variants []*vcf.Variant, header *vcf.Header, prefix string, chr
 		// PLINK PED format: FID IID PAT MAT SEX PHENOTYPE genotypes...
 		// We use sample name for both FID and IID, unknowns for others
 		fmt.Fprintf(fPed, "%s\t%s\t0\t0\t0\t-9", sample, sample)
-		
+
 		for _, v := range variants {
 			allele1, allele2 := "0", "0" // missing by default
-			
+
 			// Find this sample's genotype
 			for _, sampleData := range v.Samples {
 				if sampleData.Name == sample {
 					gt, ok := sampleData.Data["GT"]
-					
+
 					if ok && !strings.Contains(gt, ".") {
 						alleles := strings.FieldsFunc(gt, func(r rune) bool {
 							return r == '/' || r == '|'
 						})
-						
+
 						if len(alleles) == 2 {
 							// Convert allele indices to actual alleles
 							idx1, idx2 := alleles[0], alleles[1]
@@ -140,7 +140,7 @@ func outputPlink(variants []*vcf.Variant, header *vcf.Header, prefix string, chr
 					break
 				}
 			}
-			
+
 			fmt.Fprintf(fPed, "\t%s\t%s", allele1, allele2)
 		}
 		fmt.Fprintln(fPed)
@@ -177,23 +177,23 @@ func outputPlinkTped(variants []*vcf.Variant, header *vcf.Header, prefix string,
 		if varID == "" || varID == "." {
 			varID = fmt.Sprintf("%s:%d", v.Chrom, v.Pos)
 		}
-		
+
 		fmt.Fprintf(fTped, "%d\t%s\t0\t%d", chromNum, varID, v.Pos)
-		
+
 		// Write genotypes for all samples
 		for _, sample := range header.Samples {
 			allele1, allele2 := "0", "0" // missing by default
-			
+
 			// Find this sample's genotype
 			for _, sampleData := range v.Samples {
 				if sampleData.Name == sample {
 					gt, ok := sampleData.Data["GT"]
-					
+
 					if ok && !strings.Contains(gt, ".") {
 						alleles := strings.FieldsFunc(gt, func(r rune) bool {
 							return r == '/' || r == '|'
 						})
-						
+
 						if len(alleles) == 2 {
 							idx1, idx2 := alleles[0], alleles[1]
 							allele1 = getAllele(v, idx1)
@@ -203,7 +203,7 @@ func outputPlinkTped(variants []*vcf.Variant, header *vcf.Header, prefix string,
 					break
 				}
 			}
-			
+
 			fmt.Fprintf(fTped, "\t%s\t%s", allele1, allele2)
 		}
 		fmt.Fprintln(fTped)
@@ -219,12 +219,12 @@ func getChromNumber(chrom string, chromMap map[string]int) int {
 			return num
 		}
 	}
-	
+
 	// Try to extract number from chrom name
 	chrom = strings.TrimPrefix(chrom, "chr")
 	chrom = strings.TrimPrefix(chrom, "Chr")
 	chrom = strings.TrimPrefix(chrom, "CHR")
-	
+
 	// Handle special cases
 	switch chrom {
 	case "X", "x":
@@ -236,13 +236,13 @@ func getChromNumber(chrom string, chromMap map[string]int) int {
 	case "MT", "mt", "M", "m":
 		return 26
 	}
-	
+
 	// Try to parse as number
 	var num int
 	if _, err := fmt.Sscanf(chrom, "%d", &num); err == nil {
 		return num
 	}
-	
+
 	return 0 // unknown
 }
 
@@ -251,20 +251,20 @@ func getAllele(v *vcf.Variant, idx string) string {
 	if idx == "." {
 		return "0" // missing
 	}
-	
+
 	var alleleIdx int
 	if _, err := fmt.Sscanf(idx, "%d", &alleleIdx); err != nil {
 		return "0"
 	}
-	
+
 	if alleleIdx == 0 {
 		return v.Ref
 	}
-	
+
 	if alleleIdx > 0 && alleleIdx <= len(v.Alt) {
 		return v.Alt[alleleIdx-1]
 	}
-	
+
 	return "0" // unknown
 }
 
@@ -273,17 +273,17 @@ func loadChromMap(filename string) (map[string]int, error) {
 	if filename == "" {
 		return nil, nil
 	}
-	
+
 	f, err := iohelper.OpenReader(filename)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	
+
 	chromMap := make(map[string]int)
 	var chrom string
 	var num int
-	
+
 	for {
 		_, err := fmt.Fscanf(f, "%s\t%d\n", &chrom, &num)
 		if err != nil {
@@ -291,6 +291,6 @@ func loadChromMap(filename string) (map[string]int, error) {
 		}
 		chromMap[chrom] = num
 	}
-	
+
 	return chromMap, nil
 }

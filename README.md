@@ -96,6 +96,7 @@ go build ./cmd/[tool-name]
 ```
 
 Example:
+
 ```bash
 cd tools/seqtk
 go build ./cmd/seqtk
@@ -130,6 +131,7 @@ go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
 ### ✅ Completed
 
 **Shared Libraries:**
+
 - FASTA format parser/writer with validation and utilities
 - FASTQ format parser/writer with Phred33/64 support
 - VCF format parser/writer with genotype methods
@@ -137,6 +139,7 @@ go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
 - **cliflag** library for consistent CLI flag handling (short and long options)
 
 **Tools:**
+
 - **seqtk v1.0.0** - Complete reimplementation
   - comp, fq2fa, seq -r, sample, trimfq commands
   - 85.7% test coverage, all tests passing
@@ -153,6 +156,7 @@ go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
   - Consistent CLI with both short and long option flags
 
 **Documentation:**
+
 - Comprehensive Go implementation guide
 - Bioformats library documentation
 - Tool analysis and comparisons (seqtk, prinseq)

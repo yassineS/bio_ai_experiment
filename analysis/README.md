@@ -70,6 +70,7 @@ Composite Score =
 ```
 
 This formula prioritizes:
+
 - Tools with significant quality issues (low code/doc scores)
 - High-impact tools (popular in the community)
 - Tools lacking proper testing infrastructure
@@ -138,7 +139,7 @@ Top categories represented in the improvement list:
    - Code quality metrics
    - Performance baselines
 
-2. **Build Modern Alternatives**: 
+2. **Build Modern Alternatives**:
    - Reimplement in Go for performance and maintainability
    - Maintain API compatibility where possible
    - Provide migration guides
@@ -162,6 +163,7 @@ python3 top_200_packages.py
 ```
 
 This will create/update:
+
 - `top_50_packages_for_improvement.md`
 - `all_200_packages_ranked.csv`
 - `top_50_packages.json`
@@ -169,6 +171,7 @@ This will create/update:
 ### Customizing the Analysis
 
 Edit `top_200_packages.py` to:
+
 - Add or remove packages
 - Adjust scoring weights
 - Change the number of top packages
@@ -178,6 +181,7 @@ Edit `top_200_packages.py` to:
 ### Using the Data
 
 **CSV Format**: Import into Excel, R, or pandas for custom analysis:
+
 ```python
 import pandas as pd
 df = pd.read_csv('all_200_packages_ranked.csv')
@@ -185,6 +189,7 @@ top_perl = df[df['language'].str.contains('Perl')].head(10)
 ```
 
 **JSON Format**: Use in automated workflows:
+
 ```python
 import json
 with open('top_50_packages.json') as f:
@@ -283,6 +288,7 @@ To add packages or improve the analysis:
 ## References
 
 This analysis builds on:
+
 - Community knowledge of bioinformatics tools
 - Published benchmarks and comparisons
 - GitHub repository statistics

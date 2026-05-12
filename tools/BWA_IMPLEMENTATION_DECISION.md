@@ -41,11 +41,13 @@ After thorough analysis of the BWA codebase:
 ### 2. Parallelization Already Exists
 
 From the original BWA code (`bwtaln.c`):
+
 ```c
 opt->n_threads = 1;  // Default, can be set via -t flag
 ```
 
 BWA already:
+
 - ✅ Processes reads in batches
 - ✅ Uses thread pools
 - ✅ Implements lock-free queues
@@ -63,23 +65,27 @@ BWA already:
 ## Alternative Approaches Considered
 
 ### Option A: Full BWA Port ❌
+
 - **Effort**: 16-20 weeks
 - **Value**: Low (original is already excellent)
 - **Alignment with project**: Poor (far exceeds "minimal changes" philosophy)
 
 ### Option B: BWA aln Only Port ❌  
+
 - **Effort**: 7-10 weeks
 - **Value**: Medium (but MEM is preferred algorithm)
 - **Alignment with project**: Poor (still too large)
 - **Problem**: BWA-MEM is the recommended algorithm, not aln
 
 ### Option C: Wrapper/MCP Server ⚠️
+
 - **Effort**: 1-2 weeks
 - **Value**: Medium (improves accessibility)
 - **Alignment with project**: Good
 - **Limitation**: Doesn't add performance
 
 ### Option D: Focus on Different Tools ✅
+
 - **Effort**: 2-4 weeks per tool
 - **Value**: High (improve tools that need it)
 - **Alignment with project**: Excellent
@@ -89,6 +95,7 @@ BWA already:
 ### Primary Recommendation: Do NOT Port BWA
 
 **Reasons**:
+
 1. **Scope mismatch**: BWA is 10x larger than other ported tools
 2. **Already optimal**: Excellently maintained, highly optimized
 3. **Already parallelized**: Requested optimization exists
@@ -98,6 +105,7 @@ BWA already:
 ### Alternative: Port More Suitable Tools
 
 Focus on tools that:
+
 - Have code quality issues
 - Lack modern features
 - Would benefit from Go's strengths
@@ -153,13 +161,14 @@ If BWA functionality must be available to the project:
 
 ### Status: ❌ BWA Full Port NOT RECOMMENDED
 
-**Rationale**: 
+**Rationale**:
+
 - Complexity far exceeds project scope and "minimal changes" philosophy
 - Original tool is already excellent and well-maintained
 - Requested parallelization optimizations already exist in original
 - Better tools available for porting that align with project goals
 
-### Recommended Actions:
+### Recommended Actions
 
 1. ✅ **Document this decision** (this file)
 2. ✅ **Update PORTING_STATUS.md** to reflect BWA analysis
@@ -169,22 +178,26 @@ If BWA functionality must be available to the project:
 ## Supporting Evidence
 
 ### BWA Maintenance Status
-- Active repository: https://github.com/lh3/bwa
+
+- Active repository: <https://github.com/lh3/bwa>
 - Last release: 0.7.19 (March 2025)
 - Responsive maintainer (Heng Li)
 - Large user community
 - Comprehensive documentation
 
 ### Modern Alternatives
+
 - **BWA-MEM2**: Drop-in replacement, 50-100% faster
 - **minimap2**: For long reads, 50x faster than BWA-MEM
 - Both maintained by original BWA author or close collaborators
 
 ### Project Alignment
+
 The bio_ai_experiment project explicitly states:
 > "Identify areas for improvement - Analyze tools for poor code quality, performance issues, and documentation gaps"
 
 BWA does not fit these criteria:
+
 - ❌ Poor code quality: No (5.3/10 is good)
 - ❌ Performance issues: No (highly optimized)
 - ❌ Documentation gaps: No (6.36/10 is excellent)
@@ -197,9 +210,9 @@ While BWA is on the priority list and the request was to tackle it, a full port 
 
 ## References
 
-- BWA Repository: https://github.com/lh3/bwa
-- BWA-MEM2: https://github.com/bwa-mem2/bwa-mem2
-- minimap2: https://github.com/lh3/minimap2
+- BWA Repository: <https://github.com/lh3/bwa>
+- BWA-MEM2: <https://github.com/bwa-mem2/bwa-mem2>
+- minimap2: <https://github.com/lh3/minimap2>
 - Project Status: [PORTING_STATUS.md](./PORTING_STATUS.md)
 
 ---

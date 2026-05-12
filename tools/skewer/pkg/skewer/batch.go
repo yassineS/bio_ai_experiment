@@ -100,12 +100,12 @@ func processSingleJob(job BatchJob, encoding fastq.QualityEncoding, opts TrimOpt
 
 // BatchPairedJob represents a paired-end file processing job.
 type BatchPairedJob struct {
-	InputFile1  string
-	InputFile2  string
-	OutputFile1 string
-	OutputFile2 string
+	InputFile1   string
+	InputFile2   string
+	OutputFile1  string
+	OutputFile2  string
 	OutputSingle string
-	Index       int
+	Index        int
 }
 
 // BatchPairedResult contains the result of processing a paired-end job.

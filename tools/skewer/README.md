@@ -54,6 +54,7 @@ skewer se -i input.fastq -o output.fastq -x AGATCGGAAGAGC
 ```
 
 Options:
+
 - `-i, --input FILE` - Input FASTQ file (required)
 - `-o, --output FILE` - Output trimmed file (default: stdout)
 - `-x, --adapter3 SEQ` - 3' adapter sequence
@@ -80,6 +81,7 @@ skewer pe -i input1.fastq -j input2.fastq -o output1.fastq -p output2.fastq -x A
 ```
 
 Options:
+
 - `-i, --input1 FILE` - First input FASTQ file (required)
 - `-j, --input2 FILE` - Second input FASTQ file (required)
 - `-o, --output1 FILE` - First output trimmed file (required)
@@ -281,6 +283,7 @@ SE Adapter Trimming Stats:
 ```
 
 For paired-end mode:
+
 - Total reads includes both forward and reverse reads
 - Adapter detection statistics account for both reads
 - Paired output only includes pairs where both reads pass
@@ -291,6 +294,7 @@ For paired-end mode:
 This Go implementation aims for functional compatibility with the original C++ implementation.
 
 ### Similarities
+
 - ✅ Adapter detection and trimming
 - ✅ Single-end and paired-end modes
 - ✅ Error tolerance for fuzzy matching
@@ -310,6 +314,7 @@ This Go implementation aims for functional compatibility with the original C++ i
 | Performance | Very Fast | Fast | Go adds safety |
 
 ### Advantages of Go Implementation
+
 1. **Better Error Messages**: More descriptive error reporting
 2. **Type Safety**: Compile-time type checking prevents runtime errors
 3. **Cross-Platform**: Single binary works on all platforms
@@ -332,6 +337,7 @@ The Go implementation provides good performance for adapter trimming:
 *Benchmarks on Intel Core i7, 16GB RAM, SSD*
 
 Performance characteristics:
+
 - **Memory**: O(1) - streaming processing
 - **Time**: O(n×m) where n is number of reads, m is read/adapter length
 - **Disk I/O**: Buffered reading/writing for efficiency
@@ -351,6 +357,7 @@ go test ./pkg/skewer -cover
 Test coverage: **>85%**
 
 The test suite includes:
+
 - Single-end adapter trimming tests
 - Paired-end adapter trimming tests
 - Adapter detection algorithm tests
@@ -391,6 +398,7 @@ seqtk comp clean.fastq
 ### Complementary with Sickle
 
 Skewer and Sickle are complementary tools:
+
 - **Skewer**: Removes adapter sequences (3' contamination)
 - **Sickle**: Trims low-quality bases (quality-based trimming)
 
@@ -405,6 +413,7 @@ skewer se -i raw.fastq -o - -x AGATCGGAAGAGC | \
 ## Development Roadmap
 
 ### Version 1.0.0 (Current)
+
 - ✅ Single-end and paired-end adapter trimming
 - ✅ 3' and 5' adapter detection
 - ✅ Error-tolerant matching
@@ -415,6 +424,7 @@ skewer se -i raw.fastq -o - -x AGATCGGAAGAGC | \
 - ✅ Detailed statistics
 
 ### Version 1.1.0 (Current - NEW Features)
+
 - ✅ Automatic adapter detection
 - ✅ Improved adapter matching algorithm with scoring
 - ✅ Additional output formats (JSON statistics)
@@ -441,10 +451,10 @@ Apache License 2.0 - See [LICENSE](../../LICENSE) for details.
 
 ## References
 
-- Original Skewer: https://github.com/relipmoc/skewer
+- Original Skewer: <https://github.com/relipmoc/skewer>
 - Paper: Jiang et al. (2014). Skewer: a fast and accurate adapter trimmer for next-generation sequencing paired-end reads. BMC Bioinformatics.
-- FASTQ format: https://en.wikipedia.org/wiki/FASTQ_format
-- Adapter sequences: https://support.illumina.com/bulletins/2016/12/what-sequences-do-i-use-for-adapter-trimming.html
+- FASTQ format: <https://en.wikipedia.org/wiki/FASTQ_format>
+- Adapter sequences: <https://support.illumina.com/bulletins/2016/12/what-sequences-do-i-use-for-adapter-trimming.html>
 
 ## Support
 

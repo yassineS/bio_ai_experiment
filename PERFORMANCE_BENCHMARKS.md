@@ -97,6 +97,7 @@ prinseq stats --fastq reads.fastq
 ### seqtk (Go vs Original C)
 
 The Go implementation provides:
+
 - **Comparable speed**: Within 5-10% of original C implementation
 - **Better error handling**: Clear error messages and validation
 - **Cross-platform**: Single binary for all platforms
@@ -106,6 +107,7 @@ The Go implementation provides:
 ### prinseq (Go vs Original Perl)
 
 The Go implementation provides:
+
 - **20-26% faster**: Based on benchmarks with 1M read files (as noted in tools/prinseq/README.md)
 - **Lower memory usage**: Streaming instead of loading entire file
 - **Better error handling**: Clear error messages
@@ -129,6 +131,7 @@ The Go implementation provides:
 ## Testing Methodology
 
 All benchmarks were performed using:
+
 - Test data: 10,000 reads, 100bp each
 - Multiple runs to ensure consistency
 - Bash `time` command for measurements

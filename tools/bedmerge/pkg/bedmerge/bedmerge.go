@@ -11,11 +11,11 @@ import (
 
 // OutputFields specifies which fields to include in the output.
 type OutputFields struct {
-	Name       bool // Include name field
-	Score      bool // Include score field
-	Strand     bool // Include strand field
-	Count      bool // Include count of merged intervals as name field
-	BedGraph   bool // Output in bedGraph format (chrom, start, end, score)
+	Name     bool // Include name field
+	Score    bool // Include score field
+	Strand   bool // Include strand field
+	Count    bool // Include count of merged intervals as name field
+	BedGraph bool // Output in bedGraph format (chrom, start, end, score)
 }
 
 // MergeOptions contains options for merging BED intervals.
@@ -37,7 +37,7 @@ func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 	// Read all intervals
 	bedReader := bed.NewReader(reader)
 	var intervals []*bed.Record
-	
+
 	for {
 		record, err := bedReader.Read()
 		if err == io.EOF {
@@ -46,7 +46,7 @@ func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("error reading BED record: %w", err)
 		}
-		
+
 		// If bedGraph input mode, parse the name field as score
 		if opts.OutputFields.BedGraph && record.Name != "" && record.Score == 0 {
 			// Try to parse name as score
@@ -56,7 +56,7 @@ func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 				record.Name = ""
 			}
 		}
-		
+
 		intervals = append(intervals, record)
 	}
 
@@ -116,7 +116,7 @@ func mergeIntervals(intervals []*bed.Record, opts MergeOptions) []mergedInterval
 
 		// Check if we can merge with current
 		canMerge := false
-		
+
 		// Same chromosome?
 		if interval.Chrom == current.Chrom {
 			// Check strand if needed
@@ -134,7 +134,7 @@ func mergeIntervals(intervals []*bed.Record, opts MergeOptions) []mergedInterval
 				current.ChromEnd = interval.ChromEnd
 			}
 			current.count++
-			
+
 			// For bedGraph, we might want to average or sum scores
 			// For now, we keep the first score
 		} else {
@@ -166,43 +166,43 @@ func writeIntervals(writer io.Writer, merged []mergedInterval, opts MergeOptions
 	if opts.OutputFields.BedGraph {
 		return writeBedGraph(writer, merged)
 	}
-	
+
 	bedWriter := bed.NewWriter(writer)
-	
+
 	for _, m := range merged {
 		record := m.Record
-		
+
 		// Handle count field
 		if opts.OutputFields.Count {
 			record.Name = fmt.Sprintf("%d", m.count)
 		} else if !opts.OutputFields.Name {
 			record.Name = ""
 		}
-		
+
 		if !opts.OutputFields.Score {
 			record.Score = 0
 		}
-		
+
 		if !opts.OutputFields.Strand {
 			record.Strand = ""
 		}
-		
+
 		if err := bedWriter.Write(record); err != nil {
 			return fmt.Errorf("error writing BED record: %w", err)
 		}
 	}
-	
+
 	if err := bedWriter.Flush(); err != nil {
 		return fmt.Errorf("error flushing output: %w", err)
 	}
-	
+
 	return nil
 }
 
 // writeBedGraph writes intervals in bedGraph format (chrom, start, end, score).
 func writeBedGraph(writer io.Writer, merged []mergedInterval) error {
 	for _, m := range merged {
-		line := fmt.Sprintf("%s\t%d\t%d\t%d\n", 
+		line := fmt.Sprintf("%s\t%d\t%d\t%d\n",
 			m.Chrom, m.ChromStart, m.ChromEnd, m.Score)
 		if _, err := writer.Write([]byte(line)); err != nil {
 			return fmt.Errorf("error writing bedGraph record: %w", err)
@@ -215,20 +215,20 @@ func writeBedGraph(writer io.Writer, merged []mergedInterval) error {
 // This uses a sliding window approach to avoid loading all intervals into memory.
 func streamingMerge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 	bedReader := bed.NewReader(reader)
-	
+
 	// For streaming mode, we need to read intervals in chunks per chromosome
 	// We'll collect all intervals for one chromosome, merge them, write output,
 	// then move to the next chromosome. This assumes input is roughly sorted by chromosome.
-	
+
 	var currentChrom string
 	var chromIntervals []*bed.Record
 	outputCount := 0
-	
+
 	flushChrom := func() error {
 		if len(chromIntervals) == 0 {
 			return nil
 		}
-		
+
 		// Sort intervals for this chromosome
 		sort.Slice(chromIntervals, func(i, j int) bool {
 			if chromIntervals[i].ChromStart != chromIntervals[j].ChromStart {
@@ -236,18 +236,18 @@ func streamingMerge(reader io.Reader, writer io.Writer, opts MergeOptions) (int,
 			}
 			return chromIntervals[i].ChromEnd < chromIntervals[j].ChromEnd
 		})
-		
+
 		// Merge and write
 		merged := mergeIntervals(chromIntervals, opts)
 		if err := writeIntervals(writer, merged, opts); err != nil {
 			return err
 		}
-		
+
 		outputCount += len(merged)
 		chromIntervals = nil
 		return nil
 	}
-	
+
 	for {
 		record, err := bedReader.Read()
 		if err == io.EOF {
@@ -256,7 +256,7 @@ func streamingMerge(reader io.Reader, writer io.Writer, opts MergeOptions) (int,
 		if err != nil {
 			return 0, fmt.Errorf("error reading BED record: %w", err)
 		}
-		
+
 		// If bedGraph input mode, parse the name field as score
 		if opts.OutputFields.BedGraph && record.Name != "" && record.Score == 0 {
 			// Try to parse name as score
@@ -266,23 +266,23 @@ func streamingMerge(reader io.Reader, writer io.Writer, opts MergeOptions) (int,
 				record.Name = ""
 			}
 		}
-		
+
 		// If chromosome changed, flush previous chromosome
 		if record.Chrom != currentChrom && currentChrom != "" {
 			if err := flushChrom(); err != nil {
 				return 0, err
 			}
 		}
-		
+
 		currentChrom = record.Chrom
 		chromIntervals = append(chromIntervals, record)
 	}
-	
+
 	// Flush last chromosome
 	if err := flushChrom(); err != nil {
 		return 0, err
 	}
-	
+
 	return outputCount, nil
 }
 
@@ -309,7 +309,7 @@ func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Sta
 	// Read all intervals
 	bedReader := bed.NewReader(reader)
 	var intervals []*bed.Record
-	
+
 	for {
 		record, err := bedReader.Read()
 		if err == io.EOF {
@@ -318,7 +318,7 @@ func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Sta
 		if err != nil {
 			return nil, fmt.Errorf("error reading BED record: %w", err)
 		}
-		
+
 		// If bedGraph input mode, parse the name field as score
 		if opts.OutputFields.BedGraph && record.Name != "" && record.Score == 0 {
 			// Try to parse name as score
@@ -328,7 +328,7 @@ func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Sta
 				record.Name = ""
 			}
 		}
-		
+
 		intervals = append(intervals, record)
 	}
 

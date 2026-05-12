@@ -66,9 +66,10 @@ bedintersect -a genes.bed -b peaks.bed > overlaps.bed
 ```
 
 Output: The overlapping portion of each pair:
+
 ```
-chr1	150	200
-chr1	350	400
+chr1 150 200
+chr1 350 400
 ```
 
 #### Report original A entries
@@ -78,9 +79,10 @@ bedintersect -a genes.bed -b peaks.bed -wa > genes_with_peaks.bed
 ```
 
 Output: Original gene coordinates that have peaks:
+
 ```
-chr1	100	200
-chr1	300	400
+chr1 100 200
+chr1 300 400
 ```
 
 #### Report B entries that overlap A
@@ -96,9 +98,10 @@ bedintersect -a genes.bed -b peaks.bed -c > gene_peak_counts.bed
 ```
 
 Output: Each gene with count in name field:
+
 ```
-chr1	100	200	3
-chr1	300	400	1
+chr1 100 200 3
+chr1 300 400 1
 ```
 
 #### Find A intervals with no B overlap
@@ -178,6 +181,7 @@ bedintersect -a genes.bed -b peaks.bed -S > overlaps.bed
 ```
 
 Outputs to stderr:
+
 ```
 Intervals in A: 1000
 Intervals in B: 500
@@ -198,8 +202,8 @@ bedintersect -a genes.bed -b peaks.bed | gzip > overlaps.bed.gz
 Standard BED format with at least 3 columns:
 
 ```
-chr1	100	200
-chr1	300	400
+chr1 100 200
+chr1 300 400
 ```
 
 - Tab-delimited
@@ -213,27 +217,31 @@ chr1	300	400
 Depends on options:
 
 ### Default (intersection coordinates)
+
 ```
-chr1	150	200
-chr1	350	400
+chr1 150 200
+chr1 350 400
 ```
 
 ### With -wa (original A)
+
 ```
-chr1	100	200
-chr1	300	400
+chr1 100 200
+chr1 300 400
 ```
 
 ### With -wb (B entries)
+
 ```
-chr1	150	250
-chr1	350	450
+chr1 150 250
+chr1 350 450
 ```
 
 ### With -c (counts)
+
 ```
-chr1	100	200	2
-chr1	300	400	1
+chr1 100 200 2
+chr1 300 400 1
 ```
 
 ## Algorithm
@@ -263,46 +271,55 @@ Performance is similar to bedtools intersect for most use cases.
 ## Use Cases
 
 ### Find genes overlapping peaks
+
 ```bash
 bedintersect -a genes.bed -b peaks.bed -wa > genes_with_peaks.bed
 ```
 
 ### Count binding sites per gene
+
 ```bash
 bedintersect -a genes.bed -b binding_sites.bed -c > gene_binding_counts.bed
 ```
 
 ### Find genes without enhancers
+
 ```bash
 bedintersect -a genes.bed -b enhancers.bed -v > genes_no_enhancers.bed
 ```
 
 ### Find significant overlaps
+
 ```bash
 bedintersect -a regions.bed -b features.bed -m 100 -f 0.5 > significant.bed
 ```
 
 ### Strand-specific analysis
+
 ```bash
 bedintersect -a genes.bed -b reads.bed -s -c > sense_coverage.bed
 ```
 
 ### Find reciprocal best hits
+
 ```bash
 bedintersect -a genes.bed -b orthologs.bed -f 0.8 -F 0.8 -r > reciprocal_hits.bed
 ```
 
 ### Find nearest regulatory elements
+
 ```bash
 bedintersect -a genes.bed -b enhancers.bed -d > gene_enhancer_distances.bed
 ```
 
 ### Get closest transcription factor binding site
+
 ```bash
 bedintersect -a genes.bed -b tfbs.bed -k > closest_tfbs.bed
 ```
 
 ### Process very large feature databases
+
 ```bash
 bedintersect -a queries.bed -b large_database.bed -t > results.bed
 ```
@@ -310,6 +327,7 @@ bedintersect -a queries.bed -b large_database.bed -t > results.bed
 ## Comparison with bedtools
 
 ### Similarities
+
 - Same basic intersection algorithm
 - Compatible input/output formats
 - Supports most common options
@@ -331,6 +349,7 @@ bedintersect -a queries.bed -b large_database.bed -t > results.bed
 | Sorted requirement | No | No |
 
 **Use bedintersect when:**
+
 - You need a simple, standalone tool
 - You want built-in gzip support
 - You prefer Go tools
@@ -340,6 +359,7 @@ bedintersect -a queries.bed -b large_database.bed -t > results.bed
 - You need reciprocal overlap filtering
 
 **Use bedtools intersect when:**
+
 - You need advanced options (wao, sorted optimization, etc.)
 - You're already using bedtools suite
 - You need perfect output compatibility with existing pipelines
@@ -387,6 +407,7 @@ go test -cover ./pkg/bedintersect
 ## Contributing
 
 Contributions welcome! Please:
+
 - Add tests for new features
 - Follow Go coding standards
 - Update documentation

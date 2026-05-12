@@ -1,6 +1,7 @@
 # Submodules Addition Summary
 
 ## Task Completed
+
 Successfully curated 50 modern, actively-maintained bioinformatics tools as git submodules to the `reference_code/` directory. The list has been revised to exclude outdated tools and those with very large codebases, replacing them with modern alternatives that are actively maintained and widely used.
 
 ## Results
@@ -25,11 +26,13 @@ All 50 tools are actively maintained, have reasonable codebase sizes, and repres
 Based on user request and to reach 50 total submodules, the following additional tools have been added:
 
 **Initial 3 Additional Tools:**
+
 - **DISCOVAR** - Variant detection assembly (C++) - Unofficial mirror from bayolau/discovardenovo
 - **fineSTRUCTURE** - Population structure analysis (C) - Includes Chromopainter for chromosome painting
 - **AdmixTools** - Admixture testing and population genetics (C) - Tools from Reich Lab
 
 **Extended List (5 more tools to reach 50):**
+
 - **StringTie** - RNA-seq transcript assembly and quantification (C++)
 - **Minia** - Short-read de Bruijn graph assembler (C++)
 - **PLINK** - Whole genome association analysis toolset (C) - Note: plink-ng is the modern PLINK2
@@ -37,6 +40,7 @@ Based on user request and to reach 50 total submodules, the following additional
 - **Manta** - Structural variant and indel caller (C++)
 
 **Modern Replacements (7 tools replacing outdated/large tools):**
+
 - **Salmon** - Fast RNA-seq quantification (replaces Cuffdiff/Cufflinks)
 - **fastp** - All-in-one preprocessing tool (replaces fastx_toolkit)
 - **SPAdes** - Modern genome assembler (replaces Ray)
@@ -48,6 +52,7 @@ Based on user request and to reach 50 total submodules, the following additional
 ### Removed Tools (7)
 
 The following tools were removed as they are outdated, have large codebases, or have been superseded:
+
 - **Cuffdiff** - Old RNA-seq tool (superseded by Salmon, modern workflows)
 - **Cufflinks** - Old transcript assembler (superseded by StringTie)  
 - **fastx_toolkit** - Unmaintained (superseded by fastp)
@@ -59,11 +64,13 @@ The following tools were removed as they are outdated, have large codebases, or 
 ### Unavailable Tools (5)
 
 **Proprietary/Commercial (3 tools)**
+
 - NovoAlign - Commercial software
 - GeneMark - Commercial software
 - FGENESH - Commercial software
 
 **Not Available on GitHub (5 tools)**
+
 - MaxBin - Original on SourceForge; GitHub repos appear to be removed or made private
 - STRUCTURE - Proprietary software from Stanford (no public repository)
 - Homer - Official distribution only (homer.ucsd.edu, tarball distribution)
@@ -119,6 +126,7 @@ With the reference code in place, the project can now proceed to:
 ## Impact
 
 This addition provides:
+
 - Direct access to source code of 42 leading bioinformatics tools
 - Foundation for comparative analysis and improvement
 - Reference implementations for feature completeness verification
@@ -135,6 +143,7 @@ This addition provides:
 - **Average Tool Age**: Modern (mostly active development in recent years)
 
 ## Date
+
 **Completed**: 2025-10-20
 **Updated**: 2025-10-20 (Added DISCOVAR, fineSTRUCTURE, AdmixTools)
 **Updated**: 2025-10-20 (Added StringTie, Minia, PLINK, STAR, Manta to reach 50 total)

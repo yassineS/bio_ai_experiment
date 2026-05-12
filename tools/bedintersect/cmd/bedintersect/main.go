@@ -91,49 +91,49 @@ func main() {
 	// Define flags
 	inputA := flag.String("a", "", "Input BED file A (required)")
 	flag.StringVar(inputA, "input-a", "", "Input BED file A (required)")
-	
+
 	inputB := flag.String("b", "", "Input BED file B (required)")
 	flag.StringVar(inputB, "input-b", "", "Input BED file B (required)")
-	
+
 	output := flag.String("o", "", "Output file (default: stdout)")
 	flag.StringVar(output, "output", "", "Output file (default: stdout)")
-	
+
 	minOverlap := flag.Int("m", 1, "Minimum overlap required")
 	flag.IntVar(minOverlap, "min-overlap", 1, "Minimum overlap required")
-	
+
 	fractionA := flag.Float64("f", 0.0, "Minimum fraction of A that must overlap")
 	flag.Float64Var(fractionA, "fraction-a", 0.0, "Minimum fraction of A that must overlap")
-	
+
 	fractionB := flag.Float64("F", 0.0, "Minimum fraction of B that must overlap")
 	flag.Float64Var(fractionB, "fraction-b", 0.0, "Minimum fraction of B that must overlap")
-	
+
 	strandSpec := flag.Bool("s", false, "Only report hits on same strand")
 	flag.BoolVar(strandSpec, "strand", false, "Only report hits on same strand")
-	
+
 	invert := flag.Bool("v", false, "Report A entries with NO overlap with B")
 	flag.BoolVar(invert, "invert", false, "Report A entries with NO overlap with B")
-	
+
 	writeA := flag.Bool("wa", false, "Write original A entry")
 	flag.BoolVar(writeA, "write-a", false, "Write original A entry")
-	
+
 	writeB := flag.Bool("wb", false, "Write B entry instead of A")
 	flag.BoolVar(writeB, "write-b", false, "Write B entry instead of A")
-	
+
 	count := flag.Bool("c", false, "Report count of B overlaps for each A")
 	flag.BoolVar(count, "count", false, "Report count of B overlaps for each A")
-	
+
 	showStats := flag.Bool("S", false, "Print statistics to stderr")
 	flag.BoolVar(showStats, "stats", false, "Print statistics to stderr")
-	
+
 	reciprocal := flag.Bool("r", false, "Require reciprocal overlap (both -f and -F)")
 	flag.BoolVar(reciprocal, "reciprocal", false, "Require reciprocal overlap (both -f and -F)")
-	
+
 	distance := flag.Bool("d", false, "Report distance to nearest B feature")
 	flag.BoolVar(distance, "distance", false, "Report distance to nearest B feature")
-	
+
 	closest := flag.Bool("k", false, "Output closest B feature for each A")
 	flag.BoolVar(closest, "closest", false, "Output closest B feature for each A")
-	
+
 	useTree := flag.Bool("t", false, "Use interval tree for large B files")
 	flag.BoolVar(useTree, "tree", false, "Use interval tree for large B files")
 

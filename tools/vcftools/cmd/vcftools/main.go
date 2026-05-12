@@ -124,7 +124,7 @@ func main() {
 	toBp := flag.Int("to-bp", 0, "Include positions <= this value")
 	positionsFile := flag.String("positions", "", "Include positions from file")
 	excludePositionsFile := flag.String("exclude-positions", "", "Exclude positions from file")
-	
+
 	// SNP ID filtering
 	snp := flag.String("snp", "", "Include only this SNP ID")
 	snps := flag.String("snps", "", "Include SNP IDs from file")
@@ -177,7 +177,7 @@ func main() {
 	singletons := flag.Bool("singletons", false, "Singleton site analysis")
 	histIndelLen := flag.Bool("hist-indel-len", false, "Indel length histogram")
 	genoDepth := flag.Bool("geno-depth", false, "Genotype depth distribution")
-	
+
 	// Phase 2: Population genetics statistics
 	windowPi := flag.Int("window-pi", 0, "Nucleotide diversity in windows of this size")
 	windowPiStep := flag.Int("window-pi-step", 0, "Step size for pi windows")
@@ -191,7 +191,7 @@ func main() {
 	fstWindowSize := flag.Int("fst-window-size", 0, "Window size for Fst")
 	fstWindowStep := flag.Int("fst-window-step", 0, "Step size for Fst windows")
 	filterSummary := flag.Bool("FILTER-summary", false, "FILTER tag summary")
-	
+
 	// Phase 4: Format conversions
 	output012 := flag.Bool("012", false, "Output genotypes as 0/1/2 matrix")
 	outputPlink := flag.Bool("plink", false, "Output PLINK PED/MAP format")
@@ -264,73 +264,73 @@ func main() {
 
 	// Build params
 	params := &vcftools.Params{
-		OutPrefix:       *outPrefix,
-		UseStdout:       *useStdout,
-		Recode:          *recode,
-		RecodeInfoAll:   *recodeInfoAll,
-		Chr:             *chr,
-		NotChr:          *notChr,
-		FromBp:          *fromBp,
-		ToBp:            *toBp,
-		PositionsFile:   *positionsFile,
+		OutPrefix:            *outPrefix,
+		UseStdout:            *useStdout,
+		Recode:               *recode,
+		RecodeInfoAll:        *recodeInfoAll,
+		Chr:                  *chr,
+		NotChr:               *notChr,
+		FromBp:               *fromBp,
+		ToBp:                 *toBp,
+		PositionsFile:        *positionsFile,
 		ExcludePositionsFile: *excludePositionsFile,
-		SNP:             *snp,
-		SNPs:            *snps,
-		ExcludeSNP:      *excludeSNP,
-		ExcludeSNPs:     *excludeSNPs,
-		Thin:            *thin,
-		KeepOnlyIndels:  *keepOnlyIndels,
-		RemoveIndels:    *removeIndels,
-		MinAlleles:      *minAlleles,
-		MaxAlleles:      *maxAlleles,
-		MinQ:            *minQ,
-		RemoveFilteredAll: *removeFilteredAll,
-		Maf:             *maf,
-		MaxMaf:          *maxMaf,
-		Mac:             *mac,
-		MaxMac:          *maxMac,
-		MaxMissing:      *maxMissing,
-		MinMeanDP:       *minMeanDP,
-		MaxMeanDP:       *maxMeanDP,
-		MinDP:           *minDP,
-		MaxDP:           *maxDP,
-		MinGQ:           *minGQ,
-		Freq:            *freq,
-		Counts:          *counts,
-		Freq2:           *freq2,
-		Counts2:         *counts2,
-		Depth:           *depth,
-		SiteDepth:       *siteDepth,
-		SiteMeanDepth:   *siteMeanDepth,
-		SiteQuality:     *siteQuality,
-		MissingIndv:     *missingIndv,
-		MissingSite:     *missingSite,
-		Hardy:           *hardy,
-		TsTvSummary:     *tsTvSummary,
-		TsTvBinSize:     *tsTvBinSize,
-		TsTvByCount:     *tsTvByCount,
-		TsTvByQual:      *tsTvByQual,
-		SitePi:          *sitePi,
-		Het:             *het,
-		Singletons:      *singletons,
-		HistIndelLen:    *histIndelLen,
-		GenoDepth:       *genoDepth,
-		WindowPi:        *windowPi,
-		WindowPiStep:    *windowPiStep,
-		TajimaD:         *tajimaD,
-		SNPDensity:      *snpDensity,
-		WeirFstPop:      weirFstPop,
-		FstWindowSize:   *fstWindowSize,
-		FstWindowStep:   *fstWindowStep,
-		FilterSummary:   *filterSummary,
-		Output012:       *output012,
-		OutputPlink:     *outputPlink,
-		OutputPlinkTped: *outputPlinkTped,
-		ChromMap:        *chromMap,
-		IndvList:        indvList,
-		RemoveIndvList:  removeIndvList,
-		KeepFile:        *keepFile,
-		RemoveFile:      *removeFile,
+		SNP:                  *snp,
+		SNPs:                 *snps,
+		ExcludeSNP:           *excludeSNP,
+		ExcludeSNPs:          *excludeSNPs,
+		Thin:                 *thin,
+		KeepOnlyIndels:       *keepOnlyIndels,
+		RemoveIndels:         *removeIndels,
+		MinAlleles:           *minAlleles,
+		MaxAlleles:           *maxAlleles,
+		MinQ:                 *minQ,
+		RemoveFilteredAll:    *removeFilteredAll,
+		Maf:                  *maf,
+		MaxMaf:               *maxMaf,
+		Mac:                  *mac,
+		MaxMac:               *maxMac,
+		MaxMissing:           *maxMissing,
+		MinMeanDP:            *minMeanDP,
+		MaxMeanDP:            *maxMeanDP,
+		MinDP:                *minDP,
+		MaxDP:                *maxDP,
+		MinGQ:                *minGQ,
+		Freq:                 *freq,
+		Counts:               *counts,
+		Freq2:                *freq2,
+		Counts2:              *counts2,
+		Depth:                *depth,
+		SiteDepth:            *siteDepth,
+		SiteMeanDepth:        *siteMeanDepth,
+		SiteQuality:          *siteQuality,
+		MissingIndv:          *missingIndv,
+		MissingSite:          *missingSite,
+		Hardy:                *hardy,
+		TsTvSummary:          *tsTvSummary,
+		TsTvBinSize:          *tsTvBinSize,
+		TsTvByCount:          *tsTvByCount,
+		TsTvByQual:           *tsTvByQual,
+		SitePi:               *sitePi,
+		Het:                  *het,
+		Singletons:           *singletons,
+		HistIndelLen:         *histIndelLen,
+		GenoDepth:            *genoDepth,
+		WindowPi:             *windowPi,
+		WindowPiStep:         *windowPiStep,
+		TajimaD:              *tajimaD,
+		SNPDensity:           *snpDensity,
+		WeirFstPop:           weirFstPop,
+		FstWindowSize:        *fstWindowSize,
+		FstWindowStep:        *fstWindowStep,
+		FilterSummary:        *filterSummary,
+		Output012:            *output012,
+		OutputPlink:          *outputPlink,
+		OutputPlinkTped:      *outputPlinkTped,
+		ChromMap:             *chromMap,
+		IndvList:             indvList,
+		RemoveIndvList:       removeIndvList,
+		KeepFile:             *keepFile,
+		RemoveFile:           *removeFile,
 	}
 
 	// Run vcftools

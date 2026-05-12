@@ -14,6 +14,7 @@ This document outlines the command-line interface (CLI) design conventions used 
 ### Short Options (Single Letter)
 
 Short options use a single dash followed by a single letter:
+
 - `-i` for input files
 - `-o` for output files
 - `-q` for quality-related options
@@ -27,6 +28,7 @@ Short options use a single dash followed by a single letter:
 ### Long Options (Full Word)
 
 Long options use a double dash followed by a descriptive word or hyphenated phrase:
+
 - `--input` for input files
 - `--output` for output files
 - `--quality` for quality thresholds
@@ -38,6 +40,7 @@ Long options use a double dash followed by a descriptive word or hyphenated phra
 ### Paired Options
 
 When tools support paired-end reads, use numbered suffixes:
+
 - `-i1, --input1` for first read file
 - `-i2, --input2` for second read file
 - `-o1, --output1` for first output file
@@ -172,5 +175,5 @@ addFlag(fs, "i", "input", "", "Input file (use '-' for stdin)")
 
 ## References
 
-- POSIX Utility Conventions: https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html
-- GNU Coding Standards: https://www.gnu.org/prep/standards/html_node/Command_002dLine-Interfaces.html
+- POSIX Utility Conventions: <https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html>
+- GNU Coding Standards: <https://www.gnu.org/prep/standards/html_node/Command_002dLine-Interfaces.html>

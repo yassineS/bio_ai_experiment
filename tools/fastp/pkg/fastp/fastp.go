@@ -760,6 +760,7 @@ func processPairedEndParallel(reader1, reader2 *fastq.Reader, writer1, writer2 *
 	outputChan := make(chan resultPair, opts.Threads*2)
 
 	var wg sync.WaitGroup
+	var statsMu sync.Mutex
 
 	// Start worker goroutines
 	for i := 0; i < opts.Threads; i++ {
@@ -779,11 +780,12 @@ func processPairedEndParallel(reader1, reader2 *fastq.Reader, writer1, writer2 *
 				}
 			}
 
-			// Merge local stats (simplified - would need mutex for accuracy)
+			statsMu.Lock()
 			stats.LowQualityReads += localStats.LowQualityReads
 			stats.TooShortReads += localStats.TooShortReads
 			stats.TooLongReads += localStats.TooLongReads
 			stats.TooManyNReads += localStats.TooManyNReads
+			statsMu.Unlock()
 		}()
 	}
 
@@ -842,6 +844,7 @@ func processSingleEndParallel(reader *fastq.Reader, writer *fastq.Writer, encodi
 	outputChan := make(chan result, opts.Threads*2)
 
 	var wg sync.WaitGroup
+	var statsMu sync.Mutex
 
 	// Start worker goroutines
 	for i := 0; i < opts.Threads; i++ {
@@ -855,11 +858,12 @@ func processSingleEndParallel(reader *fastq.Reader, writer *fastq.Writer, encodi
 				outputChan <- result{processed: processed, pass: pass}
 			}
 
-			// Merge local stats (simplified)
+			statsMu.Lock()
 			stats.LowQualityReads += localStats.LowQualityReads
 			stats.TooShortReads += localStats.TooShortReads
 			stats.TooLongReads += localStats.TooLongReads
 			stats.TooManyNReads += localStats.TooManyNReads
+			statsMu.Unlock()
 		}()
 	}
 

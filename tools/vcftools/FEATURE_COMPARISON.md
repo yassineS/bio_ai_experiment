@@ -11,6 +11,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 ## Implemented Features (✅)
 
 ### Input/Output
+
 - ✅ `--vcf` - Input VCF file
 - ✅ `--gzvcf` - Input gzipped VCF file
 - ✅ `--stdin` - Read from stdin
@@ -20,6 +21,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--recode-INFO-all` - Include all INFO fields in recode
 
 ### Position Filtering
+
 - ✅ `--chr` - Filter by chromosome
 - ✅ `--not-chr` - Exclude chromosome
 - ✅ `--from-bp` - Minimum position
@@ -28,33 +30,39 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--exclude-positions` - Exclude positions from file
 
 ### Variant Type Filtering
+
 - ✅ `--keep-only-indels` - Keep only indels
 - ✅ `--remove-indels` - Remove indels
 - ✅ `--min-alleles` - Minimum number of alleles
 - ✅ `--max-alleles` - Maximum number of alleles
 
 ### Quality Filtering
+
 - ✅ `--minQ` - Minimum quality score
 - ✅ `--remove-filtered-all` - Remove non-PASS sites
 
 ### Allele Frequency Filtering
+
 - ✅ `--maf` - Minimum minor allele frequency
 - ✅ `--max-maf` - Maximum minor allele frequency
 - ✅ `--mac` - Minimum minor allele count
 - ✅ `--max-mac` - Maximum minor allele count
 
 ### Genotype Filtering
+
 - ✅ `--max-missing` - Maximum missing data proportion
 - ✅ `--min-meanDP` - Minimum mean depth
 - ✅ `--max-meanDP` - Maximum mean depth
 
 ### Sample Filtering
+
 - ✅ `--indv` - Include individual(s)
 - ✅ `--remove-indv` - Remove individual(s)
 - ✅ `--keep` - Keep individuals from file
 - ✅ `--remove` - Remove individuals from file
 
 ### Statistics Output
+
 - ✅ `--freq` - Allele frequency
 - ✅ `--counts` - Allele counts
 - ✅ `--depth` - Mean depth per site
@@ -73,6 +81,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 ### High Priority Features (commonly used)
 
 #### Linkage Disequilibrium Analysis
+
 - ❌ `--hap-r2` - Haplotype-based LD (r²)
 - ❌ `--geno-r2` - Genotype-based LD (r²)
 - ❌ `--geno-chisq` - Genotype chi-square test
@@ -87,6 +96,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--interchrom-geno-r2` - Inter-chromosomal genotype LD
 
 #### Population Genetics Statistics
+
 - ❌ `--weir-fst-pop` - Fst calculation (Weir & Cockerham)
 - ❌ `--fst-window-size` - Window size for Fst
 - ❌ `--fst-window-step` - Step size for Fst windows
@@ -97,6 +107,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--singletons` - Singleton site analysis
 
 #### Format Conversion
+
 - ❌ `--plink` - Convert to PLINK format
 - ❌ `--plink-tped` - Convert to PLINK transposed format
 - ❌ `--chrom-map` - Chromosome mapping for PLINK
@@ -109,6 +120,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--BEAGLE-PL` - Output BEAGLE genotype likelihoods (PL)
 
 #### VCF Comparison/Diff
+
 - ❌ `--diff` - Compare with another VCF
 - ❌ `--gzdiff` - Compare with gzipped VCF
 - ❌ `--diff-bcf` - Compare with BCF
@@ -123,6 +135,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 ### Medium Priority Features
 
 #### Additional Filtering
+
 - ❌ `--snp` - Include specific SNP by ID
 - ❌ `--snps` - Include SNPs from file
 - ❌ `--exclude` - Exclude SNPs from file
@@ -141,6 +154,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--keep-INFO-all` - Keep all INFO fields
 
 #### Genotype-Level Filtering
+
 - ❌ `--minDP` - Minimum depth per genotype
 - ❌ `--maxDP` - Maximum depth per genotype
 - ❌ `--minGQ` - Minimum genotype quality
@@ -148,6 +162,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--remove-filtered-geno-all` - Remove all filtered genotypes
 
 #### Advanced Allele Filters
+
 - ❌ `--non-ref-ac` - Non-reference allele count
 - ❌ `--max-non-ref-ac` - Maximum non-ref allele count
 - ❌ `--non-ref-ac-any` - Any non-ref allele count
@@ -159,6 +174,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--max-missing-count` - Maximum missing count
 
 #### Additional Statistics
+
 - ❌ `--freq2` - Alternative frequency output
 - ❌ `--counts2` - Alternative counts output
 - ❌ `--geno-depth` - Genotype depth distribution
@@ -174,10 +190,12 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--indv-freq-burden2` - Alternative frequency burden
 
 #### Haplotype/Phase Analysis
+
 - ❌ `--phased` - Work with phased data only
 - ❌ `--LROH` - Runs of homozygosity
 
 #### Advanced Analysis
+
 - ❌ `--relatedness` - Relatedness analysis
 - ❌ `--relatedness2` - Alternative relatedness
 - ❌ `--pca` - Principal component analysis
@@ -185,20 +203,24 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--pca-snp-loadings` - PCA SNP loadings
 
 #### Format Info Extraction
+
 - ❌ `--get-INFO` - Extract INFO field values
 - ❌ `--extract-FORMAT-info` - Extract FORMAT field values
 - ❌ `--recode-INFO` - Recode with specific INFO fields
 
 #### Output Management
+
 - ❌ `--kept-sites` - Output list of kept sites
 - ❌ `--removed-sites` - Output list of removed sites
 - ❌ `--temp` - Temporary directory
 
 #### BCF Support
+
 - ❌ `--bcf` - Input BCF file
 - ❌ `--recode-bcf` - Output BCF format
 
 #### Miscellaneous
+
 - ❌ `--contigs` - Contig information
 - ❌ `--derived` - Derived allele frequency
 - ❌ `--hwe` - Alternative HWE test
@@ -229,6 +251,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 Based on typical vcftools usage patterns:
 
 **High Priority (Commonly Used):**
+
 - ✅ Basic filtering (position, quality, allele frequency) - **IMPLEMENTED**
 - ✅ Basic statistics (frequency, depth, missingness, HWE, Ts/Tv) - **IMPLEMENTED**
 - ✅ VCF recoding - **IMPLEMENTED**
@@ -237,12 +260,14 @@ Based on typical vcftools usage patterns:
 - ❌ PLINK conversion - **NOT IMPLEMENTED**
 
 **Medium Priority (Occasionally Used):**
+
 - ❌ VCF comparison/diff - **NOT IMPLEMENTED**
 - ❌ Windowed statistics - **NOT IMPLEMENTED**
 - ❌ Format conversion (BEAGLE, IMPUTE, LDhat) - **NOT IMPLEMENTED**
 - ❌ Relatedness analysis - **NOT IMPLEMENTED**
 
 **Low Priority (Rarely Used):**
+
 - ❌ PCA analysis - **NOT IMPLEMENTED**
 - ❌ Mendelian error checking - **NOT IMPLEMENTED**
 - ❌ Advanced haplotype analysis - **NOT IMPLEMENTED**
@@ -250,6 +275,7 @@ Based on typical vcftools usage patterns:
 ## Recommendations for Feature Parity
 
 ### Phase 1: Critical Missing Features (High Impact)
+
 1. **Linkage Disequilibrium Analysis**
    - Implement `--geno-r2` (most commonly used)
    - Implement `--hap-r2` (for phased data)
@@ -268,34 +294,36 @@ Based on typical vcftools usage patterns:
    - Priority: MEDIUM-HIGH
 
 ### Phase 2: Important Features
+
 4. **VCF Comparison/Diff**
    - Implement basic diff operations
    - Site and individual concordance
    - Priority: MEDIUM
 
-5. **Additional Format Conversions**
+2. **Additional Format Conversions**
    - BEAGLE format (for imputation)
    - 012 matrix (for quick analysis)
    - Priority: MEDIUM
 
-6. **Windowed Statistics**
+3. **Windowed Statistics**
    - Window-based nucleotide diversity
    - SNP density in windows
    - Priority: MEDIUM
 
 ### Phase 3: Nice-to-Have Features
+
 7. **Advanced Filtering**
    - BED file filtering
    - Mask-based filtering
    - SNP ID filtering
    - Priority: LOW-MEDIUM
 
-8. **Advanced Analysis**
+2. **Advanced Analysis**
    - Relatedness calculation
    - Heterozygosity statistics
    - Priority: LOW
 
-9. **BCF Support**
+3. **BCF Support**
    - Input/output BCF format
    - Priority: LOW
 
@@ -304,12 +332,14 @@ Based on typical vcftools usage patterns:
 The current Go implementation covers approximately **80% of commonly used features** but only **24% of total features**. The implementation successfully handles the core use cases:
 
 ✅ **Well Covered:**
+
 - Basic filtering operations
 - Essential statistics
 - VCF recoding
 - Sample management
 
 ❌ **Major Gaps:**
+
 - Linkage Disequilibrium analysis (critical for population genetics)
 - Fst and population structure statistics
 - Format conversion (PLINK, BEAGLE, etc.)
@@ -317,6 +347,7 @@ The current Go implementation covers approximately **80% of commonly used featur
 - Windowed statistics
 
 For true feature parity with the original vcftools, the most important additions would be:
+
 1. LD analysis (`--geno-r2`, `--hap-r2`)
 2. Fst statistics (`--weir-fst-pop`)
 3. PLINK conversion (`--plink`)

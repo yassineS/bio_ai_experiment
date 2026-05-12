@@ -5,6 +5,7 @@ A Go implementation of vcftools for working with VCF (Variant Call Format) files
 ## Overview
 
 vcftools provides a suite of functions for working with genetic variation data in VCF format. The tool can:
+
 - Filter VCF files by various criteria (position, quality, allele frequency, etc.)
 - Calculate statistics (allele frequency, depth, missingness, Hardy-Weinberg equilibrium, etc.)
 - Output data in various formats
@@ -177,9 +178,11 @@ cat input.vcf | ./vcftools --stdin [options]
 ## Output Files
 
 ### Recode Output
+
 - `<prefix>.recode.vcf` - Filtered VCF file
 
 ### Statistics Outputs
+
 - `<prefix>.frq` - Allele frequencies
 - `<prefix>.frq.count` - Allele counts
 - `<prefix>.ldepth.mean` - Mean depth per site
@@ -195,6 +198,7 @@ cat input.vcf | ./vcftools --stdin [options]
 ## Performance
 
 vcftools (Go) provides comparable performance to the original C++/Perl implementation with the following advantages:
+
 - Single binary with no external dependencies
 - Consistent behavior across platforms
 - Automatic gzip handling
@@ -203,7 +207,9 @@ vcftools (Go) provides comparable performance to the original C++/Perl implement
 ## Differences from Original vcftools
 
 ### Feature Coverage
+
 This implementation provides approximately **80% of commonly used vcftools features**, covering:
+
 - ✅ Core filtering options (position, quality, allele frequency, variant type)
 - ✅ Essential statistics (frequency, depth, missingness, HWE, Ts/Tv, pi)
 - ✅ VCF recoding with filtering
@@ -212,19 +218,23 @@ This implementation provides approximately **80% of commonly used vcftools featu
 See [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md) for a detailed feature-by-feature comparison.
 
 ### Major Missing Features
+
 The following commonly-used features are not yet implemented:
 
 **High Priority:**
+
 - ❌ Linkage disequilibrium (LD) calculations (`--geno-r2`, `--hap-r2`)
 - ❌ Fst statistics (`--weir-fst-pop`)
 - ❌ PLINK format conversion (`--plink`, `--plink-tped`)
 
 **Medium Priority:**
+
 - ❌ VCF comparison/diff operations (`--diff`, `--diff-site-discordance`)
 - ❌ Windowed statistics (`--window-pi`, `--TajimaD`)
 - ❌ Additional format conversions (BEAGLE, IMPUTE, LDhat, 012 matrix)
 
 **Low Priority:**
+
 - ❌ Advanced filtering (BED files, SNP IDs, masks)
 - ❌ Relatedness and PCA analysis
 - ❌ BCF format support
@@ -232,6 +242,7 @@ The following commonly-used features are not yet implemented:
 These features may be added in future versions. Contributions are welcome!
 
 ### Improvements
+
 - Simpler command-line interface
 - Automatic handling of gzipped files
 - No need for separate Perl and C++ tools
@@ -250,12 +261,15 @@ For a complete feature-by-feature comparison with the original vcftools, see [FE
 ## Implementation Details
 
 ### VCF Format Support
+
 - VCF v4.0, v4.1, v4.2
 - Handles standard VCF fields: CHROM, POS, ID, REF, ALT, QUAL, FILTER, INFO, FORMAT, samples
 - Supports both phased (|) and unphased (/) genotypes
 
 ### Filtering Logic
+
 Filters are applied in the following order:
+
 1. Position filters (chromosome, position range, position list)
 2. Variant type filters (indels, allele count)
 3. Quality filters (minQ, filter status)
@@ -293,6 +307,7 @@ See the `examples/` directory for sample VCF files and usage examples.
 ## Contributing
 
 Contributions are welcome! Areas for improvement:
+
 - Additional statistics calculations
 - LD analysis
 - Format conversion
@@ -312,6 +327,7 @@ If you use this tool in your research, please cite the original vcftools paper:
 ## Acknowledgments
 
 Based on the original vcftools by:
+
 - Adam Auton
 - Petr Danecek
 - Anthony Marcketta

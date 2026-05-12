@@ -5,8 +5,8 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ## Tool Information
 
 **Tool Name**: PRINSEQ (PReprocessing and INformation of SEQuence data)  
-**Repository**: http://prinseq.sourceforge.net, https://github.com/Adrian-Cantu/PRINSEQ-plus-plus  
-**Website**: http://prinseq.sourceforge.net  
+**Repository**: <http://prinseq.sourceforge.net>, <https://github.com/Adrian-Cantu/PRINSEQ-plus-plus>  
+**Website**: <http://prinseq.sourceforge.net>  
 **Language**: Perl (Original), C++ (PRINSEQ++), Go (This implementation)  
 **License**: GPL-3.0
 
@@ -24,6 +24,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 **Purpose**: PRINSEQ is a sequence quality control and preprocessing tool designed for genomic and metagenomic data. It filters and trims sequences based on various quality criteria.
 
 **Key Features**:
+
 - Sequence statistics calculation (length, GC content, quality scores, N content)
 - Multi-criteria filtering (length, GC, quality, complexity, duplicates)
 - Trimming operations (fixed position, quality-based, tail trimming)
@@ -35,6 +36,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 **Target Users**: Bioinformaticians, genomics researchers, metagenomics researchers, quality control specialists
 
 **Use Cases**:
+
 1. Pre-processing raw sequencing data before assembly or alignment
 2. Quality control assessment for sequencing runs
 3. Filtering low-quality reads in metagenomics studies
@@ -44,6 +46,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ## Code Quality Assessment
 
 ### Strengths (Go Implementation)
+
 - Modern, idiomatic Go code with clear structure
 - High test coverage (>85%)
 - Streaming processing for memory efficiency
@@ -54,6 +57,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 - Type-safe implementation with compile-time checks
 
 ### Weaknesses (Original Perl Implementation)
+
 - Legacy Perl code with limited type safety
 - Poor test coverage in original version
 - Documentation scattered across multiple files
@@ -65,6 +69,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ### Code Metrics
 
 #### Go Implementation
+
 - **Lines of Code**: 1,589 total
   - Core library: 723 lines
   - Unit tests: 478 lines  
@@ -84,6 +89,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
   - Analysis documents
 
 #### Original Perl Implementation
+
 - **Lines of Code**: ~3,000+ (PRINSEQ-lite)
 - **Code Complexity**: High
   - Long functions (100+ lines)
@@ -119,6 +125,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ## Performance Analysis
 
 ### Benchmark Setup
+
 - **Test Dataset**: 1 million FASTQ reads, 150bp average length
 - **Hardware**: Intel i7-9700K, 16GB RAM, SSD
 - **Comparison Tools**: Original PRINSEQ-lite (Perl), PRINSEQ++ (C++)
@@ -135,6 +142,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ### Performance Issues
 
 #### Original Perl Implementation
+
 - **Issue 1**: Loads entire files into memory for some operations
   - Impact: Cannot handle files >10GB efficiently
   - Root cause: Array-based processing instead of streaming
@@ -148,6 +156,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
   - Root cause: Legacy single-threaded design
 
 #### Go Implementation
+
 - **Issue 1**: Slightly slower than C++ version
   - Impact: 10-20% performance gap for large files
   - Root cause: Go's garbage collector overhead
@@ -171,6 +180,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ### Current Documentation
 
 #### Go Implementation
+
 - **Installation Guide**: Yes - Excellent
   - Clear build instructions
   - Multiple installation methods
@@ -196,6 +206,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
   - Multiple use cases covered
 
 #### Original Perl Implementation
+
 - **Installation Guide**: Yes - Fair (outdated)
 - **User Manual**: Yes - Good (comprehensive but dated)
 - **API Documentation**: No
@@ -268,12 +279,14 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ### Required Dependencies
 
 #### Go Implementation
+
 - Go 1.21 or later - Standard library only
 - github.com/yassineS/bio_ai_experiment/pkg/bioformats - Internal shared library
   - FASTA parser/writer
   - FASTQ parser/writer
 
 #### Original Perl Implementation
+
 - Perl 5.8.8 or later - Interpreter
 - Getopt::Long - Command-line parsing (core module)
 - Pod::Usage - Documentation (core module)
@@ -283,10 +296,12 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ### Optional Dependencies
 
 #### Go Implementation
+
 - None currently
 - Future: Compression libraries (gzip, bzip2, xz)
 
 #### Original Perl Implementation
+
 - Statistics::PCA - For PCA analysis
 - GD::Graph - For graph generation
 - Various other CPAN modules for advanced features
@@ -294,12 +309,14 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ### Dependency Issues
 
 #### Original Perl Implementation
+
 - Complex CPAN dependency chain
 - Version conflicts between modules
 - Platform-specific installation issues
 - Difficult to create standalone distributions
 
 #### Go Implementation
+
 - No external dependencies
 - Single binary deployment
 - Cross-platform compilation
@@ -338,6 +355,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 ### Priority Score: 8/10
 
 Factors:
+
 - **Usage/Popularity**: 9/10 (1,000+ citations, widely used in metagenomics)
 - **Code Quality Issues**: 8/10 (Original has significant maintainability issues)
 - **Performance Issues**: 7/10 (Perl version 20-40% slower than needed)
@@ -347,6 +365,7 @@ Factors:
 ### Recoding Complexity: Medium
 
 Factors:
+
 - **Code size**: Moderate (~3,000 lines → ~1,600 lines Go)
 - **Algorithm complexity**: Low to Medium (string operations, statistics)
 - **Dependency complexity**: Low (minimal external dependencies needed)
@@ -430,18 +449,21 @@ Factors:
 
 1. **Tool Name**: prinseq_stats
    - **Description**: Calculate sequence statistics for FASTA/FASTQ files
-   - **Inputs**: 
+   - **Inputs**:
+
      ```json
      {
        "file_path": "string",
        "format": "fasta|fastq"
      }
      ```
+
    - **Outputs**: JSON with statistics (num_reads, total_bases, avg_length, gc_content, etc.)
 
 2. **Tool Name**: prinseq_filter
    - **Description**: Filter sequences based on quality criteria
-   - **Inputs**: 
+   - **Inputs**:
+
      ```json
      {
        "input_file": "string",
@@ -454,11 +476,13 @@ Factors:
        "min_qual_mean": "float (optional)"
      }
      ```
+
    - **Outputs**: Summary of filtered sequences (passed, failed, percentages)
 
 3. **Tool Name**: prinseq_trim
    - **Description**: Trim sequences based on quality or position
-   - **Inputs**: 
+   - **Inputs**:
+
      ```json
      {
        "input_file": "string",
@@ -470,11 +494,13 @@ Factors:
        "trim_right": "int (optional)"
      }
      ```
+
    - **Outputs**: Summary of trimming operations
 
 4. **Tool Name**: prinseq_dereplicate
    - **Description**: Remove duplicate sequences
-   - **Inputs**: 
+   - **Inputs**:
+
      ```json
      {
        "input_file": "string",
@@ -484,6 +510,7 @@ Factors:
        "min_occurrences": "int"
      }
      ```
+
    - **Outputs**: Summary of duplicates removed
 
 ### Resource Endpoints
@@ -505,6 +532,7 @@ Factors:
 ### Completed Features (v1.0.0)
 
 ✅ **Statistics Calculation**
+
 - Number of reads/sequences
 - Total bases
 - Min/Max/Average length
@@ -513,12 +541,14 @@ Factors:
 - Average quality scores (FASTQ)
 
 ✅ **Filtering Operations**
+
 - Length-based filtering
 - GC content filtering
 - N content filtering (percentage and absolute)
 - Quality score filtering
 
 ✅ **Trimming Operations**
+
 - Fixed position trimming (left/right)
 - Percentage-based trimming
 - Quality-based trimming
@@ -526,15 +556,18 @@ Factors:
 - Poly-A/T tail trimming
 
 ✅ **Duplicate Removal**
+
 - Exact duplicate detection
 - Reverse complement duplicate detection
 - Configurable occurrence threshold
 
 ✅ **Paired-End Support**
+
 - Synchronized filtering of paired files
 - Maintains read pairing
 
 ✅ **Format Support**
+
 - FASTA format (reading and writing)
 - FASTQ format with Phred+33 encoding
 - Streaming processing
@@ -602,6 +635,7 @@ The Go version has completed core functionality and extended features, making it
 **Recommend for continued development: YES**
 
 Reasons:
+
 1. High-impact tool used widely in metagenomics and genomics
 2. Original implementation has significant technical debt
 3. Go version shows measurable improvements in performance and maintainability

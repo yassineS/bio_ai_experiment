@@ -6,7 +6,7 @@ A fast and efficient sequence quality control and preprocessing tool reimplement
 
 - **Fast Performance**: Leveraging Go's efficient I/O and streaming capabilities
 - **Memory Efficient**: Streaming processing for large files
-- **Comprehensive Format Support**: 
+- **Comprehensive Format Support**:
   - FASTA format reading/writing
   - FASTQ format reading/writing (Phred+33 and Phred+64 encoding)
 - **Quality Control Operations**:
@@ -84,6 +84,7 @@ prinseq stats -fasta sequences.fasta
 ```
 
 Output includes:
+
 - Number of sequences
 - Total bases
 - Min/max/average length
@@ -92,6 +93,7 @@ Output includes:
 - Average quality (FASTQ only)
 
 Example output:
+
 ```
 Number of reads: 12
 Total bases: 1150
@@ -182,6 +184,7 @@ prinseq graph --fastq reads.fastq --type length -o length_dist.txt
 ```
 
 Graph types:
+
 - `length`: Length distribution histogram
 - `gc`: GC vs AT content visualization
 - `quality`: Quality score distribution (FASTQ only)
@@ -204,6 +207,7 @@ prinseq report --fastq reads.fastq -o report.html
 ```
 
 The HTML report includes:
+
 - Summary statistics with visual cards
 - Length distribution graph
 - Quality score distribution (FASTQ)
@@ -224,6 +228,7 @@ prinseq benchmark --fastq reads.fastq --json > benchmark.json
 ```
 
 Benchmarks include:
+
 - Statistics calculation
 - Enhanced statistics with distributions
 - Filtering operations (length, GC, quality, combined)
@@ -231,6 +236,7 @@ Benchmarks include:
 - Timing information
 
 Example output:
+
 ```
 Benchmark Results
 =================
@@ -265,6 +271,7 @@ prinseq batch --fastq -o output_dir -w 4 \
 ```
 
 Options:
+
 - `-o, --output DIR`: Output directory for filtered files and reports
 - `-w, --workers N`: Number of parallel workers (default: 4)
 - `-r, --report`: Generate HTML reports for each file
@@ -287,12 +294,14 @@ API Endpoints:
 
 **POST /api/stats**
 Calculate sequence statistics
+
 ```bash
 curl -X POST -d @reads.fastq "http://localhost:8080/api/stats?format=fastq&enhanced=true"
 ```
 
 **POST /api/filter**
 Filter sequences
+
 ```bash
 curl -X POST -d @reads.fastq \
   "http://localhost:8080/api/filter?format=fastq&min_len=100&min_qual=20" \
@@ -301,6 +310,7 @@ curl -X POST -d @reads.fastq \
 
 **POST /api/benchmark**
 Run performance benchmarks
+
 ```bash
 curl -X POST -d @reads.fastq \
   "http://localhost:8080/api/benchmark?format=fastq"
@@ -308,6 +318,7 @@ curl -X POST -d @reads.fastq \
 
 **POST /api/report**
 Generate HTML report
+
 ```bash
 curl -X POST -d @reads.fastq \
   "http://localhost:8080/api/report?format=fastq" \
@@ -316,6 +327,7 @@ curl -X POST -d @reads.fastq \
 
 **POST /api/graph**
 Generate graphs
+
 ```bash
 # ASCII graph
 curl -X POST -d @reads.fastq \
@@ -329,6 +341,7 @@ curl -X POST -d @reads.fastq \
 
 **GET /health**
 Health check
+
 ```bash
 curl http://localhost:8080/health
 ```
@@ -349,6 +362,7 @@ prinseq stats --fastq reads.fastq --json --enhanced
 ```
 
 Example JSON output:
+
 ```json
 {
   "num_reads": 1000,
@@ -388,6 +402,7 @@ Example JSON output:
 ```
 
 Options:
+
 - `-fastq FILE`: Input FASTQ file (use `-` for stdin)
 - `-fasta FILE`: Input FASTA file (use `-` for stdin)
 - `-fastq2 FILE`: Input paired-end FASTQ file 2
@@ -420,6 +435,7 @@ Options:
 This Go implementation focuses on the core filtering and statistics functionality of PRINSEQ-lite. Key differences:
 
 ### Implemented Features
+
 - ✅ Sequence statistics (length, GC, N content, quality)
 - ✅ Enhanced statistics (base composition, dinucleotides, distributions)
 - ✅ Length-based filtering
@@ -440,6 +456,7 @@ This Go implementation focuses on the core filtering and statistics functionalit
 - ✅ Parallel batch processing
 
 ### Not Yet Implemented (from original PRINSEQ)
+
 - ⏳ Sequence ID manipulation
 - ⏳ Custom graph styling
 - ⏳ Interactive reports
@@ -532,6 +549,7 @@ prinseq filter -fastq reads.fastq \
 ## Development Roadmap
 
 ### Version 1.0.0 (Current)
+
 - ✅ Basic statistics calculation
 - ✅ Multi-criteria filtering
 - ✅ FASTA/FASTQ support
@@ -544,6 +562,7 @@ prinseq filter -fastq reads.fastq \
 - ✅ Complexity filtering (DUST and entropy methods)
 
 ### Version 1.1.0 (Current)
+
 - ✅ Graph generation (ASCII and SVG formats)
 - ✅ JSON statistics output
 - ✅ Performance benchmarking suite
@@ -553,6 +572,7 @@ prinseq filter -fastq reads.fastq \
 - ✅ Web API interface
 
 ### Version 1.2.0 (Planned)
+
 - [ ] Additional graph customization options
 - [ ] Interactive HTML reports
 - [ ] Pipeline integration examples
@@ -574,7 +594,7 @@ This project is licensed under the Apache License 2.0, the same as the parent pr
 
 ## References
 
-- Original PRINSEQ: http://prinseq.sourceforge.net
+- Original PRINSEQ: <http://prinseq.sourceforge.net>
 - Paper: Schmieder R and Edwards R (2011). Quality control and preprocessing of metagenomic datasets. Bioinformatics 27(6):863-864.
 
 ## Support

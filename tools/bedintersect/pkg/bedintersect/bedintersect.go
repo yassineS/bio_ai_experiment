@@ -11,18 +11,18 @@ import (
 
 // IntersectOptions contains options for finding intersections.
 type IntersectOptions struct {
-	MinOverlap   int     // Minimum overlap required (default: 1bp)
-	FractionA    float64 // Minimum fraction of A that must overlap (0.0-1.0)
-	FractionB    float64 // Minimum fraction of B that must overlap (0.0-1.0)
-	StrandSpec   bool    // Only report hits on same strand
-	NoOverlap    bool    // Report A entries with no overlap with B
-	WriteA       bool    // Write original A entry (default: write intersection)
-	WriteB       bool    // Write B entry instead of A
-	Count        bool    // For each A, report count of B overlaps
-	Reciprocal   bool    // Require reciprocal overlap (both -f and -F must be satisfied)
-	Distance     bool    // Report distance to nearest B feature
-	Closest      bool    // Report closest B feature for each A
-	UseTree      bool    // Use interval tree for large B files
+	MinOverlap int     // Minimum overlap required (default: 1bp)
+	FractionA  float64 // Minimum fraction of A that must overlap (0.0-1.0)
+	FractionB  float64 // Minimum fraction of B that must overlap (0.0-1.0)
+	StrandSpec bool    // Only report hits on same strand
+	NoOverlap  bool    // Report A entries with no overlap with B
+	WriteA     bool    // Write original A entry (default: write intersection)
+	WriteB     bool    // Write B entry instead of A
+	Count      bool    // For each A, report count of B overlaps
+	Reciprocal bool    // Require reciprocal overlap (both -f and -F must be satisfied)
+	Distance   bool    // Report distance to nearest B feature
+	Closest    bool    // Report closest B feature for each A
+	UseTree    bool    // Use interval tree for large B files
 }
 
 // Intersect finds intervals in A that overlap with intervals in B.
@@ -30,7 +30,7 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 	// Read all B intervals (database to search against)
 	bedReaderB := bed.NewReader(readerB)
 	var intervalsB []*bed.Record
-	
+
 	for {
 		record, err := bedReaderB.Read()
 		if err == io.EOF {
@@ -53,11 +53,11 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 	// Create chromosome index and optionally interval trees
 	chromIndex := make(map[string][]*bed.Record)
 	chromTrees := make(map[string]*IntervalTree)
-	
+
 	for _, interval := range intervalsB {
 		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
 	}
-	
+
 	// Build interval trees for each chromosome if UseTree is enabled
 	if opts.UseTree {
 		for chrom, intervals := range chromIndex {
@@ -311,7 +311,7 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 	// Read all B intervals
 	bedReaderB := bed.NewReader(readerB)
 	var intervalsB []*bed.Record
-	
+
 	for {
 		record, err := bedReaderB.Read()
 		if err == io.EOF {
@@ -332,11 +332,11 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 
 	chromIndex := make(map[string][]*bed.Record)
 	chromTrees := make(map[string]*IntervalTree)
-	
+
 	for _, interval := range intervalsB {
 		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
 	}
-	
+
 	// Build interval trees for each chromosome if UseTree is enabled
 	if opts.UseTree {
 		for chrom, intervals := range chromIndex {

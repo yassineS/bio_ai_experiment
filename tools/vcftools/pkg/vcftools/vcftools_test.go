@@ -114,9 +114,9 @@ func TestCalculateMAF(t *testing.T) {
 
 func TestCalculateMissingRate(t *testing.T) {
 	tests := []struct {
-		name     string
+		name      string
 		genotypes []string
-		expected float64
+		expected  float64
 	}{
 		{
 			name:      "No missing",
@@ -335,8 +335,8 @@ func TestBuildSampleFilter(t *testing.T) {
 			expected: map[string]bool{"sample1": true, "sample3": true},
 		},
 		{
-			name:   "Remove specific individuals",
-			params: &Params{RemoveIndvList: []string{"sample2", "sample4"}},
+			name:     "Remove specific individuals",
+			params:   &Params{RemoveIndvList: []string{"sample2", "sample4"}},
 			expected: map[string]bool{"sample1": true, "sample3": true},
 		},
 	}

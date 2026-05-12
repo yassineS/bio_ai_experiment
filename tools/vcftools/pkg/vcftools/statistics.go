@@ -32,31 +32,31 @@ type statistics struct {
 	tsTvByBin     map[int]*tsTvBinStat
 
 	// Phase 2: Population genetics statistics
-	windowPiValues  []windowPiStat
-	tajimaDValues   []tajimaDStat
-	snpDensityBins  map[int]*snpDensityStat
-	fstValues       []fstStat
-	filterCounts    map[string]int
-	singletonSites  []singletonStat
+	windowPiValues []windowPiStat
+	tajimaDValues  []tajimaDStat
+	snpDensityBins map[int]*snpDensityStat
+	fstValues      []fstStat
+	filterCounts   map[string]int
+	singletonSites []singletonStat
 }
 
 type siteFreqStat struct {
-	chrom string
-	pos   int
-	nAlleles int
-	nChr  int
+	chrom     string
+	pos       int
+	nAlleles  int
+	nChr      int
 	refAllele string
 	altAllele string
-	refFreq float64
-	altFreq float64
-	refCount int
-	altCount int
+	refFreq   float64
+	altFreq   float64
+	refCount  int
+	altCount  int
 }
 
 type siteDepthStat struct {
-	chrom string
-	pos   int
-	sumDepth int
+	chrom     string
+	pos       int
+	sumDepth  int
 	meanDepth float64
 }
 
@@ -73,8 +73,8 @@ type siteMissingStat struct {
 }
 
 type siteHWEStat struct {
-	chrom string
-	pos   int
+	chrom   string
+	pos     int
 	obsHom1 int
 	obsHet  int
 	obsHom2 int
@@ -92,10 +92,10 @@ type sitePiStat struct {
 }
 
 type indvMissingStat struct {
-	name        string
-	nMissing    int
-	nTotal      int
-	fMiss       float64
+	name     string
+	nMissing int
+	nTotal   int
+	fMiss    float64
 }
 
 type tsTvBinStat struct {
@@ -107,12 +107,12 @@ type tsTvBinStat struct {
 }
 
 type indvHetStat struct {
-	name        string
-	nHet        int
-	nHomAlt     int
-	nHomRef     int
-	nTotal      int
-	hetRate     float64
+	name    string
+	nHet    int
+	nHomAlt int
+	nHomRef int
+	nTotal  int
+	hetRate float64
 }
 
 type windowPiStat struct {
@@ -145,8 +145,8 @@ type fstStat struct {
 }
 
 type singletonStat struct {
-	chrom string
-	pos   int
+	chrom  string
+	pos    int
 	allele string
 }
 
@@ -203,24 +203,24 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 	if params.SitePi {
 		s.addSitePiStat(v)
 	}
-	
+
 	// Phase 2: Population genetics statistics
-	
+
 	// Heterozygosity
 	if params.Het {
 		s.addHetStat(v)
 	}
-	
+
 	// Singletons
 	if params.Singletons {
 		s.addSingletonStat(v)
 	}
-	
+
 	// FILTER summary
 	if params.FilterSummary {
 		s.addFilterCount(v)
 	}
-	
+
 	// SNP density
 	if params.SNPDensity > 0 {
 		s.addSNPDensityStat(v, params.SNPDensity)
@@ -297,13 +297,13 @@ func (s *statistics) addSiteDepthStat(v *vcf.Variant) {
 		if !ok {
 			continue
 		}
-		
+
 		var dp int
 		_, err := fmt.Sscanf(dpStr, "%d", &dp)
 		if err != nil {
 			continue
 		}
-		
+
 		sumDepth += dp
 		count++
 	}
@@ -571,22 +571,22 @@ func (s *statistics) addHetStat(v *vcf.Variant) {
 				name: sample.Name,
 			}
 		}
-		
+
 		stat := s.indvHet[sample.Name]
-		
+
 		gt, ok := sample.Data["GT"]
 		if !ok || strings.Contains(gt, ".") {
 			continue
 		}
-		
+
 		alleles := strings.FieldsFunc(gt, func(r rune) bool {
 			return r == '/' || r == '|'
 		})
-		
+
 		if len(alleles) != 2 {
 			continue
 		}
-		
+
 		stat.nTotal++
 		if alleles[0] != alleles[1] {
 			stat.nHet++
@@ -603,25 +603,25 @@ func (s *statistics) addSingletonStat(v *vcf.Variant) {
 	if len(v.Samples) == 0 {
 		return
 	}
-	
+
 	// Count alleles
 	alleleCounts := make(map[string]int)
-	
+
 	for _, sample := range v.Samples {
 		gt, ok := sample.Data["GT"]
 		if !ok || strings.Contains(gt, ".") {
 			continue
 		}
-		
+
 		alleles := strings.FieldsFunc(gt, func(r rune) bool {
 			return r == '/' || r == '|'
 		})
-		
+
 		for _, allele := range alleles {
 			alleleCounts[allele]++
 		}
 	}
-	
+
 	// Check for singletons (alleles with count == 1)
 	for allele, count := range alleleCounts {
 		if count == 1 && allele != "0" { // Exclude reference allele
@@ -651,7 +651,7 @@ func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
 	if isIndelVariant(v) {
 		return
 	}
-	
+
 	binIdx := v.Pos / binSize
 	if s.snpDensityBins[binIdx] == nil {
 		s.snpDensityBins[binIdx] = &snpDensityStat{
@@ -952,14 +952,14 @@ func (s *statistics) outputHet(prefix string) error {
 		if stat.nTotal == 0 {
 			continue
 		}
-		
+
 		stat.hetRate = float64(stat.nHet) / float64(stat.nTotal)
 		obsHom := stat.nHomRef + stat.nHomAlt
-		
+
 		// Expected homozygosity assuming HWE
 		// This is a simplified calculation
 		expHom := float64(stat.nTotal) * (1 - stat.hetRate)
-		
+
 		// Inbreeding coefficient F
 		// F = (ExpectedHet - ObservedHet) / ExpectedHet
 		expHet := float64(stat.nTotal) - expHom
@@ -968,7 +968,7 @@ func (s *statistics) outputHet(prefix string) error {
 		if expHet > 0 {
 			f_coef = (expHet - obsHet) / expHet
 		}
-		
+
 		fmt.Fprintf(f, "%s\t%d\t%.2f\t%d\t%.5f\n",
 			stat.name, obsHom, expHom, stat.nTotal, f_coef)
 	}

@@ -19,18 +19,18 @@ import (
 // Record represents a BED format record.
 // BED format supports 3-12 fields. Fields beyond Name are optional.
 type Record struct {
-	Chrom       string  // Chromosome name
-	ChromStart  int     // Start position (0-based)
-	ChromEnd    int     // End position (exclusive)
-	Name        string  // Name of the feature (optional, BED4+)
-	Score       int     // Score (0-1000, optional, BED5+)
-	Strand      string  // Strand: '+', '-', or '.' (optional, BED6+)
-	ThickStart  int     // Thick start position (optional, BED7+)
-	ThickEnd    int     // Thick end position (optional, BED8+)
-	ItemRGB     string  // RGB color value (optional, BED9+)
-	BlockCount  int     // Number of blocks (optional, BED10+)
-	BlockSizes  []int   // Block sizes (optional, BED11+)
-	BlockStarts []int   // Block starts (optional, BED12+)
+	Chrom       string   // Chromosome name
+	ChromStart  int      // Start position (0-based)
+	ChromEnd    int      // End position (exclusive)
+	Name        string   // Name of the feature (optional, BED4+)
+	Score       int      // Score (0-1000, optional, BED5+)
+	Strand      string   // Strand: '+', '-', or '.' (optional, BED6+)
+	ThickStart  int      // Thick start position (optional, BED7+)
+	ThickEnd    int      // Thick end position (optional, BED8+)
+	ItemRGB     string   // RGB color value (optional, BED9+)
+	BlockCount  int      // Number of blocks (optional, BED10+)
+	BlockSizes  []int    // Block sizes (optional, BED11+)
+	BlockStarts []int    // Block starts (optional, BED12+)
 	ExtraFields []string // Additional custom fields beyond BED12
 }
 

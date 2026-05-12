@@ -64,24 +64,24 @@ func main() {
 
 func runSingleEnd() {
 	fs := flag.NewFlagSet("sickle se", flag.ExitOnError)
-	
+
 	var (
-		fastqFile      string
-		outputFile     string
-		qualType       string
-		qualThreshold  int
+		fastqFile       string
+		outputFile      string
+		qualType        string
+		qualThreshold   int
 		lengthThreshold int
-		windowSize     int
-		noFivePrime    bool
-		truncateN      bool
-		quiet          bool
-		jsonOutput     string
-		htmlReport     string
-		progress       bool
-		autoDetect     bool
-		recalibrate    bool
+		windowSize      int
+		noFivePrime     bool
+		truncateN       bool
+		quiet           bool
+		jsonOutput      string
+		htmlReport      string
+		progress        bool
+		autoDetect      bool
+		recalibrate     bool
 	)
-	
+
 	cliflag.StringVar(fs, &fastqFile, "f", "fastq-file", "", "Input FASTQ file (required)")
 	cliflag.StringVar(fs, &outputFile, "o", "output-file", "", "Output trimmed file (default: stdout)")
 	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
@@ -96,7 +96,7 @@ func runSingleEnd() {
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
 	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
 	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
-	
+
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: sickle se [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
@@ -117,16 +117,16 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  sickle se -f input.fastq -o output.fastq -q 20 -l 20\n")
 	}
-	
+
 	fs.Parse(os.Args[2:])
-	
+
 	// Validate required arguments
 	if fastqFile == "" {
 		fmt.Fprintln(os.Stderr, "Error: -f/--fastq-file is required")
 		fs.Usage()
 		os.Exit(1)
 	}
-	
+
 	// Determine quality encoding
 	var encoding fastq.QualityEncoding
 	if autoDetect {
@@ -146,7 +146,7 @@ func runSingleEnd() {
 	} else {
 		encoding = getQualityEncoding(qualType)
 	}
-	
+
 	// Open input file (with automatic gzip support)
 	inputFile, err := iohelper.OpenReader(fastqFile)
 	if err != nil {
@@ -154,7 +154,7 @@ func runSingleEnd() {
 		os.Exit(1)
 	}
 	defer inputFile.Close()
-	
+
 	// Open output file (with automatic gzip support)
 	outFileName := outputFile
 	if outFileName == "" {
@@ -166,7 +166,7 @@ func runSingleEnd() {
 		os.Exit(1)
 	}
 	defer outFile.Close()
-	
+
 	// Set up trim options
 	opts := sickle.TrimOptions{
 		QualThreshold:   qualThreshold,
@@ -177,19 +177,19 @@ func runSingleEnd() {
 		Progress:        progress,
 		Recalibrate:     recalibrate,
 	}
-	
+
 	// Perform trimming
 	stats, err := sickle.TrimSingleEnd(inputFile, outFile, encoding, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Print statistics
 	if !quiet {
 		printStats(stats, "SE")
 	}
-	
+
 	// Save JSON statistics
 	if jsonOutput != "" {
 		if err := saveJSONStats(stats, jsonOutput); err != nil {
@@ -197,7 +197,7 @@ func runSingleEnd() {
 			os.Exit(1)
 		}
 	}
-	
+
 	// Generate HTML report
 	if htmlReport != "" {
 		if err := generateHTMLReport(stats, htmlReport, "SE"); err != nil {
@@ -209,7 +209,7 @@ func runSingleEnd() {
 
 func runPairedEnd() {
 	fs := flag.NewFlagSet("sickle pe", flag.ExitOnError)
-	
+
 	var (
 		fastqFile1      string
 		fastqFile2      string
@@ -229,7 +229,7 @@ func runPairedEnd() {
 		autoDetect      bool
 		recalibrate     bool
 	)
-	
+
 	cliflag.StringVar(fs, &fastqFile1, "f", "fastq-file", "", "First input FASTQ file (required)")
 	cliflag.StringVar(fs, &fastqFile2, "r", "reverse-file", "", "Second input FASTQ file (required)")
 	cliflag.StringVar(fs, &outputFile1, "o", "output-file", "", "First output trimmed file (required)")
@@ -247,7 +247,7 @@ func runPairedEnd() {
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
 	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
 	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
-	
+
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: sickle pe [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
@@ -271,9 +271,9 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  sickle pe -f input1.fastq -r input2.fastq -o output1.fastq -p output2.fastq -s singles.fastq\n")
 	}
-	
+
 	fs.Parse(os.Args[2:])
-	
+
 	// Validate required arguments
 	if fastqFile1 == "" || fastqFile2 == "" {
 		fmt.Fprintln(os.Stderr, "Error: both -f/--fastq-file and -r/--reverse-file are required")
@@ -285,7 +285,7 @@ func runPairedEnd() {
 		fs.Usage()
 		os.Exit(1)
 	}
-	
+
 	// Determine quality encoding
 	var encoding fastq.QualityEncoding
 	if autoDetect {
@@ -305,7 +305,7 @@ func runPairedEnd() {
 	} else {
 		encoding = getQualityEncoding(qualType)
 	}
-	
+
 	// Open input files (with automatic gzip support)
 	f1, err := iohelper.OpenReader(fastqFile1)
 	if err != nil {
@@ -313,14 +313,14 @@ func runPairedEnd() {
 		os.Exit(1)
 	}
 	defer f1.Close()
-	
+
 	f2, err := iohelper.OpenReader(fastqFile2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening second input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer f2.Close()
-	
+
 	// Open output files (with automatic gzip support)
 	out1, err := iohelper.OpenWriter(outputFile1)
 	if err != nil {
@@ -328,14 +328,14 @@ func runPairedEnd() {
 		os.Exit(1)
 	}
 	defer out1.Close()
-	
+
 	out2, err := iohelper.OpenWriter(outputFile2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating second output file: %v\n", err)
 		os.Exit(1)
 	}
 	defer out2.Close()
-	
+
 	// Open optional single output file (with automatic gzip support)
 	var outSingle io.Writer
 	if outputSingle != "" {
@@ -347,7 +347,7 @@ func runPairedEnd() {
 		defer f.Close()
 		outSingle = f
 	}
-	
+
 	// Set up trim options
 	opts := sickle.TrimOptions{
 		QualThreshold:   qualThreshold,
@@ -358,19 +358,19 @@ func runPairedEnd() {
 		Progress:        progress,
 		Recalibrate:     recalibrate,
 	}
-	
+
 	// Perform trimming
 	stats, err := sickle.TrimPairedEnd(f1, f2, out1, out2, outSingle, encoding, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Print statistics
 	if !quiet {
 		printStats(stats, "PE")
 	}
-	
+
 	// Save JSON statistics
 	if jsonOutput != "" {
 		if err := saveJSONStats(stats, jsonOutput); err != nil {
@@ -378,7 +378,7 @@ func runPairedEnd() {
 			os.Exit(1)
 		}
 	}
-	
+
 	// Generate HTML report
 	if htmlReport != "" {
 		if err := generateHTMLReport(stats, htmlReport, "PE"); err != nil {
@@ -390,7 +390,7 @@ func runPairedEnd() {
 
 func runBatch() {
 	fs := flag.NewFlagSet("sickle batch", flag.ExitOnError)
-	
+
 	var (
 		fileList        string
 		outputDir       string
@@ -408,7 +408,7 @@ func runBatch() {
 		recalibrate     bool
 		numWorkers      int
 	)
-	
+
 	cliflag.StringVar(fs, &fileList, "i", "input-list", "", "File containing list of input FASTQ files (one per line)")
 	cliflag.StringVar(fs, &outputDir, "o", "output-dir", ".", "Output directory for trimmed files")
 	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
@@ -424,7 +424,7 @@ func runBatch() {
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
 	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
 	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
-	
+
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: sickle batch [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Batch mode processes multiple FASTQ files in parallel.\n\n")
@@ -448,22 +448,22 @@ func runBatch() {
 		fmt.Fprintf(os.Stderr, "  sickle batch -i files.txt -o trimmed_output -j 8\n")
 		fmt.Fprintf(os.Stderr, "\nThe input list file should contain one FASTQ file path per line.\n")
 	}
-	
+
 	fs.Parse(os.Args[2:])
-	
+
 	// Validate required arguments
 	if fileList == "" {
 		fmt.Fprintln(os.Stderr, "Error: -i/--input-list is required")
 		fs.Usage()
 		os.Exit(1)
 	}
-	
+
 	// Create output directory if it doesn't exist
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Read file list
 	f, err := os.Open(fileList)
 	if err != nil {
@@ -471,7 +471,7 @@ func runBatch() {
 		os.Exit(1)
 	}
 	defer f.Close()
-	
+
 	var files []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -484,32 +484,32 @@ func runBatch() {
 		fmt.Fprintf(os.Stderr, "Error reading file list: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: no files found in input list")
 		os.Exit(1)
 	}
-	
+
 	fmt.Fprintf(os.Stderr, "Processing %d files with %d workers...\n", len(files), numWorkers)
-	
+
 	// Set up worker pool
 	type job struct {
 		inputFile string
 		index     int
 	}
-	
+
 	type result struct {
 		inputFile  string
 		outputFile string
 		stats      *sickle.TrimStats
 		err        error
 	}
-	
+
 	jobs := make(chan job, len(files))
 	results := make(chan result, len(files))
-	
+
 	var wg sync.WaitGroup
-	
+
 	// Start workers
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
@@ -528,25 +528,25 @@ func runBatch() {
 				} else {
 					encoding = getQualityEncoding(qualType)
 				}
-				
+
 				// Generate output filename
 				baseName := filepath.Base(j.inputFile)
 				outputFile := filepath.Join(outputDir, "trimmed_"+baseName)
-				
+
 				// Open files
 				input, err := iohelper.OpenReader(j.inputFile)
 				if err != nil {
 					results <- result{inputFile: j.inputFile, err: err}
 					continue
 				}
-				
+
 				output, err := iohelper.OpenWriter(outputFile)
 				if err != nil {
 					input.Close()
 					results <- result{inputFile: j.inputFile, err: err}
 					continue
 				}
-				
+
 				// Set up trim options
 				opts := sickle.TrimOptions{
 					QualThreshold:   qualThreshold,
@@ -557,17 +557,17 @@ func runBatch() {
 					Progress:        progress,
 					Recalibrate:     recalibrate,
 				}
-				
+
 				// Perform trimming
 				stats, err := sickle.TrimSingleEnd(input, output, encoding, opts)
 				input.Close()
 				output.Close()
-				
+
 				if err != nil {
 					results <- result{inputFile: j.inputFile, outputFile: outputFile, err: err}
 					continue
 				}
-				
+
 				// Save JSON if requested
 				if jsonOutput {
 					jsonFile := outputFile + ".json"
@@ -575,7 +575,7 @@ func runBatch() {
 						fmt.Fprintf(os.Stderr, "Warning: failed to save JSON for %s: %v\n", j.inputFile, err)
 					}
 				}
-				
+
 				// Generate HTML if requested
 				if htmlReport {
 					htmlFile := outputFile + ".html"
@@ -583,24 +583,24 @@ func runBatch() {
 						fmt.Fprintf(os.Stderr, "Warning: failed to generate HTML for %s: %v\n", j.inputFile, err)
 					}
 				}
-				
+
 				results <- result{inputFile: j.inputFile, outputFile: outputFile, stats: stats, err: nil}
 			}
 		}()
 	}
-	
+
 	// Send jobs
 	for i, file := range files {
 		jobs <- job{inputFile: file, index: i}
 	}
 	close(jobs)
-	
+
 	// Wait for all workers to finish
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
-	
+
 	// Collect results
 	successCount := 0
 	failCount := 0
@@ -610,16 +610,16 @@ func runBatch() {
 			failCount++
 		} else {
 			if !quiet {
-				fmt.Fprintf(os.Stderr, "✓ %s -> %s (kept %d/%d reads)\n", 
+				fmt.Fprintf(os.Stderr, "✓ %s -> %s (kept %d/%d reads)\n",
 					r.inputFile, r.outputFile,
 					r.stats.TotalReads-r.stats.DiscardedReads, r.stats.TotalReads)
 			}
 			successCount++
 		}
 	}
-	
+
 	fmt.Fprintf(os.Stderr, "\nBatch processing complete: %d succeeded, %d failed\n", successCount, failCount)
-	
+
 	if failCount > 0 {
 		os.Exit(1)
 	}
@@ -643,18 +643,18 @@ func getQualityEncoding(qualType string) fastq.QualityEncoding {
 func printStats(stats *sickle.TrimStats, mode string) {
 	fmt.Fprintf(os.Stderr, "\n%s Trimming Stats:\n", mode)
 	fmt.Fprintf(os.Stderr, "  Total reads:     %d\n", stats.TotalReads)
-	fmt.Fprintf(os.Stderr, "  Trimmed reads:   %d (%.2f%%)\n", 
-		stats.TrimmedReads, 
+	fmt.Fprintf(os.Stderr, "  Trimmed reads:   %d (%.2f%%)\n",
+		stats.TrimmedReads,
 		100.0*float64(stats.TrimmedReads)/float64(stats.TotalReads))
-	fmt.Fprintf(os.Stderr, "  Discarded reads: %d (%.2f%%)\n", 
-		stats.DiscardedReads, 
+	fmt.Fprintf(os.Stderr, "  Discarded reads: %d (%.2f%%)\n",
+		stats.DiscardedReads,
 		100.0*float64(stats.DiscardedReads)/float64(stats.TotalReads))
-	fmt.Fprintf(os.Stderr, "  Kept reads:      %d (%.2f%%)\n", 
-		stats.TotalReads-stats.DiscardedReads, 
+	fmt.Fprintf(os.Stderr, "  Kept reads:      %d (%.2f%%)\n",
+		stats.TotalReads-stats.DiscardedReads,
 		100.0*float64(stats.TotalReads-stats.DiscardedReads)/float64(stats.TotalReads))
 	fmt.Fprintf(os.Stderr, "  Total bases:     %d\n", stats.TotalBases)
-	fmt.Fprintf(os.Stderr, "  Trimmed bases:   %d (%.2f%%)\n", 
-		stats.TrimmedBases, 
+	fmt.Fprintf(os.Stderr, "  Trimmed bases:   %d (%.2f%%)\n",
+		stats.TrimmedBases,
 		100.0*float64(stats.TrimmedBases)/float64(stats.TotalBases))
 	fmt.Fprintln(os.Stderr)
 }
@@ -666,14 +666,14 @@ func detectQualityEncoding(filename string) (fastq.QualityEncoding, error) {
 		return fastq.Phred33, err
 	}
 	defer f.Close()
-	
+
 	// Read a sample of records to detect encoding
 	reader := fastq.NewReader(f, fastq.Phred33) // Start with Phred33 for reading
 	minQual := 255
 	maxQual := 0
 	samplesRead := 0
 	maxSamples := 10000 // Sample first 10k reads
-	
+
 	for samplesRead < maxSamples {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -682,7 +682,7 @@ func detectQualityEncoding(filename string) (fastq.QualityEncoding, error) {
 		if err != nil {
 			return fastq.Phred33, err
 		}
-		
+
 		for _, q := range record.Quality {
 			if int(q) < minQual {
 				minQual = int(q)
@@ -693,7 +693,7 @@ func detectQualityEncoding(filename string) (fastq.QualityEncoding, error) {
 		}
 		samplesRead++
 	}
-	
+
 	// Phred+33 range: 33-126 (quality 0-93)
 	// Phred+64 range: 64-126 (quality 0-62)
 	// If we see chars < 59 (which would be quality -5 in Phred+64), it's Phred+33
@@ -707,36 +707,36 @@ func detectQualityEncoding(filename string) (fastq.QualityEncoding, error) {
 // saveJSONStats saves trimming statistics to a JSON file
 func saveJSONStats(stats *sickle.TrimStats, filename string) error {
 	type JSONStats struct {
-		TotalReads     int     `json:"total_reads"`
-		TrimmedReads   int     `json:"trimmed_reads"`
-		TrimmedPercent float64 `json:"trimmed_percent"`
-		DiscardedReads int     `json:"discarded_reads"`
-		DiscardedPercent float64 `json:"discarded_percent"`
-		KeptReads      int     `json:"kept_reads"`
-		KeptPercent    float64 `json:"kept_percent"`
-		TotalBases     int64   `json:"total_bases"`
-		TrimmedBases   int64   `json:"trimmed_bases"`
+		TotalReads          int     `json:"total_reads"`
+		TrimmedReads        int     `json:"trimmed_reads"`
+		TrimmedPercent      float64 `json:"trimmed_percent"`
+		DiscardedReads      int     `json:"discarded_reads"`
+		DiscardedPercent    float64 `json:"discarded_percent"`
+		KeptReads           int     `json:"kept_reads"`
+		KeptPercent         float64 `json:"kept_percent"`
+		TotalBases          int64   `json:"total_bases"`
+		TrimmedBases        int64   `json:"trimmed_bases"`
 		TrimmedBasesPercent float64 `json:"trimmed_bases_percent"`
 	}
-	
+
 	jsonStats := JSONStats{
-		TotalReads:     stats.TotalReads,
-		TrimmedReads:   stats.TrimmedReads,
-		TrimmedPercent: 100.0 * float64(stats.TrimmedReads) / float64(stats.TotalReads),
-		DiscardedReads: stats.DiscardedReads,
-		DiscardedPercent: 100.0 * float64(stats.DiscardedReads) / float64(stats.TotalReads),
-		KeptReads:      stats.TotalReads - stats.DiscardedReads,
-		KeptPercent:    100.0 * float64(stats.TotalReads-stats.DiscardedReads) / float64(stats.TotalReads),
-		TotalBases:     stats.TotalBases,
-		TrimmedBases:   stats.TrimmedBases,
+		TotalReads:          stats.TotalReads,
+		TrimmedReads:        stats.TrimmedReads,
+		TrimmedPercent:      100.0 * float64(stats.TrimmedReads) / float64(stats.TotalReads),
+		DiscardedReads:      stats.DiscardedReads,
+		DiscardedPercent:    100.0 * float64(stats.DiscardedReads) / float64(stats.TotalReads),
+		KeptReads:           stats.TotalReads - stats.DiscardedReads,
+		KeptPercent:         100.0 * float64(stats.TotalReads-stats.DiscardedReads) / float64(stats.TotalReads),
+		TotalBases:          stats.TotalBases,
+		TrimmedBases:        stats.TrimmedBases,
 		TrimmedBasesPercent: 100.0 * float64(stats.TrimmedBases) / float64(stats.TotalBases),
 	}
-	
+
 	data, err := json.MarshalIndent(jsonStats, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(filename, data, 0644)
 }
 
@@ -877,7 +877,7 @@ func generateHTMLReport(stats *sickle.TrimStats, filename, mode string) error {
 	trimmedPercent := 100.0 * float64(stats.TrimmedReads) / float64(stats.TotalReads)
 	discardedPercent := 100.0 * float64(stats.DiscardedReads) / float64(stats.TotalReads)
 	trimmedBasesPercent := 100.0 * float64(stats.TrimmedBases) / float64(stats.TotalBases)
-	
+
 	html := fmt.Sprintf(htmlTemplate,
 		mode,
 		stats.TotalReads,
@@ -887,6 +887,6 @@ func generateHTMLReport(stats *sickle.TrimStats, filename, mode string) error {
 		stats.TotalBases,
 		stats.TrimmedBases, trimmedBasesPercent, trimmedBasesPercent,
 	)
-	
+
 	return os.WriteFile(filename, []byte(html), 0644)
 }

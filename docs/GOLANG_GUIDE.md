@@ -33,12 +33,14 @@ bio_ai_experiment/
 ### 1. Shared Libraries First
 
 Create reusable format parsers in `pkg/bioformats/`:
+
 - Reduces code duplication
 - Ensures consistency
 - Makes testing easier
 - Simplifies tool implementation
 
 Example:
+
 ```go
 // Don't reimplement FASTA parsing in each tool
 // Use the shared library:
@@ -50,11 +52,13 @@ reader := fasta.NewReader(file)
 ### 2. CLI Best Practices
 
 Follow standard CLI conventions:
+
 ```bash
 tool <command> [options] <input>
 ```
 
 Features:
+
 - Subcommands for different operations
 - `-h` flag for help
 - `-o` flag for output file (default: stdout)
@@ -62,6 +66,7 @@ Features:
 - Exit codes (0 = success, 1 = error)
 
 Example:
+
 ```go
 fs := flag.NewFlagSet("command", flag.ExitOnError)
 output := fs.String("o", "", "output file (default: stdout)")
@@ -77,6 +82,7 @@ fs.Parse(os.Args[2:])
 ### 3. Standard Format Support
 
 Always support standard formats:
+
 - FASTA/FASTQ for sequences
 - VCF for variants
 - BAM/SAM for alignments
@@ -88,6 +94,7 @@ Use available Go libraries or the shared bioformats package.
 ### 4. Error Handling
 
 Provide clear, actionable error messages:
+
 ```go
 if err != nil {
     fmt.Fprintf(os.Stderr, "Error reading file %s: %v\n", filename, err)
@@ -98,6 +105,7 @@ if err != nil {
 ### 5. Testing
 
 Aim for >80% code coverage:
+
 ```go
 func TestFeature(t *testing.T) {
     // Arrange
@@ -121,6 +129,7 @@ func TestFeature(t *testing.T) {
 Three levels of documentation:
 
 1. **godoc Comments** - For API documentation
+
    ```go
    // CalculateStats computes sequence statistics.
    // Returns error if the input is invalid.
@@ -143,6 +152,7 @@ Three levels of documentation:
 ### 1. Analyze Original Tool
 
 Create analysis in `docs/tools/[tool]-analysis.md`:
+
 - What does the tool do?
 - What formats does it use?
 - What are its strengths/weaknesses?
@@ -151,6 +161,7 @@ Create analysis in `docs/tools/[tool]-analysis.md`:
 ### 2. Design Go Implementation
 
 Plan the structure:
+
 ```
 tools/[tool]/
 ├── cmd/[tool]/main.go      # CLI
@@ -162,6 +173,7 @@ tools/[tool]/
 ### 3. Implement Shared Libraries
 
 Before implementing the tool:
+
 - Check if required format parsers exist
 - Create/update shared libraries as needed
 - Test thoroughly
@@ -169,6 +181,7 @@ Before implementing the tool:
 ### 4. Implement Core Functionality
 
 Start with library (`pkg/[tool]/`):
+
 ```go
 package toolname
 
@@ -186,6 +199,7 @@ func Process(input io.Reader, output io.Writer) error {
 ### 5. Add CLI Interface
 
 Implement in `cmd/[tool]/main.go`:
+
 ```go
 package main
 
@@ -201,6 +215,7 @@ func main() {
 ### 6. Write Tests
 
 Test coverage checklist:
+
 - [ ] Happy path tests
 - [ ] Error cases
 - [ ] Edge cases (empty input, large files)
@@ -210,6 +225,7 @@ Test coverage checklist:
 ### 7. Document
 
 Create comprehensive documentation:
+
 - [ ] godoc comments on all exported items
 - [ ] README.md with examples
 - [ ] Tool analysis document
@@ -220,6 +236,7 @@ Create comprehensive documentation:
 ### Go Idioms
 
 1. **Error Handling**
+
    ```go
    // Good
    if err != nil {
@@ -233,6 +250,7 @@ Create comprehensive documentation:
    ```
 
 2. **Naming**
+
    ```go
    // Good
    type FastqReader struct { }
@@ -244,6 +262,7 @@ Create comprehensive documentation:
    ```
 
 3. **Interface Design**
+
    ```go
    // Accept interfaces
    func Process(r io.Reader) error { }
@@ -261,6 +280,7 @@ Create comprehensive documentation:
    - `fasta.go`, `fasta_test.go`
 
 3. **Import Grouping**:
+
    ```go
    import (
        // Standard library
@@ -280,6 +300,7 @@ Create comprehensive documentation:
 ### Unit Tests
 
 Test individual functions:
+
 ```go
 func TestParseRecord(t *testing.T) {
     input := ">seq1\nACGT\n"
@@ -299,6 +320,7 @@ func TestParseRecord(t *testing.T) {
 ### Integration Tests
 
 Test full workflows:
+
 ```go
 func TestEndToEnd(t *testing.T) {
     // Create temp input file
@@ -318,6 +340,7 @@ func TestEndToEnd(t *testing.T) {
 ### Table-Driven Tests
 
 For multiple test cases:
+
 ```go
 func TestValidation(t *testing.T) {
     tests := []struct {
@@ -346,6 +369,7 @@ func TestValidation(t *testing.T) {
 ### 1. Streaming I/O
 
 Always stream for large files:
+
 ```go
 // Good - streaming
 reader := bufio.NewReader(file)
@@ -364,6 +388,7 @@ data, _ := ioutil.ReadFile(filename)
 ### 2. Buffer Sizes
 
 Use appropriate buffer sizes:
+
 ```go
 scanner := bufio.NewScanner(file)
 buf := make([]byte, 0, 64*1024)          // 64KB initial
@@ -373,6 +398,7 @@ scanner.Buffer(buf, 10*1024*1024)        // 10MB max
 ### 3. Avoid Allocations
 
 Reuse buffers when possible:
+
 ```go
 // Good - reuse buffer
 var buf bytes.Buffer
@@ -392,6 +418,7 @@ for _, record := range records {
 ### 4. Profiling
 
 Use Go's built-in profiling:
+
 ```bash
 go test -cpuprofile=cpu.prof -bench=.
 go tool pprof cpu.prof
@@ -468,6 +495,7 @@ func mainCommand() {
 Before considering a tool complete:
 
 ### Code
+
 - [ ] Core functionality implemented
 - [ ] CLI interface implemented
 - [ ] Error handling comprehensive
@@ -476,6 +504,7 @@ Before considering a tool complete:
 - [ ] No external dependencies (if possible)
 
 ### Testing
+
 - [ ] Unit tests written
 - [ ] Test coverage >80%
 - [ ] Edge cases tested
@@ -483,6 +512,7 @@ Before considering a tool complete:
 - [ ] All tests passing
 
 ### Documentation
+
 - [ ] godoc comments on exports
 - [ ] README.md with examples
 - [ ] Tool analysis document
@@ -490,6 +520,7 @@ Before considering a tool complete:
 - [ ] Migration guide (if replacing existing tool)
 
 ### Quality
+
 - [ ] `go vet` passes
 - [ ] `gofmt` applied
 - [ ] No compiler warnings
@@ -499,6 +530,7 @@ Before considering a tool complete:
 ## Examples
 
 See `tools/seqtk/` for a complete reference implementation demonstrating:
+
 - Shared library usage
 - CLI design
 - Testing strategy

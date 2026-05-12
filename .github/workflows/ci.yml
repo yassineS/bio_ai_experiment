@@ -106,5 +106,6 @@ jobs:
       - name: Lint Markdown files
         uses: avto-dev/markdown-lint@v1
         with:
+          config: '.markdownlint.json'
           args: '**/*.md'
-          ignore: 'vendor'
+          ignore: 'reference_code'

@@ -81,6 +81,7 @@ bedmerge -S input.bed > merged.bed
 ```
 
 Outputs statistics to stderr:
+
 ```
 Input intervals:  150
 Output intervals: 87
@@ -107,9 +108,10 @@ bedmerge -c input.bed > merged.bed
 ```
 
 Outputs the count of merged intervals as the name field:
+
 ```
-chr1	100	250	2
-chr1	500	600	1
+chr1 100 250 2
+chr1 500 600 1
 ```
 
 #### Merge bedGraph files
@@ -133,9 +135,9 @@ Streaming mode processes intervals by chromosome, reducing memory usage for very
 Standard BED format with at least 3 columns:
 
 ```
-chr1	100	200
-chr1	150	250
-chr1	500	600
+chr1 100 200
+chr1 150 250
+chr1 500 600
 ```
 
 - Tab-delimited
@@ -148,22 +150,22 @@ chr1	500	600
 Default output is BED3 format (3 columns):
 
 ```
-chr1	100	250
-chr1	500	600
+chr1 100 250
+chr1 500 600
 ```
 
 With `-c` flag, includes count of merged intervals:
 
 ```
-chr1	100	250	2
-chr1	500	600	1
+chr1 100 250 2
+chr1 500 600 1
 ```
 
 With `-g` flag (bedGraph format), outputs 4 columns:
 
 ```
-chr1	100	250	10
-chr1	500	600	20
+chr1 100 250 10
+chr1 500 600 20
 ```
 
 - Merged intervals with minimum or custom fields
@@ -193,19 +195,25 @@ Performance is comparable to or better than bedtools merge for typical use cases
 ## Use Cases
 
 ### Remove redundancy
+
 Merge overlapping gene annotations or peaks:
+
 ```bash
 bedmerge peaks.bed > unique_peaks.bed
 ```
 
 ### Create windows
+
 Merge closely spaced intervals into larger regions:
+
 ```bash
 bedmerge -d 1000 small_regions.bed > windows.bed
 ```
 
 ### Prepare for downstream analysis
+
 Clean up intervals before intersection:
+
 ```bash
 bedmerge input.bed | bedtools intersect -a - -b targets.bed
 ```
@@ -213,6 +221,7 @@ bedmerge input.bed | bedtools intersect -a - -b targets.bed
 ## Comparison with bedtools
 
 ### Similarities
+
 - Same basic merging algorithm
 - Compatible input/output formats
 - Supports distance and strand options
@@ -233,6 +242,7 @@ bedmerge input.bed | bedtools intersect -a - -b targets.bed
 | Advanced options | Basic | Extensive |
 
 **Use bedmerge when:**
+
 - You need a simple, standalone tool
 - You want built-in gzip support
 - You prefer Go tools
@@ -240,6 +250,7 @@ bedmerge input.bed | bedtools intersect -a - -b targets.bed
 - You're working with bedGraph format
 
 **Use bedtools merge when:**
+
 - You need advanced options (distinct, collapse, etc.)
 - You're already using bedtools suite
 - You need complex custom operations
@@ -282,6 +293,7 @@ go test -cover ./pkg/bedmerge
 ## Contributing
 
 Contributions welcome! Please:
+
 - Add tests for new features
 - Follow Go coding standards
 - Update documentation

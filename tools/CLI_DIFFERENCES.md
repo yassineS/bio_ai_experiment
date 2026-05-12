@@ -5,6 +5,7 @@ This document details the differences between the original tools and their Go im
 ## General Improvements Across All Tools
 
 ### Common Enhancements
+
 1. **Dual Option Names**: Both short (`-f`) and long (`--fastq-file`) options for better usability
 2. **Better Error Messages**: More descriptive error reporting with context
 3. **Type Safety**: Compile-time checks prevent many runtime errors
@@ -13,6 +14,7 @@ This document details the differences between the original tools and their Go im
 6. **Consistent CLI**: Using shared cliflag library for uniform option handling
 
 ### Consistent Patterns
+
 - All tools support `-h/--help` and `-v/--version`
 - Output to stdout by default, with `-o/--output` for file output
 - Standard error reporting to stderr
@@ -26,6 +28,7 @@ This document details the differences between the original tools and their Go im
 **Go Implementation**: Version 1.0.0
 
 ### Commands Implemented
+
 - `comp` - Sequence composition statistics
 - `fq2fa` - FASTQ to FASTA conversion
 - `seq` - Sequence manipulation (reverse complement)
@@ -45,6 +48,7 @@ This document details the differences between the original tools and their Go im
 ### Examples
 
 **Original:**
+
 ```bash
 seqtk comp reads.fastq
 seqtk fq2fa -o output.fasta reads.fastq
@@ -52,6 +56,7 @@ seqtk seq -r reads.fasta > rev.fasta
 ```
 
 **Go Implementation (backward compatible):**
+
 ```bash
 seqtk comp reads.fastq
 seqtk fq2fa -o output.fasta reads.fastq
@@ -61,11 +66,13 @@ seqtk seq --reverse reads.fasta > rev.fasta    # Long option alternative
 ```
 
 ### Not Yet Implemented
+
 - Some advanced filtering options
 - Direct gzip support (use external tools)
 - Some less common subcommands
 
 ### Migration Notes
+
 - All common commands work identically
 - Scripts using short options work without changes
 - Long options available for improved readability
@@ -78,6 +85,7 @@ seqtk seq --reverse reads.fasta > rev.fasta    # Long option alternative
 **Go Implementation**: Version 1.0.0
 
 ### Commands Implemented
+
 - `stats` - Calculate sequence statistics
 - `filter` - Filter and trim sequences
 
@@ -95,12 +103,14 @@ seqtk seq --reverse reads.fasta > rev.fasta    # Long option alternative
 ### Examples
 
 **Original:**
+
 ```bash
 prinseq-lite.pl -fastq input.fastq -min_len 100 -out_good filtered
 prinseq-lite.pl -fastq input.fastq -min_gc 40 -max_gc 60
 ```
 
 **Go Implementation:**
+
 ```bash
 # Compatible usage
 prinseq stats -fastq input.fastq
@@ -112,18 +122,21 @@ prinseq filter -fastq input.fastq -min_gc 40 -max_gc 60
 ```
 
 ### Key Changes
+
 1. **Command Structure**: Uses subcommands (`stats`, `filter`) instead of mode flags
 2. **Output Files**: Simplified output naming (one file instead of numbered variants)
 3. **Trimming Options**: More consistent naming for trim parameters
 4. **Duplicate Removal**: Same algorithm, simplified interface
 
 ### Not Yet Implemented
+
 - Complexity filtering
 - Graph generation (use separate visualization tools)
 - Phred+64 encoding (planned for v1.1)
 - Output of rejected sequences (planned for v1.1)
 
 ### Migration Notes
+
 - Script modernization needed (different command structure)
 - Core filtering logic identical
 - Output format compatible (FASTQ/FASTA)
@@ -137,6 +150,7 @@ prinseq filter -fastq input.fastq -min_gc 40 -max_gc 60
 **Go Implementation**: Version 1.0.0
 
 ### Commands Implemented
+
 - `se` - Single-end trimming
 - `pe` - Paired-end trimming
 
@@ -154,12 +168,14 @@ prinseq filter -fastq input.fastq -min_gc 40 -max_gc 60
 ### Examples
 
 **Original:**
+
 ```bash
 sickle se -f input.fastq -o output.fastq -q 20 -l 20
 sickle pe -f read1.fastq -r read2.fastq -o out1.fastq -p out2.fastq -s singles.fastq
 ```
 
 **Go Implementation (fully compatible):**
+
 ```bash
 # Short options (backward compatible)
 sickle se -f input.fastq -o output.fastq -q 20 -l 20
@@ -174,11 +190,13 @@ sickle pe --fastq-file read1.fastq --reverse-file read2.fastq \
 ### Gzip Handling
 
 **Original:**
+
 ```bash
 sickle se -f input.fastq -o output.fastq -g  # Creates output.fastq.gz
 ```
 
 **Go Implementation:**
+
 ```bash
 # Use external gzip
 sickle se -f input.fastq -o - | gzip > output.fastq.gz
@@ -188,10 +206,12 @@ gunzip -c input.fastq.gz | sickle se -f - -o output.fastq
 ```
 
 ### Not Yet Implemented
+
 - Built-in gzip compression (use pipes)
 - Automatic quality encoding detection (planned for v1.1)
 
 ### Migration Notes
+
 - **100% compatible** for standard usage
 - Gzip requires external command (simple change)
 - Statistics more detailed (same data, better format)
@@ -221,6 +241,7 @@ All Go tools follow these conventions:
 ### Input/Output Patterns
 
 All tools support:
+
 - **stdin**: Use `-f -` or omit input file
 - **stdout**: Use `-o -` or omit output file
 - **Piping**: Fully compatible with Unix pipes
@@ -256,6 +277,7 @@ Performance compared to original implementations (average across typical workloa
 | sickle pe | 1M pairs | 5.1s | 5.3s | 0.96x (similar) |
 
 **Notes:**
+
 - Benchmarks on Intel i7, 16GB RAM, SSD
 - Performance depends on read length, quality scores, and filtering criteria
 - Go implementations prioritize correctness over raw speed
@@ -266,17 +288,20 @@ Performance compared to original implementations (average across typical workloa
 ## Migration Checklist
 
 ### For New Users
+
 ✅ Use long options for clarity: `--fastq-file` instead of `-f`  
 ✅ Check documentation for each tool's specific options  
 ✅ Use help command: `tool --help` or `tool command --help`  
 
 ### For Existing Script Users
+
 ✅ Test scripts with Go tools (most work without changes)  
 ✅ Update gzip handling if using sickle with `-g` flag  
 ✅ Review statistics output format if parsing programmatically  
 ✅ Check for deprecated options in original tools  
 
 ### For Tool Developers
+
 ✅ See individual tool READMEs for API documentation  
 ✅ Import packages: `github.com/yassineS/bio_ai_experiment/tools/<tool>/pkg/<tool>`  
 ✅ Use shared bioformats library for FASTA/FASTQ I/O  
@@ -289,18 +314,21 @@ Performance compared to original implementations (average across typical workloa
 Both implementations support standard quality encodings:
 
 ### Phred+33 (Sanger, Illumina 1.8+)
+
 - ASCII range: 33-126
 - Quality range: 0-93
 - Format: `!"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJK...`
 - Default in all tools
 
 ### Phred+64 (Illumina 1.3-1.7)
+
 - ASCII range: 64-126
 - Quality range: 0-62
 - Format: `@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefgh...`
 - Use `-t illumina` option
 
 ### Solexa (Legacy)
+
 - Similar to Phred+64 but different formula
 - Approximated as Phred+64 in Go implementations
 - Rarely used in modern datasets
@@ -312,6 +340,7 @@ Both implementations support standard quality encodings:
 Planned improvements across all tools:
 
 ### Version 1.1 (Next Release)
+
 - [ ] Automatic quality encoding detection
 - [ ] Phred+64 support in PRINSEQ
 - [ ] Built-in gzip/bzip2 support
@@ -319,12 +348,14 @@ Planned improvements across all tools:
 - [ ] Progress bars for large files
 
 ### Version 1.2
+
 - [ ] Parallel processing for multiple files
 - [ ] Web API interfaces
 - [ ] Extended format support (BAM, SAM)
 - [ ] Enhanced statistics and reporting
 
 ### Version 2.0
+
 - [ ] HTML report generation
 - [ ] Interactive mode
 - [ ] Plugin architecture
@@ -335,17 +366,20 @@ Planned improvements across all tools:
 ## Support and Feedback
 
 ### Reporting Issues
+
 - **Bugs**: Open issue on GitHub with tool name in title
 - **Feature Requests**: Describe use case and expected behavior
 - **Performance**: Include dataset characteristics and timing
 
 ### Contributing
+
 - See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines
 - Focus on maintaining compatibility
 - Add tests for new features
 - Update this document for CLI changes
 
 ### Version Information
+
 - Check version: `tool --version`
 - Each tool versioned independently
 - Breaking changes increment major version
@@ -356,6 +390,7 @@ Planned improvements across all tools:
 ## Summary
 
 The Go implementations provide:
+
 - ✅ **Functional parity** with original tools
 - ✅ **Backward compatibility** for most use cases
 - ✅ **Enhanced usability** with long options
@@ -366,6 +401,7 @@ The Go implementations provide:
 - ✅ **Cross-platform support**
 
 For most users, the Go tools can be drop-in replacements. Scripts using standard options work without modification. The main changes are:
+
 1. Long options available (optional to use)
 2. Gzip requires external tools (simple pipes)
 3. Enhanced statistics output (same data, better format)
