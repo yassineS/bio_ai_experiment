@@ -459,6 +459,7 @@ func TestCheckUnsupported(t *testing.T) {
 		{},
 		{SitePi: true, WindowPi: 1000},
 		{TsTvByCount: true, Depth: true},
+		{TsTvByQual: true},
 		{HistIndelLen: true, GenoDepth: true, TajimaD: 10000},
 	}
 	for i, p := range supported {
@@ -468,7 +469,6 @@ func TestCheckUnsupported(t *testing.T) {
 	}
 
 	unsupported := []*Params{
-		{TsTvByQual: true},
 		{WeirFstPop: []string{"pop1.txt", "pop2.txt"}},
 		{FstWindowSize: 10000},
 		{FstWindowStep: 5000},

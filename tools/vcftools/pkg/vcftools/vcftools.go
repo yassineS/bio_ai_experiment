@@ -863,6 +863,12 @@ func outputStatistics(stats *statistics, params *Params) error {
 		}
 	}
 
+	if params.TsTvByQual {
+		if err := stats.outputTsTvByQual(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+
 	if params.Depth {
 		if err := stats.outputDepth(params.OutPrefix); err != nil {
 			return err
@@ -969,9 +975,6 @@ func getOutputPath(prefix, suffix string) string {
 // and silently ignored, which produced no output and looked like success.
 func checkUnsupported(params *Params) error {
 	var missing []string
-	if params.TsTvByQual {
-		missing = append(missing, "--TsTv-by-qual")
-	}
 	if len(params.WeirFstPop) > 0 {
 		missing = append(missing, "--weir-fst-pop")
 	}

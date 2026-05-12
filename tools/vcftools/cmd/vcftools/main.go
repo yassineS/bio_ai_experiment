@@ -76,6 +76,7 @@ Statistics Output:
   --TsTv-summary        Output Ts/Tv ratio summary
   --TsTv INT            Output Ts/Tv in bins of size INT
   --TsTv-by-count       Output Ts/Tv grouped by alternate-allele count
+  --TsTv-by-qual        Output Ts/Tv bucketed by quality-score thresholds (.TsTv.qual)
   --site-pi             Output nucleotide diversity per site (.sites.pi)
   --hist-indel-len      Output a histogram of indel lengths (.indel.hist)
   --geno-depth          Output a per-genotype read-depth matrix (.gdepth)
@@ -94,7 +95,7 @@ Format Conversion:
   --chrom-map FILE      Chromosome-name-to-integer map for PLINK output
 
 Not yet implemented (rejected with an error rather than silently ignored):
-  --TsTv-by-qual, --weir-fst-pop, --fst-window-size, --fst-window-step,
+  --weir-fst-pop, --fst-window-size, --fst-window-step,
   and all LD analysis (--geno-r2, --hap-r2, ...)
   See tools/vcftools/ROADMAP.md for status.
 
@@ -196,7 +197,7 @@ func main() {
 	tsTvSummary := flag.Bool("TsTv-summary", false, "Ts/Tv ratio summary")
 	tsTvBinSize := flag.Int("TsTv", 0, "Ts/Tv in bins of this size")
 	tsTvByCount := flag.Bool("TsTv-by-count", false, "Ts/Tv grouped by alternate-allele count")
-	tsTvByQual := flag.Bool("TsTv-by-qual", false, "Ts/Tv by quality score (not yet implemented)")
+	tsTvByQual := flag.Bool("TsTv-by-qual", false, "Ts/Tv ratios bucketed by quality-score thresholds (.TsTv.qual)")
 	sitePi := flag.Bool("site-pi", false, "Nucleotide diversity per site (.sites.pi)")
 	het := flag.Bool("het", false, "Heterozygosity statistics")
 	singletons := flag.Bool("singletons", false, "Singleton site analysis")

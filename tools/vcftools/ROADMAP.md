@@ -14,14 +14,15 @@ This document outlines planned features and enhancements for the vcftools Go imp
   `--geno-depth`, `--site-depth`, `--site-mean-depth`, `--site-quality`,
   `--missing-site`, `--missing-indv`, `--hardy`, `--het`, `--singletons`,
   `--site-pi`, `--window-pi`(+`--window-pi-step`), `--TajimaD`,
-  `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--hist-indel-len`,
+  `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--TsTv-by-qual`
+  (→ `.TsTv.qual`: Ts/Tv counts and ratios cumulative below and at-or-above
+  each distinct QUAL threshold), `--hist-indel-len`,
   `--FILTER-summary`, `--SNPdensity`
 - VCF recoding (`--recode`, `--recode-INFO-all`)
 - Format conversion: `--012`, `--plink`, `--plink-tped`, `--chrom-map`
 
 ### Recognised but **not implemented** (return an error)
 
-- `--TsTv-by-qual`
 - `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
 - All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
 
@@ -100,8 +101,8 @@ entry point has no tests.
 
 - [ ] `--het` - Individual heterozygosity
 - [ ] `--singletons` - Singleton site analysis
-- [ ] `--TsTv-by-count` - Ts/Tv by allele count
-- [ ] `--TsTv-by-qual` - Ts/Tv by quality score
+- [x] `--TsTv-by-count` - Ts/Tv by allele count
+- [x] `--TsTv-by-qual` - Ts/Tv by quality score (→ `.TsTv.qual`)
 
 **Priority:** MEDIUM  
 **Estimated Effort:** 1 week  
