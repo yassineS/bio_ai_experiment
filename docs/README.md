@@ -140,6 +140,7 @@ Documentation improvements are always welcome! See the [Documentation Agent Guid
 | Tutorials | ○ Planned | Low |
 
 **Legend**:
+
 - ✓ Complete
 - ◐ In Progress  
 - ○ Planned

@@ -9,6 +9,7 @@ This package provides Go implementations of common bioinformatics file format pa
 FASTA is a text-based format for representing nucleotide or peptide sequences.
 
 **Features:**
+
 - Sequential and batch reading
 - Customizable line width for writing
 - Sequence validation
@@ -17,6 +18,7 @@ FASTA is a text-based format for representing nucleotide or peptide sequences.
 - Efficient handling of large files
 
 **Example:**
+
 ```go
 import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
 
@@ -55,6 +57,7 @@ revComp := records[0].ReverseComplement()
 FASTQ stores biological sequences with quality scores.
 
 **Features:**
+
 - Support for Phred+33 and Phred+64 encoding
 - Quality score conversion and analysis
 - Sequence trimming based on quality
@@ -62,6 +65,7 @@ FASTQ stores biological sequences with quality scores.
 - FASTA conversion
 
 **Example:**
+
 ```go
 import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 
@@ -103,6 +107,7 @@ if err := writer.WriteAll(records); err != nil {
 VCF (Variant Call Format) stores gene sequence variations.
 
 **Features:**
+
 - Full VCF v4.2+ support
 - Header and meta-information parsing
 - INFO field parsing and querying
@@ -110,6 +115,7 @@ VCF (Variant Call Format) stores gene sequence variations.
 - Genotype classification (homozygous ref/alt, heterozygous)
 
 **Example:**
+
 ```go
 import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
 
@@ -169,12 +175,14 @@ if err := writer.WriteAll(variants); err != nil {
 BED (Browser Extensible Data) represents genomic regions.
 
 **Features:**
+
 - Support for BED3 through BED12 formats
 - Custom field support (BED12+)
 - Interval overlap detection
 - Genomic region validation
 
 **Example:**
+
 ```go
 import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
 
@@ -221,7 +229,9 @@ if err := writer.WriteAll(records); err != nil {
 ## Design Principles
 
 ### 1. **Streaming I/O**
+
 All parsers support streaming to handle files larger than available RAM:
+
 ```go
 reader := fasta.NewReader(file)
 for {
@@ -234,7 +244,9 @@ for {
 ```
 
 ### 2. **Error Handling**
+
 Clear, descriptive errors for debugging:
+
 ```go
 record, err := reader.Read()
 if err != nil {
@@ -243,7 +255,9 @@ if err != nil {
 ```
 
 ### 3. **Validation**
+
 Built-in validation methods:
+
 ```go
 if err := record.Validate(); err != nil {
     log.Printf("Invalid record: %v", err)
@@ -251,7 +265,9 @@ if err := record.Validate(); err != nil {
 ```
 
 ### 4. **Memory Efficiency**
+
 Buffered I/O and configurable buffer sizes:
+
 ```go
 // Customize buffer size for large sequences
 scanner := bufio.NewScanner(file)
@@ -260,7 +276,9 @@ scanner.Buffer(buf, 10*1024*1024) // 10MB max
 ```
 
 ### 5. **Type Safety**
+
 Strong typing prevents common errors:
+
 ```go
 type Record struct {
     ID          string
@@ -272,6 +290,7 @@ type Record struct {
 ## Performance Characteristics
 
 All libraries are optimized for:
+
 - **Large files**: Streaming processing, not loading entire files
 - **Speed**: Buffered I/O, minimal allocations
 - **Memory**: Fixed-size buffers, garbage collection friendly
@@ -337,6 +356,7 @@ To add a new format:
 6. Document with examples
 
 Example structure:
+
 ```
 pkg/bioformats/newformat/
 ├── newformat.go      # Main implementation
@@ -347,6 +367,7 @@ pkg/bioformats/newformat/
 ## Best Practices
 
 ### 1. Always Close Files
+
 ```go
 file, err := os.Open("data.fasta")
 if err != nil {
@@ -356,6 +377,7 @@ defer file.Close()
 ```
 
 ### 2. Check for EOF Properly
+
 ```go
 for {
     record, err := reader.Read()
@@ -370,6 +392,7 @@ for {
 ```
 
 ### 3. Flush Writers
+
 ```go
 writer := fasta.NewWriter(output, 80)
 defer writer.Flush()
@@ -378,6 +401,7 @@ defer writer.Flush()
 ```
 
 ### 4. Use Appropriate Encodings
+
 ```go
 // FASTQ - always specify encoding
 reader := fastq.NewReader(file, fastq.Phred33) // or Phred64
@@ -386,6 +410,7 @@ reader := fastq.NewReader(file, fastq.Phred33) // or Phred64
 ## Future Enhancements
 
 Planned additions:
+
 - [ ] SAM/BAM format support
 - [ ] GFF/GTF format support
 - [ ] Compressed file support (gzip, bgzip)
@@ -397,6 +422,7 @@ Planned additions:
 ## Contributing
 
 When contributing format parsers:
+
 1. Follow the existing API patterns
 2. Add comprehensive tests (>80% coverage)
 3. Document with examples
@@ -409,9 +435,9 @@ Apache License 2.0 - See [LICENSE](../../LICENSE)
 
 ## References
 
-- FASTA: https://en.wikipedia.org/wiki/FASTA_format
-- FASTQ: https://en.wikipedia.org/wiki/FASTQ_format
-- VCF: https://samtools.github.io/hts-specs/VCFv4.2.pdf
-- BED: https://genome.ucsc.edu/FAQ/FAQformat.html#format1
-- SAM/BAM: https://samtools.github.io/hts-specs/SAMv1.pdf
-- GFF/GTF: https://www.ensembl.org/info/website/upload/gff.html
+- FASTA: <https://en.wikipedia.org/wiki/FASTA_format>
+- FASTQ: <https://en.wikipedia.org/wiki/FASTQ_format>
+- VCF: <https://samtools.github.io/hts-specs/VCFv4.2.pdf>
+- BED: <https://genome.ucsc.edu/FAQ/FAQformat.html#format1>
+- SAM/BAM: <https://samtools.github.io/hts-specs/SAMv1.pdf>
+- GFF/GTF: <https://www.ensembl.org/info/website/upload/gff.html>

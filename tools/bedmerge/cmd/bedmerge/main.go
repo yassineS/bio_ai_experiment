@@ -73,27 +73,27 @@ func main() {
 	// Define flags
 	distance := flag.Int("d", 0, "Maximum distance between intervals to merge")
 	flag.IntVar(distance, "distance", 0, "Maximum distance between intervals to merge")
-	
+
 	strandSpec := flag.Bool("s", false, "Merge only intervals on the same strand")
 	flag.BoolVar(strandSpec, "strand", false, "Merge only intervals on the same strand")
-	
+
 	inputFile := flag.String("i", "", "Input BED file (default: stdin)")
 	flag.StringVar(inputFile, "input", "", "Input BED file (default: stdin)")
-	
+
 	outputFile := flag.String("o", "", "Output BED file (default: stdout)")
 	flag.StringVar(outputFile, "output", "", "Output BED file (default: stdout)")
-	
+
 	showStats := flag.Bool("S", false, "Print merge statistics to stderr")
 	flag.BoolVar(showStats, "stats", false, "Print merge statistics to stderr")
-	
+
 	showCount := flag.Bool("c", false, "Output count of merged intervals as name field")
 	flag.BoolVar(showCount, "count", false, "Output count of merged intervals as name field")
-	
+
 	bedGraph := flag.Bool("g", false, "Input/output in bedGraph format")
 	flag.BoolVar(bedGraph, "bedgraph", false, "Input/output in bedGraph format")
-	
+
 	streaming := flag.Bool("streaming", false, "Use streaming mode for very large files")
-	
+
 	help := flag.Bool("h", false, "Show help message")
 	flag.BoolVar(help, "help", false, "Show help message")
 

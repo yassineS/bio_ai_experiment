@@ -13,12 +13,14 @@ This project adheres to a code of conduct that promotes a welcoming and inclusiv
 Before creating bug reports, please check existing issues to avoid duplicates. We have a structured bug report template that will guide you through providing all necessary information.
 
 **To report a bug:**
+
 1. Go to [Issues](https://github.com/yassineS/bio_ai_experiment/issues/new/choose)
 2. Select "Bug Report" template
 3. Fill in all required fields
 4. Submit the issue
 
 The bug report template will ask for:
+
 - Component affected
 - Clear description of the bug
 - Expected vs. actual behavior
@@ -31,12 +33,14 @@ The bug report template will ask for:
 Enhancement suggestions are tracked as GitHub issues. We have a feature request template to help structure your suggestion.
 
 **To suggest a feature:**
+
 1. Go to [Issues](https://github.com/yassineS/bio_ai_experiment/issues/new/choose)
 2. Select "Feature Request" template
 3. Fill in all required fields
 4. Submit the issue
 
 The feature request template will ask for:
+
 - Problem statement
 - Proposed solution
 - Use cases
@@ -48,6 +52,7 @@ The feature request template will ask for:
 If you'd like to suggest a bioinformatics tool for analysis and potential recoding:
 
 **To request tool analysis:**
+
 1. Go to [Issues](https://github.com/yassineS/bio_ai_experiment/issues/new/choose)
 2. Select "Tool Analysis Request" template
 3. Fill in tool details and justification
@@ -58,6 +63,7 @@ If you'd like to suggest a bioinformatics tool for analysis and potential recodi
 For questions, ideas, or general discussions that don't require tracking as issues:
 
 **Use GitHub Discussions:**
+
 - 💬 [Q&A](https://github.com/yassineS/bio_ai_experiment/discussions/categories/q-a) - Ask questions
 - 💡 [Ideas](https://github.com/yassineS/bio_ai_experiment/discussions/categories/ideas) - Brainstorm features
 - 🚀 [Show and Tell](https://github.com/yassineS/bio_ai_experiment/discussions/categories/show-and-tell) - Share your work
@@ -81,6 +87,7 @@ We have a comprehensive pull request template to ensure all necessary informatio
 8. **Fill in all sections** of the PR template
 
 **The PR template includes:**
+
 - Description of changes
 - Type of change (bug fix, feature, etc.)
 - Testing performed
@@ -173,6 +180,7 @@ golangci-lint run
 - Keep documentation up-to-date with code changes
 
 Example:
+
 ```go
 // ProcessSequence processes a DNA sequence and returns its reverse complement.
 //
@@ -206,6 +214,7 @@ func ProcessSequence(sequence string) (string, error) {
 - Add detailed description if needed
 
 Good examples:
+
 ```
 Add reverse complement function for DNA sequences
 Fix edge case in FASTA parser for empty files
@@ -286,6 +295,7 @@ For community conversations, Q&A, and brainstorming, use GitHub Discussions. See
 ## Recognition
 
 Contributors are recognized in:
+
 - Git commit history
 - Release notes (for significant contributions)
 - Project documentation

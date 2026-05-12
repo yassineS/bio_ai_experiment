@@ -6,7 +6,7 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
 
 - **Fast Performance**: Leveraging Go's efficient I/O and concurrency capabilities
 - **Memory Efficient**: Streaming processing for large files
-- **Comprehensive Format Support**: 
+- **Comprehensive Format Support**:
   - FASTA format reading/writing
   - FASTQ format reading/writing (Phred+33 and Phred+64 encodings)
   - **Compressed files** (gzip, bzip2) for both input and output
@@ -62,6 +62,7 @@ cat reads.fastq | seqtk comp -
 ```
 
 Output includes:
+
 - Number of sequences
 - Total bases
 - Min/max/average length
@@ -84,6 +85,7 @@ cat reads.fastq.gz | seqtk fq2fa - > reads.fasta
 ```
 
 Options:
+
 - `-6, --phred64`: Use Phred+64 encoding (default: Phred+33)
 - `-o, --output FILE`: Output file (default: stdout)
 
@@ -111,6 +113,7 @@ seqtk seq -l 100 -n scaffold reads.fasta.gz -o filtered.fasta.gz
 ```
 
 Options:
+
 - `-r, --reverse`: Reverse complement
 - `-l, --min-len INT`: Minimum sequence length
 - `-L, --max-len INT`: Maximum sequence length
@@ -137,6 +140,7 @@ cat reads.fastq.gz | seqtk subseq - 1 100 -o first100.fastq.gz
 ```
 
 Options:
+
 - `-6, --phred64`: Use Phred+64 encoding for FASTQ
 - `-o, --output FILE`: Output file
 
@@ -154,6 +158,7 @@ seqtk sample reads.fastq.gz 0.1 -o sample.fastq.gz
 ```
 
 Options:
+
 - `-6, --phred64`: Use Phred+64 encoding for FASTQ
 - `-o, --output FILE`: Output file
 
@@ -171,6 +176,7 @@ seqtk trimfq reads.fastq.gz -q 30 -o trimmed.fastq.gz
 ```
 
 Options:
+
 - `-q, --quality INT`: Minimum quality threshold (default: 20)
 - `-6, --phred64`: Use Phred+64 encoding
 - `-o, --output FILE`: Output file
@@ -402,10 +408,10 @@ Apache License 2.0 - See [LICENSE](../../LICENSE) for details.
 
 ## References
 
-- Original seqtk: https://github.com/lh3/seqtk
-- FASTA format specification: https://en.wikipedia.org/wiki/FASTA_format
-- FASTQ format specification: https://en.wikipedia.org/wiki/FASTQ_format
-- Phred quality scores: https://en.wikipedia.org/wiki/Phred_quality_score
+- Original seqtk: <https://github.com/lh3/seqtk>
+- FASTA format specification: <https://en.wikipedia.org/wiki/FASTA_format>
+- FASTQ format specification: <https://en.wikipedia.org/wiki/FASTQ_format>
+- Phred quality scores: <https://en.wikipedia.org/wiki/Phred_quality_score>
 
 ## Support
 

@@ -54,6 +54,7 @@ sickle se -f input.fastq -o output.fastq -q 20 -l 20
 ```
 
 Options:
+
 - `-f, --fastq-file FILE` - Input FASTQ file (required)
 - `-o, --output-file FILE` - Output trimmed file (default: stdout)
 - `-t, --qual-type TYPE` - Quality type: sanger, illumina, solexa (default: sanger)
@@ -78,6 +79,7 @@ sickle pe -f input1.fastq -r input2.fastq -o output1.fastq -p output2.fastq -s s
 ```
 
 Options:
+
 - `-f, --fastq-file FILE` - First input FASTQ file (required)
 - `-r, --reverse-file FILE` - Second input FASTQ file (required)
 - `-o, --output-file FILE` - First output trimmed file (required)
@@ -151,6 +153,7 @@ sickle batch -i files.txt -o trimmed_output -j 4 --auto-detect --recalibrate
 ```
 
 Batch mode options:
+
 - `-i, --input-list FILE` - File containing list of input FASTQ files (required)
 - `-o, --output-dir DIR` - Output directory for trimmed files (default: .)
 - `-j, --jobs INT` - Number of parallel workers (default: 4)
@@ -306,6 +309,7 @@ SE Trimming Stats:
 ```
 
 For paired-end mode:
+
 - Total reads includes both forward and reverse reads
 - Trimmed/discarded statistics account for both pairs
 - Paired output only includes pairs where both reads pass
@@ -316,6 +320,7 @@ For paired-end mode:
 This Go implementation aims for functional parity with the original C implementation.
 
 ### Similarities
+
 - ✅ Sliding window quality trimming algorithm
 - ✅ Single-end and paired-end modes
 - ✅ Quality and length threshold filtering
@@ -336,9 +341,11 @@ This Go implementation aims for functional parity with the original C implementa
 | Performance | Fast | Comparable | Go adds safety |
 
 ### Not Yet Implemented
+
 - None - all planned features have been implemented!
 
 ### New Features in v1.2.0
+
 ✅ **Automatic quality encoding detection** - Use `--auto-detect` to automatically detect Phred+33 or Phred+64
 ✅ **JSON statistics output** - Use `--json FILE` to save statistics in JSON format
 ✅ **HTML report generation** - Use `--html FILE` to generate a visual HTML report
@@ -348,6 +355,7 @@ This Go implementation aims for functional parity with the original C implementa
 ✅ **Parallel batch processing** - Use `sickle batch` to process multiple files in parallel
 
 ### Advantages of Go Implementation
+
 1. **Better Error Messages**: More descriptive error reporting
 2. **Type Safety**: Compile-time type checking prevents runtime errors
 3. **Cross-Platform**: Single binary works on all platforms
@@ -369,6 +377,7 @@ The Go implementation provides comparable performance to the original C implemen
 *Benchmarks on Intel Core i7, 16GB RAM, SSD*
 
 Performance characteristics:
+
 - **Memory**: O(1) - streaming processing
 - **Time**: O(n×w) where n is number of reads, w is window size
 - **Disk I/O**: Buffered reading/writing for efficiency
@@ -388,6 +397,7 @@ go test ./pkg/sickle -cover
 Test coverage: **>90%**
 
 The test suite includes:
+
 - Single-end trimming tests
 - Paired-end trimming tests
 - N-truncation tests
@@ -437,6 +447,7 @@ spades.py -1 clean_R1.fastq -2 clean_R2.fastq -o assembly/
 ## Development Roadmap
 
 ### Version 1.2.0 (Current)
+
 - ✅ Single-end and paired-end trimming
 - ✅ Quality-based sliding window algorithm
 - ✅ Length threshold filtering
@@ -454,6 +465,7 @@ spades.py -1 clean_R1.fastq -2 clean_R2.fastq -o assembly/
 - ✅ **Parallel batch processing for multiple files**
 
 ### Future Enhancements
+
 - [ ] Machine learning-based quality recalibration
 - [ ] Support for additional quality encodings (Solexa)
 - [ ] Advanced filtering options (GC content, complexity)
@@ -477,10 +489,10 @@ Apache License 2.0 - See [LICENSE](../../LICENSE) for details.
 
 ## References
 
-- Original Sickle: https://github.com/najoshi/sickle
+- Original Sickle: <https://github.com/najoshi/sickle>
 - Paper: Joshi NA, Fass JN (2011). Sickle: A sliding-window, adaptive, quality-based trimming tool for FastQ files (Version 1.33).
-- FASTQ format: https://en.wikipedia.org/wiki/FASTQ_format
-- Phred quality scores: https://en.wikipedia.org/wiki/Phred_quality_score
+- FASTQ format: <https://en.wikipedia.org/wiki/FASTQ_format>
+- Phred quality scores: <https://en.wikipedia.org/wiki/Phred_quality_score>
 
 ## Support
 

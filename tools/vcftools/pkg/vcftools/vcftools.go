@@ -29,13 +29,13 @@ type Params struct {
 	ToBp                 int
 	PositionsFile        string
 	ExcludePositionsFile string
-	
+
 	// SNP ID filtering
-	SNP             string
-	SNPs            string
-	ExcludeSNP      string
-	ExcludeSNPs     string
-	Thin            int
+	SNP         string
+	SNPs        string
+	ExcludeSNP  string
+	ExcludeSNPs string
+	Thin        int
 
 	// Variant type filtering
 	KeepOnlyIndels bool
@@ -82,22 +82,22 @@ type Params struct {
 	Singletons    bool
 	HistIndelLen  bool
 	GenoDepth     bool
-	
+
 	// Phase 2: Population genetics statistics
-	WindowPi       int
-	WindowPiStep   int
-	TajimaD        int
-	SNPDensity     int
-	WeirFstPop     []string
-	FstWindowSize  int
-	FstWindowStep  int
-	FilterSummary  bool
-	
+	WindowPi      int
+	WindowPiStep  int
+	TajimaD       int
+	SNPDensity    int
+	WeirFstPop    []string
+	FstWindowSize int
+	FstWindowStep int
+	FilterSummary bool
+
 	// Phase 4: Format conversions
-	Output012      bool
-	OutputPlink    bool
+	Output012       bool
+	OutputPlink     bool
 	OutputPlinkTped bool
-	ChromMap       string
+	ChromMap        string
 
 	// Sample filtering
 	IndvList       []string
@@ -132,7 +132,7 @@ func Run(input io.Reader, params *Params) error {
 			return fmt.Errorf("loading exclude positions file: %w", err)
 		}
 	}
-	
+
 	// Load SNP ID filters
 	var includeSNPs, excludeSNPs map[string]bool
 	if params.SNP != "" {
@@ -205,7 +205,7 @@ func Run(input io.Reader, params *Params) error {
 		}
 
 		totalSites++
-		
+
 		// Apply thinning filter
 		if params.Thin > 0 {
 			thinCounter++
@@ -221,13 +221,13 @@ func Run(input io.Reader, params *Params) error {
 
 		// Filter samples
 		filteredVariant := filterVariantSamples(variant, keepSamples)
-		
+
 		// Apply genotype-level filters
 		filteredVariant = filterGenotypes(filteredVariant, params)
 
 		// Update statistics
 		stats.addVariant(filteredVariant, params)
-		
+
 		// Collect variants for format conversions
 		if params.Output012 || params.OutputPlink || params.OutputPlinkTped {
 			allVariants = append(allVariants, filteredVariant)
@@ -277,7 +277,7 @@ func Run(input io.Reader, params *Params) error {
 	if err := outputStatistics(stats, params); err != nil {
 		return fmt.Errorf("outputting statistics: %w", err)
 	}
-	
+
 	// Output format conversions
 	if err := outputFormatConversions(allVariants, filteredHeader, params); err != nil {
 		return fmt.Errorf("outputting format conversions: %w", err)
@@ -299,7 +299,7 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 			return false
 		}
 	}
-	
+
 	// Position filters
 	if params.Chr != "" && v.Chrom != params.Chr {
 		return false
@@ -707,7 +707,7 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 	if params.MinDP == 0 && params.MaxDP == 0 && params.MinGQ == 0 {
 		return v
 	}
-	
+
 	// Create a copy to avoid modifying original
 	filtered := &vcf.Variant{
 		Chrom:  v.Chrom,
@@ -720,7 +720,7 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 		Info:   v.Info,
 		Format: v.Format,
 	}
-	
+
 	for _, sample := range v.Samples {
 		// Check DP (depth) filter
 		if params.MinDP > 0 || params.MaxDP > 0 {
@@ -745,7 +745,7 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 				}
 			}
 		}
-		
+
 		// Check GQ (genotype quality) filter
 		if params.MinGQ > 0 {
 			if gqStr, ok := sample.Data["GQ"]; ok {
@@ -769,11 +769,11 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 				}
 			}
 		}
-		
+
 		// Genotype passes filters, keep as-is
 		filtered.Samples = append(filtered.Samples, sample)
 	}
-	
+
 	return filtered
 }
 
@@ -790,13 +790,13 @@ func outputStatistics(stats *statistics, params *Params) error {
 			return err
 		}
 	}
-	
+
 	if params.Freq2 {
 		if err := stats.outputFrequency2(params.OutPrefix); err != nil {
 			return err
 		}
 	}
-	
+
 	if params.Counts2 {
 		if err := stats.outputCounts2(params.OutPrefix); err != nil {
 			return err
@@ -856,27 +856,27 @@ func outputStatistics(stats *statistics, params *Params) error {
 			return err
 		}
 	}
-	
+
 	// Phase 2: Population genetics statistics
-	
+
 	if params.Het {
 		if err := stats.outputHet(params.OutPrefix); err != nil {
 			return err
 		}
 	}
-	
+
 	if params.Singletons {
 		if err := stats.outputSingletons(params.OutPrefix); err != nil {
 			return err
 		}
 	}
-	
+
 	if params.FilterSummary {
 		if err := stats.outputFilterSummary(params.OutPrefix); err != nil {
 			return err
 		}
 	}
-	
+
 	if params.SNPDensity > 0 {
 		if err := stats.outputSNPDensity(params.OutPrefix, params.SNPDensity); err != nil {
 			return err
@@ -893,27 +893,27 @@ func outputFormatConversions(variants []*vcf.Variant, header *vcf.Header, params
 			return err
 		}
 	}
-	
+
 	if params.OutputPlink || params.OutputPlinkTped {
 		// Load chromosome map if provided
 		chromMap, err := loadChromMap(params.ChromMap)
 		if err != nil {
 			return fmt.Errorf("loading chromosome map: %w", err)
 		}
-		
+
 		if params.OutputPlink {
 			if err := outputPlink(variants, header, params.OutPrefix, chromMap); err != nil {
 				return err
 			}
 		}
-		
+
 		if params.OutputPlinkTped {
 			if err := outputPlinkTped(variants, header, params.OutPrefix, chromMap); err != nil {
 				return err
 			}
 		}
 	}
-	
+
 	return nil
 }
 

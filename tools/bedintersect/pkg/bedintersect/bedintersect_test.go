@@ -20,7 +20,7 @@ chr1	350	400
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -47,7 +47,7 @@ chr1	450	500`
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -76,7 +76,7 @@ chr1	500	600
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1, NoOverlap: true})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -104,7 +104,7 @@ chr1	400	450`
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1, Count: true})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -130,7 +130,7 @@ func TestIntersectWriteA(t *testing.T) {
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1, WriteA: true})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -156,7 +156,7 @@ func TestIntersectWriteB(t *testing.T) {
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1, WriteB: true})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -181,7 +181,7 @@ func TestIntersectMinOverlap(t *testing.T) {
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	// Only 1bp overlap, require 10bp minimum
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 10})
 	if err != nil {
@@ -211,7 +211,7 @@ chr2	150	200
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -237,7 +237,7 @@ chr1	350	450`
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	stats, err := IntersectWithStats(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1})
 	if err != nil {
 		t.Fatalf("IntersectWithStats failed: %v", err)
@@ -274,7 +274,7 @@ func TestIntersectFractionA(t *testing.T) {
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	// 50bp overlap / 100bp length = 0.5, require 0.75
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1, FractionA: 0.75})
 	if err != nil {
@@ -301,7 +301,7 @@ func TestIntersectFractionB(t *testing.T) {
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	// 50bp overlap / 150bp B length = 0.33, require 0.25
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1, FractionB: 0.25})
 	if err != nil {
@@ -327,7 +327,7 @@ func TestIntersectReciprocal(t *testing.T) {
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	// Overlap: 50bp
 	// Fraction of A: 50/100 = 0.5 (meets 0.5 threshold)
 	// Fraction of B: 50/150 = 0.33 (does NOT meet 0.5 threshold)
@@ -362,7 +362,7 @@ func TestIntersectReciprocalMet(t *testing.T) {
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	// Overlap: 50bp
 	// Fraction of A: 50/100 = 0.5 (meets 0.5 threshold)
 	// Fraction of B: 50/50 = 1.0 (meets 0.5 threshold)
@@ -401,7 +401,7 @@ chr1	500	600	220
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1, Distance: true})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -430,7 +430,7 @@ chr1	350	380
 	readerA := strings.NewReader(fileA)
 	readerB := strings.NewReader(fileB)
 	var buf bytes.Buffer
-	
+
 	count, err := Intersect(readerA, readerB, &buf, IntersectOptions{MinOverlap: 1, Closest: true})
 	if err != nil {
 		t.Fatalf("Intersect failed: %v", err)
@@ -458,7 +458,7 @@ chr2	150	250`
 	readerA1 := strings.NewReader(fileA)
 	readerB1 := strings.NewReader(fileB)
 	var buf1 bytes.Buffer
-	
+
 	count1, err := Intersect(readerA1, readerB1, &buf1, IntersectOptions{MinOverlap: 1, UseTree: false})
 	if err != nil {
 		t.Fatalf("Intersect (linear) failed: %v", err)
@@ -468,7 +468,7 @@ chr2	150	250`
 	readerA2 := strings.NewReader(fileA)
 	readerB2 := strings.NewReader(fileB)
 	var buf2 bytes.Buffer
-	
+
 	count2, err := Intersect(readerA2, readerB2, &buf2, IntersectOptions{MinOverlap: 1, UseTree: true})
 	if err != nil {
 		t.Fatalf("Intersect (tree) failed: %v", err)

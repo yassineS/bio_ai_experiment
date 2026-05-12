@@ -24,9 +24,9 @@ type Record struct {
 
 // Reader provides sequential access to FASTA records.
 type Reader struct {
-	scanner     *bufio.Scanner
-	err         error
-	nextHeader  string // Buffer for the next header when we read ahead
+	scanner       *bufio.Scanner
+	err           error
+	nextHeader    string // Buffer for the next header when we read ahead
 	hasNextHeader bool
 }
 

@@ -96,6 +96,7 @@ fastp -i input.fastq -o output.fastq -w 4 -h report.html
 ## Options
 
 ### Input/Output
+
 - `-i, --input FILE` - Input FASTQ file (single-end)
 - `-o, --output FILE` - Output FASTQ file (single-end)
 - `-I, --in1 FILE` - Input FASTQ file read 1 (paired-end)
@@ -104,27 +105,33 @@ fastp -i input.fastq -o output.fastq -w 4 -h report.html
 - `--out2 FILE` - Output FASTQ file read 2 (paired-end)
 
 ### Adapter Trimming
+
 - `-x, --adapter3 SEQ` - 3' adapter sequence
 - `-y, --adapter5 SEQ` - 5' adapter sequence
 
 ### Quality Filtering
+
 - `-q, --qual-threshold INT` - Quality threshold (default: 15)
 - `--qual-percent INT` - Percent of bases meeting quality (default: 40)
 
 ### Length Filtering
+
 - `-l, --min-length INT` - Minimum read length (default: 15)
 - `--max-length INT` - Maximum read length (0 = no limit)
 
 ### Content Filtering
+
 - `--max-n-count INT` - Maximum N count (default: 5)
 - `--max-n-percent FLOAT` - Maximum N percentage (default: 20.0)
 
 ### Poly-tail Trimming
+
 - `--trim-poly-g` - Enable poly-G tail trimming
 - `--trim-poly-x` - Enable poly-X tail trimming
 - `--poly-g-min-len INT` - Minimum poly-G length (default: 10)
 
 ### Complexity Filtering
+
 - `--low-complexity` - Enable complexity filtering
 - `--complexity-threshold FLOAT` - Complexity threshold (default: 0.3)
 
@@ -194,6 +201,7 @@ Fastp Processing Statistics:
 This is a simplified Go implementation focusing on core preprocessing functionality.
 
 ### Implemented Features
+
 - ✅ Adapter trimming (3' and 5')
 - ✅ **Automatic adapter detection**
 - ✅ Quality filtering
@@ -210,6 +218,7 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ **Multi-threading support**
 
 ### Not Implemented (from original)
+
 None - all major features are now implemented!
 
 ## Testing
@@ -264,6 +273,7 @@ fastp -i raw.fastq -o qc.fastq \
 ## Development Roadmap
 
 ### Version 1.0.0 (Current)
+
 - ✅ All-in-one preprocessing
 - ✅ Adapter trimming
 - ✅ Quality and length filtering
@@ -275,6 +285,7 @@ fastp -i raw.fastq -o qc.fastq \
 - ✅ Paired-end read support
 
 ### Version 1.1.0 (Completed)
+
 - ✅ Automatic adapter detection
 - ✅ UMI/barcode processing
 - ✅ Base correction
@@ -283,6 +294,7 @@ fastp -i raw.fastq -o qc.fastq \
 - ✅ HTML report generation
 
 ### Version 1.2.0 (Future)
+
 - [ ] Per-tile quality filtering
 - [ ] Advanced quality profiling
 - [ ] Support for additional sequencing platforms
@@ -293,7 +305,7 @@ Apache License 2.0 - See [LICENSE](../../LICENSE) for details.
 
 ## References
 
-- Original fastp: https://github.com/OpenGene/fastp
+- Original fastp: <https://github.com/OpenGene/fastp>
 - Paper: Chen et al. (2018). fastp: an ultra-fast all-in-one FASTQ preprocessor. Bioinformatics.
 
 ## Authors

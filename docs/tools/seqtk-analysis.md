@@ -7,7 +7,7 @@
 **Go Implementation Status:** ✅ Complete (v1.0.0)  
 **Category:** Quality Control / Utilities  
 **Primary Use:** Fast FASTA/Q sequence processing  
-**Original Repository:** https://github.com/lh3/seqtk  
+**Original Repository:** <https://github.com/lh3/seqtk>  
 
 ## Tool Description
 
@@ -26,7 +26,8 @@ seqtk is a fast and lightweight tool for processing sequences in FASTA or FASTQ 
 **Original (C):** 6.5/10  
 **Go Implementation:** 8.5/10
 
-### Improvements:
+### Improvements
+
 - Type safety and memory safety
 - Better error messages  
 - Cleaner code structure
@@ -60,6 +61,7 @@ seqtk is a fast and lightweight tool for processing sequences in FASTA or FASTQ 
 ## Conclusion
 
 Successfully reimplemented core seqtk functionality in Go with:
+
 - Performance parity
 - Improved code quality
 - Better documentation

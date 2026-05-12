@@ -63,6 +63,7 @@ declares 1.24.9 — stick to language/stdlib features available in 1.21.
 ## Conventions
 
 ### Code
+
 - Idiomatic Go, `gofmt`-clean, passes `go vet`. Small focused functions, meaningful names.
 - Document all exported identifiers with complete-sentence doc comments.
 - Tool logic goes in `tools/<tool>/pkg/<tool>/`; `cmd/<tool>/main.go` only does
@@ -71,6 +72,7 @@ declares 1.24.9 — stick to language/stdlib features available in 1.21.
   Use `pkg/bioformats/iohelper` for transparent gzip and stdin/stdout (`-`) handling.
 
 ### CLI design
+
 - Tools should accept both POSIX short flags (`-i`, `-o`, `-q`, `-l`, ...) and
   GNU long flags (`--input`, `--output`, `--min-length`, ...). Use the
   `pkg/cliflag` helpers (`cliflag.StringVar`, `cliflag.IntVar`, `cliflag.Float64Var`,
@@ -80,12 +82,14 @@ declares 1.24.9 — stick to language/stdlib features available in 1.21.
 - Full rules: `docs/CLI_CONVENTIONS.md`.
 
 ### Tests
+
 - Every new behavior gets a test. Prefer table-driven tests. Aim for >80% coverage.
 - Tests live next to the code as `*_test.go` in `tools/<tool>/pkg/<tool>/`.
 - Add benchmarks for performance-sensitive paths; this project cares about being
   faster than the originals (see `PERFORMANCE_BENCHMARKS.md`).
 
 ### Commits & PRs
+
 - Imperative, concise commit subjects (e.g. "Add reverse complement to seqtk seq").
 - Branch off `main`. PRs target `main`; there's a PR template in `.github/`.
 - Run `go test ./...`, `go vet ./...`, and `gofmt -w .` before committing.
@@ -112,6 +116,7 @@ specific one; you usually don't.
 
 Some documents predate the current code and describe an aspirational structure
 that wasn't followed:
+
 - `tools/README.md` claims the `tools/` dir is empty and that each tool has its
   own `go.mod`/`go.sum` and a `tests/` + `testdata/` + `docs/` subtree. In
   reality tools are populated, share the root module, and keep tests inline.

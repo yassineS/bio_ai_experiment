@@ -14,16 +14,16 @@ ACGTACGTACGTACGTACGT
 +
 IIIIIIIIIIIIIIIIIIII
 `
-	
+
 	var output bytes.Buffer
 	opts := DefaultTrimOptions()
 	opts.MinLength = 10 // Lower threshold to ensure read passes
-	
+
 	stats, err := TrimSingleEnd(strings.NewReader(input), &output, fastq.Phred33, opts)
 	if err != nil {
 		t.Fatalf("TrimSingleEnd failed: %v", err)
 	}
-	
+
 	if stats.TotalReads != 1 {
 		t.Errorf("Expected 1 total read, got %d", stats.TotalReads)
 	}
@@ -42,23 +42,23 @@ ACGTACGTACGTAGATCGGAAGAGC
 +
 IIIIIIIIIIIIIIIIIIIIIIIII
 `
-	
+
 	var output bytes.Buffer
 	opts := DefaultTrimOptions()
 	opts.Adapter3 = "AGATCGGAAGAGC"
-	
+
 	stats, err := TrimSingleEnd(strings.NewReader(input), &output, fastq.Phred33, opts)
 	if err != nil {
 		t.Fatalf("TrimSingleEnd failed: %v", err)
 	}
-	
+
 	if stats.TotalReads != 1 {
 		t.Errorf("Expected 1 total read, got %d", stats.TotalReads)
 	}
 	if stats.AdapterFound3 != 1 {
 		t.Errorf("Expected 1 adapter found, got %d", stats.AdapterFound3)
 	}
-	
+
 	// Check that adapter was removed
 	result := output.String()
 	if strings.Contains(result, "AGATCGGAAGAGC") {
@@ -73,23 +73,23 @@ AGATCGGAAGAGCACGTACGTACGT
 +
 IIIIIIIIIIIIIIIIIIIIIIIII
 `
-	
+
 	var output bytes.Buffer
 	opts := DefaultTrimOptions()
 	opts.Adapter5 = "AGATCGGAAGAGC"
-	
+
 	stats, err := TrimSingleEnd(strings.NewReader(input), &output, fastq.Phred33, opts)
 	if err != nil {
 		t.Fatalf("TrimSingleEnd failed: %v", err)
 	}
-	
+
 	if stats.TotalReads != 1 {
 		t.Errorf("Expected 1 total read, got %d", stats.TotalReads)
 	}
 	if stats.AdapterFound5 != 1 {
 		t.Errorf("Expected 1 adapter found, got %d", stats.AdapterFound5)
 	}
-	
+
 	// Check that adapter was removed
 	result := output.String()
 	if strings.Contains(result, "AGATCGGAAGAGC") {
@@ -104,17 +104,17 @@ ACGTACGTAGATCGGAAGAGC
 +
 IIIIIIIIIIIIIIIIIIIII
 `
-	
+
 	var output bytes.Buffer
 	opts := DefaultTrimOptions()
 	opts.Adapter3 = "AGATCGGAAGAGC"
 	opts.MinLength = 18
-	
+
 	stats, err := TrimSingleEnd(strings.NewReader(input), &output, fastq.Phred33, opts)
 	if err != nil {
 		t.Fatalf("TrimSingleEnd failed: %v", err)
 	}
-	
+
 	if stats.TotalReads != 1 {
 		t.Errorf("Expected 1 total read, got %d", stats.TotalReads)
 	}
@@ -125,39 +125,39 @@ IIIIIIIIIIIIIIIIIIIII
 
 func TestFindAdapter(t *testing.T) {
 	tests := []struct {
-		name      string
-		seq       string
-		adapter   string
+		name       string
+		seq        string
+		adapter    string
 		minOverlap int
-		errorRate float64
-		want      int
+		errorRate  float64
+		want       int
 	}{
 		{
-			name:      "exact match",
-			seq:       "ACGTACGTAGATCGGAAGAGC",
-			adapter:   "AGATCGGAAGAGC",
+			name:       "exact match",
+			seq:        "ACGTACGTAGATCGGAAGAGC",
+			adapter:    "AGATCGGAAGAGC",
 			minOverlap: 3,
-			errorRate: 0.1,
-			want:      8, // Correct position (0-indexed)
+			errorRate:  0.1,
+			want:       8, // Correct position (0-indexed)
 		},
 		{
-			name:      "no match",
-			seq:       "ACGTACGTACGTACGT",
-			adapter:   "AGATCGGAAGAGC",
+			name:       "no match",
+			seq:        "ACGTACGTACGTACGT",
+			adapter:    "AGATCGGAAGAGC",
 			minOverlap: 3,
-			errorRate: 0.1,
-			want:      -1,
+			errorRate:  0.1,
+			want:       -1,
 		},
 		{
-			name:      "partial match at end",
-			seq:       "ACGTACGTACGTAGA",
-			adapter:   "AGATCGGAAGAGC",
+			name:       "partial match at end",
+			seq:        "ACGTACGTACGTAGA",
+			adapter:    "AGATCGGAAGAGC",
 			minOverlap: 3,
-			errorRate: 0.1,
-			want:      12,
+			errorRate:  0.1,
+			want:       12,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := findAdapter(tt.seq, tt.adapter, tt.minOverlap, tt.errorRate)
@@ -179,11 +179,11 @@ TGCATGCATGCATGCAAGATCGGAAGAGC
 +
 IIIIIIIIIIIIIIIIIIIIIIIIIIIII
 `
-	
+
 	var output1, output2 bytes.Buffer
 	opts := DefaultTrimOptions()
 	opts.Adapter3 = "AGATCGGAAGAGC"
-	
+
 	stats, err := TrimPairedEnd(
 		strings.NewReader(input1),
 		strings.NewReader(input2),
@@ -193,11 +193,11 @@ IIIIIIIIIIIIIIIIIIIIIIIIIIIII
 		fastq.Phred33,
 		opts,
 	)
-	
+
 	if err != nil {
 		t.Fatalf("TrimPairedEnd failed: %v", err)
 	}
-	
+
 	if stats.TotalReads != 2 {
 		t.Errorf("Expected 2 total reads, got %d", stats.TotalReads)
 	}
@@ -213,20 +213,20 @@ func TestTrimRecordBothEnds(t *testing.T) {
 		Sequence:    []byte("AGATCGGAAGAGCACGTACGTACGTAGATCGGAAGAGC"),
 		Quality:     []byte("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
 	}
-	
+
 	opts := DefaultTrimOptions()
 	opts.Adapter5 = "AGATCGGAAGAGC"
 	opts.Adapter3 = "AGATCGGAAGAGC"
-	
+
 	stats := &TrimStats{}
 	trimmed := trimRecord(record, opts, stats)
-	
+
 	// Should have both adapters removed
 	seq := string(trimmed.Sequence)
 	if strings.Contains(seq, "AGATCGGAAGAGC") {
 		t.Error("Adapters should have been removed")
 	}
-	
+
 	if stats.AdapterFound5 != 1 {
 		t.Errorf("Expected 1 5' adapter found, got %d", stats.AdapterFound5)
 	}
@@ -245,12 +245,12 @@ func TestJSONOutput(t *testing.T) {
 		TotalBases:     10000,
 		TrimmedBases:   2500,
 	}
-	
+
 	json, err := stats.ToJSON()
 	if err != nil {
 		t.Fatalf("ToJSON failed: %v", err)
 	}
-	
+
 	if !strings.Contains(json, "total_reads") {
 		t.Error("JSON should contain total_reads field")
 	}
@@ -269,9 +269,9 @@ func TestHTMLOutput(t *testing.T) {
 		TotalBases:     10000,
 		TrimmedBases:   2500,
 	}
-	
+
 	html := stats.ToHTML()
-	
+
 	if !strings.Contains(html, "<!DOCTYPE html>") {
 		t.Error("HTML should start with DOCTYPE")
 	}
@@ -290,13 +290,13 @@ func TestUMIExtraction5Prime(t *testing.T) {
 		Sequence:    []byte("ACGTACGTACGTACGTACGT"),
 		Quality:     []byte("IIIIIIIIIIIIIIIIIIII"),
 	}
-	
+
 	opts := DefaultTrimOptions()
 	opts.UMILength = 8
 	opts.UMIPosition = "5prime"
-	
+
 	trimmed, umi := extractUMI(record, opts)
-	
+
 	if umi != "ACGTACGT" {
 		t.Errorf("Expected UMI 'ACGTACGT', got '%s'", umi)
 	}
@@ -312,13 +312,13 @@ func TestUMIExtraction3Prime(t *testing.T) {
 		Sequence:    []byte("ACGTACGTACGTACGTACGT"),
 		Quality:     []byte("IIIIIIIIIIIIIIIIIIII"),
 	}
-	
+
 	opts := DefaultTrimOptions()
 	opts.UMILength = 8
 	opts.UMIPosition = "3prime"
-	
+
 	trimmed, umi := extractUMI(record, opts)
-	
+
 	if umi != "ACGTACGT" {
 		t.Errorf("Expected UMI 'ACGTACGT', got '%s'", umi)
 	}
@@ -361,7 +361,7 @@ func TestImprovedFindAdapter(t *testing.T) {
 			wantPos:    -1,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := improvedFindAdapter(tt.seq, tt.adapter, tt.minOverlap, tt.errorRate)
@@ -386,29 +386,29 @@ GGGGGGGGACGTACGTACGT
 +
 IIIIIIIIIIIIIIIIIIII
 `
-	
+
 	var output bytes.Buffer
 	opts := DefaultTrimOptions()
 	opts.UMILength = 8
 	opts.UMIPosition = "5prime"
-	
+
 	stats, err := TrimSingleEnd(strings.NewReader(input), &output, fastq.Phred33, opts)
 	if err != nil {
 		t.Fatalf("TrimSingleEnd failed: %v", err)
 	}
-	
+
 	if stats.UMIStats == nil {
 		t.Fatal("UMI stats should not be nil")
 	}
-	
+
 	if stats.UMIStats.TotalUMIs != 3 {
 		t.Errorf("Expected 3 total UMIs, got %d", stats.UMIStats.TotalUMIs)
 	}
-	
+
 	if stats.UMIStats.UniqueUMIs != 2 {
 		t.Errorf("Expected 2 unique UMIs, got %d", stats.UMIStats.UniqueUMIs)
 	}
-	
+
 	// Check that ACGTACGT appears twice
 	if count, ok := stats.UMIStats.UMIDistribution["ACGTACGT"]; !ok || count != 2 {
 		t.Errorf("Expected UMI 'ACGTACGT' to appear 2 times, got %d", count)

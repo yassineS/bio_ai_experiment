@@ -19,6 +19,7 @@ This document provides a detailed analysis of the PRINSEQ Go implementation comp
 The Go implementation focuses on core quality control functionality:
 
 #### 1. Statistics Calculation
+
 - ✅ Number of reads/sequences
 - ✅ Total bases
 - ✅ Min/Max/Average length
@@ -27,12 +28,14 @@ The Go implementation focuses on core quality control functionality:
 - ✅ Average quality scores (FASTQ only)
 
 #### 2. Filtering Operations
+
 - ✅ Length-based filtering (`-min_len`, `-max_len`)
 - ✅ GC content filtering (`-min_gc`, `-max_gc`)
 - ✅ N content filtering (`-ns_max_p`, `-ns_max_n`)
 - ✅ Quality score filtering (`-min_qual_mean`, `-max_qual_mean`)
 
 #### 3. Trimming Operations
+
 - ✅ Fixed position trimming (left, right)
 - ✅ Percentage-based trimming
 - ✅ Quality-based trimming
@@ -40,28 +43,34 @@ The Go implementation focuses on core quality control functionality:
 - ✅ Poly-A/T tail trimming
 
 #### 4. Duplicate Removal
+
 - ✅ Exact duplicate detection
 - ✅ Reverse complement duplicate detection
 - ✅ Configurable duplicate threshold
 
 #### 5. Paired-End Support
+
 - ✅ Filter paired FASTA/FASTQ files
 - ✅ Maintain read pairing
 - ✅ Synchronized filtering
 
 #### 6. Complexity Filtering
+
 - ✅ DUST score method
 - ✅ Entropy method
 - ✅ Configurable thresholds
 
 #### 7. Quality Encoding
+
 - ✅ Phred+33 encoding (Sanger)
 - ✅ Phred+64 encoding (Illumina 1.3-1.7)
 
 #### 8. Bad Sequence Output
+
 - ✅ Output of rejected sequences (`--out-bad`)
 
 #### 9. Format Support
+
 - ✅ FASTA format (reading and writing)
 - ✅ FASTQ format (reading and writing)
 - ✅ Streaming processing for memory efficiency
@@ -79,17 +88,20 @@ Features from the original PRINSEQ that are not yet implemented:
 ## Code Metrics
 
 ### Lines of Code
+
 - Core library (`prinseq.go`): ~800 lines (expanded from 312)
 - Unit tests (`prinseq_test.go`): 288 lines
 - CLI interface (`main.go`): ~320 lines (expanded from 200)
 - **Total**: ~1,400 lines of Go code (up from 800)
 
 ### Test Coverage
+
 - Overall coverage: **90.2%** of statements
 - Test cases: 11 unit tests
 - All tests passing
 
 ### Dependencies
+
 - Zero external dependencies
 - Uses shared `bioformats` library from the project
 - Standard library only (`bufio`, `io`, `fmt`, `flag`)
@@ -115,13 +127,15 @@ For larger files (extrapolated from seqtk benchmarks):
 ### Test 1: Statistics Comparison
 
 **Original PRINSEQ:**
+
 ```bash
 $ perl prinseq-lite.pl -fastq example1.fastq -stats_info
-stats_info	bases	1150
-stats_info	reads	12
+stats_info bases 1150
+stats_info reads 12
 ```
 
 **Go PRINSEQ:**
+
 ```bash
 $ ./prinseq stats -fastq example1.fastq
 Number of reads: 12
@@ -139,12 +153,14 @@ Average quality: 23.08
 ### Test 2: Length Filtering
 
 **Original PRINSEQ:**
+
 ```bash
 $ perl prinseq-lite.pl -fastq example1.fastq -min_len 100 -out_good perl_filtered
 Good sequences: 9 (75.00%)
 ```
 
 **Go PRINSEQ:**
+
 ```bash
 $ ./prinseq filter -fastq example1.fastq -min_len 100 > go_filtered.fastq
 $ wc -l go_filtered.fastq
@@ -158,6 +174,7 @@ $ wc -l go_filtered.fastq
 **Test Input**: example1.fastq (contains sequences with varying GC content)
 
 **Go PRINSEQ:**
+
 ```bash
 $ ./prinseq filter -fastq example1.fastq -min_gc 45 -max_gc 55
 # Outputs sequences with 50% GC content (e.g., ACGTACGT repeats)
@@ -192,6 +209,7 @@ tools/prinseq/
 ### Key Functions
 
 #### Statistics Calculation
+
 - `CalculateStats(reader, isFastq)` - Main entry point
 - `calculateFastaStats()` - FASTA-specific statistics
 - `calculateFastqStats()` - FASTQ-specific statistics with quality
@@ -199,6 +217,7 @@ tools/prinseq/
 - `calculateAvgQualityScore()` - Quality score conversion
 
 #### Filtering
+
 - `Filter(reader, writer, isFastq, opts)` - Main entry point
 - `filterFasta()` - FASTA filtering pipeline
 - `filterFastq()` - FASTQ filtering pipeline
@@ -282,6 +301,7 @@ err := prinseq.Filter(reader, writer, true, opts)
 ### Integration Tests
 
 Verified against original PRINSEQ using real example data:
+
 - ✅ Statistics match on test dataset
 - ✅ Filtering produces identical results
 - ✅ Format compliance (valid FASTA/FASTQ output)
@@ -289,18 +309,21 @@ Verified against original PRINSEQ using real example data:
 ## Future Enhancements
 
 ### Version 1.1.0 (Planned)
+
 - Implement trimming operations
 - Add Phred+64 encoding support
 - Duplicate sequence detection
 - Paired-end read support
 
 ### Version 1.2.0 (Planned)
+
 - Low complexity filtering
 - Bad sequence output option
 - Statistics export (JSON/CSV format)
 - Benchmarking suite
 
 ### Version 2.0.0 (Future)
+
 - Graph generation (similar to prinseq-graphs)
 - HTML report generation
 - Parallel processing for large files
@@ -325,13 +348,14 @@ For users transitioning from original PRINSEQ to Go implementation:
 
 ## References
 
-- Original PRINSEQ: http://prinseq.sourceforge.net
+- Original PRINSEQ: <http://prinseq.sourceforge.net>
 - Paper: Schmieder R and Edwards R (2011). Quality control and preprocessing of metagenomic datasets. Bioinformatics 27(6):863-864.
 - Go implementation: tools/prinseq/
 
 ## Conclusion
 
 The Go implementation of PRINSEQ has achieved **full feature parity** with the original Perl version for all core functionality. The implementation demonstrates:
+
 - ✅ Correct functionality (verified against original)
 - ✅ Better performance (20-26% faster)
 - ✅ High code quality (>85% test coverage)
@@ -340,6 +364,7 @@ The Go implementation of PRINSEQ has achieved **full feature parity** with the o
 - ✅ **Complete feature set** including trimming, duplicates, paired-end, Phred+64, complexity filtering, and bad output
 
 Recent additions (2025-10-21):
+
 - ✅ Phred+64 encoding support
 - ✅ Bad sequence output
 - ✅ Complexity filtering (DUST and entropy methods)

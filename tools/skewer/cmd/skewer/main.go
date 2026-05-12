@@ -61,26 +61,26 @@ func main() {
 
 func runSingleEnd() {
 	fs := flag.NewFlagSet("skewer se", flag.ExitOnError)
-	
+
 	var (
-		inputFile      string
-		outputFile     string
-		adapter3       string
-		adapter5       string
-		qualType       string
-		minLength      int
-		qualThreshold  int
-		minOverlap     int
-		errorRate      float64
-		quiet          bool
-		autoDetect     bool
-		jsonOutput     string
-		htmlReport     string
-		progress       bool
-		umiLength      int
-		umiPosition    string
+		inputFile     string
+		outputFile    string
+		adapter3      string
+		adapter5      string
+		qualType      string
+		minLength     int
+		qualThreshold int
+		minOverlap    int
+		errorRate     float64
+		quiet         bool
+		autoDetect    bool
+		jsonOutput    string
+		htmlReport    string
+		progress      bool
+		umiLength     int
+		umiPosition   string
 	)
-	
+
 	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input FASTQ file (required)")
 	cliflag.StringVar(fs, &outputFile, "o", "output", "", "Output trimmed file (default: stdout)")
 	cliflag.StringVar(fs, &adapter3, "x", "adapter3", "", "3' adapter sequence")
@@ -97,7 +97,7 @@ func runSingleEnd() {
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress during processing")
 	cliflag.IntVar(fs, &umiLength, "", "umi-length", 0, "UMI length to extract (0 = disabled)")
 	cliflag.StringVar(fs, &umiPosition, "", "umi-position", "5prime", "UMI position: 5prime or 3prime")
-	
+
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skewer se [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
@@ -122,19 +122,19 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "  skewer se -i input.fastq.gz -o output.fastq.gz --auto-detect --progress\n")
 		fmt.Fprintf(os.Stderr, "  skewer se -i input.fastq -o output.fastq --umi-length 8 --json stats.json\n")
 	}
-	
+
 	fs.Parse(os.Args[2:])
-	
+
 	// Validate required arguments
 	if inputFile == "" {
 		fmt.Fprintln(os.Stderr, "Error: -i/--input is required")
 		fs.Usage()
 		os.Exit(1)
 	}
-	
+
 	// Determine quality encoding
 	encoding := getQualityEncoding(qualType)
-	
+
 	// Open input file (with automatic gzip support)
 	input, err := iohelper.OpenReader(inputFile)
 	if err != nil {
@@ -142,7 +142,7 @@ func runSingleEnd() {
 		os.Exit(1)
 	}
 	defer input.Close()
-	
+
 	// Open output file (with automatic gzip support)
 	outFileName := outputFile
 	if outFileName == "" {
@@ -154,7 +154,7 @@ func runSingleEnd() {
 		os.Exit(1)
 	}
 	defer output.Close()
-	
+
 	// Set up trim options
 	opts := skewer.TrimOptions{
 		Adapter3:         adapter3,
@@ -169,14 +169,14 @@ func runSingleEnd() {
 		UMILength:        umiLength,
 		UMIPosition:      umiPosition,
 	}
-	
+
 	// Perform trimming
 	stats, err := skewer.TrimSingleEnd(input, output, encoding, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Output statistics in various formats
 	if jsonOutput != "" {
 		jsonData, err := stats.ToJSON()
@@ -189,7 +189,7 @@ func runSingleEnd() {
 			os.Exit(1)
 		}
 	}
-	
+
 	if htmlReport != "" {
 		htmlData := stats.ToHTML()
 		if err := os.WriteFile(htmlReport, []byte(htmlData), 0644); err != nil {
@@ -197,7 +197,7 @@ func runSingleEnd() {
 			os.Exit(1)
 		}
 	}
-	
+
 	// Print statistics
 	if !quiet {
 		printStats(stats, "SE")
@@ -206,29 +206,29 @@ func runSingleEnd() {
 
 func runPairedEnd() {
 	fs := flag.NewFlagSet("skewer pe", flag.ExitOnError)
-	
+
 	var (
-		inputFile1     string
-		inputFile2     string
-		outputFile1    string
-		outputFile2    string
-		outputSingle   string
-		adapter3       string
-		adapter5       string
-		qualType       string
-		minLength      int
-		qualThreshold  int
-		minOverlap     int
-		errorRate      float64
-		quiet          bool
-		autoDetect     bool
-		jsonOutput     string
-		htmlReport     string
-		progress       bool
-		umiLength      int
-		umiPosition    string
+		inputFile1    string
+		inputFile2    string
+		outputFile1   string
+		outputFile2   string
+		outputSingle  string
+		adapter3      string
+		adapter5      string
+		qualType      string
+		minLength     int
+		qualThreshold int
+		minOverlap    int
+		errorRate     float64
+		quiet         bool
+		autoDetect    bool
+		jsonOutput    string
+		htmlReport    string
+		progress      bool
+		umiLength     int
+		umiPosition   string
 	)
-	
+
 	cliflag.StringVar(fs, &inputFile1, "i", "input1", "", "First input FASTQ file (required)")
 	cliflag.StringVar(fs, &inputFile2, "j", "input2", "", "Second input FASTQ file (required)")
 	cliflag.StringVar(fs, &outputFile1, "o", "output1", "", "First output trimmed file (required)")
@@ -248,7 +248,7 @@ func runPairedEnd() {
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress during processing")
 	cliflag.IntVar(fs, &umiLength, "", "umi-length", 0, "UMI length to extract (0 = disabled)")
 	cliflag.StringVar(fs, &umiPosition, "", "umi-position", "5prime", "UMI position: 5prime or 3prime")
-	
+
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skewer pe [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
@@ -275,9 +275,9 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "  skewer pe -i R1.fastq -j R2.fastq -o R1_trim.fastq -p R2_trim.fastq -x AGATCGGAAGAGC\n")
 		fmt.Fprintf(os.Stderr, "  skewer pe -i R1.fastq -j R2.fastq -o R1_trim.fastq -p R2_trim.fastq --auto-detect\n")
 	}
-	
+
 	fs.Parse(os.Args[2:])
-	
+
 	// Validate required arguments
 	if inputFile1 == "" || inputFile2 == "" {
 		fmt.Fprintln(os.Stderr, "Error: both -i/--input1 and -j/--input2 are required")
@@ -289,10 +289,10 @@ func runPairedEnd() {
 		fs.Usage()
 		os.Exit(1)
 	}
-	
+
 	// Determine quality encoding
 	encoding := getQualityEncoding(qualType)
-	
+
 	// Open input files (with automatic gzip support)
 	input1, err := iohelper.OpenReader(inputFile1)
 	if err != nil {
@@ -300,14 +300,14 @@ func runPairedEnd() {
 		os.Exit(1)
 	}
 	defer input1.Close()
-	
+
 	input2, err := iohelper.OpenReader(inputFile2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening second input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer input2.Close()
-	
+
 	// Open output files (with automatic gzip support)
 	output1, err := iohelper.OpenWriter(outputFile1)
 	if err != nil {
@@ -315,14 +315,14 @@ func runPairedEnd() {
 		os.Exit(1)
 	}
 	defer output1.Close()
-	
+
 	output2, err := iohelper.OpenWriter(outputFile2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating second output file: %v\n", err)
 		os.Exit(1)
 	}
 	defer output2.Close()
-	
+
 	// Open optional single output file (with automatic gzip support)
 	var outSingle io.Writer
 	if outputSingle != "" {
@@ -334,7 +334,7 @@ func runPairedEnd() {
 		defer f.Close()
 		outSingle = f
 	}
-	
+
 	// Set up trim options
 	opts := skewer.TrimOptions{
 		Adapter3:         adapter3,
@@ -349,14 +349,14 @@ func runPairedEnd() {
 		UMILength:        umiLength,
 		UMIPosition:      umiPosition,
 	}
-	
+
 	// Perform trimming
 	stats, err := skewer.TrimPairedEnd(input1, input2, output1, output2, outSingle, encoding, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Output statistics in various formats
 	if jsonOutput != "" {
 		jsonData, err := stats.ToJSON()
@@ -369,7 +369,7 @@ func runPairedEnd() {
 			os.Exit(1)
 		}
 	}
-	
+
 	if htmlReport != "" {
 		htmlData := stats.ToHTML()
 		if err := os.WriteFile(htmlReport, []byte(htmlData), 0644); err != nil {
@@ -377,7 +377,7 @@ func runPairedEnd() {
 			os.Exit(1)
 		}
 	}
-	
+
 	// Print statistics
 	if !quiet {
 		printStats(stats, "PE")
@@ -399,47 +399,47 @@ func getQualityEncoding(qualType string) fastq.QualityEncoding {
 func printStats(stats *skewer.TrimStats, mode string) {
 	fmt.Fprintf(os.Stderr, "\n%s Adapter Trimming Stats:\n", mode)
 	fmt.Fprintf(os.Stderr, "  Total reads:        %d\n", stats.TotalReads)
-	fmt.Fprintf(os.Stderr, "  Trimmed reads:      %d (%.2f%%)\n", 
-		stats.TrimmedReads, 
+	fmt.Fprintf(os.Stderr, "  Trimmed reads:      %d (%.2f%%)\n",
+		stats.TrimmedReads,
 		100.0*float64(stats.TrimmedReads)/float64(stats.TotalReads))
-	fmt.Fprintf(os.Stderr, "  3' adapters found:  %d (%.2f%%)\n", 
-		stats.AdapterFound3, 
+	fmt.Fprintf(os.Stderr, "  3' adapters found:  %d (%.2f%%)\n",
+		stats.AdapterFound3,
 		100.0*float64(stats.AdapterFound3)/float64(stats.TotalReads))
-	fmt.Fprintf(os.Stderr, "  5' adapters found:  %d (%.2f%%)\n", 
-		stats.AdapterFound5, 
+	fmt.Fprintf(os.Stderr, "  5' adapters found:  %d (%.2f%%)\n",
+		stats.AdapterFound5,
 		100.0*float64(stats.AdapterFound5)/float64(stats.TotalReads))
-	fmt.Fprintf(os.Stderr, "  Discarded reads:    %d (%.2f%%)\n", 
-		stats.DiscardedReads, 
+	fmt.Fprintf(os.Stderr, "  Discarded reads:    %d (%.2f%%)\n",
+		stats.DiscardedReads,
 		100.0*float64(stats.DiscardedReads)/float64(stats.TotalReads))
-	fmt.Fprintf(os.Stderr, "  Kept reads:         %d (%.2f%%)\n", 
-		stats.TotalReads-stats.DiscardedReads, 
+	fmt.Fprintf(os.Stderr, "  Kept reads:         %d (%.2f%%)\n",
+		stats.TotalReads-stats.DiscardedReads,
 		100.0*float64(stats.TotalReads-stats.DiscardedReads)/float64(stats.TotalReads))
 	fmt.Fprintf(os.Stderr, "  Total bases:        %d\n", stats.TotalBases)
-	fmt.Fprintf(os.Stderr, "  Trimmed bases:      %d (%.2f%%)\n", 
-		stats.TrimmedBases, 
+	fmt.Fprintf(os.Stderr, "  Trimmed bases:      %d (%.2f%%)\n",
+		stats.TrimmedBases,
 		100.0*float64(stats.TrimmedBases)/float64(stats.TotalBases))
 	fmt.Fprintln(os.Stderr)
 }
 
 func runBatch() {
 	fs := flag.NewFlagSet("skewer batch", flag.ExitOnError)
-	
+
 	var (
-		fileList       string
-		outputDir      string
-		adapter3       string
-		adapter5       string
-		qualType       string
-		minLength      int
-		qualThreshold  int
-		minOverlap     int
-		errorRate      float64
-		workers        int
-		quiet          bool
-		autoDetect     bool
-		jsonOutput     bool
+		fileList      string
+		outputDir     string
+		adapter3      string
+		adapter5      string
+		qualType      string
+		minLength     int
+		qualThreshold int
+		minOverlap    int
+		errorRate     float64
+		workers       int
+		quiet         bool
+		autoDetect    bool
+		jsonOutput    bool
 	)
-	
+
 	cliflag.StringVar(fs, &fileList, "f", "file-list", "", "File containing list of input files (one per line, or pairs separated by comma)")
 	cliflag.StringVar(fs, &outputDir, "d", "output-dir", ".", "Output directory for trimmed files")
 	cliflag.StringVar(fs, &adapter3, "x", "adapter3", "", "3' adapter sequence")
@@ -453,7 +453,7 @@ func runBatch() {
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
 	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
 	cliflag.BoolVar(fs, &jsonOutput, "", "json-summary", false, "Output summary as JSON")
-	
+
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skewer batch [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Process multiple FASTQ files in parallel.\n\n")
@@ -478,23 +478,23 @@ func runBatch() {
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  skewer batch -f files.txt -d output/ -x AGATCGGAAGAGC -w 8\n")
 	}
-	
+
 	fs.Parse(os.Args[2:])
-	
+
 	// Validate required arguments
 	if fileList == "" {
 		fmt.Fprintln(os.Stderr, "Error: -f/--file-list is required")
 		fs.Usage()
 		os.Exit(1)
 	}
-	
+
 	// Read file list
 	filesData, err := os.ReadFile(fileList)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading file list: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Parse file list
 	lines := strings.Split(string(filesData), "\n")
 	var jobs []skewer.BatchJob
@@ -503,51 +503,51 @@ func runBatch() {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		inputFile := line
 		outputFile := outputDir + "/" + strings.Replace(inputFile, ".fastq", ".trimmed.fastq", 1)
-		
+
 		jobs = append(jobs, skewer.BatchJob{
 			InputFile:  inputFile,
 			OutputFile: outputFile,
 			Index:      i,
 		})
 	}
-	
+
 	if len(jobs) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: no files to process")
 		os.Exit(1)
 	}
-	
+
 	// Determine quality encoding
 	encoding := getQualityEncoding(qualType)
-	
+
 	// Set up trim options
 	opts := skewer.TrimOptions{
-		Adapter3:       adapter3,
-		Adapter5:       adapter5,
-		MinLength:      minLength,
-		QualThreshold:  qualThreshold,
-		MinOverlap:     minOverlap,
-		ErrorRate:      errorRate,
-		AutoDetect:     autoDetect,
+		Adapter3:      adapter3,
+		Adapter5:      adapter5,
+		MinLength:     minLength,
+		QualThreshold: qualThreshold,
+		MinOverlap:    minOverlap,
+		ErrorRate:     errorRate,
+		AutoDetect:    autoDetect,
 	}
-	
+
 	// Process files in parallel
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "Processing %d files with %d workers...\n", len(jobs), workers)
 	}
-	
+
 	results, err := skewer.ProcessBatch(jobs, encoding, opts, workers)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during batch processing: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	// Print results
 	successCount := 0
 	failCount := 0
-	
+
 	for _, result := range results {
 		if result.Error != nil {
 			failCount++
@@ -557,19 +557,19 @@ func runBatch() {
 		} else {
 			successCount++
 			if !quiet {
-				fmt.Fprintf(os.Stderr, "Processed: %s -> %s (%d reads)\n", 
+				fmt.Fprintf(os.Stderr, "Processed: %s -> %s (%d reads)\n",
 					result.Job.InputFile, result.Job.OutputFile, result.Stats.TotalReads)
 			}
 		}
 	}
-	
+
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "\nBatch Summary:\n")
 		fmt.Fprintf(os.Stderr, "  Total files:    %d\n", len(jobs))
 		fmt.Fprintf(os.Stderr, "  Successful:     %d\n", successCount)
 		fmt.Fprintf(os.Stderr, "  Failed:         %d\n", failCount)
 	}
-	
+
 	if jsonOutput {
 		// Output JSON summary
 		type Summary struct {

@@ -7,6 +7,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Status:** Complete
 
 ### Implemented Features
+
 - Core filtering (position, quality, allele frequency, variant type)
 - Sample management (keep/remove individuals)
 - Basic statistics (frequency, depth, missingness, HWE, Ts/Tv, nucleotide diversity)
@@ -15,6 +16,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 - Complete documentation
 
 ### Statistics
+
 - 35 command-line options
 - ~80% coverage of commonly-used features
 - 0 security vulnerabilities
@@ -25,6 +27,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Focus:** Critical missing features for population genetics
 
 ### Linkage Disequilibrium Analysis
+
 - [ ] `--geno-r2` - Genotype-based LD (r²) calculation
 - [ ] `--geno-r2-positions` - LD for specific positions vs all others
 - [ ] `--ld-window` - Window size in number of SNPs
@@ -38,6 +41,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Impact:** Critical for GWAS and population genetics studies
 
 ### Population Structure Statistics
+
 - [ ] `--weir-fst-pop` - Fst calculation (Weir & Cockerham 1984)
 - [ ] `--fst-window-size` - Window size for Fst calculations
 - [ ] `--fst-window-step` - Step size for sliding windows
@@ -51,6 +55,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Focus:** Format conversion and interoperability
 
 ### PLINK Format Conversion
+
 - [ ] `--plink` - Convert to PLINK PED/MAP format
 - [ ] `--plink-tped` - Convert to PLINK transposed format
 - [ ] `--chrom-map` - Chromosome name to integer mapping
@@ -61,6 +66,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Impact:** Critical for integration with PLINK analyses
 
 ### Additional Format Conversions
+
 - [ ] `--012` - Output 0/1/2 genotype matrix
 - [ ] `--BEAGLE-GL` - BEAGLE genotype likelihoods (GL)
 - [ ] `--BEAGLE-PL` - BEAGLE genotype likelihoods (PL)
@@ -74,6 +80,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Focus:** Windowed statistics and advanced analysis
 
 ### Windowed Statistics
+
 - [ ] `--window-pi` - Nucleotide diversity in windows
 - [ ] `--window-pi-step` - Step size for pi windows
 - [ ] `--TajimaD` - Tajima's D statistic
@@ -84,6 +91,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Impact:** Important for selection scans and diversity analysis
 
 ### Additional Statistics
+
 - [ ] `--het` - Individual heterozygosity
 - [ ] `--singletons` - Singleton site analysis
 - [ ] `--TsTv-by-count` - Ts/Tv by allele count
@@ -98,6 +106,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Focus:** VCF comparison and validation
 
 ### VCF Comparison
+
 - [ ] `--diff` - Compare two VCF files
 - [ ] `--gzdiff` - Compare with gzipped VCF
 - [ ] `--diff-site` - Sites in common/unique between files
@@ -115,6 +124,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Focus:** Advanced analysis and optimization
 
 ### Advanced Filtering
+
 - [ ] `--bed` - Filter by BED file regions
 - [ ] `--exclude-bed` - Exclude BED file regions
 - [ ] `--snp` / `--snps` - Filter by SNP IDs
@@ -127,6 +137,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Impact:** Useful for specific use cases
 
 ### Advanced Analysis
+
 - [ ] `--relatedness` - Relatedness coefficient
 - [ ] `--relatedness2` - Alternative relatedness metric
 - [ ] `--LROH` - Runs of homozygosity
@@ -136,6 +147,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 **Impact:** Specialized analyses
 
 ### Performance Optimization
+
 - [ ] Parallel processing for statistics
 - [ ] Memory optimization for large VCFs
 - [ ] Indexed VCF support for random access
@@ -168,16 +180,19 @@ We welcome contributions! If you're interested in implementing any of these feat
 ### Priority Guidelines
 
 **HIGH Priority:**
+
 - Features used in >50% of typical analyses
 - Critical for common workflows (GWAS, population genetics)
 - High user demand
 
 **MEDIUM Priority:**
+
 - Features used in 20-50% of analyses
 - Important for specific workflows
 - Moderate user demand
 
 **LOW Priority:**
+
 - Features used in <20% of analyses
 - Specialized use cases
 - Low user demand or better alternatives exist
@@ -193,6 +208,7 @@ We welcome contributions! If you're interested in implementing any of these feat
 ## Feedback
 
 Please open an issue on GitHub to:
+
 - Request new features
 - Report bugs
 - Suggest improvements

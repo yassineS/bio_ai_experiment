@@ -10,12 +10,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ## Overview
 
 ### Goals
+
 - Port high-priority bioinformatics tools to Go
 - Maintain functional parity with original tools
 - Improve usability, documentation, and maintainability
 - Ensure comprehensive testing and validation
 
 ### Progress Summary
+
 - **Tools Ported**: 8
 - **Tools Tested**: 8
 - **Total Test Coverage**: >85% average
@@ -27,12 +29,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ## Completed Tools
 
 ### 1. ✅ seqtk
+
 **Status**: Complete  
 **Version**: 1.0.0  
 **Original**: C (Heng Li)  
 **Category**: Quality Control / FASTA/Q Processing
 
 **Implemented Commands**:
+
 - `comp` - Sequence composition statistics
 - `fq2fa` - FASTQ to FASTA conversion
 - `seq` - Sequence manipulation (reverse complement)
@@ -44,12 +48,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Documentation**: ✓ Complete README with examples  
 
 **Key Features**:
+
 - Fast FASTA/Q processing
 - Multiple format operations
 - Quality score handling
 - Memory-efficient streaming
 
 **Recent Updates** (2025-10-21):
+
 - ✅ All core functionality complete
 - ✅ Trimming, duplicate removal, paired-end support implemented
 - ✅ Phred+64 encoding support added
@@ -57,6 +63,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - ✅ Complexity filtering (DUST and entropy) added
 
 **Migration Notes**:
+
 - Command structure changed (subcommands instead of flags)
 - Core functionality identical
 - Output format compatible
@@ -65,12 +72,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ---
 
 ### 2. ✅ PRINSEQ
+
 **Status**: Complete  
 **Version**: 1.0.0  
 **Original**: Perl (PRINSEQ-lite)  
 **Category**: Quality Control
 
 **Implemented Commands**:
+
 - `stats` - Calculate sequence statistics
 - `filter` - Multi-criteria filtering and trimming
 
@@ -79,6 +88,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Documentation**: ✓ Complete README with examples
 
 **Key Features**:
+
 - Comprehensive sequence statistics
 - Length-based filtering
 - GC content filtering
@@ -93,6 +103,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Complexity filtering (DUST and entropy methods)
 
 **Migration Notes**:
+
 - Command structure changed (subcommands instead of flags)
 - Core functionality identical
 - Output format compatible
@@ -101,12 +112,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ---
 
 ### 3. ✅ sickle
+
 **Status**: Complete  
 **Version**: 1.1.0  
 **Original**: C (Joshi & Fass)  
 **Category**: Quality Control / Trimming
 
 **Implemented Commands**:
+
 - `se` - Single-end read trimming
 - `pe` - Paired-end read trimming
 
@@ -115,6 +128,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Documentation**: ✓ Complete README with examples
 
 **Key Features**:
+
 - Sliding window quality assessment
 - Quality threshold-based trimming
 - Length threshold filtering
@@ -125,6 +139,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Built-in gzip support
 
 **Migration Notes**:
+
 - 100% backward compatible
 - Built-in gzip support (automatic by .gz extension)
 - Enhanced statistics output
@@ -132,12 +147,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ---
 
 ### 4. ✅ skewer
+
 **Status**: Complete  
 **Version**: 1.0.0  
 **Original**: C++ (Hongshan Jiang)  
 **Category**: Adapter Trimming
 
 **Implemented Commands**:
+
 - `se` - Single-end adapter trimming
 - `pe` - Paired-end adapter trimming
 
@@ -146,6 +163,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Documentation**: ✓ Complete README with examples
 
 **Key Features**:
+
 - 3' and 5' adapter detection
 - Error-tolerant matching
 - Configurable minimum overlap
@@ -155,6 +173,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Built-in gzip support
 
 **Migration Notes**:
+
 - Similar CLI to original
 - Simplified adapter detection algorithm
 - Built-in gzip support
@@ -163,12 +182,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ---
 
 ### 5. ✅ fastp
+
 **Status**: Complete (Core Features)  
 **Version**: 1.0.0  
 **Original**: C++ (Shifu Chen)  
 **Category**: All-in-One Preprocessor
 
 **Implemented Commands**:
+
 - Single command with multiple filters
 
 **Test Coverage**: >85%  
@@ -176,6 +197,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Documentation**: ✓ Complete README with examples
 
 **Key Features**:
+
 - Adapter trimming (3' and 5')
 - Quality filtering
 - Length filtering
@@ -186,6 +208,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Comprehensive statistics
 
 **Migration Notes**:
+
 - Simplified version of original
 - Core preprocessing features implemented
 - No HTML reports (future feature)
@@ -194,12 +217,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ---
 
 ### 6. ✅ bedmerge
+
 **Status**: Complete  
 **Version**: 1.0.0  
 **Original**: bedtools merge (C++)  
 **Category**: Genomic Intervals / Utilities
 
 **Implemented Commands**:
+
 - Single command for merging BED intervals
 
 **Test Coverage**: >90%  
@@ -207,6 +232,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Documentation**: ✓ Complete README with examples
 
 **Key Features**:
+
 - Merge overlapping BED intervals
 - Distance-based merging (-d option)
 - Strand-specific merging (-s option)
@@ -215,6 +241,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Automatic sorting
 
 **Migration Notes**:
+
 - Compatible with bedtools merge basic functionality
 - Simplified version (no advanced options yet)
 - Output always BED3 format
@@ -223,12 +250,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ---
 
 ### 7. ✅ bedintersect
+
 **Status**: Complete  
 **Version**: 1.0.0  
 **Original**: bedtools intersect (C++)  
 **Category**: Genomic Intervals / Utilities
 
 **Implemented Commands**:
+
 - Single command for interval intersection
 
 **Test Coverage**: >90%  
@@ -236,6 +265,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Documentation**: ✓ Complete README with examples
 
 **Key Features**:
+
 - Find overlapping intervals between two BED files
 - Multiple output modes (-wa, -wb, -c, -v)
 - Minimum overlap filters (-m)
@@ -245,6 +275,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Statistics output (-S option)
 
 **Migration Notes**:
+
 - Compatible with bedtools intersect common operations
 - Simplified version (no sorted/reciprocal modes yet)
 - All essential features working
@@ -253,12 +284,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 ---
 
 ### 8. ✅ vcftools
+
 **Status**: Complete  
 **Version**: 1.0.0  
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
 **Implemented Commands**:
+
 - Single command with multiple filtering and statistics options
 
 **Test Coverage**: >90%  
@@ -266,6 +299,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Documentation**: ✓ Complete README with examples  
 
 **Key Features**:
+
 - Position-based filtering (chr, position range, position files)
 - Quality and allele frequency filtering
 - Variant type filtering (indels, allele count)
@@ -276,11 +310,13 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Built-in gzip support
 
 **Feature Coverage**:
+
 - ~35 of ~147 original options (24% total)
 - ~80% of commonly-used features
 - See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) for details
 
 **Migration Notes**:
+
 - Core filtering and statistics functionality implemented
 - LD analysis, Fst, windowed statistics not yet available
 - Format conversion (PLINK, BEAGLE) not yet implemented
@@ -308,6 +344,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 Based on the top 50 analysis, these tools are recommended for future porting:
 
 ### High Priority (Simple, High Impact)
+
 1. **Trim Galore** (Perl) - Quality and adapter trimming (Rank: 53.27)
    - Wrapper functionality
    - Widely used
@@ -315,17 +352,19 @@ Based on the top 50 analysis, these tools are recommended for future porting:
    - Note: Could be implemented as wrapper around sickle + skewer
 
 ### Medium Priority (More Complex)
+
 4. **BEDTools subset** (C++) - Genomic interval operations
    - Core operations: intersect, merge, sort
    - Widely used format
    - Complex but modular
 
-5. **SAMtools subset** (C) - SAM/BAM manipulation
+2. **SAMtools subset** (C) - SAM/BAM manipulation
    - Basic operations only
    - View, sort, index
    - High-impact tool
 
 ### Lower Priority (Very Complex)
+
 6. **minimap2** (C) - Long-read alignment
    - Complex algorithm
    - High performance requirements
@@ -333,7 +372,7 @@ Based on the top 50 analysis, these tools are recommended for future porting:
 
 ### Analyzed But Not Recommended for Porting
 
-7. **BWA** (C) - Short-read alignment ❌ **NOT RECOMMENDED**
+1. **BWA** (C) - Short-read alignment ❌ **NOT RECOMMENDED**
    - **Status**: Analyzed in detail (2025-10-21)
    - **Decision**: Do not port
    - **Reasons**:
@@ -352,6 +391,7 @@ Based on the top 50 analysis, these tools are recommended for future porting:
 All ported tools must meet these criteria:
 
 ### Code Quality
+
 - ✓ >80% test coverage
 - ✓ All tests passing
 - ✓ No race conditions
@@ -359,6 +399,7 @@ All ported tools must meet these criteria:
 - ✓ Formatted with gofmt
 
 ### Documentation
+
 - ✓ Complete README with:
   - Installation instructions
   - Usage examples
@@ -369,12 +410,14 @@ All ported tools must meet these criteria:
 - ✓ CLI differences documented
 
 ### Functionality
+
 - ✓ Functional parity with original (core features)
 - ✓ Error handling and validation
 - ✓ Input/output format compatibility
 - ✓ Performance within 20% of original
 
 ### Usability
+
 - ✓ Consistent CLI interface
 - ✓ Both short and long options
 - ✓ Clear error messages
@@ -385,6 +428,7 @@ All ported tools must meet these criteria:
 ## Architecture Patterns
 
 ### Standard Tool Structure
+
 ```
 tool-name/
 ├── cmd/
@@ -399,6 +443,7 @@ tool-name/
 ```
 
 ### Common Libraries
+
 - `pkg/bioformats/fastq` - FASTQ I/O
 - `pkg/bioformats/fasta` - FASTA I/O
 - `pkg/bioformats/bed` - BED format
@@ -406,6 +451,7 @@ tool-name/
 - `pkg/cliflag` - Consistent CLI parsing
 
 ### Design Principles
+
 1. **Streaming Processing**: Handle files larger than RAM
 2. **Minimal Dependencies**: Use Go standard library when possible
 3. **Type Safety**: Leverage Go's type system
@@ -467,19 +513,23 @@ tool-name/
 ## Performance Benchmarking
 
 ### Standard Benchmark Dataset
+
 Use consistent datasets for comparison:
+
 - 1M read FASTQ file (~200MB)
 - 10M read FASTQ file (~2GB)
 - Mix of read lengths and qualities
 - Both single-end and paired-end
 
 ### Metrics to Track
+
 - **Execution Time**: Wall clock time
 - **Memory Usage**: Peak RSS
 - **Throughput**: Reads per second
 - **Accuracy**: Identical output to original
 
 ### Acceptable Performance Range
+
 - **Target**: Within 20% of original (0.8x - 1.2x)
 - **Good**: Faster than original (>1.0x)
 - **Acceptable**: 0.8x - 1.0x (slight slowdown for safety/features)
@@ -492,23 +542,28 @@ Use consistent datasets for comparison:
 ### Current Implementations
 
 **seqtk**:
+
 - Some advanced filtering options not yet implemented
 - No built-in gzip support (planned for v1.1)
 
 **PRINSEQ**:
+
 - ✅ **Full feature parity achieved!** All major features implemented
 - ✅ Trimming, duplicates, paired-end, Phred+64, bad output, complexity filtering
 - Graph generation not included (use separate visualization tools)
 
 **sickle**:
+
 - ✓ Built-in gzip support added in v1.1
 - No automatic quality encoding detection (planned v1.2)
 
 **skewer**:
+
 - Simplified adapter detection algorithm
 - No automatic adapter detection (planned v1.1)
 
 **fastp**:
+
 - ✅ **Paired-end support now implemented!**
 - ✅ Core preprocessing features complete
 - No HTML reports (planned v1.2)
@@ -516,17 +571,20 @@ Use consistent datasets for comparison:
 - Single-threaded (parallel processing planned v1.2)
 
 **bedmerge**:
+
 - Output always BED3 format
 - No advanced options (distinct, count, etc.)
 - In-memory processing (not suitable for very large files)
 
 **bedintersect**:
+
 - Linear search (no interval tree)
 - No reciprocal overlap mode
 - No sorted file optimization
 - In-memory B file loading
 
 ### General Limitations
+
 - Partial gzip support (sickle, skewer, fastp, bedmerge, bedintersect have it; seqtk, prinseq coming soon)
 - No parallel processing yet (planned feature)
 - Some original tools' edge cases may differ
@@ -537,6 +595,7 @@ Use consistent datasets for comparison:
 ## Version History
 
 ### Version 1.0.0 (2025-10-21)
+
 - Initial release of 3 core QC tools
 - seqtk: FASTA/Q processing
 - PRINSEQ: Quality control and filtering
@@ -545,18 +604,21 @@ Use consistent datasets for comparison:
 - Comprehensive documentation
 
 ### Version 1.1.0 (2025-10-21)
+
 - ✓ Built-in gzip support (sickle, skewer, fastp)
 - ✓ skewer: Adapter trimming tool
 - ✓ fastp: All-in-one preprocessor
 - ✓ iohelper library for transparent gzip handling
 
 ### Version 1.2.0 (2025-10-21)
+
 - ✓ bedmerge: BED interval merger
 - ✓ bedintersect: BED interval intersection finder
 - ✓ First BED utilities added
 - ✓ 19 additional tests (bedmerge: 8, bedintersect: 11)
 
 ### Planned Version 1.3.0
+
 - Phred+64 support in PRINSEQ
 - Automatic quality encoding detection
 - Built-in gzip support for seqtk and prinseq
@@ -569,6 +631,7 @@ Use consistent datasets for comparison:
 ## Statistics
 
 ### Code Metrics
+
 - **Total Go Code**: ~9,000 lines (implementation)
 - **Total Test Code**: ~6,000 lines  
 - **Test Coverage**: >85% average
@@ -577,6 +640,7 @@ Use consistent datasets for comparison:
 - **Total Tools**: 7 (5 QC + 2 BED utilities)
 
 ### Performance Summary
+
 - **Average Speedup**: 1.05x (comparable)
 - **Memory Usage**: Similar or better
 - **Binary Size**: 5-8 MB per tool
@@ -608,6 +672,7 @@ Use consistent datasets for comparison:
 ### Areas for Improvement
 
 Existing tools:
+
 - Add missing features
 - Optimize performance
 - Improve error messages
@@ -615,6 +680,7 @@ Existing tools:
 - Add more examples
 
 New tools:
+
 - Port high-priority tools
 - Create utility libraries
 - Build tool pipelines
@@ -625,16 +691,19 @@ New tools:
 ## Resources
 
 ### Documentation
+
 - [CLI Differences](CLI_DIFFERENCES.md) - Detailed comparison with originals
 - [Tools README](README.md) - General guidelines and structure
 - Individual tool READMEs - Usage and examples
 
 ### Code
+
 - `pkg/bioformats/` - Format libraries
 - `pkg/cliflag/` - CLI utilities
 - Individual tool packages - Implementation references
 
 ### External
+
 - Original tool repositories (see individual READMEs)
 - FASTQ format specification
 - Phred quality scores documentation
@@ -644,6 +713,7 @@ New tools:
 ## Contact
 
 For questions, issues, or suggestions:
+
 - Open an issue on GitHub
 - Include tool name in title
 - Provide example data if relevant

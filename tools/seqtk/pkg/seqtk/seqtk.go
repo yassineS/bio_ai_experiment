@@ -100,9 +100,9 @@ func CalculateFastaStatsParallel(r io.Reader, workers int) (*Stats, error) {
 		minLen     int
 		maxLen     int
 	}
-	
+
 	resultChan := make(chan result, workers)
-	
+
 	for i := 0; i < workers; i++ {
 		start := i * chunkSize
 		end := start + chunkSize
@@ -112,23 +112,23 @@ func CalculateFastaStatsParallel(r io.Reader, workers int) (*Stats, error) {
 		if start >= len(records) {
 			break
 		}
-		
+
 		go func(chunk []*fasta.Record) {
 			var r result
 			r.minLen = chunk[0].Length()
 			r.maxLen = chunk[0].Length()
-			
+
 			for _, record := range chunk {
 				length := record.Length()
 				r.totalBases += int64(length)
-				
+
 				if length < r.minLen {
 					r.minLen = length
 				}
 				if length > r.maxLen {
 					r.maxLen = length
 				}
-				
+
 				for _, b := range record.Sequence {
 					if b == 'G' || b == 'C' || b == 'g' || b == 'c' {
 						r.totalGC++
@@ -138,21 +138,21 @@ func CalculateFastaStatsParallel(r io.Reader, workers int) (*Stats, error) {
 			resultChan <- r
 		}(records[start:end])
 	}
-	
+
 	// Collect results
 	stats := &Stats{
 		NumSequences: len(records),
 		MinLength:    records[0].Length(),
 		MaxLength:    records[0].Length(),
 	}
-	
+
 	var totalBases int64
 	var totalGC int64
 	activeWorkers := workers
 	if len(records) < workers*chunkSize {
 		activeWorkers = (len(records) + chunkSize - 1) / chunkSize
 	}
-	
+
 	for i := 0; i < activeWorkers; i++ {
 		r := <-resultChan
 		totalBases += r.totalBases
@@ -164,7 +164,7 @@ func CalculateFastaStatsParallel(r io.Reader, workers int) (*Stats, error) {
 			stats.MaxLength = r.maxLen
 		}
 	}
-	
+
 	stats.TotalBases = totalBases
 	stats.AvgLength = float64(totalBases) / float64(len(records))
 	if totalBases > 0 {
@@ -264,9 +264,9 @@ func ReverseComplement(input io.Reader, output io.Writer, isFastq bool, encoding
 
 // FilterOptions contains options for sequence filtering.
 type FilterOptions struct {
-	MinLength int      // Minimum sequence length (0 = no filter)
-	MaxLength int      // Maximum sequence length (0 = no filter)
-	Pattern   string   // Pattern to match in sequence ID (empty = no filter)
+	MinLength int    // Minimum sequence length (0 = no filter)
+	MaxLength int    // Maximum sequence length (0 = no filter)
+	Pattern   string // Pattern to match in sequence ID (empty = no filter)
 }
 
 // Filter sequences based on filter options.
@@ -337,12 +337,12 @@ func passesFilter(id string, length int, opts FilterOptions) bool {
 	if opts.MaxLength > 0 && length > opts.MaxLength {
 		return false
 	}
-	
+
 	// Check pattern filter
 	if opts.Pattern != "" && !strings.Contains(id, opts.Pattern) {
 		return false
 	}
-	
+
 	return true
 }
 
@@ -369,7 +369,7 @@ func subseqFasta(input io.Reader, output io.Writer, start, end int) error {
 
 		// Extract subsequence (1-based indexing, inclusive)
 		length := record.Length()
-		
+
 		// Adjust negative indices (from end)
 		if end < 0 {
 			end = length + end + 1
@@ -377,11 +377,11 @@ func subseqFasta(input io.Reader, output io.Writer, start, end int) error {
 		if start < 0 {
 			start = length + start + 1
 		}
-		
+
 		// Convert to 0-based indexing
 		startIdx := start - 1
 		endIdx := end
-		
+
 		// Bounds checking
 		if startIdx < 0 {
 			startIdx = 0
@@ -423,7 +423,7 @@ func subseqFastq(input io.Reader, output io.Writer, start, end int, encoding fas
 
 		// Extract subsequence (1-based indexing, inclusive)
 		length := record.Length()
-		
+
 		// Adjust negative indices (from end)
 		if end < 0 {
 			end = length + end + 1
@@ -431,11 +431,11 @@ func subseqFastq(input io.Reader, output io.Writer, start, end int, encoding fas
 		if start < 0 {
 			start = length + start + 1
 		}
-		
+
 		// Convert to 0-based indexing
 		startIdx := start - 1
 		endIdx := end
-		
+
 		// Bounds checking
 		if startIdx < 0 {
 			startIdx = 0
@@ -631,7 +631,7 @@ func GetFileType(filename string) (bool, error) {
 // Supports .gz (gzip) and .bz2 (bzip2) compression.
 func DecompressReader(r io.Reader, filename string) (io.Reader, error) {
 	ext := strings.ToLower(filepath.Ext(filename))
-	
+
 	switch ext {
 	case ".gz":
 		return gzip.NewReader(r)
@@ -647,7 +647,7 @@ func DecompressReader(r io.Reader, filename string) (io.Reader, error) {
 // Returns nil if no compression is needed (caller should use original writer).
 func CompressWriter(w io.Writer, filename string) (io.WriteCloser, error) {
 	ext := strings.ToLower(filepath.Ext(filename))
-	
+
 	switch ext {
 	case ".gz":
 		return gzip.NewWriter(w), nil
@@ -672,23 +672,23 @@ func OpenInput(filename string) (io.ReadCloser, error) {
 		// For stdin, we can't decompress based on filename, so try to detect
 		return io.NopCloser(os.Stdin), nil
 	}
-	
+
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	reader, err := DecompressReader(file, filename)
 	if err != nil {
 		file.Close()
 		return nil, err
 	}
-	
+
 	// If reader is not the file itself, wrap in a composite closer
 	if reader != file {
 		return &compositeCloser{reader: reader, file: file}, nil
 	}
-	
+
 	return file, nil
 }
 
@@ -713,23 +713,23 @@ func OpenOutput(filename string) (io.WriteCloser, error) {
 	if filename == "-" || filename == "" {
 		return &nopCloser{os.Stdout}, nil
 	}
-	
+
 	file, err := os.Create(filename)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	writer, err := CompressWriter(file, filename)
 	if err != nil {
 		file.Close()
 		return nil, err
 	}
-	
+
 	// If writer is nil (no compression), just use the file
 	if writer == nil {
 		return file, nil
 	}
-	
+
 	// Otherwise wrap in a composite closer
 	return &compositeWriter{writer: writer, file: file}, nil
 }

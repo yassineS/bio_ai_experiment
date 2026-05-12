@@ -10,6 +10,7 @@
 ## Key Findings
 
 ### Complexity Assessment
+
 - **Code size**: ~17,000 lines (36 C files)
 - **Estimated effort**: 16-20 weeks for full port, 7-10 weeks for aln only
 - **Comparison**: 10x larger than typical ported tools (1,500 lines)
@@ -27,6 +28,7 @@
 The problem statement requested exploring parallelization by "processing reads in batches."
 
 **Status**: ✅ Already exists in original BWA
+
 - Thread pools for concurrent read processing
 - Lock-free work queues
 - Configurable via `-t` flag
@@ -35,11 +37,13 @@ The problem statement requested exploring parallelization by "processing reads i
 ## Recommended Alternatives
 
 ### For Project Use
+
 1. Use original BWA (excellent tool, no porting needed)
 2. Use BWA-MEM2 for 50-100% speedup
 3. Use minimap2 for long reads (50x faster)
 
 ### For This Project
+
 Port more suitable tools instead:
 
 | Tool | Rank | Effort | Value |
@@ -52,6 +56,7 @@ Port more suitable tools instead:
 ## Project Alignment
 
 BWA does **not** fit project criteria:
+
 - ✗ Not poor code quality (5.3/10 is good)
 - ✗ Not poorly documented (6.36/10 is excellent)
 - ✗ Not lacking performance (highly optimized)
@@ -63,8 +68,8 @@ Project goals are to improve tools that **need** improvement. BWA doesn't.
 
 - Full Decision Document: [BWA_IMPLEMENTATION_DECISION.md](../tools/BWA_IMPLEMENTATION_DECISION.md)
 - Porting Status: [PORTING_STATUS.md](../tools/PORTING_STATUS.md)
-- BWA Repository: https://github.com/lh3/bwa
-- BWA-MEM2: https://github.com/bwa-mem2/bwa-mem2
+- BWA Repository: <https://github.com/lh3/bwa>
+- BWA-MEM2: <https://github.com/bwa-mem2/bwa-mem2>
 
 ---
 

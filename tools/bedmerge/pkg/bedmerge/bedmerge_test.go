@@ -17,7 +17,7 @@ chr1	300	400
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	count, err := Merge(reader, &buf, MergeOptions{})
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -42,7 +42,7 @@ chr1	300	400`
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	count, err := Merge(reader, &buf, MergeOptions{})
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -69,7 +69,7 @@ chr1	500	600
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	count, err := Merge(reader, &buf, MergeOptions{})
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -95,7 +95,7 @@ chr1	500	600
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	// Merge intervals within 50bp
 	count, err := Merge(reader, &buf, MergeOptions{MaxDistance: 50})
 	if err != nil {
@@ -125,7 +125,7 @@ chr3	100	200
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	count, err := Merge(reader, &buf, MergeOptions{})
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -145,7 +145,7 @@ func TestMergeEmpty(t *testing.T) {
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	count, err := Merge(reader, &buf, MergeOptions{})
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -164,7 +164,7 @@ chr1	350	450`
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	stats, err := MergeWithStats(reader, &buf, MergeOptions{})
 	if err != nil {
 		t.Fatalf("MergeWithStats failed: %v", err)
@@ -195,7 +195,7 @@ chr1	300	400
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	count, err := Merge(reader, &buf, MergeOptions{})
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -221,13 +221,13 @@ chr1	300	400	1
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	opts := MergeOptions{
 		OutputFields: OutputFields{
 			Count: true,
 		},
 	}
-	
+
 	count, err := Merge(reader, &buf, opts)
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -253,13 +253,13 @@ chr1	300	400	30
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	opts := MergeOptions{
 		OutputFields: OutputFields{
 			BedGraph: true,
 		},
 	}
-	
+
 	count, err := Merge(reader, &buf, opts)
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -288,11 +288,11 @@ chr3	100	200
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	opts := MergeOptions{
 		Streaming: true,
 	}
-	
+
 	count, err := Merge(reader, &buf, opts)
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -319,14 +319,14 @@ chr2	100	250	2
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	opts := MergeOptions{
 		Streaming: true,
 		OutputFields: OutputFields{
 			Count: true,
 		},
 	}
-	
+
 	count, err := Merge(reader, &buf, opts)
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)
@@ -353,7 +353,7 @@ chr1	300	400	name3	300	-
 
 	reader := strings.NewReader(input)
 	var buf bytes.Buffer
-	
+
 	opts := MergeOptions{
 		OutputFields: OutputFields{
 			Name:   true,
@@ -361,7 +361,7 @@ chr1	300	400	name3	300	-
 			Strand: true,
 		},
 	}
-	
+
 	count, err := Merge(reader, &buf, opts)
 	if err != nil {
 		t.Fatalf("Merge failed: %v", err)

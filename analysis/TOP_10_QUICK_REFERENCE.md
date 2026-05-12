@@ -5,17 +5,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 1. PHASE (Score: 63.17)
+
 **Category**: Population Genetics  
 **Language**: C  
 **Use**: Haplotype reconstruction  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 4.76/10 (poor structure, difficult to maintain)
 - Documentation: 4.05/10 (minimal, unclear)
 - Test Coverage: 2.5% (critically low)
 - High community usage (7.3/10 popularity)
 
 **Recommended Actions:**
+
 1. Complete rewrite in Go or Rust for memory safety
 2. Create comprehensive API documentation
 3. Build extensive test suite (target: >80% coverage)
@@ -27,17 +30,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 2. BRAKER (Score: 63.16)
+
 **Category**: Genome Annotation  
 **Language**: Perl  
 **Use**: Gene prediction pipeline  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 4.38/10 (legacy Perl, complex dependencies)
 - Documentation: 4.34/10 (incomplete)
 - Test Coverage: 2.94% (very low)
 - Critical tool for annotation (7.6/10 popularity)
 
 **Recommended Actions:**
+
 1. Rewrite in Python or Go for maintainability
 2. Modularize the pipeline architecture
 3. Create user-friendly documentation
@@ -49,17 +55,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 3. MaxBin (Score: 62.14)
+
 **Category**: Metagenomics  
 **Language**: Perl  
 **Use**: Genome binning from metagenomes  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 5.62/10 (legacy language)
 - Documentation: 4.08/10 (inadequate)
 - Test Coverage: 2.58% (minimal)
 - High usage (8.2/10 popularity)
 
 **Recommended Actions:**
+
 1. Modernize to Python/Go
 2. Improve algorithm documentation
 3. Add benchmark datasets
@@ -71,17 +80,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 4. PRINSEQ (Score: 60.45)
+
 **Category**: Quality Control  
 **Language**: Perl  
 **Use**: Sequence quality control and filtering  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 5.26/10 (outdated implementation)
 - Documentation: 5.47/10 (incomplete)
 - Test Coverage: 2.78% (very low)
 - Very popular (9.1/10 popularity)
 
 **Recommended Actions:**
+
 1. Rewrite in Python or Go
 2. Add modern QC metrics
 3. Create visualization features
@@ -93,17 +105,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 5. Bismark (Score: 60.19)
+
 **Category**: Epigenomics  
 **Language**: Perl  
 **Use**: Bisulfite sequencing alignment and methylation calling  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 4.04/10 (poor structure)
 - Documentation: 5.37/10 (needs expansion)
 - Test Coverage: 4.59% (low)
 - Widely used (8.8/10 popularity)
 
 **Recommended Actions:**
+
 1. Modern language rewrite (Python/Go)
 2. Better error handling
 3. Improved documentation with examples
@@ -115,17 +130,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 6. RAxML (Score: 59.81)
+
 **Category**: Phylogenetics  
 **Language**: C  
 **Use**: Maximum likelihood phylogenetic tree inference  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 6.46/10 (moderate, but could be better)
 - Documentation: 4.21/10 (poor, unclear)
 - Test Coverage: 3.79% (low)
 - Very high usage (9.7/10 popularity)
 
 **Recommended Actions:**
+
 1. Modernize C codebase (C17/20 standards)
 2. Complete documentation rewrite
 3. Add usage examples
@@ -137,17 +155,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 7. VCFtools (Score: 59.49)
+
 **Category**: Population Genetics  
 **Language**: C++/Perl (mixed)  
 **Use**: VCF file manipulation and analysis  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 5.01/10 (mixed language complexity)
 - Documentation: 5.3/10 (incomplete)
 - Test Coverage: 2.98% (very low)
 - Critical infrastructure (9.7/10 popularity)
 
 **Recommended Actions:**
+
 1. Consolidate into single language (Go/Rust)
 2. API documentation
 3. Better error messages
@@ -159,17 +180,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 8. MAKER (Score: 58.76)
+
 **Category**: Genome Annotation  
 **Language**: Perl  
 **Use**: Genome annotation pipeline  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 5.51/10 (complex Perl)
 - Documentation: 5.09/10 (insufficient)
 - Test Coverage: 2.51% (very low)
 - High impact (8.5/10 popularity)
 
 **Recommended Actions:**
+
 1. Modularize architecture
 2. Rewrite in modern language
 3. Simplify configuration
@@ -181,17 +205,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 9. LoFreq (Score: 58.52)
+
 **Category**: Variant Calling  
 **Language**: C  
 **Use**: Low-frequency variant calling  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 6.07/10 (moderate)
 - Documentation: 5.48/10 (needs work)
 - Test Coverage: 3.03% (very low)
 - Specialized but important (7.6/10 popularity)
 
 **Recommended Actions:**
+
 1. Modernize C implementation
 2. Add safety checks
 3. Better documentation
@@ -203,17 +230,20 @@ Quick reference for the 10 bioinformatics packages with the highest improvement 
 ---
 
 ## 10. PhyML (Score: 57.76)
+
 **Category**: Phylogenetics  
 **Language**: C  
 **Use**: Maximum likelihood phylogenetic inference  
 
 **Why It Needs Improvement:**
+
 - Code Quality: 6.47/10 (dated C code)
 - Documentation: 4.64/10 (minimal)
 - Test Coverage: 3.97% (low)
 - Very popular (9.4/10 popularity)
 
 **Recommended Actions:**
+
 1. Update to modern C standards
 2. Complete documentation
 3. Usage examples
