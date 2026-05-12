@@ -62,16 +62,41 @@ Genotype Filtering:
 Statistics Output:
   --freq                Output allele frequency
   --counts              Output allele counts
-  --depth               Output mean depth per site
-  --site-depth          Output depth for each site
-  --site-mean-depth     Output mean depth per site
+  --freq2               Alternative allele frequency format
+  --counts2             Alternative allele counts format
+  --depth               Output mean read depth per individual (.idepth)
+  --site-depth          Output summed depth for each site (.ldepth)
+  --site-mean-depth     Output mean depth per site (.ldepth.mean)
   --site-quality        Output quality scores per site
   --missing-indv        Output individual missingness
   --missing-site        Output site missingness
   --hardy               Test for Hardy-Weinberg equilibrium
+  --het                 Output per-individual heterozygosity / F
+  --singletons          Output singleton/private sites
   --TsTv-summary        Output Ts/Tv ratio summary
   --TsTv INT            Output Ts/Tv in bins of size INT
-  --site-pi             Output nucleotide diversity per site
+  --TsTv-by-count       Output Ts/Tv grouped by alternate-allele count
+  --site-pi             Output nucleotide diversity per site (.sites.pi)
+  --hist-indel-len      Output a histogram of indel lengths (.indel.hist)
+  --geno-depth          Output a per-genotype read-depth matrix (.gdepth)
+  --FILTER-summary      Output a summary of FILTER values
+  --SNPdensity INT      Output SNP density in bins of size INT
+
+Population Genetics:
+  --window-pi INT       Nucleotide diversity summed over windows of size INT
+  --window-pi-step INT  Step size for --window-pi windows (default: window size)
+  --TajimaD INT         Tajima's D in non-overlapping windows of size INT
+
+Format Conversion:
+  --012                 Output genotypes as a 0/1/2 matrix
+  --plink               Output PLINK PED/MAP files
+  --plink-tped          Output PLINK TPED/TFAM files
+  --chrom-map FILE      Chromosome-name-to-integer map for PLINK output
+
+Not yet implemented (rejected with an error rather than silently ignored):
+  --TsTv-by-qual, --weir-fst-pop, --fst-window-size, --fst-window-step,
+  and all LD analysis (--geno-r2, --hap-r2, ...)
+  See tools/vcftools/ROADMAP.md for status.
 
 Sample Filtering:
   --indv STRING         Include only this individual (can use multiple times)
@@ -161,35 +186,35 @@ func main() {
 	counts := flag.Bool("counts", false, "Output allele counts")
 	freq2 := flag.Bool("freq2", false, "Alternative frequency output format")
 	counts2 := flag.Bool("counts2", false, "Alternative counts output format")
-	depth := flag.Bool("depth", false, "Output mean depth per site")
-	siteDepth := flag.Bool("site-depth", false, "Output depth for each site")
-	siteMeanDepth := flag.Bool("site-mean-depth", false, "Output mean depth per site")
+	depth := flag.Bool("depth", false, "Output mean read depth per individual (.idepth)")
+	siteDepth := flag.Bool("site-depth", false, "Output summed depth for each site (.ldepth)")
+	siteMeanDepth := flag.Bool("site-mean-depth", false, "Output mean depth per site (.ldepth.mean)")
 	siteQuality := flag.Bool("site-quality", false, "Output quality per site")
 	missingIndv := flag.Bool("missing-indv", false, "Output individual missingness")
 	missingSite := flag.Bool("missing-site", false, "Output site missingness")
 	hardy := flag.Bool("hardy", false, "Hardy-Weinberg equilibrium test")
 	tsTvSummary := flag.Bool("TsTv-summary", false, "Ts/Tv ratio summary")
 	tsTvBinSize := flag.Int("TsTv", 0, "Ts/Tv in bins of this size")
-	tsTvByCount := flag.Bool("TsTv-by-count", false, "Ts/Tv by allele count")
-	tsTvByQual := flag.Bool("TsTv-by-qual", false, "Ts/Tv by quality score")
-	sitePi := flag.Bool("site-pi", false, "Nucleotide diversity per site")
+	tsTvByCount := flag.Bool("TsTv-by-count", false, "Ts/Tv grouped by alternate-allele count")
+	tsTvByQual := flag.Bool("TsTv-by-qual", false, "Ts/Tv by quality score (not yet implemented)")
+	sitePi := flag.Bool("site-pi", false, "Nucleotide diversity per site (.sites.pi)")
 	het := flag.Bool("het", false, "Heterozygosity statistics")
 	singletons := flag.Bool("singletons", false, "Singleton site analysis")
-	histIndelLen := flag.Bool("hist-indel-len", false, "Indel length histogram")
-	genoDepth := flag.Bool("geno-depth", false, "Genotype depth distribution")
+	histIndelLen := flag.Bool("hist-indel-len", false, "Histogram of indel lengths (.indel.hist)")
+	genoDepth := flag.Bool("geno-depth", false, "Per-genotype read-depth matrix (.gdepth)")
 
-	// Phase 2: Population genetics statistics
-	windowPi := flag.Int("window-pi", 0, "Nucleotide diversity in windows of this size")
-	windowPiStep := flag.Int("window-pi-step", 0, "Step size for pi windows")
-	tajimaD := flag.Int("TajimaD", 0, "Tajima's D in bins of this size")
+	// Population genetics statistics
+	windowPi := flag.Int("window-pi", 0, "Nucleotide diversity summed over windows of this size")
+	windowPiStep := flag.Int("window-pi-step", 0, "Step size for --window-pi windows")
+	tajimaD := flag.Int("TajimaD", 0, "Tajima's D in non-overlapping windows of this size")
 	snpDensity := flag.Int("SNPdensity", 0, "SNP density in bins of this size")
 	var weirFstPop []string
-	flag.Func("weir-fst-pop", "Population file for Fst calculation (can use multiple times)", func(s string) error {
+	flag.Func("weir-fst-pop", "Population file for Fst calculation, repeatable (not yet implemented)", func(s string) error {
 		weirFstPop = append(weirFstPop, s)
 		return nil
 	})
-	fstWindowSize := flag.Int("fst-window-size", 0, "Window size for Fst")
-	fstWindowStep := flag.Int("fst-window-step", 0, "Step size for Fst windows")
+	fstWindowSize := flag.Int("fst-window-size", 0, "Window size for Fst (not yet implemented)")
+	fstWindowStep := flag.Int("fst-window-step", 0, "Step size for Fst windows (not yet implemented)")
 	filterSummary := flag.Bool("FILTER-summary", false, "FILTER tag summary")
 
 	// Phase 4: Format conversions

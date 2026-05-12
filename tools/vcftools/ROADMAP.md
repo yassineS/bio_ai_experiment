@@ -2,25 +2,31 @@
 
 This document outlines planned features and enhancements for the vcftools Go implementation.
 
-## Version 1.0 (Current) ✅
+## Current state
 
-**Status:** Complete
+**Status:** Partial — roughly 45 of vcftools' ~147 options.
 
-### Implemented Features
+### Implemented
 
-- Core filtering (position, quality, allele frequency, variant type)
-- Sample management (keep/remove individuals)
-- Basic statistics (frequency, depth, missingness, HWE, Ts/Tv, nucleotide diversity)
-- VCF recoding with filtering
-- Comprehensive test suite
-- Complete documentation
+- Filtering: position, SNP ID + thinning, quality, allele frequency/count, variant type, genotype-level (`--minDP`/`--maxDP`/`--minGQ`)
+- Sample management (`--indv`, `--remove-indv`, `--keep`, `--remove`)
+- Per-site / per-individual statistics: `--freq`/`--counts`(+`2`), `--depth`,
+  `--geno-depth`, `--site-depth`, `--site-mean-depth`, `--site-quality`,
+  `--missing-site`, `--missing-indv`, `--hardy`, `--het`, `--singletons`,
+  `--site-pi`, `--window-pi`(+`--window-pi-step`), `--TajimaD`,
+  `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--hist-indel-len`,
+  `--FILTER-summary`, `--SNPdensity`
+- VCF recoding (`--recode`, `--recode-INFO-all`)
+- Format conversion: `--012`, `--plink`, `--plink-tped`, `--chrom-map`
 
-### Statistics
+### Recognised but **not implemented** (return an error)
 
-- 35 command-line options
-- ~80% coverage of commonly-used features
-- 0 security vulnerabilities
-- 100% test pass rate
+- `--TsTv-by-qual`
+- `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
+- All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
+
+Test coverage of the `vcftools` package is ~51% of statements; the `cmd/`
+entry point has no tests.
 
 ## Version 1.1 (Planned)
 

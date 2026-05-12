@@ -2,8 +2,15 @@
 
 This document tracks the status of bioinformatics tools being ported from their original implementations to Go.
 
-**Last Updated**: 2025-10-21  
-**Phase**: Initial Tool Porting
+**Last Updated**: 2026-05-12
+
+> **Accuracy note (2026-05-12 audit):** earlier revisions of this file
+> overstated progress — claiming ">85% test coverage" and labelling several
+> tools "Complete" with "functional parity". That is not the case. The numbers
+> and status below were re-derived from `go test -cover ./...` and from reading
+> the code. None of these ports is a drop-in replacement for the original tool;
+> each implements a subset of features. Treat "Complete" here as "the planned
+> first slice of functionality is in place", not "feature-complete".
 
 ---
 
@@ -12,17 +19,18 @@ This document tracks the status of bioinformatics tools being ported from their 
 ### Goals
 
 - Port high-priority bioinformatics tools to Go
-- Maintain functional parity with original tools
+- Cover the commonly used subset of each tool's functionality first
 - Improve usability, documentation, and maintainability
-- Ensure comprehensive testing and validation
+- Ensure tested, validated behaviour for everything that is implemented
 
 ### Progress Summary
 
-- **Tools Ported**: 8
-- **Tools Tested**: 8
-- **Total Test Coverage**: >85% average
-- **Documentation**: Complete for all ported tools
-- **New Feature**: Built-in gzip support for all tools
+- **Tools with a working subset**: 8
+- **Tools tested**: 8 (package-level tests; `cmd/` entry points have no tests)
+- **Test coverage (statements, `go test -cover`)**: skewer 46%, vcftools 51%,
+  prinseq 55%, seqtk 57%, fastp 63%, bedintersect 75%, bedmerge 79%, sickle 80%
+- **Documentation**: README per tool; some design docs are aspirational, not status
+- **gzip support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools (not seqtk/prinseq)
 
 ---
 
@@ -43,31 +51,22 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `sample` - Random subsampling
 - `trimfq` - Quality-based trimming
 
-**Test Coverage**: >90%  
-**Performance**: 1.05-1.1x faster than original  
-**Documentation**: ✓ Complete README with examples  
+**Test Coverage**: ~57% of statements (`go test -cover`)  
+**Performance**: ~1.05-1.1x faster than original on the implemented commands  
+**Documentation**: README with examples  
 
 **Key Features**:
 
-- Fast FASTA/Q processing
-- Multiple format operations
+- Fast FASTA/Q processing for the five commands above
 - Quality score handling
 - Memory-efficient streaming
-
-**Recent Updates** (2025-10-21):
-
-- ✅ All core functionality complete
-- ✅ Trimming, duplicate removal, paired-end support implemented
-- ✅ Phred+64 encoding support added
-- ✅ Bad sequence output added
-- ✅ Complexity filtering (DUST and entropy) added
 
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- Core functionality identical
-- Output format compatible
-- Now feature-complete with all major PRINSEQ-lite features
+- Only the five commands above are implemented; upstream seqtk has many more
+  (`subseq`, `mergepe`, `mutfa`, `randbase`, `hpc`, `cutN`, ...)
+- Output format intended to be compatible for the implemented commands
 
 ---
 
@@ -83,31 +82,28 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `stats` - Calculate sequence statistics
 - `filter` - Multi-criteria filtering and trimming
 
-**Test Coverage**: >85%  
-**Performance**: 1.2-1.35x faster than original  
-**Documentation**: ✓ Complete README with examples
+**Test Coverage**: ~55% of statements (`go test -cover`)  
+**Performance**: ~1.2-1.35x faster than the original Perl on the implemented paths  
+**Documentation**: README with examples
 
 **Key Features**:
 
-- Comprehensive sequence statistics
-- Length-based filtering
-- GC content filtering
-- N content filtering
-- Quality score filtering
+- Sequence statistics
+- Length / GC / N-content / quality filtering
 - Trimming operations (fixed, percentage, quality-based)
 - Poly-N and poly-A/T tail trimming
 - Duplicate removal
 - Paired-end support
 - Phred+64 encoding support (Illumina 1.3-1.7)
-- Bad sequence output
+- Bad-sequence output
 - Complexity filtering (DUST and entropy methods)
 
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- Core functionality identical
-- Output format compatible
-- Feature-complete with original PRINSEQ-lite
+- Covers the commonly used PRINSEQ-lite filtering/trimming options; not every
+  upstream option is implemented, and graph/report generation is out of scope
+- Output format intended to be compatible
 
 ---
 
@@ -123,9 +119,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `se` - Single-end read trimming
 - `pe` - Paired-end read trimming
 
-**Test Coverage**: >90%  
-**Performance**: 0.96-1.0x (similar to original)  
-**Documentation**: ✓ Complete README with examples
+**Test Coverage**: ~80% of statements (`go test -cover`)  
+**Performance**: ~0.96-1.0x (similar to original)  
+**Documentation**: README with examples
 
 **Key Features**:
 
@@ -140,9 +136,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 **Migration Notes**:
 
-- 100% backward compatible
+- CLI mirrors upstream sickle's `se`/`pe` flags; behaviour aims to match but
+  has not been validated byte-for-byte against the C implementation
 - Built-in gzip support (automatic by .gz extension)
-- Enhanced statistics output
 
 ---
 
@@ -158,9 +154,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `se` - Single-end adapter trimming
 - `pe` - Paired-end adapter trimming
 
-**Test Coverage**: >85%  
+**Test Coverage**: ~46% of statements (`go test -cover`)  
 **Performance**: ~1.0x (comparable to original)  
-**Documentation**: ✓ Complete README with examples
+**Documentation**: README with examples
 
 **Key Features**:
 
@@ -192,9 +188,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command with multiple filters
 
-**Test Coverage**: >85%  
-**Performance**: ~1.1x (good performance)  
-**Documentation**: ✓ Complete README with examples
+**Test Coverage**: ~63% of statements (`go test -cover`)  
+**Performance**: ~1.1x  
+**Documentation**: README with examples
 
 **Key Features**:
 
@@ -227,9 +223,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command for merging BED intervals
 
-**Test Coverage**: >90%  
-**Performance**: ~2x faster than bedtools merge  
-**Documentation**: ✓ Complete README with examples
+**Test Coverage**: ~79% of statements (`go test -cover`)  
+**Performance**: ~2x faster than bedtools merge on the implemented path  
+**Documentation**: README with examples
 
 **Key Features**:
 
@@ -260,9 +256,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command for interval intersection
 
-**Test Coverage**: >90%  
+**Test Coverage**: ~75% of statements (`go test -cover`)  
 **Performance**: Comparable to bedtools intersect  
-**Documentation**: ✓ Complete README with examples
+**Documentation**: README with examples
 
 **Key Features**:
 
@@ -290,37 +286,47 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
+**Status**: Partial — a subset of upstream vcftools, ~40 of ~147 options
+
 **Implemented Commands**:
 
-- Single command with multiple filtering and statistics options
+- Single command with multiple filtering, statistics and conversion options
 
-**Test Coverage**: >90%  
-**Performance**: Comparable to original  
-**Documentation**: ✓ Complete README with examples  
+**Test Coverage**: ~51% of statements (`go test -cover`)  
+**Performance**: Comparable to original on the implemented operations  
+**Documentation**: README with examples  
 
-**Key Features**:
+**Implemented features**:
 
-- Position-based filtering (chr, position range, position files)
-- Quality and allele frequency filtering
-- Variant type filtering (indels, allele count)
-- Genotype filtering (missing data, depth)
-- Sample filtering and management
-- Statistics output (frequency, depth, missingness, HWE, Ts/Tv, pi)
-- VCF recoding with filtering
-- Built-in gzip support
+- Position-based filtering (`--chr`, `--from-bp`/`--to-bp`, `--positions`, ...)
+- SNP-ID filtering and thinning (`--snp`, `--snps`, `--exclude`, `--thin`)
+- Quality, allele-frequency and allele-count filtering (`--minQ`, `--maf`, `--mac`, ...)
+- Variant-type filtering (`--remove-indels`, `--keep-only-indels`, `--min/max-alleles`)
+- Genotype-level filtering (`--minDP`, `--maxDP`, `--minGQ`)
+- Sample filtering (`--indv`, `--remove-indv`, `--keep`, `--remove`)
+- Site statistics: `--freq`/`--counts`(+`2`), `--site-depth`, `--site-mean-depth`,
+  `--site-quality`, `--missing-site`, `--missing-indv`, `--depth`, `--geno-depth`,
+  `--hardy`, `--site-pi`, `--window-pi`(+`--window-pi-step`), `--TajimaD`,
+  `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--het`, `--singletons`,
+  `--hist-indel-len`, `--FILTER-summary`, `--SNPdensity`
+- VCF recoding (`--recode`, `--recode-INFO-all`)
+- Format conversion: `--012`, `--plink`, `--plink-tped` (with `--chrom-map`)
 
-**Feature Coverage**:
+**Not yet implemented** — these options are now rejected with an error instead of
+being silently ignored (older builds accepted them and produced no output):
 
-- ~35 of ~147 original options (24% total)
-- ~80% of commonly-used features
-- See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) for details
+- `--TsTv-by-qual`, `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
+- All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
+
+See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and
+[ROADMAP.md](vcftools/ROADMAP.md) for the full picture.
 
 **Migration Notes**:
 
-- Core filtering and statistics functionality implemented
-- LD analysis, Fst, windowed statistics not yet available
-- Format conversion (PLINK, BEAGLE) not yet implemented
-- See [ROADMAP.md](vcftools/ROADMAP.md) for planned features
+- Per-site nucleotide diversity (`--site-pi`) uses the standard
+  `(n^2 - Σ c_a^2) / (n(n-1))` formula; earlier builds reported a different
+  (incorrect) per-genotype quantity
+- Not a drop-in replacement: anything not in the list above is unavailable
 
 ---
 
@@ -543,32 +549,34 @@ Use consistent datasets for comparison:
 
 **seqtk**:
 
-- Some advanced filtering options not yet implemented
-- No built-in gzip support (planned for v1.1)
+- Only `comp`, `fq2fa`, `seq`, `sample`, `trimfq` are implemented; many
+  upstream subcommands are missing
+- No built-in gzip support yet
 
 **PRINSEQ**:
 
-- ✅ **Full feature parity achieved!** All major features implemented
-- ✅ Trimming, duplicates, paired-end, Phred+64, bad output, complexity filtering
-- Graph generation not included (use separate visualization tools)
+- Covers the common filtering/trimming options (length, GC, N, quality,
+  fixed/percentage/quality trimming, poly-N/A/T, dedup, paired-end, Phred+64,
+  bad-sequence output, complexity filters); not every upstream option
+- Graph/HTML report generation not included
 
 **sickle**:
 
-- ✓ Built-in gzip support added in v1.1
-- No automatic quality encoding detection (planned v1.2)
+- Built-in gzip support (by `.gz` extension)
+- No automatic quality-encoding detection
+- Not validated byte-for-byte against the C original
 
 **skewer**:
 
-- Simplified adapter detection algorithm
-- No automatic adapter detection (planned v1.1)
+- Simplified adapter-detection algorithm
+- No automatic adapter detection
 
 **fastp**:
 
-- ✅ **Paired-end support now implemented!**
-- ✅ Core preprocessing features complete
-- No HTML reports (planned v1.2)
-- No automatic adapter detection (planned v1.1)
-- Single-threaded (parallel processing planned v1.2)
+- Single-end and paired-end processing implemented
+- No HTML/JSON reports
+- No automatic adapter detection
+- Parallel worker pool exists but the feature surface is a subset of upstream
 
 **bedmerge**:
 
@@ -578,16 +586,21 @@ Use consistent datasets for comparison:
 
 **bedintersect**:
 
-- Linear search (no interval tree)
+- Uses an interval tree (`pkg/bedintersect/intervaltree.go`)
 - No reciprocal overlap mode
-- No sorted file optimization
-- In-memory B file loading
+- No sorted-file streaming optimization
+- In-memory B-file loading
+
+**vcftools**:
+
+- ~40 of ~147 upstream options; see the vcftools section above
+- Unimplemented options are now rejected with an error rather than ignored
 
 ### General Limitations
 
-- Partial gzip support (sickle, skewer, fastp, bedmerge, bedintersect have it; seqtk, prinseq coming soon)
-- No parallel processing yet (planned feature)
-- Some original tools' edge cases may differ
+- Partial gzip support (sickle, skewer, fastp, bedmerge, bedintersect, vcftools have it; seqtk, prinseq do not)
+- `cmd/` entry points have no automated tests (coverage there is 0%)
+- None of these ports has been validated output-for-output against its original
 - Performance may vary by dataset characteristics
 
 ---
@@ -632,18 +645,17 @@ Use consistent datasets for comparison:
 
 ### Code Metrics
 
-- **Total Go Code**: ~9,000 lines (implementation)
-- **Total Test Code**: ~6,000 lines  
-- **Test Coverage**: >85% average
-- **Documentation**: ~40,000 words across all READMEs
+- **Test Coverage (statements)**: ~38-80% per package, ~60% unweighted average;
+  0% for all `cmd/` entry points (run `go test -cover ./...` for current numbers)
 - **Shared Libraries**: iohelper (gzip support), bioformats, cliflag
-- **Total Tools**: 7 (5 QC + 2 BED utilities)
+- **Tools with a working subset**: 8 (seqtk, prinseq, sickle, skewer, fastp,
+  bedmerge, bedintersect, vcftools)
 
 ### Performance Summary
 
-- **Average Speedup**: 1.05x (comparable)
-- **Memory Usage**: Similar or better
-- **Binary Size**: 5-8 MB per tool
+- **Speedup**: roughly comparable to the originals (~0.95-2x) on the implemented
+  operations; not benchmarked exhaustively
+- **Binary Size**: a few MB per tool
 - **Startup Time**: <100ms
 - **Gzip Support**: Transparent with minimal overhead
 

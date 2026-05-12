@@ -288,3 +288,96 @@ func TestIntegration_PositionRange(t *testing.T) {
 		t.Errorf("Expected 1 site in range [150, 250], got %d", dataLines)
 	}
 }
+
+func TestIntegration_NewStatistics(t *testing.T) {
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "test")
+
+	params := &Params{
+		OutPrefix:    prefix,
+		SitePi:       true,
+		WindowPi:     1000,
+		WindowPiStep: 500,
+		TsTvByCount:  true,
+		Depth:        true,
+	}
+	if err := Run(strings.NewReader(testVCF), params); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	for _, suffix := range []string{".sites.pi", ".windowed.pi", ".TsTv.count", ".idepth"} {
+		b, err := os.ReadFile(prefix + suffix)
+		if err != nil {
+			t.Fatalf("expected output file %s: %v", prefix+suffix, err)
+		}
+		if !strings.Contains(string(b), "\t") {
+			t.Errorf("%s looks malformed:\n%s", prefix+suffix, string(b))
+		}
+	}
+
+	// Each of the 3 samples appears at 5 sites with DP 20,15,30,25,20 -> mean 22.
+	idepth, err := os.ReadFile(prefix + ".idepth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(idepth), "22.00000") {
+		t.Errorf(".idepth should report mean depth 22, got:\n%s", string(idepth))
+	}
+
+	// chr1 site 100 is balanced biallelic over 6 chromosomes: pi = 0.6.
+	sitesPi, err := os.ReadFile(prefix + ".sites.pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sitesPi), "chr1\t100\t0.600000") {
+		t.Errorf(".sites.pi should report 0.6 for chr1:100, got:\n%s", string(sitesPi))
+	}
+}
+
+func TestIntegration_IndelHistGenoDepthTajimaD(t *testing.T) {
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "test")
+
+	params := &Params{
+		OutPrefix:    prefix,
+		HistIndelLen: true,
+		GenoDepth:    true,
+		TajimaD:      1000,
+	}
+	if err := Run(strings.NewReader(testVCF), params); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// The only indel in testVCF is chr2:200 A -> AT, i.e. length +1, once.
+	hist, err := os.ReadFile(prefix + ".indel.hist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hist), "1\t1\t") {
+		t.Errorf(".indel.hist should contain a length-1 indel; got:\n%s", string(hist))
+	}
+
+	// .gdepth: header has CHROM POS then sample names; rows carry DP values.
+	gd, err := os.ReadFile(prefix + ".gdepth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gd), "CHROM\tPOS\tsample1\tsample2\tsample3") {
+		t.Errorf(".gdepth header missing sample columns; got:\n%s", string(gd))
+	}
+	if !strings.Contains(string(gd), "chr1\t100\t20\t20\t20") {
+		t.Errorf(".gdepth should report DP 20/20/20 for chr1:100; got:\n%s", string(gd))
+	}
+
+	// .Tajima.D: each window header line present; chr1's window has 3 SNPs.
+	td, err := os.ReadFile(prefix + ".Tajima.D")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(td), "CHROM\tBIN_START\tN_SNPS\tTajimaD") {
+		t.Errorf(".Tajima.D header missing; got:\n%s", string(td))
+	}
+	if !strings.Contains(string(td), "chr1\t0\t3\t") {
+		t.Errorf(".Tajima.D should have a chr1 window with 3 SNPs; got:\n%s", string(td))
+	}
+}
