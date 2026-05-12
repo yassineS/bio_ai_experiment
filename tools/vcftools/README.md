@@ -6,8 +6,7 @@ Format) files.
 > **Scope:** this is **not** a drop-in replacement for upstream vcftools. It
 > implements roughly 40 of vcftools' ~147 options — the commonly used filtering,
 > per-site statistics, and a few format conversions (listed below). Options that
-> are not implemented (LD analysis, Fst, Tajima's D, `--TsTv-by-qual`,
-> `--hist-indel-len`, `--geno-depth`, ...) are **rejected with an error** rather
+> are not implemented (LD analysis, Fst, ...) are **rejected with an error** rather
 > than silently ignored. See [ROADMAP.md](ROADMAP.md) and
 > [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md).
 
@@ -40,7 +39,7 @@ This port can:
 - Missingness: per individual (`--missing-indv`) and per site (`--missing-site`)
 - Hardy-Weinberg equilibrium (`--hardy`)
 - Heterozygosity / F per individual (`--het`); singletons (`--singletons`)
-- Transition/transversion ratios: `--TsTv-summary`, `--TsTv N`, `--TsTv-by-count`
+- Transition/transversion ratios: `--TsTv-summary`, `--TsTv N`, `--TsTv-by-count`, `--TsTv-by-qual` (→ `.TsTv.qual`: Ts/Tv counts and ratios cumulative below and at-or-above each distinct QUAL threshold)
 - Nucleotide diversity: per site (`--site-pi`) and windowed (`--window-pi`, `--window-pi-step`)
 - Tajima's D in non-overlapping windows (`--TajimaD N` → `.Tajima.D`)
 - Indel length histogram (`--hist-indel-len` → `.indel.hist`)

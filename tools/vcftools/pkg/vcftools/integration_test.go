@@ -334,6 +334,79 @@ func TestIntegration_NewStatistics(t *testing.T) {
 	}
 }
 
+func TestIntegration_TsTvByQual(t *testing.T) {
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "test")
+
+	params := &Params{
+		OutPrefix:  prefix,
+		TsTvByQual: true,
+	}
+	if err := Run(strings.NewReader(testVCF), params); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	b, err := os.ReadFile(prefix + ".TsTv.qual")
+	if err != nil {
+		t.Fatalf("expected output file %s: %v", prefix+".TsTv.qual", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	wantHeader := "QUAL_THRESHOLD\tN_Ts_LT_QUAL_THRESHOLD\tN_Tv_LT_QUAL_THRESHOLD\tTs/Tv_LT_QUAL_THRESHOLD\tN_Ts_GT_QUAL_THRESHOLD\tN_Tv_GT_QUAL_THRESHOLD\tTs/Tv_GT_QUAL_THRESHOLD"
+	if lines[0] != wantHeader {
+		t.Errorf(".TsTv.qual header = %q, want %q", lines[0], wantHeader)
+	}
+	// testVCF has 4 biallelic SNPs with distinct QUAL values 25, 30, 35, 40
+	// (chr2:200 is an indel and is skipped) -> 4 threshold rows.
+	if got := len(lines) - 1; got != 4 {
+		t.Errorf(".TsTv.qual data rows = %d, want 4", got)
+	}
+}
+
+// TestTsTvByQualCumulative checks the threshold/cumulative-bucket logic of
+// outputTsTvByQual via Run on a small in-memory VCF that contains both
+// transitions and a transversion.
+func TestTsTvByQualCumulative(t *testing.T) {
+	const vcfText = `##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	s1
+chr1	10	.	A	G	10	PASS	.	GT	0/1
+chr1	20	.	C	T	20	PASS	.	GT	0/1
+chr1	30	.	A	C	20	PASS	.	GT	0/1
+chr1	40	.	G	A	30	PASS	.	GT	0/1
+chr1	50	.	A	AT	15	PASS	.	GT	0/1
+chr1	60	.	A	T	.	PASS	.	GT	0/1
+`
+	// Biallelic SNPs: A>G@10 (Ts), C>T@20 (Ts), A>C@20 (Tv), G>A@30 (Ts).
+	// chr1:50 is an indel (skipped); chr1:60 has missing QUAL (skipped).
+	// Distinct sorted thresholds: 10, 20, 30.
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "test")
+	if err := Run(strings.NewReader(vcfText), &Params{OutPrefix: prefix, TsTvByQual: true}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	b, err := os.ReadFile(prefix + ".TsTv.qual")
+	if err != nil {
+		t.Fatalf("reading .TsTv.qual: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(lines) != 4 { // header + 3 thresholds
+		t.Fatalf(".TsTv.qual has %d lines, want 4:\n%s", len(lines), string(b))
+	}
+	want := []string{
+		// q=10: LT none; GT = 3 Ts, 1 Tv -> 3/1 = 3.0000
+		"10.0000\t0\t0\t0.0000\t3\t1\t3.0000",
+		// q=20: LT = 1 Ts, 0 Tv; GT = 2 Ts, 1 Tv -> 2/1 = 2.0000
+		"20.0000\t1\t0\t0.0000\t2\t1\t2.0000",
+		// q=30: LT = 2 Ts, 1 Tv -> 2/1 = 2.0000; GT = 1 Ts, 0 Tv -> 0.0000
+		"30.0000\t2\t1\t2.0000\t1\t0\t0.0000",
+	}
+	for i, w := range want {
+		if lines[i+1] != w {
+			t.Errorf("row %d = %q, want %q", i, lines[i+1], w)
+		}
+	}
+}
+
 func TestIntegration_IndelHistGenoDepthTajimaD(t *testing.T) {
 	tmpDir := t.TempDir()
 	prefix := filepath.Join(tmpDir, "test")

@@ -33,6 +33,7 @@ type statistics struct {
 	transversions int
 	tsTvByBin     map[int]*tsTvBinStat
 	tsTvByCount   map[int]*tsTvCountStat
+	tsTvByQual    []tsTvQualStat
 
 	// Phase 2: Population genetics statistics
 	windowPiValues []windowPiStat
@@ -134,6 +135,13 @@ type tsTvCountStat struct {
 	altCount int
 	ts       int
 	tv       int
+}
+
+// tsTvQualStat records the QUAL score of one biallelic SNP and whether it is a
+// transition; used to build the --TsTv-by-qual report.
+type tsTvQualStat struct {
+	qual float64
+	isTs bool
 }
 
 type indvDepthStat struct {
@@ -241,6 +249,11 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 	// Ts/Tv by alternate allele count
 	if params.TsTvByCount {
 		s.addTsTvByCountStat(v)
+	}
+
+	// Ts/Tv by quality score
+	if params.TsTvByQual {
+		s.addTsTvByQualStat(v)
 	}
 
 	// Per-individual mean depth
@@ -636,6 +649,24 @@ func (s *statistics) addTsTvByCountStat(v *vcf.Variant) {
 	} else {
 		stat.tv++
 	}
+}
+
+// addTsTvByQualStat records the QUAL score of a biallelic SNP together with
+// whether it is a transition, for the --TsTv-by-qual report. SNPs with a
+// missing QUAL (v.Qual < 0) are skipped.
+func (s *statistics) addTsTvByQualStat(v *vcf.Variant) {
+	if len(v.Alt) != 1 || isIndelVariant(v) {
+		return
+	}
+	if v.Qual < 0 {
+		return
+	}
+	ref := strings.ToUpper(v.Ref)
+	alt := strings.ToUpper(v.Alt[0])
+	if len(ref) != 1 || len(alt) != 1 {
+		return
+	}
+	s.tsTvByQual = append(s.tsTvByQual, tsTvQualStat{qual: v.Qual, isTs: isTransitionSNP(ref, alt)})
 }
 
 // addIndvDepthStat accumulates per-individual depth from the FORMAT/DP field.
@@ -1223,6 +1254,63 @@ func (s *statistics) outputTsTvByCount(prefix string) error {
 			ratio = float64(stat.ts) / float64(stat.tv)
 		}
 		fmt.Fprintf(f, "%d\t%d\t%d\t%.4f\n", stat.altCount, stat.ts, stat.tv, ratio)
+	}
+
+	return nil
+}
+
+// outputTsTvByQual writes transition/transversion counts and ratios bucketed by
+// QUAL-score thresholds (.TsTv.qual). The thresholds are the sorted distinct
+// QUAL values that appeared among biallelic SNPs. For each threshold q the
+// "_LT_" columns count SNPs with qual < q and the "_GT_" columns count SNPs with
+// qual >= q (both cumulative). Ts/Tv ratio columns are 0.0000 when the Tv count
+// is zero.
+func (s *statistics) outputTsTvByQual(prefix string) error {
+	f, err := iohelper.OpenWriter(prefix + ".TsTv.qual")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "QUAL_THRESHOLD\tN_Ts_LT_QUAL_THRESHOLD\tN_Tv_LT_QUAL_THRESHOLD\tTs/Tv_LT_QUAL_THRESHOLD\tN_Ts_GT_QUAL_THRESHOLD\tN_Tv_GT_QUAL_THRESHOLD\tTs/Tv_GT_QUAL_THRESHOLD")
+
+	// Collect distinct sorted thresholds.
+	seen := make(map[float64]bool)
+	var thresholds []float64
+	for _, st := range s.tsTvByQual {
+		if !seen[st.qual] {
+			seen[st.qual] = true
+			thresholds = append(thresholds, st.qual)
+		}
+	}
+	sort.Float64s(thresholds)
+
+	ratio := func(ts, tv int) float64 {
+		if tv == 0 {
+			return 0.0
+		}
+		return float64(ts) / float64(tv)
+	}
+
+	for _, q := range thresholds {
+		var tsLT, tvLT, tsGT, tvGT int
+		for _, st := range s.tsTvByQual {
+			if st.qual < q {
+				if st.isTs {
+					tsLT++
+				} else {
+					tvLT++
+				}
+			} else {
+				if st.isTs {
+					tsGT++
+				} else {
+					tvGT++
+				}
+			}
+		}
+		fmt.Fprintf(f, "%.4f\t%d\t%d\t%.4f\t%d\t%d\t%.4f\n",
+			q, tsLT, tvLT, ratio(tsLT, tvLT), tsGT, tvGT, ratio(tsGT, tvGT))
 	}
 
 	return nil
