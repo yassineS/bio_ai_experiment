@@ -288,3 +288,48 @@ func TestIntegration_PositionRange(t *testing.T) {
 		t.Errorf("Expected 1 site in range [150, 250], got %d", dataLines)
 	}
 }
+
+func TestIntegration_NewStatistics(t *testing.T) {
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "test")
+
+	params := &Params{
+		OutPrefix:    prefix,
+		SitePi:       true,
+		WindowPi:     1000,
+		WindowPiStep: 500,
+		TsTvByCount:  true,
+		Depth:        true,
+	}
+	if err := Run(strings.NewReader(testVCF), params); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	for _, suffix := range []string{".sites.pi", ".windowed.pi", ".TsTv.count", ".idepth"} {
+		b, err := os.ReadFile(prefix + suffix)
+		if err != nil {
+			t.Fatalf("expected output file %s: %v", prefix+suffix, err)
+		}
+		if !strings.Contains(string(b), "\t") {
+			t.Errorf("%s looks malformed:\n%s", prefix+suffix, string(b))
+		}
+	}
+
+	// Each of the 3 samples appears at 5 sites with DP 20,15,30,25,20 -> mean 22.
+	idepth, err := os.ReadFile(prefix + ".idepth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(idepth), "22.00000") {
+		t.Errorf(".idepth should report mean depth 22, got:\n%s", string(idepth))
+	}
+
+	// chr1 site 100 is balanced biallelic over 6 chromosomes: pi = 0.6.
+	sitesPi, err := os.ReadFile(prefix + ".sites.pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sitesPi), "chr1\t100\t0.600000") {
+		t.Errorf(".sites.pi should report 0.6 for chr1:100, got:\n%s", string(sitesPi))
+	}
+}

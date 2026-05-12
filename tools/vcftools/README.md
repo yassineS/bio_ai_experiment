@@ -1,35 +1,64 @@
 # vcftools - VCF File Utilities
 
-A Go implementation of vcftools for working with VCF (Variant Call Format) files.
+A partial Go reimplementation of vcftools for working with VCF (Variant Call
+Format) files.
+
+> **Scope:** this is **not** a drop-in replacement for upstream vcftools. It
+> implements roughly 40 of vcftools' ~147 options — the commonly used filtering,
+> per-site statistics, and a few format conversions (listed below). Options that
+> are not implemented (LD analysis, Fst, Tajima's D, `--TsTv-by-qual`,
+> `--hist-indel-len`, `--geno-depth`, ...) are **rejected with an error** rather
+> than silently ignored. See [ROADMAP.md](ROADMAP.md) and
+> [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md).
 
 ## Overview
 
-vcftools provides a suite of functions for working with genetic variation data in VCF format. The tool can:
+This port can:
 
-- Filter VCF files by various criteria (position, quality, allele frequency, etc.)
-- Calculate statistics (allele frequency, depth, missingness, Hardy-Weinberg equilibrium, etc.)
-- Output data in various formats
+- Filter VCF files (position, SNP ID, quality, allele frequency/count, variant type, genotype-level filters)
+- Calculate per-site and per-individual statistics
+- Convert to a few other formats (012 matrix, PLINK PED/MAP, PLINK TPED/TFAM)
 - Handle both plain and gzipped VCF files
 
 ## Features
 
 ### Filtering Options
 
-- **Position filtering**: Filter by chromosome, position range, or position list
-- **Variant type filtering**: Keep/remove indels, filter by allele count
-- **Quality filtering**: Filter by quality score, filter status
-- **Allele frequency filtering**: Filter by MAF, MAC
-- **Genotype filtering**: Filter by missing data rate, depth
+- **Position filtering**: by chromosome (`--chr`/`--not-chr`), position range (`--from-bp`/`--to-bp`), or position list (`--positions`/`--exclude-positions`)
+- **SNP-ID filtering**: `--snp`, `--snps`, `--exclude`, `--exclude-snps`, `--thin`
+- **Variant type filtering**: `--keep-only-indels`, `--remove-indels`, `--min-alleles`/`--max-alleles`
+- **Quality filtering**: `--minQ`, `--remove-filtered-all`
+- **Allele frequency / count filtering**: `--maf`/`--max-maf`, `--mac`/`--max-mac`
+- **Genotype-level filtering**: `--max-missing`, `--min-meanDP`/`--max-meanDP`, `--minDP`/`--maxDP`, `--minGQ`
+- **Sample filtering**: `--indv`, `--remove-indv`, `--keep`, `--remove`
 
 ### Statistics Output
 
-- Allele frequency and counts
-- Site and mean depth
-- Site quality scores
-- Individual and site missingness
-- Hardy-Weinberg equilibrium testing
-- Transition/transversion (Ts/Tv) ratios
-- Nucleotide diversity (pi)
+- Allele frequency and counts (`--freq`, `--counts`, `--freq2`, `--counts2`)
+- Depth: per individual (`--depth` → `.idepth`), per site summed (`--site-depth`) and mean (`--site-mean-depth`)
+- Site quality (`--site-quality`)
+- Missingness: per individual (`--missing-indv`) and per site (`--missing-site`)
+- Hardy-Weinberg equilibrium (`--hardy`)
+- Heterozygosity / F per individual (`--het`); singletons (`--singletons`)
+- Transition/transversion ratios: `--TsTv-summary`, `--TsTv N`, `--TsTv-by-count`
+- Nucleotide diversity: per site (`--site-pi`) and windowed (`--window-pi`, `--window-pi-step`)
+- FILTER summary (`--FILTER-summary`); SNP density (`--SNPdensity N`)
+
+`--site-pi` uses the standard per-site formula `(n² − Σ cₐ²) / (n(n−1))` over
+non-missing chromosomes; `--window-pi` reports the sum of per-site π over each
+window. (Earlier builds of this port reported a different, incorrect quantity
+for `--site-pi`.)
+
+### Format Conversion
+
+- `--012` (0/1/2 genotype matrix), `--plink` (PED/MAP), `--plink-tped` (TPED/TFAM), with `--chrom-map`
+
+### Not implemented
+
+These options are recognised but **rejected with an error** (older builds
+accepted them and produced nothing): `--TsTv-by-qual`, `--hist-indel-len`,
+`--geno-depth`, `--TajimaD`, `--weir-fst-pop`, `--fst-window-size`,
+`--fst-window-step`, and all LD analysis (`--geno-r2`, `--hap-r2`, ...).
 
 ### Format Support
 

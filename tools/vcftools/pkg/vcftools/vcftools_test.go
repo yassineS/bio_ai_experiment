@@ -2,6 +2,7 @@ package vcftools
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -373,28 +374,89 @@ func TestBuildSampleFilter(t *testing.T) {
 	}
 }
 
-func TestGenotypeDistance(t *testing.T) {
+func TestNucleotideDiversity(t *testing.T) {
 	tests := []struct {
-		gt1      string
-		gt2      string
-		expected int
+		name string
+		gt   []string
+		want float64
+		ok   bool
 	}{
-		{"0/0", "0/0", 0},
-		{"0/0", "0/1", 1},
-		{"0/0", "1/1", 2},
-		{"0/1", "1/0", 2},
-		{"0/1", "0/1", 0},
-		{"0|0", "0|0", 0},
-		{"0|1", "1|0", 2},
+		// 3 ref + 3 alt out of 6 chromosomes: (36 - 9 - 9) / (6*5) = 0.6
+		{"balanced biallelic", []string{"0/0", "0/1", "1/1"}, 0.6, true},
+		// All reference => no diversity.
+		{"monomorphic", []string{"0/0", "0/0", "0/0"}, 0.0, true},
+		// 5 ref + 1 alt out of 6: (36 - 25 - 1) / 30 = 10/30
+		{"singleton", []string{"0/0", "0/0", "0/1"}, 10.0 / 30.0, true},
+		// Missing data is excluded; only two chromosomes (one ref, one alt)
+		// remain: (4 - 1 - 1) / (2*1) = 1.0
+		{"with missing", []string{"./.", "1", "0"}, 1.0, true},
+		// Fewer than two non-missing chromosomes => not defined.
+		{"insufficient data", []string{"./.", "./.", "0"}, 0.0, false},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.gt1+"_"+tt.gt2, func(t *testing.T) {
-			result := genotypeDistance(tt.gt1, tt.gt2)
-			if result != tt.expected {
-				t.Errorf("genotypeDistance(%s, %s) = %d, want %d",
-					tt.gt1, tt.gt2, result, tt.expected)
+		t.Run(tt.name, func(t *testing.T) {
+			v := createTestVariant("1", 100, "A", []string{"G"}, 50, tt.gt)
+			got, ok := nucleotideDiversity(v)
+			if ok != tt.ok {
+				t.Fatalf("nucleotideDiversity ok = %v, want %v", ok, tt.ok)
+			}
+			if ok && math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("nucleotideDiversity = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsTransitionSNP(t *testing.T) {
+	transitions := [][2]string{{"A", "G"}, {"G", "A"}, {"C", "T"}, {"T", "C"}}
+	transversions := [][2]string{{"A", "C"}, {"A", "T"}, {"G", "C"}, {"G", "T"}, {"C", "A"}, {"T", "A"}}
+	for _, p := range transitions {
+		if !isTransitionSNP(p[0], p[1]) {
+			t.Errorf("isTransitionSNP(%s,%s) = false, want true", p[0], p[1])
+		}
+	}
+	for _, p := range transversions {
+		if isTransitionSNP(p[0], p[1]) {
+			t.Errorf("isTransitionSNP(%s,%s) = true, want false", p[0], p[1])
+		}
+	}
+}
+
+func TestCheckUnsupported(t *testing.T) {
+	supported := []*Params{
+		{},
+		{SitePi: true, WindowPi: 1000},
+		{TsTvByCount: true, Depth: true},
+	}
+	for i, p := range supported {
+		if err := checkUnsupported(p); err != nil {
+			t.Errorf("checkUnsupported(supported[%d]) = %v, want nil", i, err)
+		}
+	}
+
+	unsupported := []*Params{
+		{TsTvByQual: true},
+		{HistIndelLen: true},
+		{GenoDepth: true},
+		{TajimaD: 10000},
+		{WeirFstPop: []string{"pop1.txt", "pop2.txt"}},
+		{FstWindowSize: 10000},
+	}
+	for i, p := range unsupported {
+		if err := checkUnsupported(p); err == nil {
+			t.Errorf("checkUnsupported(unsupported[%d]) = nil, want error", i)
+		}
+	}
+}
+
+func TestRunRejectsUnsupportedFeatures(t *testing.T) {
+	in := strings.NewReader(testVCF)
+	err := Run(in, &Params{OutPrefix: t.TempDir() + "/out", WeirFstPop: []string{"pop1.txt"}})
+	if err == nil {
+		t.Fatal("Run with --weir-fst-pop should return an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Errorf("error = %q, want it to mention 'not implemented'", err.Error())
 	}
 }

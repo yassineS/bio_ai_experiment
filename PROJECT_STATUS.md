@@ -1,6 +1,14 @@
 # Project Status
 
-**Last Updated**: 2025-10-20
+> **Out of date (note added 2026-05-12).** This file describes the Phase 0/1
+> setup-and-analysis period and still says "0 tools implemented". That is no
+> longer true: eight tools have a working subset of features in `tools/`.
+> For the current state see [tools/PORTING_STATUS.md](tools/PORTING_STATUS.md)
+> (per-tool status, real `go test -cover` numbers) and [CLAUDE.md](CLAUDE.md)
+> (repo layout and conventions). The historical content below is kept for
+> reference only.
+
+**Last Updated**: 2025-10-20 (historical); status note added 2026-05-12
 
 ## Current Phase
 

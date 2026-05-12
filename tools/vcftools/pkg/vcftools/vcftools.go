@@ -111,6 +111,12 @@ type positionSet map[string]map[int]bool
 
 // Run executes vcftools with the given parameters
 func Run(input io.Reader, params *Params) error {
+	// Reject requested features that this port does not implement yet, instead
+	// of silently producing no output.
+	if err := checkUnsupported(params); err != nil {
+		return err
+	}
+
 	// Read VCF
 	reader := vcf.NewReader(input)
 	header, err := reader.ReadHeader()
@@ -851,8 +857,26 @@ func outputStatistics(stats *statistics, params *Params) error {
 		}
 	}
 
+	if params.TsTvByCount {
+		if err := stats.outputTsTvByCount(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+
+	if params.Depth {
+		if err := stats.outputDepth(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+
 	if params.SitePi {
 		if err := stats.outputSitePi(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+
+	if params.WindowPi > 0 {
+		if err := stats.outputWindowedPi(params.OutPrefix, params.WindowPi, params.WindowPiStep); err != nil {
 			return err
 		}
 	}
@@ -920,4 +944,36 @@ func outputFormatConversions(variants []*vcf.Variant, header *vcf.Header, params
 // Helper function to get output file path
 func getOutputPath(prefix, suffix string) string {
 	return filepath.Join(".", prefix+suffix)
+}
+
+// checkUnsupported returns an error if the parameters request a feature that
+// this Go port does not implement yet. Previously these options were accepted
+// and silently ignored, which produced no output and looked like success.
+func checkUnsupported(params *Params) error {
+	var missing []string
+	if params.TsTvByQual {
+		missing = append(missing, "--TsTv-by-qual")
+	}
+	if params.HistIndelLen {
+		missing = append(missing, "--hist-indel-len")
+	}
+	if params.GenoDepth {
+		missing = append(missing, "--geno-depth")
+	}
+	if params.TajimaD != 0 {
+		missing = append(missing, "--TajimaD")
+	}
+	if len(params.WeirFstPop) > 0 {
+		missing = append(missing, "--weir-fst-pop")
+	}
+	if params.FstWindowSize != 0 {
+		missing = append(missing, "--fst-window-size")
+	}
+	if params.FstWindowStep != 0 {
+		missing = append(missing, "--fst-window-step")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("not implemented in this Go port yet: %s (see tools/vcftools/ROADMAP.md)", strings.Join(missing, ", "))
+	}
+	return nil
 }

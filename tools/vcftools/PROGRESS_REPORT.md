@@ -1,14 +1,28 @@
-# vcftools 100% Feature Parity - Progress Report
+# vcftools Feature-Parity Plan (aspirational)
 
-**Date**: 2025-10-21  
-**Status**: Phase 1 In Progress  
-**Overall Progress**: 35/147 features (24%)
+> **This is a plan, not a status report.** Despite the original title ("100%
+> Feature Parity"), full parity has **not** been achieved or even closely
+> approached. As of 2026-05-12 the Go port implements roughly 40 of vcftools'
+> ~147 options. A few of the "Phase 1" statistics below were wired up
+> (`--site-pi` fixed, `--window-pi`/`--window-pi-step`, `--TsTv-by-count`,
+> `--depth`), and the ones that were never implemented (`--TsTv-by-qual`,
+> `--hist-indel-len`, `--geno-depth`, `--TajimaD`, `--weir-fst-pop`,
+> `--fst-window-*`) now return an error instead of being silently ignored.
+> For the actual current state see
+> [../PORTING_STATUS.md](../PORTING_STATUS.md) and [README.md](README.md).
+> The phase breakdown below is kept as a roadmap.
+
+**Original date**: 2025-10-21 · **Reality check**: 2026-05-12
 
 ---
 
-## Executive Summary
+## Executive Summary (planning estimate, not progress)
 
-Implementation of 100% feature parity with original vcftools requires approximately **8-10 weeks** of dedicated development time. This represents adding **112 missing features** across 8 implementation phases.
+Reaching full feature parity with original vcftools would require roughly
+**8-10 weeks** of dedicated development — adding ~110 missing features across
+the phases below. None of that timeline has been executed; the items marked
+"✅" in the phase notes refer to CLI flags being added, not necessarily to the
+underlying logic working.
 
 ### Scope Assessment
 
