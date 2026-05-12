@@ -482,75 +482,187 @@ ACGTACGT
 	}
 }
 
-func TestSubseq(t *testing.T) {
-	fasta := `>seq1
-ACGTACGTACGT
->seq2
-GCGCGCGCGCGC
+const subseqFASTA = `>chr1 first contig
+ACGTACGTAA
+>chr2
+TTTTGGGGCC
+>chr3
+NNNNN
 `
 
-	// Test basic subsequence extraction
-	r := strings.NewReader(fasta)
-	var buf bytes.Buffer
-
-	err := Subseq(r, &buf, 1, 4, false, fastq.Phred33)
-	if err != nil {
-		t.Fatalf("Subseq failed: %v", err)
+func TestSubseqNameList(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    string
+		want    string
+		wantNot []string
+		lineLen int
+	}{
+		{
+			name: "single name emits full record with original header",
+			spec: "chr2\n",
+			want: ">chr2\nTTTTGGGGCC\n",
+		},
+		{
+			name: "in-input order, not spec order",
+			// chr2 listed before chr1, but chr1 appears first in the input.
+			spec:    "chr2\nchr1\n",
+			want:    ">chr1 first contig\nACGTACGTAA\n>chr2\nTTTTGGGGCC\n",
+			wantNot: []string{">chr2\nTTTTGGGGCC\n>chr1"},
+		},
+		{
+			name: "trailing whitespace after name is ignored",
+			spec: "chr2\textra columns here\n",
+			want: ">chr2\nTTTTGGGGCC\n",
+		},
+		{
+			name:    "unknown name warns and is skipped",
+			spec:    "chrX\nchr3\n",
+			want:    ">chr3\nNNNNN\n",
+			wantNot: []string{"chrX"},
+		},
+		{
+			name:    "line wrapping",
+			spec:    "chr1\n",
+			lineLen: 4,
+			want:    ">chr1 first contig\nACGT\nACGT\nAA\n",
+		},
 	}
 
-	output := buf.String()
-	if !strings.Contains(output, "ACGT") {
-		t.Error("Expected ACGT in output")
-	}
-	if !strings.Contains(output, "GCGC") {
-		t.Error("Expected GCGC in output")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := Subseq(strings.NewReader(subseqFASTA), strings.NewReader(tc.spec), &buf, tc.lineLen)
+			if err != nil {
+				t.Fatalf("Subseq failed: %v", err)
+			}
+			got := buf.String()
+			if got != tc.want {
+				t.Errorf("output = %q, want %q", got, tc.want)
+			}
+			for _, n := range tc.wantNot {
+				if strings.Contains(got, n) {
+					t.Errorf("output %q should not contain %q", got, n)
+				}
+			}
+		})
 	}
 }
 
-func TestSubseqNegativeIndex(t *testing.T) {
-	fasta := `>seq1
-ACGTACGTACGT
-`
-
-	// Test negative index (last 4 bases)
-	r := strings.NewReader(fasta)
-	var buf bytes.Buffer
-
-	err := Subseq(r, &buf, -4, -1, false, fastq.Phred33)
-	if err != nil {
-		t.Fatalf("Subseq failed: %v", err)
+func TestSubseqBED(t *testing.T) {
+	tests := []struct {
+		name string
+		spec string
+		want string
+	}{
+		{
+			name: "single region: chrom:start+1-end header and correct slice",
+			spec: "chr1\t1\t4\n",
+			want: ">chr1:2-4\nCGT\n",
+		},
+		{
+			name: "multiple regions on same chrom, in BED order",
+			spec: "chr1\t0\t2\nchr1\t4\t8\n",
+			want: ">chr1:1-2\nAC\n>chr1:5-8\nACGT\n",
+		},
+		{
+			name: "regions across multiple chroms",
+			spec: "chr1\t0\t3\nchr2\t6\t10\n",
+			want: ">chr1:1-3\nACG\n>chr2:7-10\nGGCC\n",
+		},
+		{
+			name: "end is clamped to sequence length",
+			spec: "chr3\t1\t100\n",
+			want: ">chr3:2-5\nNNNN\n",
+		},
+		{
+			name: "comment, track and browser lines are ignored",
+			spec: "#comment\ntrack name=foo\nbrowser position chr1\nchr1\t2\t5\n",
+			want: ">chr1:3-5\nGTA\n",
+		},
+		{
+			name: "extra BED columns are ignored",
+			spec: "chr2\t0\t4\tfeatureName\t100\t+\n",
+			want: ">chr2:1-4\nTTTT\n",
+		},
 	}
 
-	output := buf.String()
-	if !strings.Contains(output, "ACGT") {
-		t.Error("Expected ACGT (last 4 bases) in output")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := Subseq(strings.NewReader(subseqFASTA), strings.NewReader(tc.spec), &buf, 0)
+			if err != nil {
+				t.Fatalf("Subseq failed: %v", err)
+			}
+			if got := buf.String(); got != tc.want {
+				t.Errorf("output = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
-func TestSubseqFastq(t *testing.T) {
-	fastqData := `@read1
-ACGTACGTACGT
-+
-IIIIIIIIIIII
-`
-
-	r := strings.NewReader(fastqData)
+func TestSubseqBEDOutOfRange(t *testing.T) {
+	// start >= len(seq): the region is skipped entirely (warning to stderr).
 	var buf bytes.Buffer
-
-	err := Subseq(r, &buf, 1, 4, true, fastq.Phred33)
+	err := Subseq(strings.NewReader(subseqFASTA), strings.NewReader("chr3\t10\t20\n"), &buf, 0)
 	if err != nil {
 		t.Fatalf("Subseq failed: %v", err)
 	}
+	if got := buf.String(); got != "" {
+		t.Errorf("out-of-range region should produce no output, got %q", got)
+	}
+}
 
-	output := buf.String()
-	if !strings.Contains(output, "ACGT") {
-		t.Error("Expected ACGT in output")
+func TestSubseqFormatAutodetect(t *testing.T) {
+	tests := []struct {
+		name      string
+		spec      string
+		wantIsBED bool
+	}{
+		{name: "three int-ish fields => BED", spec: "chr1\t0\t10\n", wantIsBED: true},
+		{name: "space-separated three fields => BED", spec: "chr1 0 10\n", wantIsBED: true},
+		{name: "extra columns still BED", spec: "chr1\t0\t10\tname\n", wantIsBED: true},
+		{name: "two fields => name list", spec: "chr1\t0\n", wantIsBED: false},
+		{name: "non-integer second field => name list", spec: "chr1\tfoo\t10\n", wantIsBED: false},
+		{name: "non-integer third field => name list", spec: "chr1\t0\tbar\n", wantIsBED: false},
+		{name: "single column => name list", spec: "chr1\n", wantIsBED: false},
+		{name: "comments skipped before detection", spec: "# header\nchr1\t0\t10\n", wantIsBED: true},
 	}
-	if !strings.Contains(output, "IIII") {
-		t.Error("Expected quality IIII in output")
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := parseSubseqSpec(strings.NewReader(tc.spec))
+			if err != nil {
+				t.Fatalf("parseSubseqSpec failed: %v", err)
+			}
+			if spec.isBED != tc.wantIsBED {
+				t.Errorf("isBED = %v, want %v", spec.isBED, tc.wantIsBED)
+			}
+		})
 	}
-	// Should not contain full sequence
-	if strings.Contains(output, "ACGTACGTACGT") {
-		t.Error("Should not contain full sequence")
+}
+
+func TestSubseqFastqInputFastaOutput(t *testing.T) {
+	fastqData := "@read1 some desc\nACGTACGTAA\n+\nIIIIIIIIII\n@read2\nTTTTGGGGCC\n+\n##########\n"
+
+	// Name list.
+	var buf bytes.Buffer
+	if err := Subseq(strings.NewReader(fastqData), strings.NewReader("read2\n"), &buf, 0); err != nil {
+		t.Fatalf("Subseq failed: %v", err)
+	}
+	if got, want := buf.String(), ">read2\nTTTTGGGGCC\n"; got != want {
+		t.Errorf("name-list FASTQ->FASTA: got %q, want %q", got, want)
+	}
+
+	// BED region.
+	buf.Reset()
+	if err := Subseq(strings.NewReader(fastqData), strings.NewReader("read1\t0\t4\n"), &buf, 0); err != nil {
+		t.Fatalf("Subseq failed: %v", err)
+	}
+	if got, want := buf.String(), ">read1:1-4\nACGT\n"; got != want {
+		t.Errorf("BED FASTQ->FASTA: got %q, want %q", got, want)
+	}
+	if strings.Contains(buf.String(), "I") || strings.Contains(buf.String(), "@") {
+		t.Errorf("FASTQ quality/header leaked into FASTA output: %q", buf.String())
 	}
 }

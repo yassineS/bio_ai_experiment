@@ -3,12 +3,14 @@
 package seqtk
 
 import (
+	"bufio"
 	"compress/bzip2"
 	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
@@ -346,121 +348,248 @@ func passesFilter(id string, length int, opts FilterOptions) bool {
 	return true
 }
 
-// Subseq extracts a subsequence from each sequence.
-func Subseq(input io.Reader, output io.Writer, start, end int, isFastq bool, encoding fastq.QualityEncoding) error {
+// subseqRegion describes a half-open [Start, End) interval (0-based) requested
+// for a particular sequence. A region with Start == 0 and End == -1 (a sentinel)
+// means "the whole sequence" — this is how name-list entries are represented.
+type subseqRegion struct {
+	Start int
+	End   int // -1 means "to the end of the sequence"
+}
+
+// subseqSpec holds the parsed contents of a subseq region/name file: an ordered
+// list of sequence names and, for each name, the list of requested regions.
+type subseqSpec struct {
+	order   []string                  // sequence names in the order first seen
+	regions map[string][]subseqRegion // name -> requested regions (nil/empty for name-list mode)
+	isBED   bool                      // true if the file was detected as BED
+	seen    map[string]bool           // membership set for quick lookup
+}
+
+func newSubseqSpec() *subseqSpec {
+	return &subseqSpec{
+		regions: make(map[string][]subseqRegion),
+		seen:    make(map[string]bool),
+	}
+}
+
+func (s *subseqSpec) add(name string, reg *subseqRegion) {
+	if !s.seen[name] {
+		s.seen[name] = true
+		s.order = append(s.order, name)
+	}
+	if reg != nil {
+		s.regions[name] = append(s.regions[name], *reg)
+	}
+}
+
+// looksLikeBED reports whether a non-comment line, split on whitespace, has at
+// least three fields and the second and third fields are integers — matching how
+// upstream seqtk auto-detects a BED file versus a plain name list.
+func looksLikeBED(fields []string) bool {
+	if len(fields) < 3 {
+		return false
+	}
+	if _, err := strconv.Atoi(fields[1]); err != nil {
+		return false
+	}
+	if _, err := strconv.Atoi(fields[2]); err != nil {
+		return false
+	}
+	return true
+}
+
+// parseSubseqSpec reads a name list or a BED file from r. It auto-detects the
+// format from the first non-comment line: if that line looks like BED (>= 3
+// whitespace/tab fields with integer second and third fields) the whole file is
+// parsed as BED; otherwise it is treated as a name list (one name per line,
+// anything after the first whitespace-delimited token is ignored).
+func parseSubseqSpec(r io.Reader) (*subseqSpec, error) {
+	spec := newSubseqSpec()
+	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	decided := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") ||
+			strings.HasPrefix(line, "track") || strings.HasPrefix(line, "browser") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if !decided {
+			spec.isBED = looksLikeBED(fields)
+			decided = true
+		}
+		if spec.isBED {
+			if !looksLikeBED(fields) {
+				// Tolerate the occasional malformed line in a BED file by skipping it.
+				continue
+			}
+			start, _ := strconv.Atoi(fields[1])
+			end, _ := strconv.Atoi(fields[2])
+			spec.add(fields[0], &subseqRegion{Start: start, End: end})
+		} else {
+			spec.add(fields[0], nil)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return spec, nil
+}
+
+// peekIsFastq peeks at the first non-whitespace byte of r (via a *bufio.Reader
+// it returns) to decide whether the stream is FASTQ ('@') or FASTA ('>').
+func peekIsFastq(r io.Reader) (*bufio.Reader, bool) {
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		b, err := br.Peek(1)
+		if err != nil {
+			return br, false
+		}
+		if b[0] == ' ' || b[0] == '\t' || b[0] == '\n' || b[0] == '\r' {
+			if _, err := br.Discard(1); err != nil {
+				return br, false
+			}
+			continue
+		}
+		return br, b[0] == '@'
+	}
+}
+
+// writeFastaRecord writes a single FASTA record (header + sequence) to w,
+// wrapping sequence lines at lineLen characters (lineLen <= 0 means no wrapping).
+func writeFastaRecord(w *bufio.Writer, header string, seq []byte, lineLen int) error {
+	if _, err := fmt.Fprintf(w, ">%s\n", header); err != nil {
+		return err
+	}
+	if lineLen <= 0 {
+		if _, err := w.Write(seq); err != nil {
+			return err
+		}
+		return w.WriteByte('\n')
+	}
+	for len(seq) > 0 {
+		end := lineLen
+		if end > len(seq) {
+			end = len(seq)
+		}
+		if _, err := w.Write(seq[:end]); err != nil {
+			return err
+		}
+		if err := w.WriteByte('\n'); err != nil {
+			return err
+		}
+		seq = seq[end:]
+	}
+	return nil
+}
+
+// emitSubseqRecord writes the output for one input sequence (identified by name,
+// full header and sequence bytes) according to the parsed spec. In name-list
+// mode it emits the whole record with its original header; in BED mode it emits
+// one FASTA record per region, named "name:start+1-end", clamping end to the
+// sequence length and skipping regions whose start is at or past the end. It
+// returns the number of records written.
+func emitSubseqRecord(w *bufio.Writer, spec *subseqSpec, name, header string, seq []byte, lineLen int) (int, error) {
+	regions := spec.regions[name]
+	if len(regions) == 0 {
+		// Name-list mode (or BED entry with no regions): emit the whole record.
+		if err := writeFastaRecord(w, header, seq, lineLen); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	n := 0
+	for _, reg := range regions {
+		start := reg.Start
+		end := reg.End
+		if end < 0 || end > len(seq) {
+			end = len(seq)
+		}
+		if start < 0 {
+			start = 0
+		}
+		if start >= len(seq) || start >= end {
+			fmt.Fprintf(os.Stderr, "[seqtk subseq] warning: region %s:%d-%d is out of range; skipped\n", name, reg.Start+1, reg.End)
+			continue
+		}
+		h := fmt.Sprintf("%s:%d-%d", name, start+1, end)
+		if err := writeFastaRecord(w, h, seq[start:end], lineLen); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// Subseq extracts subsequences from a FASTA/FASTQ stream (in) given a region
+// specification (regionSpec), which is either a list of sequence names (one per
+// line) or a BED file of regions; the format is auto-detected. Output is always
+// FASTA, written to w with sequence lines wrapped at lineLen characters (0 = no
+// wrapping). Names present in the spec but absent from the input, and BED
+// regions that fall outside their sequence, produce a warning on stderr and are
+// skipped rather than causing an error.
+func Subseq(in io.Reader, regionSpec io.Reader, w io.Writer, lineLen int) error {
+	spec, err := parseSubseqSpec(regionSpec)
+	if err != nil {
+		return err
+	}
+
+	br, isFastq := peekIsFastq(in)
+	bw := bufio.NewWriter(w)
+
+	emitted := make(map[string]bool)
+
 	if isFastq {
-		return subseqFastq(input, output, start, end, encoding)
-	}
-	return subseqFasta(input, output, start, end)
-}
-
-func subseqFasta(input io.Reader, output io.Writer, start, end int) error {
-	reader := fasta.NewReader(input)
-	writer := fasta.NewWriter(output, 80)
-
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
+		reader := fastq.NewReader(br, fastq.Phred33)
+		for {
+			rec, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if !spec.seen[rec.ID] {
+				continue
+			}
+			if _, err := emitSubseqRecord(bw, spec, rec.ID, rec.Description, rec.Sequence, lineLen); err != nil {
+				return err
+			}
+			emitted[rec.ID] = true
 		}
-		if err != nil {
-			return err
-		}
-
-		// Extract subsequence (1-based indexing, inclusive)
-		length := record.Length()
-
-		// Adjust negative indices (from end)
-		if end < 0 {
-			end = length + end + 1
-		}
-		if start < 0 {
-			start = length + start + 1
-		}
-
-		// Convert to 0-based indexing
-		startIdx := start - 1
-		endIdx := end
-
-		// Bounds checking
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		if endIdx > length {
-			endIdx = length
-		}
-		if startIdx >= length || startIdx >= endIdx {
-			continue // Skip this sequence
-		}
-
-		// Create new record with subsequence
-		subRecord := &fasta.Record{
-			ID:          record.ID,
-			Description: record.Description,
-			Sequence:    record.Sequence[startIdx:endIdx],
-		}
-
-		if err := writer.Write(subRecord); err != nil {
-			return err
+	} else {
+		reader := fasta.NewReader(br)
+		for {
+			rec, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if !spec.seen[rec.ID] {
+				continue
+			}
+			if _, err := emitSubseqRecord(bw, spec, rec.ID, rec.Description, rec.Sequence, lineLen); err != nil {
+				return err
+			}
+			emitted[rec.ID] = true
 		}
 	}
 
-	return writer.Flush()
-}
-
-func subseqFastq(input io.Reader, output io.Writer, start, end int, encoding fastq.QualityEncoding) error {
-	reader := fastq.NewReader(input, encoding)
-	writer := fastq.NewWriter(output, encoding)
-
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		// Extract subsequence (1-based indexing, inclusive)
-		length := record.Length()
-
-		// Adjust negative indices (from end)
-		if end < 0 {
-			end = length + end + 1
-		}
-		if start < 0 {
-			start = length + start + 1
-		}
-
-		// Convert to 0-based indexing
-		startIdx := start - 1
-		endIdx := end
-
-		// Bounds checking
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		if endIdx > length {
-			endIdx = length
-		}
-		if startIdx >= length || startIdx >= endIdx {
-			continue // Skip this sequence
-		}
-
-		// Create new record with subsequence
-		subRecord := &fastq.Record{
-			ID:          record.ID,
-			Description: record.Description,
-			Sequence:    record.Sequence[startIdx:endIdx],
-			Quality:     record.Quality[startIdx:endIdx],
-		}
-
-		if err := writer.Write(subRecord); err != nil {
-			return err
+	for _, name := range spec.order {
+		if !emitted[name] {
+			fmt.Fprintf(os.Stderr, "[seqtk subseq] warning: sequence %q not found in input; skipped\n", name)
 		}
 	}
 
-	return writer.Flush()
+	return bw.Flush()
 }
 
 func reverseComplementFasta(input io.Reader, output io.Writer) error {

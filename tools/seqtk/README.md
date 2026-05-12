@@ -123,26 +123,41 @@ Options:
 
 #### 4. Subsequence Extraction (`subseq`)
 
-Extract subsequences from each sequence:
+Extract subsequences from a FASTA/FASTQ file given either a list of sequence
+names or a BED file of regions. The second argument's format is auto-detected:
+if its first non-comment line splits into at least three whitespace/tab fields
+whose second and third fields are integers it is treated as BED, otherwise as a
+name list. **Output is always FASTA.**
 
 ```bash
-# Extract first 100 bases
-seqtk subseq reads.fastq 1 100 > first100.fastq
+# Extract whole records whose names are listed in names.txt
+# (one name per line; anything after the name is ignored).
+# Records are emitted in the order they appear in the input.
+seqtk subseq genome.fa names.txt > selected.fa
 
-# Extract from position 50 to end
-seqtk subseq reads.fastq 50 -1 > trimmed.fastq
+# Extract regions described by a BED file
+# (chrom<TAB>start<TAB>end; 0-based half-open [start, end); extra columns
+# ignored; lines starting with '#', 'track' or 'browser' ignored).
+# Each region becomes a record named "chrom:start+1-end".
+seqtk subseq genome.fa regions.bed > regions.fa
 
-# Extract last 100 bases
-seqtk subseq reads.fastq -100 -1 > last100.fastq
+# e.g. a BED line "chr1  1  4" against ">chr1\nACGTACGT" yields ">chr1:2-4\nCGT".
 
-# Works with compressed files and stdin
-cat reads.fastq.gz | seqtk subseq - 1 100 -o first100.fastq.gz
+# Wrap output sequence lines at 60 characters (0 = no wrap, the default).
+seqtk subseq -l 60 genome.fa regions.bed > regions.fa
+
+# FASTQ input works too (output is still FASTA); '-' reads from stdin.
+cat reads.fq.gz | seqtk subseq - names.txt > selected.fa
 ```
+
+Unknown sequence names, and BED regions whose start lies at or past the end of
+the sequence, produce a warning on stderr and are skipped. BED `end`
+coordinates past the sequence length are clamped.
 
 Options:
 
-- `-6, --phred64`: Use Phred+64 encoding for FASTQ
-- `-o, --output FILE`: Output file
+- `-l, --line-length INT`: Wrap output sequence lines at INT characters (0 = no wrap, default)
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
 
 #### 5. Random Sampling (`sample`)
 
@@ -230,14 +245,11 @@ seqtk seq -n mitochondria assembly.fasta > mito.fasta
 # Filter sequences between 100-500bp
 seqtk seq -l 100 -L 500 reads.fastq > size_selected.fastq
 
-# Extract first 100bp from all reads
-seqtk subseq reads.fastq 1 100 > trimmed_reads.fastq
+# Extract named records (one name per line in names.txt)
+seqtk subseq assembly.fasta names.txt > selected.fasta
 
-# Extract last 50bp (useful for quality checking)
-seqtk subseq reads.fastq -50 -1 > read_ends.fastq
-
-# Combine filtering and extraction
-seqtk seq -l 150 reads.fastq | seqtk subseq - 1 100 > filtered_trimmed.fastq
+# Extract BED regions (each becomes a "chrom:start+1-end" FASTA record)
+seqtk subseq genome.fasta regions.bed > regions.fasta
 ```
 
 ### Quality Control
@@ -263,8 +275,8 @@ seqtk sample large_dataset.fastq 0.1 > test.fastq
 # Convert for downstream tools that need FASTA
 seqtk fq2fa test.fastq > test.fasta
 
-# Prepare specific regions
-seqtk seq -n chr1 genome.fasta | seqtk subseq - 1000 5000 > chr1_region.fasta
+# Prepare specific regions from a BED file
+seqtk subseq genome.fasta target_regions.bed > target_regions.fasta
 ```
 
 ### Pipeline Integration

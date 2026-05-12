@@ -82,7 +82,8 @@ Examples:
   seqtk fq2fa reads.fastq > reads.fasta
   seqtk seq -r sequences.fasta > rev_comp.fasta
   seqtk seq -l 100 -L 500 reads.fastq > filtered.fastq
-  seqtk subseq reads.fastq 1 100 > trimmed.fastq
+  seqtk subseq genome.fa regions.bed > regions.fa
+  seqtk subseq genome.fa names.txt > selected.fa
   seqtk sample reads.fastq 0.1 > sample.fastq
   seqtk trimfq -q 20 reads.fastq > trimmed.fastq
 
@@ -198,66 +199,51 @@ Examples:
 
 func subseqCommand() {
 	fs := flag.NewFlagSet("subseq", flag.ExitOnError)
-	var phred64 bool
 	var output string
+	var lineLen int
 
-	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
+	cliflag.IntVar(fs, &lineLen, "l", "line-length", 0, "Wrap output sequence lines at INT characters (0 = no wrap)")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: seqtk subseq [options] <input> <start> <end>
+		fmt.Fprintf(os.Stderr, `Usage: seqtk subseq [options] <in.fa> <name.list | reg.bed>
 
-Extract subsequences from sequences.
+Extract subsequences from a FASTA/FASTQ file given a list of sequence names or a
+BED file of regions. The second argument's format is auto-detected: if its first
+non-comment line splits into at least three whitespace/tab fields whose second
+and third fields are integers it is treated as BED, otherwise as a name list.
+Output is always FASTA.
 
 Arguments:
-  <input>    Input FASTA/FASTQ file (use '-' for stdin, supports .gz and .bz2)
-  <start>    Start position (1-based, inclusive, negative = from end)
-  <end>      End position (1-based, inclusive, negative = from end)
+  <in.fa>    Input FASTA/FASTQ file (use '-' for stdin, supports .gz and .bz2)
+  <name.list | reg.bed>
+             Either one sequence name per line, or a BED file
+             (chrom<TAB>start<TAB>end; 0-based half-open; extra columns ignored).
+             For each BED region a record named "chrom:start+1-end" is emitted.
 
 Options:
-  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
+  -l, --line-length INT  Wrap output sequence lines at INT characters (0 = no wrap)
   -o, --output FILE      Output file (default: stdout, supports .gz)
 
 Examples:
-  seqtk subseq reads.fastq 1 100     # Extract first 100 bases
-  seqtk subseq reads.fastq 50 -1    # Extract from position 50 to end
-  seqtk subseq reads.fastq -100 -1  # Extract last 100 bases
+  seqtk subseq genome.fa names.txt > selected.fa
+  seqtk subseq genome.fa regions.bed > regions.fa
+  cat reads.fq.gz | seqtk subseq - names.txt > selected.fa
 
 `)
 	}
 
 	fs.Parse(os.Args[2:])
 
-	if fs.NArg() < 3 {
+	if fs.NArg() < 2 {
 		fs.Usage()
 		os.Exit(1)
 	}
 
 	inputFile := fs.Arg(0)
-	var start, end int
-	if _, err := fmt.Sscanf(fs.Arg(1), "%d", &start); err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid start position: %v\n", err)
-		os.Exit(1)
-	}
-	if _, err := fmt.Sscanf(fs.Arg(2), "%d", &end); err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid end position: %v\n", err)
-		os.Exit(1)
-	}
+	specFile := fs.Arg(1)
 
-	// Detect file type
-	var isFastq bool
-	var err error
-	if inputFile != "-" {
-		isFastq, err = seqtk.GetFileType(inputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		isFastq = true // Default to FASTQ for stdin
-	}
-
-	// Open input with compression support
+	// Open input with compression support.
 	input, err := seqtk.OpenInput(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
@@ -265,7 +251,15 @@ Examples:
 	}
 	defer input.Close()
 
-	// Open output with compression support
+	// Open the name list / BED file with compression support.
+	spec, err := seqtk.OpenInput(specFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening region/name file: %v\n", err)
+		os.Exit(1)
+	}
+	defer spec.Close()
+
+	// Open output with compression support.
 	out, err := seqtk.OpenOutput(output)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
@@ -273,12 +267,7 @@ Examples:
 	}
 	defer out.Close()
 
-	encoding := fastq.Phred33
-	if phred64 {
-		encoding = fastq.Phred64
-	}
-
-	if err := seqtk.Subseq(input, out, start, end, isFastq, encoding); err != nil {
+	if err := seqtk.Subseq(input, spec, out, lineLen); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
