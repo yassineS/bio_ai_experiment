@@ -27,8 +27,8 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - **Tools with a working subset**: 8
 - **Tools tested**: 8 (package-level tests; `cmd/` entry points have no tests)
-- **Test coverage (statements, `go test -cover`)**: skewer 46%, vcftools 51%,
-  prinseq 55%, seqtk 57%, fastp 63%, bedintersect 75%, bedmerge 79%, sickle 80%
+- **Test coverage (statements, `go test -cover`)**: vcftools 52%, prinseq 55%,
+  seqtk 62%, fastp 63%, bedintersect 75%, bedmerge 79%, sickle 80%, skewer 90%
 - **Documentation**: README per tool; some design docs are aspirational, not status
 - **gzip support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools (not seqtk/prinseq)
 
@@ -50,22 +50,23 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `seq` - Sequence manipulation (reverse complement)
 - `sample` - Random subsampling
 - `trimfq` - Quality-based trimming
+- `subseq` - Extract subsequences by name list or BED region
 
-**Test Coverage**: ~57% of statements (`go test -cover`)  
+**Test Coverage**: ~62% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
 **Documentation**: README with examples  
 
 **Key Features**:
 
-- Fast FASTA/Q processing for the five commands above
+- Fast FASTA/Q processing for the six commands above
 - Quality score handling
 - Memory-efficient streaming
 
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- Only the five commands above are implemented; upstream seqtk has many more
-  (`subseq`, `mergepe`, `mutfa`, `randbase`, `hpc`, `cutN`, ...)
+- Only the six commands above are implemented; upstream seqtk has many more
+  (`mergepe`, `mutfa`, `randbase`, `hpc`, `cutN`, ...)
 - Output format intended to be compatible for the implemented commands
 
 ---
@@ -154,7 +155,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `se` - Single-end adapter trimming
 - `pe` - Paired-end adapter trimming
 
-**Test Coverage**: ~46% of statements (`go test -cover`)  
+**Test Coverage**: ~90% of statements (`go test -cover`)  
 **Performance**: ~1.0x (comparable to original)  
 **Documentation**: README with examples
 
@@ -286,13 +287,13 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~40 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~46 of ~147 options
 
 **Implemented Commands**:
 
 - Single command with multiple filtering, statistics and conversion options
 
-**Test Coverage**: ~51% of statements (`go test -cover`)  
+**Test Coverage**: ~52% of statements (`go test -cover`)  
 **Performance**: Comparable to original on the implemented operations  
 **Documentation**: README with examples  
 
@@ -307,15 +308,15 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Site statistics: `--freq`/`--counts`(+`2`), `--site-depth`, `--site-mean-depth`,
   `--site-quality`, `--missing-site`, `--missing-indv`, `--depth`, `--geno-depth`,
   `--hardy`, `--site-pi`, `--window-pi`(+`--window-pi-step`), `--TajimaD`,
-  `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--het`, `--singletons`,
-  `--hist-indel-len`, `--FILTER-summary`, `--SNPdensity`
+  `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--TsTv-by-qual`, `--het`,
+  `--singletons`, `--hist-indel-len`, `--FILTER-summary`, `--SNPdensity`
 - VCF recoding (`--recode`, `--recode-INFO-all`)
 - Format conversion: `--012`, `--plink`, `--plink-tped` (with `--chrom-map`)
 
 **Not yet implemented** — these options are now rejected with an error instead of
 being silently ignored (older builds accepted them and produced no output):
 
-- `--TsTv-by-qual`, `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
+- `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
 - All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
 
 See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and
@@ -334,7 +335,7 @@ See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and
 
 | Tool | Original Lang | Go Version | Commands | Tests | Docs | Performance | Gzip |
 |------|---------------|------------|----------|-------|------|-------------|------|
-| seqtk | C | 1.0.0 | 5 | ✓ | ✓ | 1.05-1.1x | - |
+| seqtk | C | 1.0.0 | 6 | ✓ | ✓ | 1.05-1.1x | - |
 | PRINSEQ | Perl | 1.0.0 | 2 | ✓ | ✓ | 1.2-1.35x | - |
 | sickle | C | 1.1.0 | 2 | ✓ | ✓ | 0.96-1.0x | ✓ |
 | skewer | C++ | 1.0.0 | 2 | ✓ | ✓ | ~1.0x | ✓ |
@@ -549,9 +550,8 @@ Use consistent datasets for comparison:
 
 **seqtk**:
 
-- Only `comp`, `fq2fa`, `seq`, `sample`, `trimfq` are implemented; many
-  upstream subcommands are missing
-- No built-in gzip support yet
+- Only `comp`, `fq2fa`, `seq`, `sample`, `trimfq`, `subseq` are implemented;
+  many upstream subcommands are still missing (`mergepe`, `mutfa`, `cutN`, ...)
 
 **PRINSEQ**:
 
@@ -568,8 +568,9 @@ Use consistent datasets for comparison:
 
 **skewer**:
 
-- Simplified adapter-detection algorithm
-- No automatic adapter detection
+- Simplified adapter-matching algorithm
+- `--auto-detect` picks from a small built-in adapter list (deterministic, by
+  declaration order on ties); ~90% statement test coverage
 
 **fastp**:
 
@@ -593,7 +594,7 @@ Use consistent datasets for comparison:
 
 **vcftools**:
 
-- ~40 of ~147 upstream options; see the vcftools section above
+- ~46 of ~147 upstream options; see the vcftools section above
 - Unimplemented options are now rejected with an error rather than ignored
 
 ### General Limitations
