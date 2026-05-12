@@ -172,12 +172,27 @@ func TrimSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEnco
 
 	stats := &TrimStats{}
 
+	// buffered holds records that were pre-read for auto-detection and still
+	// need to be processed; it is drained before reading further from reader.
+	var buffered []*fastq.Record
+
 	// Auto-detect adapters if requested
 	if opts.AutoDetect && opts.Adapter3 == "" && opts.Adapter5 == "" {
-		detected, err := detectAdapters(reader, opts.AutoDetectReads)
-		if err != nil {
-			return stats, fmt.Errorf("error auto-detecting adapters: %w", err)
+		maxReads := opts.AutoDetectReads
+		if maxReads <= 0 {
+			maxReads = 1000
 		}
+		for i := 0; i < maxReads; i++ {
+			record, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return stats, fmt.Errorf("error reading FASTQ: %w", err)
+			}
+			buffered = append(buffered, record)
+		}
+		detected := detectAdaptersFromReads(buffered)
 		if detected.Adapter3 != "" {
 			opts.Adapter3 = detected.Adapter3
 			stats.DetectedAdapter3 = detected.Adapter3
@@ -186,8 +201,6 @@ func TrimSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEnco
 			opts.Adapter5 = detected.Adapter5
 			stats.DetectedAdapter5 = detected.Adapter5
 		}
-		// Need to re-create reader since we consumed some reads
-		reader = fastq.NewReader(input, encoding)
 	}
 
 	// Initialize UMI stats if UMI extraction is enabled
@@ -199,12 +212,19 @@ func TrimSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEnco
 
 	readCount := 0
 	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return stats, fmt.Errorf("error reading FASTQ: %w", err)
+		var record *fastq.Record
+		if len(buffered) > 0 {
+			record = buffered[0]
+			buffered = buffered[1:]
+		} else {
+			var err error
+			record, err = reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return stats, fmt.Errorf("error reading FASTQ: %w", err)
+			}
 		}
 
 		stats.mu.Lock()
@@ -520,10 +540,9 @@ var commonAdapters = []string{
 	"ATCTCGTATGCCGTCTTCTGCTTG",           // Ion Torrent
 }
 
-// detectAdapters attempts to auto-detect adapter sequences from reads.
+// detectAdapters attempts to auto-detect adapter sequences by reading up to
+// maxReads records from reader.
 func detectAdapters(reader *fastq.Reader, maxReads int) (TrimOptions, error) {
-	opts := TrimOptions{}
-
 	var reads []*fastq.Record
 	for i := 0; i < maxReads; i++ {
 		record, err := reader.Read()
@@ -531,13 +550,21 @@ func detectAdapters(reader *fastq.Reader, maxReads int) (TrimOptions, error) {
 			break
 		}
 		if err != nil {
-			return opts, err
+			return TrimOptions{}, err
 		}
 		reads = append(reads, record)
 	}
+	return detectAdaptersFromReads(reads), nil
+}
+
+// detectAdaptersFromReads inspects a slice of already-read records and returns
+// TrimOptions populated with any common adapters that appear in at least 10% of
+// them.
+func detectAdaptersFromReads(reads []*fastq.Record) TrimOptions {
+	opts := TrimOptions{}
 
 	if len(reads) == 0 {
-		return opts, nil
+		return opts
 	}
 
 	// Count adapter occurrences
@@ -562,26 +589,28 @@ func detectAdapters(reader *fastq.Reader, maxReads int) (TrimOptions, error) {
 		}
 	}
 
-	// Find most common adapters (must appear in at least 10% of reads)
+	// Find most common adapters (must appear in at least 10% of reads).
+	// Iterate commonAdapters in declaration order so the result is
+	// deterministic when several candidates tie on count.
 	threshold := len(reads) / 10
 
 	var maxCount3 int
-	for adapter, count := range adapter3Counts {
-		if count > maxCount3 && count >= threshold {
+	for _, adapter := range commonAdapters {
+		if count := adapter3Counts[adapter]; count > maxCount3 && count >= threshold {
 			maxCount3 = count
 			opts.Adapter3 = adapter
 		}
 	}
 
 	var maxCount5 int
-	for adapter, count := range adapter5Counts {
-		if count > maxCount5 && count >= threshold {
+	for _, adapter := range commonAdapters {
+		if count := adapter5Counts[adapter]; count > maxCount5 && count >= threshold {
 			maxCount5 = count
 			opts.Adapter5 = adapter
 		}
 	}
 
-	return opts, nil
+	return opts
 }
 
 // extractUMI extracts UMI/barcode from read.
