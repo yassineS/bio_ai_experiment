@@ -27,7 +27,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - **Tools with a working subset**: 8
 - **Tools tested**: 8 (package-level tests; `cmd/` entry points have no tests)
-- **Test coverage (statements, `go test -cover`)**: vcftools 38%, skewer 46%,
+- **Test coverage (statements, `go test -cover`)**: skewer 46%, vcftools 51%,
   prinseq 55%, seqtk 57%, fastp 63%, bedintersect 75%, bedmerge 79%, sickle 80%
 - **Documentation**: README per tool; some design docs are aspirational, not status
 - **gzip support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools (not seqtk/prinseq)
@@ -292,7 +292,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command with multiple filtering, statistics and conversion options
 
-**Test Coverage**: ~38% of statements (`go test -cover`)  
+**Test Coverage**: ~51% of statements (`go test -cover`)  
 **Performance**: Comparable to original on the implemented operations  
 **Documentation**: README with examples  
 
@@ -305,17 +305,17 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Genotype-level filtering (`--minDP`, `--maxDP`, `--minGQ`)
 - Sample filtering (`--indv`, `--remove-indv`, `--keep`, `--remove`)
 - Site statistics: `--freq`/`--counts`(+`2`), `--site-depth`, `--site-mean-depth`,
-  `--site-quality`, `--missing-site`, `--missing-indv`, `--depth`, `--hardy`,
-  `--site-pi`, `--window-pi`(+`--window-pi-step`), `--TsTv-summary`, `--TsTv`,
-  `--TsTv-by-count`, `--het`, `--singletons`, `--FILTER-summary`, `--SNPdensity`
+  `--site-quality`, `--missing-site`, `--missing-indv`, `--depth`, `--geno-depth`,
+  `--hardy`, `--site-pi`, `--window-pi`(+`--window-pi-step`), `--TajimaD`,
+  `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--het`, `--singletons`,
+  `--hist-indel-len`, `--FILTER-summary`, `--SNPdensity`
 - VCF recoding (`--recode`, `--recode-INFO-all`)
 - Format conversion: `--012`, `--plink`, `--plink-tped` (with `--chrom-map`)
 
 **Not yet implemented** — these options are now rejected with an error instead of
 being silently ignored (older builds accepted them and produced no output):
 
-- `--TsTv-by-qual`, `--hist-indel-len`, `--geno-depth`
-- `--TajimaD`, `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
+- `--TsTv-by-qual`, `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
 - All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
 
 See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and

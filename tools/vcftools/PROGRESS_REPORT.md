@@ -2,13 +2,13 @@
 
 > **This is a plan, not a status report.** Despite the original title ("100%
 > Feature Parity"), full parity has **not** been achieved or even closely
-> approached. As of 2026-05-12 the Go port implements roughly 40 of vcftools'
-> ~147 options. A few of the "Phase 1" statistics below were wired up
-> (`--site-pi` fixed, `--window-pi`/`--window-pi-step`, `--TsTv-by-count`,
-> `--depth`), and the ones that were never implemented (`--TsTv-by-qual`,
-> `--hist-indel-len`, `--geno-depth`, `--TajimaD`, `--weir-fst-pop`,
-> `--fst-window-*`) now return an error instead of being silently ignored.
-> For the actual current state see
+> approached. As of 2026-05-12 the Go port implements roughly 45 of vcftools'
+> ~147 options. Several of the "Phase 1/2" statistics below have since been
+> wired up — `--site-pi` (fixed), `--window-pi`/`--window-pi-step`,
+> `--TsTv-by-count`, `--depth`, `--geno-depth`, `--hist-indel-len`,
+> `--TajimaD` — and the remaining unimplemented options (`--TsTv-by-qual`,
+> `--weir-fst-pop`, `--fst-window-*`, all LD analysis) now return an error
+> instead of being silently ignored. For the actual current state see
 > [../PORTING_STATUS.md](../PORTING_STATUS.md) and [README.md](README.md).
 > The phase breakdown below is kept as a roadmap.
 

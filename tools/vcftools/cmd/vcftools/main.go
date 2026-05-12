@@ -77,12 +77,15 @@ Statistics Output:
   --TsTv INT            Output Ts/Tv in bins of size INT
   --TsTv-by-count       Output Ts/Tv grouped by alternate-allele count
   --site-pi             Output nucleotide diversity per site (.sites.pi)
+  --hist-indel-len      Output a histogram of indel lengths (.indel.hist)
+  --geno-depth          Output a per-genotype read-depth matrix (.gdepth)
   --FILTER-summary      Output a summary of FILTER values
   --SNPdensity INT      Output SNP density in bins of size INT
 
 Population Genetics:
   --window-pi INT       Nucleotide diversity summed over windows of size INT
   --window-pi-step INT  Step size for --window-pi windows (default: window size)
+  --TajimaD INT         Tajima's D in non-overlapping windows of size INT
 
 Format Conversion:
   --012                 Output genotypes as a 0/1/2 matrix
@@ -91,8 +94,8 @@ Format Conversion:
   --chrom-map FILE      Chromosome-name-to-integer map for PLINK output
 
 Not yet implemented (rejected with an error rather than silently ignored):
-  --TsTv-by-qual, --hist-indel-len, --geno-depth, --TajimaD,
-  --weir-fst-pop, --fst-window-size, --fst-window-step
+  --TsTv-by-qual, --weir-fst-pop, --fst-window-size, --fst-window-step,
+  and all LD analysis (--geno-r2, --hap-r2, ...)
   See tools/vcftools/ROADMAP.md for status.
 
 Sample Filtering:
@@ -197,13 +200,13 @@ func main() {
 	sitePi := flag.Bool("site-pi", false, "Nucleotide diversity per site (.sites.pi)")
 	het := flag.Bool("het", false, "Heterozygosity statistics")
 	singletons := flag.Bool("singletons", false, "Singleton site analysis")
-	histIndelLen := flag.Bool("hist-indel-len", false, "Indel length histogram (not yet implemented)")
-	genoDepth := flag.Bool("geno-depth", false, "Per-genotype depth matrix (not yet implemented)")
+	histIndelLen := flag.Bool("hist-indel-len", false, "Histogram of indel lengths (.indel.hist)")
+	genoDepth := flag.Bool("geno-depth", false, "Per-genotype read-depth matrix (.gdepth)")
 
 	// Population genetics statistics
 	windowPi := flag.Int("window-pi", 0, "Nucleotide diversity summed over windows of this size")
 	windowPiStep := flag.Int("window-pi-step", 0, "Step size for --window-pi windows")
-	tajimaD := flag.Int("TajimaD", 0, "Tajima's D in bins of this size (not yet implemented)")
+	tajimaD := flag.Int("TajimaD", 0, "Tajima's D in non-overlapping windows of this size")
 	snpDensity := flag.Int("SNPdensity", 0, "SNP density in bins of this size")
 	var weirFstPop []string
 	flag.Func("weir-fst-pop", "Population file for Fst calculation, repeatable (not yet implemented)", func(s string) error {

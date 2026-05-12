@@ -41,6 +41,27 @@ type statistics struct {
 	fstValues      []fstStat
 	filterCounts   map[string]int
 	singletonSites []singletonStat
+
+	// Misc
+	indelLenHist  map[int]int
+	indelLenTotal int
+	genoDepths    []genoDepthSite
+	tajimaDSites  []tajimaDSite
+}
+
+// genoDepthSite holds the per-individual read depth at one site.
+type genoDepthSite struct {
+	chrom  string
+	pos    int
+	depths []int // one entry per sample, -1 if FORMAT/DP absent
+}
+
+// tajimaDSite holds the data needed to compute Tajima's D for one SNP.
+type tajimaDSite struct {
+	chrom string
+	pos   int
+	pi    float64 // per-site nucleotide diversity
+	nChr  int     // number of non-missing chromosomes
 }
 
 type siteFreqStat struct {
@@ -176,6 +197,7 @@ func newStatistics(header *vcf.Header) *statistics {
 		tsTvByCount:    make(map[int]*tsTvCountStat),
 		snpDensityBins: make(map[int]*snpDensityStat),
 		filterCounts:   make(map[string]int),
+		indelLenHist:   make(map[int]int),
 	}
 }
 
@@ -226,9 +248,24 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 		s.addIndvDepthStat(v)
 	}
 
+	// Per-genotype depth matrix
+	if params.GenoDepth {
+		s.addGenoDepthStat(v)
+	}
+
+	// Indel length histogram
+	if params.HistIndelLen {
+		s.addIndelLenStat(v)
+	}
+
 	// Site pi (nucleotide diversity) - also required to build windowed pi
 	if params.SitePi || params.WindowPi > 0 {
 		s.addSitePiStat(v)
+	}
+
+	// Tajima's D (collect per-SNP data; computed at output time)
+	if params.TajimaD > 0 {
+		s.addTajimaDStat(v)
 	}
 
 	// Phase 2: Population genetics statistics
@@ -620,6 +657,60 @@ func (s *statistics) addIndvDepthStat(v *vcf.Variant) {
 		stat.sum += dp
 		stat.nSites++
 	}
+}
+
+// parseDP returns the FORMAT/DP value for a sample, or -1 if absent/unparseable.
+func parseDP(sample vcf.Sample) int {
+	dpStr, ok := sample.Data["DP"]
+	if !ok {
+		return -1
+	}
+	dp, err := strconv.Atoi(strings.TrimSpace(dpStr))
+	if err != nil {
+		return -1
+	}
+	return dp
+}
+
+// addGenoDepthStat records the per-individual depth at one site.
+func (s *statistics) addGenoDepthStat(v *vcf.Variant) {
+	depths := make([]int, len(v.Samples))
+	for i, sample := range v.Samples {
+		depths[i] = parseDP(sample)
+	}
+	s.genoDepths = append(s.genoDepths, genoDepthSite{chrom: v.Chrom, pos: v.Pos, depths: depths})
+}
+
+// addIndelLenStat records the length of each indel allele (positive for
+// insertions, negative for deletions) relative to the reference.
+func (s *statistics) addIndelLenStat(v *vcf.Variant) {
+	refLen := len(v.Ref)
+	for _, alt := range v.Alt {
+		// Skip symbolic / structural alleles such as <DEL>.
+		if strings.ContainsAny(alt, "<>[]*") {
+			continue
+		}
+		d := len(alt) - refLen
+		if d == 0 {
+			continue
+		}
+		s.indelLenHist[d]++
+		s.indelLenTotal++
+	}
+}
+
+// addTajimaDStat collects the per-site data needed for Tajima's D over a
+// biallelic SNP.
+func (s *statistics) addTajimaDStat(v *vcf.Variant) {
+	if len(v.Alt) != 1 || isIndelVariant(v) {
+		return
+	}
+	pi, ok := nucleotideDiversity(v)
+	if !ok {
+		return
+	}
+	_, n := siteAlleleCounts(v)
+	s.tajimaDSites = append(s.tajimaDSites, tajimaDSite{chrom: v.Chrom, pos: v.Pos, pi: pi, nChr: n})
 }
 
 // Phase 2 statistics methods
@@ -1233,6 +1324,162 @@ func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) e
 	}
 
 	return nil
+}
+
+// outputGenoDepth writes the per-genotype read-depth matrix (.gdepth):
+// CHROM, POS, then one column per individual (-1 where FORMAT/DP is absent).
+func (s *statistics) outputGenoDepth(prefix string) error {
+	f, err := iohelper.OpenWriter(prefix + ".gdepth")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	header := "CHROM\tPOS"
+	for _, name := range s.header.Samples {
+		header += "\t" + name
+	}
+	fmt.Fprintln(f, header)
+
+	for _, site := range s.genoDepths {
+		fmt.Fprintf(f, "%s\t%d", site.chrom, site.pos)
+		for _, d := range site.depths {
+			fmt.Fprintf(f, "\t%d", d)
+		}
+		fmt.Fprintln(f)
+	}
+	return nil
+}
+
+// outputIndelHist writes a histogram of indel lengths (.indel.hist):
+// LENGTH (negative = deletion, positive = insertion), N_INDELS, PRCT.
+func (s *statistics) outputIndelHist(prefix string) error {
+	f, err := iohelper.OpenWriter(prefix + ".indel.hist")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "LENGTH\tN_INDELS\tPRCT")
+
+	var lengths []int
+	for l := range s.indelLenHist {
+		lengths = append(lengths, l)
+	}
+	sort.Ints(lengths)
+
+	for _, l := range lengths {
+		n := s.indelLenHist[l]
+		pct := 0.0
+		if s.indelLenTotal > 0 {
+			pct = 100 * float64(n) / float64(s.indelLenTotal)
+		}
+		fmt.Fprintf(f, "%d\t%d\t%.4f\n", l, n, pct)
+	}
+	return nil
+}
+
+// outputTajimaD writes Tajima's D per non-overlapping window of binSize bases
+// (.Tajima.D): CHROM, BIN_START, N_SNPS, TajimaD.
+//
+// D = (pi - thetaW) / sqrt(e1*S + e2*S*(S-1)), with pi the sum of per-site
+// nucleotide diversity in the window, thetaW = S/a1, S the number of SNPs, and
+// the a1/a2/e1/e2 constants derived from the number of sampled chromosomes n.
+// n is taken from the SNPs in the window (the modal value); this matches the
+// common case of complete data. Windows with fewer than two SNPs, or where the
+// variance estimate is non-positive, are reported with TajimaD "nan".
+func (s *statistics) outputTajimaD(prefix string, binSize int) error {
+	if binSize <= 0 {
+		return nil
+	}
+	f, err := iohelper.OpenWriter(prefix + ".Tajima.D")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "CHROM\tBIN_START\tN_SNPS\tTajimaD")
+
+	type binKey struct {
+		chrom string
+		start int
+	}
+	type binAcc struct {
+		piSum  float64
+		nSNPs  int
+		nChrMC map[int]int // modal chromosome count
+	}
+	var order []binKey
+	bins := make(map[binKey]*binAcc)
+
+	for _, site := range s.tajimaDSites {
+		start := ((site.pos - 1) / binSize) * binSize
+		key := binKey{site.chrom, start}
+		acc := bins[key]
+		if acc == nil {
+			acc = &binAcc{nChrMC: make(map[int]int)}
+			bins[key] = acc
+			order = append(order, key)
+		}
+		acc.piSum += site.pi
+		acc.nSNPs++
+		acc.nChrMC[site.nChr]++
+	}
+
+	sort.Slice(order, func(i, j int) bool {
+		if order[i].chrom != order[j].chrom {
+			return order[i].chrom < order[j].chrom
+		}
+		return order[i].start < order[j].start
+	})
+
+	for _, key := range order {
+		acc := bins[key]
+		d, ok := tajimasD(acc.piSum, acc.nSNPs, modalKey(acc.nChrMC))
+		if ok {
+			fmt.Fprintf(f, "%s\t%d\t%d\t%.5f\n", key.chrom, key.start, acc.nSNPs, d)
+		} else {
+			fmt.Fprintf(f, "%s\t%d\t%d\tnan\n", key.chrom, key.start, acc.nSNPs)
+		}
+	}
+	return nil
+}
+
+// modalKey returns the most frequent key in counts (smallest on ties).
+func modalKey(counts map[int]int) int {
+	best, bestCount := 0, -1
+	for k, c := range counts {
+		if c > bestCount || (c == bestCount && k < best) {
+			best, bestCount = k, c
+		}
+	}
+	return best
+}
+
+// tajimasD computes Tajima's D from the summed per-site diversity (piSum), the
+// number of segregating sites S, and the number of sampled chromosomes n.
+func tajimasD(piSum float64, S, n int) (d float64, ok bool) {
+	if S < 2 || n < 3 {
+		return 0, false
+	}
+	a1, a2 := 0.0, 0.0
+	for i := 1; i < n; i++ {
+		a1 += 1.0 / float64(i)
+		a2 += 1.0 / float64(i*i)
+	}
+	nf := float64(n)
+	b1 := (nf + 1) / (3 * (nf - 1))
+	b2 := 2 * (nf*nf + nf + 3) / (9 * nf * (nf - 1))
+	c1 := b1 - 1.0/a1
+	c2 := b2 - (nf+2)/(a1*nf) + a2/(a1*a1)
+	e1 := c1 / a1
+	e2 := c2 / (a1*a1 + a2)
+	thetaW := float64(S) / a1
+	variance := e1*float64(S) + e2*float64(S)*float64(S-1)
+	if variance <= 0 {
+		return 0, false
+	}
+	return (piSum - thetaW) / math.Sqrt(variance), true
 }
 
 // chiSquareCDF approximates the chi-square CDF using gamma function

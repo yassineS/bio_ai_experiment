@@ -423,11 +423,43 @@ func TestIsTransitionSNP(t *testing.T) {
 	}
 }
 
+func TestTajimasD(t *testing.T) {
+	// Fewer than two segregating sites => undefined.
+	if _, ok := tajimasD(0.0, 1, 10); ok {
+		t.Error("tajimasD with S=1 should be undefined")
+	}
+	if _, ok := tajimasD(5.0, 4, 2); ok {
+		t.Error("tajimasD with n=2 should be undefined")
+	}
+	// When the summed per-site diversity equals Watterson's theta (S/a1) the
+	// numerator is zero, so D must be zero.
+	n, S := 6, 4
+	a1 := 0.0
+	for i := 1; i < n; i++ {
+		a1 += 1.0 / float64(i)
+	}
+	d, ok := tajimasD(float64(S)/a1, S, n)
+	if !ok {
+		t.Fatal("tajimasD should be defined for S=4, n=6")
+	}
+	if math.Abs(d) > 1e-9 {
+		t.Errorf("tajimasD = %v, want ~0 when pi == thetaW", d)
+	}
+	// pi above thetaW => positive D; pi below => negative D.
+	if dp, _ := tajimasD(float64(S)/a1+2, S, n); dp <= 0 {
+		t.Errorf("tajimasD with pi > thetaW = %v, want > 0", dp)
+	}
+	if dm, _ := tajimasD(float64(S)/a1-2, S, n); dm >= 0 {
+		t.Errorf("tajimasD with pi < thetaW = %v, want < 0", dm)
+	}
+}
+
 func TestCheckUnsupported(t *testing.T) {
 	supported := []*Params{
 		{},
 		{SitePi: true, WindowPi: 1000},
 		{TsTvByCount: true, Depth: true},
+		{HistIndelLen: true, GenoDepth: true, TajimaD: 10000},
 	}
 	for i, p := range supported {
 		if err := checkUnsupported(p); err != nil {
@@ -437,11 +469,9 @@ func TestCheckUnsupported(t *testing.T) {
 
 	unsupported := []*Params{
 		{TsTvByQual: true},
-		{HistIndelLen: true},
-		{GenoDepth: true},
-		{TajimaD: 10000},
 		{WeirFstPop: []string{"pop1.txt", "pop2.txt"}},
 		{FstWindowSize: 10000},
+		{FstWindowStep: 5000},
 	}
 	for i, p := range unsupported {
 		if err := checkUnsupported(p); err == nil {

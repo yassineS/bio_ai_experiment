@@ -4,27 +4,28 @@ This document outlines planned features and enhancements for the vcftools Go imp
 
 ## Current state
 
-**Status:** Partial — ~40 of vcftools' ~147 options.
+**Status:** Partial — roughly 45 of vcftools' ~147 options.
 
 ### Implemented
 
 - Filtering: position, SNP ID + thinning, quality, allele frequency/count, variant type, genotype-level (`--minDP`/`--maxDP`/`--minGQ`)
 - Sample management (`--indv`, `--remove-indv`, `--keep`, `--remove`)
 - Per-site / per-individual statistics: `--freq`/`--counts`(+`2`), `--depth`,
-  `--site-depth`, `--site-mean-depth`, `--site-quality`, `--missing-site`,
-  `--missing-indv`, `--hardy`, `--het`, `--singletons`, `--site-pi`,
-  `--window-pi`(+`--window-pi-step`), `--TsTv-summary`, `--TsTv`,
-  `--TsTv-by-count`, `--FILTER-summary`, `--SNPdensity`
+  `--geno-depth`, `--site-depth`, `--site-mean-depth`, `--site-quality`,
+  `--missing-site`, `--missing-indv`, `--hardy`, `--het`, `--singletons`,
+  `--site-pi`, `--window-pi`(+`--window-pi-step`), `--TajimaD`,
+  `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--hist-indel-len`,
+  `--FILTER-summary`, `--SNPdensity`
 - VCF recoding (`--recode`, `--recode-INFO-all`)
 - Format conversion: `--012`, `--plink`, `--plink-tped`, `--chrom-map`
 
 ### Recognised but **not implemented** (return an error)
 
-- `--TsTv-by-qual`, `--hist-indel-len`, `--geno-depth`
-- `--TajimaD`, `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
+- `--TsTv-by-qual`
+- `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
 - All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
 
-Test coverage of the `vcftools` package is ~38% of statements; the `cmd/`
+Test coverage of the `vcftools` package is ~51% of statements; the `cmd/`
 entry point has no tests.
 
 ## Version 1.1 (Planned)

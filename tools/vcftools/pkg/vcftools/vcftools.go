@@ -907,6 +907,24 @@ func outputStatistics(stats *statistics, params *Params) error {
 		}
 	}
 
+	if params.GenoDepth {
+		if err := stats.outputGenoDepth(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+
+	if params.HistIndelLen {
+		if err := stats.outputIndelHist(params.OutPrefix); err != nil {
+			return err
+		}
+	}
+
+	if params.TajimaD > 0 {
+		if err := stats.outputTajimaD(params.OutPrefix, params.TajimaD); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -953,15 +971,6 @@ func checkUnsupported(params *Params) error {
 	var missing []string
 	if params.TsTvByQual {
 		missing = append(missing, "--TsTv-by-qual")
-	}
-	if params.HistIndelLen {
-		missing = append(missing, "--hist-indel-len")
-	}
-	if params.GenoDepth {
-		missing = append(missing, "--geno-depth")
-	}
-	if params.TajimaD != 0 {
-		missing = append(missing, "--TajimaD")
 	}
 	if len(params.WeirFstPop) > 0 {
 		missing = append(missing, "--weir-fst-pop")

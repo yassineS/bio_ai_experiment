@@ -35,19 +35,23 @@ This port can:
 ### Statistics Output
 
 - Allele frequency and counts (`--freq`, `--counts`, `--freq2`, `--counts2`)
-- Depth: per individual (`--depth` → `.idepth`), per site summed (`--site-depth`) and mean (`--site-mean-depth`)
+- Depth: per individual (`--depth` → `.idepth`), per genotype (`--geno-depth` → `.gdepth`), per site summed (`--site-depth`) and mean (`--site-mean-depth`)
 - Site quality (`--site-quality`)
 - Missingness: per individual (`--missing-indv`) and per site (`--missing-site`)
 - Hardy-Weinberg equilibrium (`--hardy`)
 - Heterozygosity / F per individual (`--het`); singletons (`--singletons`)
 - Transition/transversion ratios: `--TsTv-summary`, `--TsTv N`, `--TsTv-by-count`
 - Nucleotide diversity: per site (`--site-pi`) and windowed (`--window-pi`, `--window-pi-step`)
+- Tajima's D in non-overlapping windows (`--TajimaD N` → `.Tajima.D`)
+- Indel length histogram (`--hist-indel-len` → `.indel.hist`)
 - FILTER summary (`--FILTER-summary`); SNP density (`--SNPdensity N`)
 
 `--site-pi` uses the standard per-site formula `(n² − Σ cₐ²) / (n(n−1))` over
 non-missing chromosomes; `--window-pi` reports the sum of per-site π over each
-window. (Earlier builds of this port reported a different, incorrect quantity
-for `--site-pi`.)
+window. `--TajimaD` uses `D = (π − θ_W) / sqrt(e₁S + e₂S(S−1))` per window,
+with the chromosome count taken as the modal value among the window's SNPs
+(exact for complete data). (Earlier builds of this port reported a different,
+incorrect quantity for `--site-pi` and silently ignored `--TajimaD`.)
 
 ### Format Conversion
 
@@ -56,9 +60,9 @@ for `--site-pi`.)
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): `--TsTv-by-qual`, `--hist-indel-len`,
-`--geno-depth`, `--TajimaD`, `--weir-fst-pop`, `--fst-window-size`,
-`--fst-window-step`, and all LD analysis (`--geno-r2`, `--hap-r2`, ...).
+accepted them and produced nothing): `--TsTv-by-qual`, `--weir-fst-pop`,
+`--fst-window-size`, `--fst-window-step`, and all LD analysis
+(`--geno-r2`, `--hap-r2`, ...).
 
 ### Format Support
 
