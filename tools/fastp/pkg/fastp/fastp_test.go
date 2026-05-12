@@ -490,6 +490,147 @@ func TestGenerateHTMLReport(t *testing.T) {
 	os.Remove(tmpFile)
 }
 
+// repeatByte returns a byte slice of length n with every element set to b.
+func repeatByte(b byte, n int) []byte {
+	s := make([]byte, n)
+	for i := range s {
+		s[i] = b
+	}
+	return s
+}
+
+// concatBytes concatenates the given byte slices.
+func concatBytes(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+// TestSlidingWindowCut exercises the cut_front / cut_tail / cut_right modes of
+// slidingWindowCut directly. In Phred33, 'I' encodes quality 40 and '!' encodes
+// quality 0; with window 4 and threshold 20 a window passes iff it contains at
+// least two 'I' bases.
+func TestSlidingWindowCut(t *testing.T) {
+	const (
+		hi = 'I' // Phred 40
+		lo = '!' // Phred 0
+	)
+
+	tests := []struct {
+		name     string
+		quality  []byte
+		front    bool
+		tail     bool
+		right    bool
+		window   int
+		mean     int
+		wantLo   int
+		wantHigh int
+	}{
+		// cut_front
+		{"front: nothing to trim", repeatByte(hi, 10), true, false, false, 4, 20, 0, 10},
+		{"front: trim leading low region", concatBytes(repeatByte(lo, 4), repeatByte(hi, 8)), true, false, false, 4, 20, 2, 12},
+		{"front: whole read trimmed", repeatByte(lo, 8), true, false, false, 4, 20, 8, 8},
+		{"front: window bigger than read, all high", repeatByte(hi, 2), true, false, false, 4, 20, 0, 2},
+		{"front: window bigger than read, all low", repeatByte(lo, 2), true, false, false, 4, 20, 2, 2},
+		{"front: all high quality", repeatByte(hi, 12), true, false, false, 4, 20, 0, 12},
+		{"front: all low quality", repeatByte(lo, 12), true, false, false, 4, 20, 12, 12},
+
+		// cut_tail
+		{"tail: nothing to trim", repeatByte(hi, 10), false, true, false, 4, 20, 0, 10},
+		{"tail: trim trailing low region", concatBytes(repeatByte(hi, 8), repeatByte(lo, 4)), false, true, false, 4, 20, 0, 10},
+		{"tail: whole read trimmed", repeatByte(lo, 8), false, true, false, 4, 20, 0, 0},
+		{"tail: window bigger than read, all high", repeatByte(hi, 2), false, true, false, 4, 20, 0, 2},
+
+		// cut_right
+		{"right: nothing to trim", repeatByte(hi, 10), false, false, true, 4, 20, 0, 10},
+		{"right: cut at first low window", concatBytes(repeatByte(hi, 8), repeatByte(lo, 4)), false, false, true, 4, 20, 0, 7},
+		{"right: whole read trimmed", repeatByte(lo, 8), false, false, true, 4, 20, 0, 0},
+		{"right: all high quality", repeatByte(hi, 12), false, false, true, 4, 20, 0, 12},
+		{"right: window bigger than read, all high", repeatByte(hi, 2), false, false, true, 4, 20, 0, 2},
+		{"right: window bigger than read, all low", repeatByte(lo, 2), false, false, true, 4, 20, 0, 0},
+
+		// combined cut_front + cut_tail
+		{"front+tail: trim both ends", concatBytes(repeatByte(lo, 4), repeatByte(hi, 8), repeatByte(lo, 4)), true, true, false, 4, 20, 2, 14},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := DefaultProcessOptions()
+			opts.CutFront = tt.front
+			opts.CutTail = tt.tail
+			opts.CutRight = tt.right
+			opts.CutWindowSize = tt.window
+			opts.CutMeanQuality = tt.mean
+
+			gotLo, gotHi := slidingWindowCut(tt.quality, fastq.Phred33, opts)
+			if gotLo != tt.wantLo || gotHi != tt.wantHigh {
+				t.Errorf("slidingWindowCut() = (%d, %d), want (%d, %d)", gotLo, gotHi, tt.wantLo, tt.wantHigh)
+			}
+		})
+	}
+}
+
+// TestProcessSingleEndCutRight drives ProcessSingleEnd with --cut_right enabled.
+func TestProcessSingleEndCutRight(t *testing.T) {
+	// read1: 12 high-quality ('I') bases then 4 low-quality ('!') bases.
+	//        cut_right cuts at the first low window -> keeps 11 bases.
+	// read2: all low quality -> cut_right removes everything -> too short.
+	input := `@read1
+ACGTACGTACGTACGT
++
+IIIIIIIIIIII!!!!
+@read2
+ACGTACGTACGT
++
+!!!!!!!!!!!!
+`
+
+	var output bytes.Buffer
+	opts := DefaultProcessOptions()
+	opts.CutRight = true
+	opts.CutWindowSize = 4
+	opts.CutMeanQuality = 20
+	opts.MinLength = 10
+	opts.LengthRequired = 10
+	opts.QualPercent = 0
+
+	stats, err := ProcessSingleEnd(strings.NewReader(input), &output, fastq.Phred33, opts)
+	if err != nil {
+		t.Fatalf("ProcessSingleEnd failed: %v", err)
+	}
+
+	if stats.TotalReads != 2 {
+		t.Errorf("Expected 2 total reads, got %d", stats.TotalReads)
+	}
+	if stats.CleanReads != 1 {
+		t.Errorf("Expected 1 clean read, got %d", stats.CleanReads)
+	}
+	if stats.TooShortReads != 1 {
+		t.Errorf("Expected 1 too short read, got %d", stats.TooShortReads)
+	}
+	if stats.QualityCutReads != 2 {
+		t.Errorf("Expected 2 quality-cut reads, got %d", stats.QualityCutReads)
+	}
+	// read1: removed 5 bases; read2: removed 12 bases.
+	if stats.QualityCutBases != 17 {
+		t.Errorf("Expected 17 quality-cut bases, got %d", stats.QualityCutBases)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("Expected 4 output lines for 1 clean read, got %d: %q", len(lines), output.String())
+	}
+	if lines[1] != "ACGTACGTACG" {
+		t.Errorf("Expected trimmed sequence %q, got %q", "ACGTACGTACG", lines[1])
+	}
+	if lines[3] != "IIIIIIIIIII" {
+		t.Errorf("Expected trimmed quality %q, got %q", "IIIIIIIIIII", lines[3])
+	}
+}
+
 // Test base correction in processing
 func TestProcessSingleEndWithBaseCorrection(t *testing.T) {
 	input := `@read1

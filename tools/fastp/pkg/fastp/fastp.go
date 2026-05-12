@@ -42,6 +42,13 @@ type ProcessOptions struct {
 	TrimPolyX   bool
 	PolyGMinLen int
 
+	// Sliding-window quality trimming
+	CutFront       bool // Slide a window from the 5' end; trim leading bases while window mean quality < threshold
+	CutTail        bool // Slide a window from the 3' end; trim trailing bases while window mean quality < threshold
+	CutRight       bool // Slide a window 5'->3'; the moment a window's mean quality drops below threshold, cut there and to its right
+	CutWindowSize  int  // Window size for cut_front/cut_tail/cut_right (default 4)
+	CutMeanQuality int  // Mean-quality (Phred) threshold for the sliding window (default 20)
+
 	// N filtering
 	MaxNCount   int
 	MaxNPercent float64
@@ -86,6 +93,11 @@ func DefaultProcessOptions() ProcessOptions {
 		TrimPolyG:           false,
 		TrimPolyX:           false,
 		PolyGMinLen:         10,
+		CutFront:            false,
+		CutTail:             false,
+		CutRight:            false,
+		CutWindowSize:       4,
+		CutMeanQuality:      20,
 		MaxNCount:           5,
 		MaxNPercent:         20.0,
 		LengthRequired:      15,
@@ -117,6 +129,8 @@ type ProcessStats struct {
 	AdapterTrimmedBases int64
 	PolyGTrimmedReads   int
 	PolyGTrimmedBases   int64
+	QualityCutReads     int
+	QualityCutBases     int64
 	DetectedAdapter     string
 	UMIExtracted        int
 	BasesCorrected      int64
@@ -335,6 +349,20 @@ func processRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStat
 		}
 	}
 
+	// Step 3.5: Sliding-window quality trimming (cut_front / cut_tail / cut_right)
+	if opts.CutFront || opts.CutTail || opts.CutRight {
+		cutLo, cutHi := slidingWindowCut(qual[start:end], encoding, opts)
+		if cutLo != 0 || cutHi != end-start {
+			removed := (cutLo) + (end - start - cutHi)
+			start += cutLo
+			end = start + (cutHi - cutLo)
+			if removed > 0 {
+				stats.QualityCutReads++
+				stats.QualityCutBases += int64(removed)
+			}
+		}
+	}
+
 	// Step 4: Quality-based trimming
 	if opts.QualThreshold > 0 {
 		start, end = trimByQuality(qual[start:end], opts.QualThreshold, start, end, encoding)
@@ -443,6 +471,116 @@ func trimByQuality(quality []byte, threshold int, start, end int, encoding fastq
 	}
 
 	return start, end
+}
+
+// phredOffset returns the ASCII offset for the given quality encoding.
+func phredOffset(encoding fastq.QualityEncoding) int {
+	if encoding == fastq.Phred64 {
+		return 64
+	}
+	return 33
+}
+
+// slidingWindowCut applies fastp's sliding-window quality trimming to a quality
+// slice and returns the half-open index range [lo, hi) of the bases that should
+// be kept. The three modes (cut_front, cut_tail, cut_right) are applied in that
+// order when more than one is enabled, matching upstream fastp.
+//
+// cut_front: scanning 5'->3', find the first window whose mean quality is >=
+// CutMeanQuality and trim everything before it.
+// cut_tail: scanning 3'->5', find the first window whose mean quality is >=
+// CutMeanQuality and trim everything after it.
+// cut_right: scanning 5'->3', the moment a window's mean quality drops below
+// CutMeanQuality, cut the read at that window's start (keep [0, windowStart)).
+//
+// If the window size is larger than the (current) read, the whole read is
+// treated as a single short window.
+func slidingWindowCut(quality []byte, encoding fastq.QualityEncoding, opts ProcessOptions) (lo, hi int) {
+	offset := phredOffset(encoding)
+	window := opts.CutWindowSize
+	if window < 1 {
+		window = 1
+	}
+	threshold := float64(opts.CutMeanQuality)
+
+	lo, hi = 0, len(quality)
+
+	// meanQual computes the mean quality of quality[a:b].
+	meanQual := func(a, b int) float64 {
+		if b <= a {
+			return 0
+		}
+		sum := 0
+		for i := a; i < b; i++ {
+			sum += int(quality[i]) - offset
+		}
+		return float64(sum) / float64(b-a)
+	}
+
+	if opts.CutFront {
+		n := hi - lo
+		w := window
+		if w > n {
+			w = n
+		}
+		if w > 0 {
+			newLo := lo
+			for newLo+w <= hi {
+				if meanQual(newLo, newLo+w) >= threshold {
+					break
+				}
+				newLo++
+			}
+			if newLo+w > hi {
+				// No qualifying window found: drop everything.
+				newLo = hi
+			}
+			lo = newLo
+		}
+	}
+
+	if opts.CutTail {
+		n := hi - lo
+		w := window
+		if w > n {
+			w = n
+		}
+		if w > 0 {
+			newHi := hi
+			for newHi-w >= lo {
+				if meanQual(newHi-w, newHi) >= threshold {
+					break
+				}
+				newHi--
+			}
+			if newHi-w < lo {
+				// No qualifying window found: drop everything.
+				newHi = lo
+			}
+			hi = newHi
+		}
+	}
+
+	if opts.CutRight {
+		n := hi - lo
+		w := window
+		if w > n {
+			w = n
+		}
+		if w > 0 {
+			for s := lo; s+w <= hi; s++ {
+				if meanQual(s, s+w) < threshold {
+					hi = s
+					break
+				}
+			}
+		}
+	}
+
+	if hi < lo {
+		hi = lo
+	}
+	return lo, hi
 }
 
 // getQualityScores converts ASCII-encoded quality scores to numeric values.
