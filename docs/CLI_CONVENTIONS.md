@@ -2,12 +2,27 @@
 
 This document outlines the command-line interface (CLI) design conventions used across all tools in the Bio AI Experiment repository. These conventions ensure consistency and usability across all reimplemented bioinformatics tools.
 
+## Project goal: POSIX-compliant CLIs at full parity
+
+A tool in this repository is **only considered "complete"** once it has both:
+
+1. **100% feature parity** with the original tool it ports; and
+2. A **POSIX-compliant CLI** as specified in this document — POSIX-style short
+   options, GNU-style long options, `-` for stdin/stdout, `--` to end option
+   parsing, predictable exit codes, and `-h/--help` + `-v/--version`.
+
+Until both conditions are met, the tool is listed as **Partial** in
+[`tools/PORTING_STATUS.md`](../tools/PORTING_STATUS.md). Where a POSIX-compliant
+flag conflicts with an upstream short-form alias, the POSIX form wins; the
+upstream alias may still be accepted as a long option (e.g. `--qual-type`).
+
 ## General Principles
 
 1. **POSIX-style flags**: Use both short (single dash, single letter) and long (double dash, full word) options
 2. **Consistency**: Use the same option names for similar functionality across all tools
 3. **Discoverability**: Provide helpful error messages and comprehensive help text
-4. **Backward compatibility**: Where possible, maintain compatibility with original tool options
+4. **Backward compatibility**: Where possible, maintain compatibility with original tool options, but never at the cost of POSIX compliance once a tool is at parity
+5. **`--` ends option parsing** and `-` (alone) means stdin/stdout; both are required for compliance
 
 ## Option Naming Conventions
 
@@ -171,6 +186,8 @@ addFlag(fs, "i", "input", "", "Input file (use '-' for stdin)")
 ## Version History
 
 - 2025-10-20: Initial version established for PRINSEQ tool
+- 2026-05-13: Formalised POSIX-compliant CLI as a hard requirement for any
+  tool to be considered "complete" (alongside 100% feature parity)
 - Future: May be extended as more tools are ported
 
 ## References
