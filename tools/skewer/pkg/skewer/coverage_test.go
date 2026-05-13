@@ -707,10 +707,7 @@ func TestToJSONWithUMIStats(t *testing.T) {
 		TotalReads: 10,
 		UMIStats:   &UMIStats{TotalUMIs: 10, UniqueUMIs: 3, UMIDistribution: map[string]int{"AAAA": 5}},
 	}
-	out, err := s.ToJSON()
-	if err != nil {
-		t.Fatalf("ToJSON: %v", err)
-	}
+	out := s.ToJSON()
 	if !strings.Contains(out, "umi_stats") || !strings.Contains(out, "unique_umis") {
 		t.Errorf("JSON missing UMI stats: %s", out)
 	}

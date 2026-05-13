@@ -71,16 +71,16 @@ type UMIStats struct {
 	UMIDistribution map[string]int `json:"umi_distribution,omitempty"`
 }
 
-// ToJSON exports statistics as JSON.
-func (s *TrimStats) ToJSON() (string, error) {
+// ToJSON exports statistics as JSON. The error from json.MarshalIndent is
+// unreachable in practice — TrimStats only contains ints, strings, a
+// map[string]int and nested structs of the same, none of which json.Marshal
+// can fail on — so this method does not return one.
+func (s *TrimStats) ToJSON() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	data, _ := json.MarshalIndent(s, "", "  ")
+	return string(data)
 }
 
 // ToHTML generates an HTML report of the statistics.

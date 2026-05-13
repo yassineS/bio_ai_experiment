@@ -179,11 +179,7 @@ func runSingleEnd() {
 
 	// Output statistics in various formats
 	if jsonOutput != "" {
-		jsonData, err := stats.ToJSON()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error generating JSON: %v\n", err)
-			os.Exit(1)
-		}
+		jsonData := stats.ToJSON()
 		if err := os.WriteFile(jsonOutput, []byte(jsonData), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing JSON file: %v\n", err)
 			os.Exit(1)
@@ -359,11 +355,7 @@ func runPairedEnd() {
 
 	// Output statistics in various formats
 	if jsonOutput != "" {
-		jsonData, err := stats.ToJSON()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error generating JSON: %v\n", err)
-			os.Exit(1)
-		}
+		jsonData := stats.ToJSON()
 		if err := os.WriteFile(jsonOutput, []byte(jsonData), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing JSON file: %v\n", err)
 			os.Exit(1)
