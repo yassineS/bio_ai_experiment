@@ -2,7 +2,7 @@
 
 This document tracks the status of bioinformatics tools being ported from their original implementations to Go.
 
-**Last Updated**: 2026-05-12
+**Last Updated**: 2026-05-13
 
 > **Accuracy note (2026-05-12 audit):** earlier revisions of this file
 > overstated progress — claiming ">85% test coverage" and labelling several
@@ -27,8 +27,8 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - **Tools with a working subset**: 8
 - **Tools tested**: 8 (package-level tests; `cmd/` entry points have no tests)
-- **Test coverage (statements, `go test -cover`)**: vcftools 52%, prinseq 55%,
-  seqtk 62%, fastp 63%, bedintersect 75%, bedmerge 79%, sickle 80%, skewer 90%
+- **Test coverage (statements, `go test -cover`)**: vcftools 58%, fastp 67%,
+  seqtk 66%, bedintersect 75%, sickle 82%, bedmerge 85%, prinseq 90%, skewer 90%
 - **Documentation**: README per tool; some design docs are aspirational, not status
 - **gzip support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools (not seqtk/prinseq)
 
@@ -51,22 +51,24 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `sample` - Random subsampling
 - `trimfq` - Quality-based trimming
 - `subseq` - Extract subsequences by name list or BED region
+- `mergepe` - Interleave two paired FASTA/FASTQ files
+- `cutN` - Cut sequences at runs of N
 
-**Test Coverage**: ~62% of statements (`go test -cover`)  
+**Test Coverage**: ~66% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
 **Documentation**: README with examples  
 
 **Key Features**:
 
-- Fast FASTA/Q processing for the six commands above
+- Fast FASTA/Q processing for the eight commands above
 - Quality score handling
 - Memory-efficient streaming
 
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- Only the six commands above are implemented; upstream seqtk has many more
-  (`mergepe`, `mutfa`, `randbase`, `hpc`, `cutN`, ...)
+- Only the eight commands above are implemented; upstream seqtk has more
+  (`mutfa`, `randbase`, `hpc`, ...)
 - Output format intended to be compatible for the implemented commands
 
 ---
@@ -83,7 +85,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `stats` - Calculate sequence statistics
 - `filter` - Multi-criteria filtering and trimming
 
-**Test Coverage**: ~55% of statements (`go test -cover`)  
+**Test Coverage**: ~90% of statements (`go test -cover`)  
 **Performance**: ~1.2-1.35x faster than the original Perl on the implemented paths  
 **Documentation**: README with examples
 
@@ -120,7 +122,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `se` - Single-end read trimming
 - `pe` - Paired-end read trimming
 
-**Test Coverage**: ~80% of statements (`go test -cover`)  
+**Test Coverage**: ~82% of statements (`go test -cover`)  
 **Performance**: ~0.96-1.0x (similar to original)  
 **Documentation**: README with examples
 
@@ -189,7 +191,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command with multiple filters
 
-**Test Coverage**: ~63% of statements (`go test -cover`)  
+**Test Coverage**: ~67% of statements (`go test -cover`)  
 **Performance**: ~1.1x  
 **Documentation**: README with examples
 
@@ -197,6 +199,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Adapter trimming (3' and 5')
 - Quality filtering
+- Sliding-window quality trimming (`--cut_front`, `--cut_tail`, `--cut_right`)
 - Length filtering
 - N content filtering
 - Poly-G/X tail trimming (NovaSeq)
@@ -207,9 +210,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Migration Notes**:
 
 - Simplified version of original
-- Core preprocessing features implemented
-- No HTML reports (future feature)
-- Single-threaded (parallel processing planned)
+- Core preprocessing features and sliding-window quality trimming implemented
+- No HTML/JSON reports (future feature)
+- Parallel worker pool exists; many upstream knobs are still missing
 
 ---
 
@@ -224,25 +227,28 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command for merging BED intervals
 
-**Test Coverage**: ~79% of statements (`go test -cover`)  
+**Test Coverage**: ~85% of statements (`go test -cover`)  
 **Performance**: ~2x faster than bedtools merge on the implemented path  
 **Documentation**: README with examples
 
 **Key Features**:
 
 - Merge overlapping BED intervals
-- Distance-based merging (-d option)
-- Strand-specific merging (-s option)
-- Statistics output (-S option)
+- Distance-based merging (`-d` option)
+- Strand-specific merging (`-s` option)
+- Column aggregation `bedtools merge`-style: `-c`/`--columns` and `-o`/`--operations`
+  with `sum`, `min`, `max`, `mean`, `median`, `count`, `count_distinct`,
+  `distinct`, `collapse`, `first`, `last`, `mode`, `antimode`
+- Statistics output (`-S` option)
 - Built-in gzip support
 - Automatic sorting
 
 **Migration Notes**:
 
-- Compatible with bedtools merge basic functionality
-- Simplified version (no advanced options yet)
-- Output always BED3 format
-- All core features working
+- Compatible with `bedtools merge` for the documented common path
+- Output is BED3 by default; `-c`/`-o` adds the requested aggregated columns
+- CLI note: `-c` short form now means `--columns` (matches `bedtools merge`);
+  `--count` is still available by its long name
 
 ---
 
@@ -287,13 +293,13 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~46 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~50 of ~147 options
 
 **Implemented Commands**:
 
 - Single command with multiple filtering, statistics and conversion options
 
-**Test Coverage**: ~52% of statements (`go test -cover`)  
+**Test Coverage**: ~58% of statements (`go test -cover`)  
 **Performance**: Comparable to original on the implemented operations  
 **Documentation**: README with examples  
 
@@ -310,14 +316,16 @@ This document tracks the status of bioinformatics tools being ported from their 
   `--hardy`, `--site-pi`, `--window-pi`(+`--window-pi-step`), `--TajimaD`,
   `--TsTv-summary`, `--TsTv`, `--TsTv-by-count`, `--TsTv-by-qual`, `--het`,
   `--singletons`, `--hist-indel-len`, `--FILTER-summary`, `--SNPdensity`
+- Population genetics: Weir & Cockerham 1984 Fst (`--weir-fst-pop` ×2+) per site
+  and over windows (`--fst-window-size`/`--fst-window-step`); mean and weighted
+  summary printed to stderr
 - VCF recoding (`--recode`, `--recode-INFO-all`)
 - Format conversion: `--012`, `--plink`, `--plink-tped` (with `--chrom-map`)
 
-**Not yet implemented** — these options are now rejected with an error instead of
-being silently ignored (older builds accepted them and produced no output):
-
-- `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
-- All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
+Every `Params` field declared in the package is now wired to real logic;
+`checkUnsupported` no longer rejects anything. The remaining gap vs upstream
+vcftools is dominated by **LD analysis** (`--geno-r2`, `--hap-r2`, all the
+`--ld-window-*` options) and a long tail of less-common options.
 
 See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and
 [ROADMAP.md](vcftools/ROADMAP.md) for the full picture.
@@ -335,7 +343,7 @@ See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and
 
 | Tool | Original Lang | Go Version | Commands | Tests | Docs | Performance | Gzip |
 |------|---------------|------------|----------|-------|------|-------------|------|
-| seqtk | C | 1.0.0 | 6 | ✓ | ✓ | 1.05-1.1x | - |
+| seqtk | C | 1.0.0 | 8 | ✓ | ✓ | 1.05-1.1x | - |
 | PRINSEQ | Perl | 1.0.0 | 2 | ✓ | ✓ | 1.2-1.35x | - |
 | sickle | C | 1.1.0 | 2 | ✓ | ✓ | 0.96-1.0x | ✓ |
 | skewer | C++ | 1.0.0 | 2 | ✓ | ✓ | ~1.0x | ✓ |
@@ -550,8 +558,9 @@ Use consistent datasets for comparison:
 
 **seqtk**:
 
-- Only `comp`, `fq2fa`, `seq`, `sample`, `trimfq`, `subseq` are implemented;
-  many upstream subcommands are still missing (`mergepe`, `mutfa`, `cutN`, ...)
+- Eight subcommands implemented (`comp`, `fq2fa`, `seq`, `sample`, `trimfq`,
+  `subseq`, `mergepe`, `cutN`); upstream subcommands still missing include
+  `mutfa`, `randbase`, `hpc`
 
 **PRINSEQ**:
 
@@ -559,11 +568,14 @@ Use consistent datasets for comparison:
   fixed/percentage/quality trimming, poly-N/A/T, dedup, paired-end, Phred+64,
   bad-sequence output, complexity filters); not every upstream option
 - Graph/HTML report generation not included
+- Quirk: `trimQualityLeft`/`trimQualityRight` always assume Phred+33 regardless
+  of `QualType`; documented but not yet fixed
 
 **sickle**:
 
 - Built-in gzip support (by `.gz` extension)
-- No automatic quality-encoding detection
+- Phred-encoding auto-detect via `bufio.Reader.Peek` (default `-t auto`); explicit
+  `sanger`/`illumina`/`solexa` still accepted; one-line stderr notice on detection
 - Not validated byte-for-byte against the C original
 
 **skewer**:
@@ -575,14 +587,17 @@ Use consistent datasets for comparison:
 **fastp**:
 
 - Single-end and paired-end processing implemented
+- Sliding-window quality trimming (`--cut_front`/`--cut_tail`/`--cut_right` with
+  `--cut_window_size`/`--cut_mean_quality`)
 - No HTML/JSON reports
 - No automatic adapter detection
 - Parallel worker pool exists but the feature surface is a subset of upstream
 
 **bedmerge**:
 
-- Output always BED3 format
-- No advanced options (distinct, count, etc.)
+- Column aggregation via `-c`/`--columns` and `-o`/`--operations` (sum, min,
+  max, mean, median, count, count_distinct, distinct, collapse, first, last,
+  mode, antimode); BED3 by default
 - In-memory processing (not suitable for very large files)
 
 **bedintersect**:
@@ -594,8 +609,8 @@ Use consistent datasets for comparison:
 
 **vcftools**:
 
-- ~46 of ~147 upstream options; see the vcftools section above
-- Unimplemented options are now rejected with an error rather than ignored
+- ~50 of ~147 upstream options; every declared `Params` field is now wired
+- Largest remaining gap: LD analysis (`--geno-r2`, `--hap-r2`, `--ld-window-*`)
 
 ### General Limitations
 
@@ -646,7 +661,7 @@ Use consistent datasets for comparison:
 
 ### Code Metrics
 
-- **Test Coverage (statements)**: ~38-80% per package, ~60% unweighted average;
+- **Test Coverage (statements)**: ~58-90% per package, ~77% unweighted average;
   0% for all `cmd/` entry points (run `go test -cover ./...` for current numbers)
 - **Shared Libraries**: iohelper (gzip support), bioformats, cliflag
 - **Tools with a working subset**: 8 (seqtk, prinseq, sickle, skewer, fastp,
