@@ -264,14 +264,18 @@ func generateLengthSVG(stats *Stats, writer io.Writer, x, y int) error {
 	width := 500
 	height := 300
 
-	fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
+	if _, err := fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
     <text class="title" x="%d" y="0">Length Distribution</text>
-`, x, y, width/2)
+`, x, y, width/2); err != nil {
+		return err
+	}
 
 	// Draw axes
-	fmt.Fprintf(writer, `    <line x1="0" y1="%d" x2="%d" y2="%d" stroke="black" stroke-width="1"/>
+	if _, err := fmt.Fprintf(writer, `    <line x1="0" y1="%d" x2="%d" y2="%d" stroke="black" stroke-width="1"/>
     <line x1="0" y1="0" x2="0" y2="%d" stroke="black" stroke-width="1"/>
-`, height, width, height, height)
+`, height, width, height, height); err != nil {
+		return err
+	}
 
 	// Draw bars
 	if len(lengths) > 0 {
@@ -279,13 +283,15 @@ func generateLengthSVG(stats *Stats, writer io.Writer, x, y int) error {
 		for i, length := range lengths {
 			count := stats.LengthDistribution[length]
 			barHeight := float64(count) / float64(maxCount) * float64(height-20)
-			fmt.Fprintf(writer, `    <rect class="bar" x="%.2f" y="%.2f" width="%.2f" height="%.2f"/>
-`, float64(i)*barWidth, float64(height)-barHeight, barWidth*0.8, barHeight)
+			if _, err := fmt.Fprintf(writer, `    <rect class="bar" x="%.2f" y="%.2f" width="%.2f" height="%.2f"/>
+`, float64(i)*barWidth, float64(height)-barHeight, barWidth*0.8, barHeight); err != nil {
+				return err
+			}
 		}
 	}
 
-	fmt.Fprintf(writer, "  </g>\n")
-	return nil
+	_, err := fmt.Fprintf(writer, "  </g>\n")
+	return err
 }
 
 func generateQualitySVG(stats *Stats, writer io.Writer, x, y int) error {
@@ -305,14 +311,18 @@ func generateQualitySVG(stats *Stats, writer io.Writer, x, y int) error {
 	width := 500
 	height := 300
 
-	fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
+	if _, err := fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
     <text class="title" x="%d" y="0">Quality Score Distribution</text>
-`, x, y, width/2)
+`, x, y, width/2); err != nil {
+		return err
+	}
 
 	// Draw axes
-	fmt.Fprintf(writer, `    <line x1="0" y1="%d" x2="%d" y2="%d" stroke="black" stroke-width="1"/>
+	if _, err := fmt.Fprintf(writer, `    <line x1="0" y1="%d" x2="%d" y2="%d" stroke="black" stroke-width="1"/>
     <line x1="0" y1="0" x2="0" y2="%d" stroke="black" stroke-width="1"/>
-`, height, width, height, height)
+`, height, width, height, height); err != nil {
+		return err
+	}
 
 	// Draw bars
 	if len(qualities) > 0 {
@@ -320,27 +330,33 @@ func generateQualitySVG(stats *Stats, writer io.Writer, x, y int) error {
 		for i, qual := range qualities {
 			count := stats.QualityDistribution[qual]
 			barHeight := float64(count) / float64(maxCount) * float64(height-20)
-			fmt.Fprintf(writer, `    <rect class="bar" x="%.2f" y="%.2f" width="%.2f" height="%.2f"/>
-`, float64(i)*barWidth, float64(height)-barHeight, barWidth*0.8, barHeight)
+			if _, err := fmt.Fprintf(writer, `    <rect class="bar" x="%.2f" y="%.2f" width="%.2f" height="%.2f"/>
+`, float64(i)*barWidth, float64(height)-barHeight, barWidth*0.8, barHeight); err != nil {
+				return err
+			}
 		}
 	}
 
-	fmt.Fprintf(writer, "  </g>\n")
-	return nil
+	_, err := fmt.Fprintf(writer, "  </g>\n")
+	return err
 }
 
 func generatePositionalQualitySVG(stats *Stats, writer io.Writer, x, y int) error {
 	width := 1100
 	height := 300
 
-	fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
+	if _, err := fmt.Fprintf(writer, `  <g transform="translate(%d,%d)">
     <text class="title" x="%d" y="0">Positional Quality Scores</text>
-`, x, y, width/2)
+`, x, y, width/2); err != nil {
+		return err
+	}
 
 	// Draw axes
-	fmt.Fprintf(writer, `    <line x1="0" y1="%d" x2="%d" y2="%d" stroke="black" stroke-width="1"/>
+	if _, err := fmt.Fprintf(writer, `    <line x1="0" y1="%d" x2="%d" y2="%d" stroke="black" stroke-width="1"/>
     <line x1="0" y1="0" x2="0" y2="%d" stroke="black" stroke-width="1"/>
-`, height, width, height, height)
+`, height, width, height, height); err != nil {
+		return err
+	}
 
 	// Find min/max for scaling
 	minQual, maxQual := math.MaxFloat64, -math.MaxFloat64
@@ -360,15 +376,21 @@ func generatePositionalQualitySVG(stats *Stats, writer io.Writer, x, y int) erro
 		for i, qual := range stats.PositionalQuality {
 			y := float64(height) - ((qual - minQual) / (maxQual - minQual) * float64(height-20))
 			if i == 0 {
-				fmt.Fprintf(writer, "%s%.2f,%.2f", points, float64(i)*stepX, y)
+				if _, err := fmt.Fprintf(writer, "%s%.2f,%.2f", points, float64(i)*stepX, y); err != nil {
+					return err
+				}
 			} else {
-				fmt.Fprintf(writer, " L%.2f,%.2f", float64(i)*stepX, y)
+				if _, err := fmt.Fprintf(writer, " L%.2f,%.2f", float64(i)*stepX, y); err != nil {
+					return err
+				}
 			}
 		}
-		fmt.Fprintf(writer, `" class="line"/>
-`)
+		if _, err := fmt.Fprintf(writer, `" class="line"/>
+`); err != nil {
+			return err
+		}
 	}
 
-	fmt.Fprintf(writer, "  </g>\n")
-	return nil
+	_, err := fmt.Fprintf(writer, "  </g>\n")
+	return err
 }
