@@ -24,11 +24,20 @@ type MergeOptions struct {
 	StrandSpec   bool         // Merge only intervals on the same strand
 	OutputFields OutputFields // Fields to include in output
 	Streaming    bool         // Use streaming mode for large files
+	// ColumnOps, when non-nil, requests bedtools-merge-style aggregation of
+	// input columns (the -c/-o options). When set, output columns are
+	// chrom, start, end followed by one aggregated value per requested column.
+	ColumnOps *ColumnOps
 }
 
 // Merge reads BED intervals, sorts them, and merges overlapping/adjacent intervals.
 // Returns the number of merged intervals.
 func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
+	// Column-aggregation mode (bedtools merge -c/-o style).
+	if opts.ColumnOps != nil {
+		return mergeWithColumnOps(reader, writer, opts)
+	}
+
 	// Use streaming mode if requested
 	if opts.Streaming {
 		return streamingMerge(reader, writer, opts)
@@ -295,6 +304,15 @@ type Stats struct {
 
 // MergeWithStats performs merge and returns detailed statistics.
 func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Stats, error) {
+	// Column-aggregation mode: report only the output count.
+	if opts.ColumnOps != nil {
+		count, err := mergeWithColumnOps(reader, writer, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &Stats{OutputIntervals: count}, nil
+	}
+
 	// Streaming mode doesn't support detailed stats tracking currently
 	if opts.Streaming {
 		count, err := streamingMerge(reader, writer, opts)

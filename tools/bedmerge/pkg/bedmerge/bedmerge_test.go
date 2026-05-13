@@ -341,6 +341,237 @@ chr2	100	250	2
 	}
 }
 
+// columnOpsInput is a small set of intervals: the first three on chr1 merge
+// into one group (10..30), the fourth on chr1 is separate (40..50), and chr2
+// has one interval. Columns: 4 = name, 5 = score-ish number.
+const columnOpsInput = `chr1	10	20	a	5
+chr1	15	30	b	7
+chr1	18	25	a	7
+chr1	40	50	c	3
+chr2	5	15	d	9`
+
+func TestMergeColumnOps(t *testing.T) {
+	tests := []struct {
+		name     string
+		cols     string
+		ops      string
+		input    string
+		expected string
+	}{
+		{
+			name:  "sum on numeric column",
+			cols:  "5",
+			ops:   "sum",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\t19\n" +
+				"chr1\t40\t50\t3\n" +
+				"chr2\t5\t15\t9\n",
+		},
+		{
+			name:  "min and max",
+			cols:  "5,5",
+			ops:   "min,max",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\t5\t7\n" +
+				"chr1\t40\t50\t3\t3\n" +
+				"chr2\t5\t15\t9\t9\n",
+		},
+		{
+			name:  "mean produces float",
+			cols:  "5",
+			ops:   "mean",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\t6.333333333333333\n" +
+				"chr1\t40\t50\t3\n" +
+				"chr2\t5\t15\t9\n",
+		},
+		{
+			name:  "median odd count",
+			cols:  "5",
+			ops:   "median",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\t7\n" +
+				"chr1\t40\t50\t3\n" +
+				"chr2\t5\t15\t9\n",
+		},
+		{
+			name:  "count counts merged intervals",
+			cols:  "4",
+			ops:   "count",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\t3\n" +
+				"chr1\t40\t50\t1\n" +
+				"chr2\t5\t15\t1\n",
+		},
+		{
+			name:  "count_distinct counts distinct values",
+			cols:  "4",
+			ops:   "count_distinct",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\t2\n" +
+				"chr1\t40\t50\t1\n" +
+				"chr2\t5\t15\t1\n",
+		},
+		{
+			name:  "distinct keeps first-seen order without dups",
+			cols:  "4",
+			ops:   "distinct",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\ta,b\n" +
+				"chr1\t40\t50\tc\n" +
+				"chr2\t5\t15\td\n",
+		},
+		{
+			name:  "collapse keeps all values with dups",
+			cols:  "4",
+			ops:   "collapse",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\ta,b,a\n" +
+				"chr1\t40\t50\tc\n" +
+				"chr2\t5\t15\td\n",
+		},
+		{
+			name:  "first and last",
+			cols:  "4,4",
+			ops:   "first,last",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\ta\ta\n" +
+				"chr1\t40\t50\tc\tc\n" +
+				"chr2\t5\t15\td\td\n",
+		},
+		{
+			// chr1 group col5 = [5,7,7]; most frequent is 7.
+			name:  "mode picks most frequent value",
+			cols:  "5",
+			ops:   "mode",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\t7\n" +
+				"chr1\t40\t50\t3\n" +
+				"chr2\t5\t15\t9\n",
+		},
+		{
+			// chr1 group col5 = [5,7,7]; least frequent is 5 (tie-break: 5 seen first).
+			name:  "antimode picks least frequent value, tie -> first seen",
+			cols:  "5",
+			ops:   "antimode",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\t5\n" +
+				"chr1\t40\t50\t3\n" +
+				"chr2\t5\t15\t9\n",
+		},
+		{
+			// All distinct values are equally (least) frequent; antimode tie-breaks
+			// to the first-seen value.
+			name: "antimode tie-break across all-unique values",
+			cols: "5",
+			ops:  "antimode",
+			input: "chr1\t10\t20\ta\t8\n" +
+				"chr1\t12\t22\tb\t3\n" +
+				"chr1\t14\t24\tc\t9\n",
+			expected: "chr1\t10\t24\t8\n",
+		},
+		{
+			name:  "single op applied to multiple columns",
+			cols:  "4,5",
+			ops:   "distinct",
+			input: columnOpsInput,
+			expected: "chr1\t10\t30\ta,b\t5,7\n" +
+				"chr1\t40\t50\tc\t3\n" +
+				"chr2\t5\t15\td\t9\n",
+		},
+		{
+			name: "distinct then sum (task smoke example)",
+			cols: "4,5",
+			ops:  "distinct,sum",
+			input: "chr1\t10\t20\ta\t5\n" +
+				"chr1\t15\t30\tb\t7\n" +
+				"chr1\t40\t50\tc\t3\n",
+			expected: "chr1\t10\t30\ta,b\t12\n" +
+				"chr1\t40\t50\tc\t3\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			co, err := ParseColumnOps(tt.cols, tt.ops)
+			if err != nil {
+				t.Fatalf("ParseColumnOps(%q, %q) failed: %v", tt.cols, tt.ops, err)
+			}
+			var buf bytes.Buffer
+			if _, err := Merge(strings.NewReader(tt.input), &buf, MergeOptions{ColumnOps: co}); err != nil {
+				t.Fatalf("Merge failed: %v", err)
+			}
+			if buf.String() != tt.expected {
+				t.Errorf("Output mismatch.\nExpected:\n%q\nGot:\n%q", tt.expected, buf.String())
+			}
+		})
+	}
+}
+
+func TestParseColumnOpsErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		cols string
+		ops  string
+	}{
+		{"columns without operations", "4,5", ""},
+		{"operations without columns", "", "sum"},
+		{"mismatched lengths", "4,5,6", "sum,min"},
+		{"unsupported operation", "4", "bogus"},
+		{"non-numeric column number", "x", "sum"},
+		{"zero column number", "0", "sum"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseColumnOps(tt.cols, tt.ops); err == nil {
+				t.Errorf("ParseColumnOps(%q, %q) expected error, got nil", tt.cols, tt.ops)
+			}
+		})
+	}
+}
+
+func TestParseColumnOpsNeitherGiven(t *testing.T) {
+	co, err := ParseColumnOps("", "")
+	if err != nil {
+		t.Fatalf("ParseColumnOps(\"\", \"\") returned error: %v", err)
+	}
+	if co != nil {
+		t.Errorf("ParseColumnOps(\"\", \"\") expected nil ColumnOps, got %+v", co)
+	}
+}
+
+func TestMergeColumnOpsNonNumericError(t *testing.T) {
+	input := "chr1\t10\t20\ta\tx\nchr1\t15\t30\tb\t7\n"
+	co, err := ParseColumnOps("5", "sum")
+	if err != nil {
+		t.Fatalf("ParseColumnOps failed: %v", err)
+	}
+	var buf bytes.Buffer
+	_, err = Merge(strings.NewReader(input), &buf, MergeOptions{ColumnOps: co})
+	if err == nil {
+		t.Fatalf("expected error for non-numeric value with sum op, got nil")
+	}
+	if !strings.Contains(err.Error(), "column 5") {
+		t.Errorf("error should name the offending column, got: %v", err)
+	}
+}
+
+func TestMergeBED3UnchangedWithoutColumnOps(t *testing.T) {
+	input := "chr1\t10\t20\ta\t5\nchr1\t15\t30\tb\t7\nchr1\t40\t50\tc\t3\n"
+	expected := "chr1\t10\t30\nchr1\t40\t50\n"
+	var buf bytes.Buffer
+	count, err := Merge(strings.NewReader(input), &buf, MergeOptions{})
+	if err != nil {
+		t.Fatalf("Merge failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 intervals, got %d", count)
+	}
+	if buf.String() != expected {
+		t.Errorf("Output mismatch.\nExpected:\n%q\nGot:\n%q", expected, buf.String())
+	}
+}
+
 func TestMergeOutputFields(t *testing.T) {
 	input := `chr1	100	200	name1	100	+
 chr1	150	250	name2	200	+

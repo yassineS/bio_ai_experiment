@@ -43,10 +43,14 @@ bedmerge input.bed > merged.bed
 - `-d, --distance INT` - Maximum distance between intervals to merge (default: 0)
 - `-s, --strand` - Merge only intervals on the same strand
 - `-i, --input FILE` - Input BED file (default: stdin)
-- `-o, --output FILE` - Output BED file (default: stdout)
+- `--output FILE` - Output BED file (default: stdout)
 - `-S, --stats` - Print merge statistics to stderr
-- `-c, --count` - Output count of merged intervals as name field
+- `--count` - Output count of merged intervals as name field
 - `-g, --bedgraph` - Input/output in bedGraph format (chrom, start, end, score)
+- `-c, --columns LIST` - Comma-separated 1-based input columns to aggregate over each
+  merged group (`bedtools merge -c` style); requires `-o`
+- `-o, --operations LIST` - Comma-separated operations, one per `-c` column or a single
+  op applied to all columns (`bedtools merge -o` style); requires `-c`
 - `--streaming` - Use streaming mode for very large files
 - `-h, --help` - Show help message
 
@@ -104,7 +108,7 @@ bedmerge input.bed | gzip > merged.bed.gz
 #### Count merged intervals
 
 ```bash
-bedmerge -c input.bed > merged.bed
+bedmerge --count input.bed > merged.bed
 ```
 
 Outputs the count of merged intervals as the name field:
@@ -113,6 +117,58 @@ Outputs the count of merged intervals as the name field:
 chr1 100 250 2
 chr1 500 600 1
 ```
+
+#### Aggregate input columns over merged groups (`-c` / `-o`)
+
+Like `bedtools merge -c ... -o ...`, you can aggregate one or more input columns
+over the set of intervals that got merged into each output region:
+
+```bash
+bedmerge -c 4,5 -o distinct,sum input.bed > merged.bed
+```
+
+For example, given this input (columns are tab-separated):
+
+```
+chr1 10 20 a 5
+chr1 15 30 b 7
+chr1 40 50 c 3
+```
+
+`bedmerge -c 4,5 -o distinct,sum` produces (tab-separated):
+
+```
+chr1 10 30 a,b 12
+chr1 40 50 c 3
+```
+
+The output is `chrom`, `start`, `end` followed by one aggregated value per `-c`
+column. A single operation may be applied to every column, e.g.
+`bedmerge -c 4,5,6 -o mean`. Supported operations:
+
+| Operation | Result |
+|-----------|--------|
+| `sum` | sum of the (numeric) column values |
+| `min` / `max` | smallest / largest (numeric) value |
+| `mean` | arithmetic mean of the (numeric) values |
+| `median` | median of the (numeric) values |
+| `count` | number of merged intervals |
+| `count_distinct` | number of distinct values |
+| `distinct` | distinct values joined with `,` in first-seen order |
+| `collapse` | all values joined with `,` (duplicates kept) |
+| `first` / `last` | value from the first / last interval of the merged group |
+| `mode` | most frequent (numeric) value; ties broken by first-seen |
+| `antimode` | least frequent (numeric) value; ties broken by first-seen |
+
+Notes:
+
+- `sum`, `min`, `max`, `mean`, `median`, `mode`, and `antimode` require their
+  column values to parse as numbers; a non-numeric value is an error that names
+  the offending column.
+- Integer-valued results print without a decimal point; `mean`/`median` results
+  print with up to ~10 significant digits and no trailing-zero noise.
+- `-c` without `-o` (or vice versa) is an error, and the number of operations
+  must be 1 or equal to the number of columns.
 
 #### Merge bedGraph files
 
@@ -154,11 +210,20 @@ chr1 100 250
 chr1 500 600
 ```
 
-With `-c` flag, includes count of merged intervals:
+With `--count`, includes count of merged intervals:
 
 ```
 chr1 100 250 2
 chr1 500 600 1
+```
+
+With `-c`/`-o`, the output is `chrom`, `start`, `end` followed by one aggregated
+value per requested column (see [Aggregate input columns over merged
+groups](#aggregate-input-columns-over-merged-groups--c---o)):
+
+```
+chr1 100 250 a,b 12
+chr1 500 600 c 3
 ```
 
 With `-g` flag (bedGraph format), outputs 4 columns:
@@ -239,6 +304,7 @@ bedmerge input.bed | bedtools intersect -a - -b targets.bed
 | Output fields | Configurable | Configurable |
 | Count merged | Yes | Yes |
 | bedGraph support | Yes | Limited |
+| Column aggregation (`-c`/`-o`) | Yes | Yes |
 | Advanced options | Basic | Extensive |
 
 **Use bedmerge when:**
@@ -251,7 +317,7 @@ bedmerge input.bed | bedtools intersect -a - -b targets.bed
 
 **Use bedtools merge when:**
 
-- You need advanced options (distinct, collapse, etc.)
+- You need options beyond what bedmerge implements
 - You're already using bedtools suite
 - You need complex custom operations
 
@@ -281,14 +347,16 @@ go test -cover ./pkg/bedmerge
 
 - Streaming mode requires input roughly sorted by chromosome for optimal performance
 - For bedGraph format, only the first score is preserved when merging
-- No support for some advanced bedtools options like -delim, -collapse, etc.
+- Column aggregation always uses `,` as the delimiter (no `-delim` option)
+- `-c`/`-o` aggregation is not currently available in `--streaming` mode
 
 ## New Features (Added)
 
-- ✅ Streaming mode for very large files
-- ✅ Configurable output fields
-- ✅ Count merged intervals per region
-- ✅ Support for bedGraph format
+- Streaming mode for very large files
+- Configurable output fields
+- Count merged intervals per region
+- Support for bedGraph format
+- Column aggregation with `-c`/`-o` (bedtools merge style)
 
 ## Contributing
 
