@@ -18,12 +18,13 @@ This document outlines planned features and enhancements for the vcftools Go imp
   (→ `.TsTv.qual`: Ts/Tv counts and ratios cumulative below and at-or-above
   each distinct QUAL threshold), `--hist-indel-len`,
   `--FILTER-summary`, `--SNPdensity`
+- Population structure: `--weir-fst-pop` (Weir & Cockerham 1984 per-site Fst → `.weir.fst`),
+  `--fst-window-size`/`--fst-window-step` (windowed `WEIGHTED_FST`/`MEAN_FST` → `.windowed.weir.fst`)
 - VCF recoding (`--recode`, `--recode-INFO-all`)
 - Format conversion: `--012`, `--plink`, `--plink-tped`, `--chrom-map`
 
 ### Recognised but **not implemented** (return an error)
 
-- `--weir-fst-pop`, `--fst-window-size`, `--fst-window-step`
 - All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
 
 Test coverage of the `vcftools` package is ~51% of statements; the `cmd/`
@@ -49,9 +50,9 @@ entry point has no tests.
 
 ### Population Structure Statistics
 
-- [ ] `--weir-fst-pop` - Fst calculation (Weir & Cockerham 1984)
-- [ ] `--fst-window-size` - Window size for Fst calculations
-- [ ] `--fst-window-step` - Step size for sliding windows
+- [x] `--weir-fst-pop` - Fst calculation (Weir & Cockerham 1984)
+- [x] `--fst-window-size` - Window size for Fst calculations
+- [x] `--fst-window-step` - Step size for sliding windows
 
 **Priority:** HIGH  
 **Estimated Effort:** 1-2 weeks  

@@ -407,6 +407,148 @@ chr1	60	.	A	T	.	PASS	.	GT	0/1
 	}
 }
 
+// writePopFile writes one sample name per line to dir/name and returns the
+// full path; helper for the Weir & Cockerham Fst integration tests.
+func writePopFile(t *testing.T, dir, name string, samples []string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(strings.Join(samples, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("writing pop file %s: %v", path, err)
+	}
+	return path
+}
+
+// TestIntegration_WeirFst exercises --weir-fst-pop end-to-end on testVCF and
+// asserts the per-site .weir.fst output is produced with the expected header
+// and at least one data row.
+func TestIntegration_WeirFst(t *testing.T) {
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "test")
+	pop1 := writePopFile(t, tmpDir, "pop1.txt", []string{"sample1"})
+	pop2 := writePopFile(t, tmpDir, "pop2.txt", []string{"sample2", "sample3"})
+
+	params := &Params{
+		OutPrefix:  prefix,
+		WeirFstPop: []string{pop1, pop2},
+	}
+	if err := Run(strings.NewReader(testVCF), params); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	fstPath := prefix + ".weir.fst"
+	b, err := os.ReadFile(fstPath)
+	if err != nil {
+		t.Fatalf("expected output file %s: %v", fstPath, err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	wantHeader := "CHROM\tPOS\tWEIR_AND_COCKERHAM_FST"
+	if lines[0] != wantHeader {
+		t.Errorf(".weir.fst header = %q, want %q", lines[0], wantHeader)
+	}
+	// pop1 has only one sample so each SNP is skipped (n_i < 2); the file
+	// should still be produced with the header. Now use a synthetic VCF with
+	// five samples in two populations, each of size >= 2, to verify a real
+	// per-site Fst row is written.
+	const fstVCF = `##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4	S5
+chr1	100	.	A	G	30	PASS	.	GT	0/1	0/1	0/0	0/0	1/1
+chr1	200	.	C	T	30	PASS	.	GT	0/0	0/1	1/1	0/1	0/0
+`
+	tmpDir3 := t.TempDir()
+	prefix3 := filepath.Join(tmpDir3, "fst")
+	popX := writePopFile(t, tmpDir3, "popX.txt", []string{"S1", "S2"})
+	popY := writePopFile(t, tmpDir3, "popY.txt", []string{"S3", "S4", "S5"})
+	if err := Run(strings.NewReader(fstVCF), &Params{
+		OutPrefix:  prefix3,
+		WeirFstPop: []string{popX, popY},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	b3, err := os.ReadFile(prefix3 + ".weir.fst")
+	if err != nil {
+		t.Fatalf("expected file %s: %v", prefix3+".weir.fst", err)
+	}
+	lines3 := strings.Split(strings.TrimRight(string(b3), "\n"), "\n")
+	if lines3[0] != wantHeader {
+		t.Errorf(".weir.fst header = %q, want %q", lines3[0], wantHeader)
+	}
+	// 2 SNPs in fstVCF -> 2 data rows.
+	if got := len(lines3) - 1; got != 2 {
+		t.Errorf(".weir.fst data rows = %d, want 2:\n%s", got, string(b3))
+	}
+	// First row is the worked example: chr1 100 ~ -0.3232.
+	if !strings.HasPrefix(lines3[1], "chr1\t100\t") {
+		t.Errorf("first row prefix = %q, want chr1\\t100\\t...", lines3[1])
+	}
+}
+
+// TestIntegration_WeirFstRejectsBadPops checks the error paths in
+// loadPopulationFiles: <2 pops, missing file, sample shared across pops.
+func TestIntegration_WeirFstRejectsBadPops(t *testing.T) {
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "test")
+	pop1 := writePopFile(t, tmpDir, "p1.txt", []string{"sample1"})
+
+	// Single population => error.
+	err := Run(strings.NewReader(testVCF), &Params{OutPrefix: prefix, WeirFstPop: []string{pop1}})
+	if err == nil || !strings.Contains(err.Error(), "at least 2") {
+		t.Errorf("Run with one pop file should error about needing >=2 pops; got: %v", err)
+	}
+
+	// Sample appearing in both pops => error.
+	pop2 := writePopFile(t, tmpDir, "p2.txt", []string{"sample1", "sample2"})
+	err = Run(strings.NewReader(testVCF), &Params{OutPrefix: prefix, WeirFstPop: []string{pop1, pop2}})
+	if err == nil || !strings.Contains(err.Error(), "multiple population files") {
+		t.Errorf("Run with sample in multiple pops should error; got: %v", err)
+	}
+}
+
+// TestIntegration_WindowedWeirFst checks that --fst-window-size produces the
+// .windowed.weir.fst file with the expected header and at least one row.
+func TestIntegration_WindowedWeirFst(t *testing.T) {
+	const fstVCF = `##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4	S5
+chr1	100	.	A	G	30	PASS	.	GT	0/1	0/1	0/0	0/0	1/1
+chr1	500	.	C	T	30	PASS	.	GT	0/0	0/1	1/1	0/1	0/0
+chr1	1500	.	G	A	30	PASS	.	GT	1/1	0/1	0/0	0/0	0/1
+`
+	tmpDir := t.TempDir()
+	prefix := filepath.Join(tmpDir, "fst")
+	popX := writePopFile(t, tmpDir, "popX.txt", []string{"S1", "S2"})
+	popY := writePopFile(t, tmpDir, "popY.txt", []string{"S3", "S4", "S5"})
+
+	params := &Params{
+		OutPrefix:     prefix,
+		WeirFstPop:    []string{popX, popY},
+		FstWindowSize: 1000,
+	}
+	if err := Run(strings.NewReader(fstVCF), params); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	winPath := prefix + ".windowed.weir.fst"
+	b, err := os.ReadFile(winPath)
+	if err != nil {
+		t.Fatalf("expected file %s: %v", winPath, err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	wantHeader := "CHROM\tBIN_START\tBIN_END\tN_VARIANTS\tWEIGHTED_FST\tMEAN_FST"
+	if lines[0] != wantHeader {
+		t.Errorf(".windowed.weir.fst header = %q, want %q", lines[0], wantHeader)
+	}
+	// Step defaulted to 1000 (== window). SNPs at 100, 500 -> window
+	// [1, 1000]; SNP at 1500 -> window [1001, 2000]. Two windows expected.
+	if got := len(lines) - 1; got != 2 {
+		t.Errorf(".windowed.weir.fst data rows = %d, want 2:\n%s", got, string(b))
+	}
+	// Per-site .weir.fst should also exist.
+	if _, err := os.Stat(prefix + ".weir.fst"); err != nil {
+		t.Errorf("expected per-site %s: %v", prefix+".weir.fst", err)
+	}
+}
+
 func TestIntegration_IndelHistGenoDepthTajimaD(t *testing.T) {
 	tmpDir := t.TempDir()
 	prefix := filepath.Join(tmpDir, "test")

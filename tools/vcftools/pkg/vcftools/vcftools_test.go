@@ -454,6 +454,41 @@ func TestTajimasD(t *testing.T) {
 	}
 }
 
+// TestWeirCockerhamFstWorkedExample verifies the per-site Weir & Cockerham
+// 1984 Fst estimator against the worked example documented in the
+// implementation plan: two populations of sizes 2 and 3, genotypes
+// {0/1, 0/1} and {0/0, 0/0, 1/1}, expected Fst ~ -0.3232.
+func TestWeirCockerhamFstWorkedExample(t *testing.T) {
+	// Pop1: S1=0/1, S2=0/1 -> n=2, altCount=2, hetCount=2.
+	// Pop2: S3=0/0, S4=0/0, S5=1/1 -> n=3, altCount=2, hetCount=0.
+	pops := []popGenotypeCounts{
+		{n: 2, altCount: 2, hetCount: 2},
+		{n: 3, altCount: 2, hetCount: 0},
+	}
+	a, b, c, fst, ok := weirCockerhamFst(pops)
+	if !ok {
+		t.Fatalf("weirCockerhamFst returned ok=false; a=%v b=%v c=%v", a, b, c)
+	}
+	want := -0.3232
+	if math.Abs(fst-want) > 1e-3 {
+		t.Errorf("weirCockerhamFst Fst = %v, want ~%v (within 1e-3)", fst, want)
+	}
+	// Sanity: a + b + c should be ~0.24352 and the components carry the
+	// expected signs (a < 0, b > 0, c > 0).
+	if a >= 0 {
+		t.Errorf("expected a < 0, got %v", a)
+	}
+	if b <= 0 {
+		t.Errorf("expected b > 0, got %v", b)
+	}
+	if c <= 0 {
+		t.Errorf("expected c > 0, got %v", c)
+	}
+	if math.Abs((a+b+c)-0.24352) > 1e-3 {
+		t.Errorf("a+b+c = %v, want ~0.24352", a+b+c)
+	}
+}
+
 func TestCheckUnsupported(t *testing.T) {
 	supported := []*Params{
 		{},
@@ -461,6 +496,7 @@ func TestCheckUnsupported(t *testing.T) {
 		{TsTvByCount: true, Depth: true},
 		{TsTvByQual: true},
 		{HistIndelLen: true, GenoDepth: true, TajimaD: 10000},
+		{WeirFstPop: []string{"pop1.txt", "pop2.txt"}, FstWindowSize: 10000, FstWindowStep: 5000},
 	}
 	for i, p := range supported {
 		if err := checkUnsupported(p); err != nil {
@@ -469,9 +505,9 @@ func TestCheckUnsupported(t *testing.T) {
 	}
 
 	unsupported := []*Params{
-		{WeirFstPop: []string{"pop1.txt", "pop2.txt"}},
-		{FstWindowSize: 10000},
-		{FstWindowStep: 5000},
+		// Currently every previously-rejected feature has been implemented;
+		// this list is kept (empty) so the test trivially documents the lack
+		// of unsupported flags. Add new entries here when introducing checks.
 	}
 	for i, p := range unsupported {
 		if err := checkUnsupported(p); err == nil {
@@ -480,13 +516,11 @@ func TestCheckUnsupported(t *testing.T) {
 	}
 }
 
-func TestRunRejectsUnsupportedFeatures(t *testing.T) {
+func TestRunAcceptsTsTvByQual(t *testing.T) {
+	// TsTvByQual is now implemented (it used to be rejected with an error);
+	// this test pins that the feature stays accepted.
 	in := strings.NewReader(testVCF)
-	err := Run(in, &Params{OutPrefix: t.TempDir() + "/out", WeirFstPop: []string{"pop1.txt"}})
-	if err == nil {
-		t.Fatal("Run with --weir-fst-pop should return an error, got nil")
-	}
-	if !strings.Contains(err.Error(), "not implemented") {
-		t.Errorf("error = %q, want it to mention 'not implemented'", err.Error())
+	if err := Run(in, &Params{OutPrefix: t.TempDir() + "/out", TsTvByQual: true}); err != nil {
+		t.Fatalf("Run with --TsTv-by-qual should succeed, got: %v", err)
 	}
 }

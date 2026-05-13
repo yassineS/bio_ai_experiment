@@ -48,6 +48,10 @@ type statistics struct {
 	indelLenTotal int
 	genoDepths    []genoDepthSite
 	tajimaDSites  []tajimaDSite
+
+	// Weir & Cockerham 1984 Fst accumulator (populated when --weir-fst-pop is
+	// specified). Nil when Fst calculation was not requested.
+	weirFst *weirFstAccumulator
 }
 
 // genoDepthSite holds the per-individual read depth at one site.
@@ -301,6 +305,12 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 	// SNP density
 	if params.SNPDensity > 0 {
 		s.addSNPDensityStat(v, params.SNPDensity)
+	}
+
+	// Weir & Cockerham 1984 Fst (per-site components, accumulated for the
+	// per-site and optional windowed output).
+	if s.weirFst != nil && len(params.WeirFstPop) >= 2 {
+		s.weirFst.addVariant(v)
 	}
 }
 

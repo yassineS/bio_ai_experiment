@@ -87,6 +87,12 @@ Population Genetics:
   --window-pi INT       Nucleotide diversity summed over windows of size INT
   --window-pi-step INT  Step size for --window-pi windows (default: window size)
   --TajimaD INT         Tajima's D in non-overlapping windows of size INT
+  --weir-fst-pop FILE   Population file (one sample per line) for Weir & Cockerham
+                        1984 Fst; use the flag two or more times, once per pop.
+                        Writes <prefix>.weir.fst.
+  --fst-window-size INT Window size for Fst calculation; also writes
+                        <prefix>.windowed.weir.fst
+  --fst-window-step INT Step size for sliding Fst windows (default: window size)
 
 Format Conversion:
   --012                 Output genotypes as a 0/1/2 matrix
@@ -95,8 +101,7 @@ Format Conversion:
   --chrom-map FILE      Chromosome-name-to-integer map for PLINK output
 
 Not yet implemented (rejected with an error rather than silently ignored):
-  --weir-fst-pop, --fst-window-size, --fst-window-step,
-  and all LD analysis (--geno-r2, --hap-r2, ...)
+  All LD analysis (--geno-r2, --hap-r2, ...)
   See tools/vcftools/ROADMAP.md for status.
 
 Sample Filtering:
@@ -210,12 +215,12 @@ func main() {
 	tajimaD := flag.Int("TajimaD", 0, "Tajima's D in non-overlapping windows of this size")
 	snpDensity := flag.Int("SNPdensity", 0, "SNP density in bins of this size")
 	var weirFstPop []string
-	flag.Func("weir-fst-pop", "Population file for Fst calculation, repeatable (not yet implemented)", func(s string) error {
+	flag.Func("weir-fst-pop", "Population file (one sample per line) for Weir & Cockerham 1984 Fst, repeatable", func(s string) error {
 		weirFstPop = append(weirFstPop, s)
 		return nil
 	})
-	fstWindowSize := flag.Int("fst-window-size", 0, "Window size for Fst (not yet implemented)")
-	fstWindowStep := flag.Int("fst-window-step", 0, "Step size for Fst windows (not yet implemented)")
+	fstWindowSize := flag.Int("fst-window-size", 0, "Window size for Fst calculation")
+	fstWindowStep := flag.Int("fst-window-step", 0, "Step size for sliding Fst windows")
 	filterSummary := flag.Bool("FILTER-summary", false, "FILTER tag summary")
 
 	// Phase 4: Format conversions

@@ -42,6 +42,7 @@ This port can:
 - Transition/transversion ratios: `--TsTv-summary`, `--TsTv N`, `--TsTv-by-count`, `--TsTv-by-qual` (→ `.TsTv.qual`: Ts/Tv counts and ratios cumulative below and at-or-above each distinct QUAL threshold)
 - Nucleotide diversity: per site (`--site-pi`) and windowed (`--window-pi`, `--window-pi-step`)
 - Tajima's D in non-overlapping windows (`--TajimaD N` → `.Tajima.D`)
+- Weir & Cockerham 1984 Fst per biallelic SNP (`--weir-fst-pop` → `.weir.fst`) plus optional windowed output (`--fst-window-size`, `--fst-window-step` → `.windowed.weir.fst`); the per-site mean and weighted Fst summary is printed to stderr.
 - Indel length histogram (`--hist-indel-len` → `.indel.hist`)
 - FILTER summary (`--FILTER-summary`); SNP density (`--SNPdensity N`)
 
@@ -59,8 +60,7 @@ incorrect quantity for `--site-pi` and silently ignored `--TajimaD`.)
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): `--TsTv-by-qual`, `--weir-fst-pop`,
-`--fst-window-size`, `--fst-window-step`, and all LD analysis
+accepted them and produced nothing): all LD analysis
 (`--geno-r2`, `--hap-r2`, ...).
 
 ### Format Support
@@ -256,7 +256,6 @@ The following commonly-used features are not yet implemented:
 **High Priority:**
 
 - ❌ Linkage disequilibrium (LD) calculations (`--geno-r2`, `--hap-r2`)
-- ❌ Fst statistics (`--weir-fst-pop`)
 - ❌ PLINK format conversion (`--plink`, `--plink-tped`)
 
 **Medium Priority:**
