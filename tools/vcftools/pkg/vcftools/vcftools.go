@@ -139,6 +139,18 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// Load --weir-fst-pop population files if requested. We validate here so
+	// that errors (missing file, sample appearing in multiple populations,
+	// fewer than 2 populations) are surfaced before we start streaming the
+	// VCF.
+	var weirFstPops [][]string
+	if len(params.WeirFstPop) > 0 {
+		weirFstPops, err = loadPopulationFiles(params.WeirFstPop)
+		if err != nil {
+			return fmt.Errorf("loading --weir-fst-pop files: %w", err)
+		}
+	}
+
 	// Load SNP ID filters
 	var includeSNPs, excludeSNPs map[string]bool
 	if params.SNP != "" {
@@ -173,6 +185,9 @@ func Run(input io.Reader, params *Params) error {
 
 	// Initialize statistics
 	stats := newStatistics(filteredHeader)
+	if len(weirFstPops) >= 2 {
+		stats.weirFst = newWeirFstAccumulator(weirFstPops)
+	}
 
 	// Set up output writer for recode
 	var recodeWriter *vcf.Writer
@@ -931,6 +946,18 @@ func outputStatistics(stats *statistics, params *Params) error {
 		}
 	}
 
+	// Weir & Cockerham 1984 Fst (per-site, plus optional windowed output).
+	if stats.weirFst != nil {
+		if err := stats.weirFst.outputWeirFst(params.OutPrefix); err != nil {
+			return err
+		}
+		if params.FstWindowSize > 0 {
+			if err := stats.weirFst.outputWindowedWeirFst(params.OutPrefix, params.FstWindowSize, params.FstWindowStep); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -974,16 +1001,8 @@ func getOutputPath(prefix, suffix string) string {
 // this Go port does not implement yet. Previously these options were accepted
 // and silently ignored, which produced no output and looked like success.
 func checkUnsupported(params *Params) error {
+	_ = params
 	var missing []string
-	if len(params.WeirFstPop) > 0 {
-		missing = append(missing, "--weir-fst-pop")
-	}
-	if params.FstWindowSize != 0 {
-		missing = append(missing, "--fst-window-size")
-	}
-	if params.FstWindowStep != 0 {
-		missing = append(missing, "--fst-window-step")
-	}
 	if len(missing) > 0 {
 		return fmt.Errorf("not implemented in this Go port yet: %s (see tools/vcftools/ROADMAP.md)", strings.Join(missing, ", "))
 	}
