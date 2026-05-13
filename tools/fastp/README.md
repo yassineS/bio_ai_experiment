@@ -9,6 +9,7 @@ An all-in-one FASTQ preprocessor that combines quality filtering, adapter trimmi
 - **Length Filtering**: Filters reads by minimum and maximum length
 - **N Content Filtering**: Removes reads with excessive N bases
 - **Poly-tail Trimming**: Removes poly-G and poly-X tails (common in NovaSeq)
+- **Sliding-window Quality Trimming**: `--cut_front` / `--cut_tail` / `--cut_right` style trimming
 - **Complexity Filtering**: Filters low-complexity sequences
 - **Built-in Gzip Support**: Automatically handles .gz compressed files
 - **Memory Efficient**: Streaming processing for large files
@@ -50,6 +51,16 @@ fastp -i input.fastq -o output.fastq \
   -l 30 \
   --trim-poly-g \
   --max-n-count 3
+```
+
+### Sliding-window Quality Trimming
+
+```bash
+# Drop low-quality bases from the 5' and 3' ends using a sliding window
+fastp -i input.fastq -o output.fastq --cut-front --cut-tail -W 4 -M 20
+
+# Cut the read at (and after) the first low-quality window scanning 5'->3'
+fastp -i input.fastq -o output.fastq --cut-right --cut-window-size 4 --cut-mean-quality 20
 ```
 
 ### With Gzip Files
@@ -130,6 +141,28 @@ fastp -i input.fastq -o output.fastq -w 4 -h report.html
 - `--trim-poly-x` - Enable poly-X tail trimming
 - `--poly-g-min-len INT` - Minimum poly-G length (default: 10)
 
+### Sliding-window Quality Trimming
+
+These options mirror upstream fastp's `--cut_front` / `--cut_tail` / `--cut_right`.
+A window of `--cut-window-size` bases is slid along the read and its mean Phred
+quality is compared against `--cut-mean-quality`. If `--cut-window-size` is larger
+than the read, the whole read is treated as a single (short) window. These apply to
+single-end reads and to both reads of a pair, before the length filter.
+
+- `-5, --cut-front` - Slide a window from the 5' end; drop the leading base while
+  the window's mean quality is below the threshold (equivalently: trim everything
+  before the first 5'->3' window whose mean quality meets the threshold)
+- `-3, --cut-tail` - Slide a window from the 3' end; drop the trailing base while
+  the window's mean quality is below the threshold (equivalently: trim everything
+  after the first 3'->5' window whose mean quality meets the threshold)
+- `-r, --cut-right` - Slide a window 5'->3'; the moment a window's mean quality
+  drops below the threshold, cut the read there and discard everything to its right
+- `-W, --cut-window-size INT` - Window size for the above (default: 4)
+- `-M, --cut-mean-quality INT` - Mean Phred-quality threshold for the window (default: 20)
+
+When more than one of `--cut-front` / `--cut-tail` / `--cut-right` is given, they
+are applied in that order (matching upstream fastp).
+
 ### Complexity Filtering
 
 - `--low-complexity` - Enable complexity filtering
@@ -208,6 +241,7 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ Length filtering
 - ✅ N content filtering
 - ✅ Poly-G/X tail trimming
+- ✅ Sliding-window quality trimming (`--cut_front`/`--cut_tail`/`--cut_right`)
 - ✅ Complexity filtering
 - ✅ Built-in gzip support
 - ✅ Paired-end read support

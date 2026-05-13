@@ -47,7 +47,14 @@ Options:
     --trim-poly-g             Enable poly-G tail trimming
     --trim-poly-x             Enable poly-X tail trimming
     --poly-g-min-len INT      Minimum poly-G length (default: 10)
-  
+
+  Sliding-window Quality Trimming:
+    -5, --cut-front           Drop low-quality bases from the 5' end (sliding window)
+    -3, --cut-tail            Drop low-quality bases from the 3' end (sliding window)
+    -r, --cut-right           Cut from the first low-quality window onward (5'->3')
+    -W, --cut-window-size INT Window size for --cut-front/--cut-tail/--cut-right (default: 4)
+    -M, --cut-mean-quality INT  Mean quality threshold for the sliding window (default: 20)
+
   Complexity Filtering:
     --low-complexity          Enable complexity filtering
     --complexity-threshold FLOAT  Complexity threshold (default: 0.3)
@@ -86,6 +93,9 @@ Examples:
   # With UMI extraction
   fastp -i input.fastq -o output.fastq --umi-length 8
   
+  # Sliding-window quality trimming from both ends
+  fastp -i input.fastq -o output.fastq --cut-front --cut-tail -W 4 -M 20
+
   # Base correction
   fastp -i input.fastq -o output.fastq --base-correction
   
@@ -127,6 +137,11 @@ func main() {
 		trimPolyG           bool
 		trimPolyX           bool
 		polyGMinLen         int
+		cutFront            bool
+		cutTail             bool
+		cutRight            bool
+		cutWindowSize       int
+		cutMeanQuality      int
 		lowComplexity       bool
 		complexityThreshold float64
 		quiet               bool
@@ -172,6 +187,13 @@ func main() {
 	cliflag.BoolVar(fs, &trimPolyG, "", "trim-poly-g", false, "Enable poly-G tail trimming")
 	cliflag.BoolVar(fs, &trimPolyX, "", "trim-poly-x", false, "Enable poly-X tail trimming")
 	cliflag.IntVar(fs, &polyGMinLen, "", "poly-g-min-len", 10, "Minimum poly-G length (default: 10)")
+
+	// Sliding-window quality trimming
+	cliflag.BoolVar(fs, &cutFront, "5", "cut-front", false, "Drop low-quality bases from the 5' end (sliding window)")
+	cliflag.BoolVar(fs, &cutTail, "3", "cut-tail", false, "Drop low-quality bases from the 3' end (sliding window)")
+	cliflag.BoolVar(fs, &cutRight, "r", "cut-right", false, "Cut from the first low-quality window onward (5'->3')")
+	cliflag.IntVar(fs, &cutWindowSize, "W", "cut-window-size", 4, "Window size for sliding-window trimming (default: 4)")
+	cliflag.IntVar(fs, &cutMeanQuality, "M", "cut-mean-quality", 20, "Mean quality threshold for the sliding window (default: 20)")
 
 	// Complexity filtering
 	cliflag.BoolVar(fs, &lowComplexity, "", "low-complexity", false, "Enable complexity filtering")
@@ -246,6 +268,11 @@ func main() {
 		TrimPolyG:           trimPolyG,
 		TrimPolyX:           trimPolyX,
 		PolyGMinLen:         polyGMinLen,
+		CutFront:            cutFront,
+		CutTail:             cutTail,
+		CutRight:            cutRight,
+		CutWindowSize:       cutWindowSize,
+		CutMeanQuality:      cutMeanQuality,
 		MaxNCount:           maxNCount,
 		MaxNPercent:         maxNPercent,
 		LengthRequired:      minLength,
@@ -376,6 +403,13 @@ func printStats(stats *fastp.ProcessStats) {
 			stats.PolyGTrimmedReads,
 			100.0*float64(stats.PolyGTrimmedReads)/float64(stats.TotalReads))
 		fmt.Fprintf(os.Stderr, "  Poly-G bases removed:  %d\n", stats.PolyGTrimmedBases)
+	}
+
+	if stats.QualityCutReads > 0 {
+		fmt.Fprintf(os.Stderr, "  Sliding-window cut:    %d (%.2f%%)\n",
+			stats.QualityCutReads,
+			100.0*float64(stats.QualityCutReads)/float64(stats.TotalReads))
+		fmt.Fprintf(os.Stderr, "  Sliding-window bases:  %d\n", stats.QualityCutBases)
 	}
 
 	if stats.UMIExtracted > 0 {
