@@ -246,10 +246,7 @@ func TestJSONOutput(t *testing.T) {
 		TrimmedBases:   2500,
 	}
 
-	json, err := stats.ToJSON()
-	if err != nil {
-		t.Fatalf("ToJSON failed: %v", err)
-	}
+	json := stats.ToJSON()
 
 	if !strings.Contains(json, "total_reads") {
 		t.Error("JSON should contain total_reads field")
