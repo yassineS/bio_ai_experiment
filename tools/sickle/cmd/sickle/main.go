@@ -84,7 +84,7 @@ func runSingleEnd() {
 
 	cliflag.StringVar(fs, &fastqFile, "f", "fastq-file", "", "Input FASTQ file (required)")
 	cliflag.StringVar(fs, &outputFile, "o", "output-file", "", "Output trimmed file (default: stdout)")
-	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
+	cliflag.StringVar(fs, &qualType, "t", "qual-type", "auto", "Quality type: auto, sanger, illumina, solexa (default: auto)")
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 20, "Threshold for trimming (default: 20)")
 	cliflag.IntVar(fs, &lengthThreshold, "l", "length-threshold", 20, "Minimum length to keep (default: 20)")
 	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
@@ -94,7 +94,7 @@ func runSingleEnd() {
 	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics in JSON format to file")
 	cliflag.StringVar(fs, &htmlReport, "", "html", "", "Generate HTML report to file")
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
-	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
+	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Force auto-detection of quality encoding (same as -t auto)")
 	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
 
 	fs.Usage = func() {
@@ -102,7 +102,7 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  -f, --fastq-file FILE       Input FASTQ file (required)\n")
 		fmt.Fprintf(os.Stderr, "  -o, --output-file FILE      Output trimmed file (default: stdout)\n")
-		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: sanger, illumina, solexa (default: sanger)\n")
+		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: auto, sanger, illumina, solexa (default: auto)\n")
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT    Threshold for trimming (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  -l, --length-threshold INT  Minimum length to keep (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
@@ -112,7 +112,7 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "  --json FILE                 Output statistics in JSON format to file\n")
 		fmt.Fprintf(os.Stderr, "  --html FILE                 Generate HTML report to file\n")
 		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
-		fmt.Fprintf(os.Stderr, "  --auto-detect               Auto-detect quality encoding\n")
+		fmt.Fprintf(os.Stderr, "  --auto-detect               Force auto-detection of quality encoding (same as -t auto)\n")
 		fmt.Fprintf(os.Stderr, "  --recalibrate               Recalibrate quality scores\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  sickle se -f input.fastq -o output.fastq -q 20 -l 20\n")
@@ -127,33 +127,28 @@ func runSingleEnd() {
 		os.Exit(1)
 	}
 
-	// Determine quality encoding
-	var encoding fastq.QualityEncoding
-	if autoDetect {
-		detected, err := detectQualityEncoding(fastqFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error auto-detecting quality encoding: %v\n", err)
-			os.Exit(1)
-		}
-		encoding = detected
-		if !quiet {
-			encodingName := "Phred+33 (Sanger)"
-			if detected == fastq.Phred64 {
-				encodingName = "Phred+64 (Illumina)"
-			}
-			fmt.Fprintf(os.Stderr, "Auto-detected quality encoding: %s\n", encodingName)
-		}
-	} else {
-		encoding = getQualityEncoding(qualType)
-	}
-
-	// Open input file (with automatic gzip support)
+	// Open input file (with automatic gzip support).
 	inputFile, err := iohelper.OpenReader(fastqFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
 		os.Exit(1)
 	}
 	defer inputFile.Close()
+
+	// Wrap in a bufio.Reader large enough that DetectEncoding's Peek can find
+	// ~10000 quality characters without consuming the underlying stream. We
+	// keep using this *bufio.Reader for the actual trimming, so any bytes we
+	// peeked at remain available for reading.
+	bufInput := bufio.NewReaderSize(inputFile, 256*1024)
+
+	// Determine quality encoding. The CLI accepts an explicit name (sanger,
+	// illumina, solexa, phred33, phred64) or "auto" to detect from the input.
+	// The legacy --auto-detect boolean is honored as an override of -t.
+	encoding, err := resolveEncoding(qualType, autoDetect, bufInput, quiet)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Open output file (with automatic gzip support)
 	outFileName := outputFile
@@ -179,7 +174,7 @@ func runSingleEnd() {
 	}
 
 	// Perform trimming
-	stats, err := sickle.TrimSingleEnd(inputFile, outFile, encoding, opts)
+	stats, err := sickle.TrimSingleEnd(bufInput, outFile, encoding, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
@@ -235,7 +230,7 @@ func runPairedEnd() {
 	cliflag.StringVar(fs, &outputFile1, "o", "output-file", "", "First output trimmed file (required)")
 	cliflag.StringVar(fs, &outputFile2, "p", "output-paired", "", "Second output trimmed file (required)")
 	cliflag.StringVar(fs, &outputSingle, "s", "output-single", "", "Output single-end reads (optional)")
-	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
+	cliflag.StringVar(fs, &qualType, "t", "qual-type", "auto", "Quality type: auto, sanger, illumina, solexa (default: auto)")
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 20, "Threshold for trimming (default: 20)")
 	cliflag.IntVar(fs, &lengthThreshold, "l", "length-threshold", 20, "Minimum length to keep (default: 20)")
 	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
@@ -245,7 +240,7 @@ func runPairedEnd() {
 	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics in JSON format to file")
 	cliflag.StringVar(fs, &htmlReport, "", "html", "", "Generate HTML report to file")
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
-	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
+	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Force auto-detection of quality encoding (same as -t auto)")
 	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
 
 	fs.Usage = func() {
@@ -256,7 +251,7 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "  -o, --output-file FILE      First output trimmed file (required)\n")
 		fmt.Fprintf(os.Stderr, "  -p, --output-paired FILE    Second output trimmed file (required)\n")
 		fmt.Fprintf(os.Stderr, "  -s, --output-single FILE    Output single-end reads (optional)\n")
-		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: sanger, illumina, solexa (default: sanger)\n")
+		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: auto, sanger, illumina, solexa (default: auto)\n")
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT    Threshold for trimming (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  -l, --length-threshold INT  Minimum length to keep (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
@@ -266,10 +261,12 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "  --json FILE                 Output statistics in JSON format to file\n")
 		fmt.Fprintf(os.Stderr, "  --html FILE                 Generate HTML report to file\n")
 		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
-		fmt.Fprintf(os.Stderr, "  --auto-detect               Auto-detect quality encoding\n")
+		fmt.Fprintf(os.Stderr, "  --auto-detect               Force auto-detection of quality encoding (same as -t auto)\n")
 		fmt.Fprintf(os.Stderr, "  --recalibrate               Recalibrate quality scores\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  sickle pe -f input1.fastq -r input2.fastq -o output1.fastq -p output2.fastq -s singles.fastq\n")
+		fmt.Fprintf(os.Stderr, "\nNote: when --qual-type is auto, the encoding is detected from R1 and applied\n")
+		fmt.Fprintf(os.Stderr, "to both R1 and R2. Mismatched encodings between mates are not handled separately.\n")
 	}
 
 	fs.Parse(os.Args[2:])
@@ -286,26 +283,6 @@ func runPairedEnd() {
 		os.Exit(1)
 	}
 
-	// Determine quality encoding
-	var encoding fastq.QualityEncoding
-	if autoDetect {
-		detected, err := detectQualityEncoding(fastqFile1)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error auto-detecting quality encoding: %v\n", err)
-			os.Exit(1)
-		}
-		encoding = detected
-		if !quiet {
-			encodingName := "Phred+33 (Sanger)"
-			if detected == fastq.Phred64 {
-				encodingName = "Phred+64 (Illumina)"
-			}
-			fmt.Fprintf(os.Stderr, "Auto-detected quality encoding: %s\n", encodingName)
-		}
-	} else {
-		encoding = getQualityEncoding(qualType)
-	}
-
 	// Open input files (with automatic gzip support)
 	f1, err := iohelper.OpenReader(fastqFile1)
 	if err != nil {
@@ -320,6 +297,21 @@ func runPairedEnd() {
 		os.Exit(1)
 	}
 	defer f2.Close()
+
+	// Wrap both inputs in bufio.Reader so DetectEncoding can Peek at R1 without
+	// consuming bytes that the trimmer still needs to read. R2 is wrapped for
+	// symmetry — the encoding detected on R1 is applied to both files.
+	bufF1 := bufio.NewReaderSize(f1, 256*1024)
+	bufF2 := bufio.NewReaderSize(f2, 256*1024)
+
+	// Determine quality encoding. The CLI accepts an explicit name (sanger,
+	// illumina, solexa, phred33, phred64) or "auto" to detect from R1. The
+	// legacy --auto-detect boolean is honored as an override of -t.
+	encoding, err := resolveEncoding(qualType, autoDetect, bufF1, quiet)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Open output files (with automatic gzip support)
 	out1, err := iohelper.OpenWriter(outputFile1)
@@ -360,7 +352,7 @@ func runPairedEnd() {
 	}
 
 	// Perform trimming
-	stats, err := sickle.TrimPairedEnd(f1, f2, out1, out2, outSingle, encoding, opts)
+	stats, err := sickle.TrimPairedEnd(bufF1, bufF2, out1, out2, outSingle, encoding, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during trimming: %v\n", err)
 		os.Exit(1)
@@ -411,7 +403,7 @@ func runBatch() {
 
 	cliflag.StringVar(fs, &fileList, "i", "input-list", "", "File containing list of input FASTQ files (one per line)")
 	cliflag.StringVar(fs, &outputDir, "o", "output-dir", ".", "Output directory for trimmed files")
-	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina, solexa (default: sanger)")
+	cliflag.StringVar(fs, &qualType, "t", "qual-type", "auto", "Quality type: auto, sanger, illumina, solexa (default: auto)")
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 20, "Threshold for trimming (default: 20)")
 	cliflag.IntVar(fs, &lengthThreshold, "l", "length-threshold", 20, "Minimum length to keep (default: 20)")
 	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
@@ -422,7 +414,7 @@ func runBatch() {
 	cliflag.BoolVar(fs, &jsonOutput, "", "json", false, "Output statistics in JSON format for each file")
 	cliflag.BoolVar(fs, &htmlReport, "", "html", false, "Generate HTML report for each file")
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
-	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Auto-detect quality encoding")
+	cliflag.BoolVar(fs, &autoDetect, "", "auto-detect", false, "Force auto-detection of quality encoding (same as -t auto)")
 	cliflag.BoolVar(fs, &recalibrate, "", "recalibrate", false, "Recalibrate quality scores")
 
 	fs.Usage = func() {
@@ -431,7 +423,7 @@ func runBatch() {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  -i, --input-list FILE       File containing list of input FASTQ files (required)\n")
 		fmt.Fprintf(os.Stderr, "  -o, --output-dir DIR        Output directory for trimmed files (default: .)\n")
-		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: sanger, illumina, solexa (default: sanger)\n")
+		fmt.Fprintf(os.Stderr, "  -t, --qual-type TYPE        Quality type: auto, sanger, illumina, solexa (default: auto)\n")
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT    Threshold for trimming (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  -l, --length-threshold INT  Minimum length to keep (default: 20)\n")
 		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
@@ -442,7 +434,7 @@ func runBatch() {
 		fmt.Fprintf(os.Stderr, "  --json                      Output statistics in JSON format for each file\n")
 		fmt.Fprintf(os.Stderr, "  --html                      Generate HTML report for each file\n")
 		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
-		fmt.Fprintf(os.Stderr, "  --auto-detect               Auto-detect quality encoding\n")
+		fmt.Fprintf(os.Stderr, "  --auto-detect               Force auto-detection of quality encoding (same as -t auto)\n")
 		fmt.Fprintf(os.Stderr, "  --recalibrate               Recalibrate quality scores\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  sickle batch -i files.txt -o trimmed_output -j 8\n")
@@ -516,19 +508,6 @@ func runBatch() {
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				// Determine quality encoding
-				var encoding fastq.QualityEncoding
-				if autoDetect {
-					detected, err := detectQualityEncoding(j.inputFile)
-					if err != nil {
-						results <- result{inputFile: j.inputFile, err: err}
-						continue
-					}
-					encoding = detected
-				} else {
-					encoding = getQualityEncoding(qualType)
-				}
-
 				// Generate output filename
 				baseName := filepath.Base(j.inputFile)
 				outputFile := filepath.Join(outputDir, "trimmed_"+baseName)
@@ -537,6 +516,20 @@ func runBatch() {
 				input, err := iohelper.OpenReader(j.inputFile)
 				if err != nil {
 					results <- result{inputFile: j.inputFile, err: err}
+					continue
+				}
+
+				// Wrap in a bufio.Reader so we can Peek at quality bytes for
+				// auto-detection without consuming them — the trimmer reads
+				// from the same buffered reader and re-uses the peeked bytes.
+				bufInput := bufio.NewReaderSize(input, 256*1024)
+
+				// Determine quality encoding (per-file, since different files
+				// in a batch may have different encodings).
+				encoding, encErr := resolveEncoding(qualType, autoDetect, bufInput, true /* quiet inside workers */)
+				if encErr != nil {
+					input.Close()
+					results <- result{inputFile: j.inputFile, err: encErr}
 					continue
 				}
 
@@ -559,7 +552,7 @@ func runBatch() {
 				}
 
 				// Perform trimming
-				stats, err := sickle.TrimSingleEnd(input, output, encoding, opts)
+				stats, err := sickle.TrimSingleEnd(bufInput, output, encoding, opts)
 				input.Close()
 				output.Close()
 
@@ -625,19 +618,39 @@ func runBatch() {
 	}
 }
 
-func getQualityEncoding(qualType string) fastq.QualityEncoding {
-	switch qualType {
-	case "sanger", "phred33":
-		return fastq.Phred33
-	case "illumina", "phred64":
-		return fastq.Phred64
-	case "solexa":
-		// Solexa uses a different formula, but we'll approximate with Phred64
-		return fastq.Phred64
-	default:
-		fmt.Fprintf(os.Stderr, "Warning: unknown quality type %q, using sanger\n", qualType)
-		return fastq.Phred33
+// resolveEncoding turns the user-supplied -t/--qual-type value into a concrete
+// fastq.QualityEncoding. When qualType is "auto" (the default) — or the legacy
+// --auto-detect boolean flag is set — it peeks at br via sickle.DetectEncoding
+// to infer the encoding, then logs a one-line stderr message describing what
+// it picked (unless quiet is true). For any other value it normalizes through
+// sickle.EncodingFromName.
+//
+// The bufio.Reader br is only used when detection actually runs; callers must
+// continue reading from the same br afterwards because Peek does not consume.
+func resolveEncoding(qualType string, autoDetect bool, br *bufio.Reader, quiet bool) (fastq.QualityEncoding, error) {
+	if autoDetect || qualType == "" || qualType == "auto" {
+		res, err := sickle.DetectEncoding(br)
+		if err != nil {
+			return fastq.Phred33, fmt.Errorf("auto-detecting quality encoding: %w", err)
+		}
+		if !quiet {
+			label := "Phred+33"
+			if res.Encoding == fastq.Phred64 {
+				label = "Phred+64"
+			}
+			suffix := ""
+			if res.Ambiguous {
+				suffix = " [ambiguous: byte range did not match a single encoding cleanly; defaulted to sanger]"
+			}
+			fmt.Fprintf(os.Stderr, "sickle: auto-detected quality encoding: %s (%s)%s\n", res.Name, label, suffix)
+		}
+		return res.Encoding, nil
 	}
+	enc, err := sickle.EncodingFromName(qualType)
+	if err != nil {
+		return fastq.Phred33, err
+	}
+	return enc, nil
 }
 
 func printStats(stats *sickle.TrimStats, mode string) {
@@ -657,51 +670,6 @@ func printStats(stats *sickle.TrimStats, mode string) {
 		stats.TrimmedBases,
 		100.0*float64(stats.TrimmedBases)/float64(stats.TotalBases))
 	fmt.Fprintln(os.Stderr)
-}
-
-// detectQualityEncoding automatically detects the quality encoding from a FASTQ file
-func detectQualityEncoding(filename string) (fastq.QualityEncoding, error) {
-	f, err := iohelper.OpenReader(filename)
-	if err != nil {
-		return fastq.Phred33, err
-	}
-	defer f.Close()
-
-	// Read a sample of records to detect encoding
-	reader := fastq.NewReader(f, fastq.Phred33) // Start with Phred33 for reading
-	minQual := 255
-	maxQual := 0
-	samplesRead := 0
-	maxSamples := 10000 // Sample first 10k reads
-
-	for samplesRead < maxSamples {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fastq.Phred33, err
-		}
-
-		for _, q := range record.Quality {
-			if int(q) < minQual {
-				minQual = int(q)
-			}
-			if int(q) > maxQual {
-				maxQual = int(q)
-			}
-		}
-		samplesRead++
-	}
-
-	// Phred+33 range: 33-126 (quality 0-93)
-	// Phred+64 range: 64-126 (quality 0-62)
-	// If we see chars < 59 (which would be quality -5 in Phred+64), it's Phred+33
-	// If all chars >= 64, it's likely Phred+64
-	if minQual < 59 {
-		return fastq.Phred33, nil
-	}
-	return fastq.Phred64, nil
 }
 
 // saveJSONStats saves trimming statistics to a JSON file

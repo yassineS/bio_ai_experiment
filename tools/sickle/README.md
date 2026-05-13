@@ -57,17 +57,17 @@ Options:
 
 - `-f, --fastq-file FILE` - Input FASTQ file (required)
 - `-o, --output-file FILE` - Output trimmed file (default: stdout)
-- `-t, --qual-type TYPE` - Quality type: sanger, illumina, solexa (default: sanger)
+- `-t, --qual-type TYPE` - Quality type: `auto`, `sanger`, `illumina`, `solexa` (default: `auto` — see [Quality encoding auto-detection](#quality-encoding-auto-detection))
 - `-q, --qual-threshold INT` - Threshold for trimming (default: 20)
 - `-l, --length-threshold INT` - Minimum length to keep (default: 20)
 - `-w, --window-size INT` - Window size for quality assessment (default: 10)
 - `-x, --no-fiveprime` - Don't trim 5' end
 - `-n, --trunc-n` - Truncate sequences at position of first N
-- `--quiet` - Don't print statistics
+- `--quiet` - Don't print statistics (also suppresses the auto-detect notice)
 - `--json FILE` - Output statistics in JSON format to file
 - `--html FILE` - Generate HTML report to file
 - `--progress` - Show progress reporting
-- `--auto-detect` - Auto-detect quality encoding
+- `--auto-detect` - Force auto-detection of quality encoding (same as `-t auto`; kept for backwards compatibility)
 - `--recalibrate` - Recalibrate quality scores
 
 ### Paired-End Mode (`pe`)
@@ -85,17 +85,17 @@ Options:
 - `-o, --output-file FILE` - First output trimmed file (required)
 - `-p, --output-paired FILE` - Second output trimmed file (required)
 - `-s, --output-single FILE` - Output single-end reads (optional)
-- `-t, --qual-type TYPE` - Quality type: sanger, illumina, solexa (default: sanger)
+- `-t, --qual-type TYPE` - Quality type: `auto`, `sanger`, `illumina`, `solexa` (default: `auto` — detected from R1 only and applied to both files)
 - `-q, --qual-threshold INT` - Threshold for trimming (default: 20)
 - `-l, --length-threshold INT` - Minimum length to keep (default: 20)
 - `-w, --window-size INT` - Window size for quality assessment (default: 10)
 - `-x, --no-fiveprime` - Don't trim 5' end
 - `-n, --trunc-n` - Truncate sequences at position of first N
-- `--quiet` - Don't print statistics
+- `--quiet` - Don't print statistics (also suppresses the auto-detect notice)
 - `--json FILE` - Output statistics in JSON format to file
 - `--html FILE` - Generate HTML report to file
 - `--progress` - Show progress reporting
-- `--auto-detect` - Auto-detect quality encoding
+- `--auto-detect` - Force auto-detection of quality encoding (same as `-t auto`; kept for backwards compatibility)
 - `--recalibrate` - Recalibrate quality scores
 
 ## Examples
@@ -161,12 +161,40 @@ Batch mode options:
 
 ### New Features Examples
 
-#### Automatic Quality Encoding Detection
+#### Quality encoding auto-detection
+
+Since v1.3.0, `-t/--qual-type` defaults to `auto` for `se`, `pe`, and `batch`.
+Sickle peeks at the first ~10000 quality bytes (without consuming them — the
+input stream is still read in full afterwards) and infers the encoding:
+
+- `min < 33` → invalid FASTQ (error)
+- `min < 64 && max <= 73` → **Phred+33 (sanger)**
+- `min >= 64 && max <= 104` → **Phred+64 (illumina)**
+- `59 <= min < 64` → **Solexa+64**
+- `min < 64 && max > 73` → **Phred+33** (Illumina 1.8+, where qualities can reach `J`=74)
+- otherwise → falls back to **Phred+33** and flags the result as ambiguous
+
+A one-line notice is printed to stderr so you can verify what was picked, e.g.:
+
+```text
+sickle: auto-detected quality encoding: sanger (Phred+33)
+```
+
+You can still pass an explicit value at any time:
 
 ```bash
-# Automatically detect if file uses Phred+33 or Phred+64
-sickle se -f unknown_encoding.fastq -o trimmed.fastq --auto-detect
+sickle se -f unknown_encoding.fastq -o trimmed.fastq          # auto (default)
+sickle se -f reads.fastq            -o trimmed.fastq -t sanger
+sickle se -f old_illumina.fastq     -o trimmed.fastq -t illumina
+sickle se -f very_old_solexa.fastq  -o trimmed.fastq -t solexa
 ```
+
+For paired-end input, detection runs **once on R1** and the same encoding is
+applied to R2. Mismatched encodings between mates are exceedingly rare in
+real-world data; if you have such a file, set `-t` explicitly.
+
+The legacy `--auto-detect` boolean flag is still accepted and is equivalent to
+`-t auto`.
 
 #### JSON Statistics Output
 
@@ -253,11 +281,17 @@ sickle pe -f reads_R1.fastq -r reads_R2.fastq \
 ### Working with Different Quality Encodings
 
 ```bash
-# Illumina 1.3-1.7 format (Phred+64)
+# Default: auto-detect from the input
+sickle se -f mystery_reads.fastq -o trimmed.fastq
+
+# Force Illumina 1.3-1.7 format (Phred+64)
 sickle se -f illumina_reads.fastq -o trimmed.fastq -t illumina
 
-# Sanger format (Phred+33) - default
+# Force Sanger format (Phred+33)
 sickle se -f sanger_reads.fastq -o trimmed.fastq -t sanger
+
+# Force Solexa+64 (legacy)
+sickle se -f solexa_reads.fastq -o trimmed.fastq -t solexa
 ```
 
 ### Working with Gzip Files
@@ -394,7 +428,7 @@ go test ./pkg/sickle -v
 go test ./pkg/sickle -cover
 ```
 
-Test coverage: **>90%**
+Test coverage: **>80%** (including the auto-detection paths in `encoding.go`)
 
 The test suite includes:
 
@@ -446,7 +480,12 @@ spades.py -1 clean_R1.fastq -2 clean_R2.fastq -o assembly/
 
 ## Development Roadmap
 
-### Version 1.2.0 (Current)
+### Version 1.3.0 (Current)
+
+- Auto-detection of Phred+33 / Phred+64 / Solexa+64 is now the **default**
+  (`-t auto`); the legacy `--auto-detect` flag is preserved as an alias.
+
+### Version 1.2.0
 
 - ✅ Single-end and paired-end trimming
 - ✅ Quality-based sliding window algorithm
