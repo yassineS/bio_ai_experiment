@@ -177,38 +177,6 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 	w := bufio.NewWriter(writer)
 	outCount := 0
 
-	flushGroup := func(group []colInterval) error {
-		if len(group) == 0 {
-			return nil
-		}
-		chrom := group[0].chrom
-		start := group[0].start
-		end := group[0].end
-		for _, iv := range group {
-			if iv.end > end {
-				end = iv.end
-			}
-		}
-		out := []string{chrom, strconv.Itoa(start), strconv.Itoa(end)}
-		for i, col := range co.Columns {
-			op := co.Ops[i]
-			vals := make([]string, len(group))
-			for j, iv := range group {
-				vals[j] = iv.fields[col-1]
-			}
-			res, err := applyOp(op, col, vals)
-			if err != nil {
-				return err
-			}
-			out = append(out, res)
-		}
-		if _, err := fmt.Fprintln(w, strings.Join(out, "\t")); err != nil {
-			return err
-		}
-		outCount++
-		return nil
-	}
-
 	var group []colInterval
 	group = append(group, intervals[0])
 	curChrom := intervals[0].chrom
@@ -231,24 +199,62 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 			}
 			group = append(group, iv)
 		} else {
-			if err := flushGroup(group); err != nil {
+			wrote, err := flushColumnGroup(w, co, group)
+			if err != nil {
 				return 0, err
 			}
+			outCount += wrote
 			group = []colInterval{iv}
 			curChrom = iv.chrom
 			curStrand = iv.strand
 			curEnd = iv.end
 		}
 	}
-	if err := flushGroup(group); err != nil {
+	wrote, err := flushColumnGroup(w, co, group)
+	if err != nil {
 		return 0, err
 	}
+	outCount += wrote
 
 	if err := w.Flush(); err != nil {
 		return 0, fmt.Errorf("error flushing output: %w", err)
 	}
 
 	return outCount, nil
+}
+
+// flushColumnGroup writes one merged output line aggregating the requested
+// columns over the given group of intervals. An empty group is a no-op and
+// returns 0 written rows; otherwise it returns 1 on success.
+func flushColumnGroup(w io.Writer, co *ColumnOps, group []colInterval) (int, error) {
+	if len(group) == 0 {
+		return 0, nil
+	}
+	chrom := group[0].chrom
+	start := group[0].start
+	end := group[0].end
+	for _, iv := range group {
+		if iv.end > end {
+			end = iv.end
+		}
+	}
+	out := []string{chrom, strconv.Itoa(start), strconv.Itoa(end)}
+	for i, col := range co.Columns {
+		op := co.Ops[i]
+		vals := make([]string, len(group))
+		for j, iv := range group {
+			vals[j] = iv.fields[col-1]
+		}
+		res, err := applyOp(op, col, vals)
+		if err != nil {
+			return 0, err
+		}
+		out = append(out, res)
+	}
+	if _, err := fmt.Fprintln(w, strings.Join(out, "\t")); err != nil {
+		return 0, err
+	}
+	return 1, nil
 }
 
 // applyOp applies a single aggregation operation to the slice of column values
