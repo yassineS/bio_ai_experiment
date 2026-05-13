@@ -636,6 +636,242 @@ func reverseComplementFastq(input io.Reader, output io.Writer, encoding fastq.Qu
 	return writer.Flush()
 }
 
+// MergePE interleaves two FASTA/FASTQ streams (in1, in2) into a single stream
+// written to w, producing read1[0], read2[0], read1[1], read2[1], ... The two
+// inputs must have the same record count and the same format (auto-detected
+// from the first non-whitespace byte of each: '>' => FASTA, '@' => FASTQ); if
+// the two streams disagree on format, an error is returned. If one stream runs
+// short of records before the other, an error identifying the shorter stream
+// (by 1-based name "in1"/"in2") and the pair index where the mismatch was
+// detected is returned. The output preserves the input format (FASTA in =>
+// FASTA out, FASTQ in => FASTQ out).
+func MergePE(in1, in2 io.Reader, w io.Writer) error {
+	br1, isFastq1 := peekIsFastq(in1)
+	br2, isFastq2 := peekIsFastq(in2)
+	if isFastq1 != isFastq2 {
+		return fmt.Errorf("mergepe: input formats differ (in1 is %s, in2 is %s)",
+			fmtName(isFastq1), fmtName(isFastq2))
+	}
+
+	if isFastq1 {
+		return mergePEFastq(br1, br2, w)
+	}
+	return mergePEFasta(br1, br2, w)
+}
+
+// fmtName returns "FASTQ" or "FASTA" for use in error messages.
+func fmtName(isFastq bool) string {
+	if isFastq {
+		return "FASTQ"
+	}
+	return "FASTA"
+}
+
+func mergePEFastq(in1, in2 io.Reader, w io.Writer) error {
+	r1 := fastq.NewReader(in1, fastq.Phred33)
+	r2 := fastq.NewReader(in2, fastq.Phred33)
+	wr := fastq.NewWriter(w, fastq.Phred33)
+
+	pair := 0
+	for {
+		rec1, err1 := r1.Read()
+		rec2, err2 := r2.Read()
+
+		if err1 == io.EOF && err2 == io.EOF {
+			break
+		}
+		if err1 == io.EOF && err2 == nil {
+			return fmt.Errorf("mergepe: in1 is shorter than in2 (mismatch at pair %d, in1 has %d records)", pair+1, pair)
+		}
+		if err2 == io.EOF && err1 == nil {
+			return fmt.Errorf("mergepe: in2 is shorter than in1 (mismatch at pair %d, in2 has %d records)", pair+1, pair)
+		}
+		if err1 != nil && err1 != io.EOF {
+			return fmt.Errorf("mergepe: error reading in1 at pair %d: %w", pair+1, err1)
+		}
+		if err2 != nil && err2 != io.EOF {
+			return fmt.Errorf("mergepe: error reading in2 at pair %d: %w", pair+1, err2)
+		}
+
+		if err := wr.Write(rec1); err != nil {
+			return err
+		}
+		if err := wr.Write(rec2); err != nil {
+			return err
+		}
+		pair++
+	}
+	return wr.Flush()
+}
+
+func mergePEFasta(in1, in2 io.Reader, w io.Writer) error {
+	r1 := fasta.NewReader(in1)
+	r2 := fasta.NewReader(in2)
+	wr := fasta.NewWriter(w, 0)
+
+	pair := 0
+	for {
+		rec1, err1 := r1.Read()
+		rec2, err2 := r2.Read()
+
+		if err1 == io.EOF && err2 == io.EOF {
+			break
+		}
+		if err1 == io.EOF && err2 == nil {
+			return fmt.Errorf("mergepe: in1 is shorter than in2 (mismatch at pair %d, in1 has %d records)", pair+1, pair)
+		}
+		if err2 == io.EOF && err1 == nil {
+			return fmt.Errorf("mergepe: in2 is shorter than in1 (mismatch at pair %d, in2 has %d records)", pair+1, pair)
+		}
+		if err1 != nil && err1 != io.EOF {
+			return fmt.Errorf("mergepe: error reading in1 at pair %d: %w", pair+1, err1)
+		}
+		if err2 != nil && err2 != io.EOF {
+			return fmt.Errorf("mergepe: error reading in2 at pair %d: %w", pair+1, err2)
+		}
+
+		if err := wr.Write(rec1); err != nil {
+			return err
+		}
+		if err := wr.Write(rec2); err != nil {
+			return err
+		}
+		pair++
+	}
+	return wr.Flush()
+}
+
+// CutNOptions holds parameters for CutN.
+type CutNOptions struct {
+	// MinN is the minimum length of a run of Ns required to trigger a cut.
+	// Must be >= 1.
+	MinN int
+	// EmitGaps, if true, causes the cut-out N-runs to be written to GapsW
+	// as BED-like records: "<chrom>\t<start0>\t<end>\tN\n" (0-based half-open).
+	EmitGaps bool
+	// GapsW is the writer for BED-format gap records when EmitGaps is true.
+	// If nil and EmitGaps is true, gap records are silently dropped.
+	GapsW io.Writer
+}
+
+// CutN reads a FASTA or FASTQ stream from in (auto-detected via the first
+// non-whitespace byte: '>' => FASTA, '@' => FASTQ) and writes FASTA fragments
+// to w, splitting each input sequence at runs of 'N' or 'n' of length >=
+// opts.MinN. Each retained fragment is emitted as a new FASTA record named
+// "<orig-name>:<start>-<end>", where coordinates are 1-based inclusive (start
+// is the position of the first retained base, end the position of the last).
+// If a record has no qualifying N-run it is emitted unchanged with its
+// original header and no coordinate suffix. If a sequence is entirely Ns or
+// the only fragments would be empty (e.g. leading/trailing N-runs only), no
+// record is emitted for that input.
+//
+// When opts.EmitGaps is true and opts.GapsW is non-nil, the cut-out N-runs
+// are written to opts.GapsW as BED-like records: "<chrom>\t<start0>\t<end>\tN"
+// where coordinates are 0-based half-open.
+//
+// Returns an error if opts.MinN < 1, or on I/O errors.
+func CutN(in io.Reader, w io.Writer, opts CutNOptions) error {
+	if opts.MinN < 1 {
+		return fmt.Errorf("cutN: -n/--min-n must be >= 1 (got %d)", opts.MinN)
+	}
+
+	br, isFastq := peekIsFastq(in)
+	bw := bufio.NewWriter(w)
+
+	emit := func(name string, seq []byte) error {
+		runs := findNRuns(seq, opts.MinN)
+		if opts.EmitGaps && opts.GapsW != nil {
+			for _, r := range runs {
+				if _, err := fmt.Fprintf(opts.GapsW, "%s\t%d\t%d\tN\n", name, r[0], r[1]); err != nil {
+					return err
+				}
+			}
+		}
+		if len(runs) == 0 {
+			// No qualifying N-run: emit the record unchanged with its
+			// original header (no :start-end suffix). Skip empty
+			// sequences entirely.
+			if len(seq) == 0 {
+				return nil
+			}
+			return writeFastaRecord(bw, name, seq, 0)
+		}
+		// Build fragment intervals between runs and emit non-empty ones.
+		prev := 0
+		for _, r := range runs {
+			if r[0] > prev {
+				header := fmt.Sprintf("%s:%d-%d", name, prev+1, r[0])
+				if err := writeFastaRecord(bw, header, seq[prev:r[0]], 0); err != nil {
+					return err
+				}
+			}
+			prev = r[1]
+		}
+		if prev < len(seq) {
+			header := fmt.Sprintf("%s:%d-%d", name, prev+1, len(seq))
+			if err := writeFastaRecord(bw, header, seq[prev:], 0); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if isFastq {
+		reader := fastq.NewReader(br, fastq.Phred33)
+		for {
+			rec, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if err := emit(rec.ID, rec.Sequence); err != nil {
+				return err
+			}
+		}
+	} else {
+		reader := fasta.NewReader(br)
+		for {
+			rec, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if err := emit(rec.ID, rec.Sequence); err != nil {
+				return err
+			}
+		}
+	}
+
+	return bw.Flush()
+}
+
+// findNRuns returns the [start, end) (0-based, half-open) positions of every
+// maximal run of 'N' or 'n' in seq whose length is >= minN. Runs are returned
+// in left-to-right order.
+func findNRuns(seq []byte, minN int) [][2]int {
+	var runs [][2]int
+	i := 0
+	for i < len(seq) {
+		if seq[i] == 'N' || seq[i] == 'n' {
+			j := i + 1
+			for j < len(seq) && (seq[j] == 'N' || seq[j] == 'n') {
+				j++
+			}
+			if j-i >= minN {
+				runs = append(runs, [2]int{i, j})
+			}
+			i = j
+		} else {
+			i++
+		}
+	}
+	return runs
+}
+
 // Sample randomly samples a fraction of sequences.
 func Sample(input io.Reader, output io.Writer, fraction float64, isFastq bool, encoding fastq.QualityEncoding) error {
 	if fraction <= 0 || fraction > 1 {

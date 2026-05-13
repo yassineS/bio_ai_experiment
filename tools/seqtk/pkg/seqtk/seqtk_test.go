@@ -642,6 +642,186 @@ func TestSubseqFormatAutodetect(t *testing.T) {
 	}
 }
 
+func TestMergePE(t *testing.T) {
+	r1 := "@a/1\nAAAA\n+\nIIII\n@b/1\nCCCC\n+\nIIII\n@c/1\nGGGG\n+\nIIII\n"
+	r2 := "@a/2\nTTTT\n+\nIIII\n@b/2\nGGGG\n+\nIIII\n@c/2\nAAAA\n+\nIIII\n"
+	want := "@a/1\nAAAA\n+\nIIII\n" +
+		"@a/2\nTTTT\n+\nIIII\n" +
+		"@b/1\nCCCC\n+\nIIII\n" +
+		"@b/2\nGGGG\n+\nIIII\n" +
+		"@c/1\nGGGG\n+\nIIII\n" +
+		"@c/2\nAAAA\n+\nIIII\n"
+
+	var buf bytes.Buffer
+	if err := MergePE(strings.NewReader(r1), strings.NewReader(r2), &buf); err != nil {
+		t.Fatalf("MergePE failed: %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("MergePE output = %q, want %q", got, want)
+	}
+
+	// Mismatched counts: in1 shorter.
+	short1 := "@a/1\nAAAA\n+\nIIII\n"
+	long2 := "@a/2\nTTTT\n+\nIIII\n@b/2\nGGGG\n+\nIIII\n"
+	buf.Reset()
+	err := MergePE(strings.NewReader(short1), strings.NewReader(long2), &buf)
+	if err == nil {
+		t.Fatal("expected error for mismatched counts (in1 shorter), got nil")
+	}
+	if !strings.Contains(err.Error(), "in1 is shorter") {
+		t.Errorf("error %q should mention 'in1 is shorter'", err.Error())
+	}
+
+	// Mismatched counts: in2 shorter.
+	long1 := "@a/1\nAAAA\n+\nIIII\n@b/1\nCCCC\n+\nIIII\n"
+	short2 := "@a/2\nTTTT\n+\nIIII\n"
+	buf.Reset()
+	err = MergePE(strings.NewReader(long1), strings.NewReader(short2), &buf)
+	if err == nil {
+		t.Fatal("expected error for mismatched counts (in2 shorter), got nil")
+	}
+	if !strings.Contains(err.Error(), "in2 is shorter") {
+		t.Errorf("error %q should mention 'in2 is shorter'", err.Error())
+	}
+}
+
+func TestMergePEFasta(t *testing.T) {
+	r1 := ">a/1\nAAAA\n>b/1\nCCCC\n"
+	r2 := ">a/2\nTTTT\n>b/2\nGGGG\n"
+
+	var buf bytes.Buffer
+	if err := MergePE(strings.NewReader(r1), strings.NewReader(r2), &buf); err != nil {
+		t.Fatalf("MergePE (fasta) failed: %v", err)
+	}
+	got := buf.String()
+	// Order: a/1, a/2, b/1, b/2.
+	wantOrder := []string{">a/1", ">a/2", ">b/1", ">b/2"}
+	prev := -1
+	for _, h := range wantOrder {
+		idx := strings.Index(got, h)
+		if idx < 0 {
+			t.Fatalf("output missing header %q; got %q", h, got)
+		}
+		if idx <= prev {
+			t.Fatalf("headers out of order in output %q (expected %v)", got, wantOrder)
+		}
+		prev = idx
+	}
+	// Sanity-check the sequences are present too.
+	for _, s := range []string{"AAAA", "TTTT", "CCCC", "GGGG"} {
+		if !strings.Contains(got, s) {
+			t.Errorf("output missing sequence %q; got %q", s, got)
+		}
+	}
+}
+
+func TestCutN_BasicSplit(t *testing.T) {
+	in := ">chr1\nACGNNNTGCANNNNG\n"
+	want := ">chr1:1-3\nACG\n>chr1:7-10\nTGCA\n>chr1:15-15\nG\n"
+
+	var buf bytes.Buffer
+	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("CutN output = %q, want %q", got, want)
+	}
+}
+
+func TestCutN_MultipleRuns(t *testing.T) {
+	// Leading NN (kept, < 3), then a real cut at NNN, then an internal short
+	// run (NN, kept, < 3), then another real cut at NNNNNN.
+	// Sequence (1-based):
+	//  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
+	//  N  N  A  C  G  T  N  N  N  C  N  N  T  T  N  N  N  N  N  N
+	// Internal NN at 11-12 is < 3, so it is NOT cut. Trailing NNNNNN (15-20)
+	// is cut, leaving nothing after it.
+	in := ">s\nNNACGTNNNCNNTTNNNNNN\n"
+	want := ">s:1-6\nNNACGT\n>s:10-14\nCNNTT\n"
+
+	var buf bytes.Buffer
+	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("CutN output = %q, want %q", got, want)
+	}
+}
+
+func TestCutN_AllNs(t *testing.T) {
+	in := ">empty\nNNNNNNNN\n"
+
+	var buf bytes.Buffer
+	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := buf.String(); got != "" {
+		t.Errorf("all-N record should produce no output, got %q", got)
+	}
+}
+
+func TestCutN_NoCutsRecordUnchanged(t *testing.T) {
+	// No N-run, and no -g flag => emit unchanged with original header (no :start-end suffix).
+	in := ">solo\nACGTACGT\n"
+	want := ">solo\nACGTACGT\n"
+
+	var buf bytes.Buffer
+	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("CutN output = %q, want %q", got, want)
+	}
+
+	// Two short Ns (< 3) also count as "no qualifying run".
+	in2 := ">solo\nACGNNACGT\n"
+	want2 := ">solo\nACGNNACGT\n"
+	buf.Reset()
+	if err := CutN(strings.NewReader(in2), &buf, CutNOptions{MinN: 3}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := buf.String(); got != want2 {
+		t.Errorf("CutN output = %q, want %q", got, want2)
+	}
+}
+
+func TestCutN_GapsToStderr(t *testing.T) {
+	in := ">chr1\nACGNNNTGCANNNNG\n"
+	wantOut := ">chr1:1-3\nACG\n>chr1:7-10\nTGCA\n>chr1:15-15\nG\n"
+	// 0-based half-open BED: NNN at [3,6), NNNN at [10,14).
+	wantGaps := "chr1\t3\t6\tN\nchr1\t10\t14\tN\n"
+
+	var out, gaps bytes.Buffer
+	opts := CutNOptions{MinN: 3, EmitGaps: true, GapsW: &gaps}
+	if err := CutN(strings.NewReader(in), &out, opts); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := out.String(); got != wantOut {
+		t.Errorf("CutN stdout = %q, want %q", got, wantOut)
+	}
+	if got := gaps.String(); got != wantGaps {
+		t.Errorf("CutN gaps = %q, want %q", got, wantGaps)
+	}
+}
+
+func TestCutN_FastqInput(t *testing.T) {
+	// FASTQ input is auto-detected by the leading '@'; output is always FASTA.
+	in := "@r1\nACGNNNTGCA\n+\nIIIIIIIIII\n"
+	want := ">r1:1-3\nACG\n>r1:7-10\nTGCA\n"
+
+	var buf bytes.Buffer
+	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	got := buf.String()
+	if got != want {
+		t.Errorf("CutN(FASTQ) output = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "@") || strings.Contains(got, "IIII") {
+		t.Errorf("FASTQ header/quality leaked into FASTA output: %q", got)
+	}
+}
+
 func TestSubseqFastqInputFastaOutput(t *testing.T) {
 	fastqData := "@read1 some desc\nACGTACGTAA\n+\nIIIIIIIIII\n@read2\nTTTTGGGGCC\n+\n##########\n"
 
