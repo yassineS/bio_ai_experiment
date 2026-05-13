@@ -10,10 +10,13 @@
 // Commands:
 //
 //	seq        Transform sequences (reverse complement, etc.)
+//	subseq     Extract subsequences
 //	sample     Subsample sequences
 //	trimfq     Trim FASTQ sequences based on quality
 //	fq2fa      Convert FASTQ to FASTA
 //	comp       Get sequence composition statistics
+//	mergepe    Interleave two paired-end FASTA/FASTQ files
+//	cutN       Cut sequences at runs of N
 package main
 
 import (
@@ -49,6 +52,10 @@ func main() {
 		fq2faCommand()
 	case "comp":
 		compCommand()
+	case "mergepe":
+		mergePECommand()
+	case "cutN":
+		cutNCommand()
 	case "version", "-v", "--version":
 		fmt.Printf("seqtk version %s\n", version)
 	case "help", "-h", "--help":
@@ -72,6 +79,8 @@ Commands:
   trimfq     Trim FASTQ sequences based on quality
   fq2fa      Convert FASTQ to FASTA
   comp       Get sequence composition statistics
+  mergepe    Interleave two paired-end FASTA/FASTQ files
+  cutN       Cut sequences at runs of N (>= -n bases)
   version    Show version information
   help       Show this help message
 
@@ -86,6 +95,8 @@ Examples:
   seqtk subseq genome.fa names.txt > selected.fa
   seqtk sample reads.fastq 0.1 > sample.fastq
   seqtk trimfq -q 20 reads.fastq > trimmed.fastq
+  seqtk mergepe r1.fq r2.fq > interleaved.fq
+  seqtk cutN -n 10 genome.fa > fragments.fa
 
 `)
 }
@@ -471,6 +482,160 @@ Options:
 	}
 
 	if err := seqtk.ConvertFastqToFasta(input, out, encoding); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func mergePECommand() {
+	fs := flag.NewFlagSet("mergepe", flag.ExitOnError)
+	var output string
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk mergepe [options] <in1> <in2>
+
+Interleave two paired-end FASTA/FASTQ files, writing
+read1[0], read2[0], read1[1], read2[1], ... to the output stream.
+
+Both inputs must have the same format and the same number of records;
+if the counts differ, an error identifying the shorter input and the
+pair index where the mismatch was detected is returned.
+
+Arguments:
+  <in1>      First mate file (use '-' for stdin, supports .gz)
+  <in2>      Second mate file (use '-' for stdin, supports .gz)
+
+Options:
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk mergepe r1.fq r2.fq > interleaved.fq
+  seqtk mergepe r1.fa.gz r2.fa.gz -o pairs.fa.gz
+  zcat r1.fq.gz | seqtk mergepe - r2.fq > interleaved.fq
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 2 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	in1Name := fs.Arg(0)
+	in2Name := fs.Arg(1)
+
+	if in1Name == "-" && in2Name == "-" {
+		fmt.Fprintf(os.Stderr, "Error: both inputs cannot be stdin ('-')\n")
+		os.Exit(1)
+	}
+
+	in1, err := seqtk.OpenInput(in1Name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", in1Name, err)
+		os.Exit(1)
+	}
+	defer in1.Close()
+
+	in2, err := seqtk.OpenInput(in2Name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", in2Name, err)
+		os.Exit(1)
+	}
+	defer in2.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.MergePE(in1, in2, out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cutNCommand() {
+	fs := flag.NewFlagSet("cutN", flag.ExitOnError)
+	var minN int
+	var gaps bool
+	var output string
+
+	// -1 sentinel so we can detect "not provided" — required flag with no default.
+	cliflag.IntVar(fs, &minN, "n", "min-n", -1, "Minimum N-run length to cut at (required)")
+	cliflag.BoolVar(fs, &gaps, "g", "gaps", false, "Print BED-format records of cut N-runs to stderr")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk cutN -n INT [options] <input>
+
+Cut sequences at runs of 'N' or 'n' of length >= -n, writing the
+resulting fragments as new FASTA records named "<orig-name>:<start>-<end>"
+where coordinates are 1-based inclusive (start = position of first
+retained base, end = position of last retained base).
+
+Records with no qualifying N-run are emitted unchanged with their
+original name. All-N sequences (or those with only leading/trailing
+N-runs) produce no output for that record.
+
+Output is always FASTA. Input may be FASTA or FASTQ (auto-detected).
+
+Arguments:
+  <input>    Input FASTA/FASTQ file (use '-' for stdin, supports .gz)
+
+Options:
+  -n, --min-n INT        Minimum N-run length to cut at (required)
+  -g, --gaps             Print cut N-runs to stderr in BED format
+                         (chrom<TAB>start0<TAB>end<TAB>N; 0-based half-open)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk cutN -n 10 genome.fa > fragments.fa
+  seqtk cutN -n 5 -g genome.fa > fragments.fa 2> gaps.bed
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if minN < 1 {
+		fmt.Fprintf(os.Stderr, "Error: -n/--min-n is required and must be >= 1\n")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	opts := seqtk.CutNOptions{MinN: minN, EmitGaps: gaps}
+	if gaps {
+		opts.GapsW = os.Stderr
+	}
+
+	if err := seqtk.CutN(input, out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

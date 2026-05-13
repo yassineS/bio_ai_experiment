@@ -20,6 +20,8 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - Random subsampling
   - **Length and pattern filtering**
   - **Subsequence extraction**
+  - **Paired-end interleaving (`mergepe`)**
+  - **Cut-at-N-runs (`cutN`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -177,7 +179,97 @@ Options:
 - `-6, --phred64`: Use Phred+64 encoding for FASTQ
 - `-o, --output FILE`: Output file
 
-#### 6. Quality Trimming (`trimfq`)
+#### 6. Paired-End Interleaving (`mergepe`)
+
+Interleave two paired-end FASTA/FASTQ files, producing a single stream where
+records alternate `read1[0], read2[0], read1[1], read2[1], ...`. The two inputs
+must have the same format (auto-detected: `>` => FASTA, `@` => FASTQ) and the
+same number of records; if the counts differ, an error identifying the shorter
+input and the pair index where the mismatch was detected is returned. **Output
+preserves the input format** (FASTA in => FASTA out, FASTQ in => FASTQ out).
+
+```bash
+# Interleave two FASTQ files
+seqtk mergepe r1.fq r2.fq > interleaved.fq
+
+# Compressed input/output
+seqtk mergepe r1.fq.gz r2.fq.gz -o interleaved.fq.gz
+
+# One side from stdin (the other must be a file)
+zcat r1.fq.gz | seqtk mergepe - r2.fq > interleaved.fq
+
+# FASTA inputs work the same way
+seqtk mergepe contigs1.fa contigs2.fa > pairs.fa
+```
+
+Arguments:
+
+- `<in1>`: First mate file (use `-` for stdin, supports `.gz`)
+- `<in2>`: Second mate file (use `-` for stdin, supports `.gz`)
+
+Note: at most one of `<in1>` / `<in2>` may be `-`.
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+
+#### 7. Cut at N-Runs (`cutN`)
+
+Cut input sequences at runs of `N` or `n` of length `>= -n`, writing the
+resulting fragments as new FASTA records named `<orig-name>:<start>-<end>`,
+where coordinates are **1-based inclusive** (`start` = position of the first
+retained base, `end` = position of the last). Records with no qualifying N-run
+are emitted unchanged with their original name (no `:start-end` suffix). All-N
+sequences (or those with only leading/trailing N-runs) produce no output for
+that record.
+
+Output is always FASTA; input may be FASTA or FASTQ (auto-detected via the
+first non-whitespace byte: `>` => FASTA, `@` => FASTQ).
+
+```bash
+# Split a genome at gaps of >= 10 Ns
+seqtk cutN -n 10 genome.fa > fragments.fa
+
+# Long form
+seqtk cutN --min-n 10 genome.fa.gz -o fragments.fa.gz
+
+# Print the cut N-runs to stderr in BED format alongside the FASTA output
+seqtk cutN -n 5 -g genome.fa > fragments.fa 2> gaps.bed
+
+# FASTQ input is accepted; output is still FASTA
+seqtk cutN -n 3 reads.fq > reads.cut.fa
+```
+
+Worked example. Given input `>chr1\nACGNNNTGCANNNNG\n` and `-n 3`, the output is:
+
+```text
+>chr1:1-3
+ACG
+>chr1:7-10
+TGCA
+>chr1:15-15
+G
+```
+
+With `-g` added, the following BED-like lines (0-based half-open) are also
+emitted to stderr:
+
+```text
+chr1    3   6   N
+chr1    10  14  N
+```
+
+Arguments:
+
+- `<input>`: Input FASTA/FASTQ file (use `-` for stdin, supports `.gz`)
+
+Options:
+
+- `-n, --min-n INT`: Minimum N-run length to cut at (**required**, no default)
+- `-g, --gaps`: Emit cut N-runs to stderr as BED (`chrom\tstart0\tend\tN`)
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+
+#### 8. Quality Trimming (`trimfq`)
 
 Trim FASTQ sequences based on quality scores:
 
@@ -414,6 +506,7 @@ Apache License 2.0 - See [LICENSE](../../LICENSE) for details.
 - [x] Support for streaming from stdin
 - [x] Add length and pattern filtering options
 - [x] Add subsequence extraction command
+- [x] Add paired-end interleaving (`mergepe`) and cut-at-N-runs (`cutN`) commands
 - [ ] Implement additional seqtk commands (mutseq, mergefa, etc.)
 - [ ] Add parallel processing for very large files
 - [ ] Optimize memory usage for ReadAll operations
