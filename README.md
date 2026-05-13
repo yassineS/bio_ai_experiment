@@ -24,6 +24,11 @@ The main objectives of this repository are to use AI agents to:
    - Reimplement selected tools using Go for improved performance and maintainability
    - Maintain compatibility with original tool functionality
    - Leverage Go's concurrency and performance features
+   - **POSIX-compliant CLI**: once a tool reaches full feature parity with its
+     original, its command-line interface must also be POSIX-compliant — POSIX
+     short options (`-i`, `-q`, ...), GNU-style long options (`--input`,
+     `--quality`, ...), `--` to end option parsing, `-` to mean stdin/stdout,
+     and clean exit codes. See [docs/CLI_CONVENTIONS.md](docs/CLI_CONVENTIONS.md).
 
 4. **Comprehensive Testing**
    - Provide test data for each tool
@@ -51,6 +56,11 @@ The main objectives of this repository are to use AI agents to:
 - **Improve Usability**: Make bioinformatics tools more accessible and easier to use
 - **Enhance Documentation**: Provide clear, comprehensive documentation for all tools
 - **Boost Performance**: Leverage modern programming practices and languages for better performance
+- **Feature Parity + POSIX-Compliant CLIs**: each ported tool's terminal target
+  is 100% feature parity with its original *and* a POSIX-compliant CLI (see
+  [docs/CLI_CONVENTIONS.md](docs/CLI_CONVENTIONS.md)). Until a tool gets there
+  it is documented in [tools/PORTING_STATUS.md](tools/PORTING_STATUS.md) as
+  "Partial".
 - **Document AI Agent Utility**: Track and document the effectiveness (or lack thereof) of coding agents in this process
 
 ## Repository Structure
