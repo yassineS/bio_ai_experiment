@@ -25,10 +25,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ### Progress Summary
 
-- **Tools with a working subset**: 8
-- **Tools tested**: 8 (package-level tests; `cmd/` entry points have no tests)
-- **Test coverage (statements, `go test -cover`)**: vcftools 58%, fastp 67%,
-  seqtk 66%, bedintersect 75%, sickle 82%, bedmerge 85%, prinseq 90%, skewer 90%
+- **Tools with a working subset**: 16 (8 original + 8 bedtools subcommands)
+- **Tools tested**: 16 (package-level tests; `cmd/` entry points have no tests)
+- **Test coverage (statements, `go test -cover`)** — main tools: vcftools 58%,
+  seqtk 66%, fastp 67%, bedintersect 75%, sickle 82%, prinseq 99.9%,
+  skewer 100%, bedmerge 100%
+- **Test coverage** — new bedtools tools: bedsort 92%, bedflank 92%,
+  bedclosest 93%, bedsubtract 94%, bedgenomecov 94%, bedcomplement 95%,
+  bedslop 95%, bedjaccard 96%
 - **Documentation**: README per tool; some design docs are aspirational, not status
 - **gzip support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools (not seqtk/prinseq)
 
@@ -85,7 +89,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `stats` - Calculate sequence statistics
 - `filter` - Multi-criteria filtering and trimming
 
-**Test Coverage**: ~90% of statements (`go test -cover`)  
+**Test Coverage**: ~99.9% of statements (`go test -cover`)  
 **Performance**: ~1.2-1.35x faster than the original Perl on the implemented paths  
 **Documentation**: README with examples
 
@@ -157,7 +161,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `se` - Single-end adapter trimming
 - `pe` - Paired-end adapter trimming
 
-**Test Coverage**: ~90% of statements (`go test -cover`)  
+**Test Coverage**: **100%** of statements (`go test -cover`)  
 **Performance**: ~1.0x (comparable to original)  
 **Documentation**: README with examples
 
@@ -227,7 +231,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command for merging BED intervals
 
-**Test Coverage**: ~85% of statements (`go test -cover`)  
+**Test Coverage**: **100%** of statements (`go test -cover`)  
 **Performance**: ~2x faster than bedtools merge on the implemented path  
 **Documentation**: README with examples
 
@@ -336,6 +340,31 @@ See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and
   `(n^2 - Σ c_a^2) / (n(n-1))` formula; earlier builds reported a different
   (incorrect) per-genotype quantity
 - Not a drop-in replacement: anything not in the list above is unavailable
+
+---
+
+### 9. ✅ New bedtools subcommands (May 2026)
+
+Eight more `bedtools` subcommands were ported in this round, alongside the
+existing `bedmerge` and `bedintersect`. Every one of them has its own
+`tools/bedX/cmd/bedX/main.go` + `pkg/bedX/*.go` + `README.md`, follows the
+POSIX-compliant CLI conventions in [`../docs/CLI_CONVENTIONS.md`](../docs/CLI_CONVENTIONS.md),
+and reuses `pkg/bioformats/bed` + `pkg/bioformats/iohelper`.
+
+| Tool | Maps to | Coverage | Highlights |
+|------|---------|---------:|------------|
+| `bedsort` | `bedtools sort` | 91.6% | Lex / size / score sort modes; `-g`/`--faidx` for chrom order |
+| `bedslop` | `bedtools slop` | 95.2% | `-b N` / `-l N -r N` (+ `--pct`), `-s` strand swap, clip to chrom |
+| `bedcomplement` | `bedtools complement` | 94.6% | Gaps over chroms in `-g`; errors if input not sorted |
+| `bedsubtract` | `bedtools subtract` | 93.7% | A − B with `-A` / `-N` / `-s` / `-S`; splits A around B |
+| `bedflank` | `bedtools flank` | 92.2% | Flank-only `slop` variant |
+| `bedclosest` | `bedtools closest` | 92.8% | Sweep on sorted input; `-D ref/a/b`, `-N`, `-t all/first/last` |
+| `bedgenomecov` | `bedtools genomecov` | 94.0% | histogram / `-bg` / `-bga` / `-d` / `-dz`; `-strand`, `-max`, `-scale`, `-5`/`-3` |
+| `bedjaccard` | `bedtools jaccard` | 96.3% | Streaming sweep; `-s`/`-S`, `-f`/`-F` |
+
+Smoke tests for each are hand-verified against expected output (see the
+respective PRs and READMEs). Validated parity against the upstream `bedtools`
+test suite is **still outstanding** — coverage ≠ byte-for-byte output match.
 
 ---
 
