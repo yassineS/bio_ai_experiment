@@ -289,3 +289,83 @@ func TestWriteGZIEmpty(t *testing.T) {
 		t.Fatal("empty gzi count != 0")
 	}
 }
+
+// TestVirtualOffsetTracksBlocks compresses three small payloads — one per
+// block — and verifies that VirtualOffset returns offsets whose compressed
+// coordinates change exactly at the right time and whose in-block portion
+// advances byte-by-byte as Read consumes the block.
+func TestVirtualOffsetTracksBlocks(t *testing.T) {
+	payloads := [][]byte{
+		[]byte("alpha"),
+		[]byte("beta"),
+		[]byte("gamma"),
+	}
+	fixture := buildFixture(t, payloads)
+	// Capture the on-disk start byte of every block by scanning the fixture.
+	offsets, err := Scan(bytes.NewReader(fixture))
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(offsets) != 3 {
+		t.Fatalf("expected 3 blocks, got %d", len(offsets))
+	}
+
+	r, err := NewReader(bytes.NewReader(fixture))
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	// Before any Read, VirtualOffset must point at byte 0 of block 0.
+	if got := r.VirtualOffset(); got != 0 {
+		t.Errorf("initial VirtualOffset: got %#x, want 0", got)
+	}
+
+	// Consume payloads[0] one byte at a time and confirm uoff advances.
+	var one [1]byte
+	for i := 0; i < len(payloads[0]); i++ {
+		n, err := r.Read(one[:])
+		if n != 1 || err != nil {
+			t.Fatalf("Read byte %d: n=%d err=%v", i, n, err)
+		}
+		want := uint64(offsets[0].CompressedOffset)<<16 | uint64(i+1)
+		// When we finish the block (i == len(payloads[0])-1), the next
+		// virtual offset rolls over to (block1, 0).
+		if i == len(payloads[0])-1 {
+			want = uint64(offsets[1].CompressedOffset) << 16
+		}
+		if got := r.VirtualOffset(); got != want {
+			t.Errorf("after %d bytes: got %#x, want %#x", i+1, got, want)
+		}
+	}
+
+	// Consume the rest in one big Read and confirm we land at the EOF block
+	// boundary (offsets has only 3 data blocks, so the next-block offset is
+	// the byte just past the last data block).
+	rest, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := append([]byte{}, payloads[1]...)
+	want = append(want, payloads[2]...)
+	if !bytes.Equal(rest, want) {
+		t.Errorf("rest: got %q, want %q", rest, want)
+	}
+}
+
+// TestBAMReaderVirtualOffsetZeroForRaw confirms that a non-BGZF (raw) BAM
+// reader returns 0 for VirtualOffset — it has no compressed layer to track.
+func TestVirtualOffsetEmptyReader(t *testing.T) {
+	// An empty (only EOF block) stream.
+	var b bytes.Buffer
+	w := NewWriter(&b)
+	w.Close()
+	r, err := NewReader(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if got := r.VirtualOffset(); got != 0 {
+		t.Errorf("empty-stream VirtualOffset: got %#x, want 0", got)
+	}
+}

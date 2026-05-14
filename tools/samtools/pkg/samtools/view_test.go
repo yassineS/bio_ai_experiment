@@ -2,7 +2,6 @@ package samtools
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,11 +166,34 @@ func TestViewBAMOutput(t *testing.T) {
 	}
 }
 
-func TestViewRegionsRejected(t *testing.T) {
+func TestViewRegionsLinearScan(t *testing.T) {
+	// Regions are now supported via linear scan (no .bai required). Pick a
+	// region that overlaps read1 (chr1:100) but not read2 (chr1:200).
 	var out bytes.Buffer
-	_, err := View(strings.NewReader(sampleSAM), &out, ViewOptions{RegionsEnabled: true})
-	if !errors.Is(err, ErrRegionsUnsupported) {
-		t.Errorf("expected ErrRegionsUnsupported, got %v", err)
+	n, err := View(strings.NewReader(sampleSAM), &out, ViewOptions{
+		Regions: []string{"chr1:50-150"},
+		Count:   true,
+	})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("region count: got %d, want 1 (only read1 overlaps chr1:50-150)", n)
+	}
+}
+
+func TestViewRegionUnknownChrom(t *testing.T) {
+	// A region on an unknown chrom yields zero matches without error.
+	var out bytes.Buffer
+	n, err := View(strings.NewReader(sampleSAM), &out, ViewOptions{
+		Regions: []string{"chrUnknown:1-1000"},
+		Count:   true,
+	})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("unknown-chrom region count: got %d, want 0", n)
 	}
 }
 

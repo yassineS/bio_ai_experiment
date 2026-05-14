@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
 )
 
 // ViewOptions configures the behaviour of View. Zero values disable the
@@ -57,50 +58,48 @@ type ViewOptions struct {
 	NoPG bool
 }
 
-// ErrRegionsUnsupported is returned when a caller requests region-query
-// filtering. Region queries depend on a BAI index that is not yet implemented.
+// ErrRegionsUnsupported is retained for backward-compatibility with callers
+// that match against it. Region filtering via linear scan is now supported
+// directly by View; indexed seek is available via ViewFile when a .bai
+// sibling file exists.
+//
+// Deprecated: regions are now handled.
 var ErrRegionsUnsupported = errors.New("samtools view: region-query support requires .bai indexing — not yet implemented")
 
 // View streams alignment records from r, applying the configured filters,
 // and emits them to out as either SAM text or BAM. Returns the number of
 // records that passed all filters.
 //
-// When opts.Count is true, the matching count is the only thing emitted to out.
+// When opts.Count is true, the matching count is the only thing emitted to
+// out. When opts.Regions is non-empty View does a linear scan and filters
+// records to those overlapping any region — for indexed seek use ViewFile.
 func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
-	if opts.RegionsEnabled {
-		return 0, ErrRegionsUnsupported
-	}
-
 	r, err := sam.NewReader(in)
 	if err != nil {
 		return 0, err
 	}
 	hdr := r.Header()
 
-	var w sam.Writer
-	if !opts.Count {
-		if opts.OutputBAM {
-			bw := sam.NewBAMWriter(out)
-			w = bw
-		} else {
-			w = sam.NewSAMWriter(out)
-		}
-		emitHeader := opts.HeaderOnly || opts.WithHeader || opts.OutputBAM
-		if emitHeader {
-			if err := w.WriteHeader(hdr); err != nil {
-				return 0, err
-			}
-		} else {
-			// Still call WriteHeader on the underlying writer with nil so the
-			// internal state is correctly initialised, but emit nothing.
-			if err := w.WriteHeader(nil); err != nil {
-				return 0, err
-			}
-		}
-		// HeaderOnly stops here.
-		if opts.HeaderOnly {
-			return 0, w.Close()
-		}
+	// Resolve any region specifiers up front so unknown chroms don't abort
+	// the linear scan — they just yield zero matches.
+	resolved, _, err := ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
+	if err != nil {
+		return 0, err
+	}
+	regionFilter := buildRegionFilter(resolved, hdr)
+	if regionFilter == nil && len(opts.Regions) > 0 {
+		// User asked for regions but none resolved — surface a predicate
+		// that rejects every record so the result is correctly empty
+		// instead of accidentally returning the full stream.
+		regionFilter = func(*sam.Record) bool { return false }
+	}
+
+	w, err := openViewWriter(out, hdr, opts)
+	if err != nil {
+		return 0, err
+	}
+	if opts.HeaderOnly {
+		return 0, closeViewWriter(w)
 	}
 
 	rng := newSubsampleRNG(opts)
@@ -116,6 +115,9 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 		if !keepRecord(rec, &opts, rng) {
 			continue
 		}
+		if regionFilter != nil && !regionFilter(rec) {
+			continue
+		}
 		matched++
 		if opts.Count {
 			continue
@@ -128,12 +130,236 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 		fmt.Fprintln(out, matched)
 		return matched, nil
 	}
-	if w != nil {
-		if err := w.Close(); err != nil {
-			return matched, err
-		}
+	if err := closeViewWriter(w); err != nil {
+		return matched, err
 	}
 	return matched, nil
+}
+
+// ViewFile is the indexed entry point for samtools view: it opens the BAM
+// at inPath, looks for a sibling <inPath>.bai, and (when found and the
+// caller has supplied regions) uses the BAI chunks to seek to relevant
+// portions of the file. When no .bai is found ViewFile falls back to the
+// streaming View() linear-scan path; a warning is written to warnW (which
+// may be nil to silence it).
+//
+// If inPath is empty or "-" ViewFile delegates to View on os.Stdin.
+func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (int, error) {
+	if inPath == "" || inPath == "-" {
+		return View(os.Stdin, out, opts)
+	}
+	// No regions requested: take the streaming path.
+	if len(opts.Regions) == 0 {
+		f, err := os.Open(inPath)
+		if err != nil {
+			return 0, err
+		}
+		defer f.Close()
+		return View(f, out, opts)
+	}
+	baiPath := inPath + ".bai"
+	baiBytes, baiErr := os.ReadFile(baiPath)
+	if baiErr != nil {
+		if warnW != nil {
+			fmt.Fprintf(warnW, "samtools view: no index at %s, falling back to linear scan\n", baiPath)
+		}
+		f, err := os.Open(inPath)
+		if err != nil {
+			return 0, err
+		}
+		defer f.Close()
+		return View(f, out, opts)
+	}
+	idx, ierr := ReadBAI(strings.NewReader(string(baiBytes)))
+	if ierr != nil {
+		return 0, fmt.Errorf("samtools view: read %s: %w", baiPath, ierr)
+	}
+
+	f, err := os.Open(inPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return viewIndexed(f, idx, out, opts)
+}
+
+// viewIndexed performs an indexed region scan: it parses regions, computes
+// chunk unions, seeks into each chunk's compressed offset, decodes records
+// until each chunk's end virtual offset, and emits records overlapping any
+// requested region.
+func viewIndexed(f *os.File, idx *BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
+	// Need the header — open a BAM reader first.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	hdrReader, err := sam.NewBAMReader(f)
+	if err != nil {
+		return 0, err
+	}
+	hdr := hdrReader.Header()
+
+	resolved, _, perr := ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
+	if perr != nil {
+		return 0, perr
+	}
+	chunks := UnionChunks(idx, resolved)
+	regionFilter := buildRegionFilter(resolved, hdr)
+	if regionFilter == nil && len(opts.Regions) > 0 {
+		regionFilter = func(*sam.Record) bool { return false }
+	}
+
+	w, werr := openViewWriter(out, hdr, opts)
+	if werr != nil {
+		return 0, werr
+	}
+	if opts.HeaderOnly {
+		return 0, closeViewWriter(w)
+	}
+
+	rng := newSubsampleRNG(opts)
+	matched := 0
+	for _, c := range chunks {
+		if c.Beg >= c.End {
+			continue
+		}
+		startBlock := int64(c.Beg >> 16)
+		if _, err := f.Seek(startBlock, io.SeekStart); err != nil {
+			return matched, err
+		}
+		bgz, err := bgzip.NewReader(f)
+		if err != nil {
+			return matched, err
+		}
+		// Skip in-block bytes — they are *before* the first record we want.
+		uoff := int(c.Beg & 0xFFFF)
+		if uoff > 0 {
+			if _, err := io.CopyN(io.Discard, bgz, int64(uoff)); err != nil {
+				return matched, err
+			}
+		}
+		// Build a chunk-bounded reader so the BAM parser stops when the
+		// chunk ends; we use a custom wrapper that watches the underlying
+		// virtual offset.
+		boundedSrc := &chunkBoundedReader{r: bgz, end: uint64(c.End)}
+		br := sam.NewBAMBodyReader(boundedSrc, hdr)
+		for {
+			rec, err := br.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return matched, err
+			}
+			if !keepRecord(rec, &opts, rng) {
+				continue
+			}
+			if regionFilter != nil && !regionFilter(rec) {
+				continue
+			}
+			matched++
+			if opts.Count {
+				continue
+			}
+			if err := w.Write(rec); err != nil {
+				return matched, err
+			}
+		}
+		_ = bgz.Close()
+	}
+	if opts.Count {
+		fmt.Fprintln(out, matched)
+		return matched, nil
+	}
+	if err := closeViewWriter(w); err != nil {
+		return matched, err
+	}
+	return matched, nil
+}
+
+// chunkBoundedReader stops returning bytes once its underlying BGZF reader
+// has advanced past the chunk-end virtual offset. We watch the virtual
+// offset of the bgzip.Reader (cheap — a pair of fields) after every read
+// and report io.EOF as soon as we cross the end boundary.
+type chunkBoundedReader struct {
+	r   *bgzip.Reader
+	end uint64
+}
+
+func (c *chunkBoundedReader) Read(p []byte) (int, error) {
+	if c.r.VirtualOffset() >= c.end {
+		return 0, io.EOF
+	}
+	return c.r.Read(p)
+}
+
+// buildRegionFilter returns nil when no regions are configured; otherwise
+// returns a predicate that keeps records overlapping any region's range
+// on the matching reference.
+func buildRegionFilter(regions []ResolvedRegion, hdr *sam.Header) func(*sam.Record) bool {
+	if len(regions) == 0 {
+		return nil
+	}
+	return func(rec *sam.Record) bool {
+		if rec.RName == "" || rec.RName == "*" {
+			return false
+		}
+		rid := hdr.RefIndex(rec.RName)
+		if rid < 0 {
+			return false
+		}
+		pos0 := int(rec.Pos) - 1
+		if pos0 < 0 {
+			pos0 = 0
+		}
+		refLen := rec.Cigar.ReferenceLength()
+		if refLen <= 0 {
+			refLen = 1
+		}
+		for _, r := range regions {
+			if r.RefID != rid {
+				continue
+			}
+			recEnd := pos0 + refLen
+			if pos0 < r.End0 && recEnd > r.Beg0 {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// openViewWriter sets up the output writer and emits the header when the
+// configured options call for it. The returned writer is nil only when
+// opts.Count is true (which suppresses all record-emitting writes).
+func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Writer, error) {
+	if opts.Count {
+		return nil, nil
+	}
+	var w sam.Writer
+	if opts.OutputBAM {
+		w = sam.NewBAMWriter(out)
+	} else {
+		w = sam.NewSAMWriter(out)
+	}
+	emitHeader := opts.HeaderOnly || opts.WithHeader || opts.OutputBAM
+	if emitHeader {
+		if err := w.WriteHeader(hdr); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := w.WriteHeader(nil); err != nil {
+			return nil, err
+		}
+	}
+	return w, nil
+}
+
+// closeViewWriter flushes the writer if it is non-nil.
+func closeViewWriter(w sam.Writer) error {
+	if w == nil {
+		return nil
+	}
+	return w.Close()
 }
 
 // keepRecord applies the per-record filters and returns true if the record
