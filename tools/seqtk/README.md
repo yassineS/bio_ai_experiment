@@ -22,6 +22,9 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Subsequence extraction**
   - **Paired-end interleaving (`mergepe`)**
   - **Cut-at-N-runs (`cutN`)**
+  - **Point mutations from a TSV list (`mutfa`)**
+  - **Random IUPAC resolution (`randbase`)**
+  - **Homopolymer compression (`hpc`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -269,7 +272,107 @@ Options:
 - `-g, --gaps`: Emit cut N-runs to stderr as BED (`chrom\tstart0\tend\tN`)
 - `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
 
-#### 8. Quality Trimming (`trimfq`)
+#### 8. Point Mutations (`mutfa`)
+
+Apply point mutations described in a TSV file to a FASTA reference, writing
+the mutated FASTA to stdout. The mutation file has at least three
+whitespace- or tab-separated columns per line:
+
+```text
+chrom    pos(1-based)    base
+```
+
+For compatibility with upstream seqtk's four-column "chrom pos ref alt"
+format the new base is taken from column 4 when there are four or more
+columns. Lines starting with `#` and blank lines are ignored.
+
+Output preserves the line-width layout of the input FASTA — physical line
+breaks are kept exactly where they were on input. Substitutions are applied
+on the forward strand. Mutation entries naming a chromosome that is not in
+the input, and positions past the end of the corresponding sequence, are
+**skipped with a warning to stderr** (they are not fatal).
+
+```bash
+# Three-column TSV: chrom, 1-based pos, new base.
+seqtk mutfa ref.fa muts.tsv > mutated.fa
+
+# Compressed inputs/outputs.
+seqtk mutfa ref.fa.gz muts.tsv -o mutated.fa.gz
+
+# Long-form output flag.
+seqtk mutfa --output mutated.fa ref.fa muts.tsv
+```
+
+Arguments:
+
+- `<in.fa>`: Input FASTA file (use `-` for stdin, supports `.gz`)
+- `<mutfile>`: TSV mutation list (use `-` for stdin, supports `.gz`)
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+
+#### 9. Random IUPAC Resolution (`randbase`)
+
+Replace every IUPAC ambiguity base (R/Y/S/W/K/M/B/D/H/V/N) in a FASTA with
+one of the unambiguous bases it represents, chosen uniformly at random.
+Case is preserved (`r` becomes `a` or `g`). Non-ambiguity bytes are passed
+through unchanged. Output preserves the line-width layout of the input.
+
+The IUPAC expansions used are:
+
+```text
+R -> A,G     Y -> C,T     S -> G,C     W -> A,T
+K -> G,T     M -> A,C     B -> C,G,T   D -> A,G,T
+H -> A,C,T   V -> A,C,G   N -> A,C,G,T
+```
+
+```bash
+# Time-seeded by default — different output each run.
+seqtk randbase ambig.fa > resolved.fa
+
+# Deterministic output via -s/--seed.
+seqtk randbase -s 42 ambig.fa > resolved.fa
+seqtk randbase --seed 42 ambig.fa.gz -o resolved.fa.gz
+```
+
+Arguments:
+
+- `<in.fa>`: Input FASTA file (use `-` for stdin, supports `.gz`)
+
+Options:
+
+- `-s, --seed INT`: Random seed for reproducibility (default: time-seeded)
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+
+#### 10. Homopolymer Compression (`hpc`)
+
+Collapse every maximal run of identical bases to a single base. The first
+base of each run is kept (so the case at the start of each run is
+preserved). Sequence names are preserved on output; the compressed
+sequence is emitted on a single line with no wrapping, matching upstream
+`seqtk hpc`. Empty input sequences produce no output for that record.
+
+Input may be FASTA or FASTQ (auto-detected via the first non-whitespace
+byte: `>` => FASTA, `@` => FASTQ). Output is always FASTA.
+
+```bash
+# >s\nAAACCGT\n -> >s\nACGT\n
+seqtk hpc reads.fa > collapsed.fa
+
+# FASTQ input is accepted; output is still FASTA.
+seqtk hpc reads.fq.gz -o collapsed.fa.gz
+```
+
+Arguments:
+
+- `<in.fa>`: Input FASTA/FASTQ file (use `-` for stdin, supports `.gz`)
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+
+#### 11. Quality Trimming (`trimfq`)
 
 Trim FASTQ sequences based on quality scores:
 
@@ -507,7 +610,8 @@ Apache License 2.0 - See [LICENSE](../../LICENSE) for details.
 - [x] Add length and pattern filtering options
 - [x] Add subsequence extraction command
 - [x] Add paired-end interleaving (`mergepe`) and cut-at-N-runs (`cutN`) commands
-- [ ] Implement additional seqtk commands (mutseq, mergefa, etc.)
+- [x] Add point-mutation (`mutfa`), random IUPAC resolution (`randbase`), and homopolymer compression (`hpc`) commands
+- [ ] Implement additional seqtk commands (mergefa, telo, etc.)
 - [ ] Add parallel processing for very large files
 - [ ] Optimize memory usage for ReadAll operations
 

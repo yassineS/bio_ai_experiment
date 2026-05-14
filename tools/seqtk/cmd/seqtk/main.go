@@ -17,12 +17,16 @@
 //	comp       Get sequence composition statistics
 //	mergepe    Interleave two paired-end FASTA/FASTQ files
 //	cutN       Cut sequences at runs of N
+//	mutfa      Apply point mutations to a FASTA file
+//	randbase   Randomly resolve IUPAC ambiguity codes
+//	hpc        Homopolymer-compress sequences
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
@@ -56,6 +60,12 @@ func main() {
 		mergePECommand()
 	case "cutN":
 		cutNCommand()
+	case "mutfa":
+		mutfaCommand()
+	case "randbase":
+		randbaseCommand()
+	case "hpc":
+		hpcCommand()
 	case "version", "-v", "--version":
 		fmt.Printf("seqtk version %s\n", version)
 	case "help", "-h", "--help":
@@ -81,6 +91,9 @@ Commands:
   comp       Get sequence composition statistics
   mergepe    Interleave two paired-end FASTA/FASTQ files
   cutN       Cut sequences at runs of N (>= -n bases)
+  mutfa      Apply point mutations to a FASTA file from a TSV mutation list
+  randbase   Replace IUPAC ambiguity bases with a random expansion
+  hpc        Homopolymer-compress sequences (collapse runs of identical bases)
   version    Show version information
   help       Show this help message
 
@@ -97,6 +110,9 @@ Examples:
   seqtk trimfq -q 20 reads.fastq > trimmed.fastq
   seqtk mergepe r1.fq r2.fq > interleaved.fq
   seqtk cutN -n 10 genome.fa > fragments.fa
+  seqtk mutfa ref.fa muts.tsv > mutated.fa
+  seqtk randbase -s 42 ambig.fa > resolved.fa
+  seqtk hpc reads.fa > collapsed.fa
 
 `)
 }
@@ -715,5 +731,217 @@ Options:
 	fmt.Printf("GC content: %.2f%%\n", stats.GCContent)
 	if isFastq {
 		fmt.Printf("Average quality: %.2f\n", stats.AvgQuality)
+	}
+}
+
+func mutfaCommand() {
+	fs := flag.NewFlagSet("mutfa", flag.ExitOnError)
+	var output string
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk mutfa [options] <in.fa> <mutfile>
+
+Apply point mutations to a FASTA file. <mutfile> is a TSV with at least
+three whitespace/tab-separated columns per line:
+
+  chrom    pos(1-based)    base
+
+For compatibility with upstream seqtk's four-column format
+  chrom    pos    ref    alt
+the new base is taken from column 4 when there are four or more columns.
+Lines starting with '#' and blank lines are ignored.
+
+Output is FASTA written to stdout, preserving the line-width layout of the
+input. Mutations are applied on the forward strand. Names from the mutation
+file that are not present in the input, and positions past the end of their
+sequence, produce a warning on stderr and are skipped.
+
+Arguments:
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+  <mutfile>  TSV mutation list (use '-' for stdin, supports .gz)
+
+Options:
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk mutfa ref.fa muts.tsv > mutated.fa
+  seqtk mutfa ref.fa.gz muts.tsv -o mutated.fa.gz
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 2 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+	mutFile := fs.Arg(1)
+
+	if inputFile == "-" && mutFile == "-" {
+		fmt.Fprintf(os.Stderr, "Error: both inputs cannot be stdin ('-')\n")
+		os.Exit(1)
+	}
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	mut, err := seqtk.OpenInput(mutFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening mutation file: %v\n", err)
+		os.Exit(1)
+	}
+	defer mut.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.Mutfa(input, mut, out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func randbaseCommand() {
+	fs := flag.NewFlagSet("randbase", flag.ExitOnError)
+	var output string
+	var seed int64
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+	// Negative sentinel means "no -s provided"; we'll time-seed in that case.
+	// Use Int64Var directly since cliflag doesn't expose an int64 helper.
+	fs.Int64Var(&seed, "s", -1, "Random seed for reproducibility (default: time-seeded)")
+	fs.Int64Var(&seed, "seed", -1, "Random seed for reproducibility (default: time-seeded)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk randbase [options] <in.fa>
+
+Replace every IUPAC ambiguity base in the input FASTA with one of the
+unambiguous bases it represents, chosen uniformly at random. Case is
+preserved (e.g. 'r' becomes 'a' or 'g'). The IUPAC table used is:
+
+  R -> A,G    Y -> C,T    S -> G,C    W -> A,T
+  K -> G,T    M -> A,C    B -> C,G,T  D -> A,G,T
+  H -> A,C,T  V -> A,C,G  N -> A,C,G,T
+
+Output is FASTA written to stdout, preserving the line-width layout of
+the input.
+
+Arguments:
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+
+Options:
+  -s, --seed INT         Random seed for reproducibility (default: time-seeded)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk randbase -s 42 ambig.fa > resolved.fa
+  seqtk randbase ambig.fa.gz -o resolved.fa.gz
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	effectiveSeed := seed
+	if effectiveSeed < 0 {
+		effectiveSeed = time.Now().UnixNano()
+	}
+
+	if err := seqtk.Randbase(input, out, effectiveSeed); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func hpcCommand() {
+	fs := flag.NewFlagSet("hpc", flag.ExitOnError)
+	var output string
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk hpc [options] <in.fa>
+
+Homopolymer-compress sequences: collapse every maximal run of identical
+bases to a single base. Sequence names are preserved; the compressed
+sequence is written on a single line with no wrapping, matching upstream
+seqtk hpc.
+
+Input may be FASTA or FASTQ (auto-detected via the first non-whitespace
+byte: '>' => FASTA, '@' => FASTQ). Output is always FASTA.
+
+Arguments:
+  <in.fa>    Input FASTA/FASTQ file (use '-' for stdin, supports .gz)
+
+Options:
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk hpc reads.fa > collapsed.fa
+  seqtk hpc reads.fq.gz -o collapsed.fa.gz
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.HPC(input, out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
