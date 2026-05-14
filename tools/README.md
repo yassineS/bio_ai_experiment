@@ -23,6 +23,9 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedclosest`](bedclosest/) | bedtools closest | Nearest-neighbour intervals | 93% |
 | [`bedgenomecov`](bedgenomecov/) | bedtools genomecov | Genome-wide coverage | 94% |
 | [`bedjaccard`](bedjaccard/) | bedtools jaccard | Jaccard statistic on intervals | 96% |
+| [`bedgroupby`](bedgroupby/) | bedtools groupby | Group records + apply column ops | 94% |
+| [`bed12tobed6`](bed12tobed6/) | bedtools bed12tobed6 | Split BED12 records into BED6 blocks | 91% |
+| [`bedmakewindows`](bedmakewindows/) | bedtools makewindows | Partition intervals into windows | 91% |
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |

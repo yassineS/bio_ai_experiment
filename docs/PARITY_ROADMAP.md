@@ -140,16 +140,16 @@ Missing:
 
 **Validation:** no upstream-test-suite run yet.
 
-### bedtools (10 subcommands ported)
+### bedtools (13 subcommands ported)
 
-**Status:** 10 of ~40 subcommands (~25%). 85 passing parity tests against
+**Status:** 13 of ~40 subcommands (~33%). 85 passing parity tests against
 upstream test suite (PR #55), 42 documented `t.Skip`, 2 known
-discrepancies.
+discrepancies. **3 new subcommands** salvaged from a Phase-3 agent crash
+landed alongside this roadmap update: `bedgroupby`, `bed12tobed6`,
+`bedmakewindows`.
 
 Missing subcommands:
 
-- `groupby` (depends on a tabular grouping engine; not bedtools-specific
-  but bedtools provides the entrypoint).
 - `map` — apply column ops to A's intervals using B as input.
 - `coverage` — count features in A overlapping B.
 - `multicov` — multi-sample coverage.
@@ -159,8 +159,6 @@ Missing subcommands:
 - `fisher` — Fisher's exact for overlap.
 - `nuc` — nucleotide content per interval.
 - `getfasta` — pull FASTA subsequences.
-- `makewindows` — partition a genome into fixed windows.
-- `bed12tobed6` — split BED12 records.
 - `window` — overlap A with a window around B.
 - `expand` — expand a column.
 - `sample` — random subsample.
@@ -178,6 +176,13 @@ Skipped parity cases from PR #55 to revisit:
 
 - `bedjaccard` auto-merge behaviour.
 - `bedmerge` `.`-strand fan-out.
+
+Column-op gaps (shared between `bedmerge`, `bedgroupby`, and the future
+`bedmap`/`bedcoverage`):
+
+- `stdev` / `sstdev` — standard deviation / sample stdev.
+- `absmin` / `absmax` — min/max by absolute value.
+- `cat` / `cat_uniq` — concatenate / concatenate-unique.
 
 ### `vcftools`
 
