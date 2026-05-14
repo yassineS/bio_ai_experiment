@@ -1,0 +1,541 @@
+package mosdepth
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+)
+
+// DefaultExcludeFlag is mosdepth's default `-F` value: drop reads that are
+// unmapped (0x4), secondary (0x100), QC-fail (0x200), duplicate (0x400),
+// or supplementary (0x800). OR'd together this is 0x704 = 1796 — the same
+// value upstream prints when invoked with --help.
+const DefaultExcludeFlag uint16 = sam.FlagUnmapped | sam.FlagSecondary |
+	sam.FlagQCFail | sam.FlagDuplicate | sam.FlagSupplementary
+
+// Options configures a single mosdepth run.
+type Options struct {
+	// Prefix is the output-file prefix. Files written are:
+	//   <prefix>.mosdepth.global.dist.txt
+	//   <prefix>.mosdepth.summary.txt
+	//   <prefix>.per-base.bed.gz                (and .tbi)         — unless NoPerBase
+	//   <prefix>.regions.bed.gz                 (and .tbi)         — only when ByBED/ByWindow is set
+	//   <prefix>.thresholds.bed.gz              (and .tbi)         — only when Thresholds is non-empty
+	Prefix string
+
+	// ByBED is a path to a BED file of regions. Mutually exclusive with
+	// ByWindow.
+	ByBED string
+	// ByWindow is a fixed integer window size in bases. When >0, mosdepth
+	// emits a regions.bed.gz tiled across each reference at this stride.
+	// Mutually exclusive with ByBED.
+	ByWindow int
+
+	// MinMAPQ excludes reads with MAPQ < MinMAPQ (CLI `-Q`).
+	MinMAPQ uint8
+	// ExcludeFlag drops a read with ANY of these bits set (CLI `-F`).
+	ExcludeFlag uint16
+	// IncludeFlag keeps only reads with ALL these bits set (CLI `-i`).
+	IncludeFlag uint16
+
+	// FastMode skips CIGAR walking and treats each read as covering
+	// POS..POS+ReferenceLength. ~3x faster, slightly inaccurate around
+	// indels.
+	FastMode bool
+
+	// NoPerBase suppresses the per-base.bed.gz output entirely.
+	NoPerBase bool
+
+	// Thresholds is the parsed list of integer depths (sorted ascending);
+	// when non-empty mosdepth emits a thresholds.bed.gz file with the
+	// count of bases at or above each threshold per region.
+	Thresholds []int
+
+	// Chrom restricts processing to the named chromosome. Other chromosomes
+	// are skipped entirely. Empty means "all chromosomes".
+	Chrom string
+
+	// D4Output, when true, requests D4 output. Not yet implemented; Run
+	// returns an error.
+	D4Output bool
+
+	// ReadGroups, when non-empty, keeps reads whose RG aux tag is in the
+	// set. The special prefix "OPS:" filters on the OPS aux tag instead
+	// (matching upstream mosdepth's --read-groups OPS:X,Y).
+	ReadGroups []string
+
+	// MinFragLen / MaxFragLen filter by absolute TLEN. <=0 means no
+	// minimum / maximum, respectively.
+	MinFragLen int
+	MaxFragLen int
+
+	// Threads is accepted for compatibility; v1 is single-threaded.
+	Threads int
+}
+
+// ErrD4NotImplemented is returned when the user requests D4 output.
+var ErrD4NotImplemented = errors.New("mosdepth: D4 output not yet implemented")
+
+// ErrByConflict is returned when both ByBED and ByWindow are set.
+var ErrByConflict = errors.New("mosdepth: -b/--by cannot specify both a BED file and an integer window")
+
+// Run executes a full mosdepth pipeline against the BAM bytes streaming in
+// from in. The header is read first, then records are streamed and depth
+// is accumulated per reference. When the cursor moves to a new reference
+// (or input EOF) the previous reference's outputs are emitted.
+//
+// The function intentionally takes an io.Reader rather than a file path so
+// that tests can drive it from an in-memory BAM buffer; the CLI front-end
+// opens the file and passes its handle.
+func Run(in io.Reader, opts Options) error {
+	if opts.D4Output {
+		return ErrD4NotImplemented
+	}
+	if opts.ByBED != "" && opts.ByWindow > 0 {
+		return ErrByConflict
+	}
+	if opts.Prefix == "" {
+		return fmt.Errorf("mosdepth: empty output prefix")
+	}
+	rd, err := sam.NewReader(in)
+	if err != nil {
+		return fmt.Errorf("mosdepth: open BAM: %w", err)
+	}
+	hdr := rd.Header()
+	if hdr == nil {
+		return fmt.Errorf("mosdepth: BAM has no header")
+	}
+
+	// Resolve regions per-chrom up front. perChromRegions[chrom] is the
+	// sorted list of [beg0, end0) intervals to summarise; nil for "no
+	// regions". An empty map means "no regions configured" — i.e. only
+	// per-base output is requested.
+	perChromRegions, regionNames, err := resolveRegions(hdr, opts)
+	if err != nil {
+		return err
+	}
+
+	// Open per-base writer up front (so we can stream into it as we
+	// process each chrom and discard depth arrays).
+	var perBaseW *bedGzWriter
+	if !opts.NoPerBase && len(perChromRegions) == 0 {
+		// Per-base only emitted when --by isn't set (matches upstream).
+		// When --by IS set, upstream skips per-base unless explicitly
+		// requested. We follow the same rule.
+		p, perr := newBedGzWriter(opts.Prefix + ".per-base.bed.gz")
+		if perr != nil {
+			return perr
+		}
+		perBaseW = p
+	}
+
+	var regionsW *bedGzWriter
+	if len(perChromRegions) > 0 {
+		p, perr := newBedGzWriter(opts.Prefix + ".regions.bed.gz")
+		if perr != nil {
+			if perBaseW != nil {
+				_ = perBaseW.Close()
+			}
+			return perr
+		}
+		regionsW = p
+	}
+
+	var thresholdsW *bedGzWriter
+	if len(opts.Thresholds) > 0 && len(perChromRegions) > 0 {
+		p, perr := newBedGzWriter(opts.Prefix + ".thresholds.bed.gz")
+		if perr != nil {
+			if perBaseW != nil {
+				_ = perBaseW.Close()
+			}
+			if regionsW != nil {
+				_ = regionsW.Close()
+			}
+			return perr
+		}
+		thresholdsW = p
+		if err := writeThresholdHeader(thresholdsW, opts.Thresholds); err != nil {
+			return err
+		}
+	}
+
+	// Bucket records by reference so we can scan in @SQ order. For each
+	// chrom we build a covAccum, feed every record, then emit outputs and
+	// drop the accum.
+	perChromHist := map[string][]int64{}
+	summaryRows := make([]summaryRow, 0, len(hdr.Refs))
+
+	// Pull records once, grouping by chrom. We don't trust that the BAM
+	// is sorted — buffering per-chrom slices keeps the algorithm correct
+	// even on a name-sorted input. Memory is O(records that match
+	// filters) which is acceptable for the typical mosdepth workload.
+	byChrom, err := groupRecords(rd, opts)
+	if err != nil {
+		return err
+	}
+
+	chromOrder := make([]string, 0, len(hdr.Refs))
+	for _, r := range hdr.Refs {
+		if opts.Chrom != "" && r.Name != opts.Chrom {
+			continue
+		}
+		chromOrder = append(chromOrder, r.Name)
+	}
+
+	for _, r := range hdr.Refs {
+		if opts.Chrom != "" && r.Name != opts.Chrom {
+			continue
+		}
+		recs := byChrom[r.Name]
+		accum := newCovAccum(int(r.Length))
+		for _, rec := range recs {
+			accum.addRecord(rec, opts.FastMode)
+		}
+		// Per-base emission: collapse runs of equal depth.
+		hist := accumHistogram(accum)
+		perChromHist[r.Name] = hist
+
+		// Compute mean/min/max across the whole chromosome — also used in
+		// the summary file.
+		sum, _, minD, maxD := accum.regionStats(0, int(r.Length), nil, nil)
+		row := summaryRow{
+			chrom:  r.Name,
+			length: int64(r.Length),
+			bases:  sum,
+			minD:   minD,
+			maxD:   maxD,
+		}
+		if r.Length > 0 {
+			row.mean = float64(sum) / float64(r.Length)
+		}
+		summaryRows = append(summaryRows, row)
+
+		if perBaseW != nil {
+			if err := emitPerBase(perBaseW, r.Name, accum); err != nil {
+				return err
+			}
+		}
+
+		if regionsW != nil {
+			ivs := perChromRegions[r.Name]
+			for _, iv := range ivs {
+				bsum, perTh, mn, mx := accum.regionStats(iv.beg, iv.end, opts.Thresholds, nil)
+				_ = mn
+				_ = mx
+				width := iv.end - iv.beg
+				var mean float64
+				if width > 0 {
+					mean = float64(bsum) / float64(width)
+				}
+				extras := []string{}
+				if iv.name != "" {
+					extras = append(extras, iv.name)
+				}
+				extras = append(extras, formatMean(mean))
+				if err := regionsW.writeBED(r.Name, iv.beg, iv.end, extras...); err != nil {
+					return err
+				}
+				if thresholdsW != nil {
+					th := []string{}
+					if iv.name != "" {
+						th = append(th, iv.name)
+					} else {
+						th = append(th, fmt.Sprintf("%s:%d-%d", r.Name, iv.beg, iv.end))
+					}
+					for i := range opts.Thresholds {
+						th = append(th, strconv.FormatInt(perTh[i], 10))
+					}
+					if err := thresholdsW.writeBED(r.Name, iv.beg, iv.end, th...); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		// Free the accumulator's events explicitly to keep memory bounded.
+		accum.events = nil
+	}
+
+	// Close output writers + build TBIs.
+	if perBaseW != nil {
+		if err := perBaseW.Close(); err != nil {
+			return err
+		}
+		if err := buildBedTbi(perBaseW.path); err != nil {
+			return err
+		}
+	}
+	if regionsW != nil {
+		if err := regionsW.Close(); err != nil {
+			return err
+		}
+		if err := buildBedTbi(regionsW.path); err != nil {
+			return err
+		}
+	}
+	if thresholdsW != nil {
+		if err := thresholdsW.Close(); err != nil {
+			return err
+		}
+		if err := buildBedTbi(thresholdsW.path); err != nil {
+			return err
+		}
+	}
+
+	if err := writeDistribution(opts.Prefix+".mosdepth.global.dist.txt", perChromHist, chromOrder); err != nil {
+		return err
+	}
+	if err := writeSummary(opts.Prefix+".mosdepth.summary.txt", summaryRows); err != nil {
+		return err
+	}
+	_ = regionNames // silence linter; used implicitly via perChromRegions ordering above.
+	return nil
+}
+
+// region is a single (chrom, beg0, end0[, name]) interval.
+type region struct {
+	beg, end int
+	name     string
+}
+
+// resolveRegions returns the per-chromosome region list derived from
+// opts.ByBED / opts.ByWindow.
+//
+// regionNames is the union of unique region names (for the regions file
+// 4th column); when the BED has no name column, regionNames is nil.
+func resolveRegions(hdr *sam.Header, opts Options) (map[string][]region, []string, error) {
+	out := map[string][]region{}
+	var names []string
+	switch {
+	case opts.ByBED != "":
+		f, err := os.Open(opts.ByBED)
+		if err != nil {
+			return nil, nil, fmt.Errorf("mosdepth: open BED: %w", err)
+		}
+		defer f.Close()
+		rd := bed.NewReader(f)
+		for {
+			rec, err := rd.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, nil, fmt.Errorf("mosdepth: read BED: %w", err)
+			}
+			if opts.Chrom != "" && rec.Chrom != opts.Chrom {
+				continue
+			}
+			out[rec.Chrom] = append(out[rec.Chrom], region{beg: rec.ChromStart, end: rec.ChromEnd, name: rec.Name})
+			if rec.Name != "" {
+				names = append(names, rec.Name)
+			}
+		}
+	case opts.ByWindow > 0:
+		size := opts.ByWindow
+		for _, r := range hdr.Refs {
+			if opts.Chrom != "" && r.Name != opts.Chrom {
+				continue
+			}
+			n := int(r.Length)
+			for s := 0; s < n; s += size {
+				e := s + size
+				if e > n {
+					e = n
+				}
+				out[r.Name] = append(out[r.Name], region{beg: s, end: e})
+			}
+		}
+	}
+	return out, stringSliceUnique(names), nil
+}
+
+// groupRecords drains rd into a map keyed by reference name, applying all
+// configured read-level filters. Reads with unknown / "*" RNAME are
+// dropped silently — they cannot contribute to depth on any reference.
+func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, error) {
+	out := map[string][]*sam.Record{}
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("mosdepth: read record: %w", err)
+		}
+		if !keepRecord(rec, opts) {
+			continue
+		}
+		out[rec.RName] = append(out[rec.RName], rec)
+	}
+}
+
+// keepRecord applies every per-read filter configured on opts and returns
+// true if the read should contribute to depth.
+func keepRecord(rec *sam.Record, opts Options) bool {
+	if rec.Pos <= 0 || rec.RName == "" || rec.RName == "*" {
+		return false
+	}
+	if opts.Chrom != "" && rec.RName != opts.Chrom {
+		return false
+	}
+	if opts.ExcludeFlag != 0 && rec.Flag&opts.ExcludeFlag != 0 {
+		return false
+	}
+	if opts.IncludeFlag != 0 && rec.Flag&opts.IncludeFlag != opts.IncludeFlag {
+		return false
+	}
+	if opts.MinMAPQ > 0 && rec.MapQ < opts.MinMAPQ {
+		return false
+	}
+	if opts.MinFragLen > 0 || opts.MaxFragLen > 0 {
+		t := int(rec.TLen)
+		if t < 0 {
+			t = -t
+		}
+		if opts.MinFragLen > 0 && t < opts.MinFragLen {
+			return false
+		}
+		if opts.MaxFragLen > 0 && t > opts.MaxFragLen {
+			return false
+		}
+	}
+	if len(opts.ReadGroups) > 0 {
+		if !readGroupMatches(rec, opts.ReadGroups) {
+			return false
+		}
+	}
+	return true
+}
+
+// readGroupMatches returns true when rec's RG (or OPS) aux tag is in the
+// configured allow-list. The first element may take the form "OPS:X,Y" to
+// indicate the OPS tag should be filtered instead of RG; in that case the
+// remaining elements (after stripping the OPS: prefix on the first) are
+// the allowed values.
+func readGroupMatches(rec *sam.Record, allow []string) bool {
+	tag := "RG"
+	values := allow
+	if len(allow) > 0 && strings.HasPrefix(allow[0], "OPS:") {
+		tag = "OPS"
+		// Reconstruct the list with the prefix stripped on element 0.
+		stripped := append([]string{}, allow...)
+		stripped[0] = strings.TrimPrefix(stripped[0], "OPS:")
+		values = stripped
+	}
+	a, ok := rec.GetAux(tag)
+	if !ok {
+		return false
+	}
+	got, ok := a.String()
+	if !ok {
+		return false
+	}
+	for _, v := range values {
+		if v == got {
+			return true
+		}
+	}
+	return false
+}
+
+// accumHistogram sweeps an accumulator and returns a depth histogram where
+// hist[d] is the number of bases observed at exactly depth d.
+//
+// The histogram is the engine of writeDistribution; building it during the
+// same pass we already do for per-base emission saves a second traversal.
+func accumHistogram(a *covAccum) []int64 {
+	hist := []int64{}
+	a.emit(func(_ int, depth int32) {
+		if int(depth) >= len(hist) {
+			grown := make([]int64, int(depth)+1)
+			copy(grown, hist)
+			hist = grown
+		}
+		hist[depth]++
+	})
+	return hist
+}
+
+// emitPerBase emits per-base BED runs for a single chromosome to writer.
+func emitPerBase(w *bedGzWriter, chrom string, a *covAccum) error {
+	var emitErr error
+	a.emitRuns(func(start, end int, depth int32) {
+		if emitErr != nil {
+			return
+		}
+		emitErr = w.writeBED(chrom, start, end, strconv.FormatInt(int64(depth), 10))
+	})
+	return emitErr
+}
+
+// ParseByArg parses the user-supplied `-b/--by` argument. If it parses as a
+// positive integer, the result is treated as a window size; otherwise it is
+// treated as a path to a BED file. Empty input means "no regions".
+//
+// Returns (windowSize, bedPath, err). At most one of windowSize/bedPath is
+// non-zero/non-empty.
+func ParseByArg(arg string) (int, string, error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return 0, "", nil
+	}
+	if v, err := strconv.Atoi(arg); err == nil {
+		if v <= 0 {
+			return 0, "", fmt.Errorf("mosdepth: --by window size must be positive, got %d", v)
+		}
+		return v, "", nil
+	}
+	// Treat as a file path; verify it exists for a friendlier error.
+	if _, err := os.Stat(arg); err != nil {
+		return 0, "", fmt.Errorf("mosdepth: --by file %q not found: %w", arg, err)
+	}
+	return 0, arg, nil
+}
+
+// ParseReadGroups splits a comma-separated --read-groups argument, leaving
+// an optional "OPS:" prefix on the first element so the downstream code can
+// detect the OPS-tag mode.
+func ParseReadGroups(spec string) []string {
+	if spec == "" {
+		return nil
+	}
+	parts := strings.Split(spec, ",")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
+	}
+	// Drop empties.
+	out := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// readerForFile opens path for reading and returns a buffered reader. The
+// caller is responsible for closing the returned io.Closer.
+func readerForFile(path string) (io.Reader, io.Closer, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return bufio.NewReader(f), f, nil
+}
+
+// OpenAndRun is the convenience entry point used by the CLI: open path,
+// stream it through Run, and ensure the file handle is closed.
+func OpenAndRun(path string, opts Options) error {
+	r, c, err := readerForFile(path)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return Run(r, opts)
+}
