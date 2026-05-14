@@ -87,6 +87,13 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 		return counts, err
 	}
 	pairedMode := opts.Read1Path != "" || opts.Read2Path != ""
+	// Upstream samtools bam2fq: `if (opts->fnr[1] || opts->fnr[2]) opts->has12 = false`.
+	// In other words, when the user has specified -1 and/or -2 the read name
+	// pair-suffix is dropped by default, because the output file already
+	// disambiguates mate identity. `-N` (AlwaysAddSuffix) overrides this.
+	if pairedMode && !opts.AlwaysAddSuffix {
+		opts.NoSuffix = true
+	}
 	// Detect input ordering. For paired output we require name-sorted
 	// input; coordinate-sorted falls back to interleaved write-through.
 	hdr := rd.Header()

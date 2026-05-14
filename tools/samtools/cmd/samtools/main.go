@@ -288,8 +288,8 @@ Usage:
 Options:
   -o, --output PATH           Output file (default stdout, BAM unless extension says SAM).
   -O, --output-fmt FMT        Force output format ('bam' or 'sam').
-  -n, --by-name               Sort by read name (lexicographic).
-  -N, --by-natural-name       Sort by read name with natural numeric ordering.
+  -n, --by-name               Sort by read name (natural numeric, upstream default).
+  -N, --by-natural-name       Sort by read name (lexicographic; legacy alias kept).
   -t, --by-tag TAG            Sort by an Aux tag value (e.g. "NM").
   -m, --max-mem N[K|M|G]      Per-shard memory budget (default 768M).
   -T, --tmpdir PREFIX         Temporary-file prefix.
@@ -319,8 +319,8 @@ func runSort(args []string) int {
 	)
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output path")
 	cliflag.StringVar(fs, &outFmt, "O", "output-fmt", "", "Output format (bam|sam)")
-	cliflag.BoolVar(fs, &byName, "n", "by-name", false, "Sort by QName (lex)")
-	cliflag.BoolVar(fs, &byNatural, "N", "by-natural-name", false, "Sort by QName (natural)")
+	cliflag.BoolVar(fs, &byName, "n", "by-name", false, "Sort by QName (natural numeric, upstream default)")
+	cliflag.BoolVar(fs, &byNatural, "N", "by-natural-name", false, "Sort by QName (lexicographic)")
 	cliflag.StringVar(fs, &byTag, "t", "by-tag", "", "Sort by aux tag")
 	cliflag.StringVar(fs, &maxMem, "m", "max-mem", "", "Per-shard memory budget")
 	cliflag.StringVar(fs, &tmpdir, "T", "tmpdir", "", "Temp file prefix")
@@ -350,13 +350,17 @@ func runSort(args []string) int {
 	}
 
 	order := samtools.SortCoordinate
+	// CLI flag mapping matches upstream samtools sort:
+	//   -n  -> natural numeric name sort (the upstream default for name-sort)
+	//   -N  -> plain lexicographic name sort (sets natural_sort=0 upstream)
+	// Our library exposes both modes; the CLI just wires them up to match.
 	switch {
 	case byTag != "":
 		order = samtools.SortByTag
 	case byNatural:
-		order = samtools.SortByNameNatural
-	case byName:
 		order = samtools.SortByName
+	case byName:
+		order = samtools.SortByNameNatural
 	}
 	mem, err := samtools.ParseMemBudget(maxMem)
 	if err != nil {

@@ -98,8 +98,11 @@ func TestFastqPairedSplit(t *testing.T) {
 	if len(r1Recs) != 2 {
 		t.Fatalf("R1 has %d records, want 2", len(r1Recs))
 	}
-	if r1Recs[0][0] != "@pa/1" {
-		t.Errorf("R1[0] header: got %q, want @pa/1", r1Recs[0][0])
+	// When -1 and -2 are both set (Read1Path + Read2Path), upstream
+	// samtools drops the /1 /2 suffix unless -N (AlwaysAddSuffix) is on:
+	// the separate output files already disambiguate mate identity.
+	if r1Recs[0][0] != "@pa" {
+		t.Errorf("R1[0] header: got %q, want @pa", r1Recs[0][0])
 	}
 	// pa R1 is forward strand (flag 99 = paired+proper+mate_rev+read1; no
 	// 0x10), so SEQ unchanged.
@@ -114,8 +117,8 @@ func TestFastqPairedSplit(t *testing.T) {
 	}
 	// pa R2 is flag 147 = paired+proper+reverse+read2 → must reverse-
 	// complement SEQ.
-	if r2Recs[0][0] != "@pa/2" {
-		t.Errorf("R2[0] header: got %q, want @pa/2", r2Recs[0][0])
+	if r2Recs[0][0] != "@pa" {
+		t.Errorf("R2[0] header: got %q, want @pa (paired mode auto-drops suffix)", r2Recs[0][0])
 	}
 	if r2Recs[0][1] != "ATGCA" { // revcomp of TGCAT
 		t.Errorf("R2[0] seq: got %q, want ATGCA (revcomp of TGCAT)", r2Recs[0][1])

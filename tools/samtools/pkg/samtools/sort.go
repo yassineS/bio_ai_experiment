@@ -504,43 +504,66 @@ func writeOutput(out io.Writer, hdr *sam.Header, it recordIter, opts SortOptions
 	return w.Close()
 }
 
-// stampSortOrder rewrites the @HD line's SO: field (creating an @HD line
-// if none exists) to reflect the sort order in use.
+// stampSortOrder rewrites the @HD line's SO: and SS: fields (creating an
+// @HD line if none exists) to reflect the sort order in use. The SS
+// (sub-sort) tag is what upstream samtools writes for queryname order —
+// "queryname:natural" for the default name-sort, or
+// "queryname:lexicographical" for the -N variant.
 func stampSortOrder(hdr *sam.Header, order SortOrder) {
-	var so string
+	var so, ss string
 	switch order {
-	case SortByName, SortByNameNatural:
+	case SortByName:
 		so = "queryname"
+		ss = "queryname:lexicographical"
+	case SortByNameNatural:
+		so = "queryname"
+		ss = "queryname:natural"
 	case SortByTag:
 		so = "unknown" // SAM spec does not define a tag-sort SO value.
 	default:
 		so = "coordinate"
+	}
+	setField := func(line *sam.HeaderLine, tag, value string) {
+		for i := range line.Fields {
+			if line.Fields[i].Tag == tag {
+				line.Fields[i].Value = value
+				return
+			}
+		}
+		line.Fields = append(line.Fields, sam.HeaderField{Tag: tag, Value: value})
+	}
+	removeField := func(line *sam.HeaderLine, tag string) {
+		out := line.Fields[:0]
+		for _, f := range line.Fields {
+			if f.Tag != tag {
+				out = append(out, f)
+			}
+		}
+		line.Fields = out
 	}
 	// Find an existing @HD line.
 	for i := range hdr.Lines {
 		if hdr.Lines[i].Tag != "HD" {
 			continue
 		}
-		// Replace or add SO field.
-		found := false
-		for j := range hdr.Lines[i].Fields {
-			if hdr.Lines[i].Fields[j].Tag == "SO" {
-				hdr.Lines[i].Fields[j].Value = so
-				found = true
-				break
-			}
-		}
-		if !found {
-			hdr.Lines[i].Fields = append(hdr.Lines[i].Fields, sam.HeaderField{Tag: "SO", Value: so})
+		setField(&hdr.Lines[i], "SO", so)
+		if ss != "" {
+			setField(&hdr.Lines[i], "SS", ss)
+		} else {
+			removeField(&hdr.Lines[i], "SS")
 		}
 		hdr.HDFields = hdr.Lines[i].Fields
 		return
 	}
 	// No @HD line — create one and place it at the top.
-	newLine := sam.HeaderLine{Tag: "HD", Fields: []sam.HeaderField{
+	fields := []sam.HeaderField{
 		{Tag: "VN", Value: "1.6"},
 		{Tag: "SO", Value: so},
-	}}
+	}
+	if ss != "" {
+		fields = append(fields, sam.HeaderField{Tag: "SS", Value: ss})
+	}
+	newLine := sam.HeaderLine{Tag: "HD", Fields: fields}
 	hdr.Lines = append([]sam.HeaderLine{newLine}, hdr.Lines...)
 	hdr.HDFields = newLine.Fields
 }

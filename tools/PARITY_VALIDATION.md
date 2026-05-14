@@ -9,7 +9,7 @@ extend the same methodology to the remaining ports.
 
 ## bedtools
 
-Bytes-for-byte parity against the upstream `bedtools` C++ test suite
+Byte-for-byte parity against the upstream `bedtools` C++ test suite
 (vendored as a git submodule at `reference_code/bedtools/`).
 
 The methodology is golden-file: each upstream test's input and expected output
@@ -469,3 +469,110 @@ bcftools view --no-version tools/bcftools/testdata/parity/basic.vcf > \
 4. If the case touches a feature we don't implement, mark it
    `t.Skip("<one-line reason> (see docs/PARITY_ROADMAP.md bcftools <subcmd>)")`
    instead of deleting it — the skip count is the project's gap meter.
+
+---
+
+## samtools
+
+Byte-for-byte parity against the upstream `samtools` C regression test
+suite vendored at `reference_code/samtools/test/`.
+
+The methodology mirrors the bedtools section above: cases from upstream's
+`test.pl` driver (`test_view`, `test_sort`, `test_bam2fq`, etc.) are
+replicated as Go subtests in
+`tools/samtools/pkg/samtools/parity_test.go`. Inputs and expected outputs
+are vendored under `tools/samtools/testdata/parity/` — either direct byte
+copies of upstream golden files (e.g. `bam2fq/1.1.fq.expected`,
+`sort/pos.sort.expected.sam`) or small purpose-built SAM fixtures where
+the upstream golden files are impractically large for unit-test scope.
+
+### samtools summary
+
+| Subcommand | Tests added | Passed | Skipped | Notes |
+| ---------- | -----------:| ------:| -------:| ----- |
+| view       |          10 |      9 |       1 | Skip: CRAM input (`-C/-T`); BAM↔SAM round-trip + flag/MAPQ/RG/region/header-only covered. |
+| sort       |           6 |      3 |       3 | Skips: `-n`/`-N` FLAG tie-break gap (2 cases), `-t TAG` 3-key compare gap. |
+| index      |           5 |      5 |       0 | All cases: BAI build, CSI rejection, BAI region query, multi-chrom, empty BAM. |
+| depth      |           8 |      6 |       2 | Skips: `-a`/`-A` zero-fill edge cases, `-b BED` byte parity. |
+| fastq      |           7 |      4 |       3 | Skips: QNAME-based pair detection (singleton mid-stream), CRAM input, `-T '' / -T '*'` all-tag expansion. |
+| flagstat   |           7 |      7 |       0 | All counters validated incl. QC-fail column, secondary/supplementary, diff-chr, paired-but-unmapped. |
+| **TOTAL**  |      **43** | **34** |  **9**  | |
+
+### samtools: discrepancies found in our port (fixed in this PR)
+
+The validation surfaced three real divergences from upstream that were
+fixed inline rather than masked with `t.Skip`:
+
+- **samtools sort: `-n` and `-N` flags were inverted**. Upstream
+  `bam_sort.c` reads `case 'N': natural_sort = 0; // fall through; case
+  'n': sam_order = QueryName;` — i.e. `-n` is natural-numeric sort (the
+  default for name-sort) and `-N` flips to plain lex. We had the CLI
+  mapping the other way around. The library API (`SortByName` /
+  `SortByNameNatural`) was unchanged; only the `runSort` CLI wiring moved.
+
+- **samtools sort: missing `SS:queryname:{natural,lexicographical}` stamp
+  on the `@HD` header line**. Upstream writes this sub-sort tag so
+  downstream tools (and our own parity tests) can identify which form of
+  name-sort produced a given file. Added in `stampSortOrder` in
+  `tools/samtools/pkg/samtools/sort.go`.
+
+- **samtools fastq: pair-suffix not auto-dropped in `-1/-2` mode**.
+  Upstream `bam_fastq.c` does `if (opts->fnr[1] || opts->fnr[2])
+  opts->has12 = false;` — when the user passes `-1` and/or `-2`, the
+  `/1`/`/2` read-name suffix is suppressed because the separate output
+  files already disambiguate mate identity. Our port was unconditionally
+  adding it, failing byte-for-byte parity against
+  `bam2fq/1.1.fq.expected` etc. Fixed in `Fastq` in
+  `tools/samtools/pkg/samtools/fastq.go`; `-N` (`AlwaysAddSuffix`) still
+  forces the suffix on.
+
+### samtools: discrepancies found (NOT fixed)
+
+These are real upstream/Go differences that the parity tests document
+with `t.Skip("known discrepancy: ...")`. Each one is an open task for a
+later PR (recorded against
+[PARITY_ROADMAP.md](../docs/PARITY_ROADMAP.md#samtools)):
+
+- **sort tie-break on FLAG**. Upstream `samtools sort -n` (and `-N`)
+  uses a secondary comparison on `b->core.flag` when two records share a
+  QName, so e.g. `r001/83` sorts before `r001/163`. Our port falls
+  through to a stable input-order tie-break. Affects upstream
+  `sort/name.sort.expected.sam` exactly when there is a same-QName pair
+  — the bulk of the output is identical.
+
+- **sort by tag uses a 3-key compare upstream**. Upstream
+  `bam_sort.c`'s tag-sort key falls back to `(refID, pos, qname)` rather
+  than just qname, so two records with the same tag value sort in
+  coordinate order. Our port only uses qname as the secondary key.
+
+- **samtools fastq active QNAME-based pairing**. In paired-output mode
+  (`-1 -2 [-s]`), upstream actively pairs adjacent records by QNAME: a
+  record whose paired flag is set but whose neighbour has a different
+  QNAME is routed to the singleton file even though the flag says
+  "paired". Our port dispatches by flag bits alone (0x40 → R1, 0x80 →
+  R2, paired-but-neither/both → orphan, unpaired → singleton), which
+  produces a different output for `bam2fq.002.sam` where
+  `ref1_grp2_p002a` has no mate.
+
+### samtools: what is NOT validated (skipped features)
+
+| Subcommand | Feature | Tracking |
+| ---------- | ------- | -------- |
+| view       | CRAM input/output (`-C`, `-T ref`) | PARITY_ROADMAP.md#samtools |
+| sort       | Multi-threading (`-@`) | PARITY_ROADMAP.md#samtools |
+| sort       | Minimiser sort (`-M`/`-K`) | PARITY_ROADMAP.md#samtools |
+| sort       | Template-coordinate sort | PARITY_ROADMAP.md#samtools |
+| index      | CSI output (`-c`) | PARITY_ROADMAP.md#samtools |
+| index      | Multi-threading | PARITY_ROADMAP.md#samtools |
+| depth      | `-b BED` byte-parity | PARITY_ROADMAP.md#samtools |
+| depth      | `-a`/`-A` zero-fill edge cases | PARITY_ROADMAP.md#samtools |
+| fastq      | `-T '' / -T '*'` all-tags | PARITY_ROADMAP.md#samtools |
+| fastq      | `-D TAG:file` value-list filter | PARITY_ROADMAP.md#samtools |
+| fastq      | `--no-sc`/`--sc-aux` soft-clip handling | PARITY_ROADMAP.md#samtools |
+| fastq      | Index extraction (`--index-format`) | PARITY_ROADMAP.md#samtools |
+
+### samtools: bugs found in upstream
+
+None during this audit. If we find any in subsequent slices they will be
+recorded in [docs/UPSTREAM_BUGS.md](../docs/UPSTREAM_BUGS.md) and skipped
+in the parity test until we have a fix.
