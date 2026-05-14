@@ -101,8 +101,39 @@ fastp -I R1.fastq -O out1.fastq --in2 R2.fastq --out2 out2.fastq --merge-overlap
 
 ```bash
 # Use 4 threads and generate HTML report
-fastp -i input.fastq -o output.fastq -w 4 -h report.html
+fastp -i input.fastq -o output.fastq -w 4 --html report.html
 ```
+
+## Reports
+
+`fastp` can emit two complementary report files in addition to the cleaned FASTQ:
+
+- `--html FILE` writes a **self-contained HTML report** with embedded CSS and
+  inline SVG charts (per-base quality, per-base composition, length
+  distribution, summary tables, filtering reasons, adapter trimming). The file
+  contains no JavaScript and pulls in no external resources, so it can be
+  emailed or archived as-is.
+- `--json FILE` writes a **JSON report** whose schema is intentionally close to
+  upstream fastp's `fastp.json` (top-level `summary`, `filtering_result`,
+  `duplication`, `adapter_cutting`, and per-read `read{1,2}_before_filtering` /
+  `read{1,2}_after_filtering` sections). This makes it directly consumable by
+  tools such as MultiQC.
+
+Both report formats work when reading from stdin / writing to stdout because
+all statistics are collected in memory while the file streams.
+
+```bash
+# Paired-end run with both reports plus overlap-based PE adapter detection.
+fastp -I R1.fq.gz -O clean_R1.fq.gz --in2 R2.fq.gz --out2 clean_R2.fq.gz \
+      --detect_adapter_for_pe \
+      --html fastp_report.html --json fastp_report.json
+```
+
+### Note on the `-h` short flag
+
+Upstream fastp uses `-h` for help. To preserve that muscle memory the
+`--html` flag is **long-only** in this implementation (no `-h` alias);
+likewise `--json` is long-only. `-h`/`--help` prints usage and exits.
 
 ## Options
 

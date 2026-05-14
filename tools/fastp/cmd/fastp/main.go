@@ -77,10 +77,13 @@ Options:
     -w, --threads INT         Number of threads (default: 1)
   
   Reporting:
-    -h, --html FILE           HTML report output file
-  
+    --html FILE               Self-contained HTML report (no JS, no CDN)
+    --json FILE               JSON report (fastp-compatible schema)
+    --detect_adapter_for_pe   Overlap-based adapter detection for PE reads
+
   Other:
     -t, --qual-type TYPE      Quality type: sanger, illumina (default: sanger)
+    -h, --help                Show this help and exit
     --quiet                   Don't print statistics
 
 Examples:
@@ -102,14 +105,17 @@ Examples:
   # Merge overlapping paired-end reads
   fastp -I R1.fastq -O out1.fastq --in2 R2.fastq --out2 out2.fastq --merge-overlap
   
-  # Multi-threaded with HTML report
-  fastp -i input.fastq -o output.fastq -w 4 -h report.html
-  
+  # Multi-threaded with HTML + JSON reports
+  fastp -i input.fastq -o output.fastq -w 4 --html report.html --json report.json
+
+  # PE adapter detection via overlap analysis
+  fastp -I r1.fq -O r1.out.fq --in2 r2.fq --out2 r2.out.fq --detect_adapter_for_pe
+
   # Comprehensive preprocessing
   fastp -i input.fastq -o output.fastq \
     -x AGATCGGAAGAGC -q 20 -l 30 \
     --trim-poly-g --max-n-count 3 \
-    --base-correction -w 4 -h report.html
+    --base-correction -w 4 --html report.html --json report.json
 
 Version: 1.0.0 (Go implementation)
 `
@@ -156,6 +162,9 @@ func main() {
 		maxMismatch         int
 		threads             int
 		htmlReport          string
+		jsonReport          string
+		detectAdapterForPE  bool
+		showHelp            bool
 	)
 
 	// Input/Output
@@ -216,8 +225,15 @@ func main() {
 	// Multi-threading
 	cliflag.IntVar(fs, &threads, "w", "threads", 1, "Number of threads (default: 1)")
 
-	// HTML report
-	cliflag.StringVar(fs, &htmlReport, "h", "html", "", "HTML report output file")
+	// Reporting outputs. --html is long-only (upstream fastp uses -h for
+	// help; we keep -h reserved for help to avoid colliding with that
+	// muscle memory). --json is also long-only for symmetry.
+	cliflag.StringVar(fs, &htmlReport, "", "html", "", "HTML report output file")
+	cliflag.StringVar(fs, &jsonReport, "", "json", "", "JSON report output file")
+	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Show usage and exit")
+
+	// Automatic adapter detection
+	cliflag.BoolVar(fs, &detectAdapterForPE, "", "detect_adapter_for_pe", false, "Enable overlap-based adapter detection for paired-end")
 
 	// Other
 	cliflag.StringVar(fs, &qualType, "t", "qual-type", "sanger", "Quality type: sanger, illumina (default: sanger)")
@@ -233,6 +249,11 @@ func main() {
 	}
 
 	fs.Parse(os.Args[1:])
+
+	if showHelp {
+		fs.Usage()
+		os.Exit(0)
+	}
 
 	// Determine mode: paired-end or single-end
 	isPaired := (in1File != "" && in2File != "" && out1File != "" && out2File != "")
@@ -287,6 +308,9 @@ func main() {
 		MaxMismatch:         maxMismatch,
 		Threads:             threads,
 		HTMLReport:          htmlReport,
+		JSONReport:          jsonReport,
+		DetectAdapterPE:     detectAdapterForPE,
+		DetectAdapterSE:     detectAdapter, // legacy --detect-adapter triggers SE detection
 	}
 
 	var stats *fastp.ProcessStats
@@ -349,12 +373,23 @@ func main() {
 
 	// Generate HTML report if requested
 	if htmlReport != "" {
-		if err := fastp.GenerateHTMLReport(stats, opts, htmlReport); err != nil {
+		if err := fastp.WriteHTMLReport(htmlReport, stats); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating HTML report: %v\n", err)
 			os.Exit(1)
 		}
 		if !quiet {
 			fmt.Fprintf(os.Stderr, "HTML report written to: %s\n", htmlReport)
+		}
+	}
+
+	// Generate JSON report if requested
+	if jsonReport != "" {
+		if err := fastp.WriteJSONReport(jsonReport, stats); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating JSON report: %v\n", err)
+			os.Exit(1)
+		}
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "JSON report written to: %s\n", jsonReport)
 		}
 	}
 

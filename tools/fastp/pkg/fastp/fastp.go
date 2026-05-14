@@ -76,6 +76,13 @@ type ProcessOptions struct {
 
 	// HTML report
 	HTMLReport string // Path to HTML report file
+
+	// JSON report
+	JSONReport string // Path to JSON report file
+
+	// Automatic adapter detection
+	DetectAdapterPE bool // Enable overlap-based adapter detection for paired-end
+	DetectAdapterSE bool // Enable kmer-frequency-based adapter detection for single-end
 }
 
 // DefaultProcessOptions returns default processing options.
@@ -112,11 +119,23 @@ func DefaultProcessOptions() ProcessOptions {
 		MaxMismatch:         5,
 		Threads:             1,
 		HTMLReport:          "",
+		JSONReport:          "",
+		DetectAdapterPE:     false,
+		DetectAdapterSE:     false,
 	}
 }
 
 // ProcessStats tracks preprocessing statistics.
+//
+// In addition to top-line counters used by the CLI, ProcessStats records
+// per-cycle quality and base-composition histograms (separately for read 1
+// and read 2) plus length distributions, which the HTML and JSON reports
+// consume. The Mu field is used to guard updates from parallel workers.
 type ProcessStats struct {
+	// Mu guards all fields below when stats are accumulated from multiple
+	// goroutines. Sequential callers may ignore it.
+	Mu sync.Mutex
+
 	TotalReads          int
 	TotalBases          int64
 	CleanReads          int
@@ -132,10 +151,157 @@ type ProcessStats struct {
 	QualityCutReads     int
 	QualityCutBases     int64
 	DetectedAdapter     string
+	DetectedAdapterR1   string // Adapter detected for read 1 in PE mode
+	DetectedAdapterR2   string // Adapter detected for read 2 in PE mode
 	UMIExtracted        int
 	BasesCorrected      int64
 	OverlappingReads    int
 	MergedReads         int
+
+	// Per-base quality + composition tracking, captured BEFORE filtering.
+	// Index 0 is read 1; index 1 (when populated) is read 2.
+	// QualSumByCycle[r][i] is the sum of phred qualities seen at cycle i;
+	// QualCountByCycle[r][i] is the number of reads that reached cycle i.
+	// BaseCountByCycle[r][b][i] is the count of base b at cycle i, where
+	// b indexes into "ACGTN" via baseIndex.
+	QualSumByCycle   [2][]int64
+	QualCountByCycle [2][]int64
+	BaseCountByCycle [2][5][]int64
+
+	// Length histograms BEFORE and AFTER filtering, indexed by read (0/1).
+	LengthHistBefore [2]map[int]int64
+	LengthHistAfter  [2]map[int]int64
+
+	// Aggregate quality buckets BEFORE filtering, totals across both reads.
+	Q20BasesBefore int64
+	Q30BasesBefore int64
+	GCBasesBefore  int64
+
+	// Aggregate quality buckets AFTER filtering.
+	Q20BasesAfter int64
+	Q30BasesAfter int64
+	GCBasesAfter  int64
+	TotalReadsR1  int
+	TotalReadsR2  int
+	TotalBasesR1  int64
+	TotalBasesR2  int64
+	CleanReadsR1  int
+	CleanReadsR2  int
+	CleanBasesR1  int64
+	CleanBasesR2  int64
+}
+
+// baseIndex maps a base byte to its slot in BaseCountByCycle. Anything not
+// A/C/G/T is treated as N.
+func baseIndex(b byte) int {
+	switch b {
+	case 'A', 'a':
+		return 0
+	case 'C', 'c':
+		return 1
+	case 'G', 'g':
+		return 2
+	case 'T', 't':
+		return 3
+	default:
+		return 4
+	}
+}
+
+// growCycles ensures the per-cycle slices in stats can hold at least n
+// cycles for the given read index (0 or 1). It allocates lazily.
+func (s *ProcessStats) growCycles(readIdx, n int) {
+	if cap(s.QualSumByCycle[readIdx]) < n {
+		nq := make([]int64, n)
+		copy(nq, s.QualSumByCycle[readIdx])
+		s.QualSumByCycle[readIdx] = nq
+		nc := make([]int64, n)
+		copy(nc, s.QualCountByCycle[readIdx])
+		s.QualCountByCycle[readIdx] = nc
+		for b := 0; b < 5; b++ {
+			nb := make([]int64, n)
+			copy(nb, s.BaseCountByCycle[readIdx][b])
+			s.BaseCountByCycle[readIdx][b] = nb
+		}
+	} else if len(s.QualSumByCycle[readIdx]) < n {
+		s.QualSumByCycle[readIdx] = s.QualSumByCycle[readIdx][:n]
+		s.QualCountByCycle[readIdx] = s.QualCountByCycle[readIdx][:n]
+		for b := 0; b < 5; b++ {
+			s.BaseCountByCycle[readIdx][b] = s.BaseCountByCycle[readIdx][b][:n]
+		}
+	}
+}
+
+// recordBefore updates the BEFORE-filtering histograms for a single record.
+// readIdx is 0 for R1 / SE, 1 for R2.
+func (s *ProcessStats) recordBefore(record *fastq.Record, readIdx int, encoding fastq.QualityEncoding) {
+	if record == nil {
+		return
+	}
+	offset := phredOffset(encoding)
+	n := len(record.Sequence)
+	s.growCycles(readIdx, n)
+	if s.LengthHistBefore[readIdx] == nil {
+		s.LengthHistBefore[readIdx] = make(map[int]int64)
+	}
+	s.LengthHistBefore[readIdx][n]++
+	if readIdx == 0 {
+		s.TotalReadsR1++
+		s.TotalBasesR1 += int64(n)
+	} else {
+		s.TotalReadsR2++
+		s.TotalBasesR2 += int64(n)
+	}
+	for i := 0; i < n; i++ {
+		b := record.Sequence[i]
+		s.BaseCountByCycle[readIdx][baseIndex(b)][i]++
+		if b == 'G' || b == 'g' || b == 'C' || b == 'c' {
+			s.GCBasesBefore++
+		}
+		q := int(record.Quality[i]) - offset
+		s.QualSumByCycle[readIdx][i] += int64(q)
+		s.QualCountByCycle[readIdx][i]++
+		if q >= 20 {
+			s.Q20BasesBefore++
+		}
+		if q >= 30 {
+			s.Q30BasesBefore++
+		}
+	}
+}
+
+// recordAfter updates the AFTER-filtering histograms for a single record
+// that passed all filters.
+func (s *ProcessStats) recordAfter(record *fastq.Record, readIdx int, encoding fastq.QualityEncoding) {
+	if record == nil {
+		return
+	}
+	offset := phredOffset(encoding)
+	n := len(record.Sequence)
+	if s.LengthHistAfter[readIdx] == nil {
+		s.LengthHistAfter[readIdx] = make(map[int]int64)
+	}
+	s.LengthHistAfter[readIdx][n]++
+	if readIdx == 0 {
+		s.CleanReadsR1++
+		s.CleanBasesR1 += int64(n)
+	} else {
+		s.CleanReadsR2++
+		s.CleanBasesR2 += int64(n)
+	}
+	for i := 0; i < n; i++ {
+		b := record.Sequence[i]
+		if b == 'G' || b == 'g' || b == 'C' || b == 'c' {
+			s.GCBasesAfter++
+		}
+		q := int(record.Quality[i]) - offset
+		if q >= 20 {
+			s.Q20BasesAfter++
+		}
+		if q >= 30 {
+			s.Q30BasesAfter++
+		}
+	}
 }
 
 // OverlapResult represents the result of paired-end overlap analysis
@@ -149,9 +315,6 @@ type OverlapResult struct {
 
 // ProcessPairedEnd processes paired-end FASTQ reads with all filters.
 func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
-	// Note: Auto-detection of adapters would require reading the input twice or buffering,
-	// which is not practical for streaming. Users should specify adapter or use separate detection step.
-
 	reader1 := fastq.NewReader(input1, encoding)
 	reader2 := fastq.NewReader(input2, encoding)
 	writer1 := fastq.NewWriter(output1, encoding)
@@ -164,27 +327,56 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 		return processPairedEndParallel(reader1, reader2, writer1, writer2, encoding, opts, stats)
 	}
 
-	for {
-		// Read both pairs
-		record1, err1 := reader1.Read()
-		record2, err2 := reader2.Read()
+	// Buffer the first batch of reads so we can run overlap-based PE
+	// adapter detection on them before processing. The detected adapters
+	// (if any) feed into Adapter3 / Adapter5 for the remainder of the run.
+	type readPair struct {
+		r1 *fastq.Record
+		r2 *fastq.Record
+	}
+	var detectBuffer []readPair
+	if opts.DetectAdapterPE {
+		detectBuffer = make([]readPair, 0, adapterDetectSampleSize)
+		for i := 0; i < adapterDetectSampleSize; i++ {
+			r1, err1 := reader1.Read()
+			r2, err2 := reader2.Read()
+			if err1 == io.EOF && err2 == io.EOF {
+				break
+			}
+			if err1 == io.EOF || err2 == io.EOF {
+				return stats, fmt.Errorf("paired files have different number of reads")
+			}
+			if err1 != nil {
+				return stats, fmt.Errorf("error reading read1: %w", err1)
+			}
+			if err2 != nil {
+				return stats, fmt.Errorf("error reading read2: %w", err2)
+			}
+			detectBuffer = append(detectBuffer, readPair{r1: r1, r2: r2})
+		}
+		pairs := make([][2]*fastq.Record, len(detectBuffer))
+		for i, p := range detectBuffer {
+			pairs[i] = [2]*fastq.Record{p.r1, p.r2}
+		}
+		r1Adapter, r2Adapter := DetectAdaptersFromPairs(pairs)
+		stats.DetectedAdapterR1 = r1Adapter
+		stats.DetectedAdapterR2 = r2Adapter
+		if r1Adapter != "" {
+			stats.DetectedAdapter = r1Adapter
+		}
+		if opts.Adapter3 == "" && r1Adapter != "" {
+			opts.Adapter3 = r1Adapter
+		}
+		if opts.Adapter5 == "" && r2Adapter != "" {
+			opts.Adapter5 = r2Adapter
+		}
+	}
 
-		// Check for EOF
-		if err1 == io.EOF && err2 == io.EOF {
-			break
-		}
-		if err1 == io.EOF || err2 == io.EOF {
-			return stats, fmt.Errorf("paired files have different number of reads")
-		}
-		if err1 != nil {
-			return stats, fmt.Errorf("error reading read1: %w", err1)
-		}
-		if err2 != nil {
-			return stats, fmt.Errorf("error reading read2: %w", err2)
-		}
-
+	processPair := func(record1, record2 *fastq.Record) error {
 		stats.TotalReads += 2
 		stats.TotalBases += int64(len(record1.Sequence) + len(record2.Sequence))
+		stats.recordBefore(record1, 0, encoding)
+		stats.recordBefore(record2, 1, encoding)
 
 		// Extract UMI if configured
 		if opts.UMILength > 0 {
@@ -197,7 +389,6 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 			if overlap.HasOverlap {
 				stats.OverlappingReads++
 				if overlap.OverlapLength >= opts.MinOverlap && overlap.Mismatches <= opts.MaxMismatch {
-					// Create merged record
 					merged := &fastq.Record{
 						ID:          record1.ID,
 						Description: record1.Description,
@@ -207,44 +398,73 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 					processed, pass := processRecord(merged, opts, stats, encoding)
 					if pass {
 						if err := writer1.Write(processed); err != nil {
-							return stats, fmt.Errorf("error writing merged read: %w", err)
+							return fmt.Errorf("error writing merged read: %w", err)
 						}
 						stats.CleanReads++
 						stats.CleanBases += int64(len(processed.Sequence))
 						stats.MergedReads++
+						stats.recordAfter(processed, 0, encoding)
 					}
-					continue
+					return nil
 				}
 			}
 		}
 
-		// Process both records
 		processed1, pass1 := processRecord(record1, opts, stats, encoding)
 		processed2, pass2 := processRecord(record2, opts, stats, encoding)
 
-		// Both must pass for the pair to be kept
 		if pass1 && pass2 {
 			if err := writer1.Write(processed1); err != nil {
-				return stats, fmt.Errorf("error writing read1: %w", err)
+				return fmt.Errorf("error writing read1: %w", err)
 			}
 			if err := writer2.Write(processed2); err != nil {
-				return stats, fmt.Errorf("error writing read2: %w", err)
+				return fmt.Errorf("error writing read2: %w", err)
 			}
 			stats.CleanReads += 2
 			stats.CleanBases += int64(len(processed1.Sequence) + len(processed2.Sequence))
+			stats.recordAfter(processed1, 0, encoding)
+			stats.recordAfter(processed2, 1, encoding)
+		}
+		return nil
+	}
+
+	for _, p := range detectBuffer {
+		if err := processPair(p.r1, p.r2); err != nil {
+			return stats, err
 		}
 	}
 
-	// Flush writers
+	for {
+		record1, err1 := reader1.Read()
+		record2, err2 := reader2.Read()
+		if err1 == io.EOF && err2 == io.EOF {
+			break
+		}
+		if err1 == io.EOF || err2 == io.EOF {
+			return stats, fmt.Errorf("paired files have different number of reads")
+		}
+		if err1 != nil {
+			return stats, fmt.Errorf("error reading read1: %w", err1)
+		}
+		if err2 != nil {
+			return stats, fmt.Errorf("error reading read2: %w", err2)
+		}
+		if err := processPair(record1, record2); err != nil {
+			return stats, err
+		}
+	}
+
+	// Flush writers and return early; the old loop body is removed below.
 	if err := writer1.Flush(); err != nil {
 		return stats, fmt.Errorf("error flushing output1: %w", err)
 	}
 	if err := writer2.Flush(); err != nil {
 		return stats, fmt.Errorf("error flushing output2: %w", err)
 	}
-
 	return stats, nil
 }
+
+// ProcessSingleEnd processes single-end FASTQ reads with all filters.
 func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
 	reader := fastq.NewReader(input, encoding)
 	writer := fastq.NewWriter(output, encoding)
@@ -256,6 +476,58 @@ func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityE
 		return processSingleEndParallel(reader, writer, encoding, opts, stats)
 	}
 
+	// Buffer reads when SE adapter detection is requested so the same
+	// reads can be inspected before processing. We only buffer up to
+	// adapterDetectSampleSize records; remaining reads stream normally.
+	var detectBuffer []*fastq.Record
+	if opts.DetectAdapterSE && opts.Adapter3 == "" {
+		detectBuffer = make([]*fastq.Record, 0, adapterDetectSampleSize)
+		for i := 0; i < adapterDetectSampleSize; i++ {
+			record, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return stats, fmt.Errorf("error reading FASTQ: %w", err)
+			}
+			detectBuffer = append(detectBuffer, record)
+		}
+		stats.DetectedAdapter = DetectAdapterSE(detectBuffer)
+		stats.DetectedAdapterR1 = stats.DetectedAdapter
+		if stats.DetectedAdapter != "" && opts.Adapter3 == "" {
+			opts.Adapter3 = stats.DetectedAdapter
+		}
+	}
+
+	processOne := func(record *fastq.Record) error {
+		stats.TotalReads++
+		originalLength := len(record.Sequence)
+		stats.TotalBases += int64(originalLength)
+		stats.recordBefore(record, 0, encoding)
+
+		// Extract UMI if configured
+		if opts.UMILength > 0 && opts.UMILocation == "read1" {
+			record, _ = extractUMI(record, nil, opts, stats)
+		}
+
+		processed, pass := processRecord(record, opts, stats, encoding)
+		if pass {
+			if err := writer.Write(processed); err != nil {
+				return fmt.Errorf("error writing FASTQ: %w", err)
+			}
+			stats.CleanReads++
+			stats.CleanBases += int64(len(processed.Sequence))
+			stats.recordAfter(processed, 0, encoding)
+		}
+		return nil
+	}
+
+	for _, rec := range detectBuffer {
+		if err := processOne(rec); err != nil {
+			return stats, err
+		}
+	}
+
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -264,26 +536,8 @@ func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityE
 		if err != nil {
 			return stats, fmt.Errorf("error reading FASTQ: %w", err)
 		}
-
-		stats.TotalReads++
-		originalLength := len(record.Sequence)
-		stats.TotalBases += int64(originalLength)
-
-		// Extract UMI if configured
-		if opts.UMILength > 0 && opts.UMILocation == "read1" {
-			record, _ = extractUMI(record, nil, opts, stats)
-		}
-
-		// Process the record
-		processed, pass := processRecord(record, opts, stats, encoding)
-
-		// Write if passed all filters
-		if pass {
-			if err := writer.Write(processed); err != nil {
-				return stats, fmt.Errorf("error writing FASTQ: %w", err)
-			}
-			stats.CleanReads++
-			stats.CleanBases += int64(len(processed.Sequence))
+		if err := processOne(record); err != nil {
+			return stats, err
 		}
 	}
 
@@ -942,6 +1196,8 @@ func processPairedEndParallel(reader1, reader2 *fastq.Reader, writer1, writer2 *
 
 			stats.TotalReads += 2
 			stats.TotalBases += int64(len(record1.Sequence) + len(record2.Sequence))
+			stats.recordBefore(record1, 0, encoding)
+			stats.recordBefore(record2, 1, encoding)
 
 			inputChan <- readPair{record1: record1, record2: record2}
 		}
@@ -965,6 +1221,8 @@ func processPairedEndParallel(reader1, reader2 *fastq.Reader, writer1, writer2 *
 			}
 			stats.CleanReads += 2
 			stats.CleanBases += int64(len(result.processed1.Sequence) + len(result.processed2.Sequence))
+			stats.recordAfter(result.processed1, 0, encoding)
+			stats.recordAfter(result.processed2, 1, encoding)
 		}
 	}
 
@@ -1018,6 +1276,7 @@ func processSingleEndParallel(reader *fastq.Reader, writer *fastq.Writer, encodi
 
 			stats.TotalReads++
 			stats.TotalBases += int64(len(record.Sequence))
+			stats.recordBefore(record, 0, encoding)
 			inputChan <- record
 		}
 		close(inputChan)
@@ -1037,6 +1296,7 @@ func processSingleEndParallel(reader *fastq.Reader, writer *fastq.Writer, encodi
 			}
 			stats.CleanReads++
 			stats.CleanBases += int64(len(res.processed.Sequence))
+			stats.recordAfter(res.processed, 0, encoding)
 		}
 	}
 
