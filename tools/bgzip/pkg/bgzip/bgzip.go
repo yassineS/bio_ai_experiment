@@ -254,8 +254,15 @@ type Block struct {
 // per-block CRC32/ISIZE as it goes. A successful read of the EOF block ends
 // the stream with io.EOF; if the underlying stream ends *before* the EOF block
 // the reader returns ErrTruncated.
+//
+// VirtualOffset returns the BGZF virtual offset of the next byte that Read
+// will deliver, which is suitable for use as a BAI/CSI/TBI virtual offset
+// pointing at the start of a still-to-be-read record.
 type Reader struct {
-	r io.Reader
+	// counted wraps the caller's reader and accumulates the number of
+	// compressed bytes consumed so that VirtualOffset can compute the
+	// compressed offset of the currently-active block.
+	counted *countingReader
 
 	// fr is reused across blocks via Reset on each new gzip member.
 	fr io.ReadCloser
@@ -264,13 +271,35 @@ type Reader struct {
 	block []byte
 	off   int
 
+	// blockCoff is the compressed-stream byte offset of the current block —
+	// i.e. the byte at which the gzip member containing br.block begins.
+	blockCoff int64
+	// nextBlockCoff is the compressed-stream byte offset of the *next* block
+	// to be parsed. After nextBlock is called this becomes blockCoff for the
+	// freshly decoded block.
+	nextBlockCoff int64
+
 	sawEOFBlock bool
 	streamDone  bool
 }
 
 // NewReader returns a Reader that decodes BGZF bytes from r.
 func NewReader(r io.Reader) (*Reader, error) {
-	return &Reader{r: r}, nil
+	return &Reader{counted: &countingReader{r: r}}, nil
+}
+
+// countingReader wraps an io.Reader and tracks how many bytes have been
+// returned through it. The bgzip.Reader uses this to know where in the
+// compressed stream it currently is, which is what virtual offsets need.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // Read decodes BGZF blocks from the underlying stream into p. It returns
@@ -312,7 +341,10 @@ func (br *Reader) Read(p []byte) (int, error) {
 
 // nextBlock decodes one gzip member into br.block.
 func (br *Reader) nextBlock() error {
-	hdr, err := readBlockHeader(br.r)
+	// Record where this block starts in the compressed stream before any of
+	// its bytes are consumed.
+	br.blockCoff = br.nextBlockCoff
+	hdr, err := readBlockHeader(br.counted)
 	if err != nil {
 		return err
 	}
@@ -325,14 +357,17 @@ func (br *Reader) nextBlock() error {
 	}
 
 	deflated := make([]byte, deflatedLen)
-	if _, err := io.ReadFull(br.r, deflated); err != nil {
+	if _, err := io.ReadFull(br.counted, deflated); err != nil {
 		return ioErrUnexpected(err)
 	}
 
 	var footer [8]byte
-	if _, err := io.ReadFull(br.r, footer[:]); err != nil {
+	if _, err := io.ReadFull(br.counted, footer[:]); err != nil {
 		return ioErrUnexpected(err)
 	}
+	// Now this entire block has been consumed from the underlying reader;
+	// remember where the next block will start.
+	br.nextBlockCoff = br.blockCoff + int64(hdr.compressedSize)
 	wantCRC := binary.LittleEndian.Uint32(footer[0:4])
 	wantISIZE := binary.LittleEndian.Uint32(footer[4:8])
 
@@ -383,6 +418,25 @@ func (br *Reader) Close() error {
 		return err
 	}
 	return nil
+}
+
+// VirtualOffset returns the BGZF virtual offset of the next byte that Read
+// will deliver. The high 48 bits are the compressed-stream offset of the
+// block that owns the next byte; the low 16 bits are the uncompressed
+// in-block byte position.
+//
+// When the current block has been fully consumed (off == len(block)) the
+// returned offset points at byte 0 of the next block, which is the
+// canonical form for "between records" markers in BAI/TBI/CSI.
+func (br *Reader) VirtualOffset() uint64 {
+	coff := br.blockCoff
+	uoff := br.off
+	if uoff >= len(br.block) {
+		// The next byte will come from the next block at uoff 0.
+		coff = br.nextBlockCoff
+		uoff = 0
+	}
+	return uint64(coff)<<16 | uint64(uoff)&0xFFFF
 }
 
 // blockHeader holds the parsed gzip+BC header bytes.

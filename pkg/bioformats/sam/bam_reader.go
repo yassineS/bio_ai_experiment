@@ -82,6 +82,22 @@ func newBAMReaderRaw(r io.Reader) (*BAMReader, error) {
 	return br, nil
 }
 
+// NewBAMBodyReader constructs a BAMReader that decodes records from r
+// using the supplied header for reference resolution. r must already be
+// positioned at the start of a record (i.e. past the header / @SQ table
+// bytes). The reader does not own r — callers are responsible for closing
+// the underlying source.
+//
+// NewBAMBodyReader is the entry point used by region-query seek paths:
+// after seeking the BGZF stream to a chunk's compressed offset and
+// skipping the in-block uncompressed bytes, the next byte is a record's
+// block_size prefix and NewBAMBodyReader can decode from there.
+func NewBAMBodyReader(r io.Reader, hdr *Header) *BAMReader {
+	refs := make([]Reference, len(hdr.Refs))
+	copy(refs, hdr.Refs)
+	return &BAMReader{src: r, hdr: hdr, refs: refs}
+}
+
 // Header returns the parsed BAM header.
 func (br *BAMReader) Header() *Header { return br.hdr }
 
@@ -195,6 +211,22 @@ func (br *BAMReader) Close() error {
 		return br.bgz.Close()
 	}
 	return nil
+}
+
+// VirtualOffset returns the BGZF virtual offset of the next byte that Read
+// will consume from the underlying BAM stream. It is only meaningful for
+// readers constructed with NewBAMReader (i.e. with a real BGZF layer). For
+// raw, already-decompressed streams (newBAMReaderRaw) it always returns 0.
+//
+// Callers use VirtualOffset to record the start position of each record as
+// they iterate the stream — invoke it *before* calling Read to capture the
+// current record's offset; the value is the byte just past the previous
+// record (or just past the header for the very first record).
+func (br *BAMReader) VirtualOffset() uint64 {
+	if br.bgz != nil {
+		return br.bgz.VirtualOffset()
+	}
+	return 0
 }
 
 // decodeRecord deserialises one BAM record body (everything after block_size).
