@@ -198,14 +198,19 @@ func TestCountNs(t *testing.T) {
 }
 
 func TestCalculateComplexity(t *testing.T) {
+	// calculateComplexity follows upstream fastp's definition: the fraction
+	// of adjacent positions whose bases differ. A run of identical bases
+	// returns 0; a strictly alternating sequence returns 1.0.
 	tests := []struct {
 		name string
 		seq  string
 		want float64
 	}{
-		{"high complexity", "ACGTACGTACGT", 1.0},
-		{"low complexity", "AAAAAAAAAA", 0.111},  // Only AA kmer
-		{"medium complexity", "AACCGGTT", 0.571}, // Multiple kmers
+		{"high complexity", "ACGTACGTACGT", 1.0},  // every adjacent pair differs.
+		{"low complexity", "AAAAAAAAAA", 0.0},     // no adjacent differences.
+		{"medium complexity", "AACCGGTT", 0.4286}, // 3/7 differences (AC, CG, GT).
+		{"alternating", "ATATATAT", 1.0},          // perfectly alternating.
+		{"single triplet", "AAACCC", 0.2},         // one difference out of 5.
 	}
 
 	for _, tt := range tests {
@@ -329,7 +334,7 @@ func TestExtractUMI(t *testing.T) {
 
 	result, _ := extractUMI(record, nil, opts, stats)
 
-	if !strings.Contains(result.ID, "UMI_ACGTAC") {
+	if !strings.Contains(result.ID, ":ACGTAC") {
 		t.Errorf("Expected UMI to be added to ID, got %s", result.ID)
 	}
 

@@ -36,8 +36,8 @@ func TestApplyUMIRead1(t *testing.T) {
 	opts.UMILen = 6
 
 	out, _ := applyUMI(rec, nil, opts, stats)
-	if got := out.ID; got != "r1:UMI_ATCGAT" {
-		t.Fatalf("id: want %q, got %q", "r1:UMI_ATCGAT", got)
+	if got := out.ID; got != "r1:ATCGAT" {
+		t.Fatalf("id: want %q, got %q", "r1:ATCGAT", got)
 	}
 	if got := string(out.Sequence); got != "CGAAAACCCCGGGG" {
 		t.Fatalf("seq after UMI removal: want CGAAAACCCCGGGG, got %s", got)
@@ -62,8 +62,8 @@ func TestApplyUMIRead1WithSkipAndPrefix(t *testing.T) {
 	opts.UMIPrefix = "X"
 
 	out, _ := applyUMI(rec, nil, opts, stats)
-	if got := out.ID; got != "r1:UMI_XAAAAAA" {
-		t.Fatalf("id: want r1:UMI_XAAAAAA, got %s", got)
+	if got := out.ID; got != "r1:X_AAAAAA" {
+		t.Fatalf("id: want r1:X_AAAAAA, got %s", got)
 	}
 	// 6 UMI bases + 2 skipped bases removed from the 16-byte seq.
 	if got := string(out.Sequence); got != "GGGGCCCC" {
@@ -108,8 +108,8 @@ func TestApplyUMIRead2(t *testing.T) {
 	if r1Out.ID != "r1" {
 		t.Fatalf("r1 should be untouched: %s", r1Out.ID)
 	}
-	if r2Out.ID != "r2:UMI_CCCC" {
-		t.Fatalf("r2 id: want r2:UMI_CCCC, got %s", r2Out.ID)
+	if r2Out.ID != "r2:CCCC" {
+		t.Fatalf("r2 id: want r2:CCCC, got %s", r2Out.ID)
 	}
 	if string(r2Out.Sequence) != "CCCCCC" {
 		t.Fatalf("r2 seq after UMI removal: want CCCCCC, got %s", string(r2Out.Sequence))
@@ -129,11 +129,11 @@ func TestApplyUMIPerRead(t *testing.T) {
 	opts.UMILen = 4
 
 	r1Out, r2Out := applyUMI(r1, r2, opts, stats)
-	if r1Out.ID != "r1:UMI_AAAA_CCCC" {
-		t.Fatalf("r1 id: want r1:UMI_AAAA_CCCC, got %s", r1Out.ID)
+	if r1Out.ID != "r1:AAAA_CCCC" {
+		t.Fatalf("r1 id: want r1:AAAA_CCCC, got %s", r1Out.ID)
 	}
-	if r2Out.ID != "r2:UMI_AAAA_CCCC" {
-		t.Fatalf("r2 id: want r2:UMI_AAAA_CCCC, got %s", r2Out.ID)
+	if r2Out.ID != "r2:AAAA_CCCC" {
+		t.Fatalf("r2 id: want r2:AAAA_CCCC, got %s", r2Out.ID)
 	}
 	if stats.UMIProcessed != 2 {
 		t.Fatalf("UMIProcessed: want 2, got %d", stats.UMIProcessed)
@@ -160,11 +160,11 @@ func TestApplyUMIIndex1(t *testing.T) {
 	opts.UMILoc = UMILocIndex1
 
 	r1Out, r2Out := applyUMI(r1, r2, opts, stats)
-	if !strings.HasSuffix(r1Out.ID, ":UMI_ATCACG") {
-		t.Fatalf("r1 id: want suffix :UMI_ATCACG, got %s", r1Out.ID)
+	if !strings.HasSuffix(r1Out.ID, ":ATCACG") {
+		t.Fatalf("r1 id: want suffix :ATCACG, got %s", r1Out.ID)
 	}
-	if !strings.HasSuffix(r2Out.ID, ":UMI_ATCACG") {
-		t.Fatalf("r2 id: want suffix :UMI_ATCACG, got %s", r2Out.ID)
+	if !strings.HasSuffix(r2Out.ID, ":ATCACG") {
+		t.Fatalf("r2 id: want suffix :ATCACG, got %s", r2Out.ID)
 	}
 	// Sequence is untouched in index modes.
 	if string(r1Out.Sequence) != "ACGTACGTAC" {
@@ -187,15 +187,15 @@ func TestApplyUMIIndex2AndPerIndex(t *testing.T) {
 	opts.UMI = true
 	opts.UMILoc = UMILocIndex2
 	r1Out, _ := applyUMI(r1, nil, opts, stats)
-	if !strings.HasSuffix(r1Out.ID, ":UMI_CGATGT") {
-		t.Fatalf("index2 id: want suffix :UMI_CGATGT, got %s", r1Out.ID)
+	if !strings.HasSuffix(r1Out.ID, ":CGATGT") {
+		t.Fatalf("index2 id: want suffix :CGATGT, got %s", r1Out.ID)
 	}
 
 	opts.UMILoc = UMILocPerIndex
 	stats = &ProcessStats{}
 	r1Out, _ = applyUMI(r1, nil, opts, stats)
-	if !strings.HasSuffix(r1Out.ID, ":UMI_ATCACG_CGATGT") {
-		t.Fatalf("per_index id: want suffix :UMI_ATCACG_CGATGT, got %s", r1Out.ID)
+	if !strings.HasSuffix(r1Out.ID, ":ATCACG_CGATGT") {
+		t.Fatalf("per_index id: want suffix :ATCACG_CGATGT, got %s", r1Out.ID)
 	}
 }
 
@@ -207,7 +207,7 @@ func TestApplyUMIDefaultLoc(t *testing.T) {
 	opts.UMI = true
 	opts.UMILen = 4
 	out, _ := applyUMI(r, nil, opts, stats)
-	if !strings.HasSuffix(out.ID, ":UMI_AAAA") {
+	if !strings.HasSuffix(out.ID, ":AAAA") {
 		t.Fatalf("SE default should fall back to read1; got %s", out.ID)
 	}
 }
@@ -235,10 +235,10 @@ func TestProcessSingleEndUMIEndToEnd(t *testing.T) {
 		t.Fatalf("UMIProcessed: want 2, got %d", stats.UMIProcessed)
 	}
 	written := out.String()
-	if !strings.Contains(written, ":UMI_ACGTAC") {
+	if !strings.Contains(written, ":ACGTAC") {
 		t.Fatalf("output should contain UMI tag, got:\n%s", written)
 	}
-	if !strings.Contains(written, ":UMI_GGGGCC") {
+	if !strings.Contains(written, ":GGGGCC") {
 		t.Fatalf("output should contain UMI tag for second read, got:\n%s", written)
 	}
 }
@@ -253,7 +253,7 @@ func TestLegacyUMIFlagsStillWork(t *testing.T) {
 	opts.UMILocation = UMILocRead1
 
 	out, _ := extractUMI(r, nil, opts, stats)
-	if !strings.HasSuffix(out.ID, ":UMI_ACGT") {
-		t.Fatalf("legacy umi-length flag: want suffix :UMI_ACGT, got %s", out.ID)
+	if !strings.HasSuffix(out.ID, ":ACGT") {
+		t.Fatalf("legacy umi-length flag: want suffix :ACGT, got %s", out.ID)
 	}
 }

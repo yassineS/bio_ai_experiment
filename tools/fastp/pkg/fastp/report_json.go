@@ -44,11 +44,12 @@ type jsonSummarySection struct {
 }
 
 type jsonFiltering struct {
-	PassedFilterReads int64 `json:"passed_filter_reads"`
-	LowQualityReads   int64 `json:"low_quality_reads"`
-	TooManyNReads     int64 `json:"too_many_N_reads"`
-	TooShortReads     int64 `json:"too_short_reads"`
-	TooLongReads      int64 `json:"too_long_reads"`
+	PassedFilterReads  int64 `json:"passed_filter_reads"`
+	LowQualityReads    int64 `json:"low_quality_reads"`
+	TooManyNReads      int64 `json:"too_many_N_reads"`
+	LowComplexityReads int64 `json:"low_complexity_reads"`
+	TooShortReads      int64 `json:"too_short_reads"`
+	TooLongReads       int64 `json:"too_long_reads"`
 }
 
 type jsonDuplication struct {
@@ -158,11 +159,12 @@ func buildJSONReport(stats *ProcessStats) reportJSON {
 			},
 		},
 		FilteringResult: jsonFiltering{
-			PassedFilterReads: int64(stats.CleanReads),
-			LowQualityReads:   int64(stats.LowQualityReads),
-			TooManyNReads:     int64(stats.TooManyNReads),
-			TooShortReads:     int64(stats.TooShortReads),
-			TooLongReads:      int64(stats.TooLongReads),
+			PassedFilterReads:  int64(stats.CleanReads),
+			LowQualityReads:    int64(stats.LowQualityReads),
+			TooManyNReads:      int64(stats.TooManyNReads),
+			LowComplexityReads: int64(stats.LowComplexityReads),
+			TooShortReads:      int64(stats.TooShortReads),
+			TooLongReads:       int64(stats.TooLongReads),
 		},
 		Duplication: jsonDuplication{
 			Rate:      stats.DupRate,
