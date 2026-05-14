@@ -83,10 +83,13 @@ func TestQueryInfoFlag(t *testing.T) {
 }
 
 func TestQuerySampleRepeated(t *testing.T) {
+	// Upstream bcftools repeats the inner [...] body verbatim with no
+	// auto-inserted separator between samples. The literal in front of the
+	// sample placeholder is what produces the inter-sample gap (or its
+	// absence).
 	out := runQuery(t, queryVCF, QueryOptions{Format: `[%GT]\t[%DP]\n`})
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	// First record: [%GT] -> 0/0\t0/1\t1/1, then '\t', then [%DP] -> 10\t20\t30
-	want := "0/0\t0/1\t1/1\t10\t20\t30"
+	want := "0/00/11/1\t102030"
 	if lines[0] != want {
 		t.Errorf("got %q want %q", lines[0], want)
 	}
@@ -95,8 +98,8 @@ func TestQuerySampleRepeated(t *testing.T) {
 func TestQuerySampleNarrowing(t *testing.T) {
 	out := runQuery(t, queryVCF, QueryOptions{Format: `[%GT]\n`, Samples: []string{"S1", "S3"}})
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if lines[0] != "0/0\t1/1" {
-		t.Errorf("first row: got %q want %q", lines[0], "0/0\t1/1")
+	if lines[0] != "0/01/1" {
+		t.Errorf("first row: got %q want %q", lines[0], "0/01/1")
 	}
 }
 
@@ -121,8 +124,9 @@ func TestQueryType(t *testing.T) {
 func TestQueryTGT(t *testing.T) {
 	out := runQuery(t, queryVCF, QueryOptions{Format: `[%TGT]\n`})
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	// rs2: REF=G, ALT=A,C with GT 1/2,0/1,0/0 -> A/C, G/A, G/G.
-	if lines[2] != "A/C\tG/A\tG/G" {
+	// rs2: REF=G, ALT=A,C with GT 1/2,0/1,0/0 -> A/C, G/A, G/G,
+	// concatenated with no separator (upstream behaviour).
+	if lines[2] != "A/CG/AG/G" {
 		t.Errorf("rs2 TGT: got %q", lines[2])
 	}
 }
@@ -296,7 +300,8 @@ func TestQueryListSamplesViaStream(t *testing.T) {
 func TestQueryFmtPrefix(t *testing.T) {
 	out := runQuery(t, queryVCF, QueryOptions{Format: `[%FMT/GT]\n`})
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if lines[0] != "0/0\t0/1\t1/1" {
+	// No auto separator between samples (upstream-compatible behaviour).
+	if lines[0] != "0/00/11/1" {
 		t.Errorf("FMT/GT: got %q", lines[0])
 	}
 }
@@ -518,8 +523,9 @@ chr1	100	a	A	T	30	PASS	DP=10	GT	0/1	1/1
 	if !strings.Contains(got, "GT:B") || !strings.Contains(got, "GT:A") {
 		t.Errorf("header missing sample columns:\n%s", got)
 	}
-	// The sample filter should reorder GTs as B then A.
-	if !strings.Contains(got, "1/1\t0/1") {
+	// The sample filter should reorder GTs as B then A; no auto-separator
+	// between repeated samples in the inner [...] body.
+	if !strings.Contains(got, "1/10/1") {
 		t.Errorf("sample reorder failed:\n%s", got)
 	}
 }

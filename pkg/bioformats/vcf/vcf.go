@@ -17,16 +17,17 @@ import (
 
 // Variant represents a single VCF variant record.
 type Variant struct {
-	Chrom   string            // Chromosome
-	Pos     int               // Position (1-based)
-	ID      string            // Variant ID (or '.')
-	Ref     string            // Reference allele
-	Alt     []string          // Alternate alleles
-	Qual    float64           // Quality score (or -1 if missing)
-	Filter  []string          // Filter status (PASS or filter names)
-	Info    map[string]string // INFO field key-value pairs
-	Format  []string          // FORMAT field tags
-	Samples []Sample          // Sample genotype data
+	Chrom     string            // Chromosome
+	Pos       int               // Position (1-based)
+	ID        string            // Variant ID (or '.')
+	Ref       string            // Reference allele
+	Alt       []string          // Alternate alleles
+	Qual      float64           // Quality score (or -1 if missing)
+	Filter    []string          // Filter status (PASS or filter names)
+	Info      map[string]string // INFO field key-value pairs
+	InfoOrder []string          // INFO key insertion order (preserved for byte-for-byte parity with upstream)
+	Format    []string          // FORMAT field tags
+	Samples   []Sample          // Sample genotype data
 }
 
 // Sample represents genotype data for a single sample.
@@ -127,12 +128,14 @@ func (r *Reader) Read() (*Variant, error) {
 	}
 
 	// Parse required fields
+	info, infoOrder := parseInfoWithOrder(fields[7])
 	variant := &Variant{
-		Chrom:  fields[0],
-		ID:     fields[2],
-		Ref:    fields[3],
-		Filter: parseFilter(fields[6]),
-		Info:   parseInfo(fields[7]),
+		Chrom:     fields[0],
+		ID:        fields[2],
+		Ref:       fields[3],
+		Filter:    parseFilter(fields[6]),
+		Info:      info,
+		InfoOrder: infoOrder,
 	}
 
 	// Parse position
@@ -253,7 +256,7 @@ func (w *Writer) Write(variant *Variant) error {
 	if variant.Qual < 0 {
 		fields = append(fields, ".")
 	} else {
-		fields = append(fields, fmt.Sprintf("%.2f", variant.Qual))
+		fields = append(fields, formatQual(variant.Qual))
 	}
 
 	// Filter
@@ -264,7 +267,7 @@ func (w *Writer) Write(variant *Variant) error {
 	}
 
 	// Info
-	infoStr := formatInfo(variant.Info)
+	infoStr := formatInfo(variant.Info, variant.InfoOrder)
 	if infoStr == "" {
 		infoStr = "."
 	}
@@ -309,6 +312,18 @@ func (w *Writer) WriteAll(variants []*Variant) error {
 	return w.Flush()
 }
 
+// formatQual formats a QUAL value using the same minimal-precision rules as
+// upstream htslib's vcf_format(): integer values print as integers (no
+// trailing ".00"), otherwise the shortest representation of the float is used
+// (via strconv with %g semantics). This matches bcftools byte-for-byte for the
+// common case where the QUAL was an integer in the source file.
+func formatQual(q float64) string {
+	if q == float64(int64(q)) {
+		return strconv.FormatInt(int64(q), 10)
+	}
+	return strconv.FormatFloat(q, 'g', -1, 64)
+}
+
 // parseFilter parses the FILTER field.
 func parseFilter(filter string) []string {
 	if filter == "." || filter == "PASS" {
@@ -318,40 +333,92 @@ func parseFilter(filter string) []string {
 }
 
 // parseInfo parses the INFO field into a map.
+// Deprecated: prefer parseInfoWithOrder so the original key order can be
+// preserved on write. Retained for backward compatibility with callers that
+// construct Variants by hand.
 func parseInfo(info string) map[string]string {
-	result := make(map[string]string)
-	if info == "." {
-		return result
-	}
-
-	pairs := strings.Split(info, ";")
-	for _, pair := range pairs {
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) == 2 {
-			result[parts[0]] = parts[1]
-		} else {
-			// Flag without value
-			result[parts[0]] = ""
-		}
-	}
-	return result
+	m, _ := parseInfoWithOrder(info)
+	return m
 }
 
-// formatInfo formats the INFO map into a string.
-func formatInfo(info map[string]string) string {
+// parseInfoWithOrder parses the INFO field, returning the key->value map and
+// the keys in insertion order. Empty values denote flags.
+func parseInfoWithOrder(info string) (map[string]string, []string) {
+	result := make(map[string]string)
+	if info == "." || info == "" {
+		return result, nil
+	}
+	pairs := strings.Split(info, ";")
+	order := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, "=", 2)
+		k := parts[0]
+		if k == "" {
+			continue
+		}
+		if _, seen := result[k]; !seen {
+			order = append(order, k)
+		}
+		if len(parts) == 2 {
+			result[k] = parts[1]
+		} else {
+			result[k] = ""
+		}
+	}
+	return result, order
+}
+
+// formatInfo formats the INFO map into a string preserving the order in
+// `order` first, then appending any keys present in `info` but missing from
+// `order` (alphabetical for determinism). When `order` is nil/empty the
+// function falls back to alphabetical order — this happens for variants
+// constructed by hand without InfoOrder being set.
+func formatInfo(info map[string]string, order []string) string {
 	if len(info) == 0 {
 		return ""
 	}
-
 	var pairs []string
-	for key, value := range info {
-		if value == "" {
-			pairs = append(pairs, key)
+	seen := make(map[string]bool, len(info))
+	for _, k := range order {
+		v, ok := info[k]
+		if !ok {
+			continue
+		}
+		seen[k] = true
+		if v == "" {
+			pairs = append(pairs, k)
 		} else {
-			pairs = append(pairs, fmt.Sprintf("%s=%s", key, value))
+			pairs = append(pairs, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+	if len(seen) < len(info) {
+		extras := make([]string, 0, len(info)-len(seen))
+		for k := range info {
+			if !seen[k] {
+				extras = append(extras, k)
+			}
+		}
+		sortStringsAsc(extras)
+		for _, k := range extras {
+			v := info[k]
+			if v == "" {
+				pairs = append(pairs, k)
+			} else {
+				pairs = append(pairs, fmt.Sprintf("%s=%s", k, v))
+			}
 		}
 	}
 	return strings.Join(pairs, ";")
+}
+
+// sortStringsAsc does an in-place insertion sort. Used only for the
+// "left-over" keys in formatInfo, which is typically empty or tiny.
+func sortStringsAsc(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }
 
 // GetInfoString returns an INFO field value as a string.

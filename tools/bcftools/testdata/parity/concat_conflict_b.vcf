@@ -1,0 +1,6 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##INFO=<ID=DP,Number=1,Type=Float,Description="Depth as float">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	200	.	G	C	30	PASS	DP=10.5	GT	0/1

@@ -61,7 +61,9 @@ type MultiallelicMode struct {
 }
 
 // ParseMultiallelicMode turns the literal flag body (e.g. "-both") into the
-// typed structure. An empty string yields an inactive value.
+// typed structure. An empty string yields an inactive value. A bare "-" or
+// "+" with no suffix is treated as "any" (both SNPs and indels), matching
+// upstream bcftools.
 func ParseMultiallelicMode(s string) (MultiallelicMode, error) {
 	if s == "" {
 		return MultiallelicMode{}, nil
@@ -78,12 +80,12 @@ func ParseMultiallelicMode(s string) (MultiallelicMode, error) {
 	}
 	rest := strings.ToLower(s[1:])
 	switch rest {
+	case "", "both", "any":
+		m.Snps = true
+		m.Indels = true
 	case "snps":
 		m.Snps = true
 	case "indels":
-		m.Indels = true
-	case "both", "any":
-		m.Snps = true
 		m.Indels = true
 	default:
 		return m, fmt.Errorf("bcftools norm: unknown -m type %q (expect snps|indels|both|any)", rest)
@@ -560,6 +562,7 @@ func cloneVariant(v *vcf.Variant) *vcf.Variant {
 	for k, val := range v.Info {
 		c.Info[k] = val
 	}
+	c.InfoOrder = append([]string{}, v.InfoOrder...)
 	c.Samples = make([]vcf.Sample, len(v.Samples))
 	for i, s := range v.Samples {
 		ns := vcf.Sample{Name: s.Name, Data: make(map[string]string, len(s.Data))}

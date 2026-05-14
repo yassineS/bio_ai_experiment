@@ -698,10 +698,11 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 					indexes[i] = i
 				}
 			}
-			for j, idx := range indexes {
-				if j > 0 {
-					sb.WriteByte('\t')
-				}
+			// Upstream bcftools repeats the inner pattern verbatim for each
+			// sample with no auto-inserted separator — any inter-sample
+			// delimiter must be expressed in the inner pattern itself
+			// (e.g. `[\t%GT]` puts a tab in front of each sample's GT).
+			for _, idx := range indexes {
 				for _, inner := range t.Inner {
 					switch inner.Kind {
 					case TokenLiteral:

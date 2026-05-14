@@ -194,11 +194,16 @@ func (r *Record) ToVariant(hdr *Header) *vcf.Variant {
 		}
 	}
 
-	// INFO
+	// INFO — preserve key order from the BCF record for byte-for-byte
+	// text-output parity with upstream bcftools.
+	v.InfoOrder = make([]string, 0, len(r.InfoKeys))
 	for i, key := range r.InfoKeys {
 		entry := hdr.InfoTag(key)
 		if entry == nil {
 			continue
+		}
+		if _, seen := v.Info[entry.ID]; !seen {
+			v.InfoOrder = append(v.InfoOrder, entry.ID)
 		}
 		v.Info[entry.ID] = formatTyped(r.InfoVals[i], entry)
 	}

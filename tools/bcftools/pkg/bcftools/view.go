@@ -321,6 +321,7 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	}
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	if opts.DropGenotypes {
+		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
 	}
 
@@ -375,6 +376,7 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	hdr := br.Header().VCF
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	if opts.DropGenotypes {
+		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
 	}
 	includeF, excludeF, err := compileExpressions(opts)
@@ -436,6 +438,7 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 	vhdr := hdr.VCF
 	vhdr = filterHeaderSamples(vhdr, opts.Samples)
 	if opts.DropGenotypes {
+		vhdr = stripFormatLines(vhdr)
 		vhdr.Samples = nil
 	}
 
@@ -504,6 +507,7 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 	hdrIn.Close()
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	if opts.DropGenotypes {
+		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
 	}
 
@@ -652,6 +656,23 @@ func filterHeaderSamples(hdr *vcf.Header, samples []string) *vcf.Header {
 	return out
 }
 
+// stripFormatLines removes every ##FORMAT=... meta line from hdr. Upstream
+// bcftools drops these lines when -G/--drop-genotypes is given because the
+// resulting record has no FORMAT column to describe.
+func stripFormatLines(hdr *vcf.Header) *vcf.Header {
+	if hdr == nil {
+		return hdr
+	}
+	out := &vcf.Header{Samples: hdr.Samples}
+	for _, m := range hdr.MetaInfo {
+		if strings.HasPrefix(m, "##FORMAT=") {
+			continue
+		}
+		out.MetaInfo = append(out.MetaInfo, m)
+	}
+	return out
+}
+
 // variantWriter is the small interface View uses to send variants downstream.
 // vcfWriter wraps *vcf.Writer; bcfWriter wraps *bcf.Writer; both speak the
 // same WriteHeader / Write / Flush dance.
@@ -677,11 +698,42 @@ func (a *bcfVariantWriter) WriteHeader() error         { return a.w.WriteHeader(
 func (a *bcfVariantWriter) Write(v *vcf.Variant) error { return a.w.Write(v) }
 func (a *bcfVariantWriter) Flush() error               { return a.w.Flush() }
 
+// ensurePASSFilter inserts ##FILTER=<ID=PASS,...> immediately after the
+// ##fileformat line (or at the top of the header if no fileformat line is
+// present) when the header lacks an explicit PASS definition. This mirrors
+// upstream htslib's bcf_hdr_parse_line behaviour and is required for
+// byte-for-byte parity with bcftools text output.
+func ensurePASSFilter(hdr *vcf.Header) {
+	if hdr == nil {
+		return
+	}
+	for _, m := range hdr.MetaInfo {
+		k, id := structuredID(m)
+		if k == "FILTER" && id == "PASS" {
+			return
+		}
+	}
+	passLine := `##FILTER=<ID=PASS,Description="All filters passed">`
+	insertAt := 0
+	for i, m := range hdr.MetaInfo {
+		if strings.HasPrefix(m, "##fileformat=") {
+			insertAt = i + 1
+			break
+		}
+	}
+	out := make([]string, 0, len(hdr.MetaInfo)+1)
+	out = append(out, hdr.MetaInfo[:insertAt]...)
+	out = append(out, passLine)
+	out = append(out, hdr.MetaInfo[insertAt:]...)
+	hdr.MetaInfo = out
+}
+
 // openOutput returns a variantWriter plus a cleanup function. The cleanup
 // closes any wrapping compressor that needs an explicit Close (gzip for -O z,
 // bgzip for -O b). We deliberately do not close `out` itself — the caller
 // still owns it.
 func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter, func(), error) {
+	ensurePASSFilter(hdr)
 	switch opts.OutputFormat {
 	case OutputVCFGz:
 		gw, err := gzipWriter(out, opts.CompressLevel)
