@@ -51,7 +51,7 @@ couldn't be confirmed, "n/a" is used and no speculation is offered.
 | `sickle`    | n/a (latest Dec 2015) | 2015 | **no** | already done — freeze, deprioritise |
 | `skewer`    | n/a (latest Sep 2016) | 2016 | **no** | already done — freeze, deprioritise |
 | `fastp`     | ~631k | 1.3.3 (Apr 2026) | yes | keep, parity-track |
-| `vcftools`  | n/a (latest 0.1.17, May 2025) | weak | already done — keep, but note vcftools is itself nearly frozen |
+| `vcftools`  | n/a (latest 0.1.17, May 2025) | 0.1.17 (May 2025) | weak | already done — keep, but note vcftools is itself nearly frozen |
 | `bedmerge/intersect/sort/...` (bedtools subset) | bedtools: ~3.3M | bedtools 2.31.1 (Nov 2023) | yes | keep, extend coverage |
 
 **Sources:** anaconda.org/bioconda/{seqtk, prinseq, sickle-trim, skewer, fastp,
