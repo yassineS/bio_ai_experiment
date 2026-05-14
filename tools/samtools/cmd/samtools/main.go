@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/samtools/pkg/samtools"
 )
@@ -27,6 +28,9 @@ Subcommands:
   sort       Sort alignments by coordinate, name, or tag.
   index      Build a BAI index for a coordinate-sorted BAM.
   flagstat   Print flag statistics for a SAM/BAM file.
+  depth      Per-position depth across one or more BAMs.
+  fastq      Convert SAM/BAM to FASTQ.
+  bam2fq     Alias for fastq.
   help       Show this help.
   version    Show version.
 `
@@ -45,6 +49,10 @@ func main() {
 		os.Exit(runIndex(os.Args[2:]))
 	case "flagstat":
 		os.Exit(runFlagstat(os.Args[2:]))
+	case "depth":
+		os.Exit(runDepth(os.Args[2:]))
+	case "fastq", "bam2fq":
+		os.Exit(runFastq(os.Args[2:]))
 	case "help", "-h", "--help":
 		fmt.Print(rootUsage)
 		return
@@ -484,3 +492,279 @@ type nopCloser struct {
 }
 
 func (nopCloser) Close() error { return nil }
+
+const depthUsage = `samtools depth - print per-position depth across one or more BAMs.
+
+Usage:
+  samtools depth [options] <in1.bam> [<in2.bam> ...]
+
+Options:
+  -a, --all                 Emit positions with 0 depth too (within covered ranges).
+  -A, --all-trans           Emit every position of every reference.
+  -r, --region chr[:S-E]    Limit to region (chr name only or range).
+  -b, --bed FILE            Limit to BED regions.
+  -q, --min-mapq N          Skip reads with MAPQ below N (default 0).
+  -Q, --min-baseq N         Skip bases with quality below N (default 0).
+  -l, --min-readlen N       Skip reads shorter than N query bases (default 0).
+  -f, --include-flags N     Require ALL these flag bits set (default 0).
+  -F, --exclude-flags N     Drop reads with ANY of these flag bits set (default 0x4).
+  -d, --max-depth N         Cap reported depth (0 = no cap).
+  -o, --output PATH         Output path (default stdout).
+  -@, --threads N           Accepted; single-threaded in v1.
+  -h, --help                Show this help.
+  -v, --version             Show version.
+`
+
+func runDepth(args []string) int {
+	fs := flag.NewFlagSet("samtools depth", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		allPos   bool
+		allTrans bool
+		regions  multiString
+		bedPath  string
+		minMAPQ  int
+		minBaseQ int
+		minReadL int
+		incFlags int
+		excFlags int
+		maxDepth int
+		outPath  string
+		threads  int
+		showHelp bool
+		showVer  bool
+	)
+	cliflag.BoolVar(fs, &allPos, "a", "all", false, "Emit zero-depth positions")
+	cliflag.BoolVar(fs, &allTrans, "A", "all-trans", false, "Emit every reference position")
+	fs.Var(&regions, "r", "")
+	fs.Var(&regions, "region", "")
+	cliflag.StringVar(fs, &bedPath, "b", "bed", "", "BED of regions")
+	cliflag.IntVar(fs, &minMAPQ, "q", "min-mapq", 0, "Min MAPQ")
+	cliflag.IntVar(fs, &minBaseQ, "Q", "min-baseq", 0, "Min BaseQ")
+	cliflag.IntVar(fs, &minReadL, "l", "min-readlen", 0, "Min read length")
+	cliflag.IntVar(fs, &incFlags, "f", "include-flags", 0, "Required flags")
+	cliflag.IntVar(fs, &excFlags, "F", "exclude-flags", int(samtools.DefaultDepthExcludeFlags), "Excluded flags")
+	cliflag.IntVar(fs, &maxDepth, "d", "max-depth", 0, "Max depth cap")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "Output path")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Print(depthUsage)
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, depthUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(depthUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "samtools depth: missing input file")
+		fmt.Fprint(os.Stderr, depthUsage)
+		return 2
+	}
+
+	opts := samtools.DepthOptions{
+		AllPositions:      allPos,
+		AllTransPositions: allTrans,
+		Regions:           []string(regions),
+		BedPath:           bedPath,
+		MinMAPQ:           uint8(minMAPQ),
+		MinBaseQ:          uint8(minBaseQ),
+		MinReadLen:        minReadL,
+		IncludeFlags:      uint16(incFlags),
+		ExcludeFlags:      uint16(excFlags),
+		MaxDepth:          maxDepth,
+		Threads:           threads,
+	}
+
+	readers := make([]io.Reader, 0, fs.NArg())
+	closers := make([]io.Closer, 0, fs.NArg())
+	for _, path := range fs.Args() {
+		r, err := iohelper.OpenReader(path)
+		if err != nil {
+			for _, c := range closers {
+				_ = c.Close()
+			}
+			fmt.Fprintf(os.Stderr, "samtools depth: %v\n", err)
+			return 1
+		}
+		readers = append(readers, r)
+		closers = append(closers, r)
+	}
+	out, err := openOut(outPath)
+	if err != nil {
+		for _, c := range closers {
+			_ = c.Close()
+		}
+		fmt.Fprintf(os.Stderr, "samtools depth: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+
+	if err := samtools.Depth(readers, out, opts); err != nil {
+		for _, c := range closers {
+			_ = c.Close()
+		}
+		fmt.Fprintf(os.Stderr, "samtools depth: %v\n", err)
+		return 1
+	}
+	for _, c := range closers {
+		_ = c.Close()
+	}
+	return 0
+}
+
+// multiString implements flag.Value for collecting repeated string flags
+// (used by `-r`/`--region`, which may appear multiple times).
+type multiString []string
+
+func (m *multiString) String() string     { return strings.Join(*m, ",") }
+func (m *multiString) Set(v string) error { *m = append(*m, v); return nil }
+
+const fastqUsage = `samtools fastq - convert SAM/BAM to FASTQ.
+
+Usage:
+  samtools fastq [options] <in.bam|in.sam>
+
+Options:
+  -1, --read1 FILE          Output for read1 (mate 1).
+  -2, --read2 FILE          Output for read2 (mate 2).
+  -0, --read-orphan FILE    Reads where 0x40/0x80 are both set or both unset.
+  -s, --singleton FILE      Output for unpaired reads.
+  -o, --output FILE         Default sink (interleaved if -1/-2 unset).
+  -N, --output-name         Always append /1 or /2 to read names.
+  -n, --no-suffix           Never append /1 /2.
+  -f, --include-flags N     Required flag bits.
+  -F, --exclude-flags N     Excluded flag bits (default 0x900).
+  -G, --exclude-flags-all N Drop only when ALL bits match.
+  -T, --add-tags TAGS       Comma-separated aux tags to append.
+  -t, --no-CO               Accepted for compatibility (no-op).
+  -c, --compress-level N    Gzip level for .gz outputs.
+  -O, --use-qq              Use OQ aux tag for quality when present.
+      --threads N           Accepted; single-threaded.
+  -h, --help                Show this help.
+  -v, --version             Show version.
+
+Paired output (-1/-2) requires name-sorted input. Coordinate-sorted input
+falls back to writing every record through to -o (or singletons).
+`
+
+func runFastq(args []string) int {
+	fs := flag.NewFlagSet("samtools fastq", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		r1Path    string
+		r2Path    string
+		orphPath  string
+		singPath  string
+		outPath   string
+		alwaysSfx bool
+		noSuffix  bool
+		incFlags  int
+		excFlags  int
+		excFlagsG int
+		addTags   string
+		noCO      bool
+		compLevel string
+		useOQ     bool
+		threads   int
+		showHelp  bool
+		showVer   bool
+	)
+	cliflag.StringVar(fs, &r1Path, "1", "read1", "", "Read1 output")
+	cliflag.StringVar(fs, &r2Path, "2", "read2", "", "Read2 output")
+	cliflag.StringVar(fs, &orphPath, "0", "read-orphan", "", "Orphan output")
+	cliflag.StringVar(fs, &singPath, "s", "singleton", "", "Singleton output")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "Default output")
+	cliflag.BoolVar(fs, &alwaysSfx, "N", "output-name", false, "Always add /1 /2 suffix")
+	cliflag.BoolVar(fs, &noSuffix, "n", "no-suffix", false, "Never add /1 /2 suffix")
+	cliflag.IntVar(fs, &incFlags, "f", "include-flags", 0, "Required flags")
+	cliflag.IntVar(fs, &excFlags, "F", "exclude-flags", int(sam.FlagSecondary|sam.FlagSupplementary), "Excluded flags")
+	cliflag.IntVar(fs, &excFlagsG, "G", "exclude-flags-all", 0, "Drop if all of these set")
+	cliflag.StringVar(fs, &addTags, "T", "add-tags", "", "Aux tags to append (CSV)")
+	cliflag.BoolVar(fs, &noCO, "t", "no-CO", false, "No @CO emission (no-op)")
+	cliflag.StringVar(fs, &compLevel, "c", "compress-level", "", "Gzip level for .gz outputs")
+	cliflag.BoolVar(fs, &useOQ, "O", "use-qq", false, "Use OQ aux tag for quality")
+	cliflag.IntVar(fs, &threads, "", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Print(fastqUsage)
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, fastqUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(fastqUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "samtools fastq: missing input file")
+		fmt.Fprint(os.Stderr, fastqUsage)
+		return 2
+	}
+	if r1Path == "" && r2Path == "" && outPath == "" && singPath == "" && orphPath == "" {
+		// Default to interleaved stdout.
+		outPath = "-"
+	}
+	level, err := samtools.ParseCompressLevel(compLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	opts := samtools.FastqOptions{
+		Read1Path:       r1Path,
+		Read2Path:       r2Path,
+		OrphanPath:      orphPath,
+		SingletonPath:   singPath,
+		OutputPath:      outPath,
+		AlwaysAddSuffix: alwaysSfx,
+		NoSuffix:        noSuffix,
+		IncludeFlags:    uint16(incFlags),
+		ExcludeFlags:    uint16(excFlags),
+		ExcludeFlagsAll: uint16(excFlagsG),
+		UseExcludeAll:   excFlagsG != 0,
+		AddTags:         samtools.ParseAddTags(addTags),
+		CompressLevel:   level,
+		UseOQ:           useOQ,
+		NoCO:            noCO,
+		Threads:         threads,
+	}
+	in, err := iohelper.OpenReader(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools fastq: %v\n", err)
+		return 1
+	}
+	defer in.Close()
+	counts, err := samtools.Fastq(in, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools fastq: %v\n", err)
+		return 1
+	}
+	if counts.PairedCoordinateWarn {
+		fmt.Fprintln(os.Stderr, "samtools fastq: paired output (-1/-2) requires name-sorted input; coordinate-sorted input falls back to -o/singleton")
+	}
+	return 0
+}

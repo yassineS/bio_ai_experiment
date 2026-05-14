@@ -12,10 +12,12 @@
   exists**;
 - `samtools sort` — external-merge sort by coordinate, name, natural name,
   or aux tag;
-- `samtools index` — build a BAI index for a coordinate-sorted BAM; and
-- `samtools flagstat` — the classic 16-line alignment summary.
+- `samtools index` — build a BAI index for a coordinate-sorted BAM;
+- `samtools flagstat` — the classic 16-line alignment summary;
+- `samtools depth` — per-position depth across one or more BAMs; and
+- `samtools fastq` (and the `bam2fq` alias) — convert SAM/BAM to FASTQ.
 
-Subsequent PRs will add `fastq`, `depth`, `mpileup`, and CSI indexing.
+Subsequent PRs will add `mpileup` and CSI indexing.
 
 `samtools` is pick #3 of the 2026 next-up list in
 `analysis/tool_ranking_2026.md` — the most widely-used CLI in genomics, with
@@ -38,6 +40,9 @@ samtools view     [options] <in.bam|in.sam> [region ...]
 samtools sort     [options] <in.bam|in.sam>
 samtools index    [options] <in.sorted.bam>
 samtools flagstat <in.bam|in.sam>
+samtools depth    [options] <in1.bam> [<in2.bam> ...]
+samtools fastq    [options] <in.bam|in.sam>
+samtools bam2fq   [options] <in.bam|in.sam>   # alias for fastq
 samtools help
 samtools version
 ```
@@ -137,6 +142,80 @@ uses the BAI bins and linear index to seek directly to the relevant BGZF
 chunks; otherwise it falls back to a full linear scan with a stderr
 warning.
 
+### `samtools depth`
+
+Prints per-position depth (1-based coordinates) across one or more BAM/SAM
+inputs. The output is `chrom\tpos\tdepth1[\tdepth2 ...]\n`, with the
+depths of each input file in positional order. All inputs must share the
+same `@SQ` ordering.
+
+| Short | Long                 | Description                                  |
+|-------|----------------------|----------------------------------------------|
+| `-a`  | `--all`              | Emit zero-depth positions inside covered regions. |
+| `-A`  | `--all-trans`        | Emit every position of every reference.      |
+| `-r`  | `--region chr[:S-E]` | Limit to region (repeatable).                |
+| `-b`  | `--bed FILE`         | Limit to BED regions.                        |
+| `-q`  | `--min-mapq N`       | Skip reads with MAPQ below N.                |
+| `-Q`  | `--min-baseq N`      | Skip bases with quality below N.             |
+| `-l`  | `--min-readlen N`    | Skip reads shorter than N query bases.       |
+| `-f`  | `--include-flags N`  | Require ALL flag bits in N to be set.        |
+| `-F`  | `--exclude-flags N`  | Drop reads with ANY of these flag bits (default `0x4`). |
+| `-d`  | `--max-depth N`      | Cap reported depth (`0` = no cap).           |
+| `-o`  | `--output PATH`      | Output path (default stdout).                |
+| `-@`  | `--threads N`        | Accepted; single-threaded.                   |
+
+Depth is incremented for every reference base covered by a `M`, `=`, or
+`X` CIGAR operation; `I`/`S`/`H`/`N`/`P` ops do not contribute. The
+default `-F 0x4` filters out unmapped reads, matching upstream.
+
+```bash
+samtools depth -a -r chr1:1000-2000 sorted.bam
+samtools depth -b regions.bed sample1.bam sample2.bam
+```
+
+### `samtools fastq` (alias `bam2fq`)
+
+Converts a SAM/BAM file to FASTQ. For paired output, name-sorted input is
+required — coordinate-sorted input falls back to writing every record to
+`-o` (or singletons) with a stderr warning.
+
+| Short | Long                   | Description                                |
+|-------|------------------------|--------------------------------------------|
+| `-1`  | `--read1 FILE`         | Output for first-in-pair reads.            |
+| `-2`  | `--read2 FILE`         | Output for second-in-pair reads.           |
+| `-0`  | `--read-orphan FILE`   | Paired reads where 0x40/0x80 are both set or both unset. |
+| `-s`  | `--singleton FILE`     | Output for unpaired reads.                 |
+| `-o`  | `--output FILE`        | Default sink (interleaved if `-1/-2` unset). |
+| `-N`  | `--output-name`        | Always append `/1` or `/2` to read names.  |
+| `-n`  | `--no-suffix`          | Never append `/1` `/2`.                    |
+| `-f`  | `--include-flags N`    | Required flag bits.                        |
+| `-F`  | `--exclude-flags N`    | Excluded flag bits (default `0x900`).      |
+| `-G`  | `--exclude-flags-all N`| Drop only when ALL bits match.             |
+| `-T`  | `--add-tags TAGS`      | Comma-separated aux tags to append to the read description. |
+| `-t`  | `--no-CO`              | Accepted; we never emit `@CO` lines.       |
+| `-c`  | `--compress-level N`   | Gzip level for `.gz` outputs.              |
+| `-O`  | `--use-qq`             | Use `OQ` aux tag for quality when present. |
+|       | `--threads N`          | Accepted; single-threaded.                 |
+
+Reverse-strand records (`FLAG & 0x10`) have their SEQ reverse-complemented
+and QUAL reversed back to original-read orientation. Paired suffixes
+(`/1`, `/2`) are appended unless `-n` is set or the QNAME already ends
+with them.
+
+```bash
+# Split paired data into two files (name-sorted input):
+samtools fastq -1 r1.fq -2 r2.fq -s singleton.fq -0 orphan.fq paired.bam
+
+# Interleaved FASTQ on stdout:
+samtools fastq paired.bam | bgzip > paired.fq.gz
+
+# Compressed split outputs:
+samtools fastq -1 r1.fq.gz -2 r2.fq.gz -c 6 paired.bam
+
+# Append the NM tag to each read description:
+samtools fastq -T NM paired.bam > tagged.fq
+```
+
 ### `samtools flagstat`
 
 Emits the classic 16-line summary:
@@ -189,19 +268,32 @@ follow-up PRs.
   QC-passed side); QC-failed totals are derived from the 0x200 flag bit so
   this is correct, but the `0` after `+` reflects that no extra QC-fail
   filtering is performed in v1.
+- `samtools depth` requires identical `@SQ` ordering across all inputs and
+  surfaces an explicit error when they differ — matching upstream's
+  positional-output contract. Depth contributions follow the conservative
+  rule "only `M`/`=`/`X` CIGAR ops count for reference coverage"; `D`/`N`
+  advance the reference but do not add depth (consistent with upstream).
+- `samtools fastq` requires **name-sorted** input when `-1`/`-2` are used
+  for paired-split output. Coordinate-sorted input is detected from the
+  `@HD SO:` field and falls back to writing every record through `-o` (or
+  to `-s` if only that is configured) with a warning to stderr. A second
+  pass that pairs records on disk for coordinate-sorted input may follow
+  in a later slice.
 
 ## What this unblocks
 
-With `sort` + `index` + region queries landed, the natural next slices are:
+With `view`, `sort`, `index`, `flagstat`, `depth`, and `fastq` landed,
+the natural next slices are:
 
-- `samtools mpileup` and `bcftools mpileup` (need indexed seek to walk a
-  region per ref).
-- `samtools fastq` / `bam2fq` (works on coordinate- or name-sorted input).
-- `samtools depth` and `mosdepth` (the latter is pick #9 of the 2026
-  ranking — uses sorted+indexed BAM throughout).
+- `samtools mpileup` and `bcftools mpileup` (depth's per-position scan is
+  most of the iteration scaffold).
+- `mosdepth` (pick #9 of the 2026 ranking — coverage-summary tool that
+  builds on top of indexed BAM iteration).
+- A coordinate-sorted code-path for `fastq -1/-2` that pairs records on
+  disk (currently this configuration falls back to interleaved output).
 - CSI indexing for chromosomes longer than 512 Mb.
-- Multi-threaded sort and index, once a profiling pass shows where the
-  single-threaded baseline bottlenecks.
+- Multi-threaded sort, index, depth, and fastq once a profiling pass
+  shows where the single-threaded baselines bottleneck.
 
 ## References
 
