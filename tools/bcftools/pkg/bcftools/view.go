@@ -12,6 +12,7 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bcf"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
 	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
 )
 
@@ -181,14 +182,21 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 }
 
 // ViewFile is the file-aware entry point for `bcftools view`. It supports
-// region queries via a sibling .tbi index on bgzipped VCF inputs and falls
-// back to a streaming scan otherwise.
+// region queries via a sibling .tbi index on bgzipped VCF inputs (and a
+// sibling .csi index on BCF inputs) and falls back to a streaming scan
+// otherwise.
 func ViewFile(path string, out io.Writer, opts ViewOptions, stderr io.Writer) (int, error) {
+	if len(opts.Regions) > 0 && HasCSI(path) {
+		bcfHead, _ := looksLikeBCF(path)
+		if bcfHead {
+			return viewBCFRegions(path, out, opts, stderr)
+		}
+	}
 	if len(opts.Regions) > 0 && hasTabixIndex(path) {
 		return viewRegions(path, out, opts, stderr)
 	}
 	if len(opts.Regions) > 0 && stderr != nil {
-		fmt.Fprintln(stderr, "bcftools view: no .tbi index found; treating -r as a post-filter (slower)")
+		fmt.Fprintln(stderr, "bcftools view: no .tbi/.csi index found; treating -r as a post-filter (slower)")
 	}
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
@@ -415,6 +423,61 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	return count, w.Flush()
 }
 
+// viewBCFRegions executes CSI-backed region queries on a BGZF-wrapped BCF.
+func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (int, error) {
+	regions, err := parseRegions(opts.Regions)
+	if err != nil {
+		return 0, err
+	}
+	hdr, recs, err := ReadBCFRegions(path, regions)
+	if err != nil {
+		return 0, err
+	}
+	vhdr := hdr.VCF
+	vhdr = filterHeaderSamples(vhdr, opts.Samples)
+	if opts.DropGenotypes {
+		vhdr.Samples = nil
+	}
+
+	includeF, excludeF, err := compileExpressions(opts)
+	if err != nil {
+		return 0, err
+	}
+
+	w, finish, err := openOutput(out, opts, vhdr)
+	if err != nil {
+		return 0, err
+	}
+	defer finish()
+	if !opts.NoHeader {
+		if err := w.WriteHeader(); err != nil {
+			return 0, err
+		}
+	}
+	if opts.HeaderOnly {
+		return 0, w.Flush()
+	}
+
+	count := 0
+	for _, rec := range recs {
+		v := rec.ToVariant(hdr)
+		if !keepVariant(v, opts, includeF, excludeF, true, regions) {
+			continue
+		}
+		if len(opts.Samples) > 0 {
+			restrictSamples(v, opts.Samples)
+		}
+		if opts.DropGenotypes {
+			dropGenotypes(v)
+		}
+		if err := w.Write(v); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, w.Flush()
+}
+
 // viewRegions executes index-backed region queries on a bgzipped VCF.
 func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer) (int, error) {
 	idx, err := tabix.ReadFile(path + ".tbi")
@@ -589,21 +652,59 @@ func filterHeaderSamples(hdr *vcf.Header, samples []string) *vcf.Header {
 	return out
 }
 
-// openOutput returns a vcf.Writer plus a cleanup function. The cleanup
-// closes the gzip writer if one was created. We deliberately do not close
-// out itself — the caller still owns it.
-func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (*vcf.Writer, func(), error) {
+// variantWriter is the small interface View uses to send variants downstream.
+// vcfWriter wraps *vcf.Writer; bcfWriter wraps *bcf.Writer; both speak the
+// same WriteHeader / Write / Flush dance.
+type variantWriter interface {
+	WriteHeader() error
+	Write(*vcf.Variant) error
+	Flush() error
+}
+
+// vcfVariantWriter is the trivial pass-through adapter for the VCF / VCF.gz
+// output paths.
+type vcfVariantWriter struct{ w *vcf.Writer }
+
+func (a *vcfVariantWriter) WriteHeader() error         { return a.w.WriteHeader() }
+func (a *vcfVariantWriter) Write(v *vcf.Variant) error { return a.w.Write(v) }
+func (a *vcfVariantWriter) Flush() error               { return a.w.Flush() }
+
+// bcfVariantWriter wraps a bcf.Writer so View can treat both output formats
+// the same way.
+type bcfVariantWriter struct{ w *bcf.Writer }
+
+func (a *bcfVariantWriter) WriteHeader() error         { return a.w.WriteHeader() }
+func (a *bcfVariantWriter) Write(v *vcf.Variant) error { return a.w.Write(v) }
+func (a *bcfVariantWriter) Flush() error               { return a.w.Flush() }
+
+// openOutput returns a variantWriter plus a cleanup function. The cleanup
+// closes any wrapping compressor that needs an explicit Close (gzip for -O z,
+// bgzip for -O b). We deliberately do not close `out` itself — the caller
+// still owns it.
+func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter, func(), error) {
 	switch opts.OutputFormat {
 	case OutputVCFGz:
 		gw, err := gzipWriter(out, opts.CompressLevel)
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return vcf.NewWriter(gw, hdr), func() { _ = gw.Close() }, nil
-	case OutputBCF, OutputBCFUncompressed:
-		return nil, func() {}, fmt.Errorf("bcftools view: -O b/u (BCF output) is not yet implemented; use -O v or -O z")
+		return &vcfVariantWriter{vcf.NewWriter(gw, hdr)}, func() { _ = gw.Close() }, nil
+	case OutputBCF:
+		bw := bgzip.NewWriter(out)
+		w, err := bcf.NewWriterFromVCFHeader(bw, hdr)
+		if err != nil {
+			_ = bw.Close()
+			return nil, func() {}, err
+		}
+		return &bcfVariantWriter{w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
+	case OutputBCFUncompressed:
+		w, err := bcf.NewWriterFromVCFHeader(out, hdr)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return &bcfVariantWriter{w}, func() { _ = w.Flush() }, nil
 	}
-	return vcf.NewWriter(out, hdr), func() {}, nil
+	return &vcfVariantWriter{vcf.NewWriter(out, hdr)}, func() {}, nil
 }
 
 // gzipWriter returns a gzip writer at the requested level (or default if

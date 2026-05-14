@@ -76,6 +76,8 @@ type opts struct {
 	printHdr    bool
 	onlyHdr     bool
 	noSaveIdx   bool
+	csiOutput   bool
+	csiMinShift int
 	showHelp    bool
 	showVersion bool
 }
@@ -99,6 +101,8 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	cliflag.BoolVar(fs, &o.printHdr, "h", "print-header", false, "emit header lines")
 	fs.BoolVar(&o.onlyHdr, "only-header", false, "emit only the header")
 	fs.BoolVar(&o.noSaveIdx, "D", false, "do not save the index")
+	fs.BoolVar(&o.csiOutput, "csi", false, "emit a CSI index instead of .tbi")
+	fs.IntVar(&o.csiMinShift, "csi-min-shift", 0, "CSI min_shift parameter (default 14)")
 	fs.BoolVar(&o.showHelp, "help", false, "show help")
 	cliflag.BoolVar(fs, &o.showVersion, "v", "version", false, "show version")
 
