@@ -1,0 +1,160 @@
+package samtools
+
+import (
+	"fmt"
+	"io"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+)
+
+// FlagstatCounts is the tally of flag combinations needed to render the
+// 13-line samtools-style flagstat report. Each counter is a [QC-passed,
+// QC-failed] pair where QC-failed sums records with the 0x200 flag bit set.
+type FlagstatCounts struct {
+	Total             [2]int
+	Primary           [2]int
+	Secondary         [2]int
+	Supplementary     [2]int
+	Duplicates        [2]int
+	PrimaryDuplicates [2]int
+	Mapped            [2]int
+	PrimaryMapped     [2]int
+	Paired            [2]int
+	Read1             [2]int
+	Read2             [2]int
+	ProperlyPaired    [2]int
+	WithItselfAndMate [2]int
+	Singletons        [2]int
+	MateDiffChr       [2]int
+	MateDiffChrMapq5  [2]int
+}
+
+// CountFlagstat consumes a SAM/BAM stream from r and returns the flagstat
+// tallies. The header is parsed first via sam.NewReader.
+func CountFlagstat(r io.Reader) (*FlagstatCounts, error) {
+	rd, err := sam.NewReader(r)
+	if err != nil {
+		return nil, err
+	}
+	c := &FlagstatCounts{}
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		c.add(rec)
+	}
+	return c, nil
+}
+
+// add updates the counters for one record.
+func (c *FlagstatCounts) add(r *sam.Record) {
+	idx := 0
+	if r.IsQCFail() {
+		idx = 1
+	}
+	c.Total[idx]++
+
+	primary := r.IsPrimary()
+	switch {
+	case r.IsSecondary():
+		c.Secondary[idx]++
+	case r.IsSupplementary():
+		c.Supplementary[idx]++
+	default:
+		c.Primary[idx]++
+	}
+
+	if r.IsDuplicate() {
+		c.Duplicates[idx]++
+		if primary {
+			c.PrimaryDuplicates[idx]++
+		}
+	}
+
+	if r.IsMapped() {
+		c.Mapped[idx]++
+		if primary {
+			c.PrimaryMapped[idx]++
+		}
+	}
+
+	if !r.IsPaired() {
+		return
+	}
+	c.Paired[idx]++
+	if r.IsRead1() {
+		c.Read1[idx]++
+	}
+	if r.IsRead2() {
+		c.Read2[idx]++
+	}
+	if r.IsProperPair() {
+		c.ProperlyPaired[idx]++
+	}
+	// Mate-related accounting only applies to mapped records.
+	if r.IsUnmapped() {
+		return
+	}
+	if !r.IsMateUnmapped() {
+		c.WithItselfAndMate[idx]++
+		// Mate on a different chromosome: RNEXT != "=" and != "" (the
+		// SAM-convention reflexive marker).
+		if r.RNext != "" && r.RNext != "=" {
+			c.MateDiffChr[idx]++
+			if r.MapQ >= 5 {
+				c.MateDiffChrMapq5[idx]++
+			}
+		}
+	} else {
+		c.Singletons[idx]++
+	}
+}
+
+// Format writes the 13-line samtools-style flagstat report to w.
+func (c *FlagstatCounts) Format(w io.Writer) error {
+	pct := func(num, denom int) string {
+		if denom == 0 {
+			return "N/A"
+		}
+		return fmt.Sprintf("%.2f%%", 100.0*float64(num)/float64(denom))
+	}
+
+	lines := []string{
+		fmt.Sprintf("%d + %d in total (QC-passed reads + QC-failed reads)", c.Total[0], c.Total[1]),
+		fmt.Sprintf("%d + %d primary", c.Primary[0], c.Primary[1]),
+		fmt.Sprintf("%d + %d secondary", c.Secondary[0], c.Secondary[1]),
+		fmt.Sprintf("%d + %d supplementary", c.Supplementary[0], c.Supplementary[1]),
+		fmt.Sprintf("%d + %d duplicates", c.Duplicates[0], c.Duplicates[1]),
+		fmt.Sprintf("%d + %d primary duplicates", c.PrimaryDuplicates[0], c.PrimaryDuplicates[1]),
+		fmt.Sprintf("%d + %d mapped (%s : %s)", c.Mapped[0], c.Mapped[1], pct(c.Mapped[0], c.Total[0]), pct(c.Mapped[1], c.Total[1])),
+		fmt.Sprintf("%d + %d primary mapped (%s : %s)", c.PrimaryMapped[0], c.PrimaryMapped[1], pct(c.PrimaryMapped[0], c.Primary[0]), pct(c.PrimaryMapped[1], c.Primary[1])),
+		fmt.Sprintf("%d + %d paired in sequencing", c.Paired[0], c.Paired[1]),
+		fmt.Sprintf("%d + %d read1", c.Read1[0], c.Read1[1]),
+		fmt.Sprintf("%d + %d read2", c.Read2[0], c.Read2[1]),
+		fmt.Sprintf("%d + %d properly paired (%s : %s)", c.ProperlyPaired[0], c.ProperlyPaired[1], pct(c.ProperlyPaired[0], c.Paired[0]), pct(c.ProperlyPaired[1], c.Paired[1])),
+		fmt.Sprintf("%d + %d with itself and mate mapped", c.WithItselfAndMate[0], c.WithItselfAndMate[1]),
+		fmt.Sprintf("%d + %d singletons (%s : %s)", c.Singletons[0], c.Singletons[1], pct(c.Singletons[0], c.Paired[0]), pct(c.Singletons[1], c.Paired[1])),
+		fmt.Sprintf("%d + %d with mate mapped to a different chr", c.MateDiffChr[0], c.MateDiffChr[1]),
+		fmt.Sprintf("%d + %d with mate mapped to a different chr (mapQ>=5)", c.MateDiffChrMapq5[0], c.MateDiffChrMapq5[1]),
+	}
+	for _, ln := range lines {
+		if _, err := fmt.Fprintln(w, ln); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Flagstat is the high-level entry point used by the CLI: reads from r,
+// writes the report to w.
+func Flagstat(r io.Reader, w io.Writer) error {
+	c, err := CountFlagstat(r)
+	if err != nil {
+		return err
+	}
+	return c.Format(w)
+}
