@@ -95,6 +95,15 @@ func ParseColumnOps(colsStr, opsStr string) (*ColumnOps, error) {
 		for i := range ops {
 			ops[i] = opParts[0]
 		}
+	case len(cols) == 1:
+		// Single column, many ops: apply each op to the same column, producing
+		// one output column per op. This matches upstream bedtools merge.
+		ops = opParts
+		expanded := make([]int, len(opParts))
+		for i := range expanded {
+			expanded[i] = cols[0]
+		}
+		cols = expanded
 	default:
 		return nil, fmt.Errorf("number of operations (%d) must be 1 or equal to number of columns (%d)", len(opParts), len(cols))
 	}

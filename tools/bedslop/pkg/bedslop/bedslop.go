@@ -84,10 +84,15 @@ func ReadChromSizes(r io.Reader) (ChromSizes, error) {
 // Slop reads BED records from in, extends them according to opts using the
 // chromosome sizes in sizes, and writes the surviving records to out.
 //
+// Slop matches the upstream `bedtools slop` boundary semantics: negative slop
+// that crosses (newStart > newEnd) swaps the two coordinates, and slop that
+// would push the entire interval off the chromosome collapses to a 1bp slice
+// at the appropriate boundary instead of dropping the record.
+//
 // A record is dropped (and a warning written to warn) when:
 //
 //   - its chromosome is not in sizes; or
-//   - the extension shrinks it to a non-positive length; or
+//   - the chromosome has length 0 (no valid 1bp slice exists); or
 //   - its chromStart/chromEnd cannot be parsed.
 //
 // Slop returns the number of records written.
@@ -139,17 +144,46 @@ func Slop(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, opts Op
 
 		newStart := start - left
 		newEnd := end + right
-		if newStart < 0 {
+		// Match upstream bedtools slop: when negative slop produces an inverted
+		// interval (newStart > newEnd), swap the two coordinates so the output
+		// is still a well-formed interval rather than being dropped.
+		if newStart > newEnd {
+			newStart, newEnd = newEnd, newStart
+		}
+		// Clip to the chromosome. Upstream pins the interval to a 1bp slice at
+		// the relevant boundary instead of dropping it when slop would push the
+		// whole record off the chromosome, so we mirror that here.
+		if newEnd <= 0 {
 			newStart = 0
-		}
-		if newEnd > chromSize {
-			newEnd = chromSize
-		}
-		if newStart >= newEnd {
-			if warn != nil {
-				fmt.Fprintf(warn, "warning: slop produced empty interval; dropping record: %s\n", raw)
+			newEnd = 1
+		} else if newStart >= chromSize {
+			newStart = chromSize - 1
+			if newStart < 0 {
+				newStart = 0
 			}
-			continue
+			newEnd = chromSize
+		} else {
+			if newStart < 0 {
+				newStart = 0
+			}
+			if newEnd > chromSize {
+				newEnd = chromSize
+			}
+			if newEnd <= newStart {
+				// Slop collapsed the interval inside the chromosome bounds
+				// (e.g. clipped to the start boundary). Emit a minimal 1bp
+				// interval at that boundary.
+				if newStart+1 <= chromSize {
+					newEnd = newStart + 1
+				} else if newStart > 0 {
+					newStart = newEnd - 1
+				} else {
+					if warn != nil {
+						fmt.Fprintf(warn, "warning: slop produced empty interval on a 0-length chromosome; dropping record: %s\n", raw)
+					}
+					continue
+				}
+			}
 		}
 		fields[1] = strconv.Itoa(newStart)
 		fields[2] = strconv.Itoa(newEnd)

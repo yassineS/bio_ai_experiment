@@ -57,16 +57,18 @@ func TestSlopNegativeShrinks(t *testing.T) {
 	}
 }
 
-func TestSlopDropsEmptyInterval(t *testing.T) {
+func TestSlopInvertedIntervalIsSwapped(t *testing.T) {
 	sizes := ChromSizes{"chr1": 1000}
-	// 100..120 shrunk by 50 each side -> 150..70 -> empty, drop.
+	// 100..120 shrunk by 50 each side -> newStart=150, newEnd=70. Upstream
+	// bedtools slop swaps the coordinates rather than dropping the record;
+	// see parity test slop.t20 ("crossover during negative slop").
 	input := "chr1\t100\t120\n"
 	out, warn := runSlop(t, input, sizes, Options{Both: true, BothAdd: -50})
-	if out != "" {
-		t.Errorf("expected no output, got %q", out)
+	if out != "chr1\t70\t150\n" {
+		t.Errorf("expected swapped interval, got %q", out)
 	}
-	if !strings.Contains(warn, "empty interval") {
-		t.Errorf("expected warning about empty interval, got %q", warn)
+	if warn != "" {
+		t.Errorf("expected no warning, got %q", warn)
 	}
 }
 

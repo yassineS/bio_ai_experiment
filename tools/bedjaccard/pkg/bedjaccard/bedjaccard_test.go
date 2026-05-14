@@ -37,7 +37,7 @@ func TestRunBasic(t *testing.T) {
 		t.Errorf("jaccard=%v want ~0.3333", res.Jaccard)
 	}
 	wantHeader := "intersection\tunion\tjaccard\tn_intersections\n"
-	wantBody := "10\t30\t0.3333333333\t2\n"
+	wantBody := "10\t30\t0.333333\t2\n"
 	if out != wantHeader+wantBody {
 		t.Errorf("output mismatch.\nwant:\n%s\ngot:\n%s", wantHeader+wantBody, out)
 	}
@@ -232,7 +232,7 @@ func TestFormatJaccard(t *testing.T) {
 	if s := formatJaccard(0); s != "0" {
 		t.Errorf("got %q", s)
 	}
-	if s := formatJaccard(1.0 / 3.0); s != "0.3333333333" {
+	if s := formatJaccard(1.0 / 3.0); s != "0.333333" {
 		t.Errorf("got %q", s)
 	}
 }
