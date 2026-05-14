@@ -91,6 +91,13 @@ The runtime is single-threaded; the `-t/--threads` flag is accepted for
 compatibility with existing pipelines. A future slice may parallelise
 the per-chromosome event sweep.
 
+**Overlap-pair detection** — upstream subtracts one copy of depth where
+the two ends of a mate-paired fragment overlap on the reference. Our v1
+engine doesn't implement this pairing pass, so our default-mode output
+matches upstream's `--fast-mode` output rather than upstream's default.
+Tracked at
+[docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection](../../docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection).
+
 ## Testing
 
 ```bash
