@@ -1,28 +1,38 @@
 # Bioinformatics Tool Ranking — 2026 Refresh
 
-**Date:** 2026-05-14
+**Date:** 2026-05-14 (revised 2026-05-14)
 **Author:** Research pass for `bio_ai_experiment`
-**Purpose:** Re-rank candidate tools by *current* (2024–2026) real-world usage so
-we stop pouring effort into dead software (sickle 2014, skewer 2016,
-PRINSEQ-lite 2016) and start delivering value where people actually feel the
-pain today.
+**Purpose:** Rank candidate **new** tools to port by *current* (2024–2026)
+real-world usage. **This file is not a deprioritise-existing-tools filter.**
+
+> **Scope clarification (2026-05-14 revision):** the project goal is **1:1
+> feature parity with every tool we've started**, including ones whose
+> upstream is dormant. This file ranks which *additional* tools to port
+> after the existing-tool parity work is complete. The earlier "freeze
+> sickle/skewer/PRINSEQ" advice in this document was wrong relative to the
+> project goal and has been removed. See
+> [`../docs/PARITY_ROADMAP.md`](../docs/PARITY_ROADMAP.md) for the per-tool
+> gap list and [`../docs/UPSTREAM_BUGS.md`](../docs/UPSTREAM_BUGS.md) for
+> upstream bugs we choose not to carry over.
 
 ## TL;DR
 
-- **Deprioritise (keep, but stop chasing 100% parity):** `sickle`, `skewer`,
-  `prinseq` — all upstream-dead since 2015–2016 and replaced in practice by
-  `fastp` / `Trim Galore` / `cutadapt`. We already have working ports; treat
-  them as "case studies" and move on.
+- **The 1:1 parity goal applies to every existing port**, including
+  sickle / skewer / PRINSEQ-lite. Upstream being dormant doesn't change
+  the parity bar — it just means our port becomes the maintained
+  implementation. The earlier "deprioritise" framing has been retracted.
 - **Trim Galore went official-Rust** in v2.1.0 "Oxidized Edition" (May 2026).
-  That removes a candidate from our list — no point porting a tool whose
-  upstream just shipped a modern rewrite.
-- **Go all-in on the SAM/BAM/VCF/BGZF/tabix layer.** It's the most-used,
-  most-stable, most-painful-to-install set of tools in the field, and
-  `biogo/hts` (the only existing Go htslib alternative) is unmaintained since
-  2017. There is a clear "deliver value" wedge here.
-- **Top-5 next picks:** `bgzip`, `tabix`, `samtools view/sort/index`,
-  `bcftools view/index/merge`, `mosdepth`. See "Next-up shortlist" at the
-  bottom for rationale.
+  That removes a candidate from our *new-tools* shortlist — no point
+  porting a tool whose upstream just shipped a modern rewrite.
+- **For new tools, go all-in on the SAM/BAM/VCF/BGZF/tabix layer.** It's
+  the most-used, most-stable, most-painful-to-install set of tools in the
+  field, and `biogo/hts` (the only existing Go htslib alternative) is
+  unmaintained since 2017. There is a clear "deliver value" wedge here.
+- **Top-5 next picks (all merged as of 2026-05-14):** `bgzip` ✅, `tabix` ✅,
+  `samtools view/sort/index/depth/fastq/flagstat` ✅,
+  `bcftools view/index/stats/query/concat/norm` ✅, `mosdepth` ✅. Their
+  remaining sub-features count against the **parity roadmap**, not this
+  list. See "Next-up shortlist" at the bottom for the next batch.
 
 ## How to read this doc
 
@@ -47,9 +57,9 @@ couldn't be confirmed, "n/a" is used and no speculation is offered.
 | Tool | Bioconda total dl | Last release | Maintained? | Recommendation |
 |------|------------------:|--------------|:-----------:|----------------|
 | `seqtk`     | n/a (commonly cited >1M) | 1.5 (Jun 2025) | yes | keep, parity-track |
-| `prinseq`   | n/a (latest 0.20.4, Mar 2016) | 2016 | **no** | already done — freeze, deprioritise |
-| `sickle`    | n/a (latest Dec 2015) | 2015 | **no** | already done — freeze, deprioritise |
-| `skewer`    | n/a (latest Sep 2016) | 2016 | **no** | already done — freeze, deprioritise |
+| `prinseq`   | n/a (latest 0.20.4, Mar 2016) | 2016 | **no** | already started — close to 1:1 (see PARITY_ROADMAP) |
+| `sickle`    | n/a (latest Dec 2015) | 2015 | **no** | already started — close to 1:1 (see PARITY_ROADMAP) |
+| `skewer`    | n/a (latest Sep 2016) | 2016 | **no** | already started — close to 1:1 (see PARITY_ROADMAP) |
 | `fastp`     | ~631k | 1.3.3 (Apr 2026) | yes | keep, parity-track |
 | `vcftools`  | n/a (latest 0.1.17, May 2025) | 0.1.17 (May 2025) | weak | already done — keep, but note vcftools is itself nearly frozen |
 | `bedmerge/intersect/sort/...` (bedtools subset) | bedtools: ~3.3M | bedtools 2.31.1 (Nov 2023) | yes | keep, extend coverage |

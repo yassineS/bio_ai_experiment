@@ -30,15 +30,21 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bcftools`](bcftools/) | htslib `bcftools` | VCF/BCF `view` (filtering, conversion, expression evaluator) | 85% |
 
 For up-to-date per-tool feature lists and migration notes, see each tool's
-own `README.md` plus [`PORTING_STATUS.md`](PORTING_STATUS.md).
+own `README.md`, [`PORTING_STATUS.md`](PORTING_STATUS.md), and the
+authoritative gap list in [`../docs/PARITY_ROADMAP.md`](../docs/PARITY_ROADMAP.md).
 
-## What's deprioritised
+## Project goal: 1:1 feature parity
 
-Per [`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking_2026.md):
-**sickle**, **skewer**, and **prinseq** map to upstreams that have been
-abandoned since 2015–2016 (replaced in practice by `fastp` and
-`cutadapt`/`Trim Galore`). The Go ports remain in this repo as working
-software and useful prior art, but they will not get further parity work.
+Every tool in this directory targets **1:1 feature parity** with its
+upstream, validated byte-for-byte against the upstream's own test suite
+where one exists. No port here is yet "done" by that bar; the gap list
+per tool is in [`../docs/PARITY_ROADMAP.md`](../docs/PARITY_ROADMAP.md), and
+bugs we identify in the upstream (which we do not carry over) are tracked
+in [`../docs/UPSTREAM_BUGS.md`](../docs/UPSTREAM_BUGS.md).
+
+The companion file [`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking_2026.md)
+ranks which **new** tools to port next; it is not a deprioritise-existing
+filter.
 
 ## Building, testing, running
 
