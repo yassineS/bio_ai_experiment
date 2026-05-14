@@ -79,9 +79,27 @@ fastp -i input.fastq -o output.fastq --detect-adapter
 ### UMI Extraction
 
 ```bash
-# Extract 8-base UMI from beginning of reads
-fastp -i input.fastq -o output.fastq --umi-length 8
+# Extract an 8-base UMI from the front of each read (single-end / R1).
+fastp -i input.fastq -o output.fastq --umi --umi_loc read1 --umi_len 8
 ```
+
+See the [UMI processing](#umi-processing) section below for all supported
+`--umi_loc` modes (`read1`, `read2`, `per_read`, `index1`, `index2`,
+`per_index`).
+
+### Duplication Evaluation and Dedup
+
+```bash
+# Track duplication rate, build the duplication-level histogram, and drop
+# duplicate reads from the output FASTQ.
+fastp -i input.fastq -o output.fastq \
+      --dup_calc_accuracy 3 --dedup \
+      --json report.json --html report.html
+```
+
+See the [Duplication evaluation](#duplication-evaluation) section below for
+details on the accuracy/memory tradeoff and how the results show up in
+the JSON and HTML reports.
 
 ### Base Correction
 
@@ -199,6 +217,68 @@ are applied in that order (matching upstream fastp).
 - `--low-complexity` - Enable complexity filtering
 - `--complexity-threshold FLOAT` - Complexity threshold (default: 0.3)
 
+### UMI Processing
+
+UMI (Unique Molecular Identifier) extraction supports the same set of
+locations as upstream fastp. The UMI is appended to the read name as
+`:UMI_<prefix><umi>` so the downstream aligner can preserve molecular
+identity.
+
+- `--umi` - Enable UMI processing
+- `--umi_loc STRING` - UMI location:
+  - `read1` - UMI is the prefix of read 1 (default for single-end)
+  - `read2` - UMI is the prefix of read 2
+  - `per_read` - UMI prefix on BOTH R1 and R2; the two UMIs are joined
+    with `_` (default for paired-end)
+  - `index1` - UMI is the i7 index parsed from the Illumina header
+  - `index2` - UMI is the i5 index parsed from the Illumina header
+  - `per_index` - UMI is `i7_i5` (both index fields combined)
+- `--umi_len INT` - UMI length in bases (used by `read1`/`read2`/`per_read`)
+- `--umi_prefix STRING` - Optional prefix prepended to the UMI in the read
+  name (default: empty)
+- `--umi_skip INT` - Bases to skip immediately after the UMI bases
+  (default: 0)
+
+```bash
+# Per-read UMI extraction on paired-end Illumina reads.
+fastp -I R1.fq.gz -O clean_R1.fq.gz --in2 R2.fq.gz --out2 clean_R2.fq.gz \
+      --umi --umi_loc per_read --umi_len 6 --umi_prefix L_
+```
+
+In `read1`/`read2`/`per_read` modes the UMI bases plus `--umi_skip`
+trailing bases are removed from the sequence and quality strings.
+In `index1`/`index2`/`per_index` modes the sequence is left untouched
+and the UMI is parsed from the description line of the FASTQ record.
+
+The legacy `--umi-length`, `--umi-location`, and `--umi-skip` flags are
+still accepted as aliases.
+
+### Duplication Evaluation
+
+Duplication rate is approximated with a fixed-size hash table, matching
+upstream fastp's algorithm. Memory usage is roughly
+`2 * 2^(17 + accuracy)` bytes — about 1 MB at `--dup_calc_accuracy 3`.
+
+- `--dup_calc_accuracy INT` - Accuracy bucket in `[1, 6]`. Higher buckets
+  use more memory but produce fewer spurious hash collisions on highly
+  diverse libraries. `0` (the default) disables duplication tracking.
+- `--dedup` - When set, the second and later occurrences of each
+  duplicate read are dropped from the output FASTQ stream. `--dedup`
+  implies duplication tracking; it will use accuracy `3` if you don't
+  specify one explicitly.
+
+```bash
+# Duplication report only — no reads are dropped, but the JSON report's
+# "duplication" section will contain the rate plus a per-occurrence-count
+# histogram, and the HTML report will include a Duplication section.
+fastp -i input.fastq -o output.fastq --dup_calc_accuracy 3 \
+      --json report.json --html report.html
+```
+
+The hash key is the first 16 bytes of each read (or the full sequence
+when it's shorter than 16 bp). In paired-end mode the R1 sequence is
+hashed.
+
 ## Examples
 
 ### NovaSeq Data Preprocessing
@@ -277,10 +357,13 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ Built-in gzip support
 - ✅ Paired-end read support
 - ✅ **HTML report generation**
-- ✅ **UMI/barcode processing**
+- ✅ **UMI/barcode processing** (`read1`, `read2`, `per_read`, `index1`,
+  `index2`, `per_index`)
 - ✅ **Base correction**
 - ✅ **Overlap analysis for paired-end**
 - ✅ **Multi-threading support**
+- ✅ **Duplication evaluation** (`--dup_calc_accuracy`) and dedup
+  (`--dedup`)
 
 ### Not Implemented (from original)
 
@@ -358,7 +441,13 @@ fastp -i raw.fastq -o qc.fastq \
 - ✅ Multi-threading support
 - ✅ HTML report generation
 
-### Version 1.2.0 (Future)
+### Version 1.2.0 (Completed)
+
+- ✅ Duplication evaluation (`--dup_calc_accuracy`)
+- ✅ Read deduplication (`--dedup`)
+- ✅ Extended UMI locations (`per_read`, `index1`, `index2`, `per_index`)
+
+### Version 1.3.0 (Future)
 
 - [ ] Per-tile quality filtering
 - [ ] Advanced quality profiling

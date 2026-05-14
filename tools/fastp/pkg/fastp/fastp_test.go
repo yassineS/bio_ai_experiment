@@ -329,7 +329,7 @@ func TestExtractUMI(t *testing.T) {
 
 	result, _ := extractUMI(record, nil, opts, stats)
 
-	if !strings.Contains(result.ID, "UMI:ACGTAC") {
+	if !strings.Contains(result.ID, "UMI_ACGTAC") {
 		t.Errorf("Expected UMI to be added to ID, got %s", result.ID)
 	}
 

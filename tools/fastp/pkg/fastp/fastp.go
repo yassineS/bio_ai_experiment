@@ -57,10 +57,21 @@ type ProcessOptions struct {
 	LengthRequired int
 	LengthLimit    int
 
-	// UMI processing
+	// UMI processing (legacy fields, kept for backward compatibility with
+	// the older umi-length/umi-location/umi-skip flag names).
 	UMILength   int
 	UMILocation string // "read1", "read2", "index"
-	UMISkip     int    // Bases to skip before UMI
+
+	// UMI processing — current API matching upstream fastp's --umi family.
+	UMI       bool   // Enable UMI processing
+	UMILoc    string // One of: read1, read2, per_read, index1, index2, per_index
+	UMILen    int    // Number of UMI bases on the read (sequence-located modes only)
+	UMIPrefix string // Optional prefix prepended to the UMI in the read name
+	UMISkip   int    // Bases to skip immediately after the UMI bases
+
+	// Duplication evaluation
+	DupCalcAccuracy int  // 1..6; controls dup hash-table size. 0 means "disabled".
+	Dedup           bool // When true, drop duplicate reads from the output stream.
 
 	// Base correction
 	BaseCorrection      bool
@@ -111,7 +122,13 @@ func DefaultProcessOptions() ProcessOptions {
 		LengthLimit:         0,
 		UMILength:           0,
 		UMILocation:         "",
+		UMI:                 false,
+		UMILoc:              "",
+		UMILen:              0,
+		UMIPrefix:           "",
 		UMISkip:             0,
+		DupCalcAccuracy:     0,
+		Dedup:               false,
 		BaseCorrection:      false,
 		CorrectionThreshold: 20,
 		MergeOverlap:        false,
@@ -153,10 +170,17 @@ type ProcessStats struct {
 	DetectedAdapter     string
 	DetectedAdapterR1   string // Adapter detected for read 1 in PE mode
 	DetectedAdapterR2   string // Adapter detected for read 2 in PE mode
-	UMIExtracted        int
+	UMIExtracted        int    // Legacy counter (kept for back-compat with older tests/scripts).
+	UMIProcessed        int    // Count of records that had a UMI extracted.
 	BasesCorrected      int64
 	OverlappingReads    int
 	MergedReads         int
+
+	// Duplication evaluation results, populated when DupCalcAccuracy > 0.
+	DupRate      float64
+	DupHist      map[int]int64
+	DedupDropped int   // Reads removed from the output stream when Dedup is true.
+	DupTotal     int64 // Total reads observed by the dup tracker.
 
 	// Per-base quality + composition tracking, captured BEFORE filtering.
 	// Index 0 is read 1; index 1 (when populated) is read 2.
@@ -315,15 +339,27 @@ type OverlapResult struct {
 
 // ProcessPairedEnd processes paired-end FASTQ reads with all filters.
 func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
+	opts = normalizeUMIOptions(opts)
 	reader1 := fastq.NewReader(input1, encoding)
 	reader2 := fastq.NewReader(input2, encoding)
 	writer1 := fastq.NewWriter(output1, encoding)
 	writer2 := fastq.NewWriter(output2, encoding)
 
 	stats := &ProcessStats{}
+	var dupTracker *DupTracker
+	if opts.DupCalcAccuracy > 0 || opts.Dedup {
+		acc := opts.DupCalcAccuracy
+		if acc <= 0 {
+			acc = dupAccuracyDefault
+		}
+		dupTracker = NewDupTracker(acc)
+	}
 
-	// Process with multi-threading if enabled
-	if opts.Threads > 1 {
+	// Process with multi-threading if enabled. UMI and duplication
+	// tracking serialize through the input pipeline because they need a
+	// deterministic per-record view, so we fall back to single-threaded
+	// mode when either is active.
+	if opts.Threads > 1 && !opts.UMI && opts.UMILength == 0 && dupTracker == nil {
 		return processPairedEndParallel(reader1, reader2, writer1, writer2, encoding, opts, stats)
 	}
 
@@ -378,9 +414,20 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 		stats.recordBefore(record1, 0, encoding)
 		stats.recordBefore(record2, 1, encoding)
 
+		// Duplication evaluation: hash the R1 sequence (matches upstream
+		// fastp). When --dedup is on and the read is a duplicate, drop
+		// both mates and skip further processing.
+		if dupTracker != nil {
+			isDup := dupTracker.Observe(record1.Sequence)
+			if isDup && opts.Dedup {
+				stats.DedupDropped += 2
+				return nil
+			}
+		}
+
 		// Extract UMI if configured
-		if opts.UMILength > 0 {
-			record1, record2 = extractUMI(record1, record2, opts, stats)
+		if opts.UMI || opts.UMILength > 0 {
+			record1, record2 = applyUMI(record1, record2, opts, stats)
 		}
 
 		// Check for overlap and merge if enabled
@@ -461,18 +508,43 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 	if err := writer2.Flush(); err != nil {
 		return stats, fmt.Errorf("error flushing output2: %w", err)
 	}
+	finalizeDupStats(stats, dupTracker)
 	return stats, nil
+}
+
+// finalizeDupStats copies the final duplication metrics out of the
+// tracker into stats. Called once at the end of each Process* function.
+// It is safe to call with a nil tracker (no-op).
+func finalizeDupStats(stats *ProcessStats, tracker *DupTracker) {
+	if stats == nil || tracker == nil {
+		return
+	}
+	stats.DupRate = tracker.Rate()
+	stats.DupHist = tracker.Histogram()
+	stats.DupTotal = tracker.Total()
 }
 
 // ProcessSingleEnd processes single-end FASTQ reads with all filters.
 func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
+	opts = normalizeUMIOptions(opts)
 	reader := fastq.NewReader(input, encoding)
 	writer := fastq.NewWriter(output, encoding)
 
 	stats := &ProcessStats{}
+	var dupTracker *DupTracker
+	if opts.DupCalcAccuracy > 0 || opts.Dedup {
+		acc := opts.DupCalcAccuracy
+		if acc <= 0 {
+			acc = dupAccuracyDefault
+		}
+		dupTracker = NewDupTracker(acc)
+	}
 
-	// Process with multi-threading if enabled
-	if opts.Threads > 1 {
+	// Process with multi-threading if enabled. UMI and duplication
+	// tracking serialize through the input pipeline because they need a
+	// deterministic per-record view, so we fall back to single-threaded
+	// mode when either is active.
+	if opts.Threads > 1 && !opts.UMI && opts.UMILength == 0 && dupTracker == nil {
 		return processSingleEndParallel(reader, writer, encoding, opts, stats)
 	}
 
@@ -505,9 +577,19 @@ func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityE
 		stats.TotalBases += int64(originalLength)
 		stats.recordBefore(record, 0, encoding)
 
+		// Duplication tracking: hash the read sequence and optionally
+		// drop duplicates when --dedup is on.
+		if dupTracker != nil {
+			isDup := dupTracker.Observe(record.Sequence)
+			if isDup && opts.Dedup {
+				stats.DedupDropped++
+				return nil
+			}
+		}
+
 		// Extract UMI if configured
-		if opts.UMILength > 0 && opts.UMILocation == "read1" {
-			record, _ = extractUMI(record, nil, opts, stats)
+		if opts.UMI || opts.UMILength > 0 {
+			record, _ = applyUMI(record, nil, opts, stats)
 		}
 
 		processed, pass := processRecord(record, opts, stats, encoding)
@@ -546,6 +628,7 @@ func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityE
 		return stats, fmt.Errorf("error flushing output: %w", err)
 	}
 
+	finalizeDupStats(stats, dupTracker)
 	return stats, nil
 }
 
@@ -944,52 +1027,34 @@ func DetectAdapterFromReads(reads []string) string {
 	return ""
 }
 
-// extractUMI extracts UMI from reads based on configuration
+// normalizeUMIOptions promotes the legacy --umi-length / --umi-location /
+// --umi-skip fields into the newer fastp-aligned UMI/UMILen/UMILoc/UMISkip
+// fields when the caller has only filled in the legacy set. This keeps
+// older programmatic callers working without changing the public API.
+func normalizeUMIOptions(opts ProcessOptions) ProcessOptions {
+	if !opts.UMI && opts.UMILength > 0 {
+		opts.UMI = true
+		if opts.UMILen == 0 {
+			opts.UMILen = opts.UMILength
+		}
+		if opts.UMILoc == "" {
+			if opts.UMILocation != "" {
+				opts.UMILoc = opts.UMILocation
+			} else {
+				opts.UMILoc = UMILocRead1
+			}
+		}
+	}
+	return opts
+}
+
+// extractUMI is a thin shim retained for the existing call sites that
+// invoke UMI extraction with two records. It delegates to applyUMI so all
+// supported --umi_loc modes are honoured. Legacy callers that only set
+// the UMILength/UMILocation/UMISkip fields are accommodated by
+// normalizeUMIOptions.
 func extractUMI(record1, record2 *fastq.Record, opts ProcessOptions, stats *ProcessStats) (*fastq.Record, *fastq.Record) {
-	if opts.UMILength == 0 {
-		return record1, record2
-	}
-
-	extractFromRecord := func(record *fastq.Record) *fastq.Record {
-		if record == nil {
-			return nil
-		}
-
-		start := opts.UMISkip
-		end := start + opts.UMILength
-
-		if end > len(record.Sequence) {
-			return record
-		}
-
-		// Extract UMI and add to ID
-		umi := string(record.Sequence[start:end])
-		newID := fmt.Sprintf("%s_UMI:%s", record.ID, umi)
-
-		// Remove UMI from sequence
-		newSeq := append([]byte{}, record.Sequence[:start]...)
-		newSeq = append(newSeq, record.Sequence[end:]...)
-
-		newQual := append([]byte{}, record.Quality[:start]...)
-		newQual = append(newQual, record.Quality[end:]...)
-
-		stats.UMIExtracted++
-
-		return &fastq.Record{
-			ID:          newID,
-			Description: record.Description,
-			Sequence:    newSeq,
-			Quality:     newQual,
-		}
-	}
-
-	if opts.UMILocation == "read1" {
-		return extractFromRecord(record1), record2
-	} else if opts.UMILocation == "read2" {
-		return record1, extractFromRecord(record2)
-	}
-
-	return record1, record2
+	return applyUMI(record1, record2, normalizeUMIOptions(opts), stats)
 }
 
 // correctBases performs base correction based on quality scores

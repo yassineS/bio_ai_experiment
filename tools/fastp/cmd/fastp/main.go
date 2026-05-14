@@ -60,9 +60,19 @@ Options:
     --complexity-threshold FLOAT  Complexity threshold (default: 0.3)
   
   UMI/Barcode Processing:
-    --umi-length INT          UMI length (0 = disabled)
-    --umi-location STRING     UMI location: read1, read2 (default: read1)
-    --umi-skip INT            Bases to skip before UMI (default: 0)
+    --umi                     Enable UMI processing (use with --umi_loc / --umi_len)
+    --umi_loc STRING          UMI location: read1, read2, per_read, index1,
+                              index2, per_index (default: read1 SE / per_read PE)
+    --umi_len INT             UMI length in bases (read1/read2/per_read)
+    --umi_prefix STRING       Prefix prepended to UMI in the read name
+    --umi_skip INT            Bases to skip after the UMI bases (default: 0)
+    --umi-length INT          [legacy] alias of --umi_len
+    --umi-location STRING     [legacy] alias of --umi_loc
+    --umi-skip INT            [legacy] alias of --umi_skip
+
+  Duplication Evaluation:
+    --dup_calc_accuracy INT   Duplication accuracy bucket (1-6; 0 disables)
+    --dedup                   Drop duplicate reads from the output stream
   
   Base Correction:
     --base-correction         Enable base correction
@@ -93,8 +103,11 @@ Examples:
   # Auto-detect adapter
   fastp -i input.fastq -o output.fastq --detect-adapter
   
-  # With UMI extraction
-  fastp -i input.fastq -o output.fastq --umi-length 8
+  # With UMI extraction (legacy flags still work)
+  fastp -i input.fastq -o output.fastq --umi --umi_loc read1 --umi_len 8
+
+  # Duplication evaluation + drop duplicates
+  fastp -i input.fastq -o output.fastq --dup_calc_accuracy 3 --dedup
   
   # Sliding-window quality trimming from both ends
   fastp -i input.fastq -o output.fastq --cut-front --cut-tail -W 4 -M 20
@@ -165,6 +178,14 @@ func main() {
 		jsonReport          string
 		detectAdapterForPE  bool
 		showHelp            bool
+		// Duplication evaluation
+		dupCalcAccuracy int
+		dedup           bool
+		// UMI (fastp-aligned flag names)
+		umiEnable bool
+		umiLoc    string
+		umiLen    int
+		umiPrefix string
 	)
 
 	// Input/Output
@@ -208,10 +229,20 @@ func main() {
 	cliflag.BoolVar(fs, &lowComplexity, "", "low-complexity", false, "Enable complexity filtering")
 	cliflag.Float64Var(fs, &complexityThreshold, "", "complexity-threshold", 0.3, "Complexity threshold (default: 0.3)")
 
-	// UMI/barcode processing
-	cliflag.IntVar(fs, &umiLength, "", "umi-length", 0, "UMI length (0 = disabled)")
-	cliflag.StringVar(fs, &umiLocation, "", "umi-location", "read1", "UMI location: read1, read2")
-	cliflag.IntVar(fs, &umiSkip, "", "umi-skip", 0, "Bases to skip before UMI")
+	// UMI/barcode processing — legacy flag names.
+	cliflag.IntVar(fs, &umiLength, "", "umi-length", 0, "UMI length (legacy alias of --umi_len)")
+	cliflag.StringVar(fs, &umiLocation, "", "umi-location", "read1", "UMI location (legacy alias of --umi_loc)")
+	cliflag.IntVar(fs, &umiSkip, "", "umi-skip", 0, "Bases to skip after UMI (legacy alias of --umi_skip)")
+	// UMI/barcode processing — fastp-aligned flag names.
+	cliflag.BoolVar(fs, &umiEnable, "", "umi", false, "Enable UMI processing")
+	cliflag.StringVar(fs, &umiLoc, "", "umi_loc", "", "UMI location: read1|read2|per_read|index1|index2|per_index")
+	cliflag.IntVar(fs, &umiLen, "", "umi_len", 0, "UMI length in bases (read1/read2/per_read modes)")
+	cliflag.StringVar(fs, &umiPrefix, "", "umi_prefix", "", "Prefix prepended to UMI in the read name")
+	cliflag.IntVar(fs, &umiSkip, "", "umi_skip", 0, "Bases to skip after UMI bases")
+
+	// Duplication evaluation
+	cliflag.IntVar(fs, &dupCalcAccuracy, "", "dup_calc_accuracy", 0, "Duplication accuracy bucket (1-6; 0 = disabled)")
+	cliflag.BoolVar(fs, &dedup, "", "dedup", false, "Drop duplicate reads from the output stream")
 
 	// Base correction
 	cliflag.BoolVar(fs, &baseCorrection, "", "base-correction", false, "Enable base correction")
@@ -300,7 +331,13 @@ func main() {
 		LengthLimit:         maxLength,
 		UMILength:           umiLength,
 		UMILocation:         umiLocation,
+		UMI:                 umiEnable,
+		UMILoc:              umiLoc,
+		UMILen:              umiLen,
+		UMIPrefix:           umiPrefix,
 		UMISkip:             umiSkip,
+		DupCalcAccuracy:     dupCalcAccuracy,
+		Dedup:               dedup,
 		BaseCorrection:      baseCorrection,
 		CorrectionThreshold: correctionThreshold,
 		MergeOverlap:        mergeOverlap,
@@ -447,8 +484,20 @@ func printStats(stats *fastp.ProcessStats) {
 		fmt.Fprintf(os.Stderr, "  Sliding-window bases:  %d\n", stats.QualityCutBases)
 	}
 
-	if stats.UMIExtracted > 0 {
-		fmt.Fprintf(os.Stderr, "  UMIs extracted:        %d\n", stats.UMIExtracted)
+	if stats.UMIExtracted > 0 || stats.UMIProcessed > 0 {
+		processed := stats.UMIProcessed
+		if processed == 0 {
+			processed = stats.UMIExtracted
+		}
+		fmt.Fprintf(os.Stderr, "  UMIs processed:        %d\n", processed)
+	}
+
+	if stats.DupTotal > 0 {
+		fmt.Fprintf(os.Stderr, "  Duplication rate:      %.2f%% (%d / %d)\n",
+			100.0*stats.DupRate, int64(stats.DupRate*float64(stats.DupTotal)+0.5), stats.DupTotal)
+		if stats.DedupDropped > 0 {
+			fmt.Fprintf(os.Stderr, "  Dedup dropped:         %d\n", stats.DedupDropped)
+		}
 	}
 
 	if stats.BasesCorrected > 0 {

@@ -52,7 +52,8 @@ type jsonFiltering struct {
 }
 
 type jsonDuplication struct {
-	Rate float64 `json:"rate"`
+	Rate      float64          `json:"rate"`
+	Histogram map[string]int64 `json:"histogram,omitempty"`
 }
 
 type jsonAdapterCutting struct {
@@ -163,7 +164,10 @@ func buildJSONReport(stats *ProcessStats) reportJSON {
 			TooShortReads:     int64(stats.TooShortReads),
 			TooLongReads:      int64(stats.TooLongReads),
 		},
-		Duplication: jsonDuplication{Rate: 0.0},
+		Duplication: jsonDuplication{
+			Rate:      stats.DupRate,
+			Histogram: dupHistToJSON(stats.DupHist),
+		},
 		AdapterCutting: jsonAdapterCutting{
 			AdapterTrimmedReads: int64(stats.AdapterTrimmedReads),
 			AdapterTrimmedBases: stats.AdapterTrimmedBases,
@@ -266,6 +270,20 @@ func cycleCurves(s *ProcessStats, readIdx int) (quality map[string][]float64, co
 		content[name] = row
 	}
 	return quality, content
+}
+
+// dupHistToJSON converts a duplication count -> reads-at-that-count map
+// into a string-keyed map suitable for JSON. Returns nil if the input is
+// empty so the field is omitted from the report.
+func dupHistToJSON(hist map[int]int64) map[string]int64 {
+	if len(hist) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(hist))
+	for k, v := range hist {
+		out[fmt.Sprintf("%d", k)] = v
+	}
+	return out
 }
 
 // lengthHistToJSON converts a length->count map into a string-keyed

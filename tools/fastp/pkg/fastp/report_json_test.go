@@ -150,6 +150,58 @@ IIIIIIIIIIIIIIIIIIIIIIII
 	}
 }
 
+func TestWriteJSONReportDuplicationSection(t *testing.T) {
+	stats := makeRichStats(false)
+	stats.DupRate = 0.4
+	stats.DupTotal = 200
+	stats.DupHist = map[int]int64{1: 120, 2: 60, 4: 20}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dup.json")
+	if err := WriteJSONReport(path, stats); err != nil {
+		t.Fatalf("WriteJSONReport: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	dup, ok := m["duplication"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("duplication missing or wrong type: %v", m["duplication"])
+	}
+	if rate, _ := dup["rate"].(float64); rate < 0.39 || rate > 0.41 {
+		t.Errorf("rate: want ~0.4, got %v", rate)
+	}
+	hist, ok := dup["histogram"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("duplication.histogram missing")
+	}
+	if v, _ := hist["1"].(float64); v != 120 {
+		t.Errorf("histogram[1]: want 120, got %v", v)
+	}
+	if v, _ := hist["4"].(float64); v != 20 {
+		t.Errorf("histogram[4]: want 20, got %v", v)
+	}
+}
+
+func TestWriteJSONReportDuplicationOmitsHistogramWhenEmpty(t *testing.T) {
+	stats := makeRichStats(false)
+	// Default: no dup tracking -> histogram key should be omitted.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nohist.json")
+	if err := WriteJSONReport(path, stats); err != nil {
+		t.Fatalf("WriteJSONReport: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), `"histogram"`) {
+		t.Errorf("histogram key should be omitted when empty")
+	}
+}
+
 // discardWriter implements io.Writer and throws data away. Used as the
 // output sink for tests that only care about stats.
 type discardWriter struct{}
