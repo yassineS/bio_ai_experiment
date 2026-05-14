@@ -235,15 +235,9 @@ func findOverlaps(a *bed.Record, bIntervals []*bed.Record, opts IntersectOptions
 			continue
 		}
 
-		// For reciprocal mode, both fractions must be satisfied
-		if opts.Reciprocal {
-			if opts.FractionA > 0 && fracA < opts.FractionA {
-				continue
-			}
-			if opts.FractionB > 0 && fracB < opts.FractionB {
-				continue
-			}
-		}
+		// Note: Reciprocal mode is satisfied by the two checks above when
+		// callers supply both FractionA and FractionB, which is how the CLI
+		// wires it (-r combined with -f and -F). No additional check needed.
 
 		overlaps = append(overlaps, &Overlap{
 			A:          a,
