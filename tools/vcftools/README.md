@@ -24,7 +24,7 @@ This port can:
 
 ### Filtering Options
 
-- **Position filtering**: by chromosome (`--chr`/`--not-chr`), position range (`--from-bp`/`--to-bp`), or position list (`--positions`/`--exclude-positions`)
+- **Position filtering**: by chromosome (`--chr`/`--not-chr`), position range (`--from-bp`/`--to-bp`), position list (`--positions`/`--exclude-positions`), or BED intervals (`--bed`/`--exclude-bed`)
 - **SNP-ID filtering**: `--snp`, `--snps`, `--exclude`, `--exclude-snps`, `--thin`
 - **Variant type filtering**: `--keep-only-indels`, `--remove-indels`, `--min-alleles`/`--max-alleles`
 - **Quality filtering**: `--minQ`, `--remove-filtered-all`
@@ -57,6 +57,37 @@ incorrect quantity for `--site-pi` and silently ignored `--TajimaD`.)
 ### Format Conversion
 
 - `--012` (0/1/2 genotype matrix), `--plink` (PED/MAP), `--plink-tped` (TPED/TFAM), with `--chrom-map`
+- `--BEAGLE-GL` → `<prefix>.BEAGLE.GL` — log10 genotype likelihoods derived
+  from FORMAT/PL. Biallelic SNPs only; sites without a PL field are skipped
+  with a one-time stderr warning.
+- `--BEAGLE-PL` → `<prefix>.BEAGLE.PL` — same selection as `--BEAGLE-GL` but
+  with the raw Phred PL triplets.
+
+### VCF Comparison (--diff family)
+
+Compare two VCFs site-by-site and per-individual. The second VCF is loaded
+fully into memory; the first file is streamed and respects any normal
+filtering flags (`--chr`, `--bed`, `--minQ`, ...). The second file is
+*not* filtered, matching upstream vcftools.
+
+Flags:
+
+- `--diff FILE` — second VCF to compare against (`.gz` auto-detected).
+- `--diff-site` → `<prefix>.diff.sites_in_files` with columns
+  `CHROM POS1 POS2 IN_FILE REF1 REF2 ALT1 ALT2` where `IN_FILE ∈ {1, 2, B}`.
+- `--diff-indv` → `<prefix>.diff.indv_in_files` listing every sample tagged
+  with `1`, `2`, or `B`.
+- `--diff-site-discordance` → `<prefix>.diff.sites` with per-site
+  `N_COMMON_CALLED` / `N_DISCORD` over the intersection of samples
+  called in both files.
+- `--diff-indv-discordance` → `<prefix>.diff.indv` with per-individual
+  totals over the intersection of sites present in both files.
+
+Discordance compares unphased, sorted allele indices restricted to REF/first
+ALT; samples with multi-allelic calls at a given site are treated as missing
+for that site (mirroring upstream's default behaviour). `--gzdiff`,
+`--diff-indv-map`, and the full discordance matrices are not yet
+implemented.
 
 ### Linkage Disequilibrium
 
@@ -241,6 +272,33 @@ cat input.vcf | ./vcftools --stdin [options]
 
 # Exclude positions from file
 ./vcftools --vcf input.vcf --exclude-positions exclude.txt --recode --out filtered
+
+# Keep only sites inside intervals in a BED file (0-based half-open).
+./vcftools --vcf input.vcf --bed regions.bed --recode --out in_regions
+
+# Drop sites inside the regions file instead.
+./vcftools --vcf input.vcf --exclude-bed exclude.bed --recode --out outside_regions
+```
+
+### VCF Comparison Example
+
+```bash
+# Compare callsets — emits .diff.sites_in_files, .diff.sites,
+# .diff.indv_in_files, and .diff.indv next to <prefix>.
+./vcftools --vcf callerA.vcf \
+  --diff callerB.vcf.gz \
+  --diff-site --diff-site-discordance \
+  --diff-indv --diff-indv-discordance \
+  --out compare
+```
+
+### BEAGLE Output Example
+
+```bash
+# Write BEAGLE-format genotype likelihoods (skips non-SNP sites and sites
+# without a FORMAT/PL field, with a one-time stderr warning).
+./vcftools --vcf input.vcf --BEAGLE-GL --out for_beagle
+./vcftools --vcf input.vcf --BEAGLE-PL --out for_beagle
 ```
 
 ## Output Files

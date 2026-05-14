@@ -28,6 +28,8 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--to-bp` - Maximum position
 - ✅ `--positions` - Include positions from file
 - ✅ `--exclude-positions` - Exclude positions from file
+- ✅ `--bed` - Include sites inside any BED interval
+- ✅ `--exclude-bed` - Exclude sites inside any BED interval
 
 ### Variant Type Filtering
 
@@ -76,6 +78,19 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--TsTv` - Ts/Tv in bins
 - ✅ `--site-pi` - Nucleotide diversity per site
 
+### VCF Comparison (--diff family)
+
+- ✅ `--diff FILE` - Compare against a second VCF (`.gz` auto-detected)
+- ✅ `--diff-site` - `<prefix>.diff.sites_in_files`
+- ✅ `--diff-indv` - `<prefix>.diff.indv_in_files`
+- ✅ `--diff-site-discordance` - `<prefix>.diff.sites`
+- ✅ `--diff-indv-discordance` - `<prefix>.diff.indv`
+
+### BEAGLE Genotype-Likelihood Output
+
+- ✅ `--BEAGLE-GL` - `<prefix>.BEAGLE.GL` (log10 GL triplets from FORMAT/PL)
+- ✅ `--BEAGLE-PL` - `<prefix>.BEAGLE.PL` (raw PL triplets)
+
 ### Linkage Disequilibrium
 
 - ✅ `--geno-r2` - Genotype-based LD (r²) → `<prefix>.geno.ld`
@@ -119,18 +134,19 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--ldhat` - Output LDhat format
 - ❌ `--ldhat-geno` - Output LDhat genotype format
 - ❌ `--ldhelmet` - Output LDhelmet format
-- ❌ `--BEAGLE-GL` - Output BEAGLE genotype likelihoods (GL)
-- ❌ `--BEAGLE-PL` - Output BEAGLE genotype likelihoods (PL)
+- ✅ `--BEAGLE-GL` - Output BEAGLE genotype likelihoods (GL)
+- ✅ `--BEAGLE-PL` - Output BEAGLE genotype likelihoods (PL)
 
 #### VCF Comparison/Diff
 
-- ❌ `--diff` - Compare with another VCF
-- ❌ `--gzdiff` - Compare with gzipped VCF
+- ✅ `--diff` - Compare with another VCF (supports `.gz` via auto-detect)
+- ❌ `--gzdiff` - Explicit gzipped-diff alias (the regular `--diff` already
+  decompresses `.gz`)
 - ❌ `--diff-bcf` - Compare with BCF
-- ❌ `--diff-site` - Sites in common/unique
-- ❌ `--diff-indv` - Individuals in common/unique
-- ❌ `--diff-site-discordance` - Site-by-site discordance
-- ❌ `--diff-indv-discordance` - Individual discordance
+- ✅ `--diff-site` - Sites in common/unique (`.diff.sites_in_files`)
+- ✅ `--diff-indv` - Individuals in common/unique (`.diff.indv_in_files`)
+- ✅ `--diff-site-discordance` - Site-by-site discordance (`.diff.sites`)
+- ✅ `--diff-indv-discordance` - Individual discordance (`.diff.indv`)
 - ❌ `--diff-discordance-matrix` - Discordance matrix
 - ❌ `--diff-switch-error` - Phasing switch errors
 - ❌ `--diff-indv-map` - Map individuals between files
@@ -142,8 +158,8 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--snp` - Include specific SNP by ID
 - ❌ `--snps` - Include SNPs from file
 - ❌ `--exclude` - Exclude SNPs from file
-- ❌ `--bed` - Include positions from BED file
-- ❌ `--exclude-bed` - Exclude positions from BED file
+- ✅ `--bed` - Include positions from BED file
+- ✅ `--exclude-bed` - Exclude positions from BED file
 - ❌ `--positions-overlap` - Overlap-based position inclusion
 - ❌ `--exclude-positions-overlap` - Overlap-based exclusion
 - ❌ `--mask` - Mask file filtering

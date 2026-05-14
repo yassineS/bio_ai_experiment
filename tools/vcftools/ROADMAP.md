@@ -8,7 +8,7 @@ This document outlines planned features and enhancements for the vcftools Go imp
 
 ### Implemented
 
-- Filtering: position, SNP ID + thinning, quality, allele frequency/count, variant type, genotype-level (`--minDP`/`--maxDP`/`--minGQ`)
+- Filtering: position, BED-interval (`--bed`/`--exclude-bed`), SNP ID + thinning, quality, allele frequency/count, variant type, genotype-level (`--minDP`/`--maxDP`/`--minGQ`)
 - Sample management (`--indv`, `--remove-indv`, `--keep`, `--remove`)
 - Per-site / per-individual statistics: `--freq`/`--counts`(+`2`), `--depth`,
   `--geno-depth`, `--site-depth`, `--site-mean-depth`, `--site-quality`,
@@ -21,7 +21,10 @@ This document outlines planned features and enhancements for the vcftools Go imp
 - Population structure: `--weir-fst-pop` (Weir & Cockerham 1984 per-site Fst → `.weir.fst`),
   `--fst-window-size`/`--fst-window-step` (windowed `WEIGHTED_FST`/`MEAN_FST` → `.windowed.weir.fst`)
 - VCF recoding (`--recode`, `--recode-INFO-all`)
-- Format conversion: `--012`, `--plink`, `--plink-tped`, `--chrom-map`
+- Format conversion: `--012`, `--plink`, `--plink-tped`, `--chrom-map`,
+  `--BEAGLE-GL`, `--BEAGLE-PL`
+- VCF comparison: `--diff` with `--diff-site`, `--diff-indv`,
+  `--diff-site-discordance`, `--diff-indv-discordance`
 
 ### Recognised but **not implemented** (return an error)
 
@@ -88,8 +91,8 @@ Still missing: `--interchrom-geno-r2`, `--interchrom-hap-r2`, `--geno-chisq`.
 ### Additional Format Conversions
 
 - [ ] `--012` - Output 0/1/2 genotype matrix
-- [ ] `--BEAGLE-GL` - BEAGLE genotype likelihoods (GL)
-- [ ] `--BEAGLE-PL` - BEAGLE genotype likelihoods (PL)
+- [x] `--BEAGLE-GL` - BEAGLE genotype likelihoods (GL)
+- [x] `--BEAGLE-PL` - BEAGLE genotype likelihoods (PL)
 
 **Priority:** MEDIUM  
 **Estimated Effort:** 1 week  
@@ -127,13 +130,15 @@ Still missing: `--interchrom-geno-r2`, `--interchrom-hap-r2`, `--geno-chisq`.
 
 ### VCF Comparison
 
-- [ ] `--diff` - Compare two VCF files
-- [ ] `--gzdiff` - Compare with gzipped VCF
-- [ ] `--diff-site` - Sites in common/unique between files
-- [ ] `--diff-indv` - Individuals in common/unique
-- [ ] `--diff-site-discordance` - Site-by-site discordance
-- [ ] `--diff-indv-discordance` - Per-individual discordance
+- [x] `--diff` - Compare two VCF files
+- [ ] `--gzdiff` - Compare with gzipped VCF (compose with `iohelper`; the
+      same `--diff FILE` accepts `.gz` already)
+- [x] `--diff-site` - Sites in common/unique between files (`.diff.sites_in_files`)
+- [x] `--diff-indv` - Individuals in common/unique (`.diff.indv_in_files`)
+- [x] `--diff-site-discordance` - Site-by-site discordance (`.diff.sites`)
+- [x] `--diff-indv-discordance` - Per-individual discordance (`.diff.indv`)
 - [ ] `--diff-indv-map` - Map individual names between files
+- [ ] `--diff-discordance-matrix` - Full per-pair discordance matrices
 
 **Priority:** MEDIUM  
 **Estimated Effort:** 2 weeks  
@@ -145,8 +150,8 @@ Still missing: `--interchrom-geno-r2`, `--interchrom-hap-r2`, `--geno-chisq`.
 
 ### Advanced Filtering
 
-- [ ] `--bed` - Filter by BED file regions
-- [ ] `--exclude-bed` - Exclude BED file regions
+- [x] `--bed` - Filter by BED file regions
+- [x] `--exclude-bed` - Exclude BED file regions
 - [ ] `--snp` / `--snps` - Filter by SNP IDs
 - [ ] `--exclude` - Exclude SNPs by ID
 - [ ] `--mask` - Mask-based filtering
