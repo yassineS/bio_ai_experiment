@@ -1,6 +1,6 @@
 // Command bcftools is a pure-Go reimplementation of selected bcftools
 // subcommands. Today it ships `view`, `index`, `stats`, `query`, `concat`,
-// and `norm`; other subcommands (merge, call) will follow in subsequent PRs.
+// `norm`, and `call`; other subcommands (merge) will follow in subsequent PRs.
 package main
 
 import (
@@ -25,6 +25,7 @@ Subcommands:
   query     Format-string output for VCF/BCF records.
   concat    Concatenate VCF/BCF files.
   norm      Left-align indels, split/join multiallelics, drop duplicates.
+  call      Variant calling from per-position genotype likelihoods.
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
   help      Show this help (also via -? on subcommands).
@@ -45,6 +46,8 @@ func main() {
 		os.Exit(runConcat(os.Args[2:]))
 	case "norm":
 		os.Exit(runNorm(os.Args[2:]))
+	case "call":
+		os.Exit(runCall(os.Args[2:]))
 	case "index":
 		os.Exit(runIndex(os.Args[2:]))
 	case "stats":
@@ -921,6 +924,199 @@ func runNorm(args []string) int {
 
 	if _, err := bcftools.NormFile(input, out, opts, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools norm: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+const callUsage = `bcftools call - variant calling from per-position genotype likelihoods.
+
+Usage:
+  bcftools call [options] <in.vcf[.gz]|in.bcf>
+
+The input is the BCF / VCF produced by ` + "`samtools mpileup -g`" + ` (or any
+other tool that emits FORMAT/PL per position per sample).
+
+Calling model:
+  -c, --consensus-caller         Old (Li 2011) consensus caller.
+  -m, --multiallelic-caller      Multi-allelic caller (v1: biallelic-only;
+                                 falls back to consensus on multi-allelic
+                                 sites — see docs/PARITY_ROADMAP.md).
+
+Filters:
+  -A, --keep-alts                Emit every declared ALT even without support.
+  -v, --variants-only            Drop all-reference sites.
+  -P, --prior FLOAT              Mutation rate prior (default 1.1e-3).
+  -p, --pval-threshold FLOAT     Variant-posterior threshold (default 0.5).
+      --ploidy {1|2|GRCh37|GRCh38}  Ploidy spec (default 2). GRCh37/38 deferred.
+  -X, --chromosome-X             Legacy alias for --ploidy 1.
+
+I/O:
+  -O, --output-type {v|z|u|b}    Output format (b/u require BCF writer).
+  -o, --output PATH              Output file (default stdout).
+  -r, --regions chr[:beg-end[,..]] Region(s) (post-filter in v1).
+  -R, --regions-file PATH        BED-like regions file.
+  -t, --targets chr[:beg-end[,..]] Like -r but always a post-filter.
+  -T, --targets-file PATH        BED-like targets file (post-filter).
+  -s, --samples LIST             Restrict to these samples.
+  -S, --samples-file PATH        File of sample IDs (one per line).
+      --threads N                Accepted; v1 is single-threaded.
+  -?, --help                     Show this help.
+      --version                  Show version.
+`
+
+func runCall(args []string) int {
+	fs := flag.NewFlagSet("bcftools call", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		consensus    bool
+		multiallelic bool
+		keepAlts     bool
+		variantsOnly bool
+		prior        float64
+		pval         float64
+		ploidy       string
+		haploidX     bool
+		outputType   string
+		outputPath   string
+		regions      string
+		regionsFile  string
+		targets      string
+		targetsFile  string
+		samples      string
+		samplesFile  string
+		threads      int
+		showHelp     bool
+		showVer      bool
+	)
+	cliflag.BoolVar(fs, &consensus, "c", "consensus-caller", false, "Use consensus caller")
+	cliflag.BoolVar(fs, &multiallelic, "m", "multiallelic-caller", false, "Use multi-allelic caller")
+	cliflag.BoolVar(fs, &keepAlts, "A", "keep-alts", false, "Keep all ALT alleles")
+	cliflag.BoolVar(fs, &variantsOnly, "v", "variants-only", false, "Drop all-reference sites")
+	cliflag.Float64Var(fs, &prior, "P", "prior", 1.1e-3, "Mutation rate prior")
+	cliflag.Float64Var(fs, &pval, "p", "pval-threshold", 0.5, "P-value threshold")
+	fs.StringVar(&ploidy, "ploidy", "2", "Ploidy spec")
+	cliflag.BoolVar(fs, &haploidX, "X", "chromosome-X", false, "Treat samples as haploid")
+	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
+	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
+	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
+	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
+	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
+	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples list")
+	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "?", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, callUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(callUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "bcftools call: missing input file")
+		fmt.Fprint(os.Stderr, callUsage)
+		return 2
+	}
+
+	model := bcftools.CallModelNone
+	switch {
+	case consensus && multiallelic:
+		fmt.Fprintln(os.Stderr, "bcftools call: choose either -c/--consensus-caller or -m/--multiallelic-caller, not both")
+		return 2
+	case consensus:
+		model = bcftools.CallModelConsensus
+	case multiallelic:
+		model = bcftools.CallModelMultiallelic
+	default:
+		fmt.Fprintln(os.Stderr, "bcftools call: a caller must be selected (-c or -m)")
+		return 2
+	}
+
+	ploidySpec, ploidyText, err := bcftools.ParsePloidySpec(ploidy)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if haploidX {
+		ploidySpec = bcftools.PloidyHaploid
+		ploidyText = "1"
+	}
+
+	format, err := bcftools.ParseOutputFormat(outputType)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	opts := bcftools.CallOptions{
+		Model:         model,
+		KeepAlts:      keepAlts,
+		VariantsOnly:  variantsOnly,
+		Prior:         prior,
+		PvalThreshold: pval,
+		Ploidy:        ploidySpec,
+		PloidySpec:    ploidyText,
+		OutputFormat:  format,
+	}
+	if regions != "" {
+		opts.Regions = bcftools.SplitCommaList(regions)
+	}
+	if regionsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(regionsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
+			return 1
+		}
+		opts.Regions = append(opts.Regions, regs...)
+		opts.RegionsFile = regionsFile
+	}
+	if targets != "" {
+		opts.Targets = bcftools.SplitCommaList(targets)
+	}
+	if targetsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(targetsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
+			return 1
+		}
+		opts.Targets = append(opts.Targets, regs...)
+		opts.TargetsFile = targetsFile
+	}
+	if samples != "" {
+		opts.Samples = bcftools.SplitCommaList(samples)
+	}
+	if samplesFile != "" {
+		names, err := bcftools.LoadSamplesFile(samplesFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
+			return 1
+		}
+		opts.Samples = append(opts.Samples, names...)
+		opts.SamplesFile = samplesFile
+	}
+
+	out, err := openOutFile(outputPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+
+	if _, err := bcftools.CallFile(rest[0], out, opts, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
 		return 1
 	}
 	return 0

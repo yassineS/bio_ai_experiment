@@ -31,6 +31,7 @@ Subcommands:
   depth      Per-position depth across one or more BAMs.
   fastq      Convert SAM/BAM to FASTQ.
   bam2fq     Alias for fastq.
+  mpileup    Per-position pileup across one or more BAMs.
   help       Show this help.
   version    Show version.
 `
@@ -53,6 +54,8 @@ func main() {
 		os.Exit(runDepth(os.Args[2:]))
 	case "fastq", "bam2fq":
 		os.Exit(runFastq(os.Args[2:]))
+	case "mpileup":
+		os.Exit(runMpileup(os.Args[2:]))
 	case "help", "-h", "--help":
 		fmt.Print(rootUsage)
 		return
@@ -769,6 +772,172 @@ func runFastq(args []string) int {
 	}
 	if counts.PairedCoordinateWarn {
 		fmt.Fprintln(os.Stderr, "samtools fastq: paired output (-1/-2) requires name-sorted input; coordinate-sorted input falls back to -o/singleton")
+	}
+	return 0
+}
+
+const mpileupUsage = `samtools mpileup - per-position pileup across one or more BAMs.
+
+Usage:
+  samtools mpileup [options] <in1.bam> [<in2.bam> ...]
+
+Options:
+  -f, --fasta-ref FASTA      Reference FASTA (random-access via .fai).
+  -l, --positions FILE       BED or 2-col positions file restricting output.
+  -r, --region chr:start-end Restrict to region (uses .bai when available).
+  -b, --bam-list FILE        File of BAM paths, one per line.
+  -q, --min-mapq INT         Min MAPQ (default 0).
+  -Q, --min-baseq INT        Min base quality (default 13).
+  -d, --max-depth INT        Max reads per position (default 8000).
+  -A, --count-orphans        Include reads with unmapped mates / anomalous pairs.
+  -x, --ignore-overlaps      Discard overlapping mate-pair bases.
+  -E, --redo-baq             Re-compute BAQ (NOT IMPLEMENTED; deferred).
+  -B, --no-BAQ               Disable BAQ application (no-op in v1; we don't apply BAQ).
+  -a, --all-positions        Emit zero-depth positions inside covered regions.
+      --all-positions-all-chroms
+                             Emit every reference position (-aa). Pass -a twice or this flag.
+  -s, --output-mapq          Append MAPQs column.
+  -O, --output-BP            Append per-read positions column.
+  -o, --output PATH          Output file (default stdout).
+  -u, --uncompressed-bcf     BCF output (NOT IMPLEMENTED; deferred).
+  -g, --bcf                  BCF output (NOT IMPLEMENTED; deferred).
+  -@, --threads N            Accepted; single-threaded in v1.
+  -h, --help                 Show this help.
+  -v, --version              Show version.
+
+Notes:
+  - Multi-BAM input emits parallel "depth bases quals" triples per BAM.
+  - The bases column encodes . / , (forward/reverse strand match), upper/lower
+    base for mismatch, * for deletion/refskip placeholder, +<len><seq> for
+    insertions after the base, -<len><seq> for deletions starting after this
+    position, ^<charq> for read start (charq = mapq + 33), $ for read end.
+  - -E (--redo-baq) and -u/-g (BCF output) are deferred per
+    docs/PARITY_ROADMAP.md#samtools.
+`
+
+func runMpileup(args []string) int {
+	fs := flag.NewFlagSet("samtools mpileup", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		fastaRef  string
+		posFile   string
+		regions   multiString
+		bamList   string
+		minMAPQ   int
+		minBaseQ  int
+		maxDepth  int
+		orphans   bool
+		ignoreOvl bool
+		redoBAQ   bool
+		noBAQ     bool
+		allPos    bool
+		allChrom  bool
+		outMapq   bool
+		outBP     bool
+		outPath   string
+		bcf       bool
+		ubcf      bool
+		threads   int
+		showHelp  bool
+		showVer   bool
+	)
+	cliflag.StringVar(fs, &fastaRef, "f", "fasta-ref", "", "Reference FASTA")
+	cliflag.StringVar(fs, &posFile, "l", "positions", "", "Positions/BED file")
+	fs.Var(&regions, "r", "")
+	fs.Var(&regions, "region", "")
+	cliflag.StringVar(fs, &bamList, "b", "bam-list", "", "BAM list file")
+	cliflag.IntVar(fs, &minMAPQ, "q", "min-mapq", 0, "Min MAPQ")
+	cliflag.IntVar(fs, &minBaseQ, "Q", "min-baseq", samtools.DefaultMpileupMinBaseQ, "Min base quality")
+	cliflag.IntVar(fs, &maxDepth, "d", "max-depth", samtools.DefaultMpileupMaxDepth, "Max depth")
+	cliflag.BoolVar(fs, &orphans, "A", "count-orphans", false, "Include orphan reads")
+	cliflag.BoolVar(fs, &ignoreOvl, "x", "ignore-overlaps", false, "Discard overlapping mates")
+	cliflag.BoolVar(fs, &redoBAQ, "E", "redo-baq", false, "Re-compute BAQ (not implemented)")
+	cliflag.BoolVar(fs, &noBAQ, "B", "no-BAQ", false, "Disable BAQ (no-op in v1)")
+	cliflag.BoolVar(fs, &allPos, "a", "all-positions", false, "Emit zero-depth positions in covered range")
+	cliflag.BoolVar(fs, &allChrom, "", "all-positions-all-chroms", false, "Emit every reference position (-aa)")
+	cliflag.BoolVar(fs, &outMapq, "s", "output-mapq", false, "Append MAPQs column")
+	cliflag.BoolVar(fs, &outBP, "O", "output-BP", false, "Append per-read positions column")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "Output path")
+	cliflag.BoolVar(fs, &ubcf, "u", "uncompressed-bcf", false, "BCF output (not implemented)")
+	cliflag.BoolVar(fs, &bcf, "g", "bcf", false, "BCF output (not implemented)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Print(mpileupUsage)
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, mpileupUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(mpileupUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	if bcf || ubcf {
+		fmt.Fprintln(os.Stderr, "samtools mpileup: BCF output (-u/-g) not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
+		return 2
+	}
+	if redoBAQ {
+		fmt.Fprintln(os.Stderr, "samtools mpileup: -E/--redo-baq not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
+		return 2
+	}
+	// Detect -aa from a repeat of -a — upstream samtools accepts both
+	// `samtools mpileup -aa` (chained) and `--all-positions-all-chroms`.
+	// Our flag parser collapses double `-a` into one, but users typing
+	// "-aa" as a fused short get the same effect via the `-a -a` pattern
+	// we recognise when args contains "-aa".
+	for _, a := range args {
+		if a == "-aa" {
+			allChrom = true
+		}
+	}
+
+	if fs.NArg() == 0 && bamList == "" {
+		fmt.Fprintln(os.Stderr, "samtools mpileup: missing input file")
+		fmt.Fprint(os.Stderr, mpileupUsage)
+		return 2
+	}
+
+	opts := samtools.MpileupOptions{
+		Inputs:                fs.Args(),
+		FastaRef:              fastaRef,
+		Regions:               []string(regions),
+		PositionsFile:         posFile,
+		MinMAPQ:               uint8(minMAPQ),
+		MinBaseQ:              uint8(minBaseQ),
+		MaxDepth:              maxDepth,
+		CountOrphans:          orphans,
+		IgnoreOverlaps:        ignoreOvl,
+		AllPositions:          allPos,
+		AllPositionsAllChroms: allChrom,
+		OutputMapQ:            outMapq,
+		OutputBP:              outBP,
+		NoBAQ:                 noBAQ,
+		RedoBAQ:               redoBAQ,
+		Output:                outPath,
+		Threads:               threads,
+		BamList:               bamList,
+	}
+
+	out, err := openOut(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools mpileup: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+	if err := samtools.MpileupFile(opts, out); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools mpileup: %v\n", err)
+		return 1
 	}
 	return 0
 }
