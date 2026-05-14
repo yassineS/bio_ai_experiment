@@ -2,7 +2,7 @@
 
 This document tracks the status of bioinformatics tools being ported from their original implementations to Go.
 
-**Last Updated**: 2026-05-13
+**Last Updated**: 2026-05-14
 
 > **Accuracy note (2026-05-12 audit):** earlier revisions of this file
 > overstated progress — claiming ">85% test coverage" and labelling several
@@ -27,14 +27,17 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - **Tools with a working subset**: 16 (8 original + 8 bedtools subcommands)
 - **Tools tested**: 16 (package-level tests; `cmd/` entry points have no tests)
-- **Test coverage (statements, `go test -cover`)** — main tools: vcftools 58%,
-  seqtk 66%, fastp 67%, bedintersect 75%, sickle 82%, prinseq 99.9%,
-  skewer 100%, bedmerge 100%
+- **Test coverage (statements, `go test -cover`)** — main tools: vcftools ~64%,
+  seqtk ~72%, fastp ~76%, sickle ~82%, prinseq 99.9%, skewer 100%,
+  bedmerge 100%, bedintersect **100%**
 - **Test coverage** — new bedtools tools: bedsort 92%, bedflank 92%,
   bedclosest 93%, bedsubtract 94%, bedgenomecov 94%, bedcomplement 95%,
   bedslop 95%, bedjaccard 96%
 - **Documentation**: README per tool; some design docs are aspirational, not status
 - **gzip support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools (not seqtk/prinseq)
+- **CI**: workflow currently disabled (manual-only via `workflow_dispatch`);
+  agents run `gofmt`/`vet`/`build`/`test -race -cover` + `markdownlint` locally
+  and document the output in each PR.
 
 ---
 
@@ -57,8 +60,11 @@ This document tracks the status of bioinformatics tools being ported from their 
 - `subseq` - Extract subsequences by name list or BED region
 - `mergepe` - Interleave two paired FASTA/FASTQ files
 - `cutN` - Cut sequences at runs of N
+- `mutfa` - Apply point mutations from TSV (3-col or upstream 4-col)
+- `randbase` - Replace IUPAC ambiguity bases with random pick
+- `hpc` - Homopolymer compression
 
-**Test Coverage**: ~66% of statements (`go test -cover`)  
+**Test Coverage**: ~72% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
 **Documentation**: README with examples  
 
@@ -71,8 +77,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- Only the eight commands above are implemented; upstream seqtk has more
-  (`mutfa`, `randbase`, `hpc`, ...)
+- The 11 commands above cover upstream seqtk's mutation/compression core.
+  Smaller misses remain (e.g. `gap`, `listhet`); see
+  [the seqtk README](seqtk/README.md) for the per-subcommand list.
 - Output format intended to be compatible for the implemented commands
 
 ---
@@ -195,13 +202,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command with multiple filters
 
-**Test Coverage**: ~67% of statements (`go test -cover`)  
+**Test Coverage**: ~76% of statements (`go test -cover`)  
 **Performance**: ~1.1x  
 **Documentation**: README with examples
 
 **Key Features**:
 
 - Adapter trimming (3' and 5')
+- Automatic adapter detection (k-mer for SE, overlap-based for PE)
 - Quality filtering
 - Sliding-window quality trimming (`--cut_front`, `--cut_tail`, `--cut_right`)
 - Length filtering
@@ -209,14 +217,17 @@ This document tracks the status of bioinformatics tools being ported from their 
 - Poly-G/X tail trimming (NovaSeq)
 - Complexity filtering
 - Built-in gzip support
+- HTML report (`--html`) — self-contained, embedded CSS + inline SVG
+- JSON report (`--json`) — schema close to upstream fastp.json
 - Comprehensive statistics
 
 **Migration Notes**:
 
-- Simplified version of original
-- Core preprocessing features and sliding-window quality trimming implemented
-- No HTML/JSON reports (future feature)
-- Parallel worker pool exists; many upstream knobs are still missing
+- Core preprocessing features, sliding-window trimming, automatic adapter
+  detection, and HTML/JSON reports are in place.
+- Parallel worker pool present; remaining upstream knobs (duplication
+  detection, UMI processing, overrepresented-sequence analysis) are still
+  open.
 
 ---
 
@@ -267,7 +278,7 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 - Single command for interval intersection
 
-**Test Coverage**: ~75% of statements (`go test -cover`)  
+**Test Coverage**: **100%** of statements (`go test -cover`)  
 **Performance**: Comparable to bedtools intersect  
 **Documentation**: README with examples
 
@@ -297,13 +308,14 @@ This document tracks the status of bioinformatics tools being ported from their 
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~50 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~60 of ~147 options
+(LD analysis landed in PR #47)
 
 **Implemented Commands**:
 
 - Single command with multiple filtering, statistics and conversion options
 
-**Test Coverage**: ~58% of statements (`go test -cover`)  
+**Test Coverage**: ~64% of statements (`go test -cover`)  
 **Performance**: Comparable to original on the implemented operations  
 **Documentation**: README with examples  
 
@@ -325,11 +337,15 @@ This document tracks the status of bioinformatics tools being ported from their 
   summary printed to stderr
 - VCF recoding (`--recode`, `--recode-INFO-all`)
 - Format conversion: `--012`, `--plink`, `--plink-tped` (with `--chrom-map`)
+- LD analysis (PR #47): `--geno-r2` / `--hap-r2` / `--geno-r2-positions` /
+  `--hap-r2-positions` / `--ld-window` / `--ld-window-bp` /
+  `--ld-window-min` / `--ld-window-bp-min` / `--min-r2`
 
-Every `Params` field declared in the package is now wired to real logic;
-`checkUnsupported` no longer rejects anything. The remaining gap vs upstream
-vcftools is dominated by **LD analysis** (`--geno-r2`, `--hap-r2`, all the
-`--ld-window-*` options) and a long tail of less-common options.
+`checkUnsupported` no longer rejects anything that has a `Params` field.
+The remaining gap vs upstream vcftools is the long tail of less-common
+options: inter-chromosomal LD (`--interchrom-geno-r2`, `--interchrom-hap-r2`,
+`--geno-chisq`), `--bed` / `--exclude-bed` site filters, the `--diff` family,
+BEAGLE-GL/PL output, relatedness, runs of homozygosity, etc.
 
 See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and
 [ROADMAP.md](vcftools/ROADMAP.md) for the full picture.
