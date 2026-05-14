@@ -1,6 +1,6 @@
 // Command bcftools is a pure-Go reimplementation of selected bcftools
-// subcommands. Today it ships `view`, `index`, `stats`, `query`, and `concat`;
-// other subcommands (norm, merge) will follow in subsequent PRs.
+// subcommands. Today it ships `view`, `index`, `stats`, `query`, `concat`,
+// and `norm`; other subcommands (merge, call) will follow in subsequent PRs.
 package main
 
 import (
@@ -24,6 +24,7 @@ Subcommands:
   view      Print, filter, or convert VCF/BCF records.
   query     Format-string output for VCF/BCF records.
   concat    Concatenate VCF/BCF files.
+  norm      Left-align indels, split/join multiallelics, drop duplicates.
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
   help      Show this help (also via -? on subcommands).
@@ -42,6 +43,8 @@ func main() {
 		os.Exit(runQuery(os.Args[2:]))
 	case "concat":
 		os.Exit(runConcat(os.Args[2:]))
+	case "norm":
+		os.Exit(runNorm(os.Args[2:]))
 	case "index":
 		os.Exit(runIndex(os.Args[2:]))
 	case "stats":
@@ -749,6 +752,175 @@ func runConcat(args []string) int {
 	}
 	if _, err := bcftools.ConcatFiles(paths, out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools concat: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+const normUsage = `bcftools norm - left-align indels and normalize multiallelics.
+
+Usage:
+  bcftools norm [options] <in.vcf[.gz]|in.bcf>
+
+Options:
+  -f, --fasta-ref FASTA          Reference FASTA for left-alignment / REF check.
+      --check-ref {e|w|s}        Action on REF/FASTA mismatch: e=error (default), w=warn, s=skip.
+  -m, --multiallelics MODE       Split (-) or join (+) multiallelics. MODE = {-snps|-indels|-both|-any|+snps|+indels|+both|+any}.
+  -d, --rm-dup MODE              Drop duplicates: snps|indels|both|all|none|exact.
+  -a, --atomize                  Decompose complex variants into single-base events.
+  -N, --do-not-normalize         Skip left-alignment (useful with -m alone).
+  -s, --strict-filter            Apply -f filter list BEFORE splitting (default: after).
+  -r, --regions chr[:beg-end]    Region(s) (post-filter on streaming input).
+  -R, --regions-file PATH        BED-like regions file.
+  -t, --targets chr[:beg-end]    Like -r but always a post-filter.
+  -T, --targets-file PATH        BED-like targets file (post-filter).
+  -f, --apply-filters NAMES      Keep only PASS / named filters.
+  -O, --output-type {v|z|u|b}    Output format (b/u requires BCF writer).
+  -o, --output PATH              Output file (default stdout).
+  -l, --compression-level N      gzip level for -O z output.
+      --threads N                Accepted; v1 is single-threaded.
+  -h, --help                     Show this help.
+      --version                  Show version.
+
+Note:
+  -f is overloaded by upstream bcftools for both "fasta-ref" and "apply-filters".
+  We follow the same convention: when --fasta-ref is also set we accept --apply-filters
+  via the long form for clarity. The short -f always means --fasta-ref to match upstream.
+`
+
+func runNorm(args []string) int {
+	fs := flag.NewFlagSet("bcftools norm", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		fastaRef       string
+		checkRef       string
+		multiallelics  string
+		rmDup          string
+		atomize        bool
+		doNotNormalize bool
+		strictFilter   bool
+		regions        string
+		regionsFile    string
+		targets        string
+		targetsFile    string
+		applyFilters   string
+		outputType     string
+		outputPath     string
+		compressLevel  int
+		threads        int
+		showHelp       bool
+		showVersion    bool
+	)
+	cliflag.StringVar(fs, &fastaRef, "f", "fasta-ref", "", "Reference FASTA")
+	fs.StringVar(&checkRef, "check-ref", "e", "REF mismatch policy: e|w|s")
+	cliflag.StringVar(fs, &multiallelics, "m", "multiallelics", "", "Split / join multiallelics")
+	cliflag.StringVar(fs, &rmDup, "d", "rm-dup", "none", "Drop duplicate records")
+	cliflag.BoolVar(fs, &atomize, "a", "atomize", false, "Atomize complex variants")
+	cliflag.BoolVar(fs, &doNotNormalize, "N", "do-not-normalize", false, "Skip left-alignment")
+	cliflag.BoolVar(fs, &strictFilter, "s", "strict-filter", false, "Apply -f filters before split")
+	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
+	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets")
+	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
+	fs.StringVar(&applyFilters, "apply-filters", "", "Filter list (PASS,...)")
+	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
+	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
+	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVersion, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, normUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(normUsage)
+		return 0
+	}
+	if showVersion {
+		fmt.Println(version)
+		return 0
+	}
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "bcftools norm: missing input file")
+		fmt.Fprint(os.Stderr, normUsage)
+		return 2
+	}
+	input := rest[0]
+
+	checkRefMode, err := bcftools.ParseCheckRefMode(checkRef)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	mMode, err := bcftools.ParseMultiallelicMode(multiallelics)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	dupMode, err := bcftools.ParseRmDupMode(rmDup)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	format, err := bcftools.ParseOutputFormat(outputType)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	opts := bcftools.NormOptions{
+		FastaRef:       fastaRef,
+		CheckRef:       checkRefMode,
+		Multiallelics:  mMode,
+		RmDup:          dupMode,
+		Atomize:        atomize,
+		DoNotNormalize: doNotNormalize,
+		StrictFilter:   strictFilter,
+		ApplyFilters:   bcftools.SplitCommaList(applyFilters),
+		OutputFormat:   format,
+		CompressLevel:  compressLevel,
+	}
+	if regions != "" {
+		opts.Regions = bcftools.SplitCommaList(regions)
+	}
+	if regionsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(regionsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools norm: %v\n", err)
+			return 1
+		}
+		opts.Regions = append(opts.Regions, regs...)
+		opts.RegionsFile = regionsFile
+	}
+	if targets != "" {
+		opts.Targets = bcftools.SplitCommaList(targets)
+	}
+	if targetsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(targetsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools norm: %v\n", err)
+			return 1
+		}
+		opts.Targets = append(opts.Targets, regs...)
+		opts.TargetsFile = targetsFile
+	}
+
+	out, err := openOutFile(outputPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools norm: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+
+	if _, err := bcftools.NormFile(input, out, opts, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools norm: %v\n", err)
 		return 1
 	}
 	return 0

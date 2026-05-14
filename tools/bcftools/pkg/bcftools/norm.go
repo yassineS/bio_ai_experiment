@@ -1,0 +1,1035 @@
+package bcftools
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bcf"
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+)
+
+// CheckRefMode controls how `bcftools norm` reacts when the REF field
+// differs from the reference FASTA. It mirrors the upstream `--check-ref`
+// flag.
+type CheckRefMode int
+
+const (
+	// CheckRefError aborts the run when any REF mismatches the FASTA. This
+	// is the upstream default and the safest behaviour for piping into a
+	// caller that assumes the reference is consistent.
+	CheckRefError CheckRefMode = iota
+	// CheckRefWarn writes one warning per mismatched record to stderr and
+	// keeps the record unchanged.
+	CheckRefWarn
+	// CheckRefSkip silently drops records whose REF does not match the
+	// FASTA. Useful when running against draft assemblies.
+	CheckRefSkip
+)
+
+// ParseCheckRefMode turns the `e|w|s` flag value into a typed enum.
+func ParseCheckRefMode(s string) (CheckRefMode, error) {
+	switch strings.ToLower(s) {
+	case "", "e":
+		return CheckRefError, nil
+	case "w":
+		return CheckRefWarn, nil
+	case "s":
+		return CheckRefSkip, nil
+	}
+	return 0, fmt.Errorf("bcftools norm: unknown --check-ref value %q (expect e, w or s)", s)
+}
+
+// MultiallelicMode encodes the body of the `-m` flag (`-snps`, `+indels` etc.).
+type MultiallelicMode struct {
+	// Active is true when the user passed `-m`. When false the splitter
+	// and joiner are both off and the `-m` switch was not supplied.
+	Active bool
+	// Split is true for `-` modes (split multiallelics into biallelics).
+	// When false and Active is true the mode is `+` (join biallelics into
+	// multiallelics).
+	Split bool
+	// Snps controls whether SNP records are affected.
+	Snps bool
+	// Indels controls whether indel records are affected.
+	Indels bool
+}
+
+// ParseMultiallelicMode turns the literal flag body (e.g. "-both") into the
+// typed structure. An empty string yields an inactive value.
+func ParseMultiallelicMode(s string) (MultiallelicMode, error) {
+	if s == "" {
+		return MultiallelicMode{}, nil
+	}
+	var m MultiallelicMode
+	m.Active = true
+	switch s[0] {
+	case '-':
+		m.Split = true
+	case '+':
+		m.Split = false
+	default:
+		return m, fmt.Errorf("bcftools norm: -m must start with + or -")
+	}
+	rest := strings.ToLower(s[1:])
+	switch rest {
+	case "snps":
+		m.Snps = true
+	case "indels":
+		m.Indels = true
+	case "both", "any":
+		m.Snps = true
+		m.Indels = true
+	default:
+		return m, fmt.Errorf("bcftools norm: unknown -m type %q (expect snps|indels|both|any)", rest)
+	}
+	return m, nil
+}
+
+// RmDupMode covers the `-d` / `--rm-dup` flag.
+type RmDupMode int
+
+const (
+	// RmDupNone (the default) keeps all records.
+	RmDupNone RmDupMode = iota
+	// RmDupSnps drops duplicate SNP records sharing chrom/pos.
+	RmDupSnps
+	// RmDupIndels drops duplicate indel records sharing chrom/pos.
+	RmDupIndels
+	// RmDupBoth drops duplicate SNP or indel records sharing chrom/pos.
+	RmDupBoth
+	// RmDupAll drops any duplicate sharing chrom/pos regardless of type.
+	RmDupAll
+	// RmDupExact drops records that are byte-for-byte identical at the
+	// CHROM / POS / REF / ALT level.
+	RmDupExact
+)
+
+// ParseRmDupMode parses the flag value.
+func ParseRmDupMode(s string) (RmDupMode, error) {
+	switch strings.ToLower(s) {
+	case "", "none":
+		return RmDupNone, nil
+	case "snps":
+		return RmDupSnps, nil
+	case "indels":
+		return RmDupIndels, nil
+	case "both":
+		return RmDupBoth, nil
+	case "all":
+		return RmDupAll, nil
+	case "exact":
+		return RmDupExact, nil
+	}
+	return 0, fmt.Errorf("bcftools norm: unknown --rm-dup value %q", s)
+}
+
+// NormOptions controls Norm / NormFile behaviour.
+type NormOptions struct {
+	// FastaRef is the path to the reference FASTA. Required for
+	// left-alignment and for REF checking.
+	FastaRef string
+	// CheckRef controls the response to REF/FASTA disagreement.
+	CheckRef CheckRefMode
+	// Multiallelics enables splitting / joining.
+	Multiallelics MultiallelicMode
+	// RmDup enables duplicate-record removal.
+	RmDup RmDupMode
+	// Atomize decomposes complex variants into single-base atomic events.
+	Atomize bool
+	// DoNotNormalize skips left-alignment. Useful in `-m` only pipelines.
+	DoNotNormalize bool
+	// StrictFilter applies -f filters before splitting; when false they
+	// run after splitting (matching upstream's default ordering).
+	StrictFilter bool
+	// Regions / Targets filter the input on the fly. Region / target
+	// semantics mirror the `view` subcommand.
+	Regions      []string
+	RegionsFile  string
+	Targets      []string
+	TargetsFile  string
+	ApplyFilters []string
+	// OutputFormat / CompressLevel mirror view's writer wiring.
+	OutputFormat  OutputFormat
+	CompressLevel int
+}
+
+// NormFile is the high-level entry point matching ViewFile's signature.
+// It opens path through iohelper.OpenReader, dispatches on the magic bytes,
+// and writes the normalized output to out.
+func NormFile(path string, out io.Writer, opts NormOptions, stderr io.Writer) (int, error) {
+	in, err := iohelper.OpenReader(path)
+	if err != nil {
+		return 0, err
+	}
+	defer in.Close()
+	return Norm(in, out, opts, stderr)
+}
+
+// Norm runs the normalize pipeline on the supplied reader.
+func Norm(in io.Reader, out io.Writer, opts NormOptions, stderr io.Writer) (int, error) {
+	br := bufio.NewReader(in)
+	head, err := br.Peek(5)
+	if err != nil && err != io.EOF {
+		return 0, err
+	}
+	var (
+		hdr      *vcf.Header
+		variants []*vcf.Variant
+	)
+	if len(head) >= 5 && head[0] == 'B' && head[1] == 'C' && head[2] == 'F' {
+		hdr, variants, err = readBCFAll(br)
+	} else {
+		hdr, variants, err = readVCFAll(br)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return normRun(hdr, variants, out, opts, stderr)
+}
+
+// readVCFAll buffers a VCF stream into memory. norm needs random-ish
+// access (for `-m +` joining we need to look at adjacent records), and the
+// memory cost is dominated by the variant slice — a few MB even for a
+// whole-exome VCF.
+func readVCFAll(in io.Reader) (*vcf.Header, []*vcf.Variant, error) {
+	r := vcf.NewReader(in)
+	hdr, err := r.ReadHeader()
+	if err != nil {
+		return nil, nil, err
+	}
+	var out []*vcf.Variant
+	for {
+		v, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		out = append(out, v)
+	}
+	return hdr, out, nil
+}
+
+// readBCFAll buffers a BCF stream into memory as []*vcf.Variant.
+func readBCFAll(in io.Reader) (*vcf.Header, []*vcf.Variant, error) {
+	br, err := bcf.NewReader(in)
+	if err != nil {
+		return nil, nil, err
+	}
+	hdr := br.Header()
+	var out []*vcf.Variant
+	for {
+		rec, err := br.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		out = append(out, rec.ToVariant(hdr))
+	}
+	return hdr.VCF, out, nil
+}
+
+// normRun glues all the optional transforms together in the order:
+//
+//  1. region / target filter
+//  2. strict-filter (if -s)
+//  3. atomize
+//  4. multiallelic split
+//  5. left-align + REF check
+//  6. duplicate removal
+//  7. multiallelic join
+//  8. non-strict filter
+//  9. emit
+//
+// Each stage is a pure function on the slice so they're easy to unit-test
+// in isolation.
+func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormOptions, stderr io.Writer) (int, error) {
+	regions, err := parseRegions(opts.Regions)
+	if err != nil {
+		return 0, err
+	}
+	targets, err := parseRegions(opts.Targets)
+	if err != nil {
+		return 0, err
+	}
+	// Open the reference once if we need it for normalize or REF check.
+	var ref *fasta.RandomAccess
+	if opts.FastaRef != "" {
+		ref, err = fasta.OpenRandomAccess(opts.FastaRef)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools norm: open reference: %w", err)
+		}
+		defer ref.Close()
+	}
+
+	// 1. region/target filtering.
+	variants = filterByRegions(variants, regions, targets)
+
+	// 2. strict-filter mode runs the FILTER list before any splitting.
+	if opts.StrictFilter && len(opts.ApplyFilters) > 0 {
+		variants = applyFilterList(variants, opts.ApplyFilters)
+	}
+
+	// 3. atomize.
+	if opts.Atomize {
+		variants = atomizeVariants(variants)
+	}
+
+	// 4. split multi-allelics.
+	if opts.Multiallelics.Active && opts.Multiallelics.Split {
+		variants = splitMultiallelics(variants, opts.Multiallelics)
+	}
+
+	// 5. left-align and REF-check.
+	if ref != nil {
+		variants, err = normalizeVariants(variants, ref, opts, stderr)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	// 6. duplicate removal.
+	if opts.RmDup != RmDupNone {
+		variants = removeDuplicates(variants, opts.RmDup)
+	}
+
+	// 7. join biallelics back into a multiallelic.
+	if opts.Multiallelics.Active && !opts.Multiallelics.Split {
+		variants = joinMultiallelics(variants, opts.Multiallelics)
+	}
+
+	// 8. lax-mode filtering happens after splitting.
+	if !opts.StrictFilter && len(opts.ApplyFilters) > 0 {
+		variants = applyFilterList(variants, opts.ApplyFilters)
+	}
+
+	// 9. sort + emit. After left-align the records may need re-sorting
+	// (an indel can move upstream of its neighbours); we sort by chrom +
+	// pos preserving original order on ties to keep tests deterministic.
+	sortVariants(variants)
+
+	return emit(hdr, variants, out, opts)
+}
+
+// emit writes variants through whichever variantWriter matches the
+// requested output format.
+func emit(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormOptions) (int, error) {
+	w, finish, err := openOutput(out, ViewOptions{
+		OutputFormat:  opts.OutputFormat,
+		CompressLevel: opts.CompressLevel,
+	}, hdr)
+	if err != nil {
+		return 0, err
+	}
+	defer finish()
+	if err := w.WriteHeader(); err != nil {
+		return 0, err
+	}
+	for _, v := range variants {
+		if err := w.Write(v); err != nil {
+			return 0, err
+		}
+	}
+	return len(variants), w.Flush()
+}
+
+// filterByRegions keeps variants that fall inside any region/target slot.
+// Empty slices mean "no filter on this dimension".
+func filterByRegions(variants []*vcf.Variant, regions, targets []region) []*vcf.Variant {
+	if len(regions) == 0 && len(targets) == 0 {
+		return variants
+	}
+	combined := append([]region{}, regions...)
+	combined = append(combined, targets...)
+	out := variants[:0:0]
+	for _, v := range variants {
+		if overlapsAny(v, combined) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// applyFilterList keeps variants whose FILTER column matches one of the
+// requested names (mirrors view's behaviour).
+func applyFilterList(variants []*vcf.Variant, filters []string) []*vcf.Variant {
+	out := variants[:0:0]
+	for _, v := range variants {
+		for _, want := range filters {
+			for _, f := range v.Filter {
+				if f == want {
+					out = append(out, v)
+					goto next
+				}
+			}
+		}
+	next:
+	}
+	return out
+}
+
+// classifyAlt returns true if the (ref, alt) pair is a SNP (both length 1
+// and different) and true if it is an indel (lengths differ).
+func classifyAlt(ref, alt string) (isSNP, isIndel bool) {
+	if len(ref) == 1 && len(alt) == 1 && ref != alt {
+		return true, false
+	}
+	if len(ref) != len(alt) {
+		return false, true
+	}
+	return false, false
+}
+
+// variantIsSnp returns true if every ALT against REF is a SNP.
+func variantIsSnp(v *vcf.Variant) bool {
+	if len(v.Alt) == 0 {
+		return false
+	}
+	for _, a := range v.Alt {
+		s, _ := classifyAlt(v.Ref, a)
+		if !s {
+			return false
+		}
+	}
+	return true
+}
+
+// variantIsIndel returns true if any ALT against REF is an indel.
+func variantIsIndel(v *vcf.Variant) bool {
+	for _, a := range v.Alt {
+		_, i := classifyAlt(v.Ref, a)
+		if i {
+			return true
+		}
+	}
+	return false
+}
+
+// splitMultiallelics expands records carrying multiple ALTs into one
+// record per ALT. INFO/AC, INFO/AF and FORMAT/GT are adjusted per allele:
+//
+//   - INFO/AC and INFO/AF are split into their k-th component (R-style).
+//   - FORMAT/GT alleles are remapped: the chosen ALT (index k+1) becomes
+//     "1" and every other ALT becomes "0" so the new record looks like
+//     a clean biallelic.
+//   - INFO/AN, FORMAT/DP, etc. carry over unchanged — they describe the
+//     site rather than an individual allele.
+func splitMultiallelics(variants []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
+	if !m.Split {
+		return variants
+	}
+	out := make([]*vcf.Variant, 0, len(variants))
+	for _, v := range variants {
+		if !shouldAffect(v, m) || len(v.Alt) <= 1 {
+			out = append(out, v)
+			continue
+		}
+		for i, alt := range v.Alt {
+			child := cloneVariant(v)
+			child.Alt = []string{alt}
+			child.Info = perAlleleInfo(v.Info, i, len(v.Alt))
+			child.Samples = perAlleleSamples(v.Samples, v.Format, i)
+			out = append(out, child)
+		}
+	}
+	return out
+}
+
+// shouldAffect returns true when the multiallelic switch applies to v.
+func shouldAffect(v *vcf.Variant, m MultiallelicMode) bool {
+	if !m.Active {
+		return false
+	}
+	isSnp := variantIsSnp(v)
+	isIndel := variantIsIndel(v)
+	if isSnp && m.Snps {
+		return true
+	}
+	if isIndel && m.Indels {
+		return true
+	}
+	return false
+}
+
+// perAlleleInfo returns a copy of info with AC / AF narrowed to the i-th
+// allele (a la R-format). Unknown / unrelated tags pass through unchanged.
+func perAlleleInfo(info map[string]string, i, n int) map[string]string {
+	out := make(map[string]string, len(info))
+	for k, v := range info {
+		switch k {
+		case "AC", "AF":
+			parts := strings.Split(v, ",")
+			if len(parts) == n && i < len(parts) {
+				out[k] = parts[i]
+				continue
+			}
+			// If the field doesn't match the allele count we leave it
+			// alone — better than dropping data on a malformed record.
+			out[k] = v
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// perAlleleSamples returns a copy of samples with each GT remapped so the
+// (i+1)-th allele of the original ALT becomes "1" and every other ALT is
+// re-coded as "0". Heterozygous calls that include the chosen ALT become
+// "0/1"; calls that don't reference it become "0/0".
+func perAlleleSamples(samples []vcf.Sample, format []string, i int) []vcf.Sample {
+	if len(samples) == 0 {
+		return nil
+	}
+	wantedAllele := strconv.Itoa(i + 1)
+	out := make([]vcf.Sample, len(samples))
+	for j, s := range samples {
+		ns := vcf.Sample{
+			Name: s.Name,
+			Data: make(map[string]string, len(s.Data)),
+		}
+		for k, v := range s.Data {
+			if k == "GT" {
+				ns.Data[k] = remapGT(v, wantedAllele)
+				continue
+			}
+			ns.Data[k] = v
+		}
+		out[j] = ns
+	}
+	_ = format
+	return out
+}
+
+// remapGT rewrites a genotype string so the wantedAllele (e.g. "2") is
+// reported as "1" and any other non-zero allele becomes "0".
+func remapGT(gt, wanted string) string {
+	if gt == "" || gt == "." {
+		return gt
+	}
+	var b strings.Builder
+	b.Grow(len(gt))
+	i := 0
+	for i < len(gt) {
+		// Skip allele separators verbatim.
+		c := gt[i]
+		if c == '/' || c == '|' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		// Capture the next allele token.
+		j := i
+		for j < len(gt) && gt[j] != '/' && gt[j] != '|' {
+			j++
+		}
+		token := gt[i:j]
+		switch token {
+		case ".":
+			b.WriteString(".")
+		case "0":
+			b.WriteString("0")
+		case wanted:
+			b.WriteString("1")
+		default:
+			// Any other non-zero allele becomes 0 in the per-allele view.
+			b.WriteString("0")
+		}
+		i = j
+	}
+	return b.String()
+}
+
+// cloneVariant returns a deep enough copy of v that downstream mutation of
+// Alt / Info / Samples won't leak back into the source slice.
+func cloneVariant(v *vcf.Variant) *vcf.Variant {
+	c := *v
+	c.Alt = append([]string{}, v.Alt...)
+	c.Filter = append([]string{}, v.Filter...)
+	c.Format = append([]string{}, v.Format...)
+	c.Info = make(map[string]string, len(v.Info))
+	for k, val := range v.Info {
+		c.Info[k] = val
+	}
+	c.Samples = make([]vcf.Sample, len(v.Samples))
+	for i, s := range v.Samples {
+		ns := vcf.Sample{Name: s.Name, Data: make(map[string]string, len(s.Data))}
+		for k, val := range s.Data {
+			ns.Data[k] = val
+		}
+		c.Samples[i] = ns
+	}
+	return &c
+}
+
+// joinMultiallelics groups biallelic records sharing chrom/pos/ref into a
+// single multiallelic. INFO/AC and INFO/AF are re-joined as comma lists;
+// FORMAT/GT is re-numbered so each donor record's ALT lands at its new
+// position. Records that disagree on REF are left alone.
+func joinMultiallelics(variants []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
+	out := make([]*vcf.Variant, 0, len(variants))
+	i := 0
+	for i < len(variants) {
+		v := variants[i]
+		if !shouldAffect(v, m) || len(v.Alt) != 1 {
+			out = append(out, v)
+			i++
+			continue
+		}
+		// Find a contiguous run of records that share chrom+pos+ref and
+		// every member of which is biallelic and joinable.
+		j := i + 1
+		for j < len(variants) {
+			w := variants[j]
+			if w.Chrom != v.Chrom || w.Pos != v.Pos || w.Ref != v.Ref || len(w.Alt) != 1 {
+				break
+			}
+			if !shouldAffect(w, m) {
+				break
+			}
+			j++
+		}
+		if j-i == 1 {
+			out = append(out, v)
+			i++
+			continue
+		}
+		out = append(out, joinGroup(variants[i:j]))
+		i = j
+	}
+	return out
+}
+
+// joinGroup merges a run of biallelics (sharing CHROM/POS/REF) into one
+// multiallelic record. The first record's metadata is kept; ALTs are
+// concatenated; INFO/AC and INFO/AF are joined; FORMAT/GT alleles are
+// renumbered per donor.
+func joinGroup(records []*vcf.Variant) *vcf.Variant {
+	head := cloneVariant(records[0])
+	if len(records) == 1 {
+		return head
+	}
+	for k := 1; k < len(records); k++ {
+		r := records[k]
+		head.Alt = append(head.Alt, r.Alt...)
+	}
+	// Join INFO/AC and INFO/AF if present in every record.
+	for _, tag := range []string{"AC", "AF"} {
+		joined := make([]string, 0, len(records))
+		ok := true
+		for _, r := range records {
+			val, present := r.Info[tag]
+			if !present {
+				ok = false
+				break
+			}
+			joined = append(joined, val)
+		}
+		if ok {
+			head.Info[tag] = strings.Join(joined, ",")
+		}
+	}
+	// Renumber GTs: donor record k (0-based) contributed allele index
+	// k+1. Within each sample we OR the per-donor alt calls together;
+	// the resulting genotype takes the highest contributing allele on
+	// each strand (e.g. "0/1" + "0/0" + "0/1" with donors at 1 and 3
+	// yields "0/3").
+	if len(head.Samples) > 0 && hasGT(head.Format) {
+		for s := range head.Samples {
+			strands := splitStrands(head.Samples[s].Data["GT"])
+			for k := 1; k < len(records); k++ {
+				donor := records[k].Samples[s].Data["GT"]
+				donorStrands := splitStrands(donor)
+				for i := range strands {
+					if i < len(donorStrands) && donorStrands[i].allele == "1" {
+						strands[i].allele = strconv.Itoa(k + 1)
+					}
+				}
+			}
+			head.Samples[s].Data["GT"] = joinStrands(strands)
+		}
+	}
+	return head
+}
+
+// strand pairs an allele with the separator that preceded it (so we can
+// round-trip phased and unphased genotypes verbatim).
+type strand struct {
+	sep    byte
+	allele string
+}
+
+func splitStrands(gt string) []strand {
+	if gt == "" {
+		return nil
+	}
+	var out []strand
+	i := 0
+	for i < len(gt) {
+		var sep byte
+		if i > 0 {
+			sep = gt[i]
+			i++
+		}
+		j := i
+		for j < len(gt) && gt[j] != '/' && gt[j] != '|' {
+			j++
+		}
+		out = append(out, strand{sep: sep, allele: gt[i:j]})
+		i = j
+	}
+	return out
+}
+
+func joinStrands(s []strand) string {
+	var b strings.Builder
+	for i, st := range s {
+		if i > 0 {
+			b.WriteByte(st.sep)
+		}
+		b.WriteString(st.allele)
+	}
+	return b.String()
+}
+
+func hasGT(format []string) bool {
+	for _, f := range format {
+		if f == "GT" {
+			return true
+		}
+	}
+	return false
+}
+
+// atomizeVariants decomposes complex variants (REF and ALT both >1bp and
+// equal length, e.g. "ACG" → "AGT") into a sequence of single-base
+// substitutions. Length-changing complex variants are left intact because
+// atomizing them safely requires a true alignment which is beyond the
+// scope of this slice.
+func atomizeVariants(variants []*vcf.Variant) []*vcf.Variant {
+	out := make([]*vcf.Variant, 0, len(variants))
+	for _, v := range variants {
+		if len(v.Alt) != 1 || len(v.Ref) <= 1 || len(v.Ref) != len(v.Alt[0]) {
+			out = append(out, v)
+			continue
+		}
+		alt := v.Alt[0]
+		for k := 0; k < len(v.Ref); k++ {
+			if v.Ref[k] == alt[k] {
+				continue
+			}
+			child := cloneVariant(v)
+			child.Pos = v.Pos + k
+			child.Ref = string(v.Ref[k])
+			child.Alt = []string{string(alt[k])}
+			out = append(out, child)
+		}
+	}
+	return out
+}
+
+// normalizeVariants left-aligns indels and applies the --check-ref policy.
+func normalizeVariants(variants []*vcf.Variant, ref *fasta.RandomAccess, opts NormOptions, stderr io.Writer) ([]*vcf.Variant, error) {
+	out := make([]*vcf.Variant, 0, len(variants))
+	for _, v := range variants {
+		// Always REF-check first so the user's policy applies before
+		// left-alignment moves coordinates.
+		ok, err := checkRef(v, ref, opts.CheckRef, stderr)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if !opts.DoNotNormalize && needsLeftAlign(v) {
+			if err := leftAlignInPlace(v, ref); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// needsLeftAlign returns true when the variant has at least one ALT whose
+// length differs from REF (a candidate for shifting left).
+func needsLeftAlign(v *vcf.Variant) bool {
+	if len(v.Ref) > 1 {
+		return true
+	}
+	for _, a := range v.Alt {
+		if len(a) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// checkRef compares v.Ref to the FASTA. Returns (true, nil) when the
+// record passes (or when policy is warn) and (false, nil) when it should
+// be silently dropped. An error is returned when policy is `error` and a
+// mismatch is observed.
+func checkRef(v *vcf.Variant, ref *fasta.RandomAccess, mode CheckRefMode, stderr io.Writer) (bool, error) {
+	refSeq, err := ref.Fetch(v.Chrom, int64(v.Pos-1), int64(v.Pos-1+len(v.Ref)))
+	if err != nil {
+		// Treat fetch errors uniformly: surface in error mode, suppress
+		// in skip mode, warn in warn mode (matches upstream behaviour
+		// for missing contigs).
+		switch mode {
+		case CheckRefError:
+			return false, fmt.Errorf("bcftools norm: REF lookup %s:%d failed: %w", v.Chrom, v.Pos, err)
+		case CheckRefWarn:
+			if stderr != nil {
+				fmt.Fprintf(stderr, "bcftools norm: REF lookup %s:%d failed: %v (kept)\n", v.Chrom, v.Pos, err)
+			}
+			return true, nil
+		case CheckRefSkip:
+			return false, nil
+		}
+	}
+	if strings.EqualFold(string(refSeq), v.Ref) {
+		return true, nil
+	}
+	switch mode {
+	case CheckRefError:
+		return false, fmt.Errorf("bcftools norm: REF mismatch at %s:%d (record %q vs reference %q)", v.Chrom, v.Pos, v.Ref, refSeq)
+	case CheckRefWarn:
+		if stderr != nil {
+			fmt.Fprintf(stderr, "bcftools norm: REF mismatch at %s:%d (record %q vs reference %q)\n", v.Chrom, v.Pos, v.Ref, refSeq)
+		}
+		return true, nil
+	case CheckRefSkip:
+		return false, nil
+	}
+	return false, nil
+}
+
+// leftAlignInPlace shifts a variant left using the Tan-Abecasis-Durbin
+// algorithm that bcftools / vt / GATK use:
+//
+//	repeat:
+//	  if alleles all end in the same byte AND not all are length 1:
+//	    trim the trailing byte from every allele
+//	  if any allele is now empty:
+//	    prepend the upstream reference base
+//	  continue until no change is made.
+//
+// The result is guaranteed to be parsimonious and left-aligned: no shared
+// suffix bases, no shared leading bases beyond the single anchor required
+// for VCF representation, position as small as possible.
+func leftAlignInPlace(v *vcf.Variant, ref *fasta.RandomAccess) error {
+	alleles := make([]string, 0, 1+len(v.Alt))
+	alleles = append(alleles, v.Ref)
+	alleles = append(alleles, v.Alt...)
+	pos := v.Pos
+	for {
+		changed := false
+		// 1) Trim a shared trailing base when all alleles match in the
+		// last position and they aren't all single-byte (we never trim
+		// the only base out of an allele on this pass alone).
+		if last, ok := commonLastByte(alleles); ok && !allLengthOne(alleles) {
+			_ = last
+			for i := range alleles {
+				alleles[i] = alleles[i][:len(alleles[i])-1]
+			}
+			changed = true
+		}
+		// 2) If trimming produced an empty allele, prepend the
+		// upstream reference base — this is the actual "shift left"
+		// step.
+		needPrepend := false
+		for _, a := range alleles {
+			if len(a) == 0 {
+				needPrepend = true
+				break
+			}
+		}
+		if needPrepend {
+			if pos <= 1 {
+				return fmt.Errorf("bcftools norm: cannot left-align past chrom start at %s:%d", v.Chrom, v.Pos)
+			}
+			upstream, err := ref.Fetch(v.Chrom, int64(pos-2), int64(pos-1))
+			if err != nil {
+				return err
+			}
+			if len(upstream) != 1 {
+				return fmt.Errorf("bcftools norm: bad upstream fetch on %s:%d", v.Chrom, pos)
+			}
+			for i := range alleles {
+				alleles[i] = string(upstream) + alleles[i]
+			}
+			pos--
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
+	// 3) Trim a shared leading base when every allele has length > 1.
+	// This collapses cases like (AACC, AAC) → (ACC, AC) into the
+	// minimum representation. We always keep at least one base in every
+	// allele so the VCF representation stays well-formed.
+	for {
+		if !allLongerThanOne(alleles) {
+			break
+		}
+		first := alleles[0][0]
+		same := true
+		for _, a := range alleles[1:] {
+			if !equalASCII(a[0], first) {
+				same = false
+				break
+			}
+		}
+		if !same {
+			break
+		}
+		for i := range alleles {
+			alleles[i] = alleles[i][1:]
+		}
+		pos++
+	}
+	v.Pos = pos
+	v.Ref = alleles[0]
+	v.Alt = alleles[1:]
+	return nil
+}
+
+// allLengthOne returns true when every allele is exactly one base. This is
+// the terminating condition for the trim-trailing step.
+func allLengthOne(alleles []string) bool {
+	for _, a := range alleles {
+		if len(a) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// allLongerThanOne returns true when every allele has length >= 2.
+func allLongerThanOne(alleles []string) bool {
+	for _, a := range alleles {
+		if len(a) < 2 {
+			return false
+		}
+	}
+	return true
+}
+
+// commonLastByte returns the last byte if every allele ends in the same
+// letter, and false otherwise. Case-insensitive comparison keeps mixed-
+// case FASTAs working.
+func commonLastByte(alleles []string) (byte, bool) {
+	last := alleles[0][len(alleles[0])-1]
+	for _, a := range alleles[1:] {
+		if !equalASCII(a[len(a)-1], last) {
+			return 0, false
+		}
+	}
+	return last, true
+}
+
+// equalASCII returns true when two ASCII bytes match ignoring case.
+func equalASCII(a, b byte) bool {
+	if a >= 'a' && a <= 'z' {
+		a -= 'a' - 'A'
+	}
+	if b >= 'a' && b <= 'z' {
+		b -= 'a' - 'A'
+	}
+	return a == b
+}
+
+// removeDuplicates filters variants per the --rm-dup policy. Apart from
+// "exact", entries are matched on chrom+pos and (optionally) type.
+func removeDuplicates(variants []*vcf.Variant, mode RmDupMode) []*vcf.Variant {
+	if mode == RmDupNone {
+		return variants
+	}
+	out := make([]*vcf.Variant, 0, len(variants))
+	if mode == RmDupExact {
+		seen := make(map[string]struct{})
+		for _, v := range variants {
+			key := exactKey(v)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, v)
+		}
+		return out
+	}
+	// For the non-exact modes, only the first record of a (chrom,pos)
+	// pair (optionally narrowed by type) is retained.
+	type seenKey struct {
+		chrom string
+		pos   int
+		kind  string
+	}
+	seen := make(map[seenKey]struct{})
+	for _, v := range variants {
+		kind := "other"
+		if variantIsSnp(v) {
+			kind = "snp"
+		}
+		if variantIsIndel(v) {
+			kind = "indel"
+		}
+		affect := false
+		groupKind := kind
+		switch mode {
+		case RmDupSnps:
+			affect = kind == "snp"
+		case RmDupIndels:
+			affect = kind == "indel"
+		case RmDupBoth:
+			affect = kind == "snp" || kind == "indel"
+		case RmDupAll:
+			affect = true
+			groupKind = "all" // collapse every type into one bucket
+		}
+		if !affect {
+			out = append(out, v)
+			continue
+		}
+		key := seenKey{v.Chrom, v.Pos, groupKind}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+// exactKey returns a string used to detect byte-for-byte duplicate records
+// in the "exact" mode.
+func exactKey(v *vcf.Variant) string {
+	return strings.Join([]string{
+		v.Chrom,
+		strconv.Itoa(v.Pos),
+		v.Ref,
+		strings.Join(v.Alt, ","),
+	}, "\x00")
+}
+
+// sortVariants stable-sorts by (chrom, pos) so left-alignment doesn't
+// leave the stream out of order. The order between same-(chrom,pos)
+// records is preserved.
+func sortVariants(variants []*vcf.Variant) {
+	sort.SliceStable(variants, func(i, j int) bool {
+		if variants[i].Chrom != variants[j].Chrom {
+			return variants[i].Chrom < variants[j].Chrom
+		}
+		return variants[i].Pos < variants[j].Pos
+	})
+}
