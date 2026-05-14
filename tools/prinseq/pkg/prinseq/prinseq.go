@@ -260,12 +260,12 @@ func trimSequence(seq, qual string, opts FilterOptions) (string, string) {
 
 	// Apply quality-based trimming from left
 	if opts.TrimQualL > 0 && len(qualBytes) > 0 {
-		seqBytes, qualBytes = trimQualityLeft(seqBytes, qualBytes, opts.TrimQualL)
+		seqBytes, qualBytes = trimQualityLeft(seqBytes, qualBytes, opts.TrimQualL, phredOffset(opts.QualType))
 	}
 
 	// Apply quality-based trimming from right
 	if opts.TrimQualR > 0 && len(qualBytes) > 0 {
-		seqBytes, qualBytes = trimQualityRight(seqBytes, qualBytes, opts.TrimQualR)
+		seqBytes, qualBytes = trimQualityRight(seqBytes, qualBytes, opts.TrimQualR, phredOffset(opts.QualType))
 	}
 
 	return string(seqBytes), string(qualBytes)
@@ -347,10 +347,20 @@ func trimPolyATRight(seq, qual []byte, minLen int) ([]byte, []byte) {
 	return seq, qual
 }
 
-func trimQualityLeft(seq, qual []byte, threshold int) ([]byte, []byte) {
+// phredOffset returns the ASCII offset used to decode quality characters for
+// the given prinseq quality-type string. It returns 64 for Illumina 1.3-1.7
+// style encodings ("illumina") and 33 for Sanger/Phred+33 (the default).
+func phredOffset(qualType string) int {
+	if qualType == "illumina" {
+		return 64
+	}
+	return 33
+}
+
+func trimQualityLeft(seq, qual []byte, threshold, offset int) ([]byte, []byte) {
 	trimPos := 0
 	for i := 0; i < len(qual); i++ {
-		if int(qual[i])-33 < threshold {
+		if int(qual[i])-offset < threshold {
 			trimPos = i + 1
 		} else {
 			break
@@ -364,10 +374,10 @@ func trimQualityLeft(seq, qual []byte, threshold int) ([]byte, []byte) {
 	return seq, qual
 }
 
-func trimQualityRight(seq, qual []byte, threshold int) ([]byte, []byte) {
+func trimQualityRight(seq, qual []byte, threshold, offset int) ([]byte, []byte) {
 	trimPos := len(qual)
 	for i := len(qual) - 1; i >= 0; i-- {
-		if int(qual[i])-33 < threshold {
+		if int(qual[i])-offset < threshold {
 			trimPos = i
 		} else {
 			break
