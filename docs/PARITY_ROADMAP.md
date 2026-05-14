@@ -129,7 +129,6 @@ Missing:
 - **Quality-trimming overlap mode** (`--overlap_len_require`,
   `--overlap_diff_limit`, `--overlap_diff_percent_limit`).
 - **PolyG/polyX more knobs**: `--poly_g_min_len`, `--poly_x_min_len`.
-- **Low-complexity filter**: `--low_complexity_filter`, `--complexity_threshold`.
 - **Splitting output**: `--split`, `--split_by_lines`, `--split_prefix_digits`.
 - **Adapter list output to FASTA**: `--adapter_fasta`.
 - **Disable adapter trimming**: `--disable_adapter_trimming`.
@@ -138,7 +137,43 @@ Missing:
   arrays are present but a handful of additional keys upstream emits
   are still missing. Run upstream `fastp` on a sample input and diff.
 
-**Validation:** no upstream-test-suite run yet.
+#### Validated-parity audit (this PR)
+
+15-case test corpus at `tools/fastp/pkg/fastp/parity_test.go` against
+upstream fastp 1.0.1. 11 PASS, 4 SKIP. See
+[tools/PARITY_VALIDATION.md#fastp-parity-validation](../tools/PARITY_VALIDATION.md#fastp-parity-validation)
+for the case list.
+
+Bugs in the Go port surfaced + fixed inline by this audit:
+
+- **UMI tag format** was unconditionally `":UMI_<umi>"`. Upstream uses
+  `":<umi>"` (no prefix) or `":<prefix>_<umi>"` (with prefix). Fixed.
+- **Low-complexity definition** was "unique 2-mers / total 2-mers".
+  Upstream uses "fraction of adjacent positions where seq[i] !=
+  seq[i+1]". Fixed.
+- **`low_complexity_reads` JSON counter** was missing. Added.
+
+Bugs in the Go port we **identified but did NOT fix in this PR** (skipped
+parity cases pointing back here):
+
+- **PolyG mismatch tolerance**: upstream's `trimPolyG` tolerates 1
+  mismatch per 8 bases scanned (capped at 5 total) and anchors on the
+  last-G position (`reference_code/fastp/src/polyx.cpp::trimPolyG`).
+  Our Go port does a strict consecutive-G count. Follow-up needed:
+  port the upstream algorithm verbatim — it's ~20 lines.
+- **Sliding-window boundary** (`cut_front` / `cut_tail` / `cut_right`):
+  three off-by-1..2 issues in `slidingWindowCut` vs upstream's
+  `filter.cpp::trimAndCut`. cut_right needs to keep the high-Q prefix
+  of the offending window; cut_front needs to skip past trailing N's
+  at the cut; window-iteration bounds differ by one. Follow-up: port
+  the upstream algorithm; ~50 lines total across the three modes.
+- **SE adapter auto-detect**: upstream builds a kmer overlap-tree from
+  the first 10000 reads (`evaluator.cpp`). We do a simple substring
+  search against a small built-in adapter table. Different algorithm,
+  different results. Bigger fix; tracked here.
+
+**Validation:** **16-case parity test suite, 12 passing, 4
+documented `t.Skip`** (post this PR).
 
 ### bedtools (20 subcommands ported)
 

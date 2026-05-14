@@ -161,6 +161,7 @@ type ProcessStats struct {
 	TooShortReads       int
 	TooLongReads        int
 	TooManyNReads       int
+	LowComplexityReads  int
 	AdapterTrimmedReads int
 	AdapterTrimmedBases int64
 	PolyGTrimmedReads   int
@@ -746,11 +747,27 @@ func processRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStat
 		}
 	}
 
-	// Step 7: Check complexity if enabled
+	// Step 7: Check complexity if enabled.
+	//
+	// Upstream fastp defines sequence complexity as the fraction of
+	// adjacent base pairs that differ: `diff/(length-1)` where diff is
+	// the count of indices i where seq[i] != seq[i+1]. Threshold defaults
+	// to 0.3 (== upstream's --complexity_threshold 30, which is interpreted
+	// as a percentage). We accept the value as a fraction in [0,1]; the
+	// CLI also accepts the percentage form via cliflag's float parser, and
+	// we normalise values > 1 down by dividing by 100 so `--complexity-threshold 30`
+	// behaves like `--complexity-threshold 0.3` (matching upstream's `-Y 30`).
 	if opts.LowComplexity {
 		complexity := calculateComplexity(seq[start:end])
-		if complexity < opts.ComplexityThreshold {
-			// Low complexity read - discard
+		threshold := opts.ComplexityThreshold
+		if threshold > 1 {
+			threshold = threshold / 100
+		}
+		if complexity < threshold {
+			// Low complexity read — discard. Mirrors upstream fastp which
+			// also counts these under a dedicated `low_complexity_reads`
+			// bucket in the filtering result.
+			stats.LowComplexityReads++
 			return nil, false
 		}
 	}
@@ -933,24 +950,23 @@ func getQualityScores(quality []byte, encoding fastq.QualityEncoding) []int {
 	return scores
 }
 
-// calculateComplexity calculates sequence complexity (0-1, higher is more complex).
+// calculateComplexity returns the fraction of adjacent base pairs that
+// differ — i.e. count(i : seq[i] != seq[i+1]) / (len(seq)-1). This matches
+// upstream fastp's passLowComplexityFilter definition (see filter.cpp).
+// A run of identical bases returns 0; a perfectly alternating ATAT...
+// sequence returns 1.0. Sequences shorter than 2 bases return 0 (upstream
+// also rejects them).
 func calculateComplexity(seq string) float64 {
-	if len(seq) == 0 {
+	if len(seq) <= 1 {
 		return 0
 	}
-
-	// Simple complexity measure: unique 2-mers / total 2-mers
-	if len(seq) < 2 {
-		return 1.0
-	}
-
-	kmers := make(map[string]bool)
+	diff := 0
 	for i := 0; i < len(seq)-1; i++ {
-		kmer := seq[i : i+2]
-		kmers[kmer] = true
+		if seq[i] != seq[i+1] {
+			diff++
+		}
 	}
-
-	return float64(len(kmers)) / float64(len(seq)-1)
+	return float64(diff) / float64(len(seq)-1)
 }
 
 // detectAdapter detects the most common adapter in a sample of reads

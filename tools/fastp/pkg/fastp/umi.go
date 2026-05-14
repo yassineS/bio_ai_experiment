@@ -14,10 +14,9 @@
 // are removed from the sequence and quality of the affected record. In
 // index/per_index modes the read sequence is left alone.
 //
-// The UMI is appended to the read name as ":UMI_<prefix><umi>" so the
-// downstream aligner can preserve molecular identity. When --umi_prefix
-// is empty no separator is inserted between "UMI_" and the UMI bases,
-// matching upstream behaviour.
+// The UMI is appended to the read name as ":<umi>" (no prefix set) or
+// ":<prefix>_<umi>" (when --umi_prefix is provided), matching upstream
+// fastp's umiprocessor.cpp.
 
 package fastp
 
@@ -190,13 +189,25 @@ func extractUMIFromSequence(record *fastq.Record, opts ProcessOptions) (*fastq.R
 	return appendUMIName(out, umi, opts.UMIPrefix), true
 }
 
-// appendUMIName appends ":UMI_<prefix><umi>" to record's ID and
-// Description. If umi is empty the record is returned unchanged.
+// appendUMIName appends the upstream-fastp-style UMI tag to record's ID
+// and Description. Upstream's tag format is:
+//
+//	prefix == ""    -> ":<umi>"
+//	prefix != ""    -> ":<prefix>_<umi>"
+//
+// (the leading colon is upstream's default delimiter — see
+// umiprocessor.cpp `addUmiToName`). If umi is empty the record is
+// returned unchanged.
 func appendUMIName(record *fastq.Record, umi, prefix string) *fastq.Record {
 	if record == nil || umi == "" {
 		return record
 	}
-	tag := ":UMI_" + prefix + umi
+	var tag string
+	if prefix == "" {
+		tag = ":" + umi
+	} else {
+		tag = ":" + prefix + "_" + umi
+	}
 	out := *record
 	out.ID = record.ID + tag
 	if record.Description != "" {
