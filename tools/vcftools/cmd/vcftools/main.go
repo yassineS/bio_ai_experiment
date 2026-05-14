@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
 	"github.com/yassineS/bio_ai_experiment/tools/vcftools/pkg/vcftools"
@@ -123,6 +124,27 @@ Linkage Disequilibrium:
   --ld-window-min INT   Minimum number of SNPs between LD pairs
   --ld-window-bp-min INT  Minimum bp distance between LD pairs
   --min-r2 FLOAT        Only emit LD pairs with r^2 >= this threshold
+  --interchrom-geno-r2  Inter-chromosomal genotype LD r^2 (.interchrom.geno.ld)
+  --interchrom-hap-r2   Inter-chromosomal haplotype LD r^2 (.interchrom.hap.ld)
+  --geno-chisq          Per-pair chi-square test of genotype association (.geno.chisq)
+
+Advanced Analysis:
+  --relatedness         Yang 2010 unadjusted A_jk relatedness (.relatedness)
+  --relatedness2        KING-robust kinship coefficient (.relatedness2)
+  --LROH                Runs of homozygosity per individual (.LROH)
+  --LROH-min-variants INT
+                        Minimum consecutive homozygous variants for a run
+                        (default: 10)
+  --phased-blocks       Per-individual contiguous phased-haplotype block
+                        boundaries (.blocks)
+
+FILTER / INFO Selection:
+  --remove-filtered NAME[,NAME...]   Drop sites listing any of these FILTERs
+  --keep-filtered NAME[,NAME...]     Keep only sites listing any of these
+                                     FILTERs
+  --keep-INFO TAG       Keep only this INFO tag in --recode output (repeatable)
+  --remove-INFO TAG     Strip this INFO tag from --recode output (repeatable)
+  --get-INFO TAG        Extract this INFO tag to <prefix>.INFO (repeatable)
 
 Sample Filtering:
   --indv STRING         Include only this individual (can use multiple times)
@@ -275,6 +297,40 @@ func main() {
 	beagleGL := flag.Bool("BEAGLE-GL", false, "Emit <prefix>.BEAGLE.GL (log10 GL triplets from PL)")
 	beaglePL := flag.Bool("BEAGLE-PL", false, "Emit <prefix>.BEAGLE.PL (raw PL triplets)")
 
+	// Inter-chromosomal LD + chi-square LD
+	interchromGenoR2 := flag.Bool("interchrom-geno-r2", false, "Inter-chromosomal genotype LD r^2 (.interchrom.geno.ld)")
+	interchromHapR2 := flag.Bool("interchrom-hap-r2", false, "Inter-chromosomal haplotype LD r^2 (.interchrom.hap.ld)")
+	genoChiSq := flag.Bool("geno-chisq", false, "Per-pair chi-square test of genotype association (.geno.chisq)")
+
+	// Relatedness, LROH
+	relatedness := flag.Bool("relatedness", false, "Yang 2010 unadjusted A_jk relatedness (.relatedness)")
+	relatedness2 := flag.Bool("relatedness2", false, "KING-robust kinship coefficient (.relatedness2)")
+	lroh := flag.Bool("LROH", false, "Runs of homozygosity per individual (.LROH)")
+	lrohMin := flag.Int("LROH-min-variants", 0, "Minimum consecutive homozygous variants for an LROH run (default 10)")
+	phasedBlocks := flag.Bool("phased-blocks", false, "Per-individual contiguous phased-haplotype block boundaries (.blocks)")
+
+	// FILTER-name include/exclude
+	removeFiltered := flag.String("remove-filtered", "", "Comma-separated FILTER names to drop")
+	keepFiltered := flag.String("keep-filtered", "", "Comma-separated FILTER names to keep")
+
+	// INFO tag handling. --keep-INFO / --remove-INFO are repeatable in
+	// upstream; --get-INFO is upstream-repeatable too. We accept either
+	// repeated single-tag invocations or one comma-separated value, joined
+	// with commas in the same order seen on the command line.
+	var keepINFOParts, removeINFOParts, getINFOParts []string
+	flag.Func("keep-INFO", "INFO tag to keep in --recode output (repeatable)", func(s string) error {
+		keepINFOParts = append(keepINFOParts, s)
+		return nil
+	})
+	flag.Func("remove-INFO", "INFO tag to strip from --recode output (repeatable)", func(s string) error {
+		removeINFOParts = append(removeINFOParts, s)
+		return nil
+	})
+	flag.Func("get-INFO", "INFO tag to extract to <prefix>.INFO (repeatable)", func(s string) error {
+		getINFOParts = append(getINFOParts, s)
+		return nil
+	})
+
 	// Sample filtering
 	var indvList, removeIndvList []string
 	flag.Func("indv", "Include individual (can use multiple times)", func(s string) error {
@@ -426,6 +482,19 @@ func main() {
 		DiffIndvDiscordance:  *diffIndvDiscord,
 		BEAGLEGL:             *beagleGL,
 		BEAGLEPL:             *beaglePL,
+		InterchromGenoR2:     *interchromGenoR2,
+		InterchromHapR2:      *interchromHapR2,
+		GenoChiSq:            *genoChiSq,
+		Relatedness:          *relatedness,
+		Relatedness2:         *relatedness2,
+		PhasedBlocks:         *phasedBlocks,
+		LROH:                 *lroh,
+		LROHMinVariants:      *lrohMin,
+		RemoveFiltered:       *removeFiltered,
+		KeepFiltered:         *keepFiltered,
+		KeepINFO:             strings.Join(keepINFOParts, ","),
+		RemoveINFO:           strings.Join(removeINFOParts, ","),
+		GetINFO:              strings.Join(getINFOParts, ","),
 	}
 
 	// Run vcftools

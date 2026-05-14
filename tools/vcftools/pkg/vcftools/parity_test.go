@@ -809,3 +809,190 @@ func TestParity_WindowPi_Header(t *testing.T) {
 		t.Errorf("header mismatch: %q vs %q", lines[0], want)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Wave 1 long-tail closures: interchrom LD, chi-square, relatedness,
+// relatedness2, LROH, phased-blocks, get-INFO, remove-filtered.
+// -----------------------------------------------------------------------------
+
+// TestParity_InterchromGenoR2_Header — header byte-for-byte against upstream
+// `<prefix>.interchrom.geno.ld` layout: CHR1 POS1 CHR2 POS2 N_INDV R^2.
+func TestParity_InterchromGenoR2_Header(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{InterchromGenoR2: true})
+	b, err := os.ReadFile(prefix + ".interchrom.geno.ld")
+	if err != nil {
+		t.Fatalf("read .interchrom.geno.ld: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	want := "CHR1\tPOS1\tCHR2\tPOS2\tN_INDV\tR^2"
+	if lines[0] != want {
+		t.Errorf("header mismatch: %q vs %q", lines[0], want)
+	}
+}
+
+// TestParity_InterchromHapR2_Header — header for `--interchrom-hap-r2`.
+func TestParity_InterchromHapR2_Header(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{InterchromHapR2: true})
+	b, err := os.ReadFile(prefix + ".interchrom.hap.ld")
+	if err != nil {
+		t.Fatalf("read .interchrom.hap.ld: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	want := "CHR1\tPOS1\tCHR2\tPOS2\tN_CHR\tR^2\tD\tDprime"
+	if lines[0] != want {
+		t.Errorf("header mismatch: %q vs %q", lines[0], want)
+	}
+}
+
+// TestParity_GenoChiSq_Header — header for `--geno-chisq`.
+func TestParity_GenoChiSq_Header(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{GenoChiSq: true})
+	b, err := os.ReadFile(prefix + ".geno.chisq")
+	if err != nil {
+		t.Fatalf("read .geno.chisq: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	want := "CHR1\tPOS1\tCHR2\tPOS2\tN_INDV\tCHI^2\tDF\tP-VALUE"
+	if lines[0] != want {
+		t.Errorf("header mismatch: %q vs %q", lines[0], want)
+	}
+}
+
+// TestParity_Relatedness_Header — header for `--relatedness`.
+func TestParity_Relatedness_Header(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Relatedness: true})
+	lines := readFileLines(t, prefix+".relatedness")
+	if len(lines) == 0 {
+		t.Fatalf("empty .relatedness output")
+	}
+	want := "INDV1\tINDV2\tRELATEDNESS_AJK"
+	if lines[0] != want {
+		t.Errorf("header mismatch: %q vs %q", lines[0], want)
+	}
+	// 3 samples -> 3 self + 3 cross = 6 rows.
+	if got := len(lines) - 1; got != 6 {
+		t.Errorf("got %d rows, want 6", got)
+	}
+}
+
+// TestParity_Relatedness2_Header — header for `--relatedness2`.
+func TestParity_Relatedness2_Header(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Relatedness2: true})
+	lines := readFileLines(t, prefix+".relatedness2")
+	if len(lines) == 0 {
+		t.Fatalf("empty .relatedness2 output")
+	}
+	want := "INDV1\tINDV2\tN_AaAa\tN_AAaa\tN1_Aa\tN2_Aa\tRELATEDNESS_PHI"
+	if lines[0] != want {
+		t.Errorf("header mismatch: %q vs %q", lines[0], want)
+	}
+}
+
+// TestParity_LROH_Header — header for `--LROH`.
+func TestParity_LROH_Header(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{LROH: true})
+	lines := readFileLines(t, prefix+".LROH")
+	if len(lines) == 0 {
+		t.Fatalf("empty .LROH output")
+	}
+	want := "CHROM\tAUTO_START\tAUTO_END\tN_VARIANTS\tINDV"
+	if lines[0] != want {
+		t.Errorf("header mismatch: %q vs %q", lines[0], want)
+	}
+}
+
+// TestParity_PhasedBlocks_Header — header for `--phased-blocks`.
+func TestParity_PhasedBlocks_Header(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{PhasedBlocks: true})
+	lines := readFileLines(t, prefix+".blocks")
+	if len(lines) == 0 {
+		t.Fatalf("empty .blocks output")
+	}
+	want := "CHROM\tBLOCK_START\tBLOCK_END\tN_VARIANTS\tINDV"
+	if lines[0] != want {
+		t.Errorf("header mismatch: %q vs %q", lines[0], want)
+	}
+}
+
+// TestParity_GetINFO — extract DP and AF tags from the fixture.
+func TestParity_GetINFO(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{GetINFO: "DP,AF"})
+	lines := readFileLines(t, prefix+".INFO")
+	want := "CHROM\tPOS\tREF\tALT\tDP\tAF"
+	if lines[0] != want {
+		t.Errorf("header mismatch: %q vs %q", lines[0], want)
+	}
+	// Spot check: 20:14370 has DP=14, AF=0.5.
+	for _, ln := range lines[1:] {
+		fields := strings.Split(ln, "\t")
+		if len(fields) >= 6 && fields[0] == "20" && fields[1] == "14370" {
+			if fields[4] != "14" || fields[5] != "0.5" {
+				t.Errorf("20:14370 got DP=%s AF=%s; want 14 / 0.5", fields[4], fields[5])
+			}
+			return
+		}
+	}
+	t.Errorf("20:14370 not found in:\n%s", strings.Join(lines, "\n"))
+}
+
+// TestParity_RemoveFiltered — --remove-filtered q10 drops sites listing q10.
+// In sample.vcf the q10-filtered sites are 20:17330 and X:11; both should
+// drop. The remaining 10 records (PASS, ".", and "q10;s50" is also dropped
+// via overlap) should survive less the q10 ones.
+func TestParity_RemoveFiltered(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		RemoveFiltered: "q10",
+		Recode:         true,
+	})
+	got := readFileLines(t, prefix+".recode.vcf")
+	for _, ln := range got {
+		if strings.HasPrefix(ln, "#") || ln == "" {
+			continue
+		}
+		fields := strings.Split(ln, "\t")
+		if len(fields) < 7 {
+			continue
+		}
+		// FILTER is column 7 (1-indexed) = index 6.
+		filter := fields[6]
+		filters := strings.Split(filter, ";")
+		for _, f := range filters {
+			if f == "q10" {
+				t.Errorf("q10-filtered row leaked: %q", ln)
+			}
+		}
+	}
+}
+
+// TestParity_KeepFiltered — --keep-filtered q10 keeps only sites listing q10.
+func TestParity_KeepFiltered(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		KeepFiltered: "q10",
+		Recode:       true,
+	})
+	got := readFileLines(t, prefix+".recode.vcf")
+	rowsSeen := 0
+	for _, ln := range got {
+		if strings.HasPrefix(ln, "#") || ln == "" {
+			continue
+		}
+		rowsSeen++
+		fields := strings.Split(ln, "\t")
+		filter := fields[6]
+		filters := strings.Split(filter, ";")
+		ok := false
+		for _, f := range filters {
+			if f == "q10" {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			t.Errorf("non-q10 row leaked with --keep-filtered q10: %q", ln)
+		}
+	}
+	// Expect 2 rows: 20:17330 (q10) and X:11 (q10;s50).
+	if rowsSeen != 2 {
+		t.Errorf("expected 2 q10 rows, got %d", rowsSeen)
+	}
+}

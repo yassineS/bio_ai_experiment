@@ -4,11 +4,12 @@ This document outlines planned features and enhancements for the vcftools Go imp
 
 ## Current state
 
-**Status:** Partial — roughly 45 of vcftools' ~147 options.
+**Status:** Partial — roughly 70 of vcftools' ~147 options (~48%).
 
 ### Implemented
 
 - Filtering: position, BED-interval (`--bed`/`--exclude-bed`), SNP ID + thinning, quality, allele frequency/count, variant type, genotype-level (`--minDP`/`--maxDP`/`--minGQ`)
+- FILTER tag include/exclude: `--remove-filtered-all`, `--remove-filtered NAME[,NAME...]`, `--keep-filtered NAME[,NAME...]`
 - Sample management (`--indv`, `--remove-indv`, `--keep`, `--remove`)
 - Per-site / per-individual statistics: `--freq`/`--counts`(+`2`), `--depth`,
   `--geno-depth`, `--site-depth`, `--site-mean-depth`, `--site-quality`,
@@ -20,7 +21,14 @@ This document outlines planned features and enhancements for the vcftools Go imp
   `--FILTER-summary`, `--SNPdensity`
 - Population structure: `--weir-fst-pop` (Weir & Cockerham 1984 per-site Fst → `.weir.fst`),
   `--fst-window-size`/`--fst-window-step` (windowed `WEIGHTED_FST`/`MEAN_FST` → `.windowed.weir.fst`)
-- VCF recoding (`--recode`, `--recode-INFO-all`)
+- Linkage disequilibrium: `--geno-r2`, `--hap-r2`,
+  `--geno-r2-positions`, `--hap-r2-positions`, `--ld-window`,
+  `--ld-window-bp`, `--ld-window-min`, `--ld-window-bp-min`, `--min-r2`,
+  `--interchrom-geno-r2`, `--interchrom-hap-r2`, `--geno-chisq`
+- Relatedness: `--relatedness` (Yang 2010 A_jk), `--relatedness2` (KING-robust kinship)
+- Haplotype / homozygosity: `--LROH` (+ `--LROH-min-variants`), `--phased-blocks`
+- VCF recoding (`--recode`, `--recode-INFO-all`, `--keep-INFO TAG`, `--remove-INFO TAG`)
+- INFO extraction: `--get-INFO TAG[,TAG...]` → `.INFO`
 - Format conversion: `--012`, `--plink`, `--plink-tped`, `--chrom-map`,
   `--BEAGLE-GL`, `--BEAGLE-PL`
 - VCF comparison: `--diff` with `--diff-site`, `--diff-indv`,
@@ -28,10 +36,11 @@ This document outlines planned features and enhancements for the vcftools Go imp
 
 ### Recognised but **not implemented** (return an error)
 
-- Inter-chromosomal LD (`--interchrom-geno-r2`, `--interchrom-hap-r2`),
-  `--geno-chisq`, and many other upstream options
+- `--mendel`, `--ldhat`, `--ldhat-geno`, `--ldhelmet`, `--IMPUTE`,
+  `--diff-discordance-matrix`, `--diff-switch-error`, `--diff-indv-map`,
+  `--pca`, and a long tail of less-used options
 
-Test coverage of the `vcftools` package is ~51% of statements; the `cmd/`
+Test coverage of the `vcftools` package is ~81% of statements; the `cmd/`
 entry point has no tests.
 
 ## Version 1.1 (Planned)
@@ -57,7 +66,9 @@ chromosome; multi-allelic sites use only the first ALT; `--hap-r2` requires
 phased GTs. Upstream byte-for-byte parity hasn't been validated yet — see the
 follow-up issue.
 
-Still missing: `--interchrom-geno-r2`, `--interchrom-hap-r2`, `--geno-chisq`.
+All also implemented in the long-tail wave 1: `--interchrom-geno-r2`,
+`--interchrom-hap-r2`, `--geno-chisq` (writes `.interchrom.geno.ld`,
+`.interchrom.hap.ld`, `.geno.chisq` respectively).
 
 **Priority:** HIGH  
 **Estimated Effort:** 2-3 weeks  
@@ -163,9 +174,10 @@ Still missing: `--interchrom-geno-r2`, `--interchrom-hap-r2`, `--geno-chisq`.
 
 ### Advanced Analysis
 
-- [ ] `--relatedness` - Relatedness coefficient
-- [ ] `--relatedness2` - Alternative relatedness metric
-- [ ] `--LROH` - Runs of homozygosity
+- [x] `--relatedness` - Relatedness coefficient (Yang 2010 unadjusted A_jk)
+- [x] `--relatedness2` - KING-robust kinship coefficient
+- [x] `--LROH` - Runs of homozygosity
+- [x] `--phased-blocks` - Per-individual phased-haplotype blocks
 
 **Priority:** LOW  
 **Estimated Effort:** 2-3 weeks  
