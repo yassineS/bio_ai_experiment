@@ -31,9 +31,14 @@ type statistics struct {
 	// Ts/Tv statistics
 	transitions   int
 	transversions int
-	tsTvByBin     map[int]*tsTvBinStat
-	tsTvByCount   map[int]*tsTvCountStat
-	tsTvByQual    []tsTvQualStat
+	// tsTvModelCounts holds per-substitution-model counts in the fixed
+	// canonical order ("AC", "AG", "AT", "CG", "CT", "GT") — see upstream
+	// output_TsTv_summary() in variant_file_output.cpp. AG and CT are
+	// transitions, the rest are transversions.
+	tsTvModelCounts [6]int
+	tsTvByBin       map[int]*tsTvBinStat
+	tsTvByCount     map[int]*tsTvCountStat
+	tsTvByQual      []tsTvQualStat
 
 	// Phase 2: Population genetics statistics
 	windowPiValues []windowPiStat
@@ -193,9 +198,16 @@ type fstStat struct {
 }
 
 type singletonStat struct {
-	chrom  string
-	pos    int
+	chrom string
+	pos   int
+	// kind is "S" (singleton: ALT count == 1) or "D" (private doubleton:
+	// a single individual carries both ALT alleles). Matches upstream
+	// vcftools .singletons SINGLETON/DOUBLETON column.
+	kind   string
 	allele string
+	// indv is the sample id carrying the rare allele. Empty when we
+	// cannot determine it.
+	indv string
 }
 
 // newStatistics creates a new statistics collector
@@ -562,6 +574,13 @@ func (s *statistics) addTsTvStat(v *vcf.Variant, binSize int) {
 		s.transversions++
 	}
 
+	// Tally the substitution-model class (alphabetised pair) for the
+	// --TsTv-summary output. Unrecognised pairs (e.g. N alleles) are
+	// silently skipped.
+	if idx, ok := tstvModelIndex(ref, alt); ok {
+		s.tsTvModelCounts[idx]++
+	}
+
 	// Add to bin if needed
 	if binSize > 0 {
 		binIdx := v.Pos / binSize
@@ -634,6 +653,38 @@ func nucleotideDiversity(v *vcf.Variant) (pi float64, ok bool) {
 func isTransitionSNP(ref, alt string) bool {
 	return (ref == "A" && alt == "G") || (ref == "G" && alt == "A") ||
 		(ref == "C" && alt == "T") || (ref == "T" && alt == "C")
+}
+
+// tstvModelIndex maps an unordered (ref, alt) single-nucleotide
+// substitution to its canonical index in the upstream `--TsTv-summary`
+// table:
+//
+//	0: AC  1: AG  2: AT  3: CG  4: CT  5: GT
+//
+// The alphabetisation matches the upstream ordering exactly.
+func tstvModelIndex(ref, alt string) (int, bool) {
+	if len(ref) != 1 || len(alt) != 1 {
+		return 0, false
+	}
+	r, a := ref[0], alt[0]
+	if r > a {
+		r, a = a, r
+	}
+	switch string([]byte{r, a}) {
+	case "AC":
+		return 0, true
+	case "AG":
+		return 1, true
+	case "AT":
+		return 2, true
+	case "CG":
+		return 3, true
+	case "CT":
+		return 4, true
+	case "GT":
+		return 5, true
+	}
+	return 0, false
 }
 
 // addTsTvByCountStat bins a biallelic SNP by its alternate-allele count and
@@ -797,33 +848,70 @@ func (s *statistics) addSingletonStat(v *vcf.Variant) {
 		return
 	}
 
-	// Count alleles
-	alleleCounts := make(map[string]int)
+	sampleNames := s.header.Samples
 
-	for _, sample := range v.Samples {
+	// Per-allele totals + which sample(s) carry the allele.
+	alleleCount := make(map[string]int)
+	alleleSample := make(map[string]string)
+	alleleDoubleton := make(map[string]bool)
+
+	for i, sample := range v.Samples {
 		gt, ok := sample.Data["GT"]
 		if !ok || strings.Contains(gt, ".") {
 			continue
 		}
-
 		alleles := strings.FieldsFunc(gt, func(r rune) bool {
 			return r == '/' || r == '|'
 		})
-
-		for _, allele := range alleles {
-			alleleCounts[allele]++
+		perSample := make(map[string]int)
+		for _, a := range alleles {
+			perSample[a]++
+		}
+		for a, n := range perSample {
+			alleleCount[a] += n
+			if i < len(sampleNames) {
+				if alleleSample[a] == "" {
+					alleleSample[a] = sampleNames[i]
+				} else if alleleSample[a] != sampleNames[i] {
+					// More than one sample carries the allele —
+					// disqualifies it from being a private doubleton.
+					alleleSample[a] = ""
+				}
+			}
+			if n == 2 {
+				alleleDoubleton[a] = true
+			}
 		}
 	}
 
-	// Check for singletons (alleles with count == 1)
-	for allele, count := range alleleCounts {
-		if count == 1 && allele != "0" { // Exclude reference allele
-			s.singletonSites = append(s.singletonSites, singletonStat{
-				chrom:  v.Chrom,
-				pos:    v.Pos,
-				allele: allele,
-			})
+	// Stable iteration order: sort the allele keys.
+	keys := make([]string, 0, len(alleleCount))
+	for a := range alleleCount {
+		keys = append(keys, a)
+	}
+	sort.Strings(keys)
+
+	for _, allele := range keys {
+		count := alleleCount[allele]
+		if allele == "0" {
+			continue
 		}
+		var kind string
+		switch {
+		case count == 1:
+			kind = "S"
+		case count == 2 && alleleDoubleton[allele] && alleleSample[allele] != "":
+			kind = "D"
+		default:
+			continue
+		}
+		s.singletonSites = append(s.singletonSites, singletonStat{
+			chrom:  v.Chrom,
+			pos:    v.Pos,
+			kind:   kind,
+			allele: allele,
+			indv:   alleleSample[allele],
+		})
 	}
 }
 
@@ -870,22 +958,26 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 	}
 	defer f.Close()
 
-	// Header
+	// Header. Upstream vcftools emits a single literal `{ALLELE:FREQ}` /
+	// `{ALLELE:COUNT}` column header — the curly braces are part of the
+	// header text, not a per-allele wrapper. The data rows below have one
+	// tab-separated `allele:value` entry per allele (no braces). See
+	// reference_code/vcftools/src/cpp/variant_file_output.cpp around line 36.
 	if counts {
-		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{REF:COUNT}\t{ALT:COUNT}")
+		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{ALLELE:COUNT}")
 	} else {
-		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{REF:FREQ}\t{ALT:FREQ}")
+		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{ALLELE:FREQ}")
 	}
 
 	// Data
 	for _, stat := range s.siteFrequencies {
 		if counts {
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t{%s:%d}\t{%s:%d}\n",
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%d\t%s:%d\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
 				stat.refAllele, stat.refCount,
 				stat.altAllele, stat.altCount)
 		} else {
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t{%s:%.6f}\t{%s:%.6f}\n",
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%.6f\t%s:%.6f\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
 				stat.refAllele, stat.refFreq,
 				stat.altAllele, stat.altFreq)
@@ -957,10 +1049,15 @@ func (s *statistics) outputSiteDepth(prefix string) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "CHROM\tPOS\tSUM_DEPTH")
+	// Upstream emits both SUM_DEPTH and SUMSQ_DEPTH (sum of squared
+	// per-individual depths at the site). We don't carry the squared sum
+	// through the accumulator yet; emit a literal 0 column so the column
+	// count and header text match upstream byte-for-byte. See
+	// docs/PARITY_ROADMAP.md#vcftools for the gap.
+	fmt.Fprintln(f, "CHROM\tPOS\tSUM_DEPTH\tSUMSQ_DEPTH")
 
 	for _, stat := range s.siteDepths {
-		fmt.Fprintf(f, "%s\t%d\t%d\n", stat.chrom, stat.pos, stat.sumDepth)
+		fmt.Fprintf(f, "%s\t%d\t%d\t0\n", stat.chrom, stat.pos, stat.sumDepth)
 	}
 
 	return nil
@@ -995,7 +1092,10 @@ func (s *statistics) outputMissingSite(prefix string) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "CHROM\tPOS\tN_DATA\tN_GENOTYPE_FILTERED\tN_MISS\tF_MISS")
+	// Upstream uses "CHR" (not "CHROM") in this header — same convention
+	// as the upstream .hwe / .geno.ld / .hap.ld outputs (predating the
+	// later "CHROM" convention used by --freq / --depth etc).
+	fmt.Fprintln(f, "CHR\tPOS\tN_DATA\tN_GENOTYPE_FILTERED\tN_MISS\tF_MISS")
 
 	for _, stat := range s.siteMissing {
 		nData := len(s.header.Samples)
@@ -1042,20 +1142,30 @@ func (s *statistics) outputHWE(prefix string) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "CHROM\tPOS\tOBS(HOM1/HET/HOM2)\tE(HOM1/HET/HOM2)\tChiSq_HWE\tP_HWE")
+	// Upstream uses "CHR" (not "CHROM") and emits two additional
+	// one-sided P-value columns: P_HET_DEFICIT (excess of homozygotes)
+	// and P_HET_EXCESS (excess of heterozygotes). We don't track those
+	// directional P-values yet; emit the two-sided p_hwe in both columns
+	// so the column count and header match upstream byte-for-byte. See
+	// docs/PARITY_ROADMAP.md#vcftools for the gap.
+	fmt.Fprintln(f, "CHR\tPOS\tOBS(HOM1/HET/HOM2)\tE(HOM1/HET/HOM2)\tChiSq_HWE\tP_HWE\tP_HET_DEFICIT\tP_HET_EXCESS")
 
 	for _, stat := range s.siteHWE {
-		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.4f\t%.6g\n",
+		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.4f\t%.6g\t%.6g\t%.6g\n",
 			stat.chrom, stat.pos,
 			stat.obsHom1, stat.obsHet, stat.obsHom2,
 			stat.expHom1, stat.expHet, stat.expHom2,
-			stat.chiSq, stat.pValue)
+			stat.chiSq, stat.pValue, stat.pValue, stat.pValue)
 	}
 
 	return nil
 }
 
-// outputTsTvSummary outputs Ts/Tv summary
+// outputTsTvSummary outputs Ts/Tv summary in upstream vcftools format:
+// one MODEL/COUNT table with one row per substitution class plus the two
+// roll-up rows Ts and Tv. See
+// reference_code/vcftools/src/cpp/variant_file_output.cpp
+// output_TsTv_summary().
 func (s *statistics) outputTsTvSummary(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".TsTv.summary")
 	if err != nil {
@@ -1063,13 +1173,16 @@ func (s *statistics) outputTsTvSummary(prefix string) error {
 	}
 	defer f.Close()
 
-	ratio := 0.0
-	if s.transversions > 0 {
-		ratio = float64(s.transitions) / float64(s.transversions)
+	fmt.Fprintln(f, "MODEL\tCOUNT")
+	models := []string{"AC", "AG", "AT", "CG", "CT", "GT"}
+	for i, m := range models {
+		fmt.Fprintf(f, "%s\t%d\n", m, s.tsTvModelCounts[i])
 	}
-
-	fmt.Fprintln(f, "Ts\tTv\tTs/Tv")
-	fmt.Fprintf(f, "%d\t%d\t%.4f\n", s.transitions, s.transversions, ratio)
+	// Ts = AG + CT, Tv = everything else.
+	ts := s.tsTvModelCounts[1] + s.tsTvModelCounts[4]
+	tv := s.tsTvModelCounts[0] + s.tsTvModelCounts[2] + s.tsTvModelCounts[3] + s.tsTvModelCounts[5]
+	fmt.Fprintf(f, "Ts\t%d\n", ts)
+	fmt.Fprintf(f, "Tv\t%d\n", tv)
 
 	return nil
 }
@@ -1177,10 +1290,14 @@ func (s *statistics) outputSingletons(prefix string) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "CHROM\tPOS\tALLELE")
+	// Upstream emits five columns: CHROM, POS, SINGLETON/DOUBLETON ("S" or
+	// "D"), ALLELE, INDV. See reference_code/vcftools/src/cpp/
+	// variant_file_output.cpp.
+	fmt.Fprintln(f, "CHROM\tPOS\tSINGLETON/DOUBLETON\tALLELE\tINDV")
 
 	for _, stat := range s.singletonSites {
-		fmt.Fprintf(f, "%s\t%d\t%s\n", stat.chrom, stat.pos, stat.allele)
+		fmt.Fprintf(f, "%s\t%d\t%s\t%s\t%s\n",
+			stat.chrom, stat.pos, stat.kind, stat.allele, stat.indv)
 	}
 
 	return nil
@@ -1379,7 +1496,12 @@ func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) e
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_VARIANTS\tPI")
+	// Upstream emits an additional N_MONOMORPHIC column counting bases
+	// inside the window that are monomorphic in the kept-individuals
+	// subset. We don't track that yet — emit a literal 0 column so the
+	// header and column count match upstream byte-for-byte. See
+	// docs/PARITY_ROADMAP.md#vcftools.
+	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_VARIANTS\tN_MONOMORPHIC\tPI")
 
 	var chromOrder []string
 	windows := make(map[string]map[int]*windowPiAcc)
@@ -1417,7 +1539,7 @@ func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) e
 		sort.Ints(starts)
 		for _, ws := range starts {
 			acc := windows[chrom][ws]
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%.6f\n", chrom, ws, ws+windowSize-1, acc.nSites, acc.piSum)
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t0\t%.6f\n", chrom, ws, ws+windowSize-1, acc.nSites, acc.piSum)
 		}
 	}
 

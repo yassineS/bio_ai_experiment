@@ -553,8 +553,14 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 		}
 	}
 
-	// Genotype filters
-	if params.MaxMissing < 1 {
+	// Genotype filters. Upstream's --max-missing is the MIN fraction of
+	// non-missing genotypes (0.0 = allow all, 1.0 = require all
+	// non-missing). The Params field is the same semantics: 0 means
+	// "feature disabled" (no filter), >0 means apply. We guard against
+	// the zero default explicitly so `--max-missing 1.0` (require all
+	// non-missing) still applies — the previous `< 1` guard mistakenly
+	// dropped that exact case.
+	if params.MaxMissing > 0 {
 		missingRate := calculateMissingRate(v)
 		if missingRate > (1 - params.MaxMissing) {
 			return false

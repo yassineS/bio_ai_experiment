@@ -42,16 +42,29 @@ func output012Matrix(variants []*vcf.Variant, header *vcf.Header, prefix string)
 		fmt.Fprintln(fIndv, sample)
 	}
 
-	// Write variant positions
+	// Restrict to biallelic sites — upstream emits a one-off warning then
+	// drops multi-allelic loci because the 0/1/2 encoding has no room for
+	// alt2/alt3.
+	biallelic := make([]*vcf.Variant, 0, len(variants))
 	for _, v := range variants {
+		if len(v.Alt) == 1 {
+			biallelic = append(biallelic, v)
+		}
+	}
+
+	// Write variant positions (.012.pos)
+	for _, v := range biallelic {
 		fmt.Fprintf(fPos, "%s\t%d\n", v.Chrom, v.Pos)
 	}
 
-	// Write genotype matrix (one row per sample)
-	for sampleIdx, sample := range header.Samples {
-		fmt.Fprintf(f012, "%s", sample)
+	// Write genotype matrix (one row per sample). Upstream prefixes each
+	// row with the 0-based sample index, NOT the sample name. See
+	// reference_code/vcftools/src/cpp/variant_file_format_convert.cpp
+	// output_as_012_matrix().
+	for sampleIdx := range header.Samples {
+		fmt.Fprintf(f012, "%d", sampleIdx)
 
-		for _, v := range variants {
+		for _, v := range biallelic {
 			genotype := -1 // missing by default
 
 			if sampleIdx < len(v.Samples) {

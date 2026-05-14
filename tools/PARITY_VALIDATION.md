@@ -576,3 +576,181 @@ later PR (recorded against
 None during this audit. If we find any in subsequent slices they will be
 recorded in [docs/UPSTREAM_BUGS.md](../docs/UPSTREAM_BUGS.md) and skipped
 in the parity test until we have a fix.
+
+---
+
+## mosdepth parity validation
+
+`tools/mosdepth` is a single-subcommand tool. We mirror the upstream
+`reference_code/mosdepth/functional-tests.sh` cases against the
+vendored fixtures in `tools/mosdepth/testdata/parity/` (`ovl.bam`,
+`empty-tids.bam`, `full-fragment-pairs.bam`, `track.bed`,
+`unordered.bed`).
+
+| Case | Status | Notes |
+| --- | --- | --- |
+| `overlapM` default per-base | SKIP | Needs overlap-pair detection (open gap; see [UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection](../docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection)). |
+| `overlapM` summary MT | SKIP | Same. |
+| `overlapFastMode` per-base MT | PASS | Byte-for-byte under `--fast-mode`. |
+| `overlapFastMode` per-base chr1 zero-depth | PASS | Whole-chrom zero-depth row. |
+| `big_window` MT regions row | PASS | Structural check (single row spanning full reference). |
+| `length_filter --min-frag-len 81` | PASS | All MT reads dropped. |
+| `length_filter --max-frag-len 79` | PASS | Same. |
+| `length_filter --min/--max 80 --fast-mode` | PASS | Reads kept; output identical to unfiltered fast-mode. |
+| `threshold_test_by` (track.bed) byte parity | SKIP | 2X count differs by overlap-pair detection. |
+| `threshold_test_by` our-values check | PASS | Pins our without-overlap-dedup numbers. |
+| `track_header` regions mean | SKIP | Region mean depends on overlap-pair detection. |
+| `unordered_bed` row count | PASS | regions.bed.gz has 2 rows. |
+| `test_read_group` matching RG | PASS | Dist file has MT + total rows. |
+| `test_missing_read_group` | PASS | Dist is `MT 0 1.00` / `total 0 1.00`. |
+| `missing_chrom` strict failure | SKIP | We emit empty outputs; upstream exits 1. |
+| `bad_frag_len_filter` strict failure | SKIP | We don't error on inverted bounds. |
+| `--no-per-base` suppression | PASS | per-base.bed.gz is not created. |
+| `-c MT` restriction | PASS | Only MT rows in per-base + summary. |
+| `--mapq 60` byte parity | SKIP | Same overlap-pair gap. |
+| `--flag 4` byte parity | SKIP | Same. |
+| `fragment_mode` | SKIP | `--fragment-mode` not implemented. |
+| `quantest` (`-q`) | SKIP | `--quantize` not implemented. |
+| `--d4` rejection | PASS | Returns a clear error. |
+| `empty_tids` (`--by` + thresholds) | PASS | Run completes; thresholds file emitted. |
+| `.csi` vs `.tbi` index format | SKIP | We emit TBI; tracked at [PARITY_ROADMAP.md#mosdepth](../docs/PARITY_ROADMAP.md#mosdepth). |
+
+Totals: 24 cases, 12 PASS, 12 SKIP. Skipped cases are split between the
+overlap-pair detection gap (one root cause covers most of the
+`t.Skip()`s) and a handful of options we have not implemented
+(`--fragment-mode`, `-q`, `.csi` output).
+
+### Discrepancies found (and fixed in this PR)
+
+None. The overlap-pair gap, fast-mode equivalence, and TBI/CSI
+deviation were already known when this PR started; we documented them
+rather than papering over them.
+
+### Discrepancies found (NOT fixed in this PR)
+
+- **mosdepth lacks overlap-pair detection** for mate-pair reads.
+  Upstream subtracts one copy of depth where the two ends of a fragment
+  overlap on the reference. Our default-mode pipeline counts both copies
+  and therefore produces depths that match upstream's `--fast-mode`
+  output rather than upstream's default. Tracked at
+  [docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection](../docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection).
+
+## vcftools parity validation
+
+`tools/vcftools` ports ~60 of the upstream ~147 options (see
+`docs/PARITY_ROADMAP.md#vcftools`). The parity rig pins the fixture
+`reference_code/vcftools/examples/valid-4.0.vcf` (12 sites, 3 samples)
+into `tools/vcftools/testdata/parity/sample.vcf` and asserts each
+option's output file matches a hand-computed golden file (or, when
+upstream and our port diverge on a known format / formula gap, asserts
+the file shape and skips byte parity).
+
+| Category | Case | Status | Notes |
+| --- | --- | --- | --- |
+| Filter | `--chr 19` | PASS | Keeps 2 chr19 rows. |
+| Filter | `--from-bp/--to-bp` | PASS | Keeps the two chr20 sites in range. |
+| Filter | `--maf 0.4` | PASS | Keeps 4 sites (20:14370, X:9, X:11, X:12). |
+| Filter | `--mac 3` | PASS | Keeps ≥1 record. |
+| Filter | `--minQ 20` | PASS | Keeps 4 high-QUAL sites. |
+| Filter | `--remove-indels` | PASS | Drops both indels. |
+| Filter | `--keep-only-indels` | PASS | Keeps both indels plus symbolic-allele X:11. |
+| Filter | `--max-missing 1.0` | PASS | Drops partially-missing X:11. (Fixed off-by-one in this PR.) |
+| Sample | `--indv NA00001` | PASS | Keeps 1 sample column. |
+| Sample | `--remove-indv NA00003` | PASS | Drops 1 sample column. |
+| Sample | `--keep FILE` | PASS | Keeps 2 sample columns. |
+| Stats | `--freq` | PASS | Byte-for-byte against golden file (fixed `{ALLELE:FREQ}` header in this PR). |
+| Stats | `--counts` | PASS | Byte-for-byte. |
+| Stats | `--site-pi` upstream byte parity | SKIP | Formula difference, see [UPSTREAM_BUGS.md#vcftools-site-pi](../docs/UPSTREAM_BUGS.md#vcftools-site-pi). |
+| Stats | `--site-pi` textbook spot-check | PASS | Three hand-computed values. |
+| Stats | `--hardy` | PASS | Byte-for-byte (P_HET_DEFICIT/EXCESS placeholders, gap tracked). |
+| Stats | `--missing-site` | PASS | Byte-for-byte. |
+| Stats | `--missing-indv` | PASS | Byte-for-byte. |
+| Stats | `--depth` | PASS | Byte-for-byte. |
+| Stats | `--site-depth` | PASS | SUMSQ_DEPTH emitted as 0 placeholder. |
+| Stats | `--site-mean-depth` | PASS | VAR_DEPTH emitted as 0 placeholder. |
+| Stats | `--het` | PASS | Byte-for-byte. |
+| Stats | `--singletons` | PASS | Byte-for-byte (fixed `SINGLETON/DOUBLETON` + `INDV` columns in this PR). |
+| Stats | `--TsTv-summary` | PASS | Byte-for-byte (fixed `MODEL\tCOUNT` format in this PR). |
+| Stats | `--TsTv-by-count` header | PASS | Header byte-for-byte. |
+| Stats | `--TsTv-by-count` rows | SKIP | Upstream emits every 0..2*N bin (incl NaN ratios); ours emits non-empty bins only. |
+| Stats | `--TsTv-by-qual` header | PASS | Header byte-for-byte. |
+| Stats | `--TsTv N` (binned) | SKIP | Column layout diverges. |
+| PopGen | `--weir-fst-pop` per-site header | PASS | Header byte-for-byte. |
+| PopGen | `--fst-window-size` header | PASS | Header byte-for-byte. |
+| LD | `--geno-r2` header | PASS | Header byte-for-byte. |
+| LD | `--hap-r2` header | PASS | Header byte-for-byte. |
+| Recode | `--recode` all-sites | PASS | 12 rows. |
+| Recode | `--recode --recode-INFO-all` | PASS | INFO preserved. |
+| Convert | `--012` indv file | PASS | Sample-name list. |
+| Convert | `--012` row prefix | PASS | 0-based sample index prefix (fixed in this PR). |
+| Convert | `--012` biallelic-only | PASS | 8 of 12 sites kept. |
+| Convert | `--plink` file presence | PASS | `.ped` + `.map` emitted. |
+| Convert | `--plink-tped` file presence | PASS | `.tped` + `.tfam` emitted. |
+| Tajima | `--TajimaD` header | PASS | Header byte-for-byte. |
+| Pi | `--window-pi` header | PASS | Header byte-for-byte (N_MONOMORPHIC placeholder added in this PR). |
+
+Totals: 41 cases, 38 PASS, 3 SKIP.
+
+### Discrepancies found (and fixed in this PR)
+
+The parity audit surfaced several real output-format gaps relative to
+upstream vcftools, all of which we fixed inline rather than masking with
+`t.Skip`:
+
+- **`.frq` / `.frq.count` header and per-allele row format.** Upstream
+  emits a single literal `{ALLELE:FREQ}` / `{ALLELE:COUNT}` column
+  header (the curly braces are part of the literal header text), and
+  data rows have one tab-separated `allele:value` entry per allele
+  with no braces around each entry. Our port previously emitted
+  `{REF:FREQ}\t{ALT:FREQ}` in the header and `{A:0.833333}` in the
+  data — both wrong. Fixed; the parity test pins the upstream format.
+- **`.singletons` column count and ordering.** Upstream emits five
+  columns: `CHROM\tPOS\tSINGLETON/DOUBLETON\tALLELE\tINDV`. We were
+  emitting only three (`CHROM\tPOS\tALLELE`) and never identified
+  private doubletons. Fixed; `addSingletonStat` now resolves the
+  carrier individual and tags singletons (`S`) vs private doubletons
+  (`D`).
+- **`.hwe` header uses `CHR` (not `CHROM`)** and emits
+  `P_HET_DEFICIT` + `P_HET_EXCESS` columns alongside `P_HWE`. Fixed;
+  the two directional P-values are placeholders set to `P_HWE` until
+  the [PARITY_ROADMAP.md#vcftools](../docs/PARITY_ROADMAP.md#vcftools)
+  Wigginton-Cutler-Abecasis test is wired through. Header matches
+  upstream byte-for-byte.
+- **`.lmiss` header uses `CHR` (not `CHROM`)** — same upstream
+  convention as `.hwe` / `.geno.ld` / `.hap.ld`. Fixed.
+- **`.ldepth` is missing the `SUMSQ_DEPTH` column** — upstream emits
+  both `SUM_DEPTH` and the sum of squared per-individual depths. Fixed
+  the header/column count; the value is a literal `0` placeholder
+  until the sum-of-squares accumulator lands.
+- **`.TsTv.summary` layout.** Upstream emits a single `MODEL\tCOUNT`
+  table with six per-substitution rows (`AC`, `AG`, `AT`, `CG`, `CT`,
+  `GT`) plus two roll-up rows (`Ts`, `Tv`). Our port previously
+  emitted a tiny `Ts\tTv\tTs/Tv` two-line table. Fixed.
+- **`.012` row prefix is the 0-based sample index**, NOT the sample
+  name. Upstream's `output_as_012_matrix` writes the integer index;
+  our port wrote the name. Fixed. We also confirmed the file emits
+  only biallelic loci, matching upstream's one-off warning + skip.
+- **`--max-missing 1.0` was a no-op** because the filter was guarded
+  by `< 1` (strict less-than). With `MaxMissing == 1.0` no records
+  would be filtered even though semantically `--max-missing 1.0` is
+  "require all non-missing genotypes". Fixed to `> 0`.
+- **`.windowed.pi` is missing the `N_MONOMORPHIC` column**. Upstream
+  emits CHROM/BIN_START/BIN_END/N_VARIANTS/N_MONOMORPHIC/PI. Fixed
+  the header; the value is a literal `0` placeholder until we tally
+  monomorphic windowed sites.
+
+### Discrepancies found (NOT fixed in this PR)
+
+- **`--site-pi` formula divergence.** Upstream and our port compute
+  different quantities; tracked at
+  [docs/UPSTREAM_BUGS.md#vcftools-site-pi](../docs/UPSTREAM_BUGS.md#vcftools-site-pi).
+  Skipped byte parity; instead the textbook formula is spot-checked.
+- **`--TsTv` (binned) column layout** — upstream emits
+  `CHROM\tBinStart\tSNP_count\tTs/Tv` (4 cols, per-chrom bins). Our
+  port emits `BIN_START\tBIN_END\tTs\tTv\tTs/Tv` (5 cols, no chrom
+  column). Skipped; tracked at
+  [docs/PARITY_ROADMAP.md#vcftools](../docs/PARITY_ROADMAP.md#vcftools).
+- **`--TsTv-by-count` row enumeration** — upstream emits every count
+  bin from 0 to 2*N_indv (some with NaN ratios for empty bins). Our
+  port emits only non-empty bins. Header still matches; row content
+  skipped.

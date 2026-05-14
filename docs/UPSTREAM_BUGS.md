@@ -55,6 +55,8 @@ warrant a closer look:_
 
 ### To investigate
 
+#### vcftools-site-pi
+
 - **vcftools `--site-pi` formula** — upstream computes a per-genotype
   pairwise-distance quantity rather than the textbook
   `(n² − Σ cₐ²) / (n(n-1))`. Our Go port uses the textbook formula (#24
@@ -64,6 +66,28 @@ warrant a closer look:_
   vcftools paper and compare to PopGenome / scikit-allel. If it's a
   bug, this entry is **fix-on-port (done)**; if intentional, we should
   add a `--site-pi-vcftools-compat` flag.
+
+  Parity test status: `TestParity_SitePi` is `t.Skip("known deviation,
+  see docs/UPSTREAM_BUGS.md#vcftools-site-pi")`. A separate
+  `TestParity_SitePi_TextbookFormula` spot-checks three hand-computed
+  values against our textbook implementation.
+
+#### mosdepth-overlap-pair-detection
+
+- **mosdepth overlap-pair detection** — upstream subtracts one copy of
+  depth where the two ends of a mate-paired fragment overlap on the
+  reference, so a 80bp read pair with a 100bp insert contributes depth
+  1 to the overlapped region (not depth 2). Our v1 engine doesn't
+  implement this pairing: every aligned base of every read contributes
+  to depth. The net effect is that our default-mode output matches
+  upstream's `--fast-mode` output rather than upstream's default
+  output. This is **NOT an upstream bug** — it's a feature gap in our
+  port — but it lives here because every affected parity test cites
+  this entry from a `t.Skip("known deviation, see
+  docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")`.
+
+  Disposition: **track-only** until we add a read-name-keyed pairing
+  pass. Five mosdepth parity tests reference this anchor.
 
 - **bedtools `groupby` empty-group handling** (when we get to porting
   it) — Aaron Quinlan has acknowledged upstream emits a blank line on
@@ -77,15 +101,16 @@ warrant a closer look:_
 
 ### Fix-on-port (resolved)
 
-_None yet from upstream — the bedtools and samtools parity audits to date
-have surfaced bugs in our Go code (recorded in
+_None yet from upstream — the parity audits to date have surfaced bugs in
+our Go code (recorded below and in
 [tools/PARITY_VALIDATION.md](../tools/PARITY_VALIDATION.md)) rather than
 in upstream._
 
-The samtools parity audit (this PR) surfaced three bugs **in our Go
-port** (not upstream). Kept here for traceability — they are not upstream
-bugs, but they are exactly the class of finding the parity rig is meant
-to catch:
+PR #55 (bedtools parity) fixed 7 discrepancies in our Go code; see
+`tools/PARITY_VALIDATION.md` for the bedtools list.
+
+The samtools parity audit (PR #75) surfaced three bugs **in our Go
+port** (not upstream):
 
 - **samtools sort `-n` / `-N` CLI mapping inverted.** Upstream's `-n` is
   natural numeric name sort (the default for name-sort) and `-N` is plain
@@ -99,18 +124,16 @@ to catch:
   writes `SS:queryname:natural` or `SS:queryname:lexicographical` on the
   `@HD` line so downstream tooling can recognise the sub-form. Our
   `stampSortOrder` in `tools/samtools/pkg/samtools/sort.go` only stamped
-  the `SO` field; added the `SS` field too. Surfaced by the first-line
-  diff in `TestParity_Sort_T01_Coordinate`.
+  the `SO` field; added the `SS` field too.
 
 - **samtools fastq pair-suffix not auto-dropped in `-1/-2` mode.**
   Upstream `bam_fastq.c` sets `has12 = false` whenever `-1` or `-2` is
   given because the separate file names already disambiguate mate
   identity; we were unconditionally appending `/1`/`/2`. Fixed in
   `Fastq` in `tools/samtools/pkg/samtools/fastq.go`; `-N` still forces
-  the suffix. Surfaced by every `TestParity_Fastq_T0*` byte-equal
-  failing against `bam2fq/1.1.fq.expected`.
+  the suffix.
 
-The sickle/skewer parity audit added one build-side fix-on-port:
+The sickle/skewer parity audit (PR #73) added one build-side fix-on-port:
 
 - **skewer `src/matrix.h` is not `const`-correct** under modern
   libstdc++.
@@ -119,12 +142,44 @@ The sickle/skewer parity audit added one build-side fix-on-port:
   comparators. We patch the submodule working tree
   (`bool operator()(...) const`) before building the upstream binary used
   to generate parity fixtures. The patch is not pushed back to upstream
-  (the repo is dormant) and is not part of our Go code. See the [skewer
-  section below](#skewer) for the diff.
+  (the repo is dormant) and is not part of our Go code.
 
-The bcftools parity audit (this PR) fixed 9 discrepancies, all on our
+The bcftools parity audit (PR #74) fixed 9 discrepancies, all on our
 side rather than upstream's. They're recorded in
 `tools/PARITY_VALIDATION.md#discrepancies-found-and-fixed-in-this-pr`.
+
+The vcftools + mosdepth validated-parity audit (this PR) found 9 small
+discrepancies in our Go code (not upstream), all fixed inline:
+
+- **vcftools `.frq` / `.frq.count` header + row format** — upstream
+  emits a single literal `{ALLELE:FREQ}` / `{ALLELE:COUNT}` column
+  header with one tab-separated `allele:value` entry per allele in
+  the data rows; we were emitting `{REF:FREQ}\t{ALT:FREQ}` headers
+  and `{A:0.833333}`-wrapped data cells. Fixed.
+- **vcftools `.singletons` column count** — upstream emits five
+  columns (`CHROM`, `POS`, `SINGLETON/DOUBLETON`, `ALLELE`, `INDV`);
+  we were emitting three. Fixed; we now resolve which individual
+  carries the rare allele and tag singletons (S) vs private doubletons
+  (D).
+- **vcftools `.hwe` header** uses `CHR` (not `CHROM`) and includes
+  `P_HET_DEFICIT` + `P_HET_EXCESS` columns. Fixed header; directional
+  P-values are placeholders pending Wigginton-Cutler-Abecasis impl.
+- **vcftools `.lmiss` header** uses `CHR` (not `CHROM`). Fixed.
+- **vcftools `.ldepth`** needs a `SUMSQ_DEPTH` column. Fixed header +
+  data; value is a literal 0 placeholder pending the sum-of-squares
+  accumulator.
+- **vcftools `.TsTv.summary` layout** — upstream emits a `MODEL\tCOUNT`
+  table with six per-substitution rows plus two roll-up rows; we were
+  emitting a `Ts\tTv\tTs/Tv` two-line table. Fixed.
+- **vcftools `.012` row prefix** — upstream prefixes each row with the
+  0-based sample index; we were prefixing with the sample name. Fixed.
+  Also confirmed `.012` is biallelic-only (matches upstream's one-off
+  warning + skip on multi-allelic).
+- **vcftools `--max-missing 1.0` was a no-op** because the filter was
+  guarded by `< 1`. Fixed to `> 0` so `--max-missing 1.0` (require all
+  non-missing) actually filters.
+- **vcftools `.windowed.pi` header** needs `N_MONOMORPHIC` column.
+  Fixed header + data; value is a 0 placeholder.
 
 ### Track-only (parity skipped, fix later)
 
