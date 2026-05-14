@@ -34,16 +34,22 @@ features land.
 | bedslop       |          15 |     13 |       2 | Skips: float-precision regression tests t13/t14 (require the full `human.hg19.genome` fixture). |
 | bedsort       |          11 |      9 |       2 | Skips: `-header` (preserves leading `#` lines); one fixture-layout sanity check. |
 | bedsubtract   |          13 |     10 |       3 | Skips: `-N` (union-coverage drop). |
-| **TOTAL**     |     **127** | **85** | **42**  | |
+| bedexpand     |           6 |      6 |       0 | All canonical upstream cases (`expand.t1..t3`) plus stdin-shape smoke + two error paths. |
+| bedgetfasta   |          14 |     12 |       2 | Skips: `-fullHeader` (whitespace-aware contig name parsing), BGZF FASTA via `.gzi`. |
+| bedsample     |           7 |      5 |       2 | Skips: two CLI-only cases (no-args / unrecognized-flag) that test main.go error messages, not the library. |
+| bedspacing    |           7 |      6 |       1 | Skips: BAM input. All inline upstream cases (`spacing.t01`) + synthetic edge cases (per-chrom reset, exact abut, overlap, BED6 preservation, single record). |
+| **TOTAL**     |     **161** |**114** | **47**  | |
 
 (The discrepancy between this table and `go test`'s 87 passed / 42 skipped is
 two helper / sanity sub-tests in `bedsort` and `bedintersect` that are not
 direct mirrors of an upstream case.)
 
 The sickle and skewer ports each have a per-tool table in their respective
-section below; the project-wide running total is 154 tests added, 107
-passed, 44 skipped (47 if you count the sickle FixturesPresent + skewer
-FixturesPresent + skewer PEHelperSmoke helper tests).
+section below; the project-wide running total is 188 tests added, 136
+passed, 49 skipped (52 if you count the sickle FixturesPresent + skewer
+FixturesPresent + skewer PEHelperSmoke helper tests). The 2026-05-14
+wave-2 update (`bedexpand`, `bedgetfasta`, `bedsample`, `bedspacing`)
+added 34 of those tests (29 passing, 5 skipped).
 
 ### What is validated
 
@@ -137,6 +143,54 @@ missing feature in its `t.Skip` call.
   on `bedcomplement`.
 - **`-header`** on `bedsort`. Upstream preserves the leading `#` line in the
   output; our reader strips comment lines unconditionally.
+- **`-fullHeader`** on `bedgetfasta`. Upstream uses the full FASTA header
+  line (whitespace tolerated) when matching contig names from BED; our port
+  uses the same first-token convention as `samtools faidx`. The skipped
+  parity test (`Getfasta.T07`) documents the gap.
+- **BGZF FASTA input** (`-fi *.fa.gz`) on `bedgetfasta`. Random-access FASTA
+  over BGZF needs a `.gzi` index reader that `pkg/bioformats/fasta` does not
+  yet expose. The skipped parity test (`Getfasta.T18`) documents the gap.
+- **CLI-only "no args / bad args" diagnostics** on `bedsample`. Upstream
+  prints specific `***** ERROR:` messages from its CLI driver; we exit with
+  Go's stock `flag` package error handling and a `bedsample: …` prefix.
+  These are CLI surface details, not library behaviour, and the skipped
+  parity cases (`Sample.T01/T02`) document the divergence.
+- **BAM input** on `bedspacing`. Upstream's `spacing -i x.bam` accepts BAM;
+  our port is BED-only. Skipped: `Spacing.T07`.
+
+### Per-tool notes for the wave-2 additions
+
+The four wave-2 ports — `bedexpand`, `bedgetfasta`, `bedsample`,
+`bedspacing` — bring the bedtools tally to 17 ported subcommands and 161
+parity tests (114 passing, 47 documented skips).
+
+- **bedexpand** (`tools/bedexpand/pkg/bedexpand/parity_test.go`). All three
+  inline upstream cases (`expand.t1..t3`) pass byte-for-byte. The Go port
+  implements the same per-row walk as
+  `reference_code/bedtools/src/expand/expand.cpp`: non-expanded columns
+  emit verbatim, expanded columns substitute the k-th element of the k-th
+  list named in `-c`. So `-c 5,4` swaps the two expanded columns,
+  reproducing `expand.t3`.
+- **bedgetfasta** (`tools/bedgetfasta/pkg/bedgetfasta/parity_test.go`). 12
+  cases pass against the upstream `getfasta` corpus, covering default
+  `chrom:start-end` header, `-name` / `-nameOnly`, `-s`, `-split`,
+  `-split -s` (per-block revcomp, reversed-order blocks), and `-rna`. The
+  port carries its own `FetchPreserveCase` so IUPAC + case round-trip
+  exactly — the shared `pkg/bioformats/fasta.RandomAccess.Fetch`
+  uppercases for downstream callers that need a canonical case. The two
+  skips above (`-fullHeader`, BGZF) are the only documented gaps.
+- **bedsample** (`tools/bedsample/pkg/bedsample/parity_test.go`). 5 cases
+  pass: requested count, deterministic seed, `-header` forwarding,
+  too-few-records error, and the "subset of input" invariant. We cannot
+  byte-match upstream's PRNG (different sampler), so seeded runs are
+  deterministic within `bedsample` but not against upstream. The two
+  skips are CLI-only diagnostics.
+- **bedspacing** (`tools/bedspacing/pkg/bedspacing/parity_test.go`). The
+  single upstream test (`spacing.t01`) passes byte-for-byte. The port
+  matches `reference_code/bedtools/src/spacingFile/spacingFile.cpp`'s
+  "previous record on chrom" semantics (not running-max-end), which the
+  test cases verify with synthetic per-chrom-reset / exact-abut / overlap
+  / BED6-preservation / single-record edges.
 
 ### How to run
 
@@ -689,8 +743,18 @@ the file shape and skips byte parity).
 | Convert | `--plink-tped` file presence | PASS | `.tped` + `.tfam` emitted. |
 | Tajima | `--TajimaD` header | PASS | Header byte-for-byte. |
 | Pi | `--window-pi` header | PASS | Header byte-for-byte (N_MONOMORPHIC placeholder added in this PR). |
+| LD | `--interchrom-geno-r2` header | PASS | Header byte-for-byte (long-tail wave 1). |
+| LD | `--interchrom-hap-r2` header | PASS | Header byte-for-byte (long-tail wave 1). |
+| LD | `--geno-chisq` header | PASS | Header byte-for-byte (long-tail wave 1). |
+| Relatedness | `--relatedness` header | PASS | Header byte-for-byte (long-tail wave 1). |
+| Relatedness | `--relatedness2` header | PASS | Header byte-for-byte (long-tail wave 1). |
+| ROH | `--LROH` header | PASS | Header byte-for-byte (long-tail wave 1). |
+| Phasing | `--phased-blocks` header | PASS | Header byte-for-byte (long-tail wave 1). |
+| INFO | `--get-INFO DP,AF` | PASS | Spot-check 20:14370 DP=14, AF=0.5. |
+| Filter | `--remove-filtered q10` | PASS | q10-only sites dropped; q10;s50 also dropped. |
+| Filter | `--keep-filtered q10` | PASS | Only q10-listing sites kept (2 rows). |
 
-Totals: 41 cases, 38 PASS, 3 SKIP.
+Totals: 53 cases, 50 PASS, 3 SKIP.
 
 ### Discrepancies found (and fixed in this PR)
 

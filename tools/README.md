@@ -26,6 +26,10 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedgroupby`](bedgroupby/) | bedtools groupby | Group records + apply column ops | 94% |
 | [`bed12tobed6`](bed12tobed6/) | bedtools bed12tobed6 | Split BED12 records into BED6 blocks | 91% |
 | [`bedmakewindows`](bedmakewindows/) | bedtools makewindows | Partition intervals into windows | 91% |
+| [`bedexpand`](bedexpand/) | bedtools expand | Expand comma-separated list columns into rows | 92% |
+| [`bedgetfasta`](bedgetfasta/) | bedtools getfasta | Pull FASTA subsequences for BED intervals | 86% |
+| [`bedsample`](bedsample/) | bedtools sample | Random subsample (reservoir, without replacement) | 91% |
+| [`bedspacing`](bedspacing/) | bedtools spacing | Distance to previous interval per chromosome | 85% |
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |
