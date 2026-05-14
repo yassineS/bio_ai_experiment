@@ -23,7 +23,9 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedclosest`](bedclosest/) | bedtools closest | Nearest-neighbour intervals | 93% |
 | [`bedgenomecov`](bedgenomecov/) | bedtools genomecov | Genome-wide coverage | 94% |
 | [`bedjaccard`](bedjaccard/) | bedtools jaccard | Jaccard statistic on intervals | 96% |
-| [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~64% |
+| [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
+| [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
+| [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |
 
 For up-to-date per-tool feature lists and migration notes, see each tool's
 own `README.md` plus [`PORTING_STATUS.md`](PORTING_STATUS.md).
@@ -63,7 +65,8 @@ go test -bench=. -benchmem ./tools/seqtk/...
 ## Where the shared code lives
 
 - [`pkg/bioformats/`](../pkg/bioformats/) — parsers + writers for FASTA, FASTQ,
-  VCF, BED, plus `iohelper` for transparent gzip and `-` (stdin/stdout).
+  VCF, BED, plus `iohelper` for transparent gzip / BGZF (auto-detected by
+  magic-byte sniff) and `-` (stdin/stdout).
 - [`pkg/cliflag/`](../pkg/cliflag/) — POSIX short + GNU long flag wiring on a
   standard `flag.FlagSet`.
 

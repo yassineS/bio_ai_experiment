@@ -25,16 +25,24 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ### Progress Summary
 
-- **Tools with a working subset**: 16 (8 original + 8 bedtools subcommands)
-- **Tools tested**: 16 (package-level tests; `cmd/` entry points have no tests)
-- **Test coverage (statements, `go test -cover`)** — main tools: vcftools ~64%,
-  seqtk ~72%, fastp ~76%, sickle ~82%, prinseq 99.9%, skewer 100%,
-  bedmerge 100%, bedintersect **100%**
+- **Tools with a working subset**: 18 (8 original + 8 bedtools subcommands +
+  `bgzip` + `tabix`, the foundational htslib pair landed May 2026)
+- **Tools tested**: 18 (package-level tests; `cmd/` entry points have no tests)
+- **Test coverage (statements, `go test -cover`)** — main tools:
+  vcftools ~68%, seqtk ~72%, fastp ~77%, sickle ~82%, **tabix 86%**,
+  **bgzip 90%**, prinseq 99.9%, skewer 100%, bedmerge 100%, bedintersect 100%
 - **Test coverage** — new bedtools tools: bedsort 92%, bedflank 92%,
   bedclosest 93%, bedsubtract 94%, bedgenomecov 94%, bedcomplement 95%,
   bedslop 95%, bedjaccard 96%
+- **Validated parity vs upstream `bedtools` test suite**: 127 tests, 85 passing,
+  42 documented `t.Skip` (PR #55); 7 real semantic-discrepancy bugs fixed.
+  See [`PARITY_VALIDATION.md`](PARITY_VALIDATION.md).
 - **Documentation**: README per tool; some design docs are aspirational, not status
-- **gzip support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools (not seqtk/prinseq)
+- **Compression support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools
+  go through `pkg/bioformats/iohelper`, which now **transparently sniffs BGZF**
+  via the `BC` extra-subfield magic and routes through the pure-Go
+  `tools/bgzip/pkg/bgzip` reader (PR #57); plain gzip still routes through
+  `compress/gzip`. Seqtk/prinseq don't currently call iohelper.
 - **CI**: workflow currently disabled (manual-only via `workflow_dispatch`);
   agents run `gofmt`/`vet`/`build`/`test -race -cover` + `markdownlint` locally
   and document the output in each PR.
@@ -379,8 +387,31 @@ and reuses `pkg/bioformats/bed` + `pkg/bioformats/iohelper`.
 | `bedjaccard` | `bedtools jaccard` | 96.3% | Streaming sweep; `-s`/`-S`, `-f`/`-F` |
 
 Smoke tests for each are hand-verified against expected output (see the
-respective PRs and READMEs). Validated parity against the upstream `bedtools`
-test suite is **still outstanding** — coverage ≠ byte-for-byte output match.
+respective PRs and READMEs). **Validated parity against the upstream `bedtools`
+test suite** landed in PR #55 — 127 tests, 85 passing, 42 documented `t.Skip`
+for features outside our v1 scope, plus 7 real semantic-discrepancy bugs fixed
+inline. See [`PARITY_VALIDATION.md`](PARITY_VALIDATION.md).
+
+---
+
+### 10. ✅ bgzip + tabix (htslib foundation, May 2026)
+
+Two new tools landed back-to-back as picks #1 and #2 from
+[`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking_2026.md):
+
+| Tool | Coverage | Maps to | Highlights |
+|------|---------:|---------|------------|
+| `bgzip` | **90.0%** | htslib `bgzip` | Pure-Go BGZF codec (`pkg/bgzip`); flags `-c`/`-d`/`-f`/`-k`/`-l`/`-b`/`-s`/`-r`; `-t` accepted but single-threaded in v1. Validates `BC` subfield, EOF marker, CRC32, ISIZE. Writes htslib-compatible `.gzi` indices. |
+| `tabix` | **85.5%** | htslib `tabix` | Pure-Go `.tbi` builder + region queries; presets `vcf`/`bed`/`gff`/`sam`; UCSC binning + linear index match the htslib 2011 paper to the byte. Built on `tools/bgzip/pkg/bgzip`. Deviations: `-T`/`--targets` currently behaves as `-R`; `--reheader` deferred. |
+
+Plus `pkg/bioformats/iohelper` was extended (PR #57) to **transparently
+detect BGZF** via the `BC`-subfield magic and route through the new bgzip
+reader, so every existing tool reading `.vcf.gz`/`.bed.gz`/`.bam` via
+`iohelper.OpenReader` gets the upgrade for free.
+
+These three landings unblock the next wave: `samtools` (BAI uses the same
+UCSC binning scheme), `bcftools` (`.vcf.gz`/`.bcf` random-access), and
+`mosdepth` (depth queries over BAM/CRAM).
 
 ---
 
@@ -388,7 +419,7 @@ test suite is **still outstanding** — coverage ≠ byte-for-byte output match.
 
 | Tool | Original Lang | Go Version | Commands | Tests | Docs | Performance | Gzip |
 |------|---------------|------------|----------|-------|------|-------------|------|
-| seqtk | C | 1.0.0 | 8 | ✓ | ✓ | 1.05-1.1x | - |
+| seqtk | C | 1.0.0 | 11 | ✓ | ✓ | 1.05-1.1x | - |
 | PRINSEQ | Perl | 1.0.0 | 2 | ✓ | ✓ | 1.2-1.35x | - |
 | sickle | C | 1.1.0 | 2 | ✓ | ✓ | 0.96-1.0x | ✓ |
 | skewer | C++ | 1.0.0 | 2 | ✓ | ✓ | ~1.0x | ✓ |
@@ -396,6 +427,8 @@ test suite is **still outstanding** — coverage ≠ byte-for-byte output match.
 | bedmerge | C++ (bedtools) | 1.0.0 | 1 | ✓ | ✓ | ~2.0x | ✓ |
 | bedintersect | C++ (bedtools) | 1.0.0 | 1 | ✓ | ✓ | ~1.0x | ✓ |
 | vcftools | C++/Perl | 1.0.0 | 1 | ✓ | ✓ | ~1.0x | ✓ |
+| bgzip | C (htslib) | 1.0.0 | 1 | ✓ | ✓ | n/a | (is the format) |
+| tabix | C (htslib) | 1.0.0 | 1 | ✓ | ✓ | n/a | ✓ |
 
 ---
 
