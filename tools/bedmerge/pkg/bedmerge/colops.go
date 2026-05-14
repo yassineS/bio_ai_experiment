@@ -269,6 +269,14 @@ func flushColumnGroup(w io.Writer, co *ColumnOps, group []colInterval) (int, err
 // applyOp applies a single aggregation operation to the slice of column values
 // taken from a merged group (in input/sorted order). col is the 1-based column
 // number, used only for error messages.
+// ApplyOp applies a column op (see validOps) to a slice of string values
+// originating from column col (1-based, used only for error messages).
+// Exported so other tools (bedgroupby, bedmap, bedcoverage) can reuse the
+// same op vocabulary as bedmerge.
+func ApplyOp(op string, col int, vals []string) (string, error) {
+	return applyOp(op, col, vals)
+}
+
 func applyOp(op string, col int, vals []string) (string, error) {
 	if numericOps[op] {
 		nums := make([]float64, len(vals))
