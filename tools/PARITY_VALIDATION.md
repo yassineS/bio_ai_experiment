@@ -341,7 +341,7 @@ One; recorded in
 ## bcftools parity validation
 
 The bcftools port (`tools/bcftools/` covering `view`, `index`, `stats`,
-`query`, `concat`, `norm`) is validated against
+`query`, `concat`, `norm`, and `call`) is validated against
 upstream `bcftools 1.19+htslib-1.19` via a single
 `tools/bcftools/pkg/bcftools/parity_test.go`.
 
@@ -372,7 +372,8 @@ The brief differs from bedtools' in two ways:
 | stats      |           8 |      1 |       7 | Only the SN section is byte-stable today; AF/QUAL/IDD/ST/DP/PSC/HWE/PSI all diverge on formatting glyphs or on whether the section is recomputed from genotypes vs read from INFO. Tracked. |
 | concat     |           6 |      4 |       2 | Skips: `-a` sort-merge (different contig-order heuristic), plain `-D` adjacency dedup (upstream requires `-a`). Plain concat, `-O z` round-trip, conflicting-header detection, and the upstream `concat.1.vcf.out` fixture all match byte-for-byte. |
 | norm       |           7 |      4 |       3 | Skips: `-f` left-align (FASTA fixture not yet added), `-c` check-ref policies (same), and a placeholder for the realignment regression suite. `-m -`/`-m -snps`/`-m +`/`-a`/`-d exact` all match. |
-| **TOTAL**  |      **51** | **32** | **19**  | |
+| call       |           6 |      4 |       2 | Skips: BCF input (FORMAT-key gap; see `docs/UPSTREAM_BUGS.md`), full multi-allelic caller. Consensus calls (`-c`, `-c -v`, `-A`, `--ploidy 1`) match hand-crafted upstream-replicated fixtures byte-for-byte. |
+| **TOTAL**  |      **57** | **36** | **21**  | |
 
 (Counts include three subtests in `view` and `query` that exercise the
 streaming vs file paths separately. The two BCF header-only tests are

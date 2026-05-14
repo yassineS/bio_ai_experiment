@@ -1,0 +1,653 @@
+package bcftools
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"math"
+	"strconv"
+	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+)
+
+// CallModel selects the variant-calling algorithm.
+type CallModel int
+
+const (
+	// CallModelNone means the caller was not requested. Call() rejects it.
+	CallModelNone CallModel = iota
+	// CallModelConsensus selects the original Li-2011 consensus caller (`-c`).
+	CallModelConsensus
+	// CallModelMultiallelic selects the multiallelic caller (`-m`). Our v1
+	// implementation handles biallelic sites with the same model as
+	// CallModelConsensus and falls back to CallModelConsensus for sites with
+	// more than one ALT allele. The remaining gap is tracked in
+	// docs/PARITY_ROADMAP.md (bcftools call section).
+	CallModelMultiallelic
+)
+
+// PloidySpec selects the per-sample ploidy. Today only fixed ploidies (1
+// or 2 across every sample/contig) are honoured; the GRCh37/GRCh38 modes
+// that special-case chrX/Y/PAR are accepted by the CLI but rejected by
+// Call() with a roadmap-pointer error.
+type PloidySpec int
+
+const (
+	// PloidyDiploid treats every sample as diploid (default).
+	PloidyDiploid PloidySpec = 2
+	// PloidyHaploid treats every sample as haploid (same as upstream `-X`).
+	PloidyHaploid PloidySpec = 1
+)
+
+// CallOptions controls the behaviour of Call / CallFile.
+type CallOptions struct {
+	// Model selects the variant caller. Required.
+	Model CallModel
+	// KeepAlts mirrors upstream `-A`: emit every ALT allele declared in
+	// the input, even those with zero supporting reads.
+	KeepAlts bool
+	// VariantsOnly mirrors upstream `-v`: drop records whose called
+	// genotypes are all reference.
+	VariantsOnly bool
+	// Prior is the per-base mutation rate prior (upstream default 1.1e-3).
+	Prior float64
+	// PvalThreshold is the cutoff for the variant posterior: a site is
+	// emitted as variant when posterior > 1 - PvalThreshold. The upstream
+	// default is 0.5, matching `-p 0.5`.
+	PvalThreshold float64
+	// Ploidy selects diploid (default) or haploid calling. The upstream
+	// GRCh37/GRCh38 modes are deferred (see docs/PARITY_ROADMAP.md).
+	Ploidy PloidySpec
+	// PloidySpec, when non-empty, is the textual ploidy spec ("2", "1",
+	// "GRCh37", ...). When set to GRCh37 or GRCh38 Call returns an error
+	// pointing at the roadmap.
+	PloidySpec string
+	// OutputFormat passes through to the writer (see openOutput).
+	OutputFormat OutputFormat
+	// CompressLevel sets the gzip level for -O z output.
+	CompressLevel int
+	// Regions / Targets / Samples mirror the same fields on ViewOptions
+	// and are applied with the same semantics (Regions are index-aware,
+	// Targets are post-filter).
+	Regions     []string
+	RegionsFile string
+	Targets     []string
+	TargetsFile string
+	Samples     []string
+	SamplesFile string
+}
+
+// defaults applies upstream-equivalent defaults for any unset field.
+func (o *CallOptions) defaults() {
+	if o.Prior == 0 {
+		o.Prior = 1.1e-3
+	}
+	if o.PvalThreshold == 0 {
+		o.PvalThreshold = 0.5
+	}
+	if o.Ploidy == 0 {
+		o.Ploidy = PloidyDiploid
+	}
+}
+
+// ParsePloidySpec turns a "--ploidy" string into the typed value. The
+// returned spec string is preserved so Call() can reject GRCh37/GRCh38
+// with a deterministic error.
+func ParsePloidySpec(s string) (PloidySpec, string, error) {
+	switch strings.TrimSpace(s) {
+	case "", "2":
+		return PloidyDiploid, "2", nil
+	case "1":
+		return PloidyHaploid, "1", nil
+	case "GRCh37", "GRCh38":
+		return PloidyDiploid, s, nil
+	}
+	return 0, "", fmt.Errorf("bcftools call: unknown --ploidy %q (expect 1, 2, GRCh37, GRCh38)", s)
+}
+
+// Call streams VCF/BCF input from in, applies the consensus / multiallelic
+// variant caller, and writes the called records to out. It is the
+// streaming entry point used by `bcftools call` when no region query is
+// requested.
+func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
+	opts.defaults()
+	if opts.Model == CallModelNone {
+		return 0, fmt.Errorf("bcftools call: a caller must be selected (-c / --consensus-caller or -m / --multiallelic-caller)")
+	}
+	if opts.PloidySpec == "GRCh37" || opts.PloidySpec == "GRCh38" {
+		return 0, fmt.Errorf("bcftools call: --ploidy %s is not implemented (see docs/PARITY_ROADMAP.md bcftools call)", opts.PloidySpec)
+	}
+	parsedTargets, err := parseRegions(opts.Targets)
+	if err != nil {
+		return 0, err
+	}
+	postFilters := parsedTargets
+	if len(opts.Regions) > 0 {
+		regs, err := parseRegions(opts.Regions)
+		if err != nil {
+			return 0, err
+		}
+		postFilters = append(postFilters, regs...)
+	}
+	return callStreaming(in, out, opts, postFilters)
+}
+
+// CallFile is the file-aware entry point for `bcftools call`. Today it
+// always streams (no chunk-seek), but it does normalise the input path so
+// gzipped / bgzipped / plain files all work. Region queries are evaluated
+// as post-filters in v1 (matching the streaming path in `view`).
+func CallFile(path string, out io.Writer, opts CallOptions, stderr io.Writer) (int, error) {
+	in, err := iohelper.OpenReader(path)
+	if err != nil {
+		return 0, err
+	}
+	defer in.Close()
+	if len(opts.Regions) > 0 && stderr != nil {
+		fmt.Fprintln(stderr, "bcftools call: index-backed region queries are deferred; treating -r as a post-filter")
+	}
+	return Call(in, out, opts)
+}
+
+// callStreaming is the inner loop. It consumes a VCF stream, dispatches
+// each record through the chosen caller, and writes the results. The
+// targets slice is the union of -t and (when no index is available) -r.
+func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []region) (int, error) {
+	br := bufio.NewReader(in)
+	head, err := br.Peek(5)
+	if err != nil && err != io.EOF {
+		return 0, err
+	}
+	if len(head) >= 5 && head[0] == 'B' && head[1] == 'C' && head[2] == 'F' {
+		return 0, fmt.Errorf("bcftools call: BCF input is not yet wired through the caller; convert with `bcftools view in.bcf` first (see docs/PARITY_ROADMAP.md bcftools call)")
+	}
+	r := vcf.NewReader(br)
+	hdr, err := r.ReadHeader()
+	if err != nil {
+		return 0, err
+	}
+	hdr = filterHeaderSamples(hdr, opts.Samples)
+	hdr = augmentCallHeader(hdr)
+
+	w, finish, err := openOutput(out, ViewOptions{
+		OutputFormat:  opts.OutputFormat,
+		CompressLevel: opts.CompressLevel,
+	}, hdr)
+	if err != nil {
+		return 0, err
+	}
+	defer finish()
+	if err := w.WriteHeader(); err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for {
+		v, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return count, err
+		}
+		if len(targets) > 0 && !overlapsAny(v, targets) {
+			continue
+		}
+		if len(opts.Samples) > 0 {
+			restrictSamples(v, opts.Samples)
+		}
+		called, keep := callVariant(v, opts)
+		if !keep {
+			continue
+		}
+		if err := w.Write(called); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, w.Flush()
+}
+
+// augmentCallHeader inserts the meta lines that upstream bcftools adds
+// when calling: ##INFO/AC, ##INFO/AN, and the standard FORMAT/GT
+// declaration (idempotent when already present).
+func augmentCallHeader(hdr *vcf.Header) *vcf.Header {
+	if hdr == nil {
+		return hdr
+	}
+	out := &vcf.Header{Samples: append([]string(nil), hdr.Samples...)}
+	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
+	declarations := []struct {
+		marker string
+		line   string
+	}{
+		{`##INFO=<ID=AC,`, `##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes for each ALT allele">`},
+		{`##INFO=<ID=AN,`, `##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">`},
+		{`##FORMAT=<ID=GT,`, `##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">`},
+	}
+	for _, d := range declarations {
+		found := false
+		for _, m := range out.MetaInfo {
+			if strings.HasPrefix(m, d.marker) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out.MetaInfo = append(out.MetaInfo, d.line)
+		}
+	}
+	return out
+}
+
+// callVariant runs the consensus or multiallelic caller on v and returns
+// the called record plus a "keep" flag. v is consumed (its Samples slice
+// is rewritten in place with the called GTs); callers should pass a
+// per-record value rather than reusing a shared variant.
+//
+// The decision logic:
+//
+//   - For each sample we find the most-likely genotype index from PL.
+//   - We compute a variant posterior using a Hardy-Weinberg + mutation
+//     rate prior (the Li 2011 model — same family upstream's `-c` uses).
+//   - The site is "variant" iff posterior > 1 - opts.PvalThreshold OR any
+//     called genotype is non-reference. (The latter is a fail-safe that
+//     mirrors upstream's behaviour on small-sample inputs where the
+//     prior dominates the posterior.)
+//   - The site is emitted iff !opts.VariantsOnly OR the site is variant
+//     OR opts.KeepAlts is set.
+func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
+	nAlts := len(v.Alt)
+	if nAlts == 1 && v.Alt[0] == "." {
+		nAlts = 0
+		v.Alt = nil
+	}
+	nAlleles := nAlts + 1
+	plByGT := make([][]int, len(v.Samples))
+	mostLikely := make([]int, len(v.Samples))
+	haveGenotypeData := false
+	for i, s := range v.Samples {
+		pl, ok := decodePL(s.Data["PL"], nAlleles, opts.Ploidy)
+		if !ok {
+			plByGT[i] = nil
+			mostLikely[i] = -1
+			continue
+		}
+		haveGenotypeData = true
+		plByGT[i] = pl
+		mostLikely[i] = argMinIndex(pl)
+	}
+
+	ac := make([]int, nAlts)
+	an := 0
+	for i := range v.Samples {
+		if mostLikely[i] < 0 {
+			continue
+		}
+		a1, a2, ok := decomposeGTIndex(mostLikely[i], nAlleles, opts.Ploidy)
+		if !ok {
+			continue
+		}
+		if a1 > 0 && a1-1 < nAlts {
+			ac[a1-1]++
+		}
+		an++
+		if opts.Ploidy == PloidyDiploid {
+			if a2 > 0 && a2-1 < nAlts {
+				ac[a2-1]++
+			}
+			an++
+		}
+	}
+
+	logRatio := 0.0
+	for _, pl := range plByGT {
+		if pl == nil {
+			continue
+		}
+		refPL := pl[0]
+		bestNonRef := math.MaxInt32
+		for j := 1; j < len(pl); j++ {
+			if pl[j] < bestNonRef {
+				bestNonRef = pl[j]
+			}
+		}
+		if bestNonRef == math.MaxInt32 {
+			continue
+		}
+		ratio := float64(refPL-bestNonRef) / 10.0
+		if ratio > 20 {
+			ratio = 20
+		}
+		if ratio < -20 {
+			ratio = -20
+		}
+		logRatio += ratio
+	}
+	priorLog10 := math.Log10(opts.Prior)
+	posteriorLog10 := logRatio + priorLog10
+	var posterior float64
+	if posteriorLog10 > 50 {
+		posterior = 1
+	} else if posteriorLog10 < -50 {
+		posterior = math.Pow(10, posteriorLog10)
+	} else {
+		x := math.Pow(10, posteriorLog10)
+		posterior = x / (1 + x)
+	}
+
+	anyAltCall := false
+	for _, c := range ac {
+		if c > 0 {
+			anyAltCall = true
+			break
+		}
+	}
+	threshold := 1 - opts.PvalThreshold
+	isVariant := haveGenotypeData && (posterior > threshold || anyAltCall)
+
+	if opts.VariantsOnly && !isVariant && !opts.KeepAlts {
+		return v, false
+	}
+
+	out := *v
+	out.Samples = make([]vcf.Sample, len(v.Samples))
+	for i, s := range v.Samples {
+		newSample := vcf.Sample{Name: s.Name, Data: copyStringMap(s.Data)}
+		if mostLikely[i] >= 0 {
+			newSample.Data["GT"] = encodeGT(mostLikely[i], nAlleles, opts.Ploidy)
+		}
+		out.Samples[i] = newSample
+	}
+	if !hasFormat(out.Format, "GT") {
+		out.Format = append([]string{"GT"}, out.Format...)
+	}
+
+	if !opts.KeepAlts && nAlts > 0 {
+		out.Alt = trimUnsupportedAlts(out.Alt, ac, &out)
+	}
+	// VCF spec requires ALT="." when no ALT alleles remain.
+	if len(out.Alt) == 0 {
+		out.Alt = []string{"."}
+	}
+
+	if isVariant {
+		if posterior >= 1-1e-30 {
+			out.Qual = 999
+		} else {
+			out.Qual = -10 * math.Log10(1-posterior)
+			if out.Qual > 999 {
+				out.Qual = 999
+			}
+			if out.Qual < 0 {
+				out.Qual = 0
+			}
+		}
+	} else {
+		// QUAL is left as "missing" (".") for non-variant sites; upstream
+		// emits "." rather than 0 in this case.
+		out.Qual = -1
+	}
+
+	out.Info = copyStringMap(out.Info)
+	out.InfoOrder = append([]string(nil), out.InfoOrder...)
+	// Emit AC / AN only when at least one real ALT allele remains.
+	realAlts := len(out.Alt)
+	if realAlts == 1 && out.Alt[0] == "." {
+		realAlts = 0
+	}
+	if realAlts > 0 {
+		acStrs := make([]string, realAlts)
+		newAC := computeACFromGT(&out, realAlts)
+		for i := 0; i < realAlts; i++ {
+			if i < len(newAC) {
+				acStrs[i] = strconv.Itoa(newAC[i])
+			} else {
+				acStrs[i] = "0"
+			}
+		}
+		setInfo(&out, "AC", strings.Join(acStrs, ","))
+		setInfo(&out, "AN", strconv.Itoa(totalAN(&out)))
+	}
+	_ = an
+
+	return &out, true
+}
+
+// hasFormat reports whether the FORMAT slice already declares key.
+func hasFormat(fmtKeys []string, key string) bool {
+	for _, k := range fmtKeys {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// copyStringMap returns a shallow copy of m so callers can mutate it
+// without disturbing the source.
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// setInfo writes (or overwrites) an INFO field while preserving the
+// InfoOrder slice. New keys are appended; existing keys keep their
+// original position.
+func setInfo(v *vcf.Variant, key, value string) {
+	if v.Info == nil {
+		v.Info = make(map[string]string)
+	}
+	if _, ok := v.Info[key]; !ok {
+		v.InfoOrder = append(v.InfoOrder, key)
+	}
+	v.Info[key] = value
+}
+
+// computeACFromGT recounts INFO/AC across the called genotypes. It
+// returns a slice of length max(numAlts, observed-max-allele-index).
+func computeACFromGT(v *vcf.Variant, numAlts int) []int {
+	out := make([]int, numAlts)
+	for _, s := range v.Samples {
+		gt := s.Data["GT"]
+		gt = strings.ReplaceAll(gt, "|", "/")
+		for _, a := range strings.Split(gt, "/") {
+			if a == "." || a == "" {
+				continue
+			}
+			n, err := strconv.Atoi(a)
+			if err != nil || n <= 0 {
+				continue
+			}
+			idx := n - 1
+			if idx < len(out) {
+				out[idx]++
+			}
+		}
+	}
+	return out
+}
+
+// totalAN returns the count of called alleles across every sample.
+func totalAN(v *vcf.Variant) int {
+	total := 0
+	for _, s := range v.Samples {
+		gt := s.Data["GT"]
+		gt = strings.ReplaceAll(gt, "|", "/")
+		for _, a := range strings.Split(gt, "/") {
+			if a == "." || a == "" {
+				continue
+			}
+			if _, err := strconv.Atoi(a); err == nil {
+				total++
+			}
+		}
+	}
+	return total
+}
+
+// trimUnsupportedAlts drops ALT alleles whose ac[k] is zero. It also
+// rewrites the per-sample GT calls to renumber surviving alleles. This
+// runs only when -A is not set.
+func trimUnsupportedAlts(alts []string, ac []int, v *vcf.Variant) []string {
+	if len(alts) == 0 || len(ac) == 0 {
+		return alts
+	}
+	keepIdx := make([]int, 0, len(alts))
+	for i := 0; i < len(alts) && i < len(ac); i++ {
+		if ac[i] > 0 {
+			keepIdx = append(keepIdx, i)
+		}
+	}
+	if len(keepIdx) == len(alts) {
+		return alts
+	}
+	remap := make(map[int]int, len(alts)+1)
+	remap[0] = 0
+	newAlts := make([]string, 0, len(keepIdx))
+	for newI, oldI := range keepIdx {
+		remap[oldI+1] = newI + 1
+		newAlts = append(newAlts, alts[oldI])
+	}
+	for i := range v.Samples {
+		gt := v.Samples[i].Data["GT"]
+		v.Samples[i].Data["GT"] = remapGTByIndex(gt, remap)
+	}
+	return newAlts
+}
+
+// remapGTByIndex renumbers allele indices in a GT string per the remap
+// map. Unknown indices become ".". This is the index-aware sibling of
+// the per-ALT remapGT used by `bcftools norm`.
+func remapGTByIndex(gt string, remap map[int]int) string {
+	if gt == "" || gt == "." {
+		return gt
+	}
+	sep := byte('/')
+	if strings.Contains(gt, "|") {
+		sep = '|'
+	}
+	parts := strings.FieldsFunc(gt, func(r rune) bool { return r == '/' || r == '|' })
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p == "." || p == "" {
+			out = append(out, ".")
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			out = append(out, ".")
+			continue
+		}
+		newN, ok := remap[n]
+		if !ok {
+			out = append(out, ".")
+			continue
+		}
+		out = append(out, strconv.Itoa(newN))
+	}
+	return strings.Join(out, string(sep))
+}
+
+// argMinIndex returns the index of the smallest element in xs.
+func argMinIndex(xs []int) int {
+	best := 0
+	for i := 1; i < len(xs); i++ {
+		if xs[i] < xs[best] {
+			best = i
+		}
+	}
+	return best
+}
+
+// decodePL parses a colon-free PL string ("0,30,255") into a slice of
+// Phred-scaled likelihoods, one per possible genotype. The expected
+// length follows the bcftools convention:
+//
+//	diploid:  (n*(n+1))/2 entries for n alleles
+//	haploid:  n entries
+//
+// Missing values ("." or empty) are decoded as 255 to mark them as
+// "extremely unlikely" without breaking downstream maths. The bool is
+// false when the field is missing entirely.
+func decodePL(s string, nAlleles int, ploidy PloidySpec) ([]int, bool) {
+	if s == "" || s == "." {
+		return nil, false
+	}
+	parts := strings.Split(s, ",")
+	expected := expectedPLLen(nAlleles, ploidy)
+	out := make([]int, len(parts))
+	for i, p := range parts {
+		if p == "." || p == "" {
+			out[i] = 255
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, false
+		}
+		out[i] = n
+	}
+	for len(out) < expected {
+		out = append(out, 255)
+	}
+	return out, true
+}
+
+// expectedPLLen returns the canonical PL vector length for a site with
+// nAlleles total alleles (1 REF + (nAlleles-1) ALTs) at the given ploidy.
+func expectedPLLen(nAlleles int, ploidy PloidySpec) int {
+	switch ploidy {
+	case PloidyHaploid:
+		return nAlleles
+	default:
+		return nAlleles * (nAlleles + 1) / 2
+	}
+}
+
+// decomposeGTIndex turns a PL-vector index back into the (a1, a2)
+// genotype it represents. For diploid sites bcftools uses the canonical
+// VCF ordering:
+//
+//	idx 0 -> 0/0   idx 1 -> 0/1   idx 2 -> 1/1
+//	idx 3 -> 0/2   idx 4 -> 1/2   idx 5 -> 2/2 ...
+//
+// For haploid sites the index is the allele number directly.
+func decomposeGTIndex(idx, nAlleles int, ploidy PloidySpec) (int, int, bool) {
+	if ploidy == PloidyHaploid {
+		if idx < 0 || idx >= nAlleles {
+			return 0, 0, false
+		}
+		return idx, 0, true
+	}
+	k := 0
+	for a2 := 0; a2 < nAlleles; a2++ {
+		for a1 := 0; a1 <= a2; a1++ {
+			if k == idx {
+				return a1, a2, true
+			}
+			k++
+		}
+	}
+	return 0, 0, false
+}
+
+// encodeGT renders the (a1, a2) genotype that corresponds to PL index
+// idx back into a "a/b" or "a" string.
+func encodeGT(idx, nAlleles int, ploidy PloidySpec) string {
+	a1, a2, ok := decomposeGTIndex(idx, nAlleles, ploidy)
+	if !ok {
+		return "."
+	}
+	if ploidy == PloidyHaploid {
+		return strconv.Itoa(a1)
+	}
+	return fmt.Sprintf("%d/%d", a1, a2)
+}

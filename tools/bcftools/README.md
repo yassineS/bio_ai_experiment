@@ -7,6 +7,8 @@ subcommands. The current implementation ships:
 - `bcftools query` — format-string output for VCF/BCF records.
 - `bcftools concat` — concatenate VCF/BCF files.
 - `bcftools norm` — left-align indels, split/join multi-allelics, atomize, dedup.
+- `bcftools call` — variant calling from per-position genotype likelihoods
+  (consensus + biallelic multi-allelic).
 - `bcftools index` — build a `.csi` (or `.tbi`) index for a BCF / VCF.gz.
 - `bcftools stats` — sectioned summary numbers compatible with
   `plot-vcfstats`.
@@ -266,6 +268,7 @@ bcftools concat -f files.txt -O b -o all.bcf
 # Drop adjacent duplicates after sort-merge.
 bcftools concat -a -D split.*.vcf.gz -o uniq.vcf
 ```
+
 ## `bcftools norm`
 
 `bcftools norm` performs the standard pre-analysis fix-ups: left-align indels
@@ -353,21 +356,117 @@ For each child record:
 Joining (`-m +*`) walks adjacent biallelics sharing CHROM/POS/REF and
 collapses them into one multiallelic. `AC`/`AF` become comma lists; `GT`
 allele indices are renumbered to match each donor record's new position.
+
+## `bcftools call`
+
+`bcftools call` decides whether each input site is a variant given the
+per-position genotype likelihoods produced upstream by `samtools mpileup
+-g/--BCF`. The two operate as a pair: `mpileup` emits `FORMAT/PL` (Phred-
+scaled likelihoods) per site per sample, and `call` aggregates those
+likelihoods, applies a Hardy-Weinberg + mutation-rate prior, picks the
+most-likely genotype per sample, and emits the standard variant record.
+
+```bash
+# Consensus caller (Li 2011), drop all-reference sites.
+bcftools call -c -v input.vcf > out.vcf
+
+# Multi-allelic caller (v1: biallelic-only) writing gzipped VCF.
+bcftools call -m -v -O z -o out.vcf.gz input.vcf
+
+# Treat samples as haploid (e.g. for chrY).
+bcftools call -c --ploidy 1 -v input.vcf
+
+# Keep every declared ALT, including those with zero supporting reads.
+bcftools call -c -A input.vcf
+
+# Tighten the call rate.
+bcftools call -c -v -p 0.01 -P 1e-4 input.vcf
+```
+
+### Supported `call` flags
+
+| Short | Long                    | Meaning |
+| ----- | ----------------------- | ------- |
+| `-c`  | `--consensus-caller`    | Old Li-2011 consensus caller. |
+| `-m`  | `--multiallelic-caller` | Multi-allelic caller (v1: biallelic-only; falls back to consensus on multi-allelic sites). |
+| `-A`  | `--keep-alts`           | Emit every declared ALT, even those with zero supporting reads. |
+| `-v`  | `--variants-only`       | Drop all-reference sites. |
+| `-P`  | `--prior`               | Mutation rate prior (default `1.1e-3`). |
+| `-p`  | `--pval-threshold`      | Variant-posterior threshold (default `0.5`). |
+|       | `--ploidy`              | `2` (default), `1`, or `GRCh37` / `GRCh38` (deferred). |
+| `-X`  | `--chromosome-X`        | Legacy alias for `--ploidy 1`. |
+| `-O`  | `--output-type`         | `v`, `z`, `u`, `b` (same semantics as `view`). |
+| `-o`  | `--output`              | Output file (default stdout). |
+| `-r`  | `--regions`             | Region(s) `chr:beg-end[,...]` (v1: post-filter only). |
+| `-R`  | `--regions-file`        | BED-like regions file. |
+| `-t`  | `--targets`             | Like `-r` but always a post-filter. |
+| `-T`  | `--targets-file`        | BED-like targets file (post-filter). |
+| `-s`  | `--samples`             | Restrict to these samples. |
+| `-S`  | `--samples-file`        | File of sample IDs. |
+|       | `--threads`             | Accepted; v1 is single-threaded. |
+| `-?`  | `--help`                | Show help. |
+|       | `--version`             | Show version. |
+
+### Calling algorithm (consensus, `-c`)
+
+For each input site:
+
+1. For each sample, find the most-likely genotype from `FORMAT/PL` (the
+   index with PL=0, or the smallest PL when there is no zero).
+2. Aggregate ALT-allele support across samples (`INFO/AC` / `INFO/AN`).
+3. Compute a per-site variant-posterior by summing the per-sample
+   log-likelihood ratio "best-non-ref vs ref" (capped at +/-200 to keep
+   the maths well-behaved on extreme PLs), then combining with the
+   `-P` mutation-rate prior in a one-vs-rest logistic.
+4. The site is "variant" iff `posterior > 1 - pvalThreshold` or any
+   sample's best genotype is non-reference. Without `-v` every site is
+   still emitted (with the called GTs); with `-v` non-variant sites are
+   dropped (unless `-A` overrides).
+5. Compute `QUAL` as `-10 * log10(1 - posterior)`, clamped to `[0, 999]`.
+6. Rewrite `FORMAT/GT` per sample from the chosen genotype index.
+
+### Calling algorithm (multi-allelic, `-m`)
+
+Upstream's full multi-allelic caller iterates over every possible allele
+combination and picks the most likely combined genotype across all
+samples. **Our v1 implementation handles biallelic sites with the same
+maths as `-c` and falls back to `-c` for multi-allelic sites.** Sites
+with >2 alleles still produce a valid call (the most likely per-sample
+genotype is selected from the full PL vector) but the posterior is
+computed as if the site were biallelic with the most-supported ALT.
+Tracked in `docs/PARITY_ROADMAP.md` under the `bcftools call` entry.
+
+### Deviations from upstream
+
+- **No BCF input.** The current decoder doesn't reconstruct
+  `FORMAT/PL` from htslib-produced BCF (see `docs/UPSTREAM_BUGS.md`
+  `bcf-fmt-keys-missing`). Convert with `bcftools view in.bcf > in.vcf`
+  first. Tracked in the roadmap.
+- **`--ploidy GRCh37` / `GRCh38` are rejected** at runtime; v1 only
+  supports fixed ploidies. The CLI parses the spec so existing scripts
+  fail early with a clear error.
+- **No index-backed region queries** for `-r`; the flag is honoured as
+  a post-filter. The view-side CSI seek will move here in a follow-up.
+- **Multi-allelic caller** is biallelic-only, as described above.
+
 ## Scope and deferred work
 
 What ships in this slice:
 
-- `view`, `index`, and `stats` subcommands.
+- `view`, `index`, `stats`, `query`, `concat`, `norm`, and `call`
+  subcommands.
 - BCF reader + writer (CHROM/POS/REF/ALT/QUAL/FILTER/INFO + per-sample FORMAT).
 - VCF and BGZF-wrapped VCF input.
-- VCF and gzip-VCF (`-O v`, `-O z`) output for `view`.
+- VCF and gzip-VCF (`-O v`, `-O z`) output for most subcommands.
 - CSI / TBI index reading and writing.
 
 What is **deferred** to a follow-up PR:
 
-- Other subcommands (`query`, `norm`, `concat`, `merge`).
+- Other subcommands (`merge`, `annotate`, `isec`, `csq`, `filter`, ...).
 - The plugin system (`bcftools plugin`).
 - `bcftools stats -E exons.tab.gz` (upstream's exon-overlap section).
+- BCF input for `bcftools call`, the full multi-allelic caller, and
+  GRCh37 / GRCh38 ploidy specs.
 
 ## How records flow
 

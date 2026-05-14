@@ -271,12 +271,13 @@ Plus:
 
 ### `bcftools`
 
-**Status:** 6 of ~30 subcommands (~20%). `view`, `index`, `stats`, `query`,
-`concat`, `norm`.
+**Status:** 7 of ~30 subcommands (~23%). `view`, `index`, `stats`, `query`,
+`concat`, `norm`, `call` (consensus + biallelic multi-allelic).
 
 Missing subcommands (priority order):
 
-- **`mpileup`** + **`call`** — variant calling. Both are large.
+- **`mpileup`** — base-level pileup; required upstream input to
+  `bcftools call`. Large port.
 - **`annotate`** — annotate records from a tab-indexed table.
 - **`csq`** — predict variant consequences against a GFF.
 - **`isec`** — set operations on VCF/BCF files.
@@ -300,6 +301,21 @@ Plus:
   `--no-version`, `--write-index`, `--phased`.
 - **CSI seek** for region queries: today we validate via the index then
   linear-scan. Real chunk-seek is the natural follow-up.
+
+Subcommand-tail gaps on `bcftools call`:
+
+- **Full multi-allelic caller (`-m` on >2 ALT sites).** The v1 port
+  falls back to the consensus model for sites with more than one ALT;
+  upstream iterates over every allele combination.
+- **BCF input.** Today `call` rejects BCF input with a roadmap-pointer
+  error. The BCF reader's FORMAT-key reconstruction
+  (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) is the prerequisite.
+- **`--ploidy GRCh37 / GRCh38`.** Accepted by the CLI parser but
+  rejected at runtime — the per-contig sex-chromosome overrides need a
+  ploidy registry that's not yet wired in.
+- **Index-backed region queries** (`-r` reuses the post-filter path).
+- **`--gvcf` block-emit mode** (banded reference blocks).
+- **`-C alleles --constrain`** family.
 
 **Validation:** no upstream-test-suite run yet.
 
