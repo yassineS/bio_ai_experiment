@@ -140,22 +140,19 @@ Missing:
 
 **Validation:** no upstream-test-suite run yet.
 
-### bedtools (17 subcommands ported)
+### bedtools (20 subcommands ported)
 
-**Status:** 17 of ~40 subcommands (~43%). 114 passing parity tests against
-upstream test suite (across PR #55 + Phase-3 wave 1 + wave 2), 47
-documented `t.Skip`, 2 known discrepancies. The 2026-05-14 wave 2 PR
-added **4 new subcommands**: `bedexpand`, `bedgetfasta`, `bedsample`,
-`bedspacing` (this roadmap update). Wave 1 (PR #78) added `bedgroupby`,
-`bed12tobed6`, `bedmakewindows`.
+**Status:** 20 of ~40 subcommands (~50%). 135 passing parity tests against
+upstream test suite (across PR #55 + Phase-3 wave 1 + wave 2 simple + wave 2
+algo), 53 documented `t.Skip`, 2 known discrepancies. Phase-3 wave 1
+(PR #78) added `bedgroupby`/`bed12tobed6`/`bedmakewindows`; wave 2 simple
+(PR #80) added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`; wave 2
+algo (this PR) adds `bedcoverage`/`bedmap`/`bedshuffle`.
 
 Missing subcommands:
 
-- `map` — apply column ops to A's intervals using B as input.
-- `coverage` — count features in A overlapping B.
 - `multicov` — multi-sample coverage.
 - `multiinter` — multi-way intersection.
-- `shuffle` — randomly shuffle intervals.
 - `reldist` — relative distance distribution.
 - `fisher` — Fisher's exact for overlap.
 - `nuc` — nucleotide content per interval.

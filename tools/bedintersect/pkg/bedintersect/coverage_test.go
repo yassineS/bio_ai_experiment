@@ -638,15 +638,11 @@ func TestQueryNodeNilGuard(t *testing.T) {
 		t.Errorf("expected 1 result, got %d", len(res))
 	}
 
-	// Direct call to queryNode with node==nil to cover the explicit nil-guard
-	// branch (intervaltree.go:72-74). queryNode is only ever called by Query
-	// for the root and recursively guarded by node.Left/Right != nil checks,
-	// so this defensive guard is otherwise unreachable.
-	var results []*bed.Record
-	tree.queryNode(nil, &bed.Record{Chrom: "chr1", ChromStart: 1, ChromEnd: 2}, &results)
-	if results != nil {
-		t.Errorf("expected nil results from queryNode(nil), got %v", results)
-	}
+	// Note: the explicit nil-guard branch inside the internal queryNode
+	// recursion is now covered by the shared bed.IntervalTree tests in
+	// pkg/bioformats/bed/. We can no longer call it directly from this
+	// package because the method moved out of bedintersect when the tree was
+	// lifted into pkg/bioformats/bed.
 }
 
 // TestFindOverlapsChromMismatch directly calls findOverlaps with a B slice
