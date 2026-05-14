@@ -1,5 +1,12 @@
 # Top 50 Bioinformatics Packages for Code Rewrite and Documentation Improvement
 
+> **Superseded (2026-05-14).** This ranking is from October 2025. The
+> shortlist has shifted — most notably away from sickle / skewer /
+> PRINSEQ-lite (all upstream-dead since 2015–2016) and toward
+> samtools / bcftools / htslib / bgzip / tabix / mosdepth. See
+> [`tool_ranking_2026.md`](tool_ranking_2026.md) for the current pick and
+> rationale. This file is kept for reference.
+
 **Analysis Date:** 2025-10-20
 **Total Packages Analyzed:** 205
 
