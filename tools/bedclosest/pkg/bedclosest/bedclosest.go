@@ -19,7 +19,8 @@ import (
 	"strings"
 )
 
-// DistanceMode selects how the signed distance between A and B is computed.
+// DistanceMode selects how the distance between A and B is computed and
+// reported.
 type DistanceMode int
 
 const (
@@ -32,6 +33,10 @@ const (
 	DistanceA
 	// DistanceB computes the sign relative to B's strand.
 	DistanceB
+	// DistanceAbsolute reports the unsigned distance only. This matches
+	// upstream `bedtools closest -d`, which omits the sign; `-D <mode>` is
+	// the upstream flag for signed distance.
+	DistanceAbsolute
 )
 
 // TieBreak controls how ties among multiple equally-close B intervals are
@@ -315,9 +320,10 @@ func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
 }
 
 // signedDistance returns the signed distance between A and B according to
-// opts.DistanceMode. 0 means they overlap or touch (gap of 0 bases on the
-// reference). The magnitude is the number of bases separating the two
-// intervals on the reference; the sign indicates whether B is downstream
+// opts.DistanceMode. 0 means they overlap (truly share at least one base on a
+// 0-based half-open interval); touching records (b.start == a.end or
+// a.start == b.end) report distance 1, matching `bedtools closest -d`'s
+// (b.start - a.end) + 1 formula. The sign indicates whether B is downstream
 // (positive) or upstream (negative) of A under the chosen DistanceMode.
 func signedDistance(a, b *Row, opts Options) int64 {
 	// Overlap on a 0-based half-open interval requires a.Start < b.End AND
@@ -327,9 +333,12 @@ func signedDistance(a, b *Row, opts Options) int64 {
 	}
 	var refSigned int64
 	if b.Start >= a.End {
-		refSigned = int64(b.Start - a.End) // >= 0; positive: B downstream
+		// B is downstream of A. Upstream uses (B.start - A.end) + 1, so a 0-bp
+		// gap (touching intervals) is reported as 1.
+		refSigned = int64(b.Start-a.End) + 1
 	} else {
-		refSigned = -int64(a.Start - b.End) // <= 0; negative: B upstream
+		// B is upstream of A.
+		refSigned = -(int64(a.Start-b.End) + 1)
 	}
 	switch opts.DistanceMode {
 	case DistanceA:
@@ -339,6 +348,11 @@ func signedDistance(a, b *Row, opts Options) int64 {
 		return refSigned
 	case DistanceB:
 		if b.Strand == "-" {
+			return -refSigned
+		}
+		return refSigned
+	case DistanceAbsolute:
+		if refSigned < 0 {
 			return -refSigned
 		}
 		return refSigned

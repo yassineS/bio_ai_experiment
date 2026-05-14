@@ -24,8 +24,9 @@ func TestClosestBasic(t *testing.T) {
 	if n != 1 {
 		t.Errorf("n=%d, want 1", n)
 	}
-	// B[30,40) is closer; gap = 30 - 20 = 10, positive (downstream).
-	want := "chr1\t10\t20\tchr1\t30\t40\t10\n"
+	// B[30,40) is closer; gap = (30-20)+1 = 11, positive (downstream).
+	// bedtools' `closest -d` uses (b.start - a.end) + 1, so touching is 1.
+	want := "chr1\t10\t20\tchr1\t30\t40\t11\n"
 	if got != want {
 		t.Errorf("got %q want %q", got, want)
 	}
@@ -51,8 +52,8 @@ func TestClosestUpstreamNegative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// B is upstream of A: gap = 100-20 = 80, sign negative.
-	want := "chr1\t100\t200\tchr1\t10\t20\t-80\n"
+	// B is upstream of A: gap = (100-20)+1 = 81, sign negative.
+	want := "chr1\t100\t200\tchr1\t10\t20\t-81\n"
 	if got != want {
 		t.Errorf("got %q", got)
 	}
@@ -60,7 +61,7 @@ func TestClosestUpstreamNegative(t *testing.T) {
 
 func TestClosestTiesAll(t *testing.T) {
 	a := "chr1\t100\t110\n"
-	// Two B's equidistant (both 10bp away).
+	// Two B's equidistant (both 11bp under bedtools' (gap+1) convention).
 	b := "chr1\t80\t90\nchr1\t120\t130\n"
 	got, n, err := runClosest(t, a, b, Options{PrintDistance: true, TieBreak: TieAll})
 	if err != nil {
@@ -69,8 +70,8 @@ func TestClosestTiesAll(t *testing.T) {
 	if n != 2 {
 		t.Errorf("n=%d want 2", n)
 	}
-	want := "chr1\t100\t110\tchr1\t80\t90\t-10\n" +
-		"chr1\t100\t110\tchr1\t120\t130\t10\n"
+	want := "chr1\t100\t110\tchr1\t80\t90\t-11\n" +
+		"chr1\t100\t110\tchr1\t120\t130\t11\n"
 	if got != want {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
@@ -161,8 +162,9 @@ func TestClosestStrandA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Ref-signed distance is +10; with -D a and A on '-', flips to -10.
-	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "\t-10") {
+	// Ref-signed distance is +11 (gap 10 + 1); with -D a and A on '-',
+	// flips to -11.
+	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "\t-11") {
 		t.Errorf("expected -D a to flip sign on minus-strand A; got %q", got)
 	}
 }
@@ -174,7 +176,7 @@ func TestClosestStrandB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "\t-10") {
+	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "\t-11") {
 		t.Errorf("expected -D b to flip sign with B on minus strand; got %q", got)
 	}
 }
@@ -237,7 +239,7 @@ func TestClosestSkipsCommentsAndBlankLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "chr1\t10\t20\tchr1\t30\t40\t10\n"
+	want := "chr1\t10\t20\tchr1\t30\t40\t11\n"
 	if got != want {
 		t.Errorf("got %q", got)
 	}
@@ -249,17 +251,17 @@ func TestSignedDistanceModes(t *testing.T) {
 	bDown := &Row{Chrom: "chr1", Start: 120, End: 130, Strand: "+"}
 	bUp := &Row{Chrom: "chr1", Start: 50, End: 60, Strand: "-"}
 
-	if d := signedDistance(aPlus, bDown, Options{}); d != 10 {
-		t.Errorf("ref downstream = %d, want 10", d)
+	if d := signedDistance(aPlus, bDown, Options{}); d != 11 {
+		t.Errorf("ref downstream = %d, want 11", d)
 	}
-	if d := signedDistance(aPlus, bUp, Options{}); d != -40 {
-		t.Errorf("ref upstream = %d, want -40", d)
+	if d := signedDistance(aPlus, bUp, Options{}); d != -41 {
+		t.Errorf("ref upstream = %d, want -41", d)
 	}
-	if d := signedDistance(aMinus, bDown, Options{DistanceMode: DistanceA}); d != -10 {
-		t.Errorf("a-strand flip = %d, want -10", d)
+	if d := signedDistance(aMinus, bDown, Options{DistanceMode: DistanceA}); d != -11 {
+		t.Errorf("a-strand flip = %d, want -11", d)
 	}
-	if d := signedDistance(aPlus, bUp, Options{DistanceMode: DistanceB}); d != 40 {
-		t.Errorf("b-strand flip = %d, want 40", d)
+	if d := signedDistance(aPlus, bUp, Options{DistanceMode: DistanceB}); d != 41 {
+		t.Errorf("b-strand flip = %d, want 41", d)
 	}
 }
 
@@ -307,12 +309,12 @@ func TestClosestMultipleAOnSameChrom(t *testing.T) {
 	if n != 3 {
 		t.Errorf("n=%d want 3", n)
 	}
-	// A[10,20) closest: B[40,45) at distance 20 (only one closer; B[90,95) is 70 away).
-	// A[50,60) closest: B[40,45) at -5 (gap 5 upstream) and B[90,95) at 30; -> [40,45).
-	// A[100,110) closest: B[90,95) at -5.
-	want := "chr1\t10\t20\tchr1\t40\t45\t20\n" +
-		"chr1\t50\t60\tchr1\t40\t45\t-5\n" +
-		"chr1\t100\t110\tchr1\t90\t95\t-5\n"
+	// A[10,20) closest: B[40,45) at distance (40-20)+1 = 21.
+	// A[50,60) closest: B[40,45) upstream at -((50-45)+1) = -6.
+	// A[100,110) closest: B[90,95) upstream at -((100-95)+1) = -6.
+	want := "chr1\t10\t20\tchr1\t40\t45\t21\n" +
+		"chr1\t50\t60\tchr1\t40\t45\t-6\n" +
+		"chr1\t100\t110\tchr1\t90\t95\t-6\n"
 	if got != want {
 		t.Errorf("got %q\nwant %q", got, want)
 	}

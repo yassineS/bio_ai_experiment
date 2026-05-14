@@ -121,9 +121,9 @@ func ReadAll(r io.Reader) ([]record, error) {
 
 // Sort sorts records in place according to opts.
 //
-// Sort is stable: records that compare equal under the chosen mode retain
-// their input order, which keeps the output deterministic when ties are
-// possible (e.g. several intervals share the same start and end).
+// Sort is stable, and size/score modes additionally break ties on the default
+// (chrom, start, end) ordering so the output matches upstream bedtools sort
+// deterministically rather than depending on input order.
 func Sort(records []record, opts Options) {
 	chromRank := buildChromRank(opts.ChromOrder)
 	cmpChrom := func(a, b record) int {
@@ -153,33 +153,77 @@ func Sort(records []record, opts Options) {
 		}
 		return 1
 	}
+	// tieBreak compares two records on the default (chrom asc, start asc, end
+	// asc) ordering. It is used to break ties for size/score sorts so the
+	// output matches upstream bedtools sort, which secondary-sorts ties
+	// deterministically rather than relying on input order.
+	tieBreak := func(a, b record) int {
+		if c := cmpChrom(a, b); c != 0 {
+			return c
+		}
+		if a.start != b.start {
+			if a.start < b.start {
+				return -1
+			}
+			return 1
+		}
+		if a.end != b.end {
+			if a.end < b.end {
+				return -1
+			}
+			return 1
+		}
+		return 0
+	}
 	less := func(i, j int) bool {
 		a, b := records[i], records[j]
 		switch opts.Mode {
 		case ModeSizeA:
-			return (a.end - a.start) < (b.end - b.start)
+			la, lb := a.end-a.start, b.end-b.start
+			if la != lb {
+				return la < lb
+			}
+			return tieBreak(a, b) < 0
 		case ModeSizeD:
-			return (a.end - a.start) > (b.end - b.start)
+			la, lb := a.end-a.start, b.end-b.start
+			if la != lb {
+				return la > lb
+			}
+			return tieBreak(a, b) < 0
 		case ModeChrThenSizeA:
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0
 			}
-			return (a.end - a.start) < (b.end - b.start)
+			la, lb := a.end-a.start, b.end-b.start
+			if la != lb {
+				return la < lb
+			}
+			return tieBreak(a, b) < 0
 		case ModeChrThenSizeD:
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0
 			}
-			return (a.end - a.start) > (b.end - b.start)
+			la, lb := a.end-a.start, b.end-b.start
+			if la != lb {
+				return la > lb
+			}
+			return tieBreak(a, b) < 0
 		case ModeChrThenScoreA:
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0
 			}
-			return a.score < b.score
+			if a.score != b.score {
+				return a.score < b.score
+			}
+			return tieBreak(a, b) < 0
 		case ModeChrThenScoreD:
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0
 			}
-			return a.score > b.score
+			if a.score != b.score {
+				return a.score > b.score
+			}
+			return tieBreak(a, b) < 0
 		default: // ModeChrom
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0

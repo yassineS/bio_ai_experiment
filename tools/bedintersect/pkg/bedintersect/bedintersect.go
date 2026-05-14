@@ -140,14 +140,11 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 				count++
 			}
 		} else if opts.Count {
-			// Report count of overlaps
-			result := &bed.Record{
-				Chrom:      recordA.Chrom,
-				ChromStart: recordA.ChromStart,
-				ChromEnd:   recordA.ChromEnd,
-				Name:       fmt.Sprintf("%d", len(overlaps)),
-			}
-			if err := bedWriter.Write(result); err != nil {
+			// Append the overlap count as the final column, preserving all
+			// of A's columns (matches `bedtools intersect -c`).
+			result := *recordA
+			result.ExtraFields = append(append([]string(nil), recordA.ExtraFields...), fmt.Sprintf("%d", len(overlaps)))
+			if err := bedWriter.Write(&result); err != nil {
 				return 0, fmt.Errorf("error writing result: %w", err)
 			}
 			count++
@@ -160,12 +157,13 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 				} else if opts.WriteA {
 					result = recordA
 				} else {
-					// Write intersection
-					result = &bed.Record{
-						Chrom:      recordA.Chrom,
-						ChromStart: max(recordA.ChromStart, overlap.B.ChromStart),
-						ChromEnd:   min(recordA.ChromEnd, overlap.B.ChromEnd),
-					}
+					// Write intersection: clip A to the overlap range but
+					// preserve A's name/score/strand and any extra columns
+					// (matches `bedtools intersect` default behaviour).
+					clip := *recordA
+					clip.ChromStart = max(recordA.ChromStart, overlap.B.ChromStart)
+					clip.ChromEnd = min(recordA.ChromEnd, overlap.B.ChromEnd)
+					result = &clip
 				}
 				if err := bedWriter.Write(result); err != nil {
 					return 0, fmt.Errorf("error writing result: %w", err)

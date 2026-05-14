@@ -82,10 +82,10 @@ func TestHistogramMaxDepth(t *testing.T) {
 	// depth 5 covered at pos 0 (5 intervals); cap to 2.
 	bed := "chr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\n"
 	out := runOf(t, bed, "chr1\t3\n", Options{MaxDepth: 2})
-	want := "chr1\t0\t2\t3\t0.6666666667\n" +
-		"chr1\t2\t1\t3\t0.3333333333\n" +
-		"genome\t0\t2\t3\t0.6666666667\n" +
-		"genome\t2\t1\t3\t0.3333333333\n"
+	want := "chr1\t0\t2\t3\t0.666667\n" +
+		"chr1\t2\t1\t3\t0.333333\n" +
+		"genome\t0\t2\t3\t0.666667\n" +
+		"genome\t2\t1\t3\t0.333333\n"
 	if out != want {
 		t.Errorf("max-depth mismatch.\nwant:\n%s\ngot:\n%s", want, out)
 	}
@@ -269,7 +269,7 @@ func TestSortedKeysAndFormatFraction(t *testing.T) {
 	if s := formatFraction(0.5); s != "0.5" {
 		t.Errorf("formatFraction(0.5)=%s", s)
 	}
-	if s := formatFraction(1.0 / 3.0); s != "0.3333333333" {
+	if s := formatFraction(1.0 / 3.0); s != "0.333333" {
 		t.Errorf("formatFraction(1/3)=%s", s)
 	}
 }

@@ -327,9 +327,10 @@ func sortedKeys(m map[int]int) []int {
 	return keys
 }
 
-// formatFraction renders a fraction with up to 10 significant digits and
-// without trailing-zero noise, matching the bedtools output style.
+// formatFraction renders a fraction with 6 significant digits and no
+// trailing-zero noise. Upstream `bedtools genomecov` prints histogram
+// fractions via C++ ostream's default precision (6), so we match that here.
 func formatFraction(f float64) string {
-	s := strconv.FormatFloat(f, 'g', 10, 64)
+	s := strconv.FormatFloat(f, 'g', 6, 64)
 	return s
 }

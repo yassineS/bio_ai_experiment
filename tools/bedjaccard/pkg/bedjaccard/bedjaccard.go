@@ -73,10 +73,11 @@ func Run(a, b io.Reader, w io.Writer, opts Options) (*Result, error) {
 	return res, nil
 }
 
-// formatJaccard renders the ratio with up to 10 significant digits and no
-// trailing-zero noise, matching `bedtools jaccard`'s `%g` output.
+// formatJaccard renders the ratio with C++ ostream's default precision
+// (6 significant digits with %g-style trimming), which is what upstream
+// `bedtools jaccard` uses when it prints the ratio via `cout`.
 func formatJaccard(j float64) string {
-	return strconv.FormatFloat(j, 'g', 10, 64)
+	return strconv.FormatFloat(j, 'g', 6, 64)
 }
 
 // jaccard does the streaming sweep.

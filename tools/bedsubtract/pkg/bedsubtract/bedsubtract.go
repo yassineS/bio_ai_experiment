@@ -12,8 +12,12 @@ type Options struct {
 	// RemoveEntire ("-A") drops any A interval that overlaps B at all,
 	// rather than splitting it.
 	RemoveEntire bool
-	// MinFraction ("-N", 0..1). When > 0, an overlap with an individual B
+	// MinFraction ("-f", 0..1). When > 0, an overlap with an individual B
 	// interval is only subtracted if it covers at least this fraction of A.
+	//
+	// Note: upstream bedtools also has `-N` which sums coverage across ALL B
+	// overlaps and drops the entire A if the union coverage exceeds the
+	// fraction. That is a separate, unimplemented option here.
 	MinFraction float64
 	// SameStrand ("-s"): only consider B intervals on the same strand as A.
 	SameStrand bool
