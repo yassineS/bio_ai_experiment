@@ -104,6 +104,25 @@ type Params struct {
 	RemoveIndvList []string
 	KeepFile       string
 	RemoveFile     string
+
+	// Linkage disequilibrium analysis (--geno-r2 / --hap-r2 family).
+	// GenoR2 enables --geno-r2 output (<prefix>.geno.ld). HapR2 enables
+	// --hap-r2 output (<prefix>.hap.ld). GenoR2Positions / HapR2Positions
+	// supply chrom/pos files that restrict pairs to those where at least one
+	// endpoint is listed (analogous to upstream --geno-r2-positions /
+	// --hap-r2-positions). The four window fields bound the pairwise SNP /
+	// bp distance: zero means "no bound" for the maxima, zero for the minima
+	// means "no minimum required". MinR2 thresholds the emitted r² (default
+	// 0 = emit all pairs).
+	GenoR2          bool
+	HapR2           bool
+	GenoR2Positions string
+	HapR2Positions  string
+	LDWindow        int
+	LDWindowBp      int
+	LDWindowMin     int
+	LDWindowBpMin   int
+	MinR2           float64
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -189,6 +208,15 @@ func Run(input io.Reader, params *Params) error {
 		stats.weirFst = newWeirFstAccumulator(weirFstPops)
 	}
 
+	// Initialise LD runner (no-op when no LD flag is set).
+	var ldRun *ldRunner
+	if params.GenoR2 || params.HapR2 || params.GenoR2Positions != "" || params.HapR2Positions != "" {
+		ldRun, err = newLDRunner(params)
+		if err != nil {
+			return fmt.Errorf("initialising LD analysis: %w", err)
+		}
+	}
+
 	// Set up output writer for recode
 	var recodeWriter *vcf.Writer
 	if params.Recode {
@@ -249,6 +277,11 @@ func Run(input io.Reader, params *Params) error {
 		// Update statistics
 		stats.addVariant(filteredVariant, params)
 
+		// Feed LD runner (writes pairwise output incrementally).
+		if ldRun != nil {
+			ldRun.addVariant(filteredVariant)
+		}
+
 		// Collect variants for format conversions
 		if params.Output012 || params.OutputPlink || params.OutputPlinkTped {
 			allVariants = append(allVariants, filteredVariant)
@@ -302,6 +335,11 @@ func Run(input io.Reader, params *Params) error {
 	// Output format conversions
 	if err := outputFormatConversions(allVariants, filteredHeader, params); err != nil {
 		return fmt.Errorf("outputting format conversions: %w", err)
+	}
+
+	// Flush LD outputs.
+	if err := ldRun.close(); err != nil {
+		return fmt.Errorf("closing LD output: %w", err)
 	}
 
 	return nil

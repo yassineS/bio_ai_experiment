@@ -100,9 +100,18 @@ Format Conversion:
   --plink-tped          Output PLINK TPED/TFAM files
   --chrom-map FILE      Chromosome-name-to-integer map for PLINK output
 
-Not yet implemented (rejected with an error rather than silently ignored):
-  All LD analysis (--geno-r2, --hap-r2, ...)
-  See tools/vcftools/ROADMAP.md for status.
+Linkage Disequilibrium:
+  --geno-r2             Genotype-based LD r^2 within a window (.geno.ld)
+  --hap-r2              Haplotype-based LD r^2 for phased data (.hap.ld)
+  --geno-r2-positions FILE
+                        Restrict --geno-r2 to pairs touching a position in FILE
+  --hap-r2-positions FILE
+                        Restrict --hap-r2 to pairs touching a position in FILE
+  --ld-window INT       Maximum number of SNPs between LD pairs (default: unbounded)
+  --ld-window-bp INT    Maximum bp distance between LD pairs (default: unbounded)
+  --ld-window-min INT   Minimum number of SNPs between LD pairs
+  --ld-window-bp-min INT  Minimum bp distance between LD pairs
+  --min-r2 FLOAT        Only emit LD pairs with r^2 >= this threshold
 
 Sample Filtering:
   --indv STRING         Include only this individual (can use multiple times)
@@ -222,6 +231,17 @@ func main() {
 	fstWindowSize := flag.Int("fst-window-size", 0, "Window size for Fst calculation")
 	fstWindowStep := flag.Int("fst-window-step", 0, "Step size for sliding Fst windows")
 	filterSummary := flag.Bool("FILTER-summary", false, "FILTER tag summary")
+
+	// Linkage disequilibrium analysis
+	genoR2 := flag.Bool("geno-r2", false, "Genotype-based LD r^2 within a window (.geno.ld)")
+	hapR2 := flag.Bool("hap-r2", false, "Haplotype-based LD r^2 for phased data (.hap.ld)")
+	genoR2Positions := flag.String("geno-r2-positions", "", "Restrict --geno-r2 to pairs touching a position in this file (chrom pos)")
+	hapR2Positions := flag.String("hap-r2-positions", "", "Restrict --hap-r2 to pairs touching a position in this file (chrom pos)")
+	ldWindow := flag.Int("ld-window", 0, "Maximum number of SNPs between LD pairs (default: unbounded)")
+	ldWindowBp := flag.Int("ld-window-bp", 0, "Maximum bp distance between LD pairs (default: unbounded)")
+	ldWindowMin := flag.Int("ld-window-min", 0, "Minimum number of SNPs between LD pairs")
+	ldWindowBpMin := flag.Int("ld-window-bp-min", 0, "Minimum bp distance between LD pairs")
+	minR2 := flag.Float64("min-r2", 0, "Only emit LD pairs with r^2 >= this threshold")
 
 	// Phase 4: Format conversions
 	output012 := flag.Bool("012", false, "Output genotypes as 0/1/2 matrix")
@@ -362,6 +382,15 @@ func main() {
 		RemoveIndvList:       removeIndvList,
 		KeepFile:             *keepFile,
 		RemoveFile:           *removeFile,
+		GenoR2:               *genoR2,
+		HapR2:                *hapR2,
+		GenoR2Positions:      *genoR2Positions,
+		HapR2Positions:       *hapR2Positions,
+		LDWindow:             *ldWindow,
+		LDWindowBp:           *ldWindowBp,
+		LDWindowMin:          *ldWindowMin,
+		LDWindowBpMin:        *ldWindowBpMin,
+		MinR2:                *minR2,
 	}
 
 	// Run vcftools

@@ -76,22 +76,25 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--TsTv` - Ts/Tv in bins
 - ✅ `--site-pi` - Nucleotide diversity per site
 
+### Linkage Disequilibrium
+
+- ✅ `--geno-r2` - Genotype-based LD (r²) → `<prefix>.geno.ld`
+- ✅ `--hap-r2` - Haplotype-based LD (r²) for phased data → `<prefix>.hap.ld`
+- ✅ `--geno-r2-positions FILE` - Restrict --geno-r2 to pairs touching a listed position
+- ✅ `--hap-r2-positions FILE` - Restrict --hap-r2 to pairs touching a listed position
+- ✅ `--ld-window INT` - Maximum number of SNPs between LD pairs
+- ✅ `--ld-window-bp INT` - Maximum bp distance between LD pairs
+- ✅ `--ld-window-min INT` - Minimum number of SNPs between LD pairs
+- ✅ `--ld-window-bp-min INT` - Minimum bp distance between LD pairs
+- ✅ `--min-r2 FLOAT` - Minimum r² threshold for output
+
 ## Missing Features (❌)
 
 ### High Priority Features (commonly used)
 
 #### Linkage Disequilibrium Analysis
 
-- ❌ `--hap-r2` - Haplotype-based LD (r²)
-- ❌ `--geno-r2` - Genotype-based LD (r²)
 - ❌ `--geno-chisq` - Genotype chi-square test
-- ❌ `--hap-r2-positions` - LD for specific positions
-- ❌ `--geno-r2-positions` - LD for specific positions
-- ❌ `--ld-window` - LD window size (SNPs)
-- ❌ `--ld-window-bp` - LD window size (bp)
-- ❌ `--ld-window-bp-min` - Minimum LD window (bp)
-- ❌ `--ld-window-min` - Minimum LD window (SNPs)
-- ❌ `--min-r2` - Minimum r² threshold
 - ❌ `--interchrom-hap-r2` - Inter-chromosomal haplotype LD
 - ❌ `--interchrom-geno-r2` - Inter-chromosomal genotype LD
 

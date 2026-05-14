@@ -25,7 +25,8 @@ This document outlines planned features and enhancements for the vcftools Go imp
 
 ### Recognised but **not implemented** (return an error)
 
-- All LD analysis (`--geno-r2`, `--hap-r2`, ...) and many other upstream options
+- Inter-chromosomal LD (`--interchrom-geno-r2`, `--interchrom-hap-r2`),
+  `--geno-chisq`, and many other upstream options
 
 Test coverage of the `vcftools` package is ~51% of statements; the `cmd/`
 entry point has no tests.
@@ -36,13 +37,24 @@ entry point has no tests.
 
 ### Linkage Disequilibrium Analysis
 
-- [ ] `--geno-r2` - Genotype-based LD (r²) calculation
-- [ ] `--geno-r2-positions` - LD for specific positions vs all others
-- [ ] `--ld-window` - Window size in number of SNPs
-- [ ] `--ld-window-bp` - Window size in base pairs
-- [ ] `--min-r2` - Minimum r² threshold for output
-- [ ] `--hap-r2` - Haplotype-based LD (for phased data)
-- [ ] `--hap-r2-positions` - Haplotype LD for specific positions
+- [x] `--geno-r2` - Genotype-based LD (r²) calculation
+- [x] `--geno-r2-positions` - LD for specific positions vs all others
+- [x] `--ld-window` - Window size in number of SNPs
+- [x] `--ld-window-bp` - Window size in base pairs
+- [x] `--ld-window-min` - Minimum SNP distance between LD pairs
+- [x] `--ld-window-bp-min` - Minimum bp distance between LD pairs
+- [x] `--min-r2` - Minimum r² threshold for output
+- [x] `--hap-r2` - Haplotype-based LD (for phased data)
+- [x] `--hap-r2-positions` - Haplotype LD for specific positions
+
+*Implemented in this PR* (vcftools: linkage disequilibrium analysis). Writes
+`<prefix>.geno.ld` (`CHR POS1 POS2 N_INDV R^2`) and `<prefix>.hap.ld`
+(`CHR POS1 POS2 N_CHR R^2 D Dprime`). Pairs are restricted to the same
+chromosome; multi-allelic sites use only the first ALT; `--hap-r2` requires
+phased GTs. Upstream byte-for-byte parity hasn't been validated yet — see the
+follow-up issue.
+
+Still missing: `--interchrom-geno-r2`, `--interchrom-hap-r2`, `--geno-chisq`.
 
 **Priority:** HIGH  
 **Estimated Effort:** 2-3 weeks  
