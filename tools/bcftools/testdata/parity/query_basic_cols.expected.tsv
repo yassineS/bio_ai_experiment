@@ -1,0 +1,6 @@
+chr1	100	A	T
+chr1	200	C	G
+chr1	300	GAT	G
+chr1	400	C	T,G
+chr2	50	G	A
+chr2	150	A	<DEL>

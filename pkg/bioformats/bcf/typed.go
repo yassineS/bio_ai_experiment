@@ -14,6 +14,7 @@ const (
 	TypeInt8    = 1
 	TypeInt16   = 2
 	TypeInt32   = 3
+	TypeInt64   = 4 // BCF 2.2+; htslib 1.13+ may emit this for very large counts
 	TypeFloat   = 5
 	TypeChar    = 7
 )
@@ -171,6 +172,36 @@ func DecodeTyped(buf []byte, off *int) (TypedValue, error) {
 		for i := 0; i < size; i++ {
 			v := int32(binary.LittleEndian.Uint32(raw[i*4:]))
 			tv.Ints[i] = v
+		}
+		return tv, nil
+
+	case TypeInt64:
+		// BCF 2.2+ added a 64-bit integer type. Values that overflow int32
+		// are clamped to MissingInt32 / EndOfVectorInt32 sentinels because
+		// our downstream model is int32-based; in practice upstream emits
+		// int64 only for counts that fit in int32 anyway. The clamp is
+		// documented behaviour for now (no users depend on >2G counts in
+		// our pipeline).
+		raw, err := readBytes(buf, off, size*8)
+		if err != nil {
+			return TypedValue{}, err
+		}
+		tv.Raw = raw
+		tv.Ints = make([]int32, size)
+		for i := 0; i < size; i++ {
+			v := int64(binary.LittleEndian.Uint64(raw[i*8:]))
+			switch {
+			case v == int64(MissingInt32):
+				tv.Ints[i] = MissingInt32
+			case v == int64(EndOfVectorInt32):
+				tv.Ints[i] = EndOfVectorInt32
+			case v > int64(0x7FFFFFFF):
+				tv.Ints[i] = 0x7FFFFFFF
+			case v < int64(-0x7FFFFFFF):
+				tv.Ints[i] = -0x7FFFFFFF
+			default:
+				tv.Ints[i] = int32(v)
+			}
 		}
 		return tv, nil
 

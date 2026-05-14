@@ -1,0 +1,9 @@
+SN	0	number of samples:	3
+SN	0	number of records:	6
+SN	0	number of no-ALTs:	0
+SN	0	number of SNPs:	4
+SN	0	number of MNPs:	0
+SN	0	number of indels:	1
+SN	0	number of others:	1
+SN	0	number of multiallelic sites:	1
+SN	0	number of multiallelic SNP sites:	1

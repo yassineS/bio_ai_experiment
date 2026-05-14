@@ -92,6 +92,10 @@ The sickle/skewer parity audit added one build-side fix-on-port:
   (the repo is dormant) and is not part of our Go code. See the [skewer
   section below](#skewer) for the diff.
 
+The bcftools parity audit (this PR) fixed 9 discrepancies, all on our
+side rather than upstream's. They're recorded in
+`tools/PARITY_VALIDATION.md#discrepancies-found-and-fixed-in-this-pr`.
+
 ### Track-only (parity skipped, fix later)
 
 - **skewer adapter matcher: Hamming vs Smith-Waterman.** Upstream's
@@ -102,6 +106,39 @@ The sickle/skewer parity audit added one build-side fix-on-port:
   case05 parity test with a pointer to the [skewer
   section](#skewer-case05). This is a Go-port limitation, not an
   upstream bug.
+
+<a id="bcf-int64"></a>
+
+- **`htslib` BCF type-4 (int64) emission for fields that fit in int32**
+  — htslib 1.13+ optionally writes some FORMAT counters as the BCF
+  `int64` typed descriptor even when the values are well within int32
+  range. The BCF 2.2 spec allows it; in practice it just enlarges
+  records and forces every consumer to add a 64-bit path. Not a bug per
+  se but worth raising with the htslib maintainers about whether the
+  encoder should clamp to int32 when it can. Tracked here so the next
+  port can decide whether to round-trip 64-bit verbatim or downcast on
+  read (we currently downcast — see `pkg/bioformats/bcf/typed.go`).
+
+<a id="bcf-fmt-keys-missing"></a>
+
+- **Our BCF reader drops per-record FORMAT keys on htslib-produced
+  input** — after the int64 and IDX-strip fixes in this PR, the header
+  parses fine but per-record `FmtKeys` come back as
+  `[<resolved>, -1, -1, ...]`: only the first key resolves correctly,
+  the rest decode as `MissingInt32`. This is almost certainly a bug in
+  our `decodeIndiv` (probably mis-counting the dictionary index width
+  for n_sample > 0 when the key entry is itself a typed-int vector,
+  but we haven't bottomed it out). Workaround: use VCF / VCF.gz input.
+
+<a id="bcf-info-order"></a>
+
+- **Our BCF writer does not preserve `InfoOrder` on encode** — the
+  reader-side fix in this PR populates `Variant.InfoOrder` so the VCF
+  writer can preserve key order, but the BCF writer still iterates the
+  map directly. Consequently a VCF→BCF→VCF round-trip shuffles INFO
+  keys. The fix is to teach `bcf.NewWriterFromVCFHeader` /
+  `bcf.Writer.Write` to consult `InfoOrder` in addition to the existing
+  dict-order pass.
 
 ### Non-bugs we considered (closed)
 

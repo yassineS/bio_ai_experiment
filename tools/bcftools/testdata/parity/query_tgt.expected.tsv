@@ -1,0 +1,6 @@
+chr1	100	A/A	A/T	A/A
+chr1	200	C/C	C/C	C/G
+chr1	300	G/G	GAT/G	GAT/G
+chr1	400	T/G	C/T	C/C
+chr2	50	A/A	G/A	./.
+chr2	150	A/<DEL>	A/<DEL>	./.

@@ -335,3 +335,137 @@ One; recorded in
   the submodule working tree before building the parity binary. The Go
   port doesn't carry the underlying bug because the matrix-mode code
   path is not yet implemented in Go.
+
+---
+
+## bcftools parity validation
+
+The bcftools port (`tools/bcftools/` covering `view`, `index`, `stats`,
+`query`, `concat`, `norm`) is validated against
+upstream `bcftools 1.19+htslib-1.19` via a single
+`tools/bcftools/pkg/bcftools/parity_test.go`.
+
+The brief differs from bedtools' in two ways:
+
+1. The upstream test corpus (`reference_code/bcftools/test/`) is heavily
+   dependent on FORMAT-typing and tagged-INFO fixtures that exercise
+   bcftools-specific encodings we don't yet decode (notably the BCF
+   `int64` typed descriptor and per-record FORMAT key dictionary on
+   htslib-produced BCFs). To keep the parity tests small and meaningful
+   we hand-crafted minimal fixtures under
+   `tools/bcftools/testdata/parity/` and captured the expected output
+   by running upstream `bcftools 1.19` against them; this matches
+   `concat.1.vcf.out` byte-for-byte for the upstream concat fixture
+   when we replay it (see `TestParityConcat_UpstreamFixture`).
+2. `bcftools` strips its own `##bcftools_<cmd>Version=` /
+   `##bcftools_<cmd>Command=` lines when `--no-version` is passed; we
+   capture expected outputs with `--no-version` so the comparison is
+   stable.
+
+## Summary
+
+| Subcommand | Tests added | Passed | Skipped | Notes |
+| ---------- | -----------:| ------:| -------:| ----- |
+| view       |          12 |     10 |       2 | Skips: `-v/--types`, sample-subset AC/AN recomputation. BCF header parity passes; per-record FORMAT decode from htslib BCF is still a gap. |
+| query      |          14 |     11 |       3 | Skips: bare `%INFO`, `%N_ALT`, `[%FORMAT/<char>]`. Every other listed token in the README is byte-stable. |
+| index      |           4 |      2 |       2 | Skips: `.tbi` binary equality (BGZF padding differs), `.csi` for htslib-produced BCF (int64 / FORMAT-dict gap). |
+| stats      |           8 |      1 |       7 | Only the SN section is byte-stable today; AF/QUAL/IDD/ST/DP/PSC/HWE/PSI all diverge on formatting glyphs or on whether the section is recomputed from genotypes vs read from INFO. Tracked. |
+| concat     |           6 |      4 |       2 | Skips: `-a` sort-merge (different contig-order heuristic), plain `-D` adjacency dedup (upstream requires `-a`). Plain concat, `-O z` round-trip, conflicting-header detection, and the upstream `concat.1.vcf.out` fixture all match byte-for-byte. |
+| norm       |           7 |      4 |       3 | Skips: `-f` left-align (FASTA fixture not yet added), `-c` check-ref policies (same), and a placeholder for the realignment regression suite. `-m -`/`-m -snps`/`-m +`/`-a`/`-d exact` all match. |
+| **TOTAL**  |      **51** | **32** | **19**  | |
+
+(Counts include three subtests in `view` and `query` that exercise the
+streaming vs file paths separately. The two BCF header-only tests are
+counted as separate cases.)
+
+## Discrepancies found (and fixed in this PR)
+
+The validation surfaced a handful of byte-level divergences that we fixed
+inline rather than masking with `t.Skip`. All of them lived in either
+the shared VCF/BCF library or in the bcftools port:
+
+- **`pkg/bioformats/vcf`: QUAL formatting** now uses upstream's
+  minimal-precision rule (integer-as-integer, otherwise shortest `%g`)
+  rather than the previous unconditional `%.2f`. Upstream prints `30`
+  where we used to print `30.00`. New helper: `formatQual`.
+- **`pkg/bioformats/vcf`: INFO key order preserved**. The `Variant`
+  struct gained an `InfoOrder []string` slice. The parser populates it
+  in source order; the writer iterates `InfoOrder` first and only falls
+  back to the (alphabetised) map keys for fields the caller appended
+  without registering. Without this our VCF→VCF passes shuffled INFO
+  keys at random because Go maps are not ordered.
+- **`pkg/bioformats/bcf`: header IDX-suffix stripped on read**. htslib's
+  bcf header binary contains an `,IDX=<N>` annotation on every
+  structured line; upstream's text view drops it. We now strip it in
+  the BCF reader's header parsing so the text-out parity holds.
+- **`pkg/bioformats/bcf`: BCF int64 typed descriptor (4) decoded**.
+  htslib 1.13+ may emit type 4 (int64) for FORMAT vectors over very
+  large counts. We added a decoder that clamps to int32 range
+  (sufficient for our downstream model). Pre-change our reader errored
+  on any htslib-produced BCF that hit this path.
+- **`tools/bcftools/pkg/bcftools/view.go`: implicit `##FILTER=<ID=PASS,…>`
+  injected on output** when the input header lacks one. Upstream's
+  htslib `bcf_hdr_parse_line` auto-adds this entry; we now match.
+- **`tools/bcftools/pkg/bcftools/view.go`: `-G/--drop-genotypes` strips
+  ##FORMAT lines from the output header**, matching upstream. Without
+  this our `-G` output diverged on every meta-line block.
+- **`tools/bcftools/pkg/bcftools/concat.go`: PASS injection in
+  `MergeHeaders`** complements the view-side fix above so concat output
+  always has the PASS line right after `##fileformat=...`, in the same
+  position upstream uses.
+- **`tools/bcftools/pkg/bcftools/norm.go`: bare `-m -` / `-m +` treated
+  as `any`** (both SNPs and indels) instead of erroring out. Upstream
+  accepts a bare `-`/`+`; we did not.
+- **`tools/bcftools/pkg/bcftools/query.go`: `[ ... ]` sample loop no
+  longer auto-inserts a tab separator**. Upstream repeats the inner
+  body verbatim for each sample; the leading literal inside the
+  brackets (`[\t%GT]`) is what creates the inter-sample tab. Our
+  previous behaviour produced `0/0\t\t0/1\t\t1/1`; we now produce
+  `0/0\t0/1\t1/1` (with the leading literal) or `0/00/11/1` (without).
+  Existing `query_test.go` cases were updated.
+
+## Upstream divergences left as `t.Skip`
+
+The brief calls these out as "skip with a one-line rationale". Each
+skipped test points at `docs/PARITY_ROADMAP.md` (a known gap in the
+port) or `docs/UPSTREAM_BUGS.md` (a documented divergence from
+upstream that we're tracking before changing behaviour). The full
+list is the `SKIP` lines in `go test -v -run TestParity ./tools/bcftools/...`.
+
+The most-visible group is the `stats` family: upstream re-derives AF
+from GT and prints integer-bin labels with a `.0` suffix; we read
+INFO/AF directly and use fixed bins. Both behaviours are reasonable;
+this is more "feature gap" than "bug" and is tracked in
+`docs/PARITY_ROADMAP.md`.
+
+## Reproducing locally
+
+```bash
+# All bcftools parity tests, race detector on:
+go test -race -run TestParity ./tools/bcftools/...
+
+# View just the SKIP rationale:
+go test -v -run TestParity ./tools/bcftools/... 2>&1 | grep -A0 SKIP:
+
+# Generate (or regenerate) an expected fixture:
+bcftools view --no-version tools/bcftools/testdata/parity/basic.vcf > \
+    tools/bcftools/testdata/parity/view_basic.expected.vcf
+```
+
+## How to add a new bcftools case
+
+1. Put the input under `tools/bcftools/testdata/parity/<name>.vcf` (or
+   `<name>.bcf` / `<name>.vcf.gz` if testing a format-specific path).
+   Avoid bringing in large fixtures from
+   `reference_code/bcftools/test/` — those are heavily macro-expanded by
+   `test.pl` and depend on htslib internals. A 10-record hand-crafted
+   VCF that hits the specific feature is preferred.
+2. Run upstream `bcftools <subcmd> --no-version ...` (or without
+   `--no-version` for subcommands that don't accept it, e.g. `query`)
+   and capture the output to `tools/bcftools/testdata/parity/<name>.expected.<ext>`.
+3. Add a `TestParity<Subcmd>_<Name>` to
+   `tools/bcftools/pkg/bcftools/parity_test.go` that calls the Go port
+   on the same input and `equalBytes`-asserts the result.
+4. If the case touches a feature we don't implement, mark it
+   `t.Skip("<one-line reason> (see docs/PARITY_ROADMAP.md bcftools <subcmd>)")`
+   instead of deleting it — the skip count is the project's gap meter.

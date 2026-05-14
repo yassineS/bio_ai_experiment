@@ -154,25 +154,25 @@ func parseTextHeader(text string) (*Header, error) {
 				continue
 			}
 			h.Contigs = append(h.Contigs, entry)
-			h.VCF.MetaInfo = append(h.VCF.MetaInfo, line)
+			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "##INFO="):
 			entry := parseStructured(line[len("##INFO="):])
 			if entry.ID != "" {
 				h.InfoTags = append(h.InfoTags, entry)
 			}
-			h.VCF.MetaInfo = append(h.VCF.MetaInfo, line)
+			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "##FILTER="):
 			entry := parseStructured(line[len("##FILTER="):])
 			if entry.ID != "" && entry.ID != "PASS" {
 				h.InfoTags = append(h.InfoTags, entry)
 			}
-			h.VCF.MetaInfo = append(h.VCF.MetaInfo, line)
+			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "##FORMAT="):
 			entry := parseStructured(line[len("##FORMAT="):])
 			if entry.ID != "" {
 				h.FmtTags = append(h.FmtTags, entry)
 			}
-			h.VCF.MetaInfo = append(h.VCF.MetaInfo, line)
+			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "#CHROM"):
 			fields := strings.Split(line, "\t")
 			if len(fields) > 9 {
@@ -181,11 +181,38 @@ func parseTextHeader(text string) (*Header, error) {
 			}
 		default:
 			if strings.HasPrefix(line, "##") {
-				h.VCF.MetaInfo = append(h.VCF.MetaInfo, line)
+				h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 			}
 		}
 	}
 	return h, nil
+}
+
+// stripIDXAnnotation removes the htslib-private `,IDX=N>` suffix that
+// htslib's bcf_hdr_format adds to ##INFO / ##FILTER / ##FORMAT / ##contig
+// lines when reading a BCF file. The BCF text view emitted by upstream
+// bcftools strips this annotation before printing, so we do the same to
+// match byte-for-byte. Lines without an IDX= attribute pass through
+// unchanged.
+func stripIDXAnnotation(line string) string {
+	// We only need to handle structured lines closed by ">" with a
+	// possible trailing `,IDX=NNN` before the close.
+	end := strings.LastIndexByte(line, '>')
+	if end < 0 {
+		return line
+	}
+	// Find a `,IDX=` that ends at `end`.
+	idx := strings.LastIndex(line[:end], ",IDX=")
+	if idx < 0 {
+		return line
+	}
+	// Verify everything after IDX= up to end is decimal digits.
+	for i := idx + len(",IDX="); i < end; i++ {
+		if line[i] < '0' || line[i] > '9' {
+			return line
+		}
+	}
+	return line[:idx] + line[end:]
 }
 
 // parseStructured extracts the ID, Number, and Type attributes from a VCF
