@@ -139,7 +139,7 @@ PMC7931819).
    bioconda uploads are 2016/2015/2016 respectively. Keep our ports as
    reference/teaching, but don't sink more time into parity tests.
 3. **bedtools is now soft-maintenance** (2.31.1 from Nov 2023, ~30 months
-   stale as of this writing). Our bed* tools are well-positioned to *replace*
+   stale as of this writing). Our `bed*` tools are well-positioned to *replace*
    bedtools rather than mirror it — same input/output, fewer install steps,
    single static binary.
 4. **samtools/bcftools/htslib stay #1** in real-world install volume by a
