@@ -4,11 +4,13 @@ A partial Go reimplementation of vcftools for working with VCF (Variant Call
 Format) files.
 
 > **Scope:** this is **not** a drop-in replacement for upstream vcftools. It
-> implements roughly 50 of vcftools' ~147 options — the commonly used filtering,
-> per-site statistics, basic LD analysis, Weir & Cockerham Fst, and a few
-> format conversions (listed below). Many other options
-> (`--interchrom-geno-r2`, `--diff`, …) are **rejected with an error** rather
-> than silently ignored. See [ROADMAP.md](ROADMAP.md) and
+> implements roughly 70 of vcftools' ~147 options — the commonly used filtering,
+> per-site statistics, basic and inter-chromosomal LD analysis, chi-square LD
+> tests, Weir & Cockerham Fst, KING / Yang relatedness, runs of homozygosity,
+> phased-block reporting, INFO-tag extraction, and a few format conversions
+> (listed below). Many other options (`--mendel`, `--ldhat`, `--IMPUTE`, full
+> `--diff` extensions …) are **rejected with an error** rather than silently
+> ignored. See [ROADMAP.md](ROADMAP.md) and
 > [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md).
 
 ## Overview
@@ -123,12 +125,54 @@ vcftools --vcf phased.vcf --hap-r2 --min-r2 0.5 --out hapld
 Upstream byte-for-byte parity hasn't been validated yet; see the follow-up
 issue in `ROADMAP.md`.
 
+#### Inter-chromosomal LD and chi-square
+
+- `--interchrom-geno-r2` → `<prefix>.interchrom.geno.ld`
+  (columns: `CHR1 POS1 CHR2 POS2 N_INDV R^2`). Buffers all kept variants in
+  memory and emits every cross-chromosome pair.
+- `--interchrom-hap-r2` → `<prefix>.interchrom.hap.ld`
+  (columns: `CHR1 POS1 CHR2 POS2 N_CHR R^2 D Dprime`).
+- `--geno-chisq` → `<prefix>.geno.chisq`
+  (columns: `CHR1 POS1 CHR2 POS2 N_INDV CHI^2 DF P-VALUE`). Pearson
+  chi-square test of association on the 3×3 contingency table of diploid
+  ALT counts, with degrees of freedom restricted to non-empty rows/columns.
+  P-values via the regularised upper incomplete gamma function.
+
+### Relatedness and runs of homozygosity
+
+- `--relatedness` → `<prefix>.relatedness`
+  (columns: `INDV1 INDV2 RELATEDNESS_AJK`). Yang et al. 2010 unadjusted
+  per-pair A_jk estimator averaged over biallelic SNPs.
+- `--relatedness2` → `<prefix>.relatedness2`
+  (columns: `INDV1 INDV2 N_AaAa N_AAaa N1_Aa N2_Aa RELATEDNESS_PHI`).
+  KING-robust kinship coefficient (Manichaikul et al. 2010).
+- `--LROH` → `<prefix>.LROH`
+  (columns: `CHROM AUTO_START AUTO_END N_VARIANTS INDV`). Contiguous runs
+  of homozygous (`0/0` or `1/1`) diploid genotypes per individual. Default
+  minimum run length is 10 variants; override with `--LROH-min-variants N`.
+- `--phased-blocks` → `<prefix>.blocks`
+  (columns: `CHROM BLOCK_START BLOCK_END N_VARIANTS INDV`). Per-individual
+  contiguous runs of phased (`a|b`) diploid genotypes; runs shorter than
+  two variants are not emitted.
+
+### FILTER / INFO selection
+
+- `--remove-filtered NAME[,NAME...]` — drop sites listing any of the named
+  FILTERs. Composes with `--remove-filtered-all`.
+- `--keep-filtered NAME[,NAME...]` — keep only sites listing at least one
+  named FILTER (sites with `PASS` or `.` are dropped).
+- `--keep-INFO TAG` and `--remove-INFO TAG` — restrict / strip INFO tags in
+  `--recode` output. Both are repeatable on the command line.
+- `--get-INFO TAG[,TAG...]` → `<prefix>.INFO`
+  (columns: `CHROM POS REF ALT TAG1 TAG2 ...`). Missing values emit `.`.
+
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): inter-chromosomal LD
-(`--interchrom-geno-r2`, `--interchrom-hap-r2`), `--geno-chisq`, and many
-other upstream options. See `ROADMAP.md`.
+accepted them and produced nothing): `--mendel`, `--ldhat`, `--ldhat-geno`,
+`--ldhelmet`, `--IMPUTE`, the extended `--diff-discordance-matrix` /
+`--diff-switch-error` / `--diff-indv-map` family, `--pca`, and a long tail
+of less-used upstream options. See `ROADMAP.md`.
 
 ### Format Support
 

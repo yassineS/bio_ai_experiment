@@ -144,6 +144,51 @@ type Params struct {
 	// Both are biallelic-SNP only.
 	BEAGLEGL bool
 	BEAGLEPL bool
+
+	// Inter-chromosomal LD outputs. InterchromGenoR2 and InterchromHapR2
+	// emit `<prefix>.interchrom.geno.ld` / `<prefix>.interchrom.hap.ld`
+	// (only cross-chromosome pairs). GenoChiSq emits `<prefix>.geno.chisq`
+	// (per-pair Pearson chi-square test across all pairs, same- and
+	// cross-chromosome).
+	InterchromGenoR2 bool
+	InterchromHapR2  bool
+	GenoChiSq        bool
+
+	// Relatedness statistics. Relatedness enables <prefix>.relatedness
+	// (Yang 2010 unadjusted A_jk). Relatedness2 enables
+	// <prefix>.relatedness2 (KING-robust kinship; Manichaikul 2010).
+	Relatedness  bool
+	Relatedness2 bool
+
+	// PhasedBlocks enables <prefix>.blocks reporting per-individual
+	// contiguous runs of phased ("a|b") diploid genotypes.
+	PhasedBlocks bool
+
+	// Runs of homozygosity. LROH enables <prefix>.LROH. LROHMinVariants is
+	// the minimum number of consecutive homozygous variants for a run to
+	// be emitted (default 10 when LROH is true and the value is zero).
+	LROH            bool
+	LROHMinVariants int
+
+	// Filter-name include/exclude (operate on the FILTER column). Both are
+	// comma-separated lists. RemoveFiltered drops sites whose FILTER lists
+	// any of the named tags; KeepFiltered keeps only sites that list at
+	// least one of the named tags.
+	RemoveFiltered string
+	KeepFiltered   string
+
+	// INFO tag selection for --recode output. Both are comma-separated lists
+	// applied during recoding only. KeepINFO restricts the output INFO map
+	// to the listed tags; RemoveINFO strips the listed tags. (--recode-INFO-all
+	// already preserves everything; --keep-INFO and --remove-INFO compose
+	// after it.)
+	KeepINFO   string
+	RemoveINFO string
+
+	// --get-INFO TAG[,TAG]... extracts the named INFO tags as a TSV file
+	// <prefix>.INFO with columns CHROM POS REF ALT <tags...>. The flag is
+	// comma-separated; the upstream CLI accepts the same value-style.
+	GetINFO string
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -278,6 +323,56 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// Inter-chromosomal LD / chi-square buffer (all-pairs after streaming).
+	var interLD *interchromLDRunner
+	if params.InterchromGenoR2 || params.InterchromHapR2 || params.GenoChiSq {
+		interLD, err = newInterchromLDRunner(params)
+		if err != nil {
+			return fmt.Errorf("initialising interchrom LD: %w", err)
+		}
+	}
+
+	// --relatedness accumulator.
+	var rel *relatednessRunner
+	if params.Relatedness {
+		rel = newRelatednessRunner(filteredHeader.Samples)
+	}
+
+	// --relatedness2 accumulator.
+	var rel2 *relatedness2Runner
+	if params.Relatedness2 {
+		rel2 = newRelatedness2Runner(filteredHeader.Samples)
+	}
+
+	// --LROH runner.
+	var lroh *lrohRunner
+	if params.LROH {
+		lroh = newLROHRunner(filteredHeader.Samples, params.LROHMinVariants)
+	}
+
+	// --phased-blocks runner.
+	var phasedBlocks *phasedBlockRunner
+	if params.PhasedBlocks {
+		phasedBlocks = newPhasedBlockRunner(filteredHeader.Samples)
+	}
+
+	// --get-INFO writer.
+	var getInfo *getInfoRunner
+	if params.GetINFO != "" {
+		tags := splitCSV(params.GetINFO)
+		getInfo, err = newGetInfoRunner(params.OutPrefix, tags)
+		if err != nil {
+			return fmt.Errorf("initialising --get-INFO: %w", err)
+		}
+	}
+
+	// Pre-parse filter-name sets and INFO-tag sets so we don't re-tokenise
+	// every line in the hot path.
+	removeFilteredSet := parseFilterList(params.RemoveFiltered)
+	keepFilteredSet := parseFilterList(params.KeepFiltered)
+	keepInfoSet := parseInfoTagList(params.KeepINFO)
+	removeInfoSet := parseInfoTagList(params.RemoveINFO)
+
 	// Set up output writer for recode
 	var recodeWriter *vcf.Writer
 	if params.Recode {
@@ -329,6 +424,17 @@ func Run(input io.Reader, params *Params) error {
 			continue
 		}
 
+		// --remove-filtered <names>: drop sites listing any of the named
+		// FILTERs. --keep-filtered <names>: keep only sites listing at
+		// least one of the named FILTERs. Both compose with
+		// --remove-filtered-all (which is the union of all non-PASS sites).
+		if !passRemoveFilteredNames(variant, removeFilteredSet) {
+			continue
+		}
+		if !passKeepFilteredNames(variant, keepFilteredSet) {
+			continue
+		}
+
 		// Filter samples
 		filteredVariant := filterVariantSamples(variant, keepSamples)
 
@@ -362,6 +468,36 @@ func Run(input io.Reader, params *Params) error {
 			}
 		}
 
+		// Inter-chromosomal LD: buffer for end-of-stream pair emission.
+		if interLD != nil {
+			interLD.addVariant(filteredVariant)
+		}
+
+		// Per-variant relatedness contribution.
+		if rel != nil {
+			rel.addVariant(filteredVariant)
+		}
+		if rel2 != nil {
+			rel2.addVariant(filteredVariant)
+		}
+
+		// Per-variant LROH state update.
+		if lroh != nil {
+			lroh.addVariant(filteredVariant)
+		}
+
+		// Per-variant phased-block state update.
+		if phasedBlocks != nil {
+			phasedBlocks.addVariant(filteredVariant)
+		}
+
+		// Per-variant INFO extraction (--get-INFO).
+		if getInfo != nil {
+			if err := getInfo.addVariant(filteredVariant); err != nil {
+				return fmt.Errorf("writing --get-INFO output: %w", err)
+			}
+		}
+
 		// Collect variants for format conversions
 		if params.Output012 || params.OutputPlink || params.OutputPlinkTped {
 			allVariants = append(allVariants, filteredVariant)
@@ -369,28 +505,31 @@ func Run(input io.Reader, params *Params) error {
 
 		// Write to output if recoding
 		if params.Recode {
-			if params.RecodeInfoAll {
-				// Keep all INFO fields
-				if err := recodeWriter.Write(filteredVariant); err != nil {
-					return fmt.Errorf("writing variant: %w", err)
-				}
-			} else {
-				// Keep only essential INFO fields
-				filtered := &vcf.Variant{
-					Chrom:   filteredVariant.Chrom,
-					Pos:     filteredVariant.Pos,
-					ID:      filteredVariant.ID,
-					Ref:     filteredVariant.Ref,
-					Alt:     filteredVariant.Alt,
-					Qual:    filteredVariant.Qual,
-					Filter:  filteredVariant.Filter,
-					Info:    make(map[string]string),
-					Format:  filteredVariant.Format,
-					Samples: filteredVariant.Samples,
-				}
-				if err := recodeWriter.Write(filtered); err != nil {
-					return fmt.Errorf("writing variant: %w", err)
-				}
+			var outInfo map[string]string
+			switch {
+			case len(keepInfoSet) > 0 || len(removeInfoSet) > 0:
+				// --keep-INFO / --remove-INFO compose with --recode-INFO-all:
+				// start from the full INFO map and project.
+				outInfo = filterRecodeInfo(filteredVariant.Info, keepInfoSet, removeInfoSet)
+			case params.RecodeInfoAll:
+				outInfo = filteredVariant.Info
+			default:
+				outInfo = make(map[string]string)
+			}
+			outVariant := &vcf.Variant{
+				Chrom:   filteredVariant.Chrom,
+				Pos:     filteredVariant.Pos,
+				ID:      filteredVariant.ID,
+				Ref:     filteredVariant.Ref,
+				Alt:     filteredVariant.Alt,
+				Qual:    filteredVariant.Qual,
+				Filter:  filteredVariant.Filter,
+				Info:    outInfo,
+				Format:  filteredVariant.Format,
+				Samples: filteredVariant.Samples,
+			}
+			if err := recodeWriter.Write(outVariant); err != nil {
+				return fmt.Errorf("writing variant: %w", err)
 			}
 		}
 
@@ -436,7 +575,65 @@ func Run(input io.Reader, params *Params) error {
 		return fmt.Errorf("closing --BEAGLE-PL output: %w", err)
 	}
 
+	// Inter-chromosomal LD requires all sites in memory; emit pairs now.
+	if interLD != nil {
+		if err := interLD.flush(); err != nil {
+			return fmt.Errorf("flushing interchrom LD: %w", err)
+		}
+		if err := interLD.close(); err != nil {
+			return fmt.Errorf("closing interchrom LD output: %w", err)
+		}
+	}
+
+	// Relatedness output.
+	if rel != nil {
+		if err := rel.writeOutput(params.OutPrefix); err != nil {
+			return fmt.Errorf("writing --relatedness output: %w", err)
+		}
+	}
+	if rel2 != nil {
+		if err := rel2.writeOutput(params.OutPrefix); err != nil {
+			return fmt.Errorf("writing --relatedness2 output: %w", err)
+		}
+	}
+
+	// LROH output.
+	if lroh != nil {
+		if err := lroh.writeOutput(params.OutPrefix); err != nil {
+			return fmt.Errorf("writing --LROH output: %w", err)
+		}
+	}
+
+	// Phased blocks output.
+	if phasedBlocks != nil {
+		if err := phasedBlocks.writeOutput(params.OutPrefix); err != nil {
+			return fmt.Errorf("writing --phased-blocks output: %w", err)
+		}
+	}
+
+	// --get-INFO output.
+	if err := getInfo.close(); err != nil {
+		return fmt.Errorf("closing --get-INFO output: %w", err)
+	}
+
 	return nil
+}
+
+// splitCSV splits a comma-separated string into trimmed non-empty tokens, in
+// order. Used for --get-INFO and similar list-valued flags.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // beagleGLMode and beaglePLMode are tiny helpers so we don't need to expose

@@ -216,8 +216,7 @@ Remaining gaps:
   `--IMPUTE`, `--phase` output paths.
 - **Haplotype analyses**: `--haploid` (`--phased-blocks` done).
 - **Per-individual output**: `--missing-per-ind` (we have `--missing-indv`
-  but the per-individual `.imiss` row layout has fields we don't
-  emit).
+  but the per-individual `.imiss` row layout has fields we don't emit).
 - **Other**: `--FILTER-PASS-summary`, `--remove-INFO-all` (use
   `--keep-INFO`/`--remove-INFO`), `--non-ref-af*` family, `--pca` family.
 

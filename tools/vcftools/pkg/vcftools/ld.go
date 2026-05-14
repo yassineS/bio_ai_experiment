@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
@@ -506,6 +507,316 @@ func (r *ldRunner) close() error {
 		firstErr = err
 	}
 	if err := r.hapW.close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// computeGenoChiSq returns (nIndv, chi2, df, pValue, ok) for a 3×3 contingency
+// table of diploid allele-count combinations (g_A in {0,1,2} × g_B in {0,1,2})
+// across samples that are non-missing at both sites.
+//
+// We use Pearson's chi-square test of association on the 3×3 table. The
+// degrees of freedom is (rows-1)*(cols-1) restricted to row/column categories
+// that actually occur in the data: this matches upstream behaviour for the
+// `--geno-chisq` output where monomorphic columns/rows aren't counted toward
+// df. Expected counts are computed from the marginal totals.
+//
+// ok is false when n<2, or when df==0 (one of the sites is monomorphic across
+// the shared samples, so no association can be tested).
+//
+// The p-value uses the regularised upper incomplete gamma function for the
+// chi-square distribution with df degrees of freedom.
+func computeGenoChiSq(a, b *ldSite) (n int, chi2 float64, df int, pValue float64, ok bool) {
+	if len(a.genoCounts) != len(b.genoCounts) {
+		return 0, 0, 0, 0, false
+	}
+	var table [3][3]int
+	for i := range a.genoCounts {
+		ga := a.genoCounts[i]
+		gb := b.genoCounts[i]
+		if ga < 0 || gb < 0 {
+			continue
+		}
+		if ga > 2 || gb > 2 {
+			// Defensive: extractLDSite caps at 2.
+			continue
+		}
+		table[ga][gb]++
+		n++
+	}
+	if n < 2 {
+		return n, 0, 0, 0, false
+	}
+	var rowTot [3]int
+	var colTot [3]int
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			rowTot[i] += table[i][j]
+			colTot[j] += table[i][j]
+		}
+	}
+	// Count non-empty rows and columns: degrees of freedom = (R-1)*(C-1).
+	rows, cols := 0, 0
+	for i := 0; i < 3; i++ {
+		if rowTot[i] > 0 {
+			rows++
+		}
+		if colTot[i] > 0 {
+			cols++
+		}
+	}
+	if rows < 2 || cols < 2 {
+		return n, 0, 0, 0, false
+	}
+	df = (rows - 1) * (cols - 1)
+	fn := float64(n)
+	for i := 0; i < 3; i++ {
+		if rowTot[i] == 0 {
+			continue
+		}
+		for j := 0; j < 3; j++ {
+			if colTot[j] == 0 {
+				continue
+			}
+			expected := float64(rowTot[i]) * float64(colTot[j]) / fn
+			if expected <= 0 {
+				continue
+			}
+			diff := float64(table[i][j]) - expected
+			chi2 += diff * diff / expected
+		}
+	}
+	pValue = chiSquareSurvival(chi2, df)
+	return n, chi2, df, pValue, true
+}
+
+// chiSquareSurvival returns P(X >= x) for X ~ chi-square(df). df > 0, x >= 0.
+// Implemented via the regularised upper incomplete gamma function
+// Q(df/2, x/2). Returns 1.0 for x<=0 and 0.0 for df<=0 (defensive).
+func chiSquareSurvival(x float64, df int) float64 {
+	if df <= 0 {
+		return 0
+	}
+	if x <= 0 {
+		return 1
+	}
+	return regUpperGamma(float64(df)/2.0, x/2.0)
+}
+
+// regUpperGamma returns Q(s, x) = 1 - P(s, x) where P is the regularised
+// lower incomplete gamma function. s>0, x>=0. Uses a series expansion for
+// x < s+1 and a continued-fraction expansion otherwise, following Numerical
+// Recipes §6.2.
+func regUpperGamma(s, x float64) float64 {
+	if x < 0 || s <= 0 {
+		return math.NaN()
+	}
+	if x == 0 {
+		return 1
+	}
+	if x < s+1 {
+		return 1 - regLowerSeries(s, x)
+	}
+	return regUpperContFrac(s, x)
+}
+
+func regLowerSeries(s, x float64) float64 {
+	// P(s,x) = e^(-x) * x^s / Γ(s+1) * Σ x^n / (s+1)(s+2)...(s+n)  (n=0..)
+	gln, _ := math.Lgamma(s)
+	ap := s
+	sum := 1.0 / s
+	del := sum
+	for i := 1; i < 1000; i++ {
+		ap++
+		del *= x / ap
+		sum += del
+		if math.Abs(del) < math.Abs(sum)*1e-15 {
+			break
+		}
+	}
+	return sum * math.Exp(-x+s*math.Log(x)-gln)
+}
+
+func regUpperContFrac(s, x float64) float64 {
+	// Q(s,x) via Lentz's algorithm on the continued fraction
+	//   1/(x+1-s - 1·(1-s)/(x+3-s - 2·(2-s)/(x+5-s - ...)))
+	gln, _ := math.Lgamma(s)
+	fpmin := 1e-300
+	b := x + 1 - s
+	c := 1 / fpmin
+	d := 1 / b
+	h := d
+	for i := 1; i < 1000; i++ {
+		fi := float64(i)
+		an := -fi * (fi - s)
+		b += 2
+		d = an*d + b
+		if math.Abs(d) < fpmin {
+			d = fpmin
+		}
+		c = b + an/c
+		if math.Abs(c) < fpmin {
+			c = fpmin
+		}
+		d = 1 / d
+		del := d * c
+		h *= del
+		if math.Abs(del-1) < 1e-15 {
+			break
+		}
+	}
+	return math.Exp(-x+s*math.Log(x)-gln) * h
+}
+
+// interchromLDRunner buffers all per-chromosome sites for --interchrom-geno-r2
+// / --interchrom-hap-r2. Because pairs cross chromosomes, we can't stream:
+// upstream batches per-chrom and at end emits all (chrI, chrJ) pairs with
+// I != J. We follow the same approach but limit the output to one row per
+// distinct unordered pair.
+type interchromLDRunner struct {
+	params *Params
+
+	wantGeno    bool
+	wantHap     bool
+	wantChiSq   bool
+	genoW       *ldWriter
+	hapW        *ldWriter
+	chiSqW      *ldWriter
+	sites       []*ldSite
+	chromOrder  []string
+	siteByChrom map[string][]*ldSite
+}
+
+// newInterchromLDRunner allocates output writers as requested.
+func newInterchromLDRunner(params *Params) (*interchromLDRunner, error) {
+	r := &interchromLDRunner{
+		params:      params,
+		wantGeno:    params.InterchromGenoR2,
+		wantHap:     params.InterchromHapR2,
+		wantChiSq:   params.GenoChiSq,
+		siteByChrom: make(map[string][]*ldSite),
+	}
+	if r.wantGeno {
+		w, err := newLDWriter(params.OutPrefix+".interchrom.geno.ld",
+			"CHR1\tPOS1\tCHR2\tPOS2\tN_INDV\tR^2\n")
+		if err != nil {
+			return nil, err
+		}
+		r.genoW = w
+	}
+	if r.wantHap {
+		w, err := newLDWriter(params.OutPrefix+".interchrom.hap.ld",
+			"CHR1\tPOS1\tCHR2\tPOS2\tN_CHR\tR^2\tD\tDprime\n")
+		if err != nil {
+			_ = r.genoW.close()
+			return nil, err
+		}
+		r.hapW = w
+	}
+	if r.wantChiSq {
+		w, err := newLDWriter(params.OutPrefix+".geno.chisq",
+			"CHR1\tPOS1\tCHR2\tPOS2\tN_INDV\tCHI^2\tDF\tP-VALUE\n")
+		if err != nil {
+			_ = r.genoW.close()
+			_ = r.hapW.close()
+			return nil, err
+		}
+		r.chiSqW = w
+	}
+	return r, nil
+}
+
+// addVariant buffers a variant for later pairwise computation.
+func (r *interchromLDRunner) addVariant(v *vcf.Variant) {
+	if r == nil || (!r.wantGeno && !r.wantHap && !r.wantChiSq) {
+		return
+	}
+	site, ok := extractLDSite(v)
+	if !ok {
+		return
+	}
+	if _, seen := r.siteByChrom[site.chrom]; !seen {
+		r.chromOrder = append(r.chromOrder, site.chrom)
+	}
+	r.siteByChrom[site.chrom] = append(r.siteByChrom[site.chrom], site)
+}
+
+// flush emits all interchromosomal pairs and, when --geno-chisq is set,
+// emits chi-square for every (cross-chrom AND same-chrom) pair, matching
+// upstream's all-pairs behaviour for --geno-chisq.
+func (r *interchromLDRunner) flush() error {
+	if r == nil || (!r.wantGeno && !r.wantHap && !r.wantChiSq) {
+		return nil
+	}
+	// Inter-chromosomal pairs (cross-chrom).
+	for i := 0; i < len(r.chromOrder); i++ {
+		for j := i + 1; j < len(r.chromOrder); j++ {
+			ci := r.chromOrder[i]
+			cj := r.chromOrder[j]
+			for _, a := range r.siteByChrom[ci] {
+				for _, b := range r.siteByChrom[cj] {
+					r.emitPair(a, b)
+				}
+			}
+		}
+	}
+	// Same-chrom pairs for --geno-chisq only. For the interchrom-* outputs
+	// upstream emits only cross-chromosome pairs.
+	if r.wantChiSq {
+		for _, chr := range r.chromOrder {
+			sites := r.siteByChrom[chr]
+			for i := 0; i < len(sites); i++ {
+				for j := i + 1; j < len(sites); j++ {
+					r.emitChiSqPair(sites[i], sites[j])
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (r *interchromLDRunner) emitPair(a, b *ldSite) {
+	if r.wantGeno {
+		n, r2, ok := computeGenoR2(a, b)
+		if ok && r2 >= r.params.MinR2 {
+			r.genoW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%g\n",
+				a.chrom, a.pos, b.chrom, b.pos, n, r2))
+		}
+	}
+	if r.wantHap {
+		n, r2, D, Dp, ok := computeHapR2(a, b)
+		if ok && r2 >= r.params.MinR2 {
+			r.hapW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%g\t%g\t%g\n",
+				a.chrom, a.pos, b.chrom, b.pos, n, r2, D, Dp))
+		}
+	}
+	if r.wantChiSq {
+		r.emitChiSqPair(a, b)
+	}
+}
+
+func (r *interchromLDRunner) emitChiSqPair(a, b *ldSite) {
+	n, chi2, df, p, ok := computeGenoChiSq(a, b)
+	if !ok {
+		return
+	}
+	r.chiSqW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%g\t%d\t%g\n",
+		a.chrom, a.pos, b.chrom, b.pos, n, chi2, df, p))
+}
+
+func (r *interchromLDRunner) close() error {
+	if r == nil {
+		return nil
+	}
+	var firstErr error
+	if err := r.genoW.close(); err != nil {
+		firstErr = err
+	}
+	if err := r.hapW.close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := r.chiSqW.close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr

@@ -5,8 +5,8 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 ## Summary
 
 - **Original vcftools**: ~147 command-line options
-- **Go implementation**: ~35 command-line options
-- **Coverage**: ~24% of total options, but ~80% of commonly used features
+- **Go implementation**: ~70 command-line options (after long-tail wave 1)
+- **Coverage**: ~48% of total options, ~85% of commonly used features
 
 ## Implemented Features (✅)
 
@@ -103,15 +103,34 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--ld-window-bp-min INT` - Minimum bp distance between LD pairs
 - ✅ `--min-r2 FLOAT` - Minimum r² threshold for output
 
+### Inter-chromosomal LD + Chi-square
+
+- ✅ `--interchrom-geno-r2` - Inter-chromosomal genotype LD → `<prefix>.interchrom.geno.ld`
+- ✅ `--interchrom-hap-r2` - Inter-chromosomal haplotype LD → `<prefix>.interchrom.hap.ld`
+- ✅ `--geno-chisq` - Per-pair Pearson chi-square test → `<prefix>.geno.chisq`
+
+### Relatedness & Homozygosity
+
+- ✅ `--relatedness` - Yang 2010 unadjusted A_jk → `<prefix>.relatedness`
+- ✅ `--relatedness2` - KING-robust kinship → `<prefix>.relatedness2`
+- ✅ `--LROH` - Runs of homozygosity per individual → `<prefix>.LROH`
+- ✅ `--phased-blocks` - Per-individual phased-haplotype blocks → `<prefix>.blocks`
+
+### FILTER / INFO Selection
+
+- ✅ `--remove-filtered NAME[,NAME...]` - Drop sites listing any named FILTER
+- ✅ `--keep-filtered NAME[,NAME...]` - Keep only sites listing any named FILTER
+- ✅ `--keep-INFO TAG` (repeatable / comma-separated)
+- ✅ `--remove-INFO TAG` (repeatable / comma-separated)
+- ✅ `--get-INFO TAG[,TAG...]` - Extract INFO tags to `<prefix>.INFO`
+
 ## Missing Features (❌)
 
 ### High Priority Features (commonly used)
 
 #### Linkage Disequilibrium Analysis
 
-- ❌ `--geno-chisq` - Genotype chi-square test
-- ❌ `--interchrom-hap-r2` - Inter-chromosomal haplotype LD
-- ❌ `--interchrom-geno-r2` - Inter-chromosomal genotype LD
+(All `--geno-chisq`, `--interchrom-*-r2` now implemented; see above.)
 
 #### Population Genetics Statistics
 
@@ -166,11 +185,11 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--invert-mask` - Inverted mask filtering
 - ❌ `--mask-min` - Mask minimum threshold
 - ❌ `--thin` - Thin sites by distance
-- ❌ `--keep-filtered` - Keep specific FILTER flags
-- ❌ `--remove-filtered` - Remove specific FILTER flags
-- ❌ `--keep-INFO` - Keep sites with INFO flag
-- ❌ `--remove-INFO` - Remove sites with INFO flag
-- ❌ `--keep-INFO-all` - Keep all INFO fields
+- ✅ `--keep-filtered NAME[,NAME...]` - Keep specific FILTER flags
+- ✅ `--remove-filtered NAME[,NAME...]` - Remove specific FILTER flags
+- ✅ `--keep-INFO TAG` - Keep sites with INFO flag (recoded output)
+- ✅ `--remove-INFO TAG` - Strip INFO flag from recoded output
+- ❌ `--keep-INFO-all` - Keep all INFO fields (use `--recode-INFO-all`)
 
 #### Genotype-Level Filtering
 
@@ -211,21 +230,22 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 #### Haplotype/Phase Analysis
 
 - ❌ `--phased` - Work with phased data only
-- ❌ `--LROH` - Runs of homozygosity
+- ✅ `--LROH` - Runs of homozygosity → `<prefix>.LROH`
+- ✅ `--phased-blocks` - Per-individual phased-haplotype blocks → `<prefix>.blocks`
 
 #### Advanced Analysis
 
-- ❌ `--relatedness` - Relatedness analysis
-- ❌ `--relatedness2` - Alternative relatedness
+- ✅ `--relatedness` - Relatedness analysis (Yang 2010)
+- ✅ `--relatedness2` - KING-robust kinship
 - ❌ `--pca` - Principal component analysis
 - ❌ `--pca-no-norm` - PCA without normalization
 - ❌ `--pca-snp-loadings` - PCA SNP loadings
 
 #### Format Info Extraction
 
-- ❌ `--get-INFO` - Extract INFO field values
+- ✅ `--get-INFO TAG[,TAG...]` - Extract INFO field values → `<prefix>.INFO`
 - ❌ `--extract-FORMAT-info` - Extract FORMAT field values
-- ❌ `--recode-INFO` - Recode with specific INFO fields
+- ✅ `--recode-INFO` - Recode with specific INFO fields (via `--keep-INFO TAG`)
 
 #### Output Management
 
