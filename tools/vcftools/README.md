@@ -4,9 +4,10 @@ A partial Go reimplementation of vcftools for working with VCF (Variant Call
 Format) files.
 
 > **Scope:** this is **not** a drop-in replacement for upstream vcftools. It
-> implements roughly 40 of vcftools' ~147 options — the commonly used filtering,
-> per-site statistics, and a few format conversions (listed below). Options that
-> are not implemented (LD analysis, Fst, ...) are **rejected with an error** rather
+> implements roughly 50 of vcftools' ~147 options — the commonly used filtering,
+> per-site statistics, basic LD analysis, Weir & Cockerham Fst, and a few
+> format conversions (listed below). Many other options
+> (`--interchrom-geno-r2`, `--diff`, …) are **rejected with an error** rather
 > than silently ignored. See [ROADMAP.md](ROADMAP.md) and
 > [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md).
 
@@ -57,11 +58,46 @@ incorrect quantity for `--site-pi` and silently ignored `--TajimaD`.)
 
 - `--012` (0/1/2 genotype matrix), `--plink` (PED/MAP), `--plink-tped` (TPED/TFAM), with `--chrom-map`
 
+### Linkage Disequilibrium
+
+Genotype-based (`--geno-r2`) and haplotype-based (`--hap-r2`) pairwise LD
+between sites on the same chromosome. Window size, minimum distance, and an
+r² threshold can all be configured.
+
+Flags:
+
+- `--geno-r2` → `<prefix>.geno.ld` (columns: `CHR POS1 POS2 N_INDV R^2`).
+  Uses per-sample diploid allele counts `g_i ∈ {0,1,2}` over individuals
+  non-missing at both sites; multi-allelic sites use only the first ALT.
+- `--hap-r2` → `<prefix>.hap.ld` (columns: `CHR POS1 POS2 N_CHR R^2 D Dprime`).
+  Requires phased GTs (`a|b`); unphased samples are skipped.
+- `--geno-r2-positions FILE`, `--hap-r2-positions FILE` — only emit pairs
+  where at least one endpoint is listed in `FILE` (tab-separated `chrom pos`).
+- `--ld-window INT`, `--ld-window-bp INT` — maximum SNP and bp distance
+  between paired sites (default: unbounded).
+- `--ld-window-min INT`, `--ld-window-bp-min INT` — minimum SNP and bp
+  distance (default 0).
+- `--min-r2 FLOAT` — drop pairs below this r².
+
+Examples:
+
+```bash
+# Genotype-based LD within 1 kb windows.
+vcftools --vcf input.vcf --geno-r2 --ld-window-bp 1000 --out ld
+
+# Haplotype-based LD (phased data) keeping only strong LD.
+vcftools --vcf phased.vcf --hap-r2 --min-r2 0.5 --out hapld
+```
+
+Upstream byte-for-byte parity hasn't been validated yet; see the follow-up
+issue in `ROADMAP.md`.
+
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): all LD analysis
-(`--geno-r2`, `--hap-r2`, ...).
+accepted them and produced nothing): inter-chromosomal LD
+(`--interchrom-geno-r2`, `--interchrom-hap-r2`), `--geno-chisq`, and many
+other upstream options. See `ROADMAP.md`.
 
 ### Format Support
 
