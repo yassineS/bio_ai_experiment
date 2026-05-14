@@ -37,6 +37,8 @@ Position Filtering:
   --to-bp INT           Include positions <= this value
   --positions FILE      Include positions listed in file
   --exclude-positions FILE  Exclude positions listed in file
+  --bed FILE            Keep only sites inside any interval in BED FILE
+  --exclude-bed FILE    Remove sites inside any interval in BED FILE
 
 Variant Type Filtering:
   --keep-only-indels    Keep only indel sites
@@ -99,6 +101,15 @@ Format Conversion:
   --plink               Output PLINK PED/MAP files
   --plink-tped          Output PLINK TPED/TFAM files
   --chrom-map FILE      Chromosome-name-to-integer map for PLINK output
+  --BEAGLE-GL           Output <prefix>.BEAGLE.GL (log10 GL from PL)
+  --BEAGLE-PL           Output <prefix>.BEAGLE.PL (raw PL triplets)
+
+VCF Comparison (--diff family):
+  --diff FILE              Compare against a second VCF file
+  --diff-site              Emit <prefix>.diff.sites_in_files
+  --diff-indv              Emit <prefix>.diff.indv_in_files
+  --diff-site-discordance  Emit <prefix>.diff.sites
+  --diff-indv-discordance  Emit <prefix>.diff.indv
 
 Linkage Disequilibrium:
   --geno-r2             Genotype-based LD r^2 within a window (.geno.ld)
@@ -249,6 +260,21 @@ func main() {
 	outputPlinkTped := flag.Bool("plink-tped", false, "Output PLINK TPED/TFAM format")
 	chromMap := flag.String("chrom-map", "", "Chromosome name to integer mapping file")
 
+	// BED-based filtering
+	bedFile := flag.String("bed", "", "Keep only sites whose POS lies inside any interval in this BED file")
+	excludeBedFile := flag.String("exclude-bed", "", "Remove sites whose POS lies inside any interval in this BED file")
+
+	// VCF comparison (--diff family)
+	diffFile := flag.String("diff", "", "Second VCF file to compare against")
+	diffSite := flag.Bool("diff-site", false, "Emit <prefix>.diff.sites_in_files")
+	diffIndv := flag.Bool("diff-indv", false, "Emit <prefix>.diff.indv_in_files")
+	diffSiteDiscord := flag.Bool("diff-site-discordance", false, "Emit <prefix>.diff.sites with site-by-site discordance")
+	diffIndvDiscord := flag.Bool("diff-indv-discordance", false, "Emit <prefix>.diff.indv with per-individual discordance")
+
+	// BEAGLE genotype-likelihood output
+	beagleGL := flag.Bool("BEAGLE-GL", false, "Emit <prefix>.BEAGLE.GL (log10 GL triplets from PL)")
+	beaglePL := flag.Bool("BEAGLE-PL", false, "Emit <prefix>.BEAGLE.PL (raw PL triplets)")
+
 	// Sample filtering
 	var indvList, removeIndvList []string
 	flag.Func("indv", "Include individual (can use multiple times)", func(s string) error {
@@ -391,6 +417,15 @@ func main() {
 		LDWindowMin:          *ldWindowMin,
 		LDWindowBpMin:        *ldWindowBpMin,
 		MinR2:                *minR2,
+		Bed:                  *bedFile,
+		ExcludeBed:           *excludeBedFile,
+		Diff:                 *diffFile,
+		DiffSite:             *diffSite,
+		DiffIndv:             *diffIndv,
+		DiffSiteDiscordance:  *diffSiteDiscord,
+		DiffIndvDiscordance:  *diffIndvDiscord,
+		BEAGLEGL:             *beagleGL,
+		BEAGLEPL:             *beaglePL,
 	}
 
 	// Run vcftools

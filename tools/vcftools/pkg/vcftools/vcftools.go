@@ -123,6 +123,27 @@ type Params struct {
 	LDWindowMin     int
 	LDWindowBpMin   int
 	MinR2           float64
+
+	// BED-based site filtering. Bed keeps only sites whose 1-based POS lies
+	// inside any interval (0-based half-open) in the file. ExcludeBed is the
+	// inverse. Both compose with other position/quality filters.
+	Bed        string
+	ExcludeBed string
+
+	// VCF comparison (--diff family). Diff names the second VCF to compare
+	// against; the boolean flags request individual output files. See
+	// diff.go for the column layout of each output.
+	Diff                string
+	DiffSite            bool
+	DiffIndv            bool
+	DiffSiteDiscordance bool
+	DiffIndvDiscordance bool
+
+	// BEAGLE genotype-likelihood output. BEAGLEGL writes log10-scale GL
+	// triplets derived from FORMAT/PL; BEAGLEPL writes the raw PL triplets.
+	// Both are biallelic-SNP only.
+	BEAGLEGL bool
+	BEAGLEPL bool
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -155,6 +176,23 @@ func Run(input io.Reader, params *Params) error {
 		excludePositions, err = loadPositions(params.ExcludePositionsFile)
 		if err != nil {
 			return fmt.Errorf("loading exclude positions file: %w", err)
+		}
+	}
+
+	// Load BED-based filters (--bed / --exclude-bed). Both are optional;
+	// supplying both composes them (a site must pass include AND not be
+	// excluded).
+	var includeBed, excludeBed *bedRegions
+	if params.Bed != "" {
+		includeBed, err = loadBedRegions(params.Bed)
+		if err != nil {
+			return fmt.Errorf("loading --bed file: %w", err)
+		}
+	}
+	if params.ExcludeBed != "" {
+		excludeBed, err = loadBedRegions(params.ExcludeBed)
+		if err != nil {
+			return fmt.Errorf("loading --exclude-bed file: %w", err)
 		}
 	}
 
@@ -217,6 +255,29 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// Initialise --diff runner (no-op when --diff isn't set or no diff
+	// sub-output is requested).
+	diffRun, err := newDiffRunner(params, filteredHeader.Samples)
+	if err != nil {
+		return fmt.Errorf("initialising --diff analysis: %w", err)
+	}
+
+	// Initialise BEAGLE output writers. They're created lazily here so a
+	// failure to open the file surfaces before we stream any variants.
+	var beagleGL, beaglePL *beagleWriter
+	if params.BEAGLEGL {
+		beagleGL, err = newBEAGLEWriter(params.OutPrefix, beagleGLMode())
+		if err != nil {
+			return fmt.Errorf("initialising --BEAGLE-GL: %w", err)
+		}
+	}
+	if params.BEAGLEPL {
+		beaglePL, err = newBEAGLEWriter(params.OutPrefix, beaglePLMode())
+		if err != nil {
+			return fmt.Errorf("initialising --BEAGLE-PL: %w", err)
+		}
+	}
+
 	// Set up output writer for recode
 	var recodeWriter *vcf.Writer
 	if params.Recode {
@@ -264,7 +325,7 @@ func Run(input io.Reader, params *Params) error {
 		}
 
 		// Apply filters
-		if !passFilters(variant, params, includePositions, excludePositions, includeSNPs, excludeSNPs) {
+		if !passFilters(variant, params, includePositions, excludePositions, includeSNPs, excludeSNPs, includeBed, excludeBed) {
 			continue
 		}
 
@@ -280,6 +341,25 @@ func Run(input io.Reader, params *Params) error {
 		// Feed LD runner (writes pairwise output incrementally).
 		if ldRun != nil {
 			ldRun.addVariant(filteredVariant)
+		}
+
+		// Feed --diff runner.
+		if diffRun != nil {
+			if err := diffRun.addVariant(filteredVariant); err != nil {
+				return fmt.Errorf("writing diff output: %w", err)
+			}
+		}
+
+		// Emit BEAGLE rows (header is emitted lazily on the first call).
+		if beagleGL != nil {
+			if err := beagleGL.write(filteredVariant, filteredHeader.Samples); err != nil {
+				return fmt.Errorf("writing BEAGLE-GL output: %w", err)
+			}
+		}
+		if beaglePL != nil {
+			if err := beaglePL.write(filteredVariant, filteredHeader.Samples); err != nil {
+				return fmt.Errorf("writing BEAGLE-PL output: %w", err)
+			}
 		}
 
 		// Collect variants for format conversions
@@ -342,11 +422,30 @@ func Run(input io.Reader, params *Params) error {
 		return fmt.Errorf("closing LD output: %w", err)
 	}
 
+	// Flush --diff outputs (also emits file-2-only sites and per-individual
+	// reports).
+	if err := diffRun.close(); err != nil {
+		return fmt.Errorf("closing --diff output: %w", err)
+	}
+
+	// Flush BEAGLE outputs.
+	if err := beagleGL.close(); err != nil {
+		return fmt.Errorf("closing --BEAGLE-GL output: %w", err)
+	}
+	if err := beaglePL.close(); err != nil {
+		return fmt.Errorf("closing --BEAGLE-PL output: %w", err)
+	}
+
 	return nil
 }
 
+// beagleGLMode and beaglePLMode are tiny helpers so we don't need to expose
+// the unexported beagleMode constants outside the package.
+func beagleGLMode() beagleMode { return beagleGL }
+func beaglePLMode() beagleMode { return beaglePL }
+
 // passFilters checks if a variant passes all filters
-func passFilters(v *vcf.Variant, params *Params, includePos, excludePos positionSet, includeSNPs, excludeSNPs map[string]bool) bool {
+func passFilters(v *vcf.Variant, params *Params, includePos, excludePos positionSet, includeSNPs, excludeSNPs map[string]bool, includeBed, excludeBed *bedRegions) bool {
 	// SNP ID filters
 	if includeSNPs != nil && len(includeSNPs) > 0 {
 		if !includeSNPs[v.ID] {
@@ -388,6 +487,20 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 			if chromPos[v.Pos] {
 				return false
 			}
+		}
+	}
+
+	// BED-based include/exclude. Sites must be inside any --bed interval and
+	// must not be inside any --exclude-bed interval. Each is independent of
+	// the other (no implicit subtraction).
+	if includeBed != nil {
+		if !includeBed.containsVCFPos(v.Chrom, v.Pos) {
+			return false
+		}
+	}
+	if excludeBed != nil {
+		if excludeBed.containsVCFPos(v.Chrom, v.Pos) {
+			return false
 		}
 	}
 
