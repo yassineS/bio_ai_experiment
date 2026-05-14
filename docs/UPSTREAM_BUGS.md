@@ -77,8 +77,38 @@ warrant a closer look:_
 
 ### Fix-on-port (resolved)
 
-_None yet. PR #55 (bedtools parity) fixed 7 discrepancies but those were
-in our Go code, not upstream._
+_None yet from upstream — the bedtools and samtools parity audits to date
+have surfaced bugs in our Go code (recorded in
+[tools/PARITY_VALIDATION.md](../tools/PARITY_VALIDATION.md)) rather than
+in upstream._
+
+The samtools parity audit (this PR) surfaced three bugs **in our Go
+port** (not upstream). Kept here for traceability — they are not upstream
+bugs, but they are exactly the class of finding the parity rig is meant
+to catch:
+
+- **samtools sort `-n` / `-N` CLI mapping inverted.** Upstream's `-n` is
+  natural numeric name sort (the default for name-sort) and `-N` is plain
+  lexicographic; we had it reversed. Fixed by swapping the CLI binding in
+  `tools/samtools/cmd/samtools/main.go` (the library API
+  `SortByName` / `SortByNameNatural` was already correct). Surfaced by
+  comparing record ordering against
+  `reference_code/samtools/test/sort/name.sort.expected.sam`.
+
+- **samtools sort missing `SS:queryname:*` sub-sort tag.** Upstream
+  writes `SS:queryname:natural` or `SS:queryname:lexicographical` on the
+  `@HD` line so downstream tooling can recognise the sub-form. Our
+  `stampSortOrder` in `tools/samtools/pkg/samtools/sort.go` only stamped
+  the `SO` field; added the `SS` field too. Surfaced by the first-line
+  diff in `TestParity_Sort_T01_Coordinate`.
+
+- **samtools fastq pair-suffix not auto-dropped in `-1/-2` mode.**
+  Upstream `bam_fastq.c` sets `has12 = false` whenever `-1` or `-2` is
+  given because the separate file names already disambiguate mate
+  identity; we were unconditionally appending `/1`/`/2`. Fixed in
+  `Fastq` in `tools/samtools/pkg/samtools/fastq.go`; `-N` still forces
+  the suffix. Surfaced by every `TestParity_Fastq_T0*` byte-equal
+  failing against `bam2fq/1.1.fq.expected`.
 
 The sickle/skewer parity audit added one build-side fix-on-port:
 
