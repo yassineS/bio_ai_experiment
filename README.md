@@ -63,22 +63,33 @@ The main objectives of this repository are to use AI agents to:
   "Partial".
 - **Document AI Agent Utility**: Track and document the effectiveness (or lack thereof) of coding agents in this process
 
-## Repository Structure
+## Repository structure
 
-```
+Single Go module at the root (`github.com/yassineS/bio_ai_experiment`); no
+per-tool `go.mod`, no third-party Go dependencies. Reference upstream sources
+are vendored as git submodules under `reference_code/` for parity work.
+
+```text
 bio_ai_experiment/
-├── .github/
-│   └── agents/          # Agent configuration files
-├── tools/               # Directory for recoded tools
-│   └── [tool-name]/
-│       ├── src/         # Go source code
-│       ├── tests/       # Unit tests
-│       ├── testdata/    # Test data
-│       └── docs/        # Tool-specific documentation
-├── analysis/            # Tool analysis and findings
-├── mcp-servers/         # MCP server implementations
-└── docs/                # General documentation
-
+├── go.mod                 # single root module
+├── pkg/                   # shared libraries
+│   ├── bioformats/        # fasta, fastq, vcf, bed, sam, bcf, iohelper
+│   └── cliflag/           # POSIX short + GNU long flag helpers
+├── tools/                 # tool ports, one subdir per tool
+│   ├── PORTING_STATUS.md  # per-tool feature status
+│   ├── PARITY_VALIDATION.md  # byte-for-byte audit results
+│   └── <tool>/
+│       ├── cmd/<tool>/main.go     # CLI entry
+│       ├── pkg/<tool>/            # logic + tests
+│       └── README.md
+├── docs/
+│   ├── PARITY_ROADMAP.md      # authoritative gap list
+│   ├── UPSTREAM_BUGS.md       # bugs in originals we do not carry
+│   ├── CLI_CONVENTIONS.md     # CLI rules
+│   └── archive/               # historical Phase 0/1 docs
+├── analysis/                  # tool ranking + research
+├── reference_code/            # upstream sources as submodules (parity work)
+└── .github/agents/            # AI-agent role descriptions
 ```
 
 ## Getting Started
@@ -136,142 +147,80 @@ The bioformats library provides reusable parsers for common file formats:
 go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
 ```
 
-## Current Status
+## Current status
 
-### ✅ Completed
+**No port in this repo is at 1:1 feature parity yet.** Every tool below has
+a *working subset* of upstream functionality; the authoritative gap list is
+[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md), and upstream bugs we
+identify but choose not to carry over are tracked in
+[`docs/UPSTREAM_BUGS.md`](docs/UPSTREAM_BUGS.md).
 
-**Shared Libraries:**
+### Shared libraries (`pkg/`)
 
-- FASTA format parser/writer with validation and utilities
-- FASTQ format parser/writer with Phred33/64 support
-- VCF format parser/writer with genotype methods
-- BED format parser/writer with interval operations
-- **cliflag** library for consistent CLI flag handling (short and long options)
+- `pkg/bioformats/{fasta,fastq,vcf,bed,sam,bcf,iohelper}` — parsers, writers,
+  and a transparent gzip/BGZF I/O helper (BGZF auto-detected via the
+  `BC` extra-subfield magic).
+- `pkg/cliflag` — POSIX short + GNU long flag wiring on a standard
+  `flag.FlagSet`.
 
-**Tools:**
+### Tools ported (working subset; not 1:1)
 
-- **seqtk v1.0.0** - Complete reimplementation
-  - comp, fq2fa, seq -r, sample, trimfq commands
-  - 85.7% test coverage, all tests passing
-  - Performance comparable to original C version
-  - Zero external dependencies
-  - **New**: Consistent CLI with both short and long option flags
+23 tool ports as of 2026-05-14. See [`tools/README.md`](tools/README.md) and
+[`tools/PORTING_STATUS.md`](tools/PORTING_STATUS.md) for the per-tool table
+with statement-coverage numbers and feature notes; see
+[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) for the per-tool gap list
+against upstream.
 
-- **prinseq v1.0.0** - Core functionality implemented
-  - Statistics calculation (reads, bases, lengths, GC, N content, quality)
-  - Multi-criteria filtering (length, GC, N content, quality)
-  - 90.2% test coverage, all tests passing
-  - 20-26% faster than original Perl version
-  - Zero external dependencies
-  - Consistent CLI with both short and long option flags
+Highlights:
 
-**Documentation:**
+- **htslib core** (May 2026): `bgzip`, `tabix`, `samtools`
+  (view/sort/index/depth/fastq/flagstat/mpileup), `bcftools`
+  (view/index/stats/query/concat/norm/call), `mosdepth`.
+- **bedtools subset**: `bedmerge`, `bedintersect`, `bedsort`, `bedslop`,
+  `bedcomplement`, `bedsubtract`, `bedflank`, `bedclosest`, `bedgenomecov`,
+  `bedjaccard`, `bedgroupby`, `bed12tobed6`, `bedmakewindows`.
+- **Sequence preprocessing**: `seqtk`, `fastp`, `prinseq`, `sickle`,
+  `skewer`.
+- **VCF**: `vcftools` (~60 of ~147 options).
 
-- Comprehensive Go implementation guide
-- Bioformats library documentation
-- Tool analysis and comparisons (seqtk, prinseq)
-- Best practices and patterns
+### Validated parity against upstream test suites
 
-### 📋 In Progress
+Where we've run the upstream regression tests against our binaries and
+diffed the output, the pass rates are:
 
-- Additional seqtk commands
-- PRINSEQ trimming and duplicate removal
-- Compressed file support (gzip)
-- Performance benchmarking suite
+| Audit | PR | Tests | Pass | Skip | Bugs fixed in our code |
+|-------|----|------:|-----:|-----:|-----------------------:|
+| bedtools (10 subcmds) | #55 | 127 | 85 | 42 | 7 |
+| sickle + skewer | #73 | 27 | 22 | 3 | 3 |
+| samtools (6 subcmds) | #75 | 43 | 34 | 9 | 3 |
+| bcftools (6 subcmds) | #74 | 52 | 32 | 20 | 9 |
+| mosdepth + vcftools | #76 | 65 | 50 | 15 | 9 |
+| **Total** |  | **314** | **223** | **89** | **31** |
 
-See [docs/GO_IMPLEMENTATION_SUMMARY.md](docs/GO_IMPLEMENTATION_SUMMARY.md) for detailed status.
+The 89 documented `t.Skip()`s are all unimplemented features, each
+cross-referenced to `docs/PARITY_ROADMAP.md`. The 31 bug fixes were real
+divergences between our ports and upstream surfaced by the audits and
+corrected on the way (see each PR for details).
 
-## Available Tools
+`prinseq`, `seqtk`, and `fastp` have **not yet** been parity-validated; the
+common-path tests pass but 1:1 byte-equivalence with upstream is untested.
 
-### seqtk - FASTA/Q Sequence Processor
+### CI
 
-Fast and efficient sequence processing tool with consistent CLI flags.
-
-```bash
-cd tools/seqtk
-go build ./cmd/seqtk
-
-# Get statistics
-./seqtk comp sequences.fasta
-
-# Convert FASTQ to FASTA (short options)
-./seqtk fq2fa reads.fastq > reads.fasta
-
-# Convert FASTQ to FASTA (long options)
-./seqtk fq2fa --output reads.fasta reads.fastq
-
-# Reverse complement
-./seqtk seq -r sequences.fasta > rev_comp.fasta
-./seqtk seq --reverse sequences.fasta > rev_comp.fasta
-
-# Sample 10% of reads
-./seqtk sample reads.fastq 0.1 > sample.fastq
-
-# Trim low-quality bases
-./seqtk trimfq -q 20 reads.fastq > trimmed.fastq
-./seqtk trimfq --quality 20 reads.fastq > trimmed.fastq
-```
-
-See [tools/seqtk/README.md](tools/seqtk/README.md) for complete documentation.
-
-### prinseq - Sequence Quality Control
-
-Sequence quality control and preprocessing tool.
-
-```bash
-cd tools/prinseq
-go build ./cmd/prinseq
-
-# Get statistics
-./prinseq stats -fastq reads.fastq
-
-# Filter by length
-./prinseq filter -fastq reads.fastq -min_len 100 > filtered.fastq
-
-# Filter by GC content
-./prinseq filter -fastq reads.fastq -min_gc 40 -max_gc 60 > filtered.fastq
-
-# Filter by quality
-./prinseq filter -fastq reads.fastq -min_qual_mean 20 > filtered.fastq
-
-# Combined filters
-./prinseq filter -fastq reads.fastq \
-  -min_len 100 \
-  -min_gc 40 \
-  -max_gc 60 \
-  -min_qual_mean 20 \
-  -ns_max_p 5 \
-  -out_good filtered.fastq
-```
-
-See [tools/prinseq/README.md](tools/prinseq/README.md) for complete documentation.
+The CI workflow is currently disabled (manual-only via `workflow_dispatch`).
+Contributors run `gofmt -l`, `go vet`, `go test -race -cover`, `go build`,
+and `markdownlint` locally and document the output in each PR description.
 
 ## Documentation
 
-- [Go Implementation Guide](docs/GOLANG_GUIDE.md) - Best practices and patterns
-- [Bioformats Library](pkg/bioformats/README.md) - Format parser documentation
-- [Implementation Summary](docs/GO_IMPLEMENTATION_SUMMARY.md) - Project overview and metrics
-- [Tool Analyses](docs/tools/) - Detailed tool comparisons
-
-## Project Structure
-
-```
-bio_ai_experiment/
-├── pkg/bioformats/      # Shared format libraries
-│   ├── fasta/          # FASTA parser/writer
-│   ├── fastq/          # FASTQ parser/writer
-│   ├── vcf/            # VCF parser/writer
-│   └── bed/            # BED parser/writer
-├── tools/              # Go tool implementations
-│   └── seqtk/         # First reference implementation
-├── docs/               # Documentation
-│   ├── GOLANG_GUIDE.md
-│   ├── GO_IMPLEMENTATION_SUMMARY.md
-│   └── tools/         # Tool analyses
-├── analysis/           # Analysis scripts and data
-├── reference_code/     # Original tool repositories
-└── mcp-servers/        # MCP server implementations
-```
+- [`tools/README.md`](tools/README.md) — per-tool table + quick start
+- [`tools/PORTING_STATUS.md`](tools/PORTING_STATUS.md) — feature status + coverage per tool
+- [`tools/PARITY_VALIDATION.md`](tools/PARITY_VALIDATION.md) — byte-for-byte audit results vs upstream
+- [`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) — authoritative gap list
+- [`docs/UPSTREAM_BUGS.md`](docs/UPSTREAM_BUGS.md) — bugs in upstream we deliberately do not carry
+- [`docs/CLI_CONVENTIONS.md`](docs/CLI_CONVENTIONS.md) — CLI flag rules (POSIX short + GNU long)
+- [`docs/GOLANG_GUIDE.md`](docs/GOLANG_GUIDE.md) — Go best practices used here
+- [`analysis/tool_ranking_2026.md`](analysis/tool_ranking_2026.md) — ranking for *next* tools to port
 
 ## Contributing
 
@@ -310,10 +259,6 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - The bioinformatics community for creating the original tools
 - AI/LLM technologies that make this experiment possible
 - All contributors to this project
-
-## Project Status
-
-This is an active experimental project. Progress and findings will be documented regularly.
 
 ## Contact
 
