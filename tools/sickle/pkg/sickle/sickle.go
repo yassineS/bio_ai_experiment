@@ -68,8 +68,9 @@ func TrimSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEnco
 			record = recalibrateRecord(record, encoding)
 		}
 
-		// Apply trimming
-		trimmed := trimRecord(record, opts)
+		// Apply trimming (upstream-faithful sliding window; needs the
+		// encoding so the Phred offset is right for sanger vs illumina).
+		trimmed := trimRecord(record, opts, encoding)
 
 		// Check if read passes length threshold
 		if len(trimmed.Sequence) >= opts.LengthThreshold {
@@ -149,9 +150,9 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 			record2 = recalibrateRecord(record2, encoding)
 		}
 
-		// Trim both reads
-		trimmed1 := trimRecord(record1, opts)
-		trimmed2 := trimRecord(record2, opts)
+		// Trim both reads (upstream-faithful sliding window).
+		trimmed1 := trimRecord(record1, opts, encoding)
+		trimmed2 := trimRecord(record2, opts, encoding)
 
 		pass1 := len(trimmed1.Sequence) >= opts.LengthThreshold
 		pass2 := len(trimmed2.Sequence) >= opts.LengthThreshold
@@ -231,49 +232,47 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 	return stats, nil
 }
 
-// trimRecord applies quality-based trimming to a FASTQ record.
-func trimRecord(record *fastq.Record, opts TrimOptions) *fastq.Record {
+// qualityOffset returns the ASCII offset (Q = ASCII byte - offset) for the
+// given fastq.QualityEncoding. Upstream sickle interprets quality bytes as
+// decoded integer Phred values, so the offset must match its per-encoding
+// table exactly: 33 for sanger, 64 for illumina/solexa.
+func qualityOffset(enc fastq.QualityEncoding) int {
+	if enc == fastq.Phred64 {
+		return 64
+	}
+	return 33
+}
+
+// trimRecord applies upstream-sickle-faithful sliding-window quality trimming
+// to a FASTQ record. The algorithm mirrors reference_code/sickle/src/sliding.c:
+//
+//  1. Window size = int(0.1 * len(seq)); if that's 0 (read < 10 bp) use the
+//     full read length. Callers may override by setting opts.WindowSize > 0
+//     (this is a Go-port extension — upstream has no -w flag).
+//  2. Walk the window left-to-right. Per position:
+//     a. If no 5' cut yet and the window's *average* decoded quality is
+//     >= QualThreshold, set five_prime_cut to the first index within the
+//     window whose decoded quality is >= QualThreshold.
+//     b. If a 5' cut has been found (or NoFivePrime is set) AND either the
+//     window's average drops below threshold OR the window now extends
+//     past the read end, set three_prime_cut to the first index within
+//     the window whose decoded quality is < threshold, then break.
+//  3. If TruncateN is set and seq contains an N (case-insensitive), override
+//     three_prime_cut with the index of that first N (upstream's
+//     `strstr(seq, "N") || strstr(seq, "n")` does this unconditionally
+//     *after* the sliding pass).
+//  4. If no 5' cut was found (and NoFivePrime is off) OR
+//     three_prime_cut - five_prime_cut < LengthThreshold, the read is
+//     discarded — represented here by returning an empty sequence so the
+//     calling loop can drop it (matches upstream's three_prime_cut = -1
+//     sentinel).
+//
+// qualityEnc selects the ASCII offset for decoding qual bytes (33 vs 64).
+func trimRecord(record *fastq.Record, opts TrimOptions, qualityEnc fastq.QualityEncoding) *fastq.Record {
 	seq := record.Sequence
 	qual := record.Quality
 
-	if len(seq) == 0 {
-		return record
-	}
-
-	start := 0
-	end := len(seq)
-
-	// Truncate at first N if requested
-	if opts.TruncateN {
-		for i, base := range seq {
-			if base == 'N' || base == 'n' {
-				end = i
-				break
-			}
-		}
-		if end == 0 {
-			// Entire sequence is N or starts with N
-			return &fastq.Record{
-				ID:          record.ID,
-				Description: record.Description,
-				Sequence:    []byte{},
-				Quality:     []byte{},
-			}
-		}
-	}
-
-	// Trim 5' end (left side) unless disabled
-	if !opts.NoFivePrime {
-		start = trim5Prime(string(qual), opts.QualThreshold, opts.WindowSize, end)
-	}
-
-	// Trim 3' end (right side)
-	if start < end {
-		end = trim3Prime(string(qual), opts.QualThreshold, opts.WindowSize, start, end)
-	}
-
-	// Return trimmed record
-	if start >= end || end <= 0 {
+	emptyOut := func() *fastq.Record {
 		return &fastq.Record{
 			ID:          record.ID,
 			Description: record.Description,
@@ -282,109 +281,113 @@ func trimRecord(record *fastq.Record, opts TrimOptions) *fastq.Record {
 		}
 	}
 
+	if len(seq) == 0 {
+		return emptyOut()
+	}
+
+	// Upstream discards reads shorter than the length threshold up front.
+	if len(seq) < opts.LengthThreshold {
+		return emptyOut()
+	}
+
+	offset := qualityOffset(qualityEnc)
+
+	// Resolve the sliding-window size. Upstream uses int(0.1*L), falling
+	// back to L when that would be 0. A positive opts.WindowSize overrides
+	// (Go-port extension).
+	windowSize := opts.WindowSize
+	if windowSize <= 0 {
+		windowSize = int(0.1 * float64(len(seq)))
+		if windowSize == 0 {
+			windowSize = len(seq)
+		}
+	}
+	if windowSize > len(seq) {
+		windowSize = len(seq)
+	}
+
+	threshold := opts.QualThreshold
+	threePrimeCut := len(seq)
+	fivePrimeCut := 0
+	foundFivePrime := false
+
+	// Seed the window.
+	windowTotal := 0
+	for i := 0; i < windowSize; i++ {
+		windowTotal += int(qual[i]) - offset
+	}
+
+	windowStart := 0
+	endLoop := len(qual) - windowSize
+	for i := 0; i <= endLoop; i++ {
+		windowAvg := float64(windowTotal) / float64(windowSize)
+
+		// 5' cut: first window whose average >= threshold.
+		if !opts.NoFivePrime && !foundFivePrime && windowAvg >= float64(threshold) {
+			for j := windowStart; j < windowStart+windowSize && j < len(qual); j++ {
+				if int(qual[j])-offset >= threshold {
+					fivePrimeCut = j
+					break
+				}
+			}
+			foundFivePrime = true
+		}
+
+		// 3' cut: window average dipped below threshold, OR we've reached
+		// the last window — but only after the 5' cut is settled (or
+		// 5'-trimming is disabled).
+		if (windowAvg < float64(threshold) || windowStart+windowSize > len(qual)) && (foundFivePrime || opts.NoFivePrime) {
+			for j := windowStart; j < windowStart+windowSize && j < len(qual); j++ {
+				if int(qual[j])-offset < threshold {
+					threePrimeCut = j
+					break
+				}
+			}
+			break
+		}
+
+		// Slide one position: subtract the byte leaving the window, add
+		// the byte entering it (if one exists).
+		windowTotal -= int(qual[windowStart]) - offset
+		if windowStart+windowSize < len(qual) {
+			windowTotal += int(qual[windowStart+windowSize]) - offset
+		}
+		windowStart++
+	}
+
+	// trunc-N override (case-insensitive): if any N appears, force 3' cut
+	// to its position, mirroring upstream's behavior.
+	if opts.TruncateN {
+		for i := 0; i < len(seq); i++ {
+			if seq[i] == 'N' || seq[i] == 'n' {
+				threePrimeCut = i
+				break
+			}
+		}
+	}
+
+	// Discard rules: no 5' cut found (when 5'-trimming is on), or the
+	// kept span is shorter than the length threshold.
+	if (!foundFivePrime && !opts.NoFivePrime) || threePrimeCut-fivePrimeCut < opts.LengthThreshold {
+		return emptyOut()
+	}
+
+	if fivePrimeCut < 0 {
+		fivePrimeCut = 0
+	}
+	if threePrimeCut > len(seq) {
+		threePrimeCut = len(seq)
+	}
+	if fivePrimeCut >= threePrimeCut {
+		return emptyOut()
+	}
+
 	return &fastq.Record{
 		ID:          record.ID,
 		Description: record.Description,
-		Sequence:    seq[start:end],
-		Quality:     qual[start:end],
+		Sequence:    seq[fivePrimeCut:threePrimeCut],
+		Quality:     qual[fivePrimeCut:threePrimeCut],
 	}
-}
-
-// trim5Prime finds the start position by trimming from 5' end.
-// Assumes Phred+33 encoding for quality scores
-func trim5Prime(quality string, threshold, windowSize, maxPos int) int {
-	if len(quality) == 0 || maxPos == 0 {
-		return 0
-	}
-
-	// Convert quality string to scores (Phred+33)
-	scores := make([]int, len(quality))
-	for i := 0; i < len(quality); i++ {
-		scores[i] = int(quality[i]) - 33
-	}
-
-	windowSum := 0
-	window := 0
-
-	// Calculate initial window
-	for i := 0; i < windowSize && i < maxPos && i < len(scores); i++ {
-		windowSum += scores[i]
-		window++
-	}
-
-	// Slide window from left to right
-	for i := 0; i <= maxPos-window; i++ {
-		if window == 0 {
-			break
-		}
-		avgQual := windowSum / window
-		if avgQual >= threshold {
-			return i
-		}
-
-		// Slide window
-		if i+window < maxPos && i+window < len(scores) {
-			windowSum -= scores[i]
-			windowSum += scores[i+window]
-		} else {
-			window--
-		}
-	}
-
-	return 0
-}
-
-// trim3Prime finds the end position by trimming from 3' end.
-// Assumes Phred+33 encoding for quality scores
-func trim3Prime(quality string, threshold, windowSize, minPos, maxPos int) int {
-	if len(quality) == 0 || maxPos <= minPos {
-		return maxPos
-	}
-
-	// Convert quality string to scores (Phred+33)
-	scores := make([]int, len(quality))
-	for i := 0; i < len(quality); i++ {
-		scores[i] = int(quality[i]) - 33
-	}
-
-	windowSum := 0
-	window := 0
-
-	// Calculate initial window from the right
-	startIdx := maxPos - windowSize
-	if startIdx < minPos {
-		startIdx = minPos
-	}
-
-	for i := startIdx; i < maxPos && i < len(scores); i++ {
-		windowSum += scores[i]
-		window++
-	}
-
-	// Slide window from right to left
-	for i := maxPos; i >= minPos+window; i-- {
-		if window == 0 {
-			break
-		}
-		avgQual := windowSum / window
-		if avgQual >= threshold {
-			return i
-		}
-
-		// Slide window
-		if i-1 >= minPos && i-1 < len(scores) {
-			windowSum -= scores[i-1]
-			if i-window-1 >= minPos && i-window-1 < len(scores) {
-				windowSum += scores[i-window-1]
-			} else {
-				window--
-			}
-		} else {
-			break
-		}
-	}
-
-	return maxPos
 }
 
 // recalibrateRecord recalibrates quality scores using empirical base quality score recalibration.

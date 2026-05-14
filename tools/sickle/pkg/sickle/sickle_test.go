@@ -207,8 +207,9 @@ func TestTrimRecordBasic(t *testing.T) {
 
 	opts := DefaultTrimOptions()
 	opts.QualThreshold = 30
+	opts.LengthThreshold = 4 // upstream-faithful trimRecord discards short reads up front
 
-	trimmed := trimRecord(record, opts)
+	trimmed := trimRecord(record, opts, fastq.Phred33)
 
 	// Should trim low quality end
 	if len(trimmed.Sequence) >= len(record.Sequence) {
@@ -221,21 +222,31 @@ func TestTrimRecordBasic(t *testing.T) {
 }
 
 func TestTrimRecordWithNoFivePrime(t *testing.T) {
+	// With NoFivePrime, upstream sickle skips the 5'-cut search and proceeds
+	// straight to the 3'-cut search. If the read starts with low-quality
+	// bases the 3'-cut lands at index 0 and the whole read is discarded —
+	// this is the documented upstream behavior and matches our parity test.
+	// To verify NoFivePrime keeps the 5' end *when* quality there is good,
+	// use a high-Q prefix followed by a low-Q suffix.
 	record := &fastq.Record{
 		ID:       "test",
 		Sequence: []byte("ACGTACGTACGT"),
-		Quality:  []byte("####IIIIIIII"),
+		Quality:  []byte("IIIIIIII####"),
 	}
 
 	opts := DefaultTrimOptions()
 	opts.QualThreshold = 30
+	opts.LengthThreshold = 4
 	opts.NoFivePrime = true
 
-	trimmed := trimRecord(record, opts)
+	trimmed := trimRecord(record, opts, fastq.Phred33)
 
-	// Should not trim 5' end even though quality is low
+	// Should keep the 5' (high-Q) prefix and trim the 3' (low-Q) suffix.
 	if len(trimmed.Sequence) == 0 {
 		t.Error("Sequence was completely trimmed when NoFivePrime was set")
+	}
+	if !strings.HasPrefix(string(trimmed.Sequence), "ACGT") {
+		t.Errorf("expected 5' prefix preserved with NoFivePrime, got %q", trimmed.Sequence)
 	}
 }
 
@@ -247,9 +258,10 @@ func TestTrimRecordWithTruncateN(t *testing.T) {
 	}
 
 	opts := DefaultTrimOptions()
+	opts.LengthThreshold = 4
 	opts.TruncateN = true
 
-	trimmed := trimRecord(record, opts)
+	trimmed := trimRecord(record, opts, fastq.Phred33)
 
 	// Should truncate at first N
 	if strings.Contains(string(trimmed.Sequence), "N") {
@@ -269,8 +281,9 @@ func TestTrimRecordHighQuality(t *testing.T) {
 	}
 
 	opts := DefaultTrimOptions()
+	opts.LengthThreshold = 10
 
-	trimmed := trimRecord(record, opts)
+	trimmed := trimRecord(record, opts, fastq.Phred33)
 
 	// High quality read should not be trimmed
 	if string(trimmed.Sequence) != string(record.Sequence) {
@@ -286,9 +299,10 @@ func TestTrimRecordLowQualityEntire(t *testing.T) {
 	}
 
 	opts := DefaultTrimOptions()
+	opts.LengthThreshold = 4
 	opts.TruncateN = true
 
-	trimmed := trimRecord(record, opts)
+	trimmed := trimRecord(record, opts, fastq.Phred33)
 
 	// Entire sequence is low quality or N, should be empty
 	if len(trimmed.Sequence) != 0 {
@@ -296,33 +310,9 @@ func TestTrimRecordLowQualityEntire(t *testing.T) {
 	}
 }
 
-func TestTrim5Prime(t *testing.T) {
-	// '#' is quality 2, 'I' is quality 40 in Phred+33
-	quality := "####IIIIIIII"
-	threshold := 30
-	windowSize := 3
-
-	start := trim5Prime(quality, threshold, windowSize, len(quality))
-
-	// Should find start position after low quality region
-	if start >= len(quality)-4 {
-		t.Errorf("Expected to find good quality region, got start=%d", start)
-	}
-}
-
-func TestTrim3Prime(t *testing.T) {
-	// '#' is quality 2, 'I' is quality 40 in Phred+33
-	quality := "IIIIIIII####"
-	threshold := 30
-	windowSize := 3
-
-	end := trim3Prime(quality, threshold, windowSize, 0, len(quality))
-
-	// Should find end position before low quality region
-	if end > len(quality)-3 {
-		t.Errorf("Expected to trim low quality region, got end=%d", end)
-	}
-}
+// The old standalone trim5Prime / trim3Prime helpers were removed when
+// trimRecord was rewritten to match upstream sickle. Equivalent behavior is
+// covered by TestTrimRecord* above and by the byte-level parity_test.go.
 
 func TestTrimOptionsDefault(t *testing.T) {
 	opts := DefaultTrimOptions()

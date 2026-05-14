@@ -80,10 +80,99 @@ warrant a closer look:_
 _None yet. PR #55 (bedtools parity) fixed 7 discrepancies but those were
 in our Go code, not upstream._
 
+The sickle/skewer parity audit added one build-side fix-on-port:
+
+- **skewer `src/matrix.h` is not `const`-correct** under modern
+  libstdc++.
+  `ElementComparator::operator()` lacks the trailing `const` that gcc 13's
+  `<bits/stl_tree.h>` `static_assert` now requires for `std::set<>`
+  comparators. We patch the submodule working tree
+  (`bool operator()(...) const`) before building the upstream binary used
+  to generate parity fixtures. The patch is not pushed back to upstream
+  (the repo is dormant) and is not part of our Go code. See the [skewer
+  section below](#skewer) for the diff.
+
 ### Track-only (parity skipped, fix later)
 
-_None yet._
+- **skewer adapter matcher: Hamming vs Smith-Waterman.** Upstream's
+  matcher rejects a 1-mismatch alignment whose mismatch is in the last 4
+  bases of the adapter, even when the overall error rate is within `-r`.
+  Our Go port's `improvedFindAdapter` is plain Hamming distance and
+  accepts the alignment, over-trimming one base. `t.Skip` set on the
+  case05 parity test with a pointer to the [skewer
+  section](#skewer-case05). This is a Go-port limitation, not an
+  upstream bug.
 
 ### Non-bugs we considered (closed)
 
-_None yet._
+The sickle audit found three behaviours that looked like upstream bugs
+but turned out to be documented features:
+
+- **`int(0.1 * read_length)` window sizing.** Looks like a quirky
+  default; turns out to be the only window sizing rule upstream supports
+  (sickle has no `-w` flag) and is described in the project README.
+
+- **Discarding reads when no window reaches threshold.** Looks like an
+  off-by-one in the discard path. Reading `src/sliding.c` confirms it
+  is intentional: `if (found_five_prime == 0 && !no_fiveprime)` flags
+  the read for discard via `three_prime_cut = -1`. Documented in
+  upstream's source comments.
+
+- **Phred-offset per encoding.** Both 33 (sanger) and 64 (illumina /
+  solexa) decoded against their respective offsets via the
+  `quality_constants` table in `src/sickle.h`. Not a bug — our Go port
+  was just decoding all qualities with offset 33 regardless of `-t`. Fixed
+  inline in this PR (see `tools/PARITY_VALIDATION.md > sickle`).
+
+## skewer <a id="skewer"></a>
+
+### skewer compile failure on modern libstdc++
+
+- **Symptom.** Building `reference_code/skewer` with gcc 13 + libstdc++ 13
+  fails with `static_assert failed: 'comparison object must be invocable
+  as const'` in `<bits/stl_tree.h>`, traced back to `src/matrix.h`'s
+  `class ElementComparator` whose `bool operator()(...)` is not
+  `const`-qualified.
+
+- **Root cause.** Modern libstdc++ tightened `std::set<>` to require its
+  `_Compare` template parameter be invocable as `const`. Upstream's
+  declaration is from the older relaxed era (last upstream commit 2017).
+  Upstream is dormant.
+
+- **Disposition.** Fix-on-port (build-side only). We apply a minimal
+  patch to the submodule working tree before building the parity binary:
+
+```diff
+--- a/src/matrix.h
++++ b/src/matrix.h
+@@ -52,3 +52,3 @@
+-    bool operator()(const ELEMENT &elem1, const ELEMENT &elem2){
++    bool operator()(const ELEMENT &elem1, const ELEMENT &elem2) const {
+         return elem1.idx.pos < elem2.idx.pos;
+     }
+```
+
+  The patch is not committed back to the submodule (the submodule pointer
+  stays at `978e8e4`). The Go port doesn't carry the underlying bug
+  because the matrix-mode code path is not yet implemented in Go.
+
+### skewer case05 SE error-tolerance matcher <a id="skewer-case05"></a>
+
+- **Symptom.** Upstream rejects a 1-mismatch adapter alignment when the
+  mismatch falls in the tail 4 bp of the adapter, even when
+  `mismatches/len(adapter) <= -r`. Our Go port's `improvedFindAdapter`
+  accepts it and over-trims one base.
+
+- **Root cause.** Upstream uses a Smith-Waterman alignment with a
+  position-dependent tail penalty; we use plain Hamming distance.
+
+- **Disposition.** Track-only — Go-port limitation, not an upstream bug.
+  `tools/skewer/pkg/skewer/parity_test.go > case05` has `t.Skip` with a
+  pointer to
+  [tools/PARITY_VALIDATION.md > "skewer"](../tools/PARITY_VALIDATION.md#skewer).
+
+## sickle
+
+No upstream bugs surfaced in the sickle audit. The behaviours that
+initially looked suspicious are documented in
+[the "Non-bugs we considered" section](#non-bugs-we-considered-closed).

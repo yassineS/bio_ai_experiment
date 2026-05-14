@@ -250,7 +250,11 @@ func TestPairedAutoDetectFromR1(t *testing.T) {
 	if !strings.Contains(out1.String(), "p1/1") || !strings.Contains(out2.String(), "p1/2") {
 		t.Errorf("expected paired output to contain both mates of p1; got R1=%q R2=%q", out1.String(), out2.String())
 	}
-	if !strings.Contains(out1.String(), "det/1") || !strings.Contains(out2.String(), "det/2") {
-		t.Errorf("expected the leading detection-hint pair to also be processed; got R1=%q R2=%q", out1.String(), out2.String())
+	// `det/1` carries a Q0-quality `!!!!` block used only to anchor the
+	// auto-detection: upstream sickle drops any read where the sliding
+	// window never rises to QualThreshold, so the trimmer (correctly)
+	// discards the det pair. It must NOT appear in the paired output.
+	if strings.Contains(out1.String(), "det/1") || strings.Contains(out2.String(), "det/2") {
+		t.Errorf("det/1 (Q0 quality) should have been dropped by 5'-cut rule; got R1=%q R2=%q", out1.String(), out2.String())
 	}
 }
