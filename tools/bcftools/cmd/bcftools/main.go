@@ -1,7 +1,6 @@
 // Command bcftools is a pure-Go reimplementation of selected bcftools
-// subcommands. This first slice ships the `view` subcommand together with
-// the pkg/bioformats/bcf BCF decoder; other subcommands (query, stats, norm,
-// concat, merge) and BCF writing will follow in subsequent PRs.
+// subcommands. Today it ships `view`, `index`, and `stats`; other subcommands
+// (query, norm, concat, merge) will follow in subsequent PRs.
 package main
 
 import (
@@ -24,6 +23,7 @@ Usage:
 Subcommands:
   view      Print, filter, or convert VCF/BCF records.
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
+  stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
   help      Show this help (also via -? on subcommands).
   version   Show version.
 `
@@ -38,6 +38,8 @@ func main() {
 		os.Exit(runView(os.Args[2:]))
 	case "index":
 		os.Exit(runIndex(os.Args[2:]))
+	case "stats":
+		os.Exit(runStatsCmd(os.Args[2:]))
 	case "help", "--help":
 		fmt.Print(rootUsage)
 		return
@@ -327,3 +329,172 @@ func openOutFile(path string) (io.WriteCloser, error) {
 type nopCloser struct{ io.Writer }
 
 func (nopCloser) Close() error { return nil }
+
+const statsUsage = `bcftools stats - produce summary statistics from VCF/BCF.
+
+Usage:
+  bcftools stats [options] <in.vcf[.gz]|in.bcf>
+
+Options:
+  -s, --samples LIST              Restrict to these samples (comma list).
+  -S, --samples-file PATH         File with sample IDs (one per line).
+  -r, --regions chr[:beg-end[,..]] Region(s) — applied as a post-filter (no index).
+  -R, --regions-file PATH         BED-like regions file.
+  -t, --targets chr[:beg-end[,..]] Like -r but always a post-filter.
+  -T, --targets-file PATH         BED-like targets file.
+  -i, --include EXPR              Keep records matching expression.
+  -e, --exclude EXPR              Drop records matching expression.
+  -f, --apply-filters NAME[,..]   Keep only PASS or named filters.
+  -d, --depth MIN,MAX,STEP        Depth-distribution bins (default 0,500,1).
+  -a, --af-bins LIST              Allele-frequency bin edges (default 0,0.1,...,0.9,0.99,1.0).
+  -c, --collapse {none|snps|indels|both|all|some|id}
+                                  Multi-allelic site collapse rule. (Accepted; v1 always treats each ALT separately.)
+  -1, --1st-allele-only           Count only the 1st ALT allele.
+      --af-tag TAG                INFO tag to read AF from (default: compute from GT).
+  -o, --output PATH               Output file (default stdout).
+      --threads N                 Accepted; v1 is single-threaded.
+  -h, --help                      Show this help.
+      --version                   Show version.
+`
+
+func runStatsCmd(args []string) int {
+	fs := flag.NewFlagSet("bcftools stats", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		samples         string
+		samplesFile     string
+		regions         string
+		regionsFile     string
+		targets         string
+		targetsFile     string
+		includeExpr     string
+		excludeExpr     string
+		applyFilters    string
+		depthSpec       string
+		afBinsSpec      string
+		collapse        string
+		firstAlleleOnly bool
+		afTag           string
+		outputPath      string
+		threads         int
+		showHelp        bool
+		showVersion     bool
+	)
+	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples")
+	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
+	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
+	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
+	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
+	cliflag.StringVar(fs, &includeExpr, "i", "include", "", "Include expression")
+	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
+	cliflag.StringVar(fs, &applyFilters, "f", "apply-filters", "", "Filter list")
+	cliflag.StringVar(fs, &depthSpec, "d", "depth", "", "Depth spec MIN,MAX,STEP")
+	cliflag.StringVar(fs, &afBinsSpec, "a", "af-bins", "", "AF bin edges")
+	cliflag.StringVar(fs, &collapse, "c", "collapse", "none", "Collapse rule")
+	cliflag.BoolVar(fs, &firstAlleleOnly, "1", "1st-allele-only", false, "1st ALT only")
+	fs.StringVar(&afTag, "af-tag", "", "INFO AF tag")
+	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVersion, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, statsUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(statsUsage)
+		return 0
+	}
+	if showVersion {
+		fmt.Println(version)
+		return 0
+	}
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "bcftools stats: missing input file")
+		fmt.Fprint(os.Stderr, statsUsage)
+		return 2
+	}
+	input := rest[0]
+
+	opts := bcftools.StatsOptions{
+		IncludeExpr:     includeExpr,
+		ExcludeExpr:     excludeExpr,
+		ApplyFilters:    bcftools.SplitCommaList(applyFilters),
+		Collapse:        collapse,
+		FirstAlleleOnly: firstAlleleOnly,
+		AFTag:           afTag,
+		InputFile:       input,
+	}
+	if samples != "" {
+		opts.Samples = bcftools.SplitCommaList(samples)
+	}
+	if samplesFile != "" {
+		names, err := bcftools.LoadSamplesFile(samplesFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools stats: %v\n", err)
+			return 1
+		}
+		opts.Samples = append(opts.Samples, names...)
+		opts.SamplesFile = samplesFile
+	}
+	if regions != "" {
+		opts.Regions = bcftools.SplitCommaList(regions)
+	}
+	if regionsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(regionsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools stats: %v\n", err)
+			return 1
+		}
+		opts.Regions = append(opts.Regions, regs...)
+		opts.RegionsFile = regionsFile
+	}
+	if targets != "" {
+		opts.Targets = bcftools.SplitCommaList(targets)
+	}
+	if targetsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(targetsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools stats: %v\n", err)
+			return 1
+		}
+		opts.Targets = append(opts.Targets, regs...)
+		opts.TargetsFile = targetsFile
+	}
+	if depthSpec != "" {
+		min, max, step, err := bcftools.ParseDepthSpec(depthSpec)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		opts.DepthMin, opts.DepthMax, opts.DepthStep = min, max, step
+	}
+	if afBinsSpec != "" {
+		bins, err := bcftools.ParseAFBins(afBinsSpec)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		opts.AFBins = bins
+	}
+
+	out, err := openOutFile(outputPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools stats: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+
+	if _, err := bcftools.StatsFile(input, out, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools stats: %v\n", err)
+		return 1
+	}
+	return 0
+}
