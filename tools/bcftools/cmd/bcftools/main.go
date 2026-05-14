@@ -23,6 +23,8 @@ Usage:
 
 Subcommands:
   view      Print, filter, or convert VCF/BCF records.
+  query     Format-string output for VCF/BCF records.
+  concat    Concatenate VCF/BCF files.
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   help      Show this help (also via -? on subcommands).
   version   Show version.
@@ -36,6 +38,10 @@ func main() {
 	switch os.Args[1] {
 	case "view":
 		os.Exit(runView(os.Args[2:]))
+	case "query":
+		os.Exit(runQuery(os.Args[2:]))
+	case "concat":
+		os.Exit(runConcat(os.Args[2:]))
 	case "index":
 		os.Exit(runIndex(os.Args[2:]))
 	case "help", "--help":
@@ -327,3 +333,252 @@ func openOutFile(path string) (io.WriteCloser, error) {
 type nopCloser struct{ io.Writer }
 
 func (nopCloser) Close() error { return nil }
+
+const queryUsage = `bcftools query - format-string output for VCF/BCF records.
+
+Usage:
+  bcftools query [options] <in.vcf[.gz]|in.bcf>
+
+Options:
+  -f, --format STRING        Format string. Supported tokens:
+                               %CHROM %POS %REF %ALT %QUAL %ID %FILTER
+                               %TYPE %TGT %GT %INFO/<TAG> %FMT/<TAG>
+                               [%TOKEN ...] for per-sample expansion
+                               \n \t literal newline / tab
+  -H, --print-header         Emit a header row derived from the format string.
+  -l, --list-samples         Print one sample name per line and exit.
+  -s, --samples LIST         Restrict per-sample expansion to these names.
+  -S, --samples-file PATH    File with sample IDs (one per line).
+  -r, --regions LIST         Region list (chr:beg-end[,...]) — uses .tbi/.csi.
+  -R, --regions-file PATH    BED-like regions file.
+  -t, --targets LIST         Like -r but always a post-filter.
+  -T, --targets-file PATH    BED-like targets file (post-filter).
+  -i, --include EXPR         Keep records matching expression.
+  -e, --exclude EXPR         Drop records matching expression.
+  -F, --apply-filters NAMES  Comma list of FILTER names to keep.
+  -o, --output PATH          Output file (default stdout).
+      --threads N            Accepted; v1 is single-threaded.
+  -?, --help                 Show this help.
+      --version              Show version.
+`
+
+func runQuery(args []string) int {
+	fs := flag.NewFlagSet("bcftools query", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		format       string
+		printHeader  bool
+		listSamples  bool
+		samples      string
+		samplesFile  string
+		regions      string
+		regionsFile  string
+		targets      string
+		targetsFile  string
+		includeExpr  string
+		excludeExpr  string
+		applyFilters string
+		outputPath   string
+		threads      int
+		showHelp     bool
+		showVer      bool
+	)
+	cliflag.StringVar(fs, &format, "f", "format", "", "Format string")
+	cliflag.BoolVar(fs, &printHeader, "H", "print-header", false, "Print header row")
+	cliflag.BoolVar(fs, &listSamples, "l", "list-samples", false, "List samples and exit")
+	cliflag.StringVar(fs, &samples, "s", "samples", "", "Sample list")
+	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
+	cliflag.StringVar(fs, &regions, "r", "regions", "", "Regions")
+	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
+	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
+	cliflag.StringVar(fs, &includeExpr, "i", "include", "", "Include expression")
+	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
+	cliflag.StringVar(fs, &applyFilters, "F", "apply-filters", "", "FILTER name list to keep")
+	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "?", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Stderr.WriteString(queryUsage)
+		return 2
+	}
+	if showHelp {
+		os.Stdout.WriteString(queryUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "bcftools query: missing input file")
+		os.Stderr.WriteString(queryUsage)
+		return 2
+	}
+	if !listSamples && format == "" {
+		fmt.Fprintln(os.Stderr, "bcftools query: -f/--format is required (use -l for sample list)")
+		return 2
+	}
+
+	opts := bcftools.QueryOptions{
+		Format:       format,
+		PrintHeader:  printHeader,
+		ListSamples:  listSamples,
+		IncludeExpr:  includeExpr,
+		ExcludeExpr:  excludeExpr,
+		ApplyFilters: bcftools.SplitCommaList(applyFilters),
+		SamplesFile:  samplesFile,
+		RegionsFile:  regionsFile,
+		TargetsFile:  targetsFile,
+	}
+	if samples != "" {
+		opts.Samples = bcftools.SplitCommaList(samples)
+	}
+	if samplesFile != "" {
+		names, err := bcftools.LoadSamplesFile(samplesFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools query: %v\n", err)
+			return 1
+		}
+		opts.Samples = append(opts.Samples, names...)
+	}
+	if regions != "" {
+		opts.Regions = bcftools.SplitCommaList(regions)
+	}
+	if regionsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(regionsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools query: %v\n", err)
+			return 1
+		}
+		opts.Regions = append(opts.Regions, regs...)
+	}
+	if targets != "" {
+		opts.Targets = bcftools.SplitCommaList(targets)
+	}
+	if targetsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(targetsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools query: %v\n", err)
+			return 1
+		}
+		opts.Targets = append(opts.Targets, regs...)
+	}
+
+	out, err := openOutFile(outputPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools query: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+
+	if _, err := bcftools.QueryFile(rest[0], out, opts, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools query: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+const concatUsage = `bcftools concat - concatenate VCF/BCF files.
+
+Usage:
+  bcftools concat [options] <in1.vcf[.gz]|in1.bcf> [<in2> ...]
+
+Options:
+  -a, --allow-overlaps       Sort-merge across inputs (default is plain concat).
+  -D, --remove-duplicates    Drop adjacent duplicate records.
+  -f, --file-list PATH       File of input paths (one per line).
+  -O, --output-type {v|z|u|b}  Output format. (u/b need a BCF writer.)
+  -o, --output PATH          Output file (default stdout).
+  -q, --min-PQ INT           Accepted but no-op in v1.
+  -l, --ligate               Accepted but no-op in v1 (imputation chunks).
+      --threads N            Accepted; v1 is single-threaded.
+      --compression-level N  gzip level for -O z output.
+  -?, --help                 Show this help.
+      --version              Show version.
+`
+
+func runConcat(args []string) int {
+	fs := flag.NewFlagSet("bcftools concat", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		allowOverlaps    bool
+		removeDuplicates bool
+		fileList         string
+		outputType       string
+		outputPath       string
+		minPQ            int
+		ligate           bool
+		compressLevel    int
+		threads          int
+		showHelp         bool
+		showVer          bool
+	)
+	cliflag.BoolVar(fs, &allowOverlaps, "a", "allow-overlaps", false, "Sort-merge across inputs")
+	cliflag.BoolVar(fs, &removeDuplicates, "D", "remove-duplicates", false, "Drop adjacent duplicate records")
+	cliflag.StringVar(fs, &fileList, "f", "file-list", "", "File of input paths")
+	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
+	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
+	cliflag.IntVar(fs, &minPQ, "q", "min-PQ", 0, "Minimum PQ (accepted, ignored)")
+	cliflag.BoolVar(fs, &ligate, "l", "ligate", false, "Ligate (accepted, ignored)")
+	fs.IntVar(&compressLevel, "compression-level", -1, "")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "?", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, concatUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(concatUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+
+	paths := fs.Args()
+	if len(paths) == 0 && fileList == "" {
+		fmt.Fprintln(os.Stderr, "bcftools concat: missing input files")
+		fmt.Fprint(os.Stderr, concatUsage)
+		return 2
+	}
+	format, err := bcftools.ParseOutputFormat(outputType)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	out, err := openOutFile(outputPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools concat: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+
+	opts := bcftools.ConcatOptions{
+		OutputFormat:     format,
+		AllowOverlaps:    allowOverlaps,
+		RemoveDuplicates: removeDuplicates,
+		FileList:         fileList,
+		MinPQ:            minPQ,
+		Ligate:           ligate,
+		CompressLevel:    compressLevel,
+	}
+	if _, err := bcftools.ConcatFiles(paths, out, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools concat: %v\n", err)
+		return 1
+	}
+	return 0
+}

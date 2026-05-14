@@ -1,10 +1,13 @@
-# bcftools (pure-Go) — first slice
+# bcftools (pure-Go)
 
 A pure-Go reimplementation of selected [bcftools](https://samtools.github.io/bcftools/)
-subcommands. This first slice ships:
+subcommands. Currently shipping:
 
 - `bcftools view` — filter / project / convert VCF and BCF.
-- `pkg/bioformats/bcf` — a read-only decoder for the BCF v2.2 binary format.
+- `bcftools query` — format-string output for VCF/BCF records.
+- `bcftools concat` — concatenate VCF/BCF files.
+- `bcftools index` — build a CSI / .tbi index for a BCF / VCF.gz file.
+- `pkg/bioformats/bcf` — BCF v2.2 reader and writer.
 
 Both pieces share the existing `pkg/bioformats/vcf` types so downstream
 consumers see records as familiar `vcf.Variant` values.
@@ -95,25 +98,130 @@ INFO field values are coerced to numbers when both sides of a comparison parse
 as such; otherwise the comparison is lexical. Multi-value INFO entries take
 the first comma-separated element (matching the upstream default).
 
+## `bcftools query`
+
+`bcftools query` writes records through a format string. Tokens:
+
+| Token            | Meaning                                              |
+| ---------------- | ---------------------------------------------------- |
+| `%CHROM`         | Contig name.                                         |
+| `%POS`           | 1-based position.                                    |
+| `%REF`           | Reference allele.                                    |
+| `%ALT`           | Comma-joined ALT alleles.                            |
+| `%QUAL`          | Quality score (or `.` when missing).                 |
+| `%ID`            | Variant ID (or `.`).                                 |
+| `%FILTER`        | `;`-joined FILTER column.                            |
+| `%TYPE`          | `SNP` / `MNP` / `INDEL` / `OTHER`.                   |
+| `%INFO/<TAG>`    | INFO field by name. Missing keys render as `.`.      |
+| `%GT`            | Raw GT (sample context only).                        |
+| `%TGT`           | Translated genotype (`0/1` -> `A/T`).                |
+| `%FMT/<TAG>`     | Sample FORMAT field by name.                         |
+| `[%TOKEN ...]`   | Sample-repeated: emit inner once per sample, tab-joined. |
+| `\n`, `\t`       | Literal newline / tab.                               |
+
+### Flags
+
+| Short | Long                | Meaning |
+| ----- | ------------------- | ------- |
+| `-f`  | `--format`          | Format string (required unless `-l`). |
+| `-H`  | `--print-header`    | Emit a header row derived from the format string. |
+| `-l`  | `--list-samples`    | Print one sample per line and exit. |
+| `-s`  | `--samples`         | Comma list narrowing per-sample expansion. |
+| `-S`  | `--samples-file`    | File of sample IDs (one per line). |
+| `-r`  | `--regions`         | Region list (`chr:beg-end[,...]`). Uses `.tbi` / `.csi` when present. |
+| `-R`  | `--regions-file`    | BED-like regions file. |
+| `-t`  | `--targets`         | Like `-r` but always a post-filter (no index needed). |
+| `-T`  | `--targets-file`    | BED-like targets file (post-filter). |
+| `-i`  | `--include`         | Keep records matching expression. |
+| `-e`  | `--exclude`         | Drop records matching expression. |
+| `-F`  | `--apply-filters`   | Comma list of FILTER names to keep. (Upstream's `-f`; `-f` is the format string here.) |
+| `-o`  | `--output`          | Output path (default stdout). |
+|       | `--threads`         | Accepted; v1 is single-threaded. |
+| `-?`  | `--help`            | Show help. |
+|       | `--version`         | Show version. |
+
+### Examples
+
+```bash
+# TSV of variant coordinates.
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\n' input.vcf
+
+# Per-sample GT and DP, tab-separated within each row.
+bcftools query -f '%CHROM\t%POS\t[%GT\t%DP]\n' input.vcf
+
+# Filtered by depth, with a -H header row.
+bcftools query -H -f '%CHROM\t%POS\t%INFO/DP\n' -i 'INFO/DP>30' input.vcf
+
+# Sample names from a CSI-indexed BCF.
+bcftools query -l input.bcf
+```
+
+## `bcftools concat`
+
+`bcftools concat` concatenates two or more VCF/BCF inputs. By default it
+assumes the inputs are sorted and non-overlapping; pass `-a` for a sort-merge
+and `-D` to collapse duplicate (chrom, pos, ref, alt) records.
+
+### Flags
+
+| Short | Long                 | Meaning |
+| ----- | -------------------- | ------- |
+| `-a`  | `--allow-overlaps`   | Sort-merge across inputs. |
+| `-D`  | `--remove-duplicates`| Drop adjacent duplicate records. |
+| `-f`  | `--file-list`        | Read inputs from a file (one path per line). |
+| `-O`  | `--output-type`      | `v` (default), `z`, `u`, `b`. |
+| `-o`  | `--output`           | Output path (default stdout). |
+| `-q`  | `--min-PQ`           | Accepted; no-op in v1. |
+| `-l`  | `--ligate`           | Accepted; no-op in v1 (chunked imputation). |
+|       | `--compression-level`| gzip level for `-O z` output. |
+|       | `--threads`          | Accepted; v1 is single-threaded. |
+| `-?`  | `--help`             | Show help. |
+|       | `--version`          | Show version. |
+
+### Header merging rules
+
+- `##fileformat` is taken from the first input.
+- `##contig` lines are union-merged in first-seen order.
+- `##INFO`, `##FORMAT`, `##FILTER` lines are union-merged by ID. If the same
+  ID appears with a different definition the command errors out with a
+  message naming the conflicting line.
+- Other meta lines are de-duplicated by exact-string equality.
+- The sample sets of all inputs must match (same names in the same order);
+  mismatches abort with an error.
+
+### Examples
+
+```bash
+# Plain concat of two pre-sorted, non-overlapping VCFs.
+bcftools concat a.vcf b.vcf -o joined.vcf
+
+# Sort-merge across overlapping chunks (e.g. per-chromosome shards).
+bcftools concat -a chr*.vcf.gz -O z -o all.vcf.gz
+
+# Read the input list from a file.
+bcftools concat -f files.txt -O b -o all.bcf
+
+# Drop adjacent duplicates after sort-merge.
+bcftools concat -a -D split.*.vcf.gz -o uniq.vcf
+```
+
 ## Scope and deferred work
 
-What ships in this slice:
+What ships today:
 
-- BCF reader for the shared portion (CHROM/POS/REF/ALT/QUAL/FILTER/INFO) and
-  the per-sample FORMAT portion.
-- VCF and BGZF-wrapped VCF input.
-- VCF and gzip-VCF (`-O v`, `-O z`) output.
-- All filter and selection flags listed above.
+- BCF v2.2 reader and writer.
+- VCF, BGZF-wrapped VCF and BCF input.
+- VCF, gzip-VCF, BCF (`-O v`, `-O z`, `-O u`, `-O b`) output.
+- `view`, `query`, `concat`, `index` subcommands with the flags listed in
+  this README.
+- CSI (BCF) and .tbi (VCF.gz) index reading and writing for region queries.
 
-What is **deferred** to a follow-up PR:
+What is **deferred** to follow-up PRs:
 
-- **BCF writing** (`-O b`, `-O u`). The decoder will support encoding in the
-  next slice; today the runner returns an explanatory error when those modes
-  are requested.
-- `.csi` index reading/writing. Today `-r` chooses the `.tbi` fast path on
-  bgzipped VCF and falls back to a streaming scan otherwise.
-- Other subcommands (`query`, `stats`, `norm`, `concat`, `merge`).
+- Other subcommands (`stats`, `norm`, `merge`, ...).
 - The plugin system (`bcftools plugin`).
+- `concat --ligate` (specialised imputation merging) and `--min-PQ` are
+  accepted on the CLI but currently no-ops.
 
 ## How records flow
 
