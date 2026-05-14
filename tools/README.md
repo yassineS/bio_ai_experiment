@@ -30,6 +30,9 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedgetfasta`](bedgetfasta/) | bedtools getfasta | Pull FASTA subsequences for BED intervals | 86% |
 | [`bedsample`](bedsample/) | bedtools sample | Random subsample (reservoir, without replacement) | 91% |
 | [`bedspacing`](bedspacing/) | bedtools spacing | Distance to previous interval per chromosome | 85% |
+| [`bedcoverage`](bedcoverage/) | bedtools coverage | Per-A coverage (count / bp / fraction / histogram / per-base) | 92% |
+| [`bedmap`](bedmap/) | bedtools map | Apply column ops to A using B's values | 92% |
+| [`bedshuffle`](bedshuffle/) | bedtools shuffle | Randomly relocate intervals across a genome | 92% |
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |

@@ -38,7 +38,10 @@ features land.
 | bedgetfasta   |          14 |     12 |       2 | Skips: `-fullHeader` (whitespace-aware contig name parsing), BGZF FASTA via `.gzi`. |
 | bedsample     |           7 |      5 |       2 | Skips: two CLI-only cases (no-args / unrecognized-flag) that test main.go error messages, not the library. |
 | bedspacing    |           7 |      6 |       1 | Skips: BAM input. All inline upstream cases (`spacing.t01`) + synthetic edge cases (per-chrom reset, exact abut, overlap, BED6 preservation, single record). |
-| **TOTAL**     |     **161** |**114** | **47**  | |
+| bedcoverage   |           9 |      6 |       3 | Skips: BAM input (t1), `-mean` float32 precision (t6), `-split` BAM modes (t10..t13). |
+| bedmap        |          12 |     10 |       2 | Skips: `absmin`/`absmax` (t11), GFF input (t14+). |
+| bedshuffle    |           6 |      5 |       1 | Skips: upstream `-chromFirst` toggle (t3); inline expected outputs are RNG-specific so byte-parity is replaced with structural invariants (t1/t2/t4: lengths preserved, include/exclude/chrom honoured). |
+| **TOTAL**     |     **188** |**135** | **53**  | |
 
 (The discrepancy between this table and `go test`'s 87 passed / 42 skipped is
 two helper / sanity sub-tests in `bedsort` and `bedintersect` that are not
@@ -219,6 +222,63 @@ go test -v -run TestParity_ ./tools/bed.../... 2>&1 | grep SKIP
 5. If the case exercises an option the Go port does not implement, replace
    the test body with `t.Skip("unimplemented: <option>")` instead of
    deleting the case.
+
+### bedcoverage parity
+
+Byte-for-byte parity against
+`reference_code/bedtools/test/coverage/test-coverage.sh` using the upstream
+`a.bed` / `b.bed` fixture pair.
+
+| Case | Mode | Status | Notes |
+| ---- | ---- | ------ | ----- |
+| coverage.t1  | BAM input | skip | BAM/SAM input not supported in bedcoverage. |
+| coverage.t2  | default (count / bp / len / fraction) | pass | 7-decimal fraction matches upstream exactly. |
+| coverage.t3  | `-counts` | pass | |
+| coverage.t4  | `-hist` per-A + `all` footer | pass | 25 lines, ordering matches. |
+| coverage.t5  | `-d` (per-base depth) | pass | 300 lines. |
+| coverage.t6  | `-mean` | skip | Upstream prints float32 noise (`1.3200001`) we cannot reproduce with float64. |
+| coverage.t7  | `-s` (same strand) | pass | |
+| coverage.t8  | `-S` (opposite strand) | pass | |
+| coverage.t10 | `-split` BAM | skip | BAM input + BED12 block-aware coverage not supported. |
+
+### bedmap parity
+
+Byte-for-byte parity against
+`reference_code/bedtools/test/map/test-map.sh` using the upstream
+`ivls.bed` / `values{,2,4}.bed` fixture set.
+
+| Case | Mode | Status | Notes |
+| ---- | ---- | ------ | ----- |
+| map.t01 | defaults (`-c 5 -o sum`) | pass | |
+| map.t02 | explicit `-o sum` | pass | |
+| map.t03 | `-o count` | pass | Count emits 0 for empty groups, not the null placeholder. |
+| map.t04 | `-o mean` | pass | |
+| map.t05 | `-o max` | pass | |
+| map.t06 | `-o min` | pass | |
+| map.t07 | `-o mode` (values2.bed) | pass | |
+| map.t08 | `-o antimode` (values2.bed) | pass | |
+| map.t09 | `-c 7 -o collapse` (values4.bed) | pass | BEDPlus column extraction. |
+| map.t10 | `-c 7 -o min` (signed values) | pass | Negative numbers handled. |
+| map.t11 | `-c 7 -o absmin` | skip | `absmin`/`absmax` not yet in shared `bedmerge.ApplyOp`. |
+| map.t14 | GFF input | skip | GFF input not supported (BED only). |
+
+### bedshuffle parity
+
+Upstream's expected outputs are tied to bedtools' own Mersenne Twister
+RNG, which our `math/rand`-based port does not reproduce byte-for-byte.
+Byte-parity is therefore replaced with **structural-invariant parity**:
+each case asserts the property the upstream test was designed to check
+(lengths preserved, include/exclude/chrom honoured, error on
+unplaceable intervals).
+
+| Case | Scenario | Status | Notes |
+| ---- | -------- | ------ | ----- |
+| shuffle.t1 | basic shuffle on hg19 | pass | Asserts: line count, length preserved, chrom in genome. |
+| shuffle.t2 | `-incl` include regions | pass | Every output contained in some include region. |
+| shuffle.t3 | `-incl -chromFirst` | skip | `-chromFirst` toggle equivalent to default mode in our port. |
+| shuffle.t4 | `-excl` exclude regions | pass | No output overlaps any exclude region. |
+| shuffle.t5 | sanity check (without `-excl`) | pass | Without `-excl`, some overlap with `excl.bed` is expected. |
+| shuffle.t6 | interval larger than chrom | pass | Errors out with "could not avoid..." / "non-positive length"; matches upstream's error shape. |
 
 ## sickle
 
