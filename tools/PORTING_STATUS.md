@@ -1,27 +1,28 @@
 # Tool Porting Status
 
-This document tracks the status of bioinformatics tools being ported from their original implementations to Go.
+This document tracks the status of bioinformatics tools being ported from
+their original implementations to Go.
 
 **Last Updated**: 2026-05-14
 
-> **Accuracy note (2026-05-12 audit):** earlier revisions of this file
-> overstated progress — claiming ">85% test coverage" and labelling several
-> tools "Complete" with "functional parity". That is not the case. The numbers
-> and status below were re-derived from `go test -cover ./...` and from reading
-> the code. None of these ports is a drop-in replacement for the original tool;
-> each implements a subset of features. Treat "Complete" here as "the planned
-> first slice of functionality is in place", not "feature-complete".
+> **Project goal: 1:1 feature parity** with the upstream tool for every port
+> in this repo. Past revisions of this file labelled tools "Complete" when
+> only a working subset was in place — that wording has been removed.
+> The authoritative gap list per tool lives in
+> [`../docs/PARITY_ROADMAP.md`](../docs/PARITY_ROADMAP.md); upstream bugs
+> we identify along the way are tracked in
+> [`../docs/UPSTREAM_BUGS.md`](../docs/UPSTREAM_BUGS.md).
 
 ---
 
 ## Overview
 
-### Goals
+### Goal
 
-- Port high-priority bioinformatics tools to Go
-- Cover the commonly used subset of each tool's functionality first
-- Improve usability, documentation, and maintainability
-- Ensure tested, validated behaviour for everything that is implemented
+**1:1 feature parity with the upstream tool, validated byte-for-byte against
+its own test suite where one exists.** Working subset is a milestone, not
+the destination. Improve usability, documentation, and maintainability along
+the way.
 
 ### Progress Summary
 
@@ -52,11 +53,15 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
-## Completed Tools
+## Per-tool status
 
-### 1. ✅ seqtk
+Each tool below has a working subset of upstream functionality. None is yet
+at 1:1 feature parity (the project goal); see
+[`../docs/PARITY_ROADMAP.md`](../docs/PARITY_ROADMAP.md) for the gap list.
 
-**Status**: Complete  
+### 1. seqtk
+
+**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
 **Version**: 1.0.0  
 **Original**: C (Heng Li)  
 **Category**: Quality Control / FASTA/Q Processing
@@ -95,9 +100,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
-### 2. ✅ PRINSEQ
+### 2. PRINSEQ
 
-**Status**: Complete  
+**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
 **Version**: 1.0.0  
 **Original**: Perl (PRINSEQ-lite)  
 **Category**: Quality Control
@@ -132,9 +137,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
-### 3. ✅ sickle
+### 3. sickle
 
-**Status**: Complete  
+**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
 **Version**: 1.1.0  
 **Original**: C (Joshi & Fass)  
 **Category**: Quality Control / Trimming
@@ -167,9 +172,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
-### 4. ✅ skewer
+### 4. skewer
 
-**Status**: Complete  
+**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
 **Version**: 1.0.0  
 **Original**: C++ (Hongshan Jiang)  
 **Category**: Adapter Trimming
@@ -202,9 +207,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
-### 5. ✅ fastp
+### 5. fastp
 
-**Status**: Complete (Core Features)  
+**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp) for gaps  
 **Version**: 1.0.0  
 **Original**: C++ (Shifu Chen)  
 **Category**: All-in-One Preprocessor
@@ -242,9 +247,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
-### 6. ✅ bedmerge
+### 6. bedmerge
 
-**Status**: Complete  
+**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
 **Version**: 1.0.0  
 **Original**: bedtools merge (C++)  
 **Category**: Genomic Intervals / Utilities
@@ -278,9 +283,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
-### 7. ✅ bedintersect
+### 7. bedintersect
 
-**Status**: Complete  
+**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
 **Version**: 1.0.0  
 **Original**: bedtools intersect (C++)  
 **Category**: Genomic Intervals / Utilities
@@ -312,9 +317,9 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ---
 
-### 8. ✅ vcftools
+### 8. vcftools
 
-**Status**: Complete  
+**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
 **Version**: 1.0.0  
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
@@ -370,7 +375,7 @@ See [FEATURE_COMPARISON.md](vcftools/FEATURE_COMPARISON.md) and
 
 ---
 
-### 9. ✅ New bedtools subcommands (May 2026)
+### 9. New bedtools subcommands (May 2026)
 
 Eight more `bedtools` subcommands were ported in this round, alongside the
 existing `bedmerge` and `bedintersect`. Every one of them has its own
@@ -397,7 +402,7 @@ inline. See [`PARITY_VALIDATION.md`](PARITY_VALIDATION.md).
 
 ---
 
-### 10. ✅ bgzip + tabix (htslib foundation, May 2026)
+### 10. bgzip + tabix (htslib foundation, May 2026)
 
 Two new tools landed back-to-back as picks #1 and #2 from
 [`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking_2026.md):
@@ -418,7 +423,7 @@ UCSC binning scheme), `bcftools` (`.vcf.gz`/`.bcf` random-access), and
 
 ---
 
-### 11. ✅ samtools (May 2026, picks #3 of the 2026 ranking)
+### 11. samtools (May 2026, picks #3 of the 2026 ranking)
 
 Pure-Go port of htslib's `samtools`, built on top of `pkg/bioformats/sam`
 (SAM/BAM read+write, 87% cov). Landed in three slices:
@@ -441,7 +446,7 @@ single-threaded (`-@`/`--threads` accepted but no-op); no CRAM; no CSI;
 `samtools fastq -1/-2` requires name-sorted input (coordinate-sorted falls
 back to interleaved with a stderr warning); `samtools view -L bed` deferred.
 
-### 12. ✅ bcftools (May 2026, pick #4 of the 2026 ranking)
+### 12. bcftools (May 2026, pick #4 of the 2026 ranking)
 
 Pure-Go port of htslib's `bcftools`, built on top of a new
 `pkg/bioformats/bcf` decoder for BCF v2.2 (82% cov: full typed encoding
