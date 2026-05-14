@@ -140,13 +140,14 @@ Missing:
 
 **Validation:** no upstream-test-suite run yet.
 
-### bedtools (13 subcommands ported)
+### bedtools (17 subcommands ported)
 
-**Status:** 13 of ~40 subcommands (~33%). 85 passing parity tests against
-upstream test suite (PR #55), 42 documented `t.Skip`, 2 known
-discrepancies. **3 new subcommands** salvaged from a Phase-3 agent crash
-landed alongside this roadmap update: `bedgroupby`, `bed12tobed6`,
-`bedmakewindows`.
+**Status:** 17 of ~40 subcommands (~43%). 114 passing parity tests against
+upstream test suite (across PR #55 + Phase-3 wave 1 + wave 2), 47
+documented `t.Skip`, 2 known discrepancies. The 2026-05-14 wave 2 PR
+added **4 new subcommands**: `bedexpand`, `bedgetfasta`, `bedsample`,
+`bedspacing` (this roadmap update). Wave 1 (PR #78) added `bedgroupby`,
+`bed12tobed6`, `bedmakewindows`.
 
 Missing subcommands:
 
@@ -158,11 +159,7 @@ Missing subcommands:
 - `reldist` — relative distance distribution.
 - `fisher` — Fisher's exact for overlap.
 - `nuc` — nucleotide content per interval.
-- `getfasta` — pull FASTA subsequences.
 - `window` — overlap A with a window around B.
-- `expand` — expand a column.
-- `sample` — random subsample.
-- `spacing` — distance between adjacent intervals.
 - `split` — split into approximately equal-sized files.
 - `summary` — per-chrom summary.
 - `tag` — annotate A with B's name.
@@ -177,6 +174,17 @@ Skipped parity cases from PR #55 to revisit:
 - `bedjaccard` auto-merge behaviour.
 - `bedmerge` `.`-strand fan-out.
 
+Option-tail gaps on the wave-2 additions:
+
+- `bedgetfasta` — `-fullHeader` (whitespace-aware contig name parsing) and
+  BGZF FASTA input via `.gzi` are not yet implemented. `pkg/bioformats/fasta`
+  needs a `.gzi` reader before BGZF random-access fetch is feasible.
+- `bedsample` — output PRNG is Go `math/rand` and is not byte-compatible
+  with upstream's C++ sampler. Seeded runs are deterministic within
+  `bedsample` (same seed → same output) but cross-tool record-for-record
+  parity with upstream is not feasible without porting upstream's
+  `random_shuffle`.
+
 Column-op gaps (shared between `bedmerge`, `bedgroupby`, and the future
 `bedmap`/`bedcoverage`):
 
@@ -186,30 +194,35 @@ Column-op gaps (shared between `bedmerge`, `bedgroupby`, and the future
 
 ### `vcftools`
 
-**Status:** ~60 of ~147 options (~40%).
+**Status:** ~70 of ~147 options (~48%) after long-tail wave 1.
 
-Major gaps:
+Closed in wave 1 (this PR):
 
-- **Inter-chromosomal LD**: `--interchrom-geno-r2`, `--interchrom-hap-r2`.
-- **Chi-square LD**: `--geno-chisq`.
-- **Relatedness**: `--relatedness`, `--relatedness2`.
-- **Runs of homozygosity**: `--LROH`.
+- **Inter-chromosomal LD**: `--interchrom-geno-r2`, `--interchrom-hap-r2` ✅
+- **Chi-square LD**: `--geno-chisq` ✅
+- **Relatedness**: `--relatedness` (Yang 2010), `--relatedness2` (KING-robust) ✅
+- **Runs of homozygosity**: `--LROH` (+ `--LROH-min-variants`) ✅
+- **Phased blocks**: `--phased-blocks` ✅
+- **FILTER tag include/exclude**: `--remove-filtered`, `--keep-filtered` ✅
+- **INFO selection in recode**: `--keep-INFO TAG`, `--remove-INFO TAG` ✅
+- **INFO extraction**: `--get-INFO TAG[,TAG]` → `.INFO` ✅
+
+Remaining gaps:
+
 - **Mendelian inheritance checks**: `--mendel`.
 - **Diff family extensions**: `--diff-indv-map`, `--diff-discordance-matrix`,
   `--diff-switch-error`, `--gzdiff` (already implicit via iohelper).
-- **More filters**: `--keep-INFO`, `--remove-INFO`, `--remove-filtered`
-  (specific filter names), `--keep-filtered`.
-- **Output formats**: `--BEAGLE-PL` already done; missing `--ldhat`,
-  `--ldhat-geno`, `--ldhelmet`, `--IMPUTE`, `--phase` output paths.
-- **Haplotype analyses**: `--haploid`, `--phased-blocks`.
+- **Output formats**: missing `--ldhat`, `--ldhat-geno`, `--ldhelmet`,
+  `--IMPUTE`, `--phase` output paths.
+- **Haplotype analyses**: `--haploid` (`--phased-blocks` done).
 - **Per-individual output**: `--missing-per-ind` (we have `--missing-indv`
   but the per-individual `.imiss` row layout has fields we don't
   emit).
-- **Other**: `--TsTv-by-qual` already done; missing `--FILTER-PASS-summary`,
-  `--remove-INFO-all`, `--get-INFO TAG[,TAG]` (extract subset of INFO
-  fields to TSV).
+- **Other**: `--FILTER-PASS-summary`, `--remove-INFO-all` (use
+  `--keep-INFO`/`--remove-INFO`), `--non-ref-af*` family, `--pca` family.
 
-**Validation:** no upstream-test-suite run yet.
+**Validation:** wave 1 adds header byte-for-byte parity tests for the new
+output files; full upstream-test-suite run still pending.
 
 ### `bgzip`
 

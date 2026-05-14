@@ -1,0 +1,126 @@
+// Command bedgetfasta is a pure-Go reimplementation of `bedtools getfasta`.
+// For each BED interval, it pulls the corresponding FASTA subsequence from
+// a FAI-indexed reference and writes the result as FASTA (or TSV with
+// `-tab`). See pkg/bedgetfasta for behaviour.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
+	"github.com/yassineS/bio_ai_experiment/tools/bedgetfasta/pkg/bedgetfasta"
+)
+
+const version = "0.1.0"
+
+const usage = `bedgetfasta - extract FASTA subsequences for BED intervals.
+
+Usage:
+  bedgetfasta -fi FASTA -bed BED [-fo OUT] [-name|-nameOnly] [-tab] [-s] [-split] [-rna]
+
+Required:
+  -fi, --fasta FILE       FASTA reference. Must have a sibling .fai index
+                          (one will be built on the fly if missing).
+  -bed, --bed FILE        BED file ('-' = stdin). Transparent gzip.
+
+Optional:
+  -fo, --output FILE      Output (default stdout). '-' = stdout.
+  -name, --name           Header is '<name>::<chrom>:<start>-<end>'.
+  -nameOnly, --nameOnly   Header is just '<name>'.
+  -tab, --tab             Emit TSV ('header<TAB>seq') instead of FASTA.
+  -s, --strand            Reverse-complement '-' strand intervals
+                          (case-preserving, IUPAC-aware).
+  -split, --split         Concatenate the blocks of BED12 records before
+                          emission (per-block stranded with -s).
+  -rna, --rna             Emit U/u in place of T/t (after -s).
+
+Standard:
+  -h, --help              Show this help.
+  -v, --version           Show version.
+`
+
+func main() {
+	fs := flag.NewFlagSet("bedgetfasta", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		fastaPath   string
+		bedPath     string
+		outPath     string
+		nameFlag    bool
+		nameOnly    bool
+		tab         bool
+		strand      bool
+		split       bool
+		rna         bool
+		showHelp    bool
+		showVersion bool
+	)
+	cliflag.StringVar(fs, &fastaPath, "fi", "fasta", "", "FASTA reference")
+	cliflag.StringVar(fs, &bedPath, "bed", "bed", "", "BED file")
+	cliflag.StringVar(fs, &outPath, "fo", "output", "", "Output file")
+	cliflag.BoolVar(fs, &nameFlag, "name", "name", false, "Use BED name as header")
+	cliflag.BoolVar(fs, &nameOnly, "nameOnly", "nameOnly", false, "Header is just <name>")
+	cliflag.BoolVar(fs, &tab, "tab", "tab", false, "TSV output")
+	cliflag.BoolVar(fs, &strand, "s", "strand", false, "Reverse-complement '-' strand")
+	cliflag.BoolVar(fs, &split, "split", "split", false, "Concatenate BED12 blocks")
+	cliflag.BoolVar(fs, &rna, "rna", "rna", false, "Emit U in place of T")
+	fs.BoolVar(&showHelp, "h", false, "Help")
+	fs.BoolVar(&showHelp, "help", false, "Help")
+	fs.BoolVar(&showVersion, "v", false, "Version")
+	fs.BoolVar(&showVersion, "version", false, "Version")
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if showHelp {
+		fmt.Print(usage)
+		return
+	}
+	if showVersion {
+		fmt.Println(version)
+		return
+	}
+	if fastaPath == "" {
+		fmt.Fprintln(os.Stderr, "bedgetfasta: -fi FASTA is required")
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if bedPath == "" {
+		fmt.Fprintln(os.Stderr, "bedgetfasta: -bed BED is required")
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+
+	bed, err := iohelper.OpenReader(bedPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bedgetfasta: open bed: %v\n", err)
+		os.Exit(1)
+	}
+	defer bed.Close()
+
+	out, err := iohelper.OpenWriter(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bedgetfasta: open output: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if _, err := bedgetfasta.Run(bed, fastaPath, out, os.Stderr, bedgetfasta.Options{
+		Name:     nameFlag,
+		NameOnly: nameOnly,
+		Tab:      tab,
+		Strand:   strand,
+		Split:    split,
+		RNA:      rna,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "bedgetfasta: %v\n", err)
+		os.Exit(1)
+	}
+}
