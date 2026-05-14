@@ -269,11 +269,51 @@ func TestViewVCFGzOutput(t *testing.T) {
 	}
 }
 
-func TestViewBCFOutputUnsupported(t *testing.T) {
-	var out bytes.Buffer
-	_, err := View(strings.NewReader(sampleVCF), &out, ViewOptions{OutputFormat: OutputBCF})
-	if err == nil || !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("expected unsupported error, got %v", err)
+// TestViewBCFOutputRoundTrip writes VCF to BCF and back, checking that the
+// records survive a -O b → -O v round-trip via the on-disk fast path.
+func TestViewBCFOutputRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	bcfPath := filepath.Join(dir, "x.bcf")
+	f, err := os.Create(bcfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := View(strings.NewReader(sampleVCF), f, ViewOptions{OutputFormat: OutputBCF}); err != nil {
+		t.Fatalf("View(-O b): %v", err)
+	}
+	f.Close()
+
+	var back bytes.Buffer
+	if _, err := ViewFile(bcfPath, &back, ViewOptions{}, io.Discard); err != nil {
+		t.Fatalf("ViewFile(bcf→vcf): %v", err)
+	}
+	got := back.String()
+	for _, want := range []string{"rs1", "rs2", "DP=50", "GT:DP", "S1\tS2\tS3"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("BCF round-trip missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestViewBCFUncompressedRoundTrip exercises -O u (uncompressed BCF).
+func TestViewBCFUncompressedRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	bcfPath := filepath.Join(dir, "x.ubcf")
+	f, err := os.Create(bcfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := View(strings.NewReader(sampleVCF), f, ViewOptions{OutputFormat: OutputBCFUncompressed}); err != nil {
+		t.Fatalf("View(-O u): %v", err)
+	}
+	f.Close()
+
+	var back bytes.Buffer
+	if _, err := ViewFile(bcfPath, &back, ViewOptions{}, io.Discard); err != nil {
+		t.Fatalf("ViewFile(ubcf→vcf): %v", err)
+	}
+	if !strings.Contains(back.String(), "rs1") {
+		t.Fatalf("ubcf round-trip missing rs1:\n%s", back.String())
 	}
 }
 

@@ -23,6 +23,7 @@ Usage:
 
 Subcommands:
   view      Print, filter, or convert VCF/BCF records.
+  index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   help      Show this help (also via -? on subcommands).
   version   Show version.
 `
@@ -35,6 +36,8 @@ func main() {
 	switch os.Args[1] {
 	case "view":
 		os.Exit(runView(os.Args[2:]))
+	case "index":
+		os.Exit(runIndex(os.Args[2:]))
 	case "help", "--help":
 		fmt.Print(rootUsage)
 		return
@@ -46,6 +49,88 @@ func main() {
 		fmt.Fprint(os.Stderr, rootUsage)
 		os.Exit(1)
 	}
+}
+
+const indexUsage = `bcftools index - build a CSI (or .tbi) index for a BCF / VCF.gz file.
+
+Usage:
+  bcftools index [options] <in.bcf|in.vcf.gz>
+
+Options:
+  -c, --csi                Emit CSI (default; required for BCF).
+  -t, --tbi                Emit .tbi (VCF.gz only).
+      --csi-min-shift N    Use a non-default min_shift for the CSI bin scheme (default 14).
+  -o, --output PATH        Output index path (default <in>.csi or <in>.tbi).
+  -f, --force              Overwrite an existing index file.
+  -@, --threads N          Accepted; v1 is single-threaded.
+  -h, --help               Show this help.
+      --version            Show version.
+`
+
+func runIndex(args []string) int {
+	fs := flag.NewFlagSet("bcftools index", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		csiFlag     bool
+		tbiFlag     bool
+		minShift    int
+		outPath     string
+		force       bool
+		threads     int
+		showHelp    bool
+		showVersion bool
+	)
+	cliflag.BoolVar(fs, &csiFlag, "c", "csi", false, "Emit CSI")
+	cliflag.BoolVar(fs, &tbiFlag, "t", "tbi", false, "Emit TBI (VCF.gz only)")
+	fs.IntVar(&minShift, "csi-min-shift", 0, "CSI min_shift")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "Output index path")
+	cliflag.BoolVar(fs, &force, "f", "force", false, "Overwrite existing index")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVersion, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, indexUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(indexUsage)
+		return 0
+	}
+	if showVersion {
+		fmt.Println(version)
+		return 0
+	}
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "bcftools index: missing input file")
+		fmt.Fprint(os.Stderr, indexUsage)
+		return 2
+	}
+	input := rest[0]
+
+	format := bcftools.IndexCSI
+	if tbiFlag && !csiFlag {
+		format = bcftools.IndexTBI
+	}
+
+	opts := bcftools.IndexOptions{
+		Format:     format,
+		MinShift:   int32(minShift),
+		OutputPath: outPath,
+		Force:      force,
+	}
+	written, err := bcftools.BuildIndex(input, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools index: %v\n", err)
+		return 1
+	}
+	_ = written
+	return 0
 }
 
 const viewUsage = `bcftools view - print, filter, or convert VCF/BCF records.
