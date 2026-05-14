@@ -76,6 +76,22 @@ type htmlData struct {
 	LengthSVG      string
 	FilterReasons  []reasonRow
 	AdapterRows    []adapterRow
+
+	// Duplication section. Visible only when ShowDuplication is true; the
+	// CLI sets that whenever --dup_calc_accuracy >= 1 (or --dedup) was on
+	// for the run, so empty Duplication panels don't bloat reports of
+	// runs that didn't ask for it.
+	ShowDuplication bool
+	DupRate         float64
+	DupTotal        int64
+	DedupDropped    int64
+	DupHistRows     []dupHistRow
+	DupHistSVG      string
+}
+
+type dupHistRow struct {
+	Count int
+	Reads int64
 }
 
 type reasonRow struct {
@@ -151,7 +167,53 @@ func buildHTMLData(s *ProcessStats) htmlData {
 	if s.DetectedAdapterR2 != "" {
 		d.AdapterRows = append(d.AdapterRows, adapterRow{"Detected R2 adapter", s.DetectedAdapterR2})
 	}
+
+	if s.DupTotal > 0 || len(s.DupHist) > 0 || s.DedupDropped > 0 {
+		d.ShowDuplication = true
+		d.DupRate = s.DupRate
+		d.DupTotal = s.DupTotal
+		d.DedupDropped = int64(s.DedupDropped)
+		// Build a table sorted by count (ascending). Cap the level
+		// histogram at 20 so very high duplication tails don't blow up
+		// the table; we collapse the tail into a single "20+" bucket.
+		keys := make([]int, 0, len(s.DupHist))
+		for k := range s.DupHist {
+			keys = append(keys, k)
+		}
+		sort.Ints(keys)
+		var tailTotal int64
+		for _, k := range keys {
+			if k >= 20 {
+				tailTotal += s.DupHist[k]
+				continue
+			}
+			d.DupHistRows = append(d.DupHistRows, dupHistRow{Count: k, Reads: s.DupHist[k]})
+		}
+		if tailTotal > 0 {
+			d.DupHistRows = append(d.DupHistRows, dupHistRow{Count: 20, Reads: tailTotal})
+		}
+		d.DupHistSVG = renderDupHistSVG(d.DupHistRows, "Duplication levels")
+	}
 	return d
+}
+
+// renderDupHistSVG renders a bar plot of the duplication-level
+// histogram. rows is expected to be sorted ascending by Count.
+func renderDupHistSVG(rows []dupHistRow, title string) string {
+	if len(rows) == 0 {
+		return emptyChart(title, "no data")
+	}
+	xs := make([]float64, len(rows))
+	ys := make([]float64, len(rows))
+	maxY := 1.0
+	for i, r := range rows {
+		xs[i] = float64(r.Count)
+		ys[i] = float64(r.Reads)
+		if ys[i] > maxY {
+			maxY = ys[i]
+		}
+	}
+	return barPlot(title, "occurrence count", "reads", xs, ys, maxY, "#9c27b0")
 }
 
 // renderQualitySVG returns an inline SVG plot of per-cycle mean quality
@@ -483,6 +545,23 @@ code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; }
   <tr><th>Field</th><th>Value</th></tr>
   {{range .AdapterRows}}<tr><td>{{.Label}}</td><td><code>{{.Value}}</code></td></tr>{{end}}
 </table>
+
+{{if .ShowDuplication}}
+<h2>Duplication</h2>
+<table>
+  <tr><th>Field</th><th>Value</th></tr>
+  <tr><td>Duplication rate</td><td>{{printf "%.2f%%" (mul100 .DupRate)}}</td></tr>
+  <tr><td>Reads scanned</td><td>{{.DupTotal}}</td></tr>
+  {{if .DedupDropped}}<tr><td>Reads dropped by --dedup</td><td>{{.DedupDropped}}</td></tr>{{end}}
+</table>
+{{if .DupHistRows}}
+{{safeSVG .DupHistSVG}}
+<table>
+  <tr><th>Occurrence count</th><th>Reads</th></tr>
+  {{range .DupHistRows}}<tr><td>{{.Count}}</td><td>{{.Reads}}</td></tr>{{end}}
+</table>
+{{end}}
+{{end}}
 
 <div class="footer">fastp (Go) v{{.Version}}. Self-contained report &mdash; no scripts, no external resources.</div>
 </div>

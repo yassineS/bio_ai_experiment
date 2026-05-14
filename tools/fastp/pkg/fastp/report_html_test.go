@@ -143,6 +143,46 @@ func TestWriteHTMLReportNilStats(t *testing.T) {
 	}
 }
 
+func TestWriteHTMLReportDuplicationSection(t *testing.T) {
+	stats := makeRichStats(false)
+	stats.DupRate = 0.25
+	stats.DupTotal = 100
+	stats.DedupDropped = 7
+	stats.DupHist = map[int]int64{1: 75, 2: 20, 5: 5}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dup.html")
+	if err := WriteHTMLReport(path, stats); err != nil {
+		t.Fatalf("WriteHTMLReport: %v", err)
+	}
+	body, _ := os.ReadFile(path)
+	for _, want := range []string{
+		"<h2>Duplication</h2>",
+		"Duplication rate",
+		"25.00%",
+		"Reads dropped by --dedup",
+		"Duplication levels",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("duplication section missing %q", want)
+		}
+	}
+}
+
+func TestWriteHTMLReportNoDuplicationSectionWhenDisabled(t *testing.T) {
+	stats := makeRichStats(false)
+	// stats.DupTotal == 0 -> section should be hidden.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nodup.html")
+	if err := WriteHTMLReport(path, stats); err != nil {
+		t.Fatalf("WriteHTMLReport: %v", err)
+	}
+	body, _ := os.ReadFile(path)
+	if strings.Contains(string(body), "<h2>Duplication</h2>") {
+		t.Errorf("Duplication section rendered without DupTotal > 0")
+	}
+}
+
 func TestWriteHTMLReportRendersFromActualRun(t *testing.T) {
 	// Build a tiny SE input, run the processor, then render. This is the
 	// end-to-end path the CLI uses; it catches stat-collection regressions.
