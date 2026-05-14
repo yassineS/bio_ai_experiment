@@ -26,6 +26,8 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |
+| [`samtools`](samtools/) | htslib `samtools` | SAM/BAM `view`/`sort`/`index`/`depth`/`fastq`/`flagstat` | 87% |
+| [`bcftools`](bcftools/) | htslib `bcftools` | VCF/BCF `view` (filtering, conversion, expression evaluator) | 85% |
 
 For up-to-date per-tool feature lists and migration notes, see each tool's
 own `README.md` plus [`PORTING_STATUS.md`](PORTING_STATUS.md).
@@ -65,8 +67,8 @@ go test -bench=. -benchmem ./tools/seqtk/...
 ## Where the shared code lives
 
 - [`pkg/bioformats/`](../pkg/bioformats/) — parsers + writers for FASTA, FASTQ,
-  VCF, BED, plus `iohelper` for transparent gzip / BGZF (auto-detected by
-  magic-byte sniff) and `-` (stdin/stdout).
+  VCF, BED, **SAM/BAM**, **BCF**, plus `iohelper` for transparent gzip / BGZF
+  (auto-detected by magic-byte sniff) and `-` (stdin/stdout).
 - [`pkg/cliflag/`](../pkg/cliflag/) — POSIX short + GNU long flag wiring on a
   standard `flag.FlagSet`.
 

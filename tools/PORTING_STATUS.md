@@ -25,12 +25,15 @@ This document tracks the status of bioinformatics tools being ported from their 
 
 ### Progress Summary
 
-- **Tools with a working subset**: 18 (8 original + 8 bedtools subcommands +
-  `bgzip` + `tabix`, the foundational htslib pair landed May 2026)
-- **Tools tested**: 18 (package-level tests; `cmd/` entry points have no tests)
+- **Tools with a working subset**: 20 (8 original + 8 bedtools subcommands +
+  `bgzip` + `tabix` + `samtools` + `bcftools`, the htslib core landed May 2026)
+- **Tools tested**: 20 (package-level tests; `cmd/` entry points have no tests)
 - **Test coverage (statements, `go test -cover`)** — main tools:
-  vcftools ~68%, seqtk ~72%, fastp ~77%, sickle ~82%, **tabix 86%**,
-  **bgzip 90%**, prinseq 99.9%, skewer 100%, bedmerge 100%, bedintersect 100%
+  vcftools ~68%, seqtk ~72%, fastp ~77%, sickle ~82%, **bcftools 85%**,
+  **tabix 86%**, **samtools 87%**, **bgzip 90%**, prinseq 99.9%,
+  skewer 100%, bedmerge 100%, bedintersect 100%
+- **Shared format packages**: `pkg/bioformats/sam` 87% coverage (SAM/BAM
+  read+write); `pkg/bioformats/bcf` 82% coverage (BCF v2.2 read).
 - **Test coverage** — new bedtools tools: bedsort 92%, bedflank 92%,
   bedclosest 93%, bedsubtract 94%, bedgenomecov 94%, bedcomplement 95%,
   bedslop 95%, bedjaccard 96%
@@ -415,6 +418,53 @@ UCSC binning scheme), `bcftools` (`.vcf.gz`/`.bcf` random-access), and
 
 ---
 
+### 11. ✅ samtools (May 2026, picks #3 of the 2026 ranking)
+
+Pure-Go port of htslib's `samtools`, built on top of `pkg/bioformats/sam`
+(SAM/BAM read+write, 87% cov). Landed in three slices:
+
+- **First slice** (PR #60): `samtools view` (flag/MAPQ/RG/subsample filtering,
+  format conversion), `samtools flagstat` (16-line classic summary).
+- **Second slice** (PR #61): `samtools sort` (external-merge by
+  coordinate/qname-lex/qname-natural/aux-tag with `--max-mem` bounding),
+  `samtools index` (BAI builder; the meta pseudo-bin 37450 and `n_no_coor`
+  are both handled), BAI-backed region queries on `view`. Extended
+  `bgzip.Reader` with `VirtualOffset()` for the index machinery.
+- **Third slice** (PR #62): `samtools depth` (per-position coverage with
+  M/=/X-only counting, multi-BAM parallel iteration, MAPQ/BaseQ filters),
+  `samtools fastq` + `bam2fq` alias (paired/singleton/orphan/interleaved
+  output, reverse-strand reverse-complement, `/1`/`/2` suffix logic,
+  `-T` aux-tag passthrough).
+
+Coverage: `tools/samtools/pkg/samtools` 87% (target ≥85%). Deviations:
+single-threaded (`-@`/`--threads` accepted but no-op); no CRAM; no CSI;
+`samtools fastq -1/-2` requires name-sorted input (coordinate-sorted falls
+back to interleaved with a stderr warning); `samtools view -L bed` deferred.
+
+### 12. ✅ bcftools (May 2026, pick #4 of the 2026 ranking)
+
+Pure-Go port of htslib's `bcftools`, built on top of a new
+`pkg/bioformats/bcf` decoder for BCF v2.2 (82% cov: full typed encoding
+for int8/16/32, float, char, missing + end-of-vector sentinels;
+length-prefixed and inline-length variants).
+
+- **First slice** (PR #63): `bcftools view` — VCF or BCF in, VCF or VCF.gz
+  out. Flags: `-O v/z/u/b`, `-o`, `-h/--header-only`, `-H/--no-header`,
+  `-G/--drop-genotypes`, `-c/-C` (allele-count), `-q/-Q` (allele-freq),
+  `-i/-e` recursive-descent expression evaluator
+  (`&&`/`||`/`!`/parentheses/`==`/`=`/`!=`/`<`/`<=`/`>`/`>=`, `INFO/`,
+  `FILTER`, numeric and quoted-string literals), `-f/--apply-filters`,
+  `-r/--regions` + `-R/--regions-file` (`.tbi` fast path via `tools/tabix`),
+  `-t/-T` post-filter targets, `-s/-S` sample selection, `-l`
+  (gzip level), `--threads`. Help is on `-?` / `--help` (upstream `-h`
+  means "header-only"; documented in README).
+
+Coverage: `tools/bcftools/pkg/bcftools` 85% (target ≥85%); `pkg/bioformats/bcf`
+82% (target ≥80%). Scope deferred to follow-ups: BCF writer (`-O b/u`
+currently return an explanatory error), `.csi` indexing.
+
+---
+
 ## Tool Comparison Matrix
 
 | Tool | Original Lang | Go Version | Commands | Tests | Docs | Performance | Gzip |
@@ -429,6 +479,8 @@ UCSC binning scheme), `bcftools` (`.vcf.gz`/`.bcf` random-access), and
 | vcftools | C++/Perl | 1.0.0 | 1 | ✓ | ✓ | ~1.0x | ✓ |
 | bgzip | C (htslib) | 1.0.0 | 1 | ✓ | ✓ | n/a | (is the format) |
 | tabix | C (htslib) | 1.0.0 | 1 | ✓ | ✓ | n/a | ✓ |
+| samtools | C (htslib) | 1.0.0 | 5 | ✓ | ✓ | n/a (v1) | ✓ |
+| bcftools | C (htslib) | 1.0.0 | 1 | ✓ | ✓ | n/a (v1) | ✓ |
 
 ---
 
