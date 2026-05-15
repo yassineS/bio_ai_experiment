@@ -223,11 +223,13 @@ func TestPickIUPAC_Table(t *testing.T) {
 		{'W', "AT"},
 		{'K', "GT"},
 		{'M', "AC"},
-		{'B', "CGT"},
-		{'D', "AGT"},
-		{'H', "ACT"},
-		{'V', "ACG"},
-		{'N', "ACGT"},
+		// Upstream seqtk randbase only randomises 2-base IUPAC codes;
+		// 3-base (B/D/H/V) and 4-base (N) codes pass through unchanged.
+		{'B', "B"},
+		{'D', "D"},
+		{'H', "H"},
+		{'V', "V"},
+		{'N', "N"},
 	}
 	for _, c := range cases {
 		seen := make(map[byte]bool)
@@ -266,7 +268,9 @@ func TestPickIUPAC_NonAmbiguousUnchanged(t *testing.T) {
 }
 
 func TestRandbase_Deterministic(t *testing.T) {
-	in := ">s\nNNNNNNNN\n"
+	// Use R (a 2-base code) so the RNG actually drives the output;
+	// N is passed through unchanged to match upstream.
+	in := ">s\nRRRRRRRR\n"
 	var a, b bytes.Buffer
 	if err := Randbase(strings.NewReader(in), &a, 42); err != nil {
 		t.Fatalf("Randbase a: %v", err)
@@ -280,13 +284,15 @@ func TestRandbase_Deterministic(t *testing.T) {
 }
 
 func TestRandbase_PreservesLineWidth(t *testing.T) {
-	in := ">s\nACGT\nNNNN\n"
+	// Use R (a 2-base code) on the second line; N would be passed through
+	// unchanged per upstream's stk_randbase (only 2-base codes are randomised).
+	in := ">s\nACGT\nRRRR\n"
 	var buf bytes.Buffer
 	if err := Randbase(strings.NewReader(in), &buf, 99); err != nil {
 		t.Fatalf("Randbase: %v", err)
 	}
 	out := buf.String()
-	// Two sequence lines, each 4 chars, the second all from {A,C,G,T}.
+	// Two sequence lines, each 4 chars, the second drawn from {A,G}.
 	lines := strings.Split(out, "\n")
 	if len(lines) < 3 || lines[0] != ">s" || len(lines[1]) != 4 || len(lines[2]) != 4 {
 		t.Fatalf("Randbase did not preserve line layout: %q", out)
@@ -296,8 +302,8 @@ func TestRandbase_PreservesLineWidth(t *testing.T) {
 		t.Errorf("ACGT line was changed: got %q", lines[1])
 	}
 	for _, b := range []byte(lines[2]) {
-		if b != 'A' && b != 'C' && b != 'G' && b != 'T' {
-			t.Errorf("N-line contains non-ACGT byte %c after Randbase: %q", b, lines[2])
+		if b != 'A' && b != 'G' {
+			t.Errorf("R-line contains non-AG byte %c after Randbase: %q", b, lines[2])
 		}
 	}
 }
@@ -338,7 +344,7 @@ func TestRandbase_OnlyAmbiguityChanges(t *testing.T) {
 }
 
 func TestRandbase_MultipleRecords(t *testing.T) {
-	in := ">a\nNN\n>b\nRR\n"
+	in := ">a\nYY\n>b\nRR\n"
 	var buf bytes.Buffer
 	if err := Randbase(strings.NewReader(in), &buf, 5); err != nil {
 		t.Fatalf("Randbase: %v", err)
@@ -351,11 +357,13 @@ func TestRandbase_MultipleRecords(t *testing.T) {
 	if lines[0] != ">a" || lines[2] != ">b" {
 		t.Errorf("record headers not preserved: %q", out)
 	}
+	// Record a is Y (a 2-base code) so the output must be C or T.
 	for _, b := range []byte(lines[1]) {
-		if b != 'A' && b != 'C' && b != 'G' && b != 'T' {
-			t.Errorf("record a contains non-ACGT %c: %q", b, lines[1])
+		if b != 'C' && b != 'T' {
+			t.Errorf("record a contains non-CT %c: %q", b, lines[1])
 		}
 	}
+	// Record b is R (a 2-base code) so the output must be A or G.
 	for _, b := range []byte(lines[3]) {
 		if b != 'A' && b != 'G' {
 			t.Errorf("record b contains non-AG %c: %q", b, lines[3])

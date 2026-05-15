@@ -247,9 +247,13 @@ func (r *Record) ReverseComplement() *Record {
 		}
 	}
 
+	// Note: Description is preserved verbatim. We previously appended
+	// " (reverse complement)" here, but that diverged from upstream seqtk
+	// (which emits the original header unchanged) and broke downstream
+	// parsers that key on the FASTA description field.
 	return &Record{
 		ID:          r.ID,
-		Description: r.Description + " (reverse complement)",
+		Description: r.Description,
 		Sequence:    revComp,
 	}
 }

@@ -1,0 +1,10 @@
+stats_info	bases	145
+stats_info	reads	8
+stats_len	max	30
+stats_len	mean	18.12
+stats_len	median	20
+stats_len	min	5
+stats_len	mode	20
+stats_len	modeval	3
+stats_len	range	26
+stats_len	stddev	7.47

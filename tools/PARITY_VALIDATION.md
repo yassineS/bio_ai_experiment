@@ -997,3 +997,177 @@ go test -race ./tools/fastp/...
 The parity tests are guarded by `ensureUpstream(t)` so they skip
 cleanly on systems without the upstream binary — which is also why CI
 (currently disabled in this repo) does not need libisal/libdeflate.
+
+## prinseq parity validation
+
+`tools/prinseq` is a Go port of the PRINSEQ-lite Perl pipeline
+(upstream `uwb-linux/prinseq` @ 0.20.4, vendored under
+`reference_code/prinseq/`). The parity rig drives the Go library
+functions on a small corpus of FASTA / FASTQ fixtures generated once
+by running upstream `prinseq-lite.pl -line_width 0 -out_good <prefix>`
+on representative inputs and committing the result under
+`tools/prinseq/testdata/parity/`. Tests are then byte-for-byte against
+the fixture, with the single exception of the stats-info / stats-len
+case, where we parse upstream's `stats_*` text rows and compare
+numbers (upstream and our port disagree on summary formatting, but
+the numbers themselves must match).
+
+### Summary
+
+| Category | Case | Status | Notes |
+| --- | --- | --- | --- |
+| Stats | `stats_info` + `stats_len` (FASTA) | PASS | Numeric parity for `bases`, `reads`, `min`, `max`, `mean`. |
+| Stats | `stats_info` + `stats_len` (FASTQ) | PASS | Numeric parity (encoding-independent for length stats). |
+| Filter | `-min_len 10` | PASS | Byte-for-byte FASTA. |
+| Filter | `-max_len 20` | PASS | Byte-for-byte FASTA. |
+| Filter | `-min_gc 50` | PASS | Byte-for-byte FASTA. |
+| Filter | `-max_gc 60` | PASS | Byte-for-byte FASTA. |
+| Filter | `-ns_max_p 5` | PASS | Byte-for-byte FASTA. |
+| Filter | `-ns_max_n 2` | PASS | Byte-for-byte FASTA. |
+| Filter | `-min_qual_mean 15` (Phred+33) | PASS | Byte-for-byte FASTQ. |
+| Filter | `-min_qual_mean 39 -phred64` | PASS | Byte-for-byte FASTQ — exercises Phred+64 mean-quality decode (fixed in this PR). |
+| Filter | Multi-criteria (length + GC) | PASS | Byte-for-byte FASTA. |
+| Trim | `-trim_left 5` | PASS | Byte-for-byte FASTQ. |
+| Trim | `-trim_right 4` | PASS | Byte-for-byte FASTQ. |
+| Trim | `-trim_qual_left 20` | PASS | Byte-for-byte FASTQ. |
+| Trim | `-trim_qual_right 20` | PASS | Byte-for-byte FASTQ. |
+| Trim | `-trim_tail_left 4` | PASS | Byte-for-byte FASTQ — exercises the same-base poly-A/T anchor fix in this PR. |
+| Trim | `-trim_tail_right 4` | PASS | Byte-for-byte FASTQ — same fix. |
+| Filter | `-derep 1` exact duplicates | PASS | Byte-for-byte FASTA. |
+| Paired | `-fastq -fastq2 -min_len 10` | PASS | R1 and R2 outputs byte-for-byte. |
+| Empty | `-fasta`/`-fastq` empty input | PASS | No crash; zero-byte output. |
+
+Totals: 18 cases (counting the two empty sub-tests as one), 18 PASS,
+0 SKIP.
+
+### Discrepancies found (and fixed in this PR)
+
+The parity audit surfaced three real bugs in our Go port relative to
+upstream PRINSEQ-lite, all fixed inline:
+
+- **`-min_qual_mean` ignored `--qual-type illumina`** — the filter
+  loop in `tools/prinseq/pkg/prinseq/prinseq.go` called
+  `calculateAvgQualityScore` (which hard-codes offset 33) instead of
+  `calculateAvgQualityScoreWithOffset(_, phredOffset(opts.QualType))`.
+  Phred+64 inputs were therefore decoded against the wrong offset,
+  consistently 31 quality units too high. Now resolved.
+- **`-trim_tail_left` / `-trim_tail_right` treated A and T as
+  interchangeable** — our port matched any prefix of A or T bases
+  (`A|T`) as a single poly-tail run. Upstream first picks an anchor
+  (the leading or trailing N-base homopolymer, A *or* T, not both)
+  and then extends only with that base or N. The old behaviour
+  over-trimmed by 1+ bases whenever the tail straddled an A-run and a
+  T-run. Fixed by rewriting `trimPolyATLeft` / `trimPolyATRight` and
+  adding `matchesCase` / `allEqualCase` helpers.
+- **FASTQ output emitted `+\n` instead of `+<header>\n`** — upstream
+  PRINSEQ defaults to repeating the sequence header on the quality
+  separator line; the bare `+` is only used when `-no_qual_header` is
+  supplied. Our port used the generic `fastq.Writer` (bare `+`) which
+  diverged byte-for-byte. Fixed by adding `writePrinseqFastq` in
+  `prinseq.go` and routing filter / paired-end output through it.
+
+### Discrepancies found (NOT fixed)
+
+- **stats output format** — upstream emits
+  `stats_<section>\t<key>\t<value>` rows; our `prinseq stats`
+  emits a human-readable summary. The numbers match — we parse
+  upstream's rows and compare values rather than literal text — but
+  the formats themselves diverge. Documented under
+  [docs/PARITY_ROADMAP.md#prinseq-lite](../docs/PARITY_ROADMAP.md#prinseq-lite).
+
+### Reproducing locally
+
+```bash
+git submodule update --init reference_code/prinseq
+go test -race ./tools/prinseq/...
+```
+
+## seqtk parity validation
+
+`tools/seqtk` is a Go port of `lh3/seqtk` (upstream v1.5-r133,
+vendored under `reference_code/seqtk/`). Each fixture under
+`tools/seqtk/testdata/parity/` was generated once by piping the
+matching input file through the upstream binary with the same
+subcommand and flags. Tests then drive the Go library functions on
+the same input and assert byte parity (or skip with a documented
+divergence).
+
+### Summary
+
+| Subcommand | Case | Status | Notes |
+| --- | --- | --- | --- |
+| `comp` | FASTA small | PASS | Byte-for-byte per-record nucleotide composition (13 cols). |
+| `comp` | FASTQ small | PASS | Byte-for-byte (input format auto-detected). |
+| `comp` | FASTA with N runs | PASS | Exercises the #4 ambiguity column. |
+| `seq -A` | FASTQ → FASTA | PASS | Byte-for-byte conversion via `ConvertFastqToFasta`. |
+| `seq -A` | Phred+64 FASTQ → FASTA | PASS | Encoding-independent on the sequence side. |
+| `seq -r` | FASTA reverse-complement | PASS | Header preserved verbatim (port fix in this PR). |
+| `seq -r` | FASTQ reverse-complement | PASS | Quality reversed in lockstep with the sequence. |
+| `subseq` | Name-list mode | PASS | Records emitted in input order. |
+| `subseq` | BED-region mode | PASS | `name:start+1-end` header. |
+| `mergepe` | Two FASTQ files | PASS | Interleaved output. |
+| `cutN` | `-n 4` cut at runs ≥ 4 | PASS | Every fragment uses upstream's `name:start-end` header. |
+| `cutN` | `-n 100` (no cuts) | PASS | Records still emitted with `name:1-len` (port fix in this PR). |
+| `mutfa` | Apply mutations file | PASS | Byte-for-byte. |
+| `hpc` | Homopolymer compression (homo.fa) | PASS | Single-line output, runs of length 1 preserved. |
+| `hpc` | Homopolymer compression (small.fa) | PASS | Spot-check with mixed run lengths. |
+| `sample` | Fraction 1.0 / 0.5 invariants | PASS | Structural-only: subset of input, fraction=1.0 keeps all. |
+| `sample` | Upstream byte parity | SKIP | Different RNG; see `docs/UPSTREAM_BUGS.md#seqtk-sample-rng`. |
+| `randbase` | IUPAC invariants | PASS | Only 2-base codes (R/Y/S/W/K/M) randomised (port fix in this PR); 3/4-base codes pass through. |
+| `randbase` | Upstream byte parity | SKIP | Different RNG; see `docs/UPSTREAM_BUGS.md#seqtk-randbase-rng`. |
+| `trimfq` | Upstream byte parity | SKIP | Algorithm gap: Phred-threshold vs Mott; see `docs/UPSTREAM_BUGS.md#seqtk-trimfq-algorithm`. |
+| (all) | Empty input no-crash | PASS | Every public function on a zero-byte input returns nil. |
+
+Totals: 21 cases (including the 2 sample sub-tests), 18 PASS, 3 SKIP.
+
+### Discrepancies found (and fixed in this PR)
+
+- **`seq -r` appended `" (reverse complement)"` to the FASTA / FASTQ
+  description** — added by `fasta.Record.ReverseComplement` and
+  `fastq.Record.ReverseComplement` in `pkg/bioformats/`. Upstream
+  preserves the header verbatim; downstream tools that key on the
+  description field were silently broken. Now the description is
+  copied unchanged.
+- **`comp` was emitting summary statistics rather than upstream's
+  per-record nucleotide-composition rows.** Added a new `Comp`
+  function (`tools/seqtk/pkg/seqtk/comp.go`) that mirrors upstream's
+  `stk_comp` inner loop byte-for-byte (`name\tlen\t#A\t#C\t#G\t#T\t#2\t#3\t#4\t#CpG\t#tv\t#ts\t#CpG-ts`).
+  The summary-stats form is preserved as a `--summary` opt-in on the
+  CLI for backward compatibility with existing scripts.
+- **`cutN` dropped the coordinate suffix when no run reached the
+  threshold.** Upstream's `print_seq` always prints
+  `name:start+1-end`. Without the fix, downstream code that walks
+  uniform `name:S-E` headers had to special-case the unchanged
+  records. Now every record gets the suffix.
+- **`randbase` was randomising 3-base (B/D/H/V) and 4-base (N) IUPAC
+  codes.** Upstream's `stk_randbase` only touches codes whose
+  bit-count is exactly 2 (R/Y/S/W/K/M), leaving everything else
+  alone. The expansion table in `tools/seqtk/pkg/seqtk/mutations.go`
+  was trimmed accordingly; the existing `pickIUPAC` unit tests were
+  updated to match.
+
+### Discrepancies found (NOT fixed)
+
+- **`sample` RNG** — upstream uses a seeded reservoir sampler with a
+  default seed of 11; our port does a deterministic every-Nth-record
+  pick. Byte parity is therefore impossible. Tracked at
+  [docs/UPSTREAM_BUGS.md#seqtk-sample-rng](../docs/UPSTREAM_BUGS.md#seqtk-sample-rng);
+  the parity test is split into a structural-invariants pass and a
+  skipped byte-parity entry.
+- **`randbase` RNG** — upstream uses `drand48()` with an implicit
+  seed of 0, our port uses `math/rand` with a caller-supplied seed.
+  Structural invariants are checked; byte parity is skipped (see
+  [docs/UPSTREAM_BUGS.md#seqtk-randbase-rng](../docs/UPSTREAM_BUGS.md#seqtk-randbase-rng)).
+- **`trimfq` algorithm** — upstream runs a Mott-style error-rate
+  trim with a 0.05 default threshold; our port does a simple
+  Phred-threshold cut on each end. Different algorithms, different
+  cuts. Tracked at
+  [docs/UPSTREAM_BUGS.md#seqtk-trimfq-algorithm](../docs/UPSTREAM_BUGS.md#seqtk-trimfq-algorithm).
+
+### Reproducing locally
+
+```bash
+git submodule update --init reference_code/seqtk
+cd reference_code/seqtk && make && cd -
+go test -race ./tools/seqtk/...
+```
