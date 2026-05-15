@@ -221,15 +221,26 @@ Resolved in the column-ops + discrepancies wave:
 
 Option-tail gaps on the wave-2 additions:
 
-- `bedgetfasta` — `-fullHeader` is now implemented (this PR): contigs are
-  indexed by the full FASTA header line (whitespace included) via
+- `bedgetfasta` — `-fullHeader` is now implemented: contigs are indexed
+  by the full FASTA header line (whitespace included) via
   `pkg/bioformats/fasta.BuildIndexFullHeader` /
   `OpenRandomAccessFullHeader`, and `bedgetfasta -fullHeader` flows the
   flag through to the index build. Upstream `getfasta.t06` (the
   `-fullHeader` two-line case) and `t07` (the no-`-fullHeader` warning
-  case) now both pass byte-for-byte.
-  Remaining gap: BGZF FASTA input via `.gzi`. `pkg/bioformats/fasta`
-  needs a `.gzi` reader before BGZF random-access fetch is feasible.
+  case) now both pass byte-for-byte. BGZF FASTA input is also wired
+  through (this PR): `pkg/bioformats/fasta` now sniffs the BGZF magic
+  in `OpenRandomAccess` / `OpenRandomAccessFullHeader` and routes to a
+  new `OpenRandomAccessBGZF` that fully decompresses the payload
+  in-memory and reuses the existing FAI index path. The `.gzi` sidecar
+  (when present) is parsed for early validation via a stdlib-only
+  little-endian reader in `pkg/bioformats/fasta/bgzf.go`; a samtools-
+  compatible `.fa.gz.fai` is honoured when present, otherwise the
+  index is rebuilt from the decompressed payload. Upstream
+  `getfasta.t18` (BGZF FASTA + `-split` BED12) now passes byte-for-byte
+  using the upstream `t.fa.gz` fixture. Partial-decompression seek via
+  `.gzi` is a future optimization; the in-memory path is sufficient
+  for parity and for the reference genomes bedtools is typically used
+  against.
 - `bedsort` — `-header` is now implemented (this PR): leading
   `#`-prefixed comment, `track`, and `browser` directive lines are
   buffered and emitted verbatim ahead of the sorted body. Upstream
@@ -239,16 +250,24 @@ Option-tail gaps on the wave-2 additions:
   `bedsample` (same seed → same output) but cross-tool record-for-record
   parity with upstream is not feasible without porting upstream's
   `random_shuffle`.
-- `bedmulticov` — <a id="bedmulticov-bam"></a>BAM input is now wired
-  through (this PR) via `pkg/bioformats/sam.NewBAMReader`; primary
-  alignments contribute one interval each over their reference span,
-  and `-q` MAPQ filter + `-D` per-A-interval depth cap are honoured.
-  Upstream `multicov.t1`/`t2`/`t3`/`t4` (`two_blocks` BAM without
-  `-split`) and `t10` (multi-BAM) now pass byte-for-byte against the
-  upstream expected outputs. **CRAM** input remains deferred — see
-  `docs/CRAM_DESIGN.md`; the CLI surfaces a clear error for `.cram`.
-  **`-split`** block-aware coverage on BAM CIGAR `N` ops is still
-  missing; `multicov.t5..t9` remain `t.Skip`ped pending that.
+- `bedmulticov` — <a id="bedmulticov-bam"></a>BAM input is wired through
+  via `pkg/bioformats/sam.NewBAMReader`; primary alignments contribute
+  one interval each over their reference span, and `-q` MAPQ filter +
+  `-D` per-A-interval depth cap are honoured. Upstream `multicov.t1`
+  through `t4` and `t10` pass byte-for-byte.
+  **`-split`** block-aware coverage on BAM CIGAR `N` ops is now
+  implemented (this PR): the BAM index pass walks each alignment's
+  CIGAR and emits one block per contiguous reference-consuming op-run
+  (M/=/X, with D extending the current block — matching upstream's
+  `breakOnDeletionOps=false`), skipping any `N`-op gap. Each alignment
+  is counted at most once per A interval. When combined with
+  `-f`, the threshold is applied to `total_block_overlap /
+  sum_of_BAM_block_lengths` using strict `>` — a quirk of bedtools 2.x
+  preserved here for byte-for-byte parity (mirrors
+  `multiBamCov.cpp::FindBlockedOverlaps`). Upstream `multicov.t5`
+  through `t9` now pass.
+  **CRAM** input remains deferred — see `docs/CRAM_DESIGN.md`; the CLI
+  surfaces a clear error for `.cram`.
 - `bedmultiinter` — VCF/GFF input not implemented (upstream autodetects
   these via `BedFile`). Input is assumed sorted; out-of-order records
   within a single file are tolerated only because each file is

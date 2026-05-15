@@ -30,6 +30,7 @@ package bedgetfasta
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -37,6 +38,7 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
+	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
 )
 
 // Options configures Run.
@@ -266,6 +268,18 @@ type readerAtCloser interface {
 }
 
 func openFasta(path string, fullHeader bool) (*RandomAccess, error) {
+	// BGZF (`.fa.gz`) inputs are detected by sniffing the BGZF magic on
+	// the first four bytes. When detected, we fully decompress the
+	// payload into memory and back the case-preserving Fetch with a
+	// bytes.Reader. samtools-compatible side-files (`.fa.gz.fai` and
+	// `.fa.gz.gzi`) are honoured when present — see the package doc on
+	// pkg/bioformats/fasta/bgzf.go for the on-disk format and the
+	// future partial-decompression roadmap.
+	if bgzf, err := isBGZF(path); err != nil {
+		return nil, err
+	} else if bgzf {
+		return openFastaBGZF(path, fullHeader)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -296,6 +310,69 @@ func openFasta(path string, fullHeader bool) (*RandomAccess, error) {
 		}
 	}
 	return &RandomAccess{idx: idx, r: f, closeFn: f.Close}, nil
+}
+
+// isBGZF reports whether path starts with the BGZF magic (gzip 1f 8b 08
+// with FEXTRA bit set in FLG). A non-BGZF file (including plain gzip) is
+// not an error — the caller falls back to plain-FASTA handling.
+func isBGZF(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	var buf [4]byte
+	n, err := io.ReadFull(f, buf[:])
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return false, err
+	}
+	if n < 4 {
+		return false, nil
+	}
+	return buf == [4]byte{0x1f, 0x8b, 0x08, 0x04}, nil
+}
+
+// openFastaBGZF decompresses path and builds the case-preserving
+// random-access view over the in-memory payload. The `.fa.gz.gzi`
+// sidecar (if present) is parsed for validation only — the in-memory
+// implementation does not yet need to seek by compressed offset.
+func openFastaBGZF(path string, fullHeader bool) (*RandomAccess, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	br, err := bgzip.NewReader(f)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("bgzf header: %w", err)
+	}
+	payload, err := io.ReadAll(br)
+	f.Close()
+	if err != nil {
+		return nil, fmt.Errorf("bgzf decompress: %w", err)
+	}
+	var idx *fasta.Index
+	if fullHeader {
+		idx, err = fasta.BuildIndexFullHeaderBytes(payload)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Prefer an explicit .fa.gz.fai over rebuilding (samtools' offsets
+		// are into the uncompressed virtual stream, which IS our payload).
+		if fi, ferr := fasta.LoadIndex(path + ".fai"); ferr == nil {
+			idx = fi
+		} else if !os.IsNotExist(ferr) {
+			return nil, ferr
+		} else {
+			idx, err = fasta.BuildIndexBytes(payload)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	rdr := bytes.NewReader(payload)
+	return &RandomAccess{idx: idx, r: rdr, closeFn: func() error { return nil }}, nil
 }
 
 // Close releases the underlying file.

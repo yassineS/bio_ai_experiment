@@ -154,12 +154,90 @@ func TestParity_T4_BAMInput_TwoBlocks_NoSplit(t *testing.T) {
 	}
 }
 
-// Upstream multicov.t5..t9 all require `-split` block-aware coverage on
-// BAM CIGARs (the alignment's `N` op splits one alignment into multiple
-// disjoint reference blocks). Not yet implemented.
-func TestParity_Skip_BAMSplitCases(t *testing.T) {
-	t.Skip("multicov.t5..t9 require BAM `-split` block-aware coverage on " +
-		"CIGAR `N` ops; not yet implemented (see PARITY_ROADMAP.md#bedmulticov-bam).")
+// Parity.t5: -split alone. The `two_blocks` alignment (CIGAR 15M10N15M,
+// pos 1, '-' strand) decomposes into [0,15) and [25,40). A.{a1,a3}=[15,20)
+// no longer overlap any block; A.{a2,a4}=[15,27) still pick up the second
+// block via [25,27).
+func TestParity_T5_BAMInput_Split(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t5.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "15M10N15M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t5 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
+}
+
+// Parity.t6: -split + -s same-strand. Alignment is '-', so only the two
+// '-' A intervals are candidates; only A.a4 has a positive block overlap.
+func TestParity_T6_BAMInput_Split_SameStrand(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t6.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "15M10N15M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true, SameStrand: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t6 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
+}
+
+// Parity.t7: -split + -S opposite-strand. Alignment is '-', so only the
+// two '+' A intervals are candidates; only A.a2 has a positive block
+// overlap (block [25,40) vs [15,27)).
+func TestParity_T7_BAMInput_Split_OppositeStrand(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t7.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "15M10N15M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true, OppositeStrand: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t7 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
+}
+
+// Parity.t8: -split + -f 0.01. With overlap=2 on a2/a4 and the BAM block
+// footprint = 30, upstream's check is 2/30 = 0.0667 > 0.01 → pass for
+// a2/a4 (a1/a3 still don't overlap any block).
+func TestParity_T8_BAMInput_Split_FractionA01(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t8.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "15M10N15M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true, FractionA: 0.01}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t8 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
+}
+
+// Parity.t9: -split + -f 0.10. Same arithmetic as t8 but the threshold
+// is now 0.10 and 2/30 = 0.0667 is NOT > 0.10 → all counts become 0.
+// This exercises the upstream-specific strict-`>` divide-by-footprint
+// semantics that this port faithfully mirrors.
+func TestParity_T9_BAMInput_Split_FractionA10(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t9.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "15M10N15M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true, FractionA: 0.10}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t9 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
 }
 
 // Parity.t10-BAM mirrors upstream multicov.t10 exactly: two BAM inputs

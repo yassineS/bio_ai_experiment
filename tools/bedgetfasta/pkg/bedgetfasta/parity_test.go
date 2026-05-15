@@ -279,9 +279,52 @@ func TestParity_Getfasta_T07_NoFullHeaderWarning(t *testing.T) {
 	}
 }
 
-// Upstream getfasta.t18 — input FASTA is bgzipped. Random-access FASTA
-// support over BGZF needs a .gzi index; not yet implemented in
-// pkg/bioformats/fasta.
+// Upstream getfasta.t18 — input FASTA is bgzipped. Mirrors the upstream
+// check verbatim:
+//
+//	$BT getfasta -split -fi t.fa.gz -bed blocks.bed | awk '(NR == 4)' → "cta"
+//
+// With blocks.bed's two BED12 rows the expected output is four lines:
+//
+//	1: >chr1:0-40
+//	2: ggggggtgggggggggcggggg   (row 1's concatenated blocks)
+//	3: >chr1:0-40
+//	4: cta                       (row 2's three single-base blocks)
+//
+// The 4th line is what upstream asserts. We assert the same and also
+// require byte-for-byte equality against the four-line FASTA so the
+// BGZF path is fully validated (input is the BGZF-compressed t.fa.gz +
+// its sibling .gzi).
 func TestParity_Getfasta_T18_BGZF(t *testing.T) {
-	t.Skip("BGZF (.fa.gz) FASTA input is not yet supported by pkg/bioformats/fasta random access; needs .gzi index — see PARITY_ROADMAP.md#bedtools")
+	bed := []byte(
+		"chr1\t0\t40\tthree_blocks_match\t0\t+\t0\t0\t0\t3\t2,10,10,\t5,16,36,\n" +
+			"chr1\t0\t40\tthree_blocks_match\t0\t-\t0\t0\t0\t3\t1,1,1,\t10,20,30,\n")
+	var out, warn bytes.Buffer
+	fa := filepath.Join("..", "..", "testdata", "parity", "t.fa.gz")
+	if _, err := Run(bytes.NewReader(bed), fa, &out, &warn,
+		Options{Split: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("unexpected warnings: %q", warn.String())
+	}
+	got := out.String()
+	want := ">chr1:0-40\n" +
+		"ggggggtgggggggggcggggg\n" +
+		">chr1:0-40\n" +
+		"cta\n"
+	if got != want {
+		t.Fatalf("BGZF -split output mismatch:\n got %q\nwant %q", got, want)
+	}
+	// The headline upstream check.
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) < 4 || lines[3] != "cta" {
+		t.Fatalf("expected awk(NR==4) == \"cta\"; got line 4 = %q",
+			func() string {
+				if len(lines) >= 4 {
+					return lines[3]
+				}
+				return "<missing>"
+			}())
+	}
 }

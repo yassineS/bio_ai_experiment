@@ -20,6 +20,7 @@ package fasta
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -171,9 +172,41 @@ func buildIndex(path string, fullHeader bool) (*Index, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return buildIndexFromReader(f, fullHeader)
+}
 
+// buildIndexFromBytes is the in-memory counterpart of buildIndex, used
+// by the BGZF path which has already decompressed the FASTA payload.
+func buildIndexFromBytes(data []byte, fullHeader bool) (*Index, error) {
+	return buildIndexFromReader(bytes.NewReader(data), fullHeader)
+}
+
+// BuildIndexBytes builds a samtools-faidx-compatible index over an
+// in-memory FASTA payload (the bytes the file would contain after any
+// outer compression layer has been stripped). It is the in-memory
+// counterpart of BuildIndex and is used by the BGZF wrapper in
+// `tools/bedgetfasta` (and any future callers) to avoid an extra round
+// trip through the filesystem.
+func BuildIndexBytes(data []byte) (*Index, error) {
+	return buildIndexFromBytes(data, false)
+}
+
+// BuildIndexFullHeaderBytes is the `-fullHeader` analogue of
+// BuildIndexBytes: contigs are keyed by the full header line
+// (whitespace included) instead of the first-token name. Use this when
+// implementing `bedtools getfasta -fullHeader` against an in-memory
+// FASTA payload.
+func BuildIndexFullHeaderBytes(data []byte) (*Index, error) {
+	return buildIndexFromBytes(data, true)
+}
+
+// buildIndexFromReader is the streaming, source-agnostic core of
+// BuildIndex / BuildIndexFullHeader. It walks the FASTA line by line,
+// recording header offsets and verifying that each contig has uniform
+// line geometry (mirrors samtools faidx's invariant).
+func buildIndexFromReader(r io.Reader, fullHeader bool) (*Index, error) {
 	idx := &Index{byName: make(map[string]int)}
-	br := bufio.NewReader(f)
+	br := bufio.NewReader(r)
 	var (
 		offset    int64
 		curName   string
@@ -297,7 +330,18 @@ type RandomAccess struct {
 // OpenRandomAccess opens a FASTA file together with its sibling .fai index
 // (or builds one on the fly when missing). The returned RandomAccess holds
 // onto an open *os.File; call Close to release it.
+//
+// BGZF-compressed FASTAs (`.fa.gz` produced by `bgzip` or `samtools faidx
+// --output-fmt fasta`) are detected automatically by sniffing the BGZF
+// magic — callers do NOT need a separate code path for `.gz` inputs. See
+// OpenRandomAccessBGZF for the underlying implementation; this thin
+// wrapper exists so most callers can use a single entry point.
 func OpenRandomAccess(path string) (*RandomAccess, error) {
+	if bgzf, err := isBGZFFile(path); err != nil {
+		return nil, err
+	} else if bgzf {
+		return OpenRandomAccessBGZF(path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -328,6 +372,11 @@ func OpenRandomAccess(path string) (*RandomAccess, error) {
 // a multi-word contig identifier to match the corresponding FASTA
 // sequence).
 func OpenRandomAccessFullHeader(path string) (*RandomAccess, error) {
+	if bgzf, err := isBGZFFile(path); err != nil {
+		return nil, err
+	} else if bgzf {
+		return OpenRandomAccessBGZFFullHeader(path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

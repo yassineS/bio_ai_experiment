@@ -408,6 +408,91 @@ func TestRunSources_OptionValidation(t *testing.T) {
 	}
 }
 
+// TestSplit_Reciprocal exercises the -split + -r path: with Reciprocal
+// set, the upstream check additionally requires
+// total_overlap/lenA > FractionA. A short A interval that satisfies the
+// per-footprint check but fails the per-A check should NOT count.
+func TestSplit_Reciprocal(t *testing.T) {
+	a := "chr1\t0\t200\n" // long A: 1/200 < 0.1 fails reciprocal at A side.
+	// One read with CIGAR 1M99N1M starting at pos 1: blocks [0,1) and
+	// [100,101). Footprint=2. Total overlap with A=[0,200): 2.
+	// 2/2 = 1.0 > 0.1 (footprint side, pass).
+	// 2/200 = 0.01 < 0.1 (A side, fail under -r).
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 0, cigar: "1M99N1M", flag: 0}})
+	var got bytes.Buffer
+	if _, err := RunSources(strings.NewReader(a),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true, FractionA: 0.1, Reciprocal: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if got.String() != "chr1\t0\t200\t0\n" {
+		t.Fatalf("expected 0 under -r; got %q", got.String())
+	}
+
+	// Now drop Reciprocal: the footprint check (1.0 > 0.1) passes, so
+	// the alignment counts once.
+	var got2 bytes.Buffer
+	if _, err := RunSources(strings.NewReader(a),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got2, Options{Split: true, FractionA: 0.1}); err != nil {
+		t.Fatalf("RunSources (no -r): %v", err)
+	}
+	if got2.String() != "chr1\t0\t200\t1\n" {
+		t.Fatalf("expected 1 without -r; got %q", got2.String())
+	}
+}
+
+// TestSplit_OncePerAlignment: two blocks of one alignment both overlap
+// the same A interval — the alignment must count ONCE (the whole point
+// of `-split`'s de-duplication contract).
+func TestSplit_OncePerAlignment(t *testing.T) {
+	a := "chr1\t0\t100\n" // covers both blocks
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 0, cigar: "10M20N10M", flag: 0}})
+	var got bytes.Buffer
+	if _, err := RunSources(strings.NewReader(a),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if got.String() != "chr1\t0\t100\t1\n" {
+		t.Fatalf("expected 1 (once-per-aln dedupe); got %q", got.String())
+	}
+}
+
+// TestSplit_DeletionExtendsBlock: D ops extend the current block under
+// multicov's `-split` semantics (breakOnDeletionOps=false in upstream).
+func TestSplit_DeletionExtendsBlock(t *testing.T) {
+	a := "chr1\t0\t100\n"
+	// 5M2D5M produces ONE block of length 12 starting at pos 0 (no N).
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 0, cigar: "5M2D5M", flag: 0}})
+	var got bytes.Buffer
+	if _, err := RunSources(strings.NewReader(a),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if got.String() != "chr1\t0\t100\t1\n" {
+		t.Fatalf("expected D to extend block; got %q", got.String())
+	}
+}
+
+// TestSplit_AllSkippedAlignments: alignments that consume zero
+// reference bases produce no blocks and contribute no counts.
+func TestSplit_AllSkippedAlignments(t *testing.T) {
+	a := "chr1\t0\t100\n"
+	// Pure soft-clip — no reference advance.
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 0, cigar: "30S", flag: 0}})
+	var got bytes.Buffer
+	if _, err := RunSources(strings.NewReader(a),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{Split: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if got.String() != "chr1\t0\t100\t0\n" {
+		t.Fatalf("expected 0 for zero-block alignment; got %q", got.String())
+	}
+}
+
 // Multi-chrom inputs and intervals that span chrom gaps should still
 // report a 0 for the file that has no records on a given chrom.
 func TestRun_MultiChromAndMissingChrom(t *testing.T) {
