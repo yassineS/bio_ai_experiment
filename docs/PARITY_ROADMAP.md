@@ -312,7 +312,10 @@ workflows):
 
 Plus:
 
-- **CRAM** read/write throughout. Big.
+- **CRAM** read/write throughout. Multi-month effort on its own; the
+  rANS codec layer is the gating piece. Owner has OK'd third-party
+  dependencies for CRAM codecs (see `CLAUDE.md#documented-exception-cram`).
+  Design doc to follow.
 - **`.csi`** for samtools (BAI is fine for chromosomes ≤512Mb).
 - **Multi-threading** in `sort`, `index`, `view` (`-@`).
 
