@@ -1086,3 +1086,268 @@ func runStats(args []string) int {
 	}
 	return 0
 }
+
+// ----- calmd -----------------------------------------------------------
+
+const calmdUsage = `samtools calmd - compute MD + NM aux tags.
+
+Usage:
+  samtools calmd [options] <in.bam|in.sam> <ref.fa>
+
+Walks each record's CIGAR against the reference FASTA, fills in or
+updates the MD:Z and NM:i auxiliary tags, and writes the records back
+out. Unmapped records pass through unchanged.
+
+Options:
+  -e             Replace MATCH bases in SEQ with '='.
+  -b             Output BAM (default text SAM).
+  -u             Uncompressed BAM out (implies -b).
+  -S             Input is SAM (auto-detected — accepted, no-op).
+  -A             Accept reads with mismatch/quality issues (no-op in v1).
+  -r             Compute BQ tag from BAQ (accepted; BAQ recompute is
+                 deferred — see docs/PARITY_ROADMAP.md#samtools).
+  -E             Extended BAQ mode (accepted; deferred).
+  -Q             Quiet: suppress per-record "different MD/NM" warnings.
+  -@, --threads N  Accepted; v1 is single-threaded.
+  -o, --output PATH  Output path (default stdout).
+  -h, --help     Show this help.
+  -v, --version  Show version.
+`
+
+func runCalmd(args []string) int {
+	fs := flag.NewFlagSet("samtools calmd", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		useEqual bool
+		outBAM   bool
+		uncomp   bool
+		sInFmt   bool
+		adjustA  bool
+		realnR   bool
+		extBAQ   bool
+		quiet    bool
+		threads  int
+		outPath  string
+		showHelp bool
+		showVer  bool
+	)
+	fs.BoolVar(&useEqual, "e", false, "")
+	fs.BoolVar(&outBAM, "b", false, "")
+	fs.BoolVar(&uncomp, "u", false, "")
+	fs.BoolVar(&sInFmt, "S", false, "")
+	fs.BoolVar(&adjustA, "A", false, "")
+	fs.BoolVar(&realnR, "r", false, "")
+	fs.BoolVar(&extBAQ, "E", false, "")
+	fs.BoolVar(&quiet, "Q", false, "")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	// Accept-and-ignore stubs for upstream parity (see
+	// docs/PARITY_ROADMAP.md#samtools-calmd-deferred). Behaviour is
+	// deferred; flag parse must not hard-error.
+	var (
+		clearMDNM bool
+		maxNM     int
+		capQ      int
+		dropTag   string
+		binQual   int
+		noPG      bool
+		hashQNM   bool
+	)
+	fs.BoolVar(&clearMDNM, "N", false, "")
+	fs.IntVar(&maxNM, "n", 0, "")
+	fs.IntVar(&capQ, "C", 0, "")
+	fs.StringVar(&dropTag, "d", "", "")
+	fs.IntVar(&binQual, "q", 0, "")
+	fs.BoolVar(&noPG, "no-PG", false, "")
+	fs.BoolVar(&hashQNM, "hash-qnm", false, "")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, calmdUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(calmdUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	if fs.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "samtools calmd: need <in.bam> <ref.fa>")
+		fmt.Fprint(os.Stderr, calmdUsage)
+		return 2
+	}
+	inPath := fs.Arg(0)
+	refPath := fs.Arg(1)
+	_ = threads // accepted, ignored
+	_ = sInFmt  // we auto-detect
+	_ = clearMDNM
+	_ = maxNM
+	_ = capQ
+	_ = dropTag
+	_ = binQual
+	_ = noPG
+	_ = hashQNM
+	out, err := openOut(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools calmd: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+	opts := samtools.CalmdOptions{
+		UseEqual:     useEqual,
+		OutputBAM:    outBAM,
+		Uncompressed: uncomp,
+		ExtendedBAQ:  extBAQ,
+		AdjustCapQ:   adjustA,
+		RealignBAQ:   realnR,
+		Quiet:        quiet,
+	}
+	if err := samtools.CalmdFile(inPath, out, refPath, opts, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools calmd: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// ----- import ----------------------------------------------------------
+
+const importUsage = `samtools import - convert FASTQ to BAM/SAM.
+
+Usage:
+  samtools import [options] [file.fastq ...]
+
+Positional arguments (where supplied without -0/-1/-2/-s):
+  one file  → single / interleaved input
+  two files → R1 then R2
+
+Options:
+  -0 FILE             Unpaired reads.
+  -1 FILE             Read-1 input (paired output).
+  -2 FILE             Read-2 input (paired output).
+  -s FILE             Paired input from one file (with /1 /2 in QNAME).
+  -r STRING           Full @RG line (or "ID:rgX\tSM:s1" without leading @RG).
+  -R STRING           Build @RG with just this ID (shorthand for -r ID:STRING).
+  -N, --name2         Keep /1 /2 suffix in QNAME (default strips it).
+  -T TAGS             Aux-tag list. "*" = all, "" = none, "BC,QT" = explicit.
+  --order TAG         Per-record counter aux. "TAG" = int, "TAG:N" = zero-pad N.
+  -o FILE             Output path (default stdout).
+  -u                  Uncompressed BAM out.
+  -b                  Force BAM output (default; SAM only when -o ends in .sam).
+      --no-PG         Accepted; v1 never injects @PG.
+  -h, --help          Show this help.
+      --version       Show version.
+`
+
+func runImport(args []string) int {
+	fs := flag.NewFlagSet("samtools import", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		r0Path   string
+		r1Path   string
+		r2Path   string
+		sPath    string
+		rgID     string
+		rgLine   string
+		auxTags  string
+		orderTag string
+		outPath  string
+		name2    bool
+		outBAM   bool
+		uncomp   bool
+		noPG     bool
+		showHelp bool
+		showVer  bool
+	)
+	fs.StringVar(&r0Path, "0", "", "")
+	fs.StringVar(&r1Path, "1", "", "")
+	fs.StringVar(&r2Path, "2", "", "")
+	fs.StringVar(&sPath, "s", "", "")
+	fs.StringVar(&rgLine, "r", "", "")
+	fs.StringVar(&rgID, "R", "", "")
+	fs.StringVar(&auxTags, "T", "", "")
+	fs.StringVar(&orderTag, "order", "", "")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	cliflag.BoolVar(fs, &name2, "N", "name2", false, "")
+	fs.BoolVar(&outBAM, "b", true, "")
+	fs.BoolVar(&uncomp, "u", false, "")
+	fs.BoolVar(&noPG, "no-PG", false, "")
+	// Accept-and-ignore stubs for upstream parity (see
+	// docs/PARITY_ROADMAP.md#samtools-import-deferred).
+	var (
+		i1Path     string
+		i2Path     string
+		casavaForm bool
+		barcodeTag string
+		qualityTag string
+		outputFmt  string
+		threads    int
+	)
+	fs.StringVar(&i1Path, "i1", "", "")
+	fs.StringVar(&i2Path, "i2", "", "")
+	fs.BoolVar(&casavaForm, "i", false, "")
+	fs.StringVar(&barcodeTag, "barcode-tag", "", "")
+	fs.StringVar(&qualityTag, "quality-tag", "", "")
+	cliflag.StringVar(fs, &outputFmt, "O", "output-fmt", "", "")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, importUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(importUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	out, err := openOut(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools import: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+	// outBAM defaults to true so plain `samtools import` produces BAM
+	// (upstream behaviour). A `.sam` filename override flips us back to
+	// text SAM, matching upstream's mode autodetection.
+	if strings.HasSuffix(strings.ToLower(outPath), ".sam") {
+		outBAM = false
+	}
+	opts := samtools.FastqImportOptions{
+		SinglePath:      sPath,
+		UnpairedPath:    r0Path,
+		Read1Path:       r1Path,
+		Read2Path:       r2Path,
+		ReadGroup:       rgID,
+		ReadGroupLine:   rgLine,
+		AuxTags:         auxTags,
+		OrderTag:        orderTag,
+		StripPairSuffix: !name2,
+		OutputBAM:       outBAM,
+		Uncompressed:    uncomp,
+		NoPG:            noPG,
+	}
+	_ = i1Path
+	_ = i2Path
+	_ = casavaForm
+	_ = barcodeTag
+	_ = qualityTag
+	_ = outputFmt
+	_ = threads
+	if _, err := samtools.FastqImportFiles(fs.Args(), out, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools import: %v\n", err)
+		return 1
+	}
+	return 0
+}

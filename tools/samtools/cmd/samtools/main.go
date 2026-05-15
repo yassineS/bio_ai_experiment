@@ -44,6 +44,8 @@ Subcommands:
   split         Split a BAM by @RG ID into per-RG files.
   markdup       Mark or remove PCR duplicate records.
   stats         Print exhaustive alignment statistics.
+  calmd         Compute MD + NM aux tags by walking CIGAR vs reference.
+  import        Convert FASTQ to BAM (single / paired / interleaved).
   help          Show this help.
   version       Show version.
 `
@@ -92,6 +94,10 @@ func main() {
 		os.Exit(runMarkdup(os.Args[2:]))
 	case "stats":
 		os.Exit(runStats(os.Args[2:]))
+	case "calmd":
+		os.Exit(runCalmd(os.Args[2:]))
+	case "import":
+		os.Exit(runImport(os.Args[2:]))
 	case "help", "-h", "--help":
 		fmt.Print(rootUsage)
 		return
