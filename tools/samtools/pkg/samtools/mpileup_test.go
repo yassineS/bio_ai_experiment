@@ -505,3 +505,90 @@ r1	9	chr1	10	60	3M	*	0	0	ACG	III
 		t.Errorf("expected anomalous pair kept with -A")
 	}
 }
+
+// multiContigGapSAM is a hand-built fixture exercising -aa zero-fill across:
+//   - chr1 (LN=8): one read covering positions 3..5; positions 1,2,6,7,8 empty.
+//   - chr2 (LN=4): completely uncovered.
+//   - chr3 (LN=6): one read covering positions 2..3; positions 1,4,5,6 empty.
+const multiContigGapSAM = `@HD	VN:1.6
+@SQ	SN:chr1	LN:8
+@SQ	SN:chr2	LN:4
+@SQ	SN:chr3	LN:6
+r1	0	chr1	3	60	3M	*	0	0	ACG	III
+r2	0	chr3	2	60	2M	*	0	0	AC	II
+`
+
+// TestMpileup_AA_ZeroFillTableDriven asserts the exact set of rows emitted
+// for -aa across multi-contig input with both covered and entirely-empty
+// contigs. The default (no -a, no -aa) emits only covered positions; -a
+// extends to the covered range per chrom; -aa extends to every position of
+// every contig.
+func TestMpileup_AA_ZeroFillTableDriven(t *testing.T) {
+	// Build expected output for the -aa case explicitly so we catch any
+	// drift in row formatting.
+	want := strings.Join([]string{
+		"chr1\t1\tN\t0\t*\t*",
+		"chr1\t2\tN\t0\t*\t*",
+		"chr1\t3\tN\t1\t^]A\tI",
+		"chr1\t4\tN\t1\tC\tI",
+		"chr1\t5\tN\t1\tG$\tI",
+		"chr1\t6\tN\t0\t*\t*",
+		"chr1\t7\tN\t0\t*\t*",
+		"chr1\t8\tN\t0\t*\t*",
+		"chr2\t1\tN\t0\t*\t*",
+		"chr2\t2\tN\t0\t*\t*",
+		"chr2\t3\tN\t0\t*\t*",
+		"chr2\t4\tN\t0\t*\t*",
+		"chr3\t1\tN\t0\t*\t*",
+		"chr3\t2\tN\t1\t^]A\tI",
+		"chr3\t3\tN\t1\tC$\tI",
+		"chr3\t4\tN\t0\t*\t*",
+		"chr3\t5\tN\t0\t*\t*",
+		"chr3\t6\tN\t0\t*\t*",
+	}, "\n") + "\n"
+
+	tests := []struct {
+		name string
+		opts MpileupOptions
+		want string
+	}{
+		{
+			name: "default emits only covered positions",
+			opts: MpileupOptions{},
+			want: strings.Join([]string{
+				"chr1\t3\tN\t1\t^]A\tI",
+				"chr1\t4\tN\t1\tC\tI",
+				"chr1\t5\tN\t1\tG$\tI",
+				"chr3\t2\tN\t1\t^]A\tI",
+				"chr3\t3\tN\t1\tC$\tI",
+			}, "\n") + "\n",
+		},
+		{
+			name: "a emits zero-depth inside covered range, skips empty chr2",
+			opts: MpileupOptions{AllPositions: true},
+			// chr1 covered range = [3,6), chr3 covered = [2,4).
+			// -a does NOT extend to chr2 or to positions outside the
+			// per-chrom covered range.
+			want: strings.Join([]string{
+				"chr1\t3\tN\t1\t^]A\tI",
+				"chr1\t4\tN\t1\tC\tI",
+				"chr1\t5\tN\t1\tG$\tI",
+				"chr3\t2\tN\t1\t^]A\tI",
+				"chr3\t3\tN\t1\tC$\tI",
+			}, "\n") + "\n",
+		},
+		{
+			name: "aa emits every position of every contig including empty chr2",
+			opts: MpileupOptions{AllPositionsAllChroms: true},
+			want: want,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runMpileupOnSAM(t, []string{multiContigGapSAM}, tc.opts, nil, nil)
+			if got != tc.want {
+				t.Errorf("output mismatch.\ngot:\n%s\nwant:\n%s", got, tc.want)
+			}
+		})
+	}
+}

@@ -66,7 +66,8 @@ detected; pass `-` to read from stdin.
 | `-q`  | `--min-mapq N`            | Minimum MAPQ.                                 |
 | `-r`  | `--read-group ID`         | Keep records matching this RG.                |
 | `-R`  | `--read-groups-file F`    | File of RG IDs (one per line).                |
-| `-L`  | `--regions-file F`        | BED of regions (deferred — see Deviations).   |
+| `-L`  | `--regions-file F`        | Keep records overlapping any BED interval.    |
+| `-M`  | `--use-multi-region-iterator` | Accepted (we always run the full intersection). |
 | `-s`  | `--subsample F`           | Keep fraction `F`, or `<seed>.<frac>`.        |
 | `-o`  | `--output PATH`           | Output file (default stdout).                 |
 | `-T`  | `--reference FASTA`       | Accepted; CRAM is not supported in v1.        |
@@ -310,10 +311,12 @@ follow-up PRs.
   surfaces a clear error: "CSI output (-c/--csi) is not yet implemented;
   v1 emits BAI only". CSI is only needed for chromosomes longer than
   ~512 Mb, which excludes every common reference genome.
-- **`-L regions.bed`.** Region querying via a BED file is still deferred;
-  `samtools view` will print a warning to stderr and fall back to a
-  whole-file scan when `-L` is provided. Single-region specifiers
-  (`chr1:1000-2000`) are fully supported.
+- **`-L regions.bed`.** `samtools view -L` is supported: a per-chromosome
+  interval tree is built from the BED and records are kept only when their
+  `[Pos, Pos+refLen)` half-open range overlaps at least one BED interval
+  on the record's reference. The walk is always a linear scan (no
+  `.bai` shortcut yet); `-M`/`--use-multi-region-iterator` is accepted but
+  produces an identical record set, so we always run the full intersection.
 - **CRAM** is not supported. The `-T/--reference` flag is accepted (so
   pipelines passing it through do not break) but has no effect.
 - **Multi-threading.** `-@/--threads` is accepted by every subcommand but

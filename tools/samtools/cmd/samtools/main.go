@@ -127,7 +127,9 @@ Options:
   -q, --min-mapq <int>        Minimum MAPQ.
   -r, --read-group <string>   Keep records with this RG.
   -R, --read-groups-file <f>  File of RG IDs (one per line).
-  -L, --regions-file <f>      BED of regions (deferred — see notes).
+  -L, --regions-file <f>      BED of regions to keep (linear scan).
+  -M, --use-multi-region-iterator
+                              Accepted; we always do the full intersection.
   -s, --subsample <float>     Keep fraction (or "<seed>.<frac>").
   -o, --output <file>         Output file (default stdout).
   -T, --reference <fasta>     Accepted; CRAM is not supported in v1.
@@ -138,7 +140,9 @@ Options:
 
 Region queries (chr:start-end) use a sibling <input>.bai index when one
 exists; otherwise samtools view falls back to a linear scan with a
-warning to stderr. The -L/--regions-file form is still deferred.
+warning to stderr. The -L/--regions-file form always performs a linear
+scan over the input and keeps records whose [Pos, Pos+refLen) range
+intersects any BED interval on the record's reference.
 `
 
 func runView(args []string) int {
@@ -146,24 +150,25 @@ func runView(args []string) int {
 	fs.SetOutput(io.Discard) // we print usage ourselves
 
 	var (
-		outBAM    bool
-		withHdr   bool
-		hdrOnly   bool
-		countOnly bool
-		incFlags  int
-		excFlags  int
-		excFlagsG int
-		minMAPQ   int
-		rg        string
-		rgFile    string
-		regFile   string
-		subsample string
-		outFile   string
-		refFile   string
-		threads   int
-		noPG      bool
-		showHelp  bool
-		showVer   bool
+		outBAM      bool
+		withHdr     bool
+		hdrOnly     bool
+		countOnly   bool
+		incFlags    int
+		excFlags    int
+		excFlagsG   int
+		minMAPQ     int
+		rg          string
+		rgFile      string
+		regFile     string
+		multiRegion bool
+		subsample   string
+		outFile     string
+		refFile     string
+		threads     int
+		noPG        bool
+		showHelp    bool
+		showVer     bool
 	)
 	cliflag.BoolVar(fs, &outBAM, "b", "bam", false, "Output BAM")
 	cliflag.BoolVar(fs, &withHdr, "h", "with-header", false, "Include header")
@@ -176,6 +181,10 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &rg, "r", "read-group", "", "Read-group filter")
 	cliflag.StringVar(fs, &rgFile, "R", "read-groups-file", "", "File of read-group IDs")
 	cliflag.StringVar(fs, &regFile, "L", "regions-file", "", "BED of regions")
+	cliflag.BoolVar(fs, &multiRegion, "M", "use-multi-region-iterator", false, "Accepted (indexed-walk optimisation upstream)")
+	// Upstream samtools also spells the long form `--use-index`. Accept it
+	// as an alias for parity.
+	fs.BoolVar(&multiRegion, "use-index", false, "")
 	cliflag.StringVar(fs, &subsample, "s", "subsample", "", "Subsample fraction")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output file")
 	cliflag.StringVar(fs, &refFile, "T", "reference", "", "Reference FASTA (CRAM unsupported)")
@@ -220,10 +229,9 @@ func runView(args []string) int {
 		ReadGroup:       rg,
 		Regions:         append([]string{}, regions...),
 		RegionsEnabled:  len(regions) > 0 || regFile != "",
+		BedPath:         regFile,
+		MultiRegion:     multiRegion,
 		NoPG:            noPG,
-	}
-	if regFile != "" {
-		fmt.Fprintln(os.Stderr, "samtools view: -L/--regions-file is not yet implemented; falling back to whole-file scan")
 	}
 
 	// Honour the .bam output extension even without explicit -b.
