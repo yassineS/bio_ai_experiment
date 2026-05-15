@@ -455,6 +455,8 @@ flag-exact / SN-byte cases are exercised in
   current calmd pipeline.
 - **`-n` max-NM cap** — would mask high-mismatch reads with bin-quality;
   trivial follow-up once BIN_QUAL lands.
+- **`-N` clear-MD/NM-bits**, **`-C` capQ**, **`--no-PG`** —
+  CLI-accepted-and-ignored stubs.
 
 **`import` deferred features**:
 
@@ -468,6 +470,9 @@ flag-exact / SN-byte cases are exercised in
   fastq`; CASAVA-format input is a follow-up.
 - **`--barcode-tag` / `--quality-tag`** renaming of the BC/QT tag pair.
   Not exposed in the v1 CLI (defaults to BC/QT).
+- **`-O` / `--output-fmt`** and **`-@` / `--threads`** —
+  CLI-accepted-and-ignored stubs. v1 picks output format from the
+  output-path extension (`.sam` vs `.bam`) and is single-threaded.
 
 **Validation:** small hand-built fixtures live under
 `tools/samtools/testdata/parity/{calmd,import}/` covering the four

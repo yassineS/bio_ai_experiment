@@ -220,7 +220,15 @@ func fillMDNM(rec *sam.Record, ref []byte, useEqual bool) (string, int, string, 
 				actual++
 			}
 			nm += actual
-			rpos += oplen
+			rpos += actual
+			if actual < oplen {
+				// Upstream bam_md.c:121 breaks out of the whole CIGAR loop
+				// when the deletion can't be fully consumed from the
+				// reference; the trailing kputw(matched=0) at line 129
+				// still appends the "0" terminator.
+				flushRun()
+				return string(mdBuf), nm, string(editedOrEmpty(edited, useEqual)), nil
+			}
 		case sam.CigarInsertion:
 			nm += oplen
 			qpos += oplen

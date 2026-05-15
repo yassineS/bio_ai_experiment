@@ -37,6 +37,13 @@ func TestCalmd_BasicMDNM(t *testing.T) {
 		{"r_with_ins", "10", 2},
 		{"r_softclip", "7", 0},
 		{"r_chr2", "10", 0},
+		// End-of-contig: pos=48 on chr1 (length 52). CIGAR 3M5D3I:
+		//   - 3M consumes ref pos 48..50 (T,A,C) → all match (NM=0).
+		//   - 5D requests ref pos 51..55; only 51,52 exist (G,T) → MD `3^GT0`.
+		//   - Upstream bam_md.c:121 breaks the CIGAR loop entirely when a D
+		//     truncates; the trailing 3I is NEVER reached → NM stays at 2.
+		// Locks in the rpos-accounting + break fix.
+		{"r_end_d", "3^GT0", 2},
 	}
 	for _, c := range cases {
 		t.Run(c.qname, func(t *testing.T) {

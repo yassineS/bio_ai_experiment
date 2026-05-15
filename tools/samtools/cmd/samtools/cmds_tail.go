@@ -1141,6 +1141,25 @@ func runCalmd(args []string) int {
 	fs.BoolVar(&quiet, "Q", false, "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	// Accept-and-ignore stubs for upstream parity (see
+	// docs/PARITY_ROADMAP.md#samtools-calmd-deferred). Behaviour is
+	// deferred; flag parse must not hard-error.
+	var (
+		clearMDNM bool
+		maxNM     int
+		capQ      int
+		dropTag   string
+		binQual   int
+		noPG      bool
+		hashQNM   bool
+	)
+	fs.BoolVar(&clearMDNM, "N", false, "")
+	fs.IntVar(&maxNM, "n", 0, "")
+	fs.IntVar(&capQ, "C", 0, "")
+	fs.StringVar(&dropTag, "d", "", "")
+	fs.IntVar(&binQual, "q", 0, "")
+	fs.BoolVar(&noPG, "no-PG", false, "")
+	fs.BoolVar(&hashQNM, "hash-qnm", false, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
@@ -1168,6 +1187,13 @@ func runCalmd(args []string) int {
 	refPath := fs.Arg(1)
 	_ = threads // accepted, ignored
 	_ = sInFmt  // we auto-detect
+	_ = clearMDNM
+	_ = maxNM
+	_ = capQ
+	_ = dropTag
+	_ = binQual
+	_ = noPG
+	_ = hashQNM
 	out, err := openOut(outPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools calmd: %v\n", err)
@@ -1252,6 +1278,24 @@ func runImport(args []string) int {
 	fs.BoolVar(&outBAM, "b", true, "")
 	fs.BoolVar(&uncomp, "u", false, "")
 	fs.BoolVar(&noPG, "no-PG", false, "")
+	// Accept-and-ignore stubs for upstream parity (see
+	// docs/PARITY_ROADMAP.md#samtools-import-deferred).
+	var (
+		i1Path     string
+		i2Path     string
+		casavaForm bool
+		barcodeTag string
+		qualityTag string
+		outputFmt  string
+		threads    int
+	)
+	fs.StringVar(&i1Path, "i1", "", "")
+	fs.StringVar(&i2Path, "i2", "", "")
+	fs.BoolVar(&casavaForm, "i", false, "")
+	fs.StringVar(&barcodeTag, "barcode-tag", "", "")
+	fs.StringVar(&qualityTag, "quality-tag", "", "")
+	cliflag.StringVar(fs, &outputFmt, "O", "output-fmt", "", "")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -1294,6 +1338,13 @@ func runImport(args []string) int {
 		Uncompressed:    uncomp,
 		NoPG:            noPG,
 	}
+	_ = i1Path
+	_ = i2Path
+	_ = casavaForm
+	_ = barcodeTag
+	_ = qualityTag
+	_ = outputFmt
+	_ = threads
 	if _, err := samtools.FastqImportFiles(fs.Args(), out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools import: %v\n", err)
 		return 1
