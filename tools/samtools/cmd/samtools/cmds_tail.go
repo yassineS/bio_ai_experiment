@@ -1574,3 +1574,339 @@ func runTargetcut(args []string) int {
 	}
 	return 0
 }
+
+// ----- consensus --------------------------------------------------------
+
+const consensusUsage = `samtools consensus - call a per-position consensus base.
+
+Usage:
+  samtools consensus [options] <in.bam>
+
+Options:
+  -r, --region REG          Limit to "chr[:start-end]" region; may repeat.
+  -f, --format FMT          Output format: fasta (default), fastq, pileup.
+  -l, --line-len INT        Wrap FASTA/FASTQ lines at INT (default 70).
+  -o, --output FILE         Output file (default stdout).
+  -m, --mode STR            Algorithm: simple or bayesian (default bayesian).
+                            v1 only implements simple; bayesian falls back
+                            to simple with a stderr warning.
+  -a                        Output all bases (zero-coverage positions as N).
+      --rf, --incl-flags N  Require ALL these flag bits set (accepted; v1 has
+                            a fixed include set).
+      --ff, --excl-flags N  Drop reads with ANY of these flag bits set
+                            (default UNMAP,SECONDARY,QCFAIL,DUP).
+      --min-MQ INT          Skip reads with MAPQ below INT (default 0).
+                            No short alias upstream.
+      --min-BQ INT          Skip bases with quality below INT (default 0).
+      --show-del yes|no     Show deletions as '*' (default no).
+                            Honoured in pileup mode too.
+      --show-ins yes|no     Include insertions in FASTA/FASTQ (default yes).
+      --mark-ins            Prepend '+' before inserted base/qual (default off).
+  -A, --ambig               Emit IUPAC ambiguity codes for hets.
+  -d, --min-depth INT       Minimum depth (default 1).
+      --het-only            Suppress non-het calls (accepted; not implemented).
+      --ref-qual INT        QUAL for reference bases (accepted; not used in v1).
+      --default-qual INT    Default qual when a base has none (accepted; v1
+                            uses the per-base qual unchanged).
+  -Z, --block-size INT      Chromosome block size (accepted; v1 is single-pass).
+      --input-fmt-option OPT[=VAL]
+                            Input-format option (accepted; ignored).
+      --verbosity INT       Verbosity level (accepted; ignored).
+
+For simple mode (the v1 fallback):
+  -q, --use-qual            Use base quality in the score (default off).
+      --no-use-qual         Force frequency-only counting (the default).
+  -c, --call-fract FLOAT    Minimum (best+second)/total score required to
+                            make a call (default 0.75).
+  -H, --het-fract FLOAT     Minimum second/best score for a het call (default 0.5).
+
+For the bayesian mode (accepted; v1 falls back to simple):
+  -C, --cutoff INT          Bayesian cutoff quality (default 10).
+      --adj-qual            Modify quality with local minima (default on).
+      --no-adj-qual         Disable adj-qual.
+      --use-MQ              Use MAPQ in calculation (default on).
+      --no-use-MQ           Disable use-MQ.
+      --adj-MQ              Modify MAPQ by local NM (default on).
+      --no-adj-MQ           Disable adj-MQ.
+      --NM-halo INT         Window for NM count in adj-MQ (default 50).
+      --SC-cost INT         Soft-clip cost per base (default 60).
+      --scale-MQ FLOAT      Scale MAPQ (default 1.00).
+      --low-MQ INT          Floor MAPQ (default 1).
+      --high-MQ INT         Cap MAPQ (default 60).
+      --P-het FLOAT         Het-site probability.
+      --P-indel FLOAT       Indel-site probability.
+      --het-scale FLOAT     Het SNP probability multiplier.
+  -p, --homopoly-fix        Spread low-qual bases at homopolymer ends.
+      --homopoly-score FLOAT  Quality fraction adjustment for -p.
+      --homopoly-redux FLOAT  Quality reduction for -p (default 0.01).
+  -t, --qual-calibration STR  Quality calibration file or :preset.
+  -X, --config STR          Predefined config (hiseq/hifi/r10.4_sup/...).
+
+Global options:
+  -T, --reference FILE      Reference FASTA (accepted; not required in v1).
+  -@, --threads INT         Threads (accepted; v1 is single-threaded).
+      --ignore-overlaps     Accepted; v1 does not deduplicate mate overlaps.
+  -h, --help                Show this help.
+  -v, --version             Show version.
+
+Notes:
+  - The upstream default mode is bayesian; v1 only implements simple, so
+    every invocation that lands on bayesian (including the default!)
+    emits a one-line stderr warning and falls back to simple. Tracked in
+    docs/PARITY_ROADMAP.md#samtools.
+  - Frequency-only counting is the default (upstream use_qual=0). Pass
+    -q/--use-qual to weight by per-base quality.
+  - In pileup mode v1 emits one row per reference position; upstream's
+    default --show-ins yes also emits extra rows with nth>0 inside each
+    insertion column — v1 does not yet emit those rows. Tracked in
+    docs/PARITY_ROADMAP.md#samtools.
+`
+
+// consensusBayesianFlags collects the bayesian-only flag values so the
+// CLI can accept them all without bloating the local var declarations.
+type consensusBayesianFlags struct {
+	cutoff        int
+	adjQual       bool
+	noAdjQual     bool
+	useMQ         bool
+	noUseMQ       bool
+	adjMQ         bool
+	noAdjMQ       bool
+	nmHalo        int
+	scCost        int
+	scaleMQ       float64
+	lowMQ         int
+	highMQ        int
+	pHet          float64
+	pIndel        float64
+	hetScale      float64
+	homopolyFix   bool
+	homopolyScore float64
+	homopolyRedux float64
+	qualCal       string
+	config        string
+}
+
+func runConsensus(args []string) int {
+	fs := flag.NewFlagSet("samtools consensus", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var (
+		// Output / format / region.
+		formatStr string
+		modeStr   string
+		allPos    bool
+		regions   multiString
+		outPath   string
+		lineLen   int
+
+		// Simple-mode scoring.
+		callFract float64
+		hetFract  float64
+		minDepth  int
+		ambig     bool
+		useQual   bool
+		noUseQual bool
+
+		// Filtering.
+		inclFlags string
+		exclFlags string
+		minMQ     int
+		minBQ     int
+
+		// Insertion / deletion display.
+		showDel string
+		showIns string
+		markIns bool
+		hetOnly bool
+
+		// Reference / global.
+		refFasta  string
+		refQual   int
+		defaultQ  int
+		blockSize int
+		threads   int
+		ignoreOvl bool
+		inFmtOpt  multiString
+		verbosity int
+
+		// Bayesian-only (accepted, fall back to simple).
+		bay consensusBayesianFlags
+
+		showHelp bool
+		showVer  bool
+	)
+	// Default values are wired up here to match upstream's
+	// consensus_opts initialisers (bam_consensus.c:2981+).
+	cliflag.StringVar(fs, &formatStr, "f", "format", "fasta", "Output format")
+	cliflag.StringVar(fs, &modeStr, "m", "mode", "bayesian", "Consensus mode")
+	cliflag.BoolVar(fs, &allPos, "a", "all", false, "Output all bases")
+	fs.Var(&regions, "r", "")
+	fs.Var(&regions, "region", "")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "Output path")
+	cliflag.IntVar(fs, &lineLen, "l", "line-len", 70, "Line wrap")
+
+	cliflag.Float64Var(fs, &callFract, "c", "call-fract", 0.75, "Min call fraction")
+	cliflag.Float64Var(fs, &hetFract, "H", "het-fract", 0.5, "Min het fraction")
+	cliflag.IntVar(fs, &minDepth, "d", "min-depth", 1, "Min depth")
+	cliflag.BoolVar(fs, &ambig, "A", "ambig", false, "Emit IUPAC ambig codes")
+	cliflag.BoolVar(fs, &useQual, "q", "use-qual", false, "Use base quality")
+	fs.BoolVar(&noUseQual, "no-use-qual", false, "")
+
+	// Upstream spells these --rf/--incl-flags and --ff/--excl-flags.
+	cliflag.StringVar(fs, &inclFlags, "", "incl-flags", "", "Required flag bits")
+	cliflag.StringVar(fs, &inclFlags, "", "rf", "", "Required flag bits (alias)")
+	cliflag.StringVar(fs, &exclFlags, "", "excl-flags", "", "Excluded flag bits")
+	cliflag.StringVar(fs, &exclFlags, "", "ff", "", "Excluded flag bits (alias)")
+	cliflag.IntVar(fs, &minMQ, "", "min-MQ", 0, "Min MAPQ")
+	cliflag.IntVar(fs, &minBQ, "", "min-BQ", 0, "Min base quality")
+
+	cliflag.StringVar(fs, &showDel, "", "show-del", "no", "Show deletions")
+	cliflag.StringVar(fs, &showIns, "", "show-ins", "yes", "Include insertions")
+	cliflag.BoolVar(fs, &markIns, "", "mark-ins", false, "Mark inserted bases with '+'")
+	cliflag.BoolVar(fs, &hetOnly, "", "het-only", false, "Only emit het calls (accepted; not implemented)")
+
+	cliflag.StringVar(fs, &refFasta, "T", "reference", "", "Reference FASTA")
+	cliflag.IntVar(fs, &refQual, "", "ref-qual", 0, "Reference qual")
+	cliflag.IntVar(fs, &defaultQ, "", "default-qual", 10, "Default qual")
+	cliflag.IntVar(fs, &blockSize, "Z", "block-size", 500000, "Block size")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads")
+	cliflag.BoolVar(fs, &ignoreOvl, "", "ignore-overlaps", false, "Ignore overlapping mates (accepted; not implemented)")
+	fs.Var(&inFmtOpt, "input-fmt-option", "")
+	cliflag.IntVar(fs, &verbosity, "", "verbosity", 0, "Verbosity")
+
+	// Bayesian-only flag landing pads.
+	cliflag.IntVar(fs, &bay.cutoff, "C", "cutoff", 10, "Bayesian cutoff (accepted)")
+	cliflag.BoolVar(fs, &bay.adjQual, "", "adj-qual", false, "Bayesian adj-qual on (accepted)")
+	cliflag.BoolVar(fs, &bay.noAdjQual, "", "no-adj-qual", false, "Bayesian adj-qual off (accepted)")
+	cliflag.BoolVar(fs, &bay.useMQ, "", "use-MQ", false, "Bayesian use-MQ on (accepted)")
+	cliflag.BoolVar(fs, &bay.noUseMQ, "", "no-use-MQ", false, "Bayesian use-MQ off (accepted)")
+	cliflag.BoolVar(fs, &bay.adjMQ, "", "adj-MQ", false, "Bayesian adj-MQ on (accepted)")
+	cliflag.BoolVar(fs, &bay.noAdjMQ, "", "no-adj-MQ", false, "Bayesian adj-MQ off (accepted)")
+	cliflag.IntVar(fs, &bay.nmHalo, "", "NM-halo", 50, "Bayesian NM-halo (accepted)")
+	cliflag.IntVar(fs, &bay.scCost, "", "SC-cost", 60, "Bayesian SC-cost (accepted)")
+	cliflag.Float64Var(fs, &bay.scaleMQ, "", "scale-MQ", 1.0, "Bayesian scale-MQ (accepted)")
+	cliflag.IntVar(fs, &bay.lowMQ, "", "low-MQ", 1, "Bayesian low-MQ (accepted)")
+	cliflag.IntVar(fs, &bay.highMQ, "", "high-MQ", 60, "Bayesian high-MQ (accepted)")
+	cliflag.Float64Var(fs, &bay.pHet, "", "P-het", 1.0e-3, "Bayesian P-het (accepted)")
+	cliflag.Float64Var(fs, &bay.pIndel, "", "P-indel", 1.0e-4, "Bayesian P-indel (accepted)")
+	cliflag.Float64Var(fs, &bay.hetScale, "", "het-scale", 1.0, "Bayesian het-scale (accepted)")
+	cliflag.BoolVar(fs, &bay.homopolyFix, "p", "homopoly-fix", false, "Homopolymer fix (accepted)")
+	cliflag.Float64Var(fs, &bay.homopolyScore, "", "homopoly-score", 0.0, "Homopolymer score (accepted)")
+	cliflag.Float64Var(fs, &bay.homopolyRedux, "", "homopoly-redux", 0.01, "Homopolymer redux (accepted)")
+	cliflag.StringVar(fs, &bay.qualCal, "t", "qual-calibration", "", "Quality calibration (accepted)")
+	cliflag.StringVar(fs, &bay.config, "X", "config", "", "Predefined config (accepted)")
+
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Print(consensusUsage)
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, consensusUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(consensusUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "samtools consensus: missing input file")
+		fmt.Fprint(os.Stderr, consensusUsage)
+		return 2
+	}
+
+	// The accepted-but-not-implemented knobs (incl-flags, excl-flags,
+	// reference, ref-qual, default-qual, block-size, input-fmt-option,
+	// verbosity, and the entire bayesian-only set) live in the symbol
+	// table because cliflag took their address; we deliberately don't
+	// route them into ConsensusOptions yet. They're listed in
+	// consensusUsage and tracked in docs/PARITY_ROADMAP.md.
+	_ = inclFlags
+	_ = exclFlags
+	_ = refFasta
+	_ = refQual
+	_ = defaultQ
+	_ = blockSize
+	_ = inFmtOpt
+	_ = verbosity
+	_ = bay
+
+	format, ferr := samtools.ParseConsensusFormat(formatStr)
+	if ferr != nil {
+		fmt.Fprintln(os.Stderr, ferr)
+		return 2
+	}
+	mode, merr := samtools.ParseConsensusMode(modeStr)
+	if merr != nil {
+		fmt.Fprintln(os.Stderr, merr)
+		return 2
+	}
+
+	// --no-use-qual wins over -q/--use-qual when both are given (last
+	// flag wins is what upstream does; flag package gives us either
+	// "both seen" or "only one"; if both, we default to the explicit
+	// "no" since that's the safer fallback for accidental composition).
+	if noUseQual {
+		useQual = false
+	}
+
+	opts := samtools.ConsensusOptions{
+		Input:           fs.Arg(0),
+		Format:          format,
+		Mode:            mode,
+		AllPositions:    allPos,
+		Regions:         []string(regions),
+		MinDepth:        minDepth,
+		MinCallFraction: callFract,
+		MinHetFraction:  hetFract,
+		AmbigCodes:      ambig,
+		UseQual:         useQual,
+		MinMAPQ:         uint8(minMQ),
+		MinBaseQ:        uint8(minBQ),
+		LineLen:         lineLen,
+		IgnoreOverlaps:  ignoreOvl,
+		Output:          outPath,
+		Threads:         threads,
+	}
+	opts.ShowDel = parseYesNo(showDel, false)
+	opts.NoShowIns = !parseYesNo(showIns, true)
+	opts.MarkIns = markIns
+	opts.HetOnly = hetOnly
+
+	out, oerr := openOut(outPath)
+	if oerr != nil {
+		fmt.Fprintf(os.Stderr, "samtools consensus: %v\n", oerr)
+		return 1
+	}
+	defer out.Close()
+	if err := samtools.ConsensusFile(opts, out, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools consensus: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// parseYesNo accepts upstream samtools' "yes"/"no"/"on"/"off"/
+// "true"/"false"/"1"/"0" forms (case-insensitive). Empty returns def.
+// Used by --show-del / --show-ins.
+func parseYesNo(v string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return def
+	case "yes", "y", "on", "true", "1":
+		return true
+	case "no", "n", "off", "false", "0":
+		return false
+	}
+	return def
+}
