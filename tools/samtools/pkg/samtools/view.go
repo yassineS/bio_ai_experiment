@@ -511,7 +511,7 @@ func loadBedFilter(path string) (func(*sam.Record) bool, error) {
 		trees[chrom] = bed.NewIntervalTree(recs)
 	}
 	return func(rec *sam.Record) bool {
-		if rec.RName == "" || rec.RName == "*" {
+		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" {
 			return false
 		}
 		t, ok := trees[rec.RName]
@@ -524,7 +524,10 @@ func loadBedFilter(path string) (func(*sam.Record) bool, error) {
 		}
 		refLen := rec.Cigar.ReferenceLength()
 		if refLen <= 0 {
-			refLen = 1
+			// Zero-length footprint (CIGAR `*` or all-clip) cannot
+			// overlap any BED interval per upstream bed_overlap's strict
+			// half-open semantics. Drop the record.
+			return false
 		}
 		q := &bed.Record{Chrom: rec.RName, ChromStart: pos0, ChromEnd: pos0 + refLen}
 		return len(t.Query(q)) > 0
