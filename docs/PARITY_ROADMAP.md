@@ -175,27 +175,27 @@ parity cases pointing back here):
 **Validation:** **16-case parity test suite, 12 passing, 4
 documented `t.Skip`** (post this PR).
 
-### bedtools (29 subcommands ported)
+### bedtools (31 subcommands ported)
 
-**Status:** 29 of ~40 subcommands (~73%). 141 passing parity tests
+**Status:** 31 of ~40 subcommands (~78%). 141 passing parity tests
 against the upstream test suite (across PR #55 + Phase-3 wave 1 + wave
 2 simple + wave 2 algo) + 17 new cases from wave 3 (PR #87) + 6 cases
-from the reldist/fisher full-parity wave (PR #90) + **6 new** cases
-from the nuc/annotate wave. Phase-3 wave 1 (PR #78) added
+from the reldist/fisher full-parity wave (PR #90) + 6 cases from the
+nuc/annotate wave (PR #91) + **7 new** cases from the multicov/multiinter
+wave (this PR). Phase-3 wave 1 (PR #78) added
 `bedgroupby`/`bed12tobed6`/`bedmakewindows`; wave 2 simple (PR #80)
 added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`; wave 2 algo
 added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail (PR #87) added
 `bedcluster`/`bedsplit`/`bedsummary`/`bedtag`/`bedwindow`; the
-reldist/fisher wave (PR #90) added `bedreldist`/`bedfisher`; **the
-nuc/annotate wave added `bednuc`/`bedannotate`** with hand-computed
-byte-parity fixtures (upstream ships no `nuc/` or `annotate/` test
-subdir, so the fixtures were derived from the upstream algorithm in
-`src/nucBed/nucBed.cpp` and `src/annotateBed/annotateBed.cpp`).
+reldist/fisher wave (PR #90) added `bedreldist`/`bedfisher`; the
+nuc/annotate wave (PR #91) added `bednuc`/`bedannotate`; **the
+multicov/multiinter wave closes the last two of the six originally-planned
+algorithmic subcommands** with byte-for-byte fixtures (multicov from
+BED-equivalents of the upstream BAM corpus; multiinter from
+`multiintersect_examples()` since upstream ships no test subdir).
 
 Missing subcommands:
 
-- `multicov` — multi-sample coverage.
-- `multiinter` — multi-way intersection.
 - `igv` — generate IGV launch URLs.
 - `links` — generate UCSC links.
 - `pairtopair`, `pairtobed` — paired BEDPE operations.
@@ -215,6 +215,16 @@ Option-tail gaps on the wave-2 additions:
   `bedsample` (same seed → same output) but cross-tool record-for-record
   parity with upstream is not feasible without porting upstream's
   `random_shuffle`.
+- `bedmulticov` — BAM/CRAM input not yet wired through; `-split`
+  (block-aware coverage on BAM CIGARs) follows. The CLI surfaces a
+  clear error when a `.bam`/`.cram` path is supplied. Upstream's
+  `test/multicov/` corpus is entirely BAM-based, so the BED-equivalent
+  parity tests cover only `multicov.t1`/`t2`/`t3`/`t10`; the
+  `-split` cases `t4..t9` are `t.Skip`ped.
+- `bedmultiinter` — VCF/GFF input not implemented (upstream autodetects
+  these via `BedFile`). Input is assumed sorted; out-of-order records
+  within a single file are tolerated only because each file is
+  re-sorted and merged before the sweep.
 
 Column-op gaps (shared between `bedmerge`, `bedgroupby`, and the future
 `bedmap`/`bedcoverage`):
