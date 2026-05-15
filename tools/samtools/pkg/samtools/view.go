@@ -71,6 +71,29 @@ type ViewOptions struct {
 	// does not currently inject an @PG line, so this is a no-op kept for
 	// flag compatibility).
 	NoPG bool
+	// TagFilters is the conjunction of aux-tag predicates derived from
+	// `-d TAG[:VAL]` and `-D TAG:FILE`. A record is kept only when every
+	// filter matches. Empty means no tag filtering.
+	TagFilters []TagFilter
+	// QNameSet, if non-nil, restricts output to records whose QNAME is in
+	// the set. Populated from `-N FILE`.
+	QNameSet map[string]struct{}
+}
+
+// TagFilter is a single aux-tag predicate as derived from samtools view's
+// `-d`/`-D` flags. ExistsOnly true means "record must carry tag Tag";
+// otherwise the record must carry Tag AND its stringified value must
+// appear in Values.
+//
+// The string comparison mirrors upstream samtools (sam_view.c
+// process_aln): integer aux values are formatted as base-10 decimals,
+// 'A'-type values use the single character, and Z/H types use the raw
+// string. Float / array tags are not currently exposed for matching
+// because upstream does not stringify them in process_aln either.
+type TagFilter struct {
+	Tag        string
+	ExistsOnly bool
+	Values     map[string]struct{}
 }
 
 // ErrRegionsUnsupported is retained for backward-compatibility with callers
@@ -426,12 +449,161 @@ func keepRecord(rec *sam.Record, opts *ViewOptions, rng *rand.Rand) bool {
 			return false
 		}
 	}
+	if len(opts.QNameSet) > 0 {
+		if _, ok := opts.QNameSet[rec.QName]; !ok {
+			return false
+		}
+	}
+	for i := range opts.TagFilters {
+		if !matchTagFilter(rec, &opts.TagFilters[i]) {
+			return false
+		}
+	}
 	if rng != nil && opts.Subsample > 0 && opts.Subsample < 1 {
 		if rng.Float64() >= opts.Subsample {
 			return false
 		}
 	}
 	return true
+}
+
+// matchTagFilter returns true when rec satisfies the supplied TagFilter
+// (used by samtools view -d / -D). It mirrors upstream samtools'
+// process_aln logic: missing tag → drop; existence-only → keep; value
+// list → keep when the record's stringified aux value is in the list.
+func matchTagFilter(rec *sam.Record, f *TagFilter) bool {
+	a, ok := rec.GetAux(f.Tag)
+	if !ok {
+		return false
+	}
+	if f.ExistsOnly {
+		return true
+	}
+	val, ok := auxValueAsString(a)
+	if !ok {
+		return false
+	}
+	_, hit := f.Values[val]
+	return hit
+}
+
+// auxValueAsString returns the string form of an aux value as used for
+// `-d TAG:VAL` comparison: integers go to base-10 decimal, 'A' uses the
+// single character, Z/H use the raw string. Other types (f, B, ...) are
+// not stringified — upstream samtools does not match against them in
+// process_aln, so we report `false` and let the caller drop the record.
+func auxValueAsString(a sam.Aux) (string, bool) {
+	switch a.Type {
+	case 'c', 'C', 's', 'S', 'i', 'I':
+		if v, ok := a.Int(); ok {
+			return strconv.FormatInt(v, 10), true
+		}
+	case 'A':
+		if v, ok := a.Value.(string); ok && len(v) > 0 {
+			return v[:1], true
+		}
+	case 'Z', 'H':
+		if v, ok := a.String(); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// LoadLinesFile reads a UTF-8 file of whitespace-separated tokens (one
+// per line, blank and `#`-prefixed lines skipped) and returns them as a
+// set. Used by samtools view's `-D TAG:FILE` and `-N FILE` flags.
+func LoadLinesFile(path string) (map[string]struct{}, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	out := map[string]struct{}{}
+	scn := bufio.NewScanner(f)
+	// Allow long lines (BAM qnames can run to a few hundred chars; default
+	// 64 KiB is plenty but we bump anyway in case of pathological files).
+	scn.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scn.Scan() {
+		line := strings.TrimSpace(scn.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Upstream `fscanf("%1023s")` tokenises on whitespace; we mirror
+		// that so a file with multiple tokens per line still works.
+		for _, tok := range strings.Fields(line) {
+			out[tok] = struct{}{}
+		}
+	}
+	return out, scn.Err()
+}
+
+// ParseTagFilterSpec parses a samtools view `-d TAG[:VAL]` argument and
+// returns the corresponding TagFilter. The tag must be exactly two
+// characters; an optional ":VAL" suffix becomes a single-element value
+// set. Returns an error when the spec is malformed (too short, missing
+// ":" after a 2-char tag prefix, etc.).
+func ParseTagFilterSpec(spec string) (TagFilter, error) {
+	switch {
+	case len(spec) == 2:
+		return TagFilter{Tag: spec, ExistsOnly: true}, nil
+	case len(spec) < 4 || spec[2] != ':':
+		return TagFilter{}, fmt.Errorf("samtools view: invalid -d tag:value spec %q", spec)
+	}
+	tag := spec[:2]
+	val := spec[3:]
+	return TagFilter{
+		Tag:    tag,
+		Values: map[string]struct{}{val: {}},
+	}, nil
+}
+
+// ParseTagFileSpec parses a samtools view `-D TAG:FILE` argument and
+// returns a TagFilter populated from the file (one value per line).
+// Both `:` and `;` are accepted as separators, matching upstream's
+// MinGW path-translation workaround in sam_view.c.
+func ParseTagFileSpec(spec string) (TagFilter, error) {
+	if len(spec) < 4 || (spec[2] != ':' && spec[2] != ';') {
+		return TagFilter{}, fmt.Errorf("samtools view: invalid -D tag:file spec %q", spec)
+	}
+	tag := spec[:2]
+	path := spec[3:]
+	vals, err := LoadLinesFile(path)
+	if err != nil {
+		return TagFilter{}, err
+	}
+	return TagFilter{Tag: tag, Values: vals}, nil
+}
+
+// MergeTagFilter folds a new TagFilter into an existing slice. Upstream
+// samtools rejects mixing different tags in the same command line; we do
+// the same. When the new filter shares its tag with an existing entry
+// the value sets are unioned. Once any value has been supplied (by any
+// `-d TAG:VAL` or `-D TAG:FILE`) the merged filter becomes value-bound
+// — a bare `-d TAG` does not relax that constraint, mirroring
+// process_aln in sam_view.c which only ever consults tvhash once it is
+// non-nil.
+func MergeTagFilter(dst []TagFilter, add TagFilter) ([]TagFilter, error) {
+	for i := range dst {
+		if dst[i].Tag != add.Tag {
+			return nil, fmt.Errorf("samtools view: different tag %q specified before %q", dst[i].Tag, add.Tag)
+		}
+		// Same tag — merge value sets.
+		if add.ExistsOnly && dst[i].ExistsOnly {
+			return dst, nil
+		}
+		if dst[i].Values == nil {
+			dst[i].Values = map[string]struct{}{}
+		}
+		for v := range add.Values {
+			dst[i].Values[v] = struct{}{}
+		}
+		// As soon as any side has constrained values, the filter is no
+		// longer a pure existence check.
+		dst[i].ExistsOnly = false
+		return dst, nil
+	}
+	return append(dst, add), nil
 }
 
 // newSubsampleRNG seeds a *rand.Rand for the subsample filter. Returns nil

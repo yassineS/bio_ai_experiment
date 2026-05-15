@@ -656,7 +656,7 @@ the upstream golden files are impractically large for unit-test scope.
 
 | Subcommand | Tests added | Passed | Skipped | Notes |
 | ---------- | -----------:| ------:| -------:| ----- |
-| view       |          10 |      9 |       1 | Skip: CRAM input (`-C/-T`); BAM↔SAM round-trip + flag/MAPQ/RG/region/header-only covered. `-L/--regions-file` BED filter shipped with per-chrom `bed.IntervalTree` and table-driven tests (`TestView_BedFilter_*`); `-M`/`--use-multi-region-iterator` is accept-and-ignore (the predicate result matches the indexed-walk path). |
+| view       |          10 |      9 |       1 | Skip: CRAM input (`-C/-T`); BAM↔SAM round-trip + flag/MAPQ/RG/region/header-only covered. `-L/--regions-file` BED filter shipped with per-chrom `bed.IntervalTree` and table-driven tests (`TestView_BedFilter_*`); `-M`/`--use-multi-region-iterator` is accept-and-ignore (the predicate result matches the indexed-walk path). `-d`/`-D` tag-value filter and `-N` qname-file filter shipped with hand-built table-driven tests in `view_test.go`. |
 | sort       |           6 |      3 |       3 | Skips: `-n`/`-N` FLAG tie-break gap (2 cases), `-t TAG` 3-key compare gap. |
 | index      |           5 |      5 |       0 | All cases: BAI build, CSI rejection, BAI region query, multi-chrom, empty BAM. |
 | depth      |           8 |      6 |       2 | Skips: `-a`/`-A` zero-fill edge cases, `-b BED` byte parity. |

@@ -130,6 +130,13 @@ Options:
   -L, --regions-file <f>      BED of regions to keep (linear scan).
   -M, --use-multi-region-iterator
                               Accepted; we always do the full intersection.
+  -d, --tag STR[:VAL]         Keep records with aux tag STR (and optional VAL).
+                              May be repeated; multiple values OR within
+                              the same tag.
+  -D, --tag-file STR:FILE     Keep records with aux tag STR matching one of
+                              the values listed in FILE (one per line).
+  -N, --qname-file <f>        Keep records whose QNAME is listed in FILE.
+      --no-overflow-list      Accepted for upstream parity (no-op).
   -s, --subsample <float>     Keep fraction (or "<seed>.<frac>").
   -o, --output <file>         Output file (default stdout).
   -T, --reference <fasta>     Accepted; CRAM is not supported in v1.
@@ -162,6 +169,10 @@ func runView(args []string) int {
 		rgFile      string
 		regFile     string
 		multiRegion bool
+		tagSpecs    multiString
+		tagFiles    multiString
+		qnameFile   string
+		noOverflow  bool
 		subsample   string
 		outFile     string
 		refFile     string
@@ -185,6 +196,12 @@ func runView(args []string) int {
 	// Upstream samtools also spells the long form `--use-index`. Accept it
 	// as an alias for parity.
 	fs.BoolVar(&multiRegion, "use-index", false, "")
+	fs.Var(&tagSpecs, "d", "")
+	fs.Var(&tagSpecs, "tag", "")
+	fs.Var(&tagFiles, "D", "")
+	fs.Var(&tagFiles, "tag-file", "")
+	cliflag.StringVar(fs, &qnameFile, "N", "qname-file", "", "File of QNAMEs to keep")
+	cliflag.BoolVar(fs, &noOverflow, "", "no-overflow-list", false, "Accepted (no-op)")
 	cliflag.StringVar(fs, &subsample, "s", "subsample", "", "Subsample fraction")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output file")
 	cliflag.StringVar(fs, &refFile, "T", "reference", "", "Reference FASTA (CRAM unsupported)")
@@ -247,6 +264,46 @@ func runView(args []string) int {
 		}
 		opts.ReadGroupSet = set
 	}
+
+	// -d / -D tag-value filters compose with AND across distinct tags but
+	// upstream rejects mixing tags, so all -d/-D must reference the same
+	// tag. MergeTagFilter enforces that and unions the value sets.
+	for _, spec := range tagSpecs {
+		f, perr := samtools.ParseTagFilterSpec(spec)
+		if perr != nil {
+			fmt.Fprintln(os.Stderr, perr)
+			return 2
+		}
+		merged, merr := samtools.MergeTagFilter(opts.TagFilters, f)
+		if merr != nil {
+			fmt.Fprintln(os.Stderr, merr)
+			return 2
+		}
+		opts.TagFilters = merged
+	}
+	for _, spec := range tagFiles {
+		f, perr := samtools.ParseTagFileSpec(spec)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "samtools view: %v\n", perr)
+			return 1
+		}
+		merged, merr := samtools.MergeTagFilter(opts.TagFilters, f)
+		if merr != nil {
+			fmt.Fprintln(os.Stderr, merr)
+			return 2
+		}
+		opts.TagFilters = merged
+	}
+
+	if qnameFile != "" {
+		set, qerr := samtools.LoadLinesFile(qnameFile)
+		if qerr != nil {
+			fmt.Fprintf(os.Stderr, "samtools view: %v\n", qerr)
+			return 1
+		}
+		opts.QNameSet = set
+	}
+	_ = noOverflow // upstream-parity no-op
 
 	if subsample != "" {
 		frac, seed, err := samtools.ParseSubsample(subsample)
