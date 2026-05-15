@@ -46,6 +46,8 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedmultiinter`](bedmultiinter/) | bedtools multiinter | Multi-way intersection across N BED files | ~87% |
 | [`bedigv`](bedigv/) | bedtools igv | Emit an IGV batch-mode script (one snapshot per interval) | 90% |
 | [`bedlinks`](bedlinks/) | bedtools links | Emit a UCSC Genome Browser HTML link table | 87% |
+| [`bedpairtobed`](bedpairtobed/) | bedtools pairtobed | Overlap BEDPE pairs against a BED (either/both/neither/notboth/xor) | 90% |
+| [`bedpairtopair`](bedpairtopair/) | bedtools pairtopair | Overlap two BEDPE files (both/either/neither/notboth + slop) | 91% |
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |

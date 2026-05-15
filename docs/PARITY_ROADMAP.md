@@ -175,16 +175,17 @@ parity cases pointing back here):
 **Validation:** **16-case parity test suite, 12 passing, 4
 documented `t.Skip`** (post this PR).
 
-### bedtools (33 subcommands ported)
+### bedtools (35 subcommands ported)
 
-**Status:** 33 of ~40 subcommands (~83%). 141 passing parity tests
+**Status:** 35 of ~40 subcommands (~88%). 141 passing parity tests
 against the upstream test suite (across PR #55 + Phase-3 wave 1 + wave
 2 simple + wave 2 algo) + 17 new cases from wave 3 (PR #87) + 6 cases
 from the reldist/fisher full-parity wave (PR #90) + 6 cases from the
 nuc/annotate wave (PR #91) + 7 cases from the multicov/multiinter
-wave (PR #92) + **6 new** spec-driven cases from the igv/links wave
-(this PR — three each for `bedigv` and `bedlinks`, derived from the
-upstream source as neither subcommand ships a `test/<name>/` subdir).
+wave (PR #92) + 6 cases from the igv/links wave (PR #93) + **10 new**
+spec-driven cases from the BEDPE pair-ops wave (this PR — five each
+for `bedpairtobed` and `bedpairtopair`, derived from the upstream
+source as neither subcommand ships a `test/<name>/` subdir).
 Phase-3 wave 1 (PR #78) added `bedgroupby`/`bed12tobed6`/`bedmakewindows`;
 wave 2 simple (PR #80) added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`;
 wave 2 algo added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail
@@ -192,13 +193,15 @@ wave 2 algo added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail
 the reldist/fisher wave (PR #90) added `bedreldist`/`bedfisher`; the
 nuc/annotate wave (PR #91) added `bednuc`/`bedannotate`; the
 multicov/multiinter wave (PR #92) closed the last two of the six
-originally-planned algorithmic subcommands; **the igv/links wave
-(this PR) lands the two pure-format converters left in the long
-tail**.
+originally-planned algorithmic subcommands; the igv/links wave
+(PR #93) landed the two pure-format converters; **the BEDPE pair-ops
+wave (this PR) closes the last two missing subcommands — bedtools now
+has no missing subcommands**.
 
-Missing subcommands:
-
-- `pairtopair`, `pairtobed` — paired BEDPE operations.
+Missing subcommands: none. All algorithmic, BEDPE, and converter
+subcommands are ported. Remaining bedtools work is option-tail polish,
+column-op closure (`bedmap` / `bedgroupby` operations), and the two
+known discrepancies below.
 
 Skipped parity cases from PR #55 to revisit:
 

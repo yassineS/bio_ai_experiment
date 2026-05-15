@@ -1,0 +1,4 @@
+chr1	10	20	chr1	30	40	pair1	0	+	+
+chr1	100	200	chr2	300	400	pair2	0	+	-
+chr2	1000	2000	chr3	3000	4000	pair3	0	-	+
+chr9	0	10	chr9	100	200	lonely	0	+	+
