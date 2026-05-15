@@ -679,7 +679,8 @@ the upstream golden files are impractically large for unit-test scope.
 | import     |          12 |     11 |       1 | FASTQ→BAM/SAM across R1+R2 paired, -0 unpaired, -s interleaved, -T '*' / -T 'XZ' / -T '' aux extraction, -R short / -r full RG, --order int+padded forms, /1/2 suffix strip toggle, BAM round-trip, two positional args. Skip: upstream import-then-fastq round-trip (requires upstream samtools fastq for the round-half). |
 | phase      |           5 |      5 |       0 | Hand-built SAM fixtures: two-het chain (flip case), two-het chain (label-1 case), ambiguous label when reads don't bridge two hets, MinMAPQ filter drops T-bearing reads, default-constants guard. Upstream MCMC chimera repair deferred; `-b` per-haplotype BAM split not yet wired (see PARITY_ROADMAP.md#samtools). |
 | targetcut  |           3 |      3 |       0 | Hand-built SAM fixtures: soft-clip + insertion + deletion + unmapped/secondary skip + SEQ='*' skip; `-Q` per-base quality filter drops sub-threshold bases; default-constant guard. The upstream `cut_target.c` HMM consensus mode is **NOT** implemented in v1 — the Go port emits an aligned-slice FASTA per read instead (documented scope reduction). |
-| **TOTAL**  |     **112** | **98** | **14**  | |
+| consensus  |          17 |     16 |       1 | Hand-built fixtures across all three output formats (FASTA / FASTQ / pileup): all-match, mixed alleles above and below `--min-fraction`, zero-coverage with `-a` / without `-a`, multi-contig, min-depth gate, deletion-shown-or-suppressed, insertion-shown-or-suppressed, line-wrap, ambiguous IUPAC het call, format/mode parsers, bayesian-mode fallback. Skip: the upstream `reference_code/samtools/test/consensus/` corpus, which exercises the Gap5 bayesian caller (not yet ported); the simple-mode parity is covered by the table-driven tests above. |
+| **TOTAL**  |     **129** | **114** | **15**  | |
 
 ### samtools: discrepancies found in our port (fixed in this PR)
 

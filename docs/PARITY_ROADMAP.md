@@ -364,20 +364,35 @@ Missing:
 
 ### `samtools`
 
-**Status:** 23 of ~25 subcommands (~92%). `view`, `sort`, `index`, `depth`,
+**Status:** 24 of ~25 subcommands (~96%). `view`, `sort`, `index`, `depth`,
 `fastq`, `flagstat`, **`mpileup`** (wave-1 + tail wiring), PR #88's
 wave-1 tail (`merge`, `coverage`, `idxstats`, `cat`, `reheader`,
 `addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`), the
 heavy-hitter pair `markdup` + `stats`, the calmd/import pair
-(**`calmd`** + **`import`**), and the niche pair landed in the
-phase/targetcut PR: **`phase`** + **`targetcut`**.
+(`calmd` + `import`), the niche pair `phase` + `targetcut`, and the
+new **`consensus`** subcommand (simple-mode FASTA / FASTQ / pileup
+output). `tview` (terminal viewer) is a **deliberate skip**
+(interactive curses UI; near-zero pipeline usage; would require an
+ncurses dependency).
 
-Missing subcommands (in rough priority order):
+**`consensus` deferred features** (v1 ships simple-mode only; the
+CLI flag slots are accepted for compat):
 
-- **`consensus`** — base-level consensus.
-- **`tview`** — terminal viewer. **Deliberate skip** (interactive
-  curses UI; near-zero pipeline usage and would require an ncurses
-  dependency). Not on the roadmap.
+- **`--mode bayesian`** — upstream's Gap5-derived posterior caller is
+  ~1,800 lines of state machine + lookup tables (`bam_consensus.c`).
+  v1 falls back to `simple` with a stderr warning. Full port is a
+  follow-up PR; the v1 simple-mode parity covers the COG-UK / Covid-19
+  pipelines that motivated the upstream addition.
+- **Pileup-mode `nth` column** — upstream emits one row per insertion
+  position (nth > 0) so insertions show up in pileup output. v1 always
+  emits `nth=0` (matching upstream's `--show-ins no` behaviour).
+- **`--ignore-overlaps`** — accepted but no-op; the consensus walker
+  shares the mpileup accumulator and does not dedup PE overlap by
+  default.
+
+Missing subcommands (only):
+
+- **`tview`** — terminal viewer. **Deliberate skip**.
 - **`view` flag-tail**: `-X` (custom-index input). `-L bed` landed as a
   linear-scan BED-region filter; `-M`/`--use-multi-region-iterator` is
   accepted but treated as a no-op since we always run the full

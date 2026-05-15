@@ -1574,3 +1574,185 @@ func runTargetcut(args []string) int {
 	}
 	return 0
 }
+
+// ----- consensus --------------------------------------------------------
+
+const consensusUsage = `samtools consensus - call a per-position consensus base.
+
+Usage:
+  samtools consensus [options] <in.bam>
+
+Options:
+  -f, --format FMT          Output format: fasta (default), fastq, pileup.
+  -m, --mode MODE           Algorithm: simple (default) or bayesian
+                            (accepted but not yet implemented; falls
+                            back to simple with a stderr warning).
+  -a, --all                 Emit zero-coverage positions as N (FASTA/FASTQ);
+                            in pileup mode emit a row for every position
+                            in the contig.
+  -r, --region REG          Restrict to a "chr[:start-end]" region; may
+                            be repeated.
+  -l, --positions FILE      BED file of positions to keep.
+  -d, --min-depth INT       Minimum unfiltered depth (default 1).
+      --min-fraction FLOAT  Minimum proportion of the dominant base over
+                            total score (default 0.6).
+  -c, --call-fract FLOAT    Minimum proportion (best+second) / total
+                            required to make any call (default 0.75).
+  -H, --het-fract FLOAT     Minimum proportion of second-best/best to
+                            trigger an IUPAC het call (default 0.5);
+                            requires -A.
+  -A, --ambig               Emit IUPAC ambiguity codes for hets.
+  -q, --min-MQ INT          Minimum MAPQ (default 0).
+  -Q, --min-BQ INT          Minimum base quality (default 0).
+      --show-del yes|no     Render deletions as '*' in FASTA/FASTQ output
+                            (default no). Pileup always shows them.
+      --show-ins yes|no     Include inserted bases in FASTA/FASTQ output
+                            (default yes). Pileup ignores this in v1.
+      --line-len INT        Wrap FASTA/FASTQ lines at this many bases
+                            (default 70).
+      --ignore-overlaps     Accepted; not implemented in v1 (we don't
+                            deduplicate mate-pair overlaps).
+  -o, --output FILE         Output file (default stdout).
+  -@, --threads INT         Accepted; single-threaded in v1.
+  -h, --help                Show this help.
+  -v, --version             Show version.
+
+Notes:
+  - v1 implements the "simple" mode only (majority-vote by qual-weighted
+    sum). The "bayesian" mode is accepted on the CLI and falls back to
+    simple with a stderr warning; the Gap5-derived posterior caller is
+    tracked in docs/PARITY_ROADMAP.md#samtools.
+  - In pileup mode each row carries chrom\tpos\tnth\tdepth\tcall\tcq\tseq\tqual,
+    matching upstream's basic_pileup format. nth is always 0 in v1
+    (insertion-column rows are not yet supported).
+`
+
+func runConsensus(args []string) int {
+	fs := flag.NewFlagSet("samtools consensus", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		formatStr string
+		modeStr   string
+		allPos    bool
+		regions   multiString
+		bedPath   string
+		minDepth  int
+		minFrac   float64
+		callFract float64
+		hetFract  float64
+		ambig     bool
+		minMAPQ   int
+		minBaseQ  int
+		showDel   string
+		showIns   string
+		lineLen   int
+		ignoreOvl bool
+		outPath   string
+		threads   int
+		showHelp  bool
+		showVer   bool
+	)
+	cliflag.StringVar(fs, &formatStr, "f", "format", "fasta", "Output format")
+	cliflag.StringVar(fs, &modeStr, "m", "mode", "simple", "Consensus mode")
+	cliflag.BoolVar(fs, &allPos, "a", "all", false, "Emit zero-coverage positions")
+	fs.Var(&regions, "r", "")
+	fs.Var(&regions, "region", "")
+	cliflag.StringVar(fs, &bedPath, "l", "positions", "", "BED of positions")
+	cliflag.IntVar(fs, &minDepth, "d", "min-depth", 1, "Min depth")
+	cliflag.Float64Var(fs, &minFrac, "", "min-fraction", 0.6, "Min dominant-base fraction")
+	cliflag.Float64Var(fs, &callFract, "c", "call-fract", 0.75, "Min call fraction")
+	cliflag.Float64Var(fs, &hetFract, "H", "het-fract", 0.5, "Min het fraction")
+	cliflag.BoolVar(fs, &ambig, "A", "ambig", false, "Emit IUPAC ambig codes")
+	cliflag.IntVar(fs, &minMAPQ, "q", "min-MQ", 0, "Min MAPQ")
+	cliflag.IntVar(fs, &minBaseQ, "Q", "min-BQ", 0, "Min base quality")
+	cliflag.StringVar(fs, &showDel, "", "show-del", "no", "Show deletions in FASTA/FASTQ")
+	cliflag.StringVar(fs, &showIns, "", "show-ins", "yes", "Include insertions in FASTA/FASTQ")
+	cliflag.IntVar(fs, &lineLen, "", "line-len", 70, "FASTA/FASTQ line wrap")
+	cliflag.BoolVar(fs, &ignoreOvl, "", "ignore-overlaps", false, "Accepted; not implemented")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "Output path")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Print(consensusUsage)
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, consensusUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(consensusUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "samtools consensus: missing input file")
+		fmt.Fprint(os.Stderr, consensusUsage)
+		return 2
+	}
+	format, err := samtools.ParseConsensusFormat(formatStr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	mode, err := samtools.ParseConsensusMode(modeStr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	opts := samtools.ConsensusOptions{
+		Input:                fs.Arg(0),
+		Format:               format,
+		Mode:                 mode,
+		AllPositions:         allPos,
+		Regions:              []string(regions),
+		BEDPath:              bedPath,
+		MinDepth:             minDepth,
+		MinConsensusFraction: minFrac,
+		MinCallFraction:      callFract,
+		MinHetFraction:       hetFract,
+		AmbigCodes:           ambig,
+		MinMAPQ:              uint8(minMAPQ),
+		MinBaseQ:             uint8(minBaseQ),
+		LineLen:              lineLen,
+		IgnoreOverlaps:       ignoreOvl,
+		Output:               outPath,
+		Threads:              threads,
+	}
+	opts.ShowDel = parseYesNo(showDel, false)
+	opts.NoShowIns = !parseYesNo(showIns, true)
+
+	out, err := openOut(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools consensus: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+	if err := samtools.ConsensusFile(opts, out, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools consensus: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// parseYesNo accepts upstream samtools' "yes"/"no"/"on"/"off"/"true"/"false"/"1"/"0"
+// triplets, returning def for empty.
+func parseYesNo(v string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return def
+	case "yes", "y", "on", "true", "1":
+		return true
+	case "no", "n", "off", "false", "0":
+		return false
+	}
+	return def
+}
