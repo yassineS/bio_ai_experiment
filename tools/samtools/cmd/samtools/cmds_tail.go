@@ -1382,6 +1382,9 @@ Options:
                v1 always uses the aligned slice.
   -A           Mark drop in the dropped output. Accepted; v1 has no
                per-read chimera output.
+  -e           Use empirical-Bayes prior. Accepted-and-ignored
+               (upstream MCMC fallback is deferred — see roadmap).
+  -l INT       Block-merge length cap. Accepted-and-ignored.
   -o, --output PATH  Output TSV path (default stdout).
   -h, --help   Show this help.
       --version  Show version.
@@ -1412,6 +1415,15 @@ func runPhase(args []string) int {
 	fs.IntVar(&maxDepth, "D", samtools.DefaultPhaseMaxDepth, "")
 	fs.BoolVar(&fullRead, "F", false, "")
 	fs.BoolVar(&dropAmbig, "A", false, "")
+	// Upstream phase.c:631 declares `-e` (use empirical-Bayes prior) and
+	// `-l INT` (block-merge length cap). Both are accepted-and-ignored
+	// for CLI parity per docs/PARITY_ROADMAP.md "phase MCMC" deferral.
+	var (
+		upstreamE bool
+		upstreamL int
+	)
+	fs.BoolVar(&upstreamE, "e", false, "")
+	fs.IntVar(&upstreamL, "l", 0, "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -1430,6 +1442,8 @@ func runPhase(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
+	_ = upstreamE
+	_ = upstreamL
 	if fs.NArg() == 0 {
 		fmt.Fprint(os.Stderr, phaseUsage)
 		return 2
@@ -1466,7 +1480,7 @@ func runPhase(args []string) int {
 const targetcutUsage = `samtools targetcut - emit a FASTA slice of each aligned read.
 
 Usage:
-  samtools targetcut [options] [-i in.bam] [-f out.fa]
+  samtools targetcut [options] <in.bam>
 
 For every mapped primary record, writes a FASTA entry containing the
 read sequence that aligns to the reference (soft-clipped flanks
@@ -1474,16 +1488,18 @@ removed; insertions retained because they consume query bases;
 deletions / refskips / padding contribute nothing).
 
 Options:
-  -Q INT       Min base quality. Bases with Phred quality below the
-               cutoff are dropped from the emitted sequence. (Default 13.)
-  -i FILE      Input BAM/SAM (default: positional arg or stdin "-").
-  -f FILE      Output FASTA (default stdout). Accepts "-" for stdout.
-  -h, --help   Show this help.
-      --version  Show version.
+  -Q INT             Min base quality. Bases with Phred quality below
+                     the cutoff are dropped. (Default 13.)
+  -o, --output FILE  Output FASTA (default stdout). Accepts "-".
+  -h, --help         Show this help.
+      --version      Show version.
 
-Upstream samtools ships a (very different) HMM consensus tool under
-the same name; the cut-the-aligned-slice behaviour here is documented
-in docs/PARITY_ROADMAP.md as a deliberate scope reduction.
+Upstream-only flags (accepted-and-ignored — upstream samtools
+targetcut is an HMM-consensus tool over fosmid pools; our v1 ships
+the simpler aligned-slice-to-FASTA mode). The accepted upstream
+flag letters are: -i INT (state-transition penalty), -f FILE (ref
+FASTA), -0/-1/-2 INT (HMM emission scores). See
+docs/PARITY_ROADMAP.md for the documented scope reduction.
 `
 
 func runTargetcut(args []string) int {
@@ -1491,14 +1507,26 @@ func runTargetcut(args []string) int {
 	fs.SetOutput(io.Discard)
 	var (
 		minBaseQ int
-		inPath   string
 		outPath  string
-		showHelp bool
-		showVer  bool
+		// Upstream `cut_target.c` declares these flag letters with
+		// different meanings (HMM-consensus tool). We accept them as
+		// no-ops so a user copy-pasting an upstream invocation gets a
+		// recognised parse rather than a silent flag-letter collision.
+		upstreamI  int
+		upstreamF  string
+		upstreamE0 int
+		upstreamE1 int
+		upstreamE2 int
+		showHelp   bool
+		showVer    bool
 	)
 	fs.IntVar(&minBaseQ, "Q", int(samtools.DefaultTargetcutMinBaseQ), "")
-	fs.StringVar(&inPath, "i", "", "")
-	fs.StringVar(&outPath, "f", "", "")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	fs.IntVar(&upstreamI, "i", 0, "")
+	fs.StringVar(&upstreamF, "f", "", "")
+	fs.IntVar(&upstreamE0, "0", 0, "")
+	fs.IntVar(&upstreamE1, "1", 0, "")
+	fs.IntVar(&upstreamE2, "2", 0, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -1516,14 +1544,15 @@ func runTargetcut(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
-	// Resolve input: -i takes precedence; otherwise fall back to the
-	// first positional arg; otherwise treat as stdin.
-	if inPath == "" {
-		if fs.NArg() > 0 {
-			inPath = fs.Arg(0)
-		} else {
-			inPath = "-"
-		}
+	// Discard the upstream-only flag values (recognised for CLI parity).
+	_ = upstreamI
+	_ = upstreamF
+	_ = upstreamE0
+	_ = upstreamE1
+	_ = upstreamE2
+	inPath := "-"
+	if fs.NArg() > 0 {
+		inPath = fs.Arg(0)
 	}
 	in, err := iohelper.OpenReader(inPath)
 	if err != nil {
