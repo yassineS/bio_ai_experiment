@@ -228,6 +228,28 @@ func TestMendelian_DeleteMode(t *testing.T) {
 	}
 }
 
+// TestMendelian_GoodMode verifies the `-m g` (good-only) mode emits the
+// same record set as `-m d` (delete bad). Locks in the upstream-parity
+// interpretation that "good-only" === "keep consistent" === "drop bad".
+func TestMendelian_GoodMode(t *testing.T) {
+	var outGood, outDel bytes.Buffer
+	opts := MendelianOptions{
+		Trios:        []Trio{{Child: "CHILD", Father: "FATHER", Mother: "MOTHER"}},
+		OutputFormat: OutputVCF,
+	}
+	opts.Mode = MendelianGood
+	if _, err := Mendelian(strings.NewReader(trioFixture()), &outGood, opts); err != nil {
+		t.Fatalf("Mendelian good: %v", err)
+	}
+	opts.Mode = MendelianDelete
+	if _, err := Mendelian(strings.NewReader(trioFixture()), &outDel, opts); err != nil {
+		t.Fatalf("Mendelian delete: %v", err)
+	}
+	if outGood.String() != outDel.String() {
+		t.Fatalf("good-mode output differs from delete-mode:\n--- good\n%s\n--- delete\n%s", outGood.String(), outDel.String())
+	}
+}
+
 func TestMendelian_LegacyCountFlag(t *testing.T) {
 	// -c flag is the legacy alias for -m c.
 	var out bytes.Buffer

@@ -45,7 +45,11 @@ const (
 	// append a ##bcftools_PG header line. v1 treats it as a synonym
 	// for MendelianAnnotate (the PG line is provenance, not parity-
 	// critical).
+	// MendelianGood is upstream's `g` mode: keep ONLY consistent
+	// records (the inverse of MendelianDelete). v1 implements it
+	// alongside MendelianDelete by flipping the keep/drop sense.
 	MendelianPlusPG
+	MendelianGood
 )
 
 // ParseMendelianMode parses the one-letter mode string from -m/--mode.
@@ -61,8 +65,10 @@ func ParseMendelianMode(s string) (MendelianMode, error) {
 		return MendelianDelete, nil
 	case "+":
 		return MendelianPlusPG, nil
+	case "g":
+		return MendelianGood, nil
 	}
-	return 0, fmt.Errorf("bcftools mendelian: unknown -m mode %q (accept a|c|x|d|+)", s)
+	return 0, fmt.Errorf("bcftools mendelian: unknown -m mode %q (accept a|c|x|d|+|g)", s)
 }
 
 // MendelianOptions controls the behaviour of MendelianFile.
@@ -215,6 +221,16 @@ func Mendelian(in io.Reader, out io.Writer, opts MendelianOptions) (MendelianSum
 		case MendelianCount:
 			// no output per record; we'll emit a summary at the end.
 		case MendelianDelete:
+			if totalErrors == 0 {
+				if err := writer.Write(v); err != nil {
+					return summary, err
+				}
+			}
+		case MendelianGood:
+			// Upstream's `-m g` (good-only): emit ONLY records
+			// without Mendel errors. Semantically equivalent to
+			// `-m d` (delete bad); exposed as a separate mode for
+			// CLI parity.
 			if totalErrors == 0 {
 				if err := writer.Write(v); err != nil {
 					return summary, err
