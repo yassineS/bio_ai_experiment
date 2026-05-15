@@ -836,3 +836,253 @@ func runSplit(args []string) int {
 	}
 	return 0
 }
+
+// ----- markdup ----------------------------------------------------------
+
+const markdupUsage = `samtools markdup - mark / remove PCR duplicates.
+
+Usage:
+  samtools markdup [options] <in.bam> <out.bam>
+
+Two-pass algorithm: pass 1 builds per-fragment buckets keyed by
+(refID, unclipped coord, mate refID, mate unclipped coord, orientation);
+pass 2 re-streams the input and marks all but the highest-scoring record
+in each bucket with the 0x400 (duplicate) flag.
+
+Options:
+  -r, --remove-dups       Drop duplicates from output (vs just marking).
+  -d, --max-dist N        Optical-dup distance. v1 accepts the flag but
+                          does NOT implement optical-dup detection.
+  -s, --mode {t|s|tp}     Key mode: template (default), sequence, or
+                          template+position (folded into template).
+  -T, --tmpdir PATH       Accepted; v1 keeps state in memory.
+  -l, --max-len N         Max read length considered (default 300).
+      --include-flags N   Require ALL bits set.
+      --exclude-flags N   Drop records with ANY bit set.
+  -c, --clear-tags        Clear pre-existing dup tags (do/dt/mc).
+  -t, --add-tag           Write the 'do' aux tag on flagged duplicates.
+  -@, --threads N         Accepted; v1 is single-threaded.
+  -o, --output FILE       Output path (default stdout).
+      --no-PG             Suppress @PG injection (we never inject anyway).
+  -h, --help              Show this help.
+  -v, --version           Show version.
+`
+
+func runMarkdup(args []string) int {
+	fs := flag.NewFlagSet("samtools markdup", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		removeDups bool
+		maxDist    int
+		modeStr    string
+		tmpDir     string
+		maxLen     int
+		includeF   int
+		excludeF   int
+		clearTags  bool
+		addTag     bool
+		threads    int
+		outPath    string
+		noPG       bool
+		showHelp   bool
+		showVer    bool
+	)
+	cliflag.BoolVar(fs, &removeDups, "r", "remove-dups", false, "")
+	cliflag.IntVar(fs, &maxDist, "d", "max-dist", 0, "")
+	cliflag.StringVar(fs, &modeStr, "s", "mode", "t", "")
+	cliflag.StringVar(fs, &tmpDir, "T", "tmpdir", "", "")
+	cliflag.IntVar(fs, &maxLen, "l", "max-len", 300, "")
+	fs.IntVar(&includeF, "include-flags", 0, "")
+	fs.IntVar(&excludeF, "exclude-flags", 0, "")
+	cliflag.BoolVar(fs, &clearTags, "c", "clear-tags", false, "")
+	cliflag.BoolVar(fs, &addTag, "t", "add-tag", false, "")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	fs.BoolVar(&noPG, "no-PG", false, "")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, markdupUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(markdupUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprint(os.Stderr, markdupUsage)
+		return 2
+	}
+	if maxDist != 0 {
+		fmt.Fprintln(os.Stderr, "samtools markdup: warning: optical-dup detection (-d) is not yet implemented; PCR dups only")
+	}
+	var mode samtools.MarkdupMode
+	switch modeStr {
+	case "t", "":
+		mode = samtools.MarkdupModeTemplate
+	case "s":
+		mode = samtools.MarkdupModeSequence
+	case "tp":
+		mode = samtools.MarkdupModeTemplatePos
+	default:
+		fmt.Fprintf(os.Stderr, "samtools markdup: unknown mode %q\n", modeStr)
+		return 2
+	}
+	inPath := fs.Arg(0)
+	if fs.NArg() > 1 && outPath == "" {
+		outPath = fs.Arg(1)
+	}
+	opener := func() (io.ReadCloser, error) {
+		return iohelper.OpenReader(inPath)
+	}
+	out, err := openOut(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools markdup: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+	if _, err := samtools.Markdup(opener, out, samtools.MarkdupOptions{
+		RemoveDups:   removeDups,
+		MaxDist:      maxDist,
+		Mode:         mode,
+		TmpDir:       tmpDir,
+		MaxLen:       maxLen,
+		IncludeFlags: uint16(includeF),
+		ExcludeFlags: uint16(excludeF),
+		ClearTags:    clearTags,
+		AddTag:       addTag,
+		Threads:      threads,
+		NoPG:         noPG,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools markdup: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// ----- stats ------------------------------------------------------------
+
+const statsUsage = `samtools stats - exhaustive per-file alignment statistics.
+
+Usage:
+  samtools stats [options] <in.bam> [region ...]
+
+Emits an upstream-compatible text report. v1 ships the most-used sections:
+SN (Summary Numbers), RL (read-length), MAPQ (MAPQ distribution),
+IS (insert sizes), FFQ/LFQ (per-cycle qualities), GCF/GCL (GC-fraction
+histograms), GCC (per-cycle GC). Other sections (COV/COV2/GCD/OXC/...)
+are skipped with a documented reason; see PARITY_VALIDATION.md.
+
+Options:
+  -r, --ref-seq FASTA      Reference FASTA (accepted; sections that need
+                           reference bases are skipped without it).
+  -c, --coverage MIN[,MAX[,STEP]]
+                           Coverage histogram bins (parsed but COV is
+                           omitted in v1).
+  -l, --required-flag N    Require ALL bits set.
+  -F, --filtering-flag N   Drop records with ANY bit set.
+  -d, --max-depth N        Cap depth used in coverage.
+  -q, --min-mapq N         Skip records with MAPQ < N.
+      --remove-dups        Skip duplicate-flagged records.
+      --remove-overlaps    Accept (no-op in v1).
+  -i, --insert-size N      Max insert size for the IS section (default 8000).
+  -x, --sparse             Omit sections that would emit only zero lines.
+  -t, --target-regions BED Restrict stats to this BED (skipped in v1).
+  -@, --threads N          Accepted; v1 is single-threaded.
+  -o, --output FILE        Output path (default stdout).
+  -h, --help               Show this help.
+  -v, --version            Show version.
+`
+
+func runStats(args []string) int {
+	fs := flag.NewFlagSet("samtools stats", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		refSeq     string
+		coverage   string
+		reqFlag    int
+		filtFlag   int
+		maxDepth   int
+		minMapQ    int
+		removeDups bool
+		removeOvl  bool
+		insertSize int
+		sparse     bool
+		targetBED  string
+		threads    int
+		outPath    string
+		showHelp   bool
+		showVer    bool
+	)
+	cliflag.StringVar(fs, &refSeq, "r", "ref-seq", "", "")
+	cliflag.StringVar(fs, &coverage, "c", "coverage", "", "")
+	cliflag.IntVar(fs, &reqFlag, "l", "required-flag", 0, "")
+	cliflag.IntVar(fs, &filtFlag, "F", "filtering-flag", 0, "")
+	cliflag.IntVar(fs, &maxDepth, "d", "max-depth", 0, "")
+	cliflag.IntVar(fs, &minMapQ, "q", "min-mapq", 0, "")
+	fs.BoolVar(&removeDups, "remove-dups", false, "")
+	fs.BoolVar(&removeOvl, "remove-overlaps", false, "")
+	cliflag.IntVar(fs, &insertSize, "i", "insert-size", 8000, "")
+	cliflag.BoolVar(fs, &sparse, "x", "sparse", false, "")
+	cliflag.StringVar(fs, &targetBED, "t", "target-regions", "", "")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "v", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, statsUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(statsUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprint(os.Stderr, statsUsage)
+		return 2
+	}
+	in, err := iohelper.OpenReader(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)
+		return 1
+	}
+	defer in.Close()
+	out, err := openOut(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+	if err := samtools.Stats(in, out, samtools.StatsOptions{
+		RefSeq:         refSeq,
+		Coverage:       coverage,
+		RequiredFlag:   uint16(reqFlag),
+		FilteringFlag:  uint16(filtFlag),
+		MaxDepth:       maxDepth,
+		MinMAPQ:        uint8(minMapQ),
+		RemoveDups:     removeDups,
+		RemoveOverlaps: removeOvl,
+		MaxInsertSize:  insertSize,
+		Sparse:         sparse,
+		TargetBED:      targetBED,
+		Threads:        threads,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)
+		return 1
+	}
+	return 0
+}

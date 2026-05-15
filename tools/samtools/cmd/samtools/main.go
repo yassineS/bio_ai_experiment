@@ -42,6 +42,8 @@ Subcommands:
   merge         Merge sorted BAMs.
   coverage      Per-region coverage summary table.
   split         Split a BAM by @RG ID into per-RG files.
+  markdup       Mark or remove PCR duplicate records.
+  stats         Print exhaustive alignment statistics.
   help          Show this help.
   version       Show version.
 `
@@ -86,6 +88,10 @@ func main() {
 		os.Exit(runCoverage(os.Args[2:]))
 	case "split":
 		os.Exit(runSplit(os.Args[2:]))
+	case "markdup":
+		os.Exit(runMarkdup(os.Args[2:]))
+	case "stats":
+		os.Exit(runStats(os.Args[2:]))
 	case "help", "-h", "--help":
 		fmt.Print(rootUsage)
 		return

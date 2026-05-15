@@ -43,6 +43,8 @@ samtools flagstat <in.bam|in.sam>
 samtools depth    [options] <in1.bam> [<in2.bam> ...]
 samtools fastq    [options] <in.bam|in.sam>
 samtools bam2fq   [options] <in.bam|in.sam>   # alias for fastq
+samtools markdup  [options] <in.bam> <out.bam>
+samtools stats    [options] <in.bam|in.sam>
 samtools help
 samtools version
 ```
@@ -240,6 +242,64 @@ N + 0 with mate mapped to a different chr (mapQ>=5)
 ```
 
 Each counter is split QC-passed + QC-failed via the 0x200 flag bit.
+
+### `samtools markdup`
+
+Mark or remove PCR duplicates using a two-pass `pair_key`/`single_key`
+streaming algorithm that mirrors upstream's `bam_markdup.c`. The
+algorithm walks the input twice: pass 1 builds the duplicate buckets,
+pass 2 re-emits records with the 0x400 flag set on the non-chosen
+members of each bucket. The "best" record is the one whose
+`calc_score(read) + ms_tag(read)` is highest (`calc_score` = sum of base
+qualities ≥ 15).
+
+| Short | Long             | Description                                |
+|-------|------------------|--------------------------------------------|
+| `-r`  | `--remove-dups`  | Drop duplicates from output (vs flag).     |
+| `-d`  | `--max-dist N`   | Optical-dup distance (accepted, not impl). |
+| `-s`  | `--mode {t/s/tp}`| Key mode: template (default) / sequence.   |
+| `-T`  | `--tmpdir PATH`  | Accepted; v1 streams in memory.            |
+| `-l`  | `--max-len N`    | Max read length considered (default 300).  |
+|       | `--include-flags N` | Require ALL bits set.                   |
+|       | `--exclude-flags N` | Drop records with ANY bit set.          |
+| `-c`  | `--clear-tags`   | Strip pre-existing `do`/`dt`/`mc` tags.    |
+| `-t`  | `--add-tag`      | Write `do:Z:<winner-qname>` on duplicates. |
+| `-@`  | `--threads N`    | Accepted; v1 is single-threaded.           |
+| `-o`  | `--output PATH`  | Output BAM (default stdout).               |
+|       | `--no-PG`        | Suppress `@PG` line emission.              |
+
+Byte-parity validated against upstream's `test/markdup/5_markdup.sam` and
+`6_remove_dups.sam`; flag-parity on `18_primary_duplicate_count.sam`.
+See `PARITY_VALIDATION.md` for the deferred-feature list (optical-dup
+detection, per-RG keying, `dt:Z:` tag).
+
+### `samtools stats`
+
+Emit the upstream-compatible Summary Numbers (SN) block plus useful
+read-length, MAPQ, and insert-size histograms. The SN block is
+byte-faithful with upstream for the 6 fixtures we exercise in
+`stats_test.go` (fixtures 1, 2, 5, 7, 8, 10 from
+`reference_code/samtools/test/stat/`).
+
+| Short | Long                  | Description                                 |
+|-------|-----------------------|---------------------------------------------|
+| `-r`  | `--ref-seq FASTA`     | Reference (accepted; no GC/COV sections).   |
+| `-c`  | `--coverage SPEC`     | Coverage bin spec (parsed, COV deferred).   |
+| `-l`  | `--required-flag N`   | Require ALL bits set.                       |
+| `-F`  | `--filtering-flag N`  | Drop records with ANY bit set.              |
+| `-d`  | `--max-depth N`       | Cap depth (placeholder).                    |
+| `-q`  | `--min-mapq N`        | Skip records with MAPQ < N.                 |
+|       | `--remove-dups`       | Drop duplicate-flagged records.             |
+|       | `--remove-overlaps`   | Accepted; no-op in v1.                      |
+| `-i`  | `--insert-size N`     | Max insert size for IS section (8000).      |
+| `-x`  | `--sparse`            | Omit empty placeholder sections.            |
+| `-t`  | `--target-regions BED`| Accepted; v1 ignores BED restriction.       |
+| `-@`  | `--threads N`         | Accepted; single-threaded.                  |
+| `-o`  | `--output PATH`       | Output path (default stdout).               |
+
+Sections emitted: **SN**, **RL/FRL/LRL**, **MAPQ**, **IS**. Sections
+deferred (documented in `PARITY_VALIDATION.md`): the CHK checksum block,
+COV/COV2, GCD/GCT/GCC/GCL, FFQ/LFQ, OXC, BED target restriction.
 
 ## Deviations from upstream samtools
 
