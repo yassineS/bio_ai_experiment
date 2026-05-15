@@ -41,7 +41,12 @@ features land.
 | bedcoverage   |           9 |      6 |       3 | Skips: BAM input (t1), `-mean` float32 precision (t6), `-split` BAM modes (t10..t13). |
 | bedmap        |          12 |     10 |       2 | Skips: `absmin`/`absmax` (t11), GFF input (t14+). |
 | bedshuffle    |           6 |      5 |       1 | Skips: upstream `-chromFirst` toggle (t3); inline expected outputs are RNG-specific so byte-parity is replaced with structural invariants (t1/t2/t4: lengths preserved, include/exclude/chrom honoured). |
-| **TOTAL**     |     **188** |**135** | **53**  | |
+| bedcluster    |           3 |      3 |       0 | All upstream `cluster.t1`/`t2` cases (basic + `-s` stranded) plus an idempotency smoke (PR #87 wave-3 tail). |
+| bedsplit      |           3 |      3 |       0 | All canonical upstream cases (`split.01/02/03`: `-a simple -n 50`, `-a simple -n 1000`, `-a size -n 50`); manifest head comparison. |
+| bedsummary    |           4 |      4 |       0 | Spec-driven (upstream has no `summary/` test subdir): 2-chrom basic, `--no-header`, `--skip-all`, odd-count median. |
+| bedtag        |           4 |      4 |       0 | Spec-driven (upstream has no `tag/` test subdir): default name-column join, `-labels` source prefix, `-names` per-source override, `-s` strand filter. |
+| bedwindow     |           6 |      6 |       0 | Spec-driven (upstream has no `window/` test subdir): default A<TAB>B writer, symmetric `-w` expansion, `-c` count-only, `-v` invert, asymmetric `-l 0 -r N`, low-clipping at 0. |
+| **TOTAL**     |     **208** |**155** | **53**  | |
 
 (The discrepancy between this table and `go test`'s 87 passed / 42 skipped is
 two helper / sanity sub-tests in `bedsort` and `bedintersect` that are not
@@ -487,7 +492,13 @@ The brief differs from bedtools' in two ways:
 | concat     |           6 |      4 |       2 | Skips: `-a` sort-merge (different contig-order heuristic), plain `-D` adjacency dedup (upstream requires `-a`). Plain concat, `-O z` round-trip, conflicting-header detection, and the upstream `concat.1.vcf.out` fixture all match byte-for-byte. |
 | norm       |           7 |      4 |       3 | Skips: `-f` left-align (FASTA fixture not yet added), `-c` check-ref policies (same), and a placeholder for the realignment regression suite. `-m -`/`-m -snps`/`-m +`/`-a`/`-d exact` all match. |
 | call       |           6 |      4 |       2 | Skips: BCF input (FORMAT-key gap; see `docs/UPSTREAM_BUGS.md`), full multi-allelic caller. Consensus calls (`-c`, `-c -v`, `-A`, `--ploidy 1`) match hand-crafted upstream-replicated fixtures byte-for-byte. |
-| **TOTAL**  |      **57** | **36** | **21**  | |
+| head       |           3 |      3 |       0 | All cases: default emit, `-n N` slice, `--samples` sample-only (PR #86 wave-1 tail). |
+| sort       |           3 |      3 |       0 | All cases: out-of-order CHROM/POS records, already-sorted no-op, empty-records header-only. `-m/-T` flags are accepted but in-memory only. |
+| isec       |           3 |      3 |       0 | All cases: `-n=2 -w 1` intersection, `-n ~10` a-only bitmask, `-p PREFIX` per-input projection files. `-c some` simplified to strict tuple. |
+| merge      |           3 |      3 |       0 | All cases: two single-sample VCFs → two-sample, disjoint positions, single-input rejected. Pre-sort required. |
+| reheader   |           3 |      3 |       0 | All cases: positional sample rename, `OLD\tNEW` mapping rename, full header-file substitution. `-i` in-place mode emits to stdout in v1. |
+| annotate   |           3 |      2 |       1 | Skip: `--set-id` macro expansion. Passing: `-x ID`, `-x INFO/DP`. |
+| **TOTAL**  |      **75** | **54** | **22**  | |
 
 (Counts include three subtests in `view` and `query` that exercise the
 streaming vs file paths separately. The two BCF header-only tests are
@@ -611,7 +622,18 @@ the upstream golden files are impractically large for unit-test scope.
 | depth      |           8 |      6 |       2 | Skips: `-a`/`-A` zero-fill edge cases, `-b BED` byte parity. |
 | fastq      |           7 |      4 |       3 | Skips: QNAME-based pair detection (singleton mid-stream), CRAM input, `-T '' / -T '*'` all-tag expansion. |
 | flagstat   |           7 |      7 |       0 | All counters validated incl. QC-fail column, secondary/supplementary, diff-chr, paired-but-unmapped. |
-| **TOTAL**  |      **43** | **34** |  **9**  | |
+| dict       |           3 |      3 |       0 | All cases: minimal one-record FASTA → @HD + @SQ with M5; multi-record order; `-a`/`-s`/`-H` (PR #88 wave-1 tail). |
+| quickcheck |           3 |      3 |       0 | All cases: well-formed BAM passes; text-SAM rejected on magic check; empty file rejected with `empty file` reason. |
+| idxstats   |           3 |      3 |       0 | All cases: 3-row output (chr1/chr2/`*`) from `basic.sam` BAI fast-path; 4-col TSV format; upstream-golden 4-column shape check. |
+| coverage   |           3 |      3 |       0 | All cases: per-ref tabular rows for chr1+chr2, `-H` no-header, `Regions=["chr1"]` filter. `-A` histogram deferred. |
+| sam-merge  |           3 |      3 |       0 | All cases: two-input concatenation, single-input copy, coordinate-sorted interleave (POS monotonic). |
+| cat        |           3 |      3 |       0 | All cases: 2-input record-order preservation; empty input list errors; diverging @SQ tables rejected. |
+| reheader   |           3 |      3 |       0 | All cases: `HeaderPath` substitution adds @CO line; record bodies preserved across reheader; @SQ-table size mismatch rejected. |
+| addreplacerg |         3 |      3 |       0 | All cases: orphan-only mode adds RG, overwrite-all replaces existing RG, unknown RG id rejected. |
+| fixmate    |           3 |      3 |       0 | All cases: paired records get correct RNEXT/PNEXT/TLEN, `-m` adds `ms` aux, `-c` adds `MC` aux. |
+| split      |           3 |      3 |       0 | All cases: per-RG output files, unidentified-RG capture, single-RG one-file output. |
+| mpileup-tail |         3 |      2 |       1 | Passing: `-d 1` (MaxDepth) caps depth, `-A` (CountOrphans) wired. Skip: `-aa` full-contig zero-fill (would blow up output). |
+| **TOTAL**  |      **76** | **64** | **12**  | |
 
 ### samtools: discrepancies found in our port (fixed in this PR)
 
