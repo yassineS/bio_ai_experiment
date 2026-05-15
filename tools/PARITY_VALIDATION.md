@@ -50,7 +50,9 @@ features land.
 | bedfisher     |           6 |      5 |       1 | All five small upstream cases (`fisher.t1`..`t4`, `t6`) pass byte-for-byte; skip t5 (long $TMPDIR path is a CLI/filesystem concern, not algorithmic parity). |
 | bednuc        |           4 |      3 |       1 | Spec-driven (upstream has no `nuc/` test subdir): default 3-interval profile, `-s` + `-seq` round-trip, `-pattern` case-sensitive count. Skips `-fullHeader` (index always keys on first whitespace token; best-effort fallback map covers the common `>chr1 extra info` case but not index-time semantics). |
 | bedannotate   |           3 |      3 |       0 | Spec-driven (upstream has no `annotate/` test subdir): default per-B fractions, `-counts`, `-both` with `-names`. Header-padding difference vs upstream is tolerated in the test (data rows match byte-for-byte). |
-| **TOTAL**     |     **226** |**168** | **58**  | |
+| bedmulticov   |           5 |      4 |       1 | BED-input mirror of upstream `multicov.t1` (default), `t2` (`-s`), `t3` (`-S`), and `t10` (multi-input) — all pass byte-for-byte against BED equivalents of the upstream BAM/SAM fixtures. Skips `t4..t9` which exercise `-split` semantics on `15M10N15M` BAM CIGARs (BAM support is not yet wired through this port). |
+| bedmultiinter |           4 |      3 |       1 | Spec-driven (upstream ships no `multiinter/` test subdir): fixtures + expected outputs taken byte-for-byte from `multiintersect_examples()` in `src/multiIntersectBed/multiIntersectBedMain.cpp`. Default mode, `-header -names`, and `-empty -g -header -names` all pass byte-for-byte. The skip documents the absence of an upstream test directory. |
+| **TOTAL**     |     **235** |**175** | **60**  | |
 
 (The discrepancy between this table and `go test`'s 87 passed / 42 skipped is
 two helper / sanity sub-tests in `bedsort` and `bedintersect` that are not
