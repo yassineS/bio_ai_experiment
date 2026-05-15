@@ -138,12 +138,18 @@ func TestParity_Merge_T14_GFFInput(t *testing.T) {
 	t.Skip("unimplemented: GFF input; bedmerge is BED-only")
 }
 
-// merge.t15 — stranded merge with mixed '.' strands. Upstream treats '.' as a
-// wildcard that contributes to BOTH '+' and '-' groups; bedmerge currently
-// uses single-pass strand grouping where '.' is compatible with whatever the
-// previous interval's strand happens to be.
+// merge.t15 — stranded merge with mixed '.' strands. Upstream's
+// FileRecordMergeMgr drops UNKNOWN/`.` records under `-s` (see
+// reference_code/bedtools/src/utils/FileRecordTools/FileRecordMergeMgr.cpp
+// lines 47-58 + 96-129) and merges `+` and `-` independently, then
+// emits the two streams in (chrom, start, end) order. bedmerge now
+// matches this behaviour.
 func TestParity_Merge_T15_MixedStrandsFanOut(t *testing.T) {
-	t.Skip("known discrepancy: '.' strand fan-out into both '+' and '-' groups is not implemented")
+	got := runMergeParity(t, "mixedStrands.bed", MergeOptions{StrandSpec: true})
+	want := readMergeParity(t, "t15_mixed_strands_s.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // merge.t16 / t17 — `-S +` / `-S -` filter records by strand. bedmerge does

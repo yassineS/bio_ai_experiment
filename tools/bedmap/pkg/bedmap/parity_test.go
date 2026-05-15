@@ -124,9 +124,22 @@ func TestParity_Map_T10_MinNegative(t *testing.T) {
 	}
 }
 
-// map.t11/t13 — absmin/absmax not yet supported (see PARITY_ROADMAP.md).
+// map.t11 — absmin on the signed col 7 of values4.bed.
 func TestParity_Map_T11_AbsMin(t *testing.T) {
-	t.Skip("absmin/absmax not yet supported in shared bedmerge.ApplyOp; tracked in docs/PARITY_ROADMAP.md#bedtools")
+	got := runParity(t, "ivls.bed", "values4.bed", Options{Columns: []int{7}, Ops: []string{"absmin"}})
+	want := readParityFixture(t, "t11_absmin.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// map.t13 — absmax on the signed col 7 of values4.bed.
+func TestParity_Map_T13_AbsMax(t *testing.T) {
+	got := runParity(t, "ivls.bed", "values4.bed", Options{Columns: []int{7}, Ops: []string{"absmax"}})
+	want := readParityFixture(t, "t13_absmax.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // map.t14..t29 — GFF / VCF / BAM input not supported in BED-only port.

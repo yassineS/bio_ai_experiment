@@ -201,12 +201,18 @@ func TestBadInputErrors(t *testing.T) {
 }
 
 func TestOverlappingPairsCounted(t *testing.T) {
-	// A=[0,10). B=[0,5),[5,10). Overlap = 10 across two distinct pairs.
+	// A=[0,10). B=[0,5),[5,10).
+	//
+	// bedjaccard now pre-merges B (matching upstream's `bedtools jaccard`
+	// which sets `setUseMergedIntervals(true)` in ContextJaccard.cpp), so
+	// the two adjacent B records collapse into [0,10) before the sweep
+	// and we get one pair, not two. The intersection (10) and union (10)
+	// are unchanged; only the pair count changes.
 	a := "chr1\t0\t10\n"
 	b := "chr1\t0\t5\nchr1\t5\t10\n"
 	res, _ := runOf(t, a, b, Options{})
-	if res.N != 2 || res.Intersection != 10 {
-		t.Errorf("got %+v want N=2,intersect=10", res)
+	if res.N != 1 || res.Intersection != 10 {
+		t.Errorf("got %+v want N=1,intersect=10", res)
 	}
 }
 

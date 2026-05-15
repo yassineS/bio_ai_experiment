@@ -293,7 +293,6 @@ func TestGroup_BlankLinesSkipped(t *testing.T) {
 }
 
 func TestGroup_AdditionalOps(t *testing.T) {
-	t.Skip("absmin/absmax/cat/cat_uniq ops not yet wired into bedmerge.ApplyOp; tracked in PARITY_ROADMAP.md#bedtools")
 	in := "x\t1\t2\t-5\nx\t1\t2\t3\nx\t1\t2\t-2\n"
 	cases := []struct {
 		op   string
@@ -319,7 +318,6 @@ func TestGroup_AdditionalOps(t *testing.T) {
 }
 
 func TestGroup_StdevSstdev(t *testing.T) {
-	t.Skip("stdev/sstdev ops not yet wired into bedmerge.ApplyOp; tracked in PARITY_ROADMAP.md#bedtools")
 	in := "x\t1\t2\t2\nx\t1\t2\t4\nx\t1\t2\t4\nx\t1\t2\t6\n"
 	got := strings.TrimSpace(runGroup(t, in, Options{AggCols: []int{4}, Ops: []string{"stdev"}}))
 	if !strings.HasPrefix(got, "x\t1\t2\t1.4142") {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,17 +19,25 @@ type ColumnOps struct {
 	Ops []string
 }
 
-// validOps is the set of supported aggregation operations.
+// validOps is the set of supported aggregation operations. Matches the
+// vocabulary of bedtools' `KeyListOps` (see
+// reference_code/bedtools/src/utils/KeyListOps/KeyListOps.cpp).
 var validOps = map[string]bool{
 	"sum":            true,
 	"min":            true,
 	"max":            true,
+	"absmin":         true,
+	"absmax":         true,
 	"mean":           true,
 	"median":         true,
+	"stdev":          true,
+	"sstdev":         true,
 	"count":          true,
 	"count_distinct": true,
 	"distinct":       true,
 	"collapse":       true,
+	"cat":            true,
+	"cat_uniq":       true,
 	"first":          true,
 	"last":           true,
 	"mode":           true,
@@ -41,8 +50,12 @@ var numericOps = map[string]bool{
 	"sum":      true,
 	"min":      true,
 	"max":      true,
+	"absmin":   true,
+	"absmax":   true,
 	"mean":     true,
 	"median":   true,
+	"stdev":    true,
+	"sstdev":   true,
 	"mode":     true,
 	"antimode": true,
 }
@@ -173,6 +186,67 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 		return 0, nil
 	}
 
+	sortColIntervals(intervals)
+
+	w := bufio.NewWriter(writer)
+
+	// Under -s, upstream `bedtools merge -s` drops UNKNOWN-strand ("."
+	// or "") records entirely and merges `+` / `-` independently, then
+	// outputs both streams in (chrom, start, end) order. See
+	// reference_code/bedtools/src/utils/FileRecordTools/FileRecordMergeMgr.cpp
+	// lines 47-58 + 96-129. Replicate that here so that `merge.t15`
+	// matches upstream byte-for-byte.
+	if opts.StrandSpec {
+		var plus, minus []colInterval
+		for _, iv := range intervals {
+			switch iv.strand {
+			case "+":
+				plus = append(plus, iv)
+			case "-":
+				minus = append(minus, iv)
+				// "" and "." dropped.
+			}
+		}
+		// Collect merged groups (don't write yet) so we can merge-sort
+		// the two strand outputs by (chrom, start, end) before writing.
+		pg := groupMergedColIntervals(plus, opts)
+		mg := groupMergedColIntervals(minus, opts)
+		all := mergeSortedColGroupsByPos(pg, mg)
+		outCount := 0
+		for _, g := range all {
+			wrote, err := flushColumnGroup(w, co, g)
+			if err != nil {
+				return 0, err
+			}
+			outCount += wrote
+		}
+		if err := w.Flush(); err != nil {
+			return 0, fmt.Errorf("error flushing output: %w", err)
+		}
+		return outCount, nil
+	}
+
+	groups := groupMergedColIntervals(intervals, opts)
+	outCount := 0
+	for _, g := range groups {
+		wrote, err := flushColumnGroup(w, co, g)
+		if err != nil {
+			return 0, err
+		}
+		outCount += wrote
+	}
+
+	if err := w.Flush(); err != nil {
+		return 0, fmt.Errorf("error flushing output: %w", err)
+	}
+
+	return outCount, nil
+}
+
+// sortColIntervals sorts colIntervals by (chrom, start, end) — used as a
+// shared prerequisite for both the strand-aware and strand-agnostic
+// merge paths.
+func sortColIntervals(intervals []colInterval) {
 	sort.SliceStable(intervals, func(i, j int) bool {
 		if intervals[i].chrom != intervals[j].chrom {
 			return intervals[i].chrom < intervals[j].chrom
@@ -182,54 +256,78 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 		}
 		return intervals[i].end < intervals[j].end
 	})
+}
 
-	w := bufio.NewWriter(writer)
-	outCount := 0
-
-	var group []colInterval
-	group = append(group, intervals[0])
+// groupMergedColIntervals runs a single-pass position-only merge over
+// sorted intervals (strand is ignored — the caller is responsible for
+// any strand bucketing). The output is a list of groups, each of which
+// is a slice of all the input intervals that merged together.
+func groupMergedColIntervals(intervals []colInterval, opts MergeOptions) [][]colInterval {
+	if len(intervals) == 0 {
+		return nil
+	}
+	var out [][]colInterval
+	group := []colInterval{intervals[0]}
 	curChrom := intervals[0].chrom
-	curStrand := intervals[0].strand
 	curEnd := intervals[0].end
-
 	for i := 1; i < len(intervals); i++ {
 		iv := intervals[i]
-		canMerge := false
-		if iv.chrom == curChrom {
-			if !opts.StrandSpec || iv.strand == curStrand || curStrand == "." || iv.strand == "." {
-				if iv.start <= curEnd+opts.MaxDistance {
-					canMerge = true
-				}
-			}
-		}
-		if canMerge {
+		if iv.chrom == curChrom && iv.start <= curEnd+opts.MaxDistance {
 			if iv.end > curEnd {
 				curEnd = iv.end
 			}
 			group = append(group, iv)
-		} else {
-			wrote, err := flushColumnGroup(w, co, group)
-			if err != nil {
-				return 0, err
+			continue
+		}
+		out = append(out, group)
+		group = []colInterval{iv}
+		curChrom = iv.chrom
+		curEnd = iv.end
+	}
+	out = append(out, group)
+	return out
+}
+
+// mergeSortedColGroupsByPos two-way-merges two slices of column-merged
+// groups (each one already sorted by chrom+start) into a single stream,
+// preserving (chrom, start, end) order.
+func mergeSortedColGroupsByPos(a, b [][]colInterval) [][]colInterval {
+	out := make([][]colInterval, 0, len(a)+len(b))
+	i, j := 0, 0
+	less := func(x, y []colInterval) bool {
+		if x[0].chrom != y[0].chrom {
+			return x[0].chrom < y[0].chrom
+		}
+		if x[0].start != y[0].start {
+			return x[0].start < y[0].start
+		}
+		// Compute end of each group to break ties.
+		xe := x[0].end
+		for _, iv := range x[1:] {
+			if iv.end > xe {
+				xe = iv.end
 			}
-			outCount += wrote
-			group = []colInterval{iv}
-			curChrom = iv.chrom
-			curStrand = iv.strand
-			curEnd = iv.end
+		}
+		ye := y[0].end
+		for _, iv := range y[1:] {
+			if iv.end > ye {
+				ye = iv.end
+			}
+		}
+		return xe < ye
+	}
+	for i < len(a) && j < len(b) {
+		if less(a[i], b[j]) {
+			out = append(out, a[i])
+			i++
+		} else {
+			out = append(out, b[j])
+			j++
 		}
 	}
-	wrote, err := flushColumnGroup(w, co, group)
-	if err != nil {
-		return 0, err
-	}
-	outCount += wrote
-
-	if err := w.Flush(); err != nil {
-		return 0, fmt.Errorf("error flushing output: %w", err)
-	}
-
-	return outCount, nil
+	out = append(out, a[i:]...)
+	out = append(out, b[j:]...)
+	return out
 }
 
 // flushColumnGroup writes one merged output line aggregating the requested
@@ -310,6 +408,26 @@ func applyOp(op string, col int, vals []string) (string, error) {
 				}
 			}
 			return formatNum(m), nil
+		case "absmin":
+			// Upstream's `getAbsMin` (KeyListOpsMethods.cpp) returns the
+			// minimum of `|x|` over the group — the sign of the original
+			// value is intentionally dropped.
+			m := math.Abs(nums[0])
+			for _, n := range nums[1:] {
+				if a := math.Abs(n); a < m {
+					m = a
+				}
+			}
+			return formatNum(m), nil
+		case "absmax":
+			// Upstream's `getAbsMax`: max of `|x|`; sign is dropped.
+			m := math.Abs(nums[0])
+			for _, n := range nums[1:] {
+				if a := math.Abs(n); a > m {
+					m = a
+				}
+			}
+			return formatNum(m), nil
 		case "mean":
 			s := 0.0
 			for _, n := range nums {
@@ -327,6 +445,47 @@ func applyOp(op string, col int, vals []string) (string, error) {
 				med = (sorted[n/2-1] + sorted[n/2]) / 2
 			}
 			return formatNum(med), nil
+		case "stdev":
+			// Population standard deviation: sqrt(Σ(x-μ)² / n).
+			// Matches upstream `getStddev` in
+			// reference_code/bedtools/src/utils/KeyListOps/KeyListOpsMethods.cpp.
+			mean := 0.0
+			for _, n := range nums {
+				mean += n
+			}
+			mean /= float64(len(nums))
+			sq := 0.0
+			for _, n := range nums {
+				d := n - mean
+				sq += d * d
+			}
+			v := math.Sqrt(sq / float64(len(nums)))
+			if math.IsNaN(v) {
+				return ".", nil
+			}
+			return formatNum(v), nil
+		case "sstdev":
+			// Sample standard deviation: sqrt(Σ(x-μ)² / (n-1)).
+			// Upstream returns NaN (printed as "." via getNullValue) when
+			// n == 1; we replicate that.
+			if len(nums) == 1 {
+				return ".", nil
+			}
+			mean := 0.0
+			for _, n := range nums {
+				mean += n
+			}
+			mean /= float64(len(nums))
+			sq := 0.0
+			for _, n := range nums {
+				d := n - mean
+				sq += d * d
+			}
+			v := math.Sqrt(sq / float64(len(nums)-1))
+			if math.IsNaN(v) {
+				return ".", nil
+			}
+			return formatNum(v), nil
 		case "mode":
 			return modeOrAntimode(vals, true), nil
 		case "antimode":
@@ -359,6 +518,24 @@ func applyOp(op string, col int, vals []string) (string, error) {
 		return strings.Join(out, ","), nil
 	case "collapse":
 		return strings.Join(vals, ","), nil
+	case "cat":
+		// Concatenate all values with no separator. Mirrors upstream's
+		// CONCAT op (`getConcat` in KeyListOpsMethods.cpp), which is the
+		// `concat` operation in bedtools merge/groupby; the `cat` /
+		// `cat_uniq` names are the friendlier aliases used by bedmap.
+		return strings.Join(vals, ""), nil
+	case "cat_uniq":
+		// Concatenate unique values (first-appearance order) with no
+		// separator.
+		seen := map[string]bool{}
+		var out []string
+		for _, v := range vals {
+			if !seen[v] {
+				seen[v] = true
+				out = append(out, v)
+			}
+		}
+		return strings.Join(out, ""), nil
 	case "first":
 		return vals[0], nil
 	case "last":

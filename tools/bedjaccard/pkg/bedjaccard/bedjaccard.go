@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
@@ -81,9 +82,21 @@ func formatJaccard(j float64) string {
 }
 
 // jaccard does the streaming sweep.
+//
+// Upstream `bedtools jaccard` calls `setUseMergedIntervals(true)` on its
+// context (see reference_code/bedtools/src/utils/Contexts/ContextJaccard.cpp),
+// which means both A and B are streamed through a per-chromosome merge
+// before intersection/union are computed. Without that step our counts
+// (and `n_intersections`) diverge from upstream whenever either side
+// contains overlapping or adjacent records. We replicate the pre-merge
+// by wrapping each input reader in a `mergingReader` that emits merged
+// records on the fly. When `-s` (`SameStrand`) or `-S` (`OppositeStrand`)
+// is in play, the merge runs per-strand so cross-strand records don't
+// collapse into one.
 func jaccard(aReader, bReader io.Reader, opts Options) (*Result, error) {
-	ra := bed.NewReader(aReader)
-	rb := bed.NewReader(bReader)
+	perStrand := opts.SameStrand || opts.OppositeStrand
+	ra := newMergingReader(bed.NewReader(aReader), perStrand)
+	rb := newMergingReader(bed.NewReader(bReader), perStrand)
 
 	var active []*bed.Record
 	var (
@@ -263,4 +276,163 @@ func fractionOK(a, b *bed.Record, overlap int, opts Options) bool {
 		}
 	}
 	return true
+}
+
+// mergingReader wraps a *bed.Reader and emits merged records on the fly:
+// adjacent or overlapping records on the same chromosome are coalesced
+// into a single output record before being returned by Read. This
+// mirrors `bedtools jaccard`'s upstream pre-merge step (which is enabled
+// in `ContextJaccard` via `setUseMergedIntervals(true)`).
+//
+// When perStrand is true, the merge runs per-strand: records with
+// different strand values do NOT merge, even if they overlap. This
+// matches upstream's behaviour under `-s`. With perStrand=false, strand
+// is ignored for merging.
+//
+// The reader buffers any pending records (at most one per strand bucket)
+// and replays them in input order; it also remembers a single
+// "lookahead" record per stream so that the next Read can complete the
+// in-progress merge.
+type mergingReader struct {
+	in        *bed.Reader
+	perStrand bool
+
+	// Pending merges, keyed by strand bucket. When perStrand is false the
+	// only key in use is "" (single bucket). For perStrand we use the
+	// raw strand string ("+", "-", "." or "").
+	pending map[string]*bed.Record
+
+	// queued holds completed merged records waiting to be emitted in
+	// input order (FIFO). Read drains this first.
+	queued []*bed.Record
+
+	// done signals the underlying reader hit EOF and pending should be
+	// flushed before returning io.EOF to the caller.
+	done bool
+
+	// lastIn tracks the last RAW record pulled from the underlying
+	// reader so that we can enforce sort order on the original input
+	// (not on our merged output, which is sorted by construction).
+	lastIn *bed.Record
+}
+
+func newMergingReader(r *bed.Reader, perStrand bool) *mergingReader {
+	return &mergingReader{
+		in:        r,
+		perStrand: perStrand,
+		pending:   make(map[string]*bed.Record),
+	}
+}
+
+// Read returns the next merged record. It blocks on the underlying
+// reader as needed to complete in-progress merges, and returns io.EOF
+// only after every buffered/pending merged record has been delivered.
+func (m *mergingReader) Read() (*bed.Record, error) {
+	for {
+		// Drain anything already queued first so output order matches
+		// the input stream's chrom/start order.
+		if len(m.queued) > 0 {
+			out := m.queued[0]
+			m.queued = m.queued[1:]
+			return out, nil
+		}
+		if m.done {
+			// Flush any final pending merges, in (chrom, start) order so
+			// downstream sweep sortedness checks still hold.
+			if len(m.pending) > 0 {
+				out := m.flushPending()
+				if len(out) == 0 {
+					return nil, io.EOF
+				}
+				m.queued = out
+				continue
+			}
+			return nil, io.EOF
+		}
+
+		rec, err := m.in.Read()
+		if err == io.EOF {
+			m.done = true
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Enforce sort order on the underlying raw stream. Our merged
+		// output is sorted by construction, but we still want to surface
+		// upstream-style "input is not sorted" diagnostics for the
+		// caller's benefit.
+		if m.lastIn != nil && !sortedAfter(m.lastIn, rec) {
+			return nil, fmt.Errorf("input is not sorted: %s:%d..%d before %s:%d..%d",
+				m.lastIn.Chrom, m.lastIn.ChromStart, m.lastIn.ChromEnd,
+				rec.Chrom, rec.ChromStart, rec.ChromEnd)
+		}
+		m.lastIn = rec
+
+		// Under a stranded merge, upstream's FileRecordMergeMgr drops
+		// any record with an UNKNOWN (".") or missing strand (see
+		// reference_code/bedtools/src/utils/FileRecordTools/FileRecordMergeMgr.cpp
+		// lines 47-58 + 96-129). bedtools jaccard is one of the tools
+		// that drives that mgr with `-s` (SAME_STRAND_EITHER). Replicate
+		// that behaviour here so |A|/|B| match upstream byte-for-byte.
+		if m.perStrand {
+			if rec.Strand == "" || rec.Strand == "." {
+				continue
+			}
+		}
+
+		key := m.strandKey(rec)
+		cur, ok := m.pending[key]
+		if !ok {
+			m.pending[key] = rec
+			continue
+		}
+		// New record on a different chrom from the pending one? Flush
+		// EVERY pending bucket because the chrom changed in input — by
+		// sortedness no later record can extend any old bucket.
+		if rec.Chrom != cur.Chrom {
+			m.queued = append(m.queued, m.flushPending()...)
+			m.pending[key] = rec
+			continue
+		}
+		// Same chrom & same strand bucket: extend if overlapping/
+		// adjacent, otherwise emit cur and start a new run.
+		if rec.ChromStart <= cur.ChromEnd {
+			if rec.ChromEnd > cur.ChromEnd {
+				cur.ChromEnd = rec.ChromEnd
+			}
+			continue
+		}
+		m.queued = append(m.queued, cur)
+		m.pending[key] = rec
+	}
+}
+
+// strandKey returns the bucket key for rec under the current mode.
+func (m *mergingReader) strandKey(rec *bed.Record) string {
+	if !m.perStrand {
+		return ""
+	}
+	return rec.Strand
+}
+
+// flushPending returns every pending record sorted by (chrom, start, end)
+// so the caller's sweep continues to see a sorted stream. The pending
+// map is cleared.
+func (m *mergingReader) flushPending() []*bed.Record {
+	out := make([]*bed.Record, 0, len(m.pending))
+	for _, r := range m.pending {
+		out = append(out, r)
+	}
+	m.pending = make(map[string]*bed.Record)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Chrom != out[j].Chrom {
+			return out[i].Chrom < out[j].Chrom
+		}
+		if out[i].ChromStart != out[j].ChromStart {
+			return out[i].ChromStart < out[j].ChromStart
+		}
+		return out[i].ChromEnd < out[j].ChromEnd
+	})
+	return out
 }

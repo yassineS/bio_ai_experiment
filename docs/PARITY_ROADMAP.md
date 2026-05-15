@@ -182,10 +182,13 @@ against the upstream test suite (across PR #55 + Phase-3 wave 1 + wave
 2 simple + wave 2 algo) + 17 new cases from wave 3 (PR #87) + 6 cases
 from the reldist/fisher full-parity wave (PR #90) + 6 cases from the
 nuc/annotate wave (PR #91) + 7 cases from the multicov/multiinter
-wave (PR #92) + 6 cases from the igv/links wave (PR #93) + **10 new**
-spec-driven cases from the BEDPE pair-ops wave (this PR — five each
-for `bedpairtobed` and `bedpairtopair`, derived from the upstream
-source as neither subcommand ships a `test/<name>/` subdir).
+wave (PR #92) + 6 cases from the igv/links wave (PR #93) + 10 cases
+from the BEDPE pair-ops wave (PR #94, five each for `bedpairtobed`
+and `bedpairtopair`, derived from the upstream source as neither
+subcommand ships a `test/<name>/` subdir) + **9 newly passing**
+parity cases from the column-ops + discrepancies wave (this PR —
+`jaccard.t02/t03/t05/t06/t10/t11`, `merge.t15`, `map.t11`,
+`map.t13`).
 Phase-3 wave 1 (PR #78) added `bedgroupby`/`bed12tobed6`/`bedmakewindows`;
 wave 2 simple (PR #80) added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`;
 wave 2 algo added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail
@@ -199,14 +202,22 @@ wave (this PR) closes the last two missing subcommands — bedtools now
 has no missing subcommands**.
 
 Missing subcommands: none. All algorithmic, BEDPE, and converter
-subcommands are ported. Remaining bedtools work is option-tail polish,
-column-op closure (`bedmap` / `bedgroupby` operations), and the two
-known discrepancies below.
+subcommands are ported. Remaining bedtools work is option-tail polish.
 
-Skipped parity cases from PR #55 to revisit:
+Resolved in the column-ops + discrepancies wave:
 
-- `bedjaccard` auto-merge behaviour.
-- `bedmerge` `.`-strand fan-out.
+- `bedjaccard` now pre-merges A and B before computing intersection /
+  union, matching upstream's `setUseMergedIntervals(true)`. Previously
+  skipped parity cases `jaccard.t02 / t03 / t05 / t06 / t10 / t11` now
+  pass byte-for-byte.
+- `bedmerge -s` now matches upstream's per-strand merge semantics: `.`
+  (unknown) strand records are dropped under `-s` and `+` / `-` groups
+  merge independently before the (chrom, start) re-merge. Previously
+  skipped `merge.t15` now passes.
+- The full column-op vocabulary from upstream (`stdev`, `sstdev`,
+  `absmin`, `absmax`, `cat`, `cat_uniq`) is wired into the shared
+  `bedmerge.ApplyOp`, unblocking `bedgroupby` (`TestGroup_StdevSstdev`,
+  `TestGroup_AdditionalOps`) and `bedmap` (`map.t11`, `map.t13`).
 
 Option-tail gaps on the wave-2 additions:
 
@@ -229,12 +240,12 @@ Option-tail gaps on the wave-2 additions:
   within a single file are tolerated only because each file is
   re-sorted and merged before the sweep.
 
-Column-op gaps (shared between `bedmerge`, `bedgroupby`, and the future
-`bedmap`/`bedcoverage`):
-
-- `stdev` / `sstdev` — standard deviation / sample stdev.
-- `absmin` / `absmax` — min/max by absolute value.
-- `cat` / `cat_uniq` — concatenate / concatenate-unique.
+Column-op closure: the shared `bedmerge.ApplyOp` (used by `bedmerge`,
+`bedgroupby`, `bedmap`, and `bedcoverage`) now supports the full
+upstream KeyListOps vocabulary: `stdev`, `sstdev`, `absmin`, `absmax`,
+`cat`, `cat_uniq` (in addition to the previously-implemented sum,
+min/max, mean, median, mode/antimode, count, count_distinct, distinct,
+collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 

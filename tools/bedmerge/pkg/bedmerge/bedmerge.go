@@ -102,9 +102,42 @@ type mergedInterval struct {
 }
 
 // mergeIntervals performs the actual merging of sorted intervals.
+//
+// When opts.StrandSpec is true ("bedtools merge -s"), the merge runs
+// strictly per-strand: records with `.` or empty strand are DROPPED
+// (matching upstream's FileRecordMergeMgr behaviour, which deletes
+// UNKNOWN-strand records in stranded mode — see
+// reference_code/bedtools/src/utils/FileRecordTools/FileRecordMergeMgr.cpp
+// lines 47-58 and 96-129). The `+` and `-` groups are merged
+// independently and then re-merged into a single (chrom, start, end)
+// sorted output stream — which is what upstream `bedtools merge -s`
+// emits and what `merge.t15` asserts.
 func mergeIntervals(intervals []*bed.Record, opts MergeOptions) []mergedInterval {
 	if len(intervals) == 0 {
 		return nil
+	}
+
+	if opts.StrandSpec {
+		// Split into per-strand buckets, merge each, then merge-sort the
+		// two outputs back into one sorted stream.
+		var plus, minus []*bed.Record
+		for _, iv := range intervals {
+			switch iv.Strand {
+			case "+":
+				plus = append(plus, iv)
+			case "-":
+				minus = append(minus, iv)
+				// "." and "" are intentionally dropped (see doc comment).
+			}
+		}
+		// Disable StrandSpec on the recursive calls — within each bucket
+		// all records share the same strand and the simple single-pass
+		// merge below is the right thing.
+		inner := opts
+		inner.StrandSpec = false
+		mp := mergeIntervals(plus, inner)
+		mm := mergeIntervals(minus, inner)
+		return mergeSortedMergedByPos(mp, mm)
 	}
 
 	merged := []mergedInterval{}
@@ -128,12 +161,9 @@ func mergeIntervals(intervals []*bed.Record, opts MergeOptions) []mergedInterval
 
 		// Same chromosome?
 		if interval.Chrom == current.Chrom {
-			// Check strand if needed
-			if !opts.StrandSpec || interval.Strand == current.Strand || current.Strand == "." || interval.Strand == "." {
-				// Check if overlapping or within max distance
-				if interval.ChromStart <= current.ChromEnd+opts.MaxDistance {
-					canMerge = true
-				}
+			// Check if overlapping or within max distance
+			if interval.ChromStart <= current.ChromEnd+opts.MaxDistance {
+				canMerge = true
 			}
 		}
 
@@ -167,6 +197,35 @@ func mergeIntervals(intervals []*bed.Record, opts MergeOptions) []mergedInterval
 	merged = append(merged, current)
 
 	return merged
+}
+
+// mergeSortedMergedByPos two-way-merges two already-sorted slices of
+// merged intervals by (chrom, start, end). Used to recombine the `+` and
+// `-` outputs of strand-aware merge into a single sorted stream.
+func mergeSortedMergedByPos(a, b []mergedInterval) []mergedInterval {
+	out := make([]mergedInterval, 0, len(a)+len(b))
+	i, j := 0, 0
+	less := func(x, y mergedInterval) bool {
+		if x.Chrom != y.Chrom {
+			return x.Chrom < y.Chrom
+		}
+		if x.ChromStart != y.ChromStart {
+			return x.ChromStart < y.ChromStart
+		}
+		return x.ChromEnd < y.ChromEnd
+	}
+	for i < len(a) && j < len(b) {
+		if less(a[i], b[j]) {
+			out = append(out, a[i])
+			i++
+		} else {
+			out = append(out, b[j])
+			j++
+		}
+	}
+	out = append(out, a[i:]...)
+	out = append(out, b[j:]...)
+	return out
 }
 
 // writeIntervals writes merged intervals according to output options.

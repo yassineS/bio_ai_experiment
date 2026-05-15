@@ -5,15 +5,12 @@ package bedjaccard
 // Cases are mirrored from reference_code/bedtools/test/jaccard/test-jaccard.sh.
 // Inputs and expected outputs live under tools/bedjaccard/testdata/parity/.
 //
-// IMPORTANT semantic note: upstream `bedtools jaccard` first MERGES B's
-// overlapping intervals before computing the intersection / union, so its
-// `n_intersections` counts pairs against the merged B, not against each raw
-// B record. bedjaccard does NOT auto-merge — it counts each raw pair. As a
-// result, parity tests against b.bed / c.bed / mixedStrands.bed (all of which
-// have overlapping B intervals) are wrapped in t.Skip and listed as known
-// discrepancies. The cases we DO assert use inputs whose B records are
-// pre-disjoint, so the merge step is a no-op and our output is byte-for-byte
-// identical to upstream.
+// As of the column-ops + discrepancies wave, bedjaccard now pre-merges
+// both A and B before computing intersection / union (mirroring upstream's
+// `setUseMergedIntervals(true)` in ContextJaccard.cpp), so cases against
+// b.bed / c.bed / mixedStrands.bed are byte-for-byte parity with upstream.
+// Cases still wrapped in t.Skip are unrelated to the merge step (BAM /
+// VCF / GFF input, `-split`, `-S` single-strand filter, large fixtures).
 
 import (
 	"bytes"
@@ -51,28 +48,47 @@ func TestParity_Jaccard_T01_SelfIntersect(t *testing.T) {
 	}
 }
 
-// jaccard.t02 — a.bed vs b.bed: b.bed has overlapping records (b2/b3), so
-// upstream pre-merges B. bedjaccard does not.
+// jaccard.t02 — a.bed vs b.bed. b.bed has overlapping records (b2/b3 at
+// 90-101 and 100-110, both covered by a2 100-200); upstream pre-merges B
+// before counting. With the merge fix in place this is byte-for-byte parity.
 func TestParity_Jaccard_T02_AvsB(t *testing.T) {
-	t.Skip("known discrepancy: upstream pre-merges B's overlapping records before Jaccard; bedjaccard counts raw pairs")
+	got := runJaccardParity(t, "a.bed", "b.bed", Options{})
+	want := readJaccardParity(t, "t02_a_b.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// jaccard.t03 — a.bed vs c.bed (single record that overlaps both a1 and a2 in
-// a, so |A|=110 vs upstream pre-merged a = 110; intersection = 10). Our
-// implementation should match here since c.bed has only one record.
+// jaccard.t03 — a.bed vs c.bed. c.bed has a single record; the merge
+// changes things only on the A side (after pre-merge A is two disjoint
+// records, same as the input).
 func TestParity_Jaccard_T03_AvsC(t *testing.T) {
-	t.Skip("known discrepancy: upstream also merges A; for a.bed (disjoint records) this is a no-op but |union|/jaccard computation paths diverge on b/c (verified separately)")
+	got := runJaccardParity(t, "a.bed", "c.bed", Options{})
+	want := readJaccardParity(t, "t03_a_c.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// jaccard.t05 — same as t02 but via stdin. Covered by t02's skip.
+// jaccard.t05 — same input as t02 but conceptually piped via stdin.
+// bedjaccard takes both inputs as io.Reader so stdin vs. file is a no-op
+// at the package boundary; reuse t02's fixtures.
 func TestParity_Jaccard_T05_StdinA(t *testing.T) {
-	t.Skip("equivalent to t02 (skipped); stdin is a CLI concern handled at the bytes.Reader level")
+	got := runJaccardParity(t, "a.bed", "b.bed", Options{})
+	want := readJaccardParity(t, "t02_a_b.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// jaccard.t06 — symmetry: jaccard(A, B) == jaccard(B, A). Not exercised here
-// for the same reason as t02 (B-merging discrepancy).
+// jaccard.t06 — symmetry: jaccard(A, B) byte-equals jaccard(B, A). With
+// pre-merge in place both orderings produce the same totals.
 func TestParity_Jaccard_T06_Symmetry(t *testing.T) {
-	t.Skip("symmetry holds in bedjaccard but byte-for-byte parity with upstream depends on the merge fix")
+	fwd := runJaccardParity(t, "a.bed", "b.bed", Options{})
+	rev := runJaccardParity(t, "b.bed", "a.bed", Options{})
+	if !bytes.Equal(fwd, rev) {
+		t.Fatalf("symmetry violated.\nfwd:\n%s\nrev:\n%s", fwd, rev)
+	}
 }
 
 // jaccard.t07 — three_blocks_match.bed (BED12 single record) vs e.bed.
@@ -97,14 +113,25 @@ func TestParity_Jaccard_T09_BAMInput(t *testing.T) {
 	t.Skip("unimplemented: BAM input")
 }
 
-// jaccard.t10..t13 — mixed-strand files; upstream auto-merges B by strand
-// (and t12/t13's `-S +` / `-S -` are single-strand filters that bedjaccard
-// does not support as a CLI flag).
+// jaccard.t10 — mixed-strand files, no `-s`. Both A and B are pre-merged
+// across all strands before the sweep.
 func TestParity_Jaccard_T10_MixedStrandsNoFlag(t *testing.T) {
-	t.Skip("known discrepancy: upstream pre-merges B (and merges within-strand under -s)")
+	got := runJaccardParity(t, "aMixedStrands.bed", "bMixedStrands.bed", Options{})
+	want := readJaccardParity(t, "t10_mixed_nostrand.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
+// jaccard.t11 — mixed-strand files with `-s` (same-strand). Pre-merge
+// runs per-strand so cross-strand records don't collapse.
 func TestParity_Jaccard_T11_MixedStrandsS(t *testing.T) {
-	t.Skip("known discrepancy: upstream pre-merges B within each strand under -s")
+	got := runJaccardParity(t, "aMixedStrands.bed", "bMixedStrands.bed",
+		Options{SameStrand: true})
+	want := readJaccardParity(t, "t11_mixed_s.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 func TestParity_Jaccard_T12_MixedStrandsSPlus(t *testing.T) {
 	t.Skip("unimplemented: -S <strand> single-strand filter")
