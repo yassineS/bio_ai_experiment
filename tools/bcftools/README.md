@@ -12,6 +12,15 @@ subcommands. The current implementation ships:
 - `bcftools index` — build a `.csi` (or `.tbi`) index for a BCF / VCF.gz.
 - `bcftools stats` — sectioned summary numbers compatible with
   `plot-vcfstats`.
+- `bcftools convert` — re-emit VCF/BCF in a different format (`-O v|z|b|u`)
+  with optional sample / region filtering. Upstream's exotic shapes
+  (gVCF↔VCF, HAPLEGEND/HAPSAMPLE, PLINK) are tracked in
+  `docs/PARITY_ROADMAP.md` and deferred.
+- `bcftools mendelian` — detect Mendelian-inconsistent genotypes given
+  one or more `CHILD,FATHER,MOTHER` trios. Emits `INFO/MERR` per
+  record (annotate mode), a TSV trio rollup (`-c`), or a filtered
+  VCF (`-d`). The X-chromosome mode (`-m x`) treats the father as
+  haploid on `X`/`chrX`.
 - `pkg/bioformats/bcf` — reader and writer for the BCF v2.2 binary format.
 
 All pieces share the existing `pkg/bioformats/vcf` types so downstream

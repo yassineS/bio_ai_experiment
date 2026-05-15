@@ -610,9 +610,10 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
 
-**Status:** 13 of ~30 subcommands (~43%). `view`, `index`, `stats`, `query`,
-`concat`, `norm`, `call` (consensus + biallelic multi-allelic), and PR #86
-wave-1 tail: `annotate`, `head`, `isec`, `merge`, `reheader`, `sort`.
+**Status:** 15 of ~30 subcommands (~50%). `view`, `index`, `stats`, `query`,
+`concat`, `norm`, `call` (consensus + biallelic multi-allelic), the PR #86
+wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), and
+the convert/mendelian PR: **`convert`** + **`mendelian`**.
 
 Missing subcommands (priority order):
 
@@ -621,8 +622,9 @@ Missing subcommands (priority order):
 - **`csq`** — predict variant consequences against a GFF.
 - **`filter`** — soft-filter records (different from view's hard-filter).
 - **`consensus`** — apply variants to a FASTA.
-- **`convert`** — between formats (GVCF / TSV / hapmap / PLINK).
-- **`mendelian`** / **`mendelian2`** — Mendelian-inheritance checks.
+- **`mendelian2`** — newer Mendelian-inheritance checker (the v1
+  `mendelian` port covers the legacy plugin; `mendelian2` adds
+  PED-file ingestion and per-sample error tagging).
 - **`roh`** — runs of homozygosity.
 - **`polysomy`** — copy-number estimation.
 - **`cnv`** — CNV calling.
@@ -640,6 +642,25 @@ Option-tail gaps on the wave-1 additions (PR #86):
   is responsible for the swap.
 - `sort`: `-m/--max-mem` and `-T/--tmpdir` are accepted but always
   in-memory.
+
+Option-tail gaps on the convert/mendelian PR:
+
+- `convert`: v1 covers only the pass-through round-trip
+  (VCF↔BCF↔VCF.gz) with sample/region filtering and -i/-e expressions.
+  The full upstream `vcfconvert.c` covers many extra shapes
+  (`--gvcf2vcf`, `--haplegendsample2vcf`, `--hapsample2vcf`,
+  `--tsv2vcf`, `--gensample2vcf`, `--gvcf`, PLINK / GEN / HAP).
+  These are explicit follow-ups; the CLI emits a usage block that
+  lists them under "Deferred output paths".
+- `mendelian`: the v1 port detects Mendelian inconsistencies for
+  PED-style trios (one or more `-t CHILD,FATHER,MOTHER` flags, or
+  `-T trio-file`), emits `INFO/MERR` per record, and supports the
+  five upstream modes `a|c|x|d|+`. The `+` mode is treated as a
+  synonym for annotate (the upstream-only `##bcftools_PG=` provenance
+  header is deferred). The `--rules FILE` ploidy specification is
+  accepted but currently only the chrX heuristic is honoured; full
+  per-contig ploidy override (PAR boundaries, mitochondrial
+  haploidy) is a follow-up.
 
 Plus:
 
