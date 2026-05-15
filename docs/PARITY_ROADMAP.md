@@ -364,17 +364,16 @@ Missing:
 
 ### `samtools`
 
-**Status:** 19 of ~25 subcommands (~76%). `view`, `sort`, `index`, `depth`,
+**Status:** 21 of ~25 subcommands (~84%). `view`, `sort`, `index`, `depth`,
 `fastq`, `flagstat`, **`mpileup`** (wave-1 + tail wiring), PR #88's
 wave-1 tail (`merge`, `coverage`, `idxstats`, `cat`, `reheader`,
-`addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`), and the
-heavy-hitter pair from this PR: **`markdup`** + **`stats`**.
+`addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`), the
+heavy-hitter pair `markdup` + `stats`, and the pair landed in
+the calmd/import PR: **`calmd`** + **`import`**.
 
 Missing subcommands (in rough priority order):
 
-- **`calmd`** — compute MD/NM tags.
 - **`consensus`** — base-level consensus.
-- **`import`** — convert FASTQ/SAM to BAM.
 - **`phase`** — phase reads with their mates.
 - **`targetcut`** — cut targeted regions.
 - **`tview`** — terminal viewer (likely a deliberate skip; ~no-one uses it).
@@ -440,6 +439,45 @@ and `.../test/stat/` are vendored under
 `tools/samtools/testdata/parity/{markdup,stat}/`. The byte-exact /
 flag-exact / SN-byte cases are exercised in
 `tools/samtools/pkg/samtools/markdup_test.go` and `stats_test.go`.
+
+**`calmd` deferred features** (accepted as CLI flags, behaviour partial):
+
+- **BAQ recalculation** (`-r`, `-E`, `-A`). Upstream's `bam_md.c` calls
+  `sam_prob_realn` to recompute the BQ (base-alignment quality) aux
+  tag and to drop MAPQ for low-quality reads. v1 fills in MD + NM
+  correctly but does not touch BQ or MAPQ. ~200 lines of HMM-style
+  alignment math; deferred per owner steer.
+- **`-h` HASH_QNM** (hash-based query-name binarisation) — niche
+  upstream-only optimisation; not implemented.
+- **`-d` DROP_TAG** (drop all aux but RG) and **`-q` BIN_QUAL** (round
+  qualities to 0/7) — flag-recognised in the CLI driver but not
+  threaded through; safe to add later as small wrappers around the
+  current calmd pipeline.
+- **`-n` max-NM cap** — would mask high-mismatch reads with bin-quality;
+  trivial follow-up once BIN_QUAL lands.
+
+**`import` deferred features**:
+
+- **`--i1` / `--i2`** index-read inputs (the index-as-aux BC/QT shape).
+  v1 wires `-0/-1/-2/-s` and the positional shapes; index files would
+  attach a BC:Z and QT:Z tag computed from a separate index FASTQ. The
+  parser scaffolding is in place; just needs a third walker.
+- **`-i` CASAVA** parsing (extract barcode from CASAVA-style headers).
+  We do parse the description tail for SAM aux fields directly, which
+  covers the common case where the FASTQ was produced by `samtools
+  fastq`; CASAVA-format input is a follow-up.
+- **`--barcode-tag` / `--quality-tag`** renaming of the BC/QT tag pair.
+  Not exposed in the v1 CLI (defaults to BC/QT).
+
+**Validation:** small hand-built fixtures live under
+`tools/samtools/testdata/parity/{calmd,import}/` covering the four
+calmd code paths (match, mismatch, deletion, insertion+softclip) and
+the six import shapes (-0, -1/-2, -s, single positional, two
+positionals, -T aux extraction, --order, -R/-r RG). The upstream
+`bam_md.c` / `bam_import.c` regression cases are marked as
+`t.Skip(...)` parity stubs because upstream's BGZF output isn't
+byte-identical with ours (different libdeflate). Logical correctness
+is covered by hand-computed expected values in the table tests.
 
 ### `bcftools`
 

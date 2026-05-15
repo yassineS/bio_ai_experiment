@@ -1,0 +1,8 @@
+@readX	XX:i:10	XY:i:-257	XZ:Z:foo
+ACGTACGTAC
++
+IIIIIIIIII
+@readY	AA:Z:	XZ:Z:bar
+TTTTAAAACC
++
+HHHHHHHHHH

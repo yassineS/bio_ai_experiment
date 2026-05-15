@@ -675,7 +675,9 @@ the upstream golden files are impractically large for unit-test scope.
 | mpileup-tail |         3 |      2 |       1 | Passing: `-d 1` (MaxDepth) caps depth, `-A` (CountOrphans) wired. Skip: `-aa` full-contig zero-fill (would blow up output). |
 | markdup    |           4 |      4 |       0 | Byte-for-byte parity on 5_markdup and 6_remove_dups; flag+qname parity on 18_primary_duplicate_count (we don't emit `dt:Z:` tag); sequence-mode dup-count parity on a duplicate of fixture 5. See deferred-feature list below for the deliberate skips (optical-dup, per-RG keying). |
 | stats      |           6 |      6 |       0 | SN-section byte parity on fixtures 1, 2, 5, 7, 8, 10 from `reference_code/samtools/test/stat/` (all 8 SN-only cases we exercise pass byte-identical). Non-SN sections (RL/MAPQ/IS) are emitted but only smoke-tested; see deferred-section list below. |
-| **TOTAL**  |      **86** | **74** | **12**  | |
+| calmd      |           6 |      5 |       1 | Logical MD/NM parity on hand-built fixtures covering match, mismatch, deletion, insertion, soft-clip, multi-contig; `-e` rewrites SEQ to '=' on matches; BAM round-trip preserves both tags; existing-tag overwrite emits "different" stderr warning + Quiet suppresses it. Skip: upstream `bam_md.c` `-uAr` BGZF byte-diff (libdeflate version mismatch). |
+| import     |          12 |     11 |       1 | FASTQ→BAM/SAM across R1+R2 paired, -0 unpaired, -s interleaved, -T '*' / -T 'XZ' / -T '' aux extraction, -R short / -r full RG, --order int+padded forms, /1/2 suffix strip toggle, BAM round-trip, two positional args. Skip: upstream import-then-fastq round-trip (requires upstream samtools fastq for the round-half). |
+| **TOTAL**  |     **104** | **90** | **14**  | |
 
 ### samtools: discrepancies found in our port (fixed in this PR)
 
