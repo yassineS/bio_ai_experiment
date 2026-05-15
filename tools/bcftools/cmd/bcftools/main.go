@@ -1,6 +1,8 @@
 // Command bcftools is a pure-Go reimplementation of selected bcftools
 // subcommands. Today it ships `view`, `index`, `stats`, `query`, `concat`,
-// `norm`, and `call`; other subcommands (merge) will follow in subsequent PRs.
+// `norm`, `call`, `merge`, `isec`, `sort`, `head`, `reheader`, and
+// `annotate`; remaining subcommands (`csq`, `mpileup`, `consensus`, ...)
+// will follow in subsequent PRs.
 package main
 
 import (
@@ -26,6 +28,12 @@ Subcommands:
   concat    Concatenate VCF/BCF files.
   norm      Left-align indels, split/join multiallelics, drop duplicates.
   call      Variant calling from per-position genotype likelihoods.
+  merge     Combine multiple per-sample VCFs into a multi-sample VCF.
+  isec      Set operations on N VCFs (intersection / union / complement).
+  sort      Sort VCF/BCF by (CHROM, POS) following the header contig order.
+  head      Print just the header (or a slice of it).
+  reheader  Replace header in-place (sample renames / FAI contigs).
+  annotate  Annotate INFO from a tab-indexed table or VCF.
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
   help      Show this help (also via -? on subcommands).
@@ -52,6 +60,18 @@ func main() {
 		os.Exit(runIndex(os.Args[2:]))
 	case "stats":
 		os.Exit(runStatsCmd(os.Args[2:]))
+	case "merge":
+		os.Exit(runMerge(os.Args[2:]))
+	case "isec":
+		os.Exit(runIsec(os.Args[2:]))
+	case "sort":
+		os.Exit(runSort(os.Args[2:]))
+	case "head":
+		os.Exit(runHead(os.Args[2:]))
+	case "reheader":
+		os.Exit(runReheader(os.Args[2:]))
+	case "annotate":
+		os.Exit(runAnnotate(os.Args[2:]))
 	case "help", "--help":
 		fmt.Print(rootUsage)
 		return
