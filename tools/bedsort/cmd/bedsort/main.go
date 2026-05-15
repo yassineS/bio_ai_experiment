@@ -35,6 +35,9 @@ Options:
       --chrThenSizeD       Sort by chromosome, then by interval size descending
       --chrThenScoreA      Sort by chromosome, then by score (col 5) ascending
       --chrThenScoreD      Sort by chromosome, then by score (col 5) descending
+      --header             Preserve leading '#' / 'track' / 'browser' lines
+                           verbatim at the top of the output (matches
+                           upstream bedtools sort -header)
       --faidx FILE         Order chromosomes by their appearance in FILE
                            (a .fai or chrom-sizes file). Chromosomes that are
                            not listed in FILE sort after the listed ones, in
@@ -78,6 +81,9 @@ func main() {
 	var faidxFile string
 	cliflag.StringVar(fs, &faidxFile, "", "faidx", "", "Chromosome order file (.fai or chrom-sizes)")
 	cliflag.StringVar(fs, &faidxFile, "g", "genome", "", "Alias for --faidx")
+
+	var keepHeader bool
+	cliflag.BoolVar(fs, &keepHeader, "", "header", false, "Preserve leading header / comment lines verbatim before the sorted body")
 
 	var help bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help message")
@@ -139,7 +145,7 @@ func main() {
 	}
 	defer out.Close()
 
-	if err := bedsort.Run(in, out, bedsort.Options{Mode: mode, ChromOrder: chromOrder}); err != nil {
+	if err := bedsort.Run(in, out, bedsort.Options{Mode: mode, ChromOrder: chromOrder, Header: keepHeader}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error sorting: %v\n", err)
 		os.Exit(1)
 	}

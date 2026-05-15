@@ -49,6 +49,13 @@ type Options struct {
 	// on chromosomes not present in ChromOrder are sorted after the listed
 	// ones in lexicographic order. Used by ModeChrom and the ChrThen* modes.
 	ChromOrder []string
+	// Header, when true, preserves leading header lines (`#`-prefixed comments,
+	// `track ` directives, and `browser ` directives) at the top of the
+	// output, before the sorted body. Matches upstream `bedtools sort -header`.
+	// Header lines are emitted verbatim in the order they appeared in the
+	// input. Header lines that appear mid-file (after at least one record)
+	// are dropped, matching upstream's "leading header only" semantics.
+	Header bool
 }
 
 // record is the parsed view of one BED line used by the sort.
@@ -72,10 +79,20 @@ type record struct {
 // discards them). The returned slice contains the records in input order; the
 // caller is expected to feed it to Sort.
 func ReadAll(r io.Reader) ([]record, error) {
+	recs, _, err := readAll(r, false)
+	return recs, err
+}
+
+// readAll reads BED records from r. When keepHeader is true, the leading
+// `#`-prefix / `track ` / `browser ` lines (before the first data record) are
+// returned verbatim in headers, in input order. Header-style lines that
+// appear after the first data record are dropped, matching upstream
+// `bedtools sort -header`.
+func readAll(r io.Reader, keepHeader bool) (recs []record, headers []string, err error) {
 	scanner := bufio.NewScanner(r)
 	// Allow long BED lines.
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	var out []record
+	seenData := false
 	for scanner.Scan() {
 		raw := scanner.Text()
 		trimmed := strings.TrimSpace(raw)
@@ -85,19 +102,22 @@ func ReadAll(r io.Reader) ([]record, error) {
 		if strings.HasPrefix(trimmed, "#") ||
 			strings.HasPrefix(trimmed, "track") ||
 			strings.HasPrefix(trimmed, "browser") {
+			if keepHeader && !seenData {
+				headers = append(headers, raw)
+			}
 			continue
 		}
 		fields := strings.Split(raw, "\t")
 		if len(fields) < 3 {
-			return nil, fmt.Errorf("BED record must have at least 3 fields, got %d: %q", len(fields), raw)
+			return nil, nil, fmt.Errorf("BED record must have at least 3 fields, got %d: %q", len(fields), raw)
 		}
-		start, err := strconv.Atoi(strings.TrimSpace(fields[1]))
-		if err != nil {
-			return nil, fmt.Errorf("invalid chromStart %q: %v", fields[1], err)
+		start, errStart := strconv.Atoi(strings.TrimSpace(fields[1]))
+		if errStart != nil {
+			return nil, nil, fmt.Errorf("invalid chromStart %q: %v", fields[1], errStart)
 		}
-		end, err := strconv.Atoi(strings.TrimSpace(fields[2]))
-		if err != nil {
-			return nil, fmt.Errorf("invalid chromEnd %q: %v", fields[2], err)
+		end, errEnd := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if errEnd != nil {
+			return nil, nil, fmt.Errorf("invalid chromEnd %q: %v", fields[2], errEnd)
 		}
 		rec := record{
 			line:  raw,
@@ -106,17 +126,18 @@ func ReadAll(r io.Reader) ([]record, error) {
 			end:   end,
 		}
 		if len(fields) >= 5 {
-			if s, err := strconv.Atoi(strings.TrimSpace(fields[4])); err == nil {
+			if s, errScore := strconv.Atoi(strings.TrimSpace(fields[4])); errScore == nil {
 				rec.score = s
 				rec.hasScore = true
 			}
 		}
-		out = append(out, rec)
+		recs = append(recs, rec)
+		seenData = true
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return out, nil
+	return recs, headers, nil
 }
 
 // Sort sorts records in place according to opts.
@@ -253,12 +274,30 @@ func Write(w io.Writer, records []record) error {
 
 // Run reads BED records from r, sorts them according to opts, and writes the
 // sorted output to w. It is the convenience entry point used by the CLI.
+//
+// When opts.Header is true, leading `#` / `track ` / `browser ` lines are
+// emitted verbatim before the sorted body, mirroring upstream
+// `bedtools sort -header`.
 func Run(r io.Reader, w io.Writer, opts Options) error {
-	records, err := ReadAll(r)
+	records, headers, err := readAll(r, opts.Header)
 	if err != nil {
 		return err
 	}
 	Sort(records, opts)
+	if opts.Header && len(headers) > 0 {
+		bw := bufio.NewWriter(w)
+		for _, h := range headers {
+			if _, err := bw.WriteString(h); err != nil {
+				return err
+			}
+			if err := bw.WriteByte('\n'); err != nil {
+				return err
+			}
+		}
+		if err := bw.Flush(); err != nil {
+			return err
+		}
+	}
 	return Write(w, records)
 }
 

@@ -37,6 +37,12 @@ Optional:
   -split, --split         Concatenate the blocks of BED12 records before
                           emission (per-block stranded with -s).
   -rna, --rna             Emit U/u in place of T/t (after -s).
+  -fullHeader, --full-header
+                          Index FASTA contigs by the full header line
+                          (whitespace included). Lets a BED row keyed by
+                          a multi-word contig name match the corresponding
+                          FASTA sequence. The sibling .fai (which only
+                          stores first-token names) is rebuilt in-memory.
 
 Standard:
   -h, --help              Show this help.
@@ -57,6 +63,7 @@ func main() {
 		strand      bool
 		split       bool
 		rna         bool
+		fullHeader  bool
 		showHelp    bool
 		showVersion bool
 	)
@@ -69,6 +76,7 @@ func main() {
 	cliflag.BoolVar(fs, &strand, "s", "strand", false, "Reverse-complement '-' strand")
 	cliflag.BoolVar(fs, &split, "split", "split", false, "Concatenate BED12 blocks")
 	cliflag.BoolVar(fs, &rna, "rna", "rna", false, "Emit U in place of T")
+	cliflag.BoolVar(fs, &fullHeader, "fullHeader", "full-header", false, "Index by full FASTA header line")
 	fs.BoolVar(&showHelp, "h", false, "Help")
 	fs.BoolVar(&showHelp, "help", false, "Help")
 	fs.BoolVar(&showVersion, "v", false, "Version")
@@ -113,12 +121,13 @@ func main() {
 	defer out.Close()
 
 	if _, err := bedgetfasta.Run(bed, fastaPath, out, os.Stderr, bedgetfasta.Options{
-		Name:     nameFlag,
-		NameOnly: nameOnly,
-		Tab:      tab,
-		Strand:   strand,
-		Split:    split,
-		RNA:      rna,
+		Name:       nameFlag,
+		NameOnly:   nameOnly,
+		Tab:        tab,
+		Strand:     strand,
+		Split:      split,
+		RNA:        rna,
+		FullHeader: fullHeader,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "bedgetfasta: %v\n", err)
 		os.Exit(1)

@@ -221,20 +221,34 @@ Resolved in the column-ops + discrepancies wave:
 
 Option-tail gaps on the wave-2 additions:
 
-- `bedgetfasta` — `-fullHeader` (whitespace-aware contig name parsing) and
-  BGZF FASTA input via `.gzi` are not yet implemented. `pkg/bioformats/fasta`
+- `bedgetfasta` — `-fullHeader` is now implemented (this PR): contigs are
+  indexed by the full FASTA header line (whitespace included) via
+  `pkg/bioformats/fasta.BuildIndexFullHeader` /
+  `OpenRandomAccessFullHeader`, and `bedgetfasta -fullHeader` flows the
+  flag through to the index build. Upstream `getfasta.t06` (the
+  `-fullHeader` two-line case) and `t07` (the no-`-fullHeader` warning
+  case) now both pass byte-for-byte.
+  Remaining gap: BGZF FASTA input via `.gzi`. `pkg/bioformats/fasta`
   needs a `.gzi` reader before BGZF random-access fetch is feasible.
+- `bedsort` — `-header` is now implemented (this PR): leading
+  `#`-prefixed comment, `track`, and `browser` directive lines are
+  buffered and emitted verbatim ahead of the sorted body. Upstream
+  `sort.t09` now passes byte-for-byte.
 - `bedsample` — output PRNG is Go `math/rand` and is not byte-compatible
   with upstream's C++ sampler. Seeded runs are deterministic within
   `bedsample` (same seed → same output) but cross-tool record-for-record
   parity with upstream is not feasible without porting upstream's
   `random_shuffle`.
-- `bedmulticov` — BAM/CRAM input not yet wired through; `-split`
-  (block-aware coverage on BAM CIGARs) follows. The CLI surfaces a
-  clear error when a `.bam`/`.cram` path is supplied. Upstream's
-  `test/multicov/` corpus is entirely BAM-based, so the BED-equivalent
-  parity tests cover only `multicov.t1`/`t2`/`t3`/`t10`; the
-  `-split` cases `t4..t9` are `t.Skip`ped.
+- `bedmulticov` — <a id="bedmulticov-bam"></a>BAM input is now wired
+  through (this PR) via `pkg/bioformats/sam.NewBAMReader`; primary
+  alignments contribute one interval each over their reference span,
+  and `-q` MAPQ filter + `-D` per-A-interval depth cap are honoured.
+  Upstream `multicov.t1`/`t2`/`t3`/`t4` (`two_blocks` BAM without
+  `-split`) and `t10` (multi-BAM) now pass byte-for-byte against the
+  upstream expected outputs. **CRAM** input remains deferred — see
+  `docs/CRAM_DESIGN.md`; the CLI surfaces a clear error for `.cram`.
+  **`-split`** block-aware coverage on BAM CIGAR `N` ops is still
+  missing; `multicov.t5..t9` remain `t.Skip`ped pending that.
 - `bedmultiinter` — VCF/GFF input not implemented (upstream autodetects
   these via `BedFile`). Input is assumed sorted; out-of-order records
   within a single file are tolerated only because each file is

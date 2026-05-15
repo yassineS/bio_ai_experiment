@@ -117,9 +117,11 @@ func TestParity_Sort_T08_Faidx(t *testing.T) {
 }
 
 func TestParity_Sort_T09_Header(t *testing.T) {
-	t.Skip("upstream -header preserves the leading '#' comment line; bedsort " +
-		"strips header/comment lines like the default upstream behaviour. " +
-		"Tracked as an unimplemented option.")
+	got := runParity(t, "a.bed", Options{Header: true})
+	want := readParity(t, "t09_header.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 func TestParity_Sort_T10_ZeroLength(t *testing.T) {

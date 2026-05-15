@@ -201,6 +201,34 @@ func TestSortEmptyInput(t *testing.T) {
 	}
 }
 
+func TestSortHeaderPreservesLeadingHeaderLines(t *testing.T) {
+	// -header: leading comment/track/browser lines are kept verbatim before
+	// the sorted body. Mid-file header-style lines are still dropped.
+	input := "#Header line\n" +
+		"track name=foo\n" +
+		"browser position chr1\n" +
+		"chr2\t10\t20\n" +
+		"# mid-file comment\n" +
+		"chr1\t5\t8\n"
+	want := "#Header line\n" +
+		"track name=foo\n" +
+		"browser position chr1\n" +
+		"chr1\t5\t8\n" +
+		"chr2\t10\t20\n"
+	if got := runString(t, input, Options{Header: true}); got != want {
+		t.Errorf("-header mismatch.\nGot:\n%q\nWant:\n%q", got, want)
+	}
+}
+
+func TestSortHeaderEmptyHeaderBlock(t *testing.T) {
+	// -header on input with no header lines should be a no-op.
+	input := "chr2\t10\t20\nchr1\t5\t8\n"
+	want := "chr1\t5\t8\nchr2\t10\t20\n"
+	if got := runString(t, input, Options{Header: true}); got != want {
+		t.Errorf("-header empty-block mismatch.\nGot:\n%q\nWant:\n%q", got, want)
+	}
+}
+
 func TestSortStableWithinTies(t *testing.T) {
 	// Same chrom/start/end: ordering must be preserved (stable sort).
 	input := "chr1\t10\t20\tfirst\n" +

@@ -217,6 +217,71 @@ func TestRandomAccessUsesSidecarIndex(t *testing.T) {
 	}
 }
 
+// TestBuildIndexFullHeader: contigs with multi-word headers are indexed by
+// their full header line (not just the first whitespace-delimited token).
+func TestBuildIndexFullHeader(t *testing.T) {
+	body := ">chr1 assembled by consortium X\n" +
+		"AGGGGGGGGG\n" +
+		"CGGGGGGGGG\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	idx, err := BuildIndexFullHeader(path)
+	if err != nil {
+		t.Fatalf("BuildIndexFullHeader: %v", err)
+	}
+	// Default-mode lookup should miss; full-header lookup should hit.
+	if _, ok := idx.Get("chr1"); ok {
+		t.Errorf("full-header index unexpectedly resolved first-token name 'chr1'")
+	}
+	e, ok := idx.Get("chr1 assembled by consortium X")
+	if !ok {
+		t.Fatalf("full-header index missed the multi-word contig name")
+	}
+	if e.Length != 20 {
+		t.Errorf("entry length = %d, want 20", e.Length)
+	}
+}
+
+// TestOpenRandomAccessFullHeader: end-to-end fetch on a FASTA with
+// multi-word headers via the convenience opener.
+func TestOpenRandomAccessFullHeader(t *testing.T) {
+	body := ">chr1 assembled by consortium X\n" +
+		"AGGGGGGGGG\n" +
+		"CGGGGGGGGG\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ra, err := OpenRandomAccessFullHeader(path)
+	if err != nil {
+		t.Fatalf("OpenRandomAccessFullHeader: %v", err)
+	}
+	defer ra.Close()
+	got, err := ra.Fetch("chr1 assembled by consortium X", 1, 10)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if string(got) != "GGGGGGGGG" {
+		t.Fatalf("Fetch = %q, want GGGGGGGGG", got)
+	}
+	// First-token lookup should miss under -fullHeader.
+	if _, err := ra.Fetch("chr1", 0, 1); err == nil {
+		t.Errorf("expected miss for first-token lookup under -fullHeader")
+	}
+}
+
+// TestOpenRandomAccessFullHeader_MissingFile: surface a clear error when
+// the FASTA file doesn't exist.
+func TestOpenRandomAccessFullHeader_MissingFile(t *testing.T) {
+	if _, err := OpenRandomAccessFullHeader("/no/such/path.fa"); err == nil {
+		t.Fatal("expected error on missing file")
+	}
+}
+
 func TestRandomAccessWrappingReaderAt(t *testing.T) {
 	// Exercise NewRandomAccess on an in-memory FASTA + index.
 	body := []byte(">x\nACGTACGT\n")

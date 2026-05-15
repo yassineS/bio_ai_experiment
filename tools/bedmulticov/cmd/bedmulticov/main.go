@@ -24,13 +24,13 @@ Usage:
 
 Options:
   -bed FILE              A intervals (required, '-' for stdin)
-  -files FILE..          One or more B files (BED). Variadic.
-  -bams FILE..           Alias for -files; reserved for BAM inputs (not yet
-                         implemented — see README).
+  -files FILE..          One or more B files (BED or BAM, auto-detected by
+                         extension). Variadic.
+  -bams FILE..           Alias for -files (kept for upstream compatibility).
   -q,  --mapq N          Minimum MAPQ for BAM inputs (default 0; ignored for
                          BED inputs).
-  -D,  --max-depth N     Cap per-position depth for BAM inputs (default 64000;
-                         ignored for BED inputs).
+  -D,  --max-depth N     Cap per-A-interval depth count for BAM inputs
+                         (default 64000; ignored for BED inputs).
   -s,  --strand          Same-strand overlaps only.
   -S,  --opposite        Opposite-strand overlaps only.
   -f FRACTION            Minimum fraction of A overlapped (0,1].
@@ -41,13 +41,15 @@ Options:
   -v,  --version         Show version.
 
 Notes:
-  - BAM inputs are not yet implemented; supplying a .bam path returns an
-    explicit error.
+  - BAM input is supported (BGZF-wrapped, decoded via pkg/bioformats/sam).
+  - CRAM input is NOT yet supported — a clear error is surfaced for any
+    .cram path; see docs/CRAM_DESIGN.md.
   - The output preserves A's columns verbatim and appends one integer
     count column per input file, matching upstream's column ordering.
 
 Examples:
   bedmulticov -bed a.bed -files b1.bed b2.bed
+  bedmulticov -bed a.bed -bams b1.bam b2.bam -q 20
   bedmulticov -bed a.bed -files b1.bed b2.bed -s -f 0.5
 `
 
@@ -73,7 +75,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	cliflag.StringVar(fs, &bedPath, "", "bed", "", "A BED file (required)")
 	cliflag.IntVar(fs, &mapq, "q", "mapq", 0, "Min MAPQ for BAM inputs")
-	cliflag.IntVar(fs, &maxDepth, "D", "max-depth", 64000, "Max per-position depth for BAM inputs")
+	cliflag.IntVar(fs, &maxDepth, "D", "max-depth", 64000, "Cap per-A-interval depth count for BAM inputs (0 disables)")
 	cliflag.BoolVar(fs, &sameStrand, "s", "strand", false, "Same-strand overlaps only")
 	cliflag.BoolVar(fs, &oppStrand, "S", "opposite", false, "Opposite-strand overlaps only")
 	cliflag.Float64Var(fs, &fractionA, "f", "fraction-a", 0.0, "Fraction of A overlapped")
@@ -109,17 +111,12 @@ func run(argv []string, stdout, stderr *os.File) error {
 	if len(all) == 0 {
 		return fmt.Errorf("at least one -files or -bams <FILE> is required (use -h for help)")
 	}
-	// Surface BAM paths explicitly — they are not yet supported.
+	// Reject CRAM explicitly — we don't have a CRAM reader yet.
 	for _, p := range all {
-		lp := strings.ToLower(p)
-		if strings.HasSuffix(lp, ".bam") || strings.HasSuffix(lp, ".cram") {
-			return fmt.Errorf("BAM/CRAM input not yet implemented: %q (see README)", p)
+		if strings.HasSuffix(strings.ToLower(p), ".cram") {
+			return fmt.Errorf("CRAM input not yet supported: %q (see docs/CRAM_DESIGN.md)", p)
 		}
 	}
-	// `-q` and `-D` only meaningful for BAM; tolerated for BED so the CLI
-	// matches upstream's accepted flag set.
-	_ = mapq
-	_ = maxDepth
 
 	aR, err := iohelper.OpenReader(bedPath)
 	if err != nil {
@@ -127,7 +124,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 	}
 	defer aR.Close()
 
-	bRs := make([]io.Reader, 0, len(all))
+	sources := make([]bedmulticov.Source, 0, len(all))
 	closers := make([]io.Closer, 0, len(all))
 	defer func() {
 		for _, c := range closers {
@@ -135,12 +132,23 @@ func run(argv []string, stdout, stderr *os.File) error {
 		}
 	}()
 	for _, p := range all {
+		if strings.HasSuffix(strings.ToLower(p), ".bam") {
+			// BAM is BGZF-wrapped; iohelper would auto-decode the BGZF
+			// layer and break sam.NewBAMReader. Open raw.
+			f, err := os.Open(p)
+			if err != nil {
+				return fmt.Errorf("opening input %q: %w", p, err)
+			}
+			closers = append(closers, f)
+			sources = append(sources, bedmulticov.Source{Reader: f, Kind: bedmulticov.SourceBAM})
+			continue
+		}
 		f, err := iohelper.OpenReader(p)
 		if err != nil {
 			return fmt.Errorf("opening input %q: %w", p, err)
 		}
 		closers = append(closers, f)
-		bRs = append(bRs, f)
+		sources = append(sources, bedmulticov.Source{Reader: f, Kind: bedmulticov.SourceBED})
 	}
 
 	w, err := iohelper.OpenWriter(output)
@@ -155,8 +163,10 @@ func run(argv []string, stdout, stderr *os.File) error {
 		Reciprocal:     reciprocal,
 		SameStrand:     sameStrand,
 		OppositeStrand: oppStrand,
+		MinMAPQ:        mapq,
+		MaxDepth:       maxDepth,
 	}
-	if _, err := bedmulticov.Run(aR, bRs, w, opts); err != nil {
+	if _, err := bedmulticov.RunSources(aR, sources, w, opts); err != nil {
 		return err
 	}
 	return nil
