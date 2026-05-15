@@ -21,6 +21,15 @@ subcommands. The current implementation ships:
   record (annotate mode), a TSV trio rollup (`-c`), or a filtered
   VCF (`-d`). The X-chromosome mode (`-m x`) treats the father as
   haploid on `X`/`chrX`.
+- `bcftools gtcheck` — genotype-concordance check of a query VCF
+  against a panel. v1 implements the hard-GT Hamming distance only
+  (`-u GT`); the PL / GL / dosage / Bayesian modes parse cleanly but
+  reject with a roadmap pointer.
+- `bcftools roh` — runs-of-homozygosity caller via a two-state
+  (HW / AZ) Viterbi HMM. v1 supports `-O r` (region rows), `-O s`
+  (per-site rows), and `-O sr` (both). Allele frequencies come from
+  `INFO/<AF-tag>` (default `AF`) with an `--AF-dflt` fallback. The
+  genetic-map / rec-rate / streaming knobs are deferred.
 - `pkg/bioformats/bcf` — reader and writer for the BCF v2.2 binary format.
 
 All pieces share the existing `pkg/bioformats/vcf` types so downstream

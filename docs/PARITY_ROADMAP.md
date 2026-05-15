@@ -610,10 +610,11 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
 
-**Status:** 15 of ~30 subcommands (~50%). `view`, `index`, `stats`, `query`,
+**Status:** 17 of ~30 subcommands (~57%). `view`, `index`, `stats`, `query`,
 `concat`, `norm`, `call` (consensus + biallelic multi-allelic), the PR #86
-wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), and
-the convert/mendelian PR: **`convert`** + **`mendelian`**.
+wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), the
+convert/mendelian PR (`convert` + `mendelian`), and the gtcheck/roh PR:
+**`gtcheck`** + **`roh`**.
 
 Missing subcommands (priority order):
 
@@ -625,10 +626,8 @@ Missing subcommands (priority order):
 - **`mendelian2`** — newer Mendelian-inheritance checker (the v1
   `mendelian` port covers the legacy plugin; `mendelian2` adds
   PED-file ingestion and per-sample error tagging).
-- **`roh`** — runs of homozygosity.
 - **`polysomy`** — copy-number estimation.
 - **`cnv`** — CNV calling.
-- **`gtcheck`** — genotype concordance.
 - **`+plugins`** — full plugin system (substantial).
 
 Option-tail gaps on the wave-1 additions (PR #86):
@@ -661,6 +660,26 @@ Option-tail gaps on the convert/mendelian PR:
   accepted but currently only the chrX heuristic is honoured; full
   per-contig ploidy override (PAR boundaries, mitochondrial
   haploidy) is a follow-up.
+
+Option-tail gaps on the gtcheck/roh PR:
+
+- `gtcheck`: v1 implements only the hard-genotype Hamming-distance
+  scoring (`-u GT`). The upstream tool also offers `-u PL` (phred-
+  likelihood-based scoring), `-u GL` (likelihoods), dosage / Bayesian
+  modes, the cluster post-pass, and `--all-sites` / `--homs-only` /
+  `--no-HWE-prob` knobs. All of those parse cleanly via the CLI but
+  are rejected at runtime with a roadmap pointer. Output is a stable
+  TSV with one `DC` row per pair plus a totals line.
+- `roh`: a two-state Viterbi HMM (HW / AZ) with per-site emissions
+  driven by `INFO/<AF-tag>` (default `AF`) or `--AF-dflt`. v1 supports
+  output modes `r` (regions), `s` (sites), and `sr` (both). Upstream's
+  genetic-map-aware transition scaling (`-M/--rec-rate`,
+  `-V/--genetic-map`), the `--AF-file` external table, on-the-fly
+  AF estimation (`--estimate-AF`), and `--buffer-size` streaming are
+  accepted by the parser but rejected at runtime. The default
+  per-site transitions (`5e-2` either way) are looser than upstream's
+  per-bp `1e-8` scaling because they have to work without a genetic
+  map; callers can tune via the library `RohOptions{HWtoAZ, AZtoHW}`.
 
 Plus:
 
