@@ -24,16 +24,26 @@ Usage:
   samtools <subcommand> [options]
 
 Subcommands:
-  view       Print, filter, or convert SAM/BAM records.
-  sort       Sort alignments by coordinate, name, or tag.
-  index      Build a BAI index for a coordinate-sorted BAM.
-  flagstat   Print flag statistics for a SAM/BAM file.
-  depth      Per-position depth across one or more BAMs.
-  fastq      Convert SAM/BAM to FASTQ.
-  bam2fq     Alias for fastq.
-  mpileup    Per-position pileup across one or more BAMs.
-  help       Show this help.
-  version    Show version.
+  view          Print, filter, or convert SAM/BAM records.
+  sort          Sort alignments by coordinate, name, or tag.
+  index         Build a BAI index for a coordinate-sorted BAM.
+  flagstat      Print flag statistics for a SAM/BAM file.
+  depth         Per-position depth across one or more BAMs.
+  fastq         Convert SAM/BAM to FASTQ.
+  bam2fq        Alias for fastq.
+  mpileup       Per-position pileup across one or more BAMs.
+  idxstats      Per-reference read counts from an indexed BAM.
+  quickcheck    Fast format sanity check.
+  dict          Emit a sequence dictionary from a FASTA file.
+  cat           Concatenate BAMs without re-sorting.
+  reheader      Replace the header of a BAM in place.
+  addreplacerg  Add or replace @RG line and per-record RG tag.
+  fixmate       Fill in mate-read fields on a name-sorted BAM.
+  merge         Merge sorted BAMs.
+  coverage      Per-region coverage summary table.
+  split         Split a BAM by @RG ID into per-RG files.
+  help          Show this help.
+  version       Show version.
 `
 
 func main() {
@@ -56,6 +66,26 @@ func main() {
 		os.Exit(runFastq(os.Args[2:]))
 	case "mpileup":
 		os.Exit(runMpileup(os.Args[2:]))
+	case "idxstats":
+		os.Exit(runIdxstats(os.Args[2:]))
+	case "quickcheck":
+		os.Exit(runQuickcheck(os.Args[2:]))
+	case "dict":
+		os.Exit(runDict(os.Args[2:]))
+	case "cat":
+		os.Exit(runCat(os.Args[2:]))
+	case "reheader":
+		os.Exit(runReheader(os.Args[2:]))
+	case "addreplacerg":
+		os.Exit(runAddReplaceRG(os.Args[2:]))
+	case "fixmate":
+		os.Exit(runFixmate(os.Args[2:]))
+	case "merge":
+		os.Exit(runMerge(os.Args[2:]))
+	case "coverage":
+		os.Exit(runCoverage(os.Args[2:]))
+	case "split":
+		os.Exit(runSplit(os.Args[2:]))
 	case "help", "-h", "--help":
 		fmt.Print(rootUsage)
 		return
