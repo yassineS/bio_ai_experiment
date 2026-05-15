@@ -1,0 +1,53 @@
+<html>
+	<body>
+<title>stdin</title>
+<br>Firefox users: Press and hold the "apple" or "alt" key and click link to open in new tab.
+<p style="font-family:courier">
+<table border="0" align="justify"
+<h3>BED Entries from: stdin </h3>
+<tr>
+	<td>
+		<a href=http://genome.ucsc.edu/cgi-bin/hgTracks?org=human&db=hg18&position=chr1:100-200>chr1:101-200</a>
+	</td>
+	<td>
+geneA
+	</td>
+	<td>
+500
+	</td>
+	<td>
++
+	</td>
+</tr>
+<tr>
+	<td>
+		<a href=http://genome.ucsc.edu/cgi-bin/hgTracks?org=human&db=hg18&position=chr1:300-400>chr1:301-400</a>
+	</td>
+	<td>
+geneB
+	</td>
+	<td>
+250
+	</td>
+	<td>
+-
+	</td>
+</tr>
+<tr>
+	<td>
+		<a href=http://genome.ucsc.edu/cgi-bin/hgTracks?org=human&db=hg18&position=chrX:5000-5100>chrX:5001-5100</a>
+	</td>
+	<td>
+geneC
+	</td>
+	<td>
+999
+	</td>
+	<td>
++
+	</td>
+</tr>
+</table>
+</p>
+	</body>
+</html>
