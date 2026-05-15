@@ -40,6 +40,8 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedwindow`](bedwindow/) | bedtools window | Overlap A with an expanded window around B | ~90% |
 | [`bedreldist`](bedreldist/) | bedtools reldist | Relative-distance distribution between two BED files | ~91% |
 | [`bedfisher`](bedfisher/) | bedtools fisher | Fisher's exact test of overlap enrichment | ~89% |
+| [`bednuc`](bednuc/) | bedtools nuc | Nucleotide content profile per BED interval | ~95% |
+| [`bedannotate`](bedannotate/) | bedtools annotate | Annotate A intervals with overlap stats from N BED files | ~89% |
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |

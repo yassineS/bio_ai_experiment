@@ -175,30 +175,30 @@ parity cases pointing back here):
 **Validation:** **16-case parity test suite, 12 passing, 4
 documented `t.Skip`** (post this PR).
 
-### bedtools (27 subcommands ported)
+### bedtools (29 subcommands ported)
 
-**Status:** 27 of ~40 subcommands (~68%). 135 passing parity tests against
-upstream test suite (across PR #55 + Phase-3 wave 1 + wave 2 simple + wave 2
-algo) + 17 new cases from wave 3 (PR #87) + **6 new** cases from the
-reldist/fisher full-parity wave. Phase-3 wave 1
-(PR #78) added `bedgroupby`/`bed12tobed6`/`bedmakewindows`; wave 2 simple
-(PR #80) added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`; wave 2
-algo added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail (PR #87)
-added `bedcluster`/`bedsplit`/`bedsummary`/`bedtag`/`bedwindow`; **the
-reldist/fisher wave added `bedreldist`/`bedfisher`** with byte-for-byte
-parity on the small upstream cases.
+**Status:** 29 of ~40 subcommands (~73%). 141 passing parity tests
+against the upstream test suite (across PR #55 + Phase-3 wave 1 + wave
+2 simple + wave 2 algo) + 17 new cases from wave 3 (PR #87) + 6 cases
+from the reldist/fisher full-parity wave (PR #90) + **6 new** cases
+from the nuc/annotate wave. Phase-3 wave 1 (PR #78) added
+`bedgroupby`/`bed12tobed6`/`bedmakewindows`; wave 2 simple (PR #80)
+added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`; wave 2 algo
+added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail (PR #87) added
+`bedcluster`/`bedsplit`/`bedsummary`/`bedtag`/`bedwindow`; the
+reldist/fisher wave (PR #90) added `bedreldist`/`bedfisher`; **the
+nuc/annotate wave added `bednuc`/`bedannotate`** with hand-computed
+byte-parity fixtures (upstream ships no `nuc/` or `annotate/` test
+subdir, so the fixtures were derived from the upstream algorithm in
+`src/nucBed/nucBed.cpp` and `src/annotateBed/annotateBed.cpp`).
 
 Missing subcommands:
 
 - `multicov` — multi-sample coverage.
 - `multiinter` — multi-way intersection.
-- `nuc` — nucleotide content per interval.
 - `igv` — generate IGV launch URLs.
 - `links` — generate UCSC links.
 - `pairtopair`, `pairtobed` — paired BEDPE operations.
-- `annotate` — annotate one BED with multiple BEDs (note: `bedtag` and
-  the future `bedannotate` cover overlapping use-cases; explicit
-  `annotate` port deferred).
 
 Skipped parity cases from PR #55 to revisit:
 
