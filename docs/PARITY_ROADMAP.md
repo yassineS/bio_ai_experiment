@@ -364,19 +364,20 @@ Missing:
 
 ### `samtools`
 
-**Status:** 21 of ~25 subcommands (~84%). `view`, `sort`, `index`, `depth`,
+**Status:** 23 of ~25 subcommands (~92%). `view`, `sort`, `index`, `depth`,
 `fastq`, `flagstat`, **`mpileup`** (wave-1 + tail wiring), PR #88's
 wave-1 tail (`merge`, `coverage`, `idxstats`, `cat`, `reheader`,
 `addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`), the
-heavy-hitter pair `markdup` + `stats`, and the pair landed in
-the calmd/import PR: **`calmd`** + **`import`**.
+heavy-hitter pair `markdup` + `stats`, the calmd/import pair
+(**`calmd`** + **`import`**), and the niche pair landed in the
+phase/targetcut PR: **`phase`** + **`targetcut`**.
 
 Missing subcommands (in rough priority order):
 
 - **`consensus`** — base-level consensus.
-- **`phase`** — phase reads with their mates.
-- **`targetcut`** — cut targeted regions.
-- **`tview`** — terminal viewer (likely a deliberate skip; ~no-one uses it).
+- **`tview`** — terminal viewer. **Deliberate skip** (interactive
+  curses UI; near-zero pipeline usage and would require an ncurses
+  dependency). Not on the roadmap.
 - **`view` flag-tail**: `-X` (custom-index input). `-L bed` landed as a
   linear-scan BED-region filter; `-M`/`--use-multi-region-iterator` is
   accepted but treated as a no-op since we always run the full
@@ -487,6 +488,54 @@ positionals, -T aux extraction, --order, -R/-r RG). The upstream
 `t.Skip(...)` parity stubs because upstream's BGZF output isn't
 byte-identical with ours (different libdeflate). Logical correctness
 is covered by hand-computed expected values in the table tests.
+
+**`phase` deferred features** (accepted on the CLI, behaviour partial):
+
+- **MCMC chimera repair**. Upstream's `phase.c` runs a
+  Markov-chain-Monte-Carlo loop (`phase_core`) that flips read-cluster
+  assignments to maximise haplotype consistency and resolve chimeric
+  reads at junctions. The v1 Go port replaces this with a greedy
+  same-vs-opposite vote between adjacent het sites. Tied junctions
+  emit label `0` (ambiguous) rather than being repaired by MCMC.
+  Tracked here; the upstream `FLAG_FIX_CHIMERA` flag is implicitly
+  disabled in v1.
+- **`-b STR` per-haplotype BAM split.** v1 emits the phased TSV
+  stream to `-o`/stdout but does not yet split the input BAM into
+  per-haplotype output BAMs (`<prefix>.0.bam` / `<prefix>.1.bam`
+  / `<prefix>.chimera.bam` in upstream). The flag is accepted on the
+  CLI and stored in `PhaseOptions.OutputPrefix` for a follow-up
+  wiring pass.
+- **`-F` use-full-read** is accepted on the CLI but is a no-op in v1
+  (we always walk the aligned slice as decoded from the CIGAR).
+- **`-A` mark-drop-in-chimera-output** is also a no-op pending the
+  `-b` split landing.
+- **`-e`/`-l` site-list mode** (only-phase-listed-sites). The
+  upstream `loadpos` path is not implemented; the Go port always
+  discovers hets from the pileup. Upstream itself comments `-e` and
+  `-l` out of the usage block, so the omission is a small loss.
+
+**`targetcut` scope reduction.** The user-facing spec for the Go port
+is "cut the aligned slice from each read and emit FASTA". Upstream's
+`cut_target.c` actually does something quite different —
+HMM-based consensus calling over fosmid pools, emitting one consensus
+SAM record per identified region. The HMM consensus mode is **not**
+implemented; the upstream tool is rarely used outside fosmid
+workflows. The simple aligned-slice FASTA mode landed here covers the
+"cut a read down to its aligned bases" use case that users typically
+mean when they reach for the name. The `-Q` flag is wired through to
+the per-base quality filter as documented.
+
+**Validation:** hand-built SAM fixtures in
+`tools/samtools/pkg/samtools/phase_test.go` and
+`tools/samtools/pkg/samtools/targetcut_test.go`. Phase tests cover
+single-block chaining (consistent & label-flipping orderings),
+ambiguous-label fall-back when reads don't bridge two hets, and the
+MinMAPQ filter. Targetcut tests cover soft-clip flank stripping,
+insertion retention, deletion handling, unmapped/secondary skipping,
+SEQ='*' skipping, and `-Q` per-base filtering. There is no upstream
+regression-test fixture for either tool in
+`reference_code/samtools/test/` so byte-parity against upstream is
+not pursued.
 
 ### `bcftools`
 
