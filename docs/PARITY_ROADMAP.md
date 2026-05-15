@@ -377,10 +377,13 @@ Missing subcommands (in rough priority order):
 - **`phase`** — phase reads with their mates.
 - **`targetcut`** — cut targeted regions.
 - **`tview`** — terminal viewer (likely a deliberate skip; ~no-one uses it).
-- **`view` flag-tail**: `-L bed`, `-M` (read-id list), `-d/-D` (tag-value
-  filter), `-N` (qname file), `-X` (custom-index input).
-- **`mpileup` tail** beyond PR #88 wiring: `-aa` zero-fill of empty
-  contigs, BCF output, `-g/-u` genotype-likelihood mode.
+- **`view` flag-tail**: `-d/-D` (tag-value filter), `-N` (qname file),
+  `-X` (custom-index input). `-L bed` landed as a linear-scan BED-region
+  filter; `-M`/`--use-multi-region-iterator` is accepted but treated as a
+  no-op since we always run the full intersection.
+- **`mpileup` tail** beyond PR #88 wiring: BCF output, `-g/-u` genotype-
+  likelihood mode. `-aa` zero-fill of empty contigs is implemented (see
+  `TestMpileup_AA_ZeroFillTableDriven`).
 
 Plus:
 

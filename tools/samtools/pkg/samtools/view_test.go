@@ -307,3 +307,140 @@ func TestViewMidStreamError(t *testing.T) {
 		t.Error("expected error from malformed body line")
 	}
 }
+
+// bedFilterSAM is a hand-built fixture with reads on chr1 + chr2 chosen so
+// every BED-overlap edge case (clean hit, abuts-no-overlap, miss-by-one,
+// straddles two intervals, unknown chrom) is exercised by the table tests
+// below.
+const bedFilterSAM = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:1000
+@SQ	SN:chr2	LN:500
+@SQ	SN:chr3	LN:200
+r_in_chr1	0	chr1	100	60	5M	*	0	0	ACGTA	IIIII
+r_abut_chr1	0	chr1	200	60	5M	*	0	0	ACGTA	IIIII
+r_miss_chr1	0	chr1	300	60	5M	*	0	0	ACGTA	IIIII
+r_in_chr2	0	chr2	50	60	10M	*	0	0	ACGTACGTAC	IIIIIIIIII
+r_miss_chr2	0	chr2	200	60	5M	*	0	0	ACGTA	IIIII
+r_chr3_unmatched	0	chr3	10	60	5M	*	0	0	ACGTA	IIIII
+r_unmapped	4	*	0	0	*	*	0	0	*	*
+`
+
+func TestView_BedFilter_TableDriven(t *testing.T) {
+	dir := t.TempDir()
+
+	// BED intervals (half-open, 0-based):
+	//   chr1   99 105   -> overlaps r_in_chr1 ([99,104))
+	//   chr1  205 250   -> abuts r_abut_chr1 ([199,204)); no overlap.
+	//   chr2   40  70   -> overlaps r_in_chr2 ([49,59))
+	//   chrX    0 100   -> matches nothing (unknown chrom)
+	bedContent := "chr1\t99\t105\nchr1\t205\t250\nchr2\t40\t70\nchrX\t0\t100\n"
+	bedPath := filepath.Join(dir, "regions.bed")
+	if err := os.WriteFile(bedPath, []byte(bedContent), 0o644); err != nil {
+		t.Fatalf("write bed: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		bed       string
+		want      int
+		mustHave  []string
+		mustOmit  []string
+		extraOpts ViewOptions
+	}{
+		{
+			name:     "two intervals match two reads",
+			bed:      bedPath,
+			want:     2,
+			mustHave: []string{"r_in_chr1", "r_in_chr2"},
+			mustOmit: []string{"r_abut_chr1", "r_miss_chr1", "r_miss_chr2", "r_chr3_unmatched", "r_unmapped"},
+		},
+		{
+			name:     "empty bed keeps nothing",
+			bed:      filepath.Join(dir, "empty.bed"),
+			want:     0,
+			mustHave: nil,
+			mustOmit: []string{"r_in_chr1", "r_in_chr2"},
+		},
+		{
+			name: "bed plus min-mapq compose as AND",
+			bed:  bedPath,
+			// All matching reads have MAPQ 60, so 60 keeps both.
+			extraOpts: ViewOptions{MinMAPQ: 60},
+			want:      2,
+			mustHave:  []string{"r_in_chr1", "r_in_chr2"},
+		},
+		{
+			name: "bed plus region intersect: bed alone -> 2, region alone -> 1, intersection -> 1",
+			bed:  bedPath,
+			// chr1:1-150 selects only r_in_chr1; r_in_chr2 is dropped.
+			extraOpts: ViewOptions{Regions: []string{"chr1:1-150"}},
+			want:      1,
+			mustHave:  []string{"r_in_chr1"},
+			mustOmit:  []string{"r_in_chr2"},
+		},
+	}
+
+	// Pre-create the empty bed referenced by the second case.
+	if err := os.WriteFile(filepath.Join(dir, "empty.bed"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write empty bed: %v", err)
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.extraOpts
+			opts.BedPath = tc.bed
+			opts.WithHeader = false
+			var out bytes.Buffer
+			n, err := View(strings.NewReader(bedFilterSAM), &out, opts)
+			if err != nil {
+				t.Fatalf("View: %v", err)
+			}
+			if n != tc.want {
+				t.Errorf("count: got %d, want %d; output:\n%s", n, tc.want, out.String())
+			}
+			got := out.String()
+			for _, want := range tc.mustHave {
+				if !strings.Contains(got, want+"\t") {
+					t.Errorf("output missing read %q:\n%s", want, got)
+				}
+			}
+			for _, omit := range tc.mustOmit {
+				if strings.Contains(got, omit+"\t") {
+					t.Errorf("output unexpectedly contains read %q:\n%s", omit, got)
+				}
+			}
+		})
+	}
+}
+
+func TestView_BedFilter_MissingFileErrors(t *testing.T) {
+	var out bytes.Buffer
+	_, err := View(strings.NewReader(bedFilterSAM), &out, ViewOptions{BedPath: "/no/such/path.bed"})
+	if err == nil {
+		t.Fatal("expected error opening nonexistent BED")
+	}
+	if !strings.Contains(err.Error(), "BED") {
+		t.Errorf("expected BED in error, got %q", err)
+	}
+}
+
+func TestView_BedFilter_MultiRegionAccepted(t *testing.T) {
+	// -M is accept-and-ignore; behaviour must match plain -L.
+	dir := t.TempDir()
+	bedPath := filepath.Join(dir, "r.bed")
+	if err := os.WriteFile(bedPath, []byte("chr1\t99\t105\n"), 0o644); err != nil {
+		t.Fatalf("write bed: %v", err)
+	}
+	var out1, out2 bytes.Buffer
+	n1, err := View(strings.NewReader(bedFilterSAM), &out1, ViewOptions{BedPath: bedPath})
+	if err != nil {
+		t.Fatalf("View without -M: %v", err)
+	}
+	n2, err := View(strings.NewReader(bedFilterSAM), &out2, ViewOptions{BedPath: bedPath, MultiRegion: true})
+	if err != nil {
+		t.Fatalf("View with -M: %v", err)
+	}
+	if n1 != n2 || out1.String() != out2.String() {
+		t.Errorf("-M changed output (n1=%d n2=%d):\n--- without\n%s--- with\n%s", n1, n2, out1.String(), out2.String())
+	}
+}

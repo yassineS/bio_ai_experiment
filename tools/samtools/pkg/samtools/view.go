@@ -7,10 +7,12 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
 	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
 )
@@ -52,6 +54,19 @@ type ViewOptions struct {
 	// RegionsEnabled signals whether region-query filtering is requested.
 	// In this first slice it is always rejected, with a clear error message.
 	RegionsEnabled bool
+	// BedPath, when non-empty, is the path of a BED file whose intervals
+	// restrict the emitted records. A record is kept only when its
+	// [Pos, Pos+refLen) range intersects at least one BED interval on the
+	// record's RName. Combines (logical AND) with Regions: when both are
+	// set, records must satisfy BOTH predicates. Matches upstream samtools
+	// view's `-L/--regions-file`.
+	BedPath string
+	// MultiRegion is accept-and-ignore for upstream's
+	// `-M/--use-multi-region-iterator`. The flag controls whether upstream
+	// uses its multi-region iterator (an indexed-scan optimisation); the
+	// resulting filtered record set is identical, so we always perform the
+	// full intersection regardless.
+	MultiRegion bool
 	// NoPG suppresses the @PG line emission (placeholder; the view pipeline
 	// does not currently inject an @PG line, so this is a no-op kept for
 	// flag compatibility).
@@ -94,6 +109,11 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 		regionFilter = func(*sam.Record) bool { return false }
 	}
 
+	bedFilter, err := loadBedFilter(opts.BedPath)
+	if err != nil {
+		return 0, err
+	}
+
 	w, err := openViewWriter(out, hdr, opts)
 	if err != nil {
 		return 0, err
@@ -116,6 +136,9 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 			continue
 		}
 		if regionFilter != nil && !regionFilter(rec) {
+			continue
+		}
+		if bedFilter != nil && !bedFilter(rec) {
 			continue
 		}
 		matched++
@@ -148,7 +171,9 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 	if inPath == "" || inPath == "-" {
 		return View(os.Stdin, out, opts)
 	}
-	// No regions requested: take the streaming path.
+	// No CLI regions requested: take the streaming path. -L/--regions-file
+	// (opts.BedPath) is handled inside View() as a post-filter and doesn't
+	// require an index.
 	if len(opts.Regions) == 0 {
 		f, err := os.Open(inPath)
 		if err != nil {
@@ -207,6 +232,10 @@ func viewIndexed(f *os.File, idx *BAIIndex, out io.Writer, opts ViewOptions) (in
 	if regionFilter == nil && len(opts.Regions) > 0 {
 		regionFilter = func(*sam.Record) bool { return false }
 	}
+	bedFilter, berr := loadBedFilter(opts.BedPath)
+	if berr != nil {
+		return 0, berr
+	}
 
 	w, werr := openViewWriter(out, hdr, opts)
 	if werr != nil {
@@ -254,6 +283,9 @@ func viewIndexed(f *os.File, idx *BAIIndex, out io.Writer, opts ViewOptions) (in
 				continue
 			}
 			if regionFilter != nil && !regionFilter(rec) {
+				continue
+			}
+			if bedFilter != nil && !bedFilter(rec) {
 				continue
 			}
 			matched++
@@ -434,6 +466,72 @@ func LoadReadGroupsFile(path string) (map[string]struct{}, error) {
 		out[line] = struct{}{}
 	}
 	return out, scn.Err()
+}
+
+// loadBedFilter reads a BED file at path and returns a predicate that keeps
+// records whose `[Pos, Pos+refLen)` half-open range intersects any BED
+// interval on the record's RName. Returns (nil, nil) when path is empty.
+//
+// The implementation builds one bed.IntervalTree per chromosome so per-record
+// queries cost O(log n + k). Records whose RName has no BED entries are
+// dropped, matching upstream's `bed_overlap` behaviour.
+func loadBedFilter(path string) (func(*sam.Record) bool, error) {
+	if path == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("samtools view: open BED %q: %w", path, err)
+	}
+	defer f.Close()
+	byChrom := map[string][]*bed.Record{}
+	rd := bed.NewReader(f)
+	for {
+		rec, rerr := rd.Read()
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return nil, fmt.Errorf("samtools view: read BED %q: %w", path, rerr)
+		}
+		byChrom[rec.Chrom] = append(byChrom[rec.Chrom], rec)
+	}
+	if len(byChrom) == 0 {
+		// Empty BED means "no records pass" — match upstream's behaviour
+		// where bed_overlap returns 0 for every query.
+		return func(*sam.Record) bool { return false }, nil
+	}
+	// Sort intervals by ChromStart so the tree is balanced (NewIntervalTree
+	// requires its input to be sorted to produce a balanced tree).
+	trees := make(map[string]*bed.IntervalTree, len(byChrom))
+	for chrom, recs := range byChrom {
+		sort.Slice(recs, func(i, j int) bool {
+			return recs[i].ChromStart < recs[j].ChromStart
+		})
+		trees[chrom] = bed.NewIntervalTree(recs)
+	}
+	return func(rec *sam.Record) bool {
+		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" {
+			return false
+		}
+		t, ok := trees[rec.RName]
+		if !ok {
+			return false
+		}
+		pos0 := int(rec.Pos) - 1
+		if pos0 < 0 {
+			pos0 = 0
+		}
+		refLen := rec.Cigar.ReferenceLength()
+		if refLen <= 0 {
+			// Zero-length footprint (CIGAR `*` or all-clip) cannot
+			// overlap any BED interval per upstream bed_overlap's strict
+			// half-open semantics. Drop the record.
+			return false
+		}
+		q := &bed.Record{Chrom: rec.RName, ChromStart: pos0, ChromEnd: pos0 + refLen}
+		return len(t.Query(q)) > 0
+	}, nil
 }
 
 // ParseSubsample parses upstream samtools' "<seed>.<fraction>" composite form

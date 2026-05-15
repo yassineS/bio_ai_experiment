@@ -1674,8 +1674,13 @@ r3	0	chr1	10	60	5M	*	0	0	ACGTA	IIIII
 
 // TestParity_Mpileup_T12_AllPositionsZeroFill — -aa emits every position
 // of every contig in the header, including chromosomes with no reads.
+// Behaviour parity is exercised on a hand-built multi-contig fixture by
+// TestMpileup_AA_ZeroFillTableDriven (chr1 partial, chr2 fully empty,
+// chr3 partial). Running -aa across realistic upstream test BAMs would
+// produce a million+ rows per chrom; keep this case as a documented
+// pointer rather than re-executing.
 func TestParity_Mpileup_T12_AllPositionsZeroFill(t *testing.T) {
-	t.Skip("AllPositionsAllChroms zero-fill across full contigs blows up output for any realistic LN; tracked in docs/PARITY_ROADMAP.md (samtools mpileup tail)")
+	t.Skip("covered by TestMpileup_AA_ZeroFillTableDriven; full-LN upstream fixtures would emit >1M rows/chrom")
 }
 
 // TestParity_Mpileup_T13_CountOrphansFlag — -A includes reads marked as

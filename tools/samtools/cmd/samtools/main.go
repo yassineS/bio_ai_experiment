@@ -127,7 +127,9 @@ Options:
   -q, --min-mapq <int>        Minimum MAPQ.
   -r, --read-group <string>   Keep records with this RG.
   -R, --read-groups-file <f>  File of RG IDs (one per line).
-  -L, --regions-file <f>      BED of regions (deferred — see notes).
+  -L, --regions-file <f>      BED of regions to keep (linear scan).
+  -M, --use-multi-region-iterator
+                              Accepted; we always do the full intersection.
   -s, --subsample <float>     Keep fraction (or "<seed>.<frac>").
   -o, --output <file>         Output file (default stdout).
   -T, --reference <fasta>     Accepted; CRAM is not supported in v1.
@@ -138,7 +140,9 @@ Options:
 
 Region queries (chr:start-end) use a sibling <input>.bai index when one
 exists; otherwise samtools view falls back to a linear scan with a
-warning to stderr. The -L/--regions-file form is still deferred.
+warning to stderr. The -L/--regions-file form always performs a linear
+scan over the input and keeps records whose [Pos, Pos+refLen) range
+intersects any BED interval on the record's reference.
 `
 
 func runView(args []string) int {
@@ -146,24 +150,25 @@ func runView(args []string) int {
 	fs.SetOutput(io.Discard) // we print usage ourselves
 
 	var (
-		outBAM    bool
-		withHdr   bool
-		hdrOnly   bool
-		countOnly bool
-		incFlags  int
-		excFlags  int
-		excFlagsG int
-		minMAPQ   int
-		rg        string
-		rgFile    string
-		regFile   string
-		subsample string
-		outFile   string
-		refFile   string
-		threads   int
-		noPG      bool
-		showHelp  bool
-		showVer   bool
+		outBAM      bool
+		withHdr     bool
+		hdrOnly     bool
+		countOnly   bool
+		incFlags    int
+		excFlags    int
+		excFlagsG   int
+		minMAPQ     int
+		rg          string
+		rgFile      string
+		regFile     string
+		multiRegion bool
+		subsample   string
+		outFile     string
+		refFile     string
+		threads     int
+		noPG        bool
+		showHelp    bool
+		showVer     bool
 	)
 	cliflag.BoolVar(fs, &outBAM, "b", "bam", false, "Output BAM")
 	cliflag.BoolVar(fs, &withHdr, "h", "with-header", false, "Include header")
@@ -176,6 +181,10 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &rg, "r", "read-group", "", "Read-group filter")
 	cliflag.StringVar(fs, &rgFile, "R", "read-groups-file", "", "File of read-group IDs")
 	cliflag.StringVar(fs, &regFile, "L", "regions-file", "", "BED of regions")
+	cliflag.BoolVar(fs, &multiRegion, "M", "use-multi-region-iterator", false, "Accepted (indexed-walk optimisation upstream)")
+	// Upstream samtools also spells the long form `--use-index`. Accept it
+	// as an alias for parity.
+	fs.BoolVar(&multiRegion, "use-index", false, "")
 	cliflag.StringVar(fs, &subsample, "s", "subsample", "", "Subsample fraction")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output file")
 	cliflag.StringVar(fs, &refFile, "T", "reference", "", "Reference FASTA (CRAM unsupported)")
@@ -220,10 +229,9 @@ func runView(args []string) int {
 		ReadGroup:       rg,
 		Regions:         append([]string{}, regions...),
 		RegionsEnabled:  len(regions) > 0 || regFile != "",
+		BedPath:         regFile,
+		MultiRegion:     multiRegion,
 		NoPG:            noPG,
-	}
-	if regFile != "" {
-		fmt.Fprintln(os.Stderr, "samtools view: -L/--regions-file is not yet implemented; falling back to whole-file scan")
 	}
 
 	// Honour the .bam output extension even without explicit -b.
@@ -908,6 +916,13 @@ func runMpileup(args []string) int {
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
+	// Pre-process args: upstream samtools accepts `-aa` as a fused short
+	// for "all positions, all chromosomes". Go's flag package rejects
+	// `-aa` since `aa` isn't a registered flag; rewrite to the long form
+	// before parsing. Bare `--` ends rewriting (positional args after it
+	// are passed through untouched).
+	args = expandShortAA(args)
+
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			fmt.Print(mpileupUsage)
@@ -933,17 +948,6 @@ func runMpileup(args []string) int {
 		fmt.Fprintln(os.Stderr, "samtools mpileup: -E/--redo-baq not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
 		return 2
 	}
-	// Detect -aa from a repeat of -a — upstream samtools accepts both
-	// `samtools mpileup -aa` (chained) and `--all-positions-all-chroms`.
-	// Our flag parser collapses double `-a` into one, but users typing
-	// "-aa" as a fused short get the same effect via the `-a -a` pattern
-	// we recognise when args contains "-aa".
-	for _, a := range args {
-		if a == "-aa" {
-			allChrom = true
-		}
-	}
-
 	if fs.NArg() == 0 && bamList == "" {
 		fmt.Fprintln(os.Stderr, "samtools mpileup: missing input file")
 		fmt.Fprint(os.Stderr, mpileupUsage)
@@ -982,4 +986,29 @@ func runMpileup(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// expandShortAA rewrites `-aa` to `--all-positions-all-chroms` in args.
+// Upstream samtools accepts the fused short form; Go's flag package does
+// not. Tokens after a bare `--` are passed through untouched.
+func expandShortAA(args []string) []string {
+	out := make([]string, 0, len(args))
+	endOfFlags := false
+	for _, a := range args {
+		if endOfFlags {
+			out = append(out, a)
+			continue
+		}
+		if a == "--" {
+			endOfFlags = true
+			out = append(out, a)
+			continue
+		}
+		if a == "-aa" {
+			out = append(out, "--all-positions-all-chroms")
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
