@@ -472,15 +472,15 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 				continue
 			}
 			// Frequency-only count by default (upstream use_qual=0).
-			// With UseQual=true, weight by per-base quality, matching
-			// the `q` multiplier in upstream's score sums. A floor
-			// of 1 prevents zero-qual bases from dropping out
-			// silently when UseQual is on.
+			// With UseQual=true, weight by per-base quality. Upstream
+			// bam_consensus.c:1937-1953 computes Q = wt * (use_qual?q:1)
+			// and increments freq/score only when Q != 0; a qual-0 base
+			// therefore contributes nothing under UseQual=true.
 			var q uint64 = 1
 			if opts.UseQual {
 				q = uint64(e.qual)
 				if q == 0 {
-					q = 1
+					continue
 				}
 			}
 			// Map ambiguous IUPAC bases by upstream's seqi2A/C/G/T
@@ -540,7 +540,9 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 	// No s1>0 guard: when s1 is 0, s2 is also 0 and the call ends up
 	// at N anyway via the call_fract gate below — staying consistent
 	// with upstream is cheaper than guarding.
-	if opts.AmbigCodes && float64(s2) >= opts.MinHetFraction*float64(s1) && call2 != 15 {
+	// Het condition mirrors upstream bam_consensus.c:1982 exactly:
+	// score2 >= het_fract * score1 && ambig. No extra guards.
+	if opts.AmbigCodes && float64(s2) >= opts.MinHetFraction*float64(s1) {
 		used |= call2
 		usedScore += s2
 	}
@@ -816,18 +818,12 @@ func baseToSeqi(b byte) int {
 // Pre-computed upstream mapping tables (seqi -> weight on a pure
 // base). Mirrors `bam_consensus.c::calculate_consensus_simple::
 // seqi2A/C/G/T`.
-//
-//nolint:gochecknoglobals // mirrors upstream's `static int seqi2A[16]`
-var seqi2A = [16]int{0, 8, 0, 4, 0, 4, 0, 2, 0, 4, 0, 2, 0, 2, 0, 1}
-
-//nolint:gochecknoglobals
-var seqi2C = [16]int{0, 0, 8, 4, 0, 0, 4, 2, 0, 0, 4, 2, 0, 0, 2, 1}
-
-//nolint:gochecknoglobals
-var seqi2G = [16]int{0, 0, 0, 0, 8, 4, 4, 1, 0, 0, 0, 0, 4, 2, 2, 1}
-
-//nolint:gochecknoglobals
-var seqi2T = [16]int{0, 0, 0, 0, 0, 0, 0, 0, 8, 4, 4, 2, 8, 2, 2, 1}
+var (
+	seqi2A = [16]int{0, 8, 0, 4, 0, 4, 0, 2, 0, 4, 0, 2, 0, 2, 0, 1}
+	seqi2C = [16]int{0, 0, 8, 4, 0, 0, 4, 2, 0, 0, 4, 2, 0, 0, 2, 1}
+	seqi2G = [16]int{0, 0, 0, 0, 8, 4, 4, 1, 0, 0, 0, 0, 4, 2, 2, 1}
+	seqi2T = [16]int{0, 0, 0, 0, 0, 0, 0, 0, 8, 4, 4, 2, 8, 2, 2, 1}
+)
 
 // ParseConsensusFormat maps a CLI -f/--format value to a
 // ConsensusFormat. The lookup is case-insensitive.

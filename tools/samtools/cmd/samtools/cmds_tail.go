@@ -1612,6 +1612,9 @@ Options:
       --input-fmt-option OPT[=VAL]
                             Input-format option (accepted; ignored).
       --verbosity INT       Verbosity level (accepted; ignored).
+  -O, --output-fmt FMT      Output format (accepted; v1 honours -f).
+      --write-index         Write index alongside output (accepted; v1
+                            emits text).
 
 For simple mode (the v1 fallback):
   -q, --use-qual            Use base quality in the score (default off).
@@ -1721,14 +1724,16 @@ func runConsensus(args []string) int {
 		hetOnly bool
 
 		// Reference / global.
-		refFasta  string
-		refQual   int
-		defaultQ  int
-		blockSize int
-		threads   int
-		ignoreOvl bool
-		inFmtOpt  multiString
-		verbosity int
+		refFasta   string
+		refQual    int
+		defaultQ   int
+		blockSize  int
+		threads    int
+		ignoreOvl  bool
+		inFmtOpt   multiString
+		verbosity  int
+		outputFmt  string
+		writeIndex bool
 
 		// Bayesian-only (accepted, fall back to simple).
 		bay consensusBayesianFlags
@@ -1774,6 +1779,8 @@ func runConsensus(args []string) int {
 	cliflag.BoolVar(fs, &ignoreOvl, "", "ignore-overlaps", false, "Ignore overlapping mates (accepted; not implemented)")
 	fs.Var(&inFmtOpt, "input-fmt-option", "")
 	cliflag.IntVar(fs, &verbosity, "", "verbosity", 0, "Verbosity")
+	cliflag.StringVar(fs, &outputFmt, "O", "output-fmt", "", "Output format (accepted; v1 honours -f instead)")
+	cliflag.BoolVar(fs, &writeIndex, "", "write-index", false, "Write index alongside output (accepted; v1 emits text)")
 
 	// Bayesian-only flag landing pads.
 	cliflag.IntVar(fs, &bay.cutoff, "C", "cutoff", 10, "Bayesian cutoff (accepted)")
@@ -1839,6 +1846,8 @@ func runConsensus(args []string) int {
 	_ = blockSize
 	_ = inFmtOpt
 	_ = verbosity
+	_ = outputFmt
+	_ = writeIndex
 	_ = bay
 
 	format, ferr := samtools.ParseConsensusFormat(formatStr)
