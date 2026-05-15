@@ -1,0 +1,13 @@
+snapshotDirectory ./
+goto chr1:50-250
+sort base
+collapse
+snapshot chr1_100_200_slop50.svg
+goto chr2:950-1150
+sort base
+collapse
+snapshot chr2_1000_1100_slop50.svg
+goto chrX:4950-5150
+sort base
+collapse
+snapshot chrX_5000_5100_slop50.svg

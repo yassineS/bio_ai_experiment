@@ -175,29 +175,29 @@ parity cases pointing back here):
 **Validation:** **16-case parity test suite, 12 passing, 4
 documented `t.Skip`** (post this PR).
 
-### bedtools (31 subcommands ported)
+### bedtools (33 subcommands ported)
 
-**Status:** 31 of ~40 subcommands (~78%). 141 passing parity tests
+**Status:** 33 of ~40 subcommands (~83%). 141 passing parity tests
 against the upstream test suite (across PR #55 + Phase-3 wave 1 + wave
 2 simple + wave 2 algo) + 17 new cases from wave 3 (PR #87) + 6 cases
 from the reldist/fisher full-parity wave (PR #90) + 6 cases from the
-nuc/annotate wave (PR #91) + **7 new** cases from the multicov/multiinter
-wave (this PR). Phase-3 wave 1 (PR #78) added
-`bedgroupby`/`bed12tobed6`/`bedmakewindows`; wave 2 simple (PR #80)
-added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`; wave 2 algo
-added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail (PR #87) added
-`bedcluster`/`bedsplit`/`bedsummary`/`bedtag`/`bedwindow`; the
-reldist/fisher wave (PR #90) added `bedreldist`/`bedfisher`; the
-nuc/annotate wave (PR #91) added `bednuc`/`bedannotate`; **the
-multicov/multiinter wave closes the last two of the six originally-planned
-algorithmic subcommands** with byte-for-byte fixtures (multicov from
-BED-equivalents of the upstream BAM corpus; multiinter from
-`multiintersect_examples()` since upstream ships no test subdir).
+nuc/annotate wave (PR #91) + 7 cases from the multicov/multiinter
+wave (PR #92) + **6 new** spec-driven cases from the igv/links wave
+(this PR — three each for `bedigv` and `bedlinks`, derived from the
+upstream source as neither subcommand ships a `test/<name>/` subdir).
+Phase-3 wave 1 (PR #78) added `bedgroupby`/`bed12tobed6`/`bedmakewindows`;
+wave 2 simple (PR #80) added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`;
+wave 2 algo added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail
+(PR #87) added `bedcluster`/`bedsplit`/`bedsummary`/`bedtag`/`bedwindow`;
+the reldist/fisher wave (PR #90) added `bedreldist`/`bedfisher`; the
+nuc/annotate wave (PR #91) added `bednuc`/`bedannotate`; the
+multicov/multiinter wave (PR #92) closed the last two of the six
+originally-planned algorithmic subcommands; **the igv/links wave
+(this PR) lands the two pure-format converters left in the long
+tail**.
 
 Missing subcommands:
 
-- `igv` — generate IGV launch URLs.
-- `links` — generate UCSC links.
 - `pairtopair`, `pairtobed` — paired BEDPE operations.
 
 Skipped parity cases from PR #55 to revisit:

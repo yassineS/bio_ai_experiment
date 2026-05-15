@@ -1,0 +1,8 @@
+snapshotDirectory /tmp/snaps
+load my.xml
+goto chr1:100-200
+snapshot chr1_100_200_geneA.png
+goto chr2:1000-1100
+snapshot chr2_1000_1100_geneB.png
+goto chrX:5000-5100
+snapshot chrX_5000_5100_geneC.png
