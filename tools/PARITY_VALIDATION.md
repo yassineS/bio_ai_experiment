@@ -29,8 +29,8 @@ features land.
 | bedflank      |          11 |     11 |       0 | All upstream cases (`flank.t1..t11`) covered. |
 | bedgenomecov  |           9 |      3 |       6 | Skips: BAM/SAM/CRAM input, `-pc`, `-fs`, `-split`. |
 | bedintersect  |          13 |      8 |       5 | Skips: `-wo`/`-wao`/`-wa -wb` combined writer. |
-| bedjaccard    |          14 |      4 |      10 | Skips: BAM input, `-split`, `-S <strand>`, large fixture t16, and cases that rely on upstream's auto-merging of B (real discrepancy). |
-| bedmerge      |          16 |     10 |       6 | Skips: `-delim`, VCF/GFF input, `-S` strand filter, `-s` with mixed `.` strand fan-out (real discrepancy). |
+| bedjaccard    |          14 |     10 |       4 | Skips: BAM input, `-split`, `-S <strand>`, large fixture t16. The column-ops + discrepancies wave (this PR) unskipped t02/t03/t05/t06/t10/t11 after wiring the upstream pre-merge step into bedjaccard. |
+| bedmerge      |          16 |     11 |       5 | Skips: `-delim`, VCF/GFF input, `-S` strand filter. The column-ops + discrepancies wave (this PR) unskipped `merge.t15` after fixing `-s` to drop `.`-strand records and merge `+` / `-` independently. |
 | bedslop       |          15 |     13 |       2 | Skips: float-precision regression tests t13/t14 (require the full `human.hg19.genome` fixture). |
 | bedsort       |          11 |      9 |       2 | Skips: `-header` (preserves leading `#` lines); one fixture-layout sanity check. |
 | bedsubtract   |          13 |     10 |       3 | Skips: `-N` (union-coverage drop). |
@@ -39,7 +39,7 @@ features land.
 | bedsample     |           7 |      5 |       2 | Skips: two CLI-only cases (no-args / unrecognized-flag) that test main.go error messages, not the library. |
 | bedspacing    |           7 |      6 |       1 | Skips: BAM input. All inline upstream cases (`spacing.t01`) + synthetic edge cases (per-chrom reset, exact abut, overlap, BED6 preservation, single record). |
 | bedcoverage   |           9 |      6 |       3 | Skips: BAM input (t1), `-mean` float32 precision (t6), `-split` BAM modes (t10..t13). |
-| bedmap        |          12 |     10 |       2 | Skips: `absmin`/`absmax` (t11), GFF input (t14+). |
+| bedmap        |          13 |     12 |       1 | Skips: GFF input (t14+). The column-ops + discrepancies wave (this PR) unskipped `map.t11` (absmin) and added `map.t13` (absmax) after wiring `absmin` / `absmax` into the shared `bedmerge.ApplyOp`. |
 | bedshuffle    |           6 |      5 |       1 | Skips: upstream `-chromFirst` toggle (t3); inline expected outputs are RNG-specific so byte-parity is replaced with structural invariants (t1/t2/t4: lengths preserved, include/exclude/chrom honoured). |
 | bedcluster    |           3 |      3 |       0 | All upstream `cluster.t1`/`t2` cases (basic + `-s` stranded) plus an idempotency smoke (PR #87 wave-3 tail). |
 | bedsplit      |           3 |      3 |       0 | All canonical upstream cases (`split.01/02/03`: `-a simple -n 50`, `-a simple -n 1000`, `-a size -n 50`); manifest head comparison. |
@@ -56,7 +56,7 @@ features land.
 | bedlinks      |           3 |      3 |       0 | Spec-driven (upstream ships no `links/` test subdir): expected outputs derived directly from `src/linksBed/linksBed.cpp` + `linksMain.cpp` by playing forward `CreateLinks()`/`WriteURL()`. Cases: BED6 defaults; BED6 custom mirror (`-base/-org/-db` per upstream help example); BED3 defaults (bedType=3 branch, no name/score/strand `<td>`). |
 | bedpairtobed  |           6 |      5 |       1 | Spec-driven (upstream ships no `pairtobed/` test subdir): expected outputs derived directly from `src/pairToBed/pairToBed.cpp` by walking `FindOverlaps()`/`FindOneOrMoreOverlaps()` over a hand-curated BEDPE × BED fixture. Cases: `-type either`, `-type both`, `-type neither`, `-type xor`, `-type notboth`; skip documents that `-slop` is upstream-`pairtopair`-only. |
 | bedpairtopair |           6 |      5 |       1 | Spec-driven (upstream ships no `pairtopair/` test subdir): expected outputs derived directly from `src/pairToPair/pairToPair.cpp` by playing forward `FindHitsOnBothEnds()`/`FindHitsOnEitherEnd()` over a 4-pair × 4-pair fixture. Cases: `-type both`, `-type either`, `-type neither`, `-type notboth`, `-slop` near-miss; skip documents that the upstream stranded-slop case is covered by the unit test `TestStrandedSlop_Direction`. |
-| **TOTAL**     |     **253** |**191** | **62**  | |
+| **TOTAL**     |     **254** |**200** | **54**  | |
 
 (The discrepancy between this table and `go test`'s 87 passed / 42 skipped is
 two helper / sanity sub-tests in `bedsort` and `bedintersect` that are not
@@ -118,20 +118,41 @@ upstream that we fixed inline rather than masking with `t.Skip`:
 - **bedjaccard and bedgenomecov fraction output now uses %g precision 6**
   (matches C++ ostream's default), not 10. Existing unit tests were updated.
 
+### Discrepancies fixed (column-ops + discrepancies wave)
+
+The two previously-skipped discrepancies from PR #55 are now fixed:
+
+- **bedjaccard now pre-merges A and B before computing
+  intersection/union**, mirroring upstream's
+  `setUseMergedIntervals(true)` in
+  `reference_code/bedtools/src/utils/Contexts/ContextJaccard.cpp`. The
+  merge is per-strand under `-s` (matching upstream's
+  `SAME_STRAND_EITHER` semantics in `FileRecordMergeMgr`), with `.` /
+  unknown-strand records dropped. Newly passing parity cases:
+  `jaccard.t02 / t03 / t05 / t06 / t10 / t11`.
+- **bedmerge's `-s` now matches upstream's per-strand merge**. Records
+  with `.` (or empty) strand are dropped under `-s` (matching
+  `FileRecordMergeMgr.cpp` lines 47-58 + 96-129), and `+` / `-` groups
+  are merged independently before the two output streams are
+  recombined by (chrom, start, end). Newly passing: `merge.t15`.
+
+The shared column-op vocabulary (`bedmerge.ApplyOp`, used by
+`bedgroupby`, `bedmap`, `bedcoverage`) was extended with `stdev`,
+`sstdev`, `absmin`, `absmax`, `cat`, `cat_uniq` — matching upstream's
+KeyListOps. Newly passing: `map.t11` (absmin) + new `map.t13`
+(absmax); previously-skipped bedgroupby tests `TestGroup_AdditionalOps`
+and `TestGroup_StdevSstdev` now run.
+
 ### Discrepancies found (NOT fixed)
 
-These are real upstream/Go differences that the parity tests document with
-`t.Skip("known discrepancy: ...")`. Each one is an open task for a later PR:
+These are real upstream/Go differences that the parity tests document
+with `t.Skip("known discrepancy: ...")`. Each one is an open task for a
+later PR.
 
-- **bedjaccard does not pre-merge B before computing intersection/union**.
-  Upstream `bedtools jaccard` first merges overlapping records on both A and
-  B (its `n_intersections` is counted against the merged sides). bedjaccard
-  counts raw pairs and gets a slightly different intersection sum whenever B
-  has overlapping records. Affected: `jaccard.t02/t03/t05/t06/t10/t11`.
-- **bedmerge's `-s` does not implement upstream's `.` strand fan-out**.
-  Upstream's `merge -s` treats a `.` strand record as belonging to BOTH `+`
-  and `-` groups; bedmerge currently propagates the `.` strand through a
-  single-pass group. Affected: `merge.t15`.
+_(No known discrepancies remaining for bedtools after the column-ops +
+discrepancies wave. Remaining bedtools skips are all for unimplemented
+features — BAM/VCF/GFF input, `-split`, `-S <strand>` filter,
+`-delim`, large fixtures — not behaviour discrepancies.)_
 
 ### What is NOT validated (skipped features)
 
@@ -274,7 +295,8 @@ Byte-for-byte parity against
 | map.t08 | `-o antimode` (values2.bed) | pass | |
 | map.t09 | `-c 7 -o collapse` (values4.bed) | pass | BEDPlus column extraction. |
 | map.t10 | `-c 7 -o min` (signed values) | pass | Negative numbers handled. |
-| map.t11 | `-c 7 -o absmin` | skip | `absmin`/`absmax` not yet in shared `bedmerge.ApplyOp`. |
+| map.t11 | `-c 7 -o absmin` | pass | `absmin` now in shared `bedmerge.ApplyOp` (column-ops + discrepancies wave). |
+| map.t13 | `-c 7 -o absmax` | pass | `absmax` now in shared `bedmerge.ApplyOp` (column-ops + discrepancies wave). |
 | map.t14 | GFF input | skip | GFF input not supported (BED only). |
 
 ### bedshuffle parity

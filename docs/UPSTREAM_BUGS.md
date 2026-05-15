@@ -109,6 +109,27 @@ in upstream._
 PR #55 (bedtools parity) fixed 7 discrepancies in our Go code; see
 `tools/PARITY_VALIDATION.md` for the bedtools list.
 
+The column-ops + discrepancies wave (this PR) fixed the last two
+PR-#55-era bedtools discrepancies on our Go side:
+
+- **bedjaccard did not pre-merge A or B before computing
+  intersection / union.** Upstream `bedtools jaccard` sets
+  `setUseMergedIntervals(true)` on its context
+  (`reference_code/bedtools/src/utils/Contexts/ContextJaccard.cpp`),
+  which makes its FileRecordMergeMgr stream-merge both inputs before
+  the sweep. Our bedjaccard now wraps each input reader in a
+  `mergingReader` that does the same; the merge runs per-strand
+  under `-s`. Newly passing parity cases: `jaccard.t02 / t03 / t05 /
+  t06 / t10 / t11`.
+- **bedmerge's `-s` did not match upstream's per-strand merge.**
+  Upstream's `FileRecordMergeMgr`
+  (`reference_code/bedtools/src/utils/FileRecordTools/FileRecordMergeMgr.cpp`
+  lines 47-58 + 96-129) drops UNKNOWN-strand (`.` / empty) records
+  under `-s` and merges `+` / `-` independently. Our `mergeIntervals`
+  and `mergeWithColumnOps` now split into per-strand buckets under
+  `StrandSpec` (dropping `.` records) and re-combine the two streams
+  in `(chrom, start, end)` order. Newly passing: `merge.t15`.
+
 The samtools parity audit (PR #75) surfaced three bugs **in our Go
 port** (not upstream):
 
