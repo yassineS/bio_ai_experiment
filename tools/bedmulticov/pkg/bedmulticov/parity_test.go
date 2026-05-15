@@ -86,12 +86,115 @@ func TestParity_T10_MultiInput(t *testing.T) {
 	}
 }
 
-// Upstream multicov.t4..t9 all require BAM input (split alignment
-// semantics across `15M10N15M` cigars). BED-only port cannot model
-// `-split` properly without a BAM-block decoder; tracked below.
+// Parity.t1-BAM mirrors upstream multicov.t1 exactly: one BAM alignment
+// (`one_block.bam`) on chr1:1-30 ('-' strand, MAPQ 40, CIGAR 30M) should
+// overlap all four A intervals.
+func TestParity_T1_BAMInput(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t1.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t1 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
+}
+
+// Parity.t2-BAM mirrors upstream multicov.t2 (BAM + -s).
+func TestParity_T2_BAMInput_SameStrand(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t2.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{SameStrand: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t2 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
+}
+
+// Parity.t3-BAM mirrors upstream multicov.t3 (BAM + -S).
+func TestParity_T3_BAMInput_OppositeStrand(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t3.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "30M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{OppositeStrand: true}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t3 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
+}
+
+// Parity.t4-BAM mirrors upstream multicov.t4: a single `two_blocks` BAM
+// alignment (CIGAR `15M10N15M`, pos 1, '-' strand). Without `-split` the
+// alignment's full reference footprint [0,40) covers all four A intervals
+// — identical to t1.
+func TestParity_T4_BAMInput_TwoBlocks_NoSplit(t *testing.T) {
+	// Upstream's exp differs from t1's only in the input BAM; the expected
+	// output is byte-for-byte identical to t1.expected. We assert against
+	// t1.expected for clarity.
+	want := upstreamFixture(t, "multicov.t1.expected")
+	bam := makeBAM(t, []bamAln{{rname: "chr1", pos: 1, mapq: 40, cigar: "15M10N15M", flag: 16}})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "multicov.bed"),
+		[]Source{{Reader: bytes.NewReader(bam), Kind: SourceBAM}},
+		&got, Options{}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t4 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
+}
+
+// Upstream multicov.t5..t9 all require `-split` block-aware coverage on
+// BAM CIGARs (the alignment's `N` op splits one alignment into multiple
+// disjoint reference blocks). Not yet implemented.
 func TestParity_Skip_BAMSplitCases(t *testing.T) {
-	t.Skip("multicov.t4..t9 require indexed BAM input + -split; BAM " +
-		"support is not yet wired through bedmulticov (see README).")
+	t.Skip("multicov.t5..t9 require BAM `-split` block-aware coverage on " +
+		"CIGAR `N` ops; not yet implemented (see PARITY_ROADMAP.md#bedmulticov-bam).")
+}
+
+// Parity.t10-BAM mirrors upstream multicov.t10 exactly: two BAM inputs
+// with disjoint chr1 windows ([10,250) and [500,1030)) against the two A
+// intervals in test-multi.bed.
+func TestParity_T10_BAMInput_MultiFile(t *testing.T) {
+	want := upstreamFixture(t, "multicov.t10.expected")
+	// test-multi.bam: four 30M alignments at chr1 pos 10, 100, 120, 200.
+	// All overlap A.1 (chr1:0-250), none overlap A.2 (chr1:500-1000).
+	bam1 := makeBAM(t, []bamAln{
+		{rname: "chr1", pos: 10, mapq: 1, cigar: "30M", flag: 1},
+		{rname: "chr1", pos: 100, mapq: 1, cigar: "30M", flag: 1},
+		{rname: "chr1", pos: 120, mapq: 1, cigar: "30M", flag: 1},
+		{rname: "chr1", pos: 200, mapq: 1, cigar: "30M", flag: 1},
+	})
+	// test-multi.2.bam: four 30M alignments at chr1 pos 510, 520, 600, 1000.
+	// None overlap A.1, all overlap A.2.
+	bam2 := makeBAM(t, []bamAln{
+		{rname: "chr1", pos: 510, mapq: 1, cigar: "30M", flag: 1},
+		{rname: "chr1", pos: 520, mapq: 1, cigar: "30M", flag: 1},
+		{rname: "chr1", pos: 600, mapq: 1, cigar: "30M", flag: 1},
+		{rname: "chr1", pos: 1000, mapq: 1, cigar: "30M", flag: 1},
+	})
+	var got bytes.Buffer
+	if _, err := RunSources(openFixture(t, "test-multi.bed"),
+		[]Source{
+			{Reader: bytes.NewReader(bam1), Kind: SourceBAM},
+			{Reader: bytes.NewReader(bam2), Kind: SourceBAM},
+		},
+		&got, Options{}); err != nil {
+		t.Fatalf("RunSources: %v", err)
+	}
+	if !bytes.Equal(want, got.Bytes()) {
+		t.Fatalf("BAM-t10 mismatch:\n got:\n%s\nwant:\n%s", got.String(), string(want))
+	}
 }
 
 // Smoke check that the BAM-input rejection path returns an error

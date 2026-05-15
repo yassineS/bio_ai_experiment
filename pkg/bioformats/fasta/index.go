@@ -144,7 +144,28 @@ func (i *Index) Names() []string {
 // shelling out to samtools, and for users that haven't run faidx ahead of
 // time. For real-world genome files prefer the ahead-of-time `.fai` next to
 // the FASTA.
+//
+// Contig names are taken to be the first whitespace-delimited token after
+// '>' — the same convention samtools faidx uses. For `bedtools getfasta
+// -fullHeader` semantics (the whole header line, whitespace included),
+// use BuildIndexFullHeader instead.
 func BuildIndex(path string) (*Index, error) {
+	return buildIndex(path, false)
+}
+
+// BuildIndexFullHeader scans a plain (non-bgzipped) FASTA and indexes
+// contigs by the full header line (everything after '>' up to but not
+// including the terminating newline). It implements the `bedtools
+// getfasta -fullHeader` lookup mode: a BED row keyed by
+// `chr1 assembled by consortium X` resolves to the sequence whose header
+// is exactly `>chr1 assembled by consortium X`. Names emitted into the
+// .fai will contain spaces and are not interoperable with samtools faidx
+// — only use this when the caller is going to consume the index in-memory.
+func BuildIndexFullHeader(path string) (*Index, error) {
+	return buildIndex(path, true)
+}
+
+func buildIndex(path string, fullHeader bool) (*Index, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -182,11 +203,16 @@ func BuildIndex(path string) (*Index, error) {
 		if len(line) > 0 {
 			if line[0] == '>' {
 				flush()
-				// Parse the contig name (first whitespace-delimited token after '>').
+				// Parse the contig name: the first whitespace-delimited
+				// token after '>' for default-mode samtools/bedtools, or
+				// the full header line (excluding the trailing CR/LF) for
+				// -fullHeader mode.
 				name := string(line[1:])
 				name = strings.TrimRight(name, "\r\n")
-				if i := strings.IndexAny(name, " \t"); i >= 0 {
-					name = name[:i]
+				if !fullHeader {
+					if i := strings.IndexAny(name, " \t"); i >= 0 {
+						name = name[:i]
+					}
 				}
 				curName = name
 				curLength = 0
@@ -288,6 +314,28 @@ func OpenRandomAccess(path string) (*RandomAccess, error) {
 			f.Close()
 			return nil, err
 		}
+	}
+	return &RandomAccess{r: f, idx: idx, close: f.Close}, nil
+}
+
+// OpenRandomAccessFullHeader opens a FASTA in `-fullHeader` mode: contigs
+// are keyed by the full header line (whitespace included) instead of the
+// first-token name. The on-disk `.fai`, which is built by samtools faidx
+// and contains only the first-token names, is intentionally ignored —
+// we always rebuild from the FASTA header lines so the in-memory index
+// keys match the full header. Use this when implementing `bedtools
+// getfasta -fullHeader` (or any consumer that expects a BED row keyed by
+// a multi-word contig identifier to match the corresponding FASTA
+// sequence).
+func OpenRandomAccessFullHeader(path string) (*RandomAccess, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := BuildIndexFullHeader(path)
+	if err != nil {
+		f.Close()
+		return nil, err
 	}
 	return &RandomAccess{r: f, idx: idx, close: f.Close}, nil
 }

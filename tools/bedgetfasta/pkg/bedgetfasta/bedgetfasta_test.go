@@ -352,7 +352,7 @@ func TestRandomAccess_BuildOnMissingFai(t *testing.T) {
 	if _, err := os.Stat(path + ".fai"); err == nil {
 		t.Fatalf("unexpected pre-existing .fai")
 	}
-	ra, err := openFasta(path)
+	ra, err := openFasta(path, false)
 	if err != nil {
 		t.Fatalf("openFasta: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestRandomAccess_BuildOnMissingFai(t *testing.T) {
 func TestRandomAccess_RangeErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFasta(t, dir, "t", tFasta)
-	ra, err := openFasta(path)
+	ra, err := openFasta(path, false)
 	if err != nil {
 		t.Fatalf("openFasta: %v", err)
 	}

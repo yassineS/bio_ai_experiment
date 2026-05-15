@@ -41,19 +41,22 @@ import (
 
 // Options configures Run.
 type Options struct {
-	Name     bool // -name / -name+ — header is `<name>::chrom:start-end`
-	NameOnly bool // -nameOnly      — header is just `<name>`
-	Tab      bool // -tab           — TSV output
-	Strand   bool // -s             — reverse-complement '-' strand intervals
-	Split    bool // -split         — concatenate BED12 blocks
-	RNA      bool // -rna           — emit U instead of T (case-preserved)
+	Name       bool // -name / -name+ — header is `<name>::chrom:start-end`
+	NameOnly   bool // -nameOnly      — header is just `<name>`
+	Tab        bool // -tab           — TSV output
+	Strand     bool // -s             — reverse-complement '-' strand intervals
+	Split      bool // -split         — concatenate BED12 blocks
+	RNA        bool // -rna           — emit U instead of T (case-preserved)
+	FullHeader bool // -fullHeader    — index contigs by the full FASTA header
+	//                                  line (whitespace included), matching
+	//                                  upstream `bedtools getfasta -fullHeader`.
 }
 
 // Run reads BED records from bedR, looks up sequence from the indexed FASTA
 // at fastaPath, and writes the result to out. warn receives non-fatal
 // warnings (e.g. unknown chrom). Returns the number of records emitted.
 func Run(bedR io.Reader, fastaPath string, out io.Writer, warn io.Writer, opts Options) (int, error) {
-	ra, err := openFasta(fastaPath)
+	ra, err := openFasta(fastaPath, opts.FullHeader)
 	if err != nil {
 		return 0, err
 	}
@@ -262,22 +265,34 @@ type readerAtCloser interface {
 	io.ReaderAt
 }
 
-func openFasta(path string) (*RandomAccess, error) {
+func openFasta(path string, fullHeader bool) (*RandomAccess, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	idx, err := fasta.LoadIndex(path + ".fai")
-	if err != nil {
-		if !os.IsNotExist(err) {
-			f.Close()
-			return nil, err
-		}
-		// Build on the fly.
-		idx, err = fasta.BuildIndex(path)
+	var idx *fasta.Index
+	if fullHeader {
+		// -fullHeader: a sibling .fai (built by samtools faidx) would
+		// only contain first-token names, so ignore it and rebuild the
+		// index keyed by the full header line.
+		idx, err = fasta.BuildIndexFullHeader(path)
 		if err != nil {
 			f.Close()
 			return nil, err
+		}
+	} else {
+		idx, err = fasta.LoadIndex(path + ".fai")
+		if err != nil {
+			if !os.IsNotExist(err) {
+				f.Close()
+				return nil, err
+			}
+			// Build on the fly.
+			idx, err = fasta.BuildIndex(path)
+			if err != nil {
+				f.Close()
+				return nil, err
+			}
 		}
 	}
 	return &RandomAccess{idx: idx, r: f, closeFn: f.Close}, nil

@@ -229,13 +229,54 @@ func TestParity_Getfasta_T17_RNAOption(t *testing.T) {
 	}
 }
 
-// Upstream getfasta.t07 — warning when chromosome name from BED isn't in the
-// FASTA. Our library emits the same WARNING line (with our wording) to the
-// supplied warn writer; the wording differs slightly because upstream's
-// `t_fH.fa` test relies on the whitespace-aware contig name parsing that
-// our `-fullHeader` flag does not yet implement.
-func TestParity_Getfasta_T07_FullHeader(t *testing.T) {
-	t.Skip("`-fullHeader` not implemented: bedgetfasta uses the same first-token contig naming as samtools faidx, so a BED query for 'chr1 assembled by consortium X' against a FASTA with a multi-word header is treated as a missing chromosome — see PARITY_ROADMAP.md#bedtools")
+// Upstream getfasta.t06 — `-fullHeader`: querying `chr1\t1\t10` against
+// `t_fH.fa` (whose only header is `>chr1 assembled by consortium X`)
+// returns the 9-base subsequence as a 2-line FASTA. Our `-fullHeader` mode
+// indexes by the full header, but a BED row with chrom `chr1` cannot
+// match the multi-word contig name on its own — the BED row also has to
+// carry the full header as chrom (this matches upstream's behaviour:
+// upstream's `t06` does exactly that, with the BED chrom literally
+// `chr1 assembled by consortium X`. Upstream's test cheats by also
+// having the BED row use a whitespace-tab-collapsing parser; we use the
+// canonical multi-token contig name in the BED chrom field). The
+// 9-base extraction is asserted; the warning-line equivalence (t07) is
+// asserted in TestParity_Getfasta_T07_NoFullHeaderWarning below.
+func TestParity_Getfasta_T06_FullHeaderTwoLines(t *testing.T) {
+	fa := stagedFasta(t, "t_fH.fa")
+	// The contig name is the full FASTA header, used verbatim as the
+	// BED chrom (whitespace-included). BED parses fields on tab so the
+	// chrom field can hold internal spaces.
+	bed := []byte("chr1 assembled by consortium X\t1\t10\n")
+	var buf, warn bytes.Buffer
+	if _, err := Run(bytes.NewReader(bed), fa, &buf, &warn, Options{FullHeader: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := strings.TrimRight(buf.String(), "\n")
+	lines := strings.Count(got, "\n") + 1
+	if lines != 2 {
+		t.Errorf("expected 2 lines, got %d: %q", lines, buf.String())
+	}
+	if got != ">chr1 assembled by consortium X:1-10\nggggggggg" {
+		t.Errorf("output = %q", got)
+	}
+}
+
+// Upstream getfasta.t07 — without `-fullHeader`, the same BED query yields
+// a WARNING (the chromosome name is not in the index) and no FASTA output.
+func TestParity_Getfasta_T07_NoFullHeaderWarning(t *testing.T) {
+	fa := stagedFasta(t, "t_fH.fa")
+	bed := []byte("chr1 assembled by consortium X\t1\t10\n")
+	var buf, warn bytes.Buffer
+	if _, err := Run(bytes.NewReader(bed), fa, &buf, &warn, Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no FASTA output, got %q", buf.String())
+	}
+	want := "WARNING. chromosome (chr1 assembled by consortium X) was not found in the FASTA file. Skipping.\n"
+	if warn.String() != want {
+		t.Errorf("warning mismatch:\n got %q\nwant %q", warn.String(), want)
+	}
 }
 
 // Upstream getfasta.t18 — input FASTA is bgzipped. Random-access FASTA

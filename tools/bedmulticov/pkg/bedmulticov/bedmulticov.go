@@ -4,10 +4,11 @@
 // original A columns followed by N integer columns — one per input file —
 // holding the overlap count.
 //
-// Upstream supports BED *and* indexed BAM inputs. This port currently
-// covers BED inputs only; the CLI surfaces a clear error if a `.bam` path
-// is supplied. See tools/bedmulticov/README.md for the `t.Skip` rationale
-// on the BAM cases from `reference_code/bedtools/test/multicov`.
+// Upstream supports BED *and* indexed BAM inputs. This port now supports
+// both. BAM inputs are decoded via pkg/bioformats/sam.NewBAMReader and the
+// MAPQ filter (`-q`) and per-position depth cap (`-D`) are honoured. CRAM
+// remains deferred (we don't have a CRAM reader yet — see
+// docs/CRAM_DESIGN.md); the CLI surfaces a clear error in that case.
 //
 // Internally each input file is loaded into a per-chromosome interval
 // tree (`pkg/bioformats/bed.IntervalTree`), and the A file is streamed
@@ -25,6 +26,7 @@ import (
 	"strings"
 
 	bedpkg "github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
 )
 
 // Options configures Run.
@@ -44,13 +46,54 @@ type Options struct {
 	// OppositeStrand mirrors `-S`: only count B records on the opposite
 	// strand from A.
 	OppositeStrand bool
+	// MinMAPQ mirrors `-q`: BAM alignments with MAPQ below this threshold
+	// are skipped during indexing. Ignored for BED inputs.
+	MinMAPQ int
+	// MaxDepth mirrors `-D`: cap the reported count per A interval per BAM
+	// input at this many overlapping alignments. 0 disables the cap; the
+	// default in upstream (and in the CLI wrapper) is 64000. Ignored for
+	// BED inputs.
+	MaxDepth int
 }
 
-// Run reads A from aR and the N B files from bRs in order, indexes each B
-// into per-chromosome interval trees, then streams A and emits one row per
-// A record with one count column appended per B file. Returns the number
-// of A records processed.
+// SourceKind tags an input as BED or BAM (CRAM is rejected at the CLI layer).
+type SourceKind int
+
+const (
+	// SourceBED is a plain BED file (any number of columns ≥3).
+	SourceBED SourceKind = iota
+	// SourceBAM is a BGZF-wrapped BAM file (decoded via
+	// pkg/bioformats/sam.NewBAMReader). Each primary alignment contributes
+	// one interval over [Pos-1, Pos-1+ReferenceLength()) on its reference.
+	SourceBAM
+)
+
+// Source pairs an io.Reader with its file-format tag so a single Run call
+// can mix BED and BAM inputs. The order of Sources in a slice determines
+// the order of count columns in the output.
+type Source struct {
+	Reader io.Reader
+	Kind   SourceKind
+}
+
+// Run is the BED-only convenience entry point: every reader in bRs is
+// treated as a BED file. Use RunSources to mix BAM inputs in.
 func Run(aR io.Reader, bRs []io.Reader, out io.Writer, opts Options) (int, error) {
+	srcs := make([]Source, len(bRs))
+	for i, br := range bRs {
+		srcs[i] = Source{Reader: br, Kind: SourceBED}
+	}
+	return RunSources(aR, srcs, out, opts)
+}
+
+// RunSources reads A from aR and the N B inputs from srcs in order. Each
+// input is indexed per chromosome (BED records are read with the bed
+// package; BAM records are decoded with pkg/bioformats/sam and -q MAPQ
+// filtered up front). RunSources then streams A and emits one row per A
+// record with one count column appended per source. -D, if set, caps the
+// reported per-A count per BAM input. Returns the number of A records
+// processed.
+func RunSources(aR io.Reader, srcs []Source, out io.Writer, opts Options) (int, error) {
 	if opts.SameStrand && opts.OppositeStrand {
 		return 0, fmt.Errorf("cannot combine -s and -S")
 	}
@@ -63,19 +106,38 @@ func Run(aR io.Reader, bRs []io.Reader, out io.Writer, opts Options) (int, error
 	if opts.Reciprocal && opts.FractionA <= 0 {
 		return 0, fmt.Errorf("-r requires -f to be specified")
 	}
+	if opts.MinMAPQ < 0 || opts.MinMAPQ > 255 {
+		return 0, fmt.Errorf("-q must be in [0,255], got %d", opts.MinMAPQ)
+	}
+	if opts.MaxDepth < 0 {
+		return 0, fmt.Errorf("-D must be ≥0, got %d", opts.MaxDepth)
+	}
 	// Reciprocal: apply FractionA threshold to B as well.
 	effFracB := opts.FractionB
 	if opts.Reciprocal && effFracB < opts.FractionA {
 		effFracB = opts.FractionA
 	}
 
-	trees := make([]map[string]*bedpkg.IntervalTree, len(bRs))
-	for i, br := range bRs {
-		t, err := indexB(br)
-		if err != nil {
-			return 0, fmt.Errorf("file %d: %w", i+1, err)
+	trees := make([]map[string]*bedpkg.IntervalTree, len(srcs))
+	kinds := make([]SourceKind, len(srcs))
+	for i, s := range srcs {
+		switch s.Kind {
+		case SourceBED:
+			t, err := indexBED(s.Reader)
+			if err != nil {
+				return 0, fmt.Errorf("file %d (BED): %w", i+1, err)
+			}
+			trees[i] = t
+		case SourceBAM:
+			t, err := indexBAM(s.Reader, opts.MinMAPQ)
+			if err != nil {
+				return 0, fmt.Errorf("file %d (BAM): %w", i+1, err)
+			}
+			trees[i] = t
+		default:
+			return 0, fmt.Errorf("file %d: unknown source kind %d", i+1, s.Kind)
 		}
-		trees[i] = t
+		kinds[i] = s.Kind
 	}
 
 	bw := bufio.NewWriter(out)
@@ -101,12 +163,16 @@ func Run(aR io.Reader, bRs []io.Reader, out io.Writer, opts Options) (int, error
 		if err != nil {
 			return count, fmt.Errorf("line %d: %w", lineNo, err)
 		}
-		// Emit A's original columns verbatim, then one count per B file.
+		// Emit A's original columns verbatim, then one count per source.
 		if _, err := bw.WriteString(strings.Join(fields, "\t")); err != nil {
 			return count, err
 		}
-		for _, t := range trees {
+		for i, t := range trees {
 			n := countOverlaps(rec, t[rec.Chrom], opts, effFracB)
+			// MaxDepth caps the reported count for BAM inputs.
+			if kinds[i] == SourceBAM && opts.MaxDepth > 0 && n > opts.MaxDepth {
+				n = opts.MaxDepth
+			}
 			if _, err := fmt.Fprintf(bw, "\t%d", n); err != nil {
 				return count, err
 			}
@@ -219,8 +285,8 @@ func parseRecord(fields []string) (*bedpkg.Record, error) {
 	return r, nil
 }
 
-// indexB reads a B file fully into memory and returns a per-chrom tree.
-func indexB(r io.Reader) (map[string]*bedpkg.IntervalTree, error) {
+// indexBED reads a B file fully into memory and returns a per-chrom tree.
+func indexBED(r io.Reader) (map[string]*bedpkg.IntervalTree, error) {
 	rd := bedpkg.NewReader(r)
 	all, err := rd.ReadAll()
 	if err != nil {
@@ -230,6 +296,69 @@ func indexB(r io.Reader) (map[string]*bedpkg.IntervalTree, error) {
 	for _, x := range all {
 		byChrom[x.Chrom] = append(byChrom[x.Chrom], x)
 	}
+	return buildTrees(byChrom), nil
+}
+
+// indexBAM decodes every primary alignment from a BGZF-wrapped BAM stream,
+// drops unmapped / secondary / supplementary / duplicate / QC-fail records
+// (matching `bedtools multicov`'s default record filter), enforces the
+// caller-supplied MAPQ floor, and returns a per-reference interval tree
+// over the alignments' reference spans. The recorded interval is
+// [Pos-1, Pos-1+ReferenceLength()) and the BAM strand is the FLAG-derived
+// `-` / `+` so `-s` / `-S` keep working on BAM inputs.
+//
+// `-split` (per-block CIGAR coverage) is not yet implemented; the recorded
+// interval is the full reference footprint of each alignment, which is
+// what upstream emits without `-split`.
+func indexBAM(r io.Reader, minMAPQ int) (map[string]*bedpkg.IntervalTree, error) {
+	br, err := sam.NewBAMReader(r)
+	if err != nil {
+		return nil, err
+	}
+	byChrom := map[string][]*bedpkg.Record{}
+	for {
+		rec, err := br.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if rec.IsUnmapped() || rec.IsSecondary() || rec.IsSupplementary() ||
+			rec.IsDuplicate() || rec.IsQCFail() {
+			continue
+		}
+		if int(rec.MapQ) < minMAPQ {
+			continue
+		}
+		refLen := rec.Cigar.ReferenceLength()
+		if refLen <= 0 {
+			continue
+		}
+		// BAM stores POS as 1-based; convert to 0-based half-open BED-style.
+		start := int(rec.Pos) - 1
+		if start < 0 {
+			continue
+		}
+		end := start + refLen
+		strand := "+"
+		if rec.Flag&sam.FlagReverse != 0 {
+			strand = "-"
+		}
+		b := &bedpkg.Record{
+			Chrom:      rec.RName,
+			ChromStart: start,
+			ChromEnd:   end,
+			Strand:     strand,
+		}
+		byChrom[b.Chrom] = append(byChrom[b.Chrom], b)
+	}
+	return buildTrees(byChrom), nil
+}
+
+// buildTrees turns a per-chrom record map into per-chrom interval trees,
+// sorted by (start,end) so the tree is balanced.
+func buildTrees(byChrom map[string][]*bedpkg.Record) map[string]*bedpkg.IntervalTree {
 	out := make(map[string]*bedpkg.IntervalTree, len(byChrom))
 	for chrom, recs := range byChrom {
 		sort.SliceStable(recs, func(i, j int) bool {
@@ -240,5 +369,5 @@ func indexB(r io.Reader) (map[string]*bedpkg.IntervalTree, error) {
 		})
 		out[chrom] = bedpkg.NewIntervalTree(recs)
 	}
-	return out, nil
+	return out
 }
