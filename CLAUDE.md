@@ -40,6 +40,26 @@ the single root module. There are also no third-party dependencies (no `go.sum`)
 — prefer the standard library and the shared `pkg/` libraries; avoid adding
 external dependencies without a strong reason.
 
+#### Documented exception: CRAM (when we get there)
+
+CRAM uses several custom compression codecs (rANS 4x8, rANS 4x16) that have
+no Go-stdlib equivalent and would otherwise require ~1,500 lines of careful
+bit-twiddling to port from htslib's C. The owner has explicitly OK'd
+**accepting third-party dependencies for the CRAM codec layer when we
+implement it** rather than forcing a from-scratch rANS port. The
+preference order remains:
+
+1. Standard library.
+2. In-tree implementation (the bgzip / tabix / sam / bcf packages all
+   went this route).
+3. Third-party dep (currently allowed only for CRAM codec primitives;
+   any other use needs its own conversation).
+
+When the CRAM port lands, the dep should be confined to a single
+sub-package under `pkg/bioformats/cram/codec/` so the rest of the repo
+can still claim "stdlib only" for non-CRAM workflows. See the
+forthcoming `docs/CRAM_DESIGN.md`.
+
 ## Common commands (run from repo root)
 
 ```bash
