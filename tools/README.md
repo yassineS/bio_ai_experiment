@@ -51,7 +51,7 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |
-| [`samtools`](samtools/) | htslib `samtools` | SAM/BAM tools: `view`/`sort`/`index`/`depth`/`fastq`/`flagstat`/`merge`/`coverage`/`idxstats`/`cat`/`reheader`/`addreplacerg`/`fixmate`/`dict`/`split`/`quickcheck`/`mpileup` (16 subcommands) | 87% |
+| [`samtools`](samtools/) | htslib `samtools` | SAM/BAM tools: `view`/`sort`/`index`/`depth`/`fastq`/`flagstat`/`merge`/`coverage`/`idxstats`/`cat`/`reheader`/`addreplacerg`/`fixmate`/`dict`/`split`/`quickcheck`/`mpileup`/`markdup`/`stats` (19 subcommands) | 86% |
 | [`bcftools`](bcftools/) | htslib `bcftools` | VCF/BCF tools: `view`/`index`/`stats`/`query`/`concat`/`norm`/`call`/`annotate`/`head`/`isec`/`merge`/`reheader`/`sort` (13 subcommands) | 85% |
 
 For up-to-date per-tool feature lists and migration notes, see each tool's

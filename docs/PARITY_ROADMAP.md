@@ -24,13 +24,39 @@ A tool is **1:1** when:
 2. Every documented flag/option is recognised (either implemented or
    gracefully rejected with a clear error pointing at this roadmap).
 3. For every input shape upstream accepts, our port produces the same
-   bytes, modulo:
+   **logical result**, modulo:
    - documented intentional deviations (recorded in the tool's README +
      this roadmap),
-   - upstream bugs we chose to fix (recorded in [`UPSTREAM_BUGS.md`](UPSTREAM_BUGS.md)).
+   - upstream bugs we chose to fix (recorded in [`UPSTREAM_BUGS.md`](UPSTREAM_BUGS.md)),
+   - **RNG / stochastic divergence** — see the policy below.
 4. The validated-parity test suite (runs the upstream test corpus through
    our port) passes for every supported case, with explicit `t.Skip()` for
    each documented exception.
+
+### RNG / stochastic-output policy (2026-05-15)
+
+For subcommands that use randomness (`bedshuffle`, `bedsample`, `seqtk sample`,
+`seqtk randbase`, `samtools view -s subsample`, etc.) the parity bar is:
+
+- **Reproducibility within our tool**: same seed + same input → same output
+  byte-for-byte, every time, across Go versions and platforms.
+- **Logical equivalence with upstream**: our output must satisfy the same
+  invariants upstream's output does (correct sampling fraction, no
+  duplicates without replacement, strand filters honoured, etc.).
+- **NOT** byte-identical with upstream's output. Upstream uses its own
+  C/C++ RNG (typically a Mersenne Twister from libstdc++); Go uses
+  `math/rand`. Porting upstream's RNG would be ~200 lines of
+  bit-twiddling per tool with no functional benefit — the user
+  explicitly opted out of that work in favour of focusing on real
+  feature parity.
+
+The parity-test infrastructure handles this by either:
+
+- structural-invariant assertions (e.g. "every shuffled interval has the
+  same length as the input; every shuffled interval is on a chrom in the
+  genome"), or
+- a documented `t.Skip("RNG byte-parity, see PARITY_ROADMAP.md#rng-policy")`
+  with a pointer to this section.
 
 We're not there yet for any tool. The bedtools subset (PR #55) is the
 closest — 127 parity tests, 85 passing, 42 documented `t.Skip` — and even
@@ -338,15 +364,14 @@ Missing:
 
 ### `samtools`
 
-**Status:** 16 of ~25 subcommands (~64%). `view`, `sort`, `index`, `depth`,
-`fastq`, `flagstat`, **`mpileup`** (wave-1 + tail wiring), and PR #88's
-wave-1 tail: `merge`, `coverage`, `idxstats`, `cat`, `reheader`,
-`addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`.
+**Status:** 19 of ~25 subcommands (~76%). `view`, `sort`, `index`, `depth`,
+`fastq`, `flagstat`, **`mpileup`** (wave-1 + tail wiring), PR #88's
+wave-1 tail (`merge`, `coverage`, `idxstats`, `cat`, `reheader`,
+`addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`), and the
+heavy-hitter pair from this PR: **`markdup`** + **`stats`**.
 
 Missing subcommands (in rough priority order):
 
-- **`markdup`** — mark/remove PCR duplicates.
-- **`stats`** — exhaustive per-file statistics (different from `flagstat`).
 - **`calmd`** — compute MD/NM tags.
 - **`consensus`** — base-level consensus.
 - **`import`** — convert FASTQ/SAM to BAM.
@@ -367,7 +392,39 @@ Plus:
 - **`.csi`** for samtools (BAI is fine for chromosomes ≤512Mb).
 - **Multi-threading** in `sort`, `index`, `view` (`-@`).
 
-**Validation:** no upstream-test-suite run yet.
+**`markdup` deferred features** (deliberately skipped in v1, all flag
+slots are accepted on the CLI for compat):
+
+- Optical-duplicate detection (`-d/--max-dist` + (x,y) parsing of Illumina
+  qnames). v1 marks PCR duplicates only; nonzero `-d` triggers a stderr
+  warning.
+- Per-read-group keying (upstream's `-S` flag). v1 folds all read groups
+  into a single namespace, so fixture
+  `reference_code/samtools/test/markdup/17_read_group.sam` is a
+  documented partial-parity skip.
+- Barcode regex / barcode-tag keying.
+- The `dt:Z:` "duplicate-type" aux tag (SQ / LB / OQ). The 0x400 flag
+  bit is set correctly; only the typed aux is missing.
+
+**`stats` deferred sections** (also documented in
+`PARITY_VALIDATION.md`):
+
+- COV/COV2 coverage histograms (require reference + BAI).
+- GCD/GCT/GCC/GCL GC distributions (require reference bases).
+- FFQ/LFQ per-cycle quality matrices and OXC oxidation-context counts.
+- `--target-regions BED` restriction.
+- The leading CHK checksum block (CRC32 reduction of read names /
+  sequences / qualities).
+
+v1 emits byte-faithful **SN** (Summary Numbers) and useful **RL / MAPQ /
+IS** rollups; the unsupported sections are quietly omitted (or, under
+`--sparse`, all histogram blocks are suppressed entirely).
+
+**Validation:** upstream fixtures from `reference_code/samtools/test/markdup/`
+and `.../test/stat/` are vendored under
+`tools/samtools/testdata/parity/{markdup,stat}/`. The byte-exact /
+flag-exact / SN-byte cases are exercised in
+`tools/samtools/pkg/samtools/markdup_test.go` and `stats_test.go`.
 
 ### `bcftools`
 

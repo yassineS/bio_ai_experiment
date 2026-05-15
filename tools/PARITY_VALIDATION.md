@@ -673,7 +673,9 @@ the upstream golden files are impractically large for unit-test scope.
 | fixmate    |           3 |      3 |       0 | All cases: paired records get correct RNEXT/PNEXT/TLEN, `-m` adds `ms` aux, `-c` adds `MC` aux. |
 | split      |           3 |      3 |       0 | All cases: per-RG output files, unidentified-RG capture, single-RG one-file output. |
 | mpileup-tail |         3 |      2 |       1 | Passing: `-d 1` (MaxDepth) caps depth, `-A` (CountOrphans) wired. Skip: `-aa` full-contig zero-fill (would blow up output). |
-| **TOTAL**  |      **76** | **64** | **12**  | |
+| markdup    |           4 |      4 |       0 | Byte-for-byte parity on 5_markdup and 6_remove_dups; flag+qname parity on 18_primary_duplicate_count (we don't emit `dt:Z:` tag); sequence-mode dup-count parity on a duplicate of fixture 5. See deferred-feature list below for the deliberate skips (optical-dup, per-RG keying). |
+| stats      |           6 |      6 |       0 | SN-section byte parity on fixtures 1, 2, 5, 7, 8, 10 from `reference_code/samtools/test/stat/` (all 8 SN-only cases we exercise pass byte-identical). Non-SN sections (RL/MAPQ/IS) are emitted but only smoke-tested; see deferred-section list below. |
+| **TOTAL**  |      **86** | **74** | **12**  | |
 
 ### samtools: discrepancies found in our port (fixed in this PR)
 
@@ -747,6 +749,15 @@ later PR (recorded against
 | fastq      | `-D TAG:file` value-list filter | PARITY_ROADMAP.md#samtools |
 | fastq      | `--no-sc`/`--sc-aux` soft-clip handling | PARITY_ROADMAP.md#samtools |
 | fastq      | Index extraction (`--index-format`) | PARITY_ROADMAP.md#samtools |
+| markdup    | Optical-dup detection (`-d/--max-dist`, Illumina (x,y) parsing) | PARITY_ROADMAP.md#samtools |
+| markdup    | Per-read-group keying (upstream `-S`) — fixture 17_read_group | PARITY_ROADMAP.md#samtools |
+| markdup    | Barcode regex / barcode-tag keying | PARITY_ROADMAP.md#samtools |
+| markdup    | `dt:Z:` "duplicate-type" aux tag (SQ/LB/OQ) — fixture 18 diffs only here | PARITY_ROADMAP.md#samtools |
+| stats      | CHK checksum header block (CRC32 of names/seqs/quals) | PARITY_ROADMAP.md#samtools |
+| stats      | COV/COV2 coverage histograms (need reference + BAI) | PARITY_ROADMAP.md#samtools |
+| stats      | GCD/GCT/GCC/GCL GC-content distributions (need reference) | PARITY_ROADMAP.md#samtools |
+| stats      | FFQ/LFQ per-cycle quality matrices, OXC oxidation context | PARITY_ROADMAP.md#samtools |
+| stats      | `--target-regions BED` restriction | PARITY_ROADMAP.md#samtools |
 
 ### samtools: bugs found in upstream
 
