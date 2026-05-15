@@ -1,0 +1,3 @@
+#1_usercol	2_usercol	3_usercol	4_usercol	5_usercol	6_usercol	7_pct_at	8_pct_gc	9_num_A	10_num_C	11_num_G	12_num_T	13_num_N	14_num_oth	15_seq_len	16_seq
+chr1	0	5	plus	0	+	0.600000	0.400000	2	1	1	1	0	0	5	ACGTA
+chr1	0	5	minus	0	-	0.600000	0.400000	1	1	1	2	0	0	5	TACGT
