@@ -290,6 +290,368 @@ func TestLoadReadGroupsFileMissing(t *testing.T) {
 	}
 }
 
+// tagSampleSAM exercises both -d / -D (tag-value) and -N (qname-list).
+// It has:
+//   - mixed RG values (rg1 / rg2) and NM:i: integer aux tags;
+//   - one record (read5) with no RG tag, to confirm missing-tag → drop;
+//   - one record (read6) with RG:Z:rg3 — a value that no `-d` exercise
+//     ever lists, so it lets us assert that unmatched values are dropped.
+const tagSampleSAM = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:1000
+@RG	ID:rg1	SM:s1
+@RG	ID:rg2	SM:s2
+@RG	ID:rg3	SM:s3
+read1	0	chr1	100	60	5M	*	0	0	ACGTA	IIIII	NM:i:0	RG:Z:rg1
+read2	0	chr1	200	60	5M	*	0	0	ACGTA	IIIII	NM:i:3	RG:Z:rg2
+read3	0	chr1	300	60	5M	*	0	0	ACGTA	IIIII	NM:i:0	RG:Z:rg1
+read4	0	chr1	400	60	5M	*	0	0	ACGTA	IIIII	NM:i:5	RG:Z:rg2
+read5	0	chr1	500	60	5M	*	0	0	ACGTA	IIIII
+read6	0	chr1	600	60	5M	*	0	0	ACGTA	IIIII	NM:i:0	RG:Z:rg3
+`
+
+func TestViewTagFilters(t *testing.T) {
+	tests := []struct {
+		name    string
+		filters []TagFilter
+		want    int
+	}{
+		{
+			name:    "tag-exists: RG present",
+			filters: []TagFilter{{Tag: "RG", ExistsOnly: true}},
+			want:    5, // read1..read4 + read6 (read5 has no RG)
+		},
+		{
+			name: "string tag value matches one RG",
+			filters: []TagFilter{{
+				Tag:    "RG",
+				Values: map[string]struct{}{"rg1": {}},
+			}},
+			want: 2, // read1 + read3
+		},
+		{
+			name: "string tag value matches union",
+			filters: []TagFilter{{
+				Tag:    "RG",
+				Values: map[string]struct{}{"rg1": {}, "rg2": {}},
+			}},
+			want: 4, // read1..read4 (read6 is rg3 not in set, read5 has no RG)
+		},
+		{
+			name: "integer tag stringified to decimal",
+			filters: []TagFilter{{
+				Tag:    "NM",
+				Values: map[string]struct{}{"0": {}},
+			}},
+			want: 3, // read1, read3, read6 all NM:i:0
+		},
+		{
+			name: "AND across distinct tag predicates is unsupported by upstream but our slice composes them",
+			filters: []TagFilter{
+				{Tag: "RG", Values: map[string]struct{}{"rg1": {}}},
+				{Tag: "NM", Values: map[string]struct{}{"0": {}}},
+			},
+			want: 2, // read1, read3
+		},
+		{
+			name:    "missing tag drops the record",
+			filters: []TagFilter{{Tag: "RG", Values: map[string]struct{}{"rg999": {}}}},
+			want:    0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			n, err := View(strings.NewReader(tagSampleSAM), &out, ViewOptions{
+				TagFilters: tc.filters,
+				Count:      true,
+			})
+			if err != nil {
+				t.Fatalf("View: %v", err)
+			}
+			if n != tc.want {
+				t.Errorf("got %d, want %d (output=%q)", n, tc.want, out.String())
+			}
+		})
+	}
+}
+
+func TestViewTagFiltersExactRecords(t *testing.T) {
+	// Confirm that the records *kept* by RG=rg1 are exactly read1 and read3
+	// (and not, e.g., read6 which has rg3).
+	var out bytes.Buffer
+	_, err := View(strings.NewReader(tagSampleSAM), &out, ViewOptions{
+		WithHeader: true,
+		TagFilters: []TagFilter{{
+			Tag:    "RG",
+			Values: map[string]struct{}{"rg1": {}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "read1\t") || !strings.Contains(got, "read3\t") {
+		t.Errorf("expected read1 and read3, got %q", got)
+	}
+	for _, bad := range []string{"read2\t", "read4\t", "read5\t", "read6\t"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("unexpected %s in filtered output: %q", strings.TrimSuffix(bad, "\t"), got)
+		}
+	}
+}
+
+func TestViewQNameFilter(t *testing.T) {
+	var out bytes.Buffer
+	n, err := View(strings.NewReader(tagSampleSAM), &out, ViewOptions{
+		QNameSet: map[string]struct{}{
+			"read1": {},
+			"read5": {},
+			"read6": {},
+		},
+		Count: true,
+	})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("qname filter count: got %d, want 3", n)
+	}
+}
+
+func TestViewQNameFilterExactRecords(t *testing.T) {
+	var out bytes.Buffer
+	_, err := View(strings.NewReader(tagSampleSAM), &out, ViewOptions{
+		QNameSet: map[string]struct{}{"read2": {}, "read5": {}},
+	})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "read2\t") || !strings.Contains(got, "read5\t") {
+		t.Errorf("expected read2 and read5, got %q", got)
+	}
+	for _, bad := range []string{"read1\t", "read3\t", "read4\t", "read6\t"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("unexpected %s in qname-filtered output: %q", strings.TrimSuffix(bad, "\t"), got)
+		}
+	}
+}
+
+// TestViewQNameInvert mirrors upstream samtools view's `-N ^FILE`
+// exclude-mode (sam_view.c:347-352 rnhash_discard=1): records whose
+// QNAME IS in the set are dropped.
+func TestViewQNameInvert(t *testing.T) {
+	var out bytes.Buffer
+	_, err := View(strings.NewReader(tagSampleSAM), &out, ViewOptions{
+		QNameSet:    map[string]struct{}{"read2": {}, "read5": {}},
+		QNameInvert: true,
+	})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	got := out.String()
+	// read2 and read5 must be dropped; the other four kept.
+	for _, bad := range []string{"read2\t", "read5\t"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("invert: unexpected %s present", strings.TrimSuffix(bad, "\t"))
+		}
+	}
+	for _, want := range []string{"read1\t", "read3\t", "read4\t", "read6\t"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("invert: expected %s present", strings.TrimSuffix(want, "\t"))
+		}
+	}
+}
+
+func TestViewQNameAndTagFilterAND(t *testing.T) {
+	// QNameSet AND TagFilter must intersect.
+	var out bytes.Buffer
+	n, err := View(strings.NewReader(tagSampleSAM), &out, ViewOptions{
+		QNameSet: map[string]struct{}{"read1": {}, "read2": {}, "read3": {}, "read4": {}},
+		TagFilters: []TagFilter{{
+			Tag:    "NM",
+			Values: map[string]struct{}{"3": {}, "5": {}},
+		}},
+		Count: true,
+	})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("qname ∩ tag count: got %d, want 2", n)
+	}
+}
+
+func TestParseTagFilterSpec(t *testing.T) {
+	tests := []struct {
+		in     string
+		bad    bool
+		tag    string
+		exists bool
+		vals   []string
+	}{
+		{in: "RG", tag: "RG", exists: true},
+		{in: "RG:rg1", tag: "RG", vals: []string{"rg1"}},
+		{in: "NM:42", tag: "NM", vals: []string{"42"}},
+		{in: "R", bad: true},   // 1-char tag
+		{in: "RG-", bad: true}, // bad separator
+		{in: "RG:", bad: true}, // empty value after ':'
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			f, err := ParseTagFilterSpec(tc.in)
+			if tc.bad {
+				if err == nil {
+					t.Errorf("expected error for %q", tc.in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseTagFilterSpec(%q): %v", tc.in, err)
+			}
+			if f.Tag != tc.tag {
+				t.Errorf("tag: got %q, want %q", f.Tag, tc.tag)
+			}
+			if f.ExistsOnly != tc.exists {
+				t.Errorf("exists: got %v, want %v", f.ExistsOnly, tc.exists)
+			}
+			for _, v := range tc.vals {
+				if _, ok := f.Values[v]; !ok {
+					t.Errorf("value %q missing", v)
+				}
+			}
+		})
+	}
+}
+
+func TestParseTagFileSpec(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vals.txt")
+	if err := os.WriteFile(path, []byte("rg1\nrg2\n\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	t.Run("colon-separated", func(t *testing.T) {
+		f, err := ParseTagFileSpec("RG:" + path)
+		if err != nil {
+			t.Fatalf("ParseTagFileSpec: %v", err)
+		}
+		if f.Tag != "RG" || len(f.Values) != 2 {
+			t.Errorf("got tag=%q values=%v", f.Tag, f.Values)
+		}
+	})
+	t.Run("semicolon-separator-MinGW", func(t *testing.T) {
+		f, err := ParseTagFileSpec("RG;" + path)
+		if err != nil {
+			t.Fatalf("ParseTagFileSpec ';': %v", err)
+		}
+		if f.Tag != "RG" || len(f.Values) != 2 {
+			t.Errorf("got tag=%q values=%v", f.Tag, f.Values)
+		}
+	})
+	t.Run("malformed", func(t *testing.T) {
+		if _, err := ParseTagFileSpec("X"); err == nil {
+			t.Error("expected error on too-short spec")
+		}
+		if _, err := ParseTagFileSpec("RG-foo"); err == nil {
+			t.Error("expected error on bad separator")
+		}
+	})
+	t.Run("missing-file", func(t *testing.T) {
+		if _, err := ParseTagFileSpec("RG:/nonexistent/path.txt"); err == nil {
+			t.Error("expected error on missing file")
+		}
+	})
+}
+
+func TestMergeTagFilter(t *testing.T) {
+	t.Run("different tags rejected", func(t *testing.T) {
+		dst := []TagFilter{{Tag: "RG", Values: map[string]struct{}{"a": {}}}}
+		_, err := MergeTagFilter(dst, TagFilter{Tag: "NM", Values: map[string]struct{}{"1": {}}})
+		if err == nil {
+			t.Error("expected error mixing RG and NM")
+		}
+	})
+	t.Run("same tag unions values", func(t *testing.T) {
+		dst := []TagFilter{{Tag: "RG", Values: map[string]struct{}{"a": {}}}}
+		out, err := MergeTagFilter(dst, TagFilter{Tag: "RG", Values: map[string]struct{}{"b": {}}})
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if len(out) != 1 || len(out[0].Values) != 2 {
+			t.Errorf("expected 1 filter with 2 values, got %+v", out)
+		}
+	})
+	t.Run("exists then value becomes value-bound", func(t *testing.T) {
+		dst := []TagFilter{{Tag: "RG", ExistsOnly: true}}
+		out, err := MergeTagFilter(dst, TagFilter{Tag: "RG", Values: map[string]struct{}{"x": {}}})
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if out[0].ExistsOnly {
+			t.Error("after adding a value, filter must not stay ExistsOnly")
+		}
+		if _, ok := out[0].Values["x"]; !ok {
+			t.Errorf("value x missing: %+v", out[0])
+		}
+	})
+	t.Run("empty dst appends", func(t *testing.T) {
+		out, err := MergeTagFilter(nil, TagFilter{Tag: "RG", ExistsOnly: true})
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if len(out) != 1 || !out[0].ExistsOnly {
+			t.Errorf("expected single ExistsOnly entry, got %+v", out)
+		}
+	})
+}
+
+func TestLoadLinesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "names.txt")
+	// Multiple tokens on one line plus blank lines plus duplicates.
+	// Upstream samtools' fscanf("%1023s") tokenises on whitespace with no
+	// comment handling, so a token literally starting with `#` is kept.
+	if err := os.WriteFile(path, []byte("read1 read2\nread3\nread1\n\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	set, err := LoadLinesFile(path)
+	if err != nil {
+		t.Fatalf("LoadLinesFile: %v", err)
+	}
+	if len(set) != 3 {
+		t.Errorf("got %d unique entries, want 3 (read1/read2/read3): %v", len(set), set)
+	}
+	if _, ok := set["read2"]; !ok {
+		t.Errorf("read2 missing (whitespace-tokenised line not handled?): %v", set)
+	}
+}
+
+// TestLoadLinesFileKeepsHashTokens pins the divergence from a previous
+// over-eager `#`-comment filter: upstream samtools accepts tokens that
+// start with `#` verbatim (sam_view.c:294 fscanf("%1023s") has no
+// comment handling).
+func TestLoadLinesFileKeepsHashTokens(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "names.txt")
+	if err := os.WriteFile(path, []byte("#literal\nread1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	set, err := LoadLinesFile(path)
+	if err != nil {
+		t.Fatalf("LoadLinesFile: %v", err)
+	}
+	if _, ok := set["#literal"]; !ok {
+		t.Errorf("#literal token dropped (upstream keeps it): %v", set)
+	}
+}
+
+func TestLoadLinesFileMissing(t *testing.T) {
+	if _, err := LoadLinesFile("/nonexistent/zzz.txt"); err == nil {
+		t.Error("expected error on missing file")
+	}
+}
+
 func TestViewBadInput(t *testing.T) {
 	// Force a parse failure in the header.
 	bad := "@SQ\tbadline-without-colon\n"
