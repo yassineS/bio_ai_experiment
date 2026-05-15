@@ -203,12 +203,16 @@ func TestTrimPolyWithQuality(t *testing.T) {
 			wantQual: "IIII",
 		},
 		{
+			// AATCG with -trim_tail_left 2: head is "AA" so anchor=A;
+			// next char is T which breaks extension (T is not A and not N),
+			// so we trim exactly 2 bases. Upstream prinseq treats A-tail
+			// and T-tail as separate poly runs — see PARITY_VALIDATION.
 			name:     "polyAT left with qual",
 			seq:      "AATCG",
 			qual:     "IIIII",
 			opts:     FilterOptions{TrimTailLeft: 2},
-			wantSeq:  "CG",
-			wantQual: "II",
+			wantSeq:  "TCG",
+			wantQual: "III",
 		},
 		{
 			name:     "polyAT right with qual",

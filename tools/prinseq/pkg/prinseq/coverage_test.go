@@ -193,16 +193,25 @@ func TestTrimSequenceDirect(t *testing.T) {
 			wantSeq: "ACGT",
 		},
 		{
+			// AATTGCGTCC with -trim_tail_left 2: head "AA" → anchor A;
+			// next char T breaks the A run (T is not A and not N), so we
+			// trim exactly 2 bases. Upstream prinseq treats A-tail and
+			// T-tail as separate poly runs — see PARITY_VALIDATION.
 			name:    "polyAT left",
-			seq:     "AATTGCGTCC", // leading A/T run = AATT (4) -> trim 4
+			seq:     "AATTGCGTCC",
 			opts:    FilterOptions{TrimTailLeft: 2},
-			wantSeq: "GCGTCC",
+			wantSeq: "TTGCGTCC",
 		},
 		{
-			name:    "polyAT right",
-			seq:     "GGCCCAATT", // trailing A/T run = AATT (4) -> trim 4
+			name: "polyAT right",
+			// trim_tail_right 2: tail is "TT" -> anchor = T, extend left
+			// only while we see T or N. The preceding char is 'A', which
+			// breaks extension, so we trim exactly 2 bases. Upstream
+			// prinseq matches a single poly-A or poly-T tail, not a
+			// mixed A/T run — see UPSTREAM_BUGS / PARITY_VALIDATION.
+			seq:     "GGCCCAATT",
 			opts:    FilterOptions{TrimTailRight: 2},
-			wantSeq: "GGCCC",
+			wantSeq: "GGCCCAA",
 		},
 		{
 			name:     "quality left",

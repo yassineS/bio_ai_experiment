@@ -761,9 +761,11 @@ func TestCutN_AllNs(t *testing.T) {
 }
 
 func TestCutN_NoCutsRecordUnchanged(t *testing.T) {
-	// No N-run, and no -g flag => emit unchanged with original header (no :start-end suffix).
+	// No N-run, no -g flag: still emit the record with the upstream
+	// "name:1-len" coordinate suffix so downstream parsers see a uniform
+	// header shape across cut and uncut records.
 	in := ">solo\nACGTACGT\n"
-	want := ">solo\nACGTACGT\n"
+	want := ">solo:1-8\nACGTACGT\n"
 
 	var buf bytes.Buffer
 	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
@@ -775,7 +777,7 @@ func TestCutN_NoCutsRecordUnchanged(t *testing.T) {
 
 	// Two short Ns (< 3) also count as "no qualifying run".
 	in2 := ">solo\nACGNNACGT\n"
-	want2 := ">solo\nACGNNACGT\n"
+	want2 := ">solo:1-9\nACGNNACGT\n"
 	buf.Reset()
 	if err := CutN(strings.NewReader(in2), &buf, CutNOptions{MinN: 3}); err != nil {
 		t.Fatalf("CutN failed: %v", err)

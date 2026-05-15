@@ -236,6 +236,13 @@ func Mutfa(in io.Reader, mutR io.Reader, w io.Writer) error {
 
 // iupacExpansions maps each IUPAC ambiguity code to the set of unambiguous
 // bases it represents. Keys are uppercase; case is handled at lookup time.
+//
+// Note that only the two-base codes (R/Y/S/W/K/M) are listed here on purpose:
+// upstream `seqtk randbase` only randomises positions whose IUPAC bit-count
+// is exactly 2, leaving the three-base codes (B/D/H/V) and the four-base
+// code (N) untouched. Randomising those would silently diverge from
+// upstream — see `int stk_randbase` in reference_code/seqtk/seqtk.c
+// (the `if (a == 2)` guard).
 var iupacExpansions = map[byte][]byte{
 	'R': {'A', 'G'},
 	'Y': {'C', 'T'},
@@ -243,11 +250,6 @@ var iupacExpansions = map[byte][]byte{
 	'W': {'A', 'T'},
 	'K': {'G', 'T'},
 	'M': {'A', 'C'},
-	'B': {'C', 'G', 'T'},
-	'D': {'A', 'G', 'T'},
-	'H': {'A', 'C', 'T'},
-	'V': {'A', 'C', 'G'},
-	'N': {'A', 'C', 'G', 'T'},
 }
 
 // pickIUPAC returns one of the bases that the given IUPAC code expands to,

@@ -309,42 +309,82 @@ func trimPolyNRight(seq, qual []byte, minLen int) ([]byte, []byte) {
 	return seq, qual
 }
 
+// trimPolyATLeft trims a poly-A or poly-T tail from the 5'-end of seq when
+// the run is at least minLen bases long. The logic mirrors upstream prinseq:
+// (1) match either `^A{minLen}` or `^T{minLen}`, picking whichever exists;
+// (2) extend the run with more of the SAME base or with Ns; (3) if the run
+// covers the entire read, trim everything (the caller will length-filter it
+// out separately, matching upstream's `good = 0` branch).
+//
+// Before this fix we treated A and T as interchangeable, so a run that
+// alternated A and T (or that started with A and continued with T) would
+// over-trim by one or more bases relative to upstream.
 func trimPolyATLeft(seq, qual []byte, minLen int) ([]byte, []byte) {
-	atCount := 0
-	for i := 0; i < len(seq); i++ {
-		if seq[i] == 'A' || seq[i] == 'a' || seq[i] == 'T' || seq[i] == 't' {
-			atCount++
-		} else {
-			break
-		}
+	if len(seq) < minLen {
+		return seq, qual
 	}
-
-	if atCount >= minLen {
-		seq = seq[atCount:]
-		if len(qual) > 0 {
-			qual = qual[atCount:]
-		}
+	// Detect a homogeneous A-run or T-run of length minLen at the head.
+	var anchor byte
+	switch {
+	case allEqualCase(seq[:minLen], 'A'):
+		anchor = 'A'
+	case allEqualCase(seq[:minLen], 'T'):
+		anchor = 'T'
+	default:
+		return seq, qual
+	}
+	// Extend with the same base or N.
+	end := minLen
+	for end < len(seq) && (matchesCase(seq[end], anchor) || seq[end] == 'N' || seq[end] == 'n') {
+		end++
+	}
+	seq = seq[end:]
+	if len(qual) > 0 {
+		qual = qual[end:]
 	}
 	return seq, qual
 }
 
+// trimPolyATRight is the 3'-end counterpart of trimPolyATLeft.
 func trimPolyATRight(seq, qual []byte, minLen int) ([]byte, []byte) {
-	atCount := 0
-	for i := len(seq) - 1; i >= 0; i-- {
-		if seq[i] == 'A' || seq[i] == 'a' || seq[i] == 'T' || seq[i] == 't' {
-			atCount++
-		} else {
-			break
-		}
+	if len(seq) < minLen {
+		return seq, qual
 	}
-
-	if atCount >= minLen {
-		seq = seq[:len(seq)-atCount]
-		if len(qual) > 0 {
-			qual = qual[:len(qual)-atCount]
-		}
+	tail := seq[len(seq)-minLen:]
+	var anchor byte
+	switch {
+	case allEqualCase(tail, 'A'):
+		anchor = 'A'
+	case allEqualCase(tail, 'T'):
+		anchor = 'T'
+	default:
+		return seq, qual
+	}
+	start := len(seq) - minLen
+	for start > 0 && (matchesCase(seq[start-1], anchor) || seq[start-1] == 'N' || seq[start-1] == 'n') {
+		start--
+	}
+	seq = seq[:start]
+	if len(qual) > 0 {
+		qual = qual[:start]
 	}
 	return seq, qual
+}
+
+// matchesCase reports whether b equals base or its lowercase form.
+func matchesCase(b, base byte) bool {
+	return b == base || b == (base|0x20)
+}
+
+// allEqualCase reports whether every byte in s equals base or its
+// lowercase form.
+func allEqualCase(s []byte, base byte) bool {
+	for _, b := range s {
+		if !matchesCase(b, base) {
+			return false
+		}
+	}
+	return true
 }
 
 // phredOffset returns the ASCII offset used to decode quality characters for
@@ -504,14 +544,39 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	return nil
 }
 
+// writePrinseqFastq writes one FASTQ record in the upstream PRINSEQ-lite
+// layout, which repeats the sequence header on the "+" separator line
+// (e.g. "+read1\n" rather than the bare "+\n" emitted by sickle / fastp).
+// Upstream switches to a bare "+" only when -no_qual_header is supplied.
+// Centralising the write here lets us swap encodings later without
+// touching the filter loop.
+func writePrinseqFastq(w *bufio.Writer, rec *fastq.Record) error {
+	if _, err := fmt.Fprintf(w, "@%s\n", rec.Description); err != nil {
+		return err
+	}
+	if _, err := w.Write(rec.Sequence); err != nil {
+		return err
+	}
+	if err := w.WriteByte('\n'); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "+%s\n", rec.Description); err != nil {
+		return err
+	}
+	if _, err := w.Write(rec.Quality); err != nil {
+		return err
+	}
+	return w.WriteByte('\n')
+}
+
 func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	encoding := getQualityEncoding(opts.QualType)
 	fastqReader := fastq.NewReader(reader, encoding)
-	fastqWriter := fastq.NewWriter(writer, encoding)
+	bw := bufio.NewWriter(writer)
 
-	var badWriter *fastq.Writer
+	var bbw *bufio.Writer
 	if opts.OutBad != nil {
-		badWriter = fastq.NewWriter(opts.OutBad, encoding)
+		bbw = bufio.NewWriter(opts.OutBad)
 	}
 
 	seenSeqs := make(map[string]int) // For duplicate tracking
@@ -534,10 +599,10 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
 			if shouldFilterDuplicate(seq, seenSeqs, opts) {
-				if badWriter != nil {
+				if bbw != nil {
 					record.Sequence = []byte(seq)
 					record.Quality = []byte(qual)
-					if err := badWriter.Write(record); err != nil {
+					if err := writePrinseqFastq(bbw, record); err != nil {
 						return err
 					}
 				}
@@ -548,10 +613,10 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		// Apply filters
 		if shouldFilterSequence(seq, qual, opts) {
 			// Write to bad output if enabled
-			if badWriter != nil {
+			if bbw != nil {
 				record.Sequence = []byte(seq)
 				record.Quality = []byte(qual)
-				if err := badWriter.Write(record); err != nil {
+				if err := writePrinseqFastq(bbw, record); err != nil {
 					return err
 				}
 			}
@@ -562,17 +627,17 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		record.Sequence = []byte(seq)
 		record.Quality = []byte(qual)
 
-		// Write filtered record
-		if err := fastqWriter.Write(record); err != nil {
+		// Write filtered record in upstream-compatible format.
+		if err := writePrinseqFastq(bw, record); err != nil {
 			return err
 		}
 	}
 
-	if err := fastqWriter.Flush(); err != nil {
+	if err := bw.Flush(); err != nil {
 		return err
 	}
-	if badWriter != nil {
-		return badWriter.Flush()
+	if bbw != nil {
+		return bbw.Flush()
 	}
 	return nil
 }
@@ -621,9 +686,13 @@ func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
 		}
 	}
 
-	// Quality filters (only for FASTQ)
+	// Quality filters (only for FASTQ). Honour the per-options Phred
+	// offset so that `-phred64` inputs are decoded against ASCII 64.
+	// Before this fix the mean was always computed under Phred+33,
+	// silently mis-classifying Phred+64 reads as much higher quality
+	// than they actually were.
 	if qual != "" {
-		avgQual := calculateAvgQualityScore(qual)
+		avgQual := calculateAvgQualityScoreWithOffset(qual, phredOffset(opts.QualType))
 		if opts.MinQualMean > 0 && avgQual < opts.MinQualMean {
 			return true
 		}
@@ -827,8 +896,8 @@ func filterPairedFastq(reader1, reader2 io.Reader, writer1, writer2 io.Writer, o
 	encoding := getQualityEncoding(opts.QualType)
 	fastqReader1 := fastq.NewReader(reader1, encoding)
 	fastqReader2 := fastq.NewReader(reader2, encoding)
-	fastqWriter1 := fastq.NewWriter(writer1, encoding)
-	fastqWriter2 := fastq.NewWriter(writer2, encoding)
+	bw1 := bufio.NewWriter(writer1)
+	bw2 := bufio.NewWriter(writer2)
 
 	seenSeqs := make(map[string]int)
 
@@ -877,19 +946,19 @@ func filterPairedFastq(reader1, reader2 io.Reader, writer1, writer2 io.Writer, o
 		record2.Sequence = []byte(seq2)
 		record2.Quality = []byte(qual2)
 
-		// Write both records
-		if err := fastqWriter1.Write(record1); err != nil {
+		// Write both records in upstream-compatible FASTQ format.
+		if err := writePrinseqFastq(bw1, record1); err != nil {
 			return err
 		}
-		if err := fastqWriter2.Write(record2); err != nil {
+		if err := writePrinseqFastq(bw2, record2); err != nil {
 			return err
 		}
 	}
 
-	if err := fastqWriter1.Flush(); err != nil {
+	if err := bw1.Flush(); err != nil {
 		return err
 	}
-	return fastqWriter2.Flush()
+	return bw2.Flush()
 }
 
 // CalculateEnhancedStats computes enhanced statistics including distributions and dinucleotides

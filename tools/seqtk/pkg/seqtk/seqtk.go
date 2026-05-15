@@ -788,13 +788,14 @@ func CutN(in io.Reader, w io.Writer, opts CutNOptions) error {
 			}
 		}
 		if len(runs) == 0 {
-			// No qualifying N-run: emit the record unchanged with its
-			// original header (no :start-end suffix). Skip empty
-			// sequences entirely.
+			// No qualifying N-run: still emit the record with the
+			// upstream "name:1-len" suffix so downstream tooling sees a
+			// uniform header layout. Skip empty sequences entirely.
 			if len(seq) == 0 {
 				return nil
 			}
-			return writeFastaRecord(bw, name, seq, 0)
+			header := fmt.Sprintf("%s:1-%d", name, len(seq))
+			return writeFastaRecord(bw, header, seq, 0)
 		}
 		// Build fragment intervals between runs and emit non-empty ones.
 		prev := 0

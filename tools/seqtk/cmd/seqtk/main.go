@@ -659,20 +659,27 @@ Examples:
 
 func compCommand() {
 	fs := flag.NewFlagSet("comp", flag.ExitOnError)
-	var phred64 bool
+	var phred64, summary bool
 
 	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding for FASTQ (default: Phred+33)")
+	cliflag.BoolVar(fs, &summary, "", "summary", false, "Emit summary statistics (legacy) instead of upstream per-record output")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk comp [options] <input>
 
-Get sequence composition statistics.
+Get per-record nucleotide composition (upstream "seqtk comp" output):
+one tab-separated row per input record with the columns:
+
+    name\tlen\t#A\t#C\t#G\t#T\t#2\t#3\t#4\t#CpG\t#tv\t#ts\t#CpG-ts
 
 Arguments:
   <input>    Input file (use '-' for stdin, supports .gz and .bz2)
 
 Options:
   -6, --phred64          Use Phred+64 quality encoding for FASTQ (default: Phred+33)
+      --summary          Emit summary statistics instead of upstream-format
+                         per-record rows (legacy behaviour from before the
+                         2026-05-14 parity audit).
 
 `)
 	}
@@ -707,6 +714,16 @@ Options:
 	}
 	defer input.Close()
 
+	if !summary {
+		// Upstream-compatible per-record output (the default).
+		if err := seqtk.Comp(input, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// --summary: legacy aggregate stats; still useful for quick eyeballing.
 	var stats *seqtk.Stats
 	if isFastq {
 		encoding := fastq.Phred33

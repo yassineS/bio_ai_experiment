@@ -301,9 +301,13 @@ func (r *Record) ReverseComplement() *Record {
 		revQual[len(r.Quality)-1-i] = r.Quality[i]
 	}
 
+	// Note: Description is preserved verbatim. We previously appended
+	// " (reverse complement)" here, but that diverged from upstream seqtk
+	// (which emits the original header unchanged) and broke downstream
+	// parsers that key on the FASTQ description field.
 	return &Record{
 		ID:          r.ID,
-		Description: r.Description + " (reverse complement)",
+		Description: r.Description,
 		Sequence:    revSeq,
 		Quality:     revQual,
 	}

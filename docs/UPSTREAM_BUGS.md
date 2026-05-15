@@ -298,3 +298,77 @@ but turned out to be documented features:
 No upstream bugs surfaced in the sickle audit. The behaviours that
 initially looked suspicious are documented in
 [the "Non-bugs we considered" section](#non-bugs-we-considered-closed).
+
+## seqtk
+
+The seqtk parity audit (PR for `prinseq-seqtk-parity-validation`)
+fixed four discrepancies on **our side** (not upstream); they are
+listed under
+[tools/PARITY_VALIDATION.md > seqtk parity validation](../tools/PARITY_VALIDATION.md).
+The audit also surfaced three behavioural divergences where byte
+parity is impractical without porting upstream-specific RNG / algorithm
+machinery; we track them here so the parity tests can point at a
+stable anchor.
+
+### seqtk-sample-rng <a id="seqtk-sample-rng"></a>
+
+- **Symptom.** Upstream `seqtk sample` uses a seeded reservoir
+  sampler (`drand48()`-based, default seed 11) and produces a
+  deterministic, fraction-correct subset for any input. Our Go port
+  implements a "deterministic every-Nth-record" sampler that does
+  not match upstream's selection regardless of seed.
+
+- **Root cause.** Upstream's algorithm is the streaming reservoir
+  pass over `n` records with `keep = (drand48() < frac)` per record
+  in one-pass mode, and a two-pass random subset in `-2` mode. Our
+  port short-circuits to `written/count < fraction` per record.
+
+- **Disposition.** Track-only — Go-port limitation, not an upstream
+  bug. The parity test for `sample` is split into a structural
+  invariants pass (`TestParity_Seqtk_Sample_StructuralInvariants`,
+  passing) and a byte-parity case
+  (`TestParity_Seqtk_Sample_UpstreamByteParity`, skipped).
+  Fixing this is straightforward (port `drand48` against the same
+  seed); deferred because no caller currently relies on the
+  byte-for-byte output.
+
+### seqtk-randbase-rng <a id="seqtk-randbase-rng"></a>
+
+- **Symptom.** Upstream `seqtk randbase` uses `drand48()` (with
+  implicit seed 0) and is therefore deterministic across runs but
+  not seed-controllable. Our Go port uses `math/rand` with a
+  caller-supplied seed.
+
+- **Root cause.** Different RNGs.
+
+- **Disposition.** Track-only — Go-port limitation, not an upstream
+  bug. The structural invariants
+  (`TestParity_Seqtk_Randbase_StructuralInvariants`) verify that
+  upstream's rules (only 2-base IUPAC codes are randomised; 3-base
+  and 4-base codes pass through; case is preserved) are honoured
+  on our side. Byte parity is skipped.
+
+### seqtk-trimfq-algorithm <a id="seqtk-trimfq-algorithm"></a>
+
+- **Symptom.** Upstream `seqtk trimfq` runs a modified Mott
+  algorithm with an error-rate threshold (default `-q 0.05`) and a
+  `-l 30` minimum-length floor. Our port's `TrimQuality` does a
+  simple Phred-quality threshold trim. The two algorithms produce
+  different cuts on every non-trivial input.
+
+- **Disposition.** Track-only — feature-gap on our side, not an
+  upstream bug. Tracked in `docs/PARITY_ROADMAP.md#seqtk` under the
+  `trimfq` option-tail gaps; will be closed once we re-implement
+  the Mott trim. The parity test
+  (`TestParity_Seqtk_Trimfq_UpstreamByteParity`) is skipped with a
+  pointer here.
+
+## prinseq
+
+The prinseq parity audit (PR for `prinseq-seqtk-parity-validation`)
+fixed three discrepancies on **our side** (not upstream); they are
+listed under
+[tools/PARITY_VALIDATION.md > prinseq parity validation](../tools/PARITY_VALIDATION.md).
+No upstream bugs surfaced — PRINSEQ-lite's documented behaviour
+agreed with the corpus we tested for every option we exercised
+(see the prinseq table for the 18 cases).
