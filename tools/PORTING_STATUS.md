@@ -3,7 +3,7 @@
 This document tracks the status of bioinformatics tools being ported from
 their original implementations to Go.
 
-**Last Updated**: 2026-05-14
+**Last Updated**: 2026-05-15
 
 > **Project goal: 1:1 feature parity** with the upstream tool for every port
 > in this repo. Past revisions of this file labelled tools "Complete" when
@@ -26,9 +26,11 @@ the way.
 
 ### Progress Summary
 
-- **Tools with a working subset**: 20 (8 original + 8 bedtools subcommands +
-  `bgzip` + `tabix` + `samtools` + `bcftools`, the htslib core landed May 2026)
-- **Tools tested**: 20 (package-level tests; `cmd/` entry points have no tests)
+- **Tools with a working subset**: 25 (8 original + 22 bedtools subcommands +
+  `bgzip` + `tabix` + `samtools` (16 subcommands) + `bcftools` (13 subcommands),
+  the htslib core landed May 2026 with three rounds of tail-cleanup in
+  PRs #86/#87/#88)
+- **Tools tested**: 25 (package-level tests; `cmd/` entry points have no tests)
 - **Test coverage (statements, `go test -cover`)** — main tools:
   vcftools ~68%, seqtk ~72%, fastp ~77%, sickle ~82%, **bcftools 85%**,
   **tabix 86%**, **samtools 87%**, **bgzip 90%**, prinseq 99.9%,
@@ -400,6 +402,23 @@ test suite** landed in PR #55 — 127 tests, 85 passing, 42 documented `t.Skip`
 for features outside our v1 scope, plus 7 real semantic-discrepancy bugs fixed
 inline. See [`PARITY_VALIDATION.md`](PARITY_VALIDATION.md).
 
+**Wave 3 tail** (PR #87, May 2026) adds 5 more `bedtools` subcommands as
+their own per-tool packages, bringing the bedtools port to **~22
+subcommands**:
+
+| Tool | Maps to | Highlights |
+|------|---------|------------|
+| `bedcluster` | `bedtools cluster` | Cluster overlapping intervals + cluster-ID tag column; `-d` distance, `-s` strand-specific |
+| `bedsplit` | `bedtools split` | Partition into N shards by `simple` (record-count) or `size` (cumulative-bp) algorithm |
+| `bedsummary` | `bedtools summary` | Per-chrom interval-length min/max/mean/median + trailing `all` aggregate |
+| `bedtag` | `bedtools tag` | Annotate A with comma-joined tags from overlapping B (multi-B with `-names` / `-labels`) |
+| `bedwindow` | `bedtools window` | A overlap B after expanding B by `-w` / `-l` / `-r`; supports `-c`/`-v`/`-wa`/`-wb` writers |
+
+Parity validation: **17 new** parity cases across the 5 wave-3 tools
+(spec-driven for `bedsummary`/`bedtag`/`bedwindow` since upstream's test
+corpus has no `summary`/`tag`/`window` subdirectory; upstream fixtures
+for `cluster`/`split`).
+
 ---
 
 ### 10. bgzip + tabix (htslib foundation, May 2026)
@@ -426,7 +445,8 @@ UCSC binning scheme), `bcftools` (`.vcf.gz`/`.bcf` random-access), and
 ### 11. samtools (May 2026, picks #3 of the 2026 ranking)
 
 Pure-Go port of htslib's `samtools`, built on top of `pkg/bioformats/sam`
-(SAM/BAM read+write, 87% cov). Landed in three slices:
+(SAM/BAM read+write, 87% cov). Now at **16 subcommands** across four
+slices:
 
 - **First slice** (PR #60): `samtools view` (flag/MAPQ/RG/subsample filtering,
   format conversion), `samtools flagstat` (16-line classic summary).
@@ -440,6 +460,26 @@ Pure-Go port of htslib's `samtools`, built on top of `pkg/bioformats/sam`
   `samtools fastq` + `bam2fq` alias (paired/singleton/orphan/interleaved
   output, reverse-strand reverse-complement, `/1`/`/2` suffix logic,
   `-T` aux-tag passthrough).
+- **Fourth slice** (PR #88, May 2026): tail wave 1 — 10 new subcommands
+  plus `mpileup` flag-tail wiring:
+  - `merge` (sorted-BAM merger with `-n/-N/-r/-c/-p`),
+  - `coverage` (per-ref tabular and `-H` no-header),
+  - `idxstats` (BAI-fast-path with linear-scan fallback when index missing),
+  - `cat` (header-merged concat preserving record order),
+  - `reheader` (text + `HeaderText`/`HeaderPath`/`Command` substitution;
+    @SQ-table size mismatch rejected),
+  - `addreplacerg` (`OrphanOnly` / `OverwriteAll` modes; rejects unknown RG id),
+  - `fixmate` (proper RNEXT/PNEXT/TLEN sync; `-m` mate-score, `-c` mate-CIGAR/MQ),
+  - `dict` (FASTA → @HD + @SQ with SN/LN/M5; `-a`/`-s`/`-u`/`-H`/`-A`),
+  - `split` (per-RG output files via `%!`/`%*`/`%.` patterns;
+    `--unidentified` capture),
+  - `quickcheck` (BGZF magic + EOF + BAM-header sanity).
+  - `mpileup` tail wiring: `-A` (CountOrphans), `-x` (IgnoreOverlaps),
+    `-d` (MaxDepth), `-aa` (AllPositionsAllChroms).
+
+Parity validation: 43 cases in the earlier slices + **31 new** parity
+cases for the wave-4 subcommands (10 subcommands × 3 cases + 1 mpileup
+tail case), 1 skip (mpileup `-aa` full-contig zero-fill).
 
 Coverage: `tools/samtools/pkg/samtools` 87% (target ≥85%). Deviations:
 single-threaded (`-@`/`--threads` accepted but no-op); no CRAM; no CSI;
@@ -451,7 +491,7 @@ back to interleaved with a stderr warning); `samtools view -L bed` deferred.
 Pure-Go port of htslib's `bcftools`, built on top of a new
 `pkg/bioformats/bcf` decoder for BCF v2.2 (82% cov: full typed encoding
 for int8/16/32, float, char, missing + end-of-vector sentinels;
-length-prefixed and inline-length variants).
+length-prefixed and inline-length variants). Now at **13 subcommands**.
 
 - **First slice** (PR #63): `bcftools view` — VCF or BCF in, VCF or VCF.gz
   out. Flags: `-O v/z/u/b`, `-o`, `-h/--header-only`, `-H/--no-header`,
@@ -463,6 +503,25 @@ length-prefixed and inline-length variants).
   `-t/-T` post-filter targets, `-s/-S` sample selection, `-l`
   (gzip level), `--threads`. Help is on `-?` / `--help` (upstream `-h`
   means "header-only"; documented in README).
+
+- **Tail wave 1** (PR #86, May 2026): 6 more subcommands:
+  - `annotate` — `-x` remove ID/INFO/FORMAT tags, `-a` annotation source
+    (tab table or VCF), `-c` column spec, `-h` extra-header lines, `--rename-chrs`.
+  - `head` — fast header emission (`-n N` slice, `--samples` sample-only).
+  - `isec` — N-way set ops on sorted VCF/BCF. `-n =N/+N/~bits`, `-c
+    none|snps|indels|both|all|some|id`, `-p` prefix mode (per-input
+    projection files), `-w` write-N to stdout.
+  - `merge` — combine VCFs from disjoint sample sets. `-m
+    none|snps|indels|both|all|id`, `-l/--file-list`, regions
+    post-filter.
+  - `reheader` — replace header lines, sample names (positional or
+    `OLD\tNEW`), or `##contig=` lines from a FAI.
+  - `sort` — re-order by (contig, POS, REF, ALT) using header contig
+    order; `-m/-T` accepted for CLI compat but v1 is in-memory.
+
+Parity validation: 57 cases in the first slice + **18 new** parity cases
+for the wave-1 tail subcommands (3 cases per subcommand, 1 skip for
+`annotate --set-id`).
 
 Coverage: `tools/bcftools/pkg/bcftools` 85% (target ≥85%); `pkg/bioformats/bcf`
 82% (target ≥80%). Scope deferred to follow-ups: BCF writer (`-O b/u`

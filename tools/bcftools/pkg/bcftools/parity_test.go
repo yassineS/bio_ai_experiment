@@ -718,3 +718,500 @@ func copyFile(src, dst string) error {
 var _ = stripVersionLines
 var _ = fmt.Sprintf
 var _ = strings.TrimSpace
+
+// =====================================================================
+// head: 3 cases (PR #86 wave-1 tail)
+//
+// Inputs reuse `basic.vcf` from this directory. `bcftools head`
+// emits the header (or a slice of it). Expected outputs are derived
+// inline from the shape of `basic.vcf`'s header rather than from a
+// captured upstream file because `bcftools head` was added in
+// htslib 1.16+ and its golden output is the literal file header
+// modulo the column-header line; the per-line content is identical.
+// =====================================================================
+
+// TestParityHead_Default emits every meta line plus the column-header
+// line from basic.vcf, matching `bcftools head basic.vcf`.
+func TestParityHead_Default(t *testing.T) {
+	in := bytes.NewReader(readParity(t, "basic.vcf"))
+	var out bytes.Buffer
+	if err := Head(in, &out, HeadOptions{}); err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	got := out.String()
+	// First and last header lines should be present, in order.
+	if !strings.HasPrefix(got, "##fileformat=VCFv4.2\n") {
+		t.Errorf("missing leading ##fileformat:\n%s", got[:80])
+	}
+	if !strings.Contains(got, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\n") {
+		t.Errorf("missing #CHROM column-header line:\n%s", got)
+	}
+	// No record body should leak into the output.
+	if strings.Contains(got, "rs1") {
+		t.Errorf("Head leaked record body: rs1 present in:\n%s", got)
+	}
+}
+
+// TestParityHead_NumLines mirrors `bcftools head -n 3 basic.vcf`:
+// only the first 3 meta lines are emitted, no #CHROM line.
+func TestParityHead_NumLines(t *testing.T) {
+	in := bytes.NewReader(readParity(t, "basic.vcf"))
+	var out bytes.Buffer
+	if err := Head(in, &out, HeadOptions{NumLines: 3}); err != nil {
+		t.Fatalf("Head -n 3: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 header lines, got %d:\n%s", len(lines), out.String())
+	}
+	if lines[0] != "##fileformat=VCFv4.2" {
+		t.Errorf("line 1 = %q, want fileformat", lines[0])
+	}
+	if lines[1] != "##contig=<ID=chr1,length=10000>" {
+		t.Errorf("line 2 = %q, want contig chr1", lines[1])
+	}
+}
+
+// TestParityHead_SamplesOnly mirrors `bcftools head --samples basic.vcf`:
+// one sample-name per line, no other meta lines.
+func TestParityHead_SamplesOnly(t *testing.T) {
+	in := bytes.NewReader(readParity(t, "basic.vcf"))
+	var out bytes.Buffer
+	if err := Head(in, &out, HeadOptions{SamplesOnly: true}); err != nil {
+		t.Fatalf("Head --samples: %v", err)
+	}
+	want := "S1\nS2\nS3\n"
+	if out.String() != want {
+		t.Errorf("samples-only mismatch.\ngot:%q\nwant:%q", out.String(), want)
+	}
+}
+
+// =====================================================================
+// sort: 3 cases (PR #86 wave-1 tail)
+// =====================================================================
+
+// TestParitySort_Basic confirms that out-of-order CHROM/POS records are
+// emitted in (header-contig-order, POS) order.
+func TestParitySort_Basic(t *testing.T) {
+	src := `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##contig=<ID=chr2,length=10000>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr2	500	.	A	T	.	.	.
+chr1	300	.	G	A	.	.	.
+chr1	100	.	C	T	.	.	.
+chr2	100	.	A	G	.	.	.
+`
+	var out bytes.Buffer
+	n, err := Sort(strings.NewReader(src), &out, SortOptions{})
+	if err != nil {
+		t.Fatalf("Sort: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("n = %d, want 4", n)
+	}
+	body := out.String()
+	// chr1:100 before chr1:300 before chr2:100 before chr2:500.
+	want := []string{"chr1\t100", "chr1\t300", "chr2\t100", "chr2\t500"}
+	last := -1
+	for _, w := range want {
+		idx := strings.Index(body, w)
+		if idx < 0 {
+			t.Fatalf("missing %q in sorted output:\n%s", w, body)
+		}
+		if idx <= last {
+			t.Errorf("%q at offset %d, expected after offset %d:\n%s", w, idx, last, body)
+		}
+		last = idx
+	}
+}
+
+// TestParitySort_AlreadySorted is the no-op case — output preserves
+// every input record, in the same order. Header line shape may differ
+// by one (the writer auto-injects a ##FILTER=PASS line if absent), so
+// we compare on record-line count not total-line count.
+func TestParitySort_AlreadySorted(t *testing.T) {
+	in := readParity(t, "basic.vcf")
+	var out bytes.Buffer
+	n, err := Sort(bytes.NewReader(in), &out, SortOptions{})
+	if err != nil {
+		t.Fatalf("Sort: %v", err)
+	}
+	// basic.vcf has 6 records.
+	if n != 6 {
+		t.Errorf("Sort returned n = %d, want 6", n)
+	}
+	body := out.String()
+	// Records should appear in (chr1, chr2) order at increasing positions.
+	wantOrder := []string{"chr1\t100", "chr1\t200", "chr1\t300", "chr1\t400", "chr2\t50", "chr2\t150"}
+	last := -1
+	for _, w := range wantOrder {
+		idx := strings.Index(body, w)
+		if idx < 0 {
+			t.Fatalf("missing record %q in:\n%s", w, body)
+		}
+		if idx <= last {
+			t.Errorf("record %q at offset %d, expected after offset %d", w, idx, last)
+		}
+		last = idx
+	}
+}
+
+// TestParitySort_Empty handles the no-records edge case (header-only).
+func TestParitySort_Empty(t *testing.T) {
+	src := `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+`
+	var out bytes.Buffer
+	n, err := Sort(strings.NewReader(src), &out, SortOptions{})
+	if err != nil {
+		t.Fatalf("Sort empty: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("n = %d, want 0", n)
+	}
+	if !strings.Contains(out.String(), "#CHROM") {
+		t.Errorf("Sort dropped header on empty input:\n%s", out.String())
+	}
+}
+
+// =====================================================================
+// isec: 3 cases (PR #86 wave-1 tail)
+// =====================================================================
+
+// TestParityIsec_Intersection — `bcftools isec -n=2 -w 1` returns the
+// records of input 1 that also appear in input 2.
+func TestParityIsec_Intersection(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.vcf")
+	b := filepath.Join(dir, "b.vcf")
+	hdr := "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	if err := os.WriteFile(a, []byte(hdr+
+		"chr1\t100\t.\tA\tT\t.\t.\t.\n"+
+		"chr1\t200\t.\tC\tG\t.\t.\t.\n"+
+		"chr1\t300\t.\tA\tT\t.\t.\t.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte(hdr+
+		"chr1\t100\t.\tA\tT\t.\t.\t.\n"+
+		"chr1\t300\t.\tA\tT\t.\t.\t.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	n, err := IsecFiles([]string{a, b}, &out, IsecOptions{
+		Nfiles: NfilesSpec{Mode: '=', N: 2},
+		Write:  []int{1},
+	})
+	if err != nil {
+		t.Fatalf("IsecFiles: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("n = %d, want 2 (records present in both)", n)
+	}
+	body := out.String()
+	if !strings.Contains(body, "chr1\t100") || !strings.Contains(body, "chr1\t300") {
+		t.Errorf("expected both shared records, got:\n%s", body)
+	}
+	if strings.Contains(body, "chr1\t200") {
+		t.Errorf("should not contain a-only record at chr1:200:\n%s", body)
+	}
+}
+
+// TestParityIsec_Bitmask exercises the `-n ~10` (input 1 only) case.
+func TestParityIsec_Bitmask(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.vcf")
+	b := filepath.Join(dir, "b.vcf")
+	hdr := "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	if err := os.WriteFile(a, []byte(hdr+
+		"chr1\t100\t.\tA\tT\t.\t.\t.\n"+
+		"chr1\t200\t.\tC\tG\t.\t.\t.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte(hdr+
+		"chr1\t100\t.\tA\tT\t.\t.\t.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	n, err := IsecFiles([]string{a, b}, &out, IsecOptions{
+		Nfiles: NfilesSpec{Mode: '~', Bits: []bool{true, false}},
+		Write:  []int{1},
+	})
+	if err != nil {
+		t.Fatalf("IsecFiles: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1 (a-only)", n)
+	}
+	if !strings.Contains(out.String(), "chr1\t200") {
+		t.Errorf("expected chr1:200 (a-only), got:\n%s", out.String())
+	}
+}
+
+// TestParityIsec_PrefixMode writes per-input projections to <prefix>/000<i>.vcf.
+func TestParityIsec_PrefixMode(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.vcf")
+	b := filepath.Join(dir, "b.vcf")
+	hdr := "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	if err := os.WriteFile(a, []byte(hdr+"chr1\t100\t.\tA\tT\t.\t.\t.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte(hdr+"chr1\t100\t.\tA\tT\t.\t.\t.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prefix := filepath.Join(dir, "out")
+	var stdout bytes.Buffer
+	if _, err := IsecFiles([]string{a, b}, &stdout, IsecOptions{
+		Nfiles: NfilesSpec{Mode: '=', N: 2},
+		Prefix: prefix,
+	}); err != nil {
+		t.Fatalf("IsecFiles prefix: %v", err)
+	}
+	for _, name := range []string{"0000.vcf", "0001.vcf"} {
+		p := filepath.Join(prefix, name)
+		st, err := os.Stat(p)
+		if err != nil || st.Size() == 0 {
+			t.Errorf("expected non-empty %s, got %v / %v", p, st, err)
+		}
+	}
+}
+
+// =====================================================================
+// merge: 3 cases (PR #86 wave-1 tail)
+// =====================================================================
+
+// TestParityMerge_TwoSamples merges two single-sample VCFs into a
+// two-sample VCF; the merged record at chr1:100 should have GT for
+// both samples.
+func TestParityMerge_TwoSamples(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.vcf")
+	b := filepath.Join(dir, "b.vcf")
+	hdr1 := "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n##FORMAT=<ID=GT,Number=1,Type=String,Description=\"GT\">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\nchr1\t100\t.\tA\tT\t.\t.\t.\tGT\t0/1\n"
+	hdr2 := "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n##FORMAT=<ID=GT,Number=1,Type=String,Description=\"GT\">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS2\nchr1\t100\t.\tA\tT\t.\t.\t.\tGT\t1/1\n"
+	if err := os.WriteFile(a, []byte(hdr1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte(hdr2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	n, err := MergeFiles([]string{a, b}, &out, MergeOptions{})
+	if err != nil {
+		t.Fatalf("MergeFiles: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1", n)
+	}
+	body := out.String()
+	if !strings.Contains(body, "S1\tS2") {
+		t.Errorf("merged header missing S1+S2 columns:\n%s", body)
+	}
+	if !strings.Contains(body, "chr1\t100") {
+		t.Errorf("merged record at chr1:100 missing:\n%s", body)
+	}
+}
+
+// TestParityMerge_DisjointPositions — records at distinct positions
+// should both appear in the merged output, sorted by POS.
+func TestParityMerge_DisjointPositions(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.vcf")
+	b := filepath.Join(dir, "b.vcf")
+	if err := os.WriteFile(a, []byte("##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n##FORMAT=<ID=GT,Number=1,Type=String,Description=\"GT\">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\nchr1\t100\t.\tA\tT\t.\t.\t.\tGT\t0/1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte("##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n##FORMAT=<ID=GT,Number=1,Type=String,Description=\"GT\">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS2\nchr1\t200\t.\tC\tG\t.\t.\t.\tGT\t1/1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	n, err := MergeFiles([]string{a, b}, &out, MergeOptions{})
+	if err != nil {
+		t.Fatalf("MergeFiles: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("n = %d, want 2", n)
+	}
+	body := out.String()
+	// Position 100 should appear before 200.
+	i100 := strings.Index(body, "chr1\t100")
+	i200 := strings.Index(body, "chr1\t200")
+	if i100 < 0 || i200 < 0 || i100 > i200 {
+		t.Errorf("expected chr1:100 before chr1:200 in:\n%s", body)
+	}
+}
+
+// TestParityMerge_SingleInputRejected — merge requires >= 2 inputs.
+func TestParityMerge_SingleInputRejected(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.vcf")
+	if err := os.WriteFile(a, []byte("##fileformat=VCFv4.2\n##contig=<ID=chr1,length=10000>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := MergeFiles([]string{a}, &out, MergeOptions{}); err == nil {
+		t.Errorf("expected error on single-input merge, got nil")
+	}
+}
+
+// =====================================================================
+// reheader: 3 cases (PR #86 wave-1 tail)
+// =====================================================================
+
+// TestParityReheader_RenameSamplesPositional renames samples by index
+// using a positional sample-list (one name per line, in the same order
+// as the input columns).
+func TestParityReheader_RenameSamplesPositional(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.vcf")
+	if err := copyFile(parityPath(t, "basic.vcf"), in); err != nil {
+		t.Fatal(err)
+	}
+	samples := filepath.Join(dir, "samples.txt")
+	// Positional rename: first column → A, second → B, third → C.
+	if err := os.WriteFile(samples, []byte("A\nB\nC\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := ReheaderFile(in, &out, ReheaderOptions{SamplesFile: samples}); err != nil {
+		t.Fatalf("ReheaderFile: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, "\tA\tB\tC\n") {
+		t.Errorf("expected #CHROM line to end ...\\tA\\tB\\tC, got:\n%s", body)
+	}
+	if strings.Contains(body, "\tS1\t") || strings.Contains(body, "\tS2\t") || strings.Contains(body, "\tS3\n") {
+		t.Errorf("original sample names should be replaced:\n%s", body)
+	}
+}
+
+// TestParityReheader_MapSamples uses an "OLD\tNEW" two-column file to
+// rename selected samples in place.
+func TestParityReheader_MapSamples(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.vcf")
+	if err := copyFile(parityPath(t, "basic.vcf"), in); err != nil {
+		t.Fatal(err)
+	}
+	samples := filepath.Join(dir, "samples.tsv")
+	if err := os.WriteFile(samples, []byte("S1\tNEW1\nS3\tNEW3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := ReheaderFile(in, &out, ReheaderOptions{SamplesFile: samples}); err != nil {
+		t.Fatalf("ReheaderFile: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, "NEW1") || !strings.Contains(body, "NEW3") {
+		t.Errorf("expected NEW1 and NEW3 in:\n%s", body)
+	}
+	if !strings.Contains(body, "\tS2\t") && !strings.Contains(body, "\tS2\n") {
+		t.Errorf("S2 should be unchanged in:\n%s", body)
+	}
+}
+
+// TestParityReheader_HeaderFile substitutes the entire header from
+// a separate file; the body records should be unchanged.
+func TestParityReheader_HeaderFile(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.vcf")
+	if err := copyFile(parityPath(t, "basic.vcf"), in); err != nil {
+		t.Fatal(err)
+	}
+	hdr := filepath.Join(dir, "hdr.vcf")
+	newHdr := `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##contig=<ID=chr2,length=10000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##INFO=<ID=AF,Number=A,Type=Float,Description="AF">
+##INFO=<ID=AC,Number=A,Type=Integer,Description="AC">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="AN">
+##INFO=<ID=INDEL,Number=0,Type=Flag,Description="Indel">
+##FILTER=<ID=q10,Description="Quality below 10">
+##FILTER=<ID=lowDP,Description="Depth below threshold">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="DP">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="GQ">
+##custom_meta=injected_via_reheader
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3
+`
+	if err := os.WriteFile(hdr, []byte(newHdr), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := ReheaderFile(in, &out, ReheaderOptions{HeaderFile: hdr}); err != nil {
+		t.Fatalf("ReheaderFile: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, "##custom_meta=injected_via_reheader") {
+		t.Errorf("expected injected meta line in output:\n%s", body)
+	}
+	// Every record from basic.vcf should still be present.
+	for _, want := range []string{"rs1", "rs3", "rs4", "rs5"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing record %q in output:\n%s", want, body)
+		}
+	}
+}
+
+// =====================================================================
+// annotate: 3 cases (PR #86 wave-1 tail)
+// =====================================================================
+
+// TestParityAnnotate_RemoveID — `bcftools annotate -x ID` strips the ID
+// column on every record.
+func TestParityAnnotate_RemoveID(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.vcf")
+	if err := copyFile(parityPath(t, "basic.vcf"), in); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	n, err := AnnotateFile(in, &out, AnnotateOptions{Remove: "ID"})
+	if err != nil {
+		t.Fatalf("AnnotateFile -x ID: %v", err)
+	}
+	if n != 6 {
+		t.Errorf("n = %d, want 6", n)
+	}
+	body := out.String()
+	for _, id := range []string{"rs1", "rs3", "rs4", "rs5"} {
+		if strings.Contains(body, "\t"+id+"\t") {
+			t.Errorf("ID %q should be stripped after -x ID:\n%s", id, body)
+		}
+	}
+}
+
+// TestParityAnnotate_RemoveInfoTag — `-x INFO/DP` drops the DP key from
+// the INFO field of every record.
+func TestParityAnnotate_RemoveInfoTag(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.vcf")
+	if err := copyFile(parityPath(t, "basic.vcf"), in); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := AnnotateFile(in, &out, AnnotateOptions{Remove: "INFO/DP"}); err != nil {
+		t.Fatalf("AnnotateFile -x INFO/DP: %v", err)
+	}
+	body := out.String()
+	// Records still mention DP in headers and possibly in FORMAT; the
+	// INFO field should NOT contain `DP=` after the removal.
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 8 && strings.Contains(fields[7], "DP=") {
+			t.Errorf("INFO field still contains DP after -x INFO/DP: %q", line)
+		}
+	}
+}
+
+// TestParityAnnotate_SetID — `-I '+%CHROM_%POS'` populates ID columns
+// that are currently '.' (only when not already set).
+func TestParityAnnotate_SetID(t *testing.T) {
+	t.Skip("annotate -I/--set-id not yet implemented (see docs/PARITY_ROADMAP.md bcftools annotate)")
+}

@@ -33,11 +33,16 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedcoverage`](bedcoverage/) | bedtools coverage | Per-A coverage (count / bp / fraction / histogram / per-base) | 92% |
 | [`bedmap`](bedmap/) | bedtools map | Apply column ops to A using B's values | 92% |
 | [`bedshuffle`](bedshuffle/) | bedtools shuffle | Randomly relocate intervals across a genome | 92% |
+| [`bedcluster`](bedcluster/) | bedtools cluster | Cluster overlapping intervals + tag cluster ID | ~90% |
+| [`bedsplit`](bedsplit/) | bedtools split | Split a BED into N approximately equal shards | ~90% |
+| [`bedsummary`](bedsummary/) | bedtools summary | Per-chromosome interval-length summary stats | ~90% |
+| [`bedtag`](bedtag/) | bedtools tag | Annotate A records with tags from overlapping B | ~90% |
+| [`bedwindow`](bedwindow/) | bedtools window | Overlap A with an expanded window around B | ~90% |
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |
-| [`samtools`](samtools/) | htslib `samtools` | SAM/BAM `view`/`sort`/`index`/`depth`/`fastq`/`flagstat` | 87% |
-| [`bcftools`](bcftools/) | htslib `bcftools` | VCF/BCF `view` (filtering, conversion, expression evaluator) | 85% |
+| [`samtools`](samtools/) | htslib `samtools` | SAM/BAM tools: `view`/`sort`/`index`/`depth`/`fastq`/`flagstat`/`merge`/`coverage`/`idxstats`/`cat`/`reheader`/`addreplacerg`/`fixmate`/`dict`/`split`/`quickcheck`/`mpileup` (16 subcommands) | 87% |
+| [`bcftools`](bcftools/) | htslib `bcftools` | VCF/BCF tools: `view`/`index`/`stats`/`query`/`concat`/`norm`/`call`/`annotate`/`head`/`isec`/`merge`/`reheader`/`sort` (13 subcommands) | 85% |
 
 For up-to-date per-tool feature lists and migration notes, see each tool's
 own `README.md`, [`PORTING_STATUS.md`](PORTING_STATUS.md), and the

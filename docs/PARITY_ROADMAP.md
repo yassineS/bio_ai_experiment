@@ -175,14 +175,15 @@ parity cases pointing back here):
 **Validation:** **16-case parity test suite, 12 passing, 4
 documented `t.Skip`** (post this PR).
 
-### bedtools (20 subcommands ported)
+### bedtools (25 subcommands ported)
 
-**Status:** 20 of ~40 subcommands (~50%). 135 passing parity tests against
+**Status:** 25 of ~40 subcommands (~63%). 135 passing parity tests against
 upstream test suite (across PR #55 + Phase-3 wave 1 + wave 2 simple + wave 2
-algo), 53 documented `t.Skip`, 2 known discrepancies. Phase-3 wave 1
+algo) + **17 new** cases from wave 3 (PR #87). Phase-3 wave 1
 (PR #78) added `bedgroupby`/`bed12tobed6`/`bedmakewindows`; wave 2 simple
 (PR #80) added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`; wave 2
-algo (this PR) adds `bedcoverage`/`bedmap`/`bedshuffle`.
+algo added `bedcoverage`/`bedmap`/`bedshuffle`; **wave 3 tail (PR #87)
+added `bedcluster`/`bedsplit`/`bedsummary`/`bedtag`/`bedwindow`**.
 
 Missing subcommands:
 
@@ -191,15 +192,12 @@ Missing subcommands:
 - `reldist` — relative distance distribution.
 - `fisher` — Fisher's exact for overlap.
 - `nuc` — nucleotide content per interval.
-- `window` — overlap A with a window around B.
-- `split` — split into approximately equal-sized files.
-- `summary` — per-chrom summary.
-- `tag` — annotate A with B's name.
 - `igv` — generate IGV launch URLs.
 - `links` — generate UCSC links.
-- `cluster` — cluster overlapping intervals.
 - `pairtopair`, `pairtobed` — paired BEDPE operations.
-- `annotate` — annotate one BED with multiple BEDs.
+- `annotate` — annotate one BED with multiple BEDs (note: `bedtag` and
+  the future `bedannotate` cover overlapping use-cases; explicit
+  `annotate` port deferred).
 
 Skipped parity cases from PR #55 to revisit:
 
@@ -282,26 +280,16 @@ Missing:
 
 ### `samtools`
 
-**Status:** 6 of ~25 subcommands (~25%). `view`, `sort`, `index`, `depth`,
-`fastq`, `flagstat`.
+**Status:** 16 of ~25 subcommands (~64%). `view`, `sort`, `index`, `depth`,
+`fastq`, `flagstat`, **`mpileup`** (wave-1 + tail wiring), and PR #88's
+wave-1 tail: `merge`, `coverage`, `idxstats`, `cat`, `reheader`,
+`addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`.
 
-Missing subcommands (in rough priority order for variant-calling
-workflows):
+Missing subcommands (in rough priority order):
 
-- **`mpileup`** — base-level pileup; required for any caller. Large port.
 - **`markdup`** — mark/remove PCR duplicates.
-- **`idxstats`** — per-reference read counts.
 - **`stats`** — exhaustive per-file statistics (different from `flagstat`).
-- **`merge`** — combine sorted BAMs.
-- **`coverage`** — region-level coverage summary (different from `depth`).
-- **`addreplacerg`** — add/replace read group.
-- **`fixmate`** — fill in mate-read coordinates.
 - **`calmd`** — compute MD/NM tags.
-- **`reheader`** — replace header in place.
-- **`cat`** — concatenate sorted BAMs without re-sorting.
-- **`quickcheck`** — fast format sanity check.
-- **`dict`** — emit a sequence dictionary.
-- **`split`** — split by read group.
 - **`consensus`** — base-level consensus.
 - **`import`** — convert FASTQ/SAM to BAM.
 - **`phase`** — phase reads with their mates.
@@ -309,6 +297,8 @@ workflows):
 - **`tview`** — terminal viewer (likely a deliberate skip; ~no-one uses it).
 - **`view` flag-tail**: `-L bed`, `-M` (read-id list), `-d/-D` (tag-value
   filter), `-N` (qname file), `-X` (custom-index input).
+- **`mpileup` tail** beyond PR #88 wiring: `-aa` zero-fill of empty
+  contigs, BCF output, `-g/-u` genotype-likelihood mode.
 
 Plus:
 
@@ -323,22 +313,17 @@ Plus:
 
 ### `bcftools`
 
-**Status:** 7 of ~30 subcommands (~23%). `view`, `index`, `stats`, `query`,
-`concat`, `norm`, `call` (consensus + biallelic multi-allelic).
+**Status:** 13 of ~30 subcommands (~43%). `view`, `index`, `stats`, `query`,
+`concat`, `norm`, `call` (consensus + biallelic multi-allelic), and PR #86
+wave-1 tail: `annotate`, `head`, `isec`, `merge`, `reheader`, `sort`.
 
 Missing subcommands (priority order):
 
 - **`mpileup`** — base-level pileup; required upstream input to
   `bcftools call`. Large port.
-- **`annotate`** — annotate records from a tab-indexed table.
 - **`csq`** — predict variant consequences against a GFF.
-- **`isec`** — set operations on VCF/BCF files.
-- **`merge`** — combine VCFs from different samples.
 - **`filter`** — soft-filter records (different from view's hard-filter).
-- **`sort`** — sort VCF/BCF.
-- **`reheader`** — replace header.
 - **`consensus`** — apply variants to a FASTA.
-- **`head`** — emit just the header (different from view's `-h`).
 - **`convert`** — between formats (GVCF / TSV / hapmap / PLINK).
 - **`mendelian`** / **`mendelian2`** — Mendelian-inheritance checks.
 - **`roh`** — runs of homozygosity.
@@ -346,6 +331,18 @@ Missing subcommands (priority order):
 - **`cnv`** — CNV calling.
 - **`gtcheck`** — genotype concordance.
 - **`+plugins`** — full plugin system (substantial).
+
+Option-tail gaps on the wave-1 additions (PR #86):
+
+- `annotate --set-id '+%CHROM_%POS'` macro expansion is not implemented;
+  `-x ID` / `-x INFO/TAG` / `-x FORMAT/TAG` removal works.
+- `isec`: `--collapse some` (REF match + any-ALT-in-common) is approximated
+  via strict tuple match; deeper semantics deferred.
+- `merge`: pre-sort assumption is enforced; no automatic CHROM/POS sort.
+- `reheader`: in-place rewrite (`-i`) currently emits to stdout — caller
+  is responsible for the swap.
+- `sort`: `-m/--max-mem` and `-T/--tmpdir` are accepted but always
+  in-memory.
 
 Plus:
 
