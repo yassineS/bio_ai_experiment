@@ -46,7 +46,9 @@ features land.
 | bedsummary    |           4 |      4 |       0 | Spec-driven (upstream has no `summary/` test subdir): 2-chrom basic, `--no-header`, `--skip-all`, odd-count median. |
 | bedtag        |           4 |      4 |       0 | Spec-driven (upstream has no `tag/` test subdir): default name-column join, `-labels` source prefix, `-names` per-source override, `-s` strand filter. |
 | bedwindow     |           6 |      6 |       0 | Spec-driven (upstream has no `window/` test subdir): default A<TAB>B writer, symmetric `-w` expansion, `-c` count-only, `-v` invert, asymmetric `-l 0 -r N`, low-clipping at 0. |
-| **TOTAL**     |     **208** |**155** | **53**  | |
+| bedreldist    |           5 |      2 |       3 | Skips t01..t03 (require large `refseq.chr1.exons.bed.gz` / `aluY.chr1.bed.gz` / `gerp.chr1.bed.gz` fixtures we do not vendor); passes the shipped `issue_711` corner case byte-for-byte plus a small self-intersect mirror of t01. |
+| bedfisher     |           6 |      5 |       1 | All five small upstream cases (`fisher.t1`..`t4`, `t6`) pass byte-for-byte; skip t5 (long $TMPDIR path is a CLI/filesystem concern, not algorithmic parity). |
+| **TOTAL**     |     **219** |**162** | **57**  | |
 
 (The discrepancy between this table and `go test`'s 87 passed / 42 skipped is
 two helper / sanity sub-tests in `bedsort` and `bedintersect` that are not

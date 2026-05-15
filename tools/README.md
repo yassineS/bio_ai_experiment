@@ -38,6 +38,8 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedsummary`](bedsummary/) | bedtools summary | Per-chromosome interval-length summary stats | ~90% |
 | [`bedtag`](bedtag/) | bedtools tag | Annotate A records with tags from overlapping B | ~90% |
 | [`bedwindow`](bedwindow/) | bedtools window | Overlap A with an expanded window around B | ~90% |
+| [`bedreldist`](bedreldist/) | bedtools reldist | Relative-distance distribution between two BED files | ~91% |
+| [`bedfisher`](bedfisher/) | bedtools fisher | Fisher's exact test of overlap enrichment | ~89% |
 | [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
 | [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
 | [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |

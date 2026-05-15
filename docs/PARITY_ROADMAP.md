@@ -175,22 +175,23 @@ parity cases pointing back here):
 **Validation:** **16-case parity test suite, 12 passing, 4
 documented `t.Skip`** (post this PR).
 
-### bedtools (25 subcommands ported)
+### bedtools (27 subcommands ported)
 
-**Status:** 25 of ~40 subcommands (~63%). 135 passing parity tests against
+**Status:** 27 of ~40 subcommands (~68%). 135 passing parity tests against
 upstream test suite (across PR #55 + Phase-3 wave 1 + wave 2 simple + wave 2
-algo) + **17 new** cases from wave 3 (PR #87). Phase-3 wave 1
+algo) + 17 new cases from wave 3 (PR #87) + **6 new** cases from the
+reldist/fisher full-parity wave. Phase-3 wave 1
 (PR #78) added `bedgroupby`/`bed12tobed6`/`bedmakewindows`; wave 2 simple
 (PR #80) added `bedexpand`/`bedgetfasta`/`bedsample`/`bedspacing`; wave 2
-algo added `bedcoverage`/`bedmap`/`bedshuffle`; **wave 3 tail (PR #87)
-added `bedcluster`/`bedsplit`/`bedsummary`/`bedtag`/`bedwindow`**.
+algo added `bedcoverage`/`bedmap`/`bedshuffle`; wave 3 tail (PR #87)
+added `bedcluster`/`bedsplit`/`bedsummary`/`bedtag`/`bedwindow`; **the
+reldist/fisher wave added `bedreldist`/`bedfisher`** with byte-for-byte
+parity on the small upstream cases.
 
 Missing subcommands:
 
 - `multicov` — multi-sample coverage.
 - `multiinter` — multi-way intersection.
-- `reldist` — relative distance distribution.
-- `fisher` — Fisher's exact for overlap.
 - `nuc` — nucleotide content per interval.
 - `igv` — generate IGV launch URLs.
 - `links` — generate UCSC links.
