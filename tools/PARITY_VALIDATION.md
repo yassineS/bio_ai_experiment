@@ -35,7 +35,7 @@ features land.
 | bedsort       |          11 |     10 |       1 | Option-tail wave (this PR) unskipped `sort.t09` (`-header`) by buffering leading `#`/`track`/`browser` lines and emitting them verbatim ahead of the sorted body. Remaining skip is one fixture-layout sanity check. |
 | bedsubtract   |          13 |     10 |       3 | Skips: `-N` (union-coverage drop). |
 | bedexpand     |           6 |      6 |       0 | All canonical upstream cases (`expand.t1..t3`) plus stdin-shape smoke + two error paths. |
-| bedgetfasta   |          15 |     14 |       1 | Option-tail wave (this PR) unskipped `getfasta.t06` and added a matching `t07` warning case after wiring `-fullHeader` through `pkg/bioformats/fasta.BuildIndexFullHeader` / `OpenRandomAccessFullHeader`. Remaining skip is BGZF FASTA input via `.gzi`. |
+| bedgetfasta   |          15 |     15 |       0 | All cases pass. The latest option-tail wave (this PR) wires BGZF FASTA input through `pkg/bioformats/fasta`: `OpenRandomAccess` now sniffs the BGZF magic and routes `.fa.gz` paths to a new `OpenRandomAccessBGZF` that fully decompresses the payload in-memory and reuses the FAI index path. The `.gzi` sidecar is parsed for validation; the `.fa.gz.fai` is honoured when present. Upstream `getfasta.t18` (BGZF + `-split`) now passes byte-for-byte using the upstream `t.fa.gz` fixture.|
 | bedsample     |           7 |      5 |       2 | Skips: two CLI-only cases (no-args / unrecognized-flag) that test main.go error messages, not the library. |
 | bedspacing    |           7 |      6 |       1 | Skips: BAM input. All inline upstream cases (`spacing.t01`) + synthetic edge cases (per-chrom reset, exact abut, overlap, BED6 preservation, single record). |
 | bedcoverage   |           9 |      6 |       3 | Skips: BAM input (t1), `-mean` float32 precision (t6), `-split` BAM modes (t10..t13). |
@@ -50,13 +50,13 @@ features land.
 | bedfisher     |           6 |      5 |       1 | All five small upstream cases (`fisher.t1`..`t4`, `t6`) pass byte-for-byte; skip t5 (long $TMPDIR path is a CLI/filesystem concern, not algorithmic parity). |
 | bednuc        |           4 |      3 |       1 | Spec-driven (upstream has no `nuc/` test subdir): default 3-interval profile, `-s` + `-seq` round-trip, `-pattern` case-sensitive count. Skips `-fullHeader` (index always keys on first whitespace token; best-effort fallback map covers the common `>chr1 extra info` case but not index-time semantics). |
 | bedannotate   |           3 |      3 |       0 | Spec-driven (upstream has no `annotate/` test subdir): default per-B fractions, `-counts`, `-both` with `-names`. Header-padding difference vs upstream is tolerated in the test (data rows match byte-for-byte). |
-| bedmulticov   |          10 |      9 |       1 | Option-tail wave (this PR) wired BAM input through `pkg/bioformats/sam.NewBAMReader` and added five real-BAM parity tests (`t1`/`t2`/`t3`/`t4`/`t10` over in-memory BAM streams built from the upstream `*.sam` fixtures' alignments); these pass byte-for-byte against the upstream `multicov.t*` expected outputs. Remaining skip is `multicov.t5..t9`, which exercise `-split` block-aware coverage on `15M10N15M` BAM CIGARs (not yet implemented). `-q` MAPQ filter and `-D` per-A-interval depth cap are now honoured on BAM inputs. |
+| bedmulticov   |          10 |     10 |       0 | All upstream `multicov.t1` through `t10` cases pass byte-for-byte. The latest wave (this PR) wires `-split` block-aware coverage on BAM CIGAR `N` ops through a new `indexBAMSplit` that walks each alignment's CIGAR and emits one block per contiguous reference-consuming op-run (M/=/X, with D extending the current block to match upstream's `breakOnDeletionOps=false`), skipping `N`-op gaps. Each alignment is counted at most once per A interval; with `-f`, the threshold is applied to `total_block_overlap / sum_of_BAM_block_lengths` using strict `>` — preserving the bedtools 2.x quirk in `multiBamCov.cpp::FindBlockedOverlaps`. Unskipped `t5..t9` (split alone, split+`-s`, split+`-S`, split+`-f 0.01`, split+`-f 0.10`). `-q` MAPQ filter and `-D` per-A-interval depth cap are honoured on BAM inputs. |
 | bedmultiinter |           4 |      3 |       1 | Spec-driven (upstream ships no `multiinter/` test subdir): fixtures + expected outputs taken byte-for-byte from `multiintersect_examples()` in `src/multiIntersectBed/multiIntersectBedMain.cpp`. Default mode, `-header -names`, and `-empty -g -header -names` all pass byte-for-byte. The skip documents the absence of an upstream test directory. |
 | bedigv        |           3 |      3 |       0 | Spec-driven (upstream ships no `igv/` test subdir): expected outputs derived directly from `src/bedToIgv/bedToIgv.cpp` by playing forward `ProcessBed()` on a BED6 fixture. Cases: defaults; `-path /tmp/snaps -sess my.xml -name`; `-slop 50 -img svg -sort base -clps`. |
 | bedlinks      |           3 |      3 |       0 | Spec-driven (upstream ships no `links/` test subdir): expected outputs derived directly from `src/linksBed/linksBed.cpp` + `linksMain.cpp` by playing forward `CreateLinks()`/`WriteURL()`. Cases: BED6 defaults; BED6 custom mirror (`-base/-org/-db` per upstream help example); BED3 defaults (bedType=3 branch, no name/score/strand `<td>`). |
 | bedpairtobed  |           6 |      5 |       1 | Spec-driven (upstream ships no `pairtobed/` test subdir): expected outputs derived directly from `src/pairToBed/pairToBed.cpp` by walking `FindOverlaps()`/`FindOneOrMoreOverlaps()` over a hand-curated BEDPE × BED fixture. Cases: `-type either`, `-type both`, `-type neither`, `-type xor`, `-type notboth`; skip documents that `-slop` is upstream-`pairtopair`-only. |
 | bedpairtopair |           6 |      5 |       1 | Spec-driven (upstream ships no `pairtopair/` test subdir): expected outputs derived directly from `src/pairToPair/pairToPair.cpp` by playing forward `FindHitsOnBothEnds()`/`FindHitsOnEitherEnd()` over a 4-pair × 4-pair fixture. Cases: `-type both`, `-type either`, `-type neither`, `-type notboth`, `-slop` near-miss; skip documents that the upstream stranded-slop case is covered by the unit test `TestStrandedSlop_Direction`. |
-| **TOTAL**     |     **260** |**208** | **52**  | |
+| **TOTAL**     |     **264** |**214** | **50**  | |
 
 (The discrepancy between this table and `go test`'s 87 passed / 42 skipped is
 two helper / sanity sub-tests in `bedsort` and `bedintersect` that are not
@@ -186,9 +186,17 @@ missing feature in its `t.Skip` call.
   line (whitespace tolerated) when matching contig names from BED; our port
   uses the same first-token convention as `samtools faidx`. The skipped
   parity test (`Getfasta.T07`) documents the gap.
-- **BGZF FASTA input** (`-fi *.fa.gz`) on `bedgetfasta`. Random-access FASTA
-  over BGZF needs a `.gzi` index reader that `pkg/bioformats/fasta` does not
-  yet expose. The skipped parity test (`Getfasta.T18`) documents the gap.
+- **BGZF FASTA input** (`-fi *.fa.gz`) on `bedgetfasta`. Resolved: this PR
+  adds `OpenRandomAccessBGZF` in `pkg/bioformats/fasta` (magic-sniffed
+  auto-routing from the existing `OpenRandomAccess` entry point), reads
+  the `.gzi` sidecar via a stdlib-only little-endian parser, and honours
+  a sibling `.fa.gz.fai` when present. Upstream `getfasta.t18` (BGZF +
+  `-split` BED12) now passes byte-for-byte using upstream's `t.fa.gz`
+  fixture; the validation harness regenerates the `.gzi` on-demand via
+  the existing `tools/bgzip --reindex` path. The in-memory
+  decompression strategy is documented in `pkg/bioformats/fasta/bgzf.go`
+  with a note that partial-decompression seek via `.gzi` (htslib-style)
+  can be layered on later without API churn.
 - **CLI-only "no args / bad args" diagnostics** on `bedsample`. Upstream
   prints specific `***** ERROR:` messages from its CLI driver; we exit with
   Go's stock `flag` package error handling and a `bedsample: …` prefix.
@@ -210,14 +218,14 @@ parity tests (114 passing, 47 documented skips).
   emit verbatim, expanded columns substitute the k-th element of the k-th
   list named in `-c`. So `-c 5,4` swaps the two expanded columns,
   reproducing `expand.t3`.
-- **bedgetfasta** (`tools/bedgetfasta/pkg/bedgetfasta/parity_test.go`). 12
+- **bedgetfasta** (`tools/bedgetfasta/pkg/bedgetfasta/parity_test.go`). All
   cases pass against the upstream `getfasta` corpus, covering default
   `chrom:start-end` header, `-name` / `-nameOnly`, `-s`, `-split`,
-  `-split -s` (per-block revcomp, reversed-order blocks), and `-rna`. The
-  port carries its own `FetchPreserveCase` so IUPAC + case round-trip
-  exactly — the shared `pkg/bioformats/fasta.RandomAccess.Fetch`
-  uppercases for downstream callers that need a canonical case. The two
-  skips above (`-fullHeader`, BGZF) are the only documented gaps.
+  `-split -s` (per-block revcomp, reversed-order blocks), `-rna`,
+  `-fullHeader`, and BGZF (`.fa.gz`) input via `-fi`. The port carries
+  its own `FetchPreserveCase` so IUPAC + case round-trip exactly — the
+  shared `pkg/bioformats/fasta.RandomAccess.Fetch` uppercases for
+  downstream callers that need a canonical case.
 - **bedsample** (`tools/bedsample/pkg/bedsample/parity_test.go`). 5 cases
   pass: requested count, deterministic seed, `-header` forwarding,
   too-few-records error, and the "subset of input" invariant. We cannot

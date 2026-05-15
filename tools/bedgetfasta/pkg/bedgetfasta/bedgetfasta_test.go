@@ -7,7 +7,31 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
 )
+
+// writeBGZFFasta drops a BGZF-compressed FASTA at <dir>/<name>.fa.gz
+// and returns its path. Used by the BGZF random-access tests below.
+func writeBGZFFasta(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name+".fa.gz")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create %s: %v", path, err)
+	}
+	w := bgzip.NewWriter(f)
+	if _, err := w.Write([]byte(body)); err != nil {
+		t.Fatalf("bgzip write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("bgzip close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close %s: %v", path, err)
+	}
+	return path
+}
 
 // writeFasta drops a temporary FASTA at <dir>/<name>.fa and returns its
 // path. The .fai is built lazily by Run.
@@ -393,5 +417,146 @@ func TestRandomAccess_RangeErrors(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("zero-length fetch returned %d bytes", len(got))
+	}
+}
+
+// TestRun_BGZFRoundTrip — end-to-end run against a BGZF-compressed FASTA
+// of the canonical t.fa fixture. Confirms the BGZF magic-sniff path,
+// in-memory decompression, and case-preserving Fetch all hold up.
+func TestRun_BGZFRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := writeBGZFFasta(t, dir, "t", tFasta)
+	bed := "chr1\t0\t10\n"
+	var out, warn bytes.Buffer
+	if _, err := Run(strings.NewReader(bed), path, &out, &warn, Options{}); err != nil {
+		t.Fatalf("Run on BGZF: %v", err)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("unexpected warning: %q", warn.String())
+	}
+	want := ">chr1:0-10\naggggggggg\n"
+	if got := out.String(); got != want {
+		t.Errorf("BGZF output mismatch:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRun_BGZFFullHeader — `-fullHeader` works against BGZF FASTA inputs.
+func TestRun_BGZFFullHeader(t *testing.T) {
+	dir := t.TempDir()
+	path := writeBGZFFasta(t, dir, "ref",
+		">chr1 assembly notes here\naggggggggg\n")
+	bed := "chr1 assembly notes here\t0\t5\n"
+	var out, warn bytes.Buffer
+	if _, err := Run(strings.NewReader(bed), path, &out, &warn,
+		Options{FullHeader: true}); err != nil {
+		t.Fatalf("Run BGZF -fullHeader: %v", err)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("unexpected warning: %q", warn.String())
+	}
+	if !strings.Contains(out.String(), "agggg") {
+		t.Errorf("expected full-header lookup to succeed; got %q", out.String())
+	}
+}
+
+// TestRun_BGZFWithSiblingFai — the BGZF path should honour an explicit
+// `<path>.fa.gz.fai` sidecar instead of always rebuilding the index.
+func TestRun_BGZFWithSiblingFai(t *testing.T) {
+	dir := t.TempDir()
+	path := writeBGZFFasta(t, dir, "t", tFasta)
+	// Hand-write a samtools-style .fai for the uncompressed payload.
+	// chr1 is 50 bases at offset 6 (header is ">chr1\n" = 6 bytes), line
+	// width 11 (10 bases + '\n').
+	faiPath := path + ".fai"
+	if err := os.WriteFile(faiPath, []byte("chr1\t50\t6\t10\t11\n"), 0o644); err != nil {
+		t.Fatalf("write .fai: %v", err)
+	}
+	bed := "chr1\t0\t10\n"
+	var out, warn bytes.Buffer
+	if _, err := Run(strings.NewReader(bed), path, &out, &warn, Options{}); err != nil {
+		t.Fatalf("Run BGZF with sibling .fai: %v", err)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("unexpected warnings: %q", warn.String())
+	}
+	want := ">chr1:0-10\naggggggggg\n"
+	if out.String() != want {
+		t.Errorf("output mismatch: got %q want %q", out.String(), want)
+	}
+}
+
+// TestRun_BGZFNonexistent — opening a missing BGZF file surfaces a clean
+// open error, exercising the isBGZF error path.
+func TestRun_BGZFNonexistent(t *testing.T) {
+	dir := t.TempDir()
+	var out, warn bytes.Buffer
+	if _, err := Run(strings.NewReader("chr1\t0\t1\n"),
+		filepath.Join(dir, "missing.fa.gz"), &out, &warn, Options{}); err == nil {
+		t.Fatal("expected error opening missing BGZF, got nil")
+	}
+}
+
+// TestOpenFastaBGZF_BadFai — a malformed sibling .fa.gz.fai surfaces as
+// an error rather than silently rebuilding.
+func TestOpenFastaBGZF_BadFai(t *testing.T) {
+	dir := t.TempDir()
+	path := writeBGZFFasta(t, dir, "t", tFasta)
+	if err := os.WriteFile(path+".fai", []byte("not\tactually\tfive\tcolumns\n"), 0o644); err != nil {
+		t.Fatalf("write bad .fai: %v", err)
+	}
+	if _, err := openFasta(path, false); err == nil {
+		// Note: LoadIndex on a 4-column line errors → the openFastaBGZF
+		// fallback path treats that as a hard failure (not IsNotExist),
+		// so we expect an explicit error here.
+		t.Fatal("expected error on malformed .fai, got nil")
+	}
+}
+
+// TestIsAllPresent — direct unit test for the helper.
+func TestIsAllPresent(t *testing.T) {
+	if !isAllPresent([][]byte{{}, {}}, [][2]int{{0, 1}, {1, 2}}) {
+		t.Error("expected true for equal lengths")
+	}
+	if isAllPresent([][]byte{{}}, [][2]int{{0, 1}, {1, 2}}) {
+		t.Error("expected false for short parts")
+	}
+}
+
+// TestWarnMissingChrom — nil writer is a no-op; explicit writer gets the
+// standard upstream warning line.
+func TestWarnMissingChrom(t *testing.T) {
+	warnMissingChrom(nil, "chrZ") // must not panic
+	var buf bytes.Buffer
+	warnMissingChrom(&buf, "chrZ")
+	want := "WARNING. chromosome (chrZ) was not found in the FASTA file. Skipping.\n"
+	if buf.String() != want {
+		t.Errorf("warn output mismatch: got %q want %q", buf.String(), want)
+	}
+}
+
+// TestBytesJoin — direct unit test for the no-separator concatenator.
+func TestBytesJoin(t *testing.T) {
+	got := bytesJoin([][]byte{[]byte("ac"), []byte("gt"), []byte("")})
+	if string(got) != "acgt" {
+		t.Errorf("bytesJoin = %q, want %q", got, "acgt")
+	}
+	if string(bytesJoin(nil)) != "" {
+		t.Errorf("bytesJoin(nil) should return empty")
+	}
+}
+
+// TestIsBGZF — sniff helper rejects plain FASTA and accepts BGZF magic.
+func TestIsBGZF(t *testing.T) {
+	dir := t.TempDir()
+	plain := writeFasta(t, dir, "plain", tFasta)
+	if got, err := isBGZF(plain); err != nil || got {
+		t.Errorf("isBGZF(plain): got %v, err %v", got, err)
+	}
+	bgz := writeBGZFFasta(t, dir, "bgz", tFasta)
+	if got, err := isBGZF(bgz); err != nil || !got {
+		t.Errorf("isBGZF(bgz): got %v, err %v", got, err)
+	}
+	if _, err := isBGZF(filepath.Join(dir, "missing.fa")); err == nil {
+		t.Error("expected error for missing path")
 	}
 }

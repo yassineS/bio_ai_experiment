@@ -71,14 +71,22 @@ the standard strand / fraction options, plus the `-q` MAPQ filter and
 
 The `reference_code/bedtools/test/multicov/` corpus is entirely BAM-based
 (`one_block.sam`, `two_blocks.sam`, `test-multi.sam`, `test-multi.2.sam`,
-all run through `htsutil samtoindexedbam`). Upstream `multicov.t1`
-(default overlap), `t2` (`-s`), `t3` (`-S`), `t4` (two-block alignment
-without `-split`), and `t10` (multi-input) now pass byte-for-byte against
-real in-memory BAM streams — see `pkg/bedmulticov/parity_test.go`. The
-remaining `multicov.t5..t9` cases test BAM `-split` block-aware coverage
-on `15M10N15M` CIGARs, which is not yet implemented; they are
-`t.Skip`ped pending the split-CIGAR work tracked in
-`docs/PARITY_ROADMAP.md#bedmulticov-bam`.
+all run through `htsutil samtoindexedbam`). All ten upstream cases now
+pass byte-for-byte against real in-memory BAM streams — see
+`pkg/bedmulticov/parity_test.go`:
+
+- `t1` default overlap, `t2` `-s`, `t3` `-S`, `t4` two-block alignment
+  without `-split`, `t10` multi-input.
+- `t5` `-split` alone, `t6` `-split -s`, `t7` `-split -S`, `t8`
+  `-split -f 0.01`, `t9` `-split -f 0.10` — all exercise BAM CIGAR
+  `N`-op block-aware coverage on `15M10N15M` alignments. With
+  `-split`, each alignment is decomposed into its contiguous
+  reference-consuming op-runs (M/=/X, with D extending the current
+  block to mirror upstream's `breakOnDeletionOps=false`); the
+  alignment is counted at most once per A interval and `-f` is
+  applied to `total_overlap / sum_of_BAM_block_lengths` using strict
+  `>` (a bedtools 2.x quirk in `multiBamCov.cpp::FindBlockedOverlaps`
+  preserved here for byte-for-byte parity).
 
 CRAM input is not yet supported — see `docs/CRAM_DESIGN.md`; the CLI
 surfaces a clear error for `.cram` paths.
@@ -89,14 +97,11 @@ surfaces a clear error for `.cram` paths.
 go test -race -cover ./tools/bedmulticov/...
 ```
 
-Coverage: ~87.7% on `pkg/bedmulticov` (race + cover, 2026-05-15).
+Coverage: ~88.8% on `pkg/bedmulticov` (race + cover, 2026-05-15).
 
 ## Limitations
 
 - CRAM input is not yet supported (no CRAM reader; see
   `docs/CRAM_DESIGN.md`).
-- `-split` (block-aware coverage on BAM CIGAR `N` ops) is not yet
-  implemented; the recorded interval is the alignment's full reference
-  footprint.
 - Stranded fraction semantics follow `bedintersect`'s convention: with
   `-s` / `-S`, records with an empty strand on either side do not match.

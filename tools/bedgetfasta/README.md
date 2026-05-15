@@ -53,11 +53,21 @@ bedgetfasta -fi genome.fa -bed transcripts.bed12 -split -s > transcripts.fa
 - **`-rna`.** Applied after any reverse-complement: T→U and t→u (case
   preserved). Other bases pass through.
 
+## BGZF input
+
+`-fi *.fa.gz` (bgzipped FASTA) is supported transparently: the file is
+sniffed for the BGZF magic and routed through `pkg/bioformats/fasta`'s
+`OpenRandomAccessBGZF`, which fully decompresses the payload in-memory
+and reuses the standard FAI index path. A samtools-style sibling
+`<path>.fa.gz.fai` is honoured when present; otherwise the index is
+rebuilt from the decompressed payload. A `.gzi` sidecar (when present)
+is parsed for validation only — partial-decompression seek via `.gzi`
+is a future optimisation, not required for parity. Upstream
+`getfasta.t18` passes byte-for-byte.
+
 ## Not yet implemented
 
-- `-fullHeader` (use the full FASTA header line, not just the first token).
-- `-fi *.fa.gz` (bgzipped FASTA via `.gzi`). Random-access FASTA over BGZF
-  needs the `.gzi` index reader, not yet in `pkg/bioformats/fasta`.
+(No outstanding gaps in the upstream `getfasta` test corpus.)
 
 See [`../PARITY_VALIDATION.md`](../PARITY_VALIDATION.md) for the validated
 parity matrix.

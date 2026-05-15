@@ -36,6 +36,9 @@ Options:
   -f FRACTION            Minimum fraction of A overlapped (0,1].
   -F FRACTION            Minimum fraction of B overlapped (0,1].
   -r,  --reciprocal      Apply -f to BOTH A and B.
+       --split           BAM CIGAR N-op block-aware coverage: count only
+                         contiguous reference-consuming op runs (M/=/X/D),
+                         skipping spanning N gaps. Ignored for BED inputs.
   -o,  --output FILE     Output file (default: stdout).
   -h,  --help            Show this help.
   -v,  --version         Show version.
@@ -69,6 +72,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		mapq, maxDepth        int
 		sameStrand, oppStrand bool
 		reciprocal            bool
+		split                 bool
 		fractionA, fractionB  float64
 		help, showVer         bool
 	)
@@ -81,6 +85,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 	cliflag.Float64Var(fs, &fractionA, "f", "fraction-a", 0.0, "Fraction of A overlapped")
 	cliflag.Float64Var(fs, &fractionB, "F", "fraction-b", 0.0, "Fraction of B overlapped")
 	cliflag.BoolVar(fs, &reciprocal, "r", "reciprocal", false, "Apply -f to both A and B")
+	cliflag.BoolVar(fs, &split, "", "split", false, "BAM CIGAR N-op block-aware coverage")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVer, "v", "version", false, "Show version")
@@ -165,6 +170,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		OppositeStrand: oppStrand,
 		MinMAPQ:        mapq,
 		MaxDepth:       maxDepth,
+		Split:          split,
 	}
 	if _, err := bedmulticov.RunSources(aR, sources, w, opts); err != nil {
 		return err
