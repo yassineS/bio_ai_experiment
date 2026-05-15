@@ -437,6 +437,32 @@ func TestViewQNameFilterExactRecords(t *testing.T) {
 	}
 }
 
+// TestViewQNameInvert mirrors upstream samtools view's `-N ^FILE`
+// exclude-mode (sam_view.c:347-352 rnhash_discard=1): records whose
+// QNAME IS in the set are dropped.
+func TestViewQNameInvert(t *testing.T) {
+	var out bytes.Buffer
+	_, err := View(strings.NewReader(tagSampleSAM), &out, ViewOptions{
+		QNameSet:    map[string]struct{}{"read2": {}, "read5": {}},
+		QNameInvert: true,
+	})
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	got := out.String()
+	// read2 and read5 must be dropped; the other four kept.
+	for _, bad := range []string{"read2\t", "read5\t"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("invert: unexpected %s present", strings.TrimSuffix(bad, "\t"))
+		}
+	}
+	for _, want := range []string{"read1\t", "read3\t", "read4\t", "read6\t"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("invert: expected %s present", strings.TrimSuffix(want, "\t"))
+		}
+	}
+}
+
 func TestViewQNameAndTagFilterAND(t *testing.T) {
 	// QNameSet AND TagFilter must intersect.
 	var out bytes.Buffer
@@ -501,7 +527,7 @@ func TestParseTagFilterSpec(t *testing.T) {
 func TestParseTagFileSpec(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vals.txt")
-	if err := os.WriteFile(path, []byte("# comment\nrg1\nrg2\n\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("rg1\nrg2\n\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -583,8 +609,10 @@ func TestMergeTagFilter(t *testing.T) {
 func TestLoadLinesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "names.txt")
-	// Multiple tokens on one line plus blank/comment lines plus duplicates.
-	if err := os.WriteFile(path, []byte("# header\nread1 read2\nread3\nread1\n\n"), 0o644); err != nil {
+	// Multiple tokens on one line plus blank lines plus duplicates.
+	// Upstream samtools' fscanf("%1023s") tokenises on whitespace with no
+	// comment handling, so a token literally starting with `#` is kept.
+	if err := os.WriteFile(path, []byte("read1 read2\nread3\nread1\n\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	set, err := LoadLinesFile(path)
@@ -596,6 +624,25 @@ func TestLoadLinesFile(t *testing.T) {
 	}
 	if _, ok := set["read2"]; !ok {
 		t.Errorf("read2 missing (whitespace-tokenised line not handled?): %v", set)
+	}
+}
+
+// TestLoadLinesFileKeepsHashTokens pins the divergence from a previous
+// over-eager `#`-comment filter: upstream samtools accepts tokens that
+// start with `#` verbatim (sam_view.c:294 fscanf("%1023s") has no
+// comment handling).
+func TestLoadLinesFileKeepsHashTokens(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "names.txt")
+	if err := os.WriteFile(path, []byte("#literal\nread1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	set, err := LoadLinesFile(path)
+	if err != nil {
+		t.Fatalf("LoadLinesFile: %v", err)
+	}
+	if _, ok := set["#literal"]; !ok {
+		t.Errorf("#literal token dropped (upstream keeps it): %v", set)
 	}
 }
 

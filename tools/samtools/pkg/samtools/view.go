@@ -76,8 +76,13 @@ type ViewOptions struct {
 	// filter matches. Empty means no tag filtering.
 	TagFilters []TagFilter
 	// QNameSet, if non-nil, restricts output to records whose QNAME is in
-	// the set. Populated from `-N FILE`.
+	// the set (or, when QNameInvert is true, NOT in the set). Populated
+	// from `-N FILE` or `-N ^FILE`.
 	QNameSet map[string]struct{}
+	// QNameInvert flips the QName filter to exclude-mode, matching
+	// upstream samtools' `-N ^FILE` syntax (sam_view.c:352
+	// rnhash_discard=1).
+	QNameInvert bool
 }
 
 // TagFilter is a single aux-tag predicate as derived from samtools view's
@@ -450,7 +455,10 @@ func keepRecord(rec *sam.Record, opts *ViewOptions, rng *rand.Rand) bool {
 		}
 	}
 	if len(opts.QNameSet) > 0 {
-		if _, ok := opts.QNameSet[rec.QName]; !ok {
+		_, present := opts.QNameSet[rec.QName]
+		// Upstream sam_view.c:221: `(kh_get(...) == kh_end(h)) != rnhash_discard`
+		// — keep when (NOT present) XOR invert flips.
+		if present == opts.QNameInvert {
 			return false
 		}
 	}
@@ -510,9 +518,11 @@ func auxValueAsString(a sam.Aux) (string, bool) {
 	return "", false
 }
 
-// LoadLinesFile reads a UTF-8 file of whitespace-separated tokens (one
-// per line, blank and `#`-prefixed lines skipped) and returns them as a
-// set. Used by samtools view's `-D TAG:FILE` and `-N FILE` flags.
+// LoadLinesFile reads a UTF-8 file of whitespace-separated tokens and
+// returns them as a set. Mirrors upstream samtools' `fscanf("%1023s")`
+// reader in `populate_lookup_from_file` (sam_view.c:294) which has no
+// comment-line handling — tokens beginning with `#` are kept verbatim.
+// Used by samtools view's `-D TAG:FILE` and `-N FILE` flags.
 func LoadLinesFile(path string) (map[string]struct{}, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -525,13 +535,7 @@ func LoadLinesFile(path string) (map[string]struct{}, error) {
 	// 64 KiB is plenty but we bump anyway in case of pathological files).
 	scn.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scn.Scan() {
-		line := strings.TrimSpace(scn.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Upstream `fscanf("%1023s")` tokenises on whitespace; we mirror
-		// that so a file with multiple tokens per line still works.
-		for _, tok := range strings.Fields(line) {
+		for _, tok := range strings.Fields(scn.Text()) {
 			out[tok] = struct{}{}
 		}
 	}

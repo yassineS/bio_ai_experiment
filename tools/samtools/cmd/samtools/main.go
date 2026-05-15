@@ -136,7 +136,8 @@ Options:
   -D, --tag-file STR:FILE     Keep records with aux tag STR matching one of
                               the values listed in FILE (one per line).
   -N, --qname-file <f>        Keep records whose QNAME is listed in FILE.
-      --no-overflow-list      Accepted for upstream parity (no-op).
+                              Leading "^" inverts: -N ^FILE drops
+                              records whose QNAME is in FILE.
   -s, --subsample <float>     Keep fraction (or "<seed>.<frac>").
   -o, --output <file>         Output file (default stdout).
   -T, --reference <fasta>     Accepted; CRAM is not supported in v1.
@@ -172,7 +173,6 @@ func runView(args []string) int {
 		tagSpecs    multiString
 		tagFiles    multiString
 		qnameFile   string
-		noOverflow  bool
 		subsample   string
 		outFile     string
 		refFile     string
@@ -201,7 +201,6 @@ func runView(args []string) int {
 	fs.Var(&tagFiles, "D", "")
 	fs.Var(&tagFiles, "tag-file", "")
 	cliflag.StringVar(fs, &qnameFile, "N", "qname-file", "", "File of QNAMEs to keep")
-	cliflag.BoolVar(fs, &noOverflow, "", "no-overflow-list", false, "Accepted (no-op)")
 	cliflag.StringVar(fs, &subsample, "s", "subsample", "", "Subsample fraction")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output file")
 	cliflag.StringVar(fs, &refFile, "T", "reference", "", "Reference FASTA (CRAM unsupported)")
@@ -296,14 +295,21 @@ func runView(args []string) int {
 	}
 
 	if qnameFile != "" {
-		set, qerr := samtools.LoadLinesFile(qnameFile)
+		// Upstream sam_view.c:347-352: a leading `^` inverts the
+		// keep-set into a drop-set. We strip the prefix here and let
+		// View flip via opts.QNameInvert.
+		path := qnameFile
+		if strings.HasPrefix(path, "^") {
+			opts.QNameInvert = true
+			path = path[1:]
+		}
+		set, qerr := samtools.LoadLinesFile(path)
 		if qerr != nil {
 			fmt.Fprintf(os.Stderr, "samtools view: %v\n", qerr)
 			return 1
 		}
 		opts.QNameSet = set
 	}
-	_ = noOverflow // upstream-parity no-op
 
 	if subsample != "" {
 		frac, seed, err := samtools.ParseSubsample(subsample)
