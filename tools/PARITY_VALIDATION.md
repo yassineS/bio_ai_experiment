@@ -500,9 +500,19 @@ One; recorded in
 ## bcftools parity validation
 
 The bcftools port (`tools/bcftools/` covering `view`, `index`, `stats`,
-`query`, `concat`, `norm`, and `call`) is validated against
-upstream `bcftools 1.19+htslib-1.19` via a single
-`tools/bcftools/pkg/bcftools/parity_test.go`.
+`query`, `concat`, `norm`, `call`, plus the PR #86 wave-1 tail
+`annotate` / `head` / `isec` / `merge` / `reheader` / `sort`, and the
+convert/mendelian PR's `convert` + `mendelian`) is validated against
+upstream `bcftools 1.19+htslib-1.19` via
+`tools/bcftools/pkg/bcftools/parity_test.go` plus the per-subcommand
+unit suites under the same package directory.
+
+`convert` and `mendelian` are exercised exclusively by hand-built
+fixtures in `tools/bcftools/pkg/bcftools/{convert,mendelian}_test.go`
+in this PR; an upstream-fixture parity run will land in the
+follow-up parity wave (the upstream plugin uses
+`reference_code/bcftools/test/mendelian.*` which we do not currently
+vendor as a submodule).
 
 The brief differs from bedtools' in two ways:
 
