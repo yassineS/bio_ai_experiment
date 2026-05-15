@@ -364,17 +364,18 @@ Missing:
 
 ### `samtools`
 
-**Status:** 23 of ~25 subcommands (~92%). `view`, `sort`, `index`, `depth`,
+**Status:** 24 of ~25 subcommands (~96%). `view`, `sort`, `index`, `depth`,
 `fastq`, `flagstat`, **`mpileup`** (wave-1 + tail wiring), PR #88's
 wave-1 tail (`merge`, `coverage`, `idxstats`, `cat`, `reheader`,
 `addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`), the
 heavy-hitter pair `markdup` + `stats`, the calmd/import pair
-(**`calmd`** + **`import`**), and the niche pair landed in the
-phase/targetcut PR: **`phase`** + **`targetcut`**.
+(**`calmd`** + **`import`**), the niche pair landed in the
+phase/targetcut PR (**`phase`** + **`targetcut`**), and now
+**`consensus`** (simple-mode FASTA/FASTQ/pileup; bayesian falls back
+with a stderr warning).
 
 Missing subcommands (in rough priority order):
 
-- **`consensus`** — base-level consensus.
 - **`tview`** — terminal viewer. **Deliberate skip** (interactive
   curses UI; near-zero pipeline usage and would require an ncurses
   dependency). Not on the roadmap.
@@ -536,6 +537,76 @@ SEQ='*' skipping, and `-Q` per-base filtering. There is no upstream
 regression-test fixture for either tool in
 `reference_code/samtools/test/` so byte-parity against upstream is
 not pursued.
+
+**`consensus` deferred features** (accepted as CLI flags, behaviour
+partial). Upstream `bam_consensus.c` ships five modes — `simple` and
+four bayesian flavours (`bayesian_r` aka "bayesian", `bayesian_m`,
+`bayesian_p`, `bayesian_116`). v1 only implements `simple`. Because
+upstream defaults to `MODE_RECALL` (a bayesian mode) at
+`bam_consensus.c:2983`, the v1 binary's default invocation lands on
+the bayesian branch, emits a single-line stderr warning, and falls
+back to `simple`. The deferred surface:
+
+- **Bayesian (Gap5-derived) mode.** All variants (`bayesian`,
+  `bayesian_r`, `bayesian_m`, `bayesian_p`, `bayesian_116`) and their
+  knobs (`-C/--cutoff`, `--P-het`, `--P-indel`, `--het-scale`,
+  `--adj-qual`, `--use-MQ`, `--adj-MQ`, `--NM-halo`, `--SC-cost`,
+  `--scale-MQ`, `--low-MQ`, `--high-MQ`, `-p/--homopoly-fix`,
+  `--homopoly-score`, `--homopoly-redux`, `-t/--qual-calibration`,
+  `-X/--config`) are accepted on the CLI but not yet implemented.
+- **Pileup-mode insertion rows.** Upstream's default `--show-ins yes`
+  emits extra rows with `nth>0` for each column of an inserted
+  sequence. v1 emits only `nth=0` rows (one per reference position);
+  insertion columns are folded into the FASTA/FASTQ stream when
+  `--show-ins yes` (the default) but not into the pileup stream.
+- **Mate-overlap dedup.** `--ignore-overlaps` is accepted but is a
+  no-op; v1 counts each mate independently in the pileup walker.
+- **Reference-aware modes.** `-T/--reference`, `--ref-qual`, and
+  `--default-qual` are accepted but unused; the simple scoring path
+  doesn't need a reference, and the bayesian path that does is
+  deferred.
+- **Threading.** `-@/--threads`, `-Z/--block-size`, and
+  `--input-fmt-option` are accepted but ignored; v1 is single-pass
+  and single-threaded.
+- **Read-flag filtering.** `--rf/--incl-flags` and `--ff/--excl-flags`
+  are accepted as text/int but ignored. v1's filter set is fixed
+  (drop UNMAP|SECONDARY|QCFAIL|DUP, matching upstream's default
+  `excl_flags`).
+- **`--het-only`** suppression of homozygous calls is accepted but
+  not implemented.
+- **`--verbosity`** is accepted and ignored.
+
+**`consensus` correctness model.** v1 mirrors upstream's
+`calculate_consensus_simple` (`bam_consensus.c:1900-2006`) bit-for-bit
+where it matters:
+
+- One fraction gate only: `used_score < call_fract * tscore`
+  (`bam_consensus.c:1988-1994`). There is **no** separate
+  "min-fraction on the dominant base alone" gate; an earlier PR
+  fabricated one and is corrected here.
+- Heterozygous condition is `score2 >= het_fract * score1 && ambig`
+  with no `score1 > 0` guard (`bam_consensus.c:1982`).
+- `use_qual=0` by default (`bam_consensus.c:2984`) — bases score by
+  frequency, not quality, until `-q/--use-qual` is set.
+- `--show-del` is honoured in pileup mode too — rows whose call is
+  `'*'` are suppressed when `--show-del no`
+  (`bam_consensus.c:2244`).
+- Insertion gating uses `MinCallFraction`, the same knob as the
+  per-position gate.
+
+**Validation:** table-driven hand-built SAM fixtures in
+`tools/samtools/pkg/samtools/consensus_test.go` covering:
+all-match FASTA/FASTQ/pileup, mixed at the 0.75 boundary,
+`--show-del no` in pileup (no `*` rows),
+`--show-del yes` in pileup (keeps `*` rows),
+the canonical **50/30/20 + `-A`** fixture (must land `M`, not `N`),
+frequency-only counting (low-Q vs high-Q gives identical output when
+`UseQual=false`),
+the `UseQual=true` flip (high-Q minority beats low-Q majority),
+multi-contig, `-a` zero-fill, `--min-depth`, line-len wrapping,
+insertion include/suppress + `--mark-ins`,
+and the default-bayesian fallback emitting a stderr warning.
+Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
 
