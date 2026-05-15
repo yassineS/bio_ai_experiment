@@ -406,6 +406,14 @@ slots are accepted on the CLI for compat):
 - The `dt:Z:` "duplicate-type" aux tag (SQ / LB / OQ). The 0x400 flag
   bit is set correctly; only the typed aux is missing.
 
+**`markdup -l/--max-len` is a no-op-by-design.** Upstream uses `-l` solely
+as the streaming buffer flush window in `bam_markdup.c:1949`; it does NOT
+affect key construction or scoring. Our two-pass implementation buffers
+per-bucket state in memory, so output is identical for any `-l` value.
+The flag is accepted on the CLI and the option is preserved on
+`MarkdupOptions.MaxLen` for forward compatibility if we ever move to a
+single-pass streaming model.
+
 **`stats` deferred sections** (also documented in
 `PARITY_VALIDATION.md`):
 
@@ -415,6 +423,13 @@ slots are accepted on the CLI for compat):
 - `--target-regions BED` restriction.
 - The leading CHK checksum block (CRC32 reduction of read names /
   sequences / qualities).
+- BWA-style quality trimming (`-q/--trim-quality`). The SN field
+  `bases trimmed` is reported as 0; upstream also reports 0 when the
+  flag is not passed, so byte parity holds for the default invocation.
+- Mate-tracking memory cap: upstream's `cleanup_overlaps` periodically
+  evicts stale `mates` entries. Our `mates` map currently grows
+  unbounded — fine for the typical workload but worth fixing before
+  running `stats` on multi-billion-record BAMs.
 
 v1 emits byte-faithful **SN** (Summary Numbers) and useful **RL / MAPQ /
 IS** rollups; the unsupported sections are quietly omitted (or, under

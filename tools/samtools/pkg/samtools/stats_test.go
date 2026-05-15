@@ -93,21 +93,6 @@ func TestStatsCountersBasic(t *testing.T) {
 
 // TestStatsHelpers covers small internal helpers.
 func TestStatsHelpers(t *testing.T) {
-	t.Run("sortInt64s", func(t *testing.T) {
-		s := []int64{5, 1, 3, 2, 4}
-		sortInt64s(s)
-		want := []int64{1, 2, 3, 4, 5}
-		for i, v := range s {
-			if v != want[i] {
-				t.Fatalf("sortInt64s[%d]: got %d, want %d", i, v, want[i])
-			}
-		}
-	})
-	t.Run("sortInt64s_short", func(t *testing.T) {
-		// 1 element, 0 elements — should not panic.
-		sortInt64s(nil)
-		sortInt64s([]int64{42})
-	})
 	t.Run("sortedKeys", func(t *testing.T) {
 		m := map[int64]int64{3: 1, 1: 1, 2: 1}
 		ks := sortedKeys(m)
@@ -184,6 +169,101 @@ func TestStatsRLAndMAPQ(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "MAPQ\t40\t2") {
 		t.Fatalf("missing MAPQ row")
+	}
+}
+
+// TestStatsQCFailCountedInTotals verifies that QC-failed primary records
+// are folded into RawTotal/Sequences/1st-2nd-fragment/TotalLength and the
+// ReadsQCFailed counter — matching upstream stats.c
+// (collect_orig_read_stats runs for every primary record regardless of
+// QCFAIL).
+func TestStatsQCFailCountedInTotals(t *testing.T) {
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n"
+	// r1 = ordinary primary; r2 = QC-failed primary (flag 0x200 = 512 set,
+	// added to 0x63=99 to make 0x263=611).
+	body := "r1\t99\tc\t1\t40\t10M\t=\t100\t100\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r2\t611\tc\t100\t40\t10M\t=\t1\t-100\tACGTACGTAC\tIIIIIIIIII\n"
+	in := strings.NewReader(hdr + body)
+	var out bytes.Buffer
+	if err := Stats(in, &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"SN\traw total sequences:\t2",
+		"SN\tsequences:\t2",
+		"SN\treads QC failed:\t1",
+		"SN\ttotal length:\t20",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestStatsSortedDemotionOnOutOfOrder verifies that a header advertising
+// SO:coordinate but a body that is NOT coordinate-sorted gets demoted to
+// "is sorted: 0" — matching upstream stats.c:2327+1347 which initialises
+// is_sorted=1 then demotes on any out-of-order record.
+func TestStatsSortedDemotionOnOutOfOrder(t *testing.T) {
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n"
+	// r1 at pos=200, r2 at pos=100 on same ref → body is out of order
+	// even though @HD claims SO:coordinate.
+	body := "r1\t0\tc\t200\t40\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r2\t0\tc\t100\t40\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n"
+	in := strings.NewReader(hdr + body)
+	var out bytes.Buffer
+	if err := Stats(in, &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if !strings.Contains(out.String(), "SN\tis sorted:\t0") {
+		t.Fatalf("expected `is sorted:\t0` after out-of-order body; got:\n%s", out.String())
+	}
+}
+
+// TestStatsInsertSizeFromTLEN verifies the IS histogram and insert-size
+// SN counters come from |TLEN|, not from a position-derived computation.
+// Setup: a single mate-pair where TLEN diverges from
+// (right.end - left.pos + 1) because the right mate has a leading soft clip.
+func TestStatsInsertSizeFromTLEN(t *testing.T) {
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n"
+	// Mate 1: pos=1, M-only, TLEN=+50.
+	// Mate 2: pos=41, "5S5M" (5bp soft clip + 5bp match), TLEN=-50.
+	// Position-derived (right.end - left.pos + 1) = (41+5-1) - 1 + 1 = 45.
+	// TLEN-derived = 50. We assert 50.
+	body := "r1\t99\tc\t1\t40\t10M\t=\t41\t50\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r1\t147\tc\t41\t40\t5S5M\t=\t1\t-50\tACGTACGTAC\tIIIIIIIIII\n"
+	in := strings.NewReader(hdr + body)
+	var out bytes.Buffer
+	if err := Stats(in, &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "SN\tinsert size average:\t50.0") {
+		t.Fatalf("expected insert size average 50 (from TLEN); got:\n%s", got)
+	}
+}
+
+// TestStatsProperPairDenominator verifies the proper-pair percentage uses
+// Sequences (= 1st+2nd+other) as the denominator, matching upstream
+// stats.c:1606. Not ReadsPaired.
+func TestStatsProperPairDenominator(t *testing.T) {
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n"
+	// 2 proper pairs (4 records), 1 unpaired primary. Sequences=5 (1st=3,
+	// 2nd=2), ReadsPaired=4, ReadsProperlyPaired=4. Upstream %: 4/5*100=80.
+	// Old buggy %: 4/4*100=100.
+	body := "r1\t99\tc\t1\t40\t10M\t=\t41\t50\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r1\t147\tc\t41\t40\t10M\t=\t1\t-50\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r2\t99\tc\t2\t40\t10M\t=\t42\t50\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r2\t147\tc\t42\t40\t10M\t=\t2\t-50\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r3\t0\tc\t100\t40\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n"
+	in := strings.NewReader(hdr + body)
+	var out bytes.Buffer
+	if err := Stats(in, &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if !strings.Contains(out.String(), "SN\tpercentage of properly paired reads (%):\t80.0") {
+		t.Fatalf("expected proper-pair %% = 80.0 (4/5); got:\n%s", out.String())
 	}
 }
 

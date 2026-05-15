@@ -19,8 +19,7 @@
 //     skip in the test fixtures.
 //   - `-r/--remove-dups` to drop duplicates from the output.
 //   - `-c/--clear-tags` and `-t/--add-tag` (writes the `do` tag pointing to
-//     the chosen original; upstream's `mc` tag — Mate-Cigar score — is
-//     emitted as well so consumers that look for it find it).
+//     the qname of the chosen original).
 //   - `--include-flags / --exclude-flags` filter; matching records are kept
 //     out of the duplicate scoring entirely.
 //   - Streaming two-pass over the same input reader: the caller passes a
@@ -42,7 +41,6 @@ package samtools
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -80,7 +78,11 @@ type MarkdupOptions struct {
 	// TmpDir is accepted for CLI parity; v1 streams in memory so the
 	// option is unused.
 	TmpDir string
-	// MaxLen caps the read length considered (-l, default 300 upstream).
+	// MaxLen mirrors upstream's `-l` (default 300). In upstream this caps
+	// the streaming buffer flush window; our two-pass implementation
+	// buffers per-bucket state in memory, so the value does not affect
+	// output. The field is accepted for CLI parity. See PARITY_ROADMAP.md
+	// "samtools markdup -l no-op-by-design".
 	MaxLen int
 	// IncludeFlags requires ALL bits set (--include-flags). Default 0.
 	IncludeFlags uint16
@@ -152,8 +154,7 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 	// list isn't needed because resolution is online: ties don't escalate
 	// beyond a single "winner".
 	type singleSlot struct {
-		entry  *markdupEntry
-		marked map[string]string // qnames already marked as dup-of-winner
+		entry *markdupEntry
 	}
 	singleSlots := make(map[markdupKey]*singleSlot)
 	primaryDup := make(map[string]string) // qname -> dup-of-qname
@@ -742,8 +743,3 @@ func MarkdupBytes(input []byte, out io.Writer, opts MarkdupOptions) (MarkdupResu
 	}
 	return Markdup(opener, out, opts)
 }
-
-// ErrMarkdupNoMC signals that an input record was missing the MC tag and
-// the caller's policy was to error rather than fall back to singleton-key.
-// It is exported so tests can match on it via errors.Is.
-var ErrMarkdupNoMC = errors.New("markdup: missing MC tag (run samtools fixmate first)")

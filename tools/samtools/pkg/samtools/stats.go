@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
 )
@@ -153,9 +154,12 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	if err != nil {
 		return err
 	}
-	hdr := br.Header()
+	_ = br.Header() // header is read for side-effects (consumed from stream)
 	c := newStatsCounters()
-	c.IsSorted = headerIsCoordinateSorted(hdr)
+	// Match upstream stats.c:2327 — is_sorted starts at 1 and is demoted to
+	// 0 the first time an out-of-order record appears. The @HD SO:coordinate
+	// line is NOT consulted; an empty BAM is reported as sorted.
+	c.IsSorted = 1
 
 	for {
 		rec, err := br.Read()
@@ -167,22 +171,10 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 		}
 		c.observe(rec, opts)
 	}
-	// Upstream emits IsSorted=1 when the records actually arrived in
-	// coordinate order, regardless of whether the @HD line says so.
-	if !c.sortBroken && c.IsSorted == 0 && c.RawTotal > 0 {
-		c.IsSorted = 1
+	if c.sortBroken {
+		c.IsSorted = 0
 	}
 	return c.Write(out, opts)
-}
-
-// headerIsCoordinateSorted returns 1 if the @HD line carries SO:coordinate.
-func headerIsCoordinateSorted(h *sam.Header) int {
-	for _, f := range h.HDFields {
-		if f.Tag == "SO" && f.Value == "coordinate" {
-			return 1
-		}
-	}
-	return 0
 }
 
 // observe folds one record into the accumulator.
@@ -225,10 +217,12 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 		}
 		return
 	}
-	// QC-fail records are counted but mostly excluded from downstream sums.
+	// QC-fail records ARE counted toward RawTotal/Sequences/totals per
+	// upstream stats.c (collect_orig_read_stats runs for every primary
+	// record, QCFAIL or not). Only the MAPQ histogram excludes QCFAIL+DUP
+	// (see gating below).
 	if rec.IsQCFail() {
 		c.ReadsQCFailed++
-		return
 	}
 
 	// Apply user-specified flag filters BEFORE counting RawTotal so the
@@ -282,8 +276,15 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 			c.ReadsMappedAndPaired++
 		}
 		c.BasesMapped += rlen
-		// MAPQ histogram
-		c.MAPQ[rec.MapQ]++
+		// MAPQ histogram excludes UNMAP|SEC|SUPP|QCFAIL|DUP
+		// (upstream stats.c:1239). UNMAP/SEC/SUPP are already excluded by
+		// outer branches; gate QCFAIL+DUP here.
+		if !rec.IsQCFail() && !rec.IsDuplicate() {
+			c.MAPQ[rec.MapQ]++
+		}
+		// ReadsMQ0 (the SN counter) INCLUDES QCFAIL+DUP — upstream's
+		// nreads_mq0 lives inside collect_orig_read_stats which is called
+		// for every primary record regardless of QCFAIL/DUP.
 		if rec.MapQ == 0 {
 			c.ReadsMQ0++
 		}
@@ -304,9 +305,9 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 	// Cigar-aware "bases mapped (cigar)" — matches upstream `nbases_mapped_cigar`
 	// which counts M, =, X *and* I bases (see stats.c line 1581 comment).
 	// Note: `bases trimmed` in upstream tracks BWA-style quality trimming
-	// (see bwa_trim_read), NOT soft-clips. We expose only the soft-clip
-	// fallback when no trimming aux is present — documented as a deviation
-	// in PARITY_VALIDATION.md.
+	// (see bwa_trim_read). We don't implement trim-quality scanning, so
+	// BasesTrimmed stays 0 — matching upstream's default behaviour when
+	// `--trim-quality` (`-q`) is not passed. Documented in PARITY_ROADMAP.md.
 	for _, op := range rec.Cigar {
 		ch := op.Char()
 		ln := int64(op.Length())
@@ -342,15 +343,12 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 	}
 }
 
-// classifyPair counts each pair once: we use the leftmost record (positive
-// TLEN). For a same-chromosome pair this is sufficient and avoids
-// double-counting. Different-chromosome pairs increment DiffChromosomePairs
-// once per record encountered with TLEN==0 and a different RNext — we
-// guard against double-counting by only counting when this record is the
-// "first" mate observed, tracked via the mates map.
+// classifyPair counts each pair once on the SECOND-observed mate. The
+// insert size source is upstream's `bam_line->core.isize` (TLEN, abs value
+// capped at MaxInsertSize) per stats.c:1265-1268, NOT a position-derived
+// computation. Orientation is classified from the leftmost mate's strand
+// (inward = leftward forward + rightward reverse).
 func (c *StatsCounters) classifyPair(rec *sam.Record, opts StatsOptions) {
-	// Track pair: insert when we first see the qname, then on the second
-	// observation classify and remove.
 	if prev, ok := c.mates[rec.QName]; ok {
 		delete(c.mates, rec.QName)
 		// Different chromosome?
@@ -365,9 +363,6 @@ func (c *StatsCounters) classifyPair(rec *sam.Record, opts StatsOptions) {
 		}
 		leftRev := left.flag&sam.FlagReverse != 0
 		rightRev := right.flag&sam.FlagReverse != 0
-		// Inward: left forward, right reverse.
-		// Outward: left reverse, right forward.
-		// Other: same strand on both.
 		var bucket map[int64]int64
 		switch {
 		case !leftRev && rightRev:
@@ -380,11 +375,16 @@ func (c *StatsCounters) classifyPair(rec *sam.Record, opts StatsOptions) {
 			c.OtherOrientPairs++
 			bucket = c.ISOther
 		}
-		ins := int64(right.end) - int64(left.pos) + 1
+		// Insert size: |TLEN| of the second-observed record. Upstream
+		// caps at -i/--max-insert (default 8000) by clamping, not skipping.
+		ins := int64(rec.TLen)
 		if ins < 0 {
 			ins = -ins
 		}
-		if ins > 0 && int(ins) <= opts.MaxInsertSize {
+		if ins > int64(opts.MaxInsertSize) {
+			ins = int64(opts.MaxInsertSize)
+		}
+		if ins > 0 {
 			bucket[ins]++
 			c.InsertSumAbs += ins
 			c.InsertSumSqAbs += ins * ins
@@ -505,9 +505,12 @@ func (c *StatsCounters) writeSN(bw *bufio.Writer) {
 	emit("outward oriented pairs", c.OutwardPairs, "")
 	emit("pairs with other orientation", c.OtherOrientPairs, "")
 	emit("pairs on different chromosomes", c.DiffChromosomePairs, "")
+	// Proper-pair % uses Sequences (= 1st + 2nd + other) as the denominator,
+	// matching upstream stats.c:1606. NOT ReadsPaired — they differ when
+	// records have the paired bit but no first/last fragment classification.
 	pp := 0.0
-	if c.ReadsPaired > 0 {
-		pp = 100.0 * float64(c.ReadsProperlyPaired) / float64(c.ReadsPaired)
+	if c.Sequences > 0 {
+		pp = 100.0 * float64(c.ReadsProperlyPaired) / float64(c.Sequences)
 	}
 	emit("percentage of properly paired reads (%)", fmt.Sprintf("%.1f", pp), "")
 }
@@ -557,7 +560,7 @@ func (c *StatsCounters) writeIS(bw *bufio.Writer, opts StatsOptions) {
 	for k := range seen {
 		keys = append(keys, k)
 	}
-	sortInt64s(keys)
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	for _, k := range keys {
 		inw := c.ISInw[k]
 		outw := c.ISOutw[k]
@@ -567,34 +570,12 @@ func (c *StatsCounters) writeIS(bw *bufio.Writer, opts StatsOptions) {
 	}
 }
 
-// sortedKeys returns the keys of m in ascending order. Small helper kept
-// inline so the file has no external dependency on `sort` beyond what's
-// already pulled in.
+// sortedKeys returns the keys of m in ascending order.
 func sortedKeys(m map[int64]int64) []int64 {
 	ks := make([]int64, 0, len(m))
 	for k := range m {
 		ks = append(ks, k)
 	}
-	sortInt64s(ks)
+	sort.Slice(ks, func(i, j int) bool { return ks[i] < ks[j] })
 	return ks
-}
-
-// sortInt64s sorts s ascending using insertion sort for short slices and
-// a simple in-place quicksort otherwise. Avoids dragging in package sort
-// transitively in places we don't need it.
-func sortInt64s(s []int64) {
-	if len(s) < 2 {
-		return
-	}
-	// Use a simple insertion sort — the histograms are typically tiny
-	// (read-length distributions have a handful of distinct values).
-	for i := 1; i < len(s); i++ {
-		v := s[i]
-		j := i - 1
-		for j >= 0 && s[j] > v {
-			s[j+1] = s[j]
-			j--
-		}
-		s[j+1] = v
-	}
 }
