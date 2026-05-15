@@ -1351,3 +1351,226 @@ func runImport(args []string) int {
 	}
 	return 0
 }
+
+// ----- phase -----------------------------------------------------------
+
+const phaseUsage = `samtools phase - phase haplotypes from heterozygous SNPs.
+
+Usage:
+  samtools phase [options] <in.bam|in.sam>
+
+Walks reads against an in-memory pileup, calls heterozygous SNPs
+(positions with at least two alleles, each backed by ≥ 2 reads), then
+chains each het across overlapping reads using a greedy majority-vote
+solver. Emits a 4-column TSV per het site:
+
+  PS<TAB>chrom<TAB>pos<TAB>{0|1|2}
+
+where 0 = ambiguous (no consistent cluster), 1 = hap1, 2 = hap2.
+Positions are 1-based to match SAM POS.
+
+Options:
+  -k INT       Block-merge window: max number of unphased hets between
+               two phased hets before a new block starts. (Default 13.)
+  -b STR       Output prefix for per-haplotype BAMs. Accepted; v1 does
+               not yet split the BAM (the TSV stream is always emitted
+               to -o / stdout). Tracked in PARITY_ROADMAP.md.
+  -q INT       Min MAPQ. (Default 13.)
+  -Q INT       Min base quality. (Default 13.)
+  -D INT       Max depth observed per position. (Default 256.)
+  -F           Use the full read (ignore soft-clip trimming). Accepted;
+               v1 always uses the aligned slice.
+  -A           Mark drop in the dropped output. Accepted; v1 has no
+               per-read chimera output.
+  -e           Use empirical-Bayes prior. Accepted-and-ignored
+               (upstream MCMC fallback is deferred — see roadmap).
+  -l INT       Block-merge length cap. Accepted-and-ignored.
+  -o, --output PATH  Output TSV path (default stdout).
+  -h, --help   Show this help.
+      --version  Show version.
+
+MCMC fallback for chimera repair and tied junctions is deferred; see
+docs/PARITY_ROADMAP.md.
+`
+
+func runPhase(args []string) int {
+	fs := flag.NewFlagSet("samtools phase", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		blockK    int
+		outPrefix string
+		minMAPQ   int
+		minBaseQ  int
+		maxDepth  int
+		fullRead  bool
+		dropAmbig bool
+		outPath   string
+		showHelp  bool
+		showVer   bool
+	)
+	fs.IntVar(&blockK, "k", samtools.DefaultPhaseBlockWindow, "")
+	fs.StringVar(&outPrefix, "b", "", "")
+	fs.IntVar(&minMAPQ, "q", samtools.DefaultPhaseMinMAPQ, "")
+	fs.IntVar(&minBaseQ, "Q", samtools.DefaultPhaseMinBaseQ, "")
+	fs.IntVar(&maxDepth, "D", samtools.DefaultPhaseMaxDepth, "")
+	fs.BoolVar(&fullRead, "F", false, "")
+	fs.BoolVar(&dropAmbig, "A", false, "")
+	// Upstream phase.c:631 declares `-e` (use empirical-Bayes prior) and
+	// `-l INT` (block-merge length cap). Both are accepted-and-ignored
+	// for CLI parity per docs/PARITY_ROADMAP.md "phase MCMC" deferral.
+	var (
+		upstreamE bool
+		upstreamL int
+	)
+	fs.BoolVar(&upstreamE, "e", false, "")
+	fs.IntVar(&upstreamL, "l", 0, "")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, phaseUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(phaseUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	_ = upstreamE
+	_ = upstreamL
+	if fs.NArg() == 0 {
+		fmt.Fprint(os.Stderr, phaseUsage)
+		return 2
+	}
+	in, err := iohelper.OpenReader(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools phase: %v\n", err)
+		return 1
+	}
+	defer in.Close()
+	out, err := openOut(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools phase: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+	if _, err := samtools.Phase(in, out, samtools.PhaseOptions{
+		BlockWindow:   blockK,
+		MinMAPQ:       uint8(minMAPQ),
+		MinBaseQ:      uint8(minBaseQ),
+		MaxDepth:      maxDepth,
+		FullRead:      fullRead,
+		DropAmbiguous: dropAmbig,
+		OutputPrefix:  outPrefix,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools phase: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// ----- targetcut -------------------------------------------------------
+
+const targetcutUsage = `samtools targetcut - emit a FASTA slice of each aligned read.
+
+Usage:
+  samtools targetcut [options] <in.bam>
+
+For every mapped primary record, writes a FASTA entry containing the
+read sequence that aligns to the reference (soft-clipped flanks
+removed; insertions retained because they consume query bases;
+deletions / refskips / padding contribute nothing).
+
+Options:
+  -Q INT             Min base quality. Bases with Phred quality below
+                     the cutoff are dropped. (Default 13.)
+  -o, --output FILE  Output FASTA (default stdout). Accepts "-".
+  -h, --help         Show this help.
+      --version      Show version.
+
+Upstream-only flags (accepted-and-ignored — upstream samtools
+targetcut is an HMM-consensus tool over fosmid pools; our v1 ships
+the simpler aligned-slice-to-FASTA mode). The accepted upstream
+flag letters are: -i INT (state-transition penalty), -f FILE (ref
+FASTA), -0/-1/-2 INT (HMM emission scores). See
+docs/PARITY_ROADMAP.md for the documented scope reduction.
+`
+
+func runTargetcut(args []string) int {
+	fs := flag.NewFlagSet("samtools targetcut", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var (
+		minBaseQ int
+		outPath  string
+		// Upstream `cut_target.c` declares these flag letters with
+		// different meanings (HMM-consensus tool). We accept them as
+		// no-ops so a user copy-pasting an upstream invocation gets a
+		// recognised parse rather than a silent flag-letter collision.
+		upstreamI  int
+		upstreamF  string
+		upstreamE0 int
+		upstreamE1 int
+		upstreamE2 int
+		showHelp   bool
+		showVer    bool
+	)
+	fs.IntVar(&minBaseQ, "Q", int(samtools.DefaultTargetcutMinBaseQ), "")
+	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	fs.IntVar(&upstreamI, "i", 0, "")
+	fs.StringVar(&upstreamF, "f", "", "")
+	fs.IntVar(&upstreamE0, "0", 0, "")
+	fs.IntVar(&upstreamE1, "1", 0, "")
+	fs.IntVar(&upstreamE2, "2", 0, "")
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&showVer, "version", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, targetcutUsage)
+		return 2
+	}
+	if showHelp {
+		fmt.Print(targetcutUsage)
+		return 0
+	}
+	if showVer {
+		fmt.Println(version)
+		return 0
+	}
+	// Discard the upstream-only flag values (recognised for CLI parity).
+	_ = upstreamI
+	_ = upstreamF
+	_ = upstreamE0
+	_ = upstreamE1
+	_ = upstreamE2
+	inPath := "-"
+	if fs.NArg() > 0 {
+		inPath = fs.Arg(0)
+	}
+	in, err := iohelper.OpenReader(inPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools targetcut: %v\n", err)
+		return 1
+	}
+	defer in.Close()
+	out, err := openOut(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "samtools targetcut: %v\n", err)
+		return 1
+	}
+	defer out.Close()
+	if _, err := samtools.Targetcut(in, out, samtools.TargetcutOptions{
+		MinBaseQ: uint8(minBaseQ),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "samtools targetcut: %v\n", err)
+		return 1
+	}
+	return 0
+}

@@ -677,7 +677,9 @@ the upstream golden files are impractically large for unit-test scope.
 | stats      |           6 |      6 |       0 | SN-section byte parity on fixtures 1, 2, 5, 7, 8, 10 from `reference_code/samtools/test/stat/` (all 8 SN-only cases we exercise pass byte-identical). Non-SN sections (RL/MAPQ/IS) are emitted but only smoke-tested; see deferred-section list below. |
 | calmd      |           6 |      5 |       1 | Logical MD/NM parity on hand-built fixtures covering match, mismatch, deletion, insertion, soft-clip, multi-contig; `-e` rewrites SEQ to '=' on matches; BAM round-trip preserves both tags; existing-tag overwrite emits "different" stderr warning + Quiet suppresses it. Skip: upstream `bam_md.c` `-uAr` BGZF byte-diff (libdeflate version mismatch). |
 | import     |          12 |     11 |       1 | FASTQ→BAM/SAM across R1+R2 paired, -0 unpaired, -s interleaved, -T '*' / -T 'XZ' / -T '' aux extraction, -R short / -r full RG, --order int+padded forms, /1/2 suffix strip toggle, BAM round-trip, two positional args. Skip: upstream import-then-fastq round-trip (requires upstream samtools fastq for the round-half). |
-| **TOTAL**  |     **104** | **90** | **14**  | |
+| phase      |           5 |      5 |       0 | Hand-built SAM fixtures: two-het chain (flip case), two-het chain (label-1 case), ambiguous label when reads don't bridge two hets, MinMAPQ filter drops T-bearing reads, default-constants guard. Upstream MCMC chimera repair deferred; `-b` per-haplotype BAM split not yet wired (see PARITY_ROADMAP.md#samtools). |
+| targetcut  |           3 |      3 |       0 | Hand-built SAM fixtures: soft-clip + insertion + deletion + unmapped/secondary skip + SEQ='*' skip; `-Q` per-base quality filter drops sub-threshold bases; default-constant guard. The upstream `cut_target.c` HMM consensus mode is **NOT** implemented in v1 — the Go port emits an aligned-slice FASTA per read instead (documented scope reduction). |
+| **TOTAL**  |     **112** | **98** | **14**  | |
 
 ### samtools: discrepancies found in our port (fixed in this PR)
 

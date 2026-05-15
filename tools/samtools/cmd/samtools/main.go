@@ -46,6 +46,8 @@ Subcommands:
   stats         Print exhaustive alignment statistics.
   calmd         Compute MD + NM aux tags by walking CIGAR vs reference.
   import        Convert FASTQ to BAM (single / paired / interleaved).
+  phase         Phase haplotypes from heterozygous SNPs.
+  targetcut     Emit FASTA slice of each aligned read.
   help          Show this help.
   version       Show version.
 `
@@ -98,6 +100,10 @@ func main() {
 		os.Exit(runCalmd(os.Args[2:]))
 	case "import":
 		os.Exit(runImport(os.Args[2:]))
+	case "phase":
+		os.Exit(runPhase(os.Args[2:]))
+	case "targetcut":
+		os.Exit(runTargetcut(os.Args[2:]))
 	case "help", "-h", "--help":
 		fmt.Print(rootUsage)
 		return
