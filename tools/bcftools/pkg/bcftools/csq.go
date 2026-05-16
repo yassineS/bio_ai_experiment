@@ -460,8 +460,9 @@ func classifyForTranscript(t *CSQTranscript, refSeq []byte, pos int, refBase, al
 		consequence = "stop_lost"
 	} else if altAA == '*' && refAA != '*' {
 		consequence = "stop_gained"
-	} else if codingOff == 0 && refAA == 'M' && altAA != 'M' {
-		// First codon of CDS — start-loss.
+	} else if codonIdx == 0 && refAA == 'M' && altAA != 'M' {
+		// First codon of CDS — start-loss. Any of the 3 ATG
+		// positions count, not just the leading base.
 		consequence = "start_lost"
 	} else if refAA != altAA {
 		consequence = "missense"
@@ -485,13 +486,20 @@ func classifyForTranscript(t *CSQTranscript, refSeq []byte, pos int, refBase, al
 // cdsOffset returns the 0-based offset of pos within the transcript's
 // CDS, walking exons in strand order.
 func cdsOffset(t *CSQTranscript, pos int) (int, bool) {
+	// Honour GFF3 Phase on the first CDS exon (in transcript order).
+	// Per GFF3 spec, Phase = number of bases of the 5' end of the
+	// exon that are leftover from the previous codon, so the reading
+	// frame is offset by `phase`. Most Ensembl/GENCODE transcripts
+	// whose CDS starts mid-exon (e.g. truncated annotations) have
+	// non-zero phase here; ignoring it puts every codon out of frame.
+	framePhase := transcriptFirstPhase(t)
 	if t.Strand == gff.StrandReverse {
 		// Iterate exons from highest genomic coord downward.
 		off := 0
 		for i := len(t.CDSExons) - 1; i >= 0; i-- {
 			e := t.CDSExons[i]
 			if pos >= e.Start && pos <= e.End {
-				return off + (e.End - pos), true
+				return off + (e.End - pos) - framePhase, true
 			}
 			off += e.End - e.Start + 1
 		}
@@ -501,11 +509,32 @@ func cdsOffset(t *CSQTranscript, pos int) (int, bool) {
 	off := 0
 	for _, e := range t.CDSExons {
 		if pos >= e.Start && pos <= e.End {
-			return off + (pos - e.Start), true
+			return off + (pos - e.Start) - framePhase, true
 		}
 		off += e.End - e.Start + 1
 	}
 	return 0, false
+}
+
+// transcriptFirstPhase returns the GFF3 phase of the first CDS exon
+// in transcript order (highest-Start for reverse strand, lowest-Start
+// for forward). Defaults to 0 when the parser hasn't recorded a phase.
+func transcriptFirstPhase(t *CSQTranscript) int {
+	if len(t.CDSExons) == 0 {
+		return 0
+	}
+	if t.Strand == gff.StrandReverse {
+		p := t.CDSExons[len(t.CDSExons)-1].Phase
+		if p < 0 || p > 2 {
+			return 0
+		}
+		return p
+	}
+	p := t.CDSExons[0].Phase
+	if p < 0 || p > 2 {
+		return 0
+	}
+	return p
 }
 
 // cdsToGenomic converts a CDS-coordinate offset back to a 1-based

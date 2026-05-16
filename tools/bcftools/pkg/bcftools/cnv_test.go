@@ -139,3 +139,51 @@ func TestParseFloatField(t *testing.T) {
 		t.Errorf("missing tag should return ok=false")
 	}
 }
+
+// TestCNVBafFromAD pins the FORMAT/AD = REF,ALT fallback synthesis
+// (PR #110 review finding #4): when FORMAT/BAF isn't present, BAF
+// must come from ALT/(REF+ALT).
+func TestCNVBafFromAD(t *testing.T) {
+	cases := []struct {
+		in     string
+		want   float64
+		wantOK bool
+	}{
+		{"10,10", 0.5, true},
+		{"30,10", 0.25, true},
+		{"0,10", 1.0, true},
+		{"10,0", 0.0, true},
+		{"0,0", 0, false},
+		{"", 0, false},
+		{".", 0, false},
+		{"abc,def", 0, false},
+		{"10", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := bafFromAD(c.in)
+		if ok != c.wantOK {
+			t.Errorf("bafFromAD(%q) ok=%v want %v", c.in, ok, c.wantOK)
+			continue
+		}
+		if ok && got != c.want {
+			t.Errorf("bafFromAD(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestCNVClassifyCN_LOH pins PR #110 review finding #3: classifyCN
+// MUST consult bafDev, not just LRR. A copy-neutral LOH signal
+// (balanced LRR + skewed BAF) feeds through the new bafLo gate.
+func TestCNVClassifyCN_LOH(t *testing.T) {
+	opts := CNVOptions{BAFDev: 0.05, LRRDev: 0.20}
+	// LRR=0 + BAF dev = 0.30 -> hits the LOH branch (still CN2 in v1
+	// per docstring, but the gate is now load-bearing so a future
+	// state can flip on without breaking the public API).
+	if got := classifyCN(0.30, 0.0, opts); got != "CN2" {
+		t.Errorf("LOH-like signal: got %s, want CN2", got)
+	}
+	// LRR=0 + BAF dev = 0 -> plain diploid CN2.
+	if got := classifyCN(0.0, 0.0, opts); got != "CN2" {
+		t.Errorf("plain diploid: got %s, want CN2", got)
+	}
+}

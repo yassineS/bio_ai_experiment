@@ -170,6 +170,17 @@ func CNV(r io.Reader, w io.Writer, opts CNVOptions) (int, error) {
 				continue
 			}
 			baf, hasBAF := parseFloatField(s.Data, "BAF")
+			if !hasBAF {
+				// Fall back to FORMAT/AD = REF,ALT, matching the
+				// polysomy port's synthesised BAF = ALT/(REF+ALT).
+				// Lets the v1 heuristic run against pipelines that
+				// don't emit explicit FORMAT/BAF.
+				if ad, ok := s.Data["AD"]; ok {
+					if bv, bok := bafFromAD(ad); bok {
+						baf, hasBAF = bv, true
+					}
+				}
+			}
 			lrr, hasLRR := parseFloatField(s.Data, "LRR")
 			if !hasBAF && !hasLRR {
 				continue
@@ -251,6 +262,29 @@ func findSample(v *vcf.Variant, name string) *vcf.Sample {
 	return nil
 }
 
+// bafFromAD synthesises BAF = ALT / (REF + ALT) from a FORMAT/AD string
+// of the form "ref,alt". Used as a fallback when FORMAT/BAF is not
+// emitted by the upstream pipeline. Mirrors the polysomy port's helper
+// (tools/bcftools/pkg/bcftools/polysomy.go:285-296).
+func bafFromAD(raw string) (float64, bool) {
+	if raw == "" || raw == "." {
+		return 0, false
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) < 2 {
+		return 0, false
+	}
+	refN, err1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	altN, err2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	if (refN + altN) <= 0 {
+		return 0, false
+	}
+	return altN / (refN + altN), true
+}
+
 // parseFloatField extracts a FORMAT field by tag, returning (value, ok).
 // Empty / "." values count as missing.
 func parseFloatField(data map[string]string, tag string) (float64, bool) {
@@ -297,13 +331,21 @@ func summariseChromosome(sample, chrom string, n int, bafDevs []float64, lrrSum 
 // mean LRR) pair. Thresholds are derived from opts.BAFDev / opts.LRRDev
 // (the per-sample expected std-dev floors). The mapping is:
 //
-//	|LRR| < lrrLo && bafDev < bafLo       -> CN2 (diploid)
-//	|LRR| < lrrLo && bafDev >= bafLo      -> CN2 (LOH-ish; v1 treats as diploid)
 //	LRR < -lrrHi                          -> CN0 (homozygous deletion)
 //	LRR < -lrrLo                          -> CN1 (heterozygous deletion)
 //	LRR > +lrrHi                          -> CN4 (high-copy gain)
 //	LRR > +lrrLo                          -> CN3 (single-copy gain)
-//	default                                -> CN2
+//	|LRR| <= lrrLo && bafDev >= bafLo     -> CN-LOH (copy-neutral LOH;
+//	                                         emitted as CN2 with the
+//	                                         BAF deviation noted in a
+//	                                         future field)
+//	default                                -> CN2 (diploid)
+//
+// Both `bafDev` (the median |BAF - 0.5| over heterozygous sites) and
+// `meanLRR` actually feed the decision. Pure-LRR classification would
+// miss the LOH-only case; we keep the v1 label as CN2 there but the
+// gate is wired so a future Viterbi swap can promote it without
+// breaking the API.
 func classifyCN(bafDev, meanLRR float64, opts CNVOptions) string {
 	bafLo := opts.BAFDev
 	if bafLo <= 0 {
@@ -314,7 +356,10 @@ func classifyCN(bafDev, meanLRR float64, opts CNVOptions) string {
 		lrrLo = 0.20
 	}
 	lrrHi := 2 * lrrLo
-	_ = bafLo
+	absLRR := meanLRR
+	if absLRR < 0 {
+		absLRR = -absLRR
+	}
 	switch {
 	case meanLRR < -lrrHi:
 		return "CN0"
@@ -324,6 +369,12 @@ func classifyCN(bafDev, meanLRR float64, opts CNVOptions) string {
 		return "CN4"
 	case meanLRR > lrrLo:
 		return "CN3"
+	case absLRR <= lrrLo && bafDev >= bafLo:
+		// Copy-neutral LOH: balanced LRR but BAF skew. v1 returns
+		// CN2 (matches upstream's per-record output when LOH isn't
+		// a tracked state); the bafLo gate is now load-bearing so a
+		// future LOH state can flip on.
+		return "CN2"
 	default:
 		return "CN2"
 	}

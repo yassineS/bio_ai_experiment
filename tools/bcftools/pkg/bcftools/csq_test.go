@@ -279,6 +279,60 @@ chr1	src	CDS	1	15	.	+	0	ID=cds1;Parent=tx1
 	}
 }
 
+// TestClassifyStartLost_MidCodon pins PR #110 review finding: start-loss
+// must fire for ANY of the 3 ATG positions (codonIdx == 0), not just
+// the leading A. Previously the check was `codingOff == 0` which only
+// fired on the first base.
+func TestClassifyStartLost_MidCodon(t *testing.T) {
+	idx := buildCSQIndex(t)
+	// pos 2 is the T in ATG. Mutate it to C -> ACG -> T (not Met) -> start_lost.
+	entry, ok := classifyForTranscript(idx.Transcripts["tx1"], idx.Refs["chr1"], 2, 'T', 'C')
+	if !ok {
+		t.Fatalf("classifyForTranscript returned !ok")
+	}
+	if !strings.HasPrefix(entry, "start_lost|") {
+		t.Errorf("pos 2 (T in ATG) expected start_lost, got %q", entry)
+	}
+	// pos 3 is the G in ATG. Mutate to T -> ATT -> Ile -> start_lost.
+	entry, ok = classifyForTranscript(idx.Transcripts["tx1"], idx.Refs["chr1"], 3, 'G', 'T')
+	if !ok {
+		t.Fatalf("classifyForTranscript returned !ok")
+	}
+	if !strings.HasPrefix(entry, "start_lost|") {
+		t.Errorf("pos 3 (G in ATG) expected start_lost, got %q", entry)
+	}
+}
+
+// TestCDSOffsetHonoursPhase pins PR #110 review finding #1: cdsOffset
+// must consume CDSExon.Phase, the GFF3 5'-leftover-codon-base count.
+// With phase=1 on the first CDS exon, position 2 (which would normally
+// be CDS offset 1) becomes offset 0 — the start of the reading frame.
+func TestCDSOffsetHonoursPhase(t *testing.T) {
+	tx := &CSQTranscript{
+		Strand: gff.StrandForward,
+		CDSExons: []CSQExon{
+			{Start: 1, End: 30, Phase: 1},
+		},
+	}
+	// Without phase: pos=2 -> offset 1. With phase=1: pos=2 -> offset 0.
+	off, ok := cdsOffset(tx, 2)
+	if !ok {
+		t.Fatalf("cdsOffset(2): !ok")
+	}
+	if off != 0 {
+		t.Errorf("phase=1: cdsOffset(2) = %d, want 0", off)
+	}
+	// And pos=1 (the leftover base) -> offset -1, which the caller
+	// uses to detect "before frame start" — still returned as ok.
+	off, ok = cdsOffset(tx, 1)
+	if !ok {
+		t.Fatalf("cdsOffset(1): !ok")
+	}
+	if off != -1 {
+		t.Errorf("phase=1: cdsOffset(1) = %d, want -1", off)
+	}
+}
+
 func writeFile(path, content string) error {
 	return writeFileBytes(path, []byte(content))
 }
