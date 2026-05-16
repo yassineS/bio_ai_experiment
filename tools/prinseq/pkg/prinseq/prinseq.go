@@ -479,7 +479,7 @@ type FilterOptions struct {
 	//   FastaOut    — secondary FASTA writer for `--out_format 4 / 5`.
 	//   QualOut     — QUAL writer for `--out_format 2 / 5`. QUAL records
 	//                 follow upstream `convertQualArrayToString`
-	//                 (lines 2531-2546): two-character zero-padded decimal
+	//                 (lines 2531-2546): two-character space-padded decimal
 	//                 phred scores separated by spaces, wrapped every
 	//                 QualLineWidth values; default 60 (LINE_WIDTH at
 	//                 line 45).
@@ -724,12 +724,13 @@ func writeSeqIDMapping(w io.Writer, origID, newID string) error {
 }
 
 // renameDescription returns the rewritten header used by `--seq_id`.
-// It mirrors upstream's behaviour at prinseq-lite.pl:3648: the new
-// identifier is "<SeqID><counter>" and any trailing comment text from
-// the original header is dropped (upstream rebuilds the header from
-// just the id and an optional `$header` slot that comes from a later
-// stage — but the seq_id rename happens before any comment is appended,
-// so the upstream output is just the prefixed id).
+// The new identifier is "<SeqID><counter>".
+//
+// Documented divergence from upstream (prinseq-lite.pl:3683-3691):
+// upstream emits `$sid.($header ? ' '.$header : ”)`, so a record with
+// a trailing comment like `@read1 sample=A` becomes `@<prefix>N sample=A`
+// — the comment is PRESERVED. The Go port currently drops the comment;
+// tracked under docs/PARITY_ROADMAP.md#prinseq-lite as a known divergence.
 func renameDescription(prefix string, counter int) string {
 	return fmt.Sprintf("%s%d", prefix, counter)
 }

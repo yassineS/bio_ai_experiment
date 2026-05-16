@@ -305,14 +305,16 @@ parity is not enforced):
   multiple files to stdout. The semantic restriction matches upstream
   (lines 801-802), the on-disk filename layout differs.
 - The QUAL output uses the upstream `convertQualArrayToString`
-  layout (two-character zero-padded decimal, single-space separated,
+  layout (two-character space-padded decimal, single-space separated,
   wrapped every `LINE_WIDTH=60` values; lines 45 and 2531-2546). We
   do **not** currently expose the upstream `-line_width` knob; the
   default is fixed at 60 via `QualLineWidth` on `FilterOptions` so
   future PRs can plumb it through.
 - The `--seq_id` rename drops any trailing whitespace/comment from
-  the original FASTA description, matching upstream's
-  `$seqid = $params{seq_id}.$seqcount` replacement (line 3648).
+  the original FASTA description. **This is a divergence from upstream**:
+  upstream `prinseq-lite.pl:3683-3691` emits
+  `$sid.($header ? ' '.$header : '')`, preserving any trailing comment.
+  Tracked here for future-PR follow-up.
 
 Still missing:
 
