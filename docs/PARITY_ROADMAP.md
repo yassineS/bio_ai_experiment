@@ -71,18 +71,41 @@ closed.
 
 ### `seqtk`
 
-**Status:** 13 of ~20 subcommands. ~65%.
+**Status:** 15 of ~20 subcommands. ~75%.
 
 Missing subcommands:
 
 - `listhet` — extract heterozygous sites from VCF/BCF.
 - `fqchk` — FASTQ quality check report.
 - `seqshuf` — shuffle FASTA/Q records.
-- `pair` — pair up R1/R2 from interleaved input.
-- `dropse` — drop unpaired reads.
 - `hpc-bg` — homopolymer-compress with mismatch tolerance.
 - `kfreq` — k-mer frequency analysis.
 - `gcdc` — GC depth count.
+
+Subcommand-style extensions (no upstream equivalent, project-original
+helpers built on top of `mergepe`/`dropse`):
+
+- `pair` — split an interleaved FASTA/FASTQ stream back into two
+  parallel mate files (positional `<in> <out1> <out2>`; no flags).
+  This subcommand has **no upstream surface**: upstream seqtk v1.5
+  has no `pair` subcommand at all (verified against
+  `reference_code/seqtk/seqtk.c::main()` dispatch table — the
+  registered subcommands are `comp`, `fqchk`, `hety`, `gc`, `subseq`,
+  `mutfa`, `mergefa`, `mergepe`, `dropse`, `randbase`, `cutN`, `gap`,
+  `listhet`, `famask`, `trimfq`, `hrun`/`hpc`, `sample`, `seq`,
+  `kfreq`, `rename`, `split`, `telo`, `size`). The previous
+  roadmap entry implying `pair` was a missing upstream subcommand
+  is corrected here.
+
+Bugfixes landed since the 2026-05-14 audit:
+
+- `comp` — fixed `seq_nt16_table['U']`/`['u']` mapping. Was 8 (T);
+  upstream `reference_code/seqtk/seqtk.c` line 189 defines
+  `seq_nt16_table[85] = 15` and `[117] = 15` (i.e. U is treated as
+  the 4-base ambiguity N, not as T). The bug caused U bases to count
+  in the `#T` column instead of `#4`; the regression test
+  `TestParity_Seqtk_Comp_UBaseFasta` now pins this against an
+  upstream-generated fixture.
 
 Note: `cnregion` was listed here before but is **not** an upstream seqtk
 subcommand (verified against `reference_code/seqtk/seqtk.c` v1.5: the only

@@ -400,10 +400,50 @@ func TestParity_Seqtk_Empty_NoCrash(t *testing.T) {
 			return Mutfa(bytes.NewReader(emptyFA), bytes.NewReader([]byte{}), &bytes.Buffer{})
 		}},
 		{"Randbase", func() error { return Randbase(bytes.NewReader(emptyFA), &bytes.Buffer{}, 7) }},
+		{"Dropse(FASTA)", func() error { return Dropse(bytes.NewReader(emptyFA), &bytes.Buffer{}) }},
+		{"Dropse(FASTQ)", func() error { return Dropse(bytes.NewReader(emptyFQ), &bytes.Buffer{}) }},
+		{"Pair(FASTA)", func() error { return Pair(bytes.NewReader(emptyFA), &bytes.Buffer{}, &bytes.Buffer{}) }},
+		{"Pair(FASTQ)", func() error { return Pair(bytes.NewReader(emptyFQ), &bytes.Buffer{}, &bytes.Buffer{}) }},
 	}
 	for _, s := range subs {
 		if err := s.fn(); err != nil {
 			t.Errorf("%s on empty input returned %v, want nil (no crash)", s.name, err)
 		}
 	}
+}
+
+// TestParity_Seqtk_Comp_UBaseFasta is a regression test for the
+// previously-buggy seq_nt16_table['U']/['u'] mapping (was 8 == T,
+// upstream is 15 == N). With the fix in place every U/u counts as
+// the 4-base ambiguity code N (the #4 column) and the totals match
+// upstream byte-for-byte.
+func TestParity_Seqtk_Comp_UBaseFasta(t *testing.T) {
+	got := runComp(t, "comp_u.fa")
+	want := readParityFile(t, "comp_u.expected.txt")
+	mustEqualBytes(t, "comp comp_u.fa", got, want)
+}
+
+// TestParity_Seqtk_Dropse_FastqByteParity exercises the dropse port
+// against an upstream-generated fixture containing two paired reads,
+// one orphan in the middle and one orphan at the end.
+func TestParity_Seqtk_Dropse_FastqByteParity(t *testing.T) {
+	in := readParityFile(t, "dropse_input.fq")
+	var out bytes.Buffer
+	if err := Dropse(bytes.NewReader(in), &out); err != nil {
+		t.Fatalf("Dropse fastq: %v", err)
+	}
+	want := readParityFile(t, "dropse_input.expected.fq")
+	mustEqualBytes(t, "dropse dropse_input.fq", out.Bytes(), want)
+}
+
+// TestParity_Seqtk_Dropse_FastaByteParity is the FASTA analogue of
+// TestParity_Seqtk_Dropse_FastqByteParity.
+func TestParity_Seqtk_Dropse_FastaByteParity(t *testing.T) {
+	in := readParityFile(t, "dropse_input.fa")
+	var out bytes.Buffer
+	if err := Dropse(bytes.NewReader(in), &out); err != nil {
+		t.Fatalf("Dropse fasta: %v", err)
+	}
+	want := readParityFile(t, "dropse_input.expected.fa")
+	mustEqualBytes(t, "dropse dropse_input.fa", out.Bytes(), want)
 }

@@ -27,6 +27,8 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Homopolymer compression (`hpc`)**
   - **Gap-region scan (`gap`)**
   - **GC- and AT-rich region scan (`gc`)**
+  - **Drop unpaired reads from interleaved input (`dropse`)**
+  - **Split interleaved input into two mate files (`pair`)** *(project extension; see `docs/PARITY_ROADMAP.md#seqtk`)*
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -446,6 +448,44 @@ Options:
 - `-l, --min-length INT`: Min region length to output (default: 20)
 - `-x, --x-dropoff FLOAT`: X-dropoff threshold (default: 10.0)
 - `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+
+#### 14. Drop Unpaired Reads (`dropse`)
+
+Drop unpaired (singleton) reads from an interleaved FASTA/FASTQ stream.
+Two adjacent records are considered mates when their names are identical
+after stripping a trailing `/<digit>` suffix (e.g. `/1` vs `/2`). Records
+whose immediate neighbour does not match this rule are silently dropped,
+matching upstream `seqtk dropse` byte-for-byte (verified against
+`reference_code/seqtk` v1.5-r133).
+
+```bash
+seqtk dropse interleaved.fq > paired.fq
+cat reads.fq.gz | seqtk dropse - > paired.fq
+```
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience — upstream takes no flags.*
+
+#### 15. Split Interleaved Input (`pair`)
+
+*Project extension — upstream seqtk has no `pair` subcommand
+(see `docs/PARITY_ROADMAP.md#seqtk`).* Splits an interleaved
+FASTA/FASTQ stream back into two parallel mate files — the inverse
+of `mergepe`. Records at positions 0, 2, 4, ... go to `<out1>` and
+records at positions 1, 3, 5, ... go to `<out2>`, with the original
+format preserved.
+
+```bash
+seqtk pair interleaved.fq r1.fq r2.fq
+seqtk pair interleaved.fa.gz r1.fa.gz r2.fa.gz
+```
+
+Arguments: `<in>`, `<out1>`, `<out2>` (positional only — no flags so
+as not to introduce a non-upstream flag surface). Run `dropse` first
+if your input may contain singletons; otherwise an odd record count
+is reported as an error.
 
 ## Examples
 
