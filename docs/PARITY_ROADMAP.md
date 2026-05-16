@@ -350,14 +350,15 @@ Missing:
   arrays are present but a handful of additional keys upstream emits
   are still missing. Run upstream `fastp` on a sample input and diff.
 
-#### Validated-parity audit (this PR)
+#### Validated-parity audit
 
-15-case test corpus at `tools/fastp/pkg/fastp/parity_test.go` against
-upstream fastp 1.0.1. 11 PASS, 4 SKIP. See
+16-case test corpus at `tools/fastp/pkg/fastp/parity_test.go` against
+upstream fastp 1.0.1. 15 PASS, 1 SKIP (post the polyG / sliding-window
+fixes in `claude/fastp-algorithmic-fixes`). See
 [tools/PARITY_VALIDATION.md#fastp-parity-validation](../tools/PARITY_VALIDATION.md#fastp-parity-validation)
 for the case list.
 
-Bugs in the Go port surfaced + fixed inline by this audit:
+Bugs in the Go port surfaced + fixed inline by the initial audit:
 
 - **UMI tag format** was unconditionally `":UMI_<umi>"`. Upstream uses
   `":<umi>"` (no prefix) or `":<prefix>_<umi>"` (with prefix). Fixed.
@@ -366,27 +367,34 @@ Bugs in the Go port surfaced + fixed inline by this audit:
   seq[i+1]". Fixed.
 - **`low_complexity_reads` JSON counter** was missing. Added.
 
-Bugs in the Go port we **identified but did NOT fix in this PR** (skipped
-parity cases pointing back here):
+Bugs fixed inline by the `claude/fastp-algorithmic-fixes` follow-up PR:
 
 - **PolyG mismatch tolerance**: upstream's `trimPolyG` tolerates 1
   mismatch per 8 bases scanned (capped at 5 total) and anchors on the
-  last-G position (`reference_code/fastp/src/polyx.cpp::trimPolyG`).
-  Our Go port does a strict consecutive-G count. Follow-up needed:
-  port the upstream algorithm verbatim — it's ~20 lines.
+  last-G position (`reference_code/fastp/src/polyx.cpp:16-42`). The Go
+  port now runs a verbatim port (`trimPolyG` in
+  `tools/fastp/pkg/fastp/fastp.go`). `TestParity_Fastp_Case12_SEPolyG`
+  is no longer skipped.
 - **Sliding-window boundary** (`cut_front` / `cut_tail` / `cut_right`):
-  three off-by-1..2 issues in `slidingWindowCut` vs upstream's
-  `filter.cpp::trimAndCut`. cut_right needs to keep the high-Q prefix
-  of the offending window; cut_front needs to skip past trailing N's
-  at the cut; window-iteration bounds differ by one. Follow-up: port
-  the upstream algorithm; ~50 lines total across the three modes.
+  `slidingWindowCut` is now a verbatim port of upstream's
+  `filter.cpp:83-222`. Specifically: (a) cut_right walks the high-Q
+  prefix inside the offending bad window, (b) cut_front and cut_tail
+  truncate at the START of the qualifying window (then skip N's at the
+  boundary), (c) the loop bound stays strictly `s + w < l` so the
+  trailing w bases are never scanned.
+  `TestParity_Fastp_Case13_SECutRight` and
+  `TestParity_Fastp_Case14_SECutFrontTail` are no longer skipped.
+
+Bugs in the Go port we **identified but did NOT fix yet**:
+
 - **SE adapter auto-detect**: upstream builds a kmer overlap-tree from
   the first 10000 reads (`evaluator.cpp`). We do a simple substring
   search against a small built-in adapter table. Different algorithm,
   different results. Bigger fix; tracked here.
+  `TestParity_Fastp_Case15_SEAutoDetect` remains skipped.
 
-**Validation:** **16-case parity test suite, 12 passing, 4
-documented `t.Skip`** (post this PR).
+**Validation:** **16-case parity test suite, 15 passing, 1
+documented `t.Skip`** (post `claude/fastp-algorithmic-fixes`).
 
 ### bedtools (35 subcommands ported)
 

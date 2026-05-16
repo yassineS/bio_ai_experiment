@@ -581,31 +581,81 @@ func TestParity_Fastp_Case11b_PEDetectAdapter(t *testing.T) {
 	)
 }
 
-// Case 12 — SE poly-G trimming. SKIPPED: upstream's polyG implementation
-// tolerates 1 mismatch per 8 bases (max 5 total) plus a final-G "anchor"
-// rule (see reference_code/fastp/src/polyx.cpp::trimPolyG). Our Go port
-// strips only strictly-consecutive G's. This is a known divergence and
-// a real bug in the Go port — fixing it requires porting the upstream
-// algorithm, tracked in docs/PARITY_ROADMAP.md.
+// Case 12 — SE poly-G trimming (-g flag, upstream's NovaSeq-style trim).
+// Our Go port now runs the verbatim PolyX::trimPolyG algorithm from
+// reference_code/fastp/src/polyx.cpp:16-42 (1 mismatch per 8 bases scanned,
+// capped at 5; anchors on the last-G seen).
 func TestParity_Fastp_Case12_SEPolyG(t *testing.T) {
-	t.Skip("Go port does strict consecutive-G poly-G trim; upstream tolerates 1 mismatch per 8 bases. Tracked in docs/PARITY_ROADMAP.md#fastp (PolyG mismatch tolerance)")
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_clean.fq")
+	dir := t.TempDir()
+
+	upFq, upJSON := runUpstreamSE(t, bin, in, dir, []string{"-g"})
+
+	opts := DefaultProcessOptions()
+	opts.TrimPolyG = true
+	goFq, goStats := runGoFastpSE(t, in, opts)
+
+	mustEqualBytes(t, "case12 SE poly-G FASTQ", goFq, upFq)
+	goJSON := jsonFromStats(t, goStats)
+	assertCounters(t, "case12 counters", upJSON, goJSON,
+		"summary.before_filtering.total_reads",
+		"filtering_result.passed_filter_reads",
+	)
 }
 
-// Case 13 — SE sliding-window cut_right. SKIPPED: the upstream algorithm
-// re-walks the bad window keeping any high-Q prefix bases, AND advances
-// past 'N' bases at the cut boundary (filter.cpp:172-178). Our Go cut
-// drops the entire bad window. The end result is upstream keeps 1-2
-// more bases than us at the cut.
+// Case 13 — SE sliding-window cut_right (--cut_right with default window=4
+// and quality=20). Our Go port now mirrors the upstream cut_right walk
+// from reference_code/fastp/src/filter.cpp:144-178, including the
+// high-Q-prefix preservation inside the offending window.
 func TestParity_Fastp_Case13_SECutRight(t *testing.T) {
-	t.Skip("Go cut_right cuts at window start; upstream walks the bad window keeping high-Q prefix. Tracked in docs/PARITY_ROADMAP.md#fastp (Sliding-window boundary)")
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_lqtail.fq")
+	dir := t.TempDir()
+
+	upFq, upJSON := runUpstreamSE(t, bin, in, dir,
+		[]string{"--cut_right", "--cut_right_window_size", "4", "--cut_right_mean_quality", "20"})
+
+	opts := DefaultProcessOptions()
+	opts.CutRight = true
+	opts.CutWindowSize = 4
+	opts.CutMeanQuality = 20
+	goFq, goStats := runGoFastpSE(t, in, opts)
+
+	mustEqualBytes(t, "case13 SE cut_right FASTQ", goFq, upFq)
+	goJSON := jsonFromStats(t, goStats)
+	assertCounters(t, "case13 counters", upJSON, goJSON,
+		"summary.before_filtering.total_reads",
+		"filtering_result.passed_filter_reads",
+	)
 }
 
-// Case 14 — SE sliding-window cut_front + cut_tail. Same algorithmic
-// divergence as case 13 plus an extra "skip leading N's" step in
-// upstream's cut_front (filter.cpp:138-139). Skipped for the same
-// reason.
+// Case 14 — SE sliding-window cut_front + cut_tail. Tests both ends of
+// upstream's symmetric trimAndCut algorithm (filter.cpp:111-209),
+// including the trailing-N skip step at filter.cpp:138-139 / 206-207.
 func TestParity_Fastp_Case14_SECutFrontTail(t *testing.T) {
-	t.Skip("Go cut_front/cut_tail boundary differs from upstream by 1-2 bases. Tracked in docs/PARITY_ROADMAP.md#fastp (Sliding-window boundary)")
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_lqtail.fq")
+	dir := t.TempDir()
+
+	upFq, upJSON := runUpstreamSE(t, bin, in, dir,
+		[]string{"--cut_front", "--cut_tail",
+			"--cut_front_window_size", "4", "--cut_front_mean_quality", "20",
+			"--cut_tail_window_size", "4", "--cut_tail_mean_quality", "20"})
+
+	opts := DefaultProcessOptions()
+	opts.CutFront = true
+	opts.CutTail = true
+	opts.CutWindowSize = 4
+	opts.CutMeanQuality = 20
+	goFq, goStats := runGoFastpSE(t, in, opts)
+
+	mustEqualBytes(t, "case14 SE cut_front+cut_tail FASTQ", goFq, upFq)
+	goJSON := jsonFromStats(t, goStats)
+	assertCounters(t, "case14 counters", upJSON, goJSON,
+		"summary.before_filtering.total_reads",
+		"filtering_result.passed_filter_reads",
+	)
 }
 
 // Case 15 — SE adapter auto-detection (no -a flag, SE detection mode).

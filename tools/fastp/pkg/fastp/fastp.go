@@ -667,11 +667,18 @@ func processRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStat
 		}
 	}
 
-	// Step 2: Trim poly-G tails if enabled
+	// Step 2: Trim poly-G tails if enabled.
+	//
+	// Uses trimPolyG, a verbatim port of upstream's PolyX::trimPolyG
+	// (reference_code/fastp/src/polyx.cpp:16-42). The upstream algorithm
+	// tolerates 1 mismatch per 8 bases scanned (capped at 5 total) and
+	// anchors the trim at the last-G position seen, rather than requiring
+	// strictly-consecutive G's like the old Go countPolyTail did.
 	if opts.TrimPolyG {
-		polyLen := countPolyTail(seq[start:end], 'G')
-		if polyLen >= opts.PolyGMinLen {
-			end -= polyLen
+		newEnd := trimPolyG(seq[start:end], opts.PolyGMinLen)
+		if newEnd < end-start {
+			polyLen := (end - start) - newEnd
+			end = start + newEnd
 			stats.PolyGTrimmedReads++
 			stats.PolyGTrimmedBases += int64(polyLen)
 		}
@@ -689,7 +696,7 @@ func processRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStat
 
 	// Step 3.5: Sliding-window quality trimming (cut_front / cut_tail / cut_right)
 	if opts.CutFront || opts.CutTail || opts.CutRight {
-		cutLo, cutHi := slidingWindowCut(qual[start:end], encoding, opts)
+		cutLo, cutHi := slidingWindowCut([]byte(seq[start:end]), qual[start:end], encoding, opts)
 		if cutLo != 0 || cutHi != end-start {
 			removed := (cutLo) + (end - start - cutHi)
 			start += cutLo
@@ -835,106 +842,188 @@ func phredOffset(encoding fastq.QualityEncoding) int {
 	return 33
 }
 
-// slidingWindowCut applies fastp's sliding-window quality trimming to a quality
-// slice and returns the half-open index range [lo, hi) of the bases that should
-// be kept. The three modes (cut_front, cut_tail, cut_right) are applied in that
-// order when more than one is enabled, matching upstream fastp.
+// slidingWindowCut applies fastp's sliding-window quality trimming and
+// returns the half-open index range [lo, hi) of bases that should be kept
+// in seq / quality.
 //
-// cut_front: scanning 5'->3', find the first window whose mean quality is >=
-// CutMeanQuality and trim everything before it.
-// cut_tail: scanning 3'->5', find the first window whose mean quality is >=
-// CutMeanQuality and trim everything after it.
-// cut_right: scanning 5'->3', the moment a window's mean quality drops below
-// CutMeanQuality, cut the read at that window's start (keep [0, windowStart)).
+// This is a verbatim port of upstream fastp's Filter::trimAndCut
+// (reference_code/fastp/src/filter.cpp:83-222), with PE pre-trim front/tail
+// hard-wired to 0 (the Go caller passes the already-clipped slice). The
+// three modes are applied in upstream's order:
 //
-// If the window size is larger than the (current) read, the whole read is
-// treated as a single short window.
-func slidingWindowCut(quality []byte, encoding fastq.QualityEncoding, opts ProcessOptions) (lo, hi int) {
+//   - cut_front (filter.cpp:111-142): walk a window 5'->3' until the
+//     window mean quality is >= CutMeanQuality. Then advance past the
+//     window minus one base, then skip any leading 'N's. Keep [s, end).
+//
+//   - cut_right (filter.cpp:144-178): walk a window 5'->3'; on the first
+//     window with mean below threshold, walk the bad window keeping the
+//     high-Q prefix (qualstr[s] >= threshold). Trim from there onward.
+//
+//   - cut_tail (filter.cpp:180-209): only runs when cut_right is OFF.
+//     Walks a window 3'->5'; on the first window with mean >= threshold,
+//     trim everything past the window's START (then skip trailing N's).
+//
+// Critically, the upstream loop bound is strictly `s + w < l` (not
+// `s + w <= l`), so the very last window of the read is never scanned.
+// Replicated here for byte-for-byte parity with the C++ implementation.
+//
+// The cut_front asymmetric trim - front jumps to s+w-1 once we find the
+// qualifying window, dropping (w-1) bases of that window - is also part
+// of the upstream behavior and is preserved verbatim.
+func slidingWindowCut(seq, quality []byte, encoding fastq.QualityEncoding, opts ProcessOptions) (lo, hi int) {
 	offset := phredOffset(encoding)
 	window := opts.CutWindowSize
 	if window < 1 {
 		window = 1
 	}
-	threshold := float64(opts.CutMeanQuality)
+	l := len(quality)
+	front := 0
+	tail := 0
+	rlen := l
 
-	lo, hi = 0, len(quality)
+	// q returns the integer Phred score at position i in the (full)
+	// quality slice. Mirrors upstream's `qualstr[i] - 33` math; we use
+	// the configured phred offset (33 or 64).
+	q := func(i int) int { return int(quality[i]) - offset }
 
-	// meanQual computes the mean quality of quality[a:b].
-	meanQual := func(a, b int) float64 {
-		if b <= a {
-			return 0
-		}
-		sum := 0
-		for i := a; i < b; i++ {
-			sum += int(quality[i]) - offset
-		}
-		return float64(sum) / float64(b-a)
-	}
-
+	// CUT FRONT - filter.cpp:111-142.
 	if opts.CutFront {
-		n := hi - lo
 		w := window
-		if w > n {
-			w = n
-		}
-		if w > 0 {
-			newLo := lo
-			for newLo+w <= hi {
-				if meanQual(newLo, newLo+w) >= threshold {
+		// l - front - tail - w <= 0 -> nothing to do; upstream returns NULL.
+		if l-front-tail-w > 0 {
+			totalQual := 0
+			s := front
+			// preparing rolling: sum w-1 leading qualities.
+			for i := 0; i < w-1; i++ {
+				totalQual += q(s + i)
+			}
+			thresh := float64(opts.CutMeanQuality)
+			for s = front; s+w < l-tail; s++ {
+				totalQual += q(s + w - 1)
+				if s > front {
+					totalQual -= q(s - 1)
+				}
+				if float64(totalQual)/float64(w) >= thresh {
 					break
 				}
-				newLo++
 			}
-			if newLo+w > hi {
-				// No qualifying window found: drop everything.
-				newLo = hi
+			// the trimming in front is forwarded and rlen is recalculated
+			if s > 0 {
+				s = s + w - 1
 			}
-			lo = newLo
+			for s < l && seq[s] == 'N' {
+				s++
+			}
+			front = s
+			rlen = l - front - tail
 		}
 	}
 
-	if opts.CutTail {
-		n := hi - lo
-		w := window
-		if w > n {
-			w = n
-		}
-		if w > 0 {
-			newHi := hi
-			for newHi-w >= lo {
-				if meanQual(newHi-w, newHi) >= threshold {
-					break
-				}
-				newHi--
-			}
-			if newHi-w < lo {
-				// No qualifying window found: drop everything.
-				newHi = lo
-			}
-			hi = newHi
-		}
-	}
-
+	// CUT RIGHT - filter.cpp:144-178.
 	if opts.CutRight {
-		n := hi - lo
 		w := window
-		if w > n {
-			w = n
-		}
-		if w > 0 {
-			for s := lo; s+w <= hi; s++ {
-				if meanQual(s, s+w) < threshold {
-					hi = s
+		if l-front-tail-w > 0 {
+			totalQual := 0
+			s := front
+			for i := 0; i < w-1; i++ {
+				totalQual += q(s + i)
+			}
+			thresh := float64(opts.CutMeanQuality)
+			foundLowQualWindow := false
+			for s = front; s+w < l-tail; s++ {
+				totalQual += q(s + w - 1)
+				if s > front {
+					totalQual -= q(s - 1)
+				}
+				if float64(totalQual)/float64(w) < thresh {
+					foundLowQualWindow = true
 					break
 				}
+			}
+			if foundLowQualWindow {
+				// keep the good bases in the (bad) window
+				for s < l-1 && q(s) >= opts.CutMeanQuality {
+					s++
+				}
+				rlen = s - front
 			}
 		}
 	}
 
-	if hi < lo {
-		hi = lo
+	// CUT TAIL - filter.cpp:180-209. Suppressed when cut_right is on.
+	if !opts.CutRight && opts.CutTail {
+		w := window
+		if l-front-tail-w > 0 {
+			totalQual := 0
+			t := l - tail - 1
+			// preparing rolling: sum w-1 trailing qualities.
+			for i := 0; i < w-1; i++ {
+				totalQual += q(t - i)
+			}
+			thresh := float64(opts.CutMeanQuality)
+			for t = l - tail - 1; t-w >= front; t-- {
+				totalQual += q(t - w + 1)
+				if t < l-tail-1 {
+					totalQual -= q(t + 1)
+				}
+				if float64(totalQual)/float64(w) >= thresh {
+					break
+				}
+			}
+			if t < l-1 {
+				t = t - w + 1
+			}
+			for t >= 0 && seq[t] == 'N' {
+				t--
+			}
+			rlen = t - front + 1
+		}
 	}
-	return lo, hi
+
+	// Upstream returns NULL (i.e. the read is dropped) when rlen <= 0 or
+	// front >= l-1. We model that by emitting a degenerate range, which
+	// the caller's MinLength check then rejects.
+	if rlen <= 0 || front >= l-1 {
+		return l, l
+	}
+	return front, front + rlen
+}
+
+// trimPolyG trims a 3' poly-G run from seq and returns the new length
+// (the index at which to truncate). It is a verbatim port of upstream
+// fastp's PolyX::trimPolyG (reference_code/fastp/src/polyx.cpp:16-42).
+//
+// The algorithm scans bases right-to-left, allowing one mismatch per 8
+// bases scanned (capped at 5 total). It tracks `firstGPos`, the
+// leftmost-G seen so far in the run; once we accumulate enough
+// mismatches that the run can't reasonably continue (and we've already
+// scanned at least compareReq bases) we stop and truncate at firstGPos.
+//
+// Returns len(seq) if no trim should be applied.
+func trimPolyG(seq string, compareReq int) int {
+	const allowOneMismatchForEach = 8
+	const maxMismatch = 5
+
+	rlen := len(seq)
+	mismatch := 0
+	i := 0
+	firstGPos := rlen - 1
+	for i = 0; i < rlen; i++ {
+		b := seq[rlen-i-1]
+		if b != 'G' && b != 'g' {
+			mismatch++
+		} else {
+			firstGPos = rlen - i - 1
+		}
+		allowedMismatch := (i + 1) / allowOneMismatchForEach
+		if mismatch > maxMismatch || (mismatch > allowedMismatch && i >= compareReq-1) {
+			break
+		}
+	}
+	if i >= compareReq {
+		return firstGPos
+	}
+	return rlen
 }
 
 // getQualityScores converts ASCII-encoded quality scores to numeric values.
