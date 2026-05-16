@@ -503,17 +503,19 @@ The bcftools port (`tools/bcftools/` covering `view`, `index`, `stats`,
 `query`, `concat`, `norm`, `call`, plus the PR #86 wave-1 tail
 `annotate` / `head` / `isec` / `merge` / `reheader` / `sort`, the
 convert/mendelian PR's `convert` + `mendelian`, the gtcheck/roh PR's
-`gtcheck` + `roh`, and the filter/consensus PR's `filter` + `consensus`)
+`gtcheck` + `roh`, the filter/consensus PR's `filter` + `consensus`,
+and the mendelian2/polysomy PR's `mendelian2` + `polysomy`)
 is validated against upstream `bcftools 1.19+htslib-1.19` via
 `tools/bcftools/pkg/bcftools/parity_test.go` plus the per-subcommand
 unit suites under the same package directory.
 
-`convert` and `mendelian` are exercised exclusively by hand-built
-fixtures in `tools/bcftools/pkg/bcftools/{convert,mendelian}_test.go`
+`convert`, `mendelian`, `mendelian2`, and `polysomy` are exercised
+exclusively by hand-built fixtures in
+`tools/bcftools/pkg/bcftools/{convert,mendelian,mendelian2,polysomy}_test.go`
 in this PR; an upstream-fixture parity run will land in the
-follow-up parity wave (the upstream plugin uses
-`reference_code/bcftools/test/mendelian.*` which we do not currently
-vendor as a submodule).
+follow-up parity wave (the upstream plugins live under
+`reference_code/bcftools/plugins/` and `reference_code/bcftools/test/`,
+which we do not currently vendor for the per-suite parity rig).
 
 The brief differs from bedtools' in two ways:
 

@@ -1,9 +1,9 @@
 // Command bcftools is a pure-Go reimplementation of selected bcftools
 // subcommands. Today it ships `view`, `index`, `stats`, `query`, `concat`,
 // `norm`, `call`, `merge`, `isec`, `sort`, `head`, `reheader`,
-// `annotate`, `convert`, `mendelian`, `gtcheck`, `roh`, `filter`, and
-// `consensus`; remaining subcommands (`csq`, `mpileup`, ...) will
-// follow in subsequent PRs.
+// `annotate`, `convert`, `mendelian`, `mendelian2`, `gtcheck`, `roh`,
+// `filter`, `consensus`, and `polysomy`; remaining subcommands
+// (`csq`, `mpileup`, ...) will follow in subsequent PRs.
 package main
 
 import (
@@ -37,10 +37,12 @@ Subcommands:
   annotate  Annotate INFO from a tab-indexed table or VCF.
   convert   Re-emit VCF/BCF in a different format (with sample/region filters).
   mendelian Detect Mendelian-inconsistent genotypes given a PED-style trio.
+  mendelian2 Newer Mendelian-inheritance checker with PED-file ingestion.
   gtcheck   Check sample identity (genotype concordance).
   roh       Detect runs of autozygosity (ROH) via a 2-state HMM.
   filter    Soft-filter records by include / exclude expression.
   consensus Apply VCF variants to a reference FASTA.
+  polysomy  Detect chromosomal copy number from B-allele frequency.
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
   help      Show this help (also via -? on subcommands).
@@ -83,6 +85,8 @@ func main() {
 		os.Exit(runConvert(os.Args[2:]))
 	case "mendelian":
 		os.Exit(runMendelian(os.Args[2:]))
+	case "mendelian2":
+		os.Exit(runMendelian2(os.Args[2:]))
 	case "gtcheck":
 		os.Exit(runGtcheck(os.Args[2:]))
 	case "roh":
@@ -91,6 +95,8 @@ func main() {
 		os.Exit(runFilter(os.Args[2:]))
 	case "consensus":
 		os.Exit(runConsensus(os.Args[2:]))
+	case "polysomy":
+		os.Exit(runPolysomy(os.Args[2:]))
 	case "help", "--help":
 		fmt.Print(rootUsage)
 		return

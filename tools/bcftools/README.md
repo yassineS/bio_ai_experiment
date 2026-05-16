@@ -21,6 +21,12 @@ subcommands. The current implementation ships:
   record (annotate mode), a TSV trio rollup (`-c`), or a filtered
   VCF (`-d`). The X-chromosome mode (`-m x`) treats the father as
   haploid on `X`/`chrX`.
+- `bcftools mendelian2` — the rewritten upstream plugin. Adds PED-file
+  ingestion (`-P/--ped`), `-p/--pfm [1X:|2X:]P,F,M` shortcut, and the
+  richer mode bitmask `-m c|[adeEgmMS]` (a=annotate, d=set offending
+  trio GTs to ./., e=list err sites, E=drop err sites, g=list good
+  sites, m=list missing sites, M=drop missing sites, S=drop skipped
+  sites). Multiple letters can be combined.
 - `bcftools gtcheck` — sample-identity check by hard-GT Hamming
   concordance (with `-g panel`). Emits the upstream `tsv`-format
   `DC` / `INFO` tables.
@@ -36,6 +42,14 @@ subcommands. The current implementation ships:
   (R/A/I/LR/LA/SR/SA + numeric), `-I/--iupac-codes`, `-m/--mask`
   with `--mask-with`, `--mark-ins / --mark-snv / --mark-del`,
   `-p/--prefix`, `-a/--absent`, `-M/--missing`.
+- `bcftools polysomy` — estimate chromosomal copy number from BAF.
+  Emits a per-sample × per-chromosome TSV
+  (`sample / chrom / n_het / mean_baf / median_baf / cn_call`). The
+  v1 algorithm is a median-deviation heuristic (CN1 when no hets,
+  CN2 when |median - 0.5| ≤ threshold, CN3 otherwise); the full
+  Gaussian-mixture peak fit is tracked in
+  `docs/PARITY_ROADMAP.md#bcftools`. Reads BAF from FORMAT/BAF
+  when present, falls back to FORMAT/AD = REF,ALT.
 - `pkg/bioformats/bcf` — reader and writer for the BCF v2.2 binary format.
 
 All pieces share the existing `pkg/bioformats/vcf` types so downstream
