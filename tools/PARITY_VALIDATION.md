@@ -501,9 +501,10 @@ One; recorded in
 
 The bcftools port (`tools/bcftools/` covering `view`, `index`, `stats`,
 `query`, `concat`, `norm`, `call`, plus the PR #86 wave-1 tail
-`annotate` / `head` / `isec` / `merge` / `reheader` / `sort`, and the
-convert/mendelian PR's `convert` + `mendelian`) is validated against
-upstream `bcftools 1.19+htslib-1.19` via
+`annotate` / `head` / `isec` / `merge` / `reheader` / `sort`, the
+convert/mendelian PR's `convert` + `mendelian`, the gtcheck/roh PR's
+`gtcheck` + `roh`, and the filter/consensus PR's `filter` + `consensus`)
+is validated against upstream `bcftools 1.19+htslib-1.19` via
 `tools/bcftools/pkg/bcftools/parity_test.go` plus the per-subcommand
 unit suites under the same package directory.
 
@@ -548,7 +549,9 @@ The brief differs from bedtools' in two ways:
 | merge      |           3 |      3 |       0 | All cases: two single-sample VCFs → two-sample, disjoint positions, single-input rejected. Pre-sort required. |
 | reheader   |           3 |      3 |       0 | All cases: positional sample rename, `OLD\tNEW` mapping rename, full header-file substitution. `-i` in-place mode emits to stdout in v1. |
 | annotate   |           3 |      2 |       1 | Skip: `--set-id` macro expansion. Passing: `-x ID`, `-x INFO/DP`. |
-| **TOTAL**  |      **75** | **54** | **22**  | |
+| filter     |           7 |      7 |       0 | All cases: `-i` + `-s` soft-tag, `-e` + `-s`, `-m x` reset-on-pass, `-m +` append-preserve, `-S .` GT-rewrite (preserves `\|` phase), `-S 0` GT-rewrite, `-g SnpGap`, `-s +` auto-named filter. Mask flags (`--mask` / `-M`) parse cleanly and hard-reject with a roadmap pointer. |
+| consensus  |          11 |     11 |       0 | All cases: SNP apply-all-ALTs, simple insertion (REF=A,ALT=AC), simple deletion (REF=AC,ALT=A), `--mark-del CHAR` padding, per-sample GT (hom-ref vs hom-alt), `-H R` (REF in hets), `-H A` (ALT in hets), `-p prefix`, `--mark-snv uc`, `-m` mask with default N, overlapping-variants-first-wins. `-c/--chain` and `-H NpIu` parse cleanly and hard-reject with a roadmap pointer. |
+| **TOTAL**  |      **93** | **72** | **22**  | |
 
 (Counts include three subtests in `view` and `query` that exercise the
 streaming vs file paths separately. The two BCF header-only tests are

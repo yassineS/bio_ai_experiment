@@ -1,9 +1,9 @@
 // Command bcftools is a pure-Go reimplementation of selected bcftools
 // subcommands. Today it ships `view`, `index`, `stats`, `query`, `concat`,
 // `norm`, `call`, `merge`, `isec`, `sort`, `head`, `reheader`,
-// `annotate`, `convert`, `mendelian`, `gtcheck`, and `roh`; remaining
-// subcommands (`csq`, `mpileup`, `consensus`, ...) will follow in
-// subsequent PRs.
+// `annotate`, `convert`, `mendelian`, `gtcheck`, `roh`, `filter`, and
+// `consensus`; remaining subcommands (`csq`, `mpileup`, ...) will
+// follow in subsequent PRs.
 package main
 
 import (
@@ -39,6 +39,8 @@ Subcommands:
   mendelian Detect Mendelian-inconsistent genotypes given a PED-style trio.
   gtcheck   Check sample identity (genotype concordance).
   roh       Detect runs of autozygosity (ROH) via a 2-state HMM.
+  filter    Soft-filter records by include / exclude expression.
+  consensus Apply VCF variants to a reference FASTA.
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
   help      Show this help (also via -? on subcommands).
@@ -85,6 +87,10 @@ func main() {
 		os.Exit(runGtcheck(os.Args[2:]))
 	case "roh":
 		os.Exit(runRoh(os.Args[2:]))
+	case "filter":
+		os.Exit(runFilter(os.Args[2:]))
+	case "consensus":
+		os.Exit(runConsensus(os.Args[2:]))
 	case "help", "--help":
 		fmt.Print(rootUsage)
 		return
