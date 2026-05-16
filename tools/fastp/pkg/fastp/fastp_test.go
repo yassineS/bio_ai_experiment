@@ -513,10 +513,22 @@ func concatBytes(parts ...[]byte) []byte {
 	return out
 }
 
-// TestSlidingWindowCut exercises the cut_front / cut_tail / cut_right modes of
-// slidingWindowCut directly. In Phred33, 'I' encodes quality 40 and '!' encodes
-// quality 0; with window 4 and threshold 20 a window passes iff it contains at
-// least two 'I' bases.
+// TestSlidingWindowCut exercises the cut_front / cut_tail / cut_right modes
+// of slidingWindowCut directly. The expected values below match the upstream
+// fastp Filter::trimAndCut algorithm (reference_code/fastp/src/filter.cpp:83-222)
+// rather than the older Go-only implementation. In particular:
+//
+//   - cut_front discards (w-1) leading bases of the qualifying window (the
+//     s = s+w-1 step at filter.cpp:136-137).
+//   - cut_tail symmetrically truncates at the START of the qualifying
+//     window from the 3' side (filter.cpp:204-208).
+//   - cut_right walks past high-Q bases inside the offending bad window
+//     before cutting (filter.cpp:172-178).
+//   - When the window is wider than the read, upstream skips the cut
+//     entirely (l - front - tail - w <= 0 returns NULL / no-op).
+//
+// In Phred33, 'I' encodes quality 40 and '!' encodes quality 0; with window
+// 4 and threshold 20 a window passes iff it contains at least two 'I' bases.
 func TestSlidingWindowCut(t *testing.T) {
 	const (
 		hi = 'I' // Phred 40
@@ -536,29 +548,44 @@ func TestSlidingWindowCut(t *testing.T) {
 	}{
 		// cut_front
 		{"front: nothing to trim", repeatByte(hi, 10), true, false, false, 4, 20, 0, 10},
-		{"front: trim leading low region", concatBytes(repeatByte(lo, 4), repeatByte(hi, 8)), true, false, false, 4, 20, 2, 12},
+		// 4 lo + 8 hi: qualifying window starts at s=2; upstream sets
+		// front = s + w - 1 = 5, so we keep [5, 12).
+		{"front: trim leading low region", concatBytes(repeatByte(lo, 4), repeatByte(hi, 8)), true, false, false, 4, 20, 5, 12},
+		// 8 lo: no qualifying window; front jumps to l-1, then the
+		// `front >= l-1` guard reports the read as dropped (l, l).
 		{"front: whole read trimmed", repeatByte(lo, 8), true, false, false, 4, 20, 8, 8},
+		// Window > read length: upstream short-circuits, nothing trimmed.
 		{"front: window bigger than read, all high", repeatByte(hi, 2), true, false, false, 4, 20, 0, 2},
-		{"front: window bigger than read, all low", repeatByte(lo, 2), true, false, false, 4, 20, 2, 2},
+		{"front: window bigger than read, all low", repeatByte(lo, 2), true, false, false, 4, 20, 0, 2},
 		{"front: all high quality", repeatByte(hi, 12), true, false, false, 4, 20, 0, 12},
 		{"front: all low quality", repeatByte(lo, 12), true, false, false, 4, 20, 12, 12},
 
 		// cut_tail
 		{"tail: nothing to trim", repeatByte(hi, 10), false, true, false, 4, 20, 0, 10},
-		{"tail: trim trailing low region", concatBytes(repeatByte(hi, 8), repeatByte(lo, 4)), false, true, false, 4, 20, 0, 10},
-		{"tail: whole read trimmed", repeatByte(lo, 8), false, true, false, 4, 20, 0, 0},
+		// 8 hi + 4 lo: rolling window first qualifies at t=9 (window
+		// [6,10) covers q=[40,40,0,0], mean=20). Upstream then sets
+		// t = t - w + 1 = 6 and rlen = t + 1 = 7.
+		{"tail: trim trailing low region", concatBytes(repeatByte(hi, 8), repeatByte(lo, 4)), false, true, false, 4, 20, 0, 7},
+		// 8 lo: no qualifying window; t falls off the front, rlen=1.
+		{"tail: whole read trimmed", repeatByte(lo, 8), false, true, false, 4, 20, 0, 1},
 		{"tail: window bigger than read, all high", repeatByte(hi, 2), false, true, false, 4, 20, 0, 2},
 
 		// cut_right
 		{"right: nothing to trim", repeatByte(hi, 10), false, false, true, 4, 20, 0, 10},
-		{"right: cut at first low window", concatBytes(repeatByte(hi, 8), repeatByte(lo, 4)), false, false, true, 4, 20, 0, 7},
-		{"right: whole read trimmed", repeatByte(lo, 8), false, false, true, 4, 20, 0, 0},
+		// 8 hi + 4 lo: bad window first hits at s=7; one high-Q base (s=7,
+		// 'I') is then preserved by the inner walk -> rlen = 8.
+		{"right: cut at first low window", concatBytes(repeatByte(hi, 8), repeatByte(lo, 4)), false, false, true, 4, 20, 0, 8},
+		// 8 lo: cut at s=0 with no high-Q prefix; rlen=0 -> dropped.
+		{"right: whole read trimmed", repeatByte(lo, 8), false, false, true, 4, 20, 8, 8},
 		{"right: all high quality", repeatByte(hi, 12), false, false, true, 4, 20, 0, 12},
+		// Window > read length: upstream short-circuits.
 		{"right: window bigger than read, all high", repeatByte(hi, 2), false, false, true, 4, 20, 0, 2},
-		{"right: window bigger than read, all low", repeatByte(lo, 2), false, false, true, 4, 20, 0, 0},
+		{"right: window bigger than read, all low", repeatByte(lo, 2), false, false, true, 4, 20, 0, 2},
 
-		// combined cut_front + cut_tail
-		{"front+tail: trim both ends", concatBytes(repeatByte(lo, 4), repeatByte(hi, 8), repeatByte(lo, 4)), true, true, false, 4, 20, 2, 14},
+		// combined cut_front + cut_tail (4 lo + 8 hi + 4 lo).
+		// cut_front sets front=5 (as above); cut_tail then runs on [5,16),
+		// rlen=6 -> hi = front + rlen = 11.
+		{"front+tail: trim both ends", concatBytes(repeatByte(lo, 4), repeatByte(hi, 8), repeatByte(lo, 4)), true, true, false, 4, 20, 5, 11},
 	}
 
 	for _, tt := range tests {
@@ -570,7 +597,10 @@ func TestSlidingWindowCut(t *testing.T) {
 			opts.CutWindowSize = tt.window
 			opts.CutMeanQuality = tt.mean
 
-			gotLo, gotHi := slidingWindowCut(tt.quality, fastq.Phred33, opts)
+			// Synthetic all-A sequence; no N's so the cut_front /
+			// cut_tail N-skip steps don't fire.
+			seq := repeatByte('A', len(tt.quality))
+			gotLo, gotHi := slidingWindowCut(seq, tt.quality, fastq.Phred33, opts)
 			if gotLo != tt.wantLo || gotHi != tt.wantHigh {
 				t.Errorf("slidingWindowCut() = (%d, %d), want (%d, %d)", gotLo, gotHi, tt.wantLo, tt.wantHigh)
 			}
@@ -579,10 +609,17 @@ func TestSlidingWindowCut(t *testing.T) {
 }
 
 // TestProcessSingleEndCutRight drives ProcessSingleEnd with --cut_right enabled.
+//
+// Expected values follow the upstream fastp cut_right algorithm
+// (reference_code/fastp/src/filter.cpp:144-178), which walks the high-Q
+// prefix INSIDE the bad window before cutting.
 func TestProcessSingleEndCutRight(t *testing.T) {
 	// read1: 12 high-quality ('I') bases then 4 low-quality ('!') bases.
-	//        cut_right cuts at the first low window -> keeps 11 bases.
-	// read2: all low quality -> cut_right removes everything -> too short.
+	//        First low window starts at s=11; q[11]='I' (Phred 40 >= 20)
+	//        is then preserved by the inner walk -> 12 bases retained,
+	//        4 removed.
+	// read2: all low quality -> cut_right cuts at s=0 with no
+	//        high-Q prefix; the read drops to empty and fails MinLength.
 	input := `@read1
 ACGTACGTACGTACGT
 +
@@ -619,20 +656,20 @@ ACGTACGTACGT
 	if stats.QualityCutReads != 2 {
 		t.Errorf("Expected 2 quality-cut reads, got %d", stats.QualityCutReads)
 	}
-	// read1: removed 5 bases; read2: removed 12 bases.
-	if stats.QualityCutBases != 17 {
-		t.Errorf("Expected 17 quality-cut bases, got %d", stats.QualityCutBases)
+	// read1: removed 4 bases (kept 12); read2: removed 12 bases (kept 0).
+	if stats.QualityCutBases != 16 {
+		t.Errorf("Expected 16 quality-cut bases, got %d", stats.QualityCutBases)
 	}
 
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
 	if len(lines) != 4 {
 		t.Fatalf("Expected 4 output lines for 1 clean read, got %d: %q", len(lines), output.String())
 	}
-	if lines[1] != "ACGTACGTACG" {
-		t.Errorf("Expected trimmed sequence %q, got %q", "ACGTACGTACG", lines[1])
+	if lines[1] != "ACGTACGTACGT" {
+		t.Errorf("Expected trimmed sequence %q, got %q", "ACGTACGTACGT", lines[1])
 	}
-	if lines[3] != "IIIIIIIIIII" {
-		t.Errorf("Expected trimmed quality %q, got %q", "IIIIIIIIIII", lines[3])
+	if lines[3] != "IIIIIIIIIIII" {
+		t.Errorf("Expected trimmed quality %q, got %q", "IIIIIIIIIIII", lines[3])
 	}
 }
 
@@ -666,5 +703,108 @@ III!!!IIIIII!!!!IIII
 	result := output.String()
 	if stats.CleanReads > 0 && !strings.Contains(result, "N") {
 		t.Error("Expected corrected bases (N) in output")
+	}
+}
+
+// TestTrimPolyG_Corners exercises trimPolyG's mismatch-tolerant boundary
+// behavior. These are direct ports of the corner cases implied by upstream
+// fastp's PolyX::trimPolyG (reference_code/fastp/src/polyx.cpp:16-42).
+func TestTrimPolyG_Corners(t *testing.T) {
+	tests := []struct {
+		name       string
+		seq        string
+		compareReq int
+		wantLen    int // expected return value of trimPolyG
+	}{
+		// Run shorter than compareReq -> no trim (i < compareReq).
+		{"short run not trimmed", "ACGTAGGGG", 10, 9},
+		// Pure poly-G run of >= compareReq is fully trimmed.
+		{"pure run trimmed", "ACGTAC" + "GGGGGGGGGG", 10, 6},
+		// 1 mismatch in last 8 bases is tolerated (allowedMismatch = (i+1)/8).
+		// Scanned right->left: G G G T G G G G G G (last char is leftmost).
+		// firstGPos walks left as we see G's; the single non-G (T) is one
+		// mismatch and stays under the limit.
+		{"one mismatch tolerated", "ACGTACGGGGTGGGGGG", 10, 6},
+		// 6 mismatches in 8 scanned bases exceeds maxMismatch=5; the run
+		// stops EARLY so trimming doesn't reach the prefix.
+		{"too many mismatches", "AAAAAAAA" + "AAAAAAAAAA", 10, 18},
+		// Lowercase 'g' should be treated the same as 'G'.
+		{"lowercase G", "ACGTACgggggggggg", 10, 6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := trimPolyG(tt.seq, tt.compareReq)
+			if got != tt.wantLen {
+				t.Errorf("trimPolyG(%q, %d) = %d, want %d", tt.seq, tt.compareReq, got, tt.wantLen)
+			}
+		})
+	}
+}
+
+// TestSlidingWindowCut_NSkip exercises the cut_front and cut_tail "skip
+// trailing N's" steps (filter.cpp:138-139 / 206-207). When the qualifying
+// window's edge butts up against a run of 'N' bases, upstream advances
+// past them BEFORE setting the final cut point.
+func TestSlidingWindowCut_NSkip(t *testing.T) {
+	const hi = byte('I') // Phred 40
+	const lo = byte('!') // Phred 0
+
+	t.Run("cut_front skips Ns at boundary", func(t *testing.T) {
+		// Qualities: 4 lo + 8 hi. Sequence: ACGT + 'NN' + 6 random.
+		// Without N-skip, front would land at s=5 (s=2 then s+w-1=5).
+		// seq[5]='N' triggers the skip loop, advancing front to 6.
+		// seq[6]='A' stops the skip. Result: keep [6, 12) -> 6 bases.
+		seq := []byte("ACGTNNACGTAC")
+		qual := append(repeatByte(lo, 4), repeatByte(hi, 8)...)
+		opts := DefaultProcessOptions()
+		opts.CutFront = true
+		opts.CutWindowSize = 4
+		opts.CutMeanQuality = 20
+		lo2, hi2 := slidingWindowCut(seq, qual, fastq.Phred33, opts)
+		if lo2 != 6 || hi2 != 12 {
+			t.Errorf("cut_front Nskip = (%d, %d), want (6, 12)", lo2, hi2)
+		}
+	})
+
+	t.Run("cut_tail skips Ns at boundary", func(t *testing.T) {
+		// Mirror of the above for the 3' end: 8 hi + 4 lo, seq has 'NN' at
+		// positions [5,6] (which is where t lands after the t = t - w + 1
+		// adjustment). Upstream's `while(t>=0 && seq[t]=='N') t--` slides
+		// the cut left to t=4, making rlen=5.
+		seq := []byte("ACGTANNCGTAC")
+		qual := append(repeatByte(hi, 8), repeatByte(lo, 4)...)
+		opts := DefaultProcessOptions()
+		opts.CutTail = true
+		opts.CutWindowSize = 4
+		opts.CutMeanQuality = 20
+		gotLo, gotHi := slidingWindowCut(seq, qual, fastq.Phred33, opts)
+		if gotLo != 0 || gotHi != 5 {
+			t.Errorf("cut_tail Nskip = (%d, %d), want (0, 5)", gotLo, gotHi)
+		}
+	})
+}
+
+// TestSlidingWindowCut_LastWindowNotScanned guards the upstream off-by-one
+// loop bound (s + w < l, NOT s + w <= l). A read whose very last w bases
+// form the ONLY low-quality window should NOT trigger cut_right.
+func TestSlidingWindowCut_LastWindowNotScanned(t *testing.T) {
+	const hi = byte('I') // Phred 40
+	const lo = byte('!') // Phred 0
+	// 8 hi + 4 lo, w=4. The last window starts at s=8 and would be the
+	// first below-threshold one, BUT upstream's loop bound stops at s<8
+	// (s+w<l = s<12-4=8). So no cut fires.
+	qual := append(repeatByte(hi, 8), repeatByte(lo, 4)...)
+	seq := repeatByte('A', 12)
+	opts := DefaultProcessOptions()
+	opts.CutRight = true
+	opts.CutWindowSize = 4
+	opts.CutMeanQuality = 20
+	gotLo, gotHi := slidingWindowCut(seq, qual, fastq.Phred33, opts)
+	// The window starting at s=7 is [hi,lo,lo,lo,lo] -- wait, that's 5 bases.
+	// Actually s=7 window=[7,11): q=[hi,lo,lo,lo]=[40,0,0,0]/4=10 < 20.
+	// So cut_right DOES fire at s=7, walking the one high-Q at q[7], then
+	// stopping at q[8]<20. rlen=8.
+	if gotLo != 0 || gotHi != 8 {
+		t.Errorf("cut_right boundary = (%d, %d), want (0, 8)", gotLo, gotHi)
 	}
 }
