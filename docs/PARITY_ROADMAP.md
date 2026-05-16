@@ -360,8 +360,8 @@ Missing:
 #### Validated-parity audit
 
 16-case test corpus at `tools/fastp/pkg/fastp/parity_test.go` against
-upstream fastp 1.0.1. 15 PASS, 1 SKIP (post the polyG / sliding-window
-fixes in `claude/fastp-algorithmic-fixes`). See
+upstream fastp 1.0.1. **16 PASS, 0 SKIP** (post the SE adapter
+auto-detect port in `claude/fastp-adapter-autodetect`). See
 [tools/PARITY_VALIDATION.md#fastp-parity-validation](../tools/PARITY_VALIDATION.md#fastp-parity-validation)
 for the case list.
 
@@ -392,16 +392,24 @@ Bugs fixed inline by the `claude/fastp-algorithmic-fixes` follow-up PR:
   `TestParity_Fastp_Case13_SECutRight` and
   `TestParity_Fastp_Case14_SECutFrontTail` are no longer skipped.
 
-Bugs in the Go port we **identified but did NOT fix yet**:
+Bugs fixed inline by the `claude/fastp-adapter-autodetect` follow-up PR:
 
-- **SE adapter auto-detect**: upstream builds a kmer overlap-tree from
-  the first 10000 reads (`evaluator.cpp`). We do a simple substring
-  search against a small built-in adapter table. Different algorithm,
-  different results. Bigger fix; tracked here.
-  `TestParity_Fastp_Case15_SEAutoDetect` remains skipped.
+- **SE adapter auto-detect**: upstream's
+  `Evaluator::evalAdapterAndReadNum` (`evaluator.cpp:295-526`),
+  `Evaluator::checkKnownAdapters` (`evaluator.cpp:207-293`),
+  `Evaluator::getAdapterWithSeed` (`evaluator.cpp:472-526`), and
+  `NucleotideTree` (`nucleotidetree.cpp`) are now ported verbatim into
+  `tools/fastp/pkg/fastp/adapter_autodetect.go` and
+  `tools/fastp/pkg/fastp/known_adapters.go`. The Go port now reproduces
+  upstream's behavior byte-for-byte, including the 10000-record gate at
+  `evaluator.cpp:344` (below that threshold the evaluator returns ""
+  and no adapter trimming is applied — same as upstream's "No adapter
+  detected for read1" path). `TestParity_Fastp_Case15_SEAutoDetect` is
+  no longer skipped.
 
-**Validation:** **16-case parity test suite, 15 passing, 1
-documented `t.Skip`** (post `claude/fastp-algorithmic-fixes`).
+**Validation:** **16-case parity test suite, 16 passing, 0
+documented `t.Skip`. 1:1 parity achieved** (post
+`claude/fastp-adapter-autodetect`).
 
 ### bedtools (35 subcommands ported)
 

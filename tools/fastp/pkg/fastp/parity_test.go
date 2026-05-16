@@ -658,14 +658,39 @@ func TestParity_Fastp_Case14_SECutFrontTail(t *testing.T) {
 	)
 }
 
-// Case 15 — SE adapter auto-detection (no -a flag, SE detection mode).
-// Skipped: upstream's evaluator.cpp builds a kmer overlap-tree from
-// the first ~10000 reads; our Go port uses a much simpler
-// adapter-substring search against a small built-in adapter table.
-// Different defaults, different results. Fixing this requires porting
-// the kmer/overlap-tree logic.
+// Case 15 — SE adapter auto-detection (default upstream flags: -a is
+// "auto" so upstream runs Evaluator::evalAdapterAndReadNum). Our Go
+// port now uses the verbatim upstream algorithm (a kmer overlap-tree
+// over the first ~10000 reads) instead of a simple known-adapter
+// substring search. The se_adapter.fq fixture has 20 reads, which is
+// below upstream's gate at evaluator.cpp:344 (records >= 10000), so
+// both upstream and our port return "" from the evaluator and the
+// FASTQ output is bit-identical to case 1 (no adapter trimming
+// applied). This case validates the SE auto-detect code path runs
+// to completion and produces byte-parity output.
 func TestParity_Fastp_Case15_SEAutoDetect(t *testing.T) {
-	t.Skip("Go SE adapter auto-detection uses a simple substring search; upstream uses a kmer overlap tree. Tracked in docs/PARITY_ROADMAP.md")
+	bin := ensureUpstream(t)
+	in := parityInput(t, "se_adapter.fq")
+	dir := t.TempDir()
+
+	// Upstream's default: -a defaults to "auto" so the evaluator runs
+	// unconditionally. No extra flags needed.
+	upFq, upJSON := runUpstreamSE(t, bin, in, dir, nil)
+
+	opts := DefaultProcessOptions()
+	// Mirror upstream's default: enable SE adapter detection.
+	opts.DetectAdapterSE = true
+	goFq, goStats := runGoFastpSE(t, in, opts)
+
+	mustEqualBytes(t, "case15 SE adapter auto-detect FASTQ", goFq, upFq)
+	goJSON := jsonFromStats(t, goStats)
+	// adapter_cutting.* counters are only present when upstream detects
+	// an adapter; for this small fixture detection returns "" so we
+	// only check the always-present summary counters.
+	assertCounters(t, "case15 counters", upJSON, goJSON,
+		"summary.before_filtering.total_reads",
+		"filtering_result.passed_filter_reads",
+	)
 }
 
 // jsonFromStats serialises a ProcessStats through WriteJSONReport so the

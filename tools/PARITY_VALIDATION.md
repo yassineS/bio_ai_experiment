@@ -1031,12 +1031,12 @@ gracefully if the binary has not been built.
 | 10 | PE basic (defaults) | PASS | Byte-parity R1 + R2 + before/after counters. |
 | 11 | PE adapter (`-a ... --adapter_sequence_r2 ...`) | PASS | Counter parity. |
 | 11b | PE `--detect_adapter_for_pe` | PASS | Overlap-based detection; byte parity R1+R2. |
-| 12 | SE poly-G trimming (`-g`) | SKIP | Upstream tolerates mismatches; Go does strict consecutive-G — see PARITY_ROADMAP.md#fastp. |
-| 13 | SE sliding-window `--cut_right` | SKIP | Off-by-1..2 at cut boundary; algorithmic divergence — see PARITY_ROADMAP.md#fastp. |
-| 14 | SE sliding-window `--cut_front --cut_tail` | SKIP | Same window-boundary divergence as case 13. |
-| 15 | SE adapter auto-detect | SKIP | Different algorithm (substring vs kmer overlap-tree). |
+| 12 | SE poly-G trimming (`-g`) | PASS | Verbatim port of upstream `trimPolyG` (`polyx.cpp:16-42`). |
+| 13 | SE sliding-window `--cut_right` | PASS | Verbatim port of upstream `slidingWindowCut` (`filter.cpp:83-222`). |
+| 14 | SE sliding-window `--cut_front --cut_tail` | PASS | Same verbatim port as case 13. |
+| 15 | SE adapter auto-detect | PASS | Verbatim port of upstream `evalAdapterAndReadNum` + `NucleotideTree` (`evaluator.cpp:295-526`, `nucleotidetree.cpp`). With 20 reads, upstream's 10000-record gate returns "" and no adapter is trimmed; byte-parity output. |
 
-Totals: 16 cases, 12 PASS, 4 SKIP.
+Totals: 16 cases, **16 PASS, 0 SKIP**. **1:1 parity achieved.**
 
 ### Bugs surfaced and fixed in this PR
 
