@@ -436,7 +436,7 @@ func getAdapterWithSeed(seed int, reads []*fastq.Record, keylen int) string {
 			}
 		}
 	}
-	forwardPath, _ := forwardTree.getDominantPath()
+	forwardPath, forwardReachedLeaf := forwardTree.getDominantPath()
 
 	backwardTree := newNucleotideTree()
 	for _, r := range reads {
@@ -454,7 +454,15 @@ func getAdapterWithSeed(seed int, reads []*fastq.Record, keylen int) string {
 			}
 		}
 	}
-	backwardPath, reachedLeaf := backwardTree.getDominantPath()
+	backwardPath, backwardReachedLeaf := backwardTree.getDominantPath()
+
+	// Upstream evaluator.cpp:489-507 declares `bool reachedLeaf = true;`
+	// once and passes it by reference to BOTH getDominantPath calls,
+	// which only ever AND it down. The final value is therefore
+	// `true && !forwardFailed && !backwardFailed`. Reviewer-caught
+	// regression on PR #122: discarding the forward result let an
+	// adapter slip through when only the backward tree succeeded.
+	reachedLeaf := forwardReachedLeaf && backwardReachedLeaf
 
 	adapter := reverseString(backwardPath) + evaluatorInt2Seq(uint32(seed), keylen) + forwardPath
 	if len(adapter) > adapterDetectMaxLen {
