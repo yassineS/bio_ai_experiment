@@ -1,0 +1,4 @@
+random	200	+	104	27
+aa_repeat	100	+	99	99
+mixed_case	16	+	6	1
+with_n	12	-	2	0

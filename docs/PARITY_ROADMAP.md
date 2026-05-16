@@ -71,21 +71,54 @@ closed.
 
 ### `seqtk`
 
-**Status:** 21 of ~22 upstream subcommands. ~95%.
+**Status:** 23 of ~24 upstream subcommands. ~96%.
 
 Missing subcommands (verified against `reference_code/seqtk/seqtk.c::main()`
 dispatch table, v1.5-r133):
 
 - `listhet` — extract heterozygous sites from VCF/BCF.
 - `hpc-bg` — homopolymer-compress with mismatch tolerance.
-- `kfreq` — k-mer frequency analysis.
-- `telo` — find telomeric repeats.
 
-Added this iteration: `fqchk`, `hety`. Both are byte-for-byte parity
+Note: the dispatch-table audit at `reference_code/seqtk/seqtk.c::main()`
+lines 2099-2122 lists exactly these `stk_*` entry points: `comp`,
+`fqchk`, `hety`, `gc`, `subseq`, `mutfa`, `mergefa`, `mergepe`,
+`dropse`, `randbase`, `cutN`, `gap`, `listhet`, `famask`, `trimfq`,
+`hrun`/`hpc`, `sample`, `seq`, `kfreq`, `rename`, `split`, `telo`,
+`size`. That's 23 entries (treating `hrun`/`hpc` as one). With this
+iteration we cover everything except `listhet` and `hpc-bg`.
+
+Added this iteration: `kfreq`, `telo`. Both are byte-for-byte parity
 ports against `reference_code/seqtk` v1.5 (verified by piping the
 hand-built fixtures under `tools/seqtk/testdata/parity/` through both
 the upstream binary and the Go port and diffing). Previous iterations
-added `famask`, `mergefa`, `rename`, `split`, `size`.
+added `fqchk`, `hety`, `famask`, `mergefa`, `rename`, `split`, `size`.
+
+- `kfreq` — full upstream surface implemented: no flags, positional
+  `<kmer> <in.fa>`. Per-record TSV row with `name`, length, strand
+  (`+` if forward neighbour count strictly exceeds reverse, else
+  `-`), neighbour-count, exact-count. The neighbour set is every
+  k-mer at Hamming distance ≤ 1 from the target (including the
+  target itself). Lowercase ACGT bytes count via `seq_nt6_table`;
+  the rolling encoder is reset on any non-ACGT byte. Non-ACGT bytes
+  in the k-mer return a typed error (upstream `assert()`s and
+  aborts). Byte-parity verified against `reference_code/seqtk` v1.5
+  on `kfreq_small.fa` (`AC`, `ACGT`, `AAAA`), `kfreq_edge.fa` (`AC`),
+  and `kfreq_mixed.fa` (`AA`, `ACGT`, `CCGG`, `CCCTAA`).
+- `telo` — full upstream flag surface implemented:
+  `-m STR` (motif, default `CCCTAA`), `-p INT` (penalty, default 1;
+  negative values are silently flipped), `-d INT` (max-drop, default
+  2000), `-s INT` (min-score, default 300), `-P` (print scoring
+  profile instead of BED). The 5' scan walks left-to-right looking
+  for motif rotations on the forward strand; the 3' scan walks
+  right-to-left querying the same hash set with reverse-complement
+  bases, so flipping `-m` to the motif's reverse complement swaps
+  which end the BED rows describe. BED rows go to stdout; the
+  `<sum_telo>\t<sum_input>` summary line goes to stderr (matching
+  upstream byte-for-byte — `Telo` takes separate `stdout` and
+  `stderr` writers for this reason). Byte-parity verified against
+  `reference_code/seqtk` v1.5 on `telo_basic.fa` (default,
+  `-m TTAGGG`, `-P -s 0`), `telo_complex.fa` (default, `-s 100`,
+  `-p 2 -d 500`), and `telo_edge.fa` (default).
 
 - `fqchk` — full upstream surface implemented: `-q INT` (default 20,
   use `-q 0` to dump the per-quality distribution). Output covers the
