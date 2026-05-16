@@ -1,0 +1,12 @@
+amb1	5	R
+amb1	6	Y
+amb1	7	S
+amb1	8	W
+amb1	9	K
+amb1	10	M
+amb2	10	r
+amb2	11	y
+amb2	12	s
+amb2	13	w
+amb2	14	k
+amb2	15	m

@@ -1,0 +1,9 @@
+chr1	11	R
+chr1	12	Y
+chr1	27	Y
+chr1	48	R
+chr1	49	Y
+chr2	17	R
+chr2	18	Y
+chr2	29	R
+chr2	30	Y

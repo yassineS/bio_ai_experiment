@@ -71,23 +71,60 @@ closed.
 
 ### `seqtk`
 
-**Status:** 23 of ~24 upstream subcommands. ~96%.
+**Status:** 24 of 24 upstream subcommands. **1:1 PARITY ACHIEVED.**
 
-Missing subcommands (verified against `reference_code/seqtk/seqtk.c::main()`
-dispatch table, v1.5-r133):
-
-- `listhet` — extract heterozygous sites from VCF/BCF.
-- `hpc-bg` — homopolymer-compress with mismatch tolerance.
-
-Note: the dispatch-table audit at `reference_code/seqtk/seqtk.c::main()`
-lines 2099-2122 lists exactly these `stk_*` entry points: `comp`,
+Dispatch-table audit at `reference_code/seqtk/seqtk.c::main()`
+lines 2099-2122 lists exactly these 24 `stk_*` entry points (`hrun`
+and `hpc` are SEPARATE dispatch entries, not aliases — see
+`stk_hpc` at seqtk.c:1692 vs `stk_hrun` at seqtk.c:1174): `comp`,
 `fqchk`, `hety`, `gc`, `subseq`, `mutfa`, `mergefa`, `mergepe`,
 `dropse`, `randbase`, `cutN`, `gap`, `listhet`, `famask`, `trimfq`,
-`hrun`/`hpc`, `sample`, `seq`, `kfreq`, `rename`, `split`, `telo`,
-`size`. That's 23 entries (treating `hrun`/`hpc` as one). With this
-iteration we cover everything except `listhet` and `hpc-bg`.
+`hrun`, `sample`, `seq`, `kfreq`, `rename`, `split`, `hpc`, `size`,
+`telo`. All 24 are now implemented in
+`tools/seqtk/cmd/seqtk/main.go`.
 
-Added this iteration: `kfreq`, `telo`. Both are byte-for-byte parity
+Earlier roadmap iterations listed `hpc-bg` as missing — that was a
+misreading of the dispatch table. There is no `hpc-bg` subcommand
+upstream (verified empirically: `seqtk hpc-bg` is rejected with
+`[main] unrecognized command 'hpc-bg'. Abort!`). The genuine missing
+entry was `hrun` (homopolymer-RUN finder, BED4 output); the name
+collision with `hpc` confused the original audit.
+
+Added this iteration: `listhet`, `hrun`.
+
+- `listhet` — full upstream surface implemented (no flags, positional
+  `<in.fa>` only; the Go cmd adds `-o/--output` as the project-wide
+  file-redirect convenience). The 1:1-ported algorithm walks every
+  FASTA record byte-by-byte and emits a TSV row `name\tpos1based\tbyte`
+  for every byte whose `bitcnt_table[seq_nt16_table[b]] == 2` —
+  i.e. the 2-base IUPAC codes R, Y, S, W, K, M and their lowercase
+  counterparts. The byte is emitted in its original case. Byte-parity
+  verified against `reference_code/seqtk` v1.5 on `ambig.fa`,
+  `hety_basic.fa`, `hety_lowercase.fa`, and `small.fa` (the latter
+  pins the no-output path for fixtures with zero hets).
+- `hrun` — full upstream surface implemented (no flags, positional
+  `<in.fa> [minLen]`; the Go cmd exposes the minLen knob as
+  `-l/--min-len` AND still accepts the upstream positional form for
+  compatibility). One BED4 row (`chrom\tstart\tend\tbase`, 0-based
+  half-open) is emitted per maximal byte-identical run of length
+  `>= minLen` (default 7). Two upstream quirks are mirrored
+  byte-for-byte for parity:
+  1. Comparison is BYTE-EXACT (no case-fold, no IUPAC fold) so
+     `AAaa` is two runs of length 2.
+  2. The "open trailing run" flush at `seqtk.c:1200` lives OUTSIDE
+     the `kseq_read` loop, so it fires AT MOST ONCE per input,
+     using the last record's name and the run state left over from
+     that record. If the last record is empty, upstream reads its
+     NUL-terminator (`ks->seq.s[0]`) which sets `l = 1`, silently
+     swallowing the would-be flush for any `minLen >= 2`. Our port
+     reproduces both behaviours; see the trace in
+     `tools/seqtk/pkg/seqtk/hrun.go` and the
+     `TestHrun_TrailingFlushAcrossRecords` test.
+
+  Byte-parity verified against `reference_code/seqtk` v1.5 on
+  `nruns.fa` (default, `-l 3`, `-l 2`) and `hety_basic.fa` (`-l 4`).
+
+Previously added: `kfreq`, `telo`. Both are byte-for-byte parity
 ports against `reference_code/seqtk` v1.5 (verified by piping the
 hand-built fixtures under `tools/seqtk/testdata/parity/` through both
 the upstream binary and the Go port and diffing). Previous iterations
