@@ -45,8 +45,8 @@ the way.
   See [`PARITY_VALIDATION.md`](PARITY_VALIDATION.md).
 - **Validated parity vs upstream `sickle` v1.33**: 15/15 cases pass
   byte-for-byte (`tools/sickle/testdata/parity/`).
-- **Validated parity vs upstream `skewer` 0.2.2**: 12/14 cases pass
-  byte-for-byte; 2 documented `t.Skip` (PE matrix mode + SW-tail matcher).
+- **Validated parity vs upstream `skewer` 0.2.2**: 14/14 cases pass
+  byte-for-byte (PE matrix mode and SW-tail matcher closed in 2026-05-16).
 - **Documentation**: README per tool; some design docs are aspirational, not status
 - **Compression support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools
   go through `pkg/bioformats/iohelper`, which now **transparently sniffs BGZF**
@@ -235,10 +235,13 @@ upstream `sickle` v1.33; see
 
 ### 4. skewer
 
-**Status**: **1:1 parity (validated, with two documented gaps)** —
-12/14 parity cases byte-match upstream `skewer` 0.2.2; two cases are
-documented `t.Skip`d known divergences (PE matrix mode and SW-tail
-error-tolerance matcher). See
+**Status**: **1:1 parity (validated)** — 14/14 parity cases byte-match
+upstream `skewer` 0.2.2 as of 2026-05-16. Third complete-parity port
+(after seqtk and sickle). The previously-skipped case04 (PE matrix
+mode) and case05 (SW-tail error tolerance) were closed by porting
+`cMatrix::findAdapterWithPE` / `CalcRevCompScore` and the
+`cAdapter::align` quality-weighted penalty model from
+`reference_code/skewer/src/matrix.cpp`. See
 [`PARITY_VALIDATION.md` → skewer](PARITY_VALIDATION.md#skewer).  
 **Version**: 1.0.0  
 **Original**: C++ (Hongshan Jiang)  

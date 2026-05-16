@@ -293,14 +293,23 @@ For paired-end mode:
 
 This Go implementation has been **byte-for-byte validated** against the
 upstream C++ `skewer` 0.2.2 binary (built from `reference_code/skewer`)
-on a 14-case parity corpus under `tools/skewer/testdata/parity/`. All
-single-end cases pass byte-for-byte against upstream; two cases are
-documented `t.Skip` (PE matrix mode, and an SW-vs-Hamming error-tolerance
-divergence — both are tracked algorithm gaps, not bugs). See
-[`tools/PARITY_VALIDATION.md` → skewer](../PARITY_VALIDATION.md#skewer)
-for the test list and the known-divergence catalogue. The parity tests
-live in `tools/skewer/pkg/skewer/parity_test.go`
-(`TestParity_Skewer_*`).
+on a 14-case parity corpus under `tools/skewer/testdata/parity/`. **All
+14 cases pass byte-for-byte** as of 2026-05-16 (PR
+`claude/skewer-pe-matrix-sw-tail`), making this the third
+complete-parity port after seqtk and sickle. The two previously
+`t.Skip`d cases (case04 PE matrix mode, case05 SW-tail error tolerance)
+were closed by porting the relevant algorithms verbatim from
+`reference_code/skewer/src/matrix.cpp` (`cMatrix::findAdapterWithPE`,
+`CalcRevCompScore`, `cAdapter::align`, `cMatrix::penalty[]`).
+PE matrix mode is exposed via the `PEMatrixMode` field on
+`TrimOptions`, enabled by default in the `pe` and `batch` CLI entry
+points so the command-line behaviour matches upstream's default
+`-m pe` setting.
+See [`tools/PARITY_VALIDATION.md` → skewer](../PARITY_VALIDATION.md#skewer)
+for the test list. The parity tests live in
+`tools/skewer/pkg/skewer/parity_test.go` (`TestParity_Skewer_*`); the
+direct-unit suite for the new matcher and matrix-mode building blocks
+is in `tools/skewer/pkg/skewer/matrix_test.go`.
 
 ### Similarities
 

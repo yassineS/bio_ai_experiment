@@ -63,11 +63,13 @@ two helper / sanity sub-tests in `bedsort` and `bedintersect` that are not
 direct mirrors of an upstream case.)
 
 The sickle and skewer ports each have a per-tool table in their respective
-section below; the project-wide running total is 188 tests added, 136
-passed, 49 skipped (52 if you count the sickle FixturesPresent + skewer
+section below; the project-wide running total is 188 tests added, 138
+passed, 47 skipped (50 if you count the sickle FixturesPresent + skewer
 FixturesPresent + skewer PEHelperSmoke helper tests). The 2026-05-14
 wave-2 update (`bedexpand`, `bedgetfasta`, `bedsample`, `bedspacing`)
-added 34 of those tests (29 passing, 5 skipped).
+added 34 of those tests (29 passing, 5 skipped); the 2026-05-16 skewer
+follow-up closed both of skewer's remaining `t.Skip` gaps (case04 and
+case05).
 
 ### What is validated
 
@@ -436,44 +438,42 @@ back to the submodule and is documented in
 
 | Subcommand | Tests added | Passed | Skipped | Notes |
 | ---------- | -----------:| ------:| -------:| ----- |
-| se         |          13 |     11 |       1 | Skip: case05 error-tolerance (algorithm difference, see below). New: **case13 no-adapter pass-through**, **case14 long-reads with embedded adapter**. |
-| pe         |           1 |      0 |       1 | Skip: case04 PE matrix mode not implemented in Go port. |
-| **TOTAL**  |       **14**|  **11**|    **2**| Plus 2 smoke tests (fixture presence + PE helper). |
+| se         |          13 |     13 |       0 | All cases byte-match upstream. New (PR #119): **case13 no-adapter pass-through**, **case14 long-reads with embedded adapter**. Closed (this PR): **case05 error-tolerance** via the quality-weighted SW-tail matcher. |
+| pe         |           1 |      1 |       0 | Closed (this PR): **case04 PE matrix mode** via the ported `Matrix::findAdapterWithPE` overlap gate. |
+| **TOTAL**  |       **14**|  **14**|    **0**| Plus 2 smoke tests (fixture presence + PE helper) and a new direct-unit suite (`matrix_test.go`) for the matcher / RC-overlap building blocks. |
 
-The 2026-05-16 follow-up audit (this PR) added two SE cases
-(`case13_se_noadapter`, `case14_se_highlen`) that broaden coverage to a
-no-adapter pass-through path and to reads >40 bp with the adapter
-embedded at the 3' end. Both pass byte-for-byte against upstream skewer
-0.2.2 on first run.
+The 2026-05-16 follow-up (this PR) closed the two previously-skipped
+parity cases by porting the upstream algorithms verbatim:
 
-### skewer: discrepancies found in our port (fixed in this PR)
+- **case04 — PE matrix mode**. Ported the matrix-mode overlap gate
+  (`cMatrix::findAdapterWithPE`, matrix.cpp:726-851) and the supporting
+  quality-weighted reverse-complement scorer
+  (`cMatrix::CalcRevCompScore`, matrix.cpp:487-522) to
+  `detectPairedTrim` and `calcRevCompScore` in
+  `tools/skewer/pkg/skewer/skewer.go`. The gate trims a paired read only
+  when R1's prefix is a reverse-complement match of R2's prefix at the
+  inferred insert size — the same algorithm upstream uses to suppress
+  spurious adapter hits on PE data. Surfaced through a new
+  `PEMatrixMode` field on `TrimOptions`, and turned on by the PE CLI
+  entry point so the command-line tool matches upstream's default `-m
+  pe` behaviour.
 
-None — the Go port already passed 9/12 cases byte-for-byte on first run
-against upstream. The remaining 3 are documented divergences (one PE
-algorithm gap, one matcher difference, one upstream non-issue).
+- **case05 — error-tolerant matcher**. Ported the quality-weighted
+  penalty model from `cAdapter::align` (matrix.cpp:297-435) and the
+  precomputed quality penalty ramp (matrix.cpp:138-141, 547-556) to
+  `findAdapterWithQual` and `mismatchPenalty`. Each mismatch is charged
+  a quality-derived penalty (Q40+ saturates at MAX_PENALTY=4.477) and
+  the match is rejected when the cumulative penalty exceeds
+  `dPenaltyPerErr * compareLen + 0.001`. At `-r 0.1` over a 13 bp
+  adapter, a single Q40 mismatch already exceeds 0.1 × 2.477 × 13 =
+  3.221, so case05's 1-mismatch read correctly passes through
+  untrimmed. Hamming-only fallback (`improvedFindAdapter`) is retained
+  for backward compatibility with non-quality callers.
 
-### skewer: discrepancies found (NOT fixed)
+### skewer: discrepancies found in our port
 
-These are documented divergences the parity tests record with `t.Skip`:
-
-- **case04 — PE matrix mode (`-m pe`)**. With the default paired-end
-  mode upstream's `Matrix::Detect` runs a paired-end overlap check
-  between R1 and R2 and refuses to trim when the mates disagree on the
-  insert size. Our Go port has no equivalent matrix logic —
-  `TrimPairedEnd` just runs the per-read 3' adapter trimmer on each
-  mate independently. For the test reads in this corpus the upstream
-  behaviour is "don't trim" while ours is "trim each mate".
-  Implementing the matrix path is tracked in
-  [PARITY_ROADMAP.md](../docs/PARITY_ROADMAP.md#skewer).
-
-- **case05 — error-tolerant matcher**. With `-r 0.1` over a 13 bp adapter
-  the upstream Smith-Waterman-like matcher rejects a 1-mismatch match
-  whose mismatch is in the last 4 bases of the adapter (asymmetric tail
-  penalty). Our Go port uses a simpler Hamming-distance matcher that
-  accepts the 1-mismatch alignment and over-trims one base. Bringing the
-  matcher into byte parity needs a small Smith-Waterman implementation
-  with the same tail-penalty curve — also tracked in
-  [PARITY_ROADMAP.md](../docs/PARITY_ROADMAP.md#skewer).
+None as of this PR — every parity case in the 14-case corpus byte-
+matches upstream skewer 0.2.2.
 
 ### skewer: what is NOT validated (skipped features)
 
@@ -504,8 +504,9 @@ One; recorded in
 - **Modern-libstdc++ compile failure**. `ElementComparator::operator()`
   is not `const`-qualified. **Fix-on-port** (build-side only): we patch
   the submodule working tree before building the parity binary. The Go
-  port doesn't carry the underlying bug because the matrix-mode code
-  path is not yet implemented in Go.
+  port doesn't carry the underlying bug — our matrix-mode port
+  (`detectPairedTrim`, `calcRevCompScore`) doesn't use a `std::set` and
+  has no equivalent `const`-correctness pitfall.
 
 ---
 

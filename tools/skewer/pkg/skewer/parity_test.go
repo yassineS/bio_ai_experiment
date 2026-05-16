@@ -119,35 +119,35 @@ func TestParity_Skewer_Case03_SEAnyMode(t *testing.T) {
 // case04 — PE with adapter detection. With the default `-m pe` mode,
 // upstream looks for the adapter in *both* mates and only trims when the
 // overlap detection between R1 and R2 strongly suggests an insert shorter
-// than the read length. On our short fabricated reads with the adapter
-// sitting in the middle, upstream therefore leaves the reads untrimmed —
-// our Go port's PE path uses the same trimRecord and so should produce
-// the same byte-identical output here.
+// than the read length. On our short fabricated reads where R1 has the
+// adapter but R1's prefix is not the reverse-complement of R2's prefix,
+// upstream therefore leaves the reads untrimmed. Our Go port now mirrors
+// this with the PEMatrixMode flag plumbed into TrimPairedEnd.
 //
 // Upstream flags: -x AGATCGGAAGAGC -l 8 (no -m, default pe)
 func TestParity_Skewer_Case04_PEDefault(t *testing.T) {
-	// In upstream's pe mode the matrix-based detection refuses to trim when
-	// the mates don't agree on the insert; our Go port has no equivalent
-	// matrix logic — it just runs the per-read 3'-adapter trimmer. The
-	// per-read trim would happily strip the adapter on each mate, which is
-	// different from upstream's "untrimmed pass-through". We therefore skip
-	// this case until the PE matrix path is implemented; see
-	// tools/PARITY_VALIDATION.md > "skewer" > "PE matrix mode (mode=pe)".
-	t.Skip("Go port has no PE matrix mode; documented in tools/PARITY_VALIDATION.md")
+	opts := TrimOptions{Adapter3: "AGATCGGAAGAGC", MinLength: 8, MinOverlap: 3, ErrorRate: 0.1, PEMatrixMode: true}
+	r1, r2 := runSkewerPE(t, "case04_pe_r1.fq", "case04_pe_r2.fq", opts)
+	wantR1 := readSkewerParity(t, "case04_pe_r1.expected.fq")
+	wantR2 := readSkewerParity(t, "case04_pe_r2.expected.fq")
+	mustMatch(t, "case04 PE matrix mode R1", r1, wantR1)
+	mustMatch(t, "case04 PE matrix mode R2", r2, wantR2)
 }
 
 // case05 — error tolerance: the read carries a 1-mismatch variant of the
 // adapter (`AGATCGGAACAGC` vs `AGATCGGAAGAGC`). With -r 0.1 over 13 bp
-// upstream tolerates floor(13 * 0.1) = 1 error in theory, but the actual
-// implementation uses a Smith-Waterman-style scoring matrix with an
-// asymmetric penalty for tail mismatches and ends up rejecting the match.
-// Our Go port's simpler Hamming-distance matcher trims one base early.
+// upstream's quality-weighted scoring (Phred 'I' → MAX_PENALTY=4.477) sees
+// one mismatch already exceeding dMaxPenalty (0.1 * MEAN_PENALTY * 13 =
+// 3.221) and rejects the match. Our Go port now uses the same quality-
+// weighted scoring (see findAdapterWithQual / mismatchPenalty), so the
+// match is correctly rejected and the read passes through untrimmed.
 //
-// This is a genuine algorithmic difference — not an upstream bug.
-// Documented as a known divergence in tools/PARITY_VALIDATION.md > "skewer"
-// > "case05 error-tolerant Hamming vs SW".
+// Upstream flags: -x AGATCGGAAGAGC -r 0.1 -l 8
 func TestParity_Skewer_Case05_SEErrorTolerance(t *testing.T) {
-	t.Skip("Go port uses Hamming-distance matcher; upstream uses SW with tail penalty. See tools/PARITY_VALIDATION.md")
+	opts := TrimOptions{Adapter3: "AGATCGGAAGAGC", MinLength: 8, MinOverlap: 3, ErrorRate: 0.1}
+	got := runSkewerSE(t, "case05_se_mismatch.fq", opts)
+	want := readSkewerParity(t, "case05_se_mismatch.expected.fq")
+	mustMatch(t, "case05 SE error-tolerance (SW-tail)", got, want)
 }
 
 // case06 — minimum overlap. With -k 7 upstream requires the alignment
