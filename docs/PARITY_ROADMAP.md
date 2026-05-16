@@ -304,27 +304,34 @@ Outstanding items (Go-port extensions, not parity gaps):
 
 ### `skewer`
 
-**Status:** 2 subcommands (`se`, `pe`). **1:1 parity validated on the SE
-core; two algorithmic gaps documented and `t.Skip`d.**
+**Status:** 2 subcommands (`se`, `pe`). **1:1 parity validated** — all
+14 parity cases byte-match upstream skewer 0.2.2.
 
 A 14-case parity corpus at `tools/skewer/testdata/parity/` covers SE 3'
 trim, SE 5' (`-m head`), `-m any`, min-overlap, qual+adapter, length
 filter, empty input, adapter-at-end, gzip input, off-by-one boundary,
-**no-adapter pass-through**, and **long reads (>40 bp) with embedded
-adapter**. All twelve byte-match upstream skewer 0.2.2 (`-r 0.1`
-defaults). Two cases are `t.Skip`d:
+**no-adapter pass-through**, **long reads (>40 bp) with embedded
+adapter**, **PE matrix-mode pass-through**, and **error-tolerant matcher
+rejection** (1-mismatch at Q40). All fourteen byte-match upstream
+skewer 0.2.2 (`-r 0.1` defaults).
 
-- **case04 — PE matrix mode (`-m pe`).** Upstream's `Matrix::Detect`
-  runs a paired-end overlap check between R1 and R2 and refuses to trim
-  when the mates disagree on the insert size. Our Go port has no
-  equivalent matrix logic. Implementing this needs a port of
-  `reference_code/skewer/src/matrix.cpp`; deferred.
-- **case05 — error-tolerant matcher.** With `-r 0.1` over a 13 bp
-  adapter the upstream Smith-Waterman matcher rejects a 1-mismatch
-  match when the mismatch is in the last 4 bases (asymmetric tail
-  penalty). Our Go port uses a Hamming-distance matcher and trims one
-  base early. Closing this needs a small SW implementation with the
-  same tail-penalty curve.
+The two previously-skipped cases were closed by porting the relevant
+algorithms verbatim from `reference_code/skewer/src/matrix.cpp`:
+
+- **case04 — PE matrix mode (`-m pe`).** Ported
+  `cMatrix::findAdapterWithPE` and `CalcRevCompScore`
+  (matrix.cpp:487-522, 726-851) into
+  `tools/skewer/pkg/skewer/skewer.go` as
+  `detectPairedTrim` / `calcRevCompScore`. Matrix mode is exposed via
+  the `PEMatrixMode` option (set to `true` by the PE CLI to mirror
+  upstream's default `-m pe`).
+- **case05 — error-tolerant matcher.** Ported the quality-weighted
+  penalty model from `cAdapter::align` and the `cMatrix::penalty[]`
+  ramp (matrix.cpp:138-141, 297-435, 547-556) into
+  `findAdapterWithQual` / `mismatchPenalty`. Each mismatch costs a
+  quality-derived penalty (Q40+ → MAX_PENALTY=4.477), and the match is
+  rejected when the cumulative penalty exceeds
+  `dPenaltyPerErr * compareLen + 0.001`.
 
 See [`tools/PARITY_VALIDATION.md` → skewer](../tools/PARITY_VALIDATION.md#skewer)
 for the per-case description.

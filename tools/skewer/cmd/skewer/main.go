@@ -331,7 +331,9 @@ func runPairedEnd() {
 		outSingle = f
 	}
 
-	// Set up trim options
+	// Set up trim options. PEMatrixMode mirrors upstream skewer's default
+	// `-m pe` behaviour: trim only when R1/R2 prefixes are reverse-complement
+	// matches (matrix.cpp:findAdapterWithPE).
 	opts := skewer.TrimOptions{
 		Adapter3:         adapter3,
 		Adapter5:         adapter5,
@@ -344,6 +346,7 @@ func runPairedEnd() {
 		ProgressInterval: 100000,
 		UMILength:        umiLength,
 		UMIPosition:      umiPosition,
+		PEMatrixMode:     true,
 	}
 
 	// Perform trimming
@@ -514,7 +517,8 @@ func runBatch() {
 	// Determine quality encoding
 	encoding := getQualityEncoding(qualType)
 
-	// Set up trim options
+	// Set up trim options. PEMatrixMode mirrors upstream skewer's default
+	// `-m pe` behaviour for batch jobs that include paired-end inputs.
 	opts := skewer.TrimOptions{
 		Adapter3:      adapter3,
 		Adapter5:      adapter5,
@@ -523,6 +527,7 @@ func runBatch() {
 		MinOverlap:    minOverlap,
 		ErrorRate:     errorRate,
 		AutoDetect:    autoDetect,
+		PEMatrixMode:  true,
 	}
 
 	// Process files in parallel

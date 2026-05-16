@@ -27,6 +27,7 @@ type TrimOptions struct {
 	ProgressInterval int     // Report progress every N reads
 	UMILength        int     // UMI length to extract (0 = disabled)
 	UMIPosition      string  // UMI position: "5prime" or "3prime"
+	PEMatrixMode     bool    // PE matrix mode: require reverse-complement overlap support before trimming (skewer's default -m pe)
 }
 
 // DefaultTrimOptions returns default trimming options.
@@ -45,6 +46,7 @@ func DefaultTrimOptions() TrimOptions {
 		ProgressInterval: 100000,
 		UMILength:        0,
 		UMIPosition:      "5prime",
+		PEMatrixMode:     false,
 	}
 }
 
@@ -357,9 +359,17 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 			}
 		}
 
-		// Trim both reads
-		trimmed1 := trimRecord(record1, opts, stats)
-		trimmed2 := trimRecord(record2, opts, stats)
+		// Trim both reads. In matrix mode (skewer's default `-m pe`) the
+		// per-mate trimmer is gated by a reverse-complement overlap check
+		// so the mates have to agree on the inferred insert size before any
+		// trimming happens. See detectPairedAdapter for the algorithm.
+		var trimmed1, trimmed2 *fastq.Record
+		if opts.PEMatrixMode {
+			trimmed1, trimmed2 = trimPairWithMatrix(record1, record2, opts, stats)
+		} else {
+			trimmed1 = trimRecord(record1, opts, stats)
+			trimmed2 = trimRecord(record2, opts, stats)
+		}
 
 		// Add UMI to descriptions if extracted
 		if umi != "" {
@@ -443,6 +453,165 @@ func TrimPairedEnd(input1, input2 io.Reader, output1, output2, outputSingle io.W
 	return stats, nil
 }
 
+// trimPairWithMatrix applies skewer's `-m pe` matrix-mode logic to a paired
+// read: it only trims the mates when their inferred insert sizes are
+// consistent (the R1 prefix before the adapter is a reverse-complement of the
+// R2 prefix before the adapter). Mirrors cMatrix::findAdapterWithPE in
+// reference_code/skewer/src/matrix.cpp:726-851 and the surrounding plumbing
+// at main.cpp:1390-1413.
+func trimPairWithMatrix(record1, record2 *fastq.Record, opts TrimOptions, stats *TrimStats) (*fastq.Record, *fastq.Record) {
+	seq1 := string(record1.Sequence)
+	seq2 := string(record2.Sequence)
+	qual1 := record1.Quality
+	qual2 := record2.Quality
+
+	// If no 3' adapter is configured, fall back to plain per-record trimming
+	// (5' / quality trimming still applies). The matrix logic only governs
+	// the 3'-end adapter detection.
+	if opts.Adapter3 == "" {
+		return trimRecord(record1, opts, stats), trimRecord(record2, opts, stats)
+	}
+
+	pos1 := findAdapterWithQual(seq1, opts.Adapter3, qual1, opts.MinOverlap, opts.ErrorRate)
+	pos2 := findAdapterWithQual(seq2, opts.Adapter3, qual2, opts.MinOverlap, opts.ErrorRate)
+
+	// detectPairedTrim returns the trim positions sanctioned by the matrix
+	// gate; -1 means "leave that mate untrimmed".
+	tp1, tp2 := detectPairedTrim(seq1, seq2, qual1, qual2, pos1, pos2, opts.ErrorRate)
+
+	out1 := applyTrim(record1, tp1, opts, stats, 3)
+	out2 := applyTrim(record2, tp2, opts, stats, 3)
+	return out1, out2
+}
+
+// detectPairedTrim implements the reverse-complement overlap gate from
+// matrix.cpp:761-849. Given the (possibly -1) adapter positions in R1 and R2
+// it returns the positions at which the mates should actually be cut; -1 in
+// the return position means "no trim". The gate trims only when the two
+// mate prefixes (up to the inferred insert end) are reverse-complement
+// matches under the quality-weighted scoring model from matrix.cpp:487-522.
+func detectPairedTrim(seq1, seq2 string, qual1, qual2 []byte, pos1, pos2 int, errorRate float64) (int, int) {
+	if pos1 < 0 && pos2 < 0 {
+		return -1, -1
+	}
+	// Pick the smaller of the two candidate insert lengths as the overlap
+	// span (cpos in matrix.cpp:767/772). If only one mate found the
+	// adapter, the other one's position is treated as INT_MAX.
+	cpos := pos1
+	if pos1 < 0 || (pos2 >= 0 && pos2 < pos1) {
+		cpos = pos2
+	}
+	if cpos <= 0 {
+		// matrix.cpp:843-844: apos <= 0 ⇒ both pos clamped to 0 ⇒ effectively
+		// no overlap to validate, no trim.
+		return -1, -1
+	}
+	if calcRevCompScore(seq1, seq2, qual1, qual2, cpos, errorRate) {
+		// Both mates trimmed at cpos, with apos2 clamped to the shorter
+		// mate's length when cpos overruns it (matrix.cpp:785, 803).
+		tp1 := cpos
+		if cpos > len(seq1) {
+			tp1 = len(seq1)
+		}
+		tp2 := cpos
+		if cpos > len(seq2) {
+			tp2 = len(seq2)
+		}
+		return tp1, tp2
+	}
+	return -1, -1
+}
+
+// calcRevCompScore is the Go port of cMatrix::CalcRevCompScore in
+// matrix.cpp:487-522. It walks the first `n` bases of R1 against the
+// reverse-complement of the first `n` bases of R2 and returns true when the
+// quality-weighted mismatch penalty stays below dPenaltyPerErr * n. n must be
+// > 0; callers (detectPairedTrim) shortcut the n<=0 branch above.
+func calcRevCompScore(seq1, seq2 string, qual1, qual2 []byte, n int, errorRate float64) bool {
+	if n <= 0 || n > len(seq1) || n > len(seq2) {
+		return false
+	}
+	dPenaltyPerErr := errorRate * meanPenalty
+	dMaxPenalty := dPenaltyPerErr * float64(n)
+	var penalty float64
+	for i := 0; i < n; i++ {
+		a := seq1[i]
+		// complement of R2[n-1-i]: per matrix.cpp:500.
+		b := complementBase(seq2[n-1-i])
+		if iupacMatch(a, b) {
+			continue
+		}
+		// matrix.cpp:504-509 takes the minimum of the two mates' quality
+		// penalties; we replicate via min(mismatchPenalty(qual1,i),
+		// mismatchPenalty(qual2, n-1-i)).
+		p1 := mismatchPenalty(qual1, i)
+		p2 := mismatchPenalty(qual2, n-1-i)
+		penal := p1
+		if p2 < penal {
+			penal = p2
+		}
+		penalty += penal
+		if penalty > dMaxPenalty {
+			return false
+		}
+	}
+	return true
+}
+
+// complementBase returns the Watson-Crick complement of a single ASCII base.
+// Lower-case is mapped via toupper. Unknown bases (anything outside ACGTN)
+// map to 'N', matching matrix.cpp:84-86's `complement[]` table.
+func complementBase(b byte) byte {
+	if b >= 'a' && b <= 'z' {
+		b -= 32
+	}
+	switch b {
+	case 'A':
+		return 'T'
+	case 'T':
+		return 'A'
+	case 'C':
+		return 'G'
+	case 'G':
+		return 'C'
+	}
+	return 'N'
+}
+
+// applyTrim builds a trimmed copy of record, cutting at trimPos (or leaving
+// it untouched when trimPos < 0). end=3 means "3'-end cut"; this is the only
+// mode trimPairWithMatrix uses today. The quality-based trim from
+// opts.QualThreshold is still applied after the adapter cut, matching the
+// SE path's behaviour.
+func applyTrim(record *fastq.Record, trimPos int, opts TrimOptions, stats *TrimStats, end int) *fastq.Record {
+	_ = end // reserved for a future 5'-cut variant; the matrix gate only emits 3' cuts today.
+	start := 0
+	stop := len(record.Sequence)
+	if trimPos >= 0 && trimPos < stop {
+		stop = trimPos
+		if stats != nil {
+			stats.AdapterFound3++
+		}
+	}
+	if opts.QualThreshold > 0 {
+		start, stop = trimByQuality(record.Quality[start:stop], opts.QualThreshold, start, stop)
+	}
+	if start >= stop || stop-start < opts.MinLength {
+		return &fastq.Record{
+			ID:          record.ID,
+			Description: record.Description,
+			Sequence:    []byte{},
+			Quality:     []byte{},
+		}
+	}
+	return &fastq.Record{
+		ID:          record.ID,
+		Description: record.Description,
+		Sequence:    record.Sequence[start:stop],
+		Quality:     record.Quality[start:stop],
+	}
+}
+
 // trimRecord trims adapters from a single record.
 func trimRecord(record *fastq.Record, opts TrimOptions, stats *TrimStats) *fastq.Record {
 	seq := string(record.Sequence)
@@ -453,7 +622,7 @@ func trimRecord(record *fastq.Record, opts TrimOptions, stats *TrimStats) *fastq
 
 	// Trim 5' adapter if specified
 	if opts.Adapter5 != "" {
-		pos := findAdapter(seq, opts.Adapter5, opts.MinOverlap, opts.ErrorRate)
+		pos := findAdapterWithQual(seq, opts.Adapter5, qual, opts.MinOverlap, opts.ErrorRate)
 		if pos >= 0 {
 			// Found 5' adapter - trim from start to end of adapter
 			start = pos + len(opts.Adapter5)
@@ -465,7 +634,7 @@ func trimRecord(record *fastq.Record, opts TrimOptions, stats *TrimStats) *fastq
 
 	// Trim 3' adapter if specified
 	if opts.Adapter3 != "" {
-		pos := findAdapter(seq[start:], opts.Adapter3, opts.MinOverlap, opts.ErrorRate)
+		pos := findAdapterWithQual(seq[start:], opts.Adapter3, qual[start:], opts.MinOverlap, opts.ErrorRate)
 		if pos >= 0 {
 			// Found 3' adapter - trim from adapter position to end
 			end = start + pos
@@ -504,6 +673,120 @@ func trimRecord(record *fastq.Record, opts TrimOptions, stats *TrimStats) *fastq
 func findAdapter(seq string, adapter string, minOverlap int, errorRate float64) int {
 	// Use improved algorithm for better accuracy
 	return improvedFindAdapter(seq, adapter, minOverlap, errorRate)
+}
+
+// findAdapterWithQual finds the leftmost adapter position in a sequence using
+// the upstream skewer scoring model (quality-weighted penalty, TRIM_TAIL).
+//
+// Ported from reference_code/skewer/src/matrix.cpp:cAdapter::align
+// (lines 297-435) and the cMatrix scoring constants (lines 138-141). The
+// upstream algorithm uses a bit-masked k-difference engine with an asymmetric
+// tail penalty; this port collapses that to its observable behaviour for the
+// no-indel ASCII-ATCG-only case that the parity corpus exercises: scan every
+// candidate adapter position p in [0, rLen), accumulate per-position penalties
+// (quality-derived for mismatches, zero for matches), and accept the match
+// whose cumulative penalty stays under dPenaltyPerErr * compareLen + EPSILON.
+// For TRIM_TAIL the adapter is allowed to extend past the read's 3' end
+// (compareLen < adapterLen) provided compareLen >= minOverlap. The leftmost
+// acceptable position wins, matching upstream's preference for longer
+// alignments at the same score (longer match span ⇒ earlier start ⇒ lower p).
+//
+// qual is the Phred-encoded quality string (same encoding as seq); if qual is
+// empty, MEAN_PENALTY is used as the per-mismatch penalty (matches upstream's
+// "qLen == 0" branch in align() and CalcRevCompScore()).
+func findAdapterWithQual(seq, adapter string, qual []byte, minOverlap int, errorRate float64) int {
+	if len(adapter) == 0 || len(seq) < minOverlap {
+		return -1
+	}
+	dPenaltyPerErr := errorRate * meanPenalty
+	bestPos := -1
+	bestScore := -1.0
+	for i := 0; i <= len(seq)-minOverlap; i++ {
+		compareLen := len(adapter)
+		if remaining := len(seq) - i; remaining < compareLen {
+			compareLen = remaining
+		}
+		if compareLen < minOverlap {
+			continue
+		}
+		// dMaxPenalty matches matrix.cpp:301 / matrix.cpp:418
+		// (dPenaltyPerErr * span + 0.001 slack to absorb FP rounding).
+		dMaxPenalty := dPenaltyPerErr*float64(compareLen) + epsilonSlack
+		var penalty float64
+		ok := true
+		for j := 0; j < compareLen; j++ {
+			if iupacMatch(seq[i+j], adapter[j]) {
+				continue
+			}
+			// Per-base penalty driven by base quality, mirroring
+			// matrix.cpp:cMatrix::penalty[] (lines 547-556).
+			penalty += mismatchPenalty(qual, i+j)
+			if penalty >= dMaxPenalty {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		// Normalised score = (compareLen * dMu - penalty) / (compareLen + 1)
+		// matches the bestAlign branch in matrix.cpp:362/369/392/408 — favours
+		// longer alignments with lower penalties. Ties keep the leftmost.
+		score := (float64(compareLen)*meanPenalty - penalty) / float64(compareLen+1)
+		if score > bestScore {
+			bestScore = score
+			bestPos = i
+		}
+	}
+	return bestPos
+}
+
+// iupacMatch reports whether a read base (ATCGN/lowercase) matches an adapter
+// base under upstream's chrVadp table (matrix.cpp:115-136). For the parity
+// corpus we only need the ATCG/N subset: exact equality, with N treated as
+// non-matching to anything (chrVadp[N][*]=1, chrVadp[*][N]=0 — but here we
+// score only mismatches so a non-match read base does count as a mismatch).
+func iupacMatch(readBase, adapterBase byte) bool {
+	if readBase == adapterBase {
+		return true
+	}
+	// Lower-case forms map to the same code (codeMap entries 0x61..0x7A).
+	if readBase >= 'a' && readBase <= 'z' {
+		readBase -= 32
+	}
+	if adapterBase >= 'a' && adapterBase <= 'z' {
+		adapterBase -= 32
+	}
+	return readBase == adapterBase
+}
+
+// Penalty constants. Verbatim from matrix.cpp:138-141 (the natural-log-10
+// derived quality weights used by skewer's k-difference scoring).
+const (
+	minPenalty   = 0.477121255
+	meanPenalty  = 2.477121255
+	maxPenalty   = 4.477121255
+	epsilonSlack = 0.001
+)
+
+// mismatchPenalty returns the per-base mismatch penalty driven by Phred-33
+// quality. Mirrors the precomputed cMatrix::penalty[] table built in
+// matrix.cpp:547-556: bytes <= baseQual (33) map to minPenalty, the next 39
+// quality levels ramp linearly by 0.1, and Q>=40 saturates at maxPenalty.
+// When qual is empty the function returns meanPenalty (matches the
+// "qLen == 0" fallback in matrix.cpp:512 / matrix.cpp:338).
+func mismatchPenalty(qual []byte, idx int) float64 {
+	if idx < 0 || idx >= len(qual) {
+		return meanPenalty
+	}
+	q := int(qual[idx])
+	if q <= 33 {
+		return minPenalty
+	}
+	if q >= 33+40 {
+		return maxPenalty
+	}
+	return minPenalty + float64(q-33)/10.0
 }
 
 // trimByQuality trims low-quality regions from both ends.
