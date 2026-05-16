@@ -462,8 +462,9 @@ Tracked in `docs/PARITY_ROADMAP.md` under the `bcftools call` entry.
 
 What ships in this slice:
 
-- `view`, `index`, `stats`, `query`, `concat`, `norm`, and `call`
-  subcommands.
+- `view`, `index`, `stats`, `query`, `concat`, `norm`, `call`,
+  `merge`, `annotate`, `isec`, `sort`, `reheader`, `convert`,
+  `mendelian`, `gtcheck`, `roh` subcommands.
 - BCF reader + writer (CHROM/POS/REF/ALT/QUAL/FILTER/INFO + per-sample FORMAT).
 - VCF and BGZF-wrapped VCF input.
 - VCF and gzip-VCF (`-O v`, `-O z`) output for most subcommands.
@@ -471,7 +472,8 @@ What ships in this slice:
 
 What is **deferred** to a follow-up PR:
 
-- Other subcommands (`merge`, `annotate`, `isec`, `csq`, `filter`, ...).
+- Other subcommands (`csq`, `filter`, `mpileup`, `consensus`,
+  `polysomy`, `cnv`, `mendelian2`, `+plugins`, ...).
 - The plugin system (`bcftools plugin`).
 - `bcftools stats -E exons.tab.gz` (upstream's exon-overlap section).
 - BCF input for `bcftools call`, the full multi-allelic caller, and

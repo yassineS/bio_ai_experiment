@@ -625,11 +625,33 @@ Missing subcommands (priority order):
 - **`mendelian2`** — newer Mendelian-inheritance checker (the v1
   `mendelian` port covers the legacy plugin; `mendelian2` adds
   PED-file ingestion and per-sample error tagging).
-- **`roh`** — runs of homozygosity.
 - **`polysomy`** — copy-number estimation.
 - **`cnv`** — CNV calling.
-- **`gtcheck`** — genotype concordance.
 - **`+plugins`** — full plugin system (substantial).
+
+Option-tail gaps on `gtcheck` (PR #107, simple-mode):
+
+- `--cluster N,N` (HMM-style sample clustering), `--distinctive-sites`,
+  `--n-matches` — accepted-and-rejected with PARITY_ROADMAP pointer;
+  bayesian-mode follow-up.
+- `-u PL` — PL/GL-based scoring; v1 only does hard-GT Hamming.
+- `-O z` — bgzip output; v1 only emits tab-text (`-O t`).
+- `[5]Average -log P(HWE)` column is zeroed until a real per-site HWE
+  estimator from panel AF lands.
+- Index-backed `-r/-R` seek (post-filter only in v1).
+- Multi-allelic input is rejected (matches upstream's
+  `bcftools norm -m -` requirement).
+
+Option-tail gaps on `roh` (PR #107, simple-mode):
+
+- `-b/--buffer-size`, `-e/--estimate-AF`, `-m/--genetic-map`,
+  `-M/--rec-rate`, `-V/--viterbi-training` — accepted-and-rejected
+  with PARITY_ROADMAP pointer.
+- `-O z` — bgzip output; v1 only emits tab-text.
+- Transition defaults are upstream's literal per-bp magnitudes
+  (`6.7e-8` / `5e-9`) but NOT scaled by physical inter-marker
+  distance, so RG quality scores are NOT comparable to upstream's
+  until distance scaling lands.
 
 Option-tail gaps on the wave-1 additions (PR #86):
 
