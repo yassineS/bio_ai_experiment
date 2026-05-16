@@ -29,6 +29,8 @@
 //	famask     Apply a FASTA mask to a source FASTA (X = keep, x =
 //	           soft-mask, other = overwrite)
 //	mergefa    Merge two FASTA/FASTQ files base-by-base via IUPAC
+//	fqchk      FASTQ per-position base/quality summary
+//	hety       Per-window heterozygosity scan over a FASTA
 package main
 
 import (
@@ -91,6 +93,10 @@ func main() {
 		famaskCommand()
 	case "mergefa":
 		mergefaCommand()
+	case "fqchk":
+		fqchkCommand()
+	case "hety":
+		hetyCommand()
 	case "version", "-v", "--version":
 		fmt.Printf("seqtk version %s\n", version)
 	case "help", "-h", "--help":
@@ -127,6 +133,8 @@ Commands:
   size       Print '<num_records>\t<total_bases>' (upstream summary form)
   famask     Apply a FASTA mask file to a source FASTA
   mergefa    Merge two FASTA/FASTQ inputs base-by-base via IUPAC codes
+  fqchk      Per-position FASTQ base/quality summary
+  hety       Per-window heterozygosity scan over a FASTA
   version    Show version information
   help       Show this help message
 
@@ -155,6 +163,9 @@ Examples:
   seqtk famask src.fa mask.fa > out.fa # X=keep, x=soft-mask, else=overwrite
   seqtk mergefa a.fa b.fa > merged.fa  # IUPAC merge; -i / -m / -h / -r / -q
                                        # select the merge mode
+  seqtk fqchk reads.fq                 # per-position base/quality TSV
+  seqtk fqchk -q 30 reads.fq           # use Q30 split for %%low/%%high cols
+  seqtk hety -w 10000 genome.fa        # 10 kb non-overlapping heterozygosity
 
 `)
 }
@@ -1598,6 +1609,170 @@ Examples:
 		RandHet:   randhet,
 	}
 	if err := seqtk.Mergefa(in1, in2, out, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func fqchkCommand() {
+	fs := flag.NewFlagSet("fqchk", flag.ExitOnError)
+	var qthres int
+	var output string
+
+	cliflag.IntVar(fs, &qthres, "q", "quality", seqtk.DefaultFqchkQThres, "Quality threshold for the %low/%high split (use 0 to dump full per-quality distribution)")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk fqchk [-q INT] <in.fq>
+
+Per-position FASTQ base / quality summary, matching upstream
+"seqtk fqchk" byte-for-byte. The output is a TSV:
+
+  min_len: <min>; max_len: <max>; avg_len: <avg>; <K> distinct quality values
+  POS\t#bases\t%%A\t%%C\t%%G\t%%T\t%%N\tavgQ\terrQ\t...
+  ALL\t...
+  1\t...
+  2\t...
+  ...
+
+When -q is > 0 the per-row trailing columns are exactly two: %%low (quality
+< qthres) and %%high. When -q is 0 the trailing columns are one %%Qk per
+distinct observed quality value k. Quality is decoded as PHRED+33; values
+outside [0, 93] are clamped.
+
+Upstream surface (verified against reference_code/seqtk/seqtk.c v1.5-r133,
+line 1879, getopt("q:")):
+
+  -q INT   quality threshold [%d]; 0 prints the full per-quality distribution
+
+The "-o/--output FILE" option here is the project-wide Go-port convenience
+and does not affect parity.
+
+Arguments:
+  <in.fq>    Input FASTQ file (use '-' for stdin, supports .gz)
+
+Options:
+  -q, --quality INT      Quality threshold for the %%low/%%high split [%d]
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk fqchk reads.fq
+  seqtk fqchk -q 30 reads.fq > qc.tsv
+  zcat reads.fq.gz | seqtk fqchk -
+
+`, seqtk.DefaultFqchkQThres, seqtk.DefaultFqchkQThres)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.Fqchk(input, out, seqtk.FqchkOptions{QThres: qthres}); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func hetyCommand() {
+	fs := flag.NewFlagSet("hety", flag.ExitOnError)
+	var winSize, nStart int
+	var lowerMask bool
+	var output string
+
+	cliflag.IntVar(fs, &winSize, "w", "window", seqtk.DefaultHetyWinSize, "Window size (bp)")
+	cliflag.IntVar(fs, &nStart, "t", "n-start", seqtk.DefaultHetyNStart, "Number of start positions in a window")
+	cliflag.BoolVar(fs, &lowerMask, "m", "lower-mask", false, "Treat lowercase bases as masked (count as N)")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk hety [options] <in.fa>
+
+Per-window heterozygosity scan over a FASTA file. For every non-overlapping
+window (or window-step of size win_size / n_start) upstream emits one TSV
+line on stdout:
+
+  name\tstart\tend\t<het*win>\t<n_hom+n_het>\t<n_het>
+
+where n_hom counts unambiguous ACGT bases and n_het counts the 2-base
+IUPAC ambiguity codes R, Y, S, W, K, M. 3- and 4-base IUPAC codes
+(B, D, H, V, N, X) are NOT counted. Windows whose hom+het total is zero
+are silently dropped (matching upstream).
+
+Upstream surface (verified against reference_code/seqtk/seqtk.c v1.5-r133,
+line 584, getopt("w:t:m")):
+
+  -w INT   window size [%d]
+  -t INT   number of start positions in a window [%d]
+  -m       treat lowercases as masked
+
+The "-o/--output FILE" option here is the project-wide Go-port convenience
+and does not affect parity.
+
+Arguments:
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+
+Options:
+  -w, --window INT       Window size in bp [%d]
+  -t, --n-start INT      Number of start positions in a window [%d]
+  -m, --lower-mask       Treat lowercase bases as masked (count as N)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk hety -w 10000 genome.fa > het.bed
+  seqtk hety -w 50000 -t 5 -m masked.fa
+  zcat genome.fa.gz | seqtk hety -w 1000 -
+
+`, seqtk.DefaultHetyWinSize, seqtk.DefaultHetyNStart, seqtk.DefaultHetyWinSize, seqtk.DefaultHetyNStart)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	opts := seqtk.HetyOptions{
+		WinSize:     winSize,
+		NStart:      nStart,
+		IsLowerMask: lowerMask,
+	}
+	if err := seqtk.Hety(input, out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

@@ -33,6 +33,8 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Summary record/base count (`size`)**
   - **FASTA mask application (`famask`)**
   - **Base-by-base IUPAC merge of two FASTA/Q files (`mergefa`)**
+  - **Per-position FASTQ base/quality summary (`fqchk`)**
+  - **Per-window heterozygosity scan over a FASTA (`hety`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -643,6 +645,82 @@ Options (real upstream flag surface, `getopt("himrq:")` at
 
 `-i` and `-m` are mutually exclusive, matching upstream's early-exit
 check.
+
+#### 20. Per-Position FASTQ Summary (`fqchk`)
+
+Walk a FASTQ stream and emit a TSV report of per-position base
+composition (A/C/G/T/N) plus per-position quality statistics:
+
+```text
+min_len: <min>; max_len: <max>; avg_len: <avg>; <K> distinct quality values
+POS\t#bases\t%A\t%C\t%G\t%T\t%N\tavgQ\terrQ\t...
+ALL\t...
+1\t...
+2\t...
+...
+```
+
+The trailing columns depend on `-q INT`: when `-q` is `> 0` the row
+ends with exactly two columns (`%low` for quality `< q`, `%high` for
+the rest); when `-q 0` the row ends with one `%Qk` column per
+distinct observed quality value `k`. Quality is decoded as PHRED+33
+and clamped to `[0, 93]` (matching upstream — neither encoding nor
+range are configurable).
+
+```bash
+seqtk fqchk reads.fq               # default -q 20
+seqtk fqchk -q 0 reads.fq          # full per-quality distribution
+seqtk fqchk -q 30 reads.fq         # %low / %high split at Q30
+zcat reads.fq.gz | seqtk fqchk -   # stdin via '-'
+```
+
+Arguments:
+
+- `<in.fq>`: Input FASTQ (use `-` for stdin, supports `.gz`)
+
+Options (real upstream flag surface, `getopt("q:")` at
+`seqtk.c:1879`):
+
+- `-q, --quality INT`: Quality threshold for the `%low`/`%high` split
+  (default 20). `-q 0` switches to the full per-quality distribution.
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience.*
+
+#### 21. Per-Window Heterozygosity (`hety`)
+
+Walk every FASTA record in non-overlapping windows of `-w` bases
+(stepped at `win_size / n_start`) and emit one TSV line per window
+that contains at least one ACGT or 2-base IUPAC code:
+
+```text
+name\tstart\tend\t<het*win>\t<n_hom+n_het>\t<n_het>
+```
+
+`n_het` counts only the 2-base IUPAC ambiguity codes R, Y, S, W, K,
+M — 3-/4-base codes (B, D, H, V, N, X) are NOT counted as
+heterozygous. `n_hom` counts unambiguous ACGT bases. Empty windows
+(both counts zero) are dropped silently, matching upstream. With
+`-m`, lowercase bases are first converted to N (i.e. dropped from
+both counts).
+
+```bash
+seqtk hety -w 10000 genome.fa > het.bed
+seqtk hety -w 50000 -t 5 -m masked.fa
+zcat genome.fa.gz | seqtk hety -w 1000 -
+```
+
+Arguments:
+
+- `<in.fa>`: Input FASTA (use `-` for stdin, supports `.gz`)
+
+Options (real upstream flag surface, `getopt("w:t:m")` at
+`seqtk.c:584`):
+
+- `-w, --window INT`: Window size in bp (default 50000)
+- `-t, --n-start INT`: Number of start positions in a window (default 5)
+- `-m, --lower-mask`: Treat lowercase bases as masked (count as N)
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience.*
 
 ## Examples
 

@@ -71,22 +71,40 @@ closed.
 
 ### `seqtk`
 
-**Status:** 19 of ~22 upstream subcommands. ~86%.
+**Status:** 21 of ~22 upstream subcommands. ~95%.
 
 Missing subcommands (verified against `reference_code/seqtk/seqtk.c::main()`
 dispatch table, v1.5-r133):
 
 - `listhet` — extract heterozygous sites from VCF/BCF.
-- `fqchk` — FASTQ quality check report.
-- `hety` — heterozygosity estimator.
 - `hpc-bg` — homopolymer-compress with mismatch tolerance.
 - `kfreq` — k-mer frequency analysis.
 - `telo` — find telomeric repeats.
 
-Added this iteration: `famask`, `mergefa`. Both are byte-for-byte
-parity ports against `reference_code/seqtk` v1.5 (verified by piping
-hand-built fixtures through both the upstream binary and the Go port
-and diffing). The previous iteration added `rename`, `split`, `size`.
+Added this iteration: `fqchk`, `hety`. Both are byte-for-byte parity
+ports against `reference_code/seqtk` v1.5 (verified by piping the
+hand-built fixtures under `tools/seqtk/testdata/parity/` through both
+the upstream binary and the Go port and diffing). Previous iterations
+added `famask`, `mergefa`, `rename`, `split`, `size`.
+
+- `fqchk` — full upstream surface implemented: `-q INT` (default 20,
+  use `-q 0` to dump the per-quality distribution). Output covers the
+  preamble line, the `POS … avgQ errQ [%low %high | %Qk…]` header, the
+  `ALL` aggregate row, and the per-position rows — all matched
+  byte-for-byte on `fqchk_mixed.fq` (default, `-q 0`, `-q 30`) and
+  `small.fq` (default, `-q 0`). PHRED+33 is hard-coded upstream and
+  thus here too.
+- `hety` — full upstream surface implemented: `-w INT` (default 50000),
+  `-t INT` (default 5), `-m`. Per-position classification (the
+  `bitcnt > 2 ? 0 : == 2 ? 2 : 1` map) is reproduced verbatim from
+  `seqtk.c:614-619`, so 2-base IUPAC codes (R, Y, S, W, K, M) count as
+  heterozygous while 3-/4-base IUPAC codes (B, D, H, V, N, X) do not.
+  Byte-parity verified against `reference_code/seqtk` v1.5 on
+  `hety_basic.fa` (default, `-w 30`, `-w 30 -t 3`, `-w 30 -m`) and
+  `hety_lowercase.fa` (`-w 6 -t 1 -m`). Note: the i==l terminator and
+  the upstream rollback at `seqtk.c:604-606` are required to make the
+  partial last window emit the same byte count as upstream — both are
+  pinned by the parity fixtures.
 
 The previous list also mentioned `seqshuf`, `gcdc`, and `cnregion` —
 these are NOT upstream subcommands per the dispatch-table audit.
