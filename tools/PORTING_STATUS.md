@@ -103,8 +103,19 @@ at 1:1 feature parity (the project goal); see
 - `hety` - Per-window heterozygosity scan over a FASTA; full
   `-w/-t/-m` upstream surface; byte-parity vs upstream for default,
   `-w 30`, `-w 30 -t 3`, `-w 30 -m`, and a lowercase fixture
+- `kfreq` - Per-record k-mer (and Hamming-1 neighbour) frequency
+  scan; no upstream flags (positional `<kmer> <in.fa>`); strand
+  selection matches upstream's `cnt_nei[0] > cnt_nei[1]` tie-break
+  (ties pick `-`); byte-parity vs upstream on `kfreq_small.fa`,
+  `kfreq_edge.fa`, and `kfreq_mixed.fa` across multiple k-mers
+- `telo` - Locate telomeric repeats at FASTA record ends using the
+  upstream X-dropoff scan; full `-m/-p/-d/-s/-P` upstream surface;
+  BED rows on stdout, `<sum_telo>\t<sum_input>` summary on stderr
+  (matching upstream's split); byte-parity vs upstream on
+  `telo_basic.fa` (default, `-m TTAGGG`, `-P -s 0`), `telo_complex.fa`
+  (default, `-s 100`, `-p 2 -d 500`), and `telo_edge.fa`
 
-**Test Coverage**: ~79% of statements (`go test -cover`)  
+**Test Coverage**: ~81% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
 **Documentation**: README with examples  
 
@@ -117,14 +128,14 @@ at 1:1 feature parity (the project goal); see
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- The 21 upstream-equivalent commands above cover seqtk's
+- The 23 upstream-equivalent commands above cover seqtk's
   mutation/compression core plus the BED-emitting scanners (`gap`,
   `gc`), the paired-end helpers (`mergepe`, `dropse`), the
   housekeeping trio (`rename`, `split`, `size`), the FASTA pair-merge
-  utilities (`famask`, `mergefa`), and the QC scanners (`fqchk`,
-  `hety`). Smaller misses remain (`listhet`, `hpc-bg`, `kfreq`,
-  `telo`); see [the seqtk README](seqtk/README.md) for the
-  per-subcommand list.
+  utilities (`famask`, `mergefa`), the QC scanners (`fqchk`, `hety`),
+  and now the genome-analysis scanners (`kfreq`, `telo`). Remaining
+  gaps: `listhet`, `hpc-bg`. See
+  [the seqtk README](seqtk/README.md) for the per-subcommand list.
 - Output format intended to be compatible for the implemented commands
 
 ---

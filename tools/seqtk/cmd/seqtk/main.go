@@ -31,6 +31,8 @@
 //	mergefa    Merge two FASTA/FASTQ files base-by-base via IUPAC
 //	fqchk      FASTQ per-position base/quality summary
 //	hety       Per-window heterozygosity scan over a FASTA
+//	kfreq      Per-record k-mer (and neighbour) frequency
+//	telo       Locate telomeric repeats at the ends of FASTA records
 package main
 
 import (
@@ -97,6 +99,10 @@ func main() {
 		fqchkCommand()
 	case "hety":
 		hetyCommand()
+	case "kfreq":
+		kfreqCommand()
+	case "telo":
+		teloCommand()
 	case "version", "-v", "--version":
 		fmt.Printf("seqtk version %s\n", version)
 	case "help", "-h", "--help":
@@ -135,6 +141,8 @@ Commands:
   mergefa    Merge two FASTA/FASTQ inputs base-by-base via IUPAC codes
   fqchk      Per-position FASTQ base/quality summary
   hety       Per-window heterozygosity scan over a FASTA
+  kfreq      Per-record k-mer (and Hamming-1 neighbour) frequency
+  telo       Locate telomeric repeats at the ends of FASTA records
   version    Show version information
   help       Show this help message
 
@@ -166,6 +174,8 @@ Examples:
   seqtk fqchk reads.fq                 # per-position base/quality TSV
   seqtk fqchk -q 30 reads.fq           # use Q30 split for %%low/%%high cols
   seqtk hety -w 10000 genome.fa        # 10 kb non-overlapping heterozygosity
+  seqtk kfreq AC genome.fa             # AC k-mer + neighbour count per record
+  seqtk telo asm.fa > telo.bed         # CCCTAA telomere ends (BED, summary on stderr)
 
 `)
 }
@@ -1773,6 +1783,183 @@ Examples:
 		IsLowerMask: lowerMask,
 	}
 	if err := seqtk.Hety(input, out, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func kfreqCommand() {
+	fs := flag.NewFlagSet("kfreq", flag.ExitOnError)
+	var output string
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk kfreq <kmer> <in.fa>
+
+Per-record k-mer frequency scan. For every FASTA record, count
+occurrences of <kmer> (and its reverse complement) plus all
+Hamming-1 neighbours. One TSV row is emitted per record:
+
+  name\tlen\t<strand>\t<neighbour-count>\t<exact-count>
+
+where <strand> is '+' when the forward neighbour count strictly
+exceeds the reverse neighbour count and '-' otherwise (matching
+upstream: ties pick '-'). Matches "seqtk kfreq" byte-for-byte
+(verified against reference_code/seqtk v1.5-r133, seqtk.c:1777).
+
+Upstream surface: no flags — only the two positional arguments
+<kmer> and <in.fa>. The k-mer must be non-empty and contain only
+ACGT (upstream aborts via assert() on a non-ACGT byte; we return
+a clean error). The "-o/--output FILE" option here is the
+project-wide Go-port convenience and does not affect parity.
+
+Arguments:
+  <kmer>     Target k-mer (ACGT, case-insensitive; length 1..15)
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+
+Options:
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk kfreq AAGG genome.fa
+  seqtk kfreq CCCTAA telomeres.fa
+  zcat genome.fa.gz | seqtk kfreq ACGT -
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 2 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	kmer := fs.Arg(0)
+	inputFile := fs.Arg(1)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.Kfreq(input, out, seqtk.KfreqOptions{Kmer: kmer}); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func teloCommand() {
+	fs := flag.NewFlagSet("telo", flag.ExitOnError)
+	var motif string
+	var penalty, maxDrop, minScore int
+	var showProfile bool
+	var output string
+
+	cliflag.StringVar(fs, &motif, "m", "motif", seqtk.DefaultTeloMotif, "Telomeric motif (ACGT; default CCCTAA)")
+	cliflag.IntVar(fs, &penalty, "p", "penalty", seqtk.DefaultTeloPenalty, "Per-position penalty for a non-hit base")
+	cliflag.IntVar(fs, &maxDrop, "d", "max-drop", seqtk.DefaultTeloMaxDrop, "Max score drop before the end-scan aborts")
+	cliflag.IntVar(fs, &minScore, "s", "min-score", seqtk.DefaultTeloMinScore, "Min running max-score to emit an interval")
+	cliflag.BoolVar(fs, &showProfile, "P", "profile", false, "Emit per-position scoring profile instead of BED intervals")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk telo [options] <in.fa>
+
+Locate telomeric repeats at the 5' and 3' ends of every FASTA record
+via the upstream X-dropoff banded scan. By default the motif is
+CCCTAA (vertebrate telomere); the 3' scan checks the same motif on
+the reverse strand. For each record the 5' scan walks left-to-right
+scoring +1 per motif-rotation hit and -p per miss; the maximum
+running score in [0, max_drop] is tracked, and if it reaches
+-s min_score a BED row is emitted:
+
+  <name>\t0\t<5' end pos>\t<seq len>            (5' hit)
+  <name>\t<3' start pos>\t<seq len>\t<seq len>  (3' hit)
+
+With -P, instead of BED rows the per-position profile is printed
+(one P-row per i for the 5' scan, one Q-row per i for the 3' scan).
+
+After processing all records a summary <sum_telo>\t<sum_input> line
+is written to stderr (NOT stdout) — same split as upstream.
+
+Matches "seqtk telo" byte-for-byte (verified against
+reference_code/seqtk v1.5-r133, seqtk.c:1969).
+
+Upstream surface (verified against reference_code/seqtk/seqtk.c v1.5,
+line 1978, getopt("m:p:d:s:P")):
+
+  -m STR   motif [%s]
+  -p INT   per-position penalty [%d]
+  -d INT   max score drop [%d]
+  -s INT   min score [%d]
+  -P       print per-position scoring profile
+
+The "-o/--output FILE" option here is the project-wide Go-port
+convenience and does not affect parity.
+
+Arguments:
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+
+Options:
+  -m, --motif STR        Telomeric motif (ACGT) [%s]
+  -p, --penalty INT      Per-position penalty for a miss [%d]
+  -d, --max-drop INT     Max score drop before abort [%d]
+  -s, --min-score INT    Min score to emit an interval [%d]
+  -P, --profile          Print per-position scoring profile instead of BED
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk telo genome.fa > telo.bed
+  seqtk telo -m TTAGGG -s 200 chromosomes.fa
+  seqtk telo -P -s 0 small.fa | head
+
+`,
+			seqtk.DefaultTeloMotif, seqtk.DefaultTeloPenalty, seqtk.DefaultTeloMaxDrop, seqtk.DefaultTeloMinScore,
+			seqtk.DefaultTeloMotif, seqtk.DefaultTeloPenalty, seqtk.DefaultTeloMaxDrop, seqtk.DefaultTeloMinScore)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	opts := seqtk.TeloOptions{
+		Motif:       motif,
+		Penalty:     penalty,
+		MaxDrop:     maxDrop,
+		MinScore:    minScore,
+		ShowProfile: showProfile,
+	}
+	if err := seqtk.Telo(input, out, os.Stderr, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

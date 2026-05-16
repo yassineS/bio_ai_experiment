@@ -35,6 +35,8 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Base-by-base IUPAC merge of two FASTA/Q files (`mergefa`)**
   - **Per-position FASTQ base/quality summary (`fqchk`)**
   - **Per-window heterozygosity scan over a FASTA (`hety`)**
+  - **Per-record k-mer (and Hamming-1 neighbour) frequency (`kfreq`)**
+  - **Telomeric-repeat scan at FASTA record ends (`telo`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -721,6 +723,90 @@ Options (real upstream flag surface, `getopt("w:t:m")` at
 - `-m, --lower-mask`: Treat lowercase bases as masked (count as N)
 - `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
   *Go-port convenience.*
+
+#### 22. k-mer Frequency (`kfreq`)
+
+For every FASTA record, count exact and Hamming-1-neighbour
+occurrences of a single ACGT k-mer (and its reverse complement). One
+TSV row is written per record:
+
+```text
+name\tlen\t<strand>\t<neighbour-count>\t<exact-count>
+```
+
+`<strand>` is `+` when the forward neighbour count strictly exceeds
+the reverse neighbour count and `-` otherwise (matching upstream's
+`cnt_nei[0] > cnt_nei[1] ? 0 : 1` tie-break — ties pick `-`). A
+zero-length record still emits a row with all counts at 0 and
+`-` as the strand.
+
+```bash
+seqtk kfreq AAGG genome.fa
+seqtk kfreq ACGT reads.fa.gz
+zcat genome.fa.gz | seqtk kfreq CCCTAA -
+```
+
+Arguments:
+
+- `<kmer>`: Target k-mer (ACGT, case-insensitive; length 1..15)
+- `<in.fa>`: Input FASTA (use `-` for stdin, supports `.gz`)
+
+Upstream surface: no flags (positional `<kmer> <in.fa>` only —
+`reference_code/seqtk/seqtk.c::stk_kfreq` does not call
+`getopt`). Non-ACGT bytes in the k-mer trigger `assert()` upstream;
+this port returns a typed error instead.
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience.*
+
+#### 23. Telomeric-Repeat Scan (`telo`)
+
+Locate telomeric repeats at the 5' and 3' ends of every FASTA record
+using the upstream X-dropoff banded scan. Output is BED-style
+intervals on stdout and a summary line on stderr (`<sum_telo>\t<sum_input>\n`).
+
+5' hit row format:
+
+```text
+<name>\t0\t<5' end pos>\t<seq len>
+```
+
+3' hit row format:
+
+```text
+<name>\t<3' start pos>\t<seq len>\t<seq len>
+```
+
+With `-P` the BED output is replaced by per-position profile rows
+(`P\t<name>\t<i>\t<score>\t<max>` for the 5' scan,
+`Q\t<name>\t<seq.l - i>\t<score>\t<max>` for the 3' scan).
+
+```bash
+seqtk telo genome.fa > telo.bed                    # default CCCTAA motif
+seqtk telo -m TTAGGG -s 200 chromosomes.fa         # custom motif + min-score
+seqtk telo -P -s 0 small.fa | head                 # per-position profile
+```
+
+Arguments:
+
+- `<in.fa>`: Input FASTA (use `-` for stdin, supports `.gz`)
+
+Upstream surface (`getopt("m:p:d:s:P")` at `reference_code/seqtk/seqtk.c:1978`):
+
+- `-m, --motif STR`: Telomeric motif (ACGT) [`CCCTAA`]
+- `-p, --penalty INT`: Per-position penalty for a non-hit base [`1`].
+  Negative values are silently flipped to their absolute value
+  (upstream `if (penalty < 0) penalty = -penalty;`).
+- `-d, --max-drop INT`: Max score drop before the end-scan aborts [`2000`]
+- `-s, --min-score INT`: Min running max for an interval to be emitted [`300`]
+- `-P, --profile`: Print per-position scoring profile instead of BED intervals
+
+Options:
+
+- `-o, --output FILE`: Output file for BED rows (default: stdout, supports `.gz`).
+  *Go-port convenience.* The stderr summary line is not redirected.
 
 ## Examples
 
