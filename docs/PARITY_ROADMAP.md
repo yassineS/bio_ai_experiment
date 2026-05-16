@@ -264,19 +264,78 @@ Option-tail gaps (per existing subcommand):
 ### `prinseq-lite`
 
 **Status:** 2 subcommands (`stats`, `filter`) covering most common knobs.
+Five missing-flag gaps closed in PR #prinseq-missing-flags.
 
-Missing flags (per the upstream `-help` listing — incomplete inventory; see
-`reference_code/prinseq-lite/` for the full Perl source):
+Implemented flags (with the upstream Perl line numbers consulted for
+each — `reference_code/prinseq/prinseq-lite.pl`, 0.20.4):
 
-- `--graph_data` and the corresponding HTML/PNG report generation.
-- `--out_format` for FASTA/FASTQ/QUAL/SOL conversion combinations.
-- `--seq_id_mappings` for ID-mapping output.
-- `--ns_max_p` (percentage form of `--ns_max_n`).
-- `--noniupac` strict-IUPAC filtering.
-- `--phreds` quality-score output format.
+- `--out_format` (1=FASTA, 2=FASTA+QUAL, 3=FASTQ, 4=FASTQ+FASTA,
+  5=FASTQ+FASTA+QUAL) — POD spec at lines 242-247; CLI parsing at
+  lines 769-789; per-mode write branches at lines 1302-1348,
+  3703-3714, 3737-3757.
+- `--seq_id_mappings <file>` — POD at lines 293-295; coupling check
+  with `--seq_id` at lines 945-948; file open at lines 1350-1358;
+  per-record write at lines 3640-3648.
+- `--ns_max_p <float>` — POD at lines 344-346; filter check at
+  lines 3465-3470 (strict `>` against `(N_count * 100 / length)`).
+- `--noniupac` — POD at lines 352-354; filter check at lines
+  3478-3481 (`uc($seq) =~ /[^ACGTN]/o`, i.e. case-insensitive).
+- `--phred64` — POD at lines 230-232; gate at lines 760-764. This
+  is an INPUT encoding toggle (the original roadmap entry called it
+  `--phreds`; upstream has no such flag — the only Phred-related
+  option is `-phred64`). Implemented as a CLI alias for
+  `--qual-type illumina`, so the existing Phred+64 decoder is
+  reused. The QUAL output (`--out_format 2/5`) honours the chosen
+  encoding when converting to decimal phred scores.
+
+Bundled as a CLI alias only (`--seq_id <prefix>`): documented at
+lines 470-472 of the upstream POD, implemented at line 3648. Needed
+to make `--seq_id_mappings` useful, since upstream rejects
+`--seq_id_mappings` without `--seq_id`.
+
+Behavioural divergences vs upstream that are documented rather than
+matched (PRINSEQ-lite has no formal test suite, so byte-for-byte
+parity is not enforced):
+
+- Multi-stream outputs (`--out_format 2/4/5`) use the value of
+  `--output` directly as the prefix, appending literal `.fasta` /
+  `.qual` to it. Upstream derives the prefix from `-out_good`, with
+  randomised `_prinseq_good_XXXX` suffixes when no prefix is given;
+  we require an explicit `--output` prefix and refuse to stream
+  multiple files to stdout. The semantic restriction matches upstream
+  (lines 801-802), the on-disk filename layout differs.
+- The QUAL output uses the upstream `convertQualArrayToString`
+  layout (two-character space-padded decimal, single-space separated,
+  wrapped every `LINE_WIDTH=60` values; lines 45 and 2531-2546). We
+  do **not** currently expose the upstream `-line_width` knob; the
+  default is fixed at 60 via `QualLineWidth` on `FilterOptions` so
+  future PRs can plumb it through.
+- The `--seq_id` rename drops any trailing whitespace/comment from
+  the original FASTA description. **This is a divergence from upstream**:
+  upstream `prinseq-lite.pl:3683-3691` emits
+  `$sid.($header ? ' '.$header : '')`, preserving any trailing comment.
+  Tracked here for future-PR follow-up.
+
+Still missing:
+
+- `--graph_data` and the corresponding HTML/PNG report generation —
+  out of scope per `tools/PORTING_STATUS.md` (the existing Go
+  `graph` / `report` subcommands generate stats-based ASCII / HTML
+  output without depending on `prinseq-graphs.pl`).
+- A handful of niche knobs not in the original five-flag scope:
+  `--range_len`, `--range_gc`, `--trim_qual_window`,
+  `--trim_qual_step`, `--trim_qual_rule`, `--trim_to_len`,
+  `--seq_case`, `--dna_rna`, `--line_width`, `--rm_header`,
+  `--no_qual_header`, `--qual_noscale`, `--exact_only`, `--params`,
+  `--custom_params`, `--seq_num`. None of these were on the agreed
+  scope for this PR.
 
 **Validation:** no upstream-test-suite run yet. Upstream PRINSEQ-lite has no
 formal test suite — we'd need to construct one from the documented examples.
+The new flags are covered by hand-built unit tests in
+`tools/prinseq/pkg/prinseq/missing_flags_test.go` (10 sub-cases for
+`--ns_max_p` boundaries, 5 sub-cases for `--out_format`, plus
+`--noniupac`, `--seq_id_mappings`, `--phred64`).
 
 ### `sickle`
 

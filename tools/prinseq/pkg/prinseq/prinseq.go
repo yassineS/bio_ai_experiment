@@ -438,8 +438,8 @@ type FilterOptions struct {
 	MinGC         float64
 	MaxGC         float64
 	MinQual       float64
-	MaxNsP        float64 // Max percentage of Ns
-	MaxNsN        int     // Max number of Ns
+	MaxNsP        float64 // Max percentage of Ns (upstream --ns_max_p)
+	MaxNsN        int     // Max number of Ns (upstream --ns_max_n)
 	TrimLeft      int
 	TrimRight     int
 	TrimLeftP     int // Trim percentage from left
@@ -458,6 +458,40 @@ type FilterOptions struct {
 	OutBad        io.Writer // Writer for rejected sequences (optional)
 	LcMethod      string    // Low complexity method: "dust" or "entropy"
 	LcThreshold   float64   // Low complexity threshold (7 for dust, 70 for entropy)
+
+	// Upstream PRINSEQ-lite parity flags (added in PR #prinseq-missing-flags):
+	//
+	//   NonIUPAC    — implements `-noniupac` (reject any base outside ACGTN,
+	//                 case-insensitive; upstream upper-cases before the
+	//                 [^ACGTN] check at prinseq-lite.pl line 3478).
+	//   SeqID       — implements `-seq_id <prefix>` (rename headers to
+	//                 "<prefix><counter>"; counter starts at 1 and only
+	//                 increments for records that pass all filters, matching
+	//                 the upstream behaviour at line 3648).
+	//   SeqIDMap    — implements `-seq_id_mappings <file>`; emits
+	//                 "<orig_id>\t<new_id>\n" for each renamed record
+	//                 (upstream line 3646). Requires SeqID to be non-empty;
+	//                 callers should validate that at the CLI layer.
+	//   OutFormat   — implements `-out_format` (1=FASTA, 2=FASTA+QUAL,
+	//                 3=FASTQ, 4=FASTQ+FASTA, 5=FASTQ+FASTA+QUAL). When
+	//                 zero, the output format mirrors the input format
+	//                 (matches the inferred default at lines 785-789).
+	//   FastaOut    — secondary FASTA writer for `--out_format 4 / 5`.
+	//   QualOut     — QUAL writer for `--out_format 2 / 5`. QUAL records
+	//                 follow upstream `convertQualArrayToString`
+	//                 (lines 2531-2546): two-character space-padded decimal
+	//                 phred scores separated by spaces, wrapped every
+	//                 QualLineWidth values; default 60 (LINE_WIDTH at
+	//                 line 45).
+	//   QualLineWidth — overrides the default 60-column QUAL wrap (mirrors
+	//                 upstream `-line_width`); 0 keeps the default.
+	NonIUPAC      bool
+	SeqID         string
+	SeqIDMap      io.Writer
+	OutFormat     int
+	FastaOut      io.Writer
+	QualOut       io.Writer
+	QualLineWidth int
 }
 
 // Filter filters a FASTA/FASTQ file based on the given options
@@ -486,6 +520,7 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	}
 
 	seenSeqs := make(map[string]int) // For duplicate tracking
+	seqCount := 0                    // For --seq_id renumbering
 
 	for {
 		record, err := fastaReader.Read()
@@ -496,6 +531,7 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 			return err
 		}
 
+		origDesc := record.Description
 		seq := string(record.Sequence)
 
 		// Apply trimming
@@ -526,6 +562,25 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 			continue
 		}
 
+		// Apply --seq_id renaming. Upstream only renames records that
+		// pass the filters (prinseq-lite.pl:3640-3648).
+		if opts.SeqID != "" {
+			seqCount++
+			origID := record.ID
+			if origID == "" {
+				// Fasta reader's record exposes Description; the
+				// upstream "$seqid" is the first whitespace-
+				// delimited token. Fall back to the full
+				// description if no whitespace is present.
+				origID = firstToken(origDesc)
+			}
+			newDesc := renameDescription(opts.SeqID, seqCount)
+			record.Description = newDesc
+			if err := writeSeqIDMapping(opts.SeqIDMap, origID, newDesc); err != nil {
+				return err
+			}
+		}
+
 		// Update record with trimmed sequence
 		record.Sequence = []byte(seq)
 
@@ -542,6 +597,19 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		return badWriter.Flush()
 	}
 	return nil
+}
+
+// firstToken returns the substring of s up to (but not including) the
+// first ASCII whitespace byte, or s itself when none is present. It is
+// the Go equivalent of upstream prinseq's `/^(\S+)/` extraction of the
+// sequence identifier from a FASTA/FASTQ header.
+func firstToken(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // writePrinseqFastq writes one FASTQ record in the upstream PRINSEQ-lite
@@ -569,6 +637,104 @@ func writePrinseqFastq(w *bufio.Writer, rec *fastq.Record) error {
 	return w.WriteByte('\n')
 }
 
+// writePrinseqFasta writes one FASTA record under the upstream prinseq
+// convention: ">desc\n<seq>\n" with no soft-wrap. The seq is already
+// supplied as a single line; we deliberately do not split it here to
+// match the byte-layout used by upstream when no `-line_width` is set
+// (prinseq-lite.pl:3704-3708, where the substitution `s/(.{$linelen})/$1\n/g`
+// is gated on `$linelen` being non-zero).
+func writePrinseqFasta(w *bufio.Writer, desc string, seq []byte) error {
+	if _, err := fmt.Fprintf(w, ">%s\n", desc); err != nil {
+		return err
+	}
+	if _, err := w.Write(seq); err != nil {
+		return err
+	}
+	return w.WriteByte('\n')
+}
+
+// defaultQualLineWidth is the upstream LINE_WIDTH constant
+// (prinseq-lite.pl:45). It controls how many phred values are written
+// per line of a QUAL record.
+const defaultQualLineWidth = 60
+
+// writePrinseqQual writes one record to a QUAL file using upstream's
+// convertQualArrayToString layout (prinseq-lite.pl:2531-2546):
+//
+//   - decode each ASCII quality byte to a decimal phred score under the
+//     given offset (33 for Sanger / Phred+33, 64 for Illumina /
+//     Phred+64);
+//   - emit each score as a two-character field (leading space when
+//     <10), followed by a single space, wrapping every lineWidth
+//     values to a new line; and
+//   - strip any trailing space/newline from the last token, then end
+//     the record with a single "\n".
+//
+// linelen <= 0 selects the default of 60.
+func writePrinseqQual(w *bufio.Writer, desc string, qual []byte, offset, lineWidth int) error {
+	if lineWidth <= 0 {
+		lineWidth = defaultQualLineWidth
+	}
+	if _, err := fmt.Fprintf(w, ">%s\n", desc); err != nil {
+		return err
+	}
+	count := 0
+	for i, q := range qual {
+		score := int(q) - offset
+		// Upstream caps to 93 on write (line 2487); on read it
+		// accepts arbitrary Phred values. We don't cap here
+		// because the values are read back as ASCII via the
+		// FASTQ reader which has already validated the encoding.
+		if score < 10 {
+			if err := w.WriteByte(' '); err != nil {
+				return err
+			}
+			if err := w.WriteByte(byte('0' + score)); err != nil {
+				return err
+			}
+		} else {
+			if _, err := fmt.Fprintf(w, "%d", score); err != nil {
+				return err
+			}
+		}
+		count++
+		if count >= lineWidth && i != len(qual)-1 {
+			if err := w.WriteByte('\n'); err != nil {
+				return err
+			}
+			count = 0
+		} else if i != len(qual)-1 {
+			if err := w.WriteByte(' '); err != nil {
+				return err
+			}
+		}
+	}
+	return w.WriteByte('\n')
+}
+
+// writeSeqIDMapping writes one row of the seq_id_mappings TSV in upstream's
+// "<orig_id>\t<new_id>\n" format (prinseq-lite.pl:3646). Returns nil if
+// the writer is nil so callers can unconditionally call it.
+func writeSeqIDMapping(w io.Writer, origID, newID string) error {
+	if w == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "%s\t%s\n", origID, newID)
+	return err
+}
+
+// renameDescription returns the rewritten header used by `--seq_id`.
+// The new identifier is "<SeqID><counter>".
+//
+// Documented divergence from upstream (prinseq-lite.pl:3683-3691):
+// upstream emits `$sid.($header ? ' '.$header : ”)`, so a record with
+// a trailing comment like `@read1 sample=A` becomes `@<prefix>N sample=A`
+// — the comment is PRESERVED. The Go port currently drops the comment;
+// tracked under docs/PARITY_ROADMAP.md#prinseq-lite as a known divergence.
+func renameDescription(prefix string, counter int) string {
+	return fmt.Sprintf("%s%d", prefix, counter)
+}
+
 func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	encoding := getQualityEncoding(opts.QualType)
 	fastqReader := fastq.NewReader(reader, encoding)
@@ -579,7 +745,26 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		bbw = bufio.NewWriter(opts.OutBad)
 	}
 
+	// out_format == 2 (FASTA+QUAL) is the only mode where the FASTQ
+	// input must be silently demoted to a FASTA stream on the primary
+	// writer, with QUAL going to opts.QualOut. For modes 3/4/5 the
+	// primary writer carries FASTQ as usual; for mode 1 it carries
+	// FASTA. Mode 0 (unset) preserves the input format (FASTQ here).
+	primaryFasta := opts.OutFormat == 1 || opts.OutFormat == 2
+	emitFasta := opts.OutFormat == 4 || opts.OutFormat == 5
+	emitQual := opts.OutFormat == 2 || opts.OutFormat == 5
+
+	var fastaBW, qualBW *bufio.Writer
+	if emitFasta && opts.FastaOut != nil {
+		fastaBW = bufio.NewWriter(opts.FastaOut)
+	}
+	if emitQual && opts.QualOut != nil {
+		qualBW = bufio.NewWriter(opts.QualOut)
+	}
+
+	qualOffset := phredOffset(opts.QualType)
 	seenSeqs := make(map[string]int) // For duplicate tracking
+	seqCount := 0                    // For --seq_id renumbering
 
 	for {
 		record, err := fastqReader.Read()
@@ -623,18 +808,59 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 			continue
 		}
 
+		// Apply --seq_id renaming (only on records that pass).
+		if opts.SeqID != "" {
+			seqCount++
+			origID := record.ID
+			newDesc := renameDescription(opts.SeqID, seqCount)
+			record.Description = newDesc
+			if err := writeSeqIDMapping(opts.SeqIDMap, origID, newDesc); err != nil {
+				return err
+			}
+		}
+
 		// Update record with trimmed sequence and quality
 		record.Sequence = []byte(seq)
 		record.Quality = []byte(qual)
 
-		// Write filtered record in upstream-compatible format.
-		if err := writePrinseqFastq(bw, record); err != nil {
-			return err
+		// Write primary output. Format depends on --out_format.
+		if primaryFasta {
+			if err := writePrinseqFasta(bw, record.Description, record.Sequence); err != nil {
+				return err
+			}
+		} else {
+			if err := writePrinseqFastq(bw, record); err != nil {
+				return err
+			}
+		}
+
+		// Optional secondary FASTA output (out_format 4/5).
+		if fastaBW != nil {
+			if err := writePrinseqFasta(fastaBW, record.Description, record.Sequence); err != nil {
+				return err
+			}
+		}
+
+		// Optional QUAL output (out_format 2/5).
+		if qualBW != nil {
+			if err := writePrinseqQual(qualBW, record.Description, record.Quality, qualOffset, opts.QualLineWidth); err != nil {
+				return err
+			}
 		}
 	}
 
 	if err := bw.Flush(); err != nil {
 		return err
+	}
+	if fastaBW != nil {
+		if err := fastaBW.Flush(); err != nil {
+			return err
+		}
+	}
+	if qualBW != nil {
+		if err := qualBW.Flush(); err != nil {
+			return err
+		}
 	}
 	if bbw != nil {
 		return bbw.Flush()
@@ -683,6 +909,22 @@ func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
 		nPercent := float64(nCount) / float64(seqLen) * 100.0
 		if nPercent > opts.MaxNsP {
 			return true
+		}
+	}
+
+	// Non-IUPAC strict filter. Upstream's check is
+	// `uc($seq) =~ /[^ACGTN]/o` (prinseq-lite.pl:3478), i.e. any base
+	// other than A/C/G/T/N (case-insensitive) marks the read for
+	// rejection. We match that semantics here.
+	if opts.NonIUPAC {
+		for _, base := range seq {
+			switch base {
+			case 'A', 'C', 'G', 'T', 'N',
+				'a', 'c', 'g', 't', 'n':
+				// ok
+			default:
+				return true
+			}
 		}
 	}
 
