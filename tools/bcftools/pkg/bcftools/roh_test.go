@@ -235,3 +235,30 @@ chr1	2000	.	C	G	.	.	AF=0.5	GT	1/1
 		t.Errorf("with -i, expected 1 site (skipping the 0/0), got %d", len(r.Sites))
 	}
 }
+
+// TestRoh_PdgFromDoseMatchesFakePLs pins the PDG values returned by
+// pdgFromDose to upstream vcfroh.c:919-933 (`fake_PLs`):
+//
+//	HOM-REF  -> {1 - err - err², err, err²}
+//	HET      -> {err, 1 - 2*err, err}
+//	HOM-ALT  -> {err², err, 1 - err - err²}
+//
+// Locks in PR #107 review finding #2: the prior code used a symmetric
+// {1-2err, err, err} for HOM cases which diverges from upstream.
+func TestRoh_PdgFromDoseMatchesFakePLs(t *testing.T) {
+	const e = 0.01
+	const e2 = e * e
+	want := map[int][3]float64{
+		0: {1 - e - e2, e, e2},
+		1: {e, 1 - 2*e, e},
+		2: {e2, e, 1 - e - e2},
+	}
+	for dose, w := range want {
+		got := pdgFromDose(dose, e)
+		for i := range got {
+			if math.Abs(got[i]-w[i]) > 1e-12 {
+				t.Errorf("dose=%d PDG[%d]: got %g, want %g (upstream fake_PLs)", dose, i, got[i], w[i])
+			}
+		}
+	}
+}

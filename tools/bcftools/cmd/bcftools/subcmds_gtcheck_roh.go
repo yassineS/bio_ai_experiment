@@ -169,7 +169,11 @@ func runGtcheck(args []string) int {
 		return 2
 	}
 
-	qSamples, gSamples := splitSamplesArg(samplesCombined)
+	qSamples, gSamples, err := splitSamplesArg(samplesCombined)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools gtcheck: %v\n", err)
+		return 2
+	}
 
 	opts := bcftools.GtcheckOptions{
 		GenotypesFile:    genotypesFile,
@@ -212,17 +216,21 @@ func runGtcheck(args []string) int {
 
 // splitSamplesArg handles upstream's `qry:LIST` / `gt:LIST` prefix on
 // -s. A bare list (no prefix) is taken to apply to both cohorts.
-func splitSamplesArg(arg string) (qry, gt []string) {
+// splitSamplesArg parses upstream's "qry:"/"gt:"-prefixed sample list.
+// Returns an error for un-prefixed lists, matching upstream
+// vcfgtcheck.c's "Which one? Query samples (qry:...) or genotype
+// samples (gt:...)?" diagnostic.
+func splitSamplesArg(arg string) (qry, gt []string, err error) {
 	if arg == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	switch {
 	case strings.HasPrefix(arg, "qry:"):
-		return bcftools.SplitCommaList(arg[len("qry:"):]), nil
+		return bcftools.SplitCommaList(arg[len("qry:"):]), nil, nil
 	case strings.HasPrefix(arg, "gt:"):
-		return nil, bcftools.SplitCommaList(arg[len("gt:"):])
+		return nil, bcftools.SplitCommaList(arg[len("gt:"):]), nil
 	}
-	return bcftools.SplitCommaList(arg), bcftools.SplitCommaList(arg)
+	return nil, nil, fmt.Errorf("Which one? Query samples (qry:%s) or genotype samples (gt:%s)?", arg, arg)
 }
 
 // checkGtcheckDeferredInputs groups the flag values that v1 recognises

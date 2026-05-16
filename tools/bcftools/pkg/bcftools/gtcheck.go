@@ -30,7 +30,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"sort"
 	"strings"
@@ -178,6 +177,20 @@ func runGtcheck(
 	if err := validateUseTag(opts.UseTag); err != nil {
 		return GtcheckResult{}, err
 	}
+	if opts.RegionsFile != "" {
+		extra, err := LoadRegionsFile(opts.RegionsFile)
+		if err != nil {
+			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: regions-file: %w", err)
+		}
+		opts.Regions = append(opts.Regions, extra...)
+	}
+	if opts.TargetsFile != "" {
+		extra, err := LoadRegionsFile(opts.TargetsFile)
+		if err != nil {
+			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: targets-file: %w", err)
+		}
+		opts.Targets = append(opts.Targets, extra...)
+	}
 
 	if err := rejectMultiAllelic(varsQ, "query"); err != nil {
 		return GtcheckResult{}, err
@@ -227,12 +240,14 @@ func runGtcheck(
 
 	sites := 0
 	for _, qv := range varsQ {
-		// Hard reject multi-allelics has already happened. Apply
-		// region post-filter cheaply.
-		if !regionMatches(qv, opts.Regions) && !regionMatches(qv, opts.Targets) {
-			if len(opts.Regions) > 0 || len(opts.Targets) > 0 {
-				continue
-			}
+		// Apply region / targets post-filters independently. Either
+		// filter being set is sufficient to drop a non-matching
+		// variant; both unset means everything passes.
+		if len(opts.Regions) > 0 && !regionMatches(qv, opts.Regions) {
+			continue
+		}
+		if len(opts.Targets) > 0 && !regionMatches(qv, opts.Targets) {
+			continue
 		}
 		gv := qv
 		if !crossCheck {
@@ -274,10 +289,13 @@ func runGtcheck(
 				a.match++
 			}
 			if !opts.NoHWEProb {
-				// v1 placeholder: assume neutral HWE p=0.5
-				// at every scored site. Tracked: real per-site
-				// HWE estimate from panel AF (PARITY_ROADMAP).
-				a.hweAcc += -math.Log10(0.5)
+				// v1 placeholder: the column is zeroed until a
+				// real per-site HWE estimator from panel AF
+				// lands (tracked in PARITY_ROADMAP). A non-zero
+				// constant placeholder (like -log10(0.5)) was
+				// worse than zero — every row would read the
+				// same useless number.
+				a.hweAcc += 0
 			}
 		}
 		if opts.DryRun {

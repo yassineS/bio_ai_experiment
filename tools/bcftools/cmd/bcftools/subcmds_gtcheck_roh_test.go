@@ -4,11 +4,11 @@ import "testing"
 
 // TestCheckGtcheckDeferred locks in the upstream-flag-name surface
 // that runGtcheck hard-rejects rather than silently accepting. Per
-// the "every documented upstream flag must be recognised — either
-// implemented or gracefully rejected with a roadmap pointer" rule
-// (docs/PARITY_ROADMAP.md#definition-of-11), a regression that drops
-// any of these from the rejection set without implementing the
-// underlying behaviour is a parity bug.
+// the project parity rule (docs/PARITY_ROADMAP.md "Definition of 1:1")
+// every documented upstream flag must be recognised — either
+// implemented or gracefully rejected with a roadmap pointer. A
+// regression that drops any of these from the rejection set without
+// implementing the underlying behaviour is a parity bug.
 func TestCheckGtcheckDeferred(t *testing.T) {
 	if got := checkGtcheckDeferred(checkGtcheckDeferredInputs{outputType: "t"}); got != "" {
 		t.Fatalf("default outputType=t: got deferred=%q, want \"\"", got)
@@ -59,20 +59,29 @@ func TestCheckRohDeferred(t *testing.T) {
 }
 
 // TestSplitSamplesArg validates the upstream "qry:" / "gt:" prefix
-// handling on `-s`.
+// handling on `-s`. Un-prefixed lists are rejected to match upstream
+// vcfgtcheck.c's "Which one? Query samples (qry:...) or genotype
+// samples (gt:...)?" diagnostic.
 func TestSplitSamplesArg(t *testing.T) {
 	cases := []struct {
 		in      string
 		wantQry []string
 		wantGT  []string
+		wantErr bool
 	}{
-		{"", nil, nil},
-		{"a,b,c", []string{"a", "b", "c"}, []string{"a", "b", "c"}},
-		{"qry:a,b", []string{"a", "b"}, nil},
-		{"gt:x,y,z", nil, []string{"x", "y", "z"}},
+		{"", nil, nil, false},
+		{"qry:a,b", []string{"a", "b"}, nil, false},
+		{"gt:x,y,z", nil, []string{"x", "y", "z"}, false},
+		{"a,b,c", nil, nil, true},
 	}
 	for _, c := range cases {
-		gotQ, gotG := splitSamplesArg(c.in)
+		gotQ, gotG, gotErr := splitSamplesArg(c.in)
+		if (gotErr != nil) != c.wantErr {
+			t.Errorf("splitSamplesArg(%q) err = %v, wantErr = %v", c.in, gotErr, c.wantErr)
+		}
+		if c.wantErr {
+			continue
+		}
 		if !stringsEqual(gotQ, c.wantQry) {
 			t.Errorf("splitSamplesArg(%q) qry = %v, want %v", c.in, gotQ, c.wantQry)
 		}

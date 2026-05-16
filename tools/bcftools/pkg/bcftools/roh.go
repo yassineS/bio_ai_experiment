@@ -165,6 +165,27 @@ func Roh(in io.Reader, out io.Writer, opts RohOptions) (RohResult, error) {
 	if opts.OutputTypes == "" {
 		opts.OutputTypes = "sr"
 	}
+	if opts.SamplesFile != "" {
+		extra, err := LoadSamplesFile(opts.SamplesFile)
+		if err != nil {
+			return RohResult{}, fmt.Errorf("bcftools roh: samples-file: %w", err)
+		}
+		opts.Samples = append(opts.Samples, extra...)
+	}
+	if opts.RegionsFile != "" {
+		extra, err := LoadRegionsFile(opts.RegionsFile)
+		if err != nil {
+			return RohResult{}, fmt.Errorf("bcftools roh: regions-file: %w", err)
+		}
+		opts.Regions = append(opts.Regions, extra...)
+	}
+	if opts.TargetsFile != "" {
+		extra, err := LoadRegionsFile(opts.TargetsFile)
+		if err != nil {
+			return RohResult{}, fmt.Errorf("bcftools roh: targets-file: %w", err)
+		}
+		opts.Targets = append(opts.Targets, extra...)
+	}
 	if opts.AFTag == "" {
 		opts.AFTag = "AF"
 	}
@@ -398,8 +419,11 @@ func AFDfltPtr(v float64) *float64 { return &v }
 // pdgFromDose collapses a hard-GT dosage into a 3-vector PDG. With
 // hardGTErr>0 we redistribute mass per upstream's `-G N` semantics:
 //
-//	PDG_called = 1 - 2*err
-//	PDG_other  = err  (each)
+// Upstream vcfroh.c:919-933 (`fake_PLs`):
+//
+//	HOM-REF  PDG = [1 - err - err², err, err²]
+//	HET      PDG = [err, 1 - 2*err, err]
+//	HOM-ALT  PDG = [err², err, 1 - err - err²]
 //
 // where err = 10^(-N/10). With hardGTErr==0 we emit one-hot.
 func pdgFromDose(dose int, err float64) [3]float64 {
@@ -414,17 +438,22 @@ func pdgFromDose(dose int, err float64) [3]float64 {
 		}
 		return [3]float64{0, 0, 0}
 	}
-	called := 1 - 2*err
-	if called < 0 {
-		called = 0
+	err2 := err * err
+	homCalled := 1 - err - err2
+	if homCalled < 0 {
+		homCalled = 0
+	}
+	hetCalled := 1 - 2*err
+	if hetCalled < 0 {
+		hetCalled = 0
 	}
 	switch dose {
 	case 0:
-		return [3]float64{called, err, err}
+		return [3]float64{homCalled, err, err2}
 	case 1:
-		return [3]float64{err, called, err}
+		return [3]float64{err, hetCalled, err}
 	case 2:
-		return [3]float64{err, err, called}
+		return [3]float64{err2, err, homCalled}
 	}
 	return [3]float64{}
 }

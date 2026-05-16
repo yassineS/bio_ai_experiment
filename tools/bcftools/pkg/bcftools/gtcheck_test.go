@@ -223,3 +223,33 @@ func TestGtcheck_NoHWEProb(t *testing.T) {
 		}
 	}
 }
+
+// TestGtcheck_RegionFilterIsolated locks in the regression-fix for
+// PR #107 review finding #1: when only one of Regions / Targets is set,
+// the filter MUST still gate the scored sites. The prior code combined
+// the two filters with &&-of-NOT which silently bypassed both whenever
+// either was empty.
+func TestGtcheck_RegionFilterIsolated(t *testing.T) {
+	var outAll, outR bytes.Buffer
+	rAll, err := Gtcheck(strings.NewReader(fixtureGtcheck), &outAll, GtcheckOptions{})
+	if err != nil {
+		t.Fatalf("Gtcheck(no regions): %v", err)
+	}
+	rR, err := Gtcheck(strings.NewReader(fixtureGtcheck), &outR, GtcheckOptions{
+		Regions: []string{"chr1:150-250"},
+	})
+	if err != nil {
+		t.Fatalf("Gtcheck(regions only): %v", err)
+	}
+	// Without filter: 3-4 sites per pair. With chr1:150-250: at most 1 (the chr1:200 site).
+	for _, p := range rAll.Pairs {
+		if p.NumSites < 3 {
+			t.Errorf("baseline: pair (%s,%s) only scored %d sites, fixture has 3-4", p.QuerySample, p.GenotypedSample, p.NumSites)
+		}
+	}
+	for _, p := range rR.Pairs {
+		if p.NumSites > 1 {
+			t.Errorf("regions filter: pair (%s,%s) scored %d sites, want <=1 in chr1:150-250", p.QuerySample, p.GenotypedSample, p.NumSites)
+		}
+	}
+}
