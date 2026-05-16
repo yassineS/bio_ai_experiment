@@ -9,6 +9,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"flag"
 	"fmt"
 	"io"
@@ -33,7 +34,7 @@ Input:
   -b, --bam-list FILE            File of BAM paths (one per line).
   -f, --fasta-ref FILE           Reference FASTA (required).
   -G, --read-groups FILE         Read-group file (accepted; v1 ignores).
-  -Z, --ignore-RG                Ignore @RG tags (accepted; v1 ignores).
+      --ignore-RG                Ignore @RG tags (long-only upstream).
 
 Output:
   -o, --output FILE              Output path (default stdout).
@@ -189,7 +190,10 @@ func registerMpileupFlags(fs *flag.FlagSet, mf *mpileupFlags) {
 	cliflag.StringVar(fs, &mf.bamList, "b", "bam-list", "", "BAM list file")
 	cliflag.StringVar(fs, &mf.fastaRef, "f", "fasta-ref", "", "Reference FASTA")
 	cliflag.StringVar(fs, &mf.readGroups, "G", "read-groups", "", "Read-group filter file")
-	cliflag.BoolVar(fs, &mf.ignoreRG, "Z", "ignore-RG", false, "Ignore @RG tags")
+	// Upstream `--ignore-RG` (mpileup.c:1423) is long-only. The earlier
+	// `-Z` short binding was an invention; reviewer caught it. Keep
+	// the long form and the `--ignore-rg` lowercase alias.
+	fs.BoolVar(&mf.ignoreRG, "ignore-RG", false, "Ignore @RG tags")
 	fs.BoolVar(&mf.ignoreRG, "ignore-rg", false, "")
 
 	cliflag.StringVar(fs, &mf.outputPath, "o", "output", "", "Output file")
@@ -394,7 +398,20 @@ func runMpileup(args []string) int {
 	}
 	defer out.Close()
 
-	if err := bcftools.MpileupFile(opts, out); err != nil {
+	// `-O z` wraps the destination in a gzip.Writer. Previously the
+	// validator accepted "z" but neither the library nor the CLI
+	// actually compressed, silently emitting plain VCF — reviewer
+	// caught it.
+	var writer io.WriteCloser = out
+	if mf.outputType == "z" {
+		gz := gzip.NewWriter(out)
+		// Close the gzip layer FIRST (flushes trailer) before the
+		// underlying file is closed by the deferred out.Close().
+		defer gz.Close()
+		writer = gz
+	}
+
+	if err := bcftools.MpileupFile(opts, writer); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools mpileup: %v\n", err)
 		return 1
 	}

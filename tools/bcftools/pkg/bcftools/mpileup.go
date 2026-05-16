@@ -143,7 +143,7 @@ type MpileupOptions struct {
 
 	// ReadGroups is upstream's -G/--read-groups. Accepted; v1 ignores.
 	ReadGroups string
-	// IgnoreRG is upstream's -Z/--ignore-RG. Accepted; v1 ignores.
+	// IgnoreRG is upstream's --ignore-RG (long-only). Accepted; v1 ignores.
 	IgnoreRG bool
 
 	// Platforms is upstream's -P/--platforms. Accepted; v1 ignores.
@@ -483,13 +483,15 @@ func mpileupReadBAM(rd sam.Reader, opts MpileupOptions) (map[string][]*sam.Recor
 }
 
 // mpileupKeepRecord applies upstream's default read-level filters
-// (unmapped, secondary, supplementary, QCfail, duplicate; orphans
-// unless -A; MAPQ floor).
+// (unmapped, secondary, QCfail, duplicate; orphans unless -A;
+// MAPQ floor). Note: FSUPPLEMENTARY is NOT in upstream's default mask
+// (mpileup.c:1392 `BAM_FUNMAP|BAM_FSECONDARY|BAM_FQCFAIL|BAM_FDUP` =
+// 0x704). The earlier 0xF04 mask was a regression caught in review.
 func mpileupKeepRecord(rec *sam.Record, opts MpileupOptions) bool {
 	if rec == nil || rec.Pos <= 0 || rec.RName == "" {
 		return false
 	}
-	if rec.Flag&(sam.FlagUnmapped|sam.FlagSecondary|sam.FlagQCFail|sam.FlagDuplicate|sam.FlagSupplementary) != 0 {
+	if rec.Flag&(sam.FlagUnmapped|sam.FlagSecondary|sam.FlagQCFail|sam.FlagDuplicate) != 0 {
 		return false
 	}
 	if !opts.CountOrphans && rec.Flag&sam.FlagPaired != 0 {
@@ -831,8 +833,12 @@ func filterAndCap(evs []mpileupBase, opts MpileupOptions) []mpileupBase {
 }
 
 // chooseALTs returns the non-REF bases observed across any sample, in
-// descending total-count order. We cap at 3 ALTs (matching upstream's
-// 4-allele VCF design).
+// descending total-count order. v1 caps at 1 ALT (biallelic-only)
+// because the PL emitter only computes the biallelic 3-value triple;
+// emitting two ALTs while writing only three PL values produces an
+// output that's spec-non-conforming against `Number=G` (which expects
+// 6 values for n_alt=2). The full multi-allelic PL grid lands with
+// the MAQ port. Reviewer-caught regression on PR #111.
 func chooseALTs(perSampleBases [][]mpileupBase, ref byte) []byte {
 	counts := map[byte]int{}
 	for _, evs := range perSampleBases {
@@ -857,8 +863,8 @@ func chooseALTs(perSampleBases [][]mpileupBase, ref byte) []byte {
 		}
 		return all[i].b < all[j].b
 	})
-	if len(all) > 3 {
-		all = all[:3]
+	if len(all) > 1 {
+		all = all[:1]
 	}
 	out := make([]byte, len(all))
 	for i, a := range all {

@@ -146,3 +146,14 @@ func TestMpileupFlagSurface(t *testing.T) {
 		t.Errorf("expected non-zero rc (no BAM input), got 0")
 	}
 }
+
+// TestMpileupRejectsInventedZFlag locks in the PR #111 review fix:
+// `-Z` is NOT an upstream short letter for `--ignore-RG` (the long
+// form is long-only). The parser MUST reject `-Z` and produce a
+// non-zero return code.
+func TestMpileupRejectsInventedZFlag(t *testing.T) {
+	rc := runMpileup([]string{"-Z", "in.bam"})
+	if rc == 0 {
+		t.Errorf("expected non-zero rc for invented -Z, got 0")
+	}
+}

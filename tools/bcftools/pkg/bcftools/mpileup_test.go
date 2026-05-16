@@ -149,8 +149,11 @@ func TestChooseALTs(t *testing.T) {
 		},
 	}
 	got := chooseALTs(perSample, 'A')
-	if string(got) != "CG" {
-		t.Errorf("chooseALTs got %q want \"CG\"", string(got))
+	// v1 caps at 1 ALT to keep biallelic PL formatting valid; "C"
+	// is the higher-count non-REF base. Multi-allelic ALT grid lands
+	// with the MAQ port (PR #111 reviewer-caught regression).
+	if string(got) != "C" {
+		t.Errorf("chooseALTs got %q want \"C\"", string(got))
 	}
 	// Pure-reference site.
 	pure := [][]mpileupBase{{{base: 'A'}, {base: 'A'}}}
@@ -400,7 +403,10 @@ func TestMpileupKeepRecordFilters(t *testing.T) {
 		{"secondary", mk(0x100, 60), false},
 		{"qcfail", mk(0x200, 60), false},
 		{"duplicate", mk(0x400, 60), false},
-		{"supplementary", mk(0x800, 60), false},
+		// Supplementary alignments pass the default mask in upstream
+		// mpileup (0x704 = UNMAP|SECONDARY|QCFAIL|DUP, no SUPP). The
+		// earlier behaviour was a regression caught in PR #111 review.
+		{"supplementary keeps", mk(0x800, 60), true},
 		{"mate-unmapped without -A", mk(0x1|0x8, 60), false},
 		{"not proper-pair without -A", mk(0x1, 60), false},
 		{"low MAPQ", mk(0x2|0x1, 9), false},
