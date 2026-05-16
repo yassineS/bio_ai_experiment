@@ -199,6 +199,39 @@ func TestParity_Sickle_Case12_PESynced(t *testing.T) {
 	mustEqualBytes(t, "case12 PE singles", s, readParityFile(t, "case12_pe_synced_s.expected.fq"))
 }
 
+// case13 — SE strict thresholds (-q 30 -l 5). High quality threshold forces
+// the 3' tail of r1 to be cut at the first sub-Q30 window; r2 (uniform Q30)
+// passes through whole; r3's leading N+homopolymer should pass with strict
+// q30 because the average quality stays above 30.
+func TestParity_Sickle_Case13_SEStrict(t *testing.T) {
+	opts := TrimOptions{QualThreshold: 30, LengthThreshold: 5}
+	got := runSickleSE(t, "case13_se_strict.fq", fastq.Phred33, opts)
+	want := readParityFile(t, "case13_se_strict.expected.fq")
+	mustEqualBytes(t, "case13 SE strict q30 l5", got, want)
+}
+
+// case14 — SE lax thresholds (-q 0 -l 0). All reads must pass through
+// unmodified including the all-low-quality and the very short ones.
+// Tests the boundary where the threshold is at 0 and the length filter
+// is disabled.
+func TestParity_Sickle_Case14_SELax(t *testing.T) {
+	opts := TrimOptions{QualThreshold: 0, LengthThreshold: 0}
+	got := runSickleSE(t, "case14_se_lax.fq", fastq.Phred33, opts)
+	want := readParityFile(t, "case14_se_lax.expected.fq")
+	mustEqualBytes(t, "case14 SE lax q0 l0", got, want)
+}
+
+// case15 — PE strict thresholds (-q 30 -l 10). r1 mate p2 has a low-quality
+// 5' run that fails the threshold; the mate p2/2 still passes and lands in
+// the singletons file. Tests strict-threshold PE singletons routing.
+func TestParity_Sickle_Case15_PEStrict(t *testing.T) {
+	opts := TrimOptions{QualThreshold: 30, LengthThreshold: 10}
+	r1, r2, s := runSicklePE(t, "case15_pe_strict_r1.fq", "case15_pe_strict_r2.fq", fastq.Phred33, opts)
+	mustEqualBytes(t, "case15 PE strict R1", r1, readParityFile(t, "case15_pe_strict_r1.expected.fq"))
+	mustEqualBytes(t, "case15 PE strict R2", r2, readParityFile(t, "case15_pe_strict_r2.expected.fq"))
+	mustEqualBytes(t, "case15 PE strict singles", s, readParityFile(t, "case15_pe_strict_s.expected.fq"))
+}
+
 // Smoke test: confirm fixtures exist under testdata/parity/ at the path the
 // other tests expect; gives a single clear failure if the submodule wasn't
 // initialised when the test corpus was regenerated.
@@ -207,6 +240,9 @@ func TestParity_Sickle_FixturesPresent(t *testing.T) {
 		"case01_se_basic.fq", "case01_se_basic.expected.fq",
 		"case04_pe_r1.fq", "case04_pe_r1.expected.fq",
 		"case10_se_gz.fq.gz",
+		"case13_se_strict.fq", "case13_se_strict.expected.fq",
+		"case14_se_lax.fq", "case14_se_lax.expected.fq",
+		"case15_pe_strict_r1.fq", "case15_pe_strict_r1.expected.fq",
 	}
 	missing := []string{}
 	for _, name := range required {
