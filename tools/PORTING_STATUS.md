@@ -84,6 +84,12 @@ at 1:1 feature parity (the project goal); see
 - `gap` - Find gap (non-ACGT) regions in FASTA, emit BED3
 - `gc` - Find GC-rich (or AT-rich) regions in FASTA, emit BED4
 - `dropse` - Drop unpaired (singleton) reads from interleaved FASTA/Q
+- `rename` - Renumber records (optional prefix); pairs share an index;
+  reproduces upstream's cpy_kstr sticky-comment quirk byte-for-byte
+- `split` - Round-robin records across N output files
+  `<prefix>.<5-digit>.fa` (literal `.fa` suffix even for FASTQ);
+  preserves input format on output
+- `size` - Print `<num_records>\t<total_bases>\n` summary
 
 **Test Coverage**: ~79% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
@@ -98,11 +104,12 @@ at 1:1 feature parity (the project goal); see
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- The 14 upstream-equivalent commands above cover seqtk's
+- The 17 upstream-equivalent commands above cover seqtk's
   mutation/compression core plus the BED-emitting scanners (`gap`,
-  `gc`) and the paired-end helpers (`mergepe`, `dropse`). Smaller
-  misses remain (`listhet`, `fqchk`, `hety`, `famask`, `mergefa`,
-  `hpc-bg`, `kfreq`, `rename`, `split`, `telo`, `size`); see
+  `gc`), the paired-end helpers (`mergepe`, `dropse`), and the
+  housekeeping trio (`rename`, `split`, `size`). Smaller misses
+  remain (`listhet`, `fqchk`, `hety`, `famask`, `mergefa`,
+  `hpc-bg`, `kfreq`, `telo`); see
   [the seqtk README](seqtk/README.md) for the per-subcommand list.
 - Output format intended to be compatible for the implemented commands
 

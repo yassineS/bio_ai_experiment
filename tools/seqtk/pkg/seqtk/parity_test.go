@@ -445,3 +445,183 @@ func TestParity_Seqtk_Dropse_FastaByteParity(t *testing.T) {
 	want := readParityFile(t, "dropse_input.expected.fa")
 	mustEqualBytes(t, "dropse dropse_input.fa", out.Bytes(), want)
 }
+
+// TestParity_Seqtk_Size verifies the "<n>\t<total_bases>\n" summary
+// emitted by upstream `seqtk size` for a handful of inputs.
+func TestParity_Seqtk_Size(t *testing.T) {
+	cases := []struct {
+		name, input, expected string
+	}{
+		{"small fa", "small.fa", "size_small_fa.expected.txt"},
+		{"small fq", "small.fq", "size_small_fq.expected.txt"},
+		{"empty fa", "empty.fa", "size_empty_fa.expected.txt"},
+		{"nruns fa", "nruns.fa", "size_nruns_fa.expected.txt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := readParityFile(t, tc.input)
+			var out bytes.Buffer
+			if err := Size(bytes.NewReader(in), &out); err != nil {
+				t.Fatalf("Size(%s): %v", tc.input, err)
+			}
+			want := readParityFile(t, tc.expected)
+			mustEqualBytes(t, "size "+tc.input, out.Bytes(), want)
+		})
+	}
+}
+
+// TestParity_Seqtk_Rename covers the rename byte-for-byte parity with
+// upstream across the no-prefix, prefix, and paired-end fixtures.
+// The rename_pairs fixtures exercise the sticky-comment "leak"
+// reproduced from upstream's cpy_kstr early-return.
+func TestParity_Seqtk_Rename(t *testing.T) {
+	cases := []struct {
+		name, input, expected, prefix string
+	}{
+		{"small fa no prefix", "small.fa", "rename_small_fa_noprefix.expected.fa", ""},
+		{"small fa prefix PX", "small.fa", "rename_small_fa_prefix.expected.fa", "PX"},
+		{"small fq no prefix", "small.fq", "rename_small_fq_noprefix.expected.fq", ""},
+		{"pairs fa with comment leak", "rename_pairs.fa", "rename_pairs_fa.expected.fa", "SAMPLE_"},
+		{"pairs fq SAMPLE_", "rename_pairs.fq", "rename_pairs_fq.expected.fq", "SAMPLE_"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := readParityFile(t, tc.input)
+			var out bytes.Buffer
+			if err := Rename(bytes.NewReader(in), &out, tc.prefix); err != nil {
+				t.Fatalf("Rename(%s): %v", tc.input, err)
+			}
+			want := readParityFile(t, tc.expected)
+			mustEqualBytes(t, "rename "+tc.input, out.Bytes(), want)
+		})
+	}
+}
+
+// TestParity_Seqtk_Split compares each of the round-robin output files
+// our Split produces against the corresponding upstream-generated
+// fixture under testdata/parity/split_expected/.
+func TestParity_Seqtk_Split(t *testing.T) {
+	type fileExpect struct {
+		index int
+		want  string // basename under split_expected/
+	}
+	cases := []struct {
+		name    string
+		input   string // fixture name under parity/
+		opts    SplitOptions
+		fixture string // upstream prefix used when generating fixtures
+		files   []fileExpect
+	}{
+		{
+			name:    "fasta -n 2",
+			input:   "small.fa",
+			opts:    SplitOptions{N: 2},
+			fixture: "fa2",
+			files: []fileExpect{
+				{1, "fa2.00001.fa"},
+				{2, "fa2.00002.fa"},
+			},
+		},
+		{
+			name:    "fasta -n 3",
+			input:   "small.fa",
+			opts:    SplitOptions{N: 3},
+			fixture: "fa3",
+			files: []fileExpect{
+				{1, "fa3.00001.fa"},
+				{2, "fa3.00002.fa"},
+				{3, "fa3.00003.fa"},
+			},
+		},
+		{
+			name:    "fasta -n 2 -l 5",
+			input:   "small.fa",
+			opts:    SplitOptions{N: 2, LineLen: 5},
+			fixture: "fa2l5",
+			files: []fileExpect{
+				{1, "fa2l5.00001.fa"},
+				{2, "fa2l5.00002.fa"},
+			},
+		},
+		{
+			name:    "fastq -n 2",
+			input:   "small.fq",
+			opts:    SplitOptions{N: 2},
+			fixture: "fq2",
+			files: []fileExpect{
+				{1, "fq2.00001.fa"},
+				{2, "fq2.00002.fa"},
+			},
+		},
+		{
+			name:    "fastq -n 2 -l 4",
+			input:   "small.fq",
+			opts:    SplitOptions{N: 2, LineLen: 4},
+			fixture: "fq2l4",
+			files: []fileExpect{
+				{1, "fq2l4.00001.fa"},
+				{2, "fq2l4.00002.fa"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := readParityFile(t, tc.input)
+			dir := t.TempDir()
+			opts := tc.opts
+			opts.Prefix = filepath.Join(dir, tc.fixture)
+			if err := Split(bytes.NewReader(in), opts); err != nil {
+				t.Fatalf("Split(%s): %v", tc.input, err)
+			}
+			for _, f := range tc.files {
+				gotPath := filepath.Join(dir, tc.fixture+fmtSplitIndex(f.index))
+				gotBytes, err := os.ReadFile(gotPath)
+				if err != nil {
+					t.Fatalf("read split output %s: %v", gotPath, err)
+				}
+				want := readParityFile(t, filepath.Join("split_expected", f.want))
+				mustEqualBytes(t, "split "+tc.name+" #"+f.want, gotBytes, want)
+			}
+		})
+	}
+}
+
+// fmtSplitIndex returns the upstream-style ".NNNNN.fa" suffix.
+func fmtSplitIndex(i int) string {
+	return fmtN5(i) + ".fa"
+}
+
+// fmtN5 zero-pads i to a 5-digit string (so 1 -> ".00001").
+func fmtN5(i int) string {
+	const pad = "00000"
+	s := itoa(i)
+	if len(s) >= len(pad) {
+		return "." + s
+	}
+	return "." + pad[len(s):] + s
+}
+
+// itoa is a tiny helper so this file does not need to import strconv
+// (kept local to keep the parity-test surface independent of the
+// other test files).
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b [20]byte
+	pos := len(b)
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	for i > 0 {
+		pos--
+		b[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		b[pos] = '-'
+	}
+	return string(b[pos:])
+}

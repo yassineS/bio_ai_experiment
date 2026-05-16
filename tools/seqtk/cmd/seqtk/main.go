@@ -23,6 +23,9 @@
 //	gap        Find gap (non-ACGT) regions in FASTA
 //	gc         Find GC-rich (or AT-rich) regions in FASTA
 //	dropse     Drop unpaired reads from an interleaved FASTA/Q
+//	rename     Rename records (renumber, optional prefix)
+//	split      Split a FASTA/Q into N round-robin output files
+//	size       Print total record count and total sequence length
 package main
 
 import (
@@ -75,6 +78,12 @@ func main() {
 		gcCommand()
 	case "dropse":
 		dropseCommand()
+	case "rename":
+		renameCommand()
+	case "split":
+		splitCommand()
+	case "size":
+		sizeCommand()
 	case "version", "-v", "--version":
 		fmt.Printf("seqtk version %s\n", version)
 	case "help", "-h", "--help":
@@ -106,6 +115,9 @@ Commands:
   gap        Find gap (non-ACGT) regions in FASTA, emit BED3
   gc         Find GC-rich (or AT-rich) regions in FASTA, emit BED4
   dropse     Drop unpaired reads from an interleaved FASTA/Q stream
+  rename     Rename records as <prefix><N>; pairs share N
+  split      Split input into N round-robin output files <prefix>.NNNNN.fa
+  size       Print '<num_records>\t<total_bases>' (upstream summary form)
   version    Show version information
   help       Show this help message
 
@@ -128,6 +140,9 @@ Examples:
   seqtk gap -l 10 genome.fa > gaps.bed
   seqtk gc -f 0.7 -l 50 genome.fa > gc_rich.bed
   seqtk dropse interleaved.fq > paired.fq
+  seqtk rename reads.fq SAMPLE_ > renamed.fq
+  seqtk split  -n 4 part reads.fq      # writes part.00001.fa .. part.00004.fa
+  seqtk size   genome.fa               # "<num_records>\t<total_bases>"
 
 `)
 }
@@ -1173,6 +1188,210 @@ Examples:
 	defer out.Close()
 
 	if err := seqtk.Dropse(input, out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func renameCommand() {
+	fs := flag.NewFlagSet("rename", flag.ExitOnError)
+	var output string
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk rename <in.fq> [prefix]
+
+Rename FASTA/FASTQ records to "<prefix><N>" where N is a 1-based counter
+that advances per "fragment". Two adjacent records sharing a name modulo
+a trailing "/<digit>" suffix are treated as a pair and share the same N
+(mirroring upstream "seqtk rename" byte-for-byte). The prefix is
+optional; when omitted, names are bare integers ("1", "2", ...).
+
+Comments in the original header (anything past the first whitespace
+following the name) are preserved verbatim after the new name.
+
+Output format mirrors the input (FASTA -> FASTA, FASTQ -> FASTQ);
+sequence and quality are emitted on a single un-wrapped line, matching
+upstream stk_printseq_renamed(..., line_len=0).
+
+Upstream surface (verified against reference_code/seqtk v1.5-r133): the
+subcommand takes no flags and accepts only the positional arguments
+<in.fa> and an optional <prefix>. The "-o/--output FILE" option here is
+the project-wide Go-port convenience; it does not affect parity.
+
+Arguments:
+  <in.fq>    Input FASTA/FASTQ (use '-' for stdin, supports .gz)
+  [prefix]   Optional name prefix (default: empty, so names are
+             bare integers)
+
+Options:
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk rename reads.fq SAMPLE_ > renamed.fq
+  seqtk rename contigs.fa > numbered.fa
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+	prefix := ""
+	if fs.NArg() > 1 {
+		prefix = fs.Arg(1)
+	}
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.Rename(input, out, prefix); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func splitCommand() {
+	fs := flag.NewFlagSet("split", flag.ExitOnError)
+	var n, lineLen int
+
+	cliflag.IntVar(fs, &n, "n", "num", seqtk.DefaultSplitN, "Number of output files")
+	cliflag.IntVar(fs, &lineLen, "l", "line-length", 0, "Sequence/quality line length (0 = no wrap)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk split [options] <prefix> <in.fa>
+
+Round-robin every record from <in.fa> across N output files named
+"<prefix>.<5-digit 1-based>.fa" (note the literal ".fa" suffix --
+upstream uses it even for FASTQ input). The first record goes to
+<prefix>.00001.fa, the second to <prefix>.00002.fa, ..., the (N+1)-th
+wraps to <prefix>.00001.fa, and so on.
+
+Within each output file the input format is preserved (FASTA stays
+FASTA, FASTQ stays FASTQ). With "-l INT" sequence (and FASTQ quality)
+lines are wrapped at INT characters; the upstream default of 0 keeps
+each sequence/quality on a single line.
+
+Output files are written uncompressed even when their name ends in
+".fa", matching upstream byte-for-byte.
+
+Upstream surface (verified against reference_code/seqtk v1.5-r133):
+flags -n INT (default %d) and -l INT (default 0). Positional arguments
+are <prefix> followed by <in.fa>.
+
+Arguments:
+  <prefix>   Output file-name prefix (e.g. "part")
+  <in.fa>    Input FASTA/FASTQ file (use '-' for stdin, supports .gz)
+
+Options:
+  -n, --num INT          Number of output files [%d]
+  -l, --line-length INT  Sequence/quality line length (0 = no wrap)
+
+Examples:
+  seqtk split -n 4 part reads.fq      # writes part.00001.fa .. part.00004.fa
+  seqtk split -n 8 -l 60 chunk genome.fa
+
+`, seqtk.DefaultSplitN, seqtk.DefaultSplitN)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 2 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	prefix := fs.Arg(0)
+	inputFile := fs.Arg(1)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	opts := seqtk.SplitOptions{N: n, LineLen: lineLen, Prefix: prefix}
+	if err := seqtk.Split(input, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func sizeCommand() {
+	fs := flag.NewFlagSet("size", flag.ExitOnError)
+	var output string
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk size <in.fq>
+
+Print one tab-separated line on stdout with the total number of records
+and the total number of bases across the input:
+
+    <num_records>\t<total_bases>\n
+
+Matches upstream "seqtk size" byte-for-byte (verified against
+reference_code/seqtk v1.5-r133).
+
+Upstream surface: the subcommand takes no flags. The "-o/--output FILE"
+option here is the project-wide Go-port convenience.
+
+Arguments:
+  <in.fq>    Input FASTA/FASTQ file (use '-' for stdin, supports .gz)
+
+Options:
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk size genome.fa
+  seqtk size reads.fq.gz
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.Size(input, out); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
