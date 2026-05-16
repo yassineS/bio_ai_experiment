@@ -28,6 +28,9 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Gap-region scan (`gap`)**
   - **GC- and AT-rich region scan (`gc`)**
   - **Drop unpaired reads from interleaved input (`dropse`)**
+  - **Rename / renumber records (`rename`)**
+  - **Round-robin split into N files (`split`)**
+  - **Summary record/base count (`size`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -461,6 +464,107 @@ matching upstream `seqtk dropse` byte-for-byte (verified against
 seqtk dropse interleaved.fq > paired.fq
 cat reads.fq.gz | seqtk dropse - > paired.fq
 ```
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience — upstream takes no flags.*
+
+#### 15. Rename / Renumber Records (`rename`)
+
+Rewrite each record's name to `<prefix><N>` where `N` is a 1-based
+counter. Two adjacent records whose names compare equal modulo a
+trailing `/<digit>` suffix are treated as a pair and share the same `N`
+(matching upstream "seqtk rename" byte-for-byte). The prefix is
+optional; without one, names become bare integers ("1", "2", ...).
+
+Comments after the record name are preserved verbatim. **Quirk
+reproduced from upstream:** because upstream's `cpy_kstr` (seqtk.c:1210)
+early-returns when the source comment is empty, a record without a
+comment that follows one with a comment will inherit the previous
+record's comment text. We mirror this byte-for-byte to keep parity; see
+`pkg/seqtk/rename.go` for the algorithm comment and
+`docs/PARITY_ROADMAP.md#seqtk` for the cross-reference.
+
+Output format mirrors the input (FASTA → FASTA, FASTQ → FASTQ); each
+sequence/quality is emitted on a single un-wrapped line.
+
+```bash
+seqtk rename reads.fq SAMPLE_ > renamed.fq
+seqtk rename contigs.fa > numbered.fa
+# Streaming
+cat reads.fq.gz | seqtk rename - PX > renamed.fq
+```
+
+Arguments:
+
+- `<in.fq>`: Input FASTA/FASTQ (use `-` for stdin, supports `.gz`)
+- `[prefix]`: Optional name prefix (default: empty)
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience — upstream takes no flags.*
+
+#### 16. Round-robin Split (`split`)
+
+Distribute records round-robin across N output files named
+`<prefix>.<5-digit 1-based>.fa`. Note the literal `.fa` suffix:
+upstream uses it even for FASTQ input. Within each output file the
+input format is preserved (FASTA stays FASTA, FASTQ stays FASTQ).
+
+With `-l INT` the sequence lines (and FASTQ quality lines) are wrapped
+at INT characters; the upstream default of `0` keeps everything on a
+single line. All N files are created up front and remain present even
+when they end up empty (matching upstream).
+
+```bash
+# Split into 4 files: part.00001.fa .. part.00004.fa
+seqtk split -n 4 part reads.fq
+
+# Wrap output sequence lines at 60 chars
+seqtk split -n 8 -l 60 chunk genome.fa
+
+# Streaming input is OK
+zcat reads.fq.gz | seqtk split -n 2 part -
+```
+
+Arguments:
+
+- `<prefix>`: Output file-name prefix
+- `<in.fa>`: Input FASTA/FASTQ (use `-` for stdin, supports `.gz`)
+
+Options:
+
+- `-n, --num INT`: Number of output files (default: 10)
+- `-l, --line-length INT`: Wrap sequence/quality lines at INT characters
+  (0 = no wrap, the upstream default)
+
+Output files are written uncompressed even though the file-name suffix
+is `.fa`, matching upstream byte-for-byte.
+
+#### 17. Record / Base Count (`size`)
+
+Print a single tab-separated line on stdout with the number of records
+and the total number of bases across the input:
+
+```text
+<num_records>\t<total_bases>\n
+```
+
+This is upstream `seqtk size` — a tiny summary, not a per-record dump
+(per-record composition lives in `seqtk comp`).
+
+```bash
+seqtk size genome.fa
+# 24       3088286401
+
+seqtk size reads.fq.gz
+```
+
+Arguments:
+
+- `<in.fq>`: Input FASTA/FASTQ (use `-` for stdin, supports `.gz`)
 
 Options:
 

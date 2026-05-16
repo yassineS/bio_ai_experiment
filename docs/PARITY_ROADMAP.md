@@ -71,7 +71,7 @@ closed.
 
 ### `seqtk`
 
-**Status:** 14 of ~22 upstream subcommands. ~64%.
+**Status:** 17 of ~22 upstream subcommands. ~77%.
 
 Missing subcommands (verified against `reference_code/seqtk/seqtk.c::main()`
 dispatch table, v1.5-r133):
@@ -83,10 +83,10 @@ dispatch table, v1.5-r133):
 - `mergefa` — merge two FASTA files base-by-base.
 - `hpc-bg` — homopolymer-compress with mismatch tolerance.
 - `kfreq` — k-mer frequency analysis.
-- `rename` — rename FASTA/Q records.
-- `split` — split FASTA/Q into N files.
 - `telo` — find telomeric repeats.
-- `size` — report sequence sizes.
+
+Added this iteration: `rename`, `split`, `size`. All three are
+byte-for-byte parity ports against `reference_code/seqtk` v1.5.
 
 The previous list also mentioned `seqshuf`, `gcdc`, and `cnregion` —
 these are NOT upstream subcommands per the dispatch-table audit.
@@ -139,6 +139,22 @@ Option-tail gaps (per existing subcommand):
   algorithm is the upstream X-dropoff scan, not a sliding window. Output
   is BED4 (`chrom\tstart\tend\thits`). Byte-parity verified against
   `reference_code/seqtk` v1.5 on `gc_small.fa` fixtures.
+- `rename` — no upstream flags (positional `<in.fq> [prefix]` only).
+  Reproduces upstream's `cpy_kstr` early-return bug at
+  `reference_code/seqtk/seqtk.c:1210`: a record without a comment
+  inherits the previous record's comment until something with a
+  comment overwrites it. This "sticky-comment" quirk is required to
+  match upstream byte-for-byte and is covered by a dedicated regression
+  test (`TestRename_StickyComment_Quirk`) plus the
+  `TestParity_Seqtk_Rename` fixture comparisons.
+- `split` — full upstream surface implemented (`-n INT`, `-l INT`,
+  positional `<prefix> <in.fa>`). Output files are uncompressed and
+  named `<prefix>.<5-digit 1-based>.fa` (literal `.fa` suffix even for
+  FASTQ input), matching upstream byte-for-byte across `small.fa`,
+  `small.fq`, and the `-l` line-wrap variants.
+- `size` — no upstream flags. Emits a single
+  `<num_records>\t<total_bases>\n` line, matching upstream
+  byte-for-byte across `small.fa`, `small.fq`, `empty.fa`, `nruns.fa`.
 
 **Validation:** no upstream-test-suite run yet.
 
