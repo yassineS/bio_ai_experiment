@@ -504,21 +504,23 @@ The bcftools port (`tools/bcftools/` covering `view`, `index`, `stats`,
 `annotate` / `head` / `isec` / `merge` / `reheader` / `sort`, the
 convert/mendelian PR's `convert` + `mendelian`, the gtcheck/roh PR's
 `gtcheck` + `roh`, the filter/consensus PR's `filter` + `consensus`,
-the mendelian2/polysomy PR's `mendelian2` + `polysomy`, and the
-cnv/csq PR's `cnv` + `csq`) is validated against upstream
-`bcftools 1.19+htslib-1.19` via
+the mendelian2/polysomy PR's `mendelian2` + `polysomy`, the cnv/csq
+PR's `cnv` + `csq`, and the mpileup PR's `mpileup`) is validated
+against upstream `bcftools 1.19+htslib-1.19` via
 `tools/bcftools/pkg/bcftools/parity_test.go` plus the per-subcommand
 unit suites under the same package directory.
 
-`cnv` and `csq` ship as documented v1 simplifications: `cnv` is a
-per-sample × per-chromosome median-BAF + mean-LRR heuristic (the
-upstream 5-state HMM Viterbi is deferred); `csq` is a SNP-only
+`cnv`, `csq`, and `mpileup` ship as documented v1 simplifications:
+`cnv` is a per-sample × per-chromosome median-BAF + mean-LRR heuristic
+(the upstream 5-state HMM Viterbi is deferred); `csq` is a SNP-only
 protein-coding consequence classifier (haplotype-aware phasing,
-indels, splice-site, and compound-het are deferred). Both subcommands
-are exercised exclusively by hand-built fixtures in
-`tools/bcftools/pkg/bcftools/{cnv,csq}_test.go`. Upstream parity will
-become meaningful once the deferred algorithm pieces land; see
-`docs/PARITY_ROADMAP.md#bcftools` for the gap lists.
+indels, splice-site, and compound-het are deferred); `mpileup` is a
+SNP-only, uniform-error binomial PL computer (no BAQ, no indel
+realigner, no MAQ likelihood model). All three subcommands are
+exercised exclusively by hand-built fixtures in
+`tools/bcftools/pkg/bcftools/{cnv,csq,mpileup}_test.go`. Upstream
+parity will become meaningful once the deferred algorithm pieces
+land; see `docs/PARITY_ROADMAP.md#bcftools` for the gap lists.
 
 `convert`, `mendelian`, `mendelian2`, and `polysomy` are exercised
 exclusively by hand-built fixtures in
