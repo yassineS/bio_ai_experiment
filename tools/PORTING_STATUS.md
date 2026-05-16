@@ -83,6 +83,7 @@ at 1:1 feature parity (the project goal); see
 - `hpc` - Homopolymer compression
 - `gap` - Find gap (non-ACGT) regions in FASTA, emit BED3
 - `gc` - Find GC-rich (or AT-rich) regions in FASTA, emit BED4
+- `dropse` - Drop unpaired (singleton) reads from interleaved FASTA/Q
 
 **Test Coverage**: ~79% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
@@ -97,9 +98,11 @@ at 1:1 feature parity (the project goal); see
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- The 13 commands above cover upstream seqtk's mutation/compression core
-  plus the BED-emitting scanners (`gap`, `gc`). Smaller misses remain
-  (e.g. `listhet`, `fqchk`, `seqshuf`); see
+- The 14 upstream-equivalent commands above cover seqtk's
+  mutation/compression core plus the BED-emitting scanners (`gap`,
+  `gc`) and the paired-end helpers (`mergepe`, `dropse`). Smaller
+  misses remain (`listhet`, `fqchk`, `hety`, `famask`, `mergefa`,
+  `hpc-bg`, `kfreq`, `rename`, `split`, `telo`, `size`); see
   [the seqtk README](seqtk/README.md) for the per-subcommand list.
 - Output format intended to be compatible for the implemented commands
 

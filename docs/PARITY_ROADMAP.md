@@ -71,18 +71,50 @@ closed.
 
 ### `seqtk`
 
-**Status:** 13 of ~20 subcommands. ~65%.
+**Status:** 14 of ~22 upstream subcommands. ~64%.
 
-Missing subcommands:
+Missing subcommands (verified against `reference_code/seqtk/seqtk.c::main()`
+dispatch table, v1.5-r133):
 
 - `listhet` — extract heterozygous sites from VCF/BCF.
 - `fqchk` — FASTQ quality check report.
-- `seqshuf` — shuffle FASTA/Q records.
-- `pair` — pair up R1/R2 from interleaved input.
-- `dropse` — drop unpaired reads.
+- `hety` — heterozygosity estimator.
+- `famask` — mask FASTA regions.
+- `mergefa` — merge two FASTA files base-by-base.
 - `hpc-bg` — homopolymer-compress with mismatch tolerance.
 - `kfreq` — k-mer frequency analysis.
-- `gcdc` — GC depth count.
+- `rename` — rename FASTA/Q records.
+- `split` — split FASTA/Q into N files.
+- `telo` — find telomeric repeats.
+- `size` — report sequence sizes.
+
+The previous list also mentioned `seqshuf`, `gcdc`, and `cnregion` —
+these are NOT upstream subcommands per the dispatch-table audit.
+`cnregion` was dropped in PR #112; `seqshuf` and `gcdc` are likewise
+not real entries and should be ignored.
+
+Project-extension policy (PR #113): the previous roadmap entry
+implying `pair` was a missing upstream subcommand was wrong —
+upstream seqtk v1.5 has no `pair` subcommand at all (verified
+against `reference_code/seqtk/seqtk.c::main()` dispatch, which
+registers `comp`, `fqchk`, `hety`, `gc`, `subseq`, `mutfa`,
+`mergefa`, `mergepe`, `dropse`, `randbase`, `cutN`, `gap`,
+`listhet`, `famask`, `trimfq`, `hrun`/`hpc`, `sample`, `seq`,
+`kfreq`, `rename`, `split`, `telo`, `size`). Per the 1:1 parity
+mandate (and the `cnregion` precedent from PR #112), project-
+extension subcommands are NOT shipped under existing tool names;
+the project-extension `pair` introduced in the PR #113 first
+commit was dropped before merge.
+
+Bugfixes landed since the 2026-05-14 audit:
+
+- `comp` — fixed `seq_nt16_table['U']`/`['u']` mapping. Was 8 (T);
+  upstream `reference_code/seqtk/seqtk.c` line 189 defines
+  `seq_nt16_table[85] = 15` and `[117] = 15` (i.e. U is treated as
+  the 4-base ambiguity N, not as T). The bug caused U bases to count
+  in the `#T` column instead of `#4`; the regression test
+  `TestParity_Seqtk_Comp_UBaseFasta` now pins this against an
+  upstream-generated fixture.
 
 Note: `cnregion` was listed here before but is **not** an upstream seqtk
 subcommand (verified against `reference_code/seqtk/seqtk.c` v1.5: the only

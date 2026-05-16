@@ -45,7 +45,7 @@ var seqNT16Table = func() [256]byte {
 	t['R'] = 5
 	t['S'] = 6
 	t['T'] = 8
-	t['U'] = 8
+	t['U'] = 15 // upstream seq_nt16_table[85] = 15 (U is treated as unknown)
 	t['V'] = 7
 	t['W'] = 9
 	t['X'] = 0
@@ -63,7 +63,7 @@ var seqNT16Table = func() [256]byte {
 	t['r'] = 5
 	t['s'] = 6
 	t['t'] = 8
-	t['u'] = 8
+	t['u'] = 15 // upstream seq_nt16_table[117] = 15 (U is treated as unknown)
 	t['v'] = 7
 	t['w'] = 9
 	t['x'] = 0

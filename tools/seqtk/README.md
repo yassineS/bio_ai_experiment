@@ -27,6 +27,7 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Homopolymer compression (`hpc`)**
   - **Gap-region scan (`gap`)**
   - **GC- and AT-rich region scan (`gc`)**
+  - **Drop unpaired reads from interleaved input (`dropse`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -446,6 +447,25 @@ Options:
 - `-l, --min-length INT`: Min region length to output (default: 20)
 - `-x, --x-dropoff FLOAT`: X-dropoff threshold (default: 10.0)
 - `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+
+#### 14. Drop Unpaired Reads (`dropse`)
+
+Drop unpaired (singleton) reads from an interleaved FASTA/FASTQ stream.
+Two adjacent records are considered mates when their names are identical
+after stripping a trailing `/<digit>` suffix (e.g. `/1` vs `/2`). Records
+whose immediate neighbour does not match this rule are silently dropped,
+matching upstream `seqtk dropse` byte-for-byte (verified against
+`reference_code/seqtk` v1.5-r133).
+
+```bash
+seqtk dropse interleaved.fq > paired.fq
+cat reads.fq.gz | seqtk dropse - > paired.fq
+```
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience — upstream takes no flags.*
 
 ## Examples
 
