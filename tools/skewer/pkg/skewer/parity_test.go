@@ -241,12 +241,39 @@ func TestParity_Skewer_Case12_SEOffByOne(t *testing.T) {
 	mustMatch(t, "case12 SE off-by-one", got, want)
 }
 
+// case13 — SE no adapter present. Both reads contain only ACGT with no
+// adapter substring; upstream and the Go port must pass them through
+// unchanged (no truncation, no length filtering).
+//
+// Upstream flags: -x AGATCGGAAGAGC -l 8
+func TestParity_Skewer_Case13_SENoAdapter(t *testing.T) {
+	opts := TrimOptions{Adapter3: "AGATCGGAAGAGC", MinLength: 8, MinOverlap: 3, ErrorRate: 0.1}
+	got := runSkewerSE(t, "case13_se_noadapter.fq", opts)
+	want := readSkewerParity(t, "case13_se_noadapter.expected.fq")
+	mustMatch(t, "case13 SE no-adapter pass-through", got, want)
+}
+
+// case14 — SE longer reads (>40 bp) with the adapter embedded mid-read for
+// long1 (no match should be found because it's not near the 3' end with
+// default overlap), and earlier in long2 where the trimmer should clip the
+// adapter and 12 bp prefix is kept. Tests adapter detection on longer reads.
+//
+// Upstream flags: -x AGATCGGAAGAGC -l 8
+func TestParity_Skewer_Case14_SELongReads(t *testing.T) {
+	opts := TrimOptions{Adapter3: "AGATCGGAAGAGC", MinLength: 8, MinOverlap: 3, ErrorRate: 0.1}
+	got := runSkewerSE(t, "case14_se_highlen.fq", opts)
+	want := readSkewerParity(t, "case14_se_highlen.expected.fq")
+	mustMatch(t, "case14 SE long reads", got, want)
+}
+
 // Smoke test: confirm fixtures are present.
 func TestParity_Skewer_FixturesPresent(t *testing.T) {
 	required := []string{
 		"case01_se_3prime.fq", "case01_se_3prime.expected.fq",
 		"case04_pe_r1.fq", "case04_pe_r1.expected.fq",
 		"case11_se_gz.fq.gz",
+		"case13_se_noadapter.fq", "case13_se_noadapter.expected.fq",
+		"case14_se_highlen.fq", "case14_se_highlen.expected.fq",
 	}
 	missing := []string{}
 	for _, name := range required {

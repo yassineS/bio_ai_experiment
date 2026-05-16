@@ -351,7 +351,13 @@ For paired-end mode:
 
 ## Comparison with Original Sickle
 
-This Go implementation aims for functional parity with the original C implementation.
+This Go implementation has been **byte-for-byte validated** against the
+upstream C `sickle` v1.33 binary (built from `reference_code/sickle`) on a
+15-case parity corpus under `tools/sickle/testdata/parity/`. Every case
+passes byte-for-byte against upstream — see
+[`tools/PARITY_VALIDATION.md` → sickle](../PARITY_VALIDATION.md#sickle) for
+the test list and a per-case description. The parity tests live in
+`tools/sickle/pkg/sickle/parity_test.go` (`TestParity_Sickle_*`).
 
 ### Similarities
 

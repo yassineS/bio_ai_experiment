@@ -344,9 +344,15 @@ on the same inputs and assert `bytes.Equal` against the expected files.
 
 | Subcommand | Tests added | Passed | Skipped | Notes |
 | ---------- | -----------:| ------:| -------:| ----- |
-| se         |          10 |     10 |       0 | Basic / `-n` / `-x` / illumina (Phred+64) / empty / all-low / Q-threshold boundary / gzip / short-read filter. |
-| pe         |           3 |      3 |       0 | Basic, `-s` singletons, synced pass/fail. |
-| **TOTAL**  |       **13**|  **13**|    **0**| Includes one fixture-present smoke test. |
+| se         |          12 |     12 |       0 | Basic / `-n` / `-x` / illumina (Phred+64) / empty / all-low / Q-threshold boundary / gzip / short-read filter / **strict `-q 30 -l 5`** / **lax `-q 0 -l 0`**. |
+| pe         |           4 |      4 |       0 | Basic, `-s` singletons, synced pass/fail, **strict `-q 30 -l 10`** (with singletons). |
+| **TOTAL**  |       **16**|  **16**|    **0**| Includes one fixture-present smoke test. |
+
+The 2026-05-16 follow-up audit (this PR) added three SE/PE cases
+(`case13_se_strict`, `case14_se_lax`, `case15_pe_strict`) covering the
+extremes of the `-q` / `-l` parameter space. All three pass byte-for-byte
+against upstream sickle v1.33 on first run; they exist to catch future
+regressions on the corners of the threshold space.
 
 ### sickle: discrepancies found in our port (fixed in this PR)
 
@@ -430,9 +436,15 @@ back to the submodule and is documented in
 
 | Subcommand | Tests added | Passed | Skipped | Notes |
 | ---------- | -----------:| ------:| -------:| ----- |
-| se         |          11 |      9 |       1 | Skip: case05 error-tolerance (algorithm difference, see below). |
+| se         |          13 |     11 |       1 | Skip: case05 error-tolerance (algorithm difference, see below). New: **case13 no-adapter pass-through**, **case14 long-reads with embedded adapter**. |
 | pe         |           1 |      0 |       1 | Skip: case04 PE matrix mode not implemented in Go port. |
-| **TOTAL**  |       **14**|   **9**|    **2**| Plus 2 smoke tests (fixture presence + PE helper). |
+| **TOTAL**  |       **14**|  **11**|    **2**| Plus 2 smoke tests (fixture presence + PE helper). |
+
+The 2026-05-16 follow-up audit (this PR) added two SE cases
+(`case13_se_noadapter`, `case14_se_highlen`) that broaden coverage to a
+no-adapter pass-through path and to reads >40 bp with the adapter
+embedded at the 3' end. Both pass byte-for-byte against upstream skewer
+0.2.2 on first run.
 
 ### skewer: discrepancies found in our port (fixed in this PR)
 

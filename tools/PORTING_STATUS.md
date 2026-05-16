@@ -43,6 +43,10 @@ the way.
 - **Validated parity vs upstream `bedtools` test suite**: 127 tests, 85 passing,
   42 documented `t.Skip` (PR #55); 7 real semantic-discrepancy bugs fixed.
   See [`PARITY_VALIDATION.md`](PARITY_VALIDATION.md).
+- **Validated parity vs upstream `sickle` v1.33**: 15/15 cases pass
+  byte-for-byte (`tools/sickle/testdata/parity/`).
+- **Validated parity vs upstream `skewer` 0.2.2**: 12/14 cases pass
+  byte-for-byte; 2 documented `t.Skip` (PE matrix mode + SW-tail matcher).
 - **Documentation**: README per tool; some design docs are aspirational, not status
 - **Compression support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools
   go through `pkg/bioformats/iohelper`, which now **transparently sniffs BGZF**
@@ -193,7 +197,9 @@ at 1:1 feature parity (the project goal); see
 
 ### 3. sickle
 
-**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
+**Status**: **1:1 parity (validated)** — 15/15 parity cases byte-match
+upstream `sickle` v1.33; see
+[`PARITY_VALIDATION.md` → sickle](PARITY_VALIDATION.md#sickle).  
 **Version**: 1.1.0  
 **Original**: C (Joshi & Fass)  
 **Category**: Quality Control / Trimming
@@ -220,15 +226,20 @@ at 1:1 feature parity (the project goal); see
 
 **Migration Notes**:
 
-- CLI mirrors upstream sickle's `se`/`pe` flags; behaviour aims to match but
-  has not been validated byte-for-byte against the C implementation
+- CLI mirrors upstream sickle's `se`/`pe` flags; behaviour is byte-for-byte
+  validated against the upstream C `sickle` v1.33 across a 15-case parity
+  corpus (`tools/sickle/testdata/parity/`)
 - Built-in gzip support (automatic by .gz extension)
 
 ---
 
 ### 4. skewer
 
-**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
+**Status**: **1:1 parity (validated, with two documented gaps)** —
+12/14 parity cases byte-match upstream `skewer` 0.2.2; two cases are
+documented `t.Skip`d known divergences (PE matrix mode and SW-tail
+error-tolerance matcher). See
+[`PARITY_VALIDATION.md` → skewer](PARITY_VALIDATION.md#skewer).  
 **Version**: 1.0.0  
 **Original**: C++ (Hongshan Jiang)  
 **Category**: Adapter Trimming
@@ -254,8 +265,15 @@ at 1:1 feature parity (the project goal); see
 
 **Migration Notes**:
 
-- Similar CLI to original
-- Simplified adapter detection algorithm
+- CLI mirrors upstream skewer's flags where applicable
+- Adapter detection uses a Hamming-distance matcher; upstream uses a
+  Smith-Waterman matcher with an asymmetric tail penalty. The two agree
+  byte-for-byte on every parity case except `case05`
+  (1-mismatch-in-tail), which is `t.Skip`d. PE matrix-mode trimming is
+  not yet implemented (case04 `t.Skip`).
+- Output is byte-for-byte validated against upstream `skewer` 0.2.2 on
+  the 14-case parity corpus (`tools/skewer/testdata/parity/`); see
+  [`PARITY_VALIDATION.md` → skewer](PARITY_VALIDATION.md#skewer).
 - Built-in gzip support
 - Complements sickle for complete preprocessing
 

@@ -291,7 +291,16 @@ For paired-end mode:
 
 ## Comparison with Original Skewer
 
-This Go implementation aims for functional compatibility with the original C++ implementation.
+This Go implementation has been **byte-for-byte validated** against the
+upstream C++ `skewer` 0.2.2 binary (built from `reference_code/skewer`)
+on a 14-case parity corpus under `tools/skewer/testdata/parity/`. All
+single-end cases pass byte-for-byte against upstream; two cases are
+documented `t.Skip` (PE matrix mode, and an SW-vs-Hamming error-tolerance
+divergence — both are tracked algorithm gaps, not bugs). See
+[`tools/PARITY_VALIDATION.md` → skewer](../PARITY_VALIDATION.md#skewer)
+for the test list and the known-divergence catalogue. The parity tests
+live in `tools/skewer/pkg/skewer/parity_test.go`
+(`TestParity_Skewer_*`).
 
 ### Similarities
 
