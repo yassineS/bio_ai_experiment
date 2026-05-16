@@ -50,6 +50,18 @@ subcommands. The current implementation ships:
   Gaussian-mixture peak fit is tracked in
   `docs/PARITY_ROADMAP.md#bcftools`. Reads BAF from FORMAT/BAF
   when present, falls back to FORMAT/AD = REF,ALT.
+- `bcftools cnv` — copy-number variation caller. v1 ships a
+  heuristic per-sample × per-chromosome median-BAF + mean-LRR
+  classifier (CN0..CN4); the full upstream HMM Viterbi is tracked
+  in `docs/PARITY_ROADMAP.md`. Output is a TSV with columns
+  `sample, chrom, n_sites, median_baf, mean_lrr, cn_call`.
+- `bcftools csq` — predict variant consequences against a GFF3
+  annotation. v1 ships only the protein-coding SNP classifier
+  (missense / synonymous / stop\_gained / stop\_lost / start\_lost);
+  indels, splice-site, compound-het, and haplotype-aware phasing
+  are tracked in `docs/PARITY_ROADMAP.md`. Output is a VCF with an
+  `INFO/BCSQ` tag of the form
+  `consequence|gene|transcript|biotype|strand|aa_change|dna_change`.
 - `pkg/bioformats/bcf` — reader and writer for the BCF v2.2 binary format.
 
 All pieces share the existing `pkg/bioformats/vcf` types so downstream
