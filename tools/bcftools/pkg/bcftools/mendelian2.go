@@ -59,7 +59,8 @@ const (
 	Mendelian2ListGood                            // g — emit only sites with at least one good trio
 	Mendelian2ListMiss                            // m — emit only sites with at least one missing trio GT
 	Mendelian2DropMiss                            // M — drop sites with a missing trio GT
-	Mendelian2DropSkip                            // S — drop sites skipped for housekeeping reasons
+	Mendelian2ListSkip                            // s — list sites skipped for housekeeping reasons (MODE_LIST_SKIP, 1<<8)
+	Mendelian2DropSkip                            // S — drop sites skipped for housekeeping reasons (MODE_DROP_SKIP, 1<<9)
 )
 
 // mendelian2ListModes bundles the "emit only ..." selectors; if any
@@ -97,12 +98,13 @@ func ParseMendelian2Mode(s string) (Mendelian2Mode, error) {
 		case 'M':
 			m |= Mendelian2DropMiss
 		case 's':
-			// upstream's MODE_LIST_SKIP — list skipped sites. v1 has
-			// no per-site "skipped" track separate from regular
-			// output, so we treat it as a no-op (recognised but
-			// inert) matching upstream's "we always emit the
-			// non-skipped sites" behaviour.
-			m |= Mendelian2DropSkip // intentional alias, see destroy_skip note
+			// MODE_LIST_SKIP (upstream mendelian2.c:58). Emit
+			// skipped sites alongside the regular output. v1 has
+			// no per-site "skipped" track yet, but the bit is
+			// distinct from MODE_DROP_SKIP so a future
+			// implementation can flip it on without breaking
+			// callers.
+			m |= Mendelian2ListSkip
 		case 'S':
 			m |= Mendelian2DropSkip
 		default:

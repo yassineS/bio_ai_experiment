@@ -62,7 +62,7 @@ func TestParseMendelian2Mode(t *testing.T) {
 		{"m", Mendelian2ListMiss},
 		{"M", Mendelian2DropMiss},
 		{"S", Mendelian2DropSkip},
-		{"s", Mendelian2DropSkip},
+		{"s", Mendelian2ListSkip},                       // MODE_LIST_SKIP, distinct bit from 'S'
 		{"x", Mendelian2ListErr},                        // legacy alias for 'e'
 		{"u", Mendelian2ListMiss},                       // legacy alias for 'm'
 		{"+", Mendelian2ListGood},                       // legacy alias for 'g'

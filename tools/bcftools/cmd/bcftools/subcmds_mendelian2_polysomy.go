@@ -255,12 +255,12 @@ General options:
   -R, --regions-file FILE        Restrict to regions listed in a file.
       --regions-overlap 0|1|2    Accepted; v1 uses POS-in-region.
   -s, --sample NAME              Sample to analyze (required if VCF has >1
-                                 sample). Both -s and -S are accepted.
-  -S, --samples-file FILE        File of sample IDs (one per line).
+                                 sample).
   -t, --targets REGION           Like -r but streams (post-filter).
   -T, --targets-file FILE        Like -R but streams.
       --targets-overlap 0|1|2    Accepted; v1 uses POS-in-region.
   -v, --verbosity INT            Accepted; v1 ignores.
+      --verbose INT              Alias for --verbosity (upstream).
 
 Algorithm options:
   -b, --peak-size FLOAT          Min peak size (accepted; v1 unused).
@@ -268,15 +268,12 @@ Algorithm options:
                                  Scales the v1 median-deviation threshold.
   -f, --fit-th FLOAT             Goodness-of-fit threshold (accepted; v1 unused).
   -i, --include-aa               Include AA peak in CN2 / CN3 (accepted; v1 unused).
-  -m, --min-fraction FLOAT       Min distinguishable aberrant fraction
-                                 (accepted; v1 uses --min-baf-dev instead).
-      --min-baf-dev FLOAT        v1: min |median(BAF) - 0.5| to flip CN2→CN3
-                                 (default 0.1, matching upstream --min-fraction).
-  -n, --include-noise            Include "?" / noisy chromosomes
-                                 (accepted; v1 always emits every chromosome).
+  -m, --min-fraction FLOAT       Min |median(BAF) - 0.5| to flip CN2→CN3
+                                 (default 0.1; upstream uses this in the GSL fit,
+                                 v1 uses it as a direct threshold).
   -p, --peak-symmetry FLOAT      Peak-symmetry threshold (accepted; v1 unused).
-      --nbins INT                Histogram bins (hidden upstream option; accepted; v1 unused).
-      --smooth INT               Smoothing window (hidden upstream option; accepted; v1 unused).
+  -n, --nbins INT                Histogram bins (hidden upstream option; accepted; v1 unused).
+  -S, --smooth INT               Smoothing window (hidden upstream option; accepted; v1 unused).
       --ra-rr-scaling            Disable RA/RR scaling (hidden upstream option; accepted; v1 unused).
       --force-cn INT             Tag every chromosome with this CN (hidden upstream option).
 
@@ -287,7 +284,7 @@ Output (stdout TSV):
   # sample  chrom  n_het  mean_baf  median_baf  cn_call
 
 Deferred flags (accepted but parsed into a v1-noop): -b/--peak-size,
--f/--fit-th, -i/--include-aa, -p/--peak-symmetry, --nbins, --smooth,
+-f/--fit-th, -i/--include-aa, -p/--peak-symmetry, -n/--nbins, -S/--smooth,
 --ra-rr-scaling, -o/--output-dir, --regions-overlap, --targets-overlap.
 See docs/PARITY_ROADMAP.md#bcftools.
 `
@@ -302,7 +299,6 @@ func runPolysomy(args []string) int {
 		regionsFile    string
 		regionsOverlap int
 		sample         string
-		samplesFile    string
 		targets        string
 		targetsFile    string
 		targetsOverlap int
@@ -312,8 +308,6 @@ func runPolysomy(args []string) int {
 		fitTh          float64
 		includeAA      bool
 		minFraction    float64
-		minBafDev      float64
-		includeNoise   bool
 		peakSymmetry   float64
 		nbins          int
 		smooth         int
@@ -334,21 +328,28 @@ func runPolysomy(args []string) int {
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
 	fs.IntVar(&regionsOverlap, "regions-overlap", 1, "")
 	cliflag.StringVar(fs, &sample, "s", "sample", "", "Sample name")
-	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
 	fs.IntVar(&targetsOverlap, "targets-overlap", 0, "")
+	// Upstream binds `-v` to BOTH `--verbose` and `--verbosity`
+	// (polysomy.c:432). Mirror that aliasing here.
 	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity")
+	fs.IntVar(&verbosity, "verbose", 0, "Verbosity (alias for --verbosity)")
 	cliflag.Float64Var(fs, &peakSize, "b", "peak-size", 0.1, "Min peak size (accepted; v1 unused)")
 	cliflag.Float64Var(fs, &cnPenalty, "c", "cn-penalty", 0.7, "CN-increase penalty")
 	cliflag.Float64Var(fs, &fitTh, "f", "fit-th", 3.3, "Goodness-of-fit (accepted; v1 unused)")
 	cliflag.BoolVar(fs, &includeAA, "i", "include-aa", false, "Include AA peak (accepted; v1 unused)")
-	cliflag.Float64Var(fs, &minFraction, "m", "min-fraction", 0.1, "Min aberrant fraction (accepted; alias for --min-baf-dev)")
-	fs.Float64Var(&minBafDev, "min-baf-dev", 0, "v1: min |median(BAF)-0.5| to call CN3 (default 0.1)")
-	cliflag.BoolVar(fs, &includeNoise, "n", "include-noise", false, "Include noisy chromosomes (accepted; v1 always emits)")
+	cliflag.Float64Var(fs, &minFraction, "m", "min-fraction", 0.1, "Min aberrant fraction (also the v1 |median(BAF)-0.5| threshold)")
 	cliflag.Float64Var(fs, &peakSymmetry, "p", "peak-symmetry", 0.5, "Peak symmetry (accepted; v1 unused)")
-	fs.IntVar(&nbins, "nbins", 150, "Histogram bins (hidden upstream; accepted)")
-	fs.IntVar(&smooth, "smooth", -3, "Smoothing window (hidden upstream; accepted)")
+	// Upstream short-letter bindings (polysomy.c:412-421):
+	//   -n/--nbins   (NOT --include-noise)
+	//   -S/--smooth  (NOT --samples-file)
+	// We keep these letters bound the upstream way; PR #109 v1
+	// initially stole both for invented flags and the reviewer
+	// caught it. There is no upstream `-S/--samples-file` or
+	// `-n/--include-noise`, so they are gone.
+	cliflag.IntVar(fs, &nbins, "n", "nbins", 150, "Histogram bins (hidden upstream; accepted)")
+	cliflag.IntVar(fs, &smooth, "S", "smooth", -3, "Smoothing window (hidden upstream; accepted)")
 	fs.BoolVar(&raRrScaling, "ra-rr-scaling", false, "Disable RA/RR scaling (hidden upstream; accepted)")
 	fs.IntVar(&forceCN, "force-cn", 0, "Force every chromosome to this CN (hidden upstream)")
 	fs.BoolVar(&showHelp, "h", false, "")
@@ -377,23 +378,17 @@ func runPolysomy(args []string) int {
 		return 2
 	}
 
-	// v1 prefers --min-baf-dev when set explicitly; otherwise we
-	// fall back to --min-fraction (upstream's name) so a user who
-	// types `-m 0.05` gets the expected stricter threshold.
-	dev := minBafDev
-	if dev == 0 {
-		dev = minFraction
-	}
-
+	// v1 uses upstream's --min-fraction as the |median(BAF)-0.5|
+	// threshold. (Upstream itself uses it differently as the
+	// minimum aberrant-cell fraction in the GSL fit; the v1
+	// heuristic ports the spirit, not the math.)
 	opts := bcftools.PolysomyOptions{
-		Sample:       sample,
-		SamplesFile:  samplesFile,
-		CnPenalty:    cnPenalty,
-		MinBafDev:    dev,
-		IncludeNoise: includeNoise,
-		ForceCN:      forceCN,
-		RegionsFile:  regionsFile,
-		TargetsFile:  targetsFile,
+		Sample:      sample,
+		CnPenalty:   cnPenalty,
+		MinBafDev:   minFraction,
+		ForceCN:     forceCN,
+		RegionsFile: regionsFile,
+		TargetsFile: targetsFile,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
