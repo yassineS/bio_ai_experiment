@@ -610,21 +610,18 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
 
-**Status:** 19 of ~30 subcommands (~63%). `view`, `index`, `stats`, `query`,
+**Status:** 21 of ~30 subcommands (~70%). `view`, `index`, `stats`, `query`,
 `concat`, `norm`, `call` (consensus + biallelic multi-allelic), the PR #86
 wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), the
 convert/mendelian PR (`convert`, `mendelian`), the gtcheck/roh PR (`gtcheck`,
-`roh`), and the filter/consensus PR: **`filter`** + **`consensus`**.
+`roh`), the filter/consensus PR (**`filter`** + **`consensus`**), and the
+mendelian2/polysomy PR (**`mendelian2`** + **`polysomy`**).
 
 Missing subcommands (priority order):
 
 - **`mpileup`** — base-level pileup; required upstream input to
   `bcftools call`. Large port.
 - **`csq`** — predict variant consequences against a GFF.
-- **`mendelian2`** — newer Mendelian-inheritance checker (the v1
-  `mendelian` port covers the legacy plugin; `mendelian2` adds
-  PED-file ingestion and per-sample error tagging).
-- **`polysomy`** — copy-number estimation.
 - **`cnv`** — CNV calling.
 - **`+plugins`** — full plugin system (substantial).
 
@@ -698,6 +695,60 @@ Option-tail gaps on `filter` (this PR, simple-mode):
   is parsed but always treated as "indel" in v1.
 - BCF output (`-O b|u`) round-trips through the shared `pkg/bioformats/bcf`
   writer; CSI auto-indexing is the `-W` follow-up above.
+
+Option-tail gaps on `mendelian2` (this PR, simple-mode):
+
+- `--rules ASSEMBLY` — predefined inheritance rules (GRCh37 / GRCh38
+  / `list?`). Accepted but rejected at runtime with a roadmap pointer;
+  v1 uses the chrX heuristic from the legacy `mendelian` port instead.
+- `--rules-file FILE` — custom inheritance rules file. Accepted; v1
+  rejects at runtime.
+- `-W/--write-index[=FMT]` — auto-index output. Accepted; v1 never
+  auto-indexes.
+- `--regions-overlap 0|1|2`, `--targets-overlap 0|1|2` — accepted;
+  v1 always uses POS-in-region semantics.
+- `-v/--verbosity INT`, `--no-version` — accepted; v1 ignores both.
+- `-r/-R/-t/-T` — region / target post-filter is wired through the
+  CLI but the BCF synced-reader region-jump path is not used in v1;
+  filtering happens after the records are read.
+- `sites_not_diploid` counter never goes up in v1 because our
+  `vcf.Variant` decoder coerces non-diploid GTs to missing rather
+  than tracking ploidy. Tracked alongside the broader BCF FORMAT
+  reconstruction in `docs/UPSTREAM_BUGS.md`.
+- The PED-row sort order is by child name (deterministic);
+  upstream sorts by min(sample-index) for sequential VCF reads. The
+  sort is a performance optimisation only — the set of reported
+  trios and per-trio counters are identical.
+- `-i/-e EXPR` are accepted at the library boundary but only
+  applied as record-level filters in v1 (no per-sample mask). The
+  `sites_fail` counter is therefore always 0 in v1.
+
+Option-tail gaps on `polysomy` (this PR, simple-mode):
+
+- The full Gaussian-mixture peak-fit (`peakfit.c` + GSL) is
+  **deferred**. v1 emits CN calls from a median-deviation heuristic:
+  CN1 when n_het == 0, CN2 when |median(BAF) - 0.5| ≤ MinBafDev (with
+  CnPenalty scaling), CN3 otherwise. The upstream algorithm fits CN2,
+  CN3, and CN4 Gaussian mixtures and picks the lowest CN whose fit
+  beats `(1 - cn_penalty) * previous_fit`.
+- `-b/--peak-size FLOAT`, `-f/--fit-th FLOAT`, `-i/--include-aa`,
+  `-p/--peak-symmetry FLOAT`, `--nbins INT`, `--smooth INT`,
+  `--ra-rr-scaling` — accepted at the CLI for parity but inert in v1
+  (the heuristic doesn't run a peak fit).
+- `-o/--output-dir PATH` — accepted but ignored; v1 writes the
+  per-chromosome TSV to stdout (no per-chromosome PNG plots).
+- `--regions-overlap`, `--targets-overlap` — accepted; v1 always uses
+  POS-in-region.
+- `-v/--verbosity INT` — accepted; v1 ignores.
+- `-n/--include-noise` — accepted; v1 always emits every chromosome
+  (we don't classify any as noise / `?`).
+- `--force-cn INT` (hidden upstream option) — implemented as
+  per-chromosome override.
+- BAF source: upstream requires FORMAT/BAF; v1 also accepts
+  FORMAT/AD = REF,ALT as a fallback (synthesises BAF as
+  `ALT / (REF + ALT)` at het sites).
+- Per-record `-i/-e` are NOT in upstream `polysomy.c:main_polysomy`
+  and we follow upstream's surface exactly (no invented flags).
 
 Option-tail gaps on `consensus` (this PR, simple-mode):
 

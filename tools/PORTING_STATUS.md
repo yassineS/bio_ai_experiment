@@ -27,7 +27,7 @@ the way.
 ### Progress Summary
 
 - **Tools with a working subset**: 25 (8 original + 22 bedtools subcommands +
-  `bgzip` + `tabix` + `samtools` (24 subcommands) + `bcftools` (19 subcommands),
+  `bgzip` + `tabix` + `samtools` (24 subcommands) + `bcftools` (21 subcommands),
   the htslib core landed May 2026 with three rounds of tail-cleanup in
   PRs #86/#87/#88)
 - **Tools tested**: 25 (package-level tests; `cmd/` entry points have no tests)
@@ -491,7 +491,9 @@ back to interleaved with a stderr warning); `samtools view -L bed` deferred.
 Pure-Go port of htslib's `bcftools`, built on top of a new
 `pkg/bioformats/bcf` decoder for BCF v2.2 (82% cov: full typed encoding
 for int8/16/32, float, char, missing + end-of-vector sentinels;
-length-prefixed and inline-length variants). Now at **13 subcommands**.
+length-prefixed and inline-length variants). Now at **21 subcommands**
+(adding `mendelian2` and `polysomy` to the existing 19 in the latest
+focused PR).
 
 - **First slice** (PR #63): `bcftools view` — VCF or BCF in, VCF or VCF.gz
   out. Flags: `-O v/z/u/b`, `-o`, `-h/--header-only`, `-H/--no-header`,
