@@ -71,21 +71,25 @@ closed.
 
 ### `seqtk`
 
-**Status:** 11 of ~20 subcommands. ~55%.
+**Status:** 13 of ~20 subcommands. ~65%.
 
 Missing subcommands:
 
-- `gap` — find gap regions in FASTA.
 - `listhet` — extract heterozygous sites from VCF/BCF.
-- `gc` — find GC-rich regions.
 - `fqchk` — FASTQ quality check report.
 - `seqshuf` — shuffle FASTA/Q records.
 - `pair` — pair up R1/R2 from interleaved input.
 - `dropse` — drop unpaired reads.
 - `hpc-bg` — homopolymer-compress with mismatch tolerance.
 - `kfreq` — k-mer frequency analysis.
-- `cnregion` — find regions of constant base.
 - `gcdc` — GC depth count.
+
+Note: `cnregion` was listed here before but is **not** an upstream seqtk
+subcommand (verified against `reference_code/seqtk/seqtk.c` v1.5: the only
+`stk_*` functions registered in `main()` are `seq`, `comp`, `sample`,
+`subseq`, `mergefa`, `mutfa`, `mergepe`, `randbase`, `hety`, `gc`, `fqchk`,
+`hrun`/`hpc`, `listhet`, `famask`, `trimfq`, `hpc-bg`/`hpc`, `seq`, `cutN`,
+`gap`, and `kfreq` — no `cnregion`). Dropped from the gap list.
 
 Option-tail gaps (per existing subcommand):
 
@@ -95,6 +99,14 @@ Option-tail gaps (per existing subcommand):
 - `trimfq` — missing `-L int` (max length cap), `-B int` (min base quality).
 - `subseq` — missing the regex-name mode.
 - `mutfa` — missing the inverse `--inverse` mode.
+- `gap` — full upstream surface implemented (`-l` only). Note: upstream's
+  "gap" is any non-ACGT byte (via `seq_nt6_table`), not just literal N,
+  so IUPAC ambiguity codes (R, Y, S, W, K, M, B, D, H, V, N) all count.
+  We match that byte-for-byte against `reference_code/seqtk` v1.5.
+- `gc` — full upstream surface implemented (`-w`, `-f`, `-l`, `-x`). The
+  algorithm is the upstream X-dropoff scan, not a sliding window. Output
+  is BED4 (`chrom\tstart\tend\thits`). Byte-parity verified against
+  `reference_code/seqtk` v1.5 on `gc_small.fa` fixtures.
 
 **Validation:** no upstream-test-suite run yet.
 

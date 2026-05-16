@@ -20,6 +20,8 @@
 //	mutfa      Apply point mutations to a FASTA file
 //	randbase   Randomly resolve IUPAC ambiguity codes
 //	hpc        Homopolymer-compress sequences
+//	gap        Find gap (non-ACGT) regions in FASTA
+//	gc         Find GC-rich (or AT-rich) regions in FASTA
 package main
 
 import (
@@ -66,6 +68,10 @@ func main() {
 		randbaseCommand()
 	case "hpc":
 		hpcCommand()
+	case "gap":
+		gapCommand()
+	case "gc":
+		gcCommand()
 	case "version", "-v", "--version":
 		fmt.Printf("seqtk version %s\n", version)
 	case "help", "-h", "--help":
@@ -94,6 +100,8 @@ Commands:
   mutfa      Apply point mutations to a FASTA file from a TSV mutation list
   randbase   Replace IUPAC ambiguity bases with a random expansion
   hpc        Homopolymer-compress sequences (collapse runs of identical bases)
+  gap        Find gap (non-ACGT) regions in FASTA, emit BED3
+  gc         Find GC-rich (or AT-rich) regions in FASTA, emit BED4
   version    Show version information
   help       Show this help message
 
@@ -113,6 +121,8 @@ Examples:
   seqtk mutfa ref.fa muts.tsv > mutated.fa
   seqtk randbase -s 42 ambig.fa > resolved.fa
   seqtk hpc reads.fa > collapsed.fa
+  seqtk gap -l 10 genome.fa > gaps.bed
+  seqtk gc -f 0.7 -l 50 genome.fa > gc_rich.bed
 
 `)
 }
@@ -958,6 +968,144 @@ Examples:
 	defer out.Close()
 
 	if err := seqtk.HPC(input, out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func gapCommand() {
+	fs := flag.NewFlagSet("gap", flag.ExitOnError)
+	var minSize int
+	var output string
+
+	cliflag.IntVar(fs, &minSize, "l", "min-size", seqtk.DefaultGapMinSize, "Minimum gap-run length to report")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk gap [options] <in.fa>
+
+Find gap regions in a FASTA file. A "gap" is a maximal run of bytes that are
+not A, C, G or T (case-insensitive) — i.e. N's, IUPAC ambiguity codes and any
+other non-ACGT byte all count. For every gap of length >= -l a BED3 record is
+written to stdout: chrom\tstart\tend (0-based half-open).
+
+Arguments:
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+
+Options:
+  -l, --min-size INT     Minimum gap-run length to report (default: %d)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk gap genome.fa > gaps.bed
+  seqtk gap -l 10 genome.fa > short_gaps.bed
+  zcat genome.fa.gz | seqtk gap - > gaps.bed
+
+`, seqtk.DefaultGapMinSize)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.Gap(input, out, seqtk.GapOptions{MinSize: minSize}); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func gcCommand() {
+	fs := flag.NewFlagSet("gc", flag.ExitOnError)
+	var minLen int
+	var minFrac, xDropoff float64
+	var isAT bool
+	var output string
+
+	cliflag.IntVar(fs, &minLen, "l", "min-length", seqtk.DefaultGCMinLength, "Minimum region length to report")
+	cliflag.Float64Var(fs, &minFrac, "f", "min-frac", seqtk.DefaultGCMinFrac, "Min GC fraction (or AT fraction with -w)")
+	cliflag.Float64Var(fs, &xDropoff, "x", "x-dropoff", seqtk.DefaultGCXDropoff, "X-dropoff threshold")
+	cliflag.BoolVar(fs, &isAT, "w", "at", false, "Identify high-AT regions instead of high-GC")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk gc [options] <in.fa>
+
+Find GC-rich (or, with -w, AT-rich) regions in a FASTA file using upstream
+seqtk's X-dropoff scoring algorithm. Every "hit" base contributes
++(1-f)/f to a running score, every non-hit contributes -1, and a region is
+emitted whenever the score drops below zero or X below its running maximum,
+provided the region is at least -l bases long.
+
+Output is BED4 (0-based half-open): chrom\tstart\tend\thits, where hits is
+the number of GC (or AT) positions in [start, end).
+
+Arguments:
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+
+Options:
+  -w, --at               Identify high-AT regions instead of high-GC
+  -f, --min-frac FLOAT   Min GC fraction (or AT fraction with -w) [%.2f]
+  -l, --min-length INT   Min region length to output [%d]
+  -x, --x-dropoff FLOAT  X-dropoff threshold [%.1f]
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk gc genome.fa > gc_rich.bed
+  seqtk gc -f 0.75 -l 100 genome.fa > strong_gc.bed
+  seqtk gc -w -f 0.7 genome.fa > at_rich.bed
+
+`, seqtk.DefaultGCMinFrac, seqtk.DefaultGCMinLength, seqtk.DefaultGCXDropoff)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	opts := seqtk.GCOptions{
+		MinLength: minLen,
+		MinFrac:   minFrac,
+		XDropoff:  xDropoff,
+		IsAT:      isAT,
+	}
+	if err := seqtk.GC(input, out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

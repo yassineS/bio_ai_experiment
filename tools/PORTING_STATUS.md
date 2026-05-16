@@ -81,8 +81,10 @@ at 1:1 feature parity (the project goal); see
 - `mutfa` - Apply point mutations from TSV (3-col or upstream 4-col)
 - `randbase` - Replace IUPAC ambiguity bases with random pick
 - `hpc` - Homopolymer compression
+- `gap` - Find gap (non-ACGT) regions in FASTA, emit BED3
+- `gc` - Find GC-rich (or AT-rich) regions in FASTA, emit BED4
 
-**Test Coverage**: ~72% of statements (`go test -cover`)  
+**Test Coverage**: ~79% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
 **Documentation**: README with examples  
 
@@ -95,8 +97,9 @@ at 1:1 feature parity (the project goal); see
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- The 11 commands above cover upstream seqtk's mutation/compression core.
-  Smaller misses remain (e.g. `gap`, `listhet`); see
+- The 13 commands above cover upstream seqtk's mutation/compression core
+  plus the BED-emitting scanners (`gap`, `gc`). Smaller misses remain
+  (e.g. `listhet`, `fqchk`, `seqshuf`); see
   [the seqtk README](seqtk/README.md) for the per-subcommand list.
 - Output format intended to be compatible for the implemented commands
 
