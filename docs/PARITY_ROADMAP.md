@@ -610,19 +610,18 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
 
-**Status:** 21 of ~30 subcommands (~70%). `view`, `index`, `stats`, `query`,
+**Status:** 23 of ~30 subcommands (~77%). `view`, `index`, `stats`, `query`,
 `concat`, `norm`, `call` (consensus + biallelic multi-allelic), the PR #86
 wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), the
 convert/mendelian PR (`convert`, `mendelian`), the gtcheck/roh PR (`gtcheck`,
-`roh`), the filter/consensus PR (**`filter`** + **`consensus`**), and the
-mendelian2/polysomy PR (**`mendelian2`** + **`polysomy`**).
+`roh`), the filter/consensus PR (`filter`, `consensus`), the
+mendelian2/polysomy PR (`mendelian2`, `polysomy`), and the cnv/csq PR
+(**`cnv`** + **`csq`**).
 
 Missing subcommands (priority order):
 
 - **`mpileup`** — base-level pileup; required upstream input to
   `bcftools call`. Large port.
-- **`csq`** — predict variant consequences against a GFF.
-- **`cnv`** — CNV calling.
 - **`+plugins`** — full plugin system (substantial).
 
 Option-tail gaps on `gtcheck` (PR #107, simple-mode):
@@ -696,7 +695,7 @@ Option-tail gaps on `filter` (this PR, simple-mode):
 - BCF output (`-O b|u`) round-trips through the shared `pkg/bioformats/bcf`
   writer; CSI auto-indexing is the `-W` follow-up above.
 
-Option-tail gaps on `mendelian2` (this PR, simple-mode):
+Option-tail gaps on `mendelian2` (PR #109, simple-mode):
 
 - `--rules ASSEMBLY` — predefined inheritance rules (GRCh37 / GRCh38
   / `list?`). Accepted but rejected at runtime with a roadmap pointer;
@@ -749,6 +748,80 @@ Option-tail gaps on `polysomy` (this PR, simple-mode):
   `ALT / (REF + ALT)` at het sites).
 - Per-record `-i/-e` are NOT in upstream `polysomy.c:main_polysomy`
   and we follow upstream's surface exactly (no invented flags).
+
+Option-tail gaps on `cnv` (this PR, v1 heuristic):
+
+- **The v1 algorithm is NOT the upstream HMM.** Upstream's vcfcnv.c
+  runs a 5-state HMM (CN0/CN1/CN2/CN3/CN4) over each contig with
+  joint BAF + LRR Gaussian emissions and a configurable transition
+  matrix. The v1 port replaces this with a per-sample × per-chrom
+  median-BAF + mean-LRR heuristic that classifies each chromosome
+  into one of the same 5 CN states. The full Viterbi sweep is the
+  natural follow-up; the CLI surface is already parity-clean for
+  it. EVERY HMM tuning knob (`-a/--aberrant`, `-b/--BAF-weight`,
+  `-e/--err-prob`, `-l/--LRR-weight`, `-L/--LRR-smooth-win`,
+  `-O/--optimize`, `-P/--same-prob`, `-W/--baum-welch`,
+  `-x/--xy-prob`, `--AF-file`) is parsed and stored in `CNVOptions`
+  but the heuristic does NOT consume them. Only `-d/--BAF-dev` and
+  `-k/--LRR-dev` (the per-sample expected std-dev floors) actually
+  drive the v1 thresholds.
+- `-o/--output-dir` — upstream writes per-sample / per-region plot
+  data into this directory; v1 always streams a single summary TSV
+  to stdout regardless of the path (the flag is still required for
+  CLI parity).
+- `-p/--plot-threshold` — accepted; v1 emits no plots.
+- `--regions-overlap` / `--targets-overlap` — accepted; v1 always
+  uses POS-in-region semantics.
+- `-v/--verbosity` — accepted; v1 ignores.
+- BCF / VCF.gz output — v1 always emits the summary TSV; the
+  upstream `-O b|u|z|v` selector does not apply (the upstream tool
+  produces several per-region files; v1 produces one summary).
+- Indel / non-SNP records — the BAF/LRR signals are typically
+  per-marker SNP data; v1 honours upstream's behaviour (treat each
+  record as one marker regardless of REF/ALT).
+
+Option-tail gaps on `csq` (this PR, v1 SNP-only):
+
+- **The v1 classifier is NOT haplotype-aware.** Upstream's csq.c
+  phases variants per haplotype, walks the GFF transcripts, and
+  reports the per-haplotype consequence chain (including
+  compound-het effects). v1 instead classifies one SNP at a time
+  against the GFF CDS exons and emits `INFO/BCSQ` per-transcript
+  for the matching position. Indels, splice-site disruption,
+  start-gain, stop-retained, and compound-het bookkeeping are all
+  deferred.
+- `-p/--phase a|m|r|R|s` — parsed and stored; the per-record SNP
+  classifier ignores phasing because consequences are computed
+  position-by-position. Will become load-bearing when haplotype-
+  aware phasing lands.
+- `-i/--include` / `-e/--exclude` — accepted; v1 ignores (every
+  input record runs through the classifier). The expression
+  evaluator already exists in `pkg/bcftools`; the wire-up is a
+  trivial follow-up.
+- `-s/--samples` / `-S/--samples-file` — accepted; v1 does not
+  subset (consequences are position-driven). Once haplotype-aware
+  phasing lands the sample list will gate which haplotypes are
+  walked.
+- `-n/--ncsq INT` — accepted; v1 emits every matching transcript
+  without a cap (one BCSQ entry per transcript).
+- `-B/--trim-protein-seq INT` — accepted; v1 does not truncate
+  predictions.
+- `-b/--brief-predictions` — hard-rejected with a roadmap pointer
+  (upstream deprecates this flag itself).
+- `-C/--genetic-code INT|l` — only `0` (standard) is accepted in
+  v1; other tables are hard-rejected with a roadmap pointer.
+- `-l/--local-csq` — accepted; v1 always operates per-record.
+- `--unify-chr-names LIST` — only `0` (no rewriting) is accepted in
+  v1; non-zero specs are hard-rejected.
+- `--dump-gff` — hard-rejected; v1 has no GFF dump path.
+- `-O b|u|z|t` — only `-O v` (VCF text) is supported in v1; the
+  others are hard-rejected with a roadmap pointer.
+- `--threads`, `-v/--verbosity`, `-W/--write-index`, `--force`,
+  `--no-version`, `-q/--quiet` — accepted; v1 ignores.
+- The minimal GFF3 parser (`pkg/bioformats/gff`) understands `gene`,
+  `mRNA` / `transcript`, `CDS`, and `exon` rows. Other feature
+  types are silently skipped — fine for the v1 SNP classifier
+  but the parser will need extension for splice-site / UTR work.
 
 Option-tail gaps on `consensus` (this PR, simple-mode):
 

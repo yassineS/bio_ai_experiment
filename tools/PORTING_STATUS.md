@@ -27,7 +27,7 @@ the way.
 ### Progress Summary
 
 - **Tools with a working subset**: 25 (8 original + 22 bedtools subcommands +
-  `bgzip` + `tabix` + `samtools` (24 subcommands) + `bcftools` (21 subcommands),
+  `bgzip` + `tabix` + `samtools` (24 subcommands) + `bcftools` (23 subcommands),
   the htslib core landed May 2026 with three rounds of tail-cleanup in
   PRs #86/#87/#88)
 - **Tools tested**: 25 (package-level tests; `cmd/` entry points have no tests)

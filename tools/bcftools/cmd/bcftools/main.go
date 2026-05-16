@@ -2,8 +2,8 @@
 // subcommands. Today it ships `view`, `index`, `stats`, `query`, `concat`,
 // `norm`, `call`, `merge`, `isec`, `sort`, `head`, `reheader`,
 // `annotate`, `convert`, `mendelian`, `mendelian2`, `gtcheck`, `roh`,
-// `filter`, `consensus`, and `polysomy`; remaining subcommands
-// (`csq`, `mpileup`, ...) will follow in subsequent PRs.
+// `filter`, `consensus`, `polysomy`, `cnv`, and `csq`; remaining
+// subcommands (`mpileup`, ...) will follow in subsequent PRs.
 package main
 
 import (
@@ -43,6 +43,8 @@ Subcommands:
   filter    Soft-filter records by include / exclude expression.
   consensus Apply VCF variants to a reference FASTA.
   polysomy  Detect chromosomal copy number from B-allele frequency.
+  cnv       Copy-number variation caller (v1: heuristic CN-call).
+  csq       Predict variant consequences against a GFF (v1: SNPs only).
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
   help      Show this help (also via -? on subcommands).
@@ -97,6 +99,10 @@ func main() {
 		os.Exit(runConsensus(os.Args[2:]))
 	case "polysomy":
 		os.Exit(runPolysomy(os.Args[2:]))
+	case "cnv":
+		os.Exit(runCNV(os.Args[2:]))
+	case "csq":
+		os.Exit(runCSQ(os.Args[2:]))
 	case "help", "--help":
 		fmt.Print(rootUsage)
 		return
