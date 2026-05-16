@@ -11,7 +11,6 @@ package seqtk
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 )
 
@@ -28,15 +27,9 @@ const DefaultGapMinSize = 50
 // >= opts.MinSize) found in any record of the FASTA stream r. Output goes to
 // w in upstream "seqtk gap" format: chrom\tstart\tend\n, 0-based half-open.
 //
-// Returns an error if opts.MinSize < 1 or on I/O errors. opts.MinSize == 0 is
-// rejected because upstream's loop never reports a zero-length run (the
-// `l > 0 && l >= min_size` guard) but a user passing -l 0 almost certainly
-// meant something else; we surface that as a clear error rather than silently
-// matching nothing.
+// opts.MinSize <= 0 is silently treated like upstream `stk_gap`'s
+// `l > 0 && l >= min_size` guard: every non-zero gap run is reported.
 func Gap(r io.Reader, w io.Writer, opts GapOptions) error {
-	if opts.MinSize < 1 {
-		return fmt.Errorf("gap: -l/--min-size must be >= 1 (got %d)", opts.MinSize)
-	}
 	bw := bufio.NewWriter(w)
 	err := scanFASTA(r, func(name string, seq []byte) error {
 		l := 0
@@ -45,7 +38,9 @@ func Gap(r io.Reader, w io.Writer, opts GapOptions) error {
 		for i := 0; i <= len(seq); i++ {
 			isGap := i < len(seq) && IsGapByte(seq[i])
 			if !isGap {
-				if l >= opts.MinSize {
+				// Mirror upstream's `if (l > 0 && l >= min_size)` guard:
+				// never emit a zero-length BED row even when MinSize <= 0.
+				if l > 0 && l >= opts.MinSize {
 					if err := writeBED3(bw, name, i-l, i); err != nil {
 						return err
 					}

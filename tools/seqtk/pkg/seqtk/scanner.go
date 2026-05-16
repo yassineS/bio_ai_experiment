@@ -20,10 +20,11 @@ import (
 
 // seqNT6Table folds an ASCII byte to upstream seqtk's 6-state nucleotide
 // alphabet (the `seq_nt6_table` array in reference_code/seqtk/seqtk.c).
-// The mapping is: A/a -> 1, C/c -> 2, G/g -> 3, T/t/U/u -> 4, 0-byte -> 0,
-// everything else (including N, IUPAC codes and any non-ACGT byte) -> 5.
-// `seqtk gap` uses this table to detect "gap" runs: a gap is any maximal
-// run of bytes that map to 5, regardless of whether they are literal N's.
+// The mapping is: A/a -> 1, C/c -> 2, G/g -> 3, T/t -> 4, 0-byte -> 0,
+// everything else (including N, U/u (RNA uracil), IUPAC codes and any
+// other non-DNA byte) -> 5. `seqtk gap` uses this table to detect "gap"
+// runs: a gap is any maximal run of bytes that map to 5, regardless of
+// whether they are literal N's.
 var seqNT6Table = func() [256]byte {
 	var t [256]byte
 	for i := range t {
@@ -34,12 +35,15 @@ var seqNT6Table = func() [256]byte {
 	t['C'], t['c'] = 2, 2
 	t['G'], t['g'] = 3, 3
 	t['T'], t['t'] = 4, 4
-	t['U'], t['u'] = 4, 4
+	// U/u (uracil) stays at 5 to match upstream seq_nt6_table[85] == 5
+	// (seqtk.c:208). Previously the port mapped U/u -> 4, which silently
+	// hid uracil from `seqtk gap`; reviewer-caught regression on PR #112.
 	return t
 }()
 
 // IsGapByte reports whether b is part of a "gap" under upstream seqtk's
-// definition (anything that is not A, C, G or T/U, case-insensitive).
+// definition (anything that is not A, C, G or T, case-insensitive — note
+// U/u is also a gap, matching upstream).
 func IsGapByte(b byte) bool { return seqNT6Table[b] == 5 }
 
 // scanFASTA reads every record from r and calls emit for each one. It is a

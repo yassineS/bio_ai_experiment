@@ -54,15 +54,24 @@ func TestGap_TableDriven(t *testing.T) {
 	}
 }
 
-func TestGap_RejectsBadMinSize(t *testing.T) {
+// TestGap_NonPositiveMinSize_MatchesUpstream pins reviewer finding on
+// PR #112: upstream `stk_gap` silently accepts `-l 0` and `-l <0`,
+// reporting every non-zero gap run (its guard is `l > 0 && l >= min_size`).
+// The earlier port rejected these; that was a parity break.
+func TestGap_NonPositiveMinSize_MatchesUpstream(t *testing.T) {
+	// One real gap run of length 3 (NNN). Every non-zero MinSize should
+	// emit it; zero / negative MinSize should ALSO emit it (matching
+	// upstream's behaviour) — and crucially must NOT emit zero-length
+	// rows at the non-gap positions.
+	input := ">x\nACNNNGT\n"
+	want := "x\t2\t5\n"
 	for _, n := range []int{0, -1, -100} {
 		var out bytes.Buffer
-		err := Gap(strings.NewReader(">x\nACGT\n"), &out, GapOptions{MinSize: n})
-		if err == nil {
-			t.Fatalf("MinSize=%d: expected error, got none", n)
+		if err := Gap(strings.NewReader(input), &out, GapOptions{MinSize: n}); err != nil {
+			t.Fatalf("MinSize=%d: unexpected error: %v", n, err)
 		}
-		if !strings.Contains(err.Error(), "min-size") {
-			t.Fatalf("MinSize=%d: error message should mention min-size, got %v", n, err)
+		if got := out.String(); got != want {
+			t.Errorf("MinSize=%d: got %q, want %q", n, got, want)
 		}
 	}
 }
@@ -120,5 +129,21 @@ func TestGap_ParityWithUpstream(t *testing.T) {
 			}
 			mustEqualBytes(t, "gap parity "+tc.name, got.Bytes(), want)
 		})
+	}
+}
+
+// TestGap_UracilIsGap pins reviewer finding on PR #112: upstream
+// seq_nt6_table['U'] / ['u'] == 5 (seqtk.c:208), i.e. RNA uracil counts
+// as a gap. The earlier port mapped U/u to 4 (alongside T/t), silently
+// hiding uracil runs from `seqtk gap`.
+func TestGap_UracilIsGap(t *testing.T) {
+	input := ">uracil\nACGTUUUUUACGT\n"
+	var out bytes.Buffer
+	if err := Gap(strings.NewReader(input), &out, GapOptions{MinSize: 3}); err != nil {
+		t.Fatalf("Gap: %v", err)
+	}
+	want := "uracil\t4\t9\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

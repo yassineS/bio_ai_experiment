@@ -9,14 +9,17 @@ import (
 )
 
 func TestIsGapByte(t *testing.T) {
-	// A/C/G/T/U upper and lower must not be gap bytes.
-	for _, b := range []byte("ACGTUacgtu") {
+	// A/C/G/T upper and lower must not be gap bytes. NOTE: U/u
+	// (uracil) IS a gap, matching upstream seq_nt6_table['U']==5
+	// (seqtk.c:208). The previous test rubber-stamped a bug that
+	// mapped U/u to 4; reviewer-caught regression on PR #112.
+	for _, b := range []byte("ACGTacgt") {
 		if IsGapByte(b) {
 			t.Errorf("IsGapByte(%q) = true, want false", b)
 		}
 	}
-	// Every other byte must be a gap byte.
-	for _, b := range []byte("NnRrSsBb-0?@") {
+	// Every other byte (including U/u) must be a gap byte.
+	for _, b := range []byte("UuNnRrSsBb-0?@") {
 		if !IsGapByte(b) {
 			t.Errorf("IsGapByte(%q) = false, want true", b)
 		}
