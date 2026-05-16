@@ -277,3 +277,34 @@ func dataLines(s string) []string {
 	}
 	return out
 }
+
+// TestVCFFilterPassRecordWithEmptyFilterBecomesPASS pins PR #108
+// review finding: upstream vcffilter.c:715 forces FILTER=PASS on any
+// passing record whose input FILTER column was empty or ".", even when
+// running in the default (replace) mode without -m x.
+func TestVCFFilterPassRecordWithEmptyFilterBecomesPASS(t *testing.T) {
+	input := filterHeader +
+		"chr1\t100\t.\tA\tT\t.\t.\tDP=50\tGT\t0/0\t0/0\n" +
+		"chr1\t200\t.\tA\tT\t.\t.\tDP=5\tGT\t0/0\t0/0\n"
+	var out bytes.Buffer
+	_, err := VCFFilter(strings.NewReader(input), &out, VCFFilterOptions{
+		ExcludeExpr: "INFO/DP < 10",
+		SoftFilter:  "LowDP",
+		NoVersion:   true,
+	})
+	if err != nil {
+		t.Fatalf("VCFFilter: %v", err)
+	}
+	lines := dataLines(out.String())
+	if len(lines) != 2 {
+		t.Fatalf("want 2 records, got %d", len(lines))
+	}
+	// First record passes the filter and had FILTER=".", upstream
+	// would write "PASS". Second record fails and gets "LowDP".
+	if !strings.Contains(lines[0], "\tPASS\t") {
+		t.Errorf("first record (passing, was '.'): want FILTER=PASS, line: %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "\tLowDP\t") {
+		t.Errorf("second record (failing): want FILTER=LowDP, line: %q", lines[1])
+	}
+}

@@ -281,7 +281,24 @@ func applyFilterDecision(v *vcf.Variant, fails bool, filterName string, opts VCF
 	case !fails && opts.Mode&FilterModeReset != 0:
 		// Reset on pass: force PASS.
 		v.Filter = []string{"PASS"}
+	case !fails && isEmptyFilter(v.Filter):
+		// Upstream vcffilter.c:715 also forces FILTER=PASS on any
+		// passing record whose FILTER is empty/`.`, regardless of
+		// mode. Preserve this default-PASS-on-pass behaviour.
+		v.Filter = []string{"PASS"}
 	}
+}
+
+// isEmptyFilter returns true for the missing-FILTER encodings: empty
+// slice, single empty string, or single ".".
+func isEmptyFilter(f []string) bool {
+	if len(f) == 0 {
+		return true
+	}
+	if len(f) == 1 && (f[0] == "" || f[0] == ".") {
+		return true
+	}
+	return false
 }
 
 // rewriteFailingGTs replaces every per-sample GT entry per the upstream
@@ -311,6 +328,9 @@ func rewriteFailingGTs(v *vcf.Variant, mode SetGTsMode) {
 			rep = "."
 		case SetGTsRef:
 			rep = "0"
+		default:
+			// SetGTsOff or an unrecognised mode: don't rewrite.
+			continue
 		}
 		newSlots := make([]string, len(slots))
 		for i := range newSlots {

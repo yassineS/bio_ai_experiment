@@ -98,11 +98,15 @@ func ParseHaplotypeSelector(s string) (HaplotypeSelector, int, error) {
 		return HapAlt, 0, nil
 	case "I":
 		return HapIUPAC, 0, nil
-	case "LR":
+	case "LR", "L":
+		// Upstream consensus.c:1312 sets PICK_LONG|PICK_REF for
+		// both "L" and "LR".
 		return HapLongRef, 0, nil
 	case "LA":
 		return HapLongAlt, 0, nil
-	case "SR":
+	case "SR", "S":
+		// Upstream consensus.c:1313 sets PICK_SHORT|PICK_REF for
+		// both "S" and "SR".
 		return HapShortRef, 0, nil
 	case "SA":
 		return HapShortAlt, 0, nil
@@ -305,24 +309,27 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			}
 			// Apply highlight casing if requested.
 			alt = applyMarks(ref, alt, opts)
-			if alt == string(ref) {
-				// No-op (selectAllele returned REF).
-			}
 			newSeq := make([]byte, 0, len(seq)+len(alt)-len(ref))
 			newSeq = append(newSeq, seq[:start]...)
+			emitted := len(alt)
 			if opts.MarkDel.Mode == MarkChar && len(alt) < len(ref) {
 				// Pad the deletion with a literal character so the
-				// downstream coordinates stay aligned.
+				// downstream coordinates stay aligned. The total
+				// emitted length equals len(ref).
 				newSeq = append(newSeq, alt...)
 				for i := 0; i < len(ref)-len(alt); i++ {
 					newSeq = append(newSeq, opts.MarkDel.Char)
 				}
+				emitted = len(ref)
 			} else {
 				newSeq = append(newSeq, alt...)
 			}
 			newSeq = append(newSeq, seq[end:]...)
 			seq = newSeq
-			offset += len(alt) - len(ref)
+			// Track the coordinate shift by the ACTUAL emitted run
+			// vs. ref consumed. With mark-del padding, emitted==len(ref)
+			// so offset is unchanged (downstream coordinates align).
+			offset += emitted - len(ref)
 			lastEnd = origStart + len(ref)
 			applied++
 		}

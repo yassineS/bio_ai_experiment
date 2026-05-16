@@ -106,6 +106,38 @@ func TestConsensusMarkDel(t *testing.T) {
 	}
 }
 
+// TestConsensusMarkDelDoesNotShiftDownstream pins PR #108 review
+// finding: with --mark-del padding active, the post-deletion offset
+// MUST NOT shift, otherwise the next variant lands at the wrong
+// position. The prior code always did `offset += len(alt) - len(ref)`
+// even when the padding restored the emitted length to len(ref).
+func TestConsensusMarkDelDoesNotShiftDownstream(t *testing.T) {
+	ref := []*fasta.Record{
+		{ID: "chr1", Sequence: []byte("AAAACCCCGGGG")},
+	}
+	vcf := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=12>\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+		"chr1\t4\t.\tACC\tA\t.\tPASS\t.\n" +
+		"chr1\t10\t.\tG\tT\t.\tPASS\t.\n"
+	var out bytes.Buffer
+	if _, err := Consensus(strings.NewReader(vcf), &out, ConsensusOptions{
+		Reference: ref,
+		LineWidth: 80,
+		MarkDel:   MarkSpec{Mode: MarkChar, Char: '*'},
+	}); err != nil {
+		t.Fatalf("Consensus: %v", err)
+	}
+	// Variant #1 (chr1:4 ACC>A with mark-del) emits 'A**' at positions 4,5,6.
+	// Variant #2 (chr1:10 G>T) must land at the ORIGINAL position 10
+	// because the padding preserved length. Prior buggy offset shift
+	// would land it at position 8 (offset = 1 - 3 = -2).
+	want := ">chr1\nAAAA**CCGTGG\n"
+	if out.String() != want {
+		t.Errorf("downstream variant landed at wrong position:\n got %q\n want %q", out.String(), want)
+	}
+}
+
 // TestConsensusSamplePicksGT picks the right ALT based on a sample's GT.
 func TestConsensusSamplePicksGT(t *testing.T) {
 	ref := []*fasta.Record{
@@ -336,5 +368,29 @@ func TestConsensusOverlappingFirstWins(t *testing.T) {
 	// is skipped.
 	if !strings.HasPrefix(out.String(), ">chr1\nAAACCGGGG\n") {
 		t.Errorf("overlap-first-wins: got %q", out.String())
+	}
+}
+
+// TestParseHaplotypeAliases pins the upstream consensus.c:1312-1313
+// shortcuts: "L" === "LR", "S" === "SR".
+func TestParseHaplotypeAliases(t *testing.T) {
+	cases := []struct {
+		in   string
+		want HaplotypeSelector
+	}{
+		{"L", HapLongRef},
+		{"LR", HapLongRef},
+		{"S", HapShortRef},
+		{"SR", HapShortRef},
+	}
+	for _, c := range cases {
+		got, _, err := ParseHaplotypeSelector(c.in)
+		if err != nil {
+			t.Errorf("ParseHaplotypeSelector(%q): unexpected error %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseHaplotypeSelector(%q): got %v, want %v", c.in, got, c.want)
+		}
 	}
 }

@@ -359,6 +359,9 @@ func runConsensus(args []string) int {
 	cliflag.StringVar(fs, &prefix, "p", "prefix", "", "Sequence name prefix")
 	fs.IntVar(&regionsOverlap, "regions-overlap", 1, "")
 	cliflag.StringVar(fs, &samples, "s", "samples", "", "Sample list")
+	// Upstream consensus.c:1245 also accepts `--sample` (singular)
+	// as an alias for `-s/--samples`.
+	fs.StringVar(&samples, "sample", "", "Sample (alias for --samples)")
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
