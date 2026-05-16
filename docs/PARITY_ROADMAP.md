@@ -610,18 +610,16 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
 
-**Status:** 23 of ~30 subcommands (~77%). `view`, `index`, `stats`, `query`,
+**Status:** 24 of ~30 subcommands (~80%). `view`, `index`, `stats`, `query`,
 `concat`, `norm`, `call` (consensus + biallelic multi-allelic), the PR #86
 wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), the
 convert/mendelian PR (`convert`, `mendelian`), the gtcheck/roh PR (`gtcheck`,
 `roh`), the filter/consensus PR (`filter`, `consensus`), the
-mendelian2/polysomy PR (`mendelian2`, `polysomy`), and the cnv/csq PR
-(**`cnv`** + **`csq`**).
+mendelian2/polysomy PR (`mendelian2`, `polysomy`), the cnv/csq PR
+(`cnv` + `csq`), and the mpileup PR (**`mpileup`**).
 
 Missing subcommands (priority order):
 
-- **`mpileup`** — base-level pileup; required upstream input to
-  `bcftools call`. Large port.
 - **`+plugins`** — full plugin system (substantial).
 
 Option-tail gaps on `gtcheck` (PR #107, simple-mode):
@@ -822,6 +820,75 @@ Option-tail gaps on `csq` (this PR, v1 SNP-only):
   `mRNA` / `transcript`, `CDS`, and `exon` rows. Other feature
   types are silently skipped — fine for the v1 SNP classifier
   but the parser will need extension for splice-site / UTR work.
+
+Option-tail gaps on `mpileup` (this PR, v1 SNP + uniform-error):
+
+- **The v1 likelihood model is NOT the upstream MAQ model.** Upstream's
+  `bam2bcf.c::glfgen` reads per-base error probabilities from the
+  Heng Li MAQ recalibrator with BAQ adjustments; v1 instead uses the
+  simpler samtools-0.1.19-style uniform-error binomial: e = 10^(-Q/10)
+  per base, summed in log10 across reads, then phred-scaled and
+  rebased to min=0 for the [0/0, 0/1, 1/1] triple. The MAQ port is
+  the natural follow-up; the CLI surface and FORMAT/PL layout are
+  parity-clean for it.
+- **No BAQ recalibration.** `-B/--no-BAQ` is the v1 default (the flag
+  is accepted as a no-op); `-D/--full-BAQ` is accepted but inert;
+  `-E/--redo-BAQ` is hard-rejected with a roadmap pointer because
+  silently skipping a recalibration step a downstream caller asked
+  for would yield misleading PLs.
+- **No indel calling.** The full upstream indel realigner
+  (`bam2bcf_indel.c`) and the consensus indel mode
+  (`bam2bcf_edlib.c`) are deferred. Every knob that drives the indel
+  model — `-e/--ext-prob`, `-F/--gap-frac`, `-h/--tandem-qual`,
+  `--indel-bias`, `--indel-size`, `-I/--skip-indels`,
+  `-L/--max-idepth`, `-m/--min-ireads`, `-M/--max-read-len`,
+  `--open-prob`, `--indels-cns`, `--indels-2.0`, `--no-indels-cns`,
+  `--ar-prob`, `--ambig-reads / --ar`, `--del-bias`, `--poly-mqual`,
+  `--no-poly-mqual`, `--score-vs-ref`, `--seqq-offset` — is accepted
+  at the CLI for parity but inert in v1. The v1 emit path is
+  equivalent to running upstream with `-I/--skip-indels` set.
+- **No multi-allelic FORMAT/PL grid.** The PL we emit is always
+  biallelic [PL(0/0), PL(0/1), PL(1/1)] against ALT[0]. Sites with
+  multiple ALTs still parse upstream-style in `bcftools call`, but
+  the PL grid for the 2nd / 3rd ALT genotypes is treated as 0
+  (uninformative). The full j(j+1)/2 + i grid lands with the MAQ
+  port.
+- **No BAI seek.** `-r/--regions` and `-R/--regions-file` are
+  post-filters applied after a linear scan of every input BAM; the
+  BAI-seek fast path lives in `pkg/bioformats/sam` but is not wired
+  through `mpileup` in v1. Tracked as a follow-up — perf only, no
+  output difference.
+- **No per-read group filtering.** `-G/--read-groups` is parsed and
+  stored; v1 includes every record whose @RG passes the standard
+  filters. `-Z/--ignore-RG` is accepted but inert.
+- **No gVCF blocking.** `-g/--gvcf` is accepted; v1 always emits one
+  VCF record per variant site (REF-only sites are skipped, matching
+  upstream when `--gvcf` is unset).
+- **`-a/--annotate LIST` is accepted but inert.** v1 always emits the
+  default `INFO/DP`, `INFO/I16`, `FORMAT/PL` set. The
+  `INFO/AD,ADF,ADR,SP,SCR,IDV,IMF`, `FORMAT/AD,ADF,ADR,DP,DV,DPR,SP,SCR,QS`
+  tags will land alongside the per-tag stream when called from
+  `bcftools call`.
+- **`-O u|b` (BCF output) is hard-rejected.** The BCF writer in
+  `pkg/bioformats/bcf` can handle generic records, but mpileup carries
+  custom INFO/I16 typing rules; the wire-up is a follow-up. `-O v`
+  (text VCF) is the default; `-O z` (gzipped VCF) is accepted at the
+  CLI but currently streams text — gzip-wrap-stdout from a follow-up
+  CLI shim will close that gap.
+- **`--threads`, `-v/--verbosity`, `-W/--write-index`, `--no-version`,
+  `-A/--count-orphans`, `-x/--ignore-overlaps`, `-d/--max-depth`,
+  `-q/--min-MQ`, `-Q/--min-BQ`, `--max-bq`** — fully implemented in v1.
+- `-X/--config STR` (presets like `1.12`, `2.1`, `ultima`,
+  `pacbio-ccs-1.20`) — accepted; v1 ignores. Most presets toggle the
+  indel-model knobs which are inert above.
+- `-6/--illumina1.3+` — accepted; v1 ignores (input BAMs are
+  Phred+33 across the board).
+- `-C/--adjust-MQ INT` (MAPQ tail adjustment) — accepted; v1 ignores.
+- The 5-flag mask flags (`--skip-any-unset`, `--skip-all-unset`,
+  `--skip-any-set`, `--skip-all-set`, `--ls`) — accepted and stored;
+  v1 honours only the standard `--ff` defaults (UNMAP, SECONDARY,
+  QCFAIL, DUP, SUPPLEMENTARY) baked into `mpileupKeepRecord`.
+- `--seed`, `--delta-BQ` — accepted; v1 ignores.
 
 Option-tail gaps on `consensus` (this PR, simple-mode):
 

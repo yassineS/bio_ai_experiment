@@ -62,6 +62,16 @@ subcommands. The current implementation ships:
   are tracked in `docs/PARITY_ROADMAP.md`. Output is a VCF with an
   `INFO/BCSQ` tag of the form
   `consequence|gene|transcript|biotype|strand|aa_change|dna_change`.
+- `bcftools mpileup` — per-position genotype likelihoods from BAM
+  input, the upstream input to `bcftools call`. v1 ships the
+  SNP-only, uniform-error binomial likelihood model: each base
+  contributes log10(P(base | g)) for g ∈ {0/0, 0/1, 1/1} based on
+  e = 10^(-Q/10), then sums across reads and emits Phred-scaled
+  `FORMAT/PL`. Reads `pkg/bioformats/sam` for BAM ingestion and
+  `pkg/bioformats/fasta` for the reference. Output is a streaming
+  VCF with `INFO/DP`, `INFO/I16`, and biallelic `FORMAT/PL`. BAQ
+  recalibration, indel calling, and the full MAQ likelihood model
+  are tracked in `docs/PARITY_ROADMAP.md`.
 - `pkg/bioformats/bcf` — reader and writer for the BCF v2.2 binary format.
 
 All pieces share the existing `pkg/bioformats/vcf` types so downstream
