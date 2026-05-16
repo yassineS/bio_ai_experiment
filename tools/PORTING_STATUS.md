@@ -32,7 +32,7 @@ the way.
   PRs #86/#87/#88)
 - **Tools tested**: 25 (package-level tests; `cmd/` entry points have no tests)
 - **Test coverage (statements, `go test -cover`)** — main tools:
-  vcftools ~68%, seqtk ~72%, fastp ~77%, sickle ~82%, **bcftools 85%**,
+  vcftools ~68%, seqtk ~86%, fastp ~77%, sickle ~82%, **bcftools 85%**,
   **tabix 86%**, **samtools 87%**, **bgzip 90%**, prinseq 99.9%,
   skewer 100%, bedmerge 100%, bedintersect 100%
 - **Shared format packages**: `pkg/bioformats/sam` 87% coverage (SAM/BAM
@@ -90,6 +90,13 @@ at 1:1 feature parity (the project goal); see
   `<prefix>.<5-digit>.fa` (literal `.fa` suffix even for FASTQ);
   preserves input format on output
 - `size` - Print `<num_records>\t<total_bases>\n` summary
+- `famask` - Apply a FASTA-format mask to a source FASTA
+  (X=keep, x=soft-mask, else=overwrite); 60-column wrap;
+  byte-parity vs upstream
+- `mergefa` - Merge two FASTA/Q files base-by-base via IUPAC
+  codes; full `-q/-i/-m/-r/-h` upstream flag surface;
+  byte-parity vs upstream for default, `-i`, `-m`, `-h`,
+  and `-q` (FASTQ-quality lowering)
 
 **Test Coverage**: ~79% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
@@ -104,12 +111,12 @@ at 1:1 feature parity (the project goal); see
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- The 17 upstream-equivalent commands above cover seqtk's
+- The 19 upstream-equivalent commands above cover seqtk's
   mutation/compression core plus the BED-emitting scanners (`gap`,
-  `gc`), the paired-end helpers (`mergepe`, `dropse`), and the
-  housekeeping trio (`rename`, `split`, `size`). Smaller misses
-  remain (`listhet`, `fqchk`, `hety`, `famask`, `mergefa`,
-  `hpc-bg`, `kfreq`, `telo`); see
+  `gc`), the paired-end helpers (`mergepe`, `dropse`), the
+  housekeeping trio (`rename`, `split`, `size`), and the FASTA
+  pair-merge utilities (`famask`, `mergefa`). Smaller misses
+  remain (`listhet`, `fqchk`, `hety`, `hpc-bg`, `kfreq`, `telo`); see
   [the seqtk README](seqtk/README.md) for the per-subcommand list.
 - Output format intended to be compatible for the implemented commands
 
