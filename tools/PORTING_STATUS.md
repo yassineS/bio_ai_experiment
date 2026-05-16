@@ -97,6 +97,12 @@ at 1:1 feature parity (the project goal); see
   codes; full `-q/-i/-m/-r/-h` upstream flag surface;
   byte-parity vs upstream for default, `-i`, `-m`, `-h`,
   and `-q` (FASTQ-quality lowering)
+- `fqchk` - Per-position FASTQ base / quality summary; full `-q INT`
+  upstream surface (`-q 0` dumps the per-quality distribution);
+  byte-parity vs upstream for default, `-q 0`, `-q 30`
+- `hety` - Per-window heterozygosity scan over a FASTA; full
+  `-w/-t/-m` upstream surface; byte-parity vs upstream for default,
+  `-w 30`, `-w 30 -t 3`, `-w 30 -m`, and a lowercase fixture
 
 **Test Coverage**: ~79% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
@@ -111,13 +117,14 @@ at 1:1 feature parity (the project goal); see
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- The 19 upstream-equivalent commands above cover seqtk's
+- The 21 upstream-equivalent commands above cover seqtk's
   mutation/compression core plus the BED-emitting scanners (`gap`,
   `gc`), the paired-end helpers (`mergepe`, `dropse`), the
-  housekeeping trio (`rename`, `split`, `size`), and the FASTA
-  pair-merge utilities (`famask`, `mergefa`). Smaller misses
-  remain (`listhet`, `fqchk`, `hety`, `hpc-bg`, `kfreq`, `telo`); see
-  [the seqtk README](seqtk/README.md) for the per-subcommand list.
+  housekeeping trio (`rename`, `split`, `size`), the FASTA pair-merge
+  utilities (`famask`, `mergefa`), and the QC scanners (`fqchk`,
+  `hety`). Smaller misses remain (`listhet`, `hpc-bg`, `kfreq`,
+  `telo`); see [the seqtk README](seqtk/README.md) for the
+  per-subcommand list.
 - Output format intended to be compatible for the implemented commands
 
 ---
