@@ -20,6 +20,8 @@
 //	mutfa      Apply point mutations to a FASTA file
 //	randbase   Randomly resolve IUPAC ambiguity codes
 //	hpc        Homopolymer-compress sequences
+//	hrun       Find homopolymer runs in FASTA, emit BED4
+//	listhet    List heterozygous IUPAC sites in FASTA
 //	gap        Find gap (non-ACGT) regions in FASTA
 //	gc         Find GC-rich (or AT-rich) regions in FASTA
 //	dropse     Drop unpaired reads from an interleaved FASTA/Q
@@ -79,6 +81,10 @@ func main() {
 		randbaseCommand()
 	case "hpc":
 		hpcCommand()
+	case "hrun":
+		hrunCommand()
+	case "listhet":
+		listhetCommand()
 	case "gap":
 		gapCommand()
 	case "gc":
@@ -131,6 +137,8 @@ Commands:
   mutfa      Apply point mutations to a FASTA file from a TSV mutation list
   randbase   Replace IUPAC ambiguity bases with a random expansion
   hpc        Homopolymer-compress sequences (collapse runs of identical bases)
+  hrun       Find homopolymer runs of length >= -l in FASTA, emit BED4
+  listhet    List 2-base IUPAC heterozygous sites in FASTA (name, pos, base)
   gap        Find gap (non-ACGT) regions in FASTA, emit BED3
   gc         Find GC-rich (or AT-rich) regions in FASTA, emit BED4
   dropse     Drop unpaired reads from an interleaved FASTA/Q stream
@@ -162,6 +170,8 @@ Examples:
   seqtk mutfa ref.fa muts.tsv > mutated.fa
   seqtk randbase -s 42 ambig.fa > resolved.fa
   seqtk hpc reads.fa > collapsed.fa
+  seqtk hrun -l 7 genome.fa > runs.bed
+  seqtk listhet ambig.fa > hets.tsv
   seqtk gap -l 10 genome.fa > gaps.bed
   seqtk gc -f 0.7 -l 50 genome.fa > gc_rich.bed
   seqtk dropse interleaved.fq > paired.fq
@@ -1021,6 +1031,148 @@ Examples:
 	defer out.Close()
 
 	if err := seqtk.HPC(input, out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// hrunCommand wires `seqtk hrun`. Upstream surface (seqtk.c:1174-1204) is
+// positional only: `<in.fa> [minLen]`. We expose the minimum-run knob as
+// `-l/--min-len` for project-wide consistency AND still accept the
+// upstream positional form (a second non-flag argument overrides -l).
+func hrunCommand() {
+	fs := flag.NewFlagSet("hrun", flag.ExitOnError)
+	var minLen int
+	var output string
+
+	cliflag.IntVar(fs, &minLen, "l", "min-len", seqtk.DefaultHrunMinLen, "Minimum homopolymer-run length to report")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk hrun [options] <in.fa> [minLen]
+
+Find homopolymer runs in a FASTA file. A "run" is a maximal stretch of
+byte-identical characters (upstream does not case-fold). For every run of
+length >= -l a BED4 record is written to stdout:
+
+  chrom\tstart\tend\tbase (0-based half-open).
+
+Arguments:
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+  [minLen]   Optional positional override of --min-len (upstream form;
+             when present, takes precedence over -l)
+
+Options:
+  -l, --min-len INT      Minimum run length to report (default: %d)
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk hrun genome.fa > runs.bed
+  seqtk hrun -l 10 genome.fa > long_runs.bed
+  seqtk hrun genome.fa 4               # upstream positional form
+  zcat genome.fa.gz | seqtk hrun - 6
+
+`, seqtk.DefaultHrunMinLen)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+	// Upstream's positional form: `seqtk hrun <in.fa> <minLen>`. When a
+	// second positional argument is supplied it overrides -l. We accept
+	// it for parity with the upstream command line.
+	if fs.NArg() >= 2 {
+		var parsed int
+		if _, err := fmt.Sscanf(fs.Arg(1), "%d", &parsed); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid positional minLen %q: %v\n", fs.Arg(1), err)
+			os.Exit(1)
+		}
+		minLen = parsed
+	}
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.Hrun(input, out, seqtk.HrunOptions{MinLen: minLen}); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// listhetCommand wires `seqtk listhet`. Upstream surface
+// (seqtk.c:1004-1029) is positional only: `<in.fa>`. The only flag here
+// is the project-wide `-o/--output` convenience.
+func listhetCommand() {
+	fs := flag.NewFlagSet("listhet", flag.ExitOnError)
+	var output string
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk listhet [options] <in.fa>
+
+List heterozygous IUPAC sites from a FASTA file. For every byte whose
+IUPAC popcount is exactly 2 (R, Y, S, W, K, M and their lowercase
+counterparts) one TSV row is written to stdout:
+
+  name\tpos1based\tbyte
+
+The byte is emitted in its original case. 3-/4-base ambiguity codes
+(B, D, H, V, N, X) and unambiguous bases (A, C, G, T) are skipped.
+
+Arguments:
+  <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
+
+Options:
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk listhet genome.fa > hets.tsv
+  zcat genome.fa.gz | seqtk listhet - > hets.tsv
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	inputFile := fs.Arg(0)
+
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.ListHet(input, out); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

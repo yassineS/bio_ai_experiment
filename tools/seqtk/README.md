@@ -37,6 +37,8 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Per-window heterozygosity scan over a FASTA (`hety`)**
   - **Per-record k-mer (and Hamming-1 neighbour) frequency (`kfreq`)**
   - **Telomeric-repeat scan at FASTA record ends (`telo`)**
+  - **Heterozygous-site listing from FASTA IUPAC codes (`listhet`)**
+  - **Homopolymer run scan, BED4 output (`hrun`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -807,6 +809,89 @@ Options:
 
 - `-o, --output FILE`: Output file for BED rows (default: stdout, supports `.gz`).
   *Go-port convenience.* The stderr summary line is not redirected.
+
+#### 24. List Heterozygous Sites (`listhet`)
+
+Walk a FASTA and emit one TSV row per byte whose IUPAC popcount is
+exactly 2 — i.e. the 2-base ambiguity codes R, Y, S, W, K, M (and
+their lowercase counterparts). Output is:
+
+```text
+name\t<1-based pos>\t<byte>
+```
+
+The byte is emitted in its original case. 3-/4-base IUPAC codes
+(B, D, H, V, N, X) and the unambiguous bases (A, C, G, T) are
+silently skipped, matching upstream `seqtk listhet` byte-for-byte.
+
+```bash
+seqtk listhet ambig.fa > hets.tsv
+zcat genome.fa.gz | seqtk listhet - > hets.tsv
+```
+
+Arguments:
+
+- `<in.fa>`: Input FASTA (use `-` for stdin, supports `.gz`)
+
+Upstream surface: NO flags (positional `<in.fa>` only —
+`reference_code/seqtk/seqtk.c::stk_listhet` does not call `getopt`).
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience.*
+
+#### 25. Homopolymer Run Finder (`hrun`)
+
+For every FASTA record, walk the sequence and emit one BED4 row per
+maximal byte-identical run of length `>= -l`:
+
+```text
+chrom\t<0-based start>\t<0-based end>\t<base>
+```
+
+The comparison is BYTE-EXACT — upstream does NOT case-fold, so
+`AAaa` is reported as two runs of length 2.
+
+Two upstream quirks are reproduced byte-for-byte for parity:
+
+1. The upstream invocation form is positional: `seqtk hrun <in.fa>
+   [minLen]`. The Go port exposes the knob as `-l/--min-len` AND
+   still accepts the positional form (a second non-flag argument
+   overrides `-l`).
+2. The upstream "open trailing run" flush at `seqtk.c:1200` lives
+   OUTSIDE the read-loop, so it fires AT MOST ONCE per input —
+   using the last record's name and the run state left over from
+   it. If the last record is empty, upstream's `ks->seq.s[0]` UB
+   sets `l = 1`, silently swallowing the would-be flush for any
+   `minLen >= 2`. See `tools/seqtk/pkg/seqtk/hrun.go` for the
+   trace.
+
+```bash
+# Default min-run length 7
+seqtk hrun genome.fa > runs.bed
+
+# Stricter threshold via the project-wide -l flag
+seqtk hrun -l 12 genome.fa > long_runs.bed
+
+# Upstream positional form is still accepted
+seqtk hrun genome.fa 4 > runs.bed
+```
+
+Arguments:
+
+- `<in.fa>`: Input FASTA (use `-` for stdin, supports `.gz`)
+- `[minLen]`: Optional positional override of `--min-len`
+
+Upstream surface: no flags (positional `<in.fa> [minLen]` —
+`reference_code/seqtk/seqtk.c::stk_hrun` does not call `getopt`;
+the `min_len` int defaults to 7 at seqtk.c:1178).
+
+Options:
+
+- `-l, --min-len INT`: Minimum run length to report (default: 7)
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience.*
 
 ## Examples
 

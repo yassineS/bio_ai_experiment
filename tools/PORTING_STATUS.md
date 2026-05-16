@@ -63,7 +63,7 @@ at 1:1 feature parity (the project goal); see
 
 ### 1. seqtk
 
-**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md) for gaps  
+**Status**: **1:1 parity with upstream v1.5-r133 (all 24 subcommands)**  
 **Version**: 1.0.0  
 **Original**: C (Heng Li)  
 **Category**: Quality Control / FASTA/Q Processing
@@ -114,6 +114,16 @@ at 1:1 feature parity (the project goal); see
   (matching upstream's split); byte-parity vs upstream on
   `telo_basic.fa` (default, `-m TTAGGG`, `-P -s 0`), `telo_complex.fa`
   (default, `-s 100`, `-p 2 -d 500`), and `telo_edge.fa`
+- `listhet` - List 2-base IUPAC heterozygous sites (R, Y, S, W, K, M
+  and their lowercase counterparts). No upstream flags (positional
+  `<in.fa>`); byte-parity vs upstream on `ambig.fa`, `hety_basic.fa`,
+  `hety_lowercase.fa`, and `small.fa` (no-hets path).
+- `hrun` - Find homopolymer (byte-identical) runs in FASTA, emit BED4
+  (`chrom\tstart\tend\tbase`). Default min-run-length 7. Upstream
+  positional form `<in.fa> [minLen]` accepted alongside `-l/--min-len`.
+  Byte-parity vs upstream on `nruns.fa` (default, `-l 3`, `-l 2`)
+  and `hety_basic.fa` (`-l 4`); reproduces upstream's single-shot
+  trailing-flush bug at `seqtk.c:1200` byte-for-byte.
 
 **Test Coverage**: ~81% of statements (`go test -cover`)  
 **Performance**: ~1.05-1.1x faster than original on the implemented commands  
@@ -128,14 +138,18 @@ at 1:1 feature parity (the project goal); see
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- The 23 upstream-equivalent commands above cover seqtk's
-  mutation/compression core plus the BED-emitting scanners (`gap`,
-  `gc`), the paired-end helpers (`mergepe`, `dropse`), the
-  housekeeping trio (`rename`, `split`, `size`), the FASTA pair-merge
-  utilities (`famask`, `mergefa`), the QC scanners (`fqchk`, `hety`),
-  and now the genome-analysis scanners (`kfreq`, `telo`). Remaining
-  gaps: `listhet`, `hpc-bg`. See
+- All 24 upstream subcommands are now implemented (1:1 parity with
+  v1.5-r133): the mutation/compression core plus the BED-emitting
+  scanners (`gap`, `gc`, `hrun`), the paired-end helpers (`mergepe`,
+  `dropse`), the housekeeping trio (`rename`, `split`, `size`), the
+  FASTA pair-merge utilities (`famask`, `mergefa`), the QC scanners
+  (`fqchk`, `hety`), the genome-analysis scanners (`kfreq`, `telo`),
+  and the per-site dumpers (`listhet`). See
   [the seqtk README](seqtk/README.md) for the per-subcommand list.
+  Earlier roadmap iterations listed `hpc-bg` as a missing subcommand;
+  it does not exist upstream (confirmed by running
+  `reference_code/seqtk/seqtk hpc-bg`, which reports
+  `unrecognized command`).
 - Output format intended to be compatible for the implemented commands
 
 ---
