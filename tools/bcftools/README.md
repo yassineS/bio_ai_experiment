@@ -21,6 +21,21 @@ subcommands. The current implementation ships:
   record (annotate mode), a TSV trio rollup (`-c`), or a filtered
   VCF (`-d`). The X-chromosome mode (`-m x`) treats the father as
   haploid on `X`/`chrX`.
+- `bcftools gtcheck` — sample-identity check by hard-GT Hamming
+  concordance (with `-g panel`). Emits the upstream `tsv`-format
+  `DC` / `INFO` tables.
+- `bcftools roh` — runs-of-autozygosity detection via a 2-state HMM
+  (`HW` / `AZ`) over hard-GT input (`-G/--GTs-only`).
+- `bcftools filter` — soft-filter records by include / exclude
+  expression. Failing records keep their place in the output but
+  have FILTER set to the `-s/--soft-filter NAME` (or appended via
+  `-m +`); optional `-S/--set-GTs .|0` rewrites failing samples'
+  GTs. Supports `-g/--SnpGap` and `-G/--IndelGap` clustering.
+- `bcftools consensus` — apply VCF variants (SNPs + simple indels)
+  to a reference FASTA. Supports `-s/--samples`, `-H/--haplotype`
+  (R/A/I/LR/LA/SR/SA + numeric), `-I/--iupac-codes`, `-m/--mask`
+  with `--mask-with`, `--mark-ins / --mark-snv / --mark-del`,
+  `-p/--prefix`, `-a/--absent`, `-M/--missing`.
 - `pkg/bioformats/bcf` — reader and writer for the BCF v2.2 binary format.
 
 All pieces share the existing `pkg/bioformats/vcf` types so downstream

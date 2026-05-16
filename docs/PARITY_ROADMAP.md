@@ -610,18 +610,17 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
 
-**Status:** 15 of ~30 subcommands (~50%). `view`, `index`, `stats`, `query`,
+**Status:** 19 of ~30 subcommands (~63%). `view`, `index`, `stats`, `query`,
 `concat`, `norm`, `call` (consensus + biallelic multi-allelic), the PR #86
-wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), and
-the convert/mendelian PR: **`convert`** + **`mendelian`**.
+wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), the
+convert/mendelian PR (`convert`, `mendelian`), the gtcheck/roh PR (`gtcheck`,
+`roh`), and the filter/consensus PR: **`filter`** + **`consensus`**.
 
 Missing subcommands (priority order):
 
 - **`mpileup`** — base-level pileup; required upstream input to
   `bcftools call`. Large port.
 - **`csq`** — predict variant consequences against a GFF.
-- **`filter`** — soft-filter records (different from view's hard-filter).
-- **`consensus`** — apply variants to a FASTA.
 - **`mendelian2`** — newer Mendelian-inheritance checker (the v1
   `mendelian` port covers the legacy plugin; `mendelian2` adds
   PED-file ingestion and per-sample error tagging).
@@ -683,6 +682,42 @@ Option-tail gaps on the convert/mendelian PR:
   accepted but currently only the chrX heuristic is honoured; full
   per-contig ploidy override (PAR boundaries, mitochondrial
   haploidy) is a follow-up.
+
+Option-tail gaps on `filter` (this PR, simple-mode):
+
+- `--mask [^]REGION` and `-M/--mask-file [^]FILE` — accepted but
+  hard-rejected at runtime with a roadmap pointer. The CLI parses the
+  flag (so a downstream automation that always passes `-M ""` doesn't
+  break); the underlying BED-driven soft-filter logic is deferred.
+- `--mask-overlap 0|1|2` — accepted; v1 ignores (always treats POS-in-region).
+- `-W/--write-index[=FMT]` — accepted; v1 never auto-indexes outputs.
+- `-v/--verbosity INT` — accepted; v1 ignores.
+- `--regions-overlap` / `--targets-overlap` — accepted; v1 always
+  uses POS-in-region semantics.
+- `-g/--SnpGap INT:TYPE` — the `:TYPE` qualifier (indel|mnp|bnd|other|overlap)
+  is parsed but always treated as "indel" in v1.
+- BCF output (`-O b|u`) round-trips through the shared `pkg/bioformats/bcf`
+  writer; CSI auto-indexing is the `-W` follow-up above.
+
+Option-tail gaps on `consensus` (this PR, simple-mode):
+
+- `-c/--chain FILE` — liftover chain file. Accepted; v1 rejects with a
+  roadmap pointer at runtime.
+- `-H NpIu` — phased-index / unphased-IUPAC encoding. Accepted; v1
+  rejects with a roadmap pointer.
+- `--regions-overlap 0|1|2` — accepted; v1 ignores (no synced-reader
+  region jump path).
+- `-v/--verbosity INT` — accepted; v1 ignores.
+- `-r/-R/-t/-T` — upstream `consensus` does NOT advertise these flags
+  (only `--regions-overlap`); the v1 port follows upstream exactly.
+- Multi-sample apply: `-s LIST` accepts a comma list but v1 honours only
+  the first name (the other entries are silently ignored, mirroring
+  upstream's single-sample focus when -H is unset).
+- Complex MNP and SV (BND, breakend, `<DEL>` etc.) records are not yet
+  applied to the reference. The current v1 covers SNPs and simple
+  REF/ALT length-difference indels.
+- Overlapping variants: first wins (left-to-right). Upstream emits a
+  warning and folds them into a longer ALT; v1 doesn't.
 
 Plus:
 
