@@ -182,15 +182,32 @@ at 1:1 feature parity (the project goal); see
 - Poly-N and poly-A/T tail trimming
 - Duplicate removal
 - Paired-end support
-- Phred+64 encoding support (Illumina 1.3-1.7)
+- Phred+64 encoding support (Illumina 1.3-1.7) — via either
+  `-t illumina` or the upstream alias `--phred64`
 - Bad-sequence output
 - Complexity filtering (DUST and entropy methods)
+- Strict-IUPAC filtering (`--noniupac`)
+- Percentage-N filter (`--ns_max_p`) alongside the count-based
+  `--ns_max_n`
+- Identifier renumbering (`--seq_id <prefix>`) with optional
+  `--seq_id_mappings <file>` TSV (`<orig>\t<new>`)
+- Multi-format output (`--out_format` 1-5; FASTQ → FASTA / QUAL
+  conversion routes the QUAL stream through upstream's
+  `convertQualArrayToString` layout)
 
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- Covers the commonly used PRINSEQ-lite filtering/trimming options; not every
-  upstream option is implemented, and graph/report generation is out of scope
+- Covers the commonly used PRINSEQ-lite filtering/trimming options; the
+  five remaining single-file gaps (`--out_format`, `--seq_id_mappings`,
+  `--ns_max_p`, `--noniupac`, `--phred64`) landed in PR
+  #prinseq-missing-flags. Graph/report generation (`--graph_data` + the
+  upstream `prinseq-graphs.pl`) is out of scope; the Go port provides
+  its own `graph` / `report` subcommands.
+- For `--out_format 2/4/5` the value of `--output` is used as the
+  filename prefix (literal `.fasta` / `.qual` suffixes appended).
+  Streaming multiple files to stdout is refused, matching upstream's
+  check at `prinseq-lite.pl:801-802`.
 - Output format intended to be compatible
 
 ---

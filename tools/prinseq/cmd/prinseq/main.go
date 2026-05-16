@@ -197,6 +197,42 @@ func runFilter(args []string) {
 	cliflag.Float64Var(fs, &maxNsP, "N", "max-ns-percent", 0, "Maximum percentage of Ns allowed")
 	cliflag.IntVar(fs, &maxNsN, "n", "max-ns", 0, "Maximum number of Ns allowed")
 
+	// Upstream-named aliases for the N-filter knobs (single-dash forms
+	// from prinseq-lite.pl). Go's `flag` package treats `-foo` and
+	// `--foo` identically, so registering `ns_max_p` covers both
+	// `-ns_max_p` (upstream POSIX-ish form) and the long `--ns_max_p`.
+	// They alias the same destination as `--max-ns-percent` etc.
+	fs.Float64Var(&maxNsP, "ns_max_p", 0, "")
+	fs.IntVar(&maxNsN, "ns_max_n", 0, "")
+
+	// --noniupac strict-IUPAC filter (upstream prinseq-lite.pl:3478,
+	// `[^ACGTN]/o`).
+	var noniupac bool
+	fs.BoolVar(&noniupac, "noniupac", false, "")
+
+	// --seq_id <prefix> renames headers to "<prefix><counter>" on
+	// records that pass all filters (prinseq-lite.pl:3640-3648).
+	var seqID string
+	fs.StringVar(&seqID, "seq_id", "", "")
+
+	// --seq_id_mappings <file> writes a TSV of original-to-new ids
+	// (prinseq-lite.pl:3646; requires -seq_id).
+	var seqIDMappings string
+	fs.StringVar(&seqIDMappings, "seq_id_mappings", "", "")
+
+	// --out_format INT (1=FASTA, 2=FASTA+QUAL, 3=FASTQ,
+	// 4=FASTQ+FASTA, 5=FASTQ+FASTA+QUAL); see prinseq-lite.pl:242-247
+	// and the mode 1-5 branches at lines 769-789, 1302-1348, 3711-3714.
+	var outFormat int
+	fs.IntVar(&outFormat, "out_format", 0, "")
+
+	// --phred64 is an input-encoding toggle, equivalent to passing
+	// --qual-type illumina (prinseq-lite.pl:230-232, 760-764). We
+	// register it as a bool here for upstream compatibility; it is
+	// translated into opts.QualType below.
+	var phred64 bool
+	fs.BoolVar(&phred64, "phred64", false, "")
+
 	// Trimming options
 	var trimLeft, trimRight, trimLeftP, trimRightP int
 	var trimQualL, trimQualR, trimNsLeft, trimNsRight int
@@ -249,8 +285,17 @@ Filter Options:
   -G, --max-gc FLOAT        Maximum GC content (0-100)
   -q, --min-quality FLOAT   Minimum mean quality score
   -Q, --max-quality FLOAT   Maximum mean quality score
-  -n, --max-ns INT          Maximum number of Ns
-  -N, --max-ns-percent FLOAT Maximum percentage of Ns (0-100)
+  -n, --max-ns INT          Maximum number of Ns (alias: -ns_max_n)
+  -N, --max-ns-percent FLOAT Maximum percentage of Ns (0-100) (alias: -ns_max_p)
+  --noniupac                Filter sequences with bases outside ACGTN
+
+Identifier / Output-format Options:
+  --seq_id PREFIX           Rename passing records to "<PREFIX><N>"
+  --seq_id_mappings FILE    Write "<orig>\t<new>" TSV (requires --seq_id)
+  --out_format INT          1=FASTA, 2=FASTA+QUAL, 3=FASTQ,
+                            4=FASTQ+FASTA, 5=FASTQ+FASTA+QUAL
+  --phred64                 Input FASTQ uses Phred+64 (alias for
+                            -t illumina)
 
 Trimming Options:
   --trim-left INT           Trim bases from 5' end
@@ -355,6 +400,27 @@ Examples:
 		}
 	}
 
+	// --phred64 is an alias for --qual-type illumina (matches upstream
+	// prinseq-lite.pl:230-232). We honour --qual-type as authoritative
+	// if both are set, but otherwise flip the encoding here.
+	if phred64 && qualType == "sanger" {
+		qualType = "illumina"
+	}
+
+	// Validate --seq_id_mappings / --seq_id coupling. Upstream
+	// (prinseq-lite.pl:945-946) prints "option -seq_id_mappings
+	// requires option -seq_id" and exits.
+	if seqIDMappings != "" && seqID == "" {
+		fmt.Fprintln(os.Stderr, "Error: option --seq_id_mappings requires option --seq_id")
+		os.Exit(1)
+	}
+
+	// Validate --out_format range.
+	if outFormat < 0 || outFormat > 5 {
+		fmt.Fprintln(os.Stderr, "Error: --out_format must be an integer between 1 and 5")
+		os.Exit(1)
+	}
+
 	// Set filter options
 	opts := prinseq.FilterOptions{
 		MinLen:        minLen,
@@ -380,6 +446,56 @@ Examples:
 		QualType:      qualType,
 		LcMethod:      lcMethod,
 		LcThreshold:   lcThreshold,
+		NonIUPAC:      noniupac,
+		SeqID:         seqID,
+		OutFormat:     outFormat,
+	}
+
+	// Open the seq_id_mappings TSV writer (when requested). Upstream
+	// truncates the file on each run (open mode ">"), so we use
+	// os.Create here.
+	if seqIDMappings != "" {
+		mapW, err := os.Create(seqIDMappings)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating seq_id_mappings file: %v\n", err)
+			os.Exit(1)
+		}
+		defer mapW.Close()
+		opts.SeqIDMap = mapW
+	}
+
+	// For multi-stream --out_format modes (2, 4, 5) we need additional
+	// output files. Upstream derives them from `-out_good <prefix>`
+	// using `.fasta` and `.qual` suffixes; in this Go port we use the
+	// `--output` value as that prefix when set. If `--output` is unset
+	// (i.e. primary stream goes to stdout), require an explicit
+	// prefix via an extra positional path or fall back to "out".
+	if outFormat == 2 || outFormat == 4 || outFormat == 5 {
+		prefix := output1
+		if prefix == "" {
+			// Upstream raises an error here (line 801-802): you cannot
+			// write multi-file output to STDOUT.
+			fmt.Fprintln(os.Stderr, "Error: --out_format 2/4/5 require --output to provide a filename prefix (cannot stream multiple files to stdout)")
+			os.Exit(1)
+		}
+		if outFormat == 4 || outFormat == 5 {
+			f, err := os.Create(prefix + ".fasta")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating .fasta output: %v\n", err)
+				os.Exit(1)
+			}
+			defer f.Close()
+			opts.FastaOut = f
+		}
+		if outFormat == 2 || outFormat == 5 {
+			f, err := os.Create(prefix + ".qual")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating .qual output: %v\n", err)
+				os.Exit(1)
+			}
+			defer f.Close()
+			opts.QualOut = f
+		}
 	}
 
 	// Open bad output file if specified
