@@ -26,6 +26,9 @@
 //	rename     Rename records (renumber, optional prefix)
 //	split      Split a FASTA/Q into N round-robin output files
 //	size       Print total record count and total sequence length
+//	famask     Apply a FASTA mask to a source FASTA (X = keep, x =
+//	           soft-mask, other = overwrite)
+//	mergefa    Merge two FASTA/FASTQ files base-by-base via IUPAC
 package main
 
 import (
@@ -84,6 +87,10 @@ func main() {
 		splitCommand()
 	case "size":
 		sizeCommand()
+	case "famask":
+		famaskCommand()
+	case "mergefa":
+		mergefaCommand()
 	case "version", "-v", "--version":
 		fmt.Printf("seqtk version %s\n", version)
 	case "help", "-h", "--help":
@@ -118,6 +125,8 @@ Commands:
   rename     Rename records as <prefix><N>; pairs share N
   split      Split input into N round-robin output files <prefix>.NNNNN.fa
   size       Print '<num_records>\t<total_bases>' (upstream summary form)
+  famask     Apply a FASTA mask file to a source FASTA
+  mergefa    Merge two FASTA/FASTQ inputs base-by-base via IUPAC codes
   version    Show version information
   help       Show this help message
 
@@ -143,6 +152,9 @@ Examples:
   seqtk rename reads.fq SAMPLE_ > renamed.fq
   seqtk split  -n 4 part reads.fq      # writes part.00001.fa .. part.00004.fa
   seqtk size   genome.fa               # "<num_records>\t<total_bases>"
+  seqtk famask src.fa mask.fa > out.fa # X=keep, x=soft-mask, else=overwrite
+  seqtk mergefa a.fa b.fa > merged.fa  # IUPAC merge; -i / -m / -h / -r / -q
+                                       # select the merge mode
 
 `)
 }
@@ -1392,6 +1404,200 @@ Examples:
 	defer out.Close()
 
 	if err := seqtk.Size(input, out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func famaskCommand() {
+	fs := flag.NewFlagSet("famask", flag.ExitOnError)
+	var output string
+
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk famask <src.fa> <mask.fa>
+
+Apply a FASTA-format mask to a source FASTA, byte-for-byte:
+
+  mask byte == 'X'   keep the source base unchanged
+  mask byte == 'x'   lowercase the source base (soft-mask)
+  any other byte     overwrite the source base with the mask byte
+
+Records are paired by stream order; name mismatches and length
+mismatches print a warning to stderr (matching upstream) and the
+shorter length is used. Output is FASTA wrapped at 60 bases per line,
+matching upstream "seqtk famask" byte-for-byte.
+
+Upstream surface (verified against reference_code/seqtk/seqtk.c v1.5-r133
+line 872, getopt("")) — the subcommand takes NO flags whatsoever, only
+the two positional inputs. The "-o/--output FILE" option here is the
+project-wide Go-port convenience and does not affect parity.
+
+Arguments:
+  <src.fa>   Source FASTA (use '-' for stdin, supports .gz)
+  <mask.fa>  Mask FASTA  (use '-' for stdin, supports .gz)
+
+Options:
+  -o, --output FILE      Output file (default: stdout, supports .gz)
+
+Examples:
+  seqtk famask genome.fa repeats.fa > masked.fa
+  seqtk famask src.fa.gz mask.fa.gz -o out.fa.gz
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 2 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	srcFile := fs.Arg(0)
+	maskFile := fs.Arg(1)
+
+	if srcFile == "-" && maskFile == "-" {
+		fmt.Fprintf(os.Stderr, "Error: both inputs cannot be stdin ('-')\n")
+		os.Exit(1)
+	}
+
+	src, err := seqtk.OpenInput(srcFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening source FASTA: %v\n", err)
+		os.Exit(1)
+	}
+	defer src.Close()
+
+	mask, err := seqtk.OpenInput(maskFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening mask FASTA: %v\n", err)
+		os.Exit(1)
+	}
+	defer mask.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	if err := seqtk.Famask(src, mask, out); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func mergefaCommand() {
+	fs := flag.NewFlagSet("mergefa", flag.ExitOnError)
+	var quality int
+	var intersect, haploid, mask, randhet bool
+	var output string
+
+	cliflag.IntVar(fs, &quality, "q", "quality", 0, "Quality threshold (PHRED+33; lowercase below this)")
+	cliflag.BoolVar(fs, &intersect, "i", "intersect", false, "Take intersection (c0 & c1)")
+	cliflag.BoolVar(fs, &haploid, "h", "haploid", false, "Suppress hets in the input")
+	cliflag.BoolVar(fs, &mask, "m", "mask", false, "Lowercase when one input is N")
+	cliflag.BoolVar(fs, &randhet, "r", "rand-het", false, "Pick a random allele from het")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: seqtk mergefa [options] <in1.fa> <in2.fa>
+
+Merge two FASTA (or FASTQ) inputs base-by-base. For every paired
+position the two bases are looked up in upstream's seq_nt16 table and
+combined into a single IUPAC code:
+
+  default     OR the two codes (c0 | c1). Het pairs collapse to the
+              matching IUPAC ambiguity code (e.g. A+G -> R, C+T -> Y).
+  -i          intersect: c0 & c1 (no overlap -> 'x').
+  -m          mask: like -i but lowercase whenever either side is N.
+  -r          pick a random allele on hets (uses Go math/rand).
+  -h          haploid: heterozygous merges are lowercased.
+
+Output case encodes confidence: a base is uppercase only when both
+inputs are uppercase (or in the OR-modes when either is). With FASTQ
+input, bases whose PHRED+33 quality is below -q are lowercased before
+merging.
+
+A "[mergefa] (same,diff,hom-het,het-hom,het-het)=(...)" summary is
+written to stderr after the last record, matching upstream
+byte-for-byte.
+
+Upstream surface (verified against reference_code/seqtk/seqtk.c v1.5-r133
+line 767, getopt("himrq:")):
+  -q INT   quality threshold [0]
+  -i       take intersection
+  -m       lowercase when one of the inputs is N
+  -r       pick a random allele from het
+  -h       suppress hets in the input
+
+The "-o/--output FILE" option here is the project-wide Go-port
+convenience and does not affect parity.
+
+Arguments:
+  <in1.fa>   First FASTA/FASTQ  (use '-' for stdin, supports .gz)
+  <in2.fa>   Second FASTA/FASTQ (use '-' for stdin, supports .gz)
+
+Examples:
+  seqtk mergefa a.fa b.fa > merged.fa
+  seqtk mergefa -i a.fa b.fa > intersect.fa
+  seqtk mergefa -q 20 a.fq b.fq > merged.fa
+
+`)
+	}
+
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 2 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	if intersect && mask {
+		fmt.Fprintf(os.Stderr, "Error: -i and -m cannot be applied at the same time\n")
+		os.Exit(1)
+	}
+
+	in1Name := fs.Arg(0)
+	in2Name := fs.Arg(1)
+
+	if in1Name == "-" && in2Name == "-" {
+		fmt.Fprintf(os.Stderr, "Error: both inputs cannot be stdin ('-')\n")
+		os.Exit(1)
+	}
+
+	in1, err := seqtk.OpenInput(in1Name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", in1Name, err)
+		os.Exit(1)
+	}
+	defer in1.Close()
+
+	in2, err := seqtk.OpenInput(in2Name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", in2Name, err)
+		os.Exit(1)
+	}
+	defer in2.Close()
+
+	out, err := seqtk.OpenOutput(output)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	opts := seqtk.MergefaOptions{
+		Quality:   quality,
+		Intersect: intersect,
+		Haploid:   haploid,
+		Mask:      mask,
+		RandHet:   randhet,
+	}
+	if err := seqtk.Mergefa(in1, in2, out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

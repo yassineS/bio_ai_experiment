@@ -71,7 +71,7 @@ closed.
 
 ### `seqtk`
 
-**Status:** 17 of ~22 upstream subcommands. ~77%.
+**Status:** 19 of ~22 upstream subcommands. ~86%.
 
 Missing subcommands (verified against `reference_code/seqtk/seqtk.c::main()`
 dispatch table, v1.5-r133):
@@ -79,14 +79,14 @@ dispatch table, v1.5-r133):
 - `listhet` — extract heterozygous sites from VCF/BCF.
 - `fqchk` — FASTQ quality check report.
 - `hety` — heterozygosity estimator.
-- `famask` — mask FASTA regions.
-- `mergefa` — merge two FASTA files base-by-base.
 - `hpc-bg` — homopolymer-compress with mismatch tolerance.
 - `kfreq` — k-mer frequency analysis.
 - `telo` — find telomeric repeats.
 
-Added this iteration: `rename`, `split`, `size`. All three are
-byte-for-byte parity ports against `reference_code/seqtk` v1.5.
+Added this iteration: `famask`, `mergefa`. Both are byte-for-byte
+parity ports against `reference_code/seqtk` v1.5 (verified by piping
+hand-built fixtures through both the upstream binary and the Go port
+and diffing). The previous iteration added `rename`, `split`, `size`.
 
 The previous list also mentioned `seqshuf`, `gcdc`, and `cnregion` —
 these are NOT upstream subcommands per the dispatch-table audit.
@@ -155,6 +155,21 @@ Option-tail gaps (per existing subcommand):
 - `size` — no upstream flags. Emits a single
   `<num_records>\t<total_bases>\n` line, matching upstream
   byte-for-byte across `small.fa`, `small.fq`, `empty.fa`, `nruns.fa`.
+- `famask` — no upstream flags (`getopt("")` at
+  `reference_code/seqtk/seqtk.c:878`). Output is FASTA wrapped at 60
+  columns; the three mask rules (`X` = keep, `x` = lowercase,
+  anything else = overwrite) are reproduced 1:1 and verified
+  byte-for-byte against `reference_code/seqtk` v1.5 on
+  `famask_simple_*` and `famask_*` fixtures.
+- `mergefa` — full upstream flag surface implemented:
+  `-q INT`, `-i`, `-m`, `-r`, `-h` (`getopt("himrq:")` at
+  `reference_code/seqtk/seqtk.c:774`). FASTA-mode outputs and the
+  stderr `(same,diff,hom-het,het-hom,het-het)` counter line are
+  byte-for-byte against upstream on `mergefa_a.fa`/`mergefa_b.fa`
+  for the default, `-i`, `-m`, `-h`, `-q 20` (FASTQ), and the
+  60-col wrap fixture. The `-r` path uses Go's `math/rand` (seeded
+  with upstream's constant 11 by default); RNG byte-parity is
+  explicitly NOT a goal per the policy in the section above.
 
 **Validation:** no upstream-test-suite run yet.
 

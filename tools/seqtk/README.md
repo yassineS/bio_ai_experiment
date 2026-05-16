@@ -31,6 +31,8 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Rename / renumber records (`rename`)**
   - **Round-robin split into N files (`split`)**
   - **Summary record/base count (`size`)**
+  - **FASTA mask application (`famask`)**
+  - **Base-by-base IUPAC merge of two FASTA/Q files (`mergefa`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -570,6 +572,77 @@ Options:
 
 - `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
   *Go-port convenience — upstream takes no flags.*
+
+#### 18. FASTA Mask (`famask`)
+
+Apply a FASTA-format mask to a source FASTA, byte-for-byte:
+
+- mask byte `X` -> keep the source base unchanged
+- mask byte `x` -> lowercase the source base (soft-mask)
+- any other byte -> overwrite the source base with the mask byte
+
+Output is FASTA wrapped at 60 bases per line, matching upstream
+byte-for-byte. Records are paired by stream order; name and length
+mismatches print a warning to stderr.
+
+```bash
+seqtk famask genome.fa repeats.fa > masked.fa
+seqtk famask src.fa.gz mask.fa.gz -o out.fa.gz
+```
+
+Arguments:
+
+- `<src.fa>`: Source FASTA (use `-` for stdin, supports `.gz`)
+- `<mask.fa>`: Mask FASTA (use `-` for stdin, supports `.gz`)
+
+Options:
+
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience — upstream takes no flags
+  (`getopt("")` at `seqtk.c:878`).*
+
+#### 19. Merge Two FASTA/Q Files Base-by-Base (`mergefa`)
+
+Merge two FASTA (or FASTQ) inputs base-by-base. For every paired
+position the two bases are looked up in upstream's `seq_nt16` table and
+combined into a single IUPAC code. The default behaviour OR-merges the
+codes (A+G -> R, C+T -> Y, ...). Four mode flags select alternative
+merge strategies (`-i`, `-m`, `-h`, `-r`) and `-q INT` lowercases
+low-quality FASTQ bases before merging.
+
+Output case encodes confidence: uppercase only when both inputs are
+uppercase (or in the OR-modes when either is). Output is FASTA wrapped
+at 60 bases per line; a `(same,diff,hom-het,het-hom,het-het)=(...)`
+counter line is written to stderr after the last record.
+
+```bash
+seqtk mergefa a.fa b.fa > merged.fa
+seqtk mergefa -i a.fa b.fa > intersect.fa
+seqtk mergefa -q 20 a.fq b.fq > merged.fa
+```
+
+Arguments:
+
+- `<in1.fa>`: First FASTA/FASTQ (use `-` for stdin, supports `.gz`)
+- `<in2.fa>`: Second FASTA/FASTQ (use `-` for stdin, supports `.gz`)
+
+Options (real upstream flag surface, `getopt("himrq:")` at
+`seqtk.c:774`):
+
+- `-q, --quality INT`: PHRED+33 quality threshold; below this, FASTQ
+  bases are lowercased before merging (default 0)
+- `-i, --intersect`: Take intersection (`c0 & c1`); empty intersection
+  produces `x`
+- `-m, --mask`: Lowercase when one of the inputs is N (otherwise like
+  `-i`)
+- `-r, --rand-het`: Pick a random allele from het positions (uses Go
+  `math/rand`; see `PARITY_ROADMAP.md#rng-policy`)
+- `-h, --haploid`: Suppress hets in the input (lowercases het positions)
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+  *Go-port convenience.*
+
+`-i` and `-m` are mutually exclusive, matching upstream's early-exit
+check.
 
 ## Examples
 
