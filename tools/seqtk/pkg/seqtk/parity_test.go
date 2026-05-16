@@ -402,8 +402,6 @@ func TestParity_Seqtk_Empty_NoCrash(t *testing.T) {
 		{"Randbase", func() error { return Randbase(bytes.NewReader(emptyFA), &bytes.Buffer{}, 7) }},
 		{"Dropse(FASTA)", func() error { return Dropse(bytes.NewReader(emptyFA), &bytes.Buffer{}) }},
 		{"Dropse(FASTQ)", func() error { return Dropse(bytes.NewReader(emptyFQ), &bytes.Buffer{}) }},
-		{"Pair(FASTA)", func() error { return Pair(bytes.NewReader(emptyFA), &bytes.Buffer{}, &bytes.Buffer{}) }},
-		{"Pair(FASTQ)", func() error { return Pair(bytes.NewReader(emptyFQ), &bytes.Buffer{}, &bytes.Buffer{}) }},
 	}
 	for _, s := range subs {
 		if err := s.fn(); err != nil {

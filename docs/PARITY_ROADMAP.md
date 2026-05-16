@@ -71,31 +71,40 @@ closed.
 
 ### `seqtk`
 
-**Status:** 15 of ~20 subcommands. ~75%.
+**Status:** 14 of ~22 upstream subcommands. ~64%.
 
-Missing subcommands:
+Missing subcommands (verified against `reference_code/seqtk/seqtk.c::main()`
+dispatch table, v1.5-r133):
 
 - `listhet` — extract heterozygous sites from VCF/BCF.
 - `fqchk` — FASTQ quality check report.
-- `seqshuf` — shuffle FASTA/Q records.
+- `hety` — heterozygosity estimator.
+- `famask` — mask FASTA regions.
+- `mergefa` — merge two FASTA files base-by-base.
 - `hpc-bg` — homopolymer-compress with mismatch tolerance.
 - `kfreq` — k-mer frequency analysis.
-- `gcdc` — GC depth count.
+- `rename` — rename FASTA/Q records.
+- `split` — split FASTA/Q into N files.
+- `telo` — find telomeric repeats.
+- `size` — report sequence sizes.
 
-Subcommand-style extensions (no upstream equivalent, project-original
-helpers built on top of `mergepe`/`dropse`):
+The previous list also mentioned `seqshuf`, `gcdc`, and `cnregion` —
+these are NOT upstream subcommands per the dispatch-table audit.
+`cnregion` was dropped in PR #112; `seqshuf` and `gcdc` are likewise
+not real entries and should be ignored.
 
-- `pair` — split an interleaved FASTA/FASTQ stream back into two
-  parallel mate files (positional `<in> <out1> <out2>`; no flags).
-  This subcommand has **no upstream surface**: upstream seqtk v1.5
-  has no `pair` subcommand at all (verified against
-  `reference_code/seqtk/seqtk.c::main()` dispatch table — the
-  registered subcommands are `comp`, `fqchk`, `hety`, `gc`, `subseq`,
-  `mutfa`, `mergefa`, `mergepe`, `dropse`, `randbase`, `cutN`, `gap`,
-  `listhet`, `famask`, `trimfq`, `hrun`/`hpc`, `sample`, `seq`,
-  `kfreq`, `rename`, `split`, `telo`, `size`). The previous
-  roadmap entry implying `pair` was a missing upstream subcommand
-  is corrected here.
+Project-extension policy (PR #113): the previous roadmap entry
+implying `pair` was a missing upstream subcommand was wrong —
+upstream seqtk v1.5 has no `pair` subcommand at all (verified
+against `reference_code/seqtk/seqtk.c::main()` dispatch, which
+registers `comp`, `fqchk`, `hety`, `gc`, `subseq`, `mutfa`,
+`mergefa`, `mergepe`, `dropse`, `randbase`, `cutN`, `gap`,
+`listhet`, `famask`, `trimfq`, `hrun`/`hpc`, `sample`, `seq`,
+`kfreq`, `rename`, `split`, `telo`, `size`). Per the 1:1 parity
+mandate (and the `cnregion` precedent from PR #112), project-
+extension subcommands are NOT shipped under existing tool names;
+the project-extension `pair` introduced in the PR #113 first
+commit was dropped before merge.
 
 Bugfixes landed since the 2026-05-14 audit:
 

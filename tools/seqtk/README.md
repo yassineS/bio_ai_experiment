@@ -28,7 +28,6 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Gap-region scan (`gap`)**
   - **GC- and AT-rich region scan (`gc`)**
   - **Drop unpaired reads from interleaved input (`dropse`)**
-  - **Split interleaved input into two mate files (`pair`)** *(project extension; see `docs/PARITY_ROADMAP.md#seqtk`)*
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -467,25 +466,6 @@ Options:
 
 - `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
   *Go-port convenience — upstream takes no flags.*
-
-#### 15. Split Interleaved Input (`pair`)
-
-*Project extension — upstream seqtk has no `pair` subcommand
-(see `docs/PARITY_ROADMAP.md#seqtk`).* Splits an interleaved
-FASTA/FASTQ stream back into two parallel mate files — the inverse
-of `mergepe`. Records at positions 0, 2, 4, ... go to `<out1>` and
-records at positions 1, 3, 5, ... go to `<out2>`, with the original
-format preserved.
-
-```bash
-seqtk pair interleaved.fq r1.fq r2.fq
-seqtk pair interleaved.fa.gz r1.fa.gz r2.fa.gz
-```
-
-Arguments: `<in>`, `<out1>`, `<out2>` (positional only — no flags so
-as not to introduce a non-upstream flag surface). Run `dropse` first
-if your input may contain singletons; otherwise an odd record count
-is reported as an error.
 
 ## Examples
 

@@ -1,7 +1,8 @@
 // dropse.go: port of upstream "seqtk dropse" — read an interleaved
 // FASTA/FASTQ stream and emit only records whose immediate neighbour
-// in the stream has the same name modulo a trailing "/1" or "/2"
-// (digit) suffix. Singletons (records whose neighbour does not match)
+// in the stream has the same name modulo a trailing "/<digit>" suffix
+// (any single digit 0-9, matching upstream's `isdigit` check at
+// seqtk.c:1659). Singletons (records whose neighbour does not match)
 // are silently dropped. This is the inverse of "mergepe" minus any
 // records that have no partner.
 //

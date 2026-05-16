@@ -23,7 +23,6 @@
 //	gap        Find gap (non-ACGT) regions in FASTA
 //	gc         Find GC-rich (or AT-rich) regions in FASTA
 //	dropse     Drop unpaired reads from an interleaved FASTA/Q
-//	pair       Split an interleaved FASTA/Q into two mate files
 package main
 
 import (
@@ -76,8 +75,6 @@ func main() {
 		gcCommand()
 	case "dropse":
 		dropseCommand()
-	case "pair":
-		pairCommand()
 	case "version", "-v", "--version":
 		fmt.Printf("seqtk version %s\n", version)
 	case "help", "-h", "--help":
@@ -109,7 +106,6 @@ Commands:
   gap        Find gap (non-ACGT) regions in FASTA, emit BED3
   gc         Find GC-rich (or AT-rich) regions in FASTA, emit BED4
   dropse     Drop unpaired reads from an interleaved FASTA/Q stream
-  pair       Split an interleaved FASTA/Q stream into two mate files
   version    Show version information
   help       Show this help message
 
@@ -132,7 +128,6 @@ Examples:
   seqtk gap -l 10 genome.fa > gaps.bed
   seqtk gc -f 0.7 -l 50 genome.fa > gc_rich.bed
   seqtk dropse interleaved.fq > paired.fq
-  seqtk pair interleaved.fq r1.fq r2.fq
 
 `)
 }
@@ -1178,81 +1173,6 @@ Examples:
 	defer out.Close()
 
 	if err := seqtk.Dropse(input, out); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func pairCommand() {
-	fs := flag.NewFlagSet("pair", flag.ExitOnError)
-
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: seqtk pair <in.fq> <out1> <out2>
-
-Split an interleaved FASTA/FASTQ stream into two parallel mate files —
-the inverse of "seqtk mergepe". Records at positions 0, 2, 4, ... go
-to <out1> and records at positions 1, 3, 5, ... go to <out2>, with
-the original format preserved.
-
-Note: upstream seqtk v1.5 has no "pair" subcommand (verified against
-reference_code/seqtk/seqtk.c). This subcommand is a project extension
-documented in docs/PARITY_ROADMAP.md#seqtk; it deliberately takes no
-flags so as not to introduce a non-upstream flag surface.
-
-Arguments:
-  <in.fq>    Interleaved input (use '-' for stdin, supports .gz)
-  <out1>     Mate-1 output file (supports .gz; '-' for stdout)
-  <out2>     Mate-2 output file (supports .gz; '-' for stdout)
-
-If the input contains an odd number of records, "pair" exits non-zero
-with a message indicating the trailing unpaired record. Run "dropse"
-first if your input may contain singletons.
-
-Examples:
-  seqtk pair interleaved.fq r1.fq r2.fq
-  seqtk pair interleaved.fq.gz r1.fq.gz r2.fq.gz
-
-`)
-	}
-
-	fs.Parse(os.Args[2:])
-
-	if fs.NArg() < 3 {
-		fs.Usage()
-		os.Exit(1)
-	}
-
-	inputFile := fs.Arg(0)
-	out1Name := fs.Arg(1)
-	out2Name := fs.Arg(2)
-
-	if out1Name == "-" && out2Name == "-" {
-		fmt.Fprintf(os.Stderr, "Error: both outputs cannot be stdout ('-')\n")
-		os.Exit(1)
-	}
-
-	input, err := seqtk.OpenInput(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
-		os.Exit(1)
-	}
-	defer input.Close()
-
-	out1, err := seqtk.OpenOutput(out1Name)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", out1Name, err)
-		os.Exit(1)
-	}
-	defer out1.Close()
-
-	out2, err := seqtk.OpenOutput(out2Name)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", out2Name, err)
-		os.Exit(1)
-	}
-	defer out2.Close()
-
-	if err := seqtk.Pair(input, out1, out2); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
