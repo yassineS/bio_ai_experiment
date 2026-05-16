@@ -25,6 +25,8 @@ A fast and efficient FASTA/Q sequence processor reimplemented in Go. This tool p
   - **Point mutations from a TSV list (`mutfa`)**
   - **Random IUPAC resolution (`randbase`)**
   - **Homopolymer compression (`hpc`)**
+  - **Gap-region scan (`gap`)**
+  - **GC- and AT-rich region scan (`gc`)**
 - **Better Error Handling**: Clear error messages and validation
 - **Cross-platform**: Works on Linux, macOS, and Windows
 
@@ -390,6 +392,60 @@ Options:
 - `-q, --quality INT`: Minimum quality threshold (default: 20)
 - `-6, --phred64`: Use Phred+64 encoding
 - `-o, --output FILE`: Output file
+
+#### 12. Gap Regions (`gap`)
+
+Find gap regions in a FASTA file. A "gap" is a maximal run of non-ACGT bytes
+(case-insensitive), so N's, IUPAC ambiguity codes (R, Y, S, W, K, M, B, D,
+H, V) and any other non-ACGT byte all count — this matches upstream seqtk's
+`seq_nt6_table` definition byte-for-byte. Every gap of length `>= -l` is
+written to stdout as a BED3 record: `chrom\tstart\tend` (0-based half-open).
+
+```bash
+# Default (upstream): min gap length 50
+seqtk gap genome.fa > gaps.bed
+
+# Short gaps too
+seqtk gap -l 10 genome.fa > short_gaps.bed
+
+# Stdin + gzip input
+zcat genome.fa.gz | seqtk gap - > gaps.bed
+```
+
+Options:
+
+- `-l, --min-size INT`: Minimum gap-run length to report (default: 50)
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
+
+#### 13. GC-rich (or AT-rich) Regions (`gc`)
+
+Find GC-rich (or, with `-w`, AT-rich) regions in a FASTA file using upstream
+seqtk's X-dropoff scoring algorithm. The scan is NOT a sliding window: every
+hit base adds `(1 - f) / f` to a running score, every non-hit subtracts 1,
+and a region is closed (and emitted if long enough) when the score either
+drops below zero or falls `-x` below its running maximum.
+
+Output is BED4 (0-based half-open): `chrom\tstart\tend\thits`, where `hits`
+is the number of GC (or AT) positions inside `[start, end)`.
+
+```bash
+# Defaults: -f 0.60 -l 20 -x 10
+seqtk gc genome.fa > gc_rich.bed
+
+# Tighten the threshold and require a longer region
+seqtk gc -f 0.75 -l 100 genome.fa > strong_gc.bed
+
+# AT-rich mode
+seqtk gc -w -f 0.7 genome.fa > at_rich.bed
+```
+
+Options:
+
+- `-w, --at`: Identify high-AT regions instead of high-GC
+- `-f, --min-frac FLOAT`: Min GC/AT fraction (default: 0.60)
+- `-l, --min-length INT`: Min region length to output (default: 20)
+- `-x, --x-dropoff FLOAT`: X-dropoff threshold (default: 10.0)
+- `-o, --output FILE`: Output file (default: stdout, supports `.gz`)
 
 ## Examples
 
