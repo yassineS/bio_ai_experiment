@@ -2,10 +2,14 @@
 //
 // Two strategies are provided:
 //
-//   - DetectAdapterSE: single-end, k-mer-frequency based. Counts the
-//     most common short k-mers near the 3' end of the first
-//     ~adapterDetectSampleSize reads, then extends the leading k-mer
-//     greedily as long as the next base is dominant (>=50% of cases).
+//   - DetectAdapterSE: single-end. Delegates to detectAdapterSEUpstream
+//     in adapter_autodetect.go, which is a verbatim port of upstream
+//     fastp's Evaluator::evalAdapterAndReadNum + checkKnownAdapters +
+//     getAdapterWithSeed + NucleotideTree (reference_code/fastp/src/
+//     evaluator.cpp, nucleotidetree.cpp). Returns "" if fewer than
+//     10000 records are available (the upstream gate at
+//     evaluator.cpp:344) — this matches upstream's "No adapter
+//     detected" exit path byte-for-byte.
 //   - DetectAdapterPE / DetectAdaptersFromPairs: paired-end, overlap based.
 //     Aligns R1's 3' end against the reverse-complement of R2's 5' end with
 //     up to a few mismatches. If a confident overlap is found and R1 has
@@ -17,212 +21,35 @@
 package fastp
 
 import (
-	"sort"
-
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 )
 
 // adapterDetectSampleSize is the maximum number of reads (or pairs) we
 // buffer from the input stream to drive adapter detection. Upstream fastp
-// uses 256k; we use the same.
-const adapterDetectSampleSize = 256 * 1024
+// uses 256k (evaluator.cpp:301); we use the same.
+const adapterDetectSampleSize = adapterDetectReadLimit
 
-// adapterKmerLen is the k-mer size used by DetectAdapterSE. fastp uses 10.
-const adapterKmerLen = 10
-
-// adapterMinExtendCount is the minimum number of supporting observations
-// required to extend a candidate adapter by one more base in
-// DetectAdapterSE.
-const adapterMinExtendCount = 10
-
-// adapterMaxAdapterLen is the maximum length to which a detected adapter
-// will be extended, matching upstream fastp's behavior.
-const adapterMaxAdapterLen = 60
+// peCandidateMinCount is the minimum count a PE-overlap candidate must
+// hit before we'll accept it as the consensus adapter for that pair.
+// This threshold is local to DetectAdaptersFromPairs; the SE path uses
+// upstream's evaluator gates instead.
+const peCandidateMinCount = 10
 
 // DetectAdapterSE detects an adapter sequence from a sample of
-// single-end reads using k-mer frequencies. It scans the 3' portion of
-// each read for k-mers, picks the most common k-mer as a seed, then
-// greedily extends it base-by-base while a single base dominates the
-// next position across all reads where the seed occurs.
+// single-end reads. This is a thin wrapper around
+// detectAdapterSEUpstream which is the verbatim port of upstream
+// fastp's SE adapter auto-detect algorithm (evaluator.cpp:295-526).
 //
 // Returns the detected adapter sequence, or "" if no clear candidate
-// emerges.
+// emerges. The upstream gate at evaluator.cpp:344 short-circuits when
+// fewer than 10000 records are supplied — this is intentional and
+// required for parity (upstream prints "No adapter detected for
+// read1" and proceeds without adapter trimming).
 func DetectAdapterSE(reads []*fastq.Record) string {
 	if len(reads) == 0 {
 		return ""
 	}
-
-	// Step 1: count k-mers seen near the 3' end of reads. We look at
-	// the last quarter of each read (a typical adapter is in the 3' end).
-	type kmerCount struct {
-		seq   string
-		count int
-	}
-	counts := make(map[string]int, 1024)
-	for _, r := range reads {
-		if r == nil {
-			continue
-		}
-		seq := string(r.Sequence)
-		if len(seq) < adapterKmerLen {
-			continue
-		}
-		// Scan the 3' half of the read.
-		start := len(seq) / 2
-		if start < 0 {
-			start = 0
-		}
-		for i := start; i+adapterKmerLen <= len(seq); i++ {
-			k := seq[i : i+adapterKmerLen]
-			// Skip low-complexity / homopolymer k-mers.
-			if isLowComplexityKmer(k) {
-				continue
-			}
-			counts[k]++
-		}
-	}
-	if len(counts) == 0 {
-		return ""
-	}
-
-	// Step 2: pick the top k-mer. Require it to be at least 1% as common
-	// as the dataset is large to avoid noise on tiny inputs.
-	type kc struct {
-		seq   string
-		count int
-	}
-	all := make([]kc, 0, len(counts))
-	for s, c := range counts {
-		all = append(all, kc{s, c})
-	}
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].count != all[j].count {
-			return all[i].count > all[j].count
-		}
-		return all[i].seq < all[j].seq
-	})
-	top := all[0]
-	threshold := len(reads) / 100
-	if threshold < adapterMinExtendCount {
-		threshold = adapterMinExtendCount
-	}
-	if top.count < threshold {
-		return ""
-	}
-
-	// Step 3a: greedy 3' extension. For each read containing the seed,
-	// look at the base immediately following the seed; if one base
-	// dominates with >= 50% support AND count >= adapterMinExtendCount,
-	// append it and continue.
-	adapter := top.seq
-	for len(adapter) < adapterMaxAdapterLen {
-		nextCounts := [5]int{}
-		for _, r := range reads {
-			if r == nil {
-				continue
-			}
-			seq := string(r.Sequence)
-			idx := indexOf(seq, adapter)
-			if idx < 0 {
-				continue
-			}
-			next := idx + len(adapter)
-			if next >= len(seq) {
-				continue
-			}
-			nextCounts[baseIndex(seq[next])]++
-		}
-		best, ok := dominantBase(nextCounts)
-		if !ok {
-			break
-		}
-		adapter += string("ACGT"[best])
-	}
-
-	// Step 3b: greedy 5' extension. The seed may have landed inside the
-	// adapter rather than at its start; walk backward while a base
-	// dominates the preceding position.
-	for len(adapter) < adapterMaxAdapterLen {
-		prevCounts := [5]int{}
-		for _, r := range reads {
-			if r == nil {
-				continue
-			}
-			seq := string(r.Sequence)
-			idx := indexOf(seq, adapter)
-			if idx <= 0 {
-				continue
-			}
-			prevCounts[baseIndex(seq[idx-1])]++
-		}
-		best, ok := dominantBase(prevCounts)
-		if !ok {
-			break
-		}
-		adapter = string("ACGT"[best]) + adapter
-	}
-
-	return adapter
-}
-
-// dominantBase returns the index in "ACGT" of the dominant base from a
-// count vector (with index 4 reserved for N). It requires the dominant
-// base to account for at least 50% of A+C+G+T support and to have at
-// least adapterMinExtendCount observations.
-func dominantBase(counts [5]int) (int, bool) {
-	total := 0
-	best := -1
-	bestCount := 0
-	for i := 0; i < 4; i++ {
-		total += counts[i]
-		if counts[i] > bestCount {
-			bestCount = counts[i]
-			best = i
-		}
-	}
-	if total == 0 || bestCount < adapterMinExtendCount {
-		return -1, false
-	}
-	if float64(bestCount)/float64(total) < 0.5 {
-		return -1, false
-	}
-	return best, true
-}
-
-// isLowComplexityKmer returns true if a k-mer is degenerate (single
-// base run or only two distinct bases dominating). Used to skip noisy
-// seeds during DetectAdapterSE.
-func isLowComplexityKmer(k string) bool {
-	if len(k) == 0 {
-		return true
-	}
-	freq := map[byte]int{}
-	for i := 0; i < len(k); i++ {
-		freq[k[i]]++
-	}
-	if len(freq) < 3 {
-		return true
-	}
-	for _, c := range freq {
-		if c*2 > len(k)*3/2 { // >= 75% one base
-			return true
-		}
-	}
-	return false
-}
-
-// indexOf returns the first index of needle in haystack, or -1.
-func indexOf(haystack, needle string) int {
-	n := len(needle)
-	if n == 0 || n > len(haystack) {
-		return -1
-	}
-	for i := 0; i+n <= len(haystack); i++ {
-		if haystack[i:i+n] == needle {
-			return i
-		}
-	}
-	return -1
+	return detectAdapterSEUpstream(reads)
 }
 
 // DetectAdapterPE detects an adapter sequence from a single paired-end
@@ -336,8 +163,8 @@ func pickConsensus(candidates map[string]int, total int) string {
 		return ""
 	}
 	threshold := total / 100
-	if threshold < adapterMinExtendCount {
-		threshold = adapterMinExtendCount
+	if threshold < peCandidateMinCount {
+		threshold = peCandidateMinCount
 	}
 	// Pick top candidate.
 	bestSeq := ""

@@ -15,10 +15,6 @@ const truseqAdapter = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"
 // secondary control in SE detection.
 const nexteraAdapter = "CTGTCTCTTATACACATCTCCGAGCCCACGAGAC"
 
-// syntheticInsert is a non-low-complexity insert prefix used so the
-// k-mer counter doesn't reject our seed.
-const syntheticInsert = "ACGTGACTCAGCATGACTCAGCATGACTCAGCAT"
-
 func makeSERead(id, seq string, qual byte) *fastq.Record {
 	q := make([]byte, len(seq))
 	for i := range q {
@@ -32,12 +28,14 @@ func makeSERead(id, seq string, qual byte) *fastq.Record {
 }
 
 func TestDetectAdapterSEPicksTruSeq(t *testing.T) {
-	// Build a synthetic dataset: 500 reads, each is a unique-ish insert
-	// followed by the TruSeq adapter. The insert varies so the seed
-	// k-mer can't come from the insert region.
-	reads := make([]*fastq.Record, 0, 500)
-	for i := 0; i < 500; i++ {
-		// Vary the insert by rotating a base pattern.
+	// Build a synthetic dataset: 10000+ reads (upstream gate at
+	// evaluator.cpp:344), each is a unique-ish insert followed by the
+	// TruSeq adapter. The insert varies so the seed kmer can't come
+	// from the insert region. The known-adapters fast path should
+	// match the TruSeq adapter directly.
+	reads := make([]*fastq.Record, 0, 12000)
+	for i := 0; i < 12000; i++ {
+		// Vary the insert deterministically by rotating a base pattern.
 		insert := strings.Repeat("ACGTACGT", 4) + string("ACGT"[i%4])
 		seq := insert + truseqAdapter
 		reads = append(reads, makeSERead("r", seq, 'I'))
@@ -53,27 +51,28 @@ func TestDetectAdapterSEPicksTruSeq(t *testing.T) {
 	}
 }
 
-func TestDetectAdapterSEPicksNextera(t *testing.T) {
-	reads := make([]*fastq.Record, 0, 400)
-	for i := 0; i < 400; i++ {
-		insert := strings.Repeat("ACGTACGT", 3) + string("ACGT"[i%4])
-		seq := insert + nexteraAdapter
+func TestDetectAdapterSEBelowMinRecordsReturnsEmpty(t *testing.T) {
+	// Upstream evaluator.cpp:344 requires records >= 10000 before
+	// detection runs. With fewer reads we must return "" — this is the
+	// exact behavior the case 15 parity test relies on.
+	reads := make([]*fastq.Record, 0, 500)
+	for i := 0; i < 500; i++ {
+		insert := strings.Repeat("ACGTACGT", 4) + string("ACGT"[i%4])
+		seq := insert + truseqAdapter
 		reads = append(reads, makeSERead("r", seq, 'I'))
 	}
-	got := DetectAdapterSE(reads)
-	if got == "" {
-		t.Fatalf("DetectAdapterSE returned empty for Nextera dataset")
-	}
-	if !strings.HasPrefix(nexteraAdapter, got[:min(len(got), 10)]) &&
-		!strings.HasPrefix(got, nexteraAdapter[:min(len(nexteraAdapter), 10)]) {
-		t.Errorf("DetectAdapterSE = %q; expected prefix overlap with %q", got, nexteraAdapter)
+	if got := DetectAdapterSE(reads); got != "" {
+		t.Errorf("DetectAdapterSE with %d reads = %q, want empty (upstream gate is 10000)", len(reads), got)
 	}
 }
 
 func TestDetectAdapterSEReturnsEmptyOnRandomInput(t *testing.T) {
-	reads := make([]*fastq.Record, 0, 100)
+	// Pure-random reads (no embedded adapter) must not produce any of
+	// the canonical adapters. Use 12000 reads to bypass the
+	// min-records gate so detection actually runs.
+	reads := make([]*fastq.Record, 0, 12000)
 	bases := "ACGT"
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 12000; i++ {
 		var sb strings.Builder
 		// Length 60, varying enough to defeat consensus extension.
 		for j := 0; j < 60; j++ {
@@ -81,8 +80,6 @@ func TestDetectAdapterSEReturnsEmptyOnRandomInput(t *testing.T) {
 		}
 		reads = append(reads, makeSERead("r", sb.String(), 'I'))
 	}
-	// We don't strictly require empty (some random consensus may form),
-	// but the detected adapter should not match TruSeq or Nextera.
 	got := DetectAdapterSE(reads)
 	if strings.HasPrefix(got, "AGATCGGAAG") || strings.HasPrefix(got, "CTGTCTCTTA") {
 		t.Errorf("DetectAdapterSE = %q; unexpected real-adapter hit on random input", got)
@@ -95,6 +92,65 @@ func TestDetectAdapterSEEmptyInput(t *testing.T) {
 	}
 	if got := DetectAdapterSE([]*fastq.Record{}); got != "" {
 		t.Errorf("DetectAdapterSE([]) = %q, want empty", got)
+	}
+}
+
+// TestDetectAdapterSEAllSameRead tests the corner case where every
+// read is identical: the kmer histogram has a single high-frequency
+// peak so the dominant-path walk should produce something coherent.
+// Whether it picks a known adapter (from checkKnownAdaptersSE) or a
+// de-novo adapter, the result should be non-empty.
+func TestDetectAdapterSEAllSameRead(t *testing.T) {
+	insert := "ACGTACGTACGTACGTACGTACGTACGT" // 28bp varied
+	seq := insert + truseqAdapter
+	reads := make([]*fastq.Record, 0, 12000)
+	for i := 0; i < 12000; i++ {
+		reads = append(reads, makeSERead("r", seq, 'I'))
+	}
+	got := DetectAdapterSE(reads)
+	if got == "" {
+		t.Fatalf("DetectAdapterSE on all-same TruSeq reads returned empty")
+	}
+}
+
+// TestDetectAdapterSEVeryShortReads tests the corner case where every
+// read is too short for the kmer/seed window: with reads shorter than
+// 20+keylen+shiftTail the kmer histogram loop never fires and we
+// should fall through to an empty return.
+func TestDetectAdapterSEVeryShortReads(t *testing.T) {
+	reads := make([]*fastq.Record, 0, 12000)
+	for i := 0; i < 12000; i++ {
+		reads = append(reads, makeSERead("r", "ACGTACGTAC", 'I'))
+	}
+	if got := DetectAdapterSE(reads); got != "" {
+		t.Errorf("DetectAdapterSE on short reads = %q, want empty", got)
+	}
+}
+
+// TestNucleotideTreeDominantPath mirrors upstream's
+// NucleotideTree::test() at nucleotidetree.cpp:90-104.
+func TestNucleotideTreeDominantPath(t *testing.T) {
+	tree := newNucleotideTree()
+	for i := 0; i < 100; i++ {
+		tree.addSeq("AAAATTTT")
+		tree.addSeq("AAAATTTTGGGG")
+		tree.addSeq("AAAATTTTGGGGCCCC")
+		tree.addSeq("AAAATTTTGGGGCCAA")
+	}
+	tree.addSeq("AAAATTTTGGGACCCC")
+	path, _ := tree.getDominantPath()
+	if path != "AAAATTTTGGGGCC" {
+		t.Errorf("getDominantPath = %q, want %q", path, "AAAATTTTGGGGCC")
+	}
+}
+
+// TestEvaluatorSeq2IntInt2SeqRoundtrip mirrors upstream's
+// Evaluator::test() at evaluator.cpp:615-620.
+func TestEvaluatorSeq2IntInt2SeqRoundtrip(t *testing.T) {
+	s := "ATCGATCGAT"
+	got := evaluatorInt2Seq(uint32(evaluatorSeq2Int(s, 0, 10, -1)), 10)
+	if got != s {
+		t.Errorf("seq2int/int2seq roundtrip on %q = %q", s, got)
 	}
 }
 
@@ -158,28 +214,13 @@ func TestDetectAdaptersFromPairsThreshold(t *testing.T) {
 	}
 }
 
-func TestIsLowComplexityKmer(t *testing.T) {
-	cases := []struct {
-		k    string
-		want bool
-	}{
-		{"AAAAAAAAAA", true},
-		{"ACGTACGTAC", false},
-		{"", true},
-		{"AT", true}, // only two distinct bases
-	}
-	for _, c := range cases {
-		if got := isLowComplexityKmer(c.k); got != c.want {
-			t.Errorf("isLowComplexityKmer(%q) = %v, want %v", c.k, got, c.want)
-		}
-	}
-}
-
 func TestProcessSingleEndDetectAdapterIntegrates(t *testing.T) {
 	// Use DetectAdapterSE option, run ProcessSingleEnd, and verify that
-	// the detected adapter ends up in stats.DetectedAdapter.
+	// the detected adapter ends up in stats.DetectedAdapter. We need
+	// 10000+ reads to exercise the upstream-verbatim detection path
+	// (evaluator.cpp:344).
 	var sb strings.Builder
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 12000; i++ {
 		insert := strings.Repeat("ACGTACGT", 4) + string("ACGT"[i%4])
 		seq := insert + truseqAdapter
 		sb.WriteString("@r\n")

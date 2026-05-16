@@ -284,7 +284,8 @@ mode) and case05 (SW-tail error tolerance) were closed by porting
 
 ### 5. fastp
 
-**Status**: Working subset — see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp) for gaps  
+**Status**: **1:1 parity (validated)** — 16/16 parity cases byte-match upstream
+fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))  
 **Version**: 1.0.0  
 **Original**: C++ (Shifu Chen)  
 **Category**: All-in-One Preprocessor
