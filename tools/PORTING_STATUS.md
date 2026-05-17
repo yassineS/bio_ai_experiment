@@ -423,9 +423,10 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~73 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~75 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
-in the long-tail wave 2 PR)
+in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
+the long-tail wave 3 PR)
 
 **Implemented Commands**:
 

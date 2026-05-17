@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~73 of ~147 options (~50%) after long-tail wave 2.
+**Status:** ~75 of ~147 options (~51%) after long-tail wave 3.
 
 Closed in wave 1:
 
@@ -615,7 +615,7 @@ Closed in wave 1:
 - **INFO selection in recode**: `--keep-INFO TAG`, `--remove-INFO TAG` ✅
 - **INFO extraction**: `--get-INFO TAG[,TAG]` → `.INFO` ✅
 
-Closed in wave 2 (this PR):
+Closed in wave 2:
 
 - **LDhat output formats**: `--ldhat`, `--ldhat-geno` (paired
   `<prefix>.ldhat.sites` / `<prefix>.ldhat.locs`, byte-for-byte vs
@@ -623,13 +623,23 @@ Closed in wave 2 (this PR):
 - **Phased-site filter**: `--phased` (composes with `--ldhat` per
   upstream's `phased_only` invariant) ✅
 
+Closed in wave 3 (this PR):
+
+- **LDhelmet output format**: `--ldhelmet` (paired
+  `<prefix>.ldhelmet.snps` / `<prefix>.ldhelmet.pos`, byte-for-byte vs
+  upstream; implies `--phased` + `--remove-indels` per
+  parameters.cpp:275, requires `--chr` per parameters.cpp:717) ✅
+- **IMPUTE reference-panel output**: `--IMPUTE` (case-sensitive; emits
+  `<prefix>.impute.legend` / `<prefix>.impute.hap` /
+  `<prefix>.impute.hap.indv`, byte-for-byte vs upstream; implies
+  `--phased`, biallelic-only, no missing data per parameters.cpp:255) ✅
+
 Remaining gaps:
 
 - **Mendelian inheritance checks**: `--mendel`.
 - **Diff family extensions**: `--diff-indv-map`, `--diff-discordance-matrix`,
   `--diff-switch-error`, `--gzdiff` (already implicit via iohelper).
-- **Output formats**: missing `--ldhelmet`, `--IMPUTE`, `--phase` output
-  paths.
+- **Output formats**: missing `--phase` output path.
 - **Per-individual output**: the per-individual `.imiss` row layout has
   fields we don't emit (we have `--missing-indv`).
 - **Other**: `--FILTER-PASS-summary`, `--remove-INFO-all` (use
@@ -642,9 +652,11 @@ no `--haploid` flag — the closest thing is `--phased` (parameters.cpp:311
 
 **Validation:** wave 1 adds header byte-for-byte parity tests for the new
 output files; wave 2 ships full byte-for-byte parity tests for both
-`.ldhat.sites` and `.ldhat.locs` against upstream goldens (under
-`tools/vcftools/testdata/parity/`). Full upstream-test-suite run still
-pending.
+`.ldhat.sites` and `.ldhat.locs`; wave 3 adds byte-for-byte parity tests
+for `.ldhelmet.snps` / `.ldhelmet.pos` and the IMPUTE bundle
+(`.impute.legend` / `.impute.hap` / `.impute.hap.indv`) against upstream
+goldens (under `tools/vcftools/testdata/parity/`). Full upstream-test-suite
+run still pending.
 
 Upstream build note for golden generation: vcftools'
 `variant_file_format_convert.cpp` LDhat writers allocate a stack array of
