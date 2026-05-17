@@ -1451,3 +1451,152 @@ func TestSNPHWE_Boundaries(t *testing.T) {
 		})
 	}
 }
+
+// -----------------------------------------------------------------------------
+// --kept-sites / --removed-sites: 2-column (CHROM, POS) trace of which sites
+// pass / fail filtering. Upstream registration: parameters.cpp:268, 330.
+// Implementation: variant_file_output.cpp:4285-4373 (output_kept_sites and
+// output_removed_sites). Each writer emits a `CHROM\tPOS` header and one
+// row per site, in input file order.
+// -----------------------------------------------------------------------------
+
+// TestParity_KeptSites_NoFilter — `--kept-sites` against the 4-site
+// hwe_fixture.vcf with no filtering. Every site survives, so the file is
+// the header plus all four rows in input order.
+func TestParity_KeptSites_NoFilter(t *testing.T) {
+	prefix := runVcftoolsParity(t, "hwe_fixture.vcf", &Params{KeptSites: true})
+	got := readFileBytes(t, prefix+".kept.sites")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "kept_sites_nofilter.expected.kept.sites"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".kept.sites mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_KeptSites_HWE — `--hwe 0.05 --kept-sites` against
+// hwe_fixture.vcf. `--hwe` implies max_alleles = 2 (parameters.cpp:254).
+// Sites 1:100 and 1:400 are in HWE; 1:200 and 1:300 fail the exact test.
+// Golden generated from upstream binary (no LAPACK required).
+func TestParity_KeptSites_HWE(t *testing.T) {
+	prefix := runVcftoolsParity(t, "hwe_fixture.vcf", &Params{
+		MinHWEPvalue: 0.05,
+		MaxAlleles:   2, // upstream parameters.cpp:254 forces this when --hwe is set
+		KeptSites:    true,
+	})
+	got := readFileBytes(t, prefix+".kept.sites")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "kept_sites_hwe.expected.kept.sites"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".kept.sites mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_RemovedSites_HWE — counterpart to TestParity_KeptSites_HWE.
+// The two HWE-failing sites (1:200 and 1:300) appear in
+// .removed.sites; the two HWE-passing sites do not.
+func TestParity_RemovedSites_HWE(t *testing.T) {
+	prefix := runVcftoolsParity(t, "hwe_fixture.vcf", &Params{
+		MinHWEPvalue: 0.05,
+		MaxAlleles:   2,
+		RemovedSites: true,
+	})
+	got := readFileBytes(t, prefix+".removed.sites")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "removed_sites_hwe.expected.removed.sites"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".removed.sites mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_KeptSites_PosFilter — `--from-bp 150 --to-bp 350
+// --kept-sites` on hwe_fixture.vcf. Position filter keeps 1:200 and 1:300;
+// the file lists only those two rows in input order.
+func TestParity_KeptSites_PosFilter(t *testing.T) {
+	prefix := runVcftoolsParity(t, "hwe_fixture.vcf", &Params{
+		Chr:       "1",
+		FromBp:    150,
+		ToBp:      350,
+		KeptSites: true,
+	})
+	got := readFileBytes(t, prefix+".kept.sites")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "kept_sites_pos.expected.kept.sites"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".kept.sites mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_RemovedSites_PosFilter — counterpart of
+// TestParity_KeptSites_PosFilter. The two out-of-range sites (1:100 and
+// 1:400) appear in .removed.sites in input order.
+func TestParity_RemovedSites_PosFilter(t *testing.T) {
+	prefix := runVcftoolsParity(t, "hwe_fixture.vcf", &Params{
+		Chr:          "1",
+		FromBp:       150,
+		ToBp:         350,
+		RemovedSites: true,
+	})
+	got := readFileBytes(t, prefix+".removed.sites")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "removed_sites_pos.expected.removed.sites"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".removed.sites mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestKeptRemoved_Disjoint_And_Complete — sanity-check that --kept-sites
+// and --removed-sites partition the input perfectly: every input site
+// appears in exactly one of the two files, no duplicates, and the union
+// equals the input.
+//
+// Upstream forbids both flags in one invocation (parameters.cpp:685
+// "Only one output function may be called"), so this is a port-only
+// invariant — we deliberately do not replicate that constraint per
+// CLAUDE.md's "don't replicate upstream bugs" rule. The combined
+// invocation is strictly more useful than either alone.
+func TestKeptRemoved_Disjoint_And_Complete(t *testing.T) {
+	prefix := runVcftoolsParity(t, "hwe_fixture.vcf", &Params{
+		MinHWEPvalue: 0.05,
+		MaxAlleles:   2,
+		KeptSites:    true,
+		RemovedSites: true,
+	})
+	kept := readFileLines(t, prefix+".kept.sites")
+	removed := readFileLines(t, prefix+".removed.sites")
+	// Strip headers.
+	if len(kept) == 0 || kept[0] != "CHROM\tPOS" {
+		t.Fatalf(".kept.sites: bad header %q", kept[0])
+	}
+	if len(removed) == 0 || removed[0] != "CHROM\tPOS" {
+		t.Fatalf(".removed.sites: bad header %q", removed[0])
+	}
+	kept = kept[1:]
+	removed = removed[1:]
+	seen := make(map[string]int)
+	for _, s := range kept {
+		seen[s]++
+	}
+	for _, s := range removed {
+		seen[s]++
+	}
+	// 4 input sites, each must appear exactly once across the two files.
+	want := []string{"1\t100", "1\t200", "1\t300", "1\t400"}
+	for _, w := range want {
+		if seen[w] != 1 {
+			t.Errorf("site %q appears %d times (want 1)", w, seen[w])
+		}
+	}
+	if len(seen) != len(want) {
+		t.Errorf("got %d unique sites, want %d", len(seen), len(want))
+	}
+}
+
+// TestKeptRemoved_Disabled_NoFiles — with neither flag set, neither file
+// is created (we don't leak empty `.kept.sites` / `.removed.sites` files).
+func TestKeptRemoved_Disabled_NoFiles(t *testing.T) {
+	prefix := runVcftoolsParity(t, "hwe_fixture.vcf", &Params{
+		MinHWEPvalue: 0.05,
+		MaxAlleles:   2,
+	})
+	if _, err := os.Stat(prefix + ".kept.sites"); !os.IsNotExist(err) {
+		t.Errorf(".kept.sites was created when --kept-sites was not requested")
+	}
+	if _, err := os.Stat(prefix + ".removed.sites"); !os.IsNotExist(err) {
+		t.Errorf(".removed.sites was created when --removed-sites was not requested")
+	}
+}
