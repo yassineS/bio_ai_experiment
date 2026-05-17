@@ -28,9 +28,11 @@ Input Options:
 
 Output Options:
   --out PREFIX          Output filename prefix (default: out)
-  --stdout              Write output to stdout
+  --stdout, -c          Write output to stdout
   --recode              Output a new VCF file after filtering
   --recode-INFO-all     Include all INFO fields in recoded VCF
+  --recode-INFO TAG     Keep this INFO tag in --recode output (repeatable;
+                        upstream-canonical synonym for --keep-INFO)
 
 Position Filtering:
   --chr STRING          Include only this chromosome
@@ -284,6 +286,11 @@ func main() {
 	// Output options
 	outPrefix := flag.String("out", "out", "Output filename prefix")
 	useStdout := flag.Bool("stdout", false, "Write to stdout")
+	// -c is upstream's short alias for --stdout (parameters.cpp:194).
+	// Wired to the same boolean so either spelling toggles streaming
+	// output. Upstream's logic is `stream_out = true` from either flag;
+	// last-set wins which is the implicit behaviour of flag.BoolVar.
+	flag.BoolVar(useStdout, "c", false, "Write to stdout (short alias for --stdout)")
 	recode := flag.Bool("recode", false, "Output a new VCF file")
 	recodeInfoAll := flag.Bool("recode-INFO-all", false, "Include all INFO fields in recode")
 
@@ -498,8 +505,26 @@ func main() {
 	// upstream; --get-INFO is upstream-repeatable too. We accept either
 	// repeated single-tag invocations or one comma-separated value, joined
 	// with commas in the same order seen on the command line.
+	//
+	// --recode-INFO TAG is wired here as a repeatable alias for the
+	// port's --keep-INFO so output-INFO restriction can be requested
+	// under the upstream-canonical flag name (parameters.cpp:319 stores
+	// into `recode_INFO_to_keep`). Upstream actually distinguishes
+	// `--recode-INFO` (recode-time INFO-column selector) from
+	// `--keep-INFO` (which is a SITE filter dropping records without the
+	// named INFO key — parameters.cpp:266 → site_INFO_flags_to_keep →
+	// entry_filters.cpp:44). The Go port has long mapped the recode-INFO
+	// semantic to its `--keep-INFO` flag (see Params.KeepINFO doc-comment
+	// and tools/vcftools/FEATURE_COMPARISON.md:248); rather than rework
+	// that established behaviour here, we add the canonical
+	// `--recode-INFO` spelling as an alias and track the residual
+	// site-filter semantic gap in docs/PARITY_ROADMAP.md.
 	var keepINFOParts, removeINFOParts, getINFOParts []string
 	flag.Func("keep-INFO", "INFO tag to keep in --recode output (repeatable)", func(s string) error {
+		keepINFOParts = append(keepINFOParts, s)
+		return nil
+	})
+	flag.Func("recode-INFO", "INFO tag to keep in --recode output (repeatable; upstream-canonical synonym for --keep-INFO)", func(s string) error {
 		keepINFOParts = append(keepINFOParts, s)
 		return nil
 	})

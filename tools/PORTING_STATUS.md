@@ -423,17 +423,22 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~109 of ~147 options
-(LD analysis landed in PR #47; LDhat output formats + `--phased` landed
-in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
-the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
-landed in the long-tail wave 4 PR; `--diff-switch-error` + `--mendel`
-landed in the long-tail wave 5 PR; `--non-ref-af` + `--non-ref-ac`
-landed in the long-tail wave 6 PR; `--max-non-ref-af`, `--max-non-ref-ac`,
-and the `*-any` counterparts landed in the long-tail wave 7 PR;
-`--hwe` + `--max-missing-count` landed in the long-tail wave 8 PR with
-the `--pca` family deferred — see PARITY_ROADMAP.md#vcftools for the
-PCA re-attempt scope; `--kept-sites` + `--removed-sites` landed in the
+**Status**: **142 of 146 unique upstream long flags (~97%)**; after
+wave 16 the remaining long-flag gap is 4 BCF-binary I/O flags
+(`--bcf`, `--diff-bcf`, `--recode-bcf`, `--contigs`), all HEAVY and
+blocked on BCF binary reader/writer. The PCA trio is CLI-registered
+with a deferred-error shim (LAPACK blocker; wave 8 documented the
+re-attempt criteria). LD analysis landed in PR #47;
+LDhat output formats + `--phased` landed in the long-tail wave 2 PR;
+LDhelmet + IMPUTE output formats landed in the long-tail wave 3 PR;
+`--diff-indv-map` + `--diff-discordance-matrix` landed in the
+long-tail wave 4 PR; `--diff-switch-error` + `--mendel` landed in the
+long-tail wave 5 PR; `--non-ref-af` + `--non-ref-ac` landed in the
+long-tail wave 6 PR; `--max-non-ref-af`, `--max-non-ref-ac`, and the
+`*-any` counterparts landed in the long-tail wave 7 PR; `--hwe` +
+`--max-missing-count` landed in the long-tail wave 8 PR with the
+`--pca` family deferred — see PARITY_ROADMAP.md#vcftools for the PCA
+re-attempt scope; `--kept-sites` + `--removed-sites` landed in the
 long-tail wave 9 PR; `--remove-filtered-geno`,
 `--remove-filtered-geno-all`, `--max-indv`, `--keep-INFO-all`, and
 `--version` landed in the long-tail wave 10 PR; `--mask`,
@@ -444,10 +449,13 @@ the long-tail wave 13 PR; `--indv-burden`, `--indv-freq-burden`, and
 `--indv-freq-burden2` landed in the long-tail wave 14 PR; `--hapcount`,
 `--temp`, and `--gzdiff` landed in the long-tail wave 15 PR with three
 upstream `--hapcount` bugs fixed on port — see
-`docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the writeup. After
-wave 15 the only remaining gaps are the BCF-binary family
-(`--bcf`/`--diff-bcf`/`--recode-bcf`/`--contigs`) and the PCA family
-above.)
+`docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the writeup; the
+upstream-canonical `--recode-INFO TAG` (synonym for the port's
+existing `--keep-INFO`) and the `-c` short alias for `--stdout`
+landed in long-tail wave 16. After wave 16 the only remaining gaps
+are the BCF-binary family (`--bcf` / `--diff-bcf` / `--recode-bcf` /
+`--contigs`) and the PCA family, all HEAVY; the long-flag long-tail
+sequence is now effectively exhausted.
 
 **Implemented Commands**:
 

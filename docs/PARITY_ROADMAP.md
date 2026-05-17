@@ -602,7 +602,17 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~109 of ~147 options (~74%) after long-tail wave 15.
+**Status:** **142 of 146 unique upstream long flags (~97%)** after
+long-tail wave 16. A complete `in_str ==` enumeration of
+`parameters.cpp` finds 146 distinct upstream long flags. The port
+registers all of them EXCEPT four BCF-binary I/O flags: `--bcf`,
+`--diff-bcf`, `--recode-bcf`, `--contigs` (the last is BCF-header-
+only and meaningless without `--bcf`). The PCA trio
+(`--pca`/`--pca-no-norm`/`--pca-snp-loadings`) IS CLI-registered with
+a deferred-error shim (LAPACK blocker documented in wave 8). The
+remaining 4 missing flags are all HEAVY — blocked on BCF binary I/O
+infrastructure. Earlier wave-16 prose claiming "111/146" was a
+count error (the wave-16 PR review caught and corrected it).
 
 Closed in wave 1:
 
@@ -1120,19 +1130,80 @@ Closed in wave 15 (this PR):
   semantics parameters.cpp:209 vs :237). Pinned by
   `TestGzdiffAliasesDiff`. ✅
 
-Remaining gaps:
+Closed in wave 16 (this PR):
 
-- **BCF-binary family** — `--bcf`, `--diff-bcf`, `--recode-bcf`,
-  `--contigs` (BCF-conversion only). Deferred until the BCF reader
-  lands.
+- **`--recode-INFO TAG`** — upstream-canonical name for the repeatable
+  recode-INFO-column selector (parameters.cpp:319 →
+  `recode_INFO_to_keep.insert(...)`). The port already implemented
+  this semantic under the `--keep-INFO TAG` flag name; wave 16 adds
+  the canonical spelling as a synonym that funnels into the same
+  `keepINFOParts` slice in `tools/vcftools/cmd/vcftools/main.go`,
+  matching the existing `--keep-INFO-all` ↔ `--recode-INFO-all`
+  pattern. Pinned by `TestCLI_RecodeINFOAlias`,
+  `TestCLI_RecodeINFOAlias_Repeatable`, and
+  `TestCLI_RecodeINFOAlias_MixedWithKeepINFO` in
+  `tools/vcftools/cmd/vcftools/aliases_cli_test.go`. ✅
+- **`-c`** — upstream's short alias for `--stdout`
+  (parameters.cpp:194). Wired with `flag.BoolVar` pointing at the
+  same `useStdout` bool, so either spelling toggles streaming
+  output. Pinned by `TestCLI_ShortStdoutFlag`. ✅
+
+Wave 16 also enumerated the FULL upstream long-flag table for the
+first time (146 distinct flags). Two flags were initially flagged as
+gaps by an earlier wave's regex but actually exist in the port under
+non-obvious wiring: `--help` (registered via `flag.BoolVar(help, "help"
+…)`, not `flag.Bool("help", …)`). The remaining-gap set below is the
+definitive list.
+
+Note on the **`--keep-INFO` semantic gap**: upstream's `--keep-INFO`
+(parameters.cpp:266 → `site_INFO_flags_to_keep` →
+`entry_filters.cpp:44`) is a SITE FILTER — it drops records that do
+not list the named INFO key. The Go port has long mapped this flag
+name onto the **recode-INFO-column selector** semantic instead (see
+`Params.KeepINFO` and `tools/vcftools/FEATURE_COMPARISON.md:248`).
+Wave 16 surfaces the canonical `--recode-INFO` spelling alongside;
+swapping the port's `--keep-INFO` semantics to the upstream-site-filter
+meaning would be a breaking behaviour change with its own goldens
+churn and is tracked as a follow-up, not blocking on infrastructure.
+
+Remaining gaps (definitive enumeration vs.
+`reference_code/vcftools/src/cpp/parameters.cpp` — wave 16):
+
+The complete diff between upstream's `in_str == "--…"` table (146
+unique long flags) and the port's registered flags is **five flags**:
+
+- **`--bcf` FILE** — BCF binary input (parameters.cpp:173). **HEAVY**:
+  requires a BCF reader.
+- **`--diff-bcf` FILE** — second-file BCF input for `--diff-*`
+  family (parameters.cpp:210). **HEAVY**: requires the BCF reader.
+- **`--recode-bcf`** — emit BCF instead of VCF (parameters.cpp:317).
+  **HEAVY**: requires a BCF writer.
+- **`--contigs` FILE** — supplemental `##contig=` lines for BCF
+  header construction (parameters.cpp:197 →
+  `variant_file.cpp:45-69`). **HEAVY** by association: only consulted
+  during BCF conversion (`vcf_file.cpp:154`), so meaningless without
+  the BCF I/O layer.
 - **PCA family** (`--pca`, `--pca-no-norm`, `--pca-snp-loadings`) —
-  DEFERRED, see the wave-8 PCA-deferred block above.
+  already CLI-registered with a deferred-error shim. **HEAVY**:
+  requires LAPACK or an in-tree eigensolver. See the wave-8
+  PCA-deferred block above for the full deferral note.
+
+All five remaining gaps are HEAVY. There are **NO tractable long-flag
+gaps left** for this tool's `parameters.cpp` surface; the long-tail
+wave sequence is effectively exhausted until either the BCF binary
+infrastructure or the LAPACK eigensolver lands.
+
+Other (per-output column-set gaps, not flag-count gaps):
+
 - **Per-individual output**: the per-individual `.imiss` row layout
   still has fields we don't emit (we have `--missing-indv`).
 - **Diff family**: per-site / per-indv discordance outputs
   (`--diff-site-discordance`, `--diff-indv-discordance`) still emit a
   simpler column set than upstream's richer `.diff.sites` /
   `.diff.indv` schemas — see `variant_file_diff.cpp:635` for the gap.
+- **`--keep-INFO` semantic** — see the per-wave-16 note above; flag
+  is wired with the wrong semantic vs. upstream, tracked as a
+  semantic-swap follow-up.
 - **Other**: small-format columns gaps tracked in
   `tools/PORTING_STATUS.md`.
 
