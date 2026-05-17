@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~101 of ~147 options (~69%) after long-tail wave 12.
+**Status:** ~103 of ~147 options (~70%) after long-tail wave 13.
 
 Closed in wave 1:
 
@@ -935,6 +935,60 @@ Implementation notes (wave 12):
   (`includePos` → `excludePos` → `includePosOverlap` →
   `excludePosOverlap` → BED → variant-type → frequency / quality /
   HWE / etc.).
+
+Closed in wave 13 (this PR):
+
+- **`--derived`** — when combined with `--freq` / `--counts`, reorder
+  the allele columns so that the ancestral allele (INFO/AA,
+  case-insensitive) appears first; drop sites where AA is missing,
+  `.`, `?`, or does not match REF/ALT. Mirrors upstream
+  `parameters.cpp:201` + `variant_file_output.cpp:67-159`
+  (`output_frequency`, the `derived` branch). Implementation lives in
+  `addFrequencyStat` (new `derivedSwap` flag on `siteFreqStat`) and
+  the existing `outputFrequency` reorder loop. Multi-allelic sites
+  are already dropped by our biallelic-only `--freq` restriction, so
+  `--derived` only affects the biallelic subset (matches the subset
+  this port emits at all under `--freq`/`--counts`). ✅
+- **`--extract-FORMAT-info NAME`** — extract a per-genotype FORMAT
+  field across all kept samples into a tab-separated
+  `<prefix>.<NAME>.FORMAT` file. Header is `CHROM\tPOS\t<sample>...`;
+  one data row per site whose FORMAT column lists NAME (sites lacking
+  NAME in FORMAT are skipped entirely, matching upstream's
+  `FORMAT_id_exists` gate). Samples whose colon-separated value
+  vector is too short to reach NAME's index emit `.` (matches
+  `vcf_entry.cpp:618` + the early `break` at line 637). Ported from
+  upstream `parameters.cpp:222` +
+  `variant_file_format_convert.cpp:1204-1263`
+  (`output_FORMAT_information`). Single-valued upstream (the last
+  value wins on the CLI). ✅
+
+Implementation notes (wave 13):
+
+- `--derived` is a *modifier*, not an output: it only takes effect
+  when paired with `--freq` or `--counts`. Pinned by
+  `TestDerived_NoFreqIsNoOp`. Upstream's
+  `parameters.cpp:201` only flips a boolean; the reorder logic lives
+  inside `output_frequency` (the boolean is also consumed by
+  `output_indv_burden` and `output_indv_freq_burden`, but those two
+  outputs are tracked in the "burden bucket" of unimplemented flags
+  and `--derived` is a no-op for them in this port too).
+- AA uppercasing — upstream calls
+  `std::transform(AA.begin(), AA.end(), AA.begin(), ::toupper)` on
+  line 78 / 439 / 564 before comparing against `e->get_allele(ui)`.
+  We replicate this with `strings.ToUpper` on both AA and REF/ALT so
+  `AA=a, REF=A` matches as expected. The case-insensitive match is
+  pinned by the 1:400 site in `derived_fixture.vcf`.
+- AA sentinels — upstream's `if ((AA == "?") || (AA == "."))` check
+  appears at lines 79 / 440 / 565. We mirror it explicitly (empty,
+  ".", "?"). Pinned by sites 1:500 / 2:100 in the same fixture.
+- `--extract-FORMAT-info` shares its FORMAT-tag presence helper
+  (`formatContains`) with the BEAGLE writer (declared once in
+  `beagle.go`).
+- The Go VCF parser only populates `sample.Data[key]` for keys whose
+  colon-token slot exists in the per-sample string; absent slots
+  therefore read back as missing-from-map. We treat that as upstream's
+  "value vector too short → '.'" case (vcf_entry.cpp:618-637). Pinned
+  by sites 1:100/S3, 1:400/S2 in `extract_format_fixture.vcf`.
 
 **PCA family deferred** (`--pca`, `--pca-no-norm`,
 `--pca-snp-loadings INT`; upstream `parameters.cpp:308-310`,

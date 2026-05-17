@@ -388,6 +388,28 @@ type Params struct {
 	// `CHROM\tPOS`; rows appear in input order. With no filters set,
 	// the file contains only the header (every site is kept).
 	RemovedSites bool
+
+	// Derived enables --derived: when --freq / --counts is active, the
+	// allele columns in <prefix>.frq / <prefix>.frq.count are reordered
+	// so the ancestral allele (INFO/AA, case-insensitive) appears first.
+	// Sites where AA is missing, ".", "?", or does not match REF/ALT are
+	// dropped (upstream prints a one-off warning and continues). Mirrors
+	// upstream parameters.cpp:201 + variant_file_output.cpp:67-159
+	// (output_frequency). Multi-allelic sites are already dropped by our
+	// existing --freq biallelic restriction, so --derived only affects
+	// the biallelic subset (matches the subset the port emits at all).
+	Derived bool
+
+	// ExtractFormatInfo names the FORMAT field to extract per-genotype
+	// across all kept samples, writing a tab-separated file
+	// `<prefix>.<NAME>.FORMAT`. Sites whose FORMAT column does not list
+	// NAME are skipped. For samples whose colon-separated value vector
+	// is too short to contain NAME, a literal "." is emitted (matches
+	// upstream `read_indv_generic_entry` in vcf_entry.cpp:610-639).
+	// Ported from upstream parameters.cpp:222 +
+	// variant_file_format_convert.cpp:1204-1263
+	// (output_FORMAT_information).
+	ExtractFormatInfo string
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -595,6 +617,18 @@ func Run(input io.Reader, params *Params) error {
 		getInfo, err = newGetInfoRunner(params.OutPrefix, tags)
 		if err != nil {
 			return fmt.Errorf("initialising --get-INFO: %w", err)
+		}
+	}
+
+	// --extract-FORMAT-info NAME writer (one file per requested tag).
+	// Upstream's `output_FORMAT_information` is a per-FORMAT-name TSV;
+	// the flag is single-valued, so we only need one runner. See
+	// extract_format.go for the row-emission rules.
+	var extractFmt *extractFormatRunner
+	if params.ExtractFormatInfo != "" {
+		extractFmt, err = newExtractFormatRunner(params.OutPrefix, params.ExtractFormatInfo, filteredHeader.Samples)
+		if err != nil {
+			return fmt.Errorf("initialising --extract-FORMAT-info: %w", err)
 		}
 	}
 
@@ -844,6 +878,13 @@ func Run(input io.Reader, params *Params) error {
 			}
 		}
 
+		// Per-variant FORMAT extraction (--extract-FORMAT-info NAME).
+		if extractFmt != nil {
+			if err := extractFmt.addVariant(filteredVariant); err != nil {
+				return fmt.Errorf("writing --extract-FORMAT-info output: %w", err)
+			}
+		}
+
 		// LDhat buffer (biallelic-only filtering is applied inside).
 		if ldhat != nil {
 			ldhat.addVariant(filteredVariant)
@@ -987,6 +1028,11 @@ func Run(input io.Reader, params *Params) error {
 	// --get-INFO output.
 	if err := getInfo.close(); err != nil {
 		return fmt.Errorf("closing --get-INFO output: %w", err)
+	}
+
+	// --extract-FORMAT-info output.
+	if err := extractFmt.close(); err != nil {
+		return fmt.Errorf("closing --extract-FORMAT-info output: %w", err)
 	}
 
 	// --ldhat / --ldhat-geno output.

@@ -85,6 +85,12 @@ type siteFreqStat struct {
 	altFreq   float64
 	refCount  int
 	altCount  int
+	// derivedSwap is set when --derived was requested AND the site's
+	// ancestral allele (INFO/AA, case-insensitive) matched the ALT
+	// allele. In that case the output puts ALT before REF so that the
+	// first column is always the ancestral allele. Mirrors upstream
+	// variant_file_output.cpp:67-101 (the `aa_idx` reorder loop).
+	derivedSwap bool
 }
 
 type siteDepthStat struct {
@@ -229,7 +235,7 @@ func newStatistics(header *vcf.Header) *statistics {
 func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 	// Allele frequency
 	if params.Freq || params.Counts {
-		s.addFrequencyStat(v)
+		s.addFrequencyStat(v, params.Derived)
 	}
 
 	// Site depth
@@ -326,8 +332,13 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 	}
 }
 
-// addFrequencyStat adds allele frequency statistics
-func (s *statistics) addFrequencyStat(v *vcf.Variant) {
+// addFrequencyStat adds allele frequency statistics. When `derived` is
+// true, the site's INFO/AA tag is consulted and the entry is dropped if
+// (a) AA is missing/`.`/`?`, or (b) AA does not match REF or ALT (case-
+// insensitive). When AA matches ALT the row is recorded with
+// derivedSwap=true so outputFrequency emits ALT before REF, matching the
+// reorder upstream applies via `aa_idx` (variant_file_output.cpp:67-101).
+func (s *statistics) addFrequencyStat(v *vcf.Variant, derived bool) {
 	if len(v.Samples) == 0 {
 		return
 	}
@@ -377,6 +388,32 @@ func (s *statistics) addFrequencyStat(v *vcf.Variant) {
 		altCount:  altCount,
 		refFreq:   float64(refCount) / float64(totalAlleles),
 		altFreq:   float64(altCount) / float64(totalAlleles),
+	}
+
+	if derived {
+		// Upstream uppercases INFO/AA before comparing
+		// (variant_file_output.cpp:78). Sites with AA missing, ".",
+		// "?", or AA that does not match any allele are skipped (the
+		// `continue` branches at lines 81 and 97). For our biallelic
+		// fast path that means REF or ALT (upper-cased), otherwise
+		// drop the row.
+		aa, ok := v.Info["AA"]
+		if !ok || aa == "" || aa == "." || aa == "?" {
+			return
+		}
+		aaUp := strings.ToUpper(aa)
+		refUp := strings.ToUpper(v.Ref)
+		altUp := strings.ToUpper(v.Alt[0])
+		switch aaUp {
+		case refUp:
+			// AA == REF: no reorder.
+		case altUp:
+			stat.derivedSwap = true
+		default:
+			// AA does not match any allele: upstream emits a
+			// one-off warning and drops the site.
+			return
+		}
 	}
 
 	s.siteFrequencies = append(s.siteFrequencies, stat)
@@ -969,18 +1006,30 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{ALLELE:FREQ}")
 	}
 
-	// Data
+	// Data. When --derived was supplied and the site's ancestral allele
+	// matched ALT (derivedSwap=true), the row prints ALT first so that
+	// the leading column is always the ancestral (derived columns
+	// follow), matching upstream's `aa_idx`-keyed loop in
+	// variant_file_output.cpp:107-159.
 	for _, stat := range s.siteFrequencies {
+		firstAllele, secondAllele := stat.refAllele, stat.altAllele
+		firstCount, secondCount := stat.refCount, stat.altCount
+		firstFreq, secondFreq := stat.refFreq, stat.altFreq
+		if stat.derivedSwap {
+			firstAllele, secondAllele = stat.altAllele, stat.refAllele
+			firstCount, secondCount = stat.altCount, stat.refCount
+			firstFreq, secondFreq = stat.altFreq, stat.refFreq
+		}
 		if counts {
 			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%d\t%s:%d\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
-				stat.refAllele, stat.refCount,
-				stat.altAllele, stat.altCount)
+				firstAllele, firstCount,
+				secondAllele, secondCount)
 		} else {
 			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%.6f\t%s:%.6f\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
-				stat.refAllele, stat.refFreq,
-				stat.altAllele, stat.altFreq)
+				firstAllele, firstFreq,
+				secondAllele, secondFreq)
 		}
 	}
 
