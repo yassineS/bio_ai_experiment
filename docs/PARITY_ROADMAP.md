@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~91 of ~147 options (~62%) after long-tail wave 9.
+**Status:** ~96 of ~147 options (~65%) after long-tail wave 10.
 
 Closed in wave 1:
 
@@ -794,6 +794,66 @@ filter loop of `vcftools.go:Run` now calls
 and the successful path calls `siteTracker.recordKept(chrom, pos)` just
 before `keptSites++`. Both methods are no-ops when the corresponding
 flag is not set (cheap nil-check on the bufio.Writer).
+
+Closed in wave 10 (this PR):
+
+- **`--remove-filtered-geno-all`** — sets GT to `./.` for every kept
+  genotype whose FORMAT FT field is not "PASS" or ".". Ported from
+  upstream `parameters.cpp:323` + `vcf_entry.cpp:580-608`
+  (`filter_genotypes_by_filter_status` with `remove_all=true`). Only
+  the GT slot is rewritten; other FORMAT fields (FT/DP/GQ/...) pass
+  through unchanged, matching upstream's recode emission at
+  `vcf_entry.cpp:320-368`. Sites with no FT FORMAT column are
+  left untouched (mirrors upstream's early-return at
+  `entry_filters.cpp:94-108`). Pinned by
+  `TestParity_RemoveFilteredGenoAll` (byte-for-byte vs upstream on the
+  new `ft_geno.vcf` fixture) and `TestRemoveFilteredGeno_NoFT_NoOp`
+  (port-only invariant against `sample.vcf`, which has no FT column). ✅
+- **`--remove-filtered-geno NAME`** (repeatable) — drops a genotype
+  whose FT lists any of the named flags. Ported from
+  `parameters.cpp:324` + `vcf_entry.cpp:601-605`. FT is parsed as a
+  `;`-separated list per upstream's `vcf_entry_setters.cpp:188-212`
+  (entries equal to "" or "." are dropped from the list). Pinned by
+  `TestParity_RemoveFilteredGenoQ10` (single-flag) and
+  `TestParity_RemoveFilteredGenoMulti` (two-flag invocation — the
+  set behaviour in upstream's `geno_filter_flags_to_exclude`). ✅
+- **`--max-indv N`** — caps the number of kept individuals at N.
+  Ported from upstream `parameters.cpp:292` +
+  `variant_file_filters.cpp:105-147`
+  (`filter_individuals_randomly`). **Port deviation, documented:**
+  upstream uses `srand(time(NULL))` + `random_shuffle`, making the
+  kept-sample identity non-deterministic across runs. This port
+  instead deterministically keeps the first N kept samples in input
+  (header) order. The COUNT invariant (`|kept| =
+  min(N, |pre-cap-kept|)`) is the strongest claim we can make against
+  upstream's randomness, so parity is pinned at the COUNT level only
+  (`TestMaxIndv_Count` table-driven cases). `MaxIndvSet` gates the
+  cap so `--max-indv 0` ("drop every sample") is distinguishable from
+  the default. Pinned by `TestMaxIndv_Count` and
+  `TestMaxIndv_Unset_NoOp`. ✅
+- **`--keep-INFO-all`** — upstream-deprecated synonym for
+  `--recode-INFO-all`. Both `parameters.cpp:267` and `:318` write
+  to the same `recode_all_INFO` parameter bit; the CLI ORs them
+  together so either flag (or both) produces identical output.
+  Pinned by `TestKeepINFOAll_Synonym`. ✅
+- **`--version`** — prints `VCFtools (0.1.18)` and exits, matching
+  upstream `parameters.cpp:648-652` byte-for-byte. Hard-coded
+  version string tracks the upstream submodule at port time;
+  bump on rebase.  ✅
+
+Implementation notes (wave 10):
+
+- The FT-based filter lives inside `filterGenotypes` in
+  `tools/vcftools/pkg/vcftools/vcftools.go` (next to the existing
+  `--minDP/--maxDP/--minGQ` path). Two small helpers (`parseSampleFT`,
+  `shouldDropByFT`) keep the hot loop branch-light and mirror the
+  upstream getters/parsers documented above. The `sampleWithMissingGT`
+  helper extracted from the duplicated DP/GQ paths is also reused by
+  the FT path.
+- `--max-indv` is wired through `buildSampleFilter`, which now returns
+  a non-nil keep set when `MaxIndvSet` is true even with no
+  identity-based filter. The cap iterates `header.Samples` in order
+  so the truncation is deterministic.
 
 **PCA family deferred** (`--pca`, `--pca-no-norm`,
 `--pca-snp-loadings INT`; upstream `parameters.cpp:308-310`,

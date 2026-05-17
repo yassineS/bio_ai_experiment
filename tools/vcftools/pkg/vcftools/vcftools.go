@@ -174,6 +174,29 @@ type Params struct {
 	KeepFile       string
 	RemoveFile     string
 
+	// --max-indv N caps the number of kept individuals at N. Ported from
+	// upstream parameters.cpp:292 + variant_file_filters.cpp:105-147
+	// (filter_individuals_randomly). MaxIndvSet records whether the flag
+	// was supplied (since "0" is meaningful — drop every sample). Upstream
+	// uses srand(time(NULL)) + random_shuffle so the kept-sample identity
+	// is non-deterministic across runs; this port instead deterministically
+	// keeps the first MaxIndv samples in input order. Tests therefore pin
+	// the COUNT, not the identity (the byte-parity claim is on
+	// |kept samples| = min(MaxIndv, |kept|) rather than which N samples
+	// were chosen). Documented in docs/PARITY_ROADMAP.md (wave 10).
+	MaxIndv    int
+	MaxIndvSet bool
+
+	// --remove-filtered-geno-all sets a per-genotype filter that drops
+	// (sets GT to ./.) any genotype whose FORMAT FT field is not "PASS"
+	// or ".". Ported from upstream parameters.cpp:323 +
+	// vcf_entry.cpp:580-608 (filter_genotypes_by_filter_status).
+	// --remove-filtered-geno NAME (repeatable) drops a genotype whose
+	// FORMAT FT lists any of the named flags. Both compose: --all wins
+	// (when set, the named-list path is irrelevant).
+	RemoveFilteredGenoAll  bool
+	RemoveFilteredGenoList []string
+
 	// Linkage disequilibrium analysis (--geno-r2 / --hap-r2 family).
 	// GenoR2 enables --geno-r2 output (<prefix>.geno.ld). HapR2 enables
 	// --hap-r2 output (<prefix>.hap.ld). GenoR2Positions / HapR2Positions
@@ -1443,9 +1466,13 @@ func loadSNPIDs(filename string) (map[string]bool, error) {
 
 // buildSampleFilter builds a set of samples to keep
 func buildSampleFilter(header *vcf.Header, params *Params) (map[string]bool, error) {
-	// If no sample filters, keep all
-	if len(params.IndvList) == 0 && len(params.RemoveIndvList) == 0 &&
-		params.KeepFile == "" && params.RemoveFile == "" {
+	// Decide whether the user touched any sample-affecting flag. --max-indv
+	// is its own gate because it's not an identity-based filter — it caps
+	// the count, so it can be active even when --indv/--keep aren't.
+	hasIdentityFilter := len(params.IndvList) > 0 || len(params.RemoveIndvList) > 0 ||
+		params.KeepFile != "" || params.RemoveFile != ""
+	hasMaxIndv := params.MaxIndvSet && params.MaxIndv >= 0
+	if !hasIdentityFilter && !hasMaxIndv {
 		return nil, nil
 	}
 
@@ -1495,6 +1522,32 @@ func buildSampleFilter(header *vcf.Header, params *Params) (map[string]bool, err
 	// Apply remove list
 	for _, sample := range params.RemoveIndvList {
 		delete(keep, sample)
+	}
+
+	// --max-indv N: cap the number of kept individuals at N. Ported from
+	// upstream parameters.cpp:292 + variant_file_filters.cpp:105-147
+	// (filter_individuals_randomly). Upstream uses srand(time(NULL)) +
+	// random_shuffle, so the kept-sample identity varies across runs and
+	// cannot be byte-matched. This port instead deterministically keeps
+	// the first N kept samples in input (header) order — see the comment
+	// on Params.MaxIndv for the parity claim. N < 0 is "no cap"; N == 0
+	// is a valid drop-everything request (matches upstream's behaviour
+	// when max_N_indv == 0: filter_individuals_randomly returns early
+	// only when max_N_indv < 0).
+	if hasMaxIndv {
+		ordered := make([]string, 0, len(keep))
+		for _, sample := range header.Samples {
+			if keep[sample] {
+				ordered = append(ordered, sample)
+			}
+		}
+		if len(ordered) > params.MaxIndv {
+			capped := make(map[string]bool, params.MaxIndv)
+			for i := 0; i < params.MaxIndv; i++ {
+				capped[ordered[i]] = true
+			}
+			keep = capped
+		}
 	}
 
 	return keep, nil
@@ -1570,8 +1623,22 @@ func filterVariantSamples(v *vcf.Variant, keepSamples map[string]bool) *vcf.Vari
 
 // filterGenotypes applies genotype-level filters (sets genotypes to missing if they fail filters)
 func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
-	// If no genotype filters specified, return as-is
-	if params.MinDP == 0 && params.MaxDP == 0 && params.MinGQ == 0 {
+	// Build the FT-flag set once per call so the hot loop just probes a map.
+	var ftDropSet map[string]struct{}
+	if len(params.RemoveFilteredGenoList) > 0 {
+		ftDropSet = make(map[string]struct{}, len(params.RemoveFilteredGenoList))
+		for _, name := range params.RemoveFilteredGenoList {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			ftDropSet[name] = struct{}{}
+		}
+	}
+	ftFilterActive := params.RemoveFilteredGenoAll || len(ftDropSet) > 0
+
+	// If no genotype filters specified, return as-is.
+	if params.MinDP == 0 && params.MaxDP == 0 && params.MinGQ == 0 && !ftFilterActive {
 		return v
 	}
 
@@ -1594,19 +1661,7 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 			if dpStr, ok := sample.Data["DP"]; ok {
 				if dp, err := strconv.Atoi(dpStr); err == nil {
 					if (params.MinDP > 0 && dp < params.MinDP) || (params.MaxDP > 0 && dp > params.MaxDP) {
-						// Set genotype to missing
-						newSample := vcf.Sample{
-							Name: sample.Name,
-							Data: make(map[string]string),
-						}
-						for k, v := range sample.Data {
-							if k == "GT" {
-								newSample.Data[k] = "./."
-							} else {
-								newSample.Data[k] = v
-							}
-						}
-						filtered.Samples = append(filtered.Samples, newSample)
+						filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
 						continue
 					}
 				}
@@ -1618,21 +1673,30 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 			if gqStr, ok := sample.Data["GQ"]; ok {
 				if gq, err := strconv.Atoi(gqStr); err == nil {
 					if gq < params.MinGQ {
-						// Set genotype to missing
-						newSample := vcf.Sample{
-							Name: sample.Name,
-							Data: make(map[string]string),
-						}
-						for k, v := range sample.Data {
-							if k == "GT" {
-								newSample.Data[k] = "./."
-							} else {
-								newSample.Data[k] = v
-							}
-						}
-						filtered.Samples = append(filtered.Samples, newSample)
+						filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
 						continue
 					}
+				}
+			}
+		}
+
+		// --remove-filtered-geno-all / --remove-filtered-geno NAME:
+		// inspect the FORMAT FT field. Upstream parses FT as a
+		// semicolon-separated list (vcf_entry_setters.cpp:188-212);
+		// entries equal to "" or "." mean "unfiltered" and are
+		// dropped from the list. --all keeps a genotype only if its
+		// first FT entry is "PASS" or the list is effectively empty
+		// (mirrors upstream vcf_entry.cpp:594-599: it inspects
+		// GFILTERs[0]); --remove-filtered-geno NAME drops the
+		// genotype if any FT entry matches a named flag
+		// (vcf_entry.cpp:601-605). Sites without an FT FORMAT column
+		// are left untouched (upstream's filter_genotypes_by_filter_status
+		// in entry_filters.cpp:94-108 returns early when FT_idx == -1).
+		if ftFilterActive {
+			if ftEntries, hasFT := parseSampleFT(sample); hasFT {
+				if shouldDropByFT(ftEntries, params.RemoveFilteredGenoAll, ftDropSet) {
+					filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
+					continue
 				}
 			}
 		}
@@ -1642,6 +1706,72 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 	}
 
 	return filtered
+}
+
+// sampleWithMissingGT clones a sample and replaces its GT field with "./."
+// while preserving every other FORMAT field. Mirrors upstream's recode
+// emission for include_genotype[ui]==false (vcf_entry.cpp:341 — only the
+// GT slot is rewritten; FT/DP/GQ/... are passed through unchanged).
+func sampleWithMissingGT(sample vcf.Sample) vcf.Sample {
+	out := vcf.Sample{
+		Name: sample.Name,
+		Data: make(map[string]string, len(sample.Data)),
+	}
+	for k, val := range sample.Data {
+		if k == "GT" {
+			out.Data[k] = "./."
+		} else {
+			out.Data[k] = val
+		}
+	}
+	return out
+}
+
+// parseSampleFT splits the sample's FT FORMAT field on ';' and returns the
+// non-trivial entries (empty or "." are dropped, matching upstream's
+// vcf_entry_setters.cpp:188-212). The second return value is false when
+// the sample has no FT field at all.
+func parseSampleFT(sample vcf.Sample) ([]string, bool) {
+	raw, ok := sample.Data["FT"]
+	if !ok {
+		return nil, false
+	}
+	if raw == "" || raw == "." {
+		return nil, true
+	}
+	parts := strings.Split(raw, ";")
+	out := parts[:0]
+	for _, p := range parts {
+		if p == "" || p == "." {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, true
+}
+
+// shouldDropByFT returns true if a genotype should be set to missing given
+// its FT entries. Mirrors the two upstream branches at
+// vcf_entry.cpp:594-605:
+//   - removeAll == true: drop unless the first FT entry is "PASS" (an
+//     empty list — i.e. the unfiltered case — is implicitly kept).
+//   - removeAll == false: drop if ANY FT entry matches a named flag.
+func shouldDropByFT(ftEntries []string, removeAll bool, namedDrops map[string]struct{}) bool {
+	if removeAll {
+		if len(ftEntries) == 0 {
+			return false
+		}
+		return ftEntries[0] != "PASS"
+	}
+	if len(namedDrops) == 0 {
+		return false
+	}
+	for _, e := range ftEntries {
+		if _, hit := namedDrops[e]; hit {
+			return true
+		}
+	}
+	return false
 }
 
 // outputStatistics outputs all requested statistics

@@ -1,0 +1,10 @@
+##fileformat=VCFv4.1
+##FILTER=<ID=PASS,Description="All filters passed">
+##FILTER=<ID=q10,Description="Quality below 10">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=FT,Number=1,Type=String,Description="Genotype filter">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3
+1	100	.	A	C	29	PASS	.	GT:DP:FT	0/0:10:PASS	0/1:8:q10	1/1:6:PASS
+1	200	.	G	T	29	PASS	.	GT:DP:FT	0/0:9:.	0/1:7:lowDP	1/1:5:q10
+1	300	.	C	A	29	PASS	.	GT:DP:FT	0/1:5:PASS	1/1:7:PASS	0/0:8:PASS

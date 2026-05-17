@@ -200,9 +200,22 @@ Sample Filtering:
   --remove-indv STRING  Remove this individual (can use multiple times)
   --keep FILE           Keep only individuals listed in file
   --remove FILE         Remove individuals listed in file
+  --max-indv INT        Cap the number of kept individuals at INT. Upstream
+                        picks randomly; this port keeps the first N in
+                        input order (see docs/PARITY_ROADMAP.md#vcftools).
+
+Per-Genotype FT Filtering:
+  --remove-filtered-geno-all
+                        Set GT to ./. for any genotype whose FORMAT FT
+                        is not "PASS" or ".".
+  --remove-filtered-geno NAME
+                        Set GT to ./. for any genotype whose FORMAT FT
+                        lists NAME (repeatable).
 
 Help:
   -h, --help            Show this help message
+  --version             Print VCFtools version and exit
+  --keep-INFO-all       Deprecated synonym for --recode-INFO-all
 
 Examples:
   # Get allele frequency for chromosome 1
@@ -460,16 +473,71 @@ func main() {
 	keepFile := flag.String("keep", "", "Keep individuals from file")
 	removeFile := flag.String("remove", "", "Remove individuals from file")
 
+	// --max-indv N: cap kept-individual count at N. We use flag.Func so we
+	// can record whether the flag was supplied (since N == 0 is meaningful
+	// — drop every sample — and Go's default zero would otherwise look the
+	// same as "no flag given"). See Params.MaxIndv docstring for the
+	// upstream-parity note about deterministic input-order truncation.
+	var maxIndv int
+	var maxIndvSet bool
+	flag.Func("max-indv", "Cap the number of kept individuals at N (input-order truncation, see ROADMAP)", func(s string) error {
+		v, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return fmt.Errorf("--max-indv: %w", err)
+		}
+		maxIndv = v
+		maxIndvSet = true
+		return nil
+	})
+
+	// Per-genotype FT-based filtering. --remove-filtered-geno-all matches
+	// upstream parameters.cpp:323; --remove-filtered-geno NAME (repeatable)
+	// matches parameters.cpp:324. Both set the kept sample's GT to ./.
+	// while leaving other FORMAT fields untouched in recoded output (see
+	// vcf_entry.cpp:580-608).
+	removeFilteredGenoAll := flag.Bool("remove-filtered-geno-all", false, "Set genotype to ./. when FT is anything other than PASS or .")
+	var removeFilteredGenoList []string
+	flag.Func("remove-filtered-geno", "FT flag name to drop genotypes by (repeatable)", func(s string) error {
+		removeFilteredGenoList = append(removeFilteredGenoList, s)
+		return nil
+	})
+
+	// --keep-INFO-all is the upstream-deprecated synonym for
+	// --recode-INFO-all (parameters.cpp:267 — "Old command (soon to be
+	// depreciated)"). Both set the same parameter flag in upstream
+	// (recode_all_INFO = true); we OR them together below.
+	keepINFOAll := flag.Bool("keep-INFO-all", false, "Synonym for --recode-INFO-all (deprecated upstream)")
+
+	// --version prints "VCFtools (<version>)" and exits, matching
+	// upstream parameters.cpp:648-652. Handled before flag.Parse'd flags
+	// take effect (the boolean below is checked immediately after parse).
+	versionFlag := flag.Bool("version", false, "Print VCFtools version and exit")
+
 	// Help
 	help := flag.Bool("h", false, "Show help message")
 	flag.BoolVar(help, "help", false, "Show help message")
 
 	flag.Parse()
 
+	if *versionFlag {
+		// Match upstream's exact byte sequence (parameters.cpp:648-652).
+		// The version string is hard-coded here to track upstream's
+		// VCFTOOLS_VERSION at the time of port; bump alongside any
+		// future re-baseline.
+		fmt.Println("VCFtools (0.1.18)")
+		os.Exit(0)
+	}
+
 	if *help {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(0)
 	}
+
+	// --keep-INFO-all is the deprecated synonym for --recode-INFO-all.
+	// Upstream parameters.cpp:267 / :318 both write to the same
+	// recode_all_INFO bit; we OR them together so either flag (or both)
+	// produces the same effect.
+	recodeAllINFO := *recodeInfoAll || *keepINFOAll
 
 	// Validate input
 	inputCount := 0
@@ -513,129 +581,133 @@ func main() {
 
 	// Build params
 	params := &vcftools.Params{
-		OutPrefix:             *outPrefix,
-		UseStdout:             *useStdout,
-		Recode:                *recode,
-		RecodeInfoAll:         *recodeInfoAll,
-		Chr:                   *chr,
-		NotChr:                *notChr,
-		FromBp:                *fromBp,
-		ToBp:                  *toBp,
-		PositionsFile:         *positionsFile,
-		ExcludePositionsFile:  *excludePositionsFile,
-		SNP:                   *snp,
-		SNPs:                  *snps,
-		ExcludeSNP:            *excludeSNP,
-		ExcludeSNPs:           *excludeSNPs,
-		Thin:                  *thin,
-		KeepOnlyIndels:        *keepOnlyIndels,
-		RemoveIndels:          *removeIndels,
-		MinAlleles:            *minAlleles,
-		MaxAlleles:            *maxAlleles,
-		MinQ:                  *minQ,
-		RemoveFilteredAll:     *removeFilteredAll,
-		Maf:                   *maf,
-		MaxMaf:                *maxMaf,
-		Mac:                   *mac,
-		MaxMac:                *maxMac,
-		MinNonRefAF:           *nonRefAF,
-		MinNonRefAC:           *nonRefAC,
-		MaxNonRefAF:           *maxNonRefAF,
-		MaxNonRefAC:           *maxNonRefAC,
-		MinNonRefAFAny:        *nonRefAFAny,
-		MinNonRefACAny:        *nonRefACAny,
-		MaxNonRefAFAny:        *maxNonRefAFAny,
-		MaxNonRefACAny:        *maxNonRefACAny,
-		MaxMissing:            *maxMissing,
-		MaxMissingCount:       maxMissingCount,
-		MaxMissingCountSet:    maxMissingCountSet,
-		MinHWEPvalue:          *hwePvalue,
-		MinMeanDP:             *minMeanDP,
-		MaxMeanDP:             *maxMeanDP,
-		MinDP:                 *minDP,
-		MaxDP:                 *maxDP,
-		MinGQ:                 *minGQ,
-		Freq:                  *freq,
-		Counts:                *counts,
-		Freq2:                 *freq2,
-		Counts2:               *counts2,
-		Depth:                 *depth,
-		SiteDepth:             *siteDepth,
-		SiteMeanDepth:         *siteMeanDepth,
-		SiteQuality:           *siteQuality,
-		MissingIndv:           *missingIndv,
-		MissingSite:           *missingSite,
-		Hardy:                 *hardy,
-		TsTvSummary:           *tsTvSummary,
-		TsTvBinSize:           *tsTvBinSize,
-		TsTvByCount:           *tsTvByCount,
-		TsTvByQual:            *tsTvByQual,
-		SitePi:                *sitePi,
-		Het:                   *het,
-		Singletons:            *singletons,
-		HistIndelLen:          *histIndelLen,
-		GenoDepth:             *genoDepth,
-		WindowPi:              *windowPi,
-		WindowPiStep:          *windowPiStep,
-		TajimaD:               *tajimaD,
-		SNPDensity:            *snpDensity,
-		WeirFstPop:            weirFstPop,
-		FstWindowSize:         *fstWindowSize,
-		FstWindowStep:         *fstWindowStep,
-		FilterSummary:         *filterSummary,
-		Output012:             *output012,
-		OutputPlink:           *outputPlink,
-		OutputPlinkTped:       *outputPlinkTped,
-		ChromMap:              *chromMap,
-		IndvList:              indvList,
-		RemoveIndvList:        removeIndvList,
-		KeepFile:              *keepFile,
-		RemoveFile:            *removeFile,
-		GenoR2:                *genoR2,
-		HapR2:                 *hapR2,
-		GenoR2Positions:       *genoR2Positions,
-		HapR2Positions:        *hapR2Positions,
-		LDWindow:              *ldWindow,
-		LDWindowBp:            *ldWindowBp,
-		LDWindowMin:           *ldWindowMin,
-		LDWindowBpMin:         *ldWindowBpMin,
-		MinR2:                 *minR2,
-		Bed:                   *bedFile,
-		ExcludeBed:            *excludeBedFile,
-		Diff:                  *diffFile,
-		DiffSite:              *diffSite,
-		DiffIndv:              *diffIndv,
-		DiffSiteDiscordance:   *diffSiteDiscord,
-		DiffIndvDiscordance:   *diffIndvDiscord,
-		DiffIndvMap:           *diffIndvMap,
-		DiffDiscordanceMatrix: *diffDiscMatrix,
-		DiffSwitchError:       *diffSwitchError,
-		MendelPedFile:         *mendelPed,
-		BEAGLEGL:              *beagleGL,
-		BEAGLEPL:              *beaglePL,
-		InterchromGenoR2:      *interchromGenoR2,
-		InterchromHapR2:       *interchromHapR2,
-		GenoChiSq:             *genoChiSq,
-		Relatedness:           *relatedness,
-		Relatedness2:          *relatedness2,
-		PhasedBlocks:          *phasedBlocks,
-		LROH:                  *lroh,
-		LROHMinVariants:       *lrohMin,
-		RemoveFiltered:        *removeFiltered,
-		KeepFiltered:          *keepFiltered,
-		KeepINFO:              strings.Join(keepINFOParts, ","),
-		RemoveINFO:            strings.Join(removeINFOParts, ","),
-		GetINFO:               strings.Join(getINFOParts, ","),
-		Phased:                *phased,
-		LDhat:                 *ldhat,
-		LDhatGeno:             *ldhatGeno,
-		LDhelmet:              *ldhelmet,
-		IMPUTE:                *impute,
-		PCA:                   *pca,
-		PCANoNorm:             *pcaNoNorm,
-		PCASNPLoadings:        *pcaSNPLoadings,
-		KeptSites:             *keptSites,
-		RemovedSites:          *removedSites,
+		OutPrefix:              *outPrefix,
+		UseStdout:              *useStdout,
+		Recode:                 *recode,
+		RecodeInfoAll:          recodeAllINFO,
+		Chr:                    *chr,
+		NotChr:                 *notChr,
+		FromBp:                 *fromBp,
+		ToBp:                   *toBp,
+		PositionsFile:          *positionsFile,
+		ExcludePositionsFile:   *excludePositionsFile,
+		SNP:                    *snp,
+		SNPs:                   *snps,
+		ExcludeSNP:             *excludeSNP,
+		ExcludeSNPs:            *excludeSNPs,
+		Thin:                   *thin,
+		KeepOnlyIndels:         *keepOnlyIndels,
+		RemoveIndels:           *removeIndels,
+		MinAlleles:             *minAlleles,
+		MaxAlleles:             *maxAlleles,
+		MinQ:                   *minQ,
+		RemoveFilteredAll:      *removeFilteredAll,
+		Maf:                    *maf,
+		MaxMaf:                 *maxMaf,
+		Mac:                    *mac,
+		MaxMac:                 *maxMac,
+		MinNonRefAF:            *nonRefAF,
+		MinNonRefAC:            *nonRefAC,
+		MaxNonRefAF:            *maxNonRefAF,
+		MaxNonRefAC:            *maxNonRefAC,
+		MinNonRefAFAny:         *nonRefAFAny,
+		MinNonRefACAny:         *nonRefACAny,
+		MaxNonRefAFAny:         *maxNonRefAFAny,
+		MaxNonRefACAny:         *maxNonRefACAny,
+		MaxMissing:             *maxMissing,
+		MaxMissingCount:        maxMissingCount,
+		MaxMissingCountSet:     maxMissingCountSet,
+		MinHWEPvalue:           *hwePvalue,
+		MinMeanDP:              *minMeanDP,
+		MaxMeanDP:              *maxMeanDP,
+		MinDP:                  *minDP,
+		MaxDP:                  *maxDP,
+		MinGQ:                  *minGQ,
+		Freq:                   *freq,
+		Counts:                 *counts,
+		Freq2:                  *freq2,
+		Counts2:                *counts2,
+		Depth:                  *depth,
+		SiteDepth:              *siteDepth,
+		SiteMeanDepth:          *siteMeanDepth,
+		SiteQuality:            *siteQuality,
+		MissingIndv:            *missingIndv,
+		MissingSite:            *missingSite,
+		Hardy:                  *hardy,
+		TsTvSummary:            *tsTvSummary,
+		TsTvBinSize:            *tsTvBinSize,
+		TsTvByCount:            *tsTvByCount,
+		TsTvByQual:             *tsTvByQual,
+		SitePi:                 *sitePi,
+		Het:                    *het,
+		Singletons:             *singletons,
+		HistIndelLen:           *histIndelLen,
+		GenoDepth:              *genoDepth,
+		WindowPi:               *windowPi,
+		WindowPiStep:           *windowPiStep,
+		TajimaD:                *tajimaD,
+		SNPDensity:             *snpDensity,
+		WeirFstPop:             weirFstPop,
+		FstWindowSize:          *fstWindowSize,
+		FstWindowStep:          *fstWindowStep,
+		FilterSummary:          *filterSummary,
+		Output012:              *output012,
+		OutputPlink:            *outputPlink,
+		OutputPlinkTped:        *outputPlinkTped,
+		ChromMap:               *chromMap,
+		IndvList:               indvList,
+		RemoveIndvList:         removeIndvList,
+		KeepFile:               *keepFile,
+		RemoveFile:             *removeFile,
+		GenoR2:                 *genoR2,
+		HapR2:                  *hapR2,
+		GenoR2Positions:        *genoR2Positions,
+		HapR2Positions:         *hapR2Positions,
+		LDWindow:               *ldWindow,
+		LDWindowBp:             *ldWindowBp,
+		LDWindowMin:            *ldWindowMin,
+		LDWindowBpMin:          *ldWindowBpMin,
+		MinR2:                  *minR2,
+		Bed:                    *bedFile,
+		ExcludeBed:             *excludeBedFile,
+		Diff:                   *diffFile,
+		DiffSite:               *diffSite,
+		DiffIndv:               *diffIndv,
+		DiffSiteDiscordance:    *diffSiteDiscord,
+		DiffIndvDiscordance:    *diffIndvDiscord,
+		DiffIndvMap:            *diffIndvMap,
+		DiffDiscordanceMatrix:  *diffDiscMatrix,
+		DiffSwitchError:        *diffSwitchError,
+		MendelPedFile:          *mendelPed,
+		BEAGLEGL:               *beagleGL,
+		BEAGLEPL:               *beaglePL,
+		InterchromGenoR2:       *interchromGenoR2,
+		InterchromHapR2:        *interchromHapR2,
+		GenoChiSq:              *genoChiSq,
+		Relatedness:            *relatedness,
+		Relatedness2:           *relatedness2,
+		PhasedBlocks:           *phasedBlocks,
+		LROH:                   *lroh,
+		LROHMinVariants:        *lrohMin,
+		RemoveFiltered:         *removeFiltered,
+		KeepFiltered:           *keepFiltered,
+		KeepINFO:               strings.Join(keepINFOParts, ","),
+		RemoveINFO:             strings.Join(removeINFOParts, ","),
+		GetINFO:                strings.Join(getINFOParts, ","),
+		Phased:                 *phased,
+		LDhat:                  *ldhat,
+		LDhatGeno:              *ldhatGeno,
+		LDhelmet:               *ldhelmet,
+		IMPUTE:                 *impute,
+		PCA:                    *pca,
+		PCANoNorm:              *pcaNoNorm,
+		PCASNPLoadings:         *pcaSNPLoadings,
+		KeptSites:              *keptSites,
+		RemovedSites:           *removedSites,
+		MaxIndv:                maxIndv,
+		MaxIndvSet:             maxIndvSet,
+		RemoveFilteredGenoAll:  *removeFilteredGenoAll,
+		RemoveFilteredGenoList: removeFilteredGenoList,
 	}
 
 	// --hwe implies max_alleles = 2 in upstream (parameters.cpp:254).
