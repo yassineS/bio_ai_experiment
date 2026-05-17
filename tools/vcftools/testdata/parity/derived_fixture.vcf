@@ -1,0 +1,12 @@
+##fileformat=VCFv4.0
+##INFO=<ID=AA,Number=1,Type=String,Description="Ancestral Allele">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read Depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3
+1	100	.	A	C	30	PASS	AA=A	GT:DP	0/0:10	0/1:10	1/1:10
+1	200	.	G	T	30	PASS	AA=T	GT:DP	0/0:10	0/1:10	1/1:10
+1	300	.	A	C	30	PASS	AA=N	GT:DP	0/0:10	0/1:10	1/1:10
+1	400	.	A	C	30	PASS	AA=a	GT:DP	0/0:10	0/1:10	0/0:10
+1	500	.	C	G	30	PASS	AA=.	GT:DP	0/0:10	0/1:10	0/1:10
+2	100	.	T	A	30	PASS	AA=?	GT:DP	0/0:10	0/1:10	0/0:10

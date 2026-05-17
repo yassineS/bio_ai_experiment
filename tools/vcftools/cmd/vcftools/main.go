@@ -99,6 +99,8 @@ Statistics Output:
   --counts              Output allele counts
   --freq2               Alternative allele frequency format
   --counts2             Alternative allele counts format
+  --derived             With --freq/--counts, reorder so ancestral (INFO/AA)
+                        allele is first; drops sites without a matching AA
   --depth               Output mean read depth per individual (.idepth)
   --site-depth          Output summed depth for each site (.ldepth)
   --site-mean-depth     Output mean depth per site (.ldepth.mean)
@@ -202,6 +204,10 @@ FILTER / INFO Selection:
   --keep-INFO TAG       Keep only this INFO tag in --recode output (repeatable)
   --remove-INFO TAG     Strip this INFO tag from --recode output (repeatable)
   --get-INFO TAG        Extract this INFO tag to <prefix>.INFO (repeatable)
+  --extract-FORMAT-info NAME
+                        Extract per-genotype FORMAT NAME into
+                        <prefix>.<NAME>.FORMAT (tab-separated; sites
+                        whose FORMAT lacks NAME are skipped)
 
 Sample Filtering:
   --indv STRING         Include only this individual (can use multiple times)
@@ -336,6 +342,12 @@ func main() {
 	counts := flag.Bool("counts", false, "Output allele counts")
 	freq2 := flag.Bool("freq2", false, "Alternative frequency output format")
 	counts2 := flag.Bool("counts2", false, "Alternative counts output format")
+	// --derived: when combined with --freq or --counts, reorder the allele
+	// columns so the ancestral allele (INFO/AA, case-insensitive) appears
+	// first. Sites missing AA, with AA = "." / "?", or with AA that does
+	// not match REF/ALT are dropped (upstream emits a one-off warning).
+	// Ported from parameters.cpp:201 + variant_file_output.cpp:67-159.
+	derived := flag.Bool("derived", false, "With --freq/--counts, reorder so ancestral (INFO/AA) is first; drops sites without a matching AA")
 	depth := flag.Bool("depth", false, "Output mean read depth per individual (.idepth)")
 	siteDepth := flag.Bool("site-depth", false, "Output summed depth for each site (.ldepth)")
 	siteMeanDepth := flag.Bool("site-mean-depth", false, "Output mean depth per site (.ldepth.mean)")
@@ -478,6 +490,13 @@ func main() {
 		getINFOParts = append(getINFOParts, s)
 		return nil
 	})
+
+	// --extract-FORMAT-info NAME extracts the named per-genotype FORMAT
+	// field across all kept samples into a tab-separated
+	// <prefix>.<NAME>.FORMAT file. Single-valued upstream (the last value
+	// wins if supplied multiple times — parameters.cpp:222 simply
+	// overwrites). Ported from variant_file_format_convert.cpp:1204-1263.
+	extractFormatInfo := flag.String("extract-FORMAT-info", "", "Per-genotype FORMAT tag to extract to <prefix>.<NAME>.FORMAT")
 
 	// Sample filtering
 	var indvList, removeIndvList []string
@@ -732,6 +751,8 @@ func main() {
 		MaxIndvSet:                  maxIndvSet,
 		RemoveFilteredGenoAll:       *removeFilteredGenoAll,
 		RemoveFilteredGenoList:      removeFilteredGenoList,
+		Derived:                     *derived,
+		ExtractFormatInfo:           *extractFormatInfo,
 	}
 
 	// --invert-mask FILE shares the same mask_file slot upstream as --mask
