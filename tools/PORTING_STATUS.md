@@ -423,12 +423,13 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~79 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~81 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
 landed in the long-tail wave 4 PR; `--diff-switch-error` + `--mendel`
-landed in the long-tail wave 5 PR)
+landed in the long-tail wave 5 PR; `--non-ref-af` + `--non-ref-ac`
+landed in the long-tail wave 6 PR)
 
 **Implemented Commands**:
 
@@ -471,6 +472,11 @@ landed in the long-tail wave 5 PR)
   `<prefix>.mendel` for trios defined in a four-column PED file
   (byte-for-byte parity vs upstream
   `variant_file_output.cpp:5332`)
+- Non-reference allele filters (wave 6): `--non-ref-af FLOAT` and
+  `--non-ref-ac INT` drop sites whose per-ALT frequency / count fails
+  the threshold; ported from upstream `entry_filters.cpp:770-824` and
+  `869-920` including the documented `_any`-fallback asymmetry that
+  makes the AF flag (but not AC) also drop monomorphic sites
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common

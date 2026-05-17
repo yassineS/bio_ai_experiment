@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~79 of ~147 options (~54%) after long-tail wave 5.
+**Status:** ~81 of ~147 options (~55%) after long-tail wave 6.
 
 Closed in wave 1:
 
@@ -647,7 +647,7 @@ Closed in wave 4:
   four data rows of file-2 genotype labels, biallelic + matching-ALT only,
   diploid only, byte-for-byte parity vs upstream. ✅
 
-Closed in wave 5 (this PR):
+Closed in wave 5:
 
 - **`--diff-switch-error`** — emits `<prefix>.diff.switch` (per-event
   log with `CHROM POS_START POS_END INDV` columns) and
@@ -671,6 +671,36 @@ target. After re-checking upstream `parameters.cpp`, no standalone
 site filter). `--mendel` was substituted as the next clear long-tail
 target, per the brief's substitution clause.
 
+Closed in wave 6 (this PR):
+
+- **`--non-ref-af FLOAT`** — minimum non-reference allele frequency:
+  every ALT's count/non-missing-chr ratio must be ≥ threshold. Ported
+  from upstream `parameters.cpp:303` + `entry_filters.cpp:770-824`. We
+  preserve the upstream quirk that `min_non_ref_af > 0` also drops
+  monomorphic (no-ALT) sites via the `N_failed == N_alleles-1`
+  fallback on line 814. ✅
+- **`--non-ref-ac INT`** — minimum non-reference allele count: every
+  ALT's per-site count must be ≥ threshold. Ported from upstream
+  `parameters.cpp:302` + `entry_filters.cpp:869-920`. The
+  monomorphic-fallback on line 912 is gated on `min_non_ref_ac_any`
+  (NOT plain `min_non_ref_ac`), so `--non-ref-ac` alone deliberately
+  does NOT drop monomorphic sites — verified against upstream and
+  pinned in `TestParity_NonRefAF_DropsMonomorphic`. ✅
+
+The brief originally requested `--FILTER-PASS-summary` and
+`--remove-INFO-all`. Neither flag is registered in upstream
+`parameters.cpp`: the real flag is `--FILTER-summary` (already
+implemented since wave 0), and `--remove-INFO-all` simply does not
+exist (the upstream registrations are `--keep-INFO-all` and
+`--recode-INFO-all`, both already implemented). The brief's
+substitution clause permits picking from the `--non-ref-af*` family,
+so `--non-ref-af` and `--non-ref-ac` were chosen as the two new
+flags. The remaining `--non-ref-af-any` / `--non-ref-ac-any` (and the
+`--max-*` upper-bound counterparts) are still open — they share the
+same filter machinery but key on the `_any` fallback, which has
+slightly different semantics (a site is dropped only if EVERY ALT
+fails, not just one).
+
 Remaining gaps:
 
 - **Diff family**: `--gzdiff` (already implicit via iohelper). Per-site
@@ -680,8 +710,9 @@ Remaining gaps:
   `variant_file_diff.cpp:635` for the gap.
 - **Per-individual output**: the per-individual `.imiss` row layout has
   fields we don't emit (we have `--missing-indv`).
-- **Other**: `--remove-INFO-all` (use `--keep-INFO`/`--remove-INFO`),
-  `--non-ref-af*` family, `--pca` family.
+- **Other**: `--max-non-ref-af`, `--non-ref-af-any`, `--max-non-ref-af-any`
+  and the `*-ac*` counterparts (same filter machinery as the wave-6
+  pair, plus the upstream `_any` fallback semantics); `--pca` family.
 
 Note: the brief mentioned `--haploid` as a possible wave-2 target. After
 checking the upstream source (`reference_code/vcftools/src/cpp/`) there is
@@ -699,8 +730,13 @@ against upstream goldens (under `tools/vcftools/testdata/parity/`,
 fixtures `diff_f1.vcf` / `diff_f2.vcf` / `diff_indv_map.txt`); wave 5
 adds byte-for-byte parity tests for `.diff.switch` /
 `.diff.indv.switch` (fixtures `switch_f1.vcf` / `switch_f2.vcf`) and
-`.mendel` (fixtures `mendel.vcf` / `mendel.ped`). Full
-upstream-test-suite run still pending.
+`.mendel` (fixtures `mendel.vcf` / `mendel.ped`); wave 6 adds
+byte-for-byte parity tests for `--non-ref-af 0.3` / `--non-ref-af 0.5`
+on `sample.vcf` and `--chr X --non-ref-ac 2|3` on the same fixture
+(see `non_ref_af_*.expected.recode.vcf` and
+`non_ref_ac_*_chrX.expected.recode.vcf`), plus a regression test that
+pins the upstream `_any`-fallback asymmetry between the two flags.
+Full upstream-test-suite run still pending.
 
 Upstream build note for golden generation: vcftools'
 `variant_file_format_convert.cpp` LDhat writers allocate a stack array of

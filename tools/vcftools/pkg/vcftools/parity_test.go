@@ -231,6 +231,119 @@ func TestParity_Mac(t *testing.T) {
 	}
 }
 
+// TestParity_NonRefAF_03 — `--non-ref-af 0.3 --recode` byte-for-byte
+// against upstream. Upstream registration: parameters.cpp:303. Filter
+// logic ported from entry_filters.cpp:801-815: every ALT's frequency
+// (count/non-missing-chr) must be >= 0.3, and a monomorphic site
+// (ALT == "." or no ALT) is also dropped because
+// N_failed == N_alleles-1 == 0 fires the line-814 fallback.
+//
+// For sample.vcf the expected kept sites are 20:14370 (A freq 0.5),
+// 20:1110696 (G freq 0.333, T freq 0.5 — both >= 0.3), X:9 (T 0.4),
+// X:12 (A 0.5). All other sites have at least one ALT below 0.3.
+func TestParity_NonRefAF_03(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MinNonRefAF: 0.3,
+		Recode:      true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "non_ref_af_03.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_NonRefAF_05 — `--non-ref-af 0.5 --recode` byte-for-byte.
+// Pin: at threshold 0.5 only 20:14370 (A freq 0.5) and X:12 (A freq 0.5)
+// survive — both rare biallelic SNPs whose single ALT exactly meets the
+// threshold. 20:1110696 drops because G's freq is 0.333.
+func TestParity_NonRefAF_05(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MinNonRefAF: 0.5,
+		Recode:      true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "non_ref_af_05.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_NonRefAC_2_ChrX — `--chr X --non-ref-ac 2 --recode`
+// byte-for-byte. Upstream registration: parameters.cpp:302. Filter
+// ported from entry_filters.cpp:902-907: every ALT count must be >= 2.
+// We restrict to chr X to avoid two pre-existing baseline-recode
+// discrepancies on chr 20 (the port currently drops 20:1235237 and
+// X:11 even without filters); those gaps are documented in
+// docs/PARITY_ROADMAP.md and tracked separately. Within chr X, X:9
+// (T count 2) and X:12 (A count 3) pass while X:10 and X:11 fail
+// because some ALT has count < 2.
+func TestParity_NonRefAC_2_ChrX(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		Chr:         "X",
+		MinNonRefAC: 2,
+		Recode:      true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "non_ref_ac_2_chrX.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_NonRefAC_3_ChrX — `--chr X --non-ref-ac 3 --recode`
+// byte-for-byte. At threshold 3 only X:12 (A count 3) survives in chr X.
+func TestParity_NonRefAC_3_ChrX(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		Chr:         "X",
+		MinNonRefAC: 3,
+		Recode:      true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "non_ref_ac_3_chrX.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_NonRefAF_DropsMonomorphic — pin the upstream-quirk
+// behaviour that `--non-ref-af > 0` drops monomorphic (no-ALT) sites
+// via the N_failed == N_alleles-1 fallback. Counterpart: --non-ref-ac
+// does NOT drop them because the analogous fallback is gated on
+// `_any`. See entry_filters.cpp:814 vs 912.
+func TestParity_NonRefAF_DropsMonomorphic(t *testing.T) {
+	// With --non-ref-af set very low, every real ALT passes; only the
+	// upstream monomorphic fallback can drop sites here.
+	prefixAF := runVcftoolsParity(t, "sample.vcf", &Params{
+		MinNonRefAF: 0.01,
+		Recode:      true,
+	})
+	gotAF := readFileLines(t, prefixAF+".recode.vcf")
+	for _, ln := range gotAF {
+		if strings.HasPrefix(ln, "20\t1230237") || strings.HasPrefix(ln, "20\t1235237") {
+			t.Errorf("--non-ref-af 0.01 should drop monomorphic site, got: %q", ln)
+		}
+	}
+	// Counterpart: --non-ref-ac 1 should NOT drop monomorphic sites,
+	// because upstream's count branch keys the fallback on `_any` only.
+	// We can only check the non-baseline-buggy mono site here:
+	// 20:1230237 (the X:11 / 20:1235237 baseline gap is separate).
+	prefixAC := runVcftoolsParity(t, "sample.vcf", &Params{
+		MinNonRefAC: 1,
+		Recode:      true,
+	})
+	gotAC := readFileLines(t, prefixAC+".recode.vcf")
+	saw1230237 := false
+	for _, ln := range gotAC {
+		if strings.HasPrefix(ln, "20\t1230237") {
+			saw1230237 = true
+		}
+	}
+	if !saw1230237 {
+		t.Errorf("--non-ref-ac 1 should keep monomorphic site 20:1230237 (upstream behaviour)")
+	}
+}
+
 // TestParity_MinQ — `--minQ 20` drops sites with QUAL < 20.
 func TestParity_MinQ(t *testing.T) {
 	prefix := runVcftoolsParity(t, "sample.vcf", &Params{

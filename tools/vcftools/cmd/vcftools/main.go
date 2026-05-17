@@ -56,6 +56,8 @@ Allele Frequency Filtering:
   --max-maf FLOAT       Maximum minor allele frequency
   --mac INT             Minimum minor allele count
   --max-mac INT         Maximum minor allele count
+  --non-ref-af FLOAT    Minimum non-reference allele frequency (per ALT)
+  --non-ref-ac INT      Minimum non-reference allele count (per ALT)
 
 Genotype Filtering:
   --max-missing FLOAT   Maximum proportion of missing data (0-1)
@@ -245,6 +247,8 @@ func main() {
 	maxMaf := flag.Float64("max-maf", 0, "Maximum minor allele frequency")
 	mac := flag.Int("mac", 0, "Minimum minor allele count")
 	maxMac := flag.Int("max-mac", 0, "Maximum minor allele count")
+	nonRefAF := flag.Float64("non-ref-af", 0, "Minimum non-reference allele frequency (per ALT)")
+	nonRefAC := flag.Int("non-ref-ac", 0, "Minimum non-reference allele count (per ALT)")
 
 	// Genotype filtering
 	maxMissing := flag.Float64("max-missing", 1, "Maximum proportion of missing data")
@@ -470,6 +474,8 @@ func main() {
 		MaxMaf:                *maxMaf,
 		Mac:                   *mac,
 		MaxMac:                *maxMac,
+		MinNonRefAF:           *nonRefAF,
+		MinNonRefAC:           *nonRefAC,
 		MaxMissing:            *maxMissing,
 		MinMeanDP:             *minMeanDP,
 		MaxMeanDP:             *maxMeanDP,
