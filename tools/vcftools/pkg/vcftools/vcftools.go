@@ -97,11 +97,38 @@ type Params struct {
 
 	// Genotype filtering
 	MaxMissing float64
-	MinMeanDP  float64
-	MaxMeanDP  float64
-	MinDP      int
-	MaxDP      int
-	MinGQ      int
+	// MaxMissingCount is the maximum number of missing chromosomes (i.e.
+	// missing haploid alleles, NOT missing samples) tolerated per site.
+	// Default 0 means "feature disabled". Mirrors upstream's
+	// `--max-missing-count` (parameters.cpp:286 + entry_filters.cpp:918);
+	// the upstream check is `(N_chr - N_non_missing_chr) > max`, i.e.
+	// values are absolute allele counts. A diploid "./." sample
+	// contributes 2; "0/." contributes 1. Set via --max-missing-count.
+	// Note: upstream's default sentinel is INT_MAX. We use 0 (== disabled)
+	// because a zero threshold is the only useful "drop any site with any
+	// missing allele" semantics — for that use `--max-missing-count 0`
+	// explicitly which sets MaxMissingCount = -1 (we re-interpret -1 as
+	// "active threshold of zero" below to disambiguate from default).
+	MaxMissingCount int
+	// MaxMissingCountSet records whether --max-missing-count was supplied
+	// on the command line. Without this flag we cannot distinguish
+	// "user passed 0" (meaning: drop every site with any missing call)
+	// from "user did not pass the flag at all" (meaning: no filter).
+	MaxMissingCountSet bool
+	MinMeanDP          float64
+	MaxMeanDP          float64
+	MinDP              int
+	MaxDP              int
+	MinGQ              int
+
+	// MinHWEPvalue is the minimum exact-test p-value (Wigginton et al.
+	// 2005) for Hardy-Weinberg equilibrium that a biallelic site must
+	// pass. Default 0 means "feature disabled". Set via --hwe FLOAT.
+	// Upstream (parameters.cpp:254) also forces `max_alleles = 2` when
+	// `--hwe` is supplied; we mirror that in CheckUnsupported / the CLI
+	// wiring so `--hwe 0.05` on a multi-allelic site drops the site
+	// before the HWE test even runs.
+	MinHWEPvalue float64
 
 	// Statistics output
 	Freq          bool
@@ -282,6 +309,17 @@ type Params struct {
 	// min_site_call_rate = 1.0, min_alleles = 2, max_alleles = 2. See
 	// impute.go for the file layout.
 	IMPUTE bool
+
+	// PCA / PCANoNorm / PCASNPLoadings hold the upstream `--pca`,
+	// `--pca-no-norm`, and `--pca-snp-loadings INT` flags
+	// (parameters.cpp:308-310). Currently unsupported in this port —
+	// `Run` rejects them via `checkUnsupported`. Recorded on Params so
+	// the CLI surface still validates the flag names and so future
+	// implementation can hook in without an API change. See
+	// docs/PARITY_ROADMAP.md#vcftools (wave 8 deferral note).
+	PCA            bool
+	PCANoNorm      bool
+	PCASNPLoadings int
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -1096,6 +1134,40 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 		}
 	}
 
+	// --max-missing-count: drop the site if the total number of missing
+	// chromosomes (haploid alleles) exceeds the threshold. Mirrors
+	// upstream `(N_chr - N_non_missing_chr) > max_missing_call_count`
+	// (entry_filters.cpp:918). Only active when the flag was explicitly
+	// set on the command line.
+	if params.MaxMissingCountSet {
+		missing := countMissingChromosomes(v)
+		if missing > params.MaxMissingCount {
+			return false
+		}
+	}
+
+	// --hwe FLOAT: drop biallelic sites whose exact-test HWE p-value is
+	// below the threshold. Upstream pairs this with `max_alleles = 2`
+	// (parameters.cpp:254). The `min_alleles`/`max_alleles` check runs
+	// earlier above; here we only need to skip non-biallelic sites
+	// quietly (they've already been rejected by max_alleles=2) and skip
+	// sites with zero called diploid genotypes (upstream's SNPHWE
+	// returns p_hwe=1.0 for an empty site, never failing the filter).
+	if params.MinHWEPvalue > 0 {
+		hom1, het, hom2, biallelic := countDiploidGenotypes(v)
+		if !biallelic {
+			// Multi-allelic or REF-only: upstream's max_alleles=2 will
+			// have already dropped most of these; for REF-only "no
+			// ALT" sites SNPHWE returns 1.0 (every observation is a
+			// hom1), so we treat them as passing.
+			return true
+		}
+		p := snpHWE(het, hom1, hom2)
+		if p < params.MinHWEPvalue {
+			return false
+		}
+	}
+
 	return true
 }
 
@@ -1724,6 +1796,22 @@ func checkUnsupported(params *Params) error {
 	// producing a malformed file.
 	if (params.LDhat || params.LDhatGeno || params.LDhelmet) && params.Chr == "" {
 		return fmt.Errorf("Require a chromosome (--chr) when outputting LDhat format.")
+	}
+
+	// --pca / --pca-no-norm / --pca-snp-loadings: not yet implemented.
+	// Upstream's PCA path (variant_file_output.cpp:4871-5249) builds the
+	// N_indv x N_indv covariance matrix X = (1/n)MM' from normalised
+	// genotypes and calls LAPACK's `dgeev` for the eigendecomposition. A
+	// stdlib-only port is feasible — X is symmetric positive
+	// semi-definite, so a Jacobi-rotation eigendecomposition (~100 LOC)
+	// covers it. We defer because the upstream binary in this
+	// repository's environment is built WITHOUT LAPACK (configure-time
+	// HAVE_LIBLAPACK is unset), so we cannot generate byte-for-byte
+	// goldens to validate parity. See docs/PARITY_ROADMAP.md#vcftools
+	// (wave 8) for the precise scope of what's required to land the
+	// flags.
+	if params.PCA || params.PCANoNorm || params.PCASNPLoadings != 0 {
+		missing = append(missing, "--pca / --pca-no-norm / --pca-snp-loadings (deferred; see docs/PARITY_ROADMAP.md#vcftools)")
 	}
 
 	if len(missing) > 0 {

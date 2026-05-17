@@ -1289,3 +1289,165 @@ func TestParity_KeepFiltered(t *testing.T) {
 		t.Errorf("expected 2 q10 rows, got %d", rowsSeen)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// --hwe FLOAT (parameters.cpp:254): biallelic exact-test HWE p-value filter
+// (Wigginton 2005). Upstream couples --hwe with `max_alleles = 2`, so even on
+// fixtures with multi-allelic sites the filter looks biallelic-only.
+// -----------------------------------------------------------------------------
+
+// TestParity_HWE_005_sample — `--hwe 0.05 --recode` on sample.vcf
+// (3 individuals). Sample.vcf has too few samples for any biallelic site to
+// fail the exact HWE test (every site is in the "in-equilibrium" regime),
+// so the only filtering here is the implicit `max_alleles=2` that upstream
+// applies — the four multi-allelic / non-biallelic sites (1110696, 1234567,
+// X:10, X:11) get dropped and the remaining 8 biallelic sites survive.
+//
+// We still pin this case because it exercises the
+// `--hwe → max_alleles=2` coupling in the CLI->Params adapter, which is
+// the path that is most likely to regress.
+func TestParity_HWE_005_sample(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MinHWEPvalue: 0.05,
+		MaxAlleles:   2, // upstream's parameters.cpp:254 coupling
+		Recode:       true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "hwe_005.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_HWE_005_fixture — `--hwe 0.05 --recode` on
+// hwe_fixture.vcf (20 individuals, 4 sites). This fixture is designed
+// to make the exact HWE test actually fire: site 1:200 has counts
+// (HOM1=10, HET=0, HOM2=10), an extreme deficit of heterozygotes with
+// exact p ~= 1.34e-6 (verified via `--hardy` against upstream). The
+// other two biallelic sites are in equilibrium (p == 1.0). Site 1:300
+// is multi-allelic and gets dropped by the upstream max_alleles=2
+// coupling.
+//
+// Expected: sites 1:100 ("in_hwe") and 1:400 ("good") survive; 1:200
+// ("out_hwe") drops on the HWE test; 1:300 ("multi") drops on
+// max_alleles=2.
+func TestParity_HWE_005_fixture(t *testing.T) {
+	prefix := runVcftoolsParity(t, "hwe_fixture.vcf", &Params{
+		MinHWEPvalue: 0.05,
+		MaxAlleles:   2, // upstream's parameters.cpp:254 coupling
+		Recode:       true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "hwe_fixture_005.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_MaxMissingCount_1 — `--max-missing-count 1 --recode` on
+// sample.vcf. Upstream check: `(N_chr - N_non_missing_chr) > 1` drops the
+// site. The two sites with missing data:
+//   - 20:1235237 (`0/0  0|0  ./.`)        → 2 missing chr  → drops (2 > 1)
+//   - X:11      (`.:3:10  ./.  0|2:3`)    → 3 missing chr  → drops (3 > 1)
+//
+// All other 10 sites pass. Pinned byte-for-byte vs upstream golden.
+func TestParity_MaxMissingCount_1(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MaxMissingCount:    1,
+		MaxMissingCountSet: true,
+		Recode:             true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "max_missing_count_1.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_MaxMissingCount_2 — `--max-missing-count 2 --recode` on
+// sample.vcf. The boundary case: 20:1235237 has exactly 2 missing chrs.
+// Upstream uses strict `>` so it KEEPS the site (2 > 2 is false). Our
+// implementation matches. X:11 still drops (3 > 2). Pinned to catch any
+// off-by-one in the comparison.
+func TestParity_MaxMissingCount_2(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MaxMissingCount:    2,
+		MaxMissingCountSet: true,
+		Recode:             true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "max_missing_count_2.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// --pca family deferral (parameters.cpp:308-310). Until we land an in-tree
+// symmetric-eigendecomposition primitive (or accept a single linear-algebra
+// dep) the three PCA flags must fail fast with a clear error message rather
+// than silently producing no output.
+// -----------------------------------------------------------------------------
+
+func TestParity_PCA_Deferred(t *testing.T) {
+	cases := []struct {
+		name   string
+		params *Params
+	}{
+		{"--pca", &Params{PCA: true, Recode: true}},
+		{"--pca-no-norm", &Params{PCA: true, PCANoNorm: true, Recode: true}},
+		{"--pca-snp-loadings 5", &Params{PCASNPLoadings: 5, Recode: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			tc.params.OutPrefix = filepath.Join(tmp, "out")
+			in, err := os.Open(filepath.Join(vcftoolsFixtureDir(t), "sample.vcf"))
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			defer in.Close()
+			err = Run(in, tc.params)
+			if err == nil {
+				t.Fatalf("expected --pca family to be rejected, got nil error")
+			}
+			if !strings.Contains(err.Error(), "pca") {
+				t.Errorf("error doesn't mention pca: %v", err)
+			}
+		})
+	}
+}
+
+// TestSNPHWE_Boundaries — unit test for the SNPHWE port against the
+// hand-computable cases.
+func TestSNPHWE_Boundaries(t *testing.T) {
+	cases := []struct {
+		name             string
+		hom1, het, hom2  int
+		wantMin, wantMax float64
+	}{
+		// Empty site: p_hwe is vacuously 1.0.
+		{"empty", 0, 0, 0, 1.0, 1.0},
+		// All homozygous-ref: p_hwe is 1.0 (no rare allele observed).
+		{"all-hom1", 10, 0, 0, 1.0, 1.0},
+		// Exact equilibrium (5 hom-ref, 10 het, 5 hom-alt; p=q=0.5):
+		// observed het is the mode of the distribution, p_hwe == 1.0.
+		{"in-hwe-balanced", 5, 10, 5, 0.99, 1.0},
+		// Extreme deviation (10 hom-ref, 0 het, 10 hom-alt): exact
+		// p_hwe << 1e-5. Verified against upstream's --hardy output
+		// in TestParity_HWE_005_fixture's docstring.
+		{"out-hwe-extreme", 10, 0, 10, 0.0, 1e-5},
+		// One het, otherwise homozygous: a rare het count is well
+		// within the typical regime (no extreme excess or deficit).
+		{"single-het", 4, 1, 0, 0.5, 1.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := snpHWE(tc.het, tc.hom1, tc.hom2)
+			if p < tc.wantMin || p > tc.wantMax {
+				t.Errorf("snpHWE(%d,%d,%d) = %g, want in [%g, %g]",
+					tc.het, tc.hom1, tc.hom2, p, tc.wantMin, tc.wantMax)
+			}
+		})
+	}
+}

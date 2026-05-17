@@ -31,7 +31,7 @@ This port can:
 - **Variant type filtering**: `--keep-only-indels`, `--remove-indels`, `--min-alleles`/`--max-alleles`
 - **Quality filtering**: `--minQ`, `--remove-filtered-all`
 - **Allele frequency / count filtering**: `--maf`/`--max-maf`, `--mac`/`--max-mac`
-- **Genotype-level filtering**: `--max-missing`, `--min-meanDP`/`--max-meanDP`, `--minDP`/`--maxDP`, `--minGQ`
+- **Genotype-level filtering**: `--max-missing`, `--max-missing-count`, `--hwe`, `--min-meanDP`/`--max-meanDP`, `--minDP`/`--maxDP`, `--minGQ`
 - **Sample filtering**: `--indv`, `--remove-indv`, `--keep`, `--remove`
 
 ### Statistics Output
@@ -178,8 +178,12 @@ issue in `ROADMAP.md`.
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): `--mendel`, `--diff-switch-error`,
-`--pca`, and a long tail of less-used upstream options. See `ROADMAP.md`.
+accepted them and produced nothing): `--pca` / `--pca-no-norm` /
+`--pca-snp-loadings` (deferred — see `docs/PARITY_ROADMAP.md#vcftools`
+for the precise scope of what's needed to land them), and a long tail
+of less-used upstream options. `--mendel` and `--diff-switch-error`
+landed in wave 5; `--hwe` and `--max-missing-count` landed in wave 8.
+See `ROADMAP.md`.
 
 ### Format Support
 

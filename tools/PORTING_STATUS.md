@@ -423,14 +423,17 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~87 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~89 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
 landed in the long-tail wave 4 PR; `--diff-switch-error` + `--mendel`
 landed in the long-tail wave 5 PR; `--non-ref-af` + `--non-ref-ac`
 landed in the long-tail wave 6 PR; `--max-non-ref-af`, `--max-non-ref-ac`,
-and the `*-any` counterparts landed in the long-tail wave 7 PR)
+and the `*-any` counterparts landed in the long-tail wave 7 PR;
+`--hwe` + `--max-missing-count` landed in the long-tail wave 8 PR with
+the `--pca` family deferred — see PARITY_ROADMAP.md#vcftools for the
+PCA re-attempt scope)
 
 **Implemented Commands**:
 
@@ -492,6 +495,23 @@ and the `*-any` counterparts landed in the long-tail wave 7 PR)
   `TestParity_MaxNonRefAF_03_Chr20`, `TestParity_MaxNonRefAC_2_Chr19`,
   `TestParity_MaxNonRefACAny_2_Chr20`,
   `TestParity_NonRefAF_03_Any_06`, `TestParity_NonRefAFAny_NoOp`
+- Hardy-Weinberg + missing-count filters (wave 8): `--hwe FLOAT`
+  applies the Wigginton/Cao/Abecasis 2005 exact-test per biallelic
+  site (line-for-line port of upstream `entry::SNPHWE`); the CLI
+  adapter also forces `--max-alleles 2` to match upstream's
+  `parameters.cpp:254` coupling. `--max-missing-count INT` drops a
+  site when `N_chr - N_non_missing_chr > INT` (counts missing
+  *chromosomes*, not samples), matching upstream
+  `entry_filters.cpp:918`. The `--pca` family
+  (`--pca`, `--pca-no-norm`, `--pca-snp-loadings INT`) is
+  **registered but deferred** — see
+  `docs/PARITY_ROADMAP.md#vcftools` (wave 8 PCA-deferred block) for
+  the re-attempt scope; `Run` rejects these flags with a clear
+  error via `checkUnsupported` rather than silently producing no
+  output. Pinned by `TestParity_HWE_005_sample`,
+  `TestParity_HWE_005_fixture`, `TestParity_MaxMissingCount_1`,
+  `TestParity_MaxMissingCount_2`, `TestParity_PCA_Deferred`,
+  `TestSNPHWE_Boundaries`
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common

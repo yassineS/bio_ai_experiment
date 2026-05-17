@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
@@ -73,6 +74,13 @@ Allele Frequency Filtering:
 
 Genotype Filtering:
   --max-missing FLOAT   Maximum proportion of missing data (0-1)
+  --max-missing-count INT
+                        Maximum number of missing chromosomes (haploid
+                        alleles, NOT samples) tolerated per site. "0"
+                        means "drop any site with any missing call".
+  --hwe FLOAT           Minimum exact-test (Wigginton 2005) HWE p-value
+                        per biallelic site. Setting --hwe also forces
+                        --max-alleles 2 (matches upstream).
   --min-meanDP FLOAT    Minimum mean depth across samples
   --max-meanDP FLOAT    Maximum mean depth across samples
   --phased              Keep only sites where every kept-individual GT is
@@ -270,11 +278,33 @@ func main() {
 
 	// Genotype filtering
 	maxMissing := flag.Float64("max-missing", 1, "Maximum proportion of missing data")
+	// --max-missing-count: use flag.Func so we can record whether the
+	// flag was supplied at all (vs defaulted), since "0" is a meaningful
+	// user-supplied value (drop any site with any missing call).
+	var maxMissingCount int
+	var maxMissingCountSet bool
+	flag.Func("max-missing-count", "Maximum number of missing chromosomes (haploid alleles, NOT samples) tolerated per site", func(s string) error {
+		v, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return fmt.Errorf("--max-missing-count: %w", err)
+		}
+		if v < 0 {
+			return fmt.Errorf("--max-missing-count must be >= 0")
+		}
+		maxMissingCount = v
+		maxMissingCountSet = true
+		return nil
+	})
 	minMeanDP := flag.Float64("min-meanDP", 0, "Minimum mean depth")
 	maxMeanDP := flag.Float64("max-meanDP", 0, "Maximum mean depth")
 	minDP := flag.Int("minDP", 0, "Minimum depth per genotype")
 	maxDP := flag.Int("maxDP", 0, "Maximum depth per genotype")
 	minGQ := flag.Int("minGQ", 0, "Minimum genotype quality")
+	// --hwe FLOAT: minimum exact-test HWE p-value per site (biallelic;
+	// upstream also forces max_alleles=2 when this flag is set —
+	// parameters.cpp:254). We apply max_alleles=2 below at param-build
+	// time to mirror upstream's behaviour exactly.
+	hwePvalue := flag.Float64("hwe", 0, "Minimum exact-test HWE p-value per biallelic site (Wigginton 2005)")
 
 	// Statistics output
 	freq := flag.Bool("freq", false, "Output allele frequency")
@@ -341,6 +371,15 @@ func main() {
 	// IMPUTE output (case-sensitive flag name to match upstream). Implies
 	// --phased, biallelic-only, and rejects any site with a missing GT.
 	impute := flag.Bool("IMPUTE", false, "Output IMPUTE reference-panel format (.impute.legend/.impute.hap/.impute.hap.indv); phased biallelic SNPs with no missing data only")
+
+	// --pca / --pca-no-norm / --pca-snp-loadings INT: registered for CLI
+	// parity (so misuse is reported clearly) but not yet implemented.
+	// Run() will reject these via checkUnsupported. See
+	// docs/PARITY_ROADMAP.md#vcftools (wave 8 deferral note) for the
+	// scope of what's required to land them.
+	pca := flag.Bool("pca", false, "Principal component analysis (NOT IMPLEMENTED — see docs/PARITY_ROADMAP.md#vcftools)")
+	pcaNoNorm := flag.Bool("pca-no-norm", false, "PCA without normalisation (NOT IMPLEMENTED — see docs/PARITY_ROADMAP.md#vcftools)")
+	pcaSNPLoadings := flag.Int("pca-snp-loadings", 0, "Number of top PCs for SNP loadings (NOT IMPLEMENTED — see docs/PARITY_ROADMAP.md#vcftools)")
 
 	// --phased: keep only sites where every kept-individual GT is phased.
 	phased := flag.Bool("phased", false, "Keep only sites where every kept-individual GT is phased (separator '|' or haploid)")
@@ -501,6 +540,9 @@ func main() {
 		MaxNonRefAFAny:        *maxNonRefAFAny,
 		MaxNonRefACAny:        *maxNonRefACAny,
 		MaxMissing:            *maxMissing,
+		MaxMissingCount:       maxMissingCount,
+		MaxMissingCountSet:    maxMissingCountSet,
+		MinHWEPvalue:          *hwePvalue,
 		MinMeanDP:             *minMeanDP,
 		MaxMeanDP:             *maxMeanDP,
 		MinDP:                 *minDP,
@@ -582,6 +624,19 @@ func main() {
 		LDhatGeno:             *ldhatGeno,
 		LDhelmet:              *ldhelmet,
 		IMPUTE:                *impute,
+		PCA:                   *pca,
+		PCANoNorm:             *pcaNoNorm,
+		PCASNPLoadings:        *pcaSNPLoadings,
+	}
+
+	// --hwe implies max_alleles = 2 in upstream (parameters.cpp:254).
+	// Apply the same coupling here so the user's CLI invocation behaves
+	// identically (e.g. `--vcf x.vcf --hwe 0.05 --recode` drops multi-
+	// allelic sites even when --max-alleles is at its default of 0).
+	if *hwePvalue > 0 {
+		if params.MaxAlleles == 0 || params.MaxAlleles > 2 {
+			params.MaxAlleles = 2
+		}
 	}
 
 	// Run vcftools
