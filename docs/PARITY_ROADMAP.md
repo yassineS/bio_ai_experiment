@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~89 of ~147 options (~61%) after long-tail wave 8.
+**Status:** ~91 of ~147 options (~62%) after long-tail wave 9.
 
 Closed in wave 1:
 
@@ -759,6 +759,41 @@ Closed in wave 8 (this PR):
   "user passed 0" (drop any site with any missing call) from
   "user omitted the flag" (no filter); the CLI registers the flag via
   `flag.Func` to record both. ✅
+
+Closed in wave 9 (this PR):
+
+- **`--kept-sites`** — emits `<prefix>.kept.sites`, a two-column
+  `CHROM\tPOS` TSV listing every site that survived all filters in
+  input order. Ported from upstream `parameters.cpp:268` +
+  `variant_file_output.cpp:4285-4326` (`output_kept_sites`). Upstream
+  re-parses the input file specifically for this output and re-runs
+  `entry::apply_filters` (`entry_filters.cpp:23`) on every entry; we
+  piggy-back on the existing filter pipeline in `Run` instead, which is
+  equivalent because the same filter gates apply to both code paths.
+  Header is `CHROM\tPOS` (tab-separated, LF terminator), matching
+  upstream's `out << "CHROM\\t" << "POS" << endl;`. Pinned by
+  `TestParity_KeptSites_NoFilter` (all-sites-pass case),
+  `TestParity_KeptSites_HWE` (HWE filter), and
+  `TestParity_KeptSites_PosFilter` (chr+from-bp+to-bp filter). ✅
+- **`--removed-sites`** — counterpart of `--kept-sites`: emits
+  `<prefix>.removed.sites` with the same column layout, listing sites
+  *dropped* by any filter. Ported from upstream `parameters.cpp:330` +
+  `variant_file_output.cpp:4328-4373` (`output_removed_sites`). Pinned
+  by `TestParity_RemovedSites_HWE` and `TestParity_RemovedSites_PosFilter`.
+  Plus `TestKeptRemoved_Disjoint_And_Complete` (port-only invariant —
+  upstream forbids both flags in one run via `num_outputs > 1`; we
+  deliberately do not replicate that constraint per the CLAUDE.md
+  "don't replicate upstream bugs" rule, and instead verify that the
+  combined invocation partitions the input perfectly) and
+  `TestKeptRemoved_Disabled_NoFiles` (neither flag → no file leaked). ✅
+
+Implementation note: the trace writer lives in
+`tools/vcftools/pkg/vcftools/sitetrace.go`. Each `continue` in the main
+filter loop of `vcftools.go:Run` now calls
+`siteTracker.recordRemoved(chrom, pos)` immediately before bailing out,
+and the successful path calls `siteTracker.recordKept(chrom, pos)` just
+before `keptSites++`. Both methods are no-ops when the corresponding
+flag is not set (cheap nil-check on the bufio.Writer).
 
 **PCA family deferred** (`--pca`, `--pca-no-norm`,
 `--pca-snp-loadings INT`; upstream `parameters.cpp:308-310`,

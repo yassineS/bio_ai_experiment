@@ -48,6 +48,9 @@ This port can:
 - Weir & Cockerham 1984 Fst per biallelic SNP (`--weir-fst-pop` → `.weir.fst`) plus optional windowed output (`--fst-window-size`, `--fst-window-step` → `.windowed.weir.fst`); the per-site mean and weighted Fst summary is printed to stderr.
 - Indel length histogram (`--hist-indel-len` → `.indel.hist`)
 - FILTER summary (`--FILTER-summary`); SNP density (`--SNPdensity N`)
+- Site-pass / site-fail trace (`--kept-sites` → `.kept.sites`,
+  `--removed-sites` → `.removed.sites`): two-column `CHROM\tPOS` TSVs
+  listing which sites pass or fail every filter, in input order.
 
 `--site-pi` uses the standard per-site formula `(n² − Σ cₐ²) / (n(n−1))` over
 non-missing chromosomes; `--window-pi` reports the sum of per-site π over each

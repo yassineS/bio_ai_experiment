@@ -109,6 +109,8 @@ Statistics Output:
   --geno-depth          Output a per-genotype read-depth matrix (.gdepth)
   --FILTER-summary      Output a summary of FILTER values
   --SNPdensity INT      Output SNP density in bins of size INT
+  --kept-sites          Output CHROM/POS of sites that pass filters (.kept.sites)
+  --removed-sites       Output CHROM/POS of sites that fail filters (.removed.sites)
 
 Population Genetics:
   --window-pi INT       Nucleotide diversity summed over windows of size INT
@@ -327,6 +329,11 @@ func main() {
 	singletons := flag.Bool("singletons", false, "Singleton site analysis")
 	histIndelLen := flag.Bool("hist-indel-len", false, "Histogram of indel lengths (.indel.hist)")
 	genoDepth := flag.Bool("geno-depth", false, "Per-genotype read-depth matrix (.gdepth)")
+	// --kept-sites / --removed-sites emit a 2-column (CHROM, POS) TSV
+	// listing the sites that pass / fail filtering. Mirrors upstream
+	// parameters.cpp:268, 330 + variant_file_output.cpp:4285-4373.
+	keptSites := flag.Bool("kept-sites", false, "Output CHROM/POS of sites that pass filters (.kept.sites)")
+	removedSites := flag.Bool("removed-sites", false, "Output CHROM/POS of sites that fail filters (.removed.sites)")
 
 	// Population genetics statistics
 	windowPi := flag.Int("window-pi", 0, "Nucleotide diversity summed over windows of this size")
@@ -627,6 +634,8 @@ func main() {
 		PCA:                   *pca,
 		PCANoNorm:             *pcaNoNorm,
 		PCASNPLoadings:        *pcaSNPLoadings,
+		KeptSites:             *keptSites,
+		RemovedSites:          *removedSites,
 	}
 
 	// --hwe implies max_alleles = 2 in upstream (parameters.cpp:254).

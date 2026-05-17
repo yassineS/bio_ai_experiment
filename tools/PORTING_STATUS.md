@@ -423,7 +423,7 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~89 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~91 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
@@ -433,7 +433,8 @@ landed in the long-tail wave 6 PR; `--max-non-ref-af`, `--max-non-ref-ac`,
 and the `*-any` counterparts landed in the long-tail wave 7 PR;
 `--hwe` + `--max-missing-count` landed in the long-tail wave 8 PR with
 the `--pca` family deferred — see PARITY_ROADMAP.md#vcftools for the
-PCA re-attempt scope)
+PCA re-attempt scope; `--kept-sites` + `--removed-sites` landed in the
+long-tail wave 9 PR)
 
 **Implemented Commands**:
 
@@ -512,6 +513,19 @@ PCA re-attempt scope)
   `TestParity_HWE_005_fixture`, `TestParity_MaxMissingCount_1`,
   `TestParity_MaxMissingCount_2`, `TestParity_PCA_Deferred`,
   `TestSNPHWE_Boundaries`
+- Site-trace outputs (wave 9): `--kept-sites` and `--removed-sites`
+  emit `<prefix>.kept.sites` / `<prefix>.removed.sites`, two-column
+  `CHROM\tPOS` TSV files listing the sites that pass / fail every
+  filter in input order. Ported from upstream
+  `parameters.cpp:268, 330` + `variant_file_output.cpp:4285-4373`.
+  The port piggy-backs on the existing filter pipeline in `Run`
+  (each `continue` calls `siteTracker.recordRemoved`; the success
+  path calls `recordKept`) rather than re-parsing the input file
+  like upstream does. Pinned by `TestParity_KeptSites_NoFilter`,
+  `TestParity_KeptSites_HWE`, `TestParity_KeptSites_PosFilter`,
+  `TestParity_RemovedSites_HWE`, `TestParity_RemovedSites_PosFilter`,
+  `TestKeptRemoved_Disjoint_And_Complete`,
+  `TestKeptRemoved_Disabled_NoFiles`
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common

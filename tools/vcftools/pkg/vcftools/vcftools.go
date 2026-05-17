@@ -320,6 +320,23 @@ type Params struct {
 	PCA            bool
 	PCANoNorm      bool
 	PCASNPLoadings int
+
+	// KeptSites enables --kept-sites: writes `<prefix>.kept.sites`, a
+	// two-column (CHROM, POS) TSV listing every site that survived all
+	// filters. Mirrors upstream parameters.cpp:268 +
+	// variant_file_output.cpp:4285-4326 (output_kept_sites). The file
+	// has a `CHROM\tPOS` header followed by one row per kept site, in
+	// input order. Composes with every other filter — the contents
+	// match the sites that --recode would emit.
+	KeptSites bool
+
+	// RemovedSites enables --removed-sites: writes `<prefix>.removed.sites`,
+	// a two-column (CHROM, POS) TSV listing every site that was dropped
+	// by any filter. Mirrors upstream parameters.cpp:330 +
+	// variant_file_output.cpp:4328-4373 (output_removed_sites). Header is
+	// `CHROM\tPOS`; rows appear in input order. With no filters set,
+	// the file contains only the header (every site is kept).
+	RemovedSites bool
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -563,6 +580,22 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// --kept-sites / --removed-sites trace writers. The tracker is
+	// non-nil even when both flags are off so the recordKept /
+	// recordRemoved calls in the hot loop stay branchless aside from
+	// the writer nil-check inside the method. See sitetrace.go for the
+	// upstream byte-for-byte format derivation.
+	siteTrace, err := newSiteTracker(params.OutPrefix, params.KeptSites, params.RemovedSites)
+	if err != nil {
+		return fmt.Errorf("initialising site-trace output: %w", err)
+	}
+	// Reviewer-flagged PR #133 nit: Run has ~20 early-return paths; without
+	// a deferred close the buffered writers leak FDs and leave truncated
+	// .kept.sites / .removed.sites files on disk. The explicit close at
+	// the bottom of Run still runs first on the success path; the defer
+	// is a safety net for all error paths.
+	defer func() { _ = siteTrace.close() }()
+
 	// Process variants
 	keptSites := 0
 	totalSites := 0
@@ -584,12 +617,18 @@ func Run(input io.Reader, params *Params) error {
 		if params.Thin > 0 {
 			thinCounter++
 			if thinCounter%params.Thin != 0 {
+				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+					return err
+				}
 				continue
 			}
 		}
 
 		// Apply filters
 		if !passFilters(variant, params, includePositions, excludePositions, includeSNPs, excludeSNPs, includeBed, excludeBed) {
+			if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -598,9 +637,15 @@ func Run(input io.Reader, params *Params) error {
 		// least one of the named FILTERs. Both compose with
 		// --remove-filtered-all (which is the union of all non-PASS sites).
 		if !passRemoveFilteredNames(variant, removeFilteredSet) {
+			if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+				return err
+			}
 			continue
 		}
 		if !passKeepFilteredNames(variant, keepFilteredSet) {
+			if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -617,6 +662,9 @@ func Run(input io.Reader, params *Params) error {
 		// sample filter.
 		if params.Phased || params.LDhat || params.LDhelmet || params.IMPUTE {
 			if !isPhasedSite(filteredVariant) {
+				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+					return err
+				}
 				continue
 			}
 		}
@@ -627,6 +675,9 @@ func Run(input io.Reader, params *Params) error {
 		// implicitly for --ldhelmet even if the user didn't set
 		// --remove-indels explicitly.
 		if params.LDhelmet && isIndelVariant(filteredVariant) {
+			if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -753,6 +804,9 @@ func Run(input io.Reader, params *Params) error {
 			}
 		}
 
+		if err := siteTrace.recordKept(variant.Chrom, variant.Pos); err != nil {
+			return err
+		}
 		keptSites++
 	}
 
@@ -854,6 +908,11 @@ func Run(input io.Reader, params *Params) error {
 	// --mendel output.
 	if err := mendel.close(); err != nil {
 		return fmt.Errorf("closing --mendel output: %w", err)
+	}
+
+	// --kept-sites / --removed-sites output.
+	if err := siteTrace.close(); err != nil {
+		return err
 	}
 
 	return nil
