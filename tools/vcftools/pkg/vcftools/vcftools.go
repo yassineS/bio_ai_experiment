@@ -410,6 +410,33 @@ type Params struct {
 	// variant_file_format_convert.cpp:1204-1263
 	// (output_FORMAT_information).
 	ExtractFormatInfo string
+
+	// IndvBurden enables --indv-burden: writes <prefix>.iburden with one
+	// row per kept individual giving the per-individual count of
+	// hom-ref / het / hom-alt / missing diploid genotypes across the
+	// kept sites. With --derived the "ref" / "alt" columns become "anc"
+	// / "der" and sites without a resolvable AA are skipped. Mirrors
+	// upstream parameters.cpp:257 + variant_file_output.cpp:378-498
+	// (output_indv_burden).
+	IndvBurden bool
+
+	// IndvFreqBurden enables --indv-freq-burden: writes
+	// <prefix>.ifreqburden, a per-individual × per-allele-count
+	// matrix where cell [i, j] is the number of non-reference (or
+	// non-ancestral, with --derived) alleles that individual i carries
+	// at sites where the chosen allele's per-site count across the
+	// kept individuals is j. Mirrors upstream parameters.cpp:258 +
+	// variant_file_output.cpp:501-627 (output_indv_freq_burden with
+	// double_count_hom_alt=0).
+	IndvFreqBurden bool
+
+	// IndvFreqBurden2 enables --indv-freq-burden2: same as
+	// --indv-freq-burden but with double_count_hom_alt=1 — a hom-alt
+	// genotype contributes 1 (not 2) to the per-allele-count bin.
+	// Upstream and the port both write to <prefix>.ifreqburden, so
+	// supplying both is meaningless (only one wins). Mirrors upstream
+	// parameters.cpp:259 + variant_file_output.cpp:501-627.
+	IndvFreqBurden2 bool
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -630,6 +657,29 @@ func Run(input io.Reader, params *Params) error {
 		if err != nil {
 			return fmt.Errorf("initialising --extract-FORMAT-info: %w", err)
 		}
+	}
+
+	// --indv-burden / --indv-freq-burden / --indv-freq-burden2: per-
+	// individual diploid-burden accumulators. Both runners stream all
+	// kept sites (the filter chain ahead handles --chr / --maf / etc.)
+	// and the writers flush at end-of-stream. Upstream dispatches the
+	// three flags through two routines (vcftools.cpp:61-64) — we mirror
+	// that exactly: --indv-freq-burden2 just sets doubleCountHomAlt.
+	var indvBurden *indvBurdenRunner
+	if params.IndvBurden {
+		indvBurden = newIndvBurdenRunner(filteredHeader.Samples, params.Derived)
+	}
+	var indvFreqBurden *indvFreqBurdenRunner
+	if params.IndvFreqBurden || params.IndvFreqBurden2 {
+		// header.Samples carries the original (pre-sample-filter) VCF
+		// sample list so the label-column upstream-bug can be
+		// reproduced byte-for-byte. See burden.go for the writeup.
+		indvFreqBurden = newIndvFreqBurdenRunner(
+			filteredHeader.Samples,
+			header.Samples,
+			params.IndvFreqBurden2,
+			params.Derived,
+		)
 	}
 
 	// --ldhat / --ldhat-geno: buffer per-site genotype rows and emit the
@@ -885,6 +935,16 @@ func Run(input io.Reader, params *Params) error {
 			}
 		}
 
+		// Per-individual burden accumulators (--indv-burden,
+		// --indv-freq-burden, --indv-freq-burden2). Both runners drop
+		// non-diploid sites internally to match upstream.
+		if indvBurden != nil {
+			indvBurden.addVariant(filteredVariant)
+		}
+		if indvFreqBurden != nil {
+			indvFreqBurden.addVariant(filteredVariant)
+		}
+
 		// LDhat buffer (biallelic-only filtering is applied inside).
 		if ldhat != nil {
 			ldhat.addVariant(filteredVariant)
@@ -1033,6 +1093,17 @@ func Run(input io.Reader, params *Params) error {
 	// --extract-FORMAT-info output.
 	if err := extractFmt.close(); err != nil {
 		return fmt.Errorf("closing --extract-FORMAT-info output: %w", err)
+	}
+
+	// --indv-burden output.
+	if err := indvBurden.writeOutput(params.OutPrefix); err != nil {
+		return fmt.Errorf("writing --indv-burden output: %w", err)
+	}
+
+	// --indv-freq-burden / --indv-freq-burden2 output. Both flags
+	// share the .ifreqburden suffix upstream, so we only call once.
+	if err := indvFreqBurden.writeOutput(params.OutPrefix); err != nil {
+		return fmt.Errorf("writing --indv-freq-burden output: %w", err)
 	}
 
 	// --ldhat / --ldhat-geno output.

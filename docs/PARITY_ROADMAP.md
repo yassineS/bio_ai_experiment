@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~103 of ~147 options (~70%) after long-tail wave 13.
+**Status:** ~106 of ~147 options (~72%) after long-tail wave 14.
 
 Closed in wave 1:
 
@@ -969,9 +969,9 @@ Implementation notes (wave 13):
   `TestDerived_NoFreqIsNoOp`. Upstream's
   `parameters.cpp:201` only flips a boolean; the reorder logic lives
   inside `output_frequency` (the boolean is also consumed by
-  `output_indv_burden` and `output_indv_freq_burden`, but those two
-  outputs are tracked in the "burden bucket" of unimplemented flags
-  and `--derived` is a no-op for them in this port too).
+  `output_indv_burden` and `output_indv_freq_burden`; both burden
+  flags now honour `--derived` after wave 14 — see the wave-14
+  section below).
 - AA uppercasing — upstream calls
   `std::transform(AA.begin(), AA.end(), AA.begin(), ::toupper)` on
   line 78 / 439 / 564 before comparing against `e->get_allele(ui)`.
@@ -989,6 +989,67 @@ Implementation notes (wave 13):
   therefore read back as missing-from-map. We treat that as upstream's
   "value vector too short → '.'" case (vcf_entry.cpp:618-637). Pinned
   by sites 1:100/S3, 1:400/S2 in `extract_format_fixture.vcf`.
+
+Closed in wave 14 (this PR):
+
+- **`--indv-burden`** — per-individual diploid-burden counts emitted to
+  `<prefix>.iburden`. Header is
+  `INDV\tN_HOM_REF\tN_HET\tN_HOM_ALT\tN_MISS`; with `--derived` the
+  `_REF` / `_ALT` columns rename to `_ANC` / `_DER`. Non-diploid sites
+  are skipped (upstream's `if (e->is_diploid() == false) continue;` at
+  `variant_file_output.cpp:429-433`). With `--derived` the site's
+  INFO/AA tag picks the ancestral-allele index; sites where AA is
+  missing, `.`, `?`, or does not match any REF/ALT are skipped. Ported
+  from upstream `parameters.cpp:257` +
+  `variant_file_output.cpp:378-498` (`output_indv_burden`). ✅
+- **`--indv-freq-burden`** — per-individual × per-allele-count matrix
+  written to `<prefix>.ifreqburden`. For each kept diploid site,
+  computes the per-allele count vector across kept individuals and
+  for each kept individual increments the burden cell at column
+  `allele_counts[geno_allele]` for each non-ref (or non-ancestral with
+  `--derived`) allele the individual carries. Mirrors upstream
+  `parameters.cpp:258` + `variant_file_output.cpp:501-627`
+  (`output_indv_freq_burden` with `double_count_hom_alt=0`). ✅
+- **`--indv-freq-burden2`** — same as `--indv-freq-burden` but with
+  `double_count_hom_alt=1`, so a hom-alt genotype contributes 1 (not
+  2) to the corresponding allele-count bin. Mirrors `vcftools.cpp:64`
+  + the same `output_indv_freq_burden` routine. ✅
+
+Implementation notes (wave 14):
+
+- All three flags share `burden.go`: `indvBurdenRunner` for
+  `--indv-burden` and `indvFreqBurdenRunner` for the two
+  freq-burden variants (the latter takes a `doubleCountHomAlt`
+  toggle for `--indv-freq-burden2`).
+- **Upstream label-index bug preserved.**
+  `output_indv_freq_burden` writes
+  `out << meta_data.indv[indv_count];` at line 621 — that should be
+  `meta_data.indv[ui]` (the original-index). With `--remove-indv` (or
+  any sample-filter) dropping a non-trailing sample, the labels in
+  `.ifreqburden` shift relative to the burden values (e.g. excluding
+  `S2` from `[S1,S2,S3,S4]` yields labels `S1,S2,S3` for kept
+  individuals `S1,S3,S4`). We mirror this byte-for-byte;
+  pinned by `TestParity_IndvFreqBurden_LabelBug`. The
+  `output_indv_burden` function at lines 488-497 correctly uses
+  `meta_data.indv[ui]` and is not affected.
+- The diploid-only check is per-site: any haploid genotype in a kept
+  individual disqualifies the entire site. Upstream emits a one-off
+  warning at `variant_file_output.cpp:431`; we do not re-emit the
+  warning byte-for-byte but skip the site identically. Pinned by
+  `TestIndvBurden_SkipsNonDiploid`.
+- The `ancestralAlleleIndex` helper centralises the
+  `variant_file_output.cpp:437-462` AA-resolution logic (uppercase
+  match, missing-sentinel handling) so the same predicate is used by
+  both burden runners and stays consistent with how
+  `addFrequencyStat` already implements the `--derived` filter (see
+  wave 13).
+- The `diploidAlleles` helper splits a `a/b` / `a|b` GT into
+  `(a1, a2)`, treating `.` as -1, and is shared by both runners. The
+  existing `parseGTForLDhat` parser was close but its haploid branch
+  silently coerces a missing single-allele GT into a `(−1, −2,
+  true)` triple that the burden routines need to reject as
+  non-diploid; `diploidAlleles` returns `ok=false` for any GT without
+  a separator so the caller can do the diploid-skip up front.
 
 **PCA family deferred** (`--pca`, `--pca-no-norm`,
 `--pca-snp-loadings INT`; upstream `parameters.cpp:308-310`,
