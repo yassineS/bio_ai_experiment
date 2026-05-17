@@ -589,6 +589,12 @@ func Run(input io.Reader, params *Params) error {
 	if err != nil {
 		return fmt.Errorf("initialising site-trace output: %w", err)
 	}
+	// Reviewer-flagged PR #133 nit: Run has ~20 early-return paths; without
+	// a deferred close the buffered writers leak FDs and leave truncated
+	// .kept.sites / .removed.sites files on disk. The explicit close at
+	// the bottom of Run still runs first on the success path; the defer
+	// is a safety net for all error paths.
+	defer func() { _ = siteTrace.close() }()
 
 	// Process variants
 	keptSites := 0

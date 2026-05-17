@@ -103,6 +103,9 @@ func (t *siteTracker) recordRemoved(chrom string, pos int) error {
 
 // close flushes and closes any underlying files. Safe to call on a nil
 // receiver or when no outputs were requested.
+// close flushes and closes the kept/removed-site files. Safe to call
+// multiple times: handles are nil'd after first close so the deferred
+// safety-net close in Run is a no-op on the success path.
 func (t *siteTracker) close() error {
 	if t == nil {
 		return nil
@@ -112,21 +115,25 @@ func (t *siteTracker) close() error {
 		if err := t.keptW.Flush(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("flushing --kept-sites: %w", err)
 		}
+		t.keptW = nil
 	}
 	if t.keptF != nil {
 		if err := t.keptF.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("closing --kept-sites: %w", err)
 		}
+		t.keptF = nil
 	}
 	if t.removedW != nil {
 		if err := t.removedW.Flush(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("flushing --removed-sites: %w", err)
 		}
+		t.removedW = nil
 	}
 	if t.removedF != nil {
 		if err := t.removedF.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("closing --removed-sites: %w", err)
 		}
+		t.removedF = nil
 	}
 	return firstErr
 }
