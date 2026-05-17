@@ -423,7 +423,7 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~99 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~101 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
@@ -437,7 +437,9 @@ PCA re-attempt scope; `--kept-sites` + `--removed-sites` landed in the
 long-tail wave 9 PR; `--remove-filtered-geno`,
 `--remove-filtered-geno-all`, `--max-indv`, `--keep-INFO-all`, and
 `--version` landed in the long-tail wave 10 PR; `--mask`,
-`--invert-mask`, and `--mask-min` landed in the long-tail wave 11 PR)
+`--invert-mask`, and `--mask-min` landed in the long-tail wave 11 PR;
+`--positions-overlap` + `--exclude-positions-overlap` landed in the
+long-tail wave 12 PR)
 
 **Implemented Commands**:
 
@@ -560,6 +562,23 @@ long-tail wave 9 PR; `--remove-filtered-geno`,
   cursor advancement (`TestMaskFilter_ParseSlabs`,
   `TestMaskFilter_OffEndDrops`, `TestMaskFilter_OutOfOrderVCFDrops`,
   ...)
+- Position-overlap filters (wave 12): `--positions-overlap FILE` and
+  `--exclude-positions-overlap FILE` ported from upstream
+  `parameters.cpp:221/315` + `entry_filters.cpp:408-548`
+  (`filter_sites_by_overlap_positions`). Same two-column file format
+  as `--positions` but the per-record check sweeps every base in
+  `[POS, POS+len(REF)-1]` against the set, so multi-base REF records
+  (indels, MNPs) match positions interior to their reference allele.
+  Sites on chromosomes absent from the include file are dropped;
+  sites on chromosomes absent from the exclude file pass through —
+  both behaviours mirror the upstream `chr_to_idx.find` guards.
+  Pinned by `TestParity_PositionsOverlap_Keep`,
+  `TestParity_PositionsOverlap_Exclude`,
+  `TestPositionsOverlap_VsPlain_DivergesOnMultiBaseRef`,
+  `TestPositionsOverlap_BoundaryHits` (table-driven),
+  `TestPositionsOverlap_UnknownChromDropped`,
+  `TestExcludePositionsOverlap_UnknownChromKept`,
+  `TestPositionsOverlap_MissingFile`
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common

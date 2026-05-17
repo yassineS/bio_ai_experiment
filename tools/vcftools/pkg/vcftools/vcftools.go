@@ -30,6 +30,21 @@ type Params struct {
 	PositionsFile        string
 	ExcludePositionsFile string
 
+	// --positions-overlap FILE / --exclude-positions-overlap FILE keep or
+	// drop a site when ANY base of its reference allele falls on a position
+	// listed in the file. The point-positions variants (--positions /
+	// --exclude-positions) above test only the leading POS column. Multi-
+	// base REF records (indels, MNPs) therefore behave differently between
+	// the two flag pairs: a record at POS=200 with REF="ACGT" matches a
+	// positions-overlap entry at any of 200..203, but matches a plain
+	// positions entry only at 200. Ported from upstream
+	// parameters.cpp:221,315 + entry_filters.cpp:408-548
+	// (filter_sites_by_overlap_positions). File format is the same
+	// two-column whitespace-separated (CHROM, POS) text used by --positions,
+	// with `#` comments and blank lines tolerated.
+	PositionsOverlapFile        string
+	ExcludePositionsOverlapFile string
+
 	// SNP ID filtering
 	SNP         string
 	SNPs        string
@@ -408,6 +423,27 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// Load overlap position filters. Same file format as --positions but
+	// the match check sweeps every base in [POS, POS+len(REF)-1] against the
+	// set — see entry_filters.cpp:513-547. Stored separately from the plain
+	// include/exclude sets so the two flag pairs can coexist (the upstream
+	// implementation reuses one map and consequently has a documented
+	// quirk where combining them silently degrades to overlap semantics for
+	// whichever was supplied second; we keep the two filters independent).
+	var includePositionsOverlap, excludePositionsOverlap positionSet
+	if params.PositionsOverlapFile != "" {
+		includePositionsOverlap, err = loadPositions(params.PositionsOverlapFile)
+		if err != nil {
+			return fmt.Errorf("loading positions-overlap file: %w", err)
+		}
+	}
+	if params.ExcludePositionsOverlapFile != "" {
+		excludePositionsOverlap, err = loadPositions(params.ExcludePositionsOverlapFile)
+		if err != nil {
+			return fmt.Errorf("loading exclude-positions-overlap file: %w", err)
+		}
+	}
+
 	// Load BED-based filters (--bed / --exclude-bed). Both are optional;
 	// supplying both composes them (a site must pass include AND not be
 	// excluded).
@@ -673,7 +709,7 @@ func Run(input io.Reader, params *Params) error {
 		}
 
 		// Apply filters
-		if !passFilters(variant, params, includePositions, excludePositions, includeSNPs, excludeSNPs, includeBed, excludeBed) {
+		if !passFilters(variant, params, includePositions, excludePositions, includePositionsOverlap, excludePositionsOverlap, includeSNPs, excludeSNPs, includeBed, excludeBed) {
 			if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
 				return err
 			}
@@ -1004,7 +1040,7 @@ func beagleGLMode() beagleMode { return beagleGL }
 func beaglePLMode() beagleMode { return beaglePL }
 
 // passFilters checks if a variant passes all filters
-func passFilters(v *vcf.Variant, params *Params, includePos, excludePos positionSet, includeSNPs, excludeSNPs map[string]bool, includeBed, excludeBed *bedRegions) bool {
+func passFilters(v *vcf.Variant, params *Params, includePos, excludePos, includePosOverlap, excludePosOverlap positionSet, includeSNPs, excludeSNPs map[string]bool, includeBed, excludeBed *bedRegions) bool {
 	// SNP ID filters
 	if includeSNPs != nil && len(includeSNPs) > 0 {
 		if !includeSNPs[v.ID] {
@@ -1045,6 +1081,47 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 		if chromPos, ok := excludePos[v.Chrom]; ok {
 			if chromPos[v.Pos] {
 				return false
+			}
+		}
+	}
+
+	// --positions-overlap / --exclude-positions-overlap: sweep every base
+	// in [POS, POS+len(REF)-1] against the set. Ported from upstream
+	// entry_filters.cpp:513-547. Length is taken from REF (the loop is
+	// `for ui=POS; ui<POS+REF.size(); ui++`); we guard against an empty
+	// REF (defensive — valid VCFs always have len(REF) >= 1) so the loop
+	// always considers at least the POS itself, matching what upstream
+	// does when REF.size() >= 1.
+	if includePosOverlap != nil {
+		chromPos, ok := includePosOverlap[v.Chrom]
+		if !ok {
+			return false
+		}
+		refLen := len(v.Ref)
+		if refLen < 1 {
+			refLen = 1
+		}
+		found := false
+		for p := v.Pos; p < v.Pos+refLen; p++ {
+			if chromPos[p] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if excludePosOverlap != nil {
+		if chromPos, ok := excludePosOverlap[v.Chrom]; ok {
+			refLen := len(v.Ref)
+			if refLen < 1 {
+				refLen = 1
+			}
+			for p := v.Pos; p < v.Pos+refLen; p++ {
+				if chromPos[p] {
+					return false
+				}
 			}
 		}
 	}
