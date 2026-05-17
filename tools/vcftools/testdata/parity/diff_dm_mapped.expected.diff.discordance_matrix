@@ -1,0 +1,5 @@
+-	N_0/0_file1	N_0/1_file1	N_1/1_file1	N_./._file1
+N_0/0_file2	2	0	0	0
+N_0/1_file2	1	1	0	0
+N_1/1_file2	0	2	0	0
+N_./._file2	0	0	0	0
