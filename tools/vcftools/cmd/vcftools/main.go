@@ -216,6 +216,19 @@ FILTER / INFO Selection:
                         columns are allele-count bins 0..2N.
   --indv-freq-burden2   Like --indv-freq-burden but hom-alt genotypes
                         contribute 1 (not 2) to the per-bin count.
+  --hapcount BED        Per-bin haplotype-count summaries (.hapcount).
+                        Auto-detects BED headers (lines starting with
+                        '#', 'track', 'browser', or blank lines).
+                        Bins must be non-overlapping. Implies --phased.
+
+Diff:
+  --diff FILE           Second VCF for --diff-* outputs.
+  --gzdiff FILE         Alias for --diff (iohelper auto-sniffs gzip).
+
+Misc:
+  --temp DIR            Spill-file directory (accepted for parity;
+                        this port doesn't spill to disk so the flag
+                        has no observable effect).
 
 Sample Filtering:
   --indv STRING         Include only this individual (can use multiple times)
@@ -515,6 +528,30 @@ func main() {
 	indvFreqBurden := flag.Bool("indv-freq-burden", false, "Per-individual frequency-burden matrix (.ifreqburden)")
 	indvFreqBurden2 := flag.Bool("indv-freq-burden2", false, "Same as --indv-freq-burden but hom-alt contributes 1 (not 2)")
 
+	// --hapcount BED — per-BED-bin haplotype-count summaries
+	// (.hapcount). Upstream parameters.cpp:248 sets `phased_only = true`
+	// so unphased sites are dropped before this output is computed
+	// (matched in Run()). Three upstream bugs in
+	// `output_haplotype_count` are fixed-on-port (see hapcount.go and
+	// docs/UPSTREAM_BUGS.md): prev_bin_idx shift on bin change,
+	// end-of-stream read-after-free, and BED first-line silent skip.
+	hapcountBED := flag.String("hapcount", "", "BED file of bins for per-bin haplotype-count summaries (.hapcount); implies --phased")
+
+	// --temp DIR — upstream parameters.cpp:341 stores a directory used
+	// for `mkstemp` spill files in LD / format-convert paths. This port
+	// does not spill, so the flag is accepted for CLI parity but has
+	// no observable effect (Run() logs to stderr that the value was
+	// parsed-but-unused). Documented in docs/PARITY_ROADMAP.md.
+	tempDir := flag.String("temp", "", "Directory for spill files (accepted for parity; this port does not spill)")
+
+	// --gzdiff FILE — upstream parameters.cpp:237 is identical to
+	// `--diff` plus a `diff_file_compressed=true` flag that selects a
+	// gzip reader. This port's `iohelper.OpenReader` auto-sniffs gzip
+	// from the magic bytes, so `--gzdiff` is wired as an alias for
+	// `--diff` (last-set wins). Documented in
+	// docs/PARITY_ROADMAP.md#vcftools.
+	gzDiff := flag.String("gzdiff", "", "Alias for --diff (this port auto-sniffs gzip via iohelper)")
+
 	// Sample filtering
 	var indvList, removeIndvList []string
 	flag.Func("indv", "Include individual (can use multiple times)", func(s string) error {
@@ -773,6 +810,19 @@ func main() {
 		IndvBurden:                  *indvBurden,
 		IndvFreqBurden:              *indvFreqBurden,
 		IndvFreqBurden2:             *indvFreqBurden2,
+		HapcountBED:                 *hapcountBED,
+		TempDir:                     *tempDir,
+	}
+
+	// --gzdiff FILE: upstream-compatible alias for --diff. The
+	// underlying iohelper.OpenReader auto-sniffs gzip from the magic
+	// bytes, so the compressed/uncompressed distinction is irrelevant.
+	// If both --diff and --gzdiff are supplied, --gzdiff wins (matches
+	// upstream's "last-set" semantics for the shared `diff_file` slot —
+	// parameters.cpp:209 vs :237 both write the same slot, last parsed
+	// wins).
+	if *gzDiff != "" {
+		params.Diff = *gzDiff
 	}
 
 	// --invert-mask FILE shares the same mask_file slot upstream as --mask

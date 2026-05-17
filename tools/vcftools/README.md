@@ -99,9 +99,34 @@ Flags:
 
 Discordance compares unphased, sorted allele indices restricted to REF/first
 ALT; samples with multi-allelic calls at a given site are treated as missing
-for that site (mirroring upstream's default behaviour). `--gzdiff` is
-already implicit via `iohelper`; `--diff-switch-error` is not yet
-implemented.
+for that site (mirroring upstream's default behaviour). `--gzdiff` is wired
+as a plain alias for `--diff` (the `iohelper` reader auto-sniffs gzip from
+the magic bytes, so there's no distinction at the parser layer).
+
+### Haplotype counts (`--hapcount`)
+
+`--hapcount BED` writes `<prefix>.hapcount` — per-BED-bin tallies of unique
+kept-individual haplotypes (columns:
+`#CHROM BIN_START BIN_END N_SNP N_UNIQ_HAPS N_GROUPS {MULTIPLICITY:FREQ}...`).
+Implies `--phased`. Diploid-only per-site. Bins must be non-overlapping.
+
+This port fixes three upstream defects in `output_haplotype_count`
+(`variant_file_output.cpp:1169-1401`):
+
+1. `prev_bin_idx` shift on within-chromosome bin transitions silently
+   overwrote one bin's counts with the next bin's.
+2. End-of-stream read-after-free silently dropped (or zeroed) the last
+   chromosome's rows.
+3. The BED first line was unconditionally skipped; header-less BEDs
+   silently lost their first bin.
+
+See `docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the full writeup.
+
+### Misc
+
+`--temp DIR` is accepted for CLI parity with upstream (parameters.cpp:341)
+but has no effect — this port doesn't spill to disk. A stderr note is
+printed when the flag is supplied.
 
 ### Linkage Disequilibrium
 

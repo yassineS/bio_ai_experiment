@@ -437,6 +437,24 @@ type Params struct {
 	// supplying both is meaningless (only one wins). Mirrors upstream
 	// parameters.cpp:259 + variant_file_output.cpp:501-627.
 	IndvFreqBurden2 bool
+
+	// HapcountBED names the BED file passed to `--hapcount`. When
+	// non-empty, the runner writes `<prefix>.hapcount` with per-BED-bin
+	// haplotype-multiplicity tables. Implies `--phased` (upstream
+	// parameters.cpp:248 sets `phased_only = true`). Three upstream
+	// defects in `output_haplotype_count` are fixed on port; see
+	// hapcount.go and docs/UPSTREAM_BUGS.md for the writeup.
+	HapcountBED string
+
+	// TempDir mirrors upstream's `--temp DIR` flag
+	// (parameters.cpp:341). Upstream uses it as the base directory for
+	// `mkstemp` spill files in the LD / format-convert paths
+	// (variant_file_output.cpp:1441, variant_file_format_convert.cpp).
+	// This port does not spill to disk for any of those paths, so the
+	// flag is accepted-and-ignored for command-line parity. When
+	// non-empty, a stderr line is emitted noting the flag was parsed
+	// but unused. Documented in docs/PARITY_ROADMAP.md#vcftools.
+	TempDir string
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -683,6 +701,29 @@ func Run(input io.Reader, params *Params) error {
 		)
 	}
 
+	// --hapcount BED: parse BED bins up front so missing-file /
+	// overlap errors surface before we stream the VCF. Upstream errors
+	// with "Could not open BED file" / "BED file must be
+	// non-overlapping." at variant_file_output.cpp:1178 / :1214. The
+	// runner is fed by the main per-variant loop below. Three upstream
+	// bugs are fixed-on-port — see hapcount.go and
+	// docs/UPSTREAM_BUGS.md.
+	var hapcount *hapcountRunner
+	if params.HapcountBED != "" {
+		hapcount, err = newHapcountRunner(params.OutPrefix, params.HapcountBED, len(filteredHeader.Samples))
+		if err != nil {
+			return fmt.Errorf("initialising --hapcount: %w", err)
+		}
+	}
+
+	// --temp DIR: upstream parameters.cpp:341 stores DIR as the base
+	// path for mkstemp spill files in the LD / format-convert paths.
+	// This port does not spill, so the flag is accepted-and-noop. Emit
+	// a stderr line so a confused user doesn't think it had effect.
+	if params.TempDir != "" {
+		fmt.Fprintf(os.Stderr, "--temp %q: accepted for CLI parity; this port does not spill to disk so the flag has no effect.\n", params.TempDir)
+	}
+
 	// --ldhat / --ldhat-geno: buffer per-site genotype rows and emit the
 	// paired (.ldhat.sites, .ldhat.locs) bundle at end-of-stream. Only one
 	// flag can be active at a time on the upstream CLI (each increments
@@ -839,12 +880,14 @@ func Run(input io.Reader, params *Params) error {
 		// Apply genotype-level filters
 		filteredVariant = filterGenotypes(filteredVariant, params)
 
-		// --phased (also implied by --ldhat, --ldhelmet, --IMPUTE): drop
-		// sites with any unphased kept-individual genotype. Mirrors
-		// upstream's filter_sites_by_phase (entry_filters.cpp:989-1010),
-		// which iterates over kept individuals only — so we run after the
-		// sample filter.
-		if params.Phased || params.LDhat || params.LDhelmet || params.IMPUTE {
+		// --phased (also implied by --ldhat, --ldhelmet, --IMPUTE,
+		// --hapcount): drop sites with any unphased kept-individual
+		// genotype. Mirrors upstream's filter_sites_by_phase
+		// (entry_filters.cpp:989-1010), which iterates over kept
+		// individuals only — so we run after the sample filter. The
+		// --hapcount implication comes from parameters.cpp:248
+		// (`phased_only = true`).
+		if params.Phased || params.LDhat || params.LDhelmet || params.IMPUTE || params.HapcountBED != "" {
 			if !isPhasedSite(filteredVariant) {
 				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
 					return err
@@ -944,6 +987,15 @@ func Run(input io.Reader, params *Params) error {
 		}
 		if indvFreqBurden != nil {
 			indvFreqBurden.addVariant(filteredVariant)
+		}
+
+		// --hapcount: per-BED-bin haplotype-count update. Output is
+		// emitted incrementally on each chromosome transition and at
+		// close().
+		if hapcount != nil {
+			if err := hapcount.addVariant(filteredVariant); err != nil {
+				return fmt.Errorf("writing --hapcount output: %w", err)
+			}
 		}
 
 		// LDhat buffer (biallelic-only filtering is applied inside).
@@ -1125,6 +1177,13 @@ func Run(input io.Reader, params *Params) error {
 	// --mendel output.
 	if err := mendel.close(); err != nil {
 		return fmt.Errorf("closing --mendel output: %w", err)
+	}
+
+	// --hapcount output. The close() handler emits the last seen
+	// chromosome unconditionally (FIX for upstream bug #2 — see
+	// hapcount.go).
+	if err := hapcount.close(); err != nil {
+		return fmt.Errorf("closing --hapcount output: %w", err)
 	}
 
 	// --kept-sites / --removed-sites output.

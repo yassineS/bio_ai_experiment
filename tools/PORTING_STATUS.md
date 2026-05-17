@@ -423,7 +423,7 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~106 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~109 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
@@ -441,7 +441,13 @@ long-tail wave 9 PR; `--remove-filtered-geno`,
 `--positions-overlap` + `--exclude-positions-overlap` landed in the
 long-tail wave 12 PR; `--derived` + `--extract-FORMAT-info` landed in
 the long-tail wave 13 PR; `--indv-burden`, `--indv-freq-burden`, and
-`--indv-freq-burden2` landed in the long-tail wave 14 PR)
+`--indv-freq-burden2` landed in the long-tail wave 14 PR; `--hapcount`,
+`--temp`, and `--gzdiff` landed in the long-tail wave 15 PR with three
+upstream `--hapcount` bugs fixed on port — see
+`docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the writeup. After
+wave 15 the only remaining gaps are the BCF-binary family
+(`--bcf`/`--diff-bcf`/`--recode-bcf`/`--contigs`) and the PCA family
+above.)
 
 **Implemented Commands**:
 
