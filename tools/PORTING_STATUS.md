@@ -201,9 +201,13 @@ at 1:1 feature parity (the project goal); see
 - Covers the commonly used PRINSEQ-lite filtering/trimming options; the
   five remaining single-file gaps (`--out_format`, `--seq_id_mappings`,
   `--ns_max_p`, `--noniupac`, `--phred64`) landed in PR
-  #prinseq-missing-flags. Graph/report generation (`--graph_data` + the
-  upstream `prinseq-graphs.pl`) is out of scope; the Go port provides
-  its own `graph` / `report` subcommands.
+  #prinseq-missing-flags. The Go port provides its own `graph` /
+  `report` subcommands.
+- `--graph_data <file>` was investigated for parity in PR
+  #prinseq-graph-data and deferred. See `docs/PARITY_ROADMAP.md` for
+  the deferral rationale (Perl-hash iteration randomness makes
+  byte-parity unachievable, and the only known consumer
+  `prinseq-graphs.pl` is itself out-of-scope).
 - For `--out_format 2/4/5` the value of `--output` is used as the
   filename prefix (literal `.fasta` / `.qual` suffixes appended).
   Streaming multiple files to stdout is refused, matching upstream's

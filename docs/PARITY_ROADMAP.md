@@ -264,7 +264,9 @@ Option-tail gaps (per existing subcommand):
 ### `prinseq-lite`
 
 **Status:** 2 subcommands (`stats`, `filter`) covering most common knobs.
-Five missing-flag gaps closed in PR #prinseq-missing-flags.
+Five missing-flag gaps closed in PR #prinseq-missing-flags; a sixth
+(`--graph_data`) was investigated and deferred — see the "Still missing"
+subsection below for the technical rationale.
 
 Implemented flags (with the upstream Perl line numbers consulted for
 each — `reference_code/prinseq/prinseq-lite.pl`, 0.20.4):
@@ -318,10 +320,66 @@ parity is not enforced):
 
 Still missing:
 
-- `--graph_data` and the corresponding HTML/PNG report generation —
-  out of scope per `tools/PORTING_STATUS.md` (the existing Go
-  `graph` / `report` subcommands generate stats-based ASCII / HTML
-  output without depending on `prinseq-graphs.pl`).
+- `--graph_data <file>` — investigated for parity in PR
+  #prinseq-graph-data and **deferred**. The flag itself only writes
+  a `.gd` data file (no PNG/HTML — that part is `prinseq-graphs.pl`,
+  separately, and is out-of-scope). Three blockers, in order of
+  significance:
+  1. **Byte-parity is unachievable.** Upstream's emitter
+     (`prinseq-lite.pl:2196-2274`) walks every nested hash with
+     `each %h` / `keys %h` without sorting; Perl 5.18+ randomises
+     hash key iteration order per-process, so two upstream runs on
+     the same input produce different byte sequences. Empirically
+     verified: running upstream twice on a 3-record FASTA produced
+     two different orderings of `counts`, `stats.gc`, `stats.length`,
+     `complvals.dust`, `dinucodds`, `freqs.5`, `freqs.3`, etc. The
+     `#[prinseq-lite-...] [<timestamp>] Command: ...` header on
+     line 2 of the `.gd` file also bakes in a wall-clock timestamp
+     and the literal argv. The brief's "assert byte-equality vs
+     upstream output" check therefore cannot be satisfied without
+     either (a) modifying upstream to sort keys, or (b) post-
+     processing both outputs through a JSON normaliser — at which
+     point we have a semantic test, not a byte-equality test.
+  2. **Surface area is ~700 LOC for a feature nothing in this repo
+     consumes.** The emitter at `prinseq-lite.pl:2050-2287` pulls
+     from a dedicated stat-collection engine —
+     `getSeqStats` (`prinseq-lite.pl:4564-4744`),
+     `getQualStats` (`prinseq-lite.pl:4755-4833`),
+     `generateStatsType` (the median/p25/p75 quantile pass at
+     `prinseq-lite.pl:4087-4214`),
+     `dinucOdds` (`prinseq-lite.pl:3977-4024`, with the symmetric
+     alphabetised-pair odds formula),
+     `checkForDupl` (`prinseq-lite.pl:4217-4401`, dereplication
+     shape tracking — exact, prefix, suffix, revcomp variants),
+     `getTagFrequency` (`prinseq-lite.pl:4403-...`, 5'/3'
+     5-mer + MID-tag detection with the 34/100 frequency cutoff),
+     plus the dust/entropy windowed-complexity pass (`prinseq-lite.pl:4644-4719`).
+     None of that is currently in our `pkg/prinseq` (the existing
+     `CalculateEnhancedStats` covers length, GC, simple dinucleotide
+     counts, and average-positional-quality — but not quantiles, not
+     dust/entropy *distributions*, not 5'/3' base-frequency tables
+     at `TAG_LENGTH=20` positions, not MID detection, not
+     dereplication shape tracking). All of the above would need to
+     be ported just to feed the emitter. Estimate: ~700 LOC of stat
+     collection + ~150 LOC of emitter, plus tests.
+  3. **Only known consumer is also out-of-scope.** The `.gd` file is
+     parsed by `prinseq-graphs.pl` / `prinseq-graphs-noPCA.pl` to
+     produce PNG plots. Both upstream scripts are explicitly out
+     of scope for this port (see `tools/PORTING_STATUS.md`); the Go
+     port instead exposes its own `prinseq graph` / `prinseq report`
+     subcommands that consume our richer `Stats` struct directly.
+     Nothing else in this repo (or, to our knowledge, downstream)
+     reads `.gd` files.
+
+  **What would unblock it:** an explicit downstream consumer
+  (e.g. someone wanting to feed our Go port's output into
+  `prinseq-graphs.pl`) plus an agreement on the test strategy —
+  most likely "parse upstream `.gd` and ours through a JSON
+  normaliser, then diff structurally" rather than literal byte
+  equality. If we pick that up, the natural home is a new
+  `tools/prinseq/pkg/prinseq/graphdata.go` (the existing `graph.go`
+  is the unrelated ASCII/SVG renderer for the in-tree subcommand
+  and should NOT be confused with the upstream emitter).
 - A handful of niche knobs not in the original five-flag scope:
   `--range_len`, `--range_gc`, `--trim_qual_window`,
   `--trim_qual_step`, `--trim_qual_rule`, `--trim_to_len`,
