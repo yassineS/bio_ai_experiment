@@ -61,6 +61,8 @@ Genotype Filtering:
   --max-missing FLOAT   Maximum proportion of missing data (0-1)
   --min-meanDP FLOAT    Minimum mean depth across samples
   --max-meanDP FLOAT    Maximum mean depth across samples
+  --phased              Keep only sites where every kept-individual GT is
+                        phased (separator '|' or haploid).
 
 Statistics Output:
   --freq                Output allele frequency
@@ -104,6 +106,10 @@ Format Conversion:
   --chrom-map FILE      Chromosome-name-to-integer map for PLINK output
   --BEAGLE-GL           Output <prefix>.BEAGLE.GL (log10 GL from PL)
   --BEAGLE-PL           Output <prefix>.BEAGLE.PL (raw PL triplets)
+  --ldhat               Output phased LDhat format (<prefix>.ldhat.sites and
+                        <prefix>.ldhat.locs). Requires --chr; implies --phased.
+  --ldhat-geno          Output unphased LDhat format (same file names as
+                        --ldhat). Requires --chr.
 
 VCF Comparison (--diff family):
   --diff FILE              Compare against a second VCF file
@@ -281,6 +287,13 @@ func main() {
 	outputPlink := flag.Bool("plink", false, "Output PLINK PED/MAP format")
 	outputPlinkTped := flag.Bool("plink-tped", false, "Output PLINK TPED/TFAM format")
 	chromMap := flag.String("chrom-map", "", "Chromosome name to integer mapping file")
+
+	// LDhat output. --ldhat is phased; --ldhat-geno is unphased.
+	ldhat := flag.Bool("ldhat", false, "Output phased LDhat format (.ldhat.sites/.ldhat.locs); requires --chr")
+	ldhatGeno := flag.Bool("ldhat-geno", false, "Output unphased LDhat format (.ldhat.sites/.ldhat.locs); requires --chr")
+
+	// --phased: keep only sites where every kept-individual GT is phased.
+	phased := flag.Bool("phased", false, "Keep only sites where every kept-individual GT is phased (separator '|' or haploid)")
 
 	// BED-based filtering
 	bedFile := flag.String("bed", "", "Keep only sites whose POS lies inside any interval in this BED file")
@@ -495,6 +508,9 @@ func main() {
 		KeepINFO:             strings.Join(keepINFOParts, ","),
 		RemoveINFO:           strings.Join(removeINFOParts, ","),
 		GetINFO:              strings.Join(getINFOParts, ","),
+		Phased:               *phased,
+		LDhat:                *ldhat,
+		LDhatGeno:            *ldhatGeno,
 	}
 
 	// Run vcftools

@@ -32,7 +32,7 @@ the way.
   PRs #86/#87/#88)
 - **Tools tested**: 25 (package-level tests; `cmd/` entry points have no tests)
 - **Test coverage (statements, `go test -cover`)** — main tools:
-  vcftools ~68%, seqtk ~86%, fastp ~77%, sickle ~82%, **bcftools 85%**,
+  vcftools ~82%, seqtk ~86%, fastp ~77%, sickle ~82%, **bcftools 85%**,
   **tabix 86%**, **samtools 87%**, **bgzip 90%**, prinseq 99.9%,
   skewer 100%, bedmerge 100%, bedintersect 100%
 - **Shared format packages**: `pkg/bioformats/sam` 87% coverage (SAM/BAM
@@ -417,14 +417,15 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~60 of ~147 options
-(LD analysis landed in PR #47)
+**Status**: Partial — a subset of upstream vcftools, ~73 of ~147 options
+(LD analysis landed in PR #47; LDhat output formats + `--phased` landed
+in the long-tail wave 2 PR)
 
 **Implemented Commands**:
 
 - Single command with multiple filtering, statistics and conversion options
 
-**Test Coverage**: ~64% of statements (`go test -cover`)  
+**Test Coverage**: ~82% of statements (`go test -cover`)  
 **Performance**: Comparable to original on the implemented operations  
 **Documentation**: README with examples  
 
@@ -449,6 +450,11 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 - LD analysis (PR #47): `--geno-r2` / `--hap-r2` / `--geno-r2-positions` /
   `--hap-r2-positions` / `--ld-window` / `--ld-window-bp` /
   `--ld-window-min` / `--ld-window-bp-min` / `--min-r2`
+- LDhat output (wave 2): `--ldhat`, `--ldhat-geno` emit the paired
+  `<prefix>.ldhat.sites` / `<prefix>.ldhat.locs` files with byte-for-byte
+  parity vs upstream
+- Phased-site filter (wave 2): `--phased` drops sites with any unphased
+  kept-individual genotype
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common
