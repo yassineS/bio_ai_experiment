@@ -524,3 +524,143 @@ func TestRunAcceptsTsTvByQual(t *testing.T) {
 		t.Fatalf("Run with --TsTv-by-qual should succeed, got: %v", err)
 	}
 }
+
+// TestCalculateAlleleCounts pins the per-ALT count helper used by the
+// --non-ref-af / --non-ref-ac filters. Mirrors the get_allele_counts
+// semantics from entry_getters.cpp:389-422 (skip missing, REF skipped
+// when building altCounts, totalCalled tracks every non-missing chr).
+func TestCalculateAlleleCounts(t *testing.T) {
+	tests := []struct {
+		name        string
+		alt         []string
+		genotypes   []string
+		wantAlt     []int
+		wantTotalNc int
+	}{
+		{
+			name:        "biallelic, all alt",
+			alt:         []string{"G"},
+			genotypes:   []string{"1/1", "1|1", "1/1"},
+			wantAlt:     []int{6},
+			wantTotalNc: 6,
+		},
+		{
+			name:        "biallelic, mixed",
+			alt:         []string{"G"},
+			genotypes:   []string{"0/0", "0/1", "1/1"},
+			wantAlt:     []int{3},
+			wantTotalNc: 6,
+		},
+		{
+			name:        "triallelic",
+			alt:         []string{"G", "T"},
+			genotypes:   []string{"0/1", "1/2", "2/2"},
+			wantAlt:     []int{2, 3},
+			wantTotalNc: 6,
+		},
+		{
+			name:        "with missing",
+			alt:         []string{"G"},
+			genotypes:   []string{"0/1", "./.", "1/1"},
+			wantAlt:     []int{3},
+			wantTotalNc: 4,
+		},
+		{
+			name:        "haploid mixed",
+			alt:         []string{"T"},
+			genotypes:   []string{"0", "1", "0/1"},
+			wantAlt:     []int{2},
+			wantTotalNc: 4,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := createTestVariant("chr1", 1, "A", tt.alt, 30, tt.genotypes)
+			alt, total := calculateAlleleCounts(v)
+			if total != tt.wantTotalNc {
+				t.Errorf("totalCalled = %d, want %d", total, tt.wantTotalNc)
+			}
+			if len(alt) != len(tt.wantAlt) {
+				t.Fatalf("altCounts length = %d, want %d", len(alt), len(tt.wantAlt))
+			}
+			for i := range alt {
+				if alt[i] != tt.wantAlt[i] {
+					t.Errorf("altCounts[%d] = %d, want %d", i, alt[i], tt.wantAlt[i])
+				}
+			}
+		})
+	}
+}
+
+// TestNonRefFilters exercises the in-process passFilters logic for
+// --non-ref-af and --non-ref-ac. Includes the upstream quirk that
+// MinNonRefAF > 0 drops monomorphic sites while MinNonRefAC alone does
+// not.
+func TestNonRefFilters(t *testing.T) {
+	mk := func(alt []string, gt []string) *vcf.Variant {
+		return createTestVariant("chr1", 1, "A", alt, 30, gt)
+	}
+	tests := []struct {
+		name   string
+		v      *vcf.Variant
+		params Params
+		want   bool
+	}{
+		{
+			name:   "AF pass",
+			v:      mk([]string{"G"}, []string{"0/1", "0/1", "0/1"}),
+			params: Params{MinNonRefAF: 0.4},
+			want:   true,
+		},
+		{
+			name:   "AF fail (one ALT too rare)",
+			v:      mk([]string{"G"}, []string{"0/0", "0/0", "0/1"}),
+			params: Params{MinNonRefAF: 0.3},
+			want:   false,
+		},
+		{
+			name:   "AF fail at multi-allelic (one ALT below threshold)",
+			v:      mk([]string{"G", "T"}, []string{"0/1", "0/1", "1/2"}),
+			params: Params{MinNonRefAF: 0.3},
+			want:   false, // T has freq 1/6 = 0.167
+		},
+		{
+			name:   "AC pass",
+			v:      mk([]string{"G"}, []string{"0/1", "0/1", "1/1"}),
+			params: Params{MinNonRefAC: 2},
+			want:   true,
+		},
+		{
+			name:   "AC fail",
+			v:      mk([]string{"G"}, []string{"0/0", "0/0", "0/1"}),
+			params: Params{MinNonRefAC: 2},
+			want:   false,
+		},
+		{
+			name:   "AF drops monomorphic (ALT='.')",
+			v:      mk([]string{"."}, []string{"0/0", "0/0", "0/0"}),
+			params: Params{MinNonRefAF: 0.01},
+			want:   false,
+		},
+		{
+			name:   "AC keeps monomorphic (upstream-quirk: no _any fallback)",
+			v:      mk([]string{"."}, []string{"0/0", "0/0", "0/0"}),
+			params: Params{MinNonRefAC: 1},
+			want:   true,
+		},
+		{
+			name:   "both flags zero leaves site alone",
+			v:      mk([]string{"G"}, []string{"0/0", "0/0", "0/0"}),
+			params: Params{},
+			want:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := passFilters(tt.v, &tt.params, nil, nil, nil, nil, nil, nil)
+			if got != tt.want {
+				t.Errorf("passFilters = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

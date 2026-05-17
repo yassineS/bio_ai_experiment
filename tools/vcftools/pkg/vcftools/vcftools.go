@@ -53,6 +53,17 @@ type Params struct {
 	Mac    int
 	MaxMac int
 
+	// Non-reference (per-ALT) allele frequency / count filtering. Upstream
+	// vcftools' --non-ref-af and --non-ref-ac iterate every ALT allele and
+	// drop the site if *any* ALT's frequency (count) is below the threshold,
+	// matching entry_filters.cpp:801-808 and 902-907. The reference allele
+	// at index 0 is ignored. Both default to 0 = disabled. Monomorphic
+	// (no-ALT) sites and sites whose ALT field is "." are not dropped: the
+	// upstream loop simply has nothing to compare. Upstream registration:
+	// parameters.cpp:302-303.
+	MinNonRefAF float64
+	MinNonRefAC int
+
 	// Genotype filtering
 	MaxMissing float64
 	MinMeanDP  float64
@@ -910,6 +921,55 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 		}
 	}
 
+	// Non-reference allele filters (--non-ref-af, --non-ref-ac). Mirrors
+	// upstream entry_filters.cpp:801-815 (frequency) and 902-913 (count):
+	// for each ALT allele (index > 0) the site fails if the count is below
+	// MinNonRefAC or the frequency is below MinNonRefAF. The REF allele
+	// (index 0) is skipped. There is a known upstream asymmetry that we
+	// preserve: the frequency branch (line 814) additionally drops sites
+	// whose `N_failed == N_alleles - 1` whenever min_non_ref_af > 0 — for
+	// a monomorphic site (N_alleles == 1) this evaluates to 0 == 0 and the
+	// site is dropped even though no ALT was tested. The count branch on
+	// line 912 keys this same fallback on `min_non_ref_ac_any` (not
+	// `min_non_ref_ac`), so plain --non-ref-ac does NOT drop monomorphic
+	// sites. The two parity tests below cover both shapes.
+	if params.MinNonRefAF > 0 || params.MinNonRefAC > 0 {
+		altCounts, totalCalled := calculateAlleleCounts(v)
+		// Count effective (non-placeholder) ALTs. ALT == "." in VCF is
+		// upstream's "no ALT" sentinel which yields N_alleles == 1.
+		nAlt := 0
+		for _, alt := range v.Alt {
+			if alt != "" && alt != "." {
+				nAlt++
+			}
+		}
+		for i, alt := range v.Alt {
+			if alt == "" || alt == "." {
+				continue
+			}
+			c := 0
+			if i < len(altCounts) {
+				c = altCounts[i]
+			}
+			if params.MinNonRefAC > 0 && c < params.MinNonRefAC {
+				return false
+			}
+			if params.MinNonRefAF > 0 && totalCalled > 0 {
+				if float64(c)/float64(totalCalled) < params.MinNonRefAF {
+					return false
+				}
+			}
+		}
+		// Monomorphic fallback for --non-ref-af only (entry_filters.cpp:814).
+		// When no ALTs are present, the N_failed == N_alleles-1 condition
+		// becomes 0 == 0 and upstream drops the site. The --non-ref-ac
+		// branch's analogous check is gated on `_any`, not the plain flag,
+		// so we deliberately do NOT mirror it for MinNonRefAC.
+		if params.MinNonRefAF > 0 && nAlt == 0 {
+			return false
+		}
+	}
+
 	// Genotype filters. Upstream's --max-missing is the MIN fraction of
 	// non-missing genotypes (0.0 = allow all, 1.0 = require all
 	// non-missing). The Params field is the same semantics: 0 means
@@ -946,6 +1006,45 @@ func isIndelVariant(v *vcf.Variant) bool {
 		}
 	}
 	return false
+}
+
+// calculateAlleleCounts returns the per-ALT allele counts and the total
+// number of non-missing called chromosomes across all samples. altCounts[i]
+// is the count of ALT allele i (using v.Alt's 0-based indexing; upstream
+// indexes ALT alleles at 1..N where 0 is REF, so the caller must add the
+// REF count separately if needed). Missing alleles ('.') are skipped.
+// Mirrors entry_getters.cpp:389-422 (entry::get_allele_counts) but
+// returns just the ALT slice for the --non-ref-af / --non-ref-ac filters.
+func calculateAlleleCounts(v *vcf.Variant) (altCounts []int, totalCalled int) {
+	altCounts = make([]int, len(v.Alt))
+	for _, sample := range v.Samples {
+		gt, ok := sample.Data["GT"]
+		if !ok || gt == "" || gt == "." {
+			continue
+		}
+		// Split on '/' or '|'. The vcf package leaves GT as the raw
+		// string ("0|0", "1/2", "./.").
+		alleles := strings.FieldsFunc(gt, func(r rune) bool {
+			return r == '/' || r == '|'
+		})
+		for _, a := range alleles {
+			if a == "" || a == "." {
+				continue
+			}
+			// Each called chromosome contributes 1 to the total.
+			totalCalled++
+			// Allele 0 is REF; >0 is ALT index 1..N which maps to
+			// v.Alt[idx-1].
+			idx, err := strconv.Atoi(a)
+			if err != nil || idx <= 0 {
+				continue
+			}
+			if idx-1 < len(altCounts) {
+				altCounts[idx-1]++
+			}
+		}
+	}
+	return altCounts, totalCalled
 }
 
 // calculateMAF calculates minor allele frequency and count
