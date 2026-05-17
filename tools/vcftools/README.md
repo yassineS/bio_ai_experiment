@@ -84,11 +84,20 @@ Flags:
   called in both files.
 - `--diff-indv-discordance` → `<prefix>.diff.indv` with per-individual
   totals over the intersection of sites present in both files.
+- `--diff-indv-map FILE` — two-column whitespace-separated table that
+  renames file-2 sample IDs before matching against file-1 (mirrors
+  upstream `variant_file_diff.cpp:11-34`). Lines starting with `#` and
+  blank lines are skipped. Composes with all other `--diff-*` outputs.
+- `--diff-discordance-matrix` → `<prefix>.diff.discordance_matrix` —
+  the 4x4 genotype-by-genotype contingency table (`0/0`, `0/1`, `1/1`,
+  `./.`) for biallelic loci with matching ALT alleles in both files
+  (mirrors upstream `variant_file_diff.cpp:944`). Byte-for-byte parity
+  vs upstream is covered in `diff_parity_test.go`.
 
 Discordance compares unphased, sorted allele indices restricted to REF/first
 ALT; samples with multi-allelic calls at a given site are treated as missing
-for that site (mirroring upstream's default behaviour). `--gzdiff`,
-`--diff-indv-map`, and the full discordance matrices are not yet
+for that site (mirroring upstream's default behaviour). `--gzdiff` is
+already implicit via `iohelper`; `--diff-switch-error` is not yet
 implemented.
 
 ### Linkage Disequilibrium
@@ -169,10 +178,8 @@ issue in `ROADMAP.md`.
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): `--mendel`, `--ldhat`, `--ldhat-geno`,
-`--ldhelmet`, `--IMPUTE`, the extended `--diff-discordance-matrix` /
-`--diff-switch-error` / `--diff-indv-map` family, `--pca`, and a long tail
-of less-used upstream options. See `ROADMAP.md`.
+accepted them and produced nothing): `--mendel`, `--diff-switch-error`,
+`--pca`, and a long tail of less-used upstream options. See `ROADMAP.md`.
 
 ### Format Support
 

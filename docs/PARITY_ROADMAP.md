@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~75 of ~147 options (~51%) after long-tail wave 3.
+**Status:** ~77 of ~147 options (~52%) after long-tail wave 4.
 
 Closed in wave 1:
 
@@ -623,7 +623,7 @@ Closed in wave 2:
 - **Phased-site filter**: `--phased` (composes with `--ldhat` per
   upstream's `phased_only` invariant) ✅
 
-Closed in wave 3 (this PR):
+Closed in wave 3:
 
 - **LDhelmet output format**: `--ldhelmet` (paired
   `<prefix>.ldhelmet.snps` / `<prefix>.ldhelmet.pos`, byte-for-byte vs
@@ -634,11 +634,27 @@ Closed in wave 3 (this PR):
   `<prefix>.impute.hap.indv`, byte-for-byte vs upstream; implies
   `--phased`, biallelic-only, no missing data per parameters.cpp:255) ✅
 
+Closed in wave 4 (this PR):
+
+- **`--diff-indv-map FILE`** — two-column whitespace-separated file that
+  renames file-2 sample IDs before matching against file-1. Loader
+  mirrors upstream `variant_file_diff.cpp:11-34`; mapping is applied when
+  forming `commonPairs` and when classifying `INDV FILES` in
+  `.diff.indv_in_files`. ✅
+- **`--diff-discordance-matrix`** — emits
+  `<prefix>.diff.discordance_matrix` with the 5x5 layout from upstream
+  `variant_file_diff.cpp:944-1198`: header row of file-1 genotype labels,
+  four data rows of file-2 genotype labels, biallelic + matching-ALT only,
+  diploid only, byte-for-byte parity vs upstream. ✅
+
 Remaining gaps:
 
 - **Mendelian inheritance checks**: `--mendel`.
-- **Diff family extensions**: `--diff-indv-map`, `--diff-discordance-matrix`,
-  `--diff-switch-error`, `--gzdiff` (already implicit via iohelper).
+- **Diff family extensions**: `--diff-switch-error`, `--gzdiff` (already
+  implicit via iohelper). Per-site/per-indv discordance outputs are
+  emitted with a simpler column set than upstream (we don't yet match
+  upstream's richer `.diff.sites` / `.diff.indv` schemas — see
+  `variant_file_diff.cpp:635` for the gap).
 - **Output formats**: missing `--phase` output path.
 - **Per-individual output**: the per-individual `.imiss` row layout has
   fields we don't emit (we have `--missing-indv`).
@@ -654,9 +670,12 @@ no `--haploid` flag — the closest thing is `--phased` (parameters.cpp:311
 output files; wave 2 ships full byte-for-byte parity tests for both
 `.ldhat.sites` and `.ldhat.locs`; wave 3 adds byte-for-byte parity tests
 for `.ldhelmet.snps` / `.ldhelmet.pos` and the IMPUTE bundle
-(`.impute.legend` / `.impute.hap` / `.impute.hap.indv`) against upstream
-goldens (under `tools/vcftools/testdata/parity/`). Full upstream-test-suite
-run still pending.
+(`.impute.legend` / `.impute.hap` / `.impute.hap.indv`); wave 4 adds
+byte-for-byte parity tests for `.diff.discordance_matrix` (with and
+without `--diff-indv-map`) and the mapped `.diff.indv_in_files` output
+against upstream goldens (under `tools/vcftools/testdata/parity/`,
+fixtures `diff_f1.vcf` / `diff_f2.vcf` / `diff_indv_map.txt`). Full
+upstream-test-suite run still pending.
 
 Upstream build note for golden generation: vcftools'
 `variant_file_format_convert.cpp` LDhat writers allocate a stack array of

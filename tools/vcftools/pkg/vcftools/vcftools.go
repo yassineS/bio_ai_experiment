@@ -132,12 +132,18 @@ type Params struct {
 
 	// VCF comparison (--diff family). Diff names the second VCF to compare
 	// against; the boolean flags request individual output files. See
-	// diff.go for the column layout of each output.
-	Diff                string
-	DiffSite            bool
-	DiffIndv            bool
-	DiffSiteDiscordance bool
-	DiffIndvDiscordance bool
+	// diff.go for the column layout of each output. DiffIndvMap is a path to
+	// a two-column whitespace-separated file that renames file-2 sample IDs
+	// to their file-1 equivalents (upstream variant_file_diff.cpp:11-34).
+	// DiffDiscordanceMatrix emits the 4x4 genotype-by-genotype counts in
+	// <prefix>.diff.discordance_matrix (upstream variant_file_diff.cpp:944).
+	Diff                  string
+	DiffSite              bool
+	DiffIndv              bool
+	DiffSiteDiscordance   bool
+	DiffIndvDiscordance   bool
+	DiffIndvMap           string
+	DiffDiscordanceMatrix bool
 
 	// BEAGLE genotype-likelihood output. BEAGLEGL writes log10-scale GL
 	// triplets derived from FORMAT/PL; BEAGLEPL writes the raw PL triplets.

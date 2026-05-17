@@ -1,12 +1,18 @@
 // VCF comparison ("--diff" family) for vcftools.
 //
-// Supported flags in this v1:
+// Supported flags:
 //
 //	--diff FILE                 second VCF to compare against
 //	--diff-site                 emit <prefix>.diff.sites_in_files
 //	--diff-indv                 emit <prefix>.diff.indv_in_files
 //	--diff-site-discordance     emit <prefix>.diff.sites
 //	--diff-indv-discordance     emit <prefix>.diff.indv
+//	--diff-indv-map FILE        two-column file that renames file-2 sample
+//	                            IDs before matching against file-1 (upstream
+//	                            variant_file_diff.cpp:11-34)
+//	--diff-discordance-matrix   emit <prefix>.diff.discordance_matrix
+//	                            (4x4 genotype-by-genotype counts; upstream
+//	                            variant_file_diff.cpp:944)
 //
 // File-2 (the "--diff" file) is loaded fully into memory keyed by
 // (CHR, POS); each variant keeps REF/ALT and its sample genotypes. File-1 is
@@ -29,6 +35,13 @@
 //	                           (samples present in both files; counts only
 //	                           sites called in both that are present in
 //	                           both files)
+//
+//	.diff.discordance_matrix   5x5 grid: header row "-\tN_0/0_file1\t...\t
+//	                           N_./._file1"; four data rows labelled
+//	                           N_<GT>_file2 with four counts each. Counts
+//	                           biallelic diploid genotype pairs (ALT must
+//	                           match, REF treated as in upstream:
+//	                           variant_file_diff.cpp:1072-1083).
 //
 // Discordance compares unphased, sorted allele indices restricted to the
 // first ALT (REF=0, ALT=1, anything else=missing) which is how upstream
@@ -115,6 +128,15 @@ func loadDiffVCF(filename string) (*diffData, error) {
 	return d, nil
 }
 
+// commonPair links a file-1 sample name to its file-2 sample name. When no
+// --diff-indv-map is supplied the two names are equal; with a map they may
+// differ. The "name" used for per-individual output keying is f1Name (the
+// canonical/file-1 ID), matching upstream's combined_individuals map.
+type commonPair struct {
+	f1Name string
+	f2Name string
+}
+
 // diffRunner accumulates per-site and per-individual stats while file-1 is
 // streamed through Run, then flushes outputs in close().
 type diffRunner struct {
@@ -125,16 +147,32 @@ type diffRunner struct {
 	// Set of file-1 samples — quick lookup for the indv_in_files report.
 	file1SampleSet map[string]struct{}
 
+	// indvMap stores the parsed --diff-indv-map table: file-2 sample ID →
+	// renamed-to ID (typically a file-1 sample name). Empty when the flag
+	// isn't supplied. file2RenamedSet records the renamed file-2 IDs so the
+	// indv_in_files report classifies them as "B" rather than "2".
+	indvMap         map[string]string
+	file2RenamedSet map[string]struct{}
+
 	// Set of (chrom,pos) seen in file-1 for the sites_in_files report's
 	// "B" classification. Once a site is seen on the file-1 side we mark it
 	// here; at close() time we walk file-2's sites and any not in this map
 	// are "2"-only.
 	seenSites map[string]map[int]struct{}
 
-	// Per-sample discordance accumulators (samples shared by both files).
-	indvCommon   map[string]int
-	indvDiscord  map[string]int
-	commonSample []string // sorted, intersection of file1 and file2 samples
+	// Per-sample discordance accumulators, keyed by the file-1 (canonical)
+	// sample name.
+	indvCommon  map[string]int
+	indvDiscord map[string]int
+	// commonPairs is the ordered intersection of file-1 and (mapped) file-2
+	// sample names. Iterating it in file-1 order keeps output stable.
+	commonPairs []commonPair
+
+	// discMatrix holds the 4x4 genotype-by-genotype counts for
+	// --diff-discordance-matrix. Indexed as [file1GT][file2GT] where the
+	// genotype code is 0=0/0, 1=0/1, 2=1/1, 3=./. (matching the file2-as-
+	// row, file1-as-column layout of the upstream output).
+	discMatrix [4][4]int
 
 	// Output writers.
 	wSitesInFiles *diffOutFile
@@ -187,7 +225,8 @@ func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
 	if params.Diff == "" {
 		return nil, nil
 	}
-	if !params.DiffSite && !params.DiffIndv && !params.DiffSiteDiscordance && !params.DiffIndvDiscordance {
+	if !params.DiffSite && !params.DiffIndv && !params.DiffSiteDiscordance &&
+		!params.DiffIndvDiscordance && !params.DiffDiscordanceMatrix {
 		return nil, nil
 	}
 	d, err := loadDiffVCF(params.Diff)
@@ -196,27 +235,55 @@ func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
 	}
 
 	r := &diffRunner{
-		params:         params,
-		data:           d,
-		samples:        append([]string(nil), samples...),
-		file1SampleSet: make(map[string]struct{}, len(samples)),
-		seenSites:      make(map[string]map[int]struct{}),
-		indvCommon:     make(map[string]int),
-		indvDiscord:    make(map[string]int),
+		params:          params,
+		data:            d,
+		samples:         append([]string(nil), samples...),
+		file1SampleSet:  make(map[string]struct{}, len(samples)),
+		file2RenamedSet: make(map[string]struct{}),
+		seenSites:       make(map[string]map[int]struct{}),
+		indvCommon:      make(map[string]int),
+		indvDiscord:     make(map[string]int),
 	}
 	for _, s := range samples {
 		r.file1SampleSet[s] = struct{}{}
 	}
-	// Common samples: those in both file1 and file2, preserving file-1 order.
-	f2Set := make(map[string]struct{}, len(d.samples))
-	for _, s := range d.samples {
-		f2Set[s] = struct{}{}
+
+	// Optional --diff-indv-map: file-2 ID → renamed-to ID. We apply this
+	// before forming the intersection so a mapped pair counts as common.
+	if params.DiffIndvMap != "" {
+		m, err := loadDiffIndvMap(params.DiffIndvMap)
+		if err != nil {
+			return nil, err
+		}
+		r.indvMap = m
 	}
-	for _, s := range samples {
-		if _, ok := f2Set[s]; ok {
-			r.commonSample = append(r.commonSample, s)
-			r.indvCommon[s] = 0
-			r.indvDiscord[s] = 0
+
+	// Build the set of effective file-2 sample names (renamed where the map
+	// applies). For each effective name we remember the *raw* file-2 ID so
+	// we can look up genotypes in the file-2 record.
+	f2Effective := make(map[string]string, len(d.samples))
+	for _, s2 := range d.samples {
+		eff := s2
+		if r.indvMap != nil {
+			if renamed, ok := r.indvMap[s2]; ok {
+				eff = renamed
+				r.file2RenamedSet[s2] = struct{}{}
+			}
+		}
+		// If two file-2 IDs collapse to the same effective name the first
+		// wins (mirrors upstream's overwrite-into-map semantics: the second
+		// occurrence updates combined_individuals[eff].second).
+		if _, dup := f2Effective[eff]; !dup {
+			f2Effective[eff] = s2
+		}
+	}
+
+	// Common pairs: file-1 samples that match an effective file-2 name.
+	for _, s1 := range samples {
+		if raw2, ok := f2Effective[s1]; ok {
+			r.commonPairs = append(r.commonPairs, commonPair{f1Name: s1, f2Name: raw2})
+			r.indvCommon[s1] = 0
+			r.indvDiscord[s1] = 0
 		}
 	}
 
@@ -237,6 +304,41 @@ func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
 		r.wSites = w
 	}
 	return r, nil
+}
+
+// loadDiffIndvMap parses a two-column whitespace-separated mapping file. Each
+// line is "<file-2 ID> <file-1 ID>"; blank lines and lines starting with '#'
+// are skipped. Mirrors upstream variant_file_diff.cpp:11-34.
+func loadDiffIndvMap(path string) (map[string]string, error) {
+	f, err := iohelper.OpenReader(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening --diff-indv-map %s: %w", path, err)
+	}
+	defer f.Close()
+
+	m := make(map[string]string)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Skip blank lines and comments. Upstream tests the first byte for
+		// '#'; we match that.
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			// Upstream's `map >> indv1 >> indv2` silently leaves indv2 as ""
+			// if the second token is missing. We follow suit by skipping —
+			// keeps fixtures forgiving of trailing blanks.
+			continue
+		}
+		m[fields[0]] = fields[1]
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading --diff-indv-map %s: %w", path, err)
+	}
+	return m, nil
 }
 
 // addVariant is called once per file-1 variant after filtering.
@@ -266,28 +368,74 @@ func (r *diffRunner) addVariant(v *vcf.Variant) error {
 	// Both files have the site → compute per-site and per-individual
 	// discordance, but only over samples present in both files.
 	siteCommon, siteDiscord := 0, 0
-	for _, name := range r.commonSample {
-		gt1, ok1 := findSampleGT(v, name)
-		gt2, ok2 := rec.genotypes[name]
+	// --diff-discordance-matrix counts biallelic loci with matching ALT
+	// alleles only (upstream variant_file_diff.cpp:1122-1129). We pre-
+	// compute the eligibility flag once per site.
+	matrixEligible := r.params.DiffDiscordanceMatrix &&
+		isBiallelic(v.Ref, v.Alt) && isBiallelic(rec.ref, rec.rawALTs) &&
+		altsMatchFirst(v.Alt, rec.rawALTs)
+	for _, pair := range r.commonPairs {
+		gt1, ok1 := findSampleGT(v, pair.f1Name)
+		gt2, ok2 := rec.genotypes[pair.f2Name]
 		if !ok1 || !ok2 {
 			continue
 		}
 		a1, b1, miss1 := canonicalBiallelicGT(gt1)
 		a2, b2, miss2 := canonicalBiallelicGT(gt2)
+
+		if matrixEligible {
+			r.discMatrix[gtCode(a1, b1, miss1)][gtCode(a2, b2, miss2)]++
+		}
+
 		if miss1 || miss2 {
 			continue
 		}
 		siteCommon++
-		r.indvCommon[name]++
+		r.indvCommon[pair.f1Name]++
 		if a1 != a2 || b1 != b2 {
 			siteDiscord++
-			r.indvDiscord[name]++
+			r.indvDiscord[pair.f1Name]++
 		}
 	}
 	if r.wSites != nil {
 		fmt.Fprintf(r.wSites.w, "%s\t%d\t%d\t%d\n", v.Chrom, v.Pos, siteCommon, siteDiscord)
 	}
 	return nil
+}
+
+// gtCode encodes a canonicalised biallelic diploid genotype as one of:
+//
+//	0 = 0/0, 1 = 0/1, 2 = 1/1, 3 = ./. (missing)
+//
+// This matches the indexing the upstream discordance-matrix output uses
+// (variant_file_diff.cpp:1160-1175 where N = a+b for non-missing genotypes
+// and N=3 for the missing case).
+func gtCode(a, b int, missing bool) int {
+	if missing {
+		return 3
+	}
+	return a + b
+}
+
+// isBiallelic reports whether a site has exactly one REF allele plus one ALT
+// allele. The discordance matrix only counts biallelic sites (upstream
+// variant_file_diff.cpp:1122).
+func isBiallelic(ref string, alt []string) bool {
+	if ref == "" {
+		return false
+	}
+	return len(alt) == 1 && alt[0] != ""
+}
+
+// altsMatchFirst returns true when both ALT-allele slices start with the
+// same first allele. Upstream's discordance-matrix path skips sites with
+// mismatching ALT to avoid having to compare full genotype strings
+// (variant_file_diff.cpp:1125-1129).
+func altsMatchFirst(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	return a[0] == b[0]
 }
 
 // emitSitesInFilesRow writes one row of .diff.sites_in_files for a file-1
@@ -368,10 +516,18 @@ func (r *diffRunner) close() error {
 			return err
 		}
 	}
+	if r.params.DiffDiscordanceMatrix {
+		if err := r.writeDiscordanceMatrix(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-// writeIndvInFiles writes <prefix>.diff.indv_in_files.
+// writeIndvInFiles writes <prefix>.diff.indv_in_files. With --diff-indv-map
+// in effect, file-2 IDs that the map renames appear under their renamed (file-
+// 1) ID; unmapped file-2 IDs keep their raw name. This mirrors upstream
+// combined_individuals keying (variant_file_diff.cpp:36-57).
 func (r *diffRunner) writeIndvInFiles() error {
 	path := r.params.OutPrefix + ".diff.indv_in_files"
 	f, err := iohelper.OpenWriter(path)
@@ -386,17 +542,27 @@ func (r *diffRunner) writeIndvInFiles() error {
 		return err
 	}
 
-	f2Set := make(map[string]struct{}, len(r.data.samples))
+	// f2Effective: set of effective file-2 IDs (post-map). Used for the "in
+	// file 2" test below.
+	f2Effective := make(map[string]struct{}, len(r.data.samples))
 	for _, s := range r.data.samples {
-		f2Set[s] = struct{}{}
+		eff := s
+		if r.indvMap != nil {
+			if renamed, ok := r.indvMap[s]; ok {
+				eff = renamed
+			}
+		}
+		f2Effective[eff] = struct{}{}
 	}
 
-	// All names, sorted for stable output.
+	// All names, sorted for stable output. We emit the effective name (the
+	// renamed one when the map applies), never the raw file-2 ID for
+	// mapped samples.
 	all := make(map[string]struct{}, len(r.samples)+len(r.data.samples))
 	for _, s := range r.samples {
 		all[s] = struct{}{}
 	}
-	for _, s := range r.data.samples {
+	for s := range f2Effective {
 		all[s] = struct{}{}
 	}
 	names := make([]string, 0, len(all))
@@ -407,7 +573,7 @@ func (r *diffRunner) writeIndvInFiles() error {
 
 	for _, s := range names {
 		_, in1 := r.file1SampleSet[s]
-		_, in2 := f2Set[s]
+		_, in2 := f2Effective[s]
 		var tag string
 		switch {
 		case in1 && in2:
@@ -418,6 +584,36 @@ func (r *diffRunner) writeIndvInFiles() error {
 			tag = "2"
 		}
 		if _, err := fmt.Fprintf(w, "%s\t%s\n", s, tag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeDiscordanceMatrix writes <prefix>.diff.discordance_matrix in the
+// upstream 5x5 layout: a single header row (file-1 genotype labels) followed
+// by four data rows (file-2 genotype labels). Cells are
+// discMatrix[file1GT][file2GT]; the printed order is file2-as-row,
+// file1-as-column (variant_file_diff.cpp:1194-1198).
+func (r *diffRunner) writeDiscordanceMatrix() error {
+	path := r.params.OutPrefix + ".diff.discordance_matrix"
+	f, err := iohelper.OpenWriter(path)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+
+	if _, err := fmt.Fprintln(w, "-\tN_0/0_file1\tN_0/1_file1\tN_1/1_file1\tN_./._file1"); err != nil {
+		return err
+	}
+	rowLabels := [4]string{"N_0/0_file2", "N_0/1_file2", "N_1/1_file2", "N_./._file2"}
+	for row := 0; row < 4; row++ {
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\n",
+			rowLabels[row],
+			r.discMatrix[0][row], r.discMatrix[1][row],
+			r.discMatrix[2][row], r.discMatrix[3][row]); err != nil {
 			return err
 		}
 	}
@@ -438,9 +634,11 @@ func (r *diffRunner) writeIndvDiscordance() error {
 	if _, err := fmt.Fprintln(w, "INDV\tN_COMMON_CALLED\tN_DISCORD"); err != nil {
 		return err
 	}
-	// Emit in file-1 sample order for the intersection.
-	for _, s := range r.commonSample {
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%d\n", s, r.indvCommon[s], r.indvDiscord[s]); err != nil {
+	// Emit in file-1 sample order for the intersection. The key is the
+	// file-1 (canonical) name even when --diff-indv-map is in effect.
+	for _, pair := range r.commonPairs {
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%d\n",
+			pair.f1Name, r.indvCommon[pair.f1Name], r.indvDiscord[pair.f1Name]); err != nil {
 			return err
 		}
 	}
