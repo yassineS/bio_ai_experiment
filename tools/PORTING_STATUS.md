@@ -32,7 +32,7 @@ the way.
   PRs #86/#87/#88)
 - **Tools tested**: 25 (package-level tests; `cmd/` entry points have no tests)
 - **Test coverage (statements, `go test -cover`)** — main tools:
-  vcftools ~82%, seqtk ~86%, fastp ~77%, sickle ~82%, **bcftools 85%**,
+  vcftools ~83%, seqtk ~86%, fastp ~77%, sickle ~82%, **bcftools 85%**,
   **tabix 86%**, **samtools 87%**, **bgzip 90%**, prinseq 99.9%,
   skewer 100%, bedmerge 100%, bedintersect 100%
 - **Shared format packages**: `pkg/bioformats/sam` 87% coverage (SAM/BAM
@@ -423,7 +423,7 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~96 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~99 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
@@ -436,7 +436,8 @@ the `--pca` family deferred — see PARITY_ROADMAP.md#vcftools for the
 PCA re-attempt scope; `--kept-sites` + `--removed-sites` landed in the
 long-tail wave 9 PR; `--remove-filtered-geno`,
 `--remove-filtered-geno-all`, `--max-indv`, `--keep-INFO-all`, and
-`--version` landed in the long-tail wave 10 PR)
+`--version` landed in the long-tail wave 10 PR; `--mask`,
+`--invert-mask`, and `--mask-min` landed in the long-tail wave 11 PR)
 
 **Implemented Commands**:
 
@@ -544,6 +545,21 @@ long-tail wave 9 PR; `--remove-filtered-geno`,
   `TestParity_RemoveFilteredGenoMulti`,
   `TestRemoveFilteredGeno_NoFT_NoOp`, `TestMaxIndv_Count` (table-driven),
   `TestMaxIndv_Unset_NoOp`, `TestKeepINFOAll_Synonym`
+- FASTA-style positional mask filter (wave 11): `--mask FILE`,
+  `--invert-mask FILE`, and `--mask-min INT` ported from upstream
+  `parameters.cpp:262/279/280` + `entry_filters.cpp:674-752`
+  (`filter_sites_by_mask`). The mask file has `>CHROM` headers
+  followed by lines of digit characters; a site at (CHROM, POS) is
+  kept when its mask digit `<= --mask-min` (default 0). `--invert-mask`
+  flips the keep/drop decision. The streaming reader is forward-only
+  (mirrors upstream's stateful ifstream walk); VCF records reordered
+  relative to the mask's chromosome order may be dropped, matching
+  upstream behaviour. Pinned by `TestParity_Mask_Default`,
+  `TestParity_Mask_Min5`, `TestParity_InvertMask_Min5`,
+  `TestParity_Mask_Partial`, plus unit-level tests for parsing and
+  cursor advancement (`TestMaskFilter_ParseSlabs`,
+  `TestMaskFilter_OffEndDrops`, `TestMaskFilter_OutOfOrderVCFDrops`,
+  ...)
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common
