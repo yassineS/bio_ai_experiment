@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~106 of ~147 options (~72%) after long-tail wave 14.
+**Status:** ~109 of ~147 options (~74%) after long-tail wave 15.
 
 Closed in wave 1:
 
@@ -1078,18 +1078,63 @@ Implementation notes (wave 14):
   rather than silent no-output) but `Run` rejects them via
   `checkUnsupported`. Pinned by `TestParity_PCA_Deferred`.
 
+Closed in wave 15 (this PR):
+
+- **`--hapcount BED`** — per-BED-bin haplotype-count summaries written
+  to `<prefix>.hapcount`. Columns: `#CHROM BIN_START BIN_END N_SNP
+  N_UNIQ_HAPS N_GROUPS {MULTIPLICITY:FREQ}...`. Implies `--phased`
+  (upstream parameters.cpp:248 sets `phased_only=true`). Diploid-only
+  per-site (upstream variant_file_output.cpp:1350-1354 skip otherwise).
+  Bins must be non-overlapping (upstream errors otherwise at lines
+  1208-1216). Ported from variant_file_output.cpp:1169-1401
+  (`output_haplotype_count`) with three upstream bugs FIXED on port
+  per CLAUDE.md and the wave-14 precedent (PR #138). See
+  `docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the writeup:
+    1. prev_bin_idx shift on within-chromosome bin transitions
+       (lines 1314-1315) — old bin's counts were silently overwritten
+       with the new bin's values.
+    2. End-of-stream read-after-free (lines 1370-1400) — last
+       chromosome's rows were silently dropped (or zeroed) on a
+       glibc-built upstream binary.
+    3. BED first-line unconditional skip (line 1183) — header-less
+       BEDs silently lost one bin per invocation.
+  Pinned by `TestHapcount_CorrectBinTransitions`,
+  `TestHapcount_EndOfStreamFlush`, and `TestHapcount_BEDFirstLineWithData`
+  in `tools/vcftools/pkg/vcftools/hapcount_test.go`. The
+  `.expected.hapcount` fixture is hand-traced, NOT generated from
+  the upstream binary (whose output is wrong). ✅
+- **`--temp DIR`** — upstream parameters.cpp:341 stores DIR as the
+  base path for `mkstemp` spill files used by the LD and
+  format-convert paths (variant_file_output.cpp:1441,
+  variant_file_format_convert.cpp:28/402/627/810/994). This port does
+  not spill to disk for any of those paths so the flag is accepted
+  for CLI parity but has no observable effect; `Run` logs to stderr
+  that the value was parsed-but-unused. Pinned by
+  `TestParams_TempDirAccepted`. ✅
+- **`--gzdiff FILE`** — upstream parameters.cpp:237 sets
+  `diff_file = FILE; diff_file_compressed = true;`, and
+  vcf_file.cpp:21 then switches to the gzip reader. This port's
+  `iohelper.OpenReader` already auto-sniffs gzip from the magic
+  bytes, so `--gzdiff` is wired as a plain alias for `--diff`
+  (last-set wins, matching upstream's shared `diff_file` slot
+  semantics parameters.cpp:209 vs :237). Pinned by
+  `TestGzdiffAliasesDiff`. ✅
+
 Remaining gaps:
 
-- **Diff family**: `--gzdiff` (already implicit via iohelper). Per-site
-  / per-indv discordance outputs (`--diff-site-discordance`,
-  `--diff-indv-discordance`) emit a simpler column set than upstream's
-  richer `.diff.sites` / `.diff.indv` schemas — see
-  `variant_file_diff.cpp:635` for the gap.
-- **Per-individual output**: the per-individual `.imiss` row layout has
-  fields we don't emit (we have `--missing-indv`).
-- **Other**: `--pca` family (DEFERRED — see the wave-8 PCA-deferred
-  block above for the precise scope and re-attempt criteria);
-  small-format columns gaps tracked in `tools/PORTING_STATUS.md`.
+- **BCF-binary family** — `--bcf`, `--diff-bcf`, `--recode-bcf`,
+  `--contigs` (BCF-conversion only). Deferred until the BCF reader
+  lands.
+- **PCA family** (`--pca`, `--pca-no-norm`, `--pca-snp-loadings`) —
+  DEFERRED, see the wave-8 PCA-deferred block above.
+- **Per-individual output**: the per-individual `.imiss` row layout
+  still has fields we don't emit (we have `--missing-indv`).
+- **Diff family**: per-site / per-indv discordance outputs
+  (`--diff-site-discordance`, `--diff-indv-discordance`) still emit a
+  simpler column set than upstream's richer `.diff.sites` /
+  `.diff.indv` schemas — see `variant_file_diff.cpp:635` for the gap.
+- **Other**: small-format columns gaps tracked in
+  `tools/PORTING_STATUS.md`.
 
 Note: the brief mentioned `--haploid` as a possible wave-2 target. After
 checking the upstream source (`reference_code/vcftools/src/cpp/`) there is
