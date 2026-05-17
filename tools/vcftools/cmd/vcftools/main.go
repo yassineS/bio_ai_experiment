@@ -110,6 +110,13 @@ Format Conversion:
                         <prefix>.ldhat.locs). Requires --chr; implies --phased.
   --ldhat-geno          Output unphased LDhat format (same file names as
                         --ldhat). Requires --chr.
+  --ldhelmet            Output LDhelmet format (<prefix>.ldhelmet.snps and
+                        <prefix>.ldhelmet.pos). Requires --chr; implies
+                        --phased and --remove-indels.
+  --IMPUTE              Output IMPUTE reference-panel bundle
+                        (<prefix>.impute.legend, <prefix>.impute.hap,
+                        <prefix>.impute.hap.indv). Biallelic, phased SNPs
+                        only; sites with missing data are dropped.
 
 VCF Comparison (--diff family):
   --diff FILE              Compare against a second VCF file
@@ -291,6 +298,15 @@ func main() {
 	// LDhat output. --ldhat is phased; --ldhat-geno is unphased.
 	ldhat := flag.Bool("ldhat", false, "Output phased LDhat format (.ldhat.sites/.ldhat.locs); requires --chr")
 	ldhatGeno := flag.Bool("ldhat-geno", false, "Output unphased LDhat format (.ldhat.sites/.ldhat.locs); requires --chr")
+
+	// LDhelmet output. Implies --phased and --remove-indels (upstream
+	// parameters.cpp:275). Requires --chr like the other LDhat-family
+	// flags.
+	ldhelmet := flag.Bool("ldhelmet", false, "Output LDhelmet format (.ldhelmet.snps/.ldhelmet.pos); requires --chr; implies --phased + --remove-indels")
+
+	// IMPUTE output (case-sensitive flag name to match upstream). Implies
+	// --phased, biallelic-only, and rejects any site with a missing GT.
+	impute := flag.Bool("IMPUTE", false, "Output IMPUTE reference-panel format (.impute.legend/.impute.hap/.impute.hap.indv); phased biallelic SNPs with no missing data only")
 
 	// --phased: keep only sites where every kept-individual GT is phased.
 	phased := flag.Bool("phased", false, "Keep only sites where every kept-individual GT is phased (separator '|' or haploid)")
@@ -511,6 +527,8 @@ func main() {
 		Phased:               *phased,
 		LDhat:                *ldhat,
 		LDhatGeno:            *ldhatGeno,
+		LDhelmet:             *ldhelmet,
+		IMPUTE:               *impute,
 	}
 
 	// Run vcftools

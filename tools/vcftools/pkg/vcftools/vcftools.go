@@ -204,6 +204,21 @@ type Params struct {
 	// See ldhat.go for the file layout.
 	LDhat     bool
 	LDhatGeno bool
+
+	// --ldhelmet emits a paired (<prefix>.ldhelmet.snps,
+	// <prefix>.ldhelmet.pos) bundle in LDhelmet's input format. Upstream
+	// (parameters.cpp:275) sets phased_only = true and remove_indels =
+	// true; --ldhelmet also shares the LDhat --chr requirement
+	// (parameters.cpp:717). See ldhelmet.go for the file layout.
+	LDhelmet bool
+
+	// --IMPUTE (case-sensitive) emits a three-file bundle in IMPUTE
+	// reference-panel format:
+	//   <prefix>.impute.legend, <prefix>.impute.hap, <prefix>.impute.hap.indv
+	// Upstream (parameters.cpp:255) sets phased_only = true,
+	// min_site_call_rate = 1.0, min_alleles = 2, max_alleles = 2. See
+	// impute.go for the file layout.
+	IMPUTE bool
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -395,6 +410,20 @@ func Run(input io.Reader, params *Params) error {
 		ldhat = newLDhatRunner(ldhatUnphased, params.OutPrefix, filteredHeader.Samples)
 	}
 
+	// --ldhelmet: buffer per-site haplotype contributions and emit the
+	// paired (.ldhelmet.snps, .ldhelmet.pos) bundle at end-of-stream.
+	var ldhelmet *ldhelmetRunner
+	if params.LDhelmet {
+		ldhelmet = newLDhelmetRunner(params.OutPrefix, filteredHeader.Samples)
+	}
+
+	// --IMPUTE: buffer per-site rows for the IMPUTE (.legend, .hap,
+	// .hap.indv) bundle.
+	var impute *imputeRunner
+	if params.IMPUTE {
+		impute = newImputeRunner(params.OutPrefix, filteredHeader.Samples)
+	}
+
 	// Pre-parse filter-name sets and INFO-tag sets so we don't re-tokenise
 	// every line in the hot path.
 	removeFilteredSet := parseFilterList(params.RemoveFiltered)
@@ -470,15 +499,32 @@ func Run(input io.Reader, params *Params) error {
 		// Apply genotype-level filters
 		filteredVariant = filterGenotypes(filteredVariant, params)
 
-		// --phased (also implied by --ldhat): drop sites with any unphased
-		// kept-individual genotype. Mirrors upstream's
-		// filter_sites_by_phase (entry_filters.cpp:989-1010), which iterates
-		// over kept individuals only — so we run after the sample filter.
-		if params.Phased || params.LDhat {
+		// --phased (also implied by --ldhat, --ldhelmet, --IMPUTE): drop
+		// sites with any unphased kept-individual genotype. Mirrors
+		// upstream's filter_sites_by_phase (entry_filters.cpp:989-1010),
+		// which iterates over kept individuals only — so we run after the
+		// sample filter.
+		if params.Phased || params.LDhat || params.LDhelmet || params.IMPUTE {
 			if !isPhasedSite(filteredVariant) {
 				continue
 			}
 		}
+
+		// --ldhelmet implies --remove-indels (parameters.cpp:275). We've
+		// already passed the generic remove-indels check above via
+		// passFilters when params.RemoveIndels is set; here we apply it
+		// implicitly for --ldhelmet even if the user didn't set
+		// --remove-indels explicitly.
+		if params.LDhelmet && isIndelVariant(filteredVariant) {
+			continue
+		}
+
+		// --IMPUTE implies min_alleles == max_alleles == 2 (biallelic
+		// only; parameters.cpp:255). The generic --min-alleles /
+		// --max-alleles defaults in Params already cover the biallelic
+		// case (MinAlleles=2 default), but the multi-allelic guard is
+		// enforced inside imputeRunner.addVariant for the warning
+		// behaviour to match upstream.
 
 		// Update statistics
 		stats.addVariant(filteredVariant, params)
@@ -540,6 +586,18 @@ func Run(input io.Reader, params *Params) error {
 		// LDhat buffer (biallelic-only filtering is applied inside).
 		if ldhat != nil {
 			ldhat.addVariant(filteredVariant)
+		}
+
+		// LDhelmet buffer (no biallelic filter — upstream just looks up
+		// alleles[geno]).
+		if ldhelmet != nil {
+			ldhelmet.addVariant(filteredVariant)
+		}
+
+		// IMPUTE buffer (biallelic-only + per-site missing/unphased
+		// guard applied inside).
+		if impute != nil {
+			impute.addVariant(filteredVariant)
 		}
 
 		// Collect variants for format conversions
@@ -663,6 +721,16 @@ func Run(input io.Reader, params *Params) error {
 	// --ldhat / --ldhat-geno output.
 	if err := ldhat.close(); err != nil {
 		return fmt.Errorf("closing --ldhat output: %w", err)
+	}
+
+	// --ldhelmet output.
+	if err := ldhelmet.close(); err != nil {
+		return fmt.Errorf("closing --ldhelmet output: %w", err)
+	}
+
+	// --IMPUTE output.
+	if err := impute.close(); err != nil {
+		return fmt.Errorf("closing --IMPUTE output: %w", err)
 	}
 
 	return nil
@@ -1406,10 +1474,11 @@ func getOutputPath(prefix, suffix string) string {
 func checkUnsupported(params *Params) error {
 	var missing []string
 
-	// --ldhat / --ldhat-geno: upstream errors at parameters.cpp:717 unless
-	// exactly one chromosome is selected via --chr. Mirror that check here
-	// so misuse fails fast rather than producing a malformed file.
-	if (params.LDhat || params.LDhatGeno) && params.Chr == "" {
+	// --ldhat / --ldhat-geno / --ldhelmet: upstream errors at
+	// parameters.cpp:717 unless exactly one chromosome is selected via
+	// --chr. Mirror that check here so misuse fails fast rather than
+	// producing a malformed file.
+	if (params.LDhat || params.LDhatGeno || params.LDhelmet) && params.Chr == "" {
 		return fmt.Errorf("Require a chromosome (--chr) when outputting LDhat format.")
 	}
 
