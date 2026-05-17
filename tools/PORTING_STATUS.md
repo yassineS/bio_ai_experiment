@@ -450,11 +450,17 @@ the long-tail wave 13 PR; `--indv-burden`, `--indv-freq-burden`, and
 `--temp`, and `--gzdiff` landed in the long-tail wave 15 PR with three
 upstream `--hapcount` bugs fixed on port — see
 `docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the writeup; the
-upstream-canonical `--recode-INFO TAG` (synonym for the port's
-existing `--keep-INFO`) and the `-c` short alias for `--stdout`
-landed in long-tail wave 16. After wave 16 the only remaining gaps
-are the BCF-binary family (`--bcf` / `--diff-bcf` / `--recode-bcf` /
-`--contigs`) and the PCA family, all HEAVY; the long-flag long-tail
+upstream-canonical `--recode-INFO TAG` (then a synonym for the
+port's `--keep-INFO`) and the `-c` short alias for `--stdout`
+landed in long-tail wave 16. The `--keep-INFO` semantic was then
+corrected in wave 17 (this PR): it is now wired as the upstream
+SITE FILTER (parameters.cpp:266 + entry_filters.cpp:1033-1063),
+distinct from `--recode-INFO` which keeps the recode-column-selector
+semantic. See `docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the
+migration writeup. After wave 17 the only remaining gaps are the
+BCF-binary family (`--bcf` / `--diff-bcf` / `--recode-bcf` /
+`--contigs`), the PCA family, and the open `--remove-INFO`
+site-filter divergence — all HEAVY; the long-flag long-tail
 sequence is now effectively exhausted.
 
 **Implemented Commands**:

@@ -69,10 +69,16 @@ func parseInfoTagList(s string) infoTagSet {
 	return parseFilterList(s)
 }
 
-// filterRecodeInfo applies --keep-INFO / --remove-INFO to a recoded variant's
-// INFO map. keepInfo (when non-empty) restricts INFO to the listed tags;
-// removeInfo (when non-empty) strips the listed tags. If both are set,
-// upstream's behaviour is "intersect both restrictions", which we mirror.
+// filterRecodeInfo applies the recode-INFO column selectors to a recoded
+// variant's INFO map. keepInfo (when non-empty) restricts INFO to the listed
+// tags; removeInfo (when non-empty) strips the listed tags. If both are set
+// they intersect (keep wins, then remove).
+//
+// Upstream's `--recode-INFO TAG` (parameters.cpp:319 → recode_INFO_to_keep)
+// drives the keepInfo path; `--remove-INFO TAG` currently flows into
+// removeInfo for column-stripping (see Params.RemoveINFO for the residual
+// upstream-vs-port semantic note — upstream treats `--remove-INFO` as a
+// site filter, not a column stripper).
 //
 // Returns a fresh map; the caller is responsible for assigning it back.
 func filterRecodeInfo(info map[string]string, keepInfo, removeInfo infoTagSet) map[string]string {
@@ -164,4 +170,116 @@ func (g *getInfoRunner) close() error {
 		return err
 	}
 	return g.f.Close()
+}
+
+// infoHeaderMeta captures the bits of an `##INFO=<ID=X,Number=N,Type=T,...>`
+// declaration that the SITE-filter path needs. We only inspect Type and
+// ignore Number/Description, mirroring upstream `entry_filters.cpp:1053`,
+// which switches on `INFO_map[...].Type != Flag` alone.
+type infoHeaderMeta struct {
+	ID   string
+	Type string
+}
+
+// lookupInfoMeta scans a VCF header for an `##INFO=<ID=tag,...>` declaration
+// and returns the parsed type field. Returns (meta, false) if no matching
+// declaration exists. Used by the `--keep-INFO` site filter to mirror
+// upstream's "must be Type=Flag" check at entry_filters.cpp:1053.
+//
+// The parser is intentionally tolerant — VCF spec allows arbitrary
+// field ordering inside the `<...>` envelope, and quoted Description
+// fields may embed commas. We pull out the body once and then split on
+// commas only outside double-quoted strings.
+func lookupInfoMeta(h *vcf.Header, tag string) (infoHeaderMeta, bool) {
+	if h == nil {
+		return infoHeaderMeta{}, false
+	}
+	prefix := "##INFO=<"
+	for _, line := range h.MetaInfo {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		// Strip the leading `##INFO=<` and trailing `>` (best-effort).
+		body := strings.TrimPrefix(line, prefix)
+		if strings.HasSuffix(body, ">") {
+			body = body[:len(body)-1]
+		}
+		fields := splitInfoHeaderFields(body)
+		meta := infoHeaderMeta{}
+		for _, f := range fields {
+			kv := strings.SplitN(f, "=", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			key := strings.TrimSpace(kv[0])
+			val := strings.TrimSpace(kv[1])
+			switch key {
+			case "ID":
+				meta.ID = val
+			case "Type":
+				meta.Type = val
+			}
+		}
+		if meta.ID == tag {
+			return meta, true
+		}
+	}
+	return infoHeaderMeta{}, false
+}
+
+// splitInfoHeaderFields splits the body of an `##INFO=<...>` declaration on
+// commas that are NOT inside a double-quoted region. VCF Description fields
+// are allowed to embed commas, so a naive `strings.Split(...,",")` would
+// chop them apart.
+func splitInfoHeaderFields(body string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		switch {
+		case c == '"':
+			inQuote = !inQuote
+			cur.WriteByte(c)
+		case c == ',' && !inQuote:
+			out = append(out, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// passKeepINFOSite implements upstream's `--keep-INFO TAG` site filter
+// (entry_filters.cpp:1033-1063). A site passes when at least one of the
+// named INFO Flag tags is present in its INFO field. When `flags` is empty
+// the filter is inactive (caller should not invoke).
+//
+// "Present" matches upstream's `get_INFO_value(tag) == "1"` test: the tag
+// is in the INFO column, regardless of whether it appears as a bare flag
+// (`MYFLAG`) or with a `=1` suffix.
+func passKeepINFOSite(v *vcf.Variant, flags infoTagSet) bool {
+	if len(flags) == 0 {
+		return true
+	}
+	for tag := range flags {
+		val, ok := v.Info[tag]
+		if !ok {
+			continue
+		}
+		// Upstream Flag-type entries have value "1" when present. We
+		// also accept the bare-flag form (empty value) because some
+		// writers emit `MYFLAG;OTHER=...` with no `=1` and the parser
+		// stores those with an empty string. Anything else (e.g.
+		// `MYFLAG=0`) is treated as "not present" to match
+		// get_INFO_value semantics.
+		if val == "" || val == "1" {
+			return true
+		}
+	}
+	return false
 }

@@ -101,6 +101,75 @@ warrant a closer look:_
 
 ### Fix-on-port (resolved)
 
+#### vcftools `--keep-INFO TAG` semantic divergence (port → upstream)
+
+This is a port-side divergence (not an upstream bug): pre-wave-17 the
+Go port mapped `--keep-INFO TAG` onto upstream's recode-column
+selector semantic, when upstream actually defines it as a SITE FILTER.
+
+Upstream `parameters.cpp:266`:
+
+```cpp
+else if (in_str == "--keep-INFO") { site_INFO_flags_to_keep.insert(get_arg(i+1)); i++; }
+```
+
+The filter routine `entry::filter_sites_by_INFO` in
+`entry_filters.cpp:1033-1063` requires every named tag to be declared
+`Type=Flag` in the header (LOG.error otherwise) and then DROPS the
+site unless at least one of the named tags has value "1" in the INFO
+column (OR semantics across multiple tags). It is invoked from
+`entry::apply_filters` at `entry_filters.cpp:44`. The semantic is
+"keep sites where any of these Flag tags is present", not "restrict
+the INFO column in the recoded output".
+
+The recode-column selector is a separate flag — `--recode-INFO TAG`
+(`parameters.cpp:319`, `recode_INFO_to_keep`). Pre-wave-16 the port
+exposed the recode-column-selector semantic only via the misnamed
+`--keep-INFO` flag; wave 16 (PR #141) added `--recode-INFO` as a
+synonym pointing at the same internal slice and documented the
+residual divergence as a follow-up.
+
+**Severity:** silently-wrong output. A user invoking
+`vcftools --vcf X.vcf --keep-INFO FLAG_A --recode` against the port
+got every site in their VCF emitted with the INFO column restricted
+to FLAG_A; against upstream they got just the sites where FLAG_A is
+present, with INFO stripped to ".". Both row count and INFO content
+differed.
+
+**Fixed in port** (wave 17 — this PR). `--keep-INFO TAG` is now wired
+to a new `Params.KeepINFO` site-filter codepath that mirrors
+`entry_filters.cpp:1033-1063`: it errors at runtime if any named tag
+is not declared `Type=Flag`, then drops sites where none of the named
+tags is present in INFO. `--recode-INFO TAG` is now the sole flag
+driving the recode-column selector (new `Params.RecodeINFO` field).
+
+The two flags are independent and may be combined (e.g.
+`--keep-INFO FLAG_A --recode-INFO DP` filters sites by FLAG_A
+presence then restricts the recoded INFO column to DP).
+
+Pinned by `TestPassKeepINFOSite`, `TestLookupInfoMeta`,
+`TestRun_KeepINFO_SiteFilter_Integration`,
+`TestRun_KeepINFO_SiteFilter_OR`, and
+`TestRun_KeepINFO_SiteFilter_NonFlagType` in
+`tools/vcftools/pkg/vcftools/info_filters_test.go`, plus the
+byte-for-byte `TestParity_KeepINFO_SingleFlag` and
+`TestParity_KeepINFO_OR` in
+`tools/vcftools/pkg/vcftools/parity_test.go` against goldens generated
+by the upstream binary (built with the FORTIFY_SOURCE workaround,
+documented in `tools/vcftools/testdata/parity/keep_info_flags.vcf`
+header comment).
+
+**Note on the sibling `--remove-INFO TAG` divergence.** Upstream's
+`--remove-INFO TAG` (`parameters.cpp:328 → site_INFO_flags_to_remove`)
+is also a SITE FILTER (drop site if the named Flag IS present —
+`entry_filters.cpp:1068-1086`), but the Go port currently implements
+it as a recode-column stripper. This is the same shape of divergence
+as `--keep-INFO`; it is not addressed by this wave because it has its
+own goldens-churn cost and is not surfaced by any existing test. See
+`Params.RemoveINFO` doc-comment in
+`tools/vcftools/pkg/vcftools/vcftools.go` and the residual entry in
+`docs/PARITY_ROADMAP.md`.
+
 #### vcftools `.ifreqburden` INDV label-index bug
 
 Upstream `variant_file_output.cpp:621` emits

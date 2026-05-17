@@ -71,7 +71,10 @@ func TestPassKeepFilteredNames(t *testing.T) {
 	}
 }
 
-// TestFilterRecodeInfo covers --keep-INFO / --remove-INFO restriction.
+// TestFilterRecodeInfo covers --recode-INFO / --remove-INFO restriction
+// of the recoded INFO column. The function is now exclusively driven by
+// `Params.RecodeINFO` (and the historical recode-column `RemoveINFO`); the
+// site-filter `--keep-INFO` flow is covered by TestPassKeepINFOSite below.
 func TestFilterRecodeInfo(t *testing.T) {
 	in := map[string]string{"AF": "0.5", "DP": "10", "AA": "T"}
 
@@ -81,11 +84,11 @@ func TestFilterRecodeInfo(t *testing.T) {
 		t.Errorf("empty sets: got %d, want 3", len(out))
 	}
 
-	// keep-INFO restricts to listed tags.
+	// recode-INFO restricts to listed tags.
 	keep := parseInfoTagList("AF,DP")
 	out = filterRecodeInfo(in, keep, nil)
 	if len(out) != 2 || out["AF"] != "0.5" || out["DP"] != "10" {
-		t.Errorf("keep-INFO AF,DP: got %v", out)
+		t.Errorf("recode-INFO AF,DP: got %v", out)
 	}
 
 	// remove-INFO strips listed tags.
@@ -95,10 +98,61 @@ func TestFilterRecodeInfo(t *testing.T) {
 		t.Errorf("remove-INFO DP: got %v", out)
 	}
 
-	// Both compose: keep-INFO AF,DP then strip DP -> only AF survives.
+	// Both compose: recode-INFO AF,DP then strip DP -> only AF survives.
 	out = filterRecodeInfo(in, keep, rem)
 	if len(out) != 1 || out["AF"] != "0.5" {
-		t.Errorf("keep+remove: got %v", out)
+		t.Errorf("recode+remove: got %v", out)
+	}
+}
+
+// TestPassKeepINFOSite covers the new upstream-aligned `--keep-INFO TAG`
+// site filter (entry_filters.cpp:1033-1063). A site passes when any of
+// the named INFO Flag-type tags is present; multiple tags compose via OR.
+func TestPassKeepINFOSite(t *testing.T) {
+	flags := parseInfoTagList("FLAG_A,FLAG_B")
+	cases := []struct {
+		name string
+		info map[string]string
+		want bool
+	}{
+		{"flagA present (bare)", map[string]string{"FLAG_A": ""}, true},
+		{"flagA present (=1)", map[string]string{"FLAG_A": "1"}, true},
+		{"flagB present", map[string]string{"FLAG_B": "", "DP": "10"}, true},
+		{"both present", map[string]string{"FLAG_A": "", "FLAG_B": ""}, true},
+		{"neither present", map[string]string{"DP": "10"}, false},
+		{"flag explicitly zero", map[string]string{"FLAG_A": "0"}, false},
+		{"empty info", map[string]string{}, false},
+	}
+	for _, tc := range cases {
+		v := &vcf.Variant{Info: tc.info}
+		got := passKeepINFOSite(v, flags)
+		if got != tc.want {
+			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// Empty flag set is a no-op (always pass).
+	if !passKeepINFOSite(&vcf.Variant{}, nil) {
+		t.Error("empty flag set should always pass")
+	}
+}
+
+// TestLookupInfoMeta confirms the header scanner extracts the Type field
+// from `##INFO=<...>` declarations, including those with quoted
+// Description strings that embed commas.
+func TestLookupInfoMeta(t *testing.T) {
+	h := &vcf.Header{MetaInfo: []string{
+		`##INFO=<ID=FLAG_A,Number=0,Type=Flag,Description="A flag, with comma">`,
+		`##INFO=<ID=DP,Number=1,Type=Integer,Description="depth">`,
+	}}
+	if meta, ok := lookupInfoMeta(h, "FLAG_A"); !ok || meta.Type != "Flag" {
+		t.Errorf("FLAG_A: got (%+v, %v)", meta, ok)
+	}
+	if meta, ok := lookupInfoMeta(h, "DP"); !ok || meta.Type != "Integer" {
+		t.Errorf("DP: got (%+v, %v)", meta, ok)
+	}
+	if _, ok := lookupInfoMeta(h, "MISSING"); ok {
+		t.Error("MISSING: expected not-found")
 	}
 }
 
@@ -184,8 +238,12 @@ func TestRun_GetINFO_Integration(t *testing.T) {
 	}
 }
 
-// TestRun_KeepINFO_Integration restricts INFO in recoded output.
-func TestRun_KeepINFO_Integration(t *testing.T) {
+// TestRun_RecodeINFO_Integration restricts INFO in recoded output via
+// the upstream-canonical `--recode-INFO TAG` flag (parameters.cpp:319,
+// recode_INFO_to_keep). This test previously used `KeepINFO` because
+// the port had misaligned `--keep-INFO` with the recode-column selector
+// semantic; wave-17 separates the two flags.
+func TestRun_RecodeINFO_Integration(t *testing.T) {
 	vcfText := "##fileformat=VCFv4.2\n" +
 		"##INFO=<ID=AF,Number=1,Type=Float,Description=\"\">\n" +
 		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
@@ -195,7 +253,7 @@ func TestRun_KeepINFO_Integration(t *testing.T) {
 		"1\t100\t.\tA\tG\t.\tPASS\tAF=0.5;DP=10;AA=T\tGT\t0/0\n"
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "out")
-	params := &Params{OutPrefix: prefix, Recode: true, KeepINFO: "AF"}
+	params := &Params{OutPrefix: prefix, Recode: true, RecodeINFO: "AF"}
 	if err := Run(strings.NewReader(vcfText), params); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -217,6 +275,95 @@ func TestRun_KeepINFO_Integration(t *testing.T) {
 		}
 	}
 	t.Fatalf("data row not found in:\n%s", body)
+}
+
+// TestRun_KeepINFO_SiteFilter_Integration covers the wave-17 fix: the
+// port's `--keep-INFO TAG` flag now matches upstream's SITE FILTER
+// semantic (entry_filters.cpp:1033-1063). Only sites where the named
+// INFO Flag is present should survive.
+func TestRun_KeepINFO_SiteFilter_Integration(t *testing.T) {
+	vcfText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=FLAG_A,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=FLAG_B,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n" +
+		"1\t100\t.\tA\tG\t.\tPASS\tFLAG_A;DP=10\tGT\t0/0\n" +
+		"1\t200\t.\tA\tC\t.\tPASS\tFLAG_B;DP=20\tGT\t0/1\n" +
+		"1\t300\t.\tA\tT\t.\tPASS\tFLAG_A;FLAG_B;DP=30\tGT\t1/1\n" +
+		"1\t400\t.\tA\tG\t.\tPASS\tDP=40\tGT\t0/1\n"
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	// --keep-INFO FLAG_A --recode --recode-INFO-all: only sites with
+	// FLAG_A present should pass (100, 300).
+	params := &Params{OutPrefix: prefix, Recode: true, RecodeInfoAll: true, KeepINFO: "FLAG_A"}
+	if err := Run(strings.NewReader(vcfText), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	data, _ := os.ReadFile(prefix + ".recode.vcf")
+	body := string(data)
+	for _, pos := range []string{"\t100\t", "\t300\t"} {
+		if !strings.Contains(body, pos) {
+			t.Errorf("expected site %q kept; got:\n%s", pos, body)
+		}
+	}
+	for _, pos := range []string{"\t200\t", "\t400\t"} {
+		if strings.Contains(body, pos) {
+			t.Errorf("expected site %q dropped; got:\n%s", pos, body)
+		}
+	}
+}
+
+// TestRun_KeepINFO_SiteFilter_OR confirms multiple --keep-INFO tags
+// compose via OR (entry_filters.cpp:1049-1062 loops over flags_to_keep
+// and sets `keep=true` on the first present tag).
+func TestRun_KeepINFO_SiteFilter_OR(t *testing.T) {
+	vcfText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=FLAG_A,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=FLAG_B,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n" +
+		"1\t100\t.\tA\tG\t.\tPASS\tFLAG_A;DP=10\tGT\t0/0\n" +
+		"1\t200\t.\tA\tC\t.\tPASS\tFLAG_B;DP=20\tGT\t0/1\n" +
+		"1\t400\t.\tA\tG\t.\tPASS\tDP=40\tGT\t0/1\n"
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	params := &Params{OutPrefix: prefix, Recode: true, RecodeInfoAll: true, KeepINFO: "FLAG_A,FLAG_B"}
+	if err := Run(strings.NewReader(vcfText), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	data, _ := os.ReadFile(prefix + ".recode.vcf")
+	body := string(data)
+	for _, pos := range []string{"\t100\t", "\t200\t"} {
+		if !strings.Contains(body, pos) {
+			t.Errorf("expected site %q kept; got:\n%s", pos, body)
+		}
+	}
+	if strings.Contains(body, "\t400\t") {
+		t.Errorf("expected site 400 dropped; got:\n%s", body)
+	}
+}
+
+// TestRun_KeepINFO_SiteFilter_NonFlagType confirms the port errors out
+// when --keep-INFO names an INFO key that is not declared as Type=Flag
+// in the header. Mirrors upstream entry_filters.cpp:1053-1054.
+func TestRun_KeepINFO_SiteFilter_NonFlagType(t *testing.T) {
+	vcfText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n" +
+		"1\t100\t.\tA\tG\t.\tPASS\tDP=10\tGT\t0/0\n"
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	params := &Params{OutPrefix: prefix, Recode: true, KeepINFO: "DP"}
+	err := Run(strings.NewReader(vcfText), params)
+	if err == nil {
+		t.Fatal("expected --keep-INFO on non-Flag type to error; got nil")
+	}
+	if !strings.Contains(err.Error(), "non flag type") {
+		t.Errorf("error %q: want substring %q", err.Error(), "non flag type")
+	}
 }
 
 // TestRun_RemoveINFO_Integration strips a tag from recoded output.

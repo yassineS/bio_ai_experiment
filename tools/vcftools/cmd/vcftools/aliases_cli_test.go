@@ -1,17 +1,22 @@
-// Wave-16 CLI-binary tests for the upstream-canonical flag aliases added
-// to close gaps versus reference_code/vcftools/src/cpp/parameters.cpp:
+// Wave-16/17 CLI-binary tests for upstream-canonical flag aliases:
 //
 //   - `-c` — upstream's short alias for `--stdout` (parameters.cpp:194).
 //   - `--recode-INFO TAG` — upstream's canonical name for the repeatable
-//     recode-INFO-column selector (parameters.cpp:319). The port's
-//     `--keep-INFO` already implements this semantic; we add the
-//     canonical spelling as a synonym, mirroring the existing
-//     `--keep-INFO-all` ↔ `--recode-INFO-all` pattern (main.go).
+//     recode-INFO-column selector (parameters.cpp:319,
+//     `recode_INFO_to_keep`). Wave 17 separated this from `--keep-INFO`
+//     (which was previously routed to the same internal slice as a
+//     misaligned synonym); `--recode-INFO` is now the only flag wired
+//     to the recode-column selector path.
+//   - `--keep-INFO TAG` — upstream's site filter
+//     (parameters.cpp:266 → `site_INFO_flags_to_keep` →
+//     entry_filters.cpp:1033). Pre-wave-17 the port routed this to the
+//     recode-column selector; wave-17 swapped it to its upstream SITE
+//     FILTER semantic. See pkg/vcftools/info_filters_test.go for
+//     coverage of the new semantic; this file covers the CLI surface.
 //
-// Both aliases are wired in main.go and have no `pkg/vcftools` Params
-// equivalent of their own (they OR into the same fields as the long
-// spellings), so the tests live here next to the CLI to exercise the
-// actual argv → flag.Parse path rather than the package boundary.
+// All three flags are wired in main.go, so the tests live here next to
+// the CLI to exercise the actual argv → flag.Parse path rather than the
+// package boundary.
 package main
 
 import (
@@ -95,9 +100,8 @@ func TestCLI_ShortStdoutFlag(t *testing.T) {
 }
 
 // TestCLI_RecodeINFOAlias — `--recode-INFO TAG` must restrict the INFO
-// column in `.recode.vcf` to the listed tags, exactly like the port's
-// `--keep-INFO` (parameters.cpp:319 + port's existing
-// pkg/vcftools/info_filters.go::filterRecodeInfo).
+// column in `.recode.vcf` to the listed tags
+// (parameters.cpp:319 → recode_INFO_to_keep).
 func TestCLI_RecodeINFOAlias(t *testing.T) {
 	bin := buildVcftools(t)
 	dir := t.TempDir()
@@ -143,29 +147,70 @@ func TestCLI_RecodeINFOAlias_Repeatable(t *testing.T) {
 	}
 }
 
-// TestCLI_RecodeINFOAlias_MixedWithKeepINFO — `--recode-INFO` and the
-// port's pre-existing `--keep-INFO` flow into the same `keepINFOParts`
-// slice in main.go; mixing them must union into a single set.
-func TestCLI_RecodeINFOAlias_MixedWithKeepINFO(t *testing.T) {
+// keepInfoSiteVCF is a small fixture with one Flag-type INFO key,
+// one site with the flag set and one without. Used by the wave-17
+// `--keep-INFO` CLI tests below.
+const keepInfoSiteVCF = "##fileformat=VCFv4.2\n" +
+	"##INFO=<ID=FLAG_A,Number=0,Type=Flag,Description=\"\">\n" +
+	"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
+	"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+	"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n" +
+	"1\t100\t.\tA\tG\t.\tPASS\tFLAG_A;DP=10\tGT\t0/0\n" +
+	"1\t200\t.\tA\tC\t.\tPASS\tDP=20\tGT\t0/1\n"
+
+// TestCLI_KeepINFOSiteFilter — wave-17 fix-on-port. `--keep-INFO TAG`
+// is now a SITE FILTER (upstream parameters.cpp:266 +
+// entry_filters.cpp:1033-1063). It must drop sites where the named
+// INFO Flag is not present.
+func TestCLI_KeepINFOSiteFilter(t *testing.T) {
 	bin := buildVcftools(t)
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "out")
-	_, _ = runWithStdin(t, bin, aliasVCF,
-		"--stdin", "--recode",
-		"--keep-INFO", "AF",
-		"--recode-INFO", "AA",
+	_, _ = runWithStdin(t, bin, keepInfoSiteVCF,
+		"--stdin", "--recode", "--recode-INFO-all",
+		"--keep-INFO", "FLAG_A",
 		"--out", prefix)
 
 	data, err := os.ReadFile(prefix + ".recode.vcf")
 	if err != nil {
 		t.Fatalf("read recode output: %v", err)
 	}
-	got := dataRowINFO(string(data))
-	// Recoded INFO ordering: tools/vcftools/pkg/vcftools/vcftools.go does
-	// not propagate InfoOrder onto the recoded variant, so the surviving
-	// keys fall through to formatInfo's alphabetical-leftover branch
-	// (pkg/bioformats/vcf/vcf.go:394-409). AA precedes AF alphabetically.
-	if got != "AA=T;AF=0.5" {
-		t.Errorf("mixed --keep-INFO AF + --recode-INFO AA: INFO = %q, want %q", got, "AA=T;AF=0.5")
+	body := string(data)
+	if !strings.Contains(body, "\t100\t") {
+		t.Errorf("expected site 100 (FLAG_A) kept; got:\n%s", body)
+	}
+	if strings.Contains(body, "\t200\t") {
+		t.Errorf("expected site 200 (no FLAG_A) dropped; got:\n%s", body)
+	}
+}
+
+// TestCLI_KeepINFOAndRecodeINFOAreSeparate — the two flags drive
+// independent Params fields (KeepINFO vs RecodeINFO) and may be
+// combined: --keep-INFO filters sites, --recode-INFO restricts the
+// INFO column of survivors.
+func TestCLI_KeepINFOAndRecodeINFOAreSeparate(t *testing.T) {
+	bin := buildVcftools(t)
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	_, _ = runWithStdin(t, bin, keepInfoSiteVCF,
+		"--stdin", "--recode",
+		"--keep-INFO", "FLAG_A",
+		"--recode-INFO", "DP",
+		"--out", prefix)
+
+	data, err := os.ReadFile(prefix + ".recode.vcf")
+	if err != nil {
+		t.Fatalf("read recode output: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "\t100\t") {
+		t.Errorf("expected site 100 kept; got:\n%s", body)
+	}
+	if strings.Contains(body, "\t200\t") {
+		t.Errorf("expected site 200 dropped; got:\n%s", body)
+	}
+	got := dataRowINFO(body)
+	if got != "DP=10" {
+		t.Errorf("INFO column = %q, want %q (only DP survives via --recode-INFO)", got, "DP=10")
 	}
 }

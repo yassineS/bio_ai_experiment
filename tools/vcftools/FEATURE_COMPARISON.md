@@ -123,8 +123,11 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 
 - ✅ `--remove-filtered NAME[,NAME...]` - Drop sites listing any named FILTER
 - ✅ `--keep-filtered NAME[,NAME...]` - Keep only sites listing any named FILTER
-- ✅ `--keep-INFO TAG` (repeatable / comma-separated)
-- ✅ `--remove-INFO TAG` (repeatable / comma-separated)
+- ✅ `--keep-INFO TAG` (SITE FILTER, upstream parameters.cpp:266 +
+  entry_filters.cpp:1033; repeatable, OR-composing)
+- ⚠️ `--remove-INFO TAG` (repeatable / comma-separated;
+  currently a recode-column stripper — upstream defines it as a
+  SITE FILTER, tracked in PARITY_ROADMAP)
 - ✅ `--get-INFO TAG[,TAG...]` - Extract INFO tags to `<prefix>.INFO`
 
 ## Missing Features (❌)
@@ -190,8 +193,10 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ❌ `--thin` - Thin sites by distance
 - ✅ `--keep-filtered NAME[,NAME...]` - Keep specific FILTER flags
 - ✅ `--remove-filtered NAME[,NAME...]` - Remove specific FILTER flags
-- ✅ `--keep-INFO TAG` - Keep sites with INFO flag (recoded output)
-- ✅ `--remove-INFO TAG` - Strip INFO flag from recoded output
+- ✅ `--keep-INFO TAG` - SITE FILTER: keep only sites where the
+  named Flag-type INFO tag is present (upstream parameters.cpp:266)
+- ⚠️ `--remove-INFO TAG` - Strip INFO flag from recoded output
+  (port-only semantic; upstream uses this as a SITE FILTER)
 - ❌ `--keep-INFO-all` - Keep all INFO fields (use `--recode-INFO-all`)
 
 #### Genotype-Level Filtering
@@ -248,7 +253,8 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 
 - ✅ `--get-INFO TAG[,TAG...]` - Extract INFO field values → `<prefix>.INFO`
 - ❌ `--extract-FORMAT-info` - Extract FORMAT field values
-- ✅ `--recode-INFO` - Recode with specific INFO fields (via `--keep-INFO TAG`)
+- ✅ `--recode-INFO TAG` - Recode-column selector (upstream
+  parameters.cpp:319, distinct from `--keep-INFO` since wave 17)
 
 #### Output Management
 

@@ -318,13 +318,41 @@ type Params struct {
 	RemoveFiltered string
 	KeepFiltered   string
 
-	// INFO tag selection for --recode output. Both are comma-separated lists
-	// applied during recoding only. KeepINFO restricts the output INFO map
-	// to the listed tags; RemoveINFO strips the listed tags. (--recode-INFO-all
-	// already preserves everything; --keep-INFO and --remove-INFO compose
-	// after it.)
-	KeepINFO   string
+	// KeepINFO is a comma-separated list of INFO Flag-type tag names. It
+	// is a SITE FILTER (NOT a recode-column selector): a site passes only
+	// if at least one of the listed flag tags is present in the variant's
+	// INFO field. Mirrors upstream parameters.cpp:266
+	// (`site_INFO_flags_to_keep`) and the filter algorithm at
+	// entry_filters.cpp:1033-1063. Upstream errors out if a named tag is
+	// not declared as Type=Flag in the header; this port preserves that
+	// behaviour. Multiple tags compose via OR ("any present").
+	//
+	// To restrict the INFO column in `.recode.vcf` output to a subset of
+	// tags, use `RecodeINFO` (upstream `--recode-INFO`,
+	// parameters.cpp:319 → `recode_INFO_to_keep`) instead. Pre-wave-17
+	// versions of this port misaligned `KeepINFO` with that recode-column
+	// semantic; see docs/UPSTREAM_BUGS.md for the migration note.
+	KeepINFO string
+
+	// RemoveINFO is a comma-separated list of INFO tag names stripped from
+	// the recoded output. It composes with `RecodeINFO` and
+	// `RecodeInfoAll`.
+	//
+	// NOTE: upstream `--remove-INFO` (parameters.cpp:328) is itself a
+	// SITE FILTER (`site_INFO_flags_to_remove` →
+	// entry_filters.cpp:1068-1086, dropping sites where the named Flag is
+	// present). The port's `RemoveINFO` still implements the
+	// recode-column-stripper semantic — this is a separately-tracked
+	// divergence (see docs/PARITY_ROADMAP.md) and is NOT addressed by
+	// this wave's `--keep-INFO` site-filter fix.
 	RemoveINFO string
+
+	// RecodeINFO is a comma-separated list of INFO tag names to retain in
+	// the recoded `.recode.vcf` output. Mirrors upstream's
+	// `--recode-INFO TAG` (parameters.cpp:319 → `recode_INFO_to_keep`).
+	// Composes with `RecodeInfoAll` (which preserves all INFO) and with
+	// `RemoveINFO` (which strips after the keep-set is applied).
+	RecodeINFO string
 
 	// --get-INFO TAG[,TAG]... extracts the named INFO tags as a TSV file
 	// <prefix>.INFO with columns CHROM POS REF ALT <tags...>. The flag is
@@ -766,8 +794,33 @@ func Run(input io.Reader, params *Params) error {
 	// every line in the hot path.
 	removeFilteredSet := parseFilterList(params.RemoveFiltered)
 	keepFilteredSet := parseFilterList(params.KeepFiltered)
-	keepInfoSet := parseInfoTagList(params.KeepINFO)
+	// recodeInfoSet drives the `--recode-INFO TAG` recode-column selector
+	// (upstream parameters.cpp:319 → recode_INFO_to_keep). It restricts
+	// the INFO column in `.recode.vcf` output to the listed tags. It is
+	// NOT a site filter.
+	recodeInfoSet := parseInfoTagList(params.RecodeINFO)
+	// removeInfoSet currently drives the recode-column stripper; see the
+	// Params.RemoveINFO doc for the residual upstream divergence.
 	removeInfoSet := parseInfoTagList(params.RemoveINFO)
+
+	// keepInfoSiteSet drives the `--keep-INFO TAG` SITE FILTER
+	// (upstream parameters.cpp:266 → site_INFO_flags_to_keep →
+	// entry_filters.cpp:1033-1063). A site is dropped unless at least one
+	// of the listed tags is present in its INFO field (OR semantics).
+	// Upstream additionally errors if a listed tag is not declared as
+	// Type=Flag in the header. We mirror that error.
+	keepInfoSiteSet := parseInfoTagList(params.KeepINFO)
+	if len(keepInfoSiteSet) > 0 {
+		for tag := range keepInfoSiteSet {
+			meta, ok := lookupInfoMeta(filteredHeader, tag)
+			if !ok {
+				return fmt.Errorf("--keep-INFO: INFO tag %q is not declared in the VCF header", tag)
+			}
+			if !strings.EqualFold(meta.Type, "Flag") {
+				return fmt.Errorf("--keep-INFO: using INFO flag filtering on non flag type %s will not work correctly", tag)
+			}
+		}
+	}
 
 	// Set up output writer for recode
 	var recodeWriter *vcf.Writer
@@ -872,6 +925,19 @@ func Run(input io.Reader, params *Params) error {
 				return err
 			}
 			continue
+		}
+
+		// --keep-INFO TAG: site filter — drop sites where NONE of the
+		// named Flag-type INFO tags are present. Mirrors upstream's
+		// `filter_sites_by_INFO` (reference_code/vcftools/src/cpp/
+		// entry_filters.cpp:1033-1063). Multiple tags compose via OR.
+		if len(keepInfoSiteSet) > 0 {
+			if !passKeepINFOSite(variant, keepInfoSiteSet) {
+				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 
 		// Filter samples
@@ -1031,10 +1097,12 @@ func Run(input io.Reader, params *Params) error {
 		if params.Recode {
 			var outInfo map[string]string
 			switch {
-			case len(keepInfoSet) > 0 || len(removeInfoSet) > 0:
-				// --keep-INFO / --remove-INFO compose with --recode-INFO-all:
-				// start from the full INFO map and project.
-				outInfo = filterRecodeInfo(filteredVariant.Info, keepInfoSet, removeInfoSet)
+			case len(recodeInfoSet) > 0 || len(removeInfoSet) > 0:
+				// --recode-INFO TAG (recode-column selector) and
+				// --remove-INFO TAG (recode-column stripper) compose
+				// with --recode-INFO-all: start from the full INFO map
+				// and project.
+				outInfo = filterRecodeInfo(filteredVariant.Info, recodeInfoSet, removeInfoSet)
 			case params.RecodeInfoAll:
 				outInfo = filteredVariant.Info
 			default:
