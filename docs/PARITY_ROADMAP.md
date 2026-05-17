@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~96 of ~147 options (~65%) after long-tail wave 10.
+**Status:** ~99 of ~147 options (~67%) after long-tail wave 11.
 
 Closed in wave 1:
 
@@ -854,6 +854,44 @@ Implementation notes (wave 10):
   a non-nil keep set when `MaxIndvSet` is true even with no
   identity-based filter. The cap iterates `header.Samples` in order
   so the truncation is deterministic.
+
+Closed in wave 11 (this PR):
+
+- **`--mask FILE`** — FASTA-style positional mask. The mask file has
+  `>CHROM` headers followed by lines of digit characters (one per
+  reference base, 1-based). A site at (CHROM, POS) is kept when its
+  mask digit is `<= --mask-min` (default 0). Ported from upstream
+  `parameters.cpp:280` + `entry_filters.cpp:674-752`
+  (`filter_sites_by_mask`). Pinned by `TestParity_Mask_Default`,
+  `TestParity_Mask_Min5`, `TestParity_Mask_Partial`. ✅
+- **`--invert-mask FILE`** — same loader as `--mask`, but the keep/drop
+  decision is flipped. Ported from upstream `parameters.cpp:262`.
+  Pinned by `TestParity_InvertMask_Min5`. ✅
+- **`--mask-min INT`** — maximum kept mask digit value, 0-9 (upstream
+  errors when `> 9` at `parameters.cpp:720`; we additionally reject
+  negatives at load time because they silently drop every site
+  upstream — clearer to fail fast). Default 0. ✅
+
+Implementation notes (wave 11):
+
+- The mask reader is **forward-only**, mirroring upstream's stateful
+  `ifstream` walk (entry_filters.cpp:680-688 keeps `mask_chr`,
+  `mask_line`, and `mask_pos` as static state across calls). The Go
+  port loads the file once into a `[]maskChromosome` and maintains a
+  `(chromIdx, slabIdx)` cursor. The cursor never moves backwards, so a
+  VCF presenting chr2 before chr1 against a mask listing chr1 then
+  chr2 will lose the chr1 sites — this matches upstream behaviour
+  (`TestMaskFilter_OutOfOrderVCFDrops` pins it).
+- Header tokenisation matches upstream's
+  `line.substr(1, line.find_first_of(" \t")-1)` (split on first
+  whitespace after `>`; comments are discarded).
+- Mutually-exclusive flag behaviour: `--mask` and `--invert-mask`
+  share the same `mask_file` slot upstream (last one wins via
+  parameters.cpp:262 vs :280). Go's `flag.String` does not preserve
+  last-set ordering, so we apply the asymmetric rule "if
+  `--invert-mask` is non-empty, override and set invert=true". This is
+  observable only when both flags are supplied; documented in
+  `main.go`.
 
 **PCA family deferred** (`--pca`, `--pca-no-norm`,
 `--pca-snp-loadings INT`; upstream `parameters.cpp:308-310`,

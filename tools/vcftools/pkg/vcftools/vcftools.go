@@ -222,6 +222,19 @@ type Params struct {
 	Bed        string
 	ExcludeBed string
 
+	// FASTA-like positional mask. Mask names a file with `>CHROM` headers
+	// followed by digit lines (one per reference base). A site at (CHROM,
+	// POS) is kept when its mask digit is <= MaskMin (default 0).
+	// InvertMask flips keep/drop. Ported from upstream
+	// parameters.cpp:262/279/280 + entry_filters.cpp:674-752 (wave 11).
+	// The mask reader is forward-only — VCF records reordered relative to
+	// the mask's chromosome order may be dropped (this matches upstream
+	// because of its streaming ifstream state). See mask_filter.go for the
+	// full algorithm and parity notes.
+	Mask       string
+	InvertMask bool
+	MaskMin    int
+
 	// VCF comparison (--diff family). Diff names the second VCF to compare
 	// against; the boolean flags request individual output files. See
 	// diff.go for the column layout of each output. DiffIndvMap is a path to
@@ -409,6 +422,18 @@ func Run(input io.Reader, params *Params) error {
 		excludeBed, err = loadBedRegions(params.ExcludeBed)
 		if err != nil {
 			return fmt.Errorf("loading --exclude-bed file: %w", err)
+		}
+	}
+
+	// Load --mask / --invert-mask FASTA-style positional mask. We surface
+	// load-time errors (missing file, --mask-min out of range) before we
+	// stream the VCF. The mask filter is stateful and forward-only; see
+	// mask_filter.go for the parity notes.
+	var mask *maskFilter
+	if params.Mask != "" {
+		mask, err = loadMaskFilter(params.Mask, params.InvertMask, params.MaskMin)
+		if err != nil {
+			return fmt.Errorf("loading --mask file: %w", err)
 		}
 	}
 
@@ -653,6 +678,21 @@ func Run(input io.Reader, params *Params) error {
 				return err
 			}
 			continue
+		}
+
+		// --mask / --invert-mask: forward-only FASTA-positional filter. The
+		// cursor mutates with every call so this must run for every input
+		// site, after the cheaper position/chr filters that don't move the
+		// cursor. Upstream's filter ordering (entry_filters.cpp:47) puts
+		// mask between mean-depth and phase; our equivalent slot is here
+		// (the depth filters live inside passFilters already).
+		if mask != nil {
+			if !mask.passes(variant.Chrom, variant.Pos) {
+				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 
 		// --remove-filtered <names>: drop sites listing any of the named

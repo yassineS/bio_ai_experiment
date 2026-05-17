@@ -41,6 +41,12 @@ Position Filtering:
   --exclude-positions FILE  Exclude positions listed in file
   --bed FILE            Keep only sites inside any interval in BED FILE
   --exclude-bed FILE    Remove sites inside any interval in BED FILE
+  --mask FILE           FASTA-style positional mask: keep sites where mask
+                        digit <= --mask-min (default 0). Streams forward-only;
+                        VCF must be sorted to match the mask's chromosome
+                        order (mirrors upstream).
+  --invert-mask FILE    Like --mask but with keep/drop inverted.
+  --mask-min INT        Maximum kept mask digit value (0-9, default 0).
 
 Variant Type Filtering:
   --keep-only-indels    Keep only indel sites
@@ -408,6 +414,15 @@ func main() {
 	bedFile := flag.String("bed", "", "Keep only sites whose POS lies inside any interval in this BED file")
 	excludeBedFile := flag.String("exclude-bed", "", "Remove sites whose POS lies inside any interval in this BED file")
 
+	// FASTA-like positional mask filtering. --mask and --invert-mask are
+	// mutually exclusive (upstream's parameters.cpp:262 / :280 set the same
+	// mask_file slot, the last one wins); we surface both flags and OR the
+	// last-set into Params. --mask-min defaults to 0 (drop everything but
+	// digit '0'); valid range 0-9 (upstream parameters.cpp:720).
+	maskFile := flag.String("mask", "", "FASTA-style positional mask: keep sites with mask digit <= --mask-min")
+	invertMaskFile := flag.String("invert-mask", "", "FASTA-style positional mask with inverted keep/drop semantics")
+	maskMin := flag.Int("mask-min", 0, "Maximum kept mask digit value (0-9, default 0)")
+
 	// VCF comparison (--diff family)
 	diffFile := flag.String("diff", "", "Second VCF file to compare against")
 	diffSite := flag.Bool("diff-site", false, "Emit <prefix>.diff.sites_in_files")
@@ -670,6 +685,9 @@ func main() {
 		MinR2:                  *minR2,
 		Bed:                    *bedFile,
 		ExcludeBed:             *excludeBedFile,
+		Mask:                   *maskFile,
+		InvertMask:             false,
+		MaskMin:                *maskMin,
 		Diff:                   *diffFile,
 		DiffSite:               *diffSite,
 		DiffIndv:               *diffIndv,
@@ -708,6 +726,16 @@ func main() {
 		MaxIndvSet:             maxIndvSet,
 		RemoveFilteredGenoAll:  *removeFilteredGenoAll,
 		RemoveFilteredGenoList: removeFilteredGenoList,
+	}
+
+	// --invert-mask FILE shares the same mask_file slot upstream as --mask
+	// (parameters.cpp:262 vs :280); whichever appears last wins. Go's
+	// flag.String evaluation does not preserve last-set ordering when both
+	// flags are present, so we just take --invert-mask as the override when
+	// non-empty. Document the limitation in PARITY_ROADMAP.
+	if *invertMaskFile != "" {
+		params.Mask = *invertMaskFile
+		params.InvertMask = true
 	}
 
 	// --hwe implies max_alleles = 2 in upstream (parameters.cpp:254).
