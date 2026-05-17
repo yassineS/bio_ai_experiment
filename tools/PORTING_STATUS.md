@@ -423,7 +423,7 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~103 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~106 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
@@ -440,7 +440,8 @@ long-tail wave 9 PR; `--remove-filtered-geno`,
 `--invert-mask`, and `--mask-min` landed in the long-tail wave 11 PR;
 `--positions-overlap` + `--exclude-positions-overlap` landed in the
 long-tail wave 12 PR; `--derived` + `--extract-FORMAT-info` landed in
-the long-tail wave 13 PR)
+the long-tail wave 13 PR; `--indv-burden`, `--indv-freq-burden`, and
+`--indv-freq-burden2` landed in the long-tail wave 14 PR)
 
 **Implemented Commands**:
 
@@ -603,6 +604,26 @@ the long-tail wave 13 PR)
   `TestExtractFormatInfo_UnknownTagIsEmpty`,
   `TestExtractFormatInfo_EmptyNameRejected`,
   `TestExtractFormatInfo_NoSamplesHeader`.
+- Per-individual burden counts (wave 14): `--indv-burden` emits
+  `<prefix>.iburden` (`INDV\tN_HOM_REF\tN_HET\tN_HOM_ALT\tN_MISS`,
+  diploid-only). `--indv-freq-burden` and `--indv-freq-burden2` emit
+  `<prefix>.ifreqburden`, a per-individual × per-allele-count matrix;
+  the `2` variant skips the second-allele increment for hom-alt
+  genotypes (upstream's `double_count_hom_alt=1` mode). All three
+  flags honour `--derived` (column renames to `N_HOM_ANC`/`N_HOM_DER`
+  and the AA index replaces REF as the "skip" allele). Ported from
+  upstream `parameters.cpp:257-259` +
+  `variant_file_output.cpp:378-627`. The port preserves a
+  long-standing upstream label-index bug in
+  `output_indv_freq_burden` (the leading INDV column reads
+  `meta_data.indv[indv_count]` instead of `meta_data.indv[ui]`, so
+  labels shift when a non-trailing sample is dropped); pinned by
+  `TestParity_IndvFreqBurden_LabelBug`. Other pins:
+  `TestParity_IndvBurden`, `TestParity_IndvBurden_Derived`,
+  `TestParity_IndvFreqBurden`, `TestParity_IndvFreqBurden2`,
+  `TestParity_IndvFreqBurden_Derived`,
+  `TestIndvBurden_SkipsNonDiploid`,
+  `TestAncestralAlleleIndex`.
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common

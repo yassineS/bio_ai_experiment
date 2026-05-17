@@ -208,6 +208,14 @@ FILTER / INFO Selection:
                         Extract per-genotype FORMAT NAME into
                         <prefix>.<NAME>.FORMAT (tab-separated; sites
                         whose FORMAT lacks NAME are skipped)
+  --indv-burden         Per-individual diploid-burden counts (.iburden):
+                        N_HOM_REF, N_HET, N_HOM_ALT, N_MISS. With
+                        --derived, columns become N_HOM_ANC/HET/HOM_DER.
+  --indv-freq-burden    Per-individual frequency-burden matrix
+                        (.ifreqburden): rows are kept individuals,
+                        columns are allele-count bins 0..2N.
+  --indv-freq-burden2   Like --indv-freq-burden but hom-alt genotypes
+                        contribute 1 (not 2) to the per-bin count.
 
 Sample Filtering:
   --indv STRING         Include only this individual (can use multiple times)
@@ -498,6 +506,15 @@ func main() {
 	// overwrites). Ported from variant_file_format_convert.cpp:1204-1263.
 	extractFormatInfo := flag.String("extract-FORMAT-info", "", "Per-genotype FORMAT tag to extract to <prefix>.<NAME>.FORMAT")
 
+	// Per-individual burden flags (parameters.cpp:257-259).
+	// --indv-burden writes <prefix>.iburden; --indv-freq-burden and
+	// --indv-freq-burden2 both write <prefix>.ifreqburden (the latter
+	// with doubleCountHomAlt=1; see burden.go). All three are
+	// modifier-free and combine cleanly with --derived.
+	indvBurden := flag.Bool("indv-burden", false, "Per-individual diploid-burden counts (.iburden)")
+	indvFreqBurden := flag.Bool("indv-freq-burden", false, "Per-individual frequency-burden matrix (.ifreqburden)")
+	indvFreqBurden2 := flag.Bool("indv-freq-burden2", false, "Same as --indv-freq-burden but hom-alt contributes 1 (not 2)")
+
 	// Sample filtering
 	var indvList, removeIndvList []string
 	flag.Func("indv", "Include individual (can use multiple times)", func(s string) error {
@@ -753,6 +770,9 @@ func main() {
 		RemoveFilteredGenoList:      removeFilteredGenoList,
 		Derived:                     *derived,
 		ExtractFormatInfo:           *extractFormatInfo,
+		IndvBurden:                  *indvBurden,
+		IndvFreqBurden:              *indvFreqBurden,
+		IndvFreqBurden2:             *indvFreqBurden2,
 	}
 
 	// --invert-mask FILE shares the same mask_file slot upstream as --mask

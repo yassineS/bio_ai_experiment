@@ -1,0 +1,11 @@
+##fileformat=VCFv4.0
+##INFO=<ID=AA,Number=1,Type=String,Description="Ancestral Allele">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4
+1	100	.	A	C	.	PASS	.	GT	0/0	0/0	0/1	0/0
+1	200	.	G	T	.	PASS	.	GT	0/0	0/1	0/1	1/1
+1	300	.	C	G	.	PASS	.	GT	0/1	1/1	0/1	1/1
+1	400	.	A	T	.	PASS	.	GT	0/1	0/0	./.	0/1
+1	500	.	G	A	.	PASS	.	GT	1/1	1/1	1/1	1/1
+1	600	.	A	G	.	PASS	AA=G	GT	0/0	0/1	0/1	1/1
+1	700	.	C	T	.	PASS	AA=C	GT	0/0	0/0	0/1	1/1
