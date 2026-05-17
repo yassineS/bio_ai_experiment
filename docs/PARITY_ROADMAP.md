@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~87 of ~147 options (~59%) after long-tail wave 7.
+**Status:** ~89 of ~147 options (~61%) after long-tail wave 8.
 
 Closed in wave 1:
 
@@ -732,6 +732,61 @@ accumulator pass (matching upstream's structure literally) so the AF
 and AC `_any` fallbacks can decide post-loop. The plain flags still
 short-circuit on the first failing ALT.
 
+Closed in wave 8 (this PR):
+
+- **`--hwe FLOAT`** — minimum per-site exact-test (Wigginton/Cao/Abecasis
+  2005) Hardy-Weinberg p-value filter. Ported from upstream
+  `parameters.cpp:254` (which also forces `max_alleles = 2` when the
+  flag is supplied) + `entry_filters.cpp:922-946` + `entry.cpp:18-101`
+  (the exact-test). The SNPHWE port is a line-for-line port of
+  upstream's integer-arithmetic midpoint/walk algorithm so that
+  filtering decisions are byte-identical. The CLI adapter mirrors the
+  upstream `--hwe → max_alleles=2` coupling. Pinned by
+  `TestParity_HWE_005_sample` (3-sample fixture, exercises the
+  max_alleles=2 coupling), `TestParity_HWE_005_fixture` (20-sample
+  fixture engineered so site `1:200` with counts (10,0,10) fails the
+  exact test at p≈1.34e-6 — verified via upstream `--hardy`), and unit
+  tests on `snpHWE` boundary cases. ✅
+- **`--max-missing-count INT`** — maximum number of missing
+  *chromosomes* (haploid alleles, NOT samples) tolerated per site.
+  Ported from upstream `parameters.cpp:286` +
+  `entry_filters.cpp:918`. The comparator is strict `>` so a site
+  with exactly `INT` missing alleles is KEPT, but `INT+1` drops.
+  Pinned with two parity tests bracketing the boundary case
+  (`TestParity_MaxMissingCount_1` drops a 2-missing site,
+  `TestParity_MaxMissingCount_2` keeps it). The Params struct grows
+  a `MaxMissingCountSet` boolean so the CLI can distinguish
+  "user passed 0" (drop any site with any missing call) from
+  "user omitted the flag" (no filter); the CLI registers the flag via
+  `flag.Func` to record both. ✅
+
+**PCA family deferred** (`--pca`, `--pca-no-norm`,
+`--pca-snp-loadings INT`; upstream `parameters.cpp:308-310`,
+`variant_file_output.cpp:4871-5249`). Reasoning:
+
+- Upstream PCA uses LAPACK's `dgeev` (general eigendecomposition) on
+  the N_indv x N_indv covariance matrix `X = (1/n)MM'` (Patterson,
+  Price & Reich 2006). Since `X` is symmetric positive semi-definite,
+  a Jacobi-rotation eigendecomposition (~100 LOC of stdlib Go) is
+  algorithmically sufficient and would not require a third-party dep
+  — the project's stdlib-only rule (CLAUDE.md) is satisfiable here.
+- The blocker is **parity-test validation**. The upstream `vcftools`
+  binary in this repository's environment is built without LAPACK
+  (configure-time `HAVE_LIBLAPACK` is unset; `--pca` exits with
+  `Error: Cannot run PCA analysis. Vcftools has been compiled without
+  PCA enabled (requires LAPACK).`). Without the ability to generate
+  golden outputs from a LAPACK-enabled upstream build we cannot
+  validate a fresh port against the project's standard parity bar
+  (byte-for-byte vs upstream).
+- **Scope for re-attempt**: port `--pca` when EITHER (a) we have an
+  in-tree symmetric-eigendecomposition primitive AND an upstream
+  binary built with `--enable-pca` (i.e. a system `liblapack-dev` is
+  installed in CI), OR (b) we accept a single linear-algebra dep for
+  the eigendecomposition path. Until then the three flags are
+  registered on the CLI surface (so misuse fails with a clear error
+  rather than silent no-output) but `Run` rejects them via
+  `checkUnsupported`. Pinned by `TestParity_PCA_Deferred`.
+
 Remaining gaps:
 
 - **Diff family**: `--gzdiff` (already implicit via iohelper). Per-site
@@ -741,8 +796,9 @@ Remaining gaps:
   `variant_file_diff.cpp:635` for the gap.
 - **Per-individual output**: the per-individual `.imiss` row layout has
   fields we don't emit (we have `--missing-indv`).
-- **Other**: `--pca` family; small-format columns gaps tracked in
-  `tools/PORTING_STATUS.md`.
+- **Other**: `--pca` family (DEFERRED — see the wave-8 PCA-deferred
+  block above for the precise scope and re-attempt criteria);
+  small-format columns gaps tracked in `tools/PORTING_STATUS.md`.
 
 Note: the brief mentioned `--haploid` as a possible wave-2 target. After
 checking the upstream source (`reference_code/vcftools/src/cpp/`) there is
