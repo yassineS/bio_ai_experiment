@@ -423,7 +423,7 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~91 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~96 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
@@ -434,7 +434,9 @@ and the `*-any` counterparts landed in the long-tail wave 7 PR;
 `--hwe` + `--max-missing-count` landed in the long-tail wave 8 PR with
 the `--pca` family deferred — see PARITY_ROADMAP.md#vcftools for the
 PCA re-attempt scope; `--kept-sites` + `--removed-sites` landed in the
-long-tail wave 9 PR)
+long-tail wave 9 PR; `--remove-filtered-geno`,
+`--remove-filtered-geno-all`, `--max-indv`, `--keep-INFO-all`, and
+`--version` landed in the long-tail wave 10 PR)
 
 **Implemented Commands**:
 
@@ -526,6 +528,22 @@ long-tail wave 9 PR)
   `TestParity_RemovedSites_HWE`, `TestParity_RemovedSites_PosFilter`,
   `TestKeptRemoved_Disjoint_And_Complete`,
   `TestKeptRemoved_Disabled_NoFiles`
+- Per-genotype FT filters + sample cap + trivial banners (wave 10):
+  `--remove-filtered-geno-all` and `--remove-filtered-geno NAME`
+  (repeatable) rewrite GT to `./.` for genotypes whose FORMAT FT
+  fails the configured test, ported from upstream
+  `parameters.cpp:323-324` + `vcf_entry.cpp:580-608`. `--max-indv N`
+  caps the kept-sample count, ported from `parameters.cpp:292` +
+  `variant_file_filters.cpp:105-147` (port deviation: deterministic
+  input-order truncation rather than upstream's `srand+random_shuffle`,
+  so parity is on the count only — see PARITY_ROADMAP.md#vcftools for
+  the rationale). `--keep-INFO-all` is the upstream-deprecated synonym
+  for `--recode-INFO-all` (`parameters.cpp:267`). `--version` prints
+  the upstream banner. Pinned by `TestParity_RemoveFilteredGenoAll`,
+  `TestParity_RemoveFilteredGenoQ10`,
+  `TestParity_RemoveFilteredGenoMulti`,
+  `TestRemoveFilteredGeno_NoFT_NoOp`, `TestMaxIndv_Count` (table-driven),
+  `TestMaxIndv_Unset_NoOp`, `TestKeepINFOAll_Synonym`
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common
