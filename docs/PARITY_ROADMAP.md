@@ -577,9 +577,9 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~70 of ~147 options (~48%) after long-tail wave 1.
+**Status:** ~73 of ~147 options (~50%) after long-tail wave 2.
 
-Closed in wave 1 (this PR):
+Closed in wave 1:
 
 - **Inter-chromosomal LD**: `--interchrom-geno-r2`, `--interchrom-hap-r2` ✅
 - **Chi-square LD**: `--geno-chisq` ✅
@@ -590,21 +590,52 @@ Closed in wave 1 (this PR):
 - **INFO selection in recode**: `--keep-INFO TAG`, `--remove-INFO TAG` ✅
 - **INFO extraction**: `--get-INFO TAG[,TAG]` → `.INFO` ✅
 
+Closed in wave 2 (this PR):
+
+- **LDhat output formats**: `--ldhat`, `--ldhat-geno` (paired
+  `<prefix>.ldhat.sites` / `<prefix>.ldhat.locs`, byte-for-byte vs
+  upstream) ✅
+- **Phased-site filter**: `--phased` (composes with `--ldhat` per
+  upstream's `phased_only` invariant) ✅
+
 Remaining gaps:
 
 - **Mendelian inheritance checks**: `--mendel`.
 - **Diff family extensions**: `--diff-indv-map`, `--diff-discordance-matrix`,
   `--diff-switch-error`, `--gzdiff` (already implicit via iohelper).
-- **Output formats**: missing `--ldhat`, `--ldhat-geno`, `--ldhelmet`,
-  `--IMPUTE`, `--phase` output paths.
-- **Haplotype analyses**: `--haploid` (`--phased-blocks` done).
-- **Per-individual output**: `--missing-per-ind` (we have `--missing-indv`
-  but the per-individual `.imiss` row layout has fields we don't emit).
+- **Output formats**: missing `--ldhelmet`, `--IMPUTE`, `--phase` output
+  paths.
+- **Per-individual output**: the per-individual `.imiss` row layout has
+  fields we don't emit (we have `--missing-indv`).
 - **Other**: `--FILTER-PASS-summary`, `--remove-INFO-all` (use
   `--keep-INFO`/`--remove-INFO`), `--non-ref-af*` family, `--pca` family.
 
+Note: the brief mentioned `--haploid` as a possible wave-2 target. After
+checking the upstream source (`reference_code/vcftools/src/cpp/`) there is
+no `--haploid` flag — the closest thing is `--phased` (parameters.cpp:311
++ entry_filters.cpp:989-1010), which we ported instead.
+
 **Validation:** wave 1 adds header byte-for-byte parity tests for the new
-output files; full upstream-test-suite run still pending.
+output files; wave 2 ships full byte-for-byte parity tests for both
+`.ldhat.sites` and `.ldhat.locs` against upstream goldens (under
+`tools/vcftools/testdata/parity/`). Full upstream-test-suite run still
+pending.
+
+Upstream build note for golden generation: vcftools'
+`variant_file_format_convert.cpp` LDhat writers allocate a stack array of
+exactly `temp_dir.size()` bytes and then `strcpy` a longer string into
+it (`new_tmp = temp_dir + "/vcftools.XXXXXX";` plus
+`char tmpname[new_tmp.size()]; strcpy(tmpname, new_tmp.c_str());` at
+lines 627-629 and again at 813-815, 658-665, 680-688, 841-845). Modern
+glibc fortified strcpy aborts the run. To regenerate the goldens locally:
+
+```
+cd reference_code/vcftools/src/cpp
+make clean
+make CXXFLAGS='-O0 -g -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0'
+```
+
+Filed as a parity-only workaround; we don't replicate the bug.
 
 ### `bgzip`
 

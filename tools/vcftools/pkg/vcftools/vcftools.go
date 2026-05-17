@@ -189,6 +189,21 @@ type Params struct {
 	// <prefix>.INFO with columns CHROM POS REF ALT <tags...>. The flag is
 	// comma-separated; the upstream CLI accepts the same value-style.
 	GetINFO string
+
+	// --phased filters sites to those where every kept-individual GT is
+	// phased (separator '|', or upstream's haploid case which is treated
+	// as phased). Mirrors upstream's parameters.cpp:311 / entry_filters.cpp
+	// filter_sites_by_phase (lines 989-1010).
+	Phased bool
+
+	// --ldhat / --ldhat-geno emit a paired (<prefix>.ldhat.sites,
+	// <prefix>.ldhat.locs) bundle in LDhat's input format. Both require
+	// exactly one chromosome to be selected via --chr (upstream errors
+	// otherwise: parameters.cpp:717). --ldhat additionally implies
+	// --phased (the phased-only site filter); --ldhat-geno does not.
+	// See ldhat.go for the file layout.
+	LDhat     bool
+	LDhatGeno bool
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -366,6 +381,20 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// --ldhat / --ldhat-geno: buffer per-site genotype rows and emit the
+	// paired (.ldhat.sites, .ldhat.locs) bundle at end-of-stream. Only one
+	// flag can be active at a time on the upstream CLI (each increments
+	// num_outputs in parameters.cpp); if both are requested here we honour
+	// the phased layout for parity with the upstream order-of-evaluation
+	// in vcftools.cpp:90-91.
+	var ldhat *ldhatRunner
+	switch {
+	case params.LDhat:
+		ldhat = newLDhatRunner(ldhatPhased, params.OutPrefix, filteredHeader.Samples)
+	case params.LDhatGeno:
+		ldhat = newLDhatRunner(ldhatUnphased, params.OutPrefix, filteredHeader.Samples)
+	}
+
 	// Pre-parse filter-name sets and INFO-tag sets so we don't re-tokenise
 	// every line in the hot path.
 	removeFilteredSet := parseFilterList(params.RemoveFiltered)
@@ -441,6 +470,16 @@ func Run(input io.Reader, params *Params) error {
 		// Apply genotype-level filters
 		filteredVariant = filterGenotypes(filteredVariant, params)
 
+		// --phased (also implied by --ldhat): drop sites with any unphased
+		// kept-individual genotype. Mirrors upstream's
+		// filter_sites_by_phase (entry_filters.cpp:989-1010), which iterates
+		// over kept individuals only — so we run after the sample filter.
+		if params.Phased || params.LDhat {
+			if !isPhasedSite(filteredVariant) {
+				continue
+			}
+		}
+
 		// Update statistics
 		stats.addVariant(filteredVariant, params)
 
@@ -496,6 +535,11 @@ func Run(input io.Reader, params *Params) error {
 			if err := getInfo.addVariant(filteredVariant); err != nil {
 				return fmt.Errorf("writing --get-INFO output: %w", err)
 			}
+		}
+
+		// LDhat buffer (biallelic-only filtering is applied inside).
+		if ldhat != nil {
+			ldhat.addVariant(filteredVariant)
 		}
 
 		// Collect variants for format conversions
@@ -614,6 +658,11 @@ func Run(input io.Reader, params *Params) error {
 	// --get-INFO output.
 	if err := getInfo.close(); err != nil {
 		return fmt.Errorf("closing --get-INFO output: %w", err)
+	}
+
+	// --ldhat / --ldhat-geno output.
+	if err := ldhat.close(); err != nil {
+		return fmt.Errorf("closing --ldhat output: %w", err)
 	}
 
 	return nil
@@ -1355,8 +1404,15 @@ func getOutputPath(prefix, suffix string) string {
 // this Go port does not implement yet. Previously these options were accepted
 // and silently ignored, which produced no output and looked like success.
 func checkUnsupported(params *Params) error {
-	_ = params
 	var missing []string
+
+	// --ldhat / --ldhat-geno: upstream errors at parameters.cpp:717 unless
+	// exactly one chromosome is selected via --chr. Mirror that check here
+	// so misuse fails fast rather than producing a malformed file.
+	if (params.LDhat || params.LDhatGeno) && params.Chr == "" {
+		return fmt.Errorf("Require a chromosome (--chr) when outputting LDhat format.")
+	}
+
 	if len(missing) > 0 {
 		return fmt.Errorf("not implemented in this Go port yet: %s (see tools/vcftools/ROADMAP.md)", strings.Join(missing, ", "))
 	}
