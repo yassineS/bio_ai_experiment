@@ -6,10 +6,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/prinseq/pkg/prinseq"
 )
+
+// nowFunc is overridable in tests.
+var nowFunc = time.Now
 
 const version = "1.0.0"
 
@@ -36,6 +41,8 @@ func main() {
 		runFilter(os.Args[2:])
 	case "graph":
 		runGraph(os.Args[2:])
+	case "graph_data", "graph-data", "graphdata":
+		runGraphData(os.Args[2:])
 	case "report":
 		runReport(os.Args[2:])
 	case "benchmark":
@@ -62,15 +69,16 @@ Usage:
   prinseq <command> [options]
 
 Commands:
-  stats     Calculate sequence statistics
-  filter    Filter sequences based on quality criteria
-  graph     Generate quality graphs
-  report    Generate HTML quality report
-  benchmark Run performance benchmarks
-  api       Start REST API server
-  batch     Process multiple files in parallel
-  version   Print version information
-  help      Print this help message
+  stats       Calculate sequence statistics
+  filter      Filter sequences based on quality criteria
+  graph       Generate quality graphs
+  graph_data  Emit upstream prinseq-lite .gd graph-data JSON
+  report      Generate HTML quality report
+  benchmark   Run performance benchmarks
+  api         Start REST API server
+  batch       Process multiple files in parallel
+  version     Print version information
+  help        Print this help message
 
 Use "prinseq <command> -h" for more information about a command.`)
 }
@@ -665,6 +673,142 @@ Options:
 		fmt.Fprintf(os.Stderr, "Error generating graph: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runGraphData implements the upstream `--graph_data` flag from
+// `prinseq-lite.pl`. It collects the full graph-data stat tables
+// for one input file (FASTA or FASTQ) and writes the upstream
+// `.gd` JSON to either the path given on the flag or the
+// upstream-default `<input>__.gd`.
+//
+// Compared to upstream, key order in every map is sorted
+// lexicographically (intentional deviation; see graphdata.go and
+// docs/UPSTREAM_BUGS.md). The two leading #-comment lines are
+// emitted with the real timestamp and argv when --no-header is
+// not specified.
+func runGraphData(args []string) {
+	fs := flag.NewFlagSet("graph_data", flag.ExitOnError)
+
+	var fastq, fasta, graphData, graphStats string
+	var phred64, qualNoScale, noHeader bool
+	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file (use '-' for stdin)")
+	cliflag.StringVar(fs, &fasta, "", "fasta", "", "Input FASTA file (use '-' for stdin)")
+	cliflag.StringVar(fs, &graphData, "", "graph_data", "", "Output .gd path (default: <input>__.gd)")
+	cliflag.StringVar(fs, &graphStats, "", "graph_stats", "", "Comma-separated stat selector: ld,gc,qd,ns,pt,ts,aq,de,da,sc,dn")
+	cliflag.BoolVar(fs, &phred64, "", "phred64", false, "Input FASTQ uses Phred+64")
+	cliflag.BoolVar(fs, &qualNoScale, "", "qual_noscale", false, "Disable per-position quality relative-bin table")
+	cliflag.BoolVar(fs, &noHeader, "", "no-header", false, "Omit the two leading #-comment lines (test mode)")
+
+	fs.Usage = func() {
+		fmt.Print(`Usage: prinseq graph_data --fastq FILE [options]
+
+Emit the upstream prinseq-lite .gd graph-data JSON for a single
+input file.
+
+Options:
+  --fastq FILE          Input FASTQ file
+  --fasta FILE          Input FASTA file
+  --graph_data FILE     Output .gd path (default: <input>__.gd)
+  --graph_stats CODES   Comma-separated stat selector (ld,gc,qd,ns,pt,ts,aq,de,da,sc,dn)
+  --phred64             Input FASTQ uses Phred+64 encoding
+  --qual_noscale        Disable the relative (100-bin) quality table
+  --no-header           Omit the leading #-comment lines (testing only)
+`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var inputFile string
+	var isFastq bool
+	switch {
+	case fastq != "":
+		inputFile = fastq
+		isFastq = true
+	case fasta != "":
+		inputFile = fasta
+		isFastq = false
+	default:
+		fmt.Fprintln(os.Stderr, "Error: Either --fastq or --fasta must be specified")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	opts := prinseq.DefaultGraphDataOptions()
+	if graphStats != "" {
+		if err := prinseq.ParseGraphStatsCSV(graphStats, &opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing --graph_stats: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	opts.Phred64 = phred64
+	opts.QualNoscale = qualNoScale
+	opts.Filename1 = filenameHex(inputFile)
+
+	reader, err := openInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+		os.Exit(1)
+	}
+	defer reader.Close()
+
+	g, err := prinseq.CollectGraphData(reader, isFastq, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error collecting graph data: %v\n", err)
+		os.Exit(1)
+	}
+
+	outPath := prinseq.ResolveGraphDataPath(graphData, inputFile)
+	out, err := os.Create(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	var header prinseq.GDHeader
+	if !noHeader {
+		header = prinseq.GDHeader{
+			Version:   "0.20.4",
+			Timestamp: nowUpstreamFmt(),
+			Command:   strings.Join(append([]string{"prinseq", "graph_data"}, args...), " "),
+		}
+	}
+	if err := g.EmitGD(out, header); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing graph data: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// filenameHex hex-encodes the basename of a path, matching upstream's
+// convertStringToInt (prinseq-lite.pl:4851-4855). When the path is
+// empty or "-" (stdin), we return "stdin" so downstream renderers can
+// distinguish piped input from a missing filename.
+func filenameHex(path string) string {
+	if path == "" || path == "-" {
+		return "stdin"
+	}
+	// Take basename.
+	base := path
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		base = path[i+1:]
+	}
+	var b strings.Builder
+	for i := 0; i < len(base); i++ {
+		fmt.Fprintf(&b, "%x", base[i])
+	}
+	return b.String()
+}
+
+// nowUpstreamFmt returns the current local time in the upstream
+// graph-data header timestamp format: "MM/DD/YYYY HH:MM:SS"
+// (prinseq-lite.pl:2277).
+func nowUpstreamFmt() string {
+	t := nowFunc()
+	return fmt.Sprintf("%02d/%02d/%04d %02d:%02d:%02d",
+		t.Month(), t.Day(), t.Year(), t.Hour(), t.Minute(), t.Second())
 }
 
 func runReport(args []string) {

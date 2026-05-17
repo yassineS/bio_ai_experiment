@@ -1154,9 +1154,47 @@ the numbers themselves must match).
 | Filter | `-derep 1` exact duplicates | PASS | Byte-for-byte FASTA. |
 | Paired | `-fastq -fastq2 -min_len 10` | PASS | R1 and R2 outputs byte-for-byte. |
 | Empty | `-fasta`/`-fastq` empty input | PASS | No crash; zero-byte output. |
+| Graph | `--graph_data example1.fastq` | PASS | JSON-normalised semantic diff against upstream-shipped `reference_code/prinseq/example/example1.gd`; see "graph_data parity strategy" below for why we don't byte-compare. |
 
-Totals: 18 cases (counting the two empty sub-tests as one), 18 PASS,
+Totals: 19 cases (counting the two empty sub-tests as one), 19 PASS,
 0 SKIP.
+
+### graph_data parity strategy
+
+`prinseq-lite.pl --graph_data` emits a single-line JSON-shaped
+payload at lines 2050-2287. The Perl emitter walks `keys %hash`
+and `each %hash` directly, so since Perl 5.18 (mid-2013) the key
+order is randomised on every interpreter start. **Byte parity is
+mathematically impossible**: the same upstream invocation, run
+twice, produces two `.gd` files with identical numerical content
+and different key orders.
+
+The Go port (`tools/prinseq/pkg/prinseq/graphdata.go`) **intentionally
+diverges** from upstream by emitting all map keys in lexicographic
+order. This makes our output deterministic — `TestGraphDataDeterminism`
+asserts two consecutive runs produce byte-identical bytes — but
+voids strict byte parity against upstream.
+
+The parity test (`TestGraphDataParityExample1`) handles this by:
+
+1. Parsing both the upstream `.gd` body and our emit as JSON.
+2. Recursively coercing numeric strings (`mean`, `std`,
+   `dinucodds`) into floats so the comparison sees them as
+   numbers rather than text.
+3. Walking the two trees with a 1e-3 absolute tolerance on
+   floats and exact equality on strings (`minseq`, `maxseq`,
+   `filename1`, `format1`, `tagmidseq`).
+
+Any structural divergence (extra key, missing key, type mismatch,
+numerical disagreement beyond tolerance) fails the test loudly.
+The upstream-vendored fixture
+`reference_code/prinseq/example/example1.gd` (12 reads, 1150 bp,
+exercises every JSON sub-table) is copied into
+`tools/prinseq/testdata/parity/graphdata_example1.gd` and used
+verbatim.
+
+The key-order deviation is catalogued in
+[docs/UPSTREAM_BUGS.md > prinseq](../docs/UPSTREAM_BUGS.md#prinseq).
 
 ### Discrepancies found (and fixed in this PR)
 
