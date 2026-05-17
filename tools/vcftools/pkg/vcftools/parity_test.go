@@ -1762,3 +1762,209 @@ func TestMaxIndv_Unset_NoOp(t *testing.T) {
 // covered by manual smoke-test (PR #134 body) and by the explicit OR
 // at main.go:540. A future CLI-exec test could pin it; tracked as a
 // next-PR follow-up.
+
+// -----------------------------------------------------------------------------
+// Wave 12: --positions-overlap / --exclude-positions-overlap
+// -----------------------------------------------------------------------------
+//
+// Fixture (pos_overlap_fixture.vcf) has six sites engineered to exercise
+// overlap semantics: 1:200 has REF "ACGT" (covers 200..203), 1:400 has REF
+// "TTC" (covers 400..402), and 2:100 has REF "GCGC" (covers 100..103). The
+// other three sites (1:100, 1:300, 1:500) are 1-base REFs that coincide
+// with plain --positions behaviour.
+//
+// pos_overlap_keep.txt lists 1:202 (mid-REF of 1:200), 1:300 (exact),
+// 1:402 (last base of 1:400), 1:600 (no site), and 2:101 (mid-REF of
+// 2:100). pos_overlap_exclude.txt lists 1:202, 1:300, and 2:103 (last
+// base of 2:100).
+//
+// Goldens (pos_overlap_keep.expected.recode.vcf and the exclude
+// counterpart) were produced by the upstream binary at
+// reference_code/vcftools/src/cpp/vcftools (built with
+// CXXFLAGS='-O0 -g -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0').
+
+// TestParity_PositionsOverlap_Keep — `--positions-overlap FILE --recode`
+// keeps a record when ANY base in [POS, POS+len(REF)-1] matches a position
+// in the file. Ported from upstream parameters.cpp:315 +
+// entry_filters.cpp:408-531.
+func TestParity_PositionsOverlap_Keep(t *testing.T) {
+	prefix := runVcftoolsParity(t, "pos_overlap_fixture.vcf", &Params{
+		PositionsOverlapFile: filepath.Join(vcftoolsFixtureDir(t), "pos_overlap_keep.txt"),
+		Recode:               true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "pos_overlap_keep.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_PositionsOverlap_Exclude — `--exclude-positions-overlap FILE
+// --recode` drops a record when ANY base in [POS, POS+len(REF)-1] matches
+// a position in the file. Ported from upstream parameters.cpp:221 +
+// entry_filters.cpp:533-547.
+func TestParity_PositionsOverlap_Exclude(t *testing.T) {
+	prefix := runVcftoolsParity(t, "pos_overlap_fixture.vcf", &Params{
+		ExcludePositionsOverlapFile: filepath.Join(vcftoolsFixtureDir(t), "pos_overlap_exclude.txt"),
+		Recode:                      true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "pos_overlap_exclude.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestPositionsOverlap_VsPlain_DivergesOnMultiBaseRef — pins the
+// behavioural difference between --positions (POS-only) and
+// --positions-overlap (POS..POS+len(REF)-1) on multi-base REF records.
+// The overlap form should keep 1:200 (REF=ACGT) given a positions file
+// listing 1:202; the plain form should NOT. This is the whole reason
+// upstream ships the overlap variant.
+func TestPositionsOverlap_VsPlain_DivergesOnMultiBaseRef(t *testing.T) {
+	dir := vcftoolsFixtureDir(t)
+
+	// Build a single-line positions file that targets the interior of
+	// the 1:200 REF "ACGT". Tmpfile so the test stays hermetic.
+	pos := filepath.Join(t.TempDir(), "interior.txt")
+	if err := os.WriteFile(pos, []byte("1\t202\n"), 0o644); err != nil {
+		t.Fatalf("write positions: %v", err)
+	}
+
+	// Plain --positions: should drop 1:200 (POS != 202).
+	plain := runVcftoolsParity(t, "pos_overlap_fixture.vcf", &Params{
+		PositionsFile: pos,
+		Recode:        true,
+	})
+	plainLines := readFileLines(t, plain+".recode.vcf")
+	for _, ln := range plainLines {
+		if strings.HasPrefix(ln, "#") || ln == "" {
+			continue
+		}
+		if strings.HasPrefix(ln, "1\t200\t") {
+			t.Errorf("--positions unexpectedly kept 1:200 with pos=1:202")
+		}
+	}
+
+	// --positions-overlap: should keep 1:200 (interior overlap).
+	overlap := runVcftoolsParity(t, "pos_overlap_fixture.vcf", &Params{
+		PositionsOverlapFile: pos,
+		Recode:               true,
+	})
+	overlapLines := readFileLines(t, overlap+".recode.vcf")
+	kept200 := false
+	for _, ln := range overlapLines {
+		if strings.HasPrefix(ln, "1\t200\t") {
+			kept200 = true
+		}
+	}
+	if !kept200 {
+		t.Errorf("--positions-overlap dropped 1:200 even though pos=1:202 is interior to REF=ACGT")
+		_ = dir
+	}
+}
+
+// TestPositionsOverlap_BoundaryHits — pin overlap behaviour at both ends
+// of the REF window for both flags. For REF="ACGT" at POS=200, the
+// half-open upstream loop is `for ui=POS; ui<POS+REF.size(); ui++` so
+// matches are inclusive at both ends: 200 (first base) and 203 (last)
+// both qualify, but 199 and 204 do not.
+func TestPositionsOverlap_BoundaryHits(t *testing.T) {
+	tests := []struct {
+		name     string
+		posLine  string
+		wantKept bool
+	}{
+		{"first_base_200", "1\t200\n", true},
+		{"last_base_203", "1\t203\n", true},
+		{"one_before_199", "1\t199\n", false},
+		{"one_after_204", "1\t204\n", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pos := filepath.Join(t.TempDir(), "pos.txt")
+			if err := os.WriteFile(pos, []byte(tc.posLine), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			prefix := runVcftoolsParity(t, "pos_overlap_fixture.vcf", &Params{
+				PositionsOverlapFile: pos,
+				Recode:               true,
+			})
+			lines := readFileLines(t, prefix+".recode.vcf")
+			kept200 := false
+			for _, ln := range lines {
+				if strings.HasPrefix(ln, "1\t200\t") {
+					kept200 = true
+				}
+			}
+			if kept200 != tc.wantKept {
+				t.Errorf("--positions-overlap pos=%q: kept 1:200 = %v, want %v",
+					strings.TrimSpace(tc.posLine), kept200, tc.wantKept)
+			}
+		})
+	}
+}
+
+// TestPositionsOverlap_UnknownChromDropped — when a positions-overlap
+// file is supplied, sites on chromosomes NOT mentioned in the file are
+// dropped. Mirrors upstream entry_filters.cpp:515-516 ("if
+// chr_to_idx.find(CHROM) == chr_to_idx.end() passed_filters = false").
+func TestPositionsOverlap_UnknownChromDropped(t *testing.T) {
+	pos := filepath.Join(t.TempDir(), "pos.txt")
+	// Only chromosome "1" is named.
+	if err := os.WriteFile(pos, []byte("1\t100\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	prefix := runVcftoolsParity(t, "pos_overlap_fixture.vcf", &Params{
+		PositionsOverlapFile: pos,
+		Recode:               true,
+	})
+	for _, ln := range readFileLines(t, prefix+".recode.vcf") {
+		if strings.HasPrefix(ln, "2\t") {
+			t.Errorf("chr 2 site leaked through --positions-overlap: %q", ln)
+		}
+	}
+}
+
+// TestExcludePositionsOverlap_UnknownChromKept — converse: when an
+// exclude-overlap file is supplied, sites on chromosomes NOT named are
+// passed through unchanged. Mirrors entry_filters.cpp:535 ("if
+// chr_to_idx.find(CHROM) != chr_to_idx.end()" — no match means no drop).
+func TestExcludePositionsOverlap_UnknownChromKept(t *testing.T) {
+	pos := filepath.Join(t.TempDir(), "pos.txt")
+	if err := os.WriteFile(pos, []byte("1\t100\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	prefix := runVcftoolsParity(t, "pos_overlap_fixture.vcf", &Params{
+		ExcludePositionsOverlapFile: pos,
+		Recode:                      true,
+	})
+	saw2 := false
+	for _, ln := range readFileLines(t, prefix+".recode.vcf") {
+		if strings.HasPrefix(ln, "2\t") {
+			saw2 = true
+		}
+	}
+	if !saw2 {
+		t.Errorf("chr 2 sites dropped even though chr 2 isn't in --exclude-positions-overlap file")
+	}
+}
+
+// TestPositionsOverlap_MissingFile — surface an error when the file
+// doesn't exist (don't silently produce empty output).
+func TestPositionsOverlap_MissingFile(t *testing.T) {
+	tmp := t.TempDir()
+	in, err := os.Open(filepath.Join(vcftoolsFixtureDir(t), "pos_overlap_fixture.vcf"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer in.Close()
+	params := &Params{
+		PositionsOverlapFile: filepath.Join(tmp, "does-not-exist.txt"),
+		OutPrefix:            filepath.Join(tmp, "out"),
+		Recode:               true,
+	}
+	if err := Run(in, params); err == nil {
+		t.Errorf("expected error for missing --positions-overlap file, got nil")
+	}
+}

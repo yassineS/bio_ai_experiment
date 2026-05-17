@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~99 of ~147 options (~67%) after long-tail wave 11.
+**Status:** ~101 of ~147 options (~69%) after long-tail wave 12.
 
 Closed in wave 1:
 
@@ -892,6 +892,49 @@ Implementation notes (wave 11):
   `--invert-mask` is non-empty, override and set invert=true". This is
   observable only when both flags are supplied; documented in
   `main.go`.
+
+Closed in wave 12 (this PR):
+
+- **`--positions-overlap FILE`** — keep a record when ANY base in
+  `[POS, POS+len(REF)-1]` matches a (CHROM, POS) entry in the file.
+  Same two-column whitespace-separated format as `--positions`; `#`
+  comments and blank lines tolerated. Ported from upstream
+  `parameters.cpp:315` + `entry_filters.cpp:408-531`
+  (`filter_sites_by_overlap_positions`, keep-branch). For 1-base REF
+  records the behaviour reduces to plain `--positions`; the divergence
+  appears on indels / MNPs, which is the entire reason upstream ships
+  the overlap variant. Sites on chromosomes not named in the file are
+  dropped (matches `entry_filters.cpp:515-516`). ✅
+- **`--exclude-positions-overlap FILE`** — drop a record when ANY base
+  in `[POS, POS+len(REF)-1]` matches a (CHROM, POS) entry. Ported from
+  `parameters.cpp:221` + `entry_filters.cpp:533-547`. Inverse of
+  `--positions-overlap`; sites on chromosomes not named pass through
+  unchanged (matches the `chr_to_idx.find != end` guard at line 535). ✅
+
+Implementation notes (wave 12):
+
+- Upstream reuses the same `keep_positions`/`exclude_positions` state
+  for both the plain `--positions` family (entry_filters.cpp:279-406)
+  and the overlap family (lines 408-548). Consequence: combining
+  `--positions` with `--positions-overlap` upstream silently degrades
+  to overlap semantics for whichever file populated the set first
+  (the second loader sees a non-empty set and skips). We keep the
+  four filters as independent fields on `Params` so each behaves
+  exactly as documented when used solo, and when combined both gates
+  apply (a site must pass include AND not be excluded across the two
+  flag pairs). Pinned by
+  `TestPositionsOverlap_VsPlain_DivergesOnMultiBaseRef`.
+- The upstream loop is half-open: `for ui=POS; ui<POS+REF.size(); ui++`.
+  We mirror this with `for p := v.Pos; p < v.Pos+refLen; p++`. With a
+  defensive guard `refLen=max(len(v.Ref),1)` we ensure at least the
+  POS itself is tested for malformed VCFs with empty REF; valid VCFs
+  always have `len(REF) >= 1` and the guard never triggers.
+- File format reuses the existing `loadPositions` parser (same as
+  `--positions`); separate `positionSet` instances are kept in `Run`
+  for the four flags so the apply order is deterministic
+  (`includePos` → `excludePos` → `includePosOverlap` →
+  `excludePosOverlap` → BED → variant-type → frequency / quality /
+  HWE / etc.).
 
 **PCA family deferred** (`--pca`, `--pca-no-norm`,
 `--pca-snp-loadings INT`; upstream `parameters.cpp:308-310`,

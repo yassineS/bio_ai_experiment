@@ -1,0 +1,8 @@
+##fileformat=VCFv4.1
+##FILTER=<ID=PASS,Description="All filters passed">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2
+1	200	.	ACGT	A	29	PASS	.	GT	0/1	1/1
+1	300	.	G	GAA	29	PASS	.	GT	0/0	0/1
+1	400	.	TTC	T	29	PASS	.	GT	0/1	1/1
+2	100	.	GCGC	G	29	PASS	.	GT	0/1	0/0
