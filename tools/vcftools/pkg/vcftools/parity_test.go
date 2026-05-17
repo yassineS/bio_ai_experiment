@@ -1752,30 +1752,13 @@ func TestMaxIndv_Unset_NoOp(t *testing.T) {
 	}
 }
 
-// TestKeepINFOAll_Synonym — `--keep-INFO-all` is the upstream-deprecated
-// synonym for `--recode-INFO-all` (parameters.cpp:267 — "Old command (soon
-// to be depreciated)"). Both must produce identical recode output; this
-// invariant is the strongest port-to-port claim we can make without
-// touching the pre-existing baseline-recode INFO-ordering gap.
-func TestKeepINFOAll_Synonym(t *testing.T) {
-	// --recode-INFO-all baseline.
-	basePrefix := runVcftoolsParity(t, "sample.vcf", &Params{
-		Chr:           "20",
-		RecodeInfoAll: true,
-		Recode:        true,
-	})
-	base := readFileBytes(t, basePrefix+".recode.vcf")
-
-	// Note: the CLI wires both --keep-INFO-all and --recode-INFO-all to the
-	// same Params.RecodeInfoAll bit (see main.go), so the package-level
-	// invariant is at the CLI boundary. We exercise the same bit here to
-	// confirm the wiring is correct.
-	synonymPrefix := runVcftoolsParity(t, "sample.vcf", &Params{
-		Chr:           "20",
-		RecodeInfoAll: true,
-		Recode:        true,
-	})
-	if got := readFileBytes(t, synonymPrefix+".recode.vcf"); !bytes.Equal(got, base) {
-		t.Errorf("--keep-INFO-all should equal --recode-INFO-all output")
-	}
-}
+// `--keep-INFO-all` is wired as a CLI-only synonym for `--recode-INFO-all`
+// in tools/vcftools/cmd/vcftools/main.go (an OR into the same
+// Params.RecodeInfoAll bit). There is no package-level test for the
+// synonym because both flags collapse to the same struct field before
+// reaching `Run` — a unit test of `Run` cannot distinguish them.
+// Reviewer-flagged on PR #134: the previous TestKeepINFOAll_Synonym
+// was tautological (ran the same params twice). The synonym wiring is
+// covered by manual smoke-test (PR #134 body) and by the explicit OR
+// at main.go:540. A future CLI-exec test could pin it; tracked as a
+// next-PR follow-up.
