@@ -219,6 +219,61 @@ discrepancies in our Go code (not upstream), all fixed inline:
 
 ### Track-only (parity skipped, fix later)
 
+#### vcftools `--hapcount` prev_bin_idx shift on bin change
+
+**Severity:** numerical (mis-attributed per-bin counts and merged
+multiplicity histograms in `.hapcount`).
+
+**Status:** PRESERVED in the Go port for byte-for-byte parity. Pinned
+by `TestParity_Hapcount` in `tools/vcftools/pkg/vcftools/hapcount_test.go`.
+
+Upstream `variant_file_output.cpp:1314-1315` unconditionally assigns
+`prev_bin_idx = bin_idx; bin_idx = ui;` at the start of every per-site
+search loop's successful BED-bin match. The flush-trigger predicate at
+line 1322 is then `if ((found == false) || (prev_bin_idx != bin_idx))`
+— so after a within-chromosome bin-transition flush has fired, the
+next per-site iteration leaves `prev_bin_idx` pointing at the OLD bin
+index even though the data has moved on. The next time a flush fires
+(at the next bin change or at end-of-chromosome), `SNP_count[prev_bin_idx]`
+and `haplotype_count[prev_bin_idx]` get OVERWRITTEN with the new bin's
+values, AND `haplotype_frequencies[prev_bin_idx]` gets the new bin's
+histogram ADDED to the old bin's histogram. The N_GROUPS column
+reflects the union and the N_SNP / N_UNIQ_HAPS columns reflect the
+latest write.
+
+We mirror this verbatim because the project's parity bar is
+byte-for-byte vs upstream output. Disposition: **track-only** until
+either upstream is patched (unlikely; project is dormant) or the port
+gains an opt-in `--hapcount-correct-binning` flag.
+
+#### vcftools `--hapcount` end-of-stream read-after-free
+
+**Severity:** crash-on-input / truncated output.
+
+**Status:** PRESERVED in the Go port for byte-for-byte parity. Pinned
+indirectly by `TestParity_Hapcount` (fixture ends with a sentinel
+chromosome to force the last real-data chromosome's emission via the
+chrom-transition path).
+
+Upstream `variant_file_output.cpp:1370-1400` reads `e->include_indv[ui]`
+inside the final-flush block AFTER `delete e;` at line 1370. Observed
+behaviour on the upstream binary in this repo:
+
+- When `have_data == true` at EOF, the read-after-free corrupts the
+  final write path and the last chromosome's bins are SILENTLY DROPPED
+  from the output file (the process exits 0 but the buffered final
+  rows are never flushed).
+- When `have_data == false` at EOF, the freed-pointer access happens
+  to skip every iteration of the inner per-individual loop (likely
+  because the freed memory reads as "false" for the
+  `include_indv[ui]` check), so the final chromosome's bins are
+  emitted with all-zero values.
+
+The Go port replicates both branches in `hapcount.close()`. Test
+fixtures should end with a sentinel chromosome (one row whose only job
+is to trigger the chrom transition for the last real-data chromosome)
+to avoid relying on the EOF code path.
+
 - **skewer adapter matcher: Hamming vs Smith-Waterman.** Upstream's
   matcher rejects a 1-mismatch alignment whose mismatch is in the last 4
   bases of the adapter, even when the overall error rate is within `-r`.

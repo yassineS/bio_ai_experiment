@@ -437,6 +437,26 @@ type Params struct {
 	// supplying both is meaningless (only one wins). Mirrors upstream
 	// parameters.cpp:259 + variant_file_output.cpp:501-627.
 	IndvFreqBurden2 bool
+
+	// HapcountBED names the BED file passed to `--hapcount`. When
+	// non-empty, the runner writes `<prefix>.hapcount` with per-BED-bin
+	// haplotype-multiplicity tables. Implies `--phased` (upstream
+	// parameters.cpp:248 sets `phased_only = true`). The BED file's
+	// FIRST line is treated as a mandatory header and unconditionally
+	// dropped (upstream variant_file_output.cpp:1183). Bins must be
+	// non-overlapping (upstream lines 1208-1216 errors otherwise). See
+	// hapcount.go for the two preserved upstream bugs we mirror for
+	// byte-for-byte parity.
+	HapcountBED string
+
+	// TempDir mirrors upstream's `--temp DIR` flag
+	// (parameters.cpp:341). Upstream uses it as the base directory for
+	// `mkstemp` spill files in the LD / format-convert paths
+	// (variant_file_output.cpp:1441, variant_file_format_convert.cpp).
+	// This port does not spill to disk for any of those paths, so the
+	// flag is accepted-and-ignored for command-line parity. Documented
+	// in docs/PARITY_ROADMAP.md#vcftools.
+	TempDir string
 }
 
 // positionSet represents a set of positions to include/exclude
@@ -721,6 +741,18 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// --hapcount BED: parse BED bins up front so missing-file / overlap
+	// errors surface before we stream the VCF. Upstream errors with
+	// "Could not open BED file" / "BED file must be non-overlapping."
+	// at variant_file_output.cpp:1178 / :1214.
+	var hapcount *hapcountRunner
+	if params.HapcountBED != "" {
+		hapcount, err = newHapcountRunner(params.OutPrefix, params.HapcountBED, len(filteredHeader.Samples))
+		if err != nil {
+			return fmt.Errorf("initialising --hapcount: %w", err)
+		}
+	}
+
 	// Pre-parse filter-name sets and INFO-tag sets so we don't re-tokenise
 	// every line in the hot path.
 	removeFilteredSet := parseFilterList(params.RemoveFiltered)
@@ -839,12 +871,14 @@ func Run(input io.Reader, params *Params) error {
 		// Apply genotype-level filters
 		filteredVariant = filterGenotypes(filteredVariant, params)
 
-		// --phased (also implied by --ldhat, --ldhelmet, --IMPUTE): drop
-		// sites with any unphased kept-individual genotype. Mirrors
-		// upstream's filter_sites_by_phase (entry_filters.cpp:989-1010),
-		// which iterates over kept individuals only — so we run after the
-		// sample filter.
-		if params.Phased || params.LDhat || params.LDhelmet || params.IMPUTE {
+		// --phased (also implied by --ldhat, --ldhelmet, --IMPUTE,
+		// --hapcount): drop sites with any unphased kept-individual
+		// genotype. Mirrors upstream's filter_sites_by_phase
+		// (entry_filters.cpp:989-1010), which iterates over kept
+		// individuals only — so we run after the sample filter. The
+		// --hapcount implication comes from parameters.cpp:248
+		// (`phased_only = true`).
+		if params.Phased || params.LDhat || params.LDhelmet || params.IMPUTE || params.HapcountBED != "" {
 			if !isPhasedSite(filteredVariant) {
 				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
 					return err
@@ -967,6 +1001,14 @@ func Run(input io.Reader, params *Params) error {
 		if mendel != nil {
 			if err := mendel.addVariant(filteredVariant); err != nil {
 				return fmt.Errorf("writing --mendel output: %w", err)
+			}
+		}
+
+		// --hapcount: per-BED-bin haplotype-count update. Output is
+		// emitted incrementally on each chromosome transition.
+		if hapcount != nil {
+			if err := hapcount.addVariant(filteredVariant); err != nil {
+				return fmt.Errorf("writing --hapcount output: %w", err)
 			}
 		}
 
@@ -1125,6 +1167,15 @@ func Run(input io.Reader, params *Params) error {
 	// --mendel output.
 	if err := mendel.close(); err != nil {
 		return fmt.Errorf("closing --mendel output: %w", err)
+	}
+
+	// --hapcount output. Per the upstream-truncation bug documented in
+	// hapcount.go, the LAST chromosome's bins are NOT emitted — only
+	// chromosomes followed by another chromosome in the input VCF are
+	// written. `close` is still called so the header row is always
+	// flushed even when no data ever arrived.
+	if err := hapcount.close(); err != nil {
+		return fmt.Errorf("closing --hapcount output: %w", err)
 	}
 
 	// --kept-sites / --removed-sites output.

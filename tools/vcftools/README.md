@@ -100,8 +100,9 @@ Flags:
 Discordance compares unphased, sorted allele indices restricted to REF/first
 ALT; samples with multi-allelic calls at a given site are treated as missing
 for that site (mirroring upstream's default behaviour). `--gzdiff` is
-already implicit via `iohelper`; `--diff-switch-error` is not yet
-implemented.
+wired as a plain alias for `--diff` (the `iohelper` reader auto-sniffs
+gzip from the magic bytes, so there's no distinction at the
+parser layer).
 
 ### Linkage Disequilibrium
 
