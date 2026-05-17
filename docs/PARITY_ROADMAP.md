@@ -263,8 +263,10 @@ Option-tail gaps (per existing subcommand):
 
 ### `prinseq-lite`
 
-**Status:** 2 subcommands (`stats`, `filter`) covering most common knobs.
-Five missing-flag gaps closed in PR #prinseq-missing-flags.
+**Status:** 1:1 parity. The Go port now covers every behavioural
+flag of `prinseq-lite.pl` 0.20.4 that the agreed scope called for,
+including `--graph_data` (PR `claude/prinseq-graph-data-land`).
+Three subcommands ship: `stats`, `filter`, `graph_data`.
 
 Implemented flags (with the upstream Perl line numbers consulted for
 each — `reference_code/prinseq/prinseq-lite.pl`, 0.20.4):
@@ -316,12 +318,35 @@ parity is not enforced):
   `$sid.($header ? ' '.$header : '')`, preserving any trailing comment.
   Tracked here for future-PR follow-up.
 
-Still missing:
+Graph-data (PR `claude/prinseq-graph-data-land`):
 
-- `--graph_data` and the corresponding HTML/PNG report generation —
-  out of scope per `tools/PORTING_STATUS.md` (the existing Go
-  `graph` / `report` subcommands generate stats-based ASCII / HTML
-  output without depending on `prinseq-graphs.pl`).
+- `--graph_data [FILE]` (POD lines 393-401; emission block at
+  lines 2050-2287). Ported in full, including the full stat
+  collectors (`getSeqStats`, `getQualStats`, `generateStatsType`,
+  `dinucOdds`, `checkForDupl`, `getTagFrequency`, `getBinVal`).
+  Exposed as the `prinseq graph_data` subcommand. When `--graph_data`
+  is given without a value, the Go port falls back to upstream's
+  `<input>__.gd` default (lines 984-987).
+- `--graph_stats CODES` (lines 994-1015): the upstream stat
+  selector CSV (`ld,gc,qd,ns,pt,ts,aq,de,da,sc,dn`). Supported and
+  enforced — unknown codes return an error as upstream does.
+- `--qual_noscale` (lines 989-993). Toggles the relative
+  (100-bin) `quals` table.
+- The byte-level emit deviates from upstream in one
+  way: **map keys are emitted in lexicographic order**, where
+  upstream uses Perl-hash iteration order (Perl >= 5.18 randomises
+  this every interpreter start). Documented as an intentional
+  improvement in `docs/UPSTREAM_BUGS.md > prinseq` and validated
+  via a JSON-normalised semantic diff against the upstream-shipped
+  `example1.gd`. See `tools/PARITY_VALIDATION.md > prinseq parity
+  validation` for the test layout.
+
+Still missing (all niche knobs, not in scope for this PR):
+
+- The PNG report generation flow (`prinseq-graphs.pl`). Out of
+  scope — the Go `graph` and `report` subcommands cover the
+  equivalent visualisation surface without depending on a Perl
+  graphics stack.
 - A handful of niche knobs not in the original five-flag scope:
   `--range_len`, `--range_gc`, `--trim_qual_window`,
   `--trim_qual_step`, `--trim_qual_rule`, `--trim_to_len`,

@@ -393,3 +393,44 @@ listed under
 No upstream bugs surfaced — PRINSEQ-lite's documented behaviour
 agreed with the corpus we tested for every option we exercised
 (see the prinseq table for the 18 cases).
+
+### `--graph_data` JSON key order is non-deterministic (`prinseq-lite.pl:2050-2287`)
+
+**Severity:** behavioural / reproducibility (not a numerical bug).
+
+**Status:** worked around in our Go port (lexicographic key order).
+
+Upstream's `.gd` emitter walks `keys %hash` and `each %hash` directly
+when writing the JSON-shaped string. Since Perl 5.18 (released
+mid-2013) every interpreter start re-seeds the hash function, so
+running the same `prinseq-lite.pl ... -graph_data <out>` twice produces
+two `.gd` files with the same numerical content but different key
+order. This is fine for downstream renderers that parse with the
+`JSON` module, but it makes byte-for-byte regression tests impossible
+and complicates diff-based review of stat output.
+
+The Go port at `tools/prinseq/pkg/prinseq/graphdata.go` sorts every
+map key (string-comparison order on the printed form, matching how
+upstream renders the JSON) before emission. The parity test
+(`tools/prinseq/pkg/prinseq/graphdata_test.go:TestGraphDataParityExample1`)
+compares the upstream-shipped `example1.gd` and our emit by parsing
+both as JSON and recursively diffing the structures with a 1e-3
+absolute tolerance — which removes the key-order issue from the
+comparison while keeping the numerical content authoritative.
+`TestGraphDataDeterminism` separately asserts that two consecutive
+runs of our emitter produce byte-identical output, the property
+upstream lacks.
+
+We classify this as an upstream behavioural defect rather than an
+intentional design choice because:
+
+1. The emission code predates Perl 5.18's randomised hashing — the
+   author wrote a portable JSON-string assembler that happened to
+   inherit hash randomness only after Perl was updated under their
+   feet.
+2. There is no downstream component that benefits from random key
+   order; the companion `prinseq-graphs.pl` parses the file and
+   reorders fields itself.
+
+Per the disposition policy at the top of this file, fixing on our
+side and documenting the deviation is the right call.

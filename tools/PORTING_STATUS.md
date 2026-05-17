@@ -198,12 +198,18 @@ at 1:1 feature parity (the project goal); see
 **Migration Notes**:
 
 - Command structure changed (subcommands instead of flags)
-- Covers the commonly used PRINSEQ-lite filtering/trimming options; the
-  five remaining single-file gaps (`--out_format`, `--seq_id_mappings`,
-  `--ns_max_p`, `--noniupac`, `--phred64`) landed in PR
-  #prinseq-missing-flags. Graph/report generation (`--graph_data` + the
-  upstream `prinseq-graphs.pl`) is out of scope; the Go port provides
-  its own `graph` / `report` subcommands.
+- Covers all in-scope PRINSEQ-lite behavioural flags. The
+  five missing single-file gaps (`--out_format`,
+  `--seq_id_mappings`, `--ns_max_p`, `--noniupac`, `--phred64`)
+  landed in PR #prinseq-missing-flags; **`--graph_data`** landed
+  in PR `claude/prinseq-graph-data-land` (this PR) with the full
+  stat-collection plumbing (`getSeqStats`, `getQualStats`,
+  `generateStatsType`, `dinucOdds`, `checkForDupl`,
+  `getTagFrequency`, `getBinVal`) ported across ~1.5k lines of
+  Perl from `prinseq-lite.pl:3977-4861`. Validation uses a
+  JSON-normalised semantic diff against the upstream-shipped
+  `example1.gd` — see `PARITY_VALIDATION.md > prinseq`.
+- **Status: 1:1 parity** for in-scope flags.
 - For `--out_format 2/4/5` the value of `--output` is used as the
   filename prefix (literal `.fasta` / `.qual` suffixes appended).
   Streaming multiple files to stdout is refused, matching upstream's

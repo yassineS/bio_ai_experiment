@@ -191,6 +191,32 @@ Graph types:
 - `dinucleotides`: Dinucleotide frequency analysis
 - `positional_quality`: Per-position quality scores (FASTQ only)
 
+#### 3b. Emit Upstream `.gd` Graph Data (`graph_data`)
+
+Reproduces the upstream `prinseq-lite.pl --graph_data` flag,
+emitting a `.gd` JSON payload that the upstream `prinseq-graphs.pl`
+companion (or any third-party renderer) can consume:
+
+```bash
+# Default output: <input>__.gd (upstream convention)
+prinseq graph_data --fastq reads.fastq
+
+# Custom output path
+prinseq graph_data --fastq reads.fastq --graph_data report.gd
+
+# Select a subset of stat tables (upstream --graph_stats)
+prinseq graph_data --fastq reads.fastq --graph_stats gc,qd,ns
+
+# Phred+64 input
+prinseq graph_data --fastq reads.fastq --phred64
+```
+
+Validated against the upstream-shipped `example1.gd` via a
+JSON-normalised semantic diff (see
+`tools/PARITY_VALIDATION.md`). The Go emit is byte-deterministic
+across runs (lexicographic key order), unlike upstream which
+inherits Perl 5.18+ random hash iteration.
+
 #### 4. Generate HTML Reports (`report`)
 
 Create comprehensive HTML quality reports with embedded graphs:
