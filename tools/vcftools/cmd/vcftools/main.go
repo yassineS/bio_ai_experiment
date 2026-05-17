@@ -517,7 +517,7 @@ func main() {
 	// semantic to its `--keep-INFO` flag (see Params.KeepINFO doc-comment
 	// and tools/vcftools/FEATURE_COMPARISON.md:248); rather than rework
 	// that established behaviour here, we add the canonical
-	// `--recode-INFO` spelling as an alias and tracker the residual
+	// `--recode-INFO` spelling as an alias and track the residual
 	// site-filter semantic gap in docs/PARITY_ROADMAP.md.
 	var keepINFOParts, removeINFOParts, getINFOParts []string
 	flag.Func("keep-INFO", "INFO tag to keep in --recode output (repeatable)", func(s string) error {

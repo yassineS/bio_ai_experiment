@@ -423,9 +423,12 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: 111 of 146 long flags (~76%); after wave 16 the long-flag
-gap vs upstream `parameters.cpp` is a definitive 5 flags, all HEAVY
-(BCF binary I/O + LAPACK eigensolver). LD analysis landed in PR #47;
+**Status**: **142 of 146 unique upstream long flags (~97%)**; after
+wave 16 the remaining long-flag gap is 4 BCF-binary I/O flags
+(`--bcf`, `--diff-bcf`, `--recode-bcf`, `--contigs`), all HEAVY and
+blocked on BCF binary reader/writer. The PCA trio is CLI-registered
+with a deferred-error shim (LAPACK blocker; wave 8 documented the
+re-attempt criteria). LD analysis landed in PR #47;
 LDhat output formats + `--phased` landed in the long-tail wave 2 PR;
 LDhelmet + IMPUTE output formats landed in the long-tail wave 3 PR;
 `--diff-indv-map` + `--diff-discordance-matrix` landed in the

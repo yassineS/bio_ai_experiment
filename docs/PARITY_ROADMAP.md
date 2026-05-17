@@ -602,15 +602,17 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** 111 of ~147 long flags (~76%) after long-tail wave 16. The
-gap is far smaller than earlier waves implied: a complete `in_str ==`
-enumeration of `parameters.cpp` finds 146 distinct long flags upstream,
-of which the port now registers all but five (`--bcf`, `--diff-bcf`,
-`--recode-bcf`, `--contigs`, plus the trio `--pca` / `--pca-no-norm` /
-`--pca-snp-loadings` which are CLI-registered with a deferred-error
-shim). All five remaining gaps are HEAVY (BCF binary I/O, LAPACK
-eigensolver); see "Remaining gaps" below for the full enumeration and
-classification.
+**Status:** **142 of 146 unique upstream long flags (~97%)** after
+long-tail wave 16. A complete `in_str ==` enumeration of
+`parameters.cpp` finds 146 distinct upstream long flags. The port
+registers all of them EXCEPT four BCF-binary I/O flags: `--bcf`,
+`--diff-bcf`, `--recode-bcf`, `--contigs` (the last is BCF-header-
+only and meaningless without `--bcf`). The PCA trio
+(`--pca`/`--pca-no-norm`/`--pca-snp-loadings`) IS CLI-registered with
+a deferred-error shim (LAPACK blocker documented in wave 8). The
+remaining 4 missing flags are all HEAVY — blocked on BCF binary I/O
+infrastructure. Earlier wave-16 prose claiming "111/146" was a
+count error (the wave-16 PR review caught and corrected it).
 
 Closed in wave 1:
 
