@@ -672,11 +672,12 @@ func Run(input io.Reader, params *Params) error {
 	var indvFreqBurden *indvFreqBurdenRunner
 	if params.IndvFreqBurden || params.IndvFreqBurden2 {
 		// header.Samples carries the original (pre-sample-filter) VCF
-		// sample list so the label-column upstream-bug can be
-		// reproduced byte-for-byte. See burden.go for the writeup.
+		// kept (post-sample-filter) sample list for BOTH the row order
+		// AND the leading INDV column label — fixing the upstream
+		// `meta_data.indv[indv_count]` bug at line 621. See burden.go
+		// and docs/UPSTREAM_BUGS.md for the writeup.
 		indvFreqBurden = newIndvFreqBurdenRunner(
 			filteredHeader.Samples,
-			header.Samples,
 			params.IndvFreqBurden2,
 			params.Derived,
 		)

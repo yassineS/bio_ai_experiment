@@ -93,24 +93,26 @@ func TestParity_IndvFreqBurden_Derived(t *testing.T) {
 	}
 }
 
-// TestParity_IndvFreqBurden_LabelBug pins the upstream label-index bug
-// described in burden.go (the label column reads
-// meta_data.indv[indv_count] instead of meta_data.indv[ui]). When S2
-// is removed, the surviving samples are S1, S3, S4 but the labels
-// upstream emits — and we mirror — read S1, S2, S3. The burden values
-// themselves are correct for S1, S3, S4 in that order. This test is the
-// canonical regression for keeping the bug aligned with future upstream
-// re-bases.
-func TestParity_IndvFreqBurden_LabelBug(t *testing.T) {
+// TestIndvFreqBurden_RemoveIndv_FixesLabelBug pins the FIX for the
+// upstream label-index bug described in burden.go. Upstream
+// variant_file_output.cpp:621 emits `meta_data.indv[indv_count]`
+// instead of `meta_data.indv[ui]`, so removing S2 from
+// [S1,S2,S3,S4] yields wrong labels `S1 S2 S3` next to S1/S3/S4
+// burden values. Per CLAUDE.md ("don't replicate upstream bugs")
+// we emit the CORRECT kept-sample labels. The golden fixture has
+// been regenerated to match the fix.
+func TestIndvFreqBurden_RemoveIndv_FixesLabelBug(t *testing.T) {
 	prefix := runVcftoolsParity(t, "burden_fixture.vcf", &Params{
 		IndvFreqBurden: true,
 		RemoveIndvList: []string{"S2"},
 		MinAlleles:     2,
 	})
 	got := readFileBytes(t, prefix+".ifreqburden")
+	// Assert the first column is exactly the kept-sample IDs (S1, S3, S4)
+	// — NOT the upstream-buggy (S1, S2, S3).
 	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "burden_freq_skip.expected.ifreqburden"))
 	if !bytes.Equal(got, want) {
-		t.Errorf(".ifreqburden (label-bug parity) mismatch\nwant:\n%s\ngot:\n%s", want, got)
+		t.Errorf(".ifreqburden mismatch\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
 

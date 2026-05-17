@@ -163,19 +163,18 @@ func (r *indvBurdenRunner) writeOutput(prefix string) error {
 // Output header is `INDV\t0\t1\t...\t(2*N)` then one row per kept
 // individual.
 //
-// IMPORTANT (upstream bug, preserved here for byte parity): the
-// per-row INDV label is `meta_data.indv[indv_count]` where indv_count
-// is the kept-position index, NOT the original-index `ui`. This means
-// when --remove-indv or --indv-not-all drops a sample in the middle
-// of the original VCF list, the labels in the burden file shift
-// (S1, S2, S3 instead of S1, S3, S4). We mirror this bug here so the
-// .ifreqburden file is byte-identical to upstream. The
-// `output_indv_burden` function (lines 488-497) does NOT have this
-// bug — it uses `meta_data.indv[ui]`. See docs/UPSTREAM_BUGS.md for
-// the longer write-up.
+// Upstream BUG NOTE (FIXED in this port; tracked in docs/UPSTREAM_BUGS.md):
+// upstream variant_file_output.cpp:621 emits `meta_data.indv[indv_count]`
+// for the per-row INDV label, where `indv_count` is the kept-position
+// index, NOT the original-index `ui`. That decouples the INDV label
+// from the burden values when --remove-indv drops a non-trailing
+// sample (e.g. removing S2 from [S1,S2,S3,S4] yields labels
+// `[S1,S2,S3]` for the rows that actually contain S1/S3/S4 data).
+// The companion `output_indv_burden` (lines 488-497) uses
+// `meta_data.indv[ui]` and is unaffected. Per CLAUDE.md ("don't
+// replicate upstream bugs"), we emit the CORRECT kept-sample label.
 type indvFreqBurdenRunner struct {
 	samples        []string // kept (post-filter) sample names, in kept order
-	labelSamples   []string // names used for the leading INDV column (see bug note)
 	n              int      // == len(samples)
 	maxChrCount    int      // 2 * n
 	burden         [][]int  // [n][maxChrCount+1]
@@ -184,36 +183,18 @@ type indvFreqBurdenRunner struct {
 }
 
 // newIndvFreqBurdenRunner sets up the matrix. `keptSamples` is the
-// post-sample-filter list (rows of the matrix and the genotypes we read
-// for each variant). `originalSamples` is the full pre-filter VCF
-// sample list — when the two differ in length, the label column is
-// taken from the first n entries of `originalSamples` to mirror the
-// upstream `meta_data.indv[indv_count]` bug at line 621. When all
-// samples are kept (the common case) the two are identical and the
-// labels collapse to the kept names.
-func newIndvFreqBurdenRunner(keptSamples, originalSamples []string, doubleCountHomAlt, derived bool) *indvFreqBurdenRunner {
+// post-sample-filter list — rows of the matrix, the genotypes we read
+// per variant, AND the leading INDV column label (correcting the
+// upstream `meta_data.indv[indv_count]` bug described above).
+func newIndvFreqBurdenRunner(keptSamples []string, doubleCountHomAlt, derived bool) *indvFreqBurdenRunner {
 	n := len(keptSamples)
 	maxChr := 2 * n
 	burden := make([][]int, n)
 	for i := range burden {
 		burden[i] = make([]int, maxChr+1)
 	}
-	// Replicate upstream's `meta_data.indv[indv_count]` label lookup
-	// (variant_file_output.cpp:621). We slice the first n entries of
-	// the original sample list; if the original list is shorter than n
-	// (it shouldn't be — kept is a subset of original), fall back to
-	// the kept names for those positions.
-	labels := make([]string, n)
-	for i := 0; i < n; i++ {
-		if i < len(originalSamples) {
-			labels[i] = originalSamples[i]
-		} else {
-			labels[i] = keptSamples[i]
-		}
-	}
 	return &indvFreqBurdenRunner{
 		samples:        append([]string(nil), keptSamples...),
-		labelSamples:   labels,
 		n:              n,
 		maxChrCount:    maxChr,
 		burden:         burden,
@@ -319,7 +300,7 @@ func (r *indvFreqBurdenRunner) writeOutput(prefix string) error {
 		return err
 	}
 	for i := 0; i < r.n; i++ {
-		if _, err := w.WriteString(r.labelSamples[i]); err != nil {
+		if _, err := w.WriteString(r.samples[i]); err != nil {
 			return err
 		}
 		for j := 0; j <= r.maxChrCount; j++ {

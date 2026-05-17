@@ -101,10 +101,25 @@ warrant a closer look:_
 
 ### Fix-on-port (resolved)
 
-_None yet from upstream — the parity audits to date have surfaced bugs in
-our Go code (recorded below and in
-[tools/PARITY_VALIDATION.md](../tools/PARITY_VALIDATION.md)) rather than
-in upstream._
+#### vcftools `.ifreqburden` INDV label-index bug
+
+Upstream `variant_file_output.cpp:621` emits
+`out << meta_data.indv[indv_count] << ...` for the leading INDV column
+of the `.ifreqburden` output, where `indv_count` is the local kept-row
+index. The correct sibling write at `output_indv_burden:494` uses
+`meta_data.indv[ui]` (the original-index). When `--remove-indv` (or
+any other sample filter) drops a non-trailing sample from
+`[S1,S2,S3,S4]`, upstream emits `S1 S2 S3` next to the S1/S3/S4 burden
+values — wrong-labelled rows that downstream analyses will silently
+misread.
+
+**Fixed in port** (PR #138, wave 14). We use the kept-sample list for
+both the row order AND the INDV label. The sibling `.iburden` output
+was already correct upstream and is unaffected. Pinned by
+`TestIndvFreqBurden_RemoveIndv_FixesLabelBug` in
+`tools/vcftools/pkg/vcftools/burden_test.go`.
+
+
 
 PR #55 (bedtools parity) fixed 7 discrepancies in our Go code; see
 `tools/PARITY_VALIDATION.md` for the bedtools list.
