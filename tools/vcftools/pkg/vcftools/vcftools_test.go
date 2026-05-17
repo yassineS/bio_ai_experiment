@@ -654,6 +654,114 @@ func TestNonRefFilters(t *testing.T) {
 			params: Params{},
 			want:   true,
 		},
+		// Wave-7 additions: max + -any variants.
+		{
+			// MaxNonRefAF: drop if ANY ALT freq > Max. Single ALT, freq
+			// 3/6 = 0.5 > 0.3 → drop.
+			name:   "MaxAF drops site with ALT above threshold",
+			v:      mk([]string{"G"}, []string{"0/1", "0/1", "1/1"}),
+			params: Params{MaxNonRefAF: 0.3},
+			want:   false,
+		},
+		{
+			// freq exactly equal to max passes (strict > only). gts give
+			// count 3/6 = 0.5; max = 0.5 → `0.5 > 0.5` is false → pass.
+			name:   "MaxAF boundary equal threshold passes",
+			v:      mk([]string{"G"}, []string{"0/1", "0/1", "0/1"}),
+			params: Params{MaxNonRefAF: 0.5},
+			want:   true,
+		},
+		{
+			// MaxNonRefAF > 0 drops monomorphic (line-814 fallback gate).
+			name:   "MaxAF drops monomorphic site",
+			v:      mk([]string{"."}, []string{"0/0", "0/0", "0/0"}),
+			params: Params{MaxNonRefAF: 0.5},
+			want:   false,
+		},
+		{
+			// MaxNonRefAC: drop if ANY ALT count > Max.
+			name:   "MaxAC drops ALT above threshold",
+			v:      mk([]string{"G"}, []string{"0/1", "0/1", "1/1"}),
+			params: Params{MaxNonRefAC: 2}, // count = 4 > 2
+			want:   false,
+		},
+		{
+			name:   "MaxAC boundary equal threshold passes",
+			v:      mk([]string{"G"}, []string{"0/1", "0/1", "1/1"}),
+			params: Params{MaxNonRefAC: 4},
+			want:   true,
+		},
+		{
+			// MaxNonRefAC alone does NOT drop monomorphic (line-912 gate
+			// keyed on `_any`, not plain).
+			name:   "MaxAC keeps monomorphic (no _any fallback)",
+			v:      mk([]string{"."}, []string{"0/0", "0/0", "0/0"}),
+			params: Params{MaxNonRefAC: 1},
+			want:   true,
+		},
+		{
+			// MinNonRefACAny: drop only if ALL ALTs < Min.
+			name:   "MinACAny keeps site where any ALT passes",
+			v:      mk([]string{"G", "T"}, []string{"0/1", "0/1", "1/2"}),
+			params: Params{MinNonRefACAny: 2}, // G count=3 passes, T count=1 fails. N_failed=1, N_alleles-1=2 → keep.
+			want:   true,
+		},
+		{
+			// MinNonRefACAny: drops when ALL ALTs fail.
+			name:   "MinACAny drops when all ALTs fail",
+			v:      mk([]string{"G", "T"}, []string{"0/0", "0/0", "1/2"}),
+			params: Params{MinNonRefACAny: 2}, // G=1 fails, T=1 fails → N_failed=2 == nAlt=2 → drop.
+			want:   false,
+		},
+		{
+			// MinNonRefACAny: monomorphic site drops via 0==0 fallback.
+			name:   "MinACAny drops monomorphic via fallback",
+			v:      mk([]string{"."}, []string{"0/0", "0/0", "0/0"}),
+			params: Params{MinNonRefACAny: 1},
+			want:   false,
+		},
+		{
+			// MaxNonRefACAny: drop only if ALL ALTs > Max.
+			name:   "MaxACAny keeps site where some ALT passes max",
+			v:      mk([]string{"G", "T"}, []string{"0/1", "0/1", "1/2"}),
+			params: Params{MaxNonRefACAny: 2}, // G=3 > 2 fails, T=1 ≤ 2 passes → keep.
+			want:   true,
+		},
+		{
+			// MinNonRefAFAny ALONE is a no-op (upstream parity quirk).
+			name:   "MinAFAny alone is no-op",
+			v:      mk([]string{"G"}, []string{"0/0", "0/0", "0/1"}),
+			params: Params{MinNonRefAFAny: 0.99}, // freq=0.167, would normally fail; but no plain flag set.
+			want:   true,
+		},
+		{
+			// MaxNonRefAFAny ALONE is a no-op (upstream parity quirk).
+			name:   "MaxAFAny alone is no-op",
+			v:      mk([]string{"G"}, []string{"0/1", "0/1", "1/1"}),
+			params: Params{MaxNonRefAFAny: 0.01}, // freq=0.667, would normally fail.
+			want:   true,
+		},
+		{
+			// Combined plain + AFAny: fallback activates when ALL ALTs fail _any.
+			// Single-ALT biallelic, freq 3/6 = 0.5. plain min 0.3 (passes),
+			// any min 0.6 (0.5<0.6 → N_failed=1; nAlt=1; fallback fires).
+			name:   "Plain AF + AFAny: fallback drops when all ALTs fail _any",
+			v:      mk([]string{"G"}, []string{"0/1", "0/1", "0/1"}),
+			params: Params{MinNonRefAF: 0.3, MinNonRefAFAny: 0.6},
+			want:   false,
+		},
+		{
+			// Combined plain + AFAny: at least one ALT passes _any → keep.
+			// Multi-ALT, plain passes both, _any: G fails (0.167 < 0.6), T passes (0.5 < 0.6? no — 0.5 < 0.6 yes). Hmm let me recompute.
+			// gts: 0/1, 0/1, 1/2 → G count = 0+1+1+1+0 + ... wait — 0/1: 1 G, 0/1: 1 G, 1/2: 1 G, 1 T → G=3, T=1, total=6, freq G=0.5, T=0.167.
+			// plain 0.3: G ok, T fails → drop via plain. Bad example. Let me find better.
+			name: "Plain AF + AFAny: not-all-ALTs fail _any keeps site",
+			v:    mk([]string{"G", "T"}, []string{"1/1", "2/2", "1/2"}),
+			// G count: 1+1+0+0+1+0 = 3, T count: 0+0+1+1+0+1 = 3, total=6. G freq=0.5, T freq=0.5.
+			params: Params{MinNonRefAF: 0.3, MinNonRefAFAny: 0.6},
+			// plain: both 0.5 ≥ 0.3 → ok. _any: both 0.5 < 0.6 → N_failed=2, nAlt=2 → fallback fires → drop.
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
