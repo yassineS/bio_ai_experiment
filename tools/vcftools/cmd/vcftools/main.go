@@ -128,6 +128,14 @@ VCF Comparison (--diff family):
                              before matching against file-1
   --diff-discordance-matrix  Emit <prefix>.diff.discordance_matrix (4x4
                              genotype-by-genotype counts for biallelic loci)
+  --diff-switch-error        Emit <prefix>.diff.switch (per-event log) and
+                             <prefix>.diff.indv.switch (per-individual
+                             phase-switch error rate) vs --diff file
+
+Mendelian Inconsistency:
+  --mendel FILE              PED file (four columns: family child father
+                             mother) used to detect Mendelian errors in
+                             trios. Emits <prefix>.mendel.
 
 Linkage Disequilibrium:
   --geno-r2             Genotype-based LD r^2 within a window (.geno.ld)
@@ -327,6 +335,11 @@ func main() {
 	diffIndvDiscord := flag.Bool("diff-indv-discordance", false, "Emit <prefix>.diff.indv with per-individual discordance")
 	diffIndvMap := flag.String("diff-indv-map", "", "Two-column file mapping file-2 sample IDs to their file-1 equivalents")
 	diffDiscMatrix := flag.Bool("diff-discordance-matrix", false, "Emit <prefix>.diff.discordance_matrix (4x4 genotype-by-genotype counts)")
+	diffSwitchError := flag.Bool("diff-switch-error", false, "Emit <prefix>.diff.switch and <prefix>.diff.indv.switch (phase-switch error vs --diff file)")
+
+	// --mendel takes a PED file path; emits <prefix>.mendel (Mendelian
+	// inconsistencies across trios).
+	mendelPed := flag.String("mendel", "", "PED file for Mendelian inconsistency check (emits <prefix>.mendel)")
 
 	// BEAGLE genotype-likelihood output
 	beagleGL := flag.Bool("BEAGLE-GL", false, "Emit <prefix>.BEAGLE.GL (log10 GL triplets from PL)")
@@ -517,6 +530,8 @@ func main() {
 		DiffIndvDiscordance:   *diffIndvDiscord,
 		DiffIndvMap:           *diffIndvMap,
 		DiffDiscordanceMatrix: *diffDiscMatrix,
+		DiffSwitchError:       *diffSwitchError,
+		MendelPedFile:         *mendelPed,
 		BEAGLEGL:              *beagleGL,
 		BEAGLEPL:              *beaglePL,
 		InterchromGenoR2:      *interchromGenoR2,

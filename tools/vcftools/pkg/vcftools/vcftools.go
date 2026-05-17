@@ -145,6 +145,21 @@ type Params struct {
 	DiffIndvMap           string
 	DiffDiscordanceMatrix bool
 
+	// DiffSwitchError enables --diff-switch-error: per-event log
+	// <prefix>.diff.switch + per-individual summary
+	// <prefix>.diff.indv.switch. Ported from upstream
+	// variant_file_diff.cpp:1207 (output_switch_error). See
+	// diff_switch.go for the file layouts.
+	DiffSwitchError bool
+
+	// MendelPedFile is the path supplied to --mendel <PED>. When non-empty,
+	// vcftools writes <prefix>.mendel listing Mendelian inconsistencies
+	// across trios defined in the PED file. Ported from upstream
+	// variant_file_output.cpp:5332 (output_mendel_inconsistencies); the
+	// PED columns are `family child father mother` (with a header line
+	// that is always skipped). See mendel.go for the column layout.
+	MendelPedFile string
+
 	// BEAGLE genotype-likelihood output. BEAGLEGL writes log10-scale GL
 	// triplets derived from FORMAT/PL; BEAGLEPL writes the raw PL triplets.
 	// Both are biallelic-SNP only.
@@ -430,6 +445,16 @@ func Run(input io.Reader, params *Params) error {
 		impute = newImputeRunner(params.OutPrefix, filteredHeader.Samples)
 	}
 
+	// --mendel: parse the PED file, intersect with kept samples, open the
+	// output file. Errors here (missing PED, no trios) fail fast.
+	var mendel *mendelRunner
+	if params.MendelPedFile != "" {
+		mendel, err = newMendelRunner(params.OutPrefix, params.MendelPedFile, filteredHeader.Samples)
+		if err != nil {
+			return fmt.Errorf("initialising --mendel: %w", err)
+		}
+	}
+
 	// Pre-parse filter-name sets and INFO-tag sets so we don't re-tokenise
 	// every line in the hot path.
 	removeFilteredSet := parseFilterList(params.RemoveFiltered)
@@ -606,6 +631,13 @@ func Run(input io.Reader, params *Params) error {
 			impute.addVariant(filteredVariant)
 		}
 
+		// --mendel: per-trio Mendelian inconsistency check.
+		if mendel != nil {
+			if err := mendel.addVariant(filteredVariant); err != nil {
+				return fmt.Errorf("writing --mendel output: %w", err)
+			}
+		}
+
 		// Collect variants for format conversions
 		if params.Output012 || params.OutputPlink || params.OutputPlinkTped {
 			allVariants = append(allVariants, filteredVariant)
@@ -737,6 +769,11 @@ func Run(input io.Reader, params *Params) error {
 	// --IMPUTE output.
 	if err := impute.close(); err != nil {
 		return fmt.Errorf("closing --IMPUTE output: %w", err)
+	}
+
+	// --mendel output.
+	if err := mendel.close(); err != nil {
+		return fmt.Errorf("closing --mendel output: %w", err)
 	}
 
 	return nil

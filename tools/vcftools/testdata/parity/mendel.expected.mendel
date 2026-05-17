@@ -1,0 +1,4 @@
+CHR	POS	REF	ALT	FAMILY	CHILD	FATHER	MOTHER
+chr1	100	A	G	child_father_mother	0/1	0/0	0/0
+chr1	300	G	A	child_father_mother	1/1	0/0	1/1
+chr1	400	T	C	child_father_mother	0/0	0/1	1/1

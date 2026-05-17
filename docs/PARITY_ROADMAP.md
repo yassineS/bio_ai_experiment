@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~77 of ~147 options (~52%) after long-tail wave 4.
+**Status:** ~79 of ~147 options (~54%) after long-tail wave 5.
 
 Closed in wave 1:
 
@@ -634,7 +634,7 @@ Closed in wave 3:
   `<prefix>.impute.hap.indv`, byte-for-byte vs upstream; implies
   `--phased`, biallelic-only, no missing data per parameters.cpp:255) ✅
 
-Closed in wave 4 (this PR):
+Closed in wave 4:
 
 - **`--diff-indv-map FILE`** — two-column whitespace-separated file that
   renames file-2 sample IDs before matching against file-1. Loader
@@ -647,19 +647,41 @@ Closed in wave 4 (this PR):
   four data rows of file-2 genotype labels, biallelic + matching-ALT only,
   diploid only, byte-for-byte parity vs upstream. ✅
 
+Closed in wave 5 (this PR):
+
+- **`--diff-switch-error`** — emits `<prefix>.diff.switch` (per-event
+  log with `CHROM POS_START POS_END INDV` columns) and
+  `<prefix>.diff.indv.switch` (per-individual rate with
+  `INDV N_COMMON_PHASED_HET N_SWITCH SWITCH` columns), byte-for-byte vs
+  upstream. Ported from `variant_file_diff.cpp:1207-1507`
+  (`output_switch_error`). Plugged into the existing diff runner so it
+  composes with `--diff-indv-map` (sample-ID renaming) without
+  re-implementing the load-file-2 path. ✅
+- **`--mendel <PED>`** — emits `<prefix>.mendel` listing Mendelian
+  inconsistencies across trios defined in a four-column PED file
+  (`family child father mother`; first line always skipped). Ported from
+  `variant_file_output.cpp:5332-5470`
+  (`output_mendel_inconsistencies`). The PED column ordering follows
+  upstream's `ss >> family >> child >> father >> mother;` parse;
+  `family_ids` for each trio is `<child>_<father>_<mother>`. ✅
+
+The original brief proposed `--phase` (output format) as the second
+target. After re-checking upstream `parameters.cpp`, no standalone
+`--phase` flag exists — only `--phased` (already ported in wave 2 as a
+site filter). `--mendel` was substituted as the next clear long-tail
+target, per the brief's substitution clause.
+
 Remaining gaps:
 
-- **Mendelian inheritance checks**: `--mendel`.
-- **Diff family extensions**: `--diff-switch-error`, `--gzdiff` (already
-  implicit via iohelper). Per-site/per-indv discordance outputs are
-  emitted with a simpler column set than upstream (we don't yet match
-  upstream's richer `.diff.sites` / `.diff.indv` schemas — see
-  `variant_file_diff.cpp:635` for the gap).
-- **Output formats**: missing `--phase` output path.
+- **Diff family**: `--gzdiff` (already implicit via iohelper). Per-site
+  / per-indv discordance outputs (`--diff-site-discordance`,
+  `--diff-indv-discordance`) emit a simpler column set than upstream's
+  richer `.diff.sites` / `.diff.indv` schemas — see
+  `variant_file_diff.cpp:635` for the gap.
 - **Per-individual output**: the per-individual `.imiss` row layout has
   fields we don't emit (we have `--missing-indv`).
-- **Other**: `--FILTER-PASS-summary`, `--remove-INFO-all` (use
-  `--keep-INFO`/`--remove-INFO`), `--non-ref-af*` family, `--pca` family.
+- **Other**: `--remove-INFO-all` (use `--keep-INFO`/`--remove-INFO`),
+  `--non-ref-af*` family, `--pca` family.
 
 Note: the brief mentioned `--haploid` as a possible wave-2 target. After
 checking the upstream source (`reference_code/vcftools/src/cpp/`) there is
@@ -674,7 +696,10 @@ for `.ldhelmet.snps` / `.ldhelmet.pos` and the IMPUTE bundle
 byte-for-byte parity tests for `.diff.discordance_matrix` (with and
 without `--diff-indv-map`) and the mapped `.diff.indv_in_files` output
 against upstream goldens (under `tools/vcftools/testdata/parity/`,
-fixtures `diff_f1.vcf` / `diff_f2.vcf` / `diff_indv_map.txt`). Full
+fixtures `diff_f1.vcf` / `diff_f2.vcf` / `diff_indv_map.txt`); wave 5
+adds byte-for-byte parity tests for `.diff.switch` /
+`.diff.indv.switch` (fixtures `switch_f1.vcf` / `switch_f2.vcf`) and
+`.mendel` (fixtures `mendel.vcf` / `mendel.ped`). Full
 upstream-test-suite run still pending.
 
 Upstream build note for golden generation: vcftools'

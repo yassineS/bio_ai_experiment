@@ -177,6 +177,11 @@ type diffRunner struct {
 	// Output writers.
 	wSitesInFiles *diffOutFile
 	wSites        *diffOutFile
+
+	// switchRun is the per-individual phase-switch tracker for
+	// --diff-switch-error. nil when the flag isn't set. See
+	// diff_switch.go.
+	switchRun *switchRunner
 }
 
 // diffOutFile bundles a bufio.Writer with its file handle.
@@ -226,7 +231,8 @@ func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
 		return nil, nil
 	}
 	if !params.DiffSite && !params.DiffIndv && !params.DiffSiteDiscordance &&
-		!params.DiffIndvDiscordance && !params.DiffDiscordanceMatrix {
+		!params.DiffIndvDiscordance && !params.DiffDiscordanceMatrix &&
+		!params.DiffSwitchError {
 		return nil, nil
 	}
 	d, err := loadDiffVCF(params.Diff)
@@ -303,6 +309,13 @@ func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
 		}
 		r.wSites = w
 	}
+	if params.DiffSwitchError {
+		sw, err := newSwitchRunner(params.OutPrefix, r.commonPairs)
+		if err != nil {
+			return nil, err
+		}
+		r.switchRun = sw
+	}
 	return r, nil
 }
 
@@ -361,6 +374,9 @@ func (r *diffRunner) addVariant(v *vcf.Variant) error {
 			return err
 		}
 	}
+	// --diff-switch-error: only contributes when the site is present in
+	// both files (rec != nil). The runner itself enforces het-and-phased.
+	r.switchRun.addVariant(v, rec)
 	if rec == nil {
 		return nil
 	}
@@ -520,6 +536,9 @@ func (r *diffRunner) close() error {
 		if err := r.writeDiscordanceMatrix(); err != nil {
 			return err
 		}
+	}
+	if err := r.switchRun.close(); err != nil {
+		return err
 	}
 	return nil
 }
