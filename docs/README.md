@@ -7,6 +7,8 @@ Welcome to the Bio AI Experiment documentation!
 - [Main README](../README.md) - Project overview
 - [Contributing Guide](../CONTRIBUTING.md) - How to contribute
 - [Project Roadmap](ROADMAP.md) - Project phases and timeline
+- [htsgo Roadmap](HTSGO_ROADMAP.md) - Consolidating format/index code into a shared htslib-equivalent library
+- [CRAM Design Notes](CRAM_DESIGN.md) - Up-front decisions for the CRAM port
 - [Agent Coordination](../.github/agents/COORDINATION.md) - How agents work together
 
 ## Documentation Structure
