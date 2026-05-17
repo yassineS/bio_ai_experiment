@@ -58,6 +58,18 @@ Allele Frequency Filtering:
   --max-mac INT         Maximum minor allele count
   --non-ref-af FLOAT    Minimum non-reference allele frequency (per ALT)
   --non-ref-ac INT      Minimum non-reference allele count (per ALT)
+  --max-non-ref-af FLOAT
+                        Maximum non-reference allele frequency (per ALT)
+  --max-non-ref-ac INT  Maximum non-reference allele count (per ALT)
+  --non-ref-af-any FLOAT
+                        Minimum non-reference allele frequency (any ALT
+                        passes). NOTE: upstream parity quirk — see docs.
+  --non-ref-ac-any INT  Minimum non-reference allele count (any ALT passes)
+  --max-non-ref-af-any FLOAT
+                        Maximum non-reference allele frequency (any ALT
+                        passes). NOTE: upstream parity quirk — see docs.
+  --max-non-ref-ac-any INT
+                        Maximum non-reference allele count (any ALT passes)
 
 Genotype Filtering:
   --max-missing FLOAT   Maximum proportion of missing data (0-1)
@@ -249,6 +261,12 @@ func main() {
 	maxMac := flag.Int("max-mac", 0, "Maximum minor allele count")
 	nonRefAF := flag.Float64("non-ref-af", 0, "Minimum non-reference allele frequency (per ALT)")
 	nonRefAC := flag.Int("non-ref-ac", 0, "Minimum non-reference allele count (per ALT)")
+	maxNonRefAF := flag.Float64("max-non-ref-af", 0, "Maximum non-reference allele frequency (per ALT)")
+	maxNonRefAC := flag.Int("max-non-ref-ac", 0, "Maximum non-reference allele count (per ALT)")
+	nonRefAFAny := flag.Float64("non-ref-af-any", 0, "Minimum non-reference allele frequency (any ALT passes); upstream parity quirk: no-op alone")
+	nonRefACAny := flag.Int("non-ref-ac-any", 0, "Minimum non-reference allele count (any ALT passes)")
+	maxNonRefAFAny := flag.Float64("max-non-ref-af-any", 0, "Maximum non-reference allele frequency (any ALT passes); upstream parity quirk: no-op alone")
+	maxNonRefACAny := flag.Int("max-non-ref-ac-any", 0, "Maximum non-reference allele count (any ALT passes)")
 
 	// Genotype filtering
 	maxMissing := flag.Float64("max-missing", 1, "Maximum proportion of missing data")
@@ -476,6 +494,12 @@ func main() {
 		MaxMac:                *maxMac,
 		MinNonRefAF:           *nonRefAF,
 		MinNonRefAC:           *nonRefAC,
+		MaxNonRefAF:           *maxNonRefAF,
+		MaxNonRefAC:           *maxNonRefAC,
+		MinNonRefAFAny:        *nonRefAFAny,
+		MinNonRefACAny:        *nonRefACAny,
+		MaxNonRefAFAny:        *maxNonRefAFAny,
+		MaxNonRefACAny:        *maxNonRefACAny,
 		MaxMissing:            *maxMissing,
 		MinMeanDP:             *minMeanDP,
 		MaxMeanDP:             *maxMeanDP,

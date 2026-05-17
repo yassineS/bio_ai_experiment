@@ -54,15 +54,46 @@ type Params struct {
 	MaxMac int
 
 	// Non-reference (per-ALT) allele frequency / count filtering. Upstream
-	// vcftools' --non-ref-af and --non-ref-ac iterate every ALT allele and
-	// drop the site if *any* ALT's frequency (count) is below the threshold,
-	// matching entry_filters.cpp:801-808 and 902-907. The reference allele
-	// at index 0 is ignored. Both default to 0 = disabled. Monomorphic
-	// (no-ALT) sites and sites whose ALT field is "." are not dropped: the
-	// upstream loop simply has nothing to compare. Upstream registration:
-	// parameters.cpp:302-303.
-	MinNonRefAF float64
-	MinNonRefAC int
+	// vcftools registers eight flags here (parameters.cpp:287-290, 302-305):
+	//
+	//   --non-ref-af / --max-non-ref-af           — plain min/max AF
+	//   --non-ref-af-any / --max-non-ref-af-any   — "any ALT passes" AF
+	//   --non-ref-ac / --max-non-ref-ac           — plain min/max AC
+	//   --non-ref-ac-any / --max-non-ref-ac-any   — "any ALT passes" AC
+	//
+	// Plain semantics (entry_filters.cpp:807, 905): site dropped if ANY ALT
+	// falls outside [min, max]. "-any" semantics (lines 810, 908): N_failed
+	// counts ALTs outside the threshold; site dropped if N_failed equals
+	// (N_alleles - 1), i.e. EVERY ALT failed.
+	//
+	// Two important upstream asymmetries that we preserve verbatim:
+	//
+	//  1. AF fallback gate (line 814) is keyed on the PLAIN thresholds, not
+	//     the -any thresholds. Consequence: `--non-ref-af-any` and
+	//     `--max-non-ref-af-any` are effectively NO-OPS unless the plain
+	//     flag is also set. We still wire and validate the flags for
+	//     command-line parity, but mirror upstream's degenerate behaviour.
+	//  2. AC fallback gate (line 912) is keyed on the -any thresholds.
+	//     Consequence: plain `--non-ref-ac` / `--max-non-ref-ac` do NOT drop
+	//     monomorphic (N_alleles == 1) sites, whereas the -any variants do
+	//     (N_failed == 0 == N_alleles-1 fires the fallback). The plain AF
+	//     `--non-ref-af` / `--max-non-ref-af` do drop monomorphic sites via
+	//     the same N_failed == N_alleles-1 mechanism.
+	//
+	// All fields default to 0; the Max* defaults of 0 mean "no upper bound".
+	// We adopt 0 (instead of upstream's sentinel +inf / INT_MAX) because
+	// none of upstream's flags actually require setting max <= 0 to filter
+	// — a 0-max ALT count or AF is degenerate. Internally we treat
+	// MaxNonRefAF/MaxNonRefAC == 0 as "unset". A nonzero value applies
+	// `freq > Max` / `count > Max`.
+	MinNonRefAF    float64
+	MinNonRefAC    int
+	MaxNonRefAF    float64
+	MaxNonRefAC    int
+	MinNonRefAFAny float64
+	MinNonRefACAny int
+	MaxNonRefAFAny float64
+	MaxNonRefACAny int
 
 	// Genotype filtering
 	MaxMissing float64
@@ -921,28 +952,50 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 		}
 	}
 
-	// Non-reference allele filters (--non-ref-af, --non-ref-ac). Mirrors
-	// upstream entry_filters.cpp:801-815 (frequency) and 902-913 (count):
-	// for each ALT allele (index > 0) the site fails if the count is below
-	// MinNonRefAC or the frequency is below MinNonRefAF. The REF allele
-	// (index 0) is skipped. There is a known upstream asymmetry that we
-	// preserve: the frequency branch (line 814) additionally drops sites
-	// whose `N_failed == N_alleles - 1` whenever min_non_ref_af > 0 — for
-	// a monomorphic site (N_alleles == 1) this evaluates to 0 == 0 and the
-	// site is dropped even though no ALT was tested. The count branch on
-	// line 912 keys this same fallback on `min_non_ref_ac_any` (not
-	// `min_non_ref_ac`), so plain --non-ref-ac does NOT drop monomorphic
-	// sites. The two parity tests below cover both shapes.
-	if params.MinNonRefAF > 0 || params.MinNonRefAC > 0 {
+	// Non-reference allele filters (--non-ref-af, --non-ref-ac, and the
+	// matching --max-* / -any variants). Mirrors upstream
+	// entry_filters.cpp:770-823 (frequency) and 869-919 (count).
+	//
+	// For every ALT allele we evaluate FOUR independent checks per branch:
+	//   plain min  — drop site immediately if `value < MinPlain` (line 807/905)
+	//   plain max  — drop site immediately if `value > MaxPlain` (line 807/905)
+	//   any  min   — increment N_failed if `value < MinAny`     (line 810/908)
+	//   any  max   — increment N_failed if `value > MaxAny`     (line 810/908)
+	//
+	// After the loop, upstream applies a fallback that drops the site when
+	// N_failed equals (N_alleles - 1). The gate that activates this fallback
+	// differs between AF and AC:
+	//   AF (line 814): gate uses PLAIN thresholds (min_non_ref_af > 0 OR
+	//                  max_non_ref_af < +inf). The -any thresholds never
+	//                  trigger the fallback on their own — so the AF -any
+	//                  flags are no-ops alone. We mirror this.
+	//   AC (line 912): gate uses -any thresholds (min_non_ref_ac_any > 0 OR
+	//                  max_non_ref_ac_any < INT_MAX). The plain AC flags
+	//                  never trigger the fallback — so plain --non-ref-ac
+	//                  keeps monomorphic sites whereas --non-ref-af drops
+	//                  them.
+	//
+	// We collapse this into a single pass per branch that accumulates
+	// N_failed across all ALTs (lifting the per-ALT early-return so the
+	// _any-flavoured semantics can decide post-loop), exactly matching
+	// upstream's structure.
+	afPlainOn := params.MinNonRefAF > 0 || params.MaxNonRefAF > 0
+	afAnyOn := params.MinNonRefAFAny > 0 || params.MaxNonRefAFAny > 0
+	acPlainOn := params.MinNonRefAC > 0 || params.MaxNonRefAC > 0
+	acAnyOn := params.MinNonRefACAny > 0 || params.MaxNonRefACAny > 0
+	if afPlainOn || afAnyOn || acPlainOn || acAnyOn {
 		altCounts, totalCalled := calculateAlleleCounts(v)
-		// Count effective (non-placeholder) ALTs. ALT == "." in VCF is
-		// upstream's "no ALT" sentinel which yields N_alleles == 1.
+		// nAlt is the count of real ALTs (upstream's N_alleles - 1).
+		// ALT == "." or empty is upstream's "no ALT" sentinel.
 		nAlt := 0
 		for _, alt := range v.Alt {
 			if alt != "" && alt != "." {
 				nAlt++
 			}
 		}
+		// Per-branch N_failed accumulators for the -any fallback.
+		afNFailed := 0
+		acNFailed := 0
 		for i, alt := range v.Alt {
 			if alt == "" || alt == "." {
 				continue
@@ -951,21 +1004,70 @@ func passFilters(v *vcf.Variant, params *Params, includePos, excludePos position
 			if i < len(altCounts) {
 				c = altCounts[i]
 			}
-			if params.MinNonRefAC > 0 && c < params.MinNonRefAC {
-				return false
-			}
-			if params.MinNonRefAF > 0 && totalCalled > 0 {
-				if float64(c)/float64(totalCalled) < params.MinNonRefAF {
+			// AC branch — plain immediate-drop, then -any tally.
+			if acPlainOn {
+				if params.MinNonRefAC > 0 && c < params.MinNonRefAC {
+					return false
+				}
+				if params.MaxNonRefAC > 0 && c > params.MaxNonRefAC {
 					return false
 				}
 			}
+			if acAnyOn {
+				failed := false
+				if params.MinNonRefACAny > 0 && c < params.MinNonRefACAny {
+					failed = true
+				}
+				if params.MaxNonRefACAny > 0 && c > params.MaxNonRefACAny {
+					failed = true
+				}
+				if failed {
+					acNFailed++
+				}
+			}
+			// AF branch — same shape, freq instead of count. Upstream
+			// uses freq = count / N_non_missing_chr; if there are no
+			// called chromosomes the divide is degenerate (NaN), and
+			// upstream's `freq < threshold` becomes false (NaN compares
+			// false). We skip the AF checks entirely when totalCalled
+			// == 0 to mirror that behaviour without producing NaN.
+			if (afPlainOn || afAnyOn) && totalCalled > 0 {
+				freq := float64(c) / float64(totalCalled)
+				if afPlainOn {
+					if params.MinNonRefAF > 0 && freq < params.MinNonRefAF {
+						return false
+					}
+					if params.MaxNonRefAF > 0 && freq > params.MaxNonRefAF {
+						return false
+					}
+				}
+				if afAnyOn {
+					failed := false
+					if params.MinNonRefAFAny > 0 && freq < params.MinNonRefAFAny {
+						failed = true
+					}
+					if params.MaxNonRefAFAny > 0 && freq > params.MaxNonRefAFAny {
+						failed = true
+					}
+					if failed {
+						afNFailed++
+					}
+				}
+			}
 		}
-		// Monomorphic fallback for --non-ref-af only (entry_filters.cpp:814).
-		// When no ALTs are present, the N_failed == N_alleles-1 condition
-		// becomes 0 == 0 and upstream drops the site. The --non-ref-ac
-		// branch's analogous check is gated on `_any`, not the plain flag,
-		// so we deliberately do NOT mirror it for MinNonRefAC.
-		if params.MinNonRefAF > 0 && nAlt == 0 {
+		// AF fallback (entry_filters.cpp:814). Gate keyed on PLAIN
+		// thresholds. Upstream's check is `N_failed == (N_alleles -
+		// 1)`; N_alleles includes REF, so (N_alleles - 1) == nAlt
+		// here. A monomorphic site (nAlt == 0) satisfies 0 == 0 and
+		// is dropped via this fallback — matching the wave-6 behaviour
+		// that pinned the AF flag's mono-drop quirk.
+		if afPlainOn && afNFailed == nAlt {
+			return false
+		}
+		// AC fallback (entry_filters.cpp:912). Gate keyed on `-any`
+		// thresholds — this is the upstream asymmetry vs the AF
+		// branch's plain-keyed gate above.
+		if acAnyOn && acNFailed == nAlt {
 			return false
 		}
 	}

@@ -344,6 +344,186 @@ func TestParity_NonRefAF_DropsMonomorphic(t *testing.T) {
 	}
 }
 
+// TestParity_NonRefACAny_2 — `--non-ref-ac-any 2 --recode` byte-for-byte.
+// Upstream registration: parameters.cpp:304. Filter ported from
+// entry_filters.cpp:902-913: each ALT's count gets compared against the
+// `_any` threshold and contributes to N_failed; the site is dropped only
+// when N_failed == N_alleles-1 (every ALT failed). Monomorphic sites
+// (N_alleles == 1) satisfy 0 == 0 and so the fallback at line 912 drops
+// them too — keyed on the `_any` thresholds.
+//
+// Expected kept sites for sample.vcf: 20:14370 (A count 3), 20:1110696
+// (G=2,T=4 — T passes), 20:1234567 (GA=3,GAC=1 — GA passes), X:9 (T=2),
+// X:12 (A=3). Sites dropped: 19:111 (C=1), 19:112 (G=1), 20:17330 (A=1),
+// 20:1230237 (mono), 20:1235237 (mono), X:10 (A=1,ATG=1 both fail), X:11
+// (A=1,DEL=1 both fail).
+func TestParity_NonRefACAny_2(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MinNonRefACAny: 2,
+		Recode:         true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "non_ref_ac_any_2.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_NonRefACAny_1_Chr20 — `--chr 20 --non-ref-ac-any 1 --recode`
+// byte-for-byte. Pins the upstream-quirk monomorphic drop for the AC
+// `_any` branch (entry_filters.cpp:912) — counterpart of plain
+// `--non-ref-ac` which does NOT drop monomorphic sites. We restrict to
+// chr 20 because the chr-X record X:11 (T -> A,<DEL:ME:ALU>) is dropped
+// by our port's `MinAlleles=2` default and would mismatch upstream; the
+// only chr-20 sites kept by the filter (the four ALT-bearing records)
+// pass our baseline as well. The two monomorphic chr-20 sites
+// (20:1230237 and 20:1235237) are dropped by the `_any` fallback,
+// matching upstream.
+func TestParity_NonRefACAny_1_Chr20(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		Chr:            "20",
+		MinNonRefACAny: 1,
+		Recode:         true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "non_ref_ac_any_1_chr20.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_MaxNonRefAF_03_Chr20 — `--chr 20 --max-non-ref-af 0.3
+// --recode` byte-for-byte. Upstream registration: parameters.cpp:288.
+// Filter ported from entry_filters.cpp:807 (`freq > max_non_ref_af`).
+// At threshold 0.3 the only chr-20 site whose every ALT has freq ≤ 0.3
+// is 20:17330 (A freq 0.167). Monomorphic chr-20 sites are dropped via
+// the line-814 fallback (gated on `max_non_ref_af < 1.0`, which our
+// internal nonzero MaxNonRefAF mirrors).
+func TestParity_MaxNonRefAF_03_Chr20(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		Chr:         "20",
+		MaxNonRefAF: 0.3,
+		Recode:      true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "max_non_ref_af_03_chr20.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_MaxNonRefAC_2_Chr19 — `--chr 19 --max-non-ref-ac 2 --recode`
+// byte-for-byte. Upstream registration: parameters.cpp:287. Filter ported
+// from entry_filters.cpp:905 (`count > max_non_ref_ac`). Both chr-19 sites
+// have a single ALT with count 1 (≤ 2) so both are kept. Counterpart pin:
+// plain `--max-non-ref-ac` does NOT drop monomorphic sites (the
+// line-912 fallback is keyed on `_any`); chr 19 has no monomorphic
+// sites so this test focuses on the plain per-ALT max-check.
+func TestParity_MaxNonRefAC_2_Chr19(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		Chr:         "19",
+		MaxNonRefAC: 2,
+		Recode:      true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "max_non_ref_ac_2_chr19.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_MaxNonRefACAny_2_Chr20 — `--chr 20 --max-non-ref-ac-any 2
+// --recode` byte-for-byte. Upstream registration: parameters.cpp:289.
+// Filter ported from entry_filters.cpp:908 (`count > max_non_ref_ac_any`
+// increments N_failed) and line 912 (drop if N_failed == N_alleles-1
+// when the `_any` thresholds are active). At threshold 2 a chr-20 site
+// is dropped only when EVERY ALT has count > 2:
+//
+//   - 20:14370 (A=3) → all ALTs fail max → drop
+//   - 20:17330 (A=1) → A passes max → keep
+//   - 20:1110696 (G=2,T=4) → G passes max → keep
+//   - 20:1230237 (mono, N_alleles=1, N_failed=0, fallback 0==0) → drop
+//   - 20:1234567 (GA=3,GAC=1) → GAC passes max → keep
+//   - 20:1235237 (mono) → fallback drops
+func TestParity_MaxNonRefACAny_2_Chr20(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		Chr:            "20",
+		MaxNonRefACAny: 2,
+		Recode:         true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "max_non_ref_ac_any_2_chr20.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_NonRefAF_03_Any_06 — `--non-ref-af 0.3 --non-ref-af-any 0.6
+// --recode` byte-for-byte. Documents that the AF `_any` flag has an
+// observable effect ONLY when the plain `--non-ref-af` flag is also set
+// (upstream parameters.cpp:303,305 + entry_filters.cpp:814 fallback
+// gated on `min_non_ref_af > 0`, NOT on `min_non_ref_af_any > 0`).
+//
+// With plain ≥ 0.3 alone the kept sites are 20:14370, 20:1110696, X:9,
+// X:12 (see TestParity_NonRefAF_03). Adding `--non-ref-af-any 0.6`
+// fires the post-loop fallback for biallelic sites whose single ALT
+// has freq < 0.6 (N_failed=1, N_alleles-1=1):
+//
+//   - 20:14370 (A freq 0.5): plain passes; N_failed=1; fallback drops.
+//   - 20:1110696 (G=0.333,T=0.667): plain passes; N_failed=1 of 2
+//     (only G < 0.6); fallback NOT fired (1 != 2) → KEEP.
+//   - X:9 (T freq 0.4): N_failed=1; fallback drops.
+//   - X:12 (A freq exactly 0.6): `freq < 0.6` is false → N_failed=0;
+//     not == N_alleles-1=1 → KEEP.
+func TestParity_NonRefAF_03_Any_06(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MinNonRefAF:    0.3,
+		MinNonRefAFAny: 0.6,
+		Recode:         true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "non_ref_af_03_any_06.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_NonRefAFAny_NoOp — `--non-ref-af-any` and
+// `--max-non-ref-af-any` are observably NO-OPS when used alone in
+// upstream vcftools because the line-814 fallback gate is keyed on the
+// PLAIN thresholds (`min_non_ref_af > 0.0` / `max_non_ref_af < 1.0`),
+// not on the `_any` thresholds. Pinning this upstream quirk prevents
+// future refactors from "fixing" the bug and breaking parity.
+//
+// Strategy: run the port with extreme `_any` thresholds and assert the
+// result is bit-identical to a no-filter recode. We do NOT diff against
+// upstream because of pre-existing baseline-recode gaps (20:1235237 and
+// X:11 in the port's `MinAlleles=2` default). Comparing port-to-port is
+// the right invariant here.
+func TestParity_NonRefAFAny_NoOp(t *testing.T) {
+	// Baseline: just --recode.
+	basePrefix := runVcftoolsParity(t, "sample.vcf", &Params{Recode: true})
+	base := readFileBytes(t, basePrefix+".recode.vcf")
+
+	// With --non-ref-af-any at an extreme threshold — should match baseline.
+	anyMinPrefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MinNonRefAFAny: 0.99,
+		Recode:         true,
+	})
+	if got := readFileBytes(t, anyMinPrefix+".recode.vcf"); !bytes.Equal(got, base) {
+		t.Errorf("--non-ref-af-any alone should be a no-op (upstream quirk); diff vs baseline")
+	}
+
+	// With --max-non-ref-af-any at a very low threshold — should match baseline.
+	anyMaxPrefix := runVcftoolsParity(t, "sample.vcf", &Params{
+		MaxNonRefAFAny: 0.001,
+		Recode:         true,
+	})
+	if got := readFileBytes(t, anyMaxPrefix+".recode.vcf"); !bytes.Equal(got, base) {
+		t.Errorf("--max-non-ref-af-any alone should be a no-op (upstream quirk); diff vs baseline")
+	}
+}
+
 // TestParity_MinQ — `--minQ 20` drops sites with QUAL < 20.
 func TestParity_MinQ(t *testing.T) {
 	prefix := runVcftoolsParity(t, "sample.vcf", &Params{

@@ -423,13 +423,14 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: Partial — a subset of upstream vcftools, ~81 of ~147 options
+**Status**: Partial — a subset of upstream vcftools, ~87 of ~147 options
 (LD analysis landed in PR #47; LDhat output formats + `--phased` landed
 in the long-tail wave 2 PR; LDhelmet + IMPUTE output formats landed in
 the long-tail wave 3 PR; `--diff-indv-map` + `--diff-discordance-matrix`
 landed in the long-tail wave 4 PR; `--diff-switch-error` + `--mendel`
 landed in the long-tail wave 5 PR; `--non-ref-af` + `--non-ref-ac`
-landed in the long-tail wave 6 PR)
+landed in the long-tail wave 6 PR; `--max-non-ref-af`, `--max-non-ref-ac`,
+and the `*-any` counterparts landed in the long-tail wave 7 PR)
 
 **Implemented Commands**:
 
@@ -477,6 +478,20 @@ landed in the long-tail wave 6 PR)
   the threshold; ported from upstream `entry_filters.cpp:770-824` and
   `869-920` including the documented `_any`-fallback asymmetry that
   makes the AF flag (but not AC) also drop monomorphic sites
+- Non-reference allele upper bounds + `_any` variants (wave 7):
+  `--max-non-ref-af FLOAT`, `--max-non-ref-ac INT`, plus
+  `--non-ref-af-any` / `--non-ref-ac-any` and their `--max-*-any`
+  counterparts. Refactored the wave-6 per-ALT early-return into an
+  N_failed accumulator pass so the `_any` post-loop fallback can
+  decide site-pass after seeing every ALT. AF `_any` is registered
+  but observably a NO-OP alone (mirrors upstream
+  `entry_filters.cpp:814` which gates the fallback on the PLAIN
+  thresholds); AC `_any` is functional and triggers a fallback drop
+  when every ALT fails (`:912`). Pinned by
+  `TestParity_NonRefACAny_2`, `TestParity_NonRefACAny_1_Chr20`,
+  `TestParity_MaxNonRefAF_03_Chr20`, `TestParity_MaxNonRefAC_2_Chr19`,
+  `TestParity_MaxNonRefACAny_2_Chr20`,
+  `TestParity_NonRefAF_03_Any_06`, `TestParity_NonRefAFAny_NoOp`
 
 `checkUnsupported` no longer rejects anything that has a `Params` field.
 The remaining gap vs upstream vcftools is the long tail of less-common

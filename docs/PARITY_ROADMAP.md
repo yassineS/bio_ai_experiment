@@ -602,7 +602,7 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** ~81 of ~147 options (~55%) after long-tail wave 6.
+**Status:** ~87 of ~147 options (~59%) after long-tail wave 7.
 
 Closed in wave 1:
 
@@ -696,10 +696,41 @@ exist (the upstream registrations are `--keep-INFO-all` and
 substitution clause permits picking from the `--non-ref-af*` family,
 so `--non-ref-af` and `--non-ref-ac` were chosen as the two new
 flags. The remaining `--non-ref-af-any` / `--non-ref-ac-any` (and the
-`--max-*` upper-bound counterparts) are still open — they share the
-same filter machinery but key on the `_any` fallback, which has
-slightly different semantics (a site is dropped only if EVERY ALT
-fails, not just one).
+`--max-*` upper-bound counterparts) are closed in wave 7 below.
+
+Closed in wave 7 (this PR):
+
+- **`--max-non-ref-af FLOAT`** — upper-bound counterpart of
+  `--non-ref-af`: drops the site if ANY ALT's freq > threshold (per-ALT
+  immediate fail, entry_filters.cpp:807). Also drops monomorphic sites
+  via the line-814 fallback (gate keyed on plain thresholds). ✅
+- **`--max-non-ref-ac INT`** — upper-bound counterpart of
+  `--non-ref-ac`: drops the site if ANY ALT's count > threshold
+  (entry_filters.cpp:905). Like plain `--non-ref-ac`, does NOT drop
+  monomorphic sites (the line-912 fallback is keyed on `_any`). ✅
+- **`--non-ref-af-any FLOAT`** + **`--max-non-ref-af-any FLOAT`** —
+  N_failed-counter variants registered at `parameters.cpp:304-305` and
+  `:289-290`. Wired for command-line parity, but observably **NO-OPS**
+  when used alone because upstream `entry_filters.cpp:814` gates the
+  fallback on the PLAIN thresholds (`min_non_ref_af > 0` /
+  `max_non_ref_af < 1.0`), not on the `_any` thresholds. The flags
+  only have an effect when paired with their plain counterpart, in
+  which case the fallback fires when EVERY ALT fails the `_any`
+  threshold. We mirror this verbatim; pinned by
+  `TestParity_NonRefAFAny_NoOp` and `TestParity_NonRefAF_03_Any_06`. ✅
+- **`--non-ref-ac-any INT`** + **`--max-non-ref-ac-any INT`** — counter
+  variants of the AC family. Unlike AF, the AC fallback at
+  `entry_filters.cpp:912` IS gated on the `_any` thresholds, so these
+  flags are functional standalone. Site dropped when N_failed equals
+  N_alleles-1 (every ALT failed). Monomorphic sites (N_alleles=1)
+  satisfy 0==0 and are dropped — counter to plain `--non-ref-ac` which
+  keeps them. Pinned by `TestParity_NonRefACAny_2`,
+  `TestParity_NonRefACAny_1_Chr20`, `TestParity_MaxNonRefACAny_2_Chr20`. ✅
+
+Refactor: the wave-6 per-ALT early-return was lifted to an N_failed
+accumulator pass (matching upstream's structure literally) so the AF
+and AC `_any` fallbacks can decide post-loop. The plain flags still
+short-circuit on the first failing ALT.
 
 Remaining gaps:
 
@@ -710,9 +741,8 @@ Remaining gaps:
   `variant_file_diff.cpp:635` for the gap.
 - **Per-individual output**: the per-individual `.imiss` row layout has
   fields we don't emit (we have `--missing-indv`).
-- **Other**: `--max-non-ref-af`, `--non-ref-af-any`, `--max-non-ref-af-any`
-  and the `*-ac*` counterparts (same filter machinery as the wave-6
-  pair, plus the upstream `_any` fallback semantics); `--pca` family.
+- **Other**: `--pca` family; small-format columns gaps tracked in
+  `tools/PORTING_STATUS.md`.
 
 Note: the brief mentioned `--haploid` as a possible wave-2 target. After
 checking the upstream source (`reference_code/vcftools/src/cpp/`) there is
@@ -735,7 +765,15 @@ byte-for-byte parity tests for `--non-ref-af 0.3` / `--non-ref-af 0.5`
 on `sample.vcf` and `--chr X --non-ref-ac 2|3` on the same fixture
 (see `non_ref_af_*.expected.recode.vcf` and
 `non_ref_ac_*_chrX.expected.recode.vcf`), plus a regression test that
-pins the upstream `_any`-fallback asymmetry between the two flags.
+pins the upstream `_any`-fallback asymmetry between the two flags;
+wave 7 adds byte-for-byte parity tests for `--non-ref-ac-any 2`
+(full VCF), `--chr 20 --non-ref-ac-any 1`,
+`--chr 20 --max-non-ref-af 0.3`, `--chr 19 --max-non-ref-ac 2`,
+`--chr 20 --max-non-ref-ac-any 2`, and
+`--non-ref-af 0.3 --non-ref-af-any 0.6` (the only meaningful AF-any
+usage), plus a `TestParity_NonRefAFAny_NoOp` regression that pins
+upstream's documented "AF -any flags are no-ops alone" quirk by
+asserting the port produces baseline output unchanged.
 Full upstream-test-suite run still pending.
 
 Upstream build note for golden generation: vcftools'
