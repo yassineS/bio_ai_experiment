@@ -1157,18 +1157,25 @@ recode-INFO-column selector semantic. Wave 17 separates the two:
 errors on non-Flag tags, OR-composing across multiple tags), while
 `--recode-INFO TAG` drives the new `Params.RecodeINFO` field
 (recode-column selector). See `docs/UPSTREAM_BUGS.md` Fix-on-port
-section for the migration note. Sibling `--remove-INFO` divergence
-(also a SITE FILTER upstream, still a recode-column stripper in the
-port) tracked separately below.
+section for the migration note. The sibling `--remove-INFO`
+divergence was resolved in wave 18 (see below).
 
-**`--remove-INFO` semantic gap (open)**: upstream's `--remove-INFO`
-(parameters.cpp:328 → `site_INFO_flags_to_remove` →
-`entry_filters.cpp:1068-1086`) is a SITE FILTER that drops sites
-where the named Flag IS present. The Go port's `Params.RemoveINFO`
-currently implements it as a recode-column stripper (the same shape
-of divergence as `--keep-INFO` pre-wave-17). Not addressed in
-wave 17 because it has its own goldens-churn cost and is not
-surfaced by any existing test; tracked as a follow-up.
+**`--remove-INFO` semantic gap**: ✅ resolved in wave 18.
+Upstream's `--remove-INFO` (parameters.cpp:328 →
+`site_INFO_flags_to_remove` → `entry_filters.cpp:1068-1086`) is a
+SITE FILTER that drops sites where the named Flag IS present
+(OR-veto across multiple tags). Pre-wave-18 the Go port had this
+flag wired as a recode-column stripper — a port-only invention with
+no upstream equivalent. Wave 18 repoints `--remove-INFO TAG` at
+`passRemoveINFOSite`, the polarity-inverted complement of wave 17's
+`passKeepINFOSite`. Header validation (Type=Flag check) is shared
+with the keep path via `validateFlagTypeINFO`. Composition with
+`--keep-INFO` follows upstream's keep-then-remove ordering:
+`TestRun_KeepAndRemoveINFO_Compose` and
+`TestParity_KeepAndRemoveINFO_Compose` pin this. The dead
+recode-column stripper code in `filterRecodeInfo` was deleted (no
+CLI flag drives it now). See `docs/UPSTREAM_BUGS.md` Fix-on-port
+section for the full migration note.
 
 Remaining gaps (definitive enumeration vs.
 `reference_code/vcftools/src/cpp/parameters.cpp` — wave 16):
@@ -1233,10 +1240,6 @@ Other (per-output column-set gaps, not flag-count gaps):
      golden regenerated on musl / macOS libc / MSVC could
      print `nan` or `NaN` instead. Re-running the goldens on
      a non-glibc system would require updating the literal.
-- **`--remove-INFO` semantic** — see the per-wave-17 follow-up note
-  above; flag is currently wired as a recode-column stripper, while
-  upstream defines it as a SITE FILTER. Resolved sibling
-  `--keep-INFO` is wave 17.
 - **Other**: small-format columns gaps tracked in
   `tools/PORTING_STATUS.md`.
 

@@ -334,24 +334,29 @@ type Params struct {
 	// semantic; see docs/UPSTREAM_BUGS.md for the migration note.
 	KeepINFO string
 
-	// RemoveINFO is a comma-separated list of INFO tag names stripped from
-	// the recoded output. It composes with `RecodeINFO` and
-	// `RecodeInfoAll`.
+	// RemoveINFO is a comma-separated list of INFO Flag-type tag names. It
+	// is a SITE FILTER: a site is DROPPED if any of the listed flag tags
+	// is present in the variant's INFO field. Mirrors upstream
+	// parameters.cpp:328 (`site_INFO_flags_to_remove`) and the filter
+	// algorithm at entry_filters.cpp:1068-1086. Upstream errors out if a
+	// named tag is not declared as Type=Flag in the header; this port
+	// preserves that behaviour. Multiple tags compose via OR ("any
+	// present drops").
 	//
-	// NOTE: upstream `--remove-INFO` (parameters.cpp:328) is itself a
-	// SITE FILTER (`site_INFO_flags_to_remove` →
-	// entry_filters.cpp:1068-1086, dropping sites where the named Flag is
-	// present). The port's `RemoveINFO` still implements the
-	// recode-column-stripper semantic — this is a separately-tracked
-	// divergence (see docs/PARITY_ROADMAP.md) and is NOT addressed by
-	// this wave's `--keep-INFO` site-filter fix.
+	// Composes with `KeepINFO` per upstream's filter_sites_by_INFO
+	// ordering (entry_filters.cpp:1033-1086): keep narrows first, remove
+	// vetoes the survivors.
+	//
+	// Pre-wave-18 versions of this port wired `RemoveINFO` as a
+	// recode-column stripper (a port-only invention with no upstream
+	// equivalent); wave 18 (see docs/UPSTREAM_BUGS.md) repointed it at
+	// the upstream site-filter semantic.
 	RemoveINFO string
 
 	// RecodeINFO is a comma-separated list of INFO tag names to retain in
 	// the recoded `.recode.vcf` output. Mirrors upstream's
 	// `--recode-INFO TAG` (parameters.cpp:319 → `recode_INFO_to_keep`).
-	// Composes with `RecodeInfoAll` (which preserves all INFO) and with
-	// `RemoveINFO` (which strips after the keep-set is applied).
+	// Composes with `RecodeInfoAll` (which preserves all INFO).
 	RecodeINFO string
 
 	// --get-INFO TAG[,TAG]... extracts the named INFO tags as a TSV file
@@ -820,27 +825,21 @@ func Run(input io.Reader, params *Params) error {
 	// the INFO column in `.recode.vcf` output to the listed tags. It is
 	// NOT a site filter.
 	recodeInfoSet := parseInfoTagList(params.RecodeINFO)
-	// removeInfoSet currently drives the recode-column stripper; see the
-	// Params.RemoveINFO doc for the residual upstream divergence.
-	removeInfoSet := parseInfoTagList(params.RemoveINFO)
 
-	// keepInfoSiteSet drives the `--keep-INFO TAG` SITE FILTER
-	// (upstream parameters.cpp:266 → site_INFO_flags_to_keep →
-	// entry_filters.cpp:1033-1063). A site is dropped unless at least one
-	// of the listed tags is present in its INFO field (OR semantics).
-	// Upstream additionally errors if a listed tag is not declared as
-	// Type=Flag in the header. We mirror that error.
+	// keepInfoSiteSet / removeInfoSiteSet drive the upstream
+	// filter_sites_by_INFO routine (entry_filters.cpp:1033-1086): keep
+	// requires at least one named Flag present (OR), remove drops the
+	// site if any named Flag is present (OR-veto). Both sets require
+	// every tag to be declared `Type=Flag` in the header — upstream
+	// errors otherwise (entry_filters.cpp:1053/1072); we mirror that
+	// error once at Run start since the check is header-invariant.
 	keepInfoSiteSet := parseInfoTagList(params.KeepINFO)
-	if len(keepInfoSiteSet) > 0 {
-		for tag := range keepInfoSiteSet {
-			meta, ok := lookupInfoMeta(filteredHeader, tag)
-			if !ok {
-				return fmt.Errorf("--keep-INFO: INFO tag %q is not declared in the VCF header", tag)
-			}
-			if !strings.EqualFold(meta.Type, "Flag") {
-				return fmt.Errorf("--keep-INFO: using INFO flag filtering on non flag type %s will not work correctly", tag)
-			}
-		}
+	removeInfoSiteSet := parseInfoTagList(params.RemoveINFO)
+	if err := validateFlagTypeINFO("--keep-INFO", keepInfoSiteSet, filteredHeader); err != nil {
+		return err
+	}
+	if err := validateFlagTypeINFO("--remove-INFO", removeInfoSiteSet, filteredHeader); err != nil {
+		return err
 	}
 
 	// Set up output writer for recode
@@ -948,12 +947,22 @@ func Run(input io.Reader, params *Params) error {
 			continue
 		}
 
-		// --keep-INFO TAG: site filter — drop sites where NONE of the
-		// named Flag-type INFO tags are present. Mirrors upstream's
-		// `filter_sites_by_INFO` (reference_code/vcftools/src/cpp/
-		// entry_filters.cpp:1033-1063). Multiple tags compose via OR.
+		// --keep-INFO TAG / --remove-INFO TAG: site filters.
+		// keep narrows first (drop site if NONE of the named Flags is
+		// present, OR semantics), then remove vetoes the survivors
+		// (drop site if ANY of the named Flags is present, OR-veto).
+		// Mirrors upstream's `filter_sites_by_INFO`
+		// (entry_filters.cpp:1033-1086) in upstream order.
 		if len(keepInfoSiteSet) > 0 {
 			if !passKeepINFOSite(variant, keepInfoSiteSet) {
+				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if len(removeInfoSiteSet) > 0 {
+			if !passRemoveINFOSite(variant, removeInfoSiteSet) {
 				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
 					return err
 				}
@@ -1126,12 +1135,11 @@ func Run(input io.Reader, params *Params) error {
 		if params.Recode {
 			var outInfo map[string]string
 			switch {
-			case len(recodeInfoSet) > 0 || len(removeInfoSet) > 0:
-				// --recode-INFO TAG (recode-column selector) and
-				// --remove-INFO TAG (recode-column stripper) compose
-				// with --recode-INFO-all: start from the full INFO map
-				// and project.
-				outInfo = filterRecodeInfo(filteredVariant.Info, recodeInfoSet, removeInfoSet)
+			case len(recodeInfoSet) > 0:
+				// --recode-INFO TAG (recode-column selector): restrict
+				// the INFO column to the listed tags. Composes with
+				// --recode-INFO-all by overriding it.
+				outInfo = filterRecodeInfo(filteredVariant.Info, recodeInfoSet)
 			case params.RecodeInfoAll:
 				outInfo = filteredVariant.Info
 			default:

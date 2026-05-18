@@ -125,9 +125,9 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--keep-filtered NAME[,NAME...]` - Keep only sites listing any named FILTER
 - ✅ `--keep-INFO TAG` (SITE FILTER, upstream parameters.cpp:266 +
   entry_filters.cpp:1033; repeatable, OR-composing)
-- ⚠️ `--remove-INFO TAG` (repeatable / comma-separated;
-  currently a recode-column stripper — upstream defines it as a
-  SITE FILTER, tracked in PARITY_ROADMAP)
+- ✅ `--remove-INFO TAG` (SITE FILTER, upstream parameters.cpp:328 +
+  entry_filters.cpp:1068; repeatable, OR-veto; composes with
+  `--keep-INFO`)
 - ✅ `--get-INFO TAG[,TAG...]` - Extract INFO tags to `<prefix>.INFO`
 
 ## Missing Features (❌)
@@ -195,8 +195,9 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--remove-filtered NAME[,NAME...]` - Remove specific FILTER flags
 - ✅ `--keep-INFO TAG` - SITE FILTER: keep only sites where the
   named Flag-type INFO tag is present (upstream parameters.cpp:266)
-- ⚠️ `--remove-INFO TAG` - Strip INFO flag from recoded output
-  (port-only semantic; upstream uses this as a SITE FILTER)
+- ✅ `--remove-INFO TAG` - SITE FILTER: drop sites where the named
+  Flag-type INFO tag IS present (upstream parameters.cpp:328;
+  polarity-inverted complement of `--keep-INFO`)
 - ❌ `--keep-INFO-all` - Keep all INFO fields (use `--recode-INFO-all`)
 
 #### Genotype-Level Filtering

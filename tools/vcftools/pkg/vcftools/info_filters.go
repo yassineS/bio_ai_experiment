@@ -69,30 +69,23 @@ func parseInfoTagList(s string) infoTagSet {
 	return parseFilterList(s)
 }
 
-// filterRecodeInfo applies the recode-INFO column selectors to a recoded
-// variant's INFO map. keepInfo (when non-empty) restricts INFO to the listed
-// tags; removeInfo (when non-empty) strips the listed tags. If both are set
-// they intersect (keep wins, then remove).
-//
-// Upstream's `--recode-INFO TAG` (parameters.cpp:319 → recode_INFO_to_keep)
-// drives the keepInfo path; `--remove-INFO TAG` currently flows into
-// removeInfo for column-stripping (see Params.RemoveINFO for the residual
-// upstream-vs-port semantic note — upstream treats `--remove-INFO` as a
-// site filter, not a column stripper).
+// filterRecodeInfo applies the `--recode-INFO TAG` recode-column selector to
+// a recoded variant's INFO map. keepInfo (when non-empty) restricts INFO to
+// the listed tags. Mirrors upstream `parameters.cpp:319` (recode_INFO_to_keep).
 //
 // Returns a fresh map; the caller is responsible for assigning it back.
-func filterRecodeInfo(info map[string]string, keepInfo, removeInfo infoTagSet) map[string]string {
-	out := make(map[string]string, len(info))
-	for k, v := range info {
-		if len(keepInfo) > 0 {
-			if _, hit := keepInfo[k]; !hit {
-				continue
-			}
+func filterRecodeInfo(info map[string]string, keepInfo infoTagSet) map[string]string {
+	if len(keepInfo) == 0 {
+		out := make(map[string]string, len(info))
+		for k, v := range info {
+			out[k] = v
 		}
-		if len(removeInfo) > 0 {
-			if _, hit := removeInfo[k]; hit {
-				continue
-			}
+		return out
+	}
+	out := make(map[string]string, len(keepInfo))
+	for k, v := range info {
+		if _, hit := keepInfo[k]; !hit {
+			continue
 		}
 		out[k] = v
 	}
@@ -254,6 +247,30 @@ func splitInfoHeaderFields(body string) []string {
 	return out
 }
 
+// validateFlagTypeINFO mirrors upstream's per-tag Type=Flag header check
+// in entry_filters.cpp:1053 (keep) and :1072 (remove). It returns a
+// descriptive error if any tag in `tags` is undeclared or non-Flag-typed
+// in the header. `flagName` is the caller's CLI flag label
+// (`"--keep-INFO"` or `"--remove-INFO"`) for inclusion in the error
+// message — upstream prefixes its `LOG.error` with the same string. The
+// check is header-invariant, so we run it once at Run start rather than
+// per-site as upstream does.
+func validateFlagTypeINFO(flagName string, tags infoTagSet, h *vcf.Header) error {
+	if len(tags) == 0 {
+		return nil
+	}
+	for tag := range tags {
+		meta, ok := lookupInfoMeta(h, tag)
+		if !ok {
+			return fmt.Errorf("%s: INFO tag %q is not declared in the VCF header", flagName, tag)
+		}
+		if !strings.EqualFold(meta.Type, "Flag") {
+			return fmt.Errorf("%s: using INFO flag filtering on non flag type %s will not work correctly", flagName, tag)
+		}
+	}
+	return nil
+}
+
 // passKeepINFOSite implements upstream's `--keep-INFO TAG` site filter
 // (entry_filters.cpp:1033-1063). A site passes when at least one of the
 // named INFO Flag tags is present in its INFO field. When `flags` is empty
@@ -267,19 +284,42 @@ func passKeepINFOSite(v *vcf.Variant, flags infoTagSet) bool {
 		return true
 	}
 	for tag := range flags {
-		val, ok := v.Info[tag]
-		if !ok {
-			continue
-		}
-		// Upstream Flag-type entries have value "1" when present. We
-		// also accept the bare-flag form (empty value) because some
-		// writers emit `MYFLAG;OTHER=...` with no `=1` and the parser
-		// stores those with an empty string. Anything else (e.g.
-		// `MYFLAG=0`) is treated as "not present" to match
-		// get_INFO_value semantics.
-		if val == "" || val == "1" {
+		if infoFlagPresent(v, tag) {
 			return true
 		}
 	}
 	return false
+}
+
+// passRemoveINFOSite implements upstream's `--remove-INFO TAG` site filter
+// (entry_filters.cpp:1068-1086). A site is DROPPED (returns false) when any
+// of the named INFO Flag tags is present in its INFO field — i.e. the
+// polarity-inverted complement of passKeepINFOSite. When `flags` is empty
+// the filter is inactive (caller should not invoke).
+//
+// Composes with passKeepINFOSite per upstream's
+// filter_sites_by_INFO ordering: keep narrows first, remove vetoes the
+// survivors.
+func passRemoveINFOSite(v *vcf.Variant, flags infoTagSet) bool {
+	if len(flags) == 0 {
+		return true
+	}
+	for tag := range flags {
+		if infoFlagPresent(v, tag) {
+			return false
+		}
+	}
+	return true
+}
+
+// infoFlagPresent mirrors upstream's `get_INFO_value(tag) == "1"` presence
+// test for Flag-type INFO tags. The parser stores bare-flag form
+// (`MYFLAG;OTHER=...`) with an empty string value, so both `""` and `"1"`
+// count as present; anything else (e.g. `MYFLAG=0`) is treated as absent.
+func infoFlagPresent(v *vcf.Variant, tag string) bool {
+	val, ok := v.Info[tag]
+	if !ok {
+		return false
+	}
+	return val == "" || val == "1"
 }

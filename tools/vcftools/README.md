@@ -210,11 +210,14 @@ issue in `ROADMAP.md`.
 - `--recode-INFO TAG` — recode-column selector. Restrict the INFO
   column in `.recode.vcf` output to the listed tag(s). Repeatable.
   Mirrors upstream `parameters.cpp:319`.
-- `--remove-INFO TAG` — strip a tag from the INFO column of recoded
-  output. Repeatable. NOTE: upstream defines this flag as a SITE
-  FILTER (drop sites where the named Flag IS present); the port
-  currently implements the column-stripping semantic and tracks the
-  divergence in `docs/PARITY_ROADMAP.md`.
+- `--remove-INFO TAG` — SITE FILTER. Drop sites where the named
+  Flag-type INFO tag IS present (the polarity-inverted complement of
+  `--keep-INFO`). Errors at runtime if the tag is not declared
+  `Type=Flag` in the header. Repeatable; multiple tags compose via
+  OR-veto (any present drops the site). Mirrors upstream
+  `entry_filters.cpp:1068`. Composes with `--keep-INFO` per
+  upstream's keep-then-remove ordering: keep narrows first, then
+  remove vetoes the survivors.
 - `--get-INFO TAG[,TAG...]` → `<prefix>.INFO`
   (columns: `CHROM POS REF ALT TAG1 TAG2 ...`). Missing values emit `.`.
 

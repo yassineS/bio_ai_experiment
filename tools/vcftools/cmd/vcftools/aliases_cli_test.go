@@ -214,3 +214,29 @@ func TestCLI_KeepINFOAndRecodeINFOAreSeparate(t *testing.T) {
 		t.Errorf("INFO column = %q, want %q (only DP survives via --recode-INFO)", got, "DP=10")
 	}
 }
+
+// TestCLI_RemoveINFOSiteFilter — wave-18 fix-on-port. `--remove-INFO TAG`
+// is now a SITE FILTER (upstream parameters.cpp:328 +
+// entry_filters.cpp:1068-1086). It must drop sites where the named
+// INFO Flag IS present (polarity-inverted from --keep-INFO).
+func TestCLI_RemoveINFOSiteFilter(t *testing.T) {
+	bin := buildVcftools(t)
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	_, _ = runWithStdin(t, bin, keepInfoSiteVCF,
+		"--stdin", "--recode", "--recode-INFO-all",
+		"--remove-INFO", "FLAG_A",
+		"--out", prefix)
+
+	data, err := os.ReadFile(prefix + ".recode.vcf")
+	if err != nil {
+		t.Fatalf("read recode output: %v", err)
+	}
+	body := string(data)
+	if strings.Contains(body, "\t100\t") {
+		t.Errorf("expected site 100 (FLAG_A) dropped; got:\n%s", body)
+	}
+	if !strings.Contains(body, "\t200\t") {
+		t.Errorf("expected site 200 (no FLAG_A) kept; got:\n%s", body)
+	}
+}

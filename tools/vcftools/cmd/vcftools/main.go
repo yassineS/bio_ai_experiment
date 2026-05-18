@@ -209,7 +209,11 @@ FILTER / INFO Selection:
                         upstream parameters.cpp:266 + entry_filters.cpp:1033.
                         To restrict the INFO column in recoded output use
                         --recode-INFO TAG instead.
-  --remove-INFO TAG     Strip this INFO tag from --recode output (repeatable)
+  --remove-INFO TAG     SITE FILTER: drop sites where this INFO Flag is
+                        present (repeatable; OR-veto across tags). Matches
+                        upstream parameters.cpp:328 + entry_filters.cpp:1068.
+                        Composes with --keep-INFO (keep narrows first, then
+                        remove vetoes the survivors).
   --get-INFO TAG        Extract this INFO tag to <prefix>.INFO (repeatable)
   --extract-FORMAT-info NAME
                         Extract per-genotype FORMAT NAME into
@@ -524,11 +528,18 @@ func main() {
 	//
 	// Pre-wave-17 the port wired `--keep-INFO` to the recode-column
 	// selector semantic and treated `--recode-INFO` as a synonym for
-	// it. The two flags are now distinct slices: `keepINFOParts` drives
-	// `params.KeepINFO` (site filter) and `recodeINFOParts` drives
-	// `params.RecodeINFO` (recode-column selector). See
-	// docs/UPSTREAM_BUGS.md `Fix-on-port` section for the migration
-	// note.
+	// it. Wave 17 separated the two into distinct slices:
+	// `keepINFOParts` drives `params.KeepINFO` (site filter) and
+	// `recodeINFOParts` drives `params.RecodeINFO` (recode-column
+	// selector).
+	//
+	// Wave 18 repoints `--remove-INFO` from the port-only recode-column
+	// stripper at upstream's SITE FILTER semantic
+	// (parameters.cpp:328 → site_INFO_flags_to_remove →
+	// entry_filters.cpp:1068-1086): drop sites where any of the named
+	// Flag-type tags is present (OR-veto), with the same Type=Flag
+	// header check as --keep-INFO. See docs/UPSTREAM_BUGS.md
+	// `Fix-on-port` section for both migration notes.
 	var keepINFOParts, recodeINFOParts, removeINFOParts, getINFOParts []string
 	flag.Func("keep-INFO", "INFO Flag-type tag to use as a SITE FILTER (upstream parameters.cpp:266; repeatable)", func(s string) error {
 		keepINFOParts = append(keepINFOParts, s)
@@ -538,7 +549,7 @@ func main() {
 		recodeINFOParts = append(recodeINFOParts, s)
 		return nil
 	})
-	flag.Func("remove-INFO", "INFO tag to strip from --recode output (repeatable)", func(s string) error {
+	flag.Func("remove-INFO", "INFO Flag-type tag to use as a SITE FILTER, OR-veto (upstream parameters.cpp:328; repeatable)", func(s string) error {
 		removeINFOParts = append(removeINFOParts, s)
 		return nil
 	})
