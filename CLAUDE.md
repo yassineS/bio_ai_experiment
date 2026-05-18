@@ -36,29 +36,49 @@ Implemented tools so far: `seqtk`, `prinseq`, `sickle`, `skewer`, `fastp`,
 
 Despite what some older docs (`tools/README.md`, `CONTRIBUTING.md`,
 `.github/agents/*`) say, there is **no per-tool `go.mod`**. Everything lives in
-the single root module. There are also no third-party dependencies (no `go.sum`)
-— prefer the standard library and the shared `pkg/` libraries; avoid adding
-external dependencies without a strong reason.
+the single root module. Third-party dependencies are kept to an absolute
+minimum — prefer the standard library and the shared `pkg/` libraries.
+Adding a new external dependency needs its own conversation; the currently
+sanctioned set is enumerated below.
 
-#### Documented exception: CRAM (when we get there)
+#### Sanctioned third-party deps
 
-CRAM uses several custom compression codecs (rANS 4x8, rANS 4x16) that have
-no Go-stdlib equivalent and would otherwise require ~1,500 lines of careful
-bit-twiddling to port from htslib's C. The owner has explicitly OK'd
-**accepting third-party dependencies for the CRAM codec layer when we
-implement it** rather than forcing a from-scratch rANS port. The
-preference order remains:
+Adding a new external dependency outside these zones requires explicit
+owner approval.
+
+1. **`gonum.org/v1/gonum`** (BSD-3) — used by the vcftools `--pca`
+   family for symmetric eigendecomposition of the N×N Genomic
+   Relatedness Matrix. Upstream calls LAPACK `dgeev_`; gonum's pure-Go
+   `mat.SymEigen` is the equivalent without dragging in cgo / libblas.
+   Confined to `tools/vcftools/pkg/vcftools/pca.go` today. **Scope:**
+   reuse is allowed for other genuinely linalg-heavy paths
+   (eigendecomp, SVD, matrix solve, etc.). Reuse for non-linalg
+   utilities, or pulling in another top-level dep, still needs its
+   own conversation — pre-approval is NOT extended to "any future
+   stats-heavy tool" (e.g. Fst is a couple of means + a variance and
+   should stay stdlib-only; ADMIXTURE-style models would deserve
+   their own review). An in-tree symmetric eigensolver (~150-250 LOC
+   Jacobi or Householder+QL) remains a viable alternative if the
+   owner ever wants to drop the dep entirely; the current decision
+   prefers gonum for the well-audited numerical-stability
+   guarantees.
+2. **CRAM codec layer** (when we get there). CRAM uses several custom
+   compression codecs (rANS 4x8, rANS 4x16) that have no Go-stdlib
+   equivalent and would otherwise require ~1,500 lines of careful
+   bit-twiddling to port from htslib's C. The owner has explicitly
+   OK'd accepting third-party deps for these primitives rather than
+   a from-scratch rANS port. The dep must be confined to a single
+   sub-package under `pkg/bioformats/cram/codec/` so the rest of the
+   repo can still claim "stdlib + gonum only" for non-CRAM workflows.
+   See `docs/CRAM_DESIGN.md`.
+
+Preference order:
 
 1. Standard library.
 2. In-tree implementation (the bgzip / tabix / sam / bcf packages all
    went this route).
-3. Third-party dep (currently allowed only for CRAM codec primitives;
-   any other use needs its own conversation).
-
-When the CRAM port lands, the dep should be confined to a single
-sub-package under `pkg/bioformats/cram/codec/` so the rest of the repo
-can still claim "stdlib only" for non-CRAM workflows. See the
-forthcoming `docs/CRAM_DESIGN.md`.
+3. Sanctioned third-party dep (gonum for linalg, future CRAM codec
+   libraries).
 
 ## Common commands (run from repo root)
 

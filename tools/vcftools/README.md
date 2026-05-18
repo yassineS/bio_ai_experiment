@@ -218,14 +218,52 @@ issue in `ROADMAP.md`.
 - `--get-INFO TAG[,TAG...]` → `<prefix>.INFO`
   (columns: `CHROM POS REF ALT TAG1 TAG2 ...`). Missing values emit `.`.
 
+### Principal Component Analysis
+
+- `--pca` → `<prefix>.pca` (rows: `INDV` header, an `EIGENVALUE` row,
+  then one row per kept sample with that sample's loadings on each
+  principal component). Implements upstream's
+  `variant_file_output.cpp:4871-5042` recipe: build the per-individual
+  centred / variance-normalised genotype matrix `M`, form the
+  `(1/n)·M·Mᵀ` GRM, eigendecompose, sort by `|eigenvalue|` descending.
+  Eigendecomposition uses `gonum.org/v1/gonum/mat`'s symmetric solver
+  (the project's second sanctioned third-party dep after the CRAM
+  codec carveout — see `CLAUDE.md`).
+- `--pca-no-norm` — implies `--pca`, but skips the per-SNP `1/√(p(1-p))`
+  normalisation (still mean-centres). Mirrors upstream
+  `parameters.cpp:298`.
+- `--pca-snp-loadings INT` → `<prefix>.pca.loadings` — per-site
+  projections of raw genotypes onto the first `INT` principal
+  components (`GAMMA_0..GAMMA_{INT-1}`). Mirrors upstream
+  `variant_file_output.cpp:5044-5246`. Does NOT imply `--pca` (a
+  separate output, independent of `.pca` per upstream
+  `vcftools.cpp:110-111`).
+
+Eigenvector signs are arbitrary in both LAPACK and gonum; the port
+applies a "first nonzero component positive" canonicalisation so the
+output is deterministic across LAPACK builds. Parity tests use a
+per-column sign-tolerant comparison.
+
+Wave 19 also fixes a latent upstream bug — `output_PCA` reads past
+the end of the per-individual `M[i]` vectors when any kept individual
+has a missing genotype; the port drops such sites entirely. This is
+a deliberate divergence from both upstream's buggy "skip the push,
+advance the index" behaviour AND Patterson, Price & Reich 2006's
+mean-imputation recipe — the port chooses the most conservative
+correct behaviour (drop the site) so the GRM is built only from
+fully-observed sites. See `docs/UPSTREAM_BUGS.md` for the upstream
+bug write-up; if mean-imputation is preferred for a downstream
+analysis, regenerate the input with imputation applied first.
+
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): `--pca` / `--pca-no-norm` /
-`--pca-snp-loadings` (deferred — see `docs/PARITY_ROADMAP.md#vcftools`
-for the precise scope of what's needed to land them), and a long tail
-of less-used upstream options. `--mendel` and `--diff-switch-error`
-landed in wave 5; `--hwe` and `--max-missing-count` landed in wave 8.
+accepted them and produced nothing): the BCF binary I/O family
+(`--bcf`, `--diff-bcf`, `--recode-bcf`, `--contigs`; blocked on htsgo
+PR-G — see `docs/HTSGO_ROADMAP.md`), and a long tail of less-used
+upstream options. `--mendel` and `--diff-switch-error` landed in
+wave 5; `--hwe` and `--max-missing-count` landed in wave 8; the PCA
+family landed in wave 19.
 See `ROADMAP.md`.
 
 ### Format Support

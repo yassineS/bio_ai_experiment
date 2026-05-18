@@ -391,11 +391,15 @@ type Params struct {
 
 	// PCA / PCANoNorm / PCASNPLoadings hold the upstream `--pca`,
 	// `--pca-no-norm`, and `--pca-snp-loadings INT` flags
-	// (parameters.cpp:308-310). Currently unsupported in this port —
-	// `Run` rejects them via `checkUnsupported`. Recorded on Params so
-	// the CLI surface still validates the flag names and so future
-	// implementation can hook in without an API change. See
-	// docs/PARITY_ROADMAP.md#vcftools (wave 8 deferral note).
+	// (parameters.cpp:308-310). Wave-19 ports the eigendecomposition via
+	// gonum (`gonum.org/v1/gonum/mat`'s symmetric eigensolver), the
+	// project's second sanctioned third-party-dep zone after the CRAM
+	// codec carveout (see CLAUDE.md). PCA writes `<prefix>.pca`;
+	// PCASNPLoadings > 0 additionally writes `<prefix>.pca.loadings`
+	// with the first K SNP loadings. Setting PCANoNorm disables
+	// per-SNP variance normalisation (still mean-centres). See pca.go
+	// for the algorithm and docs/UPSTREAM_BUGS.md for the missing-data
+	// fix-on-port.
 	PCA            bool
 	PCANoNorm      bool
 	PCASNPLoadings int
@@ -744,6 +748,23 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// --pca / --pca-no-norm / --pca-snp-loadings: build the GRM from
+	// centred (and optionally variance-normalised) genotypes, then
+	// eigendecompose it via gonum. Mirrors upstream
+	// variant_file_output.cpp:4871-5246. The runner accumulates per-site
+	// rows during the variant loop and emits `<prefix>.pca` (and
+	// optionally `<prefix>.pca.loadings`) at end-of-stream. Wave 19 — see
+	// pca.go header and docs/UPSTREAM_BUGS.md (missing-data fix-on-port).
+	var pca *pcaRunner
+	// Upstream `--pca-no-norm` (parameters.cpp:298) implicitly enables
+	// PCA output; `--pca-snp-loadings INT` (parameters.cpp:299) by
+	// itself only writes `.pca.loadings`, NOT `.pca` (vcftools.cpp:110-111
+	// dispatches the two outputs independently).
+	if params.PCA || params.PCANoNorm || params.PCASNPLoadings != 0 {
+		writePCA := params.PCA || params.PCANoNorm
+		pca = newPCARunner(filteredHeader.Samples, writePCA, !params.PCANoNorm, params.PCASNPLoadings, params.UseStdout)
+	}
+
 	// --temp DIR: upstream parameters.cpp:341 stores DIR as the base
 	// path for mkstemp spill files in the LD / format-convert paths.
 	// This port does not spill, so the flag is accepted-and-noop. Emit
@@ -1064,6 +1085,14 @@ func Run(input io.Reader, params *Params) error {
 			}
 		}
 
+		// --pca: accumulate centred / normalised genotypes for the GRM.
+		// The eigendecomposition runs at end-of-stream.
+		if pca != nil {
+			if err := pca.addVariant(filteredVariant); err != nil {
+				return fmt.Errorf("--pca: %w", err)
+			}
+		}
+
 		// LDhat buffer (biallelic-only filtering is applied inside).
 		if ldhat != nil {
 			ldhat.addVariant(filteredVariant)
@@ -1252,6 +1281,13 @@ func Run(input io.Reader, params *Params) error {
 	// hapcount.go).
 	if err := hapcount.close(); err != nil {
 		return fmt.Errorf("closing --hapcount output: %w", err)
+	}
+
+	// --pca / --pca-snp-loadings: end-of-stream eigendecomposition + write.
+	if pca != nil {
+		if err := pca.computeAndWrite(params.OutPrefix); err != nil {
+			return fmt.Errorf("--pca: %w", err)
+		}
 	}
 
 	// --kept-sites / --removed-sites output.
@@ -2347,22 +2383,6 @@ func checkUnsupported(params *Params) error {
 	// producing a malformed file.
 	if (params.LDhat || params.LDhatGeno || params.LDhelmet) && params.Chr == "" {
 		return fmt.Errorf("Require a chromosome (--chr) when outputting LDhat format.")
-	}
-
-	// --pca / --pca-no-norm / --pca-snp-loadings: not yet implemented.
-	// Upstream's PCA path (variant_file_output.cpp:4871-5249) builds the
-	// N_indv x N_indv covariance matrix X = (1/n)MM' from normalised
-	// genotypes and calls LAPACK's `dgeev` for the eigendecomposition. A
-	// stdlib-only port is feasible — X is symmetric positive
-	// semi-definite, so a Jacobi-rotation eigendecomposition (~100 LOC)
-	// covers it. We defer because the upstream binary in this
-	// repository's environment is built WITHOUT LAPACK (configure-time
-	// HAVE_LIBLAPACK is unset), so we cannot generate byte-for-byte
-	// goldens to validate parity. See docs/PARITY_ROADMAP.md#vcftools
-	// (wave 8) for the precise scope of what's required to land the
-	// flags.
-	if params.PCA || params.PCANoNorm || params.PCASNPLoadings != 0 {
-		missing = append(missing, "--pca / --pca-no-norm / --pca-snp-loadings (deferred; see docs/PARITY_ROADMAP.md#vcftools)")
 	}
 
 	if len(missing) > 0 {

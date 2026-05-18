@@ -245,9 +245,12 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 
 - ✅ `--relatedness` - Relatedness analysis (Yang 2010)
 - ✅ `--relatedness2` - KING-robust kinship
-- ❌ `--pca` - Principal component analysis
-- ❌ `--pca-no-norm` - PCA without normalization
-- ❌ `--pca-snp-loadings` - PCA SNP loadings
+- ✅ `--pca` - Principal component analysis → `<prefix>.pca`
+  (eigendecomposition of the centred/normalised N×N GRM via gonum)
+- ✅ `--pca-no-norm` - PCA without per-SNP variance normalisation
+  (still mean-centres; implies `--pca`)
+- ✅ `--pca-snp-loadings INT` - Per-site loadings on the first K
+  principal components → `<prefix>.pca.loadings`
 
 #### Format Info Extraction
 
@@ -316,7 +319,7 @@ Based on typical vcftools usage patterns:
 
 **Low Priority (Rarely Used):**
 
-- ❌ PCA analysis - **NOT IMPLEMENTED**
+- ✅ PCA analysis (`--pca`, `--pca-no-norm`, `--pca-snp-loadings INT`) — landed in wave 19 via gonum
 - ❌ Mendelian error checking - **NOT IMPLEMENTED**
 - ❌ Advanced haplotype analysis - **NOT IMPLEMENTED**
 
