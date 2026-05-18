@@ -483,6 +483,7 @@ func main() {
 
 	// VCF comparison (--diff family)
 	diffFile := flag.String("diff", "", "Second VCF file to compare against")
+	diffBCFFile := flag.String("diff-bcf", "", "Second BCF file to compare against (BGZF-compressed BCF v2.2)")
 	diffSite := flag.Bool("diff-site", false, "Emit <prefix>.diff.sites_in_files")
 	diffIndv := flag.Bool("diff-indv", false, "Emit <prefix>.diff.indv_in_files")
 	diffSiteDiscord := flag.Bool("diff-site-discordance", false, "Emit <prefix>.diff.sites with site-by-site discordance")
@@ -834,6 +835,7 @@ func main() {
 		InvertMask:                  false,
 		MaskMin:                     *maskMin,
 		Diff:                        *diffFile,
+		DiffBCF:                     *diffBCFFile,
 		DiffSite:                    *diffSite,
 		DiffIndv:                    *diffIndv,
 		DiffSiteDiscordance:         *diffSiteDiscord,
@@ -890,6 +892,18 @@ func main() {
 	// wins).
 	if *gzDiff != "" {
 		params.Diff = *gzDiff
+	}
+
+	// --diff-bcf is mutually exclusive with --diff / --gzdiff: upstream
+	// writes them all to the same slot (parameters.cpp:209-237) so only
+	// one wins. We mirror the upstream "last-set" semantics by
+	// preferring --diff-bcf when both are present, since the user
+	// must have asked for it deliberately on the same command line
+	// (the BCF flag is the more specific intent). The diff loader
+	// then dispatches on params.DiffBCF first.
+	if params.DiffBCF != "" && params.Diff != "" {
+		fmt.Fprintln(os.Stderr, "warning: both --diff and --diff-bcf set; --diff-bcf takes precedence")
+		params.Diff = ""
 	}
 
 	// --invert-mask FILE shares the same mask_file slot upstream as --mask

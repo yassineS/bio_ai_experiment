@@ -281,7 +281,13 @@ type Params struct {
 	// to their file-1 equivalents (upstream variant_file_diff.cpp:11-34).
 	// DiffDiscordanceMatrix emits the 4x4 genotype-by-genotype counts in
 	// <prefix>.diff.discordance_matrix (upstream variant_file_diff.cpp:944).
-	Diff                  string
+	Diff string
+	// DiffBCF is the path to a BCF-formatted second file for the
+	// --diff-* family, mirroring upstream's `--diff-bcf FILE`
+	// (parameters.cpp:210). Mutually exclusive with Diff at the CLI
+	// layer; when set, the diff loader reads via the shared
+	// `pkg/bioformats/bcf` reader stack.
+	DiffBCF               string
 	DiffSite              bool
 	DiffIndv              bool
 	DiffSiteDiscordance   bool

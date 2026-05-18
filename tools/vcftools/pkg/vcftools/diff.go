@@ -103,19 +103,39 @@ func loadDiffVCF(filename string) (*diffData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading --diff VCF header: %w", err)
 	}
+	return loadDiffFromSource(&vcfVariantSource{r: reader, hdr: hdr}, "--diff")
+}
 
+// loadDiffBCF reads the --diff-bcf second BCF file fully into memory.
+// Mirrors `loadDiffVCF` but uses the shared BCF reader stack
+// (BGZF + bcf.Reader → vcf.Variant via Record.ToVariant). The wave-22
+// variantSource adapter handles both file ownership and the
+// VCF/BCF dispatch uniformly.
+func loadDiffBCF(filename string) (*diffData, error) {
+	src, err := newBCFVariantSource(filename)
+	if err != nil {
+		return nil, fmt.Errorf("opening --diff-bcf %s: %w", filename, err)
+	}
+	defer src.Close()
+	return loadDiffFromSource(src, "--diff-bcf")
+}
+
+// loadDiffFromSource is the shared body of loadDiffVCF / loadDiffBCF:
+// it reads every variant from the source and builds the (CHR,POS)-keyed
+// diffData map plus the genotype lookup per sample. flagLabel is the
+// user-facing flag name used in error messages.
+func loadDiffFromSource(src variantSource, flagLabel string) (*diffData, error) {
 	d := &diffData{
-		samples: append([]string(nil), hdr.Samples...),
+		samples: append([]string(nil), src.Header().Samples...),
 		sites:   make(map[string]map[int]*diffRecord),
 	}
-
 	for {
-		v, err := reader.Read()
+		v, err := src.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("reading --diff VCF: %w", err)
+			return nil, fmt.Errorf("reading %s file: %w", flagLabel, err)
 		}
 		rec := &diffRecord{
 			ref:       v.Ref,
@@ -135,8 +155,8 @@ func loadDiffVCF(filename string) (*diffData, error) {
 			bucket = make(map[int]*diffRecord)
 			d.sites[v.Chrom] = bucket
 		}
-		// If the same position appears twice in file-2, the last one wins —
-		// matches upstream's "overwrite" behaviour.
+		// If the same position appears twice in the diff file, the last
+		// one wins — matches upstream's "overwrite" behaviour.
 		bucket[v.Pos] = rec
 	}
 	return d, nil
@@ -238,10 +258,10 @@ func (o *diffOutFile) close() error {
 }
 
 // newDiffRunner prepares per-output-file writers and the intersection sample
-// list. It is the caller's responsibility to ensure params.Diff != "" and at
-// least one --diff-* output flag is set.
+// list. It is the caller's responsibility to ensure params.Diff or
+// params.DiffBCF is set and at least one --diff-* output flag is set.
 func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
-	if params.Diff == "" {
+	if params.Diff == "" && params.DiffBCF == "" {
 		return nil, nil
 	}
 	if !params.DiffSite && !params.DiffIndv && !params.DiffSiteDiscordance &&
@@ -249,7 +269,15 @@ func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
 		!params.DiffSwitchError {
 		return nil, nil
 	}
-	d, err := loadDiffVCF(params.Diff)
+	var (
+		d   *diffData
+		err error
+	)
+	if params.DiffBCF != "" {
+		d, err = loadDiffBCF(params.DiffBCF)
+	} else {
+		d, err = loadDiffVCF(params.Diff)
+	}
 	if err != nil {
 		return nil, err
 	}

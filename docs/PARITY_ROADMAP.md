@@ -1191,9 +1191,16 @@ unique long flags) and the port's registered flags is **five flags**:
   by `TestRun_BCFInput_Roundtrip` (write-then-read symmetry) and
   `TestRun_BCFInput_ComposesWithFilters` (BCF input composes with
   `--chr` / `--from-bp`).
-- **`--diff-bcf` FILE** — second-file BCF input for `--diff-*`
-  family (parameters.cpp:210). Tractable once the diff loader gets
-  the same BCF-vs-VCF dispatch as `Run` (wave 23, separate PR).
+- ~~**`--diff-bcf` FILE** — second-file BCF input for `--diff-*`
+  family (parameters.cpp:210).~~ **Closed (wave 23).**
+  `loadDiffBCF` mirrors `loadDiffVCF` but routes through the
+  wave-22 `bcfVariantSource` (BGZF + `bcf.Reader` + ToVariant).
+  The shared `loadDiffFromSource` body drives both loaders so
+  the (CHR,POS)-keyed `diffData` build is identical between VCF
+  and BCF second files. CLI mutual-exclusion with `--diff` /
+  `--gzdiff` mirrors upstream's last-set-wins slot semantics.
+  Pinned by 5 tests including all five `--diff-*` outputs
+  composed against a BCF second file.
 - ~~**`--recode-bcf`** — emit BCF instead of VCF (parameters.cpp:317).~~
   **Closed (wave 21).** Layered the existing `pkg/bioformats/bcf.Writer`
   on top of `pkg/bgzip.NewWriter` and wired it parallel to the
@@ -1221,9 +1228,12 @@ unique long flags) and the port's registered flags is **five flags**:
   `TestRun_ContigsFile_AddsContigLines`,
   `TestRun_ContigsFile_NoOpWhenHeaderAlreadyHasContigs`,
   `TestAugmentHeaderContigs_AcceptsMetaInfoForm`.
-After wave 22 only `--diff-bcf` (BCF input on the diff-family
-second file) remains. Wave 23 will share the wave-22
-variantSource adapter with the diff loader.
+After wave 23 vcftools reaches **146/146 long flags** — the
+complete `parameters.cpp` surface is exercised. The
+remaining work is per-output column-set polish (see the
+"Other" list below) and the multi-output `num_outputs > 1`
+check upstream uses, which we deliberately don't replicate
+per the CLAUDE.md "don't replicate upstream constraints" rule.
 
 Other (per-output column-set gaps, not flag-count gaps):
 
