@@ -895,12 +895,17 @@ func main() {
 	}
 
 	// --diff-bcf is mutually exclusive with --diff / --gzdiff: upstream
-	// writes them all to the same slot (parameters.cpp:209-237) so only
-	// one wins. We mirror the upstream "last-set" semantics by
-	// preferring --diff-bcf when both are present, since the user
-	// must have asked for it deliberately on the same command line
-	// (the BCF flag is the more specific intent). The diff loader
-	// then dispatches on params.DiffBCF first.
+	// writes them all to the same `diff_file` slot
+	// (parameters.cpp:209,237) so only the last-parsed flag wins.
+	//
+	// DIVERGENCE: Go's flag package erases declaration order, so we
+	// can't replicate upstream's true last-set-wins. Instead, when
+	// both flags are present we prefer --diff-bcf unconditionally
+	// (the BCF flag is the more specific intent) and emit a stderr
+	// warning so the user knows which one we picked. To get true
+	// upstream parity we'd need flag.Visit() to recover the
+	// declaration order — not worth the complexity for this rarely
+	// double-passed case.
 	if params.DiffBCF != "" && params.Diff != "" {
 		fmt.Fprintln(os.Stderr, "warning: both --diff and --diff-bcf set; --diff-bcf takes precedence")
 		params.Diff = ""

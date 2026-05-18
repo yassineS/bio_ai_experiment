@@ -9,7 +9,6 @@ package vcftools
 // pinned by the existing parity tests in diff_parity_test.go).
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,14 +205,3 @@ func TestLoadDiffBCF_MissingFile(t *testing.T) {
 		t.Fatal("expected error for missing BCF file")
 	}
 }
-
-// Compile-time check: loadDiffBCF returns the same shape as loadDiffVCF.
-var _ = func() *diffData {
-	d, _ := loadDiffVCF("")
-	return d
-}
-
-// Ensure io is referenced so the test file compiles even when the body
-// stops using it in a future rewrite. Tests above use it implicitly via
-// strings.NewReader; keep this no-op so the import remains intentional.
-var _ = io.EOF
