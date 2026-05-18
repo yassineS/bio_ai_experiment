@@ -1197,10 +1197,25 @@ Other (per-output column-set gaps, not flag-count gaps):
 
 - **Per-individual output**: the per-individual `.imiss` row layout
   still has fields we don't emit (we have `--missing-indv`).
-- **Diff family**: per-site / per-indv discordance outputs
+- ~~**Diff family**: per-site / per-indv discordance outputs
   (`--diff-site-discordance`, `--diff-indv-discordance`) still emit a
   simpler column set than upstream's richer `.diff.sites` /
-  `.diff.indv` schemas — see `variant_file_diff.cpp:635` for the gap.
+  `.diff.indv` schemas — see `variant_file_diff.cpp:635` for the gap.~~
+  **Closed (wave 20).** `.diff.sites` now emits the upstream 7-column
+  layout (`CHROM POS FILES MATCHING_ALLELES N_COMMON_CALLED N_DISCORD
+  DISCORDANCE`), including file-1-only and file-2-only zero rows;
+  `.diff.indv` now emits the 4-column layout (`INDV N_COMMON_CALLED
+  N_DISCORD DISCORDANCE`) over the union of file-1 and effective
+  file-2 samples in alphabetical order. Discordance values format
+  via `%.6g` with `-nan` for 0/0, matching libstdc++'s default
+  ostream output. Pinned by four parity tests against upstream
+  goldens (`TestParity_DiffSiteDiscordance_{NoMap,WithMap}`,
+  `TestParity_DiffIndvDiscordance_{NoMap,WithMap}`). One residual
+  deviation from upstream remains: row ordering within `.diff.sites`
+  follows file-1 streamed order with file-2-only sites appended in
+  sorted-chrom-then-pos order, rather than upstream's strict merge
+  sort — observable only when the two files have non-overlapping
+  positions interleaved by chromosome.
 - **`--keep-INFO` semantic** — see the per-wave-16 note above; flag
   is wired with the wrong semantic vs. upstream, tracked as a
   semantic-swap follow-up.

@@ -27,14 +27,28 @@
 //
 //	.diff.indv_in_files        INDV FILES  (FILES ∈ {1, 2, B})
 //
-//	.diff.sites                CHROM POS N_COMMON_CALLED N_DISCORD
-//	                           (sites present in both files; counts only
-//	                           samples called in both)
+//	.diff.sites                CHROM POS FILES MATCHING_ALLELES
+//	                           N_COMMON_CALLED N_DISCORD DISCORDANCE
+//	                           Mirrors upstream variant_file_diff.cpp:677
+//	                           (the header line). FILES ∈ {1, 2, B} just
+//	                           like .diff.sites_in_files; MATCHING_ALLELES
+//	                           is 1 when REF and the first ALT match in
+//	                           both files (B-rows only) else 0;
+//	                           N_COMMON_CALLED / N_DISCORD count common
+//	                           samples called in both files; DISCORDANCE
+//	                           = N_DISCORD / N_COMMON_CALLED, with
+//	                           division by zero rendered as -nan to
+//	                           match upstream's C++ printf.
 //
-//	.diff.indv                 INDV N_COMMON_CALLED N_DISCORD
-//	                           (samples present in both files; counts only
-//	                           sites called in both that are present in
-//	                           both files)
+//	.diff.indv                 INDV N_COMMON_CALLED N_DISCORD DISCORDANCE
+//	                           Lists the *union* of file-1 samples and
+//	                           (post-map) file-2 samples in alphabetical
+//	                           order, matching upstream's
+//	                           combined_individuals std::map iteration
+//	                           (variant_file_diff.cpp:619-625). Samples
+//	                           not shared between the two files appear
+//	                           with 0/0/-nan; sites present in only one
+//	                           file contribute 0 to every sample.
 //
 //	.diff.discordance_matrix   5x5 grid: header row "-\tN_0/0_file1\t...\t
 //	                           N_./._file1"; four data rows labelled
@@ -303,7 +317,7 @@ func newDiffRunner(params *Params, samples []string) (*diffRunner, error) {
 	}
 	if params.DiffSiteDiscordance {
 		path := params.OutPrefix + ".diff.sites"
-		w, err := newDiffOutFile(path, "CHROM\tPOS\tN_COMMON_CALLED\tN_DISCORD\n")
+		w, err := newDiffOutFile(path, "CHROM\tPOS\tFILES\tMATCHING_ALLELES\tN_COMMON_CALLED\tN_DISCORD\tDISCORDANCE\n")
 		if err != nil {
 			return nil, err
 		}
@@ -378,6 +392,13 @@ func (r *diffRunner) addVariant(v *vcf.Variant) error {
 	// both files (rec != nil). The runner itself enforces het-and-phased.
 	r.switchRun.addVariant(v, rec)
 	if rec == nil {
+		// File-1-only site. .diff.sites still gets a zero row with
+		// FILES=1, MATCHING_ALLELES=0, all counts 0, discordance -nan
+		// (variant_file_diff.cpp:801-803 emits the row prefix; the
+		// "0" MATCHING_ALLELES literal is line 929 + counts at line 933).
+		if r.wSites != nil {
+			fmt.Fprintf(r.wSites.w, "%s\t%d\t1\t0\t0\t0\t-nan\n", v.Chrom, v.Pos)
+		}
 		return nil
 	}
 
@@ -414,9 +435,32 @@ func (r *diffRunner) addVariant(v *vcf.Variant) error {
 		}
 	}
 	if r.wSites != nil {
-		fmt.Fprintf(r.wSites.w, "%s\t%d\t%d\t%d\n", v.Chrom, v.Pos, siteCommon, siteDiscord)
+		// MATCHING_ALLELES is upstream's `alleles_match = (ALT1 == ALT2)
+		// && (REF1 == REF2)` (variant_file_diff.cpp:844). For multi-ALT
+		// sites we compare the joined ALT strings, which matches the
+		// upstream `ALT1 == ALT2` string comparison over the whole list.
+		matching := 0
+		if v.Ref == rec.ref && strings.Join(v.Alt, ",") == strings.Join(rec.rawALTs, ",") {
+			matching = 1
+		}
+		fmt.Fprintf(r.wSites.w, "%s\t%d\tB\t%d\t%d\t%d\t%s\n",
+			v.Chrom, v.Pos, matching, siteCommon, siteDiscord,
+			formatDiscordance(siteDiscord, siteCommon))
 	}
 	return nil
+}
+
+// formatDiscordance renders N_DISCORD / N_COMMON_CALLED using the same
+// six-significant-digit default precision as upstream's C++ ostream
+// (variant_file_diff.cpp:625 + :932). Division by zero produces "-nan"
+// to match libstdc++'s `<< nan` output verbatim. Whole values print
+// without a decimal point ("1", "0", "0.5") — see `%g` semantics in Go,
+// which match the C `%g` format upstream relies on.
+func formatDiscordance(numerator, denominator int) string {
+	if denominator == 0 {
+		return "-nan"
+	}
+	return fmt.Sprintf("%.6g", float64(numerator)/float64(denominator))
 }
 
 // gtCode encodes a canonicalised biallelic diploid genotype as one of:
@@ -483,8 +527,9 @@ func (r *diffRunner) close() error {
 	if r == nil {
 		return nil
 	}
-	// File-2-only sites for sites_in_files.
-	if r.wSitesInFiles != nil {
+	// File-2-only sites for sites_in_files and .diff.sites. Both outputs
+	// walk the same residual set so we compute it once.
+	if r.wSitesInFiles != nil || r.wSites != nil {
 		chroms := make([]string, 0, len(r.data.sites))
 		for c := range r.data.sites {
 			chroms = append(chroms, c)
@@ -503,13 +548,24 @@ func (r *diffRunner) close() error {
 			sort.Ints(positions)
 			for _, p := range positions {
 				rec := bucket[p]
-				alt2 := "."
-				if len(rec.rawALTs) > 0 {
-					alt2 = strings.Join(rec.rawALTs, ",")
+				if r.wSitesInFiles != nil {
+					alt2 := "."
+					if len(rec.rawALTs) > 0 {
+						alt2 = strings.Join(rec.rawALTs, ",")
+					}
+					if _, err := fmt.Fprintf(r.wSitesInFiles.w, "%s\t.\t%d\t2\t.\t%s\t.\t%s\n",
+						c, p, rec.ref, alt2); err != nil {
+						return err
+					}
 				}
-				if _, err := fmt.Fprintf(r.wSitesInFiles.w, "%s\t.\t%d\t2\t.\t%s\t.\t%s\n",
-					c, p, rec.ref, alt2); err != nil {
-					return err
+				if r.wSites != nil {
+					// File-2-only zero row. Upstream prints "0" for
+					// MATCHING_ALLELES on non-B rows and -nan for the
+					// 0/0 discordance (variant_file_diff.cpp:929-933).
+					if _, err := fmt.Fprintf(r.wSites.w, "%s\t%d\t2\t0\t0\t0\t-nan\n",
+						c, p); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -639,7 +695,11 @@ func (r *diffRunner) writeDiscordanceMatrix() error {
 	return nil
 }
 
-// writeIndvDiscordance writes <prefix>.diff.indv.
+// writeIndvDiscordance writes <prefix>.diff.indv. Mirrors upstream's
+// output_discordance_by_indv (variant_file_diff.cpp:338-633), which iterates
+// `combined_individuals` — the std::map-sorted UNION of file-1 samples and
+// (post-map) file-2 samples. Samples that appear in only one file get
+// N_COMMON_CALLED=0, N_DISCORD=0, DISCORDANCE=-nan.
 func (r *diffRunner) writeIndvDiscordance() error {
 	path := r.params.OutPrefix + ".diff.indv"
 	f, err := iohelper.OpenWriter(path)
@@ -650,14 +710,37 @@ func (r *diffRunner) writeIndvDiscordance() error {
 	w := bufio.NewWriter(f)
 	defer w.Flush()
 
-	if _, err := fmt.Fprintln(w, "INDV\tN_COMMON_CALLED\tN_DISCORD"); err != nil {
+	if _, err := fmt.Fprintln(w, "INDV\tN_COMMON_CALLED\tN_DISCORD\tDISCORDANCE"); err != nil {
 		return err
 	}
-	// Emit in file-1 sample order for the intersection. The key is the
-	// file-1 (canonical) name even when --diff-indv-map is in effect.
-	for _, pair := range r.commonPairs {
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%d\n",
-			pair.f1Name, r.indvCommon[pair.f1Name], r.indvDiscord[pair.f1Name]); err != nil {
+	// Union of all sample names: file-1 names + effective file-2 names
+	// (post --diff-indv-map renaming). Upstream's combined_individuals is
+	// a std::map<string, ...> so we sort alphabetically to match its
+	// iteration order.
+	all := make(map[string]struct{}, len(r.samples)+len(r.data.samples))
+	for _, s := range r.samples {
+		all[s] = struct{}{}
+	}
+	for _, s2 := range r.data.samples {
+		eff := s2
+		if r.indvMap != nil {
+			if renamed, ok := r.indvMap[s2]; ok {
+				eff = renamed
+			}
+		}
+		all[eff] = struct{}{}
+	}
+	names := make([]string, 0, len(all))
+	for s := range all {
+		names = append(names, s)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		n := r.indvCommon[name]
+		d := r.indvDiscord[name]
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%s\n",
+			name, n, d, formatDiscordance(d, n)); err != nil {
 			return err
 		}
 	}

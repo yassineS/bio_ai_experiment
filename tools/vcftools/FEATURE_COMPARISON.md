@@ -83,8 +83,11 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--diff FILE` - Compare against a second VCF (`.gz` auto-detected)
 - ✅ `--diff-site` - `<prefix>.diff.sites_in_files`
 - ✅ `--diff-indv` - `<prefix>.diff.indv_in_files`
-- ✅ `--diff-site-discordance` - `<prefix>.diff.sites`
-- ✅ `--diff-indv-discordance` - `<prefix>.diff.indv`
+- ✅ `--diff-site-discordance` - `<prefix>.diff.sites` (upstream 7-column
+  layout: CHROM, POS, FILES, MATCHING_ALLELES, N_COMMON_CALLED, N_DISCORD,
+  DISCORDANCE; file-1-only and file-2-only sites included)
+- ✅ `--diff-indv-discordance` - `<prefix>.diff.indv` (4-column layout
+  with DISCORDANCE over the union of both files' samples)
 
 ### BEAGLE Genotype-Likelihood Output
 
