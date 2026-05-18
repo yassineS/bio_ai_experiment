@@ -1382,41 +1382,8 @@ func TestParity_MaxMissingCount_2(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// --pca family deferral (parameters.cpp:308-310). Until we land an in-tree
-// symmetric-eigendecomposition primitive (or accept a single linear-algebra
-// dep) the three PCA flags must fail fast with a clear error message rather
-// than silently producing no output.
-// -----------------------------------------------------------------------------
-
-func TestParity_PCA_Deferred(t *testing.T) {
-	cases := []struct {
-		name   string
-		params *Params
-	}{
-		{"--pca", &Params{PCA: true, Recode: true}},
-		{"--pca-no-norm", &Params{PCA: true, PCANoNorm: true, Recode: true}},
-		{"--pca-snp-loadings 5", &Params{PCASNPLoadings: 5, Recode: true}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			tmp := t.TempDir()
-			tc.params.OutPrefix = filepath.Join(tmp, "out")
-			in, err := os.Open(filepath.Join(vcftoolsFixtureDir(t), "sample.vcf"))
-			if err != nil {
-				t.Fatalf("open: %v", err)
-			}
-			defer in.Close()
-			err = Run(in, tc.params)
-			if err == nil {
-				t.Fatalf("expected --pca family to be rejected, got nil error")
-			}
-			if !strings.Contains(err.Error(), "pca") {
-				t.Errorf("error doesn't mention pca: %v", err)
-			}
-		})
-	}
-}
+// PCA parity tests live in pca_test.go alongside the algorithm-level
+// unit tests. The wave-19 implementation replaces the prior deferral.
 
 // TestSNPHWE_Boundaries — unit test for the SNPHWE port against the
 // hand-computable cases.

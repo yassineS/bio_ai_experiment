@@ -170,6 +170,59 @@ own goldens-churn cost and is not surfaced by any existing test. See
 `tools/vcftools/pkg/vcftools/vcftools.go` and the residual entry in
 `docs/PARITY_ROADMAP.md`.
 
+#### vcftools `--pca` jagged-M[i] crash on any missing genotype
+
+Upstream's `output_PCA` (`variant_file_output.cpp:4954-4972`) appends
+the centred/normalised genotype value to `M[ui_prime]` only when the
+individual has a non-missing call at that site:
+
+```cpp
+e->get_indv_GENOTYPE_ids(ui, geno_id);
+x = geno_id.first + geno_id.second;
+if (x > -1) {
+    if (use_normalisation == true)
+        M[ui_prime].push_back((x - mu) * div);
+    else
+        M[ui_prime].push_back((x - mu));
+}
+ui_prime++;
+```
+
+…but the GRM accumulation at `variant_file_output.cpp:4988-4991`
+iterates a SINGLE `s in 0..N_sites` index across every individual:
+
+```cpp
+for (unsigned int ui=0; ui<N_indvs; ui++)
+    for (unsigned int uj=ui; uj<N_indvs; uj++)
+        for (unsigned int s=0; s<N_sites; s++)
+            X[ui][uj] += M[ui][s] * M[uj][s];
+```
+
+With any missing data, the per-individual `M[i]` vectors are
+**jagged** (different lengths). The triple loop reads past the end of
+the shortest vector — undefined behaviour that may segfault, return
+garbage GRM entries, or read leftover heap memory depending on the
+allocator. The bug is well-hidden because the Patterson/Price/Reich
+2006 paper this code claims to implement explicitly **mean-imputes**
+missing genotypes; upstream's "skip the push" implementation is a
+silent divergence from that reference.
+
+**Severity:** memory unsafety / silently-wrong output. With any
+missing data the user gets garbage eigenvalues or a crash, depending
+on the C++ runtime.
+
+**Fixed in port** (wave 19 — this PR). The Go port drops any site
+where at least one kept individual has a missing genotype, keeping
+M rectangular. This is a deliberate deviation from upstream's
+broken loop and from the Patterson method (which would mean-impute);
+it matches upstream's effective intent ("compute PCA on
+complete-data sites") while avoiding the indexing bug. The decision
+is documented in `tools/vcftools/pkg/vcftools/pca.go` and pinned by
+`TestPCA_MissingDataSkipsSite`.
+
+Parity tests use no-missing-data fixtures so the divergence is
+invisible to the byte-level comparison.
+
 #### vcftools `.ifreqburden` INDV label-index bug
 
 Upstream `variant_file_output.cpp:621` emits

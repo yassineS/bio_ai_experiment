@@ -423,12 +423,15 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: **142 of 146 unique upstream long flags (~97%)**; after
-wave 16 the remaining long-flag gap is 4 BCF-binary I/O flags
+**Status**: **145 of 146 unique upstream long flags (~99%)**; after
+wave 19 the remaining long-flag gap is the 4 BCF-binary I/O flags
 (`--bcf`, `--diff-bcf`, `--recode-bcf`, `--contigs`), all HEAVY and
-blocked on BCF binary reader/writer. The PCA trio is CLI-registered
-with a deferred-error shim (LAPACK blocker; wave 8 documented the
-re-attempt criteria). LD analysis landed in PR #47;
+blocked on BCF binary reader/writer (htsgo PR-G). The PCA trio
+(`--pca`, `--pca-no-norm`, `--pca-snp-loadings`) landed in wave 19
+via gonum's symmetric eigensolver (the project's second sanctioned
+third-party dep zone — see CLAUDE.md), with byte-level parity
+goldens generated against an upstream binary rebuilt with
+`--enable-pca`. LD analysis landed in PR #47;
 LDhat output formats + `--phased` landed in the long-tail wave 2 PR;
 LDhelmet + IMPUTE output formats landed in the long-tail wave 3 PR;
 `--diff-indv-map` + `--diff-discordance-matrix` landed in the
@@ -453,15 +456,19 @@ upstream `--hapcount` bugs fixed on port — see
 upstream-canonical `--recode-INFO TAG` (then a synonym for the
 port's `--keep-INFO`) and the `-c` short alias for `--stdout`
 landed in long-tail wave 16. The `--keep-INFO` semantic was then
-corrected in wave 17 (this PR): it is now wired as the upstream
+corrected in wave 17: it is now wired as the upstream
 SITE FILTER (parameters.cpp:266 + entry_filters.cpp:1033-1063),
 distinct from `--recode-INFO` which keeps the recode-column-selector
 semantic. See `docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the
-migration writeup. After wave 17 the only remaining gaps are the
-BCF-binary family (`--bcf` / `--diff-bcf` / `--recode-bcf` /
-`--contigs`), the PCA family, and the open `--remove-INFO`
-site-filter divergence — all HEAVY; the long-flag long-tail
-sequence is now effectively exhausted.
+migration writeup. Wave 19 (this PR) lands the PCA family
+(`--pca` / `--pca-no-norm` / `--pca-snp-loadings`) via gonum's
+`mat.SymEigen` and fixes a latent upstream memory-safety bug in
+`output_PCA`'s jagged `M[i]` loop on missing genotypes — see the
+top of `docs/UPSTREAM_BUGS.md` for the writeup. After wave 19
+the remaining gaps are the BCF-binary family (`--bcf` /
+`--diff-bcf` / `--recode-bcf` / `--contigs`, HEAVY and blocked on
+htsgo PR-G) and the open `--remove-INFO` site-filter divergence
+(wave 18, separate PR).
 
 **Implemented Commands**:
 

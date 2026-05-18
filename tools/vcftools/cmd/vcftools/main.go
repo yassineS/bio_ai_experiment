@@ -447,14 +447,15 @@ func main() {
 	// --phased, biallelic-only, and rejects any site with a missing GT.
 	impute := flag.Bool("IMPUTE", false, "Output IMPUTE reference-panel format (.impute.legend/.impute.hap/.impute.hap.indv); phased biallelic SNPs with no missing data only")
 
-	// --pca / --pca-no-norm / --pca-snp-loadings INT: registered for CLI
-	// parity (so misuse is reported clearly) but not yet implemented.
-	// Run() will reject these via checkUnsupported. See
-	// docs/PARITY_ROADMAP.md#vcftools (wave 8 deferral note) for the
-	// scope of what's required to land them.
-	pca := flag.Bool("pca", false, "Principal component analysis (NOT IMPLEMENTED — see docs/PARITY_ROADMAP.md#vcftools)")
-	pcaNoNorm := flag.Bool("pca-no-norm", false, "PCA without normalisation (NOT IMPLEMENTED — see docs/PARITY_ROADMAP.md#vcftools)")
-	pcaSNPLoadings := flag.Int("pca-snp-loadings", 0, "Number of top PCs for SNP loadings (NOT IMPLEMENTED — see docs/PARITY_ROADMAP.md#vcftools)")
+	// --pca / --pca-no-norm / --pca-snp-loadings INT: build the N×N
+	// Genomic Relatedness Matrix from centred (and optionally
+	// variance-normalised) genotypes, eigendecompose via gonum, and
+	// emit `<prefix>.pca` (and optionally `<prefix>.pca.loadings` for
+	// the per-site projections). See pca.go for the algorithm and
+	// docs/UPSTREAM_BUGS.md for the missing-data fix-on-port.
+	pca := flag.Bool("pca", false, "Principal component analysis → <prefix>.pca (eigendecomposition of the N×N GRM; implies biallelic-only)")
+	pcaNoNorm := flag.Bool("pca-no-norm", false, "PCA without per-SNP variance normalisation (implies --pca)")
+	pcaSNPLoadings := flag.Int("pca-snp-loadings", 0, "K → <prefix>.pca.loadings: per-site projection onto the first K principal components")
 
 	// --phased: keep only sites where every kept-individual GT is phased.
 	phased := flag.Bool("phased", false, "Keep only sites where every kept-individual GT is phased (separator '|' or haploid)")
