@@ -483,6 +483,7 @@ func main() {
 
 	// VCF comparison (--diff family)
 	diffFile := flag.String("diff", "", "Second VCF file to compare against")
+	diffBCFFile := flag.String("diff-bcf", "", "Second BCF file to compare against (BGZF-compressed BCF v2.2)")
 	diffSite := flag.Bool("diff-site", false, "Emit <prefix>.diff.sites_in_files")
 	diffIndv := flag.Bool("diff-indv", false, "Emit <prefix>.diff.indv_in_files")
 	diffSiteDiscord := flag.Bool("diff-site-discordance", false, "Emit <prefix>.diff.sites with site-by-site discordance")
@@ -834,6 +835,7 @@ func main() {
 		InvertMask:                  false,
 		MaskMin:                     *maskMin,
 		Diff:                        *diffFile,
+		DiffBCF:                     *diffBCFFile,
 		DiffSite:                    *diffSite,
 		DiffIndv:                    *diffIndv,
 		DiffSiteDiscordance:         *diffSiteDiscord,
@@ -890,6 +892,23 @@ func main() {
 	// wins).
 	if *gzDiff != "" {
 		params.Diff = *gzDiff
+	}
+
+	// --diff-bcf is mutually exclusive with --diff / --gzdiff: upstream
+	// writes them all to the same `diff_file` slot
+	// (parameters.cpp:209,237) so only the last-parsed flag wins.
+	//
+	// DIVERGENCE: Go's flag package erases declaration order, so we
+	// can't replicate upstream's true last-set-wins. Instead, when
+	// both flags are present we prefer --diff-bcf unconditionally
+	// (the BCF flag is the more specific intent) and emit a stderr
+	// warning so the user knows which one we picked. To get true
+	// upstream parity we'd need flag.Visit() to recover the
+	// declaration order — not worth the complexity for this rarely
+	// double-passed case.
+	if params.DiffBCF != "" && params.Diff != "" {
+		fmt.Fprintln(os.Stderr, "warning: both --diff and --diff-bcf set; --diff-bcf takes precedence")
+		params.Diff = ""
 	}
 
 	// --invert-mask FILE shares the same mask_file slot upstream as --mask

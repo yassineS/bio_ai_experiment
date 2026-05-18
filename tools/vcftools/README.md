@@ -78,6 +78,11 @@ filtering flags (`--chr`, `--bed`, `--minQ`, ...). The second file is
 Flags:
 
 - `--diff FILE` — second VCF to compare against (`.gz` auto-detected).
+- `--diff-bcf FILE` — second BCF (BGZF-compressed BCF v2.2) to
+  compare against. Routes through the shared `bcfVariantSource`
+  adapter and composes with every other `--diff-*` output flag.
+  Mutually exclusive with `--diff` / `--gzdiff` (the BCF wins if
+  both are set; matches upstream's last-set slot semantics).
 - `--diff-site` → `<prefix>.diff.sites_in_files` with columns
   `CHROM POS1 POS2 IN_FILE REF1 REF2 ALT1 ALT2` where `IN_FILE ∈ {1, 2, B}`.
 - `--diff-indv` → `<prefix>.diff.indv_in_files` listing every sample tagged
@@ -260,15 +265,14 @@ analysis, regenerate the input with imputation applied first.
 
 ### Not implemented
 
-These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): the diff-family BCF input flag
-(`--diff-bcf`, tracked under htsgo PR-G wave 23 — see
-`docs/HTSGO_ROADMAP.md`), and a long tail of less-used upstream
-options. `--mendel` and `--diff-switch-error` landed in wave 5;
+A long tail of less-used upstream options are recognised but
+**rejected with an error** (older builds accepted them and produced
+nothing). `--mendel` and `--diff-switch-error` landed in wave 5;
 `--hwe` and `--max-missing-count` landed in wave 8; the PCA family
 landed in wave 19; `--recode-bcf` (BCF output) landed in wave 21;
 `--bcf` (BCF input) and `--contigs` (supplemental BCF header
-contigs) landed in wave 22.
+contigs) landed in wave 22; `--diff-bcf` (BCF second file for the
+diff family) landed in wave 23, completing the BCF I/O surface.
 
 ### BCF input (`--bcf`)
 

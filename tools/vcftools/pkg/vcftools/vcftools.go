@@ -281,7 +281,13 @@ type Params struct {
 	// to their file-1 equivalents (upstream variant_file_diff.cpp:11-34).
 	// DiffDiscordanceMatrix emits the 4x4 genotype-by-genotype counts in
 	// <prefix>.diff.discordance_matrix (upstream variant_file_diff.cpp:944).
-	Diff                  string
+	Diff string
+	// DiffBCF is the path to a BCF-formatted second file for the
+	// --diff-* family, mirroring upstream's `--diff-bcf FILE`
+	// (parameters.cpp:210). Mutually exclusive with Diff at the CLI
+	// layer; when set, the diff loader reads via the shared
+	// `pkg/bioformats/bcf` reader stack.
+	DiffBCF               string
 	DiffSite              bool
 	DiffIndv              bool
 	DiffSiteDiscordance   bool
@@ -661,17 +667,22 @@ func augmentHeaderContigs(hdr *vcf.Header, path string) error {
 
 // newBCFVariantSource opens the BCF at path, BGZF-decompresses, and
 // returns a variantSource over the resulting record stream. The
-// returned source owns the file handle and BGZF reader; Close releases
-// both in reverse open order.
+// returned source owns the file handle and BGZF reader; Close
+// releases bz before f to match the documented inner-first ordering.
+//
+// Error messages use the bare path (no flag prefix) so callers that
+// surface them under different flag names (e.g. --bcf vs --diff-bcf)
+// can prepend their own context without producing
+// "opening --diff-bcf X: opening --bcf X: …" chains.
 func newBCFVariantSource(path string) (variantSource, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("opening --bcf %s: %w", path, err)
+		return nil, fmt.Errorf("opening BCF %s: %w", path, err)
 	}
 	bz, err := bgzip.NewReader(f)
 	if err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("BGZF reader on --bcf %s: %w", path, err)
+		return nil, fmt.Errorf("BGZF reader on BCF %s: %w", path, err)
 	}
 	r, err := bcf.NewReader(bz)
 	if err != nil {

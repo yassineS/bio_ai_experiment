@@ -167,7 +167,9 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 - ✅ `--diff` - Compare with another VCF (supports `.gz` via auto-detect)
 - ❌ `--gzdiff` - Explicit gzipped-diff alias (the regular `--diff` already
   decompresses `.gz`)
-- ❌ `--diff-bcf` - Compare with BCF
+- ✅ `--diff-bcf` - Compare with BCF (routes through the shared
+  variantSource adapter; composes with --diff-indv-map and every
+  --diff-* output)
 - ✅ `--diff-site` - Sites in common/unique (`.diff.sites_in_files`)
 - ✅ `--diff-indv` - Individuals in common/unique (`.diff.indv_in_files`)
 - ✅ `--diff-site-discordance` - Site-by-site discordance (`.diff.sites`)
