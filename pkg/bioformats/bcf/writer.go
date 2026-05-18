@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
@@ -45,11 +46,16 @@ func NewWriter(w io.Writer, header *Header) *Writer {
 	for i, c := range header.Contigs {
 		wr.chromIndex[c.ID] = int32(i)
 	}
-	for i, t := range header.InfoTags {
-		wr.infoIndex[t.ID] = int32(i)
+	// Wire indices are the **unified** INFO+FILTER+FORMAT IDX value stored
+	// on each DictEntry, not the local slice position. parseTextHeader
+	// assigns IDX in declaration order across both groups; we just read
+	// it back here so the on-wire references match what a downstream
+	// reader (ours or htslib's) will derive from the text header.
+	for _, t := range header.InfoTags {
+		wr.infoIndex[t.ID] = t.IDX
 	}
-	for i, t := range header.FmtTags {
-		wr.fmtIndex[t.ID] = int32(i)
+	for _, t := range header.FmtTags {
+		wr.fmtIndex[t.ID] = t.IDX
 	}
 	return wr
 }
@@ -162,23 +168,42 @@ func (w *Writer) Flush() error { return w.bw.Flush() }
 
 // buildBCFTextHeader returns the VCF-style header text that a freshly built
 // BCF file should carry. We use the MetaInfo lines verbatim and reconstruct
-// the #CHROM line from the sample list.
+// the #CHROM line from the sample list. INFO/FILTER/FORMAT lines get a
+// trailing `,IDX=N` annotation so downstream readers (ours or htslib's)
+// agree on the unified dictionary numbering used by the on-wire records.
+// The PASS filter is implicit IDX=0 in htslib and never appears as an
+// explicit ##FILTER=<...> line, so we skip it here.
 func buildBCFTextHeader(vh *vcf.Header) string {
 	if vh == nil {
 		return "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
 	}
 	var sb strings.Builder
 	sawFileformat := false
+	// Mirror parseTextHeader's IDX counter so the text-header annotations
+	// match what NewWriter put in entry.IDX. PASS is implicit at IDX=0.
+	nextIDX := int32(1)
 	for _, m := range vh.MetaInfo {
-		if strings.HasPrefix(m, "##fileformat=") {
+		line := m
+		if strings.HasPrefix(line, "##fileformat=") {
 			sawFileformat = true
 		}
-		sb.WriteString(m)
+		switch {
+		case strings.HasPrefix(line, "##INFO="),
+			strings.HasPrefix(line, "##FILTER="),
+			strings.HasPrefix(line, "##FORMAT="):
+			line = annotateIDX(line, nextIDX)
+			nextIDX++
+		}
+		sb.WriteString(line)
 		sb.WriteByte('\n')
 	}
 	if !sawFileformat {
 		// htslib refuses to parse a BCF whose text lacks fileformat=; emit one.
+		// Insert it at the top by rebuilding the buffer.
+		tail := sb.String()
+		sb.Reset()
 		sb.WriteString("##fileformat=VCFv4.2\n")
+		sb.WriteString(tail)
 	}
 	sb.WriteString("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
 	if len(vh.Samples) > 0 {
@@ -190,4 +215,34 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 	}
 	sb.WriteByte('\n')
 	return sb.String()
+}
+
+// annotateIDX inserts `,IDX=n` immediately before the closing `>` of a
+// structured `##INFO/##FILTER/##FORMAT/##contig` line. If the line lacks a
+// closing `>` (malformed) it is returned unchanged. Any pre-existing
+// `,IDX=...` annotation is replaced.
+func annotateIDX(line string, n int32) string {
+	end := strings.LastIndexByte(line, '>')
+	if end < 0 {
+		return line
+	}
+	prefix := line[:end]
+	// Strip any pre-existing ,IDX=...
+	if idx := strings.LastIndex(prefix, ",IDX="); idx >= 0 {
+		// We accept only digits after `,IDX=` here; anything else is a
+		// false positive (e.g. a Description=...). The strict check
+		// mirrors stripIDXAnnotation.
+		tail := prefix[idx+len(",IDX="):]
+		allDigit := tail != ""
+		for i := 0; i < len(tail); i++ {
+			if tail[i] < '0' || tail[i] > '9' {
+				allDigit = false
+				break
+			}
+		}
+		if allDigit {
+			prefix = prefix[:idx]
+		}
+	}
+	return prefix + ",IDX=" + strconv.Itoa(int(n)) + line[end:]
 }

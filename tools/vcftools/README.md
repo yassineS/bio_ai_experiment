@@ -261,12 +261,31 @@ analysis, regenerate the input with imputation applied first.
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): the BCF binary I/O family
-(`--bcf`, `--diff-bcf`, `--recode-bcf`, `--contigs`; blocked on htsgo
-PR-G — see `docs/HTSGO_ROADMAP.md`), and a long tail of less-used
-upstream options. `--mendel` and `--diff-switch-error` landed in
-wave 5; `--hwe` and `--max-missing-count` landed in wave 8; the PCA
-family landed in wave 19.
+accepted them and produced nothing): the BCF binary I/O input family
+(`--bcf`, `--diff-bcf`, `--contigs`; tracked under htsgo PR-G — see
+`docs/HTSGO_ROADMAP.md`), and a long tail of less-used upstream
+options. `--mendel` and `--diff-switch-error` landed in wave 5;
+`--hwe` and `--max-missing-count` landed in wave 8; the PCA family
+landed in wave 19; `--recode-bcf` (BCF output) landed in wave 21.
+
+### BCF output (`--recode-bcf`)
+
+`--recode-bcf` emits a BGZF-compressed BCF v2.2 stream to
+`<prefix>.recode.bcf` (or stdout under `--stdout` / `-c`),
+mirroring upstream's `parameters.cpp:317 → vcf_file.cpp:119`. May be
+combined with `--recode` to emit both VCF and BCF in one pass. The
+output is interop-tested against upstream's reader: `vcftools
+--bcf <ours.recode.bcf> --recode --recode-INFO-all` round-trips
+the original VCF byte-for-byte modulo the FORMAT-field key order
+upstream's BCF round-trip omits.
+
+Wave 21 also fixed three latent bugs in the shared BCF writer
+uncovered by upstream interop: missing-ID encoding (type-0 vs
+typed-char zero-length), absent `,IDX=N` annotations on the text
+header (htslib expected the unified INFO+FILTER+FORMAT numbering),
+and the FORMAT descriptor's `size` field carrying total flat length
+instead of per-sample dimension. All three are visible to any
+htslib-compatible downstream tool, not just vcftools.
 See `ROADMAP.md`.
 
 ### Format Support

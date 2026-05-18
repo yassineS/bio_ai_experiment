@@ -10,16 +10,23 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bcf"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
 )
 
 // Params holds all parameters for vcftools operations
 type Params struct {
 	// Output options
-	OutPrefix     string
-	UseStdout     bool
-	Recode        bool
+	OutPrefix string
+	UseStdout bool
+	Recode    bool
+	// RecodeBCF emits the recoded output as BGZF-compressed BCF v2.2 to
+	// `<prefix>.recode.bcf` (or stdout under `--stdout` / `-c`), mirroring
+	// upstream's `--recode-bcf` (parameters.cpp:317 → vcf_file.cpp:119).
+	// May be combined with `Recode`; both files are written independently.
+	RecodeBCF     bool
 	RecodeInfoAll bool
 
 	// Position filtering
@@ -863,6 +870,44 @@ func Run(input io.Reader, params *Params) error {
 		}
 	}
 
+	// Set up output writer for --recode-bcf. The BCF spec requires the
+	// output stream to be BGZF-compressed (upstream `vcf_file.cpp:127`
+	// calls `bgzf_open`). We layer:
+	//
+	//	file (or os.Stdout)  →  *bgzip.Writer  →  *bcf.Writer
+	//
+	// The BCF writer takes care of magic, length-prefixed text header,
+	// and the per-record (l_shared,l_indiv,body) framing. Header is
+	// synthesised from filteredHeader, so any prior --keep / --remove
+	// sample filtering or contig dropping is reflected in the BCF
+	// dictionary indices.
+	var (
+		recodeBCFWriter *bcf.Writer
+		recodeBCFGzip   *bgzip.Writer
+	)
+	if params.RecodeBCF {
+		var w io.Writer
+		if params.UseStdout {
+			w = os.Stdout
+		} else {
+			outFile := params.OutPrefix + ".recode.bcf"
+			f, err := iohelper.OpenWriter(outFile)
+			if err != nil {
+				return fmt.Errorf("opening BCF output file: %w", err)
+			}
+			defer f.Close()
+			w = f
+		}
+		recodeBCFGzip = bgzip.NewWriter(w)
+		recodeBCFWriter, err = bcf.NewWriterFromVCFHeader(recodeBCFGzip, filteredHeader)
+		if err != nil {
+			return fmt.Errorf("initialising BCF writer: %w", err)
+		}
+		if err := recodeBCFWriter.WriteHeader(); err != nil {
+			return fmt.Errorf("writing BCF header: %w", err)
+		}
+	}
+
 	// --kept-sites / --removed-sites trace writers. The tracker is
 	// non-nil even when both flags are off so the recordKept /
 	// recordRemoved calls in the hot loop stay branchless aside from
@@ -1131,8 +1176,10 @@ func Run(input io.Reader, params *Params) error {
 			allVariants = append(allVariants, filteredVariant)
 		}
 
-		// Write to output if recoding
-		if params.Recode {
+		// Write to output if recoding. Both --recode (text VCF) and
+		// --recode-bcf (binary BCF) may be active at the same time;
+		// the outVariant body is shared.
+		if params.Recode || params.RecodeBCF {
 			var outInfo map[string]string
 			switch {
 			case len(recodeInfoSet) > 0:
@@ -1157,8 +1204,15 @@ func Run(input io.Reader, params *Params) error {
 				Format:  filteredVariant.Format,
 				Samples: filteredVariant.Samples,
 			}
-			if err := recodeWriter.Write(outVariant); err != nil {
-				return fmt.Errorf("writing variant: %w", err)
+			if params.Recode {
+				if err := recodeWriter.Write(outVariant); err != nil {
+					return fmt.Errorf("writing variant: %w", err)
+				}
+			}
+			if params.RecodeBCF {
+				if err := recodeBCFWriter.Write(outVariant); err != nil {
+					return fmt.Errorf("writing BCF variant: %w", err)
+				}
 			}
 		}
 
@@ -1172,6 +1226,19 @@ func Run(input io.Reader, params *Params) error {
 	if recodeWriter != nil {
 		if err := recodeWriter.Flush(); err != nil {
 			return fmt.Errorf("flushing output: %w", err)
+		}
+	}
+
+	// Flush + close the BCF writer chain. Order matters: BCF buffered
+	// frames first, then the BGZF stream (which appends an EOF block
+	// on Close per the BGZF spec). The underlying file handle is closed
+	// by the deferred f.Close() from the writer setup above.
+	if recodeBCFWriter != nil {
+		if err := recodeBCFWriter.Flush(); err != nil {
+			return fmt.Errorf("flushing BCF output: %w", err)
+		}
+		if err := recodeBCFGzip.Close(); err != nil {
+			return fmt.Errorf("closing BGZF stream: %w", err)
 		}
 	}
 

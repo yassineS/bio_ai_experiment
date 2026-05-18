@@ -1187,17 +1187,31 @@ unique long flags) and the port's registered flags is **five flags**:
   requires a BCF reader.
 - **`--diff-bcf` FILE** — second-file BCF input for `--diff-*`
   family (parameters.cpp:210). **HEAVY**: requires the BCF reader.
-- **`--recode-bcf`** — emit BCF instead of VCF (parameters.cpp:317).
-  **HEAVY**: requires a BCF writer.
+- ~~**`--recode-bcf`** — emit BCF instead of VCF (parameters.cpp:317).~~
+  **Closed (wave 21).** Layered the existing `pkg/bioformats/bcf.Writer`
+  on top of `pkg/bgzip.NewWriter` and wired it parallel to the
+  existing `--recode` text-VCF path; both flags may be combined.
+  This wave also fixed three latent bugs in the shared BCF writer
+  uncovered by interop with upstream's reader: (1) missing
+  IDs were encoded as type-0 instead of zero-length-typed-char;
+  (2) the unified INFO+FILTER+FORMAT dictionary numbering wasn't
+  surfaced — entries now carry their IDX and the text header is
+  emitted with the `,IDX=N` annotations htslib uses; (3) FORMAT
+  field descriptors were encoded with the total flat length as
+  `size` instead of the per-sample dimension. Pinned by
+  `TestRun_RecodeBCF_Roundtrip` and
+  `TestRun_RecodeBCF_HeaderHasIDXAnnotations`, plus interop
+  testing with upstream vcftools 0.1.18 (decoded our `.recode.bcf`
+  through `vcftools --bcf` → byte-identical VCF round-trip).
 - **`--contigs` FILE** — supplemental `##contig=` lines for BCF
   header construction (parameters.cpp:197 →
-  `variant_file.cpp:45-69`). **HEAVY** by association: only consulted
-  during BCF conversion (`vcf_file.cpp:154`), so meaningless without
-  the BCF I/O layer.
-After wave 19 only the BCF-binary family remains. There are **NO
-tractable long-flag gaps left** for this tool's `parameters.cpp`
-surface; the long-tail wave sequence is effectively exhausted until
-the BCF binary infrastructure (htsgo PR-G) lands.
+  `variant_file.cpp:45-69`). Tractable as the next BCF-family wave
+  (PR-G part 2); only consulted during BCF conversion when the
+  source VCF lacks `##contig=` lines of its own.
+After wave 21 only the two BCF-input flags (`--bcf`, `--diff-bcf`)
+remain alongside `--contigs`. All three become tractable now that
+the BCF write path is interop-clean — the remaining work is
+wiring the BCF reader onto vcftools' input and diff loaders.
 
 Other (per-output column-set gaps, not flag-count gaps):
 

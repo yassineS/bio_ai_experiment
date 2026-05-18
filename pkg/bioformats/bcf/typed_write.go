@@ -84,9 +84,14 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 	packed := (nSample & 0x00FFFFFF) | (uint32(nFmt) << 24)
 	binary.Write(&shared, binary.LittleEndian, packed)
 
-	// id
+	// id. BCF v2.2 specifies that a missing string is a zero-length
+	// typed-char vector (descriptor byte 0x07 = type 7, length 0), NOT
+	// the type-0 "missing scalar" sentinel. Encoding "." or empty as
+	// type-0 used to crash upstream's reader with "Expected type 7 for
+	// string. Found type 0." and cascaded into mis-aligned FORMAT block
+	// parsing on downstream consumers.
 	if v.ID == "" || v.ID == "." {
-		shared.Write(EncodeMissing())
+		shared.Write(EncodeTypedString(""))
 	} else {
 		shared.Write(EncodeTypedString(v.ID))
 	}
@@ -316,7 +321,39 @@ func encodeFormatGT(samples []vcf.Sample, nSample int) []byte {
 			}
 		}
 	}
-	return encodeIntsVec(flat)
+	return encodeFormatTypedInts(flat, maxPloidy)
+}
+
+// encodeFormatTypedInts writes a flat (nSample × perSample) int matrix as a
+// single FORMAT-field typed vector. The descriptor's size carries the
+// per-sample dimension `perSample`, NOT the total flat length — htslib
+// (and our own reader's decodeIndiv) carves the payload up by nSample
+// from the surrounding context.
+func encodeFormatTypedInts(flat []int32, perSample int) []byte {
+	if len(flat) == 0 {
+		return EncodeMissing()
+	}
+	width := pickIntWidth(flat)
+	switch width {
+	case 1:
+		payload := make([]byte, len(flat))
+		for i, v := range flat {
+			payload[i] = byte(int8(v))
+		}
+		return encodeTypedRaw(TypeInt8, perSample, payload)
+	case 2:
+		payload := make([]byte, len(flat)*2)
+		for i, v := range flat {
+			binary.LittleEndian.PutUint16(payload[i*2:], uint16(int16(v)))
+		}
+		return encodeTypedRaw(TypeInt16, perSample, payload)
+	default:
+		payload := make([]byte, len(flat)*4)
+		for i, v := range flat {
+			binary.LittleEndian.PutUint32(payload[i*4:], uint32(v))
+		}
+		return encodeTypedRaw(TypeInt32, perSample, payload)
+	}
 }
 
 // parseGT turns "0/1" / "1|0" / "./." into the on-wire int32 encoding.
@@ -408,7 +445,7 @@ func encodeFormatInts(samples []vcf.Sample, nSample int, key string) []byte {
 			}
 		}
 	}
-	return encodeInts(flat)
+	return encodeFormatTypedInts(flat, maxDim)
 }
 
 // encodeFormatFloats is encodeFormatInts for floats.
@@ -455,12 +492,24 @@ func encodeFormatFloats(samples []vcf.Sample, nSample int, key string) []byte {
 			}
 		}
 	}
-	return EncodeTypedFloatVec(flat)
+	return encodeFormatTypedFloats(flat, maxDim)
+}
+
+// encodeFormatTypedFloats writes a flat (nSample × perSample) float matrix
+// as a single FORMAT-field typed vector. As with the int counterpart, the
+// descriptor's size is the per-sample dimension, not the total flat length.
+func encodeFormatTypedFloats(flat []float32, perSample int) []byte {
+	b := make([]byte, 4*len(flat))
+	for i, v := range flat {
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(v))
+	}
+	return encodeTypedRaw(TypeFloat, perSample, b)
 }
 
 // encodeFormatChars writes FORMAT char fields. The on-wire form is a flat
 // char vector padded to a per-sample stride so consumers can carve it up
-// by nSample.
+// by nSample. The descriptor's size is the per-sample stride (maxLen),
+// not the total payload length.
 func encodeFormatChars(samples []vcf.Sample, nSample int, key string) []byte {
 	values := make([]string, nSample)
 	maxLen := 1
@@ -482,7 +531,7 @@ func encodeFormatChars(samples []vcf.Sample, nSample int, key string) []byte {
 		// Remaining bytes (after copy) are already zero — htslib uses NUL as
 		// the trailing pad for char vectors.
 	}
-	return encodeTypedRaw(TypeChar, len(buf), buf)
+	return encodeTypedRaw(TypeChar, maxLen, buf)
 }
 
 // encodeRecordRaw re-emits an already-decoded Record without going through

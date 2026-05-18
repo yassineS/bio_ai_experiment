@@ -137,7 +137,11 @@ func decodeShared(buf []byte, _ *Header, r *Record) error {
 }
 
 // decodeIndiv parses the per-sample portion of a record (size = lIndiv).
-// It populates r.FmtKeys and r.FmtVals.
+// It populates r.FmtKeys and r.FmtVals. The descriptor's size field is the
+// PER-SAMPLE dimension; the payload spans nSample × size elements per
+// FORMAT field. We use DecodeFormatTyped with r.NSample to read the right
+// number of elements while keeping TypedValue.Length holding the
+// per-sample dim for downstream stride-aware consumers.
 func decodeIndiv(buf []byte, _ *Header, r *Record) error {
 	if r.NFmt == 0 {
 		return nil
@@ -145,12 +149,17 @@ func decodeIndiv(buf []byte, _ *Header, r *Record) error {
 	off := 0
 	r.FmtKeys = make([]int32, 0, r.NFmt)
 	r.FmtVals = make([]TypedValue, 0, r.NFmt)
+	nSample := int(r.NSample)
+	if nSample == 0 {
+		// Defensive: with no samples, treat each field as a singleton.
+		nSample = 1
+	}
 	for i := uint8(0); i < r.NFmt; i++ {
 		key, err := DecodeTypedInt(buf, &off)
 		if err != nil {
 			return fmt.Errorf("bcf: fmt key %d: %w", i, err)
 		}
-		val, err := DecodeTyped(buf, &off)
+		val, err := DecodeFormatTyped(buf, &off, nSample)
 		if err != nil {
 			return fmt.Errorf("bcf: fmt value %d: %w", i, err)
 		}
@@ -280,13 +289,14 @@ func formatTyped(tv TypedValue, entry *DictEntry) string {
 
 // splitPerSample turns a per-sample TypedValue into nSample VCF strings.
 // FORMAT fields can be scalar (one value per sample) or vector (e.g. GT, AD)
-// in which case the typed length is nSample * dimension and we re-pack with
-// the correct separators.
+// in which case `tv.Length` carries the per-sample dimension and the flat
+// payload (tv.Ints / tv.Floats / tv.String) spans nSample × tv.Length
+// elements. We re-pack with the correct separators.
 func splitPerSample(tv TypedValue, nSample int, entry *DictEntry, _ int32, _ *Header) []string {
 	if nSample == 0 {
 		return nil
 	}
-	dim := tv.Length / nSample
+	dim := tv.Length
 	if dim < 1 {
 		dim = 1
 	}
