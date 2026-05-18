@@ -1183,10 +1183,17 @@ Remaining gaps (definitive enumeration vs.
 The complete diff between upstream's `in_str == "--…"` table (146
 unique long flags) and the port's registered flags is **five flags**:
 
-- **`--bcf` FILE** — BCF binary input (parameters.cpp:173). **HEAVY**:
-  requires a BCF reader.
+- ~~**`--bcf` FILE** — BCF binary input (parameters.cpp:173).~~
+  **Closed (wave 22).** Adapts `pkg/bioformats/bcf.Reader` (built on
+  the in-tree BGZF reader and on the wave-21 BCF dictionary fixes)
+  into the new `variantSource` interface so `Run` iterates BCF
+  records through the same filter pipeline used by `--vcf`. Pinned
+  by `TestRun_BCFInput_Roundtrip` (write-then-read symmetry) and
+  `TestRun_BCFInput_ComposesWithFilters` (BCF input composes with
+  `--chr` / `--from-bp`).
 - **`--diff-bcf` FILE** — second-file BCF input for `--diff-*`
-  family (parameters.cpp:210). **HEAVY**: requires the BCF reader.
+  family (parameters.cpp:210). Tractable once the diff loader gets
+  the same BCF-vs-VCF dispatch as `Run` (wave 23, separate PR).
 - ~~**`--recode-bcf`** — emit BCF instead of VCF (parameters.cpp:317).~~
   **Closed (wave 21).** Layered the existing `pkg/bioformats/bcf.Writer`
   on top of `pkg/bgzip.NewWriter` and wired it parallel to the
@@ -1203,15 +1210,20 @@ unique long flags) and the port's registered flags is **five flags**:
   `TestRun_RecodeBCF_HeaderHasIDXAnnotations`, plus interop
   testing with upstream vcftools 0.1.18 (decoded our `.recode.bcf`
   through `vcftools --bcf` → byte-identical VCF round-trip).
-- **`--contigs` FILE** — supplemental `##contig=` lines for BCF
+- ~~**`--contigs` FILE** — supplemental `##contig=` lines for BCF
   header construction (parameters.cpp:197 →
-  `variant_file.cpp:45-69`). Tractable as the next BCF-family wave
-  (PR-G part 2); only consulted during BCF conversion when the
-  source VCF lacks `##contig=` lines of its own.
-After wave 21 only the two BCF-input flags (`--bcf`, `--diff-bcf`)
-remain alongside `--contigs`. All three become tractable now that
-the BCF write path is interop-clean — the remaining work is
-wiring the BCF reader onto vcftools' input and diff loaders.
+  `variant_file.cpp:45-69`).~~ **Closed (wave 22).**
+  `augmentHeaderContigs` prepends `##contig=<ID=...>` MetaInfo
+  lines to the parsed header when the source lacks contig
+  declarations of its own (matching upstream's
+  `has_contigs == false` gate). Accepts both bare contig names
+  and full `##contig=<...>` forms. Pinned by
+  `TestRun_ContigsFile_AddsContigLines`,
+  `TestRun_ContigsFile_NoOpWhenHeaderAlreadyHasContigs`,
+  `TestAugmentHeaderContigs_AcceptsMetaInfoForm`.
+After wave 22 only `--diff-bcf` (BCF input on the diff-family
+second file) remains. Wave 23 will share the wave-22
+variantSource adapter with the diff loader.
 
 Other (per-output column-set gaps, not flag-count gaps):
 

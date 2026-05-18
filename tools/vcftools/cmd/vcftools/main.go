@@ -4,6 +4,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -290,6 +291,8 @@ func main() {
 	// Input options
 	vcfFile := flag.String("vcf", "", "Input VCF file")
 	gzvcfFile := flag.String("gzvcf", "", "Input gzipped VCF file")
+	bcfFile := flag.String("bcf", "", "Input BCF file (BGZF-compressed BCF v2.2)")
+	contigsFile := flag.String("contigs", "", "Supplemental ##contig= lines for BCF header construction (consulted only when input lacks contig declarations)")
 	useStdin := flag.Bool("stdin", false, "Read from stdin")
 
 	// Output options
@@ -686,12 +689,15 @@ func main() {
 	if *gzvcfFile != "" {
 		inputCount++
 	}
+	if *bcfFile != "" {
+		inputCount++
+	}
 	if *useStdin {
 		inputCount++
 	}
 
 	if inputCount == 0 {
-		fmt.Fprintln(os.Stderr, "Error: Must specify one of --vcf, --gzvcf, or --stdin")
+		fmt.Fprintln(os.Stderr, "Error: Must specify one of --vcf, --gzvcf, --bcf, or --stdin")
 		fmt.Fprintln(os.Stderr, "Use --help for usage information")
 		os.Exit(1)
 	}
@@ -700,23 +706,33 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Determine input file
+	// Determine input file. --bcf takes a distinct code path inside
+	// Run (BGZF + BCF decoder); the io.Reader argument is unused in
+	// that case, so we open /dev/null-equivalent (an empty
+	// strings.Reader) below to satisfy the signature.
 	var inputFile string
 	if *vcfFile != "" {
 		inputFile = *vcfFile
 	} else if *gzvcfFile != "" {
 		inputFile = *gzvcfFile
 	} else {
-		inputFile = "" // stdin
+		inputFile = "" // stdin or BCF (handled by Run via BCFInputFile)
 	}
 
-	// Open input
-	inputReader, err := iohelper.OpenReader(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening input: %v\n", err)
-		os.Exit(1)
+	// Open input. For --bcf we skip this entirely; Run opens the BCF
+	// file directly when params.BCFInputFile is set.
+	var inputReader io.ReadCloser
+	if *bcfFile == "" {
+		r, err := iohelper.OpenReader(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening input: %v\n", err)
+			os.Exit(1)
+		}
+		defer r.Close()
+		inputReader = r
+	} else {
+		inputReader = io.NopCloser(strings.NewReader(""))
 	}
-	defer inputReader.Close()
 
 	// Build params
 	params := &vcftools.Params{
@@ -724,6 +740,8 @@ func main() {
 		UseStdout:                   *useStdout,
 		Recode:                      *recode,
 		RecodeBCF:                   *recodeBCF,
+		BCFInputFile:                *bcfFile,
+		ContigsFile:                 *contigsFile,
 		RecodeInfoAll:               recodeAllINFO,
 		Chr:                         *chr,
 		NotChr:                      *notChr,

@@ -29,6 +29,23 @@ type Params struct {
 	RecodeBCF     bool
 	RecodeInfoAll bool
 
+	// BCFInputFile, when non-empty, makes `Run` ignore its `input
+	// io.Reader` argument and read the BCF at the given path instead.
+	// The CLI passes this through from `--bcf FILE` (parameters.cpp:173).
+	// The BCF stream is BGZF-decompressed and decoded via
+	// `pkg/bioformats/bcf`; each record is converted to `vcf.Variant`
+	// so the entire downstream filter pipeline works unchanged.
+	BCFInputFile string
+
+	// ContigsFile, when non-empty, supplies supplemental ##contig=
+	// lines for BCF header construction in --recode-bcf when the
+	// source VCF lacks contig declarations of its own. Mirrors
+	// upstream's `--contigs FILE` (parameters.cpp:197 →
+	// variant_file.cpp:45-69). The CLI parses the file once and
+	// prepends the lines to the header MetaInfo before the BCF
+	// writer is constructed.
+	ContigsFile string
+
 	// Position filtering
 	Chr                  string
 	NotChr               string
@@ -504,6 +521,143 @@ type Params struct {
 // positionSet represents a set of positions to include/exclude
 type positionSet map[string]map[int]bool
 
+// variantSource abstracts over `*vcf.Reader` and a BCF-backed adapter so
+// `Run` can iterate variants from either a text VCF or a binary BCF via
+// the same loop. The interface deliberately mirrors the small subset of
+// `*vcf.Reader` that Run uses.
+type variantSource interface {
+	Header() *vcf.Header
+	Read() (*vcf.Variant, error)
+	Close() error
+}
+
+// vcfVariantSource is the trivial adapter over a `*vcf.Reader`. The
+// reader itself doesn't own an underlying file (Run's caller does),
+// so Close is a no-op.
+type vcfVariantSource struct {
+	r   *vcf.Reader
+	hdr *vcf.Header
+}
+
+func (s *vcfVariantSource) Header() *vcf.Header         { return s.hdr }
+func (s *vcfVariantSource) Read() (*vcf.Variant, error) { return s.r.Read() }
+func (s *vcfVariantSource) Close() error                { return nil }
+
+// bcfVariantSource adapts a `*bcf.Reader` to the variantSource
+// interface. It carries `closers` for the file handle (and any
+// intermediate BGZF reader) so the caller can clean up after the
+// last Read.
+type bcfVariantSource struct {
+	r       *bcf.Reader
+	hdr     *vcf.Header
+	closers []io.Closer
+}
+
+func (s *bcfVariantSource) Header() *vcf.Header { return s.hdr }
+func (s *bcfVariantSource) Read() (*vcf.Variant, error) {
+	rec, err := s.r.Read()
+	if err != nil {
+		return nil, err
+	}
+	return rec.ToVariant(s.r.Header()), nil
+}
+func (s *bcfVariantSource) Close() error {
+	var firstErr error
+	for i := len(s.closers) - 1; i >= 0; i-- {
+		if err := s.closers[i].Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// augmentHeaderContigs reads a `--contigs FILE` and prepends `##contig=`
+// MetaInfo lines to header when it has none of its own. Mirrors upstream
+// `get_contigs` (variant_file.cpp:45-69) which is only consulted from
+// `vcf_file::print_bcf` when `meta_data.has_contigs == false`.
+//
+// Two accepted line formats per upstream:
+//
+//   - A bare contig identifier on its own line, e.g. `chr1` — turned into
+//     `##contig=<ID=chr1>`.
+//   - A full meta-info form starting with `##contig=<` — used verbatim.
+//
+// Blank lines and lines starting with `#` (i.e. neither bare names nor
+// the meta-info form) are skipped silently. Upstream is similarly
+// forgiving (line 60).
+func augmentHeaderContigs(hdr *vcf.Header, path string) error {
+	hasContig := false
+	for _, line := range hdr.MetaInfo {
+		if strings.HasPrefix(line, "##contig=") {
+			hasContig = true
+			break
+		}
+	}
+	if hasContig {
+		// Upstream gates the file read on `has_contigs == false`. We do
+		// the same so a stale `--contigs FILE` paired with a VCF that
+		// already declares contigs is silently ignored, matching
+		// upstream behaviour.
+		return nil
+	}
+
+	f, err := iohelper.OpenReader(path)
+	if err != nil {
+		return fmt.Errorf("opening --contigs %s: %w", path, err)
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	var added []string
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "##contig=<"):
+			added = append(added, line)
+		case strings.HasPrefix(line, "#"):
+			// Comment or unexpected meta line — skip.
+			continue
+		default:
+			// Bare contig name. Wrap it in the canonical structured form.
+			added = append(added, "##contig=<ID="+line+">")
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("reading --contigs %s: %w", path, err)
+	}
+	// Prepend the contig lines so they precede any INFO/FILTER/FORMAT
+	// declarations — htslib expects contigs to appear before sample
+	// lines and ahead of the BCF dictionary block.
+	hdr.MetaInfo = append(added, hdr.MetaInfo...)
+	return nil
+}
+
+// newBCFVariantSource opens the BCF at path, BGZF-decompresses, and
+// returns a variantSource over the resulting record stream. The
+// returned source owns the file handle and BGZF reader; Close releases
+// both in reverse open order.
+func newBCFVariantSource(path string) (variantSource, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening --bcf %s: %w", path, err)
+	}
+	bz, err := bgzip.NewReader(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("BGZF reader on --bcf %s: %w", path, err)
+	}
+	r, err := bcf.NewReader(bz)
+	if err != nil {
+		_ = bz.Close()
+		_ = f.Close()
+		return nil, fmt.Errorf("BCF reader on %s: %w", path, err)
+	}
+	return &bcfVariantSource{r: r, hdr: r.Header().VCF, closers: []io.Closer{bz, f}}, nil
+}
+
 // Run executes vcftools with the given parameters
 func Run(input io.Reader, params *Params) error {
 	// Reject requested features that this port does not implement yet, instead
@@ -512,12 +666,40 @@ func Run(input io.Reader, params *Params) error {
 		return err
 	}
 
-	// Read VCF
-	reader := vcf.NewReader(input)
-	header, err := reader.ReadHeader()
-	if err != nil {
-		return fmt.Errorf("reading VCF header: %w", err)
+	// Open the input as either a VCF stream (the caller-supplied reader)
+	// or a BCF file (when --bcf is set; the io.Reader argument is then
+	// ignored to match upstream's mutually-exclusive --vcf / --bcf
+	// flags).
+	var src variantSource
+	if params.BCFInputFile != "" {
+		s, err := newBCFVariantSource(params.BCFInputFile)
+		if err != nil {
+			return err
+		}
+		src = s
+	} else {
+		vr := vcf.NewReader(input)
+		hdr, err := vr.ReadHeader()
+		if err != nil {
+			return fmt.Errorf("reading VCF header: %w", err)
+		}
+		src = &vcfVariantSource{r: vr, hdr: hdr}
 	}
+	defer src.Close()
+	reader := src
+	header := src.Header()
+	// `--contigs FILE` augments the header with `##contig=<...>` lines
+	// when the input lacks any of its own (upstream variant_file.cpp:45-69
+	// + vcf_file.cpp:154). Only consulted before downstream code that
+	// might want contig declarations (BCF writer, ##contig-aware
+	// filters).
+	if params.ContigsFile != "" {
+		if err := augmentHeaderContigs(header, params.ContigsFile); err != nil {
+			return err
+		}
+	}
+	var err error
+	_ = err // err is reused by many sub-blocks below via `var x, err :=`.
 
 	// Load position filters if needed
 	var includePositions, excludePositions positionSet
