@@ -35,10 +35,21 @@ const (
 // DictEntry describes one entry in a BCF dictionary. Number and Type come
 // from the VCF meta-information line and are exposed so that the record
 // decoder can pretty-print values back into VCF text.
+//
+// IDX is the *unified* INFO+FILTER+FORMAT dictionary index that the on-wire
+// record format references. It is shared across `Header.InfoTags` and
+// `Header.FmtTags`: every entry in either slice has a distinct IDX, assigned
+// in declaration order at header-parse time. htslib annotates each
+// `##INFO/##FILTER/##FORMAT` text-header line with a trailing `,IDX=N` so
+// readers don't have to re-derive the numbering — our writer does the
+// same.
 type DictEntry struct {
 	ID     string // tag identifier (CHROM name or INFO/FORMAT key)
 	Number string // VCF "Number=" attribute (".", "A", "G", "R", or an integer)
 	Type   string // VCF "Type=" attribute (Integer / Float / String / Flag / Character)
+	IDX    int32  // wire dictionary index; 0 for Contigs (use Contig array
+	//	position) and the unified INFO+FILTER+FORMAT counter for the
+	//	other two slices.
 }
 
 // Header is the parsed BCF header. Text is the verbatim VCF-style text
@@ -66,22 +77,38 @@ func (h *Header) ContigName(n int32) string {
 	return h.Contigs[n].ID
 }
 
-// InfoTag returns the n-th INFO/FILTER dictionary entry, or nil if n is out
-// of range.
+// InfoTag returns the dictionary entry whose unified IDX is n if it lives in
+// the INFO/FILTER slice, or nil otherwise. n is the on-wire index.
 func (h *Header) InfoTag(n int32) *DictEntry {
-	if n < 0 || int(n) >= len(h.InfoTags) {
-		return nil
+	for i := range h.InfoTags {
+		if h.InfoTags[i].IDX == n {
+			return &h.InfoTags[i]
+		}
 	}
-	return &h.InfoTags[n]
+	return nil
 }
 
-// FmtTag returns the n-th FORMAT dictionary entry, or nil if n is out of
-// range.
+// FmtTag returns the dictionary entry whose unified IDX is n if it lives in
+// the FORMAT slice, or nil otherwise. n is the on-wire index.
 func (h *Header) FmtTag(n int32) *DictEntry {
-	if n < 0 || int(n) >= len(h.FmtTags) {
-		return nil
+	for i := range h.FmtTags {
+		if h.FmtTags[i].IDX == n {
+			return &h.FmtTags[i]
+		}
 	}
-	return &h.FmtTags[n]
+	return nil
+}
+
+// DictByIDX returns the dictionary entry (FILTER, INFO, or FORMAT) carrying
+// the given unified IDX, or nil if none does. The on-wire BCF format
+// references entries by IDX, not by slice position, so callers that don't
+// know whether the index refers to an INFO/FILTER tag or a FORMAT tag should
+// use this method.
+func (h *Header) DictByIDX(n int32) *DictEntry {
+	if e := h.InfoTag(n); e != nil {
+		return e
+	}
+	return h.FmtTag(n)
 }
 
 // ReadHeader decodes a BCF magic + text header from r. It returns a parsed
@@ -140,7 +167,27 @@ func parseTextHeader(text string) (*Header, error) {
 
 	// The implicit PASS filter is always entry 0 of the INFO/FILTER dict
 	// in htslib — register it before scanning any ##FILTER lines.
-	h.InfoTags = append(h.InfoTags, DictEntry{ID: "PASS", Type: "Flag", Number: "0"})
+	// nextAutoIDX feeds the IDX counter when a line lacks a ,IDX=N
+	// annotation; the counter is shared across INFO/FILTER/FORMAT
+	// because htslib uses a unified dictionary.
+	var nextAutoIDX int32
+	h.InfoTags = append(h.InfoTags, DictEntry{ID: "PASS", Type: "Flag", Number: "0", IDX: nextAutoIDX})
+	nextAutoIDX++
+
+	// assignIDX returns the explicit IDX from a ,IDX=N annotation if
+	// present and updates nextAutoIDX so subsequent auto-assignments stay
+	// monotone. Without the annotation it consumes the next auto value.
+	assignIDX := func(line string) int32 {
+		if v, ok := parseExplicitIDX(line); ok {
+			if v >= nextAutoIDX {
+				nextAutoIDX = v + 1
+			}
+			return v
+		}
+		v := nextAutoIDX
+		nextAutoIDX++
+		return v
+	}
 
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
@@ -153,23 +200,30 @@ func parseTextHeader(text string) (*Header, error) {
 			if entry.ID == "" {
 				continue
 			}
+			// Contigs have their own dictionary, independent of the
+			// INFO/FILTER/FORMAT counter. IDX is the index within the
+			// Contigs slice; carry it on the entry for symmetry.
+			entry.IDX = int32(len(h.Contigs))
 			h.Contigs = append(h.Contigs, entry)
 			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "##INFO="):
 			entry := parseStructured(line[len("##INFO="):])
 			if entry.ID != "" {
+				entry.IDX = assignIDX(line)
 				h.InfoTags = append(h.InfoTags, entry)
 			}
 			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "##FILTER="):
 			entry := parseStructured(line[len("##FILTER="):])
 			if entry.ID != "" && entry.ID != "PASS" {
+				entry.IDX = assignIDX(line)
 				h.InfoTags = append(h.InfoTags, entry)
 			}
 			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "##FORMAT="):
 			entry := parseStructured(line[len("##FORMAT="):])
 			if entry.ID != "" {
+				entry.IDX = assignIDX(line)
 				h.FmtTags = append(h.FmtTags, entry)
 			}
 			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
@@ -186,6 +240,34 @@ func parseTextHeader(text string) (*Header, error) {
 		}
 	}
 	return h, nil
+}
+
+// parseExplicitIDX extracts the integer N from a `,IDX=N>` tail on an
+// `##INFO/##FILTER/##FORMAT` line and returns (N, true) if present.
+// Returns (0, false) when the line lacks the annotation or it doesn't
+// parse as a non-negative int32.
+func parseExplicitIDX(line string) (int32, bool) {
+	end := strings.LastIndexByte(line, '>')
+	if end < 0 {
+		return 0, false
+	}
+	idx := strings.LastIndex(line[:end], ",IDX=")
+	if idx < 0 {
+		return 0, false
+	}
+	digits := line[idx+len(",IDX=") : end]
+	if digits == "" {
+		return 0, false
+	}
+	var v int32
+	for i := 0; i < len(digits); i++ {
+		c := digits[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		v = v*10 + int32(c-'0')
+	}
+	return v, true
 }
 
 // stripIDXAnnotation removes the htslib-private `,IDX=N>` suffix that

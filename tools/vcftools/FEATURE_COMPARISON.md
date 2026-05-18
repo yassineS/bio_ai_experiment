@@ -269,7 +269,8 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 #### BCF Support
 
 - ❌ `--bcf` - Input BCF file
-- ❌ `--recode-bcf` - Output BCF format
+- ✅ `--recode-bcf` - Output BCF format (BGZF-compressed BCF v2.2,
+  interop-tested against upstream's `--bcf` reader)
 
 #### Miscellaneous
 

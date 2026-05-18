@@ -241,17 +241,26 @@ func TestDecodeIndivGT(t *testing.T) {
 	// 0|1 => [2,5] (allele 0 unphased prefix, allele 1 phased: (1+1)<<1|1 = 5)
 	gtVals := []int8{2, 2, 2, 5}
 	rawGT := make([]byte, 0, 5)
-	rawGT = append(rawGT, 0x41) // descriptor: size=4, type=int8
+	// Descriptor for FORMAT/GT: type=int8 (low nibble 1), size=2 (high
+	// nibble) which is the per-sample diploid dimension. The wire
+	// payload spans nSample (=2) × per-sample-size (=2) = 4 int8 bytes.
+	rawGT = append(rawGT, 0x21)
 	for _, v := range gtVals {
 		rawGT = append(rawGT, byte(v))
 	}
-	// FMT key 1 = DP, int8 vector of length 2
-	rawDP := []byte{0x21, 10, 20}
+	// FMT key 1 = DP, int8 vector with per-sample dim = 1 → descriptor
+	// 0x11, payload = nSample (=2) × 1 = 2 bytes.
+	rawDP := []byte{0x11, 10, 20}
 
+	// The text-header fixture in buildBCFStream is:
+	//   FILTER q10 -> IDX 1, INFO {DP,AF,TAG,H2} -> IDX {2,3,4,5},
+	//   FORMAT GT -> IDX 6, FORMAT DP -> IDX 7
+	// (PASS is implicit IDX=0). The on-wire FORMAT references must use
+	// the unified IDX values, not local FmtTags positions.
 	var b bytes.Buffer
-	b.Write(EncodeTypedInt8(0)) // FMT key 0 (GT)
+	b.Write(EncodeTypedInt8(6)) // FMT key = GT (unified IDX 6)
 	b.Write(rawGT)
-	b.Write(EncodeTypedInt8(1)) // FMT key 1 (DP)
+	b.Write(EncodeTypedInt8(7)) // FMT key = DP (unified IDX 7)
 	b.Write(rawDP)
 
 	rec := &Record{NSample: 2, NFmt: 2}

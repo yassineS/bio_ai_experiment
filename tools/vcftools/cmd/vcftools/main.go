@@ -301,6 +301,7 @@ func main() {
 	// last-set wins which is the implicit behaviour of flag.BoolVar.
 	flag.BoolVar(useStdout, "c", false, "Write to stdout (short alias for --stdout)")
 	recode := flag.Bool("recode", false, "Output a new VCF file")
+	recodeBCF := flag.Bool("recode-bcf", false, "Output a new BCF file (BGZF-compressed BCF v2.2)")
 	recodeInfoAll := flag.Bool("recode-INFO-all", false, "Include all INFO fields in recode")
 
 	// Position filtering
@@ -722,6 +723,7 @@ func main() {
 		OutPrefix:                   *outPrefix,
 		UseStdout:                   *useStdout,
 		Recode:                      *recode,
+		RecodeBCF:                   *recodeBCF,
 		RecodeInfoAll:               recodeAllINFO,
 		Chr:                         *chr,
 		NotChr:                      *notChr,

@@ -93,7 +93,26 @@ func readBytes(buf []byte, off *int, n int) ([]byte, error) {
 // The descriptor byte's low nibble selects the element type; the high nibble
 // is either the literal count (0..14) or 15, meaning the count is encoded as
 // the next typed integer (recursive single-step).
+//
+// For FORMAT fields the descriptor's size is the **per-sample** dimension,
+// not the total flat count — see `DecodeFormatTyped`.
 func DecodeTyped(buf []byte, off *int) (TypedValue, error) {
+	return decodeTypedInternal(buf, off, 1)
+}
+
+// DecodeFormatTyped is the per-sample-aware sibling of DecodeTyped. Reads
+// the descriptor byte (which encodes the per-sample dimension), then reads
+// nSample × per-sample-size values from the payload. The returned
+// TypedValue.Length still holds the per-sample size so consumers can
+// stride through the flattened Ints/Floats/String slice.
+func DecodeFormatTyped(buf []byte, off *int, nSample int) (TypedValue, error) {
+	return decodeTypedInternal(buf, off, nSample)
+}
+
+// decodeTypedInternal underpins both DecodeTyped (nSample=1, classic
+// per-field decode) and DecodeFormatTyped (nSample = #samples, FORMAT
+// fields).
+func decodeTypedInternal(buf []byte, off *int, nSample int) (TypedValue, error) {
 	descByte, err := readByte(buf, off)
 	if err != nil {
 		return TypedValue{}, err
@@ -116,6 +135,10 @@ func DecodeTyped(buf []byte, off *int) (TypedValue, error) {
 		}
 	}
 	tv := TypedValue{Descriptor: descriptor, Length: size}
+	// totalElems is the actual count of payload elements on the wire.
+	// For FORMAT fields the descriptor's size is the per-sample dimension;
+	// for everything else nSample is 1 and totalElems == size.
+	totalElems := size * nSample
 
 	switch descriptor {
 	case TypeMissing:
@@ -125,12 +148,12 @@ func DecodeTyped(buf []byte, off *int) (TypedValue, error) {
 		return tv, nil
 
 	case TypeInt8:
-		raw, err := readBytes(buf, off, size)
+		raw, err := readBytes(buf, off, totalElems)
 		if err != nil {
 			return TypedValue{}, err
 		}
 		tv.Raw = raw
-		tv.Ints = make([]int32, size)
+		tv.Ints = make([]int32, totalElems)
 		for i, b := range raw {
 			v := int8(b)
 			if v == MissingInt8 {
@@ -144,13 +167,13 @@ func DecodeTyped(buf []byte, off *int) (TypedValue, error) {
 		return tv, nil
 
 	case TypeInt16:
-		raw, err := readBytes(buf, off, size*2)
+		raw, err := readBytes(buf, off, totalElems*2)
 		if err != nil {
 			return TypedValue{}, err
 		}
 		tv.Raw = raw
-		tv.Ints = make([]int32, size)
-		for i := 0; i < size; i++ {
+		tv.Ints = make([]int32, totalElems)
+		for i := 0; i < totalElems; i++ {
 			v := int16(binary.LittleEndian.Uint16(raw[i*2:]))
 			if v == MissingInt16 {
 				tv.Ints[i] = MissingInt32
@@ -163,13 +186,13 @@ func DecodeTyped(buf []byte, off *int) (TypedValue, error) {
 		return tv, nil
 
 	case TypeInt32:
-		raw, err := readBytes(buf, off, size*4)
+		raw, err := readBytes(buf, off, totalElems*4)
 		if err != nil {
 			return TypedValue{}, err
 		}
 		tv.Raw = raw
-		tv.Ints = make([]int32, size)
-		for i := 0; i < size; i++ {
+		tv.Ints = make([]int32, totalElems)
+		for i := 0; i < totalElems; i++ {
 			v := int32(binary.LittleEndian.Uint32(raw[i*4:]))
 			tv.Ints[i] = v
 		}
@@ -182,13 +205,13 @@ func DecodeTyped(buf []byte, off *int) (TypedValue, error) {
 		// int64 only for counts that fit in int32 anyway. The clamp is
 		// documented behaviour for now (no users depend on >2G counts in
 		// our pipeline).
-		raw, err := readBytes(buf, off, size*8)
+		raw, err := readBytes(buf, off, totalElems*8)
 		if err != nil {
 			return TypedValue{}, err
 		}
 		tv.Raw = raw
-		tv.Ints = make([]int32, size)
-		for i := 0; i < size; i++ {
+		tv.Ints = make([]int32, totalElems)
+		for i := 0; i < totalElems; i++ {
 			v := int64(binary.LittleEndian.Uint64(raw[i*8:]))
 			switch {
 			case v == int64(MissingInt32):
@@ -206,20 +229,20 @@ func DecodeTyped(buf []byte, off *int) (TypedValue, error) {
 		return tv, nil
 
 	case TypeFloat:
-		raw, err := readBytes(buf, off, size*4)
+		raw, err := readBytes(buf, off, totalElems*4)
 		if err != nil {
 			return TypedValue{}, err
 		}
 		tv.Raw = raw
-		tv.Floats = make([]float32, size)
-		for i := 0; i < size; i++ {
+		tv.Floats = make([]float32, totalElems)
+		for i := 0; i < totalElems; i++ {
 			bits := binary.LittleEndian.Uint32(raw[i*4:])
 			tv.Floats[i] = math.Float32frombits(bits)
 		}
 		return tv, nil
 
 	case TypeChar:
-		raw, err := readBytes(buf, off, size)
+		raw, err := readBytes(buf, off, totalElems)
 		if err != nil {
 			return TypedValue{}, err
 		}

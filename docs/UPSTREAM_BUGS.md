@@ -101,6 +101,49 @@ warrant a closer look:_
 
 ### Fix-on-port (resolved)
 
+#### BCF writer correctness fixes (wave 21)
+
+While wiring `--recode-bcf` (the wave-21 vcftools flag) we discovered
+three latent bugs in `pkg/bioformats/bcf`'s writer that produced
+self-consistent output (our own reader could roundtrip it) but
+diverged from the BCF v2.2 spec and broke htslib interop:
+
+1. **Missing-ID encoding.** The writer emitted missing string IDs as
+   the descriptor byte `0x00` (type 0, "missing scalar"). Per the BCF
+   spec a missing string is a zero-length typed-char vector,
+   descriptor byte `0x07` (type 7, length 0). htslib's reader rejects
+   the type-0 form with `Expected type 7 for string. Found type 0.`
+   and then mis-aligns on subsequent FORMAT-block parsing.
+
+2. **Unified dictionary numbering / missing IDX annotations.** BCF
+   records refer to FILTER, INFO, and FORMAT tags by a single shared
+   integer index, not a slice-local one. htslib annotates each
+   `##INFO/##FILTER/##FORMAT` text-header line with a `,IDX=N`
+   suffix so consumers can build the dictionary without re-deriving
+   the numbering. The wave-21 writer now: (a) parses `,IDX=N` if
+   present and otherwise auto-assigns IDX in declaration order across
+   all three groups, (b) stores the IDX on each `DictEntry`, (c) maps
+   tag-name → IDX (not name → slice position) for wire emission, and
+   (d) round-trips `,IDX=N` annotations on every output header.
+
+3. **FORMAT descriptor size = total flat length.** The writer encoded
+   FORMAT fields with `size = nSample × per-sample-dim` in the
+   descriptor's high nibble (or overflow). The spec says `size` is
+   the **per-sample dimension**; htslib reads it that way and then
+   multiplies by `n_sample` from the record header to walk the
+   payload. The wave-21 writer (and reader) now interpret `size`
+   per-spec.
+
+The reader was updated symmetrically — `DecodeFormatTyped(buf, off,
+nSample)` reads `nSample × per-sample-dim` elements; `splitPerSample`
+uses `tv.Length` as the per-sample dim directly.
+
+Pinned by `TestRun_RecodeBCF_Roundtrip`,
+`TestRun_RecodeBCF_HeaderHasIDXAnnotations`, the existing
+`TestWriterPerSampleRoundTrip`, and an out-of-band interop check
+against upstream `vcftools --bcf <ours.recode.bcf>` (decoded VCF
+matches the source).
+
 #### vcftools `--keep-INFO TAG` semantic divergence (port → upstream)
 
 This is a port-side divergence (not an upstream bug): pre-wave-17 the

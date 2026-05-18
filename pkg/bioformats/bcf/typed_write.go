@@ -53,9 +53,14 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 		if !ok {
 			continue
 		}
+		// idx is the *unified* dictionary IDX, not a slice position —
+		// look up via DictByIDX so we resolve regardless of which of
+		// InfoTags / FmtTags carries the entry. (In practice INFO keys
+		// always land in InfoTags, but the IDX-based lookup is the
+		// invariant-safe form.)
 		var entry DictEntry
-		if int(idx) < len(w.header.InfoTags) {
-			entry = w.header.InfoTags[idx]
+		if e := w.header.DictByIDX(idx); e != nil {
+			entry = *e
 		}
 		pairs = append(pairs, infoPair{key: idx, entry: entry, raw: raw})
 	}
@@ -84,9 +89,14 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 	packed := (nSample & 0x00FFFFFF) | (uint32(nFmt) << 24)
 	binary.Write(&shared, binary.LittleEndian, packed)
 
-	// id
+	// id. BCF v2.2 specifies that a missing string is a zero-length
+	// typed-char vector (descriptor byte 0x07 = type 7, length 0), NOT
+	// the type-0 "missing scalar" sentinel. Encoding "." or empty as
+	// type-0 used to crash upstream's reader with "Expected type 7 for
+	// string. Found type 0." and cascaded into mis-aligned FORMAT block
+	// parsing on downstream consumers.
 	if v.ID == "" || v.ID == "." {
-		shared.Write(EncodeMissing())
+		shared.Write(EncodeTypedString(""))
 	} else {
 		shared.Write(EncodeTypedString(v.ID))
 	}
@@ -116,9 +126,13 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 				return nil, nil, fmt.Errorf("bcf: FORMAT tag %q not in header", fmtTag)
 			}
 			indiv.Write(encodeInts([]int32{fIdx}))
+			// fIdx is the unified dictionary IDX (not a slice position);
+			// resolve through DictByIDX so the entry's Type drives the
+			// per-field encoder regardless of which of InfoTags / FmtTags
+			// carries the entry.
 			var entry DictEntry
-			if int(fIdx) < len(w.header.FmtTags) {
-				entry = w.header.FmtTags[fIdx]
+			if e := w.header.DictByIDX(fIdx); e != nil {
+				entry = *e
 			}
 			payload, err := encodeFormatField(entry, fmtTag, v.Samples, int(nSample))
 			if err != nil {
@@ -316,7 +330,39 @@ func encodeFormatGT(samples []vcf.Sample, nSample int) []byte {
 			}
 		}
 	}
-	return encodeIntsVec(flat)
+	return encodeFormatTypedInts(flat, maxPloidy)
+}
+
+// encodeFormatTypedInts writes a flat (nSample × perSample) int matrix as a
+// single FORMAT-field typed vector. The descriptor's size carries the
+// per-sample dimension `perSample`, NOT the total flat length — htslib
+// (and our own reader's decodeIndiv) carves the payload up by nSample
+// from the surrounding context.
+func encodeFormatTypedInts(flat []int32, perSample int) []byte {
+	if len(flat) == 0 {
+		return EncodeMissing()
+	}
+	width := pickIntWidth(flat)
+	switch width {
+	case 1:
+		payload := make([]byte, len(flat))
+		for i, v := range flat {
+			payload[i] = byte(int8(v))
+		}
+		return encodeTypedRaw(TypeInt8, perSample, payload)
+	case 2:
+		payload := make([]byte, len(flat)*2)
+		for i, v := range flat {
+			binary.LittleEndian.PutUint16(payload[i*2:], uint16(int16(v)))
+		}
+		return encodeTypedRaw(TypeInt16, perSample, payload)
+	default:
+		payload := make([]byte, len(flat)*4)
+		for i, v := range flat {
+			binary.LittleEndian.PutUint32(payload[i*4:], uint32(v))
+		}
+		return encodeTypedRaw(TypeInt32, perSample, payload)
+	}
 }
 
 // parseGT turns "0/1" / "1|0" / "./." into the on-wire int32 encoding.
@@ -408,7 +454,7 @@ func encodeFormatInts(samples []vcf.Sample, nSample int, key string) []byte {
 			}
 		}
 	}
-	return encodeInts(flat)
+	return encodeFormatTypedInts(flat, maxDim)
 }
 
 // encodeFormatFloats is encodeFormatInts for floats.
@@ -455,12 +501,24 @@ func encodeFormatFloats(samples []vcf.Sample, nSample int, key string) []byte {
 			}
 		}
 	}
-	return EncodeTypedFloatVec(flat)
+	return encodeFormatTypedFloats(flat, maxDim)
+}
+
+// encodeFormatTypedFloats writes a flat (nSample × perSample) float matrix
+// as a single FORMAT-field typed vector. As with the int counterpart, the
+// descriptor's size is the per-sample dimension, not the total flat length.
+func encodeFormatTypedFloats(flat []float32, perSample int) []byte {
+	b := make([]byte, 4*len(flat))
+	for i, v := range flat {
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(v))
+	}
+	return encodeTypedRaw(TypeFloat, perSample, b)
 }
 
 // encodeFormatChars writes FORMAT char fields. The on-wire form is a flat
 // char vector padded to a per-sample stride so consumers can carve it up
-// by nSample.
+// by nSample. The descriptor's size is the per-sample stride (maxLen),
+// not the total payload length.
 func encodeFormatChars(samples []vcf.Sample, nSample int, key string) []byte {
 	values := make([]string, nSample)
 	maxLen := 1
@@ -482,7 +540,7 @@ func encodeFormatChars(samples []vcf.Sample, nSample int, key string) []byte {
 		// Remaining bytes (after copy) are already zero — htslib uses NUL as
 		// the trailing pad for char vectors.
 	}
-	return encodeTypedRaw(TypeChar, len(buf), buf)
+	return encodeTypedRaw(TypeChar, maxLen, buf)
 }
 
 // encodeRecordRaw re-emits an already-decoded Record without going through
@@ -521,18 +579,24 @@ func encodeRecordRaw(r *Record) ([]byte, []byte, error) {
 	return shared.Bytes(), indiv.Bytes(), nil
 }
 
-// encodeTypedValue serialises a TypedValue back to its on-wire bytes. We
-// keep the descriptor verbatim so a Reader→Writer round-trip is byte-stable.
+// encodeTypedValue serialises a TypedValue back to its on-wire bytes. The
+// descriptor's `size` field is `tv.Length` (per-sample dim for FORMAT,
+// field length for INFO) — the payload byte count comes from the actual
+// data slice (`tv.Ints`, `tv.Floats`, or `tv.String`) so FORMAT values
+// holding `nSample × per-sample-dim` elements survive the encode.
+//
+// This is the symmetric counterpart of `decodeTypedInternal` after the
+// wave-21 semantic flip on TypedValue.Length: for FORMAT-typed values
+// the read populates `len(tv.Ints) == nSample × tv.Length`, and the
+// re-encode must replay every element, not just the first `tv.Length`.
 func encodeTypedValue(tv TypedValue) []byte {
 	switch tv.Descriptor {
 	case TypeMissing:
 		return EncodeMissing()
 	case TypeInt8:
-		payload := make([]byte, tv.Length)
+		n := len(tv.Ints)
+		payload := make([]byte, n)
 		for i, v := range tv.Ints {
-			if i >= tv.Length {
-				break
-			}
 			var b int8
 			switch v {
 			case MissingInt32:
@@ -546,11 +610,9 @@ func encodeTypedValue(tv TypedValue) []byte {
 		}
 		return encodeTypedRaw(TypeInt8, tv.Length, payload)
 	case TypeInt16:
-		payload := make([]byte, tv.Length*2)
+		n := len(tv.Ints)
+		payload := make([]byte, n*2)
 		for i, v := range tv.Ints {
-			if i >= tv.Length {
-				break
-			}
 			var s int16
 			switch v {
 			case MissingInt32:
@@ -564,20 +626,16 @@ func encodeTypedValue(tv TypedValue) []byte {
 		}
 		return encodeTypedRaw(TypeInt16, tv.Length, payload)
 	case TypeInt32:
-		payload := make([]byte, tv.Length*4)
+		n := len(tv.Ints)
+		payload := make([]byte, n*4)
 		for i, v := range tv.Ints {
-			if i >= tv.Length {
-				break
-			}
 			binary.LittleEndian.PutUint32(payload[i*4:], uint32(v))
 		}
 		return encodeTypedRaw(TypeInt32, tv.Length, payload)
 	case TypeFloat:
-		payload := make([]byte, tv.Length*4)
+		n := len(tv.Floats)
+		payload := make([]byte, n*4)
 		for i, f := range tv.Floats {
-			if i >= tv.Length {
-				break
-			}
 			binary.LittleEndian.PutUint32(payload[i*4:], math.Float32bits(f))
 		}
 		return encodeTypedRaw(TypeFloat, tv.Length, payload)
