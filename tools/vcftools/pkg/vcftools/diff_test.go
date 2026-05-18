@@ -107,34 +107,47 @@ func TestRunDiffFamily(t *testing.T) {
 		}
 	}
 
-	// .diff.sites: only chr1:100 and chr1:200 (the shared sites)
+	// .diff.sites uses the upstream 7-column layout
+	// CHROM POS FILES MATCHING_ALLELES N_COMMON_CALLED N_DISCORD DISCORDANCE
+	// and emits a row for every site in the union of file-1 and file-2.
 	//
-	// chr1:100  s1=0/0 / 0/0 (concordant); s2=0/1 / 1/1 (discordant). s3
-	// only in file1 → ignored. Common samples shared between files = {s1,s2}.
-	// N_COMMON_CALLED = 2, N_DISCORD = 1.
-	//
-	// chr1:200 s1=0/1 / 0/1 (concordant); s2=0/0 / 0/0 (concordant).
-	// N_COMMON_CALLED = 2, N_DISCORD = 0.
+	// chr1:100 (B) s1=0/0 / 0/0 (concordant); s2=0/1 / 1/1 (discordant).
+	//   N_COMMON_CALLED = 2 (s1,s2), N_DISCORD = 1, DISCORDANCE = 0.5.
+	//   REF and ALT match → MATCHING_ALLELES = 1.
+	// chr1:200 (B) s1=0/1 / 0/1 (concordant); s2=0/0 / 0/0 (concordant).
+	//   N_COMMON_CALLED = 2, N_DISCORD = 0, DISCORDANCE = 0.
+	// chr1:300 (2) file-2 only → 0/0/-nan row.
+	// chr1:400 (1) file-1 only → 0/0/-nan row.
 	sites := mustRead(prefix + ".diff.sites")
+	if !strings.Contains(sites, "CHROM\tPOS\tFILES\tMATCHING_ALLELES\tN_COMMON_CALLED\tN_DISCORD\tDISCORDANCE") {
+		t.Errorf("diff.sites missing header:\n%s", sites)
+	}
 	for _, line := range []string{
-		"chr1\t100\t2\t1",
-		"chr1\t200\t2\t0",
+		"chr1\t100\tB\t1\t2\t1\t0.5",
+		"chr1\t200\tB\t1\t2\t0\t0",
+		"chr1\t400\t1\t0\t0\t0\t-nan",
+		"chr1\t300\t2\t0\t0\t0\t-nan",
 	} {
 		if !strings.Contains(sites, line) {
 			t.Errorf("diff.sites missing %q in:\n%s", line, sites)
 		}
 	}
-	if strings.Contains(sites, "chr1\t400") || strings.Contains(sites, "chr1\t300") {
-		t.Errorf("diff.sites should only contain shared sites:\n%s", sites)
-	}
 
-	// .diff.indv: per-individual discordance over common sites.
+	// .diff.indv lists the UNION of file-1 (s1/s2/s3) and file-2
+	// (s1/s2/s4) samples sorted alphabetically, with a DISCORDANCE
+	// column. Samples that appear in only one file get 0/0/-nan.
 	//   s1: chr1:100 concordant, chr1:200 concordant → 2 called, 0 discord
 	//   s2: chr1:100 discordant, chr1:200 concordant → 2 called, 1 discord
+	//   s3 (file-1 only) and s4 (file-2 only) → 0/0/-nan
 	indvD := mustRead(prefix + ".diff.indv")
+	if !strings.Contains(indvD, "INDV\tN_COMMON_CALLED\tN_DISCORD\tDISCORDANCE") {
+		t.Errorf("diff.indv missing header:\n%s", indvD)
+	}
 	for _, line := range []string{
-		"s1\t2\t0",
-		"s2\t2\t1",
+		"s1\t2\t0\t0",
+		"s2\t2\t1\t0.5",
+		"s3\t0\t0\t-nan",
+		"s4\t0\t0\t-nan",
 	} {
 		if !strings.Contains(indvD, line) {
 			t.Errorf("diff.indv missing %q in:\n%s", line, indvD)

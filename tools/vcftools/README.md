@@ -82,11 +82,15 @@ Flags:
   `CHROM POS1 POS2 IN_FILE REF1 REF2 ALT1 ALT2` where `IN_FILE ∈ {1, 2, B}`.
 - `--diff-indv` → `<prefix>.diff.indv_in_files` listing every sample tagged
   with `1`, `2`, or `B`.
-- `--diff-site-discordance` → `<prefix>.diff.sites` with per-site
-  `N_COMMON_CALLED` / `N_DISCORD` over the intersection of samples
-  called in both files.
-- `--diff-indv-discordance` → `<prefix>.diff.indv` with per-individual
-  totals over the intersection of sites present in both files.
+- `--diff-site-discordance` → `<prefix>.diff.sites` with columns
+  `CHROM POS FILES MATCHING_ALLELES N_COMMON_CALLED N_DISCORD DISCORDANCE`,
+  matching upstream's 7-column layout. Sites unique to one file are
+  still listed (FILES = `1` or `2`) with zero counts and `-nan`
+  discordance, mirroring upstream's libstdc++ output.
+- `--diff-indv-discordance` → `<prefix>.diff.indv` with columns
+  `INDV N_COMMON_CALLED N_DISCORD DISCORDANCE` over the *union* of
+  file-1 and (post-map) file-2 samples in alphabetical order.
+  Samples that appear in only one file get `0 0 -nan`.
 - `--diff-indv-map FILE` — two-column whitespace-separated table that
   renames file-2 sample IDs before matching against file-1 (mirrors
   upstream `variant_file_diff.cpp:11-34`). Lines starting with `#` and
