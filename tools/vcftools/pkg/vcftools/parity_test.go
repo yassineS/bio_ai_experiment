@@ -1992,3 +1992,66 @@ func TestParity_KeepINFO_OR(t *testing.T) {
 		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Wave 18: --remove-INFO TAG (SITE FILTER)
+// -----------------------------------------------------------------------------
+//
+// Uses the same keep_info_flags.vcf fixture as wave 17 (see header
+// comment above the wave-17 block). Wave 18 polarity-inverts:
+// --remove-INFO drops sites where the named Flag IS present, the
+// complement of --keep-INFO.
+
+// TestParity_RemoveINFO_SingleFlag — `--remove-INFO FLAG_A --recode`
+// drops sites where FLAG_A is present (sites 100 and 300); sites 200
+// and 400 survive. Site-set parity is byte-for-byte against upstream;
+// the INFO column is "." on both sides because --recode-INFO-all is
+// not set. Mirrors upstream's entry_filters.cpp:1068-1086.
+func TestParity_RemoveINFO_SingleFlag(t *testing.T) {
+	prefix := runVcftoolsParity(t, "keep_info_flags.vcf", &Params{
+		RemoveINFO: "FLAG_A",
+		Recode:     true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "remove_info_flagA.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_RemoveINFO_OR — multiple --remove-INFO tags veto via OR.
+// Upstream entry_filters.cpp:1070-1083 iterates over flags_to_remove
+// and sets `passed_filters = false` on the first present tag. With
+// FLAG_A and FLAG_B as the remove set, only site 400 (neither flag)
+// survives.
+func TestParity_RemoveINFO_OR(t *testing.T) {
+	prefix := runVcftoolsParity(t, "keep_info_flags.vcf", &Params{
+		RemoveINFO: "FLAG_A,FLAG_B",
+		Recode:     true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "remove_info_or.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_KeepAndRemoveINFO_Compose — upstream's keep-then-remove
+// composition (entry_filters.cpp:1033-1086). With --keep-INFO FLAG_A
+// and --remove-INFO FLAG_B, only site 100 (FLAG_A present AND FLAG_B
+// absent) survives. Site-set parity is byte-for-byte; --recode-INFO-all
+// is deliberately omitted so INFO collapses to "." on both sides (this
+// side-steps the port-vs-upstream INFO-key-ordering quirk documented in
+// tools/vcftools/cmd/vcftools/aliases_cli_test.go:138-144).
+func TestParity_KeepAndRemoveINFO_Compose(t *testing.T) {
+	prefix := runVcftoolsParity(t, "keep_info_flags.vcf", &Params{
+		KeepINFO:   "FLAG_A",
+		RemoveINFO: "FLAG_B",
+		Recode:     true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "keep_remove_info_compose.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}

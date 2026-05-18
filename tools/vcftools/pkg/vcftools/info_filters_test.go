@@ -71,37 +71,33 @@ func TestPassKeepFilteredNames(t *testing.T) {
 	}
 }
 
-// TestFilterRecodeInfo covers --recode-INFO / --remove-INFO restriction
-// of the recoded INFO column. The function is now exclusively driven by
-// `Params.RecodeINFO` (and the historical recode-column `RemoveINFO`); the
-// site-filter `--keep-INFO` flow is covered by TestPassKeepINFOSite below.
+// TestFilterRecodeInfo covers --recode-INFO restriction of the recoded
+// INFO column. Wave 18 collapsed the helper to a single keep-set argument:
+// `--remove-INFO` is now a SITE FILTER (see TestPassRemoveINFOSite) and no
+// longer flows through this code path.
 func TestFilterRecodeInfo(t *testing.T) {
 	in := map[string]string{"AF": "0.5", "DP": "10", "AA": "T"}
 
-	// Empty sets -> unchanged.
-	out := filterRecodeInfo(in, nil, nil)
+	// Empty set -> unchanged.
+	out := filterRecodeInfo(in, nil)
 	if len(out) != 3 {
-		t.Errorf("empty sets: got %d, want 3", len(out))
+		t.Errorf("empty set: got %d, want 3", len(out))
 	}
 
 	// recode-INFO restricts to listed tags.
 	keep := parseInfoTagList("AF,DP")
-	out = filterRecodeInfo(in, keep, nil)
+	out = filterRecodeInfo(in, keep)
 	if len(out) != 2 || out["AF"] != "0.5" || out["DP"] != "10" {
 		t.Errorf("recode-INFO AF,DP: got %v", out)
 	}
 
-	// remove-INFO strips listed tags.
-	rem := parseInfoTagList("DP")
-	out = filterRecodeInfo(in, nil, rem)
-	if len(out) != 2 || out["AF"] != "0.5" || out["AA"] != "T" {
-		t.Errorf("remove-INFO DP: got %v", out)
-	}
-
-	// Both compose: recode-INFO AF,DP then strip DP -> only AF survives.
-	out = filterRecodeInfo(in, keep, rem)
-	if len(out) != 1 || out["AF"] != "0.5" {
-		t.Errorf("recode+remove: got %v", out)
+	// Tags in the keep set that are absent from the input map are silently
+	// dropped — mirrors upstream's `recode_INFO_to_keep` behaviour (the
+	// recoded INFO column lists only tags that exist on the variant).
+	miss := parseInfoTagList("MISSING")
+	out = filterRecodeInfo(in, miss)
+	if len(out) != 0 {
+		t.Errorf("MISSING keep-set: got %v, want empty", out)
 	}
 }
 
@@ -133,6 +129,38 @@ func TestPassKeepINFOSite(t *testing.T) {
 
 	// Empty flag set is a no-op (always pass).
 	if !passKeepINFOSite(&vcf.Variant{}, nil) {
+		t.Error("empty flag set should always pass")
+	}
+}
+
+// TestPassRemoveINFOSite is the polarity-inverted complement of
+// TestPassKeepINFOSite — a site is DROPPED when any of the named INFO
+// Flag-type tags is present (upstream entry_filters.cpp:1068-1086).
+func TestPassRemoveINFOSite(t *testing.T) {
+	flags := parseInfoTagList("FLAG_A,FLAG_B")
+	cases := []struct {
+		name string
+		info map[string]string
+		want bool
+	}{
+		{"flagA present (bare)", map[string]string{"FLAG_A": ""}, false},
+		{"flagA present (=1)", map[string]string{"FLAG_A": "1"}, false},
+		{"flagB present", map[string]string{"FLAG_B": "", "DP": "10"}, false},
+		{"both present", map[string]string{"FLAG_A": "", "FLAG_B": ""}, false},
+		{"neither present", map[string]string{"DP": "10"}, true},
+		{"flag explicitly zero", map[string]string{"FLAG_A": "0"}, true},
+		{"empty info", map[string]string{}, true},
+	}
+	for _, tc := range cases {
+		v := &vcf.Variant{Info: tc.info}
+		got := passRemoveINFOSite(v, flags)
+		if got != tc.want {
+			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// Empty flag set is a no-op (always pass).
+	if !passRemoveINFOSite(&vcf.Variant{}, nil) {
 		t.Error("empty flag set should always pass")
 	}
 }
@@ -366,36 +394,132 @@ func TestRun_KeepINFO_SiteFilter_NonFlagType(t *testing.T) {
 	}
 }
 
-// TestRun_RemoveINFO_Integration strips a tag from recoded output.
-func TestRun_RemoveINFO_Integration(t *testing.T) {
+// TestRun_RemoveINFO_SiteFilter_Integration covers the wave-18 fix: the
+// port's `--remove-INFO TAG` flag now matches upstream's SITE FILTER
+// semantic (entry_filters.cpp:1068-1086). A site is dropped if the named
+// Flag-type INFO tag IS present (the polarity-inverted complement of
+// --keep-INFO).
+func TestRun_RemoveINFO_SiteFilter_Integration(t *testing.T) {
 	vcfText := "##fileformat=VCFv4.2\n" +
-		"##INFO=<ID=AF,Number=1,Type=Float,Description=\"\">\n" +
+		"##INFO=<ID=FLAG_A,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=FLAG_B,Number=0,Type=Flag,Description=\"\">\n" +
 		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
 		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
 		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n" +
-		"1\t100\t.\tA\tG\t.\tPASS\tAF=0.5;DP=10\tGT\t0/0\n"
+		"1\t100\t.\tA\tG\t.\tPASS\tFLAG_A;DP=10\tGT\t0/0\n" +
+		"1\t200\t.\tA\tC\t.\tPASS\tFLAG_B;DP=20\tGT\t0/1\n" +
+		"1\t300\t.\tA\tT\t.\tPASS\tFLAG_A;FLAG_B;DP=30\tGT\t1/1\n" +
+		"1\t400\t.\tA\tG\t.\tPASS\tDP=40\tGT\t0/1\n"
 	dir := t.TempDir()
 	prefix := filepath.Join(dir, "out")
-	// Without --keep-INFO or --recode-INFO-all, vcftools normally strips all
-	// INFO. Combining --recode-INFO-all is not how vcftools' --remove-INFO is
-	// most often used, but our implementation treats --remove-INFO alone as
-	// "preserve everything except the listed tags" by default, matching
-	// upstream behaviour.
-	params := &Params{OutPrefix: prefix, Recode: true, RemoveINFO: "DP"}
+	// --remove-INFO FLAG_A --recode --recode-INFO-all: drop sites where
+	// FLAG_A is present (100, 300); keep 200 and 400.
+	params := &Params{OutPrefix: prefix, Recode: true, RecodeInfoAll: true, RemoveINFO: "FLAG_A"}
 	if err := Run(strings.NewReader(vcfText), params); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	data, _ := os.ReadFile(prefix + ".recode.vcf")
 	body := string(data)
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "1\t") {
-			fields := strings.Split(line, "\t")
-			info := fields[7]
-			if info != "AF=0.5" {
-				t.Errorf("INFO = %q, want %q", info, "AF=0.5")
-			}
-			return
+	for _, pos := range []string{"\t200\t", "\t400\t"} {
+		if !strings.Contains(body, pos) {
+			t.Errorf("expected site %q kept; got:\n%s", pos, body)
 		}
 	}
-	t.Fatalf("data row not found")
+	for _, pos := range []string{"\t100\t", "\t300\t"} {
+		if strings.Contains(body, pos) {
+			t.Errorf("expected site %q dropped; got:\n%s", pos, body)
+		}
+	}
+}
+
+// TestRun_RemoveINFO_SiteFilter_OR confirms multiple --remove-INFO tags
+// veto via OR (entry_filters.cpp:1070-1083 loops over flags_to_remove
+// and drops the site on the first present tag).
+func TestRun_RemoveINFO_SiteFilter_OR(t *testing.T) {
+	vcfText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=FLAG_A,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=FLAG_B,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n" +
+		"1\t100\t.\tA\tG\t.\tPASS\tFLAG_A;DP=10\tGT\t0/0\n" +
+		"1\t200\t.\tA\tC\t.\tPASS\tFLAG_B;DP=20\tGT\t0/1\n" +
+		"1\t400\t.\tA\tG\t.\tPASS\tDP=40\tGT\t0/1\n"
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	params := &Params{OutPrefix: prefix, Recode: true, RecodeInfoAll: true, RemoveINFO: "FLAG_A,FLAG_B"}
+	if err := Run(strings.NewReader(vcfText), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	data, _ := os.ReadFile(prefix + ".recode.vcf")
+	body := string(data)
+	if !strings.Contains(body, "\t400\t") {
+		t.Errorf("expected site 400 kept; got:\n%s", body)
+	}
+	for _, pos := range []string{"\t100\t", "\t200\t"} {
+		if strings.Contains(body, pos) {
+			t.Errorf("expected site %q dropped; got:\n%s", pos, body)
+		}
+	}
+}
+
+// TestRun_RemoveINFO_SiteFilter_NonFlagType confirms the port errors out
+// when --remove-INFO names a non-Flag-type INFO key. Mirrors upstream
+// entry_filters.cpp:1072-1073.
+func TestRun_RemoveINFO_SiteFilter_NonFlagType(t *testing.T) {
+	vcfText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n" +
+		"1\t100\t.\tA\tG\t.\tPASS\tDP=10\tGT\t0/0\n"
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	params := &Params{OutPrefix: prefix, Recode: true, RemoveINFO: "DP"}
+	err := Run(strings.NewReader(vcfText), params)
+	if err == nil {
+		t.Fatal("expected --remove-INFO on non-Flag type to error; got nil")
+	}
+	if !strings.Contains(err.Error(), "non flag type") {
+		t.Errorf("error %q: want substring %q", err.Error(), "non flag type")
+	}
+}
+
+// TestRun_KeepAndRemoveINFO_Compose covers upstream's keep-then-remove
+// composition (entry_filters.cpp:1033-1086): `keep` narrows first, then
+// `remove` vetoes the survivors. With --keep-INFO FLAG_A and
+// --remove-INFO FLAG_B, only sites with FLAG_A present AND FLAG_B
+// absent survive.
+func TestRun_KeepAndRemoveINFO_Compose(t *testing.T) {
+	vcfText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=FLAG_A,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=FLAG_B,Number=0,Type=Flag,Description=\"\">\n" +
+		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"\">\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n" +
+		"1\t100\t.\tA\tG\t.\tPASS\tFLAG_A;DP=10\tGT\t0/0\n" +
+		"1\t200\t.\tA\tC\t.\tPASS\tFLAG_B;DP=20\tGT\t0/1\n" +
+		"1\t300\t.\tA\tT\t.\tPASS\tFLAG_A;FLAG_B;DP=30\tGT\t1/1\n" +
+		"1\t400\t.\tA\tG\t.\tPASS\tDP=40\tGT\t0/1\n"
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	params := &Params{
+		OutPrefix:     prefix,
+		Recode:        true,
+		RecodeInfoAll: true,
+		KeepINFO:      "FLAG_A",
+		RemoveINFO:    "FLAG_B",
+	}
+	if err := Run(strings.NewReader(vcfText), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	data, _ := os.ReadFile(prefix + ".recode.vcf")
+	body := string(data)
+	if !strings.Contains(body, "\t100\t") {
+		t.Errorf("expected site 100 (FLAG_A only) kept; got:\n%s", body)
+	}
+	for _, pos := range []string{"\t200\t", "\t300\t", "\t400\t"} {
+		if strings.Contains(body, pos) {
+			t.Errorf("expected site %q dropped; got:\n%s", pos, body)
+		}
+	}
 }

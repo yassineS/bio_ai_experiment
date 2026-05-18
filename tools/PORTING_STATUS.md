@@ -456,19 +456,20 @@ upstream `--hapcount` bugs fixed on port — see
 upstream-canonical `--recode-INFO TAG` (then a synonym for the
 port's `--keep-INFO`) and the `-c` short alias for `--stdout`
 landed in long-tail wave 16. The `--keep-INFO` semantic was then
-corrected in wave 17: it is now wired as the upstream
-SITE FILTER (parameters.cpp:266 + entry_filters.cpp:1033-1063),
-distinct from `--recode-INFO` which keeps the recode-column-selector
-semantic. See `docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for the
-migration writeup. Wave 19 (this PR) lands the PCA family
+corrected in wave 17: it is now wired as the upstream SITE FILTER
+(parameters.cpp:266 + entry_filters.cpp:1033-1063), distinct from
+`--recode-INFO` which keeps the recode-column-selector semantic.
+The polarity-inverted sibling `--remove-INFO` landed in wave 18
+(this PR) — also a SITE FILTER (parameters.cpp:328 +
+entry_filters.cpp:1068-1086), composing with `--keep-INFO` per
+upstream's keep-then-remove ordering. Wave 19 lands the PCA family
 (`--pca` / `--pca-no-norm` / `--pca-snp-loadings`) via gonum's
 `mat.SymEigen` and fixes a latent upstream memory-safety bug in
-`output_PCA`'s jagged `M[i]` loop on missing genotypes — see the
-top of `docs/UPSTREAM_BUGS.md` for the writeup. After wave 19
-the remaining gaps are the BCF-binary family (`--bcf` /
-`--diff-bcf` / `--recode-bcf` / `--contigs`, HEAVY and blocked on
-htsgo PR-G) and the open `--remove-INFO` site-filter divergence
-(wave 18, separate PR).
+`output_PCA`'s jagged `M[i]` loop on missing genotypes. See
+`docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for all three
+migration writeups. After wave 19 the only remaining gap is the
+BCF-binary family (`--bcf` / `--diff-bcf` / `--recode-bcf` /
+`--contigs`, HEAVY and blocked on htsgo PR-G).
 
 **Implemented Commands**:
 
