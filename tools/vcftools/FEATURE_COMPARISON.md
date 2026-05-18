@@ -268,13 +268,17 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 
 #### BCF Support
 
-- ❌ `--bcf` - Input BCF file
+- ✅ `--bcf` - Input BCF file (BGZF-decompressed and decoded via the
+  shared `pkg/bioformats/bcf` reader; composes with the full filter
+  pipeline)
 - ✅ `--recode-bcf` - Output BCF format (BGZF-compressed BCF v2.2,
   interop-tested against upstream's `--bcf` reader)
 
 #### Miscellaneous
 
-- ❌ `--contigs` - Contig information
+- ✅ `--contigs` - Supplemental `##contig=` lines for BCF header
+  construction; only consulted when the source lacks contig
+  declarations (matches upstream gating)
 - ❌ `--derived` - Derived allele frequency
 - ❌ `--hwe` - Alternative HWE test
 - ❌ `--max-indv` - Maximum number of individuals

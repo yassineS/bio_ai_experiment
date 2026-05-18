@@ -174,18 +174,33 @@ func parseTextHeader(text string) (*Header, error) {
 	h.InfoTags = append(h.InfoTags, DictEntry{ID: "PASS", Type: "Flag", Number: "0", IDX: nextAutoIDX})
 	nextAutoIDX++
 
+	// nameIDX tracks the IDX assigned to each tag name across the
+	// unified INFO+FILTER+FORMAT dictionary. htslib *deduplicates by
+	// name* across these three groups (variant_file.cpp:1500-1530 in
+	// htslib's vcf.c): a ##FORMAT=<ID=DP> following ##INFO=<ID=DP>
+	// reuses the existing IDX rather than getting a fresh one. Without
+	// this dedup our auto-IDX assignment diverges from upstream's wire
+	// numbering and FmtTag(idx) lookups silently drop FORMAT fields
+	// whose name collides with an earlier INFO tag.
+	nameIDX := map[string]int32{"PASS": 0}
+
 	// assignIDX returns the explicit IDX from a ,IDX=N annotation if
-	// present and updates nextAutoIDX so subsequent auto-assignments stay
-	// monotone. Without the annotation it consumes the next auto value.
-	assignIDX := func(line string) int32 {
+	// present. Otherwise it consults nameIDX (htslib name-dedup) and
+	// falls back to a fresh auto value, recording it for future hits.
+	assignIDX := func(line string, id string) int32 {
 		if v, ok := parseExplicitIDX(line); ok {
 			if v >= nextAutoIDX {
 				nextAutoIDX = v + 1
 			}
+			nameIDX[id] = v
+			return v
+		}
+		if v, ok := nameIDX[id]; ok {
 			return v
 		}
 		v := nextAutoIDX
 		nextAutoIDX++
+		nameIDX[id] = v
 		return v
 	}
 
@@ -209,21 +224,21 @@ func parseTextHeader(text string) (*Header, error) {
 		case strings.HasPrefix(line, "##INFO="):
 			entry := parseStructured(line[len("##INFO="):])
 			if entry.ID != "" {
-				entry.IDX = assignIDX(line)
+				entry.IDX = assignIDX(line, entry.ID)
 				h.InfoTags = append(h.InfoTags, entry)
 			}
 			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "##FILTER="):
 			entry := parseStructured(line[len("##FILTER="):])
 			if entry.ID != "" && entry.ID != "PASS" {
-				entry.IDX = assignIDX(line)
+				entry.IDX = assignIDX(line, entry.ID)
 				h.InfoTags = append(h.InfoTags, entry)
 			}
 			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))
 		case strings.HasPrefix(line, "##FORMAT="):
 			entry := parseStructured(line[len("##FORMAT="):])
 			if entry.ID != "" {
-				entry.IDX = assignIDX(line)
+				entry.IDX = assignIDX(line, entry.ID)
 				h.FmtTags = append(h.FmtTags, entry)
 			}
 			h.VCF.MetaInfo = append(h.VCF.MetaInfo, stripIDXAnnotation(line))

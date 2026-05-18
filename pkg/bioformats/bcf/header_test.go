@@ -128,6 +128,57 @@ func TestFmtTagOutOfRange(t *testing.T) {
 	}
 }
 
+// TestParseTextHeader_NameDedupAcrossINFOAndFORMAT verifies that an
+// `##INFO=<ID=DP>` followed by `##FORMAT=<ID=DP>` (with no explicit
+// `,IDX=` annotations, mimicking upstream htslib output) ends up with
+// both DP entries sharing the same wire IDX. Without this dedup our
+// FmtTag(idx) lookup in record.ToVariant silently drops upstream-
+// written FORMAT/DP fields whose wire IDX matches the earlier
+// INFO/DP IDX.
+func TestParseTextHeader_NameDedupAcrossINFOAndFORMAT(t *testing.T) {
+	text := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Total depth\">\n" +
+		"##INFO=<ID=AF,Number=A,Type=Float,Description=\"AF\">\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"GT\">\n" +
+		"##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Per-sample depth\">\n" +
+		"##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"GQ\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n"
+	hdr, err := parseTextHeader(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	infoDP := findEntry(hdr.InfoTags, "DP")
+	fmtDP := findEntry(hdr.FmtTags, "DP")
+	if infoDP == nil || fmtDP == nil {
+		t.Fatalf("missing DP entries: info=%v fmt=%v", infoDP, fmtDP)
+	}
+	if infoDP.IDX != fmtDP.IDX {
+		t.Errorf("INFO/DP IDX=%d, FORMAT/DP IDX=%d (want equal — htslib name-dedups)", infoDP.IDX, fmtDP.IDX)
+	}
+	// PASS=0, INFO/DP=1 (deduped), INFO/AF=2, FORMAT/GT=3, FORMAT/DP=1
+	// (reuses INFO/DP), FORMAT/GQ=4.
+	if want := int32(1); infoDP.IDX != want {
+		t.Errorf("INFO/DP IDX=%d, want %d", infoDP.IDX, want)
+	}
+	fmtGT := findEntry(hdr.FmtTags, "GT")
+	if fmtGT == nil || fmtGT.IDX != 3 {
+		t.Errorf("FORMAT/GT IDX=%d, want 3", fmtGT.IDX)
+	}
+	fmtGQ := findEntry(hdr.FmtTags, "GQ")
+	if fmtGQ == nil || fmtGQ.IDX != 4 {
+		t.Errorf("FORMAT/GQ IDX=%d, want 4", fmtGQ.IDX)
+	}
+}
+
+func findEntry(slice []DictEntry, id string) *DictEntry {
+	for i := range slice {
+		if slice[i].ID == id {
+			return &slice[i]
+		}
+	}
+	return nil
+}
+
 func reflectStringSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

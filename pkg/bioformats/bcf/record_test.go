@@ -258,9 +258,14 @@ func TestDecodeIndivGT(t *testing.T) {
 	// (PASS is implicit IDX=0). The on-wire FORMAT references must use
 	// the unified IDX values, not local FmtTags positions.
 	var b bytes.Buffer
+	// The text-header fixture in buildBCFStream is:
+	//   FILTER q10 -> IDX 1, INFO {DP,AF,TAG,H2} -> IDX {2,3,4,5},
+	//   FORMAT GT -> IDX 6, FORMAT DP -> IDX 2 (name-deduped with INFO/DP
+	// per htslib's unified dictionary). The on-wire FORMAT references
+	// must use those unified IDX values.
 	b.Write(EncodeTypedInt8(6)) // FMT key = GT (unified IDX 6)
 	b.Write(rawGT)
-	b.Write(EncodeTypedInt8(7)) // FMT key = DP (unified IDX 7)
+	b.Write(EncodeTypedInt8(2)) // FMT key = DP (name-deduped with INFO/DP at IDX 2)
 	b.Write(rawDP)
 
 	rec := &Record{NSample: 2, NFmt: 2}

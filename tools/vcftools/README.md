@@ -261,12 +261,40 @@ analysis, regenerate the input with imputation applied first.
 ### Not implemented
 
 These options are recognised but **rejected with an error** (older builds
-accepted them and produced nothing): the BCF binary I/O input family
-(`--bcf`, `--diff-bcf`, `--contigs`; tracked under htsgo PR-G — see
+accepted them and produced nothing): the diff-family BCF input flag
+(`--diff-bcf`, tracked under htsgo PR-G wave 23 — see
 `docs/HTSGO_ROADMAP.md`), and a long tail of less-used upstream
 options. `--mendel` and `--diff-switch-error` landed in wave 5;
 `--hwe` and `--max-missing-count` landed in wave 8; the PCA family
-landed in wave 19; `--recode-bcf` (BCF output) landed in wave 21.
+landed in wave 19; `--recode-bcf` (BCF output) landed in wave 21;
+`--bcf` (BCF input) and `--contigs` (supplemental BCF header
+contigs) landed in wave 22.
+
+### BCF input (`--bcf`)
+
+`--bcf FILE` reads BGZF-compressed BCF v2.2 as the primary input,
+mirroring upstream `parameters.cpp:173`. The BCF stream is
+decoded through the shared `pkg/bioformats/bcf` reader (which
+underwent the wave-21 correctness work for `--recode-bcf` plus
+the wave-22 unified-IDX name-dedup fix); each record is converted
+to the port's internal `vcf.Variant` representation before
+entering the normal filter pipeline. The flag is mutually
+exclusive with `--vcf` / `--gzvcf` / `--stdin` and composes with
+every other filtering / statistics / recode option, including
+`--recode-bcf` for BCF round-trips through both the port and
+upstream `vcftools --bcf`. Interop-verified against multi-FORMAT
+fixtures (GT/DP/GQ/PL) read from BCF produced by both the port
+and upstream 0.1.18.
+
+### Supplemental contigs (`--contigs FILE`)
+
+`--contigs FILE` supplies extra `##contig=<ID=...>` declarations
+for the BCF output header when the source VCF lacks them. The
+file is one contig per line; either bare names (`chr1`) or full
+meta-info lines (`##contig=<ID=chr1,length=200000>`) are accepted.
+Following upstream's gating (variant_file.cpp:154), the flag is
+silently ignored when the source already declares contigs of its
+own.
 
 ### BCF output (`--recode-bcf`)
 
