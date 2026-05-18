@@ -1208,14 +1208,32 @@ Other (per-output column-set gaps, not flag-count gaps):
   N_DISCORD DISCORDANCE`) over the union of file-1 and effective
   file-2 samples in alphabetical order. Discordance values format
   via `%.6g` with `-nan` for 0/0, matching libstdc++'s default
-  ostream output. Pinned by four parity tests against upstream
-  goldens (`TestParity_DiffSiteDiscordance_{NoMap,WithMap}`,
-  `TestParity_DiffIndvDiscordance_{NoMap,WithMap}`). One residual
-  deviation from upstream remains: row ordering within `.diff.sites`
-  follows file-1 streamed order with file-2-only sites appended in
-  sorted-chrom-then-pos order, rather than upstream's strict merge
-  sort — observable only when the two files have non-overlapping
-  positions interleaved by chromosome.
+  ostream output. Pinned by five parity tests against upstream
+  goldens (`TestParity_DiffSiteDiscordance_{NoMap,WithMap,AltMismatch}`,
+  `TestParity_DiffIndvDiscordance_{NoMap,WithMap}`). Residual
+  deviations from upstream:
+  1. Row ordering within `.diff.sites` follows file-1 streamed
+     order with file-2-only sites appended in sorted-chrom-then-pos
+     order, rather than upstream's strict merge sort — observable
+     only when the two files have non-overlapping positions
+     interleaved by chromosome.
+  2. **REF-mismatch shared sites**: upstream
+     `variant_file_diff.cpp:787-790` SKIPS B-sites where REFs
+     differ (with a one-off `"Non-matching REF"` warning), treating
+     the site as if it weren't shared. The Go port emits the row
+     with `MATCHING_ALLELES=0` and accumulates discordance over
+     it. Tracked as a separate follow-up.
+  3. **REF=N/`.`/empty normalisation**: upstream replaces
+     `REF1` with `REF2` (and vice versa) when one side is `N`,
+     `.`, or empty before the alleles-match check
+     (`variant_file_diff.cpp:780-783`). The Go port does a
+     verbatim string compare. Same follow-up as (2).
+  4. **`-nan` literal portability**: the port hardcodes
+     `"-nan"` for division-by-zero discordance to match
+     libstdc++'s default ostream output on glibc. A future
+     golden regenerated on musl / macOS libc / MSVC could
+     print `nan` or `NaN` instead. Re-running the goldens on
+     a non-glibc system would require updating the literal.
 - **`--keep-INFO` semantic** — see the per-wave-16 note above; flag
   is wired with the wrong semantic vs. upstream, tracked as a
   semantic-swap follow-up.

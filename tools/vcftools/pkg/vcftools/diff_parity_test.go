@@ -135,6 +135,29 @@ func TestParity_DiffIndvDiscordance_NoMap(t *testing.T) {
 	}
 }
 
+// TestParity_DiffSiteDiscordance_AltMismatch pins MATCHING_ALLELES=0 for
+// a shared B-site whose ALT alleles differ between the two files (REF=A
+// in both, ALT=G in file-1, ALT=C in file-2). Upstream's
+// `alleles_match = (ALT1 == ALT2) && (REF1 == REF2)`
+// (variant_file_diff.cpp:844) flags this row as a 0 — the discordance
+// counts still accumulate because genotype IDs are looked up via the
+// "alleles don't match" string-comparison branch
+// (variant_file_diff.cpp:887-916). The same fixture also pins
+// MATCHING_ALLELES=1 for a site where both REF and ALT line up.
+func TestParity_DiffSiteDiscordance_AltMismatch(t *testing.T) {
+	fix := vcftoolsFixtureDir(t)
+	prefix := runVcftoolsParity(t, "diff_alt_mismatch_f1.vcf", &Params{
+		Diff:                filepath.Join(fix, "diff_alt_mismatch_f2.vcf"),
+		DiffSiteDiscordance: true,
+	})
+	got := readFileBytes(t, prefix+".diff.sites")
+	want := readFileBytes(t, filepath.Join(fix, "diff_alt_mismatch.expected.diff.sites"))
+	if string(got) != string(want) {
+		t.Errorf(".diff.sites byte mismatch:\n--- got ---\n%s\n--- want ---\n%s",
+			string(got), string(want))
+	}
+}
+
 // TestParity_DiffIndvDiscordance_WithMap exercises --diff-indv-discordance
 // under a --diff-indv-map. The mapping renames file-2's a1/a2 onto s1/s2
 // so those samples carry real discordance counts (1/3, 2/3); a4 stays
