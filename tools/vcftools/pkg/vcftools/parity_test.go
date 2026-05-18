@@ -1968,3 +1968,60 @@ func TestPositionsOverlap_MissingFile(t *testing.T) {
 		t.Errorf("expected error for missing --positions-overlap file, got nil")
 	}
 }
+
+// -----------------------------------------------------------------------------
+// Wave 17: --keep-INFO TAG (SITE FILTER)
+// -----------------------------------------------------------------------------
+//
+// Fixture (keep_info_flags.vcf) declares two Flag-type INFO tags
+// (FLAG_A, FLAG_B) and one Integer tag (DP). Sites engineered to exercise
+// every combination:
+//
+//   1:100 — FLAG_A only
+//   1:200 — FLAG_B only
+//   1:300 — both FLAG_A and FLAG_B
+//   1:400 — neither (DP only)
+//
+// Goldens were produced by the upstream binary
+// /tmp/vcftools_install/bin/vcftools (VCFtools 0.1.18, built locally
+// with the FORTIFY_SOURCE workaround). The fixture intentionally does
+// NOT use --recode-INFO-all so that the recoded INFO column is
+// upstream's canonical "." (strip-all-INFO) form; this side-steps the
+// pre-existing port-level INFO-ordering note documented in
+// tools/vcftools/cmd/vcftools/aliases_cli_test.go:138-144 and produces
+// byte-for-byte matching .recode.vcf files.
+
+// TestParity_KeepINFO_SingleFlag — `--keep-INFO FLAG_A --recode` keeps
+// only sites where FLAG_A is present (sites 100 and 300). Site-set
+// parity is byte-for-byte against upstream; the INFO column is "." on
+// both sides because --recode-INFO-all is not set. Mirrors upstream's
+// entry_filters.cpp:1033-1063 (filter_sites_by_INFO).
+func TestParity_KeepINFO_SingleFlag(t *testing.T) {
+	prefix := runVcftoolsParity(t, "keep_info_flags.vcf", &Params{
+		KeepINFO: "FLAG_A",
+		Recode:   true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "keep_info_flagA.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_KeepINFO_OR — multiple --keep-INFO tags compose via OR.
+// Upstream entry_filters.cpp:1049-1062 iterates over flags_to_keep
+// and sets `keep=true` on the first present tag, then writes
+// `passed_filters = keep`. With FLAG_A and FLAG_B as the keep set,
+// sites 100, 200, and 300 pass; only site 400 (neither flag) is
+// dropped. Byte-for-byte parity against the upstream binary.
+func TestParity_KeepINFO_OR(t *testing.T) {
+	prefix := runVcftoolsParity(t, "keep_info_flags.vcf", &Params{
+		KeepINFO: "FLAG_A,FLAG_B",
+		Recode:   true,
+	})
+	got := readFileBytes(t, prefix+".recode.vcf")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "keep_info_or.expected.recode.vcf"))
+	if !bytes.Equal(got, want) {
+		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}

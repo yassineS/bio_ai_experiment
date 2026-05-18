@@ -202,8 +202,19 @@ issue in `ROADMAP.md`.
   FILTERs. Composes with `--remove-filtered-all`.
 - `--keep-filtered NAME[,NAME...]` — keep only sites listing at least one
   named FILTER (sites with `PASS` or `.` are dropped).
-- `--keep-INFO TAG` and `--remove-INFO TAG` — restrict / strip INFO tags in
-  `--recode` output. Both are repeatable on the command line.
+- `--keep-INFO TAG` — SITE FILTER. Keep only sites where the named
+  Flag-type INFO tag is present. Errors at runtime if the tag is not
+  declared `Type=Flag` in the header. Repeatable; multiple tags
+  compose via OR (any present keeps the site). Mirrors upstream
+  `entry_filters.cpp:1033`.
+- `--recode-INFO TAG` — recode-column selector. Restrict the INFO
+  column in `.recode.vcf` output to the listed tag(s). Repeatable.
+  Mirrors upstream `parameters.cpp:319`.
+- `--remove-INFO TAG` — strip a tag from the INFO column of recoded
+  output. Repeatable. NOTE: upstream defines this flag as a SITE
+  FILTER (drop sites where the named Flag IS present); the port
+  currently implements the column-stripping semantic and tracks the
+  divergence in `docs/PARITY_ROADMAP.md`.
 - `--get-INFO TAG[,TAG...]` → `<prefix>.INFO`
   (columns: `CHROM POS REF ALT TAG1 TAG2 ...`). Missing values emit `.`.
 

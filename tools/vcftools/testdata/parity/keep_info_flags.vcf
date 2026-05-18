@@ -1,0 +1,10 @@
+##fileformat=VCFv4.2
+##INFO=<ID=FLAG_A,Number=0,Type=Flag,Description="Test flag A">
+##INFO=<ID=FLAG_B,Number=0,Type=Flag,Description="Test flag B">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Total depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	s1
+1	100	.	A	G	.	PASS	FLAG_A;DP=10	GT	0/0
+1	200	.	A	C	.	PASS	FLAG_B;DP=20	GT	0/1
+1	300	.	A	T	.	PASS	FLAG_A;FLAG_B;DP=30	GT	1/1
+1	400	.	A	G	.	PASS	DP=40	GT	0/1

@@ -32,7 +32,8 @@ Output Options:
   --recode              Output a new VCF file after filtering
   --recode-INFO-all     Include all INFO fields in recoded VCF
   --recode-INFO TAG     Keep this INFO tag in --recode output (repeatable;
-                        upstream-canonical synonym for --keep-INFO)
+                        recode-column selector matching upstream
+                        parameters.cpp:319)
 
 Position Filtering:
   --chr STRING          Include only this chromosome
@@ -203,7 +204,11 @@ FILTER / INFO Selection:
   --remove-filtered NAME[,NAME...]   Drop sites listing any of these FILTERs
   --keep-filtered NAME[,NAME...]     Keep only sites listing any of these
                                      FILTERs
-  --keep-INFO TAG       Keep only this INFO tag in --recode output (repeatable)
+  --keep-INFO TAG       SITE FILTER: keep sites where this INFO Flag is
+                        present (repeatable; OR across tags). Matches
+                        upstream parameters.cpp:266 + entry_filters.cpp:1033.
+                        To restrict the INFO column in recoded output use
+                        --recode-INFO TAG instead.
   --remove-INFO TAG     Strip this INFO tag from --recode output (repeatable)
   --get-INFO TAG        Extract this INFO tag to <prefix>.INFO (repeatable)
   --extract-FORMAT-info NAME
@@ -501,31 +506,35 @@ func main() {
 	removeFiltered := flag.String("remove-filtered", "", "Comma-separated FILTER names to drop")
 	keepFiltered := flag.String("keep-filtered", "", "Comma-separated FILTER names to keep")
 
-	// INFO tag handling. --keep-INFO / --remove-INFO are repeatable in
-	// upstream; --get-INFO is upstream-repeatable too. We accept either
-	// repeated single-tag invocations or one comma-separated value, joined
-	// with commas in the same order seen on the command line.
+	// INFO tag handling. All four flags are repeatable upstream; this
+	// port accepts repeated single-tag invocations or one
+	// comma-separated value, joined with commas in the same order seen
+	// on the command line.
 	//
-	// --recode-INFO TAG is wired here as a repeatable alias for the
-	// port's --keep-INFO so output-INFO restriction can be requested
-	// under the upstream-canonical flag name (parameters.cpp:319 stores
-	// into `recode_INFO_to_keep`). Upstream actually distinguishes
-	// `--recode-INFO` (recode-time INFO-column selector) from
-	// `--keep-INFO` (which is a SITE filter dropping records without the
-	// named INFO key — parameters.cpp:266 → site_INFO_flags_to_keep →
-	// entry_filters.cpp:44). The Go port has long mapped the recode-INFO
-	// semantic to its `--keep-INFO` flag (see Params.KeepINFO doc-comment
-	// and tools/vcftools/FEATURE_COMPARISON.md:248); rather than rework
-	// that established behaviour here, we add the canonical
-	// `--recode-INFO` spelling as an alias and track the residual
-	// site-filter semantic gap in docs/PARITY_ROADMAP.md.
-	var keepINFOParts, removeINFOParts, getINFOParts []string
-	flag.Func("keep-INFO", "INFO tag to keep in --recode output (repeatable)", func(s string) error {
+	// Wave 17 fixes a semantic divergence:
+	//   - `--keep-INFO TAG` (parameters.cpp:266) is upstream a SITE
+	//     FILTER (`site_INFO_flags_to_keep` → entry_filters.cpp:1033).
+	//     A site passes only if at least one of the named INFO Flags is
+	//     present. Upstream additionally errors out at runtime if a
+	//     listed tag is not declared as Type=Flag in the header.
+	//   - `--recode-INFO TAG` (parameters.cpp:319) is the recode-column
+	//     selector (`recode_INFO_to_keep`). It restricts the INFO column
+	//     in `.recode.vcf` output to the listed tags.
+	//
+	// Pre-wave-17 the port wired `--keep-INFO` to the recode-column
+	// selector semantic and treated `--recode-INFO` as a synonym for
+	// it. The two flags are now distinct slices: `keepINFOParts` drives
+	// `params.KeepINFO` (site filter) and `recodeINFOParts` drives
+	// `params.RecodeINFO` (recode-column selector). See
+	// docs/UPSTREAM_BUGS.md `Fix-on-port` section for the migration
+	// note.
+	var keepINFOParts, recodeINFOParts, removeINFOParts, getINFOParts []string
+	flag.Func("keep-INFO", "INFO Flag-type tag to use as a SITE FILTER (upstream parameters.cpp:266; repeatable)", func(s string) error {
 		keepINFOParts = append(keepINFOParts, s)
 		return nil
 	})
-	flag.Func("recode-INFO", "INFO tag to keep in --recode output (repeatable; upstream-canonical synonym for --keep-INFO)", func(s string) error {
-		keepINFOParts = append(keepINFOParts, s)
+	flag.Func("recode-INFO", "INFO tag to keep in --recode output (recode-column selector; upstream parameters.cpp:319; repeatable)", func(s string) error {
+		recodeINFOParts = append(recodeINFOParts, s)
 		return nil
 	})
 	flag.Func("remove-INFO", "INFO tag to strip from --recode output (repeatable)", func(s string) error {
@@ -814,6 +823,7 @@ func main() {
 		RemoveFiltered:              *removeFiltered,
 		KeepFiltered:                *keepFiltered,
 		KeepINFO:                    strings.Join(keepINFOParts, ","),
+		RecodeINFO:                  strings.Join(recodeINFOParts, ","),
 		RemoveINFO:                  strings.Join(removeINFOParts, ","),
 		GetINFO:                     strings.Join(getINFOParts, ","),
 		Phased:                      *phased,
