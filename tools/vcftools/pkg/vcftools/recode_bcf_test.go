@@ -182,3 +182,179 @@ func equalSS(a, b []string) bool {
 	}
 	return true
 }
+
+// multiFormatBCFFixture exercises the FORMAT decoder beyond the GT
+// fast-path: integer scalars (DP, GQ), the special "Number=G" likelihood
+// vector (PL), an explicit ##FILTER=<ID=PASS,...> declaration (the
+// implicit-IDX=0 invariant breaker the wave-21 review flagged), and
+// per-sample multi-value INFO (AF as Number=A).
+const multiFormatBCFFixture = `##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##contig=<ID=chr1,length=10000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">
+##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Quality">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="PL likelihoods">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	s1	s2
+chr1	100	.	A	G	30	PASS	DP=20;AF=0.5	GT:DP:GQ:PL	0/0:8:60:0,15,200	0/1:12:80:50,0,180
+chr1	200	.	C	T	25	PASS	DP=15;AF=0.33	GT:DP:GQ:PL	0/1:7:55:30,0,150	1/1:9:70:200,15,0
+`
+
+// TestRun_RecodeBCF_MultiFormatRoundtrip writes a BCF with several
+// non-GT FORMAT fields, decodes it through our reader, and asserts the
+// per-sample data survives the GT/integer/likelihood-vector encoders.
+// Regression for the wave-21 review's "encodeRecord uses unified IDX as
+// slice position → non-GT FORMAT fields lost" bug.
+func TestRun_RecodeBCF_MultiFormatRoundtrip(t *testing.T) {
+	tmp := t.TempDir()
+	prefix := filepath.Join(tmp, "out")
+	if err := Run(strings.NewReader(multiFormatBCFFixture), &Params{OutPrefix: prefix, RecodeBCF: true, RecodeInfoAll: true}); err != nil {
+		t.Fatalf("Run --recode-bcf: %v", err)
+	}
+
+	// Use the package's own bcf reader directly so we can inspect the
+	// per-FORMAT-key data (the existing readBCFViaPort helper only
+	// surfaces GT). Round-trip through the bgzip layer.
+	f, err := os.Open(prefix + ".recode.bcf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	bz, err := bgzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := bcf.NewReader(bz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []*decodedFullVariant
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		v := rec.ToVariant(r.Header())
+		dv := &decodedFullVariant{
+			Chrom: v.Chrom, Pos: v.Pos, Ref: v.Ref, Alt: append([]string(nil), v.Alt...),
+			Format: append([]string(nil), v.Format...),
+		}
+		for _, s := range v.Samples {
+			row := map[string]string{}
+			for k, val := range s.Data {
+				row[k] = val
+			}
+			dv.Samples = append(dv.Samples, fullSample{Name: s.Name, Data: row})
+		}
+		got = append(got, dv)
+	}
+	if len(got) != 2 {
+		t.Fatalf("variant count: got %d want 2", len(got))
+	}
+
+	// Site 1 assertions
+	v := got[0]
+	if v.Chrom != "chr1" || v.Pos != 100 {
+		t.Errorf("v1: chrom/pos: %s:%d", v.Chrom, v.Pos)
+	}
+	checks := []struct{ sample, key, want string }{
+		{"s1", "GT", "0/0"}, {"s1", "DP", "8"}, {"s1", "GQ", "60"}, {"s1", "PL", "0,15,200"},
+		{"s2", "GT", "0/1"}, {"s2", "DP", "12"}, {"s2", "GQ", "80"}, {"s2", "PL", "50,0,180"},
+	}
+	for _, c := range checks {
+		sample := findFullSample(v.Samples, c.sample)
+		if sample == nil {
+			t.Errorf("site 1 missing sample %s", c.sample)
+			continue
+		}
+		if got := sample.Data[c.key]; got != c.want {
+			t.Errorf("site 1 %s.%s: got %q want %q", c.sample, c.key, got, c.want)
+		}
+	}
+
+	// Site 2 assertions
+	v = got[1]
+	checks = []struct{ sample, key, want string }{
+		{"s1", "GT", "0/1"}, {"s1", "DP", "7"}, {"s1", "GQ", "55"}, {"s1", "PL", "30,0,150"},
+		{"s2", "GT", "1/1"}, {"s2", "DP", "9"}, {"s2", "GQ", "70"}, {"s2", "PL", "200,15,0"},
+	}
+	for _, c := range checks {
+		sample := findFullSample(v.Samples, c.sample)
+		if sample == nil {
+			t.Errorf("site 2 missing sample %s", c.sample)
+			continue
+		}
+		if got := sample.Data[c.key]; got != c.want {
+			t.Errorf("site 2 %s.%s: got %q want %q", c.sample, c.key, got, c.want)
+		}
+	}
+}
+
+type decodedFullVariant struct {
+	Chrom   string
+	Pos     int
+	Ref     string
+	Alt     []string
+	Format  []string
+	Samples []fullSample
+}
+
+type fullSample struct {
+	Name string
+	Data map[string]string
+}
+
+func findFullSample(samples []fullSample, name string) *fullSample {
+	for i := range samples {
+		if samples[i].Name == name {
+			return &samples[i]
+		}
+	}
+	return nil
+}
+
+// TestRun_RecodeBCF_ExplicitPASS_DoesNotShiftIDX verifies that an input
+// VCF with an explicit `##FILTER=<ID=PASS,...>` declaration produces a
+// BCF whose dictionary numbering still places PASS at IDX=0 (matching
+// the htslib implicit-PASS convention). Regression for the wave-21
+// review's "explicit PASS shifts every subsequent IDX by one" bug.
+func TestRun_RecodeBCF_ExplicitPASS_DoesNotShiftIDX(t *testing.T) {
+	tmp := t.TempDir()
+	prefix := filepath.Join(tmp, "out")
+	if err := Run(strings.NewReader(multiFormatBCFFixture), &Params{OutPrefix: prefix, RecodeBCF: true, RecodeInfoAll: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	f, err := os.Open(prefix + ".recode.bcf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	bz, err := bgzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(bz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body[9:])
+	if i := strings.IndexByte(text, '\x00'); i >= 0 {
+		text = text[:i]
+	}
+	// The emitted header must NOT contain `##FILTER=<ID=PASS` — the
+	// implicit-IDX=0 PASS is enough and the explicit line would otherwise
+	// duplicate the entry under a non-zero IDX.
+	if strings.Contains(text, "##FILTER=<ID=PASS") {
+		t.Errorf("emitted header should drop explicit PASS line; got:\n%s", text)
+	}
+	// First non-PASS FILTER/INFO/FORMAT line should be IDX=1, not IDX=2.
+	// We expect INFO/DP at IDX=1 because the source declares it first.
+	if !strings.Contains(text, "##INFO=<ID=DP,") || !strings.Contains(text, "##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Total Depth\",IDX=1>") {
+		t.Errorf("INFO/DP should be IDX=1; got:\n%s", text)
+	}
+}

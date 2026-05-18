@@ -195,6 +195,94 @@ func TestWriterWriteRecordIdentity(t *testing.T) {
 	}
 }
 
+// TestWriterWriteRecord_FormatRoundtrip pins WriteRecord through a
+// FORMAT-bearing record so the encoder's per-sample dimension survives
+// the parse-write-parse cycle. Regression for the wave-21 review's
+// finding that `encodeTypedValue` was using `tv.Length` (per-sample
+// dim) as the total payload count and truncating FORMAT payloads.
+//
+// The fixture is 2 samples × diploid GT + scalar DP: we hand-assemble
+// the indiv block matching the header dictionary (PASS=0, q10=1,
+// DP/AF/TAG/H2 = 2..5, GT=6, DP_fmt=7).
+func TestWriterWriteRecord_FormatRoundtrip(t *testing.T) {
+	// 2 samples, diploid GT: s1=0/0 → [2,2]; s2=0|1 → [2,5] (phased on
+	// the second allele). FORMAT/DP scalar: [10, 20]. Per-sample dim
+	// for GT is 2, for DP is 1; descriptor bytes 0x21 (int8, size=2)
+	// and 0x11 (int8, size=1) respectively.
+	indiv := []byte{}
+	indiv = append(indiv, EncodeTypedInt8(6)...) // FMT key = GT (IDX 6)
+	indiv = append(indiv, 0x21, 2, 2, 2, 5)      // descriptor + payload
+	indiv = append(indiv, EncodeTypedInt8(7)...) // FMT key = DP (IDX 7)
+	indiv = append(indiv, 0x11, 10, 20)          // descriptor + payload
+
+	rec := buildRecord(recordSpec{
+		chromID:    0,
+		pos:        149,
+		rlen:       1,
+		qual:       40,
+		id:         "rsY",
+		alleles:    []string{"A", "T"},
+		nSample:    2,
+		nFmt:       2,
+		indivBytes: indiv,
+	})
+	stream := buildBCFStream(t, rec)
+	r, err := NewReader(bytes.NewReader(stream))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := r.ReadAll()
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("first read: %v / %d", err, len(recs))
+	}
+	if got := recs[0].FmtVals; len(got) != 2 || got[0].Length != 2 || len(got[0].Ints) != 4 {
+		t.Fatalf("first decode shape: %+v", got)
+	}
+
+	// Write the decoded record back out via WriteRecord and re-read.
+	// If encodeTypedValue truncates the per-sample payload, the second
+	// read will either fail (too few bytes) or yield mangled GT values.
+	var buf bytes.Buffer
+	w := NewWriter(&buf, r.Header())
+	if err := w.WriteRecord(recs[0]); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := NewReader(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := r2.ReadAll()
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("re-read count: %d", len(out))
+	}
+	if len(out[0].FmtVals) != 2 {
+		t.Fatalf("re-read FmtVals: %d", len(out[0].FmtVals))
+	}
+	gt := out[0].FmtVals[0]
+	if gt.Length != 2 || len(gt.Ints) != 4 {
+		t.Errorf("GT shape after roundtrip: Length=%d Ints=%v (want Length=2, len(Ints)=4)", gt.Length, gt.Ints)
+	} else {
+		want := []int32{2, 2, 2, 5}
+		for i, v := range want {
+			if gt.Ints[i] != v {
+				t.Errorf("GT[%d]: got %d want %d", i, gt.Ints[i], v)
+			}
+		}
+	}
+	dp := out[0].FmtVals[1]
+	if dp.Length != 1 || len(dp.Ints) != 2 {
+		t.Errorf("DP shape after roundtrip: Length=%d Ints=%v (want Length=1, len(Ints)=2)", dp.Length, dp.Ints)
+	} else if dp.Ints[0] != 10 || dp.Ints[1] != 20 {
+		t.Errorf("DP values: %v want [10 20]", dp.Ints)
+	}
+}
+
 // TestNewWriterFromVCFHeader exercises the convenience constructor: build a
 // vcf.Header, emit a record, parse it back.
 func TestNewWriterFromVCFHeader(t *testing.T) {

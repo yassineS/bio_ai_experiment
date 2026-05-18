@@ -180,7 +180,13 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 	var sb strings.Builder
 	sawFileformat := false
 	// Mirror parseTextHeader's IDX counter so the text-header annotations
-	// match what NewWriter put in entry.IDX. PASS is implicit at IDX=0.
+	// match what NewWriter put in entry.IDX. PASS is implicit at IDX=0
+	// in our parser (and in htslib). If the source MetaInfo carries an
+	// explicit `##FILTER=<ID=PASS,...>` line, we skip emitting it AND
+	// don't advance the counter — that line would otherwise occupy
+	// IDX=1 in the output while infoIndex["PASS"]==0, so the on-wire
+	// FILTER references would point at the wrong entry and downstream
+	// readers (ours or htslib's) would see two PASS entries.
 	nextIDX := int32(1)
 	for _, m := range vh.MetaInfo {
 		line := m
@@ -188,8 +194,13 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 			sawFileformat = true
 		}
 		switch {
+		case strings.HasPrefix(line, "##FILTER="):
+			if isExplicitPASSFilter(line) {
+				continue
+			}
+			line = annotateIDX(line, nextIDX)
+			nextIDX++
 		case strings.HasPrefix(line, "##INFO="),
-			strings.HasPrefix(line, "##FILTER="),
 			strings.HasPrefix(line, "##FORMAT="):
 			line = annotateIDX(line, nextIDX)
 			nextIDX++
@@ -215,6 +226,25 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 	}
 	sb.WriteByte('\n')
 	return sb.String()
+}
+
+// isExplicitPASSFilter reports whether a `##FILTER=<...>` line declares
+// the PASS entry. Used by buildBCFTextHeader to drop redundant PASS
+// declarations so the implicit-IDX=0 invariant holds.
+func isExplicitPASSFilter(line string) bool {
+	rest := strings.TrimPrefix(line, "##FILTER=")
+	if !strings.HasPrefix(rest, "<") {
+		return false
+	}
+	body := strings.TrimPrefix(rest, "<")
+	body = strings.TrimSuffix(body, ">")
+	// Look for ID=PASS as a top-level attribute. Quoted descriptions can
+	// contain commas/equals; ID is always first per VCF convention and
+	// never quoted.
+	if strings.HasPrefix(body, "ID=PASS,") || body == "ID=PASS" {
+		return true
+	}
+	return false
 }
 
 // annotateIDX inserts `,IDX=n` immediately before the closing `>` of a

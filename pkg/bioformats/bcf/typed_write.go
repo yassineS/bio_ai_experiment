@@ -53,9 +53,14 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 		if !ok {
 			continue
 		}
+		// idx is the *unified* dictionary IDX, not a slice position —
+		// look up via DictByIDX so we resolve regardless of which of
+		// InfoTags / FmtTags carries the entry. (In practice INFO keys
+		// always land in InfoTags, but the IDX-based lookup is the
+		// invariant-safe form.)
 		var entry DictEntry
-		if int(idx) < len(w.header.InfoTags) {
-			entry = w.header.InfoTags[idx]
+		if e := w.header.DictByIDX(idx); e != nil {
+			entry = *e
 		}
 		pairs = append(pairs, infoPair{key: idx, entry: entry, raw: raw})
 	}
@@ -121,9 +126,13 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 				return nil, nil, fmt.Errorf("bcf: FORMAT tag %q not in header", fmtTag)
 			}
 			indiv.Write(encodeInts([]int32{fIdx}))
+			// fIdx is the unified dictionary IDX (not a slice position);
+			// resolve through DictByIDX so the entry's Type drives the
+			// per-field encoder regardless of which of InfoTags / FmtTags
+			// carries the entry.
 			var entry DictEntry
-			if int(fIdx) < len(w.header.FmtTags) {
-				entry = w.header.FmtTags[fIdx]
+			if e := w.header.DictByIDX(fIdx); e != nil {
+				entry = *e
 			}
 			payload, err := encodeFormatField(entry, fmtTag, v.Samples, int(nSample))
 			if err != nil {
@@ -570,18 +579,24 @@ func encodeRecordRaw(r *Record) ([]byte, []byte, error) {
 	return shared.Bytes(), indiv.Bytes(), nil
 }
 
-// encodeTypedValue serialises a TypedValue back to its on-wire bytes. We
-// keep the descriptor verbatim so a Reader→Writer round-trip is byte-stable.
+// encodeTypedValue serialises a TypedValue back to its on-wire bytes. The
+// descriptor's `size` field is `tv.Length` (per-sample dim for FORMAT,
+// field length for INFO) — the payload byte count comes from the actual
+// data slice (`tv.Ints`, `tv.Floats`, or `tv.String`) so FORMAT values
+// holding `nSample × per-sample-dim` elements survive the encode.
+//
+// This is the symmetric counterpart of `decodeTypedInternal` after the
+// wave-21 semantic flip on TypedValue.Length: for FORMAT-typed values
+// the read populates `len(tv.Ints) == nSample × tv.Length`, and the
+// re-encode must replay every element, not just the first `tv.Length`.
 func encodeTypedValue(tv TypedValue) []byte {
 	switch tv.Descriptor {
 	case TypeMissing:
 		return EncodeMissing()
 	case TypeInt8:
-		payload := make([]byte, tv.Length)
+		n := len(tv.Ints)
+		payload := make([]byte, n)
 		for i, v := range tv.Ints {
-			if i >= tv.Length {
-				break
-			}
 			var b int8
 			switch v {
 			case MissingInt32:
@@ -595,11 +610,9 @@ func encodeTypedValue(tv TypedValue) []byte {
 		}
 		return encodeTypedRaw(TypeInt8, tv.Length, payload)
 	case TypeInt16:
-		payload := make([]byte, tv.Length*2)
+		n := len(tv.Ints)
+		payload := make([]byte, n*2)
 		for i, v := range tv.Ints {
-			if i >= tv.Length {
-				break
-			}
 			var s int16
 			switch v {
 			case MissingInt32:
@@ -613,20 +626,16 @@ func encodeTypedValue(tv TypedValue) []byte {
 		}
 		return encodeTypedRaw(TypeInt16, tv.Length, payload)
 	case TypeInt32:
-		payload := make([]byte, tv.Length*4)
+		n := len(tv.Ints)
+		payload := make([]byte, n*4)
 		for i, v := range tv.Ints {
-			if i >= tv.Length {
-				break
-			}
 			binary.LittleEndian.PutUint32(payload[i*4:], uint32(v))
 		}
 		return encodeTypedRaw(TypeInt32, tv.Length, payload)
 	case TypeFloat:
-		payload := make([]byte, tv.Length*4)
+		n := len(tv.Floats)
+		payload := make([]byte, n*4)
 		for i, f := range tv.Floats {
-			if i >= tv.Length {
-				break
-			}
 			binary.LittleEndian.PutUint32(payload[i*4:], math.Float32bits(f))
 		}
 		return encodeTypedRaw(TypeFloat, tv.Length, payload)
