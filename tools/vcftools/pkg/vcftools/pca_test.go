@@ -308,8 +308,6 @@ func runAndCompareWithSign(t *testing.T, vcfName, goldenName string, params *Par
 	numCols := len(got.data[0])
 	for j := 0; j < numCols; j++ {
 		signFlip := false
-		isEigVal := want.labels[0] == "EIGENVALUE" && j == 0 // not actually a column index, see below
-		_ = isEigVal
 		// Determine sign flip from first non-zero row in this column.
 		// Eigenvalues (the "EIGENVALUE" row) are sign-invariant — skip
 		// the flip decision until we see a true eigenvector row.

@@ -246,8 +246,14 @@ per-column sign-tolerant comparison.
 
 Wave 19 also fixes a latent upstream bug — `output_PCA` reads past
 the end of the per-individual `M[i]` vectors when any kept individual
-has a missing genotype; the port drops such sites entirely. See
-`docs/UPSTREAM_BUGS.md`.
+has a missing genotype; the port drops such sites entirely. This is
+a deliberate divergence from both upstream's buggy "skip the push,
+advance the index" behaviour AND Patterson, Price & Reich 2006's
+mean-imputation recipe — the port chooses the most conservative
+correct behaviour (drop the site) so the GRM is built only from
+fully-observed sites. See `docs/UPSTREAM_BUGS.md` for the upstream
+bug write-up; if mean-imputation is preferred for a downstream
+analysis, regenerate the input with imputation applied first.
 
 ### Not implemented
 

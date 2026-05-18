@@ -50,9 +50,18 @@ owner approval.
    family for symmetric eigendecomposition of the N×N Genomic
    Relatedness Matrix. Upstream calls LAPACK `dgeev_`; gonum's pure-Go
    `mat.SymEigen` is the equivalent without dragging in cgo / libblas.
-   Confined to `tools/vcftools/pkg/vcftools/pca.go` today; future
-   stats-heavy tools (relatedness PCs, Fst, ADMIXTURE-style models)
-   are pre-approved to reuse the same dep.
+   Confined to `tools/vcftools/pkg/vcftools/pca.go` today. **Scope:**
+   reuse is allowed for other genuinely linalg-heavy paths
+   (eigendecomp, SVD, matrix solve, etc.). Reuse for non-linalg
+   utilities, or pulling in another top-level dep, still needs its
+   own conversation — pre-approval is NOT extended to "any future
+   stats-heavy tool" (e.g. Fst is a couple of means + a variance and
+   should stay stdlib-only; ADMIXTURE-style models would deserve
+   their own review). An in-tree symmetric eigensolver (~150-250 LOC
+   Jacobi or Householder+QL) remains a viable alternative if the
+   owner ever wants to drop the dep entirely; the current decision
+   prefers gonum for the well-audited numerical-stability
+   guarantees.
 2. **CRAM codec layer** (when we get there). CRAM uses several custom
    compression codecs (rANS 4x8, rANS 4x16) that have no Go-stdlib
    equivalent and would otherwise require ~1,500 lines of careful
