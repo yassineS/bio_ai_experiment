@@ -144,6 +144,32 @@ Pinned by `TestRun_RecodeBCF_Roundtrip`,
 against upstream `vcftools --bcf <ours.recode.bcf>` (decoded VCF
 matches the source).
 
+#### BCF header name-dedup across INFO/FILTER/FORMAT (wave 22)
+
+The wave-21 BCF correctness work assigned each `##INFO/##FILTER/
+##FORMAT` line a fresh monotonically-increasing unified IDX. htslib's
+actual policy (vcf.c:1500-1530) is to **deduplicate by name across
+all three groups**: if a `##FORMAT=<ID=DP>` line follows a
+`##INFO=<ID=DP>` line, the FORMAT entry **reuses** the INFO entry's
+IDX rather than getting a new value. Without IDX annotations on the
+text-header lines (htslib's writer commonly omits them on simple
+inputs), our auto-assignment diverged from upstream's wire numbering
+and `FmtTag(idx)` returned nil for upstream-produced FORMAT/DP
+records — silently dropping the field at decode time.
+
+Reproduced via `vcftools --vcf foo.vcf --recode-bcf` (writes BCF
+without `,IDX=` annotations) then our `vcftools --bcf foo.bcf
+--recode`: the output had FORMAT field columns mis-aligned by one
+slot.
+
+**Fixed in port** (wave 22). `parseTextHeader` now maintains a
+`nameIDX` map and on each `##INFO/##FILTER/##FORMAT` line: (a)
+honours an explicit `,IDX=N` annotation if present, (b) reuses the
+name's existing IDX if seen earlier in either group, (c) falls back
+to a fresh auto-IDX otherwise. Pinned by
+`TestParseTextHeader_NameDedupAcrossINFOAndFORMAT` and an end-to-end
+upstream-BCF → port roundtrip check.
+
 #### vcftools `--keep-INFO TAG` semantic divergence (port → upstream)
 
 This is a port-side divergence (not an upstream bug): pre-wave-17 the

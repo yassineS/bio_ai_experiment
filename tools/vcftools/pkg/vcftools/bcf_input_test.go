@@ -173,6 +173,53 @@ func TestRun_ContigsFile_NoOpWhenHeaderAlreadyHasContigs(t *testing.T) {
 	}
 }
 
+// TestRun_ContigsFile_FileformatStaysFirst pins that the
+// `##fileformat=VCFv4.2` line remains the very first line of the
+// emitted header even when --contigs prepends extra contig lines.
+// VCFv4.2 mandates ##fileformat be on line 1; putting `##contig`
+// before it produces a spec-violating header.
+func TestRun_ContigsFile_FileformatStaysFirst(t *testing.T) {
+	tmp := t.TempDir()
+	contigsPath := filepath.Join(tmp, "contigs.txt")
+	if err := os.WriteFile(contigsPath, []byte("chrA\nchrB\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const noContigsFixture = `##fileformat=VCFv4.2
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	s1
+chrA	100	.	A	G	30	PASS	DP=10	GT	0/0
+`
+	outPrefix := filepath.Join(tmp, "out")
+	if err := Run(strings.NewReader(noContigsFixture), &Params{
+		OutPrefix:     outPrefix,
+		ContigsFile:   contigsPath,
+		Recode:        true,
+		RecodeInfoAll: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(outPrefix + ".recode.vcf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(body), "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "##fileformat=") {
+		t.Fatalf("##fileformat must be line 1; got:\n%s", body)
+	}
+	// The two contig lines should appear immediately after ##fileformat
+	// and before any ##INFO/##FORMAT lines.
+	wantOrder := []string{"##fileformat=", "##contig=<ID=chrA>", "##contig=<ID=chrB>"}
+	for i, want := range wantOrder {
+		if i >= len(lines) {
+			t.Fatalf("output too short:\n%s", body)
+		}
+		if !strings.HasPrefix(lines[i], want) {
+			t.Errorf("line %d: got %q, want prefix %q", i, lines[i], want)
+		}
+	}
+}
+
 // TestAugmentHeaderContigs_AcceptsMetaInfoForm checks that --contigs
 // lines starting with `##contig=<` are kept verbatim (not re-wrapped).
 func TestAugmentHeaderContigs_AcceptsMetaInfoForm(t *testing.T) {

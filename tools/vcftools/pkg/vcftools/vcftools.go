@@ -562,8 +562,11 @@ func (s *bcfVariantSource) Read() (*vcf.Variant, error) {
 	return rec.ToVariant(s.r.Header()), nil
 }
 func (s *bcfVariantSource) Close() error {
+	// closers is stored in inner-to-outer order ([bz, f]): bz reads
+	// through f, so bz must close first to flush/release its own
+	// state before the underlying file descriptor goes away.
 	var firstErr error
-	for i := len(s.closers) - 1; i >= 0; i-- {
+	for i := 0; i < len(s.closers); i++ {
 		if err := s.closers[i].Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -628,10 +631,31 @@ func augmentHeaderContigs(hdr *vcf.Header, path string) error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("reading --contigs %s: %w", path, err)
 	}
-	// Prepend the contig lines so they precede any INFO/FILTER/FORMAT
-	// declarations — htslib expects contigs to appear before sample
-	// lines and ahead of the BCF dictionary block.
-	hdr.MetaInfo = append(added, hdr.MetaInfo...)
+	if len(added) == 0 {
+		return nil
+	}
+	// Insert the contig lines immediately AFTER the ##fileformat line.
+	// VCFv4.2 mandates ##fileformat be the first line of the header;
+	// putting contigs ahead of it produces a spec-violating header
+	// that stricter parsers (e.g. recent htslib) reject. If no
+	// ##fileformat line is present we append, mirroring upstream's
+	// "tack on after meta_data.lines" pattern (variant_file.cpp:154).
+	insertAt := -1
+	for i, line := range hdr.MetaInfo {
+		if strings.HasPrefix(line, "##fileformat=") {
+			insertAt = i + 1
+			break
+		}
+	}
+	if insertAt < 0 {
+		hdr.MetaInfo = append(hdr.MetaInfo, added...)
+		return nil
+	}
+	merged := make([]string, 0, len(hdr.MetaInfo)+len(added))
+	merged = append(merged, hdr.MetaInfo[:insertAt]...)
+	merged = append(merged, added...)
+	merged = append(merged, hdr.MetaInfo[insertAt:]...)
+	hdr.MetaInfo = merged
 	return nil
 }
 
@@ -698,8 +722,9 @@ func Run(input io.Reader, params *Params) error {
 			return err
 		}
 	}
+	// err is declared here so sub-blocks below can reuse the variable
+	// via `var x, err = …` without redeclaring at every call site.
 	var err error
-	_ = err // err is reused by many sub-blocks below via `var x, err :=`.
 
 	// Load position filters if needed
 	var includePositions, excludePositions positionSet

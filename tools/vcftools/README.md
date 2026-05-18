@@ -275,12 +275,16 @@ contigs) landed in wave 22.
 `--bcf FILE` reads BGZF-compressed BCF v2.2 as the primary input,
 mirroring upstream `parameters.cpp:173`. The BCF stream is
 decoded through the shared `pkg/bioformats/bcf` reader (which
-underwent the wave-21 correctness work for `--recode-bcf`); each
-record is converted to the port's internal `vcf.Variant`
-representation before entering the normal filter pipeline. The
-flag is mutually exclusive with `--vcf` / `--gzvcf` / `--stdin`
-and composes with every other filtering / statistics / recode
-option, including `--recode-bcf` for BCF round-trips.
+underwent the wave-21 correctness work for `--recode-bcf` plus
+the wave-22 unified-IDX name-dedup fix); each record is converted
+to the port's internal `vcf.Variant` representation before
+entering the normal filter pipeline. The flag is mutually
+exclusive with `--vcf` / `--gzvcf` / `--stdin` and composes with
+every other filtering / statistics / recode option, including
+`--recode-bcf` for BCF round-trips through both the port and
+upstream `vcftools --bcf`. Interop-verified against multi-FORMAT
+fixtures (GT/DP/GQ/PL) read from BCF produced by both the port
+and upstream 0.1.18.
 
 ### Supplemental contigs (`--contigs FILE`)
 
