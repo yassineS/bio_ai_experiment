@@ -21,11 +21,21 @@ BCF, Tabix/CSI, FASTA, FASTA index, FASTQ, BED, GFF, region parsing.
 | `vcf`               | `pkg/htsgo/vcf/`               | Text VCF reader/writer                          |
 | `bcf`               | `pkg/htsgo/bcf/`               | Binary BCF v2.2 reader/writer + dict helpers    |
 | `bgzf`              | `pkg/htsgo/bgzf/`              | BGZF reader/writer + `.gzi` index               |
+| `bam`               | `pkg/htsgo/bam/`               | BAI (.bai) index format + `BuildBAI(*sam.BAMReader)` |
 
-Old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff,sam,vcf,bcf}/`
-and `tools/bgzip/pkg/bgzip/` paths still resolve via tiny re-export
+Old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff,sam,vcf,bcf}/`,
+`tools/bgzip/pkg/bgzip/`, and the BAI surface of
+`tools/samtools/pkg/samtools/` still resolve via tiny re-export
 shims; new code should import the htsgo path directly. The shims
 will be deleted in PR-I.
+
+Note: the BAM reader/writer themselves currently live in
+`pkg/htsgo/sam/` (`sam.BAMReader`, `sam.BAMWriter`) — they moved
+into htsgo via PR-A/B as part of the `sam` migration. The
+`pkg/htsgo/bam` package added here only owns the **BAI index**
+format primitives and the BAI builder. A future PR can split BAM
+out of `sam/` into `bam/` if a cleaner SAM/BAM separation
+becomes worthwhile (htslib itself keeps them together).
 
 ## Coming in subsequent PRs
 
@@ -33,6 +43,7 @@ will be deleted in PR-I.
 |-------|-----------------------------------------------------------------|
 | ~~PR-B~~ | ~~`sam`, `vcf`, `bcf` move~~ **landed**                       |
 | ~~PR-C~~ | ~~`bgzf` extracted from `tools/bgzip/pkg/bgzip/`~~ **landed** |
+| ~~PR-D~~ | ~~`bam` (BAI primitives) extracted from `tools/samtools/`~~ **landed** |
 | PR-D  | `bam` (+ `.bai`) extracted from `tools/samtools/pkg/samtools/` |
 | PR-E  | `tabix` (+ `.csi`) extracted from `tools/tabix/pkg/tabix/`     |
 | PR-F  | `region/` — single source for `chr1:100-200` parsing            |
@@ -76,6 +87,7 @@ import paths; the matching `pkg/bioformats/<pkg>` paths are
 deprecated re-export shims that PR-I will delete.
 
 `tools/bgzip/pkg/bgzip` is now a deprecated shim for
-`pkg/htsgo/bgzf`. The in-tool packages still at their original
-locations (`tools/samtools/pkg/samtools`, `tools/tabix/pkg/tabix`)
-migrate in PRs D–E per the table above.
+`pkg/htsgo/bgzf`. The BAI surface of `tools/samtools/pkg/samtools`
+is a deprecated shim for `pkg/htsgo/bam`. The remaining tool
+packages (`tools/samtools/pkg/samtools` for non-BAI subcommands,
+`tools/tabix/pkg/tabix`) migrate further in PR-E.
