@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // IndexOptions configures the index builder. The zero value selects the

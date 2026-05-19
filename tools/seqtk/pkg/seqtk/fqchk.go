@@ -47,7 +47,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // FqchkOptions configures Fqchk. Only -q is exposed (matches upstream).

@@ -33,8 +33,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // FastqImportOptions configures FastqImport.
@@ -362,7 +362,7 @@ func walkPaired(r1Path, r2Path string, e *recordEmitter) (int, error) {
 	return n, nil
 }
 
-// fastqRecord is a lightweight FASTQ record. We don't use pkg/bioformats/fastq
+// fastqRecord is a lightweight FASTQ record. We don't use pkg/htsgo/fastq
 // because we need access to the raw description tail (everything after the
 // first whitespace) for SAM-aux parsing, including embedded tabs.
 type fastqRecord struct {

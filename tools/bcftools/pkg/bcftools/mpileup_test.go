@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // samRecordStub helps build minimal sam.Records for filter tests.

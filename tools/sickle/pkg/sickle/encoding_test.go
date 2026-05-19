@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // makeFastq builds a minimal FASTQ string with one record where seq and qual

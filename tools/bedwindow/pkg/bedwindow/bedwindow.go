@@ -7,7 +7,7 @@
 // This implementation expands B intervals at load time (clipping at 0 on
 // the low end) and then runs the same overlap finding logic as
 // bedintersect via per-chromosome interval trees from the shared
-// pkg/bioformats/bed package.
+// pkg/htsgo/bed package.
 package bedwindow
 
 import (
@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // Options configures Window.

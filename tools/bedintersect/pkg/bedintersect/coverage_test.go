@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // errWriter is an io.Writer that always returns errFailingWrite after n bytes
@@ -640,9 +640,9 @@ func TestQueryNodeNilGuard(t *testing.T) {
 
 	// Note: the explicit nil-guard branch inside the internal queryNode
 	// recursion is now covered by the shared bed.IntervalTree tests in
-	// pkg/bioformats/bed/. We can no longer call it directly from this
+	// pkg/htsgo/bed/. We can no longer call it directly from this
 	// package because the method moved out of bedintersect when the tree was
-	// lifted into pkg/bioformats/bed.
+	// lifted into pkg/htsgo/bed.
 }
 
 // TestFindOverlapsChromMismatch directly calls findOverlaps with a B slice

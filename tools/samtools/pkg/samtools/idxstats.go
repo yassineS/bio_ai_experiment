@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // IdxstatsRow is one line of `samtools idxstats` output: reference name,

@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // MergeOptions configures Merge. Defaults to coordinate-sorted input

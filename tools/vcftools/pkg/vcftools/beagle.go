@@ -39,8 +39,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // log10OneThird is log10(1/3), used as the equally-likely-genotype GL

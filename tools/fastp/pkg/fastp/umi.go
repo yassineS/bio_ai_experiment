@@ -23,7 +23,7 @@ package fastp
 import (
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // UMI location identifiers (string values for the --umi_loc flag).

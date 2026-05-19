@@ -31,7 +31,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // Mode selects which output shape is emitted.
@@ -426,7 +426,7 @@ func writeWithExtra(w io.Writer, r *bed.Record, extra ...string) error {
 func recordColumns(r *bed.Record) []string {
 	out := []string{r.Chrom, strconv.Itoa(r.ChromStart), strconv.Itoa(r.ChromEnd)}
 	// The Name/Score/Strand chain only fires once Name is non-empty, matching
-	// the conservative BED12-aware emit logic in pkg/bioformats/bed.
+	// the conservative BED12-aware emit logic in pkg/htsgo/bed.
 	if r.Name == "" && r.Score == 0 && r.Strand == "" && len(r.ExtraFields) == 0 {
 		return out
 	}

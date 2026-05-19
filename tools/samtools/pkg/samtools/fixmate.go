@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // FixmateOptions configures Fixmate. The defaults match `samtools fixmate`'s

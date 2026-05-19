@@ -31,7 +31,7 @@
 package fastp
 
 import (
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // Constants ported from evaluator.cpp.

@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // DefaultMpileupMaxDepth is the upstream samtools mpileup -d default. Reads

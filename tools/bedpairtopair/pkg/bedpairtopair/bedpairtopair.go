@@ -38,7 +38,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // Type enumerates the -type modes upstream supports.

@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // AddReplaceRGMode controls how the per-record RG tag is set.

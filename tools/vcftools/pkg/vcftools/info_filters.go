@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // filterSet is a comma-separated list of FILTER tag names parsed from a CLI

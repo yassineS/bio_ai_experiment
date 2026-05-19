@@ -17,7 +17,7 @@ import (
 // frame per record.
 //
 // Writer does not own the underlying io.Writer. Call Flush before discarding
-// the Writer; pkg/bioformats/iohelper and tools/bgzip handle compression at
+// the Writer; pkg/htsgo/iohelper and tools/bgzip handle compression at
 // the layer above us.
 type Writer struct {
 	bw      *bufio.Writer

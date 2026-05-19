@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // seqNT16Table maps an ASCII byte to its IUPAC 4-bit index used by upstream

@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // DetectionResult describes what DetectEncoding inferred from a FASTQ stream.

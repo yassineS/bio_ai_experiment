@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // makeIndexedBAM is a small helper used by idxstats and other tests:

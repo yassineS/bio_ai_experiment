@@ -35,7 +35,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // ImageType is the snapshot extension passed to IGV's `snapshot` command.

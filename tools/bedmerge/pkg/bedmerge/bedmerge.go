@@ -6,7 +6,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // OutputFields specifies which fields to include in the output.

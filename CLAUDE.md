@@ -108,8 +108,10 @@ declares 1.24.9 — stick to language/stdlib features available in 1.21.
 - Document all exported identifiers with complete-sentence doc comments.
 - Tool logic goes in `tools/<tool>/pkg/<tool>/`; `cmd/<tool>/main.go` only does
   argument parsing, wiring, and exit codes.
-- Reuse `pkg/bioformats/*` for file format parsing instead of re-implementing it.
-  Use `pkg/bioformats/iohelper` for transparent gzip and stdin/stdout (`-`) handling.
+- Reuse `pkg/htsgo/*` for file format parsing instead of re-implementing it.
+  Use `pkg/htsgo/iohelper` for transparent gzip and stdin/stdout (`-`) handling.
+  The htsgo migration completed across PRs A–I; the legacy
+  `pkg/bioformats/` path no longer exists.
 
 ### CLI design
 
@@ -146,7 +148,8 @@ specific one; you usually don't.
 - `README.md` — project overview and per-tool quick start.
 - `docs/GOLANG_GUIDE.md` — Go patterns/best practices used here.
 - `docs/CLI_CONVENTIONS.md` — the canonical CLI flag spec.
-- `pkg/bioformats/README.md` — format library docs.
+- `pkg/htsgo/README.md` — format library docs (post-migration home;
+  superseded `pkg/bioformats/README.md`).
 - `tools/PORTING_STATUS.md`, `tools/IMPLEMENTATION_SUMMARY.md` — tool-by-tool status.
 - `tools/<tool>/README.md` — per-tool usage and parity notes.
 - `.github/agents/*.md` — the agent roles (tool-analysis, golang-recoding, testing,

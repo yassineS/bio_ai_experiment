@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/tools/sickle/pkg/sickle"
 )
 

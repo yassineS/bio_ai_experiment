@@ -6,8 +6,8 @@ import (
 	"io"
 	"math"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // Stats holds sequence statistics

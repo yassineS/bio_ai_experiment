@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // QuickcheckOptions configures Quickcheck. The defaults match upstream
@@ -118,7 +118,7 @@ func QuickcheckOne(path string, opts QuickcheckOptions) QuickcheckResult {
 
 // looksLikeBGZFHeader checks the gzip magic + the BC subfield prefix
 // without consuming the BSIZE bytes. It's the same check
-// pkg/bioformats/sam.looksLikeBGZF performs but exposed here so
+// pkg/htsgo/sam.looksLikeBGZF performs but exposed here so
 // quickcheck can run before constructing a BGZF reader.
 func looksLikeBGZFHeader(b []byte) bool {
 	if len(b) < 18 {

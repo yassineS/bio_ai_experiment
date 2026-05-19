@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // TrimOptions contains parameters for quality-based trimming.

@@ -32,8 +32,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // MergeMode controls which kinds of records are eligible for collapsing

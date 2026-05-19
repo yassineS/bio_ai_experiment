@@ -28,7 +28,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 )
 
 // Famask reads two FASTA streams from src and mask and writes the masked

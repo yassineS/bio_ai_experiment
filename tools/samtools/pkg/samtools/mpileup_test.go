@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 )
 
 // runMpileupOnSAM feeds one or more SAM-text inputs through Mpileup() with

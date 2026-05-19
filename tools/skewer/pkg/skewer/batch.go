@@ -5,8 +5,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 )
 
 // BatchJob represents a single file processing job.

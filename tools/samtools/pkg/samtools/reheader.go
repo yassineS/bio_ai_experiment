@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // ReheaderOptions configures Reheader. The new header source is either a

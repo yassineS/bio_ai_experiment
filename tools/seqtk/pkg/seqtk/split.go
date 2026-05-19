@@ -28,8 +28,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // SplitOptions configures Split.

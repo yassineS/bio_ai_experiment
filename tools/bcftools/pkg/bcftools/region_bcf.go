@@ -9,9 +9,9 @@ import (
 	"io"
 	"os"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bcf"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
-	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 // HasCSI reports whether path has a sibling .csi index file.

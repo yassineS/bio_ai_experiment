@@ -5,7 +5,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // CoverageOptions configures Coverage. Defaults match `samtools coverage`'s

@@ -15,7 +15,7 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
 
 const version = "1.0.0"

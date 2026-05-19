@@ -27,8 +27,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bcf"
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
 
 const recodeBCFFixture = `##fileformat=VCFv4.2

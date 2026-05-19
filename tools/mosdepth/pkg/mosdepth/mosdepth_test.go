@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
-	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 // makeBAM constructs an in-memory BGZF-wrapped BAM containing the given

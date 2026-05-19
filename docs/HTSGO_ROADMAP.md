@@ -4,8 +4,10 @@ A proposal to consolidate this repo's scattered format/index/compression
 code into a single htslib-equivalent Go library, **htsgo**, and to treat
 that library as a first-class deliverable alongside the CLI tools.
 
-**Status: in-flight migration (PR-A landed; B–I + CRAM follow-ups
-remaining).** This doc captures the design
+**Status: structural migration complete (PR-A–I landed; CRAM and
+hfile remain as separate multi-PR follow-ups governed by
+`docs/CRAM_DESIGN.md` and a future `HFILE_DESIGN.md`).** This doc
+captures the design
 decisions so the migration PRs that follow are mechanical, not
 re-litigated.
 
@@ -261,8 +263,21 @@ flips imports in one mechanical sweep. The pattern mirrors
   `pkg/htsgo/fasta` polish and a unified region-iterator API —
   are still TBD; they ride on no current consumer and can
   follow on demand.
-- **PR-I: drop `pkg/bioformats/` and tool-package shims**, single
-  mechanical rename-imports commit across the tree.
+- ~~**PR-I: drop `pkg/bioformats/` and tool-package shims**~~
+  **Landed.** All ~220 importers swept from
+  `pkg/bioformats/<x>` to `pkg/htsgo/<x>` in a single mechanical
+  commit; the 10 shim files at the old paths plus
+  `pkg/bioformats/README.md` removed; the now-empty
+  `pkg/bioformats/`, `tools/bgzip/pkg/bgzip/`, and
+  `tools/tabix/pkg/tabix/` directories all gone. bgzip imports
+  routed through `pkg/htsgo/bgzf` with a `bgzip` package alias
+  so call sites kept their existing `bgzip.X` qualifier.
+  Deferred: the two in-samtools sub-shims
+  (`tools/samtools/pkg/samtools/bai_shim.go` and
+  `region_shim.go`) — these have no external callers and
+  removing them would require a noisy in-pkg rename sweep with
+  no observable benefit. They can be folded out whenever the
+  next samtools-internal refactor passes through the area.
 
 CRAM (PR-J onwards) and hfile (PR-K onwards) are their own multi-PR
 projects governed by `docs/CRAM_DESIGN.md` and a future `HFILE_DESIGN.md`.

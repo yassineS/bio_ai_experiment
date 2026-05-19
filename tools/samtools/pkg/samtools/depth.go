@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // DefaultDepthExcludeFlags matches upstream samtools depth's default `-F`

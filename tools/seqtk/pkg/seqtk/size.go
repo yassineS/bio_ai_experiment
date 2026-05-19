@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // Size reads every record in r (FASTA or FASTQ, auto-detected from the

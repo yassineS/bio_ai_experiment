@@ -24,7 +24,7 @@
 //
 // Implementation note: the package implements its own case-preserving
 // Fetch on top of the FASTA index because the shared
-// pkg/bioformats/fasta.RandomAccess.Fetch uppercases for downstream
+// pkg/htsgo/fasta.RandomAccess.Fetch uppercases for downstream
 // case-insensitive comparison; getfasta needs the original case.
 package bedgetfasta
 
@@ -37,8 +37,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 )
 
 // Options configures Run.
@@ -255,7 +255,7 @@ func formatHeader(chrom string, start, end int, name, strand string, opts Option
 }
 
 // FetchPreserveCase is an alternate, case-preserving fetch on a FASTA
-// random-access handle. Reused from pkg/bioformats/fasta's geometry but
+// random-access handle. Reused from pkg/htsgo/fasta's geometry but
 // emits the raw bytes (other than line terminators) without uppercasing.
 type RandomAccess struct {
 	idx     *fasta.Index
@@ -273,7 +273,7 @@ func openFasta(path string, fullHeader bool) (*RandomAccess, error) {
 	// payload into memory and back the case-preserving Fetch with a
 	// bytes.Reader. samtools-compatible side-files (`.fa.gz.fai` and
 	// `.fa.gz.gzi`) are honoured when present — see the package doc on
-	// pkg/bioformats/fasta/bgzf.go for the on-disk format and the
+	// pkg/htsgo/fasta/bgzf.go for the on-disk format and the
 	// future partial-decompression roadmap.
 	if bgzf, err := isBGZF(path); err != nil {
 		return nil, err

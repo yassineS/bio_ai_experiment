@@ -144,7 +144,7 @@ The bioformats library provides reusable parsers for common file formats:
 
 ```bash
 # View library documentation
-go doc github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta
+go doc github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta
 ```
 
 ## Current status
@@ -157,7 +157,7 @@ identify but choose not to carry over are tracked in
 
 ### Shared libraries (`pkg/`)
 
-- `pkg/bioformats/{fasta,fastq,vcf,bed,sam,bcf,iohelper}` — parsers, writers,
+- `pkg/htsgo/{fasta,fastq,vcf,bed,gff,sam,bcf,bgzf,tabix,bam,region,iohelper}` — parsers, writers,
   and a transparent gzip/BGZF I/O helper (BGZF auto-detected via the
   `BC` extra-subfield magic).
 - `pkg/cliflag` — POSIX short + GNU long flag wiring on a standard

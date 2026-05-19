@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 )
 
 // seqNT6Table folds an ASCII byte to upstream seqtk's 6-state nucleotide

@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"strings"
 
-	bedpkg "github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	bedpkg "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // Options configures Run.

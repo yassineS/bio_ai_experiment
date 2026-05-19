@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 )
 
 // DictOptions configures the dict subcommand. The defaults match upstream

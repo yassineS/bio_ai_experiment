@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // Test helper to create a simple VCF variant

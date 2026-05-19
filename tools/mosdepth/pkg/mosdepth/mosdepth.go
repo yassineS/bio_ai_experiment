@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // DefaultExcludeFlag is mosdepth's default `-F` value: drop reads that are

@@ -19,7 +19,7 @@ type Reader struct {
 
 // NewReader reads the magic + text header from r and returns a Reader
 // positioned at the first record. r should already be BGZF-decompressed —
-// pkg/bioformats/iohelper.OpenReader is the easy way to get that.
+// pkg/htsgo/iohelper.OpenReader is the easy way to get that.
 func NewReader(r io.Reader) (*Reader, error) {
 	hdr, err := ReadHeader(r)
 	if err != nil {

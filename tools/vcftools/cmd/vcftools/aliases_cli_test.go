@@ -140,7 +140,7 @@ func TestCLI_RecodeINFOAlias_Repeatable(t *testing.T) {
 	got := dataRowINFO(string(data))
 	// Recoded INFO ordering: vcftools.go does not propagate InfoOrder
 	// onto the recoded variant; surviving keys land in formatInfo's
-	// alphabetical-leftover branch (pkg/bioformats/vcf/vcf.go:394-409).
+	// alphabetical-leftover branch (pkg/htsgo/vcf/vcf.go:394-409).
 	// AF precedes DP alphabetically.
 	if got != "AF=0.5;DP=10" {
 		t.Errorf("--recode-INFO AF + DP: INFO = %q, want %q", got, "AF=0.5;DP=10")

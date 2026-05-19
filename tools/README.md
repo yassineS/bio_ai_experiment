@@ -97,7 +97,7 @@ go test -bench=. -benchmem ./tools/seqtk/...
 
 ## Where the shared code lives
 
-- [`pkg/bioformats/`](../pkg/bioformats/) — parsers + writers for FASTA, FASTQ,
+- [`pkg/htsgo/`](../pkg/htsgo/) — parsers + writers for FASTA, FASTQ,
   VCF, BED, **SAM/BAM**, **BCF**, plus `iohelper` for transparent gzip / BGZF
   (auto-detected by magic-byte sniff) and `-` (stdin/stdout).
 - [`pkg/cliflag/`](../pkg/cliflag/) — POSIX short + GNU long flag wiring on a

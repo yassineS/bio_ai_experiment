@@ -3,7 +3,7 @@ package vcftools
 import (
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // snpHWE implements Wigginton/Cao/Abecasis (2005) exact test of Hardy-Weinberg

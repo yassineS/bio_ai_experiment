@@ -7,8 +7,8 @@ import (
 	"io"
 	"math"
 
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
 )
 
 // BAMWriter emits BAM-encoded records on top of a BGZF stream.

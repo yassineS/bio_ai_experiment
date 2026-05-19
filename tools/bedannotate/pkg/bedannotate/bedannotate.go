@@ -14,7 +14,7 @@
 // from -files basenames).
 //
 // Internally we read each B file into a per-chromosome interval tree
-// (`pkg/bioformats/bed.IntervalTree`) and stream A line by line, so
+// (`pkg/htsgo/bed.IntervalTree`) and stream A line by line, so
 // the working set is O(sum(|B_i|)) rather than O(|A|·|B_i|).
 package bedannotate
 
@@ -26,7 +26,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // Mode controls which columns are appended per B file.

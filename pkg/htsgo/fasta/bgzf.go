@@ -30,7 +30,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
 
 // bgzfMagic is the first four bytes of every BGZF block. RFC 1952 says a

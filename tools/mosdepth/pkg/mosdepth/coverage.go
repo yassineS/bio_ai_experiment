@@ -1,7 +1,7 @@
 package mosdepth
 
 import (
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // covEvent is a single signed depth event at a 0-based reference position:

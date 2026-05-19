@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
 
 // buildHexBAM hand-crafts a minimal BAM stream containing a single
