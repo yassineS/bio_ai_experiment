@@ -47,6 +47,11 @@ reads.fastq.gz: FASTQ gzip-compressed sequence data
   rather than guess between two formats with overlapping prefixes,
   we report the most-specific match (e.g. `@read1\nACGT\n+\n!!!!\n`
   is classified as FASTQ, not SAM, even though both start with `@`).
+- The "mostly text" fallback uses an ASCII-only heuristic: bytes
+  in the printable range (0x20–0x7E) plus `\t`, `\n`, `\r` count
+  as text; NUL forces a "binary" classification. A UTF-8 file
+  with bytes ≥ 0x80 (e.g. a comment containing `é`) will fall
+  into PayloadBinary — same limitation as upstream htsfile.
 
 ## Implementation
 

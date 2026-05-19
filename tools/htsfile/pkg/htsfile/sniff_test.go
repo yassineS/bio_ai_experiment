@@ -3,6 +3,7 @@ package htsfile
 import (
 	"bytes"
 	"compress/gzip"
+	"os"
 	"strings"
 	"testing"
 )
@@ -149,5 +150,46 @@ func TestIdentifyPlain_FASTQDoesNotMisidentifyAsSAM(t *testing.T) {
 	}
 	if f.Payload != PayloadFASTQ {
 		t.Errorf("payload: got %s want FASTQ", f.Payload)
+	}
+}
+
+// TestIdentify_PathHappyPath exercises Identify(path) end-to-end with
+// a temporary file. The IdentifyReader path is covered separately by
+// the other tests; this one specifically pins the file-open +
+// identify path used by the CLI.
+func TestIdentify_PathHappyPath(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/sample.vcf"
+	body := []byte("##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Identify(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Payload != PayloadVCF || f.Version != "4.2" {
+		t.Errorf("got %s %s, want VCF 4.2", f.Payload, f.Version)
+	}
+}
+
+// TestIdentify_MissingFile pins the error path when the file at path
+// doesn't exist. The CLI surfaces the error to stderr and exits 1; the
+// library API just returns a wrapped error.
+func TestIdentify_MissingFile(t *testing.T) {
+	if _, err := Identify("/nope/does-not-exist.bam"); err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+// TestLooksLikeBED_RejectsNonIntegerCoordinates verifies that a
+// 3-column file whose 2nd/3rd columns aren't non-negative integers
+// does NOT trigger the BED detector (regression-test the heuristic's
+// strictness).
+func TestLooksLikeBED_RejectsNonIntegerCoordinates(t *testing.T) {
+	prefix := []byte("chr1\tabc\t200\tfeat1\n")
+	f := classifyPayload(prefix)
+	if f.Payload == PayloadBED {
+		t.Errorf("non-integer coords should not classify as BED; got %s", f.Payload)
 	}
 }

@@ -823,6 +823,27 @@ Coverage: `tools/bcftools/pkg/bcftools` 85% (target ≥85%); `pkg/bioformats/bcf
 82% (target ≥80%). Scope deferred to follow-ups: BCF writer (`-O b/u`
 currently return an explanatory error), `.csi` indexing.
 
+### 13. htsfile (htsgo PR-H, May 2026)
+
+**Status**: **1 of 1 commands implemented** (`htsfile FILE [FILE…]`)
+**Version**: 0.1.0
+**Original**: C (htslib `htsfile.c`)
+**Category**: Format-identification utility
+
+A pure-Go re-implementation of htslib's `htsfile` binary. Sniffs the
+first ≤64 KiB of each input file (or stdin via `-`) and prints a
+one-line summary identifying the container (plain / gzip / BGZF) and
+payload format (SAM/BAM/CRAM/VCF/BCF/FASTA/FASTQ/BED/GFF/text/binary)
+plus, where present, the in-band version string. See
+[`htsfile/README.md`](htsfile/README.md) for the dispatch table and
+intentional differences from upstream (no `-c` mode; pure Go).
+
+Library API at `tools/htsfile/pkg/htsfile`: `Identify(path)`,
+`IdentifyReader(io.Reader)`, `Format.Describe()`. Coverage 74.5% on
+the package; the CLI is exercised via an in-tree integration test
+that builds the binary and shells it against synthetic VCF/FASTA
+fixtures.
+
 ---
 
 ## Tool Comparison Matrix

@@ -388,6 +388,13 @@ func isNonNegInt(b []byte) bool {
 	return true
 }
 
+// isMostlyText is the ASCII-only "mostly text" check used as a fallback
+// when the per-format heuristics don't fire. It treats only the
+// printable-ASCII range (0x20-0x7E) plus the three whitespace bytes
+// (\t, \n, \r) as text-ish and rejects on any NUL byte. UTF-8 files
+// with bytes >= 0x80 (e.g. a comment containing "é" = 0xC3 0xA9)
+// therefore get classified as PayloadBinary even though they're
+// human-readable text — same limitation as upstream htsfile.
 func isMostlyText(p []byte) bool {
 	if len(p) == 0 {
 		return false
