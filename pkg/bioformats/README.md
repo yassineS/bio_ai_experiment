@@ -15,9 +15,9 @@ for the migration plan.
 | `fastq`         | `pkg/bioformats/fastq`                    | `pkg/htsgo/fastq`                            |
 | `bed`           | `pkg/bioformats/bed`                      | `pkg/htsgo/bed`                              |
 | `gff`           | `pkg/bioformats/gff`                      | `pkg/htsgo/gff`                              |
-| `sam`           | `pkg/bioformats/sam`                      | (moves in PR-B)                              |
-| `vcf`           | `pkg/bioformats/vcf`                      | (moves in PR-B)                              |
-| `bcf`           | `pkg/bioformats/bcf`                      | (moves in PR-B)                              |
+| `sam`           | `pkg/bioformats/sam`                      | `pkg/htsgo/sam`                              |
+| `vcf`           | `pkg/bioformats/vcf`                      | `pkg/htsgo/vcf`                              |
+| `bcf`           | `pkg/bioformats/bcf`                      | `pkg/htsgo/bcf`                              |
 
 New code should import the `pkg/htsgo/` path directly. The shims here
 will be deleted in the final PR of the migration (PR-I) by a single
