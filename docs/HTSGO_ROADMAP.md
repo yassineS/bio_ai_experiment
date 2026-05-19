@@ -230,8 +230,21 @@ flips imports in one mechanical sweep. The pattern mirrors
   tool package); both now import `pkg/htsgo/tabix` directly. The
   package's `pkg/htsgo/bgzf` import was also tightened (no longer
   routed through the bgzip shim).
-- **PR-F: extract region parser** from wherever each tool wrote its
-  own.
+- ~~**PR-F: extract region parser**~~ **Partially landed.** The
+  canonical region parser (the most complete of the four
+  scattered variants — samtools's) moved from
+  `tools/samtools/pkg/samtools/region.go` to
+  `pkg/htsgo/region/`. Surface: `Region`, `ParseRegion`,
+  `ResolvedRegion`, `ResolveRegions`, `Region.OverlapsRef`. The
+  BAI-specific `UnionChunks` aggregator moved alongside its
+  `BAIIndex` / `BAIChunk` dependencies into `pkg/htsgo/bam/`
+  (kept out of the region package so it stays format-agnostic).
+  A `region_shim.go` in samtools re-exports both surfaces. The
+  other variants (`tools/bcftools/pkg/bcftools/{view.go,gtcheck.go}`,
+  `tools/tabix/cmd/tabix/main.go`) are file-local one-offs with
+  slightly different semantics (0/1-based, comma-stripping,
+  half-open vs inclusive); migrating them needs per-call-site
+  semantic equivalence checking and is deferred to a follow-up.
 - **PR-G: wire vcftools BCF flags.** Plug `--bcf` / `--diff-bcf` /
   `--recode-bcf` / `--contigs` onto the existing `bcf.Writer`. The
   scope is vcftools integration, not a `pkg/htsgo/bcf` write-path

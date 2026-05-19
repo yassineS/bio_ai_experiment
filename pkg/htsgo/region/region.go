@@ -1,8 +1,7 @@
-package samtools
+package region
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -30,7 +29,7 @@ type Region struct {
 // trailing-dash end defaults to "end of chromosome".
 func ParseRegion(spec string) (Region, error) {
 	if spec == "" {
-		return Region{}, fmt.Errorf("samtools: empty region")
+		return Region{}, fmt.Errorf("region: empty region")
 	}
 	// Split on the last ':' to allow ':'-containing chrom names. Real SAM
 	// chrom names rarely contain ':' but we keep the rule consistent with
@@ -42,7 +41,7 @@ func ParseRegion(spec string) (Region, error) {
 	chrom := spec[:colon]
 	rest := spec[colon+1:]
 	if chrom == "" {
-		return Region{}, fmt.Errorf("samtools: empty chromosome in region %q", spec)
+		return Region{}, fmt.Errorf("region: empty chromosome in region %q", spec)
 	}
 	// rest must be "start" or "start-" or "start-end".
 	beg := 1
@@ -61,14 +60,14 @@ func ParseRegion(spec string) (Region, error) {
 	if startStr != "" {
 		n, err := parseCoord(startStr)
 		if err != nil {
-			return Region{}, fmt.Errorf("samtools: bad region start %q: %w", startStr, err)
+			return Region{}, fmt.Errorf("region: bad region start %q: %w", startStr, err)
 		}
 		beg = n
 	}
 	if endStr != "" {
 		n, err := parseCoord(endStr)
 		if err != nil {
-			return Region{}, fmt.Errorf("samtools: bad region end %q: %w", endStr, err)
+			return Region{}, fmt.Errorf("region: bad region end %q: %w", endStr, err)
 		}
 		end = n
 	}
@@ -76,7 +75,7 @@ func ParseRegion(spec string) (Region, error) {
 		beg = 1
 	}
 	if end > 0 && end < beg {
-		return Region{}, fmt.Errorf("samtools: region end %d < beg %d", end, beg)
+		return Region{}, fmt.Errorf("region: region end %d < beg %d", end, beg)
 	}
 	return Region{Chrom: chrom, Beg: beg, End: end}, nil
 }
@@ -118,10 +117,12 @@ func (r Region) OverlapsRef(refID int, refIDForChrom int, pos0 int, refLen int) 
 	return recBeg < regEnd0 && recEnd > regBeg0
 }
 
-// RegionChunks returns the union of BAI chunks across regions (deduplicated
-// and merged). It also returns the parallel list of (refID, 0-based half-
-// open beg, end) tuples for caller-side overlap filtering after a chunk has
-// been read.
+// ResolvedRegion is the chrom-resolved form of a parsed region: the
+// caller-supplied chrom-to-refID lookup has succeeded and the
+// half-open 0-based bounds are pre-computed for downstream consumers
+// (BAI / CSI lookup, per-record overlap filtering). End0 == 1<<30 is
+// the open-ended sentinel (matches the convention used by every BAI
+// query path in this repo).
 type ResolvedRegion struct {
 	Region Region
 	RefID  int
@@ -158,30 +159,6 @@ func ResolveRegions(specs []string, lookup func(chrom string) int) (resolved []R
 	return resolved, unknown, nil
 }
 
-// UnionChunks combines the BAI region-chunks across every ResolvedRegion
-// into a single sorted, merged []BAIChunk. It is the entry point used by
-// the seek-and-scan region-query path in samtools view.
-func UnionChunks(idx *BAIIndex, regions []ResolvedRegion) []BAIChunk {
-	var all []BAIChunk
-	for _, r := range regions {
-		all = append(all, idx.RegionChunks(r.RefID, r.Beg0, r.End0)...)
-	}
-	if len(all) == 0 {
-		return nil
-	}
-	sort.Slice(all, func(a, b int) bool { return all[a].Beg < all[b].Beg })
-	merged := all[:0]
-	cur := all[0]
-	for i := 1; i < len(all); i++ {
-		if all[i].Beg <= cur.End {
-			if all[i].End > cur.End {
-				cur.End = all[i].End
-			}
-		} else {
-			merged = append(merged, cur)
-			cur = all[i]
-		}
-	}
-	merged = append(merged, cur)
-	return merged
-}
+// (UnionChunks lives in pkg/htsgo/bam because it depends on
+// BAIIndex/BAIChunk; this package stays format-agnostic so non-BAI
+// region consumers can use it cleanly.)
