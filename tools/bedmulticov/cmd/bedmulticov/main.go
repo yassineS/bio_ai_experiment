@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/tools/bedmulticov/pkg/bedmulticov"
 )
 
@@ -44,7 +44,7 @@ Options:
   -v,  --version         Show version.
 
 Notes:
-  - BAM input is supported (BGZF-wrapped, decoded via pkg/bioformats/sam).
+  - BAM input is supported (BGZF-wrapped, decoded via pkg/htsgo/sam).
   - CRAM input is NOT yet supported — a clear error is surfaced for any
     .cram path; see docs/CRAM_DESIGN.md.
   - The output preserves A's columns verbatim and appends one integer

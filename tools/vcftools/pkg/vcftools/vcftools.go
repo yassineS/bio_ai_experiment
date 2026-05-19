@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bcf"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // Params holds all parameters for vcftools operations
@@ -33,7 +33,7 @@ type Params struct {
 	// io.Reader` argument and read the BCF at the given path instead.
 	// The CLI passes this through from `--bcf FILE` (parameters.cpp:173).
 	// The BCF stream is BGZF-decompressed and decoded via
-	// `pkg/bioformats/bcf`; each record is converted to `vcf.Variant`
+	// `pkg/htsgo/bcf`; each record is converted to `vcf.Variant`
 	// so the entire downstream filter pipeline works unchanged.
 	BCFInputFile string
 
@@ -286,7 +286,7 @@ type Params struct {
 	// --diff-* family, mirroring upstream's `--diff-bcf FILE`
 	// (parameters.cpp:210). Mutually exclusive with Diff at the CLI
 	// layer; when set, the diff loader reads via the shared
-	// `pkg/bioformats/bcf` reader stack.
+	// `pkg/htsgo/bcf` reader stack.
 	DiffBCF               string
 	DiffSite              bool
 	DiffIndv              bool

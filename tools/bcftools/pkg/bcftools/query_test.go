@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/vcf"
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
-	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 const queryVCF = `##fileformat=VCFv4.2

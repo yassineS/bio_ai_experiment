@@ -47,8 +47,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // Defaults that match upstream bcftools mpileup.
@@ -245,7 +245,7 @@ type MpileupOptions struct {
 var ErrMpileupRedoBAQ = fmt.Errorf("bcftools mpileup: -E/--redo-BAQ is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools")
 
 // ErrMpileupBCFOutput is returned when -O u/b is requested. The BCF
-// writer is wired elsewhere in the project (`pkg/bioformats/bcf`) but
+// writer is wired elsewhere in the project (`pkg/htsgo/bcf`) but
 // the mpileup-specific records carry custom INFO/FORMAT tags that the
 // writer is not yet taught to encode. Tracked in PARITY_ROADMAP.
 var ErrMpileupBCFOutput = fmt.Errorf("bcftools mpileup: -O u/b (BCF output) is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools")

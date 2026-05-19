@@ -12,7 +12,7 @@
 //
 // NewReader sniffs the first bytes of its input. If they look like a BGZF
 // gzip member with the BAM magic ("BAM\1") just inside, it constructs a
-// BAM reader on top of tools/bgzip/pkg/bgzip.Reader. Otherwise it falls back
+// BAM reader on top of pkg/htsgo/bgzf.Reader. Otherwise it falls back
 // to the line-oriented text SAM reader.
 //
 // References:

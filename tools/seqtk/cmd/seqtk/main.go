@@ -43,8 +43,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 	"github.com/yassineS/bio_ai_experiment/tools/seqtk/pkg/seqtk"
 )
 

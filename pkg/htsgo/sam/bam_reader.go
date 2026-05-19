@@ -9,7 +9,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
 
 // BAMMagic is the 4-byte signature that introduces the binary header of a
@@ -47,7 +47,7 @@ var ErrNotBAM = errors.New("sam: input is not a BAM file (missing BAM\\1 magic)"
 type BAMReader struct {
 	// src is the BAM byte stream. For the standard BGZF-wrapped input this is
 	// a *bgzip.Reader; for already-decompressed input (e.g. one routed
-	// through pkg/bioformats/iohelper, which strips the BGZF layer) it is
+	// through pkg/htsgo/iohelper, which strips the BGZF layer) it is
 	// the raw io.Reader directly.
 	src   io.Reader
 	bgz   *bgzip.Reader // non-nil when src is the BGZF reader

@@ -45,7 +45,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // MarkdupMode selects which keying scheme upstream uses.

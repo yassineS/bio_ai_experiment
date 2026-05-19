@@ -3,7 +3,7 @@ package bedintersect
 import (
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 func TestIntervalTreeBasic(t *testing.T) {

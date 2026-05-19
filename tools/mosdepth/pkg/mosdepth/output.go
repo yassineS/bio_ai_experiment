@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
-	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 // bedGzWriter wraps a BGZF writer plus a buffered writer on top, so callers

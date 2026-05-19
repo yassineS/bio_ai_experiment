@@ -16,8 +16,8 @@
 //
 // The runtime is single-threaded (the -t/--threads flag is accepted for CLI
 // compatibility). Outputs are bgzipped using
-// github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip and indexed
-// with github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix — note
+// github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf and indexed
+// with github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix — note
 // that upstream mosdepth emits .csi indexes; we emit .tbi instead because
 // the project's tabix port writes the TBI format. This is a documented
 // deviation; consumers that take tabix-format indexes (e.g. bcftools,

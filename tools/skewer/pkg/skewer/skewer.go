@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // TrimOptions contains parameters for adapter trimming.

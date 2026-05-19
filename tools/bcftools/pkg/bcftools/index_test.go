@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
-	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 // writeBCFForIndex builds a tiny BGZF-wrapped BCF on disk by piping a small

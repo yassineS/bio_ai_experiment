@@ -24,7 +24,7 @@
 // (upstream default is case-sensitive — counter to the option's mnemonic).
 //
 // The `-fullHeader` flag tells the FASTA index to look up contigs by the
-// raw header (including whitespace). Our `pkg/bioformats/fasta` index
+// raw header (including whitespace). Our `pkg/htsgo/fasta` index
 // always uses the first whitespace-delimited token, so when `-fullHeader`
 // is set we additionally consult a "full header" name map built lazily on
 // the fly.
@@ -38,7 +38,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 )
 
 // Options configures Run.

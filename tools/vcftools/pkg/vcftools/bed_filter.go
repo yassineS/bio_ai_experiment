@@ -13,8 +13,8 @@
 // allele length. Tools that want overlap semantics on indels can post-
 // process the recoded VCF.
 //
-// We re-use `pkg/bioformats/bed` for parsing (so `.gz` files work via
-// `pkg/bioformats/iohelper`). Intervals are stored as a sorted slice per
+// We re-use `pkg/htsgo/bed` for parsing (so `.gz` files work via
+// `pkg/htsgo/iohelper`). Intervals are stored as a sorted slice per
 // chromosome and queried with binary search, giving O(log N) membership
 // tests after an O(N log N) load. Overlapping or out-of-order intervals in
 // the input are tolerated — we merge during load so each chromosome holds a
@@ -26,8 +26,8 @@ import (
 	"io"
 	"sort"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 )
 
 // bedInterval is a single half-open [start, end) interval in BED coordinates.

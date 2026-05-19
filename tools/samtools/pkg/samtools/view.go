@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // ViewOptions configures the behaviour of View. Zero values disable the

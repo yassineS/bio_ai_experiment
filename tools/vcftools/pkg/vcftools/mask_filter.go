@@ -42,7 +42,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 )
 
 // maskSlab is one continuous line of mask digits for a chromosome along with

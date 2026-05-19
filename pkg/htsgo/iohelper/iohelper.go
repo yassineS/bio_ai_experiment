@@ -6,7 +6,7 @@
 //   - BGZF (RFC 1952 gzip with an `BC` extra subfield, as produced by htslib's
 //     bgzip and used by VCF/BCF, BAM, and tabix-indexed files) is decoded by
 //     the project's pure-Go BGZF reader in
-//     github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip. This makes
+//     github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf. This makes
 //     bgzipped inputs round-trip correctly and lays the groundwork for future
 //     random-access (tabix) integration.
 //   - Plain gzip is decoded by compress/gzip.
@@ -25,7 +25,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
 
 // sniffSize is the number of bytes peeked from the head of a file to detect

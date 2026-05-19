@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // Common adapter sequences for automatic detection

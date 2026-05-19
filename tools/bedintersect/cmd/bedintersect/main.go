@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/tools/bedintersect/pkg/bedintersect"
 )
 

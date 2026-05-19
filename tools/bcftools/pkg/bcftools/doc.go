@@ -4,5 +4,5 @@
 //
 // Subsequent slices will add `query`, `stats`, `norm`, `concat`, and `merge`.
 // BCF writing and .csi indexing are explicitly deferred — the view command
-// reads BCF (via pkg/bioformats/bcf) but emits only VCF/VCF.gz so far.
+// reads BCF (via pkg/htsgo/bcf) but emits only VCF/VCF.gz so far.
 package bcftools

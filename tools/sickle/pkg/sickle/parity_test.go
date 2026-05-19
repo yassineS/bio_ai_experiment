@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // readParityFile reads a fixture from tools/sickle/testdata/parity/.
@@ -159,7 +159,7 @@ func TestParity_Sickle_Case09_SEThreshold(t *testing.T) {
 }
 
 // case10 — gzipped input (upstream reads via zlib; our port via
-// pkg/bioformats/iohelper). The TrimSingleEnd library entry point gets
+// pkg/htsgo/iohelper). The TrimSingleEnd library entry point gets
 // an io.Reader, so we manually wrap the gzip stream here to exercise the
 // same code path.
 func TestParity_Sickle_Case10_SEGzip(t *testing.T) {

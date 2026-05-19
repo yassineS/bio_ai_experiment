@@ -5,13 +5,13 @@
 // holding the overlap count.
 //
 // Upstream supports BED *and* indexed BAM inputs. This port now supports
-// both. BAM inputs are decoded via pkg/bioformats/sam.NewBAMReader and the
+// both. BAM inputs are decoded via pkg/htsgo/sam.NewBAMReader and the
 // MAPQ filter (`-q`) and per-position depth cap (`-D`) are honoured. CRAM
 // remains deferred (we don't have a CRAM reader yet — see
 // docs/CRAM_DESIGN.md); the CLI surfaces a clear error in that case.
 //
 // Internally each input file is loaded into a per-chromosome interval
-// tree (`pkg/bioformats/bed.IntervalTree`), and the A file is streamed
+// tree (`pkg/htsgo/bed.IntervalTree`), and the A file is streamed
 // line-by-line. Optional strand filters (-s same / -S opposite),
 // fraction-of-A (-f), fraction-of-B (-F), and reciprocal (-r) thresholds
 // mirror upstream's semantics.
@@ -35,8 +35,8 @@ import (
 	"strconv"
 	"strings"
 
-	bedpkg "github.com/yassineS/bio_ai_experiment/pkg/bioformats/bed"
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	bedpkg "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // Options configures Run.
@@ -82,7 +82,7 @@ const (
 	// SourceBED is a plain BED file (any number of columns ≥3).
 	SourceBED SourceKind = iota
 	// SourceBAM is a BGZF-wrapped BAM file (decoded via
-	// pkg/bioformats/sam.NewBAMReader). Each primary alignment contributes
+	// pkg/htsgo/sam.NewBAMReader). Each primary alignment contributes
 	// one interval over [Pos-1, Pos-1+ReferenceLength()) on its reference.
 	SourceBAM
 )
@@ -107,7 +107,7 @@ func Run(aR io.Reader, bRs []io.Reader, out io.Writer, opts Options) (int, error
 
 // RunSources reads A from aR and the N B inputs from srcs in order. Each
 // input is indexed per chromosome (BED records are read with the bed
-// package; BAM records are decoded with pkg/bioformats/sam and -q MAPQ
+// package; BAM records are decoded with pkg/htsgo/sam and -q MAPQ
 // filtered up front). RunSources then streams A and emits one row per A
 // record with one count column appended per source. -D, if set, caps the
 // reported per-A count per BAM input. Returns the number of A records

@@ -116,7 +116,7 @@ func (h *Header) DictByIDX(n int32) *DictEntry {
 // of the first record.
 //
 // Callers must pass an already-BGZF-decompressed stream — typically the
-// io.ReadCloser returned by pkg/bioformats/iohelper.OpenReader.
+// io.ReadCloser returned by pkg/htsgo/iohelper.OpenReader.
 func ReadHeader(r io.Reader) (*Header, error) {
 	br := bufio.NewReader(r)
 

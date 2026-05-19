@@ -25,11 +25,17 @@ BCF, Tabix/CSI, FASTA, FASTA index, FASTQ, BED, GFF, region parsing.
 | `tabix`             | `pkg/htsgo/tabix/`             | Tabix (.tbi) + CSI (.csi) + binning helpers (Reg2bin, LinearTile) |
 | `region`            | `pkg/htsgo/region/`            | `chr:start-end` parser + ResolveRegions (BAI-agnostic) |
 
-Old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff,sam,vcf,bcf}/`,
-`tools/bgzip/pkg/bgzip/`, and the BAI surface of
-`tools/samtools/pkg/samtools/` still resolve via tiny re-export
-shims; new code should import the htsgo path directly. The shims
-will be deleted in PR-I.
+All format packages live under `pkg/htsgo/`. The legacy
+`pkg/bioformats/` directory and the `tools/bgzip/pkg/bgzip/`,
+`tools/tabix/pkg/tabix/` shim paths have been removed in PR-I;
+all importers now use the htsgo path directly.
+
+The two in-samtools sub-shims (`bai_shim.go`, `region_shim.go`)
+remain in place — they let samtools subcommands use bare names
+(`BAIIndex`, `ParseRegion`) without prefixing every call site
+with `bam.` / `region.`. They have no external callers and will
+be folded out in a follow-up sweep when an in-pkg rename has
+positive value of its own.
 
 Note: the BAM reader/writer themselves currently live in
 `pkg/htsgo/sam/` (`sam.BAMReader`, `sam.BAMWriter`) — they moved
@@ -50,7 +56,7 @@ becomes worthwhile (htslib itself keeps them together).
 | ~~PR-F~~ | ~~`region/` — single source for `chr1:100-200` parsing~~ **landed** |
 | PR-G  | already landed inline as the wave-21/22/23 vcftools BCF wiring  |
 | PR-H (partial) | `tools/htsfile` CLI landed; `faidx` polish + region-iterator API still TBD |
-| PR-I  | drop `pkg/bioformats/` and tool-package re-export shims         |
+| ~~PR-I~~ | ~~drop `pkg/bioformats/` and tool-package re-export shims~~ **landed** |
 | PR-J+ | CRAM read/write (see `docs/CRAM_DESIGN.md`)                     |
 | PR-K+ | `hfile` virtual filesystem (HTTP / S3 / GCS ranged reads)       |
 

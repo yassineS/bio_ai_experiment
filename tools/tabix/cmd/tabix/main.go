@@ -21,8 +21,8 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
-	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 const version = "1.0.0"

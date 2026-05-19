@@ -21,7 +21,7 @@
 package fastp
 
 import (
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/fastq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
 // adapterDetectSampleSize is the maximum number of reads (or pairs) we

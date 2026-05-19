@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/gff"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/gff"
 )
 
 // chr1 reference (1-based): positions 1..60

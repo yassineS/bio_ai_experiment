@@ -28,7 +28,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // StatsOptions configures the Stats run.

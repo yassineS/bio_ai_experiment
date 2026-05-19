@@ -3,7 +3,7 @@ package mosdepth
 import (
 	"testing"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/bioformats/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 func mustCigar(t *testing.T, s string) sam.Cigar {

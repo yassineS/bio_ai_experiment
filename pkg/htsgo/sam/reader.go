@@ -10,7 +10,7 @@ import (
 //
 // The detection is conservative: BGZF (gzip + BC subfield), and a raw
 // "BAM\1" magic (a BAM body that has already been decompressed, e.g. by
-// pkg/bioformats/iohelper which transparently strips BGZF), both route to
+// pkg/htsgo/iohelper which transparently strips BGZF), both route to
 // the BAM reader. Plain text falls through to the line-oriented SAM reader.
 // If your stream is plain gzip-compressed SAM, wrap it in compress/gzip
 // first.
@@ -29,7 +29,7 @@ func NewReader(r io.Reader) (Reader, error) {
 }
 
 // looksLikeBGZF reports whether b begins with a BGZF gzip header (the same
-// pattern checked by pkg/bioformats/iohelper.bgzfSniff).
+// pattern checked by pkg/htsgo/iohelper.bgzfSniff).
 func looksLikeBGZF(b []byte) bool {
 	if len(b) < 16 {
 		return false
