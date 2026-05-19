@@ -42,7 +42,7 @@ The "no third-party deps" rule (CLAUDE.md) is therefore relaxed for:
   the de-facto Go choice).
 
 The dep MUST be confined to a single sub-package (proposed:
-`pkg/bioformats/cram/codec/`) so the rest of the repo can still
+`pkg/htsgo/cram/codec/`) so the rest of the repo can still
 honestly claim "stdlib only" for non-CRAM workflows.
 
 Preference order remains:
@@ -93,10 +93,10 @@ Match samtools's `REF_PATH` / `REF_CACHE` semantics:
 
 ## Milestone breakdown (proposed)
 
-1. **`pkg/bioformats/cram/codec/`** — rANS 4x8 + 4x16 + LZMA wrappers,
+1. **`pkg/htsgo/cram/codec/`** — rANS 4x8 + 4x16 + LZMA wrappers,
    with byte-for-byte test fixtures from htslib's `htscodecs`. Allowed
    to use third-party deps. ~2 weeks.
-2. **`pkg/bioformats/cram` reader (v3.0)** — file/container/slice/block
+2. **`pkg/htsgo/cram` reader (v3.0)** — file/container/slice/block
    parser, data-series decoders, MD5+REF_PATH plumbing, `.crai` index
    read. Pure-Go on top of (1). ~3 weeks.
 3. **CLI plumbing** — wire the new reader through
@@ -104,10 +104,10 @@ Match samtools's `REF_PATH` / `REF_CACHE` semantics:
    `samtools view`, `samtools depth`, `samtools fastq`,
    `samtools mpileup`, etc. all transparently accept CRAM input. ~1
    week.
-4. **`pkg/bioformats/cram` reader (v3.1)** — additional rANS 4x16
+4. **`pkg/htsgo/cram` reader (v3.1)** — additional rANS 4x16
    wiring + edge cases. ~1 week.
-5. **`pkg/bioformats/cram` writer (v3.0)** — encode side. ~3 weeks.
-6. **`pkg/bioformats/cram` writer (v3.1)**. ~1 week.
+5. **`pkg/htsgo/cram` writer (v3.0)** — encode side. ~3 weeks.
+6. **`pkg/htsgo/cram` writer (v3.1)**. ~1 week.
 7. **`samtools view --output-fmt cram`** + `samtools index` for
    `.crai`. ~1 week.
 8. **Lossy quality binning** (encode side). ~2 weeks. Optional.
