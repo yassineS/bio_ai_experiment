@@ -1,4 +1,4 @@
-package samtools
+package bam
 
 import (
 	"bytes"

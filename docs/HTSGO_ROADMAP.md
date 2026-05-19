@@ -206,9 +206,19 @@ flips imports in one mechanical sweep. The pattern mirrors
   directory now holds only a re-export shim (kept under the legacy
   `bgzip` package name for backwards compatibility). The
   `tools/bgzip/cmd/bgzip/` CLI binary still builds via the shim.
-- **PR-D: extract BAM + BAI.** Lift from `tools/samtools/`. Same
-  shim pattern; `.bai` folds into the `bam/` package directly
-  (no separate `bam/bai/` sub-package — see "Target surface" above).
+- ~~**PR-D: extract BAM + BAI.**~~ **Partially landed.** The BAI
+  format primitives (`bai.go` / `bai_test.go`) and the BAM →
+  BAI builder (`BuildBAI`) moved from `tools/samtools/pkg/samtools/`
+  to `pkg/htsgo/bam/`. The BAM reader/writer themselves already
+  migrated as part of PR-A/B (they live in `pkg/htsgo/sam/`
+  alongside SAM since htslib keeps them together too); a future
+  PR can re-split BAM into `pkg/htsgo/bam/` if the SAM/BAM
+  decoupling becomes more important than the shared-record-types
+  ergonomics. Shim at `tools/samtools/pkg/samtools/bai_shim.go`
+  re-exports the moved BAI surface; the in-tree `samtools index`
+  orchestration (the `Index` / `IndexFile` functions) keeps
+  living in `tools/samtools/` because it's CLI-level, not
+  format-level.
 - **PR-E: extract Tabix/CSI.** Lift from `tools/tabix/`.
 - **PR-F: extract region parser** from wherever each tool wrote its
   own.
