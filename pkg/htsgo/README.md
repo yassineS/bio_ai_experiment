@@ -86,18 +86,25 @@ Per the convention from `tools/PORTING_STATUS.md`, htsgo gets:
   - `tools/tabix/` (exists) the same after PR-E.
   - `tools/htsfile/` (new in PR-H) is htslib's format-sniffer CLI.
 
-## When to import from here vs. tool-package paths
+## When to import from here
 
-All format packages (`iohelper`, `fasta`, `fastq`, `bed`, `gff`,
-`sam`, `vcf`, `bcf`) are now under `pkg/htsgo/<pkg>` — prefer those
-import paths; the matching `pkg/bioformats/<pkg>` paths are
-deprecated re-export shims that PR-I will delete.
+Always import from `pkg/htsgo/<pkg>` — the legacy
+`pkg/bioformats/<pkg>` and tool-package shim paths
+(`tools/bgzip/pkg/bgzip`, `tools/tabix/pkg/tabix`) were deleted
+in PR-I.
 
-`tools/bgzip/pkg/bgzip` is now a deprecated shim for
-`pkg/htsgo/bgzf`. The BAI surface of `tools/samtools/pkg/samtools`
-is a deprecated shim for `pkg/htsgo/bam`.
-`tools/tabix/pkg/tabix` is now a deprecated shim for
-`pkg/htsgo/tabix`. The remaining samtools subcommand surface in
-`tools/samtools/pkg/samtools` stays in-tool because it's CLI
-orchestration, not format primitives. PR-F extracts the shared
-region (`chr:start-end`) parser scattered across tools.
+bgzip-specific note: callers of the relocated BGZF code use
+`bgzip "github.com/.../pkg/htsgo/bgzf"` as the canonical import
+form — the htsgo target package is named `bgzf` but call sites
+across the tree use the `bgzip.X` qualifier, so the alias
+keeps every existing reference at zero diff cost. New code
+should follow the same pattern.
+
+Two in-samtools sub-shim files remain at
+`tools/samtools/pkg/samtools/{bai_shim.go,region_shim.go}`.
+They have no external callers and exist only so samtools
+subcommand code can use bare `BAIIndex` / `ParseRegion`
+identifiers without prefixing every reference with
+`bam.` / `region.`. Folding them out can ride on the next
+samtools-internal refactor (a global rename is risky because
+`Region` is also a struct field on `ResolvedRegion`).
