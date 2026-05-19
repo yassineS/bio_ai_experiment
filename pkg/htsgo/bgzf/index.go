@@ -1,4 +1,4 @@
-package bgzip
+package bgzf
 
 import (
 	"encoding/binary"

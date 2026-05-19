@@ -199,9 +199,13 @@ flips imports in one mechanical sweep. The pattern mirrors
   `bcf.Writer` API is unchanged; the in-tree `bcf` import inside
   `pkg/htsgo/bcf` was rewired to import `pkg/htsgo/vcf` directly
   rather than going back through the bioformats shim).
-- **PR-C: extract BGZF.** Lift `tools/bgzip/pkg/bgzip/` into
-  `pkg/htsgo/bgzf/`. `tools/bgzip/pkg/bgzip/` becomes a re-export
-  shim until PR-I. `tools/bgzip/` keeps the CLI binary.
+- ~~**PR-C: extract BGZF.**~~ **Landed.** Five source files moved
+  from `tools/bgzip/pkg/bgzip/` to `pkg/htsgo/bgzf/`; the package
+  name flipped from `bgzip` to `bgzf` to match htslib's terminology
+  and the htsgo target tree. The old `tools/bgzip/pkg/bgzip/`
+  directory now holds only a re-export shim (kept under the legacy
+  `bgzip` package name for backwards compatibility). The
+  `tools/bgzip/cmd/bgzip/` CLI binary still builds via the shim.
 - **PR-D: extract BAM + BAI.** Lift from `tools/samtools/`. Same
   shim pattern; `.bai` folds into the `bam/` package directly
   (no separate `bam/bai/` sub-package — see "Target surface" above).

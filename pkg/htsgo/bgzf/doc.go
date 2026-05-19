@@ -16,4 +16,4 @@
 // References:
 //   - SAM/BAM specification, section "The BGZF compression format".
 //   - htslib htslib/bgzf.h, htslib/bgzf.c.
-package bgzip
+package bgzf
