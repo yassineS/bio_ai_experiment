@@ -251,9 +251,16 @@ flips imports in one mechanical sweep. The pattern mirrors
   port (that path is already in `pkg/bioformats/bcf/writer.go`). **This
   PR is independent of A-F** and can land any time — it doesn't
   depend on the extractions and the extractions don't depend on it.
-- **PR-H: faidx + region-iterator API + `tools/htsfile`** (small new
-  CLI; follows `docs/CLI_CONVENTIONS.md` and gets a row in
-  `tools/PORTING_STATUS.md`).
+- **PR-H: faidx + region-iterator API + `tools/htsfile`** — partial
+  landing. The **`tools/htsfile`** CLI shipped (a pure-Go htsfile
+  re-implementation that sniffs SAM/BAM/CRAM/VCF/BCF/FASTA/FASTQ/
+  BED/GFF wrapped in plain/gzip/BGZF, with the same one-line
+  summary form upstream emits). Implementation in
+  `tools/htsfile/pkg/htsfile/` (kept inside the tool tree because
+  the heuristics are CLI-shaped). The other two halves —
+  `pkg/htsgo/fasta` polish and a unified region-iterator API —
+  are still TBD; they ride on no current consumer and can
+  follow on demand.
 - **PR-I: drop `pkg/bioformats/` and tool-package shims**, single
   mechanical rename-imports commit across the tree.
 

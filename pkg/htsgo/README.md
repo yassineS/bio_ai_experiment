@@ -49,7 +49,7 @@ becomes worthwhile (htslib itself keeps them together).
 | ~~PR-E~~ | ~~`tabix` (+ `.csi`) extracted from `tools/tabix/pkg/tabix/`~~ **landed** |
 | ~~PR-F~~ | ~~`region/` — single source for `chr1:100-200` parsing~~ **landed** |
 | PR-G  | already landed inline as the wave-21/22/23 vcftools BCF wiring  |
-| PR-H  | `faidx` polish + region-iterator API + `tools/htsfile` CLI      |
+| PR-H (partial) | `tools/htsfile` CLI landed; `faidx` polish + region-iterator API still TBD |
 | PR-I  | drop `pkg/bioformats/` and tool-package re-export shims         |
 | PR-J+ | CRAM read/write (see `docs/CRAM_DESIGN.md`)                     |
 | PR-K+ | `hfile` virtual filesystem (HTTP / S3 / GCS ranged reads)       |
