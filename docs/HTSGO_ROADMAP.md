@@ -4,7 +4,8 @@ A proposal to consolidate this repo's scattered format/index/compression
 code into a single htslib-equivalent Go library, **htsgo**, and to treat
 that library as a first-class deliverable alongside the CLI tools.
 
-**Status: planning, no code moved yet.** This doc captures the design
+**Status: in-flight migration (PR-A landed; B–I + CRAM follow-ups
+remaining).** This doc captures the design
 decisions so the migration PRs that follow are mechanical, not
 re-litigated.
 

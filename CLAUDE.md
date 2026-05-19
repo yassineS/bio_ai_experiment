@@ -68,7 +68,7 @@ owner approval.
    bit-twiddling to port from htslib's C. The owner has explicitly
    OK'd accepting third-party deps for these primitives rather than
    a from-scratch rANS port. The dep must be confined to a single
-   sub-package under `pkg/bioformats/cram/codec/` so the rest of the
+   sub-package under `pkg/htsgo/cram/codec/` so the rest of the
    repo can still claim "stdlib + gonum only" for non-CRAM workflows.
    See `docs/CRAM_DESIGN.md`.
 
