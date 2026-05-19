@@ -42,19 +42,19 @@ var EOFBlock = []byte{
 // Errors returned by the BGZF reader.
 var (
 	// ErrBadMagic indicates the gzip magic bytes are missing.
-	ErrBadMagic = errors.New("bgzip: not a gzip member (bad magic)")
+	ErrBadMagic = errors.New("bgzf: not a gzip member (bad magic)")
 	// ErrNoExtra indicates the FEXTRA flag is not set on a block header.
-	ErrNoExtra = errors.New("bgzip: gzip block is missing the FEXTRA flag")
+	ErrNoExtra = errors.New("bgzf: gzip block is missing the FEXTRA flag")
 	// ErrNoBCSubfield indicates the BC subfield is absent from the extra field.
-	ErrNoBCSubfield = errors.New("bgzip: gzip extra field is missing the BC subfield")
+	ErrNoBCSubfield = errors.New("bgzf: gzip extra field is missing the BC subfield")
 	// ErrBadBSIZE indicates BSIZE is shorter than the header it sits in.
-	ErrBadBSIZE = errors.New("bgzip: BSIZE is shorter than the gzip header")
+	ErrBadBSIZE = errors.New("bgzf: BSIZE is shorter than the gzip header")
 	// ErrTruncated indicates the stream ended before the BGZF EOF block.
-	ErrTruncated = errors.New("bgzip: stream is truncated (missing EOF block)")
+	ErrTruncated = errors.New("bgzf: stream is truncated (missing EOF block)")
 	// ErrChecksum indicates a block's CRC32 did not match its decoded payload.
-	ErrChecksum = errors.New("bgzip: block CRC32 mismatch")
+	ErrChecksum = errors.New("bgzf: block CRC32 mismatch")
 	// ErrISIZE indicates a block's ISIZE footer did not match the decoded length.
-	ErrISIZE = errors.New("bgzip: block ISIZE mismatch")
+	ErrISIZE = errors.New("bgzf: block ISIZE mismatch")
 )
 
 // gzip header flag bits.
@@ -111,7 +111,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 		return 0, w.err
 	}
 	if w.closed {
-		return 0, errors.New("bgzip: write on closed Writer")
+		return 0, errors.New("bgzf: write on closed Writer")
 	}
 	total := 0
 	for len(p) > 0 {
@@ -198,7 +198,7 @@ func (w *Writer) encodeBlock(payload []byte) error {
 	//   + 8 bytes footer (CRC32 + ISIZE) = 26 + len(deflated).
 	blockLen := 12 + 6 + len(deflated) + 8
 	if blockLen > MaxCompressedBlockSize {
-		return fmt.Errorf("bgzip: compressed block size %d exceeds %d", blockLen, MaxCompressedBlockSize)
+		return fmt.Errorf("bgzf: compressed block size %d exceeds %d", blockLen, MaxCompressedBlockSize)
 	}
 
 	var hdr [18]byte
@@ -353,7 +353,7 @@ func (br *Reader) nextBlock() error {
 	// trailing 8-byte CRC32+ISIZE footer.
 	deflatedLen := hdr.compressedSize - hdr.headerLen - 8
 	if deflatedLen < 0 {
-		return fmt.Errorf("bgzip: invalid block layout (deflate length %d)", deflatedLen)
+		return fmt.Errorf("bgzf: invalid block layout (deflate length %d)", deflatedLen)
 	}
 
 	deflated := make([]byte, deflatedLen)
@@ -461,7 +461,7 @@ func readBlockHeader(r io.Reader) (blockHeader, error) {
 		return blockHeader{}, ErrBadMagic
 	}
 	if fixed[2] != 8 {
-		return blockHeader{}, fmt.Errorf("bgzip: unsupported compression method %d", fixed[2])
+		return blockHeader{}, fmt.Errorf("bgzf: unsupported compression method %d", fixed[2])
 	}
 	flg := fixed[3]
 	if flg&flagFEXTRA == 0 {

@@ -1,4 +1,4 @@
-// Package bgzip implements the Blocked GNU Zip Format (BGZF) used by htslib
+// Package bgzf implements the Blocked GNU Zip Format (BGZF) used by htslib
 // and the samtools/bcftools/tabix ecosystem.
 //
 // A BGZF file is a concatenation of independent gzip member blocks. Each block
