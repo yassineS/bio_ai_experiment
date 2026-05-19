@@ -7,8 +7,8 @@ import (
 	"io"
 	"math"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
-	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
 )
 
 // BAMWriter emits BAM-encoded records on top of a BGZF stream.
@@ -338,7 +338,7 @@ func writeBAMIntCompact(buf *bytes.Buffer, v int64) {
 }
 
 // reg2bin computes the UCSC bin number for a 0-based half-open [beg, end)
-// interval, delegating to the shared implementation in tools/tabix/pkg/tabix.
+// interval, delegating to the shared implementation in pkg/htsgo/tabix.
 // For BAM records the writer guards against a degenerate empty CIGAR (which
 // gives end == beg) by bumping end up so Reg2bin's half-open contract is met.
 func reg2bin(beg, end int) int {

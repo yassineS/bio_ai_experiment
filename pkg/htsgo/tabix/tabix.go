@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
 
 // Magic is the 4-byte file signature at the start of every .tbi file.
