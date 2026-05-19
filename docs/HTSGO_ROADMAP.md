@@ -4,7 +4,8 @@ A proposal to consolidate this repo's scattered format/index/compression
 code into a single htslib-equivalent Go library, **htsgo**, and to treat
 that library as a first-class deliverable alongside the CLI tools.
 
-**Status: planning, no code moved yet.** This doc captures the design
+**Status: in-flight migration (PR-A landed; B–I + CRAM follow-ups
+remaining).** This doc captures the design
 decisions so the migration PRs that follow are mechanical, not
 re-litigated.
 
@@ -178,13 +179,20 @@ Consumers (tests, other tools) keep working unchanged until PR-I
 flips imports in one mechanical sweep. The pattern mirrors
 `pkg/bioformats/`'s own shim role during PRs A/B.
 
-- **PR-A: skeleton.** Create empty `pkg/htsgo/`, move `iohelper` and
+- ~~**PR-A: skeleton.** Create empty `pkg/htsgo/`, move `iohelper` and
   the four uncontroversial format packages (fasta, fastq, bed, gff)
   from `pkg/bioformats/`. Add re-export shims so nothing breaks. Update
   `pkg/htsgo/README.md`. Also update the path reference in
   `docs/CRAM_DESIGN.md` (`pkg/bioformats/cram/codec/` →
   `pkg/htsgo/cram/codec/`) and the stale "Future Enhancements" line
-  in `pkg/bioformats/README.md`. No new functionality.
+  in `pkg/bioformats/README.md`. No new functionality.~~
+  **Landed.** All five leaf packages moved with their tests; shims
+  at the old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff}/` paths
+  re-export through type aliases + function variables so the ~220
+  in-tree importers keep working unchanged. `docs/CRAM_DESIGN.md`
+  paths updated; `pkg/bioformats/README.md` rewritten as a
+  deprecation pointer; `pkg/htsgo/README.md` is the new canonical
+  inventory.
 - **PR-B: SAM/VCF/BCF move.** Same mechanical move for the three
   remaining `pkg/bioformats/` packages. After this PR, `pkg/bioformats/`
   contains only re-export shims. The existing `bcf.Writer` carries
