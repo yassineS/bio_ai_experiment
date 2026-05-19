@@ -1,4 +1,4 @@
-package bgzip
+package bgzf
 
 import (
 	"encoding/binary"
@@ -50,7 +50,7 @@ func Scan(r io.Reader) ([]BlockOffset, error) {
 		}
 		deflatedLen := hdr.compressedSize - hdr.headerLen - 8
 		if deflatedLen < 0 {
-			return offsets, fmt.Errorf("bgzip: invalid block layout (deflate length %d)", deflatedLen)
+			return offsets, fmt.Errorf("bgzf: invalid block layout (deflate length %d)", deflatedLen)
 		}
 		// Read and discard the deflate body and the 8-byte footer, but parse
 		// ISIZE so we know the uncompressed size.
@@ -113,7 +113,7 @@ func DecompressedSize(r io.Reader) (int64, error) {
 // total decompressed size is returned.
 func UncompressedOffsetAt(r io.Reader, compOff int64) (int64, error) {
 	if compOff < 0 {
-		return 0, errors.New("bgzip: negative offset")
+		return 0, errors.New("bgzf: negative offset")
 	}
 	offsets, err := Scan(r)
 	if err != nil && !errors.Is(err, ErrTruncated) {
@@ -127,7 +127,7 @@ func UncompressedOffsetAt(r io.Reader, compOff int64) (int64, error) {
 			return b.UncompressedOffset, nil
 		}
 		if b.CompressedOffset > compOff {
-			return 0, fmt.Errorf("bgzip: offset %d does not start a block", compOff)
+			return 0, fmt.Errorf("bgzf: offset %d does not start a block", compOff)
 		}
 	}
 	// Past the last block — return the total decompressed size, which is the

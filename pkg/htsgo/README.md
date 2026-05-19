@@ -20,17 +20,19 @@ BCF, Tabix/CSI, FASTA, FASTA index, FASTQ, BED, GFF, region parsing.
 | `sam`               | `pkg/htsgo/sam/`               | SAM + BAM reader/writer, flag + cigar consts    |
 | `vcf`               | `pkg/htsgo/vcf/`               | Text VCF reader/writer                          |
 | `bcf`               | `pkg/htsgo/bcf/`               | Binary BCF v2.2 reader/writer + dict helpers    |
+| `bgzf`              | `pkg/htsgo/bgzf/`              | BGZF reader/writer + `.gzi` index               |
 
 Old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff,sam,vcf,bcf}/`
-paths still resolve via tiny re-export shims; new code should import
-the htsgo path directly. The shims will be deleted in PR-I.
+and `tools/bgzip/pkg/bgzip/` paths still resolve via tiny re-export
+shims; new code should import the htsgo path directly. The shims
+will be deleted in PR-I.
 
 ## Coming in subsequent PRs
 
 | PR    | Brings in                                                       |
 |-------|-----------------------------------------------------------------|
 | ~~PR-B~~ | ~~`sam`, `vcf`, `bcf` move~~ **landed**                       |
-| PR-C  | `bgzf` extracted from `tools/bgzip/pkg/bgzip/`                  |
+| ~~PR-C~~ | ~~`bgzf` extracted from `tools/bgzip/pkg/bgzip/`~~ **landed** |
 | PR-D  | `bam` (+ `.bai`) extracted from `tools/samtools/pkg/samtools/` |
 | PR-E  | `tabix` (+ `.csi`) extracted from `tools/tabix/pkg/tabix/`     |
 | PR-F  | `region/` — single source for `chr1:100-200` parsing            |
@@ -73,6 +75,7 @@ All format packages (`iohelper`, `fasta`, `fastq`, `bed`, `gff`,
 import paths; the matching `pkg/bioformats/<pkg>` paths are
 deprecated re-export shims that PR-I will delete.
 
-The in-tool packages still at their original locations
-(`tools/bgzip/pkg/bgzip`, `tools/samtools/pkg/samtools`,
-`tools/tabix/pkg/tabix`) migrate in PRs C–E per the table above.
+`tools/bgzip/pkg/bgzip` is now a deprecated shim for
+`pkg/htsgo/bgzf`. The in-tool packages still at their original
+locations (`tools/samtools/pkg/samtools`, `tools/tabix/pkg/tabix`)
+migrate in PRs D–E per the table above.

@@ -8,6 +8,11 @@
 # Tool binaries in root directory
 /seqtk
 /prinseq
+/bgzip
+/tabix
+/samtools
+/bcftools
+/vcftools
 
 # Tool binaries (ignore built executables in tool directories)
 # Only ignore executable binaries in tool root directories
