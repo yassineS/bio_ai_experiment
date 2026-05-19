@@ -68,9 +68,11 @@ Per the convention from `tools/PORTING_STATUS.md`, htsgo gets:
 
 ## When to import from here vs. tool-package paths
 
-For the leaf packages already migrated (`iohelper`, `fasta`, `fastq`,
-`bed`, `gff`) prefer `pkg/htsgo/<pkg>` — the `pkg/bioformats/` paths
-are deprecated. Format packages not yet migrated (sam, vcf, bcf) and
-the in-tool packages (`tools/bgzip/pkg/bgzip`,
-`tools/samtools/pkg/samtools`, `tools/tabix/pkg/tabix`) still live at
-their current locations and migrate in the listed PR sequence.
+All format packages (`iohelper`, `fasta`, `fastq`, `bed`, `gff`,
+`sam`, `vcf`, `bcf`) are now under `pkg/htsgo/<pkg>` — prefer those
+import paths; the matching `pkg/bioformats/<pkg>` paths are
+deprecated re-export shims that PR-I will delete.
+
+The in-tool packages still at their original locations
+(`tools/bgzip/pkg/bgzip`, `tools/samtools/pkg/samtools`,
+`tools/tabix/pkg/tabix`) migrate in PRs C–E per the table above.

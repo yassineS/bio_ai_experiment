@@ -19,16 +19,16 @@
 // Out of scope for this slice (deferred to a follow-up PR):
 //
 //   - Writing BCF (encoder).
-//   - .csi indexing of BCF for random access (today the index code lives next
-//     to pkg/bioformats/sam/bai for BAM and tabix for bgzipped VCF; csi will
-//     come with the next bcftools slice).
+//   - .csi indexing of BCF for random access (today the BAM .bai code lives
+//     under tools/samtools and tabix under tools/tabix; both move into htsgo
+//     in PRs D and E. .csi for BCF will come with the next bcftools slice).
 //   - GVCF-specific REF/ALT conventions beyond what the standard decoder
 //     already handles.
 //
 // # BCF layout
 //
 // A BCF file is BGZF-wrapped (so callers should hand the decoder a BGZF-
-// decompressed stream from pkg/bioformats/iohelper). The on-disk layout is:
+// decompressed stream from pkg/htsgo/iohelper). The on-disk layout is:
 //
 //	magic[5] = "BCF\2\2"
 //	l_text   uint32          // length of the text header including trailing NUL
