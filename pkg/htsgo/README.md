@@ -23,6 +23,7 @@ BCF, Tabix/CSI, FASTA, FASTA index, FASTQ, BED, GFF, region parsing.
 | `bgzf`              | `pkg/htsgo/bgzf/`              | BGZF reader/writer + `.gzi` index               |
 | `bam`               | `pkg/htsgo/bam/`               | BAI (.bai) index format + `BuildBAI(*sam.BAMReader)` |
 | `tabix`             | `pkg/htsgo/tabix/`             | Tabix (.tbi) + CSI (.csi) + binning helpers (Reg2bin, LinearTile) |
+| `region`            | `pkg/htsgo/region/`            | `chr:start-end` parser + ResolveRegions (BAI-agnostic) |
 
 Old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff,sam,vcf,bcf}/`,
 `tools/bgzip/pkg/bgzip/`, and the BAI surface of
@@ -46,7 +47,7 @@ becomes worthwhile (htslib itself keeps them together).
 | ~~PR-C~~ | ~~`bgzf` extracted from `tools/bgzip/pkg/bgzip/`~~ **landed** |
 | ~~PR-D~~ | ~~`bam` (BAI primitives) extracted from `tools/samtools/`~~ **landed** |
 | ~~PR-E~~ | ~~`tabix` (+ `.csi`) extracted from `tools/tabix/pkg/tabix/`~~ **landed** |
-| PR-F  | `region/` — single source for `chr1:100-200` parsing            |
+| ~~PR-F~~ | ~~`region/` — single source for `chr1:100-200` parsing~~ **landed** |
 | PR-G  | already landed inline as the wave-21/22/23 vcftools BCF wiring  |
 | PR-H  | `faidx` polish + region-iterator API + `tools/htsfile` CLI      |
 | PR-I  | drop `pkg/bioformats/` and tool-package re-export shims         |
