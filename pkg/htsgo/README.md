@@ -44,7 +44,6 @@ becomes worthwhile (htslib itself keeps them together).
 | ~~PR-B~~ | ~~`sam`, `vcf`, `bcf` move~~ **landed**                       |
 | ~~PR-C~~ | ~~`bgzf` extracted from `tools/bgzip/pkg/bgzip/`~~ **landed** |
 | ~~PR-D~~ | ~~`bam` (BAI primitives) extracted from `tools/samtools/`~~ **landed** |
-| PR-D  | `bam` (+ `.bai`) extracted from `tools/samtools/pkg/samtools/` |
 | PR-E  | `tabix` (+ `.csi`) extracted from `tools/tabix/pkg/tabix/`     |
 | PR-F  | `region/` — single source for `chr1:100-200` parsing            |
 | PR-G  | already landed inline as the wave-21/22/23 vcftools BCF wiring  |

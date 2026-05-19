@@ -22,7 +22,7 @@ var BAIMagic = [4]byte{'B', 'A', 'I', 0x01}
 const MetaBin uint32 = 37450
 
 // ErrBadBAIMagic indicates the input did not start with the BAI magic bytes.
-var ErrBadBAIMagic = errors.New("samtools: not a BAI index (bad magic)")
+var ErrBadBAIMagic = errors.New("bam: not a BAI index (bad magic)")
 
 // BAIChunk is one virtual-offset range — exactly two uint64s on disk.
 type BAIChunk struct {
@@ -109,7 +109,7 @@ func (b *BAIBuilder) AddRecord(refID, beg, end int, vBeg, vEnd uint64, mapped bo
 		return nil
 	}
 	if refID >= b.totalRefs {
-		return fmt.Errorf("samtools: BAI refID %d >= %d", refID, b.totalRefs)
+		return fmt.Errorf("bam: BAI refID %d >= %d", refID, b.totalRefs)
 	}
 	if end <= beg {
 		end = beg + 1
@@ -274,7 +274,7 @@ func ReadBAI(r io.Reader) (*BAIIndex, error) {
 		return nil, err
 	}
 	if nRef < 0 {
-		return nil, fmt.Errorf("samtools: BAI negative n_ref %d", nRef)
+		return nil, fmt.Errorf("bam: BAI negative n_ref %d", nRef)
 	}
 	idx := &BAIIndex{Refs: make([]BAIRef, nRef)}
 	for i := int32(0); i < nRef; i++ {
@@ -283,7 +283,7 @@ func ReadBAI(r io.Reader) (*BAIIndex, error) {
 			return nil, err
 		}
 		if nBin < 0 {
-			return nil, fmt.Errorf("samtools: BAI negative n_bin %d", nBin)
+			return nil, fmt.Errorf("bam: BAI negative n_bin %d", nBin)
 		}
 		bins := make([]BAIBin, nBin)
 		for j := range bins {
@@ -295,7 +295,7 @@ func ReadBAI(r io.Reader) (*BAIIndex, error) {
 				return nil, err
 			}
 			if nChunk < 0 {
-				return nil, fmt.Errorf("samtools: BAI negative n_chunk %d", nChunk)
+				return nil, fmt.Errorf("bam: BAI negative n_chunk %d", nChunk)
 			}
 			chunks := make([]BAIChunk, nChunk)
 			for k := range chunks {
@@ -313,7 +313,7 @@ func ReadBAI(r io.Reader) (*BAIIndex, error) {
 			return nil, err
 		}
 		if nIntv < 0 {
-			return nil, fmt.Errorf("samtools: BAI negative n_intv %d", nIntv)
+			return nil, fmt.Errorf("bam: BAI negative n_intv %d", nIntv)
 		}
 		linear := make([]uint64, nIntv)
 		for k := range linear {
