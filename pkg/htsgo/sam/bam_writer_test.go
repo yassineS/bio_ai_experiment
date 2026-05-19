@@ -94,7 +94,7 @@ func TestBAMWriteCompactInt(t *testing.T) {
 // tabix.Reg2bin (it just adds a guard for empty intervals).
 func TestReg2Bin(t *testing.T) {
 	// Smoke test a handful of intervals — the per-tier verification lives
-	// in tools/tabix/pkg/tabix's binning_test.go.
+	// in pkg/htsgo/tabix's binning_test.go.
 	if got := reg2bin(0, 1); got != 4681 {
 		t.Errorf("reg2bin(0,1): got %d want 4681", got)
 	}

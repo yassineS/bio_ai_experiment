@@ -8,7 +8,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 // BAIMagic is the 4-byte signature at the head of every well-formed .bai

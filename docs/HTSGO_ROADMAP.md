@@ -219,7 +219,17 @@ flips imports in one mechanical sweep. The pattern mirrors
   orchestration (the `Index` / `IndexFile` functions) keeps
   living in `tools/samtools/` because it's CLI-level, not
   format-level.
-- **PR-E: extract Tabix/CSI.** Lift from `tools/tabix/`.
+- ~~**PR-E: extract Tabix/CSI.**~~ **Landed.** Ten source files moved
+  from `tools/tabix/pkg/tabix/` to `pkg/htsgo/tabix/` (Tabix/TBI
+  + CSI format primitives + the binning helpers `Reg2bin` /
+  `LinearTile` shared by BAI). Shim at the old path keeps the
+  tabix CLI building. As a bonus this PR fixed the
+  htsgo-imports-tools antipattern: `pkg/htsgo/sam/bam_writer.go`
+  and `pkg/htsgo/bam/bai.go` previously imported the binning
+  helpers from `tools/tabix/pkg/tabix` (library reaching into a
+  tool package); both now import `pkg/htsgo/tabix` directly. The
+  package's `pkg/htsgo/bgzf` import was also tightened (no longer
+  routed through the bgzip shim).
 - **PR-F: extract region parser** from wherever each tool wrote its
   own.
 - **PR-G: wire vcftools BCF flags.** Plug `--bcf` / `--diff-bcf` /

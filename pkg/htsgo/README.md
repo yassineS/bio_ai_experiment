@@ -22,6 +22,7 @@ BCF, Tabix/CSI, FASTA, FASTA index, FASTQ, BED, GFF, region parsing.
 | `bcf`               | `pkg/htsgo/bcf/`               | Binary BCF v2.2 reader/writer + dict helpers    |
 | `bgzf`              | `pkg/htsgo/bgzf/`              | BGZF reader/writer + `.gzi` index               |
 | `bam`               | `pkg/htsgo/bam/`               | BAI (.bai) index format + `BuildBAI(*sam.BAMReader)` |
+| `tabix`             | `pkg/htsgo/tabix/`             | Tabix (.tbi) + CSI (.csi) + binning helpers (Reg2bin, LinearTile) |
 
 Old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff,sam,vcf,bcf}/`,
 `tools/bgzip/pkg/bgzip/`, and the BAI surface of
@@ -44,7 +45,7 @@ becomes worthwhile (htslib itself keeps them together).
 | ~~PR-B~~ | ~~`sam`, `vcf`, `bcf` move~~ **landed**                       |
 | ~~PR-C~~ | ~~`bgzf` extracted from `tools/bgzip/pkg/bgzip/`~~ **landed** |
 | ~~PR-D~~ | ~~`bam` (BAI primitives) extracted from `tools/samtools/`~~ **landed** |
-| PR-E  | `tabix` (+ `.csi`) extracted from `tools/tabix/pkg/tabix/`     |
+| ~~PR-E~~ | ~~`tabix` (+ `.csi`) extracted from `tools/tabix/pkg/tabix/`~~ **landed** |
 | PR-F  | `region/` — single source for `chr1:100-200` parsing            |
 | PR-G  | already landed inline as the wave-21/22/23 vcftools BCF wiring  |
 | PR-H  | `faidx` polish + region-iterator API + `tools/htsfile` CLI      |
@@ -87,6 +88,9 @@ deprecated re-export shims that PR-I will delete.
 
 `tools/bgzip/pkg/bgzip` is now a deprecated shim for
 `pkg/htsgo/bgzf`. The BAI surface of `tools/samtools/pkg/samtools`
-is a deprecated shim for `pkg/htsgo/bam`. The remaining tool
-packages (`tools/samtools/pkg/samtools` for non-BAI subcommands,
-`tools/tabix/pkg/tabix`) migrate further in PR-E.
+is a deprecated shim for `pkg/htsgo/bam`.
+`tools/tabix/pkg/tabix` is now a deprecated shim for
+`pkg/htsgo/tabix`. The remaining samtools subcommand surface in
+`tools/samtools/pkg/samtools` stays in-tool because it's CLI
+orchestration, not format primitives. PR-F extracts the shared
+region (`chr:start-end`) parser scattered across tools.
