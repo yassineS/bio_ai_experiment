@@ -8,7 +8,7 @@
 //   - Parsing the BCF magic header and the VCF-style text header that follows
 //     it. Header dictionaries (CHROM, FILTER, INFO, FORMAT) are extracted from
 //     the meta-information lines so that record bodies can be decoded into
-//     plain VCF text via the existing pkg/bioformats/vcf types.
+//     plain VCF text via the existing pkg/htsgo/vcf types.
 //   - Sequential record decoding including the "shared" portion (CHROM, POS,
 //     RLEN, QUAL, FILTER, INFO, ID, ref/alt alleles) and the per-sample
 //     "individual" portion (FORMAT fields for every sample).

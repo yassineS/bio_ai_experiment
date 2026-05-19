@@ -8,7 +8,7 @@ BCF, Tabix/CSI, FASTA, FASTA index, FASTQ, BED, GFF, region parsing.
 `pkg/bioformats/`; htsgo is the consolidation target. See
 `docs/HTSGO_ROADMAP.md` for the full plan and PR sequence (A → I).
 
-## Current contents (PR-A — this PR)
+## Current contents (after PR-B)
 
 | Sub-package         | Source of truth                | Notes                                  |
 |---------------------|--------------------------------|----------------------------------------|
@@ -17,16 +17,19 @@ BCF, Tabix/CSI, FASTA, FASTA index, FASTQ, BED, GFF, region parsing.
 | `fastq`             | `pkg/htsgo/fastq/`             | Reader/Writer with Phred33/64 enums    |
 | `bed`               | `pkg/htsgo/bed/`               | BED + BEDPE + interval-tree                     |
 | `gff`               | `pkg/htsgo/gff/`               | GFF/GTF reader                                  |
+| `sam`               | `pkg/htsgo/sam/`               | SAM + BAM reader/writer, flag + cigar consts    |
+| `vcf`               | `pkg/htsgo/vcf/`               | Text VCF reader/writer                          |
+| `bcf`               | `pkg/htsgo/bcf/`               | Binary BCF v2.2 reader/writer + dict helpers    |
 
-Old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff}/` paths still
-resolve via tiny re-export shims; new code should import the htsgo
-path directly. The shims will be deleted in PR-I.
+Old `pkg/bioformats/{iohelper,fasta,fastq,bed,gff,sam,vcf,bcf}/`
+paths still resolve via tiny re-export shims; new code should import
+the htsgo path directly. The shims will be deleted in PR-I.
 
 ## Coming in subsequent PRs
 
 | PR    | Brings in                                                       |
 |-------|-----------------------------------------------------------------|
-| PR-B  | `sam`, `vcf`, `bcf` move (still leaves bcftools / vcftools wrappers in their tool packages) |
+| ~~PR-B~~ | ~~`sam`, `vcf`, `bcf` move~~ **landed**                       |
 | PR-C  | `bgzf` extracted from `tools/bgzip/pkg/bgzip/`                  |
 | PR-D  | `bam` (+ `.bai`) extracted from `tools/samtools/pkg/samtools/` |
 | PR-E  | `tabix` (+ `.csi`) extracted from `tools/tabix/pkg/tabix/`     |

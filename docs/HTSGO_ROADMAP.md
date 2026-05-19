@@ -193,10 +193,12 @@ flips imports in one mechanical sweep. The pattern mirrors
   paths updated; `pkg/bioformats/README.md` rewritten as a
   deprecation pointer; `pkg/htsgo/README.md` is the new canonical
   inventory.
-- **PR-B: SAM/VCF/BCF move.** Same mechanical move for the three
-  remaining `pkg/bioformats/` packages. After this PR, `pkg/bioformats/`
-  contains only re-export shims. The existing `bcf.Writer` carries
-  through unchanged.
+- ~~**PR-B: SAM/VCF/BCF move.**~~ **Landed.** The three remaining
+  `pkg/bioformats/` packages relocated to `pkg/htsgo/`. After this
+  PR, `pkg/bioformats/` contains only re-export shims (the
+  `bcf.Writer` API is unchanged; the in-tree `bcf` import inside
+  `pkg/htsgo/bcf` was rewired to import `pkg/htsgo/vcf` directly
+  rather than going back through the bioformats shim).
 - **PR-C: extract BGZF.** Lift `tools/bgzip/pkg/bgzip/` into
   `pkg/htsgo/bgzf/`. `tools/bgzip/pkg/bgzip/` becomes a re-export
   shim until PR-I. `tools/bgzip/` keeps the CLI binary.
