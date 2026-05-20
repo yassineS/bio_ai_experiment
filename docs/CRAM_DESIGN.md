@@ -2,7 +2,17 @@
 
 CRAM is the htslib-stack format we have **not** yet ported. This doc
 captures the up-front decisions so when we start the implementation we're
-not re-litigating them. **Status: planning, no code yet.**
+not re-litigating them. **Status: in execution — see
+[`CRAM_ROADMAP.md`](CRAM_ROADMAP.md) for the live plan.**
+
+> **Note (post-C1):** the "Dependency policy" and "Open questions"
+> sections below pre-date the first implementation PR. The rANS
+> port-vs-dep question was resolved **in favour of an in-tree pure-Go
+> port** — `pkg/htsgo/cram/codec` ships rANS 4x8 with no third-party
+> dep, proven byte-exact against the htscodecs corpus. The only
+> sanctioned CRAM dep is now `ulikunitz/xz` for LZMA. The
+> authoritative, up-to-date decisions live in
+> [`CRAM_ROADMAP.md`](CRAM_ROADMAP.md) §1.2 and §5.
 
 ## Why CRAM is held up
 

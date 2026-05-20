@@ -25,6 +25,17 @@ const (
 	ransTotFreq  = 1 << ransTFShift
 	ransByteL    = 1 << 23 // lower bound of the normalisation interval.
 	ransHeaderSz = 9
+
+	// maxRANSRawSize is a defensive ceiling on the decompressed size a
+	// stream header may declare. rANS can legitimately expand highly
+	// redundant data by a large factor (a 30-byte stream of one symbol
+	// decodes to megabytes), so the ceiling can't be derived from the
+	// compressed size — it has to be absolute. 1 GiB is orders of
+	// magnitude above any real CRAM block (slices are typically ≤10 MB)
+	// while still rejecting a malicious header that would otherwise
+	// drive an unbounded allocation. htscodecs guards with INT_MAX;
+	// this is the stricter, OOM-safe equivalent.
+	maxRANSRawSize = 1 << 30
 )
 
 // RANS4x8Decode decompresses a complete rANS 4x8 stream (header
@@ -39,6 +50,10 @@ func RANS4x8Decode(in []byte) ([]byte, error) {
 	if int(compSize) != len(in)-ransHeaderSz {
 		return nil, fmt.Errorf("rans4x8: compressed-size header %d != actual payload %d",
 			compSize, len(in)-ransHeaderSz)
+	}
+	if rawSize > maxRANSRawSize {
+		return nil, fmt.Errorf("rans4x8: declared raw size %d exceeds the %d-byte safety ceiling",
+			rawSize, maxRANSRawSize)
 	}
 	switch order {
 	case 0:
@@ -184,7 +199,10 @@ func ransDecodeO1(in []byte, rawSize uint32) ([]byte, error) {
 	cp := ransHeaderSz
 
 	// D[ctx] is the TF_SHIFT-wide reverse lookup (cumfreq → symbol);
-	// freq[ctx][sym] / start[ctx][sym] advance the state.
+	// freq[ctx][sym] / start[ctx][sym] advance the state. D is
+	// 256×4096 = 1 MiB — large for a local, but Go's growable stacks
+	// handle it and keeping it on the stack avoids a per-call heap
+	// allocation on the decode hot path.
 	var D [256][ransTotFreq]byte
 	var freq [256][256]uint32
 	var start [256][256]uint32
