@@ -38,7 +38,7 @@ bedgetfasta -fi genome.fa -bed transcripts.bed12 -split -s > transcripts.fa
 
 ## Behaviour
 
-- **Case-preserving fetch.** Where the shared `pkg/bioformats/fasta` random
+- **Case-preserving fetch.** Where the shared `pkg/htsgo/fasta` random
   access uppercases output for case-insensitive downstream comparison
   (`bcftools norm` etc.), `bedgetfasta` ships its own case-preserving
   `FetchPreserveCase` so IUPAC codes round-trip exactly.
@@ -56,7 +56,7 @@ bedgetfasta -fi genome.fa -bed transcripts.bed12 -split -s > transcripts.fa
 ## BGZF input
 
 `-fi *.fa.gz` (bgzipped FASTA) is supported transparently: the file is
-sniffed for the BGZF magic and routed through `pkg/bioformats/fasta`'s
+sniffed for the BGZF magic and routed through `pkg/htsgo/fasta`'s
 `OpenRandomAccessBGZF`, which fully decompresses the payload in-memory
 and reuses the standard FAI index path. A samtools-style sibling
 `<path>.fa.gz.fai` is honoured when present; otherwise the index is

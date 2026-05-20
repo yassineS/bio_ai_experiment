@@ -100,7 +100,7 @@ Match samtools's `REF_PATH` / `REF_CACHE` semantics:
    parser, data-series decoders, MD5+REF_PATH plumbing, `.crai` index
    read. Pure-Go on top of (1). ~3 weeks.
 3. **CLI plumbing** — wire the new reader through
-   `pkg/bioformats/iohelper` (auto-detect CRAM by magic bytes) so
+   `pkg/htsgo/iohelper` (auto-detect CRAM by magic bytes) so
    `samtools view`, `samtools depth`, `samtools fastq`,
    `samtools mpileup`, etc. all transparently accept CRAM input. ~1
    week.

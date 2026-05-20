@@ -32,7 +32,7 @@ bio_ai_experiment/
 
 ### 1. Shared Libraries First
 
-Create reusable format parsers in `pkg/bioformats/`:
+Create reusable format parsers in `pkg/htsgo/`:
 
 - Reduces code duplication
 - Ensures consistency
@@ -44,7 +44,7 @@ Example:
 ```go
 // Don't reimplement FASTA parsing in each tool
 // Use the shared library:
-import "github.com/yassineS/bio_ai_experiment/pkg/bioformats/fasta"
+import "github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 
 reader := fasta.NewReader(file)
 ```
@@ -291,7 +291,7 @@ Create comprehensive documentation:
        "github.com/pkg/errors"
        
        // Internal
-       "github.com/yassineS/bio_ai_experiment/pkg/bioformats"
+       "github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
    )
    ```
 
@@ -546,6 +546,6 @@ See `tools/seqtk/` for a complete reference implementation demonstrating:
 ## Getting Help
 
 - Check existing implementations in `tools/`
-- Review `pkg/bioformats/` for format handling
+- Review `pkg/htsgo/` for format handling
 - Read tool analyses in `docs/tools/`
 - Open an issue for questions

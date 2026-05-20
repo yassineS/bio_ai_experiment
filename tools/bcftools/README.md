@@ -67,14 +67,14 @@ subcommands. The current implementation ships:
   SNP-only, uniform-error binomial likelihood model: each base
   contributes log10(P(base | g)) for g ∈ {0/0, 0/1, 1/1} based on
   e = 10^(-Q/10), then sums across reads and emits Phred-scaled
-  `FORMAT/PL`. Reads `pkg/bioformats/sam` for BAM ingestion and
-  `pkg/bioformats/fasta` for the reference. Output is a streaming
+  `FORMAT/PL`. Reads `pkg/htsgo/sam` for BAM ingestion and
+  `pkg/htsgo/fasta` for the reference. Output is a streaming
   VCF with `INFO/DP`, `INFO/I16`, and biallelic `FORMAT/PL`. BAQ
   recalibration, indel calling, and the full MAQ likelihood model
   are tracked in `docs/PARITY_ROADMAP.md`.
-- `pkg/bioformats/bcf` — reader and writer for the BCF v2.2 binary format.
+- `pkg/htsgo/bcf` — reader and writer for the BCF v2.2 binary format.
 
-All pieces share the existing `pkg/bioformats/vcf` types so downstream
+All pieces share the existing `pkg/htsgo/vcf` types so downstream
 consumers see records as familiar `vcf.Variant` values.
 
 ## Quick start
@@ -392,7 +392,7 @@ to walk past position 1 is reported as an error.
 
 ### `.fai` index
 
-`pkg/bioformats/fasta` ships a small `.fai` reader. The format is the same
+`pkg/htsgo/fasta` ships a small `.fai` reader. The format is the same
 five-column tab-separated layout `samtools faidx` produces:
 
 ```text
@@ -536,12 +536,12 @@ What is **deferred** to a follow-up PR:
 on disk (.vcf, .vcf.gz, .bcf)
         │
         ▼
-pkg/bioformats/iohelper.OpenReader    (auto-detects BGZF / gzip / plain)
+pkg/htsgo/iohelper.OpenReader    (auto-detects BGZF / gzip / plain)
         │
         ▼
 streaming dispatcher in pkg bcftools
-   ├── BCF? → pkg/bioformats/bcf decoder → ToVariant()
-   └── VCF? → pkg/bioformats/vcf decoder
+   ├── BCF? → pkg/htsgo/bcf decoder → ToVariant()
+   └── VCF? → pkg/htsgo/vcf decoder
         │
         ▼
 filter pipeline (region / -t / -f / -c / -C / -q / -Q / -i / -e / -s / -G)
@@ -555,13 +555,13 @@ vcf.Writer  →  stdout / -o file / gzip wrap when -O z
 Run from the repo root:
 
 ```bash
-go test ./pkg/bioformats/bcf/... ./tools/bcftools/...
-go test -race -cover ./pkg/bioformats/bcf/... ./tools/bcftools/...
+go test ./pkg/htsgo/bcf/... ./tools/bcftools/...
+go test -race -cover ./pkg/htsgo/bcf/... ./tools/bcftools/...
 ```
 
 Coverage targets:
 
-- `pkg/bioformats/bcf` ≥ 80% (BCF parsing is fiddly; we hit ~82% in this
+- `pkg/htsgo/bcf` ≥ 80% (BCF parsing is fiddly; we hit ~82% in this
   slice).
 - `tools/bcftools/pkg/bcftools` ≥ 85% (we hit ~86% with the `stats` slice
   in place; `stats.go`-only coverage is ~93%).

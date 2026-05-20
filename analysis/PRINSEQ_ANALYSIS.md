@@ -281,7 +281,7 @@ Complete analysis of PRINSEQ tool using standardized template for improvement op
 #### Go Implementation
 
 - Go 1.21 or later - Standard library only
-- github.com/yassineS/bio_ai_experiment/pkg/bioformats - Internal shared library
+- github.com/yassineS/bio_ai_experiment/pkg/htsgo - Internal shared library
   - FASTA parser/writer
   - FASTQ parser/writer
 

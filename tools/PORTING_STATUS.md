@@ -35,8 +35,8 @@ the way.
   vcftools ~83%, seqtk ~86%, fastp ~77%, sickle ~82%, **bcftools 85%**,
   **tabix 86%**, **samtools 87%**, **bgzip 90%**, prinseq 99.9%,
   skewer 100%, bedmerge 100%, bedintersect 100%
-- **Shared format packages**: `pkg/bioformats/sam` 87% coverage (SAM/BAM
-  read+write); `pkg/bioformats/bcf` 82% coverage (BCF v2.2 read).
+- **Shared format packages**: `pkg/htsgo/sam` 87% coverage (SAM/BAM
+  read+write); `pkg/htsgo/bcf` 82% coverage (BCF v2.2 read).
 - **Test coverage** — new bedtools tools: bedsort 92%, bedflank 92%,
   bedclosest 93%, bedsubtract 94%, bedgenomecov 94%, bedcomplement 95%,
   bedslop 95%, bedjaccard 96%
@@ -49,9 +49,9 @@ the way.
   byte-for-byte (PE matrix mode and SW-tail matcher closed in 2026-05-16).
 - **Documentation**: README per tool; some design docs are aspirational, not status
 - **Compression support**: sickle, skewer, fastp, bedmerge, bedintersect, vcftools
-  go through `pkg/bioformats/iohelper`, which now **transparently sniffs BGZF**
+  go through `pkg/htsgo/iohelper`, which now **transparently sniffs BGZF**
   via the `BC` extra-subfield magic and routes through the pure-Go
-  `tools/bgzip/pkg/bgzip` reader (PR #57); plain gzip still routes through
+  `pkg/htsgo/bgzf` reader (PR #57); plain gzip still routes through
   `compress/gzip`. Seqtk/prinseq don't currently call iohelper.
 - **CI**: workflow currently disabled (manual-only via `workflow_dispatch`);
   agents run `gofmt`/`vet`/`build`/`test -race -cover` + `markdownlint` locally
@@ -677,7 +677,7 @@ Eight more `bedtools` subcommands were ported in this round, alongside the
 existing `bedmerge` and `bedintersect`. Every one of them has its own
 `tools/bedX/cmd/bedX/main.go` + `pkg/bedX/*.go` + `README.md`, follows the
 POSIX-compliant CLI conventions in [`../docs/CLI_CONVENTIONS.md`](../docs/CLI_CONVENTIONS.md),
-and reuses `pkg/bioformats/bed` + `pkg/bioformats/iohelper`.
+and reuses `pkg/htsgo/bed` + `pkg/htsgo/iohelper`.
 
 | Tool | Maps to | Coverage | Highlights |
 |------|---------|---------:|------------|
@@ -723,9 +723,9 @@ Two new tools landed back-to-back as picks #1 and #2 from
 | Tool | Coverage | Maps to | Highlights |
 |------|---------:|---------|------------|
 | `bgzip` | **90.0%** | htslib `bgzip` | Pure-Go BGZF codec (`pkg/bgzip`); flags `-c`/`-d`/`-f`/`-k`/`-l`/`-b`/`-s`/`-r`; `-t` accepted but single-threaded in v1. Validates `BC` subfield, EOF marker, CRC32, ISIZE. Writes htslib-compatible `.gzi` indices. |
-| `tabix` | **85.5%** | htslib `tabix` | Pure-Go `.tbi` builder + region queries; presets `vcf`/`bed`/`gff`/`sam`; UCSC binning + linear index match the htslib 2011 paper to the byte. Built on `tools/bgzip/pkg/bgzip`. Deviations: `-T`/`--targets` currently behaves as `-R`; `--reheader` deferred. |
+| `tabix` | **85.5%** | htslib `tabix` | Pure-Go `.tbi` builder + region queries; presets `vcf`/`bed`/`gff`/`sam`; UCSC binning + linear index match the htslib 2011 paper to the byte. Built on `pkg/htsgo/bgzf`. Deviations: `-T`/`--targets` currently behaves as `-R`; `--reheader` deferred. |
 
-Plus `pkg/bioformats/iohelper` was extended (PR #57) to **transparently
+Plus `pkg/htsgo/iohelper` was extended (PR #57) to **transparently
 detect BGZF** via the `BC`-subfield magic and route through the new bgzip
 reader, so every existing tool reading `.vcf.gz`/`.bed.gz`/`.bam` via
 `iohelper.OpenReader` gets the upgrade for free.
@@ -738,7 +738,7 @@ UCSC binning scheme), `bcftools` (`.vcf.gz`/`.bcf` random-access), and
 
 ### 11. samtools (May 2026, picks #3 of the 2026 ranking)
 
-Pure-Go port of htslib's `samtools`, built on top of `pkg/bioformats/sam`
+Pure-Go port of htslib's `samtools`, built on top of `pkg/htsgo/sam`
 (SAM/BAM read+write, 87% cov). Now at **16 subcommands** across four
 slices:
 
@@ -783,7 +783,7 @@ back to interleaved with a stderr warning); `samtools view -L bed` deferred.
 ### 12. bcftools (May 2026, pick #4 of the 2026 ranking)
 
 Pure-Go port of htslib's `bcftools`, built on top of a new
-`pkg/bioformats/bcf` decoder for BCF v2.2 (82% cov: full typed encoding
+`pkg/htsgo/bcf` decoder for BCF v2.2 (82% cov: full typed encoding
 for int8/16/32, float, char, missing + end-of-vector sentinels;
 length-prefixed and inline-length variants). Now at **21 subcommands**
 (adding `mendelian2` and `polysomy` to the existing 19 in the latest
@@ -819,7 +819,7 @@ Parity validation: 57 cases in the first slice + **18 new** parity cases
 for the wave-1 tail subcommands (3 cases per subcommand, 1 skip for
 `annotate --set-id`).
 
-Coverage: `tools/bcftools/pkg/bcftools` 85% (target ≥85%); `pkg/bioformats/bcf`
+Coverage: `tools/bcftools/pkg/bcftools` 85% (target ≥85%); `pkg/htsgo/bcf`
 82% (target ≥80%). Scope deferred to follow-ups: BCF writer (`-O b/u`
 currently return an explanatory error), `.csi` indexing.
 
@@ -970,10 +970,10 @@ tool-name/
 
 ### Common Libraries
 
-- `pkg/bioformats/fastq` - FASTQ I/O
-- `pkg/bioformats/fasta` - FASTA I/O
-- `pkg/bioformats/bed` - BED format
-- `pkg/bioformats/vcf` - VCF format
+- `pkg/htsgo/fastq` - FASTQ I/O
+- `pkg/htsgo/fasta` - FASTA I/O
+- `pkg/htsgo/bed` - BED format
+- `pkg/htsgo/vcf` - VCF format
 - `pkg/cliflag` - Consistent CLI parsing
 
 ### Design Principles
@@ -1237,7 +1237,7 @@ New tools:
 
 ### Code
 
-- `pkg/bioformats/` - Format libraries
+- `pkg/htsgo/` - Format libraries
 - `pkg/cliflag/` - CLI utilities
 - Individual tool packages - Implementation references
 

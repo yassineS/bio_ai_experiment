@@ -22,7 +22,7 @@ bed12tobed6 [options] [< input.bed]
 | `-v`  | `--version`| Show version.                                                                                        |
 
 `-i -` and `-o -` use stdin / stdout. Gzipped input is auto-detected via
-[`pkg/bioformats/iohelper`](../../pkg/bioformats/iohelper).
+[`pkg/htsgo/iohelper`](../../pkg/htsgo/iohelper).
 
 ## Examples
 

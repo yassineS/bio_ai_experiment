@@ -4,9 +4,9 @@
 [samtools](https://github.com/samtools/samtools) command. Slices landed so far:
 
 - a shared SAM/BAM I/O library at
-  `pkg/bioformats/sam` (text SAM reader/writer plus a binary BAM
+  `pkg/htsgo/sam` (text SAM reader/writer plus a binary BAM
   reader/writer on top of the in-tree
-  `tools/bgzip/pkg/bgzip`);
+  `pkg/htsgo/bgzf`);
 - `samtools view` — print, filter, convert SAM↔BAM records, **with region
   queries (`chr:start-end`) backed by a sibling `.bai` index when one
   exists**;
@@ -24,8 +24,8 @@ Subsequent PRs will add `mpileup` and CSI indexing.
 ~6.5M bioconda downloads over its lifetime.
 
 The implementation has **no third-party dependencies** — pure Go standard
-library plus our existing in-tree libraries (`pkg/bioformats/{sam,iohelper}`,
-`tools/bgzip/pkg/bgzip`, `tools/tabix/pkg/tabix`, `pkg/cliflag`).
+library plus our existing in-tree libraries (`pkg/htsgo/{sam,iohelper}`,
+`pkg/htsgo/bgzf`, `pkg/htsgo/tabix`, `pkg/cliflag`).
 
 ## Build
 

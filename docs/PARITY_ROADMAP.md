@@ -543,17 +543,17 @@ Option-tail gaps on the wave-2 additions:
 
 - `bedgetfasta` — `-fullHeader` is now implemented: contigs are indexed
   by the full FASTA header line (whitespace included) via
-  `pkg/bioformats/fasta.BuildIndexFullHeader` /
+  `pkg/htsgo/fasta.BuildIndexFullHeader` /
   `OpenRandomAccessFullHeader`, and `bedgetfasta -fullHeader` flows the
   flag through to the index build. Upstream `getfasta.t06` (the
   `-fullHeader` two-line case) and `t07` (the no-`-fullHeader` warning
   case) now both pass byte-for-byte. BGZF FASTA input is also wired
-  through (this PR): `pkg/bioformats/fasta` now sniffs the BGZF magic
+  through (this PR): `pkg/htsgo/fasta` now sniffs the BGZF magic
   in `OpenRandomAccess` / `OpenRandomAccessFullHeader` and routes to a
   new `OpenRandomAccessBGZF` that fully decompresses the payload
   in-memory and reuses the existing FAI index path. The `.gzi` sidecar
   (when present) is parsed for early validation via a stdlib-only
-  little-endian reader in `pkg/bioformats/fasta/bgzf.go`; a samtools-
+  little-endian reader in `pkg/htsgo/fasta/bgzf.go`; a samtools-
   compatible `.fa.gz.fai` is honoured when present, otherwise the
   index is rebuilt from the decompressed payload. Upstream
   `getfasta.t18` (BGZF FASTA + `-split` BED12) now passes byte-for-byte
@@ -571,7 +571,7 @@ Option-tail gaps on the wave-2 additions:
   parity with upstream is not feasible without porting upstream's
   `random_shuffle`.
 - `bedmulticov` — <a id="bedmulticov-bam"></a>BAM input is wired through
-  via `pkg/bioformats/sam.NewBAMReader`; primary alignments contribute
+  via `pkg/htsgo/sam.NewBAMReader`; primary alignments contribute
   one interval each over their reference span, and `-q` MAPQ filter +
   `-D` per-A-interval depth cap are honoured. Upstream `multicov.t1`
   through `t4` and `t10` pass byte-for-byte.
@@ -1184,7 +1184,7 @@ The complete diff between upstream's `in_str == "--…"` table (146
 unique long flags) and the port's registered flags is **five flags**:
 
 - ~~**`--bcf` FILE** — BCF binary input (parameters.cpp:173).~~
-  **Closed (wave 22).** Adapts `pkg/bioformats/bcf.Reader` (built on
+  **Closed (wave 22).** Adapts `pkg/htsgo/bcf.Reader` (built on
   the in-tree BGZF reader and on the wave-21 BCF dictionary fixes)
   into the new `variantSource` interface so `Run` iterates BCF
   records through the same filter pipeline used by `--vcf`. Pinned
@@ -1202,7 +1202,7 @@ unique long flags) and the port's registered flags is **five flags**:
   Pinned by 5 tests including all five `--diff-*` outputs
   composed against a BCF second file.
 - ~~**`--recode-bcf`** — emit BCF instead of VCF (parameters.cpp:317).~~
-  **Closed (wave 21).** Layered the existing `pkg/bioformats/bcf.Writer`
+  **Closed (wave 21).** Layered the existing `pkg/htsgo/bcf.Writer`
   on top of `pkg/bgzip.NewWriter` and wired it parallel to the
   existing `--recode` text-VCF path; both flags may be combined.
   This wave also fixed three latent bugs in the shared BCF writer
@@ -1680,7 +1680,7 @@ Option-tail gaps on `filter` (this PR, simple-mode):
   uses POS-in-region semantics.
 - `-g/--SnpGap INT:TYPE` — the `:TYPE` qualifier (indel|mnp|bnd|other|overlap)
   is parsed but always treated as "indel" in v1.
-- BCF output (`-O b|u`) round-trips through the shared `pkg/bioformats/bcf`
+- BCF output (`-O b|u`) round-trips through the shared `pkg/htsgo/bcf`
   writer; CSI auto-indexing is the `-W` follow-up above.
 
 Option-tail gaps on `mendelian2` (PR #109, simple-mode):
@@ -1806,7 +1806,7 @@ Option-tail gaps on `csq` (this PR, v1 SNP-only):
   others are hard-rejected with a roadmap pointer.
 - `--threads`, `-v/--verbosity`, `-W/--write-index`, `--force`,
   `--no-version`, `-q/--quiet` — accepted; v1 ignores.
-- The minimal GFF3 parser (`pkg/bioformats/gff`) understands `gene`,
+- The minimal GFF3 parser (`pkg/htsgo/gff`) understands `gene`,
   `mRNA` / `transcript`, `CDS`, and `exon` rows. Other feature
   types are silently skipped — fine for the v1 SNP classifier
   but the parser will need extension for splice-site / UTR work.
@@ -1845,7 +1845,7 @@ Option-tail gaps on `mpileup` (this PR, v1 SNP + uniform-error):
   port.
 - **No BAI seek.** `-r/--regions` and `-R/--regions-file` are
   post-filters applied after a linear scan of every input BAM; the
-  BAI-seek fast path lives in `pkg/bioformats/sam` but is not wired
+  BAI-seek fast path lives in `pkg/htsgo/sam` but is not wired
   through `mpileup` in v1. Tracked as a follow-up — perf only, no
   output difference.
 - **No per-read group filtering.** `-G/--read-groups` is parsed and
@@ -1860,7 +1860,7 @@ Option-tail gaps on `mpileup` (this PR, v1 SNP + uniform-error):
   tags will land alongside the per-tag stream when called from
   `bcftools call`.
 - **`-O u|b` (BCF output) is hard-rejected.** The BCF writer in
-  `pkg/bioformats/bcf` can handle generic records, but mpileup carries
+  `pkg/htsgo/bcf` can handle generic records, but mpileup carries
   custom INFO/I16 typing rules; the wire-up is a follow-up. `-O v`
   (text VCF) is the default; `-O z` (gzipped VCF) is accepted at the
   CLI but currently streams text — gzip-wrap-stdout from a follow-up

@@ -23,7 +23,7 @@ bedgroupby -g 1,2,3 -c 5 -o sum input.bed
 | `-h` | `--help` | Show help. |
 | `-v` | `--version` | Show version. |
 
-Reads transparent gzip / BGZF via `pkg/bioformats/iohelper`. Stdin / `-` is
+Reads transparent gzip / BGZF via `pkg/htsgo/iohelper`. Stdin / `-` is
 supported.
 
 ## Deviations from upstream

@@ -35,7 +35,7 @@ features land.
 | bedsort       |          11 |     10 |       1 | Option-tail wave (this PR) unskipped `sort.t09` (`-header`) by buffering leading `#`/`track`/`browser` lines and emitting them verbatim ahead of the sorted body. Remaining skip is one fixture-layout sanity check. |
 | bedsubtract   |          13 |     10 |       3 | Skips: `-N` (union-coverage drop). |
 | bedexpand     |           6 |      6 |       0 | All canonical upstream cases (`expand.t1..t3`) plus stdin-shape smoke + two error paths. |
-| bedgetfasta   |          15 |     15 |       0 | All cases pass. The latest option-tail wave (this PR) wires BGZF FASTA input through `pkg/bioformats/fasta`: `OpenRandomAccess` now sniffs the BGZF magic and routes `.fa.gz` paths to a new `OpenRandomAccessBGZF` that fully decompresses the payload in-memory and reuses the FAI index path. The `.gzi` sidecar is parsed for validation; the `.fa.gz.fai` is honoured when present. Upstream `getfasta.t18` (BGZF + `-split`) now passes byte-for-byte using the upstream `t.fa.gz` fixture.|
+| bedgetfasta   |          15 |     15 |       0 | All cases pass. The latest option-tail wave (this PR) wires BGZF FASTA input through `pkg/htsgo/fasta`: `OpenRandomAccess` now sniffs the BGZF magic and routes `.fa.gz` paths to a new `OpenRandomAccessBGZF` that fully decompresses the payload in-memory and reuses the FAI index path. The `.gzi` sidecar is parsed for validation; the `.fa.gz.fai` is honoured when present. Upstream `getfasta.t18` (BGZF + `-split`) now passes byte-for-byte using the upstream `t.fa.gz` fixture.|
 | bedsample     |           7 |      5 |       2 | Skips: two CLI-only cases (no-args / unrecognized-flag) that test main.go error messages, not the library. |
 | bedspacing    |           7 |      6 |       1 | Skips: BAM input. All inline upstream cases (`spacing.t01`) + synthetic edge cases (per-chrom reset, exact abut, overlap, BED6 preservation, single record). |
 | bedcoverage   |           9 |      6 |       3 | Skips: BAM input (t1), `-mean` float32 precision (t6), `-split` BAM modes (t10..t13). |
@@ -189,14 +189,14 @@ missing feature in its `t.Skip` call.
   uses the same first-token convention as `samtools faidx`. The skipped
   parity test (`Getfasta.T07`) documents the gap.
 - **BGZF FASTA input** (`-fi *.fa.gz`) on `bedgetfasta`. Resolved: this PR
-  adds `OpenRandomAccessBGZF` in `pkg/bioformats/fasta` (magic-sniffed
+  adds `OpenRandomAccessBGZF` in `pkg/htsgo/fasta` (magic-sniffed
   auto-routing from the existing `OpenRandomAccess` entry point), reads
   the `.gzi` sidecar via a stdlib-only little-endian parser, and honours
   a sibling `.fa.gz.fai` when present. Upstream `getfasta.t18` (BGZF +
   `-split` BED12) now passes byte-for-byte using upstream's `t.fa.gz`
   fixture; the validation harness regenerates the `.gzi` on-demand via
   the existing `tools/bgzip --reindex` path. The in-memory
-  decompression strategy is documented in `pkg/bioformats/fasta/bgzf.go`
+  decompression strategy is documented in `pkg/htsgo/fasta/bgzf.go`
   with a note that partial-decompression seek via `.gzi` (htslib-style)
   can be layered on later without API churn.
 - **CLI-only "no args / bad args" diagnostics** on `bedsample`. Upstream
@@ -226,7 +226,7 @@ parity tests (114 passing, 47 documented skips).
   `-split -s` (per-block revcomp, reversed-order blocks), `-rna`,
   `-fullHeader`, and BGZF (`.fa.gz`) input via `-fi`. The port carries
   its own `FetchPreserveCase` so IUPAC + case round-trip exactly — the
-  shared `pkg/bioformats/fasta.RandomAccess.Fetch` uppercases for
+  shared `pkg/htsgo/fasta.RandomAccess.Fetch` uppercases for
   downstream callers that need a canonical case.
 - **bedsample** (`tools/bedsample/pkg/bedsample/parity_test.go`). 5 cases
   pass: requested count, deterministic seed, `-header` forwarding,
@@ -591,21 +591,21 @@ The validation surfaced a handful of byte-level divergences that we fixed
 inline rather than masking with `t.Skip`. All of them lived in either
 the shared VCF/BCF library or in the bcftools port:
 
-- **`pkg/bioformats/vcf`: QUAL formatting** now uses upstream's
+- **`pkg/htsgo/vcf`: QUAL formatting** now uses upstream's
   minimal-precision rule (integer-as-integer, otherwise shortest `%g`)
   rather than the previous unconditional `%.2f`. Upstream prints `30`
   where we used to print `30.00`. New helper: `formatQual`.
-- **`pkg/bioformats/vcf`: INFO key order preserved**. The `Variant`
+- **`pkg/htsgo/vcf`: INFO key order preserved**. The `Variant`
   struct gained an `InfoOrder []string` slice. The parser populates it
   in source order; the writer iterates `InfoOrder` first and only falls
   back to the (alphabetised) map keys for fields the caller appended
   without registering. Without this our VCF→VCF passes shuffled INFO
   keys at random because Go maps are not ordered.
-- **`pkg/bioformats/bcf`: header IDX-suffix stripped on read**. htslib's
+- **`pkg/htsgo/bcf`: header IDX-suffix stripped on read**. htslib's
   bcf header binary contains an `,IDX=<N>` annotation on every
   structured line; upstream's text view drops it. We now strip it in
   the BCF reader's header parsing so the text-out parity holds.
-- **`pkg/bioformats/bcf`: BCF int64 typed descriptor (4) decoded**.
+- **`pkg/htsgo/bcf`: BCF int64 typed descriptor (4) decoded**.
   htslib 1.13+ may emit type 4 (int64) for FORMAT vectors over very
   large counts. We added a decoder that clamps to int32 range
   (sufficient for our downstream model). Pre-change our reader errored
@@ -1280,7 +1280,7 @@ Totals: 21 cases (including the 2 sample sub-tests), 18 PASS, 3 SKIP.
 
 - **`seq -r` appended `" (reverse complement)"` to the FASTA / FASTQ
   description** — added by `fasta.Record.ReverseComplement` and
-  `fastq.Record.ReverseComplement` in `pkg/bioformats/`. Upstream
+  `fastq.Record.ReverseComplement` in `pkg/htsgo/`. Upstream
   preserves the header verbatim; downstream tools that key on the
   description field were silently broken. Now the description is
   copied unchanged.

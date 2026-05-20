@@ -271,7 +271,7 @@ This document compares the original vcftools (C++/Perl) with the Go implementati
 #### BCF Support
 
 - ✅ `--bcf` - Input BCF file (BGZF-decompressed and decoded via the
-  shared `pkg/bioformats/bcf` reader; composes with the full filter
+  shared `pkg/htsgo/bcf` reader; composes with the full filter
   pipeline)
 - ✅ `--recode-bcf` - Output BCF format (BGZF-compressed BCF v2.2,
   interop-tested against upstream's `--bcf` reader)

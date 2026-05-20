@@ -103,10 +103,13 @@ cat my.vcf | bgzip > my.vcf.gz
 
 ## Library
 
-The CLI is a thin wrapper around `tools/bgzip/pkg/bgzip`:
+The CLI is a thin wrapper around `pkg/htsgo/bgzf`:
 
 ```go
-import "github.com/yassineS/bio_ai_experiment/tools/bgzip/pkg/bgzip"
+// The package is named `bgzf` (htslib's term for the format); the
+// convention across this repo is to import it under the `bgzip`
+// alias so call sites read naturally.
+import bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 
 // Write
 w := bgzip.NewWriter(out)
@@ -164,7 +167,7 @@ tools/bgzip/
 
 With a clean Go BGZF in hand, the natural follow-ups (NOT part of this PR) are:
 
-- Wire `tools/bgzip/pkg/bgzip` into `pkg/bioformats/iohelper` so any `.vcf.gz`
+- Wire `pkg/htsgo/bgzf` into `pkg/htsgo/iohelper` so any `.vcf.gz`
   with a BGZF extra field is decoded through this package — transparent
   support for the `vcftools` port and friends.
 - Implement `tabix` on top of `BlockOffsets` and `ReadGZI`.

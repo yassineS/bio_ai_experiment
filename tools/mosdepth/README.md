@@ -80,7 +80,7 @@ chromosome's-worth of events.
 ## Deviations from upstream
 
 mosdepth in Nim emits CSI indexes; our port emits TBI indexes built with
-the in-tree `tools/tabix/pkg/tabix.Build`. Consumers that read either
+the in-tree `pkg/htsgo/tabix.Build`. Consumers that read either
 format (e.g. `bcftools`, `tabix`) work transparently — the underlying
 chunk/bin layout is identical. CSI emission is on the roadmap.
 
