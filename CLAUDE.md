@@ -62,15 +62,18 @@ owner approval.
    owner ever wants to drop the dep entirely; the current decision
    prefers gonum for the well-audited numerical-stability
    guarantees.
-2. **CRAM codec layer** (when we get there). CRAM uses several custom
-   compression codecs (rANS 4x8, rANS 4x16) that have no Go-stdlib
-   equivalent and would otherwise require ~1,500 lines of careful
-   bit-twiddling to port from htslib's C. The owner has explicitly
-   OK'd accepting third-party deps for these primitives rather than
-   a from-scratch rANS port. The dep must be confined to a single
-   sub-package under `pkg/htsgo/cram/codec/` so the rest of the
-   repo can still claim "stdlib + gonum only" for non-CRAM workflows.
-   See `docs/CRAM_DESIGN.md`.
+2. **CRAM codec layer.** CRAM uses several custom compression codecs
+   that have no Go-stdlib equivalent. The owner OK'd third-party deps
+   here, but in practice the rANS coders (4x8, 4x16) are ported
+   **in-tree as pure Go** — the port is ~700 LOC per codec, well
+   within the codebase's in-tree appetite, and `pkg/htsgo/cram/codec`
+   proves it byte-exact against the htscodecs corpus. The **only**
+   sanctioned third-party dep for CRAM is **`ulikunitz/xz`** for LZMA
+   block decode (genuinely hard to port; a rare optional codec). It
+   must be confined to `pkg/htsgo/cram/codec/` so the rest of the
+   repo can still claim "stdlib + gonum only" for non-CRAM
+   workflows. See `docs/CRAM_ROADMAP.md` §1.2 (the actionable
+   decision) and `docs/CRAM_DESIGN.md` (the rationale).
 
 Preference order:
 
