@@ -60,7 +60,8 @@ Each row is one reviewable PR. "Gate" = what must be green to merge.
 | **C2.2** | The v3.1 transform bits — X_PACK (bit-packing), X_RLE, X_STRIPE. | Byte-exact vs the `r4x16/*.{8,9,64,65,128,129,192,193}` vectors. |
 | **C2.3** | X_32 — the 32-way unrolled rANS core (a distinct on-wire format from the 4-way coder). | Byte-exact vs the `r4x16/*.{4,5}` vectors. |
 | **C3** | `pkg/htsgo/cram` container parser — file def, container, compression header, slice header, block. No data-series decode yet; just the tree walk + per-block decompress dispatch. | Parse + walk every container in a real v3.0 CRAM without error. |
-| **C4** | CRAM v3.0 **read** — data-series decoders (the entropy-coder zoo: external / byte_array_stop / byte_array_len / huffman / beta / subexp / gamma / golomb-rice), record reconstruction, the reference-diff decode. | Decode a v3.0 CRAM to SAM records matching `samtools view` output. |
+| **C4a** | CRAM v3.0 **read**, part 1 — the data-series encoding layer: the encoding zoo (external / byte_array_stop / byte_array_len / huffman / beta / subexp / gamma / golomb / golomb-rice), the CORE-block bit reader, and the compression-header / slice-header parsers. | Decode every data series of a real v3.0 CRAM's slices without error. |
+| **C4b** | CRAM v3.0 **read**, part 2 — record reconstruction from the data series, the reference-diff decode, SAM record emission. | Decode a v3.0 CRAM to SAM records matching `samtools view` output. |
 | **C5** | Reference resolution — `--reference`, `REF_PATH`, `REF_CACHE`, MD5 verify; `.crai` index read. | MD5-mismatch surfaced as a clear error; `.crai` region query works. |
 | **C6** | CLI plumbing — `iohelper` CRAM magic-byte autodetect so `samtools view/depth/fastq/mpileup` accept CRAM input transparently. | The samtools subcommands round-trip a CRAM fixture. |
 | **C7** | CRAM v3.1 read — wire rANS 4x16 + 3.1 edge cases. | v3.1 fixtures decode. |
@@ -184,3 +185,25 @@ limitation here.
   alignment data-series decode is a later slice. Note: the container
   `length` field is a fixed int32, not ITF-8 as some spec prose
   implies — htslib writes it fixed-width so it can be back-patched.
+- **C4a** — landed. The CRAM v3.0 data-series encoding layer in
+  `pkg/htsgo/cram/` (`bitreader.go`, `encoding.go`, `huffman.go`,
+  `codes.go`, `decode.go`, `compheader.go`, `sliceheader.go`,
+  `series.go`, `slice.go`): the MSB-first CORE-block bit reader, the
+  full encoding zoo (NULL, EXTERNAL, GOLOMB, HUFFMAN, BYTE_ARRAY_LEN,
+  BYTE_ARRAY_STOP, BETA, SUBEXP, GOLOMB_RICE, GAMMA), and the
+  compression-header (preservation / data-series / tag maps) and
+  slice-header parsers. `ParseDataContainer` exposes a container's
+  compression header and per-slice CORE + external block set;
+  `Slice.DrainSeries` / `DrainTag` decode a self-delimiting series in
+  full. Verified against the samtools v3.0 fixtures
+  (`test_input_1_a.cram`, `7.quickcheck.cram30.ok.cram`): every
+  EXTERNAL / BYTE_ARRAY_STOP / BYTE_ARRAY_LEN data series and tag of
+  every slice drains byte-exactly, and the BETA-encoded `AP` series
+  decodes from the CORE stream. Two judgement calls: (1) CORE-bitstream
+  series (HUFFMAN/BETA/…) share one interleaved stream and cannot be
+  isolated per-series without C4b's record traversal, so C4a verifies
+  them structurally and drains only the self-delimiting EXTERNAL family;
+  (2) a BYTE_ARRAY_LEN whose length and values sub-encodings name the
+  same content id stores length and value bytes interleaved (not
+  lengths-up-front) — both layouts are handled. Fuzz targets on the
+  compression- and slice-header parsers; ≥90% coverage.
