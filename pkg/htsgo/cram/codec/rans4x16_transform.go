@@ -22,8 +22,9 @@ import "fmt"
 // the format byte is even consulted: it splits the input, recursively
 // compresses each stripe with X_NOSZ and interleaves the results.
 //
-// X_32 (0x04, 32-way SIMD unrolling) is a distinct on-wire format and is
-// still rejected; see RANS4x16Decode.
+// X_32 (0x04) selects the 32-way rANS coder (rans4x16_32.go) for the
+// rANS core; the transform layer is otherwise identical, so PACK/RLE/
+// STRIPE compose with X_32 transparently.
 
 // --- public dispatch helpers -------------------------------------------------
 
@@ -125,17 +126,30 @@ func compressToRANS4x16(in []byte, order int) ([]byte, error) {
 		doRLE = false
 	}
 
-	// htscodecs drops order 1 to order 0 below 8 bytes of rANS input.
-	if ransOrder != 0 && len(data) < 8 {
+	is32 := order&x4x16X32 != 0
+
+	// htscodecs drops order 1 to order 0 when the rANS input is too
+	// small to model: below 8 bytes for the 4-way coder, below NX
+	// bytes for the 32-way coder (rans_compress_O1_32x16 returns NULL).
+	minO1 := 8
+	if is32 {
+		minO1 = ransNX
+	}
+	if ransOrder != 0 && len(data) < minO1 {
 		ransOrder = 0
 		formatByte &^= 1
 		out[0] = formatByte
 	}
 
 	var payload []byte
-	if ransOrder != 0 {
+	switch {
+	case is32 && ransOrder != 0:
+		payload = compressO1RANS4x16X32(data, 0)
+	case is32:
+		payload = compressO0RANS4x16X32(data)
+	case ransOrder != 0:
 		payload = compressO1RANS4x16(data, 0)
-	} else {
+	default:
 		payload = compressO0RANS4x16(data)
 	}
 
@@ -334,10 +348,6 @@ func decodeRANS4x16WithSize(in []byte, expectSize uint32, depth int) ([]byte, er
 		return nil, fmt.Errorf("rans4x16: empty input")
 	}
 	format := in[0]
-	if format&x4x16X32 != 0 {
-		return nil, fmt.Errorf("rans4x16: format byte 0x%02x uses the X_32 transform, "+
-			"which is not implemented", format)
-	}
 	if format&x4x16Stripe != 0 {
 		return uncompressStripeRANS4x16(in, depth)
 	}
@@ -354,6 +364,7 @@ func uncompressTransformRANS4x16(in []byte, expectSize uint32) ([]byte, error) {
 	doRLE := format&x4x16RLE != 0
 	doCat := format&x4x16Cat != 0
 	noSize := format&x4x16NoSz != 0
+	is32 := format&x4x16X32 != 0
 	ransOrder := int(format & 1)
 	cp := 1
 
@@ -456,9 +467,14 @@ func uncompressTransformRANS4x16(in []byte, expectSize uint32) ([]byte, error) {
 			copy(tmp1, in[cp:cp+int(tmp1Size)])
 		} else {
 			var err error
-			if ransOrder != 0 {
+			switch {
+			case is32 && ransOrder != 0:
+				tmp1, err = uncompressO1RANS4x16X32(in[cp:], tmp1Size)
+			case is32:
+				tmp1, err = uncompressO0RANS4x16X32(in[cp:], tmp1Size)
+			case ransOrder != 0:
 				tmp1, err = uncompressO1RANS4x16(in[cp:], tmp1Size)
-			} else {
+			default:
 				tmp1, err = uncompressO0RANS4x16(in[cp:], tmp1Size)
 			}
 			if err != nil {

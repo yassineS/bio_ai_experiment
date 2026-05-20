@@ -31,6 +31,15 @@ const (
 	tfShiftO1Fast = 10
 	totFreqO1     = 1 << tfShiftO1     // 4096
 	totFreqO1Fast = 1 << tfShiftO1Fast // 1024
+
+	// maxO1FreqTableSize bounds the uncompressed size of an order-1
+	// frequency table. A legitimate table is at most ~128 KiB (256
+	// contexts × at most 256 two-byte entries, plus the alphabet), so
+	// the rANS-compressed-header path must reject a larger declared
+	// size before it drives a decode allocation: the general
+	// maxRANSRawSize ceiling (1 GiB) is far too loose for a frequency
+	// table and lets a tiny crafted stream demand a ~1 GiB buffer.
+	maxO1FreqTableSize = 1 << 20
 )
 
 // --- order-1 encode ----------------------------------------------------------
@@ -44,7 +53,7 @@ const (
 // path directly. Production callers always pass 0.
 func compressO1RANS4x16(in []byte, forceShift int) []byte {
 	n := len(in)
-	header, shift, cum, freq := encodeFreq1RANS4x16(in, forceShift)
+	header, shift, cum, freq := encodeFreq1RANS4x16(in, forceShift, 4)
 	sh := uint(shift)
 
 	rev := newRevBuf(n + 64)
@@ -88,6 +97,12 @@ func compressO1RANS4x16(in []byte, forceShift int) []byte {
 // rANS coder needs. forceShift, when non-zero, overrides the auto-tuned
 // precision (see compressO1RANS4x16).
 //
+// nway is the rANS state count — 4 for the 4x16 coder, 32 for the 32x16
+// coder. It mirrors the C encode_freq1's Nway argument: it sets the
+// quarter/thirty-second stride (isz4 = n/nway) and the number of
+// context-0 phantom counts the first symbol of each interleaved part
+// contributes.
+//
 // Deviation note. The per-context total T[i] is the exact frequency-row
 // sum — the number of bytes that follow byte value i. Current htscodecs
 // instead derives T[i] from the shared utils.h hist1_4, which adds one
@@ -110,9 +125,9 @@ func compressO1RANS4x16(in []byte, forceShift int) []byte {
 // byte-equality with the latest C source is affected. The order-0
 // context alphabet (present) is tracked separately so the final byte is
 // always encodable even when T[final] is 0.
-func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, cum, freq *[256][256]uint32) {
+func encodeFreq1RANS4x16(in []byte, forceShift, nway int) (header []byte, shift int, cum, freq *[256][256]uint32) {
 	n := len(in)
-	isz4 := n >> 2
+	isz4 := n / nway
 
 	// Order-1 histogram: F[prev][cur]; T[i] is the count of i as a
 	// context (the number of bytes that follow an i). htscodecs'
@@ -132,12 +147,12 @@ func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, c
 		}
 		T[i] += tt
 	}
-	// Phantom counts for the first symbol of quarters 1..3: each
-	// decodes with context 0.
-	for z := 1; z < 4; z++ {
+	// Phantom counts for the first symbol of interleaved parts 1..nway-1:
+	// each decodes with context 0.
+	for z := 1; z < nway; z++ {
 		F[0][in[z*isz4]]++
 	}
-	T[0] += 3
+	T[0] += uint32(nway - 1)
 
 	// present marks every symbol that occurs anywhere in the input; it
 	// is the order-0 alphabet of contexts (htscodecs' present8). A
@@ -325,6 +340,10 @@ func uncompressO1RANS4x16(in []byte, rawSize uint32) ([]byte, error) {
 		uFreqSz, c, ok := varGetU32(in, cp)
 		if !ok {
 			return nil, fmt.Errorf("rans4x16: truncated order-1 uncompressed-table size")
+		}
+		if uFreqSz > maxO1FreqTableSize {
+			return nil, fmt.Errorf("rans4x16: order-1 frequency table size %d exceeds the %d-byte limit",
+				uFreqSz, maxO1FreqTableSize)
 		}
 		cFreqSz, c2, ok := varGetU32(in, c)
 		if !ok {

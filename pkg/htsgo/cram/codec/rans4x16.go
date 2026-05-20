@@ -12,10 +12,8 @@ import "fmt"
 //
 // Order 0 and order 1 are both implemented (C2 + C2.1), as is the
 // format-byte transform layer X_PACK, X_RLE and X_STRIPE (C2.2, in
-// rans4x16_transform.go). The remaining bit, X_32 (32-way SIMD
-// unrolling), is a distinct on-wire format and is still rejected with a
-// clear error rather than mis-decoded. The order-1 model lives in
-// rans4x16_o1.go.
+// rans4x16_transform.go) and the X_32 32-way coder (C2.3, in
+// rans4x16_32.go). The order-1 model lives in rans4x16_o1.go.
 //
 // Stream layout (order-0):
 //
@@ -54,9 +52,8 @@ const (
 
 // RANS4x16Decode decompresses a complete rANS 4x16 stream (format byte
 // included) and returns the raw bytes. Order-0, order-1, the X_CAT
-// store-uncompressed form and the PACK/RLE/STRIPE transforms are all
-// supported; a stream using the X_32 SIMD format is rejected with an
-// error.
+// store-uncompressed form, the PACK/RLE/STRIPE transforms and the X_32
+// 32-way coder are all supported.
 func RANS4x16Decode(in []byte) ([]byte, error) {
 	// The size argument is ignored unless the format byte sets X_NOSZ,
 	// which a top-level stream never does — its size is always stored.
@@ -65,15 +62,21 @@ func RANS4x16Decode(in []byte) ([]byte, error) {
 
 // RANS4x16Encode compresses in with the rANS 4x16 codec and returns a
 // complete stream. order is the rANS order (0 or 1) optionally OR'd with
-// the transform bits X_PACK (0x80), X_RLE (0x40) and X_STRIPE (0x08);
-// for STRIPE the stream count N may be placed in bits 8-15 (N defaults
-// to 4). The output is byte-identical to htscodecs'
+// the transform bits X_PACK (0x80), X_RLE (0x40), X_STRIPE (0x08) and
+// X_32 (0x04, the 32-way coder); for STRIPE the stream count N may be
+// placed in bits 8-15 (N defaults to 4). The output is byte-identical to
+// htscodecs'
 // rans_compress_to_4x16, including its X_CAT fallback when rANS would
 // not shrink the input and its downgrade of order 1 to order 0 for
 // inputs below 8 bytes.
 func RANS4x16Encode(in []byte, order int) ([]byte, error) {
 	if out, ok, err := transformOrderRANS4x16(in, order); ok {
 		return out, err
+	}
+	// X_32 selects the 32-way coder (a distinct on-wire layout); see
+	// rans4x16_32.go.
+	if order&x4x16X32 != 0 {
+		return encodeRANS4x16X32(in, order&1), nil
 	}
 	switch order & 1 {
 	case 0:

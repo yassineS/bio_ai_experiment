@@ -166,6 +166,13 @@ limitation here.
   C2.3. This slice also fixed a latent C2.1 bug: the order-1
   per-context total must be the exact row sum, with the order-0
   alphabet tracked separately, to stay byte-exact under the transforms.
+- **C2.3** — landed. The rANS Nx16 32-way coder in
+  `pkg/htsgo/cram/codec/rans4x16_32.go` (the scalar `NX==32` path of
+  htscodecs' rANS_static32x16pr.c), byte-exact against the
+  `r4x16/*.{4,5}` vectors for both decode and encode. The X_32 format
+  bit now selects the 32-state core; it composes with PACK/RLE/STRIPE.
+  The order-1 32-way encoder reuses the shared `encodeFreq1RANS4x16`
+  with `nway=32`. This completes the rANS 4x16 / Nx16 codec family.
 - **C3** — landed. The CRAM container parser in `pkg/htsgo/cram/`
   (`filedef.go`, `container.go`, `block.go`, `itf8.go`, `reader.go`):
   the file-definition / container / block tree walk with ITF-8 and
