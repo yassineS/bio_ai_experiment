@@ -175,6 +175,10 @@ func TestRANS4x16_TransformRoundTrip(t *testing.T) {
 		"ascii-text":    []byte(repeat("the quick brown fox jumps over the lazy dog. ", 400)),
 		"full-alpha":    fullAlphabet(60000),
 		"random-large":  randomBytes(t, 120000),
+		// The final byte 'Z' appears nowhere else, so it is a valid
+		// symbol that is never a context — exercising the order-1
+		// path where T[final] == 0 (see encodeFreq1RANS4x16).
+		"last-byte-unique": append(bytes.Repeat([]byte("ABC"), 200), 'Z'),
 	}
 	for _, transform := range []struct {
 		name string
@@ -363,6 +367,17 @@ func TestRANS4x16_DecodeErrors(t *testing.T) {
 		// payload byte 0xB0 selects table precision 11 (0xB0>>4),
 		// which is neither 10 nor 12 and must be rejected.
 		{"order-1 invalid shift 11", append([]byte{0x01, 0x08, 0xB0}, make([]byte, 20)...)},
+		// RLE bomb: an X_RLE|X_CAT stream declaring a 10-byte output
+		// whose single run-length varint is 0xFFFFFFFF. The decoder
+		// must reject the run before expanding it, not hang. Layout:
+		// format, osz=10, uMetaSize=15 (raw, odd), rleLen=1, then the
+		// 7-byte raw meta [nsyms=1, sym 'A', run varint 0xFFFFFFFF],
+		// then the single literal 'A'.
+		{"rle run-length bomb", []byte{
+			0x60, 0x0A, 0x0F, 0x01,
+			0x01, 'A', 0x8F, 0xFF, 0xFF, 0xFF, 0x7F,
+			'A',
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

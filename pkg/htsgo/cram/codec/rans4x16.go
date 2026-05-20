@@ -60,7 +60,7 @@ const (
 func RANS4x16Decode(in []byte) ([]byte, error) {
 	// The size argument is ignored unless the format byte sets X_NOSZ,
 	// which a top-level stream never does — its size is always stored.
-	return decodeRANS4x16WithSize(in, 0)
+	return decodeRANS4x16WithSize(in, 0, 0)
 }
 
 // RANS4x16Encode compresses in with the rANS 4x16 codec and returns a

@@ -237,12 +237,21 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// maxStripeDepth bounds STRIPE recursion. A well-formed stream never
+// nests STRIPE — the encoder compresses each sub-stream with order
+// 0/1/RLE/PACK only — so any nesting is malformed input; the cap is
+// cheap insurance against a crafted stream exhausting the stack.
+const maxStripeDepth = 8
+
 // uncompressStripeRANS4x16 ports the STRIPE branch of
 // rans_uncompress_to_4x16: it reads the per-stripe compressed lengths,
 // recursively decompresses each stripe with X_NOSZ and interleaves the
 // results. The raw size is read from the stream (STRIPE is always
 // top-level, never itself NOSZ).
-func uncompressStripeRANS4x16(in []byte) ([]byte, error) {
+func uncompressStripeRANS4x16(in []byte, depth int) ([]byte, error) {
+	if depth > maxStripeDepth {
+		return nil, fmt.Errorf("rans4x16: STRIPE nested deeper than %d levels", maxStripeDepth)
+	}
 	cMeta := 1
 	ulen, cp, ok := varGetU32(in, cMeta)
 	if !ok {
@@ -288,7 +297,7 @@ func uncompressStripeRANS4x16(in []byte) ([]byte, error) {
 
 	outN := make([]byte, ulen)
 	for i := 0; i < n; i++ {
-		stripe, err := decodeRANS4x16WithSize(in[cMeta:cMeta+clenN[i]], uint32(ulenN[i]))
+		stripe, err := decodeRANS4x16WithSize(in[cMeta:cMeta+clenN[i]], uint32(ulenN[i]), depth+1)
 		if err != nil {
 			return nil, fmt.Errorf("rans4x16: STRIPE stream %d: %w", i, err)
 		}
@@ -318,8 +327,9 @@ func uncompressStripeRANS4x16(in []byte) ([]byte, error) {
 // decodeRANS4x16WithSize decodes a rANS 4x16 stream whose raw size is
 // supplied by the caller (the X_NOSZ case used by STRIPE sub-streams)
 // rather than read from a varint. A stream that does store its own size
-// ignores expectSize and uses the stored value.
-func decodeRANS4x16WithSize(in []byte, expectSize uint32) ([]byte, error) {
+// ignores expectSize and uses the stored value. depth tracks STRIPE
+// recursion; top-level callers pass 0.
+func decodeRANS4x16WithSize(in []byte, expectSize uint32, depth int) ([]byte, error) {
 	if len(in) == 0 {
 		return nil, fmt.Errorf("rans4x16: empty input")
 	}
@@ -329,7 +339,7 @@ func decodeRANS4x16WithSize(in []byte, expectSize uint32) ([]byte, error) {
 			"which is not implemented", format)
 	}
 	if format&x4x16Stripe != 0 {
-		return uncompressStripeRANS4x16(in)
+		return uncompressStripeRANS4x16(in, depth)
 	}
 	return uncompressTransformRANS4x16(in, expectSize)
 }
@@ -380,7 +390,13 @@ func uncompressTransformRANS4x16(in []byte, expectSize uint32) ([]byte, error) {
 		}
 		cp = c
 		// v is the rANS input length when packing applies; it is also
-		// the raw size for the un-RLE stage below.
+		// the raw size for the un-RLE stage below. It is attacker
+		// controlled, so re-apply the ceiling: it sizes the un-RLE and
+		// rANS output buffers.
+		if v > maxRANSRawSize {
+			return nil, fmt.Errorf("rans4x16: PACK length %d exceeds the %d-byte safety ceiling",
+				v, maxRANSRawSize)
+		}
 		osz = v
 	}
 
@@ -453,10 +469,11 @@ func uncompressTransformRANS4x16(in []byte, expectSize uint32) ([]byte, error) {
 		tmp1 = nil
 	}
 
-	// un-RLE: tmp1 -> tmp2.
+	// un-RLE: tmp1 -> tmp2. osz is the post-RLE length — the raw size,
+	// or the packed-data size when PACK also applies.
 	data := tmp1
 	if doRLE {
-		out, err := htsRLEDecode(tmp1, rleMeta)
+		out, err := htsRLEDecode(tmp1, rleMeta, int(osz))
 		if err != nil {
 			return nil, err
 		}
@@ -736,7 +753,14 @@ func htsRLEEncode(data []byte) (lits, run, syms []byte) {
 // the run-length stream. meta is [nsyms][syms...][runs...] — the same
 // layout the encoder builds. A run-length symbol consumes one run-length
 // varint and is emitted (run+1) times.
-func htsRLEDecode(lit, meta []byte) ([]byte, error) {
+//
+// expect is the decoded length the stream declares. Like the C
+// reference — which decodes into a caller-pre-sized buffer and rejects
+// an over-long run before touching memory — every run is bounds-checked
+// against expect *before* it is expanded. A run-length varint is
+// attacker-controlled and can be ~2^32, so checking after the fact
+// would mean appending gigabytes (and hanging) first.
+func htsRLEDecode(lit, meta []byte, expect int) ([]byte, error) {
 	if len(meta) == 0 {
 		return nil, fmt.Errorf("rans4x16: empty RLE meta block")
 	}
@@ -754,7 +778,7 @@ func htsRLEDecode(lit, meta []byte) ([]byte, error) {
 	run := meta[1+nsyms:]
 	rp := 0
 
-	out := make([]byte, 0, len(lit)*2)
+	out := make([]byte, 0, expect)
 	for _, b := range lit {
 		if isRLE[b] {
 			rlen, c, ok := varGetU32(run, rp)
@@ -762,13 +786,16 @@ func htsRLEDecode(lit, meta []byte) ([]byte, error) {
 				return nil, fmt.Errorf("rans4x16: truncated RLE run-length varint")
 			}
 			rp = c
+			if uint64(len(out))+uint64(rlen)+1 > uint64(expect) {
+				return nil, fmt.Errorf("rans4x16: RLE run expands past the declared output size %d", expect)
+			}
 			for k := uint32(0); k <= rlen; k++ {
 				out = append(out, b)
 			}
-			if int64(len(out)) > maxRANSRawSize {
-				return nil, fmt.Errorf("rans4x16: RLE expansion exceeds the safety ceiling")
-			}
 		} else {
+			if len(out) >= expect {
+				return nil, fmt.Errorf("rans4x16: RLE literals expand past the declared output size %d", expect)
+			}
 			out = append(out, b)
 		}
 	}
