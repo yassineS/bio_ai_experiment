@@ -8,19 +8,30 @@
 // a slice-header block plus its data blocks).
 //
 // This package covers the structural layer (the C3 milestone of
-// docs/CRAM_ROADMAP.md) and the data-series encoding layer (C4a). It
-// parses the file/container/block tree, validates the per-structure
-// CRC32 checksums that CRAM v3+ embeds, and decompresses every block
-// whose compression method is supported. On top of that it parses a
-// container's compression header (the preservation, data-series and
-// tag-encoding maps) and every slice header, and decodes a data series
-// through its encoding: the CRAM encoding zoo — NULL, EXTERNAL, GOLOMB,
-// HUFFMAN, BYTE_ARRAY_LEN, BYTE_ARRAY_STOP, BETA, SUBEXP, GOLOMB_RICE
-// and GAMMA — reading from the slice's CORE bitstream and external
-// blocks. Use ParseDataContainer to obtain a DataContainer and its
-// Slices, then Slice.DrainSeries / Slice.DrainTag (or the fixed-count
-// Decode*Series methods). It does NOT reconstruct alignment records
-// from the decoded series; that is the next milestone (C4b).
+// docs/CRAM_ROADMAP.md), the data-series encoding layer (C4a) and the
+// record-reconstruction layer (C4b). It parses the file/container/block
+// tree, validates the per-structure CRC32 checksums that CRAM v3+
+// embeds, and decompresses every block whose compression method is
+// supported. On top of that it parses a container's compression header
+// (the preservation, data-series and tag-encoding maps) and every slice
+// header, and decodes a data series through its encoding: the CRAM
+// encoding zoo — NULL, EXTERNAL, GOLOMB, HUFFMAN, BYTE_ARRAY_LEN,
+// BYTE_ARRAY_STOP, BETA, SUBEXP, GOLOMB_RICE and GAMMA — reading from
+// the slice's CORE bitstream and external blocks. Use ParseDataContainer
+// to obtain a DataContainer and its Slices, then Slice.DrainSeries /
+// Slice.DrainTag (or the fixed-count Decode*Series methods) for raw
+// series access.
+//
+// Record reconstruction (C4b) sits on top: RecordReader walks the whole
+// stream, decodes each slice's data series through the per-record
+// traversal — bit flags, CRAM flags, reference id, read length and
+// position, read group, read name, mate information, tags, and the
+// read-feature list (mapped) or raw bases (unmapped) — and yields
+// reconstructed *sam.Record values. It resolves the read-feature codes
+// into SEQ, QUAL and CIGAR, links downstream mate pairs, and can emit
+// the decoded stream as text SAM via WriteSAM. A reference-free CRAM
+// file is fully recoverable; a reference-backed file fills the bases an
+// external reference would supply with 'N' and reports NeedsReference.
 //
 // Integer encodings: CRAM uses two self-delimiting integer encodings,
 // ITF-8 (a 1-5 byte 32-bit value) and LTF-8 (a 1-9 byte 64-bit value).

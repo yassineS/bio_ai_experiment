@@ -67,6 +67,52 @@ func FuzzSliceHeader(f *testing.F) {
 	})
 }
 
+// FuzzRecordReader runs the full CRAM record decode — file definition,
+// containers, compression headers, slices, the per-record traversal,
+// read-feature decode and SAM emission — over arbitrary input. A
+// malformed stream must surface as a returned error, never a panic; the
+// decode-to-SAM path must be panic-free on every input. A successful
+// decode is additionally re-emitted as SAM to exercise the writer.
+func FuzzRecordReader(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte("CRAM"))
+	for _, fx := range v30Fixtures {
+		if data, ok := readFixtureNoT(fx.rel); ok {
+			f.Add(data)
+		}
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		rr, err := NewRecordReader(bytes.NewReader(data))
+		if err != nil {
+			return
+		}
+		var buf bytes.Buffer
+		// WriteSAM drives Read, the per-record traversal and the SAM
+		// writer; any malformed structure must come back as an error.
+		_ = rr.WriteSAM(&buf)
+		_ = rr.NeedsReference()
+	})
+}
+
+// FuzzTagValue runs the tag-value decoder over arbitrary bytes for every
+// SAM value type. It must never panic; a truncated or malformed value
+// must surface as a returned error.
+func FuzzTagValue(f *testing.F) {
+	f.Add([]byte{3, 0, 0, 0})
+	f.Add([]byte("abc\x00"))
+	f.Add([]byte{'S', 2, 0, 0, 0, 1, 2, 3, 4})
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		for _, typ := range []byte{'A', 'c', 'C', 's', 'S', 'i', 'I', 'f', 'Z', 'H', 'B'} {
+			aux, err := decodeTagValue(tagKey{'X', 'X', typ}, raw)
+			if err == nil {
+				// A clean decode must format without panicking.
+				_ = aux.FormatSAM()
+			}
+		}
+	})
+}
+
 // compressionHeaderPayloads extracts every compression-header block
 // payload from a CRAM file, for use as fuzz corpus seeds.
 func compressionHeaderPayloads(data []byte) [][]byte {

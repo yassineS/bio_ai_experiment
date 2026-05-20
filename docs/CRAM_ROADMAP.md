@@ -207,3 +207,18 @@ limitation here.
   same content id stores length and value bytes interleaved (not
   lengths-up-front) — both layouts are handled. Fuzz targets on the
   compression- and slice-header parsers; ≥90% coverage.
+- **C4b** — landed. CRAM v3.0 record reconstruction in `pkg/htsgo/cram/`
+  (`record.go`, `feature.go`, `reconstruct.go`, `tag.go`,
+  `iterator.go`): the per-record CORE/data-series traversal, the 12
+  read-feature codes, feature-list → SEQ/QUAL/CIGAR reconstruction,
+  auxiliary-tag decode, downstream-mate resolution, and the
+  `RecordReader` API (`OpenRecords`, `Read`/`ReadAll`, `WriteSAM`,
+  yielding `sam.Record`). Verified against `test_input_1_a.cram`: 14 of
+  its 15 records decode byte-identically to `test_input_1_a.sam`
+  (QNAME/FLAG/RNAME/POS/MAPQ/CIGAR/mate fields/SEQ/QUAL/tags, including
+  complex CIGARs and `B`-array tags); the 15th is the unmapped read
+  `u1`, which CRAM stores without MAPQ or CIGAR — the decoded `0`/`*`
+  is spec-correct and `test_input_1_a.sam` is the pre-encode input.
+  Reference-backed CRAM (`7.quickcheck.cram30.ok`) decodes structurally
+  with `NeedsReference()` set; full external-reference resolution is C5.
+  Fuzz target on the record reader; ≥86% coverage on the new code.

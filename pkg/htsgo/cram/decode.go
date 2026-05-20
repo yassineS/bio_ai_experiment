@@ -69,6 +69,23 @@ type seriesSource struct {
 	blocks map[int32][]byte
 }
 
+// totalBytes returns the combined size of the slice's CORE bitstream and
+// every external block. It bounds a per-record allocation: a single
+// record's read length, base run or quality run cannot legitimately
+// exceed the bytes of the blocks that encode the whole slice, so a
+// declared length larger than this is corrupt. The result is clamped to
+// the int32 range so it can bound an int32 length directly.
+func (s *seriesSource) totalBytes() int32 {
+	total := int64(len(s.core.data))
+	for _, b := range s.blocks {
+		total += int64(len(b))
+	}
+	if total > int64(^uint32(0)>>1) {
+		return int32(^uint32(0) >> 1)
+	}
+	return int32(total)
+}
+
 // hasBlock reports whether an external block with the given content id
 // is present in the slice. A data series whose encoding names an absent
 // block carries no values in this slice (CRAM omits a series' block
