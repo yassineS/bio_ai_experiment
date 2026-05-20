@@ -55,7 +55,9 @@ Each row is one reviewable PR. "Gate" = what must be green to merge.
 | PR | Scope | Gate |
 |----|-------|------|
 | **C1** | `pkg/htsgo/cram/codec/` — rANS 4x8 (order-0 + order-1), decode **and** encode. | Round-trip + property tests; compliance vectors if htscodecs submodule present. |
-| **C2** | rANS 4x16 (order-0 + order-1) + the v3.1 transform bits (RLE, bit-pack, 4-way stripe, "cat"). | Same as C1. |
+| **C2** | rANS 4x16 **order-0** decode + encode, plus the framing format byte and the X_CAT store-uncompressed fallback. Order-1 and the transform bits (PACK / RLE / STRIPE / X32) are rejected with a clear error. | Same as C1 — byte-exact compliance vs the `r4x16/*.0` vectors landed. |
+| **C2.1** | rANS 4x16 **order-1** context model. | Byte-exact vs the `r4x16/*.1` vectors. |
+| **C2.2** | The v3.1 transform bits — X_PACK (bit-packing), X_RLE, X_STRIPE (4-way), X_32 unrolling. | Byte-exact vs the remaining `r4x16/*.{4,5,64,…}` vectors. |
 | **C3** | `pkg/htsgo/cram` container parser — file def, container, compression header, slice header, block. No data-series decode yet; just the tree walk + per-block decompress dispatch. | Parse + walk every container in a real v3.0 CRAM without error. |
 | **C4** | CRAM v3.0 **read** — data-series decoders (the entropy-coder zoo: external / byte_array_stop / byte_array_len / huffman / beta / subexp / gamma / golomb-rice), record reconstruction, the reference-diff decode. | Decode a v3.0 CRAM to SAM records matching `samtools view` output. |
 | **C5** | Reference resolution — `--reference`, `REF_PATH`, `REF_CACHE`, MD5 verify; `.crai` index read. | MD5-mismatch surfaced as a clear error; `.crai` region query works. |
@@ -137,4 +139,12 @@ limitation here.
 
 ## 6. Progress log
 
-- **C1** — in progress (this is the first execution PR).
+- **C1** — landed (#160). rANS 4x8 order-0 + order-1, decode and
+  encode, byte-exact against the `r4x8` compliance vectors.
+- **C2** — landed. rANS 4x16 order-0 decode + encode in
+  `pkg/htsgo/cram/codec/rans4x16.go`, byte-exact against the
+  `r4x16/*.0` vectors (q4, q8, qvar, q40+dir) for both decode and
+  encode. Includes the framing format byte, the big-endian varint
+  size field, the X_CAT store-uncompressed fallback, and a decoder
+  fuzz target. Order-1 and the PACK/RLE/STRIPE/X32 transforms are
+  rejected with a clear error — split out to C2.1 / C2.2.
