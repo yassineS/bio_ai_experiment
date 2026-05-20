@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -173,11 +174,11 @@ func TestRANS4x8_DecodeErrors(t *testing.T) {
 
 // --- helpers -----------------------------------------------------------------
 
+// itoa renders a vector order byte for filenames and subtest names. The
+// transform suffixes (64, 128, 192, …) are multi-digit, so it must be a
+// real base-10 conversion, not a single-digit shortcut.
 func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	return string(rune('0' + n))
+	return strconv.Itoa(n)
 }
 
 func firstDiff(a, b []byte) int {

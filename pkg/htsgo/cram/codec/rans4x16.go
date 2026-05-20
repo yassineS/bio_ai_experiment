@@ -10,11 +10,12 @@ import "fmt"
 // (reference_code/htscodecs/tests/dat/r4x16/) is the compliance oracle —
 // see rans4x16_test.go.
 //
-// Order 0 and order 1 are both implemented (C2 + C2.1). The format-byte
-// transform layer (X_PACK, X_RLE, X_STRIPE, X_32) is deferred to a later
-// slice (C2.2) — see docs/CRAM_ROADMAP.md. A stream that asks for any of
-// those is rejected with a clear error rather than mis-decoded. The
-// order-1 model lives in rans4x16_o1.go.
+// Order 0 and order 1 are both implemented (C2 + C2.1), as is the
+// format-byte transform layer X_PACK, X_RLE and X_STRIPE (C2.2, in
+// rans4x16_transform.go). The remaining bit, X_32 (32-way SIMD
+// unrolling), is a distinct on-wire format and is still rejected with a
+// clear error rather than mis-decoded. The order-1 model lives in
+// rans4x16_o1.go.
 //
 // Stream layout (order-0):
 //
@@ -49,68 +50,41 @@ const (
 	x4x16NoSz   = 0x10
 	x4x16Stripe = 0x08
 	x4x16X32    = 0x04
-	// x4x16Unsupported collects every format-byte bit C2 cannot handle.
-	// The low bit (order-1) is checked separately.
-	x4x16Unsupported = x4x16Pack | x4x16RLE | x4x16NoSz | x4x16Stripe | x4x16X32
 )
 
 // RANS4x16Decode decompresses a complete rANS 4x16 stream (format byte
-// included) and returns the raw bytes. Order-0, order-1 and the X_CAT
-// store-uncompressed form are supported; a stream using a transform
-// (PACK/RLE/STRIPE/X32/NOSZ) is rejected with an error.
+// included) and returns the raw bytes. Order-0, order-1, the X_CAT
+// store-uncompressed form and the PACK/RLE/STRIPE transforms are all
+// supported; a stream using the X_32 SIMD format is rejected with an
+// error.
 func RANS4x16Decode(in []byte) ([]byte, error) {
-	if len(in) == 0 {
-		return nil, fmt.Errorf("rans4x16: empty input")
-	}
-	format := in[0]
-	if format&x4x16Unsupported != 0 {
-		return nil, fmt.Errorf("rans4x16: format byte 0x%02x uses an unsupported transform "+
-			"(PACK/RLE/STRIPE/X32/NOSZ); only order-0 and order-1 are implemented", format)
-	}
-
-	rawSize, cp, ok := varGetU32(in, 1)
-	if !ok {
-		return nil, fmt.Errorf("rans4x16: truncated raw-size varint")
-	}
-	if rawSize > maxRANSRawSize {
-		return nil, fmt.Errorf("rans4x16: declared raw size %d exceeds the %d-byte safety ceiling",
-			rawSize, maxRANSRawSize)
-	}
-
-	if format&x4x16Cat != 0 {
-		if cp+int(rawSize) > len(in) {
-			return nil, fmt.Errorf("rans4x16: X_CAT payload %d bytes, stream holds %d",
-				rawSize, len(in)-cp)
-		}
-		out := make([]byte, rawSize)
-		copy(out, in[cp:cp+int(rawSize)])
-		return out, nil
-	}
-
-	if format&1 != 0 {
-		return uncompressO1RANS4x16(in[cp:], rawSize)
-	}
-	return uncompressO0RANS4x16(in[cp:], rawSize)
+	// The size argument is ignored unless the format byte sets X_NOSZ,
+	// which a top-level stream never does — its size is always stored.
+	return decodeRANS4x16WithSize(in, 0)
 }
 
-// RANS4x16Encode compresses in with the rANS 4x16 codec (order 0 or 1)
-// and returns a complete stream. The output is byte-identical to
-// htscodecs' rans_compress_to_4x16, including its X_CAT fallback when
-// rANS would not shrink the input and its downgrade of order 1 to
-// order 0 for inputs below 8 bytes.
+// RANS4x16Encode compresses in with the rANS 4x16 codec and returns a
+// complete stream. order is the rANS order (0 or 1) optionally OR'd with
+// the transform bits X_PACK (0x80), X_RLE (0x40) and X_STRIPE (0x08);
+// for STRIPE the stream count N may be placed in bits 8-15 (N defaults
+// to 4). The output is byte-identical to htscodecs'
+// rans_compress_to_4x16, including its X_CAT fallback when rANS would
+// not shrink the input and its downgrade of order 1 to order 0 for
+// inputs below 8 bytes.
 func RANS4x16Encode(in []byte, order int) ([]byte, error) {
-	switch order {
+	if out, ok, err := transformOrderRANS4x16(in, order); ok {
+		return out, err
+	}
+	switch order & 1 {
 	case 0:
 		return frameRANS4x16(in, compressO0RANS4x16(in), 0x00), nil
-	case 1:
+	default:
 		// htscodecs downgrades order 1 to order 0 below 8 bytes: the
 		// four-way split has too little data to model a context.
 		if len(in) < 8 {
 			return frameRANS4x16(in, compressO0RANS4x16(in), 0x00), nil
 		}
 		return frameRANS4x16(in, compressO1RANS4x16(in, 0), 0x01), nil
-	default:
-		return nil, fmt.Errorf("rans4x16: order %d is not implemented (want 0 or 1)", order)
 	}
 }
 
