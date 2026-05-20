@@ -44,7 +44,7 @@ const (
 // path directly. Production callers always pass 0.
 func compressO1RANS4x16(in []byte, forceShift int) []byte {
 	n := len(in)
-	header, shift, cum, freq := encodeFreq1RANS4x16(in, forceShift)
+	header, shift, cum, freq := encodeFreq1RANS4x16(in, forceShift, 4)
 	sh := uint(shift)
 
 	rev := newRevBuf(n + 64)
@@ -88,6 +88,12 @@ func compressO1RANS4x16(in []byte, forceShift int) []byte {
 // rANS coder needs. forceShift, when non-zero, overrides the auto-tuned
 // precision (see compressO1RANS4x16).
 //
+// nway is the rANS state count — 4 for the 4x16 coder, 32 for the 32x16
+// coder. It mirrors the C encode_freq1's Nway argument: it sets the
+// quarter/thirty-second stride (isz4 = n/nway) and the number of
+// context-0 phantom counts the first symbol of each interleaved part
+// contributes.
+//
 // Deviation note. The per-context total T[i] is the exact frequency-row
 // sum — the number of bytes that follow byte value i. Current htscodecs
 // instead derives T[i] from the shared utils.h hist1_4, which adds one
@@ -110,9 +116,9 @@ func compressO1RANS4x16(in []byte, forceShift int) []byte {
 // byte-equality with the latest C source is affected. The order-0
 // context alphabet (present) is tracked separately so the final byte is
 // always encodable even when T[final] is 0.
-func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, cum, freq *[256][256]uint32) {
+func encodeFreq1RANS4x16(in []byte, forceShift, nway int) (header []byte, shift int, cum, freq *[256][256]uint32) {
 	n := len(in)
-	isz4 := n >> 2
+	isz4 := n / nway
 
 	// Order-1 histogram: F[prev][cur]; T[i] is the count of i as a
 	// context (the number of bytes that follow an i). htscodecs'
@@ -132,12 +138,12 @@ func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, c
 		}
 		T[i] += tt
 	}
-	// Phantom counts for the first symbol of quarters 1..3: each
-	// decodes with context 0.
-	for z := 1; z < 4; z++ {
+	// Phantom counts for the first symbol of interleaved parts 1..nway-1:
+	// each decodes with context 0.
+	for z := 1; z < nway; z++ {
 		F[0][in[z*isz4]]++
 	}
-	T[0] += 3
+	T[0] += uint32(nway - 1)
 
 	// present marks every symbol that occurs anywhere in the input; it
 	// is the order-0 alphabet of contexts (htscodecs' present8). A
