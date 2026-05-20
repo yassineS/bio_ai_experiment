@@ -166,3 +166,14 @@ limitation here.
   C2.3. This slice also fixed a latent C2.1 bug: the order-1
   per-context total must be the exact row sum, with the order-0
   alphabet tracked separately, to stay byte-exact under the transforms.
+- **C3** — landed. The CRAM container parser in `pkg/htsgo/cram/`
+  (`filedef.go`, `container.go`, `block.go`, `itf8.go`, `reader.go`):
+  the file-definition / container / block tree walk with ITF-8 and
+  LTF-8 integer decoding and per-block decompression dispatch (raw,
+  gzip, bzip2, rANS 4x8, rANS 4x16). Every container and block CRC32
+  is validated during the parse, which doubles as the compliance
+  oracle. Verified against the samtools CRAM v3.0/3.1 fixtures
+  (256 blocks, all CRCs valid); truncated input errors cleanly. The
+  alignment data-series decode is a later slice. Note: the container
+  `length` field is a fixed int32, not ITF-8 as some spec prose
+  implies — htslib writes it fixed-width so it can be back-patched.
