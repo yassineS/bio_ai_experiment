@@ -148,3 +148,6 @@
 [submodule "reference_code/samtools"]
 	path = reference_code/samtools
 	url = https://github.com/samtools/samtools
+[submodule "reference_code/htscodecs"]
+	path = reference_code/htscodecs
+	url = https://github.com/samtools/htscodecs
