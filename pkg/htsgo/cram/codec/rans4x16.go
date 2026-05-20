@@ -10,19 +10,20 @@ import "fmt"
 // (reference_code/htscodecs/tests/dat/r4x16/) is the compliance oracle —
 // see rans4x16_test.go.
 //
-// This is the C2 slice: order-0 only. The format-byte transform layer
-// (X_PACK, X_RLE, X_STRIPE, X_32) and the order-1 context model are
-// deferred to later slices (C2.1, C2.2) — see docs/CRAM_ROADMAP.md. A
-// stream that asks for any of those is rejected with a clear error
-// rather than mis-decoded.
+// Order 0 and order 1 are both implemented (C2 + C2.1). The format-byte
+// transform layer (X_PACK, X_RLE, X_STRIPE, X_32) is deferred to a later
+// slice (C2.2) — see docs/CRAM_ROADMAP.md. A stream that asks for any of
+// those is rejected with a clear error rather than mis-decoded. The
+// order-1 model lives in rans4x16_o1.go.
 //
 // Stream layout (order-0):
 //
 //	[formatByte:1][rawSize:varint][freq table][rANS bytes]
 //
-// formatByte is 0x00 for a plain order-0 stream or 0x20 (X_CAT) for the
-// store-uncompressed fallback the encoder picks when rANS would expand
-// the input. rawSize is a big-endian base-128 varint. Unlike rANS 4x8
+// formatByte is 0x00 for a plain order-0 stream, 0x01 for order-1, or
+// 0x20 (X_CAT) for the store-uncompressed fallback the encoder picks
+// when rANS would expand the input. rawSize is a big-endian base-128
+// varint. Unlike rANS 4x8
 // the renormalisation is 16-bit ("word"): the encoder emits two bytes at
 // a time and the decoder refills two bytes at a time.
 //
@@ -54,10 +55,9 @@ const (
 )
 
 // RANS4x16Decode decompresses a complete rANS 4x16 stream (format byte
-// included) and returns the raw bytes. Only order-0 and the X_CAT
-// store-uncompressed form are supported in this slice; a stream using
-// the order-1 model or any transform (PACK/RLE/STRIPE/X32/NOSZ) is
-// rejected with an error.
+// included) and returns the raw bytes. Order-0, order-1 and the X_CAT
+// store-uncompressed form are supported; a stream using a transform
+// (PACK/RLE/STRIPE/X32/NOSZ) is rejected with an error.
 func RANS4x16Decode(in []byte) ([]byte, error) {
 	if len(in) == 0 {
 		return nil, fmt.Errorf("rans4x16: empty input")
@@ -65,11 +65,7 @@ func RANS4x16Decode(in []byte) ([]byte, error) {
 	format := in[0]
 	if format&x4x16Unsupported != 0 {
 		return nil, fmt.Errorf("rans4x16: format byte 0x%02x uses an unsupported transform "+
-			"(PACK/RLE/STRIPE/X32/NOSZ); only order-0 is implemented", format)
-	}
-	if format&1 != 0 {
-		return nil, fmt.Errorf("rans4x16: format byte 0x%02x selects the order-1 model, "+
-			"which is not yet implemented", format)
+			"(PACK/RLE/STRIPE/X32/NOSZ); only order-0 and order-1 are implemented", format)
 	}
 
 	rawSize, cp, ok := varGetU32(in, 1)
@@ -91,41 +87,61 @@ func RANS4x16Decode(in []byte) ([]byte, error) {
 		return out, nil
 	}
 
+	if format&1 != 0 {
+		return uncompressO1RANS4x16(in[cp:], rawSize)
+	}
 	return uncompressO0RANS4x16(in[cp:], rawSize)
 }
 
-// RANS4x16Encode compresses in with the rANS 4x16 codec and returns a
-// complete stream. Only order 0 is implemented in this slice. The
-// output is byte-identical to htscodecs' rans_compress_to_4x16 with
-// order 0, including its X_CAT fallback when rANS would not shrink the
-// input.
+// RANS4x16Encode compresses in with the rANS 4x16 codec (order 0 or 1)
+// and returns a complete stream. The output is byte-identical to
+// htscodecs' rans_compress_to_4x16, including its X_CAT fallback when
+// rANS would not shrink the input and its downgrade of order 1 to
+// order 0 for inputs below 8 bytes.
 func RANS4x16Encode(in []byte, order int) ([]byte, error) {
-	if order != 0 {
-		return nil, fmt.Errorf("rans4x16: order %d is not implemented (C2 covers order 0 only)", order)
+	switch order {
+	case 0:
+		return frameRANS4x16(in, compressO0RANS4x16(in), 0x00), nil
+	case 1:
+		// htscodecs downgrades order 1 to order 0 below 8 bytes: the
+		// four-way split has too little data to model a context.
+		if len(in) < 8 {
+			return frameRANS4x16(in, compressO0RANS4x16(in), 0x00), nil
+		}
+		return frameRANS4x16(in, compressO1RANS4x16(in, 0), 0x01), nil
+	default:
+		return nil, fmt.Errorf("rans4x16: order %d is not implemented (want 0 or 1)", order)
 	}
+}
 
-	payload := compressO0RANS4x16(in)
-
-	var out []byte
+// frameRANS4x16 wraps a rANS payload in the on-wire framing: a format
+// byte and the big-endian raw-size varint. When the payload did not
+// shrink the input it falls back to X_CAT (store verbatim), matching
+// htscodecs' rans_compress_to_4x16.
+func frameRANS4x16(in, payload []byte, format byte) []byte {
 	if len(payload) >= len(in) {
-		// rANS did not shrink the data: store it verbatim (X_CAT).
-		out = append(out, x4x16Cat)
+		out := []byte{x4x16Cat}
 		out = varPutU32(out, uint32(len(in)))
-		out = append(out, in...)
-	} else {
-		out = append(out, 0x00)
-		out = varPutU32(out, uint32(len(in)))
-		out = append(out, payload...)
+		return append(out, in...)
 	}
-	return out, nil
+	out := []byte{format}
+	out = varPutU32(out, uint32(len(in)))
+	return append(out, payload...)
 }
 
 // --- order-0 decode ----------------------------------------------------------
 
 // uncompressO0RANS4x16 implements rans_uncompress_O0_4x16: in is the
 // payload after the format byte and raw-size varint, rawSize is the
-// declared decompressed length.
+// declared decompressed length. The maxRANSRawSize ceiling is enforced
+// here, not only in RANS4x16Decode, because the order-1 decoder reaches
+// this function recursively with an attacker-controlled size when the
+// frequency header is itself rANS-compressed.
 func uncompressO0RANS4x16(in []byte, rawSize uint32) ([]byte, error) {
+	if rawSize > maxRANSRawSize {
+		return nil, fmt.Errorf("rans4x16: declared raw size %d exceeds the %d-byte safety ceiling",
+			rawSize, maxRANSRawSize)
+	}
 	if len(in) < 16 {
 		return nil, fmt.Errorf("rans4x16: order-0 payload %d bytes, need ≥16 for four states", len(in))
 	}
@@ -306,22 +322,22 @@ func compressO0RANS4x16(in []byte) []byte {
 	i := n & 3
 	if i == 3 {
 		s := in[n-1]
-		r[2] = ransEncPutRANS4x16(r[2], rev, cum[s], F[s])
+		r[2] = ransEncPutRANS4x16(r[2], rev, cum[s], F[s], ransTFShift)
 	}
 	if i >= 2 {
 		s := in[n-(i-1)]
-		r[1] = ransEncPutRANS4x16(r[1], rev, cum[s], F[s])
+		r[1] = ransEncPutRANS4x16(r[1], rev, cum[s], F[s], ransTFShift)
 	}
 	if i >= 1 {
 		s := in[n-i]
-		r[0] = ransEncPutRANS4x16(r[0], rev, cum[s], F[s])
+		r[0] = ransEncPutRANS4x16(r[0], rev, cum[s], F[s], ransTFShift)
 	}
 	for b := n &^ 3; b > 0; b -= 4 {
 		s3, s2, s1, s0 := in[b-1], in[b-2], in[b-3], in[b-4]
-		r[3] = ransEncPutRANS4x16(r[3], rev, cum[s3], F[s3])
-		r[2] = ransEncPutRANS4x16(r[2], rev, cum[s2], F[s2])
-		r[1] = ransEncPutRANS4x16(r[1], rev, cum[s1], F[s1])
-		r[0] = ransEncPutRANS4x16(r[0], rev, cum[s0], F[s0])
+		r[3] = ransEncPutRANS4x16(r[3], rev, cum[s3], F[s3], ransTFShift)
+		r[2] = ransEncPutRANS4x16(r[2], rev, cum[s2], F[s2], ransTFShift)
+		r[1] = ransEncPutRANS4x16(r[1], rev, cum[s1], F[s1], ransTFShift)
+		r[0] = ransEncPutRANS4x16(r[0], rev, cum[s0], F[s0], ransTFShift)
 	}
 	for k := 3; k >= 0; k-- {
 		rev.writeState(r[k])
@@ -332,11 +348,12 @@ func compressO0RANS4x16(in []byte) []byte {
 
 // ransEncPutRANS4x16 encodes one symbol into the state, emitting a
 // 16-bit renorm word into rev when the state would overflow the
-// symbol's interval. Mirrors RansEncRenorm + RansEncPut from
-// rANS_word.h. The plain (divide-based) form is byte-identical to the
-// reciprocal-based RansEncPutSymbol the reference encoder uses.
-func ransEncPutRANS4x16(x uint32, rev *revBuf, start, freq uint32) uint32 {
-	xMax := ((uint32(rans4x16ByteL) >> ransTFShift) << 16) * freq
+// symbol's interval. shift is the frequency-table precision (12 for
+// order-0, 10 or 12 for order-1). Mirrors RansEncRenorm + RansEncPut
+// from rANS_word.h. The plain (divide-based) form is byte-identical to
+// the reciprocal-based RansEncPutSymbol the reference encoder uses.
+func ransEncPutRANS4x16(x uint32, rev *revBuf, start, freq uint32, shift uint) uint32 {
+	xMax := ((uint32(rans4x16ByteL) >> shift) << 16) * freq
 	if x >= xMax {
 		// writeByte prepends, so emit the high byte first to land
 		// [low, high] in forward order.
@@ -344,13 +361,14 @@ func ransEncPutRANS4x16(x uint32, rev *revBuf, start, freq uint32) uint32 {
 		rev.writeByte(byte(x))
 		x >>= 16
 	}
-	return ((x / freq) << ransTFShift) + (x % freq) + start
+	return ((x / freq) << shift) + (x % freq) + start
 }
 
-// encodeFreqRANS4x16 implements encode_freq: the delta-RLE alphabet
-// (terminated by 0) followed by one big-endian varint per present
-// symbol.
-func encodeFreqRANS4x16(F *[256]uint32) []byte {
+// encodeAlphabetRANS4x16 implements encode_alphabet: it writes the set
+// of present symbols (F[j] != 0) as a delta-RLE list — a symbol byte,
+// optionally followed by a run length when it abuts the previous
+// symbol — terminated by a 0 byte.
+func encodeAlphabetRANS4x16(F *[256]uint32) []byte {
 	var cp []byte
 	rle := 0
 	for j := 0; j < 256; j++ {
@@ -372,7 +390,14 @@ func encodeFreqRANS4x16(F *[256]uint32) []byte {
 			}
 		}
 	}
-	cp = append(cp, 0)
+	return append(cp, 0)
+}
+
+// encodeFreqRANS4x16 implements encode_freq: the delta-RLE alphabet
+// (terminated by 0) followed by one big-endian varint per present
+// symbol.
+func encodeFreqRANS4x16(F *[256]uint32) []byte {
+	cp := encodeAlphabetRANS4x16(F)
 	for j := 0; j < 256; j++ {
 		if F[j] != 0 {
 			cp = varPutU32(cp, F[j])
@@ -402,6 +427,12 @@ func round2u32(v uint32) uint32 {
 // harder" retry that compounds on the already-scaled array, and a
 // final spread-the-deficit pass. Called twice by the encoder — first
 // to the stored power-of-two ceiling, then up to TOTFREQ.
+//
+// htscodecs' normalise_freq returns -1 when the largest bucket would
+// go non-positive; that path is unreachable here because every caller
+// passes tot >= the count of present symbols, so the spread-the-deficit
+// pass can always leave each bucket >= 1. The signal is therefore not
+// propagated.
 func normaliseFreqRANS4x16(F *[256]uint32, size, tot uint32) {
 	if size == 0 {
 		return

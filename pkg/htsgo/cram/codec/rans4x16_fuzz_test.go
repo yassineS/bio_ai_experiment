@@ -14,9 +14,12 @@ func FuzzRANS4x16Decode(f *testing.F) {
 		{0},
 		{0x00, 0x00},
 		{0x20, 0x00},
+		{0x01, 0x00},
 		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-		mustEncode16([]byte("ACGTACGTACGTNNNN")),
-		mustEncode16(bytes512()),
+		mustEncode16([]byte("ACGTACGTACGTNNNN"), 0),
+		mustEncode16([]byte("ACGTACGTACGTNNNN"), 1),
+		mustEncode16(bytes512(), 0),
+		mustEncode16(bytes512(), 1),
 	} {
 		f.Add(seed)
 	}
@@ -28,8 +31,8 @@ func FuzzRANS4x16Decode(f *testing.F) {
 	})
 }
 
-func mustEncode16(in []byte) []byte {
-	out, err := RANS4x16Encode(in, 0)
+func mustEncode16(in []byte, order int) []byte {
+	out, err := RANS4x16Encode(in, order)
 	if err != nil {
 		panic(err)
 	}
