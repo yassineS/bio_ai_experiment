@@ -25,7 +25,7 @@ type FileDefinition struct {
 	FileID [20]byte
 }
 
-// Version reports whether the file definition is a CRAM version this
+// supported reports whether the file definition is a CRAM version this
 // package can parse. CRAM major version 3 (v3.0 and v3.1) is the primary
 // target; major version 2 is recognised structurally but its containers
 // omit the CRC32 fields, which changes parsing.

@@ -27,6 +27,8 @@ type Container struct {
 // the per-structure CRC32 checksums that CRAM v3+ embeds. It does not
 // decode the alignment data series; call Block.Decompress to obtain a
 // block's uncompressed payload.
+//
+// A Reader is not safe for concurrent use; Next advances shared state.
 type Reader struct {
 	def     FileDefinition
 	r       *bufio.Reader

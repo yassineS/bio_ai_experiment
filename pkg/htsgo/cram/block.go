@@ -111,12 +111,14 @@ type Block struct {
 	CRC uint32
 }
 
-// Decompress returns the block's uncompressed payload. For a raw block
-// it returns the data unchanged. For gzip, bzip2, rANS 4x8 and rANS
-// 4x16 blocks it decompresses via the standard library or the codec
-// sub-package. For any other method it returns an "unsupported
-// compression method" error. The returned length is verified against
-// the block's declared UncompressedSize.
+// Decompress returns the block's uncompressed payload. For gzip, bzip2,
+// rANS 4x8 and rANS 4x16 blocks it decompresses via the standard library
+// or the codec sub-package. For any other method it returns an
+// "unsupported compression method" error. The returned length is
+// verified against the block's declared UncompressedSize.
+//
+// For a raw block the returned slice aliases Block.Data — callers that
+// mutate it would mutate the block; copy it first if that matters.
 func (b *Block) Decompress() ([]byte, error) {
 	var out []byte
 	var err error
