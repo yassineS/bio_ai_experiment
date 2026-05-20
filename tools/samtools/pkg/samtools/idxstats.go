@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -47,7 +48,7 @@ func Idxstats(bamPath string) ([]IdxstatsRow, error) {
 	bf, err := os.Open(baiPath)
 	if err == nil {
 		defer bf.Close()
-		idx, ierr := ReadBAI(bf)
+		idx, ierr := bam.ReadBAI(bf)
 		if ierr == nil {
 			return idxstatsFromIndex(hdr, idx), nil
 		}
@@ -63,7 +64,7 @@ func Idxstats(bamPath string) ([]IdxstatsRow, error) {
 
 // idxstatsFromIndex builds the per-reference rows by reading each
 // reference's BAI meta pseudo-bin.
-func idxstatsFromIndex(hdr *sam.Header, idx *BAIIndex) []IdxstatsRow {
+func idxstatsFromIndex(hdr *sam.Header, idx *bam.BAIIndex) []IdxstatsRow {
 	out := make([]IdxstatsRow, 0, len(hdr.Refs)+1)
 	for i, ref := range hdr.Refs {
 		var mapped, unmapped uint64

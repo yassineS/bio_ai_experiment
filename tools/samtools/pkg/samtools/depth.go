@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -349,7 +350,7 @@ func resolveDepthRegion(opts DepthOptions, hdr *sam.Header) (depthRegion, error)
 			}
 		}
 		if len(opts.Regions) > 0 {
-			resolved, _, rerr := ResolveRegions(opts.Regions, func(name string) int {
+			resolved, _, rerr := region.ResolveRegions(opts.Regions, func(name string) int {
 				return hdr.RefIndex(name)
 			})
 			if rerr != nil {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -160,7 +161,7 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 		}
 	} else {
 		for _, r := range opts.Regions {
-			rg, perr := ParseRegion(r)
+			rg, perr := region.ParseRegion(r)
 			if perr != nil {
 				return perr
 			}

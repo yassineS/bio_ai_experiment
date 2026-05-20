@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -133,7 +134,7 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	defer closeAll(closers)
 	// BAI seek is left to a future PR (matches upstream view semantics):
 	// the linear-scan path here is byte-for-byte equivalent because the
-	// downstream pileup is a post-filter against ResolveRegions. The
+	// downstream pileup is a post-filter against region.ResolveRegions. The
 	// region-via-BAI fast path is tracked in
 	// docs/PARITY_ROADMAP.md#samtools as a follow-up.
 
@@ -199,7 +200,7 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 	}
 
 	// Resolve region restrictions.
-	regions, _, err := ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
+	regions, _, err := region.ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
 	if err != nil {
 		return err
 	}

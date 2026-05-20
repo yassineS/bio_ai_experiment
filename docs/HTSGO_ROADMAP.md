@@ -272,12 +272,15 @@ flips imports in one mechanical sweep. The pattern mirrors
   `tools/tabix/pkg/tabix/` directories all gone. bgzip imports
   routed through `pkg/htsgo/bgzf` with a `bgzip` package alias
   so call sites kept their existing `bgzip.X` qualifier.
-  Deferred: the two in-samtools sub-shims
+  The two in-samtools sub-shims
   (`tools/samtools/pkg/samtools/bai_shim.go` and
-  `region_shim.go`) — these have no external callers and
-  removing them would require a noisy in-pkg rename sweep with
-  no observable benefit. They can be folded out whenever the
-  next samtools-internal refactor passes through the area.
+  `region_shim.go`) were initially deferred, then removed in
+  the PR-I follow-up: the samtools subcommands now qualify
+  `bam.BAIIndex` / `region.ParseRegion` directly. The feared
+  `Region`-type-vs-field collision turned out not to bite —
+  the bare `Region` type is never referenced unqualified in
+  the subcommand code (only the `.Region` field access on
+  `ResolvedRegion`, which is untouched).
 
 CRAM (PR-J onwards) and hfile (PR-K onwards) are their own multi-PR
 projects governed by `docs/CRAM_DESIGN.md` and a future `HFILE_DESIGN.md`.
