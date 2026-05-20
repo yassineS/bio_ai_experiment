@@ -60,7 +60,7 @@ var seriesCatalogue = map[string]SeriesKind{
 	"SC": SeriesByte, // soft-clipped bases
 	"BS": SeriesByte, // base substitution codes
 	"FC": SeriesByte, // read-feature codes (one ASCII byte each)
-	"RN": SeriesByte, // read names
+	"RN": SeriesByte, // read-name data series (distinct from the RN preservation-map key)
 }
 
 // SeriesValueKind returns the value kind of the named CRAM data series.

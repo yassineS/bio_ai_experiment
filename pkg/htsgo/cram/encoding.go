@@ -175,8 +175,8 @@ func parseEncoding(p []byte, off int) (*Encoding, int, error) {
 		if err == nil {
 			enc.K, cur, err = readITF8Param(body, cur, "GOLOMB_RICE log2m")
 		}
-		if err == nil && enc.K < 0 {
-			return nil, off, fmt.Errorf("cram: GOLOMB_RICE encoding declares negative log2m %d", enc.K)
+		if err == nil && (enc.K < 0 || enc.K > 30) {
+			return nil, off, fmt.Errorf("cram: GOLOMB_RICE encoding declares out-of-range log2m %d", enc.K)
 		}
 	case EncodingHuffman:
 		var nsym int32

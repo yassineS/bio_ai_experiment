@@ -437,6 +437,9 @@ func (enc *Encoding) decodeRawBytes(s *seriesSource, n int) ([]byte, error) {
 		}
 		return c.readN(n)
 	case EncodingHuffman, EncodingBeta:
+		// Byte-valued sub-encoding: each decoded int is a single byte.
+		// A value outside 0-255 is truncated; callers use this only for
+		// series the spec defines as byte-valued.
 		out := make([]byte, n)
 		for i := 0; i < n; i++ {
 			v, err := enc.decodeInt(s)

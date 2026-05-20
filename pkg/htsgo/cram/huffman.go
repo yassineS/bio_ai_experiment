@@ -50,24 +50,27 @@ func newHuffmanTable(symbols, lengths []int32) (*huffmanTable, error) {
 		t.degenerateSym = symbols[0]
 		return t, nil
 	}
-	// Order by ascending bit length, then by the symbol's position in
-	// the input alphabet — CRAM's canonical ordering.
+	// Canonical ordering: ascending bit length, then ascending symbol
+	// value. The tie-break must be the symbol value, not the input
+	// alphabet order — htslib's writer happens to emit each length
+	// group already sorted, but a spec-conformant file from another
+	// encoder need not, and sorting by input order would then assign
+	// the wrong codes and decode silently wrong.
 	type entry struct {
 		sym, length int32
-		order       int
 	}
 	entries := make([]entry, len(symbols))
 	for i := range symbols {
 		if lengths[i] < 0 || lengths[i] > 32 {
 			return nil, fmt.Errorf("cram: huffman symbol %d has invalid bit length %d", symbols[i], lengths[i])
 		}
-		entries[i] = entry{sym: symbols[i], length: lengths[i], order: i}
+		entries[i] = entry{sym: symbols[i], length: lengths[i]}
 	}
 	sort.SliceStable(entries, func(a, b int) bool {
 		if entries[a].length != entries[b].length {
 			return entries[a].length < entries[b].length
 		}
-		return entries[a].order < entries[b].order
+		return entries[a].sym < entries[b].sym
 	})
 	var code uint32
 	var prevLen int32 = -1
