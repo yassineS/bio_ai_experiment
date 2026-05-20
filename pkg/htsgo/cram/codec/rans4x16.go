@@ -179,12 +179,12 @@ func uncompressO0RANS4x16(in []byte, rawSize uint32) ([]byte, error) {
 		out[i] = ssym[m]
 		r[k] = sfreq[m]*(r[k]>>ransTFShift) + sbase[m]
 		// 16-bit renorm: refill one word when the state drops below L.
-		if r[k] < rans4x16ByteL {
-			var w uint32
-			if cp+1 < len(in) {
-				w = uint32(in[cp]) | uint32(in[cp+1])<<8
-				cp += 2
-			}
+		// Past end-of-input the state is left untouched, matching
+		// htscodecs' RansDecRenormSafe — a valid stream never reaches
+		// here, and a truncated one decodes to garbage either way.
+		if r[k] < rans4x16ByteL && cp+1 < len(in) {
+			w := uint32(in[cp]) | uint32(in[cp+1])<<8
+			cp += 2
 			r[k] = (r[k] << 16) | w
 		}
 	}
