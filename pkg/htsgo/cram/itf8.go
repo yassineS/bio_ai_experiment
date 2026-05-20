@@ -102,6 +102,83 @@ func readLTF8(r io.Reader) (value int64, n int, err error) {
 	return int64(v), extra + 1, nil
 }
 
+// itf8At decodes one ITF-8-encoded 32-bit integer from p starting at
+// off. It returns the value and the number of bytes consumed (1-5). It
+// is the byte-slice counterpart of readITF8, used by the compression-
+// and slice-header parsers, which work over already-buffered block
+// payloads. It returns io.ErrUnexpectedEOF if p is too short.
+func itf8At(p []byte, off int) (value int32, n int, err error) {
+	if off < 0 || off >= len(p) {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	first := p[off]
+	var extra int
+	var v uint32
+	switch {
+	case first&0x80 == 0:
+		extra, v = 0, uint32(first&0x7f)
+	case first&0x40 == 0:
+		extra, v = 1, uint32(first&0x3f)
+	case first&0x20 == 0:
+		extra, v = 2, uint32(first&0x1f)
+	case first&0x10 == 0:
+		extra, v = 3, uint32(first&0x0f)
+	default:
+		extra, v = 4, uint32(first&0x0f)
+	}
+	if off+1+extra > len(p) {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	for i := 0; i < extra; i++ {
+		b := p[off+1+i]
+		if extra == 4 && i == extra-1 {
+			v = (v << 4) | uint32(b&0x0f)
+		} else {
+			v = (v << 8) | uint32(b)
+		}
+	}
+	return int32(v), extra + 1, nil
+}
+
+// ltf8At decodes one LTF-8-encoded 64-bit integer from p starting at
+// off. It returns the value and the number of bytes consumed (1-9). It
+// is the byte-slice counterpart of readLTF8.
+func ltf8At(p []byte, off int) (value int64, n int, err error) {
+	if off < 0 || off >= len(p) {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	first := p[off]
+	var extra int
+	var v uint64
+	switch {
+	case first&0x80 == 0:
+		extra, v = 0, uint64(first&0x7f)
+	case first&0x40 == 0:
+		extra, v = 1, uint64(first&0x3f)
+	case first&0x20 == 0:
+		extra, v = 2, uint64(first&0x1f)
+	case first&0x10 == 0:
+		extra, v = 3, uint64(first&0x0f)
+	case first&0x08 == 0:
+		extra, v = 4, uint64(first&0x07)
+	case first&0x04 == 0:
+		extra, v = 5, uint64(first&0x03)
+	case first&0x02 == 0:
+		extra, v = 6, uint64(first&0x01)
+	case first&0x01 == 0:
+		extra, v = 7, 0
+	default:
+		extra, v = 8, 0
+	}
+	if off+1+extra > len(p) {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	for i := 0; i < extra; i++ {
+		v = (v << 8) | uint64(p[off+1+i])
+	}
+	return int64(v), extra + 1, nil
+}
+
 // eofToUnexpected converts a plain io.EOF returned mid-structure into an
 // io.ErrUnexpectedEOF-flavoured error, so truncated input is reported as
 // a parse failure rather than a clean end-of-stream.
