@@ -41,6 +41,9 @@ func (rd *recordDecoder) reconstructMapped(feats []readFeature, readLen int32) (
 		// an earlier insertion supplied — so it is applied where it is
 		// asked without disturbing the cursor.
 		featStart := f.pos - 1
+		// featStart == readLen is permitted: a non-consuming feature
+		// (e.g. padding) may sit just past the last base. A consuming
+		// feature there is rejected later by the read-cursor checks.
 		if featStart < 0 || featStart > readLen {
 			return nil, nil, nil, errFormat("read feature %d at in-read position %d is out of range (read length %d)",
 				fi, f.pos, readLen)

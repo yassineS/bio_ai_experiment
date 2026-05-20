@@ -199,6 +199,9 @@ func TestRecordReaderMalformed(t *testing.T) {
 // carrying CF bit 0x2 stores its own NS/NP/TS and mate flags.
 func TestDecodeMateDetached(t *testing.T) {
 	h := refFreeHeader()
+	// The mate block here is MF→NS→NP→TS with no embedded read name,
+	// which is the names-preserved detached layout.
+	h.Preservation.ReadNamesIncluded = true
 	h.DataSeries[dataSeriesKey{'M', 'F'}] = extEnc(1)
 	h.DataSeries[dataSeriesKey{'N', 'S'}] = extEnc(2)
 	h.DataSeries[dataSeriesKey{'N', 'P'}] = extEnc(3)
@@ -249,14 +252,19 @@ func TestDecodeMateDownstreamNegative(t *testing.T) {
 
 // TestDecodeSliceRecordsErrors checks the slice-level traversal guards.
 func TestDecodeSliceRecordsErrors(t *testing.T) {
-	rd := &recordDecoder{h: refFreeHeader(), slice: &SliceHeader{}}
+	rd := &recordDecoder{
+		h:     refFreeHeader(),
+		slice: &SliceHeader{},
+		src:   &SeriesSource{s: newTestSource(nil, nil)},
+	}
 	if _, err := rd.decodeSliceRecords(-1); err == nil {
 		t.Error("a negative record count should error")
 	}
-	// A record count that exceeds the available series data must surface
-	// as an error from the first record decode, not a panic.
+	// A record count that exceeds the slice's series data must be
+	// rejected up front rather than allocate and loop — the slice here
+	// has zero bytes, so any positive count overshoots.
 	if _, err := rd.decodeSliceRecords(1); err == nil {
-		t.Error("decoding with no series data should error")
+		t.Error("a record count exceeding the series data should error")
 	}
 }
 

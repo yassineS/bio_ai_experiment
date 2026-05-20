@@ -33,9 +33,6 @@ type RecordReader struct {
 	next int
 	// done is set once the stream is exhausted.
 	done bool
-	// recordIndex is the running record number, used to synthesise read
-	// names when the file did not preserve them.
-	recordIndex int64
 	// needsReference is set once any decoded record reached a base an
 	// external reference would supply.
 	needsReference bool
@@ -221,7 +218,6 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 		rr.needsReference = true
 	}
 	rr.pending = append(rr.pending, recs...)
-	rr.recordIndex += int64(len(recs))
 	return nil
 }
 

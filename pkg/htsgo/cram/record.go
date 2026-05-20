@@ -369,13 +369,30 @@ func (rd *recordDecoder) decodeSliceRecords(nRecords int32) ([]*sam.Record, erro
 	if nRecords < 0 {
 		return nil, errFormat("slice declares a negative record count %d", nRecords)
 	}
-	decoded := make([]*decodedRecord, 0, nRecords)
+	// Fail fast on a count grossly larger than even the decompressed
+	// series data, before the loop allocates anything.
+	if total := rd.src.s.totalBytes(); nRecords > total {
+		return nil, errFormat("slice declares %d records but holds only %d bytes of series data",
+			nRecords, total)
+	}
+	decoded := make([]*decodedRecord, 0)
+	prev := rd.src.s.consumed()
 	for i := int32(0); i < nRecords; i++ {
 		dr, err := rd.decodeRecord(int(i))
 		if err != nil {
 			return nil, err
 		}
 		decoded = append(decoded, dr)
+		// Every record must consume series input. If one did not, the
+		// declared count has outrun the data — stop rather than loop to
+		// nRecords emitting identical zero-byte records (a crafted
+		// header could otherwise drive a multi-billion-iteration loop).
+		c := rd.src.s.consumed()
+		if c == prev && i+1 < nRecords {
+			return nil, errFormat("slice declares %d records but the series data is exhausted after record %d",
+				nRecords, i)
+		}
+		prev = c
 	}
 	if err := resolveMates(decoded); err != nil {
 		return nil, err
@@ -500,10 +517,15 @@ func (rd *recordDecoder) decodeMate(dr *decodedRecord, cf int32, index int) erro
 		if mf&mfMateUnmapped != 0 {
 			rec.Flag |= sam.FlagMateUnmapped
 		}
-		// A detached record may still drop its read name; htslib reads RN
-		// again here when names are not preserved. Names preserved is the
-		// common case and is handled in decodeReadName, so nothing extra
-		// is read for that path.
+		// A detached record whose read names are not preserved stores
+		// its name inside the mate block (after MF, before NS). That
+		// layout is not yet handled; reject it explicitly rather than
+		// silently desync every following series. Names-preserved — the
+		// samtools default — is the common case, handled in
+		// decodeReadName, and needs nothing extra here.
+		if !rd.h.Preservation.ReadNamesIncluded {
+			return errFormat("record %d: detached mate with read names not preserved is not yet supported", index)
+		}
 		nsID, err := rd.intSeries("NS")
 		if err != nil {
 			return wrapf(err, "record %d mate reference id", index)

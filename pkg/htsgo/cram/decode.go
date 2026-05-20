@@ -86,6 +86,20 @@ func (s *seriesSource) totalBytes() int32 {
 	return int32(total)
 }
 
+// consumed returns a monotonically increasing measure of how much
+// series input has been read: the CORE bitstream's bit position plus
+// every external cursor's byte position. A per-record or per-feature
+// decode loop compares it across iterations — an iteration that
+// advances it by zero means the declared count has outrun the data, so
+// the loop can stop instead of producing unbounded zero-byte items.
+func (s *seriesSource) consumed() int64 {
+	total := int64(s.core.pos)*8 - int64(s.core.nb)
+	for _, c := range s.external {
+		total += int64(c.pos) * 8
+	}
+	return total
+}
+
 // hasBlock reports whether an external block with the given content id
 // is present in the slice. A data series whose encoding names an absent
 // block carries no values in this slice (CRAM omits a series' block

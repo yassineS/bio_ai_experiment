@@ -54,8 +54,9 @@ func (rd *recordDecoder) decodeFeatures(nFeatures int32) ([]readFeature, error) 
 	if nFeatures < 0 {
 		return nil, errFormat("record declares a negative read-feature count %d", nFeatures)
 	}
-	feats := make([]readFeature, 0, nFeatures)
+	feats := make([]readFeature, 0)
 	var prevPos int32
+	prev := rd.src.s.consumed()
 	for i := int32(0); i < nFeatures; i++ {
 		code, err := rd.byteSeries("FC")
 		if err != nil {
@@ -73,6 +74,15 @@ func (rd *recordDecoder) decodeFeatures(nFeatures int32) ([]readFeature, error) 
 			return nil, wrapf(err, "read feature %d (%c)", i, code)
 		}
 		feats = append(feats, f)
+		// Every feature must consume series input; if one did not, the
+		// declared feature count has outrun the data — stop rather than
+		// loop to nFeatures (a crafted FN value could be ~2^31).
+		c := rd.src.s.consumed()
+		if c == prev && i+1 < nFeatures {
+			return nil, errFormat("record declares %d read features but the series data is exhausted after feature %d",
+				nFeatures, i)
+		}
+		prev = c
 	}
 	return feats, nil
 }
