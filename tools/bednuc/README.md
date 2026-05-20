@@ -14,7 +14,7 @@ per-interval nucleotide composition profile.
   before counting.
 - Best-effort `-fullHeader` support: contigs whose FASTA header carries
   whitespace can still be matched when the BED supplies the full string.
-- Random-access FASTA via `pkg/bioformats/fasta` (uses the sibling
+- Random-access FASTA via `pkg/htsgo/fasta` (uses the sibling
   `.fai` when present, or builds the index on the fly).
 - Pure Go, no third-party dependencies.
 - Transparent gzip/BGZF input on the BED side and `-` for stdin.
@@ -88,5 +88,5 @@ and `src/nucBed/nucBed.cpp`.
 
 Linear scan over the BED with constant-time random access into the
 FASTA via the geometry-based byte offsets in
-`pkg/bioformats/fasta.RandomAccess`. Memory footprint is the FASTA
+`pkg/htsgo/fasta.RandomAccess`. Memory footprint is the FASTA
 index (≈48 B/contig) plus a single per-record buffer.

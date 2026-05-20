@@ -278,7 +278,7 @@ diff family) landed in wave 23, completing the BCF I/O surface.
 
 `--bcf FILE` reads BGZF-compressed BCF v2.2 as the primary input,
 mirroring upstream `parameters.cpp:173`. The BCF stream is
-decoded through the shared `pkg/bioformats/bcf` reader (which
+decoded through the shared `pkg/htsgo/bcf` reader (which
 underwent the wave-21 correctness work for `--recode-bcf` plus
 the wave-22 unified-IDX name-dedup fix); each record is converted
 to the port's internal `vcf.Variant` representation before

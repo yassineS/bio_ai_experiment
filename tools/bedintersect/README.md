@@ -382,7 +382,7 @@ go test -cover ./pkg/bedintersect
 ## Implementation Details
 
 - Written in pure Go using standard library
-- Uses existing `pkg/bioformats/bed` parser
+- Uses existing `pkg/htsgo/bed` parser
 - Chromosome-based indexing for efficiency
 - Linear search within chromosome (fast for typical datasets)
 

@@ -35,7 +35,7 @@ The default output appends four columns to each A line:
 | `-h` | `--help`    | Show help. |
 | `-v` | `--version` | Show version. |
 
-Reads transparent gzip / BGZF via `pkg/bioformats/iohelper`. Stdin / `-` is
+Reads transparent gzip / BGZF via `pkg/htsgo/iohelper`. Stdin / `-` is
 supported.
 
 ## Output modes (mutually exclusive)

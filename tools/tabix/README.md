@@ -10,7 +10,7 @@ tabix -p vcf calls.vcf.gz                  # build calls.vcf.gz.tbi
 tabix calls.vcf.gz chr1:1,000,000-2,000,000   # print matching records
 ```
 
-The implementation builds on `tools/bgzip/pkg/bgzip` (the in-tree BGZF
+The implementation builds on `pkg/htsgo/bgzf` (the in-tree BGZF
 codec) and has **no third-party dependencies** — pure Go standard library.
 
 It is pick #2 of the 2026 next-up list in `analysis/tool_ranking_2026.md`
@@ -117,10 +117,10 @@ tabix -s 5 -b 6 -c '#' weird.tsv.gz
 
 ## Library
 
-The CLI is a thin wrapper around `tools/tabix/pkg/tabix`:
+The CLI is a thin wrapper around `pkg/htsgo/tabix`:
 
 ```go
-import "github.com/yassineS/bio_ai_experiment/tools/tabix/pkg/tabix"
+import "github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 
 cfg, _ := tabix.PresetConfig(tabix.PresetVCF)
 idx, _ := tabix.Build("calls.vcf.gz", cfg)
@@ -188,7 +188,7 @@ follow-ups (NOT part of this PR) are:
   binning scheme; the only structural difference is that BAI computes
   end-of-record from the CIGAR string rather than from a column index.
 - `bcftools view` random-access queries — same `.tbi` layer.
-- Wiring tabix-backed lookup into `pkg/bioformats/iohelper` so the rest
+- Wiring tabix-backed lookup into `pkg/htsgo/iohelper` so the rest
   of the repo gets transparent VCF region access.
 
 ## References

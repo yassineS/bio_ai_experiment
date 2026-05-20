@@ -27,7 +27,7 @@ bedshuffle -i input.bed -g hg19.genome -chrom        # keep on original chrom
 | `-h` | `--help` | Show help. |
 | `-v` | `--version` | Show version. |
 
-Reads transparent gzip / BGZF via `pkg/bioformats/iohelper`. Stdin / `-` is
+Reads transparent gzip / BGZF via `pkg/htsgo/iohelper`. Stdin / `-` is
 supported.
 
 ## Sampling strategy

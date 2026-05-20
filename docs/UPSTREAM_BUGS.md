@@ -104,7 +104,7 @@ warrant a closer look:_
 #### BCF writer correctness fixes (wave 21)
 
 While wiring `--recode-bcf` (the wave-21 vcftools flag) we discovered
-three latent bugs in `pkg/bioformats/bcf`'s writer that produced
+three latent bugs in `pkg/htsgo/bcf`'s writer that produced
 self-consistent output (our own reader could roundtrip it) but
 diverged from the BCF v2.2 spec and broke htslib interop:
 
@@ -565,7 +565,7 @@ discrepancies in our Go code (not upstream), all fixed inline:
   se but worth raising with the htslib maintainers about whether the
   encoder should clamp to int32 when it can. Tracked here so the next
   port can decide whether to round-trip 64-bit verbatim or downcast on
-  read (we currently downcast — see `pkg/bioformats/bcf/typed.go`).
+  read (we currently downcast — see `pkg/htsgo/bcf/typed.go`).
 
 <a id="bcf-fmt-keys-missing"></a>
 

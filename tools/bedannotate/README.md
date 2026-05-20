@@ -12,7 +12,7 @@ one or more secondary BED files (`--files`).
 - `--both` interleaves count + fraction per B (2N columns total).
 - Strand filters: `-s` (same-strand only), `-S` (opposite-strand only).
 - Optional `--names` header (or basenames are used by default).
-- Interval-tree based overlap (`pkg/bioformats/bed.IntervalTree`) — one
+- Interval-tree based overlap (`pkg/htsgo/bed.IntervalTree`) — one
   tree per B file built once, then A is streamed.
 - Pure Go, no third-party dependencies.
 - Transparent gzip/BGZF input on every input and `-` for stdin on `-i`.

@@ -29,7 +29,7 @@ bedmakewindows -b regions.bed -n 5 -i srcwinnum > windows.bed
 | `-h` | `--help` | |
 | `-v` | `--version` | |
 
-Reads transparent gzip / BGZF via `pkg/bioformats/iohelper`. Stdin / `-`
+Reads transparent gzip / BGZF via `pkg/htsgo/iohelper`. Stdin / `-`
 supported for the BED input.
 
 ## Behaviour

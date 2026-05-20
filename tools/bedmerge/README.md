@@ -339,7 +339,7 @@ go test -cover ./pkg/bedmerge
 ## Implementation Details
 
 - Written in pure Go using standard library
-- Uses existing `pkg/bioformats/bed` parser
+- Uses existing `pkg/htsgo/bed` parser
 - In-memory sorting and merging
 - Efficient interval merging with single pass
 

@@ -31,7 +31,7 @@ bedmap -a A.bed -b B.bed -c 5 -o min,max
 | `-h` | `--help` | Show help. |
 | `-v` | `--version` | Show version. |
 
-Reads transparent gzip / BGZF via `pkg/bioformats/iohelper`. Stdin / `-` is
+Reads transparent gzip / BGZF via `pkg/htsgo/iohelper`. Stdin / `-` is
 supported.
 
 ## Op semantics

@@ -219,7 +219,7 @@ Listed in **recommended build order**, because the dependency stack matters
   existing `tools/vcftools` is the natural home. `bcftools` is the modern
   successor to `vcftools` and the subcommands above are the highest-use
   ones. Combining with our existing VCF parsing in
-  `pkg/bioformats/vcf` gives us a strong base.
+  `pkg/htsgo/vcf` gives us a strong base.
 - **Effort:** ~4–6 weeks once bgzip/tabix and BCF binary format are done.
   BCF binary parsing is well-specified.
 - **Value to users:** Closes the loop with our existing VCFtools port —
