@@ -57,7 +57,8 @@ Each row is one reviewable PR. "Gate" = what must be green to merge.
 | **C1** | `pkg/htsgo/cram/codec/` — rANS 4x8 (order-0 + order-1), decode **and** encode. | Round-trip + property tests; compliance vectors if htscodecs submodule present. |
 | **C2** | rANS 4x16 **order-0** decode + encode, plus the framing format byte and the X_CAT store-uncompressed fallback. Order-1 and the transform bits (PACK / RLE / STRIPE / X32) are rejected with a clear error. | Same as C1 — byte-exact compliance vs the `r4x16/*.0` vectors landed. |
 | **C2.1** | rANS 4x16 **order-1** context model. | Byte-exact vs the `r4x16/*.1` vectors. |
-| **C2.2** | The v3.1 transform bits — X_PACK (bit-packing), X_RLE, X_STRIPE (4-way), X_32 unrolling. | Byte-exact vs the remaining `r4x16/*.{4,5,64,…}` vectors. |
+| **C2.2** | The v3.1 transform bits — X_PACK (bit-packing), X_RLE, X_STRIPE. | Byte-exact vs the `r4x16/*.{8,9,64,65,128,129,192,193}` vectors. |
+| **C2.3** | X_32 — the 32-way unrolled rANS core (a distinct on-wire format from the 4-way coder). | Byte-exact vs the `r4x16/*.{4,5}` vectors. |
 | **C3** | `pkg/htsgo/cram` container parser — file def, container, compression header, slice header, block. No data-series decode yet; just the tree walk + per-block decompress dispatch. | Parse + walk every container in a real v3.0 CRAM without error. |
 | **C4** | CRAM v3.0 **read** — data-series decoders (the entropy-coder zoo: external / byte_array_stop / byte_array_len / huffman / beta / subexp / gamma / golomb-rice), record reconstruction, the reference-diff decode. | Decode a v3.0 CRAM to SAM records matching `samtools view` output. |
 | **C5** | Reference resolution — `--reference`, `REF_PATH`, `REF_CACHE`, MD5 verify; `.crai` index read. | MD5-mismatch surfaced as a clear error; `.crai` region query works. |
@@ -155,3 +156,13 @@ limitation here.
   table with run-length-encoded zero gaps, and the optional
   rANS-O0-compressed frequency header. The PACK/RLE/STRIPE/X32
   transforms remain rejected with a clear error — split out to C2.2.
+- **C2.2** — landed. The v3.1 transform layer (X_PACK bit-packing,
+  X_RLE run-length, X_STRIPE N-way transpose) in
+  `pkg/htsgo/cram/codec/rans4x16_transform.go`, byte-exact against the
+  `r4x16/*.{8,9,64,65,128,129,192,193}` vectors for both decode and
+  encode. Includes the X_NOSZ size-threading that STRIPE sub-streams
+  need and the per-stripe brute-force method search. X_32 (the 32-way
+  unrolled core) remains rejected with a clear error — split out to
+  C2.3. This slice also fixed a latent C2.1 bug: the order-1
+  per-context total must be the exact row sum, with the order-0
+  alphabet tracked separately, to stay byte-exact under the transforms.

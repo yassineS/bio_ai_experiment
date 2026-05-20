@@ -87,13 +87,37 @@ func compressO1RANS4x16(in []byte, forceShift int) []byte {
 // shift and the per-context cumulative-start / frequency tables the
 // rANS coder needs. forceShift, when non-zero, overrides the auto-tuned
 // precision (see compressO1RANS4x16).
+//
+// Deviation note. The per-context total T[i] is the exact frequency-row
+// sum — the number of bytes that follow byte value i. Current htscodecs
+// instead derives T[i] from the shared utils.h hist1_4, which adds one
+// extra count for the input's final byte. That extra count perturbs the
+// normalise_freq rounding for the final byte's context.
+//
+// This is a verified, deliberate divergence from current htscodecs
+// *source*, chosen to match the vendored compliance *vectors*: the
+// r4x16/q8.129 and q8.193 vectors are byte-exact reproducible only with
+// T[i] == sum(F[i]); adding the final-byte count makes the encoder
+// diverge from them. The vectors are static fixtures and htscodecs'
+// own test harness never checks encode-equals-vector, so they can — and
+// here demonstrably do — predate the current hist1_4. The vectors are
+// this project's compliance oracle, so the encoder matches them.
+//
+// Consequence: for an input whose final byte value never recurs as a
+// context, our encoder's output differs by a few bytes from current
+// htscodecs. Both streams are valid and mutually decodable (our decoder
+// reads genuine htscodecs output and vice versa); only encoder
+// byte-equality with the latest C source is affected. The order-0
+// context alphabet (present) is tracked separately so the final byte is
+// always encodable even when T[final] is 0.
 func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, cum, freq *[256][256]uint32) {
 	n := len(in)
 	isz4 := n >> 2
 
 	// Order-1 histogram: F[prev][cur]; T[i] is the count of i as a
-	// context plus one for the final byte (so a symbol that only ever
-	// appears last is still marked present in the order-0 alphabet).
+	// context (the number of bytes that follow an i). htscodecs'
+	// encode_freq1 normalises each context's row to T[i], so T must be
+	// exactly the row sum — see the deviation note below.
 	F := new([256][256]uint32)
 	var T [256]uint32
 	prev := 0
@@ -108,17 +132,21 @@ func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, c
 		}
 		T[i] += tt
 	}
-	T[in[n-1]]++
 	// Phantom counts for the first symbol of quarters 1..3: each
 	// decodes with context 0.
 	for z := 1; z < 4; z++ {
 		F[0][in[z*isz4]]++
 	}
 	T[0] += 3
-	// Snapshot which bytes are valid contexts before the per-context
-	// loop below mutates T. T is a [256]uint32 array, so this is a
-	// value copy, not an alias.
+
+	// present marks every symbol that occurs anywhere in the input; it
+	// is the order-0 alphabet of contexts (htscodecs' present8). A
+	// symbol that appears only as the input's final byte is a valid
+	// symbol but never a context, so T[final] can be 0 while
+	// present[final] must still be set. Context 0 is always present —
+	// T[0] += 3 above guarantees it — so it needs no explicit mark.
 	present := T
+	present[in[n-1]] = 1
 
 	// Order-0 alphabet of contexts, preceded by the (placeholder) shift
 	// byte.
@@ -126,7 +154,7 @@ func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, c
 	body = append(body, encodeAlphabetRANS4x16(&present)...)
 
 	var S [256]uint32
-	shift = ransComputeShift(&T, F, &T, &S)
+	shift = ransComputeShift(&present, F, &T, &S)
 	if forceShift != 0 {
 		shift = forceShift
 	}
@@ -135,7 +163,7 @@ func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, c
 	cum = new([256][256]uint32)
 	freq = new([256][256]uint32)
 	for i := 0; i < 256; i++ {
-		if T[i] == 0 {
+		if present[i] == 0 {
 			continue
 		}
 		maxVal := S[i]

@@ -79,6 +79,233 @@ func TestRANS4x16_EncodeMatchesHTScodecs(t *testing.T) {
 	}
 }
 
+// transformVectorSuffixes are the htscodecs r4x16 vector order bytes for
+// the PACK/RLE/STRIPE transform layer. The suffix is the order argument
+// passed to the encoder: 0x08 STRIPE, 0x40 RLE, 0x80 PACK, optionally
+// OR'd with 0x01 for order-1. The X_32 (.4/.5) vectors are a separate
+// on-wire format and out of scope.
+var transformVectorSuffixes = []int{8, 9, 64, 65, 128, 129, 192, 193}
+
+// TestRANS4x16_TransformComplianceVectors decodes the htscodecs r4x16
+// transform vectors (PACK/RLE/STRIPE, with and without order-1) and
+// asserts byte-for-byte against the expected raw data. It complements
+// TestRANS4x16_ComplianceVectors, which covers the plain order-0/1
+// streams.
+func TestRANS4x16_TransformComplianceVectors(t *testing.T) {
+	ran := 0
+	for _, qfile := range []string{"q4", "q8", "qvar", "q40+dir"} {
+		want, ok := loadCorpus(t, qfile)
+		if !ok {
+			continue
+		}
+		for _, order := range transformVectorSuffixes {
+			comp, err := os.ReadFile(filepath.Join(htscodecsDir, "dat", "r4x16",
+				qfile+"."+itoa(order)))
+			if err != nil {
+				continue
+			}
+			ran++
+			t.Run(qfile+".o"+itoa(order), func(t *testing.T) {
+				got, err := RANS4x16Decode(comp)
+				if err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("decoded %d bytes, want %d; first mismatch at %d",
+						len(got), len(want), firstDiff(got, want))
+				}
+			})
+		}
+	}
+	if ran == 0 {
+		t.Skip("htscodecs submodule not initialised — compliance vectors unavailable")
+	}
+}
+
+// TestRANS4x16_TransformEncodeMatchesHTScodecs checks our PACK/RLE/STRIPE
+// encoder produces byte-identical output to the htscodecs reference
+// vectors. The transform pipeline (bit-packing, run-length splitting,
+// stripe transposition and the per-stripe method search) is fully
+// deterministic, so a byte-exact match is the strongest possible test.
+func TestRANS4x16_TransformEncodeMatchesHTScodecs(t *testing.T) {
+	ran := 0
+	for _, qfile := range []string{"q4", "q8", "qvar", "q40+dir"} {
+		raw, ok := loadCorpus(t, qfile)
+		if !ok {
+			continue
+		}
+		for _, order := range transformVectorSuffixes {
+			comp, err := os.ReadFile(filepath.Join(htscodecsDir, "dat", "r4x16",
+				qfile+"."+itoa(order)))
+			if err != nil {
+				continue
+			}
+			ran++
+			t.Run(qfile+".o"+itoa(order), func(t *testing.T) {
+				got, err := RANS4x16Encode(raw, order)
+				if err != nil {
+					t.Fatalf("encode: %v", err)
+				}
+				if !bytes.Equal(got, comp) {
+					t.Errorf("encoded %d bytes, htscodecs vector is %d; first mismatch at %d",
+						len(got), len(comp), firstDiff(got, comp))
+				}
+			})
+		}
+	}
+	if ran == 0 {
+		t.Skip("htscodecs submodule not initialised")
+	}
+}
+
+// TestRANS4x16_TransformRoundTrip exercises encode→decode as the
+// identity for every transform/order combination across a spread of
+// input shapes — no external fixtures needed.
+func TestRANS4x16_TransformRoundTrip(t *testing.T) {
+	inputs := map[string][]byte{
+		"empty":         {},
+		"single":        {'A'},
+		"tiny":          []byte("ACGT"),
+		"twentyone":     bytes.Repeat([]byte("ACGTACGT_"), 3)[:21],
+		"low-alpha":     []byte("ACGTACGTACGTNNNNACGTACGTNNNN"),
+		"runs":          bytes.Repeat([]byte{'A'}, 4000),
+		"two-symbol":    twoSymbol(8000),
+		"adjacent-syms": adjacentSymbols(8000),
+		"sixteen-sym":   sixteenSymbol(9000),
+		"ascii-text":    []byte(repeat("the quick brown fox jumps over the lazy dog. ", 400)),
+		"full-alpha":    fullAlphabet(60000),
+		"random-large":  randomBytes(t, 120000),
+		// The final byte 'Z' appears nowhere else, so it is a valid
+		// symbol that is never a context — exercising the order-1
+		// path where T[final] == 0 (see encodeFreq1RANS4x16).
+		"last-byte-unique": append(bytes.Repeat([]byte("ABC"), 200), 'Z'),
+	}
+	for _, transform := range []struct {
+		name string
+		bits int
+	}{
+		{"pack", x4x16Pack},
+		{"rle", x4x16RLE},
+		{"pack+rle", x4x16Pack | x4x16RLE},
+		{"stripe", x4x16Stripe},
+	} {
+		for name, in := range inputs {
+			for _, order := range []int{0, 1} {
+				t.Run(transform.name+"/"+name+".o"+itoa(order), func(t *testing.T) {
+					comp, err := RANS4x16Encode(in, transform.bits|order)
+					if err != nil {
+						t.Fatalf("encode: %v", err)
+					}
+					got, err := RANS4x16Decode(comp)
+					if err != nil {
+						t.Fatalf("decode: %v", err)
+					}
+					if !bytes.Equal(got, in) {
+						t.Fatalf("round-trip mismatch: got %d bytes, want %d (first diff at %d)",
+							len(got), len(in), firstDiff(got, in))
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestRANS4x16_StripeStreamCount checks that an explicit stripe count N,
+// passed in bits 8-15 of the order argument, round-trips for N from 1 to
+// 8 — the STRIPE format stores N in the stream and the decoder honours
+// it.
+func TestRANS4x16_StripeStreamCount(t *testing.T) {
+	in := fullAlphabet(40000)
+	for n := 1; n <= 8; n++ {
+		t.Run("N="+itoa(n), func(t *testing.T) {
+			comp, err := RANS4x16Encode(in, x4x16Stripe|(n<<8))
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			got, err := RANS4x16Decode(comp)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if !bytes.Equal(got, in) {
+				t.Fatalf("N=%d round-trip mismatch (first diff at %d)", n, firstDiff(got, in))
+			}
+		})
+	}
+}
+
+// sixteenSymbol builds data over a 16-symbol alphabet, the largest
+// alphabet hts_pack will still bit-pack (2 symbols per byte).
+func sixteenSymbol(n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = byte(i*7%16) + 32
+	}
+	return out
+}
+
+// TestRANS4x16_PackAlphabetWidths round-trips PACK across each
+// symbols-per-byte width hts_pack selects: 8 (alphabet 2), 4 (3-4), 2
+// (5-16) and 0 (the constant, alphabet-1 case). It also covers a >16
+// alphabet, where hts_pack declines and the encoder clears X_PACK.
+func TestRANS4x16_PackAlphabetWidths(t *testing.T) {
+	mk := func(alpha, n int) []byte {
+		out := make([]byte, n)
+		for i := range out {
+			out[i] = byte(40 + i%alpha)
+		}
+		return out
+	}
+	cases := map[string][]byte{
+		"constant-1":    bytes.Repeat([]byte{'Q'}, 3000),
+		"alpha-2":       mk(2, 5000),
+		"alpha-4":       mk(4, 5000),
+		"alpha-9":       mk(9, 5000),
+		"alpha-16":      mk(16, 5000),
+		"alpha-17":      mk(17, 5000), // too wide to pack
+		"odd-tail":      mk(9, 5003),
+		"single-symbol": {'Z'},
+	}
+	for name, in := range cases {
+		for _, order := range []int{0, 1} {
+			t.Run(name+".o"+itoa(order), func(t *testing.T) {
+				comp, err := RANS4x16Encode(in, x4x16Pack|order)
+				if err != nil {
+					t.Fatalf("encode: %v", err)
+				}
+				got, err := RANS4x16Decode(comp)
+				if err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if !bytes.Equal(got, in) {
+					t.Fatalf("round-trip mismatch (first diff at %d)", firstDiff(got, in))
+				}
+			})
+		}
+	}
+}
+
+// TestRANS4x16_TransformXCATFallback checks that a transform requested
+// on data rANS cannot shrink still round-trips: the encoder falls back
+// to X_CAT for the (transformed) payload and the decoder reverses the
+// transform regardless.
+func TestRANS4x16_TransformXCATFallback(t *testing.T) {
+	// Six random bytes: far too short for rANS to beat storing verbatim.
+	in := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	for _, bits := range []int{x4x16Pack, x4x16RLE, x4x16Pack | x4x16RLE} {
+		comp, err := RANS4x16Encode(in, bits)
+		if err != nil {
+			t.Fatalf("encode bits 0x%02x: %v", bits, err)
+		}
+		got, err := RANS4x16Decode(comp)
+		if err != nil {
+			t.Fatalf("decode bits 0x%02x: %v", bits, err)
+		}
+		if !bytes.Equal(got, in) {
+			t.Fatalf("bits 0x%02x round-trip mismatch", bits)
+		}
+	}
+}
+
 // TestRANS4x16_RoundTrip exercises encode→decode as the identity across
 // a spread of input shapes and both orders — no external fixtures
 // needed.
@@ -128,11 +355,11 @@ func TestRANS4x16_DecodeErrors(t *testing.T) {
 		in   []byte
 	}{
 		{"empty", nil},
-		{"pack rejected", []byte{0x80, 0x00}},
-		{"rle rejected", []byte{0x40, 0x00}},
-		{"stripe rejected", []byte{0x08, 0x00}},
+		{"pack meta truncated", []byte{0x80, 0x00}},
+		{"rle meta truncated", []byte{0x40, 0x00}},
+		{"stripe truncated", []byte{0x08, 0x00}},
 		{"x32 rejected", []byte{0x04, 0x00}},
-		{"nosz rejected", []byte{0x10, 0x00}},
+		{"nosz top-level malformed", []byte{0x10, 0x00}},
 		{"truncated size varint", []byte{0x00, 0x80}},
 		{"cat payload too short", []byte{0x20, 0x05, 'A', 'B'}},
 		{"order-0 payload too short", []byte{0x00, 0x04, 1, 2, 3}},
@@ -140,6 +367,17 @@ func TestRANS4x16_DecodeErrors(t *testing.T) {
 		// payload byte 0xB0 selects table precision 11 (0xB0>>4),
 		// which is neither 10 nor 12 and must be rejected.
 		{"order-1 invalid shift 11", append([]byte{0x01, 0x08, 0xB0}, make([]byte, 20)...)},
+		// RLE bomb: an X_RLE|X_CAT stream declaring a 10-byte output
+		// whose single run-length varint is 0xFFFFFFFF. The decoder
+		// must reject the run before expanding it, not hang. Layout:
+		// format, osz=10, uMetaSize=15 (raw, odd), rleLen=1, then the
+		// 7-byte raw meta [nsyms=1, sym 'A', run varint 0xFFFFFFFF],
+		// then the single literal 'A'.
+		{"rle run-length bomb", []byte{
+			0x60, 0x0A, 0x0F, 0x01,
+			0x01, 'A', 0x8F, 0xFF, 0xFF, 0xFF, 0x7F,
+			'A',
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

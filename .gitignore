@@ -125,3 +125,6 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# Claude Code local tooling state (agent worktrees, etc.)
+.claude/

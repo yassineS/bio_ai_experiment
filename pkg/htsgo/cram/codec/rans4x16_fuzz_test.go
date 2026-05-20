@@ -20,6 +20,16 @@ func FuzzRANS4x16Decode(f *testing.F) {
 		mustEncode16([]byte("ACGTACGTACGTNNNN"), 1),
 		mustEncode16(bytes512(), 0),
 		mustEncode16(bytes512(), 1),
+		// Transform-layer seeds: PACK, RLE, PACK+RLE and STRIPE, with
+		// and without order-1, exercising the C2.2 decode paths.
+		mustEncode16([]byte("ACGTACGTACGTNNNN"), 0x80),
+		mustEncode16([]byte("ACGTACGTACGTNNNN"), 0x81),
+		mustEncode16([]byte("AAAACCCCGGGGTTTT"), 0x40),
+		mustEncode16([]byte("AAAACCCCGGGGTTTT"), 0x41),
+		mustEncode16(bytes512(), 0xC0),
+		mustEncode16(bytes512(), 0xC1),
+		mustEncode16(bytes512(), 0x08),
+		mustEncode16(bytes512(), 0x09),
 	} {
 		f.Add(seed)
 	}
