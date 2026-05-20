@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -201,7 +202,7 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 	}
 
 	// Resolve regions.
-	resolved, _, err := ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
+	resolved, _, err := region.ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
 	if err != nil {
 		return err
 	}

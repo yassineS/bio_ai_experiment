@@ -50,14 +50,14 @@ func Index(in io.Reader, out io.Writer, opts IndexOptions) error {
 	if err != nil {
 		return err
 	}
-	return WriteBAI(out, idx)
+	return bam.WriteBAI(out, idx)
 }
 
 // BuildBAI is preserved as a thin delegation to pkg/htsgo/bam.BuildBAI
 // for backwards compatibility with any external caller importing the
 // samtools package directly. The real implementation moved to the
 // htsgo/bam package in PR-D.
-func BuildBAI(br *sam.BAMReader, numRefs int) (*BAIIndex, error) {
+func BuildBAI(br *sam.BAMReader, numRefs int) (*bam.BAIIndex, error) {
 	return bam.BuildBAI(br, numRefs)
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -59,9 +60,9 @@ func TestIndexBuildsBAI(t *testing.T) {
 	if err := Index(bytes.NewReader(bamBytes), &idxBuf, IndexOptions{}); err != nil {
 		t.Fatalf("Index: %v", err)
 	}
-	idx, err := ReadBAI(bytes.NewReader(idxBuf.Bytes()))
+	idx, err := bam.ReadBAI(bytes.NewReader(idxBuf.Bytes()))
 	if err != nil {
-		t.Fatalf("ReadBAI: %v", err)
+		t.Fatalf("bam.ReadBAI: %v", err)
 	}
 	if len(idx.Refs) != 2 {
 		t.Fatalf("Refs len: got %d, want 2", len(idx.Refs))
@@ -73,7 +74,7 @@ func TestIndexBuildsBAI(t *testing.T) {
 	for i, ref := range idx.Refs {
 		var sawMeta, sawData bool
 		for _, b := range ref.Bins {
-			if b.BinID == MetaBin {
+			if b.BinID == bam.MetaBin {
 				sawMeta = true
 			} else {
 				sawData = true
@@ -114,8 +115,8 @@ func TestIndexFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read bai: %v", err)
 	}
-	if !bytes.Equal(raw[:4], BAIMagic[:]) {
-		t.Errorf("bai magic: got % x, want % x", raw[:4], BAIMagic)
+	if !bytes.Equal(raw[:4], bam.BAIMagic[:]) {
+		t.Errorf("bai magic: got % x, want % x", raw[:4], bam.BAIMagic)
 	}
 }
 

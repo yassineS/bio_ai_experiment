@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -125,7 +127,7 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 
 	// Resolve any region specifiers up front so unknown chroms don't abort
 	// the linear scan — they just yield zero matches.
-	resolved, _, err := ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
+	resolved, _, err := region.ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
 	if err != nil {
 		return 0, err
 	}
@@ -223,7 +225,7 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 		defer f.Close()
 		return View(f, out, opts)
 	}
-	idx, ierr := ReadBAI(strings.NewReader(string(baiBytes)))
+	idx, ierr := bam.ReadBAI(strings.NewReader(string(baiBytes)))
 	if ierr != nil {
 		return 0, fmt.Errorf("samtools view: read %s: %w", baiPath, ierr)
 	}
@@ -240,7 +242,7 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 // chunk unions, seeks into each chunk's compressed offset, decodes records
 // until each chunk's end virtual offset, and emits records overlapping any
 // requested region.
-func viewIndexed(f *os.File, idx *BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
+func viewIndexed(f *os.File, idx *bam.BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
 	// Need the header — open a BAM reader first.
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return 0, err
@@ -251,11 +253,11 @@ func viewIndexed(f *os.File, idx *BAIIndex, out io.Writer, opts ViewOptions) (in
 	}
 	hdr := hdrReader.Header()
 
-	resolved, _, perr := ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
+	resolved, _, perr := region.ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
 	if perr != nil {
 		return 0, perr
 	}
-	chunks := UnionChunks(idx, resolved)
+	chunks := bam.UnionChunks(idx, resolved)
 	regionFilter := buildRegionFilter(resolved, hdr)
 	if regionFilter == nil && len(opts.Regions) > 0 {
 		regionFilter = func(*sam.Record) bool { return false }
@@ -355,7 +357,7 @@ func (c *chunkBoundedReader) Read(p []byte) (int, error) {
 // buildRegionFilter returns nil when no regions are configured; otherwise
 // returns a predicate that keeps records overlapping any region's range
 // on the matching reference.
-func buildRegionFilter(regions []ResolvedRegion, hdr *sam.Header) func(*sam.Record) bool {
+func buildRegionFilter(regions []region.ResolvedRegion, hdr *sam.Header) func(*sam.Record) bool {
 	if len(regions) == 0 {
 		return nil
 	}

@@ -26,16 +26,10 @@ BCF, Tabix/CSI, FASTA, FASTA index, FASTQ, BED, GFF, region parsing.
 | `region`            | `pkg/htsgo/region/`            | `chr:start-end` parser + ResolveRegions (BAI-agnostic) |
 
 All format packages live under `pkg/htsgo/`. The legacy
-`pkg/bioformats/` directory and the `tools/bgzip/pkg/bgzip/`,
-`tools/tabix/pkg/tabix/` shim paths have been removed in PR-I;
-all importers now use the htsgo path directly.
-
-The two in-samtools sub-shims (`bai_shim.go`, `region_shim.go`)
-remain in place — they let samtools subcommands use bare names
-(`BAIIndex`, `ParseRegion`) without prefixing every call site
-with `bam.` / `region.`. They have no external callers and will
-be folded out in a follow-up sweep when an in-pkg rename has
-positive value of its own.
+`pkg/bioformats/` directory, the `tools/bgzip/pkg/bgzip/` /
+`tools/tabix/pkg/tabix/` shim paths, and the two in-samtools
+sub-shims (`bai_shim.go`, `region_shim.go`) have all been
+removed; every importer uses the `pkg/htsgo/` path directly.
 
 Note: the BAM reader/writer themselves currently live in
 `pkg/htsgo/sam/` (`sam.BAMReader`, `sam.BAMWriter`) — they moved
@@ -100,11 +94,7 @@ across the tree use the `bgzip.X` qualifier, so the alias
 keeps every existing reference at zero diff cost. New code
 should follow the same pattern.
 
-Two in-samtools sub-shim files remain at
-`tools/samtools/pkg/samtools/{bai_shim.go,region_shim.go}`.
-They have no external callers and exist only so samtools
-subcommand code can use bare `BAIIndex` / `ParseRegion`
-identifiers without prefixing every reference with
-`bam.` / `region.`. Folding them out can ride on the next
-samtools-internal refactor (a global rename is risky because
-`Region` is also a struct field on `ResolvedRegion`).
+The samtools subcommands now import `pkg/htsgo/bam` and
+`pkg/htsgo/region` directly and qualify every reference
+(`bam.BAIIndex`, `region.ParseRegion`, …) — the bare-name
+sub-shims that PR-I had deferred were removed in a follow-up.
