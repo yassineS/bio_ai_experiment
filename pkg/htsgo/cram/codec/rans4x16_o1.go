@@ -31,6 +31,15 @@ const (
 	tfShiftO1Fast = 10
 	totFreqO1     = 1 << tfShiftO1     // 4096
 	totFreqO1Fast = 1 << tfShiftO1Fast // 1024
+
+	// maxO1FreqTableSize bounds the uncompressed size of an order-1
+	// frequency table. A legitimate table is at most ~128 KiB (256
+	// contexts × at most 256 two-byte entries, plus the alphabet), so
+	// the rANS-compressed-header path must reject a larger declared
+	// size before it drives a decode allocation: the general
+	// maxRANSRawSize ceiling (1 GiB) is far too loose for a frequency
+	// table and lets a tiny crafted stream demand a ~1 GiB buffer.
+	maxO1FreqTableSize = 1 << 20
 )
 
 // --- order-1 encode ----------------------------------------------------------
@@ -331,6 +340,10 @@ func uncompressO1RANS4x16(in []byte, rawSize uint32) ([]byte, error) {
 		uFreqSz, c, ok := varGetU32(in, cp)
 		if !ok {
 			return nil, fmt.Errorf("rans4x16: truncated order-1 uncompressed-table size")
+		}
+		if uFreqSz > maxO1FreqTableSize {
+			return nil, fmt.Errorf("rans4x16: order-1 frequency table size %d exceeds the %d-byte limit",
+				uFreqSz, maxO1FreqTableSize)
 		}
 		cFreqSz, c2, ok := varGetU32(in, c)
 		if !ok {

@@ -531,6 +531,17 @@ func TestRANS4x16_DecodeErrors(t *testing.T) {
 		// payload byte 0xB0 selects table precision 11 (0xB0>>4),
 		// which is neither 10 nor 12 and must be rejected.
 		{"order-1 invalid shift 11", append([]byte{0x01, 0x08, 0xB0}, make([]byte, 20)...)},
+		// Order-1 frequency-table bomb: a compressed-header order-1
+		// stream (payload byte 0xA1) declaring a 2^30-byte uncompressed
+		// table. The decoder must reject the oversized table size up
+		// front rather than allocate ~1 GiB and run a billion-iteration
+		// decode loop. Layout: format 0x01, rawSize=100, then a 16-byte
+		// payload: 0xA1, uFreqSz varint 2^30, cFreqSz varint 1, padding.
+		{"order-1 freq-table bomb", []byte{
+			0x01, 0x64,
+			0xA1, 0x84, 0x80, 0x80, 0x80, 0x00, 0x01,
+			0, 0, 0, 0, 0, 0, 0, 0, 0,
+		}},
 		// RLE bomb: an X_RLE|X_CAT stream declaring a 10-byte output
 		// whose single run-length varint is 0xFFFFFFFF. The decoder
 		// must reject the run before expanding it, not hang. Layout:

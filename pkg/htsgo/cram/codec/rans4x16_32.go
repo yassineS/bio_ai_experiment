@@ -300,6 +300,10 @@ func uncompressO1RANS4x16X32(in []byte, rawSize uint32) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("rans4x16: truncated 32-way order-1 uncompressed-table size")
 		}
+		if uFreqSz > maxO1FreqTableSize {
+			return nil, fmt.Errorf("rans4x16: 32-way order-1 frequency table size %d exceeds the %d-byte limit",
+				uFreqSz, maxO1FreqTableSize)
+		}
 		cFreqSz, c2, ok := varGetU32(in, c)
 		if !ok {
 			return nil, fmt.Errorf("rans4x16: truncated 32-way order-1 compressed-table size")
