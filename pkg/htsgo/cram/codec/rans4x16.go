@@ -108,7 +108,7 @@ func RANS4x16Encode(in []byte, order int) ([]byte, error) {
 		if len(in) < 8 {
 			return frameRANS4x16(in, compressO0RANS4x16(in), 0x00), nil
 		}
-		return frameRANS4x16(in, compressO1RANS4x16(in), 0x01), nil
+		return frameRANS4x16(in, compressO1RANS4x16(in, 0), 0x01), nil
 	default:
 		return nil, fmt.Errorf("rans4x16: order %d is not implemented (want 0 or 1)", order)
 	}
@@ -133,8 +133,15 @@ func frameRANS4x16(in, payload []byte, format byte) []byte {
 
 // uncompressO0RANS4x16 implements rans_uncompress_O0_4x16: in is the
 // payload after the format byte and raw-size varint, rawSize is the
-// declared decompressed length.
+// declared decompressed length. The maxRANSRawSize ceiling is enforced
+// here, not only in RANS4x16Decode, because the order-1 decoder reaches
+// this function recursively with an attacker-controlled size when the
+// frequency header is itself rANS-compressed.
 func uncompressO0RANS4x16(in []byte, rawSize uint32) ([]byte, error) {
+	if rawSize > maxRANSRawSize {
+		return nil, fmt.Errorf("rans4x16: declared raw size %d exceeds the %d-byte safety ceiling",
+			rawSize, maxRANSRawSize)
+	}
 	if len(in) < 16 {
 		return nil, fmt.Errorf("rans4x16: order-0 payload %d bytes, need ≥16 for four states", len(in))
 	}
@@ -420,6 +427,12 @@ func round2u32(v uint32) uint32 {
 // harder" retry that compounds on the already-scaled array, and a
 // final spread-the-deficit pass. Called twice by the encoder — first
 // to the stored power-of-two ceiling, then up to TOTFREQ.
+//
+// htscodecs' normalise_freq returns -1 when the largest bucket would
+// go non-positive; that path is unreachable here because every caller
+// passes tot >= the count of present symbols, so the spread-the-deficit
+// pass can always leave each bucket >= 1. The signal is therefore not
+// propagated.
 func normaliseFreqRANS4x16(F *[256]uint32, size, tot uint32) {
 	if size == 0 {
 		return

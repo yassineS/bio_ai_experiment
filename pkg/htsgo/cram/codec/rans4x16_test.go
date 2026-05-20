@@ -137,12 +137,51 @@ func TestRANS4x16_DecodeErrors(t *testing.T) {
 		{"cat payload too short", []byte{0x20, 0x05, 'A', 'B'}},
 		{"order-0 payload too short", []byte{0x00, 0x04, 1, 2, 3}},
 		{"order-1 payload too short", []byte{0x01, 0x04, 1, 2, 3}},
-		{"order-1 bad shift", append([]byte{0x01, 0x08, 0x00}, make([]byte, 20)...)},
+		// payload byte 0xB0 selects table precision 11 (0xB0>>4),
+		// which is neither 10 nor 12 and must be rejected.
+		{"order-1 invalid shift 11", append([]byte{0x01, 0x08, 0xB0}, make([]byte, 20)...)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if _, err := RANS4x16Decode(c.in); err == nil {
 				t.Errorf("expected error for %s", c.name)
+			}
+		})
+	}
+}
+
+// TestRANS4x16_Order1Shift12 exercises the 12-bit order-1 table
+// precision. The auto-tune (ransComputeShift) almost always selects the
+// 10-bit precision for synthetic data — the fast_log exponent term
+// cancels exactly for near-uniform distributions — so the encoder is
+// pinned to shift 12 via compressO1RANS4x16's forceShift seam and the
+// resulting stream round-tripped through the public decoder. This is
+// the only path that fills the frequency tables to 4096 entries and
+// masks the rANS state with 0xFFF.
+func TestRANS4x16_Order1Shift12(t *testing.T) {
+	inputs := map[string][]byte{
+		"two-symbol":    twoSymbol(9000),
+		"adjacent-syms": adjacentSymbols(9000),
+		"ascii-text":    []byte(repeat("the quick brown fox ", 800)),
+		"full-alpha":    fullAlphabet(20000),
+	}
+	for name, in := range inputs {
+		t.Run(name, func(t *testing.T) {
+			stream := frameRANS4x16(in, compressO1RANS4x16(in, tfShiftO1), 0x01)
+			if stream[0] != 0x01 {
+				t.Fatalf("expected order-1 format byte, got 0x%02x (X_CAT fallback?)", stream[0])
+			}
+			_, cp, _ := varGetU32(stream, 1)
+			if got := int(stream[cp] >> 4); got != tfShiftO1 {
+				t.Fatalf("expected shift %d in stream, got %d", tfShiftO1, got)
+			}
+			decoded, err := RANS4x16Decode(stream)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if !bytes.Equal(decoded, in) {
+				t.Fatalf("shift-12 round-trip mismatch: got %d bytes, want %d (first diff at %d)",
+					len(decoded), len(in), firstDiff(decoded, in))
 			}
 		})
 	}

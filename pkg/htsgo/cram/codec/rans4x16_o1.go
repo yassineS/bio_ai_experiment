@@ -38,9 +38,13 @@ const (
 // compressO1RANS4x16 implements rans_compress_O1_4x16. It returns the
 // order-1 payload (shift byte + frequency table + rANS bytes); the
 // framing format byte and raw-size varint are added by the caller.
-func compressO1RANS4x16(in []byte) []byte {
+//
+// forceShift is 0 for the normal auto-tuned precision; a test may pass
+// 10 or 12 to pin the table precision and exercise the matching decode
+// path directly. Production callers always pass 0.
+func compressO1RANS4x16(in []byte, forceShift int) []byte {
 	n := len(in)
-	header, shift, cum, freq := encodeFreq1RANS4x16(in)
+	header, shift, cum, freq := encodeFreq1RANS4x16(in, forceShift)
 	sh := uint(shift)
 
 	rev := newRevBuf(n + 64)
@@ -81,8 +85,9 @@ func compressO1RANS4x16(in []byte) []byte {
 // histogram, picks the table precision, encodes the frequency table
 // (optionally rANS-O0-compressed) and returns it along with the chosen
 // shift and the per-context cumulative-start / frequency tables the
-// rANS coder needs.
-func encodeFreq1RANS4x16(in []byte) (header []byte, shift int, cum, freq *[256][256]uint32) {
+// rANS coder needs. forceShift, when non-zero, overrides the auto-tuned
+// precision (see compressO1RANS4x16).
+func encodeFreq1RANS4x16(in []byte, forceShift int) (header []byte, shift int, cum, freq *[256][256]uint32) {
 	n := len(in)
 	isz4 := n >> 2
 
@@ -110,7 +115,10 @@ func encodeFreq1RANS4x16(in []byte) (header []byte, shift int, cum, freq *[256][
 		F[0][in[z*isz4]]++
 	}
 	T[0] += 3
-	present := T // snapshot of which bytes are valid contexts
+	// Snapshot which bytes are valid contexts before the per-context
+	// loop below mutates T. T is a [256]uint32 array, so this is a
+	// value copy, not an alias.
+	present := T
 
 	// Order-0 alphabet of contexts, preceded by the (placeholder) shift
 	// byte.
@@ -119,6 +127,9 @@ func encodeFreq1RANS4x16(in []byte) (header []byte, shift int, cum, freq *[256][
 
 	var S [256]uint32
 	shift = ransComputeShift(&T, F, &T, &S)
+	if forceShift != 0 {
+		shift = forceShift
+	}
 	sh := uint(shift)
 
 	cum = new([256][256]uint32)
@@ -311,6 +322,9 @@ func uncompressO1RANS4x16(in []byte, rawSize uint32) ([]byte, error) {
 		return nil, err
 	}
 	hcp += consumed
+	if hcp >= len(hdr) {
+		return nil, fmt.Errorf("rans4x16: order-1 frequency table truncated after the alphabet")
+	}
 
 	// Per-context reverse-lookup tables.
 	symTab := new([256][1 << tfShiftO1]byte)
@@ -323,6 +337,9 @@ func uncompressO1RANS4x16(in []byte, rawSize uint32) ([]byte, error) {
 		F, total, n, err := decodeFreqDRANS4x16(hdr, hcp, &F0)
 		if err != nil {
 			return nil, err
+		}
+		if n == 0 {
+			return nil, fmt.Errorf("rans4x16: order-1 frequency table truncated at context %d", i)
 		}
 		hcp += n
 		if total == 0 {
