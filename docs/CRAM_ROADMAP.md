@@ -141,10 +141,17 @@ limitation here.
 
 - **C1** — landed (#160). rANS 4x8 order-0 + order-1, decode and
   encode, byte-exact against the `r4x8` compliance vectors.
-- **C2** — landed. rANS 4x16 order-0 decode + encode in
+- **C2** — landed (#161). rANS 4x16 order-0 decode + encode in
   `pkg/htsgo/cram/codec/rans4x16.go`, byte-exact against the
   `r4x16/*.0` vectors (q4, q8, qvar, q40+dir) for both decode and
   encode. Includes the framing format byte, the big-endian varint
   size field, the X_CAT store-uncompressed fallback, and a decoder
-  fuzz target. Order-1 and the PACK/RLE/STRIPE/X32 transforms are
-  rejected with a clear error — split out to C2.1 / C2.2.
+  fuzz target.
+- **C2.1** — landed. rANS 4x16 order-1 context model in
+  `pkg/htsgo/cram/codec/rans4x16_o1.go`, byte-exact against the
+  `r4x16/*.1` vectors for both decode and encode. Includes the
+  10/12-bit table-precision auto-tune (`rans_compute_shift`, with the
+  `fast_log` bit-trick replicated exactly), the order-1 frequency
+  table with run-length-encoded zero gaps, and the optional
+  rANS-O0-compressed frequency header. The PACK/RLE/STRIPE/X32
+  transforms remain rejected with a clear error — split out to C2.2.
