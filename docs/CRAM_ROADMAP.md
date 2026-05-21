@@ -261,3 +261,16 @@ limitation here.
   `mpileup` now auto-detect and accept CRAM with no flag; `view -T`
   threads a reference FASTA into the CRAM decoder. Verified against
   `test_input_1_a.cram`. No import cycle (`go list -deps` confirmed).
+- **C7** — landed. CRAM v3.1 read. v3.1 shares the v3.0 container and
+  record format and differs only in the available block codecs; the
+  rANS 4x16 family (C2–C2.3) was already wired into the block
+  decompression dispatch, so the C3–C5 reader decodes v3.1 with no new
+  production code. C7 locks that in: `pkg/htsgo/cram/v31_test.go`
+  verifies the v3.1 fixture `cram_size/mpileup.1.cram` is recognised as
+  CRAM 3.1, decodes to its full record set, genuinely exercises the
+  rANS 4x16 block codec (every block decompresses to its declared
+  size), and that the v3.1 codecs left unimplemented — the range
+  coder, fqzcomp and the name tokeniser (methods 6/7/8) — are rejected
+  with a clear error rather than mis-decoded. Those three optional
+  codecs slot in as dedicated future slices if a fixture needs them,
+  the same way C-LZMA handles method 3.
