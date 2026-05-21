@@ -107,7 +107,7 @@ func TestDecompressSizeMismatch(t *testing.T) {
 // TestDecompressUnsupportedMethods checks every out-of-scope compression
 // method returns a clear unsupported-method error rather than panicking.
 func TestDecompressUnsupportedMethods(t *testing.T) {
-	for _, m := range []CompressionMethod{CompLZMA, CompArith, CompFQZComp, CompNameTok, 250} {
+	for _, m := range []CompressionMethod{CompArith, CompFQZComp, CompNameTok, 250} {
 		b := Block{Method: m, Data: []byte{1, 2, 3}}
 		_, err := b.Decompress()
 		if err == nil {
@@ -131,13 +131,13 @@ func TestDecompressCorruptGzip(t *testing.T) {
 
 // TestSupportedMethod pins the SupportedMethod predicate.
 func TestSupportedMethod(t *testing.T) {
-	supported := []CompressionMethod{CompRaw, CompGzip, CompBzip2, CompRANS4x8, CompRANS4x16}
+	supported := []CompressionMethod{CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16}
 	for _, m := range supported {
 		if !(&Block{Method: m}).SupportedMethod() {
 			t.Errorf("method %s should be supported", m)
 		}
 	}
-	for _, m := range []CompressionMethod{CompLZMA, CompArith, CompFQZComp, CompNameTok} {
+	for _, m := range []CompressionMethod{CompArith, CompFQZComp, CompNameTok} {
 		if (&Block{Method: m}).SupportedMethod() {
 			t.Errorf("method %s should not be supported", m)
 		}
@@ -228,6 +228,46 @@ func TestDecompressRANS4x16(t *testing.T) {
 	}
 	if !bytes.Equal(out, payload) {
 		t.Errorf("rANS4x16 block did not round-trip")
+	}
+}
+
+// TestDecompressLZMA checks the LZMA (method 3) dispatch path round-trips
+// through a block, using the codec's own .xz encoder to build the payload.
+func TestDecompressLZMA(t *testing.T) {
+	payload := bytes.Repeat([]byte("GATTACA reference sequence "), 400)
+	comp, err := codec.LZMAEncode(payload)
+	if err != nil {
+		t.Fatalf("LZMAEncode: %v", err)
+	}
+	b := Block{Method: CompLZMA, Data: comp, UncompressedSize: int32(len(payload))}
+	out, err := b.Decompress()
+	if err != nil {
+		t.Fatalf("Decompress LZMA: %v", err)
+	}
+	if !bytes.Equal(out, payload) {
+		t.Errorf("LZMA block did not round-trip")
+	}
+}
+
+// TestDecompressLZMASizeMismatch checks an LZMA block whose decompressed
+// length disagrees with its declared UncompressedSize is rejected.
+func TestDecompressLZMASizeMismatch(t *testing.T) {
+	comp, err := codec.LZMAEncode([]byte("twelve bytes"))
+	if err != nil {
+		t.Fatalf("LZMAEncode: %v", err)
+	}
+	b := Block{Method: CompLZMA, Data: comp, UncompressedSize: 99}
+	if _, err := b.Decompress(); err == nil {
+		t.Errorf("expected size-mismatch error for LZMA block")
+	}
+}
+
+// TestDecompressCorruptLZMA checks a malformed LZMA payload produces an
+// error, not a panic.
+func TestDecompressCorruptLZMA(t *testing.T) {
+	b := Block{Method: CompLZMA, Data: []byte("not an xz stream"), UncompressedSize: 10}
+	if _, err := b.Decompress(); err == nil {
+		t.Errorf("expected error decompressing corrupt LZMA block")
 	}
 }
 
