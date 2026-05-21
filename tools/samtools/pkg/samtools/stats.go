@@ -1,20 +1,17 @@
 // Package samtools — stats implementation.
 //
-// Mirrors `samtools stats`. v1 ships byte-parity on the Summary Numbers
-// (SN) block — the section the vast majority of downstream tooling
-// (multiqc, picard-style dashboards, in-house pipelines) actually
-// consume. The full upstream output has ~30 sections (FFQ/LFQ/GCT/GCC/
-// GCD/GCL/RL/MAPQ/IS/COV/COV2/OXC/...); we emit headers for the most
-// common ones with empty-but-correctly-tagged bodies so the file
-// remains grep-able with the upstream `grep ^SN | cut -f 2-` idiom.
-// PARITY_VALIDATION.md tracks which sections are byte-faithful vs.
-// placeholder.
+// Mirrors `samtools stats`. The Summary Numbers (SN) block, the read-length
+// sections (RL/FRL/LRL), the MAPQ and IS histograms, the per-cycle quality
+// histograms (FFQ/LFQ), the GC-content sections (GCF/GCL), the ACGT-content
+// sections (GCC/GCT) and the indel sections (IC/ID) are all byte-faithful to
+// upstream. PARITY_VALIDATION.md tracks which sections are byte-faithful vs.
+// deferred.
 //
 // Skipped intentionally for v1 (documented):
 //   - CHK checksum block (depends on a CRC32 reduction we don't emit).
 //   - COV/COV2 coverage histograms (requires a reference FASTA and a
 //     per-position depth walker).
-//   - GCD/GCT/GCC/GCL GC-content distributions (require reference bases).
+//   - GCD GC-depth distribution (requires reference bases).
 //   - OXC oxidation-context counts (requires reference bases).
 //   - --target-regions BED restriction.
 //   - --remove-overlaps (single-record stats are unaffected by overlap
@@ -117,9 +114,54 @@ type StatsCounters struct {
 	ISOutw  map[int64]int64 // outward
 	ISOther map[int64]int64 // other
 
+	// Per-cycle and base-content accumulators (upstream stats.c). Cycle is
+	// 0-based internally and printed 1-based.
+	//
+	// qualsFirst/qualsLast hold, per cycle, the count of each quality value
+	// 0..statsNQuals-1. Indexed [cycle][qual].
+	qualsFirst []cycleQuals
+	qualsLast  []cycleQuals
+	maxQual    int // highest observed quality value
+	maxLen1st  int // longest first-fragment unclipped read
+	maxLen2nd  int // longest last-fragment unclipped read
+	maxLen     int // longest unclipped read overall
+
+	// gcFirst/gcLast are GC-content histograms over statsNGC bins.
+	gcFirst [statsNGC]int64
+	gcLast  [statsNGC]int64
+
+	// acgtCycles1st/2nd hold as-sequenced ACGT/N/other counts per cycle;
+	// acgtRevcomp holds read-oriented counts (reverse reads complemented).
+	acgtCycles1st []acgtNoCount
+	acgtCycles2nd []acgtNoCount
+	acgtRevcomp   []acgtNoCount
+
+	// Indel distributions. insertions/deletions are keyed by indel length-1;
+	// ins/del cycle buffers are keyed by cycle index.
+	insertions  map[int]int64
+	deletions   map[int]int64
+	insCycle1st map[int]int64
+	insCycle2nd map[int]int64
+	delCycle1st map[int]int64
+	delCycle2nd map[int]int64
+
 	// Pair tracking by qname (mate's flag/pos for orientation classification).
 	// Cleared as pairs are observed (memory-bounded by max pending mates).
 	mates map[string]mateInfo
+}
+
+// Buffer dimensions mirroring upstream stats.c initial allocation.
+const (
+	statsNQuals = 256 // quality values 0..255
+	statsNGC    = 200 // GC-content histogram bins
+)
+
+// cycleQuals is the per-cycle quality histogram (one count per quality value).
+type cycleQuals [statsNQuals]int64
+
+// acgtNoCount mirrors upstream's acgtno_count_t: per-cycle base tallies.
+type acgtNoCount struct {
+	a, c, g, t, n, other int64
 }
 
 type mateInfo struct {
@@ -134,13 +176,19 @@ type mateInfo struct {
 // newStatsCounters returns a fresh counter set with maps pre-allocated.
 func newStatsCounters() *StatsCounters {
 	return &StatsCounters{
-		RL:      make(map[int64]int64),
-		FRL:     make(map[int64]int64),
-		LRL:     make(map[int64]int64),
-		ISInw:   make(map[int64]int64),
-		ISOutw:  make(map[int64]int64),
-		ISOther: make(map[int64]int64),
-		mates:   make(map[string]mateInfo),
+		RL:          make(map[int64]int64),
+		FRL:         make(map[int64]int64),
+		LRL:         make(map[int64]int64),
+		ISInw:       make(map[int64]int64),
+		ISOutw:      make(map[int64]int64),
+		ISOther:     make(map[int64]int64),
+		insertions:  make(map[int]int64),
+		deletions:   make(map[int]int64),
+		insCycle1st: make(map[int]int64),
+		insCycle2nd: make(map[int]int64),
+		delCycle1st: make(map[int]int64),
+		delCycle2nd: make(map[int]int64),
+		mates:       make(map[string]mateInfo),
 	}
 }
 
@@ -215,6 +263,11 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 				c.BasesMappedCigar += ln
 			}
 		}
+		// Upstream count_indels runs for every mapped record, including
+		// supplementary alignments (only secondary reads are excluded).
+		if rec.IsMapped() {
+			c.countIndels(rec)
+		}
 		return
 	}
 	// QC-fail records ARE counted toward RawTotal/Sequences/totals per
@@ -270,6 +323,10 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 		c.FRL[rlen]++
 	}
 
+	// Per-cycle quality, base-content and GC accumulation. Mirrors upstream
+	// collect_orig_read_stats — runs for every QC-passed primary record.
+	c.collectCycleStats(rec)
+
 	if rec.IsMapped() {
 		c.ReadsMapped++
 		if rec.IsPaired() && !rec.IsMateUnmapped() {
@@ -316,6 +373,9 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 			c.BasesMappedCigar += ln
 		}
 	}
+
+	// Indel distribution and per-cycle indel counts (mapped reads only).
+	c.countIndels(rec)
 
 	// Mismatches via NM aux tag.
 	if a, ok := rec.GetAux("NM"); ok {
@@ -401,20 +461,267 @@ func (c *StatsCounters) classifyPair(rec *sam.Record, opts StatsOptions) {
 	}
 }
 
+// Read-order classifications mirroring upstream READ_ORDER_FIRST/LAST.
+const (
+	orderOther = 0
+	orderFirst = 1
+	orderLast  = 2
+)
+
+// readOrder classifies a record as first/last fragment or "other", matching
+// upstream stats.c: unpaired reads count as first fragments; a paired read is
+// first if READ1 is set, last if READ2 is set, otherwise "other".
+func readOrder(rec *sam.Record) int {
+	if !rec.IsPaired() {
+		return orderFirst
+	}
+	switch {
+	case rec.IsRead1() && !rec.IsRead2():
+		return orderFirst
+	case rec.IsRead2() && !rec.IsRead1():
+		return orderLast
+	default:
+		return orderOther
+	}
+}
+
+// unclippedLength returns the read length including hard-clipped bases, the
+// length upstream uses to size per-cycle buffers (unclipped_length in stats.c).
+func unclippedLength(rec *sam.Record) int {
+	n := len(rec.Seq)
+	for _, op := range rec.Cigar {
+		if op.Char() == 'H' {
+			n += int(op.Length())
+		}
+	}
+	return n
+}
+
+// growCycles ensures sl has at least n entries.
+func growCycles(sl []acgtNoCount, n int) []acgtNoCount {
+	for len(sl) < n {
+		sl = append(sl, acgtNoCount{})
+	}
+	return sl
+}
+
+// growQuals ensures sl has at least n entries.
+func growQuals(sl []cycleQuals, n int) []cycleQuals {
+	for len(sl) < n {
+		sl = append(sl, cycleQuals{})
+	}
+	return sl
+}
+
+// collectCycleStats folds one QC-passed primary record into the per-cycle
+// quality, base-content and GC-content accumulators (upstream
+// collect_orig_read_stats).
+func (c *StatsCounters) collectCycleStats(rec *sam.Record) {
+	seqLen := len(rec.Seq)
+	order := readOrder(rec)
+	reverse := rec.Flag&sam.FlagReverse != 0
+
+	ulen := unclippedLength(rec)
+	if ulen > c.maxLen {
+		c.maxLen = ulen
+	}
+	if order == orderFirst && ulen > c.maxLen1st {
+		c.maxLen1st = ulen
+	}
+	if order == orderLast && ulen > c.maxLen2nd {
+		c.maxLen2nd = ulen
+	}
+	if seqLen == 0 {
+		return
+	}
+
+	c.acgtRevcomp = growCycles(c.acgtRevcomp, seqLen)
+	var cycles []acgtNoCount
+	switch order {
+	case orderFirst:
+		c.acgtCycles1st = growCycles(c.acgtCycles1st, seqLen)
+		cycles = c.acgtCycles1st
+	case orderLast:
+		c.acgtCycles2nd = growCycles(c.acgtCycles2nd, seqLen)
+		cycles = c.acgtCycles2nd
+	}
+
+	gcCount := 0
+	for i := 0; i < seqLen; i++ {
+		readCycle := i
+		if reverse {
+			readCycle = seqLen - i - 1
+		}
+		switch rec.Seq[i] {
+		case 'A', 'a':
+			if cycles != nil {
+				cycles[readCycle].a++
+			}
+			if reverse {
+				c.acgtRevcomp[readCycle].t++
+			} else {
+				c.acgtRevcomp[readCycle].a++
+			}
+		case 'C', 'c':
+			if cycles != nil {
+				cycles[readCycle].c++
+			}
+			if reverse {
+				c.acgtRevcomp[readCycle].g++
+			} else {
+				c.acgtRevcomp[readCycle].c++
+			}
+			gcCount++
+		case 'G', 'g':
+			if cycles != nil {
+				cycles[readCycle].g++
+			}
+			if reverse {
+				c.acgtRevcomp[readCycle].c++
+			} else {
+				c.acgtRevcomp[readCycle].g++
+			}
+			gcCount++
+		case 'T', 't':
+			if cycles != nil {
+				cycles[readCycle].t++
+			}
+			if reverse {
+				c.acgtRevcomp[readCycle].a++
+			} else {
+				c.acgtRevcomp[readCycle].t++
+			}
+		case 'N', 'n':
+			if cycles != nil {
+				cycles[readCycle].n++
+			}
+		default:
+			if cycles != nil {
+				cycles[readCycle].other++
+			}
+		}
+	}
+
+	// GC-content histogram: spread the read's GC fraction over a [min,max) bin
+	// range, matching upstream's gc_idx_min/gc_idx_max integer arithmetic.
+	gcIdxMin := gcCount * (statsNGC - 1) / seqLen
+	gcIdxMax := (gcCount + 1) * (statsNGC - 1) / seqLen
+	if gcIdxMax >= statsNGC {
+		gcIdxMax = statsNGC - 1
+	}
+	switch order {
+	case orderFirst:
+		for i := gcIdxMin; i < gcIdxMax; i++ {
+			c.gcFirst[i]++
+		}
+	case orderLast:
+		for i := gcIdxMin; i < gcIdxMax; i++ {
+			c.gcLast[i]++
+		}
+	}
+
+	// Quality histogram per cycle. A "*" quality string (rec.Qual empty) is
+	// treated as quality 255 per base, matching upstream's missing-qual value.
+	var quals []cycleQuals
+	switch order {
+	case orderFirst:
+		c.qualsFirst = growQuals(c.qualsFirst, seqLen)
+		quals = c.qualsFirst
+	case orderLast:
+		c.qualsLast = growQuals(c.qualsLast, seqLen)
+		quals = c.qualsLast
+	}
+	if quals != nil {
+		for i := 0; i < seqLen; i++ {
+			q := 255
+			if len(rec.Qual) == seqLen {
+				idx := i
+				if reverse {
+					idx = seqLen - i - 1
+				}
+				q = int(rec.Qual[idx])
+			}
+			if q >= statsNQuals {
+				q = statsNQuals - 1
+			}
+			if q > c.maxQual {
+				c.maxQual = q
+			}
+			quals[i][q]++
+		}
+	}
+}
+
+// countIndels folds insertion/deletion cigar operations of one mapped record
+// into the indel-length and per-cycle indel accumulators (upstream
+// count_indels).
+func (c *StatsCounters) countIndels(rec *sam.Record) {
+	isFwd := rec.Flag&sam.FlagReverse == 0
+	order := readOrder(rec)
+	readLen := len(rec.Seq)
+	icycle := 0
+	for _, op := range rec.Cigar {
+		ch := op.Char()
+		ncig := int(op.Length())
+		if ncig == 0 {
+			continue
+		}
+		switch ch {
+		case 'I':
+			idx := icycle
+			if !isFwd {
+				idx = readLen - icycle - ncig
+			}
+			if idx >= 0 {
+				switch order {
+				case orderFirst:
+					c.insCycle1st[idx]++
+				case orderLast:
+					c.insCycle2nd[idx]++
+				}
+			}
+			icycle += ncig
+			c.insertions[ncig-1]++
+		case 'D':
+			idx := icycle - 1
+			if !isFwd {
+				idx = readLen - icycle - 1
+			}
+			if idx >= 0 {
+				switch order {
+				case orderFirst:
+					c.delCycle1st[idx]++
+				case orderLast:
+					c.delCycle2nd[idx]++
+				}
+			}
+			c.deletions[ncig-1]++
+		case 'N', 'H', 'P':
+			// Reference skips, hard clips and padding do not advance the cycle.
+		default:
+			icycle += ncig
+		}
+	}
+}
+
 // Write emits the upstream-compatible text report to w.
 func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 	bw := bufio.NewWriter(w)
 	// SN block — full upstream parity.
 	c.writeSN(bw)
-	// Section placeholders. v1 ships RL/FRL/LRL and MAPQ with real data;
-	// FFQ/LFQ/GCF/GCL/GCC/GCT/IS bodies are only emitted in the
-	// non-sparse path with zero-data tables that the grep idiom can still
-	// find. Comments are placed exactly as upstream so consumers that
-	// scan `grep ^XX` find their section.
+	// Histogram and per-cycle section bodies are emitted only in the
+	// non-sparse path. FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID carry real data and are
+	// byte-faithful to upstream; section order matches stats.c.
 	if !opts.Sparse {
+		c.writeFFQLFQ(bw)
+		c.writeGCFGCL(bw)
+		c.writeGCC(bw)
+		c.writeGCT(bw)
 		c.writeRL(bw)
 		c.writeMAPQ(bw)
 		c.writeIS(bw, opts)
+		c.writeID(bw)
+		c.writeIC(bw)
 	}
 	return bw.Flush()
 }
@@ -513,6 +820,161 @@ func (c *StatsCounters) writeSN(bw *bufio.Writer) {
 		pp = 100.0 * float64(c.ReadsProperlyPaired) / float64(c.Sequences)
 	}
 	emit("percentage of properly paired reads (%)", fmt.Sprintf("%.1f", pp), "")
+}
+
+// effectiveMaxQual returns the highest quality column index to print. Upstream
+// bumps max_qual by one (so a trailing all-zero column is shown) provided that
+// stays within the quality buffer.
+func (c *StatsCounters) effectiveMaxQual() int {
+	mq := c.maxQual
+	if mq+1 < statsNQuals {
+		mq++
+	}
+	return mq
+}
+
+// writeFFQLFQ emits the per-cycle quality histograms for first and last
+// fragments.
+func (c *StatsCounters) writeFFQLFQ(bw *bufio.Writer) {
+	maxQual := c.effectiveMaxQual()
+	fmt.Fprintln(bw, "# First Fragment Qualities. Use `grep ^FFQ | cut -f 2-` to extract this part.")
+	fmt.Fprintln(bw, "# Columns correspond to qualities and rows to cycles. First column is the cycle number.")
+	c.writeQualCycles(bw, "FFQ", c.qualsFirst, c.maxLen1st, maxQual)
+	fmt.Fprintln(bw, "# Last Fragment Qualities. Use `grep ^LFQ | cut -f 2-` to extract this part.")
+	fmt.Fprintln(bw, "# Columns correspond to qualities and rows to cycles. First column is the cycle number.")
+	c.writeQualCycles(bw, "LFQ", c.qualsLast, c.maxLen2nd, maxQual)
+}
+
+// writeQualCycles writes one quality-histogram block (tag is FFQ or LFQ): one
+// row per cycle 1..maxLen, each row listing counts for qualities 0..maxQual.
+func (c *StatsCounters) writeQualCycles(bw *bufio.Writer, tag string, quals []cycleQuals, maxLen, maxQual int) {
+	for ibase := 0; ibase < maxLen; ibase++ {
+		fmt.Fprintf(bw, "%s\t%d", tag, ibase+1)
+		for iqual := 0; iqual <= maxQual; iqual++ {
+			var v int64
+			if ibase < len(quals) {
+				v = quals[ibase][iqual]
+			}
+			fmt.Fprintf(bw, "\t%d", v)
+		}
+		fmt.Fprintln(bw)
+	}
+}
+
+// writeGCFGCL emits the GC-content sections for first and last fragments.
+// Consecutive bins with an equal count are collapsed exactly as upstream does.
+func (c *StatsCounters) writeGCFGCL(bw *bufio.Writer) {
+	fmt.Fprintln(bw, "# GC Content of first fragments. Use `grep ^GCF | cut -f 2-` to extract this part.")
+	writeGCHist(bw, "GCF", c.gcFirst[:])
+	fmt.Fprintln(bw, "# GC Content of last fragments. Use `grep ^GCL | cut -f 2-` to extract this part.")
+	writeGCHist(bw, "GCL", c.gcLast[:])
+}
+
+// writeGCHist writes one GC-content histogram. The GC% of each emitted row is
+// the midpoint of the run of equal-count bins, per upstream's formula.
+func writeGCHist(bw *bufio.Writer, tag string, gc []int64) {
+	prev := 0
+	for ibase := 0; ibase < len(gc); ibase++ {
+		if gc[ibase] == gc[prev] {
+			continue
+		}
+		pct := float64(ibase+prev) * 0.5 * 100.0 / float64(statsNGC-1)
+		fmt.Fprintf(bw, "%s\t%.2f\t%d\n", tag, pct, gc[prev])
+		prev = ibase
+	}
+}
+
+// writeGCC emits the as-sequenced ACGT-content-per-cycle section, summing the
+// first- and last-fragment cycle buffers.
+func (c *StatsCounters) writeGCC(bw *bufio.Writer) {
+	fmt.Fprintln(bw, "# ACGT content per cycle. Use `grep ^GCC | cut -f 2-` to extract this part. The columns are: cycle; A,C,G,T base counts as a percentage of all A/C/G/T bases [%]; and N and O counts as a percentage of all A/C/G/T bases [%]")
+	for ibase := 0; ibase < c.maxLen; ibase++ {
+		var first, last acgtNoCount
+		if ibase < len(c.acgtCycles1st) {
+			first = c.acgtCycles1st[ibase]
+		}
+		if ibase < len(c.acgtCycles2nd) {
+			last = c.acgtCycles2nd[ibase]
+		}
+		sum := first.a + first.c + first.g + first.t + last.a + last.c + last.g + last.t
+		if sum == 0 {
+			continue
+		}
+		fs := float64(sum)
+		fmt.Fprintf(bw, "GCC\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n", ibase+1,
+			100.0*float64(first.a+last.a)/fs,
+			100.0*float64(first.c+last.c)/fs,
+			100.0*float64(first.g+last.g)/fs,
+			100.0*float64(first.t+last.t)/fs,
+			100.0*float64(first.n+last.n)/fs,
+			100.0*float64(first.other+last.other)/fs)
+	}
+}
+
+// writeGCT emits the read-oriented ACGT-content-per-cycle section, where
+// reverse-strand reads have contributed reverse-complemented bases.
+func (c *StatsCounters) writeGCT(bw *bufio.Writer) {
+	fmt.Fprintln(bw, "# ACGT content per cycle, read oriented. Use `grep ^GCT | cut -f 2-` to extract this part. The columns are: cycle; A,C,G,T base counts as a percentage of all A/C/G/T bases [%]")
+	for ibase := 0; ibase < c.maxLen; ibase++ {
+		var rc acgtNoCount
+		if ibase < len(c.acgtRevcomp) {
+			rc = c.acgtRevcomp[ibase]
+		}
+		sum := rc.a + rc.c + rc.g + rc.t
+		if sum == 0 {
+			continue
+		}
+		fs := float64(sum)
+		fmt.Fprintf(bw, "GCT\t%d\t%.2f\t%.2f\t%.2f\t%.2f\n", ibase+1,
+			100.0*float64(rc.a)/fs,
+			100.0*float64(rc.c)/fs,
+			100.0*float64(rc.g)/fs,
+			100.0*float64(rc.t)/fs)
+	}
+}
+
+// writeID emits the indel-distribution section: insertion and deletion counts
+// keyed by indel length.
+func (c *StatsCounters) writeID(bw *bufio.Writer) {
+	fmt.Fprintln(bw, "# Indel distribution. Use `grep ^ID | cut -f 2-` to extract this part. The columns are: length, number of insertions, number of deletions")
+	maxLen := 0
+	for k := range c.insertions {
+		if k+1 > maxLen {
+			maxLen = k + 1
+		}
+	}
+	for k := range c.deletions {
+		if k+1 > maxLen {
+			maxLen = k + 1
+		}
+	}
+	for ilen := 0; ilen < maxLen; ilen++ {
+		ins, del := c.insertions[ilen], c.deletions[ilen]
+		if ins > 0 || del > 0 {
+			fmt.Fprintf(bw, "ID\t%d\t%d\t%d\n", ilen+1, ins, del)
+		}
+	}
+}
+
+// writeIC emits the indels-per-cycle section: insertion and deletion counts
+// (forward and reverse) keyed by cycle.
+func (c *StatsCounters) writeIC(bw *bufio.Writer) {
+	fmt.Fprintln(bw, "# Indels per cycle. Use `grep ^IC | cut -f 2-` to extract this part. The columns are: cycle, number of insertions (fwd), .. (rev) , number of deletions (fwd), .. (rev)")
+	maxLen := 0
+	for _, m := range []map[int]int64{c.insCycle1st, c.insCycle2nd, c.delCycle1st, c.delCycle2nd} {
+		for k := range m {
+			if k+1 > maxLen {
+				maxLen = k + 1
+			}
+		}
+	}
+	for ilen := 0; ilen < maxLen; ilen++ {
+		insF, insR := c.insCycle1st[ilen], c.insCycle2nd[ilen]
+		delF, delR := c.delCycle1st[ilen], c.delCycle2nd[ilen]
+		if insF > 0 || insR > 0 || delF > 0 || delR > 0 {
+			fmt.Fprintf(bw, "IC\t%d\t%d\t%d\t%d\t%d\n", ilen+1, insF, insR, delF, delR)
+		}
+	}
 }
 
 // writeRL emits the Read Length sections.

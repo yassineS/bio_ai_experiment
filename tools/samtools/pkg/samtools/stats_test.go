@@ -71,6 +71,83 @@ func TestStatsSNParity(t *testing.T) {
 	}
 }
 
+// extractSection returns only the body lines starting with "<tag>\t" from a
+// stats-text blob, joined by '\n'.
+func extractSection(blob, tag string) string {
+	prefix := tag + "\t"
+	var b strings.Builder
+	for _, line := range strings.Split(blob, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// TestStatsCycleSectionParity compares our per-cycle and base-content sections
+// (FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID) against upstream's stats expected outputs.
+// Only .sam fixtures are used: .bam fixtures would additionally require BGZF
+// byte-parity which is unrelated to these sections.
+func TestStatsCycleSectionParity(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected"},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected"},
+		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected"},
+		{"7_supp", "7_supp.sam", "7.stats.expected"},
+		{"8_secondary", "8_secondary.sam", "8.stats.expected"},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected"},
+	}
+	sections := []string{"FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "IC", "ID"}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, tc.input))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			if err := Stats(in, &out, StatsOptions{}); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			got, want := out.String(), string(expected)
+			for _, sec := range sections {
+				if extractSection(got, sec) != extractSection(want, sec) {
+					t.Errorf("%s section differs\n--- want\n%s\n--- got\n%s",
+						sec, extractSection(want, sec), extractSection(got, sec))
+				}
+			}
+		})
+	}
+}
+
+// TestStatsCycleSectionsSparseSuppressed confirms --sparse omits the per-cycle
+// and base-content section bodies.
+func TestStatsCycleSectionsSparseSuppressed(t *testing.T) {
+	in, err := os.Open(statsFixture(t, "1_map_cigar.sam"))
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Stats(in, &out, StatsOptions{Sparse: true}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	for _, sec := range []string{"FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "IC", "ID"} {
+		if extractSection(out.String(), sec) != "" {
+			t.Errorf("--sparse should suppress %s section", sec)
+		}
+	}
+}
+
 // TestStatsCountersBasic exercises the StatsCounters surface independently
 // of the SAM reader.
 func TestStatsCountersBasic(t *testing.T) {

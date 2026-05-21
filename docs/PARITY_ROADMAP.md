@@ -1380,10 +1380,10 @@ Missing subcommands (in rough priority order):
 
 Plus:
 
-- **CRAM** read/write throughout. Multi-month effort on its own; the
-  rANS codec layer is the gating piece. Owner has OK'd third-party
-  dependencies for CRAM codecs (see `CLAUDE.md#documented-exception-cram`).
-  Design doc to follow.
+- **CRAM** read/write throughout — DONE. Landed across PRs #162–#180
+  (the rANS 4x8/4x16 codecs are in-tree pure Go; `ulikunitz/xz` is the
+  only sanctioned third-party dep, confined to the LZMA block codec).
+  See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
 - **`.csi`** for samtools (BAI is fine for chromosomes ≤512Mb).
 - **Multi-threading** in `sort`, `index`, `view` (`-@`).
 
@@ -1409,12 +1409,19 @@ The flag is accepted on the CLI and the option is preserved on
 `MarkdupOptions.MaxLen` for forward compatibility if we ever move to a
 single-pass streaming model.
 
+**`stats` implemented sections.** The per-cycle quality matrices
+**FFQ/LFQ**, the GC-content sections **GCF/GCL**, the ACGT-content
+sections **GCC/GCT** and the indel sections **IC/ID** are byte-faithful
+to upstream — validated against the vendored `.sam` fixtures. (GCC/GCT
+are read-derived and need no reference; only the GC-*depth* section GCD
+needs reference bases.)
+
 **`stats` deferred sections** (also documented in
 `PARITY_VALIDATION.md`):
 
 - COV/COV2 coverage histograms (require reference + BAI).
-- GCD/GCT/GCC/GCL GC distributions (require reference bases).
-- FFQ/LFQ per-cycle quality matrices and OXC oxidation-context counts.
+- GCD GC-depth distribution and OXC oxidation-context counts (require
+  reference bases).
 - `--target-regions BED` restriction.
 - The leading CHK checksum block (CRC32 reduction of read names /
   sequences / qualities).
@@ -1426,9 +1433,10 @@ single-pass streaming model.
   unbounded — fine for the typical workload but worth fixing before
   running `stats` on multi-billion-record BAMs.
 
-v1 emits byte-faithful **SN** (Summary Numbers) and useful **RL / MAPQ /
-IS** rollups; the unsupported sections are quietly omitted (or, under
-`--sparse`, all histogram blocks are suppressed entirely).
+The output emits byte-faithful **SN** (Summary Numbers), the per-cycle
+and base-content sections (**FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID**) and the
+**RL / MAPQ / IS** rollups; the remaining sections are quietly omitted
+(or, under `--sparse`, all histogram blocks are suppressed entirely).
 
 **Validation:** upstream fixtures from `reference_code/samtools/test/markdup/`
 and `.../test/stat/` are vendored under
