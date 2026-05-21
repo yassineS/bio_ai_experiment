@@ -798,11 +798,8 @@ later PR (recorded against
 | markdup    | Per-read-group keying (upstream `-S`) — fixture 17_read_group | PARITY_ROADMAP.md#samtools |
 | markdup    | Barcode regex / barcode-tag keying | PARITY_ROADMAP.md#samtools |
 | markdup    | `dt:Z:` "duplicate-type" aux tag (SQ/LB/OQ) — fixture 18 diffs only here | PARITY_ROADMAP.md#samtools |
-| stats      | CHK checksum header block (CRC32 of names/seqs/quals) | PARITY_ROADMAP.md#samtools |
-| stats      | COV/COV2 coverage histograms (need reference + BAI) | PARITY_ROADMAP.md#samtools |
-| stats      | GCD/GCT/GCC/GCL GC-content distributions (need reference) | PARITY_ROADMAP.md#samtools |
-| stats      | FFQ/LFQ per-cycle quality matrices, OXC oxidation context | PARITY_ROADMAP.md#samtools |
-| stats      | `--target-regions BED` restriction | PARITY_ROADMAP.md#samtools |
+| stats      | MPC mismatches-per-cycle, RFS reference statistics (need reference) | PARITY_ROADMAP.md#samtools |
+| stats      | FBC/FTC/LBC/LTC barcode-tag tables | PARITY_ROADMAP.md#samtools |
 
 ### samtools: bugs found in upstream
 

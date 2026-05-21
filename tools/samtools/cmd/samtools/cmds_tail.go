@@ -977,15 +977,17 @@ Usage:
 Emits an upstream-compatible text report. v1 ships the most-used sections:
 SN (Summary Numbers), RL (read-length), MAPQ (MAPQ distribution),
 IS (insert sizes), FFQ/LFQ (per-cycle qualities), GCF/GCL (GC-fraction
-histograms), GCC (per-cycle GC). Other sections (COV/COV2/GCD/OXC/...)
-are skipped with a documented reason; see PARITY_VALIDATION.md.
+histograms), GCC/GCT (per-cycle GC), IC/ID (indels), COV (coverage
+distribution) and GCD (GC-depth distribution). The MPC/RFS sections and
+the FBC/FTC/LBC/LTC barcode tables are deferred; see PARITY_VALIDATION.md.
 
 Options:
-  -r, --ref-seq FASTA      Reference FASTA (accepted; sections that need
-                           reference bases are skipped without it).
+  -r, --ref-seq FASTA      Reference FASTA. When given, GCD derives GC content
+                           from the reference instead of the read sequences.
   -c, --coverage MIN[,MAX[,STEP]]
-                           Coverage histogram bins (parsed but COV is
-                           omitted in v1).
+                           Coverage histogram bins (default 1,1000,1).
+      --GC-depth N         GC-depth bin width in reference bases
+                           (default 20000).
   -l, --required-flag N    Require ALL bits set.
   -F, --filtering-flag N   Drop records with ANY bit set.
   -d, --max-depth N        Cap depth used in coverage.
@@ -1012,6 +1014,7 @@ func runStats(args []string) int {
 	var (
 		refSeq      string
 		coverage    string
+		gcdBinSize  int
 		reqFlag     int
 		filtFlag    int
 		maxDepth    int
@@ -1030,6 +1033,7 @@ func runStats(args []string) int {
 	)
 	cliflag.StringVar(fs, &refSeq, "r", "ref-seq", "", "")
 	cliflag.StringVar(fs, &coverage, "c", "coverage", "", "")
+	fs.IntVar(&gcdBinSize, "GC-depth", 0, "")
 	cliflag.IntVar(fs, &reqFlag, "l", "required-flag", 0, "")
 	cliflag.IntVar(fs, &filtFlag, "F", "filtering-flag", 0, "")
 	cliflag.IntVar(fs, &maxDepth, "d", "max-depth", 0, "")
@@ -1082,6 +1086,7 @@ func runStats(args []string) int {
 	defer out.Close()
 	if err := samtools.Stats(in, out, samtools.StatsOptions{
 		RefSeq:         refSeq,
+		GcdBinSize:     gcdBinSize,
 		Coverage:       coverage,
 		RequiredFlag:   uint16(reqFlag),
 		FilteringFlag:  uint16(filtFlag),

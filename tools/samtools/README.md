@@ -284,23 +284,28 @@ byte-faithful with upstream for the 6 fixtures we exercise in
 
 | Short | Long                  | Description                                 |
 |-------|-----------------------|---------------------------------------------|
-| `-r`  | `--ref-seq FASTA`     | Reference (accepted; no GC/COV sections).   |
-| `-c`  | `--coverage SPEC`     | Coverage bin spec (parsed, COV deferred).   |
+| `-r`  | `--ref-seq FASTA`     | Reference FASTA; GCD GC from the reference. |
+| `-c`  | `--coverage SPEC`     | Coverage bin spec (default `1,1000,1`).     |
+|       | `--GC-depth N`        | GC-depth bin width (default 20000).         |
 | `-l`  | `--required-flag N`   | Require ALL bits set.                       |
 | `-F`  | `--filtering-flag N`  | Drop records with ANY bit set.              |
 | `-d`  | `--max-depth N`       | Cap depth (placeholder).                    |
-| `-q`  | `--min-mapq N`        | Skip records with MAPQ < N.                 |
+| `-q`  | `--trim-quality N`    | BWA-style 3'-end quality-trim threshold.    |
+|       | `--min-mapq N`        | Skip records with MAPQ < N.                 |
 |       | `--remove-dups`       | Drop duplicate-flagged records.             |
 |       | `--remove-overlaps`   | Accepted; no-op in v1.                      |
 | `-i`  | `--insert-size N`     | Max insert size for IS section (8000).      |
 | `-x`  | `--sparse`            | Omit empty placeholder sections.            |
-| `-t`  | `--target-regions BED`| Accepted; v1 ignores BED restriction.       |
+| `-t`  | `--target-regions F`  | Restrict stats to a target-regions file.    |
+| `-g`  | `--cov-threshold N`   | Coverage threshold for the target SN line.  |
 | `-@`  | `--threads N`         | Accepted; single-threaded.                  |
 | `-o`  | `--output PATH`       | Output path (default stdout).               |
 
-Sections emitted: **SN**, **RL/FRL/LRL**, **MAPQ**, **IS**. Sections
-deferred (documented in `PARITY_VALIDATION.md`): the CHK checksum block,
-COV/COV2, GCD/GCT/GCC/GCL, FFQ/LFQ, OXC, BED target restriction.
+Sections emitted: the **CHK** checksum block, **SN**, **FFQ/LFQ**,
+**GCF/GCL**, **GCC/GCT**, **RL/FRL/LRL**, **MAPQ**, **IS**, **IC/ID**,
+**COV** and **GCD**. Sections deferred (documented in
+`PARITY_VALIDATION.md`): MPC mismatches-per-cycle, RFS reference
+statistics and the FBC/FTC/LBC/LTC barcode tables.
 
 ## Deviations from upstream samtools
 

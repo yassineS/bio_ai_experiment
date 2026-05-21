@@ -1,6 +1,7 @@
 package samtools
 
 import (
+	"bufio"
 	"bytes"
 	"hash/crc32"
 	"os"
@@ -237,6 +238,166 @@ func TestStatsCOVParity(t *testing.T) {
 				t.Errorf("unsorted input must omit COV section, got header %q", gotHdr)
 			}
 		})
+	}
+}
+
+// TestStatsGCDParity compares our GCD GC-depth distribution against upstream's
+// stats expected outputs in the no-reference path (GC approximated from the
+// read sequences). Coordinate-sorted fixtures must emit one GCD row plus the
+// section comment; the unsorted fixture must omit the section entirely,
+// matching upstream's is_sorted gating. Every upstream fixture keeps its reads
+// inside a single 20 kbp bin, so the finalised output is the empty placeholder
+// row "GCD 0.0 100.000 0.000 0.000 0.000 0.000 0.000".
+func TestStatsGCDParity(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		expect string
+		sorted bool
+	}{
+		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected", true},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected", true},
+		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected", true},
+		{"7_supp", "7_supp.sam", "7.stats.expected", true},
+		{"8_secondary", "8_secondary.sam", "8.stats.expected", true},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, tc.input))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			if err := Stats(in, &out, StatsOptions{}); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			got, want := out.String(), string(expected)
+			if extractSection(got, "GCD") != extractSection(want, "GCD") {
+				t.Errorf("GCD rows differ\n--- want\n%s--- got\n%s",
+					extractSection(want, "GCD"), extractSection(got, "GCD"))
+			}
+			gotHdr := extractCommentHeader(got, "GC-depth")
+			wantHdr := extractCommentHeader(want, "GC-depth")
+			if gotHdr != wantHdr {
+				t.Errorf("GCD header differs\nwant: %q\ngot:  %q", wantHdr, gotHdr)
+			}
+			if !tc.sorted && gotHdr != "" {
+				t.Errorf("unsorted input must omit GCD section, got header %q", gotHdr)
+			}
+		})
+	}
+}
+
+// TestStatsGCDReferenceParity exercises the --ref-seq GC-depth path: the
+// upstream stat/1-8 fixtures were generated with `-r test.fa`, and because
+// every read stays inside a single 20 kbp bin only the empty placeholder bin
+// is finalised and printed — so the reference and no-reference paths emit
+// byte-identical GCD output. This test feeds the reference FASTA and confirms
+// the reference-derived GC path still matches the golden files exactly.
+func TestStatsGCDReferenceParity(t *testing.T) {
+	cases := []struct {
+		input  string
+		expect string
+	}{
+		{"1_map_cigar.sam", "1.stats.expected"},
+		{"2_equal_cigar_full_seq.sam", "2.stats.expected"},
+		{"5_insert_cigar.sam", "5.stats.expected"},
+		{"7_supp.sam", "7.stats.expected"},
+		{"8_secondary.sam", "8.stats.expected"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, tc.input))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			opts := StatsOptions{RefSeq: statsFixture(t, "test.fa")}
+			if err := Stats(in, &out, opts); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			got, want := out.String(), string(expected)
+			if extractSection(got, "GCD") != extractSection(want, "GCD") {
+				t.Errorf("GCD rows differ (reference path)\n--- want\n%s--- got\n%s",
+					extractSection(want, "GCD"), extractSection(got, "GCD"))
+			}
+		})
+	}
+}
+
+// TestStatsGCDMultiBin exercises the multi-segment GC-depth algorithm that the
+// single-bin upstream fixtures never reach. Synthetic reads are spread across
+// three 20 kbp bins on one contig so several segments are finalised, sorted by
+// GC and grouped — verifying the gcdPercentile interpolation, the
+// unique-sequence-percentile formula and the upstream off-by-one whereby the
+// gcd[0] placeholder and the last (gcd[gcdIdx]) segment are never finalised.
+//
+// With gcdIdx==3 the output loop finalises segments 0,1,2 but qsorts all four
+// entries (0..3). Segment 3's raw, un-finalised GC value still participates in
+// the sort and grouping — exactly as upstream stats.c does — so the printed
+// rows derive from segments 0 (placeholder, GC 0), the un-finalised segment 3
+// (raw GC 6.3 = 7*90/100), and finalised segment 1 (GC 10).
+func TestStatsGCDMultiBin(t *testing.T) {
+	c := newStatsCounters()
+	c.gcdBinSize = 20000
+	c.IsSorted = 1
+	c.Sequences = 1
+	c.TotalLength = 20000 // makes avg read length / bin size == 1.0
+
+	mk := func(pos int32, gc, depth int) {
+		for i := 0; i < depth; i++ {
+			rec := &sam.Record{RName: "c", Pos: pos, Seq: strings.Repeat("N", 100)}
+			c.accumulateGCD(rec, gc)
+		}
+	}
+	// Bin A: pos 1, GC count 10 -> fraction 0.10, depth 3.
+	// Bin B: pos 25001, GC count 50 -> fraction 0.50, depth 5.
+	// Bin C: pos 50001, GC count 90 -> fraction 0.90, depth 7.
+	mk(1, 10, 3)
+	mk(25001, 50, 5)
+	mk(50001, 90, 7)
+
+	// Four segments exist: gcd[0] placeholder + three real bins, gcdIdx==3.
+	if c.gcdIdx != 3 {
+		t.Fatalf("expected gcdIdx 3, got %d", c.gcdIdx)
+	}
+
+	var out bytes.Buffer
+	bw := bufio.NewWriter(&out)
+	c.writeGCD(bw)
+	bw.Flush()
+	var gcd []string
+	for _, l := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if strings.HasPrefix(l, "GCD\t") {
+			gcd = append(gcd, l)
+		}
+	}
+	// Three grouped rows: GC 0.0 (placeholder), 6.3 (un-finalised segment),
+	// 10.0 (finalised bin A). Bin B (GC 50, segment 2) is finalised but sorts
+	// last and is not reached by the igcd-bounded group loop.
+	want := []string{
+		"GCD\t0.0\t50.000\t0.000\t0.000\t0.000\t0.000\t0.000",
+		"GCD\t6.3\t75.000\t7.000\t7.000\t7.000\t7.000\t7.000",
+		"GCD\t10.0\t100.000\t3.000\t3.000\t3.000\t3.000\t3.000",
+	}
+	if len(gcd) != len(want) {
+		t.Fatalf("expected %d GCD rows, got %d:\n%s", len(want), len(gcd), out.String())
+	}
+	for i := range want {
+		if gcd[i] != want[i] {
+			t.Errorf("row %d:\n want %q\n got  %q", i, want[i], gcd[i])
+		}
 	}
 }
 
@@ -552,10 +713,11 @@ func TestStatsSparseOmitsHistograms(t *testing.T) {
 }
 
 // TestStatsTargetRegionsParity validates --target-regions against upstream's
-// stat/11 fixtures. The SN and COV sections are compared byte-for-byte to the
-// golden outputs for both the default coverage threshold and -g 4. The full
-// report is not compared because upstream emits version-dependent sections
-// (FBC/FTC/LBC/LTC/GCD) and a dense IS table that this v1 does not implement.
+// stat/11 fixtures. The SN, COV and GCD sections are compared byte-for-byte to
+// the golden outputs for both the default coverage threshold and -g 4. The
+// full report is not compared because upstream emits version-dependent
+// sections (FBC/FTC/LBC/LTC barcode tables) and a dense IS table that this v1
+// does not implement.
 func TestStatsTargetRegionsParity(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -596,6 +758,10 @@ func TestStatsTargetRegionsParity(t *testing.T) {
 			if extractSection(got, "COV") != extractSection(want, "COV") {
 				t.Errorf("COV rows differ\n--- want\n%s--- got\n%s",
 					extractSection(want, "COV"), extractSection(got, "COV"))
+			}
+			if extractSection(got, "GCD") != extractSection(want, "GCD") {
+				t.Errorf("GCD rows differ\n--- want\n%s--- got\n%s",
+					extractSection(want, "GCD"), extractSection(got, "GCD"))
 			}
 		})
 	}
