@@ -295,7 +295,7 @@ byte-faithful with upstream for the 6 fixtures we exercise in
 |       | `--remove-dups`       | Drop duplicate-flagged records.             |
 |       | `--remove-overlaps`   | Accepted; no-op in v1.                      |
 | `-i`  | `--insert-size N`     | Max insert size for IS section (8000).      |
-| `-x`  | `--sparse`            | Omit empty placeholder sections.            |
+| `-x`  | `--sparse`            | Suppress IS rows that have no insertions.   |
 | `-t`  | `--target-regions F`  | Restrict stats to a target-regions file.    |
 | `-g`  | `--cov-threshold N`   | Coverage threshold for the target SN line.  |
 |       | `--ref-stats`         | Emit the RFS reference-statistics section.  |
@@ -304,10 +304,12 @@ byte-faithful with upstream for the 6 fixtures we exercise in
 | `-o`  | `--output PATH`       | Output path (default stdout).               |
 
 Sections emitted: the **CHK** checksum block, **SN**, **FFQ/LFQ**,
-**MPC** (with `--ref-seq`), **GCF/GCL**, **GCC/GCT**, **RL/FRL/LRL**,
-**MAPQ**, **IS**, **IC/ID**, **COV**, **GCD** and **RFS** (with
-`--ref-stats`). Sections deferred (documented in
-`PARITY_VALIDATION.md`): the FBC/FTC/LBC/LTC barcode tables.
+**MPC** (with `--ref-seq`), **GCF/GCL**, **GCC/GCT**, **FBC/FTC/LBC/LTC**,
+the per-barcode **`<tag>C`/`<tag>Q`** tables (emitted automatically when
+the BC/CR/OX/RX aux tags are present), **RL/FRL/LRL**, **MAPQ**, **IS**,
+**IC/ID**, **COV**, **GCD** and **RFS** (with `--ref-stats`). Every
+output section is implemented; `samtools stats` is at full 1:1 section
+parity. `-x/--sparse` thins all-zero IS rows only.
 
 ## Deviations from upstream samtools
 
