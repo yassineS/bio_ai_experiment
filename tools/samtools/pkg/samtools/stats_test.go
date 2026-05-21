@@ -2,10 +2,13 @@ package samtools
 
 import (
 	"bytes"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // statsFixture returns the absolute path to a fixture under
@@ -126,6 +129,192 @@ func TestStatsCycleSectionParity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// extractCommentHeader returns the first comment line (starting with "# ")
+// whose remainder begins with prefix, trailing-newline normalised.
+func extractCommentHeader(blob, prefix string) string {
+	for _, line := range strings.Split(blob, "\n") {
+		if strings.HasPrefix(line, "# "+prefix) {
+			return line
+		}
+	}
+	return ""
+}
+
+// TestStatsCHKParity compares our leading CHK CRC32 checksum block (both the
+// two comment header lines and the CHK data row) against upstream's stats
+// expected outputs. CHK byte-parity exercises the BAM 4-bit nibble packing
+// used for the sequences checksum.
+func TestStatsCHKParity(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected"},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected"},
+		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected"},
+		{"7_supp", "7_supp.sam", "7.stats.expected"},
+		{"8_secondary", "8_secondary.sam", "8.stats.expected"},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, tc.input))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			if err := Stats(in, &out, StatsOptions{}); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			got, want := out.String(), string(expected)
+			if extractSection(got, "CHK") != extractSection(want, "CHK") {
+				t.Errorf("CHK row differs\n--- want\n%s--- got\n%s",
+					extractSection(want, "CHK"), extractSection(got, "CHK"))
+			}
+			for _, prefix := range []string{"CHK, Checksum", "CHK, CRC32"} {
+				if extractCommentHeader(got, prefix) != extractCommentHeader(want, prefix) {
+					t.Errorf("CHK header %q differs\nwant: %q\ngot:  %q", prefix,
+						extractCommentHeader(want, prefix), extractCommentHeader(got, prefix))
+				}
+			}
+		})
+	}
+}
+
+// TestStatsCOVParity compares our COV coverage-distribution histogram against
+// upstream's stats expected outputs. Coordinate-sorted fixtures must emit COV;
+// the unsorted fixture must omit the COV section entirely, matching upstream's
+// is_sorted gating.
+func TestStatsCOVParity(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		expect string
+		sorted bool
+	}{
+		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected", true},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected", true},
+		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected", true},
+		{"7_supp", "7_supp.sam", "7.stats.expected", true},
+		{"8_secondary", "8_secondary.sam", "8.stats.expected", true},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, tc.input))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			if err := Stats(in, &out, StatsOptions{}); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			got, want := out.String(), string(expected)
+			if extractSection(got, "COV") != extractSection(want, "COV") {
+				t.Errorf("COV rows differ\n--- want\n%s--- got\n%s",
+					extractSection(want, "COV"), extractSection(got, "COV"))
+			}
+			gotHdr := extractCommentHeader(got, "Coverage distribution")
+			wantHdr := extractCommentHeader(want, "Coverage distribution")
+			if gotHdr != wantHdr {
+				t.Errorf("COV header differs\nwant: %q\ngot:  %q", wantHdr, gotHdr)
+			}
+			if !tc.sorted && gotHdr != "" {
+				t.Errorf("unsorted input must omit COV section, got header %q", gotHdr)
+			}
+		})
+	}
+}
+
+// TestStatsCOVStreamingFlush confirms COV depth is accumulated in a bounded
+// per-contig sliding window: positions strictly below an advancing record's
+// start are flushed into the cov bin array, and a contig change flushes the
+// previous contig's window in full. The covWindow map must never retain the
+// whole genome — its size stays O(longest read span), not O(positions seen).
+func TestStatsCOVStreamingFlush(t *testing.T) {
+	mapped := func(rname string, pos int32, cig string) *sam.Record {
+		ops, err := sam.ParseCigar(cig)
+		if err != nil {
+			t.Fatalf("ParseCigar(%q): %v", cig, err)
+		}
+		return &sam.Record{RName: rname, Pos: pos, Cigar: ops}
+	}
+
+	c := newStatsCounters()
+	c.initCovBins(StatsOptions{})
+
+	// First record on contig "a": 10bp at pos 0 fills positions 0..9.
+	c.accumulateCoverage(mapped("a", 0, "10M"))
+	if len(c.covWindow) != 10 {
+		t.Fatalf("after first record: window size = %d, want 10", len(c.covWindow))
+	}
+
+	// A second record far downstream on the same contig finalizes every
+	// earlier position. The window must shrink to just the new span.
+	c.accumulateCoverage(mapped("a", 1_000_000, "5M"))
+	if len(c.covWindow) != 5 {
+		t.Fatalf("after distant record: window size = %d, want 5 "+
+			"(earlier positions must be flushed, not retained)", len(c.covWindow))
+	}
+
+	// Switching contigs must flush "a"'s remaining window entirely.
+	c.accumulateCoverage(mapped("b", 0, "3M"))
+	if c.covContig != "b" {
+		t.Fatalf("covContig = %q, want \"b\"", c.covContig)
+	}
+	if len(c.covWindow) != 3 {
+		t.Fatalf("after contig change: window size = %d, want 3", len(c.covWindow))
+	}
+
+	// End-of-input flush empties the window; all depth is now binned.
+	c.flushCoverageWindow(1 << 30)
+	if len(c.covWindow) != 0 {
+		t.Fatalf("after final flush: window size = %d, want 0", len(c.covWindow))
+	}
+	// 10 + 5 + 3 = 18 single-depth positions binned at depth 1.
+	var total int64
+	for _, v := range c.cov {
+		total += v
+	}
+	if total != 18 {
+		t.Fatalf("binned positions = %d, want 18", total)
+	}
+}
+
+// TestStatsCHKMissingQual confirms a record with QUAL "*" feeds seq_len bytes
+// of 0xff to the qualities checksum, matching upstream's bam_get_qual
+// missing-qual buffer, while a SEQ-less record contributes only its name.
+func TestStatsCHKMissingQual(t *testing.T) {
+	c := newStatsCounters()
+	c.updateChecksum(&sam.Record{QName: "r1", Seq: "ACGT"}) // QUAL "*"
+	missing := []byte{0xff, 0xff, 0xff, 0xff}
+	wantNames := crc32.ChecksumIEEE([]byte("r1"))
+	wantReads := crc32.ChecksumIEEE((&sam.Record{Seq: "ACGT"}).PackedSeq())
+	wantQuals := crc32.ChecksumIEEE(missing)
+	if c.ChkNames != wantNames || c.ChkReads != wantReads || c.ChkQuals != wantQuals {
+		t.Fatalf("missing-qual checksum mismatch: got (%08x %08x %08x) want (%08x %08x %08x)",
+			c.ChkNames, c.ChkReads, c.ChkQuals, wantNames, wantReads, wantQuals)
+	}
+	// A record with SEQ "*" contributes only to ChkNames.
+	c2 := newStatsCounters()
+	c2.updateChecksum(&sam.Record{QName: "r2"})
+	if c2.ChkNames != crc32.ChecksumIEEE([]byte("r2")) || c2.ChkReads != 0 || c2.ChkQuals != 0 {
+		t.Fatalf("SEQ-less record should only checksum the name: got (%08x %08x %08x)",
+			c2.ChkNames, c2.ChkReads, c2.ChkQuals)
 	}
 }
 

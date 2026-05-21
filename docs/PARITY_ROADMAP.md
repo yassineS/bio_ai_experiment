@@ -1411,20 +1411,29 @@ single-pass streaming model.
 
 **`stats` implemented sections.** The per-cycle quality matrices
 **FFQ/LFQ**, the GC-content sections **GCF/GCL**, the ACGT-content
-sections **GCC/GCT** and the indel sections **IC/ID** are byte-faithful
-to upstream — validated against the vendored `.sam` fixtures. (GCC/GCT
-are read-derived and need no reference; only the GC-*depth* section GCD
-needs reference bases.)
+sections **GCC/GCT**, the indel sections **IC/ID**, the leading **CHK**
+CRC32 checksum block and the **COV** coverage-distribution histogram are
+byte-faithful to upstream — validated against the vendored `.sam`
+fixtures. (GCC/GCT are read-derived and need no reference; only the
+GC-*depth* section GCD needs reference bases.) CHK sums the per-record
+CRC32 of read names, the BAM 4-bit-packed sequence and the quality
+bytes; COV bins each reference position's M/=/X read depth via the
+`-c MIN,MAX,STEP` option (default `1,1000,1`) and is emitted only for
+coordinate-sorted input, matching upstream's `is_sorted` gating. COV
+depth is accumulated in a bounded per-contig sliding window that is
+flushed as records advance (mirroring upstream's `cov_rbuf` ring
+buffer), so COV memory is O(longest read span), not O(genome).
+
+For unsorted input the COV section is silently omitted, whereas
+upstream aborts with `Expected coordinates in ascending order` — a
+deliberate, friendlier divergence.
 
 **`stats` deferred sections** (also documented in
 `PARITY_VALIDATION.md`):
 
-- COV/COV2 coverage histograms (require reference + BAI).
 - GCD GC-depth distribution and OXC oxidation-context counts (require
   reference bases).
 - `--target-regions BED` restriction.
-- The leading CHK checksum block (CRC32 reduction of read names /
-  sequences / qualities).
 - BWA-style quality trimming (`-q/--trim-quality`). The SN field
   `bases trimmed` is reported as 0; upstream also reports 0 when the
   flag is not passed, so byte parity holds for the default invocation.
@@ -1433,10 +1442,12 @@ needs reference bases.)
   unbounded — fine for the typical workload but worth fixing before
   running `stats` on multi-billion-record BAMs.
 
-The output emits byte-faithful **SN** (Summary Numbers), the per-cycle
-and base-content sections (**FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID**) and the
-**RL / MAPQ / IS** rollups; the remaining sections are quietly omitted
-(or, under `--sparse`, all histogram blocks are suppressed entirely).
+The output emits the byte-faithful **CHK** checksum block, **SN**
+(Summary Numbers), the per-cycle and base-content sections
+(**FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID**), the **RL / MAPQ / IS** rollups and
+the **COV** coverage histogram; the remaining sections are quietly
+omitted (or, under `--sparse`, all histogram blocks are suppressed
+entirely).
 
 **Validation:** upstream fixtures from `reference_code/samtools/test/markdup/`
 and `.../test/stat/` are vendored under

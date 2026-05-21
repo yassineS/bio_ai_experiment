@@ -3,14 +3,12 @@
 // Mirrors `samtools stats`. The Summary Numbers (SN) block, the read-length
 // sections (RL/FRL/LRL), the MAPQ and IS histograms, the per-cycle quality
 // histograms (FFQ/LFQ), the GC-content sections (GCF/GCL), the ACGT-content
-// sections (GCC/GCT) and the indel sections (IC/ID) are all byte-faithful to
+// sections (GCC/GCT), the indel sections (IC/ID), the leading CHK checksum
+// block and the COV coverage-distribution histogram are all byte-faithful to
 // upstream. PARITY_VALIDATION.md tracks which sections are byte-faithful vs.
 // deferred.
 //
 // Skipped intentionally for v1 (documented):
-//   - CHK checksum block (depends on a CRC32 reduction we don't emit).
-//   - COV/COV2 coverage histograms (requires a reference FASTA and a
-//     per-position depth walker).
 //   - GCD GC-depth distribution (requires reference bases).
 //   - OXC oxidation-context counts (requires reference bases).
 //   - --target-regions BED restriction.
@@ -21,6 +19,7 @@ package samtools
 import (
 	"bufio"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"sort"
@@ -33,14 +32,15 @@ type StatsOptions struct {
 	// RefSeq path; accepted but only the optional sections that need a
 	// reference are gated on it (currently none in v1).
 	RefSeq string
-	// Coverage is the raw "MIN,MAX,STEP" string passed via -c; parsed but
-	// not used while COV is a placeholder.
+	// Coverage is the raw "MIN,MAX,STEP" string passed via -c; parsed to
+	// configure the COV coverage-distribution bins (default "1,1000,1").
 	Coverage string
 	// RequiredFlag requires ALL bits set on each record (-l/--required-flag).
 	RequiredFlag uint16
 	// FilteringFlag drops records with ANY bit set (-F/--filtering-flag).
 	FilteringFlag uint16
-	// MaxDepth caps depth used in COV (placeholder in v1).
+	// MaxDepth is accepted for CLI compatibility; the COV histogram bins
+	// every position's depth without an upstream-style depth cap.
 	MaxDepth int
 	// MinMAPQ skips records below this MAPQ.
 	MinMAPQ uint8
@@ -148,6 +148,33 @@ type StatsCounters struct {
 	// Pair tracking by qname (mate's flag/pos for orientation classification).
 	// Cleared as pairs are observed (memory-bounded by max pending mates).
 	mates map[string]mateInfo
+
+	// CHK checksum block: per-record crc32 values summed with 32-bit
+	// overflow, mirroring upstream's update_checksum (stats.c:755).
+	ChkNames uint32
+	ChkReads uint32
+	ChkQuals uint32
+
+	// COV coverage distribution. Rather than retaining every covered
+	// reference position (which would be O(genome) and OOM on whole-genome
+	// BAMs), depth is accumulated in a bounded sliding window for the
+	// *current contig only* and finalized positions are binned into cov
+	// incrementally — mirroring upstream's fixed-size cov_rbuf ring buffer
+	// and round_buffer_flush (stats.c:326). covWindow holds depth for
+	// positions >= covFlushed on contig covContig; covContig/covFlushed
+	// track the streaming flush frontier. The cov bin array is sized once
+	// up front from parseCoverageBins so binning can happen during the
+	// flush. COV is emitted only for coordinate-sorted input, matching
+	// upstream's is_sorted gating (stats.c:1848).
+	covWindow  map[int32]int32 // per-position depth for the current contig
+	covContig  string          // RName the window currently tracks ("" = none yet)
+	covFlushed int32           // positions < this have been flushed for covContig
+	cov        []int64         // COV bin array, sized from covMin/covMax/covStep
+	covMin     int
+	covMax     int
+	covStep    int
+	ncov       int
+	covBinsSet bool // true once the cov bins have been initialized
 }
 
 // Buffer dimensions mirroring upstream stats.c initial allocation.
@@ -189,7 +216,20 @@ func newStatsCounters() *StatsCounters {
 		delCycle1st: make(map[int]int64),
 		delCycle2nd: make(map[int]int64),
 		mates:       make(map[string]mateInfo),
+		covWindow:   make(map[int32]int32),
 	}
+}
+
+// initCovBins computes the COV bin geometry once from the -c option and
+// allocates the cov bin array. Calling it more than once is a no-op so the
+// streaming flush can rely on the bins being ready.
+func (c *StatsCounters) initCovBins(opts StatsOptions) {
+	if c.covBinsSet {
+		return
+	}
+	c.covMin, c.covMax, c.covStep, c.ncov = parseCoverageBins(opts.Coverage)
+	c.cov = make([]int64, c.ncov)
+	c.covBinsSet = true
 }
 
 // Stats reads a SAM/BAM stream, accumulates statistics, and writes the
@@ -204,6 +244,9 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	}
 	_ = br.Header() // header is read for side-effects (consumed from stream)
 	c := newStatsCounters()
+	// Compute the COV bin geometry once up front so depth can be binned
+	// incrementally during the streaming flush.
+	c.initCovBins(opts)
 	// Match upstream stats.c:2327 — is_sorted starts at 1 and is demoted to
 	// 0 the first time an out-of-order record appears. The @HD SO:coordinate
 	// line is NOT consulted; an empty BAM is reported as sorted.
@@ -222,6 +265,9 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	if c.sortBroken {
 		c.IsSorted = 0
 	}
+	// Flush whatever coverage depth remains in the window for the last
+	// contig before the report is written.
+	c.flushCoverageWindow(math.MaxInt32)
 	return c.Write(out, opts)
 }
 
@@ -244,6 +290,16 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 			c.lastPos = rec.Pos
 		}
 	}
+	// CHK checksum — upstream's update_checksum (stats.c:755) runs for every
+	// record that passed the user flag filters, BEFORE the secondary/
+	// supplementary classification, so it must be folded in on all three
+	// record branches. Note: upstream applies the -F/-f/-l flag filters
+	// before update_checksum, whereas this code applies those filters only
+	// on the primary path below; computing CHK for every record is a known,
+	// pre-existing flag-ordering divergence that is correct for the default
+	// invocation (no flag filters) and is not addressed here.
+	c.updateChecksum(rec)
+
 	// Branch 1: classify non-primary reads first (they don't count toward
 	// "raw total sequences" upstream, they only bump their own counters).
 	if rec.IsSecondary() {
@@ -267,6 +323,10 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 		// supplementary alignments (only secondary reads are excluded).
 		if rec.IsMapped() {
 			c.countIndels(rec)
+			// COV folds in supplementary alignments too; upstream walks
+			// the CIGAR of every record reaching collect_stats (only
+			// secondary reads return early).
+			c.accumulateCoverage(rec)
 		}
 		return
 	}
@@ -376,6 +436,11 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 
 	// Indel distribution and per-cycle indel counts (mapped reads only).
 	c.countIndels(rec)
+
+	// COV coverage-distribution depth (mapped reads only).
+	if rec.IsMapped() {
+		c.accumulateCoverage(rec)
+	}
 
 	// Mismatches via NM aux tag.
 	if a, ok := rec.GetAux("NM"); ok {
@@ -704,9 +769,152 @@ func (c *StatsCounters) countIndels(rec *sam.Record) {
 	}
 }
 
+// updateChecksum folds one record into the CHK checksum block. It mirrors
+// upstream's update_checksum (stats.c:755): the qname, the BAM 4-bit-packed
+// sequence and the quality bytes are each crc32'd with the IEEE polynomial
+// (identical to zlib's crc32) and summed into the running totals with 32-bit
+// overflow. A record with no sequence (SEQ "*") contributes only its name.
+func (c *StatsCounters) updateChecksum(rec *sam.Record) {
+	c.ChkNames += crc32.ChecksumIEEE([]byte(rec.QName))
+
+	seqLen := len(rec.Seq)
+	if seqLen == 0 {
+		return
+	}
+	// PackedSeq yields the BAM nibble encoding byte-identical to htslib's
+	// bam_get_seq buffer, so crc32 over it matches upstream exactly.
+	c.ChkReads += crc32.ChecksumIEEE(rec.PackedSeq())
+
+	if len(rec.Qual) == seqLen {
+		c.chkQualsAdd(rec.Qual)
+		return
+	}
+	// QUAL "*" — upstream's bam_get_qual buffer is all 0xff for seq_len bytes.
+	missing := make([]byte, seqLen)
+	for i := range missing {
+		missing[i] = 0xff
+	}
+	c.chkQualsAdd(missing)
+}
+
+// chkQualsAdd folds one quality buffer into the CHK qualities checksum.
+func (c *StatsCounters) chkQualsAdd(qual []byte) {
+	c.ChkQuals += crc32.ChecksumIEEE(qual)
+}
+
+// accumulateCoverage folds one mapped record's per-position depth into the
+// bounded coverage window. Only M, = and X CIGAR operations contribute depth;
+// soft-clips, insertions, deletions and reference skips do not (stats.c
+// comment at line 29 and the cov_rbuf insertion loop at stats.c:1457).
+//
+// Because COV is emitted only for coordinate-sorted input, records arrive in
+// non-decreasing position order: once a record starts at rec.Pos every
+// reference position < rec.Pos is final and can be binned and dropped. This
+// mirrors upstream's fixed-size cov_rbuf ring buffer + round_buffer_flush
+// (stats.c:326), keeping COV memory O(longest read span) instead of
+// O(genome). On a contig change the previous contig's window is flushed in
+// full first. Defensive against out-of-order input: a backwards jump never
+// rewinds covFlushed, so the window and flush logic cannot be corrupted (the
+// COV section is suppressed anyway when the input is not sorted).
+func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
+	if rec.RName != c.covContig {
+		// New contig: every windowed position of the previous contig is
+		// final. Flush it all, then switch contigs.
+		c.flushCoverageWindow(math.MaxInt32)
+		c.covContig = rec.RName
+		c.covFlushed = 0
+	}
+	// Every position strictly below rec.Pos can receive no further depth.
+	c.flushCoverageWindow(rec.Pos)
+
+	pos := rec.Pos
+	for _, op := range rec.Cigar {
+		ch := op.Char()
+		ln := int32(op.Length())
+		switch ch {
+		case 'M', '=', 'X':
+			for i := int32(0); i < ln; i++ {
+				p := pos + i
+				// Defensive: never re-add depth to an already-flushed
+				// position (only possible on out-of-order input, where
+				// COV is suppressed regardless).
+				if p >= c.covFlushed {
+					c.covWindow[p]++
+				}
+			}
+			pos += ln
+		case 'D', 'N':
+			// Consume reference without contributing depth.
+			pos += ln
+		default:
+			// I, S, H, P do not consume reference.
+		}
+	}
+}
+
+// flushCoverageWindow bins and removes every windowed position strictly below
+// upTo, advancing the flush frontier. Passing math.MaxInt32 flushes the whole
+// window (used on a contig change and at end of input). It is the streaming
+// equivalent of upstream's round_buffer_flush (stats.c:326).
+func (c *StatsCounters) flushCoverageWindow(upTo int32) {
+	if len(c.covWindow) == 0 {
+		if upTo > c.covFlushed {
+			c.covFlushed = upTo
+		}
+		return
+	}
+	for p, d := range c.covWindow {
+		if p < upTo {
+			c.cov[coverageIdx(c.covMin, c.covMax, c.ncov, c.covStep, int(d))]++
+			delete(c.covWindow, p)
+		}
+	}
+	if upTo > c.covFlushed {
+		c.covFlushed = upTo
+	}
+}
+
+// coverageIdx maps a read depth to its COV bin index, mirroring upstream's
+// coverage_idx (stats.c:310): bin 0 collects depths below covMin, bin n-1
+// collects depths above covMax, and the middle bins are stepped by covStep.
+func coverageIdx(min, max, n, step, depth int) int {
+	if depth < min {
+		return 0
+	}
+	if depth > max {
+		return n - 1
+	}
+	return 1 + (depth-min)/step
+}
+
+// parseCoverageBins parses the -c "MIN,MAX,STEP" string and returns the
+// effective covMin, covMax, covStep and bin count, applying the same step and
+// max adjustments upstream performs at stats.c:2359-2366. An empty string
+// yields the upstream defaults 1,1000,1.
+func parseCoverageBins(spec string) (covMin, covMax, covStep, ncov int) {
+	covMin, covMax, covStep = 1, 1000, 1
+	if spec != "" {
+		var mn, mx, st int
+		if n, _ := fmt.Sscanf(spec, "%d,%d,%d", &mn, &mx, &st); n == 3 {
+			covMin, covMax, covStep = mn, mx, st
+		}
+	}
+	if covStep > covMax-covMin+1 {
+		covStep = covMax - covMin
+		if covStep <= 0 {
+			covStep = 1
+		}
+	}
+	ncov = 3 + (covMax-covMin)/covStep
+	covMax = covMin + ((covMax-covMin)/covStep+1)*covStep - 1
+	return covMin, covMax, covStep, ncov
+}
+
 // Write emits the upstream-compatible text report to w.
 func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 	bw := bufio.NewWriter(w)
+	// CHK block — emitted first, ahead of SN, matching upstream stats.c:1557.
+	c.writeCHK(bw)
 	// SN block — full upstream parity.
 	c.writeSN(bw)
 	// Histogram and per-cycle section bodies are emitted only in the
@@ -722,8 +930,48 @@ func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 		c.writeIS(bw, opts)
 		c.writeID(bw)
 		c.writeIC(bw)
+		c.writeCOV(bw, opts)
 	}
 	return bw.Flush()
+}
+
+// writeCHK emits the leading CRC32 checksum block (read names, sequences,
+// qualities), matching upstream stats.c:1557-1559.
+func (c *StatsCounters) writeCHK(bw *bufio.Writer) {
+	fmt.Fprintln(bw, "# CHK, Checksum\t[2]Read Names\t[3]Sequences\t[4]Qualities")
+	fmt.Fprintln(bw, "# CHK, CRC32 of reads which passed filtering followed by addition (32bit overflow)")
+	fmt.Fprintf(bw, "CHK\t%08x\t%08x\t%08x\n", c.ChkNames, c.ChkReads, c.ChkQuals)
+}
+
+// writeCOV emits the coverage-distribution histogram. It is only emitted for
+// coordinate-sorted input, matching upstream's is_sorted gating
+// (stats.c:1848). The cov bin array is populated incrementally during the
+// streaming flush (see accumulateCoverage/flushCoverageWindow); writeCOV just
+// formats it, printing only non-empty bins (stats.c:1850-1856).
+func (c *StatsCounters) writeCOV(bw *bufio.Writer, opts StatsOptions) {
+	if c.IsSorted != 1 {
+		return
+	}
+	c.initCovBins(opts)
+	covMin, covMax, covStep, ncov := c.covMin, c.covMax, c.covStep, c.ncov
+	_ = covMax
+	cov := c.cov
+	fmt.Fprintln(bw, "# Coverage distribution. Use `grep ^COV | cut -f 2-` to extract this part.")
+	if cov[0] > 0 {
+		fmt.Fprintf(bw, "COV\t[<%d]\t%d\t%d\n", covMin, covMin-1, cov[0])
+	}
+	for icov := 1; icov < ncov-1; icov++ {
+		if cov[icov] == 0 {
+			continue
+		}
+		lo := covMin + (icov-1)*covStep
+		hi := covMin + icov*covStep - 1
+		fmt.Fprintf(bw, "COV\t[%d-%d]\t%d\t%d\n", lo, hi, hi, cov[icov])
+	}
+	if cov[ncov-1] > 0 {
+		edge := covMin + (ncov-2)*covStep - 1
+		fmt.Fprintf(bw, "COV\t[%d<]\t%d\t%d\n", edge, edge, cov[ncov-1])
+	}
 }
 
 // writeSN emits the Summary Numbers section.

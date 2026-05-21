@@ -427,5 +427,13 @@ func (r *Record) EndPosition() int32 {
 	return r.Pos + int32(n) - 1
 }
 
+// PackedSeq returns the BAM 4-bit-packed encoding of the record's SEQ:
+// (len(Seq)+1)/2 bytes with the high nibble holding the first base. It is
+// byte-identical to the buffer pointed at by htslib's bam_get_seq, which makes
+// it suitable for checksumming. A SEQ of "*" (empty Seq) yields an empty slice.
+func (r *Record) PackedSeq() []byte {
+	return encodeSeq(r.Seq)
+}
+
 // errBadRecord is returned for malformed text SAM body lines.
 var errBadRecord = errors.New("sam: malformed record")
