@@ -202,6 +202,42 @@ func TestIndexThenRegionQuery(t *testing.T) {
 	}
 }
 
+// TestViewCustomizedIndex exercises samtools view's -X/--customized-index
+// path: an index file at an arbitrary (non-sibling) location, supplied via
+// ViewOptions.IndexPath, must drive region queries identically to the
+// conventional sibling-index lookup, for both .bai and .csi index kinds.
+func TestViewCustomizedIndex(t *testing.T) {
+	bamBytes := samToBAM(t, sortedSAM)
+	dir := t.TempDir()
+	bamPath := filepath.Join(dir, "in.bam")
+	if err := os.WriteFile(bamPath, bamBytes, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		csi  bool
+	}{{"bai", false}, {"csi", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			idxPath := filepath.Join(dir, "custom."+tc.name)
+			if err := IndexFile(bamPath, idxPath, IndexOptions{SelectCSI: tc.csi}); err != nil {
+				t.Fatalf("IndexFile: %v", err)
+			}
+			var out bytes.Buffer
+			n, err := ViewFile(bamPath, &out, ViewOptions{
+				Regions:   []string{"chr1:50-150"},
+				IndexPath: idxPath,
+				Count:     true,
+			}, io.Discard)
+			if err != nil {
+				t.Fatalf("ViewFile -X: %v", err)
+			}
+			if n != 1 {
+				t.Errorf("chr1:50-150 via -X %s: got %d, want 1", tc.name, n)
+			}
+		})
+	}
+}
+
 // TestIndexFileCSI confirms that IndexFile with SelectCSI writes a
 // sibling <bam>.csi file and that region queries against it agree with
 // the .bai path for chromosomes within BAI's range.
