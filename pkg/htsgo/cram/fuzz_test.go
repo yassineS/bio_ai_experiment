@@ -2,6 +2,7 @@ package cram
 
 import (
 	"bytes"
+	"compress/gzip"
 	"io"
 	"testing"
 )
@@ -110,6 +111,49 @@ func FuzzTagValue(f *testing.F) {
 				_ = aux.FormatSAM()
 			}
 		}
+	})
+}
+
+// FuzzReadCRAI runs the .crai index parser over arbitrary input. A
+// .crai is a gzip-compressed TSV; the parser must never panic — every
+// malformed gzip stream, non-integer field, wrong field count or
+// out-of-range value must surface as a returned error. When the parse
+// succeeds the index is additionally queried to exercise the overlap
+// arithmetic on the decoded entries.
+func FuzzReadCRAI(f *testing.F) {
+	// Seed with a valid gzip-compressed .crai body and some raw,
+	// definitely-not-gzip inputs.
+	seed := func(text string) []byte {
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		gw.Write([]byte(text))
+		gw.Close()
+		return buf.Bytes()
+	}
+	f.Add(seed("0\t100\t50\t1024\t12\t300\n1\t10\t90\t4096\t0\t500\n"))
+	f.Add(seed("-1\t0\t0\t8192\t0\t128\n"))
+	f.Add(seed(""))
+	f.Add([]byte{})
+	f.Add([]byte("not gzip at all"))
+	f.Add([]byte{0x1f, 0x8b}) // a truncated gzip magic.
+	f.Fuzz(func(t *testing.T, data []byte) {
+		idx, err := ReadCRAI(bytes.NewReader(data))
+		if err != nil {
+			return
+		}
+		// A successful parse must yield queryable entries; the query must
+		// not panic on any decoded entry, including extreme coordinates.
+		for _, e := range idx.Entries {
+			if e.AlignmentSpan < 0 {
+				t.Fatalf("parsed a negative alignment span %d", e.AlignmentSpan)
+			}
+			if e.ContainerOffset < 0 || e.SliceOffset < 0 || e.SliceSize < 0 {
+				t.Fatalf("parsed a negative offset/size in %+v", e)
+			}
+		}
+		_ = idx.Query(0, 0, 0)
+		_ = idx.Query(-1, 0, 1<<40)
+		_ = idx.Query(1<<20, -5, 5)
 	})
 }
 

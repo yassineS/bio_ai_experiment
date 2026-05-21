@@ -36,7 +36,7 @@ func newReconDecoder(refRequired bool) *recordDecoder {
 func TestReconstructMappedMatchOnly(t *testing.T) {
 	rd := newReconDecoder(false)
 	feats := []readFeature{{code: featBases, pos: 1, bases: []byte("ACGTAC")}}
-	seq, qual, cig, err := rd.reconstructMapped(feats, 6)
+	seq, qual, cig, err := rd.reconstructMapped(feats, 6, 1)
 	if err != nil {
 		t.Fatalf("reconstructMapped: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestReconstructMappedAllFeatures(t *testing.T) {
 		{code: featPadding, pos: 7, length: 2},
 		{code: featInsertion, pos: 7, bases: []byte("CC")},
 	}
-	seq, qual, cig, err := rd.reconstructMapped(feats, 8)
+	seq, qual, cig, err := rd.reconstructMapped(feats, 8, 1)
 	if err != nil {
 		t.Fatalf("reconstructMapped: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestReconstructQualityStretch(t *testing.T) {
 		{code: featBases, pos: 1, bases: []byte("ACGT")},
 		{code: featScores, pos: 1, bases: []byte{10, 11, 12, 13}},
 	}
-	_, qual, _, err := rd.reconstructMapped(feats, 4)
+	_, qual, _, err := rd.reconstructMapped(feats, 4, 1)
 	if err != nil {
 		t.Fatalf("reconstructMapped: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestReconstructSubstitutionNeedsReference(t *testing.T) {
 		{code: featSubst, pos: 3, substCode: 1},
 		{code: featBases, pos: 4, bases: []byte("GT")},
 	}
-	seq, _, cig, err := rd.reconstructMapped(feats, 5)
+	seq, _, cig, err := rd.reconstructMapped(feats, 5, 1)
 	if err != nil {
 		t.Fatalf("reconstructMapped: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestReconstructUncoveredBase(t *testing.T) {
 		{code: featBases, pos: 1, bases: []byte("AC")},
 		{code: featBases, pos: 4, bases: []byte("GT")},
 	}
-	seq, _, cig, err := rd.reconstructMapped(feats, 5)
+	seq, _, cig, err := rd.reconstructMapped(feats, 5, 1)
 	if err != nil {
 		t.Fatalf("reconstructMapped: %v", err)
 	}
@@ -179,12 +179,12 @@ func TestReconstructErrors(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, _, _, err := rd.reconstructMapped(c.feats, c.ln); err == nil {
+			if _, _, _, err := rd.reconstructMapped(c.feats, c.ln, 1); err == nil {
 				t.Error("expected an error")
 			}
 		})
 	}
-	if _, _, _, err := rd.reconstructMapped(nil, -1); err == nil {
+	if _, _, _, err := rd.reconstructMapped(nil, -1, 1); err == nil {
 		t.Error("a negative read length must error")
 	}
 }
@@ -199,7 +199,7 @@ func TestReconstructRefSkipAndHardClip(t *testing.T) {
 		{code: featRefSkip, pos: 4, length: 10},
 		{code: featBases, pos: 4, bases: []byte("TT")},
 	}
-	_, _, cig, err := rd.reconstructMapped(feats, 5)
+	_, _, cig, err := rd.reconstructMapped(feats, 5, 1)
 	if err != nil {
 		t.Fatalf("reconstructMapped: %v", err)
 	}

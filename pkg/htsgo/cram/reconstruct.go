@@ -10,13 +10,14 @@ import (
 // reference — applying each feature at its in-read coordinate and
 // emitting CIGAR operations for the runs between and within features.
 //
-// In a reference-free CRAM every base of the read is supplied by a
-// feature (a "b" stretch, an "i"/"B" single base, or a soft clip), so no
-// external reference is consulted. A run of read positions not covered
-// by any feature is treated as a reference match: in a reference-backed
-// file those bases would be copied from the reference, and this decoder
-// leaves a placeholder so the caller can see which bases need one.
-func (rd *recordDecoder) reconstructMapped(feats []readFeature, readLen int32) (seq, qual []byte, cigar sam.Cigar, err error) {
+// recPos is the record's 1-based reference alignment start (POS). A run
+// of read positions not covered by any feature is a reference match:
+// when an external reference is attached (rd.refBases non-nil) those
+// bases are copied from the reference, and a substitution feature's read
+// base is resolved through the substitution matrix; otherwise — the C4b
+// reference-free path — such bases are filled with 'N' and the record is
+// flagged as reference-needing.
+func (rd *recordDecoder) reconstructMapped(feats []readFeature, readLen, recPos int32) (seq, qual []byte, cigar sam.Cigar, err error) {
 	if readLen < 0 {
 		return nil, nil, nil, errFormat("record declares a negative read length %d", readLen)
 	}
@@ -29,55 +30,70 @@ func (rd *recordDecoder) reconstructMapped(feats []readFeature, readLen int32) (
 
 	var ops cigarBuilder
 	readPos := int32(0) // 0-based cursor within the read.
+	// refOffset is the count of reference bases consumed since recPos.
+	// A read-and-reference operation (a match run or a substitution)
+	// advances both cursors; a reference-only operation (a deletion or
+	// reference skip) advances only refOffset; a read-only operation
+	// (an insertion or soft clip) advances only readPos.
+	refOffset := int32(0)
 
 	for fi := range feats {
 		f := &feats[fi]
-		// f.pos is 1-based. A feature that consumes read bases starts a
-		// new read position; the gap before it is an implicit run of
-		// matches. A non-consuming feature (a quality score, a deletion,
-		// a reference skip, padding or a hard clip) carries no read
-		// bases and may sit at a position the read cursor has already
-		// passed — for example a Q feature setting the quality of a base
-		// an earlier insertion supplied — so it is applied where it is
-		// asked without disturbing the cursor.
 		featStart := f.pos - 1
-		// featStart == readLen is permitted: a non-consuming feature
-		// (e.g. padding) may sit just past the last base. A consuming
-		// feature there is rejected later by the read-cursor checks.
 		if featStart < 0 || featStart > readLen {
 			return nil, nil, nil, errFormat("read feature %d at in-read position %d is out of range (read length %d)",
 				fi, f.pos, readLen)
 		}
+		// writePos is the in-read coordinate the feature is applied at. A
+		// base-consuming feature starts a new read position (the gap
+		// before it is an implicit match run). A non-consuming feature
+		// (a quality score, a deletion, a reference skip, padding or a
+		// hard clip) carries no read bases and is applied at its own
+		// declared position without disturbing the read cursor.
+		writePos := readPos
 		if featConsumesRead(f.code) {
 			if featStart < readPos {
 				return nil, nil, nil, errFormat("read feature %d at in-read position %d is behind the read cursor %d",
 					fi, f.pos, readPos)
 			}
 			if featStart > readPos {
-				ops.add(sam.CigarMatch, featStart-readPos)
+				// The gap before a base-consuming feature is a reference
+				// match: copy the reference bases (or fill 'N') and emit M.
+				gap := featStart - readPos
+				if cerr := rd.fillReferenceMatch(seq, covered, readPos, recPos+refOffset, gap); cerr != nil {
+					return nil, nil, nil, wrapf(cerr, "read feature %d match run", fi)
+				}
+				ops.add(sam.CigarMatch, gap)
 				readPos = featStart
+				refOffset += gap
 			}
+			writePos = readPos
+		} else {
+			writePos = featStart
 		}
-		consumed, ferr := rd.applyFeature(f, seq, qual, covered, featStart, &ops)
+		consumedRead, consumedRef, ferr := rd.applyFeature(f, seq, qual, covered, writePos, recPos+refOffset, &ops)
 		if ferr != nil {
 			return nil, nil, nil, wrapf(ferr, "read feature %d (%c)", fi, f.code)
 		}
-		readPos += consumed
+		readPos += consumedRead
+		refOffset += consumedRef
 	}
 	// Read positions after the last feature are reference matches.
 	if readPos < readLen {
-		ops.add(sam.CigarMatch, readLen-readPos)
+		gap := readLen - readPos
+		if cerr := rd.fillReferenceMatch(seq, covered, readPos, recPos+refOffset, gap); cerr != nil {
+			return nil, nil, nil, wrapf(cerr, "trailing match run")
+		}
+		ops.add(sam.CigarMatch, gap)
 		readPos = readLen
 	}
 	if readPos != readLen {
 		return nil, nil, nil, errFormat("reconstructed read consumed %d of %d bases", readPos, readLen)
 	}
-	// Every base must have been supplied by a feature for a reference-free
-	// file. A base no feature covered would, in a reference-backed file,
-	// be copied from the external reference; this decoder has no
-	// reference, so it fills such bases with 'N' and reports — through
-	// the caller's needsReference accounting — that the record is only
-	// partially reconstructed.
+	// Any base still uncovered would, in a reference-backed file, have
+	// come from the external reference — fillReferenceMatch handled the
+	// match runs, so a leftover here only occurs in the reference-free
+	// fallback. Fill it with 'N' and report through needsReference.
 	for i := int32(0); i < readLen; i++ {
 		if !covered[i] {
 			seq[i] = 'N'
@@ -87,97 +103,153 @@ func (rd *recordDecoder) reconstructMapped(feats []readFeature, readLen int32) (
 	return seq, qual, ops.cigar(), nil
 }
 
+// fillReferenceMatch writes a run of n reference-match bases into the
+// read buffer starting at readPos, taking each base from the attached
+// reference at the corresponding reference coordinate (1-based refPos
+// for the first base). When no reference is attached it fills 'N' and
+// sets needsReference, preserving the C4b fallback. It errors only when
+// the reference span is too short for the run, which is a hard error:
+// the reference does not cover the alignment the slice claims.
+func (rd *recordDecoder) fillReferenceMatch(seq []byte, covered []bool, readPos, refPos, n int32) error {
+	if n <= 0 {
+		return nil
+	}
+	if int(readPos)+int(n) > len(seq) {
+		return errFormat("match run of %d bases at read offset %d overruns the read (length %d)",
+			n, readPos, len(seq))
+	}
+	if rd.refBases == nil {
+		for i := int32(0); i < n; i++ {
+			seq[readPos+i] = 'N'
+			covered[readPos+i] = true
+		}
+		rd.needsReference = true
+		return nil
+	}
+	idx := refPos - rd.refStart
+	if idx < 0 || int(idx)+int(n) > len(rd.refBases) {
+		return errFormat("match run needs reference bases %d-%d but the slice reference span covers %d-%d",
+			refPos, refPos+n-1, rd.refStart, rd.refStart+int32(len(rd.refBases))-1)
+	}
+	copy(seq[readPos:readPos+n], rd.refBases[idx:idx+n])
+	for i := int32(0); i < n; i++ {
+		covered[readPos+i] = true
+	}
+	return nil
+}
+
+// referenceBaseAt returns the reference base at the 1-based reference
+// coordinate refPos, or ok=false when no reference is attached or the
+// coordinate falls outside the slice's resolved span.
+func (rd *recordDecoder) referenceBaseAt(refPos int32) (byte, bool) {
+	if rd.refBases == nil {
+		return 0, false
+	}
+	idx := refPos - rd.refStart
+	if idx < 0 || int(idx) >= len(rd.refBases) {
+		return 0, false
+	}
+	return rd.refBases[idx], true
+}
+
 // applyFeature applies one read feature to the reconstruction buffers,
 // writing any bases/qualities it carries at readPos and appending the
-// CIGAR operation(s) it implies. It returns how many read bases the
-// feature consumed (so the caller can advance its read cursor).
-func (rd *recordDecoder) applyFeature(f *readFeature, seq, qual []byte, covered []bool, readPos int32, ops *cigarBuilder) (int32, error) {
+// CIGAR operation(s) it implies. refPos is the 1-based reference
+// coordinate aligned with readPos. It returns how many read bases and
+// how many reference bases the feature consumed, so the caller can
+// advance its two cursors.
+func (rd *recordDecoder) applyFeature(f *readFeature, seq, qual []byte, covered []bool, readPos, refPos int32, ops *cigarBuilder) (consumedRead, consumedRef int32, err error) {
 	switch f.code {
 	case featBases:
 		n := int32(len(f.bases))
-		if err := writeBases(seq, covered, readPos, f.bases); err != nil {
-			return 0, err
+		if werr := writeBases(seq, covered, readPos, f.bases); werr != nil {
+			return 0, 0, werr
 		}
 		ops.add(sam.CigarMatch, n)
-		return n, nil
+		return n, n, nil
 	case featScores:
 		// A "q" feature carries quality scores for a stretch already
 		// covered by bases; it consumes no read position itself.
 		if int(readPos)+len(f.bases) > len(qual) {
-			return 0, errFormat("quality-score stretch overruns the read")
+			return 0, 0, errFormat("quality-score stretch overruns the read")
 		}
 		copy(qual[readPos:], f.bases)
-		return 0, nil
+		return 0, 0, nil
 	case featBase:
-		if err := writeBases(seq, covered, readPos, []byte{f.base}); err != nil {
-			return 0, err
+		if werr := writeBases(seq, covered, readPos, []byte{f.base}); werr != nil {
+			return 0, 0, werr
 		}
 		qual[readPos] = f.quality
 		ops.add(sam.CigarMatch, 1)
-		return 1, nil
+		return 1, 1, nil
 	case featQualityScore:
 		if int(readPos) >= len(qual) {
-			return 0, errFormat("quality score overruns the read")
+			return 0, 0, errFormat("quality score overruns the read")
 		}
 		qual[readPos] = f.quality
-		return 0, nil
+		return 0, 0, nil
 	case featSubst:
-		// A substitution names a single read base relative to the
-		// reference base via the substitution matrix. Without an external
-		// reference the read base cannot be resolved, so the position is
-		// filled with 'N' and the record is flagged as reference-needing.
-		if err := writeBases(seq, covered, readPos, []byte{'N'}); err != nil {
-			return 0, err
+		// A substitution names the read base relative to the reference
+		// base at this position via the substitution matrix. With an
+		// external reference the read base is resolved exactly; without
+		// one it is filled with 'N' and the record is flagged.
+		base := byte('N')
+		if refBase, ok := rd.referenceBaseAt(refPos); ok {
+			base = rd.substMatrix.lookup(refBase, f.substCode)
+		} else {
+			rd.needsReference = true
 		}
-		rd.needsReference = true
+		if werr := writeBases(seq, covered, readPos, []byte{base}); werr != nil {
+			return 0, 0, werr
+		}
 		ops.add(sam.CigarMatch, 1)
-		return 1, nil
+		return 1, 1, nil
 	case featInsertion:
 		n := int32(len(f.bases))
-		if err := writeBases(seq, covered, readPos, f.bases); err != nil {
-			return 0, err
+		if werr := writeBases(seq, covered, readPos, f.bases); werr != nil {
+			return 0, 0, werr
 		}
 		ops.add(sam.CigarInsertion, n)
-		return n, nil
+		return n, 0, nil
 	case featInsertBase:
-		if err := writeBases(seq, covered, readPos, []byte{f.base}); err != nil {
-			return 0, err
+		if werr := writeBases(seq, covered, readPos, []byte{f.base}); werr != nil {
+			return 0, 0, werr
 		}
 		ops.add(sam.CigarInsertion, 1)
-		return 1, nil
+		return 1, 0, nil
 	case featSoftClip:
 		n := int32(len(f.bases))
-		if err := writeBases(seq, covered, readPos, f.bases); err != nil {
-			return 0, err
+		if werr := writeBases(seq, covered, readPos, f.bases); werr != nil {
+			return 0, 0, werr
 		}
 		ops.add(sam.CigarSoftClip, n)
-		return n, nil
+		return n, 0, nil
 	case featDeletion:
 		if f.length < 0 {
-			return 0, errFormat("deletion feature has negative length %d", f.length)
+			return 0, 0, errFormat("deletion feature has negative length %d", f.length)
 		}
 		ops.add(sam.CigarDeletion, f.length)
-		return 0, nil
+		return 0, f.length, nil
 	case featRefSkip:
 		if f.length < 0 {
-			return 0, errFormat("reference-skip feature has negative length %d", f.length)
+			return 0, 0, errFormat("reference-skip feature has negative length %d", f.length)
 		}
 		ops.add(sam.CigarSkipped, f.length)
-		return 0, nil
+		return 0, f.length, nil
 	case featPadding:
 		if f.length < 0 {
-			return 0, errFormat("padding feature has negative length %d", f.length)
+			return 0, 0, errFormat("padding feature has negative length %d", f.length)
 		}
 		ops.add(sam.CigarPadding, f.length)
-		return 0, nil
+		return 0, 0, nil
 	case featHardClip:
 		if f.length < 0 {
-			return 0, errFormat("hard-clip feature has negative length %d", f.length)
+			return 0, 0, errFormat("hard-clip feature has negative length %d", f.length)
 		}
 		ops.add(sam.CigarHardClip, f.length)
-		return 0, nil
+		return 0, 0, nil
 	default:
-		return 0, errFormat("unknown read-feature code %#02x", f.code)
+		return 0, 0, errFormat("unknown read-feature code %#02x", f.code)
 	}
 }
 

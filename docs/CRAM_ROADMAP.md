@@ -222,3 +222,31 @@ limitation here.
   Reference-backed CRAM (`7.quickcheck.cram30.ok`) decodes structurally
   with `NeedsReference()` set; full external-reference resolution is C5.
   Fuzz target on the record reader; ≥86% coverage on the new code.
+- **C5** — landed. Reference resolution + `.crai` index read in
+  `pkg/htsgo/cram/` (`reference.go`, `refresolve.go`, `subst.go`,
+  `crai.go`). `RecordReader.SetReference` / `SetReferenceFASTA` attach an
+  indexed FASTA (via `pkg/htsgo/fasta` faidx random access, memoising one
+  contig); `SetRefCache` / `UseRefCacheFromEnv` attach the htslib
+  REF_CACHE local cache, keyed on the contig's `@SQ` `M5` tag with the
+  `%2s/%2s/%s` path layout. The record decoder now reconstructs mapped
+  reads from the reference — match runs copy the reference span,
+  substitution features resolve through the SM substitution matrix
+  (`reconstruct.go` gained a reference cursor alongside the read cursor)
+  — and verifies each slice header's reference MD5 (md5 of the
+  upper-cased, base-only span); a mismatch is a hard error. The network
+  REF_PATH URL fetch is out of scope: an unresolvable reference is a
+  clear error naming the missing MD5. `ReadCRAI` / `OpenCRAI` parse the
+  gzip-compressed `.crai` TSV; `CRAIIndex.Query` / `QueryRegion` return
+  the slice entries overlapping a region. Verified against
+  `7.quickcheck.cram30.ok.cram` + `dat/mpileup.ref.fa` (contig `17`): the
+  reference-backed decode drops the 'N' count from 56532 to ~0, every
+  base is valid, and pure-match reads equal the reference span; the
+  REF_CACHE path round-trips via the `@SQ M5` key; the real
+  `mpileup/ce#5b.cram.crai` parses. Fuzz target on the `.crai` parser;
+  ≥85% coverage on the new code. Two judgement calls: (1) the REF_CACHE
+  key is the `@SQ` `M5` tag (the whole-sequence digest), not the slice
+  header MD5 (the slice-span digest) — matching htslib; the slice MD5
+  still verifies the span after the whole sequence is fetched. (2) An
+  unmapped (`-1`) or multi-reference (`-2`) slice resolves to a nil span
+  and the per-record reference-derived bases fall back to the 'N' fill —
+  a single-reference slice is the fully-resolved path.

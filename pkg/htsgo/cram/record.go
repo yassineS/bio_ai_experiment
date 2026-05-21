@@ -73,11 +73,25 @@ type recordDecoder struct {
 	// allocation; a genuine read is always far smaller than the data
 	// blocks that encode it.
 	readLenLimit int32
+
+	// refBases holds the slice's reference span, upper-cased, indexed so
+	// that refBases[i] is reference position SliceHeader.AlignmentStart+i.
+	// It is nil when no external reference was supplied, in which case
+	// reference-derived bases are filled with 'N' (the C4b fallback).
+	refBases []byte
+	// refStart is the 1-based reference coordinate of refBases[0].
+	refStart int32
+	// substMatrix decodes a substitution feature's BS code into a read
+	// base relative to the reference base at that position.
+	substMatrix substMatrix
 }
 
 // newRecordDecoder builds a recordDecoder for one slice. It parses the
-// tag dictionary up front so per-record tag reconstruction is a lookup.
-func newRecordDecoder(h *CompressionHeader, sh *SliceHeader, src *SeriesSource, refNames, readGroups []string) (*recordDecoder, error) {
+// tag dictionary up front so per-record tag reconstruction is a lookup,
+// and builds the base-substitution matrix from the preservation map.
+// refBases, when non-nil, is the slice's resolved and MD5-verified
+// reference span; refStart is the 1-based coordinate of its first base.
+func newRecordDecoder(h *CompressionHeader, sh *SliceHeader, src *SeriesSource, refNames, readGroups []string, refBases []byte, refStart int32) (*recordDecoder, error) {
 	td, err := parseTagDictionary(h.Preservation.TagDictionary)
 	if err != nil {
 		return nil, err
@@ -91,6 +105,9 @@ func newRecordDecoder(h *CompressionHeader, sh *SliceHeader, src *SeriesSource, 
 		prevAlignmentStart: sh.AlignmentStart,
 		tagDict:            td,
 		readLenLimit:       src.s.totalBytes(),
+		refBases:           refBases,
+		refStart:           refStart,
+		substMatrix:        newSubstMatrix(h.Preservation.SubstitutionMatrix),
 	}, nil
 }
 
@@ -634,7 +651,7 @@ func (rd *recordDecoder) decodeMapped(rec *sam.Record, cf int32, readLen int32, 
 	if err != nil {
 		return wrapf(err, "record %d", index)
 	}
-	seq, qual, cigar, err := rd.reconstructMapped(feats, readLen)
+	seq, qual, cigar, err := rd.reconstructMapped(feats, readLen, rec.Pos)
 	if err != nil {
 		return wrapf(err, "record %d", index)
 	}
