@@ -1370,7 +1370,9 @@ Missing subcommands (in rough priority order):
 - **`tview`** — terminal viewer. **Deliberate skip** (interactive
   curses UI; near-zero pipeline usage and would require an ncurses
   dependency). Not on the roadmap.
-- **`view` flag-tail**: `-X` (custom-index input). `-L bed` landed as a
+- **`view` flag-tail**: `-X`/`--customized-index` (explicit index-file
+  argument after `<in.bam>`) is implemented — the index kind (.bai or
+  .csi) is auto-detected from the file's magic. `-L bed` landed as a
   linear-scan BED-region filter; `-M`/`--use-multi-region-iterator` is
   accepted but treated as a no-op since we always run the full
   intersection. `-d/-D` (tag-value filter) and `-N` (qname file) landed

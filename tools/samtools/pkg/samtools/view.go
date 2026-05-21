@@ -104,6 +104,11 @@ type ViewOptions struct {
 	// values: "8" (Illumina 8-level), "4" (4-level), "2" (NovaSeq-style
 	// 2-level). See alnio.ParseQualityBinning for the full grammar.
 	CRAMQualityBinning string
+	// IndexPath is an explicit index-file path supplied via samtools view's
+	// `-X/--customized-index` flag. When non-empty it overrides the
+	// conventional sibling `<input>.csi`/`<input>.bai` lookup; the index
+	// kind (CSI or BAI) is auto-detected from the file's magic bytes.
+	IndexPath string
 }
 
 // TagFilter is a single aux-tag predicate as derived from samtools view's
@@ -232,6 +237,35 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 		}
 		defer f.Close()
 		return View(f, out, opts)
+	}
+	// An explicit -X/--customized-index path overrides the sibling-file
+	// lookup. The index kind is auto-detected from its 4-byte magic, so a
+	// caller may point at either a .csi or a .bai regardless of extension.
+	if opts.IndexPath != "" {
+		idxBytes, ierr := os.ReadFile(opts.IndexPath)
+		if ierr != nil {
+			return 0, fmt.Errorf("samtools view: read index %s: %w", opts.IndexPath, ierr)
+		}
+		f, err := os.Open(inPath)
+		if err != nil {
+			return 0, err
+		}
+		defer f.Close()
+		// A .bai is an uncompressed file beginning with the magic "BAI\1";
+		// a .csi is BGZF-compressed (its "CSI\1" magic is inside the
+		// stream), so its first two bytes are the gzip magic 0x1f 0x8b.
+		if len(idxBytes) >= 2 && idxBytes[0] == 0x1f && idxBytes[1] == 0x8b {
+			idx, cerr := bam.ReadCSI(bytes.NewReader(idxBytes))
+			if cerr != nil {
+				return 0, fmt.Errorf("samtools view: read %s: %w", opts.IndexPath, cerr)
+			}
+			return viewIndexedCSI(f, idx, out, opts)
+		}
+		idx, berr := bam.ReadBAI(bytes.NewReader(idxBytes))
+		if berr != nil {
+			return 0, fmt.Errorf("samtools view: read %s: %w", opts.IndexPath, berr)
+		}
+		return viewIndexed(f, idx, out, opts)
 	}
 	// Prefer a coordinate-sorted index (.csi) over .bai — it covers the
 	// larger coordinate range CSI supports.

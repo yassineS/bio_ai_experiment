@@ -190,6 +190,7 @@ func runView(args []string) int {
 		rgFile      string
 		regFile     string
 		multiRegion bool
+		customIdx   bool
 		tagSpecs    multiString
 		tagFiles    multiString
 		qnameFile   string
@@ -216,6 +217,7 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &rgFile, "R", "read-groups-file", "", "File of read-group IDs")
 	cliflag.StringVar(fs, &regFile, "L", "regions-file", "", "BED of regions")
 	cliflag.BoolVar(fs, &multiRegion, "M", "use-multi-region-iterator", false, "Accepted (indexed-walk optimisation upstream)")
+	cliflag.BoolVar(fs, &customIdx, "X", "customized-index", false, "Expect an explicit index-file argument after <in.bam>")
 	// Upstream samtools also spells the long form `--use-index`. Accept it
 	// as an alias for parity.
 	fs.BoolVar(&multiRegion, "use-index", false, "")
@@ -253,7 +255,22 @@ func runView(args []string) int {
 		return 2
 	}
 	input := positional[0]
-	regions := positional[1:]
+	var indexPath string
+	var regions []string
+	if customIdx {
+		// samtools view -X: the index file is supplied as an explicit
+		// positional argument immediately after <in.bam>, with any
+		// regions following it (sam_view.c:1441-1450).
+		if len(positional) < 2 {
+			fmt.Fprintln(os.Stderr, "samtools view: -X requires an index-file argument after the input")
+			fmt.Fprint(os.Stderr, viewUsage)
+			return 2
+		}
+		indexPath = positional[1]
+		regions = positional[2:]
+	} else {
+		regions = positional[1:]
+	}
 
 	// Resolve the output format from -b/-C and -O/--output-fmt. -O takes
 	// precedence over the boolean shorthands; an unknown -O value is an
@@ -303,6 +320,7 @@ func runView(args []string) int {
 		NoPG:               noPG,
 		Reference:          refFile,
 		CRAMQualityBinning: cramQBin,
+		IndexPath:          indexPath,
 	}
 
 	// Honour the output file extension when no format was given: a .bam
