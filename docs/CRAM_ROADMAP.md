@@ -274,3 +274,23 @@ limitation here.
   with a clear error rather than mis-decoded. Those three optional
   codecs slot in as dedicated future slices if a fixture needs them,
   the same way C-LZMA handles method 3.
+- **C8** — landed. The CRAM v3.0 writer (`writer.go`, `writeencode.go`,
+  `writeheader.go`, `writefeature.go`, `writetag.go`): a `RecordWriter`
+  inverting the reader — `sam.Record`s → data series → blocks → slices
+  → containers, with the file definition, SAM-header container, ITF-8
+  encoders and CRC32 assembly. Deliberately simple and correct over
+  compact: reference-free (preservation `RR=false`, a mapped read's
+  bases stored literally as `b` read-features per match run), an
+  all-EXTERNAL codec set (no CORE bitstream / Huffman), gzip-or-raw
+  blocks, one slice per container capped at 10000 records, every
+  record detached so the mate fields round-trip without the
+  downstream-mate optimisation. Oracle: `test_input_1_a.cram` → our
+  reader → our writer → our reader yields equal records; round-trip
+  tests cover mapped/unmapped reads, every CIGAR op, all aux types
+  including `B`-arrays, mate pairs (same- and cross-ref), multi-
+  reference slices, multi-container files and empty input. Unencodable
+  shapes (CIGAR/SEQ length mismatch, unknown reference, bad aux type)
+  are rejected with a clear error. `FuzzRecordWriter`; ≥89% coverage
+  on the new code. One judgement call: tag values use `BYTE_ARRAY_LEN`
+  (length-prefixed), not `BYTE_ARRAY_STOP` — a fixed-width binary tag
+  value can contain any byte, so a stop delimiter is ambiguous.

@@ -161,3 +161,50 @@ func TestEOFToUnexpected(t *testing.T) {
 		t.Errorf("error %q should mention truncation", got)
 	}
 }
+
+// TestAppendITF8RoundTrip checks the ITF-8 encoder against the decoder
+// at the size-class boundaries (1- through 5-byte encodings) and the
+// int32 extremes. itf8At is the same decoder the reader relies on.
+func TestAppendITF8RoundTrip(t *testing.T) {
+	values := []int32{
+		0, 1, 127, 128, 16383, 16384, 2097151, 2097152,
+		268435455, 268435456, 1 << 30, 2147483647, -1, -128, -2147483648,
+	}
+	for _, v := range values {
+		enc := appendITF8(nil, v)
+		got, n, err := itf8At(enc, 0)
+		if err != nil {
+			t.Errorf("itf8At(%d-encoding): %v", v, err)
+			continue
+		}
+		if got != v {
+			t.Errorf("ITF-8 round-trip: encoded %d, decoded %d", v, got)
+		}
+		if n != len(enc) {
+			t.Errorf("ITF-8 %d: decoder consumed %d bytes, encoding is %d", v, n, len(enc))
+		}
+	}
+}
+
+// TestAppendLTF8RoundTrip checks the LTF-8 encoder against the decoder
+// at the size-class boundaries and the int64 extremes.
+func TestAppendLTF8RoundTrip(t *testing.T) {
+	values := []int64{
+		0, 1, 127, 128, 1<<35 - 1, 1 << 35, 1<<56 - 1, 1 << 56,
+		9223372036854775807, -1, -9223372036854775808,
+	}
+	for _, v := range values {
+		enc := appendLTF8(nil, v)
+		got, n, err := ltf8At(enc, 0)
+		if err != nil {
+			t.Errorf("ltf8At(%d-encoding): %v", v, err)
+			continue
+		}
+		if got != v {
+			t.Errorf("LTF-8 round-trip: encoded %d, decoded %d", v, got)
+		}
+		if n != len(enc) {
+			t.Errorf("LTF-8 %d: decoder consumed %d bytes, encoding is %d", v, n, len(enc))
+		}
+	}
+}

@@ -31,6 +31,29 @@
 // into SEQ, QUAL and CIGAR, links downstream mate pairs, and can emit
 // the decoded stream as text SAM via WriteSAM.
 //
+// Writing (C8): RecordWriter encodes a sam.Header plus a stream of
+// sam.Records as a CRAM v3.0 file — the inverse of RecordReader.
+// Construct one with NewRecordWriter (or CreateCRAM for a file path),
+// feed records with Write, and finalise with Close; WriteCRAM is a
+// one-shot convenience. The writer is deliberately simple: it produces
+// reference-free CRAM (a mapped read's bases are stored literally as a
+// base-stretch read feature rather than diffed against a reference), it
+// encodes every data series with the EXTERNAL codec (integers as ITF-8,
+// byte runs raw, byte arrays via BYTE_ARRAY_LEN) and never uses the CORE
+// bitstream, and it gzip-compresses each data block when that shrinks
+// it. Every record is encoded "detached" so it carries its own mate
+// fields, which makes RNEXT/PNEXT/TLEN round-trip without the
+// downstream-mate optimisation. One slice is written per container,
+// capped at a fixed record count. The output is valid CRAM — it
+// re-reads through RecordReader and through samtools — but is not
+// optimised for compression ratio and is not byte-identical to
+// samtools' own encoder. A record shape the simple writer cannot encode
+// (an unknown reference, a CIGAR/SEQ length mismatch, an unsupported
+// CIGAR operation) is rejected by Write with a clear error. The CIGAR
+// match operators =, X and M all encode as a copy of the read bases, so
+// a = or X run re-reads as M — expected CRAM lossiness, the same kind
+// as an unmapped read losing its MAPQ and CIGAR.
+//
 // Reference resolution (C5) completes the reference-backed decode path.
 // A reference-free CRAM file is fully recoverable on its own; a
 // reference-backed file stores each mapped read's bases as a copy of a
