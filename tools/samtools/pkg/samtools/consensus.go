@@ -37,10 +37,10 @@ const (
 	// scoring identical to upstream `calculate_consensus_simple`.
 	ConsensusModeSimple ConsensusMode = iota
 	// ConsensusModeBayesian is upstream's Gap5-derived posterior caller.
-	// Accepted but not implemented in v1; ConsensusFile emits a stderr
-	// warning and falls back to ConsensusModeSimple. Upstream's default
-	// mode is MODE_RECALL (a flavour of bayesian), so default invocation
-	// of our binary takes this fallback path.
+	// The specific bayesian flavour (BAYES_116 / RECALL / PRECISE / MIXED)
+	// is selected by ConsensusOptions.BayesianSubMode. Upstream's default
+	// mode is MODE_RECALL, so the bare `samtools consensus` invocation
+	// runs ConsensusModeBayesian with the RECALL sub-mode.
 	ConsensusModeBayesian
 )
 
@@ -70,9 +70,13 @@ type ConsensusOptions struct {
 	// falling back to ConsensusModeSimple, since v1 only implements
 	// simple mode.
 	Mode ConsensusMode
-	// AllPositions emits zero-coverage positions as 'N' (CLI -a).
-	// When false, contigs with no covered positions emit nothing.
+	// AllPositions emits zero-coverage positions as 'N' across the full
+	// length of every contig that has at least one read (CLI -a). When
+	// false, only the covered span of each touched contig is emitted.
 	AllPositions bool
+	// AllContigs additionally emits records/rows for contigs with no
+	// reads at all (CLI -aa). Implies AllPositions.
+	AllContigs bool
 	// Regions is a list of "chr[:start-end]" specifiers (CLI -r).
 	Regions []string
 	// BEDPath is a BED file restricting emission. v1 reuses this for the
@@ -141,21 +145,79 @@ type ConsensusOptions struct {
 	Output string
 	// Threads is accepted but ignored in v1.
 	Threads int
+
+	// --- Bayesian-mode knobs (only meaningful when Mode is
+	// ConsensusModeBayesian). Zero values are filled in by
+	// applyConsensusDefaults to match upstream main_consensus. ---
+
+	// BayesianSubMode selects the bayesian parameter set. It is not set
+	// directly by external callers; use SetBayesianMode with a CLI mode
+	// string instead. Zero is treated as the RECALL set (the upstream
+	// default) by applyConsensusDefaults.
+	BayesianSubMode bayesianMode
+	// ConsCutoff is the upstream -C/--cutoff: bayesian calls with a
+	// confidence below this become 'N'. Default 10. Because 0 is a valid
+	// explicit value, ConsCutoffSet records whether the caller set it.
+	ConsCutoff int
+	// ConsCutoffSet records whether ConsCutoff was explicitly set; when
+	// false, applyConsensusDefaults fills the upstream default of 10.
+	ConsCutoffSet bool
+	// PHet is the heterozygous-site prior (--P-het, default 1e-3).
+	PHet float64
+	// PIndel is the indel prior (--P-indel, default 2e-4).
+	PIndel float64
+	// HetScale scales the heterozygous likelihood (--het-scale, default 1).
+	HetScale float64
+	// AdjQual enables the localised base-quality adjustment in the
+	// NM-halo computation (--adj-qual / --no-adj-qual; default on).
+	AdjQual bool
+	// AdjQualSet records whether AdjQual was explicitly set by the caller;
+	// when false, applyConsensusDefaults turns AdjQual on.
+	AdjQualSet bool
+	// UseMQual enables the MAPQ-based quality adjustment (--use-MQ /
+	// --no-use-MQ; default on).
+	UseMQual bool
+	// UseMQualSet records whether UseMQual was explicitly set.
+	UseMQualSet bool
+	// NMAdjust enables the NM-halo localised-MAPQ adjustment (--adj-MQ /
+	// --no-adj-MQ; default on).
+	NMAdjust bool
+	// NMAdjustSet records whether NMAdjust was explicitly set.
+	NMAdjustSet bool
+	// NMHalo is the window radius for the local NM count (--NM-halo,
+	// default 50).
+	NMHalo int
+	// SCCost is the soft-clip penalty added to localNM (--SC-cost,
+	// default 60).
+	SCCost int
+	// ScaleMQual scales the adjusted MAPQ (--scale-MQ, default 1.0).
+	ScaleMQual float64
+	// LowMQual / HighMQual clamp the adjusted MAPQ (--low-MQ default 1,
+	// --high-MQ default 60).
+	LowMQual  int
+	HighMQual int
+	// DefaultQual substitutes for missing per-base qualities
+	// (--default-qual, default 10).
+	DefaultQual int
+	// HomopolyFix enables the homopolymer quality fix (-p/--homopoly-fix);
+	// when non-zero it is also the poly_adj multiplier (--homopoly-score).
+	HomopolyFix float64
+	// HomopolyRedux is the poly-length quality reduction multiplier
+	// (--homopoly-redux, default 0.01).
+	HomopolyRedux float64
+	// HomopolyReduxSet records whether HomopolyRedux was explicitly set.
+	HomopolyReduxSet bool
 }
 
 // ConsensusFile is the file-path entry point for `samtools consensus`.
-// Opens the input file and delegates to Consensus. errOut, when
-// non-nil, receives the bayesian-fallback stderr warning.
+// Opens the input file and delegates to Consensus. errOut is retained for
+// API compatibility; both bayesian and simple modes are fully implemented,
+// so no fallback warning is emitted.
 func ConsensusFile(opts ConsensusOptions, out io.Writer, errOut io.Writer) error {
 	if opts.Input == "" {
 		return fmt.Errorf("samtools consensus: no input file")
 	}
-	if opts.Mode == ConsensusModeBayesian {
-		if errOut != nil {
-			fmt.Fprintln(errOut, "samtools consensus: --mode bayesian not yet implemented; falling back to simple (tracked in docs/PARITY_ROADMAP.md#samtools)")
-		}
-		opts.Mode = ConsensusModeSimple
-	}
+	_ = errOut
 	f, err := os.Open(opts.Input)
 	if err != nil {
 		return fmt.Errorf("samtools consensus: %w", err)
@@ -165,21 +227,11 @@ func ConsensusFile(opts ConsensusOptions, out io.Writer, errOut io.Writer) error
 }
 
 // Consensus is the streaming entry point: read records from `in` and
-// emit the consensus per the configured format to `out`.
-//
-// Note: Consensus does not emit the bayesian-fallback warning by itself
-// (it has no stderr handle). The CLI path goes through ConsensusFile,
-// which routes the warning to os.Stderr; library callers that need the
-// warning should normalise opts.Mode themselves before invoking
-// Consensus.
+// emit the consensus per the configured format to `out`. Both the simple
+// frequency caller and the bayesian Gap5 caller (the upstream default) are
+// implemented; opts.Mode selects between them.
 func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 	applyConsensusDefaults(&opts)
-	// Library-level safety: if a caller passes Mode=Bayesian directly
-	// to Consensus (not through ConsensusFile), still fall back to
-	// simple so we don't pretend to support a mode we don't implement.
-	if opts.Mode == ConsensusModeBayesian {
-		opts.Mode = ConsensusModeSimple
-	}
 	rd, err := sam.NewReader(in)
 	if err != nil {
 		return fmt.Errorf("samtools consensus: %w", err)
@@ -238,8 +290,8 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 			seen[r.Region.Chrom] = struct{}{}
 			chromsToWalk = append(chromsToWalk, r.Region.Chrom)
 		}
-	case opts.AllPositions:
-		// Walk every contig in the header so empty contigs emit N's.
+	case opts.AllContigs:
+		// -aa: walk every contig in the header so empty contigs emit N's.
 		for _, ref := range hdr.Refs {
 			chromsToWalk = append(chromsToWalk, ref.Name)
 		}
@@ -306,6 +358,79 @@ func applyConsensusDefaults(opts *ConsensusOptions) {
 	if opts.MinHetFraction <= 0 {
 		opts.MinHetFraction = 0.5
 	}
+	// Bayesian-mode defaults, mirroring upstream main_consensus's
+	// consensus_opts initialisers.
+	if opts.BayesianSubMode == 0 {
+		opts.BayesianSubMode = modeRecall
+	}
+	if !opts.ConsCutoffSet && opts.ConsCutoff == 0 {
+		opts.ConsCutoff = 10
+	}
+	if opts.PHet == 0 {
+		opts.PHet = defaultPHet
+	}
+	if opts.PIndel == 0 {
+		opts.PIndel = defaultPIndel
+	}
+	if opts.HetScale == 0 {
+		opts.HetScale = defaultHetScale
+	}
+	if !opts.AdjQualSet {
+		opts.AdjQual = true
+	}
+	if !opts.UseMQualSet {
+		opts.UseMQual = true
+	}
+	if !opts.NMAdjustSet {
+		opts.NMAdjust = true
+	}
+	if opts.NMHalo == 0 {
+		opts.NMHalo = 50
+	}
+	if opts.SCCost == 0 {
+		opts.SCCost = 60
+	}
+	if opts.ScaleMQual == 0 {
+		opts.ScaleMQual = 1.0
+	}
+	if opts.LowMQual == 0 {
+		opts.LowMQual = 1
+	}
+	if opts.HighMQual == 0 {
+		opts.HighMQual = 60
+	}
+	if opts.DefaultQual == 0 {
+		opts.DefaultQual = 10
+	}
+	if !opts.HomopolyReduxSet {
+		opts.HomopolyRedux = 0.01
+	}
+}
+
+// bayesOptionsFrom builds the internal bayesOptions from a fully-defaulted
+// ConsensusOptions.
+func bayesOptionsFrom(opts ConsensusOptions) bayesOptions {
+	return bayesOptions{
+		mode:        opts.BayesianSubMode,
+		useMQual:    opts.UseMQual,
+		adjQual:     opts.AdjQual,
+		nmAdjust:    opts.NMAdjust,
+		nmHalo:      opts.NMHalo,
+		scCost:      opts.SCCost,
+		scaleMQual:  opts.ScaleMQual,
+		lowMQual:    opts.LowMQual,
+		highMQual:   opts.HighMQual,
+		defaultQual: opts.DefaultQual,
+		minQual:     int(opts.MinBaseQ),
+		minDepth:    opts.MinDepth,
+		consCutoff:  opts.ConsCutoff,
+		ambig:       opts.AmbigCodes,
+		pHet:        opts.PHet,
+		pIndel:      opts.PIndel,
+		hetScale:    opts.HetScale,
+		homopolyFix: opts.HomopolyFix,
+		homopolyRed: opts.HomopolyRedux,
+	}
 }
 
 // consensusCall is a single per-position call.
@@ -325,8 +450,27 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 	recs []*sam.Record, posFilter *positionFilter, opts ConsensusOptions) error {
 
 	// For FASTA/FASTQ we accumulate one buffer per contig and emit at
-	// the end. For pileup we stream line-by-line.
+	// the end. For pileup we stream line-by-line. firstCovIdx/lastCovIdx
+	// bracket the covered span within seqBuf: every position is appended
+	// (uncovered ones as 'N') so internal gaps are filled, then leading
+	// and trailing N runs are trimmed unless -a is set.
 	var seqBuf, qualBuf []byte
+	firstCovIdx, lastCovIdx := -1, -1
+
+	// For bayesian mode, build the per-read NM-halo state once per
+	// contig (indexed by the record's position in recs) and the
+	// parameter-set matrices once.
+	var bayes bayesOptions
+	var bayesProbs bayesProbSet
+	var bayesReads []*bayesRead
+	if opts.Mode == ConsensusModeBayesian {
+		bayes = bayesOptionsFrom(opts)
+		bayesProbs = buildBayesProbSet(bayes)
+		bayesReads = make([]*bayesRead, len(recs))
+		for i, rec := range recs {
+			bayesReads[i] = nmInit(rec, bayes)
+		}
+	}
 
 	for _, w := range windows {
 		beg0 := w[0]
@@ -361,7 +505,13 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				continue
 			}
 			col := pos0 - beg0
-			call, totalDepth := callConsensus(events[col], opts)
+			var call consensusCall
+			var totalDepth int
+			if opts.Mode == ConsensusModeBayesian {
+				call, totalDepth = callConsensusBayesian(events[col], recs, bayesReads, bayes, bayesProbs)
+			} else {
+				call, totalDepth = callConsensus(events[col], opts)
+			}
 
 			switch opts.Format {
 			case ConsensusPileup:
@@ -377,13 +527,26 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				if err := writeConsensusPileupRow(bw, chrom, pos1, totalDepth, call, events[col], opts); err != nil {
 					return err
 				}
-			default:
-				// FASTA / FASTQ accumulate.
-				if call.base == 0 {
-					// No coverage AND not -a -> skip.
-					if !opts.AllPositions {
-						continue
+				// nth>0 insertion columns (bayesian mode only). Upstream
+				// emits one pileup row per inserted column when --show-ins
+				// is on (the default).
+				if opts.Mode == ConsensusModeBayesian && !opts.NoShowIns {
+					insCols := callConsensusBayesianInsertions(events[col], recs, bayesReads, bayes, bayesProbs)
+					for nth, ic := range insCols {
+						if ic.call.base == '*' && !opts.ShowDel {
+							continue
+						}
+						if err := writeConsensusInsertionPileupRow(bw, chrom, pos1, nth+1, ic, opts); err != nil {
+							return err
+						}
 					}
+				}
+			default:
+				// FASTA / FASTQ accumulate. Every position is appended
+				// (uncovered ones as 'N') so internal gaps fill; the
+				// covered span is bracketed by firstCovIdx/lastCovIdx
+				// and leading/trailing N is trimmed unless -a.
+				if call.base == 0 {
 					seqBuf = append(seqBuf, 'N')
 					qualBuf = append(qualBuf, '!')
 					continue
@@ -392,10 +555,30 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 					// Suppress deletion placeholder.
 					continue
 				}
+				if firstCovIdx < 0 {
+					firstCovIdx = len(seqBuf)
+				}
 				seqBuf = append(seqBuf, call.base)
 				qualBuf = append(qualBuf, phredByte(call.qual))
+				lastCovIdx = len(seqBuf)
 				if !opts.NoShowIns {
-					if insSeq, insQuals := callConsensusInsertion(events[col], opts); len(insSeq) > 0 {
+					if opts.Mode == ConsensusModeBayesian {
+						insCols := callConsensusBayesianInsertions(events[col], recs, bayesReads, bayes, bayesProbs)
+						for _, ic := range insCols {
+							if ic.call.base == 0 || ic.call.base == 'N' {
+								continue
+							}
+							if ic.call.base == '*' {
+								continue
+							}
+							if opts.MarkIns {
+								seqBuf = append(seqBuf, '+')
+								qualBuf = append(qualBuf, '+')
+							}
+							seqBuf = append(seqBuf, ic.call.base)
+							qualBuf = append(qualBuf, phredByte(ic.call.qual))
+						}
+					} else if insSeq, insQuals := callConsensusInsertion(events[col], opts); len(insSeq) > 0 {
 						if opts.MarkIns {
 							// Upstream prepends a single '+' marker; we
 							// keep that semantic and mirror it for qual.
@@ -405,18 +588,30 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 						seqBuf = append(seqBuf, insSeq...)
 						qualBuf = append(qualBuf, insQuals...)
 					}
+					lastCovIdx = len(seqBuf)
 				}
 			}
 		}
 	}
 
 	if opts.Format != ConsensusPileup {
-		if len(seqBuf) == 0 && !opts.AllPositions {
+		// Trim leading/trailing uncovered N runs unless -a is set:
+		// upstream emits only the covered span of each contig by
+		// default, internal gaps included, and extends to the full
+		// contig only with -a.
+		if !opts.AllPositions {
+			if firstCovIdx < 0 {
+				// No coverage at all and not -a: emit nothing.
+				return nil
+			}
+			seqBuf = seqBuf[firstCovIdx:lastCovIdx]
+			qualBuf = qualBuf[firstCovIdx:lastCovIdx]
+		}
+		if len(seqBuf) == 0 && !opts.AllContigs {
 			return nil
 		}
-		// AllPositions on an untouched contig: emit a record full of
-		// N's, matching upstream's `-aa` semantics.
-		if len(seqBuf) == 0 && opts.AllPositions {
+		// -aa on an untouched contig: emit a record full of N's.
+		if len(seqBuf) == 0 && opts.AllContigs {
 			seqBuf = make([]byte, refLen)
 			for i := range seqBuf {
 				seqBuf[i] = 'N'
@@ -577,6 +772,162 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 	return consensusCall{base: base, qual: qual, depth: totDepth}, totDepth
 }
 
+// callConsensusBayesian runs the Gap5-derived bayesian caller on one
+// column. It builds the per-base bayesPileupBase view from the pileup
+// events (recovering each read's NM-halo state by readIdx), invokes
+// calculateConsensusGap5m, and maps the result to a consensusCall.
+//
+// The returned base is 0 (and depth 0) when the column has no usable
+// coverage so the FASTA/FASTQ caller treats it as a skip, matching the
+// simple path.
+func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
+	bayesReads []*bayesRead, o bayesOptions, ps bayesProbSet) (consensusCall, int) {
+
+	bases := make([]bayesPileupBase, 0, len(evs))
+	td := 0
+	for _, e := range evs {
+		if e.dropped {
+			continue
+		}
+		var bp bayesPileupBase
+		bp.mapQ = e.mapq
+		if e.readIdx >= 0 && e.readIdx < len(bayesReads) {
+			bp.read = bayesReads[e.readIdx]
+		}
+		if e.readIdx >= 0 && e.readIdx < len(recs) {
+			bp.readPos0 = int(recs[e.readIdx].Pos) - 1
+		}
+		switch e.kind {
+		case pileupEventBase:
+			bp.base4 = byte(baseToSeqi(upper(e.base)))
+			bp.qual = e.qual
+			bp.seqOff = e.readBP - 1
+		case pileupEventDel:
+			bp.base4 = 16
+			bp.qual = e.qual
+			bp.seqOff = e.readBP - 1
+		case pileupEventRefSkip:
+			bp.refSkip = true
+			bp.seqOff = e.readBP - 1
+		}
+		bases = append(bases, bp)
+		td++
+	}
+
+	cons := calculateConsensusGap5m(bases, o.useMQual, td, o, ps)
+	cb, cq := bayesCallToBase(cons, o)
+
+	// Depth 0: signal "skip" to the FASTA/FASTQ accumulator.
+	if cons.depth == 0 && cons.call == 4 {
+		// A genuine all-N / empty column. Upstream emits 'N' qual 0
+		// in pileup; the FASTA path skips it unless -a is set, which
+		// is handled by the base==0 sentinel below.
+		if td == 0 {
+			return consensusCall{}, 0
+		}
+	}
+	return consensusCall{base: cb, qual: cq, depth: cons.depth}, td
+}
+
+// bayesInsertionColumn is one nth>0 insertion column produced for a
+// reference position: the bayesian call plus the per-read base/qual bytes
+// for the pileup seq/qual columns.
+type bayesInsertionColumn struct {
+	call  consensusCall
+	depth int    // raw read count in this column (all spanning reads)
+	seq   []byte // per-read base bytes (upper/lower-cased), '*' for pads
+	qual  []byte // per-read qual bytes (Phred+33)
+}
+
+// callConsensusBayesianInsertions builds the nth>0 insertion columns for a
+// reference column and runs the bayesian caller on each. Every read in the
+// base column participates: a read with an nth inserted base contributes
+// it, otherwise it contributes a '*' pad — matching upstream's pileup
+// engine which emits insertion columns with pad bases for non-inserting
+// reads.
+func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
+	bayesReads []*bayesRead, o bayesOptions, ps bayesProbSet) []bayesInsertionColumn {
+
+	// Stable order so the per-read seq/qual columns match upstream.
+	sortEvents(evs)
+
+	maxIns := 0
+	for _, e := range evs {
+		if e.dropped || e.kind != pileupEventBase {
+			continue
+		}
+		if len(e.insAfter) > maxIns {
+			maxIns = len(e.insAfter)
+		}
+	}
+	if maxIns == 0 {
+		return nil
+	}
+
+	cols := make([]bayesInsertionColumn, maxIns)
+	for nth := 1; nth <= maxIns; nth++ {
+		bases := make([]bayesPileupBase, 0, len(evs))
+		seq := make([]byte, 0, len(evs))
+		qual := make([]byte, 0, len(evs))
+		td := 0
+		for _, e := range evs {
+			if e.dropped || e.kind == pileupEventRefSkip {
+				continue
+			}
+			var bp bayesPileupBase
+			bp.mapQ = e.mapq
+			if e.readIdx >= 0 && e.readIdx < len(bayesReads) {
+				bp.read = bayesReads[e.readIdx]
+			}
+			var b byte = '*'
+			var q byte
+			if e.kind == pileupEventBase && nth <= len(e.insAfter) {
+				ib := upper(e.insAfter[nth-1])
+				bp.base4 = byte(baseToSeqi(ib))
+				// The nth inserted base sits at query offset
+				// (readBP-1)+nth in the read's SEQ.
+				bp.seqOff = e.readBP - 1 + nth
+				var rec *sam.Record
+				if e.readIdx >= 0 && e.readIdx < len(recs) {
+					rec = recs[e.readIdx]
+				}
+				if rec != nil && bp.seqOff >= 0 && bp.seqOff < len(rec.Qual) {
+					q = rec.Qual[bp.seqOff]
+				}
+				bp.qual = q
+				b = ib
+				if e.isReverse {
+					b = lower(b)
+				}
+			} else {
+				// Pad: '*' base. Upstream's pileup engine carries the
+				// read's current base quality and position into the
+				// insertion column for non-inserting reads.
+				bp.base4 = 16
+				bp.seqOff = e.readBP - 1
+				q = e.qual
+				bp.qual = q
+				if e.isReverse {
+					b = '#'
+				}
+			}
+			bases = append(bases, bp)
+			seq = append(seq, b)
+			qual = append(qual, q+33)
+			td++
+		}
+		cons := calculateConsensusGap5m(bases, o.useMQual, td, o, ps)
+		cb, cq := bayesCallToBase(cons, o)
+		cols[nth-1] = bayesInsertionColumn{
+			call:  consensusCall{base: cb, qual: cq, depth: cons.depth},
+			depth: td,
+			seq:   seq,
+			qual:  qual,
+		}
+	}
+	return cols
+}
+
 // callConsensusInsertion derives a consensus for an inserted-sequence
 // annotation attached to the current event slice. The simplest
 // faithful behaviour (matching upstream's "show_ins yes" / simple
@@ -724,6 +1075,44 @@ func writeConsensusPileupRow(bw *bufio.Writer, chrom string, pos1, depth int,
 	return nil
 }
 
+// writeConsensusInsertionPileupRow emits one nth>0 pileup row for an
+// inserted column: chrom\tpos\tnth\tdepth\tcall\tcq\tseq\tqual\n.
+func writeConsensusInsertionPileupRow(bw *bufio.Writer, chrom string, pos1, nth int,
+	ic bayesInsertionColumn, opts ConsensusOptions) error {
+
+	cb := ic.call.base
+	if cb == 0 {
+		cb = 'N'
+	}
+	if _, err := bw.WriteString(chrom); err != nil {
+		return err
+	}
+	bw.WriteByte('\t')
+	bw.WriteString(strconv.Itoa(pos1))
+	bw.WriteByte('\t')
+	bw.WriteString(strconv.Itoa(nth))
+	bw.WriteByte('\t')
+	bw.WriteString(strconv.Itoa(ic.depth))
+	bw.WriteByte('\t')
+	bw.WriteByte(cb)
+	bw.WriteByte('\t')
+	bw.WriteString(strconv.Itoa(ic.call.qual))
+	bw.WriteByte('\t')
+	if len(ic.seq) == 0 {
+		bw.WriteByte('*')
+	} else {
+		bw.Write(ic.seq)
+	}
+	bw.WriteByte('\t')
+	if len(ic.qual) == 0 {
+		bw.WriteByte('*')
+	} else {
+		bw.Write(ic.qual)
+	}
+	bw.WriteByte('\n')
+	return nil
+}
+
 // writeFastaFastqRecord emits one >/@ record with the accumulated seq
 // and (for FASTQ) quality buffers wrapped at opts.LineLen.
 func writeFastaFastqRecord(bw *bufio.Writer, chrom string, seq, qual []byte, opts ConsensusOptions) {
@@ -843,8 +1232,8 @@ func ParseConsensusFormat(s string) (ConsensusFormat, error) {
 
 // ParseConsensusMode maps a CLI -m/--mode value to a ConsensusMode.
 // Upstream accepts "simple", "bayesian", "bayesian_r", "bayesian_m",
-// "bayesian_p", "bayesian_116" — we collapse every bayesian variant
-// onto ConsensusModeBayesian since v1 only implements simple.
+// "bayesian_p", "bayesian_116". The bayesian sub-mode is reported by
+// ParseConsensusBayesianMode.
 func ParseConsensusMode(s string) (ConsensusMode, error) {
 	switch strings.ToLower(s) {
 	case "", "simple":
@@ -853,5 +1242,24 @@ func ParseConsensusMode(s string) (ConsensusMode, error) {
 		return ConsensusModeBayesian, nil
 	default:
 		return 0, fmt.Errorf("samtools consensus: unknown mode %q (want simple|bayesian)", s)
+	}
+}
+
+// SetBayesianMode selects the bayesian parameter set from a CLI -m/--mode
+// string. "bayesian" and "bayesian_r" select RECALL (the upstream
+// default); "bayesian_p" PRECISE, "bayesian_m" MIXED, "bayesian_116" the
+// samtools-1.16 parameter set. Any other value (including the simple-mode
+// strings) leaves the RECALL set, which is unused unless Mode is
+// ConsensusModeBayesian.
+func (o *ConsensusOptions) SetBayesianMode(s string) {
+	switch strings.ToLower(s) {
+	case "bayesian_p":
+		o.BayesianSubMode = modePrecise
+	case "bayesian_m":
+		o.BayesianSubMode = modeMixed
+	case "bayesian_116":
+		o.BayesianSubMode = modeBayes116
+	default:
+		o.BayesianSubMode = modeRecall
 	}
 }

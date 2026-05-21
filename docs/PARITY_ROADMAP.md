@@ -1361,8 +1361,9 @@ wave-1 tail (`merge`, `coverage`, `idxstats`, `cat`, `reheader`,
 heavy-hitter pair `markdup` + `stats`, the calmd/import pair
 (**`calmd`** + **`import`**), the niche pair landed in the
 phase/targetcut PR (**`phase`** + **`targetcut`**), and now
-**`consensus`** (simple-mode FASTA/FASTQ/pileup; bayesian falls back
-with a stderr warning).
+**`consensus`** (simple- and bayesian-mode FASTA/FASTQ/pileup; the
+Gap5 posterior caller and the NM-halo MAPQ adjustment are byte-faithful
+to upstream's default `MODE_RECALL`).
 
 Missing subcommands (in rough priority order):
 
@@ -1600,33 +1601,39 @@ regression-test fixture for either tool in
 `reference_code/samtools/test/` so byte-parity against upstream is
 not pursued.
 
-**`consensus` deferred features** (accepted as CLI flags, behaviour
-partial). Upstream `bam_consensus.c` ships five modes — `simple` and
-four bayesian flavours (`bayesian_r` aka "bayesian", `bayesian_m`,
-`bayesian_p`, `bayesian_116`). v1 only implements `simple`. Because
-upstream defaults to `MODE_RECALL` (a bayesian mode) at
-`bam_consensus.c:2983`, the v1 binary's default invocation lands on
-the bayesian branch, emits a single-line stderr warning, and falls
-back to `simple`. The deferred surface:
+**`consensus` bayesian mode** (implemented). Upstream `bam_consensus.c`
+ships five modes — `simple` and four bayesian flavours (`bayesian_r`
+aka "bayesian", `bayesian_m`, `bayesian_p`, `bayesian_116`). All five
+are now implemented. The Gap5-derived posterior caller
+(`calculate_consensus_gap5` / `_gap5m`), the localised-MAPQ NM-halo
+adjustment (`nm_init` / `nm_local` / `poly_len`), and the bayesian
+knobs (`-C/--cutoff`, `--P-het`, `--P-indel`, `--het-scale`,
+`--adj-qual`, `--use-MQ`, `--adj-MQ`, `--NM-halo`, `--SC-cost`,
+`--scale-MQ`, `--low-MQ`, `--high-MQ`, `--default-qual`,
+`-p/--homopoly-fix`, `--homopoly-score`, `--homopoly-redux`) are
+ported faithfully; the upstream `fast_exp` 0.1-resolution quantization
+and the degree-3 `fast_log2` are reproduced so phred conversions are
+byte-exact. The default invocation (`MODE_RECALL`, MQUAL + NM-adjust
+on) is byte-for-byte parity with upstream on the
+`reference_code/samtools/test/consensus/` corpus for the non-`-T`
+fixtures (18q/19q/18p/19p/20p/21p on consen1, 30/31/32/40/41/42 on
+consen1c). Insertion-column pileup rows (`nth>0`) are emitted for the
+bayesian path.
 
-- **Bayesian (Gap5-derived) mode.** All variants (`bayesian`,
-  `bayesian_r`, `bayesian_m`, `bayesian_p`, `bayesian_116`) and their
-  knobs (`-C/--cutoff`, `--P-het`, `--P-indel`, `--het-scale`,
-  `--adj-qual`, `--use-MQ`, `--adj-MQ`, `--NM-halo`, `--SC-cost`,
-  `--scale-MQ`, `--low-MQ`, `--high-MQ`, `-p/--homopoly-fix`,
-  `--homopoly-score`, `--homopoly-redux`, `-t/--qual-calibration`,
-  `-X/--config`) are accepted on the CLI but not yet implemented.
-- **Pileup-mode insertion rows.** Upstream's default `--show-ins yes`
-  emits extra rows with `nth>0` for each column of an inserted
-  sequence. v1 emits only `nth=0` rows (one per reference position);
-  insertion columns are folded into the FASTA/FASTQ stream when
-  `--show-ins yes` (the default) but not into the pileup stream.
+Genuinely deferred sub-knobs (precisely scoped):
+
+- **`-t/--qual-calibration` and `-X/--config`.** Accepted on the CLI
+  but apply only the FLAT identity calibration table. The per-machine
+  calibration tables (HiFi/HiSeq/ONT/Ultima) and the QUAL-file parser
+  (`load_qcal`, `bam_consensus.c:672-736`) are a separable ~300-line
+  table/parser block that does not affect the default invocation.
+- **`-T/--reference` uncovered-base fill.** Accepted but the reference
+  is not used to fill uncovered positions; the `*T.out` golden files
+  (30T/31T/.../42T) which substitute reference bases at zero-coverage
+  positions are therefore out of scope. The non-`-T` path — the
+  default — is fully byte-faithful.
 - **Mate-overlap dedup.** `--ignore-overlaps` is accepted but is a
   no-op; v1 counts each mate independently in the pileup walker.
-- **Reference-aware modes.** `-T/--reference`, `--ref-qual`, and
-  `--default-qual` are accepted but unused; the simple scoring path
-  doesn't need a reference, and the bayesian path that does is
-  deferred.
 - **Threading.** `-@/--threads`, `-Z/--block-size`, and
   `--input-fmt-option` are accepted but ignored; v1 is single-pass
   and single-threaded.
@@ -1667,7 +1674,12 @@ frequency-only counting (low-Q vs high-Q gives identical output when
 the `UseQual=true` flip (high-Q minority beats low-Q majority),
 multi-contig, `-a` zero-fill, `--min-depth`, line-len wrapping,
 insertion include/suppress + `--mark-ins`,
-and the default-bayesian fallback emitting a stderr warning.
+and the default-bayesian invocation emitting no fallback warning.
+Bayesian-mode parity is additionally verified byte-for-byte against
+the vendored upstream `reference_code/samtools/test/consensus/`
+golden files (`TestConsensus_BayesianUpstreamParity`): twelve
+fixtures spanning FASTQ, pileup, the `-C` cutoff, `-A` ambiguity,
+`-a`/`-aa`, and the default MQUAL + NM-adjust path.
 Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
