@@ -179,6 +179,55 @@ func ltf8At(p []byte, off int) (value int64, n int, err error) {
 	return int64(v), extra + 1, nil
 }
 
+// appendITF8 encodes v as an ITF-8 byte sequence (1-5 bytes) and appends
+// it to dst, returning the extended slice. It is the writer-side inverse
+// of readITF8 / itf8At: the number of leading 1-bits in the first byte
+// gives how many extra bytes follow, the first byte's low bits are the
+// most-significant value bits, and the fifth byte contributes only its
+// low 4 bits.
+func appendITF8(dst []byte, v int32) []byte {
+	u := uint32(v)
+	switch {
+	case u < 1<<7:
+		return append(dst, byte(u))
+	case u < 1<<14:
+		return append(dst, byte(u>>8)|0x80, byte(u))
+	case u < 1<<21:
+		return append(dst, byte(u>>16)|0xc0, byte(u>>8), byte(u))
+	case u < 1<<28:
+		return append(dst, byte(u>>24)|0xe0, byte(u>>16), byte(u>>8), byte(u))
+	default:
+		return append(dst, byte(u>>28)|0xf0, byte(u>>20), byte(u>>12), byte(u>>4), byte(u)&0x0f)
+	}
+}
+
+// appendLTF8 encodes v as an LTF-8 byte sequence (1-9 bytes) and appends
+// it to dst, returning the extended slice. It is the writer-side inverse
+// of readLTF8 / ltf8At.
+func appendLTF8(dst []byte, v int64) []byte {
+	u := uint64(v)
+	switch {
+	case u < 1<<7:
+		return append(dst, byte(u))
+	case u < 1<<14:
+		return append(dst, byte(u>>8)|0x80, byte(u))
+	case u < 1<<21:
+		return append(dst, byte(u>>16)|0xc0, byte(u>>8), byte(u))
+	case u < 1<<28:
+		return append(dst, byte(u>>24)|0xe0, byte(u>>16), byte(u>>8), byte(u))
+	case u < 1<<35:
+		return append(dst, byte(u>>32)|0xf0, byte(u>>24), byte(u>>16), byte(u>>8), byte(u))
+	case u < 1<<42:
+		return append(dst, byte(u>>40)|0xf8, byte(u>>32), byte(u>>24), byte(u>>16), byte(u>>8), byte(u))
+	case u < 1<<49:
+		return append(dst, byte(u>>48)|0xfc, byte(u>>40), byte(u>>32), byte(u>>24), byte(u>>16), byte(u>>8), byte(u))
+	case u < 1<<56:
+		return append(dst, 0xfe, byte(u>>48), byte(u>>40), byte(u>>32), byte(u>>24), byte(u>>16), byte(u>>8), byte(u))
+	default:
+		return append(dst, 0xff, byte(u>>56), byte(u>>48), byte(u>>40), byte(u>>32), byte(u>>24), byte(u>>16), byte(u>>8), byte(u))
+	}
+}
+
 // eofToUnexpected converts a plain io.EOF returned mid-structure into an
 // io.ErrUnexpectedEOF-flavoured error, so truncated input is reported as
 // a parse failure rather than a clean end-of-stream.
