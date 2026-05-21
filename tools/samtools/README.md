@@ -284,7 +284,7 @@ byte-faithful with upstream for the 6 fixtures we exercise in
 
 | Short | Long                  | Description                                 |
 |-------|-----------------------|---------------------------------------------|
-| `-r`  | `--ref-seq FASTA`     | Reference FASTA; GCD GC from the reference. |
+| `-r`  | `--ref-seq FASTA`     | Reference FASTA; GCD GC + MPC from the ref. |
 | `-c`  | `--coverage SPEC`     | Coverage bin spec (default `1,1000,1`).     |
 |       | `--GC-depth N`        | GC-depth bin width (default 20000).         |
 | `-l`  | `--required-flag N`   | Require ALL bits set.                       |
@@ -298,14 +298,16 @@ byte-faithful with upstream for the 6 fixtures we exercise in
 | `-x`  | `--sparse`            | Omit empty placeholder sections.            |
 | `-t`  | `--target-regions F`  | Restrict stats to a target-regions file.    |
 | `-g`  | `--cov-threshold N`   | Coverage threshold for the target SN line.  |
+|       | `--ref-stats`         | Emit the RFS reference-statistics section.  |
+|       | `--ref-stats-chunk N` | RFS reference-fetch chunk width (MB).       |
 | `-@`  | `--threads N`         | Accepted; single-threaded.                  |
 | `-o`  | `--output PATH`       | Output path (default stdout).               |
 
 Sections emitted: the **CHK** checksum block, **SN**, **FFQ/LFQ**,
-**GCF/GCL**, **GCC/GCT**, **RL/FRL/LRL**, **MAPQ**, **IS**, **IC/ID**,
-**COV** and **GCD**. Sections deferred (documented in
-`PARITY_VALIDATION.md`): MPC mismatches-per-cycle, RFS reference
-statistics and the FBC/FTC/LBC/LTC barcode tables.
+**MPC** (with `--ref-seq`), **GCF/GCL**, **GCC/GCT**, **RL/FRL/LRL**,
+**MAPQ**, **IS**, **IC/ID**, **COV**, **GCD** and **RFS** (with
+`--ref-stats`). Sections deferred (documented in
+`PARITY_VALIDATION.md`): the FBC/FTC/LBC/LTC barcode tables.
 
 ## Deviations from upstream samtools
 

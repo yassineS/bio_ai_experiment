@@ -1453,25 +1453,43 @@ threshold set by `-g/--cov-threshold`, default 0). The SN and COV
 sections are byte-faithful to `11.stats.expected` /
 `11.stats.g4.expected`.
 
+**`stats` reference-statistics sections.** The **MPC**
+mismatches-per-cycle section (emitted with `--ref-seq`) and the **RFS**
+reference-statistics section (emitted with `--ref-stats`, plus its
+`--ref-stats-chunk` companion) are implemented and byte-faithful to the
+upstream `stat/` golden files. MPC ports `count_mismatches_per_cycle`
+faithfully — including the cycle-index handling for soft/hard clips and
+insertions, the reverse-strand mirroring, the N-base bucketing in
+quality slot 0, and the documented `uint8` `qual+1` wrap that lands
+mismatches of `*`-quality reads in the N column. RFS ports
+`collect_refstats`: without `-t` it reports one row per `@SQ` header
+entry, with `-t` it reports the merged target intervals as
+`name:start-end` rows, and without `--ref-seq` the GC/N columns report
+the `-1` lack-of-data sentinel. Validated against `test.pl` stats cases
+1-8 (`-r test.fa`, MPC) and 16/17/19 (`--ref-stats`, RFS).
+
 **`stats` deferred sections** (also documented in
 `PARITY_VALIDATION.md`):
 
-- MPC mismatches-per-cycle and RFS reference statistics (both require
-  reference bases), and the FBC/FTC/LBC/LTC barcode-tag tables. (There
-  is no OXC section in this samtools version — earlier roadmap text
-  that listed "OXC" was mistaken.)
+- The FBC/FTC/LBC/LTC barcode-tag tables. (There is no OXC section in
+  this samtools version — earlier roadmap text that listed "OXC" was
+  mistaken.)
 - Mate-tracking memory cap: upstream's overlap-removal pass
   (`cleanup_overlaps`) also bounds its mate hash. Our `mates` map
   currently grows unbounded — an internal-implementation limitation
   (distinct from `--remove-overlaps`), fine for the typical workload
   but worth fixing before running `stats` on multi-billion-record BAMs.
+- Command-line positional region arguments are not yet accepted, so the
+  RFS-with-command-line-region path (upstream stats test 18) is not
+  reproducible; RFS-with-`-t` covers the equivalent functionality.
 
 The output emits the byte-faithful **CHK** checksum block, **SN**
 (Summary Numbers), the per-cycle and base-content sections
-(**FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID**), the **RL / MAPQ / IS** rollups,
-the **COV** coverage histogram and the **GCD** GC-depth distribution;
-the remaining sections are quietly omitted (or, under `--sparse`, all
-histogram blocks are suppressed entirely).
+(**FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID**), the **MPC** mismatches-per-cycle
+matrix, the **RL / MAPQ / IS** rollups, the **COV** coverage histogram,
+the **GCD** GC-depth distribution and the **RFS** reference-statistics
+section; the remaining sections are quietly omitted (or, under
+`--sparse`, all histogram blocks are suppressed entirely).
 
 **Validation:** upstream fixtures from `reference_code/samtools/test/markdup/`
 and `.../test/stat/` are vendored under

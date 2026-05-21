@@ -4,18 +4,22 @@
 // sections (RL/FRL/LRL), the MAPQ and IS histograms, the per-cycle quality
 // histograms (FFQ/LFQ), the GC-content sections (GCF/GCL), the ACGT-content
 // sections (GCC/GCT), the indel sections (IC/ID), the leading CHK checksum
-// block, the COV coverage-distribution histogram and the GCD GC-depth
-// distribution are all byte-faithful to upstream. PARITY_VALIDATION.md tracks
-// which sections are byte-faithful vs. deferred.
+// block, the COV coverage-distribution histogram, the GCD GC-depth
+// distribution, the MPC mismatches-per-cycle section (emitted with --ref-seq)
+// and the RFS reference-statistics section (emitted with --ref-stats) are all
+// byte-faithful to upstream. PARITY_VALIDATION.md tracks which sections are
+// byte-faithful vs. deferred.
 //
 // BWA-style quality trimming (-q/--trim-quality) feeds the "bases trimmed"
 // SN counter and --target-regions restricts every counter to a target file.
 //
 // Skipped intentionally for v1 (documented):
-//   - MPC mismatches-per-cycle (requires reference bases).
-//   - RFS reference statistics and the FBC/FTC/LBC/LTC barcode sections.
+//   - The FBC/FTC/LBC/LTC barcode sections.
 //   - --remove-overlaps (single-record stats are unaffected by overlap
 //     removal for the counters we emit).
+//   - Command-line positional region arguments (so the RFS-with-region
+//     path of upstream stats test 18 is not reproducible; --ref-stats
+//     with --target-regions covers the equivalent functionality).
 package samtools
 
 import (
@@ -215,6 +219,13 @@ type StatsOptions struct {
 	// CovThreshold is the coverage threshold (-g/--cov-threshold) used by the
 	// "percentage of target genome with coverage > N" SN line.
 	CovThreshold int
+	// RefStats enables the RFS reference-statistics section (--ref-stats).
+	RefStats bool
+	// RefStatsChunk is the reference-fetch chunk width in bytes
+	// (--ref-stats-chunk, in megabytes on the CLI). Zero selects the upstream
+	// default of 1 MB. It only affects how the reference FASTA is read for
+	// RFS, not the emitted output.
+	RefStatsChunk int
 	// Threads is accepted; v1 is single-threaded.
 	Threads int
 }
@@ -369,6 +380,45 @@ type StatsCounters struct {
 	gcdBinSize int
 	gcdRef     *fasta.RandomAccess
 	gcdRefLens map[string]int64
+
+	// MPC mismatches-per-cycle distribution. Accumulated only when --ref-seq
+	// is set: per mapped read each base is walked against the reference and
+	// bucketed by cycle and quality. mpc holds one cycleQuals per cycle; an
+	// N read base lands in quality slot 0, a true mismatch in slot qual+1
+	// (matching upstream count_mismatches_per_cycle, stats.c:476). mpc is nil
+	// unless --ref-seq is in effect, gating the MPC output section; with
+	// --ref-seq it is a non-nil (possibly empty) slice. mpcRefBuf is a scratch
+	// buffer holding the current record's reference span as refBaseCode codes.
+	mpc       []cycleQuals
+	mpcRefBuf []byte
+
+	// RFS reference-statistics section. rfs is non-nil only when --ref-stats
+	// is set, gating the RFS output. It is computed after the input stream is
+	// fully consumed (collectRefStats), mirroring upstream collect_refstats.
+	rfs *refStats
+}
+
+// refStats holds the RFS reference-statistics summary plus one per-sequence
+// row, mirroring upstream stats.c's refstats struct (stats.c:168).
+type refStats struct {
+	totalCount  int     // total @SQ count in the BAM header
+	count       int     // sequences/regions actually reported
+	combinedLen int64   // sum of reported lengths
+	minLen      int64   // shortest reported length (0 until first set)
+	maxLen      int64   // longest reported length
+	avgLen      float64 // mean reported length, -1 when count == 0
+	avgGC       float64 // mean GC fraction, -1 when no reference FASTA
+	rows        []refStatRow
+}
+
+// refStatRow is one per-sequence RFS row: the sequence (or region) name, its
+// length, GC fraction and undetermined-base (N) count. gc/n are -1 when no
+// reference FASTA was supplied.
+type refStatRow struct {
+	name string
+	len  int64
+	gc   float64
+	n    int64
 }
 
 // gcDepth mirrors upstream stats.c's gc_depth_t: one GC-depth segment holding
@@ -469,6 +519,9 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 		for _, e := range ref.Index().Entries() {
 			c.gcdRefLens[e.Name] = e.Length
 		}
+		// Upstream allocates mpc_buf iff a reference FASTA is given
+		// (stats.c:2386); a non-nil slice gates the MPC output section.
+		c.mpc = make([]cycleQuals, 0)
 	}
 	// --target-regions: parse the target file and prepare per-reference scan
 	// cursors. Every counter is then restricted to reads overlapping a
@@ -504,6 +557,11 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	// Flush whatever coverage depth remains in the window for the last
 	// contig before the report is written.
 	c.flushCoverageWindow(math.MaxInt32)
+	// --ref-stats: build the RFS reference-statistics section after the whole
+	// stream is consumed, mirroring upstream collect_refstats.
+	if opts.RefStats {
+		c.collectRefStats(hdr, opts)
+	}
 	return c.Write(out, opts)
 }
 
@@ -577,6 +635,10 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 			// read carries a GC count of zero because upstream's gc_count
 			// comes from collect_orig_read_stats, which is IS_ORIGINAL-only.
 			c.accumulateGCD(rec, 0)
+			// MPC mismatches-per-cycle is accumulated at the same call site
+			// upstream (stats.c:1400) and so also folds in supplementary
+			// alignments. It is a no-op unless --ref-seq is in effect.
+			c.accumulateMPC(rec, unclippedLength(rec))
 		}
 		return nil
 	}
@@ -677,10 +739,13 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 	// Indel distribution and per-cycle indel counts (mapped reads only).
 	c.countIndels(rec)
 
-	// COV coverage-distribution depth and GCD GC-depth (mapped reads only).
+	// COV coverage-distribution depth, GCD GC-depth and MPC
+	// mismatches-per-cycle (mapped reads only). MPC is a no-op unless
+	// --ref-seq is in effect.
 	if rec.IsMapped() {
 		c.accumulateCoverage(rec)
 		c.accumulateGCD(rec, gcCount)
+		c.accumulateMPC(rec, unclippedLength(rec))
 	}
 
 	// Mismatches via NM aux tag.
@@ -1297,6 +1362,327 @@ func (c *StatsCounters) growGCD() {
 	}
 }
 
+// seqNibble maps an ASCII SEQ character to the BAM 4-bit sequence encoding
+// (the "=ACMGRSVTWYHKDBN" table htslib's bam_seqi yields). Unknown bytes map
+// to 15 (N), matching htslib's seq_nt16_table. The plain bases A/C/G/T encode
+// to 1/2/4/8, which deliberately coincides with refBaseCode so an A==A
+// comparison succeeds even though the two tables come from different sources.
+var seqNibble = func() [256]byte {
+	var t [256]byte
+	for i := range t {
+		t[i] = 15
+	}
+	const codes = "=ACMGRSVTWYHKDBN"
+	for i := 0; i < len(codes); i++ {
+		ch := codes[i]
+		t[ch] = byte(i)
+		t[ch|0x20] = byte(i) // lowercase
+	}
+	return t
+}()
+
+// refBaseCode maps an ASCII reference-FASTA base to the 2-bit-ish code
+// upstream's read_ref_seq (stats.c:562) produces: A/a=1, C/c=2, G/g=4, T/t=8,
+// and everything else (N and ambiguity codes) = 0 ("undetermined").
+func refBaseCode(b byte) byte {
+	switch b {
+	case 'A', 'a':
+		return 1
+	case 'C', 'c':
+		return 2
+	case 'G', 'g':
+		return 4
+	case 'T', 't':
+		return 8
+	default:
+		return 0
+	}
+}
+
+// countMismatchesPerCycle folds one mapped record into the MPC
+// mismatches-per-cycle distribution. It is a faithful port of upstream
+// count_mismatches_per_cycle (stats.c:476): the record's CIGAR is walked
+// against the reference and, for each aligned base, an N read base is bucketed
+// in quality slot 0 while a true mismatch (both bases determined and unequal)
+// is bucketed in quality slot (qual+1). The cycle index advances through
+// soft-/hard-clips and insertions exactly as upstream does, and for reverse
+// reads it is mirrored via read_len-icycle-1, where read_len is the unclipped
+// read length. A "*" quality string yields per-base quality 0xFF, so qual+1
+// wraps (uint8) to 0 — upstream's documented quirk that lands such mismatches
+// in the N column. mpc must already be non-nil (gated on --ref-seq).
+func (c *StatsCounters) countMismatchesPerCycle(rec *sam.Record, readLen int) {
+	isFwd := rec.Flag&sam.FlagReverse == 0
+	iread, icycle := 0, 0
+	// C uses a 0-based core.pos; rec.Pos here is 1-based.
+	iref := int(rec.Pos) - 1
+	seq := rec.Seq
+	quals := rec.Qual
+	for _, op := range rec.Cigar {
+		ch := op.Char()
+		ncig := int(op.Length())
+		switch ch {
+		case 'I':
+			iread += ncig
+			icycle += ncig
+			continue
+		case 'D':
+			iref += ncig
+			continue
+		case 'S':
+			icycle += ncig
+			iread += ncig
+			continue
+		case 'H':
+			icycle += ncig
+			continue
+		case 'N', 'P':
+			// Reference skips and padding contribute nothing.
+			continue
+		case 'M', '=', 'X':
+		default:
+			continue
+		}
+		for im := 0; im < ncig; im++ {
+			if iread >= len(seq) {
+				break
+			}
+			cread := seqNibble[seq[iread]]
+			var cref byte
+			refIdx := iref - (int(rec.Pos) - 1)
+			if refIdx >= 0 && refIdx < len(c.mpcRefBuf) {
+				cref = c.mpcRefBuf[refIdx]
+			}
+			idx := icycle
+			if !isFwd {
+				idx = readLen - icycle - 1
+			}
+			if idx >= 0 && idx < statsNbasesMax {
+				if cread == 15 {
+					c.mpc = growQuals(c.mpc, idx+1)
+					c.mpc[idx][0]++
+				} else if cref != 0 && cread != 0 && cref != cread {
+					var qb byte = 0xff
+					if iread < len(quals) {
+						qb = quals[iread]
+					}
+					qual := byte(qb + 1)
+					c.mpc = growQuals(c.mpc, idx+1)
+					c.mpc[idx][qual]++
+				}
+			}
+			iref++
+			iread++
+			icycle++
+		}
+	}
+}
+
+// statsNbasesMax bounds the MPC cycle index defensively; upstream errors out
+// past stats->nbases. No real read reaches it.
+const statsNbasesMax = 1 << 20
+
+// accumulateMPC fetches the reference span covering one mapped record and
+// folds the record into the MPC distribution. It is the --ref-seq-gated
+// counterpart of accumulateGCD's count_mismatches_per_cycle call site
+// (stats.c:1400). readLen is the unclipped read length upstream passes as the
+// count_mismatches_per_cycle read_len argument.
+func (c *StatsCounters) accumulateMPC(rec *sam.Record, readLen int) {
+	if c.mpc == nil || c.gcdRef == nil {
+		return
+	}
+	contigLen, ok := c.gcdRefLens[rec.RName]
+	if !ok {
+		return
+	}
+	start := int64(rec.Pos) - 1
+	end := start + int64(rec.Cigar.ReferenceLength())
+	if end > contigLen {
+		end = contigLen
+	}
+	if start < 0 || start >= end {
+		c.mpcRefBuf = c.mpcRefBuf[:0]
+		return
+	}
+	bases, err := c.gcdRef.Fetch(rec.RName, start, end)
+	if err != nil {
+		c.mpcRefBuf = c.mpcRefBuf[:0]
+		return
+	}
+	if cap(c.mpcRefBuf) < len(bases) {
+		c.mpcRefBuf = make([]byte, len(bases))
+	} else {
+		c.mpcRefBuf = c.mpcRefBuf[:len(bases)]
+	}
+	for i := 0; i < len(bases); i++ {
+		c.mpcRefBuf[i] = refBaseCode(bases[i])
+	}
+	c.countMismatchesPerCycle(rec, readLen)
+}
+
+// refStatsChunkBytes returns the reference-fetch chunk width in bytes. The
+// --ref-stats-chunk CLI value is given in megabytes; values <= 0 collapse to
+// 1 MB exactly as upstream stats.c does (option case 3, stats.c:2762). The
+// chunk width only affects how the FASTA is read, not the emitted RFS output.
+func refStatsChunkBytes(opts StatsOptions) int64 {
+	mb := opts.RefStatsChunk
+	if mb <= 0 {
+		mb = 1
+	}
+	return int64(mb) * 1024 * 1024
+}
+
+// refSpanStats fetches the closed 1-based reference interval [beg, end] on
+// contig name and returns its GC fraction and undetermined-base (N) count. It
+// mirrors upstream collect_refstats' per-region accumulation (stats.c:2609):
+// only A/C/G/T are counted toward the GC denominator, N/n toward the
+// undetermined total, and any other byte (ambiguity codes) toward neither.
+// The interval is read in refStatsChunkBytes-wide chunks, which leaves the
+// result identical to a single fetch.
+func (c *StatsCounters) refSpanStats(name string, beg, end int64, chunk int64) (gcFrac float64, nCount int64) {
+	start := beg - 1 // 0-based
+	var gc, at int64
+	for rem := end - start; rem > 0; {
+		span := rem
+		if span > chunk {
+			span = chunk
+		}
+		bases, err := c.gcdRef.Fetch(name, start, start+span)
+		if err != nil || len(bases) == 0 {
+			break
+		}
+		for _, b := range bases {
+			switch b {
+			case 'G', 'g', 'C', 'c':
+				gc++
+			case 'A', 'a', 'T', 't':
+				at++
+			case 'N', 'n':
+				nCount++
+			}
+		}
+		got := int64(len(bases))
+		start += got
+		rem -= got
+		if got < span {
+			break
+		}
+	}
+	if total := gc + at; total > 0 {
+		gcFrac = float64(gc) / float64(total)
+	}
+	return gcFrac, nCount
+}
+
+// collectRefStats builds the RFS reference-statistics section after the input
+// stream has been fully consumed. It is a faithful port of upstream
+// collect_refstats (stats.c:2498).
+//
+// Without --target-regions every @SQ entry of the BAM header becomes one RFS
+// row (the read content of the BAM is irrelevant). With --target-regions the
+// sorted, merged target intervals become the rows: a row spanning a whole
+// reference is named by the reference, a sub-range by "name:start-end". When
+// no reference FASTA was supplied the GC fraction and N count are reported as
+// -1, matching upstream's lack-of-data sentinel.
+func (c *StatsCounters) collectRefStats(hdr *sam.Header, opts StatsOptions) {
+	rs := &refStats{}
+	if hdr != nil {
+		rs.totalCount = len(hdr.Refs)
+	}
+	chunk := refStatsChunkBytes(opts)
+	var gcSum float64
+	gcKnown := c.gcdRef != nil
+
+	addRow := func(name string, length int64, gc float64, n int64) {
+		rs.rows = append(rs.rows, refStatRow{name: name, len: length, gc: gc, n: n})
+		rs.count++
+		rs.combinedLen += length
+		if rs.minLen == 0 || length < rs.minLen {
+			rs.minLen = length
+		}
+		if length > rs.maxLen {
+			rs.maxLen = length
+		}
+		if gcKnown {
+			gcSum += gc
+		}
+	}
+
+	if c.regions == nil {
+		// Whole-file: one row per header reference, in header order.
+		if hdr != nil {
+			for _, ref := range hdr.Refs {
+				length := int64(ref.Length)
+				gc, n := float64(-1), int64(-1)
+				if gcKnown {
+					if hl, ok := c.gcdRefLens[ref.Name]; ok {
+						hi := length
+						if hl < hi {
+							hi = hl
+						}
+						gc, n = c.refSpanStats(ref.Name, 1, hi, chunk)
+					} else {
+						gc, n = 0, 0
+					}
+				}
+				addRow(ref.Name, length, gc, n)
+			}
+		}
+	} else {
+		// Target-regions: rows from the merged intervals, in header order.
+		hdrLen := make(map[string]int32)
+		if hdr != nil {
+			for _, ref := range hdr.Refs {
+				hdrLen[ref.Name] = ref.Length
+			}
+		}
+		var order []string
+		if hdr != nil {
+			for _, ref := range hdr.Refs {
+				order = append(order, ref.Name)
+			}
+		}
+		for _, name := range order {
+			ivs, ok := c.regions.byRef[name]
+			if !ok {
+				continue
+			}
+			hl := int64(hdrLen[name])
+			for _, iv := range ivs {
+				beg, end := int64(iv.Beg), int64(iv.End)
+				if end < beg {
+					continue
+				}
+				length := end - beg + 1
+				if hl > 0 && length > hl {
+					length = hl
+				}
+				gc, n := float64(-1), int64(-1)
+				if gcKnown {
+					if _, present := c.gcdRefLens[name]; present {
+						gc, n = c.refSpanStats(name, beg, end, chunk)
+					} else {
+						gc, n = 0, 0
+					}
+				}
+				addRow(fmt.Sprintf("%s:%d-%d", name, beg, end), length, gc, n)
+			}
+		}
+	}
+
+	if rs.count > 0 {
+		rs.avgLen = float64(rs.combinedLen) / float64(rs.count)
+		if gcKnown {
+			rs.avgGC = gcSum / float64(rs.count)
+		} else {
+			rs.avgGC = -1
+		}
+	} else {
+		rs.avgLen = -1
+		rs.avgGC = -1
+	}
+	c.rfs = rs
+}
+
 // faiGCContent returns the GC fraction of the gcdBinSize-wide reference window
 // starting at the 0-based position pos on contig name. It mirrors upstream's
 // fai_gc_content (stats.c:610): G/C bases are counted over the known
@@ -1421,6 +1807,7 @@ func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 	// byte-faithful to upstream; section order matches stats.c.
 	if !opts.Sparse {
 		c.writeFFQLFQ(bw)
+		c.writeMPC(bw)
 		c.writeGCFGCL(bw)
 		c.writeGCC(bw)
 		c.writeGCT(bw)
@@ -1431,8 +1818,56 @@ func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 		c.writeIC(bw)
 		c.writeCOV(bw, opts)
 		c.writeGCD(bw)
+		c.writeRFS(bw)
 	}
 	return bw.Flush()
+}
+
+// writeMPC emits the MPC mismatches-per-cycle section. It is emitted only when
+// --ref-seq is in effect (mpc non-nil), matching upstream's mpc_buf gate
+// (stats.c:1639). One row is printed per cycle 1..maxLen — the same row count
+// as FFQ/LFQ — and each row lists counts for qualities 0..maxQual; the first
+// data column is the N count, the rest are mismatches by quality.
+func (c *StatsCounters) writeMPC(bw *bufio.Writer) {
+	if c.mpc == nil {
+		return
+	}
+	maxQual := c.effectiveMaxQual()
+	fmt.Fprintln(bw, "# Mismatches per cycle and quality. Use `grep ^MPC | cut -f 2-` to extract this part.")
+	fmt.Fprintln(bw, "# Columns correspond to qualities, rows to cycles. First column is the cycle number, second")
+	fmt.Fprintln(bw, "# is the number of N's and the rest is the number of mismatches")
+	for ibase := 0; ibase < c.effectiveMaxLen(); ibase++ {
+		fmt.Fprintf(bw, "MPC\t%d", ibase+1)
+		for iqual := 0; iqual <= maxQual; iqual++ {
+			var v int64
+			if ibase < len(c.mpc) {
+				v = c.mpc[ibase][iqual]
+			}
+			fmt.Fprintf(bw, "\t%d", v)
+		}
+		fmt.Fprintln(bw)
+	}
+}
+
+// writeRFS emits the RFS reference-statistics section. It is emitted only when
+// --ref-stats is in effect (rfs non-nil), matching upstream's rstat gate
+// (stats.c:1894). The summary row reports total/reported sequence counts,
+// average GC, min/max/average length and total length; each following row
+// reports one sequence's (or region's) name, length, GC fraction and
+// undetermined-base count.
+func (c *StatsCounters) writeRFS(bw *bufio.Writer) {
+	if c.rfs == nil {
+		return
+	}
+	rs := c.rfs
+	fmt.Fprintln(bw, "# Reference statistics. Use `grep ^RFS | cut -f 2-` to extract this part.")
+	fmt.Fprintln(bw, "# Total count, Output count, Average GC, Min length, Max length, Average length, Total length in first row.")
+	fmt.Fprintln(bw, "# Sequence name, Length, GC content, Unknown count in following rows.")
+	fmt.Fprintf(bw, "RFS\t%d\t%d\t%.2f\t%d\t%d\t%.2f\t%d\n",
+		rs.totalCount, rs.count, rs.avgGC, rs.minLen, rs.maxLen, rs.avgLen, rs.combinedLen)
+	for _, row := range rs.rows {
+		fmt.Fprintf(bw, "RFS\t%s\t%d\t%.2f\t%d\n", row.name, row.len, row.gc, row.n)
+	}
 }
 
 // gcdPercentile interpolates the depth at the p-th percentile across the
@@ -1677,6 +2112,13 @@ func (c *StatsCounters) effectiveMaxQual() int {
 		mq++
 	}
 	return mq
+}
+
+// effectiveMaxLen returns the cycle-row count for the MPC/GCC/GCT sections.
+// Upstream bumps max_len by one at stats.c:1615 before emitting those sections
+// so a trailing all-zero cycle row is shown.
+func (c *StatsCounters) effectiveMaxLen() int {
+	return c.maxLen + 1
 }
 
 // writeFFQLFQ emits the per-cycle quality histograms for first and last
