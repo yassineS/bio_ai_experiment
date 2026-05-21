@@ -40,3 +40,32 @@ func UnionChunks(idx *BAIIndex, regions []region.ResolvedRegion) []BAIChunk {
 	merged = append(merged, cur)
 	return merged
 }
+
+// UnionChunksCSI is the CSI counterpart of UnionChunks: it combines the
+// region-chunks of a BAM `.csi` index across every ResolvedRegion into a
+// single sorted, merged slice. The result has the same BAIChunk shape so
+// the samtools view seek-and-scan path is index-kind agnostic.
+func UnionChunksCSI(idx *CSIIndex, regions []region.ResolvedRegion) []BAIChunk {
+	var all []BAIChunk
+	for _, r := range regions {
+		all = append(all, idx.RegionChunks(r.RefID, r.Beg0, r.End0)...)
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	sort.Slice(all, func(a, b int) bool { return all[a].Beg < all[b].Beg })
+	merged := all[:0]
+	cur := all[0]
+	for i := 1; i < len(all); i++ {
+		if all[i].Beg <= cur.End {
+			if all[i].End > cur.End {
+				cur.End = all[i].End
+			}
+		} else {
+			merged = append(merged, cur)
+			cur = all[i]
+		}
+	}
+	merged = append(merged, cur)
+	return merged
+}

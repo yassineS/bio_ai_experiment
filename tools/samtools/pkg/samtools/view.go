@@ -2,6 +2,7 @@ package samtools
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -208,11 +209,13 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 }
 
 // ViewFile is the indexed entry point for samtools view: it opens the BAM
-// at inPath, looks for a sibling <inPath>.bai, and (when found and the
-// caller has supplied regions) uses the BAI chunks to seek to relevant
-// portions of the file. When no .bai is found ViewFile falls back to the
-// streaming View() linear-scan path; a warning is written to warnW (which
-// may be nil to silence it).
+// at inPath, looks for a sibling index, and (when found and the caller has
+// supplied regions) uses the index chunks to seek to relevant portions of
+// the file. A coordinate-sorted index (<inPath>.csi) is preferred when
+// present — it addresses references beyond the BAI 2^29 bp ceiling — and a
+// <inPath>.bai is used otherwise. When no index is found ViewFile falls
+// back to the streaming View() linear-scan path; a warning is written to
+// warnW (which may be nil to silence it).
 //
 // If inPath is empty or "-" ViewFile delegates to View on os.Stdin.
 func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (int, error) {
@@ -229,6 +232,21 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 		}
 		defer f.Close()
 		return View(f, out, opts)
+	}
+	// Prefer a coordinate-sorted index (.csi) over .bai — it covers the
+	// larger coordinate range CSI supports.
+	csiPath := inPath + ".csi"
+	if csiBytes, csiErr := os.ReadFile(csiPath); csiErr == nil {
+		idx, ierr := bam.ReadCSI(bytes.NewReader(csiBytes))
+		if ierr != nil {
+			return 0, fmt.Errorf("samtools view: read %s: %w", csiPath, ierr)
+		}
+		f, err := os.Open(inPath)
+		if err != nil {
+			return 0, err
+		}
+		defer f.Close()
+		return viewIndexedCSI(f, idx, out, opts)
 	}
 	baiPath := inPath + ".bai"
 	baiBytes, baiErr := os.ReadFile(baiPath)
@@ -256,16 +274,35 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 	return viewIndexed(f, idx, out, opts)
 }
 
-// viewIndexed performs an indexed region scan: it parses regions, computes
-// chunk unions, seeks into each chunk's compressed offset, decodes records
-// until each chunk's end virtual offset, and emits records overlapping any
-// requested region.
+// viewIndexed performs an indexed region scan against a .bai index: it
+// parses regions, computes chunk unions, seeks into each chunk's
+// compressed offset, decodes records until each chunk's end virtual
+// offset, and emits records overlapping any requested region.
 //
 // This path is BAM-only: it does BGZF virtual-offset seeks against a .bai
 // index. CRAM uses a .crai index and a different seek model; indexed CRAM
 // region query is a separate roadmap item, so a CRAM file reaches the
 // streaming path above, not here.
 func viewIndexed(f *os.File, idx *bam.BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
+	return viewIndexedChunks(f, out, opts, func(hdr *sam.Header, resolved []region.ResolvedRegion) []bam.BAIChunk {
+		return bam.UnionChunks(idx, resolved)
+	})
+}
+
+// viewIndexedCSI performs an indexed region scan against a BAM .csi index.
+// CSI shares the BAI chunk model, so the seek-and-scan loop is identical;
+// only the chunk-lookup index differs. CSI is preferred when present
+// because it addresses references beyond the BAI 2^29 bp ceiling.
+func viewIndexedCSI(f *os.File, idx *bam.CSIIndex, out io.Writer, opts ViewOptions) (int, error) {
+	return viewIndexedChunks(f, out, opts, func(hdr *sam.Header, resolved []region.ResolvedRegion) []bam.BAIChunk {
+		return bam.UnionChunksCSI(idx, resolved)
+	})
+}
+
+// viewIndexedChunks is the index-kind-agnostic seek-and-scan core shared by
+// the .bai and .csi indexed-query paths. unionFn resolves the requested
+// regions to a sorted, merged BAIChunk slice for the relevant index.
+func viewIndexedChunks(f *os.File, out io.Writer, opts ViewOptions, unionFn func(*sam.Header, []region.ResolvedRegion) []bam.BAIChunk) (int, error) {
 	// Need the header — open a BAM reader first.
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return 0, err
@@ -280,7 +317,7 @@ func viewIndexed(f *os.File, idx *bam.BAIIndex, out io.Writer, opts ViewOptions)
 	if perr != nil {
 		return 0, perr
 	}
-	chunks := bam.UnionChunks(idx, resolved)
+	chunks := unionFn(hdr, resolved)
 	regionFilter := buildRegionFilter(resolved, hdr)
 	if regionFilter == nil && len(opts.Regions) > 0 {
 		regionFilter = func(*sam.Record) bool { return false }

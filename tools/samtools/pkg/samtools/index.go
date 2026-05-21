@@ -1,7 +1,6 @@
 package samtools
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,34 +12,28 @@ import (
 )
 
 // IndexOptions configures the index builder. The zero value selects the
-// .bai default; CSI is accepted via SelectCSI but rejected with a clear
-// error in v1 so callers can wire the flag now and a later slice can flip
-// the bit without touching the CLI.
+// .bai default; setting SelectCSI requests a coordinate-sorted index
+// (.csi), which is required for reference sequences longer than the BAI
+// 2^29 bp ceiling.
 type IndexOptions struct {
-	// SelectCSI requests a .csi index (>512Mb chromosomes). Not yet
-	// implemented; setting it surfaces ErrCSIUnsupported.
+	// SelectCSI requests a .csi index (>512Mb chromosomes).
 	SelectCSI bool
-	// CSIMinShift is honoured only when SelectCSI is true; accepted for
-	// flag-compatibility with upstream samtools.
+	// CSIMinShift is the CSI bin-hierarchy min_shift; it is honoured only
+	// when SelectCSI is true. Zero (or any non-positive value) selects the
+	// htslib default of 14.
 	CSIMinShift int
 	// Threads is accepted but ignored — the v1 index pipeline is
 	// single-threaded.
 	Threads int
 }
 
-// ErrCSIUnsupported is returned when an index build asks for CSI output.
-// CSI is deferred to a later slice; v1 only emits BAI.
-var ErrCSIUnsupported = errors.New("samtools index: CSI output (-c/--csi) is not yet implemented; v1 emits BAI only")
-
-// Index reads a coordinate-sorted BAM stream from in, builds a BAI index in
+// Index reads a coordinate-sorted BAM stream from in, builds an index in
 // memory, and writes it to out. The input must be a coordinate-sorted BAM
 // (the @HD SO:coordinate header is not strictly required, but the records
 // must arrive in increasing (refID, pos) order — for our use case the
-// `samtools sort` output guarantees this).
+// `samtools sort` output guarantees this). When opts.SelectCSI is set a
+// BGZF-compressed .csi index is written; otherwise a plain .bai index.
 func Index(in io.Reader, out io.Writer, opts IndexOptions) error {
-	if opts.SelectCSI {
-		return ErrCSIUnsupported
-	}
 	br, err := sam.NewBAMReader(in)
 	if err != nil {
 		return err
@@ -48,6 +41,13 @@ func Index(in io.Reader, out io.Writer, opts IndexOptions) error {
 	defer br.Close()
 
 	hdr := br.Header()
+	if opts.SelectCSI {
+		idx, err := bam.BuildCSI(br, len(hdr.Refs), int32(opts.CSIMinShift), bam.DefaultCSIDepth)
+		if err != nil {
+			return err
+		}
+		return bam.WriteCSI(out, idx)
+	}
 	idx, err := BuildBAI(br, len(hdr.Refs))
 	if err != nil {
 		return err
@@ -65,16 +65,12 @@ func BuildBAI(br *sam.BAMReader, numRefs int) (*bam.BAIIndex, error) {
 
 // IndexFile reads the alignment file at inPath, builds the appropriate
 // index, and writes it to outPath. The index kind is chosen from the
-// input format: a BAM file gets a BAI written to <inPath>.bai, while a
-// CRAM file gets a CRAI written to <inPath>.crai. When outPath is
-// non-empty it overrides the default destination.
+// input format and options: a BAM file gets a BAI written to
+// <inPath>.bai by default, or a .csi written to <inPath>.csi when
+// opts.SelectCSI is set, while a CRAM file gets a CRAI written to
+// <inPath>.crai. When outPath is non-empty it overrides the default
+// destination.
 func IndexFile(inPath, outPath string, opts IndexOptions) error {
-	// CSI is a BAM-only index kind and is not yet implemented; reject it
-	// up front, before the input file is even opened, so the deferral is
-	// surfaced regardless of the input format.
-	if opts.SelectCSI {
-		return ErrCSIUnsupported
-	}
 	isCRAM, err := inputIsCRAM(inPath)
 	if err != nil {
 		return err
@@ -86,7 +82,11 @@ func IndexFile(inPath, outPath string, opts IndexOptions) error {
 		return indexCRAMFile(inPath, outPath)
 	}
 	if outPath == "" {
-		outPath = inPath + ".bai"
+		if opts.SelectCSI {
+			outPath = inPath + ".csi"
+		} else {
+			outPath = inPath + ".bai"
+		}
 	}
 	in, err := os.Open(inPath)
 	if err != nil {
@@ -96,7 +96,7 @@ func IndexFile(inPath, outPath string, opts IndexOptions) error {
 
 	// Materialise to a sibling tmp file then rename so a half-written index
 	// never replaces a real one.
-	tmp, err := os.CreateTemp(filepath.Dir(outPath), ".bai.tmp.")
+	tmp, err := os.CreateTemp(filepath.Dir(outPath), ".idx.tmp.")
 	if err != nil {
 		return err
 	}

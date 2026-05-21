@@ -12,12 +12,13 @@
   exists**;
 - `samtools sort` — external-merge sort by coordinate, name, natural name,
   or aux tag;
-- `samtools index` — build a BAI index for a coordinate-sorted BAM;
+- `samtools index` — build a `.bai` (default) or `.csi` (`-c`) index for
+  a coordinate-sorted BAM;
 - `samtools flagstat` — the classic 16-line alignment summary;
 - `samtools depth` — per-position depth across one or more BAMs; and
 - `samtools fastq` (and the `bam2fq` alias) — convert SAM/BAM to FASTQ.
 
-Subsequent PRs will add `mpileup` and CSI indexing.
+Subsequent PRs will continue to fill in the `mpileup` subcommand tail.
 
 `samtools` is pick #3 of the 2026 next-up list in
 `analysis/tool_ranking_2026.md` — the most widely-used CLI in genomics, with
@@ -129,9 +130,11 @@ records.
 | Short | Long                  | Description                                  |
 |-------|-----------------------|----------------------------------------------|
 | `-b`  | `--bai`               | Emit `.bai` (default).                       |
-| `-c`  | `--csi`               | Emit `.csi` — **NOT YET IMPLEMENTED**.       |
-|       | `--csi-min-shift N`   | CSI shift (accepted with `-c`).              |
-| `-o`  | `--output PATH`       | Index output path (default `<input>.bai`).   |
+| `-c`  | `--csi`               | Emit `.csi` (for references > 512 Mb).       |
+| `-m`  | `--min-shift N`       | CSI bin-hierarchy `min_shift` (default 14;   |
+|       |                       | `--csi-min-shift` is accepted as an alias).  |
+| `-o`  | `--output PATH`       | Index output path (default `<input>.bai`,    |
+|       |                       | or `<input>.csi` with `-c`).                 |
 | `-@`  | `--threads N`         | Accepted; single-threaded.                   |
 
 ```bash
@@ -316,10 +319,6 @@ parity. `-x/--sparse` thins all-zero IS rows only.
 The following are intentionally out of scope or deferred and will land in
 follow-up PRs.
 
-- **CSI indexing.** `samtools index -c/--csi` is accepted on the CLI but
-  surfaces a clear error: "CSI output (-c/--csi) is not yet implemented;
-  v1 emits BAI only". CSI is only needed for chromosomes longer than
-  ~512 Mb, which excludes every common reference genome.
 - **`-L regions.bed`.** `samtools view -L` is supported: a per-chromosome
   interval tree is built from the BED and records are kept only when their
   `[Pos, Pos+refLen)` half-open range overlaps at least one BED interval
@@ -363,7 +362,6 @@ the natural next slices are:
   builds on top of indexed BAM iteration).
 - A coordinate-sorted code-path for `fastq -1/-2` that pairs records on
   disk (currently this configuration falls back to interleaved output).
-- CSI indexing for chromosomes longer than 512 Mb.
 - Multi-threaded sort, index, depth, and fastq once a profiling pass
   shows where the single-threaded baselines bottleneck.
 
