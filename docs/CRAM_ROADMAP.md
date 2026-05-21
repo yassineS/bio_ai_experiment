@@ -328,3 +328,12 @@ limitation here.
   the reader; a v3.0 file stays 3.0 with no method-5 block.
   `FuzzRecordWriterV31`. This completes the C1–C10 CRAM roadmap:
   pure-Go CRAM v3.0/v3.1 read and write, CLI-integrated.
+- **C-LZMA** — landed. LZMA block decompression (`codec/lzma.go`,
+  `LZMADecode`/`LZMAEncode`). CRAM method-3 blocks are a complete `.xz`
+  container stream (the `\xFD7zXZ\x00` magic) — htslib's CRAM writer
+  uses liblzma's `lzma_easy_buffer_encode` — read via
+  `github.com/ulikunitz/xz`, the one sanctioned CRAM third-party dep,
+  imported only from `codec/lzma.go`. `block.go`'s method-3 dispatch
+  now decodes instead of erroring. No LZMA CRAM fixture exists in the
+  reference corpus, so an `.xz` round-trip is the oracle; a 1 GiB
+  decompression ceiling and a fuzz target guard malformed input.

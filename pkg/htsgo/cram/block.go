@@ -21,7 +21,7 @@ const (
 	CompRaw      CompressionMethod = 0 // Uncompressed.
 	CompGzip     CompressionMethod = 1 // RFC 1952 gzip (compress/gzip).
 	CompBzip2    CompressionMethod = 2 // bzip2 (compress/bzip2).
-	CompLZMA     CompressionMethod = 3 // LZMA — out of scope (PR C-LZMA).
+	CompLZMA     CompressionMethod = 3 // LZMA (.xz container, CRAM codec).
 	CompRANS4x8  CompressionMethod = 4 // rANS 4x8 (CRAM v3.0 codec).
 	CompRANS4x16 CompressionMethod = 5 // rANS 4x16 (CRAM v3.1 codec).
 	CompArith    CompressionMethod = 6 // Range/arithmetic coder — out of scope.
@@ -112,8 +112,8 @@ type Block struct {
 }
 
 // Decompress returns the block's uncompressed payload. For gzip, bzip2,
-// rANS 4x8 and rANS 4x16 blocks it decompresses via the standard library
-// or the codec sub-package. For any other method it returns an
+// LZMA, rANS 4x8 and rANS 4x16 blocks it decompresses via the standard
+// library or the codec sub-package. For any other method it returns an
 // "unsupported compression method" error. The returned length is
 // verified against the block's declared UncompressedSize.
 //
@@ -136,7 +136,9 @@ func (b *Block) Decompress() ([]byte, error) {
 		out, err = codec.RANS4x8Decode(b.Data)
 	case CompRANS4x16:
 		out, err = codec.RANS4x16Decode(b.Data)
-	case CompLZMA, CompArith, CompFQZComp, CompNameTok:
+	case CompLZMA:
+		out, err = codec.LZMADecode(b.Data)
+	case CompArith, CompFQZComp, CompNameTok:
 		return nil, fmt.Errorf("cram: unsupported compression method %d (%s)",
 			byte(b.Method), b.Method)
 	default:
@@ -157,7 +159,7 @@ func (b *Block) Decompress() ([]byte, error) {
 // compression method without returning an unsupported-method error.
 func (b *Block) SupportedMethod() bool {
 	switch b.Method {
-	case CompRaw, CompGzip, CompBzip2, CompRANS4x8, CompRANS4x16:
+	case CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16:
 		return true
 	default:
 		return false
