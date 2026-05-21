@@ -635,6 +635,10 @@ func fqzDecode(in []byte) ([]byte, []int, error) {
 				return nil, nil, err
 			}
 			if gp.gflags&fqzGFlagDoRev != 0 {
+				// st.lastLen is this read's length: fqzDecodeNewRead has
+				// just set it, either from the length model or the
+				// fixed-length reuse. It is the C decoder's per-read
+				// len_a[rec].
 				revRecs = append(revRecs, revRec{rev, st.lastLen})
 			}
 			if r == 1 {
