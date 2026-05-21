@@ -25,7 +25,7 @@ const (
 	CompLZMA     CompressionMethod = 3 // LZMA (.xz container, CRAM codec).
 	CompRANS4x8  CompressionMethod = 4 // rANS 4x8 (CRAM v3.0 codec).
 	CompRANS4x16 CompressionMethod = 5 // rANS 4x16 (CRAM v3.1 codec).
-	CompArith    CompressionMethod = 6 // Range/arithmetic coder — out of scope.
+	CompArith    CompressionMethod = 6 // arith_dynamic adaptive range coder (CRAM v3.1 codec).
 	CompFQZComp  CompressionMethod = 7 // fqzcomp quality codec — out of scope.
 	CompNameTok  CompressionMethod = 8 // Name tokeniser — out of scope.
 )
@@ -113,10 +113,10 @@ type Block struct {
 }
 
 // Decompress returns the block's uncompressed payload. For gzip, bzip2,
-// LZMA, rANS 4x8 and rANS 4x16 blocks it decompresses via the standard
-// library or the codec sub-package. For any other method it returns an
-// "unsupported compression method" error. The returned length is
-// verified against the block's declared UncompressedSize.
+// LZMA, rANS 4x8, rANS 4x16 and arith_dynamic blocks it decompresses via
+// the standard library or the codec sub-package. For any other method it
+// returns an "unsupported compression method" error. The returned length
+// is verified against the block's declared UncompressedSize.
 //
 // For a raw block the returned slice aliases Block.Data — callers that
 // mutate it would mutate the block; copy it first if that matters.
@@ -139,7 +139,9 @@ func (b *Block) Decompress() ([]byte, error) {
 		out, err = codec.RANS4x16Decode(b.Data)
 	case CompLZMA:
 		out, err = codec.LZMADecode(b.Data)
-	case CompArith, CompFQZComp, CompNameTok:
+	case CompArith:
+		out, err = codec.ArithDecode(b.Data)
+	case CompFQZComp, CompNameTok:
 		return nil, fmt.Errorf("cram: unsupported compression method %d (%s)",
 			byte(b.Method), b.Method)
 	default:
@@ -160,7 +162,7 @@ func (b *Block) Decompress() ([]byte, error) {
 // compression method without returning an unsupported-method error.
 func (b *Block) SupportedMethod() bool {
 	switch b.Method {
-	case CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16:
+	case CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16, CompArith:
 		return true
 	default:
 		return false

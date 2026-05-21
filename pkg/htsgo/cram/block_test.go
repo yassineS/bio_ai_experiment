@@ -107,7 +107,7 @@ func TestDecompressSizeMismatch(t *testing.T) {
 // TestDecompressUnsupportedMethods checks every out-of-scope compression
 // method returns a clear unsupported-method error rather than panicking.
 func TestDecompressUnsupportedMethods(t *testing.T) {
-	for _, m := range []CompressionMethod{CompArith, CompFQZComp, CompNameTok, 250} {
+	for _, m := range []CompressionMethod{CompFQZComp, CompNameTok, 250} {
 		b := Block{Method: m, Data: []byte{1, 2, 3}}
 		_, err := b.Decompress()
 		if err == nil {
@@ -131,13 +131,13 @@ func TestDecompressCorruptGzip(t *testing.T) {
 
 // TestSupportedMethod pins the SupportedMethod predicate.
 func TestSupportedMethod(t *testing.T) {
-	supported := []CompressionMethod{CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16}
+	supported := []CompressionMethod{CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16, CompArith}
 	for _, m := range supported {
 		if !(&Block{Method: m}).SupportedMethod() {
 			t.Errorf("method %s should be supported", m)
 		}
 	}
-	for _, m := range []CompressionMethod{CompArith, CompFQZComp, CompNameTok} {
+	for _, m := range []CompressionMethod{CompFQZComp, CompNameTok} {
 		if (&Block{Method: m}).SupportedMethod() {
 			t.Errorf("method %s should not be supported", m)
 		}

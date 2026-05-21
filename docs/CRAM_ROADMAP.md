@@ -337,3 +337,15 @@ limitation here.
   now decodes instead of erroring. No LZMA CRAM fixture exists in the
   reference corpus, so an `.xz` round-trip is the oracle; a 1 GiB
   decompression ceiling and a fuzz target guard malformed input.
+- **C-Arith** — landed. The htscodecs `arith_dynamic` adaptive range
+  coder (CRAM block compression method 6) in `codec/arith.go` +
+  `codec/arith_transform.go`: the carry-less byte-wise range coder,
+  the order-0/order-1 adaptive frequency models, the RLE cores, and
+  the X_PACK/X_RLE/X_STRIPE/X_CAT/X_EXT transform layer (which reuses
+  the rANS 4x16 transform/varint/pack helpers — only the entropy core
+  differs). `block.go` method-6 dispatch now decodes. Byte-exact
+  against all 32 `arith/q*` + `u32` vectors for decode and 31/32 for
+  encode — the one gap is `u32.4` (X_EXT, a bzip2 payload): decode
+  works via stdlib `compress/bzip2`, but Go has no bzip2 encoder and
+  none is in the sanctioned dependency set, so X_EXT *encode* returns
+  a clear error. `FuzzArithDecode` (1M+ execs clean).
