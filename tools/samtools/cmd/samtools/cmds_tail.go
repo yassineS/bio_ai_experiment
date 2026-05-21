@@ -1141,6 +1141,9 @@ Options:
   -r             Compute BQ tag from BAQ (accepted; BAQ recompute is
                  deferred — see docs/PARITY_ROADMAP.md#samtools).
   -E             Extended BAQ mode (accepted; deferred).
+  -d             Drop all aux tags except RG.
+  -q             Reduce base-quality resolution (qual/10*10+7 for qual>=3).
+  -n INT         Mask matching bases of reads whose NM >= INT.
   -Q             Quiet: suppress per-record "different MD/NM" warnings.
   -@, --threads N  Accepted; v1 is single-threaded.
   -o, --output PATH  Output path (default stdout).
@@ -1165,6 +1168,11 @@ func runCalmd(args []string) int {
 		showHelp bool
 		showVer  bool
 	)
+	var (
+		dropTag bool
+		binQual bool
+		maxNM   int
+	)
 	fs.BoolVar(&useEqual, "e", false, "")
 	fs.BoolVar(&outBAM, "b", false, "")
 	fs.BoolVar(&uncomp, "u", false, "")
@@ -1172,6 +1180,9 @@ func runCalmd(args []string) int {
 	fs.BoolVar(&adjustA, "A", false, "")
 	fs.BoolVar(&realnR, "r", false, "")
 	fs.BoolVar(&extBAQ, "E", false, "")
+	fs.BoolVar(&dropTag, "d", false, "")
+	fs.BoolVar(&binQual, "q", false, "")
+	fs.IntVar(&maxNM, "n", 0, "")
 	fs.BoolVar(&quiet, "Q", false, "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
@@ -1180,18 +1191,12 @@ func runCalmd(args []string) int {
 	// deferred; flag parse must not hard-error.
 	var (
 		clearMDNM bool
-		maxNM     int
 		capQ      int
-		dropTag   string
-		binQual   int
 		noPG      bool
 		hashQNM   bool
 	)
 	fs.BoolVar(&clearMDNM, "N", false, "")
-	fs.IntVar(&maxNM, "n", 0, "")
 	fs.IntVar(&capQ, "C", 0, "")
-	fs.StringVar(&dropTag, "d", "", "")
-	fs.IntVar(&binQual, "q", 0, "")
 	fs.BoolVar(&noPG, "no-PG", false, "")
 	fs.BoolVar(&hashQNM, "hash-qnm", false, "")
 	fs.BoolVar(&showHelp, "h", false, "")
@@ -1222,10 +1227,7 @@ func runCalmd(args []string) int {
 	_ = threads // accepted, ignored
 	_ = sInFmt  // we auto-detect
 	_ = clearMDNM
-	_ = maxNM
 	_ = capQ
-	_ = dropTag
-	_ = binQual
 	_ = noPG
 	_ = hashQNM
 	out, err := openOut(outPath)
@@ -1242,6 +1244,9 @@ func runCalmd(args []string) int {
 		AdjustCapQ:   adjustA,
 		RealignBAQ:   realnR,
 		Quiet:        quiet,
+		DropTags:     dropTag,
+		BinQual:      binQual,
+		MaxNM:        maxNM,
 	}
 	if err := samtools.CalmdFile(inPath, out, refPath, opts, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools calmd: %v\n", err)
