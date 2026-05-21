@@ -143,14 +143,14 @@ const (
 	maxInt32 = 1<<31 - 1
 )
 
-// splitTabs splits a line on tab characters without allocating an
-// intermediate Replacer; it is the .crai field splitter.
+// splitTabs splits a line on tab characters; it is the .crai field
+// splitter. The fields are subslices of s — no copy.
 func splitTabs(s string) []string {
 	var out []string
 	start := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\t' {
-			out = append(out, s[i:i][:0]+s[start:i])
+			out = append(out, s[start:i])
 			start = i + 1
 		}
 	}

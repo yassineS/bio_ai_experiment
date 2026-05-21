@@ -1,6 +1,9 @@
 package cram
 
-import "encoding/hex"
+import (
+	"encoding/hex"
+	"errors"
+)
 
 // referenceResolver resolves the reference bases a slice's mapped
 // records need, threading together the two reference sources C5
@@ -60,6 +63,11 @@ func (rr *referenceResolver) sliceReference(sh *SliceHeader, contig, contigMD5 s
 		return []byte{}, nil
 	}
 
+	// priorErr accumulates the errors from sources tried before the
+	// cache, so a final cache failure reports every path that was tried
+	// rather than just the last one.
+	var priorErr error
+
 	// Prefer the explicit FASTA: it is name-addressed and can serve any
 	// span without the whole-sequence MD5 the cache needs.
 	if rr.fasta != nil {
@@ -75,6 +83,7 @@ func (rr *referenceResolver) sliceReference(sh *SliceHeader, contig, contigMD5 s
 		if rr.cache == nil {
 			return nil, err
 		}
+		priorErr = err
 	}
 
 	// A custom name-addressed source: fetch the span directly and verify.
@@ -90,6 +99,7 @@ func (rr *referenceResolver) sliceReference(sh *SliceHeader, contig, contigMD5 s
 		if rr.cache == nil {
 			return nil, err
 		}
+		priorErr = errors.Join(priorErr, err)
 	}
 
 	// REF_CACHE: the whole reference sequence is stored in a file named
@@ -98,11 +108,11 @@ func (rr *referenceResolver) sliceReference(sh *SliceHeader, contig, contigMD5 s
 	if rr.cache != nil {
 		key, err := cacheKey(contigMD5, sh.ReferenceMD5, contig, start, span)
 		if err != nil {
-			return nil, err
+			return nil, errors.Join(priorErr, err)
 		}
 		whole, err := rr.cache.ResolveByMD5(key)
 		if err != nil {
-			return nil, err
+			return nil, errors.Join(priorErr, err)
 		}
 		end := int(start-1) + int(span)
 		if end > len(whole) || start < 1 {
