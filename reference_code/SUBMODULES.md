@@ -97,6 +97,8 @@
 |-----------|----------|-------------|-------------|------|
 | BEDTools | C++ | Genomic interval operations | v2.31.1-7-gdd570590 | `reference_code/bedtools` |
 | samtools | C | SAM/BAM file manipulation | 1.22.1-19-ge406d9e | `reference_code/samtools` |
+| bcftools | C | VCF/BCF variant calling and manipulation | 1.23.1-73-ge0ec6ab0 | `reference_code/bcftools` |
+| htslib | C | HTS data I/O (SAM/BAM/CRAM/VCF/BCF) | 1.23.1-32-gcdf22929 | `reference_code/htslib` |
 
 ## Variant Calling
 
