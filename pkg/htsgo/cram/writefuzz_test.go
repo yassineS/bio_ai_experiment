@@ -77,40 +77,62 @@ func itoa(n int) string {
 	return string(buf[pos:])
 }
 
-// FuzzRecordWriter drives the CRAM writer with record batches derived
-// from arbitrary bytes, then reads the result back. The writer must
-// never panic, and any file it produces without error must re-read
-// without error: a written CRAM is always a valid CRAM.
-func FuzzRecordWriter(f *testing.F) {
+// fuzzWriteRoundTrip writes records as the given CRAM version and reads
+// them back, asserting an error-free write always yields a file that
+// re-reads to the same records. It is the shared body of the v3.0 and
+// v3.1 fuzz targets.
+func fuzzWriteRoundTrip(t *testing.T, records []*sam.Record, version Version) {
+	h := writerTestHeader()
+	var buf bytes.Buffer
+	if err := WriteCRAMVersion(&buf, h, records, version); err != nil {
+		// A record the simple writer rejects is a clean error, not a
+		// panic; nothing more to check.
+		return
+	}
+	rr, err := NewRecordReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("writer produced an unreadable %s file: %v", version, err)
+	}
+	out, err := rr.ReadAll()
+	if err != nil {
+		t.Fatalf("writer produced a %s file that fails to decode: %v", version, err)
+	}
+	if len(out) != len(records) {
+		t.Fatalf("round-trip record count = %d, want %d", len(out), len(records))
+	}
+	// A written CRAM must not just re-read — it must re-read to the
+	// same records. Check every field of every record.
+	for i := range records {
+		assertRecordEqual(t, i, out[i], records[i])
+	}
+}
+
+// fuzzWriterSeeds adds the shared corpus seeds to a fuzz target.
+func fuzzWriterSeeds(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0x00, 0x05, 0x41, 0x42, 0x43, 0x44, 0x10, 0x20})
 	f.Add([]byte{0x01, 0x08, 0x47, 0x47, 0x47, 0x47, 0x05, 0x05})
 	f.Add(bytes.Repeat([]byte{0x02, 0x0a, 0x54, 0x41, 0x43, 0x47, 0x1f, 0x3c}, 8))
-	f.Fuzz(func(t *testing.T, data []byte) {
-		h := writerTestHeader()
-		records := fuzzRecordsFromBytes(data)
+}
 
-		var buf bytes.Buffer
-		if err := WriteCRAM(&buf, h, records); err != nil {
-			// A record the simple writer rejects is a clean error, not a
-			// panic; nothing more to check.
-			return
-		}
-		rr, err := NewRecordReader(bytes.NewReader(buf.Bytes()))
-		if err != nil {
-			t.Fatalf("writer produced an unreadable file: %v", err)
-		}
-		out, err := rr.ReadAll()
-		if err != nil {
-			t.Fatalf("writer produced a file that fails to decode: %v", err)
-		}
-		if len(out) != len(records) {
-			t.Fatalf("round-trip record count = %d, want %d", len(out), len(records))
-		}
-		// A written CRAM must not just re-read — it must re-read to the
-		// same records. Check every field of every record.
-		for i := range records {
-			assertRecordEqual(t, i, out[i], records[i])
-		}
+// FuzzRecordWriter drives the CRAM v3.0 writer with record batches
+// derived from arbitrary bytes, then reads the result back. The writer
+// must never panic, and any file it produces without error must re-read
+// without error: a written CRAM is always a valid CRAM.
+func FuzzRecordWriter(f *testing.F) {
+	fuzzWriterSeeds(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fuzzWriteRoundTrip(t, fuzzRecordsFromBytes(data), VersionV30)
+	})
+}
+
+// FuzzRecordWriterV31 is the v3.1 counterpart of FuzzRecordWriter: it
+// drives the rANS 4x16-capable write path with the same derived record
+// batches, holding it to the same "a written CRAM is always a valid
+// CRAM" invariant.
+func FuzzRecordWriterV31(f *testing.F) {
+	fuzzWriterSeeds(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fuzzWriteRoundTrip(t, fuzzRecordsFromBytes(data), VersionV31)
 	})
 }

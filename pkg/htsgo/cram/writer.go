@@ -9,14 +9,43 @@ import (
 	"io"
 	"os"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram/codec"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
-// writerVersion is the CRAM version the writer emits. The C8 writer
-// targets v3.0: major 3 carries the per-container and per-block CRC32,
-// which the reader validates, and minor 0 keeps the codec set to the
-// v3.0 zoo (no rANS 4x16, no CRAM v3.1 extensions).
-var writerVersion = FileDefinition{Major: 3, Minor: 0}
+// Version selects the CRAM format version a RecordWriter emits. Both
+// versions share the v3 container, slice and record layout and the v3
+// CRC32 fields; they differ only in the per-block compression codecs the
+// writer is allowed to use.
+type Version int
+
+const (
+	// VersionV30 is CRAM v3.0: the writer compresses each block with raw
+	// or gzip. It is the default and the format every existing caller
+	// gets.
+	VersionV30 Version = iota
+	// VersionV31 is CRAM v3.1: in addition to raw and gzip the writer may
+	// compress a block with the rANS 4x16 codec (block method 5), the
+	// distinguishing capability of v3.1.
+	VersionV31
+)
+
+// fileDefinition returns the on-disk file-definition version for v. Both
+// CRAM v3.0 and v3.1 carry major version 3; only the minor version
+// differs.
+func (v Version) fileDefinition() FileDefinition {
+	switch v {
+	case VersionV31:
+		return FileDefinition{Major: 3, Minor: 1}
+	default:
+		return FileDefinition{Major: 3, Minor: 0}
+	}
+}
+
+// String returns the version as a "major.minor" string.
+func (v Version) String() string {
+	return v.fileDefinition().VersionString()
+}
 
 // defaultRecordsPerSlice caps how many records the writer packs into one
 // slice (and, since the writer emits one slice per container, one
@@ -94,6 +123,12 @@ type RecordWriter struct {
 	closer io.Closer
 	header *sam.Header
 
+	// version is the CRAM format this writer emits. It is a per-writer
+	// field — not package-level state — so two writers targeting
+	// different versions can run concurrently. It governs both the
+	// file-definition minor version and the per-block codec set.
+	version Version
+
 	// refIndex maps a reference name to its zero-based @SQ position, so a
 	// record's RName / RNext can be turned into the integer ids the CRAM
 	// data series store.
@@ -122,13 +157,26 @@ type RecordWriter struct {
 // CRAM v3.0 file. The SAM header is written immediately as the first
 // container's single block, so h must be complete before the call. It
 // returns an error only if the initial header write to w fails.
+//
+// To target CRAM v3.1 instead, use NewRecordWriterVersion.
 func NewRecordWriter(w io.Writer, h *sam.Header) (*RecordWriter, error) {
+	return NewRecordWriterVersion(w, h, VersionV30)
+}
+
+// NewRecordWriterVersion returns a RecordWriter that encodes records to w
+// as a CRAM file of the requested version. VersionV30 produces a v3.0
+// file (raw/gzip block compression); VersionV31 produces a v3.1 file,
+// which may additionally compress blocks with the rANS 4x16 codec. The
+// SAM header is written immediately, so h must be complete before the
+// call. It returns an error only if the initial header write to w fails.
+func NewRecordWriterVersion(w io.Writer, h *sam.Header, version Version) (*RecordWriter, error) {
 	if h == nil {
 		h = &sam.Header{}
 	}
 	rw := &RecordWriter{
 		w:               w,
 		header:          h,
+		version:         version,
 		refIndex:        make(map[string]int32, len(h.Refs)),
 		recordsPerSlice: defaultRecordsPerSlice,
 	}
@@ -141,15 +189,22 @@ func NewRecordWriter(w io.Writer, h *sam.Header) (*RecordWriter, error) {
 	return rw, nil
 }
 
-// CreateCRAM creates the named file and returns a RecordWriter over it.
-// The caller must call Close, which flushes the final container and
-// releases the file handle.
+// CreateCRAM creates the named file and returns a RecordWriter over it
+// targeting CRAM v3.0. The caller must call Close, which flushes the
+// final container and releases the file handle.
 func CreateCRAM(path string, h *sam.Header) (*RecordWriter, error) {
+	return CreateCRAMVersion(path, h, VersionV30)
+}
+
+// CreateCRAMVersion creates the named file and returns a RecordWriter
+// over it targeting the requested CRAM version. The caller must call
+// Close, which flushes the final container and releases the file handle.
+func CreateCRAMVersion(path string, h *sam.Header, version Version) (*RecordWriter, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err
 	}
-	rw, err := NewRecordWriter(f, h)
+	rw, err := NewRecordWriterVersion(f, h, version)
 	if err != nil {
 		f.Close()
 		os.Remove(path)
@@ -163,7 +218,15 @@ func CreateCRAM(path string, h *sam.Header) (*RecordWriter, error) {
 // complete CRAM v3.0 file, including the trailing EOF marker. It is a
 // convenience wrapper over NewRecordWriter / Write / Close.
 func WriteCRAM(w io.Writer, h *sam.Header, records []*sam.Record) error {
-	rw, err := NewRecordWriter(w, h)
+	return WriteCRAMVersion(w, h, records, VersionV30)
+}
+
+// WriteCRAMVersion encodes header and every record in records to w as a
+// complete CRAM file of the requested version, including the trailing
+// EOF marker. It is a convenience wrapper over NewRecordWriterVersion /
+// Write / Close.
+func WriteCRAMVersion(w io.Writer, h *sam.Header, records []*sam.Record, version Version) error {
+	rw, err := NewRecordWriterVersion(w, h, version)
 	if err != nil {
 		return err
 	}
@@ -266,10 +329,11 @@ func (rw *RecordWriter) writeFileHeader() error {
 	if rw.wroteHeader {
 		return nil
 	}
+	fd := rw.version.fileDefinition()
 	var def [fileDefSize]byte
 	copy(def[0:4], fileDefMagic[:])
-	def[4] = writerVersion.Major
-	def[5] = writerVersion.Minor
+	def[4] = fd.Major
+	def[5] = fd.Minor
 	// FileID is left NUL — the conventional originating-file-name slot is
 	// optional and a reader trims trailing NULs.
 	if _, err := rw.w.Write(def[:]); err != nil {
@@ -282,7 +346,7 @@ func (rw *RecordWriter) writeFileHeader() error {
 	payload := make([]byte, 4+len(text))
 	binary.LittleEndian.PutUint32(payload[:4], uint32(len(text)))
 	copy(payload[4:], text)
-	headerBlock := encodeBlock(ContentFileHeader, cidSAMHeader, payload)
+	headerBlock := encodeBlock(rw.version, ContentFileHeader, cidSAMHeader, payload)
 
 	// The file-header container holds exactly the header block. Its
 	// reference fields are the unmapped/no-data sentinels.
@@ -319,7 +383,7 @@ func (rw *RecordWriter) flushContainer() error {
 	if len(rw.buf) == 0 {
 		return nil
 	}
-	container, err := encodeContainer(rw.buf, rw.refIndex, rw.recordCounter)
+	container, err := encodeContainer(rw.version, rw.buf, rw.refIndex, rw.recordCounter)
 	if err != nil {
 		rw.err = err
 		return err
@@ -334,18 +398,12 @@ func (rw *RecordWriter) flushContainer() error {
 }
 
 // encodeBlock assembles a complete on-disk CRAM v3 block from a content
-// type, content id and uncompressed payload. The payload is gzip-
-// compressed when that is worthwhile (method 1) and otherwise stored raw
-// (method 0); the trailing IEEE CRC32 over the whole block is appended.
-func encodeBlock(ct BlockContentType, contentID int32, payload []byte) []byte {
-	method := CompRaw
-	stored := payload
-	if len(payload) >= gzipBlockThreshold {
-		if gz := gzipCompress(payload); len(gz) < len(payload) {
-			method = CompGzip
-			stored = gz
-		}
-	}
+// type, content id and uncompressed payload. The payload is compressed
+// with whichever method chooseBlockCompression picks for the writer's
+// version — never larger than raw — and the trailing IEEE CRC32 over the
+// whole block is appended.
+func encodeBlock(version Version, ct BlockContentType, contentID int32, payload []byte) []byte {
+	method, stored := chooseBlockCompression(version, payload)
 	var b []byte
 	b = append(b, byte(method), byte(ct))
 	b = appendITF8(b, contentID)
@@ -356,6 +414,36 @@ func encodeBlock(ct BlockContentType, contentID int32, payload []byte) []byte {
 	var crcBuf [4]byte
 	binary.LittleEndian.PutUint32(crcBuf[:], crc)
 	return append(b, crcBuf[:]...)
+}
+
+// chooseBlockCompression picks the block compression method for a
+// payload and returns it together with the bytes to store. The candidate
+// set depends on the CRAM version: v3.0 considers raw (method 0) and
+// gzip (method 1); v3.1 additionally considers rANS 4x16 (method 5), its
+// distinguishing codec. The smallest candidate wins and raw is always in
+// the running, so the stored payload is never larger than the input —
+// the block stays decodable even if a codec misbehaves.
+func chooseBlockCompression(version Version, payload []byte) (CompressionMethod, []byte) {
+	method := CompRaw
+	stored := payload
+	// Below the threshold the per-codec framing overhead outweighs any
+	// saving, so a tiny block is always stored raw.
+	if len(payload) < gzipBlockThreshold {
+		return method, stored
+	}
+	if gz := gzipCompress(payload); len(gz) < len(stored) {
+		method, stored = CompGzip, gz
+	}
+	if version == VersionV31 {
+		// rANS 4x16 is a v3.1-only codec; never offer it for v3.0. Order 0
+		// is used — correctness and round-trip matter here, not ratio, and
+		// the order-0 model round-trips every input including the empty
+		// one.
+		if r, err := codec.RANS4x16Encode(payload, 0); err == nil && len(r) < len(stored) {
+			method, stored = CompRANS4x16, r
+		}
+	}
+	return method, stored
 }
 
 // gzipCompress returns the gzip (RFC 1952) compression of in. It is the

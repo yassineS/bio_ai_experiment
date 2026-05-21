@@ -307,3 +307,18 @@ limitation here.
   slice). Oracle: a SAM→CRAM→SAM round-trip through the `view` code
   path recovers the records, and a built `.crai` parses back and its
   overlap query returns the expected slices. `FuzzCRAIWriteRoundTrip`.
+- **C10** — landed. CRAM v3.1 write. A `Version` type (`VersionV30`
+  default, `VersionV31`) selects the output dialect; new constructors
+  `NewRecordWriterVersion` / `CreateCRAMVersion` / `WriteCRAMVersion`
+  carry it, and the existing v3.0 constructors delegate unchanged. The
+  package-level mutable `writerVersion` var is gone — version is a
+  per-`RecordWriter` field, so concurrent writers of different
+  versions are safe. `chooseBlockCompression` is now per-version: v3.0
+  keeps the raw/gzip candidate set; v3.1 additionally tries rANS 4x16
+  (`codec.RANS4x16Encode`, block method 5) and keeps the smallest, raw
+  always in the running so output never exceeds raw. Method 5 is never
+  emitted for v3.0. Verified: a v3.1-written file has file definition
+  3.1, genuinely contains rANS-4x16 blocks, and round-trips through
+  the reader; a v3.0 file stays 3.0 with no method-5 block.
+  `FuzzRecordWriterV31`. This completes the C1–C10 CRAM roadmap:
+  pure-Go CRAM v3.0/v3.1 read and write, CLI-integrated.
