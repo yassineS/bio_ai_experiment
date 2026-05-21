@@ -1543,14 +1543,21 @@ flag-exact / SN-byte cases are exercised in
   alignment math; deferred per owner steer.
 - **`-h` HASH_QNM** (hash-based query-name binarisation) — niche
   upstream-only optimisation; not implemented.
-- **`-d` DROP_TAG** (drop all aux but RG) and **`-q` BIN_QUAL** (round
-  qualities to 0/7) — flag-recognised in the CLI driver but not
-  threaded through; safe to add later as small wrappers around the
-  current calmd pipeline.
-- **`-n` max-NM cap** — would mask high-mismatch reads with bin-quality;
-  trivial follow-up once BIN_QUAL lands.
 - **`-N` clear-MD/NM-bits**, **`-C` capQ**, **`--no-PG`** —
   CLI-accepted-and-ignored stubs.
+
+**`calmd` implemented post-MD/NM transforms** (`bam_md.c` upstream
+order — max-NM masking → write NM → write MD → DROP_TAG → BIN_QUAL):
+
+- **`-d` DROP_TAG** — drops every aux tag except `RG`. Applied after
+  the NM/MD fill, so the freshly-computed NM/MD are dropped too; only
+  `RG` survives (records without `RG` keep no aux at all).
+- **`-q` BIN_QUAL** — reduces base-quality resolution: each quality
+  `>= 3` maps to `qual/10*10 + 7` (integer division); lower values
+  unchanged.
+- **`-n INT` max-NM** — for reads whose computed NM `>= INT`, masks
+  every matching M/=/X base (SEQ `->` `=`, quality `-> 0`); the
+  emitted NM/MD are unaffected.
 
 **`import` deferred features**:
 

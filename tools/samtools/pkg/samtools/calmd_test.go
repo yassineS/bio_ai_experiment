@@ -210,6 +210,133 @@ func TestParity_Calmd_UpstreamCorpus(t *testing.T) {
 	t.Skip("BGZF byte-identical output requires upstream's libdeflate; logical MD/NM parity covered by TestCalmd_BasicMDNM; tracked in docs/PARITY_ROADMAP.md#samtools")
 }
 
+// TestCalmd_BinQual verifies the -q flag bins base qualities: every value
+// >= 3 maps to qual/10*10+7 (integer division); values below 3 are kept.
+func TestCalmd_BinQual(t *testing.T) {
+	// Qual string with Phred values 0,2,3,9,10,13,25,40,7,17 (ASCII '!'+v).
+	// '!'=0, '#'=2, '$'=3, '*'=9, '+'=10, '.'=13, ':'=25, 'I'=40, '('=7, '2'=17.
+	samText := `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:52
+r_q	0	chr1	1	60	10M	*	0	0	ACGTACGTAC	!#$*+.:I(2
+`
+	refPath := parityPath(t, "calmd/ref.fa")
+	var buf bytes.Buffer
+	if err := Calmd(strings.NewReader(samText), &buf, refPath, CalmdOptions{BinQual: true}, nil); err != nil {
+		t.Fatalf("Calmd: %v", err)
+	}
+	rec := indexCalmdSAM(t, buf.String())["r_q"]
+	if rec == nil {
+		t.Fatalf("r_q missing")
+	}
+	// Expected per upstream bam_md.c:204-208:
+	//   0->0, 2->2 (both < 3, unchanged); 3->7, 9->7, 10->17, 13->17,
+	//   25->27, 40->47, 7->7, 17->17.
+	want := []byte{0, 2, 7, 7, 17, 17, 27, 47, 7, 17}
+	if !bytes.Equal(rec.Qual, want) {
+		t.Errorf("binned qual = %v, want %v", rec.Qual, want)
+	}
+}
+
+// TestCalmd_DropTags verifies the -d flag keeps only the RG aux tag and, for
+// a record without RG, drops every aux tag (including the freshly computed
+// NM/MD, mirroring upstream's post-fill DROP_TAG ordering).
+func TestCalmd_DropTags(t *testing.T) {
+	samText := `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:52
+r_rg	0	chr1	1	60	10M	*	0	0	ACGTACGTAC	IIIIIIIIII	RG:Z:grp1	XX:i:5	MD:Z:1A8	NM:i:9
+r_norg	0	chr1	1	60	10M	*	0	0	ACGTACGTAC	IIIIIIIIII	XX:i:5	NM:i:9
+`
+	refPath := parityPath(t, "calmd/ref.fa")
+	var buf bytes.Buffer
+	if err := Calmd(strings.NewReader(samText), &buf, refPath, CalmdOptions{DropTags: true}, nil); err != nil {
+		t.Fatalf("Calmd: %v", err)
+	}
+	got := indexCalmdSAM(t, buf.String())
+
+	rg := got["r_rg"]
+	if rg == nil {
+		t.Fatalf("r_rg missing")
+	}
+	if len(rg.Aux) != 1 || rg.Aux[0].Tag != "RG" {
+		t.Errorf("r_rg aux = %v, want only RG", rg.Aux)
+	}
+	if v, _ := rg.Aux[0].String(); v != "grp1" {
+		t.Errorf("r_rg RG = %q, want grp1", v)
+	}
+	if _, ok := rg.GetAux("MD"); ok {
+		t.Errorf("r_rg kept MD (should be dropped after fill)")
+	}
+	if _, ok := rg.GetAux("NM"); ok {
+		t.Errorf("r_rg kept NM (should be dropped after fill)")
+	}
+
+	norg := got["r_norg"]
+	if norg == nil {
+		t.Fatalf("r_norg missing")
+	}
+	if len(norg.Aux) != 0 {
+		t.Errorf("r_norg aux = %v, want empty (no RG to keep)", norg.Aux)
+	}
+}
+
+// TestCalmd_MaxNM verifies the -n flag masks the matching bases of a
+// high-NM read (SEQ -> '=', qual -> 0) while leaving a low-NM read and the
+// emitted NM/MD untouched.
+func TestCalmd_MaxNM(t *testing.T) {
+	// chr1 ref = ACGTACGTAC...
+	//   r_hi  ATGTACGAAC: mismatches at idx 1 (T/C) and idx 7 (A/T) -> NM=2.
+	//   r_lo  ACGTTCGTAC: mismatch at idx 4 (T/A) -> NM=1.
+	samText := `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:52
+r_hi	0	chr1	1	60	10M	*	0	0	ATGTACGAAC	IIIIIIIIII
+r_lo	0	chr1	1	60	10M	*	0	0	ACGTTCGTAC	IIIIIIIIII
+`
+	refPath := parityPath(t, "calmd/ref.fa")
+	var buf bytes.Buffer
+	if err := Calmd(strings.NewReader(samText), &buf, refPath, CalmdOptions{MaxNM: 2}, nil); err != nil {
+		t.Fatalf("Calmd: %v", err)
+	}
+	got := indexCalmdSAM(t, buf.String())
+
+	// r_hi has NM=2 >= 2: matching bases masked, mismatches (idx 1,7) kept.
+	hi := got["r_hi"]
+	if hi == nil {
+		t.Fatalf("r_hi missing")
+	}
+	if hi.Seq != "=T=====A==" {
+		t.Errorf("r_hi masked SEQ = %q, want %q", hi.Seq, "=T=====A==")
+	}
+	wantQual := []byte{0, 40, 0, 0, 0, 0, 0, 40, 0, 0}
+	if !bytes.Equal(hi.Qual, wantQual) {
+		t.Errorf("r_hi masked qual = %v, want %v", hi.Qual, wantQual)
+	}
+	if md, _ := hi.GetAux("MD"); true {
+		s, _ := md.String()
+		if s != "1C5T2" {
+			t.Errorf("r_hi MD = %q, want 1C5T2 (unchanged by masking)", s)
+		}
+	}
+	if nm, _ := hi.GetAux("NM"); true {
+		v, _ := nm.Int()
+		if v != 2 {
+			t.Errorf("r_hi NM = %d, want 2 (unchanged by masking)", v)
+		}
+	}
+
+	// r_lo has NM=1 < 2: untouched.
+	lo := got["r_lo"]
+	if lo == nil {
+		t.Fatalf("r_lo missing")
+	}
+	if lo.Seq != "ACGTTCGTAC" {
+		t.Errorf("r_lo SEQ = %q, want unchanged ACGTTCGTAC", lo.Seq)
+	}
+	loQual := []byte{40, 40, 40, 40, 40, 40, 40, 40, 40, 40}
+	if !bytes.Equal(lo.Qual, loQual) {
+		t.Errorf("r_lo qual = %v, want all 40 (unchanged)", lo.Qual)
+	}
+}
+
 // indexCalmdSAM parses SAM body lines into a QNAME → *sam.Record map.
 // Helper used across calmd tests; header lines are silently skipped.
 func indexCalmdSAM(t *testing.T, text string) map[string]*sam.Record {

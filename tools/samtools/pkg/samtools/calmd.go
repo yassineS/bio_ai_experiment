@@ -59,6 +59,17 @@ type CalmdOptions struct {
 	// Quiet suppresses the per-record "different NM/MD" stderr line when an
 	// existing tag is overwritten with a different value.
 	Quiet bool
+	// DropTags drops every aux tag except RG (the -d flag). Upstream applies
+	// this after the freshly-computed NM/MD have been written, so the
+	// recomputed NM/MD are dropped too; only RG survives.
+	DropTags bool
+	// BinQual reduces base-quality resolution (the -q flag): each quality
+	// value >= 3 is mapped to qual/10*10 + 7.
+	BinQual bool
+	// MaxNM, when > 0, masks the matching bases of any read whose computed
+	// NM is >= MaxNM (the -n flag). Matching SEQ bases become '=' and their
+	// qualities become 0. The emitted NM/MD are unaffected.
+	MaxNM int
 }
 
 // Calmd reads SAM/BAM records from in, fills in MD + NM aux tags by
@@ -124,10 +135,21 @@ func Calmd(in io.Reader, out io.Writer, refPath string, opts CalmdOptions, warnW
 		if eerr != nil {
 			return eerr
 		}
-		updateNMAux(rec, nm, opts.Quiet, warnW)
-		updateMDAux(rec, md, opts.Quiet, warnW)
 		if opts.UseEqual && edited != "" {
 			rec.Seq = edited
+		}
+		// Upstream ordering (bam_md.c): max-NM masking → write NM → write
+		// MD → DROP_TAG → BIN_QUAL.
+		if opts.MaxNM > 0 && nm >= opts.MaxNM {
+			maskMatches(rec, curSeq)
+		}
+		updateNMAux(rec, nm, opts.Quiet, warnW)
+		updateMDAux(rec, md, opts.Quiet, warnW)
+		if opts.DropTags {
+			dropOtherTags(rec)
+		}
+		if opts.BinQual {
+			binQual(rec)
 		}
 		if err := w.Write(rec); err != nil {
 			return err
@@ -177,26 +199,14 @@ func fillMDNM(rec *sam.Record, ref []byte, useEqual bool) (string, int, string, 
 					truncated = true
 					break
 				}
-				readBase := upperByte(seq[qpos+j])
-				refBase := upperByte(ref[rpos+j])
-				match := readBase == refBase && readBase != 'N' && refBase != 'N'
-				// Upstream treats read N (4-bit code 15) vs ref N as a
-				// mismatch but treats read "=" (code 0) as a match against
-				// anything. We don't carry the BAM 4-bit code through Go's
-				// string SEQ, so the second case only matters when the
-				// caller has already injected '=' bases — treat them as
-				// matches too.
-				if readBase == '=' {
-					match = true
-				}
-				if match {
+				if baseMatches(seq[qpos+j], ref[rpos+j]) {
 					matched++
 					if useEqual {
 						edited[qpos+j] = '='
 					}
 				} else {
 					flushRun()
-					mdBuf = append(mdBuf, refBase)
+					mdBuf = append(mdBuf, upperByte(ref[rpos+j]))
 					nm++
 				}
 			}
@@ -261,6 +271,88 @@ func upperByte(b byte) byte {
 		return b - ('a' - 'A')
 	}
 	return b
+}
+
+// baseMatches reports whether the read base readByte matches the reference
+// base refByte for MD/NM purposes. It mirrors upstream bam_md.c's test
+// `(c1==c2 && c1!=15 && c2!=15) || c1==0`: equal non-N bases match, an N on
+// either side is a mismatch, and a read base of '=' (BAM 4-bit code 0)
+// matches anything.
+func baseMatches(readByte, refByte byte) bool {
+	readBase := upperByte(readByte)
+	if readBase == '=' {
+		return true
+	}
+	refBase := upperByte(refByte)
+	return readBase == refBase && readBase != 'N' && refBase != 'N'
+}
+
+// maskMatches rewrites every matching M/=/X-op SEQ base of rec to '=' and
+// sets its quality to 0, mirroring upstream's max-NM masking pass
+// (bam_md.c:135-155). The CIGAR walk and base-match test reuse the same
+// out-of-bounds break semantics and baseMatches comparison as fillMDNM.
+func maskMatches(rec *sam.Record, ref []byte) {
+	seq := []byte(rec.Seq)
+	rpos := int(rec.Pos) - 1
+	if rpos < 0 {
+		rpos = 0
+	}
+	qpos := 0
+	for _, op := range rec.Cigar {
+		oplen := int(op.Length())
+		switch op.Op() {
+		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			truncated := false
+			for j := 0; j < oplen; j++ {
+				if rpos+j >= len(ref) || qpos+j >= len(seq) {
+					truncated = true
+					break
+				}
+				if baseMatches(seq[qpos+j], ref[rpos+j]) {
+					seq[qpos+j] = '='
+					if qpos+j < len(rec.Qual) {
+						rec.Qual[qpos+j] = 0
+					}
+				}
+			}
+			if truncated {
+				rec.Seq = string(seq)
+				return
+			}
+			rpos += oplen
+			qpos += oplen
+		case sam.CigarDeletion, sam.CigarSkipped:
+			rpos += oplen
+		case sam.CigarInsertion, sam.CigarSoftClip:
+			qpos += oplen
+		}
+	}
+	rec.Seq = string(seq)
+}
+
+// dropOtherTags removes every aux field except RG, mirroring upstream's
+// DROP_TAG handling (bam_md.c:199-202). When the record has no RG tag all
+// aux fields are dropped.
+func dropOtherTags(rec *sam.Record) {
+	kept := rec.Aux[:0]
+	for _, a := range rec.Aux {
+		if a.Tag == "RG" {
+			kept = append(kept, a)
+		}
+	}
+	rec.Aux = kept
+	rebuildAuxIndex(rec)
+}
+
+// binQual reduces the resolution of rec's base qualities: each value >= 3
+// becomes qual/10*10 + 7 (integer division), mirroring upstream's BIN_QUAL
+// handling (bam_md.c:204-208). Values below 3 are left untouched.
+func binQual(rec *sam.Record) {
+	for i, q := range rec.Qual {
+		if q >= 3 {
+			rec.Qual[i] = q/10*10 + 7
+		}
+	}
 }
 
 // updateNMAux sets / replaces the NM:i: aux. Mirrors upstream's "different NM"
