@@ -4,16 +4,16 @@
 // sections (RL/FRL/LRL), the MAPQ and IS histograms, the per-cycle quality
 // histograms (FFQ/LFQ), the GC-content sections (GCF/GCL), the ACGT-content
 // sections (GCC/GCT), the indel sections (IC/ID), the leading CHK checksum
-// block and the COV coverage-distribution histogram are all byte-faithful to
-// upstream. PARITY_VALIDATION.md tracks which sections are byte-faithful vs.
-// deferred.
+// block, the COV coverage-distribution histogram and the GCD GC-depth
+// distribution are all byte-faithful to upstream. PARITY_VALIDATION.md tracks
+// which sections are byte-faithful vs. deferred.
 //
 // BWA-style quality trimming (-q/--trim-quality) feeds the "bases trimmed"
 // SN counter and --target-regions restricts every counter to a target file.
 //
 // Skipped intentionally for v1 (documented):
-//   - GCD GC-depth distribution (requires reference bases).
-//   - OXC oxidation-context counts (requires reference bases).
+//   - MPC mismatches-per-cycle (requires reference bases).
+//   - RFS reference statistics and the FBC/FTC/LBC/LTC barcode sections.
 //   - --remove-overlaps (single-record stats are unaffected by overlap
 //     removal for the counters we emit).
 package samtools
@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -177,9 +178,13 @@ func isSpaceByte(b byte) bool {
 
 // StatsOptions configures the Stats run.
 type StatsOptions struct {
-	// RefSeq path; accepted but only the optional sections that need a
-	// reference are gated on it (currently none in v1).
+	// RefSeq is the path to an indexed reference FASTA (-r/--ref-seq). When
+	// set, the GCD GC-depth distribution derives GC content from the
+	// reference rather than approximating it from the read sequences.
 	RefSeq string
+	// GcdBinSize is the width, in reference bases, of one GC-depth bin
+	// (--GC-depth). Zero selects the upstream default of 20000.
+	GcdBinSize int
 	// Coverage is the raw "MIN,MAX,STEP" string passed via -c; parsed to
 	// configure the COV coverage-distribution bins (default "1,1000,1").
 	Coverage string
@@ -346,6 +351,31 @@ type StatsCounters struct {
 	regCursor map[string]int
 	regFrom   int32
 	regTo     int32
+
+	// GCD GC-depth distribution. The reference is split into gcdBinSize-wide
+	// segments and per segment the read depth and GC content are recorded;
+	// at output the segments are sorted by GC and depth percentiles are
+	// reported. gcd holds one entry per segment, accumulated only for
+	// coordinate-sorted input (like COV). Mirroring upstream's igcd/ngcd
+	// indexing, gcd[0] is always an empty placeholder and a freshly started
+	// segment is gcd[gcdIdx] with gcdIdx incremented first; the slice
+	// therefore holds gcdIdx+1 entries. gcdPos is the reference start of the
+	// current segment (-1 = none yet), gcdContig the contig it lies on.
+	// gcdRef is the reference reader, non-nil only when --ref-seq is set.
+	gcd        []gcDepth
+	gcdIdx     int
+	gcdPos     int32
+	gcdContig  string
+	gcdBinSize int
+	gcdRef     *fasta.RandomAccess
+	gcdRefLens map[string]int64
+}
+
+// gcDepth mirrors upstream stats.c's gc_depth_t: one GC-depth segment holding
+// an accumulated GC value and a read-depth count.
+type gcDepth struct {
+	gc    float64
+	depth uint32
 }
 
 // Buffer dimensions mirroring upstream stats.c initial allocation.
@@ -388,6 +418,9 @@ func newStatsCounters() *StatsCounters {
 		delCycle2nd: make(map[int]int64),
 		mates:       make(map[string]mateInfo),
 		covWindow:   make(map[int32]int32),
+		// gcdPos == -1 marks "no GC-depth segment started yet", mirroring
+		// upstream stats.c's gcd_pos = -1LL initialiser.
+		gcdPos: -1,
 	}
 }
 
@@ -418,6 +451,25 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	// Compute the COV bin geometry once up front so depth can be binned
 	// incrementally during the streaming flush.
 	c.initCovBins(opts)
+	// GCD GC-depth bin width (--GC-depth, default 20000 reference bases).
+	c.gcdBinSize = opts.GcdBinSize
+	if c.gcdBinSize <= 0 {
+		c.gcdBinSize = 20000
+	}
+	// --ref-seq: open the reference FASTA so GCD can derive GC content from
+	// the reference rather than approximating it from the read sequences.
+	if opts.RefSeq != "" {
+		ref, rerr := fasta.OpenRandomAccess(opts.RefSeq)
+		if rerr != nil {
+			return fmt.Errorf("could not load faidx: %s", opts.RefSeq)
+		}
+		defer ref.Close()
+		c.gcdRef = ref
+		c.gcdRefLens = make(map[string]int64)
+		for _, e := range ref.Index().Entries() {
+			c.gcdRefLens[e.Name] = e.Length
+		}
+	}
 	// --target-regions: parse the target file and prepare per-reference scan
 	// cursors. Every counter is then restricted to reads overlapping a
 	// listed interval (see isInRegions).
@@ -519,6 +571,12 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 			// the CIGAR of every record reaching collect_stats (only
 			// secondary reads return early).
 			c.accumulateCoverage(rec)
+			// GCD likewise folds in supplementary alignments — upstream's
+			// GC-depth block sits after the IS_UNMAPPED early-return and so
+			// runs for every mapped non-secondary record. A supplementary
+			// read carries a GC count of zero because upstream's gc_count
+			// comes from collect_orig_read_stats, which is IS_ORIGINAL-only.
+			c.accumulateGCD(rec, 0)
 		}
 		return nil
 	}
@@ -576,8 +634,9 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 	}
 
 	// Per-cycle quality, base-content and GC accumulation. Mirrors upstream
-	// collect_orig_read_stats — runs for every QC-passed primary record.
-	c.collectCycleStats(rec, opts)
+	// collect_orig_read_stats — runs for every QC-passed primary record. The
+	// returned G+C base count feeds the GC-depth distribution.
+	gcCount := c.collectCycleStats(rec, opts)
 
 	if rec.IsMapped() {
 		c.ReadsMapped++
@@ -618,9 +677,10 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 	// Indel distribution and per-cycle indel counts (mapped reads only).
 	c.countIndels(rec)
 
-	// COV coverage-distribution depth (mapped reads only).
+	// COV coverage-distribution depth and GCD GC-depth (mapped reads only).
 	if rec.IsMapped() {
 		c.accumulateCoverage(rec)
+		c.accumulateGCD(rec, gcCount)
 	}
 
 	// Mismatches via NM aux tag.
@@ -864,8 +924,9 @@ func growQuals(sl []cycleQuals, n int) []cycleQuals {
 // collectCycleStats folds one QC-passed primary record into the per-cycle
 // quality, base-content and GC-content accumulators (upstream
 // collect_orig_read_stats). When -q/--trim-quality is set it also folds the
-// BWA-style trimmed-base count into BasesTrimmed.
-func (c *StatsCounters) collectCycleStats(rec *sam.Record, opts StatsOptions) {
+// BWA-style trimmed-base count into BasesTrimmed. It returns the record's
+// G+C base count, which the GC-depth accumulator consumes.
+func (c *StatsCounters) collectCycleStats(rec *sam.Record, opts StatsOptions) int {
 	seqLen := len(rec.Seq)
 	order := readOrder(rec)
 	reverse := rec.Flag&sam.FlagReverse != 0
@@ -895,7 +956,7 @@ func (c *StatsCounters) collectCycleStats(rec *sam.Record, opts StatsOptions) {
 		c.maxLen2nd = ulen
 	}
 	if seqLen == 0 {
-		return
+		return 0
 	}
 
 	c.acgtRevcomp = growCycles(c.acgtRevcomp, seqLen)
@@ -1013,6 +1074,7 @@ func (c *StatsCounters) collectCycleStats(rec *sam.Record, opts StatsOptions) {
 			quals[i][q]++
 		}
 	}
+	return gcCount
 }
 
 // countIndels folds insertion/deletion cigar operations of one mapped record
@@ -1161,6 +1223,120 @@ func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
 	}
 }
 
+// gcdReadLen returns the number of reference bases a mapped record spans for
+// GC-depth purposes: the read length plus every deletion length, mirroring
+// upstream stats.c's `readlen` variable (stats.c:1306/1316/1342). Insertions
+// and soft clips do not contribute.
+func gcdReadLen(rec *sam.Record) int32 {
+	n := int32(len(rec.Seq))
+	for _, op := range rec.Cigar {
+		if op.Char() == 'D' {
+			n += int32(op.Length())
+		}
+	}
+	return n
+}
+
+// accumulateGCD folds one mapped record into the GC-depth distribution. It is
+// a faithful port of the GCD accumulation block of upstream stats.c
+// (stats.c:1369-1415): the reference is split into gcdBinSize-wide segments
+// and per segment a read-depth count plus a GC value are recorded.
+//
+// gcCount is the record's G+C base count and is meaningful only for original
+// (non-supplementary) reads; supplementary reads pass gcCount 0, matching
+// upstream where gc_count comes from collect_orig_read_stats which runs for
+// IS_ORIGINAL records only.
+//
+// With --ref-seq the GC value is read straight from the reference window; in
+// the no-reference default it is the read's GC fraction accumulated across
+// the segment's reads and averaged at output time.
+func (c *StatsCounters) accumulateGCD(rec *sam.Record, gcCount int) {
+	seqLen := len(rec.Seq)
+	if seqLen == 0 {
+		return
+	}
+	// C uses a 0-based core.pos; rec.Pos here is 1-based.
+	pos := rec.Pos - 1
+	readLen := gcdReadLen(rec)
+
+	if c.gcdRef != nil {
+		// Reference path: start a new segment on first read, a contig change,
+		// or when the read crosses past the current segment's bin width.
+		incGcd := false
+		if c.gcdPos == -1 || c.gcdContig != rec.RName {
+			incGcd = true
+		} else if int64(c.gcdPos)+int64(c.gcdBinSize) < int64(pos)+int64(readLen) {
+			incGcd = true
+		}
+		if incGcd {
+			c.gcdIdx++
+			c.growGCD()
+			c.gcdContig = rec.RName
+			c.gcdPos = pos
+			c.gcd[c.gcdIdx].gc = c.faiGCContent(rec.RName, pos, c.gcdBinSize)
+		}
+	} else if c.gcdPos == -1 || c.gcdContig != rec.RName || pos-c.gcdPos > int32(c.gcdBinSize) {
+		// No-reference path: start a new segment on first read, a contig
+		// change, or when the read starts past the current bin's far edge.
+		c.gcdContig = rec.RName
+		c.gcdPos = pos
+		c.gcdIdx++
+		c.growGCD()
+	}
+	c.gcd[c.gcdIdx].depth++
+	if c.gcdRef == nil {
+		c.gcd[c.gcdIdx].gc += float64(gcCount) / float64(seqLen)
+	}
+}
+
+// growGCD ensures the gcd slice can hold index gcdIdx, mirroring upstream's
+// realloc_gcd_buffer. gcd[0] is always an empty placeholder.
+func (c *StatsCounters) growGCD() {
+	for len(c.gcd) <= c.gcdIdx {
+		c.gcd = append(c.gcd, gcDepth{})
+	}
+}
+
+// faiGCContent returns the GC fraction of the gcdBinSize-wide reference window
+// starting at the 0-based position pos on contig name. It mirrors upstream's
+// fai_gc_content (stats.c:610): G/C bases are counted over the known
+// (non-N, non-ambiguous) bases of the window and the count is divided by that
+// known-base total. The window is clipped to the contig end.
+func (c *StatsCounters) faiGCContent(name string, pos int32, length int) float64 {
+	contigLen, ok := c.gcdRefLens[name]
+	if !ok {
+		return 0
+	}
+	start := int64(pos)
+	end := start + int64(length)
+	if end > contigLen {
+		end = contigLen
+	}
+	if start < 0 || start >= end {
+		return 0
+	}
+	bases, err := c.gcdRef.Fetch(name, start, end)
+	if err != nil {
+		return 0
+	}
+	gc, count := 0, 0
+	for _, b := range bases {
+		// Upstream read_ref_seq (stats.c:588) folds case, so soft-masked
+		// (lowercase) reference bases count toward GC/AT just like uppercase.
+		switch b {
+		case 'C', 'G', 'c', 'g':
+			gc++
+			count++
+		case 'A', 'T', 'a', 't':
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return float64(gc) / float64(count)
+}
+
 // positionInIntervals reports whether the 1-based reference position p falls
 // inside any of the sorted, merged target intervals ivs.
 func positionInIntervals(p int32, ivs []regionInterval) bool {
@@ -1254,8 +1430,91 @@ func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 		c.writeID(bw)
 		c.writeIC(bw)
 		c.writeCOV(bw, opts)
+		c.writeGCD(bw)
 	}
 	return bw.Flush()
+}
+
+// gcdPercentile interpolates the depth at the p-th percentile across the
+// nbins consecutive GC-depth segments starting at grp. It is a faithful port
+// of upstream stats.c's gcd_percentile (stats.c:1491), including its
+// truncating float-to-int conversion and the k<=0 / k>=N edge clamps.
+func gcdPercentile(grp []gcDepth, nbins, p int) float64 {
+	n := float64(p) * float64(nbins+1) / 100.0
+	k := int(n)
+	if k <= 0 {
+		return float64(grp[0].depth)
+	}
+	if k >= nbins {
+		return float64(grp[nbins-1].depth)
+	}
+	d := n - float64(k)
+	return float64(grp[k-1].depth) + d*(float64(grp[k].depth)-float64(grp[k-1].depth))
+}
+
+// writeGCD emits the GC-depth distribution. It is only emitted for
+// coordinate-sorted input, matching upstream's is_sorted gating
+// (stats.c:1848). Each segment's accumulated GC is finalised — multiplied by
+// 100 and rounded — then the segments are sorted by GC (and depth) and
+// grouped while their rounded GC stays within 0.1; one GCD row is printed per
+// group. The columns are GC%, unique-sequence percentile, and the 10/25/50/
+// 75/90th depth percentiles scaled by average read length / bin size. This is
+// a faithful port of stats.c:1859-1891. Mirroring upstream, the gcd[0]
+// placeholder bin and the gcd indexing (gcdIdx+1 valid entries, only the
+// first gcdIdx finalised and grouped) are preserved exactly.
+func (c *StatsCounters) writeGCD(bw *bufio.Writer) {
+	if c.IsSorted != 1 {
+		return
+	}
+	fmt.Fprintln(bw, "# GC-depth. Use `grep ^GCD | cut -f 2-` to extract this part. The columns are: GC%, unique sequence percentiles, 10th, 25th, 50th, 75th and 90th depth percentile")
+	// avg_read_length mirrors stats.c:1586 — total length over the count of
+	// 1st + 2nd + other reads (i.e. Sequences).
+	avgReadLength := 0.0
+	if c.Sequences > 0 {
+		avgReadLength = float64(c.TotalLength) / float64(c.Sequences)
+	}
+	// Finalise the GC value of every segment below gcdIdx. The reference
+	// path scales the raw fraction by 100; the no-reference path averages
+	// the accumulated per-read fractions over the segment depth first.
+	for i := 0; i < c.gcdIdx && i < len(c.gcd); i++ {
+		if c.gcdRef != nil {
+			c.gcd[i].gc = math.RoundToEven(100.0 * c.gcd[i].gc)
+		} else if c.gcd[i].depth > 0 {
+			c.gcd[i].gc = math.RoundToEven(100.0 * c.gcd[i].gc / float64(c.gcd[i].depth))
+		}
+	}
+	// Sort the gcdIdx+1 valid entries by GC then depth (upstream gcd_cmp).
+	if len(c.gcd) > 0 {
+		n := c.gcdIdx + 1
+		if n > len(c.gcd) {
+			n = len(c.gcd)
+		}
+		sort.SliceStable(c.gcd[:n], func(a, b int) bool {
+			if c.gcd[a].gc != c.gcd[b].gc {
+				return c.gcd[a].gc < c.gcd[b].gc
+			}
+			return c.gcd[a].depth < c.gcd[b].depth
+		})
+	}
+	igcd := 0
+	for igcd < c.gcdIdx {
+		gc := c.gcd[igcd].gc
+		nbins := 0
+		for itmp := igcd; itmp < c.gcdIdx && math.Abs(c.gcd[itmp].gc-gc) < 0.1; itmp++ {
+			nbins++
+		}
+		grp := c.gcd[igcd : igcd+nbins]
+		uniq := float64(igcd+nbins+1) * 100.0 / float64(c.gcdIdx+1)
+		scale := avgReadLength / float64(c.gcdBinSize)
+		fmt.Fprintf(bw, "GCD\t%.1f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\n",
+			gc, uniq,
+			gcdPercentile(grp, nbins, 10)*scale,
+			gcdPercentile(grp, nbins, 25)*scale,
+			gcdPercentile(grp, nbins, 50)*scale,
+			gcdPercentile(grp, nbins, 75)*scale,
+			gcdPercentile(grp, nbins, 90)*scale)
+		igcd += nbins
+	}
 }
 
 // writeCHK emits the leading CRC32 checksum block (read names, sequences,

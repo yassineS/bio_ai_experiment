@@ -1412,10 +1412,9 @@ single-pass streaming model.
 **`stats` implemented sections.** The per-cycle quality matrices
 **FFQ/LFQ**, the GC-content sections **GCF/GCL**, the ACGT-content
 sections **GCC/GCT**, the indel sections **IC/ID**, the leading **CHK**
-CRC32 checksum block and the **COV** coverage-distribution histogram are
-byte-faithful to upstream — validated against the vendored `.sam`
-fixtures. (GCC/GCT are read-derived and need no reference; only the
-GC-*depth* section GCD needs reference bases.) CHK sums the per-record
+CRC32 checksum block, the **COV** coverage-distribution histogram and
+the **GCD** GC-depth distribution are byte-faithful to upstream —
+validated against the vendored `.sam` fixtures. CHK sums the per-record
 CRC32 of read names, the BAM 4-bit-packed sequence and the quality
 bytes; COV bins each reference position's M/=/X read depth via the
 `-c MIN,MAX,STEP` option (default `1,1000,1`) and is emitted only for
@@ -1423,6 +1422,17 @@ coordinate-sorted input, matching upstream's `is_sorted` gating. COV
 depth is accumulated in a bounded per-contig sliding window that is
 flushed as records advance (mirroring upstream's `cov_rbuf` ring
 buffer), so COV memory is O(longest read span), not O(genome).
+
+GCD splits the reference into `--GC-depth`-wide segments (default
+20000 bases) and records per-segment read depth plus GC content, then
+at output sorts segments by GC and reports depth percentiles. Both
+upstream code paths are ported: the default no-reference path
+approximates GC content from the read sequences, while the
+`-r/--ref-seq` reference path reads GC content from the indexed
+reference FASTA (`fai_gc_content`). Like COV, GCD is emitted only for
+coordinate-sorted input. The upstream `igcd`/`ngcd` indexing quirk —
+where `gcd[0]` is an empty placeholder and the final segment is never
+finalised before sorting — is replicated exactly for byte-parity.
 
 For unsorted input the COV section is silently omitted, whereas
 upstream aborts with `Expected coordinates in ascending order` — a
@@ -1446,8 +1456,10 @@ sections are byte-faithful to `11.stats.expected` /
 **`stats` deferred sections** (also documented in
 `PARITY_VALIDATION.md`):
 
-- GCD GC-depth distribution and OXC oxidation-context counts (require
-  reference bases).
+- MPC mismatches-per-cycle and RFS reference statistics (both require
+  reference bases), and the FBC/FTC/LBC/LTC barcode-tag tables. (There
+  is no OXC section in this samtools version — earlier roadmap text
+  that listed "OXC" was mistaken.)
 - Mate-tracking memory cap: upstream's overlap-removal pass
   (`cleanup_overlaps`) also bounds its mate hash. Our `mates` map
   currently grows unbounded — an internal-implementation limitation
@@ -1456,10 +1468,10 @@ sections are byte-faithful to `11.stats.expected` /
 
 The output emits the byte-faithful **CHK** checksum block, **SN**
 (Summary Numbers), the per-cycle and base-content sections
-(**FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID**), the **RL / MAPQ / IS** rollups and
-the **COV** coverage histogram; the remaining sections are quietly
-omitted (or, under `--sparse`, all histogram blocks are suppressed
-entirely).
+(**FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID**), the **RL / MAPQ / IS** rollups,
+the **COV** coverage histogram and the **GCD** GC-depth distribution;
+the remaining sections are quietly omitted (or, under `--sparse`, all
+histogram blocks are suppressed entirely).
 
 **Validation:** upstream fixtures from `reference_code/samtools/test/markdup/`
 and `.../test/stat/` are vendored under
