@@ -227,9 +227,44 @@ func TestParity_View_T09_SAMtoBAMtoSAM(t *testing.T) {
 	}
 }
 
-// view.t10 — CRAM input is not supported in v1.
+// view.t10 — CRAM input. samtools view auto-detects a CRAM file and
+// decodes it transparently (the CRAM seam landed in CRAM roadmap C6).
+// The fixture is upstream's reference-free v3.0 test_input_1_a.cram; the
+// oracle is the record set cram.OpenRecords yields for the same file, so
+// the documented u1 unmapped-read difference is folded in.
 func TestParity_View_T10_CRAMInput(t *testing.T) {
-	t.Skip("not yet supported: CRAM input/output; tracked in PARITY_ROADMAP.md#samtools")
+	path := openCRAMFixture(t)
+	want := cramFixtureRecordKeys(t, path)
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open CRAM fixture: %v", err)
+	}
+	defer f.Close()
+	var out bytes.Buffer
+	n, err := View(f, &out, ViewOptions{})
+	if err != nil {
+		t.Fatalf("View on CRAM: %v", err)
+	}
+	if n != len(want) {
+		t.Fatalf("View emitted %d records, want %d", n, len(want))
+	}
+	var got []string
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		got = append(got, strings.Join(fields[:4], "\t"))
+	}
+	if len(got) != len(want) {
+		t.Fatalf("re-parsed %d records, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("record %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
 }
 
 // ---- sort --------------------------------------------------------------
@@ -733,9 +768,35 @@ func TestParity_Fastq_T05_Interleaved(t *testing.T) {
 	}
 }
 
-// fastq.t06 — CRAM input.
+// fastq.t06 — CRAM input. samtools fastq auto-detects a CRAM file and
+// decodes it transparently (the CRAM seam landed in CRAM roadmap C6).
+// Every primary, non-supplementary record of the fixture must surface as
+// a FASTQ record.
 func TestParity_Fastq_T06_CRAMInput(t *testing.T) {
-	t.Skip("not yet supported: CRAM input; tracked in PARITY_ROADMAP.md#samtools")
+	path := openCRAMFixture(t)
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open CRAM fixture: %v", err)
+	}
+	defer f.Close()
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.fastq")
+	counts, err := Fastq(f, FastqOptions{OutputPath: outPath})
+	if err != nil {
+		t.Fatalf("Fastq on CRAM: %v", err)
+	}
+	if counts.Output == 0 {
+		t.Error("Fastq on CRAM emitted no records")
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read fastq output: %v", err)
+	}
+	// Each FASTQ record is four lines; the first must start with '@'.
+	if !bytes.HasPrefix(data, []byte("@")) {
+		t.Errorf("fastq output does not start with '@':\n%s", data)
+	}
 }
 
 // fastq.t07 — -T tag injection. Upstream supports an empty/star form to

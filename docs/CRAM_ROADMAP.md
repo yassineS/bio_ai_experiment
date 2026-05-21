@@ -250,3 +250,14 @@ limitation here.
   unmapped (`-1`) or multi-reference (`-2`) slice resolves to a nil span
   and the per-record reference-derived bases fall back to the 'N' fill —
   a single-reference slice is the fully-resolved path.
+- **C6** — landed. CRAM input wired into the samtools CLI. The samtools
+  subcommands all open alignment input through one seam, `sam.NewReader`;
+  the CRAM router cannot live in `pkg/htsgo/sam` (that would cycle, as
+  `cram` imports `sam`), so it lives in `pkg/htsgo/alnio`, which may
+  import both. `iohelper.DetectFormat` sniffs the `CRAM`/BAM/SAM magic;
+  `alnio.NewReader` returns a `sam.Reader` — and `*cram.RecordReader`
+  already satisfies that interface directly (matching `Header()` /
+  `Read()`), so no adapter is needed. `view`, `depth`, `fastq` and
+  `mpileup` now auto-detect and accept CRAM with no flag; `view -T`
+  threads a reference FASTA into the CRAM decoder. Verified against
+  `test_input_1_a.cram`. No import cycle (`go list -deps` confirmed).

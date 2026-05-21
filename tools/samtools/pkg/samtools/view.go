@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
@@ -85,6 +86,12 @@ type ViewOptions struct {
 	// upstream samtools' `-N ^FILE` syntax (sam_view.c:352
 	// rnhash_discard=1).
 	QNameInvert bool
+	// Reference names a FASTA file (with a sibling .fai) used as the decode
+	// reference for reference-backed CRAM input — upstream samtools view's
+	// `-T/--reference`. It is ignored for SAM and BAM input. When empty a
+	// reference-backed CRAM still decodes, with reference-derived bases
+	// filled with 'N'.
+	Reference string
 }
 
 // TagFilter is a single aux-tag predicate as derived from samtools view's
@@ -119,7 +126,7 @@ var ErrRegionsUnsupported = errors.New("samtools view: region-query support requ
 // out. When opts.Regions is non-empty View does a linear scan and filters
 // records to those overlapping any region — for indexed seek use ViewFile.
 func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
-	r, err := sam.NewReader(in)
+	r, err := alnio.NewReaderWithReference(in, opts.Reference)
 	if err != nil {
 		return 0, err
 	}

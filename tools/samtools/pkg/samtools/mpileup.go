@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -124,7 +125,7 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 			return fmt.Errorf("samtools mpileup: %w", err)
 		}
 		closers[i] = f
-		rd, err := sam.NewReader(f)
+		rd, err := alnio.NewReader(f)
 		if err != nil {
 			closeAll(closers)
 			return fmt.Errorf("samtools mpileup: %s: %w", path, err)
@@ -174,7 +175,7 @@ func Mpileup(inputs []io.Reader, out io.Writer, opts MpileupOptions, refFA *fast
 	}
 	readers := make([]sam.Reader, len(inputs))
 	for i, r := range inputs {
-		rd, err := sam.NewReader(r)
+		rd, err := alnio.NewReader(r)
 		if err != nil {
 			return fmt.Errorf("samtools mpileup: input %d: %w", i, err)
 		}

@@ -149,7 +149,9 @@ Options:
                               records whose QNAME is in FILE.
   -s, --subsample <float>     Keep fraction (or "<seed>.<frac>").
   -o, --output <file>         Output file (default stdout).
-  -T, --reference <fasta>     Accepted; CRAM is not supported in v1.
+  -T, --reference <fasta>     Reference FASTA for decoding reference-backed
+                              CRAM input (needs a sibling .fai). Ignored
+                              for SAM/BAM. CRAM input is auto-detected.
   -@, --threads <int>         Accepted; single-threaded in v1.
       --no-PG                 Suppress @PG line emission.
       --help                  Show this help.
@@ -212,7 +214,7 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &qnameFile, "N", "qname-file", "", "File of QNAMEs to keep")
 	cliflag.StringVar(fs, &subsample, "s", "subsample", "", "Subsample fraction")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output file")
-	cliflag.StringVar(fs, &refFile, "T", "reference", "", "Reference FASTA (CRAM unsupported)")
+	cliflag.StringVar(fs, &refFile, "T", "reference", "", "Reference FASTA for CRAM input")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	cliflag.BoolVar(fs, &noPG, "", "no-PG", false, "Suppress @PG line")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -257,6 +259,7 @@ func runView(args []string) int {
 		BedPath:         regFile,
 		MultiRegion:     multiRegion,
 		NoPG:            noPG,
+		Reference:       refFile,
 	}
 
 	// Honour the .bam output extension even without explicit -b.
