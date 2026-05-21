@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
@@ -1618,10 +1619,11 @@ Options:
   -f, --format FMT          Output format: fasta (default), fastq, pileup.
   -l, --line-len INT        Wrap FASTA/FASTQ lines at INT (default 70).
   -o, --output FILE         Output file (default stdout).
-  -m, --mode STR            Algorithm: simple or bayesian (default bayesian).
-                            v1 only implements simple; bayesian falls back
-                            to simple with a stderr warning.
-  -a                        Output all bases (zero-coverage positions as N).
+  -m, --mode STR            Algorithm: simple, bayesian, bayesian_r,
+                            bayesian_p, bayesian_m, bayesian_116
+                            (default bayesian, i.e. bayesian_r/RECALL).
+  -a                        Output all bases; repeat (-aa) to also emit
+                            contigs with no reads.
       --rf, --incl-flags N  Require ALL these flag bits set (accepted; v1 has
                             a fixed include set).
       --ff, --excl-flags N  Drop reads with ANY of these flag bits set
@@ -1654,7 +1656,7 @@ For simple mode (the v1 fallback):
                             make a call (default 0.75).
   -H, --het-fract FLOAT     Minimum second/best score for a het call (default 0.5).
 
-For the bayesian mode (accepted; v1 falls back to simple):
+For the bayesian mode (the default):
   -C, --cutoff INT          Bayesian cutoff quality (default 10).
       --adj-qual            Modify quality with local minima (default on).
       --no-adj-qual         Disable adj-qual.
@@ -1673,27 +1675,27 @@ For the bayesian mode (accepted; v1 falls back to simple):
   -p, --homopoly-fix        Spread low-qual bases at homopolymer ends.
       --homopoly-score FLOAT  Quality fraction adjustment for -p.
       --homopoly-redux FLOAT  Quality reduction for -p (default 0.01).
-  -t, --qual-calibration STR  Quality calibration file or :preset.
-  -X, --config STR          Predefined config (hiseq/hifi/r10.4_sup/...).
+  -t, --qual-calibration STR  Quality calibration file or :preset
+                            (accepted; the FLAT identity table is used).
+  -X, --config STR          Predefined config (accepted; not applied).
 
 Global options:
-  -T, --reference FILE      Reference FASTA (accepted; not required in v1).
+  -T, --reference FILE      Reference FASTA (accepted; not used to fill
+                            uncovered bases in v1).
   -@, --threads INT         Threads (accepted; v1 is single-threaded).
       --ignore-overlaps     Accepted; v1 does not deduplicate mate overlaps.
   -h, --help                Show this help.
   -v, --version             Show version.
 
 Notes:
-  - The upstream default mode is bayesian; v1 only implements simple, so
-    every invocation that lands on bayesian (including the default!)
-    emits a one-line stderr warning and falls back to simple. Tracked in
-    docs/PARITY_ROADMAP.md#samtools.
-  - Frequency-only counting is the default (upstream use_qual=0). Pass
-    -q/--use-qual to weight by per-base quality.
-  - In pileup mode v1 emits one row per reference position; upstream's
-    default --show-ins yes also emits extra rows with nth>0 inside each
-    insertion column — v1 does not yet emit those rows. Tracked in
-    docs/PARITY_ROADMAP.md#samtools.
+  - The default mode is bayesian (RECALL); the Gap5 posterior caller,
+    the NM-halo MAPQ adjustment, and all four bayesian sub-modes are
+    implemented.
+  - Frequency-only counting is the default for simple mode (upstream
+    use_qual=0). Pass -q/--use-qual to weight by per-base quality.
+  - -t/--qual-calibration and -X/--config are accepted but apply the
+    FLAT identity calibration only; -T reference fill of uncovered bases
+    is not yet implemented. Tracked in docs/PARITY_ROADMAP.md#samtools.
 `
 
 // consensusBayesianFlags collects the bayesian-only flag values so the
@@ -1721,6 +1723,87 @@ type consensusBayesianFlags struct {
 	config        string
 }
 
+// countFlag is a boolean-style flag that counts repeats, used for the
+// consensus -a/-aa option (upstream's repeatable `-a`).
+type countFlag int
+
+func (c *countFlag) String() string   { return strconv.Itoa(int(*c)) }
+func (c *countFlag) Set(string) error { *c++; return nil }
+func (c *countFlag) IsBoolFlag() bool { return true }
+
+// permuteFlagArgs reorders args so every recognised option flag (and its
+// value, if any) precedes the positional arguments, letting Go's flag
+// package — which otherwise stops at the first non-flag token — accept
+// flags given after the input file. It returns the reordered slice and
+// true; if anything looks unrecognised it returns (nil, false) so the
+// caller falls back to plain parsing and the normal error path.
+func permuteFlagArgs(fs *flag.FlagSet, args []string) ([]string, bool) {
+	// Collect the flag names and which take a value.
+	isBool := map[string]bool{}
+	known := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		known[f.Name] = true
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			isBool[f.Name] = true
+		}
+	})
+	known["h"], known["help"], known["v"], known["version"] = true, true, true, true
+	isBool["h"], isBool["help"], isBool["v"], isBool["version"] = true, true, true, true
+
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if len(a) < 2 || a[0] != '-' {
+			positional = append(positional, a)
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		eq := strings.IndexByte(name, '=')
+		if eq >= 0 {
+			name = name[:eq]
+		}
+		if !known[name] {
+			if a[1] != '-' && len(name) > 1 {
+				short := name[:1]
+				// Glued short-flag form "-C0": a known non-bool flag
+				// immediately followed by its value.
+				if known[short] && !isBool[short] {
+					flags = append(flags, "-"+short, name[1:])
+					continue
+				}
+				// Repeated bool short flag "-aa": expand to "-a -a".
+				if known[short] && isBool[short] {
+					allSame := true
+					for k := 0; k < len(name); k++ {
+						if name[k] != short[0] {
+							allSame = false
+							break
+						}
+					}
+					if allSame {
+						for k := 0; k < len(name); k++ {
+							flags = append(flags, "-"+short)
+						}
+						continue
+					}
+				}
+			}
+			// Unknown flag: bail and let plain parsing report it.
+			return nil, false
+		}
+		flags = append(flags, a)
+		if eq < 0 && !isBool[name] && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, positional...), true
+}
+
 func runConsensus(args []string) int {
 	fs := flag.NewFlagSet("samtools consensus", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -1729,7 +1812,7 @@ func runConsensus(args []string) int {
 		// Output / format / region.
 		formatStr string
 		modeStr   string
-		allPos    bool
+		allPos    countFlag
 		regions   multiString
 		outPath   string
 		lineLen   int
@@ -1776,7 +1859,7 @@ func runConsensus(args []string) int {
 	// consensus_opts initialisers (bam_consensus.c:2981+).
 	cliflag.StringVar(fs, &formatStr, "f", "format", "fasta", "Output format")
 	cliflag.StringVar(fs, &modeStr, "m", "mode", "bayesian", "Consensus mode")
-	cliflag.BoolVar(fs, &allPos, "a", "all", false, "Output all bases")
+	fs.Var(&allPos, "a", "Output all bases (repeat for all contigs)")
 	fs.Var(&regions, "r", "")
 	fs.Var(&regions, "region", "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "Output path")
@@ -1827,7 +1910,7 @@ func runConsensus(args []string) int {
 	cliflag.IntVar(fs, &bay.lowMQ, "", "low-MQ", 1, "Bayesian low-MQ (accepted)")
 	cliflag.IntVar(fs, &bay.highMQ, "", "high-MQ", 60, "Bayesian high-MQ (accepted)")
 	cliflag.Float64Var(fs, &bay.pHet, "", "P-het", 1.0e-3, "Bayesian P-het (accepted)")
-	cliflag.Float64Var(fs, &bay.pIndel, "", "P-indel", 1.0e-4, "Bayesian P-indel (accepted)")
+	cliflag.Float64Var(fs, &bay.pIndel, "", "P-indel", 2.0e-4, "Bayesian P-indel")
 	cliflag.Float64Var(fs, &bay.hetScale, "", "het-scale", 1.0, "Bayesian het-scale (accepted)")
 	cliflag.BoolVar(fs, &bay.homopolyFix, "p", "homopoly-fix", false, "Homopolymer fix (accepted)")
 	cliflag.Float64Var(fs, &bay.homopolyScore, "", "homopoly-score", 0.0, "Homopolymer score (accepted)")
@@ -1840,6 +1923,13 @@ func runConsensus(args []string) int {
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
+	// Upstream's consensus tests put the input BAM before its flags
+	// (e.g. `consensus in.bam -m bayesian -C 0`). Go's flag package
+	// stops at the first non-flag argument, so permute the args to put
+	// option flags first and positional arguments last.
+	if perm, ok := permuteFlagArgs(fs, args); ok {
+		args = perm
+	}
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			fmt.Print(consensusUsage)
@@ -1863,23 +1953,27 @@ func runConsensus(args []string) int {
 		return 2
 	}
 
+	// Record which flags were explicitly set so the bayesian on/off
+	// toggles (--adj-qual / --no-adj-qual etc.) and the homopoly-redux
+	// default can be distinguished from their zero values.
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+
 	// The accepted-but-not-implemented knobs (incl-flags, excl-flags,
-	// reference, ref-qual, default-qual, block-size, input-fmt-option,
-	// verbosity, and the entire bayesian-only set) live in the symbol
-	// table because cliflag took their address; we deliberately don't
-	// route them into ConsensusOptions yet. They're listed in
-	// consensusUsage and tracked in docs/PARITY_ROADMAP.md.
+	// reference, ref-qual, block-size, input-fmt-option, verbosity, and
+	// the -t/-X bayesian config knobs) live in the symbol table because
+	// cliflag took their address; we deliberately don't route them into
+	// ConsensusOptions yet. They're listed in consensusUsage and tracked
+	// in docs/PARITY_ROADMAP.md.
 	_ = inclFlags
 	_ = exclFlags
 	_ = refFasta
 	_ = refQual
-	_ = defaultQ
 	_ = blockSize
 	_ = inFmtOpt
 	_ = verbosity
 	_ = outputFmt
 	_ = writeIndex
-	_ = bay
 
 	format, ferr := samtools.ParseConsensusFormat(formatStr)
 	if ferr != nil {
@@ -1904,7 +1998,8 @@ func runConsensus(args []string) int {
 		Input:           fs.Arg(0),
 		Format:          format,
 		Mode:            mode,
-		AllPositions:    allPos,
+		AllPositions:    allPos >= 1,
+		AllContigs:      allPos >= 2,
 		Regions:         []string(regions),
 		MinDepth:        minDepth,
 		MinCallFraction: callFract,
@@ -1922,6 +2017,59 @@ func runConsensus(args []string) int {
 	opts.NoShowIns = !parseYesNo(showIns, true)
 	opts.MarkIns = markIns
 	opts.HetOnly = hetOnly
+
+	// Bayesian-mode knobs. The sub-mode comes from the -m string; the
+	// remaining knobs route straight through, with the on/off toggles
+	// resolved against which flags were explicitly given.
+	opts.SetBayesianMode(modeStr)
+	opts.ConsCutoff = bay.cutoff
+	opts.ConsCutoffSet = explicit["C"] || explicit["cutoff"]
+	opts.PHet = bay.pHet
+	opts.PIndel = bay.pIndel
+	opts.HetScale = bay.hetScale
+	opts.NMHalo = bay.nmHalo
+	opts.SCCost = bay.scCost
+	opts.ScaleMQual = bay.scaleMQ
+	opts.LowMQual = bay.lowMQ
+	opts.HighMQual = bay.highMQ
+	opts.DefaultQual = defaultQ
+	// adj-qual: default on; --no-adj-qual disables, --adj-qual forces on.
+	opts.AdjQual = true
+	if explicit["no-adj-qual"] {
+		opts.AdjQual = false
+	}
+	if explicit["adj-qual"] {
+		opts.AdjQual = true
+	}
+	opts.AdjQualSet = explicit["no-adj-qual"] || explicit["adj-qual"]
+	// use-MQ: default on; --no-use-MQ disables.
+	opts.UseMQual = true
+	if explicit["no-use-MQ"] {
+		opts.UseMQual = false
+	}
+	if explicit["use-MQ"] {
+		opts.UseMQual = true
+	}
+	opts.UseMQualSet = explicit["no-use-MQ"] || explicit["use-MQ"]
+	// adj-MQ: default on; --no-adj-MQ disables.
+	opts.NMAdjust = true
+	if explicit["no-adj-MQ"] {
+		opts.NMAdjust = false
+	}
+	if explicit["adj-MQ"] {
+		opts.NMAdjust = true
+	}
+	opts.NMAdjustSet = explicit["no-adj-MQ"] || explicit["adj-MQ"]
+	// homopoly-fix: -p sets the P_HOMOPOLY (0.5) multiplier;
+	// --homopoly-score overrides it with an explicit value.
+	if bay.homopolyFix {
+		opts.HomopolyFix = 0.5
+	}
+	if explicit["homopoly-score"] {
+		opts.HomopolyFix = bay.homopolyScore
+	}
+	opts.HomopolyRedux = bay.homopolyRedux
+	opts.HomopolyReduxSet = explicit["homopoly-redux"]
 
 	out, oerr := openOut(outPath)
 	if oerr != nil {

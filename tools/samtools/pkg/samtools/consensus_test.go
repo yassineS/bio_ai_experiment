@@ -125,13 +125,24 @@ func TestConsensus_NoCoverage_NoEmit(t *testing.T) {
 
 func TestConsensus_NoCoverage_AllPos_EmitsAllN(t *testing.T) {
 	sam := "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:4\n"
+	// -a alone does not emit fully-uncovered contigs (matches upstream:
+	// the *T.out 31/32 fixtures show empty contigs only under -aa).
 	out := runConsensusOnSAM(t, sam, ConsensusOptions{
 		Format:       ConsensusFASTA,
 		AllPositions: true,
 	})
+	if out != "" {
+		t.Errorf("-a empty contig: got %q want empty", out)
+	}
+	// -aa emits the empty contig as all-N.
+	out = runConsensusOnSAM(t, sam, ConsensusOptions{
+		Format:       ConsensusFASTA,
+		AllPositions: true,
+		AllContigs:   true,
+	})
 	want := ">chr1\nNNNN\n"
 	if out != want {
-		t.Errorf("-a empty contig: got %q want %q", out, want)
+		t.Errorf("-aa empty contig: got %q want %q", out, want)
 	}
 }
 
@@ -421,13 +432,10 @@ r4	0	chr1	1	60	1M	*	0	0	C	"
 	}
 }
 
-// TestConsensus_BayesianFallback_FromFile validates reviewer
-// correctness finding #2: default invocation (Mode=Bayesian) must
-// emit a stderr warning and fall back to simple.
-func TestConsensus_BayesianFallback_FromFile(t *testing.T) {
-	// We use ConsensusFile so that the errOut writer gets the warning
-	// — Consensus() alone doesn't take a stderr handle.
-	// Need a real file path on disk because ConsensusFile opens it.
+// TestConsensus_BayesianDefault_FromFile confirms the default
+// invocation (Mode=Bayesian) runs the real Gap5 bayesian caller with no
+// fallback warning on stderr.
+func TestConsensus_BayesianDefault_FromFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	bamPath := tmpDir + "/in.sam"
 	if err := writeStringFile(bamPath, allMatchSAM); err != nil {
@@ -440,34 +448,29 @@ func TestConsensus_BayesianFallback_FromFile(t *testing.T) {
 		Mode:   ConsensusModeBayesian,
 	}
 	if err := ConsensusFile(opts, &sout, &serr); err != nil {
-		t.Fatalf("ConsensusFile(bayesian fallback): %v", err)
+		t.Fatalf("ConsensusFile(bayesian): %v", err)
 	}
-	if !strings.Contains(serr.String(), "bayesian") {
-		t.Errorf("expected stderr warning mentioning bayesian, got %q", serr.String())
-	}
-	if !strings.Contains(serr.String(), "falling back to simple") {
-		t.Errorf("expected stderr warning mentioning 'falling back to simple', got %q", serr.String())
+	if serr.Len() != 0 {
+		t.Errorf("expected no stderr warning, got %q", serr.String())
 	}
 	if !strings.Contains(sout.String(), "ACGTA") {
-		t.Errorf("bayesian fallback should still emit consensus, got %q", sout.String())
+		t.Errorf("bayesian default should emit a consensus, got %q", sout.String())
 	}
 }
 
-// TestConsensus_BayesianFallback_LibraryCall confirms that calling
-// Consensus() directly with Mode=Bayesian also falls back (no warning,
-// because there's no stderr handle, but no crash either — the
-// behaviour is consistent with simple mode).
-func TestConsensus_BayesianFallback_LibraryCall(t *testing.T) {
+// TestConsensus_BayesianDefault_LibraryCall confirms Consensus() with
+// Mode=Bayesian runs the bayesian caller directly.
+func TestConsensus_BayesianDefault_LibraryCall(t *testing.T) {
 	var sout bytes.Buffer
 	opts := ConsensusOptions{
 		Format: ConsensusFASTA,
 		Mode:   ConsensusModeBayesian,
 	}
 	if err := Consensus(strings.NewReader(allMatchSAM), &sout, opts); err != nil {
-		t.Fatalf("Consensus(bayesian fallback): %v", err)
+		t.Fatalf("Consensus(bayesian): %v", err)
 	}
 	if !strings.Contains(sout.String(), "ACGTA") {
-		t.Errorf("bayesian fallback should still emit consensus, got %q", sout.String())
+		t.Errorf("bayesian default should emit a consensus, got %q", sout.String())
 	}
 }
 
@@ -526,11 +529,77 @@ func TestParseConsensusMode(t *testing.T) {
 	}
 }
 
-// TestConsensus_UpstreamParityStub is a deliberate skip for the
-// upstream `samtools test/consensus/` corpus. Re-enable once bayesian
-// mode lands. Tracked in docs/PARITY_ROADMAP.md#samtools.
-func TestConsensus_UpstreamParityStub(t *testing.T) {
-	t.Skip("upstream samtools/test/consensus/ corpus exercises bayesian-mode by default; simple-mode parity covered above. Re-enable once bayesian mode lands.")
+// TestConsensus_BayesianUpstreamParity checks our bayesian output
+// byte-for-byte against the golden files in the vendored upstream
+// `reference_code/samtools/test/consensus/` corpus. Fixtures requiring a
+// reference FASTA (-T, the *T.out goldens) are out of scope for v1 and
+// are not exercised here; see docs/PARITY_ROADMAP.md#samtools.
+func TestConsensus_BayesianUpstreamParity(t *testing.T) {
+	const fixDir = "../../../../reference_code/samtools/test/consensus"
+	if _, err := os.Stat(fixDir); err != nil {
+		t.Skipf("upstream consensus fixtures not present (%v); run `git submodule update --init reference_code/samtools`", err)
+	}
+	cases := []struct {
+		golden string
+		input  string
+		opts   ConsensusOptions
+	}{
+		{"18q.out", "consen1.sam", consBayes(ConsensusFASTQ, 0, false, false, "", "")},
+		{"19q.out", "consen1.sam", consBayes(ConsensusFASTQ, 19, false, false, "", "")},
+		{"18p.out", "consen1.sam", consBayes(ConsensusPileup, 0, false, false, "", "")},
+		{"19p.out", "consen1.sam", consBayes(ConsensusPileup, 19, false, false, "", "")},
+		{"20p.out", "consen1.sam", consBayes(ConsensusPileup, 30, false, true, "", "")},
+		{"21p.out", "consen1.sam", consBayes(ConsensusPileup, 31, false, true, "", "")},
+		{"30.out", "consen1c.sam", consBayes(ConsensusFASTQ, 0, true, false, "yes", "no")},
+		{"31.out", "consen1c.sam", consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 1)},
+		{"32.out", "consen1c.sam", consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 2)},
+		{"40.out", "consen1c.sam", consBayes(ConsensusPileup, 0, true, false, "yes", "no")},
+		{"41.out", "consen1c.sam", consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 1)},
+		{"42.out", "consen1c.sam", consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 2)},
+	}
+	for _, c := range cases {
+		t.Run(c.golden, func(t *testing.T) {
+			samBytes, err := os.ReadFile(fixDir + "/" + c.input)
+			if err != nil {
+				t.Fatalf("read input %s: %v", c.input, err)
+			}
+			want, err := os.ReadFile(fixDir + "/expected/" + c.golden)
+			if err != nil {
+				t.Fatalf("read golden %s: %v", c.golden, err)
+			}
+			got := runConsensusOnSAM(t, string(samBytes), c.opts)
+			if got != string(want) {
+				t.Errorf("%s mismatch:\n--- got ---\n%s\n--- want ---\n%s", c.golden, got, want)
+			}
+		})
+	}
+}
+
+// consBayes builds a bayesian-mode ConsensusOptions for the parity test.
+func consBayes(f ConsensusFormat, cutoff int, useMQ, ambig bool, showDel, showIns string) ConsensusOptions {
+	return consBayesA(f, cutoff, useMQ, ambig, showDel, showIns, 0)
+}
+
+// consBayesA is consBayes with an explicit -a level (0/1/2).
+func consBayesA(f ConsensusFormat, cutoff int, useMQ, ambig bool, showDel, showIns string, allLevel int) ConsensusOptions {
+	o := ConsensusOptions{
+		Format:        f,
+		Mode:          ConsensusModeBayesian,
+		ConsCutoff:    cutoff,
+		ConsCutoffSet: true,
+		AmbigCodes:    ambig,
+		UseMQual:      useMQ,
+		UseMQualSet:   true,
+		AllPositions:  allLevel >= 1,
+		AllContigs:    allLevel >= 2,
+	}
+	if showDel == "yes" {
+		o.ShowDel = true
+	}
+	if showIns == "no" {
+		o.NoShowIns = true
+	}
+	return o
 }
 
 // Table-driven smoke test across all three formats sharing a fixture.
