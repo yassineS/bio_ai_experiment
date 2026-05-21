@@ -4,7 +4,13 @@ Companion to [`CRAM_DESIGN.md`](CRAM_DESIGN.md) (the *why* and the
 up-front decisions). This doc is the *how*: the shopping plan, the
 PR-by-PR execution sequence, and the testing + compliance strategy.
 
-**Status: in execution.** Updated as milestones land.
+**Status: core complete (C1–C10 landed).** Pure-Go CRAM v3.0/v3.1
+read and write, reference resolution, `.crai` index read/write, and
+samtools-CLI integration are all merged. Remaining work is optional:
+C11 (lossy quality binning) and the rare per-block codecs — LZMA
+(C-LZMA) and the htscodecs range / fqzcomp / name-tokeniser codecs —
+which a stream may currently use only to be rejected with a clear
+"unsupported codec" error.
 
 ---
 
