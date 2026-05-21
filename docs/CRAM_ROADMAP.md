@@ -275,12 +275,18 @@ limitation here.
   verifies the v3.1 fixture `cram_size/mpileup.1.cram` is recognised as
   CRAM 3.1, decodes to its full record set, genuinely exercises the
   rANS 4x16 block codec (every block decompresses to its declared
-  size). The arith_dynamic range coder (method 6) and the fqzcomp
-  quality-score codec (method 7) have since landed in
-  `pkg/htsgo/cram/codec/` — both byte-exact against the htscodecs
-  corpus — leaving only the name tokeniser (method 8) unimplemented;
-  it is rejected with a clear error rather than mis-decoded, and slots
-  in as a dedicated future slice the same way C-LZMA handled method 3.
+  size). The arith_dynamic range coder (method 6), the fqzcomp
+  quality-score codec (method 7) and the name tokeniser (method 8)
+  have since all landed in `pkg/htsgo/cram/codec/`. The name
+  tokeniser (`nametok.go` / `nametok_encode.go`) decodes byte-exact
+  against the full htscodecs tok3 vector set (110 vectors, 11 corpora
+  x 10 levels); its encoder round-trips at every level. Encode is not
+  byte-exact against the committed tok3 vectors — those were produced
+  by an older htscodecs whose rANS 4x16 encoder did not apply the PACK
+  transform in some token-block paths, so the current sub-codec emits
+  different (often smaller) streams; the htscodecs test harness itself
+  only ever decodes those vectors, never re-encodes to match them. All
+  CRAM block compression methods (0-8) are now supported.
 - **C8** — landed. The CRAM v3.0 writer (`writer.go`, `writeencode.go`,
   `writeheader.go`, `writefeature.go`, `writetag.go`): a `RecordWriter`
   inverting the reader — `sam.Record`s → data series → blocks → slices

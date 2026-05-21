@@ -107,7 +107,7 @@ func TestDecompressSizeMismatch(t *testing.T) {
 // TestDecompressUnsupportedMethods checks every out-of-scope compression
 // method returns a clear unsupported-method error rather than panicking.
 func TestDecompressUnsupportedMethods(t *testing.T) {
-	for _, m := range []CompressionMethod{CompNameTok, 250} {
+	for _, m := range []CompressionMethod{250} {
 		b := Block{Method: m, Data: []byte{1, 2, 3}}
 		_, err := b.Decompress()
 		if err == nil {
@@ -131,15 +131,15 @@ func TestDecompressCorruptGzip(t *testing.T) {
 
 // TestSupportedMethod pins the SupportedMethod predicate.
 func TestSupportedMethod(t *testing.T) {
-	supported := []CompressionMethod{CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16, CompArith, CompFQZComp}
+	supported := []CompressionMethod{CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16, CompArith, CompFQZComp, CompNameTok}
 	for _, m := range supported {
 		if !(&Block{Method: m}).SupportedMethod() {
 			t.Errorf("method %s should be supported", m)
 		}
 	}
-	for _, m := range []CompressionMethod{CompNameTok} {
+	for _, m := range []CompressionMethod{250} {
 		if (&Block{Method: m}).SupportedMethod() {
-			t.Errorf("method %s should not be supported", m)
+			t.Errorf("method %d should not be supported", byte(m))
 		}
 	}
 }
@@ -350,5 +350,29 @@ func TestReadBlockNegativeSize(t *testing.T) {
 	buf.Write(encITF8(0))
 	if _, err := readBlock(bytes.NewReader(buf.Bytes()), v3Def, 1<<20); err == nil {
 		t.Errorf("expected error for negative compressed size")
+	}
+}
+
+// TestDecompressNameTok checks the name-tokeniser (method 8) dispatch
+// path: a block built with the codec's encoder decompresses through
+// Block.Decompress to the NUL-joined read names.
+func TestDecompressNameTok(t *testing.T) {
+	names := []byte("HS25_09827:2:2215:4133:22216#49\n" +
+		"HS25_09827:2:1212:15822:94146#49\n" +
+		"HS25_09827:2:1209:9304:17097#49\n")
+	want := bytes.ReplaceAll(names, []byte{'\n'}, []byte{0})
+	for _, lvl := range []int{1, 9, 11, 19} {
+		comp, err := codec.NameTokEncode(names, lvl)
+		if err != nil {
+			t.Fatalf("NameTokEncode L%d: %v", lvl, err)
+		}
+		b := Block{Method: CompNameTok, Data: comp, UncompressedSize: int32(len(want))}
+		out, err := b.Decompress()
+		if err != nil {
+			t.Fatalf("Decompress name-tokeniser L%d: %v", lvl, err)
+		}
+		if !bytes.Equal(out, want) {
+			t.Errorf("name-tokeniser block L%d did not round-trip", lvl)
+		}
 	}
 }
