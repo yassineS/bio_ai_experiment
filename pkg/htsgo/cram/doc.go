@@ -49,7 +49,10 @@
 // optimised for compression ratio and is not byte-identical to
 // samtools' own encoder. A record shape the simple writer cannot encode
 // (an unknown reference, a CIGAR/SEQ length mismatch, an unsupported
-// CIGAR operation) is rejected by Write with a clear error.
+// CIGAR operation) is rejected by Write with a clear error. The CIGAR
+// match operators =, X and M all encode as a copy of the read bases, so
+// a = or X run re-reads as M — expected CRAM lossiness, the same kind
+// as an unmapped read losing its MAPQ and CIGAR.
 //
 // Reference resolution (C5) completes the reference-backed decode path.
 // A reference-free CRAM file is fully recoverable on its own; a

@@ -107,5 +107,10 @@ func FuzzRecordWriter(f *testing.F) {
 		if len(out) != len(records) {
 			t.Fatalf("round-trip record count = %d, want %d", len(out), len(records))
 		}
+		// A written CRAM must not just re-read — it must re-read to the
+		// same records. Check every field of every record.
+		for i := range records {
+			assertRecordEqual(t, i, out[i], records[i])
+		}
 	})
 }

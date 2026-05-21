@@ -209,6 +209,8 @@ func encodeSliceHeader(f sliceHeaderFields) []byte {
 	b = appendITF8(b, f.alignmentSpan)
 	b = appendITF8(b, f.numRecords)
 	b = appendLTF8(b, f.recordCounter)
+	// The slice header carries the block count twice: the NumBlocks
+	// field and, separately, the length of the block-content-id array.
 	b = appendITF8(b, int32(len(f.contentIDs)))
 	b = appendITF8(b, int32(len(f.contentIDs)))
 	for _, id := range f.contentIDs {
@@ -355,7 +357,7 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 	// optimisation).
 	cf := int32(cfQualityPreserved | cfDetached)
 
-	b.bf = appendITF8(b.bf, int32(int16(rec.Flag)))
+	b.bf = appendITF8(b.bf, int32(rec.Flag))
 	b.cf = appendITF8(b.cf, cf)
 
 	refID := recordRefID(rec, e.refIndex)
