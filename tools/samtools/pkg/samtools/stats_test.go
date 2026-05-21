@@ -106,7 +106,7 @@ func TestStatsCycleSectionParity(t *testing.T) {
 		{"8_secondary", "8_secondary.sam", "8.stats.expected"},
 		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected"},
 	}
-	sections := []string{"FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "IC", "ID"}
+	sections := []string{"FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "IC", "ID"}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			in, err := os.Open(statsFixture(t, tc.input))

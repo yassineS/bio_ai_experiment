@@ -1468,12 +1468,23 @@ entry, with `-t` it reports the merged target intervals as
 the `-1` lack-of-data sentinel. Validated against `test.pl` stats cases
 1-8 (`-r test.fa`, MPC) and 16/17/19 (`--ref-stats`, RFS).
 
+**`stats` per-fragment ACGT sections.** **FBC/LBC** (ACGT content per
+cycle for first / last fragments) and **FTC/LTC** (the matching
+A/C/G/T/N raw-counter totals) are implemented and byte-faithful to the
+vendored `stat/` fixtures. They derive from the same per-fragment
+cycle buffers GCC/GCT already accumulate. Note: despite the name these
+are NOT barcode tables — earlier roadmap text mislabelled them, and
+there is no OXC section in this samtools version.
+
 **`stats` deferred sections** (also documented in
 `PARITY_VALIDATION.md`):
 
-- The FBC/FTC/LBC/LTC barcode-tag tables. (There is no OXC section in
-  this samtools version — earlier roadmap text that listed "OXC" was
-  mistaken.)
+- The `--barcodes` feature: `collect_barcode_stats` plus the dynamic
+  `<TAG>C` / `<TAG>Q` per-barcode content/quality tables. Niche; the
+  default invocation does not emit these.
+- `--sparse` (`-x`) currently suppresses every histogram block; upstream
+  `-x` only thins IS rows that have no insertions. A focused follow-up
+  should emit all sections under `-x` and thin only the IS rows.
 - Mate-tracking memory cap: upstream's overlap-removal pass
   (`cleanup_overlaps`) also bounds its mate hash. Our `mates` map
   currently grows unbounded — an internal-implementation limitation
@@ -1485,7 +1496,7 @@ the `-1` lack-of-data sentinel. Validated against `test.pl` stats cases
 
 The output emits the byte-faithful **CHK** checksum block, **SN**
 (Summary Numbers), the per-cycle and base-content sections
-(**FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID**), the **MPC** mismatches-per-cycle
+(**FFQ/LFQ/GCF/GCL/GCC/GCT/FBC/FTC/LBC/LTC/IC/ID**), the **MPC** mismatches-per-cycle
 matrix, the **RL / MAPQ / IS** rollups, the **COV** coverage histogram,
 the **GCD** GC-depth distribution and the **RFS** reference-statistics
 section; the remaining sections are quietly omitted (or, under
