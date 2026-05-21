@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -82,7 +83,7 @@ type FastqCounts struct {
 // Fastq performs the conversion.
 func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 	var counts FastqCounts
-	rd, err := sam.NewReader(in)
+	rd, err := alnio.NewReader(in)
 	if err != nil {
 		return counts, err
 	}

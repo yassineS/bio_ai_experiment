@@ -33,6 +33,88 @@ import (
 // the start of the FEXTRA field where the `BC` subfield lives.
 const sniffSize = 16
 
+// Format classifies the on-disk format of an alignment stream as detected
+// from its leading bytes. It distinguishes the three SAM-family formats so
+// callers can route a stream to the right decoder without relying on the
+// file extension.
+type Format int
+
+const (
+	// FormatUnknown is returned when the leading bytes match none of the
+	// recognised alignment formats. A plain-text SAM stream that does not
+	// start with an `@` header line also classifies as FormatUnknown; the
+	// SAM reader is the natural fallback for it.
+	FormatUnknown Format = iota
+	// FormatSAM is a text SAM stream, recognised by a leading `@` header
+	// line.
+	FormatSAM
+	// FormatBAM is a BAM stream: either BGZF-wrapped (the on-disk form) or
+	// an already-decompressed raw `BAM\1` body.
+	FormatBAM
+	// FormatCRAM is a CRAM stream, recognised by the four-byte `CRAM`
+	// file-definition magic.
+	FormatCRAM
+)
+
+// String returns the format name in lower case ("sam", "bam", "cram" or
+// "unknown").
+func (f Format) String() string {
+	switch f {
+	case FormatSAM:
+		return "sam"
+	case FormatBAM:
+		return "bam"
+	case FormatCRAM:
+		return "cram"
+	default:
+		return "unknown"
+	}
+}
+
+// cramMagic is the four-byte signature at the start of every CRAM file.
+var cramMagic = [4]byte{'C', 'R', 'A', 'M'}
+
+// classifyHead classifies leading bytes of a stream as SAM, BAM, CRAM or
+// unknown. It looks only at magic bytes; it never consumes input. BGZF is
+// reported as FormatBAM because every BGZF-wrapped alignment stream this
+// project reads is BAM (a BGZF-wrapped CRAM is not a thing — CRAM has its
+// own container framing and is never BGZF-wrapped at the file level).
+func classifyHead(head []byte) Format {
+	if len(head) >= 4 && head[0] == cramMagic[0] && head[1] == cramMagic[1] &&
+		head[2] == cramMagic[2] && head[3] == cramMagic[3] {
+		return FormatCRAM
+	}
+	if bgzfSniff(head) {
+		return FormatBAM
+	}
+	if len(head) >= 4 && head[0] == 'B' && head[1] == 'A' && head[2] == 'M' && head[3] == 0x01 {
+		return FormatBAM
+	}
+	if len(head) >= 1 && head[0] == '@' {
+		return FormatSAM
+	}
+	return FormatUnknown
+}
+
+// DetectFormat classifies the alignment format of r from its leading bytes
+// and returns the classification together with a reader that still yields
+// those bytes — peeking is non-destructive, so the returned reader is a
+// faithful replacement for r and must be used in its place.
+//
+// DetectFormat performs no decompression: a CRAM stream is reported as
+// FormatCRAM and a BGZF-wrapped BAM as FormatBAM, leaving the actual
+// decoding to the caller. It deliberately does not import the sam or cram
+// packages, so it stays a low-level building block free of decoder
+// dependencies.
+func DetectFormat(r io.Reader) (Format, io.Reader, error) {
+	br := bufio.NewReader(r)
+	head, err := br.Peek(sniffSize)
+	if err != nil && err != io.EOF && err != bufio.ErrBufferFull {
+		return FormatUnknown, br, err
+	}
+	return classifyHead(head), br, nil
+}
+
 // OpenReader opens a file for reading, transparently decompressing gzip and
 // BGZF inputs. The format is detected by sniffing the first bytes of the
 // stream, not by file extension, so a .vcf.gz that is actually BGZF is read

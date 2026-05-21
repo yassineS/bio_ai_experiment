@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -80,7 +81,7 @@ func Depth(inputs []io.Reader, out io.Writer, opts DepthOptions) error {
 	}
 	readers := make([]sam.Reader, len(inputs))
 	for i, r := range inputs {
-		rd, err := sam.NewReader(r)
+		rd, err := alnio.NewReader(r)
 		if err != nil {
 			return fmt.Errorf("samtools depth: input %d: %w", i, err)
 		}

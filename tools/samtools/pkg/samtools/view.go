@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
@@ -85,6 +86,12 @@ type ViewOptions struct {
 	// upstream samtools' `-N ^FILE` syntax (sam_view.c:352
 	// rnhash_discard=1).
 	QNameInvert bool
+	// Reference names a FASTA file (with a sibling .fai) used as the decode
+	// reference for reference-backed CRAM input — upstream samtools view's
+	// `-T/--reference`. It is ignored for SAM and BAM input. When empty a
+	// reference-backed CRAM still decodes, with reference-derived bases
+	// filled with 'N'.
+	Reference string
 }
 
 // TagFilter is a single aux-tag predicate as derived from samtools view's
@@ -119,7 +126,7 @@ var ErrRegionsUnsupported = errors.New("samtools view: region-query support requ
 // out. When opts.Regions is non-empty View does a linear scan and filters
 // records to those overlapping any region — for indexed seek use ViewFile.
 func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
-	r, err := sam.NewReader(in)
+	r, err := alnio.NewReaderWithReference(in, opts.Reference)
 	if err != nil {
 		return 0, err
 	}
@@ -242,6 +249,11 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 // chunk unions, seeks into each chunk's compressed offset, decodes records
 // until each chunk's end virtual offset, and emits records overlapping any
 // requested region.
+//
+// This path is BAM-only: it does BGZF virtual-offset seeks against a .bai
+// index. CRAM uses a .crai index and a different seek model; indexed CRAM
+// region query is a separate roadmap item, so a CRAM file reaches the
+// streaming path above, not here.
 func viewIndexed(f *os.File, idx *bam.BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
 	// Need the header — open a BAM reader first.
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
