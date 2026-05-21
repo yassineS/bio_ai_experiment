@@ -1407,12 +1407,6 @@ Plus:
 
 **Genuine remaining samtools gaps** (everything else is done):
 
-- **`calmd` BAQ realignment (`-r`, `-E`, `-A`).** MD + NM are filled
-  correctly; the BQ (base-alignment-quality) aux tag and the
-  low-quality-read MAPQ drop are not yet computed. Upstream calls
-  `sam_prob_realn`; the HMM realignment math lives in
-  `reference_code/htslib/probaln.c`, which is now vendored, so the
-  reference source for the port is available.
 - **`mpileup` BCF / genotype-likelihood output (`-g/-u`).** See the
   mpileup tail note above; `reference_code/htslib/errmod.c` (the MAQ
   genotype-likelihood model) is now vendored.
@@ -1570,19 +1564,27 @@ and `.../test/stat/` are vendored under
 flag-exact / SN-byte cases are exercised in
 `tools/samtools/pkg/samtools/markdup_test.go` and `stats_test.go`.
 
+**`calmd` BAQ realignment** (`-r`, `-E`, `-A`, `-C`) — implemented:
+
+- The probabilistic banded glocal forward-backward HMM
+  (`probaln_glocal`) and the CIGAR-aware BAQ driver / MAPQ cap
+  (`sam_prob_realn`, `sam_cap_mapq`) are ported faithfully into the
+  shared `pkg/htsgo/baq` package — shared so `mpileup` can reuse it.
+- **`-r`** computes the `BQ:Z` base-alignment-quality aux tag;
+  **`-rE`** is extended-BAQ mode; **`-rA`** applies BAQ to the base
+  qualities and writes a `ZQ:Z` tag. **`-C INT`** (threshold `> 10`)
+  caps MAPQ via `sam_cap_mapq`.
+- Validated byte-for-byte against htslib's own `realn0{1,2,3}*`
+  golden fixtures: all 8 `test_realn` flag combinations plus the
+  `FlagRedo` path pass exactly. `probaln_glocal` is additionally
+  pinned against score / posterior-quality vectors captured from the
+  upstream `probaln.c` self-test.
+
 **`calmd` deferred features** (accepted as CLI flags, behaviour partial):
 
-- **BAQ recalculation** (`-r`, `-E`, `-A`). Upstream's `bam_md.c` calls
-  `sam_prob_realn` to recompute the BQ (base-alignment quality) aux
-  tag and to drop MAPQ for low-quality reads. v1 fills in MD + NM
-  correctly but does not touch BQ or MAPQ. ~200 lines of HMM-style
-  alignment math; deferred per owner steer. The reference
-  implementation (`probaln_glocal` / `sam_prob_realn`) is now
-  vendored at `reference_code/htslib/probaln.c` — the port is
-  unblocked whenever this slice is scheduled.
 - **`-h` HASH_QNM** (hash-based query-name binarisation) — niche
   upstream-only optimisation; not implemented.
-- **`-N` clear-MD/NM-bits**, **`-C` capQ**, **`--no-PG`** —
+- **`-N` clear-MD/NM-bits**, **`--no-PG`** —
   CLI-accepted-and-ignored stubs.
 
 **`calmd` implemented post-MD/NM transforms** (`bam_md.c` upstream
@@ -1618,7 +1620,10 @@ order — max-NM masking → write NM → write MD → DROP_TAG → BIN_QUAL):
 `tools/samtools/testdata/parity/{calmd,import}/` covering the four
 calmd code paths (match, mismatch, deletion, insertion+softclip) and
 the six import shapes (-0, -1/-2, -s, single positional, two
-positionals, -T aux extraction, --order, -R/-r RG). The upstream
+positionals, -T aux extraction, --order, -R/-r RG). The calmd BAQ
+path additionally diffs the `-r` / `-rA` output against htslib's
+vendored `realn01_exp*.sam` goldens, and `pkg/htsgo/baq` carries the
+full `realn0{1,2,3}` golden corpus. The upstream
 `bam_md.c` / `bam_import.c` regression cases are marked as
 `t.Skip(...)` parity stubs because upstream's BGZF output isn't
 byte-identical with ours (different libdeflate). Logical correctness
