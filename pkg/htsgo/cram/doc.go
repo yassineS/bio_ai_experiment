@@ -29,9 +29,28 @@
 // read-feature list (mapped) or raw bases (unmapped) — and yields
 // reconstructed *sam.Record values. It resolves the read-feature codes
 // into SEQ, QUAL and CIGAR, links downstream mate pairs, and can emit
-// the decoded stream as text SAM via WriteSAM. A reference-free CRAM
-// file is fully recoverable; a reference-backed file fills the bases an
-// external reference would supply with 'N' and reports NeedsReference.
+// the decoded stream as text SAM via WriteSAM.
+//
+// Reference resolution (C5) completes the reference-backed decode path.
+// A reference-free CRAM file is fully recoverable on its own; a
+// reference-backed file stores each mapped read's bases as a copy of a
+// reference span plus the read features, so it needs the reference
+// supplied. Call RecordReader.SetReference (or SetReferenceFASTA) with
+// an indexed FASTA, or RecordReader.SetRefCache / UseRefCacheFromEnv to
+// use the htslib REF_CACHE local cache, before the first Read. Each
+// slice's reference span is fetched and its MD5 verified against the
+// slice header — an MD5 mismatch is always a hard error, so the decoder
+// never produces sequence against the wrong reference. Without a
+// reference the bases an external reference would supply are filled with
+// 'N' and NeedsReference reports it. The network REF_PATH URL-fetch
+// mechanism is out of scope: an unresolvable reference is a clear error
+// naming the missing MD5.
+//
+// CRAM index (.crai): ReadCRAI / OpenCRAI parse the gzip-compressed TSV
+// index that accompanies a CRAM file. CRAIIndex.Query (and the
+// region-typed QueryRegion) return the index entries whose alignment
+// range overlaps a wanted region, giving a caller the container and
+// slice byte offsets to seek to.
 //
 // Integer encodings: CRAM uses two self-delimiting integer encodings,
 // ITF-8 (a 1-5 byte 32-bit value) and LTF-8 (a 1-9 byte 64-bit value).

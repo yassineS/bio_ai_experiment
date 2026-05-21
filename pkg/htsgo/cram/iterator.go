@@ -36,6 +36,10 @@ type RecordReader struct {
 	// needsReference is set once any decoded record reached a base an
 	// external reference would supply.
 	needsReference bool
+	// refResolver supplies external reference bases when one was set via
+	// SetReference / SetRefCache; nil means decode in the C4b fallback
+	// mode where reference-derived bases are filled with 'N'.
+	refResolver *referenceResolver
 }
 
 // NewRecordReader reads the CRAM file definition and the embedded SAM
@@ -69,8 +73,74 @@ func OpenRecords(path string) (*RecordReader, error) {
 	return rr, nil
 }
 
-// Close releases the underlying CRAM Reader's file handle, if any.
-func (rr *RecordReader) Close() error { return rr.rd.Close() }
+// Close releases the underlying CRAM Reader's file handle, if any. If a
+// reference FASTA was opened via SetReferenceFASTA, its file handle is
+// released too.
+func (rr *RecordReader) Close() error {
+	if rr.refResolver != nil && rr.refResolver.fasta != nil {
+		rr.refResolver.fasta.Close()
+	}
+	return rr.rd.Close()
+}
+
+// SetReference makes rr reconstruct reference-backed mapped reads from
+// the supplied ReferenceSource instead of filling reference-derived
+// bases with 'N'. Each slice's reference span is fetched and its MD5
+// verified against the slice header; an MD5 mismatch fails the decode.
+// SetReference must be called before the first Read.
+//
+// A *FASTAReference is recognised so its file handle is released by
+// Close; any other ReferenceSource is used through its name-addressed
+// Fetch method. To use the htslib REF_CACHE, call SetRefCache.
+func (rr *RecordReader) SetReference(src ReferenceSource) {
+	if rr.refResolver == nil {
+		rr.refResolver = &referenceResolver{}
+	}
+	if f, ok := src.(*FASTAReference); ok {
+		rr.refResolver.fasta = f
+		rr.refResolver.custom = nil
+		return
+	}
+	rr.refResolver.custom = src
+}
+
+// SetReferenceFASTA opens the named FASTA file as the decode reference
+// and attaches it to rr. The FASTA's file handle is released by Close.
+// It is a convenience wrapper over OpenFASTAReference + SetReference.
+func (rr *RecordReader) SetReferenceFASTA(path string) error {
+	f, err := OpenFASTAReference(path)
+	if err != nil {
+		return err
+	}
+	rr.SetReference(f)
+	return nil
+}
+
+// SetRefCache attaches the htslib local reference cache rooted at dir
+// (the REF_CACHE directory) as the decode reference, looked up by the
+// MD5 each slice header records. SetRefCache and SetReference can both
+// be set: an explicit FASTA is tried first, the cache second.
+func (rr *RecordReader) SetRefCache(dir string) {
+	if rr.refResolver == nil {
+		rr.refResolver = &referenceResolver{}
+	}
+	rr.refResolver.cache = OpenRefCache(dir)
+}
+
+// UseRefCacheFromEnv attaches the REF_CACHE directory as a reference
+// source when the REF_CACHE environment variable is set. It reports
+// whether a cache was attached.
+func (rr *RecordReader) UseRefCacheFromEnv() bool {
+	c, ok := RefCacheFromEnv()
+	if !ok {
+		return false
+	}
+	if rr.refResolver == nil {
+		rr.refResolver = &referenceResolver{}
+	}
+	rr.refResolver.cache = c
+	return true
+}
 
 // Header returns the SAM header parsed from the CRAM file's first
 // container. The header is available immediately after NewRecordReader.
@@ -206,7 +276,11 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	if err != nil {
 		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
-	dec, err := newRecordDecoder(h, sl.Header, src, rr.refNames, rr.readGroups)
+	refBases, refStart, err := rr.resolveSliceReference(sl.Header)
+	if err != nil {
+		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
+	}
+	dec, err := newRecordDecoder(h, sl.Header, src, rr.refNames, rr.readGroups, refBases, refStart)
 	if err != nil {
 		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
@@ -219,6 +293,58 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	}
 	rr.pending = append(rr.pending, recs...)
 	return nil
+}
+
+// resolveSliceReference resolves and MD5-verifies the reference span a
+// slice covers, when a reference source is attached. It returns the
+// span bytes and the 1-based coordinate of the span's first base.
+//
+// It resolves a single-reference slice (RefSeqID >= 0). An
+// unmapped-reads slice (RefSeqID == -1) and a multi-reference slice
+// (RefSeqID == -2) need no slice-level span — the former has no
+// reference bases and the latter resolves its references per record
+// against the contig table, both falling back to the C4b 'N' fill — so
+// they return a nil span. A nil span with no source is the C4b path.
+func (rr *RecordReader) resolveSliceReference(sh *SliceHeader) ([]byte, int32, error) {
+	if !rr.refResolver.hasSource() {
+		return nil, 0, nil
+	}
+	if sh.RefSeqID < 0 {
+		return nil, 0, nil
+	}
+	contig, err := rr.refNameByID(sh.RefSeqID)
+	if err != nil {
+		return nil, 0, err
+	}
+	bases, err := rr.refResolver.sliceReference(sh, contig, rr.contigMD5(sh.RefSeqID))
+	if err != nil {
+		return nil, 0, err
+	}
+	return bases, sh.AlignmentStart, nil
+}
+
+// contigMD5 returns the hex M5 tag of the @SQ entry for a reference id,
+// or "" when the header carries no M5 for that reference. The M5 tag is
+// the contig's whole-sequence MD5 — the key htslib's REF_CACHE uses.
+func (rr *RecordReader) contigMD5(id int32) string {
+	if rr.header == nil || id < 0 || int(id) >= len(rr.header.Refs) {
+		return ""
+	}
+	for _, f := range rr.header.Refs[id].Extra {
+		if f.Tag == "M5" {
+			return f.Value
+		}
+	}
+	return ""
+}
+
+// refNameByID resolves a reference id to its SAM @SQ name. It is the
+// iterator-level counterpart of recordDecoder.refName.
+func (rr *RecordReader) refNameByID(id int32) (string, error) {
+	if id < 0 || int(id) >= len(rr.refNames) {
+		return "", errFormat("reference id %d has no @SQ entry (%d known)", id, len(rr.refNames))
+	}
+	return rr.refNames[id], nil
 }
 
 // WriteSAM decodes the whole CRAM stream and writes it as text SAM to w:
