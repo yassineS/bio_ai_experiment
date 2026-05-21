@@ -11,6 +11,10 @@ import (
 // CRAMWriteOptions configures the CRAM writer adapter. Its zero value is
 // the default writer — CRAM v3.0 with no lossy quality binning — exactly
 // what NewCRAMWriter produces.
+//
+// The adapter always writes CRAM v3.0; the output version is not
+// exposed here because the samtools CLI has no v3.1-output flag. A
+// caller needing v3.1 output uses cram.NewRecordWriterOpts directly.
 type CRAMWriteOptions struct {
 	// QualityBinning selects the lossy quality-binning scheme applied to
 	// each record's QUAL before encoding. The zero value, cram.BinningNone,
