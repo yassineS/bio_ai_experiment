@@ -48,9 +48,10 @@ func newSeriesBuffers() *seriesBuffers {
 
 // encodeContainer encodes a batch of records as one complete CRAM data
 // container: a container header, a compression-header block, a slice-
-// header block and the slice's external data blocks. recordCounter is
-// the running record total of all earlier containers.
-func encodeContainer(records []*sam.Record, refIndex map[string]int32, recordCounter int64) ([]byte, error) {
+// header block and the slice's external data blocks. version selects the
+// per-block codec set (see chooseBlockCompression). recordCounter is the
+// running record total of all earlier containers.
+func encodeContainer(version Version, records []*sam.Record, refIndex map[string]int32, recordCounter int64) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, fmt.Errorf("cram: cannot encode an empty container")
 	}
@@ -74,12 +75,12 @@ func encodeContainer(records []*sam.Record, refIndex map[string]int32, recordCou
 	tagDict := enc.tagDictionary()
 
 	compHeader := encodeCompressionHeader(multiRef, tagDict, enc.tagKeysSorted())
-	compBlock := encodeBlock(ContentCompressionHeader, 0, compHeader)
+	compBlock := encodeBlock(version, ContentCompressionHeader, 0, compHeader)
 
 	// Assemble the slice: a slice-header block followed by the external
 	// data blocks. The slice-header block's content-id list and block
 	// count must match the data blocks that follow it.
-	dataBlocks, contentIDs := enc.buffers.blocks(enc.tagKeysSorted())
+	dataBlocks, contentIDs := enc.buffers.blocks(version, enc.tagKeysSorted())
 
 	startPos, span := sliceSpan(records)
 	sliceHeader := encodeSliceHeader(sliceHeaderFields{
@@ -90,7 +91,7 @@ func encodeContainer(records []*sam.Record, refIndex map[string]int32, recordCou
 		recordCounter:  recordCounter,
 		contentIDs:     contentIDs,
 	})
-	sliceHeaderBlock := encodeBlock(ContentMappedSlice, 0, sliceHeader)
+	sliceHeaderBlock := encodeBlock(version, ContentMappedSlice, 0, sliceHeader)
 
 	// The container body is the compression-header block, the slice-
 	// header block, then the data blocks. The slice landmark is the byte
@@ -227,14 +228,15 @@ func encodeSliceHeader(f sliceHeaderFields) []byte {
 // blocks and the parallel list of their content ids. Only non-empty
 // series produce a block; an empty series is omitted, which the reader
 // tolerates (a series with no block carries no values for the slice).
+// version selects the per-block codec set (see chooseBlockCompression).
 // tagKeys lists the auxiliary tag keys in the order their content ids
 // were assigned.
-func (sb *seriesBuffers) blocks(tagKeys []tagKey) (data [][]byte, ids []int32) {
+func (sb *seriesBuffers) blocks(version Version, tagKeys []tagKey) (data [][]byte, ids []int32) {
 	add := func(id int32, payload []byte) {
 		if len(payload) == 0 {
 			return
 		}
-		data = append(data, encodeBlock(ContentExternal, id, payload))
+		data = append(data, encodeBlock(version, ContentExternal, id, payload))
 		ids = append(ids, id)
 	}
 	add(cidBF, sb.bf)
