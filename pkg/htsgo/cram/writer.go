@@ -129,6 +129,12 @@ type RecordWriter struct {
 	// file-definition minor version and the per-block codec set.
 	version Version
 
+	// binning is the lossy quality-binning scheme applied to every
+	// record's QUAL before it reaches the QS data series. BinningNone
+	// (the zero value) leaves quality untouched, so the default writer is
+	// losslessly exact and existing callers are unaffected.
+	binning QualityBinning
+
 	// refIndex maps a reference name to its zero-based @SQ position, so a
 	// record's RName / RNext can be turned into the integer ids the CRAM
 	// data series store.
@@ -170,13 +176,60 @@ func NewRecordWriter(w io.Writer, h *sam.Header) (*RecordWriter, error) {
 // SAM header is written immediately, so h must be complete before the
 // call. It returns an error only if the initial header write to w fails.
 func NewRecordWriterVersion(w io.Writer, h *sam.Header, version Version) (*RecordWriter, error) {
+	return NewRecordWriterOpts(w, h, WriterOptions{Version: version})
+}
+
+// WriterOptions configures a RecordWriter at construction time. Its zero
+// value is the default writer: CRAM v3.0 with no quality binning, exactly
+// what NewRecordWriter produces.
+//
+// Construction-time configuration is required for any option that
+// influences the CRAM file header — the header container is the file's
+// first container and is written immediately by the constructor, so it
+// must be settable before that write. Quality binning records its
+// provenance in the SAM header, so it lives here rather than in a
+// post-construction setter.
+type WriterOptions struct {
+	// Version selects the CRAM format version (v3.0 or v3.1). The zero
+	// value, VersionV30, is the default.
+	Version Version
+	// Binning selects the lossy quality-binning scheme. The zero value,
+	// BinningNone, disables binning and keeps the writer losslessly
+	// exact. When a real scheme is set, the writer records a @CO
+	// provenance line in the embedded SAM header.
+	Binning QualityBinning
+}
+
+// NewRecordWriterOpts returns a RecordWriter that encodes records to w as
+// a CRAM file configured by opts. It is the most general RecordWriter
+// constructor; NewRecordWriter, NewRecordWriterVersion and the CreateCRAM
+// family are thin wrappers over it.
+//
+// When opts.Binning selects a real binning scheme, a @CO line documenting
+// the lossy quality transform is appended to a copy of h before the SAM
+// header is written, so a downstream reader can tell the qualities were
+// binned. The caller's *sam.Header is not modified.
+//
+// The SAM header is written immediately, so h must be complete before the
+// call. It returns an error only if opts is invalid or the initial header
+// write to w fails.
+func NewRecordWriterOpts(w io.Writer, h *sam.Header, opts WriterOptions) (*RecordWriter, error) {
+	if !opts.Binning.valid() {
+		return nil, fmt.Errorf("cram: unknown quality-binning scheme %d", int(opts.Binning))
+	}
 	if h == nil {
 		h = &sam.Header{}
+	}
+	if opts.Binning != BinningNone {
+		// Record the lossy transform in the embedded header. A copy is
+		// taken so the caller's header is left untouched.
+		h = headerWithBinningProvenance(h, opts.Binning)
 	}
 	rw := &RecordWriter{
 		w:               w,
 		header:          h,
-		version:         version,
+		version:         opts.Version,
+		binning:         opts.Binning,
 		refIndex:        make(map[string]int32, len(h.Refs)),
 		recordsPerSlice: defaultRecordsPerSlice,
 	}
@@ -187,6 +240,26 @@ func NewRecordWriterVersion(w io.Writer, h *sam.Header, version Version) (*Recor
 		return nil, err
 	}
 	return rw, nil
+}
+
+// headerWithBinningProvenance returns a shallow copy of h with one extra
+// @CO comment line documenting that lossy quality-score binning was
+// applied. The copy shares the slice backing arrays of the original
+// except for Lines and Comments, which are freshly allocated, so the
+// caller's header is not mutated.
+func headerWithBinningProvenance(h *sam.Header, b QualityBinning) *sam.Header {
+	note := "samtools/htsgo: lossy quality-score binning applied (scheme " + b.String() + ")"
+	cp := *h
+	cp.Lines = make([]sam.HeaderLine, len(h.Lines), len(h.Lines)+1)
+	copy(cp.Lines, h.Lines)
+	cp.Lines = append(cp.Lines, sam.HeaderLine{
+		Tag:    "CO",
+		Fields: []sam.HeaderField{{Value: note}},
+	})
+	cp.Comments = make([]string, len(h.Comments), len(h.Comments)+1)
+	copy(cp.Comments, h.Comments)
+	cp.Comments = append(cp.Comments, note)
+	return &cp
 }
 
 // CreateCRAM creates the named file and returns a RecordWriter over it
@@ -383,7 +456,7 @@ func (rw *RecordWriter) flushContainer() error {
 	if len(rw.buf) == 0 {
 		return nil
 	}
-	container, err := encodeContainer(rw.version, rw.buf, rw.refIndex, rw.recordCounter)
+	container, err := encodeContainer(rw.version, rw.binning, rw.buf, rw.refIndex, rw.recordCounter)
 	if err != nil {
 		rw.err = err
 		return err

@@ -99,6 +99,66 @@ func TestViewCRAMOutputFromSAM(t *testing.T) {
 	}
 }
 
+// TestViewCRAMOutputQualityBinning exercises the `--output-fmt-option
+// qbin=8` path: viewing a SAM stream to CRAM with the binning option set
+// must yield CRAM whose decoded qualities are the 8-level-binned input,
+// while the default (no option) leaves them verbatim.
+func TestViewCRAMOutputQualityBinning(t *testing.T) {
+	// r1 carries raw qualities chosen to straddle several Illumina-8 bins.
+	// SAM QUAL char '!' is Phred 0; the offset is 33.
+	samText := "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:100000\n" +
+		"r1\t0\tchr1\t100\t30\t6M\t*\t0\t0\tACGTAC\t#)-9CI\n"
+	// '#'=2 ')'=8 '-'=12 '9'=24 'C'=34 'I'=40 (after subtracting 33).
+	rawQual := []byte{2, 8, 12, 24, 34, 40}
+	wantBinned := cram.BinningIllumina8.BinQuality(rawQual)
+
+	decodeQual := func(t *testing.T, opts ViewOptions) []byte {
+		t.Helper()
+		var cramOut bytes.Buffer
+		if _, err := View(bytes.NewReader([]byte(samText)), &cramOut, opts); err != nil {
+			t.Fatalf("View -> CRAM: %v", err)
+		}
+		rr, err := cram.NewRecordReader(bytes.NewReader(cramOut.Bytes()))
+		if err != nil {
+			t.Fatalf("NewRecordReader: %v", err)
+		}
+		recs, err := rr.ReadAll()
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if len(recs) != 1 {
+			t.Fatalf("decoded %d records, want 1", len(recs))
+		}
+		return recs[0].Qual
+	}
+
+	// With qbin=8 the decoded qualities must be the binned values.
+	binned := decodeQual(t, ViewOptions{OutputCRAM: true, CRAMQualityBinning: "8"})
+	if !bytes.Equal(binned, wantBinned) {
+		t.Errorf("qbin=8 decoded QUAL = %v, want binned %v", binned, wantBinned)
+	}
+
+	// Without the option the qualities must round-trip verbatim.
+	plain := decodeQual(t, ViewOptions{OutputCRAM: true})
+	if !bytes.Equal(plain, rawQual) {
+		t.Errorf("default decoded QUAL = %v, want verbatim %v", plain, rawQual)
+	}
+}
+
+// TestViewCRAMOutputBadBinningOption confirms an unknown binning value is
+// surfaced as an error rather than silently ignored.
+func TestViewCRAMOutputBadBinningOption(t *testing.T) {
+	samText := "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:100\nr1\t4\t*\t0\t0\t*\t*\t0\t0\tAAAA\tIIII\n"
+	var out bytes.Buffer
+	_, err := View(bytes.NewReader([]byte(samText)), &out, ViewOptions{
+		OutputCRAM: true, CRAMQualityBinning: "bogus",
+	})
+	if err == nil {
+		t.Fatal("View accepted an unknown CRAMQualityBinning value")
+	}
+}
+
 // TestIndexFileCRAMWritesCRAI runs the `index` file path over a CRAM
 // file and asserts a .crai is written that cram.ReadCRAI parses back into
 // sane entries: one per slice, offsets within the file, and an overlap

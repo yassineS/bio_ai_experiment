@@ -129,6 +129,10 @@ Options:
   -b, --bam                   Output BAM (default text SAM).
   -C, --cram                  Output CRAM (reference-free, v3.0).
   -O, --output-fmt FMT        Force output format ('sam', 'bam' or 'cram').
+      --output-fmt-option OPT CRAM output tuning, KEY=VALUE form. Repeatable.
+                              Supported: qbin=8|4|2|none — apply lossy
+                              Illumina quality-score binning (8-/4-/2-level)
+                              to CRAM output. Ignored for SAM/BAM output.
   -h, --with-header           Include the header in SAM output.
   -H, --header-only           Print the header only.
   -c, --count                 Print only the count of matching records.
@@ -174,6 +178,7 @@ func runView(args []string) int {
 		outBAM      bool
 		outCRAM     bool
 		outFmt      string
+		outFmtOpts  multiString
 		withHdr     bool
 		hdrOnly     bool
 		countOnly   bool
@@ -199,6 +204,7 @@ func runView(args []string) int {
 	cliflag.BoolVar(fs, &outBAM, "b", "bam", false, "Output BAM")
 	cliflag.BoolVar(fs, &outCRAM, "C", "cram", false, "Output CRAM")
 	cliflag.StringVar(fs, &outFmt, "O", "output-fmt", "", "Output format (sam|bam|cram)")
+	fs.Var(&outFmtOpts, "output-fmt-option", "")
 	cliflag.BoolVar(fs, &withHdr, "h", "with-header", false, "Include header")
 	cliflag.BoolVar(fs, &hdrOnly, "H", "header-only", false, "Header only")
 	cliflag.BoolVar(fs, &countOnly, "c", "count", false, "Count records")
@@ -269,24 +275,34 @@ func runView(args []string) int {
 		outBAM = false
 	}
 
+	// --output-fmt-option carries KEY=VALUE CRAM tuning knobs. Only qbin
+	// (lossy quality-score binning) is recognised today; an unknown key is
+	// rejected so a typo is not silently ignored.
+	cramQBin, perr := parseOutputFmtOptions(outFmtOpts)
+	if perr != nil {
+		fmt.Fprintln(os.Stderr, perr)
+		return 2
+	}
+
 	opts := samtools.ViewOptions{
-		OutputBAM:       outBAM,
-		OutputCRAM:      outCRAM,
-		WithHeader:      withHdr,
-		HeaderOnly:      hdrOnly,
-		Count:           countOnly,
-		IncludeFlags:    uint16(incFlags),
-		ExcludeFlags:    uint16(excFlags),
-		ExcludeFlagsAll: uint16(excFlagsG),
-		UseExcludeAll:   excFlagsG != 0,
-		MinMAPQ:         uint8(minMAPQ),
-		ReadGroup:       rg,
-		Regions:         append([]string{}, regions...),
-		RegionsEnabled:  len(regions) > 0 || regFile != "",
-		BedPath:         regFile,
-		MultiRegion:     multiRegion,
-		NoPG:            noPG,
-		Reference:       refFile,
+		OutputBAM:          outBAM,
+		OutputCRAM:         outCRAM,
+		WithHeader:         withHdr,
+		HeaderOnly:         hdrOnly,
+		Count:              countOnly,
+		IncludeFlags:       uint16(incFlags),
+		ExcludeFlags:       uint16(excFlags),
+		ExcludeFlagsAll:    uint16(excFlagsG),
+		UseExcludeAll:      excFlagsG != 0,
+		MinMAPQ:            uint8(minMAPQ),
+		ReadGroup:          rg,
+		Regions:            append([]string{}, regions...),
+		RegionsEnabled:     len(regions) > 0 || regFile != "",
+		BedPath:            regFile,
+		MultiRegion:        multiRegion,
+		NoPG:               noPG,
+		Reference:          refFile,
+		CRAMQualityBinning: cramQBin,
 	}
 
 	// Honour the output file extension when no format was given: a .bam
@@ -803,6 +819,29 @@ type multiString []string
 
 func (m *multiString) String() string     { return strings.Join(*m, ",") }
 func (m *multiString) Set(v string) error { *m = append(*m, v); return nil }
+
+// parseOutputFmtOptions interprets the KEY=VALUE strings collected from
+// `--output-fmt-option`. It returns the raw qbin value (passed on to
+// alnio.ParseQualityBinning, which validates it) and an error for any
+// malformed entry or unrecognised key. A later entry for the same key
+// overrides an earlier one, matching upstream samtools' last-wins
+// behaviour.
+func parseOutputFmtOptions(opts multiString) (qbin string, err error) {
+	for _, o := range opts {
+		eq := strings.IndexByte(o, '=')
+		if eq < 1 {
+			return "", fmt.Errorf("samtools view: malformed --output-fmt-option %q (want KEY=VALUE)", o)
+		}
+		key, val := o[:eq], o[eq+1:]
+		switch key {
+		case "qbin", "quality-binning":
+			qbin = val
+		default:
+			return "", fmt.Errorf("samtools view: unknown --output-fmt-option key %q (supported: qbin)", key)
+		}
+	}
+	return qbin, nil
+}
 
 const fastqUsage = `samtools fastq - convert SAM/BAM to FASTQ.
 

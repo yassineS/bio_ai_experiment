@@ -96,6 +96,13 @@ type ViewOptions struct {
 	// reference-backed CRAM still decodes, with reference-derived bases
 	// filled with 'N'.
 	Reference string
+	// CRAMQualityBinning selects a lossy quality-score binning scheme for
+	// CRAM output, set from `--output-fmt-option qbin=...`. The empty
+	// string (and "none") disables binning. It is a no-op for SAM and BAM
+	// output, where qualities are always stored verbatim. Recognised
+	// values: "8" (Illumina 8-level), "4" (4-level), "2" (NovaSeq-style
+	// 2-level). See alnio.ParseQualityBinning for the full grammar.
+	CRAMQualityBinning string
 }
 
 // TagFilter is a single aux-tag predicate as derived from samtools view's
@@ -416,7 +423,14 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 	var w sam.Writer
 	switch {
 	case opts.OutputCRAM:
-		w = alnio.NewCRAMWriter(out)
+		// CRAMQualityBinning selects optional lossy quality-score binning;
+		// the empty string maps to BinningNone, so the default CRAM output
+		// stays losslessly exact.
+		binning, err := alnio.ParseQualityBinning(opts.CRAMQualityBinning)
+		if err != nil {
+			return nil, err
+		}
+		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{QualityBinning: binning})
 	case opts.OutputBAM:
 		w = sam.NewBAMWriter(out)
 	default:
