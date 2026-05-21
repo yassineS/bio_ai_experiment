@@ -336,9 +336,9 @@ func arithCompressTo(in []byte, order int) ([]byte, error) {
 
 	// X_CAT fallback when the range coder would not shrink the (possibly
 	// already transformed) data. htscodecs keeps PACK but clears the
-	// order/RLE bits and sets X_CAT.
+	// order/RLE/EXT bits and sets X_CAT.
 	if len(payload) >= len(data) {
-		formatByte = (formatByte &^ 3) &^ x4x16RLE
+		formatByte = (formatByte &^ 3) &^ x4x16RLE &^ x4x16Ext
 		formatByte |= x4x16Cat
 		out[0] = formatByte
 		out = append(out, data...)
