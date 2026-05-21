@@ -44,6 +44,12 @@ const (
 	nameMaxTokens  = 128 // MAX_TOKENS.
 	nameMaxTBlocks = nameMaxTokens * 16
 	nameMaxNames   = 10_000_000 // create_context's 10M-record ceiling.
+	// nameInflateMax bounds the declared name count against the input
+	// size: the tokeniser cannot encode more than this many names per
+	// compressed byte, so a larger nreads is corrupt. It is generous —
+	// real read names compress to a byte or more each — and exists only
+	// to deny a tiny crafted block a huge up-front allocation.
+	nameInflateMax = 20
 	// nameMaxNameLen bounds a single decoded name. The reference grants
 	// decode_name a ulen-sized scratch buffer; we cap each name instead so
 	// a corrupt stream cannot make one token-block describe a giant name.
@@ -106,6 +112,16 @@ func NameTokDecode(in []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: declared uncompressed size %d implausibly large", errNameTok, ulen)
 	}
 	nreads := int(uint32(in[4]) | uint32(in[5])<<8 | uint32(in[6])<<16 | uint32(in[7])<<24)
+	// nreads sizes the per-name context array and every synthesised
+	// type block, so it must be bounded by the input — not just the
+	// 10M absolute ceiling. The tokeniser never compresses a name below
+	// ~1 byte even for the most regular names, so a block encoding more
+	// than nameInflateMax names per input byte is corrupt; rejecting it
+	// stops a few-byte block from driving a multi-hundred-MB allocation.
+	if nreads >= 0 && int64(nreads) > int64(len(in))*nameInflateMax {
+		return nil, fmt.Errorf("%w: name count %d exceeds what a %d-byte block can encode",
+			errNameTok, nreads, len(in))
+	}
 	if nreads < 0 || nreads > nameMaxNames {
 		return nil, fmt.Errorf("%w: name count %d out of range", errNameTok, nreads)
 	}
@@ -346,6 +362,12 @@ func (ctx *nameContext) readChar(ntok int) (byte, bool) {
 // readAlpha reads one NUL-terminated alpha run from token ntok's N_ALPHA
 // block and appends it (without the terminator) to dst, returning the
 // extended slice and the run length. It bounds the run by nameMaxNameLen.
+//
+// On a well-formed (NUL-terminated) block this matches the C
+// decode_token byte-for-byte. The C reference, on a stream that ends
+// without a NUL, keeps the final byte in its scratch buffer but
+// returns len-1; this port keeps every consumed byte. The difference
+// is reachable only on a corrupt block — neither form panics.
 func (ctx *nameContext) readAlpha(ntok int, dst []byte) ([]byte, int, bool) {
 	d := &ctx.desc[(ntok<<4)|ntAlpha]
 	if d.pos >= len(d.buf) {
