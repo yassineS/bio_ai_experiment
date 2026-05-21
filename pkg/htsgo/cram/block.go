@@ -14,9 +14,10 @@ import (
 // CompressionMethod identifies how a CRAM block's data is compressed.
 type CompressionMethod byte
 
-// The CRAM block compression methods. Methods 0-2, 4 and 5 are handled
-// by this package; 3, 6, 7 and 8 are out of scope for the C3 structural
-// parser and decompressing them returns an error.
+// The CRAM block compression methods. Methods 0-5 are handled by this
+// package; 6, 7 and 8 (the htscodecs range / fqzcomp / name-tokeniser
+// codecs) are not yet implemented and decompressing them returns an
+// error.
 const (
 	CompRaw      CompressionMethod = 0 // Uncompressed.
 	CompGzip     CompressionMethod = 1 // RFC 1952 gzip (compress/gzip).
