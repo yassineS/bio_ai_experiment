@@ -49,3 +49,5 @@ LUMPY,variant_calling,C++,Structural variant caller,reference_code/lumpy,N/A,-f2
 LoFreq,variant_calling,C,Low-frequency variant caller,reference_code/lofreq,N/A,-46bd58d7f5b2c38c5b422820ece82b119830e4b7
 Manta,variant_calling,C++,Structural variant caller,reference_code/manta,N/A,-2a9eeafaedd1b5020057cc21524ae0af1b7067b3
 Strelka,variant_calling,C++,Small variant caller,reference_code/strelka,N/A,-d7377443b62319f7c7bd70c241c4b2df3459e29a
+bcftools,utilities,C,VCF/BCF variant calling and manipulation,reference_code/bcftools,1.23.1-73-ge0ec6ab0,e0ec6ab02db1e7b238971de77bea576ea1b17248
+htslib,library,C,High-throughput sequencing data I/O (SAM/BAM/CRAM/VCF/BCF),reference_code/htslib,1.23.1-32-gcdf22929,cdf22929aad8dde719c1b2070ad565ac9dd76c02

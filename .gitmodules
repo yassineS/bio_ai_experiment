@@ -151,3 +151,9 @@
 [submodule "reference_code/htscodecs"]
 	path = reference_code/htscodecs
 	url = https://github.com/samtools/htscodecs
+[submodule "reference_code/bcftools"]
+	path = reference_code/bcftools
+	url = https://github.com/samtools/bcftools
+[submodule "reference_code/htslib"]
+	path = reference_code/htslib
+	url = https://github.com/samtools/htslib
