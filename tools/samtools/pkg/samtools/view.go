@@ -249,6 +249,11 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 // chunk unions, seeks into each chunk's compressed offset, decodes records
 // until each chunk's end virtual offset, and emits records overlapping any
 // requested region.
+//
+// This path is BAM-only: it does BGZF virtual-offset seeks against a .bai
+// index. CRAM uses a .crai index and a different seek model; indexed CRAM
+// region query is a separate roadmap item, so a CRAM file reaches the
+// streaming path above, not here.
 func viewIndexed(f *os.File, idx *bam.BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
 	// Need the header — open a BAM reader first.
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
