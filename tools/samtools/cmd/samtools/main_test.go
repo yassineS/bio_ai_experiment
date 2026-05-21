@@ -56,3 +56,25 @@ func TestExpandShortAA(t *testing.T) {
 		})
 	}
 }
+
+// TestParseOutputFmtOptions checks the `--output-fmt-option` KEY=VALUE
+// parser: a valid qbin value is extracted, last-wins on repeats, and a
+// malformed entry or unknown key is an error.
+func TestParseOutputFmtOptions(t *testing.T) {
+	if got, err := parseOutputFmtOptions(nil); err != nil || got != "" {
+		t.Errorf("parseOutputFmtOptions(nil) = (%q, %v), want (\"\", nil)", got, err)
+	}
+	if got, err := parseOutputFmtOptions(multiString{"qbin=8"}); err != nil || got != "8" {
+		t.Errorf("parseOutputFmtOptions(qbin=8) = (%q, %v), want (\"8\", nil)", got, err)
+	}
+	// Last value wins for a repeated key.
+	if got, err := parseOutputFmtOptions(multiString{"qbin=8", "qbin=4"}); err != nil || got != "4" {
+		t.Errorf("repeated qbin = (%q, %v), want (\"4\", nil)", got, err)
+	}
+	if _, err := parseOutputFmtOptions(multiString{"qbin"}); err == nil {
+		t.Error("parseOutputFmtOptions(\"qbin\") should fail (no '=')")
+	}
+	if _, err := parseOutputFmtOptions(multiString{"bogus=1"}); err == nil {
+		t.Error("parseOutputFmtOptions with unknown key should fail")
+	}
+}

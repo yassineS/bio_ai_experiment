@@ -49,9 +49,11 @@ func newSeriesBuffers() *seriesBuffers {
 // encodeContainer encodes a batch of records as one complete CRAM data
 // container: a container header, a compression-header block, a slice-
 // header block and the slice's external data blocks. version selects the
-// per-block codec set (see chooseBlockCompression). recordCounter is the
-// running record total of all earlier containers.
-func encodeContainer(version Version, records []*sam.Record, refIndex map[string]int32, recordCounter int64) ([]byte, error) {
+// per-block codec set (see chooseBlockCompression). binning selects the
+// lossy quality-binning scheme applied to each record's QUAL (BinningNone
+// leaves quality untouched). recordCounter is the running record total of
+// all earlier containers.
+func encodeContainer(version Version, binning QualityBinning, records []*sam.Record, refIndex map[string]int32, recordCounter int64) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, fmt.Errorf("cram: cannot encode an empty container")
 	}
@@ -64,6 +66,7 @@ func encodeContainer(version Version, records []*sam.Record, refIndex map[string
 	enc := &recordEncoder{
 		refIndex: refIndex,
 		multiRef: multiRef,
+		binning:  binning,
 		buffers:  newSeriesBuffers(),
 	}
 	if err := enc.encodeAll(records); err != nil {
@@ -281,7 +284,11 @@ func (sb *seriesBuffers) blocks(version Version, tagKeys []tagKey) (data [][]byt
 type recordEncoder struct {
 	refIndex map[string]int32
 	multiRef bool
-	buffers  *seriesBuffers
+	// binning is the lossy quality-binning scheme applied to each
+	// record's QUAL before it is appended to the QS series. BinningNone
+	// leaves quality untouched.
+	binning QualityBinning
+	buffers *seriesBuffers
 
 	// numBases is the running total of read bases, stored in the
 	// container header.
@@ -401,7 +408,11 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 		return err
 	}
 
-	quality := normaliseQuality(rec.Qual, readLen)
+	// Quality is normalised to a fixed-width slice, then mapped through
+	// the lossy binning table. normaliseQuality allocates a fresh slice
+	// and BinQuality is the identity for BinningNone, so the caller's
+	// rec.Qual is never modified and the default writer stays lossless.
+	quality := e.binning.BinQuality(normaliseQuality(rec.Qual, readLen))
 	if mapped {
 		b.mq = appendITF8(b.mq, int32(rec.MapQ))
 		if err := e.encodeFeatures(rec, readLen); err != nil {

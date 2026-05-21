@@ -4,14 +4,14 @@ Companion to [`CRAM_DESIGN.md`](CRAM_DESIGN.md) (the *why* and the
 up-front decisions). This doc is the *how*: the shopping plan, the
 PR-by-PR execution sequence, and the testing + compliance strategy.
 
-**Status: read/write + all block codecs complete (C1–C10, C-LZMA,
-C-Arith, C-FQZComp, C-NameTok landed).** Pure-Go CRAM v3.0/v3.1 read
-and write, reference resolution, `.crai` index read/write, and
-samtools-CLI integration are all merged, and every CRAM block
-compression method (0–8 — raw, gzip, bzip2, LZMA, rANS 4x8/4x16, the
-arith_dynamic range coder, fqzcomp and the name tokeniser) is
-implemented. The only remaining roadmap item is **C11**, optional:
-lossy quality-score binning on the encode side.
+**Status: read/write + all block codecs + lossy quality binning
+complete (C1–C11, C-LZMA, C-Arith, C-FQZComp, C-NameTok landed).**
+Pure-Go CRAM v3.0/v3.1 read and write, reference resolution, `.crai`
+index read/write, and samtools-CLI integration are all merged, every
+CRAM block compression method (0–8 — raw, gzip, bzip2, LZMA, rANS
+4x8/4x16, the arith_dynamic range coder, fqzcomp and the name
+tokeniser) is implemented, and opt-in lossy quality-score binning on
+the encode side is landed. The CRAM roadmap is complete.
 
 ---
 
@@ -75,7 +75,7 @@ Each row is one reviewable PR. "Gate" = what must be green to merge.
 | **C8** | CRAM v3.0 **write** — encoder, container/slice assembly, codec selection. | Written CRAM re-reads byte-identically through our own reader; `samtools view` reads it. |
 | **C9** | `samtools view --output-fmt cram` + `samtools index` `.crai` write. | End-to-end SAM→CRAM→SAM via the CLI. |
 | **C10** | CRAM v3.1 write. | v3.1 round-trip. |
-| **C11** *(optional)* | Lossy quality binning (encode). | Documented, opt-in. |
+| **C11** | Lossy quality binning (encode). | Documented, opt-in. **Landed.** |
 | **C-LZMA** *(slots in before C4 if a fixture needs it)* | `codec/lzma.go` via `ulikunitz/xz`. | LZMA-compressed block decodes. |
 
 v2.1 decode is **deferred** — see Open Questions resolution below.
@@ -336,6 +336,34 @@ limitation here.
   the reader; a v3.0 file stays 3.0 with no method-5 block.
   `FuzzRecordWriterV31`. This completes the C1–C10 CRAM roadmap:
   pure-Go CRAM v3.0/v3.1 read and write, CLI-integrated.
+- **C11** — landed. Opt-in lossy quality-score binning on the encode
+  side. `pkg/htsgo/cram/qualbin.go` adds a `QualityBinning` enum —
+  `BinningNone` (default), `BinningIllumina8`, `BinningIllumina4`,
+  `BinningIllumina2` — each carrying a dense `[256]byte` lookup table.
+  The tables are the standard Illumina recalibration schemes from the
+  "Reducing Whole-Genome Data Storage Footprint" technical note: the
+  canonical 8-level table (0-2→0, 3-9→6, 10-19→15, 20-24→22, 25-29→27,
+  30-34→33, 35-39→37, 40+→40), the coarser 4-level table (0-9→0,
+  10-19→15, 20-29→25, 30+→37) and the 2-level NovaSeq-style table
+  (0-14→6, 15+→37). `QualityBinning.BinQuality` maps a quality slice
+  through the table, returning a fresh slice — the caller's
+  `*sam.Record` is never mutated — and the SAM no-quality sentinel
+  `0xff` is passed through unchanged. The writer option mirrors the C10
+  `Version` pattern: a `WriterOptions{Version, Binning}` struct and a
+  `NewRecordWriterOpts` constructor (the other constructors delegate to
+  it, zero-value unchanged), so the default writer is byte-for-byte
+  identical to before — verified by a dedicated default-bytes-unchanged
+  test. When a real scheme is set the writer maps each record's QUAL
+  through the table just before it reaches the `b.qs` series, and
+  appends a `@CO` provenance line to a *copy* of the embedded SAM
+  header noting the lossy transform. CLI: the
+  `samtools view --output-fmt-option qbin=8|4|2|none` flag (upstream's
+  KEY=VALUE form) threads through `ViewOptions.CRAMQualityBinning` →
+  `alnio.NewCRAMWriterOpts`; it is a no-op for SAM/BAM output. Oracle:
+  round-trip with `BinningIllumina8`
+  decodes QUAL equal to the binned input, `BinningNone` is exactly
+  lossless, and a CLI `view -C` with/without the flag bins or leaves
+  qualities verbatim. This completes the CRAM roadmap.
 - **C-LZMA** — landed. LZMA block decompression (`codec/lzma.go`,
   `LZMADecode`/`LZMAEncode`). CRAM method-3 blocks are a complete `.xz`
   container stream (the `\xFD7zXZ\x00` magic) — htslib's CRAM writer
