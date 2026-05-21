@@ -74,7 +74,11 @@ func BuildCRAI(r io.Reader) ([]CRAIEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, craiSliceEntries(blockEnds, containerOffset)...)
+		sliceEntries, err := craiSliceEntries(blockEnds, containerOffset)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, sliceEntries...)
 	}
 }
 
@@ -107,6 +111,12 @@ func craiContainerBlocks(br *bufio.Reader, def FileDefinition, hdr ContainerHead
 			encodedSize: bodyReader.offset() - start,
 		})
 	}
+	// The container body is exactly its NumBlocks blocks — Reader.Next
+	// enforces the same. Leftover bytes would desync the next
+	// container's offset and silently corrupt the index, so reject them.
+	if limited.N != 0 {
+		return nil, errFormat("container body has %d bytes after its %d blocks", limited.N, hdr.NumBlocks)
+	}
 	return blocks, nil
 }
 
@@ -117,20 +127,22 @@ func craiContainerBlocks(br *bufio.Reader, def FileDefinition, hdr ContainerHead
 // reference span from the slice header, the slice-header block's
 // body-relative offset as SliceOffset, and the summed byte size of the
 // slice-header block and its data blocks as SliceSize.
-func craiSliceEntries(blocks []craiBlock, containerOffset int64) []CRAIEntry {
+func craiSliceEntries(blocks []craiBlock, containerOffset int64) ([]CRAIEntry, error) {
 	var entries []CRAIEntry
 	for i := 0; i < len(blocks); i++ {
 		b := &blocks[i]
 		if b.block.ContentType != ContentMappedSlice {
 			continue // the compression-header block and stray blocks.
 		}
+		// A slice-header block that fails to decode is a hard error:
+		// dropping the slice would yield a quietly incomplete index.
 		payload, err := b.block.Decompress()
 		if err != nil {
-			continue // an unreadable slice header contributes no entry.
+			return nil, wrapf(err, "slice-header block at body offset %d", b.bodyOffset)
 		}
 		sh, err := parseSliceHeader(payload)
 		if err != nil {
-			continue
+			return nil, wrapf(err, "slice header at body offset %d", b.bodyOffset)
 		}
 		sliceSize := b.encodedSize
 		// The slice owns the next NumBlocks blocks; sum their sizes.
@@ -146,7 +158,7 @@ func craiSliceEntries(blocks []craiBlock, containerOffset int64) []CRAIEntry {
 			SliceSize:       sliceSize,
 		})
 	}
-	return entries
+	return entries, nil
 }
 
 // BuildCRAIFile walks the named CRAM file and returns its .crai entries.

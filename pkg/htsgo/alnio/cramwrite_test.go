@@ -61,9 +61,18 @@ func TestCRAMWriterRoundTrip(t *testing.T) {
 // TestCRAMWriterNilHeader confirms the adapter rejects a nil header,
 // since CRAM cannot be written without one.
 func TestCRAMWriterNilHeader(t *testing.T) {
-	w := NewCRAMWriter(&bytes.Buffer{})
+	var buf bytes.Buffer
+	w := NewCRAMWriter(&buf)
 	if err := w.WriteHeader(nil); err == nil {
 		t.Fatal("WriteHeader(nil) succeeded, want an error")
+	}
+	// Close after a failed WriteHeader must not panic, and no partial
+	// file may have been emitted.
+	if err := w.Close(); err == nil {
+		t.Error("Close after a failed WriteHeader should return an error")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("a writer with no valid header emitted %d bytes", buf.Len())
 	}
 }
 

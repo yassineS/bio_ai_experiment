@@ -289,9 +289,11 @@ func runView(args []string) int {
 		Reference:       refFile,
 	}
 
-	// Honour the output file extension even without an explicit format
-	// flag: a .bam name implies BAM, a .cram name implies CRAM.
-	if !opts.OutputBAM && !opts.OutputCRAM && outFile != "" {
+	// Honour the output file extension when no format was given: a .bam
+	// name implies BAM, a .cram name implies CRAM. An explicit -O is
+	// authoritative and suppresses the inference, matching upstream
+	// samtools (-O sam -o foo.cram still writes SAM).
+	if outFmt == "" && !opts.OutputBAM && !opts.OutputCRAM && outFile != "" {
 		switch {
 		case strings.HasSuffix(outFile, ".cram"):
 			opts.OutputCRAM = true
