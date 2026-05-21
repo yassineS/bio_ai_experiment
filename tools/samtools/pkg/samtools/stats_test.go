@@ -550,3 +550,236 @@ func TestStatsSparseOmitsHistograms(t *testing.T) {
 		t.Fatalf("--sparse should suppress RL header")
 	}
 }
+
+// TestStatsTargetRegionsParity validates --target-regions against upstream's
+// stat/11 fixtures. The SN and COV sections are compared byte-for-byte to the
+// golden outputs for both the default coverage threshold and -g 4. The full
+// report is not compared because upstream emits version-dependent sections
+// (FBC/FTC/LBC/LTC/GCD) and a dense IS table that this v1 does not implement.
+func TestStatsTargetRegionsParity(t *testing.T) {
+	cases := []struct {
+		name   string
+		expect string
+		opts   StatsOptions
+	}{
+		{
+			"default-threshold",
+			"11.stats.expected",
+			StatsOptions{TargetBED: statsFixture(t, "11.stats.targets")},
+		},
+		{
+			"cov-threshold-4",
+			"11.stats.g4.expected",
+			StatsOptions{TargetBED: statsFixture(t, "11.stats.targets"), CovThreshold: 4},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, "11_target.sam"))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			if err := Stats(in, &out, tc.opts); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			got, want := out.String(), string(expected)
+			if extractSN(got) != extractSN(want) {
+				t.Errorf("SN section differs\n--- want\n%s\n--- got\n%s",
+					extractSN(want), extractSN(got))
+			}
+			if extractSection(got, "COV") != extractSection(want, "COV") {
+				t.Errorf("COV rows differ\n--- want\n%s--- got\n%s",
+					extractSection(want, "COV"), extractSection(got, "COV"))
+			}
+		})
+	}
+}
+
+// TestStatsTargetRegionsSNLines confirms the two target-specific SN lines are
+// emitted only when a target file is given and that "bases inside the target"
+// equals the merged-interval base total.
+func TestStatsTargetRegionsSNLines(t *testing.T) {
+	in, err := os.Open(statsFixture(t, "11_target.sam"))
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer in.Close()
+	var out bytes.Buffer
+	opts := StatsOptions{TargetBED: statsFixture(t, "11.stats.targets")}
+	if err := Stats(in, &out, opts); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "SN\tbases inside the target:\t42") {
+		t.Errorf("expected 42 target bases (intervals [10,24] + merged [30,56]); got:\n%s", s)
+	}
+	if !strings.Contains(s, "SN\tpercentage of target genome with coverage > 0 (%):\t100.00") {
+		t.Errorf("expected 100.00%% target coverage; got:\n%s", s)
+	}
+
+	// Without a target file the two SN lines must be absent.
+	in2, err := os.Open(statsFixture(t, "1_map_cigar.sam"))
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer in2.Close()
+	var out2 bytes.Buffer
+	if err := Stats(in2, &out2, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if strings.Contains(out2.String(), "bases inside the target") {
+		t.Errorf("target SN lines must not appear without --target-regions")
+	}
+}
+
+// TestStatsTargetRegionsFilter confirms reads on a reference absent from the
+// target file are excluded entirely: stat/11 has 28 records (2 on contig
+// "alpha"), and restricting to ref1 targets must drop those to 26 sequences.
+func TestStatsTargetRegionsFilter(t *testing.T) {
+	in, err := os.Open(statsFixture(t, "11_target.sam"))
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer in.Close()
+	var out bytes.Buffer
+	opts := StatsOptions{TargetBED: statsFixture(t, "11.stats.targets")}
+	if err := Stats(in, &out, opts); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if !strings.Contains(out.String(), "SN\traw total sequences:\t26") {
+		t.Errorf("off-target contig reads must be filtered (want 26 sequences); got:\n%s", out.String())
+	}
+}
+
+// TestBwaTrimRead exercises the BWA-style trimming algorithm port, including
+// the BWA_MIN_RDLEN early return and bwa's documented off-by-one.
+func TestBwaTrimRead(t *testing.T) {
+	mkquals := func(n int, q byte) []byte {
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = q
+		}
+		return b
+	}
+	cases := []struct {
+		name     string
+		trimQual int
+		quals    []byte
+		reverse  bool
+		want     int
+	}{
+		{"too-short", 20, mkquals(34, 5), false, 0},
+		{"high-quality-no-trim", 20, mkquals(40, 30), false, 0},
+		{"low-quality-trims-to-min", 20, mkquals(40, 10), false, 5},
+		{"low-quality-reverse", 20, mkquals(40, 10), true, 5},
+		{"zero-threshold-no-trim", 0, mkquals(40, 10), false, 0},
+		{"exact-min-length", 20, mkquals(35, 5), false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := bwaTrimRead(tc.trimQual, tc.quals, len(tc.quals), tc.reverse)
+			if got != tc.want {
+				t.Errorf("bwaTrimRead = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStatsTrimQualityCounter confirms -q/--trim-quality feeds the "bases
+// trimmed" SN counter: a long low-quality read is trimmed while a short or
+// high-quality read is not, and the default (TrimQuality 0) trims nothing.
+func TestStatsTrimQualityCounter(t *testing.T) {
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:100000\n"
+	// One 40bp read with uniformly low quality ('+' = Phred 10): with a
+	// trim threshold of 20 bwa trims it down to BWA_MIN_RDLEN-1, i.e. 5
+	// bases. A second high-quality read ('I' = Phred 40) trims nothing.
+	lowQual := strings.Repeat("A", 40)
+	lowQ := strings.Repeat("+", 40)
+	hiQ := strings.Repeat("I", 40)
+	body := "r1\t0\tc\t1\t40\t40M\t*\t0\t0\t" + lowQual + "\t" + lowQ + "\n" +
+		"r2\t0\tc\t100\t40\t40M\t*\t0\t0\t" + lowQual + "\t" + hiQ + "\n"
+
+	var trimmed bytes.Buffer
+	if err := Stats(strings.NewReader(hdr+body), &trimmed, StatsOptions{TrimQuality: 20}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if !strings.Contains(trimmed.String(), "SN\tbases trimmed:\t5") {
+		t.Errorf("expected 5 trimmed bases with -q 20; got:\n%s", extractSN(trimmed.String()))
+	}
+
+	var untrimmed bytes.Buffer
+	if err := Stats(strings.NewReader(hdr+body), &untrimmed, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if !strings.Contains(untrimmed.String(), "SN\tbases trimmed:\t0") {
+		t.Errorf("default (no -q) must trim nothing; got:\n%s", extractSN(untrimmed.String()))
+	}
+}
+
+// TestStatsTargetRegionsUnsorted confirms --target-regions rejects an
+// unsorted input, mirroring upstream stats.c's is_in_regions hard error.
+func TestStatsTargetRegionsUnsorted(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "t.regions")
+	if err := os.WriteFile(target, []byte("c\t1 1000\n"), 0o644); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:100000\n"
+	// Second record precedes the first on the same reference.
+	body := "r1\t0\tc\t500\t40\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r2\t0\tc\t100\t40\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n"
+	var out bytes.Buffer
+	err := Stats(strings.NewReader(hdr+body), &out, StatsOptions{TargetBED: target})
+	if err == nil {
+		t.Fatal("expected an error for unsorted input with --target-regions")
+	}
+	if !strings.Contains(err.Error(), "sorted") {
+		t.Errorf("error should mention sorting; got: %v", err)
+	}
+}
+
+// TestStatsTargetRegionsDeletionBoundary is a regression test for the on-target
+// "bases mapped (cigar)" counter (addBasesMappedCigar) when a CIGAR D op
+// precedes an M op that straddles a target-interval boundary. Upstream
+// stats.c:1316 handles BAM_CDEL with only `readlen += ncig` and NEVER advances
+// the reference cursor iref on a deletion. An earlier draft of this port did
+// `iref += ncig` on the D op, mis-positioning every op after a deletion.
+//
+// Synthetic input: one mapped read, POS=8 (1-based), CIGAR 5M3D10M. The target
+// file gives a single ref interval [10,20], so regFrom=10, regTo=20.
+//
+// Hand calculation following upstream (iref NOT advanced on D):
+//
+//	iref=8.
+//	op 5M:  ncig=5; iref(8)<regFrom(10) -> ncig -= 10-8 => 3; add 3; iref += 5 => 13.
+//	op 3D:  iref unchanged => 13.
+//	op 10M: ncig=10; iref(13) not <10; iref+ncig-1 = 22 > regTo(20)
+//	        -> ncig -= 22-20 => 8; add 8; iref += 10 => 23.
+//	total bases mapped (cigar) = 3 + 8 = 11.
+//
+// With the old buggy `iref += ncig` on D, iref would be 16 at the 10M op:
+// iref+ncig-1 = 25 > 20 -> ncig -= 5 => 5, giving total 3 + 5 = 8. The assertion
+// on 11 therefore fails against the old behaviour.
+func TestStatsTargetRegionsDeletionBoundary(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "t.regions")
+	if err := os.WriteFile(target, []byte("c\t10 20\n"), 0o644); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:100000\n"
+	// 15 query bases (5M + 10M; the 3D consumes no query).
+	body := "r1\t0\tc\t8\t40\t5M3D10M\t*\t0\t0\tACGTACGTACGTACG\tIIIIIIIIIIIIIII\n"
+	var out bytes.Buffer
+	if err := Stats(strings.NewReader(hdr+body), &out, StatsOptions{TargetBED: target}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if !strings.Contains(out.String(), "SN\tbases mapped (cigar):\t11\t") {
+		t.Errorf("expected on-target bases mapped (cigar) = 11 (D must not advance iref); got:\n%s", out.String())
+	}
+}

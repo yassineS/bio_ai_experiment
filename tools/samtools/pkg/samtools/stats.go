@@ -8,10 +8,12 @@
 // upstream. PARITY_VALIDATION.md tracks which sections are byte-faithful vs.
 // deferred.
 //
+// BWA-style quality trimming (-q/--trim-quality) feeds the "bases trimmed"
+// SN counter and --target-regions restricts every counter to a target file.
+//
 // Skipped intentionally for v1 (documented):
 //   - GCD GC-depth distribution (requires reference bases).
 //   - OXC oxidation-context counts (requires reference bases).
-//   - --target-regions BED restriction.
 //   - --remove-overlaps (single-record stats are unaffected by overlap
 //     removal for the counters we emit).
 package samtools
@@ -22,10 +24,156 @@ import (
 	"hash/crc32"
 	"io"
 	"math"
+	"os"
 	"sort"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
+
+// bwaMinReadLength mirrors upstream stats.c's BWA_MIN_RDLEN: reads shorter
+// than this are never quality-trimmed by bwaTrimRead.
+const bwaMinReadLength = 35
+
+// bwaTrimRead returns the number of bases BWA would trim from the 3' end of a
+// read given a trim-quality threshold, the per-base quality bytes, the read
+// length and the reverse-strand flag. It is a faithful port of upstream
+// stats.c's bwa_trim_read, including bwa's documented off-by-one (max_l = l
+// rather than l+1, which trims one base fewer than the running maximum
+// would imply).
+func bwaTrimRead(trimQual int, quals []byte, length int, reverse bool) int {
+	if length < bwaMinReadLength {
+		return 0
+	}
+	maxTrimmed := length - bwaMinReadLength + 1
+	sum, maxSum, maxL := 0, 0, 0
+	for l := 0; l < maxTrimmed; l++ {
+		idx := length - 1 - l
+		if reverse {
+			idx = l
+		}
+		sum += trimQual - int(quals[idx])
+		if sum < 0 {
+			break
+		}
+		if sum > maxSum {
+			maxSum = sum
+			maxL = l
+		}
+	}
+	return maxL
+}
+
+// regionInterval is one closed 1-based interval [Beg, End] from a
+// --target-regions file.
+type regionInterval struct {
+	Beg int32
+	End int32
+}
+
+// targetRegions holds the parsed --target-regions intervals keyed by reference
+// name, plus the total number of distinct reference bases they cover.
+type targetRegions struct {
+	byRef map[string][]regionInterval
+	count int64
+}
+
+// loadTargetRegions parses a --target-regions file. The format mirrors
+// upstream stats.c's init_regions: each non-comment line is a reference name
+// followed by whitespace then two whitespace-separated 1-based inclusive
+// coordinates ("seq beg end"). It is NOT a standard BED file. Intervals are
+// sorted and overlapping/adjacent-touching intervals on the same reference are
+// merged, exactly as upstream does, and the covered-base total is accumulated
+// for the "bases inside the target" SN line. Reference names not present in
+// the BAM header are skipped with a warning, matching upstream.
+func loadTargetRegions(path string, hdr *sam.Header) (*targetRegions, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	known := make(map[string]struct{})
+	if hdr != nil {
+		for _, ref := range hdr.Refs {
+			known[ref.Name] = struct{}{}
+		}
+	}
+
+	tr := &targetRegions{byRef: make(map[string][]regionInterval)}
+	prev := make(map[string]int32)
+	warned := false
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		i := 0
+		for i < len(line) && !isSpaceByte(line[i]) {
+			i++
+		}
+		if i >= len(line) {
+			return nil, fmt.Errorf("could not parse the file: %s [%s]", path, line)
+		}
+		name := line[:i]
+		var beg, end int32
+		if _, serr := fmt.Sscanf(strings.TrimSpace(line[i:]), "%d %d", &beg, &end); serr != nil {
+			return nil, fmt.Errorf("could not parse the region [%s]", strings.TrimSpace(line[i:]))
+		}
+		if hdr != nil {
+			if _, ok := known[name]; !ok {
+				if !warned {
+					fmt.Fprintf(os.Stderr, "Warning: Some sequences not present in the BAM, e.g. %q. This message is printed only once.\n", name)
+					warned = true
+				}
+				continue
+			}
+		}
+		if p, ok := prev[name]; ok && p > beg {
+			return nil, fmt.Errorf("the positions are not in chromosomal order (%s comes after %d)", line, p)
+		}
+		prev[name] = beg
+		tr.byRef[name] = append(tr.byRef[name], regionInterval{Beg: beg, End: end})
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if len(tr.byRef) == 0 {
+		return nil, fmt.Errorf("unable to map the -t sequences to the BAM sequences")
+	}
+
+	// Sort and merge overlapping intervals per reference, then sum covered
+	// bases — mirroring upstream init_regions' qsort + dedup loop.
+	for name, ivs := range tr.byRef {
+		sort.Slice(ivs, func(a, b int) bool {
+			if ivs[a].Beg != ivs[b].Beg {
+				return ivs[a].Beg < ivs[b].Beg
+			}
+			return ivs[a].End < ivs[b].End
+		})
+		merged := ivs[:1]
+		for _, iv := range ivs[1:] {
+			last := &merged[len(merged)-1]
+			if last.End < iv.Beg {
+				merged = append(merged, iv)
+			} else if last.End < iv.End {
+				last.End = iv.End
+			}
+		}
+		tr.byRef[name] = merged
+		for _, iv := range merged {
+			tr.count += int64(iv.End - iv.Beg + 1)
+		}
+	}
+	return tr, nil
+}
+
+// isSpaceByte reports whether b is an ASCII whitespace character, matching
+// C's isspace for the bytes that appear in a target-regions file.
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == '\v' || b == '\f'
+}
 
 // StatsOptions configures the Stats run.
 type StatsOptions struct {
@@ -52,8 +200,16 @@ type StatsOptions struct {
 	MaxInsertSize int
 	// Sparse omits empty placeholder section bodies.
 	Sparse bool
-	// TargetBED restricts stats to regions; accepted but unused.
+	// TargetBED is the --target-regions file: when set, every statistic is
+	// restricted to reads overlapping a listed interval. The file format is
+	// "seq-name beg end" with 1-based inclusive coordinates (NOT BED).
 	TargetBED string
+	// TrimQuality is the BWA-style 3'-end quality-trim threshold passed via
+	// -q/--trim-quality. Zero (the default) disables trimming.
+	TrimQuality int
+	// CovThreshold is the coverage threshold (-g/--cov-threshold) used by the
+	// "percentage of target genome with coverage > N" SN line.
+	CovThreshold int
 	// Threads is accepted; v1 is single-threaded.
 	Threads int
 }
@@ -100,10 +256,15 @@ type StatsCounters struct {
 	InwardPairs          int64
 	OutwardPairs         int64
 	OtherOrientPairs     int64
-	DiffChromosomePairs  int64
-	InsertSumAbs         int64 // |TLEN| over pairs accepted into IS
-	InsertSumSqAbs       int64 // |TLEN|^2
-	InsertPairsCounted   int64
+	// AnomalousReads counts, per paired-and-mapped primary read, those whose
+	// mate maps to a different reference (upstream nreads_anomalous). The
+	// "pairs on different chromosomes" SN line emits AnomalousReads/2, which
+	// — unlike a pair-completion count — stays correct when one mate is
+	// region-filtered out by --target-regions.
+	AnomalousReads     int64
+	InsertSumAbs       int64 // |TLEN| over pairs accepted into IS
+	InsertSumSqAbs     int64 // |TLEN|^2
+	InsertPairsCounted int64
 
 	// histograms keyed on small integer ranges
 	RL      map[int64]int64 // read length distribution
@@ -175,6 +336,16 @@ type StatsCounters struct {
 	covStep    int
 	ncov       int
 	covBinsSet bool // true once the cov bins have been initialized
+
+	// Target-regions state. regions is nil unless --target-regions is in
+	// effect. regCursor tracks the per-reference scan cursor mirroring
+	// upstream's reg->cpos; it relies on coordinate-sorted input (upstream
+	// errors otherwise). regFrom/regTo hold the first interval matched by the
+	// current record, used to clip "bases mapped (cigar)" to the target.
+	regions   *targetRegions
+	regCursor map[string]int
+	regFrom   int32
+	regTo     int32
 }
 
 // Buffer dimensions mirroring upstream stats.c initial allocation.
@@ -242,11 +413,22 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	if err != nil {
 		return err
 	}
-	_ = br.Header() // header is read for side-effects (consumed from stream)
+	hdr := br.Header()
 	c := newStatsCounters()
 	// Compute the COV bin geometry once up front so depth can be binned
 	// incrementally during the streaming flush.
 	c.initCovBins(opts)
+	// --target-regions: parse the target file and prepare per-reference scan
+	// cursors. Every counter is then restricted to reads overlapping a
+	// listed interval (see isInRegions).
+	if opts.TargetBED != "" {
+		tr, terr := loadTargetRegions(opts.TargetBED, hdr)
+		if terr != nil {
+			return terr
+		}
+		c.regions = tr
+		c.regCursor = make(map[string]int)
+	}
 	// Match upstream stats.c:2327 — is_sorted starts at 1 and is demoted to
 	// 0 the first time an out-of-order record appears. The @HD SO:coordinate
 	// line is NOT consulted; an empty BAM is reported as sorted.
@@ -260,7 +442,9 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 		if err != nil {
 			return err
 		}
-		c.observe(rec, opts)
+		if oerr := c.observe(rec, opts); oerr != nil {
+			return oerr
+		}
 	}
 	if c.sortBroken {
 		c.IsSorted = 0
@@ -271,8 +455,23 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	return c.Write(out, opts)
 }
 
-// observe folds one record into the accumulator.
-func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
+// observe folds one record into the accumulator. It returns a non-nil error
+// only when --target-regions is active and the input is not coordinate
+// sorted, mirroring upstream stats.c's hard error in is_in_regions.
+func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
+	// --target-regions filter: records that overlap no listed interval are
+	// skipped entirely (upstream collect_stats returns immediately). This
+	// runs before the sort-order detector below updates state, so it sees
+	// the same sortedness upstream's is_in_regions sees.
+	if c.regions != nil {
+		in, ierr := c.isInRegions(rec)
+		if ierr != nil {
+			return ierr
+		}
+		if !in {
+			return nil
+		}
+	}
 	// Sort-order detector — track whether records arrive coordinate-sorted.
 	if !c.sortBroken && rec.IsMapped() {
 		if c.lastRef == "" {
@@ -304,21 +503,14 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 	// "raw total sequences" upstream, they only bump their own counters).
 	if rec.IsSecondary() {
 		c.NonPrimary++
-		return
+		return nil
 	}
 	if rec.IsSupplementary() {
 		c.Supplementary++
 		// Upstream's bases_mapped_cigar counter folds in supplementary
 		// alignments — stats.c walks the cigar of EVERY mapped record
 		// (primary + supplementary) into nbases_mapped_cigar.
-		for _, op := range rec.Cigar {
-			ch := op.Char()
-			ln := int64(op.Length())
-			switch ch {
-			case 'M', '=', 'X', 'I':
-				c.BasesMappedCigar += ln
-			}
-		}
+		c.addBasesMappedCigar(rec)
 		// Upstream count_indels runs for every mapped record, including
 		// supplementary alignments (only secondary reads are excluded).
 		if rec.IsMapped() {
@@ -328,7 +520,7 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 			// secondary reads return early).
 			c.accumulateCoverage(rec)
 		}
-		return
+		return nil
 	}
 	// QC-fail records ARE counted toward RawTotal/Sequences/totals per
 	// upstream stats.c (collect_orig_read_stats runs for every primary
@@ -343,19 +535,19 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 	c.RawTotal++
 	if opts.RequiredFlag != 0 && rec.Flag&opts.RequiredFlag != opts.RequiredFlag {
 		c.FilteredOut++
-		return
+		return nil
 	}
 	if opts.FilteringFlag != 0 && rec.Flag&opts.FilteringFlag != 0 {
 		c.FilteredOut++
-		return
+		return nil
 	}
 	if opts.RemoveDups && rec.IsDuplicate() {
 		c.FilteredOut++
-		return
+		return nil
 	}
 	if opts.MinMAPQ > 0 && rec.MapQ < opts.MinMAPQ {
 		c.FilteredOut++
-		return
+		return nil
 	}
 	c.Sequences++
 
@@ -385,7 +577,7 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 
 	// Per-cycle quality, base-content and GC accumulation. Mirrors upstream
 	// collect_orig_read_stats — runs for every QC-passed primary record.
-	c.collectCycleStats(rec)
+	c.collectCycleStats(rec, opts)
 
 	if rec.IsMapped() {
 		c.ReadsMapped++
@@ -421,18 +613,7 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 
 	// Cigar-aware "bases mapped (cigar)" — matches upstream `nbases_mapped_cigar`
 	// which counts M, =, X *and* I bases (see stats.c line 1581 comment).
-	// Note: `bases trimmed` in upstream tracks BWA-style quality trimming
-	// (see bwa_trim_read). We don't implement trim-quality scanning, so
-	// BasesTrimmed stays 0 — matching upstream's default behaviour when
-	// `--trim-quality` (`-q`) is not passed. Documented in PARITY_ROADMAP.md.
-	for _, op := range rec.Cigar {
-		ch := op.Char()
-		ln := int64(op.Length())
-		switch ch {
-		case 'M', '=', 'X', 'I':
-			c.BasesMappedCigar += ln
-		}
-	}
+	c.addBasesMappedCigar(rec)
 
 	// Indel distribution and per-cycle indel counts (mapped reads only).
 	c.countIndels(rec)
@@ -464,8 +645,111 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) {
 
 	// Pair orientation + insert size classification.
 	if rec.IsPaired() && rec.IsMapped() && !rec.IsMateUnmapped() {
+		// Per-read different-chromosome tally (upstream nreads_anomalous):
+		// counted whenever the mate maps to a different reference. RNEXT
+		// "=" denotes the same reference.
+		if rec.RNext != "" && rec.RNext != "*" && rec.RNext != "=" && rec.RNext != rec.RName {
+			c.AnomalousReads++
+		}
 		c.classifyPair(rec, opts)
 	}
+	return nil
+}
+
+// addBasesMappedCigar folds one mapped record's CIGAR into the "bases mapped
+// (cigar)" counter. M/=/X and I operations contribute. When --target-regions
+// is active the count is clipped to the first target interval the record
+// matched ([regFrom, regTo]), mirroring upstream stats.c's on-target counting
+// at stats.c:1306-1333.
+func (c *StatsCounters) addBasesMappedCigar(rec *sam.Record) {
+	if c.regions == nil {
+		for _, op := range rec.Cigar {
+			switch op.Char() {
+			case 'M', '=', 'X', 'I':
+				c.BasesMappedCigar += int64(op.Length())
+			}
+		}
+		return
+	}
+	// Region-restricted: iref is the 1-based reference coordinate of the
+	// current CIGAR op (rec.Pos is already 1-based here).
+	iref := rec.Pos
+	for _, op := range rec.Cigar {
+		ch := op.Char()
+		ncig := int32(op.Length())
+		if ncig == 0 {
+			continue
+		}
+		switch ch {
+		case 'M', '=', 'X':
+			clipped := ncig
+			if iref < c.regFrom {
+				clipped -= c.regFrom - iref
+			} else if iref+clipped-1 > c.regTo {
+				clipped -= iref + clipped - 1 - c.regTo
+			}
+			if clipped < 0 {
+				clipped = 0
+			}
+			c.BasesMappedCigar += int64(clipped)
+			iref += ncig
+		case 'I':
+			iref += ncig
+			if iref >= c.regFrom && iref <= c.regTo {
+				c.BasesMappedCigar += int64(ncig)
+			}
+		case 'D':
+			// Per upstream stats.c:1316, a deletion does NOT advance the
+			// reference cursor in the on-target counting loop (it only adds
+			// to readlen, which we do not track here). This is an upstream
+			// quirk replicated for byte-parity — do not advance iref.
+		}
+	}
+}
+
+// isInRegions reports whether rec overlaps any --target-regions interval,
+// advancing the per-reference scan cursor and recording the first matched
+// interval in regFrom/regTo. It mirrors upstream stats.c's is_in_regions:
+// reads whose reference is absent from the target file are excluded, the scan
+// relies on coordinate-sorted input, and even a single-base overlap includes
+// the read. A non-nil error is returned when the input is not sorted.
+func (c *StatsCounters) isInRegions(rec *sam.Record) (bool, error) {
+	ivs, ok := c.regions.byRef[rec.RName]
+	if !ok || rec.RName == "" {
+		return false, nil
+	}
+	// Upstream errors when -t is used on an unsorted BAM. Detect a backwards
+	// jump within the same reference.
+	if !c.sortBroken && rec.IsMapped() {
+		if c.lastRef == rec.RName && rec.Pos < c.lastPos {
+			return false, fmt.Errorf("the BAM must be sorted in order for -t to work")
+		}
+	}
+	cur := c.regCursor[rec.RName]
+	if cur >= len(ivs) {
+		return false, nil // done for this reference
+	}
+	// Upstream compares the 1-based inclusive interval end against the
+	// 0-based core.pos with `end <= pos`; rec.Pos here is 1-based, so the
+	// equivalent test is `End < rec.Pos`.
+	i := cur
+	for i < len(ivs) && ivs[i].End < rec.Pos {
+		i++
+	}
+	if i >= len(ivs) {
+		c.regCursor[rec.RName] = len(ivs)
+		return false, nil
+	}
+	// bam_endpos is a 0-based exclusive end, equal to our 1-based inclusive
+	// EndPosition; the overlap test `endpos < beg` carries over unchanged.
+	endpos := rec.EndPosition()
+	if endpos < ivs[i].Beg {
+		return false, nil
+	}
+	c.regCursor[rec.RName] = i
+	c.regFrom = ivs[i].Beg
+	c.regTo = ivs[i].End
+	return true, nil
 }
 
 // classifyPair counts each pair once on the SECOND-observed mate. The
@@ -478,7 +762,6 @@ func (c *StatsCounters) classifyPair(rec *sam.Record, opts StatsOptions) {
 		delete(c.mates, rec.QName)
 		// Different chromosome?
 		if rec.RName != "" && prev.rname != "" && rec.RName != prev.rname {
-			c.DiffChromosomePairs++
 			return
 		}
 		// Same chromosome — classify orientation from the leftmost.
@@ -580,11 +863,26 @@ func growQuals(sl []cycleQuals, n int) []cycleQuals {
 
 // collectCycleStats folds one QC-passed primary record into the per-cycle
 // quality, base-content and GC-content accumulators (upstream
-// collect_orig_read_stats).
-func (c *StatsCounters) collectCycleStats(rec *sam.Record) {
+// collect_orig_read_stats). When -q/--trim-quality is set it also folds the
+// BWA-style trimmed-base count into BasesTrimmed.
+func (c *StatsCounters) collectCycleStats(rec *sam.Record, opts StatsOptions) {
 	seqLen := len(rec.Seq)
 	order := readOrder(rec)
 	reverse := rec.Flag&sam.FlagReverse != 0
+
+	// BWA-style 3'-end quality trimming. Upstream invokes bwa_trim_read on
+	// the record's quality bytes inside collect_orig_read_stats; a "*"
+	// quality string behaves as all-0xFF bytes, which trims nothing.
+	if opts.TrimQuality > 0 && seqLen > 0 {
+		quals := rec.Qual
+		if len(quals) != seqLen {
+			quals = make([]byte, seqLen)
+			for i := range quals {
+				quals[i] = 0xff
+			}
+		}
+		c.BasesTrimmed += int64(bwaTrimRead(opts.TrimQuality, quals, seqLen, reverse))
+	}
 
 	ulen := unclippedLength(rec)
 	if ulen > c.maxLen {
@@ -827,6 +1125,13 @@ func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
 	// Every position strictly below rec.Pos can receive no further depth.
 	c.flushCoverageWindow(rec.Pos)
 
+	// When --target-regions is active, COV depth is restricted to on-target
+	// reference positions, mirroring upstream's per-chunk round_buffer
+	// inserts (stats.c:1419-1452).
+	var ivs []regionInterval
+	if c.regions != nil {
+		ivs = c.regions.byRef[rec.RName]
+	}
 	pos := rec.Pos
 	for _, op := range rec.Cigar {
 		ch := op.Char()
@@ -838,9 +1143,13 @@ func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
 				// Defensive: never re-add depth to an already-flushed
 				// position (only possible on out-of-order input, where
 				// COV is suppressed regardless).
-				if p >= c.covFlushed {
-					c.covWindow[p]++
+				if p < c.covFlushed {
+					continue
 				}
+				if c.regions != nil && !positionInIntervals(p, ivs) {
+					continue
+				}
+				c.covWindow[p]++
 			}
 			pos += ln
 		case 'D', 'N':
@@ -850,6 +1159,20 @@ func (c *StatsCounters) accumulateCoverage(rec *sam.Record) {
 			// I, S, H, P do not consume reference.
 		}
 	}
+}
+
+// positionInIntervals reports whether the 1-based reference position p falls
+// inside any of the sorted, merged target intervals ivs.
+func positionInIntervals(p int32, ivs []regionInterval) bool {
+	for _, iv := range ivs {
+		if p < iv.Beg {
+			return false
+		}
+		if p <= iv.End {
+			return true
+		}
+	}
+	return false
 }
 
 // flushCoverageWindow bins and removes every windowed position strictly below
@@ -916,7 +1239,7 @@ func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 	// CHK block — emitted first, ahead of SN, matching upstream stats.c:1557.
 	c.writeCHK(bw)
 	// SN block — full upstream parity.
-	c.writeSN(bw)
+	c.writeSN(bw, opts)
 	// Histogram and per-cycle section bodies are emitted only in the
 	// non-sparse path. FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID carry real data and are
 	// byte-faithful to upstream; section order matches stats.c.
@@ -975,7 +1298,7 @@ func (c *StatsCounters) writeCOV(bw *bufio.Writer, opts StatsOptions) {
 }
 
 // writeSN emits the Summary Numbers section.
-func (c *StatsCounters) writeSN(bw *bufio.Writer) {
+func (c *StatsCounters) writeSN(bw *bufio.Writer, opts StatsOptions) {
 	fmt.Fprintln(bw, "# Summary Numbers. Use `grep ^SN | cut -f 2-` to extract this part.")
 	emit := func(key string, val interface{}, comment string) {
 		if comment == "" {
@@ -1059,7 +1382,7 @@ func (c *StatsCounters) writeSN(bw *bufio.Writer) {
 	emit("inward oriented pairs", c.InwardPairs, "")
 	emit("outward oriented pairs", c.OutwardPairs, "")
 	emit("pairs with other orientation", c.OtherOrientPairs, "")
-	emit("pairs on different chromosomes", c.DiffChromosomePairs, "")
+	emit("pairs on different chromosomes", c.AnomalousReads/2, "")
 	// Proper-pair % uses Sequences (= 1st + 2nd + other) as the denominator,
 	// matching upstream stats.c:1606. NOT ReadsPaired — they differ when
 	// records have the paired bit but no first/last fragment classification.
@@ -1068,6 +1391,22 @@ func (c *StatsCounters) writeSN(bw *bufio.Writer) {
 		pp = 100.0 * float64(c.ReadsProperlyPaired) / float64(c.Sequences)
 	}
 	emit("percentage of properly paired reads (%)", fmt.Sprintf("%.1f", pp), "")
+	// Target-regions SN lines (stats.c:1607-1611) — emitted only when a
+	// --target-regions file actually mapped to BAM references. The coverage
+	// percentage sums COV bins above cov_threshold; the cov array is sized
+	// from -c and finalized by the streaming flush before Write runs.
+	if c.regions != nil && c.regions.count > 0 {
+		emit("bases inside the target", c.regions.count, "")
+		var covSum int64
+		for icov := opts.CovThreshold + 1; icov < c.ncov && icov < len(c.cov); icov++ {
+			if icov >= 0 {
+				covSum += c.cov[icov]
+			}
+		}
+		pct := 100.0 * float64(covSum) / float64(c.regions.count)
+		emit(fmt.Sprintf("percentage of target genome with coverage > %d (%%)", opts.CovThreshold),
+			fmt.Sprintf("%.2f", pct), "")
+	}
 }
 
 // effectiveMaxQual returns the highest quality column index to print. Upstream
