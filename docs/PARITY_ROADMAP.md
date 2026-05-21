@@ -602,17 +602,21 @@ collapse, first, last). Done; no remaining gaps.
 
 ### `vcftools`
 
-**Status:** **142 of 146 unique upstream long flags (~97%)** after
-long-tail wave 16. A complete `in_str ==` enumeration of
-`parameters.cpp` finds 146 distinct upstream long flags. The port
-registers all of them EXCEPT four BCF-binary I/O flags: `--bcf`,
-`--diff-bcf`, `--recode-bcf`, `--contigs` (the last is BCF-header-
-only and meaningless without `--bcf`). The PCA trio
-(`--pca`/`--pca-no-norm`/`--pca-snp-loadings`) IS CLI-registered with
-a deferred-error shim (LAPACK blocker documented in wave 8). The
-remaining 4 missing flags are all HEAVY — blocked on BCF binary I/O
-infrastructure. Earlier wave-16 prose claiming "111/146" was a
-count error (the wave-16 PR review caught and corrected it).
+**Status:** **146 of 146 unique upstream long flags (100%)** after
+long-tail wave 23. A complete `in_str ==` enumeration of
+`parameters.cpp` finds 146 distinct upstream long flags; the port
+registers and implements all of them. The four BCF-binary I/O flags
+that earlier prose listed as blocked — `--bcf`, `--diff-bcf`,
+`--recode-bcf`, `--contigs` — are all closed (waves 21–23): the
+in-tree `pkg/htsgo/bcf` reader/writer (built on the in-tree BGZF
+codec) supplies the binary I/O, so no external infrastructure is
+needed. The PCA trio (`--pca`/`--pca-no-norm`/`--pca-snp-loadings`)
+is fully implemented (wave 19) on top of gonum's symmetric
+eigendecomposition — the former "LAPACK blocker" no longer applies.
+The remaining work is per-output column-set polish (see the "Other"
+list below), not flag-count gaps. Earlier header prose claiming
+"142 of 146, blocked on 4 BCF flags" predated waves 19–23 and was
+stale; this is the corrected count.
 
 Closed in wave 1:
 
@@ -1177,11 +1181,13 @@ recode-column stripper code in `filterRecodeInfo` was deleted (no
 CLI flag drives it now). See `docs/UPSTREAM_BUGS.md` Fix-on-port
 section for the full migration note.
 
-Remaining gaps (definitive enumeration vs.
+Flag history (definitive enumeration vs.
 `reference_code/vcftools/src/cpp/parameters.cpp` — wave 16):
 
-The complete diff between upstream's `in_str == "--…"` table (146
-unique long flags) and the port's registered flags is **five flags**:
+As of wave 16 the diff between upstream's `in_str == "--…"` table
+(146 unique long flags) and the port's registered flags was **five
+flags** (the PCA-deferred trio counted as registered). All five are
+now closed — waves 19–23, recorded below for history:
 
 - ~~**`--bcf` FILE** — BCF binary input (parameters.cpp:173).~~
   **Closed (wave 22).** Adapts `pkg/htsgo/bcf.Reader` (built on
@@ -1377,9 +1383,13 @@ Missing subcommands (in rough priority order):
   accepted but treated as a no-op since we always run the full
   intersection. `-d/-D` (tag-value filter) and `-N` (qname file) landed
   in the view-d-D-N PR.
-- **`mpileup` tail** beyond PR #88 wiring: BCF output, `-g/-u` genotype-
-  likelihood mode. `-aa` zero-fill of empty contigs is implemented (see
-  `TestMpileup_AA_ZeroFillTableDriven`).
+- **`mpileup` tail** beyond PR #88 wiring: the remaining genuine gap is
+  BCF / genotype-likelihood output (`-g/-u`). `-aa` zero-fill of empty
+  contigs is implemented (see `TestMpileup_AA_ZeroFillTableDriven`). The
+  text-pileup path is complete. `-g/-u` requires the genotype-likelihood
+  model (`bam2bcf`) plus a BCF emit path; `reference_code/htslib`
+  (`errmod.c`, the MAQ likelihood) is now vendored, so the reference
+  source for the port is available — see the "deferred" note below.
 
 Plus:
 
@@ -1387,7 +1397,33 @@ Plus:
   (the rANS 4x8/4x16 codecs are in-tree pure Go; `ulikunitz/xz` is the
   only sanctioned third-party dep, confined to the LZMA block codec).
   See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
-- **Multi-threading** in `sort`, `index`, `view` (`-@`).
+- **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
+  and `.csi`, and readers auto-detect index kind from file magic.
+- **Multi-threading (`-@`) — NOT done.** `-@/--threads` is accepted on
+  the CLI of `sort`, `index`, `view` (and elsewhere) but is a no-op
+  stub; v1 is single-threaded everywhere. The option value is stored on
+  the relevant options struct for a future parallel pass. This is the
+  one cross-cutting deferred item, not a completed feature.
+
+**Genuine remaining samtools gaps** (everything else is done):
+
+- **`calmd` BAQ realignment (`-r`, `-E`, `-A`).** MD + NM are filled
+  correctly; the BQ (base-alignment-quality) aux tag and the
+  low-quality-read MAPQ drop are not yet computed. Upstream calls
+  `sam_prob_realn`; the HMM realignment math lives in
+  `reference_code/htslib/probaln.c`, which is now vendored, so the
+  reference source for the port is available.
+- **`mpileup` BCF / genotype-likelihood output (`-g/-u`).** See the
+  mpileup tail note above; `reference_code/htslib/errmod.c` (the MAQ
+  genotype-likelihood model) is now vendored.
+- **`phase` MCMC chimera repair.** The v1 port uses a greedy
+  adjacent-het vote in place of upstream `phase.c`'s MCMC
+  `phase_core` loop; `-b` per-haplotype BAM split is also deferred.
+  Detail in the `phase` subsection below.
+- **`targetcut` HMM consensus mode.** v1 implements the simple
+  aligned-slice FASTA cut; upstream's `cut_target.c` HMM-based
+  fosmid-pool consensus caller is not ported. Detail below.
+- **`tview`** — deliberate skip (interactive curses UI).
 
 **`markdup` deferred features** (deliberately skipped in v1, all flag
 slots are accepted on the CLI for compat):
@@ -1540,7 +1576,10 @@ flag-exact / SN-byte cases are exercised in
   `sam_prob_realn` to recompute the BQ (base-alignment quality) aux
   tag and to drop MAPQ for low-quality reads. v1 fills in MD + NM
   correctly but does not touch BQ or MAPQ. ~200 lines of HMM-style
-  alignment math; deferred per owner steer.
+  alignment math; deferred per owner steer. The reference
+  implementation (`probaln_glocal` / `sam_prob_realn`) is now
+  vendored at `reference_code/htslib/probaln.c` — the port is
+  unblocked whenever this slice is scheduled.
 - **`-h` HASH_QNM** (hash-based query-name binarisation) — niche
   upstream-only optimisation; not implemented.
 - **`-N` clear-MD/NM-bits**, **`-C` capQ**, **`--no-PG`** —
@@ -1616,7 +1655,9 @@ is "cut the aligned slice from each read and emit FASTA". Upstream's
 HMM-based consensus calling over fosmid pools, emitting one consensus
 SAM record per identified region. The HMM consensus mode is **not**
 implemented; the upstream tool is rarely used outside fosmid
-workflows. The simple aligned-slice FASTA mode landed here covers the
+workflows. The upstream `cut_target.c` reference source is vendored at
+`reference_code/samtools/` if the HMM mode is ever scheduled. The
+simple aligned-slice FASTA mode landed here covers the
 "cut a read down to its aligned bases" use case that users typically
 mean when they reach for the name. The `-Q` flag is wired through to
 the per-base quality filter as documented.
@@ -1726,7 +1767,45 @@ mendelian2/polysomy PR (`mendelian2`, `polysomy`), the cnv/csq PR
 
 Missing subcommands (priority order):
 
-- **`+plugins`** — full plugin system (substantial).
+- **`+plugins`** — the full plugin system. bcftools ships ~40 plugins
+  (`+fill-tags`, `+split-vep`, `+setGT`, `+prune`, `+fixploidy`, ...)
+  loaded as shared objects via `bcftools plugin`. The Go port has no
+  plugin host and none of the individual plugins; this is the single
+  largest remaining subcommand-level gap. Upstream plugin sources
+  (`plugins/*.c`) are vendored under `reference_code/bcftools/`.
+
+Note on vendored reference source: `reference_code/bcftools` and
+`reference_code/htslib` are now both vendored as submodules. Earlier
+roadmap text in this section was written when bcftools internals were
+unavailable and called several HMM-based features unportable for that
+reason. That is no longer true — `vcfcnv.c` (CNV HMM), `vcfroh.c` (RoH
+HMM), `polysomy.c` + `peakfit.c`, `HMM.c` (the shared Viterbi/Baum-Welch
+core), `bam2bcf*.c` (mpileup MAQ model + indel caller) and
+`reference_code/htslib/errmod.c` are all available as porting
+references. The deferrals below are scope/effort calls, not
+source-availability blockers; each is annotated accordingly.
+
+Genuine algorithmic gaps (subcommands present but running a v1
+heuristic in place of the upstream algorithm — full detail in the
+per-subcommand option-tail sections below):
+
+- **`cnv`** — v1 median-BAF/mean-LRR heuristic instead of the 5-state
+  Viterbi HMM (`vcfcnv.c` + `HMM.c`, both vendored).
+- **`roh`** — v1 simple-mode RoH detection without the forward-backward
+  HMM and without genetic-distance scaling (`vcfroh.c` + `HMM.c`).
+- **`polysomy`** — v1 median-deviation CN heuristic instead of the
+  Gaussian-mixture peak fit (`polysomy.c` + `peakfit.c`; upstream uses
+  GSL).
+- **`gtcheck`** — v1 hard-GT Hamming only; `--cluster` HMM-style
+  sample clustering and PL/GL scoring deferred.
+- **`mpileup`** — v1 uniform-error binomial likelihood instead of the
+  MAQ model (`bam2bcf.c`, vendored); no indel calling, no
+  multi-allelic PL grid, no BCF output.
+- **`call`** — consensus and biallelic multi-allelic calling are
+  implemented; the full upstream multi-allelic `-m` grid over >2 ALTs
+  pairs with the mpileup MAQ port.
+- **`csq`** — v1 per-record SNP classifier, not the haplotype-aware
+  consequence walker.
 
 Option-tail gaps on `gtcheck` (PR #107, simple-mode):
 
@@ -1743,6 +1822,11 @@ Option-tail gaps on `gtcheck` (PR #107, simple-mode):
 
 Option-tail gaps on `roh` (PR #107, simple-mode):
 
+- **The v1 algorithm is not the full upstream HMM.** Upstream
+  `vcfroh.c` runs a forward-backward HMM (via the shared `HMM.c`
+  core) with optional Viterbi training; v1 runs a simple-mode RoH
+  scan. `vcfroh.c` and `HMM.c` are now vendored under
+  `reference_code/bcftools/`, so the full port is a scoped task.
 - `-b/--buffer-size`, `-e/--estimate-AF`, `-m/--genetic-map`,
   `-M/--rec-rate`, `-V/--viterbi-training` — accepted-and-rejected
   with PARITY_ROADMAP pointer.
@@ -1829,7 +1913,11 @@ Option-tail gaps on `mendelian2` (PR #109, simple-mode):
 Option-tail gaps on `polysomy` (this PR, simple-mode):
 
 - The full Gaussian-mixture peak-fit (`peakfit.c` + GSL) is
-  **deferred**. v1 emits CN calls from a median-deviation heuristic:
+  **deferred**. Reference source `reference_code/bcftools/polysomy.c`
+  and `peakfit.c` are now vendored; the only genuine external
+  dependency is GSL's nonlinear least-squares fitter, which would
+  need an in-tree replacement or a sanctioned dep. v1 emits CN calls
+  from a median-deviation heuristic:
   CN1 when n_het == 0, CN2 when |median(BAF) - 0.5| ≤ MinBafDev (with
   CnPenalty scaling), CN3 otherwise. The upstream algorithm fits CN2,
   CN3, and CN4 Gaussian mixtures and picks the lowest CN whose fit
@@ -1862,7 +1950,9 @@ Option-tail gaps on `cnv` (this PR, v1 heuristic):
   median-BAF + mean-LRR heuristic that classifies each chromosome
   into one of the same 5 CN states. The full Viterbi sweep is the
   natural follow-up; the CLI surface is already parity-clean for
-  it. EVERY HMM tuning knob (`-a/--aberrant`, `-b/--BAF-weight`,
+  it. Reference source `reference_code/bcftools/vcfcnv.c` and the
+  shared `reference_code/bcftools/HMM.c` Viterbi core are now
+  vendored. EVERY HMM tuning knob (`-a/--aberrant`, `-b/--BAF-weight`,
   `-e/--err-prob`, `-l/--LRR-weight`, `-L/--LRR-smooth-win`,
   `-O/--optimize`, `-P/--same-prob`, `-W/--baum-welch`,
   `-x/--xy-prob`, `--AF-file`) is parsed and stored in `CNVOptions`
@@ -1936,7 +2026,9 @@ Option-tail gaps on `mpileup` (this PR, v1 SNP + uniform-error):
   per base, summed in log10 across reads, then phred-scaled and
   rebased to min=0 for the [0/0, 0/1, 1/1] triple. The MAQ port is
   the natural follow-up; the CLI surface and FORMAT/PL layout are
-  parity-clean for it.
+  parity-clean for it. The reference source — `reference_code/bcftools/`
+  `bam2bcf.c` and `reference_code/htslib/errmod.c` — is now vendored,
+  so this is a scoped porting task, not a research item.
 - **No BAQ recalibration.** `-B/--no-BAQ` is the v1 default (the flag
   is accepted as a no-op); `-D/--full-BAQ` is accepted but inert;
   `-E/--redo-BAQ` is hard-rejected with a roadmap pointer because
