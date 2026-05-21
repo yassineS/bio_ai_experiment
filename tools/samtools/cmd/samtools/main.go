@@ -605,16 +605,20 @@ Usage:
 
 Options:
   -b, --bai                   Produce a .bai index (BAM input; default).
-  -c, --csi                   Produce a .csi index (NOT YET IMPLEMENTED).
-      --csi-min-shift N       CSI bin shift (only used with -c).
-  -o, --output PATH           Index output path. Default is <in>.bai for
-                              BAM input or <in>.crai for CRAM input.
+  -c, --csi                   Produce a .csi index (required for reference
+                              sequences longer than ~512 Mbp).
+  -m, --min-shift N           CSI bin-hierarchy min_shift (default 14;
+                              only used with -c). Accepts --csi-min-shift
+                              as an alias for upstream compatibility.
+  -o, --output PATH           Index output path. Default is <in>.bai (or
+                              <in>.csi with -c) for BAM input, or
+                              <in>.crai for CRAM input.
   -@, --threads N             Accepted; v1 is single-threaded.
   -h, --help                  Show this help.
   -v, --version               Show version.
 
-The index kind is chosen from the input format: a CRAM file is given a
-.crai index, a BAM file a .bai index.
+The index kind is chosen from the input format and options: a CRAM file
+is given a .crai index, a BAM file a .bai index (or a .csi index with -c).
 `
 
 func runIndex(args []string) int {
@@ -630,8 +634,10 @@ func runIndex(args []string) int {
 		showVer     bool
 	)
 	cliflag.BoolVar(fs, &wantBAI, "b", "bai", false, "Emit .bai")
-	cliflag.BoolVar(fs, &wantCSI, "c", "csi", false, "Emit .csi (not yet implemented)")
-	cliflag.IntVar(fs, &csiMinShift, "", "csi-min-shift", 14, "CSI bin shift")
+	cliflag.BoolVar(fs, &wantCSI, "c", "csi", false, "Emit .csi")
+	cliflag.IntVar(fs, &csiMinShift, "m", "min-shift", 14, "CSI bin-hierarchy min_shift")
+	// --csi-min-shift is accepted as an alias for upstream compatibility.
+	fs.IntVar(&csiMinShift, "csi-min-shift", 14, "")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&showHelp, "help", false, "")

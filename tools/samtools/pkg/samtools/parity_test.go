@@ -39,6 +39,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -405,21 +406,26 @@ func TestParity_Index_T01_BuildBAI(t *testing.T) {
 	}
 }
 
-// index.t02 — CSI output is intentionally rejected in v1.
-func TestParity_Index_T02_CSIRejected(t *testing.T) {
+// index.t02 — CSI output writes a BGZF-compressed .csi index that begins
+// with the CSI magic and round-trips through the CSI reader.
+func TestParity_Index_T02_CSIOutput(t *testing.T) {
 	in := openParity(t, "basic.sam")
 	defer in.Close()
-	var bam bytes.Buffer
-	if err := Sort(in, &bam, SortOptions{Order: SortCoordinate, OutputBAM: true}); err != nil {
+	var bamBuf bytes.Buffer
+	if err := Sort(in, &bamBuf, SortOptions{Order: SortCoordinate, OutputBAM: true}); err != nil {
 		t.Fatalf("Sort: %v", err)
 	}
 	var idx bytes.Buffer
-	err := Index(bytes.NewReader(bam.Bytes()), &idx, IndexOptions{SelectCSI: true})
-	if err == nil {
-		t.Fatalf("Index with SelectCSI should fail")
+	if err := Index(bytes.NewReader(bamBuf.Bytes()), &idx, IndexOptions{SelectCSI: true}); err != nil {
+		t.Fatalf("Index with SelectCSI: %v", err)
 	}
-	if !strings.Contains(err.Error(), "CSI") {
-		t.Errorf("expected CSI error, got %v", err)
+	csi, err := bam.ReadCSI(bytes.NewReader(idx.Bytes()))
+	if err != nil {
+		t.Fatalf("bam.ReadCSI: %v", err)
+	}
+	if csi.CSI.MinShift != bam.DefaultCSIMinShift || csi.CSI.Depth != bam.DefaultCSIDepth {
+		t.Errorf("CSI params: got min_shift=%d depth=%d, want %d %d",
+			csi.CSI.MinShift, csi.CSI.Depth, bam.DefaultCSIMinShift, bam.DefaultCSIDepth)
 	}
 }
 

@@ -1385,7 +1385,6 @@ Plus:
   (the rANS 4x8/4x16 codecs are in-tree pure Go; `ulikunitz/xz` is the
   only sanctioned third-party dep, confined to the LZMA block codec).
   See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
-- **`.csi`** for samtools (BAI is fine for chromosomes ≤512Mb).
 - **Multi-threading** in `sort`, `index`, `view` (`-@`).
 
 **`markdup` deferred features** (deliberately skipped in v1, all flag
