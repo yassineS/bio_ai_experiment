@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -61,11 +63,27 @@ func BuildBAI(br *sam.BAMReader, numRefs int) (*bam.BAIIndex, error) {
 	return bam.BuildBAI(br, numRefs)
 }
 
-// IndexFile reads the BAM at inPath, builds a BAI index, and writes it to
-// outPath. If outPath is empty, the index is written to <inPath>.bai.
+// IndexFile reads the alignment file at inPath, builds the appropriate
+// index, and writes it to outPath. The index kind is chosen from the
+// input format: a BAM file gets a BAI written to <inPath>.bai, while a
+// CRAM file gets a CRAI written to <inPath>.crai. When outPath is
+// non-empty it overrides the default destination.
 func IndexFile(inPath, outPath string, opts IndexOptions) error {
+	// CSI is a BAM-only index kind and is not yet implemented; reject it
+	// up front, before the input file is even opened, so the deferral is
+	// surfaced regardless of the input format.
 	if opts.SelectCSI {
 		return ErrCSIUnsupported
+	}
+	isCRAM, err := inputIsCRAM(inPath)
+	if err != nil {
+		return err
+	}
+	if isCRAM {
+		if outPath == "" {
+			outPath = inPath + ".crai"
+		}
+		return indexCRAMFile(inPath, outPath)
 	}
 	if outPath == "" {
 		outPath = inPath + ".bai"
@@ -85,6 +103,48 @@ func IndexFile(inPath, outPath string, opts IndexOptions) error {
 	tmpName := tmp.Name()
 	cleanup := func() { _ = os.Remove(tmpName) }
 	if err := Index(in, tmp, opts); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	return os.Rename(tmpName, outPath)
+}
+
+// inputIsCRAM reports whether the file at inPath is a CRAM stream. It
+// sniffs the leading bytes through iohelper's format detector; a SAM or
+// BAM file reports false.
+func inputIsCRAM(inPath string) (bool, error) {
+	f, err := os.Open(inPath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	format, _, err := iohelper.DetectFormat(f)
+	if err != nil {
+		return false, err
+	}
+	return format == iohelper.FormatCRAM, nil
+}
+
+// indexCRAMFile builds a .crai index for the CRAM at inPath and writes it
+// to outPath. The index is materialised to a sibling temp file and then
+// renamed so a half-written .crai never replaces a real one.
+func indexCRAMFile(inPath, outPath string) error {
+	entries, err := cram.BuildCRAIFile(inPath)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(outPath), ".crai.tmp.")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if err := cram.WriteCRAI(tmp, entries); err != nil {
 		_ = tmp.Close()
 		cleanup()
 		return err

@@ -26,6 +26,10 @@ type ViewOptions struct {
 	// OutputBAM forces BAM output. When false, output is text SAM unless the
 	// caller pre-wraps the output writer in a BAM writer.
 	OutputBAM bool
+	// OutputCRAM forces CRAM output (samtools view -C / --output-fmt cram).
+	// When set it takes precedence over OutputBAM. The CRAM the writer
+	// emits is reference-free, so it decodes without an external FASTA.
+	OutputCRAM bool
 	// WithHeader emits the header alongside records.
 	WithHeader bool
 	// HeaderOnly emits the header and skips all records.
@@ -410,12 +414,18 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 		return nil, nil
 	}
 	var w sam.Writer
-	if opts.OutputBAM {
+	switch {
+	case opts.OutputCRAM:
+		w = alnio.NewCRAMWriter(out)
+	case opts.OutputBAM:
 		w = sam.NewBAMWriter(out)
-	} else {
+	default:
 		w = sam.NewSAMWriter(out)
 	}
-	emitHeader := opts.HeaderOnly || opts.WithHeader || opts.OutputBAM
+	// BAM and CRAM are binary container formats whose header is structural
+	// — it is always emitted regardless of -h/-H. CRAM in particular
+	// cannot be written without a header.
+	emitHeader := opts.HeaderOnly || opts.WithHeader || opts.OutputBAM || opts.OutputCRAM
 	if emitHeader {
 		if err := w.WriteHeader(hdr); err != nil {
 			return nil, err
