@@ -107,7 +107,7 @@ func TestDecompressSizeMismatch(t *testing.T) {
 // TestDecompressUnsupportedMethods checks every out-of-scope compression
 // method returns a clear unsupported-method error rather than panicking.
 func TestDecompressUnsupportedMethods(t *testing.T) {
-	for _, m := range []CompressionMethod{CompFQZComp, CompNameTok, 250} {
+	for _, m := range []CompressionMethod{CompNameTok, 250} {
 		b := Block{Method: m, Data: []byte{1, 2, 3}}
 		_, err := b.Decompress()
 		if err == nil {
@@ -131,13 +131,13 @@ func TestDecompressCorruptGzip(t *testing.T) {
 
 // TestSupportedMethod pins the SupportedMethod predicate.
 func TestSupportedMethod(t *testing.T) {
-	supported := []CompressionMethod{CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16, CompArith}
+	supported := []CompressionMethod{CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16, CompArith, CompFQZComp}
 	for _, m := range supported {
 		if !(&Block{Method: m}).SupportedMethod() {
 			t.Errorf("method %s should be supported", m)
 		}
 	}
-	for _, m := range []CompressionMethod{CompFQZComp, CompNameTok} {
+	for _, m := range []CompressionMethod{CompNameTok} {
 		if (&Block{Method: m}).SupportedMethod() {
 			t.Errorf("method %s should not be supported", m)
 		}
@@ -246,6 +246,42 @@ func TestDecompressLZMA(t *testing.T) {
 	}
 	if !bytes.Equal(out, payload) {
 		t.Errorf("LZMA block did not round-trip")
+	}
+}
+
+// TestDecompressFQZComp checks the fqzcomp (method 7) dispatch path
+// round-trips through a block, using the codec's own encoder to build
+// the payload. The fqzcomp decoded length is verified against the
+// block's declared UncompressedSize like every other method.
+func TestDecompressFQZComp(t *testing.T) {
+	payload := bytes.Repeat([]byte{30, 30, 35, 2, 30, 35, 35, 2}, 400)
+	for strat := 0; strat <= 3; strat++ {
+		comp, err := codec.FQZCompEncode(payload, strat, nil)
+		if err != nil {
+			t.Fatalf("FQZCompEncode strat %d: %v", strat, err)
+		}
+		b := Block{Method: CompFQZComp, Data: comp, UncompressedSize: int32(len(payload))}
+		out, err := b.Decompress()
+		if err != nil {
+			t.Fatalf("Decompress fqzcomp strat %d: %v", strat, err)
+		}
+		if !bytes.Equal(out, payload) {
+			t.Errorf("fqzcomp block did not round-trip at strat %d", strat)
+		}
+	}
+}
+
+// TestDecompressFQZCompSizeMismatch checks an fqzcomp block whose
+// decompressed length disagrees with its declared UncompressedSize is
+// rejected.
+func TestDecompressFQZCompSizeMismatch(t *testing.T) {
+	comp, err := codec.FQZCompEncode([]byte{10, 11, 12, 13}, 0, nil)
+	if err != nil {
+		t.Fatalf("FQZCompEncode: %v", err)
+	}
+	b := Block{Method: CompFQZComp, Data: comp, UncompressedSize: 99}
+	if _, err := b.Decompress(); err == nil {
+		t.Errorf("expected size-mismatch error for fqzcomp block")
 	}
 }
 

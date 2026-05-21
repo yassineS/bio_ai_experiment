@@ -103,15 +103,17 @@ func TestV31UsesRANS4x16(t *testing.T) {
 	}
 }
 
-// TestNewV31CodecsRejected confirms the v3.1 codecs C7 does not implement
-// — the range coder, fqzcomp and the name tokeniser — are rejected with
-// a clear error rather than mis-decoded or panicking.
+// TestNewV31CodecsRejected confirms that a v3.1 codec still unimplemented
+// — the name tokeniser (method 8) — is rejected with a clear error
+// rather than mis-decoded or panicking. The arith_dynamic and fqzcomp
+// codecs (methods 6 and 7) are now implemented; garbage payloads for
+// them must still surface a decode error, not a panic.
 func TestNewV31CodecsRejected(t *testing.T) {
 	for _, m := range []CompressionMethod{CompArith, CompFQZComp, CompNameTok} {
 		b := Block{Method: m, UncompressedSize: 4, Data: []byte{1, 2, 3, 4}}
 		out, err := b.Decompress()
 		if err == nil {
-			t.Errorf("method %d: expected an unsupported-codec error, decoded %d bytes", m, len(out))
+			t.Errorf("method %d: expected a decode error on garbage data, decoded %d bytes", m, len(out))
 		}
 	}
 }

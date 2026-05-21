@@ -275,11 +275,12 @@ limitation here.
   verifies the v3.1 fixture `cram_size/mpileup.1.cram` is recognised as
   CRAM 3.1, decodes to its full record set, genuinely exercises the
   rANS 4x16 block codec (every block decompresses to its declared
-  size), and that the v3.1 codecs left unimplemented — the range
-  coder, fqzcomp and the name tokeniser (methods 6/7/8) — are rejected
-  with a clear error rather than mis-decoded. Those three optional
-  codecs slot in as dedicated future slices if a fixture needs them,
-  the same way C-LZMA handles method 3.
+  size). The arith_dynamic range coder (method 6) and the fqzcomp
+  quality-score codec (method 7) have since landed in
+  `pkg/htsgo/cram/codec/` — both byte-exact against the htscodecs
+  corpus — leaving only the name tokeniser (method 8) unimplemented;
+  it is rejected with a clear error rather than mis-decoded, and slots
+  in as a dedicated future slice the same way C-LZMA handled method 3.
 - **C8** — landed. The CRAM v3.0 writer (`writer.go`, `writeencode.go`,
   `writeheader.go`, `writefeature.go`, `writetag.go`): a `RecordWriter`
   inverting the reader — `sam.Record`s → data series → blocks → slices
