@@ -978,12 +978,17 @@ Emits an upstream-compatible text report. v1 ships the most-used sections:
 SN (Summary Numbers), RL (read-length), MAPQ (MAPQ distribution),
 IS (insert sizes), FFQ/LFQ (per-cycle qualities), GCF/GCL (GC-fraction
 histograms), GCC/GCT (per-cycle GC), IC/ID (indels), COV (coverage
-distribution) and GCD (GC-depth distribution). The MPC/RFS sections and
-the FBC/FTC/LBC/LTC barcode tables are deferred; see PARITY_VALIDATION.md.
+distribution), GCD (GC-depth distribution), MPC (mismatches per cycle, with
+--ref-seq) and RFS (reference statistics, with --ref-stats). The
+FBC/FTC/LBC/LTC barcode tables are deferred; see PARITY_VALIDATION.md.
 
 Options:
   -r, --ref-seq FASTA      Reference FASTA. When given, GCD derives GC content
-                           from the reference instead of the read sequences.
+                           from the reference instead of the read sequences,
+                           and the MPC mismatches-per-cycle section is emitted.
+      --ref-stats          Emit the RFS reference-statistics section.
+      --ref-stats-chunk N  Reference-fetch chunk width in megabytes for RFS
+                           (default 1); affects only how the FASTA is read.
   -c, --coverage MIN[,MAX[,STEP]]
                            Coverage histogram bins (default 1,1000,1).
       --GC-depth N         GC-depth bin width in reference bases
@@ -1026,6 +1031,8 @@ func runStats(args []string) int {
 		insertSize  int
 		sparse      bool
 		targetBED   string
+		refStats    bool
+		refStatsChk int
 		threads     int
 		outPath     string
 		showHelp    bool
@@ -1045,6 +1052,8 @@ func runStats(args []string) int {
 	cliflag.IntVar(fs, &insertSize, "i", "insert-size", 8000, "")
 	cliflag.BoolVar(fs, &sparse, "x", "sparse", false, "")
 	cliflag.StringVar(fs, &targetBED, "t", "target-regions", "", "")
+	fs.BoolVar(&refStats, "ref-stats", false, "")
+	fs.IntVar(&refStatsChk, "ref-stats-chunk", 0, "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
 	fs.BoolVar(&showHelp, "h", false, "")
@@ -1097,6 +1106,8 @@ func runStats(args []string) int {
 		MaxInsertSize:  insertSize,
 		Sparse:         sparse,
 		TargetBED:      targetBED,
+		RefStats:       refStats,
+		RefStatsChunk:  refStatsChk,
 		TrimQuality:    trimQuality,
 		CovThreshold:   covThresh,
 		Threads:        threads,

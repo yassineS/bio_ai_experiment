@@ -949,3 +949,179 @@ func TestStatsTargetRegionsDeletionBoundary(t *testing.T) {
 		t.Errorf("expected on-target bases mapped (cigar) = 11 (D must not advance iref); got:\n%s", out.String())
 	}
 }
+
+// TestStatsMPCParity compares our MPC mismatches-per-cycle section against
+// upstream's stats expected outputs. The stat/1-8 golden files were generated
+// with `-r test.fa`, so the section comment lines and every cycle row
+// (including the bumped trailing all-zero cycle) must match byte-for-byte.
+// Fixture 7_supp exercises the only non-zero entry across the suite: a
+// supplementary read whose first aligned base mismatches the reference, landing
+// in the N column because the "*" quality string makes qual+1 wrap to 0.
+func TestStatsMPCParity(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected"},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected"},
+		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected"},
+		{"7_supp", "7_supp.sam", "7.stats.expected"},
+		{"8_secondary", "8_secondary.sam", "8.stats.expected"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, tc.input))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			opts := StatsOptions{RefSeq: statsFixture(t, "test.fa")}
+			if err := Stats(in, &out, opts); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			got, want := out.String(), string(expected)
+			if extractSection(got, "MPC") != extractSection(want, "MPC") {
+				t.Errorf("MPC rows differ\n--- want\n%s--- got\n%s",
+					extractSection(want, "MPC"), extractSection(got, "MPC"))
+			}
+			for _, prefix := range []string{
+				"Mismatches per cycle and quality",
+				"Columns correspond to qualities, rows to cycles",
+				"is the number of N's and the rest is the number of mismatches",
+			} {
+				if extractCommentHeader(got, prefix) != extractCommentHeader(want, prefix) {
+					t.Errorf("MPC header %q differs\nwant: %q\ngot:  %q", prefix,
+						extractCommentHeader(want, prefix), extractCommentHeader(got, prefix))
+				}
+			}
+		})
+	}
+}
+
+// TestStatsMPCGatedOnRefSeq confirms the MPC section is emitted only when
+// --ref-seq is supplied, matching upstream's mpc_buf non-nil gate.
+func TestStatsMPCGatedOnRefSeq(t *testing.T) {
+	in, err := os.Open(statsFixture(t, "1_map_cigar.sam"))
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Stats(in, &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if extractSection(out.String(), "MPC") != "" {
+		t.Errorf("MPC section must be omitted without --ref-seq")
+	}
+}
+
+// TestStatsRFSParity compares our RFS reference-statistics section against
+// upstream's stats expected outputs. The validated invocations are upstream's
+// test.pl stats cases:
+//
+//	16: samtools stats --ref-stats 11_target.sam            (no reference FASTA)
+//	17: samtools stats --ref-stats 11_target.sam -r test1.fa
+//	19: samtools stats --ref-stats 11_target.sam -r test1.fa -t 11.stats.targets
+//
+// Upstream test 18 (a command-line region argument against a BAM) is not
+// reproduced here: the Go CLI does not yet accept positional region arguments,
+// which would need a region-iterator implementation outside the scope of the
+// RFS section itself.
+func TestStatsRFSParity(t *testing.T) {
+	cases := []struct {
+		name   string
+		expect string
+		opts   func(t *testing.T) StatsOptions
+	}{
+		{
+			name:   "no_reference",
+			expect: "16.stats.expected",
+			opts:   func(t *testing.T) StatsOptions { return StatsOptions{RefStats: true} },
+		},
+		{
+			name:   "with_reference",
+			expect: "17.stats.expected",
+			opts: func(t *testing.T) StatsOptions {
+				return StatsOptions{RefStats: true, RefSeq: statsFixture(t, "test1.fa")}
+			},
+		},
+		{
+			name:   "with_reference_and_targets",
+			expect: "19.stats.expected",
+			opts: func(t *testing.T) StatsOptions {
+				return StatsOptions{
+					RefStats:  true,
+					RefSeq:    statsFixture(t, "test1.fa"),
+					TargetBED: statsFixture(t, "11.stats.targets"),
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, "11_target.sam"))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			if err := Stats(in, &out, tc.opts(t)); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			if extractSection(out.String(), "RFS") != string(expected) {
+				t.Errorf("RFS rows differ\n--- want\n%s--- got\n%s",
+					string(expected), extractSection(out.String(), "RFS"))
+			}
+		})
+	}
+}
+
+// TestStatsRFSHeaders confirms the three RFS comment header lines are emitted
+// verbatim from upstream stats.c:1897-1899.
+func TestStatsRFSHeaders(t *testing.T) {
+	in, err := os.Open(statsFixture(t, "11_target.sam"))
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Stats(in, &out, StatsOptions{RefStats: true}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	for _, prefix := range []string{
+		"Reference statistics. Use `grep ^RFS",
+		"Total count, Output count, Average GC",
+		"Sequence name, Length, GC content, Unknown count",
+	} {
+		if extractCommentHeader(out.String(), prefix) == "" {
+			t.Errorf("missing RFS header line %q", prefix)
+		}
+	}
+}
+
+// TestStatsRFSGatedOnRefStats confirms the RFS section is emitted only when
+// --ref-stats is supplied, matching upstream's rstat non-nil gate.
+func TestStatsRFSGatedOnRefStats(t *testing.T) {
+	in, err := os.Open(statsFixture(t, "11_target.sam"))
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Stats(in, &out, StatsOptions{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if extractSection(out.String(), "RFS") != "" {
+		t.Errorf("RFS section must be omitted without --ref-stats")
+	}
+}
