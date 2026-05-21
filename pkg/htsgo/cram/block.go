@@ -14,9 +14,8 @@ import (
 // CompressionMethod identifies how a CRAM block's data is compressed.
 type CompressionMethod byte
 
-// The CRAM block compression methods. Methods 0-7 are handled by this
-// package; method 8 (the htscodecs name-tokeniser codec) is not yet
-// implemented and decompressing it returns an error.
+// The CRAM block compression methods. Methods 0-8 are all handled by
+// this package; method 8 is the htscodecs name-tokeniser codec.
 const (
 	CompRaw      CompressionMethod = 0 // Uncompressed.
 	CompGzip     CompressionMethod = 1 // RFC 1952 gzip (compress/gzip).
@@ -26,7 +25,7 @@ const (
 	CompRANS4x16 CompressionMethod = 5 // rANS 4x16 (CRAM v3.1 codec).
 	CompArith    CompressionMethod = 6 // arith_dynamic adaptive range coder (CRAM v3.1 codec).
 	CompFQZComp  CompressionMethod = 7 // fqzcomp quality-score codec (CRAM v3.1 codec).
-	CompNameTok  CompressionMethod = 8 // Name tokeniser — out of scope.
+	CompNameTok  CompressionMethod = 8 // Name tokeniser (CRAM v3.1 codec).
 )
 
 // String returns the spec name of the compression method.
@@ -144,8 +143,7 @@ func (b *Block) Decompress() ([]byte, error) {
 	case CompFQZComp:
 		out, err = codec.FQZCompDecode(b.Data)
 	case CompNameTok:
-		return nil, fmt.Errorf("cram: unsupported compression method %d (%s)",
-			byte(b.Method), b.Method)
+		out, err = codec.NameTokDecode(b.Data)
 	default:
 		return nil, fmt.Errorf("cram: unsupported compression method %d", byte(b.Method))
 	}
@@ -164,7 +162,7 @@ func (b *Block) Decompress() ([]byte, error) {
 // compression method without returning an unsupported-method error.
 func (b *Block) SupportedMethod() bool {
 	switch b.Method {
-	case CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16, CompArith, CompFQZComp:
+	case CompRaw, CompGzip, CompBzip2, CompLZMA, CompRANS4x8, CompRANS4x16, CompArith, CompFQZComp, CompNameTok:
 		return true
 	default:
 		return false

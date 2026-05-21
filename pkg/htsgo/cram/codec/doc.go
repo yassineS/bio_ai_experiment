@@ -21,6 +21,14 @@
 //     fqzcomp.go (decode + parameter machinery) and
 //     fqzcomp_encode.go (the strategy-driven encoder). Both decode
 //     and encode are byte-exact against the htscodecs corpus.
+//   - name tokeniser — CRAM v3.1's read-name codec (compression
+//     method 8). It splits each name into typed tokens, models each
+//     name as a diff against an earlier one, and routes the per-token
+//     streams through the rANS / arith sub-codecs above. Implemented
+//     in nametok.go (decode) and nametok_encode.go (encode). Decode is
+//     byte-exact against the full htscodecs tok3 vector set; the
+//     encoder round-trips at every level (see NameTokEncode for the
+//     byte-exactness caveat).
 //   - LZMA      — a rare optional per-block codec, implemented in
 //     lzma.go; the one place a third-party dependency (ulikunitz/xz)
 //     is sanctioned.
