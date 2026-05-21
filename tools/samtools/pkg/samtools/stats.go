@@ -1811,6 +1811,7 @@ func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 		c.writeGCFGCL(bw)
 		c.writeGCC(bw)
 		c.writeGCT(bw)
+		c.writeFBCLTC(bw)
 		c.writeRL(bw)
 		c.writeMAPQ(bw)
 		c.writeIS(bw, opts)
@@ -2197,6 +2198,50 @@ func (c *StatsCounters) writeGCC(bw *bufio.Writer) {
 			100.0*float64(first.n+last.n)/fs,
 			100.0*float64(first.other+last.other)/fs)
 	}
+}
+
+// writeFBCLTC emits the per-fragment ACGT-content sections (FBC for first
+// fragments, LBC for last) and the matching raw-counter sections (FTC, LTC),
+// ported from upstream stats.c:1699-1746. Unlike GCC, which sums both
+// fragment orientations, these keep the first- and last-fragment cycle
+// buffers separate; FTC/LTC carry the A/C/G/T/N totals summed across cycles.
+func (c *StatsCounters) writeFBCLTC(bw *bufio.Writer) {
+	c.writeFragmentACGT(bw, c.acgtCycles1st, "first", "FBC", "FTC")
+	c.writeFragmentACGT(bw, c.acgtCycles2nd, "last", "LBC", "LTC")
+}
+
+// writeFragmentACGT emits one per-cycle ACGT-content section (contentTag)
+// followed by its raw-counter section (counterTag) for the per-cycle buffer
+// cycles. The counter totals are accumulated over every cycle in [0,maxLen),
+// including cycles whose content row is skipped for having no A/C/G/T bases.
+func (c *StatsCounters) writeFragmentACGT(bw *bufio.Writer, cycles []acgtNoCount, frag, contentTag, counterTag string) {
+	fmt.Fprintf(bw, "# ACGT content per cycle for %s fragments. Use `grep ^%s | cut -f 2-` to extract this part. The columns are: cycle; A,C,G,T base counts as a percentage of all A/C/G/T bases [%%]; and N and O counts as a percentage of all A/C/G/T bases [%%]\n", frag, contentTag)
+	var tA, tC, tG, tT, tN int64
+	for ibase := 0; ibase < c.maxLen; ibase++ {
+		var v acgtNoCount
+		if ibase < len(cycles) {
+			v = cycles[ibase]
+		}
+		tA += v.a
+		tC += v.c
+		tG += v.g
+		tT += v.t
+		tN += v.n
+		sum := v.a + v.c + v.g + v.t
+		if sum == 0 {
+			continue
+		}
+		fs := float64(sum)
+		fmt.Fprintf(bw, "%s\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n", contentTag, ibase+1,
+			100.0*float64(v.a)/fs,
+			100.0*float64(v.c)/fs,
+			100.0*float64(v.g)/fs,
+			100.0*float64(v.t)/fs,
+			100.0*float64(v.n)/fs,
+			100.0*float64(v.other)/fs)
+	}
+	fmt.Fprintf(bw, "# ACGT raw counters for %s fragments. Use `grep ^%s | cut -f 2-` to extract this part. The columns are: A,C,G,T,N base counters\n", frag, counterTag)
+	fmt.Fprintf(bw, "%s\t%d\t%d\t%d\t%d\t%d\n", counterTag, tA, tC, tG, tT, tN)
 }
 
 // writeGCT emits the read-oriented ACGT-content-per-cycle section, where
