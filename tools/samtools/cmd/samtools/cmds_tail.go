@@ -989,12 +989,17 @@ Options:
   -l, --required-flag N    Require ALL bits set.
   -F, --filtering-flag N   Drop records with ANY bit set.
   -d, --max-depth N        Cap depth used in coverage.
-  -q, --min-mapq N         Skip records with MAPQ < N.
+      --min-mapq N         Skip records with MAPQ < N.
+  -q, --trim-quality N     BWA-style 3'-end quality-trim threshold; feeds the
+                           "bases trimmed" SN counter (default 0 = disabled).
       --remove-dups        Skip duplicate-flagged records.
       --remove-overlaps    Accept (no-op in v1).
   -i, --insert-size N      Max insert size for the IS section (default 8000).
   -x, --sparse             Omit sections that would emit only zero lines.
-  -t, --target-regions BED Restrict stats to this BED (skipped in v1).
+  -t, --target-regions F   Restrict stats to a target-regions file. Each line
+                           is "seq-name beg end", 1-based inclusive (NOT BED).
+  -g, --cov-threshold N    Coverage threshold for the target-genome coverage
+                           SN line (default 0; requires -t).
   -@, --threads N          Accepted; v1 is single-threaded.
   -o, --output FILE        Output path (default stdout).
   -h, --help               Show this help.
@@ -1005,28 +1010,32 @@ func runStats(args []string) int {
 	fs := flag.NewFlagSet("samtools stats", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		refSeq     string
-		coverage   string
-		reqFlag    int
-		filtFlag   int
-		maxDepth   int
-		minMapQ    int
-		removeDups bool
-		removeOvl  bool
-		insertSize int
-		sparse     bool
-		targetBED  string
-		threads    int
-		outPath    string
-		showHelp   bool
-		showVer    bool
+		refSeq      string
+		coverage    string
+		reqFlag     int
+		filtFlag    int
+		maxDepth    int
+		minMapQ     int
+		trimQuality int
+		covThresh   int
+		removeDups  bool
+		removeOvl   bool
+		insertSize  int
+		sparse      bool
+		targetBED   string
+		threads     int
+		outPath     string
+		showHelp    bool
+		showVer     bool
 	)
 	cliflag.StringVar(fs, &refSeq, "r", "ref-seq", "", "")
 	cliflag.StringVar(fs, &coverage, "c", "coverage", "", "")
 	cliflag.IntVar(fs, &reqFlag, "l", "required-flag", 0, "")
 	cliflag.IntVar(fs, &filtFlag, "F", "filtering-flag", 0, "")
 	cliflag.IntVar(fs, &maxDepth, "d", "max-depth", 0, "")
-	cliflag.IntVar(fs, &minMapQ, "q", "min-mapq", 0, "")
+	cliflag.IntVar(fs, &minMapQ, "", "min-mapq", 0, "")
+	cliflag.IntVar(fs, &trimQuality, "q", "trim-quality", 0, "")
+	cliflag.IntVar(fs, &covThresh, "g", "cov-threshold", 0, "")
 	fs.BoolVar(&removeDups, "remove-dups", false, "")
 	fs.BoolVar(&removeOvl, "remove-overlaps", false, "")
 	cliflag.IntVar(fs, &insertSize, "i", "insert-size", 8000, "")
@@ -1055,6 +1064,10 @@ func runStats(args []string) int {
 		fmt.Fprint(os.Stderr, statsUsage)
 		return 2
 	}
+	if covThresh > 0 && targetBED == "" {
+		fmt.Fprintln(os.Stderr, "samtools stats: coverage percentage calculation requires a list of target regions")
+		return 2
+	}
 	in, err := iohelper.OpenReader(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)
@@ -1079,6 +1092,8 @@ func runStats(args []string) int {
 		MaxInsertSize:  insertSize,
 		Sparse:         sparse,
 		TargetBED:      targetBED,
+		TrimQuality:    trimQuality,
+		CovThreshold:   covThresh,
 		Threads:        threads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)

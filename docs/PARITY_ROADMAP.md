@@ -1428,19 +1428,31 @@ For unsorted input the COV section is silently omitted, whereas
 upstream aborts with `Expected coordinates in ascending order` — a
 deliberate, friendlier divergence.
 
+**`stats` reference-free option tails.** BWA-style quality trimming
+(`-q/--trim-quality`) and the `-t/--target-regions` restriction are
+implemented and validated against the upstream `stat/11` fixtures.
+`-q` ports `bwa_trim_read` faithfully, including bwa's documented
+off-by-one and the `BWA_MIN_RDLEN` (35) early return, and feeds the
+`bases trimmed` SN counter. `-t` parses the upstream target-regions
+format (`seq-name beg end`, 1-based inclusive — not BED), merges
+overlapping intervals, restricts every counter to reads overlapping a
+target interval, clips `bases mapped (cigar)` and the COV depth to the
+target, and emits the `bases inside the target` and
+`percentage of target genome with coverage > N` SN lines (the latter
+threshold set by `-g/--cov-threshold`, default 0). The SN and COV
+sections are byte-faithful to `11.stats.expected` /
+`11.stats.g4.expected`.
+
 **`stats` deferred sections** (also documented in
 `PARITY_VALIDATION.md`):
 
 - GCD GC-depth distribution and OXC oxidation-context counts (require
   reference bases).
-- `--target-regions BED` restriction.
-- BWA-style quality trimming (`-q/--trim-quality`). The SN field
-  `bases trimmed` is reported as 0; upstream also reports 0 when the
-  flag is not passed, so byte parity holds for the default invocation.
-- Mate-tracking memory cap: upstream's `cleanup_overlaps` periodically
-  evicts stale `mates` entries. Our `mates` map currently grows
-  unbounded — fine for the typical workload but worth fixing before
-  running `stats` on multi-billion-record BAMs.
+- Mate-tracking memory cap: upstream's overlap-removal pass
+  (`cleanup_overlaps`) also bounds its mate hash. Our `mates` map
+  currently grows unbounded — an internal-implementation limitation
+  (distinct from `--remove-overlaps`), fine for the typical workload
+  but worth fixing before running `stats` on multi-billion-record BAMs.
 
 The output emits the byte-faithful **CHK** checksum block, **SN**
 (Summary Numbers), the per-cycle and base-content sections
