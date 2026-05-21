@@ -294,3 +294,16 @@ limitation here.
   on the new code. One judgement call: tag values use `BYTE_ARRAY_LEN`
   (length-prefixed), not `BYTE_ARRAY_STOP` — a fixed-width binary tag
   value can contain any byte, so a stop delimiter is ambiguous.
+- **C9** — landed. CRAM output from the CLI and `.crai` index write.
+  `samtools view -C` / `--output-fmt cram` now writes CRAM: a
+  `cramWriter` adapter in `pkg/htsgo/alnio` bridges `cram.RecordWriter`
+  (header at construction) to the `sam.Writer` interface (separate
+  `WriteHeader`), symmetric with C6's reader adapter — `alnio` imports
+  both `sam` and `cram`, `sam` imports neither, no cycle. `samtools
+  index` detects a CRAM input via `iohelper.DetectFormat` and writes a
+  `.crai` instead of a `.bai`: `pkg/htsgo/cram/craiwrite.go`
+  (`WriteCRAI`, the inverse of the C5 `ReadCRAI`) and `craibuild.go`
+  (`BuildCRAI` — an offset-tracking CRAM walk emitting one entry per
+  slice). Oracle: a SAM→CRAM→SAM round-trip through the `view` code
+  path recovers the records, and a built `.crai` parses back and its
+  overlap query returns the expected slices. `FuzzCRAIWriteRoundTrip`.

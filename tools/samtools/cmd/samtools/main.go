@@ -127,6 +127,8 @@ Usage:
 
 Options:
   -b, --bam                   Output BAM (default text SAM).
+  -C, --cram                  Output CRAM (reference-free, v3.0).
+  -O, --output-fmt FMT        Force output format ('sam', 'bam' or 'cram').
   -h, --with-header           Include the header in SAM output.
   -H, --header-only           Print the header only.
   -c, --count                 Print only the count of matching records.
@@ -170,6 +172,8 @@ func runView(args []string) int {
 
 	var (
 		outBAM      bool
+		outCRAM     bool
+		outFmt      string
 		withHdr     bool
 		hdrOnly     bool
 		countOnly   bool
@@ -193,6 +197,8 @@ func runView(args []string) int {
 		showVer     bool
 	)
 	cliflag.BoolVar(fs, &outBAM, "b", "bam", false, "Output BAM")
+	cliflag.BoolVar(fs, &outCRAM, "C", "cram", false, "Output CRAM")
+	cliflag.StringVar(fs, &outFmt, "O", "output-fmt", "", "Output format (sam|bam|cram)")
 	cliflag.BoolVar(fs, &withHdr, "h", "with-header", false, "Include header")
 	cliflag.BoolVar(fs, &hdrOnly, "H", "header-only", false, "Header only")
 	cliflag.BoolVar(fs, &countOnly, "c", "count", false, "Count records")
@@ -243,8 +249,29 @@ func runView(args []string) int {
 	input := positional[0]
 	regions := positional[1:]
 
+	// Resolve the output format from -b/-C and -O/--output-fmt. -O takes
+	// precedence over the boolean shorthands; an unknown -O value is an
+	// error. CRAM (-C / -O cram) wins over BAM when both are requested.
+	switch strings.ToLower(outFmt) {
+	case "":
+		// No explicit -O; the booleans below decide.
+	case "sam":
+		outBAM, outCRAM = false, false
+	case "bam":
+		outBAM, outCRAM = true, false
+	case "cram":
+		outCRAM = true
+	default:
+		fmt.Fprintf(os.Stderr, "samtools view: unknown output format %q (want sam, bam or cram)\n", outFmt)
+		return 2
+	}
+	if outCRAM {
+		outBAM = false
+	}
+
 	opts := samtools.ViewOptions{
 		OutputBAM:       outBAM,
+		OutputCRAM:      outCRAM,
 		WithHeader:      withHdr,
 		HeaderOnly:      hdrOnly,
 		Count:           countOnly,
@@ -262,9 +289,17 @@ func runView(args []string) int {
 		Reference:       refFile,
 	}
 
-	// Honour the .bam output extension even without explicit -b.
-	if !opts.OutputBAM && outFile != "" && strings.HasSuffix(outFile, ".bam") {
-		opts.OutputBAM = true
+	// Honour the output file extension when no format was given: a .bam
+	// name implies BAM, a .cram name implies CRAM. An explicit -O is
+	// authoritative and suppresses the inference, matching upstream
+	// samtools (-O sam -o foo.cram still writes SAM).
+	if outFmt == "" && !opts.OutputBAM && !opts.OutputCRAM && outFile != "" {
+		switch {
+		case strings.HasSuffix(outFile, ".cram"):
+			opts.OutputCRAM = true
+		case strings.HasSuffix(outFile, ".bam"):
+			opts.OutputBAM = true
+		}
 	}
 
 	if rgFile != "" {
@@ -547,19 +582,23 @@ func runSort(args []string) int {
 	return 0
 }
 
-const indexUsage = `samtools index - build a BAI index for a coordinate-sorted BAM.
+const indexUsage = `samtools index - build an index for a coordinate-sorted BAM or CRAM.
 
 Usage:
-  samtools index [options] <in.sorted.bam>
+  samtools index [options] <in.sorted.bam|in.cram>
 
 Options:
-  -b, --bai                   Produce a .bai index (default).
+  -b, --bai                   Produce a .bai index (BAM input; default).
   -c, --csi                   Produce a .csi index (NOT YET IMPLEMENTED).
       --csi-min-shift N       CSI bin shift (only used with -c).
-  -o, --output PATH           Index output path (default <in.bam>.bai).
+  -o, --output PATH           Index output path. Default is <in>.bai for
+                              BAM input or <in>.crai for CRAM input.
   -@, --threads N             Accepted; v1 is single-threaded.
   -h, --help                  Show this help.
   -v, --version               Show version.
+
+The index kind is chosen from the input format: a CRAM file is given a
+.crai index, a BAM file a .bai index.
 `
 
 func runIndex(args []string) int {
