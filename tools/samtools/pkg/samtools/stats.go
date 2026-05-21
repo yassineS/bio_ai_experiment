@@ -3,18 +3,20 @@
 // Mirrors `samtools stats`. The Summary Numbers (SN) block, the read-length
 // sections (RL/FRL/LRL), the MAPQ and IS histograms, the per-cycle quality
 // histograms (FFQ/LFQ), the GC-content sections (GCF/GCL), the ACGT-content
-// sections (GCC/GCT), the indel sections (IC/ID), the leading CHK checksum
-// block, the COV coverage-distribution histogram, the GCD GC-depth
-// distribution, the MPC mismatches-per-cycle section (emitted with --ref-seq)
-// and the RFS reference-statistics section (emitted with --ref-stats) are all
-// byte-faithful to upstream. PARITY_VALIDATION.md tracks which sections are
-// byte-faithful vs. deferred.
+// sections (GCC/GCT), the per-fragment ACGT sections (FBC/FTC/LBC/LTC), the
+// per-barcode ACGT-content and quality sections (<tag>C/<tag>Q), the indel
+// sections (IC/ID), the leading CHK checksum block, the COV
+// coverage-distribution histogram, the GCD GC-depth distribution, the MPC
+// mismatches-per-cycle section (emitted with --ref-seq) and the RFS
+// reference-statistics section (emitted with --ref-stats) are all byte-faithful
+// to upstream. PARITY_VALIDATION.md tracks which sections are byte-faithful.
 //
 // BWA-style quality trimming (-q/--trim-quality) feeds the "bases trimmed"
 // SN counter and --target-regions restricts every counter to a target file.
+// The -x/--sparse flag thins all-zero rows of the IS section only, matching
+// upstream (it does not suppress whole sections).
 //
 // Skipped intentionally for v1 (documented):
-//   - The FBC/FTC/LBC/LTC barcode sections.
 //   - --remove-overlaps (single-record stats are unaffected by overlap
 //     removal for the counters we emit).
 //   - Command-line positional region arguments (so the RFS-with-region
@@ -269,27 +271,24 @@ type StatsCounters struct {
 	MaxLastFragLength    int64
 	TotalQual            int64 // sum of (qual byte) over all bases of QC-passed reads (255 for "*")
 	TotalQualBases       int64
-	InwardPairs          int64
-	OutwardPairs         int64
-	OtherOrientPairs     int64
 	// AnomalousReads counts, per paired-and-mapped primary read, those whose
 	// mate maps to a different reference (upstream nreads_anomalous). The
 	// "pairs on different chromosomes" SN line emits AnomalousReads/2, which
 	// — unlike a pair-completion count — stays correct when one mate is
 	// region-filtered out by --target-regions.
-	AnomalousReads     int64
-	InsertSumAbs       int64 // |TLEN| over pairs accepted into IS
-	InsertSumSqAbs     int64 // |TLEN|^2
-	InsertPairsCounted int64
+	AnomalousReads int64
 
-	// histograms keyed on small integer ranges
+	// histograms keyed on small integer ranges. ISInw/ISOutw/ISOther hold
+	// per-read insert-size tallies — both mates of a pair are counted, so the
+	// values are doubled and halved back to per-pair counts at output time,
+	// mirroring upstream stats.c's `* 0.5` rescale (stats.c:1516).
 	RL      map[int64]int64 // read length distribution
 	FRL     map[int64]int64
 	LRL     map[int64]int64
 	MAPQ    [256]int64
-	ISInw   map[int64]int64 // insert size: inward
-	ISOutw  map[int64]int64 // outward
-	ISOther map[int64]int64 // other
+	ISInw   map[int64]int64 // insert size: inward (per-read, doubled)
+	ISOutw  map[int64]int64 // outward (per-read, doubled)
+	ISOther map[int64]int64 // other (per-read, doubled)
 
 	// Per-cycle and base-content accumulators (upstream stats.c). Cycle is
 	// 0-based internally and printed 1-based.
@@ -321,10 +320,6 @@ type StatsCounters struct {
 	insCycle2nd map[int]int64
 	delCycle1st map[int]int64
 	delCycle2nd map[int]int64
-
-	// Pair tracking by qname (mate's flag/pos for orientation classification).
-	// Cleared as pairs are observed (memory-bounded by max pending mates).
-	mates map[string]mateInfo
 
 	// CHK checksum block: per-record crc32 values summed with 32-bit
 	// overflow, mirroring upstream's update_checksum (stats.c:755).
@@ -396,6 +391,29 @@ type StatsCounters struct {
 	// is set, gating the RFS output. It is computed after the input stream is
 	// fully consumed (collectRefStats), mirroring upstream collect_refstats.
 	rfs *refStats
+
+	// Per-barcode base-content and quality accumulators. tagsBarcode holds one
+	// entry per known barcode/quality tag pair (BC/QT, CR/CY, OX/BZ, RX/QX),
+	// mirroring upstream stats.c's fixed tags_barcode array (stats.c:2344). A
+	// tag's stats are emitted only once a barcode for it has been observed
+	// (nbases > 0), matching upstream's output gate at stats.c:1750.
+	tagsBarcode []barcodeInfo
+}
+
+// barcodeInfo accumulates per-cycle base-content and quality statistics for one
+// barcode/quality aux tag pair. It mirrors upstream stats.c's barcode_info_t
+// (stats.c:129): tagName/qualName are the aux tags read from each record,
+// nbases is the barcode length fixed by the first observed barcode, tagSep is
+// the index of the in-barcode separator character (-1 when none has been
+// seen), and maxQual is the highest quality value observed for the tag.
+type barcodeInfo struct {
+	tagName  string
+	qualName string
+	nbases   int
+	tagSep   int
+	maxQual  int
+	acgt     []acgtNoCount
+	quals    []cycleQuals
 }
 
 // refStats holds the RFS reference-statistics summary plus one per-sequence
@@ -442,15 +460,6 @@ type acgtNoCount struct {
 	a, c, g, t, n, other int64
 }
 
-type mateInfo struct {
-	pos    int32
-	end    int32
-	rname  string
-	flag   uint16
-	tlen   int32
-	insert int32
-}
-
 // newStatsCounters returns a fresh counter set with maps pre-allocated.
 func newStatsCounters() *StatsCounters {
 	return &StatsCounters{
@@ -466,11 +475,18 @@ func newStatsCounters() *StatsCounters {
 		insCycle2nd: make(map[int]int64),
 		delCycle1st: make(map[int]int64),
 		delCycle2nd: make(map[int]int64),
-		mates:       make(map[string]mateInfo),
 		covWindow:   make(map[int32]int32),
 		// gcdPos == -1 marks "no GC-depth segment started yet", mirroring
 		// upstream stats.c's gcd_pos = -1LL initialiser.
 		gcdPos: -1,
+		// The fixed barcode/quality tag pairs upstream's init_barcode_tags
+		// installs (stats.c:2344). tagSep -1 marks "no separator seen yet".
+		tagsBarcode: []barcodeInfo{
+			{tagName: "BC", qualName: "QT", tagSep: -1, maxQual: -1},
+			{tagName: "CR", qualName: "CY", tagSep: -1, maxQual: -1},
+			{tagName: "OX", qualName: "BZ", tagSep: -1, maxQual: -1},
+			{tagName: "RX", qualName: "QX", tagSep: -1, maxQual: -1},
+		},
 	}
 }
 
@@ -700,6 +716,14 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 	// returned G+C base count feeds the GC-depth distribution.
 	gcCount := c.collectCycleStats(rec, opts)
 
+	// Per-barcode base-content and quality accumulation. Upstream calls
+	// collect_barcode_stats from collect_orig_read_stats but only for
+	// READ_ORDER_FIRST records (stats.c:993), i.e. unpaired reads and the
+	// first mate of a pair — exactly what readOrder reports as orderFirst.
+	if readOrder(rec) == orderFirst {
+		c.collectBarcodeStats(rec)
+	}
+
 	if rec.IsMapped() {
 		c.ReadsMapped++
 		if rec.IsPaired() && !rec.IsMateUnmapped() {
@@ -776,7 +800,7 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 		if rec.RNext != "" && rec.RNext != "*" && rec.RNext != "=" && rec.RNext != rec.RName {
 			c.AnomalousReads++
 		}
-		c.classifyPair(rec, opts)
+		c.classifyInsertSize(rec, opts)
 	}
 	return nil
 }
@@ -877,61 +901,69 @@ func (c *StatsCounters) isInRegions(rec *sam.Record) (bool, error) {
 	return true, nil
 }
 
-// classifyPair counts each pair once on the SECOND-observed mate. The
-// insert size source is upstream's `bam_line->core.isize` (TLEN, abs value
-// capped at MaxInsertSize) per stats.c:1265-1268, NOT a position-derived
-// computation. Orientation is classified from the leftmost mate's strand
-// (inward = leftward forward + rightward reverse).
-func (c *StatsCounters) classifyPair(rec *sam.Record, opts StatsOptions) {
-	if prev, ok := c.mates[rec.QName]; ok {
-		delete(c.mates, rec.QName)
-		// Different chromosome?
-		if rec.RName != "" && prev.rname != "" && rec.RName != prev.rname {
-			return
-		}
-		// Same chromosome — classify orientation from the leftmost.
-		left, right := prev, mateInfo{pos: rec.Pos, end: rec.EndPosition(), rname: rec.RName, flag: rec.Flag, tlen: rec.TLen}
-		if rec.Pos < prev.pos {
-			left, right = right, prev
-		}
-		leftRev := left.flag&sam.FlagReverse != 0
-		rightRev := right.flag&sam.FlagReverse != 0
-		var bucket map[int64]int64
-		switch {
-		case !leftRev && rightRev:
-			c.InwardPairs++
-			bucket = c.ISInw
-		case leftRev && !rightRev:
-			c.OutwardPairs++
-			bucket = c.ISOutw
-		default:
-			c.OtherOrientPairs++
-			bucket = c.ISOther
-		}
-		// Insert size: |TLEN| of the second-observed record. Upstream
-		// caps at -i/--max-insert (default 8000) by clamping, not skipping.
-		ins := int64(rec.TLen)
-		if ins < 0 {
-			ins = -ins
-		}
-		if ins > int64(opts.MaxInsertSize) {
-			ins = int64(opts.MaxInsertSize)
-		}
-		if ins > 0 {
-			bucket[ins]++
-			c.InsertSumAbs += ins
-			c.InsertSumSqAbs += ins * ins
-			c.InsertPairsCounted++
-		}
+// classifyInsertSize folds one paired-and-mapped original record into the
+// insert-size histogram. It is a faithful port of upstream stats.c's IS block
+// (stats.c:1259-1296): both mates of a pair are classified independently from
+// the read's own flags and mate position, so every pair is counted twice; the
+// halving back to per-pair counts happens at output time (see writeIS and the
+// SN orientation counters). The insert size is |TLEN| clamped at the
+// -i/--insert-size cap, and a pair is bucketed when its insert size is
+// positive or its mate maps to the same reference (so isize-0 same-reference
+// pairs land in the IS 0 row).
+//
+// Orientation follows upstream's sign arithmetic exactly: is_fst is +1 for
+// READ1 and -1 otherwise, is_fwd/is_mfwd are +1 for forward and -1 for
+// reverse, and pos_fst is the mate position minus this record's position. A
+// pair with both mates on the same strand is "other"; otherwise the sign of
+// is_fst*pos_fst and is_fst*is_fwd selects inward vs outward.
+func (c *StatsCounters) classifyInsertSize(rec *sam.Record, opts StatsOptions) {
+	ins := int64(rec.TLen)
+	if ins < 0 {
+		ins = -ins
+	}
+	if ins > int64(opts.MaxInsertSize) {
+		ins = int64(opts.MaxInsertSize)
+	}
+	// Upstream's `isize > 0 || tid == mtid` gate: a same-reference pair is
+	// always bucketed (RNEXT "=" denotes the same reference).
+	sameRef := rec.RNext == "=" || rec.RNext == rec.RName
+	if ins <= 0 && !sameRef {
 		return
 	}
-	c.mates[rec.QName] = mateInfo{
-		pos:   rec.Pos,
-		end:   rec.EndPosition(),
-		rname: rec.RName,
-		flag:  rec.Flag,
-		tlen:  rec.TLen,
+	isFst := 1
+	if !rec.IsRead1() {
+		isFst = -1
 	}
+	isFwd := 1
+	if rec.Flag&sam.FlagReverse != 0 {
+		isFwd = -1
+	}
+	isMfwd := 1
+	if rec.Flag&sam.FlagMateReverse != 0 {
+		isMfwd = -1
+	}
+	posFst := int64(rec.PNext) - int64(rec.Pos)
+	var bucket map[int64]int64
+	switch {
+	case isFwd*isMfwd > 0:
+		bucket = c.ISOther
+	case int64(isFst)*posFst > 0:
+		if isFst*isFwd > 0 {
+			bucket = c.ISInw
+		} else {
+			bucket = c.ISOutw
+		}
+	case int64(isFst)*posFst < 0:
+		if isFst*isFwd > 0 {
+			bucket = c.ISOutw
+		} else {
+			bucket = c.ISInw
+		}
+	default:
+		// Exactly overlapping reads are assumed inward.
+		bucket = c.ISInw
+	}
+	bucket[ins]++
 }
 
 // Read-order classifications mirroring upstream READ_ORDER_FIRST/LAST.
@@ -1140,6 +1172,97 @@ func (c *StatsCounters) collectCycleStats(rec *sam.Record, opts StatsOptions) in
 		}
 	}
 	return gcCount
+}
+
+// collectBarcodeStats folds one record's barcode and barcode-quality aux tags
+// into the per-barcode accumulators. It is a faithful port of upstream
+// collect_barcode_stats (stats.c:773): each known barcode tag (BC/CR/OX/RX) is
+// looked up, its length fixed by the first observed value, every base bucketed
+// per cycle, and the matching quality tag (QT/CY/BZ/QX) bucketed per cycle and
+// quality value. A non-ACGTN barcode byte is treated as the single in-barcode
+// separator; a barcode whose separator sits at a different position, or whose
+// length differs from the first, is reported on stderr and skipped, exactly as
+// upstream does. Barcode quality bytes are Phred+33; values outside
+// [0, statsNQuals) are ignored.
+func (c *StatsCounters) collectBarcodeStats(rec *sam.Record) {
+	for t := range c.tagsBarcode {
+		bi := &c.tagsBarcode[t]
+		bc, ok := rec.GetAux(bi.tagName)
+		if !ok {
+			continue
+		}
+		barcode, ok := bc.String()
+		if !ok || len(barcode) == 0 {
+			// A zero-length barcode is treated as no barcode, matching
+			// upstream's explicit comment at stats.c:791.
+			continue
+		}
+		barcodeLen := len(barcode)
+		if bi.nbases == 0 {
+			// First time this tag is seen: fix its length and allocate.
+			bi.nbases = barcodeLen
+			bi.acgt = make([]acgtNoCount, barcodeLen)
+			bi.quals = make([]cycleQuals, barcodeLen)
+		}
+		if barcodeLen > bi.nbases {
+			fmt.Fprintf(os.Stderr, "Barcodes with tag %s differ in length at sequence '%s'\n",
+				bi.tagName, rec.QName)
+			continue
+		}
+		errorFlag := false
+		for i := 0; i < barcodeLen; i++ {
+			switch barcode[i] {
+			case 'A':
+				bi.acgt[i].a++
+			case 'C':
+				bi.acgt[i].c++
+			case 'G':
+				bi.acgt[i].g++
+			case 'T':
+				bi.acgt[i].t++
+			case 'N':
+				bi.acgt[i].n++
+			default:
+				if bi.tagSep >= 0 {
+					if bi.tagSep != i {
+						fmt.Fprintf(os.Stderr, "Barcode separator for tag %s is in a different position or wrong barcode content('%s') at sequence '%s'\n",
+							bi.tagName, barcode, rec.QName)
+						errorFlag = true
+					}
+				} else {
+					bi.tagSep = i
+				}
+			}
+			if errorFlag {
+				break
+			}
+		}
+		if errorFlag {
+			continue
+		}
+		qt, ok := rec.GetAux(bi.qualName)
+		if !ok {
+			continue
+		}
+		barqual, ok := qt.String()
+		if !ok {
+			continue
+		}
+		if len(barqual) == barcodeLen {
+			for i := 0; i < barcodeLen; i++ {
+				qual := int(barqual[i]) - '!'
+				if qual >= 0 && qual < statsNQuals {
+					bi.quals[i][qual]++
+					if qual > bi.maxQual {
+						bi.maxQual = qual
+					}
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "%s length and %s length don't match for sequence '%s'\n",
+				bi.tagName, bi.qualName, rec.QName)
+		}
+	}
 }
 
 // countIndels folds insertion/deletion cigar operations of one mapped record
@@ -1802,25 +1925,26 @@ func (c *StatsCounters) Write(w io.Writer, opts StatsOptions) error {
 	c.writeCHK(bw)
 	// SN block — full upstream parity.
 	c.writeSN(bw, opts)
-	// Histogram and per-cycle section bodies are emitted only in the
-	// non-sparse path. FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID carry real data and are
-	// byte-faithful to upstream; section order matches stats.c.
-	if !opts.Sparse {
-		c.writeFFQLFQ(bw)
-		c.writeMPC(bw)
-		c.writeGCFGCL(bw)
-		c.writeGCC(bw)
-		c.writeGCT(bw)
-		c.writeFBCLTC(bw)
-		c.writeRL(bw)
-		c.writeMAPQ(bw)
-		c.writeIS(bw, opts)
-		c.writeID(bw)
-		c.writeIC(bw)
-		c.writeCOV(bw, opts)
-		c.writeGCD(bw)
-		c.writeRFS(bw)
-	}
+	// Every histogram and per-cycle section is emitted unconditionally. The
+	// -x/--sparse flag does NOT suppress whole sections: upstream consults
+	// `sparse` only at stats.c:1796, where it thins all-zero rows of the IS
+	// section (writeIS honours opts.Sparse for exactly that). Section order
+	// matches upstream output_stats.
+	c.writeFFQLFQ(bw)
+	c.writeMPC(bw)
+	c.writeGCFGCL(bw)
+	c.writeGCC(bw)
+	c.writeGCT(bw)
+	c.writeFBCLTC(bw)
+	c.writeBarcodes(bw)
+	c.writeIS(bw, opts)
+	c.writeRL(bw)
+	c.writeMAPQ(bw)
+	c.writeID(bw)
+	c.writeIC(bw)
+	c.writeCOV(bw, opts)
+	c.writeGCD(bw)
+	c.writeRFS(bw)
 	return bw.Flush()
 }
 
@@ -2061,22 +2185,14 @@ func (c *StatsCounters) writeSN(bw *bufio.Writer, opts StatsOptions) {
 		avgQual = float64(c.TotalQual) / float64(c.TotalQualBases)
 	}
 	emit("average quality", fmt.Sprintf("%.1f", avgQual), "")
-	// Insert-size mean and stddev: |TLEN| over inward+outward+other pairs.
-	insAvg := 0.0
-	insSD := 0.0
-	if c.InsertPairsCounted > 0 {
-		insAvg = float64(c.InsertSumAbs) / float64(c.InsertPairsCounted)
-		mean2 := float64(c.InsertSumSqAbs) / float64(c.InsertPairsCounted)
-		variance := mean2 - insAvg*insAvg
-		if variance > 0 {
-			insSD = math.Sqrt(variance)
-		}
-	}
-	emit("insert size average", fmt.Sprintf("%.1f", insAvg), "")
-	emit("insert size standard deviation", fmt.Sprintf("%.1f", insSD), "")
-	emit("inward oriented pairs", c.InwardPairs, "")
-	emit("outward oriented pairs", c.OutwardPairs, "")
-	emit("pairs with other orientation", c.OtherOrientPairs, "")
+	// Insert-size mean, stddev and per-pair orientation counts — all derived
+	// from the halved insert-size histogram, mirroring upstream output_stats.
+	is := c.insertSizeSummary(opts)
+	emit("insert size average", fmt.Sprintf("%.1f", is.avg), "")
+	emit("insert size standard deviation", fmt.Sprintf("%.1f", is.sd), "")
+	emit("inward oriented pairs", is.nInward, "")
+	emit("outward oriented pairs", is.nOutward, "")
+	emit("pairs with other orientation", is.nOther, "")
 	emit("pairs on different chromosomes", c.AnomalousReads/2, "")
 	// Proper-pair % uses Sequences (= 1st + 2nd + other) as the denominator,
 	// matching upstream stats.c:1606. NOT ReadsPaired — they differ when
@@ -2337,31 +2453,159 @@ func (c *StatsCounters) writeMAPQ(bw *bufio.Writer) {
 	}
 }
 
-// writeIS emits the Insert Size section.
+// isizeMainBulk mirrors upstream stats.c's default isize_main_bulk (0.99,
+// stats.c:2282): the IS row range is truncated once the cumulative pair count
+// exceeds this fraction of the total, dropping the unrealistically large
+// insert-size outliers at the far tail. There is no CLI option to change it.
+const isizeMainBulk = 0.99
+
+// insertSizeStats holds the derived insert-size summary shared by writeSN and
+// writeIS: per-isize halved orientation counts, the IS row upper bound ibulk,
+// the per-pair orientation totals, and the mean/stddev of the insert size.
+type insertSizeStats struct {
+	inward   []int64 // per-isize halved inward pair counts, index 0..maxIS
+	outward  []int64
+	other    []int64
+	ibulk    int   // exclusive upper bound of the IS row range
+	nInward  int64 // total halved inward pairs
+	nOutward int64
+	nOther   int64
+	avg      float64 // mean insert size
+	sd       float64 // insert-size standard deviation
+}
+
+// insertSizeSummary derives the insert-size summary from the per-read IS
+// histogram. It is a faithful port of upstream output_stats' IS preamble
+// (stats.c:1510-1543): the per-read tallies are halved back to per-pair counts,
+// ibulk is set to the last non-zero insert size + 1 or truncated where the
+// cumulative pair count first exceeds isizeMainBulk of the total, and the mean
+// and standard deviation are computed over that bulk.
+func (c *StatsCounters) insertSizeSummary(opts StatsOptions) insertSizeStats {
+	maxIS := opts.MaxInsertSize
+	is := insertSizeStats{
+		inward:  make([]int64, maxIS+1),
+		outward: make([]int64, maxIS+1),
+		other:   make([]int64, maxIS+1),
+	}
+	// Halve the per-read tallies (integer truncation matches upstream's
+	// double-to-uint64 store at stats.c:1516) and accumulate the totals.
+	var nisize int64
+	for k := 0; k <= maxIS; k++ {
+		in := c.ISInw[int64(k)] / 2
+		out := c.ISOutw[int64(k)] / 2
+		oth := c.ISOther[int64(k)] / 2
+		is.inward[k], is.outward[k], is.other[k] = in, out, oth
+		is.nInward += in
+		is.nOutward += out
+		is.nOther += oth
+		nisize += in + out + oth
+	}
+	// Determine ibulk and the isize-weighted sum for the mean. The divisor
+	// becomes the partial bulk when the loop breaks on the bulk threshold.
+	var bulk float64
+	var avgSum float64
+	divisor := nisize
+	for k := 0; k <= maxIS; k++ {
+		num := is.inward[k] + is.outward[k] + is.other[k]
+		if num > 0 {
+			is.ibulk = k + 1
+		}
+		bulk += float64(num)
+		avgSum += float64(k) * float64(num)
+		if nisize > 0 && bulk/float64(nisize) > isizeMainBulk {
+			is.ibulk = k + 1
+			divisor = int64(bulk)
+			break
+		}
+	}
+	if divisor > 0 {
+		is.avg = avgSum / float64(divisor)
+	}
+	var sd float64
+	for k := 1; k < is.ibulk; k++ {
+		num := is.inward[k] + is.outward[k] + is.other[k]
+		d := float64(k) - is.avg
+		sd += float64(num) * d * d
+	}
+	if divisor > 0 {
+		sd /= float64(divisor)
+	}
+	is.sd = math.Sqrt(sd)
+	return is
+}
+
+// writeIS emits the Insert Size section. It is a faithful port of upstream
+// output_stats' IS loop (stats.c:1791-1800): rows run from insert size 0 up to
+// ibulk-1. Under the default (non-sparse) mode every row in that range is
+// printed, including all-zero rows; under -x/--sparse the all-zero rows are
+// skipped, which is the ONLY place upstream's `sparse` flag has any effect.
 func (c *StatsCounters) writeIS(bw *bufio.Writer, opts StatsOptions) {
 	fmt.Fprintln(bw, "# Insert sizes. Use `grep ^IS | cut -f 2-` to extract this part. The columns are: insert size, pairs total, inward oriented pairs, outward oriented pairs, other pairs")
-	// Union of all insert-size keys, sorted.
-	seen := make(map[int64]struct{})
-	for k := range c.ISInw {
-		seen[k] = struct{}{}
-	}
-	for k := range c.ISOutw {
-		seen[k] = struct{}{}
-	}
-	for k := range c.ISOther {
-		seen[k] = struct{}{}
-	}
-	keys := make([]int64, 0, len(seen))
-	for k := range seen {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	for _, k := range keys {
-		inw := c.ISInw[k]
-		outw := c.ISOutw[k]
-		oth := c.ISOther[k]
+	is := c.insertSizeSummary(opts)
+	for k := 0; k < is.ibulk; k++ {
+		inw, outw, oth := is.inward[k], is.outward[k], is.other[k]
 		total := inw + outw + oth
+		if opts.Sparse && total == 0 {
+			continue
+		}
 		fmt.Fprintf(bw, "IS\t%d\t%d\t%d\t%d\t%d\n", k, total, inw, outw, oth)
+	}
+}
+
+// writeBarcodes emits the per-barcode ACGT-content (<tag>C) and quality
+// (<qual-tag>Q) sections. It is a faithful port of upstream output_stats'
+// barcode block (stats.c:1748-1789): a tag is emitted only once a barcode for
+// it has been observed, the in-barcode separator cycle is skipped, and the two
+// barcode segments either side of the separator are numbered 1 and 2 with
+// per-segment 1-based cycle indices. Quality rows list counts for qualities
+// 0..maxQual for that tag.
+func (c *StatsCounters) writeBarcodes(bw *bufio.Writer) {
+	for t := range c.tagsBarcode {
+		bi := &c.tagsBarcode[t]
+		if bi.nbases == 0 {
+			continue
+		}
+		// segCycle returns the barcode-segment number (1 or 2) and the
+		// 1-based cycle index within that segment for barcode index ibase,
+		// mirroring upstream's tag_sep arithmetic at stats.c:1763-1764.
+		segCycle := func(ibase int) (int, int) {
+			if bi.tagSep < 0 || ibase < bi.tagSep {
+				return 1, ibase + 1
+			}
+			return 2, ibase - bi.tagSep
+		}
+		fmt.Fprintf(bw, "# ACGT content per cycle for barcodes. Use `grep ^%sC | cut -f 2-` to extract this part. The columns are: cycle; A,C,G,T base counts as a percentage of all A/C/G/T bases [%%]; and N counts as a percentage of all A/C/G/T bases [%%]\n", bi.tagName)
+		for ibase := 0; ibase < bi.nbases; ibase++ {
+			if ibase == bi.tagSep {
+				continue
+			}
+			v := bi.acgt[ibase]
+			sum := v.a + v.c + v.g + v.t
+			if sum == 0 {
+				continue
+			}
+			seg, cyc := segCycle(ibase)
+			fs := float64(sum)
+			fmt.Fprintf(bw, "%sC%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n", bi.tagName, seg, cyc,
+				100.0*float64(v.a)/fs,
+				100.0*float64(v.c)/fs,
+				100.0*float64(v.g)/fs,
+				100.0*float64(v.t)/fs,
+				100.0*float64(v.n)/fs)
+		}
+		fmt.Fprintf(bw, "# Barcode Qualities. Use `grep ^%sQ | cut -f 2-` to extract this part.\n", bi.qualName)
+		fmt.Fprintln(bw, "# Columns correspond to qualities and rows to barcode cycles. First column is the cycle number.")
+		for ibase := 0; ibase < bi.nbases; ibase++ {
+			if ibase == bi.tagSep {
+				continue
+			}
+			seg, cyc := segCycle(ibase)
+			fmt.Fprintf(bw, "%sQ%d\t%d", bi.qualName, seg, cyc)
+			for iqual := 0; iqual <= bi.maxQual; iqual++ {
+				fmt.Fprintf(bw, "\t%d", bi.quals[ibase][iqual])
+			}
+			fmt.Fprintln(bw)
+		}
 	}
 }
 

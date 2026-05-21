@@ -975,13 +975,15 @@ const statsUsage = `samtools stats - exhaustive per-file alignment statistics.
 Usage:
   samtools stats [options] <in.bam> [region ...]
 
-Emits an upstream-compatible text report. v1 ships the most-used sections:
-SN (Summary Numbers), RL (read-length), MAPQ (MAPQ distribution),
-IS (insert sizes), FFQ/LFQ (per-cycle qualities), GCF/GCL (GC-fraction
-histograms), GCC/GCT (per-cycle GC), IC/ID (indels), COV (coverage
-distribution), GCD (GC-depth distribution), MPC (mismatches per cycle, with
---ref-seq) and RFS (reference statistics, with --ref-stats). The
-FBC/FTC/LBC/LTC barcode tables are deferred; see PARITY_VALIDATION.md.
+Emits an upstream-compatible text report covering every section: SN
+(Summary Numbers), RL/FRL/LRL (read-length), MAPQ, IS (insert sizes),
+FFQ/LFQ (per-cycle qualities), GCF/GCL (GC-fraction histograms), GCC/GCT
+(per-cycle GC), FBC/FTC/LBC/LTC (per-fragment ACGT), the per-barcode
+ACGT-content and quality tables (<tag>C/<tag>Q for the BC/CR/OX/RX tag
+pairs, emitted automatically when those aux tags are present), IC/ID
+(indels), COV (coverage distribution), GCD (GC-depth distribution), MPC
+(mismatches per cycle, with --ref-seq) and RFS (reference statistics,
+with --ref-stats).
 
 Options:
   -r, --ref-seq FASTA      Reference FASTA. When given, GCD derives GC content
@@ -1003,7 +1005,7 @@ Options:
       --remove-dups        Skip duplicate-flagged records.
       --remove-overlaps    Accept (no-op in v1).
   -i, --insert-size N      Max insert size for the IS section (default 8000).
-  -x, --sparse             Omit sections that would emit only zero lines.
+  -x, --sparse             Suppress IS rows that have no insertions.
   -t, --target-regions F   Restrict stats to a target-regions file. Each line
                            is "seq-name beg end", 1-based inclusive (NOT BED).
   -g, --cov-threshold N    Coverage threshold for the target-genome coverage

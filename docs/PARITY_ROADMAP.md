@@ -1474,34 +1474,58 @@ cycle for first / last fragments) and **FTC/LTC** (the matching
 A/C/G/T/N raw-counter totals) are implemented and byte-faithful to the
 vendored `stat/` fixtures. They derive from the same per-fragment
 cycle buffers GCC/GCT already accumulate. Note: despite the name these
-are NOT barcode tables — earlier roadmap text mislabelled them, and
-there is no OXC section in this samtools version.
+are NOT barcode tables — earlier roadmap text mislabelled them.
 
-**`stats` deferred sections** (also documented in
-`PARITY_VALIDATION.md`):
+**`stats` per-barcode sections (implemented).** The per-barcode
+ACGT-content (`<tag>C`) and quality (`<tag>Q`) tables are a faithful
+port of `collect_barcode_stats` (stats.c:773) and its output
+(stats.c:1748). Collection is unconditional for the four fixed aux-tag
+pairs upstream's `init_barcode_tags` installs — `BC`/`QT`, `CR`/`CY`,
+`OX`/`BZ`, `RX`/`QX` — and a section is emitted only once a barcode for
+its tag has been observed. The barcode separator, the two segment
+columns either side of it, and the per-tag `max_qual` quality-column
+count all match upstream. Note: this samtools version has **no**
+`--barcodes` CLI option — barcodes are always collected — so no such
+flag is wired; `--barcode-tag` / `--quality-tag` tag renaming likewise
+does not exist here. Validated byte-for-byte against the exact
+`test.pl` invocations `samtools stats 13_barcodes_ok.sam` and
+`samtools stats 13_barcodes_ok_ox_bz.sam` (test.pl:3325-3326). The
+malformed-barcode `expect_fail` fixtures (test.pl:3327-3329) are
+exercised for graceful warn-and-skip behaviour but not byte-compared,
+since their output deliberately diverges from any clean baseline.
 
-- The `--barcodes` feature: `collect_barcode_stats` plus the dynamic
-  `<TAG>C` / `<TAG>Q` per-barcode content/quality tables. Niche; the
-  default invocation does not emit these.
-- `--sparse` (`-x`) currently suppresses every histogram block; upstream
-  `-x` only thins IS rows that have no insertions. A focused follow-up
-  should emit all sections under `-x` and thin only the IS rows.
-- Mate-tracking memory cap: upstream's overlap-removal pass
-  (`cleanup_overlaps`) also bounds its mate hash. Our `mates` map
-  currently grows unbounded — an internal-implementation limitation
-  (distinct from `--remove-overlaps`), fine for the typical workload
-  but worth fixing before running `stats` on multi-billion-record BAMs.
+**`stats` `--sparse` (corrected).** Upstream `-x/--sparse`
+(stats.c:2170) only "suppresses outputting IS rows where there are no
+insertions" — its sole effect is at stats.c:1796, thinning all-zero IS
+rows. Earlier this code wrongly suppressed *every* histogram section.
+It now emits every section unconditionally and honours `sparse` per-row
+in the IS section only. The IS section itself was reworked: it now
+emits the full `0..ibulk-1` row range (including zero rows in the
+default mode) where `ibulk` mirrors upstream's last-non-zero /
+99%-bulk-truncation logic, instead of the old observed-sizes-only map.
+Insert sizes are now classified per-read from each record's own flags
+and mate position and halved at output, matching upstream exactly
+(this also fixed an inward/outward misclassification the prior
+per-pair logic produced on multi-pair inputs).
+
+**`stats` remaining tail** (also documented in `PARITY_VALIDATION.md`):
+
 - Command-line positional region arguments are not yet accepted, so the
   RFS-with-command-line-region path (upstream stats test 18) is not
   reproducible; RFS-with-`-t` covers the equivalent functionality.
+- `--remove-overlaps` is accepted as a no-op; single-record stats are
+  unaffected by overlap removal for the counters emitted.
+
+With `--sparse` corrected and the per-barcode sections implemented,
+`samtools stats` reaches full 1:1 output parity for every section.
 
 The output emits the byte-faithful **CHK** checksum block, **SN**
 (Summary Numbers), the per-cycle and base-content sections
-(**FFQ/LFQ/GCF/GCL/GCC/GCT/FBC/FTC/LBC/LTC/IC/ID**), the **MPC** mismatches-per-cycle
-matrix, the **RL / MAPQ / IS** rollups, the **COV** coverage histogram,
-the **GCD** GC-depth distribution and the **RFS** reference-statistics
-section; the remaining sections are quietly omitted (or, under
-`--sparse`, all histogram blocks are suppressed entirely).
+(**FFQ/LFQ/GCF/GCL/GCC/GCT/FBC/FTC/LBC/LTC/IC/ID**), the per-barcode
+**`<tag>C`/`<tag>Q`** tables, the **MPC** mismatches-per-cycle matrix,
+the **RL / MAPQ / IS** rollups, the **COV** coverage histogram, the
+**GCD** GC-depth distribution and the **RFS** reference-statistics
+section. `--sparse` thins only all-zero IS rows.
 
 **Validation:** upstream fixtures from `reference_code/samtools/test/markdup/`
 and `.../test/stat/` are vendored under

@@ -90,9 +90,11 @@ func extractSection(blob, tag string) string {
 }
 
 // TestStatsCycleSectionParity compares our per-cycle and base-content sections
-// (FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID) against upstream's stats expected outputs.
-// Only .sam fixtures are used: .bam fixtures would additionally require BGZF
-// byte-parity which is unrelated to these sections.
+// (FFQ/LFQ/GCF/GCL/GCC/GCT/IC/ID) plus the IS insert-size section against
+// upstream's stats expected outputs. Only .sam fixtures are used: .bam fixtures
+// would additionally require BGZF byte-parity which is unrelated to these
+// sections. The IS section exercises the full 0..ibulk-1 row range, including
+// all-zero rows, in the default (non-sparse) mode.
 func TestStatsCycleSectionParity(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -106,7 +108,7 @@ func TestStatsCycleSectionParity(t *testing.T) {
 		{"8_secondary", "8_secondary.sam", "8.stats.expected"},
 		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected"},
 	}
-	sections := []string{"FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "IC", "ID"}
+	sections := []string{"FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "IC", "ID", "IS"}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			in, err := os.Open(statsFixture(t, tc.input))
@@ -128,6 +130,107 @@ func TestStatsCycleSectionParity(t *testing.T) {
 					t.Errorf("%s section differs\n--- want\n%s\n--- got\n%s",
 						sec, extractSection(want, sec), extractSection(got, sec))
 				}
+			}
+		})
+	}
+}
+
+// extractPrefixLines returns every line of a stats-text blob that starts with
+// prefix, joined by '\n'. Unlike extractSection it does not append a tab, so
+// it matches the barcode rows whose tag carries a trailing segment digit
+// (e.g. "BCC1", "QTQ2").
+func extractPrefixLines(blob, prefix string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(blob, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// TestStatsBarcodeParity compares every section of our stats output against
+// upstream's barcode golden files byte-for-byte. The two _ok fixtures exercise
+// the per-barcode ACGT-content (<tag>C) and quality (<tag>Q) sections: the BC
+// fixture has only BC/QT tags (BCC/QTQ), the OX fixture additionally carries
+// OX/BZ tags (OXC/BZQ). The exact upstream invocations are test.pl:3325-3326
+// `samtools stats <13_barcodes_ok[ _ox_bz].sam>`.
+func TestStatsBarcodeParity(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expect   string
+		sections []string
+	}{
+		{
+			"bc", "13_barcodes_ok.sam", "13.barcodes.bc.ok.expected",
+			[]string{"CHK", "SN", "FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "BCC", "QTQ", "IS", "RL", "FRL", "LRL", "MAPQ", "ID", "IC", "COV", "GCD"},
+		},
+		{
+			"ox_bz", "13_barcodes_ok_ox_bz.sam", "13.barcodes.ox.ok.expected",
+			[]string{"CHK", "SN", "FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "BCC", "QTQ", "OXC", "BZQ", "IS", "RL", "FRL", "LRL", "MAPQ", "ID", "IC", "COV", "GCD"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, tc.input))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			if err := Stats(in, &out, StatsOptions{}); err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			expected, err := os.ReadFile(statsFixture(t, tc.expect))
+			if err != nil {
+				t.Fatalf("read expected: %v", err)
+			}
+			got, want := out.String(), string(expected)
+			// The per-barcode sections carry a trailing segment digit on the
+			// tag (BCC1/BCC2/QTQ1/...), so they need prefix matching.
+			isBarcodeSec := map[string]bool{"BCC": true, "QTQ": true, "OXC": true, "BZQ": true}
+			for _, sec := range tc.sections {
+				var g, w string
+				if isBarcodeSec[sec] {
+					g, w = extractPrefixLines(got, sec), extractPrefixLines(want, sec)
+				} else {
+					g, w = extractSection(got, sec), extractSection(want, sec)
+				}
+				if g != w {
+					t.Errorf("%s section differs\n--- want\n%s\n--- got\n%s", sec, w, g)
+				}
+			}
+		})
+	}
+}
+
+// TestStatsBarcodeFailInputs verifies the malformed-barcode fixtures (the
+// inconsistent-length and misplaced-separator inputs from test.pl:3327-3329)
+// run to completion: upstream warns on stderr and skips the offending record
+// rather than aborting, so the run must succeed and still emit barcode
+// sections. The exact byte output is intentionally NOT compared — test.pl
+// marks these cases expect_fail, i.e. their output deliberately diverges from
+// the clean baseline.
+func TestStatsBarcodeFailInputs(t *testing.T) {
+	for _, name := range []string{
+		"13_barcodes_fail_bc_length.sam",
+		"13_barcodes_fail_hyphen.sam",
+		"13_barcodes_fail_qt_length.sam",
+	} {
+		t.Run(name, func(t *testing.T) {
+			in, err := os.Open(statsFixture(t, name))
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer in.Close()
+			var out bytes.Buffer
+			if err := Stats(in, &out, StatsOptions{}); err != nil {
+				t.Fatalf("Stats must not abort on a malformed barcode: %v", err)
+			}
+			if extractPrefixLines(out.String(), "BCC") == "" {
+				t.Errorf("expected a BCC barcode section despite malformed records")
 			}
 		})
 	}
@@ -479,22 +582,49 @@ func TestStatsCHKMissingQual(t *testing.T) {
 	}
 }
 
-// TestStatsCycleSectionsSparseSuppressed confirms --sparse omits the per-cycle
-// and base-content section bodies.
-func TestStatsCycleSectionsSparseSuppressed(t *testing.T) {
-	in, err := os.Open(statsFixture(t, "1_map_cigar.sam"))
-	if err != nil {
-		t.Fatalf("open input: %v", err)
-	}
-	defer in.Close()
-	var out bytes.Buffer
-	if err := Stats(in, &out, StatsOptions{Sparse: true}); err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
-	for _, sec := range []string{"FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "IC", "ID"} {
-		if extractSection(out.String(), sec) != "" {
-			t.Errorf("--sparse should suppress %s section", sec)
+// TestStatsSparseKeepsAllSections confirms -x/--sparse does NOT suppress whole
+// sections: upstream stats.c consults `sparse` only at stats.c:1796, where it
+// thins all-zero rows of the IS section. Every other section must be emitted
+// identically with and without --sparse, and the non-IS bytes must be equal.
+func TestStatsSparseKeepsAllSections(t *testing.T) {
+	read := func(opts StatsOptions) string {
+		in, err := os.Open(statsFixture(t, "1_map_cigar.sam"))
+		if err != nil {
+			t.Fatalf("open input: %v", err)
 		}
+		defer in.Close()
+		var out bytes.Buffer
+		if err := Stats(in, &out, opts); err != nil {
+			t.Fatalf("Stats: %v", err)
+		}
+		return out.String()
+	}
+	dense := read(StatsOptions{})
+	sparse := read(StatsOptions{Sparse: true})
+
+	// Every non-IS section must survive --sparse unchanged.
+	for _, sec := range []string{"CHK", "SN", "FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "RL", "FRL", "LRL", "MAPQ", "IC", "ID", "COV", "GCD"} {
+		if got := extractSection(sparse, sec); got == "" && extractSection(dense, sec) != "" {
+			t.Errorf("--sparse must NOT suppress %s section", sec)
+		}
+		if extractSection(sparse, sec) != extractSection(dense, sec) {
+			t.Errorf("%s section changed under --sparse", sec)
+		}
+	}
+
+	// The IS section must still be present but thinned: fixture 1 has a
+	// single pair at insert size 100, so dense emits 101 IS rows (0..100)
+	// while sparse emits only the one non-zero row.
+	denseIS := strings.Count(extractSection(dense, "IS"), "\n")
+	sparseIS := strings.Count(extractSection(sparse, "IS"), "\n")
+	if denseIS != 101 {
+		t.Errorf("dense IS rows = %d, want 101", denseIS)
+	}
+	if sparseIS != 1 {
+		t.Errorf("sparse IS rows = %d, want 1", sparseIS)
+	}
+	if !strings.Contains(extractSection(sparse, "IS"), "IS\t100\t1\t1\t0\t0\n") {
+		t.Errorf("sparse IS missing the single non-zero row:\n%s", extractSection(sparse, "IS"))
 	}
 }
 
@@ -694,11 +824,15 @@ func TestStatsProperPairDenominator(t *testing.T) {
 	}
 }
 
-// TestStatsSparseOmitsHistograms confirms the -x/--sparse flag skips the
-// RL/MAPQ/IS section blocks but keeps SN.
-func TestStatsSparseOmitsHistograms(t *testing.T) {
+// TestStatsSparseThinsISOnly confirms the -x/--sparse flag thins all-zero IS
+// rows but keeps every section header, including RL — upstream's `sparse`
+// touches the IS row loop only.
+func TestStatsSparseThinsISOnly(t *testing.T) {
 	hdr := "@HD\tVN:1.4\tSO:coordinate\n@SQ\tSN:c\tLN:1000\n"
-	body := "r1\t99\tc\t1\t40\t10M\t=\t100\t100\tACGTACGTAC\tIIIIIIIIII\n"
+	// Both mates of one inward pair (insert size 100) — upstream classifies
+	// each mate then halves, so a complete pair is needed to yield one row.
+	body := "r1\t99\tc\t1\t40\t10M\t=\t100\t100\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r1\t147\tc\t100\t40\t10M\t=\t1\t-100\tACGTACGTAC\tIIIIIIIIII\n"
 	in := strings.NewReader(hdr + body)
 	var out bytes.Buffer
 	if err := Stats(in, &out, StatsOptions{Sparse: true}); err != nil {
@@ -707,8 +841,15 @@ func TestStatsSparseOmitsHistograms(t *testing.T) {
 	if !strings.Contains(out.String(), "SN\t") {
 		t.Fatalf("SN must still be emitted under --sparse")
 	}
-	if strings.Contains(out.String(), "# Read lengths.") {
-		t.Fatalf("--sparse should suppress RL header")
+	if !strings.Contains(out.String(), "# Read lengths.") {
+		t.Fatalf("--sparse must NOT suppress the RL section")
+	}
+	if !strings.Contains(out.String(), "# Insert sizes.") {
+		t.Fatalf("--sparse must NOT suppress the IS section header")
+	}
+	// Only the single non-zero IS row survives the sparse thinning.
+	if n := strings.Count(extractSection(out.String(), "IS"), "\n"); n != 1 {
+		t.Fatalf("sparse IS rows = %d, want 1", n)
 	}
 }
 
