@@ -15,6 +15,12 @@
 //     arith_transform.go. Decode is fully supported; encode is too,
 //     except the rare X_EXT (bzip2) transform — Go has no standard-
 //     library bzip2 encoder, so X_EXT encode returns an error.
+//   - fqzcomp   — CRAM v3.1's quality-score codec (compression
+//     method 7). A parameterised context model driving the same
+//     adaptive range coder as arith_dynamic. Implemented in
+//     fqzcomp.go (decode + parameter machinery) and
+//     fqzcomp_encode.go (the strategy-driven encoder). Both decode
+//     and encode are byte-exact against the htscodecs corpus.
 //   - LZMA      — a rare optional per-block codec, implemented in
 //     lzma.go; the one place a third-party dependency (ulikunitz/xz)
 //     is sanctioned.

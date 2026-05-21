@@ -200,6 +200,32 @@ func newArithModel(nsym, maxSym int) *arithModel {
 	return m
 }
 
+// newArithModelBatch builds n adaptive models that all share a single
+// contiguous backing array for their symbol lists, mirroring how the C
+// fqzcomp codec allocates its CTX_SIZE quality models in one block via
+// htscodecs_tls_alloc. Each model gets a disjoint (nsym+1)-entry window,
+// so model updates never interfere; the single allocation keeps the
+// 65536-model fqzcomp set cheap to construct. Every model is seeded
+// identically to newArithModel(nsym, maxSym).
+func newArithModelBatch(n, nsym, maxSym int) []*arithModel {
+	backing := make([]symFreq, n*(nsym+1))
+	models := make([]arithModel, n)
+	ptrs := make([]*arithModel, n)
+	for k := 0; k < n; k++ {
+		f := backing[k*(nsym+1) : (k+1)*(nsym+1) : (k+1)*(nsym+1)]
+		i := 0
+		for ; i < maxSym && i < nsym; i++ {
+			f[i] = symFreq{sym: uint16(i), freq: 1}
+		}
+		for ; i < nsym; i++ {
+			f[i] = symFreq{sym: uint16(i), freq: 0}
+		}
+		models[k] = arithModel{nsym: nsym, f: f, totFreq: uint32(maxSym)}
+		ptrs[k] = &models[k]
+	}
+	return ptrs
+}
+
 // normalize ports SIMPLE_MODEL(NSYM,_normalize): every non-zero frequency
 // is halved (rounding up) and the total recomputed.
 func (m *arithModel) normalize() {
