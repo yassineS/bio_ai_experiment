@@ -22,152 +22,292 @@ func (s *samRecordStub) toRecord() *sam.Record {
 	return &sam.Record{Flag: s.Flag, MapQ: s.MapQ, RName: s.RName, Pos: s.Pos}
 }
 
-// TestMpileupDiploidPL_HomRef checks that an all-REF pile yields PL[0]=0
-// and PL[1], PL[2] >> 0. A 10-base pile of REF=A with quality 30 gives
-// strong support for hom-ref.
-func TestMpileupDiploidPL_HomRef(t *testing.T) {
-	bases := make([]mpileupBase, 0, 10)
-	for i := 0; i < 10; i++ {
-		bases = append(bases, mpileupBase{base: 'A', qual: 30})
+// mkPile builds a pileup column of n reads carrying the given uppercase
+// base at the given quality, on the forward strand, with MAPQ 60. The
+// neighbour qualities are set equal to qual so the delta_baseQ cap is a
+// no-op.
+func mkPile(n int, base byte, qual uint8) []pileupBase {
+	out := make([]pileupBase, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, pileupBase{
+			base4:   seqNt16Int[baseToNt16(base)],
+			rawQual: qual,
+			prevQ:   int(qual),
+			nextQ:   int(qual),
+			mapq:    60,
+			qlen:    10,
+			qpos:    5,
+		})
 	}
-	pl := mpileupDiploidPL(bases, 'A', 'C')
+	return out
+}
+
+// glfPL runs glfgen + combine on a single sample and returns the per-
+// sample PL grid plus the resolved alleles.
+func glfPL(t *testing.T, pile []pileupBase, ref byte) (bcfCall, []int) {
+	t.Helper()
+	em := ErrmodInit(1.0 - mpileupTheta)
+	ref4 := seqNt16Int[baseToNt16(ref)]
+	var cr bcfCallret
+	bcfCallGlfgen(pile, ref4, MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
+	call := bcfCallCombine([]bcfCallret{cr}, ref4)
+	return call, call.pl[0]
+}
+
+// TestGlfgenHomRef: an all-REF pile yields PL[0/0]=0 and rising PL for
+// the het and hom-alt genotypes against the appended <*> allele.
+func TestGlfgenHomRef(t *testing.T) {
+	call, pl := glfPL(t, mkPile(10, 'A', 30), 'A')
+	// REF + <*> => 2 alleles => 3 PL values.
+	if call.nAlleles != 2 {
+		t.Fatalf("nAlleles = %d, want 2 (REF + <*>)", call.nAlleles)
+	}
+	if call.unseen != 1 {
+		t.Errorf("unseen index = %d, want 1", call.unseen)
+	}
+	if len(pl) != 3 {
+		t.Fatalf("PL grid len = %d, want 3", len(pl))
+	}
 	if pl[0] != 0 {
 		t.Errorf("hom-ref PL[0/0] = %d, want 0", pl[0])
 	}
-	if pl[1] <= 20 {
-		t.Errorf("hom-ref PL[0/1] = %d, want > 20", pl[1])
-	}
-	if pl[2] <= pl[1] {
-		t.Errorf("hom-ref PL[1/1] = %d, want > PL[0/1]=%d", pl[2], pl[1])
+	if pl[2] <= pl[1] || pl[1] <= 0 {
+		t.Errorf("hom-ref PL = %v, want rising 0 < pl[1] < pl[2]", pl)
 	}
 }
 
-// TestMpileupDiploidPL_HomAlt is the mirror: a 10-base pile of all-C
-// bases when REF=A, ALT=C should yield PL[2]=0 and PL[0] >> 0.
-func TestMpileupDiploidPL_HomAlt(t *testing.T) {
-	bases := make([]mpileupBase, 0, 10)
-	for i := 0; i < 10; i++ {
-		bases = append(bases, mpileupBase{base: 'C', qual: 30})
+// TestGlfgenHetSite: an even split of REF and ALT bases makes the
+// heterozygous genotype the most likely (PL of the 0/1 cell is 0).
+func TestGlfgenHetSite(t *testing.T) {
+	pile := append(mkPile(5, 'A', 30), mkPile(5, 'C', 30)...)
+	call, pl := glfPL(t, pile, 'A')
+	// REF=A, ALT=C, <*> => 3 alleles => 6 PL values.
+	if call.nAlleles != 3 {
+		t.Fatalf("nAlleles = %d, want 3 (REF, C, <*>)", call.nAlleles)
 	}
-	pl := mpileupDiploidPL(bases, 'A', 'C')
-	if pl[2] != 0 {
-		t.Errorf("hom-alt PL[1/1] = %d, want 0", pl[2])
+	if len(pl) != 6 {
+		t.Fatalf("PL grid len = %d, want 6", len(pl))
 	}
-	if pl[0] <= 20 {
-		t.Errorf("hom-alt PL[0/0] = %d, want > 20", pl[0])
-	}
-}
-
-// TestMpileupDiploidPL_Het verifies that a balanced REF/ALT pile picks
-// the heterozygous genotype 0/1 (PL[1]=0) and that both homozygous
-// hypotheses are penalised symmetrically.
-func TestMpileupDiploidPL_Het(t *testing.T) {
-	bases := make([]mpileupBase, 0, 10)
-	for i := 0; i < 5; i++ {
-		bases = append(bases, mpileupBase{base: 'A', qual: 30})
-	}
-	for i := 0; i < 5; i++ {
-		bases = append(bases, mpileupBase{base: 'C', qual: 30})
-	}
-	pl := mpileupDiploidPL(bases, 'A', 'C')
+	// PL ordering for alleles (0=REF,1=C,2=<*>): index 0=0/0, 1=0/1,
+	// 2=1/1, 3=0/2, 4=1/2, 5=2/2.
 	if pl[1] != 0 {
-		t.Errorf("het PL[0/1] = %d, want 0", pl[1])
+		t.Errorf("het PL[0/1] = %d, want 0 (het most likely)", pl[1])
 	}
 	if pl[0] <= 0 || pl[2] <= 0 {
-		t.Errorf("het PL ends should be > 0, got (%d,%d)", pl[0], pl[2])
-	}
-	// Symmetric: hom-ref vs hom-alt penalty should be equal-ish (the
-	// rounding can shift them by 1 phred unit).
-	delta := pl[0] - pl[2]
-	if delta < -1 || delta > 1 {
-		t.Errorf("het PL should be symmetric, got [%d,%d,%d]", pl[0], pl[1], pl[2])
+		t.Errorf("het: hom-ref/hom-alt PL should be > 0, got %v", pl)
 	}
 }
 
-// TestMpileupDiploidPL_NoCoverage exercises the zero-base edge case
-// (every PL value should be 0 — uninformative).
-func TestMpileupDiploidPL_NoCoverage(t *testing.T) {
-	pl := mpileupDiploidPL(nil, 'A', 'C')
-	if pl != [3]int{0, 0, 0} {
-		t.Errorf("zero-cov PL = %v, want [0,0,0]", pl)
+// TestGlfgenEmptyPile: a zero-coverage column returns 0 bases.
+func TestGlfgenEmptyPile(t *testing.T) {
+	em := ErrmodInit(1.0 - mpileupTheta)
+	var cr bcfCallret
+	n := bcfCallGlfgen(nil, 0, MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
+	if n != 0 {
+		t.Errorf("empty pile glfgen returned %d, want 0", n)
 	}
 }
 
-// TestMpileupDiploidPL_LowQuality: high-coverage but with low qualities
-// (Q=2) should give muddled likelihoods (small numerical gap).
-func TestMpileupDiploidPL_LowQuality(t *testing.T) {
-	bases := make([]mpileupBase, 0, 10)
-	for i := 0; i < 5; i++ {
-		bases = append(bases, mpileupBase{base: 'A', qual: 2})
+// TestCombineAlleleOrdering: ALT alleles are ordered by descending
+// coverage-normalised QS sum, with <*> always last.
+func TestCombineAlleleOrdering(t *testing.T) {
+	// REF=A. Pile: 2xA, 6xC, 4xG. Expect order REF(A), C, G, <*>.
+	pile := mkPile(2, 'A', 30)
+	pile = append(pile, mkPile(6, 'C', 30)...)
+	pile = append(pile, mkPile(4, 'G', 30)...)
+	em := ErrmodInit(1.0 - mpileupTheta)
+	var cr bcfCallret
+	bcfCallGlfgen(pile, seqNt16Int[baseToNt16('A')], MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
+	call := bcfCallCombine([]bcfCallret{cr}, seqNt16Int[baseToNt16('A')])
+	if call.nAlleles != 4 {
+		t.Fatalf("nAlleles = %d, want 4", call.nAlleles)
 	}
-	for i := 0; i < 5; i++ {
-		bases = append(bases, mpileupBase{base: 'C', qual: 2})
+	// alleles[0]=A(0), [1]=C(1), [2]=G(2), [3]=<*>.
+	if call.alleles[0] != 0 || call.alleles[1] != 1 || call.alleles[2] != 2 {
+		t.Errorf("allele order = %v, want [A,C,G,...]", call.alleles[:3])
 	}
-	pl := mpileupDiploidPL(bases, 'A', 'C')
-	if pl[1] != 0 {
-		t.Errorf("low-Q het PL[0/1] = %d, want 0", pl[1])
+	if call.unseen != 3 {
+		t.Errorf("unseen index = %d, want 3", call.unseen)
 	}
-	if pl[0] > 5 {
-		t.Errorf("low-Q het: PL[0/0] = %d should be small, got > 5", pl[0])
-	}
-}
-
-// TestMpileupI16 verifies the per-strand / per-quality count layout
-// returned by mpileupI16.
-func TestMpileupI16(t *testing.T) {
-	bases := []mpileupBase{
-		{base: 'A', qual: 20, mapq: 30, isReverse: false}, // ref forward
-		{base: 'A', qual: 30, mapq: 40, isReverse: true},  // ref reverse
-		{base: 'C', qual: 25, mapq: 35, isReverse: false}, // alt forward
-		{base: 'C', qual: 35, mapq: 45, isReverse: true},  // alt reverse
-	}
-	got := mpileupI16(bases, 'A')
-	if got[0] != 1 || got[1] != 1 || got[2] != 1 || got[3] != 1 {
-		t.Errorf("strand counts wrong: %v", got[:4])
-	}
-	if got[4] != 50 {
-		t.Errorf("sum baseQ ref = %v, want 50 (20+30)", got[4])
-	}
-	if got[5] != 1300 { // 20*20 + 30*30 = 400+900
-		t.Errorf("sum baseQ^2 ref = %v, want 1300", got[5])
-	}
-	if got[6] != 60 {
-		t.Errorf("sum baseQ non-ref = %v, want 60 (25+35)", got[6])
-	}
-	if got[8] != 70 {
-		t.Errorf("sum mapq ref = %v, want 70 (30+40)", got[8])
+	// PL grid is upper triangle of a 4x4 => 10 values.
+	if len(call.pl[0]) != 10 {
+		t.Errorf("PL grid len = %d, want 10", len(call.pl[0]))
 	}
 }
 
-// TestChooseALTs verifies ALT-choice ordering (descending count, then
-// lexicographic tie-break).
-func TestChooseALTs(t *testing.T) {
-	perSample := [][]mpileupBase{
-		{
-			{base: 'A'}, {base: 'A'}, {base: 'C'},
-			{base: 'C'}, {base: 'C'}, {base: 'G'},
-		},
+// TestBcfCall2bcfRecord checks the emitted vcf.Variant: REF, ALT incl.
+// <*>, QUAL=0, INFO order DP/I16/QS/MQ0F, FORMAT/PL.
+func TestBcfCall2bcfRecord(t *testing.T) {
+	pile := append(mkPile(5, 'A', 30), mkPile(3, 'C', 30)...)
+	em := ErrmodInit(1.0 - mpileupTheta)
+	var cr bcfCallret
+	bcfCallGlfgen(pile, seqNt16Int[baseToNt16('A')], MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
+	call := bcfCallCombine([]bcfCallret{cr}, seqNt16Int[baseToNt16('A')])
+	v := bcfCall2bcf("chr1", 42, 'A', &call)
+	if v.Chrom != "chr1" || v.Pos != 42 || v.Ref != "A" {
+		t.Errorf("record locus = %s:%d %s, want chr1:42 A", v.Chrom, v.Pos, v.Ref)
 	}
-	got := chooseALTs(perSample, 'A')
-	// v1 caps at 1 ALT to keep biallelic PL formatting valid; "C"
-	// is the higher-count non-REF base. Multi-allelic ALT grid lands
-	// with the MAQ port (PR #111 reviewer-caught regression).
-	if string(got) != "C" {
-		t.Errorf("chooseALTs got %q want \"C\"", string(got))
+	if v.Qual != 0 {
+		t.Errorf("QUAL = %v, want 0", v.Qual)
 	}
-	// Pure-reference site.
-	pure := [][]mpileupBase{{{base: 'A'}, {base: 'A'}}}
-	if a := chooseALTs(pure, 'A'); len(a) != 0 {
-		t.Errorf("pure ref: ALTs %v want []", a)
+	if len(v.Alt) != 2 || v.Alt[0] != "C" || v.Alt[1] != "<*>" {
+		t.Errorf("ALT = %v, want [C <*>]", v.Alt)
 	}
-	// Cap at 3.
-	multi := [][]mpileupBase{{
-		{base: 'C'}, {base: 'G'}, {base: 'T'},
-		{base: 'N'},
+	wantOrder := []string{"DP", "I16", "QS", "MQ0F"}
+	for i, k := range wantOrder {
+		if i >= len(v.InfoOrder) || v.InfoOrder[i] != k {
+			t.Errorf("InfoOrder = %v, want prefix %v", v.InfoOrder, wantOrder)
+			break
+		}
+	}
+	if v.Info["DP"] != "8" {
+		t.Errorf("INFO/DP = %q, want 8", v.Info["DP"])
+	}
+	i16 := strings.Split(v.Info["I16"], ",")
+	if len(i16) != 16 {
+		t.Errorf("INFO/I16 has %d values, want 16", len(i16))
+	}
+	// QS has one value per allele (REF, C, <*>) => 3.
+	if qs := strings.Split(v.Info["QS"], ","); len(qs) != 3 {
+		t.Errorf("INFO/QS = %q, want 3 values", v.Info["QS"])
+	}
+	if len(v.Format) != 1 || v.Format[0] != "PL" {
+		t.Errorf("FORMAT = %v, want [PL]", v.Format)
+	}
+	pl := strings.Split(v.Samples[0].Data["PL"], ",")
+	if len(pl) != 6 { // 3 alleles => 6 PL values.
+		t.Errorf("FORMAT/PL = %q, want 6 values", v.Samples[0].Data["PL"])
+	}
+}
+
+// TestGlfgenDeltaBQCap verifies the neighbour-quality cap: a high-Q base
+// flanked by low-Q neighbours is downgraded to neighbour_q + DeltaBQ.
+func TestGlfgenDeltaBQCap(t *testing.T) {
+	// One base Q=60 with neighbour qualities 2. With DeltaBQ=30 the
+	// effective quality is min(60, 2+30) = 32.
+	pile := []pileupBase{{
+		base4: seqNt16Int[baseToNt16('A')], rawQual: 60,
+		prevQ: 2, nextQ: 2, mapq: 60, qlen: 10, qpos: 5,
 	}}
-	if a := chooseALTs(multi, 'A'); len(a) > 3 {
-		t.Errorf("cap: ALTs %v exceeds 3", a)
+	em := ErrmodInit(1.0 - mpileupTheta)
+	var cr bcfCallret
+	bcfCallGlfgen(pile, seqNt16Int[baseToNt16('A')], MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
+	// The capped quality 32 lands in QS[0] (the A allele).
+	if cr.qs[0] != 32 {
+		t.Errorf("delta_baseQ cap: QS[A] = %v, want 32 (min(60,2+30))", cr.qs[0])
 	}
+}
+
+// TestMpileupGoldenStructure runs mpileup against the upstream
+// mpileup.1.bam fixture and validates the output structurally against
+// the upstream golden mpileup/mpileup.3.out.
+//
+// Full byte-for-byte parity is NOT achievable in slice 2: the upstream
+// golden was produced with `-B --ff 0x14` and bakes in (a) the --ff
+// flag-filter (out of scope here) and, for ALT sites, (b) the bias
+// annotations (slice 4). We therefore assert the structure: one record
+// per covered position, the <*> allele always present, QUAL=0, the
+// INFO tag set, and a PL grid whose length matches the allele count.
+func TestMpileupGoldenStructure(t *testing.T) {
+	bam := referenceFixture(t, "mpileup/mpileup.1.bam")
+	ref := referenceFixture(t, "mpileup/mpileup.ref.fa")
+
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:   []string{bam},
+		FastaRef: ref,
+		Regions:  []string{"17:1050-1060"},
+		NoBAQ:    true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	var data []string
+	for _, ln := range strings.Split(buf.String(), "\n") {
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		data = append(data, ln)
+	}
+	// 17:1050-1060 inclusive = 11 covered positions.
+	if len(data) != 11 {
+		t.Fatalf("got %d records for 17:1050-1060, want 11", len(data))
+	}
+	for _, ln := range data {
+		f := strings.Split(ln, "\t")
+		if len(f) != 10 {
+			t.Fatalf("record %q has %d fields, want 10", ln, len(f))
+		}
+		if f[5] != "0" {
+			t.Errorf("%s:%s QUAL=%q, want 0", f[0], f[1], f[5])
+		}
+		alt := strings.Split(f[4], ",")
+		if alt[len(alt)-1] != "<*>" {
+			t.Errorf("%s:%s ALT=%q, want trailing <*>", f[0], f[1], f[4])
+		}
+		for _, tag := range []string{"DP=", "I16=", "QS=", "MQ0F="} {
+			if !strings.Contains(f[7], tag) {
+				t.Errorf("%s:%s INFO=%q missing %s", f[0], f[1], f[7], tag)
+			}
+		}
+		// PL grid length must be n_alleles*(n_alleles+1)/2.
+		nAll := len(alt) + 1 // ALT count + REF
+		wantPL := nAll * (nAll + 1) / 2
+		if pl := strings.Split(f[9], ","); len(pl) != wantPL {
+			t.Errorf("%s:%s PL has %d values, want %d for %d alleles",
+				f[0], f[1], len(pl), wantPL, nAll)
+		}
+	}
+}
+
+// TestMpileupBCFRoundTrip verifies that -O b output is well-formed BCF
+// that round-trips through the project's BCF reader.
+func TestMpileupBCFRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	famPath := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(famPath, []byte(">chr1\n"+strings.Repeat("A", 50)+"\n"), 0o644); err != nil {
+		t.Fatalf("write fasta: %v", err)
+	}
+	if err := os.WriteFile(famPath+".fai", []byte("chr1\t50\t6\t50\t51\n"), 0o644); err != nil {
+		t.Fatalf("write fai: %v", err)
+	}
+	samPath := filepath.Join(dir, "in.sam")
+	samText := strings.Join([]string{
+		"@HD\tVN:1.6\tSO:coordinate",
+		"@SQ\tSN:chr1\tLN:50",
+		"@RG\tID:rg1\tSM:s1",
+		"r1\t0\tchr1\t1\t60\t8M\t*\t0\t0\tAAAACAAA\t????????\tRG:Z:rg1",
+		"r2\t0\tchr1\t1\t60\t8M\t*\t0\t0\tAAAACAAA\t????????\tRG:Z:rg1",
+		"",
+	}, "\n")
+	if err := os.WriteFile(samPath, []byte(samText), 0o644); err != nil {
+		t.Fatalf("write sam: %v", err)
+	}
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:       []string{samPath},
+		FastaRef:     famPath,
+		OutputFormat: OutputBCF,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile -O b: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Fatal("BCF output is empty")
+	}
+	// The BCF stream is BGZF-wrapped; a well-formed file starts with the
+	// gzip magic 0x1f 0x8b.
+	out := buf.Bytes()
+	if len(out) < 2 || out[0] != 0x1f || out[1] != 0x8b {
+		t.Errorf("BCF output missing BGZF/gzip magic, got % x", out[:min2(4, len(out))])
+	}
+}
+
+func min2(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // TestParseMpileupRegionSpec covers the chr / chr:beg / chr:beg-end
@@ -236,13 +376,10 @@ func TestValidateMpileupOptions(t *testing.T) {
 	if err := validateMpileupOptions(&opts); err == nil {
 		t.Error("RedoBAQ should be rejected")
 	}
+	// BCF output is now supported (slice 2): no rejection.
 	opts = MpileupOptions{OutputFormat: OutputBCF}
-	if err := validateMpileupOptions(&opts); err == nil {
-		t.Error("OutputBCF should be rejected")
-	}
-	opts = MpileupOptions{OutputFormat: OutputBCFUncompressed}
-	if err := validateMpileupOptions(&opts); err == nil {
-		t.Error("OutputBCFUncompressed should be rejected")
+	if err := validateMpileupOptions(&opts); err != nil {
+		t.Errorf("OutputBCF should be accepted, got %v", err)
 	}
 	opts = MpileupOptions{}
 	if err := validateMpileupOptions(&opts); err != nil {
@@ -370,9 +507,23 @@ func TestMpileupEndToEndSAM(t *testing.T) {
 	if f[8] != "PL" {
 		t.Errorf("FORMAT at chr1:5 = %q, want PL", f[8])
 	}
+	// chr1:5 is a heterozygous-looking site: REF=A, ALT=C, plus the
+	// appended <*> unseen allele => 3 alleles => 6 PL values.
 	plParts := strings.Split(f[9], ",")
-	if len(plParts) != 3 {
-		t.Errorf("PL at chr1:5 = %q, want 3 comma-separated values", f[9])
+	if len(plParts) != 6 {
+		t.Errorf("PL at chr1:5 = %q, want 6 comma-separated values", f[9])
+	}
+	// Every covered position (chr1:1..10) emits a record now, not just
+	// the variant site.
+	if len(data) != 10 {
+		t.Errorf("got %d records, want 10 (one per covered position)", len(data))
+	}
+	// Non-variant positions still carry the <*> allele.
+	for _, ln := range data {
+		ff := strings.Split(ln, "\t")
+		if len(ff) >= 5 && !strings.Contains(ff[4], "<*>") {
+			t.Errorf("record %s:%s ALT=%q missing <*>", ff[0], ff[1], ff[4])
+		}
 	}
 }
 

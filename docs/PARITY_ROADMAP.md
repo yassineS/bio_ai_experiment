@@ -1407,18 +1407,53 @@ Plus:
 
 **Genuine remaining samtools gaps** (everything else is done):
 
-- **`mpileup` BCF / genotype-likelihood output (`-g/-u`).** See the
-  mpileup tail note above. The MAQ genotype-likelihood error model
-  (`reference_code/htslib/errmod.c`) is now ported to pure Go in
-  `tools/bcftools/pkg/bcftools/errmod.go` — slice 1 of 4 of the
-  `mpileup` MAQ-model work. Remaining slices: `bcf_call_glfgen` /
-  `combine` / BCF emit, BAQ wiring into the pileup, and the bias
-  annotations. BAQ realignment itself already exists as a reusable
-  package in `pkg/htsgo/baq`. One accepted divergence: `errmod_cal`'s
-  downsampling of piles deeper than 255 reads uses Go's RNG rather than
-  htslib's `drand48`, so byte-for-byte parity holds only at depth ≤255
-  (RNG byte-parity is not a project goal); the later golden-test
-  fixtures stay within that depth.
+- **`mpileup` MAQ genotype-likelihood model — slices 1 & 2 DONE.**
+  The `mpileup` MAQ-model port is sliced into four parts:
+  - **Slice 1 (DONE).** The MAQ error model (`errmod.c`) is ported to
+    pure Go in `tools/bcftools/pkg/bcftools/errmod.go` (`ErrmodInit` /
+    `ErrmodCal`).
+  - **Slice 2 (DONE).** The per-site genotype-likelihood pipeline —
+    `bcf_call_glfgen` / `bcf_call_combine` / `bcf_call2bcf` from
+    `bam2bcf.c` — is ported in
+    `tools/bcftools/pkg/bcftools/bam2bcf.go`. `mpileup` now emits one
+    BCF/VCF record per covered reference position with real MAQ PLs,
+    the `<*>` "unseen" allele, the multi-allelic PL grid, and
+    INFO/DP/I16/QS/MQ0F. `-O b` (BCF output) works through
+    `pkg/htsgo/bcf`; the old `-O u/b` hard-rejection is gone. The
+    upstream mpileup defaults are now applied (`min-BQ=1`,
+    `max-BQ=60`, `delta-BQ=30`). The `delta_baseQ` neighbour-quality
+    cap is implemented.
+  - **Slice 3 (TODO).** Wire BAQ realignment into the pileup. The BAQ
+    HMM already exists as a reusable package in `pkg/htsgo/baq`
+    (`SamProbRealn` / `ProbalnGlocal`); slice 2 does not call it, so
+    base qualities are still the raw (delta_baseQ-capped) values and
+    `-E/--redo-BAQ` is hard-rejected. Until BAQ lands, `mpileup`
+    output cannot byte-match the upstream `mpileup/*.out` goldens
+    (which bake in BAQ).
+  - **Slice 4 (TODO).** The bias annotations VDB / SGB / RPBZ / MQBZ /
+    BQBZ / MQSBZ / SCBZ / MQ0F-family (`calc_vdb` / `calc_SegBias` /
+    `calc_mwu_biasZ`) and the indel caller (`bam2bcf_indel.c`).
+    Records are currently emitted without those INFO tags.
+
+  One accepted divergence: `errmod_cal`'s downsampling of piles deeper
+  than 255 reads uses Go's RNG rather than htslib's `drand48`, so
+  byte-for-byte parity holds only at depth ≤255 (RNG byte-parity is not
+  a project goal).
+
+  **Parity watch-item — QS-sum zero-break float comparison.**
+  `bcfCallCombine` in `bam2bcf.go` (allele-ordering loop, ~line 290)
+  breaks the loop on `qsum[ipos] == 0` using a Go `float64` exact
+  compare, mirroring upstream `bcf_call_combine` (`bam2bcf.c:991-1001`,
+  which tests a C `float`). The `qsum` slots are sums of per-sample
+  coverage-normalised QS ratios; accumulation order and the C
+  `float`-vs-Go `float64` width difference mean a slot that is exactly
+  `0` in upstream could be a tiny non-zero in Go (or vice versa). When
+  that happens, `n_alleles` and the position of the `<*>` unseen allele
+  differ from upstream, shifting the whole allele set and PL grid. Not
+  observed in the slice-2 fixtures (all small, integral QS), but it
+  must be verified — and likely fixed with an explicit epsilon or by
+  matching upstream's `float` width/accumulation order — when the
+  slice-3/4 goldens are enabled.
 - **`phase` MCMC chimera repair.** The v1 port uses a greedy
   adjacent-het vote in place of upstream `phase.c`'s MCMC
   `phase_core` loop; `-b` per-haplotype BAM split is also deferred.
@@ -2123,23 +2158,24 @@ Option-tail gaps on `csq` (this PR, v1 SNP-only):
   types are silently skipped — fine for the v1 SNP classifier
   but the parser will need extension for splice-site / UTR work.
 
-Option-tail gaps on `mpileup` (this PR, v1 SNP + uniform-error):
+Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1 & 2 done):
 
-- **The v1 likelihood model is NOT the upstream MAQ model.** Upstream's
-  `bam2bcf.c::glfgen` reads per-base error probabilities from the
-  Heng Li MAQ recalibrator with BAQ adjustments; v1 instead uses the
-  simpler samtools-0.1.19-style uniform-error binomial: e = 10^(-Q/10)
-  per base, summed in log10 across reads, then phred-scaled and
-  rebased to min=0 for the [0/0, 0/1, 1/1] triple. The MAQ port is
-  the natural follow-up; the CLI surface and FORMAT/PL layout are
-  parity-clean for it. The reference source — `reference_code/bcftools/`
-  `bam2bcf.c` and `reference_code/htslib/errmod.c` — is now vendored,
-  so this is a scoped porting task, not a research item.
-- **No BAQ recalibration.** `-B/--no-BAQ` is the v1 default (the flag
-  is accepted as a no-op); `-D/--full-BAQ` is accepted but inert;
-  `-E/--redo-BAQ` is hard-rejected with a roadmap pointer because
-  silently skipping a recalibration step a downstream caller asked
-  for would yield misleading PLs.
+- **The likelihood model IS the upstream MAQ model.** Slice 2 wired
+  `bam2bcf.c::bcf_call_glfgen` / `bcf_call_combine` / `bcf_call2bcf`
+  (ported in `bam2bcf.go`) onto the slice-1 errmod port. `mpileup`
+  emits one BCF/VCF record per covered position with the `<*>`
+  unseen allele, the full multi-allelic PL grid, and
+  INFO/DP/I16/QS/MQ0F. The obsolete uniform-error binomial is gone.
+- **No BAQ recalibration (slice 3 TODO).** `-B/--no-BAQ` is the
+  effective behaviour today (BAQ is not yet wired); `-D/--full-BAQ`
+  is accepted but inert; `-E/--redo-BAQ` is hard-rejected. The BAQ
+  HMM already exists in `pkg/htsgo/baq`; until it is plumbed in,
+  output cannot byte-match the upstream `mpileup/*.out` goldens,
+  which bake in BAQ.
+- **No bias annotations (slice 4 TODO).** VDB / SGB / RPBZ / MQBZ /
+  BQBZ / MQSBZ / SCBZ are not yet computed; records carry only
+  INFO/DP/I16/QS/MQ0F. The `calc_vdb` / `calc_SegBias` /
+  `calc_mwu_biasZ` machinery and the indel caller land in slice 4.
 - **No indel calling.** The full upstream indel realigner
   (`bam2bcf_indel.c`) and the consensus indel mode
   (`bam2bcf_edlib.c`) are deferred. Every knob that drives the indel
@@ -2151,12 +2187,10 @@ Option-tail gaps on `mpileup` (this PR, v1 SNP + uniform-error):
   `--no-poly-mqual`, `--score-vs-ref`, `--seqq-offset` — is accepted
   at the CLI for parity but inert in v1. The v1 emit path is
   equivalent to running upstream with `-I/--skip-indels` set.
-- **No multi-allelic FORMAT/PL grid.** The PL we emit is always
-  biallelic [PL(0/0), PL(0/1), PL(1/1)] against ALT[0]. Sites with
-  multiple ALTs still parse upstream-style in `bcftools call`, but
-  the PL grid for the 2nd / 3rd ALT genotypes is treated as 0
-  (uninformative). The full j(j+1)/2 + i grid lands with the MAQ
-  port.
+- **The FORMAT/PL grid is multi-allelic.** Slice 2 emits the full
+  upper-triangle `g[z++] = a[j]*5 + a[i]` grid of
+  `n_alleles*(n_alleles+1)/2` values per sample, including the `<*>`
+  unseen allele.
 - **No BAI seek.** `-r/--regions` and `-R/--regions-file` are
   post-filters applied after a linear scan of every input BAM; the
   BAI-seek fast path lives in `pkg/htsgo/sam` but is not wired
@@ -2165,20 +2199,17 @@ Option-tail gaps on `mpileup` (this PR, v1 SNP + uniform-error):
 - **No per-read group filtering.** `-G/--read-groups` is parsed and
   stored; v1 includes every record whose @RG passes the standard
   filters. `-Z/--ignore-RG` is accepted but inert.
-- **No gVCF blocking.** `-g/--gvcf` is accepted; v1 always emits one
-  VCF record per variant site (REF-only sites are skipped, matching
-  upstream when `--gvcf` is unset).
-- **`-a/--annotate LIST` is accepted but inert.** v1 always emits the
-  default `INFO/DP`, `INFO/I16`, `FORMAT/PL` set. The
-  `INFO/AD,ADF,ADR,SP,SCR,IDV,IMF`, `FORMAT/AD,ADF,ADR,DP,DV,DPR,SP,SCR,QS`
-  tags will land alongside the per-tag stream when called from
-  `bcftools call`.
-- **`-O u|b` (BCF output) is hard-rejected.** The BCF writer in
-  `pkg/htsgo/bcf` can handle generic records, but mpileup carries
-  custom INFO/I16 typing rules; the wire-up is a follow-up. `-O v`
-  (text VCF) is the default; `-O z` (gzipped VCF) is accepted at the
-  CLI but currently streams text — gzip-wrap-stdout from a follow-up
-  CLI shim will close that gap.
+- **No gVCF blocking.** `-g/--gvcf` is accepted; one BCF/VCF record
+  is emitted per covered reference position (gVCF range-blocking is a
+  follow-up).
+- **`-a/--annotate LIST` is accepted but inert.** mpileup always
+  emits the default `INFO/DP`, `INFO/I16`, `INFO/QS`, `INFO/MQ0F`,
+  `FORMAT/PL` set. The `INFO/AD,ADF,ADR,SP,SCR,IDV,IMF`,
+  `FORMAT/AD,ADF,ADR,DP,DV,DPR,SP,SCR,QS` tags will land alongside
+  the per-tag stream when called from `bcftools call`.
+- **`-O u|b` (BCF output) works.** Slice 2 wired BCF output through
+  `pkg/htsgo/bcf` (`-O b` is BGZF-wrapped, `-O u` uncompressed);
+  `-O v` (text VCF) is the default and `-O z` is gzipped VCF.
 - **`--threads`, `-v/--verbosity`, `-W/--write-index`, `--no-version`,
   `-A/--count-orphans`, `-x/--ignore-overlaps`, `-d/--max-depth`,
   `-q/--min-MQ`, `-Q/--min-BQ`, `--max-bq`** — fully implemented in v1.
@@ -2192,7 +2223,10 @@ Option-tail gaps on `mpileup` (this PR, v1 SNP + uniform-error):
   `--skip-any-set`, `--skip-all-set`, `--ls`) — accepted and stored;
   v1 honours only the standard `--ff` defaults (UNMAP, SECONDARY,
   QCFAIL, DUP, SUPPLEMENTARY) baked into `mpileupKeepRecord`.
-- `--seed`, `--delta-BQ` — accepted; v1 ignores.
+- `--delta-BQ` — implemented (default 30): a base quality is capped at
+  `neighbour_qual + delta` before the MAQ model sees it.
+- `--seed` — accepted; ignored (no subsampling below the 255-read
+  errmod cap).
 
 Option-tail gaps on `consensus` (this PR, simple-mode):
 

@@ -28,8 +28,8 @@ func TestCheckMpileupDeferred(t *testing.T) {
 		want string
 	}{
 		{"redoBAQ", &mpileupFlags{redoBAQ: true}, "-E/--redo-BAQ"},
-		{"-O u", &mpileupFlags{outputType: "u"}, "-O u (BCF output)"},
-		{"-O b", &mpileupFlags{outputType: "b"}, "-O b (BCF output)"},
+		{"-O u", &mpileupFlags{outputType: "u"}, ""},
+		{"-O b", &mpileupFlags{outputType: "b"}, ""},
 		{"-O bogus", &mpileupFlags{outputType: "x"}, "-O x"},
 	}
 	for _, tc := range cases {
@@ -60,9 +60,14 @@ func TestMpileupRunInputs(t *testing.T) {
 	if rc := runMpileup([]string{"-E", "-f", "x.fa", "some.bam"}); rc != 2 {
 		t.Errorf("-E rc=%d want 2", rc)
 	}
-	// -O b (BCF) should reject.
-	if rc := runMpileup([]string{"-O", "b", "-f", "x.fa", "some.bam"}); rc != 2 {
-		t.Errorf("-O b rc=%d want 2", rc)
+	// -O b (BCF) is now accepted at the option-deferral check; the run
+	// still fails (rc=1) here because the fixture files do not exist.
+	if rc := runMpileup([]string{"-O", "b", "-f", "x.fa", "some.bam"}); rc != 1 {
+		t.Errorf("-O b rc=%d want 1 (missing fixtures)", rc)
+	}
+	// -O bogus is still rejected at the deferral check.
+	if rc := runMpileup([]string{"-O", "x", "-f", "x.fa", "some.bam"}); rc != 2 {
+		t.Errorf("-O x rc=%d want 2", rc)
 	}
 }
 
