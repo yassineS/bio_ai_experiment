@@ -2,105 +2,363 @@ package bcftools
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 )
 
-// TestCNVHeuristicSimple feeds a tiny 2-sample BAF/LRR VCF with a
-// chr2 stretch that should classify as CN3 (gain).
-func TestCNVHeuristicSimple(t *testing.T) {
-	input := `##fileformat=VCFv4.2
+// vcfHeaderSingle is a minimal single-sample BAF/LRR VCF header.
+const vcfHeaderSingle = `##fileformat=VCFv4.2
 ##contig=<ID=chr1>
 ##contig=<ID=chr2>
 ##FORMAT=<ID=BAF,Number=1,Type=Float,Description="B-allele freq">
 ##FORMAT=<ID=LRR,Number=1,Type=Float,Description="Log R ratio">
-#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	queryA	ctrlB
-chr1	100	.	A	C	.	PASS	.	BAF:LRR	0.50:0.01	0.50:0.02
-chr1	200	.	A	C	.	PASS	.	BAF:LRR	0.50:-0.01	0.51:0.00
-chr1	300	.	A	C	.	PASS	.	BAF:LRR	0.50:0.00	0.49:0.01
-chr2	100	.	A	C	.	PASS	.	BAF:LRR	0.33:0.65	0.50:0.01
-chr2	200	.	A	C	.	PASS	.	BAF:LRR	0.66:0.62	0.50:-0.01
-chr2	300	.	A	C	.	PASS	.	BAF:LRR	0.34:0.70	0.50:0.00
-chr2	400	.	A	C	.	PASS	.	BAF:LRR	0.67:0.55	0.50:0.02
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sampleA
 `
+
+// buildVCF appends per-site BAF:LRR records (one sample) to the header.
+func buildVCF(header string, chrom string, baf, lrr []float64) string {
+	var b strings.Builder
+	b.WriteString(header)
+	for i := range baf {
+		b.WriteString(chrom)
+		b.WriteString("\t")
+		// 1-based positions, 1000 bp apart.
+		b.WriteString(itoa((i + 1) * 1000))
+		b.WriteString("\t.\tA\tC\t.\tPASS\t.\tBAF:LRR\t")
+		b.WriteString(ftoa(baf[i]))
+		b.WriteString(":")
+		b.WriteString(ftoa(lrr[i]))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var d []byte
+	for n > 0 {
+		d = append([]byte{byte('0' + n%10)}, d...)
+		n /= 10
+	}
+	return string(d)
+}
+
+func ftoa(f float64) string {
+	return strings.TrimRight(strings.TrimRight(
+		formatFixed(f, 4), "0"), ".")
+}
+
+func formatFixed(f float64, prec int) string {
+	scale := 1.0
+	for i := 0; i < prec; i++ {
+		scale *= 10
+	}
+	neg := f < 0
+	if neg {
+		f = -f
+	}
+	n := int(math.Round(f * scale))
+	intPart := n / int(scale)
+	frac := n % int(scale)
+	s := itoa(intPart) + "."
+	fs := itoa(frac)
+	for len(fs) < prec {
+		fs = "0" + fs
+	}
+	s += fs
+	if neg {
+		s = "-" + s
+	}
+	return s
+}
+
+// cnvOnly returns the data ("RG") rows of a CNV summary, dropping the
+// header comment line.
+func cnvRows(out string) []string {
+	var rows []string
+	for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.HasPrefix(ln, "RG\t") {
+			rows = append(rows, ln)
+		}
+	}
+	return rows
+}
+
+// TestCNVCleanDiploidIsAllCN2 is the internal consistency check: a
+// clean CN=2 region (every site a balanced het BAF≈0.5 and LRR≈0)
+// must decode to a single all-normal CN2 region.
+func TestCNVCleanDiploidIsAllCN2(t *testing.T) {
+	n := 40
+	baf := make([]float64, n)
+	lrr := make([]float64, n)
+	for i := range baf {
+		// Alternate the three CN2 genotype clusters around their
+		// peaks (RR≈0, RA≈0.5, AA≈1) — all consistent with diploid.
+		switch i % 3 {
+		case 0:
+			baf[i] = 0.02
+		case 1:
+			baf[i] = 0.50
+		default:
+			baf[i] = 0.98
+		}
+		lrr[i] = 0.0
+	}
+	input := buildVCF(vcfHeaderSingle, "chr1", baf, lrr)
 	var out bytes.Buffer
-	n, err := CNV(strings.NewReader(input), &out, CNVOptions{})
-	if err != nil {
+	if _, err := CNV(strings.NewReader(input), &out, CNVOptions{}); err != nil {
 		t.Fatalf("CNV: %v", err)
 	}
-	if n != 4 {
-		t.Errorf("expected 4 rows (2 samples x 2 chromosomes), got %d", n)
+	rows := cnvRows(out.String())
+	if len(rows) != 1 {
+		t.Fatalf("clean diploid: expected 1 region, got %d:\n%s", len(rows), out.String())
 	}
-	got := out.String()
-	wantLines := []string{
-		"#sample\tchrom\tn_sites\tmedian_baf\tmean_lrr\tcn_call",
-		"queryA\tchr1\t3\t0.000000\t0.000000\tCN2",
-		"queryA\tchr2\t4\t0.165000\t0.630000\tCN4",
-		"ctrlB\tchr1\t3\t0.010000\t0.010000\tCN2",
-		"ctrlB\tchr2\t4\t0.000000\t0.005000\tCN2",
+	f := strings.Split(rows[0], "\t")
+	if f[1] != "chr1" || f[4] != "CN2" {
+		t.Errorf("clean diploid: expected chr1 CN2, got %v", f)
 	}
-	for _, want := range wantLines {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing line %q in:\n%s", want, got)
-		}
+	if f[2] != "1000" || f[3] != itoa(n*1000) {
+		t.Errorf("clean diploid: expected span 1000..%d, got %s..%s", n*1000, f[2], f[3])
 	}
 }
 
-// TestCNVSampleNarrowing exercises -s/-c and verifies non-matching
-// samples are skipped.
+// TestCNVHomozygousDeletionIsCN0 hand-derives a CN0 call. Upstream's
+// emission model assigns CN0 a fixed 0.5 weight on a no-call (missing
+// BAF) site and exactly 0 on a site with a real BAF, so CN0 only
+// decodes for runs of missing BAF. A single-sample input drops no-call
+// sites entirely (parse_lrr_baf returns 0), exactly as upstream does;
+// CN0 is therefore only reachable in paired mode, where a record
+// survives as long as either sample has a usable BAF. This test puts a
+// run of query no-calls against a control with valid diploid BAF.
+func TestCNVHomozygousDeletionIsCN0(t *testing.T) {
+	header := `##fileformat=VCFv4.2
+##contig=<ID=chr1>
+##FORMAT=<ID=BAF,Number=1,Type=Float,Description="">
+##FORMAT=<ID=LRR,Number=1,Type=Float,Description="">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	queryA	ctrlB
+`
+	var b strings.Builder
+	b.WriteString(header)
+	pos := 0
+	write := func(q string) {
+		pos += 1000
+		b.WriteString("chr1\t" + itoa(pos) + "\t.\tA\tC\t.\tPASS\t.\tBAF:LRR\t" +
+			q + "\t0.5:0.0\n")
+	}
+	for i := 0; i < 30; i++ {
+		write("0.5:0.0")
+	}
+	for i := 0; i < 80; i++ {
+		write(".:.")
+	}
+	for i := 0; i < 30; i++ {
+		write("0.5:0.0")
+	}
+	var out bytes.Buffer
+	// A looser transition prior lets the long no-call run flip to CN0;
+	// the default xy-prob is too rigid for a region of this length.
+	if _, err := CNV(strings.NewReader(b.String()), &out,
+		CNVOptions{QuerySample: "queryA", ControlSample: "ctrlB", XYProb: 1e-3}); err != nil {
+		t.Fatalf("CNV: %v", err)
+	}
+	rows := cnvRows(out.String())
+	// The query path should be CN2, CN0, CN2; the control stays CN2.
+	sawCN0 := false
+	for _, r := range rows {
+		f := strings.Split(r, "\t")
+		if f[4] == "CN0" {
+			sawCN0 = true
+		}
+		if f[5] != "CN2" {
+			t.Errorf("control should stay CN2, got %s in %v", f[5], f)
+		}
+	}
+	if !sawCN0 {
+		t.Errorf("expected a query CN0 region, got:\n%s", out.String())
+	}
+}
+
+// TestCNVSingleCopyGainCN3 hand-derives a CN3 call. In a single-copy
+// gain the heterozygous BAF cluster splits into two bands at 1/3 and
+// 2/3 (cell_frac=1: 1/(2+1) and 2/(2+1)) plus a positive LRR shift
+// (~0.30). A run of such sites flanked by normal CN2 must produce a
+// CN3 region in the middle.
+func TestCNVSingleCopyGainCN3(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(vcfHeaderSingle)
+	pos := 0
+	write := func(baf, lrr float64) {
+		pos += 1000
+		b.WriteString("chr1\t" + itoa(pos) + "\t.\tA\tC\t.\tPASS\t.\tBAF:LRR\t" +
+			ftoa(baf) + ":" + ftoa(lrr) + "\n")
+	}
+	for i := 0; i < 15; i++ {
+		// Normal het: BAF 0.5, LRR 0.
+		write(0.5, 0.0)
+	}
+	for i := 0; i < 25; i++ {
+		// CN3: BAF alternates between the 1/3 and 2/3 bands, LRR ~0.30.
+		if i%2 == 0 {
+			write(1.0/3.0, 0.30)
+		} else {
+			write(2.0/3.0, 0.30)
+		}
+	}
+	for i := 0; i < 15; i++ {
+		write(0.5, 0.0)
+	}
+	var out bytes.Buffer
+	if _, err := CNV(strings.NewReader(b.String()), &out, CNVOptions{}); err != nil {
+		t.Fatalf("CNV: %v", err)
+	}
+	rows := cnvRows(out.String())
+	gain := false
+	for _, r := range rows {
+		if strings.Contains(r, "\tCN3\t") {
+			gain = true
+		}
+	}
+	if !gain {
+		t.Errorf("expected a CN3 region, got:\n%s", out.String())
+	}
+}
+
+// TestCNVErrProbKnobTakesEffect confirms that --err-prob is now a
+// load-bearing HMM knob: a huge error floor flattens every non-CN0
+// emission so the decode collapses to a single region.
+func TestCNVErrProbKnobTakesEffect(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(vcfHeaderSingle)
+	pos := 0
+	write := func(baf, lrr float64) {
+		pos += 1000
+		b.WriteString("chr1\t" + itoa(pos) + "\t.\tA\tC\t.\tPASS\t.\tBAF:LRR\t" +
+			ftoa(baf) + ":" + ftoa(lrr) + "\n")
+	}
+	for i := 0; i < 15; i++ {
+		write(0.5, 0.0)
+	}
+	for i := 0; i < 25; i++ {
+		if i%2 == 0 {
+			write(1.0/3.0, 0.30)
+		} else {
+			write(2.0/3.0, 0.30)
+		}
+	}
+	for i := 0; i < 15; i++ {
+		write(0.5, 0.0)
+	}
+	input := b.String()
+
+	var defOut bytes.Buffer
+	if _, err := CNV(strings.NewReader(input), &defOut, CNVOptions{}); err != nil {
+		t.Fatalf("CNV default: %v", err)
+	}
+	var floorOut bytes.Buffer
+	// A dominating error floor swamps the BAF/LRR signal.
+	if _, err := CNV(strings.NewReader(input), &floorOut, CNVOptions{ErrProb: 1e6}); err != nil {
+		t.Fatalf("CNV err-prob: %v", err)
+	}
+	if defOut.String() == floorOut.String() {
+		t.Errorf("--err-prob did not change the decode; knob is not load-bearing")
+	}
+	if len(cnvRows(floorOut.String())) != 1 {
+		t.Errorf("err-prob floor should collapse to one region, got:\n%s", floorOut.String())
+	}
+}
+
+// TestCNVXYProbKnobTakesEffect confirms --xy-prob influences the
+// decode: a near-1 transition probability makes state switching free,
+// which fragments the path relative to the rigid default.
+func TestCNVXYProbKnobTakesEffect(t *testing.T) {
+	n := 30
+	baf := make([]float64, n)
+	lrr := make([]float64, n)
+	for i := range baf {
+		// Borderline-noisy signal so the transition prior matters.
+		if i < n/2 {
+			baf[i] = 0.5
+			lrr[i] = 0.0
+		} else {
+			baf[i] = 1.0 / 3.0
+			lrr[i] = 0.25
+		}
+	}
+	input := buildVCF(vcfHeaderSingle, "chr1", baf, lrr)
+	var rigid, loose bytes.Buffer
+	if _, err := CNV(strings.NewReader(input), &rigid, CNVOptions{XYProb: 1e-9}); err != nil {
+		t.Fatalf("rigid: %v", err)
+	}
+	if _, err := CNV(strings.NewReader(input), &loose, CNVOptions{XYProb: 0.2}); err != nil {
+		t.Fatalf("loose: %v", err)
+	}
+	if rigid.String() == loose.String() {
+		t.Errorf("--xy-prob did not change the decode; knob is not load-bearing")
+	}
+}
+
+// TestCNVPairedMode exercises the 16-state paired HMM and confirms the
+// per-sample CN columns are emitted.
+func TestCNVPairedMode(t *testing.T) {
+	input := `##fileformat=VCFv4.2
+##contig=<ID=chr1>
+##FORMAT=<ID=BAF,Number=1,Type=Float,Description="">
+##FORMAT=<ID=LRR,Number=1,Type=Float,Description="">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	queryA	ctrlB
+`
+	var b strings.Builder
+	b.WriteString(input)
+	for i := 0; i < 20; i++ {
+		b.WriteString("chr1\t" + itoa((i+1)*1000) + "\t.\tA\tC\t.\tPASS\t.\tBAF:LRR\t0.5:0.0\t0.5:0.0\n")
+	}
+	var out bytes.Buffer
+	n, err := CNV(strings.NewReader(b.String()), &out, CNVOptions{
+		QuerySample: "queryA", ControlSample: "ctrlB",
+	})
+	if err != nil {
+		t.Fatalf("CNV paired: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("paired clean diploid: expected 1 region, got %d:\n%s", n, out.String())
+	}
+	if !strings.Contains(out.String(), "Copy number:queryA\t[6]Copy number:ctrlB") {
+		t.Errorf("paired header missing both sample columns:\n%s", out.String())
+	}
+	f := strings.Split(cnvRows(out.String())[0], "\t")
+	// RG chrom start end queryCN ctrlCN qual nsites nhets
+	if f[4] != "CN2" || f[5] != "CN2" {
+		t.Errorf("paired clean diploid: expected CN2/CN2, got %s/%s", f[4], f[5])
+	}
+}
+
+// TestCNVSampleNarrowing exercises -s and verifies the right sample
+// drives the call.
 func TestCNVSampleNarrowing(t *testing.T) {
 	input := `##fileformat=VCFv4.2
 ##contig=<ID=chr1>
 ##FORMAT=<ID=BAF,Number=1,Type=Float,Description="">
 ##FORMAT=<ID=LRR,Number=1,Type=Float,Description="">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	A	B	C
-chr1	1	.	A	C	.	.	.	BAF:LRR	0.50:0.01	0.30:-0.55	0.50:0.00
-chr1	2	.	A	C	.	.	.	BAF:LRR	0.50:0.00	0.70:-0.60	0.50:0.01
 `
+	var b strings.Builder
+	b.WriteString(input)
+	for i := 0; i < 10; i++ {
+		b.WriteString("chr1\t" + itoa((i+1)*1000) +
+			"\t.\tA\tC\t.\t.\t.\tBAF:LRR\t0.5:0.0\t0.5:0.0\t0.5:0.0\n")
+	}
 	var out bytes.Buffer
-	n, err := CNV(strings.NewReader(input), &out, CNVOptions{QuerySample: "B"})
+	n, err := CNV(strings.NewReader(b.String()), &out, CNVOptions{QuerySample: "B"})
 	if err != nil {
 		t.Fatalf("CNV: %v", err)
 	}
 	if n != 1 {
 		t.Errorf("expected 1 row, got %d", n)
 	}
-	if !strings.Contains(out.String(), "B\tchr1\t2") {
-		t.Errorf("expected sample B row, got:\n%s", out.String())
-	}
-	if strings.Contains(out.String(), "A\t") || strings.Contains(out.String(), "C\t") {
-		t.Errorf("unexpected sample row in:\n%s", out.String())
-	}
-}
-
-func TestCNVClassifyCN(t *testing.T) {
-	cases := []struct {
-		baf, lrr float64
-		want     string
-	}{
-		{0.01, 0.01, "CN2"},
-		{0.30, -0.55, "CN0"}, // mean LRR < -2*0.20
-		{0.30, -0.25, "CN1"},
-		{0.30, 0.25, "CN3"},
-		{0.30, 0.55, "CN4"},
-	}
-	for _, tc := range cases {
-		got := classifyCN(tc.baf, tc.lrr, CNVOptions{})
-		if got != tc.want {
-			t.Errorf("classifyCN(%v,%v) = %q want %q", tc.baf, tc.lrr, got, tc.want)
-		}
-	}
-}
-
-func TestCNVMedian(t *testing.T) {
-	if median(nil) != 0 {
-		t.Error("median(nil) should be 0")
-	}
-	if got := median([]float64{1, 3, 2}); got != 2 {
-		t.Errorf("median(1,3,2) = %v want 2", got)
-	}
-	if got := median([]float64{1, 2, 3, 4}); got != 2.5 {
-		t.Errorf("median(1,2,3,4) = %v want 2.5", got)
+	if !strings.Contains(out.String(), "Copy number:B") {
+		t.Errorf("expected sample B in header, got:\n%s", out.String())
 	}
 }
 
@@ -114,6 +372,29 @@ chr1	1	.	A	C	.	.	.	.
 	if _, err := CNV(strings.NewReader(input), &out, CNVOptions{QuerySample: "NOPE"}); err == nil {
 		t.Errorf("expected error when no samples match")
 	}
+}
+
+func TestCNVAFFileRejected(t *testing.T) {
+	// --AF-file is a deliberate deferral: upstream recomputes the
+	// per-site genotype frequencies from it and uses it as a targets
+	// filter (vcfcnv.c:735-739, :27-31, :1429). Honouring the flag
+	// without that support would silently produce wrong output, so a
+	// non-empty value must be a hard error.
+	input := `##fileformat=VCFv4.2
+##contig=<ID=chr1>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT
+chr1	1	.	A	C	.	.	.	.
+`
+	var out bytes.Buffer
+	_, err := CNV(strings.NewReader(input), &out, CNVOptions{AFFile: "afs.tab"})
+	if err == nil {
+		t.Fatalf("expected --AF-file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "AF-file") {
+		t.Errorf("error %q does not mention --AF-file", err)
+	}
+	// The rejection fires before sample resolution; the empty-AFFile
+	// happy path is exercised by the other CNV tests in this file.
 }
 
 func TestParseFloatField(t *testing.T) {
@@ -134,15 +415,13 @@ func TestParseFloatField(t *testing.T) {
 			t.Errorf("parseFloatField(%q): got (%v,%v) want (%v,%v)", tc.s, got, ok, tc.want, tc.ok)
 		}
 	}
-	// Missing tag.
 	if _, ok := parseFloatField(map[string]string{}, "Y"); ok {
 		t.Errorf("missing tag should return ok=false")
 	}
 }
 
-// TestCNVBafFromAD pins the FORMAT/AD = REF,ALT fallback synthesis
-// (PR #110 review finding #4): when FORMAT/BAF isn't present, BAF
-// must come from ALT/(REF+ALT).
+// TestCNVBafFromAD pins the FORMAT/AD = REF,ALT fallback synthesis:
+// when FORMAT/BAF isn't present, BAF must come from ALT/(REF+ALT).
 func TestCNVBafFromAD(t *testing.T) {
 	cases := []struct {
 		in     string
@@ -171,19 +450,137 @@ func TestCNVBafFromAD(t *testing.T) {
 	}
 }
 
-// TestCNVClassifyCN_LOH pins PR #110 review finding #3: classifyCN
-// MUST consult bafDev, not just LRR. A copy-neutral LOH signal
-// (balanced LRR + skewed BAF) feeds through the new bafLo gate.
-func TestCNVClassifyCN_LOH(t *testing.T) {
-	opts := CNVOptions{BAFDev: 0.05, LRRDev: 0.20}
-	// LRR=0 + BAF dev = 0.30 -> hits the LOH branch (still CN2 in v1
-	// per docstring, but the gate is now load-bearing so a future
-	// state can flip on without breaking the public API).
-	if got := classifyCN(0.30, 0.0, opts); got != "CN2" {
-		t.Errorf("LOH-like signal: got %s, want CN2", got)
+// --- Unit tests for the ported HMM internals ------------------------
+
+// TestCNVNormCDF checks the truncated-Gaussian mass against hand
+// values: a peak centred at 0.5 keeps almost all its mass inside [0,1].
+func TestCNVNormCDF(t *testing.T) {
+	got := cnvNormCDF(0.5, 0.04)
+	if got <= 0.99 || got > 1.0 {
+		t.Errorf("cnvNormCDF(0.5,0.04) = %v, expected ~1", got)
 	}
-	// LRR=0 + BAF dev = 0 -> plain diploid CN2.
-	if got := classifyCN(0.0, 0.0, opts); got != "CN2" {
-		t.Errorf("plain diploid: got %s, want CN2", got)
+	// A peak centred at 0 loses half its mass below 0.
+	half := cnvNormCDF(0.0, 0.04)
+	if math.Abs(half-0.5) > 0.02 {
+		t.Errorf("cnvNormCDF(0,0.04) = %v, expected ~0.5", half)
+	}
+}
+
+// TestCNVInitTprobSingle checks the 4-state transition matrix: every
+// column sums to 1, the diagonal carries the staying probability, and
+// off-diagonals carry the xy-prob.
+func TestCNVInitTprobSingle(t *testing.T) {
+	xy := 1e-3
+	mat, err := cnvInitTprob(cnvNStates, xy, 0.5)
+	if err != nil {
+		t.Fatalf("cnvInitTprob: %v", err)
+	}
+	for j := 0; j < cnvNStates; j++ {
+		sum := 0.0
+		for i := 0; i < cnvNStates; i++ {
+			sum += mat[i*cnvNStates+j]
+		}
+		if math.Abs(sum-1) > 1e-12 {
+			t.Errorf("column %d sums to %v, want 1", j, sum)
+		}
+		if d := mat[j*cnvNStates+j]; math.Abs(d-(1-xy*3)) > 1e-12 {
+			t.Errorf("diagonal[%d] = %v, want %v", j, d, 1-xy*3)
+		}
+	}
+}
+
+// TestCNVInitTprobRejectsBadXY checks the upstream guard: an xy-prob so
+// large that P(x|x) < P(x|y) is rejected.
+func TestCNVInitTprobRejectsBadXY(t *testing.T) {
+	if _, err := cnvInitTprob(cnvNStates, 0.5, 0.5); err == nil {
+		t.Errorf("expected error for xy-prob too high")
+	}
+}
+
+// TestCNVInitTprobPaired checks the 16-state paired transition matrix
+// is column-stochastic.
+func TestCNVInitTprobPaired(t *testing.T) {
+	mat, err := cnvInitTprob(cnvNStates*cnvNStates, 1e-3, 0.5)
+	if err != nil {
+		t.Fatalf("cnvInitTprob paired: %v", err)
+	}
+	nd := cnvNStates * cnvNStates
+	for j := 0; j < nd; j++ {
+		sum := 0.0
+		for i := 0; i < nd; i++ {
+			sum += mat[i*nd+j]
+		}
+		if math.Abs(sum-1) > 1e-9 {
+			t.Errorf("paired column %d sums to %v, want 1", j, sum)
+		}
+	}
+}
+
+// TestCNVInitIProbs checks the initial-state vector favours CN2 and
+// normalises to 1.
+func TestCNVInitIProbs(t *testing.T) {
+	p := cnvInitIProbs(cnvNStates, 0.5)
+	sum := 0.0
+	for _, x := range p {
+		sum += x
+	}
+	if math.Abs(sum-1) > 1e-12 {
+		t.Errorf("iprobs sum = %v, want 1", sum)
+	}
+	if p[cnvCN2] <= p[cnvCN0] {
+		t.Errorf("CN2 prior %v should exceed CN0 prior %v", p[cnvCN2], p[cnvCN0])
+	}
+}
+
+// TestCNVSmoothData checks the moving-average smoother flattens a step:
+// every value stays within the [min,max] range of the input and the
+// hard 0->1 jump becomes a gradient.
+func TestCNVSmoothData(t *testing.T) {
+	dat := []float64{0, 0, 0, 0, 1, 1, 1, 1}
+	cnvSmoothData(dat, 4)
+	for i, x := range dat {
+		if x < 0 || x > 1 {
+			t.Errorf("smoothed value dat[%d]=%v out of [0,1]", i, x)
+		}
+	}
+	if dat[3] == 0 && dat[4] == 1 {
+		t.Errorf("smoother left a hard step: %v", dat)
+	}
+	// A win<=1 smoother is a no-op.
+	noop := []float64{3, 1, 4, 1, 5}
+	cnvSmoothData(noop, 1)
+	for i, x := range noop {
+		want := []float64{3, 1, 4, 1, 5}[i]
+		if x != want {
+			t.Errorf("win=1 should be a no-op, dat[%d]=%v want %v", i, x, want)
+		}
+	}
+}
+
+// TestCNVObservedProbMissingBAF checks the no-call emission: CN0 gets a
+// fixed 0.5 and the rest split the remainder.
+func TestCNVObservedProbMissingBAF(t *testing.T) {
+	s := &cnvSample{baf: []float64{cnvMissingBAF}, lrr: []float64{0}, bafDev2: 0.0016, lrrDev2: 0.04}
+	s.cellFrac = 1
+	s.setGaussParams()
+	s.setObservedProb(0, 0.76, 0.14, 0.098, 1.0, 0.2, 1e-4)
+	if s.pobs[cnvCN0] != 0.5 {
+		t.Errorf("missing BAF: pobs[CN0] = %v, want 0.5", s.pobs[cnvCN0])
+	}
+	rest := s.pobs[cnvCN1] + s.pobs[cnvCN2] + s.pobs[cnvCN3]
+	if math.Abs(rest-0.5) > 1e-9 {
+		t.Errorf("missing BAF: non-CN0 sum = %v, want 0.5", rest)
+	}
+}
+
+// TestCNVObservedProbDiploidPeak checks that a balanced het BAF makes
+// CN2 the most likely state.
+func TestCNVObservedProbDiploidPeak(t *testing.T) {
+	s := &cnvSample{baf: []float64{0.5}, lrr: []float64{0.0}, bafDev2: 0.0016, lrrDev2: 0.04}
+	s.cellFrac = 1
+	s.setGaussParams()
+	s.setObservedProb(0, 0.76, 0.14, 0.098, 1.0, 0.2, 1e-4)
+	if s.pobs[cnvCN2] <= s.pobs[cnvCN1] || s.pobs[cnvCN2] <= s.pobs[cnvCN3] {
+		t.Errorf("balanced het BAF should favour CN2: %v", s.pobs)
 	}
 }

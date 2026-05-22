@@ -1794,8 +1794,12 @@ Genuine algorithmic gaps (subcommands present but running a v1
 heuristic in place of the upstream algorithm — full detail in the
 per-subcommand option-tail sections below):
 
-- **`cnv`** — v1 median-BAF/mean-LRR heuristic instead of the 5-state
-  Viterbi HMM (`vcfcnv.c` + `HMM.c`, both vendored).
+- **`cnv`** — full port: the upstream copy-number HMM (`vcfcnv.c` +
+  `HMM.c`, both vendored). 4-state single-sample / 16-state paired
+  Viterbi + forward-backward over BAF+LRR Gaussian emissions, with
+  `--optimize` cell-fraction estimation and `--baum-welch` transition
+  re-estimation. See the `cnv` option-tail section for the validation
+  situation (no upstream golden exists).
 - **`roh`** — full port: 2-state Viterbi + forward-backward HMM
   (`vcfroh.c` + `HMM.c`) with physical-distance- and genetic-map-scaled
   transitions, allele-frequency estimation and Baum-Welch
@@ -1953,38 +1957,69 @@ Option-tail gaps on `polysomy` (this PR, simple-mode):
 - Per-record `-i/-e` are NOT in upstream `polysomy.c:main_polysomy`
   and we follow upstream's surface exactly (no invented flags).
 
-Option-tail gaps on `cnv` (this PR, v1 heuristic):
+Option-tail gaps on `cnv` (full HMM port):
 
-- **The v1 algorithm is NOT the upstream HMM.** Upstream's vcfcnv.c
-  runs a 5-state HMM (CN0/CN1/CN2/CN3/CN4) over each contig with
-  joint BAF + LRR Gaussian emissions and a configurable transition
-  matrix. The v1 port replaces this with a per-sample × per-chrom
-  median-BAF + mean-LRR heuristic that classifies each chromosome
-  into one of the same 5 CN states. The full Viterbi sweep is the
-  natural follow-up; the CLI surface is already parity-clean for
-  it. Reference source `reference_code/bcftools/vcfcnv.c` and the
-  shared `reference_code/bcftools/HMM.c` Viterbi core are now
-  vendored. EVERY HMM tuning knob (`-a/--aberrant`, `-b/--BAF-weight`,
-  `-e/--err-prob`, `-l/--LRR-weight`, `-L/--LRR-smooth-win`,
-  `-O/--optimize`, `-P/--same-prob`, `-W/--baum-welch`,
-  `-x/--xy-prob`, `--AF-file`) is parsed and stored in `CNVOptions`
-  but the heuristic does NOT consume them. Only `-d/--BAF-dev` and
-  `-k/--LRR-dev` (the per-sample expected std-dev floors) actually
-  drive the v1 thresholds.
+- **The algorithm is the upstream HMM.** `vcfcnv.c` is ported
+  faithfully: a 4-state HMM (CN0/CN1/CN2/CN3) for a single sample, or
+  a 16-state HMM for the paired tumour/control mode (`-c`), swept per
+  contig with Viterbi + forward-backward. Emission probabilities are
+  the upstream joint BAF + LRR model — a truncated-Gaussian BAF peak
+  mixture weighted by genotype frequencies fRR/fRA/fAA, combined with
+  a per-state LRR Gaussian. The generic engine is the shared
+  `hmm.go` port (also used by `roh`), reused unchanged. Every HMM
+  tuning knob is now load-bearing: `-a/--aberrant` (CN3 BAF peak
+  shift), `-b/--BAF-weight`, `-e/--err-prob`, `-l/--LRR-weight`,
+  `-L/--LRR-smooth-win`, `-d/--BAF-dev`, `-k/--LRR-dev`,
+  `-x/--xy-prob`, `-P/--same-prob`, `-O/--optimize` (iterated
+  forward-backward cell-fraction estimation), and `-W/--baum-welch`
+  (per-contig transition re-estimation).
+- **Validation: no upstream golden exists.** bcftools `test/test.pl`
+  contains no `cnv` invocation and `test/` ships no `cnv` fixtures
+  (`cnv` output is plot-oriented). The Go port is therefore validated
+  with hand-derived cases: a clean diploid region decodes to a single
+  all-CN2 region; a long missing-BAF run in paired mode decodes to
+  CN0; a het-band-split + positive-LRR run decodes to CN3; and
+  unit tests pin the ported transition matrix (column-stochastic,
+  the bad-xy-prob guard), the truncated-Gaussian `norm_cdf`, the
+  emission model, the smoother and the initial-probability vector.
+  Knob load-bearingness is asserted by tests that change `--err-prob`
+  / `--xy-prob` and observe a different decode. Byte-for-byte parity
+  against upstream is NOT claimed because upstream emits no
+  comparable golden.
+- `--AF-file` — **rejected** (a non-empty value is a hard error)
+  pending per-site allele-frequency support. Upstream's `vcfcnv.c`
+  uses the AF file two ways: it recomputes the per-site genotype
+  frequencies fRR/fRA/fAA from each site's `nonref_afs[i]`
+  (`vcfcnv.c:735-739`) instead of the fixed defaults, and it acts as
+  a targets filter — sites absent from the AF file are dropped
+  (`vcfcnv.c:27-31`, `:1429`). This port implements neither, so a
+  `--AF-file` run would silently diverge in both the emission model
+  and the site set; the port rejects the flag rather than produce
+  wrong output. Wiring per-site AFs into the emission model and the
+  targets filter is the one remaining deferred piece. Without it the
+  port always uses the fixed defaults fRR/fRA/fAA = 0.76/0.14/0.098.
 - `-o/--output-dir` — upstream writes per-sample / per-region plot
-  data into this directory; v1 always streams a single summary TSV
-  to stdout regardless of the path (the flag is still required for
-  CLI parity).
-- `-p/--plot-threshold` — accepted; v1 emits no plots.
-- `--regions-overlap` / `--targets-overlap` — accepted; v1 always
-  uses POS-in-region semantics.
-- `-v/--verbosity` — accepted; v1 ignores.
-- BCF / VCF.gz output — v1 always emits the summary TSV; the
-  upstream `-O b|u|z|v` selector does not apply (the upstream tool
-  produces several per-region files; v1 produces one summary).
+  data and several `.tab`/`.cn` files into this directory; this port
+  streams a single summary TSV (the upstream `summary.tab` "RG"
+  rows) to stdout regardless of the path (the flag is still required
+  for CLI parity). The per-site `cn.<sample>.tab` and `dat.*.tab`
+  files and the `CF` cell-fraction summary rows are not emitted.
+- **Paired-mode control counts are dropped from `summary.tab`.** In
+  paired (tumour/control) mode upstream writes per-sample summary
+  files and a `summary.tab` whose "RG" rows carry four count columns
+  — query `nSites`/`nHETs` and control `nSites`/`nHETs`
+  (`vcfcnv.c:296-298,1095`). This port emits only the merged
+  `summary.tab` "RG" rows with the query sample's `nSites`/`nHETs`;
+  it computes the control counts internally but does not write them.
+  This is a deliberate I/O-surface reduction, consistent with the
+  single-stream `-o/--output-dir` simplification above.
+- `-p/--plot-threshold` — accepted; this port emits no plots.
+- `--regions-overlap` / `--targets-overlap` — accepted; always
+  POS-in-region semantics.
+- `-v/--verbosity` — accepted; ignored.
 - Indel / non-SNP records — the BAF/LRR signals are typically
-  per-marker SNP data; v1 honours upstream's behaviour (treat each
-  record as one marker regardless of REF/ALT).
+  per-marker SNP data; the port honours upstream's behaviour (treat
+  each record as one marker regardless of REF/ALT).
 
 Option-tail gaps on `csq` (this PR, v1 SNP-only):
 
