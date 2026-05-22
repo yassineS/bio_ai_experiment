@@ -22,26 +22,27 @@ const cnvUsage = `bcftools cnv - copy-number variation caller.
 Usage:
   bcftools cnv [options] <in.vcf[.gz]|in.bcf>
 
-V1 SIMPLIFICATION: per-sample × per-chromosome heuristic over BAF/LRR
-medians. The full HMM Viterbi (CN0..CN4 states) from upstream's
-vcfcnv.c is tracked in docs/PARITY_ROADMAP.md#bcftools.
+Copy-number HMM over BAF/LRR with hidden states CN0/CN1/CN2/CN3, a
+faithful port of upstream's vcfcnv.c. With -c the HMM runs the paired
+16-state model. Output is the upstream summary.tab "RG" region rows on
+stdout. Tracked in docs/PARITY_ROADMAP.md#bcftools.
 
 I/O options:
   -c, --control-sample NAME      Control sample name.
   -s, --query-sample NAME        Query sample name.
   -o, --output-dir DIR           Output directory (required).
-                                 v1 streams the summary TSV to stdout regardless
+                                 The summary TSV is streamed to stdout regardless
                                  of this value; tracked in PARITY_ROADMAP.
-  -p, --plot-threshold FLOAT     Plot threshold; v1 emits no plots.
-  -r, --regions LIST             Region list (post-filter in v1).
+  -p, --plot-threshold FLOAT     Plot threshold; this port emits no plots.
+  -r, --regions LIST             Region list (post-filter).
   -R, --regions-file FILE        BED-like regions file.
-      --regions-overlap 0|1|2    Accepted; v1 ignores.
+      --regions-overlap 0|1|2    Accepted; always POS-in-region.
   -t, --targets LIST             Like -r but always a post-filter.
   -T, --targets-file FILE        BED-like targets file.
-      --targets-overlap 0|1|2    Accepted; v1 ignores.
-  -v, --verbosity INT            Accepted; v1 ignores.
+      --targets-overlap 0|1|2    Accepted; always POS-in-region.
+  -v, --verbosity INT            Accepted; ignored.
 
-HMM options (accepted, recorded; v1 heuristic does not use them):
+HMM options:
   -a, --aberrant FLOAT[,FLOAT]   Fraction of aberrant cells (query,control).
   -b, --BAF-weight FLOAT         Relative BAF contribution.
   -d, --BAF-dev FLOAT[,FLOAT]    Expected BAF std-dev (query,control).
@@ -53,7 +54,8 @@ HMM options (accepted, recorded; v1 heuristic does not use them):
   -P, --same-prob FLOAT          Prior of -s/-c being the same.
   -W, --baum-welch FLOAT         Baum-Welch convergence threshold (hidden upstream).
   -x, --xy-prob FLOAT            Transition probability.
-      --AF-file FILE             Optional AF-tab file (accepted; v1 unused).
+      --AF-file FILE             AF-tab file; rejected (per-site AF support
+                                 deferred, see docs/PARITY_ROADMAP.md#bcftools).
 
   -h, -?, --help                 Show this help.
       --version                  Show version.
@@ -136,21 +138,16 @@ func runCNV(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
-	// Reference accepted-but-ignored CLI flags so the Go compiler
-	// keeps them in scope. They appear in the help text and -h surface
-	// for parity but the v1 heuristic does not consume them.
-	_ = bafWeight
-	_ = errProb
-	_ = lrrWeight
-	_ = optimize
-	_ = sameProb
-	_ = baumWelch
-	_ = xyProb
-	_ = afFile
+	// The HMM tuning knobs (bafWeight, errProb, lrrWeight, optimize,
+	// sameProb, baumWelch, xyProb, lrrSmoothWin) feed CNVOptions below
+	// and drive the HMM. --AF-file is passed through to CNVFile, which
+	// hard-rejects a non-empty value (per-site AF support is deferred).
+	// These remaining flags are accepted for CLI parity but have no
+	// effect: --regions-overlap / --targets-overlap select the overlap
+	// mode, and --verbosity is a logging level.
 	_ = regionsOverlap
 	_ = targetsOverlap
 	_ = verbosity
-	_ = lrrSmoothWin
 
 	rest := fs.Args()
 	if len(rest) == 0 {
