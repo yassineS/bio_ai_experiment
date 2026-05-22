@@ -1137,10 +1137,10 @@ Options:
   -b             Output BAM (default text SAM).
   -u             Uncompressed BAM out (implies -b).
   -S             Input is SAM (auto-detected — accepted, no-op).
-  -A             Accept reads with mismatch/quality issues (no-op in v1).
-  -r             Compute BQ tag from BAQ (accepted; BAQ recompute is
-                 deferred — see docs/PARITY_ROADMAP.md#samtools).
-  -E             Extended BAQ mode (accepted; deferred).
+  -A             With -r, cap base qualities by BAQ (write ZQ tag).
+  -r             Compute the BQ:Z BAQ tag (or, with -A, cap baseQ by BAQ).
+  -E             Extended BAQ mode (used with -r).
+  -C INT         Cap MAPQ using mismatch quality, threshold INT (>10).
   -d             Drop all aux tags except RG.
   -q             Reduce base-quality resolution (qual/10*10+7 for qual>=3).
   -n INT         Mask matching bases of reads whose NM >= INT.
@@ -1227,7 +1227,6 @@ func runCalmd(args []string) int {
 	_ = threads // accepted, ignored
 	_ = sInFmt  // we auto-detect
 	_ = clearMDNM
-	_ = capQ
 	_ = noPG
 	_ = hashQNM
 	out, err := openOut(outPath)
@@ -1243,6 +1242,7 @@ func runCalmd(args []string) int {
 		ExtendedBAQ:  extBAQ,
 		AdjustCapQ:   adjustA,
 		RealignBAQ:   realnR,
+		CapMapQ:      capQ,
 		Quiet:        quiet,
 		DropTags:     dropTag,
 		BinQual:      binQual,

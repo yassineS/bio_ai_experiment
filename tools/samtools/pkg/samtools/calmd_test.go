@@ -2,6 +2,8 @@ package samtools
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -354,4 +356,126 @@ func indexCalmdSAM(t *testing.T, text string) map[string]*sam.Record {
 		out[rec.QName] = rec
 	}
 	return out
+}
+
+// extractTag re-parses SAM text and returns a qname->aux-string map for the
+// named Z-type tag. Records lacking the tag are simply absent from the map.
+func extractTag(t *testing.T, text, tag string) map[string]string {
+	t.Helper()
+	out := make(map[string]string)
+	for q, rec := range indexCalmdSAM(t, text) {
+		if a, ok := rec.GetAux(tag); ok {
+			if s, ok := a.String(); ok {
+				out[q] = s
+			}
+		}
+	}
+	return out
+}
+
+// TestCalmd_RealignBAQ verifies the -r flag drives BAQ realignment: each
+// record in the output carries a BQ:Z tag byte-identical to htslib's
+// realn01_exp.sam golden (which test_realn produced with the same input).
+func TestCalmd_RealignBAQ(t *testing.T) {
+	in := openParity(t, "calmd/realn01.sam")
+	defer in.Close()
+	refPath := parityPath(t, "calmd/realn01.fa")
+
+	var buf, warn bytes.Buffer
+	if err := Calmd(in, &buf, refPath, CalmdOptions{RealignBAQ: true}, &warn); err != nil {
+		t.Fatalf("Calmd -r: %v", err)
+	}
+	got := extractTag(t, buf.String(), "BQ")
+
+	goldText := string(readParity(t, "calmd/realn01_exp.sam"))
+	want := extractTag(t, goldText, "BQ")
+	if len(want) == 0 {
+		t.Fatal("golden has no BQ tags")
+	}
+	for q, w := range want {
+		if got[q] != w {
+			t.Errorf("read %s: BQ\n  got  %q\n  want %q", q, got[q], w)
+		}
+	}
+}
+
+// TestCalmd_ApplyBAQ verifies the -rA combination applies BAQ to the base
+// qualities and writes a ZQ:Z tag. The adjusted qualities and ZQ tag are
+// checked byte-for-byte against htslib's realn01_exp-a.sam golden.
+func TestCalmd_ApplyBAQ(t *testing.T) {
+	in := openParity(t, "calmd/realn01.sam")
+	defer in.Close()
+	refPath := parityPath(t, "calmd/realn01.fa")
+
+	var buf, warn bytes.Buffer
+	if err := Calmd(in, &buf, refPath, CalmdOptions{RealignBAQ: true, AdjustCapQ: true}, &warn); err != nil {
+		t.Fatalf("Calmd -rA: %v", err)
+	}
+	gotRecs := indexCalmdSAM(t, buf.String())
+
+	goldRecs := indexCalmdSAM(t, string(readParity(t, "calmd/realn01_exp-a.sam")))
+	checked := 0
+	for q, gold := range goldRecs {
+		goldZQ, hasZQ := gold.GetAux("ZQ")
+		if !hasZQ {
+			continue
+		}
+		got, ok := gotRecs[q]
+		if !ok {
+			t.Errorf("read %s missing from output", q)
+			continue
+		}
+		gotZQ, ok := got.GetAux("ZQ")
+		if !ok {
+			t.Errorf("read %s missing ZQ tag", q)
+			continue
+		}
+		gz, _ := goldZQ.String()
+		gotz, _ := gotZQ.String()
+		if gotz != gz {
+			t.Errorf("read %s: ZQ\n  got  %q\n  want %q", q, gotz, gz)
+		}
+		if !bytes.Equal(got.Qual, gold.Qual) {
+			t.Errorf("read %s: adjusted QUAL mismatch\n  got  %v\n  want %v", q, got.Qual, gold.Qual)
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("no ZQ-bearing records checked")
+	}
+}
+
+// TestCalmd_CapMapQ verifies the -C flag caps MAPQ via baq.SamCapMapq. A
+// 10M read with three quality-13 mismatches caps to 36 at threshold 40;
+// thresholds <= 10 leave MAPQ untouched (matching bam_md.c's `capQ > 10`).
+func TestCalmd_CapMapQ(t *testing.T) {
+	// '.' is Phred 13 (ASCII 46-33). Reference CCCAAAAAAA gives the read
+	// three quality-13 mismatches.
+	sam10 := "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:c\tLN:10\n" +
+		"r\t0\tc\t1\t60\t10M\t*\t0\t0\tAAAAAAAAAA\t..........\n"
+	refFA := ">c\nCCCAAAAAAA\n"
+
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "c.fa")
+	if err := os.WriteFile(refPath, []byte(refFA), 0o644); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+
+	var buf, warn bytes.Buffer
+	if err := Calmd(strings.NewReader(sam10), &buf, refPath, CalmdOptions{CapMapQ: 40}, &warn); err != nil {
+		t.Fatalf("Calmd -C40: %v", err)
+	}
+	recs := indexCalmdSAM(t, buf.String())
+	if recs["r"].MapQ != 36 {
+		t.Errorf("MAPQ with -C40 = %d, want 36", recs["r"].MapQ)
+	}
+
+	// Threshold <= 10 must be ignored: MAPQ stays at the original 60.
+	var buf2 bytes.Buffer
+	if err := Calmd(strings.NewReader(sam10), &buf2, refPath, CalmdOptions{CapMapQ: 5}, &warn); err != nil {
+		t.Fatalf("Calmd -C5: %v", err)
+	}
+	if r := indexCalmdSAM(t, buf2.String())["r"]; r.MapQ != 60 {
+		t.Errorf("MAPQ with -C5 = %d, want 60 (unchanged)", r.MapQ)
+	}
 }

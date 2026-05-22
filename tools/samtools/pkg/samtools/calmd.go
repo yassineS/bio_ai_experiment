@@ -27,6 +27,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -45,17 +46,22 @@ type CalmdOptions struct {
 	// Uncompressed forces compress-level 0 on BAM output (the -u flag,
 	// which also implies -b in upstream samtools).
 	Uncompressed bool
-	// ExtendedBAQ controls upstream's -E "extended-BAQ" mode. Accepted but
-	// not implemented in v1 (BAQ recalculation is deferred; see
-	// docs/PARITY_ROADMAP.md#samtools).
+	// ExtendedBAQ controls upstream's -E "extended-BAQ" mode: BAQ values may
+	// exceed the input base qualities, trading specificity for sensitivity.
+	// Only takes effect together with RealignBAQ.
 	ExtendedBAQ bool
-	// AdjustCapQ holds upstream's -A "adjust mapping quality" flag. Accepted
-	// but BAQ-dependent so currently a no-op (records pass through with
-	// their original MAPQ).
+	// AdjustCapQ holds upstream's -A flag. With RealignBAQ it switches the
+	// BAQ pass from "compute the BQ:Z: tag" to "cap base qualities by BAQ"
+	// (writing a ZQ:Z: tag instead). Without RealignBAQ it has no effect.
 	AdjustCapQ bool
-	// RealignBAQ holds upstream's -r flag. Accepted but recomputing BQ tag
-	// from BAQ is deferred; records still get MD/NM filled in.
+	// RealignBAQ holds upstream's -r flag. When set, BAQ realignment runs
+	// before the MD/NM fill: each record gets a BQ:Z: tag (or, with
+	// AdjustCapQ, capped qualities plus a ZQ:Z: tag).
 	RealignBAQ bool
+	// CapMapQ holds upstream's -C flag. When greater than 10, each record's
+	// MAPQ is capped by baq.SamCapMapq using CapMapQ as the threshold,
+	// matching bam_md.c's `if (capQ > 10)` gate.
+	CapMapQ int
 	// Quiet suppresses the per-record "different NM/MD" stderr line when an
 	// existing tag is overwritten with a different value.
 	Quiet bool
@@ -130,6 +136,27 @@ func Calmd(in io.Reader, out io.Writer, refPath string, opts CalmdOptions, warnW
 			}
 			curRef = rec.RName
 			curSeq = seq
+		}
+		// BAQ realignment and MAPQ capping run before the MD/NM fill,
+		// mirroring upstream bam_md.c (sam_prob_realn -> sam_cap_mapq ->
+		// bam_fillmd1_core). sam_prob_realn return codes -1/-3 are benign
+		// "nothing to do" results; only -4 (alignment failure) is an error.
+		if opts.RealignBAQ {
+			flag := 0
+			if opts.AdjustCapQ {
+				flag |= baq.FlagApply
+			}
+			if opts.ExtendedBAQ {
+				flag |= baq.FlagExtend
+			}
+			if r := baq.SamProbRealn(rec, curSeq, flag); r < -3 {
+				return fmt.Errorf("samtools calmd: BAQ alignment failed for read %q", rec.QName)
+			}
+		}
+		if opts.CapMapQ > 10 {
+			if q := baq.SamCapMapq(rec, curSeq, opts.CapMapQ); q >= 0 && int(rec.MapQ) > q {
+				rec.MapQ = uint8(q)
+			}
 		}
 		md, nm, edited, eerr := fillMDNM(rec, curSeq, opts.UseEqual)
 		if eerr != nil {
@@ -393,20 +420,11 @@ func updateMDAux(rec *sam.Record, md string, quiet bool, warnW io.Writer) {
 	rebuildAuxIndex(rec)
 }
 
-// rebuildAuxIndex resets the lazy aux lookup map after a mutation.
+// rebuildAuxIndex drops the record's cached tag→position lookup after the
+// NM/MD aux fields have been mutated, so a subsequent GetAux rebuilds it
+// from the current Aux slice.
 func rebuildAuxIndex(rec *sam.Record) {
-	// The package-private auxIndex field is rebuilt on next GetAux call;
-	// here we just clear what we can by re-calling GetAux to repopulate. Go
-	// doesn't let us touch the unexported field from outside the package
-	// so we rely on the rebuild-on-demand contract — but the rebuild only
-	// fires when the map is nil. To force a rebuild, drop the map by
-	// re-creating the Aux slice contents via the existing public surface.
-	// In practice the sam package keeps auxIndex==nil after our mutations
-	// here (we never called GetAux first), so this is a no-op for fresh
-	// records and harmless for already-cached ones (the cached index will
-	// be stale only for the offsets we just rewrote in place, and we
-	// always replace at the same slice index, so values resolve correctly).
-	_ = rec
+	rec.InvalidateAuxIndex()
 }
 
 // CalmdFile is a thin path-based wrapper that opens the input file via

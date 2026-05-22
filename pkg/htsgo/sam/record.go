@@ -377,6 +377,11 @@ func (r *Record) GetAux(tag string) (Aux, bool) {
 	return Aux{}, false
 }
 
+// InvalidateAuxIndex drops the cached tag→position lookup map. Call it after
+// directly mutating, appending to, or deleting from r.Aux so that the next
+// GetAux rebuilds the index from the current slice contents.
+func (r *Record) InvalidateAuxIndex() { r.auxIndex = nil }
+
 // IsUnmapped reports whether the read is flagged as unmapped (flag bit 0x4).
 func (r *Record) IsUnmapped() bool { return r.Flag&FlagUnmapped != 0 }
 
