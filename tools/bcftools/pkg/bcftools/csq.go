@@ -1,30 +1,31 @@
-// bcftools csq — predict variant consequences against a GFF annotation.
+// bcftools csq — haplotype-aware variant consequence caller against a
+// GFF annotation.
 //
-// SCOPE: this port implements the full PER-RECORD (single-variant,
-// non-haplotype-phased) consequence classifier. The haplotype engine
-// (compound consequences, the hap_node_t tree, -p/--phase modes,
-// -n/--ncsq) is a separate, later slice; see docs/PARITY_ROADMAP.md
-// "csq full-parity slicing plan" for the ordered roadmap.
+// SCOPE: this port implements the full haplotype-aware engine. Variants
+// overlapping a coding region are phased onto per-sample haplotypes and
+// walked together (the hap_node_t tree), so compound consequences are
+// called jointly and the reference vs haplotype-altered CDS are
+// translated and diffed. The INFO/BCSQ output matches upstream
+// byte-for-byte on the targeted goldens (see csq_golden_test.go).
 //
-// What this port DOES do:
-//   - Load a GFF3 file and build per-transcript CDS / exon / UTR /
-//     transcript-span indexes keyed by transcript ID.
-//   - Load the reference FASTA into memory.
-//   - For each input VCF record, classify each ALT allele against every
-//     overlapping transcript and emit INFO/BCSQ as
-//     "consequence|gene|transcript|biotype|strand" (one entry per
-//     matching transcript, comma-separated).
-//   - Cover the full per-record SO-term set: synonymous, missense,
-//     stop_gained, stop_lost, start_lost, splice_donor/acceptor/region,
-//     5_prime_utr, 3_prime_utr, intron, non_coding, and the indel
-//     consequences (inframe insertion/deletion, frameshift,
-//     feature_elongation/truncation). The dispatch and splice machinery
-//     are ported from csq.c's test_cds/test_utr/test_splice/
-//     test_tscript and the splice_csq family — see csq_classify.go.
+// File roles:
+//   - csq.go            — GFF/FASTA index build (CSQIndex/CSQTranscript)
+//                         plus the CSQ / CSQFile entry points.
+//   - csq_classify.go   — the shared CSQ_* SO-term bit constants and the
+//                         csqStrings table consumed by the engine.
+//   - csq_hap.go        — engine data model: hapEngine, hapTranscript,
+//                         hapNode, the genetic-code tables.
+//   - csq_splice.go     — splice_csq with set_refalt / splice_build_hap.
+//   - csq_engine.go     — hap_init, cds_translate, hap_finalize,
+//                         hap_add_csq, csq_push, kput_vcsq.
+//   - csq_process.go    — the vbuf/pos2vbuf buffer and the
+//                         test_cds/utr/splice/tscript dispatch.
 //
-// The CLI accepts the full upstream getopt_long surface (see csq.c at
-// `static struct option loptions[]`). Flags we don't yet honour either
-// no-op or hard-reject with a roadmap pointer.
+// The remaining tail (FORMAT/TBCSQ text expansion, --unify-chr-names,
+// -l/--local-csq) is slice 4; see docs/PARITY_ROADMAP.md "csq
+// full-parity slicing plan". The CLI accepts the full upstream
+// getopt_long surface; flags we don't yet honour either no-op or
+// hard-reject with a roadmap pointer.
 
 package bcftools
 
@@ -160,7 +161,23 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 	regionSpecs := append([]string(nil), opts.Regions...)
 	regionSpecs = append(regionSpecs, opts.Targets...)
 
+	// The haplotype-aware engine buffers variants until the enclosing
+	// transcript boundary is crossed, so compound consequences across
+	// several records can be called jointly. Records are emitted in
+	// input order once their annotations are final.
+	opts.CustomTag = tag
+	eng := newHapEngine(idx, opts, hdr)
 	written := 0
+	emit := func() error {
+		for _, v := range eng.out {
+			if err := out.Write(v); err != nil {
+				return fmt.Errorf("write variant: %w", err)
+			}
+			written++
+		}
+		eng.out = eng.out[:0]
+		return nil
+	}
 	for {
 		v, err := vr.Read()
 		if err == io.EOF {
@@ -172,19 +189,16 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 		if len(regionSpecs) > 0 && !regionMatches(v, regionSpecs) {
 			continue
 		}
-
-		// Annotate per-transcript consequences and merge into INFO.
-		// classifyCSQRecord covers the full per-record SO-term set
-		// (CDS / UTR / intron / non-coding / splice, SNPs + indels).
-		entries := classifyCSQRecord(v, idx)
-		if len(entries) > 0 {
-			merged := strings.Join(entries, ",")
-			setInfoField(v, tag, merged)
+		if err := eng.process(v); err != nil {
+			return written, err
 		}
-		if err := out.Write(v); err != nil {
-			return written, fmt.Errorf("write variant: %w", err)
+		if err := emit(); err != nil {
+			return written, err
 		}
-		written++
+	}
+	eng.finish()
+	if err := emit(); err != nil {
+		return written, err
 	}
 	if err := out.Flush(); err != nil {
 		return written, err
@@ -202,7 +216,7 @@ func ensureCSQInfoLine(meta []string, tag string) []string {
 			return meta
 		}
 	}
-	line := fmt.Sprintf("##INFO=<ID=%s,Number=.,Type=String,Description=\"Consequence prediction (bcftools csq v1)\">", tag)
+	line := fmt.Sprintf("##INFO=<ID=%s,Number=.,Type=String,Description=\"Haplotype-aware consequence annotation from BCFtools/csq, see http://samtools.github.io/bcftools/howtos/csq-calling.html for details. Format: Consequence|gene|transcript|biotype|strand|amino_acid_change|dna_change\">", tag)
 	return append(meta, line)
 }
 
@@ -315,7 +329,7 @@ func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
 	// First pass: map gene ID -> gene name + biotype.
 	geneInfo := map[string]struct{ name, biotype string }{}
 	for _, f := range feats {
-		if f.Type != "gene" {
+		if !isGeneType(f.Type) {
 			continue
 		}
 		id := f.ID()
@@ -368,7 +382,7 @@ func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
 			biotype = gi.biotype
 		}
 		idx.Transcripts[tid] = &CSQTranscript{
-			ID:      tid,
+			ID:      stripGFFPrefix(tid),
 			Gene:    gi.name,
 			Biotype: biotype,
 			Chrom:   f.Seqid,
@@ -412,11 +426,19 @@ func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
 	return idx, nil
 }
 
+// isGeneType reports whether a GFF3 feature type denotes a gene (the
+// top level of the gene/transcript/exon hierarchy). Ensembl uses
+// biotype-qualified names such as "lincRNA_gene" alongside plain
+// "gene", so any type ending in "gene" is accepted.
+func isGeneType(t string) bool {
+	return t == "gene" || strings.HasSuffix(t, "_gene")
+}
+
 // isTranscriptType reports whether a GFF3 feature type denotes a
 // transcript (the second level of the gene/transcript/exon hierarchy).
 func isTranscriptType(t string) bool {
 	switch t {
-	case "mRNA", "transcript", "lnc_RNA", "lncRNA", "ncRNA", "miRNA",
+	case "mRNA", "transcript", "lnc_RNA", "lncRNA", "lincRNA", "ncRNA", "miRNA",
 		"snRNA", "snoRNA", "rRNA", "tRNA", "scRNA", "pseudogenic_transcript",
 		"processed_transcript", "nc_primary_transcript", "antisense_RNA":
 		return true
@@ -433,12 +455,47 @@ func firstParent(p string) string {
 	return p
 }
 
+// stripGFFPrefix removes the Ensembl-style "transcript:" / "gene:"
+// namespace prefix from a GFF3 ID, matching upstream gff_id2string
+// which stores and reports the bare accession.
+func stripGFFPrefix(id string) string {
+	if i := strings.IndexByte(id, ':'); i >= 0 {
+		return id[i+1:]
+	}
+	return id
+}
+
 // finalizeTranscript fills in derived fields after the GFF passes:
 // Coding, the transcript span, the incomplete-CDS trim flags, and any
 // UTR regions not explicitly present in the GFF (derived as the parts
 // of full exons that fall outside the CDS span).
 func finalizeTranscript(t *CSQTranscript, ref []byte) {
 	t.Coding = len(t.CDSExons) > 0
+
+	// Trim the GFF3 reading-frame phase off the 5' CDS exon, mirroring
+	// gff.c (the "trim non-coding start" block). After trimming, every
+	// CDS exon begins exactly on a codon boundary and Phase is 0, so the
+	// haplotype engine and the per-record classifier both treat the
+	// spliced CDS as frame-aligned. A non-zero leading phase also marks
+	// the CDS as 5' incomplete (TRIM_5PRIME).
+	if t.Coding {
+		if t.Strand == gff.StrandReverse {
+			last := len(t.CDSExons) - 1
+			ph := t.CDSExons[last].Phase
+			if ph >= 1 && ph <= 2 {
+				t.CDSExons[last].End -= ph
+				t.Trim5 = true
+			}
+			t.CDSExons[last].Phase = 0
+		} else {
+			ph := t.CDSExons[0].Phase
+			if ph >= 1 && ph <= 2 {
+				t.CDSExons[0].Start += ph
+				t.Trim5 = true
+			}
+			t.CDSExons[0].Phase = 0
+		}
+	}
 
 	// Transcript span: prefer the mRNA/transcript feature's own span;
 	// otherwise derive from exons or CDS exons.
@@ -478,23 +535,22 @@ func finalizeTranscript(t *CSQTranscript, ref []byte) {
 		}
 	}
 
-	// Mark an incomplete CDS: a coding transcript whose first codon
-	// (in transcript orientation) is not ATG. Upstream uses this to
-	// suppress spurious start_lost / stop_lost calls.
-	if t.Coding && len(ref) > 0 {
-		if c, ok := codingFirstCodon(t, ref); ok && c != "ATG" {
-			t.Trim5 = true
-		}
-	}
+	// Note: upstream's TRIM_5PRIME comes solely from a non-zero GFF3
+	// CDS phase (handled by the phase-trim block above). A first codon
+	// that is not ATG does NOT set TRIM_5PRIME; instead the haplotype
+	// engine suppresses the start check locally per variant (see
+	// hapInit's checkStart handling), so no extra flag is needed here.
+	_ = ref
 
 	// Mark an incomplete 3' CDS: a coding transcript whose total
 	// coding length is not a multiple of three. Upstream (gff.c:844
 	// `if (len%3 != 0) tr->trim |= TRIM_3PRIME`) computes len over the
 	// phase-trimmed CDS exons, so the equivalent here is the sum of CDS
 	// exon lengths minus the 5' reading-frame phase. Without this flag
-	// an incomplete-3' transcript still runs the stop check in
-	// classifyCDS and can emit a spurious stop_lost on its last,
-	// non-stop codon. csq.c:1646-1650 gates check_stop on !TRIM_3PRIME.
+	// an incomplete-3' transcript still runs the stop check in the
+	// haplotype engine and can emit a spurious stop_lost on its last,
+	// non-stop codon. csq.c:1646-1650 gates check_stop on !TRIM_3PRIME;
+	// the equivalent gate lives in hapInit (csq_engine.go).
 	if t.Coding {
 		codingLen := -transcriptFirstPhase(t)
 		for _, e := range t.CDSExons {
@@ -504,116 +560,6 @@ func finalizeTranscript(t *CSQTranscript, ref []byte) {
 			t.Trim3 = true
 		}
 	}
-}
-
-// codingFirstCodon returns the transcript's first CDS codon (ATG for a
-// complete annotation), reading in transcript orientation.
-func codingFirstCodon(t *CSQTranscript, ref []byte) (string, bool) {
-	var b [3]byte
-	for i := 0; i < 3; i++ {
-		g, ok := cdsToGenomic(t, i)
-		if !ok || g < 1 || g > len(ref) {
-			return "", false
-		}
-		b[i] = upper(ref[g-1])
-	}
-	if t.Strand == gff.StrandReverse {
-		b = revcompCodon(b)
-	}
-	return string(b[:]), true
-}
-
-// cdsCovers reports whether t's CDS exons include pos. The full
-// per-record dispatch lives in classifyCSQRecord (csq_classify.go);
-// cdsCovers is retained as a small reusable predicate.
-func cdsCovers(t *CSQTranscript, pos int) bool {
-	for _, e := range t.CDSExons {
-		if pos >= e.Start && pos <= e.End {
-			return true
-		}
-	}
-	return false
-}
-
-// classifyForTranscript returns the BCSQ entry for one (transcript, SNP)
-// pair. The reference base must match v.Ref; if it does not we return
-// false so the variant is left unannotated for that transcript.
-func classifyForTranscript(t *CSQTranscript, refSeq []byte, pos int, refBase, altBase byte) (string, bool) {
-	if len(refSeq) == 0 {
-		return "", false
-	}
-	// Sanity: position must be within sequence and match the reference.
-	if pos < 1 || pos > len(refSeq) {
-		return "", false
-	}
-	if refSeq[pos-1] != refBase && upper(refSeq[pos-1]) != upper(refBase) {
-		return "", false
-	}
-
-	// Compute coding offset (0-based codon position within the CDS).
-	codingOff, ok := cdsOffset(t, pos)
-	if !ok {
-		return "", false
-	}
-
-	// Identify the codon: which CDS-coordinate triplet contains
-	// codingOff? Then fetch the 3 codon bases from the genomic
-	// sequence using cdsOffsetToGenomic for the *other* two positions.
-	codonIdx := codingOff / 3
-	withinCodon := codingOff % 3
-
-	// Triplet covers cds positions [codonIdx*3, codonIdx*3+1, codonIdx*3+2].
-	codonStart := codonIdx * 3
-	codon := [3]byte{}
-	for i := 0; i < 3; i++ {
-		g, ok := cdsToGenomic(t, codonStart+i)
-		if !ok {
-			return "", false
-		}
-		codon[i] = upper(refSeq[g-1])
-	}
-	// On the reverse strand the codon bases come from the reverse
-	// complement of the genomic sequence; flip both the codon and the
-	// alt base.
-	if t.Strand == gff.StrandReverse {
-		codon = revcompCodon(codon)
-		altBase = complementBase(altBase)
-		withinCodon = 2 - withinCodon
-	}
-
-	refCodon := codon
-	mutCodon := codon
-	mutCodon[withinCodon] = upper(altBase)
-
-	refAA := translateCodon(refCodon)
-	altAA := translateCodon(mutCodon)
-
-	consequence := "synonymous"
-	if refAA == '*' && altAA != '*' {
-		consequence = "stop_lost"
-	} else if altAA == '*' && refAA != '*' {
-		consequence = "stop_gained"
-	} else if codonIdx == 0 && refAA == 'M' && altAA != 'M' {
-		// First codon of CDS — start-loss. Any of the 3 ATG
-		// positions count, not just the leading base.
-		consequence = "start_lost"
-	} else if refAA != altAA {
-		consequence = "missense"
-	}
-
-	// dna_change: 1-based CDS coordinate of the changed position.
-	dnaCoord := codingOff + 1
-	dnaChange := fmt.Sprintf("%d%c>%c", dnaCoord, codon[withinCodon], upper(altBase))
-	aaChange := fmt.Sprintf("%d%c>%c", codonIdx+1, refAA, altAA)
-
-	// Format: consequence|gene|transcript|biotype|strand|aa_change|dna_change
-	strand := "+"
-	if t.Strand == gff.StrandReverse {
-		strand = "-"
-	}
-	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s",
-		consequence, t.Gene, t.ID, t.Biotype, strand, aaChange, dnaChange,
-	), true
 }
 
 // cdsOffset returns the 0-based offset of pos within the transcript's
@@ -668,31 +614,6 @@ func transcriptFirstPhase(t *CSQTranscript) int {
 		return 0
 	}
 	return p
-}
-
-// cdsToGenomic converts a CDS-coordinate offset back to a 1-based
-// genomic position. Returns false if the offset is past the end of
-// the CDS.
-func cdsToGenomic(t *CSQTranscript, off int) (int, bool) {
-	if t.Strand == gff.StrandReverse {
-		for i := len(t.CDSExons) - 1; i >= 0; i-- {
-			e := t.CDSExons[i]
-			n := e.End - e.Start + 1
-			if off < n {
-				return e.End - off, true
-			}
-			off -= n
-		}
-		return 0, false
-	}
-	for _, e := range t.CDSExons {
-		n := e.End - e.Start + 1
-		if off < n {
-			return e.Start + off, true
-		}
-		off -= n
-	}
-	return 0, false
 }
 
 // translateCodon returns the standard-table single-letter amino acid
