@@ -1796,8 +1796,12 @@ per-subcommand option-tail sections below):
 
 - **`cnv`** — v1 median-BAF/mean-LRR heuristic instead of the 5-state
   Viterbi HMM (`vcfcnv.c` + `HMM.c`, both vendored).
-- **`roh`** — v1 simple-mode RoH detection without the forward-backward
-  HMM and without genetic-distance scaling (`vcfroh.c` + `HMM.c`).
+- **`roh`** — full port: 2-state Viterbi + forward-backward HMM
+  (`vcfroh.c` + `HMM.c`) with physical-distance- and genetic-map-scaled
+  transitions, allele-frequency estimation and Baum-Welch
+  Viterbi training. Validated byte-for-byte against the upstream
+  `roh.1.*.out` goldens. The only remaining gap is PL-based emission
+  (`-G` hard-GT is the supported path) and `-O z`.
 - **`polysomy`** — v1 median-deviation CN heuristic instead of the
   Gaussian-mixture peak fit (`polysomy.c` + `peakfit.c`; upstream uses
   GSL).
@@ -1825,21 +1829,24 @@ Option-tail gaps on `gtcheck` (PR #107, simple-mode):
 - Multi-allelic input is rejected (matches upstream's
   `bcftools norm -m -` requirement).
 
-Option-tail gaps on `roh` (PR #107, simple-mode):
+Option-tail gaps on `roh`:
 
-- **The v1 algorithm is not the full upstream HMM.** Upstream
-  `vcfroh.c` runs a forward-backward HMM (via the shared `HMM.c`
-  core) with optional Viterbi training; v1 runs a simple-mode RoH
-  scan. `vcfroh.c` and `HMM.c` are now vendored under
-  `reference_code/bcftools/`, so the full port is a scoped task.
-- `-b/--buffer-size`, `-e/--estimate-AF`, `-m/--genetic-map`,
-  `-M/--rec-rate`, `-V/--viterbi-training` — accepted-and-rejected
-  with PARITY_ROADMAP pointer.
-- `-O z` — bgzip output; v1 only emits tab-text.
-- Transition defaults are upstream's literal per-bp magnitudes
-  (`6.7e-8` / `5e-9`) but NOT scaled by physical inter-marker
-  distance, so RG quality scores are NOT comparable to upstream's
-  until distance scaling lands.
+- **The HMM is now the full upstream port.** `vcfroh.c` + `HMM.c` are
+  ported in-tree (`tools/bcftools/pkg/bcftools/hmm.go`,
+  `roh.go`, `roh_genmap.go`): a 2-state Viterbi decode plus a
+  forward-backward posterior, transition probabilities scaled by the
+  physical (and, with `-m`/`-M`, the genetic-map) inter-marker
+  distance, allele-frequency estimation (`-e/--estimate-AF` from
+  GT cohorts), Baum-Welch parameter re-estimation
+  (`-V/--viterbi-training`) and overlapping-window buffering
+  (`-b/--buffer-size`). RG/ST quality scores are forward-backward
+  phred scores and match upstream byte-for-byte on the
+  `roh.1.*.out` goldens.
+- `-O z` — bgzip output; v1 only emits tab-text. Remaining gap.
+- PL-based emission scoring is not ported; `-G/--GTs-only` hard-GT
+  mode is the supported emission path (the upstream test corpus
+  uses `-G30`). `-e PL,...` falls back to rejecting sites with no
+  usable genotype rather than reading PLs.
 
 Option-tail gaps on the wave-1 additions (PR #86):
 
