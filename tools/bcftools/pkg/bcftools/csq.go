@@ -1,21 +1,26 @@
 // bcftools csq — predict variant consequences against a GFF annotation.
 //
-// V1 SIMPLIFICATION: this port implements ONLY the protein-coding SNP
-// consequence classifier. The full upstream csq.c performs haplotype-
-// aware phasing, indel handling, splice-site and stop-gain detection,
-// and compound-het bookkeeping; none of those are implemented here.
-// See docs/PARITY_ROADMAP.md#bcftools for the deferred tail.
+// SCOPE: this port implements the full PER-RECORD (single-variant,
+// non-haplotype-phased) consequence classifier. The haplotype engine
+// (compound consequences, the hap_node_t tree, -p/--phase modes,
+// -n/--ncsq) is a separate, later slice; see docs/PARITY_ROADMAP.md
+// "csq full-parity slicing plan" for the ordered roadmap.
 //
-// What v1 DOES do:
-//   - Load a GFF3 file and build a per-gene CDS index keyed by transcript ID.
+// What this port DOES do:
+//   - Load a GFF3 file and build per-transcript CDS / exon / UTR /
+//     transcript-span indexes keyed by transcript ID.
 //   - Load the reference FASTA into memory.
-//   - For each input VCF record:
-//     * Skip non-SNPs (REF length != 1 OR ALT length != 1).
-//     * Locate the transcript(s) whose CDS exons cover POS.
-//     * Compute the codon and amino-acid change.
-//     * Emit INFO/BCSQ as "consequence|gene|transcript|biotype|strand|aa_change|dna_change"
-//       (one entry per matching transcript, comma-separated).
-//   - Pass non-coding sites through unchanged (no BCSQ).
+//   - For each input VCF record, classify each ALT allele against every
+//     overlapping transcript and emit INFO/BCSQ as
+//     "consequence|gene|transcript|biotype|strand" (one entry per
+//     matching transcript, comma-separated).
+//   - Cover the full per-record SO-term set: synonymous, missense,
+//     stop_gained, stop_lost, start_lost, splice_donor/acceptor/region,
+//     5_prime_utr, 3_prime_utr, intron, non_coding, and the indel
+//     consequences (inframe insertion/deletion, frameshift,
+//     feature_elongation/truncation). The dispatch and splice machinery
+//     are ported from csq.c's test_cds/test_utr/test_splice/
+//     test_tscript and the splice_csq family — see csq_classify.go.
 //
 // The CLI accepts the full upstream getopt_long surface (see csq.c at
 // `static struct option loptions[]`). Flags we don't yet honour either
@@ -169,7 +174,9 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 		}
 
 		// Annotate per-transcript consequences and merge into INFO.
-		entries := classifyCSQVariant(v, idx)
+		// classifyCSQRecord covers the full per-record SO-term set
+		// (CDS / UTR / intron / non-coding / splice, SNPs + indels).
+		entries := classifyCSQRecord(v, idx)
 		if len(entries) > 0 {
 			merged := strings.Join(entries, ",")
 			setInfoField(v, tag, merged)
@@ -224,21 +231,52 @@ type CSQIndex struct {
 	ByChrom map[string][]*CSQTranscript
 }
 
-// CSQTranscript is a single transcript's CDS structure.
+// CSQTranscript is a single transcript's structure: its CDS exons,
+// full exons, derived UTR regions and transcript span. These mirror
+// upstream csq.c's idx_cds / idx_exon / idx_utr / idx_tscript indexes.
 type CSQTranscript struct {
 	ID       string
 	Gene     string
 	Biotype  string
 	Chrom    string
 	Strand   gff.Strand
-	CDSExons []CSQExon // sorted by genomic Start
+	CDSExons []CSQExon // CDS exons, sorted by genomic Start
+	Exons    []CSQExon // full exons (CDS + UTR), sorted by genomic Start
+	UTRs     []CSQUTR  // 5'/3' UTR regions, sorted by genomic Start
+
+	// Beg and End are the transcript's genomic span (1-based,
+	// inclusive). When no transcript/mRNA feature was seen they are
+	// derived as the min/max over Exons (or CDSExons).
+	Beg int
+	End int
+
+	// Coding reports whether the transcript has any CDS exon. Upstream
+	// distinguishes coding transcripts (intron consequence) from
+	// non-coding ones (non_coding consequence) via GF_is_coding.
+	Coding bool
+
+	// Trim5 / Trim3 mark an incomplete CDS at the 5' / 3' end of the
+	// transcript. Upstream's TRIM_5PRIME / TRIM_3PRIME suppress
+	// start_lost / stop_lost on incomplete annotations.
+	Trim5 bool
+	Trim3 bool
 }
 
-// CSQExon is one CDS exon (genomic coordinates, 1-based inclusive).
+// CSQExon is one exon (genomic coordinates, 1-based inclusive). For a
+// CDS exon Phase holds the GFF3 reading-frame phase; for a full exon
+// Phase is unused.
 type CSQExon struct {
 	Start int
 	End   int
 	Phase int
+}
+
+// CSQUTR is one untranslated-region span. Prime5 is true for a
+// 5'-UTR, false for a 3'-UTR.
+type CSQUTR struct {
+	Start  int
+	End    int
+	Prime5 bool
 }
 
 // loadCSQIndex reads the FASTA + GFF and constructs the cross-reference.
@@ -301,16 +339,20 @@ func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
 		geneInfo[id] = struct{ name, biotype string }{name, biotype}
 	}
 
-	// Second pass: collect transcripts.
+	// Second pass: collect transcripts. A transcript is any feature
+	// whose type is not gene/CDS/exon/UTR but which has an ID; csq
+	// recognises mRNA, transcript and the various non-coding RNA
+	// biotypes (lnc_RNA, miRNA, ...). We treat anything that is a
+	// declared Parent of a CDS or exon as a transcript.
 	for _, f := range feats {
-		if f.Type != "mRNA" && f.Type != "transcript" {
+		if !isTranscriptType(f.Type) {
 			continue
 		}
 		tid := f.ID()
 		if tid == "" {
 			continue
 		}
-		parent := f.Parent()
+		parent := firstParent(f.Parent())
 		gi := geneInfo[parent]
 		if gi.name == "" {
 			gi.name = parent
@@ -318,81 +360,172 @@ func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
 		if gi.biotype == "" {
 			gi.biotype = "protein_coding"
 		}
+		biotype := f.Attributes["biotype"]
+		if biotype == "" {
+			biotype = f.Attributes["transcript_biotype"]
+		}
+		if biotype == "" {
+			biotype = gi.biotype
+		}
 		idx.Transcripts[tid] = &CSQTranscript{
 			ID:      tid,
 			Gene:    gi.name,
-			Biotype: gi.biotype,
+			Biotype: biotype,
 			Chrom:   f.Seqid,
 			Strand:  f.Strand,
+			Beg:     f.Start,
+			End:     f.End,
 		}
 	}
 
-	// Third pass: collect CDS exons under each transcript.
+	// Third pass: collect CDS and full exons under each transcript.
 	for _, f := range feats {
-		if f.Type != "CDS" {
-			continue
+		switch f.Type {
+		case "CDS":
+			if t := idx.Transcripts[firstParent(f.Parent())]; t != nil {
+				t.CDSExons = append(t.CDSExons, CSQExon{Start: f.Start, End: f.End, Phase: f.Phase})
+			}
+		case "exon":
+			if t := idx.Transcripts[firstParent(f.Parent())]; t != nil {
+				t.Exons = append(t.Exons, CSQExon{Start: f.Start, End: f.End})
+			}
+		case "five_prime_UTR", "5UTR", "five_prime_utr":
+			if t := idx.Transcripts[firstParent(f.Parent())]; t != nil {
+				t.UTRs = append(t.UTRs, CSQUTR{Start: f.Start, End: f.End, Prime5: true})
+			}
+		case "three_prime_UTR", "3UTR", "three_prime_utr":
+			if t := idx.Transcripts[firstParent(f.Parent())]; t != nil {
+				t.UTRs = append(t.UTRs, CSQUTR{Start: f.Start, End: f.End, Prime5: false})
+			}
 		}
-		parent := f.Parent()
-		// Parent may be a comma-list per GFF3; we accept the first.
-		if i := strings.IndexByte(parent, ','); i >= 0 {
-			parent = parent[:i]
-		}
-		t, ok := idx.Transcripts[parent]
-		if !ok {
-			continue
-		}
-		t.CDSExons = append(t.CDSExons, CSQExon{
-			Start: f.Start,
-			End:   f.End,
-			Phase: f.Phase,
-		})
 	}
 
-	// Sort each transcript's exons by genomic start, then build the
-	// per-contig index.
+	// Finalise each transcript: sort exons, derive missing UTRs and
+	// transcript span, set Coding / Trim flags, then index by contig.
 	for _, t := range idx.Transcripts {
 		sort.Slice(t.CDSExons, func(i, j int) bool { return t.CDSExons[i].Start < t.CDSExons[j].Start })
+		sort.Slice(t.Exons, func(i, j int) bool { return t.Exons[i].Start < t.Exons[j].Start })
+		finalizeTranscript(t, idx.Refs[t.Chrom])
+		sort.Slice(t.UTRs, func(i, j int) bool { return t.UTRs[i].Start < t.UTRs[j].Start })
 		idx.ByChrom[t.Chrom] = append(idx.ByChrom[t.Chrom], t)
 	}
 	return idx, nil
 }
 
-// classifyCSQVariant returns BCSQ entries (one per matching transcript)
-// for the given variant. Empty slice means "no coding consequence".
-func classifyCSQVariant(v *vcf.Variant, idx *CSQIndex) []string {
-	if v == nil || idx == nil {
-		return nil
+// isTranscriptType reports whether a GFF3 feature type denotes a
+// transcript (the second level of the gene/transcript/exon hierarchy).
+func isTranscriptType(t string) bool {
+	switch t {
+	case "mRNA", "transcript", "lnc_RNA", "lncRNA", "ncRNA", "miRNA",
+		"snRNA", "snoRNA", "rRNA", "tRNA", "scRNA", "pseudogenic_transcript",
+		"processed_transcript", "nc_primary_transcript", "antisense_RNA":
+		return true
 	}
-	// SNP-only: REF and (at least one) ALT must be a single base.
-	if len(v.Ref) != 1 {
-		return nil
-	}
-	alt := ""
-	for _, a := range v.Alt {
-		if len(a) == 1 && a != "." && a != v.Ref {
-			alt = a
-			break
-		}
-	}
-	if alt == "" {
-		return nil
-	}
-	pos := v.Pos
-	out := []string{}
-	for _, t := range idx.ByChrom[v.Chrom] {
-		if !cdsCovers(t, pos) {
-			continue
-		}
-		entry, ok := classifyForTranscript(t, idx.Refs[v.Chrom], pos, v.Ref[0], alt[0])
-		if !ok {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out
+	return false
 }
 
-// cdsCovers reports whether t's CDS exons include pos.
+// firstParent returns the first ID in a possibly comma-separated GFF3
+// Parent attribute.
+func firstParent(p string) string {
+	if i := strings.IndexByte(p, ','); i >= 0 {
+		return p[:i]
+	}
+	return p
+}
+
+// finalizeTranscript fills in derived fields after the GFF passes:
+// Coding, the transcript span, the incomplete-CDS trim flags, and any
+// UTR regions not explicitly present in the GFF (derived as the parts
+// of full exons that fall outside the CDS span).
+func finalizeTranscript(t *CSQTranscript, ref []byte) {
+	t.Coding = len(t.CDSExons) > 0
+
+	// Transcript span: prefer the mRNA/transcript feature's own span;
+	// otherwise derive from exons or CDS exons.
+	if t.Beg == 0 || t.End == 0 {
+		spanFrom := t.Exons
+		if len(spanFrom) == 0 {
+			spanFrom = t.CDSExons
+		}
+		for i, e := range spanFrom {
+			if i == 0 || e.Start < t.Beg {
+				t.Beg = e.Start
+			}
+			if i == 0 || e.End > t.End {
+				t.End = e.End
+			}
+		}
+	}
+
+	// Derive UTRs from exon minus CDS when none were given explicitly.
+	if len(t.UTRs) == 0 && t.Coding && len(t.Exons) > 0 {
+		cdsBeg, cdsEnd := t.CDSExons[0].Start, t.CDSExons[len(t.CDSExons)-1].End
+		for _, e := range t.Exons {
+			if e.Start < cdsBeg {
+				end := e.End
+				if end >= cdsBeg {
+					end = cdsBeg - 1
+				}
+				t.UTRs = append(t.UTRs, CSQUTR{Start: e.Start, End: end, Prime5: t.Strand != gff.StrandReverse})
+			}
+			if e.End > cdsEnd {
+				start := e.Start
+				if start <= cdsEnd {
+					start = cdsEnd + 1
+				}
+				t.UTRs = append(t.UTRs, CSQUTR{Start: start, End: e.End, Prime5: t.Strand == gff.StrandReverse})
+			}
+		}
+	}
+
+	// Mark an incomplete CDS: a coding transcript whose first codon
+	// (in transcript orientation) is not ATG. Upstream uses this to
+	// suppress spurious start_lost / stop_lost calls.
+	if t.Coding && len(ref) > 0 {
+		if c, ok := codingFirstCodon(t, ref); ok && c != "ATG" {
+			t.Trim5 = true
+		}
+	}
+
+	// Mark an incomplete 3' CDS: a coding transcript whose total
+	// coding length is not a multiple of three. Upstream (gff.c:844
+	// `if (len%3 != 0) tr->trim |= TRIM_3PRIME`) computes len over the
+	// phase-trimmed CDS exons, so the equivalent here is the sum of CDS
+	// exon lengths minus the 5' reading-frame phase. Without this flag
+	// an incomplete-3' transcript still runs the stop check in
+	// classifyCDS and can emit a spurious stop_lost on its last,
+	// non-stop codon. csq.c:1646-1650 gates check_stop on !TRIM_3PRIME.
+	if t.Coding {
+		codingLen := -transcriptFirstPhase(t)
+		for _, e := range t.CDSExons {
+			codingLen += e.End - e.Start + 1
+		}
+		if codingLen%3 != 0 {
+			t.Trim3 = true
+		}
+	}
+}
+
+// codingFirstCodon returns the transcript's first CDS codon (ATG for a
+// complete annotation), reading in transcript orientation.
+func codingFirstCodon(t *CSQTranscript, ref []byte) (string, bool) {
+	var b [3]byte
+	for i := 0; i < 3; i++ {
+		g, ok := cdsToGenomic(t, i)
+		if !ok || g < 1 || g > len(ref) {
+			return "", false
+		}
+		b[i] = upper(ref[g-1])
+	}
+	if t.Strand == gff.StrandReverse {
+		b = revcompCodon(b)
+	}
+	return string(b[:]), true
+}
+
+// cdsCovers reports whether t's CDS exons include pos. The full
+// per-record dispatch lives in classifyCSQRecord (csq_classify.go);
+// cdsCovers is retained as a small reusable predicate.
 func cdsCovers(t *CSQTranscript, pos int) bool {
 	for _, e := range t.CDSExons {
 		if pos >= e.Start && pos <= e.End {

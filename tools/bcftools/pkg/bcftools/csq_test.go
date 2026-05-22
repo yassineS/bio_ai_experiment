@@ -42,6 +42,12 @@ func buildCSQIndex(t *testing.T) *CSQIndex {
 		CDSExons: []CSQExon{
 			{Start: 1, End: 30, Phase: 0},
 		},
+		Exons: []CSQExon{
+			{Start: 1, End: 30},
+		},
+		Beg:    1,
+		End:    30,
+		Coding: true,
 	}
 	idx.Transcripts[tx.ID] = tx
 	idx.ByChrom["chr1"] = []*CSQTranscript{tx}
@@ -176,7 +182,10 @@ chr1	100	.	A	C	.	PASS	DP=10
 	}
 }
 
-func TestClassifyNonSNPSkipped(t *testing.T) {
+// TestClassifyIndelsInCDS pins that the per-record classifier (this
+// slice) now handles indels: a 1bp insertion and a 1bp deletion inside
+// the CDS both shift the reading frame and are reported as frameshift.
+func TestClassifyIndelsInCDS(t *testing.T) {
 	idx := buildCSQIndex(t)
 	const vcfIn = `##fileformat=VCFv4.2
 ##contig=<ID=chr1>
@@ -188,8 +197,9 @@ chr1	7	.	TA	T	.	PASS	DP=10
 	if _, err := CSQ(strings.NewReader(vcfIn), &out, idx, CSQOptions{}); err != nil {
 		t.Fatalf("CSQ: %v", err)
 	}
-	if strings.Contains(out.String(), "BCSQ=") {
-		t.Errorf("indel should not be classified:\n%s", out.String())
+	got := out.String()
+	if strings.Count(got, "BCSQ=frameshift|GENE|tx1") != 2 {
+		t.Errorf("expected both indels classified as frameshift:\n%s", got)
 	}
 }
 
