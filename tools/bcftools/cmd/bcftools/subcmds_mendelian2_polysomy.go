@@ -263,18 +263,15 @@ General options:
       --verbose INT              Alias for --verbosity (upstream).
 
 Algorithm options:
-  -b, --peak-size FLOAT          Min peak size (accepted; v1 unused).
-  -c, --cn-penalty FLOAT         CN-increase penalty (default 0.7).
-                                 Scales the v1 median-deviation threshold.
-  -f, --fit-th FLOAT             Goodness-of-fit threshold (accepted; v1 unused).
-  -i, --include-aa               Include AA peak in CN2 / CN3 (accepted; v1 unused).
-  -m, --min-fraction FLOAT       Min |median(BAF) - 0.5| to flip CN2→CN3
-                                 (default 0.1; upstream uses this in the GSL fit,
-                                 v1 uses it as a direct threshold).
-  -p, --peak-symmetry FLOAT      Peak-symmetry threshold (accepted; v1 unused).
-  -n, --nbins INT                Histogram bins (hidden upstream option; accepted; v1 unused).
-  -S, --smooth INT               Smoothing window (hidden upstream option; accepted; v1 unused).
-      --ra-rr-scaling            Disable RA/RR scaling (hidden upstream option; accepted; v1 unused).
+  -b, --peak-size FLOAT          Min CN4 side-peak size (0-1, larger stricter) [0.1].
+  -c, --cn-penalty FLOAT         CN-increase penalty (0-1, larger stricter) [0.7].
+  -f, --fit-th FLOAT             Goodness-of-fit threshold (>0, smaller stricter) [3.3].
+  -i, --include-aa               Include the AA peak in CN2 / CN4 evaluation.
+  -m, --min-fraction FLOAT       Min distinguishable fraction of aberrant cells [0.1].
+  -p, --peak-symmetry FLOAT      Peak-symmetry threshold (0-1, larger stricter) [0.5].
+  -n, --nbins INT                Histogram bin count (hidden upstream option) [150].
+  -S, --smooth INT               Smoothing half-window control (hidden upstream) [-3].
+      --ra-rr-scaling            Disable RA/RR/AA normalisation (hidden upstream option).
       --force-cn INT             Tag every chromosome with this CN (hidden upstream option).
 
   -h, --help                     Show this help.
@@ -283,10 +280,12 @@ Algorithm options:
 Output (stdout TSV):
   # sample  chrom  n_het  mean_baf  median_baf  cn_call
 
-Deferred flags (accepted but parsed into a v1-noop): -b/--peak-size,
--f/--fit-th, -i/--include-aa, -p/--peak-symmetry, -n/--nbins, -S/--smooth,
---ra-rr-scaling, -o/--output-dir, --regions-overlap, --targets-overlap.
-See docs/PARITY_ROADMAP.md#bcftools.
+The CN call is produced by the upstream Gaussian-mixture peak fit
+(polysomy.c + peakfit.c); all algorithm knobs above are live.
+
+Deferred flags (accepted but parsed into a no-op): -o/--output-dir
+(this port emits the TSV to stdout, no PNG plots), --regions-overlap,
+--targets-overlap, -v/--verbosity. See docs/PARITY_ROADMAP.md#bcftools.
 `
 
 func runPolysomy(args []string) int {
@@ -378,14 +377,21 @@ func runPolysomy(args []string) int {
 		return 2
 	}
 
-	// v1 uses upstream's --min-fraction as the |median(BAF)-0.5|
-	// threshold. (Upstream itself uses it differently as the
-	// minimum aberrant-cell fraction in the GSL fit; the v1
-	// heuristic ports the spirit, not the math.)
+	// The polysomy algorithm is the upstream Gaussian-mixture peak
+	// fit; every algorithm knob below is now live.
 	opts := bcftools.PolysomyOptions{
-		Sample:      sample,
-		CnPenalty:   cnPenalty,
-		MinBafDev:   minFraction,
+		Sample:       sample,
+		CnPenalty:    cnPenalty,
+		FitTh:        fitTh,
+		PeakSymmetry: peakSymmetry,
+		MinPeakSize:  peakSize,
+		MinFraction:  minFraction,
+		IncludeAA:    includeAA,
+		NBins:        nbins,
+		Smooth:       smooth,
+		// Upstream's --ra-rr-scaling flag DISABLES the per-segment
+		// normalisation, which is otherwise on by default.
+		RaRrScaling: !raRrScaling,
 		ForceCN:     forceCN,
 		RegionsFile: regionsFile,
 		TargetsFile: targetsFile,
@@ -402,13 +408,6 @@ func runPolysomy(args []string) int {
 	_ = regionsOverlap
 	_ = targetsOverlap
 	_ = verbosity
-	_ = peakSize
-	_ = fitTh
-	_ = includeAA
-	_ = peakSymmetry
-	_ = nbins
-	_ = smooth
-	_ = raRrScaling
 
 	if _, err := bcftools.PolysomyFile(rest[0], os.Stdout, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools polysomy: %v\n", err)
