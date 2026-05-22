@@ -265,8 +265,8 @@ General Options:
       --AF-dflt FLOAT            Use this AF when AF is unknown (default: skip the site).
       --AF-tag TAG               INFO tag to read AF from (default AF).
       --AF-file FILE             AF source file (CHR<TAB>POS<TAB>REF,ALT<TAB>AF).
-  -b, --buffer-size INT[,INT]    Buffer / overlap size (accepted; v1 unlimited).
-  -e, --estimate-AF [TAG],FILE   Estimate AF from FORMAT/TAG (accepted; v1 reads INFO/AF).
+  -b, --buffer-size INT[,INT]    Buffer / overlap size, 0 for unlimited.
+  -e, --estimate-AF [TAG],FILE   Estimate AF from FORMAT/TAG (GT or PL) of all samples ("-") or listed samples.
       --exclude EXPR             Drop sites for which EXPR is true.
   -G, --GTs-only FLOAT           Hard-GT mode, use FLOAT (phred) as PL of the two least likely genotypes.
                                    Safe value is 30 to account for GT errors. (FLOAT, not int.)
@@ -274,8 +274,8 @@ General Options:
   -i, --ignore-homref            Skip 0/0 genotypes.
       --include-noalt            Include sites with no ALT.
   -I, --skip-indels              Drop indel records.
-  -m, --genetic-map FILE         Genetic map (IMPUTE2 format). Accepted; v1 unused.
-  -M, --rec-rate FLOAT           Constant recombination rate per bp. Accepted; v1 unused.
+  -m, --genetic-map FILE         Genetic map (IMPUTE2 format) for distance-scaled transitions.
+  -M, --rec-rate FLOAT           Constant recombination rate per bp for distance-scaled transitions.
   -o, --output FILE              Write output to FILE.
   -O, --output-type [srz]        Output sections: s = per-site, r = per-region, z = compressed.
                                   Default "sr". v1 does not yet emit gzipped output.
@@ -292,19 +292,19 @@ General Options:
 HMM Options:
   -a, --hw-to-az FLOAT           P(HW->AZ) transition probability per bp (default 6.7e-8).
   -H, --az-to-hw FLOAT           P(AZ->HW) transition probability per bp (default 5e-9).
-  -V, --viterbi-training FLOAT   HMM parameter estimation threshold. Accepted; v1 unused.
+  -V, --viterbi-training FLOAT   Estimate HMM parameters by Baum-Welch; FLOAT is the convergence threshold.
 
   -?, --help                     Show this help.
       --version                  Show version.
 
 Notes:
-  - The v1 port does NOT yet scale transitions by physical distance
-    between adjacent markers. The per-bp magnitudes (-a / -H) match
-    upstream, but RG quality scores are not directly comparable to
-    upstream's until distance scaling lands. Tracked in
-    docs/PARITY_ROADMAP.md#bcftools.
-  - PL-based scoring is not implemented in v1; -G/--GTs-only is the
-    supported path. PL inputs are rejected with a roadmap pointer.
+  - Transitions scale with the physical distance between adjacent
+    markers; -m/--genetic-map and -M/--rec-rate further scale them by
+    the interval cross-over probability.
+  - PL-based emission scoring is not implemented; -G/--GTs-only
+    (hard-GT mode) is the only supported emission path. An invocation
+    without -G is rejected with upstream's "FORMAT/PL tag not found"
+    error (see docs/PARITY_ROADMAP.md#bcftools).
 `
 
 func runRoh(args []string) int {
@@ -366,7 +366,7 @@ func runRoh(args []string) int {
 	cliflag.BoolVar(fs, &ignoreHomRef, "i", "ignore-homref", false, "Skip 0/0 GTs")
 	fs.BoolVar(&includeNoalt, "include-noalt", false, "Include no-ALT sites")
 	cliflag.BoolVar(fs, &skipIndels, "I", "skip-indels", false, "Skip indels")
-	cliflag.StringVar(fs, &geneticMap, "m", "genetic-map", "", "Genetic map (accepted; v1 unused)")
+	cliflag.StringVar(fs, &geneticMap, "m", "genetic-map", "", "Genetic map (IMPUTE2 format) for distance-scaled transitions")
 	cliflag.Float64Var(fs, &recRate, "M", "rec-rate", 0, "Recombination rate per bp")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output file")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "sr", "Output sections srz")
@@ -383,7 +383,7 @@ func runRoh(args []string) int {
 	// these; the PR #106 CLI wrongly rejected them as "deferred".
 	cliflag.Float64Var(fs, &hwToAz, "a", "hw-to-az", bcftools.DefaultHWtoAZ, "HW->AZ transition")
 	cliflag.Float64Var(fs, &azToHw, "H", "az-to-hw", bcftools.DefaultAZtoHW, "AZ->HW transition")
-	cliflag.Float64Var(fs, &viterbiTraining, "V", "viterbi-training", 0, "Viterbi training threshold (accepted; v1 unused)")
+	cliflag.Float64Var(fs, &viterbiTraining, "V", "viterbi-training", 0, "Estimate HMM parameters by Baum-Welch; FLOAT is the convergence threshold")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -403,12 +403,7 @@ func runRoh(args []string) int {
 	}
 
 	if deferred := checkRohDeferred(checkRohDeferredInputs{
-		bufferSize:      bufferSize,
-		estimateAF:      estimateAF,
-		geneticMap:      geneticMap,
-		recRate:         recRate,
-		viterbiTraining: viterbiTraining,
-		outputType:      outputType,
+		outputType: outputType,
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools roh: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
@@ -475,27 +470,11 @@ func runRoh(args []string) int {
 }
 
 type checkRohDeferredInputs struct {
-	bufferSize      string
-	estimateAF      string
-	geneticMap      string
-	recRate         float64
-	viterbiTraining float64
-	outputType      string
+	outputType string
 }
 
 func checkRohDeferred(in checkRohDeferredInputs) string {
-	switch {
-	case in.bufferSize != "":
-		return "-b/--buffer-size"
-	case in.estimateAF != "":
-		return "-e/--estimate-AF"
-	case in.geneticMap != "":
-		return "-m/--genetic-map"
-	case in.recRate != 0:
-		return "-M/--rec-rate"
-	case in.viterbiTraining != 0:
-		return "-V/--viterbi-training"
-	case strings.ContainsRune(in.outputType, 'z'):
+	if strings.ContainsRune(in.outputType, 'z') {
 		return "-O z (compressed output)"
 	}
 	return ""

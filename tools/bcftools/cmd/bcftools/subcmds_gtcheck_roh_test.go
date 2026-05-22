@@ -32,29 +32,15 @@ func TestCheckGtcheckDeferred(t *testing.T) {
 	}
 }
 
-// TestCheckRohDeferred is the corresponding test for roh.
+// TestCheckRohDeferred is the corresponding test for roh. With the
+// genetic-map / rec-rate / estimate-AF / buffer-size / viterbi-training
+// features now implemented, only gzip output (-O z) remains deferred.
 func TestCheckRohDeferred(t *testing.T) {
 	if got := checkRohDeferred(checkRohDeferredInputs{outputType: "sr"}); got != "" {
 		t.Fatalf("default outputType=sr: got deferred=%q, want \"\"", got)
 	}
-	cases := []struct {
-		name string
-		in   checkRohDeferredInputs
-		want string
-	}{
-		{"buffer-size", checkRohDeferredInputs{bufferSize: "100000"}, "-b/--buffer-size"},
-		{"estimate-AF", checkRohDeferredInputs{estimateAF: "GT,-"}, "-e/--estimate-AF"},
-		{"genetic-map", checkRohDeferredInputs{geneticMap: "map.txt"}, "-m/--genetic-map"},
-		{"rec-rate", checkRohDeferredInputs{recRate: 1e-9}, "-M/--rec-rate"},
-		{"viterbi-training", checkRohDeferredInputs{viterbiTraining: 1e-10}, "-V/--viterbi-training"},
-		{"output-z", checkRohDeferredInputs{outputType: "srz"}, "-O z (compressed output)"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := checkRohDeferred(tc.in); got != tc.want {
-				t.Errorf("deferred(%s): got %q, want %q", tc.name, got, tc.want)
-			}
-		})
+	if got := checkRohDeferred(checkRohDeferredInputs{outputType: "srz"}); got != "-O z (compressed output)" {
+		t.Errorf("output-z: got %q, want %q", got, "-O z (compressed output)")
 	}
 }
 

@@ -69,12 +69,43 @@ chr1	1000	.	A	T	.	.	.	GT	1/1
 chr1	2000	.	C	G	.	.	.	GT	1/1
 `
 	var out bytes.Buffer
-	r, err := Roh(strings.NewReader(src), &out, RohOptions{})
+	r, err := Roh(strings.NewReader(src), &out, RohOptions{GTsOnly: 30})
 	if err != nil {
 		t.Fatalf("Roh: %v", err)
 	}
 	if len(r.Sites) != 0 {
 		t.Errorf("missing-AF sites must be skipped: got %d sites:\n%+v", len(r.Sites), r.Sites)
+	}
+}
+
+// TestRoh_NoGTsOnlyRejected pins the BLOCKER fix: a default (no -G)
+// invocation must error rather than silently decoding from hard GT.
+// PL-based emission is a documented deferral; the port reproduces
+// upstream init_data's diagnostic (vcfroh.c:151-158).
+func TestRoh_NoGTsOnlyRejected(t *testing.T) {
+	var out bytes.Buffer
+	_, err := Roh(strings.NewReader(fixtureRoh), &out, RohOptions{})
+	if err == nil {
+		t.Fatal("expected an error when -G is not given, got nil")
+	}
+	const want = "Error: The FORMAT/PL tag not found in the header, consider running with -G"
+	if err.Error() != want {
+		t.Errorf("no-G error = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestRoh_ViterbiWithBufferRejected pins MINOR 2: -V with -b is
+// rejected with upstream's literal diagnostic (vcfroh.c:1255).
+func TestRoh_ViterbiWithBufferRejected(t *testing.T) {
+	var out bytes.Buffer
+	_, err := Roh(strings.NewReader(fixtureRoh), &out, RohOptions{
+		GTsOnly: 30, ViterbiTraining: 1e-8, BufferSize: "500",
+	})
+	if err == nil {
+		t.Fatal("expected an error for -V with -b, got nil")
+	}
+	if err.Error() != "Error: cannot use -b with -V" {
+		t.Errorf("got %q, want %q", err.Error(), "Error: cannot use -b with -V")
 	}
 }
 
@@ -91,7 +122,7 @@ chr1	2000	.	C	G	.	.	.	GT	1/1
 `
 	dflt := 0.4
 	var out bytes.Buffer
-	r, err := Roh(strings.NewReader(src), &out, RohOptions{AFDflt: &dflt})
+	r, err := Roh(strings.NewReader(src), &out, RohOptions{GTsOnly: 30, AFDflt: &dflt})
 	if err != nil {
 		t.Fatalf("Roh --AF-dflt: %v", err)
 	}
@@ -136,7 +167,7 @@ chr1	8000	.	T	A	.	.	AF=0.05	GT	1/1
 	// Use stronger-than-default transitions so the v1 (no distance
 	// scaling) model can actually flip on this short fixture; the
 	// per-bp magnitudes are pinned by TestRoh_DefaultTransitions.
-	r, err := Roh(strings.NewReader(src), &out, RohOptions{HWtoAZ: 1e-2, AZtoHW: 1e-3})
+	r, err := Roh(strings.NewReader(src), &out, RohOptions{GTsOnly: 30, HWtoAZ: 1e-2, AZtoHW: 1e-3})
 	if err != nil {
 		t.Fatalf("Roh: %v", err)
 	}
@@ -176,7 +207,7 @@ func TestRoh_GTsOnlyAcceptsFloat(t *testing.T) {
 func TestRoh_CustomTransitionsThreaded(t *testing.T) {
 	var out bytes.Buffer
 	r1, err := Roh(strings.NewReader(fixtureRoh), &out, RohOptions{
-		HWtoAZ: 1e-4, AZtoHW: 1e-4,
+		GTsOnly: 30, HWtoAZ: 1e-4, AZtoHW: 1e-4,
 	})
 	if err != nil {
 		t.Fatalf("Roh: %v", err)
@@ -202,7 +233,7 @@ chr1	2000	.	A	AT	.	.	AF=0.5	GT	1/1
 chr1	3000	.	C	G	.	.	AF=0.5	GT	1/1
 `
 	var out bytes.Buffer
-	r, err := Roh(strings.NewReader(src), &out, RohOptions{SkipIndels: true})
+	r, err := Roh(strings.NewReader(src), &out, RohOptions{GTsOnly: 30, SkipIndels: true})
 	if err != nil {
 		t.Fatalf("Roh -I: %v", err)
 	}
@@ -227,7 +258,7 @@ chr1	1000	.	A	T	.	.	AF=0.5	GT	0/0
 chr1	2000	.	C	G	.	.	AF=0.5	GT	1/1
 `
 	var out bytes.Buffer
-	r, err := Roh(strings.NewReader(src), &out, RohOptions{IgnoreHomRef: true})
+	r, err := Roh(strings.NewReader(src), &out, RohOptions{GTsOnly: 30, IgnoreHomRef: true})
 	if err != nil {
 		t.Fatalf("Roh -i: %v", err)
 	}
