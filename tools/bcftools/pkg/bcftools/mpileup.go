@@ -1,43 +1,36 @@
 // bcftools mpileup — generate per-position genotype likelihoods from
 // BAM input. This is the upstream input to `bcftools call`.
 //
-// V1 SIMPLIFICATION: this port ships the SNP-only, uniform-error
-// genotype-likelihood model. Per the project parity rule
-// (docs/PARITY_ROADMAP.md "Definition of 1:1") the CLI surface matches
-// upstream `mpileup.c::main_mpileup` getopt_long; the underlying
-// algorithm is documented as a v1 simplification and tracked for
-// follow-up. The simplifications are explicitly:
+// The genotype-likelihood model is the MAQ error model ported from
+// bcftools' bam2bcf.c (see errmod.go and bam2bcf.go). For every covered
+// reference position mpileup emits one BCF/VCF record carrying:
 //
-//   - No BAQ recalibration (`-B/--no-BAQ` is the default and the
-//     enabled state both no-op; `-E/--redo-BAQ` is hard-rejected).
-//   - No indel calling (the upstream MAQ-style indel realigner is
-//     deferred; every `--ext-prob`, `--gap-frac`, `--tandem-qual`,
-//     `--indel-bias`, `--indel-size`, `--min-ireads`, `--max-idepth`,
-//     `--open-prob`, `--ar-prob` knob is accepted at the CLI but inert
-//     in v1).
-//   - The likelihood model is samtools-0.1.19-style uniform-error
-//     binomial: for each (REF, ALT) candidate site we walk the base
-//     pile, compute log10(P(b | g)) per base, sum across reads, and
-//     emit FORMAT/PL as [00, 01, 11] in phred-scaled form.
-//   - Single-sample only: each BAM input is one sample; one VCF
-//     output column. Multi-sample column merging is deferred.
+//   - REF and the ALT alleles ordered by coverage-normalised quality
+//     sum, always followed by the `<*>` "unseen" symbolic allele.
+//   - QUAL fixed at 0 (upstream leaves QUAL for `bcftools call` to set).
+//   - INFO/DP (raw read depth), INFO/I16 (the 16-slot calling aux tag),
+//     INFO/QS (per-allele quality sums) and INFO/MQ0F.
+//   - FORMAT/PL — the multi-allelic phred-scaled genotype likelihoods,
+//     one upper-triangle grid of n_alleles*(n_alleles+1)/2 values per
+//     sample.
 //
-// Upstream reference: reference_code/bcftools/mpileup.c. The full
-// algorithm is a per-position MAQ likelihood model with optional BAQ
-// recalibration and indel realignment via the
-// `bam2bcf_indel.c` machinery.
+// Deferred slices (see docs/PARITY_ROADMAP.md#bcftools):
 //
-// Output is a streaming VCF that `bcftools call` can consume:
+//   - Slice 3: BAQ realignment. `pkg/htsgo/baq` already implements the
+//     HMM; mpileup does not yet wire it, so base qualities here are the
+//     raw (delta_baseQ-capped) values. `-B/--no-BAQ` is therefore the
+//     effective behaviour today and `-E/--redo-BAQ` is hard-rejected.
+//   - Slice 4: the bias annotations VDB / SGB / RPBZ / MQBZ / BQBZ /
+//     MQSBZ / SCBZ. Records are emitted without those INFO tags.
+//   - Indel calling (bam2bcf_indel.c) — every indel knob is accepted at
+//     the CLI but inert.
 //
-//	##fileformat=VCFv4.2
-//	##INFO=<ID=DP,Number=1,Type=Integer,Description="Total depth">
-//	##INFO=<ID=I16,Number=16,Type=Float,Description="Auxiliary tag for...">
-//	##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred-scaled GL...">
-//	#CHROM POS ID REF ALT QUAL FILTER INFO FORMAT <sample>
-//	chr1   100 .  A  C   0    .       DP=10;I16=...  PL  0,30,300
+// Upstream reference: reference_code/bcftools/mpileup.c (the driver) and
+// bam2bcf.c (bcf_call_glfgen / bcf_call_combine / bcf_call2bcf).
 package bcftools
 
 import (
+	"compress/gzip"
 	"fmt"
 	"io"
 	"math"
@@ -47,48 +40,58 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
-// Defaults that match upstream bcftools mpileup.
+// Defaults that match upstream bcftools mpileup (mpileup.c:1381-1383).
 const (
 	// DefaultMpileupMaxDepth is upstream `-d` default.
 	DefaultMpileupMaxDepth = 250
 	// DefaultMpileupMinMQ is upstream `-q` default.
 	DefaultMpileupMinMQ uint8 = 0
-	// DefaultMpileupMinBQ is upstream `-Q` default.
-	DefaultMpileupMinBQ uint8 = 13
+	// DefaultMpileupMinBQ is upstream `-Q` default (mpileup.c:1381). The
+	// obsolete samtools default of 13 was wrong for bcftools mpileup.
+	DefaultMpileupMinBQ uint8 = 1
+	// DefaultMpileupMaxBQ is upstream `--max-BQ` default (mpileup.c:1382).
+	DefaultMpileupMaxBQ uint8 = 60
+	// DefaultMpileupDeltaBQ is upstream `--delta-BQ` default
+	// (mpileup.c:1383): a base quality is capped at neighbour_qual+delta.
+	DefaultMpileupDeltaBQ = 30
 	// DefaultMpileupTandemQual is upstream `-h` default (indel-aware
-	// homopolymer penalty). Accepted at CLI but unused in v1.
+	// homopolymer penalty). Accepted at CLI but unused.
 	DefaultMpileupTandemQual = 500
-	// DefaultMpileupExtProb is upstream `--ext-prob`. Unused in v1.
+	// DefaultMpileupExtProb is upstream `--ext-prob`. Unused.
 	DefaultMpileupExtProb = 20
-	// DefaultMpileupGapFrac is upstream `--gap-frac`. Unused in v1.
+	// DefaultMpileupGapFrac is upstream `--gap-frac`. Unused.
 	DefaultMpileupGapFrac = 0.05
-	// DefaultMpileupOpenProb is upstream `--open-prob`. Unused in v1.
+	// DefaultMpileupOpenProb is upstream `--open-prob`. Unused.
 	DefaultMpileupOpenProb = 40
-	// DefaultMpileupIndelBias is upstream `--indel-bias`. Unused in v1.
+	// DefaultMpileupIndelBias is upstream `--indel-bias`. Unused.
 	DefaultMpileupIndelBias = 1.00
-	// DefaultMpileupIndelSize is upstream `--indel-size`. Unused in v1.
+	// DefaultMpileupIndelSize is upstream `--indel-size`. Unused.
 	DefaultMpileupIndelSize = 110
-	// DefaultMpileupMinIReads is upstream `--min-ireads`. Unused in v1.
+	// DefaultMpileupMinIReads is upstream `--min-ireads`. Unused.
 	DefaultMpileupMinIReads = 1
-	// DefaultMpileupMaxIDepth is upstream `--max-idepth`. Unused in v1.
+	// DefaultMpileupMaxIDepth is upstream `--max-idepth`. Unused.
 	DefaultMpileupMaxIDepth = 250
-	// DefaultMpileupARProb is upstream `--ar-prob`. Unused in v1.
+	// DefaultMpileupARProb is upstream `--ar-prob`. Unused.
 	DefaultMpileupARProb = 1e-4
+	// mpileupTheta is upstream's CALL_DEFTHETA (bam2bcf.c:39); the errmod
+	// depth-correlation parameter is 1 - theta.
+	mpileupTheta = 0.83
 )
 
 // MpileupOptions configures bcftools mpileup. Fields are 1:1 with the
-// upstream getopt_long table in `mpileup.c`. Knobs that the v1 model
-// does not consume are tagged "accepted; v1 unused" in the doc
-// comment and tracked in PARITY_ROADMAP.
+// upstream getopt_long table in `mpileup.c`. Knobs the model does not
+// consume are tagged "accepted; unused" and tracked in PARITY_ROADMAP.
 type MpileupOptions struct {
 	// Inputs is the list of BAM/SAM paths to pile up. Multi-BAM input
-	// yields one VCF sample column per BAM (sample name comes from the
-	// @RG SM tag if uniform across the file, otherwise the basename of
-	// the input).
+	// yields one sample column per BAM (sample name comes from the @RG
+	// SM tag if uniform, otherwise the basename of the input).
 	Inputs []string
 	// FastaRef is upstream's -f/--fasta-ref. Required: every emitted
 	// record needs the REF base.
@@ -116,142 +119,130 @@ type MpileupOptions struct {
 	MaxDepth int
 	// MinMQ is upstream's -q/--min-MQ (default 0).
 	MinMQ uint8
-	// MinBQ is upstream's -Q/--min-BQ (default 13).
+	// MinBQ is upstream's -Q/--min-BQ (default 1).
 	MinBQ uint8
-	// MaxBQ is upstream's --max-bq cap (accepted, used as a ceiling on
-	// the base quality so callers can clip outlier qualities).
+	// MaxBQ is upstream's --max-BQ cap (default 60).
 	MaxBQ uint8
+	// DeltaBQ is upstream's --delta-BQ (default 30): a base quality is
+	// capped at neighbour_qual+DeltaBQ.
+	DeltaBQ int
 
 	// CountOrphans is upstream's -A/--count-orphans.
 	CountOrphans bool
 	// IgnoreOverlaps is upstream's -x/--ignore-overlaps.
 	IgnoreOverlaps bool
-	// NoBAQ is upstream's -B/--no-BAQ. V1 never applies BAQ, so this
-	// is effectively the default; the flag exists for parity.
+	// NoBAQ is upstream's -B/--no-BAQ. BAQ is not yet wired (slice 3),
+	// so this is effectively the default; the flag exists for parity.
 	NoBAQ bool
-	// RedoBAQ is upstream's -E/--redo-BAQ. Hard-rejected in v1.
+	// RedoBAQ is upstream's -E/--redo-BAQ. Hard-rejected until slice 3.
 	RedoBAQ bool
-	// FullBAQ is upstream's -D/--full-baq. Accepted; v1 ignores.
+	// FullBAQ is upstream's -D/--full-baq. Accepted; ignored until slice 3.
 	FullBAQ bool
-	// AdjustMQ is upstream's -C/--adjust-mq. Accepted; v1 ignores.
+	// AdjustMQ is upstream's -C/--adjust-mq. Accepted; ignored.
 	AdjustMQ int
 
 	// Annotate is upstream's -a/--annotate list (FORMAT/INFO tags to
-	// include). Accepted; v1 always emits the default set
-	// (INFO/DP, INFO/I16, FORMAT/PL).
+	// include). Accepted; the default set (INFO/DP, I16, QS, MQ0F,
+	// FORMAT/PL) is always emitted.
 	Annotate string
 
-	// ReadGroups is upstream's -G/--read-groups. Accepted; v1 ignores.
+	// ReadGroups is upstream's -G/--read-groups. Accepted; ignored.
 	ReadGroups string
-	// IgnoreRG is upstream's --ignore-RG (long-only). Accepted; v1 ignores.
+	// IgnoreRG is upstream's --ignore-RG (long-only). Accepted; ignored.
 	IgnoreRG bool
 
-	// Platforms is upstream's -P/--platforms. Accepted; v1 ignores.
+	// Platforms is upstream's -P/--platforms. Accepted; ignored.
 	Platforms string
 
-	// Config is upstream's -X/--config (predefined indel-model preset:
-	// `1.12`, `2.1`, `ultima`, `pacbio-ccs-1.20`, etc). Accepted; v1
-	// ignores since we don't run an indel realigner.
+	// Config is upstream's -X/--config (predefined indel-model preset).
+	// Accepted; ignored (no indel realigner).
 	Config string
 
-	// PerSampleMF is upstream's -p/--per-sample-mF. Accepted; v1 ignores.
+	// PerSampleMF is upstream's -p/--per-sample-mF. Accepted; ignored.
 	PerSampleMF bool
 
 	// Seed is upstream's --seed (random seed for subsampling).
-	// Accepted; v1 ignores (no subsampling).
+	// Accepted; ignored (no subsampling).
 	Seed int64
 
-	// TandemQual is upstream's -h/--tweak-stop / --tandem-qual.
-	// Accepted; v1 ignores.
+	// TandemQual is upstream's -h/--tandem-qual. Accepted; ignored.
 	TandemQual int
-	// ExtProb is upstream's --ext-prob. Accepted; v1 ignores.
+	// ExtProb is upstream's --ext-prob. Accepted; ignored.
 	ExtProb int
-	// GapFrac is upstream's --gap-frac. Accepted; v1 ignores.
+	// GapFrac is upstream's --gap-frac. Accepted; ignored.
 	GapFrac float64
-	// OpenProb is upstream's --open-prob. Accepted; v1 ignores.
+	// OpenProb is upstream's --open-prob. Accepted; ignored.
 	OpenProb int
-	// IndelBias is upstream's --indel-bias. Accepted; v1 ignores.
+	// IndelBias is upstream's --indel-bias. Accepted; ignored.
 	IndelBias float64
-	// IndelSize is upstream's --indel-size. Accepted; v1 ignores.
+	// IndelSize is upstream's --indel-size. Accepted; ignored.
 	IndelSize int
-	// MinIReads is upstream's --min-ireads. Accepted; v1 ignores.
+	// MinIReads is upstream's --min-ireads. Accepted; ignored.
 	MinIReads int
-	// MaxIDepth is upstream's --max-idepth. Accepted; v1 ignores.
+	// MaxIDepth is upstream's --max-idepth. Accepted; ignored.
 	MaxIDepth int
-	// ARProb is upstream's --ar-prob. Accepted; v1 ignores.
+	// ARProb is upstream's --ar-prob. Accepted; ignored.
 	ARProb float64
-	// AmbigReads is upstream's --ambig-reads / --ar. Accepted; v1 ignores.
+	// AmbigReads is upstream's --ambig-reads / --ar. Accepted; ignored.
 	AmbigReads string
-	// MaxReadLen is upstream's -M/--max-read-len. Accepted; v1 ignores.
+	// MaxReadLen is upstream's -M/--max-read-len. Accepted; ignored.
 	MaxReadLen int
 
-	// DelBias is upstream's --del-bias (hidden). Accepted; v1 ignores.
+	// DelBias is upstream's --del-bias (hidden). Accepted; ignored.
 	DelBias float64
-	// PolyMQual is upstream's --poly-mqual. Accepted; v1 ignores.
+	// PolyMQual is upstream's --poly-mqual. Accepted; ignored.
 	PolyMQual bool
-	// ScoreVsRef is upstream's --score-vs-ref. Accepted; v1 ignores.
+	// ScoreVsRef is upstream's --score-vs-ref. Accepted; ignored.
 	ScoreVsRef float64
-	// SeqQOffset is upstream's --seqq-offset. Accepted; v1 ignores.
+	// SeqQOffset is upstream's --seqq-offset. Accepted; ignored.
 	SeqQOffset int
 
-	// SkipIndels is upstream's -I/--skip-indels. V1 already never
-	// emits indel records so the flag is effectively the default.
+	// SkipIndels is upstream's -I/--skip-indels. mpileup never emits
+	// indel records yet so the flag is effectively the default.
 	SkipIndels bool
-	// IndelsCNS is upstream's --indels-cns. Accepted; v1 ignores.
+	// IndelsCNS is upstream's --indels-cns. Accepted; ignored.
 	IndelsCNS bool
-	// NoIndelsCNS is upstream's --no-indels-cns. Accepted; v1 ignores.
+	// NoIndelsCNS is upstream's --no-indels-cns. Accepted; ignored.
 	NoIndelsCNS bool
 
-	// GVCFBlock is upstream's -g/--gvcf. Accepted; v1 always emits
-	// one record per position (no gVCF blocking).
+	// GVCFBlock is upstream's -g/--gvcf. Accepted; one record per
+	// covered position is always emitted (no gVCF blocking yet).
 	GVCFBlock string
 
 	// NoReference is upstream's --no-reference (skip the FASTA REF
-	// check). Accepted; v1 always uses the FASTA REF.
+	// check). Accepted; the FASTA REF is always used.
 	NoReference bool
 
-	// OutputFormat is upstream's -O/--output-type (v|z|u|b). v1 emits
-	// VCF text ("v") or gzipped VCF ("z"); BCF output (u|b) is
-	// hard-rejected with a roadmap pointer.
+	// OutputFormat is upstream's -O/--output-type (v|z|u|b).
 	OutputFormat OutputFormat
 	// Output is upstream's -o/--output (default stdout).
 	Output string
 	// CompressLevel is upstream's --compression-level (gzip level for -O z).
 	CompressLevel int
 
-	// Threads is upstream's --threads (accepted; v1 is single-threaded).
+	// Threads is upstream's --threads (accepted; single-threaded).
 	Threads int
-	// NoVersion is upstream's --no-version (omit the version line in
-	// the header).
+	// NoVersion is upstream's --no-version (omit the version line).
 	NoVersion bool
 
-	// Verbosity is upstream's -v/--verbosity (accepted; v1 ignores).
+	// Verbosity is upstream's -v/--verbosity (accepted; ignored).
 	Verbosity int
 
-	// FlagIncl / FlagExcl are upstream's --rf/--ff (now spelled
-	// --skip-all-unset / --skip-any-set in newer bcftools). Accepted;
-	// v1 ignores. The boring no-op behaviour matches upstream when
-	// these flags are left empty.
+	// FlagIncl / FlagExcl are upstream's --rf/--ff. Accepted; ignored.
 	FlagIncl string
 	FlagExcl string
 	FlagAny  string
 	FlagLS   string
 }
 
-// ErrMpileupRedoBAQ is returned when -E/--redo-BAQ is requested. The
-// upstream BAQ recalibrator is non-trivial (Heng Li's BAQ HMM in
-// `bcftools/bam2bcf.c`) and not yet ported. Tracked in
-// docs/PARITY_ROADMAP.md#bcftools.
-var ErrMpileupRedoBAQ = fmt.Errorf("bcftools mpileup: -E/--redo-BAQ is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools")
-
-// ErrMpileupBCFOutput is returned when -O u/b is requested. The BCF
-// writer is wired elsewhere in the project (`pkg/htsgo/bcf`) but
-// the mpileup-specific records carry custom INFO/FORMAT tags that the
-// writer is not yet taught to encode. Tracked in PARITY_ROADMAP.
-var ErrMpileupBCFOutput = fmt.Errorf("bcftools mpileup: -O u/b (BCF output) is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools")
+// ErrMpileupRedoBAQ is returned when -E/--redo-BAQ is requested. BAQ
+// wiring is slice 3 of the MAQ-model work; the HMM itself already
+// exists in pkg/htsgo/baq but is not yet plumbed into mpileup. Tracked
+// in docs/PARITY_ROADMAP.md#bcftools.
+var ErrMpileupRedoBAQ = fmt.Errorf("bcftools mpileup: -E/--redo-BAQ is not implemented yet (BAQ wiring is slice 3); tracked in docs/PARITY_ROADMAP.md#bcftools")
 
 // MpileupFile is the file-path entry point. It opens every input BAM,
-// the FASTA reference, and writes a streaming VCF to out.
+// the FASTA reference, and writes BCF or VCF to out.
 func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	if err := validateMpileupOptions(&opts); err != nil {
 		return err
@@ -320,19 +311,18 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	}
 
 	// Parse region/target windows. -r and -t are both treated as
-	// post-filters in v1 (no BAI seek path).
+	// post-filters (no BAI seek path).
 	regWindows, err := parseMpileupRegions(opts, chromLen)
 	if err != nil {
 		return err
 	}
 
-	// Sample names for the VCF #CHROM line and FORMAT column.
+	// Sample names for the #CHROM line and FORMAT column.
 	samples := make([]string, len(in))
 	for i, x := range in {
 		samples[i] = x.sample
 	}
 	if len(opts.Samples) > 0 || opts.SamplesFile != "" {
-		// Restrict to the named samples (preserving input order).
 		want := map[string]struct{}{}
 		for _, s := range opts.Samples {
 			want[s] = struct{}{}
@@ -346,7 +336,6 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 				want[s] = struct{}{}
 			}
 		}
-		// Drop inputs whose sample isn't requested.
 		keep := in[:0]
 		keepRecs := perInputRecs[:0]
 		keepSamp := samples[:0]
@@ -366,19 +355,11 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	return writeMpileupVCF(out, opts, ref, chromOrder, chromLen, perInputRecs, samples, regWindows)
 }
 
-// validateMpileupOptions applies upstream's defaults and hard-rejects
-// flags whose underlying behaviour is deferred. Per the project parity
-// rule, every accepted-but-deferred flag must be visible at the CLI
-// surface but flagging it on must produce a clean error.
+// validateMpileupOptions applies upstream's defaults (mpileup.c:1381-1383)
+// and hard-rejects flags whose behaviour is deferred to a later slice.
 func validateMpileupOptions(opts *MpileupOptions) error {
 	if opts.RedoBAQ {
 		return ErrMpileupRedoBAQ
-	}
-	switch opts.OutputFormat {
-	case OutputVCF, OutputVCFGz:
-		// OK.
-	default:
-		return ErrMpileupBCFOutput
 	}
 	if opts.MaxDepth == 0 {
 		opts.MaxDepth = DefaultMpileupMaxDepth
@@ -387,9 +368,10 @@ func validateMpileupOptions(opts *MpileupOptions) error {
 		opts.MinBQ = DefaultMpileupMinBQ
 	}
 	if opts.MaxBQ == 0 {
-		// Upstream caps at 60 to stop overly-confident base callers
-		// from dominating; we follow.
-		opts.MaxBQ = 60
+		opts.MaxBQ = DefaultMpileupMaxBQ
+	}
+	if opts.DeltaBQ == 0 {
+		opts.DeltaBQ = DefaultMpileupDeltaBQ
 	}
 	return nil
 }
@@ -421,10 +403,9 @@ func resolveMpileupInputs(opts MpileupOptions) ([]string, error) {
 	return out, nil
 }
 
-// deriveSample picks a sample name for the VCF output. We use the @RG
-// SM tag when uniform across the file's @RG lines, falling back to the
-// basename of the BAM (matching upstream's behaviour when no @RG SM is
-// present).
+// deriveSample picks a sample name for the output. We use the @RG SM
+// tag when uniform across the file's @RG lines, falling back to the
+// basename of the BAM.
 func deriveSample(rd sam.Reader, path string) string {
 	hdr := rd.Header()
 	var sm string
@@ -444,7 +425,6 @@ func deriveSample(rd sam.Reader, path string) string {
 			continue
 		}
 		if rgSM != sm {
-			// Inconsistent SM; fall back to file basename.
 			sm = ""
 			break
 		}
@@ -483,10 +463,9 @@ func mpileupReadBAM(rd sam.Reader, opts MpileupOptions) (map[string][]*sam.Recor
 }
 
 // mpileupKeepRecord applies upstream's default read-level filters
-// (unmapped, secondary, QCfail, duplicate; orphans unless -A;
-// MAPQ floor). Note: FSUPPLEMENTARY is NOT in upstream's default mask
-// (mpileup.c:1392 `BAM_FUNMAP|BAM_FSECONDARY|BAM_FQCFAIL|BAM_FDUP` =
-// 0x704). The earlier 0xF04 mask was a regression caught in review.
+// (unmapped, secondary, QCfail, duplicate; orphans unless -A; MAPQ
+// floor). FSUPPLEMENTARY is NOT in upstream's default mask
+// (mpileup.c:1392 BAM_FUNMAP|BAM_FSECONDARY|BAM_FQCFAIL|BAM_FDUP).
 func mpileupKeepRecord(rec *sam.Record, opts MpileupOptions) bool {
 	if rec == nil || rec.Pos <= 0 || rec.RName == "" {
 		return false
@@ -539,7 +518,6 @@ func parseMpileupRegions(opts MpileupOptions, chromLen map[string]int) (map[stri
 		}
 		out[chrom] = append(out[chrom], [2]int{beg, end})
 	}
-	// Sort + merge per chrom for stable contains checks.
 	for k, iv := range out {
 		sort.Slice(iv, func(i, j int) bool { return iv[i][0] < iv[j][0] })
 		merged := iv[:0]
@@ -604,8 +582,8 @@ func parseMpileupRegionSpec(s string, chromLen map[string]int) (chrom string, be
 }
 
 // regionContains returns true when 1-based pos is inside any of the
-// windows associated with chrom. When windows is nil (the no-restriction
-// case) every position passes.
+// windows associated with chrom. When windows is nil every position
+// passes.
 func regionContains(windows map[string][][2]int, chrom string, pos1 int) bool {
 	if windows == nil {
 		return true
@@ -623,20 +601,26 @@ func regionContains(windows map[string][][2]int, chrom string, pos1 int) bool {
 }
 
 // writeMpileupVCF walks every chrom in chromOrder, gathers per-position
-// base events from every input, and writes a streaming VCF to out.
+// pileup columns from every input, runs the glfgen/combine/2bcf
+// pipeline, and writes one record per covered position to out.
 func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess,
 	chromOrder []string, chromLen map[string]int,
 	perInputRecs []map[string][]*sam.Record, samples []string,
 	regWindows map[string][][2]int) error {
 
-	bw := newMpileupOutput(out, opts)
-	defer bw.Close()
-
-	if err := writeMpileupHeader(bw, opts, chromOrder, chromLen, samples); err != nil {
+	hdr := buildMpileupHeader(opts, chromOrder, chromLen, samples)
+	w, finish, err := openMpileupOutput(out, opts, hdr)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	if err := w.WriteHeader(); err != nil {
 		return err
 	}
 
-	// Emit positions in chrom-order, position-order.
+	// The errmod tables are expensive to build, so do it once.
+	em := ErrmodInit(1.0 - mpileupTheta)
+
 	for _, chrom := range chromOrder {
 		if regWindows != nil {
 			if _, ok := regWindows[chrom]; !ok {
@@ -647,7 +631,6 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 		if refLen <= 0 {
 			continue
 		}
-		// Pull this chrom's records per input.
 		anyHit := false
 		perInputChromRecs := make([][]*sam.Record, len(perInputRecs))
 		for i, recs := range perInputRecs {
@@ -663,34 +646,33 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 		if err != nil {
 			return fmt.Errorf("bcftools mpileup: fetch %s: %w", chrom, err)
 		}
-		if err := emitChromMpileup(bw, chrom, refSlab, refLen, perInputChromRecs, opts, regWindows); err != nil {
+		if err := emitChromMpileup(w, em, chrom, refSlab, refLen, perInputChromRecs, opts, regWindows); err != nil {
 			return err
 		}
 	}
-	return nil
+	return w.Flush()
 }
 
 // emitChromMpileup walks every covered position on one chromosome and
-// writes a VCF record per variant site (or per all-ref site when
-// --skip-indels is false, which we then would log; in v1 we emit only
-// SNP candidates that have at least one ALT-supporting read).
-func emitChromMpileup(out io.Writer, chrom string, refSlab []byte, refLen int,
+// writes one record per position that has read coverage. Unlike the
+// pre-MAQ port, this emits a record for every covered position (not
+// only SNP candidates) with `<*>` as the unseen allele.
+func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte, refLen int,
 	perInputChromRecs [][]*sam.Record, opts MpileupOptions,
 	regWindows map[string][][2]int) error {
 
-	// Build per-position base events for every input. The window is
-	// the entire chrom in v1 (we don't split into sub-windows because
-	// the BAM is already in memory and the event slabs are small per
-	// position).
 	nIn := len(perInputChromRecs)
-	events := make([][][]mpileupBase, nIn)
+	// events[input][pos0] is the pileup column for one input at one
+	// reference position.
+	events := make([][][]pileupBase, nIn)
 	for i := 0; i < nIn; i++ {
-		events[i] = make([][]mpileupBase, refLen)
+		events[i] = make([][]pileupBase, refLen)
 		for _, rec := range perInputChromRecs[i] {
-			accumulateMpileupBases(rec, events[i], opts)
+			accumulateMpileupBases(rec, events[i])
 		}
 	}
 
+	calls := make([]bcfCallret, nIn)
 	for pos0 := 0; pos0 < refLen; pos0++ {
 		pos1 := pos0 + 1
 		if !regionContains(regWindows, chrom, pos1) {
@@ -700,63 +682,43 @@ func emitChromMpileup(out io.Writer, chrom string, refSlab []byte, refLen int,
 		if pos0 < len(refSlab) {
 			refB = upperByte(refSlab[pos0])
 		}
-		if refB == 'N' {
-			// Upstream emits records for N positions only when the
-			// site has reads; we follow the simpler rule and skip
-			// since the likelihood model needs a valid REF.
-			continue
-		}
-		// Per-sample base lists at this position.
+		ref4 := seqNt16Int[baseToNt16(refB)]
+
+		// Per-sample glfgen. Track total coverage so all-empty
+		// positions are skipped.
 		anyCov := false
-		var perSampleBases [][]mpileupBase
 		for i := 0; i < nIn; i++ {
-			bs := filterAndCap(events[i][pos0], opts)
-			perSampleBases = append(perSampleBases, bs)
-			if len(bs) > 0 {
+			pile := filterMpileupPile(events[i][pos0], opts)
+			if len(pile) > 0 {
 				anyCov = true
 			}
+			bcfCallGlfgen(pile, ref4, opts, em, &calls[i])
 		}
 		if !anyCov {
 			continue
 		}
-		// Choose ALT alleles: the non-REF bases present across any
-		// sample, in descending count.
-		alts := chooseALTs(perSampleBases, refB)
-		if len(alts) == 0 {
-			// Pure reference; v1 omits these (matching upstream's
-			// default "no -G" behaviour where REF-only sites are
-			// dropped unless --gvcf grouping kicks in, which is
-			// deferred).
-			continue
-		}
-		// Write the record.
-		if err := writeMpileupRecord(out, chrom, pos1, refB, alts, perSampleBases); err != nil {
+		call := bcfCallCombine(calls, ref4)
+		v := bcfCall2bcf(chrom, pos1, refB, &call)
+		if err := w.Write(v); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// mpileupBase is one read's base contribution to one reference position.
-type mpileupBase struct {
-	base      byte // uppercase ACGTN
-	qual      uint8
-	mapq      uint8
-	isReverse bool
-	qname     string
-}
-
-// accumulateMpileupBases walks rec's CIGAR and appends one event per
-// covered reference position into events[pos0]. CIGAR ops that don't
-// produce an SNP-candidate base (D, N, S, H, P, I) are skipped — indel
-// candidates are tracked in PARITY_ROADMAP for v2.
-func accumulateMpileupBases(rec *sam.Record, events [][]mpileupBase, opts MpileupOptions) {
+// accumulateMpileupBases walks rec's CIGAR and appends one pileupBase
+// per covered reference position into events[pos0]. The base quality is
+// captured raw together with its neighbours so glfgen can apply the
+// delta_baseQ cap. CIGAR ops that produce no SNP-candidate base
+// (D, N, S, H, P, I) are skipped — indel candidates are slice-4 work.
+func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 	if rec.Pos <= 0 {
 		return
 	}
 	refPos := int(rec.Pos) - 1
 	queryPos := 0
 	isReverse := rec.Flag&sam.FlagReverse != 0
+	qlen := len(rec.Seq)
 	for _, op := range rec.Cigar {
 		l := int(op.Length())
 		o := op.Op()
@@ -772,22 +734,29 @@ func accumulateMpileupBases(rec *sam.Record, events [][]mpileupBase, opts Mpileu
 					continue
 				}
 				base := upperByte(rec.Seq[q])
-				if base != 'A' && base != 'C' && base != 'G' && base != 'T' {
-					continue
-				}
-				var qual uint8
+				b4 := seqNt16Int[baseToNt16(base)]
+				var rawQual uint8
 				if q < len(rec.Qual) {
-					qual = rec.Qual[q]
+					rawQual = rec.Qual[q]
 				}
-				if opts.MaxBQ > 0 && qual > opts.MaxBQ {
-					qual = opts.MaxBQ
+				prevQ := -1
+				if q > 0 && q-1 < len(rec.Qual) {
+					prevQ = int(rec.Qual[q-1])
 				}
-				events[p] = append(events[p], mpileupBase{
-					base:      base,
-					qual:      qual,
-					mapq:      rec.MapQ,
-					isReverse: isReverse,
-					qname:     rec.QName,
+				nextQ := -1
+				if q+1 < qlen && q+1 < len(rec.Qual) {
+					nextQ = int(rec.Qual[q+1])
+				}
+				events[p] = append(events[p], pileupBase{
+					base4:   b4,
+					rawQual: rawQual,
+					prevQ:   prevQ,
+					nextQ:   nextQ,
+					mapq:    rec.MapQ,
+					reverse: isReverse,
+					qpos:    q,
+					qlen:    qlen,
+					qname:   rec.QName,
 				})
 			}
 			refPos += l
@@ -802,22 +771,23 @@ func accumulateMpileupBases(rec *sam.Record, events [][]mpileupBase, opts Mpileu
 	}
 }
 
-// filterAndCap applies -Q (MinBQ), -x (IgnoreOverlaps), and -d (MaxDepth)
-// to a per-position event slice. The slice returned is freshly allocated.
-func filterAndCap(evs []mpileupBase, opts MpileupOptions) []mpileupBase {
+// filterMpileupPile applies -x (IgnoreOverlaps) and -d (MaxDepth) to a
+// per-position pileup column. -Q/--min-BQ is applied inside glfgen
+// (after the delta_baseQ cap), matching upstream's ordering.
+func filterMpileupPile(evs []pileupBase, opts MpileupOptions) []pileupBase {
 	if len(evs) == 0 {
 		return nil
 	}
-	out := make([]mpileupBase, 0, len(evs))
-	seenQNames := map[string]int{} // for IgnoreOverlaps
+	out := make([]pileupBase, 0, len(evs))
+	var seenQNames map[string]int
+	if opts.IgnoreOverlaps {
+		seenQNames = make(map[string]int, len(evs))
+	}
 	for _, e := range evs {
-		if opts.MinBQ > 0 && e.qual < opts.MinBQ {
-			continue
-		}
 		if opts.IgnoreOverlaps {
 			if idx, ok := seenQNames[e.qname]; ok {
-				// Keep the higher-quality half of the overlap.
-				if e.qual > out[idx].qual {
+				// Keep the higher-quality half of the overlapping pair.
+				if e.rawQual > out[idx].rawQual {
 					out[idx] = e
 				}
 				continue
@@ -832,292 +802,158 @@ func filterAndCap(evs []mpileupBase, opts MpileupOptions) []mpileupBase {
 	return out
 }
 
-// chooseALTs returns the non-REF bases observed across any sample, in
-// descending total-count order. v1 caps at 1 ALT (biallelic-only)
-// because the PL emitter only computes the biallelic 3-value triple;
-// emitting two ALTs while writing only three PL values produces an
-// output that's spec-non-conforming against `Number=G` (which expects
-// 6 values for n_alt=2). The full multi-allelic PL grid lands with
-// the MAQ port. Reviewer-caught regression on PR #111.
-func chooseALTs(perSampleBases [][]mpileupBase, ref byte) []byte {
-	counts := map[byte]int{}
-	for _, evs := range perSampleBases {
-		for _, e := range evs {
-			if e.base == ref {
-				continue
-			}
-			counts[e.base]++
-		}
-	}
-	type ac struct {
-		b byte
-		n int
-	}
-	all := make([]ac, 0, len(counts))
-	for b, n := range counts {
-		all = append(all, ac{b, n})
-	}
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].n != all[j].n {
-			return all[i].n > all[j].n
-		}
-		return all[i].b < all[j].b
-	})
-	if len(all) > 1 {
-		all = all[:1]
-	}
-	out := make([]byte, len(all))
-	for i, a := range all {
-		out[i] = a.b
-	}
-	return out
-}
-
-// mpileupDiploidPL computes phred-scaled genotype likelihoods for a
-// biallelic site under the uniform-error model. The returned slice is
-// [PL(0/0), PL(0/1), PL(1/1)] with the minimum value subtracted (so
-// the chosen genotype is 0). REF is allele 0, ALT is allele 1.
-//
-// Per-base log10 likelihood when the genotype is g:
-//
-//	g = 0/0 → p(base|g) = 1-e        if base == ref else e/3
-//	g = 0/1 → p(base|g) = 0.5*(1-e) + 0.5*e/3  if base in {ref, alt}
-//	                    else e/3
-//	g = 1/1 → p(base|g) = 1-e        if base == alt else e/3
-//
-// e is derived from the base quality: e = 10^(-Q/10). The genotype
-// log10-likelihood is the sum across bases; we then convert to phred
-// (multiply by -10) and rebase to min=0.
-func mpileupDiploidPL(bases []mpileupBase, ref, alt byte) [3]int {
-	var ll [3]float64
-	for _, b := range bases {
-		// e = 10^(-q/10) clamped to [1e-6, 0.75] to mirror the
-		// upstream samtools 0.1.19 cap (qual=0 → e=1, which would
-		// blow up the log; cap at 0.75 to keep it finite while
-		// preserving the "uninformative" semantics).
-		q := float64(b.qual)
-		e := math.Pow(10, -q/10)
-		if e > 0.75 {
-			e = 0.75
-		}
-		if e < 1e-6 {
-			e = 1e-6
-		}
-		one := 1.0 - e
-		het := 0.5*one + 0.5*(e/3.0)
-
-		// p(base|g) for each g.
-		var p [3]float64
-		if b.base == ref {
-			p[0] = one
-			p[1] = het
-			p[2] = e / 3
-		} else if b.base == alt {
-			p[0] = e / 3
-			p[1] = het
-			p[2] = one
+// bcfCall2bcf is the Go port of bcf_call2bcf (bam2bcf.c:1200) for the
+// SNP path. It turns a combined bcfCall into a vcf.Variant: REF, the
+// ALT alleles (including the `<*>` unseen allele), QUAL=0, INFO/DP/I16/
+// QS/MQ0F and FORMAT/PL. The bias INFO tags (VDB/SGB/RPBZ/...) are
+// slice-4 work and deliberately omitted.
+func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall) *vcf.Variant {
+	alleles := make([]string, 0, call.nAlleles)
+	alleles = append(alleles, string(refB)) // REF
+	for i := 1; i < call.nAlleles; i++ {
+		if call.unseen == i {
+			alleles = append(alleles, "<*>")
 		} else {
-			// Off-allele: only e/3 mass for any g.
-			p[0] = e / 3
-			p[1] = e / 3
-			p[2] = e / 3
-		}
-		for g := 0; g < 3; g++ {
-			ll[g] += math.Log10(p[g])
+			alleles = append(alleles, string("ACGTN"[call.alleles[i]]))
 		}
 	}
-	// Convert to phred (×-10), subtract min.
-	var phred [3]float64
-	for g := 0; g < 3; g++ {
-		phred[g] = -10 * ll[g]
-	}
-	mn := phred[0]
-	for g := 1; g < 3; g++ {
-		if phred[g] < mn {
-			mn = phred[g]
-		}
-	}
-	var out [3]int
-	for g := 0; g < 3; g++ {
-		v := phred[g] - mn
-		if v > 255 {
-			v = 255 // upstream caps PL at 255.
-		}
-		if v < 0 {
-			v = 0
-		}
-		out[g] = int(math.Round(v))
-	}
-	return out
-}
+	alt := alleles[1:]
 
-// mpileupI16 computes the upstream-flavoured 16-tag aux array. The 16
-// slots are documented in `bcftools/bam2bcf.c::compute_I16` but we
-// reproduce the layout here:
-//
-//	[0] #ref bases on forward strand
-//	[1] #ref bases on reverse strand
-//	[2] #non-ref bases on forward strand
-//	[3] #non-ref bases on reverse strand
-//	[4] sum baseQ of ref bases
-//	[5] sum baseQ^2 of ref bases
-//	[6] sum baseQ of non-ref bases
-//	[7] sum baseQ^2 of non-ref bases
-//	[8] sum mapQ of ref bases
-//	[9] sum mapQ^2 of ref bases
-//	[10] sum mapQ of non-ref bases
-//	[11] sum mapQ^2 of non-ref bases
-//	[12] sum tailDist of ref bases (zero in v1 — no tail-distance tracker)
-//	[13] sum tailDist^2 of ref bases
-//	[14] sum tailDist of non-ref bases
-//	[15] sum tailDist^2 of non-ref bases
-func mpileupI16(bases []mpileupBase, ref byte) [16]float64 {
-	var i16 [16]float64
-	for _, b := range bases {
-		isRef := b.base == ref
-		fwd := !b.isReverse
-		switch {
-		case isRef && fwd:
-			i16[0]++
-		case isRef && !fwd:
-			i16[1]++
-		case !isRef && fwd:
-			i16[2]++
-		case !isRef && !fwd:
-			i16[3]++
-		}
-		bq := float64(b.qual)
-		mq := float64(b.mapq)
-		if isRef {
-			i16[4] += bq
-			i16[5] += bq * bq
-			i16[8] += mq
-			i16[9] += mq * mq
-		} else {
-			i16[6] += bq
-			i16[7] += bq * bq
-			i16[10] += mq
-			i16[11] += mq * mq
-		}
-		// tail distance not tracked in v1.
-	}
-	return i16
-}
+	// INFO/DP, I16, QS, MQ0F. The order matches bam2bcf.c:1300-1336.
+	info := map[string]string{}
+	infoOrder := make([]string, 0, 4)
+	info["DP"] = strconv.Itoa(call.oriDepth)
+	infoOrder = append(infoOrder, "DP")
 
-// writeMpileupRecord emits one VCF text record for (chrom, pos, ref,
-// alts) given per-sample base lists.
-func writeMpileupRecord(out io.Writer, chrom string, pos1 int, ref byte, alts []byte, perSampleBases [][]mpileupBase) error {
-	var b strings.Builder
-	b.WriteString(chrom)
-	b.WriteByte('\t')
-	b.WriteString(strconv.Itoa(pos1))
-	b.WriteString("\t.\t")
-	b.WriteByte(ref)
-	b.WriteByte('\t')
-	for i, a := range alts {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteByte(a)
-	}
-	b.WriteString("\t0\t.\t")
-
-	// INFO: DP, I16.
-	dp := 0
-	var totI16 [16]float64
-	for _, evs := range perSampleBases {
-		dp += len(evs)
-		for j, v := range mpileupI16(evs, ref) {
-			totI16[j] += v
-		}
-	}
-	b.WriteString("DP=")
-	b.WriteString(strconv.Itoa(dp))
-	b.WriteString(";I16=")
-	for j, v := range totI16 {
+	var i16 strings.Builder
+	for j, v := range call.anno {
 		if j > 0 {
-			b.WriteByte(',')
+			i16.WriteByte(',')
 		}
-		b.WriteString(formatI16Number(v))
+		i16.WriteString(formatI16Number(v))
 	}
-	b.WriteString("\tPL")
-	// Per-sample PL: in v1 we always emit the (REF, ALT0) biallelic
-	// PL. Sites with multiple ALTs use the leading ALT in the PL
-	// computation. The full multi-allelic PL grid is a v2 follow-up
-	// (the ordering is `j(j+1)/2 + i` per VCF spec) — tracked in
-	// PARITY_ROADMAP.
-	alt0 := alts[0]
-	for _, evs := range perSampleBases {
-		pl := mpileupDiploidPL(evs, ref, alt0)
-		b.WriteByte('\t')
-		b.WriteString(strconv.Itoa(pl[0]))
-		b.WriteByte(',')
-		b.WriteString(strconv.Itoa(pl[1]))
-		b.WriteByte(',')
-		b.WriteString(strconv.Itoa(pl[2]))
+	info["I16"] = i16.String()
+	infoOrder = append(infoOrder, "I16")
+
+	// INFO/QS carries one value per allele (the coverage-normalised
+	// quality sum); the `<*>` allele's qsum is 0.
+	var qs strings.Builder
+	for j := 0; j < call.nAlleles; j++ {
+		if j > 0 {
+			qs.WriteByte(',')
+		}
+		qs.WriteString(formatQSNumber(call.qsum[j]))
 	}
-	b.WriteByte('\n')
-	_, err := io.WriteString(out, b.String())
-	return err
+	info["QS"] = qs.String()
+	infoOrder = append(infoOrder, "QS")
+
+	mq0f := 0.0
+	if call.oriDepth > 0 {
+		mq0f = float64(call.mq0) / float64(call.oriDepth)
+	}
+	info["MQ0F"] = formatQSNumber(mq0f)
+	infoOrder = append(infoOrder, "MQ0F")
+
+	// FORMAT/PL — one upper-triangle grid per sample.
+	format := []string{"PL"}
+	samplesOut := make([]vcf.Sample, len(call.pl))
+	for s := range call.pl {
+		var pl strings.Builder
+		for k, v := range call.pl[s] {
+			if k > 0 {
+				pl.WriteByte(',')
+			}
+			pl.WriteString(strconv.Itoa(v))
+		}
+		samplesOut[s] = vcf.Sample{Data: map[string]string{"PL": pl.String()}}
+	}
+
+	return &vcf.Variant{
+		Chrom:     chrom,
+		Pos:       pos1,
+		ID:        ".",
+		Ref:       string(refB),
+		Alt:       alt,
+		Qual:      0,
+		Filter:    []string{"."},
+		Info:      info,
+		InfoOrder: infoOrder,
+		Format:    format,
+		Samples:   samplesOut,
+	}
 }
 
 // formatI16Number matches upstream's I16 float rendering: integers
-// without a fractional part; floats with the shortest exact form.
+// without a fractional part, otherwise the shortest exact form.
 func formatI16Number(v float64) string {
-	if v == math.Trunc(v) {
+	if v == math.Trunc(v) && !math.IsInf(v, 0) {
 		return strconv.FormatFloat(v, 'f', 0, 64)
 	}
 	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
-// writeMpileupHeader emits the VCF header lines: fileformat, contigs,
-// INFO/FORMAT, and the #CHROM column.
-func writeMpileupHeader(out io.Writer, opts MpileupOptions, chroms []string, chromLen map[string]int, samples []string) error {
-	var b strings.Builder
-	b.WriteString("##fileformat=VCFv4.2\n")
+// formatQSNumber renders an INFO/QS or MQ0F float: whole numbers print
+// as integers, otherwise the shortest exact decimal form is used.
+func formatQSNumber(v float64) string {
+	if v == math.Trunc(v) && !math.IsInf(v, 0) {
+		return strconv.FormatFloat(v, 'f', 0, 64)
+	}
+	return strconv.FormatFloat(v, 'g', -1, 64)
+}
+
+// buildMpileupHeader builds the VCF header (metadata + sample list) for
+// the output. The INFO/FORMAT lines match the SNP-relevant subset of
+// upstream's mpileup header.
+func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[string]int, samples []string) *vcf.Header {
+	meta := []string{"##fileformat=VCFv4.2"}
 	if !opts.NoVersion {
-		b.WriteString("##bcftoolsVersion=bio_ai_experiment\n")
-		b.WriteString("##bcftools_mpileupCommand=mpileup\n")
+		meta = append(meta,
+			"##bcftoolsVersion=bio_ai_experiment",
+			"##bcftools_mpileupCommand=mpileup",
+		)
 	}
+	meta = append(meta, `##FILTER=<ID=PASS,Description="All filters passed">`)
 	for _, c := range chroms {
-		fmt.Fprintf(&b, "##contig=<ID=%s,length=%d>\n", c, chromLen[c])
+		meta = append(meta, fmt.Sprintf("##contig=<ID=%s,length=%d>", c, chromLen[c]))
 	}
-	b.WriteString("##ALT=<ID=*,Description=\"Represents allele(s) other than observed.\">\n")
-	b.WriteString("##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Raw read depth\">\n")
-	b.WriteString("##INFO=<ID=I16,Number=16,Type=Float,Description=\"Auxiliary tag used for calling, see description of bcf_callret1_t in bam2bcf.h\">\n")
-	b.WriteString("##FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"List of Phred-scaled genotype likelihoods\">\n")
-	b.WriteString("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")
-	for _, s := range samples {
-		b.WriteByte('\t')
-		b.WriteString(s)
-	}
-	b.WriteByte('\n')
-	_, err := io.WriteString(out, b.String())
-	return err
+	meta = append(meta,
+		`##ALT=<ID=*,Description="Represents allele(s) other than observed.">`,
+		`##INFO=<ID=DP,Number=1,Type=Integer,Description="Raw read depth">`,
+		`##INFO=<ID=I16,Number=16,Type=Float,Description="Auxiliary tag used for calling, see description of bcf_callret1_t in bam2bcf.h">`,
+		`##INFO=<ID=QS,Number=R,Type=Float,Description="Auxiliary tag used for calling">`,
+		`##INFO=<ID=MQ0F,Number=1,Type=Float,Description="Fraction of MQ0 reads (smaller is better)">`,
+		`##FORMAT=<ID=PL,Number=G,Type=Integer,Description="List of Phred-scaled genotype likelihoods">`,
+	)
+	return &vcf.Header{MetaInfo: meta, Samples: samples}
 }
 
-// mpileupOutput is a tiny wrapper that lets the caller select gzipped
-// VCF output. For v1 we only support text (-O v) and gzipped text (-O z)
-// outputs; BCF (-O b|u) is rejected at validateMpileupOptions.
-type mpileupOutput struct {
-	out io.Writer
-	gz  io.WriteCloser
-}
-
-func newMpileupOutput(out io.Writer, opts MpileupOptions) *mpileupOutput {
-	// gzipped VCF output is wired through the standard iohelper
-	// wrapper used by other subcommands; for the streaming-text v1 we
-	// pass the caller's writer through unchanged (the CLI wraps stdout
-	// in a gzip writer when -O z is set, so the package layer stays
-	// format-agnostic).
-	_ = opts
-	return &mpileupOutput{out: out}
-}
-
-func (m *mpileupOutput) Write(p []byte) (int, error) { return m.out.Write(p) }
-func (m *mpileupOutput) Close() error {
-	if m.gz != nil {
-		return m.gz.Close()
+// openMpileupOutput returns a variantWriter for the requested -O format
+// plus a cleanup function that flushes/closes any wrapping compressor.
+// The caller still owns the underlying writer.
+func openMpileupOutput(out io.Writer, opts MpileupOptions, hdr *vcf.Header) (variantWriter, func(), error) {
+	switch opts.OutputFormat {
+	case OutputVCFGz:
+		gw := gzip.NewWriter(out)
+		if opts.CompressLevel > 0 {
+			if g, err := gzip.NewWriterLevel(out, opts.CompressLevel); err == nil {
+				gw = g
+			}
+		}
+		return &vcfVariantWriter{vcf.NewWriter(gw, hdr)}, func() { _ = gw.Close() }, nil
+	case OutputBCF:
+		bw := bgzip.NewWriter(out)
+		w, err := bcf.NewWriterFromVCFHeader(bw, hdr)
+		if err != nil {
+			_ = bw.Close()
+			return nil, func() {}, err
+		}
+		return &bcfVariantWriter{w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
+	case OutputBCFUncompressed:
+		w, err := bcf.NewWriterFromVCFHeader(out, hdr)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return &bcfVariantWriter{w}, func() { _ = w.Flush() }, nil
 	}
-	return nil
+	return &vcfVariantWriter{vcf.NewWriter(out, hdr)}, func() {}, nil
 }

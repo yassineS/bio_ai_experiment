@@ -9,7 +9,6 @@
 package main
 
 import (
-	"compress/gzip"
 	"flag"
 	"fmt"
 	"io"
@@ -25,10 +24,11 @@ const mpileupUsage = `bcftools mpileup - per-position genotype likelihoods from 
 Usage:
   bcftools mpileup [options] -f ref.fa <in.bam> [<in2.bam> ...]
 
-V1 SIMPLIFICATION: SNP-only, uniform-error genotype-likelihood model.
-Indels, BAQ recalibration, MAQ-style likelihoods, and the full upstream
-indel realigner are deferred. See docs/PARITY_ROADMAP.md#bcftools for
-the option-tail gap list.
+SNP-only MAQ genotype-likelihood model. One BCF/VCF record is emitted
+per covered reference position with the <*> "unseen" allele and real
+phred-scaled PLs. BAQ realignment and the bias annotations (VDB, SGB,
+RPBZ, ...) plus indel calling are deferred — see
+docs/PARITY_ROADMAP.md#bcftools.
 
 Input:
   -b, --bam-list FILE            File of BAM paths (one per line).
@@ -38,8 +38,8 @@ Input:
 
 Output:
   -o, --output FILE              Output path (default stdout).
-  -O, --output-type v|z|u|b      VCF (default), VCF.gz, BCF (u/b
-                                 not yet implemented).
+  -O, --output-type v|z|u|b      VCF (default), VCF.gz, uncompressed
+                                 BCF, or BCF.
       --no-version               Skip version line in the header.
       --threads INT              Accepted; v1 is single-threaded.
 
@@ -47,9 +47,9 @@ Read filtering:
   -A, --count-orphans            Keep anomalous read pairs.
   -d, --max-depth INT            Max per-file depth (default 250).
   -q, --min-MQ INT               Skip reads with mapping quality < INT.
-  -Q, --min-BQ INT               Skip bases with quality < INT (default 13).
+  -Q, --min-BQ INT               Skip bases with quality < INT (default 1).
       --max-bq INT               Cap base quality at INT (default 60).
-      --delta-BQ INT             Accepted; v1 ignores.
+      --delta-BQ INT             Cap baseQ at neighbour_qual+INT (default 30).
   -x, --ignore-overlaps          Disable read-pair overlap detection.
   -C, --adjust-MQ INT            Accepted; v1 ignores.
   -r, --regions LIST             Region(s) (chr:beg-end[,...]).
@@ -205,11 +205,11 @@ func registerMpileupFlags(fs *flag.FlagSet, mf *mpileupFlags) {
 	cliflag.IntVar(fs, &mf.maxDepth, "d", "max-depth", 250, "Max depth per BAM")
 	cliflag.IntVar(fs, &mf.minMQ, "q", "min-MQ", 0, "Minimum MAPQ")
 	fs.IntVar(&mf.minMQ, "min-mq", 0, "")
-	cliflag.IntVar(fs, &mf.minBQ, "Q", "min-BQ", 13, "Minimum base quality")
-	fs.IntVar(&mf.minBQ, "min-bq", 13, "")
+	cliflag.IntVar(fs, &mf.minBQ, "Q", "min-BQ", 1, "Minimum base quality")
+	fs.IntVar(&mf.minBQ, "min-bq", 1, "")
 	fs.IntVar(&mf.maxBQ, "max-bq", 60, "Max base quality cap")
 	fs.IntVar(&mf.maxBQ, "max-BQ", 60, "")
-	fs.IntVar(&mf.deltaBQ, "delta-BQ", 0, "Delta base quality (accepted, ignored)")
+	fs.IntVar(&mf.deltaBQ, "delta-BQ", 30, "Cap base quality at neighbour_qual + INT")
 	cliflag.BoolVar(fs, &mf.ignoreOverlaps, "x", "ignore-overlaps", false, "Disable overlap detection")
 	cliflag.IntVar(fs, &mf.adjustMQ, "C", "adjust-MQ", 0, "Adjust MAPQ for excess mismatches")
 	fs.IntVar(&mf.adjustMQ, "adjust-mq", 0, "")
@@ -329,6 +329,7 @@ func runMpileup(args []string) int {
 		MinMQ:          uint8(clampU8(mf.minMQ)),
 		MinBQ:          uint8(clampU8(mf.minBQ)),
 		MaxBQ:          uint8(clampU8(mf.maxBQ)),
+		DeltaBQ:        mf.deltaBQ,
 		CountOrphans:   mf.countOrphans,
 		IgnoreOverlaps: mf.ignoreOverlaps,
 		NoBAQ:          mf.noBAQ,
@@ -398,20 +399,10 @@ func runMpileup(args []string) int {
 	}
 	defer out.Close()
 
-	// `-O z` wraps the destination in a gzip.Writer. Previously the
-	// validator accepted "z" but neither the library nor the CLI
-	// actually compressed, silently emitting plain VCF — reviewer
-	// caught it.
-	var writer io.WriteCloser = out
-	if mf.outputType == "z" {
-		gz := gzip.NewWriter(out)
-		// Close the gzip layer FIRST (flushes trailer) before the
-		// underlying file is closed by the deferred out.Close().
-		defer gz.Close()
-		writer = gz
-	}
-
-	if err := bcftools.MpileupFile(opts, writer); err != nil {
+	// The mpileup library handles every -O format itself (VCF, VCF.gz,
+	// BCF, uncompressed BCF) — see openMpileupOutput. The CLI just
+	// passes the parsed format through and hands over the raw file.
+	if err := bcftools.MpileupFile(opts, out); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools mpileup: %v\n", err)
 		return 1
 	}
@@ -431,10 +422,8 @@ func checkMpileupDeferred(mf *mpileupFlags) string {
 		return "-E/--redo-BAQ"
 	}
 	switch mf.outputType {
-	case "", "v", "z":
-		// OK.
-	case "u", "b":
-		return "-O " + mf.outputType + " (BCF output)"
+	case "", "v", "z", "u", "b":
+		// All output formats are supported (slice 2 wired BCF output).
 	default:
 		return "-O " + mf.outputType
 	}
