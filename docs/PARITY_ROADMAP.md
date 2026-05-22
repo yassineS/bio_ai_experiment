@@ -1926,9 +1926,13 @@ per-subcommand option-tail sections below):
 - **`call`** — consensus and biallelic multi-allelic calling are
   implemented; the full upstream multi-allelic `-m` grid over >2 ALTs
   pairs with the mpileup MAQ port.
-- **`csq`** — v1 per-record SNP classifier, not the haplotype-aware
-  consequence walker. See the "csq full-parity slicing plan" below
-  for the ordered slices toward 1:1 parity with upstream `csq.c`.
+- **`csq`** — haplotype-aware consequence engine (slices 1-3 done):
+  the `hap_node_t` tree, `cds_translate`, compound consequences,
+  `@pos` reference pointers and `-p/-n` are ported, and the
+  INFO/BCSQ output matches upstream byte-for-byte on the targeted
+  goldens. The remaining tail (`FORMAT/TBCSQ` text expansion,
+  `--unify-chr-names`, `-l/--local-csq`) is slice 4 — see the "csq
+  full-parity slicing plan" below.
 
 Option-tail gaps on `gtcheck` (PR #107, simple-mode):
 
@@ -2157,30 +2161,23 @@ Option-tail gaps on `cnv` (full HMM port):
   per-marker SNP data; the port honours upstream's behaviour (treat
   each record as one marker regardless of REF/ALT).
 
-Option-tail gaps on `csq` (this PR, v1 SNP-only):
+Option-tail gaps on `csq` (slices 1-3 done; slice 4 remains):
 
-- **The v1 classifier is NOT haplotype-aware.** Upstream's csq.c
-  phases variants per haplotype, walks the GFF transcripts, and
-  reports the per-haplotype consequence chain (including
-  compound-het effects). v1 instead classifies one SNP at a time
-  against the GFF CDS exons and emits `INFO/BCSQ` per-transcript
-  for the matching position. Indels, splice-site disruption,
-  start-gain, stop-retained, and compound-het bookkeeping are all
-  deferred.
-- `-p/--phase a|m|r|R|s` — parsed and stored; the per-record SNP
-  classifier ignores phasing because consequences are computed
-  position-by-position. Will become load-bearing when haplotype-
-  aware phasing lands.
-- `-i/--include` / `-e/--exclude` — accepted; v1 ignores (every
-  input record runs through the classifier). The expression
-  evaluator already exists in `pkg/bcftools`; the wire-up is a
-  trivial follow-up.
-- `-s/--samples` / `-S/--samples-file` — accepted; v1 does not
-  subset (consequences are position-driven). Once haplotype-aware
-  phasing lands the sample list will gate which haplotypes are
-  walked.
-- `-n/--ncsq INT` — accepted; v1 emits every matching transcript
-  without a cap (one BCSQ entry per transcript).
+- **The engine IS haplotype-aware.** `bcftools csq` now phases
+  variants per haplotype, walks the GFF transcripts, builds the
+  `hap_node_t` tree and reports per-haplotype compound consequences
+  in `INFO/BCSQ`. Indels, splice-site disruption, start/stop
+  refinement and compound-het bookkeeping are all handled.
+- `-p/--phase a|m|r|R|s` — load-bearing: the haplotype-construction
+  modes are ported (`phaseRequire/Merge/AsIs/Skip/NonRef/DropGT`).
+- `-i/--include` / `-e/--exclude` — accepted; not yet evaluated
+  (slice 4). The expression evaluator already exists in
+  `pkg/bcftools`; the wire-up is a small follow-up.
+- `-s/--samples` / `-S/--samples-file` — accepted; the engine
+  currently walks every header sample. Sample subsetting is slice 4.
+- `-n/--ncsq INT` — parsed into the per-haplotype `FORMAT/BCSQ` cap
+  (`ncsq2`); the cap becomes load-bearing once the `FORMAT/BCSQ`
+  bitmask emission lands in slice 4.
 - `-B/--trim-protein-seq INT` — accepted; v1 does not truncate
   predictions.
 - `-b/--brief-predictions` — hard-rejected with a roadmap pointer
@@ -2203,13 +2200,14 @@ Option-tail gaps on `csq` (this PR, v1 SNP-only):
 ### csq full-parity slicing plan
 
 Upstream `csq.c` is ~3994 lines. The Go port is sliced as follows.
-Critically, every upstream `csq` golden (`test/csq*.out`) is produced
-by the haplotype engine and contains compound consequences
-(`103G>A+108T>A`), reference pointers (`@107`), indels and frameshift
-on the *same* line — so **no golden file validates byte-for-byte until
-the haplotype engine (slice 3) is complete**. Slices 1-2 are validated
-with hand-derived unit tables and per-record sub-checks; the upstream
-golden files are unblocked only at slice 3.
+Every upstream `csq` golden (`test/csq*.out`) is produced by the
+haplotype engine and contains compound consequences (`103G>A+108T>A`),
+reference pointers (`@107`), indels and frameshift on the *same* line,
+so **no golden validates byte-for-byte until the haplotype engine
+(slice 3) is complete**. Slices 1-2 were validated with hand-derived
+unit tables; slice 3 unblocked the INFO/BCSQ goldens (now passing
+byte-for-byte). The fixtures are vendored under
+`tools/bcftools/testdata/csq/`.
 
 - **Slice 1 — region classifier + SO-term completion (per-record, no
   haplotype tree). DONE.** The GFF3 model now carries `five_prime_UTR`
@@ -2258,30 +2256,53 @@ class — UTR5/UTR3, intron, splice donor/acceptor/region (fwd + rev
 strand), stop_gained/stop_lost/start_lost, missense, synonymous,
 inframe vs frameshift indel, splice-site indel — plus the kput_vcsq
 SO-term precedence ordering.
-- **Slice 3 — the haplotype-aware engine.** Port the haplotype tree
+- **Slice 3 — the haplotype-aware engine. DONE.** The haplotype tree
   (`hap_node_t`, `hap_init`, `hap_finalize`, `hap_add_csq`,
-  `cds_translate`), the per-transcript spliced-reference build
-  (`tscript_init_ref` / `tscript_splice_ref`), the `vbuf` /
-  `pos2vbuf` position-clustered VCF buffer, `csq_push` / `csq_stage`,
-  and the `-p/--phase {a|m|r|R|s}` haplotype-construction modes plus
-  `-n/--ncsq`. This is what produces compound consequences
-  (`103G>A+108T>A`), the `@pos` reference pointers, and the
-  per-haplotype `FORMAT/BCSQ` bitmask. *Unblocks (byte-for-byte):*
-  `csq.1.out`, `csq.2.out`, `csq.3.out` (`--ncsq 64`),
-  `csq.splice.issue-2543.1.out`, `csq.oob-codon.out`.
-- **Slice 4 — GFF/output tail.** `--unify-chr-names LIST` (the 3-field
-  VCF/GFF/FAI rename spec exercised by `csq.chr.out` / `csq.yychr.out`
-  / the `csq.nchr` + `csq.ychr` matrix), `-l/--local-csq`
-  (`test_cds_local`), `--dump-gff`, BCF/`-O b|u|z` output, the
-  `FORMAT/TBCSQ` text output, and `-i/-e` filter wire-up. *Unblocks:*
-  `csq.chr.out`, `csq.yychr.out`, and the `csq.nchr`/`csq.ychr`
-  `--unify-chr-names` matrix (test.pl lines 1081, 1084-1092).
+  `cds_translate`), the per-transcript padded + spliced reference
+  build (`tscript_init_ref` / `tscript_splice_ref`), the full
+  `splice_csq` family with `set_refalt` / `splice_build_hap` /
+  `shifted_del_synonymous`, the `vbuf` / `pos2vbuf` position-clustered
+  VCF buffer, `csq_push` / `csq_stage`, `kput_vcsq`, and the
+  `-p/--phase {a|m|r|R|s}` haplotype-construction modes plus
+  `-n/--ncsq` are ported in `csq_hap.go`, `csq_splice.go`,
+  `csq_engine.go` and `csq_process.go`. This produces compound
+  consequences (`103G>A+108T>A`), the `@pos` reference pointers, the
+  `*`-upstream-stop prefix, and the true frameshift / inframe /
+  elongation / truncation / start_retained / stop_retained calls from
+  the translated `dlen`. The GFF3 CDS reading-frame phase is now
+  trimmed off the 5' CDS exon at index-build time (mirroring `gff.c`),
+  so the spliced CDS is frame-aligned for both the engine and the
+  per-record classifier. *Passes byte-for-byte:* `csq.1.out`,
+  `csq.oob-codon.out`, `csq.splice.issue-2543.1.out` — see
+  `csq_golden_test.go::TestCSQGoldenINFO`.
+- **Slice 4 — GFF/output tail.** The `FORMAT/BCSQ` per-haplotype
+  bitmask and the `FORMAT/TBCSQ` `bcftools query` expansion (needed by
+  `csq.2.out` / `csq.3.out`, which run `query -f'[%TBCSQ\n]'`);
+  `--unify-chr-names LIST` (the 3-field VCF/GFF/FAI rename spec
+  exercised by `csq.chr.out` / `csq.yychr.out` / the `csq.nchr` +
+  `csq.ychr` matrix), `-l/--local-csq` (`test_cds_local`),
+  `--dump-gff`, BCF/`-O b|u|z` output, and `-i/-e` filter wire-up.
+  Also the `GF_NMD`/`NMD_transcript` branch of upstream `kput_vcsq`:
+  `kputVcsq` currently omits NMD-transcript consequence emission, not
+  exercised by the slice 1-3 goldens — it lands here in the slice-4
+  tail.
+  *Unblocks:* `csq.2.out`, `csq.3.out` (`--ncsq 64`), `csq.chr.out`,
+  `csq.yychr.out`, and the `csq.nchr`/`csq.ychr` `--unify-chr-names`
+  matrix (test.pl lines 1081-1092).
 
-Status: slices 1+2 (the full per-record classifier) **DONE** — see
-`csq_classify.go` and `csq_classify_test.go`. Slice 3 (the
-haplotype-aware engine) and slice 4 (the GFF/output tail) remain; until
-slice 3 lands no upstream `csq` golden passes byte-for-byte (every
-golden needs the compound-consequence engine).
+Status: slices 1+2 (the per-record consequence logic) and slice 3 (the
+haplotype-aware engine) **DONE** — see `csq_hap.go`, `csq_splice.go`,
+`csq_engine.go`, `csq_process.go` and the golden test
+`csq_golden_test.go`. The standalone v1 per-record classifier has been
+folded into the engine; `csq_classify.go` now holds only the shared
+`csqStrings` table and the `csq*` SO-term bit constants. The `bcftools csq` INFO/BCSQ
+output now matches upstream byte-for-byte on `csq.1.out`,
+`csq.oob-codon.out` and `csq.splice.issue-2543.1.out`. Slice 4 (the
+GFF/output tail — `FORMAT/TBCSQ` text expansion and the
+`--unify-chr-names` matrix) remains; `csq.2.out` / `csq.3.out` are
+deferred there because they validate the `FORMAT/TBCSQ` per-haplotype
+field via `bcftools query`, a cross-tool output-formatting feature
+distinct from the haplotype engine.
 
 Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
 

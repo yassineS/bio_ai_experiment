@@ -54,105 +54,16 @@ func buildCSQIndex(t *testing.T) *CSQIndex {
 	return idx
 }
 
-func TestClassifyMissenseSynonymousStop(t *testing.T) {
-	idx := buildCSQIndex(t)
-	cases := []struct {
-		name        string
-		pos         int
-		refBase     byte
-		altBase     byte
-		consequence string
-		aaChange    string
-		dnaChange   string
-	}{
-		{"missense T>A at 7", 7, 'T', 'A', "missense", "3Y>N", "7T>A"},
-		{"stop_gained C>A at 9", 9, 'C', 'A', "stop_gained", "3Y>*", "9C>A"},
-		{"synonymous G>C at 6", 6, 'G', 'C', "synonymous", "2A>A", "6G>C"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			entry, ok := classifyForTranscript(idx.Transcripts["tx1"], idx.Refs["chr1"], tc.pos, tc.refBase, tc.altBase)
-			if !ok {
-				t.Fatalf("classifyForTranscript returned !ok")
-			}
-			wantPrefix := tc.consequence + "|GENE|tx1|protein_coding|+|" + tc.aaChange + "|" + tc.dnaChange
-			if entry != wantPrefix {
-				t.Errorf("entry = %q want %q", entry, wantPrefix)
-			}
-		})
-	}
-}
-
-func TestClassifyStartLost(t *testing.T) {
-	idx := buildCSQIndex(t)
-	// pos 1 is the A in ATG (Met). Mutate it to C, codon becomes CTG -> L.
-	entry, ok := classifyForTranscript(idx.Transcripts["tx1"], idx.Refs["chr1"], 1, 'A', 'C')
-	if !ok {
-		t.Fatalf("classifyForTranscript returned !ok")
-	}
-	if !strings.HasPrefix(entry, "start_lost|") {
-		t.Errorf("expected start_lost, got %q", entry)
-	}
-}
-
-func TestClassifyReverseStrand(t *testing.T) {
-	// Reverse-strand transcript at chr1:31..60.
-	// Refseq positions 31..60 (1-based) is "ATGAATGAATGAATGAATGAATGAATGAAT".
-	// Reverse complement (the actual coding sequence, 5'->3') is
-	// "ATTCATTCATTCATTCATTCATTCATTCAT".
-	// First codon ATT -> I (isoleucine).
-	// Position 60 is the 1st base of the FIRST codon when reading 3'->5'
-	// (genomic) = position 60's complement is the FIRST base of CDS coordinate 0.
-	// Genomic base at pos 60 is 'T' -> complement 'A' (the 'A' in ATT).
-	refSeq := []byte("ATGGCGTACAACTAATGAATGAATGAATGAATGAATGAATGAATGAATGAATGAATGAATG")
-	tx := &CSQTranscript{
-		ID:      "tx2",
-		Gene:    "GENE2",
-		Biotype: "protein_coding",
-		Chrom:   "chr1",
-		Strand:  gff.StrandReverse,
-		CDSExons: []CSQExon{
-			{Start: 31, End: 60, Phase: 0},
-		},
-	}
-	// Mutate pos 60 T -> A. Complement(T)=A, complement(A)=T. So
-	// first codon ATT becomes TTT -> F. I>F missense.
-	entry, ok := classifyForTranscript(tx, refSeq, 60, 'T', 'A')
-	if !ok {
-		t.Fatalf("classifyForTranscript returned !ok")
-	}
-	if !strings.HasPrefix(entry, "missense|") {
-		t.Errorf("expected missense, got %q", entry)
-	}
-	if !strings.Contains(entry, "|-|") {
-		t.Errorf("expected '-' strand in %q", entry)
-	}
-}
-
-func TestClassifyOutsideCDS(t *testing.T) {
-	idx := buildCSQIndex(t)
-	tx := idx.Transcripts["tx1"]
-	if cdsCovers(tx, 50) {
-		t.Errorf("cdsCovers should be false for pos 50 (CDS is 1..30)")
-	}
-}
-
-func TestClassifyRefMismatch(t *testing.T) {
-	idx := buildCSQIndex(t)
-	// Pos 8 is T; passing refBase='G' must fail.
-	if _, ok := classifyForTranscript(idx.Transcripts["tx1"], idx.Refs["chr1"], 8, 'G', 'A'); ok {
-		t.Errorf("expected !ok when REF does not match FASTA")
-	}
-}
-
 // TestCSQEndToEnd builds a tiny VCF and runs the full CSQ pipeline.
 func TestCSQEndToEnd(t *testing.T) {
 	idx := buildCSQIndex(t)
+	// The haplotype engine requires position-sorted input, like
+	// upstream bcftools csq.
 	const vcfIn = `##fileformat=VCFv4.2
 ##contig=<ID=chr1>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
-chr1	7	.	T	A	.	PASS	DP=10
 chr1	6	.	G	C	.	PASS	DP=10
+chr1	7	.	T	A	.	PASS	DP=10
 chr1	100	.	A	C	.	PASS	DP=10
 `
 	var out bytes.Buffer
@@ -187,19 +98,21 @@ chr1	100	.	A	C	.	PASS	DP=10
 // the CDS both shift the reading frame and are reported as frameshift.
 func TestClassifyIndelsInCDS(t *testing.T) {
 	idx := buildCSQIndex(t)
-	const vcfIn = `##fileformat=VCFv4.2
-##contig=<ID=chr1>
-#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
-chr1	7	.	T	TA	.	PASS	DP=10
-chr1	7	.	TA	T	.	PASS	DP=10
-`
-	var out bytes.Buffer
-	if _, err := CSQ(strings.NewReader(vcfIn), &out, idx, CSQOptions{}); err != nil {
-		t.Fatalf("CSQ: %v", err)
-	}
-	got := out.String()
-	if strings.Count(got, "BCSQ=frameshift|GENE|tx1") != 2 {
-		t.Errorf("expected both indels classified as frameshift:\n%s", got)
+	// Each indel is classified in its own run so the no-GT haplotype
+	// engine does not combine them onto a single haplotype: a 1bp
+	// insertion and a 1bp deletion inside the CDS are both frameshifts.
+	hdr := "##fileformat=VCFv4.2\n##contig=<ID=chr1>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	for _, vcfIn := range []string{
+		hdr + "chr1\t4\t.\tG\tGA\t.\tPASS\tDP=10\n",
+		hdr + "chr1\t8\t.\tAC\tA\t.\tPASS\tDP=10\n",
+	} {
+		var out bytes.Buffer
+		if _, err := CSQ(strings.NewReader(vcfIn), &out, idx, CSQOptions{}); err != nil {
+			t.Fatalf("CSQ: %v", err)
+		}
+		if got := out.String(); !strings.Contains(got, "BCSQ=frameshift|GENE|tx1") {
+			t.Errorf("expected indel classified as frameshift:\n%s", got)
+		}
 	}
 }
 
@@ -289,30 +202,6 @@ chr1	src	CDS	1	15	.	+	0	ID=cds1;Parent=tx1
 	}
 }
 
-// TestClassifyStartLost_MidCodon pins PR #110 review finding: start-loss
-// must fire for ANY of the 3 ATG positions (codonIdx == 0), not just
-// the leading A. Previously the check was `codingOff == 0` which only
-// fired on the first base.
-func TestClassifyStartLost_MidCodon(t *testing.T) {
-	idx := buildCSQIndex(t)
-	// pos 2 is the T in ATG. Mutate it to C -> ACG -> T (not Met) -> start_lost.
-	entry, ok := classifyForTranscript(idx.Transcripts["tx1"], idx.Refs["chr1"], 2, 'T', 'C')
-	if !ok {
-		t.Fatalf("classifyForTranscript returned !ok")
-	}
-	if !strings.HasPrefix(entry, "start_lost|") {
-		t.Errorf("pos 2 (T in ATG) expected start_lost, got %q", entry)
-	}
-	// pos 3 is the G in ATG. Mutate to T -> ATT -> Ile -> start_lost.
-	entry, ok = classifyForTranscript(idx.Transcripts["tx1"], idx.Refs["chr1"], 3, 'G', 'T')
-	if !ok {
-		t.Fatalf("classifyForTranscript returned !ok")
-	}
-	if !strings.HasPrefix(entry, "start_lost|") {
-		t.Errorf("pos 3 (G in ATG) expected start_lost, got %q", entry)
-	}
-}
-
 // TestCDSOffsetHonoursPhase pins PR #110 review finding #1: cdsOffset
 // must consume CDSExon.Phase, the GFF3 5'-leftover-codon-base count.
 // With phase=1 on the first CDS exon, position 2 (which would normally
@@ -340,6 +229,34 @@ func TestCDSOffsetHonoursPhase(t *testing.T) {
 	}
 	if off != -1 {
 		t.Errorf("phase=1: cdsOffset(1) = %d, want -1", off)
+	}
+}
+
+// TestCSQPhaseRequire pins parity with upstream csq.c (~line 3274):
+// an unphased heterozygous genotype under -p require must abort.
+func TestCSQPhaseRequire(t *testing.T) {
+	idx := buildCSQIndex(t)
+	// chr1:7 T>A is a missense inside the CDS; sample S1 carries an
+	// unphased het 0/1.
+	const vcfIn = `##fileformat=VCFv4.2
+##contig=<ID=chr1>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	7	.	T	A	.	PASS	DP=10	GT	0/1
+`
+	var out bytes.Buffer
+	_, err := CSQ(strings.NewReader(vcfIn), &out, idx, CSQOptions{Phase: 'r'})
+	if err == nil {
+		t.Fatalf("expected error for unphased het under -p require")
+	}
+	if !strings.Contains(err.Error(), "Unphased heterozygous genotype") {
+		t.Errorf("error = %q, want it to mention 'Unphased heterozygous genotype'", err)
+	}
+	// A phased het (0|1) must NOT error.
+	phased := strings.Replace(vcfIn, "GT\t0/1", "GT\t0|1", 1)
+	var out2 bytes.Buffer
+	if _, err := CSQ(strings.NewReader(phased), &out2, idx, CSQOptions{Phase: 'r'}); err != nil {
+		t.Errorf("phased het under -p require unexpectedly errored: %v", err)
 	}
 }
 
