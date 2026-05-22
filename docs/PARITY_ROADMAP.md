@@ -1806,9 +1806,12 @@ per-subcommand option-tail sections below):
   Viterbi training. Validated byte-for-byte against the upstream
   `roh.1.*.out` goldens. The only remaining gap is PL-based emission
   (`-G` hard-GT is the supported path) and `-O z`.
-- **`polysomy`** — v1 median-deviation CN heuristic instead of the
-  Gaussian-mixture peak fit (`polysomy.c` + `peakfit.c`; upstream uses
-  GSL).
+- **`polysomy`** — DONE: faithful port of the upstream
+  Gaussian-mixture peak fit (`polysomy.c` + `peakfit.c`). The GSL
+  Levenberg-Marquardt solver is ported in-tree as pure Go
+  (`peakfit_lm.go`); no third-party dependency was added. All
+  algorithm knobs are live. See the per-subcommand section below for
+  the validation situation (no upstream golden exists).
 - **`gtcheck`** — v1 hard-GT Hamming only; `--cluster` HMM-style
   sample clustering and PL/GL scoring deferred.
 - **`mpileup`** — v1 uniform-error binomial likelihood instead of the
@@ -1926,32 +1929,58 @@ Option-tail gaps on `mendelian2` (PR #109, simple-mode):
   applied as record-level filters in v1 (no per-sample mask). The
   `sites_fail` counter is therefore always 0 in v1.
 
-Option-tail gaps on `polysomy` (this PR, simple-mode):
+Option-tail status on `polysomy` (Gaussian-mixture peak fit — DONE):
 
-- The full Gaussian-mixture peak-fit (`peakfit.c` + GSL) is
-  **deferred**. Reference source `reference_code/bcftools/polysomy.c`
-  and `peakfit.c` are now vendored; the only genuine external
-  dependency is GSL's nonlinear least-squares fitter, which would
-  need an in-tree replacement or a sanctioned dep. v1 emits CN calls
-  from a median-deviation heuristic:
-  CN1 when n_het == 0, CN2 when |median(BAF) - 0.5| ≤ MinBafDev (with
-  CnPenalty scaling), CN3 otherwise. The upstream algorithm fits CN2,
-  CN3, and CN4 Gaussian mixtures and picks the lowest CN whose fit
-  beats `(1 - cn_penalty) * previous_fit`.
-- `-b/--peak-size FLOAT`, `-f/--fit-th FLOAT`, `-i/--include-aa`,
-  `-p/--peak-symmetry FLOAT`, `--nbins INT`, `--smooth INT`,
-  `--ra-rr-scaling` — accepted at the CLI for parity but inert in v1
-  (the heuristic doesn't run a peak fit).
-- `-o/--output-dir PATH` — accepted but ignored; v1 writes the
-  per-chromosome TSV to stdout (no per-chromosome PNG plots).
-- `--regions-overlap`, `--targets-overlap` — accepted; v1 always uses
-  POS-in-region.
-- `-v/--verbosity INT` — accepted; v1 ignores.
-- `-n/--include-noise` — accepted; v1 always emits every chromosome
-  (we don't classify any as noise / `?`).
-- `--force-cn INT` (hidden upstream option) — implemented as
-  per-chromosome override.
-- BAF source: upstream requires FORMAT/BAF; v1 also accepts
+- **The algorithm is the upstream Gaussian-mixture peak fit.**
+  `polysomy.c` is ported faithfully: each chromosome's BAF values are
+  binned into an `--nbins`-bin histogram, smoothed, and the RR/RA/AA
+  bands are isolated and per-segment normalised (`init_dist`). Three
+  candidate fits — CN2 (one bounded Gaussian near 0.5), CN3 (two
+  symmetric Gaussians near 1/3 and 2/3) and CN4 (a central peak plus
+  two symmetric side peaks) — are run over the heterozygous band, and
+  the lowest CN that passes `--fit-th` plus the symmetry / peak-size
+  checks is chosen, with `--cn-penalty` as the tiebreaker
+  (`fit_curves`).
+- **The peak-fitting engine `peakfit.c` is ported in-tree as pure
+  Go** (`peakfit.go`): the Gaussian / centre-bounded-Gaussian /
+  exponential peak models, the residual objective `(model-y)/0.01`,
+  the unscaled `Σ|model-y|` goodness measure, and the Monte-Carlo
+  restart driver. The GSL `gsl_multifit_fdfsolver_lmsder` non-linear
+  least-squares solver is replaced by an in-tree pure-Go
+  Levenberg-Marquardt solver (`peakfit_lm.go`) — the normal-equations
+  damping loop `(JᵀJ + λ·diag)·δ = -Jᵀr` with an analytic Jacobian, a
+  λ up/down schedule, and convergence on the parameter / gradient
+  deltas at tolerance 1e-8. `peakfit_lm.go` also ports glibc's
+  `random()` so the Monte-Carlo restart stream after `srand(0)`
+  matches upstream. **No third-party dependency was added** — CLAUDE.md
+  scopes the one sanctioned numerical dep (gonum) narrowly and
+  explicitly excludes stats-fitting tools like this.
+- **All algorithm knobs are live:** `-b/--peak-size`,
+  `-c/--cn-penalty`, `-f/--fit-th`, `-i/--include-aa`,
+  `-m/--min-fraction`, `-p/--peak-symmetry`, `-n/--nbins`,
+  `-S/--smooth`, `--ra-rr-scaling`, `--force-cn`.
+- **Validation — no upstream golden exists.** `bcftools polysomy`
+  produces only per-chromosome PNG plots and a `dist.dat` dump under
+  `--output-dir`; `reference_code/bcftools/test/test.pl` has no
+  `polysomy` invocation. Byte-for-byte parity therefore cannot be
+  demonstrated and is **not claimed**. The port is validated instead
+  with: (a) unit tests of the LM solver against analytic curves with
+  known optima (a linear-in-parameters quadratic and a non-linear
+  single Gaussian); (b) a check of the glibc `rand()` port against the
+  published `srand(0)` reference sequence; (c) unit tests of each peak
+  model (Gaussian / bounded-Gaussian / exp) recovering known
+  parameters from clean synthetic samples; (d) hand-constructed BAF
+  distributions for the canonical karyotypes — a clean diploid
+  (single peak at 0.5 → CN2) and a clear trisomy (two peaks at 1/3 and
+  2/3 → CN3), exercised both directly and end-to-end through the VCF
+  reader. See `polysomy_test.go` and `peakfit_test.go`.
+- `-o/--output-dir PATH` — accepted but ignored; the port writes the
+  per-chromosome TSV to stdout (no PNG plots, no `dist.dat`).
+- `--regions-overlap`, `--targets-overlap` — accepted; the port uses a
+  chromosome-name post-filter (per-base interval filtering deferred).
+- `-v/--verbosity` / `--verbose` — accepted; the port ignores it (no
+  per-iteration fit trace).
+- BAF source: upstream requires FORMAT/BAF; the port also accepts
   FORMAT/AD = REF,ALT as a fallback (synthesises BAF as
   `ALT / (REF + ALT)` at het sites).
 - Per-record `-i/-e` are NOT in upstream `polysomy.c:main_polysomy`
