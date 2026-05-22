@@ -1770,14 +1770,32 @@ convert/mendelian PR (`convert`, `mendelian`), the gtcheck/roh PR (`gtcheck`,
 mendelian2/polysomy PR (`mendelian2`, `polysomy`), the cnv/csq PR
 (`cnv` + `csq`), and the mpileup PR (**`mpileup`**).
 
-Missing subcommands (priority order):
+All bcftools subcommands now have an implementation in the Go port.
 
-- **`+plugins`** — the full plugin system. bcftools ships ~40 plugins
-  (`+fill-tags`, `+split-vep`, `+setGT`, `+prune`, `+fixploidy`, ...)
-  loaded as shared objects via `bcftools plugin`. The Go port has no
-  plugin host and none of the individual plugins; this is the single
-  largest remaining subcommand-level gap. Upstream plugin sources
-  (`plugins/*.c`) are vendored under `reference_code/bcftools/`.
+The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
+but with a deliberate design divergence from upstream:
+
+- **`+plugins`** — implemented as a **subprocess plugin system**.
+  Upstream loads plugins as native shared objects (`.so`) via `dlopen`
+  against a fixed C ABI. The Go port instead resolves `bcftools +<name>`
+  to an ordinary *executable* found by name in the `BCFTOOLS_PLUGINS`
+  colon-separated directory list, runs it as a child process, pipes the
+  input VCF as uncompressed text to its stdin, and reads VCF back from
+  its stdout. A plugin is therefore "a VCF-on-stdin to VCF-on-stdout
+  filter" and can be written in any language — no C ABI, no version
+  check, no rebuild against the host. `bcftools plugin -l`/`-lv` lists
+  discoverable plugins; the host applies `-o`/`-O` formatting around the
+  plugin's output; a non-zero plugin exit is surfaced as an error with
+  its stderr. The contract is specified in `docs/PLUGIN_PROTOCOL.md`.
+  The mechanism lives in `tools/bcftools/pkg/bcftools/plugin.go` with a
+  reference example plugin under `tools/bcftools/plugins/example/`.
+  **Intentionally not ported:** the ~30 bundled upstream plugins
+  (`+fill-tags`, `+split-vep`, `+setGT`, `+prune`, `+fixploidy`, ...).
+  The plugin *system* exists so users can write their own plugins;
+  re-porting upstream's plugin catalogue is explicit non-goal scope.
+  Upstream plugin sources (`plugins/*.c`) remain vendored under
+  `reference_code/bcftools/` for anyone who wants to reimplement a
+  specific one as a standalone subprocess plugin.
 
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
