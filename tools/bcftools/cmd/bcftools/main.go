@@ -2,8 +2,8 @@
 // subcommands. Today it ships `view`, `index`, `stats`, `query`, `concat`,
 // `norm`, `call`, `merge`, `isec`, `sort`, `head`, `reheader`,
 // `annotate`, `convert`, `mendelian`, `mendelian2`, `gtcheck`, `roh`,
-// `filter`, `consensus`, `polysomy`, `cnv`, `csq`, and `mpileup`;
-// remaining subcommands (`+plugins`) will follow in subsequent PRs.
+// `filter`, `consensus`, `polysomy`, `cnv`, `csq`, `mpileup`, and the
+// `plugin` subprocess plugin system (also reachable as `bcftools +<name>`).
 package main
 
 import (
@@ -48,6 +48,7 @@ Subcommands:
   mpileup   Per-position genotype likelihoods from BAM (v1: SNPs only).
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
+  plugin    Run a user plugin (subprocess); also reachable as +<name>.
   help      Show this help (also via -? on subcommands).
   version   Show version.
 `
@@ -56,6 +57,10 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, rootUsage)
 		os.Exit(1)
+	}
+	// `bcftools +<name> ...` is shorthand for `bcftools plugin <name> ...`.
+	if len(os.Args[1]) > 1 && os.Args[1][0] == '+' {
+		os.Exit(runPlugin(os.Args[2:], os.Args[1][1:]))
 	}
 	switch os.Args[1] {
 	case "view":
@@ -106,6 +111,8 @@ func main() {
 		os.Exit(runCSQ(os.Args[2:]))
 	case "mpileup":
 		os.Exit(runMpileup(os.Args[2:]))
+	case "plugin":
+		os.Exit(runPlugin(os.Args[2:], ""))
 	case "help", "--help":
 		fmt.Print(rootUsage)
 		return

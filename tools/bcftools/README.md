@@ -72,10 +72,45 @@ subcommands. The current implementation ships:
   VCF with `INFO/DP`, `INFO/I16`, and biallelic `FORMAT/PL`. BAQ
   recalibration, indel calling, and the full MAQ likelihood model
   are tracked in `docs/PARITY_ROADMAP.md`.
+- `bcftools plugin` — run a user-supplied plugin over a VCF/BCF, also
+  reachable as the `bcftools +<name>` shorthand. Unlike upstream — which
+  loads plugins as native shared objects via `dlopen` — this port runs a
+  plugin as an ordinary **child process**: it streams the input VCF as
+  uncompressed text to the plugin's stdin and reads the plugin's stdout
+  back as VCF, so a plugin is "a filter from VCF on stdin to VCF on
+  stdout" and can be written in any language. Plugins are discovered via
+  the `BCFTOOLS_PLUGINS` colon-separated directory list, exactly as
+  upstream. `bcftools plugin -l` (`-lv` for verbose) lists them. The
+  host applies `-o`/`-O` formatting around the plugin's output. The
+  ~30 upstream bundled plugins are intentionally **not** ported — only
+  the mechanism is, so users can write their own. The full contract is
+  in `docs/PLUGIN_PROTOCOL.md`, with a reference example plugin under
+  `tools/bcftools/plugins/example/`.
 - `pkg/htsgo/bcf` — reader and writer for the BCF v2.2 binary format.
 
 All pieces share the existing `pkg/htsgo/vcf` types so downstream
 consumers see records as familiar `vcf.Variant` values.
+
+## `bcftools plugin` / `bcftools +<name>`
+
+A plugin is any executable found by name in one of the colon-separated
+directories in the `BCFTOOLS_PLUGINS` environment variable. The host
+pipes uncompressed VCF text to the plugin's stdin and reads VCF text from
+its stdout; plugin arguments are passed as the plugin's `argv`, a literal
+`--` separates them from the host input file. A non-zero plugin exit is
+surfaced as an error with the plugin's stderr. See
+`docs/PLUGIN_PROTOCOL.md` for the complete specification.
+
+```bash
+# Discover plugins.
+export BCFTOOLS_PLUGINS=/path/to/plugins
+bcftools plugin -l            # names, one per line
+bcftools plugin -lv           # path + --about description
+
+# Run a plugin (these two forms are equivalent).
+bcftools +example   -- input.vcf.gz
+bcftools plugin example -O z -o out.vcf.gz -- input.vcf.gz chr1:1-1000
+```
 
 ## Quick start
 
