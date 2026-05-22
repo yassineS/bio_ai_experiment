@@ -1408,8 +1408,17 @@ Plus:
 **Genuine remaining samtools gaps** (everything else is done):
 
 - **`mpileup` BCF / genotype-likelihood output (`-g/-u`).** See the
-  mpileup tail note above; `reference_code/htslib/errmod.c` (the MAQ
-  genotype-likelihood model) is now vendored.
+  mpileup tail note above. The MAQ genotype-likelihood error model
+  (`reference_code/htslib/errmod.c`) is now ported to pure Go in
+  `tools/bcftools/pkg/bcftools/errmod.go` — slice 1 of 4 of the
+  `mpileup` MAQ-model work. Remaining slices: `bcf_call_glfgen` /
+  `combine` / BCF emit, BAQ wiring into the pileup, and the bias
+  annotations. BAQ realignment itself already exists as a reusable
+  package in `pkg/htsgo/baq`. One accepted divergence: `errmod_cal`'s
+  downsampling of piles deeper than 255 reads uses Go's RNG rather than
+  htslib's `drand48`, so byte-for-byte parity holds only at depth ≤255
+  (RNG byte-parity is not a project goal); the later golden-test
+  fixtures stay within that depth.
 - **`phase` MCMC chimera repair.** The v1 port uses a greedy
   adjacent-het vote in place of upstream `phase.c`'s MCMC
   `phase_core` loop; `-b` per-haplotype BAM split is also deferred.
@@ -1834,7 +1843,10 @@ per-subcommand option-tail sections below):
   sample clustering and PL/GL scoring deferred.
 - **`mpileup`** — v1 uniform-error binomial likelihood instead of the
   MAQ model (`bam2bcf.c`, vendored); no indel calling, no
-  multi-allelic PL grid, no BCF output.
+  multi-allelic PL grid, no BCF output. The MAQ error model
+  (`errmod.c`) is ported as slice 1 of 4 in `errmod.go`; glfgen /
+  combine / BCF emit, BAQ wiring and bias annotations are the
+  remaining slices (BAQ itself lives in `pkg/htsgo/baq`).
 - **`call`** — consensus and biallelic multi-allelic calling are
   implemented; the full upstream multi-allelic `-m` grid over >2 ALTs
   pairs with the mpileup MAQ port.
