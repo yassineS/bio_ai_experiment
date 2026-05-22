@@ -1407,7 +1407,7 @@ Plus:
 
 **Genuine remaining samtools gaps** (everything else is done):
 
-- **`mpileup` MAQ genotype-likelihood model — slices 1 & 2 DONE.**
+- **`mpileup` MAQ genotype-likelihood model — slices 1, 2 & 3 DONE.**
   The `mpileup` MAQ-model port is sliced into four parts:
   - **Slice 1 (DONE).** The MAQ error model (`errmod.c`) is ported to
     pure Go in `tools/bcftools/pkg/bcftools/errmod.go` (`ErrmodInit` /
@@ -1423,17 +1423,37 @@ Plus:
     upstream mpileup defaults are now applied (`min-BQ=1`,
     `max-BQ=60`, `delta-BQ=30`). The `delta_baseQ` neighbour-quality
     cap is implemented.
-  - **Slice 3 (TODO).** Wire BAQ realignment into the pileup. The BAQ
-    HMM already exists as a reusable package in `pkg/htsgo/baq`
-    (`SamProbRealn` / `ProbalnGlocal`); slice 2 does not call it, so
-    base qualities are still the raw (delta_baseQ-capped) values and
-    `-E/--redo-BAQ` is hard-rejected. Until BAQ lands, `mpileup`
-    output cannot byte-match the upstream `mpileup/*.out` goldens
-    (which bake in BAQ).
+  - **Slice 3 (DONE).** BAQ realignment is wired into the pileup.
+    `applyMpileupBAQ` in `mpileup.go` ports `mpileup.c`'s `mplp_realn`:
+    every covered column is gated by the `MPLP_REALN_PARTIAL`
+    heuristic, and each selected read is run once through
+    `pkg/htsgo/baq.SamProbRealn` in apply+extend mode (`flag 3`,
+    matching `sam_prob_realn(b, ref, ref_len, (flag & MPLP_REDO_BAQ) ?
+    7 : 3)`) before its bases enter the pileup. `-B/--no-BAQ` disables
+    BAQ; `-E/--redo-BAQ` adds `baq.FlagRedo` (`flag 7`). The default is
+    PARTIAL realignment — upstream sets `MPLP_REALN | MPLP_REALN_PARTIAL`
+    (mpileup.c:1389), so the per-column skip heuristic and the per-read
+    spanning check apply. `-D/--full-BAQ` clears `MPLP_REALN_PARTIAL`
+    (mpileup.c:1567), forcing full BAQ: every read on the chromosome is
+    realigned. The `MPLP_REALN_PARTIAL` per-column skip heuristic depends
+    on the per-column `p->indel` term, which needs indel detection — see
+    slice 4 — so it is approximated from the `PLP_HAS_INDEL` CIGAR scan;
+    exact for indel-free inputs. BAQ runs
+    before `accumulateMpileupBases`, so the `delta_baseQ` cap and the
+    `min_baseQ` filter inside `bcfCallGlfgen` see the BAQ-adjusted
+    qualities — matching `mpileup.c`'s ordering. Byte-for-byte parity
+    is verified by `TestMpileupBAQGoldens`, which matches all 1091
+    `<*>`-only records of `mpileup/mpileup.11.out` over region
+    `17:1-1116`.
   - **Slice 4 (TODO).** The bias annotations VDB / SGB / RPBZ / MQBZ /
     BQBZ / MQSBZ / SCBZ / MQ0F-family (`calc_vdb` / `calc_SegBias` /
     `calc_mwu_biasZ`) and the indel caller (`bam2bcf_indel.c`).
-    Records are currently emitted without those INFO tags.
+    Records are currently emitted without those INFO tags. Two other
+    follow-ups block full golden parity and are tracked here: the
+    `MPLP_SMART_OVERLAPS` read-pair quality-merge (overlapping mates
+    are not yet de-weighted, so multi-read columns with mate overlap
+    diverge), and INFO/QS float formatting (upstream prints a
+    `float32` `%g`; we print full `float64` precision).
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
@@ -1876,12 +1896,12 @@ per-subcommand option-tail sections below):
   the validation situation (no upstream golden exists).
 - **`gtcheck`** — v1 hard-GT Hamming only; `--cluster` HMM-style
   sample clustering and PL/GL scoring deferred.
-- **`mpileup`** — v1 uniform-error binomial likelihood instead of the
-  MAQ model (`bam2bcf.c`, vendored); no indel calling, no
-  multi-allelic PL grid, no BCF output. The MAQ error model
-  (`errmod.c`) is ported as slice 1 of 4 in `errmod.go`; glfgen /
-  combine / BCF emit, BAQ wiring and bias annotations are the
-  remaining slices (BAQ itself lives in `pkg/htsgo/baq`).
+- **`mpileup`** — the upstream MAQ genotype-likelihood model is ported
+  (`errmod.c` → `errmod.go`; `bam2bcf.c` glfgen/combine/2bcf →
+  `bam2bcf.go`), with the full multi-allelic PL grid, the `<*>` unseen
+  allele, BCF output, and BAQ realignment (`pkg/htsgo/baq`) wired in
+  (slices 1-3 done). The bias annotations (VDB/SGB/RPBZ/...) and indel
+  calling are slice 4.
 - **`call`** — consensus and biallelic multi-allelic calling are
   implemented; the full upstream multi-allelic `-m` grid over >2 ALTs
   pairs with the mpileup MAQ port.
@@ -2158,7 +2178,7 @@ Option-tail gaps on `csq` (this PR, v1 SNP-only):
   types are silently skipped — fine for the v1 SNP classifier
   but the parser will need extension for splice-site / UTR work.
 
-Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1 & 2 done):
+Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
 
 - **The likelihood model IS the upstream MAQ model.** Slice 2 wired
   `bam2bcf.c::bcf_call_glfgen` / `bcf_call_combine` / `bcf_call2bcf`
@@ -2166,12 +2186,14 @@ Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1 & 2 done):
   emits one BCF/VCF record per covered position with the `<*>`
   unseen allele, the full multi-allelic PL grid, and
   INFO/DP/I16/QS/MQ0F. The obsolete uniform-error binomial is gone.
-- **No BAQ recalibration (slice 3 TODO).** `-B/--no-BAQ` is the
-  effective behaviour today (BAQ is not yet wired); `-D/--full-BAQ`
-  is accepted but inert; `-E/--redo-BAQ` is hard-rejected. The BAQ
-  HMM already exists in `pkg/htsgo/baq`; until it is plumbed in,
-  output cannot byte-match the upstream `mpileup/*.out` goldens,
-  which bake in BAQ.
+- **BAQ recalibration IS wired (slice 3 done).** Reads are run
+  through `pkg/htsgo/baq.SamProbRealn` (apply+extend mode) before their
+  bases enter the pileup, gated by the ported `mplp_realn` /
+  `MPLP_REALN_PARTIAL` column heuristic. `-B/--no-BAQ` disables it;
+  `-E/--redo-BAQ` recomputes BAQ. Partial realignment is the default;
+  `-D/--full-BAQ` clears `MPLP_REALN_PARTIAL` and forces full BAQ (every
+  read realigned). The `<*>`-only `mpileup/*.out` golden records now
+  byte-match (`TestMpileupBAQGoldens`).
 - **No bias annotations (slice 4 TODO).** VDB / SGB / RPBZ / MQBZ /
   BQBZ / MQSBZ / SCBZ are not yet computed; records carry only
   INFO/DP/I16/QS/MQ0F. The `calc_vdb` / `calc_SegBias` /

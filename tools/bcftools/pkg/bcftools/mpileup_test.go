@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -260,6 +261,171 @@ func TestMpileupGoldenStructure(t *testing.T) {
 	}
 }
 
+// mpileupStarRecords runs mpileup over the given region of one upstream
+// fixture BAM and returns the data records whose ALT is exactly the
+// `<*>` unseen allele (i.e. no called ALT, hence no slice-4 bias INFO
+// tags), each as a tab-joined string.
+func mpileupStarRecords(t *testing.T, bam, ref, region string, noBAQ bool) []string {
+	t.Helper()
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:   []string{bam},
+		FastaRef: ref,
+		Regions:  []string{region},
+		NoBAQ:    noBAQ,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile %s: %v", region, err)
+	}
+	var out []string
+	for _, ln := range strings.Split(buf.String(), "\n") {
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		f := strings.Split(ln, "\t")
+		if len(f) >= 5 && f[4] == "<*>" {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
+
+// goldenStarRecords reads the upstream golden, keeps records on chrom in
+// the inclusive [beg,end] window whose ALT is `<*>`, and strips the
+// FORMAT/AD column the golden was produced with (`-a -AD`) so the
+// remaining fields can be compared byte-for-byte against our PL-only
+// output. The `<*>`-only records carry no bias annotations, so once the
+// AD subfield is removed the line must match exactly.
+func goldenStarRecords(t *testing.T, goldenPath, chrom string, beg, end int) []string {
+	t.Helper()
+	b, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden %s: %v", goldenPath, err)
+	}
+	var out []string
+	for _, ln := range strings.Split(string(b), "\n") {
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		f := strings.Split(ln, "\t")
+		if len(f) < 10 || f[0] != chrom || f[4] != "<*>" {
+			continue
+		}
+		pos, err := strconv.Atoi(f[1])
+		if err != nil || pos < beg || pos > end {
+			continue
+		}
+		// Drop the AD half of FORMAT (`PL:AD` -> `PL`) and every
+		// sample's `:AD` subfield value.
+		fmtTags := strings.Split(f[8], ":")
+		keep := fmtTags[:0]
+		var adIdx = -1
+		for i, tag := range strings.Split(f[8], ":") {
+			if tag == "AD" {
+				adIdx = i
+				continue
+			}
+			keep = append(keep, tag)
+		}
+		f[8] = strings.Join(keep, ":")
+		if adIdx >= 0 {
+			for s := 9; s < len(f); s++ {
+				parts := strings.Split(f[s], ":")
+				if adIdx < len(parts) {
+					parts = append(parts[:adIdx], parts[adIdx+1:]...)
+				}
+				f[s] = strings.Join(parts, ":")
+			}
+		}
+		out = append(out, strings.Join(f, "\t"))
+	}
+	return out
+}
+
+// TestMpileupBAQGoldens is the slice-3 byte-for-byte parity check. With
+// BAQ wired, mpileup over the upstream mpileup.3.bam fixture must match
+// the upstream golden mpileup/mpileup.11.out on every `<*>`-only record
+// (those carry no slice-4 bias annotations).
+//
+// Region 17:1-1116 is used: it is free of overlapping read pairs, so the
+// not-yet-ported MPLP_SMART_OVERLAPS quality merging cannot perturb the
+// comparison. The default (BAQ-on) output is compared to the golden; the
+// test also runs -B (BAQ-off) and asserts it diverges on at least one
+// column, proving the MPLP_REALN_PARTIAL heuristic does trigger BAQ on
+// the indel-bearing columns in this region (and that BAQ then matches
+// upstream byte-for-byte, since the golden compare above is the BAQ-on
+// path).
+func TestMpileupBAQGoldens(t *testing.T) {
+	bam := referenceFixture(t, "mpileup/mpileup.3.bam")
+	ref := referenceFixture(t, "mpileup/mpileup.ref.fa")
+	golden := referenceFixturePath(t, "mpileup/mpileup.11.out")
+
+	got := mpileupStarRecords(t, bam, ref, "17:1-1116", false)
+	want := goldenStarRecords(t, golden, "17", 1, 1116)
+	if len(got) != len(want) {
+		t.Fatalf("record count: got %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("record %d mismatch (BAQ-on path):\n got:  %s\n want: %s", i, got[i], want[i])
+		}
+	}
+
+	// -B disables BAQ; it must differ from the BAQ-on path on at least
+	// one column, otherwise BAQ is not actually being exercised here.
+	noBAQ := mpileupStarRecords(t, bam, ref, "17:1-1116", true)
+	if len(noBAQ) != len(got) {
+		t.Fatalf("-B record count: got %d, want %d", len(noBAQ), len(got))
+	}
+	diffs := 0
+	for i := range got {
+		if noBAQ[i] != got[i] {
+			diffs++
+		}
+	}
+	if diffs == 0 {
+		t.Error("-B output identical to default: BAQ was never applied, so this test would not actually exercise BAQ")
+	}
+	t.Logf("BAQ active: %d/%d `<*>`-only columns differ between -B and the default", diffs, len(got))
+}
+
+// TestMpileupBAQGoldensDeferred documents the upstream mpileup goldens
+// that do NOT yet byte-match and the precise reason, so the deferred
+// work is visible in the test output.
+func TestMpileupBAQGoldensDeferred(t *testing.T) {
+	deferred := []struct{ golden, reason string }{
+		{
+			"mpileup/mpileup.12.out",
+			"multi-BAM (mpileup.1+2+3): I16 strand/quality sums diverge " +
+				"because MPLP_SMART_OVERLAPS read-pair quality merging is " +
+				"not yet ported (slice-2 follow-up), and ALT records carry " +
+				"the slice-4 bias annotations (SGB/RPBZ/MQBZ/...).",
+		},
+		{
+			"mpileup/mpileup.3.out",
+			"produced with `-B --ff 0x14`: the --ff/--rf FLAG read filter " +
+				"is accepted but inert, so reverse-strand reads are not " +
+				"excluded and depth/I16 diverge.",
+		},
+		{
+			"mpileup/iupac.1.out",
+			"reference FASTA carries IUPAC ambiguity codes; REF-base " +
+				"rendering of ambiguous reference positions is a separate " +
+				"parity gap.",
+		},
+		{
+			"mpileup/mpileup.11.out (ALT records)",
+			"ALT records differ only by the slice-4 bias INFO tags and by " +
+				"INFO/QS float formatting (upstream prints float32 %g; we " +
+				"print full float64 precision) — a slice-2/4 follow-up.",
+		},
+	}
+	for _, d := range deferred {
+		t.Logf("DEFERRED golden %s: %s", d.golden, d.reason)
+	}
+	t.Skip("documented above; these goldens are deferred to slice 4 / slice-2 follow-ups")
+}
+
 // TestMpileupBCFRoundTrip verifies that -O b output is well-formed BCF
 // that round-trips through the project's BCF reader.
 func TestMpileupBCFRoundTrip(t *testing.T) {
@@ -369,12 +535,13 @@ func TestRegionContains(t *testing.T) {
 	}
 }
 
-// TestValidateMpileupOptions covers the v1 hard-rejections and default
-// substitutions (-d, -Q, --max-bq).
+// TestValidateMpileupOptions covers the default substitutions (-d, -Q,
+// --max-bq) and that previously deferred flags are now accepted.
 func TestValidateMpileupOptions(t *testing.T) {
+	// RedoBAQ is wired in slice 3: no longer rejected.
 	opts := MpileupOptions{RedoBAQ: true}
-	if err := validateMpileupOptions(&opts); err == nil {
-		t.Error("RedoBAQ should be rejected")
+	if err := validateMpileupOptions(&opts); err != nil {
+		t.Errorf("RedoBAQ should be accepted (slice 3), got %v", err)
 	}
 	// BCF output is now supported (slice 2): no rejection.
 	opts = MpileupOptions{OutputFormat: OutputBCF}
@@ -409,6 +576,12 @@ func TestValidateMpileupOptions(t *testing.T) {
 // Asserts: a single VCF record at chr1:5 with REF=A, ALT=C, INFO/DP=4
 // (one base per read at that column), and a PL triple that picks 0/1
 // or a low PL[1].
+//
+// The fixture runs with NoBAQ (the variant-detection intent): a 10 bp
+// read is far too short for BAQ to align confidently, so BAQ would
+// collapse the lone mismatch's quality to 0 and the ALT would vanish.
+// BAQ behaviour itself is exercised against upstream goldens in
+// TestMpileupBAQGoldens.
 func TestMpileupEndToEndSAM(t *testing.T) {
 	dir := t.TempDir()
 	famPath := filepath.Join(dir, "ref.fa")
@@ -446,6 +619,7 @@ func TestMpileupEndToEndSAM(t *testing.T) {
 	opts := MpileupOptions{
 		Inputs:   []string{samPath},
 		FastaRef: famPath,
+		NoBAQ:    true,
 	}
 	if err := MpileupFile(opts, &buf); err != nil {
 		t.Fatalf("MpileupFile: %v", err)
