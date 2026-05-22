@@ -685,6 +685,13 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 	regWindows map[string][][2]int) error {
 
 	nIn := len(perInputChromRecs)
+	// MPLP_SMART_OVERLAPS: de-weight bases covered by both mates of a
+	// read pair. Upstream enables this by default and -x disables it;
+	// htslib applies it (overlap_push -> tweak_overlap_quality) as reads
+	// are pushed into the pileup engine, i.e. before BAQ realignment.
+	if !opts.IgnoreOverlaps {
+		applySmartOverlaps(perInputChromRecs)
+	}
 	// BAQ realignment. Upstream mpileup.c runs sam_prob_realn on each
 	// mapped read against the chromosome reference (BAQ on by default);
 	// in apply mode it lowers rec.Qual in place. applyMpileupBAQ ports
@@ -957,6 +964,14 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 	queryPos := 0
 	isReverse := rec.Flag&sam.FlagReverse != 0
 	qlen := len(rec.Seq)
+	// CIGAR op codes / lengths in BAM order, for get_position's
+	// soft-clip-aware read-position and soft-clip-length annotations.
+	cigarOps := make([]int, len(rec.Cigar))
+	cigarLens := make([]int, len(rec.Cigar))
+	for k, op := range rec.Cigar {
+		cigarOps[k] = int(op.Op())
+		cigarLens[k] = int(op.Length())
+	}
 	for _, op := range rec.Cigar {
 		l := int(op.Length())
 		o := op.Op()
@@ -985,6 +1000,8 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 				if q+1 < qlen && q+1 < len(rec.Qual) {
 					nextQ = int(rec.Qual[q+1])
 				}
+				gp := getPosition(cigarOps, cigarLens, q, qlen)
+				epos, scLen := biasPositionBins(gp)
 				events[p] = append(events[p], pileupBase{
 					base4:   b4,
 					rawQual: rawQual,
@@ -995,6 +1012,8 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 					qpos:    q,
 					qlen:    qlen,
 					qname:   rec.QName,
+					epos:    epos,
+					scLen:   scLen,
 				})
 			}
 			refPos += l
@@ -1009,29 +1028,324 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 	}
 }
 
-// filterMpileupPile applies -x (IgnoreOverlaps) and -d (MaxDepth) to a
-// per-position pileup column. -Q/--min-BQ is applied inside glfgen
-// (after the delta_baseQ cap), matching upstream's ordering.
+// wangHash is the Go port of htslib's __ac_Wang_hash (khash.h:528),
+// operating on 32-bit unsigned integers like the C khint_t.
+func wangHash(key uint32) uint32 {
+	key += ^(key << 15)
+	key ^= key >> 10
+	key += key << 3
+	key ^= key >> 6
+	key += ^(key << 11)
+	key ^= key >> 16
+	return key
+}
+
+// x31HashString is the Go port of htslib's __ac_X31_hash_string
+// (khash.h:454), the read-name hash used to pick which mate keeps its
+// quality during overlap merging.
+func x31HashString(s string) uint32 {
+	if len(s) == 0 {
+		return 0
+	}
+	h := uint32(s[0])
+	for i := 1; i < len(s); i++ {
+		h = (h << 5) - h + uint32(s[i])
+	}
+	return h
+}
+
+// cigarIter is the Go port of htslib's cigar_iref2iseq_set/next state
+// machine (sam.c:5731). It walks a read's CIGAR yielding the sequence
+// index of each M/=/X base together with its reference offset relative
+// to the read start.
+type cigarIter struct {
+	ops  []int // BAM op codes
+	lens []int // op lengths
+	idx  int   // current CIGAR op
+	icig int   // position within the current op
+	iseq int   // sequence index
+	iref int   // reference offset from the read start
+}
+
+// cigarSet positions the iterator at reference offset pos (iref). It
+// returns true if pos is covered by an M/=/X op, false otherwise.
+func (it *cigarIter) cigarSet(pos int) bool {
+	if pos < 0 {
+		return false
+	}
+	it.idx, it.icig, it.iseq, it.iref = 0, 0, 0, 0
+	for it.idx < len(it.ops) {
+		cig := it.ops[it.idx]
+		ncig := it.lens[it.idx]
+		switch cig {
+		case sam.CigarSoftClip:
+			it.idx++
+			it.iseq += ncig
+			it.icig = 0
+		case sam.CigarHardClip, sam.CigarPadding:
+			it.idx++
+			it.icig = 0
+		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			pos -= ncig
+			if pos < 0 {
+				it.icig = ncig + pos
+				it.iseq += it.icig
+				it.iref += it.icig
+				return true
+			}
+			it.idx++
+			it.iseq += ncig
+			it.icig = 0
+			it.iref += ncig
+		case sam.CigarInsertion:
+			it.idx++
+			it.iseq += ncig
+			it.icig = 0
+		case sam.CigarDeletion, sam.CigarSkipped:
+			pos -= ncig
+			if pos < 0 {
+				pos = 0
+			}
+			it.idx++
+			it.icig = 0
+			it.iref += ncig
+		default:
+			return false
+		}
+	}
+	it.iseq = -1
+	return false
+}
+
+// cigarNext advances to the next M/=/X base. It returns true while a
+// base is available and false when the CIGAR is exhausted.
+func (it *cigarIter) cigarNext() bool {
+	for it.idx < len(it.ops) {
+		cig := it.ops[it.idx]
+		ncig := it.lens[it.idx]
+		switch cig {
+		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			if it.icig >= ncig-1 {
+				it.icig = -1
+				it.idx++
+				continue
+			}
+			it.iseq++
+			it.icig++
+			it.iref++
+			return true
+		case sam.CigarDeletion, sam.CigarSkipped:
+			it.idx++
+			it.iref += ncig
+			it.icig = -1
+		case sam.CigarInsertion, sam.CigarSoftClip:
+			it.idx++
+			it.iseq += ncig
+			it.icig = -1
+		case sam.CigarHardClip, sam.CigarPadding:
+			it.idx++
+			it.icig = -1
+		default:
+			return false
+		}
+	}
+	it.iseq, it.iref = -1, -1
+	return false
+}
+
+// newCigarIter builds a cigarIter from a record's CIGAR.
+func newCigarIter(c sam.Cigar) *cigarIter {
+	it := &cigarIter{ops: make([]int, len(c)), lens: make([]int, len(c))}
+	for i, op := range c {
+		it.ops[i] = int(op.Op())
+		it.lens[i] = int(op.Length())
+	}
+	return it
+}
+
+// seqBase returns the uppercase nucleotide at sequence index i of rec,
+// or 0 if out of range.
+func seqBase(rec *sam.Record, i int) byte {
+	if i < 0 || i >= len(rec.Seq) {
+		return 0
+	}
+	return upperByte(rec.Seq[i])
+}
+
+// tweakOverlapQuality is the Go port of htslib's tweak_overlap_quality
+// (sam.c:5805). For two reads of the same template whose alignments
+// overlap, it merges the base qualities in the overlapping reference
+// span: matching bases get the summed quality on the kept mate and 0 on
+// the other; mismatching bases keep 0.8x the higher quality and zero
+// the lower. Which mate keeps quality is chosen by a name hash so the
+// choice is deterministic and unbiased.
+func tweakOverlapQuality(a, b *sam.Record) {
+	aCig := newCigarIter(a.Cigar)
+	bCig := newCigarIter(b.Cigar)
+	aPos := int(a.Pos) - 1
+	bPos := int(b.Pos) - 1
+	iref := bPos
+	if !aCig.cigarSet(iref - aPos) {
+		return
+	}
+	if !bCig.cigarSet(iref - bPos) {
+		return
+	}
+
+	// Pick which mate keeps quality, by read-name hash.
+	var amul, bmul uint8
+	if wangHash(x31HashString(a.QName))&1 != 0 {
+		amul, bmul = 1, 0
+	} else {
+		amul, bmul = 0, 1
+	}
+
+	for {
+		// Step a and b to the next matching reference position.
+		for aCig.iref >= 0 && aCig.iref < iref-aPos {
+			if !aCig.cigarNext() {
+				return
+			}
+		}
+		if aCig.iref < 0 {
+			return
+		}
+		for bCig.iref >= 0 && bCig.iref < iref-bPos {
+			if !bCig.cigarNext() {
+				return
+			}
+		}
+		if bCig.iref < 0 {
+			return
+		}
+
+		if iref < aCig.iref+aPos {
+			iref = aCig.iref + aPos
+		}
+		if iref < bCig.iref+bPos {
+			iref = bCig.iref + bPos
+		}
+		iref++
+
+		// If a or b has a deletion the other catches up. Upstream zeroes
+		// (or scales by 0.8 on the kept mate) the caught-up bases, the
+		// same rule it uses for mismatches.
+		if aCig.iref+aPos != bCig.iref+bPos {
+			switch {
+			case aCig.iref+aPos < bCig.iref+bPos && bCig.idx > 0 &&
+				bCig.ops[bCig.idx-1] == sam.CigarDeletion:
+				for aCig.iref+aPos < bCig.iref+bPos {
+					if amul != 0 {
+						a.Qual[aCig.iseq] = uint8(float64(a.Qual[aCig.iseq]) * 0.8)
+					} else {
+						a.Qual[aCig.iseq] = 0
+					}
+					if !aCig.cigarNext() {
+						return
+					}
+				}
+				continue
+			case aCig.idx > 0 && aCig.ops[aCig.idx-1] == sam.CigarDeletion:
+				for bCig.iref+bPos < aCig.iref+aPos {
+					if bmul != 0 {
+						b.Qual[bCig.iseq] = uint8(float64(b.Qual[bCig.iseq]) * 0.8)
+					} else {
+						b.Qual[bCig.iseq] = 0
+					}
+					if !bCig.cigarNext() {
+						return
+					}
+				}
+				continue
+			default:
+				continue
+			}
+		}
+
+		if aCig.iseq >= len(a.Qual) || bCig.iseq >= len(b.Qual) {
+			return
+		}
+
+		aq := a.Qual[aCig.iseq]
+		bq := b.Qual[bCig.iseq]
+		if seqBase(a, aCig.iseq) == seqBase(b, bCig.iseq) {
+			// Confident: keep the summed quality, capped at 200.
+			qual := int(aq) + int(bq)
+			if qual > 200 {
+				qual = 200
+			}
+			a.Qual[aCig.iseq] = uint8(amul) * uint8(qual)
+			b.Qual[bCig.iseq] = uint8(bmul) * uint8(qual)
+		} else {
+			// Mismatch: keep 0.8x the higher quality, zero the lower.
+			switch {
+			case aq > bq:
+				a.Qual[aCig.iseq] = uint8(0.8 * float64(aq))
+				b.Qual[bCig.iseq] = 0
+			case aq < bq:
+				b.Qual[bCig.iseq] = uint8(0.8 * float64(bq))
+				a.Qual[aCig.iseq] = 0
+			default:
+				a.Qual[aCig.iseq] = uint8(float64(amul) * 0.8 * float64(aq))
+				b.Qual[bCig.iseq] = uint8(float64(bmul) * 0.8 * float64(bq))
+			}
+		}
+	}
+}
+
+// applySmartOverlaps ports htslib's overlap_push (sam.c:5950): for each
+// input it pairs up the two mates of every proper read pair and calls
+// tweakOverlapQuality so a base covered by both mates is not counted
+// twice. Reads must be in coordinate order (as the pileup engine sees
+// them); the per-input record slices already are.
+func applySmartOverlaps(perInputChromRecs [][]*sam.Record) {
+	for _, recs := range perInputChromRecs {
+		buffered := make(map[string]*sam.Record)
+		for _, rec := range recs {
+			// Mapped reads in proper pairs only.
+			if rec.IsUnmapped() || rec.IsMateUnmapped() || !rec.IsProperPair() {
+				continue
+			}
+			pos := int(rec.Pos) - 1
+			mpos := int(rec.PNext) - 1
+			end := int(rec.EndPosition()) // 0-based exclusive ref end
+			// No overlap possible for mates on a different contig or for
+			// wild CIGARs (matching the overlap_push guard).
+			if rec.RNext != "" && rec.RNext != "=" && rec.RNext != rec.RName {
+				continue
+			}
+			isize := int(rec.TLen)
+			if isize < 0 {
+				isize = -isize
+			}
+			if isize >= 2*len(rec.Seq) && mpos >= end {
+				continue
+			}
+			if mate, ok := buffered[rec.QName]; ok {
+				tweakOverlapQuality(mate, rec)
+				delete(buffered, rec.QName)
+				continue
+			}
+			// Buffer reads whose mate is still to arrive.
+			if mpos >= pos || (rec.IsPaired() && rec.PNext == 0) {
+				buffered[rec.QName] = rec
+			}
+		}
+	}
+}
+
+// filterMpileupPile applies -d (MaxDepth) to a per-position pileup
+// column. -Q/--min-BQ is applied inside glfgen (after the delta_baseQ
+// cap), matching upstream's ordering. Read-pair overlap handling is not
+// done here: it is a pre-pileup quality merge (applySmartOverlaps),
+// matching upstream where overlap_push runs while reads are pushed into
+// the pileup engine.
 func filterMpileupPile(evs []pileupBase, opts MpileupOptions) []pileupBase {
 	if len(evs) == 0 {
 		return nil
 	}
 	out := make([]pileupBase, 0, len(evs))
-	var seenQNames map[string]int
-	if opts.IgnoreOverlaps {
-		seenQNames = make(map[string]int, len(evs))
-	}
 	for _, e := range evs {
-		if opts.IgnoreOverlaps {
-			if idx, ok := seenQNames[e.qname]; ok {
-				// Keep the higher-quality half of the overlapping pair.
-				if e.rawQual > out[idx].rawQual {
-					out[idx] = e
-				}
-				continue
-			}
-			seenQNames[e.qname] = len(out)
-		}
 		out = append(out, e)
 		if opts.MaxDepth > 0 && len(out) >= opts.MaxDepth {
 			break
@@ -1074,22 +1388,44 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall) *vcf.Variant 
 	infoOrder = append(infoOrder, "I16")
 
 	// INFO/QS carries one value per allele (the coverage-normalised
-	// quality sum); the `<*>` allele's qsum is 0.
+	// quality sum); the `<*>` allele's qsum is 0. Upstream stores QS as
+	// a C float and renders it with %g, so round through float32 for
+	// byte-for-byte parity.
 	var qs strings.Builder
 	for j := 0; j < call.nAlleles; j++ {
 		if j > 0 {
 			qs.WriteByte(',')
 		}
-		qs.WriteString(formatQSNumber(call.qsum[j]))
+		qs.WriteString(formatFloat32G(call.qsum[j]))
 	}
 	info["QS"] = qs.String()
 	infoOrder = append(infoOrder, "QS")
+
+	// Bias annotations, emitted only for sites with a real ALT allele
+	// and only when the value is defined (upstream skips HUGE_VAL). The
+	// order matches bam2bcf.c:1306-1336: VDB, SGB, RPBZ, MQBZ, MQSBZ,
+	// BQBZ, SCBZ. NM/NMBZ/FS are not in the mpileup default tag set.
+	if call.hasAlt {
+		addBias := func(tag string, v float64, ok bool) {
+			if ok {
+				info[tag] = formatFloat32G(v)
+				infoOrder = append(infoOrder, tag)
+			}
+		}
+		addBias("VDB", call.vdb, call.vdbOK)
+		addBias("SGB", call.segBias, call.sgbOK)
+		addBias("RPBZ", call.mwuPos, call.rpbzOK)
+		addBias("MQBZ", call.mwuMq, call.mqbzOK)
+		addBias("MQSBZ", call.mwuMqs, call.mqsbzOK)
+		addBias("BQBZ", call.mwuBq, call.bqbzOK)
+		addBias("SCBZ", call.mwuSc, call.scbzOK)
+	}
 
 	mq0f := 0.0
 	if call.oriDepth > 0 {
 		mq0f = float64(call.mq0) / float64(call.oriDepth)
 	}
-	info["MQ0F"] = formatQSNumber(mq0f)
+	info["MQ0F"] = formatFloat32G(mq0f)
 	infoOrder = append(infoOrder, "MQ0F")
 
 	// FORMAT/PL — one upper-triangle grid per sample.
@@ -1121,22 +1457,25 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall) *vcf.Variant 
 	}
 }
 
-// formatI16Number matches upstream's I16 float rendering: integers
-// without a fractional part, otherwise the shortest exact form.
-func formatI16Number(v float64) string {
-	if v == math.Trunc(v) && !math.IsInf(v, 0) {
-		return strconv.FormatFloat(v, 'f', 0, 64)
+// formatFloat32G renders v exactly as upstream renders an INFO float
+// field: bcftools stores the value as a C `float` (32-bit) and the VCF
+// writer prints it with C's `%g` conversion, which uses six significant
+// digits with trailing zeros stripped. Rounding through float32 first
+// is what makes INFO/QS, I16 and the bias tags (VDB, SGB, RPBZ, ...)
+// byte-for-byte identical to upstream output.
+func formatFloat32G(v float64) string {
+	f := float64(float32(v))
+	if math.IsInf(f, 0) || math.IsNaN(f) {
+		return strconv.FormatFloat(f, 'g', 6, 64)
 	}
-	return strconv.FormatFloat(v, 'g', -1, 64)
+	return strconv.FormatFloat(f, 'g', 6, 64)
 }
 
-// formatQSNumber renders an INFO/QS or MQ0F float: whole numbers print
-// as integers, otherwise the shortest exact decimal form is used.
-func formatQSNumber(v float64) string {
-	if v == math.Trunc(v) && !math.IsInf(v, 0) {
-		return strconv.FormatFloat(v, 'f', 0, 64)
-	}
-	return strconv.FormatFloat(v, 'g', -1, 64)
+// formatI16Number renders one I16 slot. Upstream copies the double into
+// a C float before writing, so I16 goes through the same float32 + %g
+// path as the other INFO floats.
+func formatI16Number(v float64) string {
+	return formatFloat32G(v)
 }
 
 // buildMpileupHeader builds the VCF header (metadata + sample list) for
@@ -1154,12 +1493,25 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 	for _, c := range chroms {
 		meta = append(meta, fmt.Sprintf("##contig=<ID=%s,length=%d>", c, chromLen[c]))
 	}
+	// INFO/FORMAT declarations, in the same order as upstream mpileup so
+	// the header matches byte-for-byte. INDEL/IDV/IMF are declared even
+	// though indel calling is not yet ported: upstream always emits them.
 	meta = append(meta,
 		`##ALT=<ID=*,Description="Represents allele(s) other than observed.">`,
+		`##INFO=<ID=INDEL,Number=0,Type=Flag,Description="Indicates that the variant is an INDEL.">`,
+		`##INFO=<ID=IDV,Number=1,Type=Integer,Description="Maximum number of raw reads supporting an indel">`,
+		`##INFO=<ID=IMF,Number=1,Type=Float,Description="Maximum fraction of raw reads supporting an indel">`,
 		`##INFO=<ID=DP,Number=1,Type=Integer,Description="Raw read depth">`,
+		`##INFO=<ID=VDB,Number=1,Type=Float,Description="Variant Distance Bias for filtering splice-site artefacts in RNA-seq data (bigger is better)",Version="3">`,
+		`##INFO=<ID=RPBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Read Position Bias (closer to 0 is better)">`,
+		`##INFO=<ID=MQBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Mapping Quality Bias (closer to 0 is better)">`,
+		`##INFO=<ID=BQBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Base Quality Bias (closer to 0 is better)">`,
+		`##INFO=<ID=MQSBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Mapping Quality vs Strand Bias (closer to 0 is better)">`,
+		`##INFO=<ID=SCBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Soft-Clip Length Bias (closer to 0 is better)">`,
+		`##INFO=<ID=SGB,Number=1,Type=Float,Description="Segregation based metric, http://samtools.github.io/bcftools/rd-SegBias.pdf">`,
+		`##INFO=<ID=MQ0F,Number=1,Type=Float,Description="Fraction of MQ0 reads (smaller is better)">`,
 		`##INFO=<ID=I16,Number=16,Type=Float,Description="Auxiliary tag used for calling, see description of bcf_callret1_t in bam2bcf.h">`,
 		`##INFO=<ID=QS,Number=R,Type=Float,Description="Auxiliary tag used for calling">`,
-		`##INFO=<ID=MQ0F,Number=1,Type=Float,Description="Fraction of MQ0 reads (smaller is better)">`,
 		`##FORMAT=<ID=PL,Number=G,Type=Integer,Description="List of Phred-scaled genotype likelihoods">`,
 	)
 	return &vcf.Header{MetaInfo: meta, Samples: samples}
