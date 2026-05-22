@@ -12,16 +12,28 @@
 //   - bcfCall2bcf     (bam2bcf.c:1200 bcf_call2bcf) — emit the record:
 //     REF, ALT (incl. `<*>`), QUAL, INFO/DP/I16/QS, FORMAT/PL.
 //
-// SNP-only: indel branches of the upstream functions are skipped. BAQ
-// realignment (slice 3) and the bias annotations VDB/SGB/RPBZ/... (slice
-// 4) are deliberately out of scope; records are emitted without those
-// INFO tags.
+// SNP-only: indel branches of the upstream functions are skipped. Slice
+// 4 adds the per-site bias annotations (VDB/SGB/RPBZ/MQBZ/BQBZ/MQSBZ/
+// SCBZ) and MQ0F: see calcVDB, calcSegBias and calcMWUBiasZ below, and
+// the bias tallies threaded through bcfCallret.
+//
+// BAQ realignment (slice 3) is wired separately in mpileup.go.
 
 package bcftools
 
 import (
 	"math"
 )
+
+// b2bNpos is upstream's bca->npos: the number of read-position and
+// soft-clip-length bins. get_position rescales every read to this many
+// bins so 100 bp reads (the calc_vdb training length) land 1:1.
+const b2bNpos = 100
+
+// b2bNqual is upstream's bca->nqual: the number of mapping-quality and
+// base-quality bins for the MWU bias tests. baseQ/mapQ are clamped to
+// 59 in glfgen so all 60 bins are reachable.
+const b2bNqual = 60
 
 // b2bMaxAlleles is upstream's B2B_MAX_ALLELES: REF + up to 3 ALT + the
 // `<*>` unseen allele, i.e. a 5x5 genotype matrix.
@@ -80,6 +92,12 @@ type pileupBase struct {
 	qpos    int    // 0-based query position of this base
 	qlen    int    // read query length (for tail-distance annotation)
 	qname   string // read name, for overlap detection
+	// epos, scLen and scDist are the soft-clip-aware position annotations
+	// from get_position (bam2bcf.c:146), already rescaled the way glfgen
+	// expects: epos is the read-position bin in [0,b2bNpos), scLen is the
+	// soft-clip-bias bin in [0,b2bNpos).
+	epos  int
+	scLen int
 }
 
 // bcfCallret is the per-sample result of bcfCallGlfgen, mirroring
@@ -104,6 +122,22 @@ type bcfCallret struct {
 	// adf / adr are per-allele forward/reverse depths (FORMAT AD support).
 	adf [b2bMaxAlleles]int
 	adr [b2bMaxAlleles]int
+	// Bias-test tallies, mirroring the per-sample contribution to the
+	// shared bca arrays in bcf_call_glfgen (bam2bcf.c:506-537). Upstream
+	// keeps these in bcf_callaux_t and they accumulate across samples;
+	// here each sample's glfgen fills its own copy and bcfCallCombine
+	// sums them. refPos/altPos and refScl/altScl have b2bNpos bins;
+	// refMq/altMq, refBq/altBq, fwdMqs/revMqs have b2bNqual bins.
+	refPos [b2bNpos]int
+	altPos [b2bNpos]int
+	refScl [b2bNpos]int
+	altScl [b2bNpos]int
+	refMq  [b2bNqual]int
+	altMq  [b2bNqual]int
+	refBq  [b2bNqual]int
+	altBq  [b2bNqual]int
+	fwdMqs [b2bNqual]int
+	revMqs [b2bNqual]int
 }
 
 // bcfCallGlfgen is the Go port of bcf_call_glfgen (bam2bcf.c:250) for
@@ -208,6 +242,36 @@ func bcfCallGlfgen(pile []pileupBase, ref4 int, opts MpileupOptions, em *Errmod,
 		r.anno[2<<2|isDiff<<1|1] += mq * mq
 		r.anno[3<<2|isDiff<<1|0] += md
 		r.anno[3<<2|isDiff<<1|1] += md * md
+
+		// Bias-test tallies (bam2bcf.c:491-537). baseQ/mapQ are clamped
+		// to 59 so they index the 60-bin arrays; with nqual==60 the
+		// nqual_over_60 scale factor is 1.0, hence imq==mapQ, ibq==baseQ.
+		// epos / scLen were rescaled by get_position at accumulation
+		// time. is_diff splits ref vs non-ref reads.
+		biasBQ := baseQ
+		if biasBQ > 59 {
+			biasBQ = 59
+		}
+		biasMQ := mapQ
+		if biasMQ > 59 {
+			biasMQ = 59
+		}
+		if p.reverse {
+			r.revMqs[biasMQ]++
+		} else {
+			r.fwdMqs[biasMQ]++
+		}
+		if isDiff == 0 {
+			r.refPos[p.epos]++
+			r.refBq[biasBQ]++
+			r.refMq[biasMQ]++
+			r.refScl[p.scLen]++
+		} else {
+			r.altPos[p.epos]++
+			r.altBq[biasBQ]++
+			r.altMq[biasMQ]++
+			r.altScl[p.scLen]++
+		}
 	}
 
 	// glfgen: errmod turns the packed base array into the 5x5 PL matrix.
@@ -248,6 +312,27 @@ type bcfCall struct {
 	mq0 int
 	// oriRef is the 2-bit reference base index (0..4), -1 for indels.
 	oriRef int
+	// hasAlt reports whether the site carries a real (non-`<*>`) ALT
+	// allele; the bias annotations below are only computed when it does
+	// (bam2bcf.c:1014, 1151).
+	hasAlt bool
+	// Bias annotations (bam2bcf.c calc_* functions). Each is paired with
+	// an ok flag: upstream emits the INFO tag only when the value is not
+	// HUGE_VAL, which Go represents as ok==false.
+	vdb     float64
+	vdbOK   bool
+	segBias float64
+	sgbOK   bool
+	mwuPos  float64 // RPBZ
+	rpbzOK  bool
+	mwuMq   float64 // MQBZ
+	mqbzOK  bool
+	mwuBq   float64 // BQBZ
+	bqbzOK  bool
+	mwuMqs  float64 // MQSBZ
+	mqsbzOK bool
+	mwuSc   float64 // SCBZ
+	scbzOK  bool
 }
 
 // bcfCallCombine is the Go port of bcf_call_combine (bam2bcf.c:959) for
@@ -377,5 +462,365 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 			call.anno[j] += r.anno[j]
 		}
 	}
+
+	// has_alt: a real ALT exists unless the only non-REF allele is `<*>`
+	// (bam2bcf.c:1014). The bias tests are skipped otherwise.
+	call.hasAlt = !(call.nAlleles == 2 && call.unseen != -1)
+	if !call.hasAlt {
+		return call
+	}
+
+	// Sum the per-sample bias tallies into the combined arrays, matching
+	// upstream's shared bca accumulation.
+	var refPos, altPos, refScl, altScl [b2bNpos]int
+	var refMq, altMq, refBq, altBq, fwdMqs, revMqs [b2bNqual]int
+	for i := range calls {
+		r := &calls[i]
+		for k := 0; k < b2bNpos; k++ {
+			refPos[k] += r.refPos[k]
+			altPos[k] += r.altPos[k]
+			refScl[k] += r.refScl[k]
+			altScl[k] += r.altScl[k]
+		}
+		for k := 0; k < b2bNqual; k++ {
+			refMq[k] += r.refMq[k]
+			altMq[k] += r.altMq[k]
+			refBq[k] += r.refBq[k]
+			altBq[k] += r.altBq[k]
+			fwdMqs[k] += r.fwdMqs[k]
+			revMqs[k] += r.revMqs[k]
+		}
+	}
+
+	// SGB — segregation bias (bam2bcf.c:1158, calc_SegBias).
+	call.segBias, call.sgbOK = calcSegBias(calls, &call)
+
+	// Mann-Whitney U z-scores (bam2bcf.c:1172-1183). RPBZ uses the
+	// read-position bins, MQBZ the mapping-quality bins (one-sided),
+	// BQBZ the base-quality bins, MQSBZ the fwd/rev mapping-quality
+	// bins, SCBZ the soft-clip-length bins.
+	call.mwuPos, call.rpbzOK = calcMWUBiasZ(refPos[:], altPos[:], false)
+	call.mwuMq, call.mqbzOK = calcMWUBiasZ(refMq[:], altMq[:], true)
+	call.mwuBq, call.bqbzOK = calcMWUBiasZ(refBq[:], altBq[:], false)
+	call.mwuMqs, call.mqsbzOK = calcMWUBiasZ(fwdMqs[:], revMqs[:], false)
+	call.mwuSc, call.scbzOK = calcMWUBiasZ(refScl[:], altScl[:], false)
+
+	// VDB — variant distance bias (bam2bcf.c:1194, calc_vdb).
+	call.vdb, call.vdbOK = calcVDB(altPos[:])
+
 	return call
+}
+
+// getPositionResult bundles the soft-clip-aware position annotations
+// computed by getPosition for one read base.
+type getPositionResult struct {
+	pos    int // edist: query position counted from the unclipped read start
+	length int // unclipped read length (l_qseq minus soft-clips)
+	scLen  int // length of the nearer soft-clip, 0 if none
+	scDist int // distance from this base to the nearer soft-clip
+}
+
+// getPosition is the Go port of get_position (bam2bcf.c:146). cigarOps
+// and cigarLens describe rec's CIGAR (one entry per op); qpos is the
+// 0-based query position of the base; lQseq is the read's sequence
+// length. The CIGAR op codes use the BAM convention 0=M..9, with 4=S
+// (soft-clip) and 5=H (hard-clip).
+func getPosition(cigarOps, cigarLens []int, qpos, lQseq int) getPositionResult {
+	const (
+		cigarSoftClip = 4
+		cigarHardClip = 5
+	)
+	edist := qpos + 1
+	scLeft, scRight := 0, 0
+	scLeftDist, scRightDist := -1, -1
+
+	// Leading soft-clip run.
+	i := 0
+	for ; i < len(cigarOps); i++ {
+		switch cigarOps[i] {
+		case cigarHardClip:
+			continue
+		case cigarSoftClip:
+			scLeft += cigarLens[i]
+		default:
+			goto leftDone
+		}
+	}
+leftDone:
+	if scLeft != 0 {
+		scLeftDist = qpos + 1 - scLeft
+	}
+	edist -= scLeft
+
+	// Trailing soft-clip run (down to i, the first non-leading-clip op).
+trailing:
+	for j := len(cigarOps) - 1; j >= i; j-- {
+		switch cigarOps[j] {
+		case cigarHardClip:
+			continue
+		case cigarSoftClip:
+			scRight += cigarLens[j]
+		default:
+			break trailing
+		}
+	}
+	if scRight != 0 {
+		scRightDist = lQseq - scRight - qpos
+	}
+
+	res := getPositionResult{pos: edist, length: lQseq - scLeft - scRight}
+	switch {
+	case scLeftDist >= 0:
+		if scRightDist < 0 || scLeftDist < scRightDist {
+			res.scLen = scLeft
+			res.scDist = scLeftDist
+		}
+	case scRightDist >= 0:
+		res.scLen = scRight
+		res.scDist = scRightDist
+	}
+	return res
+}
+
+// biasPositionBins reduces getPosition's raw output to the rescaled
+// (epos, scLen) bins glfgen's bias tallies index, exactly as the inline
+// code at bam2bcf.c:497-504 does.
+func biasPositionBins(r getPositionResult) (epos, scLen int) {
+	epos = int(float64(r.pos) / float64(r.length+1) * float64(b2bNpos-1))
+	if r.scLen != 0 {
+		scLen = int(15.0 * float64(r.scLen) / float64(r.scDist+1))
+		if scLen > 99 {
+			scLen = 99
+		}
+	}
+	if epos < 0 {
+		epos = 0
+	} else if epos >= b2bNpos {
+		epos = b2bNpos - 1
+	}
+	return epos, scLen
+}
+
+// kfErfc is the Go port of htslib's kf_erfc (kfunc.c:58). bcftools uses
+// this rational approximation, not the libc erfc, so calc_vdb must call
+// it for byte-for-byte parity. Note kf_erfc(x) effectively evaluates
+// erfc(x*sqrt2) — the M_SQRT2 scaling is part of the function.
+func kfErfc(x float64) float64 {
+	const (
+		p0 = 220.2068679123761
+		p1 = 221.2135961699311
+		p2 = 112.0792914978709
+		p3 = 33.912866078383
+		p4 = 6.37396220353165
+		p5 = .7003830644436881
+		p6 = .03526249659989109
+		q0 = 440.4137358247522
+		q1 = 793.8265125199484
+		q2 = 637.3336333788311
+		q3 = 296.5642487796737
+		q4 = 86.78073220294608
+		q5 = 16.06417757920695
+		q6 = 1.755667163182642
+		q7 = .08838834764831844
+	)
+	z := math.Abs(x) * math.Sqrt2
+	if z > 37 {
+		if x > 0 {
+			return 0
+		}
+		return 2
+	}
+	expntl := math.Exp(z * z * -.5)
+	var p float64
+	if z < 10/math.Sqrt2 {
+		p = expntl * ((((((p6*z+p5)*z+p4)*z+p3)*z+p2)*z+p1)*z + p0) /
+			(((((((q7*z+q6)*z+q5)*z+q4)*z+q3)*z+q2)*z+q1)*z + q0)
+	} else {
+		p = expntl / 2.506628274631001 / (z + 1/(z+2/(z+3/(z+4/(z+.65)))))
+	}
+	if x > 0 {
+		return 2 * p
+	}
+	return 2 * (1 - p)
+}
+
+// calcVDB is the Go port of calc_vdb (bam2bcf.c:600). It returns the
+// variant distance bias (a value in [0,1], smaller meaning more biased)
+// for the alt-read position histogram. ok is false when VDB cannot be
+// computed because fewer than two variant reads were observed (upstream
+// returns HUGE_VAL).
+//
+// Faithfulness note: upstream declares mean_pos and mean_diff as C
+// `float`, so the running sums and the final mean are single precision.
+// The port keeps that — calc_vdb is sensitive to it via the `int ipos`
+// truncation and the dp==2 exact formula.
+func calcVDB(pos []int) (float64, bool) {
+	const readlen = 100
+	// param is the upstream nparam-by-3 fitting table {dp, pscale, pshift}.
+	param := [15][3]float32{
+		{3, 0.079, 18}, {4, 0.09, 19.8}, {5, 0.1, 20.5}, {6, 0.11, 21.5},
+		{7, 0.125, 21.6}, {8, 0.135, 22}, {9, 0.14, 22.2}, {10, 0.153, 22.3},
+		{15, 0.19, 22.8}, {20, 0.22, 23.2}, {30, 0.26, 23.4}, {40, 0.29, 23.5},
+		{50, 0.35, 23.65}, {100, 0.5, 23.7}, {200, 0.7, 23.7},
+	}
+	const nparam = 15
+
+	dp := 0
+	var meanPos float32
+	for i := range pos {
+		if pos[i] == 0 {
+			continue
+		}
+		dp += pos[i]
+		meanPos += float32(pos[i] * i)
+	}
+	if dp < 2 {
+		return 0, false // one or zero reads can be placed anywhere
+	}
+	meanPos /= float32(dp)
+
+	var meanDiff float32
+	for i := range pos {
+		if pos[i] == 0 {
+			continue
+		}
+		// abs(i - mean_pos) in single precision, matching the C float math.
+		meanDiff += float32(pos[i]) * float32(math.Abs(float64(float32(i)-meanPos)))
+	}
+	meanDiff /= float32(dp)
+
+	if dp == 2 {
+		ipos := int(meanDiff) // C float-to-int truncation
+		// Upstream: (int expr)/(readlen-1) is integer division, only the
+		// final /(readlen*0.5) is floating point.
+		num := (2*readlen - 2*(ipos+1) - 1) * (ipos + 1)
+		return float64(num/(readlen-1)) / (readlen * 0.5), true
+	}
+
+	var i int
+	if dp >= 200 {
+		i = nparam
+	} else {
+		for i = 0; i < nparam; i++ {
+			if param[i][0] >= float32(dp) {
+				break
+			}
+		}
+	}
+	var pscale, pshift float32
+	switch {
+	case i == nparam:
+		pscale = param[nparam-1][1]
+		pshift = param[nparam-1][2]
+	case i > 0 && param[i][0] != float32(dp):
+		pscale = (param[i-1][1] + param[i][1]) * 0.5
+		pshift = (param[i-1][2] + param[i][2]) * 0.5
+	default:
+		pscale = param[i][1]
+		pshift = param[i][2]
+	}
+	return 0.5 * kfErfc(-float64((meanDiff-pshift)*pscale)), true
+}
+
+// logsumexp2 is the Go port of bam2bcf.c's logsumexp2 helper.
+func logsumexp2(a, b float64) float64 {
+	if a > b {
+		return math.Log(1+math.Exp(b-a)) + a
+	}
+	return math.Log(1+math.Exp(a-b)) + b
+}
+
+// calcSegBias is the Go port of calc_SegBias (bam2bcf.c:895). It returns
+// the segregation-bias score and ok=false (HUGE_VAL upstream) when no
+// non-reference reads were observed.
+func calcSegBias(calls []bcfCallret, call *bcfCall) (float64, bool) {
+	n := len(calls)
+	if n == 0 {
+		return 0, false
+	}
+	nr := int(call.anno[2] + call.anno[3]) // non-reference reads
+	if nr == 0 {
+		return 0, false
+	}
+	avgDp := int(call.anno[0]+call.anno[1]) + nr
+	avgDp /= n
+	if avgDp == 0 {
+		// Guard against a divide-by-zero that C would not hit because
+		// nr>0 implies the total is positive; keep parity by flooring.
+		avgDp = 1
+	}
+	m := math.Floor(float64(nr)/float64(avgDp) + 0.5)
+	if m > float64(n) {
+		m = float64(n)
+	} else if m == 0 {
+		m = 1
+	}
+	f := m / 2.0 / float64(n)
+	p := float64(nr) / float64(n)
+	q := float64(nr) / m
+	var sum float64
+	const log2 = math.Ln2
+	for i := range calls {
+		oi := int(calls[i].anno[2] + calls[i].anno[3])
+		var tmp float64
+		if oi != 0 {
+			tmp = logsumexp2(math.Log(2*(1-f)), math.Log(f)+float64(oi)*log2-q)
+			tmp += math.Log(f) + float64(oi)*math.Log(q/p) - q + p
+		} else {
+			tmp = math.Log(2*f*(1-f)*math.Exp(-q)+f*f*math.Exp(-2*q)+(1-f)*(1-f)) + p
+		}
+		sum += tmp
+	}
+	return sum, true
+}
+
+// calcMWUBiasZ is the Go port of calc_mwu_biasZ (bam2bcf.c:817) with
+// do_Z=1, i.e. the standard-deviation-normalised Mann-Whitney U z-score
+// used by RPBZ/MQBZ/BQBZ/MQSBZ/SCBZ. leftOnly mirrors the upstream
+// left_only argument (set for MQBZ); with do_Z it does not change the
+// result but is kept for fidelity. ok=false signals HUGE_VAL (one of
+// the two histograms is empty).
+func calcMWUBiasZ(a, b []int, leftOnly bool) (float64, bool) {
+	n := len(a)
+	_ = leftOnly // unused with do_Z=1, kept to mirror the C signature
+
+	// Optimisation: detect an all-zero b array.
+	bEmpty := true
+	for i := 0; i < n; i++ {
+		if b[i] != 0 {
+			bEmpty = false
+			break
+		}
+	}
+
+	var e, l, na, nb int
+	var t int64
+	if bEmpty {
+		for i := n - 1; i >= 0; i-- {
+			na += a[i]
+			ai := int64(a[i])
+			t += (ai*ai - 1) * ai
+		}
+	} else {
+		for i := n - 1; i >= 0; i-- {
+			e += a[i] * b[i]
+			l += a[i] * nb
+			na += a[i]
+			nb += b[i]
+			pp := int64(a[i] + b[i])
+			t += (pp*pp - 1) * pp
+		}
+	}
+	if na == 0 || nb == 0 {
+		return 0, false
+	}
+
+	u := float64(l) + float64(e)*0.5
+	m := float64(na) * float64(nb) / 2.0
+	var2 := float64(na*nb) / 12.0 *
+		(float64(na+nb+1) - float64(t)/float64((na+nb)*(na+nb-1)))
+	if var2 <= 0 {
+		return 0, true
+	}
+	return (u - m) / math.Sqrt(var2), true
 }

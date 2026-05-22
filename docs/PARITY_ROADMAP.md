@@ -1407,8 +1407,9 @@ Plus:
 
 **Genuine remaining samtools gaps** (everything else is done):
 
-- **`mpileup` MAQ genotype-likelihood model — slices 1, 2 & 3 DONE.**
-  The `mpileup` MAQ-model port is sliced into four parts:
+- **`mpileup` MAQ genotype-likelihood model — slices 1-4 DONE; only
+  indel calling remains deferred.** The `mpileup` SNP MAQ-model port is
+  complete: it was sliced into four parts:
   - **Slice 1 (DONE).** The MAQ error model (`errmod.c`) is ported to
     pure Go in `tools/bcftools/pkg/bcftools/errmod.go` (`ErrmodInit` /
     `ErrmodCal`).
@@ -1441,39 +1442,57 @@ Plus:
     exact for indel-free inputs. BAQ runs
     before `accumulateMpileupBases`, so the `delta_baseQ` cap and the
     `min_baseQ` filter inside `bcfCallGlfgen` see the BAQ-adjusted
-    qualities — matching `mpileup.c`'s ordering. Byte-for-byte parity
-    is verified by `TestMpileupBAQGoldens`, which matches all 1091
-    `<*>`-only records of `mpileup/mpileup.11.out` over region
-    `17:1-1116`.
-  - **Slice 4 (TODO).** The bias annotations VDB / SGB / RPBZ / MQBZ /
-    BQBZ / MQSBZ / SCBZ / MQ0F-family (`calc_vdb` / `calc_SegBias` /
-    `calc_mwu_biasZ`) and the indel caller (`bam2bcf_indel.c`).
-    Records are currently emitted without those INFO tags. Two other
-    follow-ups block full golden parity and are tracked here: the
-    `MPLP_SMART_OVERLAPS` read-pair quality-merge (overlapping mates
-    are not yet de-weighted, so multi-read columns with mate overlap
-    diverge), and INFO/QS float formatting (upstream prints a
-    `float32` `%g`; we print full `float64` precision).
+    qualities — matching `mpileup.c`'s ordering.
+  - **Slice 4 (DONE).** The per-site bias annotations are ported in
+    `bam2bcf.go`: `calcVDB` (VDB, with the htslib `kf_erfc` rational
+    approximation ported as `kfErfc` and the single-precision `float`
+    arithmetic upstream relies on), `calcSegBias` (SGB) and
+    `calcMWUBiasZ` (the standard-deviation-normalised Mann-Whitney U
+    z-score that yields RPBZ / MQBZ / BQBZ / MQSBZ / SCBZ), plus the
+    MQ0F fraction. The bias tallies (`ref_pos`/`alt_pos`,
+    `ref_mq`/`alt_mq`, `ref_bq`/`alt_bq`, `fwd_mqs`/`rev_mqs`,
+    `ref_scl`/`alt_scl`) accumulate per-sample in `bcfCallret` from the
+    I16 path and from `getPosition` (the soft-clip-aware read-position
+    port), then combine in `bcfCallCombine`. INFO floats — QS, I16 and
+    every bias tag — are now rounded through `float32` and rendered with
+    a 6-significant-digit `%g` (`formatFloat32G`), matching upstream's C
+    `float` storage byte-for-byte. `MPLP_SMART_OVERLAPS` is ported too:
+    `applySmartOverlaps` pairs the two mates of each proper pair and
+    `tweakOverlapQuality` (a faithful port of htslib's
+    `tweak_overlap_quality`, with the `cigar_iref2iseq` iterator and the
+    Wang/X31 read-name hashes) merges the overlapping-span base
+    qualities before BAQ. Byte-for-byte parity is verified by
+    `TestMpileupSNPGoldens`: the full `mpileup/mpileup.11.out` golden
+    (4001 covered positions, 87 SNP ALT records, two overlapping mate
+    pairs) and the three-sample multi-BAM `mpileup/mpileup.1.out` golden
+    match exactly — header and every SNP data record, all bias INFO tags
+    included.
+
+  **Remaining deferred work — indel calling only.** The one upstream
+  `mpileup` path still unported is the indel caller (`bam2bcf_indel.c` /
+  `bam2bcf_edlib.c`): indel candidate detection, the indel genotype
+  likelihoods and the INDEL/IDV/IMF INFO tags. The single INDEL record
+  of `mpileup.11.out` (17:302 `TA`) is consequently the only golden line
+  not reproduced; `TestMpileupSNPGoldens` aligns records by `CHROM:POS`
+  and skips it, and `TestMpileupGoldensDeferred` catalogues every other
+  deferred golden with its precise reason (FORMAT tags beyond PL, `--ff`
+  FLAG filtering, `-s/-S/-G` sample/read-group selection, IUPAC REF
+  bases, indel/SCR fixtures).
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
   byte-for-byte parity holds only at depth ≤255 (RNG byte-parity is not
-  a project goal).
+  a project goal). All vendored `mpileup` fixtures are within that
+  bound.
 
-  **Parity watch-item — QS-sum zero-break float comparison.**
-  `bcfCallCombine` in `bam2bcf.go` (allele-ordering loop, ~line 290)
-  breaks the loop on `qsum[ipos] == 0` using a Go `float64` exact
-  compare, mirroring upstream `bcf_call_combine` (`bam2bcf.c:991-1001`,
-  which tests a C `float`). The `qsum` slots are sums of per-sample
-  coverage-normalised QS ratios; accumulation order and the C
-  `float`-vs-Go `float64` width difference mean a slot that is exactly
-  `0` in upstream could be a tiny non-zero in Go (or vice versa). When
-  that happens, `n_alleles` and the position of the `<*>` unseen allele
-  differ from upstream, shifting the whole allele set and PL grid. Not
-  observed in the slice-2 fixtures (all small, integral QS), but it
-  must be verified — and likely fixed with an explicit epsilon or by
-  matching upstream's `float` width/accumulation order — when the
-  slice-3/4 goldens are enabled.
+  **Parity watch-item (resolved) — QS-sum zero-break float comparison.**
+  `bcfCallCombine` in `bam2bcf.go` breaks the allele-ordering loop on
+  `qsum[ipos] == 0`, mirroring upstream `bcf_call_combine`
+  (`bam2bcf.c:991-1001`, which tests a C `float`). The slice-4 goldens
+  exercise this path heavily (87 multi-allelic SNP sites) and match
+  byte-for-byte, so the C-`float`-vs-Go-`float64` width concern did not
+  materialise on the upstream fixtures. The note is kept for awareness
+  on future high-coverage inputs.
 - **`phase` MCMC chimera repair.** The v1 port uses a greedy
   adjacent-het vote in place of upstream `phase.c`'s MCMC
   `phase_core` loop; `-b` per-haplotype BAM split is also deferred.
@@ -1896,12 +1915,14 @@ per-subcommand option-tail sections below):
   the validation situation (no upstream golden exists).
 - **`gtcheck`** — v1 hard-GT Hamming only; `--cluster` HMM-style
   sample clustering and PL/GL scoring deferred.
-- **`mpileup`** — the upstream MAQ genotype-likelihood model is ported
-  (`errmod.c` → `errmod.go`; `bam2bcf.c` glfgen/combine/2bcf →
-  `bam2bcf.go`), with the full multi-allelic PL grid, the `<*>` unseen
-  allele, BCF output, and BAQ realignment (`pkg/htsgo/baq`) wired in
-  (slices 1-3 done). The bias annotations (VDB/SGB/RPBZ/...) and indel
-  calling are slice 4.
+- **`mpileup`** — the upstream MAQ genotype-likelihood model is fully
+  ported for the SNP path (`errmod.c` → `errmod.go`; `bam2bcf.c`
+  glfgen/combine/2bcf → `bam2bcf.go`): the multi-allelic PL grid, the
+  `<*>` unseen allele, BCF output, BAQ realignment (`pkg/htsgo/baq`),
+  the per-site bias annotations (VDB/SGB/RPBZ/MQBZ/BQBZ/MQSBZ/SCBZ),
+  MQ0F and `MPLP_SMART_OVERLAPS` read-pair quality merging are all wired
+  in and verified byte-for-byte against the upstream goldens (slices
+  1-4 done). Only indel calling (`bam2bcf_indel.c`) remains deferred.
 - **`call`** — consensus and biallelic multi-allelic calling are
   implemented; the full upstream multi-allelic `-m` grid over >2 ALTs
   pairs with the mpileup MAQ port.

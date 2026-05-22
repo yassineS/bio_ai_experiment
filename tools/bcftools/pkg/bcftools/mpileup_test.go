@@ -137,7 +137,8 @@ func TestCombineAlleleOrdering(t *testing.T) {
 }
 
 // TestBcfCall2bcfRecord checks the emitted vcf.Variant: REF, ALT incl.
-// <*>, QUAL=0, INFO order DP/I16/QS/MQ0F, FORMAT/PL.
+// <*>, QUAL=0, the INFO ordering (DP/I16/QS first, the bias tags, then
+// MQ0F last), and FORMAT/PL.
 func TestBcfCall2bcfRecord(t *testing.T) {
 	pile := append(mkPile(5, 'A', 30), mkPile(3, 'C', 30)...)
 	em := ErrmodInit(1.0 - mpileupTheta)
@@ -154,12 +155,17 @@ func TestBcfCall2bcfRecord(t *testing.T) {
 	if len(v.Alt) != 2 || v.Alt[0] != "C" || v.Alt[1] != "<*>" {
 		t.Errorf("ALT = %v, want [C <*>]", v.Alt)
 	}
-	wantOrder := []string{"DP", "I16", "QS", "MQ0F"}
-	for i, k := range wantOrder {
+	// INFO begins with DP/I16/QS and ends with MQ0F; the bias tags
+	// (present here because the site has a real ALT) sit in between.
+	wantPrefix := []string{"DP", "I16", "QS"}
+	for i, k := range wantPrefix {
 		if i >= len(v.InfoOrder) || v.InfoOrder[i] != k {
-			t.Errorf("InfoOrder = %v, want prefix %v", v.InfoOrder, wantOrder)
+			t.Errorf("InfoOrder = %v, want prefix %v", v.InfoOrder, wantPrefix)
 			break
 		}
+	}
+	if n := len(v.InfoOrder); n == 0 || v.InfoOrder[n-1] != "MQ0F" {
+		t.Errorf("InfoOrder = %v, want MQ0F last", v.InfoOrder)
 	}
 	if v.Info["DP"] != "8" {
 		t.Errorf("INFO/DP = %q, want 8", v.Info["DP"])
@@ -389,41 +395,13 @@ func TestMpileupBAQGoldens(t *testing.T) {
 	t.Logf("BAQ active: %d/%d `<*>`-only columns differ between -B and the default", diffs, len(got))
 }
 
-// TestMpileupBAQGoldensDeferred documents the upstream mpileup goldens
-// that do NOT yet byte-match and the precise reason, so the deferred
-// work is visible in the test output.
+// TestMpileupBAQGoldensDeferred is retained for history. The slice-4
+// work (bias annotations, INFO/QS float32 rounding, smart-overlaps)
+// closed the SNP gaps it used to track; the full byte-for-byte parity
+// check now lives in TestMpileupSNPGoldens and the remaining deferred
+// goldens are catalogued by TestMpileupGoldensDeferred.
 func TestMpileupBAQGoldensDeferred(t *testing.T) {
-	deferred := []struct{ golden, reason string }{
-		{
-			"mpileup/mpileup.12.out",
-			"multi-BAM (mpileup.1+2+3): I16 strand/quality sums diverge " +
-				"because MPLP_SMART_OVERLAPS read-pair quality merging is " +
-				"not yet ported (slice-2 follow-up), and ALT records carry " +
-				"the slice-4 bias annotations (SGB/RPBZ/MQBZ/...).",
-		},
-		{
-			"mpileup/mpileup.3.out",
-			"produced with `-B --ff 0x14`: the --ff/--rf FLAG read filter " +
-				"is accepted but inert, so reverse-strand reads are not " +
-				"excluded and depth/I16 diverge.",
-		},
-		{
-			"mpileup/iupac.1.out",
-			"reference FASTA carries IUPAC ambiguity codes; REF-base " +
-				"rendering of ambiguous reference positions is a separate " +
-				"parity gap.",
-		},
-		{
-			"mpileup/mpileup.11.out (ALT records)",
-			"ALT records differ only by the slice-4 bias INFO tags and by " +
-				"INFO/QS float formatting (upstream prints float32 %g; we " +
-				"print full float64 precision) — a slice-2/4 follow-up.",
-		},
-	}
-	for _, d := range deferred {
-		t.Logf("DEFERRED golden %s: %s", d.golden, d.reason)
-	}
-	t.Skip("documented above; these goldens are deferred to slice 4 / slice-2 follow-ups")
+	t.Skip("superseded by TestMpileupSNPGoldens and TestMpileupGoldensDeferred")
 }
 
 // TestMpileupBCFRoundTrip verifies that -O b output is well-formed BCF
