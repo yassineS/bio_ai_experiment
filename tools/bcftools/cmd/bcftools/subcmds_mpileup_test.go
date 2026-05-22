@@ -27,7 +27,8 @@ func TestCheckMpileupDeferred(t *testing.T) {
 		mf   *mpileupFlags
 		want string
 	}{
-		{"redoBAQ", &mpileupFlags{redoBAQ: true}, "-E/--redo-BAQ"},
+		// -E/--redo-BAQ is wired in slice 3: no longer deferred.
+		{"redoBAQ", &mpileupFlags{redoBAQ: true}, ""},
 		{"-O u", &mpileupFlags{outputType: "u"}, ""},
 		{"-O b", &mpileupFlags{outputType: "b"}, ""},
 		{"-O bogus", &mpileupFlags{outputType: "x"}, "-O x"},
@@ -56,9 +57,11 @@ func TestMpileupRunInputs(t *testing.T) {
 	if rc := runMpileup([]string{"some.bam"}); rc != 2 {
 		t.Errorf("no -f rc=%d want 2", rc)
 	}
-	// -E/--redo-BAQ flag should reject early.
-	if rc := runMpileup([]string{"-E", "-f", "x.fa", "some.bam"}); rc != 2 {
-		t.Errorf("-E rc=%d want 2", rc)
+	// -E/--redo-BAQ is wired in slice 3 (no longer rejected at parse
+	// time); the run still fails (rc=1) here because the fixtures do
+	// not exist.
+	if rc := runMpileup([]string{"-E", "-f", "x.fa", "some.bam"}); rc != 1 {
+		t.Errorf("-E rc=%d want 1 (missing fixtures)", rc)
 	}
 	// -O b (BCF) is now accepted at the option-deferral check; the run
 	// still fails (rc=1) here because the fixture files do not exist.

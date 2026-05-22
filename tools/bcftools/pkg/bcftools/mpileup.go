@@ -14,16 +14,30 @@
 //     one upper-triangle grid of n_alleles*(n_alleles+1)/2 values per
 //     sample.
 //
+// BAQ realignment (slice 3) is wired: mapped reads are run through
+// `pkg/htsgo/baq.SamProbRealn` in apply+extend mode before their bases
+// enter the pileup, matching upstream's `sam_prob_realn(b, ref, ref_len,
+// 3)` call in mpileup.c. `-B/--no-BAQ` disables it and `-E/--redo-BAQ`
+// forces recomputation (flag 7). By default upstream enables
+// MPLP_REALN | MPLP_REALN_PARTIAL (mpileup.c:1389), so realignment is
+// PARTIAL: the per-column has_indel/soft-clip heuristic and the per-read
+// spanning check skip reads that do not need BAQ. `-D/--full-BAQ` clears
+// MPLP_REALN_PARTIAL (mpileup.c:1567), forcing full BAQ — every read on
+// the chromosome is realigned. The port mirrors both modes via
+// opts.FullBAQ. For indel-free inputs the two paths coincide.
+//
+// One faithful-port caveat: upstream's per-column `p->indel` term (an
+// indel event adjacent to the column, supplied by the pileup engine) is
+// not available without indel detection (slice 4), so for indel-bearing
+// inputs the partial heuristic is a slight underestimate.
+//
 // Deferred slices (see docs/PARITY_ROADMAP.md#bcftools):
 //
-//   - Slice 3: BAQ realignment. `pkg/htsgo/baq` already implements the
-//     HMM; mpileup does not yet wire it, so base qualities here are the
-//     raw (delta_baseQ-capped) values. `-B/--no-BAQ` is therefore the
-//     effective behaviour today and `-E/--redo-BAQ` is hard-rejected.
 //   - Slice 4: the bias annotations VDB / SGB / RPBZ / MQBZ / BQBZ /
 //     MQSBZ / SCBZ. Records are emitted without those INFO tags.
 //   - Indel calling (bam2bcf_indel.c) — every indel knob is accepted at
-//     the CLI but inert.
+//     the CLI but inert. The MPLP_REALN_PARTIAL BAQ-skip heuristic is
+//     tracked here too: it cannot be faithful without indel detection.
 //
 // Upstream reference: reference_code/bcftools/mpileup.c (the driver) and
 // bam2bcf.c (bcf_call_glfgen / bcf_call_combine / bcf_call2bcf).
@@ -40,6 +54,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
@@ -131,12 +146,18 @@ type MpileupOptions struct {
 	CountOrphans bool
 	// IgnoreOverlaps is upstream's -x/--ignore-overlaps.
 	IgnoreOverlaps bool
-	// NoBAQ is upstream's -B/--no-BAQ. BAQ is not yet wired (slice 3),
-	// so this is effectively the default; the flag exists for parity.
+	// NoBAQ is upstream's -B/--no-BAQ. When set, BAQ realignment is
+	// skipped and raw (delta_baseQ-capped) base qualities are used.
 	NoBAQ bool
-	// RedoBAQ is upstream's -E/--redo-BAQ. Hard-rejected until slice 3.
+	// RedoBAQ is upstream's -E/--redo-BAQ. When set, BAQ is recomputed
+	// from scratch, discarding any pre-existing BQ tag (baq.FlagRedo).
 	RedoBAQ bool
-	// FullBAQ is upstream's -D/--full-baq. Accepted; ignored until slice 3.
+	// FullBAQ is upstream's -D/--full-BAQ. By default mpileup does
+	// PARTIAL realignment (upstream's MPLP_REALN_PARTIAL, on by
+	// default): the per-column indel/soft-clip heuristic and the
+	// per-read spanning check skip reads that do not need BAQ. When
+	// FullBAQ is set, -D clears MPLP_REALN_PARTIAL so every read on the
+	// chromosome is BAQ-realigned ("full BAQ").
 	FullBAQ bool
 	// AdjustMQ is upstream's -C/--adjust-mq. Accepted; ignored.
 	AdjustMQ int
@@ -235,11 +256,17 @@ type MpileupOptions struct {
 	FlagLS   string
 }
 
-// ErrMpileupRedoBAQ is returned when -E/--redo-BAQ is requested. BAQ
-// wiring is slice 3 of the MAQ-model work; the HMM itself already
-// exists in pkg/htsgo/baq but is not yet plumbed into mpileup. Tracked
-// in docs/PARITY_ROADMAP.md#bcftools.
-var ErrMpileupRedoBAQ = fmt.Errorf("bcftools mpileup: -E/--redo-BAQ is not implemented yet (BAQ wiring is slice 3); tracked in docs/PARITY_ROADMAP.md#bcftools")
+// mpileupBAQFlag derives the realn flag passed to baq.SamProbRealn from
+// the mpileup options, mirroring mpileup.c:548
+// `sam_prob_realn(b, ref, ref_len, (flag & MPLP_REDO_BAQ) ? 7 : 3)`.
+// mpileup always realigns in apply+extend mode (3); -E adds FlagRedo (7).
+func mpileupBAQFlag(opts MpileupOptions) int {
+	flag := baq.FlagApply | baq.FlagExtend
+	if opts.RedoBAQ {
+		flag |= baq.FlagRedo
+	}
+	return flag
+}
 
 // MpileupFile is the file-path entry point. It opens every input BAM,
 // the FASTA reference, and writes BCF or VCF to out.
@@ -355,12 +382,8 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	return writeMpileupVCF(out, opts, ref, chromOrder, chromLen, perInputRecs, samples, regWindows)
 }
 
-// validateMpileupOptions applies upstream's defaults (mpileup.c:1381-1383)
-// and hard-rejects flags whose behaviour is deferred to a later slice.
+// validateMpileupOptions applies upstream's defaults (mpileup.c:1381-1383).
 func validateMpileupOptions(opts *MpileupOptions) error {
-	if opts.RedoBAQ {
-		return ErrMpileupRedoBAQ
-	}
 	if opts.MaxDepth == 0 {
 		opts.MaxDepth = DefaultMpileupMaxDepth
 	}
@@ -662,6 +685,16 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 	regWindows map[string][][2]int) error {
 
 	nIn := len(perInputChromRecs)
+	// BAQ realignment. Upstream mpileup.c runs sam_prob_realn on each
+	// mapped read against the chromosome reference (BAQ on by default);
+	// in apply mode it lowers rec.Qual in place. applyMpileupBAQ ports
+	// mplp_realn's column-gated decision and edits rec.Qual before
+	// accumulateMpileupBases reads the (now BAQ-adjusted) qualities.
+	// -B/--no-BAQ skips it entirely.
+	if !opts.NoBAQ {
+		applyMpileupBAQ(perInputChromRecs, refSlab, opts)
+	}
+
 	// events[input][pos0] is the pileup column for one input at one
 	// reference position.
 	events := make([][][]pileupBase, nIn)
@@ -704,6 +737,211 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 		}
 	}
 	return nil
+}
+
+// mpileupReadBAQInfo caches the per-read CIGAR facts that mplp_realn's
+// realignment heuristic needs, so they are computed once per read
+// instead of once per covered column.
+type mpileupReadBAQInfo struct {
+	rec       *sam.Record
+	beg       int  // 0-based reference start
+	end       int  // 0-based reference end (exclusive)
+	hasIndel  bool // CIGAR contains an I/D/N op (upstream PLP_HAS_INDEL)
+	hasClip   bool // CIGAR contains a soft-clip op (PLP_HAS_SOFT_CLIP)
+	ncig      int  // number of CIGAR ops
+	leadMatch int  // leading consecutive M/=/X reference length (lm)
+	tailMatch int  // trailing consecutive M/=/X reference length (rm)
+	allMatch  bool // every CIGAR op is M/=/X (nm == ncig)
+	realigned bool // BAQ already applied (upstream PLP_IS_REALN)
+}
+
+// mpileupBuildBAQInfo derives the mplp_realn heuristic facts for rec. lr
+// (long-read) controls whether clip ops are skipped while measuring the
+// leading/trailing match runs, mirroring mplp_realn's `lr` branch.
+func mpileupBuildBAQInfo(rec *sam.Record) mpileupReadBAQInfo {
+	info := mpileupReadBAQInfo{rec: rec, beg: int(rec.Pos) - 1, ncig: len(rec.Cigar)}
+	refLen := 0
+	for _, op := range rec.Cigar {
+		switch op.Op() {
+		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			refLen += int(op.Length())
+		case sam.CigarDeletion, sam.CigarSkipped:
+			refLen += int(op.Length())
+			info.hasIndel = true
+		case sam.CigarInsertion:
+			info.hasIndel = true
+		case sam.CigarSoftClip:
+			info.hasClip = true
+		}
+	}
+	info.end = info.beg + refLen
+	lr := len(rec.Seq) > 500
+	// Leading match run.
+	nm := 0
+	for _, op := range rec.Cigar {
+		o := op.Op()
+		if lr && (o == sam.CigarHardClip || o == sam.CigarSoftClip) {
+			continue
+		}
+		if o == sam.CigarMatch || o == sam.CigarEqual || o == sam.CigarMismatch {
+			info.leadMatch += int(op.Length())
+			nm++
+		} else {
+			break
+		}
+	}
+	info.allMatch = nm == info.ncig
+	// Trailing match run.
+	for k := len(rec.Cigar) - 1; k >= 0; k-- {
+		o := rec.Cigar[k].Op()
+		if lr && (o == sam.CigarHardClip || o == sam.CigarSoftClip) {
+			continue
+		}
+		if o == sam.CigarMatch || o == sam.CigarEqual || o == sam.CigarMismatch {
+			info.tailMatch += int(rec.Cigar[k].Length())
+		} else {
+			break
+		}
+	}
+	return info
+}
+
+// applyMpileupBAQ ports mpileup.c's mplp_realn: it walks every covered
+// reference column and runs baq.SamProbRealn (apply+extend mode) on each
+// read the first time a column it covers selects it. A read is realigned
+// at most once, matching upstream's PLP_IS_REALN dedup.
+//
+// By default upstream sets MPLP_REALN_PARTIAL (mpileup.c:1389): the
+// per-column has_indel/soft-clip skip heuristic and the per-read
+// spanning check both apply. `-D/--full-BAQ` (opts.FullBAQ) clears
+// MPLP_REALN_PARTIAL (mpileup.c:1567), so both of those checks are
+// bypassed and every read on the chromosome is realigned ("full BAQ").
+//
+// One faithful-port caveat: upstream's per-column `p->indel` term (an
+// indel event adjacent to the column, supplied by the pileup engine) is
+// not available without indel detection (slice 4). has_indel here counts
+// only reads whose CIGAR carries an I/D/N op (PLP_HAS_INDEL), so for
+// indel-bearing inputs the partial heuristic is a slight underestimate;
+// for indel-free inputs it is exact.
+func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts MpileupOptions) {
+	baqFlag := mpileupBAQFlag(opts)
+	// max_read_len: upstream default is 500 unless -M overrides it.
+	maxReadLen := opts.MaxReadLen
+	if maxReadLen <= 0 {
+		maxReadLen = 500
+	}
+
+	// Build per-read heuristic info and an interval index keyed by
+	// covered reference position.
+	var infos []*mpileupReadBAQInfo
+	maxPos := 0
+	for _, recs := range perInputChromRecs {
+		for _, rec := range recs {
+			if rec.IsUnmapped() || len(rec.Cigar) == 0 {
+				continue
+			}
+			info := mpileupBuildBAQInfo(rec)
+			infos = append(infos, &info)
+			if info.end > maxPos {
+				maxPos = info.end
+			}
+		}
+	}
+	if len(infos) == 0 {
+		return
+	}
+	// column[pos0] lists the reads overlapping that column.
+	column := make([][]*mpileupReadBAQInfo, maxPos)
+	for _, info := range infos {
+		for p := info.beg; p < info.end; p++ {
+			if p >= 0 && p < maxPos {
+				column[p] = append(column[p], info)
+			}
+		}
+	}
+
+	// partial mirrors upstream's MPLP_REALN_PARTIAL bit: set by default,
+	// cleared by -D/--full-BAQ (opts.FullBAQ). When false the per-column
+	// skip heuristic and the per-read spanning check are both bypassed.
+	partial := !opts.FullBAQ
+
+	for pos0 := 0; pos0 < maxPos; pos0++ {
+		col := column[pos0]
+		if len(col) == 0 {
+			continue
+		}
+		nt := len(col)
+		hasIndel, hasClip := 0, 0
+		for _, info := range col {
+			if info.hasIndel {
+				hasIndel++
+			}
+			if info.hasClip {
+				hasClip++
+			}
+		}
+		// MPLP_REALN_PARTIAL skip heuristic (mpileup.c:445). max_indel
+		// and min_indel both collapse to 0 here (no per-column indel
+		// term), so max_indel==min_indel is always satisfied. Skipped
+		// entirely under -D/--full-BAQ.
+		if partial {
+			if hasIndel == 0 ||
+				(float64(hasClip) < 0.2*float64(nt) &&
+					(float64(hasIndel) < 0.1*float64(nt) || hasIndel == 1)) {
+				continue
+			}
+		}
+		// realnDist mirrors the REALN_DIST macro.
+		realnDist := 40
+		if nt < 40 {
+			realnDist += 10
+		}
+		if nt < 20 {
+			realnDist += 10
+		}
+		for _, info := range col {
+			if info.realigned {
+				continue
+			}
+			info.realigned = true
+			if len(info.rec.Seq) > maxReadLen {
+				continue
+			}
+			// Per-read spanning check (mpileup.c:495). Only when
+			// MPLP_REALN_PARTIAL is on, nt > 15 and the read has more
+			// than one CIGAR op. Bypassed entirely under -D/--full-BAQ.
+			if partial && nt > 15 && info.ncig > 1 && !info.allMatch {
+				lm, rm := info.leadMatch, info.tailMatch
+				if lm >= realnDist*4 && rm >= realnDist*4 {
+					continue
+				}
+				clipThresh := 0.15
+				if nt > 20 {
+					clipThresh = 0.20
+				}
+				if lm >= realnDist && rm >= realnDist &&
+					float64(hasClip) < clipThresh*float64(nt) {
+					continue
+				}
+			}
+			// Long-read band-width blow-up guard (mpileup.c:540-545):
+			// for reads longer than 500bp, skip BAQ when the gap
+			// between the read's reference span and its query length
+			// would force an expensive wide alignment band. rl is the
+			// CIGAR reference length (bam_cigar2rlen) — info.end-info.beg.
+			if qseq := len(info.rec.Seq); qseq > 500 {
+				rl := info.end - info.beg
+				diff := rl - qseq
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff*qseq >= 500000 {
+					continue
+				}
+			}
+			baq.SamProbRealn(info.rec, refSlab, baqFlag)
+		}
+	}
 }
 
 // accumulateMpileupBases walks rec's CIGAR and appends one pileupBase

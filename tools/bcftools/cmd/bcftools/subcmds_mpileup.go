@@ -26,9 +26,9 @@ Usage:
 
 SNP-only MAQ genotype-likelihood model. One BCF/VCF record is emitted
 per covered reference position with the <*> "unseen" allele and real
-phred-scaled PLs. BAQ realignment and the bias annotations (VDB, SGB,
-RPBZ, ...) plus indel calling are deferred — see
-docs/PARITY_ROADMAP.md#bcftools.
+phred-scaled PLs. BAQ realignment is applied by default (-B disables
+it, -E recomputes it). The bias annotations (VDB, SGB, RPBZ, ...) and
+indel calling remain deferred — see docs/PARITY_ROADMAP.md#bcftools.
 
 Input:
   -b, --bam-list FILE            File of BAM paths (one per line).
@@ -64,10 +64,12 @@ Read filtering:
       --skip-all-set MASK        Accepted; v1 ignores.
       --ls MASK                  Accepted; v1 ignores.
 
-Likelihood model (accepted; v1 uses uniform-error model):
-  -B, --no-BAQ                   Disable BAQ (v1 default; no-op).
-  -D, --full-BAQ                 Accepted; v1 ignores.
-  -E, --redo-BAQ                 NOT IMPLEMENTED (hard-reject).
+Likelihood model:
+  -B, --no-BAQ                   Disable BAQ realignment.
+  -D, --full-BAQ                 Apply BAQ to every read. Default is
+                                 partial BAQ (the per-column/per-read
+                                 skip heuristic); -D forces full BAQ.
+  -E, --redo-BAQ                 Recompute BAQ, ignoring existing BQ tags.
   -P, --platforms LIST           Accepted; v1 ignores.
   -p, --per-sample-mF            Accepted; v1 ignores.
   -6, --illumina1.3+             Accepted; v1 ignores.
@@ -418,9 +420,6 @@ func runMpileup(args []string) int {
 // hard-reject the small set whose set-but-ignored behaviour would
 // be silently wrong.
 func checkMpileupDeferred(mf *mpileupFlags) string {
-	if mf.redoBAQ {
-		return "-E/--redo-BAQ"
-	}
 	switch mf.outputType {
 	case "", "v", "z", "u", "b":
 		// All output formats are supported (slice 2 wired BCF output).
