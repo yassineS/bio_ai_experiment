@@ -1126,7 +1126,7 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 		for i := 0; i < nIn; i++ {
 			bcfCallGlfgenIndel(piles[i], opts, em, &indelCalls[i])
 		}
-		icall, ok := bcfCallCombineIndel(indelCalls, bca, *leak)
+		icall, ok := bcfCallCombineIndel(indelCalls, calls, bca, *leak)
 		if !ok {
 			continue
 		}
@@ -1943,7 +1943,8 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 	// Bias annotations, emitted only for sites with a real ALT allele
 	// and only when the value is defined (upstream skips HUGE_VAL). The
 	// order matches bam2bcf.c:1306-1336: VDB, SGB, RPBZ, MQBZ, MQSBZ,
-	// BQBZ, SCBZ. NM/NMBZ/FS are not in the mpileup default tag set.
+	// BQBZ, NMBZ, SCBZ. NMBZ is gated by B2BInfoNMBZ; the others are in
+	// the mpileup default set.
 	if call.hasAlt {
 		addBias := func(tag string, v float64, ok bool) {
 			if ok {
@@ -1957,6 +1958,9 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 		addBias("MQBZ", call.mwuMq, call.mqbzOK)
 		addBias("MQSBZ", call.mwuMqs, call.mqsbzOK)
 		addBias("BQBZ", call.mwuBq, call.bqbzOK)
+		if fmtFlag&B2BInfoNMBZ != 0 {
+			addBias("NMBZ", call.mwuNm, call.nmbzOK)
+		}
 		addBias("SCBZ", call.mwuSc, call.scbzOK)
 	}
 
@@ -2149,6 +2153,9 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 	addBias("MQBZ", call.mwuMq, call.mqbzOK)
 	addBias("MQSBZ", call.mwuMqs, call.mqsbzOK)
 	addBias("BQBZ", call.mwuBq, call.bqbzOK)
+	if fmtFlag&B2BInfoNMBZ != 0 {
+		addBias("NMBZ", call.mwuNm, call.nmbzOK)
+	}
 	addBias("SCBZ", call.mwuSc, call.scbzOK)
 
 	mq0f := 0.0
@@ -2304,6 +2311,14 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 		`##INFO=<ID=MQBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Mapping Quality Bias (closer to 0 is better)">`,
 		`##INFO=<ID=BQBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Base Quality Bias (closer to 0 is better)">`,
 		`##INFO=<ID=MQSBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Mapping Quality vs Strand Bias (closer to 0 is better)">`,
+	)
+	// INFO/NMBZ is optional, gated by B2BInfoNMBZ. Upstream emits it
+	// between MQSBZ and SCBZ (mpileup.c:816-817 + bam2bcf.c:1326).
+	if opts.FmtFlag&B2BInfoNMBZ != 0 {
+		meta = append(meta,
+			`##INFO=<ID=NMBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Number of Mismatches within supporting reads (closer to 0 is better; approximate, experimental, make me localized?)">`)
+	}
+	meta = append(meta,
 		`##INFO=<ID=SCBZ,Number=1,Type=Float,Description="Mann-Whitney U-z test of Soft-Clip Length Bias (closer to 0 is better)">`,
 		`##INFO=<ID=SGB,Number=1,Type=Float,Description="Segregation based metric, http://samtools.github.io/bcftools/rd-SegBias.pdf">`,
 		`##INFO=<ID=MQ0F,Number=1,Type=Float,Description="Fraction of MQ0 reads (smaller is better)">`,
