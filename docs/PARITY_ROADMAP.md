@@ -1645,13 +1645,35 @@ Plus:
       caps per column-depth; `.3`'s SNP row byte-matches including
       `NMBZ=7.74597` but the indel row's I16 differs due to 4e.7).
       FORMAT/NMBZ (per-sample) is not in this slice; only INFO/NMBZ.
-    - **4e.7 (TODO).** `bcfCgpComputeIndelQ` + `cgp_align_score`
-      refinement so REF-type reads at deeply-covered homopolymer /
-      tandem-repeat sites receive a defensible indelQ instead of 0. This
-      is what blocks `indel-AD.{1,2,3,4}.out` byte-parity today: the SNP
-      INFO columns and the indel ALT consensus match, but the indel-row
-      I16 / QS / PL / AD columns disagree because most REF reads fail
-      the min-BQ gate. The `--indels-cns` (edlib) path joins this slice.
+    - **4e.7 (DONE).** Ports the legacy REF-rescue heuristic that
+      `bcf_call_glfgen` applies in its indel branch
+      (`bam2bcf.c:338-348`, originally Heng Li's e4e161068 fix for
+      htslib issue #1446). At deeply-covered homopolymer / tandem-
+      repeat sites `bcf_cgp_compute_indelQ` emits `indelQ = 0` for
+      most REF-leaning reads — so without the rescue every REF read
+      fails the indel-branch min-baseQ gate and lands in
+      `ADR/ADF_ref_missed`, breaking I16 / QS / AD parity. The
+      heuristic: when a read has no CIGAR indel (`p.indel == 0`) and
+      either `q < _n/2` or `_n > 20`, reclassify it as REF (`b = 0`),
+      promote `q` to the read's raw base quality at qpos, and rebuild
+      `seqQ` as `(3*seqQ + 2*q)/8`; once `_n > 20`, cap that seqQ at
+      40. `baseQ` for I16 stays at the pre-heuristic value in
+      `p.aux>>8&0xff` (matching `bam2bcf.c:420`); the local seqQ is
+      used only to cap `q` and gate min-baseQ. Two correctness fixes
+      landed at the same time: (a) `seqQ = q = (p.aux & 0xff)` on the
+      indel branch (upstream `bam2bcf.c:315` initialises both from
+      the indelQ bits, not the saved seqQ bits), and (b) the SNP
+      branch now stores `seqQ = b2bSeqQ` explicitly so the shared
+      `if (q > seqQ) q = seqQ` step at `bam2bcf.c:459` is the same
+      literal port. Goldens: `indel-AD.{2,3,4}.out` are byte-for-byte
+      (tested in `TestMpileupIndelADGolden`, covering `--ambig-reads`
+      default / `incAD` / `incAD0`); the `annot-NMBZ.3.1.out` indel
+      row's I16 also matches byte-for-byte. The `--indels-cns` (edlib)
+      path is a separate algorithm and stays deferred. Residual
+      divergences live on `indel-AD.1.out` (the same depth-cap
+      per-alignment-start pileup quirk that blocks
+      `annot-NMBZ.2.1.out`) and the trailing QS/NMBZ/PL[0] columns
+      of `annot-NMBZ.3.1.out`'s indel row.
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
