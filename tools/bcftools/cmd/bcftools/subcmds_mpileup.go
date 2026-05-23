@@ -58,11 +58,11 @@ Read filtering:
   -T, --targets-file FILE        BED-like targets file.
   -s, --samples LIST             Sample list (BAM SM-tag filter).
   -S, --samples-file FILE        File of sample names.
-      --skip-any-unset MASK      Accepted; v1 ignores.
-      --skip-all-unset MASK      Accepted; v1 ignores.
-      --skip-any-set MASK        Accepted; v1 ignores.
-      --skip-all-set MASK        Accepted; v1 ignores.
-      --ls MASK                  Accepted; v1 ignores.
+      --skip-any-unset MASK      Skip reads with any of these bits unset.
+      --skip-all-unset MASK      Skip reads with all of these bits unset.
+      --skip-any-set MASK        Skip reads with any of these bits set.
+      --skip-all-set MASK        Skip reads with all of these bits set.
+      --ls MASK                  Alias for --skip-all-set.
 
 Likelihood model:
   -B, --no-BAQ                   Disable BAQ realignment.
@@ -77,7 +77,8 @@ Likelihood model:
                                  Accepted; v1 ignores.
       --seed INT                 Random seed for subsampling.
                                  Accepted; v1 ignores.
-      --ambig-reads / --ar STR   Accepted; v1 ignores.
+      --ambig-reads / --ar STR   What to do with ambiguous indel reads:
+                                 drop, incAD, incAD0 (default drop).
 
 Indel model (accepted; v1 emits no indel records):
   -I, --skip-indels              Always on in v1.

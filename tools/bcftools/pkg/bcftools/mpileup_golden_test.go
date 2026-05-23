@@ -190,6 +190,137 @@ func TestMpileupSNPGoldens(t *testing.T) {
 	}
 }
 
+// TestMpileupFilterGolden replays the upstream `bcftools mpileup
+// --skip-*` test from test.pl (lines 1072-1073), exercising the
+// BAM-flag read filter. The input has two reads of the same template,
+// flags 99 (paired+propPair+R1+MateReverse) and 3 (paired+propPair).
+// `--skip-all-unset READ1` drops the second read; `--skip-any-unset
+// READ1` does likewise (since both forms reject a read with READ1
+// unset for a single-bit mask). The result is one covered position
+// at 1:100 with DP=1.
+func TestMpileupFilterGolden(t *testing.T) {
+	ref := mpileupFixture(t, "mpileup-SCR.fa")
+	mpileupFixture(t, "mpileup-SCR.fa.fai")
+	bam := mpileupFixture(t, "mpileup-filter.bam")
+	goldenPath := mpileupFixture(t, "mpileup-filter.2.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		opts MpileupOptions
+	}{
+		{
+			name: "skip-all-unset-READ1",
+			opts: MpileupOptions{
+				Inputs:    []string{bam},
+				FastaRef:  ref,
+				Targets:   []string{"1:100"},
+				Annotate:  "-AD",
+				FlagIncl:  "READ1", // --skip-all-unset alias
+				NoVersion: true,
+			},
+		},
+		{
+			name: "skip-any-unset-READ1",
+			opts: MpileupOptions{
+				Inputs:    []string{bam},
+				FastaRef:  ref,
+				Targets:   []string{"1:100"},
+				Annotate:  "-AD",
+				FlagAny:   "READ1", // --skip-any-unset alias
+				NoVersion: true,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := MpileupFile(tc.opts, &buf); err != nil {
+				t.Fatalf("MpileupFile: %v", err)
+			}
+			if buf.String() != string(goldenBytes) {
+				t.Errorf("output mismatch:\n got:\n%s\n want:\n%s", buf.String(), string(goldenBytes))
+			}
+		})
+	}
+}
+
+// TestMpileupAmbigReadsParse verifies parseAmbigReads round-trips every
+// upstream-accepted spelling. The byte-level effect on per-allele AD is
+// covered by the (currently deferred) indel-AD.{3,4} goldens which
+// depend on additional indel-scoring work tracked in PARITY_ROADMAP
+// 4e.7.
+func TestMpileupAmbigReadsParse(t *testing.T) {
+	cases := []struct {
+		in   string
+		mode AmbigReadsMode
+		err  bool
+	}{
+		{"", AmbigReadsDrop, false},
+		{"drop", AmbigReadsDrop, false},
+		{"DROP", AmbigReadsDrop, false},
+		{"incAD", AmbigReadsIncAD, false},
+		{"incad", AmbigReadsIncAD, false},
+		{"incAD0", AmbigReadsIncAD0, false},
+		{"bogus", AmbigReadsDrop, true},
+	}
+	for _, tc := range cases {
+		got, err := parseAmbigReads(tc.in)
+		if tc.err {
+			if err == nil {
+				t.Errorf("parseAmbigReads(%q): want error, got nil", tc.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseAmbigReads(%q): unexpected error: %v", tc.in, err)
+			continue
+		}
+		if got != tc.mode {
+			t.Errorf("parseAmbigReads(%q): got %d, want %d", tc.in, got, tc.mode)
+		}
+	}
+}
+
+// TestMpileupBAMFlagParse covers the named-flag and numeric forms of
+// the --skip-* argument parser ported from htslib bam_str2flag.
+func TestMpileupBAMFlagParse(t *testing.T) {
+	cases := []struct {
+		in   string
+		want uint16
+		err  bool
+	}{
+		{"", 0, false},
+		{"0x14", 0x14, false},
+		{"20", 20, false},
+		{"READ1", 0x40, false},
+		{"read1", 0x40, false},
+		{"PAIRED,PROPER_PAIR,MREVERSE", 0x1 | 0x2 | 0x20, false},
+		{"SUPPLEMENTARY", 0x800, false},
+		{"NOTAFLAG", 0, true},
+	}
+	for _, tc := range cases {
+		got, err := parseBAMFlagString(tc.in)
+		if tc.err {
+			if err == nil {
+				t.Errorf("parseBAMFlagString(%q): want error, got nil", tc.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseBAMFlagString(%q): unexpected error: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("parseBAMFlagString(%q): got 0x%x, want 0x%x", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestMpileupGoldensDeferred documents the upstream mpileup goldens that
 // still do not byte-match and the precise reason, so the remaining work
 // stays visible in the test output.
@@ -213,9 +344,22 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"ambiguous REF base is a separate parity gap.",
 		},
 		{
-			"mpileup/indel-AD.*.out, mpileup-SCR.out",
-			"exercise indel calling and INFO/FMT SCR; both depend on the " +
-				"deferred bam2bcf_indel.c port.",
+			"mpileup/indel-AD.{1,2,3,4}.out",
+			"the indel-branch glfgen still scores REF-type reads with too " +
+				"low an indelQ in deeply-covered homopolymer / tandem-repeat " +
+				"sites, so most REF reads in indel rows fail the min-BQ " +
+				"gate and the I16/QS/PL/AD columns of the indel record " +
+				"disagree with upstream. Tracked as 4e.7 in PARITY_ROADMAP " +
+				"(the bcfCgpComputeIndelQ + cgp_align_score refinement).",
+		},
+		{
+			"mpileup/indel-AD.1cns.out",
+			"requires --indels-cns (edlib realignment) — tracked as 4e.7.",
+		},
+		{
+			"mpileup/mpileup-SCR.out, annot-NMBZ.*.out",
+			"INFO/FMT/SCR (soft-clipped reads) and the FORMAT/NMBZ tag " +
+				"are tracked as 4e.5 and 4e.6 in PARITY_ROADMAP.",
 		},
 	}
 	for _, d := range deferred {

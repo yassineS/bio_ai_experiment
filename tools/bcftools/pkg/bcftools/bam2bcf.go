@@ -108,6 +108,18 @@ type pileupBase struct {
 	// indel-calling helpers (bam2bcf_indel.go) consume this; the SNP
 	// path ignores it.
 	indel int
+	// isDel mirrors htslib's bam_pileup1_t.is_del: the column lands
+	// inside this read's CIGAR D op (a spanning deletion). Upstream's
+	// SNP branch skips such reads (bam2bcf.c:307 `if (p->is_del &&
+	// !is_indel) continue`), but the indel branch lets them through
+	// with the chosen-type encoded in p.aux. The base4 slot is unused
+	// when isDel=true.
+	isDel bool
+	// isRefskip mirrors htslib's bam_pileup1_t.is_refskip: the column
+	// lands inside this read's CIGAR N op (CREF_SKIP, e.g. an RNA-seq
+	// intron). Both SNP and indel branches skip these reads
+	// unconditionally (bam2bcf.c:301).
+	isRefskip bool
 	// aux is per-read scratch space the indel core uses to thread
 	// scoring state through a column. Upstream bcftools stuffs the
 	// alignment-score / chosen-type bits into a 32-bit field on
@@ -204,8 +216,23 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 	}
 
 	bases := make([]uint16, 0, len(pile))
+	// ADR_ref_missed / ADF_ref_missed accumulate the indel-branch reads
+	// whose precomputed indelQ falls below min-baseQ but which look like
+	// REF (b<4, no indel in CIGAR). Upstream uses them to compensate the
+	// per-allele AD when --ambig-reads is incAD / incAD0 (bam2bcf.c:540-561).
+	var adrRefMissed, adfRefMissed [4]int
 	for i := range pile {
 		p := &pile[i]
+		// is_refskip skips both branches unconditionally
+		// (bam2bcf.c:301 `if (p->is_refskip || ...) continue;`).
+		if p.isRefskip {
+			continue
+		}
+		// is_del skips the SNP branch only; the indel branch lets the
+		// read through (bam2bcf.c:307 `if (p->is_del && !is_indel) continue`).
+		if p.isDel && !isIndel {
+			continue
+		}
 		r.oriDepth++
 
 		var b, q, baseQ int
@@ -219,6 +246,17 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 			q = int(p.aux) & 0xff
 			baseQ = int(p.aux>>8) & 0xff
 			if q < minBQ {
+				// Low-quality indel read. Upstream's "is this a REF
+				// match in disguise?" stash for --ambig-reads compensation
+				// (bam2bcf.c:365-374): only reads with no indel in their
+				// CIGAR (p.indel==0) and a real DNA base (b<4) qualify.
+				if p.indel == 0 && b >= 0 && b < 4 {
+					if p.reverse {
+						adrRefMissed[b]++
+					} else {
+						adfRefMissed[b]++
+					}
+				}
 				continue
 			}
 		} else {
@@ -340,6 +378,48 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 			r.altBq[biasBQ]++
 			r.altMq[biasMQ]++
 			r.altScl[p.scLen]++
+		}
+	}
+
+	// AD compensation for low-quality REF-looking indel reads
+	// (bam2bcf.c:540-561). Only the indel branch produces ADR/ADF_ref_missed
+	// entries; opts.AmbigReadsMode picks the strategy.
+	if isIndel {
+		switch opts.AmbigReadsMode {
+		case AmbigReadsIncAD0:
+			// All ambig reads are claimed as REF (allele 0).
+			for j := 0; j < 4; j++ {
+				r.adr[0] += adrRefMissed[j]
+				r.adf[0] += adfRefMissed[j]
+			}
+		case AmbigReadsIncAD:
+			// Distribute ambig reads across the per-allele AD slots in
+			// proportion to the existing allele counts.
+			dp, dpAmbig := 0, 0
+			for j := 0; j < 4; j++ {
+				dp += r.adr[j]
+			}
+			for j := 0; j < 4; j++ {
+				dpAmbig += adrRefMissed[j]
+			}
+			if dp != 0 {
+				for j := 0; j < 4; j++ {
+					// upstream uses lroundf((float)dp_ambig * r->ADR[j] / dp).
+					r.adr[j] += int(math.Round(float64(float32(dpAmbig) * float32(r.adr[j]) / float32(dp))))
+				}
+			}
+			dp, dpAmbig = 0, 0
+			for j := 0; j < 4; j++ {
+				dp += r.adf[j]
+			}
+			for j := 0; j < 4; j++ {
+				dpAmbig += adfRefMissed[j]
+			}
+			if dp != 0 {
+				for j := 0; j < 4; j++ {
+					r.adf[j] += int(math.Round(float64(float32(dpAmbig) * float32(r.adf[j]) / float32(dp))))
+				}
+			}
 		}
 	}
 

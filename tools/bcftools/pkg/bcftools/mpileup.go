@@ -103,6 +103,40 @@ const (
 	mpileupTheta = 0.83
 )
 
+// AmbigReadsMode selects how `--ambig-reads` compensates the per-allele
+// AD counts for low-quality REF-looking reads at an indel site. Values
+// mirror upstream's B2B_DROP / B2B_INC_AD / B2B_INC_AD0 (bam2bcf.h:81-83).
+type AmbigReadsMode int
+
+const (
+	// AmbigReadsDrop is the upstream default (`drop`): discard
+	// ambiguous reads entirely.
+	AmbigReadsDrop AmbigReadsMode = 0
+	// AmbigReadsIncAD is `incAD`: distribute ambiguous reads across the
+	// per-allele AD slots in proportion to the existing allele counts.
+	AmbigReadsIncAD AmbigReadsMode = 1
+	// AmbigReadsIncAD0 is `incAD0`: claim every ambiguous read as a
+	// REF support, adding to AD slot 0.
+	AmbigReadsIncAD0 AmbigReadsMode = 2
+)
+
+// parseAmbigReads maps an `--ambig-reads STR` option value to its
+// AmbigReadsMode. Comparison is case-insensitive, matching upstream
+// (mpileup.c:1779-1782). An empty input maps to AmbigReadsDrop.
+func parseAmbigReads(s string) (AmbigReadsMode, error) {
+	switch {
+	case s == "":
+		return AmbigReadsDrop, nil
+	case strings.EqualFold(s, "drop"):
+		return AmbigReadsDrop, nil
+	case strings.EqualFold(s, "incAD"):
+		return AmbigReadsIncAD, nil
+	case strings.EqualFold(s, "incAD0"):
+		return AmbigReadsIncAD0, nil
+	}
+	return AmbigReadsDrop, fmt.Errorf("the option to --ambig-reads not recognised: %q", s)
+}
+
 // FmtFlag bit assignments, mirroring B2B_FMT_*/B2B_INFO_* in
 // reference_code/bcftools/bam2bcf.h:46-75. Only the bits that this port
 // actually consumes drive emission today; the rest are parsed and
@@ -368,8 +402,13 @@ type MpileupOptions struct {
 	MaxIDepth int
 	// ARProb is upstream's --ar-prob. Accepted; ignored.
 	ARProb float64
-	// AmbigReads is upstream's --ambig-reads / --ar. Accepted; ignored.
+	// AmbigReads is upstream's --ambig-reads / --ar string form.
+	// validateMpileupOptions parses it into AmbigReadsMode.
 	AmbigReads string
+	// AmbigReadsMode is the parsed --ambig-reads selection that drives
+	// the indel-branch glfgen's ADR/ADF compensation. Callers can also
+	// set it directly when the string form is left empty.
+	AmbigReadsMode AmbigReadsMode
 	// MaxReadLen is upstream's -M/--max-read-len. Accepted; ignored.
 	MaxReadLen int
 
@@ -413,11 +452,33 @@ type MpileupOptions struct {
 	// Verbosity is upstream's -v/--verbosity (accepted; ignored).
 	Verbosity int
 
-	// FlagIncl / FlagExcl are upstream's --rf/--ff. Accepted; ignored.
+	// FlagIncl / FlagExcl / FlagAny / FlagLS are the raw user-supplied
+	// string forms of upstream's --rf/--ff/--ls/etc. They are parsed by
+	// validateMpileupOptions into the typed RflagSkip* masks below.
+	//
+	//   - FlagIncl  is upstream's --rf / --lu / --skip-all-unset
+	//     (mpileup.c:1413+1418): skip reads with all of these bits unset.
+	//   - FlagExcl  is upstream's --ff / --ns / --skip-any-set
+	//     (mpileup.c:1415+1419): skip reads with any of these bits set.
+	//   - FlagAny   is upstream's --nu / --skip-any-unset
+	//     (mpileup.c:1416): skip reads with any of these bits unset.
+	//   - FlagLS    is upstream's --ls / --skip-all-set
+	//     (mpileup.c:1419): skip reads with all of these bits set.
 	FlagIncl string
 	FlagExcl string
 	FlagAny  string
 	FlagLS   string
+
+	// RflagSkipAnyUnset / RflagSkipAllUnset / RflagSkipAnySet /
+	// RflagSkipAllSet are the parsed BAM-flag masks driving the
+	// upstream `mplp_func` per-read filters (mpileup.c:208-211).
+	// validateMpileupOptions populates them from the corresponding
+	// Flag* string fields; callers can also set them directly. Both
+	// `0` and "no bits" are no-op (matching upstream's `if (mask)` gates).
+	RflagSkipAnyUnset uint16
+	RflagSkipAllUnset uint16
+	RflagSkipAnySet   uint16
+	RflagSkipAllSet   uint16
 }
 
 // mpileupBAQFlag derives the realn flag passed to baq.SamProbRealn from
@@ -571,7 +632,94 @@ func validateMpileupOptions(opts *MpileupOptions) error {
 	if err := parseFormatFlag(&opts.FmtFlag, opts.Annotate); err != nil {
 		return fmt.Errorf("bcftools mpileup: -a/--annotate: %w", err)
 	}
+	// --ambig-reads: parse the string form when AmbigReadsMode hasn't
+	// been set directly. An empty string means "stay with default
+	// AmbigReadsDrop".
+	if opts.AmbigReads != "" && opts.AmbigReadsMode == AmbigReadsDrop {
+		mode, err := parseAmbigReads(opts.AmbigReads)
+		if err != nil {
+			return fmt.Errorf("bcftools mpileup: %w", err)
+		}
+		opts.AmbigReadsMode = mode
+	}
+	// --skip-* BAM-flag masks. The string form is parsed via
+	// parseBAMFlagString; either bare integers (e.g. "0x14", "20") or
+	// comma-separated names ("PAIRED,DUP") are accepted, mirroring
+	// htslib's bam_str2flag (sam.c:5290).
+	if v, err := parseBAMFlagString(opts.FlagAny); err != nil {
+		return fmt.Errorf("bcftools mpileup: --skip-any-unset/--nu: %w", err)
+	} else if opts.RflagSkipAnyUnset == 0 {
+		opts.RflagSkipAnyUnset = v
+	}
+	if v, err := parseBAMFlagString(opts.FlagIncl); err != nil {
+		return fmt.Errorf("bcftools mpileup: --skip-all-unset/--rf/--lu: %w", err)
+	} else if opts.RflagSkipAllUnset == 0 {
+		opts.RflagSkipAllUnset = v
+	}
+	if v, err := parseBAMFlagString(opts.FlagExcl); err != nil {
+		return fmt.Errorf("bcftools mpileup: --skip-any-set/--ff/--ns: %w", err)
+	} else if opts.RflagSkipAnySet == 0 {
+		opts.RflagSkipAnySet = v
+	}
+	if v, err := parseBAMFlagString(opts.FlagLS); err != nil {
+		return fmt.Errorf("bcftools mpileup: --skip-all-set/--ls: %w", err)
+	} else if opts.RflagSkipAllSet == 0 {
+		opts.RflagSkipAllSet = v
+	}
 	return nil
+}
+
+// parseBAMFlagString is the Go port of htslib's bam_str2flag
+// (sam.c:5290). An empty string returns 0 (no-op). A bare integer
+// (decimal, hex with 0x prefix, octal with 0 prefix) is parsed
+// directly. Otherwise the input is split on commas and each token is
+// matched case-insensitively against the canonical flag names; an
+// unknown token returns an error.
+func parseBAMFlagString(s string) (uint16, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	// Try integer first (decimal/hex/octal via base 0).
+	if v, err := strconv.ParseUint(s, 0, 32); err == nil {
+		return uint16(v), nil
+	}
+	var out uint16
+	for _, raw := range strings.Split(s, ",") {
+		tok := strings.TrimSpace(raw)
+		if tok == "" {
+			continue
+		}
+		switch strings.ToUpper(tok) {
+		case "PAIRED":
+			out |= sam.FlagPaired
+		case "PROPER_PAIR":
+			out |= sam.FlagProperPair
+		case "UNMAP":
+			out |= sam.FlagUnmapped
+		case "MUNMAP":
+			out |= sam.FlagMateUnmapped
+		case "REVERSE":
+			out |= sam.FlagReverse
+		case "MREVERSE":
+			out |= sam.FlagMateReverse
+		case "READ1":
+			out |= sam.FlagRead1
+		case "READ2":
+			out |= sam.FlagRead2
+		case "SECONDARY":
+			out |= sam.FlagSecondary
+		case "QCFAIL":
+			out |= sam.FlagQCFail
+		case "DUP":
+			out |= sam.FlagDuplicate
+		case "SUPPLEMENTARY":
+			out |= sam.FlagSupplementary
+		default:
+			return 0, fmt.Errorf("could not parse flag name %q in %q", tok, s)
+		}
+	}
+	return out, nil
 }
 
 // resolveMpileupInputs reads -b/--bam-list (when given) and appends to
@@ -662,13 +810,31 @@ func mpileupReadBAM(rd sam.Reader, opts MpileupOptions) (map[string][]*sam.Recor
 
 // mpileupKeepRecord applies upstream's default read-level filters
 // (unmapped, secondary, QCfail, duplicate; orphans unless -A; MAPQ
-// floor). FSUPPLEMENTARY is NOT in upstream's default mask
-// (mpileup.c:1392 BAM_FUNMAP|BAM_FSECONDARY|BAM_FQCFAIL|BAM_FDUP).
+// floor) and the user-supplied --skip-* BAM-flag masks. The default
+// mask (mpileup.c:1392 BAM_FUNMAP|BAM_FSECONDARY|BAM_FQCFAIL|BAM_FDUP)
+// is layered through RflagSkipAnySet by validateMpileupOptions so
+// upstream's mplp_func per-read checks (mpileup.c:208-211) drive
+// the same predicate.
 func mpileupKeepRecord(rec *sam.Record, opts MpileupOptions) bool {
 	if rec == nil || rec.Pos <= 0 || rec.RName == "" {
 		return false
 	}
 	if rec.Flag&(sam.FlagUnmapped|sam.FlagSecondary|sam.FlagQCFail|sam.FlagDuplicate) != 0 {
+		return false
+	}
+	// --skip-* user filters (mpileup.c:208-211). The `if (mask)` gates
+	// match upstream: a zero mask is a no-op, so callers who do not
+	// set the flag get default behaviour.
+	if m := opts.RflagSkipAnyUnset; m != 0 && (m&rec.Flag) != m {
+		return false
+	}
+	if m := opts.RflagSkipAllSet; m != 0 && (m&rec.Flag) == m {
+		return false
+	}
+	if m := opts.RflagSkipAllUnset; m != 0 && (m&rec.Flag) == 0 {
+		return false
+	}
+	if m := opts.RflagSkipAnySet; m != 0 && (m&rec.Flag) != 0 {
 		return false
 	}
 	if !opts.CountOrphans && rec.Flag&sam.FlagPaired != 0 {
@@ -819,6 +985,18 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 	// The errmod tables are expensive to build, so do it once.
 	em := ErrmodInit(1.0 - mpileupTheta)
 
+	// Run-level BQBZ / MQSBZ leak (bam2bcf.c:1175-1183 + the lack of a
+	// reset in bcf_callaux_clean). Upstream's bcf_call_t is allocated
+	// once for the whole run; mwu_bq / mwu_mqs are C floats default-
+	// initialised to 0.0, then OVERWRITTEN only by has-alt SNP combines.
+	// The indel-branch combine reads whatever the most recent SNP-combine
+	// value was, regardless of the chromosome boundary. We mirror that by
+	// threading a single biasLeak instance through every chromosome,
+	// pre-initialised to "value 0, ok=true" so the very first indel record
+	// (before any has-alt SNP combine) sees BQBZ=MQSBZ=0 instead of being
+	// silently dropped.
+	leak := biasLeak{bq: 0, mqs: 0, bqOK: true, mqsOK: true}
+
 	for _, chrom := range chromOrder {
 		if regWindows != nil {
 			if _, ok := regWindows[chrom]; !ok {
@@ -844,7 +1022,7 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 		if err != nil {
 			return fmt.Errorf("bcftools mpileup: fetch %s: %w", chrom, err)
 		}
-		if err := emitChromMpileup(w, em, chrom, refSlab, refLen, perInputChromRecs, opts, regWindows); err != nil {
+		if err := emitChromMpileup(w, em, chrom, refSlab, refLen, perInputChromRecs, opts, regWindows, &leak); err != nil {
 			return err
 		}
 	}
@@ -857,7 +1035,7 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 // only SNP candidates) with `<*>` as the unseen allele.
 func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte, refLen int,
 	perInputChromRecs [][]*sam.Record, opts MpileupOptions,
-	regWindows map[string][][2]int) error {
+	regWindows map[string][][2]int, leak *biasLeak) error {
 
 	nIn := len(perInputChromRecs)
 	// MPLP_SMART_OVERLAPS: de-weight bases covered by both mates of a
@@ -896,7 +1074,6 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 	bca.Chr = chrom
 	indelCalls := make([]bcfCallret, nIn)
 	piles := make([][]pileupBase, nIn)
-	var leak biasLeak
 	for pos0 := 0; pos0 < refLen; pos0++ {
 		pos1 := pos0 + 1
 		if !regionContains(regWindows, chrom, pos1) {
@@ -945,7 +1122,7 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 		for i := 0; i < nIn; i++ {
 			bcfCallGlfgenIndel(piles[i], opts, em, &indelCalls[i])
 		}
-		icall, ok := bcfCallCombineIndel(indelCalls, bca, leak)
+		icall, ok := bcfCallCombineIndel(indelCalls, bca, *leak)
 		if !ok {
 			continue
 		}
@@ -1314,6 +1491,55 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 			refPos += l
 			queryPos += l
 		case sam.CigarDeletion, sam.CigarSkipped:
+			// Spanning deletion / ref-skip: emit one pileupBase per
+			// covered reference column so the indel branch's glfgen
+			// can iterate these reads (upstream bam2bcf.c:307 lets
+			// is_del reads through when is_indel=1; bam2bcf.c:301 has
+			// is_refskip skip both branches). The SNP branch ignores
+			// these columns via the isDel / isRefskip gate in
+			// bcfCallGlfgenCore. We carry the back-pointer to the
+			// originating record together with the read's mapq and
+			// strand so the indel histograms remain accurate.
+			isDel := o == sam.CigarDeletion
+			isRefskip := o == sam.CigarSkipped
+			// p->qpos in upstream points at the LAST consumed query
+			// base before the D/N op (i.e. queryPos-1 here when at
+			// least one match preceded). Use that for the
+			// bias-position helper so iref/ialt histograms are
+			// populated with sensible bins.
+			qref := queryPos - 1
+			if qref < 0 {
+				qref = 0
+			}
+			var rawQual uint8
+			if qref < len(rec.Qual) {
+				rawQual = rec.Qual[qref]
+			}
+			gp := getPosition(cigarOps, cigarLens, qref, qlen)
+			epos, scLen := biasPositionBins(gp)
+			for k := 0; k < l; k++ {
+				p := refPos + k
+				if p < 0 || p >= len(events) {
+					continue
+				}
+				events[p] = append(events[p], pileupBase{
+					base4:     0,
+					rawQual:   rawQual,
+					prevQ:     -1,
+					nextQ:     -1,
+					mapq:      rec.MapQ,
+					reverse:   isReverse,
+					qpos:      qref,
+					qlen:      qlen,
+					qname:     rec.QName,
+					epos:      epos,
+					scLen:     scLen,
+					indel:     0,
+					rec:       rec,
+					isDel:     isDel,
+					isRefskip: isRefskip,
+				})
+			}
 			refPos += l
 		case sam.CigarInsertion, sam.CigarSoftClip:
 			queryPos += l
