@@ -103,6 +103,159 @@ const (
 	mpileupTheta = 0.83
 )
 
+// FmtFlag bit assignments, mirroring B2B_FMT_*/B2B_INFO_* in
+// reference_code/bcftools/bam2bcf.h:46-75. Only the bits that this port
+// actually consumes drive emission today; the rest are parsed and
+// accepted so `-a` token lists match upstream verbatim.
+const (
+	B2BFmtDP     uint32 = 1 << 0
+	B2BFmtSP     uint32 = 1 << 1
+	B2BFmtDV     uint32 = 1 << 2
+	B2BFmtDP4    uint32 = 1 << 3
+	B2BFmtDPR    uint32 = 1 << 4
+	B2BInfoDPR   uint32 = 1 << 5
+	B2BFmtAD     uint32 = 1 << 6
+	B2BFmtADF    uint32 = 1 << 7
+	B2BFmtADR    uint32 = 1 << 8
+	B2BInfoAD    uint32 = 1 << 9
+	B2BInfoADF   uint32 = 1 << 10
+	B2BInfoADR   uint32 = 1 << 11
+	B2BInfoSCR   uint32 = 1 << 12
+	B2BFmtSCR    uint32 = 1 << 13
+	B2BInfoVDB   uint32 = 1 << 14
+	B2BFmtQS     uint32 = 1 << 15
+	B2BFmtNMBZ   uint32 = 1 << 16
+	B2BInfoNMBZ  uint32 = 1 << 17
+	B2BInfoBQBZ  uint32 = 1 << 18
+	B2BInfoMQBZ  uint32 = 1 << 19
+	B2BInfoMQSBZ uint32 = 1 << 20
+	B2BInfoRPBZ  uint32 = 1 << 21
+	B2BInfoSCBZ  uint32 = 1 << 22
+	B2BInfoSGB   uint32 = 1 << 23
+	B2BFmtQM     uint32 = 1 << 24
+	B2BInfoNM    uint32 = 1 << 25
+	B2BInfoMQ0F  uint32 = 1 << 26
+	B2BInfoIDV   uint32 = 1 << 27
+	B2BInfoIMF   uint32 = 1 << 28
+	B2BInfoFS    uint32 = 1 << 29
+)
+
+// DefaultMpileupFmtFlag mirrors the bitset assigned in mpileup.c:1399:
+// the bias INFO tags that mpileup always emits when a real ALT is
+// present, plus the default FORMAT/AD per-sample tag.
+const DefaultMpileupFmtFlag = B2BInfoBQBZ | B2BInfoIDV | B2BInfoIMF |
+	B2BInfoMQ0F | B2BInfoMQBZ | B2BInfoMQSBZ | B2BInfoRPBZ | B2BInfoSCBZ |
+	B2BInfoSGB | B2BInfoVDB | B2BFmtAD
+
+// parseFormatFlag is the Go port of mpileup.c:1141 parse_format_flag. It
+// updates *flag with the bits selected by the comma-separated `str`:
+// each token is a FORMAT/INFO tag name, optionally prefixed with "-" to
+// clear the bit. Both bare names ("AD") and prefixed names ("FORMAT/AD",
+// "INFO/AD") are accepted (case-insensitive). An unknown token returns
+// an error; callers wire that to a non-zero exit. The upstream warnings
+// for deprecated tags (DP4/DPR/DV) are intentionally not emitted — they
+// just clutter test output; the bits are still toggled correctly.
+func parseFormatFlag(flag *uint32, str string) error {
+	if str == "" {
+		return nil
+	}
+	for _, raw := range strings.Split(str, ",") {
+		tag := strings.TrimSpace(raw)
+		if tag == "" {
+			continue
+		}
+		exclude := false
+		if tag[0] == '-' {
+			exclude = true
+			tag = tag[1:]
+		}
+		// upper-case keys are compared case-insensitively via strings.EqualFold
+		var bit uint32
+		switch {
+		case mpileupTagMatch(tag, "AD"):
+			bit = B2BFmtAD
+		case mpileupTagMatch(tag, "ADF"):
+			bit = B2BFmtADF
+		case mpileupTagMatch(tag, "ADR"):
+			bit = B2BFmtADR
+		case mpileupTagMatch(tag, "DP"):
+			bit = B2BFmtDP
+		case mpileupTagMatch(tag, "DP4"):
+			bit = B2BFmtDP4
+		case mpileupTagMatch(tag, "DPR"):
+			bit = B2BFmtDPR
+		case mpileupTagMatch(tag, "DV"):
+			bit = B2BFmtDV
+		case mpileupTagMatch(tag, "NMBZ"):
+			bit = B2BFmtNMBZ
+		case mpileupTagMatch(tag, "QM"):
+			bit = B2BFmtQM
+		case mpileupTagMatch(tag, "QS"):
+			bit = B2BFmtQS
+		case mpileupTagMatch(tag, "SP"):
+			bit = B2BFmtSP
+		case mpileupTagMatch(tag, "SCR"):
+			bit = B2BFmtSCR
+		case strings.EqualFold(tag, "INFO/DPR"):
+			bit = B2BInfoDPR
+		case strings.EqualFold(tag, "INFO/AD"):
+			bit = B2BInfoAD
+		case strings.EqualFold(tag, "INFO/ADF"):
+			bit = B2BInfoADF
+		case strings.EqualFold(tag, "INFO/ADR"):
+			bit = B2BInfoADR
+		case strings.EqualFold(tag, "INFO/BQBZ"):
+			bit = B2BInfoBQBZ
+		case strings.EqualFold(tag, "INFO/FS"):
+			bit = B2BInfoFS
+		case strings.EqualFold(tag, "INFO/IDV"):
+			bit = B2BInfoIDV
+		case strings.EqualFold(tag, "INFO/IMF"):
+			bit = B2BInfoIMF
+		case strings.EqualFold(tag, "INFO/MQ0F"):
+			bit = B2BInfoMQ0F
+		case strings.EqualFold(tag, "INFO/MQBZ"):
+			bit = B2BInfoMQBZ
+		case strings.EqualFold(tag, "INFO/NM"):
+			bit = B2BInfoNM
+		case strings.EqualFold(tag, "INFO/NMBZ"):
+			bit = B2BInfoNMBZ
+		case strings.EqualFold(tag, "INFO/RPBZ"):
+			bit = B2BInfoRPBZ
+		case strings.EqualFold(tag, "INFO/SCBZ"):
+			bit = B2BInfoSCBZ
+		case strings.EqualFold(tag, "INFO/SCR"):
+			bit = B2BInfoSCR
+		case strings.EqualFold(tag, "INFO/SGB"):
+			bit = B2BInfoSGB
+		case strings.EqualFold(tag, "INFO/VDB"):
+			bit = B2BInfoVDB
+		default:
+			return fmt.Errorf("could not parse tag %q in %q", tag, str)
+		}
+		if exclude {
+			*flag &^= bit
+		} else {
+			*flag |= bit
+		}
+	}
+	return nil
+}
+
+// mpileupTagMatch reports whether tag (the bare name supplied by the
+// user) names the FORMAT tag fmtName. Bare names ("AD") and the
+// optional "FORMAT/" prefix ("FORMAT/AD") both succeed; comparison is
+// case-insensitive, mirroring SET_FMT_FLAG in mpileup.c:1120.
+func mpileupTagMatch(tag, fmtName string) bool {
+	if strings.EqualFold(tag, fmtName) {
+		return true
+	}
+	if strings.EqualFold(tag, "FORMAT/"+fmtName) {
+		return true
+	}
+	return false
+}
+
 // MpileupOptions configures bcftools mpileup. Fields are 1:1 with the
 // upstream getopt_long table in `mpileup.c`. Knobs the model does not
 // consume are tagged "accepted; unused" and tracked in PARITY_ROADMAP.
@@ -166,9 +319,17 @@ type MpileupOptions struct {
 	AdjustMQ int
 
 	// Annotate is upstream's -a/--annotate list (FORMAT/INFO tags to
-	// include). Accepted; the default set (INFO/DP, I16, QS, MQ0F,
-	// FORMAT/PL) is always emitted.
+	// include). Tokens are parsed into FmtFlag by validateMpileupOptions
+	// (see parseFormatFlag, the Go port of mpileup.c:1141 parse_format_flag);
+	// a "-TAG" token clears the bit, mirroring upstream. The default set
+	// (mpileup.c:1399) is BQBZ/IDV/IMF/MQ0F/MQBZ/MQSBZ/RPBZ/SCBZ/SGB/VDB
+	// + FORMAT/AD.
 	Annotate string
+	// FmtFlag is the resolved bitset selected by Annotate; the
+	// B2BFmtAD/B2BInfoAD/... constants are the bit assignments. It is
+	// populated by validateMpileupOptions from Annotate (and the upstream
+	// default). External callers can also set it directly.
+	FmtFlag uint32
 
 	// ReadGroups is upstream's -G/--read-groups. Accepted; ignored.
 	ReadGroups string
@@ -386,6 +547,11 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 }
 
 // validateMpileupOptions applies upstream's defaults (mpileup.c:1381-1383).
+// It also parses opts.Annotate into opts.FmtFlag, layering the
+// user-specified `-a` tokens on top of DefaultMpileupFmtFlag (the
+// "* "-marked default annotation set in mpileup.c:1399). When FmtFlag
+// has already been set non-zero by the caller, it is taken as the
+// starting bitset and only the Annotate tokens further modify it.
 func validateMpileupOptions(opts *MpileupOptions) error {
 	if opts.MaxDepth == 0 {
 		opts.MaxDepth = DefaultMpileupMaxDepth
@@ -398,6 +564,12 @@ func validateMpileupOptions(opts *MpileupOptions) error {
 	}
 	if opts.DeltaBQ == 0 {
 		opts.DeltaBQ = DefaultMpileupDeltaBQ
+	}
+	if opts.FmtFlag == 0 {
+		opts.FmtFlag = DefaultMpileupFmtFlag
+	}
+	if err := parseFormatFlag(&opts.FmtFlag, opts.Annotate); err != nil {
+		return fmt.Errorf("bcftools mpileup: -a/--annotate: %w", err)
 	}
 	return nil
 }
@@ -741,7 +913,7 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 			continue
 		}
 		call := bcfCallCombine(calls, ref4)
-		v := bcfCall2bcf(chrom, pos1, refB, &call)
+		v := bcfCall2bcf(chrom, pos1, refB, &call, opts.FmtFlag)
 		if err := w.Write(v); err != nil {
 			return err
 		}
@@ -1442,9 +1614,9 @@ func filterMpileupPile(evs []pileupBase, opts MpileupOptions) []pileupBase {
 // bcfCall2bcf is the Go port of bcf_call2bcf (bam2bcf.c:1200) for the
 // SNP path. It turns a combined bcfCall into a vcf.Variant: REF, the
 // ALT alleles (including the `<*>` unseen allele), QUAL=0, INFO/DP/I16/
-// QS/MQ0F and FORMAT/PL. The bias INFO tags (VDB/SGB/RPBZ/...) are
-// slice-4 work and deliberately omitted.
-func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall) *vcf.Variant {
+// QS/MQ0F and FORMAT/PL plus FORMAT/AD,ADF,ADR controlled by fmtFlag
+// (the resolved `-a/--annotate` bitset).
+func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint32) *vcf.Variant {
 	alleles := make([]string, 0, call.nAlleles)
 	alleles = append(alleles, string(refB)) // REF
 	for i := 1; i < call.nAlleles; i++ {
@@ -1513,8 +1685,23 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall) *vcf.Variant 
 	info["MQ0F"] = formatFloat32G(mq0f)
 	infoOrder = append(infoOrder, "MQ0F")
 
-	// FORMAT/PL — one upper-triangle grid per sample.
+	// FORMAT — PL first, then optional AD/ADF/ADR controlled by fmtFlag.
+	// Upstream emits ADF/ADR before AD (bam2bcf.c:1376-1384), but does so
+	// for INFO; for FORMAT both are gated by fmtFlag bits and the column
+	// order matches the bits' order: AD, ADF, ADR.
 	format := []string{"PL"}
+	emitAD := fmtFlag&B2BFmtAD != 0
+	emitADF := fmtFlag&B2BFmtADF != 0
+	emitADR := fmtFlag&B2BFmtADR != 0
+	if emitAD {
+		format = append(format, "AD")
+	}
+	if emitADF {
+		format = append(format, "ADF")
+	}
+	if emitADR {
+		format = append(format, "ADR")
+	}
 	samplesOut := make([]vcf.Sample, len(call.pl))
 	for s := range call.pl {
 		var pl strings.Builder
@@ -1524,7 +1711,17 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall) *vcf.Variant 
 			}
 			pl.WriteString(strconv.Itoa(v))
 		}
-		samplesOut[s] = vcf.Sample{Data: map[string]string{"PL": pl.String()}}
+		data := map[string]string{"PL": pl.String()}
+		if emitAD && s < len(call.adf) {
+			data["AD"] = formatPerAlleleSum(call.adf[s], call.adr[s])
+		}
+		if emitADF && s < len(call.adf) {
+			data["ADF"] = formatPerAllele(call.adf[s])
+		}
+		if emitADR && s < len(call.adr) {
+			data["ADR"] = formatPerAllele(call.adr[s])
+		}
+		samplesOut[s] = vcf.Sample{Data: data}
 	}
 
 	return &vcf.Variant{
@@ -1563,6 +1760,51 @@ func formatI16Number(v float64) string {
 	return formatFloat32G(v)
 }
 
+// formatPerAllele renders a comma-separated list of integer counts, one
+// per output allele, for FORMAT/ADF or FORMAT/ADR. The slice is already
+// reordered to the site's allele order by bcfCallCombine.
+func formatPerAllele(vals []int) string {
+	if len(vals) == 0 {
+		return "0"
+	}
+	var b strings.Builder
+	for i, v := range vals {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Itoa(v))
+	}
+	return b.String()
+}
+
+// formatPerAlleleSum renders FORMAT/AD: the elementwise sum of the
+// per-allele forward and reverse allelic depths. Both inputs are
+// expected to be the same length and ordered to the site's allele list.
+func formatPerAlleleSum(adf, adr []int) string {
+	n := len(adf)
+	if len(adr) > n {
+		n = len(adr)
+	}
+	if n == 0 {
+		return "0"
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		var v int
+		if i < len(adf) {
+			v += adf[i]
+		}
+		if i < len(adr) {
+			v += adr[i]
+		}
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Itoa(v))
+	}
+	return b.String()
+}
+
 // buildMpileupHeader builds the VCF header (metadata + sample list) for
 // the output. The INFO/FORMAT lines match the SNP-relevant subset of
 // upstream's mpileup header.
@@ -1599,6 +1841,20 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 		`##INFO=<ID=QS,Number=R,Type=Float,Description="Auxiliary tag used for calling">`,
 		`##FORMAT=<ID=PL,Number=G,Type=Integer,Description="List of Phred-scaled genotype likelihoods">`,
 	)
+	// Optional FORMAT tags emitted only when their `-a` bits are set. The
+	// header-line text matches upstream verbatim (mpileup.c:843-849).
+	if opts.FmtFlag&B2BFmtAD != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (high-quality bases)">`)
+	}
+	if opts.FmtFlag&B2BFmtADF != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=ADF,Number=R,Type=Integer,Description="Allelic depths on the forward strand (high-quality bases)">`)
+	}
+	if opts.FmtFlag&B2BFmtADR != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Allelic depths on the reverse strand (high-quality bases)">`)
+	}
 	return &vcf.Header{MetaInfo: meta, Samples: samples}
 }
 
