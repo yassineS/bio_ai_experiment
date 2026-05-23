@@ -1499,12 +1499,34 @@ Plus:
     `--indel-bias`, `--indel-size`) reach `bcfCallauxIndel` via
     `newBcfCallauxIndel`, but the value is not yet driven into
     emission.
-  - **4c (TODO).** Per-sample consensus + reference-sample
+  - **4c (DONE).** Per-sample consensus + reference-sample
     construction (`bcf_cgp_ref_sample`, `bcf_cgp_calc_cons`) and the
-    Probaln-based alignment scoring core (`bcf_cgp_align_score`).
-  - **4d (TODO).** `bcf_call_gap_prep` + `bcf_cgp_compute_indelQ`: the
-    glue that turns per-read alignment scores into per-allele indel
-    quality estimates.
+    Probaln-based alignment scoring core (`bcf_cgp_align_score`) are
+    ported in `tools/bcftools/pkg/bcftools/bam2bcf_indel_align.go`.
+    `bcfCgpRefSample` samples the per-sample 4-bit IUPAC reference and
+    masks positions where ALT ≥30% with N (15); `bcfCgpCalcCons`
+    majority-rule-builds the per-type insertion consensus (zeroing
+    types whose consensus contains an N); `bcfCgpAlignScore` runs
+    `baq.ProbalnGlocal` (BW = |typeLen|+3; PacBio CCS params for
+    >1000-bp reads), applies the indel-bias clamp to the
+    length-normalised score, and folds in the STR-finder fudge
+    (`strfinder.FindSTR`). The returned word reproduces upstream's
+    `(sc<<8) | min(255, l)` bit-pattern byte-for-byte, with the low
+    byte rewritten as `min(255, (score&0xff)*0.8 + iscore*2)` after
+    the STR fudge — verified by `TestBcfCgpAlignScore_BitPattern`.
+  - **4d (DONE).** `bcf_call_gap_prep` + `bcf_cgp_compute_indelQ` are
+    ported as `bcfCallGapPrep` and `bcfCgpComputeIndelQ` in the same
+    file. `bcfCallGapPrep` orchestrates the full pipeline: cheap-reject
+    on a clean column → `bcfCgpFindTypes` → `bcfCgpRefSample` →
+    `bcfCgpCalcCons` → per-(read,type) `bcfCgpAlignScore`, scoring into
+    a flat `N*nTypes` matrix. `bcfCgpComputeIndelQ` then folds those
+    scores into per-read `p.aux` words (chosen-type<<16 | seqQ<<8 |
+    indelQ), populates `bca.IndelTypes` / `bca.Inscns` / `bca.MaxIns`
+    by sumq-sorting the candidate types (REF always at slot 0), and
+    returns n_alt. Unit-tested at the bit-pattern level
+    (`TestBcfCgpComputeIndelQ_BitPattern`) with a hand-derived
+    expectation; the orchestrator has a clean-site -1 reject test and
+    an indel-site smoke test.
   - **4e (TODO).** Indel-aware branches of `bcf_call_glfgen` /
     `bcf_call_combine` / `bcf_call2bcf` and emission of the
     INDEL/IDV/IMF INFO tags; golden tests land here.
