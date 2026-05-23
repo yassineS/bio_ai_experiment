@@ -1527,9 +1527,47 @@ Plus:
     (`TestBcfCgpComputeIndelQ_BitPattern`) with a hand-derived
     expectation; the orchestrator has a clean-site -1 reject test and
     an indel-site smoke test.
-  - **4e (TODO).** Indel-aware branches of `bcf_call_glfgen` /
+  - **4e (in progress).** Indel-aware branches of `bcf_call_glfgen` /
     `bcf_call_combine` / `bcf_call2bcf` and emission of the
-    INDEL/IDV/IMF INFO tags; golden tests land here.
+    INDEL/IDV/IMF INFO tags; golden tests land here. Broken into
+    cross-cutting sub-slices since the targeted goldens require more
+    than just the indel branch of glfgen+2bcf:
+    - **4e.1 (DONE).** FORMAT/AD support and `-a/--annotate` parsing.
+      `parseFormatFlag` (`mpileup.go`) is the Go port of
+      `parse_format_flag` (mpileup.c:1141) with bit constants
+      `B2BFmt*/B2BInfo*` matching `bam2bcf.h:46-75`.
+      `validateMpileupOptions` seeds `opts.FmtFlag` from
+      `DefaultMpileupFmtFlag` (mpileup.c:1399) and layers user tokens on
+      top — `-AD` clears the bit, `AD`/`FORMAT/AD` sets it. `bcfCall2bcf`
+      emits FORMAT/AD,ADF,ADR per-sample columns when the matching bit
+      is set, with the per-allele depths drawn from the already-reordered
+      `call.adf/adr` arrays. The corresponding `##FORMAT=<ID=AD,...>`
+      header lines are emitted only when their bits are on.
+      `TestMpileupSNPGoldens/multi-bam-region-format-AD` is the
+      byte-for-byte golden check against `mpileup/mpileup.12.out`.
+    - **4e.2 (TODO).** Indel-branch `bcf_call_glfgen` (`bam2bcf.c:300-460`):
+      consume per-read `p.aux` words populated by `bcfCallGapPrep`, run
+      `errmodCal` on the indel bases, and populate `bcfCallret` with
+      indel-specific QS / AD / I16 / bias tallies (the `iref_*/ialt_*`
+      arrays on `bcfCallauxIndel`). The bias arrays will need to be
+      populated inside `bcfCallGapPrep`'s per-read alignment loop
+      (matching upstream `bam2bcf_indel.c:826-848`); they are sized but
+      empty today.
+    - **4e.3 (TODO).** Indel-branch `bcf_call_combine` + `bcf_call2bcf`
+      (`bam2bcf.c:1165-1198`, `bam2bcf.c:1211-1234`): build REF/ALT from
+      `bca.Inscns`/`IndelTypes`/`IndelReg`; emit `INFO/INDEL` flag, IDV,
+      IMF, FORMAT/PL and FORMAT/AD for indel records; carefully model
+      the upstream "leaked" bias semantics (BQBZ/MQSBZ retain the last
+      has-alt SNP's value since `bcf_callaux_clean` does not reset
+      `call->mwu_*`). Per-site driver in `emitChromMpileup` will run
+      `bcfCallGapPrep` after the SNP emission and, when it returns ≥0,
+      do a second glfgen+combine+2bcf pass with `ref4=-1`.
+    - **4e.4 (TODO).** `--indels-cns` (edlib) realignment path.
+    - **4e.5 (TODO).** `--ambig-reads` (incAD / incAD0) ADF/ADR
+      compensation (`bam2bcf.c:540-562`).
+    - **4e.6 (TODO).** INFO/FMT/SCR (soft-clipped reads counter) and the
+      `--skip-{all,any}-{set,unset}` BAM-flag filters needed for
+      `mpileup-SCR.out` and `mpileup-filter.2.out`.
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
@@ -2402,11 +2440,15 @@ Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
 - **No gVCF blocking.** `-g/--gvcf` is accepted; one BCF/VCF record
   is emitted per covered reference position (gVCF range-blocking is a
   follow-up).
-- **`-a/--annotate LIST` is accepted but inert.** mpileup always
-  emits the default `INFO/DP`, `INFO/I16`, `INFO/QS`, `INFO/MQ0F`,
-  `FORMAT/PL` set. The `INFO/AD,ADF,ADR,SP,SCR,IDV,IMF`,
-  `FORMAT/AD,ADF,ADR,DP,DV,DPR,SP,SCR,QS` tags will land alongside
-  the per-tag stream when called from `bcftools call`.
+- **`-a/--annotate LIST` is parsed and partially honoured.**
+  `parseFormatFlag` ports the upstream tag-list parser (mpileup.c:1141);
+  tokens are accepted as bare names ("AD"), with FORMAT/INFO prefixes,
+  and with the "-" prefix to clear bits. The upstream default
+  (BQBZ/IDV/IMF/MQ0F/MQBZ/MQSBZ/RPBZ/SCBZ/SGB/VDB + FORMAT/AD) is the
+  starting bitset; user tokens layer on top. Today FORMAT/AD, ADF, ADR
+  and the bias INFO tags emit; the remaining `INFO/AD,ADF,ADR,SP,SCR`,
+  `FORMAT/DP,DV,DPR,SP,SCR,QS,NMBZ,QM,DP4` tags land alongside the
+  indel branch of 2bcf (slices 4e.3 and beyond).
 - **`-O u|b` (BCF output) works.** Slice 2 wired BCF output through
   `pkg/htsgo/bcf` (`-O b` is BGZF-wrapped, `-O u` uncompressed);
   `-O v` (text VCF) is the default and `-O z` is gzipped VCF.

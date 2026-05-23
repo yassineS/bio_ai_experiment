@@ -73,21 +73,36 @@ func TestMpileupSNPGoldens(t *testing.T) {
 	mpileupFixture(t, "mpileup.ref.fa.fai") // sidecar required by the FASTA reader
 
 	cases := []struct {
-		name    string
-		golden  string
-		inputs  []string
-		regions []string
+		name     string
+		golden   string
+		inputs   []string
+		regions  []string
+		annotate string
 	}{
 		{
-			name:   "single-bam-full-contig",
-			golden: "mpileup.11.out",
-			inputs: []string{mpileupFixture(t, "mpileup.3.bam")},
+			name:     "single-bam-full-contig",
+			golden:   "mpileup.11.out",
+			inputs:   []string{mpileupFixture(t, "mpileup.3.bam")},
+			annotate: "-AD", // upstream: -a -AD removes FORMAT/AD from defaults
 		},
 		{
-			name:    "multi-bam-region",
-			golden:  "mpileup.1.out",
-			inputs:  []string{mpileupFixture(t, "mpileup.1.bam"), mpileupFixture(t, "mpileup.2.bam"), mpileupFixture(t, "mpileup.3.bam")},
-			regions: []string{"17:100-150"},
+			name:     "multi-bam-region",
+			golden:   "mpileup.1.out",
+			inputs:   []string{mpileupFixture(t, "mpileup.1.bam"), mpileupFixture(t, "mpileup.2.bam"), mpileupFixture(t, "mpileup.3.bam")},
+			regions:  []string{"17:100-150"},
+			annotate: "-AD",
+		},
+		{
+			// mpileup.12.out exercises the default `-a` set, which
+			// includes FORMAT/AD. The upstream test.pl invocation
+			// (mpileup.1+mpileup.2+mpileup.3, region list 17:100-105)
+			// covers six positions including the multi-sample SNP rows
+			// at 17:103 and 17:104.
+			name:     "multi-bam-region-format-AD",
+			golden:   "mpileup.12.out",
+			inputs:   []string{mpileupFixture(t, "mpileup.1.bam"), mpileupFixture(t, "mpileup.2.bam"), mpileupFixture(t, "mpileup.3.bam")},
+			regions:  []string{"17:100-102", "17:102-103", "17:103-104", "17:104-105", "17:100-105"},
+			annotate: "",
 		},
 	}
 
@@ -104,6 +119,7 @@ func TestMpileupSNPGoldens(t *testing.T) {
 				Inputs:    tc.inputs,
 				FastaRef:  ref,
 				Regions:   tc.regions,
+				Annotate:  tc.annotate,
 				NoVersion: true, // upstream goldens were made with --no-version
 			}
 			if err := MpileupFile(opts, &buf); err != nil {
@@ -185,12 +201,6 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 			"produced with FORMAT tags beyond PL (DP, DV, DP4, SP, AD, ADF, " +
 				"ADR and the gVCF mode). The per-sample FORMAT tag emission " +
 				"is a separate slice; the SNP INFO columns already match.",
-		},
-		{
-			"mpileup/mpileup.12.out",
-			"produced without `-AD`, so FORMAT carries the default AD tag " +
-				"(FORMAT=PL:AD). INFO and PL match; only the FORMAT/AD column " +
-				"is missing — a FORMAT-tag follow-up.",
 		},
 		{
 			"mpileup/mpileup.{3,7,8,9,10}.out",

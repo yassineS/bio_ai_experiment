@@ -145,7 +145,7 @@ func TestBcfCall2bcfRecord(t *testing.T) {
 	var cr bcfCallret
 	bcfCallGlfgen(pile, seqNt16Int[baseToNt16('A')], MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
 	call := bcfCallCombine([]bcfCallret{cr}, seqNt16Int[baseToNt16('A')])
-	v := bcfCall2bcf("chr1", 42, 'A', &call)
+	v := bcfCall2bcf("chr1", 42, 'A', &call, 0)
 	if v.Chrom != "chr1" || v.Pos != 42 || v.Ref != "A" {
 		t.Errorf("record locus = %s:%d %s, want chr1:42 A", v.Chrom, v.Pos, v.Ref)
 	}
@@ -257,10 +257,12 @@ func TestMpileupGoldenStructure(t *testing.T) {
 				t.Errorf("%s:%s INFO=%q missing %s", f[0], f[1], f[7], tag)
 			}
 		}
-		// PL grid length must be n_alleles*(n_alleles+1)/2.
+		// PL grid length must be n_alleles*(n_alleles+1)/2. The default
+		// FORMAT is PL:AD; PL is the first subfield.
 		nAll := len(alt) + 1 // ALT count + REF
 		wantPL := nAll * (nAll + 1) / 2
-		if pl := strings.Split(f[9], ","); len(pl) != wantPL {
+		plField := strings.Split(f[9], ":")[0]
+		if pl := strings.Split(plField, ","); len(pl) != wantPL {
 			t.Errorf("%s:%s PL has %d values, want %d for %d alleles",
 				f[0], f[1], len(pl), wantPL, nAll)
 		}
@@ -279,6 +281,9 @@ func mpileupStarRecords(t *testing.T, bam, ref, region string, noBAQ bool) []str
 		FastaRef: ref,
 		Regions:  []string{region},
 		NoBAQ:    noBAQ,
+		// upstream golden was generated with `-a -AD`; mirror it so the
+		// FORMAT column is just PL (no AD subfield) for the comparison.
+		Annotate: "-AD",
 	}
 	if err := MpileupFile(opts, &buf); err != nil {
 		t.Fatalf("MpileupFile %s: %v", region, err)
@@ -656,14 +661,23 @@ func TestMpileupEndToEndSAM(t *testing.T) {
 	if !strings.Contains(f[7], "I16=") {
 		t.Errorf("INFO at chr1:5 = %q, want I16= tag", f[7])
 	}
-	if f[8] != "PL" {
-		t.Errorf("FORMAT at chr1:5 = %q, want PL", f[8])
+	// FORMAT is PL:AD by default (B2B_FMT_AD on in DefaultMpileupFmtFlag).
+	if f[8] != "PL:AD" {
+		t.Errorf("FORMAT at chr1:5 = %q, want PL:AD", f[8])
 	}
 	// chr1:5 is a heterozygous-looking site: REF=A, ALT=C, plus the
 	// appended <*> unseen allele => 3 alleles => 6 PL values.
-	plParts := strings.Split(f[9], ",")
+	sample := strings.Split(f[9], ":")
+	if len(sample) != 2 {
+		t.Fatalf("sample at chr1:5 = %q, want PL:AD subfields", f[9])
+	}
+	plParts := strings.Split(sample[0], ",")
 	if len(plParts) != 6 {
-		t.Errorf("PL at chr1:5 = %q, want 6 comma-separated values", f[9])
+		t.Errorf("PL at chr1:5 = %q, want 6 comma-separated values", sample[0])
+	}
+	adParts := strings.Split(sample[1], ",")
+	if len(adParts) != 3 {
+		t.Errorf("AD at chr1:5 = %q, want 3 comma-separated values", sample[1])
 	}
 	// Every covered position (chr1:1..10) emits a record now, not just
 	// the variant site.
@@ -730,5 +744,45 @@ func TestMpileupKeepRecordFilters(t *testing.T) {
 	}
 	if !mpileupKeepRecord(mk(0x1, 60).toRecord(), optsA) {
 		t.Error("-A should keep not-proper-pair reads")
+	}
+}
+
+// TestParseFormatFlag covers the parser for the `-a/--annotate` token
+// list (mpileup.c:1141 parse_format_flag). It checks token recognition
+// (bare names, FORMAT/* and INFO/* prefixes), exclusion with "-", and
+// the upstream default's compatibility with `-AD`.
+func TestParseFormatFlag(t *testing.T) {
+	cases := []struct {
+		name  string
+		seed  uint32
+		input string
+		want  uint32
+	}{
+		{"empty leaves seed", DefaultMpileupFmtFlag, "", DefaultMpileupFmtFlag},
+		{"bare AD on zero", 0, "AD", B2BFmtAD},
+		{"format-prefix AD", 0, "FORMAT/AD", B2BFmtAD},
+		{"info-prefix AD", 0, "INFO/AD", B2BInfoAD},
+		{"add DP,AD,SP", 0, "DP,AD,SP", B2BFmtDP | B2BFmtAD | B2BFmtSP},
+		{"strip AD from default", DefaultMpileupFmtFlag, "-AD", DefaultMpileupFmtFlag &^ B2BFmtAD},
+		{"toggle ADF,ADR", 0, "ADF,ADR", B2BFmtADF | B2BFmtADR},
+		{"info NM/NMBZ", 0, "INFO/NM,INFO/NMBZ", B2BInfoNM | B2BInfoNMBZ},
+		{"case insensitive", 0, "ad", B2BFmtAD},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flag := tc.seed
+			if err := parseFormatFlag(&flag, tc.input); err != nil {
+				t.Fatalf("parseFormatFlag(%q): %v", tc.input, err)
+			}
+			if flag != tc.want {
+				t.Errorf("parseFormatFlag(%q) = %#x, want %#x", tc.input, flag, tc.want)
+			}
+		})
+	}
+
+	// Unknown tag must error out.
+	var f uint32
+	if err := parseFormatFlag(&f, "NOT_A_TAG"); err == nil {
+		t.Error("parseFormatFlag(\"NOT_A_TAG\") returned nil, want error")
 	}
 }
