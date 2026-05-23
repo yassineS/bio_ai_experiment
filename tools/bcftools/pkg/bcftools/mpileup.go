@@ -45,6 +45,7 @@ package bcftools
 
 import (
 	"compress/gzip"
+	"container/heap"
 	"fmt"
 	"io"
 	"math"
@@ -1042,10 +1043,22 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 	regWindows map[string][][2]int, leak *biasLeak) error {
 
 	nIn := len(perInputChromRecs)
+	// -d/--max-depth: htslib applies the cap per alignment-start inside
+	// bam_plp_push (sam.c:6090), dropping a read when iter->pos ==
+	// b->core.pos and the queue already holds maxcnt active reads.
+	// applyMpileupDepthCap simulates that on the coordinate-sorted
+	// record stream so deeply-piled columns (homopolymers, PCR-dup
+	// stacks) drop the same reads upstream does. The cap runs BEFORE
+	// the smart-overlap tweak so dropped reads do not leak quality
+	// edits into their surviving mates: upstream's overlap_push runs
+	// inside bam_plp_push, *after* the cap test, so reads dropped by
+	// the cap never reach the overlap-quality merger.
+	applyMpileupDepthCap(perInputChromRecs, opts.MaxDepth)
+
 	// MPLP_SMART_OVERLAPS: de-weight bases covered by both mates of a
 	// read pair. Upstream enables this by default and -x disables it;
 	// htslib applies it (overlap_push -> tweak_overlap_quality) as reads
-	// are pushed into the pileup engine, i.e. before BAQ realignment.
+	// are pushed into the pileup engine.
 	if !opts.IgnoreOverlaps {
 		applySmartOverlaps(perInputChromRecs)
 	}
@@ -1093,7 +1106,7 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 		// positions are skipped.
 		anyCov := false
 		for i := 0; i < nIn; i++ {
-			piles[i] = filterMpileupPile(events[i][pos0], opts)
+			piles[i] = filterMpileupPile(events[i][pos0])
 			if len(piles[i]) > 0 {
 				anyCov = true
 			}
@@ -1865,24 +1878,114 @@ func applySmartOverlaps(perInputChromRecs [][]*sam.Record) {
 	}
 }
 
-// filterMpileupPile applies -d (MaxDepth) to a per-position pileup
-// column. -Q/--min-BQ is applied inside glfgen (after the delta_baseQ
-// cap), matching upstream's ordering. Read-pair overlap handling is not
-// done here: it is a pre-pileup quality merge (applySmartOverlaps),
-// matching upstream where overlap_push runs while reads are pushed into
-// the pileup engine.
-func filterMpileupPile(evs []pileupBase, opts MpileupOptions) []pileupBase {
+// filterMpileupPile finalises a per-position pileup column as the
+// per-sample glfgen input. -Q/--min-BQ is applied inside glfgen (after
+// the delta_baseQ cap), matching upstream's ordering. Read-pair overlap
+// handling is not done here: it is a pre-pileup quality merge
+// (applySmartOverlaps), matching upstream where overlap_push runs while
+// reads are pushed into the pileup engine. The -d/--max-depth cap is
+// applied earlier, in applyMpileupDepthCap, matching htslib's per-
+// alignment-start drop semantics in bam_plp_push (sam.c:6090).
+func filterMpileupPile(evs []pileupBase) []pileupBase {
 	if len(evs) == 0 {
 		return nil
 	}
-	out := make([]pileupBase, 0, len(evs))
-	for _, e := range evs {
-		out = append(out, e)
-		if opts.MaxDepth > 0 && len(out) >= opts.MaxDepth {
-			break
-		}
-	}
+	out := make([]pileupBase, len(evs))
+	copy(out, evs)
 	return out
+}
+
+// endHeap is a min-heap of 0-based exclusive reference end positions,
+// used by applyMpileupDepthCap to track in-queue read lifetimes when
+// porting htslib's per-alignment-start depth cap.
+type endHeap []int
+
+func (h endHeap) Len() int            { return len(h) }
+func (h endHeap) Less(i, j int) bool  { return h[i] < h[j] }
+func (h endHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *endHeap) Push(x interface{}) { *h = append(*h, x.(int)) }
+func (h *endHeap) Pop() interface{} {
+	n := len(*h)
+	x := (*h)[n-1]
+	*h = (*h)[:n-1]
+	return x
+}
+
+// applyMpileupDepthCap drops reads using htslib's per-alignment-start
+// rule from bam_plp_push (reference_code/htslib/sam.c:6090): when a new
+// read is pushed at b->core.pos == iter->pos and mp->cnt > maxcnt, the
+// read is silently discarded. Because htslib's mempool keeps one
+// sentinel node alive, the predicate is equivalent to "drop when the
+// number of accepted, still-active reads already in the queue is at
+// least maxcnt".
+//
+// The cap fires only at the boundary between same-start reads: between
+// two pushes the pileup engine has drained columns up to the last
+// accepted read's alignment start, so iter->pos at push time equals the
+// previous accepted read's start position. The cap therefore differs
+// from the previous per-column cap (which dropped reads once a column
+// already had MaxDepth bases regardless of where they started) and
+// matches upstream's golden output at deep homopolymer columns where
+// many reads share an alignment start.
+//
+// Records must be coordinate-sorted on input (they are, post
+// mpileupReadBAM). The slice in perInputChromRecs[i] is rewritten in
+// place to retain only the accepted reads.
+func applyMpileupDepthCap(perInputChromRecs [][]*sam.Record, maxcnt int) {
+	if maxcnt <= 0 {
+		return
+	}
+	for i, recs := range perInputChromRecs {
+		if len(recs) == 0 {
+			continue
+		}
+		ends := &endHeap{}
+		// iter->pos starts at 0 (calloc-zeroed in bam_plp_init). The
+		// cap predicate is iter->pos == b->core.pos; the very first
+		// read therefore only triggers the cap when its 0-based start
+		// is also 0, which our zero initialisation reproduces.
+		iterPos := int32(0)
+		// lastAccepted tracks whether any read on this contig has been
+		// accepted yet. Before the first accepted read, iter->pos is
+		// still its init value, so we honour the upstream check via
+		// iterPos == startPos directly.
+		out := recs[:0]
+		for _, rec := range recs {
+			if rec == nil || rec.Pos <= 0 {
+				continue
+			}
+			startPos := rec.Pos - 1 // 0-based
+			// Drain reads whose end (0-based exclusive) is <= iterPos.
+			// htslib frees these inside bam_plp64_next before counting
+			// mp->cnt, so they no longer occupy a queue slot.
+			for ends.Len() > 0 && (*ends)[0] <= int(iterPos) {
+				heap.Pop(ends)
+			}
+			// htslib's bam_plp_push cap check: drop the read when
+			// iter->pos == b->core.pos and mp->cnt > maxcnt. mp->cnt
+			// equals "active reads + 1" (one initial sentinel node),
+			// so the >maxcnt test fires once the number of active
+			// reads reaches maxcnt.
+			if iterPos == startPos && ends.Len() >= maxcnt {
+				continue
+			}
+			out = append(out, rec)
+			// htslib only allocates a new tail node (incrementing
+			// mp->cnt) when tail->end > iter->pos, i.e. the read is
+			// still active. Pure-insertion CIGARs with refLen == 0
+			// satisfy end == startPos and therefore do not queue.
+			endPos := int(rec.EndPosition())
+			if endPos > int(startPos) {
+				heap.Push(ends, endPos)
+			}
+			// After this push the pileup engine drains columns up to
+			// the read's alignment start: iter->pos catches up to the
+			// new max_pos == startPos before the next bam_plp_push
+			// call returns NULL.
+			iterPos = startPos
+		}
+		perInputChromRecs[i] = out
+	}
 }
 
 // bcfCall2bcf is the Go port of bcf_call2bcf (bam2bcf.c:1200) for the

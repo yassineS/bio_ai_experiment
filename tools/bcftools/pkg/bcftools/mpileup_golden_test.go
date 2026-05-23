@@ -401,14 +401,12 @@ func TestMpileupIndelADGolden(t *testing.T) {
 // carry NMBZ values computed from the cross-sample ref_nm / alt_nm
 // histograms via the existing Mann-Whitney U z-score helper.
 //
-// The 4e.6 slice ports NMBZ; the .2 and .3 annot-NMBZ goldens are NOT
-// added here because they hit pre-existing parity gaps unrelated to
-// NMBZ: annot-NMBZ.2 has a column with >250 reads which trips a
-// pre-existing depth-cap divergence (upstream caps per-alignment-start
-// in the htslib pileup engine, our port caps per column-depth), and
-// annot-NMBZ.3's indel row differs in I16 and PL due to the indel
-// glfgen anno-accumulation gap tracked as 4e.7. The SNP row of
-// annot-NMBZ.3 does byte-match including NMBZ=7.74597.
+// The 4e.6 slice ports NMBZ; annot-NMBZ.3's indel row residual (QS /
+// NMBZ / PL[0]) is tracked separately as 4e.7 — the SNP row of
+// annot-NMBZ.3 does byte-match including NMBZ=7.74597. The
+// annot-NMBZ.2 golden now byte-matches at chr6:75 (DP=283 > 250)
+// thanks to the htslib per-alignment-start depth cap port; see
+// TestMpileupDepthCapGolden.
 func TestMpileupNMBZGolden(t *testing.T) {
 	ref := mpileupFixture(t, "annot-NMBZ.1.fa")
 	mpileupFixture(t, "annot-NMBZ.1.fa.fai")
@@ -456,6 +454,71 @@ func TestMpileupNMBZGolden(t *testing.T) {
 				if diffs <= 5 {
 					t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
 				}
+			}
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
+// TestMpileupDepthCapGolden pins the htslib per-alignment-start depth
+// cap port. annot-NMBZ.2 has a single SNP row at chr6:75 where raw
+// coverage is 449 (orphan-filtered from 450) but the -d 250 cap drops
+// 166 reads, leaving DP=283. Upstream htslib applies the cap per
+// alignment start inside bam_plp_push (reference_code/htslib/sam.c:
+// 6090): a new read is dropped when iter->pos == b->core.pos and the
+// queue already holds maxcnt active reads. Our applyMpileupDepthCap
+// reproduces that drop order so the surviving 283 reads, their I16
+// partial sums and the resulting NMBZ / QS / SCBZ values all match
+// the upstream golden byte-for-byte.
+//
+// Replays test.pl line 1075: `bcftools mpileup -a -AD,INFO/NMBZ -r
+// chr6:75 annot-NMBZ.2.bam`.
+func TestMpileupDepthCapGolden(t *testing.T) {
+	ref := mpileupFixture(t, "annot-NMBZ.2.fa")
+	mpileupFixture(t, "annot-NMBZ.2.fa.fai")
+	bam := mpileupFixture(t, "annot-NMBZ.2.bam")
+	mpileupFixture(t, "annot-NMBZ.2.bam.bai")
+	goldenPath := mpileupFixture(t, "annot-NMBZ.2.1.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:    []string{bam},
+		FastaRef:  ref,
+		Regions:   []string{"chr6:75"},
+		Annotate:  "-AD,INFO/NMBZ",
+		NoVersion: true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		for i := 0; i < nD; i++ {
+			if gotD[i] != wantD[i] {
+				t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
 			}
 		}
 		if len(gotD) != len(wantD) {
@@ -560,36 +623,30 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 		},
 		{
 			"mpileup/indel-AD.1.out",
-			"the four indel rows now match the upstream I16 ALT counts " +
-				"and AD compensation (the heuristic-driven REF-rescue " +
-				"port in slice 4e.7 — see bcf_call_glfgen REF rescue at " +
-				"bam2bcf.c:338-348). Residual divergence is the indel-AD.1 " +
-				"pre-existing depth-cap SNP-row differences and a few " +
-				"chosen-type assignment off-by-1 reads at a single " +
-				"homopolymer column; the latter is the same upstream " +
-				"htslib pileup quirk that blocks annot-NMBZ.2.1.out. " +
-				"Tracked alongside the depth-cap divergence.",
+			"the four indel rows match the upstream I16 ALT counts and " +
+				"AD compensation (the heuristic-driven REF-rescue port " +
+				"in slice 4e.7 — see bcf_call_glfgen REF rescue at " +
+				"bam2bcf.c:338-348). Residual divergence (~20 SNP rows " +
+				"with small I16 base-quality sum drifts plus 4 indel " +
+				"rows with chosen-type off-by-1 assignments at the " +
+				"homopolymer column near 000000F:537) is independent " +
+				"of the depth cap — DP never exceeds 125 — and tracked " +
+				"alongside the bcfCall2bcfIndel SCR-on-indel-rows " +
+				"polish item.",
 		},
 		{
 			"mpileup/indel-AD.1cns.out",
 			"requires --indels-cns (edlib realignment) — separate algorithm.",
 		},
 		{
-			"mpileup/annot-NMBZ.2.1.out",
-			"the matching SNP row at chr6:75 has DP > 250 in upstream " +
-				"(283) but our port caps the per-column pile at -d 250. " +
-				"Upstream's htslib bam_mplp caps per alignment-start, not " +
-				"per column-depth; the divergence is independent of NMBZ. " +
-				"(annot-NMBZ.1.1.out is byte-for-byte as of 4e.6.)",
-		},
-		{
 			"mpileup/annot-NMBZ.3.1.out",
-			"with slice 4e.7 the indel row's I16 now matches upstream " +
-				"byte-for-byte; residual divergence is in QS, NMBZ and " +
-				"PL[0] (226 vs 255) — driven by the same handful of " +
-				"reads whose chosen-indel-type assignment differs from " +
-				"upstream's at this homopolymer column. The SNP row " +
-				"continues to match including NMBZ=7.74597.",
+			"the SNP row at chr16:75 byte-matches including NMBZ=" +
+				"7.74597; the indel row residual (QS / NMBZ / PL[0]: " +
+				"226 vs 255) is driven by a handful of reads whose " +
+				"chosen-indel-type assignment differs from upstream " +
+				"at this homopolymer column. Pinned by the bcfCall2-" +
+				"bcfIndel SCR-on-indel-rows polish item, not by the " +
+				"depth cap (DP=246 < 250 here).",
 		},
 		{
 			"mpileup/annot-NMBZ.[23].2.out / FORMAT/NMBZ goldens",
