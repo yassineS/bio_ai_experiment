@@ -278,13 +278,17 @@ func parseFormatFlag(flag *uint32, str string) error {
 
 // mpileupTagMatch reports whether tag (the bare name supplied by the
 // user) names the FORMAT tag fmtName. Bare names ("AD") and the
-// optional "FORMAT/" prefix ("FORMAT/AD") both succeed; comparison is
-// case-insensitive, mirroring SET_FMT_FLAG in mpileup.c:1120.
+// "FORMAT/" or "FMT/" prefix ("FORMAT/AD", "FMT/AD") all succeed;
+// comparison is case-insensitive, mirroring SET_FMT_FLAG in
+// mpileup.c:1120-1122.
 func mpileupTagMatch(tag, fmtName string) bool {
 	if strings.EqualFold(tag, fmtName) {
 		return true
 	}
 	if strings.EqualFold(tag, "FORMAT/"+fmtName) {
+		return true
+	}
+	if strings.EqualFold(tag, "FMT/"+fmtName) {
 		return true
 	}
 	return false
@@ -1360,9 +1364,13 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 	// soft-clip-aware read-position and soft-clip-length annotations.
 	cigarOps := make([]int, len(rec.Cigar))
 	cigarLens := make([]int, len(rec.Cigar))
+	hasSC := false
 	for k, op := range rec.Cigar {
 		cigarOps[k] = int(op.Op())
 		cigarLens[k] = int(op.Length())
+		if op.Op() == sam.CigarSoftClip {
+			hasSC = true
+		}
 	}
 	// Track whether this read ever produces an indel-bearing column so
 	// the back-pointer to rec can be set on those columns. The
@@ -1473,19 +1481,20 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 				// histograms can be populated.
 				recPtr := rec
 				events[p] = append(events[p], pileupBase{
-					base4:   b4,
-					rawQual: rawQual,
-					prevQ:   prevQ,
-					nextQ:   nextQ,
-					mapq:    rec.MapQ,
-					reverse: isReverse,
-					qpos:    q,
-					qlen:    qlen,
-					qname:   rec.QName,
-					epos:    epos,
-					scLen:   scLen,
-					indel:   ind,
-					rec:     recPtr,
+					base4:       b4,
+					rawQual:     rawQual,
+					prevQ:       prevQ,
+					nextQ:       nextQ,
+					mapq:        rec.MapQ,
+					reverse:     isReverse,
+					qpos:        q,
+					qlen:        qlen,
+					qname:       rec.QName,
+					epos:        epos,
+					scLen:       scLen,
+					indel:       ind,
+					rec:         recPtr,
+					hasSoftClip: hasSC,
 				})
 			}
 			refPos += l
@@ -1523,21 +1532,22 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 					continue
 				}
 				events[p] = append(events[p], pileupBase{
-					base4:     0,
-					rawQual:   rawQual,
-					prevQ:     -1,
-					nextQ:     -1,
-					mapq:      rec.MapQ,
-					reverse:   isReverse,
-					qpos:      qref,
-					qlen:      qlen,
-					qname:     rec.QName,
-					epos:      epos,
-					scLen:     scLen,
-					indel:     0,
-					rec:       rec,
-					isDel:     isDel,
-					isRefskip: isRefskip,
+					base4:       0,
+					rawQual:     rawQual,
+					prevQ:       -1,
+					nextQ:       -1,
+					mapq:        rec.MapQ,
+					reverse:     isReverse,
+					qpos:        qref,
+					qlen:        qlen,
+					qname:       rec.QName,
+					epos:        epos,
+					scLen:       scLen,
+					indel:       0,
+					rec:         rec,
+					isDel:       isDel,
+					isRefskip:   isRefskip,
+					hasSoftClip: hasSC,
 				})
 			}
 			refPos += l
@@ -1898,6 +1908,14 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 	info["DP"] = strconv.Itoa(call.oriDepth)
 	infoOrder = append(infoOrder, "DP")
 
+	// INFO/SCR is emitted before I16, mirroring bam2bcf.c:1298-1299
+	// (after the per-sample AD/ADF/ADR INFO tags — which the current
+	// port does not yet emit at the INFO level — and before I16/QS).
+	if fmtFlag&B2BInfoSCR != 0 {
+		info["SCR"] = strconv.Itoa(call.scrTotal)
+		infoOrder = append(infoOrder, "SCR")
+	}
+
 	var i16 strings.Builder
 	for j, v := range call.anno {
 		if j > 0 {
@@ -1949,14 +1967,15 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 	info["MQ0F"] = formatFloat32G(mq0f)
 	infoOrder = append(infoOrder, "MQ0F")
 
-	// FORMAT — PL first, then optional AD/ADF/ADR controlled by fmtFlag.
-	// Upstream emits ADF/ADR before AD (bam2bcf.c:1376-1384), but does so
-	// for INFO; for FORMAT both are gated by fmtFlag bits and the column
-	// order matches the bits' order: AD, ADF, ADR.
+	// FORMAT — PL first, then optional AD/ADF/ADR controlled by fmtFlag,
+	// then SCR. Upstream emits ADF/ADR before AD (bam2bcf.c:1376-1384),
+	// but does so for INFO; for FORMAT both are gated by fmtFlag bits
+	// and the column order matches the bits' order: AD, ADF, ADR, SCR.
 	format := []string{"PL"}
 	emitAD := fmtFlag&B2BFmtAD != 0
 	emitADF := fmtFlag&B2BFmtADF != 0
 	emitADR := fmtFlag&B2BFmtADR != 0
+	emitSCR := fmtFlag&B2BFmtSCR != 0
 	if emitAD {
 		format = append(format, "AD")
 	}
@@ -1965,6 +1984,9 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 	}
 	if emitADR {
 		format = append(format, "ADR")
+	}
+	if emitSCR {
+		format = append(format, "SCR")
 	}
 	samplesOut := make([]vcf.Sample, len(call.pl))
 	for s := range call.pl {
@@ -1984,6 +2006,9 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 		}
 		if emitADR && s < len(call.adr) {
 			data["ADR"] = formatPerAllele(call.adr[s])
+		}
+		if emitSCR && s < len(call.scr) {
+			data["SCR"] = strconv.Itoa(call.scr[s])
 		}
 		samplesOut[s] = vcf.Sample{Data: data}
 	}
@@ -2299,6 +2324,16 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 	if opts.FmtFlag&B2BFmtADR != 0 {
 		meta = append(meta,
 			`##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Allelic depths on the reverse strand (high-quality bases)">`)
+	}
+	// INFO/SCR + FORMAT/SCR, gated independently by their bits. Header
+	// text matches upstream verbatim (mpileup.c:858-860).
+	if opts.FmtFlag&B2BInfoSCR != 0 {
+		meta = append(meta,
+			`##INFO=<ID=SCR,Number=1,Type=Integer,Description="Number of soft-clipped reads (at high-quality bases)">`)
+	}
+	if opts.FmtFlag&B2BFmtSCR != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=SCR,Number=1,Type=Integer,Description="Per-sample number of soft-clipped reads (at high-quality bases)">`)
 	}
 	return &vcf.Header{MetaInfo: meta, Samples: samples}
 }

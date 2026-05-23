@@ -190,6 +190,70 @@ func TestMpileupSNPGoldens(t *testing.T) {
 	}
 }
 
+// TestMpileupSCRGolden replays the upstream `bcftools mpileup -a
+// -AD,INFO/SCR,FMT/SCR` test (test.pl line 1069), which exercises the
+// soft-clip-read accumulator. SCR counts the reads in a column whose
+// CIGAR contains at least one S op anywhere — see
+// reference_code/bcftools/mpileup.c:307-324 for upstream's
+// pileup_constructor that sets PLP_HAS_SOFT_CLIP, and
+// reference_code/bcftools/bam2bcf.c:300 for the per-read tally in
+// bcf_call_glfgen. INFO/SCR is the total, FORMAT/SCR is the per-sample
+// count.
+func TestMpileupSCRGolden(t *testing.T) {
+	ref := mpileupFixture(t, "mpileup-SCR.fa")
+	mpileupFixture(t, "mpileup-SCR.fa.fai")
+	bam := mpileupFixture(t, "mpileup-SCR.bam")
+	goldenPath := mpileupFixture(t, "mpileup-SCR.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:    []string{bam},
+		FastaRef:  ref,
+		Annotate:  "-AD,INFO/SCR,FMT/SCR",
+		NoVersion: true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		// Helpful diff: header first, then first 5 differing data lines.
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		diffs := 0
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		for i := 0; i < nD; i++ {
+			if gotD[i] != wantD[i] {
+				diffs++
+				if diffs <= 5 {
+					t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+				}
+			}
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
 // TestMpileupFilterGolden replays the upstream `bcftools mpileup
 // --skip-*` test from test.pl (lines 1072-1073), exercising the
 // BAM-flag read filter. The input has two reads of the same template,
@@ -357,9 +421,9 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 			"requires --indels-cns (edlib realignment) — tracked as 4e.7.",
 		},
 		{
-			"mpileup/mpileup-SCR.out, annot-NMBZ.*.out",
-			"INFO/FMT/SCR (soft-clipped reads) and the FORMAT/NMBZ tag " +
-				"are tracked as 4e.5 and 4e.6 in PARITY_ROADMAP.",
+			"mpileup/annot-NMBZ.*.out",
+			"the FORMAT/NMBZ tag is tracked as 4e.6 in PARITY_ROADMAP. " +
+				"(mpileup-SCR.out byte-matched as of 4e.5.)",
 		},
 	}
 	for _, d := range deferred {
