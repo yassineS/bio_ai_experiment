@@ -279,15 +279,48 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 		}
 		r.oriDepth++
 
-		var b, q, baseQ int
+		var b, q, baseQ, seqQ int
 		if isIndel {
 			// Indel branch (bam2bcf.c:312-421). Read the precomputed
 			// (chosen-type, seqQ, indelQ) word produced by gap_prep.
-			// Without edlib / indels_v20 the upstream path leaves q and
-			// seqQ both equal to (aux & 0xff), so subsequent `if (q > seqQ)`
-			// is a no-op. baseQ is the saved seqQ in bits 8-15.
+			// Upstream's `seqQ = q = (p->aux & 0xff)` (bam2bcf.c:315):
+			// both the local `seqQ` and `q` initialise from the indelQ
+			// bits, NOT the saved seqQ bits — the latter are read into
+			// `baseQ` later (line 420) and used for I16 only.
 			b = int(p.aux>>16) & 0x3f
 			q = int(p.aux) & 0xff
+			seqQ = q
+			// Legacy REF-rescue heuristic for the !indels_v20 && !edlib
+			// path (bam2bcf.c:338-348, originally e4e161068 fix for #1446).
+			// At homopolymer / tandem-repeat sites bcf_cgp_compute_indelQ
+			// often returns q == 0 for REF-type reads, so without this
+			// rescue they would fail the min-baseQ gate below and be
+			// undercounted in I16 / QS / AD. Upstream's heuristic: when
+			// the read has no indel in its CIGAR (p.indel == 0) and
+			// either the sample is shallow enough that q < _n/2 or deeper
+			// than 20 reads, reclassify the read as REF (b = 0), promote
+			// q to the read's raw base quality at qpos and rebuild seqQ
+			// as a 3:2 blend of the old seqQ and the base quality. Cap
+			// seqQ to 40 once the pile exceeds 20 reads to dampen
+			// overconfident calls.
+			N := len(pile)
+			if p.indel == 0 && (q < N/2 || N > 20) {
+				rawQ := 0
+				if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
+					rawQ = int(p.rec.Qual[p.qpos])
+				}
+				b = 0
+				q = rawQ
+				seqQ = (3*seqQ + 2*rawQ) / 8
+			}
+			if N > 20 && seqQ > 40 {
+				seqQ = 40
+			}
+			// Upstream reads baseQ AFTER the heuristic from p->aux>>8&0xff
+			// (bam2bcf.c:420) — i.e. the pre-heuristic seqQ bits stored by
+			// bcf_cgp_compute_indelQ. The local `seqQ` variable is used
+			// only to cap `q` below and to gate min-baseQ; I16 uses the
+			// original aux value.
 			baseQ = int(p.aux>>8) & 0xff
 			if q < minBQ {
 				// Low-quality indel read. Upstream's "is this a REF
@@ -321,6 +354,8 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 				q = maxBQ
 			}
 			baseQ = q
+			// SNP branch hardcodes seqQ to 99 (bam2bcf.c:440).
+			seqQ = b2bSeqQ
 		}
 
 		mapQ := int(p.mapq)
@@ -331,13 +366,13 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 			r.mq0++
 		}
 		// Cap sequence, literal port of bam2bcf.c:459-461:
-		//   if (q > seqQ) q = seqQ;                       // seqQ = 99
+		//   if (q > seqQ) q = seqQ;
 		//   mapQ = mapQ < bca->capQ ? mapQ : bca->capQ;   // capQ = 60
 		//   if (q > mapQ) q = mapQ;
-		// i.e. mapQ is itself capped to 60 first, then q is capped to the
-		// capped mapQ. Then q is floored into [4,63] (bam2bcf.c:462-463).
-		if q > b2bSeqQ {
-			q = b2bSeqQ
+		// SNP path: seqQ == 99 (b2bSeqQ). Indel path: seqQ is either the
+		// stored bits 8-15 of p.aux or the REF-rescue blend above.
+		if q > seqQ {
+			q = seqQ
 		}
 		if mapQ > b2bCapQ {
 			mapQ = b2bCapQ

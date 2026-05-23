@@ -313,6 +313,87 @@ func TestMpileupFilterGolden(t *testing.T) {
 	}
 }
 
+// TestMpileupIndelADGolden replays upstream's `bcftools mpileup -a AD
+// -r 11:75 [--ambig-reads MODE]` invocations from test.pl lines
+// 1066-1068 (indel-AD.{2,3,4}.out). They exercise the legacy
+// REF-rescue heuristic that `bcf_cgp_compute_indelQ` leaves to
+// `bcf_call_glfgen`: at homopolymer / tandem-repeat sites the indel
+// branch reclassifies a REF-looking read (no CIGAR indel) as REF type,
+// promotes its `q` to the raw base quality at qpos, and blends seqQ as
+// `(3*seqQ + 2*q)/8`. Without that step REF reads at the deep
+// homopolymer at chr11:75 would all fail the min-baseQ gate and AD
+// would collapse. The byte-for-byte goldens here pin both the rescue
+// itself (AD.2) and its interaction with --ambig-reads incAD (AD.3)
+// and --ambig-reads incAD0 (AD.4).
+func TestMpileupIndelADGolden(t *testing.T) {
+	ref := mpileupFixture(t, "indel-AD.2.fa")
+	mpileupFixture(t, "indel-AD.2.fa.fai")
+	bam := mpileupFixture(t, "indel-AD.2.bam")
+	mpileupFixture(t, "indel-AD.2.bam.bai")
+
+	cases := []struct {
+		name   string
+		golden string
+		mode   AmbigReadsMode
+	}{
+		{"default", "indel-AD.2.out", AmbigReadsDrop},
+		{"incAD", "indel-AD.3.out", AmbigReadsIncAD},
+		{"incAD0", "indel-AD.4.out", AmbigReadsIncAD0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			goldenBytes, err := os.ReadFile(mpileupFixture(t, tc.golden))
+			if err != nil {
+				t.Fatalf("read golden %s: %v", tc.golden, err)
+			}
+			var buf bytes.Buffer
+			opts := MpileupOptions{
+				Inputs:         []string{bam},
+				FastaRef:       ref,
+				Regions:        []string{"11:75"},
+				Annotate:       "AD",
+				AmbigReadsMode: tc.mode,
+				NoVersion:      true,
+			}
+			if err := MpileupFile(opts, &buf); err != nil {
+				t.Fatalf("MpileupFile: %v", err)
+			}
+			if buf.String() != string(goldenBytes) {
+				gotH, gotD := splitMpileupVCF(buf.String())
+				wantH, wantD := splitMpileupVCF(string(goldenBytes))
+				if len(gotH) != len(wantH) {
+					t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+				}
+				nH := len(gotH)
+				if len(wantH) < nH {
+					nH = len(wantH)
+				}
+				for i := 0; i < nH; i++ {
+					if gotH[i] != wantH[i] {
+						t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+					}
+				}
+				diffs := 0
+				nD := len(gotD)
+				if len(wantD) < nD {
+					nD = len(wantD)
+				}
+				for i := 0; i < nD; i++ {
+					if gotD[i] != wantD[i] {
+						diffs++
+						if diffs <= 5 {
+							t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+						}
+					}
+				}
+				if len(gotD) != len(wantD) {
+					t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+				}
+			}
+		})
+	}
+}
+
 // TestMpileupNMBZGolden replays the upstream `bcftools mpileup -a
 // -AD,INFO/NMBZ` test for fixture annot-NMBZ.1 (test.pl line 1074). It
 // exercises the per-read NM-tag bias accumulator and the INFO/NMBZ
@@ -478,17 +559,20 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"ambiguous REF base is a separate parity gap.",
 		},
 		{
-			"mpileup/indel-AD.{1,2,3,4}.out",
-			"the indel-branch glfgen still scores REF-type reads with too " +
-				"low an indelQ in deeply-covered homopolymer / tandem-repeat " +
-				"sites, so most REF reads in indel rows fail the min-BQ " +
-				"gate and the I16/QS/PL/AD columns of the indel record " +
-				"disagree with upstream. Tracked as 4e.7 in PARITY_ROADMAP " +
-				"(the bcfCgpComputeIndelQ + cgp_align_score refinement).",
+			"mpileup/indel-AD.1.out",
+			"the four indel rows now match the upstream I16 ALT counts " +
+				"and AD compensation (the heuristic-driven REF-rescue " +
+				"port in slice 4e.7 — see bcf_call_glfgen REF rescue at " +
+				"bam2bcf.c:338-348). Residual divergence is the indel-AD.1 " +
+				"pre-existing depth-cap SNP-row differences and a few " +
+				"chosen-type assignment off-by-1 reads at a single " +
+				"homopolymer column; the latter is the same upstream " +
+				"htslib pileup quirk that blocks annot-NMBZ.2.1.out. " +
+				"Tracked alongside the depth-cap divergence.",
 		},
 		{
 			"mpileup/indel-AD.1cns.out",
-			"requires --indels-cns (edlib realignment) — tracked as 4e.7.",
+			"requires --indels-cns (edlib realignment) — separate algorithm.",
 		},
 		{
 			"mpileup/annot-NMBZ.2.1.out",
@@ -500,10 +584,12 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 		},
 		{
 			"mpileup/annot-NMBZ.3.1.out",
-			"the SNP row at chr16:75 is byte-for-byte (NMBZ=7.74597) but " +
-				"the indel row's I16 and NMBZ disagree because the indel " +
-				"glfgen's per-sample anno still differs from upstream — " +
-				"tracked as 4e.7 (the bcfCgpComputeIndelQ refinement).",
+			"with slice 4e.7 the indel row's I16 now matches upstream " +
+				"byte-for-byte; residual divergence is in QS, NMBZ and " +
+				"PL[0] (226 vs 255) — driven by the same handful of " +
+				"reads whose chosen-indel-type assignment differs from " +
+				"upstream's at this homopolymer column. The SNP row " +
+				"continues to match including NMBZ=7.74597.",
 		},
 		{
 			"mpileup/annot-NMBZ.[23].2.out / FORMAT/NMBZ goldens",
