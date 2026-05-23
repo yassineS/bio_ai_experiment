@@ -23,6 +23,8 @@ package bcftools
 
 import (
 	"math"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // b2bNpos is upstream's bca->npos: the number of read-position and
@@ -98,6 +100,27 @@ type pileupBase struct {
 	// soft-clip-bias bin in [0,b2bNpos).
 	epos  int
 	scLen int
+	// indel mirrors htslib's bam_pileup1_t.indel field (sam.c pileup
+	// engine). It is the length of the indel that begins at the CIGAR
+	// position immediately after this column: positive for an
+	// insertion of that many query bases, negative for a deletion of
+	// that many reference bases, 0 if the next op is a match. The
+	// indel-calling helpers (bam2bcf_indel.go) consume this; the SNP
+	// path ignores it.
+	indel int
+	// aux is per-read scratch space the indel core uses to thread
+	// scoring state through a column. Upstream bcftools stuffs the
+	// alignment-score / chosen-type bits into a 32-bit field on
+	// bcf_callaux_t.bases — here we keep that state per-pileupBase.
+	aux uint32
+	// rec is a back-pointer to the originating BAM record. It is only
+	// populated on columns whose read carries an indel (indel != 0) —
+	// the sub-slices 4c+4d alignment-scoring core needs to walk that
+	// read's full CIGAR anchored at qpos, but the SNP path never reads
+	// it. Keeping rec optional lets columns of pure-match reads stay
+	// compact in memory while still being faithful to upstream's
+	// per-read scoring requirements.
+	rec *sam.Record
 }
 
 // bcfCallret is the per-sample result of bcfCallGlfgen, mirroring

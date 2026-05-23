@@ -89,8 +89,11 @@ const (
 	DefaultMpileupIndelBias = 1.00
 	// DefaultMpileupIndelSize is upstream `--indel-size`. Unused.
 	DefaultMpileupIndelSize = 110
-	// DefaultMpileupMinIReads is upstream `--min-ireads`. Unused.
-	DefaultMpileupMinIReads = 1
+	// DefaultMpileupMinIReads is upstream `--min-ireads`. The
+	// upstream default in mpileup.c:1387 is 2; the value 1 is only
+	// applied via the `--indels 1.12` config preset (mpileup.c:1738),
+	// which this port does not (yet) honour.
+	DefaultMpileupMinIReads = 2
 	// DefaultMpileupMaxIDepth is upstream `--max-idepth`. Unused.
 	DefaultMpileupMaxIDepth = 250
 	// DefaultMpileupARProb is upstream `--ar-prob`. Unused.
@@ -955,7 +958,11 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 // per covered reference position into events[pos0]. The base quality is
 // captured raw together with its neighbours so glfgen can apply the
 // delta_baseQ cap. CIGAR ops that produce no SNP-candidate base
-// (D, N, S, H, P, I) are skipped — indel candidates are slice-4 work.
+// (D, N, S, H, P, I) are skipped as far as the SNP pileup is
+// concerned, but the column immediately before an I/D op has its
+// pileupBase.indel set to match upstream htslib's bam_pileup1_t.indel
+// semantics (positive for an insertion of that length, negative for a
+// deletion). This is the input the indel calling slice (4c+4d) consumes.
 func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 	if rec.Pos <= 0 {
 		return
@@ -972,11 +979,79 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 		cigarOps[k] = int(op.Op())
 		cigarLens[k] = int(op.Length())
 	}
-	for _, op := range rec.Cigar {
+	// Track whether this read ever produces an indel-bearing column so
+	// the back-pointer to rec can be set on those columns. The
+	// per-column indels themselves are computed by peeking at the next
+	// consuming CIGAR op when walking the read.
+	for idx, op := range rec.Cigar {
 		l := int(op.Length())
 		o := op.Op()
 		switch o {
 		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			// nextIndel is the indel value to stamp on the LAST base
+			// of this match run (htslib pileup engine semantics:
+			// p->indel is read from the CIGAR op that follows the
+			// match op covering this column). Upstream reference:
+			// htslib sam.c:5463-5491 — same-type indel ops are
+			// MERGED (1D2D -> -3, 2I1I -> +3), and a CPAD-leading
+			// insertion run (e.g. M P I) accumulates inserts across
+			// CPAD ops. We reproduce that here so the per-column
+			// p->indel matches bam_plp_next.
+			nextIndel := 0
+			if idx+1 < len(rec.Cigar) {
+				no2 := rec.Cigar[idx+1].Op()
+				nl2 := int(rec.Cigar[idx+1].Length())
+				switch {
+				case no2 == sam.CigarDeletion:
+					// Start of a new deletion: merge e.g. 1D2D to
+					// 3D by accumulating any further D ops.
+					nextIndel = -nl2
+					for k := idx + 2; k < len(rec.Cigar); k++ {
+						if rec.Cigar[k].Op() == sam.CigarDeletion {
+							nextIndel -= int(rec.Cigar[k].Length())
+						} else {
+							break
+						}
+					}
+				case no2 == sam.CigarInsertion:
+					// Insertion run: accumulate consecutive I ops,
+					// skipping CPAD ops between them, stop on
+					// anything else.
+					nextIndel = nl2
+					for k := idx + 2; k < len(rec.Cigar); k++ {
+						kop := rec.Cigar[k].Op()
+						if kop == sam.CigarInsertion {
+							nextIndel += int(rec.Cigar[k].Length())
+						} else if kop == sam.CigarPadding {
+							continue
+						} else {
+							break
+						}
+					}
+				case no2 == sam.CigarPadding && idx+2 < len(rec.Cigar):
+					// Pure CPAD-leading run; sum any I ops until a
+					// consuming op terminates the run (D/M/N/=/X).
+					l3 := 0
+					for k := idx + 2; k < len(rec.Cigar); k++ {
+						kop := rec.Cigar[k].Op()
+						if kop == sam.CigarInsertion {
+							l3 += int(rec.Cigar[k].Length())
+						} else if kop == sam.CigarDeletion ||
+							kop == sam.CigarMatch ||
+							kop == sam.CigarSkipped ||
+							kop == sam.CigarEqual ||
+							kop == sam.CigarMismatch {
+							break
+						}
+					}
+					if l3 > 0 {
+						nextIndel = l3
+					}
+				}
+				// Otherwise (N, M/=/X, S, H without P-leading): no
+				// indel; nextIndel stays 0, mirroring upstream
+				// where p->indel = 0 is the default.
+			}
 			for k := 0; k < l; k++ {
 				p := refPos + k
 				q := queryPos + k
@@ -1002,6 +1077,14 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 				}
 				gp := getPosition(cigarOps, cigarLens, q, qlen)
 				epos, scLen := biasPositionBins(gp)
+				ind := 0
+				var recPtr *sam.Record
+				if k == l-1 {
+					ind = nextIndel
+					if ind != 0 {
+						recPtr = rec
+					}
+				}
 				events[p] = append(events[p], pileupBase{
 					base4:   b4,
 					rawQual: rawQual,
@@ -1014,6 +1097,8 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 					qname:   rec.QName,
 					epos:    epos,
 					scLen:   scLen,
+					indel:   ind,
+					rec:     recPtr,
 				})
 			}
 			refPos += l
