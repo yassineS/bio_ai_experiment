@@ -1479,6 +1479,36 @@ Plus:
   FLAG filtering, `-s/-S/-G` sample/read-group selection, IUPAC REF
   bases, indel/SCR fixtures).
 
+  **Indel-caller sub-slicing (in progress).** The remaining indel work
+  is broken into five sub-slices:
+
+  - **4a + 4b (DONE).** Pileup data model + STR finder + indel
+    candidate-type discovery helpers. `pileupBase` now carries the
+    htslib `bam_pileup1_t.indel` field, an `aux` scratch word, and an
+    optional `*sam.Record` back-pointer set only on indel-bearing
+    columns; `accumulateMpileupBases` populates them by peeking at the
+    next consuming CIGAR op. `bam2bcf_indel.go` adds `bcfCallauxIndel`
+    (the indel-specific subset of upstream `bcf_callaux_t`) plus the
+    static helpers `est_seqQ`, `est_indelreg`, `bcf_cgp_l_run`,
+    `bcf_cgp_find_types`, `tpos2qpos`, and `get_pos`. The STR finder
+    (upstream `str_finder.c` / `find_STR` / `find_STR64`) is ported as
+    a reusable in-tree package `pkg/htsgo/strfinder` and unit-tested
+    over hand-traced inputs (homopolymers, dinucleotide repeats,
+    padding, lower-case filter). All CLI knobs (`--open-prob`,
+    `--ext-prob`, `--tandem-qual`, `--min-ireads`, `--gap-frac`,
+    `--indel-bias`, `--indel-size`) reach `bcfCallauxIndel` via
+    `newBcfCallauxIndel`, but the value is not yet driven into
+    emission.
+  - **4c (TODO).** Per-sample consensus + reference-sample
+    construction (`bcf_cgp_ref_sample`, `bcf_cgp_calc_cons`) and the
+    Probaln-based alignment scoring core (`bcf_cgp_align_score`).
+  - **4d (TODO).** `bcf_call_gap_prep` + `bcf_cgp_compute_indelQ`: the
+    glue that turns per-read alignment scores into per-allele indel
+    quality estimates.
+  - **4e (TODO).** Indel-aware branches of `bcf_call_glfgen` /
+    `bcf_call_combine` / `bcf_call2bcf` and emission of the
+    INDEL/IDV/IMF INFO tags; golden tests land here.
+
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
   byte-for-byte parity holds only at depth ≤255 (RNG byte-parity is not
