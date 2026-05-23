@@ -349,7 +349,9 @@ func TestNewBcfCallauxIndel_Overrides(t *testing.T) {
 // TestAccumulateMpileupBases_IndelSet covers the wiring added in
 // mpileup.go: an alignment with CIGAR 3M2D3M sets the indel field to
 // -2 on the LAST base of the first match run, and 0 elsewhere. The
-// rec back-pointer is set only on the indel-bearing column.
+// rec back-pointer is set on every column (4e.2: every read in the
+// pile needs to be available to bcfCallGapPrep for the per-read
+// iref/ialt bias accumulation, not just the indel-bearing ones).
 func TestAccumulateMpileupBases_IndelSet(t *testing.T) {
 	rec := &sam.Record{
 		QName: "r",
@@ -373,7 +375,7 @@ func TestAccumulateMpileupBases_IndelSet(t *testing.T) {
 	if events[2][0].rec != rec {
 		t.Errorf("events[2].rec = %v, want rec pointer set", events[2][0].rec)
 	}
-	if len(events[0]) != 1 || events[0][0].indel != 0 || events[0][0].rec != nil {
+	if len(events[0]) != 1 || events[0][0].indel != 0 || events[0][0].rec != rec {
 		t.Errorf("events[0] indel/rec wrong: %+v", events[0])
 	}
 	if len(events[5]) != 1 || events[5][0].indel != 0 {

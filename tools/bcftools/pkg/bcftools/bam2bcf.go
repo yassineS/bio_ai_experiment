@@ -113,13 +113,12 @@ type pileupBase struct {
 	// alignment-score / chosen-type bits into a 32-bit field on
 	// bcf_callaux_t.bases — here we keep that state per-pileupBase.
 	aux uint32
-	// rec is a back-pointer to the originating BAM record. It is only
-	// populated on columns whose read carries an indel (indel != 0) —
-	// the sub-slices 4c+4d alignment-scoring core needs to walk that
-	// read's full CIGAR anchored at qpos, but the SNP path never reads
-	// it. Keeping rec optional lets columns of pure-match reads stay
-	// compact in memory while still being faithful to upstream's
-	// per-read scoring requirements.
+	// rec is a back-pointer to the originating BAM record. It is now
+	// populated on every pileupBase: the indel-branch glfgen's
+	// alt_pos/ref_pos tallies and bcfCallGapPrep's iref_*/ialt_*
+	// histograms both need the read's CIGAR (for soft-clip-aware
+	// get_pos) for ALL reads in the column, not just the indel-bearing
+	// ones. The SNP path never reads it.
 	rec *sam.Record
 }
 
@@ -170,6 +169,27 @@ type bcfCallret struct {
 // r. ref4 is the 2-bit reference base index (0..4). It returns the
 // number of bases that passed the quality filter.
 func bcfCallGlfgen(pile []pileupBase, ref4 int, opts MpileupOptions, em *Errmod, r *bcfCallret) int {
+	return bcfCallGlfgenCore(pile, ref4, opts, em, r, false)
+}
+
+// bcfCallGlfgenIndel is the Go port of the `ref_base < 0` branch of
+// bcf_call_glfgen (bam2bcf.c:~300-460). It consumes the per-read p.aux
+// words produced by bcfCgpComputeIndelQ (chosen-type index in bits 16-21,
+// seqQ in bits 8-15, indelQ in bits 0-7) and accumulates QS / I16 / AD /
+// bias tallies into r exactly as glfgen does for SNPs, but indexed by
+// indel-type slot instead of 2-bit base. Reads with no indel assignment
+// (aux>>16 == 4 — the sentinel from compute_indelQ) are still ranked but
+// their b<4 conditional gates the per-allele QS and AD updates.
+//
+// Returns the number of reads whose quality passed the min-BQ filter.
+func bcfCallGlfgenIndel(pile []pileupBase, opts MpileupOptions, em *Errmod, r *bcfCallret) int {
+	return bcfCallGlfgenCore(pile, -1, opts, em, r, true)
+}
+
+// bcfCallGlfgenCore is the shared SNP/indel implementation. isIndel=false
+// reads b from p.base4 and q from the raw quality+delta cap; isIndel=true
+// reads b from p.aux>>16 and q from p.aux&0xff (the precomputed indelQ).
+func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Errmod, r *bcfCallret, isIndel bool) int {
 	*r = bcfCallret{}
 	if len(pile) == 0 {
 		return 0
@@ -177,29 +197,49 @@ func bcfCallGlfgen(pile []pileupBase, ref4 int, opts MpileupOptions, em *Errmod,
 	minBQ := int(opts.MinBQ)
 	maxBQ := int(opts.MaxBQ)
 	deltaBQ := opts.DeltaBQ
+	// In the indel branch ref4 is forced to 4 to mirror upstream
+	// (bam2bcf.c:269 `ref4 = 4`).
+	if isIndel {
+		ref4 = 4
+	}
 
 	bases := make([]uint16, 0, len(pile))
 	for i := range pile {
 		p := &pile[i]
 		r.oriDepth++
 
-		b := p.base4
-		// Lowest of this base and its neighbours' qualities, capped via
-		// delta_baseQ (bam2bcf.c:~427-435).
-		q := int(p.rawQual)
-		if p.prevQ >= 0 && q > p.prevQ+deltaBQ {
-			q = p.prevQ + deltaBQ
+		var b, q, baseQ int
+		if isIndel {
+			// Indel branch (bam2bcf.c:312-421). Read the precomputed
+			// (chosen-type, seqQ, indelQ) word produced by gap_prep.
+			// Without edlib / indels_v20 the upstream path leaves q and
+			// seqQ both equal to (aux & 0xff), so subsequent `if (q > seqQ)`
+			// is a no-op. baseQ is the saved seqQ in bits 8-15.
+			b = int(p.aux>>16) & 0x3f
+			q = int(p.aux) & 0xff
+			baseQ = int(p.aux>>8) & 0xff
+			if q < minBQ {
+				continue
+			}
+		} else {
+			b = p.base4
+			// Lowest of this base and its neighbours' qualities, capped via
+			// delta_baseQ (bam2bcf.c:~427-435).
+			q = int(p.rawQual)
+			if p.prevQ >= 0 && q > p.prevQ+deltaBQ {
+				q = p.prevQ + deltaBQ
+			}
+			if p.nextQ >= 0 && q > p.nextQ+deltaBQ {
+				q = p.nextQ + deltaBQ
+			}
+			if q < minBQ {
+				continue
+			}
+			if q > maxBQ {
+				q = maxBQ
+			}
+			baseQ = q
 		}
-		if p.nextQ >= 0 && q > p.nextQ+deltaBQ {
-			q = p.nextQ + deltaBQ
-		}
-		if q < minBQ {
-			continue
-		}
-		if q > maxBQ {
-			q = maxBQ
-		}
-		baseQ := q
 
 		mapQ := int(p.mapq)
 		if mapQ == 255 {
@@ -236,7 +276,13 @@ func bcfCallGlfgen(pile []pileupBase, ref4 int, opts MpileupOptions, em *Errmod,
 		bases = append(bases, uint16(q<<5|rev<<4|b))
 
 		isDiff := 0
-		if !(ref4 < 4 && b == ref4) {
+		if isIndel {
+			// Indel branch (bam2bcf.c:350): is_diff = b ? 1 : 0. b == 0
+			// is the REF indel type (length 0).
+			if b != 0 {
+				isDiff = 1
+			}
+		} else if !(ref4 < 4 && b == ref4) {
 			isDiff = 1
 		}
 		if b < 4 {
@@ -356,6 +402,204 @@ type bcfCall struct {
 	mqsbzOK bool
 	mwuSc   float64 // SCBZ
 	scbzOK  bool
+}
+
+// bcfCallCombineIndel is the Go port of the `ref_base < 0` branch of
+// bcf_call_combine (bam2bcf.c:959-1198). It combines the per-sample
+// indel-flavored bcfCallret structs into a multi-allelic indel call:
+//
+//   - alleles[0] is forced to 0 (the REF indel-type index); subsequent
+//     alleles are picked from indel-type indices 1..3 in descending QS,
+//     stopping at the first zero-QS slot;
+//   - no `<*>` unseen allele is appended;
+//   - if only the REF type survives (nAlleles==1) the call is rejected
+//     (returns ok=false), matching upstream's `return -1`;
+//   - the multi-allelic PL grid is built from the 5x5 errmod matrix the
+//     same way as for SNPs;
+//   - VDB is recomputed from the per-sample altPos histogram (the indel
+//     branch reused the same bca->alt_pos array, accumulating only over
+//     indel-type-bearing reads);
+//   - SGB is recomputed from the per-sample anno (now indel-flavored);
+//   - RPBZ/MQBZ/SCBZ are recomputed from the per-call iref/ialt tallies
+//     supplied via `bca`. BQBZ and MQSBZ are NOT recomputed: upstream's
+//     `bcf_callaux_clean` only resets the bca histograms, not the
+//     bcf_call_t.mwu_bq / mwu_mqs scalars, so those leak from the last
+//     has_alt SNP combine at this or an earlier position. The caller
+//     threads the leaked values in via the `leak` argument.
+func bcfCallCombineIndel(calls []bcfCallret, bca *bcfCallauxIndel, leak biasLeak) (bcfCall, bool) {
+	var call bcfCall
+	call.oriRef = -1
+
+	// Coverage-normalised QS sums per indel-type slot (bam2bcf.c:970-977).
+	// QS is indexed by indel-type index (0=REF, 1..3=ALT types in the
+	// order chosen by bcfCgpComputeIndelQ).
+	var qsum [b2bMaxAlleles]float64
+	for i := range calls {
+		var sum float64
+		for j := 0; j < 4; j++ {
+			sum += calls[i].qs[j]
+		}
+		if sum != 0 {
+			for j := 0; j < 4; j++ {
+				qsum[j] += calls[i].qs[j] / sum
+			}
+		}
+	}
+
+	// Sort the 5 qsum slots in ascending order, tracking original index
+	// (insertion sort, matching bam2bcf.c:980-984). Indel's "ref4" is 0.
+	idx := [5]int{0, 1, 2, 3, 4}
+	for i := 1; i < 4; i++ {
+		for j := i; j > 0 && qsum[idx[j]] < qsum[idx[j-1]]; j-- {
+			idx[j], idx[j-1] = idx[j-1], idx[j]
+		}
+	}
+
+	for i := range call.alleles {
+		call.alleles[i] = -1
+	}
+	call.unseen = -1
+	const indelRef4 = 0
+	call.alleles[0] = indelRef4
+	j := 1
+	i := 3
+	for ; i >= 0; i-- {
+		ipos := idx[i]
+		if ipos == indelRef4 {
+			call.qsum[0] = qsum[ipos]
+		} else {
+			if qsum[ipos] == 0 {
+				break
+			}
+			call.qsum[j] = qsum[ipos]
+			call.alleles[j] = ipos
+			j++
+		}
+	}
+	call.nAlleles = j
+	if call.nAlleles == 1 {
+		// No reliable supporting read (bam2bcf.c:1012).
+		return call, false
+	}
+	call.hasAlt = true
+
+	// Build the upper-triangle genotype-index list g[].
+	x := call.nAlleles * (call.nAlleles + 1) / 2
+	g := make([]int, 0, x)
+	for ii := 0; ii < call.nAlleles; ii++ {
+		for jj := 0; jj <= ii; jj++ {
+			g = append(g, call.alleles[jj]*5+call.alleles[ii])
+		}
+	}
+
+	// Per-sample PL.
+	call.pl = make([][]int, len(calls))
+	for s := range calls {
+		r := &calls[s]
+		minv := float32(math.MaxFloat32)
+		for _, gi := range g {
+			if r.p[gi] < minv {
+				minv = r.p[gi]
+			}
+		}
+		pl := make([]int, x)
+		for k, gi := range g {
+			y := int(float64(r.p[gi]-minv) + 0.499)
+			if y > 255 {
+				y = 255
+			}
+			pl[k] = y
+		}
+		call.pl[s] = pl
+	}
+
+	// Reorder QS and AD to match the site's allele ordering.
+	call.qs = make([][]int, len(calls))
+	call.adf = make([][]int, len(calls))
+	call.adr = make([][]int, len(calls))
+	for s := range calls {
+		r := &calls[s]
+		qs := make([]int, call.nAlleles)
+		adf := make([]int, call.nAlleles)
+		adr := make([]int, call.nAlleles)
+		for k := 0; k < call.nAlleles; k++ {
+			a := call.alleles[k]
+			if a >= 0 && a < 4 {
+				qs[k] = int(r.qs[a])
+				adf[k] = r.adf[a]
+				adr[k] = r.adr[a]
+			}
+		}
+		call.qs[s] = qs
+		call.adf[s] = adf
+		call.adr[s] = adr
+	}
+
+	// Combine I16 / depth annotations (bam2bcf.c:1138-1148).
+	for i := range calls {
+		r := &calls[i]
+		call.depth += int(r.anno[0] + r.anno[1] + r.anno[2] + r.anno[3])
+		call.oriDepth += r.oriDepth
+		call.mq0 += r.mq0
+		for k := 0; k < 16; k++ {
+			call.anno[k] += r.anno[k]
+		}
+	}
+
+	// Sum the per-sample SNP-flavored bias tallies (refPos/altPos via
+	// glfgen's indel branch — VDB is computed from alt_pos). Other
+	// histograms (refMq/altMq/refBq/altBq) are accumulated but not
+	// emitted on the indel row: the indel branch only consults the
+	// iref_*/ialt_* histograms threaded via bca.
+	var altPos [b2bNpos]int
+	for i := range calls {
+		r := &calls[i]
+		for k := 0; k < b2bNpos; k++ {
+			altPos[k] += r.altPos[k]
+		}
+	}
+
+	// SGB from the (indel-flavored) per-sample anno.
+	call.segBias, call.sgbOK = calcSegBias(calls, &call)
+
+	// RPBZ / MQBZ / SCBZ from the indel iref/ialt histograms populated by
+	// bcfCallGapPrep (bam2bcf.c:1166-1171).
+	call.mwuPos, call.rpbzOK = calcMWUBiasZ(bca.IrefPos, bca.IaltPos, false)
+	call.mwuMq, call.mqbzOK = calcMWUBiasZ(bca.IrefMq, bca.IaltMq, true)
+	call.mwuSc, call.scbzOK = calcMWUBiasZ(bca.IrefScl[:], bca.IaltScl[:], false)
+
+	// BQBZ / MQSBZ leak from the last has_alt SNP combine, per upstream's
+	// bcf_callaux_clean which only resets the bca arrays.
+	call.mwuBq, call.bqbzOK = leak.bq, leak.bqOK
+	call.mwuMqs, call.mqsbzOK = leak.mqs, leak.mqsOK
+
+	// VDB from the indel-branch alt_pos (bam2bcf.c:1195).
+	call.vdb, call.vdbOK = calcVDB(altPos[:])
+
+	return call, true
+}
+
+// biasLeak carries the BQBZ / MQSBZ scalars that upstream's bcf_call_t
+// retains across positions: bcf_callaux_clean wipes the bca histograms
+// but not the call's mwu_bq / mwu_mqs, so an indel record at a position
+// where the SNP row had no real ALT inherits whichever value was last
+// computed by a has_alt SNP combine.
+type biasLeak struct {
+	bq, mqs     float64
+	bqOK, mqsOK bool
+}
+
+// updateBiasLeak captures the BQBZ / MQSBZ scalars from a SNP combine
+// for later reuse by the indel combine at the same or a subsequent
+// position. Only has_alt SNP combines overwrite the slot — upstream's
+// `if (!has_alt) return 0;` (bam2bcf.c:1151) preserves the previous
+// value otherwise.
+func (l *biasLeak) update(call *bcfCall) {
+	if !call.hasAlt {
+		return
+	}
+	l.bq, l.bqOK = call.mwuBq, call.bqbzOK
+	l.mqs, l.mqsOK = call.mwuMqs, call.mqsbzOK
 }
 
 // bcfCallCombine is the Go port of bcf_call_combine (bam2bcf.c:959) for

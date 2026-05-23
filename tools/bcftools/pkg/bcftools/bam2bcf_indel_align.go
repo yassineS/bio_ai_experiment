@@ -664,6 +664,33 @@ func bcfCallGapPrep(piles [][]pileupBase, pos int, bca *bcfCallauxIndel, ref []b
 	if maxIns < 0 {
 		maxIns = 0
 	}
+
+	// Allocate / reset the indel-flavored bias histograms (bam2bcf.h:119).
+	// Upstream sizes ref_pos/alt_pos by bca->npos (b2bNpos==100) and
+	// ref_mq/alt_mq by bca->nqual (b2bNqual==60); iref_scl/ialt_scl are
+	// fixed-size arrays of length 100. We follow upstream sizes.
+	if len(bca.IrefPos) != b2bNpos {
+		bca.IrefPos = make([]int, b2bNpos)
+		bca.IaltPos = make([]int, b2bNpos)
+	} else {
+		for i := range bca.IrefPos {
+			bca.IrefPos[i] = 0
+			bca.IaltPos[i] = 0
+		}
+	}
+	if len(bca.IrefMq) != b2bNqual {
+		bca.IrefMq = make([]int, b2bNqual)
+		bca.IaltMq = make([]int, b2bNqual)
+	} else {
+		for i := range bca.IrefMq {
+			bca.IrefMq[i] = 0
+			bca.IaltMq[i] = 0
+		}
+	}
+	for i := range bca.IrefScl {
+		bca.IrefScl[i] = 0
+		bca.IaltScl[i] = 0
+	}
 	var inscns []byte
 	if maxIns > 0 {
 		inscns = bcfCgpCalcCons(piles, types, maxIns)
@@ -750,6 +777,40 @@ func bcfCallGapPrep(piles [][]pileupBase, pos int, bca *bcfCallauxIndel, ref []b
 			}
 
 			for _, p := range piles[s] {
+				// Per-read iref/ialt bias tallies (bam2bcf_indel.c:826-849).
+				// Upstream does these before the BAM_FUNMAP / CREF_SKIP
+				// `continue`s, so every read in the pile contributes.
+				// Only gathered once across all candidate types (the t==0
+				// pass), since they share the same `bca` storage.
+				if t == 0 && p.rec != nil {
+					imq := int(p.rec.MapQ)
+					if imq > 59 {
+						imq = 59
+					}
+					gp := getPos(p.rec.Cigar, int(p.rec.Pos)-1, p.qpos, p.qlen, p.indel)
+					epos, scLen := gp.EPos, gp.ScLen
+					if epos < 0 {
+						epos = 0
+					}
+					if epos >= b2bNpos {
+						epos = b2bNpos - 1
+					}
+					if scLen < 0 {
+						scLen = 0
+					}
+					if scLen >= 100 {
+						scLen = 99
+					}
+					if p.indel != 0 {
+						bca.IaltMq[imq]++
+						bca.IaltScl[scLen]++
+						bca.IaltPos[epos]++
+					} else {
+						bca.IrefMq[imq]++
+						bca.IrefScl[scLen]++
+						bca.IrefPos[epos]++
+					}
+				}
 				if p.rec == nil {
 					// Upstream (bam2bcf_indel.c) calloc's `score` and
 					// `continue`s on p->b == NULL / BAM_FUNMAP / CREF_SKIP
