@@ -888,6 +888,15 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 	}
 
 	calls := make([]bcfCallret, nIn)
+	// Indel-pass state. bca is the per-call aux struct; leak threads the
+	// BQBZ / MQSBZ scalars from the last has_alt SNP combine into the
+	// indel combine (upstream's bcf_call_t reuse — only the bca arrays
+	// are cleaned between SNP and indel passes).
+	bca := newBcfCallauxIndel(opts)
+	bca.Chr = chrom
+	indelCalls := make([]bcfCallret, nIn)
+	piles := make([][]pileupBase, nIn)
+	var leak biasLeak
 	for pos0 := 0; pos0 < refLen; pos0++ {
 		pos1 := pos0 + 1
 		if !regionContains(regWindows, chrom, pos1) {
@@ -903,11 +912,11 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 		// positions are skipped.
 		anyCov := false
 		for i := 0; i < nIn; i++ {
-			pile := filterMpileupPile(events[i][pos0], opts)
-			if len(pile) > 0 {
+			piles[i] = filterMpileupPile(events[i][pos0], opts)
+			if len(piles[i]) > 0 {
 				anyCov = true
 			}
-			bcfCallGlfgen(pile, ref4, opts, em, &calls[i])
+			bcfCallGlfgen(piles[i], ref4, opts, em, &calls[i])
 		}
 		if !anyCov {
 			continue
@@ -915,6 +924,33 @@ func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte,
 		call := bcfCallCombine(calls, ref4)
 		v := bcfCall2bcf(chrom, pos1, refB, &call, opts.FmtFlag)
 		if err := w.Write(v); err != nil {
+			return err
+		}
+		// Update the SNP→indel bias leak: only has_alt SNP combines
+		// overwrite BQBZ / MQSBZ on the shared bcf_call_t.
+		leak.update(&call)
+
+		// Indel pass (mpileup.c:589-613). Upstream gates this on
+		// `total_depth < max_indel_depth`, which our port treats as
+		// always-true (MaxIDepth is accepted but unused so far). Skip
+		// only when -I/--skip-indels is in force.
+		if opts.SkipIndels {
+			continue
+		}
+		iret := bcfCallGapPrep(piles, pos0, bca, refSlab)
+		if iret < 0 {
+			continue
+		}
+		// Per-sample indel-branch glfgen.
+		for i := 0; i < nIn; i++ {
+			bcfCallGlfgenIndel(piles[i], opts, em, &indelCalls[i])
+		}
+		icall, ok := bcfCallCombineIndel(indelCalls, bca, leak)
+		if !ok {
+			continue
+		}
+		iv := bcfCall2bcfIndel(chrom, pos0, refSlab, &icall, bca, opts.FmtFlag)
+		if err := w.Write(iv); err != nil {
 			return err
 		}
 	}
@@ -1250,13 +1286,15 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 				gp := getPosition(cigarOps, cigarLens, q, qlen)
 				epos, scLen := biasPositionBins(gp)
 				ind := 0
-				var recPtr *sam.Record
 				if k == l-1 {
 					ind = nextIndel
-					if ind != 0 {
-						recPtr = rec
-					}
 				}
+				// Always carry the back-pointer to the originating read.
+				// bcfCallGapPrep needs it to compute the indel-flavored
+				// get_pos result for every read at the column (not just
+				// the indel-bearing ones), so the iref_*/ialt_*
+				// histograms can be populated.
+				recPtr := rec
 				events[p] = append(events[p], pileupBase{
 					base4:   b4,
 					rawQual: rawQual,
@@ -1730,6 +1768,187 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 		ID:        ".",
 		Ref:       string(refB),
 		Alt:       alt,
+		Qual:      0,
+		Filter:    []string{"."},
+		Info:      info,
+		InfoOrder: infoOrder,
+		Format:    format,
+		Samples:   samplesOut,
+	}
+}
+
+// bcfCall2bcfIndel is the Go port of the `ori_ref < 0` branch of
+// bcf_call2bcf (bam2bcf.c:1211-1234, 1257-1283). It turns a combined
+// indel bcfCall into a vcf.Variant, building REF/ALT from
+// bca.IndelTypes / bca.Inscns / bca.IndelReg, and emitting the
+// INDEL flag together with IDV/IMF, plus the standard INFO/DP/I16/QS,
+// the bias subset present, and FORMAT/PL.
+//
+// refSlab is the chromosome reference (0-indexed); pos0 is the 0-based
+// reference position of the indel (the position immediately PRIOR to
+// the inserted/deleted span — i.e. the anchor base printed as the first
+// REF nucleotide).
+func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
+	bca *bcfCallauxIndel, fmtFlag uint32) *vcf.Variant {
+
+	// Build REF and ALT strings (bam2bcf.c:1211-1234).
+	refBase := byte('N')
+	if pos0 >= 0 && pos0 < len(refSlab) {
+		refBase = upperByte(refSlab[pos0])
+	}
+	var ref strings.Builder
+	ref.WriteByte(refBase)
+	for j := 0; j < bca.IndelReg; j++ {
+		if pos0+1+j < len(refSlab) {
+			ref.WriteByte(upperByte(refSlab[pos0+1+j]))
+		}
+	}
+	alts := make([]string, 0, call.nAlleles-1)
+	for i := 1; i < call.nAlleles && i < 4; i++ {
+		a := call.alleles[i]
+		if a < 0 {
+			break
+		}
+		var b strings.Builder
+		b.WriteByte(refBase)
+		t := bca.IndelTypes[a]
+		switch {
+		case t < 0:
+			// Deletion: skip the deleted reference bases.
+			for j := -t; j < bca.IndelReg; j++ {
+				if pos0+1+j < len(refSlab) {
+					b.WriteByte(upperByte(refSlab[pos0+1+j]))
+				}
+			}
+		case t > 0:
+			// Insertion: emit the per-type consensus payload, then the
+			// indelreg ref tail.
+			ins := bca.Inscns[a*bca.MaxIns : (a+1)*bca.MaxIns]
+			for j := 0; j < t; j++ {
+				code := ins[j]
+				if int(code) < 5 {
+					b.WriteByte("ACGTN"[code])
+				} else {
+					b.WriteByte('N')
+				}
+			}
+			for j := 0; j < bca.IndelReg; j++ {
+				if pos0+1+j < len(refSlab) {
+					b.WriteByte(upperByte(refSlab[pos0+1+j]))
+				}
+			}
+		default:
+			// t == 0: this should not appear among the ALT slots because
+			// allele 0 carries the REF type. Skip defensively.
+			continue
+		}
+		alts = append(alts, b.String())
+	}
+
+	info := map[string]string{}
+	infoOrder := make([]string, 0, 16)
+
+	// INDEL flag, IDV, IMF (bam2bcf.c:1257-1283).
+	info["INDEL"] = ""
+	infoOrder = append(infoOrder, "INDEL")
+	if fmtFlag&B2BInfoIDV != 0 {
+		info["IDV"] = strconv.Itoa(bca.MaxSupport)
+		infoOrder = append(infoOrder, "IDV")
+	}
+	if fmtFlag&B2BInfoIMF != 0 {
+		info["IMF"] = formatFloat32G(bca.MaxFrac)
+		infoOrder = append(infoOrder, "IMF")
+	}
+
+	info["DP"] = strconv.Itoa(call.oriDepth)
+	infoOrder = append(infoOrder, "DP")
+
+	var i16 strings.Builder
+	for j, v := range call.anno {
+		if j > 0 {
+			i16.WriteByte(',')
+		}
+		i16.WriteString(formatI16Number(v))
+	}
+	info["I16"] = i16.String()
+	infoOrder = append(infoOrder, "I16")
+
+	var qs strings.Builder
+	for j := 0; j < call.nAlleles; j++ {
+		if j > 0 {
+			qs.WriteByte(',')
+		}
+		qs.WriteString(formatFloat32G(call.qsum[j]))
+	}
+	info["QS"] = qs.String()
+	infoOrder = append(infoOrder, "QS")
+
+	// Bias annotations: only with a real ALT (always true here), and
+	// only when defined. Order matches the SNP path (bam2bcf.c:1306-1336):
+	// VDB, SGB, RPBZ, MQBZ, MQSBZ, BQBZ, SCBZ.
+	addBias := func(tag string, v float64, ok bool) {
+		if ok {
+			info[tag] = formatFloat32G(v)
+			infoOrder = append(infoOrder, tag)
+		}
+	}
+	addBias("VDB", call.vdb, call.vdbOK)
+	addBias("SGB", call.segBias, call.sgbOK)
+	addBias("RPBZ", call.mwuPos, call.rpbzOK)
+	addBias("MQBZ", call.mwuMq, call.mqbzOK)
+	addBias("MQSBZ", call.mwuMqs, call.mqsbzOK)
+	addBias("BQBZ", call.mwuBq, call.bqbzOK)
+	addBias("SCBZ", call.mwuSc, call.scbzOK)
+
+	mq0f := 0.0
+	if call.oriDepth > 0 {
+		mq0f = float64(call.mq0) / float64(call.oriDepth)
+	}
+	info["MQ0F"] = formatFloat32G(mq0f)
+	infoOrder = append(infoOrder, "MQ0F")
+
+	// FORMAT: PL plus optional AD/ADF/ADR.
+	format := []string{"PL"}
+	emitAD := fmtFlag&B2BFmtAD != 0
+	emitADF := fmtFlag&B2BFmtADF != 0
+	emitADR := fmtFlag&B2BFmtADR != 0
+	if emitAD {
+		format = append(format, "AD")
+	}
+	if emitADF {
+		format = append(format, "ADF")
+	}
+	if emitADR {
+		format = append(format, "ADR")
+	}
+	samplesOut := make([]vcf.Sample, len(call.pl))
+	for s := range call.pl {
+		var pl strings.Builder
+		for k, v := range call.pl[s] {
+			if k > 0 {
+				pl.WriteByte(',')
+			}
+			pl.WriteString(strconv.Itoa(v))
+		}
+		data := map[string]string{"PL": pl.String()}
+		if emitAD && s < len(call.adf) {
+			data["AD"] = formatPerAlleleSum(call.adf[s], call.adr[s])
+		}
+		if emitADF && s < len(call.adf) {
+			data["ADF"] = formatPerAllele(call.adf[s])
+		}
+		if emitADR && s < len(call.adr) {
+			data["ADR"] = formatPerAllele(call.adr[s])
+		}
+		samplesOut[s] = vcf.Sample{Data: data}
+	}
+
+	return &vcf.Variant{
+		Chrom:     chrom,
+		Pos:       pos0 + 1,
+		ID:        ".",
+		Ref:       ref.String(),
+		Alt:       alts,
 		Qual:      0,
 		Filter:    []string{"."},
 		Info:      info,

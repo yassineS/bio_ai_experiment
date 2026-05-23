@@ -1545,23 +1545,38 @@ Plus:
       header lines are emitted only when their bits are on.
       `TestMpileupSNPGoldens/multi-bam-region-format-AD` is the
       byte-for-byte golden check against `mpileup/mpileup.12.out`.
-    - **4e.2 (TODO).** Indel-branch `bcf_call_glfgen` (`bam2bcf.c:300-460`):
-      consume per-read `p.aux` words populated by `bcfCallGapPrep`, run
-      `errmodCal` on the indel bases, and populate `bcfCallret` with
-      indel-specific QS / AD / I16 / bias tallies (the `iref_*/ialt_*`
-      arrays on `bcfCallauxIndel`). The bias arrays will need to be
-      populated inside `bcfCallGapPrep`'s per-read alignment loop
-      (matching upstream `bam2bcf_indel.c:826-848`); they are sized but
-      empty today.
-    - **4e.3 (TODO).** Indel-branch `bcf_call_combine` + `bcf_call2bcf`
-      (`bam2bcf.c:1165-1198`, `bam2bcf.c:1211-1234`): build REF/ALT from
-      `bca.Inscns`/`IndelTypes`/`IndelReg`; emit `INFO/INDEL` flag, IDV,
-      IMF, FORMAT/PL and FORMAT/AD for indel records; carefully model
-      the upstream "leaked" bias semantics (BQBZ/MQSBZ retain the last
-      has-alt SNP's value since `bcf_callaux_clean` does not reset
-      `call->mwu_*`). Per-site driver in `emitChromMpileup` will run
-      `bcfCallGapPrep` after the SNP emission and, when it returns ≥0,
-      do a second glfgen+combine+2bcf pass with `ref4=-1`.
+    - **4e.2 (DONE).** Indel-branch `bcf_call_glfgen`
+      (`bam2bcf.c:300-460`) is now `bcfCallGlfgenIndel` /
+      `bcfCallGlfgenCore` in `bam2bcf.go`: it consumes per-read `p.aux`
+      words populated by `bcfCallGapPrep`, runs `errmodCal` on the indel
+      bases, and populates `bcfCallret` with indel-specific QS / AD /
+      I16 / bias tallies (using `is_diff = b ? 1 : 0`, mirroring
+      `bam2bcf.c:350`). `bcfCallGapPrep` was extended to populate
+      `bca.IrefPos / IaltPos / IrefMq / IaltMq / IrefScl / IaltScl`
+      (`bam2bcf_indel.c:826-848`) from the per-read loop at t==0; the
+      indel-flavored `getPos` helper supplies the read-position and
+      soft-clip-length bins. `pileupBase.rec` is now populated for
+      every read in the pile (not just indel-bearing columns) so the
+      indel iref/ialt accumulation has the cigar available for all
+      reads.
+    - **4e.3 (DONE).** Indel-branch `bcf_call_combine` + `bcf_call2bcf`
+      (`bam2bcf.c:1165-1198`, `bam2bcf.c:1211-1234`) are
+      `bcfCallCombineIndel` (in `bam2bcf.go`) and `bcfCall2bcfIndel`
+      (in `mpileup.go`): REF/ALT alleles built from
+      `bca.Inscns`/`IndelTypes`/`IndelReg`, `INFO/INDEL` flag plus
+      `IDV`/`IMF` emitted before `DP`/`I16`/`QS`, then the same bias
+      subset as the SNP path (`VDB`/`SGB`/`RPBZ`/`MQBZ`/`MQSBZ`/`BQBZ`/
+      `SCBZ`/`MQ0F`) followed by `FORMAT/PL`. The upstream "leaked"
+      bias semantics (BQBZ/MQSBZ retain the last has-alt SNP's value
+      since `bcf_callaux_clean` does not reset `call->mwu_*`) is modelled
+      explicitly by a `biasLeak` struct threaded through the per-site
+      driver. The driver in `emitChromMpileup` runs `bcfCallGapPrep`
+      after the SNP emission and, when it returns ≥0, runs a second
+      `bcfCallGlfgenIndel` + `bcfCallCombineIndel` + `bcfCall2bcfIndel`
+      pass (matching `mpileup.c:589-613`). The full
+      `mpileup/mpileup.11.out` golden — including the 17:302 INDEL row
+      (`T → TA`, `BQBZ=-1.34164` inherited from the prior SNP combine
+      at 17:237) — now matches byte-for-byte.
     - **4e.4 (TODO).** `--indels-cns` (edlib) realignment path.
     - **4e.5 (TODO).** `--ambig-reads` (incAD / incAD0) ADF/ADR
       compensation (`bam2bcf.c:540-562`).

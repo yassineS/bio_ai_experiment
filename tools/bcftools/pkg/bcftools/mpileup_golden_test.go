@@ -45,11 +45,13 @@ func splitMpileupVCF(s string) (header, data []string) {
 }
 
 // TestMpileupSNPGoldens is the slice-4 byte-for-byte parity check for
-// the SNP MAQ path. With the per-site bias annotations (VDB, SGB, RPBZ,
-// MQBZ, BQBZ, MQSBZ, SCBZ), the MQ0F fraction, the INFO/QS float32
-// rounding and the MPLP_SMART_OVERLAPS read-pair quality merge all
-// ported, `bcftools mpileup` must reproduce the upstream goldens
-// exactly — header and every data record, INFO bias tags included.
+// the SNP MAQ path and (post 4e.2+4e.3) the indel emission path. With
+// the per-site bias annotations (VDB, SGB, RPBZ, MQBZ, BQBZ, MQSBZ,
+// SCBZ), the MQ0F fraction, the INFO/QS float32 rounding, the
+// MPLP_SMART_OVERLAPS read-pair quality merge AND the indel-branch
+// glfgen/combine/2bcf all ported, `bcftools mpileup` must reproduce
+// the upstream goldens exactly — header and every data record, INFO
+// bias tags and the single INDEL record at 17:302 included.
 //
 // Two upstream invocations from reference_code/bcftools/test/test.pl
 // are replayed:
@@ -57,17 +59,15 @@ func splitMpileupVCF(s string) (header, data []string) {
 //   - mpileup.11.out: `mpileup -a -AD mpileup.3.bam`, the full 4200 bp
 //     contig. 4001 covered positions, 87 SNP ALT records, two
 //     overlapping mate pairs (17:1118-1142 and 17:3785-3836) that
-//     exercise smart-overlaps.
+//     exercise smart-overlaps, plus the single +1 insertion record at
+//     17:302 (T → TA) which exercises the full indel-calling
+//     gap_prep/glfgen/combine/2bcf pipeline including the BQBZ leak
+//     from the prior has_alt SNP combine.
 //   - mpileup.1.out: `mpileup -r17:100-150 -a -AD mpileup.{1,2,3}.bam`,
 //     the three-sample multi-BAM path over a 51 bp window.
 //
 // `-a -AD` removes FORMAT/AD from the default tag set, so the goldens
-// carry FORMAT=PL only — exactly what the SNP path emits today.
-//
-// The single upstream INDEL record in mpileup.11.out (17:302 TA) is the
-// only golden line not reproduced: indel calling (bam2bcf_indel.c) is
-// the remaining deferred mpileup work. The comparison aligns records by
-// CHROM:POS and skips that INDEL position.
+// carry FORMAT=PL only — exactly what the SNP / indel paths emit.
 func TestMpileupSNPGoldens(t *testing.T) {
 	ref := mpileupFixture(t, "mpileup.ref.fa")
 	mpileupFixture(t, "mpileup.ref.fa.fai") // sidecar required by the FASTA reader
@@ -138,26 +138,32 @@ func TestMpileupSNPGoldens(t *testing.T) {
 				}
 			}
 
-			// Index the golden data records by CHROM:POS, splitting off
-			// the deferred INDEL records so the SNP comparison is clean.
-			wantByPos := make(map[string]string, len(wantData))
-			indelSkipped := 0
-			for _, ln := range wantData {
+			// Index the golden data records by CHROM:POS:isIndel so the
+			// SNP and INDEL records at the same coordinate (17:302) are
+			// disambiguated.
+			isIndel := func(ln string) bool {
 				f := strings.Split(ln, "\t")
 				if len(f) < 8 {
-					t.Fatalf("malformed golden record %q", ln)
+					return false
 				}
-				if strings.HasPrefix(f[7], "INDEL") || strings.Contains(f[7], ";INDEL;") {
-					indelSkipped++
-					continue
+				return strings.HasPrefix(f[7], "INDEL;") || strings.Contains(f[7], ";INDEL;") || f[7] == "INDEL"
+			}
+			recKey := func(ln string) string {
+				f := strings.Split(ln, "\t")
+				if isIndel(ln) {
+					return f[0] + ":" + f[1] + ":indel"
 				}
-				wantByPos[f[0]+":"+f[1]] = ln
+				return f[0] + ":" + f[1] + ":snp"
+			}
+
+			wantByPos := make(map[string]string, len(wantData))
+			for _, ln := range wantData {
+				wantByPos[recKey(ln)] = ln
 			}
 
 			checked, diffs := 0, 0
 			for _, ln := range gotData {
-				f := strings.Split(ln, "\t")
-				key := f[0] + ":" + f[1]
+				key := recKey(ln)
 				want, ok := wantByPos[key]
 				if !ok {
 					t.Errorf("emitted an extra record at %s:\n %s", key, ln)
@@ -172,15 +178,14 @@ func TestMpileupSNPGoldens(t *testing.T) {
 					}
 				}
 			}
-			// Every non-INDEL golden record must have been produced.
 			for key := range wantByPos {
 				t.Errorf("missing record at %s (golden has it, we did not emit it)", key)
 			}
 			if diffs > 10 {
 				t.Errorf("... and %d more record mismatches", diffs-10)
 			}
-			t.Logf("%s: %d SNP records byte-for-byte identical, %d upstream INDEL record(s) skipped (indel calling deferred)",
-				tc.golden, checked, indelSkipped)
+			t.Logf("%s: %d records byte-for-byte identical (SNP and INDEL)",
+				tc.golden, checked)
 		})
 	}
 }
@@ -190,12 +195,6 @@ func TestMpileupSNPGoldens(t *testing.T) {
 // stays visible in the test output.
 func TestMpileupGoldensDeferred(t *testing.T) {
 	deferred := []struct{ golden, reason string }{
-		{
-			"mpileup/mpileup.11.out (17:302 TA record)",
-			"the single INDEL record; indel calling (bam2bcf_indel.c) is " +
-				"the only remaining deferred mpileup path. Every SNP record " +
-				"of this golden, bias tags included, matches byte-for-byte.",
-		},
 		{
 			"mpileup/mpileup.2.out, mpileup.4.out, mpileup.5.out, mpileup.6.out",
 			"produced with FORMAT tags beyond PL (DP, DV, DP4, SP, AD, ADF, " +
