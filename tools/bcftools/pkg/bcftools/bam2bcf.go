@@ -132,6 +132,14 @@ type pileupBase struct {
 	// get_pos) for ALL reads in the column, not just the indel-bearing
 	// ones. The SNP path never reads it.
 	rec *sam.Record
+	// hasSoftClip mirrors htslib's PLP_HAS_SOFT_CLIP flag: true iff
+	// the originating read has at least one CIGAR S op anywhere in its
+	// alignment. Upstream sets the flag once in pileup_constructor
+	// (mpileup.c:317-323) and consumes it in bcf_call_glfgen when
+	// counting per-sample SCR (bam2bcf.c:300). We stamp the same bit
+	// on every pileupBase produced from such a read so the SCR
+	// accumulator can read it from the column directly.
+	hasSoftClip bool
 }
 
 // bcfCallret is the per-sample result of bcfCallGlfgen, mirroring
@@ -172,6 +180,11 @@ type bcfCallret struct {
 	altBq  [b2bNqual]int
 	fwdMqs [b2bNqual]int
 	revMqs [b2bNqual]int
+	// scr is the per-sample count of reads at this column whose CIGAR
+	// contains at least one soft-clip op. Filled by glfgen when either
+	// B2BInfoSCR or B2BFmtSCR is set (matching bam2bcf.c:300). Combined
+	// into bcfCall.scrTotal and bcfCall.scr by bcfCallCombine.
+	scr int
 }
 
 // bcfCallGlfgen is the Go port of bcf_call_glfgen (bam2bcf.c:250) for
@@ -221,8 +234,20 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 	// REF (b<4, no indel in CIGAR). Upstream uses them to compensate the
 	// per-allele AD when --ambig-reads is incAD / incAD0 (bam2bcf.c:540-561).
 	var adrRefMissed, adfRefMissed [4]int
+	// scrWanted mirrors upstream's gating on (B2B_INFO_SCR|B2B_FMT_SCR)
+	// at bam2bcf.c:300. We only tally SCR in the SNP branch because the
+	// indel branch reuses a separate bcfCallret and the SNP combine has
+	// already emitted INFO/FMT/SCR onto the SNP row by the time the
+	// indel branch runs.
+	scrWanted := !isIndel && opts.FmtFlag&(B2BInfoSCR|B2BFmtSCR) != 0
 	for i := range pile {
 		p := &pile[i]
+		// SCR accumulator runs BEFORE the is_refskip / is_unmap gate,
+		// matching bam2bcf.c:300 which counts every pileup1_t entry
+		// flagged with PLP_HAS_SOFT_CLIP regardless of refskip.
+		if scrWanted && p.hasSoftClip {
+			r.scr++
+		}
 		// is_refskip skips both branches unconditionally
 		// (bam2bcf.c:301 `if (p->is_refskip || ...) continue;`).
 		if p.isRefskip {
@@ -482,6 +507,12 @@ type bcfCall struct {
 	mqsbzOK bool
 	mwuSc   float64 // SCBZ
 	scbzOK  bool
+	// scrTotal is the sum of per-sample SCR counts (INFO/SCR). scr is
+	// the per-sample SCR array (FORMAT/SCR), in input sample order.
+	// Both are filled by bcfCallCombine when either B2BInfoSCR or
+	// B2BFmtSCR is set on the fmt_flag.
+	scrTotal int
+	scr      []int
 }
 
 // bcfCallCombineIndel is the Go port of the `ref_base < 0` branch of
@@ -808,6 +839,17 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 		for j := 0; j < 16; j++ {
 			call.anno[j] += r.anno[j]
 		}
+	}
+
+	// Fold per-sample SCR tallies into the call (bam2bcf.c:1060-1066).
+	// Upstream stores SCR as an int32_t[ncall+1]: index 0 holds the
+	// total (INFO/SCR), indices 1..n hold the per-sample counts
+	// (FORMAT/SCR). Here we keep the total scalar separately and a
+	// per-sample slice.
+	call.scr = make([]int, len(calls))
+	for i := range calls {
+		call.scr[i] = calls[i].scr
+		call.scrTotal += calls[i].scr
 	}
 
 	// has_alt: a real ALT exists unless the only non-REF allele is `<*>`

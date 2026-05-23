@@ -1607,8 +1607,20 @@ Plus:
       `mpileupKeepRecord`. Byte-for-byte golden: `mpileup-filter.2.out`
       now matches (both the `--skip-all-unset READ1` and `--skip-any-unset
       READ1` forms; tested in `TestMpileupFilterGolden`).
-    - **4e.5 (TODO).** INFO/FMT/SCR (soft-clipped reads counter) for the
-      `mpileup-SCR.out` golden.
+    - **4e.5 (DONE).** INFO/FMT/SCR (soft-clipped reads counter). The
+      SCR signal is a per-record `hasSoftClip` bit (true iff the read
+      has any CIGAR S op, mirroring upstream's `PLP_HAS_SOFT_CLIP` set
+      in `pileup_constructor`, `mpileup.c:317-323`). The bit is stamped
+      on every `pileupBase` produced by `accumulateMpileupBases` so the
+      SNP-branch `bcfCallGlfgenCore` can tally it pre-refskip into
+      `bcfCallret.scr` (matching `bam2bcf.c:300`). `bcfCallCombine`
+      folds the per-sample counts into `bcfCall.scrTotal` /
+      `bcfCall.scr[]`, and `bcfCall2bcf` emits INFO/SCR (before I16) /
+      FORMAT/SCR (after AD/ADF/ADR) when their bits are set.
+      `parseFormatFlag` now also accepts the `FMT/` prefix in addition
+      to `FORMAT/` (`SET_FMT_FLAG`, `mpileup.c:1120-1122`). Byte-for-
+      byte golden `mpileup-SCR.out` (test.pl:1069) now matches; tested
+      in `TestMpileupSCRGolden`.
     - **4e.6 (TODO).** FORMAT/NMBZ (per-read NM bias) for the
       `annot-NMBZ.*.out` goldens.
     - **4e.7 (TODO).** `bcfCgpComputeIndelQ` + `cgp_align_score`
