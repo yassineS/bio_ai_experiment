@@ -1577,12 +1577,47 @@ Plus:
       `mpileup/mpileup.11.out` golden — including the 17:302 INDEL row
       (`T → TA`, `BQBZ=-1.34164` inherited from the prior SNP combine
       at 17:237) — now matches byte-for-byte.
-    - **4e.4 (TODO).** `--indels-cns` (edlib) realignment path.
-    - **4e.5 (TODO).** `--ambig-reads` (incAD / incAD0) ADF/ADR
-      compensation (`bam2bcf.c:540-562`).
-    - **4e.6 (TODO).** INFO/FMT/SCR (soft-clipped reads counter) and the
-      `--skip-{all,any}-{set,unset}` BAM-flag filters needed for
-      `mpileup-SCR.out` and `mpileup-filter.2.out`.
+    - **4e.4 (DONE).** `--ambig-reads` (incAD / incAD0) ADF/ADR
+      compensation (`bam2bcf.c:540-561`), `--skip-{all,any}-{set,unset}`
+      BAM-flag filters (`mpileup.c:208-211`), and the three latent items
+      the 4e.2+4e.3 review flagged:
+        1. `p.is_del` modelling — `accumulateMpileupBases` now emits a
+           pileupBase event for every reference column inside a read's
+           `D` op (`isDel=true`, `b=0`); `bcfCallGlfgenCore` lets these
+           reads through in the indel branch (matching upstream
+           `bam2bcf.c:307 `if (p->is_del && !is_indel) continue`).
+        2. `p.is_refskip` modelling — same shape for CREF_SKIP (`N`)
+           ops; `isRefskip` reads are dropped in both branches
+           (`bam2bcf.c:301`).
+        3. Cross-contig `biasLeak` reset — the `biasLeak` instance now
+           lives on the per-run driver in `writeMpileupVCF` and threads
+           through every `emitChromMpileup` call so the BQBZ / MQSBZ
+           scalars persist across contigs, mirroring upstream's `conf->bc`
+           lifetime. The leak is pre-initialised to `(0, ok=true)` so the
+           very first indel record (before any has-alt SNP combine) sees
+           BQBZ=MQSBZ=0 — matching upstream's C `bcf_call_t bc = {0}`
+           default-initialisation.
+      `--ambig-reads` is parsed via `parseAmbigReads` into
+      `AmbigReadsMode` on `MpileupOptions`; the indel-branch glfgen
+      stashes low-quality REF-looking reads in `adrRefMissed[]` /
+      `adfRefMissed[]` per upstream and applies the `incAD` (proportional)
+      or `incAD0` (claim as REF) compensation. The `--skip-*` strings go
+      through `parseBAMFlagString` (Go port of htslib's `bam_str2flag`)
+      into the `RflagSkip{Any,All}{Set,Unset}` masks consumed by
+      `mpileupKeepRecord`. Byte-for-byte golden: `mpileup-filter.2.out`
+      now matches (both the `--skip-all-unset READ1` and `--skip-any-unset
+      READ1` forms; tested in `TestMpileupFilterGolden`).
+    - **4e.5 (TODO).** INFO/FMT/SCR (soft-clipped reads counter) for the
+      `mpileup-SCR.out` golden.
+    - **4e.6 (TODO).** FORMAT/NMBZ (per-read NM bias) for the
+      `annot-NMBZ.*.out` goldens.
+    - **4e.7 (TODO).** `bcfCgpComputeIndelQ` + `cgp_align_score`
+      refinement so REF-type reads at deeply-covered homopolymer /
+      tandem-repeat sites receive a defensible indelQ instead of 0. This
+      is what blocks `indel-AD.{1,2,3,4}.out` byte-parity today: the SNP
+      INFO columns and the indel ALT consensus match, but the indel-row
+      I16 / QS / PL / AD columns disagree because most REF reads fail
+      the min-BQ gate. The `--indels-cns` (edlib) path joins this slice.
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
