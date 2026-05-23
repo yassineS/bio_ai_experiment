@@ -1638,12 +1638,11 @@ Plus:
       `bcfCall2bcfIndel` emit `INFO/NMBZ` between MQSBZ and SCBZ when
       `B2BInfoNMBZ` is set, and the header line is inserted in the
       same place. Byte-for-byte golden `annot-NMBZ.1.1.out` (test.pl
-      line 1074) now matches; tested in `TestMpileupNMBZGolden`. The
-      `.2.1.out` and `.3.1.out` goldens are still deferred (NOT by
-      NMBZ — `.2` hits a pre-existing depth-cap divergence where the
-      htslib pileup engine caps per alignment-start while our port
-      caps per column-depth; `.3`'s SNP row byte-matches including
-      `NMBZ=7.74597` but the indel row's I16 differs due to 4e.7).
+      line 1074) now matches; tested in `TestMpileupNMBZGolden`.
+      `annot-NMBZ.2.1.out` byte-matches once the depth-cap port is in
+      place (4e.8 below); `.3.1.out`'s SNP row byte-matches including
+      `NMBZ=7.74597` while the indel row's QS / NMBZ / PL[0] residual
+      tracks with the `bcfCall2bcfIndel` SCR-on-indel-rows polish item.
       FORMAT/NMBZ (per-sample) is not in this slice; only INFO/NMBZ.
     - **4e.7 (DONE).** Ports the legacy REF-rescue heuristic that
       `bcf_call_glfgen` applies in its indel branch
@@ -1670,10 +1669,32 @@ Plus:
       default / `incAD` / `incAD0`); the `annot-NMBZ.3.1.out` indel
       row's I16 also matches byte-for-byte. The `--indels-cns` (edlib)
       path is a separate algorithm and stays deferred. Residual
-      divergences live on `indel-AD.1.out` (the same depth-cap
-      per-alignment-start pileup quirk that blocks
-      `annot-NMBZ.2.1.out`) and the trailing QS/NMBZ/PL[0] columns
-      of `annot-NMBZ.3.1.out`'s indel row.
+      divergences live on `indel-AD.1.out` (~20 SNP rows with small
+      I16 base-quality drifts plus four homopolymer-column indel rows
+      with chosen-type off-by-1 assignments — DP ≤ 125 throughout so
+      the depth cap is not in play) and the trailing QS/NMBZ/PL[0]
+      columns of `annot-NMBZ.3.1.out`'s indel row.
+    - **4e.8 (DONE).** Ports htslib's per-alignment-start depth cap.
+      Upstream's `bam_plp_push` (reference\_code/htslib/sam.c:6090)
+      drops a new read when `iter->pos == b->core.pos` and the
+      pileup queue already holds `maxcnt` active reads, while our
+      previous port truncated each per-column pile to `MaxDepth`
+      reads instead. The new `applyMpileupDepthCap` walks the per-
+      sample coordinate-sorted record stream, maintains a min-heap
+      of in-flight end positions, and drops reads using exactly the
+      htslib predicate (including the per-alignment-start trigger
+      and the "mp->cnt includes one sentinel node" off-by-one). The
+      cap runs BEFORE `applySmartOverlaps` so a capped-out read
+      cannot leak a tweaked base quality into the surviving mate —
+      upstream's `overlap_push` runs inside `bam_plp_push` after the
+      cap test, so dropped reads never reach the overlap-quality
+      merger. Byte-for-byte golden `annot-NMBZ.2.1.out` at chr6:75
+      (raw coverage 449, capped to DP=283) now matches; tested in
+      `TestMpileupDepthCapGolden`. Remaining mpileup residuals are
+      the `--indels-cns` edlib path (separately deferred) and the
+      indel-row QS/NMBZ/PL[0] columns at homopolymer columns on
+      `indel-AD.1.out` and `annot-NMBZ.3.1.out`, both tracked under
+      the `bcfCall2bcfIndel` SCR-on-indel-rows polish.
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
