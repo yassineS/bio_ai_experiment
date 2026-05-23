@@ -41,6 +41,11 @@ const b2bNqual = 60
 // `<*>` unseen allele, i.e. a 5x5 genotype matrix.
 const b2bMaxAlleles = 5
 
+// b2bNNm mirrors B2B_N_NM (bam2bcf.h:78): the number of NM-bias bins, i.e.
+// the maximum number of mismatches counted before clamping. get_aux_nm
+// caps inm to [0, b2bNNm-1].
+const b2bNNm = 32
+
 // b2bDefMapQ mirrors bam2bcf.c's DEF_MAPQ: the mapping quality assigned
 // to reads whose MAPQ is the "unavailable" sentinel 255.
 const b2bDefMapQ = 20
@@ -185,6 +190,15 @@ type bcfCallret struct {
 	// B2BInfoSCR or B2BFmtSCR is set (matching bam2bcf.c:300). Combined
 	// into bcfCall.scrTotal and bcfCall.scr by bcfCallCombine.
 	scr int
+	// refNm / altNm are per-sample NM-bias histograms (one bin per
+	// possible mismatch count up to b2bNNm-1, matching upstream's
+	// bca->ref_nm/alt_nm and r->ref_nm/alt_nm which share storage
+	// via bcf_call_t). The driver's SNP and indel glfgen both fill
+	// them when any of the NMBZ/NM bits are set; the SNP and indel
+	// combine each sum across samples (and across the two glfgen
+	// passes, mirroring upstream's shared bca-level accumulator).
+	refNm [b2bNNm]int
+	altNm [b2bNNm]int
 }
 
 // bcfCallGlfgen is the Go port of bcf_call_glfgen (bam2bcf.c:250) for
@@ -240,6 +254,11 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 	// already emitted INFO/FMT/SCR onto the SNP row by the time the
 	// indel branch runs.
 	scrWanted := !isIndel && opts.FmtFlag&(B2BInfoSCR|B2BFmtSCR) != 0
+	// nmWanted mirrors upstream's `fmt_flag & (B2B_FMT_NMBZ|B2B_INFO_NMBZ|
+	// B2B_INFO_NM)` gate (bam2bcf.c:351, 442). When set, glfgen reads the
+	// NM aux tag from each accepted read and accumulates the refNm/altNm
+	// histograms used by NMBZ.
+	nmWanted := opts.FmtFlag&(B2BFmtNMBZ|B2BInfoNMBZ|B2BInfoNM) != 0
 	for i := range pile {
 		p := &pile[i]
 		// SCR accumulator runs BEFORE the is_refskip / is_unmap gate,
@@ -348,6 +367,18 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 		} else if !(ref4 < 4 && b == ref4) {
 			isDiff = 1
 		}
+		// NM tag: upstream's get_aux_nm is called per accepted read when
+		// any NMBZ/NM bit is set (bam2bcf.c:351, 442). Returns -1 if the
+		// read has no NM tag; the per-read inm is used to bump the
+		// per-sample refNm/altNm histograms below alongside the other
+		// bias tallies. Note upstream subtracts 1 from inm for REF reads
+		// (is_diff==0) and 2 for ALT reads.
+		inm := -1
+		if nmWanted {
+			if v, ok := getAuxNm(p.rec, isDiff == 0); ok {
+				inm = v
+			}
+		}
 		if b < 4 {
 			r.qs[b] += float64(q)
 			if p.reverse {
@@ -398,11 +429,17 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 			r.refBq[biasBQ]++
 			r.refMq[biasMQ]++
 			r.refScl[p.scLen]++
+			if inm >= 0 {
+				r.refNm[inm]++
+			}
 		} else {
 			r.altPos[p.epos]++
 			r.altBq[biasBQ]++
 			r.altMq[biasMQ]++
 			r.altScl[p.scLen]++
+			if inm >= 0 {
+				r.altNm[inm]++
+			}
 		}
 	}
 
@@ -507,6 +544,8 @@ type bcfCall struct {
 	mqsbzOK bool
 	mwuSc   float64 // SCBZ
 	scbzOK  bool
+	mwuNm   float64 // NMBZ — Mann-Whitney U z-score on per-read NM tags
+	nmbzOK  bool
 	// scrTotal is the sum of per-sample SCR counts (INFO/SCR). scr is
 	// the per-sample SCR array (FORMAT/SCR), in input sample order.
 	// Both are filled by bcfCallCombine when either B2BInfoSCR or
@@ -537,7 +576,11 @@ type bcfCall struct {
 //     bcf_call_t.mwu_bq / mwu_mqs scalars, so those leak from the last
 //     has_alt SNP combine at this or an earlier position. The caller
 //     threads the leaked values in via the `leak` argument.
-func bcfCallCombineIndel(calls []bcfCallret, bca *bcfCallauxIndel, leak biasLeak) (bcfCall, bool) {
+//   - NMBZ is recomputed from refNm/altNm summed across BOTH the SNP
+//     and indel per-sample bcfCallret structs. Upstream accumulates
+//     into the shared `bca->ref_nm/alt_nm` arrays in both glfgen
+//     branches; `snpCalls` carries the SNP-pass contribution.
+func bcfCallCombineIndel(calls []bcfCallret, snpCalls []bcfCallret, bca *bcfCallauxIndel, leak biasLeak) (bcfCall, bool) {
 	var call bcfCall
 	call.oriRef = -1
 
@@ -670,6 +713,27 @@ func bcfCallCombineIndel(calls []bcfCallret, bca *bcfCallauxIndel, leak biasLeak
 		}
 	}
 
+	// NM histograms accumulate across BOTH SNP and indel glfgen passes
+	// in upstream (the bca-level ref_nm/alt_nm arrays are shared and
+	// only cleared by bcf_callaux_clean per position). Sum the indel
+	// pass (`calls`) and the SNP pass (`snpCalls`) for the indel
+	// combine's NMBZ.
+	var refNm, altNm [b2bNNm]int
+	for i := range calls {
+		r := &calls[i]
+		for k := 0; k < b2bNNm; k++ {
+			refNm[k] += r.refNm[k]
+			altNm[k] += r.altNm[k]
+		}
+	}
+	for i := range snpCalls {
+		r := &snpCalls[i]
+		for k := 0; k < b2bNNm; k++ {
+			refNm[k] += r.refNm[k]
+			altNm[k] += r.altNm[k]
+		}
+	}
+
 	// SGB from the (indel-flavored) per-sample anno.
 	call.segBias, call.sgbOK = calcSegBias(calls, &call)
 
@@ -678,6 +742,10 @@ func bcfCallCombineIndel(calls []bcfCallret, bca *bcfCallauxIndel, leak biasLeak
 	call.mwuPos, call.rpbzOK = calcMWUBiasZ(bca.IrefPos, bca.IaltPos, false)
 	call.mwuMq, call.mqbzOK = calcMWUBiasZ(bca.IrefMq, bca.IaltMq, true)
 	call.mwuSc, call.scbzOK = calcMWUBiasZ(bca.IrefScl[:], bca.IaltScl[:], false)
+	// NMBZ (bam2bcf.c:1184-1185) uses the same calc_mwu_biasZ helper on
+	// the cross-pass refNm/altNm sum computed above. Note upstream does
+	// NOT skip this for indel rows.
+	call.mwuNm, call.nmbzOK = calcMWUBiasZ(refNm[:], altNm[:], false)
 
 	// BQBZ / MQSBZ leak from the last has_alt SNP combine, per upstream's
 	// bcf_callaux_clean which only resets the bca arrays.
@@ -863,6 +931,7 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 	// upstream's shared bca accumulation.
 	var refPos, altPos, refScl, altScl [b2bNpos]int
 	var refMq, altMq, refBq, altBq, fwdMqs, revMqs [b2bNqual]int
+	var refNm, altNm [b2bNNm]int
 	for i := range calls {
 		r := &calls[i]
 		for k := 0; k < b2bNpos; k++ {
@@ -879,6 +948,10 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 			fwdMqs[k] += r.fwdMqs[k]
 			revMqs[k] += r.revMqs[k]
 		}
+		for k := 0; k < b2bNNm; k++ {
+			refNm[k] += r.refNm[k]
+			altNm[k] += r.altNm[k]
+		}
 	}
 
 	// SGB — segregation bias (bam2bcf.c:1158, calc_SegBias).
@@ -893,6 +966,9 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 	call.mwuBq, call.bqbzOK = calcMWUBiasZ(refBq[:], altBq[:], false)
 	call.mwuMqs, call.mqsbzOK = calcMWUBiasZ(fwdMqs[:], revMqs[:], false)
 	call.mwuSc, call.scbzOK = calcMWUBiasZ(refScl[:], altScl[:], false)
+	// NMBZ — NM-bias z-score on the per-read NM-tag histograms
+	// (bam2bcf.c:1184-1185). The same calc_mwu_biasZ helper applies.
+	call.mwuNm, call.nmbzOK = calcMWUBiasZ(refNm[:], altNm[:], false)
 
 	// VDB — variant distance bias (bam2bcf.c:1194, calc_vdb).
 	call.vdb, call.vdbOK = calcVDB(altPos[:])
@@ -988,6 +1064,62 @@ func biasPositionBins(r getPositionResult) (epos, scLen int) {
 		epos = b2bNpos - 1
 	}
 	return epos, scLen
+}
+
+// getAuxNm is the Go port of get_aux_nm (bam2bcf.c:96). It reads the
+// BAM NM:i: aux tag, normalises it by treating each indel as a single
+// event (subtracting len-1 for indel ops longer than 1) and adding the
+// soft-clip lengths as mismatches, then subtracts 1 for a REF read or
+// 2 for an ALT read (mirroring upstream's MNP-aware adjustment), and
+// clamps the result to [0, b2bNNm-1]. Returns ok=false when the read
+// has no NM tag (mirroring upstream's "-1" sentinel).
+//
+// rec must be the originating BAM record; isRef is true when this read
+// supports the reference allele (b == ref4 for SNPs, b == 0 for indels).
+// The upstream qpos argument is unused by upstream — the cache it would
+// normally key on is per-read, and this port computes everything fresh.
+func getAuxNm(rec *sam.Record, isRef bool) (int, bool) {
+	if rec == nil {
+		return 0, false
+	}
+	aux, ok := rec.GetAux("NM")
+	if !ok {
+		return 0, false
+	}
+	v, ok := aux.Int()
+	if !ok {
+		return 0, false
+	}
+	nm := int(v)
+	// Adjust: indels collapse to single events (upstream subtracts
+	// len-1 per indel op of length > 1), soft-clips count as
+	// mismatches (added to nm).
+	for _, op := range rec.Cigar {
+		o := op.Op()
+		l := int(op.Length())
+		switch o {
+		case sam.CigarSoftClip:
+			nm += l
+		case sam.CigarInsertion, sam.CigarDeletion:
+			if l > 1 {
+				nm -= l - 1
+			}
+		}
+	}
+	// MNP-aware subtraction (bam2bcf.c:135-137): REF reads have one
+	// "expected" mismatch nearby on average, ALT reads two.
+	if isRef {
+		nm--
+	} else {
+		nm -= 2
+	}
+	if nm < 0 {
+		nm = 0
+	}
+	if nm >= b2bNNm {
+		nm = b2bNNm - 1
+	}
+	return nm, true
 }
 
 // kfErfc is the Go port of htslib's kf_erfc (kfunc.c:58). bcftools uses

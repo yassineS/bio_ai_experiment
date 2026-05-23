@@ -1621,8 +1621,30 @@ Plus:
       to `FORMAT/` (`SET_FMT_FLAG`, `mpileup.c:1120-1122`). Byte-for-
       byte golden `mpileup-SCR.out` (test.pl:1069) now matches; tested
       in `TestMpileupSCRGolden`.
-    - **4e.6 (TODO).** FORMAT/NMBZ (per-read NM bias) for the
-      `annot-NMBZ.*.out` goldens.
+    - **4e.6 (DONE).** INFO/NMBZ (per-read NM bias) — the Mann-Whitney
+      U z-score over the per-read NM tag, split REF vs ALT. The port
+      adds `getAuxNm` (Go counterpart of `get_aux_nm`, `bam2bcf.c:96`)
+      which reads the BAM `NM:i:` tag, treats each indel CIGAR op as a
+      single event (subtracting `len-1` for ops with `len>1`), counts
+      soft-clip lengths as mismatches, then subtracts 1 for REF reads
+      and 2 for ALT reads (the MNP-aware adjustment) and clamps to
+      `[0, b2bNNm-1]`. Per-sample `refNm[32] / altNm[32]` histograms on
+      `bcfCallret` are filled by both the SNP and indel branches of
+      `bcfCallGlfgenCore` when any of the `B2BInfoNMBZ` / `B2BFmtNMBZ`
+      / `B2BInfoNM` bits is set. `bcfCallCombine` sums them across
+      samples and runs `calcMWUBiasZ`; `bcfCallCombineIndel` also
+      folds in the matching SNP-pass tallies (mirroring upstream's
+      shared `bca->ref_nm/alt_nm` accumulator). `bcfCall2bcf` and
+      `bcfCall2bcfIndel` emit `INFO/NMBZ` between MQSBZ and SCBZ when
+      `B2BInfoNMBZ` is set, and the header line is inserted in the
+      same place. Byte-for-byte golden `annot-NMBZ.1.1.out` (test.pl
+      line 1074) now matches; tested in `TestMpileupNMBZGolden`. The
+      `.2.1.out` and `.3.1.out` goldens are still deferred (NOT by
+      NMBZ — `.2` hits a pre-existing depth-cap divergence where the
+      htslib pileup engine caps per alignment-start while our port
+      caps per column-depth; `.3`'s SNP row byte-matches including
+      `NMBZ=7.74597` but the indel row's I16 differs due to 4e.7).
+      FORMAT/NMBZ (per-sample) is not in this slice; only INFO/NMBZ.
     - **4e.7 (TODO).** `bcfCgpComputeIndelQ` + `cgp_align_score`
       refinement so REF-type reads at deeply-covered homopolymer /
       tandem-repeat sites receive a defensible indelQ instead of 0. This

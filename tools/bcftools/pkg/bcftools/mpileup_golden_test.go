@@ -313,6 +313,76 @@ func TestMpileupFilterGolden(t *testing.T) {
 	}
 }
 
+// TestMpileupNMBZGolden replays the upstream `bcftools mpileup -a
+// -AD,INFO/NMBZ` test for fixture annot-NMBZ.1 (test.pl line 1074). It
+// exercises the per-read NM-tag bias accumulator and the INFO/NMBZ
+// emission path. The matching SNP rows at chr19:69,72,76,78,91,99
+// carry NMBZ values computed from the cross-sample ref_nm / alt_nm
+// histograms via the existing Mann-Whitney U z-score helper.
+//
+// The 4e.6 slice ports NMBZ; the .2 and .3 annot-NMBZ goldens are NOT
+// added here because they hit pre-existing parity gaps unrelated to
+// NMBZ: annot-NMBZ.2 has a column with >250 reads which trips a
+// pre-existing depth-cap divergence (upstream caps per-alignment-start
+// in the htslib pileup engine, our port caps per column-depth), and
+// annot-NMBZ.3's indel row differs in I16 and PL due to the indel
+// glfgen anno-accumulation gap tracked as 4e.7. The SNP row of
+// annot-NMBZ.3 does byte-match including NMBZ=7.74597.
+func TestMpileupNMBZGolden(t *testing.T) {
+	ref := mpileupFixture(t, "annot-NMBZ.1.fa")
+	mpileupFixture(t, "annot-NMBZ.1.fa.fai")
+	bam := mpileupFixture(t, "annot-NMBZ.1.bam")
+	goldenPath := mpileupFixture(t, "annot-NMBZ.1.1.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:    []string{bam},
+		FastaRef:  ref,
+		Regions:   []string{"chr19:69-99"},
+		Annotate:  "-AD,INFO/NMBZ",
+		NoVersion: true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		diffs := 0
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		for i := 0; i < nD; i++ {
+			if gotD[i] != wantD[i] {
+				diffs++
+				if diffs <= 5 {
+					t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+				}
+			}
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
 // TestMpileupAmbigReadsParse verifies parseAmbigReads round-trips every
 // upstream-accepted spelling. The byte-level effect on per-allele AD is
 // covered by the (currently deferred) indel-AD.{3,4} goldens which
@@ -421,9 +491,24 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 			"requires --indels-cns (edlib realignment) — tracked as 4e.7.",
 		},
 		{
-			"mpileup/annot-NMBZ.*.out",
-			"the FORMAT/NMBZ tag is tracked as 4e.6 in PARITY_ROADMAP. " +
-				"(mpileup-SCR.out byte-matched as of 4e.5.)",
+			"mpileup/annot-NMBZ.2.1.out",
+			"the matching SNP row at chr6:75 has DP > 250 in upstream " +
+				"(283) but our port caps the per-column pile at -d 250. " +
+				"Upstream's htslib bam_mplp caps per alignment-start, not " +
+				"per column-depth; the divergence is independent of NMBZ. " +
+				"(annot-NMBZ.1.1.out is byte-for-byte as of 4e.6.)",
+		},
+		{
+			"mpileup/annot-NMBZ.3.1.out",
+			"the SNP row at chr16:75 is byte-for-byte (NMBZ=7.74597) but " +
+				"the indel row's I16 and NMBZ disagree because the indel " +
+				"glfgen's per-sample anno still differs from upstream — " +
+				"tracked as 4e.7 (the bcfCgpComputeIndelQ refinement).",
+		},
+		{
+			"mpileup/annot-NMBZ.[23].2.out / FORMAT/NMBZ goldens",
+			"the per-sample FORMAT/NMBZ emission is not in the slice 4e.6 " +
+				"footprint; INFO/NMBZ is fully ported.",
 		},
 	}
 	for _, d := range deferred {
