@@ -713,18 +713,20 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 			"the four indel rows match the upstream I16 ALT counts and " +
 				"AD compensation (the heuristic-driven REF-rescue port " +
 				"in slice 4e.7 — see bcf_call_glfgen REF rescue at " +
-				"bam2bcf.c:338-348). Residual divergence has three " +
-				"independent clusters, all documented in " +
-				"docs/PARITY_ROADMAP.md mpileup section: (1) two N-REF " +
-				"rows at 000000F:687-688, root-cause = FASTA boundary " +
-				"truncation (a read CIGAR ends 2bp past the 686bp " +
-				"reference); (2) ~12 SNP-row I16 base-quality drifts on " +
-				"reads whose tail bases extend past the FASTA end (same " +
-				"root cause); (3) 4 indel-row chosen-type off-by-one " +
-				"assignments at the homopolymer columns near " +
-				"000000F:537/538/658, root cause = single-ULP rounding " +
-				"inside ProbalnGlocal at long homopolymer runs flipping " +
-				"the score<<6|t ascending-sort tie-break.",
+				"bam2bcf.c:338-348). Cluster (1) — two N-REF rows at " +
+				"000000F:687-688 — is RESOLVED by extending the events " +
+				"array to max(refLen, maxReadEnd). Two clusters remain, " +
+				"documented in docs/PARITY_ROADMAP.md mpileup section: " +
+				"(2) ~12 SNP-row I16 base-quality drifts at " +
+				"000000F:446-624 — the FASTA-boundary hypothesis was " +
+				"falsified by the cluster-1 fix; root cause is an " +
+				"independent BAQ / overlap-merge subtlety dropping a " +
+				"single BQ=9 contribution per affected column; (3) 4 " +
+				"indel-row chosen-type off-by-one assignments at the " +
+				"homopolymer columns near 000000F:537/538/658, root " +
+				"cause = single-ULP rounding inside ProbalnGlocal at " +
+				"long homopolymer runs flipping the score<<6|t " +
+				"ascending-sort tie-break.",
 		},
 		{
 			"mpileup/indel-AD.1cns.out",

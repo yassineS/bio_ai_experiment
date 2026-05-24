@@ -1073,11 +1073,27 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 		applyMpileupBAQ(perInputChromRecs, refSlab, opts)
 	}
 
+	// Upstream's pileup engine walks reads' CIGARs and emits a column
+	// for every covered reference position, including positions past
+	// the FASTA end (those rows carry REF=N). Compute the effective
+	// chromosome length as max(refLen, maxReadEnd) so the events array
+	// can hold those trailing columns. EndPosition is 1-based inclusive,
+	// which equals the 0-based exclusive end matching upstream's
+	// bam_endpos.
+	effLen := refLen
+	for i := 0; i < nIn; i++ {
+		for _, rec := range perInputChromRecs[i] {
+			if e := int(rec.EndPosition()); e > effLen {
+				effLen = e
+			}
+		}
+	}
+
 	// events[input][pos0] is the pileup column for one input at one
 	// reference position.
 	events := make([][][]pileupBase, nIn)
 	for i := 0; i < nIn; i++ {
-		events[i] = make([][]pileupBase, refLen)
+		events[i] = make([][]pileupBase, effLen)
 		for _, rec := range perInputChromRecs[i] {
 			accumulateMpileupBases(rec, events[i])
 		}
@@ -1092,7 +1108,7 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	bca.Chr = chrom
 	indelCalls := make([]bcfCallret, nIn)
 	piles := make([][]pileupBase, nIn)
-	for pos0 := 0; pos0 < refLen; pos0++ {
+	for pos0 := 0; pos0 < effLen; pos0++ {
 		pos1 := pos0 + 1
 		if !regionContains(regWindows, chrom, pos1) {
 			continue
@@ -1130,6 +1146,12 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 		// always-true (MaxIDepth is accepted but unused so far). Skip
 		// only when -I/--skip-indels is in force.
 		if opts.SkipIndels {
+			continue
+		}
+		// Past the FASTA end there is no reference to anchor an indel
+		// call (upstream's indel pass reads ref_fai only within the
+		// FASTA), so the N-REF SNP column is emitted alone.
+		if pos0 >= refLen {
 			continue
 		}
 		iret := bcfCallGapPrep(piles, pos0, bca, refSlab)

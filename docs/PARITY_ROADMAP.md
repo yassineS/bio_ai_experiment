@@ -1716,37 +1716,31 @@ Plus:
 
       1. **Trailing N-REF rows past the FASTA end** (`indel-AD.1.out`
          positions `000000F:687-688`, two records with `REF=N`,
-         `DP=1`, all I16 fields zero). Root cause: the 000000F
-         contig is 686 bp in the FASTA, but the BAM contains a read
-         whose CIGAR (`6M1D117M5D28M`) ends at reference position
-         688 — two bases past the FASTA boundary. Upstream's
-         pileup engine does not bound itself to the FASTA length:
-         it walks reads' CIGARs and emits a column for every
-         covered reference position, using `N` for the REF when
-         the position is past the FASTA. Our port allocates
-         `events[i]` of length `refLen` (the FASTA length) and the
-         per-site loop in `emitChromMpileup` terminates at
-         `pos0 < refLen` (mpileup.go:1080, 1095). Fix would
-         require extending the events array to the maximum
-         read-end across inputs, padding the REF with `N` for
-         positions past `refLen`, and adjusting the regions/targets
-         intersection to allow positions past the FASTA. Scoped as
-         a follow-up; the two affected rows carry no biological
-         signal (DP=1 with zero base-quality contribution).
+         `DP=1`, all I16 fields zero). **RESOLVED** — `emitChromMpileup`
+         now computes `effLen = max(refLen, maxReadEnd)` by scanning
+         each input's records for `rec.EndPosition()`, sizes the
+         events array to `effLen`, and walks the per-site loop to
+         `effLen`. The existing `pos0 < len(refSlab)` fallback emits
+         `REF=N` past the FASTA. The indel pass is skipped for
+         `pos0 >= refLen` (upstream's indel branch reads `ref_fai`
+         only within the FASTA, so an `N`-anchored column emits the
+         SNP row alone).
 
       2. **SNP-row I16 base-quality-sum micro-drifts** (`indel-AD.1.out`
-         ~12 columns near 446-624, all with I16 slots 4-5 off by a
-         single read's base quality, e.g. 1204/45840 vs upstream's
-         1205/45921 = one missing BQ=9 contribution). The reads
-         involved cover both the BAQ-adjusted homopolymer at
-         `000000F:537-540` and the columns straddling the FASTA
-         boundary at 686. These are post-BAQ quality drifts on
-         reads whose tail bases extend past the FASTA end —
-         upstream's BAQ adjustment for those tail bases differs
-         from ours, propagating a one-quality-unit shift back into
-         the SNP-row I16 sums at columns where the affected reads
-         contribute REF bases. Same root cause as cluster (1):
-         FASTA-boundary handling.
+         ~12 columns at 000000F:446-450, 497-500, 540-542, 566-567,
+         624, all with I16 slots 4-5 off by a single read's base
+         quality, e.g. 1204/45840 vs upstream's 1205/45921 = one
+         missing BQ=9 contribution). The earlier hypothesis that
+         this cluster shared root cause with cluster (1) (FASTA-
+         boundary BAQ) was **falsified** by the cluster-1 fix:
+         extending the events past `refLen` did not change any I16
+         BQ-sum on these columns, and the reads covering them all
+         end well before pos 686. The remaining root cause is
+         independent of the FASTA boundary — likely a delta_baseQ
+         cap or post-BAQ rounding subtlety in
+         `applyMpileupBAQ` / `applySmartOverlaps` that drops a
+         single BQ=9 contribution per affected column. Out of scope
+         for the cluster-1 slice; needs its own investigation pass.
 
       3. **Indel-row chosen-type off-by-one at homopolymer columns**
          (`indel-AD.1.out` at `000000F:537/538/658`, plus
