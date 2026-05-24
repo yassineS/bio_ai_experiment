@@ -1551,10 +1551,11 @@ Options:
                      callable base" positions (default 1).
   -2 INT             HMM emission score in state 1 for callable-base
                      positions (default 6).
-  -f FILE            Reference FASTA. Accepted for CLI parity; BAQ
-                     realignment is NOT applied in v1 (upstream uses
-                     sam_prob_realn here). Tracked in
-                     docs/PARITY_ROADMAP.md#samtools.
+  -f FILE            Reference FASTA. When supplied, every per-record
+                     SEQ is run through BAQ (sam_prob_realn, apply+
+                     extend) before its bases enter the pileup,
+                     matching upstream cut_target.c::read_aln. No
+                     effect with --simple.
       --simple       Emit the v1 aligned-slice FASTA per-read mode
                      instead of the HMM consensus (legacy behaviour,
                      retained for backward compatibility). With
@@ -1604,14 +1605,6 @@ func runTargetcut(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
-	if fastaRef != "" {
-		// Accepted for CLI parity. Upstream uses sam_prob_realn for
-		// per-record BAQ adjustment when -f is given; we defer that to
-		// future work and emit a friendly warning so users aren't
-		// surprised by the omission.
-		fmt.Fprintln(os.Stderr, "samtools targetcut: warning: -f reference accepted but BAQ realignment is deferred (see docs/PARITY_ROADMAP.md#samtools)")
-	}
-
 	inPath := "-"
 	if fs.NArg() > 0 {
 		inPath = fs.Arg(0)
@@ -1635,6 +1628,7 @@ func runTargetcut(args []string) int {
 		EmissionDepth:    emDepth,
 		EmissionCallable: emCallable,
 		SimpleMode:       simpleMode,
+		FastaRef:         fastaRef,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools targetcut: %v\n", err)
 		return 1

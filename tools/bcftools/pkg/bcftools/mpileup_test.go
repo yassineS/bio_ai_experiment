@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -47,7 +48,7 @@ func mkPile(n int, base byte, qual uint8) []pileupBase {
 // sample PL grid plus the resolved alleles.
 func glfPL(t *testing.T, pile []pileupBase, ref byte) (bcfCall, []int) {
 	t.Helper()
-	em := ErrmodInit(1.0 - mpileupTheta)
+	em := errmod.Init(1.0 - mpileupTheta)
 	ref4 := seqNt16Int[baseToNt16(ref)]
 	var cr bcfCallret
 	bcfCallGlfgen(pile, ref4, MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
@@ -101,7 +102,7 @@ func TestGlfgenHetSite(t *testing.T) {
 
 // TestGlfgenEmptyPile: a zero-coverage column returns 0 bases.
 func TestGlfgenEmptyPile(t *testing.T) {
-	em := ErrmodInit(1.0 - mpileupTheta)
+	em := errmod.Init(1.0 - mpileupTheta)
 	var cr bcfCallret
 	n := bcfCallGlfgen(nil, 0, MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
 	if n != 0 {
@@ -116,7 +117,7 @@ func TestCombineAlleleOrdering(t *testing.T) {
 	pile := mkPile(2, 'A', 30)
 	pile = append(pile, mkPile(6, 'C', 30)...)
 	pile = append(pile, mkPile(4, 'G', 30)...)
-	em := ErrmodInit(1.0 - mpileupTheta)
+	em := errmod.Init(1.0 - mpileupTheta)
 	var cr bcfCallret
 	bcfCallGlfgen(pile, seqNt16Int[baseToNt16('A')], MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
 	call := bcfCallCombine([]bcfCallret{cr}, seqNt16Int[baseToNt16('A')])
@@ -141,7 +142,7 @@ func TestCombineAlleleOrdering(t *testing.T) {
 // MQ0F last), and FORMAT/PL.
 func TestBcfCall2bcfRecord(t *testing.T) {
 	pile := append(mkPile(5, 'A', 30), mkPile(3, 'C', 30)...)
-	em := ErrmodInit(1.0 - mpileupTheta)
+	em := errmod.Init(1.0 - mpileupTheta)
 	var cr bcfCallret
 	bcfCallGlfgen(pile, seqNt16Int[baseToNt16('A')], MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
 	call := bcfCallCombine([]bcfCallret{cr}, seqNt16Int[baseToNt16('A')])
@@ -196,7 +197,7 @@ func TestGlfgenDeltaBQCap(t *testing.T) {
 		base4: seqNt16Int[baseToNt16('A')], rawQual: 60,
 		prevQ: 2, nextQ: 2, mapq: 60, qlen: 10, qpos: 5,
 	}}
-	em := ErrmodInit(1.0 - mpileupTheta)
+	em := errmod.Init(1.0 - mpileupTheta)
 	var cr bcfCallret
 	bcfCallGlfgen(pile, seqNt16Int[baseToNt16('A')], MpileupOptions{MinBQ: 1, MaxBQ: 60, DeltaBQ: 30}, em, &cr)
 	// The capped quality 32 lands in QS[0] (the A allele).

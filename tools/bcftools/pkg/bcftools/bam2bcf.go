@@ -1,7 +1,8 @@
 // Per-site genotype-likelihood pipeline for `bcftools mpileup`, ported
 // from bcftools' bam2bcf.c. This is slice 2 of the MAQ-model work: it
-// wires the errmod error model (slice 1, errmod.go) into the three
-// upstream functions that turn a pileup column into a BCF/VCF record:
+// wires the errmod error model (slice 1, pkg/htsgo/errmod) into the
+// three upstream functions that turn a pileup column into a BCF/VCF
+// record:
 //
 //   - bcfCallGlfgen   (bam2bcf.c:250 bcf_call_glfgen) — one sample's
 //     pileup column → packed base array → errmod → per-call QS / I16 /
@@ -24,6 +25,7 @@ package bcftools
 import (
 	"math"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -207,7 +209,7 @@ type bcfCallret struct {
 // errmod MAQ model, and accumulates the QS / I16 / AD annotations into
 // r. ref4 is the 2-bit reference base index (0..4). It returns the
 // number of bases that passed the quality filter.
-func bcfCallGlfgen(pile []pileupBase, ref4 int, opts MpileupOptions, em *Errmod, r *bcfCallret) int {
+func bcfCallGlfgen(pile []pileupBase, ref4 int, opts MpileupOptions, em *errmod.Errmod, r *bcfCallret) int {
 	return bcfCallGlfgenCore(pile, ref4, opts, em, r, false)
 }
 
@@ -221,14 +223,14 @@ func bcfCallGlfgen(pile []pileupBase, ref4 int, opts MpileupOptions, em *Errmod,
 // their b<4 conditional gates the per-allele QS and AD updates.
 //
 // Returns the number of reads whose quality passed the min-BQ filter.
-func bcfCallGlfgenIndel(pile []pileupBase, opts MpileupOptions, em *Errmod, r *bcfCallret) int {
+func bcfCallGlfgenIndel(pile []pileupBase, opts MpileupOptions, em *errmod.Errmod, r *bcfCallret) int {
 	return bcfCallGlfgenCore(pile, -1, opts, em, r, true)
 }
 
 // bcfCallGlfgenCore is the shared SNP/indel implementation. isIndel=false
 // reads b from p.base4 and q from the raw quality+delta cap; isIndel=true
 // reads b from p.aux>>16 and q from p.aux&0xff (the precomputed indelQ).
-func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Errmod, r *bcfCallret, isIndel bool) int {
+func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *errmod.Errmod, r *bcfCallret, isIndel bool) int {
 	*r = bcfCallret{}
 	if len(pile) == 0 {
 		return 0
@@ -522,7 +524,7 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *Err
 
 	// glfgen: errmod turns the packed base array into the 5x5 PL matrix.
 	pl := r.p[:]
-	em.ErrmodCal(len(bases), b2bMaxAlleles, bases, pl, nil)
+	em.Cal(bases, b2bMaxAlleles, pl)
 	return len(bases)
 }
 
