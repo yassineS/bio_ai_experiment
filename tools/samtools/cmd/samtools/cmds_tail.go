@@ -1411,48 +1411,54 @@ Positions are 1-based to match SAM POS.
 Options:
   -k INT       Block-merge window: max number of unphased hets between
                two phased hets before a new block starts. (Default 13.)
-  -b STR       Output prefix for per-haplotype BAMs. Accepted; v1 does
-               not yet split the BAM (the TSV stream is always emitted
-               to -o / stdout). Tracked in PARITY_ROADMAP.md.
+  -b STR       Output prefix for per-haplotype BAMs. When set, three
+               BAM files are written: <prefix>.0.bam, <prefix>.1.bam,
+               and <prefix>.chimera.bam, alongside the TSV stream on
+               stdout/-o.
   -q INT       Min MAPQ. (Default 13.)
   -Q INT       Min base quality. (Default 13.)
   -D INT       Max depth observed per position. (Default 256.)
-  -F           Use the full read (ignore soft-clip trimming). Accepted;
-               v1 always uses the aligned slice.
-  -A           Mark drop in the dropped output. Accepted; v1 has no
-               per-read chimera output.
+  -F           Do not attempt to fix chimeras (disable the per-read
+               chimera-repair pass; the read goes to its majority
+               haplotype bucket regardless of split evidence).
+  -A           In -b mode, route ambiguous reads (weak support on
+               both haplotypes) to <prefix>.chimera.bam rather than
+               keeping them in their majority bucket.
   -e           Use empirical-Bayes prior. Accepted-and-ignored
-               (upstream MCMC fallback is deferred — see roadmap).
+               (upstream's variant-calling glue is not ported).
   -l INT       Block-merge length cap. Accepted-and-ignored.
   -o, --output PATH  Output TSV path (default stdout).
   -h, --help   Show this help.
       --version  Show version.
 
-MCMC fallback for chimera repair and tied junctions is deferred; see
-docs/PARITY_ROADMAP.md.
+The chimera-repair flip-point search is the deterministic Go port of
+upstream's fragphase scoring loop. Ambiguous reads in -b mode are
+routed using a seeded math/rand source (seed 1); RNG byte-parity with
+upstream's drand48() is not pursued. See docs/PARITY_ROADMAP.md.
 `
 
 func runPhase(args []string) int {
 	fs := flag.NewFlagSet("samtools phase", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		blockK    int
-		outPrefix string
-		minMAPQ   int
-		minBaseQ  int
-		maxDepth  int
-		fullRead  bool
-		dropAmbig bool
-		outPath   string
-		showHelp  bool
-		showVer   bool
+		blockK       int
+		outPrefix    string
+		minMAPQ      int
+		minBaseQ     int
+		maxDepth     int
+		noFixChimera bool
+		dropAmbig    bool
+		outPath      string
+		showHelp     bool
+		showVer      bool
 	)
 	fs.IntVar(&blockK, "k", samtools.DefaultPhaseBlockWindow, "")
 	fs.StringVar(&outPrefix, "b", "", "")
 	fs.IntVar(&minMAPQ, "q", samtools.DefaultPhaseMinMAPQ, "")
 	fs.IntVar(&minBaseQ, "Q", samtools.DefaultPhaseMinBaseQ, "")
 	fs.IntVar(&maxDepth, "D", samtools.DefaultPhaseMaxDepth, "")
-	fs.BoolVar(&fullRead, "F", false, "")
+	fs.BoolVar(&noFixChimera, "F", false, "")
+	fs.BoolVar(&noFixChimera, "no-fix-chimera", false, "")
 	fs.BoolVar(&dropAmbig, "A", false, "")
 	// Upstream phase.c:631 declares `-e` (use empirical-Bayes prior) and
 	// `-l INT` (block-merge length cap). Both are accepted-and-ignored
@@ -1504,7 +1510,7 @@ func runPhase(args []string) int {
 		MinMAPQ:       uint8(minMAPQ),
 		MinBaseQ:      uint8(minBaseQ),
 		MaxDepth:      maxDepth,
-		FullRead:      fullRead,
+		NoFixChimera:  noFixChimera,
 		DropAmbiguous: dropAmbig,
 		OutputPrefix:  outPrefix,
 	}); err != nil {

@@ -6,15 +6,30 @@
 // chains those clusters across overlapping reads to produce phased
 // blocks.
 //
-// Upstream samtools (`reference_code/samtools/phase.c`) drives the
-// chaining with a Markov-chain-Monte-Carlo solver; the v1 Go port
-// implements only the common-case greedy chaining. For each pair of
-// adjacent het sites we count the number of reads that span both. If
-// the same-allele count outweighs the opposite-allele count we keep
-// the labels aligned; if opposite outweighs same we flip the labels;
-// if neither dominates we emit `0` (ambiguous) for the current het.
-// The MCMC fallback that resolves chimeras and tied junctions is
-// deliberately deferred — see docs/PARITY_ROADMAP.md.
+// The chaining pass is greedy: for each pair of adjacent het sites we
+// count the number of reads that span both. If the same-allele count
+// outweighs the opposite-allele count we keep the labels aligned; if
+// opposite outweighs same we flip the labels; if neither dominates we
+// emit `0` (ambiguous) for the current het. Upstream samtools drives
+// the analogous step with a Viterbi-style dynamic program over k-block
+// haplotype states; the greedy decomposition produces the same result
+// on the clean inputs `phase` is designed for and the differences on
+// noisy inputs are localised to the per-junction label rather than
+// the global block.
+//
+// After the chaining pass, when chimera-repair is enabled (the default;
+// upstream's `FLAG_FIX_CHIMERA`, cleared by `-F`/`--no-fix-chimera`),
+// each read with support on both haplotypes is examined for a
+// per-read flip point that maximises the haplotype-consistency score
+// — this is the Go port of upstream's `fragphase` chimera-repair
+// scoring loop. The scoring is conceptually a small MCMC-like search
+// over per-read flip assignments, implemented deterministically as
+// the same forward/backward sum scan upstream uses; the only random
+// source is the `math/rand` seeded RNG that routes truly-ambiguous
+// reads into the 0/1 output buckets in `-b` mode (mirroring upstream's
+// `drand48()`). The seed is fixed (1) so test assertions on the `-b`
+// BAM split are deterministic; RNG byte-parity with upstream is not a
+// goal of this project (see docs/PARITY_ROADMAP.md).
 //
 // Output format is the tab-separated stream documented in the user
 // spec:
@@ -24,6 +39,18 @@
 // where 0 = ambiguous (no consistent cluster), 1 = hap1, 2 = hap2.
 // One line per het SNP, in coordinate order. Het positions are
 // 1-based to match SAM POS.
+//
+// When the caller supplies `OutputPrefix` (upstream's `-b STR`), three
+// BAM files are written alongside the TSV stream:
+//
+//	<prefix>.0.bam       — reads assigned to haplotype 0
+//	<prefix>.1.bam       — reads assigned to haplotype 1
+//	<prefix>.chimera.bam — reads that span both haplotypes (chimeric)
+//
+// Reads with no allele evidence are routed randomly to .0 or .1.
+// When `DropAmbiguous` is set (upstream's `-A`), reads with weak but
+// non-zero evidence on both haplotypes are routed to the chimera
+// bucket instead of being kept in their majority bucket.
 //
 // A new phase block is implicitly started whenever the distance (in
 // number of intervening het sites) to the previous successfully-phased
@@ -35,6 +62,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math/rand"
 	"sort"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -54,20 +82,31 @@ type PhaseOptions struct {
 	// MaxDepth caps the number of reads observed at any one het. The
 	// upstream default is 256.
 	MaxDepth int
-	// FullRead, when set, mirrors upstream's -F flag: use the full
-	// read regardless of soft-clipped bases. v1 always uses the
-	// aligned slice; the flag is accepted on the CLI but its current
-	// effect is a no-op (see PARITY_ROADMAP.md).
+	// FullRead, when set, mirrors upstream's -F flag: when CLEARED it
+	// disables MCMC/chimera repair (upstream's FLAG_FIX_CHIMERA). The
+	// historical name FullRead is retained for backwards compatibility
+	// with the v1 API; semantically the field now means "skip chimera
+	// repair when true". See NoFixChimera for the canonical accessor.
+	//
+	// Deprecated: use NoFixChimera in new code.
 	FullRead bool
-	// DropAmbiguous, when set, mirrors upstream's -A flag: indicate
-	// "drop" in the chimera/dropped output. v1 has no per-read
-	// chimera output, so this flag is accepted but informational.
+	// NoFixChimera, when set, disables the chimera-repair pass. This
+	// mirrors upstream `-F`/`--no-fix-chimera`. When unset (the
+	// default) the chimera-repair pass runs after greedy phasing.
+	NoFixChimera bool
+	// DropAmbiguous, when set, mirrors upstream's -A flag: ambiguous
+	// reads are routed to the chimera bucket in the `-b` BAM split
+	// instead of being kept in their majority bucket.
 	DropAmbiguous bool
-	// OutputPrefix is upstream's -b STR option. v1 emits the phased-
-	// TSV stream to the writer the caller passes; this option is
-	// accepted on the CLI but not yet wired through to per-haplotype
-	// BAM splitting (which is the upstream behaviour).
+	// OutputPrefix is upstream's -b STR option. When non-empty, three
+	// BAM files are written: `<prefix>.0.bam`, `<prefix>.1.bam`, and
+	// `<prefix>.chimera.bam`.
 	OutputPrefix string
+	// RNGSeed seeds the random number generator used to route
+	// truly-ambiguous reads to the 0/1 buckets in `-b` mode. When
+	// zero, the default seed (1) is used; tests should pin this for
+	// determinism.
+	RNGSeed int64
 }
 
 // Phase default constants matching upstream samtools phase.c.
@@ -77,11 +116,22 @@ const (
 	DefaultPhaseMinBaseQ     = 13
 	DefaultPhaseMaxDepth     = 256
 	DefaultPhaseOutputPrefix = ""
+
+	// flipPenalty and flipThreshold mirror upstream phase.c's
+	// FLIP_PENALTY and FLIP_THRES — the scoring constants used by
+	// the chimera-repair flip-point search in `fragphase`.
+	flipPenalty   = 2
+	flipThreshold = 4
 )
 
 // Phase reads SAM/BAM records from in, identifies het SNPs, and writes
 // the phased-position TSV to out. Returns the number of het sites
 // emitted and the first error encountered.
+//
+// When opts.OutputPrefix is non-empty, three BAM files are written
+// alongside the TSV stream (see the package doc comment). The input
+// must be a SAM stream when BAM output is requested; the BAM writer
+// needs the full header from the reader.
 func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 	if opts.BlockWindow == 0 {
 		opts.BlockWindow = DefaultPhaseBlockWindow
@@ -130,6 +180,25 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 		byRef[rec.RName] = append(byRef[rec.RName], rec)
 	}
 
+	// Open the per-haplotype BAM writers up front if requested. We
+	// need the reader's header for the BAM table-of-references.
+	var bamSplit *bamSplitWriter
+	if opts.OutputPrefix != "" {
+		bs, err := newBAMSplitWriter(opts.OutputPrefix, r.Header())
+		if err != nil {
+			return 0, err
+		}
+		defer bs.Close()
+		bamSplit = bs
+	}
+
+	// Set up the RNG used for ambiguous-read routing.
+	seed := opts.RNGSeed
+	if seed == 0 {
+		seed = 1
+	}
+	rng := rand.New(rand.NewSource(seed))
+
 	emitted := 0
 	for _, ref := range refOrder {
 		recs := byRef[ref]
@@ -138,13 +207,20 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 		if err != nil {
 			return emitted, err
 		}
-		phased := phaseHets(hets, opts)
+		phased, mapping := phaseHetsWithMapping(hets, opts)
 		for _, h := range phased {
 			line := fmt.Sprintf("PS\t%s\t%d\t%d\n", ref, h.pos, h.label)
 			if _, err := bw.WriteString(line); err != nil {
 				return emitted, err
 			}
 			emitted++
+		}
+		if bamSplit != nil {
+			// Per-read assignment: walk every read once, classify it
+			// against the phased het list, write to the matching BAM.
+			if err := bamSplit.assignAndWrite(recs, hets, mapping, opts, rng); err != nil {
+				return emitted, err
+			}
 		}
 	}
 	return emitted, nil
@@ -171,7 +247,7 @@ type readSupport struct {
 // callHets scans the per-reference records and returns one het entry
 // per position where:
 //   - at least two distinct query bases were observed, AND
-//   - the two most-common bases each have ≥ 2 supporting reads (a
+//   - the two most-common bases each have >= 2 supporting reads (a
 //     minimal "het call"), AND
 //   - the supporting reads' query quality at that position passed the
 //     opts.MinBaseQ filter.
@@ -268,33 +344,72 @@ type phasedSite struct {
 // label 0 (ambiguous). Blocks reset when more than opts.BlockWindow
 // hets in a row are unphased.
 func phaseHets(hets []het, opts PhaseOptions) []phasedSite {
+	sites, _ := phaseHetsWithMapping(hets, opts)
+	return sites
+}
+
+// hetHapMapping records, for each het, what the per-block "hap0"
+// allele index is (0 means allele0 of this het represents hap0; 1
+// means allele1 of this het represents hap0; -1 means the het is
+// not phased into the current block).
+type hetHapMapping []int8
+
+// phaseHetsWithMapping is the workhorse for phaseHets. It returns
+// the per-het labels and, alongside, the per-het hap0-allele
+// mapping consistent with the block's labelling. The mapping is
+// what callers need to classify a read by haplotype (see the
+// chimera-repair pass in phase_bam.go).
+func phaseHetsWithMapping(hets []het, opts PhaseOptions) ([]phasedSite, hetHapMapping) {
 	out := make([]phasedSite, 0, len(hets))
-	// Per-read: which allele did it pick at the previous phased het?
-	// readAssign[readIdx] = 0 / 1 / -1 (no assignment).
-	readAssign := map[int]int{}
+	mapping := make(hetHapMapping, len(hets))
+	for i := range mapping {
+		mapping[i] = -1
+	}
+	// Per-read: which block-frame haplotype (0 or 1) was this read on
+	// at the previous phased het? The block frame is fixed at the
+	// first het of the block; "blockHap" is allele-index–independent
+	// and stays consistent across flips so that a non-chimeric read's
+	// assignment never appears to flip from het to het.
+	readBlockHap := map[int]int{}
 	prevPhasedIdx := -1
 	consecUnphased := 0
+	// cumFlip is the cumulative number of label-2 (flip) events seen
+	// since the block start, mod 2. mapping[i] = cumFlip (after the
+	// flip at het i is applied) — i.e. cumFlip == 0 ⇒ allele0
+	// represents block hap0; cumFlip == 1 ⇒ allele1 represents block
+	// hap0.
+	cumFlip := 0
 
 	for i, h := range hets {
 		if prevPhasedIdx < 0 {
-			// Block start: label the first het arbitrarily.
+			// Block start: label the first het arbitrarily; record
+			// each read's block-frame hap = its allele index here.
 			out = append(out, phasedSite{pos: h.pos, label: 1})
+			cumFlip = 0
+			mapping[i] = 0
 			for _, s := range h.support {
-				readAssign[s.readIdx] = s.allele
+				readBlockHap[s.readIdx] = s.allele
 			}
 			prevPhasedIdx = i
 			consecUnphased = 0
 			continue
 		}
-		// Count overlap between this het's supporting reads and the
-		// previous-het assignment.
+		// Translate each read's local allele at this het into the
+		// current block frame: blockHap = s.allele XOR cumFlip.
+		// Compare against the prior block-frame hap of the same read.
+		// "same" supports keeping the labelling (label=1, no flip);
+		// "opposite" supports flipping the labelling (label=2). Note
+		// that for a non-chimeric read the block-frame hap is
+		// invariant across hets, so the count is robust against a
+		// chimera read's mid-block jump.
 		same, opposite := 0, 0
 		for _, s := range h.support {
-			prevAllele, ok := readAssign[s.readIdx]
+			prev, ok := readBlockHap[s.readIdx]
 			if !ok {
 				continue
 			}
-			if prevAllele == s.allele {
+			curr := s.allele ^ cumFlip
+			if prev == curr {
 				same++
 			} else {
 				opposite++
@@ -317,27 +432,26 @@ func phaseHets(hets []het, opts PhaseOptions) []phasedSite {
 			if consecUnphased > opts.BlockWindow {
 				// Block break — reset.
 				prevPhasedIdx = -1
-				readAssign = map[int]int{}
+				readBlockHap = map[int]int{}
 				consecUnphased = 0
+				cumFlip = 0
 			}
 			continue
 		}
-		// Update readAssign so future hets chain off this one. If the
-		// label flipped (label==2) we record the OPPOSITE allele as
-		// the "hap1 marker" so the next het's comparison stays
-		// consistent.
-		flip := label == 2
+		// Apply the flip (if any) to the running cumulative flip
+		// count. Then update readBlockHap with each supporting read's
+		// block-frame hap at this het (s.allele XOR cumFlip).
+		if label == 2 {
+			cumFlip ^= 1
+		}
+		mapping[i] = int8(cumFlip)
 		for _, s := range h.support {
-			a := s.allele
-			if flip {
-				a ^= 1
-			}
-			readAssign[s.readIdx] = a
+			readBlockHap[s.readIdx] = s.allele ^ cumFlip
 		}
 		prevPhasedIdx = i
 		consecUnphased = 0
 	}
-	return out
+	return out, mapping
 }
 
 // baseIdx maps an upper- or lower-case ACGT base to a 0..3 index.
