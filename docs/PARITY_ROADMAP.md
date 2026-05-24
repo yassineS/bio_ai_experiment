@@ -1696,6 +1696,99 @@ Plus:
       indel-row QS/NMBZ/PL[0] columns at homopolymer columns on
       `indel-AD.1.out` and `annot-NMBZ.3.1.out`, both tracked under
       the `bcfCall2bcfIndel` SCR-on-indel-rows polish.
+    - **4e.5 indel-row SCR (DONE).** `bcfCall2bcfIndel` now emits
+      `INFO/SCR` (before I16) and `FORMAT/SCR` (after AD/ADF/ADR)
+      when the corresponding `B2BInfoSCR` / `B2BFmtSCR` bits are
+      set, mirroring the SNP-row code path. `bcfCallCombineIndel`
+      copies the per-sample SCR tally from the SNP-pass
+      `bcfCallret.scr` arrays (the indel branch of `bcfCallGlfgen`
+      does not tally SCR — the SCR accumulator is gated on
+      `!isIndel`, matching upstream's `bam2bcf.c:300`). Both the
+      SNP and indel rows at the same column therefore report the
+      same SCR counts. Regression: `TestMpileupSCROnIndelRow` (uses
+      the `indel-AD.2.fa` / `indel-AD.2.bam` fixture, which has a
+      homopolymer-anchored indel call and soft-clipped reads at
+      `11:75`).
+    - **Residual: `indel-AD.1.out` and `annot-NMBZ.3.1.out` indel-row
+      drifts at homopolymer columns (DOCUMENTED, root cause traced).**
+      A column-by-column diff against the goldens identifies three
+      independent clusters:
+
+      1. **Trailing N-REF rows past the FASTA end** (`indel-AD.1.out`
+         positions `000000F:687-688`, two records with `REF=N`,
+         `DP=1`, all I16 fields zero). Root cause: the 000000F
+         contig is 686 bp in the FASTA, but the BAM contains a read
+         whose CIGAR (`6M1D117M5D28M`) ends at reference position
+         688 — two bases past the FASTA boundary. Upstream's
+         pileup engine does not bound itself to the FASTA length:
+         it walks reads' CIGARs and emits a column for every
+         covered reference position, using `N` for the REF when
+         the position is past the FASTA. Our port allocates
+         `events[i]` of length `refLen` (the FASTA length) and the
+         per-site loop in `emitChromMpileup` terminates at
+         `pos0 < refLen` (mpileup.go:1080, 1095). Fix would
+         require extending the events array to the maximum
+         read-end across inputs, padding the REF with `N` for
+         positions past `refLen`, and adjusting the regions/targets
+         intersection to allow positions past the FASTA. Scoped as
+         a follow-up; the two affected rows carry no biological
+         signal (DP=1 with zero base-quality contribution).
+
+      2. **SNP-row I16 base-quality-sum micro-drifts** (`indel-AD.1.out`
+         ~12 columns near 446-624, all with I16 slots 4-5 off by a
+         single read's base quality, e.g. 1204/45840 vs upstream's
+         1205/45921 = one missing BQ=9 contribution). The reads
+         involved cover both the BAQ-adjusted homopolymer at
+         `000000F:537-540` and the columns straddling the FASTA
+         boundary at 686. These are post-BAQ quality drifts on
+         reads whose tail bases extend past the FASTA end —
+         upstream's BAQ adjustment for those tail bases differs
+         from ours, propagating a one-quality-unit shift back into
+         the SNP-row I16 sums at columns where the affected reads
+         contribute REF bases. Same root cause as cluster (1):
+         FASTA-boundary handling.
+
+      3. **Indel-row chosen-type off-by-one at homopolymer columns**
+         (`indel-AD.1.out` at `000000F:537/538/658`, plus
+         `annot-NMBZ.3.1.out` at `chr16:75`). At these columns the
+         indel-row I16 fields agree on REF/ALT classification (so
+         the `isDiff = b ? 1 : 0` split is identical), but the
+         **per-allele** breakdown shifts because a handful of reads
+         are assigned to a different non-REF indel type by
+         `bcfCgpComputeIndelQ`. Concretely at `000000F:537`: ours
+         classifies one extra read as type `-1` (the deletion),
+         shifting I16 slot 3 (alt-rev count) from 27 to 28, the
+         alt BQ-sum by exactly one BQ=40 contribution, the alt
+         MQ-sum by MQ=60, and the alt min-dist sum by 25. This
+         propagates into QS (per-type qsum), AD (per-allele
+         counts), and (transitively) PL[2]. At `chr16:75`
+         (`annot-NMBZ.3.1.out`) the I16 byte-matches because the
+         swaps are between two ALT types (both `b!=0`, so isDiff
+         stays 1), but QS shifts (1.45884 vs 1.43466 for type 1),
+         NMBZ flips sign (+0.437589 vs -0.886523 — the indel-pass
+         refNm/altNm split changes), and PL[0] for sample 1 falls
+         from 255 to 226. Root cause: `bcfCgpComputeIndelQ` and
+         `bcfCgpAlignScore` use the same encoding `score<<6 | t`
+         and the same ascending-insertion-sort tie-break as
+         upstream, and the orchestrator's `tbeg`/`tend`/`rStart`/
+         `rEnd` / ref2-slice positioning matches upstream
+         byte-for-byte (verified by `bcfCgpAlignScore`'s
+         existing tests). The remaining divergence is in the
+         `probaln_glocal` score itself for reads whose query
+         window straddles a homopolymer run — at most-frequent /
+         long homopolymers, two indel types can produce
+         `probaln_glocal` returns that differ by a single Phred
+         unit, and a one-unit drift in the underlying HMM
+         likelihoods (rounding inside the forward/backward DP)
+         flips the tie-break. The HMM port lives in
+         `pkg/bcftools/.../baq.ProbalnGlocal` and the residual is
+         a "single ULP rounding inside the forward DP at long
+         homopolymer columns" item rather than a `bam2bcf.c`
+         port gap. Out of scope for this slice — fixing it
+         requires either (a) reproducing C's exact left-to-right
+         multiply order inside the HMM transition step, or (b)
+         accepting these as RNG-class residuals (a handful of
+         reads per homopolymer column at depths > 100).
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
