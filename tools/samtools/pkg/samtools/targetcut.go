@@ -31,10 +31,10 @@
 //	        "inside" state (default 1).
 //	-2 INT  HMM emission score for "callable base" in "inside" state
 //	        (default 6).
-//	-f FILE Reference FASTA. ACCEPTED, with BAQ realignment NOT
-//	        applied in v1 — upstream uses sam_prob_realn here to
-//	        improve consensus calling; deferred per
-//	        docs/PARITY_ROADMAP.md#samtools.
+//	-f FILE Reference FASTA. When supplied, every per-record SEQ is
+//	        run through pkg/htsgo/baq.SamProbRealn (apply+extend mode,
+//	        flag = 1<<1|1) before its bases enter the pileup, matching
+//	        upstream cut_target.c's read_aln.
 //
 // Compatibility note: prior to this port the Go re-implementation
 // shipped a simpler "cut the aligned slice from each read to FASTA"
@@ -50,6 +50,9 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -97,6 +100,14 @@ type TargetcutOptions struct {
 	// in v1 of this re-implementation. When false (the default), the
 	// faithful upstream HMM-consensus path runs.
 	SimpleMode bool
+
+	// FastaRef is the optional reference FASTA path (upstream `-f`).
+	// When non-empty, every record surviving the read filter is run
+	// through pkg/htsgo/baq.SamProbRealn before its bases enter the
+	// per-position pileup, matching upstream cut_target.c's read_aln
+	// behaviour (`sam_prob_realn(b, g->ref, g->len, 1<<1|1)`). Has no
+	// effect in SimpleMode.
+	FastaRef string
 }
 
 // defaultedOptions returns opts with zero-valued fields filled in from
@@ -176,7 +187,22 @@ func targetcutHMM(in io.Reader, out io.Writer, opts TargetcutOptions) (int, erro
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
 
-	em := newErrModel(errModDepCorr)
+	em := errmod.Init(errModDepCorr)
+
+	// Optional reference FASTA: when -f is supplied we run BAQ
+	// realignment on every record before it enters the per-chrom
+	// pileup, matching upstream cut_target.c::read_aln. The reference
+	// is loaded lazily per chromosome (mirroring upstream's
+	// per-tid fai_fetch64 cache).
+	var ref *fasta.RandomAccess
+	if opts.FastaRef != "" {
+		ref, err = fasta.OpenRandomAccess(opts.FastaRef)
+		if err != nil {
+			return 0, fmt.Errorf("samtools targetcut: open reference %s: %w", opts.FastaRef, err)
+		}
+		defer ref.Close()
+	}
+
 	emitted := 0
 	for i, b := range buckets {
 		if len(b.recs) == 0 {
@@ -186,6 +212,18 @@ func targetcutHMM(in io.Reader, out io.Writer, opts TargetcutOptions) (int, erro
 		if refLen <= 0 {
 			continue
 		}
+		if ref != nil {
+			refSeq, err := ref.Fetch(b.chrom, 0, int64(refLen))
+			if err != nil {
+				// Upstream tolerates a missing contig (fai_fetch64 may
+				// return NULL) and simply skips BAQ for that chrom; we
+				// do the same.
+				refSeq = nil
+			}
+			if refSeq != nil {
+				applyTargetcutBAQ(b.recs, refSeq)
+			}
+		}
 		cns := buildConsensusTrack(b.recs, refLen, em, opts.MinBaseQ)
 		n, err := emitTargetcutRegions(bw, b.chrom, cns, opts)
 		if err != nil {
@@ -194,6 +232,21 @@ func targetcutHMM(in io.Reader, out io.Writer, opts TargetcutOptions) (int, erro
 		emitted += n
 	}
 	return emitted, nil
+}
+
+// applyTargetcutBAQ runs pkg/htsgo/baq.SamProbRealn on each record in
+// apply+extend mode, mirroring upstream cut_target.c::read_aln which
+// invokes `sam_prob_realn(b, g->ref, g->len, 1<<1|1)` once per record
+// when a `-f` reference is supplied. The call mutates rec.Qual and
+// adds a ZQ aux tag; we ignore SamProbRealn's return value because
+// "no work needed" results (-1, -3) are not errors for our purposes
+// — they leave the record's qualities untouched, exactly as upstream
+// does.
+func applyTargetcutBAQ(recs []*sam.Record, ref []byte) {
+	flag := baq.FlagApply | baq.FlagExtend
+	for _, rec := range recs {
+		_ = baq.SamProbRealn(rec, ref, flag)
+	}
 }
 
 // skipForTargetcutHMM mirrors the read filter inside cut_target.c::read_aln:
@@ -235,7 +288,7 @@ func (c consensusCell) hasCallableBase() bool { return (c >> 8) != 0 }
 // buildConsensusTrack walks every reference position 0..refLen and
 // calls gencns over the per-position pileup. Returns a refLen-length
 // vector of consensusCells.
-func buildConsensusTrack(recs []*sam.Record, refLen int, em *errModel, minBQ uint8) []consensusCell {
+func buildConsensusTrack(recs []*sam.Record, refLen int, em *errmod.Errmod, minBQ uint8) []consensusCell {
 	// Build per-position contributions in a single CIGAR pass per read.
 	// Each contribution is the packed `(q<<5 | strand<<4 | base)` byte
 	// upstream feeds into errmod.
@@ -357,8 +410,8 @@ func nucBase4(b byte) byte {
 // upstream `gencns` function in Go: feeds the packed bases into the
 // MAQ error model, picks the best base by score, and packs the result
 // in the upstream uint16 shape.
-func gencns(em *errModel, bases []uint16, q []float32) consensusCell {
-	em.calc(bases, 4, q)
+func gencns(em *errmod.Errmod, bases []uint16, q []float32) consensusCell {
+	em.Cal(bases, 4, q)
 	// sum[i] holds (q[i*4+i] rounded) << 2 | i  — encoding base index
 	// in the low 2 bits so the upcoming sort keeps them together.
 	var sum [4]int

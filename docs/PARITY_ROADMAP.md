@@ -1411,8 +1411,9 @@ Plus:
   indel calling remains deferred.** The `mpileup` SNP MAQ-model port is
   complete: it was sliced into four parts:
   - **Slice 1 (DONE).** The MAQ error model (`errmod.c`) is ported to
-    pure Go in `tools/bcftools/pkg/bcftools/errmod.go` (`ErrmodInit` /
-    `ErrmodCal`).
+    pure Go in the shared `pkg/htsgo/errmod` package (`errmod.Init` /
+    `errmod.Cal`). Both `bcftools mpileup` and `samtools targetcut`
+    consume this single implementation.
   - **Slice 2 (DONE).** The per-site genotype-likelihood pipeline —
     `bcf_call_glfgen` / `bcf_call_combine` / `bcf_call2bcf` from
     `bam2bcf.c` — is ported in
@@ -1714,15 +1715,17 @@ Plus:
   adjacent-het vote in place of upstream `phase.c`'s MCMC
   `phase_core` loop; `-b` per-haplotype BAM split is also deferred.
   Detail in the `phase` subsection below.
-- **`targetcut` BAQ realignment with `-f` reference.** The HMM
-  consensus mode is now implemented (faithful port of
+- **`targetcut` BAQ realignment with `-f` reference (DONE).** The
+  HMM consensus mode is implemented (faithful port of
   `cut_target.c`, including the MAQ errmod port; see below). The
-  only deliberately-deferred sub-feature is the per-record BAQ
-  realignment that upstream's `read_aln` applies via
-  `sam_prob_realn` when a `-f` reference is supplied: we accept
-  `-f` for CLI parity and emit a stderr warning. Wiring our
-  existing `pkg/htsgo/baq.SamProbRealn` into `targetcutHMM` is
-  small (~20 LOC) and tracked as a follow-up.
+  per-record BAQ realignment that upstream's `read_aln` applies
+  via `sam_prob_realn` when a `-f` reference is supplied is now
+  wired: `targetcutHMM` runs `pkg/htsgo/baq.SamProbRealn` in
+  apply+extend mode (`flag = 1<<1|1`) on every record that
+  survives the read filter, on a per-chromosome cache of the
+  reference fetched via `fasta.RandomAccess`. The stderr warning
+  is gone; the BAQ-adjusted qualities feed `gencns` exactly as
+  upstream feeds them into the pileup.
 - **`tview`** — deliberate skip (interactive curses UI).
 
 **`markdup` deferred features** (deliberately skipped in v1, all flag
@@ -1963,21 +1966,25 @@ is covered by hand-computed expected values in the table tests.
 **`targetcut` HMM consensus mode** (implemented). The Go port is now
 a faithful translation of upstream `cut_target.c`: per-position
 consensus via the MAQ revised error model (`errmod.c` is ported
-in-tree at `tools/samtools/pkg/samtools/targetcut_errmod.go`),
-followed by a 2-state Viterbi over the per-chrom consensus track
-to segment "covered, callable" regions from "no-info or
-uninformative" regions, then one SAM-format consensus record is
-emitted per identified region in the exact upstream printf shape
+in-tree as a shared package at `pkg/htsgo/errmod` — both
+`samtools targetcut` and `bcftools mpileup` import the same
+implementation, eliminating the duplicate ports that briefly
+existed in PRs #199 and #216), followed by a 2-state Viterbi
+over the per-chrom consensus track to segment "covered, callable"
+regions from "no-info or uninformative" regions, then one SAM-
+format consensus record is emitted per identified region in the
+exact upstream printf shape
 (`%s:%d-%d\t0\t%s\t%d\t60\t%dM\t*\t0\t0\t<seq>\t<qual>\n`). The
 emit-loop's "position 0 never participates in a region" quirk —
 a consequence of upstream's backtrack loop running over the half-
 open range `(0, l-1]` — is reproduced verbatim so we agree with
 the C output by construction. CLI flags `-Q -i -0 -1 -2` carry
-their upstream semantics; `-f` reference is accepted with a
-stderr warning that BAQ realignment is deferred (see the deferred-
-features list above). The pre-port "aligned-slice FASTA" mode
-remains available behind `--simple` (library: `TargetcutOptions.
-SimpleMode`).
+their upstream semantics; `-f` reference triggers per-record BAQ
+realignment via `pkg/htsgo/baq.SamProbRealn` (apply+extend mode,
+flag `1<<1|1`), matching upstream `cut_target.c::read_aln`. The
+pre-port "aligned-slice FASTA" mode remains available behind
+`--simple` (library: `TargetcutOptions.SimpleMode`); `-f` has no
+effect in simple mode.
 
 One implementation detail diverges from upstream by design: when
 n > 255 bases pile at a single position the upstream `errmod_cal`

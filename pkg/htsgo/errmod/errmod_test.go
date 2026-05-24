@@ -1,14 +1,13 @@
-package bcftools
+package errmod
 
 import (
 	"math"
-	"math/rand"
 	"testing"
 )
 
-// packBase builds a bases[] entry the way errmod_cal expects: the 6-bit
-// quality occupies bits 5..15, strand is bit 4, and the 4-bit base is
-// bits 0..3.
+// packBase builds a bases[] entry the way Cal expects: the 6-bit
+// quality occupies bits 5..15, strand is bit 4, and the 4-bit base
+// is bits 0..3.
 func packBase(qual int, strand int, base int) uint16 {
 	return uint16(qual<<5 | strand<<4 | base)
 }
@@ -21,15 +20,15 @@ const (
 	baseN = 4
 )
 
-func TestErrmodInitFkTable(t *testing.T) {
+func TestInitFkTable(t *testing.T) {
 	depcorr := 1.0 - 0.83
-	em := ErrmodInit(depcorr)
+	em := Init(depcorr)
 	if em.fk[0] != 1.0 {
 		t.Fatalf("fk[0] = %v, want 1.0", em.fk[0])
 	}
 	// fk[n] = (1-depcorr)^n * (1-eta) + eta.
 	for _, n := range []int{1, 2, 5, 10, 100, 255} {
-		want := math.Pow(1.0-depcorr, float64(n))*(1.0-errmodEta) + errmodEta
+		want := math.Pow(1.0-depcorr, float64(n))*(1.0-Eta) + Eta
 		if math.Abs(em.fk[n]-want) > 1e-12 {
 			t.Errorf("fk[%d] = %v, want %v", n, em.fk[n], want)
 		}
@@ -39,28 +38,25 @@ func TestErrmodInitFkTable(t *testing.T) {
 		if em.fk[n] > em.fk[n-1]+1e-15 {
 			t.Errorf("fk not monotone non-increasing at n=%d", n)
 		}
-		if em.fk[n] < errmodEta-1e-12 {
+		if em.fk[n] < Eta-1e-12 {
 			t.Errorf("fk[%d] = %v below eta", n, em.fk[n])
 		}
 	}
 }
 
-func TestErrmodInitLhetTable(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
-	// lhet[n<<8|k] = logBinom(n,k) - ln2*n. Compute logBinom by hand.
+func TestInitLhetTable(t *testing.T) {
+	em := Init(1.0 - 0.83)
+	// lhet[n<<8|k] = logBinom(n,k) - ln2*n.
 	lbinom := func(n, k int) float64 {
 		lf := func(x int) float64 {
 			v, _ := math.Lgamma(float64(x) + 1)
 			return v
 		}
-		if k == 0 || n == 0 {
-			return lf(n) - lf(k) - lf(n-k)
-		}
 		return lf(n) - lf(k) - lf(n-k)
 	}
 	cases := []struct{ n, k int }{{0, 0}, {1, 0}, {1, 1}, {4, 2}, {10, 3}, {20, 10}}
 	for _, c := range cases {
-		want := lbinom(c.n, c.k) - errmodLn2*float64(c.n)
+		want := lbinom(c.n, c.k) - math.Ln2*float64(c.n)
 		got := em.lhet[c.n<<8|c.k]
 		if math.Abs(got-want) > 1e-9 {
 			t.Errorf("lhet[%d,%d] = %v, want %v", c.n, c.k, got, want)
@@ -82,8 +78,8 @@ func TestErrmodInitLhetTable(t *testing.T) {
 	}
 }
 
-func TestErrmodInitBetaTable(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+func TestInitBetaTable(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	// beta[q<<16|n<<8|n] is +Inf for every q,n (the all-error endpoint).
 	for _, q := range []int{1, 10, 40, 63} {
 		for _, n := range []int{1, 5, 50, 255} {
@@ -121,8 +117,8 @@ func TestErrmodInitBetaTable(t *testing.T) {
 	}
 }
 
-// best returns the index of the smallest (best) phred score in the m*m
-// genotype matrix, decoded as the (i,j) pair with i <= j.
+// bestGenotype returns the (i,j) index pair (i<=j) of the smallest
+// score in the m*m phred-scaled likelihood matrix.
 func bestGenotype(q []float32, m int) (int, int) {
 	bi, bj := 0, 0
 	best := float32(math.MaxFloat32)
@@ -137,16 +133,15 @@ func bestGenotype(q []float32, m int) (int, int) {
 	return bi, bj
 }
 
-func TestErrmodCalAllRef(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+func TestCalAllRef(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	m := 5
 	q := make([]float32, m*m)
 	bases := make([]uint16, 0, 30)
 	for i := 0; i < 30; i++ {
-		strand := i & 1
-		bases = append(bases, packBase(30, strand, baseA))
+		bases = append(bases, packBase(30, i&1, baseA))
 	}
-	em.ErrmodCal(len(bases), m, bases, q, nil)
+	em.Cal(bases, m, q)
 	bi, bj := bestGenotype(q, m)
 	if bi != baseA || bj != baseA {
 		t.Fatalf("all-REF best genotype = (%d,%d), want (A,A)", bi, bj)
@@ -168,23 +163,23 @@ func TestErrmodCalAllRef(t *testing.T) {
 	}
 }
 
-func TestErrmodCalAllAlt(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+func TestCalAllAlt(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	m := 5
 	q := make([]float32, m*m)
 	bases := make([]uint16, 0, 30)
 	for i := 0; i < 30; i++ {
 		bases = append(bases, packBase(30, i&1, baseG))
 	}
-	em.ErrmodCal(len(bases), m, bases, q, nil)
+	em.Cal(bases, m, q)
 	bi, bj := bestGenotype(q, m)
 	if bi != baseG || bj != baseG {
 		t.Fatalf("all-ALT best genotype = (%d,%d), want (G,G)", bi, bj)
 	}
 }
 
-func TestErrmodCalHet5050(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+func TestCalHet5050(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	m := 5
 	q := make([]float32, m*m)
 	bases := make([]uint16, 0, 40)
@@ -195,7 +190,7 @@ func TestErrmodCalHet5050(t *testing.T) {
 		}
 		bases = append(bases, packBase(30, i&1, b))
 	}
-	em.ErrmodCal(len(bases), m, bases, q, nil)
+	em.Cal(bases, m, q)
 	bi, bj := bestGenotype(q, m)
 	if !(bi == baseA && bj == baseC) {
 		t.Fatalf("50/50 best genotype = (%d,%d), want (A,C)", bi, bj)
@@ -207,8 +202,8 @@ func TestErrmodCalHet5050(t *testing.T) {
 	}
 }
 
-func TestErrmodCalQualityMonotone(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+func TestCalQualityMonotone(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	m := 5
 	// An all-REF pile: higher base quality => more confident, so the
 	// competing wrong genotypes get monotonically worse (larger) scores.
@@ -220,7 +215,7 @@ func TestErrmodCalQualityMonotone(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			bases = append(bases, packBase(qual, i&1, baseA))
 		}
-		em.ErrmodCal(len(bases), m, bases, q, nil)
+		em.Cal(bases, m, q)
 		hom := q[baseC*m+baseC]
 		het := q[baseA*m+baseC]
 		if prevHom >= 0 && hom < prevHom-1e-3 {
@@ -233,14 +228,14 @@ func TestErrmodCalQualityMonotone(t *testing.T) {
 	}
 }
 
-func TestErrmodCalEmptyPile(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+func TestCalEmptyPile(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	m := 5
 	q := make([]float32, m*m)
 	for i := range q {
 		q[i] = 7 // garbage that must be zeroed.
 	}
-	em.ErrmodCal(0, m, nil, q, nil)
+	em.Cal(nil, m, q)
 	for i, v := range q {
 		if v != 0 {
 			t.Fatalf("q[%d] = %v, want 0 for empty pile", i, v)
@@ -248,8 +243,8 @@ func TestErrmodCalEmptyPile(t *testing.T) {
 	}
 }
 
-func TestErrmodCalSymmetric(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+func TestCalSymmetric(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	m := 5
 	q := make([]float32, m*m)
 	bases := []uint16{
@@ -257,7 +252,7 @@ func TestErrmodCalSymmetric(t *testing.T) {
 		packBase(30, 0, baseA), packBase(20, 1, baseG),
 		packBase(35, 0, baseC), packBase(28, 1, baseA),
 	}
-	em.ErrmodCal(len(bases), m, bases, q, nil)
+	em.Cal(bases, m, q)
 	for i := 0; i < m; i++ {
 		for j := 0; j < m; j++ {
 			if q[i*m+j] != q[j*m+i] {
@@ -269,20 +264,22 @@ func TestErrmodCalSymmetric(t *testing.T) {
 			}
 		}
 	}
+	_ = baseN
+	_ = baseT
 }
 
-func TestErrmodCalDownsample(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+// TestCalDownsampleTruncates exercises the >MaxObs path: a 600-deep
+// pile is deterministically truncated to the first 255 observations,
+// the call still completes, and the dominant genotype still wins.
+func TestCalDownsampleTruncates(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	m := 5
-	rng := rand.New(rand.NewSource(1))
-	// 600 observations > 255 forces the shuffle/downsample path.
 	bases := make([]uint16, 0, 600)
 	for i := 0; i < 600; i++ {
 		bases = append(bases, packBase(30, i&1, baseT))
 	}
 	q := make([]float32, m*m)
-	em.ErrmodCal(len(bases), m, bases, q, rng)
-	// Path must complete and still pick the dominant genotype.
+	em.Cal(bases, m, q)
 	bi, bj := bestGenotype(q, m)
 	if bi != baseT || bj != baseT {
 		t.Fatalf("downsampled all-T best genotype = (%d,%d), want (T,T)", bi, bj)
@@ -294,11 +291,14 @@ func TestErrmodCalDownsample(t *testing.T) {
 	}
 }
 
-func TestErrmodCalDownsampleStable(t *testing.T) {
-	em := ErrmodInit(1.0 - 0.83)
+// TestCalDownsampleDeterministic guards the documented divergence from
+// upstream: truncation to the first MaxObs observations is fully
+// deterministic, so two identical inputs yield identical outputs even
+// when n > MaxObs. (Upstream's ks_shuffle + drand48 path is not byte-
+// reproducible across calls; ours is.)
+func TestCalDownsampleDeterministic(t *testing.T) {
+	em := Init(1.0 - 0.83)
 	m := 5
-	// A homogeneous pile downsampled with the same seed twice must give
-	// identical results (deterministic given the rng).
 	mk := func() []uint16 {
 		b := make([]uint16, 0, 400)
 		for i := 0; i < 400; i++ {
@@ -308,11 +308,39 @@ func TestErrmodCalDownsampleStable(t *testing.T) {
 	}
 	q1 := make([]float32, m*m)
 	q2 := make([]float32, m*m)
-	em.ErrmodCal(400, m, mk(), q1, rand.New(rand.NewSource(42)))
-	em.ErrmodCal(400, m, mk(), q2, rand.New(rand.NewSource(42)))
+	em.Cal(mk(), m, q1)
+	em.Cal(mk(), m, q2)
 	for i := range q1 {
 		if q1[i] != q2[i] {
-			t.Fatalf("downsample not stable at q[%d]: %v vs %v", i, q1[i], q2[i])
+			t.Fatalf("downsample not deterministic at q[%d]: %v vs %v", i, q1[i], q2[i])
+		}
+	}
+}
+
+// TestCalEquivalentToFirstMaxObs documents the truncation contract: a
+// pile of MaxObs+k bases produces the same result as just the first
+// MaxObs of them. (The downstream consumers — gencns in samtools
+// targetcut and bam2bcf in bcftools mpileup — both cap depth at 255
+// in their output, so this is the documented divergence from
+// upstream's randomised downsampling.)
+func TestCalEquivalentToFirstMaxObs(t *testing.T) {
+	em := Init(1.0 - 0.83)
+	m := 4
+	mk := func(n int) []uint16 {
+		b := make([]uint16, 0, n)
+		for i := 0; i < n; i++ {
+			b = append(b, packBase(30, i&1, baseA))
+		}
+		return b
+	}
+	qLong := make([]float32, m*m)
+	qShort := make([]float32, m*m)
+	em.Cal(mk(MaxObs+50), m, qLong)
+	em.Cal(mk(MaxObs), m, qShort)
+	for i := range qLong {
+		if qLong[i] != qShort[i] {
+			t.Fatalf("truncate-first contract broken at q[%d]: %v vs %v",
+				i, qLong[i], qShort[i])
 		}
 	}
 }

@@ -58,6 +58,7 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -988,7 +989,7 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 	}
 
 	// The errmod tables are expensive to build, so do it once.
-	em := ErrmodInit(1.0 - mpileupTheta)
+	em := errmod.Init(1.0 - mpileupTheta)
 
 	// Run-level BQBZ / MQSBZ leak (bam2bcf.c:1175-1183 + the lack of a
 	// reset in bcf_callaux_clean). Upstream's bcf_call_t is allocated
@@ -1038,7 +1039,7 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 // writes one record per position that has read coverage. Unlike the
 // pre-MAQ port, this emits a record for every covered position (not
 // only SNP candidates) with `<*>` as the unseen allele.
-func emitChromMpileup(w variantWriter, em *Errmod, chrom string, refSlab []byte, refLen int,
+func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab []byte, refLen int,
 	perInputChromRecs [][]*sam.Record, opts MpileupOptions,
 	regWindows map[string][][2]int, leak *biasLeak) error {
 

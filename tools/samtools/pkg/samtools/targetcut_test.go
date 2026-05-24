@@ -2,8 +2,12 @@ package samtools
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod"
 )
 
 // ----- Simple-mode tests (legacy behaviour, behind SimpleMode opt-in) -----
@@ -336,24 +340,98 @@ func TestTargetcutHMM_ConsensusBaseFromMajorityVote(t *testing.T) {
 	}
 }
 
-// TestErrModelSelfConsistent guards the errmod tables: when every
-// observed base agrees on one allele at qual 40, the diagonal entry
-// for that allele must be the minimum (best) score and the other
-// homozygous diagonals must score worse.
+// TestErrModelSelfConsistent guards the shared errmod port through the
+// targetcut call path: when every observed base agrees on one allele
+// at qual 40, the diagonal entry for that allele must be the minimum
+// (best) score and the other homozygous diagonals must score worse.
 func TestErrModelSelfConsistent(t *testing.T) {
-	em := newErrModel(errModDepCorr)
+	em := errmod.Init(errModDepCorr)
 	// 10 bases of 'A' (base = 0), forward strand, quality 40.
 	bases := make([]uint16, 10)
 	for i := range bases {
 		bases[i] = uint16(40)<<5 | uint16(0)<<4 | uint16(0)
 	}
 	q := make([]float32, 16)
-	em.calc(bases, 4, q)
+	em.Cal(bases, 4, q)
 	for j := 1; j < 4; j++ {
 		if q[j*4+j] <= q[0] {
 			t.Errorf("homozygous q[%d,%d] = %g should be > q[A,A] = %g (10 A's)",
 				j, j, q[j*4+j], q[0])
 		}
+	}
+}
+
+// TestTargetcutHMM_BAQReferenceChangesConsensus exercises the `-f`
+// (BAQ) path: with a reference supplied, pkg/htsgo/baq.SamProbRealn
+// lowers the qualities of bases flanked by mismatches, which shifts
+// gencns' per-position consensus call and/or its quality. The test
+// runs the same SAM input twice — once without `-f` and once with —
+// and asserts that the per-position QUAL bytes differ. The
+// `--simple` mode is unaffected, validated by a separate run.
+func TestTargetcutHMM_BAQReferenceChangesConsensus(t *testing.T) {
+	// 60-bp reference of all A's. Reads stack 10-deep at chr1:1 and
+	// each read carries one of two mismatches near the centre. Without
+	// BAQ every base is q40 and the consensus QUAL is uniformly high.
+	// With BAQ the mismatch flanks get downweighted, so the consensus
+	// QUAL bytes drop at those positions and the output differs.
+	const refLen = 60
+	refSeq := strings.Repeat("A", refLen)
+
+	dir := t.TempDir()
+	faPath := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(faPath, []byte(">chr1\n"+refSeq+"\n"), 0o644); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+
+	// Build a SAM with 10 stacked 30M reads at chr1:1. Each read has
+	// two mismatches at positions 10 and 20 (1-based bases 'C') —
+	// enough internal disagreement to trigger BAQ quality reduction
+	// in the flanking match positions when a reference is supplied.
+	lines := []string{
+		"@HD\tVN:1.6\tSO:coordinate",
+		"@SQ\tSN:chr1\tLN:60",
+	}
+	readSeq := strings.Repeat("A", 9) + "C" + strings.Repeat("A", 9) + "C" + strings.Repeat("A", 10)
+	readQual := strings.Repeat("I", 30) // Phred 40 everywhere
+	for i := 0; i < 10; i++ {
+		lines = append(lines,
+			"r"+targetcutItoa(i)+"\t0\tchr1\t1\t60\t30M\t*\t0\t0\t"+readSeq+"\t"+readQual)
+	}
+	samText := strings.Join(lines, "\n") + "\n"
+
+	run := func(fasta string) string {
+		var buf bytes.Buffer
+		if _, err := Targetcut(strings.NewReader(samText), &buf, TargetcutOptions{
+			FastaRef: fasta,
+		}); err != nil {
+			t.Fatalf("Targetcut(fasta=%q): %v", fasta, err)
+		}
+		return buf.String()
+	}
+
+	without := run("")
+	with := run(faPath)
+	if without == "" {
+		t.Fatal("no-ref run produced no output (test fixture broken)")
+	}
+	if without == with {
+		t.Fatalf("BAQ should have changed at least one output byte but outputs are identical:\n%s",
+			without)
+	}
+
+	// And simple mode is unaffected by `-f`: same byte output.
+	runSimple := func(fasta string) string {
+		var buf bytes.Buffer
+		if _, err := Targetcut(strings.NewReader(samText), &buf, TargetcutOptions{
+			FastaRef:   fasta,
+			SimpleMode: true,
+		}); err != nil {
+			t.Fatalf("Targetcut(simple, fasta=%q): %v", fasta, err)
+		}
+		return buf.String()
+	}
+	if runSimple("") != runSimple(faPath) {
+		t.Errorf("simple-mode output changed with `-f`; it should be unaffected")
 	}
 }
 
