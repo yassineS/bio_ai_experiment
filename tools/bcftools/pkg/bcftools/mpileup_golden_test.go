@@ -718,15 +718,20 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"array to max(refLen, maxReadEnd). Two clusters remain, " +
 				"documented in docs/PARITY_ROADMAP.md mpileup section: " +
 				"(2) ~12 SNP-row I16 base-quality drifts at " +
-				"000000F:446-624 — the FASTA-boundary hypothesis was " +
-				"falsified by the cluster-1 fix; root cause is an " +
-				"independent BAQ / overlap-merge subtlety dropping a " +
-				"single BQ=9 contribution per affected column; (3) 4 " +
-				"indel-row chosen-type off-by-one assignments at the " +
-				"homopolymer columns near 000000F:537/538/658, root " +
-				"cause = single-ULP rounding inside ProbalnGlocal at " +
-				"long homopolymer runs flipping the score<<6|t " +
-				"ascending-sort tie-break.",
+				"000000F:446-624 — root cause traced to BAQ / " +
+				"overlap-merge pipeline ordering. Upstream interleaves " +
+				"per-read inside bam_plp_push: mate 1 is BAQ'd on raw " +
+				"quals at its first column, then overlap-merge runs " +
+				"when mate 2 arrives, then BAQ runs on mate 2's merged " +
+				"quals. Our port batches overlap-merge before BAQ " +
+				"chromosome-wide, feeding mate 1's BAQ merged quals. " +
+				"Closing this needs a streaming bam_plp_push port " +
+				"(per-pair arrival state); naive swap regresses 14 " +
+				"other columns. (3) 4 indel-row chosen-type off-by-one " +
+				"assignments at the homopolymer columns near " +
+				"000000F:537/538/658, root cause = single-ULP rounding " +
+				"inside ProbalnGlocal at long homopolymer runs flipping " +
+				"the score<<6|t ascending-sort tie-break.",
 		},
 		{
 			"mpileup/indel-AD.1cns.out",
