@@ -21,13 +21,17 @@ func TestCheckCSQDeferred(t *testing.T) {
 		in   checkCSQDeferredInputs
 		want string
 	}{
+		// Still genuinely deferred:
 		{"brief", checkCSQDeferredInputs{brief: true}, "-b/--brief-predictions"},
-		{"-O z", checkCSQDeferredInputs{outputType: "z"}, "-O z (only -O v in v1)"},
-		{"-O b", checkCSQDeferredInputs{outputType: "b"}, "-O b (only -O v in v1)"},
-		{"-O t", checkCSQDeferredInputs{outputType: "t"}, "-O t (only -O v in v1)"},
 		{"genetic-code 1", checkCSQDeferredInputs{geneticCode: "1"}, "-C/--genetic-code 1 (only standard table 0 in v1)"},
-		{"unify-chr", checkCSQDeferredInputs{unifyChrNames: "chr,Chr,-"}, "--unify-chr-names chr,Chr,-"},
-		{"dump-gff", checkCSQDeferredInputs{dumpGFF: "out.gff.gz"}, "--dump-gff"},
+		// Unknown -O type must still be rejected with the format hint.
+		{"-O t", checkCSQDeferredInputs{outputType: "t"}, "-O t (expect v|z|b|u)"},
+		// Now-implemented flags must NOT be rejected:
+		{"-O z", checkCSQDeferredInputs{outputType: "z"}, ""},
+		{"-O b", checkCSQDeferredInputs{outputType: "b"}, ""},
+		{"-O u", checkCSQDeferredInputs{outputType: "u"}, ""},
+		{"unify-chr", checkCSQDeferredInputs{unifyChrNames: "chr,Chr,-"}, ""},
+		{"dump-gff", checkCSQDeferredInputs{dumpGFF: "out.gff.gz"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,7 +94,8 @@ func TestCSQRunInputs(t *testing.T) {
 		t.Errorf("missing -g rc=%d want 2", rc)
 	}
 	// Hard-rejected deferred flags must error out before any I/O.
-	if rc := runCSQ([]string{"-O", "z", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 2 {
-		t.Errorf("-O z must be rejected, got rc=%d", rc)
+	// -b/--brief-predictions is still in the deferred set; rc=2.
+	if rc := runCSQ([]string{"-b", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 2 {
+		t.Errorf("-b must be rejected, got rc=%d", rc)
 	}
 }

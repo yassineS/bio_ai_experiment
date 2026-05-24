@@ -763,6 +763,11 @@ func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int) string {
 			return "."
 		}
 		return translatedGenotype(v, sampleIdx)
+	case "TBCSQ":
+		if sampleIdx < 0 {
+			return "."
+		}
+		return expandTBCSQ(v, sampleIdx, "BCSQ")
 	}
 	if strings.HasPrefix(name, "INFO/") {
 		key := name[len("INFO/"):]
@@ -786,6 +791,79 @@ func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int) string {
 		return sampleField(v, sampleIdx, name)
 	}
 	return "."
+}
+
+// expandTBCSQ ports upstream convert.c's process_tbcsq: it decodes the
+// per-sample FORMAT/BCSQ bitmask into the comma-separated list of the
+// referenced INFO/BCSQ entries. The output is `hap1\thap2` when both
+// haplotypes carry consequences (or "." per side when empty), matching
+// `bcftools query -f'[%TBCSQ\n]'`.
+//
+// Bit layout (mirrors upstream's csq.c emission and convert.c expansion):
+//   - each int32 value carries 30 effective bits (top 2 reserved);
+//   - bit (2*k + ihap) within a value at array offset j corresponds to
+//     INFO/BCSQ entry index (j*30 + 2*k + ihap) / 2 = j*15 + k.
+func expandTBCSQ(v *vcf.Variant, sampleIdx int, tag string) string {
+	if sampleIdx < 0 || sampleIdx >= len(v.Samples) {
+		return "."
+	}
+	info, ok := v.Info[tag]
+	if !ok || info == "" {
+		return ".\t."
+	}
+	csqs := strings.Split(info, ",")
+	raw := sampleField(v, sampleIdx, tag)
+	if raw == "" || raw == "." {
+		return ".\t."
+	}
+	parts := strings.Split(raw, ",")
+	vals := make([]uint32, len(parts))
+	for i, p := range parts {
+		// Treat negative/missing as zero.
+		if p == "" || p == "." {
+			continue
+		}
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err != nil || n < 0 {
+			continue
+		}
+		vals[i] = uint32(n)
+	}
+	var hap1, hap2 strings.Builder
+	appendCSQ := func(sb *strings.Builder, idx int) {
+		if idx < 0 || idx >= len(csqs) {
+			return
+		}
+		if sb.Len() > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(csqs[idx])
+	}
+	const nbits = 30 // 30 effective bits per int32
+	for j, val := range vals {
+		if val == 0 {
+			continue
+		}
+		// hap1 lives in even bits (0,2,4,...), hap2 in odd (1,3,5,...).
+		for k := 0; k < nbits; k += 2 {
+			idx := (j*nbits + k) / 2
+			if val&(1<<uint(k)) != 0 {
+				appendCSQ(&hap1, idx)
+			}
+			if val&(1<<uint(k+1)) != 0 {
+				appendCSQ(&hap2, idx)
+			}
+		}
+	}
+	h1 := hap1.String()
+	if h1 == "" {
+		h1 = "."
+	}
+	h2 := hap2.String()
+	if h2 == "" {
+		h2 = "."
+	}
+	return h1 + "\t" + h2
 }
 
 // sampleField returns the FORMAT key value for a sample, or "." when missing.

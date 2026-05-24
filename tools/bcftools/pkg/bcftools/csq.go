@@ -124,7 +124,11 @@ func CSQFile(vcfPath string, w io.Writer, opts CSQOptions) (int, error) {
 	if opts.GFFAnnot == "" {
 		return 0, fmt.Errorf("bcftools csq: -g/--gff-annot is required")
 	}
-	idx, err := loadCSQIndex(opts.FastaRef, opts.GFFAnnot)
+	prefixVCF, prefixGFF, prefixFAI, err := parseUnifyChrNames(opts.UnifyChrNames)
+	if err != nil {
+		return 0, err
+	}
+	idx, err := loadCSQIndexUnified(opts.FastaRef, opts.GFFAnnot, prefixVCF, prefixGFF, prefixFAI)
 	if err != nil {
 		return 0, err
 	}
@@ -152,8 +156,15 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 	// Inject INFO meta-line for the consequence tag.
 	tag := opts.CustomTag
 	hdr.MetaInfo = ensureCSQInfoLine(hdr.MetaInfo, tag)
+	if len(hdr.Samples) > 0 {
+		hdr.MetaInfo = ensureCSQFormatLine(hdr.MetaInfo, tag)
+	}
 
-	out := vcf.NewWriter(w, hdr)
+	out, cleanup, err := openCSQOutput(w, opts.OutputFormat, hdr)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
 	if err := out.WriteHeader(); err != nil {
 		return 0, fmt.Errorf("write VCF header: %w", err)
 	}
@@ -206,6 +217,14 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 	return written, nil
 }
 
+// openCSQOutput wraps the destination writer in a variantWriter for the
+// requested -O format. Supports VCF text, VCF.gz, compressed BCF and
+// uncompressed BCF (shared with `bcftools view` so the BCF writer logic
+// stays in one place).
+func openCSQOutput(w io.Writer, format OutputFormat, hdr *vcf.Header) (variantWriter, func(), error) {
+	return openOutput(w, ViewOptions{OutputFormat: format}, hdr)
+}
+
 // ensureCSQInfoLine inserts (or replaces) the ##INFO=<ID=...> header
 // for the consequence tag. Existing entries are kept untouched if
 // they already declare the same ID.
@@ -217,6 +236,21 @@ func ensureCSQInfoLine(meta []string, tag string) []string {
 		}
 	}
 	line := fmt.Sprintf("##INFO=<ID=%s,Number=.,Type=String,Description=\"Haplotype-aware consequence annotation from BCFtools/csq, see http://samtools.github.io/bcftools/howtos/csq-calling.html for details. Format: Consequence|gene|transcript|biotype|strand|amino_acid_change|dna_change\">", tag)
+	return append(meta, line)
+}
+
+// ensureCSQFormatLine inserts the ##FORMAT=<ID=...> header for the
+// per-sample bitmask emitted alongside INFO/BCSQ. The description
+// matches upstream csq.c:800 so `bcftools query -f'[%TBCSQ]'` can
+// detect and expand the bitmask.
+func ensureCSQFormatLine(meta []string, tag string) []string {
+	prefix := fmt.Sprintf("##FORMAT=<ID=%s,", tag)
+	for _, m := range meta {
+		if strings.HasPrefix(m, prefix) {
+			return meta
+		}
+	}
+	line := fmt.Sprintf("##FORMAT=<ID=%s,Number=.,Type=Integer,Description=\"Bitmask of indexes to INFO/BCSQ, with interleaved first/second haplotype. Use \\\"bcftools query -f'[%%CHROM\\t%%POS\\t%%SAMPLE\\t%%TBCSQ\\n]'\\\" to translate.\">", tag)
 	return append(meta, line)
 }
 
@@ -293,8 +327,50 @@ type CSQUTR struct {
 	Prime5 bool
 }
 
+// parseUnifyChrNames decodes the upstream --unify-chr-names spec
+// `VCF,GFF,FAI` into three prefixes (empty for "-" or "0", which
+// disables the unifier). Returns an error for malformed input.
+func parseUnifyChrNames(spec string) (vcfPfx, gffPfx, faiPfx string, err error) {
+	if spec == "" || spec == "0" {
+		return "", "", "", nil
+	}
+	parts := strings.Split(spec, ",")
+	if len(parts) != 3 {
+		return "", "", "", fmt.Errorf("bcftools csq: --unify-chr-names: expected three comma-separated prefixes, got %q", spec)
+	}
+	for i, p := range parts {
+		if p == "-" {
+			parts[i] = ""
+		}
+	}
+	return parts[0], parts[1], parts[2], nil
+}
+
+// unifyChrName ports csq.c's unify_chr_name: strip the source prefix,
+// then prepend the destination prefix. Empty prefixes pass the name
+// through unchanged.
+func unifyChrName(chr, srcPfx, dstPfx string) string {
+	if srcPfx == "" && dstPfx == "" {
+		return chr
+	}
+	if srcPfx != "" && strings.HasPrefix(chr, srcPfx) {
+		chr = chr[len(srcPfx):]
+	}
+	if dstPfx != "" {
+		return dstPfx + chr
+	}
+	return chr
+}
+
 // loadCSQIndex reads the FASTA + GFF and constructs the cross-reference.
 func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
+	return loadCSQIndexUnified(fastaPath, gffPath, "", "", "")
+}
+
+// loadCSQIndexUnified is loadCSQIndex with --unify-chr-names prefixes.
+// All GFF / FASTA contig keys are rewritten into VCF-prefix form so
+// the engine's per-record lookups can use rec.Chrom directly.
+func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI string) (*CSQIndex, error) {
 	idx := &CSQIndex{
 		Refs:        make(map[string][]byte),
 		Transcripts: make(map[string]*CSQTranscript),
@@ -312,7 +388,11 @@ func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
 		return nil, fmt.Errorf("read fasta: %w", err)
 	}
 	for _, r := range rec {
-		idx.Refs[r.ID] = r.Sequence
+		// Rewrite FASTA contig names into VCF-prefix form when
+		// --unify-chr-names is in effect, so the engine's
+		// idx.Refs[t.Chrom] lookups (with t.Chrom also rewritten
+		// below) succeed transparently.
+		idx.Refs[unifyChrName(r.ID, prefixFAI, prefixVCF)] = r.Sequence
 	}
 
 	// Load GFF.
@@ -385,7 +465,7 @@ func loadCSQIndex(fastaPath, gffPath string) (*CSQIndex, error) {
 			ID:      stripGFFPrefix(tid),
 			Gene:    gi.name,
 			Biotype: biotype,
-			Chrom:   f.Seqid,
+			Chrom:   unifyChrName(f.Seqid, prefixGFF, prefixVCF),
 			Strand:  f.Strand,
 			Beg:     f.Start,
 			End:     f.End,

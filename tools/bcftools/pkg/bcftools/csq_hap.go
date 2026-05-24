@@ -216,6 +216,14 @@ type vcsq struct {
 type vrecBuf struct {
 	rec  *vcf.Variant
 	vcsq []vcsq
+	// fmtBM is the per-sample FORMAT/BCSQ bitmask block, length
+	// nsamples*nfmtBcsq when populated. Bit (2*idx+ihap) at offset
+	// nfmtBcsq*ismpl marks "INFO/BCSQ entry idx applies to haplotype
+	// ihap of sample ismpl". Mirrors vrec_t.fmt_bm.
+	fmtBM []uint32
+	// nfmt tracks the highest int32 index touched by any bit, so the
+	// emitted FORMAT/BCSQ can be trimmed to the minimum width.
+	nfmt int
 }
 
 // vbuf mirrors vbuf_t: VCF records sharing a position.
@@ -233,6 +241,10 @@ type hapEngine struct {
 	phase   int
 	samples []int // header indices of samples to process; nil when phaseDropGT
 	ncsq2   int
+	// nfmtBcsq is the per-sample width of FORMAT/BCSQ (number of
+	// int32 ints needed to hold ncsq2 effective bits, 30 per int).
+	// Mirrors upstream's args->nfmt_bcsq.
+	nfmtBcsq int
 
 	vcfBuf   []*vbuf       // round buffer of buffered VCF lines, ordered by pos
 	pos2vbuf map[int]*vbuf // position -> vbuf
@@ -270,7 +282,24 @@ func newHapEngine(idx *CSQIndex, opts CSQOptions, hdr *vcf.Header) *hapEngine {
 		e.ncsq2 = 16 // upstream default --ncsq
 	}
 	e.ncsq2 *= 2
+	e.nfmtBcsq = ncsq2ToNfmt(e.ncsq2)
 	return e
+}
+
+// ncsq2ToNfmt mirrors upstream's ncsq2_to_nfmt: the number of 32-bit
+// ints needed to hold ncsq2 effective bits, with 30 bits per int (the
+// top two bits are reserved to avoid BCF missing/end values).
+func ncsq2ToNfmt(ncsq2 int) int {
+	if ncsq2 <= 0 {
+		return 1
+	}
+	return 1 + (ncsq2-1)/30
+}
+
+// icsq2ToBit maps an icsq2 (2*idx+ihap) to its int32 index and bit
+// position. Mirrors upstream's icsq2_to_bit.
+func icsq2ToBit(icsq2 int) (ival, ibit int) {
+	return icsq2 / 30, icsq2 % 30
 }
 
 // phaseByteToMode maps the -p/--phase byte (a|m|r|R|s) to a phase*
