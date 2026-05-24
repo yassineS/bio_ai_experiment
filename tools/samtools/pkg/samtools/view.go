@@ -109,6 +109,15 @@ type ViewOptions struct {
 	// conventional sibling `<input>.csi`/`<input>.bai` lookup; the index
 	// kind (CSI or BAI) is auto-detected from the file's magic bytes.
 	IndexPath string
+	// Threads is accepted for upstream-flag parity with samtools view -@/
+	// --threads. The view pipeline is IO-bound on the bgzf encode side and
+	// our in-tree bgzf writer does not expose a block-parallel mode, so
+	// the value is currently a no-op: View serialises the encode step to
+	// preserve byte-identical output. Decoupling the bgzf encode into a
+	// worker pool while preserving deterministic block boundaries is a
+	// roadmap item; for now this field is honoured by the CLI without
+	// silently changing behaviour.
+	Threads int
 }
 
 // TagFilter is a single aux-tag predicate as derived from samtools view's

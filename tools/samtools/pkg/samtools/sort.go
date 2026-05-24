@@ -54,7 +54,13 @@ type SortOptions struct {
 	// OutputSAM forces text SAM output (overrides OutputBAM when both set —
 	// SAM wins).
 	OutputSAM bool
-	// Threads is accepted but ignored — the v1 pipeline is single-threaded.
+	// Threads selects the number of worker goroutines used to sort and BAM-
+	// encode in-memory shards in parallel. The value follows upstream
+	// samtools' loose convention: 0 (or any non-positive value) selects the
+	// serial fast path (one worker), positive values are capped at
+	// runtime.NumCPU(). Output is byte-identical to the serial path
+	// because shards are reassembled by submission-order sequence number
+	// before the k-way merge step.
 	Threads int
 	// NoPG is accepted but is a no-op (we don't inject @PG lines anyway).
 	NoPG bool
@@ -108,6 +114,8 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 		}
 	}
 
+	workers := resolveWorkers(opts.Threads)
+
 	var shards []string
 	defer func() {
 		for _, p := range shards {
@@ -115,21 +123,117 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 		}
 	}()
 
-	var buffer []*sam.Record
-	var bufBytes int64
-	flush := func() error {
+	// Pipeline: the reader hands full buffers off to either a serial
+	// flush (workers == 1) or a worker pool (workers > 1). The worker
+	// path is share-nothing — each shardJob carries its own []*sam.Record
+	// — and results are reassembled by submission sequence number so the
+	// resulting list of temp BAM paths is identical to the serial path's.
+
+	var (
+		buffer   []*sam.Record
+		bufBytes int64
+		seq      int
+	)
+
+	// Serial flush keeps the simple in-line path for workers == 1, which
+	// preserves the historical behaviour (no goroutines, no channels) and
+	// matches the byte-for-byte temp-shard layout used by every existing
+	// test.
+	flushSerial := func() error {
 		if len(buffer) == 0 {
 			return nil
 		}
 		sort.SliceStable(buffer, func(a, b int) bool { return cmp(buffer[a], buffer[b]) })
-		path, ferr := writeShard(tmpBaseDir, tmpName, len(shards), hdr, buffer)
+		path, ferr := writeShard(tmpBaseDir, tmpName, seq, hdr, buffer)
 		if ferr != nil {
 			return ferr
 		}
 		shards = append(shards, path)
+		seq++
 		buffer = buffer[:0]
 		bufBytes = 0
 		return nil
+	}
+
+	// Parallel path: spin up a pool and a small result collector that
+	// recovers submission order via a min-heap keyed on seq. The pool is
+	// only constructed when workers > 1 so the serial path stays free of
+	// goroutines.
+	type pendingResults struct {
+		pool     *shardPool
+		bySeq    map[int]string // collected results awaiting in-order release
+		nextWant int            // next seq to append to shards
+	}
+	var pr *pendingResults
+	if workers > 1 {
+		work := func(job shardJob) shardResult {
+			sort.SliceStable(job.recs, func(a, b int) bool { return cmp(job.recs[a], job.recs[b]) })
+			path, ferr := writeShard(tmpBaseDir, tmpName, job.seq, hdr, job.recs)
+			return shardResult{seq: job.seq, path: path, err: ferr}
+		}
+		pr = &pendingResults{
+			pool:  newShardPool(workers, work),
+			bySeq: make(map[int]string),
+		}
+	}
+
+	// drainAvailable pulls every result currently sitting in the pool's
+	// output channel (non-blocking) into pr.bySeq, then releases the
+	// in-order prefix into shards. Called between submissions so the
+	// channel does not back up and so an early error is surfaced promptly.
+	drainAvailable := func() error {
+		if pr == nil {
+			return nil
+		}
+		for {
+			select {
+			case res, ok := <-pr.pool.results():
+				if !ok {
+					return pr.pool.firstError()
+				}
+				if res.err != nil {
+					return res.err
+				}
+				pr.bySeq[res.seq] = res.path
+			default:
+				// Release the contiguous in-order prefix.
+				for {
+					p, ok := pr.bySeq[pr.nextWant]
+					if !ok {
+						return nil
+					}
+					shards = append(shards, p)
+					delete(pr.bySeq, pr.nextWant)
+					pr.nextWant++
+				}
+			}
+		}
+	}
+
+	flushParallel := func() error {
+		if len(buffer) == 0 {
+			return nil
+		}
+		// Hand the buffer off to a worker and start a fresh local slice
+		// so the reader can keep filling while the worker runs. This is
+		// the share-nothing handoff that keeps the race detector happy.
+		job := shardJob{seq: seq, recs: buffer}
+		buffer = make([]*sam.Record, 0, 1024)
+		bufBytes = 0
+		seq++
+		// Surface any prior worker error before blocking on submit so we
+		// don't deadlock waiting on a full input channel after a worker
+		// has already failed.
+		if err := drainAvailable(); err != nil {
+			return err
+		}
+		pr.pool.submit(job)
+		return nil
+	}
+
+	flush := flushSerial
+	if pr != nil {
+		flush = flushParallel
 	}
 
 	for {
@@ -138,6 +242,11 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 			break
 		}
 		if err != nil {
+			if pr != nil {
+				pr.pool.closeSubmissions()
+				for range pr.pool.results() {
+				}
+			}
 			return err
 		}
 		size := recordSize(rec)
@@ -151,14 +260,56 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 		buffer = append(buffer, rec)
 		bufBytes += size
 	}
-	// Fast path: zero shards → sort the buffer in place and write to out.
-	if len(shards) == 0 {
+	// Fast path: zero shards spilled and no in-flight workers → sort the
+	// buffer in place and stream it out. This applies in both the serial
+	// and parallel code paths.
+	if pr == nil && len(shards) == 0 {
+		sort.SliceStable(buffer, func(a, b int) bool { return cmp(buffer[a], buffer[b]) })
+		return writeOutput(out, hdr, sliceIter(buffer), opts)
+	}
+	if pr != nil && seq == 0 {
+		// No buffers ever spilled — every record still sits in `buffer`.
+		// Tear down the (idle) pool and take the in-memory fast path.
+		pr.pool.closeSubmissions()
+		for range pr.pool.results() {
+		}
+		if err := pr.pool.firstError(); err != nil {
+			return err
+		}
 		sort.SliceStable(buffer, func(a, b int) bool { return cmp(buffer[a], buffer[b]) })
 		return writeOutput(out, hdr, sliceIter(buffer), opts)
 	}
 	// Otherwise: flush the tail and k-way merge.
 	if err := flush(); err != nil {
+		if pr != nil {
+			pr.pool.closeSubmissions()
+			for range pr.pool.results() {
+			}
+		}
 		return err
+	}
+	// Drain the parallel pool to completion so all temp files exist and
+	// the shards slice is in submission order.
+	if pr != nil {
+		pr.pool.closeSubmissions()
+		for res := range pr.pool.results() {
+			if res.err != nil {
+				continue // firstError will surface it below
+			}
+			pr.bySeq[res.seq] = res.path
+		}
+		if err := pr.pool.firstError(); err != nil {
+			return err
+		}
+		for pr.nextWant < seq {
+			p, ok := pr.bySeq[pr.nextWant]
+			if !ok {
+				return fmt.Errorf("samtools sort: missing parallel shard %d", pr.nextWant)
+			}
+			shards = append(shards, p)
+			delete(pr.bySeq, pr.nextWant)
+			pr.nextWant++
+		}
 	}
 	readers := make([]*sam.BAMReader, 0, len(shards))
 	defer func() {

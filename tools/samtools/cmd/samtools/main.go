@@ -158,7 +158,9 @@ Options:
   -T, --reference <fasta>     Reference FASTA for decoding reference-backed
                               CRAM input (needs a sibling .fai). Ignored
                               for SAM/BAM. CRAM input is auto-detected.
-  -@, --threads <int>         Accepted; single-threaded in v1.
+  -@, --threads <int>         Accepted for upstream-flag parity; the view
+                              pipeline is currently serial (see ViewOptions
+                              doc), so this value is a no-op.
       --no-PG                 Suppress @PG line emission.
       --help                  Show this help.
       --version               Show version.
@@ -321,6 +323,7 @@ func runView(args []string) int {
 		Reference:          refFile,
 		CRAMQualityBinning: cramQBin,
 		IndexPath:          indexPath,
+		Threads:            threads,
 	}
 
 	// Honour the output file extension when no format was given: a .bam
@@ -491,7 +494,10 @@ Options:
   -m, --max-mem N[K|M|G]      Per-shard memory budget (default 768M).
   -T, --tmpdir PREFIX         Temporary-file prefix.
   -l, --compress-level N      Output BGZF deflate level 0..9.
-  -@, --threads N             Accepted; v1 is single-threaded.
+  -@, --threads N             Worker goroutines for per-shard sort and
+                              BAM encode. 0 (default) is serial; positive
+                              values are capped at runtime.NumCPU(). Output
+                              is byte-identical to the serial path.
       --no-PG                 Suppress @PG injection (v1 never injects).
   -h, --help                  Show this help.
   -v, --version               Show version.
@@ -522,7 +528,7 @@ func runSort(args []string) int {
 	cliflag.StringVar(fs, &maxMem, "m", "max-mem", "", "Per-shard memory budget")
 	cliflag.StringVar(fs, &tmpdir, "T", "tmpdir", "", "Temp file prefix")
 	cliflag.IntVar(fs, &compLevel, "l", "compress-level", -1, "BGZF deflate level")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker goroutines for per-shard sort and BAM encode")
 	cliflag.BoolVar(fs, &noPG, "", "no-PG", false, "No @PG injection")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -631,7 +637,9 @@ Options:
   -o, --output PATH           Index output path. Default is <in>.bai (or
                               <in>.csi with -c) for BAM input, or
                               <in>.crai for CRAM input.
-  -@, --threads N             Accepted; v1 is single-threaded.
+  -@, --threads N             Accepted for upstream-flag parity; the index
+                              build is sequential by construction, so this
+                              value is a no-op.
   -h, --help                  Show this help.
   -v, --version               Show version.
 

@@ -3,6 +3,7 @@ package samtools
 import (
 	"bytes"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -338,5 +339,134 @@ func TestNaturalLess(t *testing.T) {
 		if got := naturalLess(c.a, c.b); got != c.want {
 			t.Errorf("naturalLess(%q, %q): got %v, want %v", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// largeUnsortedSAM produces enough records (with byte sizes exceeding the
+// tight memory budget used by the determinism tests) to force the
+// external-merge path. Records cycle across two references with positions
+// chosen to scramble both the (refID, pos) and natural-QName orderings,
+// guaranteeing multiple non-trivial shards.
+func largeUnsortedSAM(t *testing.T, n int) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("@HD\tVN:1.6\tSO:unsorted\n")
+	b.WriteString("@SQ\tSN:chr1\tLN:100000\n")
+	b.WriteString("@SQ\tSN:chr2\tLN:100000\n")
+	for i := 0; i < n; i++ {
+		// Mix references and positions deterministically but out of order.
+		ref := "chr1"
+		if i%3 == 0 {
+			ref = "chr2"
+		}
+		pos := ((i*9277)%99000 + 1) // pseudo-random but reproducible
+		// Pad QName with the iteration number so every record is unique
+		// and the bytes payload (Seq + Qual) is non-trivial; this gives
+		// the memory budget something real to count against.
+		qname := "read_" + strings.Repeat("x", i%17) + strconv.Itoa(i)
+		seq := strings.Repeat("ACGT", 12)
+		qual := strings.Repeat("I", len(seq))
+		b.WriteString(qname)
+		b.WriteByte('\t')
+		b.WriteString("0\t")
+		b.WriteString(ref)
+		b.WriteByte('\t')
+		b.WriteString(strconv.Itoa(pos))
+		b.WriteString("\t60\t48M\t*\t0\t0\t")
+		b.WriteString(seq)
+		b.WriteByte('\t')
+		b.WriteString(qual)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// TestSortParallelDeterminism asserts byte-equal BAM output across the
+// serial path (Threads=0) and several parallel widths (Threads=2, 4, 8).
+// This is the load-bearing parity test for the -@/--threads feature: any
+// non-determinism in the worker pool (out-of-order shard collection,
+// shared mutable state, racy merge tie-breaks) would surface here.
+func TestSortParallelDeterminism(t *testing.T) {
+	// 4 KiB budget on records of ~150-200 bytes each forces ~30-40 shards
+	// at n=2000, exercising the parallel submit/drain/merge pipeline.
+	const memBudget int64 = 4 * 1024
+	const n = 2000
+	input := largeUnsortedSAM(t, n)
+
+	run := func(workers int) []byte {
+		var out bytes.Buffer
+		opts := SortOptions{
+			Order:       SortCoordinate,
+			OutputBAM:   true,
+			MaxMemBytes: memBudget,
+			TmpPrefix:   t.TempDir(),
+			Threads:     workers,
+		}
+		if err := Sort(strings.NewReader(input), &out, opts); err != nil {
+			t.Fatalf("Sort(Threads=%d): %v", workers, err)
+		}
+		return out.Bytes()
+	}
+
+	want := run(0) // serial baseline
+	// Sanity: the baseline must actually contain records.
+	if recs := readBAMRecords(t, want); len(recs) != n {
+		t.Fatalf("baseline record count: got %d, want %d", len(recs), n)
+	}
+	for _, w := range []int{1, 2, 4, 8} {
+		got := run(w)
+		if !bytes.Equal(got, want) {
+			t.Errorf("Sort with Threads=%d produced bytes that differ from serial baseline (len got=%d, want=%d)", w, len(got), len(want))
+		}
+	}
+}
+
+// TestSortParallelDeterminismByName covers the same parity property for
+// the queryname sort path — its `cmp` and tie-break logic differ from
+// coordinate sort, so the parallel pool's ordering needs to be verified
+// separately.
+func TestSortParallelDeterminismByName(t *testing.T) {
+	const memBudget int64 = 4 * 1024
+	const n = 1500
+	input := largeUnsortedSAM(t, n)
+
+	run := func(workers int) []byte {
+		var out bytes.Buffer
+		opts := SortOptions{
+			Order:       SortByName,
+			OutputBAM:   true,
+			MaxMemBytes: memBudget,
+			TmpPrefix:   t.TempDir(),
+			Threads:     workers,
+		}
+		if err := Sort(strings.NewReader(input), &out, opts); err != nil {
+			t.Fatalf("Sort(Threads=%d): %v", workers, err)
+		}
+		return out.Bytes()
+	}
+	want := run(0)
+	for _, w := range []int{1, 2, 4, 8} {
+		got := run(w)
+		if !bytes.Equal(got, want) {
+			t.Errorf("Sort byName with Threads=%d differs from serial baseline (len got=%d, want=%d)", w, len(got), len(want))
+		}
+	}
+}
+
+// TestSortParallelFastPath exercises the parallel-path branch where no
+// shards spill (everything fits in memory). The pool is built and torn
+// down without doing any work; the output must still match the serial
+// path byte-for-byte.
+func TestSortParallelFastPath(t *testing.T) {
+	var serial bytes.Buffer
+	if err := Sort(strings.NewReader(unsortedSAM), &serial, SortOptions{Order: SortCoordinate, OutputBAM: true}); err != nil {
+		t.Fatalf("serial sort: %v", err)
+	}
+	var par bytes.Buffer
+	if err := Sort(strings.NewReader(unsortedSAM), &par, SortOptions{Order: SortCoordinate, OutputBAM: true, Threads: 4}); err != nil {
+		t.Fatalf("parallel sort: %v", err)
+	}
+	if !bytes.Equal(serial.Bytes(), par.Bytes()) {
+		t.Errorf("fast-path parallel output differs from serial (lens %d vs %d)", par.Len(), serial.Len())
 	}
 }

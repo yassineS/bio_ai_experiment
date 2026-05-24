@@ -22,8 +22,12 @@ type IndexOptions struct {
 	// when SelectCSI is true. Zero (or any non-positive value) selects the
 	// htslib default of 14.
 	CSIMinShift int
-	// Threads is accepted but ignored — the v1 index pipeline is
-	// single-threaded.
+	// Threads is accepted for upstream samtools index -@/--threads parity.
+	// The BAI/CSI build is intrinsically sequential — one entry per ref
+	// bin per BGZF virtual offset, walked in coordinate order — so
+	// pipelining the bgzf decode side is the only available win and is
+	// not yet implemented. This field is therefore currently a no-op;
+	// the CLI accepts the flag without silently changing behaviour.
 	Threads int
 }
 
