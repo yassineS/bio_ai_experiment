@@ -270,12 +270,13 @@ CSQ-specific options:
   -B, --trim-protein-seq INT     Accepted; v1 does not trim long predictions.
   -C, --genetic-code INT|l       Genetic code table; v1 supports only 0 (standard).
   -c, --custom-tag STRING        INFO tag name (default BCSQ).
-  -l, --local-csq                Accepted; v1 always operates per-record.
-  -n, --ncsq INT                 Accepted; v1 reports every matching transcript.
+  -l, --local-csq                Local (non-haplotype-aware) calling.
+  -n, --ncsq INT                 Maximum per-haplotype consequences per site [16].
   -p, --phase a|m|r|R|s          Accepted; v1 SNP classifier ignores phasing.
-      --dump-gff FILE.gz         Accepted; v1 emits no debug dumps.
+      --dump-gff FILE            Dump the parsed GFF (for debugging).
       --force                    Accepted; v1 has no sanity checks to skip.
-      --unify-chr-names 0|LIST   Accepted; v1 honours only "0".
+      --unify-chr-names 0|LIST   Three comma-separated VCF,GFF,FAI prefixes,
+                                 each '-' for none. "0" disables.
 
 General options:
   -e, --exclude EXPR             Accepted; v1 ignores (every record is processed).
@@ -404,7 +405,6 @@ func runCSQ(args []string) int {
 	}
 
 	// Silence "declared but not used".
-	_ = ncsq
 	_ = trimProtein
 	_ = excludeExpr
 	_ = includeExpr
@@ -515,19 +515,17 @@ func checkCSQDeferred(in checkCSQDeferredInputs) string {
 		return "-b/--brief-predictions"
 	}
 	switch in.outputType {
-	case "", "v":
-		// OK.
+	case "", "v", "z", "b", "u":
+		// All four output formats are supported via openCSQOutput.
 	default:
-		return "-O " + in.outputType + " (only -O v in v1)"
+		return "-O " + in.outputType + " (expect v|z|b|u)"
 	}
 	if in.geneticCode != "" && in.geneticCode != "0" {
 		return "-C/--genetic-code " + in.geneticCode + " (only standard table 0 in v1)"
 	}
-	if in.unifyChrNames != "" && in.unifyChrNames != "0" {
-		return "--unify-chr-names " + in.unifyChrNames
-	}
-	if in.dumpGFF != "" {
-		return "--dump-gff"
-	}
+	// --unify-chr-names is honoured by the CSQ engine; no deferral needed.
+	_ = in.unifyChrNames
+	// --dump-gff is honoured below via CSQFile / CSQOptions.DumpGFF.
+	_ = in.dumpGFF
 	return ""
 }

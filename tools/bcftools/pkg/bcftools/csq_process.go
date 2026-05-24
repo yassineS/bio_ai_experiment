@@ -8,6 +8,8 @@ package bcftools
 import (
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/gff"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -143,9 +145,9 @@ func (e *hapEngine) hapFlush(pos int) {
 		if ht.root != nil && len(ht.root.child) > 0 {
 			e.hapFinalize(ht)
 			if e.phase != phaseDropGT {
-				for i := range e.samples {
+				for i, hdrIdx := range e.samples {
 					for j := 0; j < 2; j++ {
-						e.hapStageVCF(ht.hap[i*2+j])
+						e.hapStageVCF(ht.hap[i*2+j], hdrIdx, j)
 					}
 				}
 			}
@@ -154,11 +156,41 @@ func (e *hapEngine) hapFlush(pos int) {
 	e.activeTr = remaining
 }
 
-// hapStageVCF is a no-op placeholder: per-haplotype FORMAT/BCSQ bitmask
-// emission is a separate slice. The INFO/BCSQ string is built from the
-// vrec.vcsq entries staged by csqPush, which is what the targeted
-// goldens compare.
-func (e *hapEngine) hapStageVCF(node *hapNode) {}
+// hapStageVCF walks a leaf hapNode's csqList and sets the FORMAT/BCSQ
+// bits for the given sample/haplotype, mirroring upstream's
+// hap_stage_vcf. The leaf-index encoding is hi = 2*ismpl + ihap, so we
+// pass (ismpl, ihap) in directly. When icsq2 (= 2*csq.idx+ihap) hits
+// the ncsq2 cap we break the loop, just like upstream.
+func (e *hapEngine) hapStageVCF(node *hapNode, ismpl, ihap int) {
+	if node == nil || len(node.csqList) == 0 || ismpl < 0 {
+		return
+	}
+	for _, csq := range node.csqList {
+		if csq.vrec == nil {
+			continue
+		}
+		icsq2 := 2*csq.idx + ihap
+		if icsq2 >= e.ncsq2 {
+			break
+		}
+		e.setFmtBit(csq.vrec, ismpl, icsq2)
+	}
+}
+
+// setFmtBit allocates vrec.fmtBM lazily and sets one (ismpl,icsq2) bit.
+func (e *hapEngine) setFmtBit(vrec *vrecBuf, ismpl, icsq2 int) {
+	if e.nfmtBcsq <= 0 || len(e.samples) == 0 {
+		return
+	}
+	if vrec.fmtBM == nil {
+		vrec.fmtBM = make([]uint32, len(e.samples)*e.nfmtBcsq)
+	}
+	ival, ibit := icsq2ToBit(icsq2)
+	if 1+ival > vrec.nfmt {
+		vrec.nfmt = 1 + ival
+	}
+	vrec.fmtBM[ismpl*e.nfmtBcsq+ival] |= 1 << uint(ibit)
+}
 
 // vbufFlush emits buffered VCF records whose annotations are complete
 // (no active transcript still overlaps them). Ports vbuf_flush.
@@ -184,12 +216,67 @@ func (e *hapEngine) vbufFlush(pos int) {
 					parts = append(parts, kputVcsq(&vr.vcsq[i]))
 				}
 				setInfoField(vr.rec, e.opts.CustomTag, joinComma(parts))
+				e.emitFmtBCSQ(vr)
 			}
 			e.out = append(e.out, vr.rec)
 		}
 		if vbPos >= 0 {
 			delete(e.pos2vbuf, vbPos)
 		}
+	}
+}
+
+// emitFmtBCSQ serialises the per-record FORMAT/BCSQ bitmask into the
+// variant's per-sample FORMAT slot. Mirrors upstream's
+// bcf_update_format_int32 in vbuf_flush (csq.c:2833-2839): the per-
+// sample stride is trimmed to vrec.nfmt (so common short cases emit a
+// single int rather than the full nfmtBcsq width), and rows are
+// memmoved down accordingly.
+func (e *hapEngine) emitFmtBCSQ(vr *vrecBuf) {
+	if e.phase == phaseDropGT || len(e.samples) == 0 || vr.fmtBM == nil || vr.nfmt == 0 {
+		return
+	}
+	stride := vr.nfmt
+	rec := vr.rec
+	if rec == nil {
+		return
+	}
+	// Build per-sample formatted values. Encoded as the raw int32 in
+	// decimal, ',' joined when stride > 1, matching how upstream's
+	// bcftools query reads FORMAT/BCSQ as a comma-separated int list.
+	if len(rec.Samples) < len(e.hdr.Samples) {
+		// Pad missing trailing samples (rare for csq inputs but cheap).
+		for i := len(rec.Samples); i < len(e.hdr.Samples); i++ {
+			rec.Samples = append(rec.Samples, vcf.Sample{Name: e.hdr.Samples[i], Data: map[string]string{}})
+		}
+	}
+	tag := e.opts.CustomTag
+	hasTag := false
+	for _, f := range rec.Format {
+		if f == tag {
+			hasTag = true
+			break
+		}
+	}
+	if !hasTag {
+		rec.Format = append(rec.Format, tag)
+	}
+	for _, hdrIdx := range e.samples {
+		if hdrIdx >= len(rec.Samples) {
+			continue
+		}
+		if rec.Samples[hdrIdx].Data == nil {
+			rec.Samples[hdrIdx].Data = map[string]string{}
+		}
+		var sb strings.Builder
+		for k := 0; k < stride; k++ {
+			if k > 0 {
+				sb.WriteByte(',')
+			}
+			val := vr.fmtBM[hdrIdx*e.nfmtBcsq+k]
+			sb.WriteString(strconv.FormatUint(uint64(val), 10))
+		}
+		rec.Samples[hdrIdx].Data[tag] = sb.String()
 	}
 }
 
@@ -207,7 +294,10 @@ func joinComma(parts []string) string {
 
 // stageOneCsq stages a non-haplotype consequence (UTR / splice /
 // intron / non-coding) against a record. Ports the csq_stage path for
-// these simple consequences.
+// these simple consequences: csqPush deduplicates into vrec.vcsq and
+// returns the canonical INFO/BCSQ idx; then for each sample whose GT
+// carries this ALT, set the corresponding (ismpl,icsq2) bit in
+// vrec.fmtBM (mirroring upstream's per-haplotype loop in csq_stage).
 func (e *hapEngine) stageOneCsq(rec *hapRecord, typ uint32, t *CSQTranscript, ial int) {
 	entry := &csqEntry{pos: rec.pos}
 	entry.typ.typ = typ
@@ -217,6 +307,36 @@ func (e *hapEngine) stageOneCsq(rec *hapRecord, typ uint32, t *CSQTranscript, ia
 	entry.typ.vcfIal = ial
 	entry.typ.gene = t.Gene
 	e.csqPush(entry, rec.v)
+	e.stageSimpleFmtBits(entry, rec.v)
+}
+
+// stageSimpleFmtBits sets FORMAT/BCSQ bits for a simple consequence
+// (one not produced by the haplotype tree). Mirrors the per-sample
+// loop in upstream's csq_stage (csq.c:3382-3419) for VCF output.
+func (e *hapEngine) stageSimpleFmtBits(entry *csqEntry, rec *vcf.Variant) {
+	if entry.vrec == nil || e.phase == phaseDropGT || len(e.samples) == 0 {
+		return
+	}
+	for _, hdrIdx := range e.samples {
+		if hdrIdx >= len(rec.Samples) {
+			continue
+		}
+		gt := rec.Samples[hdrIdx].Data["GT"]
+		alleles, _ := csqGTAlleles(gt)
+		for j, ial := range alleles {
+			if j >= 2 {
+				break
+			}
+			if ial <= 0 || ial != entry.typ.vcfIal {
+				continue
+			}
+			icsq2 := 2*entry.idx + j
+			if icsq2 >= e.ncsq2 {
+				break
+			}
+			e.setFmtBit(entry.vrec, hdrIdx, icsq2)
+		}
+	}
 }
 
 // testCDS applies coding variants to the haplotype trees of overlapping
@@ -359,6 +479,7 @@ func (e *hapEngine) applyCDSSamples(ht *hapTranscript, icds int, rec *hapRecord)
 				entry.typ.vcfIal = ial
 				entry.typ.gene = ht.tr.Gene
 				e.csqPush(entry, rec.v)
+				e.stageSimpleFmtBits(entry, rec.v)
 				continue
 			}
 			if parent.curRec != rec.v {
