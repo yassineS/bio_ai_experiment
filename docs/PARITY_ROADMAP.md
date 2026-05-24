@@ -1727,48 +1727,45 @@ Plus:
          SNP row alone).
 
       2. **SNP-row I16 base-quality-sum micro-drifts** (`indel-AD.1.out`
-         ~12 columns at 000000F:446-450, 497-500, 540-542, 566-567,
-         624, with I16 slots 4-5 shifted at each — e.g. 1204/45840
-         vs upstream's 1205/45921). **Root cause traced: BAQ /
-         overlap-merge pipeline ordering.** Upstream `htslib
-         bam_plp_push` (sam.c:6083-6132) interleaves per-read: each
-         read is BAQ'd by `mplp_realn` (mpileup.c:548) at the first
-         pileup column that passes the partial-realn skip heuristic,
-         and `overlap_push` (sam.c:5950) runs only when the *second*
-         mate of a pair arrives. Mate 1 normally gets BAQ'd at its
-         first column (e.g. col 420) on its raw qualities, BEFORE
-         mate 2 arrives at col 452 to trigger overlap-merge. The
-         overlap-merge zero/scale is then applied on top of BAQ for
-         both mates. Our port (`emitChromMpileup` in
-         `tools/bcftools/pkg/bcftools/mpileup.go:1057-1074`) batches
-         `applySmartOverlaps` before `applyMpileupBAQ` for the
-         entire chromosome, which feeds overlap-merged qualities
-         into mate 1's BAQ. For one representative read
-         (`ST-E00128:308:HHVVLALXX:8:1122:14174:33252`, mate 1 at
-         pos=420, CIGAR `21S29M2D9M1D77M1D15M`, mate 2 at pos=452),
-         this shifts `probaln_glocal`'s output at qpos 47 from 41
-         to 40 — accounting for one BQ²=81 contribution at the
-         REF I16 sum at col 446. Multiple overlap-paired reads
-         drift by ±1 each at the affected columns, so the deltas
-         aren't strictly "one BQ=9 per column" — that earlier
-         framing is corrected here.
+         originally 15 columns at 000000F:446-450, 497-500, 540-542,
+         566-567, 624, with I16 slots 4-5 shifted at each — e.g.
+         1204/45840 vs upstream's 1205/45921). **Mostly RESOLVED.**
+         `emitChromMpileup` now interleaves BAQ and overlap-merge
+         per-pair, matching upstream `htslib bam_plp_push`
+         (sam.c:6083-6132): a `classifyMatePairs` pre-pass labels
+         each read as standalone, first-mate or second-mate (same
+         predicate as `applySmartOverlaps`'s `overlap_push` port)
+         and records the mate's alignment start. The BAQ engine
+         then runs in two phases sharing a per-record `realigned`
+         dedup map (the equivalent of upstream's PLP_IS_REALN flag).
+         Phase 1 BAQs standalones plus first-mates whose first
+         eligible pileup column precedes the mate's start (raw
+         quals — the `pos0 < mateStart` gate captures whether
+         `overlap_push` would have run yet at upstream's iter->pos).
+         `applySmartOverlaps` then merges quals. Phase 2 BAQs all
+         second-mates plus any first-mates phase 1 left untouched
+         (merged quals). 13 of the 15 cluster-2 columns now
+         byte-match (446-449, 497-499, 540-542, 566-567, 624).
 
-         A naive swap (BAQ-then-overlap, chromosome-wide) closes
-         all 12 documented columns but introduces ~14 new drifts
-         at previously-passing columns (451-453, 458, 463-465,
-         501-503, 543-548, 568, 625): swapping moves overlap-merge
-         after BAQ for the *second* mate too, but upstream BAQs
-         the second mate AFTER its overlap-merge (because mate 2's
-         first column IS its arrival column, where `overlap_push`
-         has just run). A correct port has to track each read's
-         first-permit-column, run overlap-merge exactly when a
-         pair's second mate enters the queue, and gate the second
-         mate's BAQ on that ordering — i.e. stream the column loop
-         with per-pair arrival state. Out of scope for the cluster-1
-         slice; scoped as a future "streaming `bam_plp_push` port"
-         item. The BAQ code itself (`pkg/htsgo/baq/realn.go`) is
-         byte-identical to upstream when fed identical input
-         qualities; the divergence is purely the orchestration.
+         **Residual: 2 cluster-2 columns + 2 newly-drifting columns.**
+         The SNP rows at 450 and 500 still drift by a single read's
+         BAQ delta (1438/55672 vs upstream's 1449/56453 at col 450),
+         and the two-phase batch additionally drifts the
+         previously-matching SNP rows at 547/548 (4118/160128 vs
+         upstream's 4105/158737 at col 547). These four match the
+         cluster-2 trace's "543-548" group: the two-phase batch
+         still differs from upstream's per-column interleave in
+         one edge case — a read whose first eligible column lies in
+         the same column-equivalence-class as its mate's push and
+         several other reads, where upstream's `bam_plp_next` drains
+         the column with the mate already merged but our phase 1
+         must commit before `applySmartOverlaps`. Closing the last
+         four needs the full streaming `bam_plp_push` column-by-
+         column interleave (per-pair arrival state inside the
+         column engine, not just a two-phase batch). The BAQ code
+         itself (`pkg/htsgo/baq/realn.go`) is byte-identical to
+         upstream when fed identical input qualities; the residual
+         divergence is purely the orchestration.
 
       3. **Indel-row chosen-type off-by-one at homopolymer columns**
          (`indel-AD.1.out` at `000000F:537/538/658`, plus

@@ -1056,21 +1056,75 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	// the cap never reach the overlap-quality merger.
 	applyMpileupDepthCap(perInputChromRecs, opts.MaxDepth)
 
-	// MPLP_SMART_OVERLAPS: de-weight bases covered by both mates of a
-	// read pair. Upstream enables this by default and -x disables it;
-	// htslib applies it (overlap_push -> tweak_overlap_quality) as reads
-	// are pushed into the pileup engine.
-	if !opts.IgnoreOverlaps {
+	// MPLP_SMART_OVERLAPS + BAQ. Upstream htslib's bam_plp_push
+	// (reference_code/htslib/sam.c:6083-6132) interleaves these per
+	// read: when a mapped read enters the pileup queue, overlap_push
+	// runs only if its mate is already queued (i.e. when the second
+	// mate arrives); BAQ (mplp_realn) then runs at the read's first
+	// eligible pileup column. The upshot is:
+	//   * mate 1's BAQ runs at its first eligible column; if that
+	//     column precedes the second mate's arrival, BAQ sees raw
+	//     quals (overlap_push has not run yet) — otherwise BAQ sees
+	//     the already-merged quals (overlap_push ran when the second
+	//     mate was pushed);
+	//   * mate 2's BAQ runs after its own arrival triggers
+	//     overlap_push, so it always sees merged quals.
+	// The previous batched ordering ran applySmartOverlaps for the
+	// entire chromosome before applyMpileupBAQ, which fed every mate
+	// 1's BAQ overlap-merged quals — driving the indel-AD.1.out
+	// cluster-2 SNP-row I16 BQ drifts at 000000F:446-624. The split
+	// below reproduces upstream's per-read ordering: phase 1 BAQs
+	// standalones + first-mates whose trigger column precedes the
+	// mate's start (raw quals); applySmartOverlaps merges; phase 2
+	// BAQs second-mates + any remaining first-mates (merged quals).
+	if opts.NoBAQ {
+		// -B disables BAQ entirely. Overlap-merge alone matches the
+		// upstream MPLP_NO_BAQ branch (mpileup.c bypasses mplp_realn
+		// while keeping bam_plp_push's overlap_push call).
+		if !opts.IgnoreOverlaps {
+			applySmartOverlaps(perInputChromRecs)
+		}
+	} else if opts.IgnoreOverlaps {
+		// -x disables overlap-merge. BAQ runs once per read on raw
+		// quals — equivalent to the previous batched form.
+		applyMpileupBAQ(perInputChromRecs, refSlab, opts, nil, nil)
+	} else {
+		// Default: per-pair interleaving. Classify mates once, then
+		// run BAQ→overlap→BAQ as upstream does. Eligibility uses
+		// the trigger column (pos0) to decide whether overlap_push
+		// would have run by the time the read's first eligible BAQ
+		// column is reached: for first-mates that's pos0 >=
+		// mate.Start; for second-mates the overlap always precedes
+		// BAQ (their push runs overlap_push at or before their first
+		// eligible column). realigned is a shared dedup set so
+		// reads BAQ'd in phase 1 are not re-BAQ'd in phase 2.
+		pairs := classifyMatePairs(perInputChromRecs)
+		realigned := make(map[*sam.Record]bool)
+		// Phase 1: standalones + first-mates whose first BAQ trigger
+		// column is before their mate's alignment start (raw quals).
+		applyMpileupBAQ(perInputChromRecs, refSlab, opts, func(rec *sam.Record, pos0 int) bool {
+			p, ok := pairs[rec]
+			if !ok {
+				return true
+			}
+			return p.class == mateClassFirst && pos0 < p.mateStart
+		}, realigned)
 		applySmartOverlaps(perInputChromRecs)
-	}
-	// BAQ realignment. Upstream mpileup.c runs sam_prob_realn on each
-	// mapped read against the chromosome reference (BAQ on by default);
-	// in apply mode it lowers rec.Qual in place. applyMpileupBAQ ports
-	// mplp_realn's column-gated decision and edits rec.Qual before
-	// accumulateMpileupBases reads the (now BAQ-adjusted) qualities.
-	// -B/--no-BAQ skips it entirely.
-	if !opts.NoBAQ {
-		applyMpileupBAQ(perInputChromRecs, refSlab, opts)
+		// Phase 2: all second-mates + the first-mates phase 1 left
+		// untouched (their first eligible column lies on or after
+		// their mate's start, so by upstream's bam_plp_push ordering
+		// overlap_push has already merged their quals by the time
+		// BAQ runs).
+		applyMpileupBAQ(perInputChromRecs, refSlab, opts, func(rec *sam.Record, pos0 int) bool {
+			p, ok := pairs[rec]
+			if !ok {
+				return false
+			}
+			if p.class == mateClassSecond {
+				return true
+			}
+			return pos0 >= p.mateStart
+		}, realigned)
 	}
 
 	// Upstream's pileup engine walks reads' CIGARs and emits a column
@@ -1258,7 +1312,7 @@ func mpileupBuildBAQInfo(rec *sam.Record) mpileupReadBAQInfo {
 // only reads whose CIGAR carries an I/D/N op (PLP_HAS_INDEL), so for
 // indel-bearing inputs the partial heuristic is a slight underestimate;
 // for indel-free inputs it is exact.
-func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts MpileupOptions) {
+func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts MpileupOptions, eligible func(*sam.Record, int) bool, realigned map[*sam.Record]bool) {
 	baqFlag := mpileupBAQFlag(opts)
 	// max_read_len: upstream default is 500 unless -M overrides it.
 	maxReadLen := opts.MaxReadLen
@@ -1267,7 +1321,16 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 	}
 
 	// Build per-read heuristic info and an interval index keyed by
-	// covered reference position.
+	// covered reference position. The column-heuristic counters
+	// (nt/has_indel/has_clip) include ALL reads at the column,
+	// matching upstream mplp_realn (mpileup.c:430-441) which sees
+	// the whole pileup pile regardless of which read it might end up
+	// realigning at this column. eligible (when non-nil) only gates
+	// which reads we actually realign — never which reads we count.
+	// realigned (when non-nil) is a shared per-record dedup set that
+	// persists across multiple BAQ phases — phase 1 marks reads it
+	// realigns so phase 2 does not double-BAQ them; upstream's
+	// PLP_IS_REALN flag plays the same role.
 	var infos []*mpileupReadBAQInfo
 	maxPos := 0
 	for _, recs := range perInputChromRecs {
@@ -1276,6 +1339,9 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 				continue
 			}
 			info := mpileupBuildBAQInfo(rec)
+			if realigned != nil && realigned[rec] {
+				info.realigned = true
+			}
 			infos = append(infos, &info)
 			if info.end > maxPos {
 				maxPos = info.end
@@ -1338,7 +1404,20 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 			if info.realigned {
 				continue
 			}
+			if eligible != nil && !eligible(info.rec, pos0) {
+				// Skip but do NOT mark realigned: this read may be
+				// processed in a later phase (second-mate BAQ after
+				// overlap-merge). The shared realigned map persists
+				// the "already BAQ'd" status across phases so a
+				// first-mate that was realigned in phase 1 is not
+				// re-realigned in phase 2 — matching upstream's
+				// per-read PLP_IS_REALN dedup.
+				continue
+			}
 			info.realigned = true
+			if realigned != nil {
+				realigned[info.rec] = true
+			}
 			if len(info.rec.Seq) > maxReadLen {
 				continue
 			}
@@ -1858,6 +1937,81 @@ func tweakOverlapQuality(a, b *sam.Record) {
 			}
 		}
 	}
+}
+
+// mateClass labels a read's role within an overlap-pair, as identified
+// by the same predicate htslib's overlap_push uses (sam.c:5950): the
+// first mate to arrive (coordinate-sorted) is mateClassFirst, the
+// second is mateClassSecond. Reads that never get paired (no mate in
+// the input, mate fails the proper-pair / coord guards, or wild CIGAR)
+// are absent from the classifyMatePairs map and treated as standalones.
+type mateClass uint8
+
+const (
+	mateClassFirst mateClass = iota + 1
+	mateClassSecond
+)
+
+// matePairInfo records a read's pair role plus the 0-based reference
+// start of the read's mate. mateStart lets the BAQ engine answer
+// "would overlap_push have run by the time BAQ realigns this read?":
+// upstream htslib's overlap_push runs when the second mate is pushed
+// (at its alignment start). For a first-mate, if its first eligible
+// BAQ column precedes its mate's start, BAQ sees raw quals; otherwise
+// BAQ sees the post-merge quals. For a second-mate, BAQ always runs
+// after overlap-merge because its own push triggers overlap_push at
+// or before its first eligible column.
+type matePairInfo struct {
+	class     mateClass
+	mateStart int
+}
+
+// classifyMatePairs walks each input's records in arrival (coordinate)
+// order and labels every read that will be paired up by
+// applySmartOverlaps. The predicate must stay byte-identical to
+// applySmartOverlaps' loop so the two passes agree on which reads are
+// "first" and "second" mates. The result is keyed by *sam.Record
+// pointer identity, which is stable across BAQ / overlap-merge phases
+// because we never copy records.
+//
+// This pre-classification lets emitChromMpileup interleave BAQ and
+// overlap-merge per upstream's bam_plp_push ordering: first-mates
+// whose BAQ trigger column precedes their mate's start are BAQ'd on
+// raw quals; the remaining first-mates plus all second-mates are
+// BAQ'd after overlap-merge.
+func classifyMatePairs(perInputChromRecs [][]*sam.Record) map[*sam.Record]matePairInfo {
+	out := make(map[*sam.Record]matePairInfo)
+	for _, recs := range perInputChromRecs {
+		buffered := make(map[string]*sam.Record)
+		for _, rec := range recs {
+			if rec.IsUnmapped() || rec.IsMateUnmapped() || !rec.IsProperPair() {
+				continue
+			}
+			pos := int(rec.Pos) - 1
+			mpos := int(rec.PNext) - 1
+			end := int(rec.EndPosition())
+			if rec.RNext != "" && rec.RNext != "=" && rec.RNext != rec.RName {
+				continue
+			}
+			isize := int(rec.TLen)
+			if isize < 0 {
+				isize = -isize
+			}
+			if isize >= 2*len(rec.Seq) && mpos >= end {
+				continue
+			}
+			if mate, ok := buffered[rec.QName]; ok {
+				out[mate] = matePairInfo{class: mateClassFirst, mateStart: pos}
+				out[rec] = matePairInfo{class: mateClassSecond, mateStart: int(mate.Pos) - 1}
+				delete(buffered, rec.QName)
+				continue
+			}
+			if mpos >= pos || (rec.IsPaired() && rec.PNext == 0) {
+				buffered[rec.QName] = rec
+			}
+		}
+	}
+	return out
 }
 
 // applySmartOverlaps ports htslib's overlap_push (sam.c:5950): for each

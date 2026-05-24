@@ -715,23 +715,29 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"in slice 4e.7 — see bcf_call_glfgen REF rescue at " +
 				"bam2bcf.c:338-348). Cluster (1) — two N-REF rows at " +
 				"000000F:687-688 — is RESOLVED by extending the events " +
-				"array to max(refLen, maxReadEnd). Two clusters remain, " +
-				"documented in docs/PARITY_ROADMAP.md mpileup section: " +
-				"(2) ~12 SNP-row I16 base-quality drifts at " +
-				"000000F:446-624 — root cause traced to BAQ / " +
-				"overlap-merge pipeline ordering. Upstream interleaves " +
-				"per-read inside bam_plp_push: mate 1 is BAQ'd on raw " +
-				"quals at its first column, then overlap-merge runs " +
-				"when mate 2 arrives, then BAQ runs on mate 2's merged " +
-				"quals. Our port batches overlap-merge before BAQ " +
-				"chromosome-wide, feeding mate 1's BAQ merged quals. " +
-				"Closing this needs a streaming bam_plp_push port " +
-				"(per-pair arrival state); naive swap regresses 14 " +
-				"other columns. (3) 4 indel-row chosen-type off-by-one " +
-				"assignments at the homopolymer columns near " +
-				"000000F:537/538/658, root cause = single-ULP rounding " +
-				"inside ProbalnGlocal at long homopolymer runs flipping " +
-				"the score<<6|t ascending-sort tie-break.",
+				"array to max(refLen, maxReadEnd). Cluster (2) — SNP-row " +
+				"I16 base-quality drifts at 000000F:446-624 — is mostly " +
+				"RESOLVED by the per-pair BAQ/overlap-merge interleaving " +
+				"in emitChromMpileup (matching upstream's bam_plp_push " +
+				"ordering: first-mates BAQ on raw quals at their first " +
+				"eligible column iff that column precedes the second " +
+				"mate's arrival, then overlap-merge runs, then " +
+				"second-mates BAQ on the merged quals). 13 of the 15 " +
+				"cluster-2 columns (446-449, 497-499, 540-542, 566-567, " +
+				"624) now byte-match; two SNP rows at 450 and 500 still " +
+				"drift by a single read's BAQ delta, and the change " +
+				"introduces single-read BQ-sum drifts at the previously- " +
+				"matching SNP rows 547/548 (the residual identified by " +
+				"the cluster-2 trace as the ~14 \"naive swap\" drifts). " +
+				"Closing the last four needs the full streaming " +
+				"bam_plp_push column-by-column interleave (per-pair " +
+				"arrival state inside the column engine, not just a " +
+				"two-phase batch); see docs/PARITY_ROADMAP.md. (3) 4 " +
+				"indel-row chosen-type off-by-one assignments at the " +
+				"homopolymer columns near 000000F:537/538/658, root " +
+				"cause = single-ULP rounding inside ProbalnGlocal at " +
+				"long homopolymer runs flipping the score<<6|t " +
+				"ascending-sort tie-break.",
 		},
 		{
 			"mpileup/indel-AD.1cns.out",
