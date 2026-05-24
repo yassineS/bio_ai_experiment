@@ -1522,56 +1522,71 @@ func runPhase(args []string) int {
 
 // ----- targetcut -------------------------------------------------------
 
-const targetcutUsage = `samtools targetcut - emit a FASTA slice of each aligned read.
+const targetcutUsage = `samtools targetcut - HMM consensus over a pileup.
 
 Usage:
   samtools targetcut [options] <in.bam>
 
-For every mapped primary record, writes a FASTA entry containing the
-read sequence that aligns to the reference (soft-clipped flanks
-removed; insertions retained because they consume query bases;
-deletions / refskips / padding contribute nothing).
+Faithful port of upstream samtools cut_target.c: builds a per-position
+consensus from the SAM/BAM pileup using the MAQ revised error model,
+runs a 2-state Viterbi over the per-chrom consensus track to segment
+"covered, callable" regions away from "no info or uninformative"
+regions, and emits one consensus SAM record per identified region.
+
+The output line for each region has shape:
+
+  <chrom>:<start>-<end>  0  <chrom>  <start>  60  <len>M  *  0  0  <seq>  <qual>
+
+where <seq> is the per-position consensus base (ACGT or 'N' when no
+read provided usable evidence) and <qual> is the per-position
+consensus quality (Phred+33-encoded, after upstream's >>2 shift).
 
 Options:
-  -Q INT             Min base quality. Bases with Phred quality below
-                     the cutoff are dropped. (Default 13.)
-  -o, --output FILE  Output FASTA (default stdout). Accepts "-".
+  -Q INT             Per-base quality cutoff (default 13).
+  -i INT             HMM entry penalty, i.e. magnitude of the 0->1
+                     state transition penalty (default 14000).
+  -0 INT             HMM emission score in state 1 for "no info"
+                     positions (default -4).
+  -1 INT             HMM emission score in state 1 for "depth but no
+                     callable base" positions (default 1).
+  -2 INT             HMM emission score in state 1 for callable-base
+                     positions (default 6).
+  -f FILE            Reference FASTA. Accepted for CLI parity; BAQ
+                     realignment is NOT applied in v1 (upstream uses
+                     sam_prob_realn here). Tracked in
+                     docs/PARITY_ROADMAP.md#samtools.
+      --simple       Emit the v1 aligned-slice FASTA per-read mode
+                     instead of the HMM consensus (legacy behaviour,
+                     retained for backward compatibility). With
+                     --simple, -i / -0 / -1 / -2 are ignored.
+  -o, --output FILE  Output file (default stdout). Accepts "-".
   -h, --help         Show this help.
       --version      Show version.
-
-Upstream-only flags (accepted-and-ignored — upstream samtools
-targetcut is an HMM-consensus tool over fosmid pools; our v1 ships
-the simpler aligned-slice-to-FASTA mode). The accepted upstream
-flag letters are: -i INT (state-transition penalty), -f FILE (ref
-FASTA), -0/-1/-2 INT (HMM emission scores). See
-docs/PARITY_ROADMAP.md for the documented scope reduction.
 `
 
 func runTargetcut(args []string) int {
 	fs := flag.NewFlagSet("samtools targetcut", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		minBaseQ int
-		outPath  string
-		// Upstream `cut_target.c` declares these flag letters with
-		// different meanings (HMM-consensus tool). We accept them as
-		// no-ops so a user copy-pasting an upstream invocation gets a
-		// recognised parse rather than a silent flag-letter collision.
-		upstreamI  int
-		upstreamF  string
-		upstreamE0 int
-		upstreamE1 int
-		upstreamE2 int
-		showHelp   bool
-		showVer    bool
+		minBaseQ     int
+		entryPenalty int
+		emNoInfo     int
+		emDepth      int
+		emCallable   int
+		fastaRef     string
+		simpleMode   bool
+		outPath      string
+		showHelp     bool
+		showVer      bool
 	)
 	fs.IntVar(&minBaseQ, "Q", int(samtools.DefaultTargetcutMinBaseQ), "")
+	fs.IntVar(&entryPenalty, "i", samtools.DefaultTargetcutEntryPenalty, "")
+	fs.IntVar(&emNoInfo, "0", samtools.DefaultTargetcutEmissionNoInfo, "")
+	fs.IntVar(&emDepth, "1", samtools.DefaultTargetcutEmissionDepth, "")
+	fs.IntVar(&emCallable, "2", samtools.DefaultTargetcutEmissionCallable, "")
+	fs.StringVar(&fastaRef, "f", "", "")
+	fs.BoolVar(&simpleMode, "simple", false, "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
-	fs.IntVar(&upstreamI, "i", 0, "")
-	fs.StringVar(&upstreamF, "f", "", "")
-	fs.IntVar(&upstreamE0, "0", 0, "")
-	fs.IntVar(&upstreamE1, "1", 0, "")
-	fs.IntVar(&upstreamE2, "2", 0, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -1589,12 +1604,14 @@ func runTargetcut(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
-	// Discard the upstream-only flag values (recognised for CLI parity).
-	_ = upstreamI
-	_ = upstreamF
-	_ = upstreamE0
-	_ = upstreamE1
-	_ = upstreamE2
+	if fastaRef != "" {
+		// Accepted for CLI parity. Upstream uses sam_prob_realn for
+		// per-record BAQ adjustment when -f is given; we defer that to
+		// future work and emit a friendly warning so users aren't
+		// surprised by the omission.
+		fmt.Fprintln(os.Stderr, "samtools targetcut: warning: -f reference accepted but BAQ realignment is deferred (see docs/PARITY_ROADMAP.md#samtools)")
+	}
+
 	inPath := "-"
 	if fs.NArg() > 0 {
 		inPath = fs.Arg(0)
@@ -1612,7 +1629,12 @@ func runTargetcut(args []string) int {
 	}
 	defer out.Close()
 	if _, err := samtools.Targetcut(in, out, samtools.TargetcutOptions{
-		MinBaseQ: uint8(minBaseQ),
+		MinBaseQ:         uint8(minBaseQ),
+		EntryPenalty:     entryPenalty,
+		EmissionNoInfo:   emNoInfo,
+		EmissionDepth:    emDepth,
+		EmissionCallable: emCallable,
+		SimpleMode:       simpleMode,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools targetcut: %v\n", err)
 		return 1

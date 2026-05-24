@@ -1714,9 +1714,15 @@ Plus:
   adjacent-het vote in place of upstream `phase.c`'s MCMC
   `phase_core` loop; `-b` per-haplotype BAM split is also deferred.
   Detail in the `phase` subsection below.
-- **`targetcut` HMM consensus mode.** v1 implements the simple
-  aligned-slice FASTA cut; upstream's `cut_target.c` HMM-based
-  fosmid-pool consensus caller is not ported. Detail below.
+- **`targetcut` BAQ realignment with `-f` reference.** The HMM
+  consensus mode is now implemented (faithful port of
+  `cut_target.c`, including the MAQ errmod port; see below). The
+  only deliberately-deferred sub-feature is the per-record BAQ
+  realignment that upstream's `read_aln` applies via
+  `sam_prob_realn` when a `-f` reference is supplied: we accept
+  `-f` for CLI parity and emit a stderr warning. Wiring our
+  existing `pkg/htsgo/baq.SamProbRealn` into `targetcutHMM` is
+  small (~20 LOC) and tracked as a follow-up.
 - **`tview`** — deliberate skip (interactive curses UI).
 
 **`markdup` deferred features** (deliberately skipped in v1, all flag
@@ -1954,30 +1960,52 @@ is covered by hand-computed expected values in the table tests.
   discovers hets from the pileup. Upstream itself comments `-e` and
   `-l` out of the usage block, so the omission is a small loss.
 
-**`targetcut` scope reduction.** The user-facing spec for the Go port
-is "cut the aligned slice from each read and emit FASTA". Upstream's
-`cut_target.c` actually does something quite different —
-HMM-based consensus calling over fosmid pools, emitting one consensus
-SAM record per identified region. The HMM consensus mode is **not**
-implemented; the upstream tool is rarely used outside fosmid
-workflows. The upstream `cut_target.c` reference source is vendored at
-`reference_code/samtools/` if the HMM mode is ever scheduled. The
-simple aligned-slice FASTA mode landed here covers the
-"cut a read down to its aligned bases" use case that users typically
-mean when they reach for the name. The `-Q` flag is wired through to
-the per-base quality filter as documented.
+**`targetcut` HMM consensus mode** (implemented). The Go port is now
+a faithful translation of upstream `cut_target.c`: per-position
+consensus via the MAQ revised error model (`errmod.c` is ported
+in-tree at `tools/samtools/pkg/samtools/targetcut_errmod.go`),
+followed by a 2-state Viterbi over the per-chrom consensus track
+to segment "covered, callable" regions from "no-info or
+uninformative" regions, then one SAM-format consensus record is
+emitted per identified region in the exact upstream printf shape
+(`%s:%d-%d\t0\t%s\t%d\t60\t%dM\t*\t0\t0\t<seq>\t<qual>\n`). The
+emit-loop's "position 0 never participates in a region" quirk —
+a consequence of upstream's backtrack loop running over the half-
+open range `(0, l-1]` — is reproduced verbatim so we agree with
+the C output by construction. CLI flags `-Q -i -0 -1 -2` carry
+their upstream semantics; `-f` reference is accepted with a
+stderr warning that BAQ realignment is deferred (see the deferred-
+features list above). The pre-port "aligned-slice FASTA" mode
+remains available behind `--simple` (library: `TargetcutOptions.
+SimpleMode`).
+
+One implementation detail diverges from upstream by design: when
+n > 255 bases pile at a single position the upstream `errmod_cal`
+shuffles via `ks_shuffle` (drand48 state) and truncates to 255 to
+fit its pre-computed coefficient table. We truncate deterministically
+to the first 255 because the downstream gencns caps depth at 255
+anyway and a drand48-dependent output would not be reproducible.
+For coverages ≤255 (the overwhelming common case in practice) we
+are byte-equivalent to upstream.
 
 **Validation:** hand-built SAM fixtures in
 `tools/samtools/pkg/samtools/phase_test.go` and
 `tools/samtools/pkg/samtools/targetcut_test.go`. Phase tests cover
 single-block chaining (consistent & label-flipping orderings),
-ambiguous-label fall-back when reads don't bridge two hets, and the
-MinMAPQ filter. Targetcut tests cover soft-clip flank stripping,
-insertion retention, deletion handling, unmapped/secondary skipping,
-SEQ='*' skipping, and `-Q` per-base filtering. There is no upstream
-regression-test fixture for either tool in
-`reference_code/samtools/test/` so byte-parity against upstream is
-not pursued.
+ambiguous-label fall-back when reads don't bridge two hets, and
+the MinMAPQ filter. Targetcut tests cover the simple-mode legacy
+behaviour AND the HMM mode: a uniform-coverage region (one
+emitted region with the expected SAM shape), an entirely-empty
+chrom (no output), the upstream read filter (unmapped /
+secondary / qcfail / dup all skipped), MinBaseQ pushing every
+cell to "no info", a tuned `-i` entry penalty separating two
+coverage blocks into two regions, and a majority-vote consensus
+base check. A self-consistency test on the errmod port checks
+that 10 identical 'A' observations yield the minimum (best)
+homozygous score at q[A,A]. There is no upstream regression-test
+fixture for either tool in `reference_code/samtools/test/`, so
+expected values are hand-derived directly from the C source — the
+project's accepted standard for tools with no upstream fixture.
 
 **`consensus` bayesian mode** (implemented). Upstream `bam_consensus.c`
 ships five modes — `simple` and four bayesian flavours (`bayesian_r`
