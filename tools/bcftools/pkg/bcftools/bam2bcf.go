@@ -792,6 +792,17 @@ func bcfCallCombineIndel(calls []bcfCallret, snpCalls []bcfCallret, bca *bcfCall
 	// VDB from the indel-branch alt_pos (bam2bcf.c:1195).
 	call.vdb, call.vdbOK = calcVDB(altPos[:])
 
+	// SCR: the indel pass does not tally soft-clipped reads (only the
+	// SNP branch does, see bcfCallGlfgen's scrWanted gate). Upstream
+	// emits SCR on the indel row using the same per-column tally as
+	// the SNP row, which lives on the shared bcf_call_t.scr / .scrTotal.
+	// Reuse the SNP-pass per-sample counts so both rows agree.
+	call.scr = make([]int, len(snpCalls))
+	for i := range snpCalls {
+		call.scr[i] = snpCalls[i].scr
+		call.scrTotal += snpCalls[i].scr
+	}
+
 	return call, true
 }
 

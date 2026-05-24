@@ -254,6 +254,93 @@ func TestMpileupSCRGolden(t *testing.T) {
 	}
 }
 
+// TestMpileupSCROnIndelRow confirms that when -a INFO/SCR,FMT/SCR is
+// in force, bcfCall2bcfIndel emits SCR on the indel row using the
+// shared per-column tally that also feeds the SNP row. The upstream
+// SCR golden has no indel-bearing columns, so we reuse the indel-AD.2
+// fixture (chr11:75 has a homopolymer-anchored indel call and at least
+// one soft-clipped read in the column). The SNP and indel rows at the
+// same position must therefore report the same INFO/SCR and the same
+// per-sample FORMAT/SCR.
+func TestMpileupSCROnIndelRow(t *testing.T) {
+	ref := mpileupFixture(t, "indel-AD.2.fa")
+	mpileupFixture(t, "indel-AD.2.fa.fai")
+	bam := mpileupFixture(t, "indel-AD.2.bam")
+	mpileupFixture(t, "indel-AD.2.bam.bai")
+
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:    []string{bam},
+		FastaRef:  ref,
+		Regions:   []string{"11:75"},
+		Annotate:  "AD,INFO/SCR,FMT/SCR",
+		NoVersion: true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+
+	var snp, indel string
+	for _, ln := range strings.Split(buf.String(), "\n") {
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		fields := strings.Split(ln, "\t")
+		if len(fields) < 10 || fields[1] != "75" {
+			continue
+		}
+		if strings.Contains(fields[7], "INDEL") {
+			indel = ln
+		} else {
+			snp = ln
+		}
+	}
+	if snp == "" || indel == "" {
+		t.Fatalf("expected one SNP and one indel record at 11:75; got snp=%q indel=%q",
+			snp, indel)
+	}
+
+	// Extract INFO/SCR and FORMAT/SCR from each record. FORMAT is the
+	// 9th column (index 8), SCR's position varies and is parsed by name.
+	parseSCR := func(line string) (infoSCR, fmtSCR string) {
+		f := strings.Split(line, "\t")
+		for _, kv := range strings.Split(f[7], ";") {
+			if strings.HasPrefix(kv, "SCR=") {
+				infoSCR = strings.TrimPrefix(kv, "SCR=")
+				break
+			}
+		}
+		format := strings.Split(f[8], ":")
+		sample := strings.Split(f[9], ":")
+		for i, k := range format {
+			if k == "SCR" && i < len(sample) {
+				fmtSCR = sample[i]
+				break
+			}
+		}
+		return
+	}
+	snpInfo, snpFmt := parseSCR(snp)
+	indelInfo, indelFmt := parseSCR(indel)
+	if indelInfo == "" {
+		t.Fatalf("indel row missing INFO/SCR; record: %s", indel)
+	}
+	if indelFmt == "" {
+		t.Fatalf("indel row missing FORMAT/SCR; record: %s", indel)
+	}
+	if snpInfo != indelInfo {
+		t.Errorf("INFO/SCR mismatch SNP=%s indel=%s", snpInfo, indelInfo)
+	}
+	if snpFmt != indelFmt {
+		t.Errorf("FORMAT/SCR mismatch SNP=%s indel=%s", snpFmt, indelFmt)
+	}
+	// And the per-column tally must be non-zero — this fixture is
+	// chosen precisely because it has soft-clipped reads at the column.
+	if indelInfo == "0" {
+		t.Errorf("expected non-zero SCR at 11:75 indel row, got %s", indelInfo)
+	}
+}
+
 // TestMpileupFilterGolden replays the upstream `bcftools mpileup
 // --skip-*` test from test.pl (lines 1072-1073), exercising the
 // BAM-flag read filter. The input has two reads of the same template,
@@ -626,13 +713,18 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 			"the four indel rows match the upstream I16 ALT counts and " +
 				"AD compensation (the heuristic-driven REF-rescue port " +
 				"in slice 4e.7 — see bcf_call_glfgen REF rescue at " +
-				"bam2bcf.c:338-348). Residual divergence (~20 SNP rows " +
-				"with small I16 base-quality sum drifts plus 4 indel " +
-				"rows with chosen-type off-by-1 assignments at the " +
-				"homopolymer column near 000000F:537) is independent " +
-				"of the depth cap — DP never exceeds 125 — and tracked " +
-				"alongside the bcfCall2bcfIndel SCR-on-indel-rows " +
-				"polish item.",
+				"bam2bcf.c:338-348). Residual divergence has three " +
+				"independent clusters, all documented in " +
+				"docs/PARITY_ROADMAP.md mpileup section: (1) two N-REF " +
+				"rows at 000000F:687-688, root-cause = FASTA boundary " +
+				"truncation (a read CIGAR ends 2bp past the 686bp " +
+				"reference); (2) ~12 SNP-row I16 base-quality drifts on " +
+				"reads whose tail bases extend past the FASTA end (same " +
+				"root cause); (3) 4 indel-row chosen-type off-by-one " +
+				"assignments at the homopolymer columns near " +
+				"000000F:537/538/658, root cause = single-ULP rounding " +
+				"inside ProbalnGlocal at long homopolymer runs flipping " +
+				"the score<<6|t ascending-sort tie-break.",
 		},
 		{
 			"mpileup/indel-AD.1cns.out",
@@ -644,9 +736,15 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"7.74597; the indel row residual (QS / NMBZ / PL[0]: " +
 				"226 vs 255) is driven by a handful of reads whose " +
 				"chosen-indel-type assignment differs from upstream " +
-				"at this homopolymer column. Pinned by the bcfCall2-" +
-				"bcfIndel SCR-on-indel-rows polish item, not by the " +
-				"depth cap (DP=246 < 250 here).",
+				"at this homopolymer column. I16 byte-matches because " +
+				"the swaps are between two non-REF types (both " +
+				"isDiff=1), but per-type qsum (QS), the indel-pass " +
+				"refNm/altNm split (NMBZ sign flip), and PL[0] for " +
+				"sample 1 all shift. Same root cause as the " +
+				"indel-AD.1.out homopolymer cluster: ProbalnGlocal " +
+				"single-ULP rounding flips the score<<6|t tie-break. " +
+				"See docs/PARITY_ROADMAP.md mpileup section for the " +
+				"full trace.",
 		},
 		{
 			"mpileup/annot-NMBZ.[23].2.out / FORMAT/NMBZ goldens",

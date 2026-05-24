@@ -2222,6 +2222,14 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 	info["DP"] = strconv.Itoa(call.oriDepth)
 	infoOrder = append(infoOrder, "DP")
 
+	// INFO/SCR mirrors the SNP path (bam2bcf.c:1298-1299): emitted
+	// before I16 when -a INFO/SCR is selected, using the shared
+	// per-column tally produced by bcfCallCombine.
+	if fmtFlag&B2BInfoSCR != 0 {
+		info["SCR"] = strconv.Itoa(call.scrTotal)
+		infoOrder = append(infoOrder, "SCR")
+	}
+
 	var i16 strings.Builder
 	for j, v := range call.anno {
 		if j > 0 {
@@ -2269,11 +2277,13 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 	info["MQ0F"] = formatFloat32G(mq0f)
 	infoOrder = append(infoOrder, "MQ0F")
 
-	// FORMAT: PL plus optional AD/ADF/ADR.
+	// FORMAT: PL plus optional AD/ADF/ADR/SCR. Column order matches
+	// the SNP path: AD, ADF, ADR, SCR (mirrors the bit ordering).
 	format := []string{"PL"}
 	emitAD := fmtFlag&B2BFmtAD != 0
 	emitADF := fmtFlag&B2BFmtADF != 0
 	emitADR := fmtFlag&B2BFmtADR != 0
+	emitSCR := fmtFlag&B2BFmtSCR != 0
 	if emitAD {
 		format = append(format, "AD")
 	}
@@ -2282,6 +2292,9 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 	}
 	if emitADR {
 		format = append(format, "ADR")
+	}
+	if emitSCR {
+		format = append(format, "SCR")
 	}
 	samplesOut := make([]vcf.Sample, len(call.pl))
 	for s := range call.pl {
@@ -2301,6 +2314,9 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 		}
 		if emitADR && s < len(call.adr) {
 			data["ADR"] = formatPerAllele(call.adr[s])
+		}
+		if emitSCR && s < len(call.scr) {
+			data["SCR"] = strconv.Itoa(call.scr[s])
 		}
 		samplesOut[s] = vcf.Sample{Data: data}
 	}
