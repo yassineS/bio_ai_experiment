@@ -2,8 +2,12 @@ package samtools
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // TestPhase_TwoHetsConsistentChain builds a tiny SAM with two het
@@ -160,6 +164,234 @@ func TestPhase_LowMAPQSkipped(t *testing.T) {
 	if n != 0 {
 		t.Errorf("emitted = %d, want 0 (all T-bearing reads MAPQ-filtered); output:\n%s", n, buf.String())
 	}
+}
+
+// TestPhase_BamSplit_CleanBlock asserts that with -b prefix on a
+// clean two-het two-haplotype block, the three BAMs are created and
+// the reads are partitioned by haplotype: r_a/b/c (G@3, G@7) go to
+// one bucket, r_d/e/f (T@3, C@7) to the other, with no chimera.
+//
+// The greedy phaser ends with label flip → blockFlip set, so the
+// hap0/hap1 labels are determined by the block-internal mapping;
+// the bucket *identity* (.0 vs .1) is implementation-defined but
+// the *partition* must be clean.
+func TestPhase_BamSplit_CleanBlock(t *testing.T) {
+	samText := strings.Join([]string{
+		"@HD\tVN:1.6\tSO:coordinate",
+		"@SQ\tSN:chr1\tLN:100",
+		"r_a\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII",
+		"r_b\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII",
+		"r_c\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII",
+		"r_d\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII",
+		"r_e\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII",
+		"r_f\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII",
+	}, "\n") + "\n"
+
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "split")
+	var buf bytes.Buffer
+	if _, err := Phase(strings.NewReader(samText), &buf, PhaseOptions{
+		OutputPrefix: prefix,
+		RNGSeed:      42,
+	}); err != nil {
+		t.Fatalf("Phase: %v", err)
+	}
+	got0 := readBAMQNames(t, prefix+".0.bam")
+	got1 := readBAMQNames(t, prefix+".1.bam")
+	gotC := readBAMQNames(t, prefix+".chimera.bam")
+	if len(gotC) != 0 {
+		t.Errorf("chimera bucket non-empty on clean block: %v", gotC)
+	}
+	// The two haplotypes should be the two cohorts r_a/b/c and r_d/e/f
+	// in some order.
+	cohort1 := map[string]bool{"r_a": true, "r_b": true, "r_c": true}
+	cohort2 := map[string]bool{"r_d": true, "r_e": true, "r_f": true}
+	if !matchesCohort(got0, cohort1) && !matchesCohort(got0, cohort2) {
+		t.Errorf("bucket 0 = %v doesn't match either cohort", got0)
+	}
+	if !matchesCohort(got1, cohort1) && !matchesCohort(got1, cohort2) {
+		t.Errorf("bucket 1 = %v doesn't match either cohort", got1)
+	}
+	if matchesCohort(got0, cohort1) && !matchesCohort(got1, cohort2) {
+		t.Errorf("buckets do not form a partition: 0=%v 1=%v", got0, got1)
+	}
+}
+
+// TestPhase_BamSplit_Chimera builds a block with a clear chimeric
+// read at the junction between two hets (r_chimera supports allele0
+// at hets 0..3 then jumps to allele1 at hets 4..7 — split in half).
+// The chimera-repair pass should route r_chimera to the .chimera.bam.
+//
+// Eight hets are needed because upstream's FLIP_THRES = 4 with
+// FLIP_PENALTY = 2 demands m - c[0] >= 4 AND m - c[1] >= 4 — i.e.
+// the flip-point score has to beat each side's count by 4. With 4
+// + 4 hets, m = 8 and c[0] = c[1] = 4, exactly hitting the threshold.
+func TestPhase_BamSplit_Chimera(t *testing.T) {
+	// Reference: positions 1..40. Het sites every 5 bases: pos 3, 8,
+	// 13, 18, 23, 28, 33, 38 — alternating G/T. Two clean haplotypes:
+	//   r_h0_*: G at every het (allele 0)
+	//   r_h1_*: T at every het (allele 1)
+	// One chimera: G at hets 0..3 then T at hets 4..7.
+	mkSeq := func(alleles [8]byte) string {
+		base := []byte(strings.Repeat("A", 40))
+		for i, p := range []int{2, 7, 12, 17, 22, 27, 32, 37} {
+			base[p] = alleles[i]
+		}
+		return string(base)
+	}
+	hapG := mkSeq([8]byte{'G', 'G', 'G', 'G', 'G', 'G', 'G', 'G'})
+	hapT := mkSeq([8]byte{'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T'})
+	chim := mkSeq([8]byte{'G', 'G', 'G', 'G', 'T', 'T', 'T', 'T'})
+	qual := strings.Repeat("I", 40)
+
+	var sb strings.Builder
+	sb.WriteString("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:100\n")
+	for i := 0; i < 4; i++ {
+		sb.WriteString("r_h0_" + string(rune('a'+i)) + "\t0\tchr1\t1\t60\t40M\t*\t0\t0\t" + hapG + "\t" + qual + "\n")
+	}
+	for i := 0; i < 4; i++ {
+		sb.WriteString("r_h1_" + string(rune('a'+i)) + "\t0\tchr1\t1\t60\t40M\t*\t0\t0\t" + hapT + "\t" + qual + "\n")
+	}
+	sb.WriteString("r_chimera\t0\tchr1\t1\t60\t40M\t*\t0\t0\t" + chim + "\t" + qual + "\n")
+	samText := sb.String()
+
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "split")
+	var buf bytes.Buffer
+	if _, err := Phase(strings.NewReader(samText), &buf, PhaseOptions{
+		OutputPrefix: prefix,
+		RNGSeed:      1,
+	}); err != nil {
+		t.Fatalf("Phase: %v", err)
+	}
+	gotC := readBAMQNames(t, prefix+".chimera.bam")
+	found := false
+	for _, q := range gotC {
+		if q == "r_chimera" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("r_chimera should be in chimera bucket, got %v", gotC)
+	}
+}
+
+// TestPhase_BamSplit_NoFixChimera asserts that with -F set
+// (NoFixChimera = true), the chimeric read is NOT moved to the
+// chimera bucket — it lands in its majority bucket like any other
+// read. This confirms the -F path bypasses the flip-point search.
+func TestPhase_BamSplit_NoFixChimera(t *testing.T) {
+	mkSeq := func(alleles [8]byte) string {
+		base := []byte(strings.Repeat("A", 40))
+		for i, p := range []int{2, 7, 12, 17, 22, 27, 32, 37} {
+			base[p] = alleles[i]
+		}
+		return string(base)
+	}
+	hapG := mkSeq([8]byte{'G', 'G', 'G', 'G', 'G', 'G', 'G', 'G'})
+	hapT := mkSeq([8]byte{'T', 'T', 'T', 'T', 'T', 'T', 'T', 'T'})
+	chim := mkSeq([8]byte{'G', 'G', 'G', 'G', 'T', 'T', 'T', 'T'})
+	qual := strings.Repeat("I", 40)
+
+	var sb strings.Builder
+	sb.WriteString("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:100\n")
+	for i := 0; i < 4; i++ {
+		sb.WriteString("r_h0_" + string(rune('a'+i)) + "\t0\tchr1\t1\t60\t40M\t*\t0\t0\t" + hapG + "\t" + qual + "\n")
+	}
+	for i := 0; i < 4; i++ {
+		sb.WriteString("r_h1_" + string(rune('a'+i)) + "\t0\tchr1\t1\t60\t40M\t*\t0\t0\t" + hapT + "\t" + qual + "\n")
+	}
+	sb.WriteString("r_chimera\t0\tchr1\t1\t60\t40M\t*\t0\t0\t" + chim + "\t" + qual + "\n")
+	samText := sb.String()
+
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "split")
+	var buf bytes.Buffer
+	if _, err := Phase(strings.NewReader(samText), &buf, PhaseOptions{
+		OutputPrefix: prefix,
+		NoFixChimera: true,
+		RNGSeed:      1,
+	}); err != nil {
+		t.Fatalf("Phase: %v", err)
+	}
+	gotC := readBAMQNames(t, prefix+".chimera.bam")
+	for _, q := range gotC {
+		if q == "r_chimera" {
+			t.Errorf("with -F, r_chimera should NOT be in chimera bucket; got %v", gotC)
+		}
+	}
+}
+
+// TestPhase_NoFixChimera_GreedyUnchanged asserts that the TSV stream
+// produced with NoFixChimera = true is identical to the baseline
+// greedy output on a clean input (the chimera-repair pass affects
+// per-read BAM assignment, not the TSV labels).
+func TestPhase_NoFixChimera_GreedyUnchanged(t *testing.T) {
+	samText := strings.Join([]string{
+		"@HD\tVN:1.6\tSO:coordinate",
+		"@SQ\tSN:chr1\tLN:100",
+		"r_a\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII",
+		"r_b\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII",
+		"r_c\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII",
+		"r_d\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII",
+		"r_e\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII",
+		"r_f\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII",
+	}, "\n") + "\n"
+
+	var baseline bytes.Buffer
+	if _, err := Phase(strings.NewReader(samText), &baseline, PhaseOptions{}); err != nil {
+		t.Fatalf("baseline Phase: %v", err)
+	}
+	var noFix bytes.Buffer
+	if _, err := Phase(strings.NewReader(samText), &noFix, PhaseOptions{NoFixChimera: true}); err != nil {
+		t.Fatalf("noFix Phase: %v", err)
+	}
+	if baseline.String() != noFix.String() {
+		t.Errorf("TSV stream should be identical under -F\nbaseline:\n%s\nnoFix:\n%s",
+			baseline.String(), noFix.String())
+	}
+}
+
+// readBAMQNames opens a BAM file written by phase -b and returns the
+// list of QNames in the order encountered. Intended for short
+// fixture BAMs used by these tests.
+func readBAMQNames(t *testing.T, path string) []string {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	r, err := sam.NewReader(f)
+	if err != nil {
+		t.Fatalf("NewReader(%s): %v", path, err)
+	}
+	var names []string
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			break
+		}
+		names = append(names, rec.QName)
+	}
+	return names
+}
+
+// matchesCohort reports whether the qnames in got exactly populate
+// the cohort set (same elements, ignoring order, no duplicates).
+func matchesCohort(got []string, cohort map[string]bool) bool {
+	if len(got) != len(cohort) {
+		return false
+	}
+	seen := make(map[string]bool, len(got))
+	for _, q := range got {
+		if !cohort[q] || seen[q] {
+			return false
+		}
+		seen[q] = true
+	}
+	return true
 }
 
 // TestPhase_DefaultExportedConsts guards against drift in the
