@@ -57,20 +57,22 @@ warrant a closer look:_
 
 #### vcftools-site-pi
 
-- **vcftools `--site-pi` formula** — upstream computes a per-genotype
-  pairwise-distance quantity rather than the textbook
-  `(n² − Σ cₐ²) / (n(n-1))`. Our Go port uses the textbook formula (#24
-  flagged this as a likely bug; we then fixed it on our side). Open
-  question: is upstream's behaviour a real bug, or a deliberate
-  per-genotype variant of nucleotide diversity? Need to read the
-  vcftools paper and compare to PopGenome / scikit-allel. If it's a
-  bug, this entry is **fix-on-port (done)**; if intentional, we should
-  add a `--site-pi-vcftools-compat` flag.
-
-  Parity test status: `TestParity_SitePi` is `t.Skip("known deviation,
-  see docs/UPSTREAM_BUGS.md#vcftools-site-pi")`. A separate
-  `TestParity_SitePi_TextbookFormula` spot-checks three hand-computed
-  values against our textbook implementation.
+- **vcftools `--site-pi` formula** — **resolved-as-feature**. On
+  closer reading of `variant_file_output.cpp:3870-3936`, upstream's
+  per-site Pi computes `mismatches / (total_alleles *
+  (total_alleles - 1))` where
+  `mismatches = Σ_a c_a × (total - c_a) = total² - Σ c_a²`. This is
+  algebraically identical to the textbook
+  `(n² − Σ cₐ²) / (n(n-1))` formula. The earlier "deviation" was
+  a byte-format divergence: our port emitted `%.6f` ("0.600000")
+  while upstream uses the C++ ostream default (six significant
+  digits, shortest representation, "0.6"). After the
+  deferred-test-closure wave the port emits with `formatCppDouble`
+  (`strconv.FormatFloat(x, 'g', 6, 64)`) and gates Pi on
+  `is_diploid()` to skip haploid sites the way upstream does. Byte
+  parity holds on `sample.vcf` (`TestParity_SitePi`); the textbook
+  spot-check `TestParity_SitePi_TextbookFormula` was updated to
+  assert the C++ default literal form ("0.6" rather than "0.600000").
 
 #### mosdepth-overlap-pair-detection
 

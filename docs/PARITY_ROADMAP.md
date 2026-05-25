@@ -1285,6 +1285,31 @@ Other (per-output column-set gaps, not flag-count gaps):
 - **Other**: small-format columns gaps tracked in
   `tools/PORTING_STATUS.md`.
 
+Closed in the deferred-test wave (this PR):
+
+- **`--site-pi` byte parity** — upstream and the port compute the same
+  quantity (the two formulas `mismatches / total*(total-1)` and
+  `(n^2 − Σ c_a^2) / (n*(n-1))` are mathematically identical). After
+  switching the output formatter from `%.6f` to C++-default
+  six-significant-digit shortest representation
+  (`formatCppDouble`) and gating on `is_diploid()` to skip the
+  haploid X-chrom sites that upstream filters, `.sites.pi` matches
+  upstream byte-for-byte on `sample.vcf`. The old
+  `TestParity_SitePi` skip and the corresponding
+  `docs/UPSTREAM_BUGS.md#vcftools-site-pi` "to investigate" entry
+  are both closed.
+- **`--TsTv N` binned byte parity** — re-laid out the output as
+  upstream's `CHROM\tBinStart\tSNP_count\tTs/Tv` (4 columns) keyed
+  per-chromosome with dense bins, and gated counting on the
+  biallelic-A/C/G/T check that upstream's `is_biallelic_SNP()` does.
+  Pinned by `TestParity_TsTv_Binned` against an upstream golden.
+- **`--TsTv-by-count` full-row byte parity** — output now enumerates
+  every count from 0 to `2 * N_kept_indv - 1` (upstream's loop bound
+  at `variant_file_output.cpp:3221`), emitting empty bins as
+  `0\t0\t-nan` to match glibc's signed-NaN literal for the
+  `double(0)/0` expression upstream sends through `<<`. Pinned by
+  `TestParity_TsTvByCount_FullRows`.
+
 Note: the brief mentioned `--haploid` as a possible wave-2 target. After
 checking the upstream source (`reference_code/vcftools/src/cpp/`) there is
 no `--haploid` flag — the closest thing is `--phased` (parameters.cpp:311
