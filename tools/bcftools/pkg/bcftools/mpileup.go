@@ -1077,16 +1077,36 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	// standalones + first-mates whose trigger column precedes the
 	// mate's start (raw quals); applySmartOverlaps merges; phase 2
 	// BAQs second-mates + any remaining first-mates (merged quals).
+	// preMergeQual carries, for each first-mate of an overlapping pair, a
+	// snapshot of rec.Qual taken AFTER any pre-merge BAQ but BEFORE
+	// applySmartOverlaps mutates the array. accumulateMpileupBases consults
+	// it when emitting prevQ/nextQ for columns that upstream's bam_plp_next
+	// would have drained BEFORE bam_plp_push pushed the second mate and
+	// fired overlap_push (sam.c:5970-5980) — at those columns the
+	// delta_baseQ neighbour cap in bcfCallGlfgenCore (bam2bcf.c:428-435)
+	// reads raw qual[qpos±1], not the post-merge zeros. Without this
+	// snapshot our chromosome-wide applySmartOverlaps zeroes the future
+	// neighbour bytes early, the cap over-clips, and the SNP-row I16 BQ
+	// sums drift — see the indel-AD.1.out cluster-2 residual (000000F:450
+	// and :500). preMergeDrain maps a first-mate record to its drain
+	// threshold (max BAM-order intermediate read pos between the two
+	// mates) so the snapshot is consulted at column C iff C < threshold.
+	var preMergeQual map[*sam.Record][]byte
+	var preMergeDrain map[*sam.Record]int
 	if opts.NoBAQ {
 		// -B disables BAQ entirely. Overlap-merge alone matches the
 		// upstream MPLP_NO_BAQ branch (mpileup.c bypasses mplp_realn
 		// while keeping bam_plp_push's overlap_push call).
 		if !opts.IgnoreOverlaps {
+			pairs := classifyMatePairs(perInputChromRecs)
+			preMergeQual, preMergeDrain = snapshotFirstMateQuals(perInputChromRecs, pairs)
 			applySmartOverlaps(perInputChromRecs)
 		}
 	} else if opts.IgnoreOverlaps {
 		// -x disables overlap-merge. BAQ runs once per read on raw
-		// quals — equivalent to the previous batched form.
+		// quals — equivalent to the previous batched form. No
+		// pre-merge snapshot is needed because overlap_push never
+		// fires upstream either.
 		applyMpileupBAQ(perInputChromRecs, refSlab, opts, nil, nil)
 	} else {
 		// Default: per-pair interleaving. Classify mates once, then
@@ -1109,6 +1129,14 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 			}
 			return p.class == mateClassFirst && pos0 < p.mateStart
 		}, realigned)
+		// Snapshot first-mate quals AFTER phase 1 BAQ (which mirrors
+		// upstream's mplp_realn run at the read's first eligible
+		// column) but BEFORE overlap-merge zeroes the future
+		// neighbour bytes. This is the same quality array upstream's
+		// bcf_call_glfgen reads as qual[qpos±1] at any column C
+		// drained before the second mate's push (see
+		// snapshotFirstMateQuals for the drain-threshold derivation).
+		preMergeQual, preMergeDrain = snapshotFirstMateQuals(perInputChromRecs, pairs)
 		applySmartOverlaps(perInputChromRecs)
 		// Phase 2: all second-mates + the first-mates phase 1 left
 		// untouched (their first eligible column lies on or after
@@ -1144,12 +1172,18 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	}
 
 	// events[input][pos0] is the pileup column for one input at one
-	// reference position.
+	// reference position. The preMergeQual / preMergeDrain side-maps
+	// thread the pre-overlap-merge quality snapshot for first-mates into
+	// accumulateMpileupBases so the per-column prevQ/nextQ delta_baseQ
+	// neighbours match the live qual[qpos±1] upstream's bcf_call_glfgen
+	// would read at the same column. Nil maps degrade to "always read
+	// rec.Qual" — the correct behaviour with -x/--ignore-overlaps and for
+	// non-first-mate reads.
 	events := make([][][]pileupBase, nIn)
 	for i := 0; i < nIn; i++ {
 		events[i] = make([][]pileupBase, effLen)
 		for _, rec := range perInputChromRecs[i] {
-			accumulateMpileupBases(rec, events[i])
+			accumulateMpileupBases(rec, events[i], preMergeQual, preMergeDrain)
 		}
 	}
 
@@ -1467,7 +1501,22 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 // pileupBase.indel set to match upstream htslib's bam_pileup1_t.indel
 // semantics (positive for an insertion of that length, negative for a
 // deletion). This is the input the indel calling slice (4c+4d) consumes.
-func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
+//
+// preMergeQual and preMergeDrain (when non-nil) carry the
+// pre-overlap-merge quality snapshot for first-mates of overlapping
+// pairs together with a per-record drain threshold. For columns C
+// strictly less than that threshold, the delta_baseQ neighbour
+// qualities (prevQ/nextQ) are read from the snapshot rather than from
+// rec.Qual — matching upstream's bcf_call_glfgen at bam2bcf.c:428-435:
+// at iter->pos=C, qual[qpos±1] reflects only the overlap-merges that
+// fired in bam_plp_push (sam.c:5970-5980) before C was drained, which
+// happens when no intermediate read between the two mates lifted
+// iter->max_pos past C. snapshotFirstMateQuals derives the threshold as
+// max(X.Pos) over intermediate reads X (initial value F.Pos so the
+// predicate is unreachable when no intermediate raises max_pos). Reads
+// without an entry in preMergeQual (second mates, standalones, or all
+// reads when -x is in force) always read rec.Qual.
+func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual map[*sam.Record][]byte, preMergeDrain map[*sam.Record]int) {
 	if rec.Pos <= 0 {
 		return
 	}
@@ -1475,6 +1524,21 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 	queryPos := 0
 	isReverse := rec.Flag&sam.FlagReverse != 0
 	qlen := len(rec.Seq)
+	// preMerge / drainAt are the pre-overlap-merge neighbour-qual
+	// snapshot for this record (nil if rec is not a first-mate of an
+	// overlapping pair) and the column threshold below which upstream's
+	// pileup engine had not yet fired overlap_push when it drained the
+	// column. For columns C < drainAt the neighbour qualities are read
+	// from preMerge; from C >= drainAt onwards rec.Qual already carries
+	// the post-merge values (or was never merged) and is used directly.
+	var preMerge []byte
+	drainAt := -1
+	if preMergeQual != nil {
+		if q, ok := preMergeQual[rec]; ok {
+			preMerge = q
+			drainAt = preMergeDrain[rec]
+		}
+	}
 	// CIGAR op codes / lengths in BAM order, for get_position's
 	// soft-clip-aware read-position and soft-clip-length annotations.
 	cigarOps := make([]int, len(rec.Cigar))
@@ -1575,13 +1639,25 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase) {
 				if q < len(rec.Qual) {
 					rawQual = rec.Qual[q]
 				}
+				// neighbourSrc selects the qual array upstream's
+				// bcf_call_glfgen would see at iter->pos = p. For a
+				// first-mate of an overlapping pair, columns drained
+				// before overlap_push fired (p < drainAt) predate the
+				// merge and must read the pre-merge snapshot; columns
+				// from drainAt onwards see the post-merge rec.Qual
+				// (because by the time they were drained, mate2's push
+				// had already fired tweak_overlap_quality).
+				neighbourSrc := rec.Qual
+				if preMerge != nil && p < drainAt {
+					neighbourSrc = preMerge
+				}
 				prevQ := -1
-				if q > 0 && q-1 < len(rec.Qual) {
-					prevQ = int(rec.Qual[q-1])
+				if q > 0 && q-1 < len(neighbourSrc) {
+					prevQ = int(neighbourSrc[q-1])
 				}
 				nextQ := -1
-				if q+1 < qlen && q+1 < len(rec.Qual) {
-					nextQ = int(rec.Qual[q+1])
+				if q+1 < qlen && q+1 < len(neighbourSrc) {
+					nextQ = int(neighbourSrc[q+1])
 				}
 				gp := getPosition(cigarOps, cigarLens, q, qlen)
 				epos, scLen := biasPositionBins(gp)
@@ -2012,6 +2088,97 @@ func classifyMatePairs(perInputChromRecs [][]*sam.Record) map[*sam.Record]matePa
 		}
 	}
 	return out
+}
+
+// snapshotFirstMateQuals returns a per-record pre-merge copy of rec.Qual
+// for each first-mate of an overlapping pair (as labelled by pairs), plus
+// a parallel map from each first-mate to the column threshold below
+// which its pile entries must consult the snapshot for delta_baseQ
+// neighbour quals. The threshold mirrors upstream htslib's pileup-
+// iterator timing: in bam_plp_push (sam.c:6083-6132) the overlap_push
+// call that merges the pair's quals fires only when the SECOND mate is
+// pushed (sam.c:5970-5980), and the engine emits a column C as soon as
+// iter->max_pos > C — which is set to the maximum BAM-order position
+// pushed so far. So overlap_push fires "in time" for column C only when
+// no read pushed strictly between the two mates has Pos > C; otherwise
+// that earlier intermediate read already drove iter->max_pos > C and
+// drained C with raw quals BEFORE mate2 (and overlap_push) arrived.
+//
+// drainThreshold for a first-mate F is therefore max(X.Pos) over reads
+// X strictly between F and its mate M in BAM order (initial value F.Pos
+// so the predicate "C < threshold" stays unreachable when there are no
+// intermediates with Pos > F.Pos). Columns C < drainThreshold use the
+// snapshot; columns C >= drainThreshold use the post-merge rec.Qual.
+//
+// Second mates need no snapshot: by the time upstream's iter->pos
+// reaches any column they cover, overlap_push has already fired (it
+// fired when they were pushed, before iter->max_pos could advance past
+// their own start), so accumulateMpileupBases can read rec.Qual
+// directly for them.
+func snapshotFirstMateQuals(perInputChromRecs [][]*sam.Record, pairs map[*sam.Record]matePairInfo) (map[*sam.Record][]byte, map[*sam.Record]int) {
+	snap := make(map[*sam.Record][]byte)
+	drainThreshold := make(map[*sam.Record]int)
+	for _, recs := range perInputChromRecs {
+		// Walk this input's records in coordinate (= push) order so we
+		// can compute, for each first-mate F, the running max of any
+		// later reads' positions until F's mate is encountered. pending
+		// maps first-mate -> current max(X.Pos) for X seen strictly
+		// between F and (still-to-arrive) M. The initial max is F.Pos
+		// so reads with X.Pos > F.Pos can lift it; reads with
+		// X.Pos == F.Pos (same-position bystanders pushed before F's
+		// mate) don't change drainage.
+		pending := make(map[*sam.Record]int)
+		matePending := make(map[string]*sam.Record)
+		for _, rec := range recs {
+			pos := int(rec.Pos) - 1
+			p, pairOk := pairs[rec]
+			// Resolve a pending pair FIRST when this rec is its second
+			// mate: mate2's own push is what fires overlap_push, so it
+			// must NOT be counted as an intermediate that lifts the
+			// drain threshold. Once the threshold is frozen we proceed
+			// with the lift loop for whichever first-mates are still
+			// pending (other pairs whose mate has yet to arrive).
+			if pairOk && p.class == mateClassSecond {
+				if f, ok2 := matePending[rec.QName]; ok2 {
+					drainThreshold[f] = pending[f]
+					delete(pending, f)
+					delete(matePending, rec.QName)
+				}
+			}
+			// Lift drain thresholds of every still-pending first-mate
+			// whose mate has not yet been encountered. This rec's push
+			// would have set upstream's iter->max_pos to max(prev, pos),
+			// draining cols < pos for those pending first-mates if pos
+			// exceeds the previous running max.
+			for f, m := range pending {
+				if pos > m {
+					pending[f] = pos
+				}
+			}
+			if pairOk && p.class == mateClassFirst {
+				// Snapshot F's quality array NOW (called just before
+				// applySmartOverlaps, after any pre-merge BAQ; this is
+				// the post-mplp_realn / pre-overlap_push state upstream
+				// keeps in bam1_t->qual until its mate's push fires
+				// tweak_overlap_quality at sam.c:5982). The drain
+				// threshold starts at F.Pos and grows as intermediates
+				// are pushed; it freezes when F's mate appears.
+				buf := make([]byte, len(rec.Qual))
+				copy(buf, rec.Qual)
+				snap[rec] = buf
+				pending[rec] = pos
+				matePending[rec.QName] = rec
+			}
+		}
+		// First-mates whose mate never showed up (shouldn't happen
+		// when classifyMatePairs labelled them, but be defensive)
+		// still get a sensible threshold = current running max so the
+		// snapshot is never consulted past that point.
+		for f, m := range pending {
+			drainThreshold[f] = m
+		}
+	}
+	return snap, drainThreshold
 }
 
 // applySmartOverlaps ports htslib's overlap_push (sam.c:5950): for each

@@ -367,7 +367,7 @@ func TestAccumulateMpileupBases_IndelSet(t *testing.T) {
 		Qual: []byte{30, 30, 30, 30, 30, 30},
 	}
 	events := make([][]pileupBase, 10)
-	accumulateMpileupBases(rec, events)
+	accumulateMpileupBases(rec, events, nil, nil)
 	// Ref positions 0..2 are M, 3..4 are D (no bases emitted), 5..7 are M.
 	if len(events[2]) != 1 || events[2][0].indel != -2 {
 		t.Errorf("events[2].indel = %v, want a single base with indel=-2", events[2])
@@ -400,7 +400,7 @@ func TestAccumulateMpileupBases_InsertionIndel(t *testing.T) {
 		Qual: []byte{30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30},
 	}
 	events := make([][]pileupBase, 10)
-	accumulateMpileupBases(rec, events)
+	accumulateMpileupBases(rec, events, nil, nil)
 	if events[3][0].indel != 3 {
 		t.Errorf("events[3].indel = %d, want 3", events[3][0].indel)
 	}
@@ -431,7 +431,7 @@ func TestAccumulateMpileupBases_MergedDeletions(t *testing.T) {
 		Qual: []byte{30, 30, 30, 30, 30, 30},
 	}
 	events := make([][]pileupBase, 12)
-	accumulateMpileupBases(rec, events)
+	accumulateMpileupBases(rec, events, nil, nil)
 	if len(events[2]) != 1 || events[2][0].indel != -3 {
 		t.Errorf("events[2].indel = %v, want -3 (1D+2D merged)", events[2])
 	}
@@ -456,7 +456,7 @@ func TestAccumulateMpileupBases_MergedInsertions(t *testing.T) {
 		Qual: []byte{30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30},
 	}
 	events := make([][]pileupBase, 12)
-	accumulateMpileupBases(rec, events)
+	accumulateMpileupBases(rec, events, nil, nil)
 	if events[3][0].indel != 3 {
 		t.Errorf("events[3].indel = %d, want 3 (2I+1I merged)", events[3][0].indel)
 	}
@@ -483,7 +483,7 @@ func TestAccumulateMpileupBases_InsertionsAcrossPad(t *testing.T) {
 		Qual: []byte{30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30},
 	}
 	events := make([][]pileupBase, 12)
-	accumulateMpileupBases(rec, events)
+	accumulateMpileupBases(rec, events, nil, nil)
 	if events[3][0].indel != 3 {
 		t.Errorf("events[3].indel = %d, want 3 (2I across CPAD + 1I)", events[3][0].indel)
 	}

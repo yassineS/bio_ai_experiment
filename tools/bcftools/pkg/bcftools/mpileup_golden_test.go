@@ -717,22 +717,21 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"000000F:687-688 — is RESOLVED by extending the events " +
 				"array to max(refLen, maxReadEnd). Cluster (2) — SNP-row " +
 				"I16 base-quality drifts at 000000F:446-624 — is mostly " +
-				"RESOLVED by the per-pair BAQ/overlap-merge interleaving " +
-				"in emitChromMpileup (matching upstream's bam_plp_push " +
-				"ordering: first-mates BAQ on raw quals at their first " +
-				"eligible column iff that column precedes the second " +
-				"mate's arrival, then overlap-merge runs, then " +
-				"second-mates BAQ on the merged quals). 13 of the 15 " +
-				"cluster-2 columns (446-449, 497-499, 540-542, 566-567, " +
-				"624) now byte-match; two SNP rows at 450 and 500 still " +
-				"drift by a single read's BAQ delta, and the change " +
-				"introduces single-read BQ-sum drifts at the previously- " +
-				"matching SNP rows 547/548 (the residual identified by " +
-				"the cluster-2 trace as the ~14 \"naive swap\" drifts). " +
-				"Closing the last four needs the full streaming " +
-				"bam_plp_push column-by-column interleave (per-pair " +
-				"arrival state inside the column engine, not just a " +
-				"two-phase batch); see docs/PARITY_ROADMAP.md. (3) 4 " +
+				"RESOLVED by (a) per-pair BAQ/overlap-merge interleaving " +
+				"in emitChromMpileup, and (b) a pre-merge qual snapshot " +
+				"for first-mates of overlapping pairs so the delta_baseQ " +
+				"neighbour cap in accumulateMpileupBases reads the " +
+				"upstream-equivalent raw neighbour qual for columns " +
+				"before the mate's push position. 13 of the 15 cluster-2 " +
+				"columns now byte-match (446-449, 497-500, 540-542, " +
+				"566-567, 624). Two SNP rows at 547 and 548 still drift " +
+				"with INVERTED sign (we over-count BQ by one Q41 read at " +
+				"col 547 vs upstream's ≤Q28); the snapshot fix doesn't " +
+				"move these, confirming the bug is NOT the delta_baseQ " +
+				"neighbour cap but a per-column iter-pos timing edge case " +
+				"in the partial-realn skip heuristic. Closing the last " +
+				"two needs a per-read trace at col 547 to identify the " +
+				"over-counted read and the divergent gate. (3) 4 " +
 				"indel-row chosen-type off-by-one assignments at the " +
 				"homopolymer columns near 000000F:537/538/658, root " +
 				"cause = single-ULP rounding inside ProbalnGlocal at " +

@@ -1747,25 +1747,24 @@ Plus:
          (merged quals). 13 of the 15 cluster-2 columns now
          byte-match (446-449, 497-499, 540-542, 566-567, 624).
 
-         **Residual: 2 cluster-2 columns + 2 newly-drifting columns.**
-         The SNP rows at 450 and 500 still drift by a single read's
-         BAQ delta (1438/55672 vs upstream's 1449/56453 at col 450),
-         and the two-phase batch additionally drifts the
-         previously-matching SNP rows at 547/548 (4118/160128 vs
-         upstream's 4105/158737 at col 547). These four match the
-         cluster-2 trace's "543-548" group: the two-phase batch
-         still differs from upstream's per-column interleave in
-         one edge case — a read whose first eligible column lies in
-         the same column-equivalence-class as its mate's push and
-         several other reads, where upstream's `bam_plp_next` drains
-         the column with the mate already merged but our phase 1
-         must commit before `applySmartOverlaps`. Closing the last
-         four needs the full streaming `bam_plp_push` column-by-
-         column interleave (per-pair arrival state inside the
-         column engine, not just a two-phase batch). The BAQ code
-         itself (`pkg/htsgo/baq/realn.go`) is byte-identical to
-         upstream when fed identical input qualities; the residual
-         divergence is purely the orchestration.
+         **Residual: 2 cluster-2 columns with an inverted-sign root cause.**
+         The snapshot fix above closed cols 450 and 500 (the original
+         cluster-2 trace: our run *under-counted* BQ by clipping
+         neighbour quals that upstream still saw raw). Cols 547 and
+         548 remain — but their drift sign is INVERTED: our I16 BQ
+         sums are +13/+1391 vs upstream's (we *over-count* BQ by one
+         Q41 read at col 547). The snapshot fix does not change
+         these numbers, confirming the bug is NOT the delta_baseQ
+         neighbour cap. Likely root cause: the partial-realn skip
+         heuristic admits a read whose mate-pair classification or
+         per-column iter-pos timing differs from upstream's
+         `bam_plp_push` interleave in an edge case the two-phase
+         batch doesn't capture (one read at col 547 contributes
+         Q41 in our run vs ≤Q28 in upstream's). Closing this needs
+         a per-read trace at col 547 to identify the over-counted
+         read and the divergent gate. Scoped as a future slice. The
+         BAQ code itself (`pkg/htsgo/baq/realn.go`) is byte-
+         identical to upstream when fed identical input qualities.
 
       3. **Indel-row chosen-type off-by-one at homopolymer columns**
          (`indel-AD.1.out` at `000000F:537/538/658`, plus
