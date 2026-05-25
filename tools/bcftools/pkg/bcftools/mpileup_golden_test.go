@@ -714,6 +714,71 @@ func TestMpileupDepthCapGolden(t *testing.T) {
 	}
 }
 
+// TestMpileupNMBZ3Golden replays test.pl line 1076's two-sample
+// `bcftools mpileup -a -AD,INFO/NMBZ -r chr16:75` over annot-NMBZ.3,
+// the regression that pinned the indel-pass NMBZ to the indel glfgen
+// tallies only. Upstream's mpileup_reg loop calls bcf_callaux_clean
+// between the SNP and indel passes (mpileup.c:580, 593), and the
+// bca->ref_nm / bca->alt_nm arrays are wiped via the `else` branch of
+// bcf_callaux_clean (bam2bcf.c:219-223) whether or not B2B_FMT_NMBZ
+// is set, so the indel combine's calc_mwu_biasZ at bam2bcf.c:1185
+// sees only the indel-pass NM contributions. The Go port previously
+// summed both passes, which sign-flipped chr16:75's INDEL NMBZ from
+// upstream's -0.886523 to +0.437589.
+func TestMpileupNMBZ3Golden(t *testing.T) {
+	ref := mpileupFixture(t, "annot-NMBZ.3.fa")
+	mpileupFixture(t, "annot-NMBZ.3.fa.fai")
+	bam1 := mpileupFixture(t, "annot-NMBZ.3.1.bam")
+	mpileupFixture(t, "annot-NMBZ.3.1.bam.bai")
+	bam2 := mpileupFixture(t, "annot-NMBZ.3.2.bam")
+	mpileupFixture(t, "annot-NMBZ.3.2.bam.bai")
+	goldenPath := mpileupFixture(t, "annot-NMBZ.3.1.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:    []string{bam1, bam2},
+		FastaRef:  ref,
+		Regions:   []string{"chr16:75"},
+		Annotate:  "-AD,INFO/NMBZ",
+		NoVersion: true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		for i := 0; i < nD; i++ {
+			if gotD[i] != wantD[i] {
+				t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+			}
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
 // TestMpileupAmbigReadsParse verifies parseAmbigReads round-trips every
 // upstream-accepted spelling. The byte-level effect on per-allele AD is
 // covered by the (currently deferred) indel-AD.{3,4} goldens which
@@ -840,29 +905,6 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"(cons[0]/cons[1]) and the edlib-flavored " +
 				"compute_indelQ (indelQ1/indelQ2, vs_ref, poly_mqual, " +
 				"TMP_MAGIC=255) that drive those residual deltas.",
-		},
-		{
-			"mpileup/annot-NMBZ.3.1.out",
-			"the SNP row at chr16:75 now byte-matches (including I16 " +
-				"REF baseQ sums) after gating applyMpileupBAQ on the " +
-				"requested regions: upstream's mpileup_reg loop only " +
-				"invokes mplp_realn for piles emitted inside [beg, " +
-				"end] (mpileup.c:573), so a `-r chr16:75` invocation " +
-				"defers each read's first BAQ trigger to col 74 — by " +
-				"which time the overlapping mate has been pushed and " +
-				"overlap_push has already merged the qual array. " +
-				"Without the region gate our port BAQed mate1 at its " +
-				"first eligible chromosome-wide column (~16), which " +
-				"saw raw quals; the subsequent overlap merge then " +
-				"summed BAQed mate1 with raw mate2, inflating " +
-				"qual[qpos=74] above what upstream computed. The " +
-				"remaining indel row residual (QS / NMBZ / PL[0]: " +
-				"226 vs 255, NMBZ sign flip) is the per-read chosen-" +
-				"indel-type assignment at this homopolymer column — " +
-				"same root cause as the indel-AD.1 homopolymer rows " +
-				"that survived the BAQ probe (a single-ULP rounding " +
-				"flip inside ProbalnGlocal at long homopolymer runs, " +
-				"RNG-class divergence deferred per project policy).",
 		},
 		{
 			"mpileup/annot-NMBZ.[23].2.out / FORMAT/NMBZ goldens",

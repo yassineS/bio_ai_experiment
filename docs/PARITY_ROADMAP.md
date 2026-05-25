@@ -1633,17 +1633,17 @@ Plus:
       `bcfCallret` are filled by both the SNP and indel branches of
       `bcfCallGlfgenCore` when any of the `B2BInfoNMBZ` / `B2BFmtNMBZ`
       / `B2BInfoNM` bits is set. `bcfCallCombine` sums them across
-      samples and runs `calcMWUBiasZ`; `bcfCallCombineIndel` also
-      folds in the matching SNP-pass tallies (mirroring upstream's
-      shared `bca->ref_nm/alt_nm` accumulator). `bcfCall2bcf` and
+      samples and runs `calcMWUBiasZ`; `bcfCallCombineIndel` sums
+      only the indel-pass tallies (the indel combine runs after
+      `bcf_callaux_clean` wipes the shared `bca->ref_nm` / `bca->alt_nm`
+      arrays per `bam2bcf.c:219-223` — the SNP-pass contributions are
+      not visible to the indel-pass NMBZ). `bcfCall2bcf` and
       `bcfCall2bcfIndel` emit `INFO/NMBZ` between MQSBZ and SCBZ when
       `B2BInfoNMBZ` is set, and the header line is inserted in the
-      same place. Byte-for-byte golden `annot-NMBZ.1.1.out` (test.pl
-      line 1074) now matches; tested in `TestMpileupNMBZGolden`.
-      `annot-NMBZ.2.1.out` byte-matches once the depth-cap port is in
-      place (4e.8 below); `.3.1.out`'s SNP row byte-matches including
-      `NMBZ=7.74597` while the indel row's QS / NMBZ / PL[0] residual
-      tracks with the `bcfCall2bcfIndel` SCR-on-indel-rows polish item.
+      same place. Byte-for-byte goldens: `annot-NMBZ.1.1.out`
+      (test.pl line 1074, `TestMpileupNMBZGolden`), `annot-NMBZ.2.1.out`
+      (depth-cap, `TestMpileupDepthCapGolden`), and `annot-NMBZ.3.1.out`
+      (two-sample indel + SNP row, `TestMpileupNMBZ3Golden`).
       FORMAT/NMBZ (per-sample) is not in this slice; only INFO/NMBZ.
     - **4e.7 (DONE).** Ports the legacy REF-rescue heuristic that
       `bcf_call_glfgen` applies in its indel branch
@@ -1667,14 +1667,11 @@ Plus:
       `if (q > seqQ) q = seqQ` step at `bam2bcf.c:459` is the same
       literal port. Goldens: `indel-AD.{2,3,4}.out` are byte-for-byte
       (tested in `TestMpileupIndelADGolden`, covering `--ambig-reads`
-      default / `incAD` / `incAD0`); the `annot-NMBZ.3.1.out` indel
-      row's I16 also matches byte-for-byte. The `--indels-cns` (edlib)
-      path is a separate algorithm and stays deferred. Residual
-      divergences live on `indel-AD.1.out` (~20 SNP rows with small
-      I16 base-quality drifts plus four homopolymer-column indel rows
-      with chosen-type off-by-1 assignments — DP ≤ 125 throughout so
-      the depth cap is not in play) and the trailing QS/NMBZ/PL[0]
-      columns of `annot-NMBZ.3.1.out`'s indel row.
+      default / `incAD` / `incAD0`); `annot-NMBZ.3.1.out` byte-matches
+      end-to-end (see 4e.6 and `TestMpileupNMBZ3Golden`). The
+      `--indels-cns` (edlib) path is a separate algorithm and stays
+      deferred. No remaining mpileup-output residuals against upstream
+      on the slice-4e fixtures.
     - **4e.8 (DONE).** Ports htslib's per-alignment-start depth cap.
       Upstream's `bam_plp_push` (reference\_code/htslib/sam.c:6090)
       drops a new read when `iter->pos == b->core.pos` and the
@@ -1692,10 +1689,9 @@ Plus:
       merger. Byte-for-byte golden `annot-NMBZ.2.1.out` at chr6:75
       (raw coverage 449, capped to DP=283) now matches; tested in
       `TestMpileupDepthCapGolden`. Remaining mpileup residuals are
-      the `--indels-cns` edlib path (separately deferred) and the
-      indel-row QS/NMBZ/PL[0] columns at homopolymer columns on
-      `indel-AD.1.out` and `annot-NMBZ.3.1.out`, both tracked under
-      the `bcfCall2bcfIndel` SCR-on-indel-rows polish.
+      the `--indels-cns` edlib path (separately deferred); the
+      `annot-NMBZ.3.1.out` indel-row NMBZ sign flip closed in 4e.6
+      via the indel-pass-only NM-tag sum noted above.
     - **4e.5 indel-row SCR (DONE).** `bcfCall2bcfIndel` now emits
       `INFO/SCR` (before I16) and `FORMAT/SCR` (after AD/ADF/ADR)
       when the corresponding `B2BInfoSCR` / `B2BFmtSCR` bits are
@@ -1811,13 +1807,22 @@ Plus:
             regions, matching upstream's region-restricted BAQ
             timing.
 
-         The residual `annot-NMBZ.3.1.out` INDEL row at chr16:75
-         (`QS` / `NMBZ` / PL[0]: 226 vs 255, NMBZ sign flip)
-         survives `-B/--no-BAQ` and is the per-read chosen-indel-
-         type assignment at the homopolymer column — same root
-         cause as the long-homopolymer probaln_glocal single-ULP
-         rounding residuals tracked under the next item, RNG-class
-         and out of scope per project policy.
+         c. `annot-NMBZ.3.1.out` INDEL row at `chr16:75` NMBZ
+            sign flip (`+0.437589` vs upstream `-0.886523`).
+            **RESOLVED.** The Go port's `bcfCallCombineIndel` was
+            summing the NM-tag histograms (`refNm` / `altNm`) from
+            both the SNP-pass and indel-pass `bcfCallret` slices
+            before feeding them to `calcMWUBiasZ`. Upstream's
+            `bcf_callaux_clean` (`bam2bcf.c:219-223`) wipes the
+            shared `bca->ref_nm` / `bca->alt_nm` storage between
+            the SNP and indel `bcf_call_glfgen` invocations
+            (`mpileup.c:580`, `:593`) whether or not
+            `B2B_FMT_NMBZ` is set, so the indel-pass NMBZ at
+            `bam2bcf.c:1185` sees only the indel-pass tallies.
+            Restricting the histogram sum to `calls` (indel
+            pass) closed the sign flip and the full byte diff
+            for `annot-NMBZ.3.1.out`. Regression covered by
+            `TestMpileupNMBZ3Golden`.
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so

@@ -819,21 +819,16 @@ func bcfCallCombineIndel(calls []bcfCallret, snpCalls []bcfCallret, bca *bcfCall
 		}
 	}
 
-	// NM histograms accumulate across BOTH SNP and indel glfgen passes
-	// in upstream (the bca-level ref_nm/alt_nm arrays are shared and
-	// only cleared by bcf_callaux_clean per position). Sum the indel
-	// pass (`calls`) and the SNP pass (`snpCalls`) for the indel
-	// combine's NMBZ.
+	// NM histograms for the indel-pass NMBZ. Upstream's bca->ref_nm /
+	// bca->alt_nm are wiped by bcf_callaux_clean between the SNP and
+	// indel passes (mpileup.c:580, 593 — the clean call before the
+	// indel glfgen at line 593 clears the shared B2B_N_NM slot via the
+	// `else` branch in bcf_callaux_clean, bam2bcf.c:219-223). So the
+	// indel-row NMBZ at bam2bcf.c:1185 sees ONLY the indel-pass NM
+	// tallies, never the SNP-pass ones — sum just `calls` here.
 	var refNm, altNm [b2bNNm]int
 	for i := range calls {
 		r := &calls[i]
-		for k := 0; k < b2bNNm; k++ {
-			refNm[k] += r.refNm[k]
-			altNm[k] += r.altNm[k]
-		}
-	}
-	for i := range snpCalls {
-		r := &snpCalls[i]
 		for k := 0; k < b2bNNm; k++ {
 			refNm[k] += r.refNm[k]
 			altNm[k] += r.altNm[k]
