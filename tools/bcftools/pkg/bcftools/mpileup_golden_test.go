@@ -713,30 +713,32 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 			"the four indel rows match the upstream I16 ALT counts and " +
 				"AD compensation (the heuristic-driven REF-rescue port " +
 				"in slice 4e.7 — see bcf_call_glfgen REF rescue at " +
-				"bam2bcf.c:338-348). Cluster (1) — two N-REF rows at " +
-				"000000F:687-688 — is RESOLVED by extending the events " +
-				"array to max(refLen, maxReadEnd). Cluster (2) — SNP-row " +
-				"I16 base-quality drifts at 000000F:446-624 — is mostly " +
-				"RESOLVED by (a) per-pair BAQ/overlap-merge interleaving " +
-				"in emitChromMpileup, and (b) a pre-merge qual snapshot " +
-				"for first-mates of overlapping pairs so the delta_baseQ " +
+				"bam2bcf.c:338-348). Clusters (1) and (2) are fully " +
+				"RESOLVED: cluster (1) — two N-REF rows at " +
+				"000000F:687-688 — by extending the events array to " +
+				"max(refLen, maxReadEnd); cluster (2) — SNP-row I16 " +
+				"base-quality drifts at 000000F:446-624 — by (a) " +
+				"per-pair BAQ/overlap-merge interleaving in " +
+				"emitChromMpileup, (b) a pre-merge qual snapshot for " +
+				"first-mates of overlapping pairs so the delta_baseQ " +
 				"neighbour cap in accumulateMpileupBases reads the " +
 				"upstream-equivalent raw neighbour qual for columns " +
-				"before the mate's push position. 13 of the 15 cluster-2 " +
-				"columns now byte-match (446-449, 497-500, 540-542, " +
-				"566-567, 624). Two SNP rows at 547 and 548 still drift " +
-				"with INVERTED sign (we over-count BQ by one Q41 read at " +
-				"col 547 vs upstream's ≤Q28); the snapshot fix doesn't " +
-				"move these, confirming the bug is NOT the delta_baseQ " +
-				"neighbour cap but a per-column iter-pos timing edge case " +
-				"in the partial-realn skip heuristic. Closing the last " +
-				"two needs a per-read trace at col 547 to identify the " +
-				"over-counted read and the divergent gate. (3) 4 " +
-				"indel-row chosen-type off-by-one assignments at the " +
-				"homopolymer columns near 000000F:537/538/658, root " +
-				"cause = single-ULP rounding inside ProbalnGlocal at " +
-				"long homopolymer runs flipping the score<<6|t " +
-				"ascending-sort tie-break.",
+				"before the mate's push position, and (c) gating the " +
+				"phase-1 / phase-2 BAQ eligibility predicates on the " +
+				"per-first-mate drainAt threshold (= max(intermediate " +
+				"X.Pos for X pushed strictly between F.Pos and mate.Pos, " +
+				"init F.Pos)) rather than mate.Pos, so pairs with no " +
+				"intermediate are deferred to phase 2 and BAQed on " +
+				"merged quals — matching upstream's bam_plp_push at " +
+				"sam.c:6083-6132 firing overlap_push before draining " +
+				"col F.Pos with mplp_realn. All 15 cluster-2 columns " +
+				"(446-449, 497-499, 540-542, 547-548, 566-567, 624) " +
+				"now byte-match. Cluster (3): 4 indel-row chosen-type " +
+				"off-by-one assignments at the homopolymer columns " +
+				"near 000000F:537/538/655/658, root cause = single-ULP " +
+				"rounding inside ProbalnGlocal at long homopolymer " +
+				"runs flipping the score<<6|t ascending-sort tie-break " +
+				"(RNG-class, deferred per project policy).",
 		},
 		{
 			"mpileup/indel-AD.1cns.out",

@@ -1729,8 +1729,8 @@ Plus:
       2. **SNP-row I16 base-quality-sum micro-drifts** (`indel-AD.1.out`
          originally 15 columns at 000000F:446-450, 497-500, 540-542,
          566-567, 624, with I16 slots 4-5 shifted at each — e.g.
-         1204/45840 vs upstream's 1205/45921). **Mostly RESOLVED.**
-         `emitChromMpileup` now interleaves BAQ and overlap-merge
+         1204/45840 vs upstream's 1205/45921). **RESOLVED.**
+         `emitChromMpileup` interleaves BAQ and overlap-merge
          per-pair, matching upstream `htslib bam_plp_push`
          (sam.c:6083-6132): a `classifyMatePairs` pre-pass labels
          each read as standalone, first-mate or second-mate (same
@@ -1738,33 +1738,32 @@ Plus:
          and records the mate's alignment start. The BAQ engine
          then runs in two phases sharing a per-record `realigned`
          dedup map (the equivalent of upstream's PLP_IS_REALN flag).
-         Phase 1 BAQs standalones plus first-mates whose first
-         eligible pileup column precedes the mate's start (raw
-         quals — the `pos0 < mateStart` gate captures whether
-         `overlap_push` would have run yet at upstream's iter->pos).
+         The eligibility predicate gates on a per-first-mate
+         `drainAt` threshold computed by
+         `computeFirstMateDrainThresholds` (a sibling of
+         `snapshotFirstMateQuals` that does only the push-order
+         math, no quality snapshot): `drainAt = max(intermediate
+         X.Pos for X pushed strictly between F.Pos and mate.Pos,
+         init F.Pos)`. Phase 1 BAQs standalones plus first-mates
+         whose first eligible pileup column is strictly less than
+         their drain threshold (raw quals — the `pos0 < drainAt[rec]`
+         gate captures upstream's bam_plp_push timing: when no
+         intermediate read sits strictly between F.Pos and mate.Pos,
+         `drainAt == F.Pos` so phase 1 skips the read and phase 2
+         BAQs the kept mate on merged quals; when intermediates
+         lift `drainAt`, phase 1 BAQs F's pre-drain columns on raw
+         quals exactly as upstream's `mplp_realn` would).
          `applySmartOverlaps` then merges quals. Phase 2 BAQs all
          second-mates plus any first-mates phase 1 left untouched
-         (merged quals). 13 of the 15 cluster-2 columns now
-         byte-match (446-449, 497-499, 540-542, 566-567, 624).
-
-         **Residual: 2 cluster-2 columns with an inverted-sign root cause.**
-         The snapshot fix above closed cols 450 and 500 (the original
-         cluster-2 trace: our run *under-counted* BQ by clipping
-         neighbour quals that upstream still saw raw). Cols 547 and
-         548 remain — but their drift sign is INVERTED: our I16 BQ
-         sums are +13/+1391 vs upstream's (we *over-count* BQ by one
-         Q41 read at col 547). The snapshot fix does not change
-         these numbers, confirming the bug is NOT the delta_baseQ
-         neighbour cap. Likely root cause: the partial-realn skip
-         heuristic admits a read whose mate-pair classification or
-         per-column iter-pos timing differs from upstream's
-         `bam_plp_push` interleave in an edge case the two-phase
-         batch doesn't capture (one read at col 547 contributes
-         Q41 in our run vs ≤Q28 in upstream's). Closing this needs
-         a per-read trace at col 547 to identify the over-counted
-         read and the divergent gate. Scoped as a future slice. The
-         BAQ code itself (`pkg/htsgo/baq/realn.go`) is byte-
-         identical to upstream when fed identical input qualities.
+         (merged quals). All 15 cluster-2 columns now byte-match
+         (446-449, 497-499, 540-542, 547-548, 566-567, 624). The
+         original `pos0 < mateStart` gate over-admitted pairs with
+         no intermediate (it BAQed F on raw quals then
+         `applySmartOverlaps` overwrote the BAQ output with the raw
+         sum, so the BQ cap never landed); switching to
+         `pos0 < drainAt[rec]` closed cols 547/548. The BAQ code
+         itself (`pkg/htsgo/baq/realn.go`) is byte-identical to
+         upstream when fed identical input qualities.
 
       3. **Indel-row chosen-type off-by-one at homopolymer columns**
          (`indel-AD.1.out` at `000000F:537/538/658`, plus

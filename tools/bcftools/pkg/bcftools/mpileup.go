@@ -1119,15 +1119,39 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 		// eligible column). realigned is a shared dedup set so
 		// reads BAQ'd in phase 1 are not re-BAQ'd in phase 2.
 		pairs := classifyMatePairs(perInputChromRecs)
+		// Compute the per-first-mate drain threshold BEFORE phase 1
+		// so the phase-1 predicate can mirror upstream's bam_plp_push
+		// timing. Upstream drains a column C with the mate already
+		// merged when no intermediate read with pos strictly between
+		// F.Pos and mate.Pos has been pushed; drainAt captures that
+		// timing per read (= max(intermediate.Pos), init F.Pos). The
+		// drain threshold depends only on push (= coordinate) order,
+		// not on quals, so it is safe to compute pre-BAQ.
+		drainAt := computeFirstMateDrainThresholds(perInputChromRecs, pairs)
 		realigned := make(map[*sam.Record]bool)
-		// Phase 1: standalones + first-mates whose first BAQ trigger
-		// column is before their mate's alignment start (raw quals).
+		// Phase 1: standalones + first-mates whose trigger column is
+		// strictly before their drain threshold (raw quals). Reads
+		// with no drainAt entry (second mates, non-overlapping
+		// first-mates, standalones) fall through to the !ok branch
+		// above. For first-mates with no intermediate strictly
+		// between F.Pos and mate.Pos, drainAt == F.Pos and the gate
+		// is always false → phase 1 skips them and phase 2 BAQs the
+		// kept mate on merged quals, matching upstream's
+		// bam_plp_push (sam.c:6083-6132) firing overlap_push before
+		// draining col F.Pos with mplp_realn (mpileup.c:573).
 		applyMpileupBAQ(perInputChromRecs, refSlab, opts, func(rec *sam.Record, pos0 int) bool {
 			p, ok := pairs[rec]
 			if !ok {
 				return true
 			}
-			return p.class == mateClassFirst && pos0 < p.mateStart
+			if p.class != mateClassFirst {
+				return false
+			}
+			d, dOk := drainAt[rec]
+			if !dOk {
+				d = p.mateStart
+			}
+			return pos0 < d
 		}, realigned)
 		// Snapshot first-mate quals AFTER phase 1 BAQ (which mirrors
 		// upstream's mplp_realn run at the read's first eligible
@@ -1139,8 +1163,8 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 		preMergeQual, preMergeDrain = snapshotFirstMateQuals(perInputChromRecs, pairs)
 		applySmartOverlaps(perInputChromRecs)
 		// Phase 2: all second-mates + the first-mates phase 1 left
-		// untouched (their first eligible column lies on or after
-		// their mate's start, so by upstream's bam_plp_push ordering
+		// untouched (their trigger column lies on or after the drain
+		// threshold, so by upstream's bam_plp_push ordering
 		// overlap_push has already merged their quals by the time
 		// BAQ runs).
 		applyMpileupBAQ(perInputChromRecs, refSlab, opts, func(rec *sam.Record, pos0 int) bool {
@@ -1151,7 +1175,11 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 			if p.class == mateClassSecond {
 				return true
 			}
-			return pos0 >= p.mateStart
+			d, dOk := drainAt[rec]
+			if !dOk {
+				d = p.mateStart
+			}
+			return pos0 >= d
 		}, realigned)
 	}
 
@@ -2115,6 +2143,45 @@ func classifyMatePairs(perInputChromRecs [][]*sam.Record) map[*sam.Record]matePa
 // fired when they were pushed, before iter->max_pos could advance past
 // their own start), so accumulateMpileupBases can read rec.Qual
 // directly for them.
+// computeFirstMateDrainThresholds returns just the per-first-mate drain
+// thresholds (see snapshotFirstMateQuals for the derivation) without
+// allocating the quality snapshot. It is called before phase-1 BAQ so
+// the phase-1 / phase-2 eligibility predicates can gate on the same
+// upstream-equivalent timing the snapshot lookup uses; the snapshot
+// itself is still produced after phase 1 by snapshotFirstMateQuals
+// (the threshold is push-order-only and unaffected by BAQ).
+func computeFirstMateDrainThresholds(perInputChromRecs [][]*sam.Record, pairs map[*sam.Record]matePairInfo) map[*sam.Record]int {
+	drainThreshold := make(map[*sam.Record]int)
+	for _, recs := range perInputChromRecs {
+		pending := make(map[*sam.Record]int)
+		matePending := make(map[string]*sam.Record)
+		for _, rec := range recs {
+			pos := int(rec.Pos) - 1
+			p, pairOk := pairs[rec]
+			if pairOk && p.class == mateClassSecond {
+				if f, ok2 := matePending[rec.QName]; ok2 {
+					drainThreshold[f] = pending[f]
+					delete(pending, f)
+					delete(matePending, rec.QName)
+				}
+			}
+			for f, m := range pending {
+				if pos > m {
+					pending[f] = pos
+				}
+			}
+			if pairOk && p.class == mateClassFirst {
+				pending[rec] = pos
+				matePending[rec.QName] = rec
+			}
+		}
+		for f, m := range pending {
+			drainThreshold[f] = m
+		}
+	}
+	return drainThreshold
+}
+
 func snapshotFirstMateQuals(perInputChromRecs [][]*sam.Record, pairs map[*sam.Record]matePairInfo) (map[*sam.Record][]byte, map[*sam.Record]int) {
 	snap := make(map[*sam.Record][]byte)
 	drainThreshold := make(map[*sam.Record]int)
