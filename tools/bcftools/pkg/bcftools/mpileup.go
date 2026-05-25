@@ -430,9 +430,13 @@ type MpileupOptions struct {
 	// SkipIndels is upstream's -I/--skip-indels. mpileup never emits
 	// indel records yet so the flag is effectively the default.
 	SkipIndels bool
-	// IndelsCNS is upstream's --indels-cns. Accepted; ignored.
+	// IndelsCNS enables upstream's --indels-cns / --indels-2.0
+	// consensus-based indel caller (Go port at bam2bcf_indelcns.go).
+	// When false the legacy probabilistic caller
+	// (bam2bcf_indel_align.go) is used; this is the default.
 	IndelsCNS bool
-	// NoIndelsCNS is upstream's --no-indels-cns. Accepted; ignored.
+	// NoIndelsCNS is upstream's --no-indels-cns. It is the inverse of
+	// IndelsCNS; the CLI wiring resolves which takes precedence.
 	NoIndelsCNS bool
 
 	// GVCFBlock is upstream's -g/--gvcf. Accepted; one record per
@@ -1270,7 +1274,15 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 		if pos0 >= refLen {
 			continue
 		}
-		iret := bcfCallGapPrep(piles, pos0, bca, refSlab)
+		var iret int
+		if opts.IndelsCNS {
+			// --indels-cns / --indels-2.0: consensus-based caller via
+			// the in-tree edlib engine (bam2bcf_indelcns.go, port of
+			// reference_code/bcftools/bam2bcf_edlib.c).
+			iret = bcfCallGapPrepCNS(piles, pos0, bca, refSlab)
+		} else {
+			iret = bcfCallGapPrep(piles, pos0, bca, refSlab)
+		}
 		if iret < 0 {
 			continue
 		}
