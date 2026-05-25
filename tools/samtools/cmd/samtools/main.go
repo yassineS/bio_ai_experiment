@@ -997,6 +997,10 @@ func runFastq(args []string) int {
 		ExcludeFlagsAll: uint16(excFlagsG),
 		UseExcludeAll:   excFlagsG != 0,
 		AddTags:         samtools.ParseAddTags(addTags),
+		// `-T '*'` is upstream's "all aux tags" sentinel. (`-T ''` does
+		// the same upstream but our CLI cannot disambiguate "explicitly
+		// empty" from "flag unset", so only the explicit '*' form here.)
+		AddAllTags: strings.TrimSpace(addTags) == "*",
 		CompressLevel:   level,
 		UseOQ:           useOQ,
 		NoCO:            noCO,

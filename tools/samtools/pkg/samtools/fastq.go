@@ -51,6 +51,10 @@ type FastqOptions struct {
 	// AddTags is the comma-separated list of aux tags whose `TAG:TYPE:VALUE`
 	// formatted form is appended to the read description (`-T`).
 	AddTags []string
+	// AddAllTags, when true, appends every aux tag on each record (in the
+	// record's existing order). Matches upstream samtools fastq's `-T '*'`
+	// / `-T ''` shorthand (bam_fastq.c:500 — FASTQ_OPT_AUX(NULL)).
+	AddAllTags bool
 	// CompressLevel is the gzip level for `.gz` outputs (`-c`).
 	// gzip.DefaultCompression when zero.
 	CompressLevel int
@@ -166,6 +170,121 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 	// In coordinate-sorted paired mode we fall back to interleaved output:
 	// if Output is open, write everything there; if not, write paired
 	// records into Singleton; final fallback is to drop them.
+	//
+	// In name-sorted paired mode (the upstream supported case) we group
+	// adjacent same-qname records and decide pair vs singleton on the
+	// completed group, matching bam_fastq.c's `flush_rec` logic: only
+	// when both an R1 and an R2 share the qname does the pair go to
+	// `-1`/`-2`. A paired-flagged record whose mate is absent from the
+	// group goes to `-s` if open, otherwise to its flag-indicated `-1`
+	// or `-2` file (the upstream fallback).
+	useGrouping := pairedMode && !counts.PairedCoordinateWarn
+	// fmtRec runs the per-record SAM→FASTQ formatting steps once so the
+	// same payload can be routed to any of the sinks below.
+	fmtRec := func(rec *sam.Record) string {
+		seq, qual := orientReadForFastq(rec, opts)
+		header := buildFastqHeader(rec, opts)
+		return formatFastq(header, seq, qual)
+	}
+	// writeToSink writes line to s if non-nil and updates *count, else
+	// falls back to output / dropped per upstream's precedence.
+	writeToSink := func(s *sink, line string, count *int) {
+		if s != nil {
+			_, _ = s.bw.WriteString(line)
+			*count++
+			return
+		}
+		if output != nil {
+			_, _ = output.bw.WriteString(line)
+			counts.Output++
+			return
+		}
+		counts.Dropped++
+	}
+	// dispatchSingle handles the non-grouped (coordinate-fallback /
+	// non-paired-mode) path that used to be the only code path.
+	dispatchSingle := func(rec *sam.Record, line string) {
+		switch {
+		case useGrouping:
+			// Unreachable: grouping path bypasses dispatchSingle.
+		case output != nil:
+			_, _ = output.bw.WriteString(line)
+			counts.Output++
+		case singleton != nil && !rec.IsPaired():
+			_, _ = singleton.bw.WriteString(line)
+			counts.Singleton++
+		default:
+			counts.Dropped++
+		}
+	}
+	// flushGroup writes a same-qname group per upstream flush_rec:
+	//   - if R1 and R2 both present → pair to -1/-2
+	//   - if exactly one of R1/R2 present → -s if open, else its -1/-2
+	//   - non-paired (score[0]) → -1 (upstream's fpr[0])
+	//   - flag-paired but neither R1 nor R2 (or both) → orphan sink
+	flushGroup := func(group []*sam.Record) {
+		var best1, best2, best0 *sam.Record
+		for _, r := range group {
+			switch {
+			case r.IsPaired() && r.IsRead1() && !r.IsRead2():
+				if best1 == nil {
+					best1 = r
+				}
+			case r.IsPaired() && r.IsRead2() && !r.IsRead1():
+				if best2 == nil {
+					best2 = r
+				}
+			case !r.IsPaired():
+				if best0 == nil {
+					best0 = r
+				}
+			default:
+				// Paired but both/neither R1/R2 set → orphan.
+				line := fmtRec(r)
+				writeToSink(orphan, line, &counts.Orphan)
+			}
+		}
+		if best1 != nil && best2 != nil {
+			writeToSink(read1, fmtRec(best1), &counts.Read1)
+			writeToSink(read2, fmtRec(best2), &counts.Read2)
+		} else if best1 != nil || best2 != nil {
+			var solo *sam.Record
+			if best1 != nil {
+				solo = best1
+			} else {
+				solo = best2
+			}
+			line := fmtRec(solo)
+			if singleton != nil {
+				_, _ = singleton.bw.WriteString(line)
+				counts.Singleton++
+			} else if best1 != nil {
+				writeToSink(read1, line, &counts.Read1)
+			} else {
+				writeToSink(read2, line, &counts.Read2)
+			}
+		}
+		if best0 != nil {
+			// Non-paired (no 0x1): our port maps this to the singleton
+			// sink (matching the legacy non-grouping dispatch
+			// behaviour). Upstream emits to its `-0` (`fpr[0]`) sink
+			// which our CLI does not expose. If neither `-s` nor `-o`
+			// is set the record is dropped, preserving the partial-
+			// fallback contract exercised by TestFastqPairedPartialFallback.
+			line := fmtRec(best0)
+			if singleton != nil {
+				_, _ = singleton.bw.WriteString(line)
+				counts.Singleton++
+			} else if output != nil {
+				_, _ = output.bw.WriteString(line)
+				counts.Output++
+			} else {
+				counts.Dropped++
+			}
+		}
+	}
+	var group []*sam.Record
+	var groupQName string
 	for {
 		rec, rerr := rd.Read()
 		if rerr == io.EOF {
@@ -179,69 +298,19 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 			counts.Dropped++
 			continue
 		}
-		seq, qual := orientReadForFastq(rec, opts)
-		header := buildFastqHeader(rec, opts)
-		line := formatFastq(header, seq, qual)
-
-		switch {
-		case pairedMode && !counts.PairedCoordinateWarn:
-			// Categorise per upstream samtools fastq:
-			//   - Paired + only-0x40 set → Read1
-			//   - Paired + only-0x80 set → Read2
-			//   - Not paired (no 0x1) → singleton
-			//   - Paired + neither/both of 0x40/0x80 set → orphan
-			switch {
-			case rec.IsPaired() && rec.IsRead1() && !rec.IsRead2():
-				if read1 != nil {
-					_, _ = read1.bw.WriteString(line)
-					counts.Read1++
-				} else if output != nil {
-					_, _ = output.bw.WriteString(line)
-					counts.Output++
-				} else {
-					counts.Dropped++
-				}
-			case rec.IsPaired() && rec.IsRead2() && !rec.IsRead1():
-				if read2 != nil {
-					_, _ = read2.bw.WriteString(line)
-					counts.Read2++
-				} else if output != nil {
-					_, _ = output.bw.WriteString(line)
-					counts.Output++
-				} else {
-					counts.Dropped++
-				}
-			case !rec.IsPaired():
-				if singleton != nil {
-					_, _ = singleton.bw.WriteString(line)
-					counts.Singleton++
-				} else if output != nil {
-					_, _ = output.bw.WriteString(line)
-					counts.Output++
-				} else {
-					counts.Dropped++
-				}
-			default:
-				// Paired but 0x40/0x80 are both set or both unset.
-				if orphan != nil {
-					_, _ = orphan.bw.WriteString(line)
-					counts.Orphan++
-				} else if output != nil {
-					_, _ = output.bw.WriteString(line)
-					counts.Output++
-				} else {
-					counts.Dropped++
-				}
+		if useGrouping {
+			if group != nil && rec.QName != groupQName {
+				flushGroup(group)
+				group = group[:0]
 			}
-		case output != nil:
-			_, _ = output.bw.WriteString(line)
-			counts.Output++
-		case singleton != nil && !rec.IsPaired():
-			_, _ = singleton.bw.WriteString(line)
-			counts.Singleton++
-		default:
-			counts.Dropped++
+			groupQName = rec.QName
+			group = append(group, rec)
+			continue
 		}
+		dispatchSingle(rec, fmtRec(rec))
+	}
+	if useGrouping && len(group) > 0 {
+		flushGroup(group)
 	}
 	if err := closeAll(); err != nil {
 		return counts, err
@@ -442,7 +511,15 @@ func buildFastqHeader(rec *sam.Record, opts FastqOptions) string {
 		}
 	}
 	sb.WriteString(qname)
-	if len(opts.AddTags) > 0 {
+	switch {
+	case opts.AddAllTags:
+		// Emit every aux tag in the record's existing order, matching
+		// upstream's FASTQ_OPT_AUX(NULL) behaviour for `-T ''` / `-T '*'`.
+		for _, a := range rec.Aux {
+			sb.WriteByte('\t')
+			sb.WriteString(a.FormatSAM())
+		}
+	case len(opts.AddTags) > 0:
 		for _, t := range opts.AddTags {
 			t = strings.TrimSpace(t)
 			if t == "" {
@@ -502,6 +579,9 @@ func readSortOrder(hdr *sam.Header) string {
 
 // ParseAddTags splits a comma-separated list of aux tag names, trimming
 // whitespace from each. The result is suitable for FastqOptions.AddTags.
+// The upstream shorthand "*" (or an empty string) means "every tag";
+// callers should detect those forms with AddTagsIsAll and set
+// FastqOptions.AddAllTags = true instead of passing them through here.
 func ParseAddTags(spec string) []string {
 	if spec == "" {
 		return nil
@@ -516,6 +596,14 @@ func ParseAddTags(spec string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// AddTagsIsAll reports whether the -T argument is upstream samtools'
+// "all aux tags" sentinel — an empty string or the literal "*". The CLI
+// driver uses this to route to FastqOptions.AddAllTags.
+func AddTagsIsAll(spec string) bool {
+	s := strings.TrimSpace(spec)
+	return s == "" || s == "*"
 }
 
 // ParseCompressLevel parses an integer compress level in [0, 9]. Other

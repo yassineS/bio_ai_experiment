@@ -769,18 +769,38 @@ func TestParity_Fastq_T02_PairedNoSingleton(t *testing.T) {
 // fastq.t03 — paired + singleton with a singleton in the middle. Upstream
 // `test.pl` third `test_bam2fq` case.
 //
-// Upstream samtools fastq actively pairs adjacent records by QNAME when
-// running in paired-output (-1/-2) mode: a record with the paired flag set
-// whose neighbour has a different QNAME is sent to the singleton file even
-// though it is flagged "paired". Our port currently dispatches by flag bits
-// alone (0x40 → R1, 0x80 → R2, paired-but-neither → orphan, unpaired → s),
-// so `ref1_grp2_p002a` (flag 99, mate missing) goes to R1 instead of `s`.
-// Tracking the design gap rather than masking it: this test stays skipped
-// until we add QNAME-based pairing.
+// fastq.t03 — paired + singleton with a singleton in the middle. With
+// QNAME-based pair grouping (mirroring upstream `flush_rec`) a record
+// flagged paired but missing its mate now lands in -s.
 func TestParity_Fastq_T03_PairedSingletonMiddle(t *testing.T) {
-	t.Skip("not yet supported: QNAME-based pair detection in paired mode " +
-		"(upstream sends flag-paired-but-mate-missing records to -s; our port " +
-		"sends them to -1/-2). Tracked in PARITY_ROADMAP.md#samtools.")
+	dir := t.TempDir()
+	r1 := filepath.Join(dir, "1.fq")
+	r2 := filepath.Join(dir, "2.fq")
+	s := filepath.Join(dir, "s.fq")
+	in := openParity(t, "bam2fq.002.sam")
+	defer in.Close()
+	if _, err := Fastq(in, FastqOptions{
+		Read1Path:     r1,
+		Read2Path:     r2,
+		SingletonPath: s,
+	}); err != nil {
+		t.Fatalf("Fastq: %v", err)
+	}
+	got1, _ := os.ReadFile(r1)
+	got2, _ := os.ReadFile(r2)
+	gots, _ := os.ReadFile(s)
+	want1 := readParity(t, "3.1.fq.expected")
+	want2 := readParity(t, "3.2.fq.expected")
+	wants := readParity(t, "3.s.fq.expected")
+	if !bytes.Equal(got1, want1) {
+		t.Errorf("1.fq mismatch.\nwant:\n%s\ngot:\n%s", want1, got1)
+	}
+	if !bytes.Equal(got2, want2) {
+		t.Errorf("2.fq mismatch.\nwant:\n%s\ngot:\n%s", want2, got2)
+	}
+	if !bytes.Equal(gots, wants) {
+		t.Errorf("s.fq mismatch.\nwant:\n%s\ngot:\n%s", wants, gots)
+	}
 }
 
 // fastq.t04 — -N (AlwaysAddSuffix) re-adds /1 /2 even in paired mode.
@@ -856,11 +876,40 @@ func TestParity_Fastq_T06_CRAMInput(t *testing.T) {
 	}
 }
 
-// fastq.t07 — -T tag injection. Upstream supports an empty/star form to
-// expand to "every aux tag"; we only handle explicit comma lists.
+// fastq.t07 — -T tag injection in upstream's "all tags" form. The CLI
+// accepts -T '*' (and the library accepts AddAllTags=true) to dump every
+// aux tag onto each FASTQ description line, matching bam_fastq.c
+// FASTQ_OPT_AUX(NULL).
 func TestParity_Fastq_T07_AllTagsExpansion(t *testing.T) {
-	t.Skip("not yet supported: -T '' / -T '*' (all-tags expansion); tracked in " +
-		"PARITY_ROADMAP.md#samtools")
+	const in = `@HD	VN:1.6
+@SQ	SN:chr1	LN:100
+r1	0	chr1	10	60	5M	*	0	0	ACGTA	IIIII	RG:Z:grp1	NM:i:3	XX:i:42
+r2	0	chr1	20	60	5M	*	0	0	TGCAT	IIIII	RG:Z:grp1	ZZ:Z:hello
+`
+	dir := t.TempDir()
+	out := filepath.Join(dir, "all.fq")
+	if _, err := Fastq(strings.NewReader(in), FastqOptions{
+		OutputPath: out,
+		AddAllTags: true,
+	}); err != nil {
+		t.Fatalf("Fastq: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read out: %v", err)
+	}
+	body := string(data)
+	// Every aux tag should appear on the FASTQ description lines.
+	for _, want := range []string{"RG:Z:grp1", "NM:i:3", "XX:i:42", "ZZ:Z:hello"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("AddAllTags missing %q in:\n%s", want, body)
+		}
+	}
+	// r1's description must start `@r1<TAB>RG:Z:grp1` (qname then tags
+	// in the record's existing order).
+	if !strings.Contains(body, "@r1\tRG:Z:grp1") {
+		t.Errorf("r1 description should be qname<TAB>RG:..., got:\n%s", body)
+	}
 }
 
 // ---- flagstat ----------------------------------------------------------
