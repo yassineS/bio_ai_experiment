@@ -2486,15 +2486,45 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 	}
 	alt := alleles[1:]
 
-	// INFO/DP, I16, QS, MQ0F. The order matches bam2bcf.c:1300-1336.
+	// INFO/DP, I16, QS, MQ0F. The order matches bam2bcf.c:1285-1336:
+	// DP, [ADF], [ADR], [AD], [DPR], [SCR], I16, QS, [bias], MQ0F.
 	info := map[string]string{}
-	infoOrder := make([]string, 0, 4)
+	infoOrder := make([]string, 0, 8)
 	info["DP"] = strconv.Itoa(call.oriDepth)
 	infoOrder = append(infoOrder, "DP")
 
-	// INFO/SCR is emitted before I16, mirroring bam2bcf.c:1298-1299
-	// (after the per-sample AD/ADF/ADR INFO tags — which the current
-	// port does not yet emit at the INFO level — and before I16/QS).
+	// INFO/ADF, INFO/ADR, INFO/AD, INFO/DPR (bam2bcf.c:1286-1297). The
+	// per-sample ADF/ADR slices on the combined call are already
+	// reordered to match the site's allele ordering; sum them across
+	// samples to get the INFO row.
+	if fmtFlag&(B2BInfoADF|B2BInfoADR|B2BInfoAD|B2BInfoDPR) != 0 {
+		sumADF := sumPerAllele(call.adf, call.nAlleles)
+		sumADR := sumPerAllele(call.adr, call.nAlleles)
+		if fmtFlag&B2BInfoADF != 0 {
+			info["ADF"] = perAlleleToCSV(sumADF)
+			infoOrder = append(infoOrder, "ADF")
+		}
+		if fmtFlag&B2BInfoADR != 0 {
+			info["ADR"] = perAlleleToCSV(sumADR)
+			infoOrder = append(infoOrder, "ADR")
+		}
+		if fmtFlag&(B2BInfoAD|B2BInfoDPR) != 0 {
+			sumAD := make([]int, len(sumADF))
+			for i := range sumAD {
+				sumAD[i] = sumADF[i] + sumADR[i]
+			}
+			if fmtFlag&B2BInfoAD != 0 {
+				info["AD"] = perAlleleToCSV(sumAD)
+				infoOrder = append(infoOrder, "AD")
+			}
+			if fmtFlag&B2BInfoDPR != 0 {
+				info["DPR"] = perAlleleToCSV(sumAD)
+				infoOrder = append(infoOrder, "DPR")
+			}
+		}
+	}
+
+	// INFO/SCR is emitted before I16, mirroring bam2bcf.c:1298-1299.
 	if fmtFlag&B2BInfoSCR != 0 {
 		info["SCR"] = strconv.Itoa(call.scrTotal)
 		infoOrder = append(infoOrder, "SCR")
@@ -2555,23 +2585,43 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 	info["MQ0F"] = formatFloat32G(mq0f)
 	infoOrder = append(infoOrder, "MQ0F")
 
-	// FORMAT — PL first, then optional AD/ADF/ADR controlled by fmtFlag,
-	// then SCR. Upstream emits ADF/ADR before AD (bam2bcf.c:1376-1384),
-	// but does so for INFO; for FORMAT both are gated by fmtFlag bits
-	// and the column order matches the bits' order: AD, ADF, ADR, SCR.
+	// FORMAT — PL first, then the optional per-sample tags in the order
+	// emitted by bam2bcf.c:1341-1393: DP, DV, SP, DP4, ADF, ADR, AD,
+	// DPR, SCR. NMBZ (gated on has_alt at bam2bcf.c:1395-1398) is
+	// rendered last when set.
 	format := []string{"PL"}
+	emitDP := fmtFlag&B2BFmtDP != 0
+	emitDV := fmtFlag&B2BFmtDV != 0
+	emitSP := fmtFlag&B2BFmtSP != 0
+	emitDP4 := fmtFlag&B2BFmtDP4 != 0
 	emitAD := fmtFlag&B2BFmtAD != 0
 	emitADF := fmtFlag&B2BFmtADF != 0
 	emitADR := fmtFlag&B2BFmtADR != 0
+	emitDPR := fmtFlag&B2BFmtDPR != 0
 	emitSCR := fmtFlag&B2BFmtSCR != 0
-	if emitAD {
-		format = append(format, "AD")
+	if emitDP {
+		format = append(format, "DP")
+	}
+	if emitDV {
+		format = append(format, "DV")
+	}
+	if emitSP {
+		format = append(format, "SP")
+	}
+	if emitDP4 {
+		format = append(format, "DP4")
 	}
 	if emitADF {
 		format = append(format, "ADF")
 	}
 	if emitADR {
 		format = append(format, "ADR")
+	}
+	if emitAD {
+		format = append(format, "AD")
+	}
+	if emitDPR {
+		format = append(format, "DPR")
 	}
 	if emitSCR {
 		format = append(format, "SCR")
@@ -2586,14 +2636,33 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 			pl.WriteString(strconv.Itoa(v))
 		}
 		data := map[string]string{"PL": pl.String()}
-		if emitAD && s < len(call.adf) {
-			data["AD"] = formatPerAlleleSum(call.adf[s], call.adr[s])
+		var dp4 [4]int
+		if s < len(call.dp4) {
+			dp4 = call.dp4[s]
+		}
+		if emitDP {
+			data["DP"] = formatPerSampleDP(dp4)
+		}
+		if emitDV {
+			data["DV"] = formatPerSampleDV(dp4)
+		}
+		if emitSP {
+			data["SP"] = formatPerSampleSP(dp4)
+		}
+		if emitDP4 {
+			data["DP4"] = formatPerSampleDP4(dp4)
 		}
 		if emitADF && s < len(call.adf) {
 			data["ADF"] = formatPerAllele(call.adf[s])
 		}
 		if emitADR && s < len(call.adr) {
 			data["ADR"] = formatPerAllele(call.adr[s])
+		}
+		if emitAD && s < len(call.adf) {
+			data["AD"] = formatPerAlleleSum(call.adf[s], call.adr[s])
+		}
+		if emitDPR && s < len(call.adf) {
+			data["DPR"] = formatPerAlleleSum(call.adf[s], call.adr[s])
 		}
 		if emitSCR && s < len(call.scr) {
 			data["SCR"] = strconv.Itoa(call.scr[s])
@@ -2730,6 +2799,35 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 	info["DP"] = strconv.Itoa(call.oriDepth)
 	infoOrder = append(infoOrder, "DP")
 
+	// INFO/ADF, INFO/ADR, INFO/AD, INFO/DPR mirror the SNP path
+	// (bam2bcf.c:1286-1297).
+	if fmtFlag&(B2BInfoADF|B2BInfoADR|B2BInfoAD|B2BInfoDPR) != 0 {
+		sumADF := sumPerAllele(call.adf, call.nAlleles)
+		sumADR := sumPerAllele(call.adr, call.nAlleles)
+		if fmtFlag&B2BInfoADF != 0 {
+			info["ADF"] = perAlleleToCSV(sumADF)
+			infoOrder = append(infoOrder, "ADF")
+		}
+		if fmtFlag&B2BInfoADR != 0 {
+			info["ADR"] = perAlleleToCSV(sumADR)
+			infoOrder = append(infoOrder, "ADR")
+		}
+		if fmtFlag&(B2BInfoAD|B2BInfoDPR) != 0 {
+			sumAD := make([]int, len(sumADF))
+			for i := range sumAD {
+				sumAD[i] = sumADF[i] + sumADR[i]
+			}
+			if fmtFlag&B2BInfoAD != 0 {
+				info["AD"] = perAlleleToCSV(sumAD)
+				infoOrder = append(infoOrder, "AD")
+			}
+			if fmtFlag&B2BInfoDPR != 0 {
+				info["DPR"] = perAlleleToCSV(sumAD)
+				infoOrder = append(infoOrder, "DPR")
+			}
+		}
+	}
+
 	// INFO/SCR mirrors the SNP path (bam2bcf.c:1298-1299): emitted
 	// before I16 when -a INFO/SCR is selected, using the shared
 	// per-column tally produced by bcfCallCombine.
@@ -2785,21 +2883,41 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 	info["MQ0F"] = formatFloat32G(mq0f)
 	infoOrder = append(infoOrder, "MQ0F")
 
-	// FORMAT: PL plus optional AD/ADF/ADR/SCR. Column order matches
-	// the SNP path: AD, ADF, ADR, SCR (mirrors the bit ordering).
+	// FORMAT: PL plus optional per-sample tags in the order emitted by
+	// bam2bcf.c:1341-1393: DP, DV, SP, DP4, ADF, ADR, AD, DPR, SCR.
 	format := []string{"PL"}
+	emitDP := fmtFlag&B2BFmtDP != 0
+	emitDV := fmtFlag&B2BFmtDV != 0
+	emitSP := fmtFlag&B2BFmtSP != 0
+	emitDP4 := fmtFlag&B2BFmtDP4 != 0
 	emitAD := fmtFlag&B2BFmtAD != 0
 	emitADF := fmtFlag&B2BFmtADF != 0
 	emitADR := fmtFlag&B2BFmtADR != 0
+	emitDPR := fmtFlag&B2BFmtDPR != 0
 	emitSCR := fmtFlag&B2BFmtSCR != 0
-	if emitAD {
-		format = append(format, "AD")
+	if emitDP {
+		format = append(format, "DP")
+	}
+	if emitDV {
+		format = append(format, "DV")
+	}
+	if emitSP {
+		format = append(format, "SP")
+	}
+	if emitDP4 {
+		format = append(format, "DP4")
 	}
 	if emitADF {
 		format = append(format, "ADF")
 	}
 	if emitADR {
 		format = append(format, "ADR")
+	}
+	if emitAD {
+		format = append(format, "AD")
+	}
+	if emitDPR {
+		format = append(format, "DPR")
 	}
 	if emitSCR {
 		format = append(format, "SCR")
@@ -2814,8 +2932,27 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 			pl.WriteString(strconv.Itoa(v))
 		}
 		data := map[string]string{"PL": pl.String()}
+		var dp4 [4]int
+		if s < len(call.dp4) {
+			dp4 = call.dp4[s]
+		}
+		if emitDP {
+			data["DP"] = formatPerSampleDP(dp4)
+		}
+		if emitDV {
+			data["DV"] = formatPerSampleDV(dp4)
+		}
+		if emitSP {
+			data["SP"] = formatPerSampleSP(dp4)
+		}
+		if emitDP4 {
+			data["DP4"] = formatPerSampleDP4(dp4)
+		}
 		if emitAD && s < len(call.adf) {
 			data["AD"] = formatPerAlleleSum(call.adf[s], call.adr[s])
+		}
+		if emitDPR && s < len(call.adf) {
+			data["DPR"] = formatPerAlleleSum(call.adf[s], call.adr[s])
 		}
 		if emitADF && s < len(call.adf) {
 			data["ADF"] = formatPerAllele(call.adf[s])
@@ -2954,8 +3091,34 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 		`##INFO=<ID=QS,Number=R,Type=Float,Description="Auxiliary tag used for calling">`,
 		`##FORMAT=<ID=PL,Number=G,Type=Integer,Description="List of Phred-scaled genotype likelihoods">`,
 	)
-	// Optional FORMAT tags emitted only when their `-a` bits are set. The
-	// header-line text matches upstream verbatim (mpileup.c:843-849).
+	// Optional FORMAT / INFO tag headers — the order matches upstream
+	// mpileup.c:831-862 exactly: DP, DV, DPR (FMT then INFO), DP4, SP,
+	// AD, ADF, ADR, QM, QS, INFO/AD, INFO/ADF, INFO/SCR, FMT/SCR,
+	// INFO/ADR. The bitset alone decides which lines are emitted.
+	if opts.FmtFlag&B2BFmtDP != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Number of high-quality bases">`)
+	}
+	if opts.FmtFlag&B2BFmtDV != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=DV,Number=1,Type=Integer,Description="Number of high-quality non-reference bases">`)
+	}
+	if opts.FmtFlag&B2BFmtDPR != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=DPR,Number=R,Type=Integer,Description="Number of high-quality bases observed for each allele">`)
+	}
+	if opts.FmtFlag&B2BInfoDPR != 0 {
+		meta = append(meta,
+			`##INFO=<ID=DPR,Number=R,Type=Integer,Description="Number of high-quality bases observed for each allele">`)
+	}
+	if opts.FmtFlag&B2BFmtDP4 != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=DP4,Number=4,Type=Integer,Description="Number of high-quality ref-fwd, ref-reverse, alt-fwd and alt-reverse bases">`)
+	}
+	if opts.FmtFlag&B2BFmtSP != 0 {
+		meta = append(meta,
+			`##FORMAT=<ID=SP,Number=1,Type=Integer,Description="Phred-scaled strand bias P-value">`)
+	}
 	if opts.FmtFlag&B2BFmtAD != 0 {
 		meta = append(meta,
 			`##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (high-quality bases)">`)
@@ -2968,6 +3131,14 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 		meta = append(meta,
 			`##FORMAT=<ID=ADR,Number=R,Type=Integer,Description="Allelic depths on the reverse strand (high-quality bases)">`)
 	}
+	if opts.FmtFlag&B2BInfoAD != 0 {
+		meta = append(meta,
+			`##INFO=<ID=AD,Number=R,Type=Integer,Description="Total allelic depths (high-quality bases)">`)
+	}
+	if opts.FmtFlag&B2BInfoADF != 0 {
+		meta = append(meta,
+			`##INFO=<ID=ADF,Number=R,Type=Integer,Description="Total allelic depths on the forward strand (high-quality bases)">`)
+	}
 	// INFO/SCR + FORMAT/SCR, gated independently by their bits. Header
 	// text matches upstream verbatim (mpileup.c:858-860).
 	if opts.FmtFlag&B2BInfoSCR != 0 {
@@ -2977,6 +3148,10 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 	if opts.FmtFlag&B2BFmtSCR != 0 {
 		meta = append(meta,
 			`##FORMAT=<ID=SCR,Number=1,Type=Integer,Description="Per-sample number of soft-clipped reads (at high-quality bases)">`)
+	}
+	if opts.FmtFlag&B2BInfoADR != 0 {
+		meta = append(meta,
+			`##INFO=<ID=ADR,Number=R,Type=Integer,Description="Total allelic depths on the reverse strand (high-quality bases)">`)
 	}
 	return &vcf.Header{MetaInfo: meta, Samples: samples}
 }

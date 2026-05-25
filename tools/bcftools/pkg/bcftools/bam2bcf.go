@@ -658,6 +658,13 @@ type bcfCall struct {
 	// B2BFmtSCR is set on the fmt_flag.
 	scrTotal int
 	scr      []int
+	// dp4 holds the per-sample DP4 row: [fwdRef, revRef, fwdAlt, revAlt],
+	// one [4]int per sample in input order. It mirrors upstream's
+	// bc->DP4 (bam2bcf.c:1052-1058), sourced from calls[i].anno[0..3].
+	// Always populated by bcfCallCombine — the per-sample FORMAT
+	// DP/DV/DP4/SP renderers read it when the corresponding fmt_flag
+	// bit is set.
+	dp4 [][4]int
 }
 
 // bcfCallCombineIndel is the Go port of the `ref_base < 0` branch of
@@ -796,6 +803,7 @@ func bcfCallCombineIndel(calls []bcfCallret, snpCalls []bcfCallret, bca *bcfCall
 	}
 
 	// Combine I16 / depth annotations (bam2bcf.c:1138-1148).
+	call.dp4 = make([][4]int, len(calls))
 	for i := range calls {
 		r := &calls[i]
 		call.depth += int(r.anno[0] + r.anno[1] + r.anno[2] + r.anno[3])
@@ -804,6 +812,7 @@ func bcfCallCombineIndel(calls []bcfCallret, snpCalls []bcfCallret, bca *bcfCall
 		for k := 0; k < 16; k++ {
 			call.anno[k] += r.anno[k]
 		}
+		call.dp4[i] = perSampleDP4(r)
 	}
 
 	// Sum the per-sample SNP-flavored bias tallies (refPos/altPos via
@@ -1011,6 +1020,7 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 	}
 
 	// Combine I16 / depth annotations (bam2bcf.c:1138-1148).
+	call.dp4 = make([][4]int, len(calls))
 	for i := range calls {
 		r := &calls[i]
 		call.depth += int(r.anno[0] + r.anno[1] + r.anno[2] + r.anno[3])
@@ -1019,6 +1029,7 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 		for j := 0; j < 16; j++ {
 			call.anno[j] += r.anno[j]
 		}
+		call.dp4[i] = perSampleDP4(r)
 	}
 
 	// Fold per-sample SCR tallies into the call (bam2bcf.c:1060-1066).
