@@ -851,6 +851,65 @@ func TestMpileupBAMFlagParse(t *testing.T) {
 	}
 }
 
+// TestMpileupIUPACGolden replays test.pl line 1044's `bcftools mpileup
+// -r 11:10-20` over iupac.bam / iupac.fa, whose reference carries IUPAC
+// ambiguity codes (R/Y/S/W/K/M/B/D/H/V) at positions 9-19. Upstream's
+// bam2bcf.c:1238 renders REF via "ACGTN"[ori_ref], where ori_ref =
+// seq_nt16_int[ref16] collapses any ambiguous nt16 code to 4 (=N), so
+// the golden carries REF=N for every ambiguous-ref position. The Go
+// port now matches by routing the REF byte through call.oriRef rather
+// than echoing the raw FASTA byte.
+func TestMpileupIUPACGolden(t *testing.T) {
+	ref := mpileupFixture(t, "iupac.fa")
+	mpileupFixture(t, "iupac.fa.fai")
+	bam := mpileupFixture(t, "iupac.bam")
+	mpileupFixture(t, "iupac.bam.bai")
+	goldenPath := mpileupFixture(t, "iupac.1.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:    []string{bam},
+		FastaRef:  ref,
+		Regions:   []string{"11:10-20"},
+		NoVersion: true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		for i := 0; i < nD; i++ {
+			if gotD[i] != wantD[i] {
+				t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+			}
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
 // TestMpileupGoldensDeferred documents the upstream mpileup goldens that
 // still do not byte-match and the precise reason, so the remaining work
 // stays visible in the test output.
@@ -867,11 +926,6 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 			"produced with `--ff` FLAG filtering, `-s/-S/-G` sample/read-" +
 				"group selection or `-t` targets — accepted flags whose " +
 				"read/sample subsetting is a separate parity item.",
-		},
-		{
-			"mpileup/iupac.1.out",
-			"reference FASTA carries IUPAC ambiguity codes; rendering an " +
-				"ambiguous REF base is a separate parity gap.",
 		},
 		{
 			"mpileup/indel-AD.1.out",

@@ -2467,7 +2467,16 @@ func applyMpileupDepthCap(perInputChromRecs [][]*sam.Record, maxcnt int) {
 // (the resolved `-a/--annotate` bitset).
 func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint32) *vcf.Variant {
 	alleles := make([]string, 0, call.nAlleles)
-	alleles = append(alleles, string(refB)) // REF
+	// Upstream renders REF via `"ACGTN"[bc->ori_ref]` (bam2bcf.c:1238),
+	// where ori_ref is seq_nt16_int[ref16] — i.e. any IUPAC ambiguity
+	// code in the FASTA collapses to N. Mirror that so a reference
+	// carrying R/Y/S/W/K/M/B/D/H/V renders REF=N instead of leaking the
+	// ambiguous letter into the VCF.
+	refOut := refB
+	if call.oriRef >= 0 && call.oriRef < 5 {
+		refOut = "ACGTN"[call.oriRef]
+	}
+	alleles = append(alleles, string(refOut)) // REF
 	for i := 1; i < call.nAlleles; i++ {
 		if call.unseen == i {
 			alleles = append(alleles, "<*>")
@@ -2596,7 +2605,7 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 		Chrom:     chrom,
 		Pos:       pos1,
 		ID:        ".",
-		Ref:       string(refB),
+		Ref:       string(refOut),
 		Alt:       alt,
 		Qual:      0,
 		Filter:    []string{"."},
