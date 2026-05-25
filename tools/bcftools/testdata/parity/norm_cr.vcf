@@ -1,0 +1,7 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=24>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr1	5	keep	A	T	.	.	DP=10
+chr1	11	mismatch	C	T	.	.	DP=10
+chr1	15	alsokeep	A	G	.	.	DP=10

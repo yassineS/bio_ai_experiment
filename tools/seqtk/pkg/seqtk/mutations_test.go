@@ -283,28 +283,50 @@ func TestRandbase_Deterministic(t *testing.T) {
 	}
 }
 
-func TestRandbase_PreservesLineWidth(t *testing.T) {
-	// Use R (a 2-base code) on the second line; N would be passed through
-	// unchanged per upstream's stk_randbase (only 2-base codes are randomised).
+func TestRandbase_Wraps60ColsLikeUpstream(t *testing.T) {
+	// Upstream `stk_randbase` ignores the input's physical line breaks
+	// and re-emits each record's sequence wrapped to 60 columns —
+	// `if (i%60 == 0) putchar('\n')` at seqtk.c:557. Our two-line
+	// 4-char input therefore becomes one 8-char output line whose
+	// first 4 chars are the original ACGT and the last 4 are drawn
+	// from {A,G} for the R-substitutions.
 	in := ">s\nACGT\nRRRR\n"
 	var buf bytes.Buffer
 	if err := Randbase(strings.NewReader(in), &buf, 99); err != nil {
 		t.Fatalf("Randbase: %v", err)
 	}
 	out := buf.String()
-	// Two sequence lines, each 4 chars, the second drawn from {A,G}.
-	lines := strings.Split(out, "\n")
-	if len(lines) < 3 || lines[0] != ">s" || len(lines[1]) != 4 || len(lines[2]) != 4 {
-		t.Fatalf("Randbase did not preserve line layout: %q", out)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 2 || lines[0] != ">s" || len(lines[1]) != 8 {
+		t.Fatalf("Randbase did not wrap to 60 cols / concatenate input lines: %q", out)
 	}
-	// Line 1 should be unchanged (no ambiguity bases).
-	if lines[1] != "ACGT" {
-		t.Errorf("ACGT line was changed: got %q", lines[1])
+	if !strings.HasPrefix(lines[1], "ACGT") {
+		t.Errorf("first 4 bases of merged sequence should be unchanged ACGT, got %q", lines[1])
 	}
-	for _, b := range []byte(lines[2]) {
+	for _, b := range []byte(lines[1][4:]) {
 		if b != 'A' && b != 'G' {
-			t.Errorf("R-line contains non-AG byte %c after Randbase: %q", b, lines[2])
+			t.Errorf("R-substituted bases must be in {A,G}, got %c in %q", b, lines[1])
 		}
+	}
+}
+
+func TestRandbase_Wraps60ColsOnLongSequence(t *testing.T) {
+	// A 130-char R-only sequence should wrap to 60+60+10 across three
+	// output lines, mirroring upstream's `i%60==0` newline rule.
+	in := ">s\n" + strings.Repeat("R", 130) + "\n"
+	var buf bytes.Buffer
+	if err := Randbase(strings.NewReader(in), &buf, 0); err != nil {
+		t.Fatalf("Randbase: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("want 4 lines (header + 60 + 60 + 10), got %d: %q", len(lines), buf.String())
+	}
+	if lines[0] != ">s" {
+		t.Errorf("header: got %q, want %q", lines[0], ">s")
+	}
+	if len(lines[1]) != 60 || len(lines[2]) != 60 || len(lines[3]) != 10 {
+		t.Errorf("wrap widths: got %d/%d/%d, want 60/60/10", len(lines[1]), len(lines[2]), len(lines[3]))
 	}
 }
 

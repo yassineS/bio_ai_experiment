@@ -33,22 +33,26 @@ A tool is **1:1** when:
    our port) passes for every supported case, with explicit `t.Skip()` for
    each documented exception.
 
-### RNG / stochastic-output policy (2026-05-15)
+### RNG / stochastic-output policy (2026-05-15; revised 2026-05-25)
 
-For subcommands that use randomness (`bedshuffle`, `bedsample`, `seqtk sample`,
-`seqtk randbase`, `samtools view -s subsample`, etc.) the parity bar is:
+For subcommands that use randomness (`bedshuffle`, `bedsample`,
+`samtools view -s subsample`, etc.) the parity bar is:
 
 - **Reproducibility within our tool**: same seed + same input → same output
   byte-for-byte, every time, across Go versions and platforms.
 - **Logical equivalence with upstream**: our output must satisfy the same
   invariants upstream's output does (correct sampling fraction, no
   duplicates without replacement, strand filters honoured, etc.).
-- **NOT** byte-identical with upstream's output. Upstream uses its own
-  C/C++ RNG (typically a Mersenne Twister from libstdc++); Go uses
-  `math/rand`. Porting upstream's RNG would be ~200 lines of
-  bit-twiddling per tool with no functional benefit — the user
-  explicitly opted out of that work in favour of focusing on real
-  feature parity.
+- **Default: NOT** byte-identical with upstream's output. Upstream uses
+  its own C/C++ RNG (typically a Mersenne Twister from libstdc++); Go
+  uses `math/rand`. Porting upstream's RNG is ~200 lines of bit-twiddling
+  per generator and was originally opted out of.
+
+**Exception (2026-05-25):** for seqtk the user moved to a full-feature-parity
+policy. `seqtk sample` and `seqtk randbase` now have upstream RNGs
+ported in-tree (`krand.go` for MT19937-64; `drand48.go` for glibc's
+drand48), so their parity tests assert byte-for-byte equality. See
+`docs/UPSTREAM_BUGS.md#seqtk-sample-rng` and `#seqtk-randbase-rng`.
 
 The parity-test infrastructure handles this by either:
 

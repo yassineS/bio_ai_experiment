@@ -279,11 +279,20 @@ func TestParity_Seqtk_Sample_StructuralInvariants(t *testing.T) {
 	})
 }
 
-// TestParity_Seqtk_Sample_UpstreamByteParity is currently skipped: see
-// the comment on TestParity_Seqtk_Sample_StructuralInvariants for the
-// reasoning. Re-enable after porting upstream's drand48-style sampler.
+// TestParity_Seqtk_Sample_UpstreamByteParity — `seqtk sample <in> 0.3`
+// byte-for-byte. After porting the upstream MT19937-64 PRNG (`krand`)
+// and the default seed 11, the streaming `kr_drand() < fraction`
+// keep/skip decision matches upstream record-by-record on
+// `sample20.fq`. Goes through the seeded entry point (SampleSeeded)
+// with seed 11 explicit to make the seed dependency self-documenting.
 func TestParity_Seqtk_Sample_UpstreamByteParity(t *testing.T) {
-	t.Skip("port limitation: Sample uses every-Nth, not upstream's seeded reservoir; see docs/UPSTREAM_BUGS.md#seqtk-sample-rng")
+	in := readParityFile(t, "sample20.fq")
+	var out bytes.Buffer
+	if err := SampleSeeded(bytes.NewReader(in), &out, 0.3, true, fastq33Encoding(), SampleSeed); err != nil {
+		t.Fatalf("SampleSeeded: %v", err)
+	}
+	want := readParityFile(t, "sample20_default_f0.3.expected.fq")
+	mustEqualBytes(t, "sample sample20.fq 0.3", out.Bytes(), want)
 }
 
 // TestParity_Seqtk_Randbase_StructuralInvariants — known divergence:
@@ -353,22 +362,47 @@ func TestParity_Seqtk_Randbase_StructuralInvariants(t *testing.T) {
 	}
 }
 
-// TestParity_Seqtk_Randbase_UpstreamByteParity is skipped: upstream's
-// drand48() implicit-seed-0 RNG and our math/rand RNG produce different
-// sequences. See docs/UPSTREAM_BUGS.md#seqtk-randbase-rng for the
-// disposition.
+// TestParity_Seqtk_Randbase_UpstreamByteParity — `seqtk randbase`
+// byte-for-byte. After porting glibc's drand48 (X0 = 0 default
+// state) and matching upstream's 60-char wrap output formatter, the
+// port produces the same bytes as the upstream binary on the ambig.fa
+// fixture. The `seed` parameter is intentionally ignored.
 func TestParity_Seqtk_Randbase_UpstreamByteParity(t *testing.T) {
-	t.Skip("port limitation: Randbase RNG differs from upstream drand48; structural invariants are checked separately")
+	in := readParityFile(t, "ambig.fa")
+	var out bytes.Buffer
+	if err := Randbase(bytes.NewReader(in), &out, 0); err != nil {
+		t.Fatalf("Randbase: %v", err)
+	}
+	want := readParityFile(t, "randbase_default.expected.fa")
+	mustEqualBytes(t, "randbase ambig.fa", out.Bytes(), want)
 }
 
-// TestParity_Seqtk_Trimfq_UpstreamByteParity is skipped: upstream's
-// trimfq runs a modified Mott algorithm with an error-rate threshold
-// (default -q 0.05), while our Go port's TrimQuality does a simple
-// Phred-threshold trim. The two algorithms produce different cuts on
-// every non-trivial input. Tracked in
-// docs/UPSTREAM_BUGS.md#seqtk-trimfq-algorithm.
+// TestParity_Seqtk_Trimfq_UpstreamByteParity — `seqtk trimfq` (Mott
+// algorithm) byte-for-byte. The port's TrimfqMott implements
+// upstream's modified Mott trim with the default -q 0.05 / -l 30
+// parameters and produces identical bytes to the upstream binary on
+// both the all-high-quality p64.fq fixture (which is a no-op pass-through)
+// and on a low-quality-border fixture (trimfq_borders.fq) where the
+// algorithm actually trims.
 func TestParity_Seqtk_Trimfq_UpstreamByteParity(t *testing.T) {
-	t.Skip("port limitation: TrimQuality is Phred-threshold; upstream trimfq is Mott (different algorithm)")
+	t.Run("p64_high_quality_passthrough", func(t *testing.T) {
+		in := readParityFile(t, "p64.fq")
+		var out bytes.Buffer
+		if err := TrimfqMott(bytes.NewReader(in), &out, 0.05, 30); err != nil {
+			t.Fatalf("TrimfqMott: %v", err)
+		}
+		want := readParityFile(t, "trimfq_default.expected.fq")
+		mustEqualBytes(t, "trimfq p64.fq", out.Bytes(), want)
+	})
+	t.Run("borders_actually_trims", func(t *testing.T) {
+		in := readParityFile(t, "trimfq_borders.fq")
+		var out bytes.Buffer
+		if err := TrimfqMott(bytes.NewReader(in), &out, 0.05, 30); err != nil {
+			t.Fatalf("TrimfqMott: %v", err)
+		}
+		want := readParityFile(t, "trimfq_borders.expected.fq")
+		mustEqualBytes(t, "trimfq trimfq_borders.fq", out.Bytes(), want)
+	})
 }
 
 // TestParity_Seqtk_Empty_NoCrash verifies that all subcommands tolerate

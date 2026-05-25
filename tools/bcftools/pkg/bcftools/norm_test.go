@@ -527,14 +527,28 @@ func TestRemapGT(t *testing.T) {
 func TestLeftAlignDoesNotRunPastChromStart(t *testing.T) {
 	// Reference "CCG" puts a CC at pos 1-2 followed by G. REF=CC ALT=C
 	// at pos 1 would normally shift left, but there's no upstream base
-	// to consume — we expect an error.
+	// to consume. Upstream vcfnorm.c::realign_left line 458 explicitly
+	// breaks the trim loop in this case (`if (min_len<=1 && new_pos==0)
+	// break;`) — the record is emitted unchanged. We mirror that: the
+	// call must succeed and POS=1 REF=CC ALT=C survives.
 	ref := writeRefFasta(t, map[string]string{"chr1": "CCG"})
 	body := []string{"chr1\t1\t.\tCC\tC\t.\tPASS\t."}
 	input := vcfDoc(nil, body...)
 	var out, stderr bytes.Buffer
-	_, err := Norm(strings.NewReader(input), &out, NormOptions{FastaRef: ref}, &stderr)
-	if err == nil {
-		t.Fatalf("expected error when aligning past chrom start")
+	if _, err := Norm(strings.NewReader(input), &out, NormOptions{FastaRef: ref}, &stderr); err != nil {
+		t.Fatalf("unexpected error at chrom start: %v", err)
+	}
+	body2 := strings.Split(out.String(), "\n")
+	gotData := ""
+	for _, l := range body2 {
+		if l == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		gotData = l
+		break
+	}
+	if !strings.HasPrefix(gotData, "chr1\t1\t.\tCC\tC") {
+		t.Errorf("expected unchanged record at chrom start, got: %s", gotData)
 	}
 }
 

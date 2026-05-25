@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -873,24 +874,41 @@ func findNRuns(seq []byte, minN int) [][2]int {
 	return runs
 }
 
-// Sample randomly samples a fraction of sequences.
+// SampleSeed is the default RNG seed used by `seqtk sample` when no
+// `-s SEED` is given. Matches upstream's `if (kr == 0) kr = kr_srand(11);`
+// at reference_code/seqtk/seqtk.c:1254.
+const SampleSeed = 11
+
+// Sample randomly samples a fraction of sequences. Uses the default
+// upstream seed (SampleSeed = 11) so that the streaming `r < fraction`
+// decision is reproducible and byte-for-byte identical to
+// `seqtk sample`.
+//
+// Mirrors the streaming (no -2) path of `stk_sample` in
+// reference_code/seqtk/seqtk.c: one drand call per record, keep iff the
+// draw is strictly below `fraction`.
 func Sample(input io.Reader, output io.Writer, fraction float64, isFastq bool, encoding fastq.QualityEncoding) error {
+	return SampleSeeded(input, output, fraction, isFastq, encoding, SampleSeed)
+}
+
+// SampleSeeded is the explicit-seed form of Sample, equivalent to
+// `seqtk sample -s SEED <in> FRACTION`. The seed feeds the in-tree
+// MT19937-64 port (`krand`), which produces the same `kr_drand`
+// sequence as upstream so output is byte-for-byte identical.
+func SampleSeeded(input io.Reader, output io.Writer, fraction float64, isFastq bool, encoding fastq.QualityEncoding, seed uint64) error {
 	if fraction <= 0 || fraction > 1 {
 		return fmt.Errorf("fraction must be between 0 and 1")
 	}
-
+	kr := newKrand(seed)
 	if isFastq {
-		return sampleFastq(input, output, fraction, encoding)
+		return sampleFastq(input, output, fraction, encoding, kr)
 	}
-	return sampleFasta(input, output, fraction)
+	return sampleFasta(input, output, fraction, kr)
 }
 
-func sampleFasta(input io.Reader, output io.Writer, fraction float64) error {
+func sampleFasta(input io.Reader, output io.Writer, fraction float64, kr *krand) error {
 	reader := fasta.NewReader(input)
-	writer := fasta.NewWriter(output, 80)
-
-	count := 0
-	written := 0
+	bw := bufio.NewWriter(output)
 
 	for {
 		record, err := reader.Read()
@@ -901,26 +919,33 @@ func sampleFasta(input io.Reader, output io.Writer, fraction float64) error {
 			return err
 		}
 
-		count++
-		// Simple deterministic sampling: write every Nth record
-		if float64(written)/float64(count) < fraction {
-			if err := writer.Write(record); err != nil {
+		// Upstream draws one drand per record (the increment that bumps
+		// n_seqs is also unconditional) so the per-record decision is
+		// deterministic given seed + record index.
+		r := kr.drand()
+		if r < fraction {
+			// Upstream's stk_printseq with UINT_MAX line_len emits the
+			// sequence on a single un-wrapped line — preserve that here
+			// rather than fasta.NewWriter's default 80-char wrap.
+			if _, err := fmt.Fprintf(bw, ">%s\n", record.Description); err != nil {
 				return err
 			}
-			written++
+			if _, err := bw.Write(record.Sequence); err != nil {
+				return err
+			}
+			if err := bw.WriteByte('\n'); err != nil {
+				return err
+			}
 		}
 	}
 
-	return writer.Flush()
+	return bw.Flush()
 }
 
-func sampleFastq(input io.Reader, output io.Writer, fraction float64, encoding fastq.QualityEncoding) error {
+func sampleFastq(input io.Reader, output io.Writer, fraction float64, encoding fastq.QualityEncoding, kr *krand) error {
 	reader := fastq.NewReader(input, encoding)
 	writer := fastq.NewWriter(output, encoding)
 
-	count := 0
-	written := 0
-
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -930,13 +955,11 @@ func sampleFastq(input io.Reader, output io.Writer, fraction float64, encoding f
 			return err
 		}
 
-		count++
-		// Simple deterministic sampling: write every Nth record
-		if float64(written)/float64(count) < fraction {
+		r := kr.drand()
+		if r < fraction {
 			if err := writer.Write(record); err != nil {
 				return err
 			}
-			written++
 		}
 	}
 
@@ -967,6 +990,142 @@ func TrimQuality(input io.Reader, output io.Writer, threshold int, encoding fast
 	}
 
 	return writer.Flush()
+}
+
+// TrimfqMott implements upstream `seqtk trimfq`'s modified Mott
+// algorithm (reference_code/seqtk/seqtk.c:361-441). Each base's quality
+// `q` (clamped to [36, 127]) contributes `param - 10^(-(q-33)/10)` to a
+// running sum `s`; if `s` exceeds the running maximum the trim window
+// is extended; if `s` drops below zero the window is reset. The kept
+// window is `[beg, end)`. A `minLen` floor (default 30) triggers a
+// fallback window-based scan picking the highest-mean-quality `minLen`
+// window. Phred+33 is assumed (upstream hardcodes the q_int2real table
+// at offset 33).
+//
+// param is the error-rate threshold (upstream default 0.05). minLen is
+// the minimum window length floor (upstream default 30). Both must be
+// > 0 for non-trivial behaviour.
+func TrimfqMott(input io.Reader, output io.Writer, param float64, minLen int) error {
+	reader := fastq.NewReader(input, fastq.Phred33)
+	bw := bufio.NewWriter(output)
+	q2real := mottPhredErrTable()
+	for {
+		rec, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		beg, end := mottTrimWindow(rec.Quality, param, minLen, q2real)
+		// Match upstream's record emitter (seqtk.c:428-436): use '@'
+		// for FASTQ records (rec.Quality non-empty) and '>' otherwise;
+		// emit name + optional comment + trimmed seq + optional
+		// "+\n<qual>".
+		hasQual := len(rec.Quality) > 0
+		if hasQual {
+			if err := bw.WriteByte('@'); err != nil {
+				return err
+			}
+		} else {
+			if err := bw.WriteByte('>'); err != nil {
+				return err
+			}
+		}
+		if _, err := bw.WriteString(rec.Description); err != nil {
+			return err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return err
+		}
+		if _, err := bw.Write(rec.Sequence[beg:end]); err != nil {
+			return err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return err
+		}
+		if hasQual {
+			if _, err := bw.WriteString("+\n"); err != nil {
+				return err
+			}
+			if _, err := bw.Write(rec.Quality[beg:end]); err != nil {
+				return err
+			}
+			if err := bw.WriteByte('\n'); err != nil {
+				return err
+			}
+		}
+	}
+	return bw.Flush()
+}
+
+// mottPhredErrTable precomputes `pow(10, -(q-33)/10)` for q in 0..127,
+// matching upstream's `for (i = 0; i < 128; ++i) q_int2real[i] = pow(10., -(i - 33) / 10.);`
+// at seqtk.c:395-396.
+func mottPhredErrTable() [128]float64 {
+	var t [128]float64
+	for i := 0; i < 128; i++ {
+		t[i] = math.Pow(10, -float64(i-33)/10.0)
+	}
+	return t
+}
+
+// mottTrimWindow runs upstream's per-record Mott loop over `qual`
+// (Phred+33 ASCII) and returns the [beg, end) trim window. minLen is
+// the floor below which a sliding-window fallback runs (seqtk.c:417-426).
+func mottTrimWindow(qual []byte, param float64, minLen int, q2real [128]float64) (beg, end int) {
+	n := len(qual)
+	if n <= minLen {
+		return 0, n
+	}
+	// Main Mott pass.
+	var tmp, sBeg, sEnd int
+	end = n
+	s, max := 0.0, 0.0
+	for i := 0; i < n; i++ {
+		q := int(qual[i])
+		if q < 36 {
+			q = 36
+		}
+		if q > 127 {
+			q = 127
+		}
+		s += param - q2real[q]
+		if s > max {
+			max = s
+			sBeg = tmp
+			sEnd = i + 1
+		}
+		if s < 0 {
+			s = 0
+			tmp = i + 1
+		}
+	}
+	beg, end = sBeg, sEnd
+	if max == 0 {
+		// Upstream comment: "max never set; all low qual, just give
+		// first min_len bp" (seqtk.c:414-415).
+		beg, end = 0, minLen
+	}
+	if end-beg < minLen {
+		// Fallback: pick the minLen window with the highest summed
+		// raw quality. Mirrors seqtk.c:417-426.
+		is := 0
+		for i := 0; i < minLen; i++ {
+			is += int(qual[i]) - 33
+		}
+		imax := is
+		beg = 0
+		for i := minLen; i < n; i++ {
+			is += int(qual[i]) - int(qual[i-minLen])
+			if imax < is {
+				imax = is
+				beg = i - minLen + 1
+			}
+		}
+		end = beg + minLen
+	}
+	return beg, end
 }
 
 // GetFileType determines if a file is FASTA or FASTQ.

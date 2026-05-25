@@ -852,17 +852,67 @@ func TestParityNorm_RmDupExact(t *testing.T) {
 	equalBytes(t, got, want, "norm -d exact")
 }
 
-// TestParityNorm_LeftAlign documents that left-alignment requires a
-// FASTA reference. Without the reference, upstream errors out; we error
-// out too. Add a fixture (FASTA + VCF + expected) later.
+// TestParityNorm_LeftAlign exercises `-f norm_la.fa`. The fixture VCF
+// holds a deletion at chr1:5 whose REF spans a homopolymer run of A's
+// (positions 1-10); upstream's vt-style left-aligner rolls the indel
+// back to position 1. Mirrors the canonical norm-fa behaviour
+// (vcfnorm.c::realign).
 func TestParityNorm_LeftAlign(t *testing.T) {
-	t.Skip("norm -f left-align: needs FASTA fixture (see docs/PARITY_ROADMAP.md bcftools norm)")
+	fa := parityPath(t, "norm_la.fa")
+	if _, err := os.Stat(fa); err != nil {
+		t.Skipf("fixture missing: %v", err)
+	}
+	got := runParityNormFile(t, parityPath(t, "norm_la.vcf"), NormOptions{
+		FastaRef: fa,
+	})
+	pos, refs, _ := extractPosRefAlt(string(got))
+	if len(pos) != 1 {
+		t.Fatalf("expected 1 record, got %d: %v", len(pos), pos)
+	}
+	if pos[0] != "1" {
+		t.Errorf("left-align POS: got %s want 1", pos[0])
+	}
+	if refs[0] != "AA" {
+		t.Errorf("left-align REF: got %s want AA", refs[0])
+	}
 }
 
-// TestParityNorm_CheckRefSkip documents `-c s` (skip on REF/FASTA
-// mismatch). Same FASTA dependency.
+// TestParityNorm_CheckRefSkip exercises `-c s` against a fixture whose
+// middle record (chr1:11 REF=C) disagrees with the FASTA (G at that
+// position). `-c s` drops the bad record and keeps the rest; mirrors
+// vcfnorm.c::check_ref's CHECK_REF_SKIP branch.
 func TestParityNorm_CheckRefSkip(t *testing.T) {
-	t.Skip("norm -c: needs FASTA fixture (see docs/PARITY_ROADMAP.md bcftools norm)")
+	fa := parityPath(t, "norm_la.fa")
+	if _, err := os.Stat(fa); err != nil {
+		t.Skipf("fixture missing: %v", err)
+	}
+	got := runParityNormFile(t, parityPath(t, "norm_cr.vcf"), NormOptions{
+		FastaRef:       fa,
+		CheckRef:       CheckRefSkip,
+		DoNotNormalize: true,
+	})
+	pos, _, _ := extractPosRefAlt(string(got))
+	wantPos := []string{"5", "15"}
+	if !equalStringSlice(pos, wantPos) {
+		t.Fatalf("-c s positions: got %v want %v", pos, wantPos)
+	}
+}
+
+// extractPosRefAlt returns (POS, REF, ALT) per non-header record.
+func extractPosRefAlt(body string) (pos, ref, alt []string) {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if len(f) < 5 {
+			continue
+		}
+		pos = append(pos, f[1])
+		ref = append(ref, f[3])
+		alt = append(alt, f[4])
+	}
+	return pos, ref, alt
 }
 
 // =====================================================================

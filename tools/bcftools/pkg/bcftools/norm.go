@@ -836,6 +836,9 @@ func leftAlignInPlace(v *vcf.Variant, ref *fasta.RandomAccess) error {
 	pos := v.Pos
 	for {
 		changed := false
+		// Snapshot the per-loop start state so we can rewind a trim that
+		// would otherwise force a prepend past the chromosome start.
+		snapshot := append([]string(nil), alleles...)
 		// 1) Trim a shared trailing base when all alleles match in the
 		// last position and they aren't all single-byte (we never trim
 		// the only base out of an allele on this pass alone).
@@ -858,7 +861,13 @@ func leftAlignInPlace(v *vcf.Variant, ref *fasta.RandomAccess) error {
 		}
 		if needPrepend {
 			if pos <= 1 {
-				return fmt.Errorf("bcftools norm: cannot left-align past chrom start at %s:%d", v.Chrom, v.Pos)
+				// At chromosome start there is no upstream base to
+				// borrow. Revert the trim we just performed and stop:
+				// upstream `vt`-style left-alignment treats the
+				// chromosome boundary as the floor (vcfnorm.c::realign
+				// loop bound `line->pos > 0`).
+				alleles = snapshot
+				break
 			}
 			upstream, err := ref.Fetch(v.Chrom, int64(pos-2), int64(pos-1))
 			if err != nil {

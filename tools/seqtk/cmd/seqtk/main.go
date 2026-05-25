@@ -457,26 +457,27 @@ Example:
 
 func trimfqCommand() {
 	fs := flag.NewFlagSet("trimfq", flag.ExitOnError)
-	var quality int
-	var phred64 bool
-	var output string
+	var errRate float64
+	var minLen int
 
-	cliflag.IntVar(fs, &quality, "q", "quality", 20, "Minimum quality threshold")
-	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	cliflag.Float64Var(fs, &errRate, "q", "error-rate", 0.05, "Mott error-rate threshold (upstream default)")
+	cliflag.IntVar(fs, &minLen, "l", "min-length", 30, "Minimum kept length (upstream default)")
+	var output string
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk trimfq [options] <input>
 
-Trim FASTQ sequences based on quality.
+Quality-trim FASTQ reads with Mott's algorithm, matching upstream
+seqtk trimfq.
 
 Arguments:
   <input>    Input FASTQ file (use '-' for stdin, supports .gz and .bz2)
 
 Options:
-  -q, --quality INT      Minimum quality threshold (default: 20)
-  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
-  -o, --output FILE      Output file (default: stdout, supports .gz)
+  -q, --error-rate FLOAT  Mott error-rate threshold (default: 0.05)
+  -l, --min-length INT    Minimum kept length floor (default: 30)
+  -o, --output FILE       Output file (default: stdout, supports .gz)
 
 `)
 	}
@@ -506,12 +507,7 @@ Options:
 	}
 	defer out.Close()
 
-	encoding := fastq.Phred33
-	if phred64 {
-		encoding = fastq.Phred64
-	}
-
-	if err := seqtk.TrimQuality(input, out, quality, encoding); err != nil {
+	if err := seqtk.TrimfqMott(input, out, errRate, minLen); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

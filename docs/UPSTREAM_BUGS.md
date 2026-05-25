@@ -692,55 +692,56 @@ stable anchor.
 ### seqtk-sample-rng <a id="seqtk-sample-rng"></a>
 
 - **Symptom.** Upstream `seqtk sample` uses a seeded reservoir
-  sampler (`drand48()`-based, default seed 11) and produces a
-  deterministic, fraction-correct subset for any input. Our Go port
-  implements a "deterministic every-Nth-record" sampler that does
+  sampler (kr_drand-based MT19937-64, default seed 11). Our Go port
+  used to do a "deterministic every-Nth-record" sampler that did
   not match upstream's selection regardless of seed.
 
-- **Root cause.** Upstream's algorithm is the streaming reservoir
-  pass over `n` records with `keep = (drand48() < frac)` per record
-  in one-pass mode, and a two-pass random subset in `-2` mode. Our
-  port short-circuits to `written/count < fraction` per record.
-
-- **Disposition.** Track-only — Go-port limitation, not an upstream
-  bug. The parity test for `sample` is split into a structural
-  invariants pass (`TestParity_Seqtk_Sample_StructuralInvariants`,
-  passing) and a byte-parity case
-  (`TestParity_Seqtk_Sample_UpstreamByteParity`, skipped).
-  Fixing this is straightforward (port `drand48` against the same
-  seed); deferred because no caller currently relies on the
-  byte-for-byte output.
+- **Resolution.** Closed in the deferred-test wave. Ported upstream's
+  MT19937-64 PRNG in-tree as
+  `tools/seqtk/pkg/seqtk/krand.go` (matches `kr_srand` / `kr_rand`
+  / `kr_drand` at seqtk.c:300-357 byte-for-byte). `Sample` now
+  defaults to seed `SampleSeed = 11` and a streaming
+  `kr.drand() < fraction` decision; `SampleSeeded(..., seed)` is
+  available for explicit seed control. The parity test
+  `TestParity_Seqtk_Sample_UpstreamByteParity` is unskipped and
+  passes on `sample20.fq` at fraction 0.3.
 
 ### seqtk-randbase-rng <a id="seqtk-randbase-rng"></a>
 
 - **Symptom.** Upstream `seqtk randbase` uses `drand48()` (with
-  implicit seed 0) and is therefore deterministic across runs but
-  not seed-controllable. Our Go port uses `math/rand` with a
-  caller-supplied seed.
+  glibc's default implicit state X0 = 0) and is therefore
+  deterministic across runs but not seed-controllable. Our Go port
+  used `math/rand` with a caller-supplied seed.
 
-- **Root cause.** Different RNGs.
-
-- **Disposition.** Track-only — Go-port limitation, not an upstream
-  bug. The structural invariants
-  (`TestParity_Seqtk_Randbase_StructuralInvariants`) verify that
-  upstream's rules (only 2-base IUPAC codes are randomised; 3-base
-  and 4-base codes pass through; case is preserved) are honoured
-  on our side. Byte parity is skipped.
+- **Resolution.** Closed in the deferred-test wave. Ported glibc's
+  drand48 in-tree as `tools/seqtk/pkg/seqtk/drand48.go` (48-bit
+  LCG, default state 0, matches glibc byte-for-byte; verified
+  against `man drand48`'s sample sequence). `Randbase` now uses
+  `drand48State` and re-formats output to upstream's 60-char wrap
+  rule (`if (i%60 == 0) putchar('\n')` at seqtk.c:557). The `seed`
+  parameter is accepted for API stability but intentionally
+  ignored. Parity test
+  `TestParity_Seqtk_Randbase_UpstreamByteParity` passes on
+  `ambig.fa`.
 
 ### seqtk-trimfq-algorithm <a id="seqtk-trimfq-algorithm"></a>
 
 - **Symptom.** Upstream `seqtk trimfq` runs a modified Mott
   algorithm with an error-rate threshold (default `-q 0.05`) and a
-  `-l 30` minimum-length floor. Our port's `TrimQuality` does a
-  simple Phred-quality threshold trim. The two algorithms produce
-  different cuts on every non-trivial input.
+  `-l 30` minimum-length floor. The port's `TrimQuality` does a
+  simple Phred-quality threshold trim — a different feature.
 
-- **Disposition.** Track-only — feature-gap on our side, not an
-  upstream bug. Tracked in `docs/PARITY_ROADMAP.md#seqtk` under the
-  `trimfq` option-tail gaps; will be closed once we re-implement
-  the Mott trim. The parity test
-  (`TestParity_Seqtk_Trimfq_UpstreamByteParity`) is skipped with a
-  pointer here.
+- **Resolution.** Closed in the deferred-test wave. Added a new
+  `TrimfqMott` function in `tools/seqtk/pkg/seqtk/seqtk.go` that
+  ports upstream's main Mott pass plus the `imax / sliding-window`
+  fallback (seqtk.c:397-426). The `seqtk trimfq` CLI now wires
+  through `TrimfqMott` with `-q 0.05 / -l 30` defaults to mirror
+  upstream's option-tail. The legacy `TrimQuality` library API is
+  retained as a separate Phred-threshold helper. Parity test
+  `TestParity_Seqtk_Trimfq_UpstreamByteParity` has two cases: an
+  all-high-quality pass-through (`p64.fq`) and a low-quality-border
+  case (`trimfq_borders.fq`) that actually exercises the trim — both
+  pass byte-for-byte.
 
 ## prinseq
 
