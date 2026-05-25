@@ -371,3 +371,129 @@ The roadmap is "done" when:
 - `pkg/htsgo/README.md` is a true inventory, not a roadmap of vapour.
 - CRAM v3.0 read works on the htslib test corpus; CRAM is the only
   sub-package with a third-party dep.
+
+## Appendix: libdeflate-parity port for BGZF byte equality
+
+**Status: deferred — multi-slice scope.** This appendix records the
+scope assessment captured against `libdeflate` upstream commit on the
+default branch (cloned read-only into `/tmp/libdeflate`, not added as
+a submodule).
+
+### Motivation
+
+Three test cases currently document themselves as "honest non-parity
+by policy" because upstream samtools/bcftools link against
+`libdeflate`, while htsgo's BGZF writer uses Go's stdlib
+`compress/flate`. Semantically the output is a valid DEFLATE stream;
+byte-for-byte it diverges because of different match-finder
+heuristics and Huffman tree construction.
+
+- `tools/samtools/pkg/samtools/calmd_test.go::TestParity_Calmd_UpstreamCorpus`
+  — only checks BGZF magic, not byte equality.
+- `tools/samtools/pkg/samtools/import_test.go` — round-trip is logical,
+  not byte-exact.
+- `tools/bcftools/pkg/bcftools/parity_test.go` `.tbi` binary equality
+  — skipped via `t.Skip("tabix .tbi binary equality is not a parity
+  target ...")`.
+
+Closing the three requires an in-tree pure-Go libdeflate encoder
+since the policy forbids cgo and forbids new third-party deps for
+this surface.
+
+### Upstream scope (LOC, complexity)
+
+`/tmp/libdeflate/lib/`:
+
+| File                       | LOC   | Role                          |
+|----------------------------|-------|-------------------------------|
+| `deflate_compress.c`       | 4,135 | Encoder, 76 static functions  |
+| `hc_matchfinder.h`         |   401 | Hash-chain MF (levels 4–6)    |
+| `bt_matchfinder.h`         |   342 | Binary-tree MF (levels 8–12)  |
+| `ht_matchfinder.h`         |   234 | Hash-table MF (level 1)       |
+| `matchfinder_common.h`     |   224 | Hashing + skip-bytes helpers  |
+| `deflate_constants.h`      |    56 | Symbol/length/offset tables   |
+| `deflate_compress.h`       |    15 | Encoder-internal API          |
+| **Total**                  | **5,407** | |
+
+Samtools/bcftools default to level 6 (lazy hash-chain). The minimum
+viable subset for BGZF byte parity is:
+
+- `deflate_compress_lazy` + `deflate_compress_lazy_generic` (level-6
+  dispatch, lazy match decision)
+- `hc_matchfinder_init/longest_match/skip_bytes` + matchfinder_common
+- Huffman tables (length-slot base + extra-bits, offset-slot base +
+  extra-bits, precode-permutation, slot lookups for length/offset)
+- `deflate_make_huffman_codes` — package-merge optimal-length code
+  construction with libdeflate's exact tie-break
+- `deflate_compute_true_cost`, dynamic vs static vs stored block chooser
+- `block_split_stats` (`init_block_split_stats`, `observe_literal`,
+  `observe_match`, `merge_new_observations`, `do_end_block_check`,
+  `ready_to_check_block`, `should_end_block`)
+- `calculate_min_match_len`, `recalculate_min_match_len`
+- Output bitstream with LSB-first bit-packing and the canonical
+  `reverse_codeword` symbol-emission tables
+- Header emission for STORED, STATIC, and DYNAMIC block types
+
+Estimated Go LOC: **3,500–4,500** for the encoder, plus **800–1,200**
+for tests (a corpus harness that runs upstream `samtools view -b`
+against shared fixtures and asserts byte-exact output).
+
+### Why this is multi-slice
+
+The encoder's output depends on **exact tie-breaking** in multiple
+places — any single divergence ripples through the entire LZ77
+emission stream and breaks the goal:
+
+1. `lz_hash` and the pipelined `next_hashes[2]` lookahead.
+2. Hash-chain insertion order during `skip_bytes`.
+3. Lazy-match thresholds (`cur_len < min_len`, the `cur_offset > 8192`
+   short-match cutoff at line 2668).
+4. Block-split heuristic firing point (`should_end_block` uses
+   fixed-point entropy thresholds).
+5. Package-merge canonical-Huffman length assignment ordering.
+6. Code-length encoding via the precode (run-length encoding of
+   repeated lengths with three special symbols: 16/17/18).
+7. Cost computation for dynamic vs static vs stored block selection
+   (`deflate_compute_true_cost`).
+
+A half-port that drifts at any of these points produces a stream
+that decodes correctly but never matches libdeflate. The byte-parity
+target is binary — either it lands or it doesn't.
+
+### Suggested slicing
+
+| Slice | Surface                                                                 | Est. LOC | Verification                                              |
+|-------|-------------------------------------------------------------------------|----------|-----------------------------------------------------------|
+| 1     | Constants, tables, output bitstream, STATIC + STORED block emission     |   600    | Decode round-trip against `compress/flate.Reader`         |
+| 2     | `hc_matchfinder` + `matchfinder_common`                                 |   900    | Trace-equality vs captured libdeflate (literal, off, len) |
+| 3     | Huffman code construction + precode + DYNAMIC block emission            | 1,200    | Golden DYNAMIC blocks captured from libdeflate            |
+| 4     | Block splitter + min-match-len + lazy generic + BGZF backend flag       |   800    | End-to-end byte-equality on small fixtures                |
+| 5     | Corpus harness using `samtools view -b` as oracle; default the backend; |   400    | All three deferred tests flip to byte-exact assertions    |
+|       | unskip the three deferred tests                                         |          |                                                           |
+
+Slices 2 and 3 are the load-bearing ones — they require capturing
+libdeflate's internal state at known input positions and asserting
+the Go port emits the same symbols at the same positions. A small
+C harness under `reference_code/libdeflate_trace/` that links against
+the upstream library and dumps `(pos, op, arg)` triples is the
+recommended oracle source.
+
+### Recommendation
+
+Do not attempt this as a single slice. The honest options are:
+
+- **Multi-slice port** (slices 1–5 above), gated on building a
+  libdeflate-trace oracle harness first. Estimated effort: 5 PRs,
+  each independently reviewable, each gated on its own byte-equality
+  tests.
+- **Accept as non-parity** indefinitely. The current `t.Skip` and
+  "logical parity only" tests are honest. BGZF output is a valid
+  DEFLATE stream that any conformant reader (including upstream
+  samtools, bcftools, htslib, IGV, Picard) handles correctly. The
+  only thing it fails is bit-for-bit equality with libdeflate output.
+
+A middle path — porting just enough to get level-6 BGZF byte-exact
+without supporting other levels — does not meaningfully shrink the
+scope. Most of the 3,500–4,500 LOC budget is in the Huffman
+construction, block splitter, and matchfinder, all of which are
+shared between levels 4–6.
