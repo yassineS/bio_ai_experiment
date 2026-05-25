@@ -742,7 +742,15 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 		},
 		{
 			"mpileup/indel-AD.1cns.out",
-			"requires --indels-cns (edlib realignment) — separate algorithm.",
+			"requires --indels-cns (edlib realignment). The bit-parallel " +
+				"Myers' edit-distance engine now lives in " +
+				"pkg/htsgo/edlib (port of reference_code/bcftools/" +
+				"edlib.c — HW/SHW semi-global + a DP fallback for NW " +
+				"and path reconstruction). The consensus-realignment " +
+				"caller that drives it (port of bam2bcf_edlib.c — " +
+				"~1700 LOC of read-vs-consensus dispatch) is the next " +
+				"slice; CLI flags --indels-cns / --indels-2.0 / " +
+				"--no-indels-cns are accepted today but still no-op.",
 		},
 		{
 			"mpileup/annot-NMBZ.3.1.out",
