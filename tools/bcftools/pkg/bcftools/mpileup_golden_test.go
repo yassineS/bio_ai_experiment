@@ -489,19 +489,18 @@ func TestMpileupIndelADGolden(t *testing.T) {
 // edlib engine (pkg/htsgo/edlib) to score each read against per-type
 // candidate haplotypes.
 //
-// Scope: this slice asserts the dispatch wires up and emits valid
-// output of the right shape — the same set of SNP / N-REF / INDEL
-// rows as upstream, with byte-matching records on the bulk of
-// non-indel columns. The four indel rows (000000F:537, :538, :655,
-// :658) carry residual byte-level differences from upstream: those
-// columns are the homopolymer/tandem-repeat sites that exercise the
-// elaborated bcf_cgp_consensus heterozygous threading
-// (cons[0]/cons[1]) and the edlib-flavored compute_indelQ
-// (indelQ1/indelQ2, vs_ref, poly_mqual, TMP_MAGIC=255) that the
-// current slice does not yet implement. Those refinements are the
-// follow-up slice. We surface the residual as a soft expectation
-// (counted, capped) rather than a hard failure so the dispatch
-// itself stays under regression coverage.
+// Scope: the consensus builder (bcf_cgp_consensus with cons[0]/cons[1]
+// het threading and cons_ins/ref_ins smoothing), the dual-consensus
+// alignment scoring (bcf_cgp_align_score), and the edlib-flavored
+// compute_indelQ (indelQ1/indelQ2 vs_ref blend, poly_mqual,
+// TMP_MAGIC=255) have all landed, plus the CNS-specific glfgen path
+// (bam2bcf.c:317-415: legacy REF-rescue disabled, seqQ_offset cap,
+// realigned-read q2p5 dampener) and the IDV/IMF recompute from ADF/ADR
+// (bam2bcf.c:1265-1275). Two indel rows (000000F:538, :658) still
+// carry residual single-read assignment noise (one read's tail-distance
+// contribution and PL byte). The soft expectation (counted, capped)
+// keeps the dispatch under regression coverage while those final two
+// rows are characterised.
 func TestMpileupIndelsCNSGolden(t *testing.T) {
 	ref := mpileupFixture(t, "indel-AD.1.fa")
 	mpileupFixture(t, "indel-AD.1.fa.fai")

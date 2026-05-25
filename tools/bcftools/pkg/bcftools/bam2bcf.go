@@ -292,31 +292,59 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *err
 			b = int(p.aux>>16) & 0x3f
 			q = int(p.aux) & 0xff
 			seqQ = q
-			// Legacy REF-rescue heuristic for the !indels_v20 && !edlib
-			// path (bam2bcf.c:338-348, originally e4e161068 fix for #1446).
-			// At homopolymer / tandem-repeat sites bcf_cgp_compute_indelQ
-			// often returns q == 0 for REF-type reads, so without this
-			// rescue they would fail the min-baseQ gate below and be
-			// undercounted in I16 / QS / AD. Upstream's heuristic: when
-			// the read has no indel in its CIGAR (p.indel == 0) and
-			// either the sample is shallow enough that q < _n/2 or deeper
-			// than 20 reads, reclassify the read as REF (b = 0), promote
-			// q to the read's raw base quality at qpos and rebuild seqQ
-			// as a 3:2 blend of the old seqQ and the base quality. Cap
-			// seqQ to 40 once the pile exceeds 20 reads to dampen
-			// overconfident calls.
 			N := len(pile)
-			if p.indel == 0 && (q < N/2 || N > 20) {
-				rawQ := 0
-				if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
-					rawQ = int(p.rec.Qual[p.qpos])
+			// CNS-only branch (bam2bcf.c:317-327): when --indels-cns is
+			// active, the legacy REF-rescue heuristic is skipped (only the
+			// !indels_v20 && !edlib path runs it). Instead, if NO read in
+			// this sample has an indel in its CIGAR but the read carries
+			// a non-zero indelQ from another sample's candidate, drop the
+			// indelQ and use the raw base quality with seqQ = 99 (the
+			// "basic sequence confidences" fallback).
+			if opts.IndelsCNS {
+				indelInSample := false
+				for k := range pile {
+					if pile[k].indel != 0 {
+						indelInSample = true
+						break
+					}
 				}
-				b = 0
-				q = rawQ
-				seqQ = (3*seqQ + 2*rawQ) / 8
-			}
-			if N > 20 && seqQ > 40 {
-				seqQ = 40
+				if !indelInSample && (p.aux&0xff) != 0 {
+					rawQ := 0
+					if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
+						rawQ = int(p.rec.Qual[p.qpos])
+					}
+					if rawQ > maxBQ {
+						rawQ = maxBQ
+					}
+					q = rawQ
+					seqQ = 99
+				}
+			} else {
+				// Legacy REF-rescue heuristic for the !indels_v20 && !edlib
+				// path (bam2bcf.c:338-348, originally e4e161068 fix for #1446).
+				// At homopolymer / tandem-repeat sites bcf_cgp_compute_indelQ
+				// often returns q == 0 for REF-type reads, so without this
+				// rescue they would fail the min-baseQ gate below and be
+				// undercounted in I16 / QS / AD. Upstream's heuristic: when
+				// the read has no indel in its CIGAR (p.indel == 0) and
+				// either the sample is shallow enough that q < _n/2 or deeper
+				// than 20 reads, reclassify the read as REF (b = 0), promote
+				// q to the read's raw base quality at qpos and rebuild seqQ
+				// as a 3:2 blend of the old seqQ and the base quality. Cap
+				// seqQ to 40 once the pile exceeds 20 reads to dampen
+				// overconfident calls.
+				if p.indel == 0 && (q < N/2 || N > 20) {
+					rawQ := 0
+					if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
+						rawQ = int(p.rec.Qual[p.qpos])
+					}
+					b = 0
+					q = rawQ
+					seqQ = (3*seqQ + 2*rawQ) / 8
+				}
+				if N > 20 && seqQ > 40 {
+					seqQ = 40
+				}
 			}
 			// Upstream reads baseQ AFTER the heuristic from p->aux>>8&0xff
 			// (bam2bcf.c:420) — i.e. the pre-heuristic seqQ bits stored by
@@ -337,6 +365,47 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *err
 					}
 				}
 				continue
+			}
+			// CNS-only seqQ cap and realigned-read dampener (TEST 6,
+			// bam2bcf.c:386-415). Active only with --indels-cns.
+			if opts.IndelsCNS {
+				cap20 := N
+				if cap20 > 20 {
+					cap20 = 20
+				}
+				seqQOffset := opts.SeqQOffset
+				if seqQOffset == 0 {
+					seqQOffset = 120
+				}
+				if cs := seqQOffset - cap20*5; seqQ > cs {
+					seqQ = cs
+				}
+				indelInSample := false
+				for k := range pile {
+					if pile[k].indel != 0 {
+						indelInSample = true
+						break
+					}
+				}
+				if indelInSample && p.indel == 0 && b != 0 {
+					alt := seqQ/2 + 5
+					if alt < seqQ {
+						seqQ = alt
+					}
+					rawQ := 0
+					if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
+						rawQ = int(p.rec.Qual[p.qpos])
+					}
+					a := rawQ/4 + 10
+					bv := q/4 + 1
+					min := a
+					if bv < min {
+						min = bv
+					}
+					if min < q {
+						q = min
+					}
+				}
 			}
 		} else {
 			b = p.base4

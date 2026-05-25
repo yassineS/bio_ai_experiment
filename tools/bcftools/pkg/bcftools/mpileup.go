@@ -420,9 +420,14 @@ type MpileupOptions struct {
 
 	// DelBias is upstream's --del-bias (hidden). Accepted; ignored.
 	DelBias float64
-	// PolyMQual is upstream's --poly-mqual. Accepted; ignored.
+	// PolyMQual is upstream's --poly-mqual. Active only on the CNS indel
+	// path (bcfCallGapPrepCNS): rescales seqQ/indelQ via a homopolymer
+	// min-quality scan (bam2bcf_edlib.c:1164-1203). The legacy probabilistic
+	// caller does not consume it.
 	PolyMQual bool
-	// ScoreVsRef is upstream's --score-vs-ref. Accepted; ignored.
+	// ScoreVsRef is upstream's --score-vs-ref. Active only on the CNS
+	// indel path: weights indelQ between vs-ref (1) and vs-next-best (0)
+	// (bam2bcf_edlib.c:1143). The legacy caller does not consume it.
 	ScoreVsRef float64
 	// SeqQOffset is upstream's --seqq-offset. Accepted; ignored.
 	SeqQOffset int
@@ -1294,7 +1299,7 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 		if !ok {
 			continue
 		}
-		iv := bcfCall2bcfIndel(chrom, pos0, refSlab, &icall, bca, opts.FmtFlag)
+		iv := bcfCall2bcfIndel(chrom, pos0, refSlab, &icall, bca, opts.FmtFlag, opts.IndelsCNS)
 		if err := w.Write(iv); err != nil {
 			return err
 		}
@@ -2570,7 +2575,7 @@ func bcfCall2bcf(chrom string, pos1 int, refB byte, call *bcfCall, fmtFlag uint3
 // the inserted/deleted span — i.e. the anchor base printed as the first
 // REF nucleotide).
 func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
-	bca *bcfCallauxIndel, fmtFlag uint32) *vcf.Variant {
+	bca *bcfCallauxIndel, fmtFlag uint32, cnsMode bool) *vcf.Variant {
 
 	// Build REF and ALT strings (bam2bcf.c:1211-1234).
 	refBase := byte('N')
@@ -2629,15 +2634,43 @@ func bcfCall2bcfIndel(chrom string, pos0 int, refSlab []byte, call *bcfCall,
 	info := map[string]string{}
 	infoOrder := make([]string, 0, 16)
 
-	// INDEL flag, IDV, IMF (bam2bcf.c:1257-1283).
+	// INDEL flag, IDV, IMF (bam2bcf.c:1257-1283). CNS-only override:
+	// upstream bam2bcf.c:1265-1275 recomputes IDV/IMF from the actual
+	// alignment-supported ADF/ADR counts (max ALT ADF+ADR across
+	// alleles) when --indels-cns is active and per-sample ADF/ADR are
+	// populated. This shifts IDV from the "candidate-discovery
+	// max_support" tally to the post-realignment supported-ALT count.
+	idv := bca.MaxSupport
+	imf := bca.MaxFrac
+	if cnsMode && len(call.adf) > 0 && len(call.adr) > 0 {
+		maxAD := 0
+		for k := 1; k < call.nAlleles; k++ {
+			tot := 0
+			for s := 0; s < len(call.adf); s++ {
+				if k < len(call.adf[s]) {
+					tot += call.adf[s][k]
+				}
+				if k < len(call.adr[s]) {
+					tot += call.adr[s][k]
+				}
+			}
+			if tot > maxAD {
+				maxAD = tot
+			}
+		}
+		idv = maxAD
+		if call.oriDepth > 0 {
+			imf = float64(maxAD) / float64(call.oriDepth)
+		}
+	}
 	info["INDEL"] = ""
 	infoOrder = append(infoOrder, "INDEL")
 	if fmtFlag&B2BInfoIDV != 0 {
-		info["IDV"] = strconv.Itoa(bca.MaxSupport)
+		info["IDV"] = strconv.Itoa(idv)
 		infoOrder = append(infoOrder, "IDV")
 	}
 	if fmtFlag&B2BInfoIMF != 0 {
-		info["IMF"] = formatFloat32G(bca.MaxFrac)
+		info["IMF"] = formatFloat32G(imf)
 		infoOrder = append(infoOrder, "IMF")
 	}
 
