@@ -268,6 +268,9 @@ func runView(args []string) int {
 		samplesFile   string
 		compressLevel int
 		threads       int
+		includeTypes  string
+		excludeTypes  string
+		noUpdate      bool
 		showHelp      bool
 		showVer       bool
 	)
@@ -291,6 +294,9 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.StringVar(fs, &includeTypes, "v", "types", "", "Include only listed variant types (snps,indels,mnps,bnd,other)")
+	cliflag.StringVar(fs, &excludeTypes, "V", "exclude-types", "", "Exclude listed variant types")
+	cliflag.BoolVar(fs, &noUpdate, "I", "no-update", false, "Do not (re)calculate INFO fields for the subset (currently INFO/AC and INFO/AN)")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -324,6 +330,10 @@ func runView(args []string) int {
 		return 2
 	}
 
+	if includeTypes != "" && excludeTypes != "" {
+		fmt.Fprintln(os.Stderr, "bcftools view: only one of -v/--types or -V/--exclude-types can be given")
+		return 2
+	}
 	opts := bcftools.ViewOptions{
 		OutputFormat:   format,
 		HeaderOnly:     headerOnly,
@@ -337,6 +347,9 @@ func runView(args []string) int {
 		ExcludeExpr:    excludeExpr,
 		ApplyFilters:   bcftools.SplitCommaList(applyFilters),
 		CompressLevel:  compressLevel,
+		IncludeTypes:   bcftools.SplitCommaList(includeTypes),
+		ExcludeTypes:   bcftools.SplitCommaList(excludeTypes),
+		NoUpdateINFO:   noUpdate,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)

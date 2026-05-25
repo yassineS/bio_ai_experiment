@@ -67,6 +67,18 @@ type ViewOptions struct {
 	Samples        []string // -s
 	SamplesFile    string   // -S
 	CompressLevel  int      // -l
+	// IncludeTypes / ExcludeTypes are the comma lists driving
+	// `-v/--types` and `-V/--exclude-types`. Accepted token set:
+	// snps, indels, mnps, ref, bnd, other. Both empty means no filter;
+	// supplying both is an error (matches vcfview.c:170).
+	IncludeTypes []string
+	ExcludeTypes []string
+	// NoUpdateINFO is the `-I/--no-update` flag (vcfview.c:567+669).
+	// When true the per-record INFO/AC and INFO/AN are NOT recomputed
+	// after a sample subset; the original values pass through. Default
+	// (false) matches upstream's behaviour of always recomputing when
+	// samples are restricted.
+	NoUpdateINFO bool
 }
 
 // applyAlleleFilters returns true if the variant passes the AC/AF filters.
@@ -172,6 +184,74 @@ func restrictSamples(v *vcf.Variant, wanted []string) {
 		}
 	}
 	v.Samples = kept
+}
+
+// recomputeACAN walks the per-sample GT field and rewrites v.Info["AC"]
+// and v.Info["AN"] from scratch. AC is the per-ALT non-reference count
+// (so a multi-allelic site emits a comma-separated list of length
+// len(v.Alt)); AN is the total called-allele count. Mirrors the path
+// upstream vcfview.c takes when `args->update_info` is on and samples
+// have been subset (vcfview.c:355-364, 452-454).
+//
+// If no sample carries a GT field the function leaves Info untouched
+// (mirroring vcfview.c:354 `if ( ... && !bcf_get_fmt(... "GT")) update_ac = 0`).
+func recomputeACAN(v *vcf.Variant) {
+	if len(v.Samples) == 0 {
+		return
+	}
+	hasGT := false
+	for _, s := range v.Samples {
+		if _, ok := s.Data["GT"]; ok {
+			hasGT = true
+			break
+		}
+	}
+	if !hasGT {
+		return
+	}
+	ac := make([]int, len(v.Alt))
+	an := 0
+	for _, s := range v.Samples {
+		gt, ok := s.Data["GT"]
+		if !ok {
+			continue
+		}
+		gt = strings.ReplaceAll(gt, "|", "/")
+		for _, a := range strings.Split(gt, "/") {
+			if a == "." || a == "" {
+				continue
+			}
+			an++
+			n, err := strconv.Atoi(a)
+			if err != nil || n <= 0 {
+				continue
+			}
+			if n-1 < len(ac) {
+				ac[n-1]++
+			}
+		}
+	}
+	if v.Info == nil {
+		v.Info = make(map[string]string)
+	}
+	// AC may not have been declared in the source INFO map at all. We
+	// still update it; the header line is expected to exist (upstream
+	// also writes the tag unconditionally and relies on the header
+	// declaration). InfoOrder is touched only if needed so the source
+	// key order is otherwise preserved.
+	acParts := make([]string, len(ac))
+	for i, n := range ac {
+		acParts[i] = strconv.Itoa(n)
+	}
+	acStr := strings.Join(acParts, ",")
+	if _, present := v.Info["AC"]; !present {
+		v.InfoOrder = append(v.InfoOrder, "AC")
+	}
+	v.Info["AC"] = acStr
+	if _, present := v.Info["AN"]; !present {
+		v.InfoOrder = append(v.InfoOrder, "AN")
+	}
+	v.Info["AN"] = strconv.Itoa(an)
 }
 
 // View streams VCF or BCF from in, applies opts, and writes to out. It is
@@ -353,6 +433,9 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		}
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
+			if !opts.NoUpdateINFO {
+				recomputeACAN(v)
+			}
 		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
@@ -413,6 +496,9 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		}
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
+			if !opts.NoUpdateINFO {
+				recomputeACAN(v)
+			}
 		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
@@ -469,6 +555,9 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 		}
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
+			if !opts.NoUpdateINFO {
+				recomputeACAN(v)
+			}
 		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
@@ -558,6 +647,9 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 			}
 			if len(opts.Samples) > 0 {
 				restrictSamples(v, opts.Samples)
+				if !opts.NoUpdateINFO {
+					recomputeACAN(v)
+				}
 			}
 			if opts.DropGenotypes {
 				dropGenotypes(v)
@@ -610,6 +702,9 @@ func keepVariant(v *vcf.Variant, opts ViewOptions, includeF, excludeF *Filter, a
 	if !opts.applyAlleleFilters(v) {
 		return false
 	}
+	if !opts.applyVariantTypeFilters(v) {
+		return false
+	}
 	if includeF != nil && !includeF.Eval(v) {
 		return false
 	}
@@ -617,6 +712,75 @@ func keepVariant(v *vcf.Variant, opts ViewOptions, includeF, excludeF *Filter, a
 		return false
 	}
 	return true
+}
+
+// applyVariantTypeFilters returns true if v passes the -v/-V type
+// selectors. A variant is kept when at least one of its per-ALT types
+// is in the include set, and none of its per-ALT types are in the
+// exclude set. Mirrors vcfview.c:325-329 — but operates on the
+// already-decoded ALT strings rather than the bcf bitmask.
+func (o ViewOptions) applyVariantTypeFilters(v *vcf.Variant) bool {
+	if len(o.IncludeTypes) == 0 && len(o.ExcludeTypes) == 0 {
+		return true
+	}
+	types := variantTypesPerALT(v)
+	if len(o.IncludeTypes) > 0 {
+		ok := false
+		for _, t := range o.IncludeTypes {
+			for _, vt := range types {
+				if vt == t {
+					ok = true
+					break
+				}
+			}
+			if ok {
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	if len(o.ExcludeTypes) > 0 {
+		for _, t := range o.ExcludeTypes {
+			for _, vt := range types {
+				if vt == t {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// variantTypesPerALT classifies each ALT allele of v into one of the
+// upstream bucket names: "snps", "indels", "mnps", "bnd", "ref",
+// "other". A site with N ALTs returns N labels. Mirrors htslib's
+// bcf_set_variant_type (vcf.c:5380-5439) — REF-length, ALT-length and
+// breakend bracket syntax drive the bucket choice.
+func variantTypesPerALT(v *vcf.Variant) []string {
+	if len(v.Alt) == 0 {
+		return []string{"ref"}
+	}
+	out := make([]string, 0, len(v.Alt))
+	refLen := len(v.Ref)
+	for _, a := range v.Alt {
+		switch {
+		case a == "" || a == "." || a == "*":
+			out = append(out, "other")
+		case strings.ContainsAny(a, "[]"):
+			out = append(out, "bnd")
+		case strings.HasPrefix(a, "<") && strings.HasSuffix(a, ">"):
+			out = append(out, "other")
+		case len(a) == 1 && refLen == 1:
+			out = append(out, "snps")
+		case len(a) == refLen:
+			out = append(out, "mnps")
+		default:
+			out = append(out, "indels")
+		}
+	}
+	return out
 }
 
 // compileExpressions parses the -i / -e flags into Filter trees.

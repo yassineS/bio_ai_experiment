@@ -181,11 +181,72 @@ func TestParityView_RegionTBI(t *testing.T) {
 	equalBytes(t, got, want, "view -r tbi")
 }
 
-// TestParityView_SampleSubset documents a real gap: upstream recomputes
-// INFO/AC and INFO/AN after restricting samples; we don't. Tracked in
-// docs/PARITY_ROADMAP.md (bcftools view section).
+// TestParityView_SampleSubset exercises `-s S1,S3` against basic.vcf
+// with the upstream-default INFO/AC + INFO/AN recompute. Mirrors
+// vcfview.c:341-364 (recompute when sample subset shrinks the set and
+// `update_info` is on; -I/--no-update suppresses the recompute).
 func TestParityView_SampleSubset(t *testing.T) {
-	t.Skip("view -s does not recompute INFO/AC/AN (see docs/PARITY_ROADMAP.md bcftools view)")
+	in := readParity(t, "basic.vcf")
+	got := runParityView(t, in, ViewOptions{Samples: []string{"S1", "S3"}})
+
+	// Per-record AC/AN derived by hand from basic.vcf GTs at S1 and S3.
+	wantAC := []string{"0", "1", "3", "1,1", "2", "1"}
+	wantAN := []string{"4", "4", "4", "4", "2", "2"}
+
+	pos, ac, an := extractACAN(string(got))
+	if len(pos) != len(wantAC) {
+		t.Fatalf("recompute: got %d records (%v), want %d", len(pos), pos, len(wantAC))
+	}
+	for i := range pos {
+		if ac[i] != wantAC[i] {
+			t.Errorf("record %d (POS=%s) AC: got %q want %q", i, pos[i], ac[i], wantAC[i])
+		}
+		if an[i] != wantAN[i] {
+			t.Errorf("record %d (POS=%s) AN: got %q want %q", i, pos[i], an[i], wantAN[i])
+		}
+	}
+
+	// -I/--no-update: the original AC/AN pass through unchanged.
+	got = runParityView(t, in, ViewOptions{Samples: []string{"S1", "S3"}, NoUpdateINFO: true})
+	pos, ac, an = extractACAN(string(got))
+	origAC := []string{"1", "1", "3", "2,1", "2", "2"}
+	origAN := []string{"4", "6", "6", "6", "4", "4"}
+	if len(pos) != len(origAC) {
+		t.Fatalf("no-update: got %d records, want %d", len(pos), len(origAC))
+	}
+	for i := range pos {
+		if ac[i] != origAC[i] {
+			t.Errorf("no-update record %d AC: got %q want %q", i, ac[i], origAC[i])
+		}
+		if an[i] != origAN[i] {
+			t.Errorf("no-update record %d AN: got %q want %q", i, an[i], origAN[i])
+		}
+	}
+}
+
+// extractACAN returns (POS, INFO/AC, INFO/AN) per non-header record.
+func extractACAN(body string) (pos, ac, an []string) {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 8 {
+			continue
+		}
+		pos = append(pos, fields[1])
+		var thisAC, thisAN string
+		for _, kv := range strings.Split(fields[7], ";") {
+			if strings.HasPrefix(kv, "AC=") {
+				thisAC = kv[3:]
+			} else if strings.HasPrefix(kv, "AN=") {
+				thisAN = kv[3:]
+			}
+		}
+		ac = append(ac, thisAC)
+		an = append(an, thisAN)
+	}
+	return pos, ac, an
 }
 
 // TestParityView_VTypeSnps exercises `-v snps`: only SNP records pass
