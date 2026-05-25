@@ -771,10 +771,6 @@ func bcfCallGapPrep(piles [][]pileupBase, pos int, bca *bcfCallauxIndel, ref []b
 			for ; k < maxRef2; k++ {
 				ref2[k] = 4
 			}
-			rRight := right
-			if right > j {
-				rRight = j
-			}
 
 			for _, p := range piles[s] {
 				// Per-read iref/ialt bias tallies (bam2bcf_indel.c:826-849).
@@ -843,12 +839,20 @@ func bcfCallGapPrep(piles [][]pileupBase, pos int, bca *bcfCallauxIndel, ref []b
 
 				// Determine alignment window. Long reads use a
 				// half-window heuristic (bam2bcf_indel.c:866-875).
-				left2, right2 := left, rRight
+				// Upstream bam2bcf_indel.c:866 sets `right2 = right`
+				// (the original window right edge), not a value
+				// truncated at where the haplotype-build loop stopped.
+				// The previous code used a `rRight = min(right, j)`
+				// variable which could differ from upstream when the
+				// per-sample refSample was shorter than the full
+				// window; restore upstream's exact `right2 = right`
+				// assignment.
+				left2, right2 := left, right
 				if len(p.rec.Seq) > 1000 {
 					if pos-left >= bca.IndelWinSize {
 						left2 += bca.IndelWinSize / 2
 					}
-					if rRight-pos >= bca.IndelWinSize {
+					if right-pos >= bca.IndelWinSize {
 						right2 -= bca.IndelWinSize / 2
 					}
 				}

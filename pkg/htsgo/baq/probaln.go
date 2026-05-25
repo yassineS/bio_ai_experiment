@@ -46,11 +46,19 @@ type Par struct {
 var ErrProbalnFailed = errors.New("baq: probaln_glocal failed")
 
 // qual2prob is the g_qual2prob table: index i holds 10^(-i/10), the error
-// probability for a Phred quality of i.
-var qual2prob = func() [256]float64 {
-	var t [256]float64
+// probability for a Phred quality of i. Upstream htslib declares this as
+// `static float g_qual2prob[256]` (probaln.c:47) and the per-base qual array
+// in probaln_glocal is also `float`, so values are computed in double
+// precision via pow() and then rounded once to float32 on store. The
+// downstream arithmetic widens back to double, but that single float32
+// rounding shifts later sums by up to one ULP per base — which over a long
+// homopolymer is enough to flip the score<<6|t tie-break in bcftools
+// mpileup's bcfCgpComputeIndelQ. Match upstream by storing the table as
+// float32.
+var qual2prob = func() [256]float32 {
+	var t [256]float32
 	for i := range t {
-		t[i] = math.Pow(10, -float64(i)/10.0)
+		t[i] = float32(math.Pow(10, -float64(i)/10.0))
 	}
 	return t
 }()
@@ -112,8 +120,15 @@ func ProbalnGlocal(ref []byte, query []byte, iqual []byte, c Par, state []int, q
 	}
 	s := make([]float64, lQuery+2)
 
-	// Per-base error probabilities (probaln.c qual[]).
-	qual := make([]float64, lQuery)
+	// Per-base error probabilities (probaln.c qual[]). Upstream stores
+	// these as float32 (probaln.c:83 `float *qual`), so we do the same:
+	// the float32 storage rounds qual2prob's already-float32 values to
+	// themselves but, more importantly, when these are later read into
+	// `qli` (declared `double` in C), the float-to-double promotion is
+	// exact and the downstream double arithmetic exactly tracks
+	// upstream. Using float64 here would silently keep extra precision
+	// from any future hypothetical extension and drift away from upstream.
+	qual := make([]float32, lQuery)
 	for i := 0; i < lQuery; i++ {
 		if iqual != nil {
 			qual[i] = qual2prob[iqual[i]]
@@ -149,15 +164,16 @@ func ProbalnGlocal(ref []byte, query []byte, iqual []byte, c Par, state []int, q
 			end = lRef
 		}
 		sum := 0.0
+		q0 := float64(qual[0])
 		for k := 1; k <= end; k++ {
 			var e float64
 			switch {
 			case ref[k-1] > 3 || query[0] > 3:
 				e = 1.0
 			case ref[k-1] == query[0]:
-				e = 1.0 - qual[0]
+				e = 1.0 - q0
 			default:
-				e = qual[0] * eM
+				e = q0 * eM
 			}
 			u := setU(bw, 1, k)
 			fi[u+0] = e * bM
@@ -170,7 +186,10 @@ func ProbalnGlocal(ref []byte, query []byte, iqual []byte, c Par, state []int, q
 	for i := 2; i <= lQuery; i++ {
 		fi := f[i*iDim:]
 		fi1 := f[(i-1)*iDim:]
-		qli := qual[i-1]
+		// qli mirrors upstream's `double qli = qual[i-1]` (probaln.c:169):
+		// the float-to-double promotion happens at this single read, then
+		// downstream arithmetic is in double precision.
+		qli := float64(qual[i-1])
 		qyi := query[i-1]
 		beg := 1
 		if x := i - bw; beg < x {
@@ -274,7 +293,9 @@ func ProbalnGlocal(ref []byte, query []byte, iqual []byte, c Par, state []int, q
 		if i > 1 {
 			y = 1.0
 		}
-		qli1 := qual[i]
+		// qli1 mirrors upstream's `double qli1 = qual[i]` (probaln.c:302):
+		// promote the float32 table value to double once at this read.
+		qli1 := float64(qual[i])
 		qyi1 := query[i]
 		beg := 1
 		if x := i - bw; beg < x {
@@ -325,15 +346,16 @@ func ProbalnGlocal(ref []byte, query []byte, iqual []byte, c Par, state []int, q
 			end = lRef
 		}
 		sum := 0.0
+		q0 := float64(qual[0])
 		for k := end; k >= 1; k-- {
 			var e float64
 			switch {
 			case ref[k-1] > 3 || query[0] > 3:
 				e = 1.0
 			case ref[k-1] == query[0]:
-				e = 1.0 - qual[0]
+				e = 1.0 - q0
 			default:
-				e = qual[0] * eM
+				e = q0 * eM
 			}
 			u := setU(bw, 1, k)
 			if u < 3 || u >= iDim {
