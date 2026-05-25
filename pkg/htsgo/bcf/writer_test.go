@@ -498,3 +498,92 @@ func TestEncodeFormatFieldsEncodesEmpty(t *testing.T) {
 		t.Errorf("expected missing for empty sample list, got %v", got)
 	}
 }
+
+// TestWriterPreservesInfoOrder is the regression for the bcf-info-order
+// entry in docs/UPSTREAM_BUGS.md. A VCF→BCF→VCF round-trip must emit the
+// INFO keys in the source declaration order rather than Go's
+// non-deterministic map-iteration order.
+func TestWriterPreservesInfoOrder(t *testing.T) {
+	hdr := makeHeader(t)
+	var buf bytes.Buffer
+	w := NewWriter(&buf, hdr)
+	v := &vcf.Variant{
+		Chrom: "chr1", Pos: 50, ID: ".",
+		Ref: "A", Alt: []string{"T"},
+		Qual: 30, Filter: []string{"PASS"},
+		Info: map[string]string{
+			"AF": "0.5",
+			"DP": "20",
+			"H2": "",
+		},
+		InfoOrder: []string{"DP", "AF", "H2"},
+	}
+	if err := w.Write(v); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	r, err := NewReader(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := r.ReadAll()
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("ReadAll: recs=%d err=%v", len(recs), err)
+	}
+	got := recs[0].ToVariant(r.Header())
+	want := []string{"DP", "AF", "H2"}
+	if len(got.InfoOrder) != len(want) {
+		t.Fatalf("InfoOrder len mismatch: got %v want %v", got.InfoOrder, want)
+	}
+	for i, k := range want {
+		if got.InfoOrder[i] != k {
+			t.Fatalf("InfoOrder[%d]: got %q want %q (full: %v)", i, got.InfoOrder[i], k, got.InfoOrder)
+		}
+	}
+}
+
+// TestWriterPreservesMissingFormatInts is the regression for the
+// MissingInt32 → 0 truncation surfaced by the bcf-info-order round-trip
+// work: encoding "." in a FORMAT integer field at int8/int16 width must
+// produce the matching width-sized missing sentinel (MissingInt8 /
+// MissingInt16) so a downstream reader can recover the missing marker
+// instead of a literal 0.
+func TestWriterPreservesMissingFormatInts(t *testing.T) {
+	hdr := makeHeader(t)
+	var buf bytes.Buffer
+	w := NewWriter(&buf, hdr)
+	v := &vcf.Variant{
+		Chrom: "chr1", Pos: 100, ID: ".",
+		Ref: "A", Alt: []string{"T"},
+		Qual: 99, Filter: []string{"PASS"},
+		Format: []string{"GT", "DP"},
+		Samples: []vcf.Sample{
+			{Name: "S1", Data: map[string]string{"GT": "0/1", "DP": "20"}},
+			// S2: missing DP — must round-trip as "."
+			{Name: "S2", Data: map[string]string{"GT": "./.", "DP": "."}},
+		},
+	}
+	if err := w.Write(v); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	r, err := NewReader(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := r.ReadAll()
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("ReadAll: recs=%d err=%v", len(recs), err)
+	}
+	got := recs[0].ToVariant(r.Header())
+	if got.Samples[0].Data["DP"] != "20" {
+		t.Errorf("S1 DP: got %q want 20", got.Samples[0].Data["DP"])
+	}
+	if got.Samples[1].Data["DP"] != "." {
+		t.Errorf("S2 DP: got %q want . (missing truncated to a literal value)", got.Samples[1].Data["DP"])
+	}
+}

@@ -193,12 +193,17 @@ func TestParityView_VTypeSnps(t *testing.T) {
 	t.Skip("view -v/--types not implemented (see docs/PARITY_ROADMAP.md bcftools view)")
 }
 
-// TestParityView_BCFInput documents that, even with the int64 typed
-// descriptor and IDX-suffix-stripping fixes in this PR, our BCF reader
-// still drops per-record FORMAT/sample data when reading an
-// htslib-produced BCF. The header now matches byte-for-byte. Tracked.
+// TestParityView_BCFInput asserts byte-for-byte parity when reading an
+// htslib-produced BCF, including per-record FORMAT/sample reconstruction.
+// Closes docs/UPSTREAM_BUGS.md#bcf-fmt-keys-missing.
 func TestParityView_BCFInput(t *testing.T) {
-	t.Skip("BCF reader: per-record FORMAT fields not yet reconstructed from htslib BCF input (see docs/UPSTREAM_BUGS.md bcf-fmt-keys-missing)")
+	path := parityPath(t, "basic.bcf")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("fixture missing: %v", err)
+	}
+	want := readParity(t, "view_basic.expected.vcf")
+	got := runParityViewFile(t, path, ViewOptions{})
+	equalBytes(t, got, want, "view BCF input")
 }
 
 // TestParityView_BCFHeader is a positive parity assertion for the header
@@ -215,11 +220,27 @@ func TestParityView_BCFHeader(t *testing.T) {
 	equalBytes(t, got, want, "view -h on BCF input (header parity)")
 }
 
-// TestParityView_RoundTrip_OurBCF documents an incomplete round-trip:
-// our BCF writer hashes INFO into a map without preserving InfoOrder,
-// so a VCF→BCF→VCF cycle loses the source key order. Tracked.
+// TestParityView_RoundTrip_OurBCF asserts a VCF→BCF→VCF cycle preserves
+// the source INFO key order (the byte-for-byte parity invariant for
+// round-trips). Closes docs/UPSTREAM_BUGS.md#bcf-info-order.
 func TestParityView_RoundTrip_OurBCF(t *testing.T) {
-	t.Skip("BCF writer does not yet preserve InfoOrder on encode (see docs/UPSTREAM_BUGS.md bcf-info-order)")
+	in := readParity(t, "basic.vcf")
+	dir := t.TempDir()
+	bcfPath := filepath.Join(dir, "rt.bcf")
+	bcfFile, err := os.Create(bcfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := View(bytes.NewReader(in), bcfFile, ViewOptions{OutputFormat: OutputBCF}); err != nil {
+		bcfFile.Close()
+		t.Fatalf("View VCF->BCF: %v", err)
+	}
+	if err := bcfFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := runParityViewFile(t, bcfPath, ViewOptions{})
+	want := readParity(t, "view_basic.expected.vcf")
+	equalBytes(t, got, want, "VCF->BCF->VCF round-trip")
 }
 
 // TestParityView_SamplesFile tests `-S file` (sample names from a file).
@@ -420,11 +441,32 @@ func TestParityIndex_BinaryMatch(t *testing.T) {
 	t.Skip("tabix .tbi binary equality is not a parity target (see docs/PARITY_ROADMAP.md bcftools index)")
 }
 
-// TestParityIndex_CSIForBCF documents that our index works on
-// port-produced BCF (round-trip), but the upstream-produced BCF fixture
-// hits the int64 typed-descriptor gap and is currently skipped.
+// TestParityIndex_CSIForBCF builds a CSI index for an upstream-produced
+// BCF fixture and verifies it indexes successfully. The int64 typed
+// descriptor path (htslib 1.13+ may emit int64 even when values fit in
+// int32) is now handled by the reader so the index build no longer
+// stumbles on it. Closes docs/UPSTREAM_BUGS.md#bcf-int64.
 func TestParityIndex_CSIForBCF(t *testing.T) {
-	t.Skip("CSI parity for upstream BCF blocked by int64 typed descriptor (see docs/UPSTREAM_BUGS.md bcf-int64)")
+	src := parityPath(t, "basic.bcf")
+	if _, err := os.Stat(src); err != nil {
+		t.Skipf("fixture missing: %v", err)
+	}
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "basic.bcf")
+	if err := copyFile(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := BuildIndex(dst, IndexOptions{Format: IndexCSI, Force: true})
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	info, err := os.Stat(idx)
+	if err != nil {
+		t.Fatalf("stat idx: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("index empty")
+	}
 }
 
 // TestParityIndex_NRecsMatchesUpstream exercises a minimal sanity check:

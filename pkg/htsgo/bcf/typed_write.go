@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -48,10 +49,10 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 		raw   string
 	}
 	pairs := make([]infoPair, 0, len(v.Info))
-	for name, raw := range v.Info {
+	emit := func(name, raw string) {
 		idx, ok := w.infoIndex[name]
 		if !ok {
-			continue
+			return
 		}
 		// idx is the *unified* dictionary IDX, not a slice position —
 		// look up via DictByIDX so we resolve regardless of which of
@@ -63,6 +64,42 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 			entry = *e
 		}
 		pairs = append(pairs, infoPair{key: idx, entry: entry, raw: raw})
+	}
+	// Iteration order matters: a VCF→BCF→VCF round-trip must preserve
+	// the caller's INFO key ordering for byte-for-byte parity. v.InfoOrder
+	// carries the source order when known; fall back to a stable sorted
+	// pass over the map otherwise so output is at least deterministic
+	// rather than Go's randomised map iteration order.
+	if len(v.InfoOrder) > 0 {
+		seen := make(map[string]struct{}, len(v.InfoOrder))
+		for _, name := range v.InfoOrder {
+			raw, ok := v.Info[name]
+			if !ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			emit(name, raw)
+		}
+		extras := make([]string, 0, len(v.Info))
+		for name := range v.Info {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			extras = append(extras, name)
+		}
+		sort.Strings(extras)
+		for _, name := range extras {
+			emit(name, v.Info[name])
+		}
+	} else {
+		names := make([]string, 0, len(v.Info))
+		for name := range v.Info {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			emit(name, v.Info[name])
+		}
 	}
 
 	// Shared portion.
@@ -171,6 +208,10 @@ func encodeInfoValue(entry DictEntry, raw string) []byte {
 
 // encodeInts picks the narrowest integer width that fits every value (and
 // keeps room for the missing/end-of-vector sentinels at the chosen width).
+// Sentinel values (MissingInt32 / EndOfVectorInt32) are translated to the
+// width-appropriate sentinels (MissingInt8 / EndOfVectorInt8 for int8,
+// MissingInt16 / EndOfVectorInt16 for int16) so a downstream reader can
+// distinguish "missing" from a real numeric value of 0.
 func encodeInts(vs []int32) []byte {
 	if len(vs) == 0 {
 		return EncodeMissing()
@@ -180,13 +221,31 @@ func encodeInts(vs []int32) []byte {
 	case 1:
 		payload := make([]byte, len(vs))
 		for i, v := range vs {
-			payload[i] = byte(int8(v))
+			var b int8
+			switch v {
+			case MissingInt32:
+				b = MissingInt8
+			case EndOfVectorInt32:
+				b = EndOfVectorInt8
+			default:
+				b = int8(v)
+			}
+			payload[i] = byte(b)
 		}
 		return encodeTypedRaw(TypeInt8, len(vs), payload)
 	case 2:
 		payload := make([]byte, len(vs)*2)
 		for i, v := range vs {
-			binary.LittleEndian.PutUint16(payload[i*2:], uint16(int16(v)))
+			var s int16
+			switch v {
+			case MissingInt32:
+				s = MissingInt16
+			case EndOfVectorInt32:
+				s = EndOfVectorInt16
+			default:
+				s = int16(v)
+			}
+			binary.LittleEndian.PutUint16(payload[i*2:], uint16(s))
 		}
 		return encodeTypedRaw(TypeInt16, len(vs), payload)
 	default:
@@ -347,13 +406,31 @@ func encodeFormatTypedInts(flat []int32, perSample int) []byte {
 	case 1:
 		payload := make([]byte, len(flat))
 		for i, v := range flat {
-			payload[i] = byte(int8(v))
+			var b int8
+			switch v {
+			case MissingInt32:
+				b = MissingInt8
+			case EndOfVectorInt32:
+				b = EndOfVectorInt8
+			default:
+				b = int8(v)
+			}
+			payload[i] = byte(b)
 		}
 		return encodeTypedRaw(TypeInt8, perSample, payload)
 	case 2:
 		payload := make([]byte, len(flat)*2)
 		for i, v := range flat {
-			binary.LittleEndian.PutUint16(payload[i*2:], uint16(int16(v)))
+			var s int16
+			switch v {
+			case MissingInt32:
+				s = MissingInt16
+			case EndOfVectorInt32:
+				s = EndOfVectorInt16
+			default:
+				s = int16(v)
+			}
+			binary.LittleEndian.PutUint16(payload[i*2:], uint16(s))
 		}
 		return encodeTypedRaw(TypeInt16, perSample, payload)
 	default:

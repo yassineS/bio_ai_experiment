@@ -560,33 +560,47 @@ discrepancies in our Go code (not upstream), all fixed inline:
 - **`htslib` BCF type-4 (int64) emission for fields that fit in int32**
   — htslib 1.13+ optionally writes some FORMAT counters as the BCF
   `int64` typed descriptor even when the values are well within int32
-  range. The BCF 2.2 spec allows it; in practice it just enlarges
-  records and forces every consumer to add a 64-bit path. Not a bug per
-  se but worth raising with the htslib maintainers about whether the
-  encoder should clamp to int32 when it can. Tracked here so the next
-  port can decide whether to round-trip 64-bit verbatim or downcast on
-  read (we currently downcast — see `pkg/htsgo/bcf/typed.go`).
+  range. **Fixed in port** (this PR). The BCF reader at
+  `pkg/htsgo/bcf/typed.go` decodes int64 typed payloads and downcasts
+  values that fit (clamping the ±2³¹ sentinels onto the int32
+  Missing/EndOfVector markers) so upstream-produced BCFs no longer
+  trip the index/decode pipeline. CSI parity for upstream BCFs is now
+  pinned by `TestParityIndex_CSIForBCF` in
+  `tools/bcftools/pkg/bcftools/parity_test.go`. The encoder still
+  emits int32 because no in-tree path produces values that need int64;
+  if a future caller does, encoding will need a parallel int64 path.
 
 <a id="bcf-fmt-keys-missing"></a>
 
 - **Our BCF reader drops per-record FORMAT keys on htslib-produced
-  input** — after the int64 and IDX-strip fixes in this PR, the header
-  parses fine but per-record `FmtKeys` come back as
-  `[<resolved>, -1, -1, ...]`: only the first key resolves correctly,
-  the rest decode as `MissingInt32`. This is almost certainly a bug in
-  our `decodeIndiv` (probably mis-counting the dictionary index width
-  for n_sample > 0 when the key entry is itself a typed-int vector,
-  but we haven't bottomed it out). Workaround: use VCF / VCF.gz input.
+  input.** **Resolved** (this PR). Originally surfaced as
+  `FmtKeys = [<resolved>, -1, -1, ...]` after the int64 + IDX-strip
+  landings; the residual was actually masked by the int64 typed
+  descriptor not being decoded — once `decodeTypedInternal` learned
+  the int64 path (see `bcf-int64`) the FORMAT keys all resolve.
+  Pinned by `TestParityView_BCFInput` in
+  `tools/bcftools/pkg/bcftools/parity_test.go`, which asserts
+  byte-for-byte equality against `view_basic.expected.vcf` on the
+  upstream-produced `basic.bcf` fixture.
 
 <a id="bcf-info-order"></a>
 
-- **Our BCF writer does not preserve `InfoOrder` on encode** — the
-  reader-side fix in this PR populates `Variant.InfoOrder` so the VCF
-  writer can preserve key order, but the BCF writer still iterates the
-  map directly. Consequently a VCF→BCF→VCF round-trip shuffles INFO
-  keys. The fix is to teach `bcf.NewWriterFromVCFHeader` /
-  `bcf.Writer.Write` to consult `InfoOrder` in addition to the existing
-  dict-order pass.
+- **Our BCF writer does not preserve `InfoOrder` on encode.**
+  **Fixed in port** (this PR). `Writer.encodeRecord` in
+  `pkg/htsgo/bcf/typed_write.go` now walks `v.InfoOrder` first (any
+  map-only keys are appended in sorted order for determinism) so a
+  VCF→BCF→VCF cycle no longer shuffles INFO keys. The same change
+  also surfaced a latent encoder bug where MissingInt32 was getting
+  bitcast to a literal 0 at int8/int16 widths; the
+  `encodeInts` / `encodeFormatTypedInts` switches now translate the
+  sentinel to the width-appropriate `MissingInt8`/`MissingInt16` (and
+  `EndOfVector*`) marker so downstream readers see the missing
+  marker rather than a literal value. Pinned by
+  `TestWriterPreservesInfoOrder` and
+  `TestWriterPreservesMissingFormatInts` in
+  `pkg/htsgo/bcf/writer_test.go`, plus
+  `TestParityView_RoundTrip_OurBCF` in
+  `tools/bcftools/pkg/bcftools/parity_test.go`.
 
 ### Non-bugs we considered (closed)
 
