@@ -590,29 +590,69 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 		samples[i] = x.sample
 	}
 	if len(opts.Samples) > 0 || opts.SamplesFile != "" {
+		// `^name` (in -s) or `^path` (in -S) flips to exclusion mode for
+		// the whole list, matching upstream's `if (sample_list[0]=='^')`
+		// gate in mpileup.c's read_samples (the `^` sticks across both
+		// -s and -S input). `-S` file lines may carry a second column
+		// (whitespace-separated) that renames the matched sample on the
+		// way out — mirroring upstream's bam_smpl_get_samples rename map.
+		exclude := false
 		want := map[string]struct{}{}
-		for _, s := range opts.Samples {
-			want[s] = struct{}{}
+		rename := map[string]string{}
+		add := func(name, alias string) {
+			if name == "" {
+				return
+			}
+			if name[0] == '^' {
+				exclude = true
+				name = name[1:]
+			}
+			if name == "" {
+				return
+			}
+			want[name] = struct{}{}
+			if alias != "" {
+				rename[name] = alias
+			}
 		}
-		if opts.SamplesFile != "" {
-			names, err := LoadSamplesFile(opts.SamplesFile)
+		for _, s := range opts.Samples {
+			add(s, "")
+		}
+		samplesPath := opts.SamplesFile
+		if strings.HasPrefix(samplesPath, "^") {
+			exclude = true
+			samplesPath = samplesPath[1:]
+		}
+		if samplesPath != "" {
+			pairs, err := LoadSamplesFilePairs(samplesPath)
 			if err != nil {
 				return fmt.Errorf("bcftools mpileup: %w", err)
 			}
-			for _, s := range names {
-				want[s] = struct{}{}
+			for _, p := range pairs {
+				add(p[0], p[1])
 			}
+		}
+		matches := func(name string) bool {
+			_, ok := want[name]
+			if exclude {
+				return !ok
+			}
+			return ok
 		}
 		keep := in[:0]
 		keepRecs := perInputRecs[:0]
 		keepSamp := samples[:0]
 		for i, x := range in {
-			if _, ok := want[x.sample]; !ok {
+			if !matches(x.sample) {
 				continue
+			}
+			outName := x.sample
+			if alias, ok := rename[x.sample]; ok {
+				outName = alias
 			}
 			keep = append(keep, x)
 			keepRecs = append(keepRecs, perInputRecs[i])
-			keepSamp = append(keepSamp, x.sample)
+			keepSamp = append(keepSamp, outName)
 		}
 		in = keep
 		perInputRecs = keepRecs
@@ -673,8 +713,15 @@ func validateMpileupOptions(opts *MpileupOptions) error {
 	}
 	if v, err := parseBAMFlagString(opts.FlagExcl); err != nil {
 		return fmt.Errorf("bcftools mpileup: --skip-any-set/--ff/--ns: %w", err)
-	} else if opts.RflagSkipAnySet == 0 {
+	} else if v != 0 {
 		opts.RflagSkipAnySet = v
+	} else if opts.RflagSkipAnySet == 0 {
+		// Upstream default (mpileup.c:1392): drop UNMAP|SECONDARY|
+		// QCFAIL|DUP reads. Setting --ff or RflagSkipAnySet directly
+		// REPLACES this default (not OR'd), matching upstream's
+		// configure_handler.
+		opts.RflagSkipAnySet = uint16(sam.FlagUnmapped) | uint16(sam.FlagSecondary) |
+			uint16(sam.FlagQCFail) | uint16(sam.FlagDuplicate)
 	}
 	if v, err := parseBAMFlagString(opts.FlagLS); err != nil {
 		return fmt.Errorf("bcftools mpileup: --skip-all-set/--ls: %w", err)
@@ -834,9 +881,12 @@ func mpileupKeepRecord(rec *sam.Record, opts MpileupOptions) bool {
 	if rec == nil || rec.Pos <= 0 || rec.RName == "" {
 		return false
 	}
-	if rec.Flag&(sam.FlagUnmapped|sam.FlagSecondary|sam.FlagQCFail|sam.FlagDuplicate) != 0 {
-		return false
-	}
+	// The default UNMAP|SECONDARY|QCFAIL|DUP mask is already wired into
+	// RflagSkipAnySet by validateMpileupOptions (mirroring upstream
+	// mpileup.c:1392) when the user does not supply --ff; passing
+	// --ff <mask> REPLACES that default. Do not also hardcode the
+	// default here — it would over-filter when the user picks a less
+	// restrictive --ff (e.g. --ff 0x14 keeps QCFAIL/DUP reads upstream).
 	// --skip-* user filters (mpileup.c:208-211). The `if (mask)` gates
 	// match upstream: a zero mask is a no-op, so callers who do not
 	// set the flag get default behaviour.

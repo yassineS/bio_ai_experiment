@@ -958,6 +958,41 @@ func LoadSamplesFile(path string) ([]string, error) {
 	return names, sc.Err()
 }
 
+// LoadSamplesFilePairs reads a samples file like LoadSamplesFile but
+// also returns the optional second whitespace-separated column as a
+// rename target. Each result entry is {name, alias}; alias is "" when
+// the line carries only one field. Mirrors bam_smpl_add_samples
+// (bam_sample.c) which threads the second column as a per-sample
+// rename map. Lines starting with `#` and blank lines are ignored.
+func LoadSamplesFilePairs(path string) ([][2]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	var pairs [][2]string
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		var name, alias string
+		if i := strings.IndexAny(line, "\t "); i >= 0 {
+			name = line[:i]
+			alias = strings.TrimSpace(line[i:])
+		} else {
+			name = line
+		}
+		if name == "" {
+			continue
+		}
+		pairs = append(pairs, [2]string{name, alias})
+	}
+	return pairs, sc.Err()
+}
+
 // LoadRegionsFile reads BED-style regions (CHROM \t BEG \t END) one per line,
 // converting them to 1-based inclusive ranges that match VCF spec text.
 func LoadRegionsFile(path string) ([]string, error) {

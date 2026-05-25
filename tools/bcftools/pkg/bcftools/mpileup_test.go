@@ -732,6 +732,14 @@ func TestMpileupKeepRecordFilters(t *testing.T) {
 		{"OK single", mk(0, 60), true},
 	}
 	opts := MpileupOptions{MinMQ: 10}
+	// Apply the same default RflagSkipAnySet mask that
+	// validateMpileupOptions does (mirroring mpileup.c:1392): UNMAP |
+	// SECONDARY | QCFAIL | DUP. The hardcoded copy in mpileupKeepRecord
+	// was removed so callers who construct MpileupOptions by hand are
+	// expected to either go through validateMpileupOptions or set the
+	// mask themselves.
+	opts.RflagSkipAnySet = uint16(sam.FlagUnmapped) | uint16(sam.FlagSecondary) |
+		uint16(sam.FlagQCFail) | uint16(sam.FlagDuplicate)
 	for _, tc := range checkDrops {
 		got := mpileupKeepRecord(tc.rec.toRecord(), opts)
 		if got != tc.want {
@@ -739,7 +747,7 @@ func TestMpileupKeepRecordFilters(t *testing.T) {
 		}
 	}
 	// -A flips orphan and not-proper-pair to keep.
-	optsA := MpileupOptions{CountOrphans: true}
+	optsA := MpileupOptions{CountOrphans: true, RflagSkipAnySet: opts.RflagSkipAnySet}
 	if !mpileupKeepRecord(mk(0x1|0x8, 60).toRecord(), optsA) {
 		t.Error("-A should keep mate-unmapped paired reads")
 	}

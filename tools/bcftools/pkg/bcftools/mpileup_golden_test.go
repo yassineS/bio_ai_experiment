@@ -1009,6 +1009,218 @@ func TestMpileupFormatTagGoldens(t *testing.T) {
 	}
 }
 
+// TestMpileupFlagFilterGolden replays test.pl line 1048's `bcftools
+// mpileup -B --ff 0x14 -r17:1050-1060 -a -AD mpileup.1.bam`. --ff 0x14
+// sets the BAM-flag mask RflagSkipAnySet to UNMAP|REVERSE (0x4|0x10),
+// so any read on the reverse strand is dropped on top of the default
+// UNMAP/SECONDARY/QCFAIL/DUP filters. The pileup-engine wiring at
+// mpileupKeepRecord already applies this mask; we just had no golden
+// covering it.
+func TestMpileupFlagFilterGolden(t *testing.T) {
+	ref := mpileupFixture(t, "mpileup.ref.fa")
+	mpileupFixture(t, "mpileup.ref.fa.fai")
+	bam := mpileupFixture(t, "mpileup.1.bam")
+	goldenPath := mpileupFixture(t, "mpileup.3.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:          []string{bam},
+		FastaRef:        ref,
+		Regions:         []string{"17:1050-1060"},
+		NoBAQ:           true, // -B
+		Annotate:        "-AD",
+		RflagSkipAnySet: 0x14, // --ff 0x14
+		NoVersion:       true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		for i := 0; i < nD; i++ {
+			if gotD[i] != wantD[i] {
+				t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+			}
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
+// TestMpileupSampleSelectGoldens replays test.pl lines 1053-1056's
+// `bcftools mpileup -a -AD -r17:100-150 -s HG00101,HG00102` and the
+// `-s ^...` exclusion form. Sample subsetting is wired through the
+// in-driver `keep` filter that drops un-selected input BAMs after the
+// read load; a sample-list entry whose first character is `^` flips
+// to exclusion mode for the whole list.
+func TestMpileupSampleSelectGoldens(t *testing.T) {
+	ref := mpileupFixture(t, "mpileup.ref.fa")
+	mpileupFixture(t, "mpileup.ref.fa.fai")
+	bams := []string{
+		mpileupFixture(t, "mpileup.1.bam"),
+		mpileupFixture(t, "mpileup.2.bam"),
+		mpileupFixture(t, "mpileup.3.bam"),
+	}
+	cases := []struct {
+		name, golden string
+		samples      []string
+	}{
+		{"mpileup.7-include", "mpileup.7.out", []string{"HG00101", "HG00102"}},
+		{"mpileup.8-exclude", "mpileup.8.out", []string{"^HG00101", "HG00102"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			goldenBytes, err := os.ReadFile(mpileupFixture(t, tc.golden))
+			if err != nil {
+				t.Fatalf("read golden: %v", err)
+			}
+			var buf bytes.Buffer
+			opts := MpileupOptions{
+				Inputs:    bams,
+				FastaRef:  ref,
+				Regions:   []string{"17:100-150"},
+				Annotate:  "-AD",
+				Samples:   tc.samples,
+				NoVersion: true,
+			}
+			if err := MpileupFile(opts, &buf); err != nil {
+				t.Fatalf("MpileupFile: %v", err)
+			}
+			if buf.String() != string(goldenBytes) {
+				gotH, gotD := splitMpileupVCF(buf.String())
+				wantH, wantD := splitMpileupVCF(string(goldenBytes))
+				if len(gotH) != len(wantH) {
+					t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+				}
+				nH := len(gotH)
+				if len(wantH) < nH {
+					nH = len(wantH)
+				}
+				for i := 0; i < nH; i++ {
+					if gotH[i] != wantH[i] {
+						t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+					}
+				}
+				diffs := 0
+				nD := len(gotD)
+				if len(wantD) < nD {
+					nD = len(wantD)
+				}
+				for i := 0; i < nD; i++ {
+					if gotD[i] != wantD[i] {
+						diffs++
+						if diffs <= 5 {
+							t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+						}
+					}
+				}
+				if diffs > 5 {
+					t.Errorf("... and %d more record mismatches", diffs-5)
+				}
+				if len(gotD) != len(wantD) {
+					t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+				}
+			}
+		})
+	}
+}
+
+// TestMpileupTargetsAndRenameGolden replays test.pl line 1057's
+// `bcftools mpileup -a -AD -t17:100-150 -S {PATH}/mplp.9.samples`. The
+// samples file has two tab-separated columns per line: the matched
+// sample ID and its rename target. mpileup.9.samples reads
+//
+//   HG00101 SAMPLE1
+//   HG00102 SAMPLE2
+//
+// so HG00100 (not in the file) is excluded and the surviving columns
+// are renamed to SAMPLE1 / SAMPLE2. -t with a literal `chr:beg-end`
+// has the same effect as -r for a single contiguous range; the read
+// fetch is identical in both modes for in-range positions.
+func TestMpileupTargetsAndRenameGolden(t *testing.T) {
+	ref := mpileupFixture(t, "mpileup.ref.fa")
+	mpileupFixture(t, "mpileup.ref.fa.fai")
+	bams := []string{
+		mpileupFixture(t, "mpileup.1.bam"),
+		mpileupFixture(t, "mpileup.2.bam"),
+		mpileupFixture(t, "mpileup.3.bam"),
+	}
+	goldenPath := mpileupFixture(t, "mpileup.9.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	samplesFile := mpileupFixture(t, "mplp.9.samples")
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:      bams,
+		FastaRef:    ref,
+		Targets:     []string{"17:100-150"},
+		Annotate:    "-AD",
+		SamplesFile: samplesFile,
+		NoVersion:   true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		diffs := 0
+		for i := 0; i < nD; i++ {
+			if gotD[i] != wantD[i] {
+				diffs++
+				if diffs <= 5 {
+					t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+				}
+			}
+		}
+		if diffs > 5 {
+			t.Errorf("... and %d more record mismatches", diffs-5)
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
 // TestMpileupGoldensDeferred documents the upstream mpileup goldens that
 // still do not byte-match and the precise reason, so the remaining work
 // stays visible in the test output.
@@ -1022,10 +1234,13 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"TestMpileupFormatTagGoldens (mpileup.{2,4,5}.out).",
 		},
 		{
-			"mpileup/mpileup.{3,7,8,9,10}.out",
-			"produced with `--ff` FLAG filtering, `-s/-S/-G` sample/read-" +
-				"group selection or `-t` targets — accepted flags whose " +
-				"read/sample subsetting is a separate parity item.",
+			"mpileup/mpileup.10.out",
+			"-G {file} read-group selection with optional RG-level rename " +
+				"is not yet ported. The per-input-sample data model in " +
+				"this port lifts the @RG SM tag into a single column per " +
+				"BAM; -G with renaming would need to split a BAM's reads " +
+				"across multiple output columns keyed on read-group ID " +
+				"(mpileup.c bam_smpl.c). Tracked separately.",
 		},
 		{
 			"mpileup/indel-AD.1.out",
@@ -1061,9 +1276,14 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"TMP_MAGIC=255) that drive those residual deltas.",
 		},
 		{
-			"mpileup/annot-NMBZ.[23].2.out / FORMAT/NMBZ goldens",
-			"the per-sample FORMAT/NMBZ emission is not in the slice 4e.6 " +
-				"footprint; INFO/NMBZ is fully ported.",
+			"FORMAT/NMBZ emission",
+			"the per-sample FORMAT/NMBZ tag (B2B_FMT_NMBZ) requires " +
+				"per-sample NM Mann-Whitney z-scores; bcfCall only " +
+				"carries the cross-sample scalar today. INFO/NMBZ is " +
+				"fully ported and exercised by TestMpileupNMBZGolden / " +
+				"TestMpileupNMBZ3Golden / TestMpileupDepthCapGolden. " +
+				"The upstream test.pl suite has no FORMAT/NMBZ golden, " +
+				"so this is tracked for completeness only.",
 		},
 	}
 	for _, d := range deferred {
