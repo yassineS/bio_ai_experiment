@@ -346,16 +346,41 @@ func TestParity_ReadGroupFilter_Missing(t *testing.T) {
 }
 
 // TestParity_MissingChrom_StrictFail mirrors
-// `run missing_chrom $exe -c nonexistent ...`. Upstream exits 1; we
-// silently emit empty outputs — gap.
+// `run missing_chrom $exe -c nonexistent ...`. Upstream exits 1; we now
+// match by returning ErrUnknownChrom from Run.
 func TestParity_MissingChrom_StrictFail(t *testing.T) {
-	t.Skip("known gap: --chrom nonexistent should error like upstream; see docs/PARITY_ROADMAP.md#mosdepth")
+	tmp := t.TempDir()
+	bamPath := filepath.Join(fixtureDir(t), "ovl.bam")
+	err := OpenAndRun(bamPath, Options{
+		Prefix:      filepath.Join(tmp, "t"),
+		Chrom:       "nonexistent",
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	if err == nil {
+		t.Fatalf("expected unknown-chrom error, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") || !strings.Contains(err.Error(), "--chrom") {
+		t.Fatalf("expected --chrom/nonexistent in error, got %v", err)
+	}
 }
 
 // TestParity_BadFragLenBounds — upstream exits 2 with a clear error when
-// --max-frag-len < --min-frag-len; we don't. Gap.
+// --max-frag-len < --min-frag-len; we now reject the combination up front.
 func TestParity_BadFragLenBounds(t *testing.T) {
-	t.Skip("known gap: --max-frag-len < --min-frag-len should be a hard error; see docs/PARITY_ROADMAP.md#mosdepth")
+	tmp := t.TempDir()
+	bamPath := filepath.Join(fixtureDir(t), "ovl.bam")
+	err := OpenAndRun(bamPath, Options{
+		Prefix:      filepath.Join(tmp, "t"),
+		MinFragLen:  100,
+		MaxFragLen:  50,
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	if err == nil {
+		t.Fatalf("expected frag-len bounds error, got nil")
+	}
+	if !strings.Contains(err.Error(), "max-frag-len") {
+		t.Fatalf("expected max-frag-len in error, got %v", err)
+	}
 }
 
 // TestParity_NoPerBase — `-n` / `--no-per-base` suppresses the per-base

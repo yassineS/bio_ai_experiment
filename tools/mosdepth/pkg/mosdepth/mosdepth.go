@@ -86,6 +86,15 @@ var ErrD4NotImplemented = errors.New("mosdepth: D4 output not yet implemented")
 // ErrByConflict is returned when both ByBED and ByWindow are set.
 var ErrByConflict = errors.New("mosdepth: -b/--by cannot specify both a BED file and an integer window")
 
+// ErrBadFragLenBounds is returned when MaxFragLen < MinFragLen and both are
+// positive — upstream mosdepth exits with a hard error in this case rather
+// than silently dropping every read.
+var ErrBadFragLenBounds = errors.New("mosdepth: --max-frag-len must be >= --min-frag-len")
+
+// ErrUnknownChrom is returned when --chrom names a sequence that is not in
+// the BAM header. Upstream mosdepth treats this as a hard error.
+var ErrUnknownChrom = errors.New("mosdepth: --chrom not found in BAM header")
+
 // Run executes a full mosdepth pipeline against the BAM bytes streaming in
 // from in. The header is read first, then records are streamed and depth
 // is accumulated per reference. When the cursor moves to a new reference
@@ -104,6 +113,9 @@ func Run(in io.Reader, opts Options) error {
 	if opts.Prefix == "" {
 		return fmt.Errorf("mosdepth: empty output prefix")
 	}
+	if opts.MinFragLen > 0 && opts.MaxFragLen > 0 && opts.MaxFragLen < opts.MinFragLen {
+		return fmt.Errorf("%w: max=%d min=%d", ErrBadFragLenBounds, opts.MaxFragLen, opts.MinFragLen)
+	}
 	rd, err := sam.NewReader(in)
 	if err != nil {
 		return fmt.Errorf("mosdepth: open BAM: %w", err)
@@ -111,6 +123,18 @@ func Run(in io.Reader, opts Options) error {
 	hdr := rd.Header()
 	if hdr == nil {
 		return fmt.Errorf("mosdepth: BAM has no header")
+	}
+	if opts.Chrom != "" {
+		found := false
+		for _, r := range hdr.Refs {
+			if r.Name == opts.Chrom {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%w: %q", ErrUnknownChrom, opts.Chrom)
+		}
 	}
 
 	// Resolve regions per-chrom up front. perChromRegions[chrom] is the

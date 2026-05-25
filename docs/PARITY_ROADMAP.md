@@ -2955,6 +2955,12 @@ Missing:
 - **Multi-threading** (`-t/--threads N`).
 - **`--mapq` 0-only fast-path** — upstream has a special fast loop.
 
+Closed (this wave):
+
+- **Error gates** — `--chrom nonexistent` (`ErrUnknownChrom`) and
+  `--max-frag-len < --min-frag-len` (`ErrBadFragLenBounds`) now return
+  hard errors matching upstream's exit-1 / exit-2 behaviour.
+
 **Validation:** no upstream-test-suite run yet.
 
 ---
