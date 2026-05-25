@@ -350,24 +350,35 @@ func TestParityQuery_ListSamples(t *testing.T) {
 	equalBytes(t, got, want, "query -l")
 }
 
-// TestParityQuery_FormatChar documents that we don't yet support
-// `[%FORMAT/<tag>]` where <tag> is a Char field. Upstream produces the
-// same output via `%STR` shortcut; our parser is conservative.
+// TestParityQuery_FormatChar exercises `[%FMT/<tag>]` where <tag> is
+// a String FORMAT field — here `GT` (char-typed in BCF). The explicit
+// `FMT/` prefix routes through the per-sample dispatcher and emits the
+// same output as the bare `[%GT]` form.
 func TestParityQuery_FormatChar(t *testing.T) {
-	t.Skip("query: FMT/<char-tag> token not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "query_sample_gt.expected.tsv")
+	got := runParityQuery(t, in, QueryOptions{Format: `%CHROM\t%POS[\t%FMT/GT]\n`})
+	equalBytes(t, got, want, "query [\\t%FMT/GT]")
 }
 
-// TestParityQuery_NAlleles documents that the `%N_ALT` token is not yet
-// implemented. Upstream evaluates it dynamically from len(ALT)-1.
+// TestParityQuery_NAlleles exercises the `%N_ALT` token. Upstream
+// filter.c:3384 resolves it to line->n_allele - 1; the query path
+// mirrors that as len(v.Alt).
 func TestParityQuery_NAlleles(t *testing.T) {
-	t.Skip("query %N_ALT not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "query_n_alt.expected.tsv")
+	got := runParityQuery(t, in, QueryOptions{Format: `%CHROM\t%POS\t%N_ALT\n`})
+	equalBytes(t, got, want, "query %N_ALT")
 }
 
-// TestParityQuery_AllInfoLine documents that the `%INFO` (without a
-// subkey) token is not yet implemented; upstream prints the entire INFO
-// column verbatim.
+// TestParityQuery_AllInfoLine exercises the `%INFO` token (without a
+// subkey): upstream convert.c::process_info with fmt->key == NULL emits
+// the entire INFO column verbatim in source order.
 func TestParityQuery_AllInfoLine(t *testing.T) {
-	t.Skip("query bare %INFO token not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "query_info_all.expected.tsv")
+	got := runParityQuery(t, in, QueryOptions{Format: `%CHROM\t%POS\t%INFO\n`})
+	equalBytes(t, got, want, "query bare %INFO")
 }
 
 // =====================================================================

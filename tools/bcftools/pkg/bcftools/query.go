@@ -753,6 +753,16 @@ func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int) string {
 		return strings.Join(v.Filter, ";")
 	case "TYPE":
 		return variantType(v)
+	case "N_ALT":
+		// Count of non-reference alleles. Upstream's convert.c resolves
+		// this via the shared filter token (filter.c:3384) which returns
+		// line->n_allele - 1; the format-string path matches.
+		return strconv.Itoa(len(v.Alt))
+	case "INFO":
+		// Whole-INFO column verbatim. Upstream `process_info` with a null
+		// key re-serialises every present INFO tag in source order; we
+		// re-emit captured InfoOrder which preserves the source order.
+		return formatWholeInfo(v)
 	case "GT":
 		if sampleIdx < 0 {
 			return "."
