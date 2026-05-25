@@ -628,13 +628,40 @@ func TestParity_Depth_T03_Region(t *testing.T) {
 	}
 }
 
-// depth.t04 — `-a` zero-depth emission. Skipped: our `-a` semantics emit
-// only positions inside an interval that contains at least one base, which
-// for a single-read scan matches but the upstream "single contiguous span
-// per chromosome" form is the natural follow-up.
+// depth.t04 — `-a` zero-depth emission with a region restriction. The
+// region chr1:5-15 covers part of a single read at chr1:10-14, so
+// positions 5..9 are zero-filled (the leading gap before the read) and
+// 10..14 carry depth 1.
 func TestParity_Depth_T04_AllPositions(t *testing.T) {
-	t.Skip("not yet validated against upstream: -a zero-fill behaviour edge cases; " +
-		"tracked in PARITY_ROADMAP.md#samtools")
+	const sam = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:50
+r1	0	chr1	10	60	5M	*	0	0	ACGTA	IIIII
+`
+	var out bytes.Buffer
+	if err := Depth([]io.Reader{strings.NewReader(sam)}, &out, DepthOptions{
+		ExcludeFlags: DefaultDepthExcludeFlags,
+		AllPositions: true,
+		Regions:      []string{"chr1:5-15"},
+	}); err != nil {
+		t.Fatalf("Depth -a -r: %v", err)
+	}
+	// Positions 5..9 zero, 10..14 cov=1, no row past 14 (region end).
+	var b strings.Builder
+	for p := 5; p <= 9; p++ {
+		b.WriteString("chr1\t")
+		b.WriteString(itoa(p))
+		b.WriteString("\t0\n")
+	}
+	for p := 10; p <= 14; p++ {
+		b.WriteString("chr1\t")
+		b.WriteString(itoa(p))
+		b.WriteString("\t1\n")
+	}
+	b.WriteString("chr1\t15\t0\n")
+	want := b.String()
+	if out.String() != want {
+		t.Errorf("depth -a mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
+	}
 }
 
 // depth.t05 — CIGAR with a deletion. Verifies refLen advances past the
@@ -701,10 +728,31 @@ func TestParity_Depth_T07_Empty(t *testing.T) {
 	}
 }
 
-// depth.t08 — BED restriction is not yet validated against upstream.
+// depth.t08 — BED restriction. The BED interval [10, 15) on chr1
+// intersects the chr1:10-... read in basic.sam and must emit exactly
+// positions 10..14 (1-based, half-open BED→inclusive 1-based pos).
 func TestParity_Depth_T08_BedRestrict(t *testing.T) {
-	t.Skip("not yet supported: -b BED region restriction byte-parity not validated; " +
-		"tracked in PARITY_ROADMAP.md#samtools")
+	const sam = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:1000
+r1	0	chr1	10	60	10M	*	0	0	ACGTACGTAC	IIIIIIIIII
+`
+	dir := t.TempDir()
+	bed := filepath.Join(dir, "regions.bed")
+	if err := os.WriteFile(bed, []byte("chr1\t9\t14\n"), 0o644); err != nil {
+		t.Fatalf("write BED: %v", err)
+	}
+	var out bytes.Buffer
+	if err := Depth([]io.Reader{strings.NewReader(sam)}, &out, DepthOptions{
+		ExcludeFlags: DefaultDepthExcludeFlags,
+		BedPath:      bed,
+	}); err != nil {
+		t.Fatalf("Depth -b: %v", err)
+	}
+	// BED 9..14 (0-based half-open) → 1-based positions 10..14 inclusive.
+	want := "chr1\t10\t1\nchr1\t11\t1\nchr1\t12\t1\nchr1\t13\t1\nchr1\t14\t1\n"
+	if out.String() != want {
+		t.Errorf("depth -b mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
+	}
 }
 
 // ---- fastq -------------------------------------------------------------
@@ -1261,27 +1309,40 @@ func TestParity_Idxstats_T02_OutputFormat(t *testing.T) {
 	}
 }
 
-// idxstats.t03 — upstream golden output (from reference_code/samtools/test/idxstats/).
+// idxstats.t03 — upstream golden output (from
+// reference_code/samtools/test/idxstats/). We feed the matching
+// upstream BAM through Idxstats and assert byte-for-byte equality
+// with the expected text. When the submodule is absent the test
+// skips with a pointer at how to initialise it.
 func TestParity_Idxstats_T03_UpstreamGolden(t *testing.T) {
-	abs, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "samtools", "test", "idxstats", "test_input_1_a.bam.expected"))
+	expected, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "samtools", "test", "idxstats", "test_input_1_a.bam.expected"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(abs); err != nil {
+	bamPath, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "samtools", "test", "dat", "test_input_1_a.bam"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(expected); err != nil {
 		t.Skip("upstream samtools idxstats fixture not available; init reference_code/samtools submodule")
 	}
-	want, err := os.ReadFile(abs)
+	if _, err := os.Stat(bamPath); err != nil {
+		t.Skip("upstream samtools BAM fixture not available; init reference_code/samtools submodule")
+	}
+	want, err := os.ReadFile(expected)
 	if err != nil {
 		t.Fatalf("read golden: %v", err)
 	}
-	// We don't have the source BAM checked in — just verify the
-	// expected file has the 4-column shape so any future BAM
-	// vendoring can be slotted in trivially.
-	for i, line := range strings.Split(strings.TrimRight(string(want), "\n"), "\n") {
-		fields := strings.Split(line, "\t")
-		if len(fields) != 4 {
-			t.Errorf("upstream line %d has %d fields, want 4: %q", i, len(fields), line)
-		}
+	rows, err := Idxstats(bamPath)
+	if err != nil {
+		t.Fatalf("Idxstats: %v", err)
+	}
+	var got bytes.Buffer
+	if err := WriteIdxstats(&got, rows); err != nil {
+		t.Fatalf("WriteIdxstats: %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Errorf("idxstats mismatch.\nwant:\n%s\ngot:\n%s", want, got.String())
 	}
 }
 
@@ -1840,14 +1901,45 @@ r3	0	chr1	10	60	5M	*	0	0	ACGTA	IIIII
 }
 
 // TestParity_Mpileup_T12_AllPositionsZeroFill — -aa emits every position
-// of every contig in the header, including chromosomes with no reads.
-// Behaviour parity is exercised on a hand-built multi-contig fixture by
-// TestMpileup_AA_ZeroFillTableDriven (chr1 partial, chr2 fully empty,
-// chr3 partial). Running -aa across realistic upstream test BAMs would
-// produce a million+ rows per chrom; keep this case as a documented
-// pointer rather than re-executing.
+// of every contig in the header, including chromosomes with no reads. We
+// drive a minimal three-contig fixture (one fully-empty contig in the
+// middle) and assert the exact row set, mirroring the larger table-driven
+// test in mpileup_test.go (TestMpileup_AA_ZeroFillTableDriven). Realistic
+// upstream BAMs with multi-million-bp contigs would balloon to millions
+// of rows; this minimal fixture surfaces the same -aa semantics without
+// the time cost.
 func TestParity_Mpileup_T12_AllPositionsZeroFill(t *testing.T) {
-	t.Skip("covered by TestMpileup_AA_ZeroFillTableDriven; full-LN upstream fixtures would emit >1M rows/chrom")
+	sam := `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chrA	LN:4
+@SQ	SN:chrB	LN:3
+@SQ	SN:chrC	LN:4
+r1	0	chrA	2	60	2M	*	0	0	AC	II
+r2	0	chrC	3	60	2M	*	0	0	GT	II
+`
+	var out bytes.Buffer
+	if err := Mpileup([]io.Reader{strings.NewReader(sam)}, &out,
+		MpileupOptions{AllPositionsAllChroms: true}, nil, nil); err != nil {
+		t.Fatalf("Mpileup -aa: %v", err)
+	}
+	// Build the expected -aa row set. Every position of every contig must
+	// appear in header order; covered positions carry depth+pileup, every
+	// other position is zero-filled.
+	want := strings.Join([]string{
+		"chrA\t1\tN\t0\t*\t*",
+		"chrA\t2\tN\t1\t^]A\tI",
+		"chrA\t3\tN\t1\tC$\tI",
+		"chrA\t4\tN\t0\t*\t*",
+		"chrB\t1\tN\t0\t*\t*",
+		"chrB\t2\tN\t0\t*\t*",
+		"chrB\t3\tN\t0\t*\t*",
+		"chrC\t1\tN\t0\t*\t*",
+		"chrC\t2\tN\t0\t*\t*",
+		"chrC\t3\tN\t1\t^]G\tI",
+		"chrC\t4\tN\t1\tT$\tI",
+	}, "\n") + "\n"
+	if out.String() != want {
+		t.Errorf("-aa output mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
+	}
 }
 
 // TestParity_Mpileup_T13_CountOrphansFlag — -A includes reads marked as

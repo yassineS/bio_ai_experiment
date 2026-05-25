@@ -60,9 +60,20 @@ type Options struct {
 	PrintDistance bool
 	// DistanceMode controls the sign convention for the distance column.
 	DistanceMode DistanceMode
-	// RequireOverlap (`-N`) only emits rows where A and B overlap. All
+	// RequireOverlap, when set, only emits rows where A and B overlap. All
 	// non-overlapping B intervals are treated as infinity (skipped).
+	// NOTE: this is distinct from upstream `-N`; see RequireDifferentNames.
 	RequireOverlap bool
+	// RequireDifferentNames (`-N`) forces the closest B to have a different
+	// name field (BED column 4) than A. B's with the same name are ignored.
+	RequireDifferentNames bool
+	// SameStrand (`-s`) restricts the search to B's whose strand matches A's
+	// strand (BED column 6). If A has no strand, all B's are eligible.
+	SameStrand bool
+	// OppositeStrand (`-S`) restricts the search to B's whose strand is the
+	// opposite of A's strand. Mutually exclusive with SameStrand at upstream;
+	// here the caller is expected not to set both.
+	OppositeStrand bool
 	// TieBreak controls how ties (multiple equally-close B intervals) are
 	// resolved. Default TieAll.
 	TieBreak TieBreak
@@ -80,8 +91,28 @@ type Row struct {
 
 // MissingRow is a sentinel "no closest B" row used when A's chromosome doesn't
 // exist in B. It contains "." for chrom and -1 for the coordinates, matching
-// bedtools convention.
+// bedtools convention. The Fields slice is padded by Closest to match B's
+// observed column width using upstream's Bed{3,4,5,6,12}::printNull format.
 var MissingRow = &Row{Fields: []string{".", "-1", "-1"}, Chrom: ".", Start: -1, End: -1, Strand: "+"}
+
+// missingRowForCols returns a MissingRow padded to bCols using upstream's
+// Bed{3,4,5,6,12}::printNull format.
+func missingRowForCols(bCols int) *Row {
+	var fields []string
+	switch {
+	case bCols >= 12:
+		fields = []string{".", "-1", "-1", ".", "-1", ".", ".", ".", ".", ".", ".", "."}
+	case bCols >= 6:
+		fields = []string{".", "-1", "-1", ".", "-1", "."}
+	case bCols >= 5:
+		fields = []string{".", "-1", "-1", ".", "-1"}
+	case bCols >= 4:
+		fields = []string{".", "-1", "-1", "."}
+	default:
+		fields = []string{".", "-1", "-1"}
+	}
+	return &Row{Fields: fields, Chrom: ".", Start: -1, End: -1, Strand: "+"}
+}
 
 // ReadAll parses every BED record from r into Row values. Lines that begin
 // with '#', "track", or "browser" are skipped, as are blank lines.
@@ -170,6 +201,7 @@ func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, e
 		maxEndPref []int // maxEndPref[i] = max(rows[0..i].End)
 	}
 	bByChrom := make(map[string]*chromB, 16)
+	bMaxCols := 3
 	for _, b := range bRows {
 		c := bByChrom[b.Chrom]
 		if c == nil {
@@ -177,6 +209,9 @@ func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, e
 			bByChrom[b.Chrom] = c
 		}
 		c.rows = append(c.rows, b)
+		if n := len(b.Fields); n > bMaxCols {
+			bMaxCols = n
+		}
 	}
 	for _, c := range bByChrom {
 		c.maxEndPref = make([]int, len(c.rows))
@@ -188,6 +223,7 @@ func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, e
 			c.maxEndPref[i] = max
 		}
 	}
+	missing := missingRowForCols(bMaxCols)
 
 	bw := bufio.NewWriter(writer)
 	defer bw.Flush()
@@ -200,7 +236,7 @@ func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, e
 			bs = c.rows
 			maxEnd = c.maxEndPref
 		}
-		hits := closestFor(a, bs, maxEnd, opts)
+		hits := closestFor(a, bs, maxEnd, opts, missing)
 		for _, h := range hits {
 			if err := writeRow(bw, a, h.b, h.dist, opts); err != nil {
 				return count, fmt.Errorf("error writing output: %w", err)
@@ -217,6 +253,95 @@ type hit struct {
 	dist int64
 }
 
+// ClosestMulti is the multiple-database equivalent of Closest. For each A row
+// it emits one output line per database, in the order the databases were
+// supplied. The line is:
+//
+//	<A's columns>  <label>  <closest-B-from-that-db's columns>  [<distance>]
+//
+// where <label> is dbLabels[i] (use the empty string to omit the label column;
+// pass strconv.Itoa(i+1) for upstream's default "1/2/3" labelling, the basename
+// for -filenames, or the user-supplied -names tokens). When a database has no
+// B on A's chromosome it is reported with the per-db null placeholder
+// (Bed3/4/5/6/12 width detected per database).
+func ClosestMulti(readerA io.Reader, dbReaders []io.Reader, writer io.Writer, opts Options, dbLabels []string) (int, error) {
+	if len(dbReaders) == 0 {
+		return 0, fmt.Errorf("ClosestMulti: no databases supplied")
+	}
+	if len(dbLabels) != 0 && len(dbLabels) != len(dbReaders) {
+		return 0, fmt.Errorf("ClosestMulti: dbLabels (%d) must match dbReaders (%d) or be empty",
+			len(dbLabels), len(dbReaders))
+	}
+
+	aRows, err := ReadAll(readerA)
+	if err != nil {
+		return 0, fmt.Errorf("error reading A: %w", err)
+	}
+	if err := CheckSorted(aRows, "A"); err != nil {
+		return 0, err
+	}
+
+	type dbIndex struct {
+		rows       map[string][]*Row
+		maxEndPref map[string][]int
+		missing    *Row
+	}
+	dbs := make([]*dbIndex, len(dbReaders))
+	for di, r := range dbReaders {
+		bRows, err := ReadAll(r)
+		if err != nil {
+			return 0, fmt.Errorf("error reading db %d: %w", di+1, err)
+		}
+		if err := CheckSorted(bRows, fmt.Sprintf("db %d", di+1)); err != nil {
+			return 0, err
+		}
+		bByChrom := make(map[string][]*Row, 16)
+		maxCols := 3
+		for _, b := range bRows {
+			bByChrom[b.Chrom] = append(bByChrom[b.Chrom], b)
+			if n := len(b.Fields); n > maxCols {
+				maxCols = n
+			}
+		}
+		maxEndByChrom := make(map[string][]int, len(bByChrom))
+		for chrom, rs := range bByChrom {
+			pref := make([]int, len(rs))
+			m := 0
+			for i, r := range rs {
+				if r.End > m {
+					m = r.End
+				}
+				pref[i] = m
+			}
+			maxEndByChrom[chrom] = pref
+		}
+		dbs[di] = &dbIndex{rows: bByChrom, maxEndPref: maxEndByChrom, missing: missingRowForCols(maxCols)}
+	}
+
+	bw := bufio.NewWriter(writer)
+	defer bw.Flush()
+
+	count := 0
+	for _, a := range aRows {
+		for di, db := range dbs {
+			bs := db.rows[a.Chrom]
+			maxEnd := db.maxEndPref[a.Chrom]
+			hits := closestFor(a, bs, maxEnd, opts, db.missing)
+			label := ""
+			if len(dbLabels) > 0 {
+				label = dbLabels[di]
+			}
+			for _, h := range hits {
+				if err := writeRowLabeled(bw, a, label, h.b, h.dist, opts); err != nil {
+					return count, fmt.Errorf("error writing output: %w", err)
+				}
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
 // closestFor returns the closest hits for A on its chromosome, taking
 // Options.TieBreak into account.
 //
@@ -229,12 +354,12 @@ type hit struct {
 // that side. To handle the case where a B further left has a long End that
 // could overlap A, we widen the left walk: any B that overlaps a.Start (i.e.
 // B.End > a.Start) is also considered.
-func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
+func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options, missing *Row) []hit {
 	if len(bs) == 0 {
 		if opts.RequireOverlap {
 			return nil
 		}
-		return []hit{{b: MissingRow, dist: -1}}
+		return []hit{{b: missing, dist: -1}}
 	}
 
 	idx := sort.Search(len(bs), func(i int) bool { return bs[i].Start >= a.Start })
@@ -245,8 +370,35 @@ func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
 		signed int64
 	}
 	var cands []cand
+	// nameOf returns the BED column-4 name, or "" if the record has < 4 fields.
+	nameOf := func(r *Row) string {
+		if len(r.Fields) >= 4 {
+			return r.Fields[3]
+		}
+		return ""
+	}
 	consider := func(i int) {
-		signed := signedDistance(a, bs[i], opts)
+		b := bs[i]
+		// -N: skip B's whose name equals A's.
+		if opts.RequireDifferentNames && nameOf(a) == nameOf(b) {
+			return
+		}
+		// -s / -S: strand filters. Only applied when B has a strand column
+		// (matches upstream which treats a missing strand as a mismatch).
+		if opts.SameStrand {
+			if a.Strand == "" || b.Strand == "" || a.Strand != b.Strand {
+				return
+			}
+		}
+		if opts.OppositeStrand {
+			if a.Strand == "" || b.Strand == "" || a.Strand == b.Strand {
+				return
+			}
+			if a.Strand != "+" && a.Strand != "-" {
+				return
+			}
+		}
+		signed := signedDistance(a, b, opts)
 		if opts.RequireOverlap && signed != 0 {
 			return
 		}
@@ -297,7 +449,7 @@ func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
 		if opts.RequireOverlap {
 			return nil
 		}
-		return []hit{{b: MissingRow, dist: -1}}
+		return []hit{{b: missing, dist: -1}}
 	}
 
 	// Sort candidates by their index in B (input order) for deterministic output.
@@ -359,6 +511,38 @@ func signedDistance(a, b *Row, opts Options) int64 {
 	default: // DistanceRef
 		return refSigned
 	}
+}
+
+// writeRowLabeled writes A's columns, an optional label column (between A
+// and B), B's columns, and optionally the trailing distance column. The
+// label is omitted entirely when it is empty.
+func writeRowLabeled(bw *bufio.Writer, a *Row, label string, b *Row, dist int64, opts Options) error {
+	if _, err := bw.WriteString(strings.Join(a.Fields, "\t")); err != nil {
+		return err
+	}
+	if label != "" {
+		if err := bw.WriteByte('\t'); err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(label); err != nil {
+			return err
+		}
+	}
+	if err := bw.WriteByte('\t'); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(strings.Join(b.Fields, "\t")); err != nil {
+		return err
+	}
+	if opts.PrintDistance {
+		if err := bw.WriteByte('\t'); err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(strconv.FormatInt(dist, 10)); err != nil {
+			return err
+		}
+	}
+	return bw.WriteByte('\n')
 }
 
 // writeRow writes one output row: A's columns, then B's columns, then the

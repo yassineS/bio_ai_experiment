@@ -282,6 +282,57 @@ func (r *Record) Length() int {
 	return r.ChromEnd - r.ChromStart
 }
 
+// Fields returns the record's tab-delimited columns using the same
+// "shortest-prefix" heuristic as Writer.Write: optional columns are emitted
+// only as long as the next one is also populated. This is useful for callers
+// that need to compose joined output (for example `bedtools intersect -wa
+// -wb / -wo / -wao`) without duplicating the field-selection logic.
+func (r *Record) Fields() []string {
+	fields := []string{
+		r.Chrom,
+		strconv.Itoa(r.ChromStart),
+		strconv.Itoa(r.ChromEnd),
+	}
+
+	if r.Name != "" {
+		fields = append(fields, r.Name)
+		if r.Score != 0 {
+			fields = append(fields, strconv.Itoa(r.Score))
+			if r.Strand != "" {
+				fields = append(fields, r.Strand)
+				if r.ThickStart != 0 || r.ThickEnd != 0 {
+					fields = append(fields,
+						strconv.Itoa(r.ThickStart),
+						strconv.Itoa(r.ThickEnd))
+					if r.ItemRGB != "" {
+						fields = append(fields, r.ItemRGB)
+						if r.BlockCount != 0 {
+							fields = append(fields, strconv.Itoa(r.BlockCount))
+							if len(r.BlockSizes) > 0 {
+								sizes := make([]string, len(r.BlockSizes))
+								for i, size := range r.BlockSizes {
+									sizes[i] = strconv.Itoa(size)
+								}
+								fields = append(fields, strings.Join(sizes, ","))
+								if len(r.BlockStarts) > 0 {
+									starts := make([]string, len(r.BlockStarts))
+									for i, start := range r.BlockStarts {
+										starts[i] = strconv.Itoa(start)
+									}
+									fields = append(fields, strings.Join(starts, ","))
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	fields = append(fields, r.ExtraFields...)
+	return fields
+}
+
 // Overlaps checks if this record overlaps with another record.
 // Records overlap if they share any genomic positions.
 func (r *Record) Overlaps(other *Record) bool {

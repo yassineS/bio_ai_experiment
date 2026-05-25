@@ -98,29 +98,49 @@ func TestParity_Intersect_T07_WriteA(t *testing.T) {
 	}
 }
 
-// intersect.t08 — `-wa -wb`: emit A and B side-by-side. Not implemented:
-// bedintersect's WriteA and WriteB toggles are mutually exclusive, so we
-// cannot emit both fields together.
+// intersect.t08 — `-wa -wb`: emit A and B side-by-side.
 func TestParity_Intersect_T08_WAWB(t *testing.T) {
-	t.Skip("unimplemented: -wa with -wb combined output (side-by-side A and B columns)")
+	got := runIntersectParity(t, "a.bed", "b.bed", IntersectOptions{WriteA: true, WriteB: true})
+	want := readIntersectParity(t, "t08_wawb.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // intersect.t09 — `-wo`: emit A, B and the overlap length per hit.
 func TestParity_Intersect_T09_WO(t *testing.T) {
-	t.Skip("unimplemented: -wo (write overlap length alongside A and B)")
+	got := runIntersectParity(t, "a.bed", "b.bed", IntersectOptions{WriteOverlap: true})
+	want := readIntersectParity(t, "t09_wo.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // intersect.t10 — `-wao`: like -wo but emit A even when there are no hits.
 func TestParity_Intersect_T10_WAO(t *testing.T) {
-	t.Skip("unimplemented: -wao (write all + overlap length)")
+	got := runIntersectParity(t, "a.bed", "b.bed", IntersectOptions{WriteAllOverlap: true})
+	want := readIntersectParity(t, "t10_wao.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// intersect.t11 / t12 — `-wo -s` / `-wao -s`: same writer features as t09/t10.
+// intersect.t11 — `-wo -s`: combined writer plus same-strand filter.
 func TestParity_Intersect_T11_WOStrand(t *testing.T) {
-	t.Skip("unimplemented: -wo combined writer (and -s strand filter on it)")
+	got := runIntersectParity(t, "a.bed", "b.bed", IntersectOptions{WriteOverlap: true, StrandSpec: true})
+	want := readIntersectParity(t, "t11_wos.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
+// intersect.t12 — `-wao -s`: combined writer (with no-hit padding) + same-strand filter.
 func TestParity_Intersect_T12_WAOStrand(t *testing.T) {
-	t.Skip("unimplemented: -wao combined writer (and -s strand filter on it)")
+	got := runIntersectParity(t, "a.bed", "b.bed", IntersectOptions{WriteAllOverlap: true, StrandSpec: true})
+	want := readIntersectParity(t, "t12_waos.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // intersect.t13..t16 — `-a -`, `-a stdin`, `-b -`, `-b stdin`: these are

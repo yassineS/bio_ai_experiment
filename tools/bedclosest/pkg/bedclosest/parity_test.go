@@ -14,6 +14,7 @@ package bedclosest
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,6 +36,20 @@ func runClosestParity(t *testing.T, aFile, bFile string, opts Options) []byte {
 	var out bytes.Buffer
 	if _, err := Closest(bytes.NewReader(a), bytes.NewReader(b), &out, opts); err != nil {
 		t.Fatalf("Closest failed: %v", err)
+	}
+	return out.Bytes()
+}
+
+func runClosestMultiParity(t *testing.T, aFile string, bFiles, labels []string, opts Options) []byte {
+	t.Helper()
+	a := readClosestParity(t, aFile)
+	readers := make([]io.Reader, len(bFiles))
+	for i, f := range bFiles {
+		readers[i] = bytes.NewReader(readClosestParity(t, f))
+	}
+	var out bytes.Buffer
+	if _, err := ClosestMulti(bytes.NewReader(a), readers, &out, opts, labels); err != nil {
+		t.Fatalf("ClosestMulti failed: %v", err)
 	}
 	return out.Bytes()
 }
@@ -87,15 +102,31 @@ func TestParity_Closest_T5_Named(t *testing.T) {
 
 // closest.t6 — `-N` forces the closest B to have a *different* name than A.
 func TestParity_Closest_T6_DifferentNames(t *testing.T) {
-	t.Skip("unimplemented: -N (force different names) option")
+	got := runClosestParity(t, "a.names.bed", "b.names.bed", Options{PrintDistance: true, DistanceMode: DistanceAbsolute, RequireDifferentNames: true})
+	want := readClosestParity(t, "t6_N.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// closest.t7 / t8 — `-s` and `-S` strand filters.
+// closest.t7 — `-s` same-strand filter; A's strand is + but B's strand is -,
+// so no B is eligible and the BED6 null-placeholder is emitted.
 func TestParity_Closest_T7_SameStrand(t *testing.T) {
-	t.Skip("unimplemented: -s (same-strand) filter")
+	got := runClosestParity(t, "strand-test-a.bed", "strand-test-b.bed", Options{SameStrand: true})
+	want := readClosestParity(t, "t7_s.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
+// closest.t8 — `-S` opposite-strand filter; A's strand is + and the lone B has
+// strand -, so it is reported.
 func TestParity_Closest_T8_OppositeStrand(t *testing.T) {
-	t.Skip("unimplemented: -S (opposite-strand) filter")
+	got := runClosestParity(t, "strand-test-a.bed", "strand-test-b.bed", Options{OppositeStrand: true})
+	want := readClosestParity(t, "t8_S.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // closest.t9 — report ALL overlapping features when ties (default tie mode).
@@ -126,13 +157,36 @@ func TestParity_Closest_T11_TiesLast(t *testing.T) {
 }
 
 // closest.t13..t15 — multiple databases (`-b A B C`, `-names ...`,
-// `-filenames`).
+// `-filenames`). These exercise the ClosestMulti entry point.
 func TestParity_Closest_T13_MultipleDatabases(t *testing.T) {
-	t.Skip("unimplemented: multiple -b database support")
+	got := runClosestMultiParity(t, "mq1.bed",
+		[]string{"mdb1.bed", "mdb2.bed", "mdb3.bed"},
+		[]string{"1", "2", "3"},
+		Options{})
+	want := readClosestParity(t, "t13_multi.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
 func TestParity_Closest_T14_DBNames(t *testing.T) {
-	t.Skip("unimplemented: -names option (multi-DB labels)")
+	got := runClosestMultiParity(t, "mq1.bed",
+		[]string{"mdb1.bed", "mdb2.bed", "mdb3.bed"},
+		[]string{"a", "b", "c"},
+		Options{})
+	want := readClosestParity(t, "t14_names.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
 func TestParity_Closest_T15_DBFilenames(t *testing.T) {
-	t.Skip("unimplemented: -filenames option (multi-DB labels)")
+	got := runClosestMultiParity(t, "mq1.bed",
+		[]string{"mdb1.bed", "mdb2.bed", "mdb3.bed"},
+		[]string{"mdb1.bed", "mdb2.bed", "mdb3.bed"},
+		Options{})
+	want := readClosestParity(t, "t15_filenames.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }

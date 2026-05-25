@@ -122,9 +122,21 @@ func TestParity_Complement_T9_RecordExceedsChrom(t *testing.T) {
 
 // complement.t9b / t10 (script duplicates 'complement.t9' label) — issue #503,
 // the -L flag limits output to chromosomes that had records in the input.
-// bedcomplement always emits all chromosomes in the genome file.
 func TestParity_Complement_T9b_DashLLimit(t *testing.T) {
-	t.Skip("unimplemented: -L flag (limit output to chromosomes present in input)")
+	in := readComplementParity(t, "issue_503.bed")
+	g := readComplementParity(t, "issue_503.genome")
+	sizes, order, err := ReadChromSizes(bytes.NewReader(g))
+	if err != nil {
+		t.Fatalf("ReadChromSizes: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := ComplementWithOptions(bytes.NewReader(in), &buf, io.Discard, sizes, order, Options{LimitToInput: true}); err != nil {
+		t.Fatalf("Complement failed: %v", err)
+	}
+	want := readComplementParity(t, "t9b_L.expected.bed")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
 }
 
 // complement.t10 — same input as t9b but WITHOUT -L: emit gaps on chr1 plus

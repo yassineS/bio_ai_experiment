@@ -71,7 +71,27 @@ func ReadChromSizes(r io.Reader) (ChromSizes, []string, error) {
 // if the input is not sorted by (chrom, start) or if a record is malformed.
 //
 // Complement returns the number of complementary intervals written.
+// Options configures Complement / ComplementWithOptions.
+type Options struct {
+	// LimitToInput (`-L`) restricts the output to chromosomes that had at
+	// least one record in the input, mirroring upstream's `bedtools
+	// complement -L` (issue #503). When false (default), every chromosome
+	// from the genome file is emitted.
+	LimitToInput bool
+}
+
+// ComplementWithOptions is the variant of Complement that exposes the -L
+// limit-to-input toggle. Complement is preserved for callers that don't need
+// any options.
+func ComplementWithOptions(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, chromOrder []string, opts Options) (int, error) {
+	return complementImpl(in, out, warn, sizes, chromOrder, opts)
+}
+
 func Complement(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, chromOrder []string) (int, error) {
+	return complementImpl(in, out, warn, sizes, chromOrder, Options{})
+}
+
+func complementImpl(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, chromOrder []string, opts Options) (int, error) {
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
@@ -151,6 +171,20 @@ func Complement(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, c
 	// chromosomes from sizes in lexicographic order. This makes the output
 	// deterministic regardless of how chromOrder was supplied.
 	emitOrder := buildEmitOrder(sizes, chromOrder)
+	if opts.LimitToInput {
+		// Restrict to chromosomes that actually had records in the input.
+		seen := make(map[string]bool, len(groupOrder))
+		for _, c := range groupOrder {
+			seen[c] = true
+		}
+		filtered := make([]string, 0, len(emitOrder))
+		for _, c := range emitOrder {
+			if seen[c] {
+				filtered = append(filtered, c)
+			}
+		}
+		emitOrder = filtered
+	}
 
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()

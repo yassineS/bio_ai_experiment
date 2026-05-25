@@ -24,6 +24,12 @@ type Options struct {
 	// OppositeStrand ("-S"): only consider B intervals on the opposite
 	// strand of A.
 	OppositeStrand bool
+	// UnionDrop ("-N") changes the semantics of MinFraction: instead of
+	// applying the fraction per-B, the union of all B intervals' coverage of
+	// A is computed; if pctCovered > MinFraction then A is dropped, else A is
+	// emitted intact (no per-B clipping). When false, MinFraction is applied
+	// per-B (the default bedtools behaviour). Mirrors `bedtools subtract -N`.
+	UnionDrop bool
 }
 
 // Validate reports configuration errors.
@@ -111,7 +117,9 @@ func subtractOne(a *row, bs []*row, opts Options) (segs []*row, drop bool) {
 		if ovLen <= 0 {
 			continue
 		}
-		if opts.MinFraction > 0 && aLen > 0 {
+		// Under -N the per-B fraction filter is NOT applied; the union
+		// coverage check (below) is the only criterion.
+		if !opts.UnionDrop && opts.MinFraction > 0 && aLen > 0 {
 			if float64(ovLen)/float64(aLen) < opts.MinFraction {
 				continue
 			}
@@ -120,6 +128,19 @@ func subtractOne(a *row, bs []*row, opts Options) (segs []*row, drop bool) {
 	}
 
 	if len(eligible) == 0 {
+		return []*row{a}, false
+	}
+	// -N: compute union coverage and drop or keep A intact.
+	// pctCovered > MinFraction => drop, else emit A unchanged.
+	if opts.UnionDrop {
+		covered := unionCoverage(a, eligible)
+		if aLen == 0 {
+			return []*row{a}, false
+		}
+		pctCovered := float64(covered) / float64(aLen)
+		if pctCovered > opts.MinFraction {
+			return nil, true
+		}
 		return []*row{a}, false
 	}
 	if opts.RemoveEntire {
@@ -153,6 +174,46 @@ func subtractOne(a *row, bs []*row, opts Options) (segs []*row, drop bool) {
 		segs = append(segs, a.withSpan(cur, a.end))
 	}
 	return segs, false
+}
+
+// unionCoverage returns the number of bases of a covered by the union of the
+// supplied b intervals (each already clipped to a's range conceptually; we
+// re-clip here for safety). bs is not required to be sorted.
+func unionCoverage(a *row, bs []*row) int {
+	if len(bs) == 0 {
+		return 0
+	}
+	type span struct{ s, e int }
+	spans := make([]span, 0, len(bs))
+	for _, b := range bs {
+		s := b.start
+		if s < a.start {
+			s = a.start
+		}
+		e := b.end
+		if e > a.end {
+			e = a.end
+		}
+		if e > s {
+			spans = append(spans, span{s, e})
+		}
+	}
+	if len(spans) == 0 {
+		return 0
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].s < spans[j].s })
+	covered := 0
+	curS, curE := spans[0].s, spans[0].e
+	for _, sp := range spans[1:] {
+		if sp.s > curE {
+			covered += curE - curS
+			curS, curE = sp.s, sp.e
+		} else if sp.e > curE {
+			curE = sp.e
+		}
+	}
+	covered += curE - curS
+	return covered
 }
 
 // strandMatch returns true if b should be considered for subtraction from a

@@ -119,6 +119,12 @@ func main() {
 	writeB := flag.Bool("wb", false, "Write B entry instead of A")
 	flag.BoolVar(writeB, "write-b", false, "Write B entry instead of A")
 
+	writeOverlap := flag.Bool("wo", false, "Write A and B plus the overlap length per hit")
+	flag.BoolVar(writeOverlap, "write-overlap", false, "Write A and B plus the overlap length per hit")
+
+	writeAllOverlap := flag.Bool("wao", false, "Like -wo, but emit every A (with B columns = '.', '-1' for misses)")
+	flag.BoolVar(writeAllOverlap, "write-all-overlap", false, "Like -wo, but emit every A (with B columns = '.', '-1' for misses)")
+
 	count := flag.Bool("c", false, "Report count of B overlaps for each A")
 	flag.BoolVar(count, "count", false, "Report count of B overlaps for each A")
 
@@ -180,18 +186,20 @@ func main() {
 
 	// Set options
 	opts := bedintersect.IntersectOptions{
-		MinOverlap: *minOverlap,
-		FractionA:  *fractionA,
-		FractionB:  *fractionB,
-		StrandSpec: *strandSpec,
-		NoOverlap:  *invert,
-		WriteA:     *writeA,
-		WriteB:     *writeB,
-		Count:      *count,
-		Reciprocal: *reciprocal,
-		Distance:   *distance,
-		Closest:    *closest,
-		UseTree:    *useTree,
+		MinOverlap:      *minOverlap,
+		FractionA:       *fractionA,
+		FractionB:       *fractionB,
+		StrandSpec:      *strandSpec,
+		NoOverlap:       *invert,
+		WriteA:          *writeA,
+		WriteB:          *writeB,
+		WriteOverlap:    *writeOverlap,
+		WriteAllOverlap: *writeAllOverlap,
+		Count:           *count,
+		Reciprocal:      *reciprocal,
+		Distance:        *distance,
+		Closest:         *closest,
+		UseTree:         *useTree,
 	}
 
 	// Perform intersection

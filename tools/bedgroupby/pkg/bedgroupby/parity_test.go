@@ -36,7 +36,11 @@ func runParity(t *testing.T, inputFile string, opts Options) []byte {
 
 // groupby.t1 — basic, default group cols (1,2,3), -c 5.
 func TestParity_Groupby_T1_Basic(t *testing.T) {
-	t.Skip("missing fixture t1_basic.expected; salvage from agent crash, see PARITY_ROADMAP.md#bedtools")
+	got := runParity(t, "values3.header.bed", Options{AggCols: []int{5}})
+	want := readParity(t, "t1_basic.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // groupby.t2 — case-insensitive grouping.
@@ -55,7 +59,11 @@ func TestParity_Groupby_T3_Full(t *testing.T) {
 
 // groupby.t4 — -inheader on marked-header file (same output as t1).
 func TestParity_Groupby_T4_InheaderMarked(t *testing.T) {
-	t.Skip("depends on missing t1_basic.expected fixture; see PARITY_ROADMAP.md#bedtools")
+	got := runParity(t, "values3.header.bed", Options{AggCols: []int{5}, InHeader: true})
+	want := readParity(t, "t1_basic.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // groupby.t7 — -outheader emits the marked header before the data.

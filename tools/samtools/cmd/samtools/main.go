@@ -1000,11 +1000,11 @@ func runFastq(args []string) int {
 		// `-T '*'` is upstream's "all aux tags" sentinel. (`-T ''` does
 		// the same upstream but our CLI cannot disambiguate "explicitly
 		// empty" from "flag unset", so only the explicit '*' form here.)
-		AddAllTags: strings.TrimSpace(addTags) == "*",
-		CompressLevel:   level,
-		UseOQ:           useOQ,
-		NoCO:            noCO,
-		Threads:         threads,
+		AddAllTags:    strings.TrimSpace(addTags) == "*",
+		CompressLevel: level,
+		UseOQ:         useOQ,
+		NoCO:          noCO,
+		Threads:       threads,
 	}
 	in, err := iohelper.OpenReader(fs.Arg(0))
 	if err != nil {

@@ -30,11 +30,20 @@ type Options struct {
 	SameStrand bool
 	// OppositeStrand causes only opposite-strand B intervals to be considered.
 	OppositeStrand bool
+	// StrandFilter, when "+" or "-", drops all records on the other strand
+	// from BOTH A and B before the sweep, mirroring upstream's `-S <strand>`
+	// single-strand filter.
+	StrandFilter string
 	// FractionA: require at least this fraction of A to overlap B for the
 	// pair to count (0..1). Zero disables the check.
 	FractionA float64
 	// FractionB: require at least this fraction of B to overlap A.
 	FractionB float64
+	// Split, when true, treats each BED12 input record as the union of its
+	// blocks rather than the single thick range. Each block becomes a virtual
+	// 3-column record for the purposes of intersection / union accounting.
+	// Mirrors upstream's `-split` flag.
+	Split bool
 }
 
 // Result is the one-line summary written by Run.
@@ -95,8 +104,18 @@ func formatJaccard(j float64) string {
 // collapse into one.
 func jaccard(aReader, bReader io.Reader, opts Options) (*Result, error) {
 	perStrand := opts.SameStrand || opts.OppositeStrand
-	ra := newMergingReader(bed.NewReader(aReader), perStrand)
-	rb := newMergingReader(bed.NewReader(bReader), perStrand)
+	wrapReader := func(r io.Reader) recordReader {
+		var src recordReader = bed.NewReader(r)
+		if opts.Split {
+			src = newSplitReader(src)
+		}
+		if opts.StrandFilter != "" {
+			src = newStrandFilterReader(src, opts.StrandFilter)
+		}
+		return src
+	}
+	ra := newMergingReader(wrapReader(aReader), perStrand)
+	rb := newMergingReader(wrapReader(bReader), perStrand)
 
 	var active []*bed.Record
 	var (
@@ -293,8 +312,14 @@ func fractionOK(a, b *bed.Record, overlap int, opts Options) bool {
 // and replays them in input order; it also remembers a single
 // "lookahead" record per stream so that the next Read can complete the
 // in-progress merge.
+// recordReader is the minimal interface mergingReader needs from its source.
+// *bed.Reader satisfies it directly; the split/strand-filter wrappers do too.
+type recordReader interface {
+	Read() (*bed.Record, error)
+}
+
 type mergingReader struct {
-	in        *bed.Reader
+	in        recordReader
 	perStrand bool
 
 	// Pending merges, keyed by strand bucket. When perStrand is false the
@@ -316,7 +341,7 @@ type mergingReader struct {
 	lastIn *bed.Record
 }
 
-func newMergingReader(r *bed.Reader, perStrand bool) *mergingReader {
+func newMergingReader(r recordReader, perStrand bool) *mergingReader {
 	return &mergingReader{
 		in:        r,
 		perStrand: perStrand,
@@ -405,6 +430,76 @@ func (m *mergingReader) Read() (*bed.Record, error) {
 		}
 		m.queued = append(m.queued, cur)
 		m.pending[key] = rec
+	}
+}
+
+// strandFilterReader passes through only records whose Strand matches the
+// configured strand. Records with empty/`.` strand are dropped, matching
+// upstream's `-S` semantics (a record needs a real strand to qualify).
+type strandFilterReader struct {
+	in     recordReader
+	strand string
+}
+
+func newStrandFilterReader(in recordReader, strand string) *strandFilterReader {
+	return &strandFilterReader{in: in, strand: strand}
+}
+
+func (s *strandFilterReader) Read() (*bed.Record, error) {
+	for {
+		r, err := s.in.Read()
+		if err != nil {
+			return nil, err
+		}
+		if r.Strand == s.strand {
+			return r, nil
+		}
+	}
+}
+
+// splitReader replaces each BED12 record by one virtual record per block
+// (chrom, blockStart, blockEnd). Non-BED12 records (BlockCount == 0) pass
+// through unchanged. Blocks are emitted in input order.
+type splitReader struct {
+	in      recordReader
+	pending []*bed.Record
+}
+
+func newSplitReader(in recordReader) *splitReader {
+	return &splitReader{in: in}
+}
+
+func (s *splitReader) Read() (*bed.Record, error) {
+	for {
+		if len(s.pending) > 0 {
+			out := s.pending[0]
+			s.pending = s.pending[1:]
+			return out, nil
+		}
+		r, err := s.in.Read()
+		if err != nil {
+			return nil, err
+		}
+		if r.BlockCount == 0 || len(r.BlockSizes) == 0 || len(r.BlockStarts) == 0 {
+			return r, nil
+		}
+		// Explode into one record per block.
+		n := len(r.BlockSizes)
+		if n > len(r.BlockStarts) {
+			n = len(r.BlockStarts)
+		}
+		s.pending = make([]*bed.Record, 0, n)
+		for i := 0; i < n; i++ {
+			blockStart := r.ChromStart + r.BlockStarts[i]
+			blockEnd := blockStart + r.BlockSizes[i]
+			s.pending = append(s.pending, &bed.Record{
+				Chrom:      r.Chrom,
+				ChromStart: blockStart,
+				ChromEnd:   blockEnd,
+				Strand:     r.Strand,
+			})
+		}
+		// Continue loop to dequeue the first virtual record.
 	}
 }
 

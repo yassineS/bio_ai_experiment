@@ -28,6 +28,14 @@ type MergeOptions struct {
 	// input columns (the -c/-o options). When set, output columns are
 	// chrom, start, end followed by one aggregated value per requested column.
 	ColumnOps *ColumnOps
+	// Delim is the join separator used by collapse / distinct / freqdesc /
+	// freqasc / concat-style ops. An empty string falls back to ",", matching
+	// upstream's default. Mirrors `bedtools merge -delim`.
+	Delim string
+	// StrandFilter, when non-empty ("+" or "-"), keeps only records whose
+	// strand matches and discards all others. Mirrors upstream's `-S +` / `-S -`
+	// single-strand filter.
+	StrandFilter string
 }
 
 // Merge reads BED intervals, sorts them, and merges overlapping/adjacent intervals.
@@ -64,6 +72,11 @@ func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 				record.Score = score
 				record.Name = ""
 			}
+		}
+
+		// -S strand filter: drop records that don't match the requested strand.
+		if opts.StrandFilter != "" && record.Strand != opts.StrandFilter {
+			continue
 		}
 
 		intervals = append(intervals, record)
@@ -404,6 +417,11 @@ func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Sta
 				record.Score = score
 				record.Name = ""
 			}
+		}
+
+		// -S strand filter: drop records that don't match the requested strand.
+		if opts.StrandFilter != "" && record.Strand != opts.StrandFilter {
+			continue
 		}
 
 		intervals = append(intervals, record)

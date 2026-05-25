@@ -681,7 +681,7 @@ func TestModeOrAntimodeDecrementBranch(t *testing.T) {
 func TestFlushColumnGroupEmpty(t *testing.T) {
 	co := &ColumnOps{Columns: []int{4}, Ops: []string{"first"}}
 	var buf bytes.Buffer
-	n, err := flushColumnGroup(&buf, co, nil)
+	n, err := flushColumnGroup(&buf, co, nil, "")
 	if err != nil {
 		t.Fatalf("flushColumnGroup(nil) err = %v", err)
 	}

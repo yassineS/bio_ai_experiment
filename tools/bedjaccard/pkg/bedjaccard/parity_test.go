@@ -102,10 +102,14 @@ func TestParity_Jaccard_T07_ThreeBlocksNoSplit(t *testing.T) {
 	}
 }
 
-// jaccard.t08 — `-split` interprets the BED12 blocks. bedjaccard does not
-// implement BED12 block-splitting.
+// jaccard.t08 — `-split` interprets the BED12 blocks. Each block becomes a
+// virtual 3-column record.
 func TestParity_Jaccard_T08_ThreeBlocksSplit(t *testing.T) {
-	t.Skip("unimplemented: -split (BED12 block-aware overlap)")
+	got := runJaccardParity(t, "three_blocks_match.bed", "e.bed", Options{Split: true})
+	want := readJaccardParity(t, "t08_three_blocks_split.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // jaccard.t09 — BAM input. bedjaccard is BED-only.
@@ -134,10 +138,20 @@ func TestParity_Jaccard_T11_MixedStrandsS(t *testing.T) {
 	}
 }
 func TestParity_Jaccard_T12_MixedStrandsSPlus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runJaccardParity(t, "aMixedStrands.bed", "bMixedStrands.bed",
+		Options{StrandFilter: "+"})
+	want := readJaccardParity(t, "t12_S_plus.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 func TestParity_Jaccard_T13_MixedStrandsSMinus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runJaccardParity(t, "aMixedStrands.bed", "bMixedStrands.bed",
+		Options{StrandFilter: "-"})
+	want := readJaccardParity(t, "t13_S_minus.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // jaccard.t14 — a645.bed vs b645.bed: each side has disjoint records, no

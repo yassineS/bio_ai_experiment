@@ -122,10 +122,17 @@ func TestParity_Merge_T9b_StrandedStrand(t *testing.T) {
 	}
 }
 
-// merge.t10 — custom delimiter via -delim "|". bedmerge always joins with ',';
-// the delim option is not yet plumbed through.
+// merge.t10 — custom delimiter via `-delim "|"` overrides the default "," used
+// by collapse / distinct.
 func TestParity_Merge_T10_CustomDelim(t *testing.T) {
-	t.Skip("unimplemented: -delim option; bedmerge always uses ',' for collapse/distinct joins")
+	got := runMergeParity(t, "a.names.bed", MergeOptions{
+		ColumnOps: mustParseOps(t, "4", "collapse"),
+		Delim:     "|",
+	})
+	want := readMergeParity(t, "t10_custom_delim.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // merge.t13 — VCF input. bedmerge only accepts BED.
@@ -152,13 +159,20 @@ func TestParity_Merge_T15_MixedStrandsFanOut(t *testing.T) {
 	}
 }
 
-// merge.t16 / t17 — `-S +` / `-S -` filter records by strand. bedmerge does
-// not implement `-S` (single-strand filter); only `-s` (stranded).
+// merge.t16 / t17 — `-S +` / `-S -` filter records by strand before merging.
 func TestParity_Merge_T16_StrandFilterPlus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runMergeParity(t, "mixedStrands.bed", MergeOptions{StrandFilter: "+"})
+	want := readMergeParity(t, "t16_S_plus.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 func TestParity_Merge_T17_StrandFilterMinus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runMergeParity(t, "mixedStrands.bed", MergeOptions{StrandFilter: "-"})
+	want := readMergeParity(t, "t17_S_minus.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // merge.t20 — chromosome change handling (BED3 output, 4-col input ignored).

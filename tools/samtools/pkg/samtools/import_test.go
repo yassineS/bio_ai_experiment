@@ -2,6 +2,8 @@ package samtools
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -377,26 +379,73 @@ func TestImport_HeaderHasHDLine(t *testing.T) {
 }
 
 // TestImport_MismatchedPairLengths verifies that an unequal number of
-// records in R1 / R2 returns an error mentioning both filenames.
+// records in R1 / R2 surfaces an error mentioning both filenames.
 func TestImport_MismatchedPairLengths(t *testing.T) {
-	// Construct a R1 with three records and an R2 with two records.
-	r1Path := parityPath(t, "import/r1.fq")
-	// r1.fq has 2 records; r2.fq has 2 records — pad r1 in-memory.
-	// We can't easily reach in-memory, so simulate by reusing r1.fq for
-	// both with a deliberately-truncated mate. We instead use single.fq
-	// (2 records) and a longer single via concat.
-	// Skip if the fixture geometry doesn't permit; we have a fixture-free
-	// equivalent test via a temp file.
-	t.Skip("Fixture for mismatched lengths requires temp files; covered by integration parity work in PARITY_ROADMAP.md#samtools")
-	_ = r1Path
+	dir := t.TempDir()
+	r1Path := filepath.Join(dir, "r1.fq")
+	r2Path := filepath.Join(dir, "r2.fq")
+	// R1 has three records, R2 has two — short by one.
+	r1 := "@a\nACGT\n+\nIIII\n@b\nTGCA\n+\nIIII\n@c\nGGGG\n+\nIIII\n"
+	r2 := "@a\nACGT\n+\nIIII\n@b\nTGCA\n+\nIIII\n"
+	if err := os.WriteFile(r1Path, []byte(r1), 0o644); err != nil {
+		t.Fatalf("write r1: %v", err)
+	}
+	if err := os.WriteFile(r2Path, []byte(r2), 0o644); err != nil {
+		t.Fatalf("write r2: %v", err)
+	}
+	var buf bytes.Buffer
+	_, err := FastqImportFiles(nil, &buf, FastqImportOptions{
+		Read1Path: r1Path,
+		Read2Path: r2Path,
+		OutputBAM: false,
+	})
+	if err == nil {
+		t.Fatal("expected error for mismatched R1/R2 lengths, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"differing", filepath.Base(r1Path), filepath.Base(r2Path)} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q: %s", want, msg)
+		}
+	}
 }
 
-// TestParity_Import_UpstreamCorpus marks the upstream `samtools import`
-// regression test as a deferred parity gate. The upstream tests
-// pipe through `samtools fastq` to round-trip, which we don't byte-diff
-// against; logical parity is covered by the table tests in this file.
+// TestParity_Import_UpstreamCorpus exercises the upstream `samtools
+// import | samtools fastq` round-trip: a fastq fixture is imported to
+// BAM in-memory, then re-streamed back through Fastq, and the result
+// must be byte-equal to the input. This mirrors the upstream
+// `test_import` cases in reference_code/samtools/test/test.pl which
+// likewise pipe import → fastq and diff against the original fastq.
 func TestParity_Import_UpstreamCorpus(t *testing.T) {
-	t.Skip("upstream tests round-trip through samtools fastq with BGZF outputs; logical parity covered by TestImport_PairedR1R2 / TestImport_InterleavedSingleFile / etc; tracked in docs/PARITY_ROADMAP.md#samtools")
+	fq := parityPath(t, "import/single.fq")
+	want, err := os.ReadFile(fq)
+	if err != nil {
+		t.Fatalf("read input fq: %v", err)
+	}
+	// Import the fastq into an in-memory SAM (text) stream.
+	var sam1 bytes.Buffer
+	if _, err := FastqImportFiles(nil, &sam1, FastqImportOptions{
+		SinglePath: fq,
+		OutputBAM:  false,
+		NoPG:       true,
+	}); err != nil {
+		t.Fatalf("FastqImport: %v", err)
+	}
+	// Pipe the SAM back through Fastq and write to a single output file.
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.fq")
+	if _, err := Fastq(bytes.NewReader(sam1.Bytes()), FastqOptions{
+		OutputPath: out,
+	}); err != nil {
+		t.Fatalf("Fastq round-trip: %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read round-trip fq: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("import|fastq round-trip mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // readSAMRecords parses a SAM-text blob into []*sam.Record. Header lines

@@ -2,9 +2,12 @@
 package bedintersect
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
@@ -23,6 +26,31 @@ type IntersectOptions struct {
 	Distance   bool    // Report distance to nearest B feature
 	Closest    bool    // Report closest B feature for each A
 	UseTree    bool    // Use interval tree for large B files
+
+	// WriteOverlap (-wo): emit A and B side-by-side plus the overlap length
+	// as the trailing column. Only A's that hit at least one B are emitted.
+	WriteOverlap bool
+	// WriteAllOverlap (-wao): like WriteOverlap, but also emit each A that
+	// has no hit, with B columns filled by the upstream printNull placeholder
+	// and overlap length 0.
+	WriteAllOverlap bool
+}
+
+// nullPlaceholder builds the upstream "no-hit" placeholder for a database
+// record of bCols columns, mirroring bedtools' Bed{3,4,5,6,12}Interval::printNull.
+func nullPlaceholder(bCols int) string {
+	switch {
+	case bCols >= 12:
+		return ".\t-1\t-1\t.\t-1\t.\t.\t.\t.\t.\t.\t."
+	case bCols >= 6:
+		return ".\t-1\t-1\t.\t-1\t."
+	case bCols >= 5:
+		return ".\t-1\t-1\t.\t-1"
+	case bCols >= 4:
+		return ".\t-1\t-1\t."
+	default:
+		return ".\t-1\t-1"
+	}
 }
 
 // Intersect finds intervals in A that overlap with intervals in B.
@@ -30,6 +58,7 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 	// Read all B intervals (database to search against)
 	bedReaderB := bed.NewReader(readerB)
 	var intervalsB []*bed.Record
+	bMaxCols := 3
 
 	for {
 		record, err := bedReaderB.Read()
@@ -40,6 +69,9 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 			return 0, fmt.Errorf("error reading B intervals: %w", err)
 		}
 		intervalsB = append(intervalsB, record)
+		if n := len(record.Fields()); n > bMaxCols {
+			bMaxCols = n
+		}
 	}
 
 	// Sort B intervals for efficient searching
@@ -65,9 +97,27 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 		}
 	}
 
-	// Process A intervals
+	// Process A intervals. Combined writers (-wa+-wb / -wo / -wao) emit a
+	// non-BED stream (A columns + B columns jammed side-by-side), so route
+	// them through a raw bufio.Writer for byte-for-byte upstream parity.
 	bedReaderA := bed.NewReader(readerA)
+	combined := opts.WriteOverlap || opts.WriteAllOverlap || (opts.WriteA && opts.WriteB)
 	bedWriter := bed.NewWriter(writer)
+	rawWriter := bufio.NewWriter(writer)
+	writeCombined := func(a, b *bed.Record, overlap int) error {
+		fields := make([]string, 0, 16)
+		fields = append(fields, a.Fields()...)
+		if b != nil {
+			fields = append(fields, b.Fields()...)
+		} else {
+			fields = append(fields, strings.Split(nullPlaceholder(bMaxCols), "\t")...)
+		}
+		if opts.WriteOverlap || opts.WriteAllOverlap {
+			fields = append(fields, strconv.Itoa(overlap))
+		}
+		_, err := fmt.Fprintln(rawWriter, strings.Join(fields, "\t"))
+		return err
+	}
 	count := 0
 
 	for {
@@ -148,6 +198,24 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 				return 0, fmt.Errorf("error writing result: %w", err)
 			}
 			count++
+		} else if combined {
+			// -wa+-wb / -wo: side-by-side raw output. -wao additionally emits
+			// A with the null-B placeholder when no overlap is found.
+			if len(overlaps) == 0 {
+				if opts.WriteAllOverlap {
+					if err := writeCombined(recordA, nil, 0); err != nil {
+						return 0, fmt.Errorf("error writing result: %w", err)
+					}
+					count++
+				}
+			} else {
+				for _, overlap := range overlaps {
+					if err := writeCombined(recordA, overlap.B, overlap.OverlapLen); err != nil {
+						return 0, fmt.Errorf("error writing result: %w", err)
+					}
+					count++
+				}
+			}
 		} else {
 			// Report each overlap
 			for _, overlap := range overlaps {
@@ -173,8 +241,14 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 		}
 	}
 
-	if err := bedWriter.Flush(); err != nil {
-		return 0, fmt.Errorf("error flushing output: %w", err)
+	if combined {
+		if err := rawWriter.Flush(); err != nil {
+			return 0, fmt.Errorf("error flushing output: %w", err)
+		}
+	} else {
+		if err := bedWriter.Flush(); err != nil {
+			return 0, fmt.Errorf("error flushing output: %w", err)
+		}
 	}
 
 	return count, nil

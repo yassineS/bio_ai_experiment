@@ -215,8 +215,17 @@ Option-tail gaps (per existing subcommand):
 
 - `comp` — missing `-r REGION` to restrict to a BED region.
 - `seq` — missing `-A` (force ASCII output), `-C` (mask sequence with N), `-M FILE` (mask regions), the `-T int` trim option.
-- `sample` — missing `-2` (output two paired files).
-- `trimfq` — missing `-L int` (max length cap), `-B int` (min base quality).
+- `sample` — missing `-2` (output two paired files). The streaming
+  one-pass `kr_drand < fraction` path matches upstream byte-for-byte
+  with the default seed 11 (see `SampleSeed` and `SampleSeeded` in
+  `seqtk.go`; ported via in-tree MT19937-64 at
+  `tools/seqtk/pkg/seqtk/krand.go`).
+- `trimfq` — Mott's algorithm with `-q 0.05 / -l 30` defaults is
+  now implemented byte-for-byte (`TrimfqMott` in `seqtk.go`); the
+  CLI uses it. Missing knobs: `-L int` (max length cap), `-B int`
+  (min base quality), `-b INT`, `-e INT` (fixed left/right trim).
+  The legacy `TrimQuality` Phred-threshold helper stays as a
+  separate library API.
 - `subseq` — missing the regex-name mode.
 - `mutfa` — missing the inverse `--inverse` mode.
 - `gap` — full upstream surface implemented (`-l` only). Note: upstream's
@@ -1430,6 +1439,45 @@ Plus:
   the relevant options struct for a future parallel pass. This is the
   one cross-cutting deferred item, not a completed feature.
 
+**Closed samtools parity deferreds** (this PR — every previously
+`t.Skip(...)` parity gate now exercises the upstream behaviour):
+
+- **`sort -n` / `-N` / `-t TAG` tie-break (T02 / T04 / T05).**
+  `pkg/samtools/sort.go` now mirrors upstream `bam1_cmp_core` +
+  `bam1_cmp_by_tag` byte-for-byte: qname sorts apply the FLAG-encoded
+  `((flag&0xc0)<<8)|((flag&0x100)<<3)|((flag&0x800)>>3)` secondary key
+  (READ1 < READ2 < primary < supplementary < secondary), tag sort picks
+  between TagCoordinate (`-t TAG`) and TagQueryName (`-n -t TAG`) via a
+  new `SortOptions.SecondaryByName`, and tag-missing records sort first
+  (matching upstream's `aux_a == NULL` branch). Parity pinned by
+  `TestParity_Sort_T02/T04/T05` against upstream's
+  `name.sort/name2.sort/tag.rg{,.n}.sort` goldens.
+- **`fastq` paired-singleton-middle (T03) + `-T '*'` all-tags (T07).**
+  Paired output (`-1 -2 [-s]`) now groups adjacent same-QNAME records
+  per upstream `flush_rec`: only an R1+R2 pair lands in `-1`/`-2`; a
+  paired-flagged record whose mate is absent routes to `-s` when set
+  (else its flag-indicated sink). `-T '*'` expands to "every aux tag"
+  on each FASTQ description line.
+- **`depth -a` zero-fill (T04) + `-b BED` (T08).** Both now carry
+  byte-pinned tests rather than skip-with-rationale.
+- **`idxstats` upstream golden (T03).** The upstream
+  `reference_code/samtools/test/idxstats/test_input_1_a.bam.expected`
+  is diffed byte-for-byte against `Idxstats(test_input_1_a.bam)`.
+- **`import` mismatched pair lengths + upstream round-trip.** Truncated
+  R1/R2 pairs surface a `"differing number of records"` error
+  mentioning both filenames; the upstream `samtools import | samtools
+  fastq` round-trip is replicated in-process and the output must be
+  byte-equal to the input fastq.
+- **`mpileup -aa` zero-fill (T12).** A minimal three-contig fixture
+  (one fully empty contig in the middle) is now pinned with the exact
+  upstream row set instead of delegating to the sister table test.
+- **`calmd` BGZF output (upstream corpus).** Now runs end-to-end with
+  the upstream `mpileup.1.sam`+`mpileup.ref.fa` fixtures, asserting
+  the BGZF magic plus per-record MD/NM presence (the same contract as
+  upstream's `test.pl::test_calmd`). **Byte-for-byte BGZF parity with
+  upstream remains explicitly NOT a goal** — same policy as RNG byte
+  parity, documented under the calmd entry below.
+
 **Genuine remaining samtools gaps** (everything else is done):
 
 - **`mpileup` MAQ genotype-likelihood model — slices 1-4 DONE; only
@@ -1494,16 +1542,23 @@ Plus:
     match exactly — header and every SNP data record, all bias INFO tags
     included.
 
-  **Remaining deferred work — indel calling only.** The one upstream
-  `mpileup` path still unported is the indel caller (`bam2bcf_indel.c` /
-  `bam2bcf_edlib.c`): indel candidate detection, the indel genotype
-  likelihoods and the INDEL/IDV/IMF INFO tags. The single INDEL record
-  of `mpileup.11.out` (17:302 `TA`) is consequently the only golden line
-  not reproduced; `TestMpileupSNPGoldens` aligns records by `CHROM:POS`
-  and skips it, and `TestMpileupGoldensDeferred` catalogues every other
-  deferred golden with its precise reason (FORMAT tags beyond PL, `--ff`
-  FLAG filtering, `-s/-S/-G` sample/read-group selection, IUPAC REF
-  bases, indel/SCR fixtures).
+  **Remaining deferred work.** The one upstream `mpileup` path still
+  unported in volume is the indel caller (`bam2bcf_indel.c` /
+  `bam2bcf_edlib.c`). The per-sample FORMAT/INFO tag set is now
+  complete: `mpileup.{2,4,5}.out` byte-match (PL, DP, DV, SP, DP4,
+  ADF, ADR, AD, DPR and the INFO totals — see
+  `TestMpileupFormatTagGoldens`), the `--ff` flag filter
+  byte-matches (`mpileup.3.out`, `TestMpileupFlagFilterGolden`),
+  sample include/exclude via `-s`/`-s ^` byte-matches
+  (`mpileup.{7,8}.out`, `TestMpileupSampleSelectGoldens`), the `-S`
+  rename-map second column byte-matches (`mpileup.9.out`,
+  `TestMpileupTargetsAndRenameGolden`), and IUPAC REF bases render
+  as REF=N matching upstream (`iupac.1.out`,
+  `TestMpileupIUPACGolden`). `TestMpileupGoldensDeferred` now lists
+  only `mpileup.6.out` (`--gvcf` block emitter, separate slice),
+  `mpileup.10.out` (`-G` read-group selection with per-RG rename —
+  requires splitting a BAM's reads across multiple output columns)
+  and FORMAT/NMBZ (per-sample emission has no upstream golden).
 
   **Indel-caller sub-slicing (in progress).** The remaining indel work
   is broken into five sub-slices:
@@ -2084,11 +2139,26 @@ the six import shapes (-0, -1/-2, -s, single positional, two
 positionals, -T aux extraction, --order, -R/-r RG). The calmd BAQ
 path additionally diffs the `-r` / `-rA` output against htslib's
 vendored `realn01_exp*.sam` goldens, and `pkg/htsgo/baq` carries the
-full `realn0{1,2,3}` golden corpus. The upstream
-`bam_md.c` / `bam_import.c` regression cases are marked as
-`t.Skip(...)` parity stubs because upstream's BGZF output isn't
-byte-identical with ours (different libdeflate). Logical correctness
-is covered by hand-computed expected values in the table tests.
+full `realn0{1,2,3}` golden corpus.
+
+The upstream `bam_md.c` regression case (`test_calmd`) now runs
+end-to-end against our port: `TestParity_Calmd_UpstreamCorpus`
+streams `reference_code/samtools/test/dat/mpileup.1.sam` through
+`Calmd -uAr` and asserts the BGZF magic plus per-record MD/NM
+presence — the same contract as upstream's `test.pl::test_calmd`.
+**Byte-for-byte BGZF parity with upstream is explicitly NOT a goal**
+(upstream uses libdeflate; we use the stdlib compress/flate), so the
+calmd "BGZF-identical" deferred is closed as honest non-parity by
+policy in the same vein as the RNG policy.
+
+The upstream `samtools import` regression
+(`reference_code/samtools/test/test.pl::test_import`) is mirrored by
+`TestParity_Import_UpstreamCorpus`: a fastq fixture is round-tripped
+through `FastqImport` then `Fastq` in-process and the output must be
+byte-equal to the input. The byte-level BGZF round-trip used by the
+upstream Perl harness is replaced by an in-process SAM-text pipeline
+that exercises the same logical contract without depending on
+upstream's deflate library.
 
 **`phase` deferred features** (accepted on the CLI, behaviour partial):
 

@@ -164,6 +164,10 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 		if len(fields) > 5 {
 			strand = fields[5]
 		}
+		// -S strand filter: drop records whose strand doesn't match.
+		if opts.StrandFilter != "" && strand != opts.StrandFilter {
+			continue
+		}
 		// Verify the requested columns exist.
 		for _, c := range co.Columns {
 			if c > len(fields) {
@@ -214,7 +218,7 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 		all := mergeSortedColGroupsByPos(pg, mg)
 		outCount := 0
 		for _, g := range all {
-			wrote, err := flushColumnGroup(w, co, g)
+			wrote, err := flushColumnGroup(w, co, g, opts.Delim)
 			if err != nil {
 				return 0, err
 			}
@@ -229,7 +233,7 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 	groups := groupMergedColIntervals(intervals, opts)
 	outCount := 0
 	for _, g := range groups {
-		wrote, err := flushColumnGroup(w, co, g)
+		wrote, err := flushColumnGroup(w, co, g, opts.Delim)
 		if err != nil {
 			return 0, err
 		}
@@ -333,7 +337,7 @@ func mergeSortedColGroupsByPos(a, b [][]colInterval) [][]colInterval {
 // flushColumnGroup writes one merged output line aggregating the requested
 // columns over the given group of intervals. An empty group is a no-op and
 // returns 0 written rows; otherwise it returns 1 on success.
-func flushColumnGroup(w io.Writer, co *ColumnOps, group []colInterval) (int, error) {
+func flushColumnGroup(w io.Writer, co *ColumnOps, group []colInterval, delim string) (int, error) {
 	if len(group) == 0 {
 		return 0, nil
 	}
@@ -352,7 +356,7 @@ func flushColumnGroup(w io.Writer, co *ColumnOps, group []colInterval) (int, err
 		for j, iv := range group {
 			vals[j] = iv.fields[col-1]
 		}
-		res, err := applyOp(op, col, vals)
+		res, err := applyOpDelim(op, col, vals, delim)
 		if err != nil {
 			return 0, err
 		}
@@ -370,12 +374,27 @@ func flushColumnGroup(w io.Writer, co *ColumnOps, group []colInterval) (int, err
 // ApplyOp applies a column op (see validOps) to a slice of string values
 // originating from column col (1-based, used only for error messages).
 // Exported so other tools (bedgroupby, bedmap, bedcoverage) can reuse the
-// same op vocabulary as bedmerge.
+// same op vocabulary as bedmerge. Uses the default "," join separator for
+// collapse / distinct / freqdesc / freqasc; see ApplyOpDelim for an override.
 func ApplyOp(op string, col int, vals []string) (string, error) {
-	return applyOp(op, col, vals)
+	return applyOpDelim(op, col, vals, ",")
+}
+
+// ApplyOpDelim is the variant of ApplyOp that lets the caller override the
+// join separator used by collapse / distinct / freqdesc / freqasc. Pass ""
+// to fall back to ",". Mirrors `bedtools merge -delim`.
+func ApplyOpDelim(op string, col int, vals []string, delim string) (string, error) {
+	return applyOpDelim(op, col, vals, delim)
 }
 
 func applyOp(op string, col int, vals []string) (string, error) {
+	return applyOpDelim(op, col, vals, ",")
+}
+
+func applyOpDelim(op string, col int, vals []string, delim string) (string, error) {
+	if delim == "" {
+		delim = ","
+	}
 	if numericOps[op] {
 		nums := make([]float64, len(vals))
 		for i, v := range vals {
@@ -515,9 +534,9 @@ func applyOp(op string, col int, vals []string) (string, error) {
 				out = append(out, v)
 			}
 		}
-		return strings.Join(out, ","), nil
+		return strings.Join(out, delim), nil
 	case "collapse":
-		return strings.Join(vals, ","), nil
+		return strings.Join(vals, delim), nil
 	case "cat":
 		// Concatenate all values with no separator. Mirrors upstream's
 		// CONCAT op (`getConcat` in KeyListOpsMethods.cpp), which is the
