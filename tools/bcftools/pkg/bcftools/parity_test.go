@@ -1263,8 +1263,63 @@ func TestParityAnnotate_RemoveInfoTag(t *testing.T) {
 	}
 }
 
-// TestParityAnnotate_SetID — `-I '+%CHROM_%POS'` populates ID columns
-// that are currently '.' (only when not already set).
+// TestParityAnnotate_SetID — `-I '+%CHROM\_%POS'` populates ID columns
+// that are currently '.' (only when not already set), and the
+// no-plus form `-I '%CHROM\_%POS'` replaces every ID. The `\_`
+// underscore escape mirrors the upstream documentation
+// (`bcftools.txt:455`); without it the parser greedily consumes the
+// underscore as part of the preceding placeholder name, identical to
+// upstream convert.c::parse_tag (line 1499: `isalnum_c(*q) || *q=='_'`).
 func TestParityAnnotate_SetID(t *testing.T) {
-	t.Skip("annotate -I/--set-id not yet implemented (see docs/PARITY_ROADMAP.md bcftools annotate)")
+	in := parityPath(t, "basic.vcf")
+
+	// Plus form: only fill missing IDs. basic.vcf has IDs 'rs1', '.',
+	// 'rs3', 'rs4', 'rs5', '.' — the two '.' rows become
+	// 'chr1_200' / 'chr2_150'.
+	var out bytes.Buffer
+	if _, err := AnnotateFile(in, &out, AnnotateOptions{SetID: `+%CHROM\_%POS`}); err != nil {
+		t.Fatalf("AnnotateFile +set-id: %v", err)
+	}
+	gotIDs := extractIDColumn(out.String())
+	wantIDs := []string{"rs1", "chr1_200", "rs3", "rs4", "rs5", "chr2_150"}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("plus-form: got %d IDs %v, want %d %v", len(gotIDs), gotIDs, len(wantIDs), wantIDs)
+	}
+	for i, g := range gotIDs {
+		if g != wantIDs[i] {
+			t.Errorf("plus-form row %d: got %q want %q", i, g, wantIDs[i])
+		}
+	}
+
+	// Replace form: rewrite every ID unconditionally.
+	out.Reset()
+	if _, err := AnnotateFile(in, &out, AnnotateOptions{SetID: `%CHROM\_%POS`}); err != nil {
+		t.Fatalf("AnnotateFile set-id: %v", err)
+	}
+	gotIDs = extractIDColumn(out.String())
+	wantIDs = []string{"chr1_100", "chr1_200", "chr1_300", "chr1_400", "chr2_50", "chr2_150"}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("replace-form: got %d IDs %v, want %d %v", len(gotIDs), gotIDs, len(wantIDs), wantIDs)
+	}
+	for i, g := range gotIDs {
+		if g != wantIDs[i] {
+			t.Errorf("replace-form row %d: got %q want %q", i, g, wantIDs[i])
+		}
+	}
+}
+
+// extractIDColumn pulls the third (ID) column from every non-header
+// VCF line.
+func extractIDColumn(body string) []string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 3 {
+			out = append(out, fields[2])
+		}
+	}
+	return out
 }

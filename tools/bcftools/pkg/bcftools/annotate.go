@@ -65,6 +65,12 @@ type AnnotateOptions struct {
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// SetID is the `-I/--set-id [+]FORMAT` value: a bcftools-query-style
+	// format string used to populate the ID column. A leading '+' means
+	// "only set when ID is missing (.)"; without the '+' the value is
+	// unconditionally replaced. An empty string leaves the ID column
+	// untouched. Mirrors vcfannotate.c:3250-3253.
+	SetID string
 }
 
 // AnnotateFile is the file-aware entry point. It opens path through
@@ -147,6 +153,13 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 	// -x: field removal.
 	if opts.Remove != "" {
 		applyRemovals(recs, hdr, opts.Remove)
+	}
+
+	// -I/--set-id: rewrite the ID column from a query-style format string.
+	if opts.SetID != "" {
+		if err := applySetID(recs, opts.SetID); err != nil {
+			return 0, fmt.Errorf("bcftools annotate: --set-id: %w", err)
+		}
 	}
 
 	// Region post-filter.

@@ -480,6 +480,7 @@ func runAnnotate(args []string) int {
 		outputPath    string
 		compressLevel int
 		threads       int
+		setID         string
 		showHelp      bool
 		showVer       bool
 	)
@@ -488,6 +489,7 @@ func runAnnotate(args []string) int {
 	cliflag.StringVar(fs, &headerLines, "H", "header-lines", "", "Header lines file")
 	cliflag.StringVar(fs, &remove, "x", "remove", "", "Fields to drop")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
+	cliflag.StringVar(fs, &setID, "I", "set-id", "", "Set ID column using a query-like format string")
 	fs.StringVar(&renameChrs, "rename-chrs", "", "Rename CHROM via two-col map")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
@@ -530,6 +532,7 @@ func runAnnotate(args []string) int {
 		RenameChromMap: renameChrs,
 		OutputFormat:   format,
 		CompressLevel:  compressLevel,
+		SetID:          setID,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
