@@ -979,6 +979,30 @@ func regionContains(windows map[string][][2]int, chrom string, pos1 int) bool {
 	return false
 }
 
+// mkColInRegion returns a predicate testing 0-based column membership in
+// the regWindows entries for chrom. A nil windows map means "all columns";
+// the returned predicate is also nil in that case so the caller can skip
+// the per-column guard cheaply.
+func mkColInRegion(windows map[string][][2]int, chrom string) func(int) bool {
+	if windows == nil {
+		return nil
+	}
+	iv, ok := windows[chrom]
+	if !ok {
+		// No windows on this chrom: nothing passes.
+		return func(int) bool { return false }
+	}
+	return func(pos0 int) bool {
+		pos1 := pos0 + 1
+		for _, r := range iv {
+			if pos1 >= r[0] && pos1 <= r[1] {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // writeMpileupVCF walks every chrom in chromOrder, gathers per-position
 // pileup columns from every input, runs the glfgen/combine/2bcf
 // pipeline, and writes one record per covered position to out.
@@ -1116,7 +1140,7 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 		// quals — equivalent to the previous batched form. No
 		// pre-merge snapshot is needed because overlap_push never
 		// fires upstream either.
-		applyMpileupBAQ(perInputChromRecs, refSlab, opts, nil, nil)
+		applyMpileupBAQ(perInputChromRecs, refSlab, opts, nil, nil, mkColInRegion(regWindows, chrom))
 	} else {
 		// Default: per-pair interleaving. Classify mates once, then
 		// run BAQ→overlap→BAQ as upstream does. Eligibility uses
@@ -1161,7 +1185,7 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 				d = p.mateStart
 			}
 			return pos0 < d
-		}, realigned)
+		}, realigned, mkColInRegion(regWindows, chrom))
 		// Snapshot first-mate quals AFTER phase 1 BAQ (which mirrors
 		// upstream's mplp_realn run at the read's first eligible
 		// column) but BEFORE overlap-merge zeroes the future
@@ -1189,7 +1213,7 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 				d = p.mateStart
 			}
 			return pos0 >= d
-		}, realigned)
+		}, realigned, mkColInRegion(regWindows, chrom))
 	}
 
 	// Upstream's pileup engine walks reads' CIGARs and emits a column
@@ -1391,7 +1415,7 @@ func mpileupBuildBAQInfo(rec *sam.Record) mpileupReadBAQInfo {
 // only reads whose CIGAR carries an I/D/N op (PLP_HAS_INDEL), so for
 // indel-bearing inputs the partial heuristic is a slight underestimate;
 // for indel-free inputs it is exact.
-func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts MpileupOptions, eligible func(*sam.Record, int) bool, realigned map[*sam.Record]bool) {
+func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts MpileupOptions, eligible func(*sam.Record, int) bool, realigned map[*sam.Record]bool, colInRegion func(pos0 int) bool) {
 	baqFlag := mpileupBAQFlag(opts)
 	// max_read_len: upstream default is 500 unless -M overrides it.
 	maxReadLen := opts.MaxReadLen
@@ -1446,6 +1470,19 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 	partial := !opts.FullBAQ
 
 	for pos0 := 0; pos0 < maxPos; pos0++ {
+		// Upstream's mplp_realn is only invoked for piles emitted within
+		// the requested region (mpileup.c:573 sits inside mpileup_reg's
+		// post-region-filter block). Match that by skipping cols outside
+		// the regions here — without this, a region-restricted run BAQs
+		// reads at columns the region wouldn't have emitted, fixing
+		// quals upstream wouldn't have touched and breaking parity (see
+		// annot-NMBZ.3.1.out: mate1 of an overlapping pair gets BAQ'd
+		// on raw quals here at col 16 while upstream's -r chr16:75 only
+		// fires mplp_realn at col 74, by which time overlap_push has
+		// already merged its quals).
+		if colInRegion != nil && !colInRegion(pos0) {
+			continue
+		}
 		col := column[pos0]
 		if len(col) == 0 {
 			continue
@@ -1747,14 +1784,21 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual
 			// strand so the indel histograms remain accurate.
 			isDel := o == sam.CigarDeletion
 			isRefskip := o == sam.CigarSkipped
-			// p->qpos in upstream points at the LAST consumed query
-			// base before the D/N op (i.e. queryPos-1 here when at
-			// least one match preceded). Use that for the
-			// bias-position helper so iref/ialt histograms are
-			// populated with sensible bins.
-			qref := queryPos - 1
-			if qref < 0 {
-				qref = 0
+			// Upstream's resolve_cigar2 sets p->qpos = s->y at a D/N
+			// op (sam.c:5496). s->y has been advanced by the previous
+			// M/=/X op (sam.c:5443), so it equals queryPos here — the
+			// index of the FIRST query base AFTER the deletion, i.e.
+			// the first base of the next M run. NOT queryPos-1 (the
+			// last base BEFORE the deletion). This drives min_dist
+			// (= min(qpos, l_qseq-1-qpos), capped at CAP_DIST) and
+			// the REF-rescue raw-qual lookup (qual[p.qpos]) in
+			// bcf_call_glfgen's indel branch.
+			qref := queryPos
+			if qref >= qlen {
+				qref = qlen - 1
+				if qref < 0 {
+					qref = 0
+				}
 			}
 			var rawQual uint8
 			if qref < len(rec.Qual) {

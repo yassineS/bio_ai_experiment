@@ -1765,47 +1765,59 @@ Plus:
          itself (`pkg/htsgo/baq/realn.go`) is byte-identical to
          upstream when fed identical input qualities.
 
-      3. **Indel-row chosen-type off-by-one at homopolymer columns**
-         (`indel-AD.1.out` at `000000F:537/538/658`, plus
-         `annot-NMBZ.3.1.out` at `chr16:75`). At these columns the
-         indel-row I16 fields agree on REF/ALT classification (so
-         the `isDiff = b ? 1 : 0` split is identical), but the
-         **per-allele** breakdown shifts because a handful of reads
-         are assigned to a different non-REF indel type by
-         `bcfCgpComputeIndelQ`. Concretely at `000000F:537`: ours
-         classifies one extra read as type `-1` (the deletion),
-         shifting I16 slot 3 (alt-rev count) from 27 to 28, the
-         alt BQ-sum by exactly one BQ=40 contribution, the alt
-         MQ-sum by MQ=60, and the alt min-dist sum by 25. This
-         propagates into QS (per-type qsum), AD (per-allele
-         counts), and (transitively) PL[2]. At `chr16:75`
-         (`annot-NMBZ.3.1.out`) the I16 byte-matches because the
-         swaps are between two ALT types (both `b!=0`, so isDiff
-         stays 1), but QS shifts (1.45884 vs 1.43466 for type 1),
-         NMBZ flips sign (+0.437589 vs -0.886523 — the indel-pass
-         refNm/altNm split changes), and PL[0] for sample 1 falls
-         from 255 to 226. Root cause: `bcfCgpComputeIndelQ` and
-         `bcfCgpAlignScore` use the same encoding `score<<6 | t`
-         and the same ascending-insertion-sort tie-break as
-         upstream, and the orchestrator's `tbeg`/`tend`/`rStart`/
-         `rEnd` / ref2-slice positioning matches upstream
-         byte-for-byte (verified by `bcfCgpAlignScore`'s
-         existing tests). The remaining divergence is in the
-         `probaln_glocal` score itself for reads whose query
-         window straddles a homopolymer run — at most-frequent /
-         long homopolymers, two indel types can produce
-         `probaln_glocal` returns that differ by a single Phred
-         unit, and a one-unit drift in the underlying HMM
-         likelihoods (rounding inside the forward/backward DP)
-         flips the tie-break. The HMM port lives in
-         `pkg/bcftools/.../baq.ProbalnGlocal` and the residual is
-         a "single ULP rounding inside the forward DP at long
-         homopolymer columns" item rather than a `bam2bcf.c`
-         port gap. Out of scope for this slice — fixing it
-         requires either (a) reproducing C's exact left-to-right
-         multiply order inside the HMM transition step, or (b)
-         accepting these as RNG-class residuals (a handful of
-         reads per homopolymer column at depths > 100).
+      3. **Indel-pass `p->qpos` off-by-one for deletion-spanning reads
+         and region-gated BAQ timing.** **RESOLVED.** Two independent
+         residuals remained on the cluster-3 surface after the BAQ /
+         overlap-merge interleaving fixes above:
+
+         a. `indel-AD.1.out` at `000000F:538` and `:658`: upstream's
+            `resolve_cigar2` sets `p->qpos = s->y` at a D/N op
+            (sam.c:5496) — i.e. `queryPos` AFTER the preceding M run
+            advanced it (the first query base of the next M run).
+            Our `accumulateMpileupBases` D/N branch had
+            `qref = queryPos - 1` (the last base BEFORE the
+            deletion), which shifted `p.qpos` by -1 for every read
+            with a spanning deletion at the indel-pass column. The
+            shift fed two downstream divergences: `min_dist`
+            (= `min(qpos, l_qseq-1-qpos)` capped at CAP_DIST) was
+            consistently low by 1, drifting I16 slots 12-15 (REF
+            tail-distance sum / sumsq) by ~N×1 and ~N×(2qpos-1)
+            respectively, and the legacy REF-rescue raw-qual
+            lookup (`rec.Qual[p.qpos]`) read the wrong byte, so
+            the `(3*seqQ + 2*rawQ)/8` blend and the
+            min-baseQ-rescue gate flipped admission for the
+            specific reads at the homopolymer boundary. Fix:
+            `qref = queryPos` in the D/N case.
+
+         b. `annot-NMBZ.3.1.out` SNP row at `chr16:75`: upstream's
+            `mpileup_reg` only invokes `mplp_realn` for piles
+            emitted inside the requested region (mpileup.c:573 sits
+            after the `pos<beg || pos>end` skip). With
+            `-r chr16:75` that means BAQ first triggers at col 74,
+            by which time the iterator has already pushed the
+            second mate of every overlapping pair (and so
+            `overlap_push` has merged each first-mate's qual
+            array). Our `applyMpileupBAQ` was iterating every
+            chromosome column unconditionally, BAQing first-mates
+            at their first eligible col (~16 in this fixture) on
+            raw quals; when `applySmartOverlaps` then ran,
+            mate1's BAQed qual was summed with mate2's raw qual at
+            the overlap window, inflating `qual[qpos=74]` above
+            what upstream produced (60 capped from 75 in ours
+            versus 36 capped from itself in upstream). Fix: gate
+            phase-1 / phase-2 `applyMpileupBAQ` and the `-x` /
+            `-B` paths on `mkColInRegion(regWindows, chrom)` so
+            BAQ only fires at columns within the requested
+            regions, matching upstream's region-restricted BAQ
+            timing.
+
+         The residual `annot-NMBZ.3.1.out` INDEL row at chr16:75
+         (`QS` / `NMBZ` / PL[0]: 226 vs 255, NMBZ sign flip)
+         survives `-B/--no-BAQ` and is the per-read chosen-indel-
+         type assignment at the homopolymer column — same root
+         cause as the long-homopolymer probaln_glocal single-ULP
+         rounding residuals tracked under the next item, RNG-class
+         and out of scope per project policy.
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
