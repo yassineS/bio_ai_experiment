@@ -179,17 +179,21 @@ chr1	400	.	A	AT	30	PASS	DP=30	GT:DP	0/0:6	0/1:6	1/1:6
 chr1	500	.	C	G	30	PASS	DP=30	GT:DP	0/1:4	1/1:4	0/1:4
 `
 	res, _ := runStats(t, fx, StatsOptions{})
-	// Expected counts per sample (3 samples × 5 records):
-	//   S1: GTs = 0/0, 0/1, 1/1, 0/0, 0/1. RefHom=2, AltHom=1, Het=2.
-	//        SNP transitions at chr1@200 (C>T), chr1@300 (G>A) on S1 hits = 1ts (chr1@300 1/1 G>A=ts) + 1ts(chr1@200 0/1 C>T = ts).
-	//        Transversions: chr1@100 (A>G ts), chr1@500 (C>G tv). S1@100 0/0 no Ts/Tv contribution; S1@500 0/1 → tv. So Tv=1.
-	//        Indel: chr1@400 0/0 → 0.
-	//   S2: 0/1, 0/1, 0/0, 0/1, 1/1. RefHom=1, AltHom=1, Het=3.
-	//   S3: 1/1, 0/0, 0/1, 1/1, 0/1. RefHom=1, AltHom=2, Het=2.
+	// Expected counts per sample, matching upstream `bcftools stats -s -`
+	// semantics: the ref/het/hom counters are SNP-only (PSC header note,
+	// vcfstats.c:1786). The indel record at chr1@400 therefore contributes
+	// to pscNIndels but NOT to homRR/homAA/hets.
+	//
+	//   S1 SNPs only (chr1@100,200,300,500): 0/0, 0/1, 1/1, 0/1 →
+	//     RefHom=2, AltHom=1, Het=2. Indel chr1@400 0/0 → no PSC change.
+	//   S2 SNPs only: 0/1, 0/1, 0/0, 1/1 → RefHom=1, AltHom=1, Het=2.
+	//     Indel chr1@400 0/1 → pscNIndels[S2]++.
+	//   S3 SNPs only: 1/1, 0/0, 0/1, 0/1 → RefHom=1, AltHom=1, Het=2.
+	//     Indel chr1@400 1/1 → pscNIndels[S3]++.
 	want := []struct{ refHom, altHom, het int }{
 		{2, 1, 2},
-		{1, 1, 3},
-		{1, 2, 2},
+		{1, 1, 2},
+		{1, 1, 2},
 	}
 	for i, w := range want {
 		if res.pscNRefHom[i] != w.refHom {

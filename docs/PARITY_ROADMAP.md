@@ -2338,6 +2338,48 @@ per-subcommand option-tail sections below):
   `--unify-chr-names`, `-l/--local-csq`) is slice 4 — see the "csq
   full-parity slicing plan" below.
 
+`stats` section parity (RESOLVED — all seven previously-deferred section
+goldens now match `bcftools stats -s -` byte-for-byte on
+`tools/bcftools/testdata/parity/basic.vcf`):
+
+- **PSC** — per-sample counts now follow upstream `do_sample_stats`
+  (vcfstats.c:1094) semantics: missing GTs (./.) bump `nMissing`,
+  haploid REF/ALT GTs bump `nHapRef`/`nHapAlt`, the diploid SNP-only
+  counters (`nRefHom`/`nNonRefHom`/`nHets`/`nTransitions`/
+  `nTransversions`) only count SNP-typed alleles, the 1/2 SNP-het case
+  scores ts/tv for both `ial` and `jal`, `nIndels` is bumped once per
+  non-REF diploid GT at any INDEL site, and `nSingletons` is bumped on
+  the unique non-REF sample. Mean depth uses `%.1f` (vcfstats.c:1795).
+- **AF** — bins now mirror upstream's 101-bin scheme: bin 0 is the
+  singleton (AC==1) bucket and gets folded into bin 1 at print time
+  (vcfstats.c:1451-1452 / 1826); other bins use
+  `floor(af*(m_af-2))+1` with float32 truncation
+  (vcfstats.c:692-695). Per-allele AC comes from INFO/AC,AN first,
+  falling back to FORMAT/GT, matching `bcf_calc_ac`
+  (htslib vcfutils.c). The "not applicable" indel column tracks
+  `af_repeats[2]++` for every indel allele when no indel-context is
+  configured (vcfstats.c:767-768).
+- **QUAL** — bins now keyed by `iqual=1+int(qual*10)` and emit
+  `0.1*(k-1)` formatted as `%.1f` (vcfstats.c:1489-1526), including
+  the trailing `.0` upstream produces for integer QUALs. Symbolic /
+  "other"-type ALTs no longer contribute to the QUAL indel column.
+- **IDD** — trailing per-genotype-VAF columns emit `0\t.` for empty
+  buckets (vcfstats.c:1558-1559).
+- **ST** — already matched; explicit parity test added.
+- **DP** — already matched; explicit parity test added.
+- **HWE** — Hardy-Weinberg accumulator now mirrors the upstream 2-D
+  `af_hwe` array (vcfstats.c:1158-1173 / 1821-1858) including the
+  singleton fold into bin 1 and the 25th / median / 75th percentile
+  CDF emission. Per-record het-fraction follows upstream's
+  `nref_tot`/`nhet_tot`/`nalt_tot` tally where GT_HET_AA contributes
+  to the alt bucket (vcfstats.c:1022-1029), not the het bucket.
+
+Parity tests covering each section live in
+`tools/bcftools/pkg/bcftools/parity_test.go` (TestParityStats_PSC,
+TestParityStats_AF, TestParityStats_QUAL, TestParityStats_IDD,
+TestParityStats_ST, TestParityStats_DP, TestParityStats_HWE) with
+goldens captured under `tools/bcftools/testdata/parity/stats_*.expected.txt`.
+
 Option-tail gaps on `gtcheck` (PR #107, simple-mode):
 
 - `--cluster N,N` (HMM-style sample clustering), `--distinctive-sites`,

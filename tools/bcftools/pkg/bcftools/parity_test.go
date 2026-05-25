@@ -188,9 +188,58 @@ func TestParityView_SampleSubset(t *testing.T) {
 	t.Skip("view -s does not recompute INFO/AC/AN (see docs/PARITY_ROADMAP.md bcftools view)")
 }
 
-// TestParityView_VTypeSnps documents the missing -v / --types selector.
+// TestParityView_VTypeSnps exercises `-v snps`: only SNP records pass
+// (POS 100/200/400/50 from basic.vcf; the indel at 300 and the symbolic
+// <DEL> at chr2:150 are excluded). The complementary `-V indels,other`
+// path is verified to yield the same selection.
 func TestParityView_VTypeSnps(t *testing.T) {
-	t.Skip("view -v/--types not implemented (see docs/PARITY_ROADMAP.md bcftools view)")
+	in := readParity(t, "basic.vcf")
+
+	// -v snps: keep only SNP-type rows.
+	got := runParityView(t, in, ViewOptions{IncludeTypes: []string{"snps"}})
+	gotPos := extractPOSColumn(string(got))
+	wantPos := []string{"100", "200", "400", "50"}
+	if !equalStringSlice(gotPos, wantPos) {
+		t.Errorf("-v snps positions: got %v want %v", gotPos, wantPos)
+	}
+
+	// -V indels,other: drop the indel at 300 and the <DEL> at 150;
+	// chr1:400 has ALT=T,G which classify per-ALT to (SNP, SNP), so
+	// it stays.
+	got = runParityView(t, in, ViewOptions{ExcludeTypes: []string{"indels", "other"}})
+	gotPos = extractPOSColumn(string(got))
+	wantPos = []string{"100", "200", "400", "50"}
+	if !equalStringSlice(gotPos, wantPos) {
+		t.Errorf("-V indels,other positions: got %v want %v", gotPos, wantPos)
+	}
+}
+
+// extractPOSColumn pulls the second (POS) column from every non-header
+// VCF line.
+func extractPOSColumn(body string) []string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 2 {
+			out = append(out, fields[1])
+		}
+	}
+	return out
+}
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestParityView_BCFInput asserts byte-for-byte parity when reading an
@@ -526,48 +575,79 @@ func TestParityStats_SN(t *testing.T) {
 	equalBytes(t, got, want, "stats SN")
 }
 
-// TestParityStats_PSC documents PSC column-count and rounding differences:
-// upstream emits per-sample mean DP with one decimal and a different
-// counting basis for nRef/nAlt/nHet. We emit %.2f and count from raw GT.
+// TestParityStats_PSC asserts byte-for-byte parity of the per-sample-counts
+// section against `bcftools stats -s -` on basic.vcf. The Go port now
+// matches upstream `do_sample_stats` semantics (SNP-only homRR/homAA/hets
+// counters, two-allele ts/tv attribution for 1/2 hets, %.1f mean depth,
+// and the singleton / hapRef / hapAlt / missing columns).
 func TestParityStats_PSC(t *testing.T) {
-	t.Skip("stats PSC section: mean-DP rounding and reference-count accounting diverge (see docs/PARITY_ROADMAP.md bcftools stats)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "stats_psc.expected.txt")
+	got := statsSection(runParityStats(t, in), "PSC")
+	equalBytes(t, got, want, "stats PSC")
 }
 
-// TestParityStats_AF documents a divergence: upstream re-derives AF from
-// genotypes and uses dynamic bin labels; our port reads INFO/AF directly
-// and uses fixed bins. The two outputs are not byte-comparable.
+// TestParityStats_AF asserts byte-for-byte parity of the AF section. The
+// Go port mirrors upstream's 101-bin scheme: singletons folded into
+// bin 1, per-allele AC from INFO/AC,AN with FORMAT/GT fallback,
+// float32 truncation matching vcfstats.c:692-695, and the af_repeats[2]
+// indel "not applicable" column.
 func TestParityStats_AF(t *testing.T) {
-	t.Skip("stats AF section: upstream rebuilds AF from GTs, we read INFO/AF (see docs/PARITY_ROADMAP.md bcftools stats)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "stats_af.expected.txt")
+	got := statsSection(runParityStats(t, in), "AF")
+	equalBytes(t, got, want, "stats AF")
 }
 
-// TestParityStats_QUAL documents that our port emits integer QUAL bins
-// without the `.0` decimal suffix that upstream produces. Tracked.
+// TestParityStats_QUAL asserts byte-for-byte parity of the QUAL section.
+// The Go port now bins by `iqual=1+int(qual*10)` and emits `0.1*(k-1)`
+// with `%.1f` formatting — including the trailing `.0` upstream produces
+// for integer QUAL values.
 func TestParityStats_QUAL(t *testing.T) {
-	t.Skip("stats QUAL section: upstream emits trailing .0 on integer bins (see docs/PARITY_ROADMAP.md bcftools stats)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "stats_qual.expected.txt")
+	got := statsSection(runParityStats(t, in), "QUAL")
+	equalBytes(t, got, want, "stats QUAL")
 }
 
-// TestParityStats_IDD documents the indel-length distribution; our
-// indel-length bucketing is correct but the trailing "frame-shift" column
-// emits 0.00 where upstream emits `.` for unset.
+// TestParityStats_IDD asserts byte-for-byte parity of the indel-length
+// distribution. The trailing per-genotype-VAF columns now emit `0\t.`
+// (matching vcfstats.c:1558-1559) rather than the legacy `0\t0.00`.
 func TestParityStats_IDD(t *testing.T) {
-	t.Skip("stats IDD section: trailing-column missing-value glyph diverges (see docs/PARITY_ROADMAP.md bcftools stats)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "stats_idd.expected.txt")
+	got := statsSection(runParityStats(t, in), "IDD")
+	equalBytes(t, got, want, "stats IDD")
 }
 
-// TestParityStats_ST documents the substitution-types section; we emit
-// the same 12 rows but format zero-counts as `0` while upstream omits
-// some rows entirely under certain inputs.
+// TestParityStats_ST asserts byte-for-byte parity of the substitution-types
+// section.
 func TestParityStats_ST(t *testing.T) {
-	t.Skip("stats ST section: zero-count row handling diverges (see docs/PARITY_ROADMAP.md bcftools stats)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "stats_st.expected.txt")
+	got := statsSection(runParityStats(t, in), "ST")
+	equalBytes(t, got, want, "stats ST")
 }
 
-// TestParityStats_DP documents the depth distribution section.
+// TestParityStats_DP asserts byte-for-byte parity of the depth-distribution
+// section. With the upstream-faithful PSC accumulator in place, the
+// per-genotype DP histogram matches `bcftools stats -s -`.
 func TestParityStats_DP(t *testing.T) {
-	t.Skip("stats DP section: dynamic bin labels diverge (see docs/PARITY_ROADMAP.md bcftools stats)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "stats_dp.expected.txt")
+	got := statsSection(runParityStats(t, in), "DP")
+	equalBytes(t, got, want, "stats DP")
 }
 
-// TestParityStats_HWE documents the Hardy-Weinberg section.
+// TestParityStats_HWE asserts byte-for-byte parity of the Hardy-Weinberg
+// section. The Go port now mirrors upstream's 2-D af_hwe accumulator
+// (vcfstats.c:1158-1173 / 1821-1858) including the singleton fold into
+// bin 1 and the 25th / median / 75th percentile CDF emission.
 func TestParityStats_HWE(t *testing.T) {
-	t.Skip("stats HWE section: needs additional input shape (see docs/PARITY_ROADMAP.md bcftools stats)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "stats_hwe.expected.txt")
+	got := statsSection(runParityStats(t, in), "HWE")
+	equalBytes(t, got, want, "stats HWE")
 }
 
 // =====================================================================
