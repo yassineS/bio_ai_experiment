@@ -557,9 +557,16 @@ func runSort(args []string) int {
 	//   -n  -> natural numeric name sort (the upstream default for name-sort)
 	//   -N  -> plain lexicographic name sort (sets natural_sort=0 upstream)
 	// Our library exposes both modes; the CLI just wires them up to match.
+	// secondaryByName is set when `-t TAG` is combined with `-n`/`-N`; this
+	// matches upstream's TagQueryName ordering (qname+FLAG tie-break inside
+	// equal-tag groups, vs the default pos-based TagCoordinate tie-break).
+	secondaryByName := false
 	switch {
 	case byTag != "":
 		order = samtools.SortByTag
+		if byName || byNatural {
+			secondaryByName = true
+		}
 	case byNatural:
 		order = samtools.SortByName
 	case byName:
@@ -592,15 +599,16 @@ func runSort(args []string) int {
 	}
 
 	opts := samtools.SortOptions{
-		Order:         order,
-		Tag:           byTag,
-		MaxMemBytes:   mem,
-		TmpPrefix:     tmpdir,
-		CompressLevel: compLevel,
-		OutputBAM:     outputBAM,
-		OutputSAM:     outputSAM,
-		Threads:       threads,
-		NoPG:          noPG,
+		Order:           order,
+		Tag:             byTag,
+		MaxMemBytes:     mem,
+		TmpPrefix:       tmpdir,
+		CompressLevel:   compLevel,
+		OutputBAM:       outputBAM,
+		OutputSAM:       outputSAM,
+		Threads:         threads,
+		NoPG:            noPG,
+		SecondaryByName: secondaryByName,
 	}
 
 	in, err := iohelper.OpenReader(fs.Arg(0))

@@ -305,14 +305,21 @@ func TestParity_Sort_T01_Coordinate(t *testing.T) {
 	}
 }
 
-// sort.t02 — `-n` natural-name sort. Upstream's tie-break uses the FLAG
-// field as a secondary key when two records share a QName; our port does
-// a stable name-only sort. Affects a single pair (`r001` 83/163), so we
-// document the difference rather than diverging from upstream silently.
+// sort.t02 — `-n` natural-name sort against upstream's golden output.
+// With the FLAG-encoded tie-break in place the `r001` 83/163 pair (and
+// every other same-qname group) now lands in the upstream order.
 func TestParity_Sort_T02_ByNameNatural(t *testing.T) {
-	t.Skip("known discrepancy: upstream samtools sort -n tie-breaks on FLAG; " +
-		"our port preserves input order. Tracked in PARITY_ROADMAP.md#samtools as " +
-		"the missing FLAG secondary key for name sorts.")
+	in := openParity(t, "test_input_1_a.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Sort(in, &out, SortOptions{Order: SortByNameNatural, OutputSAM: true}); err != nil {
+		t.Fatalf("Sort -n: %v", err)
+	}
+	got := stripPGAndCO(out.Bytes())
+	want := stripPGAndCO(readParity(t, "name.sort.expected.sam"))
+	if !bytes.Equal(got, want) {
+		t.Errorf("name-sort mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // sort.t03 — natural-name sort on a self-contained input with no same-qname
@@ -350,19 +357,63 @@ u1	4	*	0	0	*	*	0	0	*	*
 	}
 }
 
-// sort.t04 — `-N` plain lexicographic name sort. Same FLAG tie-break gap
-// as sort.t02 surfaces on `test_input_1_b.sam`.
+// sort.t04 — `-N` plain lexicographic name sort against upstream's golden
+// output. The FLAG tie-break now matches upstream byte-for-byte on
+// test_input_1_b.sam.
 func TestParity_Sort_T04_ByNameLex(t *testing.T) {
-	t.Skip("known discrepancy: upstream samtools sort -N tie-breaks on FLAG; " +
-		"our port preserves input order. Tracked in PARITY_ROADMAP.md#samtools.")
+	in := openParity(t, "test_input_1_b.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Sort(in, &out, SortOptions{Order: SortByName, OutputSAM: true}); err != nil {
+		t.Fatalf("Sort -N: %v", err)
+	}
+	got := stripPGAndCO(out.Bytes())
+	want := stripPGAndCO(readParity(t, "name2.sort.expected.sam"))
+	if !bytes.Equal(got, want) {
+		t.Errorf("name-lex sort mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// sort.t05 — `-t RG` tag sort. Skipped pending unify of upstream's
-// secondary tag-sort key (it falls back to position, then name).
+// sort.t05 — `-t RG` tag sort. Upstream's secondary key for `-t TAG` alone
+// is the coordinate compare (tid, pos+1, rev); with `-n -t TAG` it becomes
+// qname+FLAG. Our SortByTag + SecondaryByName options now route to either
+// upstream comparator so both regressions pass.
 func TestParity_Sort_T05_TagSort(t *testing.T) {
-	t.Skip("known discrepancy: upstream samtools sort -t RG uses a 3-key compare " +
-		"(tag, pos, qname); our port uses (tag, qname). Tracked in " +
-		"PARITY_ROADMAP.md#samtools.")
+	t.Run("tag.rg.sort (pos secondary)", func(t *testing.T) {
+		in := openParity(t, "test_input_1_a.sam")
+		defer in.Close()
+		var out bytes.Buffer
+		if err := Sort(in, &out, SortOptions{
+			Order:     SortByTag,
+			Tag:       "RG",
+			OutputSAM: true,
+		}); err != nil {
+			t.Fatalf("Sort -t RG: %v", err)
+		}
+		got := stripPGAndCO(out.Bytes())
+		want := stripPGAndCO(readParity(t, "tag.rg.sort.expected.sam"))
+		if !bytes.Equal(got, want) {
+			t.Errorf("tag.rg.sort mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+		}
+	})
+	t.Run("tag.rg.n.sort (qname secondary)", func(t *testing.T) {
+		in := openParity(t, "test_input_1_a.sam")
+		defer in.Close()
+		var out bytes.Buffer
+		if err := Sort(in, &out, SortOptions{
+			Order:           SortByTag,
+			Tag:             "RG",
+			SecondaryByName: true,
+			OutputSAM:       true,
+		}); err != nil {
+			t.Fatalf("Sort -n -t RG: %v", err)
+		}
+		got := stripPGAndCO(out.Bytes())
+		want := stripPGAndCO(readParity(t, "tag.rg.n.sort.expected.sam"))
+		if !bytes.Equal(got, want) {
+			t.Errorf("tag.rg.n.sort mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+		}
+	})
 }
 
 // sort.t06 — empty input emits the header alone (and the SO/SS stamps).

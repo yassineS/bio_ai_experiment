@@ -64,6 +64,10 @@ type SortOptions struct {
 	Threads int
 	// NoPG is accepted but is a no-op (we don't inject @PG lines anyway).
 	NoPG bool
+	// SecondaryByName, with Order == SortByTag, selects upstream's
+	// TagQueryName ordering (qname+FLAG tie-break). Default false matches
+	// upstream TagCoordinate (tid, pos+1, rev) tie-break.
+	SecondaryByName bool
 }
 
 // SortDefaultMem is the default per-shard memory budget when SortOptions.
@@ -447,52 +451,121 @@ func recordSize(r *sam.Record) int64 {
 }
 
 // makeRecordLess constructs the comparison function that drives both the
-// in-memory sort and the merge heap, per opts.
+// in-memory sort and the merge heap, per opts. Semantics mirror upstream
+// samtools' bam_sort.c `bam1_cmp_core` / `bam1_cmp_by_tag` exactly.
 func makeRecordLess(opts SortOptions, refIndex map[string]int) func(a, b *sam.Record) bool {
 	switch opts.Order {
 	case SortByName:
-		return func(a, b *sam.Record) bool { return a.QName < b.QName }
+		return func(a, b *sam.Record) bool { return nameCmpLess(a, b, false) }
 	case SortByNameNatural:
-		return func(a, b *sam.Record) bool { return naturalLess(a.QName, b.QName) }
+		return func(a, b *sam.Record) bool { return nameCmpLess(a, b, true) }
 	case SortByTag:
 		tag := opts.Tag
-		return func(a, b *sam.Record) bool { return tagLess(a, b, tag) }
+		secondaryByName := opts.SecondaryByName
+		return func(a, b *sam.Record) bool { return tagLess(a, b, tag, refIndex, secondaryByName) }
 	default:
 		return func(a, b *sam.Record) bool { return coordLess(a, b, refIndex) }
 	}
 }
 
-// coordLess sorts records by (refID, 0-based pos). Unmapped records (refID
-// == -1) sort after every mapped record. Within a reference, ties on pos
-// fall back to lexicographic QName so the order is fully deterministic.
+// coordLess wraps coordCmpCore for the in-memory sort.
 func coordLess(a, b *sam.Record, refIndex map[string]int) bool {
-	ra := -1
-	if a.RName != "" && a.RName != "*" {
-		if id, ok := refIndex[a.RName]; ok {
-			ra = id
-		}
-	}
-	rb := -1
-	if b.RName != "" && b.RName != "*" {
-		if id, ok := refIndex[b.RName]; ok {
-			rb = id
-		}
-	}
-	// Convert -1 to a sentinel that sorts last.
-	const last = 1 << 30
-	if ra < 0 {
-		ra = last
-	}
-	if rb < 0 {
-		rb = last
-	}
+	return coordCmpCore(a, b, refIndex) < 0
+}
+
+// coordCmpCore is upstream `bam1_cmp_core` for coordinate order: (tid,
+// pos+1, rev). Unmapped records sort last via refIDFor's sentinel.
+func coordCmpCore(a, b *sam.Record, refIndex map[string]int) int {
+	ra := refIDFor(a, refIndex)
+	rb := refIDFor(b, refIndex)
 	if ra != rb {
-		return ra < rb
+		if ra < rb {
+			return -1
+		}
+		return 1
 	}
 	if a.Pos != b.Pos {
-		return a.Pos < b.Pos
+		if a.Pos < b.Pos {
+			return -1
+		}
+		return 1
 	}
-	return a.QName < b.QName
+	revA := uint32(0)
+	if a.Flag&0x10 != 0 {
+		revA = 1
+	}
+	revB := uint32(0)
+	if b.Flag&0x10 != 0 {
+		revB = 1
+	}
+	if revA != revB {
+		if revA < revB {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// refIDFor maps a record's RName to refIndex; unmapped/unknown get a
+// large sentinel so they sort last.
+func refIDFor(r *sam.Record, refIndex map[string]int) int {
+	if r.RName == "" || r.RName == "*" {
+		return 1 << 30
+	}
+	if id, ok := refIndex[r.RName]; ok {
+		return id
+	}
+	return 1 << 30
+}
+
+// flagSortKey reorders FLAG bits so the natural integer compare yields
+// READ1 < READ2 < primary < supplementary < secondary, matching upstream
+// bam_sort.c bam1_cmp_core:
+// `((flag&0xc0)<<8)|((flag&0x100)<<3)|((flag&0x800)>>3)`.
+func flagSortKey(flag uint16) uint32 {
+	f := uint32(flag)
+	return ((f & 0xc0) << 8) | ((f & 0x100) << 3) | ((f & 0x800) >> 3)
+}
+
+// nameCmpLess is the qname comparator with the upstream FLAG tie-break.
+func nameCmpLess(a, b *sam.Record, natural bool) bool {
+	return nameCmpCore(a, b, natural) < 0
+}
+
+func nameCmpCore(a, b *sam.Record, natural bool) int {
+	var t int
+	if natural {
+		t = naturalCmp(a.QName, b.QName)
+	} else {
+		if a.QName < b.QName {
+			t = -1
+		} else if a.QName > b.QName {
+			t = 1
+		}
+	}
+	if t != 0 {
+		return t
+	}
+	fa := flagSortKey(a.Flag)
+	fb := flagSortKey(b.Flag)
+	if fa < fb {
+		return -1
+	}
+	if fa > fb {
+		return 1
+	}
+	return 0
+}
+
+func naturalCmp(a, b string) int {
+	if naturalLess(a, b) {
+		return -1
+	}
+	if naturalLess(b, a) {
+		return 1
+	}
+	return 0
 }
 
 // naturalLess implements numeric-aware string comparison: runs of digits in
@@ -549,29 +622,30 @@ func stripLeadingZeros(s string) string {
 	return s[i:]
 }
 
-// tagLess compares two records by an aux tag value. Missing tags sort last;
-// integer tags compare numerically; float tags compare as floats; string
-// tags compare lexicographically.
-func tagLess(a, b *sam.Record, tag string) bool {
+// tagLess compares two records by an aux tag value. Tag-absent records sort
+// FIRST (matching upstream `bam1_cmp_by_tag` where aux_a == NULL returns -1
+// vs an aux-bearing aux_b). Ties on the tag value fall back to the secondary
+// comparator selected by secondaryByName: true → qname+FLAG, false →
+// (tid, pos, rev). Mirrors upstream `TagQueryName` vs `TagCoordinate`.
+func tagLess(a, b *sam.Record, tag string, refIndex map[string]int, secondaryByName bool) bool {
 	av, aok := a.GetAux(tag)
 	bv, bok := b.GetAux(tag)
 	if !aok && !bok {
-		return a.QName < b.QName
+		return tagSecondaryCmp(a, b, refIndex, secondaryByName) < 0
 	}
 	if !aok {
-		return false
-	}
-	if !bok {
 		return true
 	}
-	// Integer comparison (works for c/C/s/S/i/I).
+	if !bok {
+		return false
+	}
 	ai, aint := av.Int()
 	bi, bint := bv.Int()
 	if aint && bint {
 		if ai != bi {
 			return ai < bi
 		}
-		return a.QName < b.QName
+		return tagSecondaryCmp(a, b, refIndex, secondaryByName) < 0
 	}
 	if av.Type == 'f' && bv.Type == 'f' {
 		af, _ := av.Value.(float64)
@@ -579,14 +653,23 @@ func tagLess(a, b *sam.Record, tag string) bool {
 		if af != bf {
 			return af < bf
 		}
-		return a.QName < b.QName
+		return tagSecondaryCmp(a, b, refIndex, secondaryByName) < 0
 	}
 	as, _ := av.Value.(string)
 	bs, _ := bv.Value.(string)
 	if as != bs {
 		return as < bs
 	}
-	return a.QName < b.QName
+	return tagSecondaryCmp(a, b, refIndex, secondaryByName) < 0
+}
+
+// tagSecondaryCmp routes to upstream's secondary comparator: name+FLAG when
+// secondaryByName, otherwise the position-based comparator.
+func tagSecondaryCmp(a, b *sam.Record, refIndex map[string]int, secondaryByName bool) int {
+	if secondaryByName {
+		return nameCmpCore(a, b, true)
+	}
+	return coordCmpCore(a, b, refIndex)
 }
 
 // writeShard creates a tmp BAM file and writes the given (already sorted)

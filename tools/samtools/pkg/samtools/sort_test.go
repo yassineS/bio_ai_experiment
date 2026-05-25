@@ -128,13 +128,20 @@ func TestSortByNaturalName(t *testing.T) {
 
 func TestSortByTag(t *testing.T) {
 	var out bytes.Buffer
-	if err := Sort(strings.NewReader(unsortedSAM), &out, SortOptions{Order: SortByTag, Tag: "NM", OutputBAM: true}); err != nil {
+	if err := Sort(strings.NewReader(unsortedSAM), &out, SortOptions{
+		Order:           SortByTag,
+		Tag:             "NM",
+		SecondaryByName: true,
+		OutputBAM:       true,
+	}); err != nil {
 		t.Fatalf("Sort: %v", err)
 	}
 	recs := readBAMRecords(t, out.Bytes())
-	// NM values: r10=3, r2=1, r1=2, r20=9, u1=missing → u1 sorts last.
-	// Sorted by NM: r2(1), r1(2), r10(3), r20(9), u1(missing).
-	want := []string{"r2", "r1", "r10", "r20", "u1"}
+	// Upstream `samtools sort -n -t NM`: records missing the tag sort
+	// FIRST (per bam1_cmp_by_tag), then the rest by tag value with a
+	// qname+FLAG secondary key.
+	// NM: r10=3, r2=1, r1=2, r20=9; u1 missing.
+	want := []string{"u1", "r2", "r1", "r10", "r20"}
 	for i, w := range want {
 		if recs[i].QName != w {
 			t.Errorf("position %d: got %q, want %q", i, recs[i].QName, w)
@@ -143,9 +150,16 @@ func TestSortByTag(t *testing.T) {
 }
 
 func TestSortByTagMissing(t *testing.T) {
-	// Sorting by a tag absent on every record falls back to QName order.
+	// Sorting by a tag absent on every record falls back to the secondary
+	// comparator. With SecondaryByName=true the order is qname-natural,
+	// so r1 lands first.
 	var out bytes.Buffer
-	if err := Sort(strings.NewReader(unsortedSAM), &out, SortOptions{Order: SortByTag, Tag: "ZZ", OutputBAM: true}); err != nil {
+	if err := Sort(strings.NewReader(unsortedSAM), &out, SortOptions{
+		Order:           SortByTag,
+		Tag:             "ZZ",
+		SecondaryByName: true,
+		OutputBAM:       true,
+	}); err != nil {
 		t.Fatalf("Sort: %v", err)
 	}
 	recs := readBAMRecords(t, out.Bytes())
@@ -253,20 +267,19 @@ func TestParseMemBudget(t *testing.T) {
 	}
 }
 
-// TestTagLessFloatAndString exercises the float and string branches of
-// tagLess that the SortByTag tests don't hit.
+// TestTagLessFloat exercises the float branch of tagLess (qname-secondary).
 func TestTagLessFloat(t *testing.T) {
 	a := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
 	b := &sam.Record{QName: "b", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 2.0}}}
-	if !tagLess(a, b, "XF") {
+	if !tagLess(a, b, "XF", nil, true) {
 		t.Error("XF=1.0 should be less than XF=2.0")
 	}
-	if tagLess(b, a, "XF") {
+	if tagLess(b, a, "XF", nil, true) {
 		t.Error("XF=2.0 should NOT be less than XF=1.0")
 	}
 	// Equal floats fall back to QName.
 	c := &sam.Record{QName: "z", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
-	if !tagLess(a, c, "XF") {
+	if !tagLess(a, c, "XF", nil, true) {
 		t.Error("tie on XF=1.0 should defer to QName (a < z)")
 	}
 }
@@ -274,25 +287,26 @@ func TestTagLessFloat(t *testing.T) {
 func TestTagLessString(t *testing.T) {
 	a := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
 	b := &sam.Record{QName: "b", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-bb"}}}
-	if !tagLess(a, b, "RG") {
+	if !tagLess(a, b, "RG", nil, true) {
 		t.Error("rg-aa < rg-bb expected")
 	}
-	// Equal strings fall back to QName.
 	c := &sam.Record{QName: "z", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
-	if !tagLess(a, c, "RG") {
+	if !tagLess(a, c, "RG", nil, true) {
 		t.Error("tie on rg-aa should defer to QName")
 	}
 }
 
+// TestTagLessMissingOneSide mirrors upstream `bam1_cmp_by_tag`: the record
+// MISSING the sort tag sorts FIRST. This used to be inverted; the change
+// brings the port in line with upstream samtools sort -t TAG.
 func TestTagLessMissingOneSide(t *testing.T) {
 	withTag := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "NM", Type: 'i', Value: int64(1)}}}
 	without := &sam.Record{QName: "b"}
-	// withTag has the field → it should sort first.
-	if !tagLess(withTag, without, "NM") {
-		t.Error("record with tag should sort before record without")
+	if !tagLess(without, withTag, "NM", nil, true) {
+		t.Error("missing-tag record should sort before tag-bearing record (upstream parity)")
 	}
-	if tagLess(without, withTag, "NM") {
-		t.Error("record without tag should NOT sort before record with tag")
+	if tagLess(withTag, without, "NM", nil, true) {
+		t.Error("tag-bearing record should NOT sort before missing-tag record")
 	}
 }
 
