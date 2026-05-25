@@ -2960,6 +2960,10 @@ Closed (this wave):
 - **Error gates** — `--chrom nonexistent` (`ErrUnknownChrom`) and
   `--max-frag-len < --min-frag-len` (`ErrBadFragLenBounds`) now return
   hard errors matching upstream's exit-1 / exit-2 behaviour.
+- **Overlap-pair detection** — default mode now subtracts one copy of
+  depth on the per-fragment overlap interval (mate-aware, QName keyed,
+  per-chromosome). `--fast-mode` still skips the dedup (matching
+  upstream). Six previously-deferred parity tests now pass.
 
 **Validation:** no upstream-test-suite run yet.
 

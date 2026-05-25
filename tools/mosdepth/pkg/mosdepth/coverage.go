@@ -37,6 +37,14 @@ func newCovAccum(refLen int) *covAccum {
 // clamped to [0, refLen]. If the resulting interval is empty after
 // clamping, no events are added.
 func (a *covAccum) add(start, end int) {
+	a.addSigned(start, end, 1)
+}
+
+// addSigned inserts a (+sign, -sign) event pair at [start, end). It is used
+// by the overlap-pair detector to cancel one copy of depth across the
+// region shared by two mates (sign = -1). The semantics mirror add — same
+// boundary clamping, same drop-empty rule.
+func (a *covAccum) addSigned(start, end int, sign int32) {
 	if a.refLen > 0 {
 		if start < 0 {
 			start = 0
@@ -52,8 +60,8 @@ func (a *covAccum) add(start, end int) {
 	if end <= start {
 		return
 	}
-	a.events = append(a.events, covEvent{pos: start, delta: 1})
-	a.events = append(a.events, covEvent{pos: end, delta: -1})
+	a.events = append(a.events, covEvent{pos: start, delta: sign})
+	a.events = append(a.events, covEvent{pos: end, delta: -sign})
 }
 
 // addRecord walks rec's CIGAR and inserts one event pair per contiguous
@@ -62,29 +70,44 @@ func (a *covAccum) add(start, end int) {
 // span from POS to POS+ReferenceLength is added as a single run, skipping
 // the CIGAR walk entirely.
 func (a *covAccum) addRecord(rec *sam.Record, fast bool) {
-	if rec.Pos <= 0 {
-		return
+	for _, iv := range recordRefIntervals(rec, fast) {
+		a.add(iv[0], iv[1])
+	}
+}
+
+// recordRefIntervals returns the list of half-open [start, end) reference
+// intervals contributed by rec under the current mode. Empty result means
+// the read does not contribute any depth (unmapped, empty CIGAR, etc.).
+//
+// In fast mode the result is the single span POS..POS+ReferenceLength; in
+// the default mode it is one interval per contiguous M/=/X run (D/N break
+// the run, I/S/H/P do not advance the reference). It is exported as a
+// package-private helper so the overlap-pair detector can reuse it without
+// duplicating the CIGAR walk.
+func recordRefIntervals(rec *sam.Record, fast bool) [][2]int {
+	if rec == nil || rec.Pos <= 0 {
+		return nil
 	}
 	if fast {
 		start := int(rec.Pos) - 1
 		refLen := rec.Cigar.ReferenceLength()
 		if refLen == 0 {
-			// Fall back to len(SEQ) when CIGAR is "*" but the read has
-			// a sequence — better than nothing in fast mode.
 			refLen = len(rec.Seq)
 		}
 		if refLen <= 0 {
-			return
+			return nil
 		}
-		a.add(start, start+refLen)
-		return
+		return [][2]int{{start, start + refLen}}
 	}
 	refPos := int(rec.Pos) - 1
+	var out [][2]int
 	for _, op := range rec.Cigar {
 		l := int(op.Length())
 		switch op.Op() {
 		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
-			a.add(refPos, refPos+l)
+			if l > 0 {
+				out = append(out, [2]int{refPos, refPos + l})
+			}
 			refPos += l
 		case sam.CigarDeletion, sam.CigarSkipped:
 			refPos += l
@@ -92,6 +115,41 @@ func (a *covAccum) addRecord(rec *sam.Record, fast bool) {
 			// No reference advance.
 		}
 	}
+	return out
+}
+
+// overlapIntervals returns the intersection (in half-open [start, end)
+// coordinates) of two interval lists. Both inputs are expected to be
+// position-ascending (the natural order from a CIGAR walk). The result is
+// also ascending; empty when there is no overlap.
+//
+// Used by the overlap-pair detector to compute the bases shared by two
+// mates of the same fragment so the second contribution can be cancelled.
+func overlapIntervals(a, b [][2]int) [][2]int {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	var out [][2]int
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		s := a[i][0]
+		if b[j][0] > s {
+			s = b[j][0]
+		}
+		e := a[i][1]
+		if b[j][1] < e {
+			e = b[j][1]
+		}
+		if s < e {
+			out = append(out, [2]int{s, e})
+		}
+		if a[i][1] < b[j][1] {
+			i++
+		} else {
+			j++
+		}
+	}
+	return out
 }
 
 // sortEvents sorts events by position ascending. Equal positions keep their

@@ -219,8 +219,43 @@ func Run(in io.Reader, opts Options) error {
 		}
 		recs := byChrom[r.Name]
 		accum := newCovAccum(int(r.Length))
+		// Per-chromosome QName -> already-added intervals map for
+		// overlap-pair detection. Only used in default (non-fast) mode
+		// because --fast-mode intentionally skips this work upstream too.
+		var mateBuf map[string][][2]int
+		if !opts.FastMode {
+			mateBuf = make(map[string][][2]int, len(recs)/2+1)
+		}
 		for _, rec := range recs {
-			accum.addRecord(rec, opts.FastMode)
+			ivs := recordRefIntervals(rec, opts.FastMode)
+			for _, iv := range ivs {
+				accum.add(iv[0], iv[1])
+			}
+			if mateBuf == nil || len(ivs) == 0 {
+				continue
+			}
+			// Overlap-pair detection: only consider records whose mate
+			// maps to the same reference. RNext == "=" or RNext ==
+			// rec.RName both mean "same chrom" in SAM. Mate-unmapped
+			// reads (flag 0x8) are skipped.
+			if !rec.IsPaired() || rec.IsMateUnmapped() {
+				continue
+			}
+			if rec.RNext != "=" && rec.RNext != "" && rec.RNext != rec.RName {
+				continue
+			}
+			if prev, ok := mateBuf[rec.QName]; ok {
+				for _, iv := range overlapIntervals(prev, ivs) {
+					// Cancel one copy of depth over the overlap so the
+					// fragment contributes 1, not 2, to the shared bases.
+					// Pipe through accum.add semantics (with sign flip) so
+					// boundary clamping matches the +1 events.
+					accum.addSigned(iv[0], iv[1], -1)
+				}
+				delete(mateBuf, rec.QName)
+				continue
+			}
+			mateBuf[rec.QName] = ivs
 		}
 		// Per-base emission: collapse runs of equal depth.
 		hist := accumHistogram(accum)

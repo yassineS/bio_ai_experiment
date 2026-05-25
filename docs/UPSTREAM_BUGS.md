@@ -79,17 +79,16 @@ warrant a closer look:_
 - **mosdepth overlap-pair detection** — upstream subtracts one copy of
   depth where the two ends of a mate-paired fragment overlap on the
   reference, so a 80bp read pair with a 100bp insert contributes depth
-  1 to the overlapped region (not depth 2). Our v1 engine doesn't
-  implement this pairing: every aligned base of every read contributes
-  to depth. The net effect is that our default-mode output matches
-  upstream's `--fast-mode` output rather than upstream's default
-  output. This is **NOT an upstream bug** — it's a feature gap in our
-  port — but it lives here because every affected parity test cites
-  this entry from a `t.Skip("known deviation, see
-  docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")`.
+  1 to the overlapped region (not depth 2).
 
-  Disposition: **track-only** until we add a read-name-keyed pairing
-  pass. Five mosdepth parity tests reference this anchor.
+  **Resolved.** The default-mode engine now buffers a QName -> reference
+  interval map per chromosome and emits a sign-flipped event pair over
+  the per-fragment overlap interval the second time a QName appears.
+  `--fast-mode` keeps the no-pairing fast path (matching upstream).
+  The six previously-skipped parity tests
+  (`TestParity_OverlapM_DefaultPerBase`, `_OverlapM_SummaryMT`,
+  `_ThresholdByBED`, `_TrackHeader`, `_MAPQFilter`, `_FlagExclude`)
+  now assert upstream byte-for-byte values.
 
 - **bedtools `groupby` empty-group handling** (when we get to porting
   it) — Aaron Quinlan has acknowledged upstream emits a blank line on

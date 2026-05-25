@@ -120,11 +120,22 @@ func equalLines(a, b []string) bool {
 }
 
 // TestParity_OverlapM_DefaultPerBase mirrors `run overlapM $exe t tests/ovl.bam`.
-// Upstream emits `MT 0 80 1 / MT 80 16569 0` after overlap-pair detection.
-// Our default mode lacks overlap-pair detection — tracked at
-// docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection.
+// Upstream emits `MT 0 80 1 / MT 80 16569 0` after overlap-pair detection;
+// our default mode now matches byte-for-byte.
 func TestParity_OverlapM_DefaultPerBase(t *testing.T) {
-	t.Skip("known deviation: default-mode per-base output requires overlap-pair detection, see docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")
+	prefix := runParity(t, "ovl.bam", Options{
+		Chrom:       "MT",
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	got := linesWithPrefix(readGzLines(t, prefix+".per-base.bed.gz"), "MT\t")
+	want := []string{
+		"MT\t0\t80\t1",
+		"MT\t80\t16569\t0",
+	}
+	if !equalLines(got, want) {
+		t.Fatalf("MT default-mode per-base mismatch.\nwant:\n%s\ngot:\n%s",
+			strings.Join(want, "\n"), strings.Join(got, "\n"))
+	}
 }
 
 // TestParity_OverlapFastMode_MT mirrors
@@ -170,9 +181,27 @@ func TestParity_OverlapFastMode_Chr1Zero(t *testing.T) {
 
 // TestParity_OverlapM_SummaryMT mirrors
 // `cat t.mosdepth.summary.txt | grep 'MT'` — the per-chromosome MT row.
-// Default-mode parity is blocked by the overlap-pair gap.
+// With overlap-pair detection enabled MT has 80 bases at depth 1, and
+// mean = 80 / 16569 = 0.0048, which the summary writer renders as 0.00.
 func TestParity_OverlapM_SummaryMT(t *testing.T) {
-	t.Skip("known deviation: summary MT mean requires overlap-pair detection, see docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")
+	prefix := runParity(t, "ovl.bam", Options{
+		Chrom:       "MT",
+		ExcludeFlag: DefaultExcludeFlag,
+		NoPerBase:   true,
+	})
+	sum := readPlainLines(t, prefix+".mosdepth.summary.txt")
+	var mt string
+	for _, ln := range sum {
+		if strings.HasPrefix(ln, "MT\t") {
+			mt = ln
+			break
+		}
+	}
+	want := "MT\t16569\t80\t0.00\t0\t1"
+	if mt != want {
+		t.Fatalf("MT summary row mismatch.\nwant: %q\ngot:  %q\nfull:\n%s",
+			want, mt, strings.Join(sum, "\n"))
+	}
 }
 
 // TestParity_BigWindow mirrors
@@ -244,19 +273,38 @@ func TestParity_LengthFilter_Included_FastMode(t *testing.T) {
 
 // TestParity_ThresholdByBED mirrors
 // `run threshold_test_by $exe --by tests/track.bed -T 0,1,2 -c MT t tests/ovl.bam`.
-// Upstream expects `MT 2 80 aregion 78 78 0`; we deviate (overlap-pair
-// detection gap), so skip the upstream byte diff.
+// Upstream expects `MT 2 80 aregion 78 78 0`; with overlap-pair detection
+// our output matches byte-for-byte.
 func TestParity_ThresholdByBED(t *testing.T) {
-	t.Skip("known deviation: 2X count requires overlap-pair detection, see docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")
+	prefix := runParity(t, "ovl.bam", Options{
+		ByBED:       filepath.Join(fixtureDir(t), "track.bed"),
+		Thresholds:  []int{0, 1, 2},
+		Chrom:       "MT",
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	lines := readGzLines(t, prefix+".thresholds.bed.gz")
+	if len(lines) != 2 {
+		t.Fatalf("expected header + 1 row, got %d:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	wantHdr := "#chrom\tstart\tend\tregion\t0X\t1X\t2X"
+	if lines[0] != wantHdr {
+		t.Errorf("header mismatch.\nwant: %q\ngot:  %q", wantHdr, lines[0])
+	}
+	wantRow := "MT\t2\t80\taregion\t78\t78\t0"
+	if lines[1] != wantRow {
+		t.Errorf("row mismatch.\nwant: %q\ngot:  %q", wantRow, lines[1])
+	}
 }
 
-// TestParity_ThresholdByBED_OurValues mirrors the same case but pins our
-// (no-overlap-dedup) values so regressions in our pipeline still trigger.
+// TestParity_ThresholdByBED_OurValues pins --fast-mode (no overlap-pair
+// detection) thresholds so a regression in either the threshold sweep or
+// the fast-mode code path still trips.
 func TestParity_ThresholdByBED_OurValues(t *testing.T) {
 	prefix := runParity(t, "ovl.bam", Options{
 		ByBED:       filepath.Join(fixtureDir(t), "track.bed"),
 		Thresholds:  []int{0, 1, 2},
 		Chrom:       "MT",
+		FastMode:    true,
 		ExcludeFlag: DefaultExcludeFlag,
 	})
 	lines := readGzLines(t, prefix+".thresholds.bed.gz")
@@ -278,9 +326,20 @@ func TestParity_ThresholdByBED_OurValues(t *testing.T) {
 
 // TestParity_TrackHeader mirrors
 // `run track_header $exe --by tests/track.bed t tests/ovl.bam`. Upstream
-// expects mean 1.00; we deviate (overlap-pair detection gap).
+// expects mean 1.00 over the [2,80) "aregion" on MT; with overlap-pair
+// detection we match.
 func TestParity_TrackHeader(t *testing.T) {
-	t.Skip("known deviation: region mean requires overlap-pair detection, see docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")
+	prefix := runParity(t, "ovl.bam", Options{
+		ByBED:       filepath.Join(fixtureDir(t), "track.bed"),
+		Chrom:       "MT",
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	mt := linesWithPrefix(readGzLines(t, prefix+".regions.bed.gz"), "MT\t")
+	want := []string{"MT\t2\t80\taregion\t1.00"}
+	if !equalLines(mt, want) {
+		t.Fatalf("MT track regions mismatch.\nwant:\n%s\ngot:\n%s",
+			strings.Join(want, "\n"), strings.Join(mt, "\n"))
+	}
 }
 
 // TestParity_UnorderedBED mirrors
@@ -418,16 +477,44 @@ func TestParity_ChromRestrict(t *testing.T) {
 	}
 }
 
-// TestParity_MAPQFilter exercises `-Q 60`. Byte parity blocked by
-// overlap-pair detection.
+// TestParity_MAPQFilter exercises `-Q 60`. One of the two MT reads in
+// ovl.bam has MAPQ < 60 and is filtered out, leaving a single read whose
+// CIGAR-walked footprint covers MT:6..80 at depth 1.
 func TestParity_MAPQFilter(t *testing.T) {
-	t.Skip("known deviation: --mapq subset of reads requires overlap-pair detection for byte parity; see docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")
+	prefix := runParity(t, "ovl.bam", Options{
+		Chrom:       "MT",
+		MinMAPQ:     60,
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	got := linesWithPrefix(readGzLines(t, prefix+".per-base.bed.gz"), "MT\t")
+	want := []string{
+		"MT\t0\t6\t0",
+		"MT\t6\t80\t1",
+		"MT\t80\t16569\t0",
+	}
+	if !equalLines(got, want) {
+		t.Fatalf("MT per-base mismatch under -Q 60.\nwant:\n%s\ngot:\n%s",
+			strings.Join(want, "\n"), strings.Join(got, "\n"))
+	}
 }
 
-// TestParity_FlagExclude mirrors `-F 4`. Byte parity blocked by
-// overlap-pair detection.
+// TestParity_FlagExclude mirrors `-F 4` (exclude only unmapped). All MT
+// reads in ovl.bam are mapped, so the output matches the default-mode
+// overlap-paired view.
 func TestParity_FlagExclude(t *testing.T) {
-	t.Skip("known deviation: --flag custom value requires overlap-pair detection for byte parity; see docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")
+	prefix := runParity(t, "ovl.bam", Options{
+		Chrom:       "MT",
+		ExcludeFlag: 4,
+	})
+	got := linesWithPrefix(readGzLines(t, prefix+".per-base.bed.gz"), "MT\t")
+	want := []string{
+		"MT\t0\t80\t1",
+		"MT\t80\t16569\t0",
+	}
+	if !equalLines(got, want) {
+		t.Fatalf("MT per-base mismatch under -F 4.\nwant:\n%s\ngot:\n%s",
+			strings.Join(want, "\n"), strings.Join(got, "\n"))
+	}
 }
 
 // TestParity_FragmentMode mirrors
