@@ -899,12 +899,22 @@ func bcfCallGapPrep(piles [][]pileupBase, pos int, bca *bcfCallauxIndel, ref []b
 					queryBuf[l-qbeg] = byte(seqNt16Int[nt16ASCII(p.rec.Seq[l])])
 				}
 
-				// Build qq: clamp [7,30].
+				// Build qq: clamp [7,30]. Upstream bam2bcf_indel.c:525-533 restores the
+				// BAQ-delta from the ZQ:Z: aux tag so indel realignment uses pre-BAQ quals.
+				var zq string
+				if a, ok := p.rec.GetAux("ZQ"); ok {
+					if s, ok := a.Value.(string); ok {
+						zq = s
+					}
+				}
 				qq := make([]byte, qlen)
 				for l := qbeg; l < qend; l++ {
 					var qv int
 					if l < len(p.rec.Qual) {
 						qv = int(p.rec.Qual[l])
+					}
+					if l < len(zq) {
+						qv += int(zq[l]) - 64
 					}
 					if qv > 30 {
 						qv = 30
