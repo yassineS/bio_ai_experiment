@@ -84,13 +84,15 @@ one of the four buckets from this file's preamble:
   (bedjaccard — vendored long.bed/short.bed from upstream).
 - **Stale skips removed**: `TestMpileupBAQGoldensDeferred` (was a
   pure-historical doc-skip superseded by `TestMpileupSNPGoldens`).
-- **Real gaps with refined rationale**: mosdepth `-q/--quantize`,
-  mosdepth `.csi` (now points at `docs/htsgo/LIBDEFLATE.md`),
-  bcftools `.tbi` binary-equality (same), bedgenomecov `-pc`/`-fs`/CRAM/deep
-  SAM, bedcoverage `-abam` BAM-as-A, bedgroupby `-i x.bam` SAM-TSV,
-  bedgroupby `-ignorecase` first-seen-case bookkeeping. Each skip now
-  names the missing helper / scope estimate so the next slice can pick
-  it up directly.
+- **Real gaps with refined rationale**: mosdepth `.csi` (now points at
+  `docs/htsgo/LIBDEFLATE.md`), bcftools `.tbi` binary-equality (same).
+  Each skip now names the missing helper / scope estimate so the next
+  slice can pick it up directly. **Closed in the bamtobed-helpers
+  wave**: mosdepth `-q/--quantize`, bedgenomecov `-pc`/`-fs`/CRAM,
+  bedcoverage `-abam` BAM-as-A, bedgroupby `-i x.bam` SAM-TSV,
+  bedgroupby `-ignorecase`. Six previously-deferred parity tests now
+  pass; only the deep-SAM fixture-generator skip (genomecov.t18)
+  remains in that group.
 
 The remaining skips break down as: fixture-not-vendored / submodule-not-
 initialised guards (the bulk: pkg/htsgo/cram, pkg/htsgo/alnio, samtools

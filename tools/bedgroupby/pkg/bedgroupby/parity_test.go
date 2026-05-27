@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bamtobed"
 )
 
 func readParity(t *testing.T, name string) []byte {
@@ -51,7 +53,14 @@ func TestParity_Groupby_T1_Basic(t *testing.T) {
 // columns; ~20-30 LOC in pkg/bedgroupby plus a vendored fixture.
 // Deferred.
 func TestParity_Groupby_T2_IgnoreCase(t *testing.T) {
-	t.Skip("unimplemented: -ignorecase first-seen-case preservation; ~20-30 LOC + fixture")
+	got := runParity(t, "values3_case.header.bed", Options{
+		AggCols:    []int{5},
+		IgnoreCase: true,
+	})
+	want := readParity(t, "t2_ignorecase.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // groupby.t3 — -full prints all original first-record columns + agg.
@@ -144,7 +153,20 @@ func TestParity_Groupby_T19_Bug569(t *testing.T) {
 // SAM textual form (sans header), wired into bedgroupby's parity
 // fixture loader. Roughly 50-80 LOC; deferred.
 func TestParity_Groupby_T17_BAM(t *testing.T) {
-	t.Skip("unimplemented: BAM-as-SAM-TSV input; needs pkg/bamtobed.FromBAMSAMText")
+	bamBytes := readParity(t, "gdc.bam")
+	samStream := bamtobed.FromBAMSAMText(bytes.NewReader(bamBytes))
+	var buf bytes.Buffer
+	if _, err := Group(samStream, &buf, Options{
+		GroupCols: []int{1, 3},
+		AggCols:   []int{4},
+		Ops:       []string{"mean"},
+	}); err != nil {
+		t.Fatalf("Group: %v", err)
+	}
+	want := []byte("None\tchr2L\t118.75\n")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
 }
 
 // groupby.t16 — VCF file as input. bedgroupby treats the input as TSV and

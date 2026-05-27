@@ -154,6 +154,7 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 		sawFirstRecord bool
 		curKey         string
 		curFirst       []string
+		curGroupVals   []string   // per GroupCol: first-seen original-case value
 		curVals        [][]string // per AggCol: values in input order
 		outCount       int
 	)
@@ -186,9 +187,11 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 		if opts.Full {
 			out = append(out, curFirst...)
 		} else {
-			for _, gc := range opts.GroupCols {
-				out = append(out, fieldOr(curFirst, gc))
-			}
+			// curGroupVals captures the first-seen value (with its
+			// original case) for each grouping column. Under
+			// -ignorecase that means the group's first row sets the
+			// emitted spelling, which matches upstream.
+			out = append(out, curGroupVals...)
 		}
 		for i, ac := range opts.AggCols {
 			res, err := bedmerge.ApplyOp(opts.Ops[i], ac, curVals[i])
@@ -247,6 +250,7 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 		if !sawFirstRecord {
 			curKey = key
 			curFirst = fields
+			curGroupVals = pickGroupVals(fields, opts.GroupCols)
 			curVals = make([][]string, len(opts.AggCols))
 			for i, ac := range opts.AggCols {
 				curVals[i] = append(curVals[i], fields[ac-1])
@@ -266,6 +270,7 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 		}
 		curKey = key
 		curFirst = fields
+		curGroupVals = pickGroupVals(fields, opts.GroupCols)
 		curVals = make([][]string, len(opts.AggCols))
 		for i, ac := range opts.AggCols {
 			curVals[i] = append(curVals[i], fields[ac-1])
@@ -281,6 +286,19 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 		return outCount, fmt.Errorf("error flushing output: %w", err)
 	}
 	return outCount, nil
+}
+
+// pickGroupVals copies the grouping-column values out of a record's
+// fields, preserving each value's original case. It is used to seed
+// curGroupVals at the start of each group so the output row spells the
+// grouping key the way the first row spelled it — matching upstream's
+// `-ignorecase` first-seen-case behaviour.
+func pickGroupVals(fields []string, cols []int) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = fieldOr(fields, c)
+	}
+	return out
 }
 
 func fieldOr(fields []string, col int) string {
