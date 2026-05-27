@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,16 +120,37 @@ func TestParity_Sample_SubsetOfInput(t *testing.T) {
 	}
 }
 
-// sample.t01 — upstream prints "No input file given" when invoked with no
-// args. That's a CLI concern, not a library concern; the library always
-// requires an io.Reader. Skipped.
+// sample.t01 — upstream prints "No input file given" and exits non-zero
+// when invoked with no args. The Go reimplementation also rejects this
+// case (it requires `-n`), exiting 2 with a usage message that mentions
+// the missing `-n` flag. We verify the CLI binary exits non-zero and
+// emits a usage message rather than panicking or silently consuming stdin.
 func TestParity_Sample_T01_NoArgs(t *testing.T) {
-	t.Skip("CLI-only behaviour: 'No input file given' is emitted by the bedsample binary, not the library; covered by main.go validation path")
+	if testing.Short() {
+		t.Skip("skipping subprocess CLI test in -short mode")
+	}
+	out, err := exec.Command("go", "run", "../../cmd/bedsample").CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit, got success; output:\n%s", out)
+	}
+	combined := string(out)
+	if !strings.Contains(combined, "-n N is required") && !strings.Contains(combined, "Usage:") {
+		t.Errorf("expected usage / -n required message, got:\n%s", combined)
+	}
 }
 
-// sample.new.t02 — upstream errors on an unrecognised flag. That's a Go
-// flag-package concern; we already exit 2 on unknown flags via the standard
-// flag.FlagSet behaviour.
+// sample.new.t02 — upstream errors on an unrecognised flag. We verify the
+// Go binary exits non-zero with a flag-not-defined message.
 func TestParity_Sample_T02_UnrecognizedFlag(t *testing.T) {
-	t.Skip("CLI-only: 'Unrecognized parameter' is emitted by main.go via flag.Parse error handling")
+	if testing.Short() {
+		t.Skip("skipping subprocess CLI test in -short mode")
+	}
+	out, err := exec.Command("go", "run", "../../cmd/bedsample", "--definitely-not-a-flag").CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit, got success; output:\n%s", out)
+	}
+	combined := string(out)
+	if !strings.Contains(combined, "flag provided but not defined") && !strings.Contains(combined, "not defined") {
+		t.Errorf("expected 'not defined' error from flag pkg, got:\n%s", combined)
+	}
 }
