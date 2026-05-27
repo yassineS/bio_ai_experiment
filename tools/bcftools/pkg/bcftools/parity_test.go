@@ -758,13 +758,37 @@ func TestParityConcat_DedupAdjacent(t *testing.T) {
 	t.Skip("concat -D requires -a upstream; standalone -D is a port-only extension (see docs/PARITY_ROADMAP.md bcftools concat)")
 }
 
-// TestParityConcat_AllowOverlaps documents a divergence: upstream's `-a`
-// sort key is the first-seen-in-data contig order; ours is the merged
-// header contig declaration order. For some inputs they coincide; for
-// the upstream concat.2 fixture they don't. We leave the case as a skip
-// pointing at the roadmap rather than diverge silently.
+// TestParityConcat_AllowOverlaps asserts byte-for-byte parity with the
+// upstream `concat.2.vcf.out` fixture (the canonical `-a` test). The
+// contig sort key is the order in which contigs first appear across the
+// inputs' data — NOT the merged header's ##contig declaration order.
+// Within a position, records are grouped by (REF,ALT) signature, with
+// signatures ordered by first appearance in input order. See
+// firstSeenContigOrder and mergeSorted in concat.go.
 func TestParityConcat_AllowOverlaps(t *testing.T) {
-	t.Skip("concat -a uses different contig-order heuristic than upstream (see docs/PARITY_ROADMAP.md bcftools concat)")
+	a := referenceFixture(t, "concat.2.a.vcf")
+	b := referenceFixture(t, "concat.2.b.vcf")
+	want, err := os.ReadFile(referenceFixturePath(t, "concat.2.vcf.out"))
+	if err != nil {
+		t.Skipf("upstream fixture missing (submodule not initialised): %v", err)
+	}
+	got := runParityConcatFiles(t, []string{a, b}, ConcatOptions{AllowOverlaps: true})
+	equalBytes(t, got, want, "concat -a upstream concat.2")
+}
+
+// TestParityConcat_AllowOverlapsAD asserts byte-for-byte parity with
+// the upstream `concat.4.vcf.out` fixture (the `-aD` test): same inputs
+// as concat.2 but with --remove-duplicates collapsing identical
+// records at the same (CHROM,POS,REF,ALT).
+func TestParityConcat_AllowOverlapsAD(t *testing.T) {
+	a := referenceFixture(t, "concat.2.a.vcf")
+	b := referenceFixture(t, "concat.2.b.vcf")
+	want, err := os.ReadFile(referenceFixturePath(t, "concat.4.vcf.out"))
+	if err != nil {
+		t.Skipf("upstream fixture missing (submodule not initialised): %v", err)
+	}
+	got := runParityConcatFiles(t, []string{a, b}, ConcatOptions{AllowOverlaps: true, RemoveDuplicates: true})
+	equalBytes(t, got, want, "concat -aD upstream concat.4")
 }
 
 // TestParityConcat_ConflictingHeaders verifies that a mismatch between

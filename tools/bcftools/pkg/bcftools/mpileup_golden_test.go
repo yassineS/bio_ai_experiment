@@ -1151,8 +1151,8 @@ func TestMpileupSampleSelectGoldens(t *testing.T) {
 // samples file has two tab-separated columns per line: the matched
 // sample ID and its rename target. mpileup.9.samples reads
 //
-//   HG00101 SAMPLE1
-//   HG00102 SAMPLE2
+//	HG00101 SAMPLE1
+//	HG00102 SAMPLE2
 //
 // so HG00100 (not in the file) is excluded and the surviving columns
 // are renamed to SAMPLE1 / SAMPLE2. -t with a literal `chr:beg-end`
@@ -1221,18 +1221,80 @@ func TestMpileupTargetsAndRenameGolden(t *testing.T) {
 	}
 }
 
+// TestMpileupGVCFGolden replays test.pl line 1051 (mpileup.6.out):
+// `mpileup -a DP,DV,-AD -r17:100-600 --gvcf 0,2,5` over the three
+// mpileup.{1,2,3} BAMs. It exercises the gVCF block-emitter
+// (mpileup_gvcf.go) end-to-end: consecutive REF-only rows are banded
+// into INFO/END blocks keyed on the per-sample MIN_DP bin, with PL /
+// DP held at the block minimum and INFO/QS copied from the block's
+// first row. SNP / indel rows pass through unchanged.
+func TestMpileupGVCFGolden(t *testing.T) {
+	ref := mpileupFixture(t, "mpileup.ref.fa")
+	mpileupFixture(t, "mpileup.ref.fa.fai")
+	bams := []string{
+		mpileupFixture(t, "mpileup.1.bam"),
+		mpileupFixture(t, "mpileup.2.bam"),
+		mpileupFixture(t, "mpileup.3.bam"),
+	}
+	goldenPath := mpileupFixture(t, "mpileup.6.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs:    bams,
+		FastaRef:  ref,
+		Regions:   []string{"17:100-600"},
+		Annotate:  "DP,DV,-AD",
+		GVCFBlock: "0,2,5",
+		NoVersion: true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		diffs := 0
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		for i := 0; i < nD; i++ {
+			if gotD[i] != wantD[i] {
+				diffs++
+				if diffs <= 6 {
+					t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+				}
+			}
+		}
+		if diffs > 6 {
+			t.Errorf("... and %d more record mismatches", diffs-6)
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
 // TestMpileupGoldensDeferred documents the upstream mpileup goldens that
 // still do not byte-match and the precise reason, so the remaining work
 // stays visible in the test output.
 func TestMpileupGoldensDeferred(t *testing.T) {
 	deferred := []struct{ golden, reason string }{
-		{
-			"mpileup/mpileup.6.out",
-			"--gvcf 0,2,5 mode emits non-variant gVCF blocks; the block-" +
-				"emitter (mpileup.c gvcf.{c,h}) is not yet ported. FORMAT/INFO " +
-				"tag emission for the non-gVCF variant rows is now covered by " +
-				"TestMpileupFormatTagGoldens (mpileup.{2,4,5}.out).",
-		},
 		{
 			"mpileup/mpileup.10.out",
 			"-G {file} read-group selection with optional RG-level rename " +

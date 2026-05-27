@@ -444,9 +444,15 @@ type MpileupOptions struct {
 	// IndelsCNS; the CLI wiring resolves which takes precedence.
 	NoIndelsCNS bool
 
-	// GVCFBlock is upstream's -g/--gvcf. Accepted; one record per
-	// covered position is always emitted (no gVCF blocking yet).
+	// GVCFBlock is upstream's -g/--gvcf. When set, consecutive REF-only
+	// sites are banded into INFO/END blocks by per-sample MIN_DP bin
+	// (see mpileup_gvcf.go). The string is the comma-separated DP
+	// threshold list (e.g. "0,2,5"); validateMpileupOptions parses it
+	// into GVCFRange and forces B2BFmtDP on (mpileup.c:1790).
 	GVCFBlock string
+	// GVCFRange is the parsed --gvcf threshold list. Populated by
+	// validateMpileupOptions from GVCFBlock; non-empty enables banding.
+	GVCFRange []int
 
 	// NoReference is upstream's --no-reference (skip the FASTA REF
 	// check). Accepted; the FASTA REF is always used.
@@ -686,6 +692,16 @@ func validateMpileupOptions(opts *MpileupOptions) error {
 	}
 	if err := parseFormatFlag(&opts.FmtFlag, opts.Annotate); err != nil {
 		return fmt.Errorf("bcftools mpileup: -a/--annotate: %w", err)
+	}
+	// --gvcf: parse the DP-threshold list and force B2BFmtDP on so
+	// gvcf_write has per-sample DP to bin / collapse on (mpileup.c:1790).
+	if opts.GVCFBlock != "" {
+		ranges, err := parseGVCFRanges(opts.GVCFBlock)
+		if err != nil {
+			return fmt.Errorf("bcftools mpileup: %w", err)
+		}
+		opts.GVCFRange = ranges
+		opts.FmtFlag |= B2BFmtDP
 	}
 	// --ambig-reads: parse the string form when AmbigReadsMode hasn't
 	// been set directly. An empty string means "stay with default
@@ -1067,6 +1083,13 @@ func writeMpileupVCF(out io.Writer, opts MpileupOptions, ref *fasta.RandomAccess
 		return err
 	}
 	defer finish()
+	// --gvcf wraps w with a blocker that bands consecutive REF-only
+	// rows by per-sample MIN_DP. Variant rows pass through unchanged;
+	// the blocker calls inner.Write to flush an in-flight block before
+	// each variant row and on Flush().
+	if len(opts.GVCFRange) > 0 {
+		w = newGVCFBlocker(w, opts.GVCFRange)
+	}
 	if err := w.WriteHeader(); err != nil {
 		return err
 	}
@@ -3202,6 +3225,15 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 	if opts.FmtFlag&B2BInfoADR != 0 {
 		meta = append(meta,
 			`##INFO=<ID=ADR,Number=R,Type=Integer,Description="Total allelic depths on the reverse strand (high-quality bases)">`)
+	}
+	// gVCF appends END / MIN_DP at the end (after FORMAT lines) because
+	// upstream's gvcf_update_header runs after the main per-tag header
+	// emission in main_constants_print_header.
+	if len(opts.GVCFRange) > 0 {
+		meta = append(meta,
+			`##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">`,
+			`##INFO=<ID=MIN_DP,Number=1,Type=Integer,Description="Minimum per-sample depth in this gVCF block">`,
+		)
 	}
 	return &vcf.Header{MetaInfo: meta, Samples: samples}
 }
