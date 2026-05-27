@@ -274,6 +274,128 @@ func parseThresholds(spec string) ([]int, error) {
 	return out, nil
 }
 
+// ParseQuantize parses upstream mosdepth's `-q/--quantize` argument
+// — a colon-separated, ascending list of integer cutoffs that defines
+// the depth bins. For example `0:1:1000` defines three bins covering
+// `[0,1)`, `[1,1000)`, and `[1000,+inf)`. Empty input yields a nil
+// slice. Returns an error on non-integer entries or descending lists.
+func ParseQuantize(spec string) ([]int, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, nil
+	}
+	parts := strings.Split(spec, ":")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		v, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, fmt.Errorf("mosdepth: bad --quantize cutoff %q: %w", p, err)
+		}
+		out = append(out, v)
+	}
+	if len(out) < 2 {
+		return nil, fmt.Errorf("mosdepth: --quantize needs at least two colon-separated cutoffs (got %q)", spec)
+	}
+	for i := 1; i < len(out); i++ {
+		if out[i] <= out[i-1] {
+			return nil, fmt.Errorf("mosdepth: --quantize cutoffs must be strictly ascending (got %v)", out)
+		}
+	}
+	return out, nil
+}
+
+// resolveQuantizeLabels returns the label string for each bin index
+// `i` in `[0, len(cutoffs)]` (one bin per gap plus the implicit
+// open-ended top bin). When the environment variable `MOSDEPTH_Q{i}`
+// is set, its value is used; otherwise the default sequence
+// `NO_COVERAGE`, `LOW_COVERAGE`, `CALLABLE`, `HIGH_COVERAGE`, then
+// `Q{i}` from index 4 onwards. Matches upstream mosdepth.
+func resolveQuantizeLabels(cutoffs []int) []string {
+	if len(cutoffs) == 0 {
+		return nil
+	}
+	defaults := []string{"NO_COVERAGE", "LOW_COVERAGE", "CALLABLE", "HIGH_COVERAGE"}
+	n := len(cutoffs) - 1 + 1 // gaps + open-ended-top
+	labels := make([]string, n)
+	for i := 0; i < n; i++ {
+		envKey := fmt.Sprintf("MOSDEPTH_Q%d", i)
+		if v, ok := osLookupEnv(envKey); ok {
+			labels[i] = v
+			continue
+		}
+		if i < len(defaults) {
+			labels[i] = defaults[i]
+			continue
+		}
+		labels[i] = fmt.Sprintf("Q%d", i)
+	}
+	return labels
+}
+
+// osLookupEnv is a tiny wrapper so tests can stub it out if needed.
+func osLookupEnv(key string) (string, bool) { return os.LookupEnv(key) }
+
+// quantizeBin returns the bin index for a depth value given an ascending
+// cutoff list. Depth d falls into bin i when cutoffs[i] <= d <
+// cutoffs[i+1] (with -inf at index 0 if d < cutoffs[0]; i = len(cutoffs)
+// when d >= the last cutoff).
+func quantizeBin(d int, cutoffs []int) int {
+	if len(cutoffs) == 0 {
+		return 0
+	}
+	if d < cutoffs[0] {
+		return 0
+	}
+	// Walk in order — bins are typically few. A binary search is
+	// available but unnecessary at the expected scale.
+	for i := 0; i < len(cutoffs)-1; i++ {
+		if d >= cutoffs[i] && d < cutoffs[i+1] {
+			return i
+		}
+	}
+	return len(cutoffs) - 1
+}
+
+// emitQuantized walks accum and emits one BED4 record per maximal run
+// of consecutive bases that share the same bin index. Labels match the
+// MOSDEPTH_Q{i} env-var override resolved by resolveQuantizeLabels.
+func emitQuantized(w *bedGzWriter, chrom string, a *covAccum, cutoffs []int, labels []string) error {
+	var emitErr error
+	var runStart int = -1
+	var runBin int = -1
+	a.emit(func(pos int, depth int32) {
+		if emitErr != nil {
+			return
+		}
+		bin := quantizeBin(int(depth), cutoffs)
+		if runStart < 0 {
+			runStart = pos
+			runBin = bin
+			return
+		}
+		if bin != runBin {
+			emitErr = w.writeBED(chrom, runStart, pos, labels[runBin])
+			runStart = pos
+			runBin = bin
+		}
+	})
+	if emitErr != nil {
+		return emitErr
+	}
+	if runStart >= 0 {
+		end := a.refLen
+		if end <= runStart {
+			end = runStart + 1
+		}
+		return w.writeBED(chrom, runStart, end, labels[runBin])
+	}
+	return nil
+}
+
 // stringSliceUnique returns a stable de-duplicated copy of in.
 func stringSliceUnique(in []string) []string {
 	seen := map[string]struct{}{}

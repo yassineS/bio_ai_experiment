@@ -76,6 +76,17 @@ type Options struct {
 	MinFragLen int
 	MaxFragLen int
 
+	// Quantize is the parsed list of bin cutoffs from `-q/--quantize`,
+	// sorted ascending. A non-nil non-empty list produces a
+	// `<prefix>.quantized.bed.gz` output with one BED4 record per maximal
+	// run of consecutive bases that fall into the same bin. The bin
+	// index is `i` where `cutoffs[i] <= depth < cutoffs[i+1]` (with
+	// implicit -inf / +inf at the ends). Each record's 4th column is
+	// the bin label: the environment variable `MOSDEPTH_Q{i}` if set,
+	// otherwise the default label sequence
+	// `NO_COVERAGE`,`LOW_COVERAGE`,`CALLABLE`,`HIGH_COVERAGE`,`Q{i}`...
+	Quantize []int
+
 	// FragmentMode, when true, scores each paired-end fragment as a
 	// single contiguous span [POS, POS+TLEN) instead of summing both
 	// mates' aligned bases. Singletons / mate-unmapped reads still use
@@ -177,6 +188,23 @@ func Run(in io.Reader, opts Options) error {
 			return perr
 		}
 		regionsW = p
+	}
+
+	var quantizedW *bedGzWriter
+	var quantizeLabels []string
+	if len(opts.Quantize) > 0 {
+		p, perr := newBedGzWriter(opts.Prefix + ".quantized.bed.gz")
+		if perr != nil {
+			if perBaseW != nil {
+				_ = perBaseW.Close()
+			}
+			if regionsW != nil {
+				_ = regionsW.Close()
+			}
+			return perr
+		}
+		quantizedW = p
+		quantizeLabels = resolveQuantizeLabels(opts.Quantize)
 	}
 
 	var thresholdsW *bedGzWriter
@@ -297,6 +325,12 @@ func Run(in io.Reader, opts Options) error {
 			}
 		}
 
+		if quantizedW != nil {
+			if err := emitQuantized(quantizedW, r.Name, accum, opts.Quantize, quantizeLabels); err != nil {
+				return err
+			}
+		}
+
 		if regionsW != nil {
 			ivs := perChromRegions[r.Name]
 			for _, iv := range ivs {
@@ -358,6 +392,14 @@ func Run(in io.Reader, opts Options) error {
 			return err
 		}
 		if err := buildBedTbi(thresholdsW.path); err != nil {
+			return err
+		}
+	}
+	if quantizedW != nil {
+		if err := quantizedW.Close(); err != nil {
+			return err
+		}
+		if err := buildBedTbi(quantizedW.path); err != nil {
 			return err
 		}
 	}

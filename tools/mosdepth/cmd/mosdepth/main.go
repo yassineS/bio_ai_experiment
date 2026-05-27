@@ -43,6 +43,11 @@ Options:
   -l, --min-frag-len INT  minimum absolute TLEN.
   -u, --max-frag-len INT  maximum absolute TLEN.
   -m, --fragment-mode     score each pair as a single fragment span.
+  -q, --quantize CUTOFFS  colon-separated cutoffs (e.g. 0:1:1000) for the
+                          quantized.bed.gz output. Bin labels default to
+                          NO_COVERAGE, LOW_COVERAGE, CALLABLE,
+                          HIGH_COVERAGE, then Q4..; override per bin via
+                          the MOSDEPTH_Q{i} environment variables.
   -h, --help              show this help.
   -v, --version           print version and exit.
 
@@ -70,6 +75,7 @@ type runOptions struct {
 	minFragLen   int
 	maxFragLen   int
 	fragmentMode bool
+	quantize     string
 	showHelp     bool
 	showVersion  bool
 }
@@ -95,6 +101,7 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	cliflag.IntVar(fs, &opts.minFragLen, "l", "min-frag-len", 0, "min |TLEN|")
 	cliflag.IntVar(fs, &opts.maxFragLen, "u", "max-frag-len", 0, "max |TLEN|")
 	cliflag.BoolVar(fs, &opts.fragmentMode, "m", "fragment-mode", false, "score each pair as a fragment span")
+	cliflag.StringVar(fs, &opts.quantize, "q", "quantize", "", "colon-separated cutoffs (e.g. 0:1:1000) for quantized.bed.gz")
 	cliflag.BoolVar(fs, &opts.showHelp, "h", "help", false, "help")
 	cliflag.BoolVar(fs, &opts.showVersion, "v", "version", false, "version")
 	if err := fs.Parse(args); err != nil {
@@ -134,6 +141,11 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	qz, err := mosdepth.ParseQuantize(opts.quantize)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	mo := mosdepth.Options{
 		Prefix:       prefix,
 		ByBED:        bedPath,
@@ -150,6 +162,7 @@ func run(args []string) int {
 		MinFragLen:   opts.minFragLen,
 		MaxFragLen:   opts.maxFragLen,
 		FragmentMode: opts.fragmentMode,
+		Quantize:     qz,
 		Threads:      opts.threads,
 	}
 	if err := mosdepth.OpenAndRun(bam, mo); err != nil {

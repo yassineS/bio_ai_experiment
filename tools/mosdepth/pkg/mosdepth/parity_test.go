@@ -576,8 +576,51 @@ func TestParity_FragmentMode(t *testing.T) {
 // writer alongside the existing `.per-base.bed.gz` / regions writers,
 // and (4) env-var lookup for the MOSDEPTH_Q{i} label override. Tracked
 // in docs/PARITY_ROADMAP.md#mosdepth.
+// TestParity_Quantized mirrors `-q 0:1:1000`. Upstream `-q` parses a
+// colon-separated cutoff list and emits a `.quantized.bed.gz` file with
+// one BED4 record per maximal same-bin run, labelled `MOSDEPTH_Q{i}` if
+// that env var is set or one of the default mnemonics
+// (`NO_COVERAGE`,`LOW_COVERAGE`,`CALLABLE`,`HIGH_COVERAGE`) otherwise.
+// We drive the test against `ovl.bam`'s MT chromosome where the depth
+// is 1 over [0,80) and 0 elsewhere, then assert both the default-label
+// and env-override paths.
 func TestParity_Quantized(t *testing.T) {
-	t.Skip("known gap: -q/--quantize not implemented (CLI parse + writer + env-label lookup); see docs/PARITY_ROADMAP.md#mosdepth")
+	t.Run("DefaultLabels", func(t *testing.T) {
+		prefix := runParity(t, "ovl.bam", Options{
+			Chrom:       "MT",
+			NoPerBase:   true,
+			ExcludeFlag: DefaultExcludeFlag,
+			Quantize:    []int{0, 1, 1000},
+		})
+		got := linesWithPrefix(readGzLines(t, prefix+".quantized.bed.gz"), "MT\t")
+		want := []string{
+			"MT\t0\t80\tLOW_COVERAGE",
+			"MT\t80\t16569\tNO_COVERAGE",
+		}
+		if !equalLines(got, want) {
+			t.Fatalf("MT quantized mismatch.\nwant:\n%s\ngot:\n%s",
+				strings.Join(want, "\n"), strings.Join(got, "\n"))
+		}
+	})
+	t.Run("EnvOverride", func(t *testing.T) {
+		t.Setenv("MOSDEPTH_Q0", "ZERO")
+		t.Setenv("MOSDEPTH_Q1", "ONE_TO_999")
+		prefix := runParity(t, "ovl.bam", Options{
+			Chrom:       "MT",
+			NoPerBase:   true,
+			ExcludeFlag: DefaultExcludeFlag,
+			Quantize:    []int{0, 1, 1000},
+		})
+		got := linesWithPrefix(readGzLines(t, prefix+".quantized.bed.gz"), "MT\t")
+		want := []string{
+			"MT\t0\t80\tONE_TO_999",
+			"MT\t80\t16569\tZERO",
+		}
+		if !equalLines(got, want) {
+			t.Fatalf("MT quantized env override mismatch.\nwant:\n%s\ngot:\n%s",
+				strings.Join(want, "\n"), strings.Join(got, "\n"))
+		}
+	})
 }
 
 // TestParity_D4Rejected mirrors `--d4`. Our port rejects it with a clear

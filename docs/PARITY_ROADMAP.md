@@ -3025,12 +3025,6 @@ Missing:
   `docs/htsgo/LIBDEFLATE.md`. Tracked via the
   `TestParity_IndexFiles_Skipped` skip with rationale pointing at that
   doc.
-- **`-q/--quantize`** — colon-separated cutoffs (e.g. `0:1:1000`) that
-  emit `.quantized.bed.gz` with one BED4 record per maximal same-bin
-  run. Needs (1) CLI parse for the cutoff/label syntax, (2)
-  `Options.Quantize` + main wiring, (3) a quantized-output writer, and
-  (4) MOSDEPTH_Q{i} env-var label lookup. Tracked via
-  `TestParity_Quantized`.
 - **D4 output** (`-d/--d4`).
 - **Multi-threading** (`-t/--threads N`).
 - **`--mapq` 0-only fast-path** — upstream has a special fast loop.
@@ -3047,6 +3041,14 @@ Closed (this wave):
 - **`--fragment-mode`** (`-m`) — paired reads now contribute a single
   fragment span `[POS-1, POS-1+TLEN)` rather than one footprint per
   mate; singletons fall back to the CIGAR-walk view.
+- **`-q/--quantize`** — colon-separated cutoff parser
+  (`mosdepth.ParseQuantize`), `Options.Quantize` field, CLI wiring on
+  `-q/--quantize`, `.quantized.bed.gz` writer that emits one BED4
+  record per maximal same-bin run, and per-bin label resolution
+  honouring `MOSDEPTH_Q{i}` env vars with default mnemonics
+  (`NO_COVERAGE`,`LOW_COVERAGE`,`CALLABLE`,`HIGH_COVERAGE`,`Q4..`).
+  `TestParity_Quantized` now passes byte-for-byte for both the
+  default-label and env-override paths.
 
 **Validation:** no upstream-test-suite run yet.
 
