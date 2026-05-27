@@ -135,14 +135,30 @@ func TestParity_Merge_T10_CustomDelim(t *testing.T) {
 	}
 }
 
-// merge.t13 — VCF input. bedmerge only accepts BED.
+// merge.t13 — VCF input gives BED3 output. Routed through NewVCFToBEDReader.
 func TestParity_Merge_T13_VCFInput(t *testing.T) {
-	t.Skip("unimplemented: VCF input; bedmerge is BED-only")
+	in := readMergeParity(t, "testA.vcf")
+	var buf bytes.Buffer
+	if _, err := Merge(NewVCFToBEDReader(bytes.NewReader(in)), &buf, MergeOptions{}); err != nil {
+		t.Fatalf("Merge VCF: %v", err)
+	}
+	want := readMergeParity(t, "t13_vcf.expected.bed")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
 }
 
-// merge.t14 — GFF input.
+// merge.t14 — GFF input gives BED3 output. Routed through NewGFFToBEDReader.
 func TestParity_Merge_T14_GFFInput(t *testing.T) {
-	t.Skip("unimplemented: GFF input; bedmerge is BED-only")
+	in := readMergeParity(t, "a.gff")
+	var buf bytes.Buffer
+	if _, err := Merge(NewGFFToBEDReader(bytes.NewReader(in)), &buf, MergeOptions{}); err != nil {
+		t.Fatalf("Merge GFF: %v", err)
+	}
+	want := readMergeParity(t, "t14_gff.expected.bed")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
 }
 
 // merge.t15 — stranded merge with mixed '.' strands. Upstream's

@@ -135,7 +135,17 @@ func TestParity_Groupby_T17_BAM(t *testing.T) {
 	t.Skip("BAM input is not supported by bedgroupby")
 }
 
-// groupby.t16 — VCF file as input. Not supported.
+// groupby.t16 — VCF file as input. bedgroupby treats the input as TSV and
+// skips leading `#` header lines, which matches upstream's behaviour for
+// `bedtools groupby -i x.vcf -g CHROM,REF -c QUAL -o mean`.
 func TestParity_Groupby_T16_VCF(t *testing.T) {
-	t.Skip("VCF input is not supported by bedgroupby (treats lines as TSV; column semantics differ from upstream's CHROM/REF mapping)")
+	got := runParity(t, "a_vcfSVtest.vcf", Options{
+		GroupCols: []int{1, 4},
+		AggCols:   []int{6},
+		Ops:       []string{"mean"},
+	})
+	want := readParity(t, "t16_vcf.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }

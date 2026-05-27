@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bamtobed"
 )
 
 func readJaccardParity(t *testing.T, name string) []byte {
@@ -112,9 +114,21 @@ func TestParity_Jaccard_T08_ThreeBlocksSplit(t *testing.T) {
 	}
 }
 
-// jaccard.t09 — BAM input. bedjaccard is BED-only.
+// jaccard.t09 — BAM input on both sides. The BAM files are converted to
+// BED via bamtobed.FromBAM and then fed into the standard Run path.
 func TestParity_Jaccard_T09_BAMInput(t *testing.T) {
-	t.Skip("unimplemented: BAM input")
+	aBytes := readJaccardParity(t, "a.bam")
+	bBytes := readJaccardParity(t, "three_blocks_match.bam")
+	aBed := bamtobed.FromBAM(bytes.NewReader(aBytes))
+	bBed := bamtobed.FromBAM(bytes.NewReader(bBytes))
+	var out bytes.Buffer
+	if _, err := Run(aBed, bBed, &out, Options{}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	want := readJaccardParity(t, "t09_bam.expected.tsv")
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, out.Bytes())
+	}
 }
 
 // jaccard.t10 — mixed-strand files, no `-s`. Both A and B are pre-merged

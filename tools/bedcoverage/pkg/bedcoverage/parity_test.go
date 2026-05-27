@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bamtobed"
 )
 
 func readParityFixture(t *testing.T, name string) []byte {
@@ -104,7 +106,35 @@ func TestParity_Coverage_T8_OppositeStrand(t *testing.T) {
 	}
 }
 
-// coverage.t10..t13 — -split and BAM input.
-func TestParity_Coverage_T10_Split(t *testing.T) {
-	t.Skip("BAM input + -split block-aware coverage not yet supported in bedcoverage")
+// coverage.t10 — A=BED, B=BAM with `-split`. The BAM is converted to BED
+// blocks (one per CIGAR M-run, N breaks blocks) via bamtobed.FromBAMSplit
+// before being fed to Coverage.
+func TestParity_Coverage_T10_BAMSplit(t *testing.T) {
+	a := readParityFixture(t, "c.bed")
+	bRaw := readParityFixture(t, "three_blocks_match.bam")
+	bBed := bamtobed.FromBAMSplit(bytes.NewReader(bRaw))
+	var buf bytes.Buffer
+	if _, err := Coverage(bytes.NewReader(a), bBed, &buf, Options{}); err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	want := readParityFixture(t, "t10_bam_split.expected")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
+}
+
+// coverage.t11 — A=BED, B=BAM, no `-split`. Full reference footprint of
+// each alignment is counted via bamtobed.FromBAM.
+func TestParity_Coverage_T11_BAMNoSplit(t *testing.T) {
+	a := readParityFixture(t, "c.bed")
+	bRaw := readParityFixture(t, "three_blocks_match.bam")
+	bBed := bamtobed.FromBAM(bytes.NewReader(bRaw))
+	var buf bytes.Buffer
+	if _, err := Coverage(bytes.NewReader(a), bBed, &buf, Options{}); err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	want := readParityFixture(t, "t11_bam_nosplit.expected")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
 }

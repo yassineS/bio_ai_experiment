@@ -14,7 +14,28 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bamtobed"
 )
+
+// runGenomecovFromBAMText runs the genomecov Run() function against a BED
+// text body whose genome is derived from a list of BAM-header references.
+// Used by parity tests that exercise `-ibam` semantics: the SQ header of
+// the BAM provides the per-chromosome size list, exactly mirroring how
+// upstream `bedtools genomecov -ibam` seeds its depth arrays.
+func runGenomecovFromBAMText(t *testing.T, bed []byte, refs []bamtobed.BAMRef, opts Options) []byte {
+	t.Helper()
+	g := &GenomeSize{Length: map[string]int{}}
+	for _, r := range refs {
+		g.Order = append(g.Order, r.Name)
+		g.Length[r.Name] = r.Length
+	}
+	var out bytes.Buffer
+	if err := Run(bytes.NewReader(bed), g, &out, opts); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	return out.Bytes()
+}
 
 func readGenomecovParity(t *testing.T, name string) []byte {
 	t.Helper()
@@ -40,9 +61,152 @@ func runGenomecovParity(t *testing.T, bedFile, genomeFile string, opts Options) 
 	return out.Bytes()
 }
 
-// genomecov.t1..t10 — all use BAM/CRAM input. bedgenomecov is BED-only.
-func TestParity_Genomecov_T1to10_BAMInputs(t *testing.T) {
-	t.Skip("unimplemented: BAM/SAM/CRAM input. bedgenomecov consumes BED only.")
+// genomecov.t1 — three-block BAM, `-bg`, no `-split`. Full reference
+// footprint of the alignment is covered.
+func TestParity_Genomecov_T1_ThreeBlocksNoSplit(t *testing.T) {
+	sam := readGenomecovParity(t, "three_blocks.sam")
+	bed, refs, err := bamtobed.DecodeSAMToBED(bytes.NewReader(sam))
+	if err != nil {
+		t.Fatalf("DecodeSAMToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeBedGraph, Scale: 1.0})
+	want := []byte("chr1\t0\t50\t1\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// genomecov.t2 — three-block BAM, `-bg -split`. CIGAR `N` gaps split blocks.
+func TestParity_Genomecov_T2_ThreeBlocksSplit(t *testing.T) {
+	sam := readGenomecovParity(t, "three_blocks.sam")
+	bed, refs, err := bamtobed.DecodeSAMSplitToBED(bytes.NewReader(sam))
+	if err != nil {
+		t.Fatalf("DecodeSAMSplitToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeBedGraph, Scale: 1.0})
+	want := []byte("chr1\t0\t10\t1\nchr1\t20\t30\t1\nchr1\t40\t50\t1\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// genomecov.t3 — three-block BAM, `-bga -split`. Adds zero-depth runs.
+func TestParity_Genomecov_T3_ThreeBlocksSplitBGA(t *testing.T) {
+	sam := readGenomecovParity(t, "three_blocks.sam")
+	bed, refs, err := bamtobed.DecodeSAMSplitToBED(bytes.NewReader(sam))
+	if err != nil {
+		t.Fatalf("DecodeSAMSplitToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeBedGraphAll, Scale: 1.0})
+	want := []byte("chr1\t0\t10\t1\nchr1\t10\t20\t0\nchr1\t20\t30\t1\nchr1\t30\t40\t0\nchr1\t40\t50\t1\nchr1\t50\t1000\t0\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// genomecov.t6 — three-block BAM, `-dz -split` (per-base non-zero).
+func TestParity_Genomecov_T6_ThreeBlocksSplitDZ(t *testing.T) {
+	sam := readGenomecovParity(t, "three_blocks.sam")
+	bed, refs, err := bamtobed.DecodeSAMSplitToBED(bytes.NewReader(sam))
+	if err != nil {
+		t.Fatalf("DecodeSAMSplitToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModePerBaseNonZero, Scale: 1.0})
+	// Build expected: 3 runs of 10 bases at positions [1..10], [21..30], [41..50].
+	var w bytes.Buffer
+	for _, r := range []struct{ lo, hi int }{{1, 10}, {21, 30}, {41, 50}} {
+		for i := r.lo; i <= r.hi; i++ {
+			w.WriteString("chr1\t")
+			w.WriteString(itoa(i))
+			w.WriteString("\t1\n")
+		}
+	}
+	if !bytes.Equal(got, w.Bytes()) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", w.Bytes(), got)
+	}
+}
+
+// genomecov.t7 — SAM with one D op, `-bg`. Upstream genomecov splits BAM
+// blocks on both N and D ops (sam-w-del has CIGAR 10M1D10M and emits two
+// 10bp runs separated by the deleted base). To match we set SplitOnDel.
+func TestParity_Genomecov_T7_SAMWithDel(t *testing.T) {
+	sam := readGenomecovParity(t, "sam-w-del.sam")
+	bed, refs, err := bamtobed.DecodeSAMSplitOptsToBED(bytes.NewReader(sam),
+		bamtobed.DecodeOpts{SplitOnN: true, SplitOnDel: true})
+	if err != nil {
+		t.Fatalf("DecodeSAMSplitOptsToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeBedGraph, Scale: 1.0})
+	want := []byte("chr1\t0\t10\t1\nchr1\t11\t21\t1\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// genomecov.t8 — y.bam, default histogram. Tests that chroms with no
+// coverage still appear in the output.
+func TestParity_Genomecov_T8_YBamHist(t *testing.T) {
+	bam := readGenomecovParity(t, "y.bam")
+	bed, refs, err := bamtobed.DecodeBAMToBED(bytes.NewReader(bam))
+	if err != nil {
+		t.Fatalf("DecodeBAMToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeHistogram, Scale: 1.0})
+	want := []byte("1\t0\t93\t100\t0.93\n1\t1\t4\t100\t0.04\n1\t2\t3\t100\t0.03\n2\t0\t100\t100\t1\n3\t0\t100\t100\t1\ngenome\t0\t293\t300\t0.976667\ngenome\t1\t4\t300\t0.0133333\ngenome\t2\t3\t300\t0.01\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// genomecov.t9 — y.bam, `-bg`.
+func TestParity_Genomecov_T9_YBamBG(t *testing.T) {
+	bam := readGenomecovParity(t, "y.bam")
+	bed, refs, err := bamtobed.DecodeBAMToBED(bytes.NewReader(bam))
+	if err != nil {
+		t.Fatalf("DecodeBAMToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeBedGraph, Scale: 1.0})
+	want := []byte("1\t15\t17\t1\n1\t17\t20\t2\n1\t20\t22\t1\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// genomecov.t10 — y.bam, `-bga`.
+func TestParity_Genomecov_T10_YBamBGA(t *testing.T) {
+	bam := readGenomecovParity(t, "y.bam")
+	bed, refs, err := bamtobed.DecodeBAMToBED(bytes.NewReader(bam))
+	if err != nil {
+		t.Fatalf("DecodeBAMToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeBedGraphAll, Scale: 1.0})
+	want := []byte("1\t0\t15\t0\n1\t15\t17\t1\n1\t17\t20\t2\n1\t20\t22\t1\n1\t22\t100\t0\n2\t0\t100\t0\n3\t0\t100\t0\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// itoa is a tiny local helper to keep the expected-output builders concise.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // genomecov.t11 — histogram (default) over y.bed, including chroms in the
@@ -81,12 +245,25 @@ func TestParity_Genomecov_T14_PairedEnd(t *testing.T) {
 func TestParity_Genomecov_T15_FragmentSize(t *testing.T) {
 	t.Skip("unimplemented: -fs fragment size (BAM-only feature)")
 }
+
+// genomecov.t16 — empty.bam, default histogram. The genome (3 chroms of
+// 100bp each) comes entirely from the BAM SQ header; with no alignments,
+// every base is at depth 0.
 func TestParity_Genomecov_T16_EmptyBAM(t *testing.T) {
-	t.Skip("unimplemented: BAM input")
+	bam := readGenomecovParity(t, "empty.bam")
+	bed, refs, err := bamtobed.DecodeBAMToBED(bytes.NewReader(bam))
+	if err != nil {
+		t.Fatalf("DecodeBAMToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeHistogram, Scale: 1.0})
+	want := []byte("1\t0\t100\t100\t1\n2\t0\t100\t100\t1\n3\t0\t100\t100\t1\ngenome\t0\t300\t300\t1\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 func TestParity_Genomecov_T17_EmptyCRAM(t *testing.T) {
-	t.Skip("unimplemented: CRAM input")
+	t.Skip("unimplemented: CRAM input (htsgo/cram decoder layer not wired through bedgenomecov)")
 }
 func TestParity_Genomecov_T18_DeepSAM(t *testing.T) {
-	t.Skip("unimplemented: SAM input")
+	t.Skip("upstream test depends on the bundled mk-deep.py to synthesise a 1Mbase deep SAM; we don't ship that helper here")
 }

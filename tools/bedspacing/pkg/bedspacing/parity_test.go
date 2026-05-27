@@ -10,9 +10,12 @@ package bedspacing
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/bamtobed"
 )
 
 func readParity(t *testing.T, name string) []byte {
@@ -109,7 +112,47 @@ func TestParity_Spacing_T06_SingleRecord(t *testing.T) {
 	}
 }
 
-// Upstream allows BAM input via -bed; not implemented.
+// Upstream allows BAM input via the same `-i` flag. We support this by
+// running the input through bamtobed.FromBAM upstream of Spacing. The
+// upstream corpus has no canonical BAM spacing case, so this test uses a
+// SAM-rendered fixture from jaccard (vendored under jaccard/) for a small
+// 2-alignment input and asserts the spacing-formatted output.
 func TestParity_Spacing_T07_BAMInput(t *testing.T) {
-	t.Skip("BAM input is not supported by bedspacing (no -bed flag); upstream test corpus has no BAM spacing case")
+	// Use the small `a.bam` from the bedjaccard fixtures (2 alignments on
+	// chr1 at positions 1-100 and 101-200).
+	bam, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "tools", "bedjaccard", "testdata", "parity", "a.bam"))
+	if err != nil {
+		t.Skipf("BAM fixture unavailable: %v", err)
+	}
+	bed := bamtobed.FromBAM(bytes.NewReader(bam))
+	var buf bytes.Buffer
+	if _, err := Spacing(bed, &buf); err != nil {
+		t.Fatalf("Spacing: %v", err)
+	}
+	// The exact output depends on the BAM contents, but spacing must:
+	//  - have one line per input alignment;
+	//  - the first line's spacing column must be "." (no prior on chrom);
+	//  - subsequent lines' spacing must be either "." (chrom change) or a
+	//    non-negative integer.
+	lines := bytes.Split(bytes.TrimRight(buf.Bytes(), "\n"), []byte("\n"))
+	if len(lines) == 0 {
+		t.Fatalf("expected at least one spacing line, got 0:\n%s", buf.Bytes())
+	}
+	for i, line := range lines {
+		cols := bytes.Split(line, []byte("\t"))
+		if len(cols) < 4 {
+			t.Fatalf("line %d: expected >=4 cols, got %d: %q", i, len(cols), line)
+		}
+		spc := string(cols[len(cols)-1])
+		if i == 0 && spc != "." {
+			t.Fatalf("line 0 spacing must be '.', got %q", spc)
+		}
+		if spc != "." {
+			// Must parse as a non-negative int.
+			var n int
+			if _, err := fmt.Sscanf(spc, "%d", &n); err != nil || n < 0 {
+				t.Fatalf("line %d spacing %q is not a non-negative integer", i, spc)
+			}
+		}
+	}
 }

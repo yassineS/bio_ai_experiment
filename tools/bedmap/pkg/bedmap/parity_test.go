@@ -142,7 +142,29 @@ func TestParity_Map_T13_AbsMax(t *testing.T) {
 	}
 }
 
-// map.t14..t29 — GFF / VCF / BAM input not supported in BED-only port.
+// map.t14 — GFF input on B, collapse column 1 (seqname).
 func TestParity_Map_T14_GFF(t *testing.T) {
-	t.Skip("GFF input not yet supported in bedmap")
+	got := runParity(t, "ivls.bed", "test.gff", Options{Columns: []int{1}, Ops: []string{"collapse"}})
+	want := readParityFixture(t, "t14_gff_col1.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// map.t15 — GFF input on B, collapse column 2 (source).
+func TestParity_Map_T15_GFFCol2(t *testing.T) {
+	got := runParity(t, "ivls.bed", "test.gff", Options{Columns: []int{2}, Ops: []string{"collapse"}})
+	want := readParityFixture(t, "t15_gff_col2.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// map.t16 — GFF input on B, collapse column 3 (feature).
+func TestParity_Map_T16_GFFCol3(t *testing.T) {
+	got := runParity(t, "ivls.bed", "test.gff", Options{Columns: []int{3}, Ops: []string{"collapse"}})
+	want := readParityFixture(t, "t16_gff_col3.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }

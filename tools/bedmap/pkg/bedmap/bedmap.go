@@ -247,13 +247,21 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 	return count, nil
 }
 
-// readRawRecords reads a BED-like stream as (parsed Record, raw fields)
-// pairs. The parsed Record is needed for interval-tree queries; the raw
-// fields are needed so any column can be extracted by index.
+// readRawRecords reads a BED-like or GFF-like stream as (parsed Record, raw
+// fields) pairs. The parsed Record is needed for interval-tree queries; the
+// raw fields are needed so any column can be extracted by index.
+//
+// Format detection: the function inspects the first non-comment line. If it
+// has 9 tab-separated columns AND columns 4 and 5 are positive integers, it
+// is treated as GFF (chrom=col1, start=col4-1, end=col5, strand=col7); GFF
+// uses 1-based closed coordinates that we convert to BED 0-based half-open.
+// Otherwise the stream is treated as BED.
 func readRawRecords(r io.Reader) ([]rawRecord, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var out []rawRecord
+	formatKnown := false
+	isGFF := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -261,6 +269,18 @@ func readRawRecords(r io.Reader) ([]rawRecord, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
+		if !formatKnown {
+			isGFF = looksLikeGFF(fields)
+			formatKnown = true
+		}
+		if isGFF {
+			rr, err := parseGFFFields(fields)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, rr)
+			continue
+		}
 		if len(fields) < 3 {
 			return nil, fmt.Errorf("BED record must have at least 3 fields, got %d", len(fields))
 		}
@@ -282,6 +302,46 @@ func readRawRecords(r io.Reader) ([]rawRecord, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// looksLikeGFF returns true when the given record looks like a GFF row:
+// exactly 9 tab-separated columns, with columns 4 and 5 parseable as
+// positive integers and column 4 <= column 5.
+func looksLikeGFF(fields []string) bool {
+	if len(fields) != 9 {
+		return false
+	}
+	s, err := strconv.Atoi(fields[3])
+	if err != nil || s < 1 {
+		return false
+	}
+	e, err := strconv.Atoi(fields[4])
+	if err != nil || e < s {
+		return false
+	}
+	return true
+}
+
+// parseGFFFields parses a 9-column GFF row into a rawRecord whose Record
+// uses BED-style 0-based half-open coordinates while the raw fields slice
+// preserves the original GFF columns verbatim. Strand is column 7.
+func parseGFFFields(fields []string) (rawRecord, error) {
+	if len(fields) < 9 {
+		return rawRecord{}, fmt.Errorf("GFF record must have 9 fields, got %d", len(fields))
+	}
+	s, err := strconv.Atoi(fields[3])
+	if err != nil {
+		return rawRecord{}, fmt.Errorf("invalid GFF start %q: %v", fields[3], err)
+	}
+	e, err := strconv.Atoi(fields[4])
+	if err != nil {
+		return rawRecord{}, fmt.Errorf("invalid GFF end %q: %v", fields[4], err)
+	}
+	rec := &bed.Record{Chrom: fields[0], ChromStart: s - 1, ChromEnd: e}
+	if len(fields) > 6 {
+		rec.Strand = fields[6]
+	}
+	return rawRecord{rec: rec, fields: fields}, nil
 }
 
 // strandPass: same as bedcoverage; duplicated here to avoid a cross-tool
