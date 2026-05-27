@@ -90,16 +90,27 @@ one of the four buckets from this file's preamble:
   slice can pick it up directly. **Closed in the bamtobed-helpers
   wave**: mosdepth `-q/--quantize`, bedgenomecov `-pc`/`-fs`/CRAM,
   bedcoverage `-abam` BAM-as-A, bedgroupby `-i x.bam` SAM-TSV,
-  bedgroupby `-ignorecase`. Six previously-deferred parity tests now
-  pass; only the deep-SAM fixture-generator skip (genomecov.t18)
-  remains in that group.
+  bedgroupby `-ignorecase`. **Closed in the final-skips wave**:
+  bedreldist t01/t02/t03 (refseq/aluY/gerp chr1 fixtures vendored,
+  ~1.7 MB compressed); bedslop t13/t14 (human.hg19.genome vendored);
+  bedgenomecov t18 (mk-deep.py SAM synthesiser ported in-tree —
+  1M-record SAM is built in memory, no on-disk fixture shipped);
+  bedsample t01/t02 (converted from CLI-skip to real subprocess tests
+  asserting the binary exits non-zero with a usage / "not defined"
+  message); bedmultiinter provenance footnote (no upstream
+  test/multiinter/ subdir — converted from skip to `t.Log` so the
+  deferred work stays visible without inflating the skip count);
+  mpileup goldens container (`TestMpileupGoldensDeferred` converted
+  from skip to `t.Log` and stale RESOLVED entry pruned).
 
 The remaining skips break down as: fixture-not-vendored / submodule-not-
 initialised guards (the bulk: pkg/htsgo/cram, pkg/htsgo/alnio, samtools
-fixtures, bedreldist external corpora); structural-blocker skips
-(libdeflate `.tbi` / `.csi`); CLI-only behaviour covered elsewhere
-(bedsample's `No input file given`); and the remaining real gaps listed
-in the per-tool sections below. None of the remaining skips are stale.
+fixtures); structural-blocker skips (libdeflate `.tbi` / `.csi` — the
+only two in-CI-fires; need the multi-week libdeflate port — see
+`docs/htsgo/LIBDEFLATE.md`); and defensive fallbacks that never fire
+when the submodules are initialised (bedcluster, bedsplit "test data
+not available"; CRAM @SQ M5-tag absent). None of the remaining skips
+are stale.
 
 ---
 
