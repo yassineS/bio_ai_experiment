@@ -237,13 +237,23 @@ func TestParity_Genomecov_T13_BedGraphAll(t *testing.T) {
 	}
 }
 
-// genomecov.t14..t18 — `-pc` paired-end coverage, `-fs` fragment size, BAM
-// empty fixtures, deep SAM. All BAM-only.
+// genomecov.t14..t18 — `-pc` paired-end coverage, `-fs` fragment size,
+// BAM empty fixtures, deep SAM. All BAM-only.
+//
+// -pc: covers the entire fragment [POS-1, POS-1+TLEN) for the leftmost
+// mate (TLEN > 0) and skips the rightmost mate (TLEN < 0). Needs a new
+// pkg/bamtobed converter (FromBAMPaired) plus a bedgenomecov option to
+// consume it; ~50-80 LOC.
+//
+// -fs: extends each read to a fixed fragment length downstream of the
+// alignment start (`POS-1` .. `POS-1+fragLen`). Needs a similar
+// converter + option; ~30-50 LOC. Both tracked together because they
+// share the new pkg/bamtobed entry point.
 func TestParity_Genomecov_T14_PairedEnd(t *testing.T) {
-	t.Skip("unimplemented: -pc paired-end coverage (BAM-only feature)")
+	t.Skip("unimplemented: -pc paired-end coverage; needs pkg/bamtobed.FromBAMPaired + Options.PairedCoverage")
 }
 func TestParity_Genomecov_T15_FragmentSize(t *testing.T) {
-	t.Skip("unimplemented: -fs fragment size (BAM-only feature)")
+	t.Skip("unimplemented: -fs fragment size; needs pkg/bamtobed.FromBAMExtended + Options.FragmentSize")
 }
 
 // genomecov.t16 — empty.bam, default histogram. The genome (3 chroms of
@@ -261,9 +271,24 @@ func TestParity_Genomecov_T16_EmptyBAM(t *testing.T) {
 		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
+
+// genomecov.t17 — empty CRAM input. pkg/htsgo/cram has a decoder but
+// it requires a fasta reference (CRAM's reference-compressed read
+// substitution lookup). bedgenomecov's BAM path goes through
+// pkg/bamtobed.DecodeBAMToBED which produces a BED stream + ref list
+// in one shot; an equivalent DecodeCRAMToBED would need to accept and
+// thread through an `M5`-keyed reference cache. Roughly 80-120 LOC
+// once a small empty CRAM fixture is vendored. Deferred.
 func TestParity_Genomecov_T17_EmptyCRAM(t *testing.T) {
-	t.Skip("unimplemented: CRAM input (htsgo/cram decoder layer not wired through bedgenomecov)")
+	t.Skip("unimplemented: CRAM input; needs pkg/bamtobed.DecodeCRAMToBED + reference threading")
 }
+
+// genomecov.t18 — upstream test calls bundled mk-deep.py to synthesise
+// a 1 Mbase deep SAM at runtime, then exercises the per-base path's
+// O(N*depth) memory profile. Closing this needs either (a) checking
+// in a ~100 MB synthetic SAM, or (b) porting mk-deep.py to Go as a
+// testdata generator. Both options are out of scope for this slice;
+// the per-base path itself is exercised by t1-t12 on small fixtures.
 func TestParity_Genomecov_T18_DeepSAM(t *testing.T) {
-	t.Skip("upstream test depends on the bundled mk-deep.py to synthesise a 1Mbase deep SAM; we don't ship that helper here")
+	t.Skip("fixture: needs in-tree port of mk-deep.py (1Mbase deep SAM synthesiser); not algorithmic")
 }

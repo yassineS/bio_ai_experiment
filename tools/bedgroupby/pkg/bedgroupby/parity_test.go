@@ -43,9 +43,15 @@ func TestParity_Groupby_T1_Basic(t *testing.T) {
 	}
 }
 
-// groupby.t2 — case-insensitive grouping.
+// groupby.t2 — case-insensitive grouping with `-ignorecase`. Upstream
+// folds grouping-column values for the key comparison but preserves
+// the *first-seen* original case in the output row for each grouping
+// triple. We currently fold to lower-case in the output too. Closing
+// this needs per-row first-seen-case bookkeeping on the grouping
+// columns; ~20-30 LOC in pkg/bedgroupby plus a vendored fixture.
+// Deferred.
 func TestParity_Groupby_T2_IgnoreCase(t *testing.T) {
-	t.Skip("upstream -ignorecase compares only the grouping field, but expected output preserves the input's mixed-case chrom value of each record verbatim; our implementation matches that behaviour but the upstream test asserts a precise sequence we cannot exactly mirror without per-row case bookkeeping not yet implemented")
+	t.Skip("unimplemented: -ignorecase first-seen-case preservation; ~20-30 LOC + fixture")
 }
 
 // groupby.t3 — -full prints all original first-record columns + agg.
@@ -130,9 +136,15 @@ func TestParity_Groupby_T19_Bug569(t *testing.T) {
 	}
 }
 
-// groupby.t17 — BAM file as input. Not supported.
+// groupby.t17 — BAM file as input. Upstream's `groupby -i x.bam`
+// treats the BAM as a SAM-column TSV (col 1=qname, col 2=flag, col
+// 3=rname, col 4=pos, col 5=mapq, ...), not as the BED6 our
+// pkg/bamtobed.FromBAM produces. Closing this test needs a new helper
+// (pkg/bamtobed.FromBAMSAMText) that streams BAM records back out in
+// SAM textual form (sans header), wired into bedgroupby's parity
+// fixture loader. Roughly 50-80 LOC; deferred.
 func TestParity_Groupby_T17_BAM(t *testing.T) {
-	t.Skip("BAM input is not supported by bedgroupby")
+	t.Skip("unimplemented: BAM-as-SAM-TSV input; needs pkg/bamtobed.FromBAMSAMText")
 }
 
 // groupby.t16 — VCF file as input. bedgroupby treats the input as TSV and

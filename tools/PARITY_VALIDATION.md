@@ -7,6 +7,37 @@ in this repository and the upstream tools' regression test corpora
 The initial corpus is bedtools (PR #55, 127 cases). Subsequent sections
 extend the same methodology to the remaining ports.
 
+### Skip-list cleanup pass (2026-05-27)
+
+Round-3 sweep through every `t.Skip` in the suite. The total dropped
+from 92 to 82, and the residue is categorised below so a future slice
+can target the substantive items. Notable closures (full list in
+`docs/PARITY_ROADMAP.md`):
+
+- **bedcomplement t9** — now ports the upstream
+  `***** WARNING: chr1:90-110 exceeds the length of chromosome (chr1)`
+  wording and the clipped complement output, asserted byte-for-byte.
+- **bcftools concat `-D` without `-a`** — now rejected with upstream's
+  `error("The -D option is supported only with -a")` text.
+- **bedjaccard t16** (long.bed vs short.bed) — vendored the small
+  upstream fixtures and now exercises the
+  `247800000\t615800000\t0.402403\t4` intersection/union/jaccard
+  output.
+- **bednuc `-fullHeader`** — converted from doc-skip to a real parity
+  assertion over a whitespace-bearing FASTA header.
+- **bedfisher t5** (long path) — exercises a 32-segment deep tempdir
+  tree and asserts t1-equivalent output.
+- **bedcoverage `-mean`** — replaces the documented-divergence skip
+  with a parser-based float-equivalence assertion (the only difference
+  is float32 vs float64 round-trip noise; values agree within 1e-6).
+
+Remaining skips are: fixture-not-vendored guards in pkg/htsgo/cram and
+pkg/htsgo/alnio (33), samtools submodule guards (5), structural
+libdeflate-blocker skips for `.tbi`/`.csi` binary parity (2), tracked
+real-but-substantive gaps with refined rationale (e.g. mosdepth
+`-q/--quantize`, bedcoverage `-abam` BAM-as-A, bedgenomecov `-pc`/`-fs`),
+and CLI-only guard skips for tests covered by main.go validation paths.
+
 ## bedtools
 
 Byte-for-byte parity against the upstream `bedtools` C++ test suite

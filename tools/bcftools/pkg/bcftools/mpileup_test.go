@@ -401,15 +401,6 @@ func TestMpileupBAQGoldens(t *testing.T) {
 	t.Logf("BAQ active: %d/%d `<*>`-only columns differ between -B and the default", diffs, len(got))
 }
 
-// TestMpileupBAQGoldensDeferred is retained for history. The slice-4
-// work (bias annotations, INFO/QS float32 rounding, smart-overlaps)
-// closed the SNP gaps it used to track; the full byte-for-byte parity
-// check now lives in TestMpileupSNPGoldens and the remaining deferred
-// goldens are catalogued by TestMpileupGoldensDeferred.
-func TestMpileupBAQGoldensDeferred(t *testing.T) {
-	t.Skip("superseded by TestMpileupSNPGoldens and TestMpileupGoldensDeferred")
-}
-
 // TestMpileupBCFRoundTrip verifies that -O b output is well-formed BCF
 // that round-trips through the project's BCF reader.
 func TestMpileupBCFRoundTrip(t *testing.T) {

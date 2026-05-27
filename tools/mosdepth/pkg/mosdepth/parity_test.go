@@ -564,9 +564,20 @@ func TestParity_FragmentMode(t *testing.T) {
 	_ = wantSpans
 }
 
-// TestParity_Quantized mirrors `-q 0:1:1000`. Not implemented.
+// TestParity_Quantized mirrors `-q 0:1:1000`. Upstream `-q` parses a
+// colon-separated cutoff list (e.g. `0:1:1000` -> bins
+// `NO_COVERAGE`,`LOW_COVERAGE`,`CALLABLE`), then emits a separate
+// `.quantized.bed.gz` file with one BED4 record per maximal run that
+// stays in the same bin (label = `MOSDEPTH_Q{i}` if `MOSDEPTH_Q{i}` is
+// unset, otherwise the env-var value). Reuses the same per-base
+// accumulator the default path already builds. Out of scope for this
+// cleanup slice: needs (1) CLI parsing for the cutoff/label syntax,
+// (2) `Options.Quantize` field + main wiring, (3) a quantized-output
+// writer alongside the existing `.per-base.bed.gz` / regions writers,
+// and (4) env-var lookup for the MOSDEPTH_Q{i} label override. Tracked
+// in docs/PARITY_ROADMAP.md#mosdepth.
 func TestParity_Quantized(t *testing.T) {
-	t.Skip("known gap: -q/--quantize not implemented yet; see docs/PARITY_ROADMAP.md#mosdepth")
+	t.Skip("known gap: -q/--quantize not implemented (CLI parse + writer + env-label lookup); see docs/PARITY_ROADMAP.md#mosdepth")
 }
 
 // TestParity_D4Rejected mirrors `--d4`. Our port rejects it with a clear
@@ -598,6 +609,15 @@ func TestParity_EmptyTids(t *testing.T) {
 }
 
 // TestParity_IndexFiles_Skipped documents the .csi/.tbi deviation.
+// Upstream emits a `.csi` (BGZF-blocked binary virtual-offset index)
+// alongside each per-base / regions output; our port emits the simpler
+// `.tbi` because (a) consumers in this repo only read indexed files via
+// our pkg/htsgo/tabix decoder which handles both formats transparently,
+// and (b) byte-for-byte `.csi` parity requires the libdeflate-class
+// BGZF block-byte equality work scoped in docs/htsgo/LIBDEFLATE.md.
+// Until that lands the index file is not a parity target — the data
+// files themselves match upstream exactly, and consumers re-index on
+// the fly when needed.
 func TestParity_IndexFiles_Skipped(t *testing.T) {
-	t.Skip("known deviation: upstream emits .csi, we emit .tbi; see docs/PARITY_ROADMAP.md#mosdepth")
+	t.Skip("structural: BGZF block-byte parity requires libdeflate; see docs/htsgo/LIBDEFLATE.md and docs/PARITY_ROADMAP.md#mosdepth")
 }

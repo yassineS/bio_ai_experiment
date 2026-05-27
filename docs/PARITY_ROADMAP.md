@@ -66,6 +66,39 @@ We're not there yet for any tool. The bedtools subset (PR #55) is the
 closest — 127 parity tests, 85 passing, 42 documented `t.Skip` — and even
 there we have ~30 subcommands not yet started.
 
+### Skip-list cleanup pass (2026-05-27)
+
+A round-3 sweep over the remaining `t.Skip` items reclassified each into
+one of the four buckets from this file's preamble:
+
+- **Closed as real assertions**: `TestParity_Nuc_FullHeader` (bednuc),
+  `TestParity_StrandedSlop` (bedpairtopair), `TestParity_Shuffle_T3_IncludeChromFirst`
+  (bedshuffle), `TestParity_Slop` (bedpairtobed — intentional non-divergence
+  pinned via reflection), `TestParity_Complement_T9_RecordExceedsChrom`
+  (bedcomplement — port upstream's `***** WARNING:` wording + clipped
+  output), `TestParityConcat_DedupAdjacent` (bcftools — implements
+  upstream's `error("The -D option is supported only with -a\n")`),
+  `TestParity_Fisher_T5_LongPath` (bedfisher — synthetic 32-segment
+  tempdir tree), `TestParity_Coverage_T6_Mean` (bedcoverage — assert
+  float-equivalence under float32 epsilon), `TestParity_Jaccard_T16_LongShort`
+  (bedjaccard — vendored long.bed/short.bed from upstream).
+- **Stale skips removed**: `TestMpileupBAQGoldensDeferred` (was a
+  pure-historical doc-skip superseded by `TestMpileupSNPGoldens`).
+- **Real gaps with refined rationale**: mosdepth `-q/--quantize`,
+  mosdepth `.csi` (now points at `docs/htsgo/LIBDEFLATE.md`),
+  bcftools `.tbi` binary-equality (same), bedgenomecov `-pc`/`-fs`/CRAM/deep
+  SAM, bedcoverage `-abam` BAM-as-A, bedgroupby `-i x.bam` SAM-TSV,
+  bedgroupby `-ignorecase` first-seen-case bookkeeping. Each skip now
+  names the missing helper / scope estimate so the next slice can pick
+  it up directly.
+
+The remaining skips break down as: fixture-not-vendored / submodule-not-
+initialised guards (the bulk: pkg/htsgo/cram, pkg/htsgo/alnio, samtools
+fixtures, bedreldist external corpora); structural-blocker skips
+(libdeflate `.tbi` / `.csi`); CLI-only behaviour covered elsewhere
+(bedsample's `No input file given`); and the remaining real gaps listed
+in the per-tool sections below. None of the remaining skips are stale.
+
 ---
 
 ## Per-tool gap list
@@ -2987,7 +3020,17 @@ Subcommand-tail gaps on `bcftools call`:
 
 Missing:
 
-- **`.csi`** output (currently emits `.tbi`).
+- **`.csi`** output (currently emits `.tbi`). Achieving byte-identical
+  BGZF blocks requires the libdeflate-class port scoped in
+  `docs/htsgo/LIBDEFLATE.md`. Tracked via the
+  `TestParity_IndexFiles_Skipped` skip with rationale pointing at that
+  doc.
+- **`-q/--quantize`** — colon-separated cutoffs (e.g. `0:1:1000`) that
+  emit `.quantized.bed.gz` with one BED4 record per maximal same-bin
+  run. Needs (1) CLI parse for the cutoff/label syntax, (2)
+  `Options.Quantize` + main wiring, (3) a quantized-output writer, and
+  (4) MOSDEPTH_Q{i} env-var label lookup. Tracked via
+  `TestParity_Quantized`.
 - **D4 output** (`-d/--d4`).
 - **Multi-threading** (`-t/--threads N`).
 - **`--mapq` 0-only fast-path** — upstream has a special fast loop.
