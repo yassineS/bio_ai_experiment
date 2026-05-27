@@ -2454,6 +2454,43 @@ TestParityStats_AF, TestParityStats_QUAL, TestParityStats_IDD,
 TestParityStats_ST, TestParityStats_DP, TestParityStats_HWE) with
 goldens captured under `tools/bcftools/testdata/parity/stats_*.expected.txt`.
 
+`concat` parity (RESOLVED — both previously-deferred cases now match
+upstream byte-for-byte on the vendored `concat.2.*` / `concat.4.*`
+fixtures):
+
+- **`concat -a` contig order** — upstream's synced reader
+  (`reference_code/htslib/synced_bcf_reader.c`) iterates contigs in
+  the order their names are added to the regions table, which is
+  built by walking each `bcf_sr_add_reader` reader in command-line
+  order and appending its tabix/BCF index seq-names (these match the
+  order chromosomes first appear in the data, for a sorted-then-
+  indexed input). The Go port previously used the merged header's
+  `##contig` declaration order, which diverged for inputs like
+  `concat.2.a.vcf` whose data starts on chr2 even though the header
+  declares chr1 first. Fixed in `firstSeenContigOrder` + the
+  per-contig n-way merge in `mergeSorted` (concat.go): we partition
+  each input's records by chromosome, rank chromosomes by first
+  appearance across inputs in order, then within each contig do a
+  POS-min merge with a (REF,ALT)-signature grouping that mirrors
+  `bcf_sr_sort_next`. Validated by `TestParityConcat_AllowOverlaps`
+  against upstream's `concat.2.vcf.out`.
+- **`concat -D` standalone** — upstream rejects `-D` without `-a`
+  with `"The -D option is supported only with -a"`. The Go port
+  previously accepted standalone `-D` as a stream-level adjacency
+  filter (a port-only extension); we now mirror upstream's
+  rejection at both the CLI (`cmd/bcftools/main.go runConcat`) and
+  library (`Concat` in `pkg/bcftools/concat.go`) layers.
+  `TestParityConcat_DedupAdjacent` exercises the rejection;
+  `TestParityConcat_AllowOverlapsAD` exercises the successful
+  `-aD` path against upstream's `concat.4.vcf.out`.
+
+Out-of-scope for this round: a full synced-reader port (the
+`bcf_sr_*` C API). The contig-order parity fix above approximates
+the synced reader's observable behaviour without porting the API,
+which is sufficient for `concat -a`. A proper port would unblock
+`-r/-R` region-jumping for concat and similar consumers; that is
+tracked as a separate item.
+
 Option-tail gaps on `gtcheck` (PR #107, simple-mode):
 
 - `--cluster N,N` (HMM-style sample clustering), `--distinctive-sites`,
@@ -2964,6 +3001,9 @@ Closed (this wave):
   depth on the per-fragment overlap interval (mate-aware, QName keyed,
   per-chromosome). `--fast-mode` still skips the dedup (matching
   upstream). Six previously-deferred parity tests now pass.
+- **`--fragment-mode`** (`-m`) — paired reads now contribute a single
+  fragment span `[POS-1, POS-1+TLEN)` rather than one footprint per
+  mate; singletons fall back to the CIGAR-walk view.
 
 **Validation:** no upstream-test-suite run yet.
 
