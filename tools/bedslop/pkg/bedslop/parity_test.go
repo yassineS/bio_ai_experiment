@@ -121,13 +121,40 @@ func TestParity_Slop_T10_PastBoth(t *testing.T) {
 	}
 }
 
-// slop.t13 / t14 — float-point precision regression tests; require the full
-// human.hg19.genome (not vendored under reference_code/bedtools/test/genomes/).
+// slop.t13 / t14 — float-point precision regression tests using
+// human.hg19.genome (chr1 length 249,250,621). Now vendored under
+// tools/bedslop/testdata/parity/human.hg19.genome.
 func TestParity_Slop_T13_FloatPrecision(t *testing.T) {
-	t.Skip("requires the full human.hg19.genome file under reference_code/bedtools/genomes/")
+	in := []byte("chr1\t16778271\t16778571\n")
+	g := readSlopParity(t, "human.hg19.genome")
+	sizes, err := ReadChromSizes(bytes.NewReader(g))
+	if err != nil {
+		t.Fatalf("ReadChromSizes: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := Slop(bytes.NewReader(in), &out, io.Discard, sizes, Options{LeftAdd: 200, RightAdd: 200}); err != nil {
+		t.Fatalf("Slop failed: %v", err)
+	}
+	want := []byte("chr1\t16778071\t16778771\n")
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant: %q\ngot:  %q", want, out.Bytes())
+	}
 }
 func TestParity_Slop_T14_FloatPrecisionB(t *testing.T) {
-	t.Skip("requires the full human.hg19.genome file under reference_code/bedtools/genomes/")
+	in := []byte("chr1\t16778272\t16778572\n")
+	g := readSlopParity(t, "human.hg19.genome")
+	sizes, err := ReadChromSizes(bytes.NewReader(g))
+	if err != nil {
+		t.Fatalf("ReadChromSizes: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := Slop(bytes.NewReader(in), &out, io.Discard, sizes, Options{LeftAdd: 200, RightAdd: 200}); err != nil {
+		t.Fatalf("Slop failed: %v", err)
+	}
+	want := []byte("chr1\t16778072\t16778772\n")
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant: %q\ngot:  %q", want, out.Bytes())
+	}
 }
 
 // slop.t16 — negative -l (no strand): straight subtraction on the left edge.
