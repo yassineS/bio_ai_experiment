@@ -118,6 +118,49 @@ func recordRefIntervals(rec *sam.Record, fast bool) [][2]int {
 	return out
 }
 
+// fragmentIntervals returns the reference intervals contributed by rec
+// when --fragment-mode is in effect. The convention matches upstream
+// mosdepth's fragment view:
+//
+//   - Paired reads with TLEN > 0 own the whole [POS-1, POS-1+TLEN) span;
+//     their mate (TLEN < 0) returns no intervals so the fragment is
+//     counted exactly once.
+//   - Singletons, mate-unmapped reads, and any record with TLEN == 0
+//     fall back to the CIGAR-walk view (single contiguous span if mapped).
+//
+// This produces depth that counts each *fragment* once at every base it
+// physically covers — overlapping mates collapse for free.
+func fragmentIntervals(rec *sam.Record) [][2]int {
+	if rec == nil || rec.Pos <= 0 {
+		return nil
+	}
+	if rec.Flag&sam.FlagPaired != 0 && rec.Flag&sam.FlagMateUnmapped == 0 && rec.TLen != 0 {
+		// Same-chrom mates carry RNext == "=" or RNext == RName.
+		if rec.RNext == "=" || rec.RNext == "" || rec.RNext == rec.RName {
+			if rec.TLen < 0 {
+				// Right mate — left mate already covered the fragment.
+				return nil
+			}
+			start := int(rec.Pos) - 1
+			end := start + int(rec.TLen)
+			if end <= start {
+				return nil
+			}
+			return [][2]int{{start, end}}
+		}
+	}
+	// Singleton / cross-chrom / mate-unmapped / TLEN==0 fallback.
+	start := int(rec.Pos) - 1
+	refLen := rec.Cigar.ReferenceLength()
+	if refLen == 0 {
+		refLen = len(rec.Seq)
+	}
+	if refLen <= 0 {
+		return nil
+	}
+	return [][2]int{{start, start + refLen}}
+}
+
 // overlapIntervals returns the intersection (in half-open [start, end)
 // coordinates) of two interval lists. Both inputs are expected to be
 // position-ascending (the natural order from a CIGAR walk). The result is

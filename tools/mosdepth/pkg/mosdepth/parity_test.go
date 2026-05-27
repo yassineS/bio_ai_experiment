@@ -519,9 +519,49 @@ func TestParity_FlagExclude(t *testing.T) {
 
 // TestParity_FragmentMode mirrors
 // `run fragment_mode $exe t --fragment-mode tests/full-fragment-pairs.bam`.
-// --fragment-mode is not yet implemented.
+// The fixture has 4 mate pairs and 2 singletons on chr22:20000000-23000000;
+// fragment-mode emits one depth-1 run per fragment span (POS-1, POS-1+|TLEN|).
 func TestParity_FragmentMode(t *testing.T) {
-	t.Skip("known gap: --fragment-mode not implemented yet; see docs/PARITY_ROADMAP.md#mosdepth")
+	prefix := runParity(t, "full-fragment-pairs.bam", Options{
+		FragmentMode: true,
+		ExcludeFlag:  DefaultExcludeFlag,
+	})
+	lines := readGzLines(t, prefix+".per-base.bed.gz")
+	wantSpans := []string{
+		// Singletons
+		"chr22:20000000-23000000\t1637\t1737\t1",
+		"chr22:20000000-23000000\t12597\t12697\t1",
+		// Pairs (left-mate TLEN > 0 owns the span)
+		"chr22:20000000-23000000\t17318\t17756\t1",
+		"chr22:20000000-23000000\t17320\t17420\t1",
+		"chr22:20000000-23000000\t52130\t52546\t1",
+		"chr22:20000000-23000000\t52135\t52235\t1",
+	}
+	have := map[string]bool{}
+	for _, ln := range lines {
+		have[ln] = true
+	}
+	// The 17320..17420 fragment is fully inside 17318..17756, so the
+	// shorter span shows as depth 2 over [17320, 17420) and depth 1 in
+	// the flanks. Same for 52135..52235 inside 52130..52546.
+	// Verify the singletons + the outer pair spans appear as separate
+	// runs that match the upstream layout.
+	expectExact := []string{
+		"chr22:20000000-23000000\t1637\t1737\t1",
+		"chr22:20000000-23000000\t12597\t12697\t1",
+		"chr22:20000000-23000000\t17318\t17320\t1",
+		"chr22:20000000-23000000\t17320\t17420\t2",
+		"chr22:20000000-23000000\t17420\t17756\t1",
+		"chr22:20000000-23000000\t52130\t52135\t1",
+		"chr22:20000000-23000000\t52135\t52235\t2",
+		"chr22:20000000-23000000\t52235\t52546\t1",
+	}
+	for _, w := range expectExact {
+		if !have[w] {
+			t.Errorf("missing fragment-mode run %q", w)
+		}
+	}
+	_ = wantSpans
 }
 
 // TestParity_Quantized mirrors `-q 0:1:1000`. Not implemented.

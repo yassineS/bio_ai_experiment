@@ -42,6 +42,7 @@ Options:
   -r, --read-groups LIST  comma list of allowed RG ids, or "OPS:X,Y" for the OPS aux tag.
   -l, --min-frag-len INT  minimum absolute TLEN.
   -u, --max-frag-len INT  maximum absolute TLEN.
+  -m, --fragment-mode     score each pair as a single fragment span.
   -h, --help              show this help.
   -v, --version           print version and exit.
 
@@ -54,22 +55,23 @@ Deviations from upstream mosdepth (Nim):
 `
 
 type runOptions struct {
-	threads     int
-	by          string
-	mapq        int
-	flag        int
-	includeFlag int
-	fastMode    bool
-	noPerBase   bool
-	noPerBase2  bool
-	thresholds  string
-	chrom       string
-	d4          bool
-	readGroups  string
-	minFragLen  int
-	maxFragLen  int
-	showHelp    bool
-	showVersion bool
+	threads      int
+	by           string
+	mapq         int
+	flag         int
+	includeFlag  int
+	fastMode     bool
+	noPerBase    bool
+	noPerBase2   bool
+	thresholds   string
+	chrom        string
+	d4           bool
+	readGroups   string
+	minFragLen   int
+	maxFragLen   int
+	fragmentMode bool
+	showHelp     bool
+	showVersion  bool
 }
 
 func parseFlags(args []string) (*runOptions, []string, error) {
@@ -92,6 +94,7 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	cliflag.StringVar(fs, &opts.readGroups, "r", "read-groups", "", "comma list of RG IDs (or OPS:...)")
 	cliflag.IntVar(fs, &opts.minFragLen, "l", "min-frag-len", 0, "min |TLEN|")
 	cliflag.IntVar(fs, &opts.maxFragLen, "u", "max-frag-len", 0, "max |TLEN|")
+	cliflag.BoolVar(fs, &opts.fragmentMode, "m", "fragment-mode", false, "score each pair as a fragment span")
 	cliflag.BoolVar(fs, &opts.showHelp, "h", "help", false, "help")
 	cliflag.BoolVar(fs, &opts.showVersion, "v", "version", false, "version")
 	if err := fs.Parse(args); err != nil {
@@ -132,21 +135,22 @@ func run(args []string) int {
 		return 1
 	}
 	mo := mosdepth.Options{
-		Prefix:      prefix,
-		ByBED:       bedPath,
-		ByWindow:    winSize,
-		MinMAPQ:     uint8Clamp(opts.mapq),
-		ExcludeFlag: uint16(opts.flag),
-		IncludeFlag: uint16(opts.includeFlag),
-		FastMode:    opts.fastMode,
-		NoPerBase:   opts.noPerBase || opts.noPerBase2,
-		Thresholds:  th,
-		Chrom:       opts.chrom,
-		D4Output:    opts.d4,
-		ReadGroups:  mosdepth.ParseReadGroups(opts.readGroups),
-		MinFragLen:  opts.minFragLen,
-		MaxFragLen:  opts.maxFragLen,
-		Threads:     opts.threads,
+		Prefix:       prefix,
+		ByBED:        bedPath,
+		ByWindow:     winSize,
+		MinMAPQ:      uint8Clamp(opts.mapq),
+		ExcludeFlag:  uint16(opts.flag),
+		IncludeFlag:  uint16(opts.includeFlag),
+		FastMode:     opts.fastMode,
+		NoPerBase:    opts.noPerBase || opts.noPerBase2,
+		Thresholds:   th,
+		Chrom:        opts.chrom,
+		D4Output:     opts.d4,
+		ReadGroups:   mosdepth.ParseReadGroups(opts.readGroups),
+		MinFragLen:   opts.minFragLen,
+		MaxFragLen:   opts.maxFragLen,
+		FragmentMode: opts.fragmentMode,
+		Threads:      opts.threads,
 	}
 	if err := mosdepth.OpenAndRun(bam, mo); err != nil {
 		fmt.Fprintln(os.Stderr, err)

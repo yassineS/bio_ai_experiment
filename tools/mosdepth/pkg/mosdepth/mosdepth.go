@@ -76,6 +76,13 @@ type Options struct {
 	MinFragLen int
 	MaxFragLen int
 
+	// FragmentMode, when true, scores each paired-end fragment as a
+	// single contiguous span [POS, POS+TLEN) instead of summing both
+	// mates' aligned bases. Singletons / mate-unmapped reads still use
+	// the CIGAR walk. Overlap-pair detection becomes a no-op because a
+	// fragment can only contribute one copy of depth by construction.
+	FragmentMode bool
+
 	// Threads is accepted for compatibility; v1 is single-threaded.
 	Threads int
 }
@@ -222,11 +229,19 @@ func Run(in io.Reader, opts Options) error {
 		// Per-chromosome QName -> already-added intervals map for
 		// overlap-pair detection. Only used in default (non-fast) mode
 		// because --fast-mode intentionally skips this work upstream too.
+		// Fragment-mode shares the pair logic but emits one span per
+		// fragment instead of one per read.
 		var mateBuf map[string][][2]int
-		if !opts.FastMode {
+		if !opts.FastMode && !opts.FragmentMode {
 			mateBuf = make(map[string][][2]int, len(recs)/2+1)
 		}
 		for _, rec := range recs {
+			if opts.FragmentMode {
+				for _, iv := range fragmentIntervals(rec) {
+					accum.add(iv[0], iv[1])
+				}
+				continue
+			}
 			ivs := recordRefIntervals(rec, opts.FastMode)
 			for _, iv := range ivs {
 				accum.add(iv[0], iv[1])
