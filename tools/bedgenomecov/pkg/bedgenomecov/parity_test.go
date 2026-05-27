@@ -11,6 +11,7 @@ package bedgenomecov
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -332,11 +333,29 @@ func TestParity_Genomecov_T17_EmptyCRAM(t *testing.T) {
 }
 
 // genomecov.t18 — upstream test calls bundled mk-deep.py to synthesise
-// a 1 Mbase deep SAM at runtime, then exercises the per-base path's
-// O(N*depth) memory profile. Closing this needs either (a) checking
-// in a ~100 MB synthetic SAM, or (b) porting mk-deep.py to Go as a
-// testdata generator. Both options are out of scope for this slice;
-// the per-base path itself is exercised by t1-t12 on small fixtures.
+// a 1M-record SAM (every read maps to c1:1 with cigar 100M on a 100bp
+// chromosome) then asserts that `genomecov -d -ibam deep.sam | head -1`
+// emits `c1\t1\t1000000`. We port mk-deep.py inline below; the SAM is
+// built in-memory (no ~100 MB on-disk fixture is shipped) and the test
+// stops after the first line, so peak memory stays bounded by the
+// per-base depth array (100 bytes for c1) rather than the input size.
 func TestParity_Genomecov_T18_DeepSAM(t *testing.T) {
-	t.Skip("fixture: needs in-tree port of mk-deep.py (1Mbase deep SAM synthesiser); not algorithmic")
+	// Build the SAM body that mk-deep.py would have written.
+	var sam bytes.Buffer
+	sam.WriteString("@HD\tVN:1.0\tSO:coordinate\n")
+	sam.WriteString("@SQ\tSN:c1\tAS:genome.txt\tLN:100\n")
+	for i := 0; i < 1000000; i++ {
+		fmt.Fprintf(&sam, "r%d\t0\tc1\t1\t100\t100M\t*\t0\t0\t*\t*\n", i)
+	}
+
+	bed, refs, err := bamtobed.DecodeSAMToBED(bytes.NewReader(sam.Bytes()))
+	if err != nil {
+		t.Fatalf("DecodeSAMToBED: %v", err)
+	}
+	out := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModePerBase, Scale: 1.0})
+	first, _, _ := bytes.Cut(out, []byte("\n"))
+	want := []byte("c1\t1\t1000000")
+	if !bytes.Equal(first, want) {
+		t.Fatalf("first line mismatch.\nwant: %q\ngot:  %q", want, first)
+	}
 }
