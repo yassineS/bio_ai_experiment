@@ -77,11 +77,29 @@ func TestParity_Shuffle_T2_Include(t *testing.T) {
 	checkStructure(t, in, buf.Bytes(), g, incl, nil, false)
 }
 
-// shuffle.t3 — basic shuffle with -incl and -chromFirst. We treat
-// -chromFirst as the default behaviour (sample chrom then position) so this
-// is the same as t2 in our port.
+// shuffle.t3 — basic shuffle with -incl and -chromFirst.
+//
+// Upstream `-chromFirst` toggles between two sampling strategies: pick
+// chrom uniformly then position uniformly within an include region, vs.
+// pick chrom proportional to include-bp. Our port always weights chroms
+// by include-bp (the latter), which is the strategy upstream uses
+// without `-chromFirst`. On any include-list with at least one
+// include-bp on >1 chrom the two strategies produce different position
+// distributions but identical structural invariants: every output
+// interval has the same length as its input and falls fully inside a
+// known chromosome (and, here, an include region). This test pins that
+// non-divergence by asserting the invariant rather than the
+// position-by-position output.
 func TestParity_Shuffle_T3_IncludeChromFirst(t *testing.T) {
-	t.Skip("upstream -chromFirst toggles between two sampling strategies; our port always weights by include-bp, which is equivalent on the include-list case")
+	in := readParityFixture(t, "simrep.bed")
+	g := readParityGenome(t, "human.hg19.genome")
+	incl := readParityBED(t, "incl.bed")
+	var buf bytes.Buffer
+	if _, err := Shuffle(bytes.NewReader(in), &buf,
+		Options{Genome: g, Seed: 42, Include: incl}); err != nil {
+		t.Fatalf("Shuffle: %v", err)
+	}
+	checkStructure(t, in, buf.Bytes(), g, incl, nil, false)
 }
 
 // shuffle.t4 — basic shuffle with -excl. The piped intersect in the upstream

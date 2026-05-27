@@ -117,9 +117,33 @@ func TestParity_Slop(t *testing.T) {
 	}
 }
 
-// TestParity_StrandedSlop documents that -ss extends only in the strand
-// direction. Currently exercised by the unit test TestStrandedSlop_Direction;
-// kept here as a doc-skip so reviewers see the upstream feature parity.
+// TestParity_StrandedSlop asserts upstream -ss semantics end-to-end:
+// stranded slop only extends the interval in the direction of the
+// strand (downstream for `+`, upstream for `-`). A1 is chr1:90-100 on
+// `+`; B1 sits to its right (120-130). With `Slop=50` and `StrandedSlop`
+// the `+` end1 extends rightward by 50, bridging the 20bp gap and
+// producing exactly one hit. Flipping A1 to `-` strand causes slop to
+// extend leftward only, missing the right-side B1.
 func TestParity_StrandedSlop(t *testing.T) {
-	t.Skip("Covered by TestStrandedSlop_Direction; left as a documented placeholder for upstream -ss parity.")
+	bPlus := "chr1\t120\t130\tchr1\t950\t1050\tbp\t.\t+\t+\n"
+
+	aPlus := "chr1\t90\t100\tchr1\t900\t1000\tap\t.\t+\t+\n"
+	var out bytes.Buffer
+	if _, err := Run(strings.NewReader(aPlus), strings.NewReader(bPlus), &out,
+		Options{Type: TypeBoth, Slop: 50, StrandedSlop: true}); err != nil {
+		t.Fatalf("Run(+): %v", err)
+	}
+	if got := strings.Count(out.String(), "\n"); got != 1 {
+		t.Errorf("stranded slop on +: expected 1 hit, got %d:\n%s", got, out.String())
+	}
+
+	aMinus := "chr1\t90\t100\tchr1\t900\t1000\tap\t.\t-\t+\n"
+	out.Reset()
+	if _, err := Run(strings.NewReader(aMinus), strings.NewReader(bPlus), &out,
+		Options{Type: TypeBoth, Slop: 50, StrandedSlop: true, IgnoreStrand: true}); err != nil {
+		t.Fatalf("Run(-): %v", err)
+	}
+	if got := strings.Count(out.String(), "\n"); got != 0 {
+		t.Errorf("stranded slop on - vs right-side B: expected 0, got %d:\n%s", got, out.String())
+	}
 }

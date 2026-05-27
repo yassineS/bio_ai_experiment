@@ -80,12 +80,38 @@ func TestParity_Nuc_Case3_PatternCase(t *testing.T) {
 	}
 }
 
-// Skipped: -fullHeader — our index always keys on the first whitespace
-// token, and a best-effort fallback is built in Run. Exercising it would
-// require a FASTA with whitespace in the header AND a BED keyed by that
-// full header; upstream's `-fullHeader` semantics flip whether the index
-// is built on the full header at indexing time, which we don't expose.
-// Documented option-tail gap in PARITY_VALIDATION.md.
+// TestParity_Nuc_FullHeader covers the `-fullHeader` flag end-to-end.
+//
+// Upstream `bedtools nuc -fullHeader` rebuilds the FASTA index keyed on
+// the entire `>` line (everything after `>` up to the newline), so a
+// BED row whose chrom column carries embedded whitespace will resolve
+// against the matching record. Our port keeps the FAI keyed on the
+// first whitespace token (the htslib default) and instead constructs a
+// secondary map from full-header to first-token at Run time when
+// FullHeader is requested — see buildFullHeaderMap in bednuc.go. The
+// observable output is identical: the matching record is located, its
+// sequence is sliced by the BED [start,end) range, and the per-base
+// composition / pattern columns are emitted in the upstream column
+// order. This test asserts that observable parity over a fixture whose
+// only special characteristic is a whitespace-bearing header.
 func TestParity_Nuc_FullHeader(t *testing.T) {
-	t.Skip("-fullHeader: index-time semantics differ; tracked in PARITY_VALIDATION.md")
+	dir := t.TempDir()
+	faPath := filepath.Join(dir, "fh.fa")
+	if err := os.WriteFile(faPath, []byte(">chr1 with extra info\nACGTACGTAC\n"), 0o644); err != nil {
+		t.Fatalf("write fasta: %v", err)
+	}
+	bed := []byte("chr1 with extra info\t0\t10\n")
+	var out, warn bytes.Buffer
+	if _, err := Run(bytes.NewReader(bed), faPath, &out, &warn, Options{FullHeader: true}); err != nil {
+		t.Fatalf("Run: %v\nwarn: %s", err, warn.String())
+	}
+	// Upstream `nuc -fullHeader` emits the chrom column verbatim from
+	// the input BED, followed by the standard counts row. The
+	// percentages come from a 10-mer ACGTACGTAC = 3A/3C/2G/2T, so
+	// %AT = (3+2)/10 = 0.5 and %GC = (3+2)/10 = 0.5.
+	want := "#1_usercol\t2_usercol\t3_usercol\t4_pct_at\t5_pct_gc\t6_num_A\t7_num_C\t8_num_G\t9_num_T\t10_num_N\t11_num_oth\t12_seq_len\n" +
+		"chr1 with extra info\t0\t10\t0.500000\t0.500000\t3\t3\t2\t2\t0\t0\t10\n"
+	if got := out.String(); got != want {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }

@@ -71,11 +71,55 @@ func TestParity_Fisher_T4(t *testing.T) {
 	}
 }
 
-// fisher.t5 — long-file-path test that just checks bedtools can open a deeply
-// nested $TMPDIR path. This is a CLI/filesystem concern, not an algorithm
-// case; skip rather than dragging in a temp-tree fixture.
+// fisher.t5 — upstream verifies that `bedtools fisher` happily opens a
+// deeply nested $TMPDIR path. Our port operates on io.Reader so the
+// only filesystem concern is callers passing OS-opened files. This
+// test exercises that path with a synthetic deep tempdir tree and
+// asserts the same Fisher exact result as t1 (same fixtures, just
+// addressed via a long absolute path). Intentional non-divergence
+// pinned as a real assertion rather than a skip.
 func TestParity_Fisher_T5_LongPath(t *testing.T) {
-	t.Skip("upstream t5 only verifies long-filename handling; not an algorithmic parity case")
+	dir := t.TempDir()
+	// Build a deep nested path under t.TempDir. 32 segments of 8 bytes
+	// each plus separators is comfortably under PATH_MAX on Linux/macOS
+	// (4096 / 1024) but exercises any per-segment buffer caps.
+	deep := dir
+	for i := 0; i < 32; i++ {
+		deep = filepath.Join(deep, "depth_seg")
+	}
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", deep, err)
+	}
+	for _, name := range []string{"a.bed", "b.bed", "t.500.genome", "t1.expected.txt"} {
+		data := readFisherParity(t, name)
+		if err := os.WriteFile(filepath.Join(deep, name), data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	openFromDeep := func(name string) *os.File {
+		f, err := os.Open(filepath.Join(deep, name))
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+		return f
+	}
+	a := openFromDeep("a.bed")
+	defer a.Close()
+	b := openFromDeep("b.bed")
+	defer b.Close()
+	g := openFromDeep("t.500.genome")
+	defer g.Close()
+	var out bytes.Buffer
+	if _, err := Run(a, b, g, &out, Options{}); err != nil {
+		t.Fatalf("Run from deep path: %v", err)
+	}
+	want, err := os.ReadFile(filepath.Join(deep, "t1.expected.txt"))
+	if err != nil {
+		t.Fatalf("read expected: %v", err)
+	}
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, out.Bytes())
+	}
 }
 
 // fisher.t6 — issue 954 regression: 5 query intervals across 5 chromosomes,

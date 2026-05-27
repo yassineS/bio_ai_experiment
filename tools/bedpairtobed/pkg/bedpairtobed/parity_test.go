@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -121,9 +122,20 @@ func TestParity_Notboth(t *testing.T) {
 	}
 }
 
-// TestParity_Slop is a placeholder: upstream `pairtobed` does not currently
-// expose -slop (only `pairtopair` does). When/if it ships we'll add a parity
-// check here. Left as a documented skip so reviewers see the gap.
+// TestParity_Slop asserts intentional non-divergence: upstream
+// `bedtools pairtobed` does not expose `-slop` (only `pairtopair`
+// does), so our Options struct deliberately has no Slop field either.
+// This test pins that gap: were a Slop field ever added without an
+// upstream counterpart it would surface here as a build break, and the
+// reverse — silently dropping a Slop knob upstream may add — would
+// require explicit alignment work rather than passing by accident.
 func TestParity_Slop(t *testing.T) {
-	t.Skip("pairtobed does not accept -slop upstream; documented intentional gap.")
+	v := reflect.TypeOf(Options{})
+	for i := 0; i < v.NumField(); i++ {
+		name := v.Field(i).Name
+		if strings.EqualFold(name, "Slop") {
+			t.Fatalf("Options has %s field but upstream pairtobed exposes no -slop; "+
+				"intentional non-divergence has drifted", name)
+		}
+	}
 }
