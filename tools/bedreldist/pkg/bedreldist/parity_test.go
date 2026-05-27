@@ -3,16 +3,18 @@ package bedreldist
 // Parity tests against the upstream `bedtools reldist` test suite under
 // reference_code/bedtools/test/reldist/.
 //
-// Three of upstream's four shell cases (t01..t03) rely on multi-megabyte
-// gzipped fixtures (refseq.chr1.exons.bed.gz, aluY.chr1.bed.gz,
-// gerp.chr1.bed.gz) that we do not vendor — we exercise the same code path
-// with a small hand-crafted self-intersect (small_self) instead, plus the
-// shipped issue_711 corner case.
+// All four upstream cases (t01..t04) are now exercised byte-for-byte; the
+// three large-fixture cases (t01..t03) read vendored gzipped corpora
+// (refseq.chr1.exons.bed.gz, aluY.chr1.bed.gz, gerp.chr1.bed.gz, total
+// ~1.7MB compressed). t04 is the shipped issue_711 corner case.
 
 import (
 	"bytes"
+	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,30 +27,58 @@ func readReldistParity(t *testing.T, name string) []byte {
 	return data
 }
 
+func openReldistParity(t *testing.T, name string) io.Reader {
+	t.Helper()
+	data := readReldistParity(t, name)
+	if strings.HasSuffix(name, ".gz") {
+		gr, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("gzip %s: %v", name, err)
+		}
+		return gr
+	}
+	return bytes.NewReader(data)
+}
+
 func runReldistParity(t *testing.T, aFile, bFile string, opts Options) []byte {
 	t.Helper()
-	a := readReldistParity(t, aFile)
-	b := readReldistParity(t, bFile)
+	a := openReldistParity(t, aFile)
+	b := openReldistParity(t, bFile)
 	var out bytes.Buffer
-	if _, err := Run(bytes.NewReader(a), bytes.NewReader(b), &out, opts); err != nil {
+	if _, err := Run(a, b, &out, opts); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
 	return out.Bytes()
 }
 
-// reldist.t01 — self-intersect. The full upstream case uses the
-// refseq.chr1.exons.bed.gz fixture (~1MB gzipped, 43k records). We do not
-// vendor that; the same code path is exercised by small_self below.
+// reldist.t01 — self-intersect of refseq.chr1.exons.bed.gz (43,424 records).
+// All relative distances are 0 by construction.
 func TestParity_Reldist_T01_SelfIntersect_LargeFixture(t *testing.T) {
-	t.Skip("not vendored: refseq.chr1.exons.bed.gz; covered by TestParity_Reldist_SmallSelf instead")
+	got := runReldistParity(t, "refseq.chr1.exons.bed.gz", "refseq.chr1.exons.bed.gz", Options{})
+	want := readReldistParity(t, "t01_self.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// reldist.t02 / t03 — same situation: external large fixtures.
+// reldist.t02 — refseq exons vs randomly distributed aluY repeats on chr1.
+// Distances are uniformly spread (all bins ~0.02).
 func TestParity_Reldist_T02_RandomDistribution(t *testing.T) {
-	t.Skip("not vendored: aluY.chr1.bed.gz / refseq.chr1.exons.bed.gz")
+	got := runReldistParity(t, "refseq.chr1.exons.bed.gz", "aluY.chr1.bed.gz", Options{})
+	want := readReldistParity(t, "t02_random.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
+// reldist.t03 — refseq exons vs gerp constrained elements on chr1.
+// Distances are biased toward 0 (the 0.00 bin holds ~48% of the mass).
 func TestParity_Reldist_T03_BiasedToZero(t *testing.T) {
-	t.Skip("not vendored: gerp.chr1.bed.gz / refseq.chr1.exons.bed.gz")
+	got := runReldistParity(t, "refseq.chr1.exons.bed.gz", "gerp.chr1.bed.gz", Options{})
+	want := readReldistParity(t, "t03_biased.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // reldist.t04 — the shipped issue_711 corner case (a.bed has 2 records,
