@@ -213,12 +213,43 @@ func chooseMaxBlockEnd(blockBegin, end int32, softMax int32) int32 {
 	return blockBegin + softMax
 }
 
-// lazyEmit runs the lazy parser at level `level` over `in` and returns
-// the literal/match item stream in the order the BTRACE harness would
-// record it. Only levels 5 (lazy) and 6 (lazy, primary target) are
-// covered today; lazy2 (8/9) is a small additional change planned for
-// a follow-up slice.
+// lazyBlock holds the matchfinder output for a single DEFLATE block.
+// Slice 3 consumes this directly: `items` and `freqs` feed both the
+// dynamic-Huffman code builder and the cost-based block chooser, while
+// `length` is the uncompressed length used by the uncompressed-cost
+// formula.
+type lazyBlock struct {
+	items  []item
+	freqs  deflateFreqs
+	length uint32 // uncompressed byte length
+	begin  int32  // absolute start position in the input
+}
+
+// lazyEmit is a thin compatibility wrapper used by the Slice 2 oracle
+// tests. It flattens lazyEmitBlocks back to a single item slice.
 func lazyEmit(in []byte, level int) []item {
+	blocks := lazyEmitBlocks(in, level)
+	if blocks == nil {
+		return nil
+	}
+	total := 0
+	for _, b := range blocks {
+		total += len(b.items)
+	}
+	out := make([]item, 0, total)
+	for _, b := range blocks {
+		out = append(out, b.items...)
+	}
+	return out
+}
+
+// lazyEmitBlocks runs the lazy parser at level `level` over `in` and
+// returns the per-block matchfinder output: the literal/match item
+// stream, per-symbol frequencies, and uncompressed block length, in
+// the exact order the BTRACE harness records them. Only levels 5
+// (lazy) and 6 (lazy, primary target) are covered today; lazy2 (8/9)
+// is a small additional change planned for a follow-up slice.
+func lazyEmitBlocks(in []byte, level int) []lazyBlock {
 	if level < 2 || level > 9 {
 		return nil
 	}
@@ -232,7 +263,8 @@ func lazyEmit(in []byte, level int) []item {
 		mf      hcMatchfinder
 		freqs   deflateFreqs
 		stats   blockSplitStats
-		items   = make([]item, 0, len(in))
+		blocks  []lazyBlock
+		items   []item
 		inBase  int32
 		inNext  int32
 		inEnd   = int32(len(in))
@@ -257,6 +289,7 @@ func lazyEmit(in []byte, level int) []item {
 		}
 		stats.init()
 		freqs.reset()
+		items = make([]item, 0, inMaxBlockEnd-inBlockBegin)
 
 		minLen := calculateMinMatchLen(in[inNext:inMaxBlockEnd], params.maxSearchDepth)
 		// Track sequence count to mirror the SEQ_STORE_LENGTH check.
@@ -382,12 +415,19 @@ func lazyEmit(in []byte, level int) []item {
 			}
 		}
 
+		blocks = append(blocks, lazyBlock{
+			items:  items,
+			freqs:  freqs,
+			length: uint32(inNext - inBlockBegin),
+			begin:  inBlockBegin,
+		})
+
 		if inNext == inEnd {
 			break
 		}
 	}
 
-	return items
+	return blocks
 }
 
 // bsr32 returns the 0-indexed position of the highest set bit of x.

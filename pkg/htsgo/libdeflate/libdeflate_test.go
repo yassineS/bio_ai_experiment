@@ -60,8 +60,50 @@ func TestGzipCompress_OracleRepeatedA(t *testing.T) {
 	}
 }
 
+func TestGzipCompress_OracleRandom64K(t *testing.T) {
+	src, want := readOracle(t, "random_64k")
+	got, err := GzipCompress(src, 6)
+	if err != nil {
+		t.Fatalf("GzipCompress: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("byte mismatch: len got=%d want=%d, first diff at %d",
+			len(got), len(want), firstDiff(got, want))
+	}
+}
+
+func TestGzipCompress_OracleBGZFPayload(t *testing.T) {
+	src, want := readOracle(t, "bgzf_payload")
+	got, err := GzipCompress(src, 6)
+	if err != nil {
+		t.Fatalf("GzipCompress: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("byte mismatch: len got=%d want=%d, first diff at %d",
+			len(got), len(want), firstDiff(got, want))
+	}
+}
+
+// firstDiff returns the index of the first byte that differs between
+// a and b, or -1 if they share the entire shorter prefix.
+func firstDiff(a, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	if len(a) != len(b) {
+		return n
+	}
+	return -1
+}
+
 func TestGzipDecompress_RoundTrip(t *testing.T) {
-	for _, name := range []string{"empty", "single_byte", "repeated_a"} {
+	for _, name := range []string{"empty", "single_byte", "repeated_a", "random_64k", "bgzf_payload"} {
 		t.Run(name, func(t *testing.T) {
 			src, _ := readOracle(t, name)
 			gz, err := GzipCompress(src, 6)

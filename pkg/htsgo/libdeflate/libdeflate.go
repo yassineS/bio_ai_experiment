@@ -14,10 +14,19 @@ const (
 // GzipCompress compresses src at the given compression level and
 // returns the gzip-wrapped DEFLATE byte stream. The output is
 // byte-identical to libdeflate's libdeflate_gzip_compress on the
-// inputs supported by the current slice (very small inputs handled by
-// the passthrough/STORED path, plus the repeated_a fixture covered by
-// the static-block path). Larger inputs that require a real
-// matchfinder or dynamic Huffman coding are deferred to later slices.
+// fixtures in the oracle corpus (empty, single_byte, repeated_a,
+// random_64k, bgzf_payload) at level 6. The Slice 3 path:
+//
+//  1. For inputs <= the per-level passthrough threshold, emit a
+//     single all-STORED stream (mirrors deflate_compress_none in
+//     reference_code/libdeflate/lib/deflate_compress.c).
+//  2. Otherwise run the lazy matchfinder (Slice 2) to produce one or
+//     more blocks of literal/match items, then for each block run the
+//     cost-based chooser to pick dynamic / static / uncompressed and
+//     emit accordingly.
+//
+// Levels other than 5-7 fall back to the Slice 1 trivial encoder for
+// now; expanding the level coverage is a follow-up slice.
 func GzipCompress(src []byte, level int) ([]byte, error) {
 	if level < minCompressionLevel || level > maxCompressionLevel {
 		return nil, fmt.Errorf("libdeflate: invalid compression level %d (want %d..%d)",
@@ -28,9 +37,12 @@ func GzipCompress(src []byte, level int) ([]byte, error) {
 	out = writeGzipHeader(out, level)
 
 	bw := newBitWriter(out)
-	if uint64(len(src)) <= maxPassthroughSize(level) {
+	switch {
+	case uint64(len(src)) <= maxPassthroughSize(level):
 		writeStoredBlocks(bw, src, true)
-	} else {
+	case level >= 2 && level <= 7:
+		writeLazyBlocks(bw, src, level)
+	default:
 		items := trivialLZ77(src)
 		writeStaticBlock(bw, items, true)
 	}
@@ -38,6 +50,40 @@ func GzipCompress(src []byte, level int) ([]byte, error) {
 
 	out = writeGzipTrailer(out, src)
 	return out, nil
+}
+
+// writeLazyBlocks runs the lazy matchfinder over src and emits each
+// block using the cost-cheapest of {dynamic, static, uncompressed}.
+// Mirrors the per-block dispatch in deflate_compress_lazy_generic ->
+// deflate_finish_block -> deflate_flush_block.
+func writeLazyBlocks(bw *bitWriter, src []byte, level int) {
+	blocks := lazyEmitBlocks(src, level)
+	for i := range blocks {
+		blk := &blocks[i]
+		last := i == len(blocks)-1
+		// deflate_finish_block (deflate_compress.c:2041) increments
+		// the EOB frequency before building the dynamic code, since
+		// the EOB symbol is always emitted exactly once per block.
+		blk.freqs.litlen[endOfBlock]++
+		costs := computeBlockCosts(&blk.freqs, blk.length, bw.bitcount)
+		blockBegin := int(blk.begin)
+		blockData := src[blockBegin : blockBegin+int(blk.length)]
+		switch costs.pickBlockType() {
+		case blockTypeStored:
+			writeStoredBlocks(bw, blockData, last)
+		case blockTypeStatic:
+			writeStaticBlockTail(bw, blk.items, last)
+		default: // blockTypeDynamic
+			writeDynamicBlock(bw, blk.items, costs.dyn, last)
+		}
+	}
+}
+
+// writeStaticBlockTail is a thin alias for writeStaticBlock; it exists
+// purely so the dispatch site reads symmetrically with the dynamic /
+// stored cases.
+func writeStaticBlockTail(bw *bitWriter, items []item, last bool) {
+	writeStaticBlock(bw, items, last)
 }
 
 // maxPassthroughSize matches libdeflate's per-level threshold below
