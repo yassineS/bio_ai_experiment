@@ -318,7 +318,17 @@ func TestParity_Genomecov_T16_EmptyBAM(t *testing.T) {
 // thread through an `M5`-keyed reference cache. Roughly 80-120 LOC
 // once a small empty CRAM fixture is vendored. Deferred.
 func TestParity_Genomecov_T17_EmptyCRAM(t *testing.T) {
-	t.Skip("unimplemented: CRAM input; needs pkg/bamtobed.DecodeCRAMToBED + reference threading")
+	cramData := readGenomecovParity(t, "empty.cram")
+	refFA := filepath.Join("..", "..", "testdata", "parity", "test_ref.fa")
+	bed, refs, err := bamtobed.DecodeCRAMToBED(bytes.NewReader(cramData), refFA)
+	if err != nil {
+		t.Fatalf("DecodeCRAMToBED: %v", err)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeHistogram, Scale: 1.0})
+	want := []byte("chr1\t0\t50000\t50000\t1\ngenome\t0\t50000\t50000\t1\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // genomecov.t18 — upstream test calls bundled mk-deep.py to synthesise
