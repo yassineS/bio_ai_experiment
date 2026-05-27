@@ -68,7 +68,18 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 	// Build the merged record stream.
 	var records []*vcf.Variant
 	if opts.AllowOverlaps {
-		records = mergeSorted(groups, contigOrder(merged))
+		// Match upstream's synced-reader behaviour: the contig sort key
+		// is the order in which contigs first appear in any input's
+		// *data* (mirroring how htslib's tabix/BCF index seq-names are
+		// added to the synced reader's regions table), not the order
+		// the contigs are declared in the merged header. See
+		// reference_code/htslib/synced_bcf_reader.c:392-414 and
+		// _regions_add (1028+): the first reader's index seq-names are
+		// added in order, then later readers add only the previously
+		// unseen ones at the end. We approximate that here without an
+		// index by walking each input's record stream in order and
+		// recording first-seen chromosomes.
+		records = mergeSorted(groups, firstSeenContigOrder(groups))
 	} else {
 		for _, g := range groups {
 			records = append(records, g...)
@@ -385,34 +396,177 @@ func contigOrder(hdr *vcf.Header) map[string]int {
 	return out
 }
 
-// mergeSorted performs an n-way merge of pre-sorted variant groups using a
-// (contig-index, POS) ordering.
+// firstSeenContigOrder returns a contig-name -> rank map matching
+// upstream's synced-reader contig ordering. The synced reader walks the
+// inputs in command-line order, asks each one's tabix/BCF index for its
+// seq-names list (which, for a sorted-then-indexed file, reflects the
+// order chromosomes first appear in the data), and adds them to its
+// regions table; previously-seen names keep their original rank. We
+// approximate the same ordering from the in-memory record stream: walk
+// every group in order, and record the rank at which each new chromosome
+// first appears across all of them. This matches upstream's observable
+// concat -a contig order for the common cases the synced reader was
+// designed for and, crucially, does NOT depend on the merged header's
+// ##contig declaration order.
+func firstSeenContigOrder(groups [][]*vcf.Variant) map[string]int {
+	out := make(map[string]int)
+	idx := 0
+	for _, g := range groups {
+		for _, v := range g {
+			if _, ok := out[v.Chrom]; ok {
+				continue
+			}
+			out[v.Chrom] = idx
+			idx++
+		}
+	}
+	return out
+}
+
+// mergeSorted mirrors upstream's synced-reader concat behaviour: emit one
+// contig at a time in `order` rank order, and within each contig do a POS
+// n-way merge across whichever input groups contain records for that
+// contig.
+//
+// Unlike a single global n-way merge, this matches upstream even when an
+// input file's records are not globally sorted by (contig, POS) — e.g.
+// the upstream `concat.2.a.vcf` fixture lists chr2 records first, then
+// chr1 records. The synced reader handles that by seeking each input to
+// the current contig (via the tabix index); without an index we simulate
+// the same effect by partitioning records by contig first.
 func mergeSorted(groups [][]*vcf.Variant, order map[string]int) []*vcf.Variant {
-	cursors := make([]int, len(groups))
 	total := 0
 	for _, g := range groups {
 		total += len(g)
 	}
 	out := make([]*vcf.Variant, 0, total)
-	for {
-		bestG := -1
-		var best *vcf.Variant
-		for i, g := range groups {
-			if cursors[i] >= len(g) {
-				continue
-			}
-			v := g[cursors[i]]
-			if best == nil || lessVariant(v, best, order) {
-				best = v
-				bestG = i
-			}
-		}
-		if bestG < 0 {
-			return out
-		}
-		out = append(out, best)
-		cursors[bestG]++
+
+	// Partition each group by chromosome, preserving the original
+	// per-chromosome record order (upstream relies on each input being
+	// sorted within a chromosome, which is the contract of `concat -a`).
+	type bucket struct {
+		records []*vcf.Variant
 	}
+	perGroup := make([]map[string]*bucket, len(groups))
+	for gi, g := range groups {
+		perGroup[gi] = make(map[string]*bucket)
+		for _, v := range g {
+			b, ok := perGroup[gi][v.Chrom]
+			if !ok {
+				b = &bucket{}
+				perGroup[gi][v.Chrom] = b
+			}
+			b.records = append(b.records, v)
+		}
+	}
+
+	// Build contig emission order: ranked names from `order`, followed
+	// by any contigs we saw in the data but aren't in `order` (rare:
+	// happens when order was built from a different source than the
+	// records; the firstSeenContigOrder caller covers every chromosome
+	// it walked, so this is mostly defensive).
+	allChroms := make(map[string]struct{})
+	for gi := range groups {
+		for c := range perGroup[gi] {
+			allChroms[c] = struct{}{}
+		}
+	}
+	ranked := make([]string, 0, len(allChroms))
+	for c := range allChroms {
+		ranked = append(ranked, c)
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		ri, ok := order[ranked[i]]
+		if !ok {
+			ri = 1<<30 + sortFallback(ranked[i])
+		}
+		rj, ok := order[ranked[j]]
+		if !ok {
+			rj = 1<<30 + sortFallback(ranked[j])
+		}
+		if ri != rj {
+			return ri < rj
+		}
+		return ranked[i] < ranked[j]
+	})
+
+	// Emit one contig at a time. Within a contig advance position-min
+	// across the per-group buckets; at each tied position, emit records
+	// grouped by their (REF,ALT) signature, with signatures ordered by
+	// the order in which they first appear across the inputs. This
+	// mirrors upstream's bcf_sr_sort behaviour (see
+	// reference_code/htslib/bcf_sr_sort.c:bcf_sr_sort_next).
+	cursors := make([]int, len(groups))
+	for _, chrom := range ranked {
+		slices := make([][]*vcf.Variant, len(groups))
+		for gi := range groups {
+			cursors[gi] = 0
+			if b, ok := perGroup[gi][chrom]; ok {
+				slices[gi] = b.records
+			}
+		}
+		for {
+			// Find the minimum position across all groups at their
+			// current cursor.
+			var minPos int = -1
+			haveAny := false
+			for gi, s := range slices {
+				if cursors[gi] >= len(s) {
+					continue
+				}
+				p := s[cursors[gi]].Pos
+				if !haveAny || p < minPos {
+					minPos = p
+					haveAny = true
+				}
+			}
+			if !haveAny {
+				break
+			}
+			// Collect all records at minPos from each group, ordered
+			// by signature-first-seen.
+			type entry struct {
+				gi  int
+				rec *vcf.Variant
+			}
+			var entries []entry
+			for gi, s := range slices {
+				for cursors[gi] < len(s) && s[cursors[gi]].Pos == minPos {
+					entries = append(entries, entry{gi: gi, rec: s[cursors[gi]]})
+					cursors[gi]++
+				}
+			}
+			// Build signature order: first appearance in the
+			// `entries` slice (which is itself ordered by group
+			// then by in-file order — matching upstream's
+			// command-line-order traversal).
+			sigOrder := make(map[string]int)
+			for _, e := range entries {
+				sig := e.rec.Ref + "\x00" + strings.Join(e.rec.Alt, ",")
+				if _, ok := sigOrder[sig]; !ok {
+					sigOrder[sig] = len(sigOrder)
+				}
+			}
+			// Emit: for each signature in first-seen order, emit
+			// all entries with that signature in group order
+			// (entries is already group-ordered).
+			emitted := make([]bool, len(entries))
+			for sig := 0; sig < len(sigOrder); sig++ {
+				for i, e := range entries {
+					if emitted[i] {
+						continue
+					}
+					thisSig := e.rec.Ref + "\x00" + strings.Join(e.rec.Alt, ",")
+					if sigOrder[thisSig] != sig {
+						continue
+					}
+					out = append(out, e.rec)
+					emitted[i] = true
+				}
+			}
+		}
+	}
+	return out
 }
 
 // lessVariant orders two variants by (contig-index, POS, REF, ALT).
