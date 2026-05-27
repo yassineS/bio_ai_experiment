@@ -140,6 +140,17 @@ func complementImpl(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSize
 			}
 			continue
 		}
+		// Upstream `bedtools complement` warns when an input interval
+		// exceeds the chromosome length but still emits the (clipped)
+		// complement. Mirror that wording: `***** WARNING:
+		// <chrom>:<start>-<end> exceeds the length of chromosome
+		// (<chrom>)`. Emitted once per offending record.
+		if size, ok := sizes[chrom]; ok && end > size {
+			if warn != nil {
+				fmt.Fprintf(warn, "***** WARNING: %s:%d-%d exceeds the length of chromosome (%s)\n",
+					chrom, start, end, chrom)
+			}
+		}
 		if chrom != prevChrom {
 			// Starting a new chromosome. Verify this chromosome wasn't seen
 			// before (which would mean the input is not chrom-grouped, i.e.

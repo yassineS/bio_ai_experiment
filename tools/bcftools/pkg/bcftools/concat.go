@@ -45,6 +45,13 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 	if len(inputs) == 0 {
 		return 0, fmt.Errorf("bcftools concat: no input files")
 	}
+	// Match upstream vcfconcat.c:1120 — `-D` is meaningful only when the
+	// inputs are first sort-merged with `-a`, so reject `-D` standalone
+	// rather than silently doing a stream-level adjacency dedupe (which
+	// upstream simply never offers).
+	if opts.RemoveDuplicates && !opts.AllowOverlaps {
+		return 0, fmt.Errorf("bcftools concat: The -D option is supported only with -a")
+	}
 	// Read each input fully into memory: bcftools concat already requires
 	// inputs to be sorted, and we operate on the in-memory variants to
 	// implement sort-merge and de-duplication cleanly. For v1 this is the

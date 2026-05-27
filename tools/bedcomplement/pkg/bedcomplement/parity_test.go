@@ -112,12 +112,30 @@ func TestParity_Complement_T8_OneFullyCovered(t *testing.T) {
 	}
 }
 
-// complement.t9 — input interval exceeds chrom length; bedtools emits a stderr
-// warning and still produces output. bedcomplement currently rejects intervals
-// past the chromosome end via the underlying merge step; the exact upstream
-// warning string is also not reproduced.
+// complement.t9 — input interval (chr1 90-110) exceeds the chromosome
+// length (chr1 = 100). Upstream emits both the warning
+// `***** WARNING: chr1:90-110 exceeds the length of chromosome (chr1)`
+// to stderr AND the clipped complement gap `chr1\t0\t90` on stdout.
+// Our port now mirrors both halves.
 func TestParity_Complement_T9_RecordExceedsChrom(t *testing.T) {
-	t.Skip("known discrepancy: warning message format and out-of-range handling differ from upstream")
+	in := []byte("chr1\t90\t110\n")
+	g := []byte("chr1\t100\n")
+	sizes, order, err := ReadChromSizes(bytes.NewReader(g))
+	if err != nil {
+		t.Fatalf("ReadChromSizes: %v", err)
+	}
+	var out, warn bytes.Buffer
+	if _, err := Complement(bytes.NewReader(in), &out, &warn, sizes, order); err != nil {
+		t.Fatalf("Complement: %v", err)
+	}
+	wantOut := "chr1\t0\t90\n"
+	if got := out.String(); got != wantOut {
+		t.Errorf("stdout mismatch.\nwant: %q\ngot:  %q", wantOut, got)
+	}
+	wantWarn := "***** WARNING: chr1:90-110 exceeds the length of chromosome (chr1)\n"
+	if got := warn.String(); got != wantWarn {
+		t.Errorf("stderr mismatch.\nwant: %q\ngot:  %q", wantWarn, got)
+	}
 }
 
 // complement.t9b / t10 (script duplicates 'complement.t9' label) — issue #503,

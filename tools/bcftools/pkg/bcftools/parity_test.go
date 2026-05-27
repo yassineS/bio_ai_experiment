@@ -544,11 +544,19 @@ func TestParityIndex_TabixVCFGz(t *testing.T) {
 	}
 }
 
-// TestParityIndex_BinaryMatch documents that exact byte equality between
-// our .tbi and upstream's is not yet a target — BGZF block boundaries and
-// trailing padding differ.
+// TestParityIndex_BinaryMatch documents that exact byte equality
+// between our `.tbi` and upstream's is a deliberate non-target until
+// the BGZF block-byte parity work lands. Upstream uses libdeflate's
+// deterministic level-6 deflater with htslib's fixed 64 KiB block
+// boundaries; our `pkg/htsgo/bgzf` writer uses Go's compress/flate
+// which produces semantically-equivalent but byte-different output.
+// Achieving byte-identical `.tbi` blobs needs the libdeflate-class
+// porting work scoped in docs/htsgo/LIBDEFLATE.md (estimated 2-4
+// kLOC). Until then we assert .tbi *functional* parity in
+// TestParityIndex_CSIForBCF and TestParityIndex_BuildAndQuery and
+// leave the bytewise check tracked here.
 func TestParityIndex_BinaryMatch(t *testing.T) {
-	t.Skip("tabix .tbi binary equality is not a parity target (see docs/PARITY_ROADMAP.md bcftools index)")
+	t.Skip("structural: BGZF block-byte parity requires libdeflate; see docs/htsgo/LIBDEFLATE.md")
 }
 
 // TestParityIndex_CSIForBCF builds a CSI index for an upstream-produced
@@ -750,12 +758,27 @@ func TestParityConcat_UpstreamFixture(t *testing.T) {
 	equalBytes(t, got, want, "concat upstream concat.1")
 }
 
-// TestParityConcat_DedupAdjacent documents that upstream `-D` requires
-// `-a` (and therefore bgzip+tabix-indexed inputs); our implementation
-// supports plain `-D` as a stream-level adjacency filter, which has no
-// upstream counterpart. Tracked.
+// TestParityConcat_DedupAdjacent asserts intentional non-divergence
+// with upstream vcfconcat.c: invoking `concat -D` without `-a` must be
+// rejected with the same error message upstream emits ("The -D option
+// is supported only with -a"). This makes the parity an active
+// assertion rather than a documented skip.
 func TestParityConcat_DedupAdjacent(t *testing.T) {
-	t.Skip("concat -D requires -a upstream; standalone -D is a port-only extension (see docs/PARITY_ROADMAP.md bcftools concat)")
+	a := parityPath(t, "concat_conflict_a.vcf")
+	fa, err := os.Open(a)
+	if err != nil {
+		t.Fatalf("open %s: %v", a, err)
+	}
+	defer fa.Close()
+	var out bytes.Buffer
+	_, err = Concat([]NamedReader{{Name: a, Reader: fa}}, &out,
+		ConcatOptions{RemoveDuplicates: true})
+	if err == nil {
+		t.Fatal("expected -D without -a to be rejected, got nil error")
+	}
+	if !strings.Contains(err.Error(), "The -D option is supported only with -a") {
+		t.Errorf("error %q does not match upstream wording", err)
+	}
 }
 
 // TestParityConcat_AllowOverlaps asserts byte-for-byte parity with the
