@@ -157,3 +157,6 @@
 [submodule "reference_code/htslib"]
 	path = reference_code/htslib
 	url = https://github.com/samtools/htslib
+[submodule "reference_code/libdeflate"]
+	path = reference_code/libdeflate
+	url = https://github.com/ebiggers/libdeflate.git
