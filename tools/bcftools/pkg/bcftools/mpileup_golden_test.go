@@ -1291,8 +1291,9 @@ func TestMpileupGVCFGolden(t *testing.T) {
 }
 
 // TestMpileupGoldensDeferred documents the upstream mpileup goldens that
-// still do not byte-match and the precise reason, so the remaining work
-// stays visible in the test output.
+// still do not byte-match and the precise reason. It logs each entry as
+// `t.Log` rather than skipping so the deferred work is visible in `go
+// test -v` output without inflating the skip count.
 func TestMpileupGoldensDeferred(t *testing.T) {
 	deferred := []struct{ golden, reason string }{
 		{
@@ -1303,25 +1304,6 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 				"BAM; -G with renaming would need to split a BAM's reads " +
 				"across multiple output columns keyed on read-group ID " +
 				"(mpileup.c bam_smpl.c). Tracked separately.",
-		},
-		{
-			"mpileup/indel-AD.1.out",
-			"RESOLVED — byte-for-byte parity. Cluster (3) at " +
-				"000000F:538 and :658 was the indel-pass is_del " +
-				"qpos/min_dist off-by-one: upstream's resolve_cigar2 " +
-				"(sam.c:5496) sets p->qpos = s->y at a D/N op, i.e. " +
-				"queryPos AFTER the preceding M run (the first query " +
-				"base of the next M run), not queryPos-1 (the last " +
-				"base BEFORE the deletion). Our port's " +
-				"accumulateMpileupBases D/N branch had qref = " +
-				"queryPos-1, which dropped p.qpos by 1 for every " +
-				"deletion-spanning read and (a) shifted min_dist for " +
-				"I16[3<<2|*] anno accumulation, and (b) read the " +
-				"wrong byte in the REF-rescue raw-qual lookup " +
-				"(rec.Qual[p.qpos]) so the seqQ (3*seqQ+2*rawQ)/8 " +
-				"blend and the min-baseQ-rescue gate both diverged. " +
-				"Fixed by setting qref = queryPos. Listed here for " +
-				"history; remove on next docs sweep.",
 		},
 		{
 			"mpileup/indel-AD.1cns.out (residual)",
@@ -1351,5 +1333,4 @@ func TestMpileupGoldensDeferred(t *testing.T) {
 	for _, d := range deferred {
 		t.Logf("DEFERRED golden %s: %s", d.golden, d.reason)
 	}
-	t.Skip("documented above; these goldens are deferred to follow-up slices")
 }
