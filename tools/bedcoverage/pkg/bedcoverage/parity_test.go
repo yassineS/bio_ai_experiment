@@ -50,7 +50,20 @@ func runParity(t *testing.T, aFile, bFile string, opts Options) []byte {
 // LOC: a new pkg/bamtobed.FromBAMBED12 + wiring into the parity test.
 // Deferred — tracked in docs/PARITY_ROADMAP.md.
 func TestParity_Coverage_T1_BAMInput(t *testing.T) {
-	t.Skip("unimplemented: BAM-as-A via -abam (needs pkg/bamtobed.FromBAMBED12); tracked in docs/PARITY_ROADMAP.md")
+	// Stream three_blocks.sam through bamtobed.FromSAMBED12 to produce a
+	// BED12 A-side input, then run Coverage with the default mode and
+	// the upstream nomatch BED as B.
+	samBytes := readParityFixture(t, "three_blocks.sam")
+	aBed := bamtobed.FromSAMBED12(bytes.NewReader(samBytes))
+	bBed := readParityFixture(t, "three_blocks_nomatch.bed")
+	var buf bytes.Buffer
+	if _, err := Coverage(aBed, bytes.NewReader(bBed), &buf, Options{}); err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	want := readParityFixture(t, "t1_abam.expected")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
 }
 
 // coverage.t2 — defaults: A, B BED; per-A count + bp + len + frac.

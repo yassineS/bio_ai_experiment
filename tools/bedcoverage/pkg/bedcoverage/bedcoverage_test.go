@@ -233,8 +233,10 @@ func TestRecordColumns_ExtraFields(t *testing.T) {
 	// We hand-craft a BED12 with one trailing extra column.
 	a := "chr1\t0\t100\tn\t10\t+\t0\t100\t0,0,0\t1\t100,\t0,\textra\n"
 	got := runCoverage(t, a, "", Options{Mode: ModeCounts})
-	// Note: bed.Reader treats the 13th column as an ExtraField.
-	want := "chr1\t0\t100\tn\t10\t+\t0\t100\t0,0,0\t1\t100\t0\textra\t0\n"
+	// Note: bed.Reader treats the 13th column as an ExtraField. BED12
+	// blockSize / blockStart columns are emitted with the trailing
+	// comma that upstream bedtools uses.
+	want := "chr1\t0\t100\tn\t10\t+\t0\t100\t0,0,0\t1\t100,\t0,\textra\t0\n"
 	if got != want {
 		t.Errorf("13-field round-trip:\nwant: %q\ngot:  %q", want, got)
 	}

@@ -451,14 +451,16 @@ func recordColumns(r *bed.Record) []string {
 		for i, s := range r.BlockSizes {
 			sizes[i] = strconv.Itoa(s)
 		}
-		out = append(out, strings.Join(sizes, ","))
+		// BED12 convention preserves the trailing comma on block-size /
+		// block-start columns; upstream bedtools coverage emits with it.
+		out = append(out, strings.Join(sizes, ",")+",")
 	}
 	if len(r.BlockStarts) > 0 {
 		starts := make([]string, len(r.BlockStarts))
 		for i, s := range r.BlockStarts {
 			starts[i] = strconv.Itoa(s)
 		}
-		out = append(out, strings.Join(starts, ","))
+		out = append(out, strings.Join(starts, ",")+",")
 	}
 	if len(r.ExtraFields) > 0 {
 		out = append(out, r.ExtraFields...)
