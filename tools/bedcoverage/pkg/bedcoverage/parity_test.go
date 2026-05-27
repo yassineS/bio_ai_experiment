@@ -15,6 +15,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/bamtobed"
@@ -40,9 +42,15 @@ func runParity(t *testing.T, aFile, bFile string, opts Options) []byte {
 	return buf.Bytes()
 }
 
-// coverage.t1 — BAM input. Not yet supported.
+// coverage.t1 — BAM as A input via `-abam`. Upstream emits one BED12
+// row per BAM alignment with the standard coverage suffix
+// (count/bp/len/frac). t10/t11 already exercise BAM as B via
+// pkg/bamtobed.FromBAM; closing this test needs the inverse (BAM as A
+// in BED12 form, since A flows verbatim to the output). Roughly 60-90
+// LOC: a new pkg/bamtobed.FromBAMBED12 + wiring into the parity test.
+// Deferred — tracked in docs/PARITY_ROADMAP.md.
 func TestParity_Coverage_T1_BAMInput(t *testing.T) {
-	t.Skip("BAM/SAM input not yet supported in bedcoverage; tracked in PARITY_ROADMAP.md")
+	t.Skip("unimplemented: BAM-as-A via -abam (needs pkg/bamtobed.FromBAMBED12); tracked in docs/PARITY_ROADMAP.md")
 }
 
 // coverage.t2 — defaults: A, B BED; per-A count + bp + len + frac.
@@ -82,10 +90,59 @@ func TestParity_Coverage_T5_Depth(t *testing.T) {
 }
 
 // coverage.t6 — -mean. Upstream prints with float32 precision
-// ("1.3200001", "5.5599999"); our port uses float64 so we'd emit "1.32" and
-// "5.56". Documented divergence; we still cover the mean op via unit tests.
+// ("1.3200001", "5.5599999"); our port uses float64 and prints the
+// mathematically-equal "1.32" / "5.56". This test asserts that
+// intentional non-divergence by reading the upstream expected text,
+// parsing each row's mean column with strconv.ParseFloat, and
+// asserting our output parses to the same value within float32 epsilon.
+// Anything else (chrom, start, end, count, length, strand) must match
+// exactly.
 func TestParity_Coverage_T6_Mean(t *testing.T) {
-	t.Skip("upstream -mean prints float32 noise (1.3200001) we don't reproduce; semantic equivalence covered by unit tests")
+	got := runParity(t, "a.bed", "b.bed", Options{Mode: ModeMean})
+	// The upstream expected output is the inline `echo` block from
+	// reference_code/bedtools/test/coverage/test-coverage.sh:
+	upstream := []string{
+		"chr1\t20\t70\t6\t25\t+\t2.0000000",
+		"chr1\t50\t100\t1\t25\t-\t2.2000000",
+		"chr1\t200\t250\t3\t25\t+\t1.3200001",
+		"chr2\t80\t130\t5\t25\t-\t3.0799999",
+		"chr2\t150\t200\t4\t25\t+\t5.5599999",
+		"chr2\t180\t230\t2\t25\t-\t3.4600000",
+	}
+	gotLines := strings.Split(strings.TrimRight(string(got), "\n"), "\n")
+	if len(gotLines) != len(upstream) {
+		t.Fatalf("row count mismatch: got %d, want %d\n%s", len(gotLines), len(upstream), got)
+	}
+	const eps = 1e-6
+	for i, want := range upstream {
+		gotF := strings.Split(gotLines[i], "\t")
+		wantF := strings.Split(want, "\t")
+		if len(gotF) != len(wantF) {
+			t.Errorf("row %d field count mismatch: got %d, want %d (%q vs %q)",
+				i, len(gotF), len(wantF), gotLines[i], want)
+			continue
+		}
+		// First six columns must match byte-for-byte.
+		for j := 0; j < 6; j++ {
+			if gotF[j] != wantF[j] {
+				t.Errorf("row %d col %d: got %q, want %q", i, j, gotF[j], wantF[j])
+			}
+		}
+		// Final mean column: parse both as float64, compare.
+		gotV, err := strconv.ParseFloat(gotF[6], 64)
+		if err != nil {
+			t.Errorf("row %d: parse got mean %q: %v", i, gotF[6], err)
+			continue
+		}
+		wantV, err := strconv.ParseFloat(wantF[6], 64)
+		if err != nil {
+			t.Errorf("row %d: parse want mean %q: %v", i, wantF[6], err)
+			continue
+		}
+		if diff := gotV - wantV; diff > eps || diff < -eps {
+			t.Errorf("row %d mean: got %v, want %v (diff %v)", i, gotV, wantV, diff)
+		}
+	}
 }
 
 // coverage.t7 — -s (same strand).
