@@ -11,6 +11,7 @@ package bedgenomecov
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -249,11 +250,48 @@ func TestParity_Genomecov_T13_BedGraphAll(t *testing.T) {
 // alignment start (`POS-1` .. `POS-1+fragLen`). Needs a similar
 // converter + option; ~30-50 LOC. Both tracked together because they
 // share the new pkg/bamtobed entry point.
+// genomecov.t14 — `-pc`: paired-end coverage. The leftmost first-mate
+// of each proper pair contributes the full fragment span [POS-1,
+// POS-1+|ISIZE|); the other mate is dropped so the fragment is counted
+// exactly once. pair-chip.sam has one pair (chip:1:1106:..:70206) with
+// FLAG=99 / TLEN=203 / POS=1; expected output is one chr1\t0\t203\t1
+// bedGraph row.
 func TestParity_Genomecov_T14_PairedEnd(t *testing.T) {
-	t.Skip("unimplemented: -pc paired-end coverage; needs pkg/bamtobed.FromBAMPaired + Options.PairedCoverage")
+	sam := readGenomecovParity(t, "pair-chip.sam")
+	refs, body, err := bamtobed.ReadSAMHeaderRefs(bytes.NewReader(sam))
+	if err != nil {
+		t.Fatalf("ReadSAMHeaderRefs: %v", err)
+	}
+	bed, rerr := io.ReadAll(bamtobed.FromSAMPaired(body))
+	if rerr != nil {
+		t.Fatalf("FromSAMPaired: %v", rerr)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeBedGraph, Scale: 1.0})
+	want := []byte("chr1\t0\t203\t1\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
+// genomecov.t15 — `-fs 100`: each read is extended downstream
+// (forward) or upstream (reverse) to a fixed fragment length. chip.sam
+// has chip:2 (FLAG=0, POS=2) extended to [1, 101) and chip:1 (FLAG=16,
+// POS=226, refLen=75) extended to [200, 300).
 func TestParity_Genomecov_T15_FragmentSize(t *testing.T) {
-	t.Skip("unimplemented: -fs fragment size; needs pkg/bamtobed.FromBAMExtended + Options.FragmentSize")
+	sam := readGenomecovParity(t, "chip.sam")
+	refs, body, err := bamtobed.ReadSAMHeaderRefs(bytes.NewReader(sam))
+	if err != nil {
+		t.Fatalf("ReadSAMHeaderRefs: %v", err)
+	}
+	bed, rerr := io.ReadAll(bamtobed.FromSAMExtended(body, 100))
+	if rerr != nil {
+		t.Fatalf("FromSAMExtended: %v", rerr)
+	}
+	got := runGenomecovFromBAMText(t, bed, refs, Options{Mode: ModeBedGraph, Scale: 1.0})
+	want := []byte("chr1\t1\t101\t1\nchr1\t200\t300\t1\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // genomecov.t16 — empty.bam, default histogram. The genome (3 chroms of

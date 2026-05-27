@@ -537,6 +537,345 @@ func decodeSAM(r io.Reader, split bool) ([]byte, []BAMRef, error) {
 	return []byte(out.String()), refs, nil
 }
 
+// FromBAMPaired wraps a BGZF-wrapped BAM byte stream and emits BED3 lines
+// covering the full fragment span [POS-1, MatePos-1+something) for
+// properly-paired reads, mirroring `bedtools genomecov -ibam -pc`
+// (paired-end coverage).
+//
+// Upstream logic: skip if not a proper pair (unpaired records are also
+// skipped — `-pc` requires both mates). For each surviving record:
+//
+//   - IsFirstMate && IsReverseStrand    -> emit [MatePos-1, EndPosition)
+//     (this read is to the right of its mate; cover from mate's left edge
+//     to this read's right edge)
+//   - IsFirstMate && IsMateReverseStrand -> emit [POS-1, POS-1+|ISIZE|)
+//     (this read is to the left of its mate; cover from POS to ISIZE
+//     downstream)
+//
+// All other records (second mates and oddly-oriented pairs) contribute
+// nothing — the first mate's pair already covered the fragment, and
+// mixed-orientation pairs are dropped wholesale (matches upstream's
+// silent skip). Output is BED6 (`chrom\tstart\tend\tQNAME\tMAPQ\tstrand`)
+// because consumers downstream still want a sortable name/mapq column.
+func FromBAMPaired(r io.Reader) io.Reader {
+	pr, pw := io.Pipe()
+	go func() {
+		bw := bufio.NewWriter(pw)
+		defer func() {
+			_ = bw.Flush()
+			_ = pw.Close()
+		}()
+		br, err := sam.NewBAMReader(r)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("bamtobed: open BAM: %w", err))
+			return
+		}
+		for {
+			rec, err := br.Read()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("bamtobed: read BAM: %w", err))
+				return
+			}
+			if rec.IsUnmapped() || rec.IsSecondary() || rec.IsSupplementary() ||
+				rec.IsDuplicate() || rec.IsQCFail() {
+				continue
+			}
+			if !rec.IsPaired() || !rec.IsProperPair() || rec.IsMateUnmapped() {
+				continue
+			}
+			start, end, ok := pairedCoverageInterval(rec)
+			if !ok {
+				continue
+			}
+			strand := "+"
+			if rec.Flag&sam.FlagReverse != 0 {
+				strand = "-"
+			}
+			name := rec.QName
+			if name == "" {
+				name = "."
+			}
+			if _, err := fmt.Fprintf(bw, "%s\t%d\t%d\t%s\t%d\t%s\n",
+				rec.RName, start, end, name, rec.MapQ, strand); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}
+	}()
+	return pr
+}
+
+// pairedCoverageInterval returns the [start, end) reference span for one
+// alignment under bedtools' `-pc` rules, plus an ok flag. Only the
+// leftmost first-mate of each pair contributes; everyone else returns
+// ok=false. Upstream code: see genomeCoverageBed.cpp pair_chip branch.
+func pairedCoverageInterval(rec *sam.Record) (int, int, bool) {
+	if !rec.IsRead1() {
+		return 0, 0, false
+	}
+	// Skip pairs where the orientation is wrong (reverse mate to the
+	// left of, or forward mate to the right of, its partner).
+	pos := int(rec.Pos) - 1
+	matePos := int(rec.PNext) - 1
+	if (pos < matePos && rec.Flag&sam.FlagReverse != 0) ||
+		(matePos < pos && rec.Flag&sam.FlagMateReverse != 0) {
+		return 0, 0, false
+	}
+	switch {
+	case rec.Flag&sam.FlagReverse != 0:
+		// Right mate of a forward+reverse pair: cover from mate's left
+		// edge to this read's right edge.
+		refLen := rec.Cigar.ReferenceLength()
+		if refLen <= 0 {
+			return 0, 0, false
+		}
+		end := pos + refLen
+		if matePos < 0 || matePos >= end {
+			return 0, 0, false
+		}
+		return matePos, end, true
+	case rec.Flag&sam.FlagMateReverse != 0:
+		// Left mate: cover [POS-1, POS-1+|ISIZE|).
+		isize := int(rec.TLen)
+		if isize < 0 {
+			isize = -isize
+		}
+		if isize <= 0 {
+			return 0, 0, false
+		}
+		return pos, pos + isize, true
+	}
+	return 0, 0, false
+}
+
+// FromSAMPaired is the SAM-text counterpart of FromBAMPaired (see
+// FromBAMPaired for semantics).
+func FromSAMPaired(r io.Reader) io.Reader {
+	pr, pw := io.Pipe()
+	go func() {
+		bw := bufio.NewWriter(pw)
+		defer func() {
+			_ = bw.Flush()
+			_ = pw.Close()
+		}()
+		sr, err := sam.NewSAMReader(r)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("bamtobed: open SAM: %w", err))
+			return
+		}
+		for {
+			rec, err := sr.Read()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("bamtobed: read SAM: %w", err))
+				return
+			}
+			if rec.IsUnmapped() || rec.IsSecondary() || rec.IsSupplementary() ||
+				rec.IsDuplicate() || rec.IsQCFail() {
+				continue
+			}
+			if !rec.IsPaired() || !rec.IsProperPair() || rec.IsMateUnmapped() {
+				continue
+			}
+			start, end, ok := pairedCoverageInterval(rec)
+			if !ok {
+				continue
+			}
+			strand := "+"
+			if rec.Flag&sam.FlagReverse != 0 {
+				strand = "-"
+			}
+			name := rec.QName
+			if name == "" {
+				name = "."
+			}
+			if _, err := fmt.Fprintf(bw, "%s\t%d\t%d\t%s\t%d\t%s\n",
+				rec.RName, start, end, name, rec.MapQ, strand); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}
+	}()
+	return pr
+}
+
+// FromSAMExtended is the SAM-text counterpart of FromBAMExtended.
+func FromSAMExtended(r io.Reader, fragSize int) io.Reader {
+	pr, pw := io.Pipe()
+	go func() {
+		bw := bufio.NewWriter(pw)
+		defer func() {
+			_ = bw.Flush()
+			_ = pw.Close()
+		}()
+		if fragSize <= 0 {
+			_ = pw.CloseWithError(fmt.Errorf("bamtobed: -fs fragment size must be > 0"))
+			return
+		}
+		sr, err := sam.NewSAMReader(r)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("bamtobed: open SAM: %w", err))
+			return
+		}
+		for {
+			rec, err := sr.Read()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("bamtobed: read SAM: %w", err))
+				return
+			}
+			if rec.IsUnmapped() || rec.IsSecondary() || rec.IsSupplementary() ||
+				rec.IsDuplicate() || rec.IsQCFail() {
+				continue
+			}
+			refLen := rec.Cigar.ReferenceLength()
+			if refLen <= 0 {
+				continue
+			}
+			pos := int(rec.Pos) - 1
+			if pos < 0 {
+				continue
+			}
+			strand := "+"
+			var start, end int
+			if rec.Flag&sam.FlagReverse != 0 {
+				strand = "-"
+				end = pos + refLen
+				start = end - fragSize
+				if start < 0 {
+					start = 0
+				}
+			} else {
+				start = pos
+				end = pos + fragSize
+			}
+			if end <= start {
+				continue
+			}
+			name := rec.QName
+			if name == "" {
+				name = "."
+			}
+			if _, err := fmt.Fprintf(bw, "%s\t%d\t%d\t%s\t%d\t%s\n",
+				rec.RName, start, end, name, rec.MapQ, strand); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}
+	}()
+	return pr
+}
+
+// ReadSAMHeaderRefs parses the SAM header from r and returns the @SQ
+// reference list, plus the remainder of the SAM body buffered into a
+// fresh reader. Used by parity tests that only have a SAM fixture and
+// need both the @SQ-derived genome and the body stream.
+func ReadSAMHeaderRefs(r io.Reader) ([]BAMRef, io.Reader, error) {
+	// Drain the whole input once — fixtures are small.
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	sr, err := sam.NewSAMReader(strings.NewReader(string(buf)))
+	if err != nil {
+		return nil, nil, fmt.Errorf("bamtobed: open SAM: %w", err)
+	}
+	hdr := sr.Header()
+	refs := make([]BAMRef, len(hdr.Refs))
+	for i, ref := range hdr.Refs {
+		refs[i] = BAMRef{Name: ref.Name, Length: int(ref.Length)}
+	}
+	// Hand back the full SAM (header + body) so callers can use any of
+	// the FromSAM* converters on it.
+	return refs, strings.NewReader(string(buf)), nil
+}
+
+// FromBAMExtended wraps a BGZF-wrapped BAM byte stream and emits BED6
+// lines with each alignment extended downstream-or-upstream-of-the-5'-end
+// to a fixed fragment length, mirroring `bedtools genomecov -ibam -fs N`.
+//
+// Forward-strand records become [POS-1, POS-1+fragSize); reverse-strand
+// records become [POS-1+ReferenceLength-fragSize, POS-1+ReferenceLength).
+// Reverse-strand extensions that would underflow are clamped to start at
+// 0 (matching upstream's "if(end<fragSize) AddCoverage(0,end)" branch).
+//
+// Filtering matches FromBAM: unmapped/secondary/supplementary/duplicate/
+// QC-fail records are dropped.
+func FromBAMExtended(r io.Reader, fragSize int) io.Reader {
+	pr, pw := io.Pipe()
+	go func() {
+		bw := bufio.NewWriter(pw)
+		defer func() {
+			_ = bw.Flush()
+			_ = pw.Close()
+		}()
+		if fragSize <= 0 {
+			_ = pw.CloseWithError(fmt.Errorf("bamtobed: -fs fragment size must be > 0"))
+			return
+		}
+		br, err := sam.NewBAMReader(r)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("bamtobed: open BAM: %w", err))
+			return
+		}
+		for {
+			rec, err := br.Read()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("bamtobed: read BAM: %w", err))
+				return
+			}
+			if rec.IsUnmapped() || rec.IsSecondary() || rec.IsSupplementary() ||
+				rec.IsDuplicate() || rec.IsQCFail() {
+				continue
+			}
+			refLen := rec.Cigar.ReferenceLength()
+			if refLen <= 0 {
+				continue
+			}
+			pos := int(rec.Pos) - 1
+			if pos < 0 {
+				continue
+			}
+			strand := "+"
+			var start, end int
+			if rec.Flag&sam.FlagReverse != 0 {
+				strand = "-"
+				end = pos + refLen
+				start = end - fragSize
+				if start < 0 {
+					start = 0
+				}
+			} else {
+				start = pos
+				end = pos + fragSize
+			}
+			if end <= start {
+				continue
+			}
+			name := rec.QName
+			if name == "" {
+				name = "."
+			}
+			if _, err := fmt.Fprintf(bw, "%s\t%d\t%d\t%s\t%d\t%s\n",
+				rec.RName, start, end, name, rec.MapQ, strand); err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}
+	}()
+	return pr
+}
+
 // FromGFF wraps a GFF text reader and emits BED3 lines (chrom,
 // col4-1, col5). Header / comment / blank lines and rows with fewer than
 // 5 columns or unparseable coordinates are silently dropped.
