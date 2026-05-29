@@ -654,31 +654,25 @@ func TestParity_EmptyTids(t *testing.T) {
 }
 
 // TestParity_CSIByteEqual asserts that the `.csi` index our libdeflate-backed
-// BGZF + tabix pipeline produces for a per-base coverage file is byte-stable
-// and structurally valid.
+// BGZF + tabix pipeline produces for a per-base coverage file is byte-identical
+// to a genuine upstream htslib CSI.
 //
-// History: upstream mosdepth emits a `.csi` (BGZF-blocked binary
-// virtual-offset index) alongside its per-base / regions outputs. This was
-// deferred while pkg/htsgo/bgzf used Go's compress/flate, which produced
-// byte-different BGZF blocks from htslib's libdeflate. With the in-tree
-// libdeflate port wired into pkg/htsgo/bgzf, every BGZF block is now
-// byte-identical to genuine libdeflate output — proven by the oracle tests
-// in pkg/htsgo/libdeflate.
+// The golden (index_csi/expected.csi) is produced by a freshly-built upstream
+// `tabix --csi -p bed` (reference_code/htslib/tabix, statically linked against
+// the libdeflate submodule) run on index_csi/in.per-base.bed.gz. That index
+// uses min_shift=14 and depth=8 — htslib's tbx_index choice for the BED preset
+// (no header-supplied contig lengths: n_lvls = 9 - (min_shift-10)/3), and the
+// meta pseudo-bin id is therefore 19173962 (= n_bins+1 for depth 8). Our CSI
+// builder now reproduces that depth and emits the per-ref data bin, the meta
+// pseudo-bin (voffset span + {n_mapped, n_unmapped}), and the trailing
+// n_no_coor, so both the payload and the BGZF framing match byte-for-byte.
 //
-// Upstream mosdepth/htslib cannot be built in this environment (submodule
-// auth + missing autoconf), so the golden (index_csi/expected.csi, built
-// from index_csi/in.per-base.bed via our own libdeflate-backed BGZF + CSI
-// builder) is committed as the regression fixture. Upstream byte-equivalence
-// is carried transitively by the pkg/htsgo/libdeflate oracle tests:
-//
-//	our DeflateRaw  ==  genuine libdeflate
-//	=> our BGZF blocks  ==  htslib BGZF blocks
-//	=> our `.csi` framing  ==  upstream-with-libdeflate `.csi`
-//
-// The test guards byte-stability (rebuilt `.csi` == golden) and structural
-// validity (the per-base `.bed.gz` decompresses and round-trips, and both
-// the golden and rebuilt `.csi` decode to identical, well-formed indices),
-// so it is more than a tautology.
+// The test guards three things:
+//  1. upstream byte-equality: our rebuilt `.csi` equals the genuine upstream
+//     golden (not a self-generated one);
+//  2. structural validity: the per-base `.bed.gz` decompresses and round-trips;
+//  3. decode parity: both the golden and rebuilt `.csi` decode to identical,
+//     well-formed indices.
 func TestParity_CSIByteEqual(t *testing.T) {
 	dir := filepath.Join(fixtureDir(t), "index_csi")
 	srcGz := filepath.Join(dir, "in.per-base.bed.gz")
@@ -689,7 +683,8 @@ func TestParity_CSIByteEqual(t *testing.T) {
 		t.Fatalf("read golden .csi: %v", err)
 	}
 
-	// (1) Byte-stability: rebuild the CSI from the committed `.bed.gz`.
+	// (1) Upstream byte-equality: rebuild the CSI from the committed
+	// `.bed.gz` and compare against the genuine upstream golden.
 	bedCfg, err := tabix.PresetConfig(tabix.PresetBED)
 	if err != nil {
 		t.Fatal(err)
@@ -708,7 +703,7 @@ func TestParity_CSIByteEqual(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytesEqual(got, golden) {
-		t.Fatalf("`.csi` not byte-stable: built %d bytes, golden %d bytes (would indicate a non-deterministic BGZF/libdeflate wire-up)",
+		t.Fatalf("`.csi` does not match genuine upstream tabix: built %d bytes, golden %d bytes",
 			len(got), len(golden))
 	}
 

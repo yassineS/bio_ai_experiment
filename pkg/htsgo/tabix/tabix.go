@@ -106,6 +106,16 @@ type Bin struct {
 type RefIndex struct {
 	Bins   []Bin
 	Linear []VOffset
+
+	// offBeg/offEnd track the virtual-offset span covered by this
+	// reference's records (offBeg = start of the first record, offEnd =
+	// virtual offset just past the last record). nMapped counts records
+	// placed on this reference. These feed htslib's meta/pseudo-bin
+	// (META_BIN) emitted by finalize.
+	offBeg   VOffset
+	offEnd   VOffset
+	nMapped  uint64
+	haveSpan bool
 }
 
 // Index is the in-memory representation of a `.tbi` file plus the
@@ -272,27 +282,7 @@ func Build(path string, cfg Config) (*Index, error) {
 	// uncompressedToVOffset maps an absolute uncompressed byte position to
 	// the virtual offset of that byte. We need this every time a line
 	// starts.
-	uoffToV := func(pos int64) VOffset {
-		// Binary search offsets for the block whose
-		// [UncompressedOffset, UncompressedOffset+UncompressedSize)
-		// contains pos.
-		lo, hi := 0, len(offsets)
-		for lo < hi {
-			mid := (lo + hi) / 2
-			if int64(offsets[mid].UncompressedOffset) <= pos {
-				lo = mid + 1
-			} else {
-				hi = mid
-			}
-		}
-		i := lo - 1
-		if i < 0 {
-			i = 0
-		}
-		blk := offsets[i]
-		uoff := int(pos - blk.UncompressedOffset)
-		return MakeVOffset(blk.CompressedOffset, uoff)
-	}
+	uoffToV := func(pos int64) VOffset { return VOffsetAt(offsets, pos) }
 
 	skip := int(cfg.Skip)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -344,6 +334,16 @@ func Build(path string, cfg Config) (*Index, error) {
 // addRecord registers one record with bin and linear-index slots.
 func (idx *Index) addRecord(refID, beg, end int, v, vEnd VOffset) {
 	ref := &idx.Refs[refID]
+
+	// Track the per-reference virtual-offset span and mapped-record count
+	// for the meta/pseudo-bin written by finalize.
+	if !ref.haveSpan {
+		ref.offBeg = v
+		ref.haveSpan = true
+	}
+	ref.offEnd = vEnd
+	ref.nMapped++
+
 	binID := uint32(Reg2bin(beg, end))
 
 	// Find or create the bin entry.
@@ -392,7 +392,8 @@ func (idx *Index) addRecord(refID, beg, end int, v, vEnd VOffset) {
 // Sentinel-prefixed tiles (those before the first record) become 0.
 func (idx *Index) finalize() {
 	for r := range idx.Refs {
-		lin := idx.Refs[r].Linear
+		ref := &idx.Refs[r]
+		lin := ref.Linear
 		var last VOffset
 		seen := false
 		for i := range lin {
@@ -407,7 +408,33 @@ func (idx *Index) finalize() {
 				seen = true
 			}
 		}
+		idx.appendMetaBin(ref)
 	}
+}
+
+// MetaBin is htslib's pseudo-bin number (META_BIN = n_bins + 1). For the
+// fixed TBI/BAI six-level scheme n_bins is MaxBin (37449), so the meta-bin
+// id is 37450. It carries two metadata "chunks": the reference's
+// virtual-offset span and its {n_mapped, n_unmapped} record counts.
+const MetaBin = MaxBin + 1
+
+// appendMetaBin adds the meta/pseudo-bin to ref's bin list, mirroring what
+// htslib's hts_idx_finish writes (insert_to_b with META_BIN). The first chunk
+// is {off_beg, off_end} (the span of this reference's records); the second is
+// {n_mapped, n_unmapped} stored verbatim in the chunk's begin/end slots. A
+// reference with no records gets no meta-bin, matching htslib (which never
+// reaches a save_tid for an empty reference).
+func (idx *Index) appendMetaBin(ref *RefIndex) {
+	if !ref.haveSpan {
+		return
+	}
+	ref.Bins = append(ref.Bins, Bin{
+		ID: MetaBin,
+		Chunks: []Chunk{
+			{Beg: ref.offBeg, End: ref.offEnd},
+			{Beg: VOffset(ref.nMapped), End: VOffset(0)},
+		},
+	})
 }
 
 // validateConfig checks the Config for the minimum invariants required to
@@ -487,10 +514,9 @@ func (idx *Index) Write(w io.Writer) error {
 			}
 		}
 	}
-	if idx.NoCoor > 0 {
-		if err := binary.Write(bw, binary.LittleEndian, idx.NoCoor); err != nil {
-			return err
-		}
+	// htslib always writes the trailing n_no_coor (uint64), even when zero.
+	if err := binary.Write(bw, binary.LittleEndian, idx.NoCoor); err != nil {
+		return err
 	}
 	return bw.Flush()
 }

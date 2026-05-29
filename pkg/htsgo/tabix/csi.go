@@ -35,7 +35,25 @@ type CSI struct {
 }
 
 // CSIRef is the per-reference index portion.
-type CSIRef struct{ Bins []CSIBin }
+type CSIRef struct {
+	Bins []CSIBin
+
+	// offBeg/offEnd track the virtual-offset span covered by this
+	// reference's records, and nMapped counts records placed here. These
+	// feed the meta/pseudo-bin (META_BIN) htslib writes after a reference's
+	// data bins. metaDone guards against appending the pseudo-bin twice.
+	offBeg   VOffset
+	offEnd   VOffset
+	nMapped  uint64
+	haveSpan bool
+	metaDone bool
+}
+
+// metaBin is the CSI meta/pseudo-bin number. htslib defines it as
+// META_BIN = n_bins + 1 where n_bins = ((1<<(3*depth+3))-1)/7. BinLimit()
+// returns exactly that n_bins value, so META_BIN is BinLimit()+1. For the
+// default depth of 5 this is 37449+1 = 37450 — identical to the TBI/BAI scheme.
+func (c *CSI) metaBin() uint32 { return c.BinLimit() + 1 }
 
 // CSIBin is one bin in a CSI index. LOffset is the linear-index "earliest
 // virtual offset of any record reaching this bin" used to short-circuit
@@ -59,6 +77,29 @@ func NewCSI(minShift, depth int32) *CSI {
 		depth = 5
 	}
 	return &CSI{MinShift: minShift, Depth: depth}
+}
+
+// TBXMaxShift mirrors htslib's TBX_MAX_SHIFT: the maximum interval shift the
+// tabix CSI scheme addresses before adjusting min_shift.
+const TBXMaxShift = 31
+
+// csiDepthForGeneric reproduces htslib tbx_index's choice of n_lvls (CSI
+// depth) for a tabix index built with the given positive min_shift when no
+// per-reference maximum length is known up front — the situation for the BED
+// and other generic presets, whose header lines carry no contig lengths.
+// htslib uses n_lvls = max_n_lvls - (min_shift-10)/3 for 10 <= min_shift < 25
+// (with max_n_lvls = 9), n_lvls = 9 for min_shift < 10, and n_lvls = 4 for
+// min_shift >= 25. With the conventional min_shift of 14 this yields 8.
+func csiDepthForGeneric(minShift int32) int32 {
+	const maxNLvls = 9
+	switch {
+	case minShift < 10:
+		return maxNLvls
+	case minShift < 25:
+		return maxNLvls - (minShift-10)/3
+	default:
+		return 4
+	}
 }
 
 // MaxPos returns the largest 0-based position addressable at the current
@@ -124,6 +165,14 @@ func (c *CSI) AddRecord(refID int, beg, end int64, vbeg, vend VOffset) {
 		c.Refs = append(c.Refs, CSIRef{})
 	}
 	ref := &c.Refs[refID]
+	// Track the per-reference virtual-offset span and mapped-record count
+	// for the meta/pseudo-bin emitted by Finalize.
+	if !ref.haveSpan {
+		ref.offBeg = vbeg
+		ref.haveSpan = true
+	}
+	ref.offEnd = vend
+	ref.nMapped++
 	binID := c.Reg2bin(beg, end)
 	var bin *CSIBin
 	for i := range ref.Bins {
@@ -136,7 +185,11 @@ func (c *CSI) AddRecord(refID int, beg, end int64, vbeg, vend VOffset) {
 		ref.Bins = append(ref.Bins, CSIBin{ID: binID, LOffset: vbeg})
 		bin = &ref.Bins[len(ref.Bins)-1]
 	}
-	if vbeg < bin.LOffset || bin.LOffset == 0 {
+	// Track the minimum begin offset reaching this bin. Do NOT treat a
+	// stored LOffset of 0 as "unset": 0 is a legitimate virtual offset (the
+	// first byte of the first block), and htslib keeps it as the loff for a
+	// bin whose first record starts at the file head.
+	if vbeg < bin.LOffset {
 		bin.LOffset = vbeg
 	}
 	if n := len(bin.Chunks); n > 0 && bin.Chunks[n-1].End >= vbeg {
@@ -145,6 +198,30 @@ func (c *CSI) AddRecord(refID int, beg, end int64, vbeg, vend VOffset) {
 		}
 	} else {
 		bin.Chunks = append(bin.Chunks, CSIChunk{Beg: vbeg, End: vend})
+	}
+}
+
+// Finalize appends each non-empty reference's meta/pseudo-bin, mirroring
+// htslib's hts_idx_finish. The pseudo-bin (id metaBin()) carries two chunks:
+// {off_beg, off_end} (the reference's virtual-offset span) and
+// {n_mapped, n_unmapped} (record counts, stored verbatim in the chunk's
+// begin/end slots). Per htslib update_loff, a CSI bin with id >= n_bins (the
+// meta-bin) has loff == 0. Finalize is idempotent per reference.
+func (c *CSI) Finalize() {
+	for r := range c.Refs {
+		ref := &c.Refs[r]
+		if !ref.haveSpan || ref.metaDone {
+			continue
+		}
+		ref.metaDone = true
+		ref.Bins = append(ref.Bins, CSIBin{
+			ID:      c.metaBin(),
+			LOffset: 0,
+			Chunks: []CSIChunk{
+				{Beg: ref.offBeg, End: ref.offEnd},
+				{Beg: VOffset(ref.nMapped), End: VOffset(0)},
+			},
+		})
 	}
 }
 
@@ -198,10 +275,10 @@ func (c *CSI) Write(w io.Writer) error {
 			}
 		}
 	}
-	if c.NoCoor > 0 {
-		if err := binary.Write(bw, binary.LittleEndian, c.NoCoor); err != nil {
-			return err
-		}
+	// htslib's idx_save_core always writes the trailing n_no_coor (uint64)
+	// for CSI indexes, even when zero.
+	if err := binary.Write(bw, binary.LittleEndian, c.NoCoor); err != nil {
+		return err
 	}
 	return bw.Flush()
 }
@@ -461,26 +538,16 @@ func BuildCSIFromDataFile(path string, cfg Config, minShift int32) (*CSI, error)
 		return nil, err
 	}
 
-	uoffToV := func(pos int64) VOffset {
-		lo, hi := 0, len(offsets)
-		for lo < hi {
-			mid := (lo + hi) / 2
-			if int64(offsets[mid].UncompressedOffset) <= pos {
-				lo = mid + 1
-			} else {
-				hi = mid
-			}
-		}
-		i := lo - 1
-		if i < 0 {
-			i = 0
-		}
-		blk := offsets[i]
-		uoff := int(pos - blk.UncompressedOffset)
-		return MakeVOffset(blk.CompressedOffset, uoff)
-	}
+	uoffToV := func(pos int64) VOffset { return VOffsetAt(offsets, pos) }
 
-	csi := NewCSI(minShift, 5)
+	// Match htslib tbx_index's CSI parameter choice: a positive min_shift
+	// selects CSI, and for presets without header-supplied contig lengths
+	// (BED and other generic formats) the depth is derived from min_shift.
+	ms := minShift
+	if ms <= 0 {
+		ms = 14
+	}
+	csi := NewCSI(ms, csiDepthForGeneric(ms))
 	idx := NewIndex(cfg) // we reuse the existing parser bits
 	skip := int(cfg.Skip)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -525,6 +592,7 @@ func BuildCSIFromDataFile(path string, cfg Config, minShift int32) (*CSI, error)
 	}
 	// Carry the contig name list in the aux block (tabix-style).
 	csi.SetAuxFromTabix(cfg, idx.Names)
+	csi.Finalize()
 	return csi, nil
 }
 

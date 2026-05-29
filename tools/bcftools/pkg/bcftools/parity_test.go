@@ -546,33 +546,23 @@ func TestParityIndex_TabixVCFGz(t *testing.T) {
 	}
 }
 
-// TestParityIndex_TBIByteEqual asserts that our `.tbi` output is
-// byte-stable and structurally valid.
+// TestParityIndex_TBIByteEqual asserts that our `BuildIndex` `.tbi` output is
+// byte-identical to a genuine upstream `tabix -p vcf` index.
 //
-// History: this was deferred while pkg/htsgo/bgzf used Go's
-// compress/flate, which produced semantically-equivalent but
-// byte-different BGZF blocks from upstream htslib (libdeflate). With the
-// in-tree libdeflate port wired into pkg/htsgo/bgzf, every BGZF block we
-// emit is byte-identical to genuine libdeflate output — proven by the
-// oracle tests in pkg/htsgo/libdeflate that compare DeflateRaw against
-// real libdeflate `.gz` corpora byte-for-byte.
+// The golden (index_tbi/expected.tbi) is produced by a freshly-built upstream
+// `tabix` binary (reference_code/htslib/tabix, statically linked against the
+// libdeflate submodule) run on index_tbi/in.vcf.gz — which is itself genuine
+// upstream bgzip output. Both the index payload (per ref: data bin + meta
+// pseudo-bin 37450 + trailing n_no_coor) and the BGZF framing must match
+// byte-for-byte.
 //
-// Upstream htslib/samtools cannot be built or fetched in this environment
-// (the htslib submodule clone needs GitHub auth and autoconf is absent),
-// so we cannot capture a genuine upstream-produced `.tbi`. Instead the
-// golden (index_tbi/expected.tbi, built from index_tbi/in.vcf via our own
-// libdeflate-backed BGZF + tabix pipeline) is committed as the regression
-// fixture. Upstream byte-equivalence is carried transitively:
-//
-//	our DeflateRaw  ==  genuine libdeflate            (oracle tests)
-//	=> our BGZF blocks  ==  htslib BGZF blocks
-//	=> our `.tbi` framing  ==  upstream-with-libdeflate `.tbi`
-//
-// This test guards two things, so it is more than a tautology:
-//  1. byte-stability: our rebuilt `.tbi` equals the committed golden;
-//  2. structural validity: the input `.vcf.gz` decompresses through the
-//     BGZF reader and every record round-trips, and both the golden and
-//     the freshly-built `.tbi` decode to identical, well-formed indices.
+// This test guards three things:
+//  1. upstream byte-equality: our rebuilt `.tbi` equals the genuine upstream
+//     golden (not a self-generated one);
+//  2. structural validity: the input `.vcf.gz` decompresses through the BGZF
+//     reader and every record round-trips;
+//  3. decode parity: both the golden and the freshly-built `.tbi` decode to
+//     identical, well-formed indices.
 func TestParityIndex_TBIByteEqual(t *testing.T) {
 	dir := parityPath(t, "index_tbi")
 	srcGz := filepath.Join(dir, "in.vcf.gz")
@@ -583,9 +573,9 @@ func TestParityIndex_TBIByteEqual(t *testing.T) {
 		t.Fatalf("read golden .tbi: %v", err)
 	}
 
-	// (1) Byte-stability: rebuild the index from the committed `.vcf.gz`
-	// and compare against the golden. The build runs through the
-	// libdeflate-backed BGZF reader/writer + tabix builder.
+	// (1) Upstream byte-equality: rebuild the index from the committed
+	// `.vcf.gz` and compare against the genuine upstream golden. The build
+	// runs through the libdeflate-backed BGZF reader/writer + tabix builder.
 	tmp := t.TempDir()
 	work := filepath.Join(tmp, "in.vcf.gz")
 	if err := copyFile(srcGz, work); err != nil {
@@ -600,7 +590,7 @@ func TestParityIndex_TBIByteEqual(t *testing.T) {
 		t.Fatalf("read built .tbi: %v", err)
 	}
 	if !bytes.Equal(got, golden) {
-		t.Fatalf("`.tbi` not byte-stable: built %d bytes, golden %d bytes (this would indicate a non-deterministic BGZF/libdeflate wire-up)",
+		t.Fatalf("`.tbi` does not match genuine upstream tabix: built %d bytes, golden %d bytes",
 			len(got), len(golden))
 	}
 

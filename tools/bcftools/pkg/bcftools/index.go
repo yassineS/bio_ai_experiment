@@ -151,24 +151,7 @@ func buildCSIForBCF(path string, minShift int32) (*tabix.CSI, error) {
 	}
 
 	// Helper: convert an uncompressed byte position into a virtual offset.
-	uoffToV := func(pos int64) tabix.VOffset {
-		lo, hi := 0, len(offsets)
-		for lo < hi {
-			mid := (lo + hi) / 2
-			if int64(offsets[mid].UncompressedOffset) <= pos {
-				lo = mid + 1
-			} else {
-				hi = mid
-			}
-		}
-		i := lo - 1
-		if i < 0 {
-			i = 0
-		}
-		blk := offsets[i]
-		uoff := int(pos - blk.UncompressedOffset)
-		return tabix.MakeVOffset(blk.CompressedOffset, uoff)
-	}
+	uoffToV := func(pos int64) tabix.VOffset { return tabix.VOffsetAt(offsets, pos) }
 
 	// Parse the BCF header so we know where records start.
 	rdr := bytes.NewReader(data)
@@ -222,6 +205,7 @@ func buildCSIForBCF(path string, minShift int32) (*tabix.CSI, error) {
 		vEnd := uoffToV(pos)
 		csi.AddRecord(int(rec.ChromID), beg, end, v, vEnd)
 	}
+	csi.Finalize()
 	return csi, nil
 }
 
@@ -284,24 +268,7 @@ func buildCSIForVCFGz(path string, minShift int32) (*tabix.CSI, error) {
 		return nil, err
 	}
 
-	uoffToV := func(pos int64) tabix.VOffset {
-		lo, hi := 0, len(offsets)
-		for lo < hi {
-			mid := (lo + hi) / 2
-			if int64(offsets[mid].UncompressedOffset) <= pos {
-				lo = mid + 1
-			} else {
-				hi = mid
-			}
-		}
-		i := lo - 1
-		if i < 0 {
-			i = 0
-		}
-		blk := offsets[i]
-		uoff := int(pos - blk.UncompressedOffset)
-		return tabix.MakeVOffset(blk.CompressedOffset, uoff)
-	}
+	uoffToV := func(pos int64) tabix.VOffset { return tabix.VOffsetAt(offsets, pos) }
 
 	csi := tabix.NewCSI(minShift, 5)
 	csi.SetAuxFromTabix(tabix.Config{Format: tabix.FormatVCF, ColSeq: 1, ColBeg: 2, ColEnd: 0, Meta: '#', Skip: 0}, nil)
@@ -360,6 +327,7 @@ func buildCSIForVCFGz(path string, minShift int32) (*tabix.CSI, error) {
 		names[i] = n
 	}
 	csi.SetAuxFromTabix(tabix.Config{Format: tabix.FormatVCF, ColSeq: 1, ColBeg: 2, ColEnd: 0, Meta: '#', Skip: 0}, names)
+	csi.Finalize()
 	return csi, nil
 }
 
