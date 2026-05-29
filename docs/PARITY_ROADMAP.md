@@ -2710,6 +2710,32 @@ Option-tail gaps on `filter` (this PR, simple-mode):
 - BCF output (`-O b|u`) round-trips through the shared `pkg/htsgo/bcf`
   writer; CSI auto-indexing is the `-W` follow-up above.
 
+`-i/-e` filter-expression evaluator (`pkg/bcftools/filter.go`,
+shared by `view`, `query`, `filter`, `convert`, `consensus`) — now
+matches htslib `filter.c` semantics, verified against a genuine
+bcftools 1.23.1 expected matrix (`testdata/filter_live/`,
+`TestFilterLiveMatrix` / `TestFilterLiveExcludeComplement`):
+
+- **Bare-tag resolution** is header-aware (`CompileFilterWithHeader`,
+  `headerTags.resolve`, mirroring filter.c:3434-3437). A bare name
+  defined only in INFO resolves to INFO; only in FORMAT resolves to
+  FORMAT (per-sample, no site-level match); defined in **both** is
+  rejected with the exact upstream "ambiguous filtering expression"
+  error (so `DP` over a header that defines both INFO/DP and FORMAT/DP
+  aborts, identical to upstream). `INFO/`, `FMT/`, `FORMAT/` prefixes
+  force the source; `QUAL` is the column.
+- **`TYPE`** classifies via `variantTypeSet` (snp/indel/mnp/bnd/ref/
+  other), with `TYPE="snp"` true when any ALT is a SNP. **`N_ALT`**
+  returns the ALT count.
+- **Multi-value INFO** comparisons use any-element semantics; `TAG[i]`
+  selects one element (`AC=1` matches `AC=2,1`; `AC[0]>1` indexes the
+  first value).
+- `-e EXPR` is the exact complement of `-i EXPR`.
+- Still using the header-less observable fallback (the `CompileFilter`
+  entry point) only where no header is threaded; remaining advanced
+  operators not yet ported: regex `~`/`!~`, the `@file` set form, and
+  per-sample `FMT/` evaluation against a chosen sample.
+
 Option-tail gaps on `mendelian2` (PR #109, simple-mode):
 
 - `--rules ASSEMBLY` — predefined inheritance rules (GRCh37 / GRCh38

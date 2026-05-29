@@ -221,7 +221,7 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 	include, exclude, err := compileExpressions(ViewOptions{
 		IncludeExpr: opts.IncludeExpr,
 		ExcludeExpr: opts.ExcludeExpr,
-	})
+	}, hdr)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools consensus: %w", err)
 	}

@@ -189,7 +189,7 @@ func queryVCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 	if err != nil {
 		return 0, err
 	}
-	includeF, excludeF, err := compileQueryExpressions(opts)
+	includeF, excludeF, err := compileQueryExpressions(opts, hdr)
 	if err != nil {
 		return 0, err
 	}
@@ -235,7 +235,7 @@ func queryBCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 	if err != nil {
 		return 0, err
 	}
-	includeF, excludeF, err := compileQueryExpressions(opts)
+	includeF, excludeF, err := compileQueryExpressions(opts, hdr.VCF)
 	if err != nil {
 		return 0, err
 	}
@@ -282,7 +282,7 @@ func queryBCFRegions(path string, out io.Writer, opts QueryOptions) (int, error)
 	if err != nil {
 		return 0, err
 	}
-	includeF, excludeF, err := compileQueryExpressions(opts)
+	includeF, excludeF, err := compileQueryExpressions(opts, hdr.VCF)
 	if err != nil {
 		return 0, err
 	}
@@ -328,7 +328,7 @@ func queryVCFRegions(path string, out io.Writer, opts QueryOptions, stderr io.Wr
 	if err != nil {
 		return 0, err
 	}
-	includeF, excludeF, err := compileQueryExpressions(opts)
+	includeF, excludeF, err := compileQueryExpressions(opts, hdr)
 	if err != nil {
 		return 0, err
 	}
@@ -386,16 +386,17 @@ func writeSampleList(out io.Writer, names []string) (int, error) {
 	return len(names), bw.Flush()
 }
 
-// compileQueryExpressions parses -i/-e using the shared expression compiler.
-func compileQueryExpressions(opts QueryOptions) (include, exclude *Filter, err error) {
+// compileQueryExpressions parses -i/-e using the shared expression compiler,
+// resolving bare tags against hdr so INFO vs FORMAT resolution matches htslib.
+func compileQueryExpressions(opts QueryOptions, hdr *vcf.Header) (include, exclude *Filter, err error) {
 	if opts.IncludeExpr != "" {
-		include, err = CompileFilter(opts.IncludeExpr)
+		include, err = CompileFilterWithHeader(opts.IncludeExpr, hdr)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 	if opts.ExcludeExpr != "" {
-		exclude, err = CompileFilter(opts.ExcludeExpr)
+		exclude, err = CompileFilterWithHeader(opts.ExcludeExpr, hdr)
 		if err != nil {
 			return nil, nil, err
 		}

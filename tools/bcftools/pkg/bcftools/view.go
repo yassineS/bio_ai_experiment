@@ -399,7 +399,7 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		return 0, err
 	}
 
-	includeF, excludeF, err := compileExpressions(opts)
+	includeF, excludeF, err := compileExpressions(opts, hdr)
 	if err != nil {
 		return 0, err
 	}
@@ -460,13 +460,13 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	if err != nil {
 		return 0, err
 	}
-	hdr := br.Header().VCF
-	hdr = filterHeaderSamples(hdr, opts.Samples)
+	origHdr := br.Header().VCF
+	hdr := filterHeaderSamples(origHdr, opts.Samples)
 	if opts.DropGenotypes {
 		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
 	}
-	includeF, excludeF, err := compileExpressions(opts)
+	includeF, excludeF, err := compileExpressions(opts, origHdr)
 	if err != nil {
 		return 0, err
 	}
@@ -525,14 +525,14 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 	if err != nil {
 		return 0, err
 	}
-	vhdr := hdr.VCF
-	vhdr = filterHeaderSamples(vhdr, opts.Samples)
+	origHdr := hdr.VCF
+	vhdr := filterHeaderSamples(origHdr, opts.Samples)
 	if opts.DropGenotypes {
 		vhdr = stripFormatLines(vhdr)
 		vhdr.Samples = nil
 	}
 
-	includeF, excludeF, err := compileExpressions(opts)
+	includeF, excludeF, err := compileExpressions(opts, origHdr)
 	if err != nil {
 		return 0, err
 	}
@@ -598,13 +598,14 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 		return 0, err
 	}
 	hdrIn.Close()
+	origHdr := hdr
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	if opts.DropGenotypes {
 		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
 	}
 
-	includeF, excludeF, err := compileExpressions(opts)
+	includeF, excludeF, err := compileExpressions(opts, origHdr)
 	if err != nil {
 		return 0, err
 	}
@@ -787,16 +788,19 @@ func variantTypesPerALT(v *vcf.Variant) []string {
 	return out
 }
 
-// compileExpressions parses the -i / -e flags into Filter trees.
-func compileExpressions(opts ViewOptions) (include, exclude *Filter, err error) {
+// compileExpressions parses the -i / -e flags into Filter trees, resolving
+// bare tags against hdr (which should be the unmodified input header so INFO
+// vs FORMAT resolution matches htslib). A nil hdr falls back to the
+// header-less observable resolution rule.
+func compileExpressions(opts ViewOptions, hdr *vcf.Header) (include, exclude *Filter, err error) {
 	if opts.IncludeExpr != "" {
-		include, err = CompileFilter(opts.IncludeExpr)
+		include, err = CompileFilterWithHeader(opts.IncludeExpr, hdr)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 	if opts.ExcludeExpr != "" {
-		exclude, err = CompileFilter(opts.ExcludeExpr)
+		exclude, err = CompileFilterWithHeader(opts.ExcludeExpr, hdr)
 		if err != nil {
 			return nil, nil, err
 		}
