@@ -191,8 +191,11 @@ func encodeInfoValue(entry DictEntry, raw string) []byte {
 	t := strings.ToLower(entry.Type)
 	switch t {
 	case "flag":
-		// Flag = present. htslib encodes flags as a single int8 of value 1.
-		return EncodeTypedInt8(1)
+		// Flag present. htslib's VCF parser encodes a valueless flag as a
+		// zero-length NULL-typed descriptor (bcf_enc_size(str, 0, BCF_BT_NULL)
+		// in vcf.c vcf_parse_info), i.e. the single byte 0x00 — NOT an int8 of
+		// value 1. bcftools then prints just the tag name with no "=1".
+		return EncodeMissing()
 	case "integer":
 		return encodeIntsFromText(raw)
 	case "float":
@@ -369,7 +372,10 @@ func encodeFormatGT(samples []vcf.Sample, nSample int) []byte {
 			gt = samples[i].Data["GT"]
 		}
 		if gt == "" {
-			parsed[i] = []int32{MissingInt32}
+			// A missing genotype is the GT sentinel 0 (htslib bcf_gt_missing),
+			// NOT the type-specific missing value (0x80). htslib decodes the
+			// allele as (val>>1)-1, so 0 -> -1 -> ".".
+			parsed[i] = []int32{0}
 			continue
 		}
 		parsed[i] = parseGT(gt)
@@ -446,7 +452,7 @@ func encodeFormatTypedInts(flat []int32, perSample int) []byte {
 // The first element does not carry a phased bit (htslib convention).
 func parseGT(gt string) []int32 {
 	if gt == "" || gt == "." {
-		return []int32{MissingInt32}
+		return []int32{0}
 	}
 	// Replace pipes with slashes so we can split — and remember per-position
 	// whether the original separator was a pipe.
@@ -458,8 +464,10 @@ func parseGT(gt string) []int32 {
 			tok := gt[start:i]
 			var v int32
 			if tok == "." || tok == "" {
-				// missing genotype slot
-				v = MissingInt32
+				// Missing genotype slot is the GT sentinel 0
+				// (htslib bcf_gt_missing), not the int8/16/32 missing
+				// value. htslib decodes allele = (0>>1)-1 = -1 -> ".".
+				v = 0
 			} else {
 				n, err := strconv.Atoi(tok)
 				if err != nil || n < 0 {

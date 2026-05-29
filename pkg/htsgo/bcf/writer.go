@@ -187,7 +187,30 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 	// IDX=1 in the output while infoIndex["PASS"]==0, so the on-wire
 	// FILTER references would point at the wrong entry and downstream
 	// readers (ours or htslib's) would see two PASS entries.
+	//
+	// htslib registers INFO/FILTER/FORMAT names into a single shared
+	// BCF_DT_ID dictionary keyed by tag name (vcf.c). A tag name that has
+	// already appeared in any of these three line-types reuses its IDX
+	// rather than consuming a fresh one — e.g. a ##FORMAT=<ID=DP> following
+	// ##INFO=<ID=DP> reuses INFO/DP's IDX. We mirror that here with a
+	// name->IDX map so the explicit ,IDX=N annotations we emit match the
+	// unified, first-appearance-order numbering and genuine bcftools can
+	// read our output.
 	nextIDX := int32(1)
+	nameIDX := map[string]int32{"PASS": 0}
+	idxFor := func(line string) (int32, bool) {
+		id := structuredID(line)
+		if id == "" {
+			return 0, false
+		}
+		if v, ok := nameIDX[id]; ok {
+			return v, true
+		}
+		v := nextIDX
+		nextIDX++
+		nameIDX[id] = v
+		return v, true
+	}
 	for _, m := range vh.MetaInfo {
 		line := m
 		if strings.HasPrefix(line, "##fileformat=") {
@@ -198,12 +221,14 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 			if isExplicitPASSFilter(line) {
 				continue
 			}
-			line = annotateIDX(line, nextIDX)
-			nextIDX++
+			if v, ok := idxFor(line); ok {
+				line = annotateIDX(line, v)
+			}
 		case strings.HasPrefix(line, "##INFO="),
 			strings.HasPrefix(line, "##FORMAT="):
-			line = annotateIDX(line, nextIDX)
-			nextIDX++
+			if v, ok := idxFor(line); ok {
+				line = annotateIDX(line, v)
+			}
 		}
 		sb.WriteString(line)
 		sb.WriteByte('\n')
@@ -226,6 +251,31 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 	}
 	sb.WriteByte('\n')
 	return sb.String()
+}
+
+// structuredID extracts the ID attribute from a `##INFO/##FILTER/##FORMAT`
+// meta-information line of the form `##KIND=<ID=foo,...>`. It returns "" when
+// the line has no recognizable `<ID=...>`. ID is always the first attribute
+// per VCF convention and is never quoted, so a lightweight scan suffices.
+func structuredID(line string) string {
+	lt := strings.IndexByte(line, '<')
+	if lt < 0 {
+		return ""
+	}
+	body := line[lt+1:]
+	if end := strings.LastIndexByte(body, '>'); end >= 0 {
+		body = body[:end]
+	}
+	for _, kv := range splitStructured(body) {
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
+		}
+		if strings.TrimSpace(kv[:eq]) == "ID" {
+			return strings.Trim(strings.TrimSpace(kv[eq+1:]), `"`)
+		}
+	}
+	return ""
 }
 
 // isExplicitPASSFilter reports whether a `##FILTER=<...>` line declares

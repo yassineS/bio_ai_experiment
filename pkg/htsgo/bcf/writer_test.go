@@ -344,9 +344,11 @@ func TestParseGT(t *testing.T) {
 		{"0/0", []int32{2, 2}},
 		{"0/1", []int32{2, 4}},
 		{"1|1", []int32{4, 5}},
-		{".", []int32{MissingInt32}},
-		{"", []int32{MissingInt32}},
-		{"./.", []int32{MissingInt32, MissingInt32}},
+		// Missing GT alleles use the htslib bcf_gt_missing sentinel 0,
+		// not the type-specific missing value, so they decode as ".".
+		{".", []int32{0}},
+		{"", []int32{0}},
+		{"./.", []int32{0, 0}},
 		{"1", []int32{4}},
 	}
 	for _, c := range cases {
@@ -403,8 +405,10 @@ func TestEncodeInfoValue(t *testing.T) {
 	}
 	flagEntry := DictEntry{ID: "H2", Type: "Flag", Number: "0"}
 	got := encodeInfoValue(flagEntry, "")
-	if len(got) != 2 || got[0] != 0x11 {
-		t.Errorf("flag encoding: %v", got)
+	// htslib encodes a present Flag as a zero-length NULL-typed descriptor
+	// (the single byte 0x00), matching bcf_enc_size(str, 0, BCF_BT_NULL).
+	if !bytes.Equal(got, EncodeMissing()) {
+		t.Errorf("flag encoding = %v, want %v", got, EncodeMissing())
 	}
 	stringEntry := DictEntry{ID: "TAG", Type: "String", Number: "1"}
 	if got := encodeInfoValue(stringEntry, "hello"); len(got) == 0 {
