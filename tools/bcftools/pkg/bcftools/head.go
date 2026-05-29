@@ -55,6 +55,11 @@ func Head(in io.Reader, out io.Writer, opts HeadOptions) error {
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
 
+	// htslib injects the implicit ##FILTER=<ID=PASS> line (filter id 0)
+	// when the header lacks an explicit PASS definition, so `head` must
+	// emit it too for parity with genuine bcftools.
+	ensurePASSFilter(hdr)
+
 	if opts.SamplesOnly {
 		for _, s := range hdr.Samples {
 			if _, err := fmt.Fprintln(bw, s); err != nil {
