@@ -154,6 +154,18 @@ upstream (verified empirically: `seqtk hpc-bg` is rejected with
 entry was `hrun` (homopolymer-RUN finder, BED4 output); the name
 collision with `hpc` confused the original audit.
 
+Flag-level note (2026-05-29): the `seq` subcommand previously dispatched
+but implemented only a thin subset (reverse complement plus non-upstream
+`-l`/`-L`/`-n` filters). It now matches `stk_seq` (seqtk.c:1381) flag for
+flag: `-A/-a`, `-C`, `-r`, `-R`, `-c`, `-1`/`-2`, `-V`, `-N`, `-U`, `-S`,
+`-x`, `-q`/`-X`, `-n`, `-l` (line wrapping, previously parsed but ignored),
+`-Q`, `-L`, `-F`, `-M` (BED/name-list region masking), and `-f`/`-s`
+(MT19937-64 sampling). The transformation order mirrors `stk_seq` exactly,
+and a live-oracle + golden test matrix (`seq_live_test.go`,
+`testdata/seq_live/`) pins it byte-for-byte against genuine seqtk 1.5-r133.
+A dedicated kseq-compatible reader (`seq.go`) is used instead of the shared
+fasta/fastq readers so `-S` and `-C` behave like upstream's kseq.h.
+
 Added this iteration: `listhet`, `hrun`.
 
 - `listhet` — full upstream surface implemented (no flags, positional

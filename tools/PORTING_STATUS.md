@@ -76,7 +76,14 @@ at 1:1 feature parity (the project goal); see
 
 - `comp` - Sequence composition statistics
 - `fq2fa` - FASTQ to FASTA conversion
-- `seq` - Sequence manipulation (reverse complement)
+- `seq` - Full upstream `seqtk seq` flag parity (verified byte-for-byte
+  vs genuine seqtk 1.5-r133): `-A/-a` force FASTA, `-C` drop comments,
+  `-r` reverse complement, `-R` both strands, `-c` mask-complement,
+  `-1/-2` odd/even, `-V` quality shift, `-N` drop ambiguous, `-U`
+  uppercase, `-S` strip whitespace, `-x` lowercase->mask, `-q`/`-X` quality
+  masking, `-n` mask char, `-l` line wrap, `-Q` quality shift, `-L` min
+  length, `-F` fake quality, `-M` BED/name-list region masking, and
+  `-f`/`-s` MT19937-64 sampling. Transformation order mirrors `stk_seq`.
 - `sample` - Random subsampling
 - `trimfq` - Quality-based trimming
 - `subseq` - Extract subsequences by name list or BED region

@@ -192,39 +192,68 @@ Examples:
 
 func seqCommand() {
 	fs := flag.NewFlagSet("seq", flag.ExitOnError)
-	var revComp, phred64 bool
-	var output string
-	var minLen, maxLen int
-	var pattern string
+	opts := seqtk.NewSeqOptions()
 
-	cliflag.BoolVar(fs, &revComp, "r", "reverse", false, "Reverse complement sequences")
-	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	var output string
+	var maskCharStr, fakeQualStr string
+	var forceFastaA, forceFastaa bool
+
+	// Flags follow upstream `seqtk seq` semantics.
+	cliflag.IntVar(fs, &opts.QualThres, "q", "min-qual", 0, "Mask bases with quality lower than INT")
+	cliflag.IntVar(fs, &opts.MaxQual, "X", "max-qual", 255, "Mask bases with quality higher than INT")
+	cliflag.StringVar(fs, &maskCharStr, "n", "mask-char", "", "Masked bases converted to CHAR; 0 for lowercase")
+	cliflag.IntVar(fs, &opts.LineLen, "l", "line-length", 0, "Number of residues per line; 0 for no wrap")
+	cliflag.IntVar(fs, &opts.QualShift, "Q", "qual-shift", 33, "Quality shift: ASCII-INT gives base quality")
+	var seed int
+	cliflag.IntVar(fs, &seed, "s", "seed", 11, "Random seed (effective with -f)")
+	cliflag.Float64Var(fs, &opts.Frac, "f", "fraction", 1.0, "Sample FLOAT fraction of sequences")
+	cliflag.StringVar(fs, &opts.MaskFile, "M", "mask-file", "", "Mask regions in BED or name list FILE")
+	cliflag.IntVar(fs, &opts.MinLen, "L", "min-length", 0, "Drop sequences with length shorter than INT")
+	cliflag.StringVar(fs, &fakeQualStr, "F", "fake-qual", "", "Fake FASTQ quality CHAR")
+	cliflag.BoolVar(fs, &opts.MaskComp, "c", "mask-complement", false, "Mask complement region (with -M)")
+	cliflag.BoolVar(fs, &opts.RevComp, "r", "reverse", false, "Reverse complement")
+	cliflag.BoolVar(fs, &opts.BothStrands, "R", "both-strands", false, "Output both forward and reverse complement")
+	cliflag.BoolVar(fs, &forceFastaA, "A", "fasta", false, "Force FASTA output (discard quality)")
+	cliflag.BoolVar(fs, &forceFastaa, "a", "fasta-alt", false, "Force FASTA output (discard quality)")
+	cliflag.BoolVar(fs, &opts.DropComment, "C", "drop-comment", false, "Drop comments at the header lines")
+	cliflag.BoolVar(fs, &opts.DropAmbig, "N", "drop-ambiguous", false, "Drop sequences containing ambiguous bases")
+	cliflag.BoolVar(fs, &opts.Odd, "1", "odd", false, "Output the 2n-1 reads only")
+	cliflag.BoolVar(fs, &opts.Even, "2", "even", false, "Output the 2n reads only")
+	cliflag.BoolVar(fs, &opts.ShiftQual, "V", "shift-qual", false, "Shift quality by '(-Q) - 33'")
+	cliflag.BoolVar(fs, &opts.Uppercase, "U", "uppercase", false, "Convert all bases to uppercase")
+	cliflag.BoolVar(fs, &opts.LowerToMask, "x", "lower-to-mask", false, "Convert all lowercase to -n char")
+	cliflag.BoolVar(fs, &opts.StripSpace, "S", "strip-space", false, "Strip white spaces in sequences")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
-	cliflag.IntVar(fs, &minLen, "l", "min-len", 0, "Minimum sequence length (0 = no filter)")
-	cliflag.IntVar(fs, &maxLen, "L", "max-len", 0, "Maximum sequence length (0 = no filter)")
-	cliflag.StringVar(fs, &pattern, "n", "name", "", "Filter by sequence name pattern")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: seqtk seq [options] <input>
+		fmt.Fprintf(os.Stderr, `Usage: seqtk seq [options] <in.fq>|<in.fa>
 
-Transform sequences.
-
-Arguments:
-  <input>    Input file (use '-' for stdin, supports .gz and .bz2)
+Transform / filter FASTA/FASTQ sequences (matches upstream seqtk seq).
 
 Options:
-  -r, --reverse          Reverse complement sequences
-  -l, --min-len INT      Minimum sequence length (0 = no filter)
-  -L, --max-len INT      Maximum sequence length (0 = no filter)
-  -n, --name PATTERN     Filter by sequence name pattern
-  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
-  -o, --output FILE      Output file (default: stdout, supports .gz)
-
-Examples:
-  seqtk seq -r reads.fastq > rev_comp.fastq
-  seqtk seq -l 100 -L 500 reads.fastq > filtered.fastq
-  seqtk seq -n "chr1" sequences.fasta > chr1.fasta
-
+  -q INT    mask bases with quality lower than INT [0]
+  -X INT    mask bases with quality higher than INT [255]
+  -n CHAR   masked bases converted to CHAR; 0 for lowercase [0]
+  -l INT    number of residues per line; 0 for no wrap [0]
+  -Q INT    quality shift: ASCII-INT gives base quality [33]
+  -s INT    random seed (effective with -f) [11]
+  -f FLOAT  sample FLOAT fraction of sequences [1]
+  -M FILE   mask regions in BED or name list FILE [null]
+  -L INT    drop sequences with length shorter than INT [0]
+  -F CHAR   fake FASTQ quality []
+  -c        mask complement region (effective with -M)
+  -r        reverse complement
+  -R        output both forward and reverse complement
+  -A        force FASTA output (discard quality)
+  -C        drop comments at the header lines
+  -N        drop sequences containing ambiguous bases
+  -1        output the 2n-1 reads only
+  -2        output the 2n reads only
+  -V        shift quality by '(-Q) - 33'
+  -U        convert all bases to uppercases
+  -x        convert all lowercases to -n
+  -S        strip of white spaces in sequences
+  -o FILE   output file (default: stdout, supports .gz)
 `)
 	}
 
@@ -235,23 +264,20 @@ Examples:
 		os.Exit(1)
 	}
 
-	inputFile := fs.Arg(0)
+	opts.ForceFasta = forceFastaA || forceFastaa
+	opts.Seed = int64(seed)
 
-	// Detect file type (before opening to avoid consuming stdin)
-	var isFastq bool
-	var err error
-	if inputFile != "-" {
-		isFastq, err = seqtk.GetFileType(inputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		// For stdin, assume FASTQ (could be improved with buffered detection)
-		isFastq = true
+	// -n CHAR: first byte of the argument; default 0 (lowercase masking).
+	if maskCharStr != "" {
+		opts.MaskChar = maskCharStr[0]
+	}
+	// -F CHAR: first byte; default -1 (unset).
+	if fakeQualStr != "" {
+		opts.FakeQual = int(fakeQualStr[0])
 	}
 
-	// Open input with compression support
+	inputFile := fs.Arg(0)
+
 	input, err := seqtk.OpenInput(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
@@ -259,7 +285,6 @@ Examples:
 	}
 	defer input.Close()
 
-	// Open output with compression support
 	out, err := seqtk.OpenOutput(output)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
@@ -267,32 +292,23 @@ Examples:
 	}
 	defer out.Close()
 
-	encoding := fastq.Phred33
-	if phred64 {
-		encoding = fastq.Phred64
+	// -M: load the region/name list now.
+	if opts.MaskFile != "" {
+		mf, err := seqtk.OpenInput(opts.MaskFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening mask file: %v\n", err)
+			os.Exit(1)
+		}
+		if err := opts.LoadMaskFile(mf); err != nil {
+			mf.Close()
+			fmt.Fprintf(os.Stderr, "Error reading mask file: %v\n", err)
+			os.Exit(1)
+		}
+		mf.Close()
 	}
 
-	// Check if any transformation or filter is specified
-	hasFilter := minLen > 0 || maxLen > 0 || pattern != ""
-
-	if revComp {
-		if err := seqtk.ReverseComplement(input, out, isFastq, encoding); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	} else if hasFilter {
-		opts := seqtk.FilterOptions{
-			MinLength: minLen,
-			MaxLength: maxLen,
-			Pattern:   pattern,
-		}
-		if err := seqtk.Filter(input, out, opts, isFastq, encoding); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		// Just copy through (could add more transformations here)
-		fmt.Fprintf(os.Stderr, "No transformation specified. Use -r for reverse complement or -l/-L/-n for filtering.\n")
+	if err := seqtk.Seq(input, out, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }

@@ -1,0 +1,12 @@
+>seq1+ a comment here
+ACGTacgtNNNNnnnn
+>seq1- a comment here
+nnnnNNNNacgtACGT
+>seq2+ desc2
+GGGGCCCCaaaa
+>seq2- desc2
+ttttGGGGCCCC
+>seq3+
+NNNNACGT
+>seq3-
+ACGTNNNN
