@@ -119,13 +119,14 @@ type deflateFreqs struct {
 func (f *deflateFreqs) reset() { *f = deflateFreqs{} }
 
 // minLensTable mirrors the choose_min_match_len lookup table
-// (deflate_compress.c:2299). Entries past index 75 are implicitly 3.
-var minLensTable = [76]uint8{
+// (deflate_compress.c:2299). It has 80 entries; entries past index 79
+// are implicitly 3.
+var minLensTable = [80]uint8{
 	9, 9, 9, 9, 9, 9, 8, 8, 7, 7, 6, 6, 6, 6, 6, 6,
 	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
 	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4,
 	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
 }
 
 // chooseMinMatchLen mirrors choose_min_match_len (deflate_compress.c:2296).
