@@ -32,10 +32,9 @@ func TestParity_Derived_Counts(t *testing.T) {
 	}
 }
 
-// TestParity_Derived_Freq verifies --derived --freq. The data lines
-// match upstream up to float formatting; the existing freq.expected.frq
-// fixture uses %.6f (Go port format), so this golden also uses %.6f.
-// Allele identity and ordering are upstream-byte-for-byte.
+// TestParity_Derived_Freq verifies --derived --freq byte-for-byte against
+// genuine VCFtools 0.1.18 (minimal %g float formatting, e.g. A:0.5 not
+// A:0.500000). Allele identity and ordering are upstream-byte-for-byte.
 func TestParity_Derived_Freq(t *testing.T) {
 	prefix := runVcftoolsParity(t, "derived_fixture.vcf", &Params{
 		Freq:    true,

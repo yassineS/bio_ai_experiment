@@ -116,7 +116,13 @@ type siteQualityStat struct {
 type siteMissingStat struct {
 	chrom string
 	pos   int
-	fMiss float64
+	// nData is the number of alleles considered at the site (2 per
+	// diploid sample, reduced for haploid/phased-missing genotypes),
+	// matching upstream's site_N_tot. nMiss is the number of missing
+	// alleles, nGenoFiltered the number of genotype-filtered samples.
+	nData         int
+	nMiss         int
+	nGenoFiltered int
 }
 
 type siteHWEStat struct {
@@ -180,6 +186,16 @@ type indvHetStat struct {
 	nHomRef int
 	nTotal  int
 	hetRate float64
+	// nSites is the number of biallelic, fully-diploid, non-missing sites
+	// included for this individual (upstream N_sites_included).
+	nSites int
+	// nObsHom is the observed number of homozygous genotypes (upstream
+	// N_obs_hom).
+	nObsHom int
+	// expHom is the accumulated expected number of homozygous genotypes,
+	// summed per included site as 1 - 2*p*q*N/(N-1) (upstream
+	// N_expected_hom).
+	expHom float64
 }
 
 type windowPiStat struct {
@@ -482,18 +498,59 @@ func (s *statistics) addSiteMissingStat(v *vcf.Variant) {
 		return
 	}
 
-	missing := 0
+	// Upstream counts missingness per allele, not per sample:
+	//   site_N_tot += 2 for each diploid sample, then both site_N_tot and
+	//   site_N_missing are decremented by one for haploid genotypes (a
+	//   single-allele entry, "-2") or phased-missing second alleles
+	//   ("a|."). See variant_file_output.cpp:893-924.
+	var nTot, nMiss, nGenoFiltered int
 	for _, sample := range v.Samples {
 		gt, ok := sample.Data["GT"]
-		if !ok || gt == "." || gt == "./." || gt == ".|." {
-			missing++
+		if !ok || gt == "" {
+			// No GT field: treated as a fully-missing diploid genotype.
+			nTot += 2
+			nMiss += 2
+			continue
+		}
+
+		phased := strings.ContainsRune(gt, '|')
+		alleles := strings.FieldsFunc(gt, func(r rune) bool {
+			return r == '/' || r == '|'
+		})
+
+		first := -1
+		second := -2 // -2 marks "no second allele" (haploid)
+		if len(alleles) >= 1 {
+			first = parseHetAllele(alleles[0])
+		}
+		if len(alleles) >= 2 {
+			second = parseHetAllele(alleles[1])
+		}
+
+		nTot += 2
+		if first == -1 {
+			nMiss++
+		}
+		if second == -1 {
+			nMiss++
+		}
+
+		if second == -1 && phased {
+			// Phased missing second allele indicates a haploid genome.
+			nTot--
+			nMiss--
+		} else if second == -2 {
+			// Haploid genotype (single allele).
+			nTot--
 		}
 	}
 
 	stat := siteMissingStat{
-		chrom: v.Chrom,
-		pos:   v.Pos,
-		fMiss: float64(missing) / float64(len(v.Samples)),
+		chrom:         v.Chrom,
+		pos:           v.Pos,
+		nData:         nTot,
+		nMiss:         nMiss,
+		nGenoFiltered: nGenoFiltered,
 	}
 
 	s.siteMissing = append(s.siteMissing, stat)
@@ -877,37 +934,115 @@ func (s *statistics) addTajimaDStat(v *vcf.Variant) {
 
 // addHetStat adds heterozygosity statistics per individual
 func (s *statistics) addHetStat(v *vcf.Variant) {
+	// Ensure every sample has a stat entry so individuals absent from a
+	// given site still appear in the output in a stable order.
 	for _, sample := range v.Samples {
 		if s.indvHet[sample.Name] == nil {
-			s.indvHet[sample.Name] = &indvHetStat{
-				name: sample.Name,
-			}
+			s.indvHet[sample.Name] = &indvHetStat{name: sample.Name}
 		}
+	}
 
-		stat := s.indvHet[sample.Name]
+	// Upstream only uses biallelic SNPs for individual heterozygosity
+	// (variant_file_output.cpp:219).
+	if len(v.Alt) != 1 {
+		return
+	}
 
+	// First pass: compute the site allele frequency of the non-reference
+	// allele across all non-missing, diploid genotypes — and verify the
+	// site is fully diploid (upstream is_diploid() check). Mixed ploidy
+	// causes upstream to skip the whole site.
+	type indvGT struct {
+		idx     int
+		a, b    int
+		missing bool
+	}
+	gts := make([]indvGT, 0, len(v.Samples))
+	altCount := 0
+	nNonMissingChr := 0
+	for i, sample := range v.Samples {
 		gt, ok := sample.Data["GT"]
-		if !ok || strings.Contains(gt, ".") {
+		if !ok {
+			// Treated as fully-missing diploid (alleles -1/-1).
+			gts = append(gts, indvGT{idx: i, a: -1, b: -1})
 			continue
 		}
-
 		alleles := strings.FieldsFunc(gt, func(r rune) bool {
 			return r == '/' || r == '|'
 		})
-
 		if len(alleles) != 2 {
+			// Not diploid: upstream skips the entire site.
+			return
+		}
+		ig := indvGT{idx: i}
+		ig.a = parseHetAllele(alleles[0])
+		ig.b = parseHetAllele(alleles[1])
+		if ig.a == -1 || ig.b == -1 {
+			ig.missing = true
+		}
+		if ig.a == 1 {
+			altCount++
+			nNonMissingChr++
+		} else if ig.a == 0 {
+			nNonMissingChr++
+		}
+		if ig.b == 1 {
+			altCount++
+			nNonMissingChr++
+		} else if ig.b == 0 {
+			nNonMissingChr++
+		}
+		gts = append(gts, ig)
+	}
+
+	if nNonMissingChr == 0 {
+		return
+	}
+	freq := float64(altCount) / float64(nNonMissingChr)
+
+	// Upstream skips monomorphic sites (freq at the numeric epsilon
+	// boundaries), variant_file_output.cpp:240.
+	const eps = 2.220446049250313e-16 // numeric_limits<double>::epsilon()
+	if freq <= eps || 1.0-freq <= eps {
+		return
+	}
+
+	// Per-site expected-homozygosity contribution, shared across all
+	// included individuals: 1 - 2*p*q * N/(N-1).
+	siteExpHom := 1.0 - (2.0 * freq * (1.0 - freq) * (float64(nNonMissingChr) / (float64(nNonMissingChr) - 1.0)))
+
+	for _, ig := range gts {
+		stat := s.indvHet[v.Samples[ig.idx].Name]
+		if ig.missing {
 			continue
 		}
-
+		stat.nSites++
 		stat.nTotal++
-		if alleles[0] != alleles[1] {
-			stat.nHet++
-		} else if alleles[0] == "0" {
-			stat.nHomRef++
+		if ig.a == ig.b {
+			stat.nObsHom++
+			if ig.a == 0 {
+				stat.nHomRef++
+			} else {
+				stat.nHomAlt++
+			}
 		} else {
-			stat.nHomAlt++
+			stat.nHet++
 		}
+		stat.expHom += siteExpHom
 	}
+}
+
+// parseHetAllele parses a single genotype allele index, returning -1 for
+// the missing allele ".".
+func parseHetAllele(a string) int {
+	if a == "." {
+		return -1
+	}
+	n, err := strconv.Atoi(a)
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // addSingletonStat identifies singleton sites (alleles present in only one sample)
@@ -1057,10 +1192,14 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 				firstAllele, firstCount,
 				secondAllele, secondCount)
 		} else {
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%.6f\t%s:%.6f\n",
+			// Upstream emits frequencies via the default `ostream <<`
+			// (six significant digits, trailing zeros stripped), not a
+			// fixed %.6f — e.g. `A:0.5`, not `A:0.500000`. See
+			// reference_code/vcftools/src/cpp/variant_file_output.cpp:135.
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%s\t%s:%s\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
-				firstAllele, firstFreq,
-				secondAllele, secondFreq)
+				firstAllele, formatCppDouble(firstFreq),
+				secondAllele, formatCppDouble(secondFreq))
 		}
 	}
 
@@ -1178,10 +1317,16 @@ func (s *statistics) outputMissingSite(prefix string) error {
 	fmt.Fprintln(f, "CHR\tPOS\tN_DATA\tN_GENOTYPE_FILTERED\tN_MISS\tF_MISS")
 
 	for _, stat := range s.siteMissing {
-		nData := len(s.header.Samples)
-		nMiss := int(stat.fMiss * float64(nData))
-		fmt.Fprintf(f, "%s\t%d\t%d\t0\t%d\t%.6f\n",
-			stat.chrom, stat.pos, nData, nMiss, stat.fMiss)
+		// Upstream prints F_MISS = N_MISS / N_DATA via the default
+		// ostream << (minimal %g-style formatting): 0 not 0.000000.
+		// See variant_file_output.cpp:922-923.
+		fMiss := 0.0
+		if stat.nData != 0 {
+			fMiss = float64(stat.nMiss) / float64(stat.nData)
+		}
+		fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\t%s\n",
+			stat.chrom, stat.pos, stat.nData, stat.nGenoFiltered,
+			stat.nMiss, formatCppDouble(fMiss))
 	}
 
 	return nil
@@ -1335,28 +1480,25 @@ func (s *statistics) outputHet(prefix string) error {
 
 	for _, name := range names {
 		stat := s.indvHet[name]
-		if stat.nTotal == 0 {
+		// Upstream only prints individuals with at least one included
+		// site (variant_file_output.cpp:268).
+		if stat.nSites <= 0 {
 			continue
 		}
 
-		stat.hetRate = float64(stat.nHet) / float64(stat.nTotal)
-		obsHom := stat.nHomRef + stat.nHomAlt
+		// Method-of-moments inbreeding coefficient, following PLINK:
+		//   F = (O - E) / (N - E)
+		// where O = observed homozygotes, E = expected homozygotes
+		// (summed per site as 1 - 2pq*N/(N-1)), N = sites included.
+		// See variant_file_output.cpp:270.
+		obsHom := stat.nObsHom
+		expHom := stat.expHom
+		fCoef := (float64(obsHom) - expHom) / (float64(stat.nSites) - expHom)
 
-		// Expected homozygosity assuming HWE
-		// This is a simplified calculation
-		expHom := float64(stat.nTotal) * (1 - stat.hetRate)
-
-		// Inbreeding coefficient F
-		// F = (ExpectedHet - ObservedHet) / ExpectedHet
-		expHet := float64(stat.nTotal) - expHom
-		obsHet := float64(stat.nHet)
-		f_coef := 0.0
-		if expHet > 0 {
-			f_coef = (expHet - obsHet) / expHet
-		}
-
-		fmt.Fprintf(f, "%s\t%d\t%.2f\t%d\t%.5f\n",
-			stat.name, obsHom, expHom, stat.nTotal, f_coef)
+		// Upstream prints E(HOM) at fixed precision 1 and F at fixed
+		// precision 5 (out.setf(ios::fixed); out.precision(1)/(5)).
+		fmt.Fprintf(f, "%s\t%d\t%.1f\t%d\t%.5f\n",
+			stat.name, obsHom, expHom, stat.nSites, fCoef)
 	}
 
 	return nil

@@ -854,6 +854,54 @@ func TestParity_TsTvSummary(t *testing.T) {
 	}
 }
 
+// TestVcftoolsLiveOracle runs --freq, --counts, --het, --missing-site,
+// --site-pi and --TsTv-summary on testdata/live/in.vcf and compares each
+// output file byte-for-byte against expected.* — golden files generated
+// by a freshly-built genuine VCFtools 0.1.18 binary
+// (reference_code/vcftools/src/cpp/vcftools). All six must match exactly.
+func TestVcftoolsLiveOracle(t *testing.T) {
+	liveDir, err := filepath.Abs(filepath.Join("testdata", "live"))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	in := filepath.Join(liveDir, "in.vcf")
+
+	cases := []struct {
+		name     string
+		params   *Params
+		out      string // output suffix
+		expected string // expected.* file name
+	}{
+		{"freq", &Params{Freq: true}, ".frq", "expected.frq"},
+		{"counts", &Params{Counts: true}, ".frq.count", "expected.frq.count"},
+		{"het", &Params{Het: true}, ".het", "expected.het"},
+		{"missing-site", &Params{MissingSite: true}, ".lmiss", "expected.lmiss"},
+		{"site-pi", &Params{SitePi: true}, ".sites.pi", "expected.sites.pi"},
+		{"TsTv-summary", &Params{TsTvSummary: true}, ".TsTv.summary", "expected.TsTv.summary"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			prefix := filepath.Join(tmp, "out")
+			tc.params.OutPrefix = prefix
+			f, err := os.Open(in)
+			if err != nil {
+				t.Fatalf("open in.vcf: %v", err)
+			}
+			defer f.Close()
+			if err := Run(f, tc.params); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			got := readFileBytes(t, prefix+tc.out)
+			want := readFileBytes(t, filepath.Join(liveDir, tc.expected))
+			if !bytes.Equal(got, want) {
+				t.Errorf("%s mismatch\nwant:\n%s\ngot:\n%s", tc.out, want, got)
+			}
+		})
+	}
+}
+
 // TestParity_TsTvByCount_Header — header byte-for-byte.
 func TestParity_TsTvByCount_Header(t *testing.T) {
 	prefix := runVcftoolsParity(t, "sample.vcf", &Params{TsTvByCount: true})
