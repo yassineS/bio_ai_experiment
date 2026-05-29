@@ -380,6 +380,85 @@ func TestViewOutputVCFGz(t *testing.T) {
 	}
 }
 
+// bgzfBlocks splits a BGZF stream into its constituent blocks and returns the
+// decompressed payload of each. It reads the BSIZE from the BC extra subfield
+// of every gzip member, exactly as htslib's bgzf reader does.
+func bgzfBlocks(t *testing.T, data []byte) [][]byte {
+	t.Helper()
+	var blocks [][]byte
+	for pos := 0; pos < len(data); {
+		if pos+12 > len(data) {
+			t.Fatalf("truncated BGZF header at offset %d", pos)
+		}
+		xlen := int(binary.LittleEndian.Uint16(data[pos+10 : pos+12]))
+		extra := data[pos+12 : pos+12+xlen]
+		bsize := 0
+		for i := 0; i+4 <= len(extra); {
+			si1, si2 := extra[i], extra[i+1]
+			slen := int(binary.LittleEndian.Uint16(extra[i+2 : i+4]))
+			if si1 == 'B' && si2 == 'C' {
+				bsize = int(binary.LittleEndian.Uint16(extra[i+4:i+6])) + 1
+			}
+			i += 4 + slen
+		}
+		if bsize == 0 {
+			t.Fatalf("no BC subfield in BGZF block at offset %d", pos)
+		}
+		gr, err := gzip.NewReader(bytes.NewReader(data[pos : pos+bsize]))
+		if err != nil {
+			t.Fatalf("block at offset %d not valid gzip: %v", pos, err)
+		}
+		dec, err := io.ReadAll(gr)
+		if err != nil {
+			t.Fatalf("block at offset %d decompress: %v", pos, err)
+		}
+		gr.Close()
+		blocks = append(blocks, dec)
+		pos += bsize
+	}
+	return blocks
+}
+
+// TestViewBGZFHeaderBlockBoundary verifies that -O z output places the VCF
+// header in its own BGZF block, with the records starting a fresh block, just
+// like genuine `bcftools view -Oz` (and htslib's vcf_hdr_write, which flushes
+// the BGZF block after writing the header).
+func TestViewBGZFHeaderBlockBoundary(t *testing.T) {
+	var oz bytes.Buffer
+	if _, err := View(strings.NewReader(sampleVCF), &oz, ViewOptions{OutputFormat: OutputVCFGz}); err != nil {
+		t.Fatalf("View(-O z): %v", err)
+	}
+	blocks := bgzfBlocks(t, oz.Bytes())
+	// Expect: header block, records block, EOF (empty) block.
+	if len(blocks) < 3 {
+		t.Fatalf("expected >=3 BGZF blocks (header, records, EOF), got %d", len(blocks))
+	}
+	header := string(blocks[0])
+	if !strings.HasPrefix(header, "##fileformat=") {
+		t.Fatalf("block 0 should start with the header, got:\n%s", header)
+	}
+	// The header block must end exactly at the #CHROM line + newline and must
+	// NOT contain any record data.
+	if !strings.HasSuffix(header, "\tS3\n") {
+		t.Fatalf("header block should end at the #CHROM line + newline, got tail:\n%q", header)
+	}
+	if !strings.Contains(header, "#CHROM\tPOS") {
+		t.Fatalf("header block missing #CHROM line:\n%s", header)
+	}
+	if strings.Contains(header, "chr1\t100") {
+		t.Fatalf("header block must not contain record data:\n%s", header)
+	}
+	// The next non-empty block must start with the first record.
+	records := string(blocks[1])
+	if !strings.HasPrefix(records, "chr1\t100\trs1") {
+		t.Fatalf("block 1 should start with the first record, got:\n%s", records)
+	}
+	// The final block is the empty BGZF EOF marker.
+	if len(blocks[len(blocks)-1]) != 0 {
+		t.Fatalf("last block should be the empty EOF marker, got %d bytes", len(blocks[len(blocks)-1]))
+	}
+}
+
 func TestViewBCFInput(t *testing.T) {
 	// Build a minimal BCF stream in memory and feed it to View.
 	stream := buildBCFFixture(t)

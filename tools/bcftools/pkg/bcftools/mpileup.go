@@ -3276,7 +3276,7 @@ func openMpileupOutput(out io.Writer, opts MpileupOptions, hdr *vcf.Header) (var
 				gw = g
 			}
 		}
-		return &vcfVariantWriter{vcf.NewWriter(gw, hdr)}, func() { _ = gw.Close() }, nil
+		return &vcfVariantWriter{w: vcf.NewWriter(gw, hdr)}, func() { _ = gw.Close() }, nil
 	case OutputBCF:
 		bw := bgzip.NewWriter(out)
 		w, err := bcf.NewWriterFromVCFHeader(bw, hdr)
@@ -3284,13 +3284,13 @@ func openMpileupOutput(out io.Writer, opts MpileupOptions, hdr *vcf.Header) (var
 			_ = bw.Close()
 			return nil, func() {}, err
 		}
-		return &bcfVariantWriter{w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
+		return &bcfVariantWriter{w: w, bgzf: bw}, func() { _ = w.Flush(); _ = bw.Close() }, nil
 	case OutputBCFUncompressed:
 		w, err := bcf.NewWriterFromVCFHeader(out, hdr)
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return &bcfVariantWriter{w}, func() { _ = w.Flush() }, nil
+		return &bcfVariantWriter{w: w}, func() { _ = w.Flush() }, nil
 	}
-	return &vcfVariantWriter{vcf.NewWriter(out, hdr)}, func() {}, nil
+	return &vcfVariantWriter{w: vcf.NewWriter(out, hdr)}, func() {}, nil
 }

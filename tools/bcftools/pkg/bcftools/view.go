@@ -3,7 +3,6 @@ package bcftools
 import (
 	"bufio"
 	"compress/flate"
-	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -855,18 +854,54 @@ type variantWriter interface {
 }
 
 // vcfVariantWriter is the trivial pass-through adapter for the VCF / VCF.gz
-// output paths.
-type vcfVariantWriter struct{ w *vcf.Writer }
+// output paths. When bgzf is non-nil (the -Oz path), WriteHeader closes the
+// BGZF block after the header so the header occupies its own block, matching
+// upstream bcftools / htslib's vcf_hdr_write which calls bgzf_flush after the
+// header.
+type vcfVariantWriter struct {
+	w    *vcf.Writer
+	bgzf *bgzip.Writer
+}
 
-func (a *vcfVariantWriter) WriteHeader() error         { return a.w.WriteHeader() }
+func (a *vcfVariantWriter) WriteHeader() error {
+	if err := a.w.WriteHeader(); err != nil {
+		return err
+	}
+	if a.bgzf != nil {
+		// Push the header bytes out of the vcf.Writer's bufio buffer so they
+		// reach the BGZF layer, then close the BGZF block.
+		if err := a.w.Flush(); err != nil {
+			return err
+		}
+		return a.bgzf.Flush()
+	}
+	return nil
+}
 func (a *vcfVariantWriter) Write(v *vcf.Variant) error { return a.w.Write(v) }
 func (a *vcfVariantWriter) Flush() error               { return a.w.Flush() }
 
 // bcfVariantWriter wraps a bcf.Writer so View can treat both output formats
-// the same way.
-type bcfVariantWriter struct{ w *bcf.Writer }
+// the same way. As with vcfVariantWriter, a non-nil bgzf closes the BGZF block
+// after the header for the -Ob / -Ou paths.
+type bcfVariantWriter struct {
+	w    *bcf.Writer
+	bgzf *bgzip.Writer
+}
 
-func (a *bcfVariantWriter) WriteHeader() error         { return a.w.WriteHeader() }
+func (a *bcfVariantWriter) WriteHeader() error {
+	if err := a.w.WriteHeader(); err != nil {
+		return err
+	}
+	if a.bgzf != nil {
+		// Push the header bytes out of the bcf.Writer's bufio buffer so they
+		// reach the BGZF layer, then close the BGZF block.
+		if err := a.w.Flush(); err != nil {
+			return err
+		}
+		return a.bgzf.Flush()
+	}
+	return nil
+}
 func (a *bcfVariantWriter) Write(v *vcf.Variant) error { return a.w.Write(v) }
 func (a *bcfVariantWriter) Flush() error               { return a.w.Flush() }
 
@@ -908,11 +943,20 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 	ensurePASSFilter(hdr)
 	switch opts.OutputFormat {
 	case OutputVCFGz:
-		gw, err := gzipWriter(out, opts.CompressLevel)
-		if err != nil {
-			return nil, func() {}, err
+		// Upstream -Oz emits BGZF (block-gzip with the BC subfield), not
+		// plain gzip, so the output is tabix-indexable and byte-matches
+		// `bgzip`. Use the BGZF writer rather than compress/gzip.
+		var gw *bgzip.Writer
+		if opts.CompressLevel < 0 {
+			gw = bgzip.NewWriter(out)
+		} else {
+			var err error
+			gw, err = bgzip.NewWriterLevel(out, opts.CompressLevel)
+			if err != nil {
+				return nil, func() {}, err
+			}
 		}
-		return &vcfVariantWriter{vcf.NewWriter(gw, hdr)}, func() { _ = gw.Close() }, nil
+		return &vcfVariantWriter{w: vcf.NewWriter(gw, hdr), bgzf: gw}, func() { _ = gw.Close() }, nil
 	case OutputBCF:
 		bw := bgzip.NewWriter(out)
 		w, err := bcf.NewWriterFromVCFHeader(bw, hdr)
@@ -920,7 +964,7 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 			_ = bw.Close()
 			return nil, func() {}, err
 		}
-		return &bcfVariantWriter{w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
+		return &bcfVariantWriter{w: w, bgzf: bw}, func() { _ = w.Flush(); _ = bw.Close() }, nil
 	case OutputBCFUncompressed:
 		// htslib's "wbu" mode wraps BCF in BGZF but stores each block
 		// uncompressed (deflate level 0). Match that framing so the output
@@ -934,18 +978,9 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 			_ = bw.Close()
 			return nil, func() {}, err
 		}
-		return &bcfVariantWriter{w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
+		return &bcfVariantWriter{w: w, bgzf: bw}, func() { _ = w.Flush(); _ = bw.Close() }, nil
 	}
-	return &vcfVariantWriter{vcf.NewWriter(out, hdr)}, func() {}, nil
-}
-
-// gzipWriter returns a gzip writer at the requested level (or default if
-// level < 0).
-func gzipWriter(out io.Writer, level int) (*gzip.Writer, error) {
-	if level < 0 {
-		return gzip.NewWriter(out), nil
-	}
-	return gzip.NewWriterLevel(out, level)
+	return &vcfVariantWriter{w: vcf.NewWriter(out, hdr)}, func() {}, nil
 }
 
 // LoadSamplesFile reads one sample name per line. Blank lines and comment
