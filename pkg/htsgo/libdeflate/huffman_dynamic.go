@@ -242,7 +242,12 @@ func computeLengthCounts(A []uint32, rootIdx int, lenCounts []uint32, maxCodewor
 		A[node] = (A[node] & symbolMask) | (uint32(depth) << numSymbolBits)
 
 		if depth >= maxCodewordLen {
-			depth = maxCodewordLen
+			// Mirror upstream's do{depth--}while(len_counts[depth]==0)
+			// (deflate_compress.c:1079-1081): always decrement at
+			// least once so the subsequent `len_counts[depth+1] += 2`
+			// can never write past the end of len_counts (which has
+			// length maxCodewordLen+1).
+			depth = maxCodewordLen - 1
 			for lenCounts[depth] == 0 {
 				depth--
 			}

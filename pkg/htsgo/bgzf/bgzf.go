@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/libdeflate"
 )
 
 // MaxBlockSize is the maximum number of uncompressed bytes a single BGZF block
@@ -69,6 +71,14 @@ const (
 // Writer compresses bytes into a BGZF stream. Writes are buffered up to
 // MaxBlockSize bytes; each buffered chunk is emitted as one gzip member with
 // the BGZF BC subfield. Close emits the final BGZF EOF block.
+//
+// Each block's DEFLATE payload is produced by the in-tree libdeflate port
+// (pkg/htsgo/libdeflate), so the bytes on disk match upstream
+// htslib/bgzip 1.x byte-for-byte at the default level (6). Levels outside
+// libdeflate's supported [1, 12] range trigger an error at construction
+// time; levels outside the [2, 7] band that the libdeflate Go port
+// presently models exactly will fall back to the trivial Slice 1 encoder
+// — still valid DEFLATE, but not byte-identical with htslib.
 type Writer struct {
 	w     io.Writer
 	level int
@@ -76,11 +86,15 @@ type Writer struct {
 	buf [MaxBlockSize]byte
 	n   int
 
-	// scratch buffer for the deflate output of one block. flate may write
-	// slightly more than the input size on incompressible data, so size this
-	// generously.
+	// scratch buffer for the deflate output of one block. The libdeflate
+	// port returns a fresh slice per call; this buffer is reused only for
+	// the fallback flate path (unused once everything routes through
+	// libdeflate). flate may write slightly more than the input size on
+	// incompressible data, so size this generously.
 	deflated bytes.Buffer
-	fw       *flate.Writer
+	// fw is the legacy compress/flate writer, retained only so the
+	// fallback path keeps working when an unusual level is selected.
+	fw *flate.Writer
 
 	err    error
 	closed bool
@@ -96,6 +110,10 @@ func NewWriter(w io.Writer) *Writer {
 // Valid levels are flate.HuffmanOnly, flate.NoCompression (0),
 // flate.BestSpeed (1) through flate.BestCompression (9), and
 // flate.DefaultCompression (-1).
+//
+// When level is in the libdeflate-supported range (1..12) the BGZF
+// payload is produced by the in-tree libdeflate port for byte-identity
+// with upstream htslib. Other levels fall back to compress/flate.
 func NewWriterLevel(w io.Writer, level int) (*Writer, error) {
 	fw, err := flate.NewWriter(io.Discard, level)
 	if err != nil {
@@ -182,16 +200,10 @@ func (w *Writer) flushBlock() error {
 // given payload (which may be empty — that's how the EOF block is built, though
 // EOFBlock is hard-coded for cross-implementation byte-identity).
 func (w *Writer) encodeBlock(payload []byte) error {
-	// Run deflate on the payload.
-	w.deflated.Reset()
-	w.fw.Reset(&w.deflated)
-	if _, err := w.fw.Write(payload); err != nil {
+	deflated, err := w.deflatePayload(payload)
+	if err != nil {
 		return err
 	}
-	if err := w.fw.Close(); err != nil {
-		return err
-	}
-	deflated := w.deflated.Bytes()
 
 	// Compute the total compressed block size:
 	//   12 bytes fixed header + 6 bytes BC subfield + len(deflated)
@@ -230,6 +242,61 @@ func (w *Writer) encodeBlock(payload []byte) error {
 		return err
 	}
 	return nil
+}
+
+// htslibLevelMap mirrors lvl_map[] in htslib's bgzf.c bgzf_compress:
+//
+//	int lvl_map[] = {0,1,2,3,5,6,7,8,10,12};
+//	level = lvl_map[level>9 ? 9 : level];
+//
+// htslib accepts a zlib-style level in [0..9] (or -1 → 6) at the public
+// API boundary but internally remaps it to libdeflate's [0..12] scale.
+// Reproducing the map here lets a BGZF Writer created with level 6
+// (zlib default) drive libdeflate at level 7, which is what htslib
+// itself does — and what the .tbi/.csi/BAM fixtures in this repo were
+// produced with.
+var htslibLevelMap = [10]int{0, 1, 2, 3, 5, 6, 7, 8, 10, 12}
+
+// libdeflateLevel converts a zlib-style level (0..9) into the
+// libdeflate level htslib would use for the same BGZF block. Inputs
+// outside the [0, 9] range are returned unchanged, which lets callers
+// who already speak libdeflate's native scale (e.g. tests, or future
+// code wanting to opt into level 11/12) pass through.
+func libdeflateLevel(level int) int {
+	if level >= 0 && level <= 9 {
+		return htslibLevelMap[level]
+	}
+	return level
+}
+
+// deflatePayload compresses payload with the in-tree libdeflate port when
+// the configured level is in libdeflate's [1, 12] range, falling back to
+// compress/flate otherwise. The libdeflate path is what gives BGZF blocks
+// byte-for-byte equality with upstream htslib/bgzip.
+func (w *Writer) deflatePayload(payload []byte) ([]byte, error) {
+	if w.level >= 0 && w.level <= 12 {
+		lvl := libdeflateLevel(w.level)
+		if lvl == 0 {
+			// libdeflate level 0 is "all stored, no compression";
+			// our port reserves level 0 (the public API rejects it).
+			// Fall through to compress/flate so the caller still gets
+			// a valid stream, even if it's not byte-identical to htslib.
+		} else if lvl >= 1 && lvl <= 12 {
+			return libdeflate.DeflateCompress(payload, lvl)
+		}
+	}
+	w.deflated.Reset()
+	w.fw.Reset(&w.deflated)
+	if _, err := w.fw.Write(payload); err != nil {
+		return nil, err
+	}
+	if err := w.fw.Close(); err != nil {
+		return nil, err
+	}
+	// Copy out because w.deflated is reused on the next call.
+	out := make([]byte, w.deflated.Len())
+	copy(out, w.deflated.Bytes())
+	return out, nil
 }
 
 func min(a, b int) int {

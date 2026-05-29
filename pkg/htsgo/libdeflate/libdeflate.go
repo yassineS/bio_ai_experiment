@@ -37,6 +37,36 @@ func GzipCompress(src []byte, level int) ([]byte, error) {
 	out = writeGzipHeader(out, level)
 
 	bw := newBitWriter(out)
+	writeDeflateStream(bw, src, level)
+	out = bw.flush()
+
+	out = writeGzipTrailer(out, src)
+	return out, nil
+}
+
+// DeflateCompress compresses src at the given compression level and
+// returns the raw DEFLATE byte stream (RFC 1951) — no gzip header or
+// trailer. The output is byte-identical to libdeflate's
+// libdeflate_deflate_compress on the same fixtures GzipCompress
+// validates against. This is the entry point used by the BGZF writer
+// (pkg/htsgo/bgzf), since BGZF wraps each block with its own
+// gzip-with-BC-subfield header instead of the standard RFC 1952 one.
+func DeflateCompress(src []byte, level int) ([]byte, error) {
+	if level < minCompressionLevel || level > maxCompressionLevel {
+		return nil, fmt.Errorf("libdeflate: invalid compression level %d (want %d..%d)",
+			level, minCompressionLevel, maxCompressionLevel)
+	}
+	bw := newBitWriter(make([]byte, 0, len(src)/2+16))
+	writeDeflateStream(bw, src, level)
+	return bw.flush(), nil
+}
+
+// writeDeflateStream emits one or more DEFLATE blocks for src into bw,
+// terminating with BFINAL=1 on the final block. The dispatch matches
+// libdeflate's deflate_compress: short inputs go through the all-stored
+// passthrough, mid-range levels (5–7) drive the lazy parser + cost
+// chooser, and other levels fall back to the trivial encoder (Slice 1).
+func writeDeflateStream(bw *bitWriter, src []byte, level int) {
 	switch {
 	case uint64(len(src)) <= maxPassthroughSize(level):
 		writeStoredBlocks(bw, src, true)
@@ -46,10 +76,6 @@ func GzipCompress(src []byte, level int) ([]byte, error) {
 		items := trivialLZ77(src)
 		writeStaticBlock(bw, items, true)
 	}
-	out = bw.flush()
-
-	out = writeGzipTrailer(out, src)
-	return out, nil
 }
 
 // writeLazyBlocks runs the lazy matchfinder over src and emits each
