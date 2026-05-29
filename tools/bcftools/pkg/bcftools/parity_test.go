@@ -1141,8 +1141,14 @@ func TestParityHead_NumLines(t *testing.T) {
 	if lines[0] != "##fileformat=VCFv4.2" {
 		t.Errorf("line 1 = %q, want fileformat", lines[0])
 	}
-	if lines[1] != "##contig=<ID=chr1,length=10000>" {
-		t.Errorf("line 2 = %q, want contig chr1", lines[1])
+	// htslib injects the implicit ##FILTER=<ID=PASS> line right after
+	// ##fileformat, so genuine `bcftools head -h 3` emits it as line 2
+	// (verified against bcftools 1.23.1) and the first contig as line 3.
+	if lines[1] != `##FILTER=<ID=PASS,Description="All filters passed">` {
+		t.Errorf("line 2 = %q, want implicit PASS filter", lines[1])
+	}
+	if lines[2] != "##contig=<ID=chr1,length=10000>" {
+		t.Errorf("line 3 = %q, want contig chr1", lines[2])
 	}
 }
 
