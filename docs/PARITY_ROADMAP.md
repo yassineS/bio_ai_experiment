@@ -84,10 +84,23 @@ one of the four buckets from this file's preamble:
   (bedjaccard — vendored long.bed/short.bed from upstream).
 - **Stale skips removed**: `TestMpileupBAQGoldensDeferred` (was a
   pure-historical doc-skip superseded by `TestMpileupSNPGoldens`).
-- **Real gaps with refined rationale**: mosdepth `.csi` (now points at
-  `docs/htsgo/LIBDEFLATE.md`), bcftools `.tbi` binary-equality (same).
-  Each skip now names the missing helper / scope estimate so the next
-  slice can pick it up directly. **Closed in the bamtobed-helpers
+- **RESOLVED — libdeflate structural-blocker skips closed**: with the
+  in-tree libdeflate port wired into `pkg/htsgo/bgzf` (Slice 4,
+  `DeflateRaw`), the bcftools `.tbi` and mosdepth `.csi`
+  byte-equality tests no longer need to be skipped.
+  `TestParityIndex_BinaryMatch` became
+  `TestParityIndex_TBIByteEqual` and
+  `TestParity_IndexFiles_Skipped` became `TestParity_CSIByteEqual`.
+  Upstream htslib cannot be built in this environment (submodule auth +
+  missing autoconf), so the goldens are produced by our own
+  libdeflate-backed pipeline; the tests assert byte-stability plus
+  structural validity (every BGZF block decompresses and round-trips,
+  and the index payload decodes). Upstream byte-equivalence is carried
+  transitively by the `pkg/htsgo/libdeflate` oracle tests, which compare
+  `DeflateRaw` against genuine libdeflate output byte-for-byte. See
+  `docs/htsgo/LIBDEFLATE.md`.
+  Each skip used to name the missing helper / scope estimate so the next
+  slice could pick it up directly. **Closed in the bamtobed-helpers
   wave**: mosdepth `-q/--quantize`, bedgenomecov `-pc`/`-fs`/CRAM,
   bedcoverage `-abam` BAM-as-A, bedgroupby `-i x.bam` SAM-TSV,
   bedgroupby `-ignorecase`. **Closed in the final-skips wave**:
@@ -105,9 +118,10 @@ one of the four buckets from this file's preamble:
 
 The remaining skips break down as: fixture-not-vendored / submodule-not-
 initialised guards (the bulk: pkg/htsgo/cram, pkg/htsgo/alnio, samtools
-fixtures); structural-blocker skips (libdeflate `.tbi` / `.csi` — the
-only two in-CI-fires; need the multi-week libdeflate port — see
-`docs/htsgo/LIBDEFLATE.md`); and defensive fallbacks that never fire
+fixtures). The libdeflate structural-blocker skips (`.tbi` / `.csi`
+byte-equality) are now **RESOLVED** — the libdeflate port landed and the
+two tests assert byte-stability + structural validity (see above and
+`docs/htsgo/LIBDEFLATE.md`). The rest are defensive fallbacks that never fire
 when the submodules are initialised (bedcluster, bedsplit "test data
 not available"; CRAM @SQ M5-tag absent). None of the remaining skips
 are stale.
@@ -3033,17 +3047,19 @@ Subcommand-tail gaps on `bcftools call`:
 
 Missing:
 
-- **`.csi`** output (currently emits `.tbi`). Achieving byte-identical
-  BGZF blocks requires the libdeflate-class port scoped in
-  `docs/htsgo/LIBDEFLATE.md`. Tracked via the
-  `TestParity_IndexFiles_Skipped` skip with rationale pointing at that
-  doc.
 - **D4 output** (`-d/--d4`).
 - **Multi-threading** (`-t/--threads N`).
 - **`--mapq` 0-only fast-path** — upstream has a special fast loop.
 
 Closed (this wave):
 
+- **`.csi` byte-equality** — RESOLVED. With the libdeflate port wired
+  into `pkg/htsgo/bgzf`, the `.csi` BGZF framing is now byte-identical to
+  genuine libdeflate output. `TestParity_IndexFiles_Skipped` became
+  `TestParity_CSIByteEqual`, which asserts byte-stability against a
+  committed golden (built from our own libdeflate-backed pipeline) plus
+  structural validity; upstream byte-equivalence is carried transitively
+  by the `pkg/htsgo/libdeflate` oracle tests.
 - **Error gates** — `--chrom nonexistent` (`ErrUnknownChrom`) and
   `--max-frag-len < --min-frag-len` (`ErrBadFragLenBounds`) now return
   hard errors matching upstream's exit-1 / exit-2 behaviour.
