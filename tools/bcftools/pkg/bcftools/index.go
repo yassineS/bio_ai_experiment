@@ -12,11 +12,115 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
+
+// tbxMaxShift mirrors htslib's TBX_MAX_SHIFT (the maximum interval shift the
+// tabix/VCF CSI scheme addresses before adjusting min_shift).
+const tbxMaxShift = 31
+
+// maxContigLenFromHeaderText scans VCF-style ##contig=<...,length=N> lines in
+// the verbatim header text and returns the largest length found, or 0 if none
+// carry a length attribute. It mirrors htslib's adjust_max_ref_len_vcf
+// (tbx.c:413) / idx_calc_n_lvls_ids contig scan (vcf.c:4637).
+func maxContigLenFromHeaderText(text string) int64 {
+	var max int64
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, "##contig") {
+			continue
+		}
+		idx := strings.Index(line[8:], "length")
+		if idx < 0 {
+			continue
+		}
+		ptr := line[8+idx+6:]
+		ptr = strings.TrimLeft(ptr, " =")
+		// Read the leading integer run (strtoll semantics).
+		end := 0
+		for end < len(ptr) && ptr[end] >= '0' && ptr[end] <= '9' {
+			end++
+		}
+		if end == 0 {
+			continue
+		}
+		n, err := strconv.ParseInt(ptr[:end], 10, 64)
+		if err == nil && n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// vcfHeaderText returns the leading run of '#'-prefixed header lines from a
+// decompressed VCF, joined with newlines. This is the text we scan for
+// ##contig lengths when computing the CSI depth, mirroring how htslib's tabix
+// path consults the parsed VCF header.
+func vcfHeaderText(data []byte) string {
+	var sb strings.Builder
+	for len(data) > 0 {
+		nl := bytes.IndexByte(data, '\n')
+		var line []byte
+		if nl < 0 {
+			line = data
+			data = nil
+		} else {
+			line = data[:nl]
+			data = data[nl+1:]
+		}
+		if len(line) == 0 || line[0] != '#' {
+			break
+		}
+		sb.Write(line)
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
+// csiSettingsForBCF computes the (min_shift, n_lvls) htslib's bcf_index path
+// uses: starting n_lvls=0, then hts_adjust_csi_settings from the longest
+// contig (defaulting to (1<<31)-1 when no contig line carries a length).
+// Mirrors idx_calc_n_lvls_ids (vcf.c:4637) called with starting_n_lvls=0.
+func csiSettingsForBCF(minShift int32, headerText string) (int32, int32) {
+	if minShift <= 0 {
+		minShift = 14
+	}
+	maxLen := maxContigLenFromHeaderText(headerText)
+	if maxLen == 0 {
+		maxLen = (int64(1) << 31) - 1
+	}
+	return tabix.AdjustCSISettings(maxLen, minShift, 0)
+}
+
+// csiSettingsForVCFGz computes the (min_shift, n_lvls) htslib's tabix path uses
+// for VCF.gz: starting n_lvls=(TBX_MAX_SHIFT-min_shift+2)/3, then
+// hts_adjust_csi_settings from the longest ##contig length. When no contig line
+// carries a length, htslib leaves the large default n_lvls untouched. Mirrors
+// tbx_index (tbx.c:438).
+func csiSettingsForVCFGz(minShift int32, headerText string) (int32, int32) {
+	if minShift <= 0 {
+		minShift = 14
+	}
+	nLvls := (tbxMaxShift - minShift + 2) / 3
+	maxLen := maxContigLenFromHeaderText(headerText)
+	if maxLen == 0 {
+		const maxNLvls = 9
+		switch {
+		case minShift < 10:
+			nLvls = maxNLvls
+		case minShift < 25:
+			nLvls = maxNLvls - (minShift-10)/3
+		default:
+			nLvls = 4
+		}
+		return minShift, nLvls
+	}
+	return tabix.AdjustCSISettings(maxLen, minShift, nLvls)
+}
 
 // IndexFormat selects the on-disk index flavour.
 type IndexFormat int
@@ -159,17 +263,31 @@ func buildCSIForBCF(path string, minShift int32) (*tabix.CSI, error) {
 	if err != nil {
 		return nil, err
 	}
-	bodyStart := int64(len(data)) - int64(rdr.Len())
+	// Compute where the record body begins directly from the on-disk header
+	// layout: 5-byte magic ("BCF\2\2") + 4-byte l_text + l_text bytes of
+	// header text (NUL-terminated). We cannot derive this from rdr.Len()
+	// because bcf.ReadHeader wraps rdr in a bufio.Reader that drains the
+	// underlying reader, leaving rdr.Len()==0. l_text on the wire includes
+	// the trailing NUL(s) that ReadHeader trims, so we read it raw here.
+	if len(data) < 9 {
+		return nil, errors.New("bcftools index: BCF too short for header")
+	}
+	lText := binary.LittleEndian.Uint32(data[5:9])
+	bodyStart := int64(9) + int64(lText)
 	pos := bodyStart
 
-	csi := tabix.NewCSI(minShift, 5)
-	// Encode the contig names + tabix-style preset block so consumers can
-	// look up refIDs by name (mirrors htslib's CSI-for-BCF auxiliary block).
-	names := make([]string, len(hdr.Contigs))
+	// htslib's BCF CSI computes depth (n_lvls) from the longest contig and
+	// writes NO auxiliary block: the reference names/lengths live in the
+	// embedded BCF header, not the index aux (l_aux=0). See bcf_index /
+	// idx_calc_n_lvls_ids (vcf.c).
+	ms, depth := csiSettingsForBCF(minShift, hdr.Text)
+	csi := tabix.NewCSIExact(ms, depth)
+	// Carry the contig name list in-memory for callers that look up refIDs by
+	// name, but do not serialise it into the aux block.
+	csi.Names = make([]string, len(hdr.Contigs))
 	for i, c := range hdr.Contigs {
-		names[i] = c.ID
+		csi.Names[i] = c.ID
 	}
-	csi.SetAuxFromTabix(tabix.Config{Format: tabix.FormatVCF, ColSeq: 1, ColBeg: 2, ColEnd: 0, Meta: '#', Skip: 0}, names)
 
 	br2 := bcf.NewReaderWithHeader(hdr)
 	for {
@@ -270,7 +388,13 @@ func buildCSIForVCFGz(path string, minShift int32) (*tabix.CSI, error) {
 
 	uoffToV := func(pos int64) tabix.VOffset { return tabix.VOffsetAt(offsets, pos) }
 
-	csi := tabix.NewCSI(minShift, 5)
+	// htslib's tabix CSI computes depth (n_lvls) from the longest ##contig
+	// length, starting from n_lvls=(TBX_MAX_SHIFT-min_shift+2)/3, then
+	// hts_adjust_csi_settings. Extract the verbatim header text (the leading
+	// run of '#'-prefixed lines) so we can replicate that computation before
+	// allocating the index.
+	ms, depth := csiSettingsForVCFGz(minShift, vcfHeaderText(data))
+	csi := tabix.NewCSIExact(ms, depth)
 	csi.SetAuxFromTabix(tabix.Config{Format: tabix.FormatVCF, ColSeq: 1, ColBeg: 2, ColEnd: 0, Meta: '#', Skip: 0}, nil)
 	// Build the name list as we encounter chroms.
 	nameID := map[string]int{}

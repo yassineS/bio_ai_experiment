@@ -79,6 +79,21 @@ func NewCSI(minShift, depth int32) *CSI {
 	return &CSI{MinShift: minShift, Depth: depth}
 }
 
+// NewCSIExact returns a CSI with the given (minShift, depth) applied verbatim,
+// without the default-substitution NewCSI performs. A depth of 0 is a legal
+// CSI configuration (htslib computes it for short references via
+// hts_adjust_csi_settings), so callers that derive depth from a reference
+// length must use this constructor rather than NewCSI.
+func NewCSIExact(minShift, depth int32) *CSI {
+	if minShift <= 0 {
+		minShift = 14
+	}
+	if depth < 0 {
+		depth = 0
+	}
+	return &CSI{MinShift: minShift, Depth: depth}
+}
+
 // TBXMaxShift mirrors htslib's TBX_MAX_SHIFT: the maximum interval shift the
 // tabix CSI scheme addresses before adjusting min_shift.
 const TBXMaxShift = 31
@@ -100,6 +115,37 @@ func csiDepthForGeneric(minShift int32) int32 {
 	default:
 		return 4
 	}
+}
+
+// binMaxPos mirrors htslib's hts_bin_maxpos (hts.h): the 0-based exclusive
+// maximum position a binning index addresses at (minShift, nLvls).
+func binMaxPos(minShift, nLvls int32) int64 {
+	return int64(1) << uint32(minShift+nLvls*3)
+}
+
+// AdjustCSISettings ports htslib's hts_adjust_csi_settings (hts.c:2374). Given
+// the longest reference length and a starting (minShift, nLvls), it returns the
+// (minShift, nLvls) that just covers maxLen. It first tries to grow nLvls
+// (capped at maxNLvls=9); only if even nLvls=9 cannot reach maxLen does it grow
+// minShift instead. The +256 slack matches htslib exactly.
+func AdjustCSISettings(maxLen int64, minShift, nLvls int32) (int32, int32) {
+	const maxNLvls = 9
+	maxLen += 256
+	if maxLen <= binMaxPos(minShift, maxNLvls) {
+		maxpos := binMaxPos(minShift, nLvls)
+		for maxLen > maxpos {
+			nLvls++
+			maxpos *= 8
+		}
+		return minShift, nLvls
+	}
+	nLvls = maxNLvls
+	maxpos := binMaxPos(minShift, nLvls)
+	for maxLen > maxpos {
+		minShift++
+		maxpos *= 2
+	}
+	return minShift, nLvls
 }
 
 // MaxPos returns the largest 0-based position addressable at the current

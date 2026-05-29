@@ -56,8 +56,15 @@ chr2	50	c	G	A	30	PASS	DP=30
 	if err != nil {
 		t.Fatalf("tabix.ReadCSIFile: %v", err)
 	}
-	if csi.MinShift != 14 || csi.Depth != 5 {
+	// htslib computes n_lvls from the longest contig: with both contigs at
+	// length 1000, hts_adjust_csi_settings yields depth 0 (1000+256 fits in
+	// hts_bin_maxpos(14,0)=16384). Confirmed against genuine
+	// `bcftools index -c`, which writes min_shift=14, n_lvls=0, l_aux=0.
+	if csi.MinShift != 14 || csi.Depth != 0 {
 		t.Errorf("unexpected params: %+v", csi)
+	}
+	if len(csi.Aux) != 0 {
+		t.Errorf("BCF CSI must have no aux block, got %d bytes", len(csi.Aux))
 	}
 	// Should have at least 2 refs (chr1, chr2).
 	if len(csi.Refs) < 2 {
@@ -245,5 +252,74 @@ chr1	1	.	A	T	.	PASS	.
 	}
 	if got, _ := looksLikeBCF(vcfPath); got {
 		t.Error("plain VCF should not detect as BCF")
+	}
+}
+
+// oracleDir is the path (relative to this package) to the committed genuine
+// upstream CSI oracles produced by `bcftools index -c` / `tabix --csi -p vcf`.
+const oracleDir = "../../../../pkg/htsgo/tabix/testdata/bcf_csi"
+
+// TestCSIDepthAdjustBCF asserts our BCF .csi is byte-identical to one produced
+// by genuine `bcftools index -c`. It exercises the depth computation
+// (hts_adjust_csi_settings: depth 0 for short contigs) and the l_aux=0 (no aux
+// block) behaviour htslib uses for BCF indexes.
+func TestCSIDepthAdjustBCF(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(oracleDir, "in.bcf")
+	bcfPath := filepath.Join(dir, "in.bcf")
+	copyFileForIndex(t, src, bcfPath)
+
+	out, err := BuildIndex(bcfPath, IndexOptions{Format: IndexCSI, Force: true})
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join(oracleDir, "expected.csi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("BCF .csi not byte-equal to genuine `bcftools index -c`: got %d bytes, want %d", len(got), len(want))
+	}
+}
+
+// TestCSIDepthAdjustVCFGz asserts our VCF.gz .csi is byte-identical to one
+// produced by genuine `tabix --csi -p vcf`. The depth here is computed from the
+// ##contig length (10000), and the tabix conf aux block is retained.
+func TestCSIDepthAdjustVCFGz(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(oracleDir, "vcf_in.vcf.gz")
+	vcfPath := filepath.Join(dir, "in.vcf.gz")
+	copyFileForIndex(t, src, vcfPath)
+
+	out, err := BuildIndex(vcfPath, IndexOptions{Format: IndexCSI, Force: true})
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join(oracleDir, "vcf_expected.csi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("VCF.gz .csi not byte-equal to genuine `tabix --csi -p vcf`: got %d bytes, want %d", len(got), len(want))
+	}
+}
+
+// copyFileForIndex copies src to dst for the oracle round-trip tests.
+func copyFileForIndex(t *testing.T, src, dst string) {
+	t.Helper()
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	if err := os.WriteFile(dst, b, 0o644); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
 	}
 }
