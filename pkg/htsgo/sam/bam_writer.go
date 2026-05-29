@@ -8,7 +8,6 @@ import (
 	"math"
 
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
-	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 // BAMWriter emits BAM-encoded records on top of a BGZF stream.
@@ -57,14 +56,27 @@ func (bw *BAMWriter) WriteHeader(h *Header) error {
 			return err
 		}
 	}
-	_, err := bw.bw.Write(buf.Bytes())
-	return err
+	if _, err := bw.bw.Write(buf.Bytes()); err != nil {
+		return err
+	}
+	// htslib's sam_hdr_write calls bgzf_flush after writing the BAM header
+	// (sam.c:2053), ending the header's BGZF block before any records are
+	// written so the header occupies its own block(s). Mirror that here.
+	return bw.bw.Flush()
 }
 
 // Write serialises one record into the BAM stream.
 func (bw *BAMWriter) Write(rec *Record) error {
 	body, err := bw.encodeRecord(rec)
 	if err != nil {
+		return err
+	}
+	// htslib calls bgzf_flush_try(fp, 4 + block_len) before writing each
+	// record (sam.c:889), where block_len is the record body size and the
+	// leading 4 accounts for the little-endian block_size prefix written
+	// just below. This guarantees a record never straddles a BGZF block
+	// boundary, matching samtools view -b byte-for-byte.
+	if err := bw.bw.FlushTry(4 + len(body)); err != nil {
 		return err
 	}
 	var sz [4]byte
@@ -127,7 +139,19 @@ func (bw *BAMWriter) encodeRecord(rec *Record) ([]byte, error) {
 	}
 
 	lSeq := int32(len(rec.Seq))
-	bin := reg2bin(int(bamPos), int(bamPos)+rec.Cigar.ReferenceLength())
+	// Match htslib sam_parse1 (sam.c:551-558): the reference length used for
+	// binning comes from the CIGAR only when the read is mapped; unmapped
+	// reads ignore their CIGAR and use rlen=1, and a mapped read with no
+	// reference span is also clamped to rlen=1. bam_reg2bin then receives the
+	// 0-based pos (which may be -1) directly.
+	rlen := 0
+	if rec.Flag&FlagUnmapped == 0 {
+		rlen = rec.Cigar.ReferenceLength()
+	}
+	if rlen == 0 {
+		rlen = 1
+	}
+	bin := reg2bin(int(bamPos), int(bamPos)+rlen)
 
 	// Fixed 32-byte header.
 	binary.Write(&buf, binary.LittleEndian, refID)
@@ -337,13 +361,22 @@ func writeBAMIntCompact(buf *bytes.Buffer, v int64) {
 	}
 }
 
-// reg2bin computes the UCSC bin number for a 0-based half-open [beg, end)
-// interval, delegating to the shared implementation in pkg/htsgo/tabix.
-// For BAM records the writer guards against a degenerate empty CIGAR (which
-// gives end == beg) by bumping end up so Reg2bin's half-open contract is met.
+// reg2bin computes the BAM bin number for a 0-based half-open [beg, end)
+// interval, replicating htslib's bam_reg2bin == hts_reg2bin(beg, end, 14, 5)
+// (hts.h:1516) byte-for-byte. Unlike tabix.Reg2bin it deliberately does NOT
+// clamp a degenerate interval: htslib feeds bam_reg2bin the raw 0-based pos,
+// which is -1 for an unmapped read with SAM POS 0, and relies on the
+// arithmetic right shift of the negative value (e.g. (-1)>>14 == -1) to land
+// such reads in bin 4680. Clamping end up (as the index path does) would
+// instead yield bin 0 and diverge from samtools view -b.
 func reg2bin(beg, end int) int {
-	if end <= beg {
-		end = beg + 1
+	s := 14
+	t := ((1 << 15) - 1) / 7
+	end--
+	for l := 5; l > 0; l, s, t = l-1, s+3, t-(1<<(((l-1)<<1)+(l-1))) {
+		if beg>>s == end>>s {
+			return t + (beg >> s)
+		}
 	}
-	return tabix.Reg2bin(beg, end)
+	return 0
 }

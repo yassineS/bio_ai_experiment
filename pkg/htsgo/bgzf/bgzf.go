@@ -161,6 +161,23 @@ func (w *Writer) Flush() error {
 	return w.flushBlock()
 }
 
+// FlushTry flushes the current partial block if appending size more bytes
+// would overflow MaxBlockSize, ensuring the next write starts a fresh block
+// rather than straddling a boundary. It mirrors htslib's bgzf_flush_try
+// (bgzf.c:bgzf_flush_try): flush iff block_offset + size > BGZF_BLOCK_SIZE.
+// When size still fits in the current block it is a no-op. BAM record writes
+// call this before each record so a record never spans two BGZF blocks, which
+// is required for byte-for-byte parity with samtools view -b.
+func (w *Writer) FlushTry(size int) error {
+	if w.err != nil {
+		return w.err
+	}
+	if w.n+size > MaxBlockSize {
+		return w.Flush()
+	}
+	return nil
+}
+
 // Close flushes any buffered bytes, writes the BGZF EOF block, and releases
 // internal resources. Close does not close the underlying writer.
 func (w *Writer) Close() error {
