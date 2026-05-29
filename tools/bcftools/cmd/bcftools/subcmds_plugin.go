@@ -116,7 +116,7 @@ func runPlugin(args []string, pluginName string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(hostArgs); err != nil {
+	if err := parseFlags(fs, hostArgs); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, pluginUsage)
 		return 2

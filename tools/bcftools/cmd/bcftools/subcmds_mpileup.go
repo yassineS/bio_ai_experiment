@@ -288,7 +288,7 @@ func runMpileup(args []string) int {
 	mf := &mpileupFlags{}
 	registerMpileupFlags(fs, mf)
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, mpileupUsage)
 		return 2

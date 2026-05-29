@@ -60,7 +60,7 @@ func runMerge(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, mergeUsage)
 		return 2
@@ -158,7 +158,7 @@ func runIsec(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, isecUsage)
 		return 2
@@ -261,7 +261,7 @@ func runSort(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, sortUsage)
 		return 2
@@ -330,7 +330,7 @@ func runHead(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, headUsage)
 		return 2
@@ -402,7 +402,7 @@ func runReheader(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, reheaderUsage)
 		return 2
@@ -499,7 +499,7 @@ func runAnnotate(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, annotateUsage)
 		return 2
@@ -550,27 +550,91 @@ func runAnnotate(args []string) int {
 	return 0
 }
 
-// expandOutputTypeFlag rewrites the combined short output-type form
-// `-O<x>` (e.g. `-Ob`, `-Oz`, `-Ou`, `-Ov`) into the two-token form
-// `-O <x>` that Go's flag package accepts. Upstream bcftools accepts
-// `-Ob` as a single token; Go's flag package does not, so we normalise
-// the argument list before parsing. The separated (`-O b`), long
-// (`--output-type b`), and `=`-joined (`--output-type=b`) forms are
-// already handled by the flag package and pass through untouched.
-// Parsing stops at the first bare `--` (end-of-options marker) so that
-// positional arguments such as regions or filenames are never rewritten.
-func expandOutputTypeFlag(args []string) []string {
+// boolFlag is the optional interface the standard library's flag package
+// uses to recognise boolean flags (those that do not consume a following
+// value). We use it to distinguish value-taking short flags from boolean
+// ones when normalising getopt-style attached values.
+type boolFlag interface {
+	IsBoolFlag() bool
+}
+
+// valueTakingShortFlags inspects fs and returns the set of registered
+// single-character flag names that consume a value (i.e. are NOT boolean
+// flags). These are the only short flags for which an attached value
+// (`-Xvalue`) is meaningful in upstream getopt semantics.
+func valueTakingShortFlags(fs *flag.FlagSet) map[byte]bool {
+	set := make(map[byte]bool)
+	fs.VisitAll(func(f *flag.Flag) {
+		if len(f.Name) != 1 {
+			return
+		}
+		if bf, ok := f.Value.(boolFlag); ok && bf.IsBoolFlag() {
+			return
+		}
+		set[f.Name[0]] = true
+	})
+	return set
+}
+
+// normalizeShortFlags rewrites getopt-style attached short-flag values
+// into the two-token form that Go's flag package accepts. Upstream
+// bcftools is getopt-based and accepts a value attached directly to a
+// single-letter flag (e.g. `-Ob`, `norm -m-`, `-m+`, `-mboth`); Go's
+// flag package only accepts `-X value` or `-X=value`. For each argument
+// of the form `-X...` where X is a registered value-taking short flag
+// and extra characters follow X, it splits the token into `-X` and the
+// remainder. So `-Ob` -> `-O b`, `-m-` -> `-m -`, `-mboth` -> `-m both`.
+//
+// It deliberately leaves untouched:
+//   - long flags (`--foo`, `--foo=bar`),
+//   - boolean short flags (which take no value),
+//   - the `-X=value` form (already valid; passed through),
+//   - a bare `-` (stdin/stdout),
+//   - everything after a bare `--` (end-of-options marker).
+func normalizeShortFlags(fs *flag.FlagSet, args []string) []string {
+	values := valueTakingShortFlags(fs)
 	out := make([]string, 0, len(args)+2)
 	for i, a := range args {
 		if a == "--" {
 			out = append(out, args[i:]...)
 			break
 		}
-		if len(a) > 2 && strings.HasPrefix(a, "-O") && a[2] != '=' && !strings.HasPrefix(a, "--") {
-			out = append(out, "-O", a[2:])
-			continue
+		// Candidate: a single-dash flag with at least one char after
+		// the flag letter, and not a long flag (`--`) or bare `-`.
+		if len(a) > 2 && a[0] == '-' && a[1] != '-' {
+			if values[a[1]] && a[2] != '=' {
+				out = append(out, a[:2], a[2:])
+				continue
+			}
 		}
 		out = append(out, a)
 	}
 	return out
+}
+
+// parseFlags is the shared parse entry point for every bcftools
+// subcommand. It (1) ensures `--no-version` is accepted (see
+// registerNoVersionIfAbsent) and (2) normalises getopt-style attached
+// short-flag values (see normalizeShortFlags) so all subcommands accept
+// the upstream attached short-flag forms (`-Ob`, `-m-`, ...) and
+// `--no-version` uniformly, before delegating to fs.Parse.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	registerNoVersionIfAbsent(fs)
+	return fs.Parse(normalizeShortFlags(fs, args))
+}
+
+// registerNoVersionIfAbsent registers a no-op `--no-version` boolean flag
+// on fs when one is not already present. Upstream bcftools accepts
+// `--no-version` as a per-subcommand option that suppresses the
+// `##bcftools_*Version`/`##bcftools_*Command` provenance header lines.
+// Subcommands that already register `--no-version` (and wire it into
+// their options) keep their own registration; this only fills the gap for
+// subcommands such as `view` and `norm` which never emit a provenance
+// line, so accepting the flag is a safe no-op.
+func registerNoVersionIfAbsent(fs *flag.FlagSet) {
+	if fs.Lookup("no-version") != nil {
+		return
+	}
+	var noVersion bool
+	fs.BoolVar(&noVersion, "no-version", false, "Accepted; no provenance line is emitted.")
 }

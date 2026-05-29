@@ -2401,8 +2401,17 @@ All bcftools subcommands now have an implementation in the Go port.
 `view` output-type selector (`-O`/`--output-type`) — DONE for all four
 formats. The combined short form (`-Ob`/`-Ou`/`-Oz`/`-Ov`), the
 separated form (`-O b`), and the long forms (`--output-type b`,
-`--output-type=b`) all parse via `expandOutputTypeFlag`
-(`cmd/bcftools/main.go runView`). The writers are wired in
+`--output-type=b`) all parse via the shared `parseFlags` helper
+(`cmd/bcftools/subcmds.go`). `parseFlags` wraps `fs.Parse` for every
+subcommand and runs `normalizeShortFlags`, a general getopt-style
+preprocessor that splits any `-Xvalue` token where `X` is a registered
+value-taking single-character short flag into `-X value` (`-Ob` → `-O b`,
+`norm -m-` → `-m -`, `-mboth` → `-m both`). It leaves long flags, boolean
+short flags, `-X=value`, a bare `-`, and everything after `--` untouched.
+It also registers a no-op `--no-version` on subcommand FlagSets that lack
+one (via `registerNoVersionIfAbsent`), so `--no-version` is accepted in
+any position alongside other flags. (This generalizes the former
+`expandOutputTypeFlag`, which only handled `-O<x>`.) The writers are wired in
 `openOutput` (`pkg/bcftools/view.go`) and shared across the streaming,
 tabix-region, and CSI-region paths:
 
