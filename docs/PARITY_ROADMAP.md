@@ -2561,6 +2561,39 @@ TestParityStats_AF, TestParityStats_QUAL, TestParityStats_IDD,
 TestParityStats_ST, TestParityStats_DP, TestParityStats_HWE) with
 goldens captured under `tools/bcftools/testdata/parity/stats_*.expected.txt`.
 
+`stats` whole-document byte parity vs genuine bcftools 1.23.1 (RESOLVED).
+Against a freshly-built `reference_code/bcftools/bcftools`, the full
+report now byte-matches both `bcftools stats basic.vcf` and
+`bcftools stats -s - basic.vcf` (modulo the `## bcftools_*` /
+`# This file was produced` / `# The command line was` provenance lines):
+
+- **TSTV / SiS** — previously omitted entirely; now emitted.
+  TSTV sums `af_ts`/`af_tv` over all AF bins for columns 3/4 and uses
+  the 1st-ALT-only `ts_alt1`/`tv_alt1` for columns 6/7
+  (vcfstats.c:1389-1399). SiS reads the AF bin-0 (AC==1) accumulators
+  before they are folded into bin 1 (vcfstats.c:1439-1449).
+- **PSC / PSI / HWE gating** — these per-sample sections are now emitted
+  only when `-s`/`-S` is given (upstream gates on `args->files->n_smpl`).
+  Without samples the DP histogram is driven by INFO/DP site depth only;
+  with `-s -` the per-genotype FORMAT/DP histogram is added.
+  The CLI detects "samples given" via `fs.Visit` so `-s -` (and even an
+  empty `-s ''`) counts.
+- **PSI columns** — `nInsHets`/`nDelHets`/`nInsAltHoms`/`nDelAltHoms`
+  now map to the upstream `smpl_ins_hets`/`smpl_del_hets`/
+  `smpl_ins_homs`/`smpl_del_homs` counters (vcfstats.c:1063-1083 /
+  1816-1817); alt-het GTs with both an ins and a del allele are counted
+  in both het columns.
+- **Comment/definition blocks** — the verbose multi-line `#` definition
+  blocks (SN field descriptions, TSTV/SiS legends, the DP "depth"
+  preamble) and the exact single-line section headers now match
+  upstream's `print_stats` text verbatim, so `grep`-on-comment workflows
+  are byte-faithful.
+
+Pinned by `TestStatsLiveOracle` and `TestStatsLiveOracleSamples`
+(`tools/bcftools/pkg/bcftools/stats_test.go`), which diff against the
+committed genuine-upstream oracles under
+`tools/bcftools/pkg/bcftools/testdata/stats_live/`.
+
 `concat` parity (RESOLVED — both previously-deferred cases now match
 upstream byte-for-byte on the vendored `concat.2.*` / `concat.4.*`
 fixtures):

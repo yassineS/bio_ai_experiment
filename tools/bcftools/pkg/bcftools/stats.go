@@ -18,6 +18,7 @@ import (
 // `bcftools stats` upstream flags closely.
 type StatsOptions struct {
 	Samples         []string // -s
+	SamplesGiven    bool     // whether -s/-S was supplied at all (gates PSC/PSI/HWE + DP genotype binning)
 	SamplesFile     string   // -S
 	Regions         []string // -r
 	RegionsFile     string   // -R
@@ -111,10 +112,12 @@ type statsResult struct {
 	pscNHapAlt    []int // smpl_hapAlt
 	pscNMissing   []int // smpl_missing
 
-	psiNIns []int
-	psiNDel []int
-	psiNHet []int
-	psiNAA  []int
+	// PSI per-sample indel het/hom ins/del counters
+	// (vcfstats.c:1077-1083 / 1816-1817).
+	psiInsHets []int
+	psiDelHets []int
+	psiInsHoms []int
+	psiDelHoms []int
 
 	// HWE: AF -> (n_obs, chi-square sum). Retained for the legacy
 	// `TestStatsHWEChiSquare` unit test; the textual HWE output uses afHWE.
@@ -130,6 +133,8 @@ type statsResult struct {
 	qualTsUS  map[int]int          // ts count keyed by iqual=1+int(qual*10)
 	qualTvUS  map[int]int          // tv count keyed by iqual
 	qualIndS  map[int]int          // indel count keyed by iqual
+	tsAlt1    int                  // upstream `stats->ts_alt1` (1st-ALT transitions)
+	tvAlt1    int                  // upstream `stats->tv_alt1` (1st-ALT transversions)
 	afHWE     [mAFBins][naFHWE]int // [afBin][hetFreqBin] -> n records
 }
 
@@ -165,7 +170,7 @@ func newStatsResult(opts StatsOptions, headerSamples []string) *statsResult {
 	r.afTv = make([]int, nBins)
 	r.afNonS = make([]int, nBins)
 
-	r.samples = filterSampleSet(headerSamples, opts.Samples)
+	r.samples = filterSampleSet(headerSamples, opts.SamplesGiven, opts.Samples)
 	r.sampleIndex = make(map[string]int, len(r.samples))
 	for i, name := range r.samples {
 		r.sampleIndex[name] = i
@@ -182,18 +187,31 @@ func newStatsResult(opts StatsOptions, headerSamples []string) *statsResult {
 	r.pscNHapRef = make([]int, len(r.samples))
 	r.pscNHapAlt = make([]int, len(r.samples))
 	r.pscNMissing = make([]int, len(r.samples))
-	r.psiNIns = make([]int, len(r.samples))
-	r.psiNDel = make([]int, len(r.samples))
-	r.psiNHet = make([]int, len(r.samples))
-	r.psiNAA = make([]int, len(r.samples))
+	r.psiInsHets = make([]int, len(r.samples))
+	r.psiDelHets = make([]int, len(r.samples))
+	r.psiInsHoms = make([]int, len(r.samples))
+	r.psiDelHoms = make([]int, len(r.samples))
 	return r
 }
 
-// filterSampleSet returns the intersection of `headerSamples` and `want`
-// preserving the requested order. When want is empty all header samples are
-// returned in their original order.
-func filterSampleSet(headerSamples, want []string) []string {
-	if len(want) == 0 {
+// filterSampleSet returns the sample set used for per-sample stats. Upstream
+// only populates per-sample counters (and gates the PSC/PSI/HWE sections and
+// the DP genotype histogram) when `-s`/`-S` was given — i.e. when
+// `args->files->n_smpl > 0`. When given is false we return an empty set so
+// those sections are suppressed, matching `bcftools stats` without -s.
+//
+// When given is true, `-s -` (or an empty/`"-"` list) selects every header
+// sample in header order; otherwise we return the intersection of
+// headerSamples and want, preserving the requested order.
+func filterSampleSet(headerSamples []string, given bool, want []string) []string {
+	if !given {
+		return nil
+	}
+	allSamples := len(want) == 0
+	if len(want) == 1 && want[0] == "-" {
+		allSamples = true
+	}
+	if allSamples {
 		out := make([]string, len(headerSamples))
 		copy(out, headerSamples)
 		return out
@@ -489,6 +507,7 @@ func accumulate(r *statsResult, v *vcf.Variant) {
 				r.qualTs[qualBin]++
 				r.afTsUS[usBin]++
 				if i == 0 {
+					r.tsAlt1++
 					r.qualTsUS[iqual]++
 				}
 			} else {
@@ -496,6 +515,7 @@ func accumulate(r *statsResult, v *vcf.Variant) {
 				r.qualTv[qualBin]++
 				r.afTvUS[usBin]++
 				if i == 0 {
+					r.tvAlt1++
 					r.qualTvUS[iqual]++
 				}
 			}
@@ -831,27 +851,26 @@ func afBinIndex(bins []float64, af float64) int {
 	return len(bins) - 2
 }
 
-// siteDepth returns INFO/DP if present (else falls back to the sum of FORMAT/DP).
+// siteDepth returns INFO/DP if present. Upstream's `dp_sites` histogram is
+// driven solely by a scalar INFO/DP value (vcfstats.c:1307-1308 —
+// `bcf_get_info_int32(...,"DP",...)==1`); when INFO/DP is absent the site does
+// not contribute to the DP section at all. There is deliberately no FORMAT/DP
+// fallback here: per-sample FORMAT/DP feeds the separate genotype histogram.
 func siteDepth(v *vcf.Variant) (int, bool) {
-	if raw, ok := v.Info["DP"]; ok && raw != "" && raw != "." {
-		if n, err := strconv.Atoi(raw); err == nil {
-			return n, true
-		}
+	raw, ok := v.Info["DP"]
+	if !ok || raw == "" || raw == "." {
+		return 0, false
 	}
-	total := 0
-	any := false
-	for _, s := range v.Samples {
-		if raw, ok := s.Data["DP"]; ok && raw != "" && raw != "." {
-			if n, err := strconv.Atoi(raw); err == nil {
-				total += n
-				any = true
-			}
-		}
+	// Only a single scalar value counts (upstream requires the return of
+	// bcf_get_info_int32 to be exactly 1).
+	if strings.Contains(raw, ",") {
+		return 0, false
 	}
-	if any {
-		return total, true
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
 	}
-	return 0, false
+	return n, true
 }
 
 // dpBin returns the depth bin for value dp using opts.DepthMin/Max/Step. With
@@ -913,7 +932,9 @@ func accumulateSamples(r *statsResult, v *vcf.Variant, alts []string) (nRefHom, 
 		// Depth is recorded regardless of GT (upstream calls
 		// calc_sample_depth before sample_gt_stats — vcfstats.c:1115).
 		if raw, ok := s.Data["DP"]; ok && raw != "" && raw != "." {
-			if n, err := strconv.Atoi(raw); err == nil {
+			// Upstream only records depths > 0 (vcfstats.c:1116) — a
+			// zero or negative/missing depth is skipped entirely.
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 				r.pscDepthSum[idx] += n
 				r.pscDepthN[idx]++
 				bin := dpBin(r.opts, n)
@@ -992,6 +1013,10 @@ func accumulateSamples(r *statsResult, v *vcf.Variant, alts []string) (nRefHom, 
 			r.pscNIndels[idx]++
 			switch kind {
 			case gtHetRefAlt, gtHetAltAlt:
+				// Upstream (vcfstats.c:1063-1078) sets is_ins/is_del from
+				// BOTH ial and jal, then bumps del_hets and/or ins_hets.
+				// An alt-het with one ins and one del allele is counted in
+				// both, hence the separate ifs (not else-if).
 				isIns, isDel := classifyIndelAllele(v.Ref, alts, ial)
 				ji, jd := classifyIndelAllele(v.Ref, alts, jal)
 				if ji {
@@ -1000,22 +1025,21 @@ func accumulateSamples(r *statsResult, v *vcf.Variant, alts []string) (nRefHom, 
 				if jd {
 					isDel = true
 				}
-				if isIns {
-					r.psiNIns[idx]++
-					r.psiNHet[idx]++
-				}
 				if isDel {
-					r.psiNDel[idx]++
-					r.psiNHet[idx]++
+					r.psiDelHets[idx]++
+				}
+				if isIns {
+					r.psiInsHets[idx]++
 				}
 			case gtHomAltAlt:
+				// HOM_AA: classify the single ALT allele (ial) as ins/del
+				// (vcfstats.c:1080-1083).
 				if isIns, isDel := classifyIndelAllele(v.Ref, alts, ial); isIns || isDel {
-					if isIns {
-						r.psiNIns[idx]++
+					if isDel {
+						r.psiDelHoms[idx]++
 					} else {
-						r.psiNDel[idx]++
+						r.psiInsHoms[idx]++
 					}
-					r.psiNAA[idx]++
 				}
 			}
 		}
@@ -1201,15 +1225,24 @@ func hweChiSquare(v *vcf.Variant) (float64, bool) {
 func writeStats(out io.Writer, r *statsResult) error {
 	bw := bufio.NewWriter(out)
 
-	// File header.
+	// File header. The provenance lines below carry the version/command
+	// and are stripped by the oracle comparison; the rest is byte-parity.
 	fmt.Fprintln(bw, "# This file was produced by bcftools stats (pure-Go).")
 	fmt.Fprintln(bw, "# The command line was:\tbcftools stats", r.opts.InputFile)
+	fmt.Fprintln(bw, "#")
 
 	// ID block — upstream lists each input file's ID; we only use one (0).
-	fmt.Fprintln(bw, "# ID, Definition of sets:")
+	fmt.Fprintln(bw, "# Definition of sets:")
+	fmt.Fprintln(bw, "# ID\t[2]id\t[3]tab-separated file names")
 	fmt.Fprintf(bw, "ID\t0\t%s\n", r.opts.InputFile)
 
 	if err := writeSN(bw, r); err != nil {
+		return err
+	}
+	if err := writeTSTV(bw, r); err != nil {
+		return err
+	}
+	if err := writeSiS(bw, r); err != nil {
 		return err
 	}
 	if err := writeAF(bw, r); err != nil {
@@ -1227,20 +1260,38 @@ func writeStats(out io.Writer, r *statsResult) error {
 	if err := writeDP(bw, r); err != nil {
 		return err
 	}
-	if err := writePSC(bw, r); err != nil {
-		return err
-	}
-	if err := writePSI(bw, r); err != nil {
-		return err
-	}
-	if err := writeHWE(bw, r); err != nil {
-		return err
+	// Upstream only emits PSC/PSI/HWE when -s/-S was given
+	// (args->files->n_smpl>0). Without samples these sections are absent.
+	if r.opts.SamplesGiven {
+		if err := writePSC(bw, r); err != nil {
+			return err
+		}
+		if err := writePSI(bw, r); err != nil {
+			return err
+		}
+		if err := writeHWE(bw, r); err != nil {
+			return err
+		}
 	}
 	return bw.Flush()
 }
 
 func writeSN(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# SN, Summary numbers:")
+	fmt.Fprintln(bw, "#   number of records   .. number of data rows in the VCF")
+	fmt.Fprintln(bw, "#   number of no-ALTs   .. reference-only sites, ALT is either \".\" or identical to REF")
+	fmt.Fprintln(bw, "#   number of SNPs      .. number of rows with a SNP")
+	fmt.Fprintln(bw, "#   number of MNPs      .. number of rows with a MNP, such as CC>TT")
+	fmt.Fprintln(bw, "#   number of indels    .. number of rows with an indel")
+	fmt.Fprintln(bw, "#   number of others    .. number of rows with other type, for example a symbolic allele or")
+	fmt.Fprintln(bw, "#                          a complex substitution, such as ACT>TCGA")
+	fmt.Fprintln(bw, "#   number of multiallelic sites     .. number of rows with multiple alternate alleles")
+	fmt.Fprintln(bw, "#   number of multiallelic SNP sites .. number of rows with multiple alternate alleles, all SNPs")
+	fmt.Fprintln(bw, "# ")
+	fmt.Fprintln(bw, "#   Note that rows containing multiple types will be counted multiple times, in each")
+	fmt.Fprintln(bw, "#   counter. For example, a row with a SNP and an indel increments both the SNP and")
+	fmt.Fprintln(bw, "#   the indel counter.")
+	fmt.Fprintln(bw, "# ")
 	fmt.Fprintln(bw, "# SN\t[2]id\t[3]key\t[4]value")
 	fmt.Fprintf(bw, "SN\t0\tnumber of samples:\t%d\n", len(r.headerSamples))
 	fmt.Fprintf(bw, "SN\t0\tnumber of records:\t%d\n", r.numRecords)
@@ -1251,6 +1302,53 @@ func writeSN(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintf(bw, "SN\t0\tnumber of others:\t%d\n", r.numOthers)
 	fmt.Fprintf(bw, "SN\t0\tnumber of multiallelic sites:\t%d\n", r.numMA)
 	fmt.Fprintf(bw, "SN\t0\tnumber of multiallelic SNP sites:\t%d\n", r.numMASNP)
+	return nil
+}
+
+// writeTSTV emits the transitions/transversions section
+// (vcfstats.c:1389-1399). Columns 3/4 are the total ts/tv summed over all
+// AF bins; columns 6/7 are the 1st-ALT-only ts/tv. The ratios use %.2f and
+// are 0 when the denominator is zero.
+func writeTSTV(bw *bufio.Writer, r *statsResult) error {
+	fmt.Fprintln(bw, "# TSTV, transitions/transversions")
+	fmt.Fprintln(bw, "#   - transitions, see https://en.wikipedia.org/wiki/Transition_(genetics)")
+	fmt.Fprintln(bw, "#   - transversions, see https://en.wikipedia.org/wiki/Transversion")
+	fmt.Fprintln(bw, "# TSTV\t[2]id\t[3]ts\t[4]tv\t[5]ts/tv\t[6]ts (1st ALT)\t[7]tv (1st ALT)\t[8]ts/tv (1st ALT)")
+	ts, tv := 0, 0
+	for i := 0; i < mAFBins; i++ {
+		ts += r.afTsUS[i]
+		tv += r.afTvUS[i]
+	}
+	// Upstream computes the ratios in 32-bit float (vcfstats.c:1398).
+	var ratio float32
+	if tv != 0 {
+		ratio = float32(ts) / float32(tv)
+	}
+	var ratio1 float32
+	if r.tvAlt1 != 0 {
+		ratio1 = float32(r.tsAlt1) / float32(r.tvAlt1)
+	}
+	fmt.Fprintf(bw, "TSTV\t0\t%d\t%d\t%.2f\t%d\t%d\t%.2f\n",
+		ts, tv, ratio, r.tsAlt1, r.tvAlt1, ratio1)
+	return nil
+}
+
+// writeSiS emits the singleton stats section (vcfstats.c:1439-1449). It uses
+// the AF bin-0 (AC==1) accumulators, which is why it must run before writeAF
+// folds bin 0 into bin 1. Columns 8/9 (repeat-consistent/inconsistent) come
+// from the unimplemented --indel-context path and are always 0; column 10
+// ("not applicable") is the indel count in bin 0.
+func writeSiS(bw *bufio.Writer, r *statsResult) error {
+	fmt.Fprintln(bw, "# SiS, Singleton stats:")
+	fmt.Fprintln(bw, "#   - allele count, i.e. the number of singleton genotypes (AC=1)")
+	fmt.Fprintln(bw, "#   - number of transitions, see above")
+	fmt.Fprintln(bw, "#   - number of transversions, see above")
+	fmt.Fprintln(bw, "#   - repeat-consistent, inconsistent and n/a: experimental and useless stats [DEPRECATED]")
+	fmt.Fprintln(bw, "# SiS\t[2]id\t[3]allele count\t[4]number of SNPs\t[5]number of transitions\t[6]number of transversions\t[7]number of indels\t[8]repeat-consistent\t[9]repeat-inconsistent\t[10]not applicable")
+	indels := r.afRepNAUS[0]
+	fmt.Fprintf(bw, "SiS\t0\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+		1, r.afSnpsUS[0], r.afTsUS[0], r.afTvUS[0],
+		indels, 0, 0, r.afRepNAUS[0])
 	return nil
 }
 
@@ -1291,7 +1389,7 @@ func writeAF(bw *bufio.Writer, r *statsResult) error {
 // with key 0 reserved for missing/negative QUAL ("."). The printed
 // quality is `0.1 * (key - 1)` formatted as `%.1f`.
 func writeQUAL(bw *bufio.Writer, r *statsResult) error {
-	fmt.Fprintln(bw, "# QUAL, Stats by quality:")
+	fmt.Fprintln(bw, "# QUAL, Stats by quality")
 	fmt.Fprintln(bw, "# QUAL\t[2]id\t[3]Quality\t[4]number of SNPs\t[5]number of transitions (1st ALT)\t[6]number of transversions (1st ALT)\t[7]number of indels")
 	keys := unionMapKeys(r.qualTsUS, r.qualTvUS, r.qualIndS)
 	sort.Ints(keys)
@@ -1346,7 +1444,14 @@ func writeST(bw *bufio.Writer, r *statsResult) error {
 }
 
 func writeDP(bw *bufio.Writer, r *statsResult) error {
-	fmt.Fprintln(bw, "# DP, Depth distribution:")
+	fmt.Fprintln(bw, "# DP, depth:")
+	fmt.Fprintln(bw, "#   - set id, see above")
+	fmt.Fprintln(bw, "#   - the depth bin, corresponds to the depth (unless --depth was given)")
+	fmt.Fprintln(bw, "#   - number of genotypes with this depth (zero unless -s/-S was given)")
+	fmt.Fprintln(bw, "#   - fraction of genotypes with this depth (zero unless -s/-S was given)")
+	fmt.Fprintln(bw, "#   - number of sites with this depth")
+	fmt.Fprintln(bw, "#   - fraction of sites with this depth")
+	fmt.Fprintln(bw, "# DP, Depth distribution")
 	fmt.Fprintln(bw, "# DP\t[2]id\t[3]bin\t[4]number of genotypes\t[5]fraction of genotypes (%)\t[6]number of sites\t[7]fraction of sites (%)")
 	bins := unionMapKeys(r.dpSites, r.dpGTs)
 	sort.Ints(bins)
@@ -1365,7 +1470,7 @@ func writeDP(bw *bufio.Writer, r *statsResult) error {
 }
 
 func writePSC(bw *bufio.Writer, r *statsResult) error {
-	fmt.Fprintln(bw, "# PSC, Per-sample counts:")
+	fmt.Fprintln(bw, "# PSC, Per-sample counts. Note that the ref/het/hom counts include only SNPs, for indels see PSI. The rest include both SNPs and indels.")
 	fmt.Fprintln(bw, "# PSC\t[2]id\t[3]sample\t[4]nRefHom\t[5]nNonRefHom\t[6]nHets\t[7]nTransitions\t[8]nTransversions\t[9]nIndels\t[10]average depth\t[11]nSingletons\t[12]nHapRef\t[13]nHapAlt\t[14]nMissing")
 	for i, name := range r.samples {
 		var avg float64
@@ -1383,11 +1488,11 @@ func writePSC(bw *bufio.Writer, r *statsResult) error {
 }
 
 func writePSI(bw *bufio.Writer, r *statsResult) error {
-	fmt.Fprintln(bw, "# PSI, Per-Sample Indels:")
+	fmt.Fprintln(bw, "# PSI, Per-Sample Indels. Note that alt-het genotypes with both ins and del allele are counted twice, in both nInsHets and nDelHets.")
 	fmt.Fprintln(bw, "# PSI\t[2]id\t[3]sample\t[4]in-frame\t[5]out-frame\t[6]not applicable\t[7]out/(in+out) ratio\t[8]nInsHets\t[9]nDelHets\t[10]nInsAltHoms\t[11]nDelAltHoms")
 	for i, name := range r.samples {
 		fmt.Fprintf(bw, "PSI\t0\t%s\t0\t0\t0\t0.00\t%d\t%d\t%d\t%d\n",
-			name, r.psiNIns[i], r.psiNDel[i], r.psiNHet[i], r.psiNAA[i])
+			name, r.psiInsHets[i], r.psiDelHets[i], r.psiInsHoms[i], r.psiDelHoms[i])
 	}
 	return nil
 }
@@ -1397,7 +1502,7 @@ func writePSI(bw *bufio.Writer, r *statsResult) error {
 // total observations and the 25th/median/75th percentile of the
 // per-record heterozygous-fraction CDF, reported as `j/naFHWE`.
 func writeHWE(bw *bufio.Writer, r *statsResult) error {
-	fmt.Fprintln(bw, "# HWE, Hardy-Weinberg equilibrium:")
+	fmt.Fprintln(bw, "# HWE")
 	fmt.Fprintln(bw, "# HWE\t[2]id\t[3]1st ALT allele frequency\t[4]Number of observations\t[5]25th percentile\t[6]median\t[7]75th percentile")
 	hwe := r.afHWE
 	for j := 0; j < naFHWE; j++ {

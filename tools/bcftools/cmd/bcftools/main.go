@@ -518,6 +518,16 @@ func runStatsCmd(args []string) int {
 		AFTag:           afTag,
 		InputFile:       input,
 	}
+	// Upstream gates the per-sample sections (PSC/PSI/HWE) and the DP
+	// genotype histogram on whether -s/-S was supplied at all, regardless
+	// of value (`-s -` selects every sample). Detect that via fs.Visit so
+	// even an empty `-s ''` counts as "given".
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "s", "samples", "S", "samples-file":
+			opts.SamplesGiven = true
+		}
+	})
 	if samples != "" {
 		opts.Samples = bcftools.SplitCommaList(samples)
 	}

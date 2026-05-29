@@ -46,7 +46,7 @@ func runStats(t *testing.T, input string, opts StatsOptions) (*statsResult, stri
 
 // helper that hand-counts the fixture sections.
 func TestStatsSNHandCount(t *testing.T) {
-	res, out := runStats(t, statsFixtureVCF, StatsOptions{InputFile: "test.vcf"})
+	res, out := runStats(t, statsFixtureVCF, StatsOptions{InputFile: "test.vcf", SamplesGiven: true})
 	// records: 10 total.
 	if res.numRecords != 10 {
 		t.Errorf("numRecords = %d, want 10", res.numRecords)
@@ -73,7 +73,7 @@ func TestStatsSNHandCount(t *testing.T) {
 		t.Errorf("numMASNP = %d, want 0", res.numMASNP)
 	}
 	// Verify section headers appear in the text.
-	for _, hdr := range []string{"# SN,", "# AF,", "# QUAL,", "# IDD,", "# ST,", "# DP,", "# PSC,", "# PSI,", "# HWE,"} {
+	for _, hdr := range []string{"# SN,", "# TSTV,", "# SiS,", "# AF,", "# QUAL,", "# IDD,", "# ST,", "# DP,", "# PSC,", "# PSI,", "# HWE"} {
 		if !strings.Contains(out, hdr) {
 			t.Errorf("missing section header %q in:\n%s", hdr, out)
 		}
@@ -178,7 +178,7 @@ chr1	300	.	G	A	30	PASS	DP=30	GT:DP	1/1:8	0/0:8	0/1:8
 chr1	400	.	A	AT	30	PASS	DP=30	GT:DP	0/0:6	0/1:6	1/1:6
 chr1	500	.	C	G	30	PASS	DP=30	GT:DP	0/1:4	1/1:4	0/1:4
 `
-	res, _ := runStats(t, fx, StatsOptions{})
+	res, _ := runStats(t, fx, StatsOptions{SamplesGiven: true})
 	// Expected counts per sample, matching upstream `bcftools stats -s -`
 	// semantics: the ref/het/hom counters are SNP-only (PSC header note,
 	// vcfstats.c:1786). The indel record at chr1@400 therefore contributes
@@ -209,7 +209,7 @@ chr1	500	.	C	G	30	PASS	DP=30	GT:DP	0/1:4	1/1:4	0/1:4
 }
 
 func TestStatsSampleRestriction(t *testing.T) {
-	res, _ := runStats(t, statsFixtureVCF, StatsOptions{Samples: []string{"S1", "S3"}})
+	res, _ := runStats(t, statsFixtureVCF, StatsOptions{SamplesGiven: true, Samples: []string{"S1", "S3"}})
 	if len(res.samples) != 2 || res.samples[0] != "S1" || res.samples[1] != "S3" {
 		t.Errorf("samples = %v, want [S1 S3]", res.samples)
 	}
@@ -392,13 +392,19 @@ func TestStatsDPBin(t *testing.T) {
 }
 
 func TestStatsFilterSampleSet(t *testing.T) {
-	got := filterSampleSet([]string{"a", "b", "c"}, []string{"c", "a"})
+	// given=true with an explicit list keeps the requested order.
+	got := filterSampleSet([]string{"a", "b", "c"}, true, []string{"c", "a"})
 	if len(got) != 2 || got[0] != "c" || got[1] != "a" {
 		t.Errorf("filterSampleSet returned %v", got)
 	}
-	got = filterSampleSet([]string{"a", "b"}, nil)
+	// given=true with a nil/empty list selects every header sample.
+	got = filterSampleSet([]string{"a", "b"}, true, nil)
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Errorf("nil filter returned %v", got)
+	}
+	// given=false suppresses per-sample stats entirely (no -s/-S).
+	if got = filterSampleSet([]string{"a", "b"}, false, nil); got != nil {
+		t.Errorf("ungiven filter returned %v, want nil", got)
 	}
 }
 
@@ -648,4 +654,72 @@ func writeFixtureAsBCF(t *testing.T, vcfText string, out *bytes.Buffer) error {
 		}
 	}
 	return w.Flush()
+}
+
+// stripStatsProvenance removes only the version/command provenance lines
+// (`# This file was produced...`, `# The command line was...`, and any
+// `##bcftools_*`) that legitimately differ between the Go port and genuine
+// bcftools. Everything else — including the non-provenance `# ...` comment
+// blocks and the `ID 0 <file>` row — must be byte-identical.
+func stripStatsProvenance(b []byte) string {
+	var keep []string
+	for _, line := range strings.Split(string(b), "\n") {
+		switch {
+		case strings.HasPrefix(line, "# This file was produced"),
+			strings.HasPrefix(line, "# The command line was"),
+			strings.HasPrefix(line, "##bcftools_"),
+			strings.HasPrefix(line, "bcftools_"):
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.Join(keep, "\n")
+}
+
+// TestStatsLiveOracle compares `bcftools stats basic.vcf` (no -s) against the
+// committed genuine-upstream oracle (bcftools 1.23.1), modulo provenance.
+func TestStatsLiveOracle(t *testing.T) {
+	const input = "tools/bcftools/testdata/parity/basic.vcf"
+	in, err := os.ReadFile("testdata/stats_live/basic.vcf")
+	if err != nil {
+		t.Fatalf("read oracle input: %v", err)
+	}
+	wantRaw, err := os.ReadFile("testdata/stats_live/basic.stats.expected")
+	if err != nil {
+		t.Fatalf("read oracle: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := Stats(bytes.NewReader(in), &out, StatsOptions{InputFile: input}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	got := stripStatsProvenance(out.Bytes())
+	want := stripStatsProvenance(wantRaw)
+	if got != want {
+		t.Errorf("stats (no -s) does not match genuine upstream oracle.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestStatsLiveOracleSamples compares `bcftools stats -s - basic.vcf` against
+// the committed genuine-upstream oracle, modulo provenance. This exercises
+// the gated PSC/PSI/HWE sections and the DP genotype histogram.
+func TestStatsLiveOracleSamples(t *testing.T) {
+	const input = "tools/bcftools/testdata/parity/basic.vcf"
+	in, err := os.ReadFile("testdata/stats_live/basic.vcf")
+	if err != nil {
+		t.Fatalf("read oracle input: %v", err)
+	}
+	wantRaw, err := os.ReadFile("testdata/stats_live/basic.stats.s.expected")
+	if err != nil {
+		t.Fatalf("read oracle: %v", err)
+	}
+	var out bytes.Buffer
+	opts := StatsOptions{InputFile: input, SamplesGiven: true, Samples: []string{"-"}}
+	if _, err := Stats(bytes.NewReader(in), &out, opts); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	got := stripStatsProvenance(out.Bytes())
+	want := stripStatsProvenance(wantRaw)
+	if got != want {
+		t.Errorf("stats (-s -) does not match genuine upstream oracle.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
 }

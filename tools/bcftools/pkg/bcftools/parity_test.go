@@ -704,10 +704,15 @@ func statsSection(stats []byte, prefix string) []byte {
 	return out.Bytes()
 }
 
+// runParityStats runs `bcftools stats -s -` (per-sample expansion enabled)
+// so the PSC/PSI/HWE sections and the DP genotype histogram are emitted —
+// the SN/AF/QUAL/IDD/ST sections are identical with or without -s, so the
+// shared goldens still match. Upstream gates the per-sample sections on
+// -s/-S, mirrored here by SamplesGiven.
 func runParityStats(t *testing.T, in []byte) []byte {
 	t.Helper()
 	var out bytes.Buffer
-	if _, err := Stats(bytes.NewReader(in), &out, StatsOptions{}); err != nil {
+	if _, err := Stats(bytes.NewReader(in), &out, StatsOptions{SamplesGiven: true}); err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	return out.Bytes()
