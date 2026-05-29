@@ -67,6 +67,7 @@ bgzip -d [options] file.gz
 | `-b N`| `--offset N`          | Print the uncompressed byte offset that corresponds to compressed offset N. |
 | `-s`  | `--size`              | Print the decompressed size of the file. |
 | `-r`  | `--reindex`           | Write a `.gzi` index alongside `file.gz`. |
+|       | `--binary`            | Don't align BGZF blocks with text lines; stream as greedy 65280-byte blocks. |
 | `-h`  | `--help`              | Show help and exit. |
 | `-v`  | `--version`           | Show version and exit. |
 
@@ -144,6 +145,14 @@ above with two known deviations:
    leading `(0, 0)` block is *not* written, so the file is
    `8 + 16*(N−1)` bytes for an N-block input. This matches what tabix
    expects.
+
+Compressed output is **byte-for-byte identical** to genuine htslib `bgzip -c`,
+including its text-mode block framing: for a detected uncompressed text format
+(VCF/SAM/BED/FASTA/FASTQ and the FAI/FQI variants) the header occupies its own
+BGZF block and records are flushed at the last newline within each 65280-byte
+window, matching `hts_detect_format` plus the `bgzip.c` text-mode loop. Pass
+`--binary` (or feed binary input, which is detected automatically) to stream as
+greedy 65280-byte blocks instead. See `testdata/oracle/` for committed goldens.
 
 There are no other intentional differences. The Reader rejects gzip members
 without the BC subfield (`ErrNoBCSubfield`), refuses streams missing the EOF

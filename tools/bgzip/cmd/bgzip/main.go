@@ -38,6 +38,7 @@ Options:
   -b, --offset N            Print uncompressed offset at compressed offset N.
   -s, --size                Print the decompressed size of the file.
   -r, --reindex             Write a .gzi index alongside file.gz.
+      --binary              Don't align BGZF blocks with text lines.
   -h, --help                Show this help and exit.
   -v, --version             Show version and exit.
 
@@ -63,6 +64,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		offsetSet   bool
 		showSize    bool
 		reindex     bool
+		binary      bool
 		showHelp    bool
 		showVersion bool
 	)
@@ -81,6 +83,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	})
 	cliflag.BoolVar(fs, &showSize, "s", "size", false, "Print decompressed size")
 	cliflag.BoolVar(fs, &reindex, "r", "reindex", false, "Write .gzi index")
+	// --binary is a long-only flag in upstream bgzip (no short form).
+	fs.BoolVar(&binary, "binary", false, "Don't align BGZF blocks with text lines")
 	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Show version")
 
@@ -125,7 +129,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case decompress:
 		return runDecompress(input, stdoutFlag, force, keep, stdin, stdout, stderr)
 	default:
-		return runCompress(input, stdoutFlag, force, keep, level, stdin, stdout, stderr)
+		return runCompress(input, stdoutFlag, force, keep, level, binary, stdin, stdout, stderr)
 	}
 }
 
@@ -140,7 +144,7 @@ func parseInt64Flag(s string, dest *int64, set *bool) error {
 	return nil
 }
 
-func runCompress(input string, useStdout, force, keep bool, level int, stdin io.Reader, stdout, stderr io.Writer) int {
+func runCompress(input string, useStdout, force, keep bool, level int, binary bool, stdin io.Reader, stdout, stderr io.Writer) int {
 	if level < flate.HuffmanOnly || level > flate.BestCompression {
 		fmt.Fprintf(stderr, "bgzip: invalid compression level %d\n", level)
 		return 2
@@ -183,7 +187,7 @@ func runCompress(input string, useStdout, force, keep bool, level int, stdin io.
 		fmt.Fprintf(stderr, "bgzip: %v\n", err)
 		return 1
 	}
-	if _, err := io.Copy(bw, in); err != nil {
+	if err := compressStream(bw, in, binary); err != nil {
 		fmt.Fprintf(stderr, "bgzip: %v\n", err)
 		return 1
 	}
