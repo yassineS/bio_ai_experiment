@@ -2,6 +2,7 @@ package bcftools
 
 import (
 	"bufio"
+	"compress/flate"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -24,11 +25,14 @@ const (
 	OutputVCF OutputFormat = iota
 	// OutputVCFGz is gzip-compressed VCF.
 	OutputVCFGz
-	// OutputBCF marks compressed BCF output. NOT IMPLEMENTED in this slice;
-	// the runner returns an explanatory error so callers do not silently get
-	// the wrong format.
+	// OutputBCF marks BGZF-compressed BCF output (-Ob): BCF bytes streamed
+	// through a bgzf.Writer.
 	OutputBCF
-	// OutputBCFUncompressed marks uncompressed BCF output. Also deferred.
+	// OutputBCFUncompressed marks "uncompressed" BCF output (-Ou). This
+	// mirrors htslib's "wbu" open mode: the BCF byte stream is still wrapped
+	// in BGZF framing, but each deflate block is stored uncompressed
+	// (compression level 0). It is therefore BGZF-readable like -Ob, just
+	// without the deflate cost — not a raw, frameless BCF.
 	OutputBCFUncompressed
 )
 
@@ -448,9 +452,9 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	return count, w.Flush()
 }
 
-// viewBCFStream consumes a BCF stream and emits VCF text. Writing BCF is
-// deferred — when callers ask for OutputBCF/OutputBCFUncompressed the
-// outer runner has already rejected the request.
+// viewBCFStream consumes a BCF stream and re-emits records in the
+// requested output format (VCF, gzipped VCF, raw BCF, or BGZF BCF) via
+// openOutput.
 func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets bool, targets []region) (int, error) {
 	br, err := bcf.NewReader(in)
 	if err != nil {
@@ -914,11 +918,19 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 		}
 		return &bcfVariantWriter{w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
 	case OutputBCFUncompressed:
-		w, err := bcf.NewWriterFromVCFHeader(out, hdr)
+		// htslib's "wbu" mode wraps BCF in BGZF but stores each block
+		// uncompressed (deflate level 0). Match that framing so the output
+		// is structurally identical to genuine `bcftools view -Ou`.
+		bw, err := bgzip.NewWriterLevel(out, flate.NoCompression)
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return &bcfVariantWriter{w}, func() { _ = w.Flush() }, nil
+		w, err := bcf.NewWriterFromVCFHeader(bw, hdr)
+		if err != nil {
+			_ = bw.Close()
+			return nil, func() {}, err
+		}
+		return &bcfVariantWriter{w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
 	}
 	return &vcfVariantWriter{vcf.NewWriter(out, hdr)}, func() {}, nil
 }

@@ -2398,6 +2398,39 @@ mendelian2/polysomy PR (`mendelian2`, `polysomy`), the cnv/csq PR
 
 All bcftools subcommands now have an implementation in the Go port.
 
+`view` output-type selector (`-O`/`--output-type`) — DONE for all four
+formats. The combined short form (`-Ob`/`-Ou`/`-Oz`/`-Ov`), the
+separated form (`-O b`), and the long forms (`--output-type b`,
+`--output-type=b`) all parse via `expandOutputTypeFlag`
+(`cmd/bcftools/main.go runView`). The writers are wired in
+`openOutput` (`pkg/bcftools/view.go`) and shared across the streaming,
+tabix-region, and CSI-region paths:
+
+- **`-Ov`** (default) — uncompressed VCF text. Byte-identical to the
+  VCF text path already validated elsewhere.
+- **`-Oz`** — bgzipped VCF via `pkg/htsgo/bgzf.Writer`. The decompressed
+  payload is byte-identical to `-Ov`
+  (`TestViewOutputVCFGz`); the BGZF container itself is byte-verified
+  against genuine htslib (`pkg/htsgo/bgzf/oracle_test.go`).
+- **`-Ob`** — BCF streamed through the byte-verified BGZF writer.
+- **`-Ou`** — BCF through a BGZF writer at deflate level 0 (stored
+  blocks), matching htslib's `wbu` open mode
+  (`version.c hts_bcf_wmode`: `FT_BCF → "wbu"`). This corrects an
+  earlier raw-BCF (frameless) emit; genuine `bcftools view -Ou` is
+  BGZF-framed with BTYPE=0 deflate blocks. Asserted by
+  `TestViewBCFUncompressedFraming`.
+
+Decode-equivalence: genuine `bcftools view` reads our `-Ob`/`-Ou`
+output and reproduces the VCF body identically (records + header,
+modulo the `##bcftools_view{Version,Command}` provenance lines that
+upstream stamps and the Go port intentionally omits). Byte-identity
+with upstream BCF is **not** yet achieved: beyond the provenance-line
+difference, the BCF typed-descriptor encoding is not guaranteed to be
+byte-for-byte identical to htslib's encoder on all inputs (the
+`pkg/htsgo/bcf` writer is round-trip-correct but not yet byte-locked to
+htslib's descriptor-width / dictionary-IDX choices). That is a separate
+BCF-encoder parity follow-up, not a `view` wiring gap.
+
 The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
 but with a deliberate design divergence from upstream:
 

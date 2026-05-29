@@ -549,3 +549,28 @@ func runAnnotate(args []string) int {
 	}
 	return 0
 }
+
+// expandOutputTypeFlag rewrites the combined short output-type form
+// `-O<x>` (e.g. `-Ob`, `-Oz`, `-Ou`, `-Ov`) into the two-token form
+// `-O <x>` that Go's flag package accepts. Upstream bcftools accepts
+// `-Ob` as a single token; Go's flag package does not, so we normalise
+// the argument list before parsing. The separated (`-O b`), long
+// (`--output-type b`), and `=`-joined (`--output-type=b`) forms are
+// already handled by the flag package and pass through untouched.
+// Parsing stops at the first bare `--` (end-of-options marker) so that
+// positional arguments such as regions or filenames are never rewritten.
+func expandOutputTypeFlag(args []string) []string {
+	out := make([]string, 0, len(args)+2)
+	for i, a := range args {
+		if a == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		if len(a) > 2 && strings.HasPrefix(a, "-O") && a[2] != '=' && !strings.HasPrefix(a, "--") {
+			out = append(out, "-O", a[2:])
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}

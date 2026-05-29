@@ -317,6 +317,69 @@ func TestViewBCFUncompressedRoundTrip(t *testing.T) {
 	}
 }
 
+// TestViewBCFUncompressedFraming verifies that -O u emits BGZF framing with
+// stored (uncompressed) deflate blocks, matching htslib's "wbu" open mode.
+// Genuine `bcftools view -Ou` produces a BGZF stream whose deflate blocks are
+// BTYPE=0 (stored); a raw, frameless BCF would not begin with the BGZF magic.
+func TestViewBCFUncompressedFraming(t *testing.T) {
+	var out bytes.Buffer
+	if _, err := View(strings.NewReader(sampleVCF), &out, ViewOptions{OutputFormat: OutputBCFUncompressed}); err != nil {
+		t.Fatalf("View(-O u): %v", err)
+	}
+	b := out.Bytes()
+	if len(b) < 26 {
+		t.Fatalf("output too short: %d bytes", len(b))
+	}
+	// BGZF block = gzip member with the BC extra subfield: magic 1f 8b 08 04,
+	// then at offset 12 the extra field SI1=0x42 ('B') SI2=0x43 ('C').
+	if b[0] != 0x1f || b[1] != 0x8b || b[2] != 0x08 || b[3] != 0x04 {
+		t.Fatalf("-O u output is not BGZF-framed; first bytes %x", b[:4])
+	}
+	if b[12] != 'B' || b[13] != 'C' {
+		t.Fatalf("-O u output missing BGZF BC extra subfield; got %x", b[12:14])
+	}
+	// The deflate payload starts at offset 18 (12-byte gzip header + 6-byte
+	// BC extra field). Its first byte's BTYPE bits (1..2) must be 0 = stored.
+	if btype := (b[18] >> 1) & 0x3; btype != 0 {
+		t.Fatalf("-O u deflate block BTYPE=%d, want 0 (stored/uncompressed)", btype)
+	}
+	// Decompressing the BGZF stream must yield a raw BCF (magic "BCF\2").
+	gr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("BGZF not gzip-readable: %v", err)
+	}
+	gr.Multistream(false)
+	dec, _ := io.ReadAll(gr)
+	if len(dec) < 4 || string(dec[:3]) != "BCF" {
+		t.Fatalf("decompressed -O u does not start with BCF magic; got %x", dec)
+	}
+}
+
+// TestViewOutputVCFGz verifies that -O z (bgzipped VCF) decompresses to the
+// exact same text as the default -O v output.
+func TestViewOutputVCFGz(t *testing.T) {
+	var ov bytes.Buffer
+	if _, err := View(strings.NewReader(sampleVCF), &ov, ViewOptions{OutputFormat: OutputVCF}); err != nil {
+		t.Fatalf("View(-O v): %v", err)
+	}
+	var oz bytes.Buffer
+	if _, err := View(strings.NewReader(sampleVCF), &oz, ViewOptions{OutputFormat: OutputVCFGz}); err != nil {
+		t.Fatalf("View(-O z): %v", err)
+	}
+	gr, err := gzip.NewReader(&oz)
+	if err != nil {
+		t.Fatalf("-O z output is not valid gzip: %v", err)
+	}
+	defer gr.Close()
+	decompressed, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decompressed, ov.Bytes()) {
+		t.Fatalf("-O z decompressed != -O v\n--- -Oz ---\n%s\n--- -Ov ---\n%s", decompressed, ov.Bytes())
+	}
+}
+
 func TestViewBCFInput(t *testing.T) {
 	// Build a minimal BCF stream in memory and feed it to View.
 	stream := buildBCFFixture(t)
