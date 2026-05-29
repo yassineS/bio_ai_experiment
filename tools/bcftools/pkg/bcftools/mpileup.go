@@ -371,9 +371,16 @@ type MpileupOptions struct {
 	// default). External callers can also set it directly.
 	FmtFlag uint32
 
-	// ReadGroups is upstream's -G/--read-groups. Accepted; ignored.
+	// ReadGroups is upstream's -G/--read-groups: a file mapping
+	// read-group IDs to output sample names (with a leading `^` on the
+	// whole file selecting exclude mode). When set, reads are dispatched
+	// to output sample columns by their RG tag via this map rather than
+	// one column per BAM (the bam_sample.c model; see
+	// mpileup_readgroups.go and dispatchByReadGroup).
 	ReadGroups string
-	// IgnoreRG is upstream's --ignore-RG (long-only). Accepted; ignored.
+	// IgnoreRG is upstream's --ignore-RG (long-only). When set, every
+	// read in a file is assigned to a single column named after the
+	// file, ignoring @RG entirely (bam_sample.c:160-165).
 	IgnoreRG bool
 
 	// Platforms is upstream's -P/--platforms. Accepted; ignored.
@@ -588,6 +595,25 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	regWindows, err := parseMpileupRegions(opts, chromLen)
 	if err != nil {
 		return err
+	}
+
+	// -G/--read-groups (or --ignore-RG) selects the read-group sample
+	// model: reads are dispatched to output columns by their RG tag via
+	// the -G map rather than one-column-per-BAM. This is upstream's
+	// bam_sample.c path (mpileup.c:1652). When neither flag is set we
+	// keep the simpler default below.
+	if opts.ReadGroups != "" || opts.IgnoreRG {
+		headers := make([]*sam.Header, len(in))
+		paths := make([]string, len(in))
+		for i, x := range in {
+			headers[i] = x.reader.Header()
+			paths[i] = x.path
+		}
+		colSamples, colRecs, err := dispatchByReadGroup(opts, headers, paths, perInputRecs)
+		if err != nil {
+			return err
+		}
+		return writeMpileupVCF(out, opts, ref, chromOrder, chromLen, colRecs, colSamples, regWindows)
 	}
 
 	// Sample names for the #CHROM line and FORMAT column.

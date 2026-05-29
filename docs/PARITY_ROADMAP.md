@@ -1618,11 +1618,16 @@ Plus:
   rename-map second column byte-matches (`mpileup.9.out`,
   `TestMpileupTargetsAndRenameGolden`), and IUPAC REF bases render
   as REF=N matching upstream (`iupac.1.out`,
-  `TestMpileupIUPACGolden`). `TestMpileupGoldensDeferred` now lists
-  only `mpileup.6.out` (`--gvcf` block emitter, separate slice),
-  `mpileup.10.out` (`-G` read-group selection with per-RG rename —
-  requires splitting a BAM's reads across multiple output columns)
-  and FORMAT/NMBZ (per-sample emission has no upstream golden).
+  `TestMpileupIUPACGolden`). `-G`/`--read-groups` read-group sample
+  dispatch with per-RG rename now byte-matches (`mpileup.10.out`,
+  `TestMpileupReadGroupsGolden`): reads are routed to output sample
+  columns by their RG tag via the `-G` map (a Go port of upstream's
+  `bam_sample.c` in `mpileup_readgroups.go`), so one BAM's reads can
+  populate several columns and several RGs can collapse onto one. The
+  single-column-per-BAM path remains the default when `-G` is absent.
+  `TestMpileupGoldensDeferred` now lists only `mpileup.6.out`
+  (`--gvcf` block emitter, separate slice) and FORMAT/NMBZ
+  (per-sample emission has no upstream golden).
 
   **Indel-caller sub-slicing (in progress).** The remaining indel work
   is broken into five sub-slices:
@@ -2961,9 +2966,14 @@ Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
   BAI-seek fast path lives in `pkg/htsgo/sam` but is not wired
   through `mpileup` in v1. Tracked as a follow-up — perf only, no
   output difference.
-- **No per-read group filtering.** `-G/--read-groups` is parsed and
-  stored; v1 includes every record whose @RG passes the standard
-  filters. `-Z/--ignore-RG` is accepted but inert.
+- **Per-read-group sample dispatch (DONE).** `-G/--read-groups` maps
+  read-group IDs to output sample names (`^` prefix = exclude mode);
+  reads are routed to output columns by their RG tag rather than by
+  input file (`mpileup_readgroups.go`, a port of `bam_sample.c`), so
+  one BAM can populate several columns and several RGs can collapse
+  onto one. `--ignore-RG` assigns each file to a single file-named
+  column. Byte-matches `mpileup.10.out`
+  (`TestMpileupReadGroupsGolden`).
 - **No gVCF blocking.** `-g/--gvcf` is accepted; one BCF/VCF record
   is emitted per covered reference position (gVCF range-blocking is a
   follow-up).

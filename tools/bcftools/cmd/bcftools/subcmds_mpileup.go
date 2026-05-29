@@ -33,7 +33,7 @@ indel calling remain deferred — see docs/PARITY_ROADMAP.md#bcftools.
 Input:
   -b, --bam-list FILE            File of BAM paths (one per line).
   -f, --fasta-ref FILE           Reference FASTA (required).
-  -G, --read-groups FILE         Read-group file (accepted; v1 ignores).
+  -G, --read-groups FILE         Select/rename samples by read group (^ = exclude).
       --ignore-RG                Ignore @RG tags (long-only upstream).
 
 Output:

@@ -1290,21 +1290,81 @@ func TestMpileupGVCFGolden(t *testing.T) {
 	}
 }
 
+// TestMpileupReadGroupsGolden replays the upstream test.pl invocation
+// (test.pl:1058) `mpileup -a -AD -t17:100-150 -G {PATH}/mplp.10.samples`
+// over mpileup.1+mpileup.2+mpileup.3. It exercises -G/--read-groups
+// per-read-group sample dispatch with optional renaming: the mplp.10
+// samples file keeps ERR162872 under its @RG SM name (HG00100), renames
+// ERR162875→SAMPLE1a / ERR013140→SAMPLE1b (both in mpileup.1.bam), and
+// maps ERR229776→SAMPLE2 / ERR229775→SAMPLE3. mpileup.1.bam's reads are
+// thus split across three output columns, and the remaining (unlisted)
+// read groups in that BAM are dropped (include mode). The output column
+// order — SAMPLE1b HG00100 SAMPLE1a SAMPLE2 SAMPLE3 — is the
+// @RG-header-encounter order across files, matching upstream's
+// bam_smpl_add_bam (bam_sample.c:151).
+func TestMpileupReadGroupsGolden(t *testing.T) {
+	ref := mpileupFixture(t, "mpileup.ref.fa")
+	mpileupFixture(t, "mpileup.ref.fa.fai")
+	goldenPath := mpileupFixture(t, "mpileup.10.out")
+	goldenBytes, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+
+	var buf bytes.Buffer
+	opts := MpileupOptions{
+		Inputs: []string{
+			mpileupFixture(t, "mpileup.1.bam"),
+			mpileupFixture(t, "mpileup.2.bam"),
+			mpileupFixture(t, "mpileup.3.bam"),
+		},
+		FastaRef:   ref,
+		Regions:    []string{"17:100-150"}, // upstream -t17:100-150
+		Annotate:   "-AD",
+		ReadGroups: mpileupFixture(t, "mplp.10.samples"),
+		NoVersion:  true,
+	}
+	if err := MpileupFile(opts, &buf); err != nil {
+		t.Fatalf("MpileupFile: %v", err)
+	}
+	if buf.String() != string(goldenBytes) {
+		gotH, gotD := splitMpileupVCF(buf.String())
+		wantH, wantD := splitMpileupVCF(string(goldenBytes))
+		if len(gotH) != len(wantH) {
+			t.Errorf("header line count: got %d, want %d", len(gotH), len(wantH))
+		}
+		nH := len(gotH)
+		if len(wantH) < nH {
+			nH = len(wantH)
+		}
+		for i := 0; i < nH; i++ {
+			if gotH[i] != wantH[i] {
+				t.Errorf("header line %d:\n got:  %s\n want: %s", i, gotH[i], wantH[i])
+			}
+		}
+		diffs := 0
+		nD := len(gotD)
+		if len(wantD) < nD {
+			nD = len(wantD)
+		}
+		for i := 0; i < nD && diffs < 6; i++ {
+			if gotD[i] != wantD[i] {
+				diffs++
+				t.Errorf("record %d:\n got:  %s\n want: %s", i, gotD[i], wantD[i])
+			}
+		}
+		if len(gotD) != len(wantD) {
+			t.Errorf("data record count: got %d, want %d", len(gotD), len(wantD))
+		}
+	}
+}
+
 // TestMpileupGoldensDeferred documents the upstream mpileup goldens that
 // still do not byte-match and the precise reason. It logs each entry as
 // `t.Log` rather than skipping so the deferred work is visible in `go
 // test -v` output without inflating the skip count.
 func TestMpileupGoldensDeferred(t *testing.T) {
 	deferred := []struct{ golden, reason string }{
-		{
-			"mpileup/mpileup.10.out",
-			"-G {file} read-group selection with optional RG-level rename " +
-				"is not yet ported. The per-input-sample data model in " +
-				"this port lifts the @RG SM tag into a single column per " +
-				"BAM; -G with renaming would need to split a BAM's reads " +
-				"across multiple output columns keyed on read-group ID " +
-				"(mpileup.c bam_smpl.c). Tracked separately.",
-		},
 		{
 			"mpileup/indel-AD.1cns.out (residual)",
 			"the --indels-cns dispatch now wires through to a Go port " +
