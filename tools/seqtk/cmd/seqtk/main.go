@@ -1707,7 +1707,7 @@ inputs are uppercase (or in the OR-modes when either is). With FASTQ
 input, bases whose PHRED+33 quality is below -q are lowercased before
 merging.
 
-A "[mergefa] (same,diff,hom-het,het-hom,het-het)=(...)" summary is
+A "[stk_mergefa] (same,diff,hom-het,het-hom,het-het)=(...)" summary is
 written to stderr after the last record, matching upstream
 byte-for-byte.
 

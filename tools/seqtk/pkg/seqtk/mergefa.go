@@ -153,16 +153,16 @@ func mergefaImpl(r1, r2 io.Reader, w, warn io.Writer, opts MergefaOptions) error
 			// the return value; an early EOF leaves seq[1] with
 			// stale data. We mirror by zeroing out the mate so
 			// min_l drops to 0 and the per-base loop is a no-op.
-			fmt.Fprintf(warn, "[mergefa] second stream ended before first: %s has no mate record\n", s1.name)
+			fmt.Fprintf(warn, "[stk_mergefa] second stream ended before first: %s has no mate record\n", s1.name)
 			s2 = &mergefaRec{}
 		} else if err != nil {
 			return err
 		}
 		if s1.name != s2.name {
-			fmt.Fprintf(warn, "[mergefa] Different sequence names: %s != %s\n", s1.name, s2.name)
+			fmt.Fprintf(warn, "[stk_mergefa] Different sequence names: %s != %s\n", s1.name, s2.name)
 		}
 		if len(s1.seq) != len(s2.seq) {
-			fmt.Fprintf(warn, "[mergefa] Unequal sequence length: %d != %d\n", len(s1.seq), len(s2.seq))
+			fmt.Fprintf(warn, "[stk_mergefa] Unequal sequence length: %d != %d\n", len(s1.seq), len(s2.seq))
 		}
 		minL := len(s1.seq)
 		if len(s2.seq) < minL {
@@ -291,8 +291,9 @@ func mergefaImpl(r1, r2 io.Reader, w, warn io.Writer, opts MergefaOptions) error
 		}
 	}
 	// Emit the upstream counter summary on the warn stream
-	// (upstream uses stderr at seqtk.c:868).
-	fmt.Fprintf(warn, "[mergefa] (same,diff,hom-het,het-hom,het-het)=(%d,%d,%d,%d,%d)\n",
+	// (upstream uses stderr at seqtk.c:868, where __func__ is
+	// "stk_mergefa" — match that prefix byte-for-byte).
+	fmt.Fprintf(warn, "[stk_mergefa] (same,diff,hom-het,het-hom,het-het)=(%d,%d,%d,%d,%d)\n",
 		cnt[0], cnt[1], cnt[2], cnt[3], cnt[4])
 	return bw.Flush()
 }
