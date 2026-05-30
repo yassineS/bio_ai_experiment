@@ -82,6 +82,11 @@ type ViewOptions struct {
 	// (false) matches upstream's behaviour of always recomputing when
 	// samples are restricted.
 	NoUpdateINFO bool
+	// SkipPASSInjection disables the automatic ##FILTER=<ID=PASS,...>
+	// header insertion. Internal use only: `bcftools reheader` is a
+	// pure header rewrite — upstream does not synthesise a PASS line
+	// when one isn't already present, so neither should we.
+	SkipPASSInjection bool
 }
 
 // applyAlleleFilters returns true if the variant passes the AC/AF filters.
@@ -940,7 +945,9 @@ func ensurePASSFilter(hdr *vcf.Header) {
 // bgzip for -O b). We deliberately do not close `out` itself — the caller
 // still owns it.
 func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter, func(), error) {
-	ensurePASSFilter(hdr)
+	if !opts.SkipPASSInjection {
+		ensurePASSFilter(hdr)
+	}
 	switch opts.OutputFormat {
 	case OutputVCFGz:
 		// Upstream -Oz emits BGZF (block-gzip with the BC subfield), not

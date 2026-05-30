@@ -106,8 +106,9 @@ func Reheader(in io.Reader, out io.Writer, opts ReheaderOptions) (int, error) {
 	}
 
 	w, finish, err := openOutput(out, ViewOptions{
-		OutputFormat:  opts.OutputFormat,
-		CompressLevel: opts.CompressLevel,
+		OutputFormat:      opts.OutputFormat,
+		CompressLevel:     opts.CompressLevel,
+		SkipPASSInjection: true,
 	}, hdr)
 	if err != nil {
 		return 0, err
