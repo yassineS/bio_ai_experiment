@@ -460,8 +460,84 @@ func applyRemovals(recs []*vcf.Variant, hdr *vcf.Header, spec string) {
 			for _, v := range recs {
 				v.ID = "."
 			}
+		case ent == "FORMAT" || ent == "FMT":
+			// Drop everything except GT (matches upstream: removing all
+			// FORMAT keeps GT as the genotype column is part of the
+			// record contract).
+			for _, v := range recs {
+				v.Format = filterFormatKeep(v.Format, "GT")
+				for i := range v.Samples {
+					if v.Samples[i].Data != nil {
+						for k := range v.Samples[i].Data {
+							if k != "GT" {
+								delete(v.Samples[i].Data, k)
+							}
+						}
+					}
+				}
+			}
+			hdr.MetaInfo = filterFormatHeaderKeep(hdr.MetaInfo, "GT")
+		case strings.HasPrefix(ent, "FORMAT/") || strings.HasPrefix(ent, "FMT/"):
+			tag := ent[strings.IndexByte(ent, '/')+1:]
+			for _, v := range recs {
+				v.Format = filterFormatDrop(v.Format, tag)
+				for i := range v.Samples {
+					if v.Samples[i].Data != nil {
+						delete(v.Samples[i].Data, tag)
+					}
+				}
+			}
+			// Strip the matching ##FORMAT header line.
+			out := hdr.MetaInfo[:0]
+			for _, m := range hdr.MetaInfo {
+				k, id := structuredID(m)
+				if k == "FORMAT" && id == tag {
+					continue
+				}
+				out = append(out, m)
+			}
+			hdr.MetaInfo = out
 		}
 	}
+}
+
+// filterFormatDrop returns a copy of fmts with the named tag removed
+// (preserving order). The empty input case returns nil.
+func filterFormatDrop(fmts []string, tag string) []string {
+	out := fmts[:0]
+	for _, k := range fmts {
+		if k == tag {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+// filterFormatKeep returns a copy of fmts with everything except keep
+// removed.
+func filterFormatKeep(fmts []string, keep string) []string {
+	out := fmts[:0]
+	for _, k := range fmts {
+		if k == keep {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// filterFormatHeaderKeep drops every ##FORMAT=<ID=...> meta line whose
+// ID is not in keep. Other meta lines are passed through unchanged.
+func filterFormatHeaderKeep(meta []string, keep string) []string {
+	out := meta[:0]
+	for _, m := range meta {
+		k, id := structuredID(m)
+		if k == "FORMAT" && id != keep {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // readHeaderLines reads a file of `##...` meta lines, ignoring blank lines
