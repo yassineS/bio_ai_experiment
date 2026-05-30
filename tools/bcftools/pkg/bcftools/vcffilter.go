@@ -195,7 +195,7 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 		filterName = uniqueFilterName(hdr)
 	}
 	if filterName != "" {
-		ensureSoftFilterHeader(hdr, filterName)
+		ensureSoftFilterHeader(hdr, filterName, opts.IncludeExpr, opts.ExcludeExpr)
 	}
 
 	if !opts.NoVersion {
@@ -225,6 +225,13 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 			if violatesGap(v, indelPos, opts.SnpGap, opts.IndelGap) {
 				fails = true
 			}
+		}
+
+		// Hard-filter: when no -s/--soft-filter is in play, upstream's
+		// `bcftools filter -i/-e` *drops* failing records rather than
+		// tagging them. See vcffilter.c:677 ("if (filter_id<0) continue").
+		if fails && filterName == "" {
+			continue
 		}
 
 		applyFilterDecision(v, fails, filterName, opts)
@@ -409,8 +416,11 @@ func violatesGap(v *vcf.Variant, indels map[string][]int, snpGap, indelGap int) 
 }
 
 // ensureSoftFilterHeader injects a ##FILTER=<ID=name,Description=...>
-// header line if one with the same ID isn't present yet.
-func ensureSoftFilterHeader(hdr *vcf.Header, name string) {
+// header line if one with the same ID isn't present yet. The description
+// mirrors upstream vcffilter.c:614: "Set if true: <expr>" for -e and
+// "Set if not true: <expr>" for -i (the empty-expr fallback keeps the
+// previous defensive wording).
+func ensureSoftFilterHeader(hdr *vcf.Header, name, includeExpr, excludeExpr string) {
 	if hdr == nil || name == "" {
 		return
 	}
@@ -420,7 +430,14 @@ func ensureSoftFilterHeader(hdr *vcf.Header, name string) {
 			return
 		}
 	}
-	line := fmt.Sprintf(`##FILTER=<ID=%s,Description="Set if not true: see bcftools filter expression">`, name)
+	desc := "Set by +/-set-GTs: see bcftools filter expression"
+	switch {
+	case excludeExpr != "":
+		desc = "Set if true: " + excludeExpr
+	case includeExpr != "":
+		desc = "Set if not true: " + includeExpr
+	}
+	line := fmt.Sprintf(`##FILTER=<ID=%s,Description="%s">`, name, desc)
 	hdr.MetaInfo = append(hdr.MetaInfo, line)
 }
 
