@@ -2622,6 +2622,65 @@ to pass.
   section below).
 
 
+#### Live-binary oracle coverage
+
+`tools/bcftools/pkg/bcftools/live_oracle_test.go` shells out to the vendored
+`reference_code/bcftools/bcftools` (genuine 1.23.1-73-ge0ec6ab0) and the
+locally-built port on the same fixture, then asserts stdout byte-equality
+after stripping provenance lines (`##bcftools_*Version`, `##bcftools_*Command`,
+`##bcftoolsVersion`, `##bcftoolsCommand`, `##reference=`, and the
+`# This file was produced by` / `# The command line was` stats headers).
+The local binary is built once in `TestMain` and reused. When the upstream
+binary is missing the suite `t.Skip`s so CI without submodules continues
+to pass.
+
+**Coverage (subcommand → status, vs upstream 1.23.1):**
+
+- **PASS (byte-equal modulo provenance):** `view` (bare, `-v snps`, `-v
+  indels`, `-v mnps`, `-V snps`, `-s S1`, `-s S1,S3`, `-c 1`, `-f .,PASS`,
+  `--no-update`, `-G`, `-h`, `-H`), `view -Oz` (inflated), `view -Ob`
+  (decoded-by-live), `view` from `.vcf.gz`, `view` from `.bcf`,
+  `view --regions chr1`, `stats` (bare, `-s -`, `-f PASS`), `query` (`-l`,
+  `%CHROM\t%POS`, `%INFO/AC`, `[%SAMPLE=%GT]`, `-i AC>1`, `-i TYPE="snp"`),
+  `annotate` (`-x INFO/AF`, `-x FORMAT/GQ`, `-I +%CHROM_%POS`), `head` (bare,
+  `-n 5`), `norm` (`-m-`, `-m+`), `filter` (`-i QUAL>30`, `-e AC<2`,
+  `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare).
+
+- **FAIL (real divergences; tracked here):**
+  - **`merge`** — INFO/DP is not summed across overlapping records (we
+    emit the first input's value; upstream sums). Same divergence
+    likely applies to other Number=1 Integer INFOs. *Fix scope:* port
+    upstream's `merge.c:merge_INFO_int_sum` logic; non-trivial.
+  - **`isec`** — for two inputs `-p DIR` mode upstream emits four
+    files (`0000.vcf` = private to A, `0001.vcf` = private to B,
+    `0002.vcf` = shared from A, `0003.vcf` = shared from B). Our port
+    emits only the two private-per-input files. *Fix scope:* emit the
+    shared-from-each-input projections; modest.
+  - **`index -t` / `index -c`** — `.tbi` and `.csi` byte streams
+    diverge starting at the first interval offset (~byte 85/59). Same
+    file size on both sides, so the format-level structure agrees but
+    the BGZF virtual offsets differ. Likely cause: BGZF block boundary
+    differences from our writer (which is byte-locked to libdeflate
+    but may differ from upstream htslib's block-size heuristics on
+    small inputs). *Fix scope:* either align block boundaries
+    upstream-exactly or accept "logically equivalent index" and
+    document.
+  - **`mpileup`** — header meta-line ordering differs (`##bcftoolsVersion`
+    and `##bcftools_mpileupCommand` appear before/after `##FILTER` and
+    the contig set in different orders); body output is otherwise
+    very close. *Fix scope:* re-order meta-line emission in
+    `pkg/bcftools/mpileup.go` to match upstream's insertion sequence.
+
+- **Skipped for lack of committed fixture (TODOs in the test file):**
+  `call` (needs an mpileup VCF input), `csq` (needs (gff, fa, vcf)
+  triple under `testdata/csq/`), `roh` (needs `--AF-tag`/`--AF-file`
+  plumbing), `mendelian` (trio VCF + PED), `gtcheck` (two indexed
+  VCFs with overlapping samples), `polysomy` (BAF distribution),
+  `cnv` (tumour/normal pair), `consensus` (fasta + matching vcf.gz),
+  `plugin` (our plugin discovery diverges intentionally; see plugin
+  section below).
+
+
 `view` output-type selector (`-O`/`--output-type`) — DONE for all four
 formats. The combined short form (`-Ob`/`-Ou`/`-Oz`/`-Ov`), the
 separated form (`-O b`), and the long forms (`--output-type b`,
