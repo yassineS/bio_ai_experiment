@@ -213,7 +213,7 @@ func queryVCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 		if !keepQueryVariant(v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.Samples); err != nil {
 			return count, err
 		}
 		count++
@@ -260,7 +260,7 @@ func queryBCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 		if !keepQueryVariant(v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.VCF.Samples); err != nil {
 			return count, err
 		}
 		count++
@@ -300,7 +300,7 @@ func queryBCFRegions(path string, out io.Writer, opts QueryOptions) (int, error)
 		if !keepQueryVariant(v, opts, includeF, excludeF, true, regs) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.VCF.Samples); err != nil {
 			return count, err
 		}
 		count++
@@ -367,7 +367,7 @@ func queryTBI(path string, hdr *vcf.Header, regs []region, opts QueryOptions, in
 		if !keepQueryVariant(v, opts, includeF, excludeF, true, regs) {
 			continue
 		}
-		if err := emitRecord(w, tokens, v, sampleFilter); err != nil {
+		if err := emitRecord(w, tokens, v, sampleFilter, hdr.Samples); err != nil {
 			return count, err
 		}
 		count++
@@ -683,14 +683,16 @@ func filterSamplesByName(wanted, headerSamples []string) []string {
 }
 
 // emitRecord formats one variant per the token list and writes it to w.
-func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter []int) error {
+// headerSamples carries the header-level sample names, used to resolve
+// the `%SAMPLE` placeholder inside `[ ... ]` brackets.
+func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter []int, headerSamples []string) error {
 	var sb strings.Builder
 	for _, t := range tokens {
 		switch t.Kind {
 		case TokenLiteral:
 			sb.WriteString(t.Text)
 		case TokenPlaceholder:
-			sb.WriteString(formatPlaceholder(t.Text, v, -1))
+			sb.WriteString(formatPlaceholderSamples(t.Text, v, -1, headerSamples))
 		case TokenSample:
 			indexes := sampleFilter
 			if indexes == nil {
@@ -709,7 +711,7 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 					case TokenLiteral:
 						sb.WriteString(inner.Text)
 					case TokenPlaceholder:
-						sb.WriteString(formatPlaceholder(inner.Text, v, idx))
+						sb.WriteString(formatPlaceholderSamples(inner.Text, v, idx, headerSamples))
 					}
 				}
 			}
@@ -717,6 +719,21 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 	}
 	_, err := w.Write([]byte(sb.String()))
 	return err
+}
+
+// formatPlaceholderSamples wraps formatPlaceholder with knowledge of the
+// header sample list so it can resolve the `%SAMPLE` token (which upstream
+// `bcftools query` treats as "the sample's name as it appears in the
+// #CHROM header line"). Bare `%SAMPLE` outside a `[...]` block evaluates
+// to "." (matches upstream, since no sample is bound).
+func formatPlaceholderSamples(name string, v *vcf.Variant, sampleIdx int, headerSamples []string) string {
+	if name == "SAMPLE" {
+		if sampleIdx < 0 || sampleIdx >= len(headerSamples) {
+			return "."
+		}
+		return headerSamples[sampleIdx]
+	}
+	return formatPlaceholder(name, v, sampleIdx)
 }
 
 // formatPlaceholder resolves a single placeholder against v. sampleIdx is the
