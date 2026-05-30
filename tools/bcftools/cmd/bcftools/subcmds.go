@@ -310,6 +310,7 @@ Usage:
 
 Options:
   -h, --headers N            Print only the first N header lines.
+  -n, --records N            Print the first N variant records after the header.
   -s, --samples              Print one sample-name per line and exit.
   -?, --help                 Show this help.
       --version              Show version.
@@ -320,11 +321,13 @@ func runHead(args []string) int {
 	fs.SetOutput(io.Discard)
 	var (
 		numLines    int
+		numRecords  int
 		samplesOnly bool
 		showHelp    bool
 		showVer     bool
 	)
 	cliflag.IntVar(fs, &numLines, "h", "headers", 0, "Number of header lines to print")
+	cliflag.IntVar(fs, &numRecords, "n", "records", 0, "Number of variant records to print after the header")
 	cliflag.BoolVar(fs, &samplesOnly, "s", "samples", false, "Print sample names only")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -351,6 +354,7 @@ func runHead(args []string) int {
 	}
 	if err := bcftools.HeadFile(rest[0], os.Stdout, bcftools.HeadOptions{
 		NumLines:    numLines,
+		NumRecords:  numRecords,
 		SamplesOnly: samplesOnly,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools head: %v\n", err)
