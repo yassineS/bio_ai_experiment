@@ -394,13 +394,17 @@ chr1	60	.	A	T	.	PASS	.	GT	0/1
 	if len(lines) != 4 { // header + 3 thresholds
 		t.Fatalf(".TsTv.qual has %d lines, want 4:\n%s", len(lines), string(b))
 	}
+	// Upstream variant_file_output.cpp:3310 emits cumulative sums STRICTLY
+	// below / STRICTLY above each threshold (values at exactly q go into
+	// neither side), formatted via the default ostream << (no fixed
+	// precision). 0/0 renders as glibc's "-nan" literal.
 	want := []string{
-		// q=10: LT none; GT = 3 Ts, 1 Tv -> 3/1 = 3.0000
-		"10.0000\t0\t0\t0.0000\t3\t1\t3.0000",
-		// q=20: LT = 1 Ts, 0 Tv; GT = 2 Ts, 1 Tv -> 2/1 = 2.0000
-		"20.0000\t1\t0\t0.0000\t2\t1\t2.0000",
-		// q=30: LT = 2 Ts, 1 Tv -> 2/1 = 2.0000; GT = 1 Ts, 0 Tv -> 0.0000
-		"30.0000\t2\t1\t2.0000\t1\t0\t0.0000",
+		// q=10: LT none; GT = qual > 10 → C>T@20 (Ts), A>C@20 (Tv), G>A@30 (Ts) = 2 Ts, 1 Tv -> 2.
+		"10\t0\t0\t-nan\t2\t1\t2",
+		// q=20: LT = qual < 20 → A>G@10 (Ts) = 1 Ts, 0 Tv -> -nan; GT = qual > 20 → G>A@30 (Ts) = 1 Ts, 0 Tv -> -nan.
+		"20\t1\t0\t-nan\t1\t0\t-nan",
+		// q=30: LT = qual < 30 → A>G@10 (Ts), C>T@20 (Ts), A>C@20 (Tv) = 2 Ts, 1 Tv -> 2; GT = none.
+		"30\t2\t1\t2\t0\t0\t-nan",
 	}
 	for i, w := range want {
 		if lines[i+1] != w {

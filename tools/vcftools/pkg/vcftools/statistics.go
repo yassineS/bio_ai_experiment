@@ -1296,7 +1296,10 @@ func (s *statistics) outputSiteQuality(prefix string) error {
 		if stat.qual < 0 {
 			fmt.Fprintf(f, "%s\t%d\t.\n", stat.chrom, stat.pos)
 		} else {
-			fmt.Fprintf(f, "%s\t%d\t%.4f\n", stat.chrom, stat.pos, stat.qual)
+			// Upstream prints QUAL via the default ostream << (minimal
+			// %g-style formatting): 30 not 30.0000. See
+			// variant_file_output.cpp:1230-1234.
+			fmt.Fprintf(f, "%s\t%d\t%s\n", stat.chrom, stat.pos, formatCppDouble(stat.qual))
 		}
 	}
 
@@ -1352,8 +1355,11 @@ func (s *statistics) outputMissingIndv(prefix string) error {
 	for _, name := range names {
 		stat := s.indvMissing[name]
 		stat.fMiss = float64(stat.nMissing) / float64(stat.nTotal)
-		fmt.Fprintf(f, "%s\t%d\t0\t%d\t%.6f\n",
-			stat.name, stat.nTotal, stat.nMissing, stat.fMiss)
+		// Upstream prints F_MISS via the default ostream << (minimal
+		// %g-style formatting): 0 not 0.000000. See
+		// variant_file_output.cpp:1009-1013.
+		fmt.Fprintf(f, "%s\t%d\t0\t%d\t%s\n",
+			stat.name, stat.nTotal, stat.nMissing, formatCppDouble(stat.fMiss))
 	}
 
 	return nil
@@ -1642,9 +1648,15 @@ func (s *statistics) outputTsTvByQual(prefix string) error {
 	}
 	sort.Float64s(thresholds)
 
+	// Upstream's loop (variant_file_output.cpp:3260-3315) emits the
+	// cumulative Ts/Tv sums STRICTLY BELOW and STRICTLY ABOVE each
+	// threshold — values exactly equal to the threshold contribute to
+	// neither side. The output formats every numeric column via the
+	// default ostream << (`0`, not `0.0000`), with `0/0` yielding
+	// glibc's signed-NaN literal (`-nan`).
 	ratio := func(ts, tv int) float64 {
 		if tv == 0 {
-			return 0.0
+			return math.NaN()
 		}
 		return float64(ts) / float64(tv)
 	}
@@ -1658,7 +1670,7 @@ func (s *statistics) outputTsTvByQual(prefix string) error {
 				} else {
 					tvLT++
 				}
-			} else {
+			} else if st.qual > q {
 				if st.isTs {
 					tsGT++
 				} else {
@@ -1666,8 +1678,10 @@ func (s *statistics) outputTsTvByQual(prefix string) error {
 				}
 			}
 		}
-		fmt.Fprintf(f, "%.4f\t%d\t%d\t%.4f\t%d\t%d\t%.4f\n",
-			q, tsLT, tvLT, ratio(tsLT, tvLT), tsGT, tvGT, ratio(tsGT, tvGT))
+		fmt.Fprintf(f, "%s\t%d\t%d\t%s\t%d\t%d\t%s\n",
+			formatCppDouble(q),
+			tsLT, tvLT, formatCppDouble(ratio(tsLT, tvLT)),
+			tsGT, tvGT, formatCppDouble(ratio(tsGT, tvGT)))
 	}
 
 	return nil

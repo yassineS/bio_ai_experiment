@@ -258,9 +258,11 @@ func TestRun_GetINFO_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read .INFO: %v", err)
 	}
+	// Missing INFO tag emits "?" (upstream variant_file_output.cpp:2050
+	// sentinel), not the VCF "." missing-data convention.
 	want := "CHROM\tPOS\tREF\tALT\tAF\tDP\n" +
 		"1\t100\tA\tG\t0.5\t10\n" +
-		"1\t200\tA\tC\t0.25\t.\n"
+		"1\t200\tA\tC\t0.25\t?\n"
 	if string(data) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", data, want)
 	}

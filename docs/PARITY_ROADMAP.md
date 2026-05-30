@@ -1482,6 +1482,120 @@ make CXXFLAGS='-O0 -g -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0'
 
 Filed as a parity-only workaround; we don't replicate the bug.
 
+Open divergences found by the expanded live oracle (this PR):
+
+`TestVcftoolsLiveOracleFull` runs every implemented vcftools option that
+the genuine binary accepts on `testdata/live/in.vcf`, generates the
+golden at test time from `reference_code/vcftools/src/cpp/vcftools`, and
+diffs the port output byte-for-byte. 53 of the 67 subtests pass; the
+following 14 fail (each is a live, visible `t.Errorf`, not skipped):
+
+- **`--freq2` / `--counts2`**: the port treats these as no-ops — no
+  `.frq` / `.frq.count` file is produced. Upstream's
+  `variant_file_output.cpp:140-180` writes a simplified
+  `CHROM POS N_ALLELES N_CHR {FREQ}` (no `ALLELE:` prefix) for `--freq2`,
+  and the integer counterpart for `--counts2`. Wire `Freq2`/`Counts2`
+  into the same emitter as `--freq`/`--counts` with the alternate
+  column header. Should be small (~30 LOC in `statistics.go`).
+- **`--site-quality`**: emits QUAL with `%.4f` (`30.0000`); upstream uses
+  the default ostream `<<` minimal-significant-digit format (`30`).
+  Route through `formatCppDouble` (`statistics.go`).
+- **`--site-depth` / `--site-mean-depth` / `--depth`**: SUMSQ_DEPTH and
+  VAR_DEPTH are hard-coded to literal `0` (this was already documented as
+  a known gap, but the live oracle now pins it as a failing test rather
+  than a `t.Skip`). Additionally the port silently DROPS sites with zero
+  total depth — upstream emits a row with `SUM_DEPTH=0`,
+  `MEAN_DEPTH=-nan`, `VAR_DEPTH=-nan`. `--depth` shows the per-individual
+  view doesn't accumulate sites with missing DP correctly. Fix in
+  `statistics.go` `addSiteDepthStat` / `outputSiteDepth` /
+  `outputSiteMeanDepth` / `outputDepth`.
+- **`--hardy`**: P_HWE / P_HET_DEFICIT / P_HET_EXCESS print the same
+  Wigginton p_hwe value for all three columns and format at default
+  `%g`-style with too few digits. Upstream emits scientific-notation
+  6-sig-digit (`1.000000e+00`) and computes the directional deficit /
+  excess p-values separately. Also `ChiSq_HWE` formats as `0.3333` vs
+  upstream's `3.333333e-01`. The directional p-values were already
+  flagged as placeholders; the live oracle now pins both shape and
+  format. Substantial: separate per-site exact p-value computation in
+  `hwe.go`.
+- **`--hist-indel-len`**: header is `LENGTH N_INDELS PRCT` vs upstream's
+  `LENGTH COUNT PRCT`; the port also emits an empty body where upstream
+  emits one row per indel-length bucket. The fixture has zero true
+  indels but upstream still emits `0\t4\t100` (it counts SNPs as
+  length-0 entries — odd but it's the upstream behaviour). Header
+  rename is trivial; body semantics need
+  `tools/vcftools/pkg/vcftools/statistics.go` to follow upstream's
+  `variant_file_output.cpp:2880-2929`.
+- **`--FILTER-summary`**: port emits `FILTER N_SITES`; upstream emits
+  `FILTER N_VARIANTS N_Ts N_Tv Ts/Tv` with per-FILTER Ts/Tv counts.
+  Rewrite in `statistics.go` against `variant_file_output.cpp:2840-2880`.
+- **`--SNPdensity`**: header is `BIN_END N_SNPs DENSITY` (with floats
+  `0.010000`) vs upstream `SNP_COUNT VARIANTS/KB` (integer SNP count,
+  one-decimal density). Also the port leaves CHROM as `.` instead of
+  `1`. Two issues in `statistics.go` SNP-density writer.
+- **`--missing-indv`**: `F_MISS` formats as `0.000000` vs upstream's
+  shortest `0`. Single-character fix: route through `formatCppDouble`.
+- **`--TsTv-by-qual`**: header order matches, but per-row formatting
+  uses `%.4f` (`30.0000`) and emits an inverted GT counter (port shows
+  `0\t4` for `_GT_QUAL_THRESHOLD` where upstream shows `0\t0`). Mirror
+  upstream's `variant_file_output.cpp:3260-3315`.
+- **`--TajimaD`**: port emits `nan` and adds a phantom `BIN_START=0`
+  row; upstream produces a real Tajima D value (e.g. `1.4451`) per bin
+  and skips bin 0 when empty. The port's Tajima D formula or N
+  computation is broken — likely needs a full reread against
+  `variant_file_output.cpp:2940-3050`.
+- **`--window-pi`**: emits `N_MONOMORPHIC=0` and `PI=2.4` (just summed
+  per-site pi without dividing by window length) — upstream emits
+  `N_MONOMORPHIC=996` and `PI=0.0024` (sum / window-length, with the
+  per-bin monomorphic count). `tools/vcftools/pkg/vcftools/statistics.go`
+  windowed-pi writer.
+- **`--geno-r2`**: VALUES are correct but row order differs — the port
+  groups by POS1 strictly ascending (100,100,200,200,300 then 400-pair),
+  upstream emits pairs in upstream-loop order
+  (100,200; 100,300; 100,400; 200,300; 200,400; 300,400). Trivial: emit
+  in upstream's lexicographic-pair order, not the port's current scheme.
+- **`--geno-chisq`**: header columns are `CHR1 POS1 CHR2 POS2 N_INDV
+  CHI^2 DF P-VALUE`; upstream's same-chrom emitter uses `CHR POS1 POS2
+  N_INDV CHI^2 DOF PVAL` (no chr2 column when intra-chrom, `DOF` not
+  `DF`, `PVAL` not `P-VALUE`). Values also format as
+  `6.000000000000001` vs `6` — needs `formatCppDouble`.
+- **`--relatedness2`**: KING-robust port emits 6 rows (upper-triangle
+  only) and gives wrong values for self-pairs (`0.5` vs upstream's
+  `-nan`) and for the S1-S3 pair (`0` vs upstream's `-inf`); upstream
+  emits the full 9-row dense matrix. The port also fails to emit the
+  reverse-direction rows (S2,S1; S3,S1; S3,S2). Algorithmic gap in
+  `relatedness.go`.
+- **`--LROH`**: header is `CHROM AUTO_START AUTO_END N_VARIANTS INDV`;
+  upstream uses `CHROM AUTO_START AUTO_END MIN_START MAX_END
+  N_VARIANTS_BETWEEN_MAX_BOUNDARIES N_MISMATCHES INDV`. Rewrite the
+  emitter (the algorithm output may need the extra fields tracked
+  through the run).
+- **`--get-INFO`**: missing-tag sentinel emits `.` (VCF default);
+  upstream uses `?` (`variant_file_output.cpp:2050`).
+  Single-character fix in `info_filters.go`.
+- **`--plink` / `--plink-tped`**: 6th column (phenotype) emits `-9`;
+  upstream emits `0`. Trivial fix in `formats.go`.
+- **`--minDP`** + **`--minGQ`** + **`--thin`** (recoded VCFs): the port
+  masks genotypes for `--minDP` / `--minGQ` only on samples where the
+  filter triggers, but BOTH the genuine binary AND the port should give
+  identical masks. Looking at the diff: the port keeps S2's
+  `0/1:20:.` for `--minDP 6` but upstream masks it because GQ is `.`
+  (treated as missing, hence filtered too — at least via the
+  PL/GQ interaction). Actually: upstream masks both S1 site-400 and S3
+  site-100 when `--minDP 6`, while the port keeps them. This is a real
+  filter divergence — the port's `--minDP` doesn't mask samples whose
+  DP field is `.` (missing-depth), whereas upstream does. Same pattern
+  on `--minGQ`. `--thin 50` produces an empty file in the port vs four
+  rows in upstream — the thinning logic is overzealous (probably
+  comparing the thin window in input order; should keep first site per
+  bin). All three are real correctness issues in `vcftools.go` /
+  `info_filters.go`. Tracked here; fixes are out of scope for this PR.
+
+These are all surfaced as failing `TestVcftoolsLiveOracleFull/<name>`
+subtests so CI / `go test` will flag any regression of the *passing*
+options and the failing ones provide a precise diff for whoever picks
+them up.
+
 ### `bgzip`
 
 **Status:** 1 / 1 command, most flags.
@@ -2448,6 +2562,65 @@ mendelian2/polysomy PR (`mendelian2`, `polysomy`), the cnv/csq PR
 (`cnv` + `csq`), and the mpileup PR (**`mpileup`**).
 
 All bcftools subcommands now have an implementation in the Go port.
+
+#### Live-binary oracle coverage
+
+`tools/bcftools/pkg/bcftools/live_oracle_test.go` shells out to the vendored
+`reference_code/bcftools/bcftools` (genuine 1.23.1-73-ge0ec6ab0) and the
+locally-built port on the same fixture, then asserts stdout byte-equality
+after stripping provenance lines (`##bcftools_*Version`, `##bcftools_*Command`,
+`##bcftoolsVersion`, `##bcftoolsCommand`, `##reference=`, and the
+`# This file was produced by` / `# The command line was` stats headers).
+The local binary is built once in `TestMain` and reused. When the upstream
+binary is missing the suite `t.Skip`s so CI without submodules continues
+to pass.
+
+**Coverage (subcommand → status, vs upstream 1.23.1):**
+
+- **PASS (byte-equal modulo provenance):** `view` (bare, `-v snps`, `-v
+  indels`, `-v mnps`, `-V snps`, `-s S1`, `-s S1,S3`, `-c 1`, `-f .,PASS`,
+  `--no-update`, `-G`, `-h`, `-H`), `view -Oz` (inflated), `view -Ob`
+  (decoded-by-live), `view` from `.vcf.gz`, `view` from `.bcf`,
+  `view --regions chr1`, `stats` (bare, `-s -`, `-f PASS`), `query` (`-l`,
+  `%CHROM\t%POS`, `%INFO/AC`, `[%SAMPLE=%GT]`, `-i AC>1`, `-i TYPE="snp"`),
+  `annotate` (`-x INFO/AF`, `-x FORMAT/GQ`, `-I +%CHROM_%POS`), `head` (bare,
+  `-n 5`), `norm` (`-m-`, `-m+`), `filter` (`-i QUAL>30`, `-e AC<2`,
+  `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare).
+
+- **FAIL (real divergences; tracked here):**
+  - **`merge`** — INFO/DP is not summed across overlapping records (we
+    emit the first input's value; upstream sums). Same divergence
+    likely applies to other Number=1 Integer INFOs. *Fix scope:* port
+    upstream's `merge.c:merge_INFO_int_sum` logic; non-trivial.
+  - **`isec`** — for two inputs `-p DIR` mode upstream emits four
+    files (`0000.vcf` = private to A, `0001.vcf` = private to B,
+    `0002.vcf` = shared from A, `0003.vcf` = shared from B). Our port
+    emits only the two private-per-input files. *Fix scope:* emit the
+    shared-from-each-input projections; modest.
+  - **`index -t` / `index -c`** — `.tbi` and `.csi` byte streams
+    diverge starting at the first interval offset (~byte 85/59). Same
+    file size on both sides, so the format-level structure agrees but
+    the BGZF virtual offsets differ. Likely cause: BGZF block boundary
+    differences from our writer (which is byte-locked to libdeflate
+    but may differ from upstream htslib's block-size heuristics on
+    small inputs). *Fix scope:* either align block boundaries
+    upstream-exactly or accept "logically equivalent index" and
+    document.
+  - **`mpileup`** — header meta-line ordering differs (`##bcftoolsVersion`
+    and `##bcftools_mpileupCommand` appear before/after `##FILTER` and
+    the contig set in different orders); body output is otherwise
+    very close. *Fix scope:* re-order meta-line emission in
+    `pkg/bcftools/mpileup.go` to match upstream's insertion sequence.
+
+- **Skipped for lack of committed fixture (TODOs in the test file):**
+  `call` (needs an mpileup VCF input), `csq` (needs (gff, fa, vcf)
+  triple under `testdata/csq/`), `roh` (needs `--AF-tag`/`--AF-file`
+  plumbing), `mendelian` (trio VCF + PED), `gtcheck` (two indexed
+  VCFs with overlapping samples), `polysomy` (BAF distribution),
+  `cnv` (tumour/normal pair), `consensus` (fasta + matching vcf.gz),
+  `plugin` (our plugin discovery diverges intentionally; see plugin
+  section below).
+
 
 `view` output-type selector (`-O`/`--output-type`) — DONE for all four
 formats. The combined short form (`-Ob`/`-Ou`/`-Oz`/`-Ov`), the

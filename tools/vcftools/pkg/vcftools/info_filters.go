@@ -94,7 +94,9 @@ func filterRecodeInfo(info map[string]string, keepInfo infoTagSet) map[string]st
 
 // getInfoRunner streams variants and writes <prefix>.INFO with chosen INFO
 // tags. The columns are CHROM POS REF ALT followed by one column per
-// requested tag, in the order the user supplied them. Missing tags emit ".".
+// requested tag, in the order the user supplied them. Missing tags emit "?"
+// to match upstream's variant_file_output.cpp:2050 sentinel (not the VCF "."
+// missing convention).
 //
 // vcftools refers to the input flag as `--get-INFO TAG`, repeatable. Our CLI
 // accepts a comma-separated list; both styles map to the same `tags` slice.
@@ -142,7 +144,9 @@ func (g *getInfoRunner) addVariant(v *vcf.Variant) error {
 	for _, tag := range g.tags {
 		val, ok := v.Info[tag]
 		if !ok || val == "" {
-			val = "."
+			// Upstream uses "?" as the missing-INFO-tag sentinel here, NOT
+			// the VCF "." default — see variant_file_output.cpp:2050.
+			val = "?"
 		}
 		if _, err := g.w.WriteString("\t" + val); err != nil {
 			return err

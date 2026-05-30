@@ -128,7 +128,9 @@ func outputPlink(variants []*vcf.Variant, header *vcf.Header, prefix string, chr
 	for _, sample := range header.Samples {
 		// PLINK PED format: FID IID PAT MAT SEX PHENOTYPE genotypes...
 		// We use sample name for both FID and IID, unknowns for others
-		fmt.Fprintf(fPed, "%s\t%s\t0\t0\t0\t-9", sample, sample)
+		// Phenotype column (6th) is "0" (unknown) per upstream
+		// variant_file_output.cpp:1700 — NOT PLINK's idiomatic "-9".
+		fmt.Fprintf(fPed, "%s\t%s\t0\t0\t0\t0", sample, sample)
 
 		for _, v := range variants {
 			allele1, allele2 := "0", "0" // missing by default
@@ -180,7 +182,9 @@ func outputPlinkTped(variants []*vcf.Variant, header *vcf.Header, prefix string,
 
 	// Write TFAM file (FID IID PAT MAT SEX PHENOTYPE)
 	for _, sample := range header.Samples {
-		fmt.Fprintf(fTfam, "%s\t%s\t0\t0\t0\t-9\n", sample, sample)
+		// Phenotype column (6th) is "0" (unknown) per upstream
+		// variant_file_output.cpp:1840 — NOT PLINK's idiomatic "-9".
+		fmt.Fprintf(fTfam, "%s\t%s\t0\t0\t0\t0\n", sample, sample)
 	}
 
 	// Write TPED file (chr, variant ID, genetic distance, position, genotypes)

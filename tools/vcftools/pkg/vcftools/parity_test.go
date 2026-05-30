@@ -39,6 +39,7 @@ package vcftools
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -899,6 +900,225 @@ func TestVcftoolsLiveOracle(t *testing.T) {
 				t.Errorf("%s mismatch\nwant:\n%s\ngot:\n%s", tc.out, want, got)
 			}
 		})
+	}
+}
+
+// genuineVcftoolsBinary returns the absolute path of the upstream
+// vcftools binary built from the vendored submodule. Tests that need to
+// drive it should call this and t.Skip when it is missing — the parity
+// suite is designed to run without it, but the live-oracle tests below
+// fail closed when both the binary and the port are available.
+func genuineVcftoolsBinary(t *testing.T) string {
+	t.Helper()
+	abs, err := filepath.Abs(filepath.Join(
+		"..", "..", "..", "..",
+		"reference_code", "vcftools", "src", "cpp", "vcftools",
+	))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		t.Skipf("genuine vcftools binary not built at %s: %v", abs, err)
+	}
+	return abs
+}
+
+// TestVcftoolsLiveOracleFull is the broad expansion of TestVcftoolsLiveOracle.
+// For every vcftools option wired into our port that the genuine C binary
+// also supports on testdata/live/in.vcf, this test:
+//
+//  1. invokes the genuine binary
+//     (reference_code/vcftools/src/cpp/vcftools) at test time;
+//  2. invokes our port on the same input with the same Params;
+//  3. diffs each non-".log" output file byte-for-byte.
+//
+// Goldens are NOT vendored — they are regenerated every run from the live
+// binary. This is the only way to keep us honest as the port evolves; the
+// pre-existing vendored expected.* files (which TestVcftoolsLiveOracle
+// still relies on) drifted out of date and hid bugs in --freq/--het/
+// --missing-site that landed in commit dea8695.
+//
+// Subtests t.Skip when the genuine binary refuses the option (e.g.
+// --BEAGLE-GL requires GL/PL FORMAT tags absent from in.vcf, --LROH
+// requires --chr explicitly, etc.). They t.Errorf — not t.Skip — on
+// mismatch: the goal is to surface gaps.
+func TestVcftoolsLiveOracleFull(t *testing.T) {
+	bin := genuineVcftoolsBinary(t)
+
+	liveDir, err := filepath.Abs(filepath.Join("testdata", "live"))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	in := filepath.Join(liveDir, "in.vcf")
+
+	// Each case lists (subtest name, the upstream CLI args, the matching
+	// Params, and the output-file suffixes to diff). The args slice does
+	// NOT include --vcf / --out; runOracle adds those. The suffixes do
+	// NOT include the ".log" suffix; that file embeds timestamps and
+	// upstream version banners and is never compared.
+	type oracle struct {
+		name     string
+		args     []string
+		params   *Params
+		suffixes []string
+	}
+
+	cases := []oracle{
+		// ------ Site / allele frequency family ------
+		{"freq", []string{"--freq"}, &Params{Freq: true}, []string{".frq"}},
+		{"counts", []string{"--counts"}, &Params{Counts: true}, []string{".frq.count"}},
+		{"freq2", []string{"--freq2"}, &Params{Freq2: true}, []string{".frq"}},
+		{"counts2", []string{"--counts2"}, &Params{Counts2: true}, []string{".frq.count"}},
+
+		// ------ Site stats ------
+		{"site-pi", []string{"--site-pi"}, &Params{SitePi: true}, []string{".sites.pi"}},
+		{"site-quality", []string{"--site-quality"}, &Params{SiteQuality: true}, []string{".lqual"}},
+		{"site-depth", []string{"--site-depth"}, &Params{SiteDepth: true}, []string{".ldepth"}},
+		{"site-mean-depth", []string{"--site-mean-depth"}, &Params{SiteMeanDepth: true}, []string{".ldepth.mean"}},
+		{"missing-site", []string{"--missing-site"}, &Params{MissingSite: true}, []string{".lmiss"}},
+		{"hardy", []string{"--hardy"}, &Params{Hardy: true}, []string{".hwe"}},
+		{"singletons", []string{"--singletons"}, &Params{Singletons: true}, []string{".singletons"}},
+		{"hist-indel-len", []string{"--hist-indel-len"}, &Params{HistIndelLen: true}, []string{".indel.hist"}},
+		{"FILTER-summary", []string{"--FILTER-summary"}, &Params{FilterSummary: true}, []string{".FILTER.summary"}},
+		{"SNPdensity-100", []string{"--SNPdensity", "100"}, &Params{SNPDensity: 100}, []string{".snpden"}},
+		{"kept-sites", []string{"--kept-sites"}, &Params{KeptSites: true}, []string{".kept.sites"}},
+		{"removed-sites-with-filter", []string{"--minQ", "100", "--removed-sites"}, &Params{MinQ: 100, RemovedSites: true}, []string{".removed.sites"}},
+
+		// ------ Per-individual stats ------
+		{"depth", []string{"--depth"}, &Params{Depth: true}, []string{".idepth"}},
+		{"missing-indv", []string{"--missing-indv"}, &Params{MissingIndv: true}, []string{".imiss"}},
+		{"het", []string{"--het"}, &Params{Het: true}, []string{".het"}},
+		{"geno-depth", []string{"--geno-depth"}, &Params{GenoDepth: true}, []string{".gdepth"}},
+		{"indv-burden", []string{"--indv-burden"}, &Params{IndvBurden: true}, []string{".iburden"}},
+		{"indv-freq-burden", []string{"--indv-freq-burden"}, &Params{IndvFreqBurden: true}, []string{".ifreqburden"}},
+		{"indv-freq-burden2", []string{"--indv-freq-burden2"}, &Params{IndvFreqBurden2: true}, []string{".ifreqburden"}},
+
+		// ------ TsTv family ------
+		{"TsTv-summary", []string{"--TsTv-summary"}, &Params{TsTvSummary: true}, []string{".TsTv.summary"}},
+		{"TsTv-by-count", []string{"--TsTv-by-count"}, &Params{TsTvByCount: true}, []string{".TsTv.count"}},
+		{"TsTv-by-qual", []string{"--TsTv-by-qual"}, &Params{TsTvByQual: true}, []string{".TsTv.qual"}},
+		{"TsTv-binned-100", []string{"--TsTv", "100"}, &Params{TsTvBinSize: 100}, []string{".TsTv"}},
+
+		// ------ Windowed stats ------
+		{"TajimaD-100", []string{"--TajimaD", "100"}, &Params{TajimaD: 100}, []string{".Tajima.D"}},
+		{"window-pi-1000", []string{"--window-pi", "1000"}, &Params{WindowPi: 1000}, []string{".windowed.pi"}},
+
+		// ------ LD ------
+		{"geno-r2", []string{"--geno-r2"}, &Params{GenoR2: true}, []string{".geno.ld"}},
+		{"hap-r2", []string{"--hap-r2"}, &Params{HapR2: true}, []string{".hap.ld"}},
+		{"interchrom-geno-r2", []string{"--interchrom-geno-r2"}, &Params{InterchromGenoR2: true}, []string{".interchrom.geno.ld"}},
+		{"interchrom-hap-r2", []string{"--interchrom-hap-r2"}, &Params{InterchromHapR2: true}, []string{".interchrom.hap.ld"}},
+		{"geno-chisq", []string{"--geno-chisq"}, &Params{GenoChiSq: true}, []string{".geno.chisq"}},
+
+		// ------ Relatedness ------
+		{"relatedness", []string{"--relatedness"}, &Params{Relatedness: true}, []string{".relatedness"}},
+		{"relatedness2", []string{"--relatedness2"}, &Params{Relatedness2: true}, []string{".relatedness2"}},
+
+		// ------ LROH (needs --chr) ------
+		{"LROH-chr1", []string{"--chr", "1", "--LROH"}, &Params{Chr: "1", LROH: true}, []string{".LROH"}},
+
+		// ------ INFO extraction ------
+		{"get-INFO-DP", []string{"--get-INFO", "DP"}, &Params{GetINFO: "DP"}, []string{".INFO"}},
+
+		// ------ Format conversions ------
+		{"012", []string{"--012"}, &Params{Output012: true}, []string{".012", ".012.indv", ".012.pos"}},
+		{"plink", []string{"--plink"}, &Params{OutputPlink: true}, []string{".ped", ".map"}},
+		{"plink-tped", []string{"--plink-tped"}, &Params{OutputPlinkTped: true}, []string{".tped", ".tfam"}},
+
+		// ------ Recode passthroughs ------
+		{"recode", []string{"--recode"}, &Params{Recode: true}, []string{".recode.vcf"}},
+		{"recode-INFO-all", []string{"--recode", "--recode-INFO-all"}, &Params{Recode: true, RecodeInfoAll: true}, []string{".recode.vcf"}},
+
+		// ------ Site-set filters (paired with --recode for an observable
+		// output) ------
+		{"chr-filter", []string{"--chr", "1", "--recode"}, &Params{Chr: "1", Recode: true}, []string{".recode.vcf"}},
+		{"from-to-bp", []string{"--chr", "1", "--from-bp", "150", "--to-bp", "350", "--recode"}, &Params{Chr: "1", FromBp: 150, ToBp: 350, Recode: true}, []string{".recode.vcf"}},
+		{"maf", []string{"--maf", "0.3", "--recode"}, &Params{Maf: 0.3, Recode: true}, []string{".recode.vcf"}},
+		{"max-maf", []string{"--max-maf", "0.4", "--recode"}, &Params{MaxMaf: 0.4, Recode: true}, []string{".recode.vcf"}},
+		{"mac", []string{"--mac", "2", "--recode"}, &Params{Mac: 2, Recode: true}, []string{".recode.vcf"}},
+		{"max-mac", []string{"--max-mac", "4", "--recode"}, &Params{MaxMac: 4, Recode: true}, []string{".recode.vcf"}},
+		{"minQ", []string{"--minQ", "20", "--recode"}, &Params{MinQ: 20, Recode: true}, []string{".recode.vcf"}},
+		{"remove-indels", []string{"--remove-indels", "--recode"}, &Params{RemoveIndels: true, Recode: true}, []string{".recode.vcf"}},
+		{"keep-only-indels", []string{"--keep-only-indels", "--recode"}, &Params{KeepOnlyIndels: true, Recode: true}, []string{".recode.vcf"}},
+		{"max-missing-1", []string{"--max-missing", "1.0", "--recode"}, &Params{MaxMissing: 1.0, Recode: true}, []string{".recode.vcf"}},
+		{"max-missing-count-0", []string{"--max-missing-count", "0", "--recode"}, &Params{MaxMissingCount: 0, MaxMissingCountSet: true, Recode: true}, []string{".recode.vcf"}},
+		{"remove-filtered-all", []string{"--remove-filtered-all", "--recode"}, &Params{RemoveFilteredAll: true, Recode: true}, []string{".recode.vcf"}},
+		{"non-ref-af", []string{"--non-ref-af", "0.3", "--recode"}, &Params{MinNonRefAF: 0.3, Recode: true}, []string{".recode.vcf"}},
+		{"non-ref-ac", []string{"--non-ref-ac", "1", "--recode"}, &Params{MinNonRefAC: 1, Recode: true}, []string{".recode.vcf"}},
+		{"max-non-ref-af", []string{"--max-non-ref-af", "0.9", "--recode"}, &Params{MaxNonRefAF: 0.9, Recode: true}, []string{".recode.vcf"}},
+		{"max-non-ref-ac", []string{"--max-non-ref-ac", "5", "--recode"}, &Params{MaxNonRefAC: 5, Recode: true}, []string{".recode.vcf"}},
+		{"minDP", []string{"--minDP", "6", "--recode"}, &Params{MinDP: 6, Recode: true}, []string{".recode.vcf"}},
+		{"maxDP", []string{"--maxDP", "50", "--recode"}, &Params{MaxDP: 50, Recode: true}, []string{".recode.vcf"}},
+		{"min-meanDP", []string{"--min-meanDP", "5", "--recode"}, &Params{MinMeanDP: 5, Recode: true}, []string{".recode.vcf"}},
+		{"max-meanDP", []string{"--max-meanDP", "50", "--recode"}, &Params{MaxMeanDP: 50, Recode: true}, []string{".recode.vcf"}},
+		{"minGQ", []string{"--minGQ", "40", "--recode"}, &Params{MinGQ: 40, Recode: true}, []string{".recode.vcf"}},
+		{"thin-50", []string{"--thin", "50", "--recode"}, &Params{Thin: 50, Recode: true}, []string{".recode.vcf"}},
+		{"max-alleles-2", []string{"--max-alleles", "2", "--recode"}, &Params{MaxAlleles: 2, Recode: true}, []string{".recode.vcf"}},
+		{"phased", []string{"--phased", "--recode"}, &Params{Phased: true, Recode: true}, []string{".recode.vcf"}},
+		{"hwe", []string{"--hwe", "0.001", "--recode"}, &Params{MinHWEPvalue: 0.001, MaxAlleles: 2, Recode: true}, []string{".recode.vcf"}},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			runOracleCase(t, bin, in, tc.args, tc.params, tc.suffixes)
+		})
+	}
+}
+
+// runOracleCase drives one live-oracle subtest. It runs the genuine
+// vcftools binary in a fresh temp dir; if that succeeds, it runs our
+// port on the same input with the supplied Params; then it diffs each
+// requested output suffix byte-for-byte. If the genuine binary fails
+// (non-zero exit) the subtest is skipped — the option is not exercisable
+// on this fixture and there is nothing to compare. Port failures are
+// surfaced via t.Fatalf so they cannot hide behind a missing golden.
+func runOracleCase(t *testing.T, bin, in string, args []string, params *Params, suffixes []string) {
+	t.Helper()
+	tmp := t.TempDir()
+
+	// Drive the genuine binary in `goldDir` so its log/aux files cannot
+	// collide with the port's output.
+	goldDir := filepath.Join(tmp, "gold")
+	if err := os.Mkdir(goldDir, 0o755); err != nil {
+		t.Fatalf("mkdir gold: %v", err)
+	}
+	goldPrefix := filepath.Join(goldDir, "out")
+	cmdArgs := append([]string{"--vcf", in, "--out", goldPrefix}, args...)
+	cmd := exec.Command(bin, cmdArgs...)
+	cmd.Dir = goldDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("genuine vcftools failed for %v: %v\n%s", args, err, out)
+	}
+
+	// Drive the port.
+	portPrefix := filepath.Join(tmp, "port_out")
+	params.OutPrefix = portPrefix
+	f, err := os.Open(in)
+	if err != nil {
+		t.Fatalf("open in.vcf: %v", err)
+	}
+	defer f.Close()
+	if err := Run(f, params); err != nil {
+		t.Fatalf("port Run failed: %v", err)
+	}
+
+	// Diff each requested suffix byte-for-byte.
+	for _, suf := range suffixes {
+		gold, err := os.ReadFile(goldPrefix + suf)
+		if err != nil {
+			t.Skipf("genuine binary did not produce %s%s: %v", "out", suf, err)
+			return
+		}
+		got, err := os.ReadFile(portPrefix + suf)
+		if err != nil {
+			t.Errorf("port did not produce %s: %v", suf, err)
+			continue
+		}
+		if !bytes.Equal(got, gold) {
+			t.Errorf("%s mismatch\n--- want (genuine) ---\n%s\n--- got (port) ---\n%s",
+				suf, gold, got)
+		}
 	}
 }
 
