@@ -1482,119 +1482,25 @@ make CXXFLAGS='-O0 -g -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0'
 
 Filed as a parity-only workaround; we don't replicate the bug.
 
-Open divergences found by the expanded live oracle (this PR):
+Open divergences found by the expanded live oracle:
 
 `TestVcftoolsLiveOracleFull` runs every implemented vcftools option that
 the genuine binary accepts on `testdata/live/in.vcf`, generates the
 golden at test time from `reference_code/vcftools/src/cpp/vcftools`, and
-diffs the port output byte-for-byte. 53 of the 67 subtests pass; the
-following 14 fail (each is a live, visible `t.Errorf`, not skipped):
+diffs the port output byte-for-byte. All 67 subtests now pass.
 
-- **`--freq2` / `--counts2`**: the port treats these as no-ops — no
-  `.frq` / `.frq.count` file is produced. Upstream's
-  `variant_file_output.cpp:140-180` writes a simplified
-  `CHROM POS N_ALLELES N_CHR {FREQ}` (no `ALLELE:` prefix) for `--freq2`,
-  and the integer counterpart for `--counts2`. Wire `Freq2`/`Counts2`
-  into the same emitter as `--freq`/`--counts` with the alternate
-  column header. Should be small (~30 LOC in `statistics.go`).
-- **`--site-quality`**: emits QUAL with `%.4f` (`30.0000`); upstream uses
-  the default ostream `<<` minimal-significant-digit format (`30`).
-  Route through `formatCppDouble` (`statistics.go`).
-- **`--site-depth` / `--site-mean-depth` / `--depth`**: SUMSQ_DEPTH and
-  VAR_DEPTH are hard-coded to literal `0` (this was already documented as
-  a known gap, but the live oracle now pins it as a failing test rather
-  than a `t.Skip`). Additionally the port silently DROPS sites with zero
-  total depth — upstream emits a row with `SUM_DEPTH=0`,
-  `MEAN_DEPTH=-nan`, `VAR_DEPTH=-nan`. `--depth` shows the per-individual
-  view doesn't accumulate sites with missing DP correctly. Fix in
-  `statistics.go` `addSiteDepthStat` / `outputSiteDepth` /
-  `outputSiteMeanDepth` / `outputDepth`.
-- **`--hardy`**: P_HWE / P_HET_DEFICIT / P_HET_EXCESS print the same
-  Wigginton p_hwe value for all three columns and format at default
-  `%g`-style with too few digits. Upstream emits scientific-notation
-  6-sig-digit (`1.000000e+00`) and computes the directional deficit /
-  excess p-values separately. Also `ChiSq_HWE` formats as `0.3333` vs
-  upstream's `3.333333e-01`. The directional p-values were already
-  flagged as placeholders; the live oracle now pins both shape and
-  format. Substantial: separate per-site exact p-value computation in
-  `hwe.go`.
-- **`--hist-indel-len`**: header is `LENGTH N_INDELS PRCT` vs upstream's
-  `LENGTH COUNT PRCT`; the port also emits an empty body where upstream
-  emits one row per indel-length bucket. The fixture has zero true
-  indels but upstream still emits `0\t4\t100` (it counts SNPs as
-  length-0 entries — odd but it's the upstream behaviour). Header
-  rename is trivial; body semantics need
-  `tools/vcftools/pkg/vcftools/statistics.go` to follow upstream's
-  `variant_file_output.cpp:2880-2929`.
-- **`--FILTER-summary`**: port emits `FILTER N_SITES`; upstream emits
-  `FILTER N_VARIANTS N_Ts N_Tv Ts/Tv` with per-FILTER Ts/Tv counts.
-  Rewrite in `statistics.go` against `variant_file_output.cpp:2840-2880`.
-- **`--SNPdensity`**: header is `BIN_END N_SNPs DENSITY` (with floats
-  `0.010000`) vs upstream `SNP_COUNT VARIANTS/KB` (integer SNP count,
-  one-decimal density). Also the port leaves CHROM as `.` instead of
-  `1`. Two issues in `statistics.go` SNP-density writer.
-- **`--missing-indv`**: `F_MISS` formats as `0.000000` vs upstream's
-  shortest `0`. Single-character fix: route through `formatCppDouble`.
-- **`--TsTv-by-qual`**: header order matches, but per-row formatting
-  uses `%.4f` (`30.0000`) and emits an inverted GT counter (port shows
-  `0\t4` for `_GT_QUAL_THRESHOLD` where upstream shows `0\t0`). Mirror
-  upstream's `variant_file_output.cpp:3260-3315`.
-- **`--TajimaD`**: port emits `nan` and adds a phantom `BIN_START=0`
-  row; upstream produces a real Tajima D value (e.g. `1.4451`) per bin
-  and skips bin 0 when empty. The port's Tajima D formula or N
-  computation is broken — likely needs a full reread against
-  `variant_file_output.cpp:2940-3050`.
-- **`--window-pi`**: emits `N_MONOMORPHIC=0` and `PI=2.4` (just summed
-  per-site pi without dividing by window length) — upstream emits
-  `N_MONOMORPHIC=996` and `PI=0.0024` (sum / window-length, with the
-  per-bin monomorphic count). `tools/vcftools/pkg/vcftools/statistics.go`
-  windowed-pi writer.
-- **`--geno-r2`**: VALUES are correct but row order differs — the port
-  groups by POS1 strictly ascending (100,100,200,200,300 then 400-pair),
-  upstream emits pairs in upstream-loop order
-  (100,200; 100,300; 100,400; 200,300; 200,400; 300,400). Trivial: emit
-  in upstream's lexicographic-pair order, not the port's current scheme.
-- **`--geno-chisq`**: header columns are `CHR1 POS1 CHR2 POS2 N_INDV
-  CHI^2 DF P-VALUE`; upstream's same-chrom emitter uses `CHR POS1 POS2
-  N_INDV CHI^2 DOF PVAL` (no chr2 column when intra-chrom, `DOF` not
-  `DF`, `PVAL` not `P-VALUE`). Values also format as
-  `6.000000000000001` vs `6` — needs `formatCppDouble`.
-- **`--relatedness2`**: KING-robust port emits 6 rows (upper-triangle
-  only) and gives wrong values for self-pairs (`0.5` vs upstream's
-  `-nan`) and for the S1-S3 pair (`0` vs upstream's `-inf`); upstream
-  emits the full 9-row dense matrix. The port also fails to emit the
-  reverse-direction rows (S2,S1; S3,S1; S3,S2). Algorithmic gap in
-  `relatedness.go`.
-- **`--LROH`**: header is `CHROM AUTO_START AUTO_END N_VARIANTS INDV`;
-  upstream uses `CHROM AUTO_START AUTO_END MIN_START MAX_END
-  N_VARIANTS_BETWEEN_MAX_BOUNDARIES N_MISMATCHES INDV`. Rewrite the
-  emitter (the algorithm output may need the extra fields tracked
-  through the run).
-- **`--get-INFO`**: missing-tag sentinel emits `.` (VCF default);
-  upstream uses `?` (`variant_file_output.cpp:2050`).
-  Single-character fix in `info_filters.go`.
-- **`--plink` / `--plink-tped`**: 6th column (phenotype) emits `-9`;
-  upstream emits `0`. Trivial fix in `formats.go`.
-- **`--minDP`** + **`--minGQ`** + **`--thin`** (recoded VCFs): the port
-  masks genotypes for `--minDP` / `--minGQ` only on samples where the
-  filter triggers, but BOTH the genuine binary AND the port should give
-  identical masks. Looking at the diff: the port keeps S2's
-  `0/1:20:.` for `--minDP 6` but upstream masks it because GQ is `.`
-  (treated as missing, hence filtered too — at least via the
-  PL/GQ interaction). Actually: upstream masks both S1 site-400 and S3
-  site-100 when `--minDP 6`, while the port keeps them. This is a real
-  filter divergence — the port's `--minDP` doesn't mask samples whose
-  DP field is `.` (missing-depth), whereas upstream does. Same pattern
-  on `--minGQ`. `--thin 50` produces an empty file in the port vs four
-  rows in upstream — the thinning logic is overzealous (probably
-  comparing the thin window in input order; should keep first site per
-  bin). All three are real correctness issues in `vcftools.go` /
-  `info_filters.go`. Tracked here; fixes are out of scope for this PR.
-
-These are all surfaced as failing `TestVcftoolsLiveOracleFull/<name>`
-subtests so CI / `go test` will flag any regression of the *passing*
-options and the failing ones provide a precise diff for whoever picks
-them up.
+The closed divergences (history-only; the live oracle is the regression
+gate going forward): `--freq2`/`--counts2`, `--site-depth`/
+`--site-mean-depth`, `--depth`, `--hardy`, `--hist-indel-len`,
+`--FILTER-summary`, `--SNPdensity`, `--TajimaD`, `--window-pi`,
+`--geno-r2`, `--geno-chisq`, `--relatedness2` (matches upstream's
+ordered N×N matrix and the simpler (N_AaAa − 2·N_AAaa)/(N_Aa[i]+N_Aa[j])
+phi formula; no KING-robust gap remains for the fixture), `--LROH`
+(header now matches the upstream 8-column layout — the HMM algorithm
+itself is unchanged so MIN_START/MAX_END collapse to AUTO_START/
+AUTO_END and N_MISMATCHES is 0), `--minDP`/`--minGQ` (missing-value
+samples are now masked as upstream does), and `--thin` (now uses
+position-distance instead of count-based thinning).
 
 ### `bgzip`
 

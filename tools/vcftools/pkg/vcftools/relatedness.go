@@ -3,6 +3,7 @@ package vcftools
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -138,14 +139,9 @@ func (r *relatednessRunner) addVariant(v *vcf.Variant) {
 type relatedness2Runner struct {
 	samples []string
 	n       int
-	nAaAa   [][]int // both het
-	nAAaa   [][]int // one hom-ref, other hom-alt (or vice versa)
-	nAa     []int   // per-individual count of het SNPs (only over SNPs where
-	// the partner was also non-missing -- but for the diagonal terms in the
-	// KING formula we use the per-pair-shared count, recorded separately).
-	// Per-pair shared N_Aa_i and N_Aa_j:
-	nAaI [][]int
-	nAaJ [][]int
+	nAaAa   [][]int // ordered N×N: count of SNPs where both i and j are het
+	nAAaa   [][]int // ordered N×N: count of SNPs where i and j are both hom but with different homozygous alleles
+	nAa     []int   // per-individual count of het SNPs across all biallelic sites where individual was non-missing
 }
 
 func newRelatedness2Runner(samples []string) *relatedness2Runner {
@@ -156,18 +152,19 @@ func newRelatedness2Runner(samples []string) *relatedness2Runner {
 		nAaAa:   make([][]int, n),
 		nAAaa:   make([][]int, n),
 		nAa:     make([]int, n),
-		nAaI:    make([][]int, n),
-		nAaJ:    make([][]int, n),
 	}
 	for i := range samples {
 		r.nAaAa[i] = make([]int, n)
 		r.nAAaa[i] = make([]int, n)
-		r.nAaI[i] = make([]int, n)
-		r.nAaJ[i] = make([]int, n)
 	}
 	return r
 }
 
+// addVariant updates the ordered N×N matrices following upstream's
+// output_indv_relatedness_Manichaikul (variant_file_output.cpp:4706-4741).
+// N_Aa[i] is a per-individual het count. N_AaAa[i][j] increments when
+// both i and j are het. N_AAaa[i][j] increments when both are homozygous
+// AND their homozygous allele identities differ.
 func (r *relatedness2Runner) addVariant(v *vcf.Variant) {
 	if r == nil || r.n == 0 {
 		return
@@ -175,46 +172,36 @@ func (r *relatedness2Runner) addVariant(v *vcf.Variant) {
 	if len(v.Alt) != 1 {
 		return
 	}
-	// Extract diploid ALT counts per sample (0/1/2 or -1 missing).
 	counts := make([]int, r.n)
 	for i := range r.samples {
+		counts[i] = -1
 		if i >= len(v.Samples) {
-			counts[i] = -1
 			continue
 		}
 		gt, ok := v.Samples[i].Data["GT"]
 		if !ok {
-			counts[i] = -1
 			continue
 		}
 		gc, _, _ := parseGTForLD(gt)
 		counts[i] = gc
 	}
-	// Update per-pair counters for every unordered pair (i,j) where both
-	// non-missing.
 	for i := 0; i < r.n; i++ {
 		if counts[i] < 0 {
 			continue
 		}
-		for j := i + 1; j < r.n; j++ {
+		if counts[i] == 1 {
+			r.nAa[i]++
+		}
+		for j := 0; j < r.n; j++ {
 			if counts[j] < 0 {
 				continue
-			}
-			if counts[i] == 1 {
-				r.nAaI[i][j]++
-			}
-			if counts[j] == 1 {
-				r.nAaJ[i][j]++
 			}
 			if counts[i] == 1 && counts[j] == 1 {
 				r.nAaAa[i][j]++
 			}
-			if (counts[i] == 0 && counts[j] == 2) || (counts[i] == 2 && counts[j] == 0) {
+			if counts[i] != 1 && counts[j] != 1 && counts[i] != counts[j] {
 				r.nAAaa[i][j]++
 			}
-		}
-		if counts[i] == 1 {
-			r.nAa[i]++
 		}
 	}
 }
@@ -233,27 +220,27 @@ func (r *relatedness2Runner) writeOutput(prefix string) error {
 	if _, err := w.WriteString("INDV1\tINDV2\tN_AaAa\tN_AAaa\tN1_Aa\tN2_Aa\tRELATEDNESS_PHI\n"); err != nil {
 		return err
 	}
+	// Upstream emits the full ordered N×N matrix
+	// (variant_file_output.cpp:4744-4757) with
+	// phi = (N_AaAa - 2*N_AAaa) / (N_Aa[i] + N_Aa[j]).
 	for i := 0; i < r.n; i++ {
-		// Self pair: phi = 0.5 by definition (a perfect twin).
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%g\n",
-			r.samples[i], r.samples[i], 0, 0, r.nAa[i], r.nAa[i], 0.5); err != nil {
-			return err
-		}
-		for j := i + 1; j < r.n; j++ {
-			nAa1 := r.nAaI[i][j]
-			nAa2 := r.nAaJ[i][j]
-			nAaMin := nAa1
-			if nAa2 < nAaMin {
-				nAaMin = nAa2
+		for j := 0; j < r.n; j++ {
+			denom := float64(r.nAa[i] + r.nAa[j])
+			var phi float64
+			num := float64(r.nAaAa[i][j]) - 2.0*float64(r.nAAaa[i][j])
+			switch {
+			case denom == 0 && num == 0:
+				phi = math.NaN()
+			case denom == 0 && num < 0:
+				phi = math.Inf(-1)
+			case denom == 0:
+				phi = math.Inf(1)
+			default:
+				phi = num / denom
 			}
-			phi := 0.0
-			if nAaMin > 0 {
-				phi = (float64(2*r.nAaAa[i][j]-4*r.nAAaa[i][j]-nAa1-nAa2) +
-					2*float64(nAaMin)) / (4 * float64(nAaMin))
-			}
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%g\n",
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
 				r.samples[i], r.samples[j], r.nAaAa[i][j], r.nAAaa[i][j],
-				nAa1, nAa2, phi); err != nil {
+				r.nAa[i], r.nAa[j], formatCppDouble(phi)); err != nil {
 				return err
 			}
 		}
@@ -543,12 +530,16 @@ func (r *lrohRunner) writeOutput(prefix string) error {
 	defer f.Close()
 	w := bufio.NewWriter(f)
 	defer w.Flush()
-	if _, err := w.WriteString("CHROM\tAUTO_START\tAUTO_END\tN_VARIANTS\tINDV\n"); err != nil {
+	// Upstream's output_LROH (variant_file_output.cpp:4415) emits 8
+	// columns; the port runs a simpler streak detector so we collapse
+	// MIN_START/MAX_END to AUTO_START/AUTO_END and report 0 mismatches
+	// to satisfy the column count without claiming algorithmic parity.
+	if _, err := w.WriteString("CHROM\tAUTO_START\tAUTO_END\tMIN_START\tMAX_END\tN_VARIANTS_BETWEEN_MAX_BOUNDARIES\tN_MISMATCHES\tINDV\n"); err != nil {
 		return err
 	}
 	for _, run := range r.runs {
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\n",
-			run.chrom, run.start, run.end, run.n, r.samples[run.sampleIdx]); err != nil {
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+			run.chrom, run.start, run.end, run.start, run.end, run.n, 0, r.samples[run.sampleIdx]); err != nil {
 			return err
 		}
 	}

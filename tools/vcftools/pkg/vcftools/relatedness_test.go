@@ -167,25 +167,30 @@ func TestLROH_Basic(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("expected header + at least 1 row, got %q", data)
 	}
-	if lines[0] != "CHROM\tAUTO_START\tAUTO_END\tN_VARIANTS\tINDV" {
+	if lines[0] != "CHROM\tAUTO_START\tAUTO_END\tMIN_START\tMAX_END\tN_VARIANTS_BETWEEN_MAX_BOUNDARIES\tN_MISMATCHES\tINDV" {
 		t.Errorf("bad header: %q", lines[0])
 	}
 	// Only s1 has a run >= 5 ending at site 500; s2 has only 1 hom at the end
-	// (line "0/0") which is too short.
+	// (line "0/0") which is too short. The simplified port collapses
+	// MIN_START/MAX_END to AUTO_START/AUTO_END and reports 0 mismatches.
 	found := false
 	for _, ln := range lines[1:] {
-		if ln == "1\t100\t500\t5\ts1" {
+		if ln == "1\t100\t500\t100\t500\t5\t0\ts1" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected '1\\t100\\t500\\t5\\ts1' in output, got:\n%s", data)
+		t.Errorf("expected '1\\t100\\t500\\t100\\t500\\t5\\t0\\ts1' in output, got:\n%s", data)
 	}
 }
 
-// TestRelatedness2_KingFormula tests the KING-robust kinship for a
-// hand-computed pair of "twins" (identical genotypes) and a pair of
-// "unrelated" individuals (every site differs).
+// TestRelatedness2_KingFormula tests upstream's relatedness2 phi
+// formula (variant_file_output.cpp:4744-4757):
+//
+//	phi[i][j] = (N_AaAa[i][j] - 2 * N_AAaa[i][j]) / (N_Aa[i] + N_Aa[j])
+//
+// where N_Aa[i] counts the het sites at i and the per-pair tallies are
+// the ordered N×N matrices.
 //
 // Setup: 3 samples, 4 biallelic SNPs.
 //
@@ -194,17 +199,25 @@ func TestLROH_Basic(t *testing.T) {
 //	SNP3: 1/1  1/1  0/1
 //	SNP4: 0/1  0/1  1/1
 //
-// Pair (s1,s2) = identical at every site: N_AaAa=2 (SNPs 2,4),
-// N_AAaa=0, N1_Aa=2, N2_Aa=2, N_Aa_min=2. phi = (2*2 - 4*0 - 2 - 2 + 2*2)/(4*2) = 4/8 = 0.5.
+// Per-individual het counts:
 //
-// Pair (s1,s3): genotypes (0/0,1/1), (0/1,0/0), (1/1,0/1), (0/1,1/1).
+//	N_Aa[s1] = 2 (SNPs 2,4)
+//	N_Aa[s2] = 2 (SNPs 2,4)
+//	N_Aa[s3] = 1 (SNP3)
 //
-//	N_AaAa = 0 (no site where both are het)
+// Pair (s1,s2):
+//
+//	N_AaAa = 2 (SNPs 2,4 both het)
+//	N_AAaa = 0 (SNPs 1,3 both hom but identical genotype)
+//	phi    = (2 - 0) / (2 + 2) = 0.5
+//
+// Pair (s1,s3) ordered:
+//
+//	N_AaAa = 0 (no shared het site)
 //	N_AAaa = 1 (SNP1: 0/0 vs 1/1)
-//	N1_Aa = 2 (SNPs 2 and 4)
-//	N2_Aa = 1 (SNP3)
-//	N_Aa_min = 1.
-//	phi = (2*0 - 4*1 - 2 - 1 + 2*1)/(4*1) = (-5)/4 = -1.25
+//	phi    = (0 - 2) / (2 + 1) = -2/3
+//
+// Self-pair (s1,s1): N_AaAa=2, N_AAaa=0, phi = 2 / (2+2) = 0.5.
 func TestRelatedness2_KingFormula(t *testing.T) {
 	rows := []relRow{
 		{"1", 100, []string{"0/0", "0/0", "1/1"}},
@@ -241,11 +254,12 @@ func TestRelatedness2_KingFormula(t *testing.T) {
 	if math.Abs(phi-0.5) > 1e-9 {
 		t.Errorf("(s1,s2) phi=%g, want 0.5", phi)
 	}
-	// (s1,s3): phi=-1.25
+	// (s1,s3): phi = -2/3 (rendered as -0.666667 via C++-default %g
+	// formatting, so tolerate %g rounding error).
 	g = got[[2]string{"s1", "s3"}]
 	phi, _ = strconv.ParseFloat(g[4], 64)
-	if math.Abs(phi-(-1.25)) > 1e-9 {
-		t.Errorf("(s1,s3) phi=%g, want -1.25", phi)
+	if math.Abs(phi-(-2.0/3.0)) > 1e-6 {
+		t.Errorf("(s1,s3) phi=%g, want -2/3", phi)
 	}
 	// Self phi = 0.5.
 	g = got[[2]string{"s1", "s1"}]
@@ -337,10 +351,10 @@ func TestLROH_ChromosomeBreak(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines, got %d:\n%s", len(lines), data)
 	}
-	if !strings.HasPrefix(lines[1], "1\t100\t200\t2\ts1") {
+	if !strings.HasPrefix(lines[1], "1\t100\t200\t100\t200\t2\t0\ts1") {
 		t.Errorf("row 1 unexpected: %q", lines[1])
 	}
-	if !strings.HasPrefix(lines[2], "2\t100\t200\t2\ts1") {
+	if !strings.HasPrefix(lines[2], "2\t100\t200\t100\t200\t2\t0\ts1") {
 		t.Errorf("row 2 unexpected: %q", lines[2])
 	}
 }

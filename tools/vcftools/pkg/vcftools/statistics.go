@@ -48,17 +48,17 @@ type statistics struct {
 	tsTvByQual    []tsTvQualStat
 
 	// Phase 2: Population genetics statistics
-	windowPiValues []windowPiStat
-	tajimaDValues  []tajimaDStat
+	windowPiValues      []windowPiStat
+	tajimaDValues       []tajimaDStat
 	snpDensityBins      map[string][]int // chrom -> bin index -> count
 	snpDensityChroms    []string         // first-seen chromosome order
 	snpDensityPrevPos   int
 	snpDensityPrevChrom string
-	fstValues      []fstStat
-	filterCounts   map[string]int
-	filterTs       map[string]int
-	filterTv       map[string]int
-	singletonSites []singletonStat
+	fstValues           []fstStat
+	filterCounts        map[string]int
+	filterTs            map[string]int
+	filterTv            map[string]int
+	singletonSites      []singletonStat
 
 	// Misc
 	indelLenHist  map[int]int
@@ -133,18 +133,18 @@ type siteMissingStat struct {
 }
 
 type siteHWEStat struct {
-	chrom        string
-	pos          int
-	obsHom1      int
-	obsHet       int
-	obsHom2      int
-	expHom1      float64
-	expHet       float64
-	expHom2      float64
-	chiSq        float64
-	pValue       float64
-	pHetDeficit  float64
-	pHetExcess   float64
+	chrom       string
+	pos         int
+	obsHom1     int
+	obsHet      int
+	obsHom2     int
+	expHom1     float64
+	expHet      float64
+	expHom2     float64
+	chiSq       float64
+	pValue      float64
+	pHetDeficit float64
+	pHetExcess  float64
 }
 
 type sitePiStat struct {
@@ -255,18 +255,18 @@ type singletonStat struct {
 // newStatistics creates a new statistics collector
 func newStatistics(header *vcf.Header) *statistics {
 	return &statistics{
-		header:         header,
-		indvMissing:    make(map[string]*indvMissingStat),
-		indvHet:        make(map[string]*indvHetStat),
-		indvDepth:      make(map[string]*indvDepthStat),
-		tsTvByBin:      make(map[string][]tsTvBinStat),
-		tsTvByCount:    make(map[int]*tsTvCountStat),
+		header:            header,
+		indvMissing:       make(map[string]*indvMissingStat),
+		indvHet:           make(map[string]*indvHetStat),
+		indvDepth:         make(map[string]*indvDepthStat),
+		tsTvByBin:         make(map[string][]tsTvBinStat),
+		tsTvByCount:       make(map[int]*tsTvCountStat),
 		snpDensityBins:    make(map[string][]int),
 		snpDensityPrevPos: -1,
-		filterCounts:   make(map[string]int),
-		filterTs:       make(map[string]int),
-		filterTv:       make(map[string]int),
-		indelLenHist:   make(map[int]int),
+		filterCounts:      make(map[string]int),
+		filterTs:          make(map[string]int),
+		filterTv:          make(map[string]int),
+		indelLenHist:      make(map[int]int),
 	}
 }
 
