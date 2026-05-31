@@ -50,14 +50,20 @@ type statistics struct {
 	// Phase 2: Population genetics statistics
 	windowPiValues []windowPiStat
 	tajimaDValues  []tajimaDStat
-	snpDensityBins map[int]*snpDensityStat
+	snpDensityBins      map[string][]int // chrom -> bin index -> count
+	snpDensityChroms    []string         // first-seen chromosome order
+	snpDensityPrevPos   int
+	snpDensityPrevChrom string
 	fstValues      []fstStat
 	filterCounts   map[string]int
+	filterTs       map[string]int
+	filterTv       map[string]int
 	singletonSites []singletonStat
 
 	// Misc
 	indelLenHist  map[int]int
 	indelLenTotal int
+	indelHistSNPs int
 	genoDepths    []genoDepthSite
 	tajimaDSites  []tajimaDSite
 
@@ -252,8 +258,11 @@ func newStatistics(header *vcf.Header) *statistics {
 		indvDepth:      make(map[string]*indvDepthStat),
 		tsTvByBin:      make(map[string][]tsTvBinStat),
 		tsTvByCount:    make(map[int]*tsTvCountStat),
-		snpDensityBins: make(map[int]*snpDensityStat),
+		snpDensityBins:    make(map[string][]int),
+		snpDensityPrevPos: -1,
 		filterCounts:   make(map[string]int),
+		filterTs:       make(map[string]int),
+		filterTv:       make(map[string]int),
 		indelLenHist:   make(map[int]int),
 	}
 }
@@ -911,12 +920,21 @@ func (s *statistics) addGenoDepthStat(v *vcf.Variant) {
 }
 
 // addIndelLenStat records the length of each indel allele (positive for
-// insertions, negative for deletions) relative to the reference.
+// insertions, negative for deletions) relative to the reference. Upstream
+// (variant_file_output.cpp:5288-5310) also tallies SNPs separately so the
+// length-0 bin can be emitted alongside the indel histogram.
 func (s *statistics) addIndelLenStat(v *vcf.Variant) {
+	if isSNPVariant(v) {
+		s.indelHistSNPs++
+	}
 	refLen := len(v.Ref)
 	for _, alt := range v.Alt {
 		// Skip symbolic / structural alleles such as <DEL>.
 		if strings.ContainsAny(alt, "<>[]*") {
+			continue
+		}
+		// Upstream only counts indels whose ALT is plain ATCG.
+		if !allACGT(alt) {
 			continue
 		}
 		d := len(alt) - refLen
@@ -926,6 +944,21 @@ func (s *statistics) addIndelLenStat(v *vcf.Variant) {
 		s.indelLenHist[d]++
 		s.indelLenTotal++
 	}
+}
+
+// allACGT reports whether s consists entirely of A/C/G/T (case-insensitive).
+func allACGT(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, r := range s {
+		switch r {
+		case 'a', 'c', 'g', 't', 'A', 'C', 'G', 'T':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // addTajimaDStat collects the per-site data needed for Tajima's D over a
@@ -1130,32 +1163,91 @@ func (s *statistics) addSingletonStat(v *vcf.Variant) {
 	}
 }
 
-// addFilterCount tracks FILTER tag occurrences
+// addFilterCount tracks FILTER tag occurrences plus Ts/Tv tallies for
+// biallelic SNPs at each FILTER value, mirroring upstream
+// output_FILTER_summary (variant_file_output.cpp:2867-2922). The key is
+// the entry's FILTER string verbatim (";"-joined).
 func (s *statistics) addFilterCount(v *vcf.Variant) {
-	if len(v.Filter) == 0 {
-		s.filterCounts["PASS"]++
-	} else {
-		for _, filter := range v.Filter {
-			s.filterCounts[filter]++
-		}
+	key := "PASS"
+	if len(v.Filter) > 0 {
+		key = strings.Join(v.Filter, ";")
+	}
+	s.filterCounts[key]++
+
+	// Tally Ts/Tv on biallelic SNP sites using the REF+ALT[0] base pair.
+	if len(v.Alt) != 1 || len(v.Ref) != 1 || !allACGT(v.Ref) || !allACGT(v.Alt[0]) {
+		return
+	}
+	a, b := v.Ref, v.Alt[0]
+	if a > b {
+		a, b = b, a
+	}
+	model := a + b
+	switch model {
+	case "AG", "CT":
+		s.filterTs[key]++
+	case "AC", "AT", "CG", "GT":
+		s.filterTv[key]++
 	}
 }
 
-// addSNPDensityStat adds SNP density in bins
+// addSNPDensityStat adds SNP density in bins. Mirrors upstream
+// output_SNP_density (variant_file_output.cpp:695-755): bins are keyed
+// per CHROM in first-seen order; only ALT != "." sites at a new
+// (CHROM,POS) increment a bin; bin index = floor(POS / bin_size).
 func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
-	// Only count SNPs, not indels
-	if isIndelVariant(v) {
+	if binSize <= 0 {
+		return
+	}
+	// Skip monomorphic ALT="." sites.
+	monomorphic := len(v.Alt) == 0
+	if !monomorphic {
+		allMissing := true
+		for _, a := range v.Alt {
+			if a != "." && a != "" {
+				allMissing = false
+				break
+			}
+		}
+		monomorphic = allMissing
+	}
+	if monomorphic {
+		// Still need to record chromosome appearance so first-seen
+		// ordering matches upstream's `prev_chrom` tracking.
+		s.touchSNPDensityChrom(v.Chrom)
+		s.snpDensityPrevPos = v.Pos
+		s.snpDensityPrevChrom = v.Chrom
 		return
 	}
 
-	binIdx := v.Pos / binSize
-	if s.snpDensityBins[binIdx] == nil {
-		s.snpDensityBins[binIdx] = &snpDensityStat{
-			binStart: binIdx * binSize,
-			binEnd:   (binIdx + 1) * binSize,
+	if v.Pos != s.snpDensityPrevPos || v.Chrom != s.snpDensityPrevChrom {
+		idx := v.Pos / binSize
+		bins := s.snpDensityBins[v.Chrom]
+		if idx >= len(bins) {
+			grow := make([]int, idx+1)
+			copy(grow, bins)
+			bins = grow
+		}
+		bins[idx]++
+		s.snpDensityBins[v.Chrom] = bins
+	}
+	s.touchSNPDensityChrom(v.Chrom)
+	s.snpDensityPrevPos = v.Pos
+	s.snpDensityPrevChrom = v.Chrom
+}
+
+// touchSNPDensityChrom appends chrom to snpDensityChroms the first time
+// it is seen.
+func (s *statistics) touchSNPDensityChrom(chrom string) {
+	if _, ok := s.snpDensityBins[chrom]; !ok {
+		s.snpDensityBins[chrom] = nil
+	}
+	for _, c := range s.snpDensityChroms {
+		if c == chrom {
+			return
 		}
 	}
-	s.snpDensityBins[binIdx].nSNPs++
+	s.snpDensityChroms = append(s.snpDensityChroms, chrom)
 }
 
 // Output functions
@@ -1540,6 +1632,11 @@ func (s *statistics) outputSingletons(prefix string) error {
 }
 
 // outputFilterSummary outputs FILTER tag summary
+// (variant_file_output.cpp:2867-2960): one row per distinct FILTER value
+// with N_VARIANTS, N_Ts, N_Tv and Ts/Tv columns, sorted by ascending
+// count and emitted in reverse so the most-populated FILTER comes first.
+// Ts/Tv = Ts / Tv via default ostream<< (yields "inf"/"-nan" via
+// formatCppDouble when Tv is 0).
 func (s *statistics) outputFilterSummary(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".FILTER.summary")
 	if err != nil {
@@ -1547,50 +1644,79 @@ func (s *statistics) outputFilterSummary(prefix string) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "FILTER\tN_SITES")
+	fmt.Fprintln(f, "FILTER\tN_VARIANTS\tN_Ts\tN_Tv\tTs/Tv")
 
-	// Sort by filter name
-	var filters []string
-	for filter := range s.filterCounts {
-		filters = append(filters, filter)
+	type fkey struct {
+		count  int
+		filter string
 	}
-	sort.Strings(filters)
+	keys := make([]fkey, 0, len(s.filterCounts))
+	for k, c := range s.filterCounts {
+		keys = append(keys, fkey{count: c, filter: k})
+	}
+	// Stable C++ sort by (count asc, filter asc) — matches upstream's
+	// `sort(pair<int,string>)`.
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].count != keys[j].count {
+			return keys[i].count < keys[j].count
+		}
+		return keys[i].filter < keys[j].filter
+	})
 
-	for _, filter := range filters {
-		count := s.filterCounts[filter]
-		fmt.Fprintf(f, "%s\t%d\n", filter, count)
+	for i := len(keys) - 1; i >= 0; i-- {
+		k := keys[i]
+		ts := s.filterTs[k.filter]
+		tv := s.filterTv[k.filter]
+		// Upstream emits double(Ts)/Tv via the default ostream<<: this
+		// yields "-nan" for 0/0 and "inf" for ts>0/tv==0; both go via
+		// formatCppDouble. The expected output for our fixture shows
+		// "0" when Tv>0 / Ts==0.
+		var ratio float64
+		switch {
+		case tv == 0 && ts == 0:
+			ratio = math.NaN()
+		case tv == 0:
+			ratio = math.Inf(1)
+		default:
+			ratio = float64(ts) / float64(tv)
+		}
+		fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s\n", k.filter, k.count, ts, tv, formatCppDouble(ratio))
 	}
 
 	return nil
 }
 
-// outputSNPDensity outputs SNP density in bins
+// outputSNPDensity outputs SNP density per non-overlapping bin
+// (.snpden). Mirrors upstream (variant_file_output.cpp:757-772):
+// CHROM, BIN_START (= s*bin_size), SNP_COUNT, VARIANTS/KB
+// (= count * 1000 / bin_size). Bins are emitted per chromosome in
+// first-seen order; within a chromosome we skip leading empty bins and
+// then dump every bin dense up to the last populated index.
 func (s *statistics) outputSNPDensity(prefix string, binSize int) error {
+	if binSize <= 0 {
+		return nil
+	}
 	f, err := iohelper.OpenWriter(prefix + ".snpden")
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_SNPs\tDENSITY")
-
-	// Sort bins
-	var bins []int
-	for binIdx := range s.snpDensityBins {
-		bins = append(bins, binIdx)
-	}
-	sort.Ints(bins)
-
-	for _, binIdx := range bins {
-		stat := s.snpDensityBins[binIdx]
-		windowSize := float64(stat.binEnd - stat.binStart)
-		if windowSize > 0 {
-			stat.density = float64(stat.nSNPs) / windowSize
+	fmt.Fprintln(f, "CHROM\tBIN_START\tSNP_COUNT\tVARIANTS/KB")
+	c := 1000.0 / float64(binSize)
+	for _, chrom := range s.snpDensityChroms {
+		bins := s.snpDensityBins[chrom]
+		output := false
+		for idx, count := range bins {
+			if count > 0 {
+				output = true
+			}
+			if output {
+				fmt.Fprintf(f, "%s\t%d\t%d\t%s\n",
+					chrom, idx*binSize, count, formatCppDouble(float64(count)*c))
+			}
 		}
-		fmt.Fprintf(f, ".\t%d\t%d\t%d\t%.6f\n",
-			stat.binStart, stat.binEnd, stat.nSNPs, stat.density)
 	}
-
 	return nil
 }
 
@@ -1836,7 +1962,12 @@ func (s *statistics) outputGenoDepth(prefix string) error {
 }
 
 // outputIndelHist writes a histogram of indel lengths (.indel.hist):
-// LENGTH (negative = deletion, positive = insertion), N_INDELS, PRCT.
+// LENGTH (negative = deletion, positive = insertion, 0 = SNP), COUNT, PRCT.
+// Mirrors upstream output_indel_hist (variant_file_output.cpp:5251-5329):
+// emit one row for every length in [smallest_len, largest_len] with a
+// non-zero count, plus a synthetic length-0 row carrying the total SNP
+// count when SNPs were observed. PRCT is the default `ostream <<`
+// formatted double (6 sig-figs, trailing zeros stripped).
 func (s *statistics) outputIndelHist(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".indel.hist")
 	if err != nil {
@@ -1844,21 +1975,30 @@ func (s *statistics) outputIndelHist(prefix string) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "LENGTH\tN_INDELS\tPRCT")
+	fmt.Fprintln(f, "LENGTH\tCOUNT\tPRCT")
 
-	var lengths []int
+	smallest, largest := 0, 0
 	for l := range s.indelLenHist {
-		lengths = append(lengths, l)
-	}
-	sort.Ints(lengths)
-
-	for _, l := range lengths {
-		n := s.indelLenHist[l]
-		pct := 0.0
-		if s.indelLenTotal > 0 {
-			pct = 100 * float64(n) / float64(s.indelLenTotal)
+		if l < smallest {
+			smallest = l
 		}
-		fmt.Fprintf(f, "%d\t%d\t%.4f\n", l, n, pct)
+		if l > largest {
+			largest = l
+		}
+	}
+	total := float64(s.indelLenTotal + s.indelHistSNPs)
+	if total == 0 {
+		return nil
+	}
+
+	for i := smallest; i <= largest; i++ {
+		if c, ok := s.indelLenHist[i]; ok && c > 0 {
+			pct := 100.0 * float64(c) / total
+			fmt.Fprintf(f, "%d\t%d\t%s\n", i, c, formatCppDouble(pct))
+		} else if i == 0 && s.indelHistSNPs > 0 {
+			pct := 100.0 * float64(s.indelHistSNPs) / total
+			fmt.Fprintf(f, "%d\t%d\t%s\n", i, s.indelHistSNPs, formatCppDouble(pct))
+		}
 	}
 	return nil
 }

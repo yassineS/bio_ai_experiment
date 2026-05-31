@@ -1955,6 +1955,21 @@ func isIndelVariant(v *vcf.Variant) bool {
 	return false
 }
 
+// isSNPVariant mirrors upstream `entry::is_SNP` (entry_getters.cpp): a
+// site is a SNP when REF is a single base and at least one ALT is a
+// single base distinct from REF, both restricted to A/C/G/T.
+func isSNPVariant(v *vcf.Variant) bool {
+	if len(v.Ref) != 1 || !allACGT(v.Ref) {
+		return false
+	}
+	for _, alt := range v.Alt {
+		if len(alt) == 1 && allACGT(alt) && alt != v.Ref {
+			return true
+		}
+	}
+	return false
+}
+
 // calculateAlleleCounts returns the per-ALT allele counts and the total
 // number of non-missing called chromosomes across all samples. altCounts[i]
 // is the count of ALT allele i (using v.Alt's 0-based indexing; upstream
