@@ -2468,25 +2468,25 @@ func shouldDropByFT(ftEntries []string, removeAll bool, namedDrops map[string]st
 // outputStatistics outputs all requested statistics
 func outputStatistics(stats *statistics, params *Params) error {
 	if params.Freq {
-		if err := stats.outputFrequency(params.OutPrefix, false); err != nil {
+		if err := stats.outputFrequency(params.OutPrefix, false, false); err != nil {
 			return err
 		}
 	}
 
 	if params.Counts {
-		if err := stats.outputFrequency(params.OutPrefix, true); err != nil {
+		if err := stats.outputFrequency(params.OutPrefix, true, false); err != nil {
 			return err
 		}
 	}
 
 	if params.Freq2 {
-		if err := stats.outputFrequency2(params.OutPrefix); err != nil {
+		if err := stats.outputFrequency(params.OutPrefix, false, true); err != nil {
 			return err
 		}
 	}
 
 	if params.Counts2 {
-		if err := stats.outputCounts2(params.OutPrefix); err != nil {
+		if err := stats.outputFrequency(params.OutPrefix, true, true); err != nil {
 			return err
 		}
 	}

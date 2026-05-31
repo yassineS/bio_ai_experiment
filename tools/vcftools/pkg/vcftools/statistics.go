@@ -258,7 +258,7 @@ func newStatistics(header *vcf.Header) *statistics {
 // addVariant adds a variant to the statistics
 func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 	// Allele frequency
-	if params.Freq || params.Counts {
+	if params.Freq || params.Counts || params.Freq2 || params.Counts2 {
 		s.addFrequencyStat(v, params.Derived)
 	}
 
@@ -1148,8 +1148,11 @@ func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
 
 // Output functions
 
-// outputFrequency outputs allele frequency statistics
-func (s *statistics) outputFrequency(prefix string, counts bool) error {
+// outputFrequency outputs allele frequency statistics. When suppress is
+// true (the --freq2 / --counts2 path), allele labels are omitted and only
+// the numeric COUNT/FREQ columns are emitted, matching upstream's
+// `params.suppress_allele_output` branches in variant_file_output.cpp:34-159.
+func (s *statistics) outputFrequency(prefix string, counts, suppress bool) error {
 	suffix := ".frq"
 	if counts {
 		suffix = ".frq.count"
@@ -1166,9 +1169,14 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 	// header text, not a per-allele wrapper. The data rows below have one
 	// tab-separated `allele:value` entry per allele (no braces). See
 	// reference_code/vcftools/src/cpp/variant_file_output.cpp around line 36.
-	if counts {
+	switch {
+	case suppress && counts:
+		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{COUNT}")
+	case suppress:
+		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{FREQ}")
+	case counts:
 		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{ALLELE:COUNT}")
-	} else {
+	default:
 		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{ALLELE:FREQ}")
 	}
 
@@ -1186,12 +1194,21 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 			firstCount, secondCount = stat.altCount, stat.refCount
 			firstFreq, secondFreq = stat.altFreq, stat.refFreq
 		}
-		if counts {
+		switch {
+		case suppress && counts:
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\t%d\n",
+				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
+				firstCount, secondCount)
+		case suppress:
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s\t%s\n",
+				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
+				formatCppDouble(firstFreq), formatCppDouble(secondFreq))
+		case counts:
 			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%d\t%s:%d\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
 				firstAllele, firstCount,
 				secondAllele, secondCount)
-		} else {
+		default:
 			// Upstream emits frequencies via the default `ostream <<`
 			// (six significant digits, trailing zeros stripped), not a
 			// fixed %.6f — e.g. `A:0.5`, not `A:0.500000`. See
@@ -1201,42 +1218,6 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 				firstAllele, formatCppDouble(firstFreq),
 				secondAllele, formatCppDouble(secondFreq))
 		}
-	}
-
-	return nil
-}
-
-// outputFrequency2 outputs alternative allele frequency format
-func (s *statistics) outputFrequency2(prefix string) error {
-	f, err := iohelper.OpenWriter(prefix + ".frq2")
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	fmt.Fprintln(f, "CHROM\tPOS\tN_CHR\tREF_FREQ\tALT_FREQ")
-
-	for _, stat := range s.siteFrequencies {
-		fmt.Fprintf(f, "%s\t%d\t%d\t%.6f\t%.6f\n",
-			stat.chrom, stat.pos, stat.nChr, stat.refFreq, stat.altFreq)
-	}
-
-	return nil
-}
-
-// outputCounts2 outputs alternative allele counts format
-func (s *statistics) outputCounts2(prefix string) error {
-	f, err := iohelper.OpenWriter(prefix + ".frq.count2")
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	fmt.Fprintln(f, "CHROM\tPOS\tN_CHR\tREF_COUNT\tALT_COUNT")
-
-	for _, stat := range s.siteFrequencies {
-		fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\n",
-			stat.chrom, stat.pos, stat.nChr, stat.refCount, stat.altCount)
 	}
 
 	return nil
