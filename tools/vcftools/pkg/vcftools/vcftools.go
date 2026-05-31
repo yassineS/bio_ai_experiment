@@ -1145,7 +1145,8 @@ func Run(input io.Reader, params *Params) error {
 	// Process variants
 	keptSites := 0
 	totalSites := 0
-	thinCounter := 0
+	thinChrom := ""
+	thinPos := 0
 	var allVariants []*vcf.Variant // For format conversions that need all data
 
 	for {
@@ -1159,15 +1160,20 @@ func Run(input io.Reader, params *Params) error {
 
 		totalSites++
 
-		// Apply thinning filter
+		// Apply --thin: drop sites that fall within `Thin` bp of the
+		// most recently-kept site on the same chromosome. Mirrors
+		// upstream entry::filter_sites_by_thinning (entry_filters.cpp:
+		// 1012-1031): the first site on a chromosome is always kept;
+		// later sites need POS - thin_pos >= Thin.
 		if params.Thin > 0 {
-			thinCounter++
-			if thinCounter%params.Thin != 0 {
+			if variant.Chrom == thinChrom && variant.Pos-thinPos < params.Thin {
 				if err := siteTrace.recordRemoved(variant.Chrom, variant.Pos); err != nil {
 					return err
 				}
 				continue
 			}
+			thinChrom = variant.Chrom
+			thinPos = variant.Pos
 		}
 
 		// Apply filters
@@ -2361,28 +2367,48 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 		Format: v.Format,
 	}
 
+	// Upstream's filter_genotypes_by_depth (vcf_entry.cpp:540-557)
+	// activates only when the site's FORMAT carries DP at all
+	// (DP_idx != -1). When it does, every sample is checked: a missing
+	// or unparseable per-sample DP is set to -1 by set_indv_DEPTH
+	// (entry_setters.cpp:31-35) and will fail any positive MinDP.
+	// Same shape applies to GQ.
+	hasDPFormat := false
+	hasGQFormat := false
+	for _, fld := range v.Format {
+		if fld == "DP" {
+			hasDPFormat = true
+		}
+		if fld == "GQ" {
+			hasGQFormat = true
+		}
+	}
 	for _, sample := range v.Samples {
 		// Check DP (depth) filter
-		if params.MinDP > 0 || params.MaxDP > 0 {
-			if dpStr, ok := sample.Data["DP"]; ok {
-				if dp, err := strconv.Atoi(dpStr); err == nil {
-					if (params.MinDP > 0 && dp < params.MinDP) || (params.MaxDP > 0 && dp > params.MaxDP) {
-						filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
-						continue
-					}
+		if (params.MinDP > 0 || params.MaxDP > 0) && hasDPFormat {
+			dp := -1
+			if dpStr, ok := sample.Data["DP"]; ok && dpStr != "" && dpStr != "." {
+				if parsed, err := strconv.Atoi(dpStr); err == nil {
+					dp = parsed
 				}
+			}
+			if (params.MinDP > 0 && dp < params.MinDP) || (params.MaxDP > 0 && dp > params.MaxDP) {
+				filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
+				continue
 			}
 		}
 
 		// Check GQ (genotype quality) filter
-		if params.MinGQ > 0 {
-			if gqStr, ok := sample.Data["GQ"]; ok {
-				if gq, err := strconv.Atoi(gqStr); err == nil {
-					if gq < params.MinGQ {
-						filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
-						continue
-					}
+		if params.MinGQ > 0 && hasGQFormat {
+			gq := -1
+			if gqStr, ok := sample.Data["GQ"]; ok && gqStr != "" && gqStr != "." {
+				if parsed, err := strconv.Atoi(gqStr); err == nil {
+					gq = parsed
 				}
+			}
+			if gq < params.MinGQ {
+				filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
+				continue
 			}
 		}
 
