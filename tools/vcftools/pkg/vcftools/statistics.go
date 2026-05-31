@@ -148,9 +148,12 @@ type siteHWEStat struct {
 }
 
 type sitePiStat struct {
-	chrom string
-	pos   int
-	pi    float64
+	chrom         string
+	pos           int
+	pi            float64
+	nMismatches   int  // sum_i ac_i * (N - ac_i) — pairwise mismatches at the site
+	nNonMissChr   int  // total called chromosomes at the site
+	isPolymorphic bool // REF allele count < total called chromosomes
 }
 
 type indvMissingStat struct {
@@ -744,7 +747,19 @@ func (s *statistics) addSitePiStat(v *vcf.Variant) {
 	if !ok {
 		return
 	}
-	s.sitePiValues = append(s.sitePiValues, sitePiStat{chrom: v.Chrom, pos: v.Pos, pi: pi})
+	counts, n := siteAlleleCounts(v)
+	mismatches := 0
+	for _, c := range counts {
+		mismatches += c * (n - c)
+	}
+	s.sitePiValues = append(s.sitePiValues, sitePiStat{
+		chrom:         v.Chrom,
+		pos:           v.Pos,
+		pi:            pi,
+		nMismatches:   mismatches,
+		nNonMissChr:   n,
+		isPolymorphic: counts["0"] < n,
+	})
 }
 
 // siteAlleleCounts returns the count of each allele index ("0", "1", ...) across
@@ -1861,17 +1876,26 @@ func (s *statistics) outputDepth(prefix string) error {
 	return nil
 }
 
-// windowPiAcc accumulates per-site nucleotide diversity within one window.
+// windowPiAcc accumulates the four upstream-defined window counters.
 type windowPiAcc struct {
-	winStart int
-	nSites   int
-	piSum    float64
+	nVariantSites int    // sites with VCF entries that contributed
+	nVariantPairs uint64 // sum of N_non_missing_chr*(N_non_missing_chr-1) over those sites
+	nMismatches   uint64 // sum of N_site_mismatches over those sites
+	nPolymorphic  int    // sites where REF count < N_non_missing_chr
 }
 
-// outputWindowedPi outputs nucleotide diversity summed over fixed-size windows
-// (.windowed.pi). The PI column is the sum of per-site nucleotide diversity for
-// variants falling in the window. If stepSize is zero or larger than windowSize
-// the windows are non-overlapping.
+// outputWindowedPi outputs nucleotide diversity over fixed-size windows
+// (.windowed.pi). Mirrors upstream
+// output_windowed_nucleotide_diversity (variant_file_output.cpp:4065-4282):
+//
+//	N_VARIANTS    = bins[s][N_polymorphic_sites]
+//	N_MONOMORPHIC = window_size - bins[s][N_variant_sites]
+//	N_pairs       = bins[s][N_variant_site_pairs] + N_monomorphic * N_comparisons
+//	PI            = bins[s][N_mismatches] / N_pairs
+//
+// N_comparisons = 2*N_kept_indv * (2*N_kept_indv - 1) is the pairwise
+// count at a fully-called monomorphic site. Only bins with at least one
+// polymorphic site OR at least one mismatch are emitted.
 func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) error {
 	if windowSize <= 0 {
 		return nil
@@ -1886,54 +1910,82 @@ func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) e
 	}
 	defer f.Close()
 
-	// Upstream emits an additional N_MONOMORPHIC column counting bases
-	// inside the window that are monomorphic in the kept-individuals
-	// subset. We don't track that yet — emit a literal 0 column so the
-	// header and column count match upstream byte-for-byte. See
-	// docs/PARITY_ROADMAP.md#vcftools.
 	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_VARIANTS\tN_MONOMORPHIC\tPI")
 
 	var chromOrder []string
-	windows := make(map[string]map[int]*windowPiAcc)
+	bins := make(map[string][]windowPiAcc)
+	seenChrom := make(map[string]bool)
 
 	for _, st := range s.sitePiValues {
-		if _, seen := windows[st.chrom]; !seen {
-			windows[st.chrom] = make(map[int]*windowPiAcc)
+		if st.nMismatches == 0 {
+			continue
+		}
+		if !seenChrom[st.chrom] {
+			seenChrom[st.chrom] = true
 			chromOrder = append(chromOrder, st.chrom)
 		}
-		// Window starts are 1, 1+step, 1+2*step, ...; a variant at 1-based
-		// position p belongs to every window [ws, ws+windowSize-1] containing p.
-		p := st.pos
-		kMax := (p - 1) / stepSize
-		kMin := 0
-		if p > windowSize {
-			kMin = (p - windowSize + stepSize - 1) / stepSize
+		first := 0
+		if st.pos > windowSize {
+			first = ceilDiv(st.pos-windowSize, stepSize)
 		}
-		for k := kMin; k <= kMax; k++ {
-			ws := 1 + k*stepSize
-			acc := windows[st.chrom][ws]
-			if acc == nil {
-				acc = &windowPiAcc{winStart: ws}
-				windows[st.chrom][ws] = acc
+		last := ceilDiv(st.pos, stepSize)
+		row := bins[st.chrom]
+		if last > len(row) {
+			grow := make([]windowPiAcc, last)
+			copy(grow, row)
+			row = grow
+		}
+		comparisons := uint64(st.nNonMissChr) * uint64(st.nNonMissChr-1)
+		for idx := first; idx < last; idx++ {
+			row[idx].nVariantSites++
+			row[idx].nVariantPairs += comparisons
+			row[idx].nMismatches += uint64(st.nMismatches)
+			if st.isPolymorphic {
+				row[idx].nPolymorphic++
 			}
-			acc.nSites++
-			acc.piSum += st.pi
 		}
+		bins[st.chrom] = row
 	}
+
+	nKeptChr := 0
+	if s.header != nil {
+		nKeptChr = 2 * len(s.header.Samples)
+	}
+	nComparisons := uint64(nKeptChr) * uint64(nKeptChr-1)
 
 	for _, chrom := range chromOrder {
-		var starts []int
-		for ws := range windows[chrom] {
-			starts = append(starts, ws)
-		}
-		sort.Ints(starts)
-		for _, ws := range starts {
-			acc := windows[chrom][ws]
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t0\t%.6f\n", chrom, ws, ws+windowSize-1, acc.nSites, acc.piSum)
+		row := bins[chrom]
+		for idx, acc := range row {
+			if acc.nPolymorphic == 0 && acc.nMismatches == 0 {
+				continue
+			}
+			nMono := windowSize - acc.nVariantSites
+			if nMono < 0 {
+				nMono = 0
+			}
+			nPairs := acc.nVariantPairs + uint64(nMono)*nComparisons
+			var pi float64
+			if nPairs > 0 {
+				pi = float64(acc.nMismatches) / float64(nPairs)
+			}
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\t%s\n",
+				chrom, idx*stepSize+1, idx*stepSize+windowSize,
+				acc.nPolymorphic, nMono, formatCppDouble(pi))
 		}
 	}
-
 	return nil
+}
+
+// ceilDiv returns ceil(a/b) for positive integers.
+func ceilDiv(a, b int) int {
+	if b == 0 {
+		return 0
+	}
+	q := a / b
+	if a%b != 0 {
+		q++
+	}
+	return q
 }
 
 // outputGenoDepth writes the per-genotype read-depth matrix (.gdepth):
@@ -2003,15 +2055,17 @@ func (s *statistics) outputIndelHist(prefix string) error {
 	return nil
 }
 
-// outputTajimaD writes Tajima's D per non-overlapping window of binSize bases
-// (.Tajima.D): CHROM, BIN_START, N_SNPS, TajimaD.
-//
-// D = (pi - thetaW) / sqrt(e1*S + e2*S*(S-1)), with pi the sum of per-site
-// nucleotide diversity in the window, thetaW = S/a1, S the number of SNPs, and
-// the a1/a2/e1/e2 constants derived from the number of sampled chromosomes n.
-// n is taken from the SNPs in the window (the modal value); this matches the
-// common case of complete data. Windows with fewer than two SNPs, or where the
-// variance estimate is non-positive, are reported with TajimaD "nan".
+// outputTajimaD writes Tajima's D per non-overlapping window of binSize
+// bases (.Tajima.D). Mirrors upstream output_Tajima_D
+// (variant_file_output.cpp:3940-4063):
+//   - n = 2*N_kept_indv (sample-set total), giving a single set of
+//     a1/e1/e2 constants reused across all bins
+//   - bin index uses POS / binSize (no -1 adjustment); POS=100, binSize=100
+//     falls into idx=1 (BIN_START=100), matching `(unsigned)(POS*1/bin)`
+//   - D is computed for any S>=1 (var=e1*S>0 for S>=1); only var<=0 emits NaN
+//   - bins are emitted per chromosome in first-seen order, dense from the
+//     first non-zero bin
+//   - TajimaD is formatted via the default ostream<< (formatCppDouble)
 func (s *statistics) outputTajimaD(prefix string, binSize int) error {
 	if binSize <= 0 {
 		return nil
@@ -2024,46 +2078,83 @@ func (s *statistics) outputTajimaD(prefix string, binSize int) error {
 
 	fmt.Fprintln(f, "CHROM\tBIN_START\tN_SNPS\tTajimaD")
 
-	type binKey struct {
-		chrom string
-		start int
+	nIndv := 0
+	if s.header != nil {
+		nIndv = len(s.header.Samples)
 	}
-	type binAcc struct {
-		piSum  float64
-		nSNPs  int
-		nChrMC map[int]int // modal chromosome count
+	n := 2 * nIndv
+	if n < 2 {
+		return nil
 	}
-	var order []binKey
-	bins := make(map[binKey]*binAcc)
 
+	a1, a2 := 0.0, 0.0
+	for i := 1; i < n; i++ {
+		a1 += 1.0 / float64(i)
+		a2 += 1.0 / float64(i*i)
+	}
+	nf := float64(n)
+	b1 := (nf + 1) / 3.0 / (nf - 1)
+	b2 := 2.0 * (nf*nf + nf + 3) / 9.0 / nf / (nf - 1)
+	c1 := b1 - 1.0/a1
+	c2 := b2 - (nf+2)/(a1*nf) + a2/(a1*a1)
+	e1 := c1 / a1
+	e2 := c2 / (a1*a1 + a2)
+
+	type bin struct {
+		pSum  float64 // sum of p*(1-p) over SNPs in this bin
+		nSNPs int
+	}
+	bins := make(map[string][]bin)
+	var chroms []string
+	seen := make(map[string]bool)
 	for _, site := range s.tajimaDSites {
-		start := ((site.pos - 1) / binSize) * binSize
-		key := binKey{site.chrom, start}
-		acc := bins[key]
-		if acc == nil {
-			acc = &binAcc{nChrMC: make(map[int]int)}
-			bins[key] = acc
-			order = append(order, key)
+		idx := site.pos / binSize
+		row := bins[site.chrom]
+		if idx >= len(row) {
+			grow := make([]bin, idx+1)
+			copy(grow, row)
+			row = grow
 		}
-		acc.piSum += site.pi
-		acc.nSNPs++
-		acc.nChrMC[site.nChr]++
+		// Our site.pi is (n^2 - sumSq)/(n*(n-1)) for the per-site n,
+		// which equals 2*p*(1-p)*n/(n-1) at a biallelic SNP. Convert
+		// back to p*(1-p) using the per-site nChr so the
+		// accumulation matches upstream exactly.
+		ns := site.nChr
+		if ns < 2 {
+			row[idx].nSNPs++
+			bins[site.chrom] = row
+			continue
+		}
+		row[idx].pSum += site.pi * float64(ns-1) / (2.0 * float64(ns))
+		row[idx].nSNPs++
+		bins[site.chrom] = row
+		if !seen[site.chrom] {
+			seen[site.chrom] = true
+			chroms = append(chroms, site.chrom)
+		}
 	}
 
-	sort.Slice(order, func(i, j int) bool {
-		if order[i].chrom != order[j].chrom {
-			return order[i].chrom < order[j].chrom
-		}
-		return order[i].start < order[j].start
-	})
-
-	for _, key := range order {
-		acc := bins[key]
-		d, ok := tajimasD(acc.piSum, acc.nSNPs, modalKey(acc.nChrMC))
-		if ok {
-			fmt.Fprintf(f, "%s\t%d\t%d\t%.5f\n", key.chrom, key.start, acc.nSNPs, d)
-		} else {
-			fmt.Fprintf(f, "%s\t%d\t%d\tnan\n", key.chrom, key.start, acc.nSNPs)
+	for _, chrom := range chroms {
+		row := bins[chrom]
+		output := false
+		for idx, b := range row {
+			if b.nSNPs > 0 {
+				output = true
+			}
+			if !output {
+				continue
+			}
+			d := math.NaN()
+			if b.nSNPs > 0 {
+				pi := 2.0 * b.pSum * nf / (nf - 1)
+				tw := float64(b.nSNPs) / a1
+				S := float64(b.nSNPs)
+				variance := e1*S + e2*S*(S-1)
+				if variance > 0 {
+					d = (pi - tw) / math.Sqrt(variance)
+				}
+			}
+			fmt.Fprintf(f, "%s\t%d\t%d\t%s\n", chrom, idx*binSize, b.nSNPs, formatCppDouble(d))
 		}
 	}
 	return nil
