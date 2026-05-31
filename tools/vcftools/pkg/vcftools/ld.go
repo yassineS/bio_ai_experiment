@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -366,6 +367,27 @@ type ldRunner struct {
 	window   []*ldSite
 	chromIdx int
 	chrom    string
+
+	// Buffered output lines keyed by (pos1, pos2) so the per-chromosome
+	// flush emits rows in upstream's nested-loop order (pos1 ascending,
+	// pos2 ascending). Upstream's variant_file_output.cpp output_haplotype_r2
+	// loop reads through the site list with two cursors so all pairs
+	// (i, j>i) are produced in lexicographic order; our streaming
+	// runner pairs each new site against all prior in the window, which
+	// would otherwise interleave pairs by pos2 first.
+	genoBuf []ldRow
+	hapBuf  []ldRow
+}
+
+// ldRow holds a single buffered output line so the runner can sort by
+// (pos1, pos2) before flushing.
+type ldRow struct {
+	chrom  string
+	pos1   int
+	pos2   int
+	idx1   int
+	idx2   int
+	output string
 }
 
 // newLDRunner opens the output writers and returns a runner ready to consume
@@ -418,6 +440,9 @@ func (r *ldRunner) addVariant(v *vcf.Variant) {
 		return
 	}
 	if site.chrom != r.chrom {
+		// Emit buffered rows for the previous chromosome in
+		// upstream's (pos1 asc, pos2 asc) nested-loop order.
+		r.flushIntraChrom()
 		r.window = r.window[:0]
 		r.chromIdx = 0
 		r.chrom = site.chrom
@@ -433,8 +458,12 @@ func (r *ldRunner) addVariant(v *vcf.Variant) {
 			if ldPositionAllowed(prev, site, r.genoPos, r.params.GenoR2Positions != "") {
 				n, r2, ok := computeGenoR2(prev, site)
 				if ok && r2 >= r.params.MinR2 {
-					r.genoW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%g\n",
-						prev.chrom, prev.pos, site.pos, n, r2))
+					r.genoBuf = append(r.genoBuf, ldRow{
+						chrom: prev.chrom, pos1: prev.pos, pos2: site.pos,
+						idx1: prev.chromIdx, idx2: site.chromIdx,
+						output: fmt.Sprintf("%s\t%d\t%d\t%d\t%g\n",
+							prev.chrom, prev.pos, site.pos, n, r2),
+					})
 				}
 			}
 		}
@@ -442,8 +471,12 @@ func (r *ldRunner) addVariant(v *vcf.Variant) {
 			if ldPositionAllowed(prev, site, r.hapPos, r.params.HapR2Positions != "") {
 				n, r2, D, Dp, ok := computeHapR2(prev, site)
 				if ok && r2 >= r.params.MinR2 {
-					r.hapW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%g\t%g\t%g\n",
-						prev.chrom, prev.pos, site.pos, n, r2, D, Dp))
+					r.hapBuf = append(r.hapBuf, ldRow{
+						chrom: prev.chrom, pos1: prev.pos, pos2: site.pos,
+						idx1: prev.chromIdx, idx2: site.chromIdx,
+						output: fmt.Sprintf("%s\t%d\t%d\t%d\t%g\t%g\t%g\n",
+							prev.chrom, prev.pos, site.pos, n, r2, D, Dp),
+					})
 				}
 			}
 		}
@@ -496,12 +529,43 @@ func (r *ldRunner) pruneWindow(latest *ldSite) {
 	r.window = append(r.window[:0], r.window[cut:]...)
 }
 
+// flushIntraChrom emits all buffered rows for the current chromosome
+// sorted by (chromIdx1, chromIdx2) which equals (pos1, pos2) ordering
+// because sites enter the window in genomic order.
+func (r *ldRunner) flushIntraChrom() {
+	if len(r.genoBuf) > 0 {
+		sort.Slice(r.genoBuf, func(i, j int) bool {
+			if r.genoBuf[i].idx1 != r.genoBuf[j].idx1 {
+				return r.genoBuf[i].idx1 < r.genoBuf[j].idx1
+			}
+			return r.genoBuf[i].idx2 < r.genoBuf[j].idx2
+		})
+		for _, row := range r.genoBuf {
+			r.genoW.writeLine(row.output)
+		}
+		r.genoBuf = r.genoBuf[:0]
+	}
+	if len(r.hapBuf) > 0 {
+		sort.Slice(r.hapBuf, func(i, j int) bool {
+			if r.hapBuf[i].idx1 != r.hapBuf[j].idx1 {
+				return r.hapBuf[i].idx1 < r.hapBuf[j].idx1
+			}
+			return r.hapBuf[i].idx2 < r.hapBuf[j].idx2
+		})
+		for _, row := range r.hapBuf {
+			r.hapW.writeLine(row.output)
+		}
+		r.hapBuf = r.hapBuf[:0]
+	}
+}
+
 // close flushes and closes all open LD output files. Returns the first error
 // encountered.
 func (r *ldRunner) close() error {
 	if r == nil {
 		return nil
 	}
+	r.flushIntraChrom()
 	var firstErr error
 	if err := r.genoW.close(); err != nil {
 		firstErr = err
@@ -715,8 +779,11 @@ func newInterchromLDRunner(params *Params) (*interchromLDRunner, error) {
 		r.hapW = w
 	}
 	if r.wantChiSq {
+		// Upstream output_genotype_chisq emits a single-chromosome
+		// header (variant_file_output.cpp:1778) with DOF/PVAL spelling
+		// distinct from CHI^2's --geno-r2 cousin's DF/P-VALUE.
 		w, err := newLDWriter(params.OutPrefix+".geno.chisq",
-			"CHR1\tPOS1\tCHR2\tPOS2\tN_INDV\tCHI^2\tDF\tP-VALUE\n")
+			"CHR\tPOS1\tPOS2\tN_INDV\tCHI^2\tDOF\tPVAL\n")
 		if err != nil {
 			_ = r.genoW.close()
 			_ = r.hapW.close()
@@ -797,12 +864,18 @@ func (r *interchromLDRunner) emitPair(a, b *ldSite) {
 }
 
 func (r *interchromLDRunner) emitChiSqPair(a, b *ldSite) {
+	// Upstream emits same-chromosome pairs only with a CHR
+	// (not CHR1/CHR2) column and DOF/PVAL as ostream doubles.
+	if a.chrom != b.chrom {
+		return
+	}
 	n, chi2, df, p, ok := computeGenoChiSq(a, b)
 	if !ok {
 		return
 	}
-	r.chiSqW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%g\t%d\t%g\n",
-		a.chrom, a.pos, b.chrom, b.pos, n, chi2, df, p))
+	r.chiSqW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%s\t%s\t%s\n",
+		a.chrom, a.pos, b.pos, n,
+		formatCppDouble(chi2), formatCppDouble(float64(df)), formatCppDouble(p)))
 }
 
 func (r *interchromLDRunner) close() error {

@@ -1441,7 +1441,7 @@ func TestParity_GenoChiSq_Header(t *testing.T) {
 		t.Fatalf("read .geno.chisq: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	want := "CHR1\tPOS1\tCHR2\tPOS2\tN_INDV\tCHI^2\tDF\tP-VALUE"
+	want := "CHR\tPOS1\tPOS2\tN_INDV\tCHI^2\tDOF\tPVAL"
 	if lines[0] != want {
 		t.Errorf("header mismatch: %q vs %q", lines[0], want)
 	}

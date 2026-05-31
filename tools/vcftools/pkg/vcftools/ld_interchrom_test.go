@@ -159,9 +159,9 @@ func TestGenoChiSq_Monomorphic(t *testing.T) {
 	}
 }
 
-// TestGenoChiSq_Integration: end-to-end. With same VCF as
-// TestInterchromGenoR2_BasicOutput, geno-chisq emits pairs both within and
-// across chromosomes (6 pairs total for 4 sites).
+// TestGenoChiSq_Integration: end-to-end. Upstream's
+// output_genotype_chisq only emits same-chromosome pairs; for this
+// 2-chrom fixture that yields 1 pair per chromosome (2 total).
 func TestGenoChiSq_Integration(t *testing.T) {
 	vcfText := minimalVCF([]string{"s1", "s2", "s3", "s4"},
 		[]struct {
@@ -185,20 +185,20 @@ func TestGenoChiSq_Integration(t *testing.T) {
 		t.Fatalf("read .geno.chisq: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if lines[0] != "CHR1\tPOS1\tCHR2\tPOS2\tN_INDV\tCHI^2\tDF\tP-VALUE" {
+	if lines[0] != "CHR\tPOS1\tPOS2\tN_INDV\tCHI^2\tDOF\tPVAL" {
 		t.Errorf("bad header: %q", lines[0])
 	}
-	if len(lines) != 7 {
-		t.Fatalf("expected 6 data rows, got %d:\n%s", len(lines)-1, data)
+	if len(lines) != 3 {
+		t.Fatalf("expected 2 data rows, got %d:\n%s", len(lines)-1, data)
 	}
 	// Every pair should have chi^2=4, df=1 (since all sites are identical).
 	for _, ln := range lines[1:] {
 		fields := strings.Split(ln, "\t")
-		if len(fields) != 8 {
+		if len(fields) != 7 {
 			t.Errorf("row %q wrong field count", ln)
 			continue
 		}
-		chi2, err := strconv.ParseFloat(fields[5], 64)
+		chi2, err := strconv.ParseFloat(fields[4], 64)
 		if err != nil {
 			t.Errorf("parse chi2 from %q: %v", ln, err)
 			continue
@@ -206,8 +206,8 @@ func TestGenoChiSq_Integration(t *testing.T) {
 		if math.Abs(chi2-4) > 1e-9 {
 			t.Errorf("chi2=%v want 4 (row %q)", chi2, ln)
 		}
-		if fields[6] != "1" {
-			t.Errorf("df=%v want 1 (row %q)", fields[6], ln)
+		if fields[5] != "1" {
+			t.Errorf("df=%v want 1 (row %q)", fields[5], ln)
 		}
 	}
 }
