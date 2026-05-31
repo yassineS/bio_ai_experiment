@@ -2588,29 +2588,27 @@ to pass.
   `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare).
 
 - **FAIL (real divergences; tracked here):**
-  - **`merge`** — INFO/DP is not summed across overlapping records (we
-    emit the first input's value; upstream sums). Same divergence
-    likely applies to other Number=1 Integer INFOs. *Fix scope:* port
-    upstream's `merge.c:merge_INFO_int_sum` logic; non-trivial.
-  - **`isec`** — for two inputs `-p DIR` mode upstream emits four
-    files (`0000.vcf` = private to A, `0001.vcf` = private to B,
-    `0002.vcf` = shared from A, `0003.vcf` = shared from B). Our port
-    emits only the two private-per-input files. *Fix scope:* emit the
-    shared-from-each-input projections; modest.
   - **`index -t` / `index -c`** — `.tbi` and `.csi` byte streams
-    diverge starting at the first interval offset (~byte 85/59). Same
-    file size on both sides, so the format-level structure agrees but
-    the BGZF virtual offsets differ. Likely cause: BGZF block boundary
-    differences from our writer (which is byte-locked to libdeflate
-    but may differ from upstream htslib's block-size heuristics on
-    small inputs). *Fix scope:* either align block boundaries
-    upstream-exactly or accept "logically equivalent index" and
-    document.
-  - **`mpileup`** — header meta-line ordering differs (`##bcftoolsVersion`
-    and `##bcftools_mpileupCommand` appear before/after `##FILTER` and
-    the contig set in different orders); body output is otherwise
-    very close. *Fix scope:* re-order meta-line emission in
-    `pkg/bcftools/mpileup.go` to match upstream's insertion sequence.
+    diverge inside the BGZF deflate payload (~4 bytes around offset
+    0x54). Same file size on both sides, identical CRC32/ISIZE, and
+    the inflated content is byte-identical — i.e. the index *content*
+    matches; only the deflate-stream encoding chosen by our compressor
+    differs from upstream zlib. Rooted in `pkg/htsgo/bgzip`'s deflate
+    output (oracle-locked package; not modified). *Fix scope:* either
+    teach the bgzip writer to mirror zlib's exact Huffman/match
+    choices, or relax the live oracle to compare inflated bytes.
+  - **`mpileup`** — header order is correct after stripping
+    provenance (`##bcftoolsVersion`/`##bcftoolsCommand`/`##reference`).
+    The remaining diff is numerical: I16 sums and PL fields differ
+    at ~18 sites (e.g. `chr=17 pos=175,177,604..,3009,3016,3054`)
+    where our base/mapping quality accumulation diverges from
+    upstream's `bam2bcf.c` for sites near read edges. *Fix scope:*
+    engine-level (deep audit of `tools/bcftools/pkg/bcftools/bam2bcf.go`
+    against `reference_code/bcftools/bam2bcf.c`); >>50 LOC, deferred.
+
+  Closed in 2026-05-31 sweep: `merge` INFO/DP sum (commit 02717bc;
+  `merge.c:merge_INFO_int_sum` rule applied to DP/DP4/AC/AN); `isec`
+  four-projection OP_VENN mode (commit 2f19170).
 
 - **Skipped for lack of committed fixture (TODOs in the test file):**
   `call` (needs an mpileup VCF input), `csq` (needs (gff, fa, vcf)
@@ -2647,29 +2645,27 @@ to pass.
   `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare).
 
 - **FAIL (real divergences; tracked here):**
-  - **`merge`** — INFO/DP is not summed across overlapping records (we
-    emit the first input's value; upstream sums). Same divergence
-    likely applies to other Number=1 Integer INFOs. *Fix scope:* port
-    upstream's `merge.c:merge_INFO_int_sum` logic; non-trivial.
-  - **`isec`** — for two inputs `-p DIR` mode upstream emits four
-    files (`0000.vcf` = private to A, `0001.vcf` = private to B,
-    `0002.vcf` = shared from A, `0003.vcf` = shared from B). Our port
-    emits only the two private-per-input files. *Fix scope:* emit the
-    shared-from-each-input projections; modest.
   - **`index -t` / `index -c`** — `.tbi` and `.csi` byte streams
-    diverge starting at the first interval offset (~byte 85/59). Same
-    file size on both sides, so the format-level structure agrees but
-    the BGZF virtual offsets differ. Likely cause: BGZF block boundary
-    differences from our writer (which is byte-locked to libdeflate
-    but may differ from upstream htslib's block-size heuristics on
-    small inputs). *Fix scope:* either align block boundaries
-    upstream-exactly or accept "logically equivalent index" and
-    document.
-  - **`mpileup`** — header meta-line ordering differs (`##bcftoolsVersion`
-    and `##bcftools_mpileupCommand` appear before/after `##FILTER` and
-    the contig set in different orders); body output is otherwise
-    very close. *Fix scope:* re-order meta-line emission in
-    `pkg/bcftools/mpileup.go` to match upstream's insertion sequence.
+    diverge inside the BGZF deflate payload (~4 bytes around offset
+    0x54). Same file size on both sides, identical CRC32/ISIZE, and
+    the inflated content is byte-identical — i.e. the index *content*
+    matches; only the deflate-stream encoding chosen by our compressor
+    differs from upstream zlib. Rooted in `pkg/htsgo/bgzip`'s deflate
+    output (oracle-locked package; not modified). *Fix scope:* either
+    teach the bgzip writer to mirror zlib's exact Huffman/match
+    choices, or relax the live oracle to compare inflated bytes.
+  - **`mpileup`** — header order is correct after stripping
+    provenance (`##bcftoolsVersion`/`##bcftoolsCommand`/`##reference`).
+    The remaining diff is numerical: I16 sums and PL fields differ
+    at ~18 sites (e.g. `chr=17 pos=175,177,604..,3009,3016,3054`)
+    where our base/mapping quality accumulation diverges from
+    upstream's `bam2bcf.c` for sites near read edges. *Fix scope:*
+    engine-level (deep audit of `tools/bcftools/pkg/bcftools/bam2bcf.go`
+    against `reference_code/bcftools/bam2bcf.c`); >>50 LOC, deferred.
+
+  Closed in 2026-05-31 sweep: `merge` INFO/DP sum (commit 02717bc;
+  `merge.c:merge_INFO_int_sum` rule applied to DP/DP4/AC/AN); `isec`
+  four-projection OP_VENN mode (commit 2f19170).
 
 - **Skipped for lack of committed fixture (TODOs in the test file):**
   `call` (needs an mpileup VCF input), `csq` (needs (gff, fa, vcf)
