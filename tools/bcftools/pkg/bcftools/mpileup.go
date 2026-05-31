@@ -1225,6 +1225,26 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	// mates) so the snapshot is consulted at column C iff C < threshold.
 	var preMergeQual map[*sam.Record][]byte
 	var preMergeDrain map[*sam.Record]int
+	// rawQualSnap, postMergeQual and baqAt thread the qual state
+	// upstream's bcf_call_glfgen sees at iter->pos = C into
+	// accumulateMpileupBases. There are two upstream transitions per
+	// rec: BAQ at col baqAt[rec] (mplp_realn fires inline with the
+	// glfgen loop, modifying qual once) and overlap_push at mate2's
+	// push (modifying mate1 and mate2 quals; visible at cols >=
+	// drainAt for mate1 and at all cols mate2 covers). A column
+	// chooses one of four snapshots:
+	//   pre-BAQ pre-merge:  rawQualSnap
+	//   post-BAQ pre-merge: preMergeQual (post-phase-1-BAQ snapshot)
+	//   pre-BAQ post-merge: postMergeQual (post-applySmartOverlaps)
+	//   post-BAQ post-merge: rec.Qual
+	// Without this, our pre-pass batched BAQ and overlap-merge feed
+	// post-everything quals to every column, drifting I16 BQ sums at
+	// cols predating a read's first BAQ-eligible col (mpileup.1.bam:
+	// 17:175/177) and over-merging at cols mate2 covers before its
+	// BAQ trigger (17:569 mate2 of ERR162872.26172147).
+	rawQualSnap := snapshotRawQuals(perInputChromRecs)
+	var postMergeQual map[*sam.Record][]byte
+	baqAt := map[*sam.Record]int{}
 	if opts.NoBAQ {
 		// -B disables BAQ entirely. Overlap-merge alone matches the
 		// upstream MPLP_NO_BAQ branch (mpileup.c bypasses mplp_realn
@@ -1233,13 +1253,17 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 			pairs := classifyMatePairs(perInputChromRecs)
 			preMergeQual, preMergeDrain = snapshotFirstMateQuals(perInputChromRecs, pairs)
 			applySmartOverlaps(perInputChromRecs)
+			postMergeQual = snapshotPostMergeQuals(perInputChromRecs, pairs)
 		}
 	} else if opts.IgnoreOverlaps {
 		// -x disables overlap-merge. BAQ runs once per read on raw
 		// quals — equivalent to the previous batched form. No
 		// pre-merge snapshot is needed because overlap_push never
-		// fires upstream either.
-		applyMpileupBAQ(perInputChromRecs, refSlab, opts, nil, nil, mkColInRegion(regWindows, chrom))
+		// fires upstream either; the pre-BAQ qual for any rec is the
+		// raw snapshot, which is reused as postMergeQual so the
+		// accumulator's pre-BAQ corners fall back to the raw bytes.
+		applyMpileupBAQ(perInputChromRecs, refSlab, opts, nil, nil, mkColInRegion(regWindows, chrom), baqAt)
+		postMergeQual = rawQualSnap
 	} else {
 		// Default: per-pair interleaving. Classify mates once, then
 		// run BAQ→overlap→BAQ as upstream does. Eligibility uses
@@ -1284,7 +1308,7 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 				d = p.mateStart
 			}
 			return pos0 < d
-		}, realigned, mkColInRegion(regWindows, chrom))
+		}, realigned, mkColInRegion(regWindows, chrom), baqAt)
 		// Snapshot first-mate quals AFTER phase 1 BAQ (which mirrors
 		// upstream's mplp_realn run at the read's first eligible
 		// column) but BEFORE overlap-merge zeroes the future
@@ -1294,6 +1318,14 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 		// snapshotFirstMateQuals for the drain-threshold derivation).
 		preMergeQual, preMergeDrain = snapshotFirstMateQuals(perInputChromRecs, pairs)
 		applySmartOverlaps(perInputChromRecs)
+		// Snapshot post-merge pre-phase-2-BAQ rec.Qual for every rec.
+		// accumulateMpileupBases consults this for cols where merge has
+		// already fired but the rec's BAQ has not: second-mates at every
+		// col they cover and BAQ has not yet fired on them; first-mates
+		// at C >= drainAt but C < baqStart (phase-2-deferred mates). For
+		// recs BAQ'd in phase 1 the snapshot is post-BAQ as well, so it
+		// degrades to rec.Qual at any col where it would have applied.
+		postMergeQual = snapshotPostMergeQuals(perInputChromRecs, pairs)
 		// Phase 2: all second-mates + the first-mates phase 1 left
 		// untouched (their trigger column lies on or after the drain
 		// threshold, so by upstream's bam_plp_push ordering
@@ -1312,7 +1344,7 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 				d = p.mateStart
 			}
 			return pos0 >= d
-		}, realigned, mkColInRegion(regWindows, chrom))
+		}, realigned, mkColInRegion(regWindows, chrom), baqAt)
 	}
 
 	// Upstream's pileup engine walks reads' CIGARs and emits a column
@@ -1343,7 +1375,7 @@ func emitChromMpileup(w variantWriter, em *errmod.Errmod, chrom string, refSlab 
 	for i := 0; i < nIn; i++ {
 		events[i] = make([][]pileupBase, effLen)
 		for _, rec := range perInputChromRecs[i] {
-			accumulateMpileupBases(rec, events[i], preMergeQual, preMergeDrain)
+			accumulateMpileupBases(rec, events[i], preMergeQual, preMergeDrain, rawQualSnap, postMergeQual, baqAt)
 		}
 	}
 
@@ -1444,6 +1476,12 @@ type mpileupReadBAQInfo struct {
 	tailMatch int  // trailing consecutive M/=/X reference length (rm)
 	allMatch  bool // every CIGAR op is M/=/X (nm == ncig)
 	realigned bool // BAQ already applied (upstream PLP_IS_REALN)
+	// indelAt maps the 0-based reference column to upstream's
+	// bam_pileup1_t.indel value for that column on this read (positive
+	// for insertion length following the column, negative for deletion
+	// length). Cols absent from the map have indel=0. The map is sparse:
+	// at most ncig-1 entries (one per intra-CIGAR M->I/D boundary).
+	indelAt map[int]int
 }
 
 // mpileupBuildBAQInfo derives the mplp_realn heuristic facts for rec. lr
@@ -1465,7 +1503,74 @@ func mpileupBuildBAQInfo(rec *sam.Record) mpileupReadBAQInfo {
 			info.hasClip = true
 		}
 	}
+	// Second pass: stamp indelAt at M->I/D boundaries. Mirrors the
+	// nextIndel computation in accumulateMpileupBases so the heuristic's
+	// max_indel / min_indel agrees with the per-column p->indel that
+	// glfgen reads — same merge rules (consecutive same-type indel ops
+	// collapse to a single sum, CPAD-leading insertion runs accumulate).
 	info.end = info.beg + refLen
+	refPos2 := info.beg
+	for idx, op := range rec.Cigar {
+		l := int(op.Length())
+		o := op.Op()
+		switch o {
+		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			nextIndel := 0
+			if idx+1 < len(rec.Cigar) {
+				no2 := rec.Cigar[idx+1].Op()
+				nl2 := int(rec.Cigar[idx+1].Length())
+				switch {
+				case no2 == sam.CigarDeletion:
+					nextIndel = -nl2
+					for k := idx + 2; k < len(rec.Cigar); k++ {
+						if rec.Cigar[k].Op() == sam.CigarDeletion {
+							nextIndel -= int(rec.Cigar[k].Length())
+						} else {
+							break
+						}
+					}
+				case no2 == sam.CigarInsertion:
+					nextIndel = nl2
+					for k := idx + 2; k < len(rec.Cigar); k++ {
+						kop := rec.Cigar[k].Op()
+						if kop == sam.CigarInsertion {
+							nextIndel += int(rec.Cigar[k].Length())
+						} else if kop == sam.CigarPadding {
+							continue
+						} else {
+							break
+						}
+					}
+				case no2 == sam.CigarPadding && idx+2 < len(rec.Cigar):
+					l3 := 0
+					for k := idx + 2; k < len(rec.Cigar); k++ {
+						kop := rec.Cigar[k].Op()
+						if kop == sam.CigarInsertion {
+							l3 += int(rec.Cigar[k].Length())
+						} else if kop == sam.CigarDeletion ||
+							kop == sam.CigarMatch ||
+							kop == sam.CigarSkipped ||
+							kop == sam.CigarEqual ||
+							kop == sam.CigarMismatch {
+							break
+						}
+					}
+					if l3 > 0 {
+						nextIndel = l3
+					}
+				}
+			}
+			if nextIndel != 0 && l > 0 {
+				if info.indelAt == nil {
+					info.indelAt = make(map[int]int)
+				}
+				info.indelAt[refPos2+l-1] = nextIndel
+			}
+			refPos2 += l
+		case sam.CigarDeletion, sam.CigarSkipped:
+			refPos2 += l
+		}
+	}
 	lr := len(rec.Seq) > 500
 	// Leading match run.
 	nm := 0
@@ -1514,7 +1619,7 @@ func mpileupBuildBAQInfo(rec *sam.Record) mpileupReadBAQInfo {
 // only reads whose CIGAR carries an I/D/N op (PLP_HAS_INDEL), so for
 // indel-bearing inputs the partial heuristic is a slight underestimate;
 // for indel-free inputs it is exact.
-func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts MpileupOptions, eligible func(*sam.Record, int) bool, realigned map[*sam.Record]bool, colInRegion func(pos0 int) bool) {
+func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts MpileupOptions, eligible func(*sam.Record, int) bool, realigned map[*sam.Record]bool, colInRegion func(pos0 int) bool, baqAt map[*sam.Record]int) {
 	baqFlag := mpileupBAQFlag(opts)
 	// max_read_len: upstream default is 500 unless -M overrides it.
 	maxReadLen := opts.MaxReadLen
@@ -1588,6 +1693,21 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 		}
 		nt := len(col)
 		hasIndel, hasClip := 0, 0
+		// max_indel / min_indel mirror upstream mplp_realn (mpileup.c:438):
+		// per-pile-column p->indel values are accumulated even when the
+		// underlying read's CIGAR carries no indel (then p->indel==0). The
+		// partial skip predicate at line 447 demands max_indel==min_indel
+		// to skip the col, so any col where a single read carries a non-
+		// zero p->indel (an M-then-I/D boundary on this column) escapes the
+		// "hasIndel<=1" skip and BAQs the whole pile. Without this, our
+		// heuristic skips cols that upstream BAQs — leaving reads pre-BAQ
+		// where upstream's qual has been adjusted (mpileup.1.bam fixture:
+		// col 17:604 with read ERR245024.739014 carrying CIGAR 20M1D80M,
+		// p->indel=-1 at col 0-based 602, driving BAQ at the surrounding
+		// pile and shifting I16 BQ at 17:604-618).
+		maxIndel := 0
+		minIndel := 0
+		indelInited := false
 		for _, info := range col {
 			if info.hasIndel {
 				hasIndel++
@@ -1595,14 +1715,41 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 			if info.hasClip {
 				hasClip++
 			}
+			pIndel := 0
+			if info.indelAt != nil {
+				if v, ok := info.indelAt[pos0]; ok {
+					pIndel = v
+				}
+			}
+			// Upstream's has_indel also counts reads with a non-zero
+			// per-col p->indel even if the underlying CIGAR didn't
+			// already raise PLP_HAS_INDEL — see mpileup.c:433
+			// (`PLP_HAS_INDEL(...) || p->indel`). Cap the count so a read
+			// with both signals isn't double-counted.
+			if pIndel != 0 && !info.hasIndel {
+				hasIndel++
+			}
+			if !indelInited {
+				maxIndel = pIndel
+				minIndel = pIndel
+				indelInited = true
+			} else {
+				if pIndel > maxIndel {
+					maxIndel = pIndel
+				}
+				if pIndel < minIndel {
+					minIndel = pIndel
+				}
+			}
 		}
-		// MPLP_REALN_PARTIAL skip heuristic (mpileup.c:445). max_indel
-		// and min_indel both collapse to 0 here (no per-column indel
-		// term), so max_indel==min_indel is always satisfied. Skipped
-		// entirely under -D/--full-BAQ.
+		// MPLP_REALN_PARTIAL skip heuristic (mpileup.c:445). Mirrors
+		// upstream byte-for-byte including the max_indel==min_indel
+		// guard that opens the BAQ gate when an indel sits adjacent to
+		// this column. Bypassed entirely under -D/--full-BAQ.
 		if partial {
 			if hasIndel == 0 ||
 				(float64(hasClip) < 0.2*float64(nt) &&
+					maxIndel == minIndel &&
 					(float64(hasIndel) < 0.1*float64(nt) || hasIndel == 1)) {
 				continue
 			}
@@ -1668,6 +1815,11 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 					continue
 				}
 			}
+			if baqAt != nil {
+				if _, seen := baqAt[info.rec]; !seen {
+					baqAt[info.rec] = pos0
+				}
+			}
 			baq.SamProbRealn(info.rec, refSlab, baqFlag)
 		}
 	}
@@ -1697,7 +1849,7 @@ func applyMpileupBAQ(perInputChromRecs [][]*sam.Record, refSlab []byte, opts Mpi
 // predicate is unreachable when no intermediate raises max_pos). Reads
 // without an entry in preMergeQual (second mates, standalones, or all
 // reads when -x is in force) always read rec.Qual.
-func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual map[*sam.Record][]byte, preMergeDrain map[*sam.Record]int) {
+func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual map[*sam.Record][]byte, preMergeDrain map[*sam.Record]int, rawQualSnap map[*sam.Record][]byte, postMergeQual map[*sam.Record][]byte, baqAt map[*sam.Record]int) {
 	if rec.Pos <= 0 {
 		return
 	}
@@ -1718,6 +1870,28 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual
 		if q, ok := preMergeQual[rec]; ok {
 			preMerge = q
 			drainAt = preMergeDrain[rec]
+		}
+	}
+	// rawSnap, postMerge and baqStart let us mirror upstream's
+	// bam_mplp_auto interleaving of mplp_realn with bcf_call_glfgen.
+	// Each rec has two timeline transitions: BAQ at iter->pos=baqStart
+	// (mplp_realn fires inline with glfgen) and overlap_push at mate2's
+	// push (visible at cols >= drainAt for mate1, all cols mate2
+	// covers). The four corners select rawSnap (pre-BAQ pre-merge),
+	// preMerge (post-BAQ pre-merge), postMerge (pre-BAQ post-merge), or
+	// rec.Qual (post-BAQ post-merge).
+	var rawSnap []byte
+	var postMerge []byte
+	baqStart := -1
+	if rawQualSnap != nil {
+		rawSnap = rawQualSnap[rec]
+	}
+	if postMergeQual != nil {
+		postMerge = postMergeQual[rec]
+	}
+	if baqAt != nil {
+		if pos, ok := baqAt[rec]; ok {
+			baqStart = pos
 		}
 	}
 	// CIGAR op codes / lengths in BAM order, for get_position's
@@ -1816,22 +1990,48 @@ func accumulateMpileupBases(rec *sam.Record, events [][]pileupBase, preMergeQual
 				}
 				base := upperByte(rec.Seq[q])
 				b4 := seqNt16Int[baseToNt16(base)]
+				// qualSrc is the qual array upstream's bcf_call_glfgen
+				// sees at iter->pos = p. Two orthogonal upstream
+				// transitions split the timeline:
+				//   isPreBAQ:   p < baqStart (or baqStart unset)
+				//   isPreMerge: preMerge has a snapshot for rec AND
+				//               p < drainAt (the existing first-mate
+				//               drain threshold).
+				// The four corners pick rawSnap, preMerge, postMerge,
+				// or rec.Qual. For second-mates preMerge is nil, so the
+				// only relevant axis is BAQ — they fall through to
+				// postMerge (pre-BAQ) or rec.Qual (post-BAQ). For
+				// standalones both snapshots collapse to the raw qual
+				// (no merge ever happened), so rawSnap and postMerge
+				// agree.
+				isPreBAQ := baqStart < 0 || p < baqStart
+				isPreMerge := preMerge != nil && p < drainAt
+				qualSrc := rec.Qual
+				if isPreBAQ {
+					// pre-BAQ corner: pick the snapshot whose merge
+					// timing matches this column. For first-mates with
+					// p < drainAt and standalones (no merge ever), the
+					// raw snapshot is correct; for second-mates (and
+					// first-mates with p >= drainAt) the post-merge
+					// pre-BAQ snapshot is the right state.
+					switch {
+					case isPreMerge && rawSnap != nil:
+						qualSrc = rawSnap
+					case postMerge != nil:
+						qualSrc = postMerge
+					case rawSnap != nil:
+						qualSrc = rawSnap
+					}
+				} else if isPreMerge {
+					// post-BAQ pre-merge: the snapshot captured by
+					// snapshotFirstMateQuals after phase-1 BAQ.
+					qualSrc = preMerge
+				}
 				var rawQual uint8
-				if q < len(rec.Qual) {
-					rawQual = rec.Qual[q]
+				if q < len(qualSrc) {
+					rawQual = qualSrc[q]
 				}
-				// neighbourSrc selects the qual array upstream's
-				// bcf_call_glfgen would see at iter->pos = p. For a
-				// first-mate of an overlapping pair, columns drained
-				// before overlap_push fired (p < drainAt) predate the
-				// merge and must read the pre-merge snapshot; columns
-				// from drainAt onwards see the post-merge rec.Qual
-				// (because by the time they were drained, mate2's push
-				// had already fired tweak_overlap_quality).
-				neighbourSrc := rec.Qual
-				if preMerge != nil && p < drainAt {
-					neighbourSrc = preMerge
-				}
+				neighbourSrc := qualSrc
 				prevQ := -1
 				if q > 0 && q-1 < len(neighbourSrc) {
 					prevQ = int(neighbourSrc[q-1])
@@ -2228,6 +2428,65 @@ const (
 type matePairInfo struct {
 	class     mateClass
 	mateStart int
+}
+
+// snapshotPostMergeQuals copies rec.Qual AFTER applySmartOverlaps has
+// run but BEFORE phase-2 BAQ, for every record subject to overlap-merge
+// (those that classifyMatePairs recognised as one half of an
+// overlapping pair). accumulateMpileupBases consults it at the pre-BAQ
+// post-merge corner: second-mates at every col they cover before
+// baqStart, and first-mates deferred to phase 2 (C >= drainAt, C <
+// baqStart). Recs not in pairs are NOT inserted: their qual was never
+// touched by applySmartOverlaps, so the accumulator's pre-BAQ branch
+// falls back to rawSnap (which is correct for standalones — no merge
+// transition to model).
+func snapshotPostMergeQuals(perInputChromRecs [][]*sam.Record, pairs map[*sam.Record]matePairInfo) map[*sam.Record][]byte {
+	if pairs == nil {
+		return nil
+	}
+	out := make(map[*sam.Record][]byte, len(pairs))
+	for _, recs := range perInputChromRecs {
+		for _, rec := range recs {
+			if rec == nil || len(rec.Qual) == 0 {
+				continue
+			}
+			if _, ok := pairs[rec]; !ok {
+				continue
+			}
+			buf := make([]byte, len(rec.Qual))
+			copy(buf, rec.Qual)
+			out[rec] = buf
+		}
+	}
+	return out
+}
+
+// snapshotRawQuals returns a per-record copy of rec.Qual taken before
+// any BAQ pass mutates it. accumulateMpileupBases consults the snapshot
+// for any column C with C < baqAt[rec], mirroring upstream's
+// bam_mplp_auto / mplp_realn ordering: bcf_call_glfgen emits a column
+// using whatever qual[] state exists at iter->pos, and mplp_realn at
+// iter->pos = C only modifies qual for the FIRST time a read's pile
+// satisfies the partial-realn heuristic. Reads not entered in baqAt
+// (BAQ never fired) read from the raw snapshot at every column they
+// cover. This is the missing piece behind the mpileup.1.bam I16 BQ
+// drift at 17:175/177/604+: the read ERR162872.15901000 starts at 175
+// but its BAQ does not fire until col 235 (the first column with two
+// indel-bearing reads in its pile), so cols 174-234 must see raw qual,
+// not the post-BAQ rec.Qual our pre-pass leaves behind.
+func snapshotRawQuals(perInputChromRecs [][]*sam.Record) map[*sam.Record][]byte {
+	snap := make(map[*sam.Record][]byte)
+	for _, recs := range perInputChromRecs {
+		for _, rec := range recs {
+			if rec == nil || len(rec.Qual) == 0 {
+				continue
+			}
+			buf := make([]byte, len(rec.Qual))
+			copy(buf, rec.Qual)
+			snap[rec] = buf
+		}
+	}
+	return snap
 }
 
 // classifyMatePairs walks each input's records in arrival (coordinate)
