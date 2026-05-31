@@ -15,8 +15,9 @@ import (
 )
 
 // DefaultDepthExcludeFlags matches upstream samtools depth's default `-F`
-// value of 0x4 (unmapped reads).
-const DefaultDepthExcludeFlags uint16 = sam.FlagUnmapped
+// value of BAM_FUNMAP | BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL
+// (0x4 | 0x100 | 0x400 | 0x200 = 0x704).
+const DefaultDepthExcludeFlags uint16 = sam.FlagUnmapped | sam.FlagSecondary | sam.FlagDuplicate | sam.FlagQCFail
 
 // DepthOptions configures the behaviour of Depth.
 type DepthOptions struct {

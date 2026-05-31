@@ -537,15 +537,17 @@ func buildFastqHeader(rec *sam.Record, opts FastqOptions) string {
 // formatFastq returns one FASTQ record (header includes leading '@') with
 // trailing newline.
 func formatFastq(header, seq string, qual []byte) string {
+	// Upstream samtools writes a literal empty line for records with no
+	// SEQ (BAM "*"); ours used to emit "*". Treat "*" as empty so the
+	// fastq output is byte-identical.
+	if seq == "*" {
+		seq = ""
+	}
 	var sb strings.Builder
 	sb.Grow(len(header) + len(seq) + len(qual) + 8)
 	sb.WriteString(header)
 	sb.WriteByte('\n')
-	if seq == "" {
-		sb.WriteByte('*')
-	} else {
-		sb.WriteString(seq)
-	}
+	sb.WriteString(seq)
 	sb.WriteString("\n+\n")
 	if len(qual) == 0 {
 		// Match SEQ length with '!' (Phred 0) per FASTQ convention.

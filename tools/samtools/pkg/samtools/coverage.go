@@ -182,16 +182,37 @@ func Coverage(in io.Reader, w io.Writer, opts CoverageOptions) error {
 	}
 
 	if !opts.HeaderOff {
-		fmt.Fprintln(w, "#rname\tstartpos\tendpos\tnumreads\tcovbases\tcoverage\tmeandepth\tbaseq\tmapq")
+		fmt.Fprintln(w, "#rname\tstartpos\tendpos\tnumreads\tcovbases\tcoverage\tmeandepth\tmeanbaseq\tmeanmapq")
 	}
 	for _, s := range specs {
 		row := summariseCoverage(s.name, s.startPos, s.endPos, states[s.idx])
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%.6f\t%.6f\t%.4f\t%.4f\n",
+		// Match upstream coverage.c print_tabular_line: numerics use
+		// %g for coverage/meandepth and %.3g for the baseQ/mapQ
+		// means. Go's %g defaults to the shortest representation,
+		// which mirrors C's %g for the values we see here.
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n",
 			row.RName, row.StartPos, row.EndPos, row.NumReads,
-			row.CovBases, row.Coverage, row.MeanDepth,
-			row.MeanBaseQ, row.MeanMapQ)
+			row.CovBases,
+			formatCoverageG(row.Coverage),
+			formatCoverageG(row.MeanDepth),
+			formatCoverageDot3G(row.MeanBaseQ),
+			formatCoverageDot3G(row.MeanMapQ))
 	}
 	return nil
+}
+
+// formatCoverageG renders a float64 in C's `%g` form (precision 6,
+// trim trailing zeros, drop a trailing decimal point). Go's `%g`
+// defaults to the shortest round-trip precision, so we have to spell
+// the precision out explicitly to match upstream.
+func formatCoverageG(v float64) string {
+	return fmt.Sprintf("%.6g", v)
+}
+
+// formatCoverageDot3G renders a float64 in C's `%.3g` form (precision
+// 3, trim trailing zeros, drop a trailing decimal point).
+func formatCoverageDot3G(v float64) string {
+	return fmt.Sprintf("%.3g", v)
 }
 
 // summariseCoverage computes the per-region row from a refState by

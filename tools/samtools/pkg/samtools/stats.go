@@ -666,6 +666,15 @@ func (c *StatsCounters) observe(rec *sam.Record, opts StatsOptions) error {
 		c.ReadsQCFailed++
 	}
 
+	// Upstream stats.c:1218-1219 — primary records with no sequence
+	// (BAM `core.l_qseq == 0`, i.e. SAM SEQ='*') exit early from
+	// collect_stats: they don't contribute to nreads_1st/_2nd/_other
+	// (which flow into "raw total sequences"), nor to the RL/FRL
+	// length histograms.
+	if recHasNoSeq(rec) {
+		return nil
+	}
+
 	// Apply user-specified flag filters BEFORE counting RawTotal so the
 	// "filtered sequences" delta is meaningful (matches upstream).
 	c.RawTotal++
@@ -2607,6 +2616,14 @@ func (c *StatsCounters) writeBarcodes(bw *bufio.Writer) {
 			fmt.Fprintln(bw)
 		}
 	}
+}
+
+// recHasNoSeq returns true when the SAM record has no SEQ. SAM SEQ
+// "*" maps to BAM core.l_qseq == 0 upstream; we keep the SAM-side "*"
+// literal in rec.Seq, so a length check that respects the "*"
+// sentinel matches upstream semantics.
+func recHasNoSeq(rec *sam.Record) bool {
+	return rec.Seq == "" || rec.Seq == "*"
 }
 
 // sortedKeys returns the keys of m in ascending order.

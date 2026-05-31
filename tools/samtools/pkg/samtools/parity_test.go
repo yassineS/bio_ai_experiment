@@ -1226,16 +1226,20 @@ func TestParity_Quickcheck_T01_GoodBAM(t *testing.T) {
 	}
 }
 
-// quickcheck.t02 — a plain-text SAM file is NOT a BAM, must fail magic check.
-func TestParity_Quickcheck_T02_TextSAMRejected(t *testing.T) {
+// quickcheck.t02 — a plain-text SAM file passes quickcheck. Upstream's
+// `samtools quickcheck` is permissive on non-BGZF sequence_data
+// formats: it only verifies the format category and the header
+// parses, skipping the EOF-block check for formats that don't have
+// one. We mirror that behaviour.
+func TestParity_Quickcheck_T02_TextSAMAccepted(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "text.sam")
 	if err := os.WriteFile(p, readParity(t, "basic.sam"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	res := QuickcheckOne(p, QuickcheckOptions{})
-	if res.OK {
-		t.Errorf("expected SAM text to fail BAM quickcheck; got OK")
+	if !res.OK {
+		t.Errorf("expected SAM text to pass upstream-style quickcheck; got fail: %s", res.Reason)
 	}
 }
 
@@ -1611,8 +1615,9 @@ func TestParity_AddReplaceRG_T01_OrphanOnly(t *testing.T) {
 	bamBytes := localSAMToBAM(t, "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\n@RG\tID:rg1\tSM:s1\nr1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n")
 	var out bytes.Buffer
 	if err := AddReplaceRG(bytes.NewReader(bamBytes), &out, AddReplaceRGOptions{
-		RGID: "rg1",
-		Mode: AddReplaceRGOrphanOnly,
+		RGID:      "rg1",
+		Mode:      AddReplaceRGOrphanOnly,
+		OutputBAM: true,
 	}); err != nil {
 		t.Fatalf("AddReplaceRG: %v", err)
 	}
@@ -1635,8 +1640,9 @@ func TestParity_AddReplaceRG_T02_OverwriteAll(t *testing.T) {
 	bamBytes := localSAMToBAM(t, "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\n@RG\tID:rg1\tSM:s1\n@RG\tID:rg2\tSM:s2\nr1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:rg1\n")
 	var out bytes.Buffer
 	if err := AddReplaceRG(bytes.NewReader(bamBytes), &out, AddReplaceRGOptions{
-		RGID: "rg2",
-		Mode: AddReplaceRGOverwriteAll,
+		RGID:      "rg2",
+		Mode:      AddReplaceRGOverwriteAll,
+		OutputBAM: true,
 	}); err != nil {
 		t.Fatalf("AddReplaceRG: %v", err)
 	}

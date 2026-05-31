@@ -75,6 +75,15 @@ func QuickcheckOne(path string, opts QuickcheckOptions) QuickcheckResult {
 		return res
 	}
 	if !looksLikeBGZFHeader(hdrBuf) {
+		// Upstream `quickcheck` is permissive on non-BGZF sequence data
+		// (plain SAM and FASTQ): it only verifies the format category is
+		// sequence_data and the header parses, and skips the EOF-block
+		// check on formats that don't have one. We mirror that by
+		// accepting files whose first bytes look like a SAM header.
+		if looksLikeSAM(hdrBuf) {
+			res.OK = true
+			return res
+		}
 		res.Reason = "not a BGZF (BAM) file"
 		return res
 	}
@@ -114,6 +123,31 @@ func QuickcheckOne(path string, opts QuickcheckOptions) QuickcheckResult {
 	}
 	res.OK = true
 	return res
+}
+
+// looksLikeSAM returns true when the leading bytes resemble a SAM
+// header (start with '@HD', '@SQ', '@RG', '@PG', '@CO', or a record
+// line). Mirrors upstream's hts_detect_format auto-detection for the
+// SAM case as far as samtools quickcheck cares.
+func looksLikeSAM(b []byte) bool {
+	if len(b) < 1 {
+		return false
+	}
+	if b[0] == '@' {
+		return true
+	}
+	// A bare record line starts with QNAME followed by a tab. Permit
+	// any printable QNAME char followed by a tab within the first few
+	// bytes so single-record / header-less SAM files still pass.
+	for i := 0; i < len(b) && i < 256; i++ {
+		if b[i] == '\t' {
+			return true
+		}
+		if b[i] == '\n' || b[i] < 0x20 {
+			return false
+		}
+	}
+	return false
 }
 
 // looksLikeBGZFHeader checks the gzip magic + the BC subfield prefix

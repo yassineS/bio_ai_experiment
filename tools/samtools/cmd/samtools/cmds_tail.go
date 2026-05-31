@@ -393,8 +393,11 @@ Usage:
 Options:
   -r, --rg-line STRING   Full @RG line (e.g. "ID:rgX\tSM:s1").
   -R, --rg-id ID         Existing RG ID from the header to apply.
-  -m, --mode MODE        "orphan_only" (default) or "overwrite_all".
-  -o, --output PATH      Output BAM (default stdout).
+  -m, --mode MODE        "orphan_only" or "overwrite_all" (default).
+  -o, --output PATH      Output path (default stdout).
+  -O, --output-fmt FMT   Output format ("sam" or "bam"). Defaults to SAM
+                         on stdout and follows the suffix (.bam → BAM)
+                         when -o is a file.
   -w, --no-PG            Accepted; v1 never injects @PG.
   -h, --help             Show this help.
   -v, --version          Show version.
@@ -408,14 +411,16 @@ func runAddReplaceRG(args []string) int {
 		rgID     string
 		mode     string
 		outPath  string
+		outFmt   string
 		noPG     bool
 		showHelp bool
 		showVer  bool
 	)
 	cliflag.StringVar(fs, &rgLine, "r", "rg-line", "", "")
 	cliflag.StringVar(fs, &rgID, "R", "rg-id", "", "")
-	cliflag.StringVar(fs, &mode, "m", "mode", "orphan_only", "")
+	cliflag.StringVar(fs, &mode, "m", "mode", "overwrite_all", "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
+	cliflag.StringVar(fs, &outFmt, "O", "output-fmt", "", "")
 	cliflag.BoolVar(fs, &noPG, "w", "no-PG", false, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -461,11 +466,27 @@ func runAddReplaceRG(args []string) int {
 		return 1
 	}
 	defer out.Close()
+	// Upstream's `addreplacerg` defaults to SAM text on stdout and
+	// auto-detects BAM via the `.bam` suffix when -o points to a
+	// file. -O/--output-fmt overrides explicitly.
+	outputBAM := false
+	switch strings.ToLower(outFmt) {
+	case "bam", "b":
+		outputBAM = true
+	case "sam", "s":
+		outputBAM = false
+	case "":
+		outputBAM = strings.HasSuffix(strings.ToLower(outPath), ".bam")
+	default:
+		fmt.Fprintf(os.Stderr, "samtools addreplacerg: bad -O %q (sam|bam)\n", outFmt)
+		return 2
+	}
 	if err := samtools.AddReplaceRG(in, out, samtools.AddReplaceRGOptions{
-		RGLine: rgLine,
-		RGID:   rgID,
-		Mode:   rgMode,
-		NoPG:   noPG,
+		RGLine:    rgLine,
+		RGID:      rgID,
+		Mode:      rgMode,
+		NoPG:      noPG,
+		OutputBAM: outputBAM,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
 		return 1

@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
@@ -382,38 +383,40 @@ func binQual(rec *sam.Record) {
 	}
 }
 
-// updateNMAux sets / replaces the NM:i: aux. Mirrors upstream's "different NM"
-// stderr line on mismatch.
+// updateNMAux sets / replaces the NM:i: aux. Mirrors upstream's
+// bam_md.c semantics: when the existing NM matches the new value the
+// tag is left in place; when it differs (or is absent), the old tag
+// is removed and the new one is appended at the end of the aux list.
 func updateNMAux(rec *sam.Record, nm int, quiet bool, warnW io.Writer) {
 	for i, a := range rec.Aux {
 		if a.Tag == "NM" {
-			if old, ok := a.Int(); ok && old != int64(nm) {
-				if !quiet && warnW != nil {
-					fmt.Fprintf(warnW, "[bam_fillmd1] different NM for read '%s': %d -> %d\n", rec.QName, old, nm)
-				}
+			if old, ok := a.Int(); ok && old == int64(nm) {
+				return
+			} else if ok && !quiet && warnW != nil {
+				fmt.Fprintf(warnW, "[bam_fillmd1] different NM for read '%s': %d -> %d\n", rec.QName, old, nm)
 			}
-			rec.Aux[i] = sam.Aux{Tag: "NM", Type: 'i', Value: int64(nm)}
-			rebuildAuxIndex(rec)
-			return
+			rec.Aux = append(rec.Aux[:i], rec.Aux[i+1:]...)
+			break
 		}
 	}
 	rec.Aux = append(rec.Aux, sam.Aux{Tag: "NM", Type: 'i', Value: int64(nm)})
 	rebuildAuxIndex(rec)
 }
 
-// updateMDAux sets / replaces the MD:Z: aux. Mirrors upstream's "different MD"
-// stderr line on mismatch.
+// updateMDAux sets / replaces the MD:Z: aux. Mirrors upstream's
+// bam_md.c semantics: when the existing MD matches case-insensitively
+// the tag is left in place; otherwise the old tag is removed and the
+// new one is appended at the end of the aux list.
 func updateMDAux(rec *sam.Record, md string, quiet bool, warnW io.Writer) {
 	for i, a := range rec.Aux {
 		if a.Tag == "MD" {
-			if old, ok := a.String(); ok && old != md {
-				if !quiet && warnW != nil {
-					fmt.Fprintf(warnW, "[bam_fillmd1] different MD for read '%s': '%s' -> '%s'\n", rec.QName, old, md)
-				}
+			if old, ok := a.String(); ok && strings.EqualFold(old, md) {
+				return
+			} else if ok && !quiet && warnW != nil {
+				fmt.Fprintf(warnW, "[bam_fillmd1] different MD for read '%s': '%s' -> '%s'\n", rec.QName, old, md)
 			}
-			rec.Aux[i] = sam.Aux{Tag: "MD", Type: 'Z', Value: md}
-			rebuildAuxIndex(rec)
-			return
+			rec.Aux = append(rec.Aux[:i], rec.Aux[i+1:]...)
+			break
 		}
 	}
 	rec.Aux = append(rec.Aux, sam.Aux{Tag: "MD", Type: 'Z', Value: md})

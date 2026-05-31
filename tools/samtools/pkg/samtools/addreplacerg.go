@@ -36,6 +36,10 @@ type AddReplaceRGOptions struct {
 	Mode AddReplaceRGMode
 	// NoPG is accepted; v1 never emits @PG lines so this is a no-op.
 	NoPG bool
+	// OutputBAM forces BAM output. Upstream's `addreplacerg` defaults
+	// to SAM text when writing to stdout; set this to true (via
+	// -O bam or an .bam output suffix at the CLI layer) to emit BAM.
+	OutputBAM bool
 }
 
 // AddReplaceRG copies records from in to out, ensuring an @RG record
@@ -69,8 +73,19 @@ func AddReplaceRG(in io.Reader, out io.Writer, opts AddReplaceRGOptions) error {
 			return fmt.Errorf("samtools addreplacerg: -R %q is not in @RG table", id)
 		}
 	}
+	// In overwrite_all mode upstream's sam_hdr_remove_except("RG",
+	// "ID", id) drops every @RG line except the chosen one — so the
+	// header reflects the post-rewrite reality.
+	if opts.Mode == AddReplaceRGOverwriteAll {
+		removeOtherRGs(hdr, id)
+	}
 
-	bw := sam.NewBAMWriter(out)
+	var bw sam.Writer
+	if opts.OutputBAM {
+		bw = sam.NewBAMWriter(out)
+	} else {
+		bw = sam.NewSAMWriter(out)
+	}
 	if err := bw.WriteHeader(hdr); err != nil {
 		return err
 	}
@@ -145,6 +160,37 @@ func parseRGLine(line string) (sam.ReadGroup, error) {
 		return sam.ReadGroup{}, errors.New("samtools addreplacerg: @RG line missing ID:")
 	}
 	return rg, nil
+}
+
+// removeOtherRGs drops every @RG header line except the one whose
+// ID equals keepID. Mirrors upstream sam_hdr_remove_except("RG",
+// "ID", keepID).
+func removeOtherRGs(h *sam.Header, keepID string) {
+	rgs := h.ReadGroups[:0]
+	for _, rg := range h.ReadGroups {
+		if rg.ID == keepID {
+			rgs = append(rgs, rg)
+		}
+	}
+	h.ReadGroups = rgs
+	lines := h.Lines[:0]
+	for _, l := range h.Lines {
+		if l.Tag != "RG" {
+			lines = append(lines, l)
+			continue
+		}
+		keep := false
+		for _, f := range l.Fields {
+			if f.Tag == "ID" && f.Value == keepID {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			lines = append(lines, l)
+		}
+	}
+	h.Lines = lines
 }
 
 // findRG returns the index of the @RG entry with ID id, or -1.
