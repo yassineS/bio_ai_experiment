@@ -101,10 +101,11 @@ type siteFreqStat struct {
 }
 
 type siteDepthStat struct {
-	chrom     string
-	pos       int
-	sumDepth  int
-	meanDepth float64
+	chrom      string
+	pos        int
+	sumDepth   int
+	sumsqDepth int
+	n          int
 }
 
 type siteQualityStat struct {
@@ -443,40 +444,30 @@ func (s *statistics) addFrequencyStat(v *vcf.Variant, derived bool) {
 	s.siteFrequencies = append(s.siteFrequencies, stat)
 }
 
-// addSiteDepthStat adds site depth statistics
+// addSiteDepthStat adds site depth statistics. Upstream
+// (variant_file_output.cpp:3416-3452) emits one row per kept site even
+// when no sample has a non-missing DP — sum/sumsq/n stay at zero, and
+// the .ldepth.mean row formats as `-nan\t-nan` from the 0/0 mean and
+// variance divisions. We match by always appending and only skipping
+// per-sample DPs that are missing or negative.
 func (s *statistics) addSiteDepthStat(v *vcf.Variant) {
-	if len(v.Samples) == 0 {
-		return
-	}
-
-	sumDepth := 0
-	count := 0
+	stat := siteDepthStat{chrom: v.Chrom, pos: v.Pos}
 
 	for _, sample := range v.Samples {
 		dpStr, ok := sample.Data["DP"]
-		if !ok {
+		if !ok || dpStr == "." || dpStr == "" {
 			continue
 		}
 
 		var dp int
 		_, err := fmt.Sscanf(dpStr, "%d", &dp)
-		if err != nil {
+		if err != nil || dp < 0 {
 			continue
 		}
 
-		sumDepth += dp
-		count++
-	}
-
-	if count == 0 {
-		return
-	}
-
-	stat := siteDepthStat{
-		chrom:     v.Chrom,
-		pos:       v.Pos,
-		sumDepth:  sumDepth,
-		meanDepth: float64(sumDepth) / float64(count),
+		stat.sumDepth += dp
+		stat.sumsqDepth += dp * dp
+		stat.n++
 	}
 
 	s.siteDepths = append(s.siteDepths, stat)
@@ -1223,7 +1214,13 @@ func (s *statistics) outputFrequency(prefix string, counts, suppress bool) error
 	return nil
 }
 
-// outputSiteMeanDepth outputs mean depth per site
+// outputSiteMeanDepth outputs mean depth per site (.ldepth.mean). Both
+// MEAN_DEPTH and VAR_DEPTH follow upstream's bare `ostream <<` doubles
+// (variant_file_output.cpp:3454-3458); when n==0 mean is 0/0 → -nan and
+// variance is forced to -nan too (upstream divides by n-1 which on n==0
+// yields -nan from the surrounding 0/0 mean²). When n==1 the n-1
+// denominator in `(sumsq/n - mean²) * n/(n-1)` is 0 — that 0/0 also
+// renders as -nan on glibc.
 func (s *statistics) outputSiteMeanDepth(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".ldepth.mean")
 	if err != nil {
@@ -1234,14 +1231,29 @@ func (s *statistics) outputSiteMeanDepth(prefix string) error {
 	fmt.Fprintln(f, "CHROM\tPOS\tMEAN_DEPTH\tVAR_DEPTH")
 
 	for _, stat := range s.siteDepths {
-		// We don't calculate variance, so output 0
-		fmt.Fprintf(f, "%s\t%d\t%.4f\t0\n", stat.chrom, stat.pos, stat.meanDepth)
+		var mean, variance float64
+		if stat.n == 0 {
+			mean = math.NaN()
+			variance = math.NaN()
+		} else {
+			mean = float64(stat.sumDepth) / float64(stat.n)
+			if stat.n == 1 {
+				variance = math.NaN()
+			} else {
+				variance = ((float64(stat.sumsqDepth) / float64(stat.n)) - mean*mean) * float64(stat.n) / float64(stat.n-1)
+			}
+		}
+		fmt.Fprintf(f, "%s\t%d\t%s\t%s\n",
+			stat.chrom, stat.pos,
+			formatCppDouble(mean), formatCppDouble(variance))
 	}
 
 	return nil
 }
 
-// outputSiteDepth outputs sum depth per site
+// outputSiteDepth outputs sum depth per site (.ldepth). Both SUM_DEPTH
+// and SUMSQ_DEPTH are unsigned ints in upstream (cpp:3434-3461); we
+// emit them as decimal integers.
 func (s *statistics) outputSiteDepth(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".ldepth")
 	if err != nil {
@@ -1249,15 +1261,10 @@ func (s *statistics) outputSiteDepth(prefix string) error {
 	}
 	defer f.Close()
 
-	// Upstream emits both SUM_DEPTH and SUMSQ_DEPTH (sum of squared
-	// per-individual depths at the site). We don't carry the squared sum
-	// through the accumulator yet; emit a literal 0 column so the column
-	// count and header text match upstream byte-for-byte. See
-	// docs/PARITY_ROADMAP.md#vcftools for the gap.
 	fmt.Fprintln(f, "CHROM\tPOS\tSUM_DEPTH\tSUMSQ_DEPTH")
 
 	for _, stat := range s.siteDepths {
-		fmt.Fprintf(f, "%s\t%d\t%d\t0\n", stat.chrom, stat.pos, stat.sumDepth)
+		fmt.Fprintf(f, "%s\t%d\t%d\t%d\n", stat.chrom, stat.pos, stat.sumDepth, stat.sumsqDepth)
 	}
 
 	return nil
