@@ -240,6 +240,11 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		keep[k] = true
 	}
 
+	// vennMode is upstream's OP_VENN: triggered when there are exactly two
+	// inputs and no -n constraint is given. In that mode `-p` produces four
+	// projection files (private-to-A, private-to-B, shared-from-A,
+	// shared-from-B) instead of the one-file-per-input default.
+	vennMode := n == 2 && opts.Nfiles.Mode == 0
 	// Open per-input output files when -p is set.
 	var perInputW []variantWriter
 	var perInputClose []func()
@@ -249,10 +254,20 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		}
 		// Drop a small README in the prefix (matches upstream convention).
 		readmePath := filepath.Join(opts.Prefix, "README.txt")
-		_ = os.WriteFile(readmePath, []byte(isecReadme(headers, opts)), 0644)
+		_ = os.WriteFile(readmePath, []byte(isecReadme(headers, opts, vennMode)), 0644)
 		// One file per input, named 0000.vcf, 0001.vcf, ... matching upstream.
+		// In Venn mode there are four outputs whose source group is the
+		// 0..3 -> {0,1,0,1} mapping.
 		ext := outputExt(opts.OutputFormat)
-		for i := range groups {
+		nOut := n
+		if vennMode {
+			nOut = 4
+		}
+		for i := 0; i < nOut; i++ {
+			src := i
+			if vennMode {
+				src = i % 2
+			}
 			path := filepath.Join(opts.Prefix, fmt.Sprintf("%04d.vcf%s", i, ext))
 			f, err := os.Create(path)
 			if err != nil {
@@ -261,7 +276,7 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 			w, finish, err := openOutput(f, ViewOptions{
 				OutputFormat:  opts.OutputFormat,
 				CompressLevel: opts.CompressLevel,
-			}, headers[i])
+			}, headers[src])
 			if err != nil {
 				_ = f.Close()
 				return 0, err
@@ -344,11 +359,32 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		totalKept++
 		cells := keyVariants[k]
 		// Per-input projection: write each cell to its respective per-input
-		// file.
+		// file. In Venn mode (two inputs, no -n), records present in both
+		// inputs go to outputs 2 (from A) and 3 (from B); records private
+		// to one input go to outputs 0 or 1.
 		if opts.Prefix != "" {
-			for _, c := range cells {
-				if err := perInputW[c.groupIdx].Write(c.variant); err != nil {
-					return totalKept, err
+			if vennMode {
+				mem := *keyMembership[k]
+				bothPresent := mem[0] && mem[1]
+				for _, c := range cells {
+					var dst int
+					switch {
+					case bothPresent && c.groupIdx == 0:
+						dst = 2
+					case bothPresent && c.groupIdx == 1:
+						dst = 3
+					default:
+						dst = c.groupIdx
+					}
+					if err := perInputW[dst].Write(c.variant); err != nil {
+						return totalKept, err
+					}
+				}
+			} else {
+				for _, c := range cells {
+					if err := perInputW[c.groupIdx].Write(c.variant); err != nil {
+						return totalKept, err
+					}
 				}
 			}
 		}
@@ -469,12 +505,19 @@ func outputExt(f OutputFormat) string {
 // isecReadme is a small explainer dropped into the prefix dir so users know
 // what the per-input files contain. Matches upstream's habit of writing a
 // README.txt next to the outputs.
-func isecReadme(headers []*vcf.Header, opts IsecOptions) string {
+func isecReadme(headers []*vcf.Header, opts IsecOptions, vennMode bool) string {
 	var b strings.Builder
 	b.WriteString("This directory was produced by `bcftools isec` (Go port).\n\n")
 	b.WriteString("Per-input projections:\n")
-	for i := range headers {
-		b.WriteString(fmt.Sprintf("  000%d.vcf - records from input %d that pass the membership constraint\n", i, i+1))
+	if vennMode {
+		b.WriteString("  0000.vcf - records private to input 1\n")
+		b.WriteString("  0001.vcf - records private to input 2\n")
+		b.WriteString("  0002.vcf - records from input 1 shared by both\n")
+		b.WriteString("  0003.vcf - records from input 2 shared by both\n")
+	} else {
+		for i := range headers {
+			b.WriteString(fmt.Sprintf("  000%d.vcf - records from input %d that pass the membership constraint\n", i, i+1))
+		}
 	}
 	b.WriteString("\nMembership constraint:\n")
 	switch opts.Nfiles.Mode {
