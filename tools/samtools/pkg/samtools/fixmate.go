@@ -119,12 +119,20 @@ func fixPair(a, b *sam.Record, opts FixmateOptions) {
 	a.TLen = tlen
 	b.TLen = -tlen
 
-	// Optional aux tags.
-	if opts.AddMateCigar {
+	// Upstream's `sync_mq_mc` always copies MQ (mate MAPQ) and MC
+	// (mate CIGAR) onto both reads of a pair when at least one is
+	// mapped, regardless of CLI flags. We mirror that here so the
+	// default fixmate invocation produces upstream-compatible
+	// output.
+	if !a.IsUnmapped() {
+		setAuxInt(b, "MQ", int64(a.MapQ))
+	}
+	if !b.IsUnmapped() {
+		setAuxInt(a, "MQ", int64(b.MapQ))
+	}
+	if !a.IsUnmapped() || !b.IsUnmapped() {
 		setAuxString(a, "MC", b.Cigar.String())
 		setAuxString(b, "MC", a.Cigar.String())
-		setAuxInt(a, "MQ", int64(b.MapQ))
-		setAuxInt(b, "MQ", int64(a.MapQ))
 	}
 	if opts.AddMateScore {
 		setAuxInt(a, "ms", int64(mateScore(b)))

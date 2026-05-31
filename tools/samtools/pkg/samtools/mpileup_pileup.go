@@ -116,13 +116,20 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 	// refbase column. Empty when no FASTA was supplied (upstream emits 'N').
 	var refSlab []byte
 	if refFA != nil {
-		// Coerce [beg0, end0) onto the contig length already done by the
-		// caller, so this Fetch is always in-range.
-		b, err := refFA.Fetch(chrom, int64(beg0), int64(end0))
-		if err != nil {
-			return fmt.Errorf("samtools mpileup: fetch %s:%d-%d: %w", chrom, beg0, end0, err)
+		// The caller may have stretched end0 beyond refLen to cover
+		// read overhang; the FASTA fetch must still be bounded by the
+		// contig length. Positions past refLen render as 'N' anyway.
+		fetchEnd := end0
+		if fetchEnd > refLen {
+			fetchEnd = refLen
 		}
-		refSlab = b
+		if fetchEnd > beg0 {
+			b, err := refFA.Fetch(chrom, int64(beg0), int64(fetchEnd))
+			if err != nil {
+				return fmt.Errorf("samtools mpileup: fetch %s:%d-%d: %w", chrom, beg0, fetchEnd, err)
+			}
+			refSlab = b
+		}
 	}
 
 	for pos0 := beg0; pos0 < end0; pos0++ {
@@ -136,7 +143,11 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 				d = opts.MaxDepth
 			}
 			depths[i] = d
-			if d > 0 {
+			// Upstream emits a row whenever ANY pileup event lands
+			// on this column (even if every event is filtered out
+			// by `-Q`). The filtered count becomes 0 in the bases
+			// column — but the row is still printed.
+			if d > 0 || rawCoverage(events[i][col]) > 0 {
 				any = true
 			}
 		}
@@ -225,16 +236,33 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 // liveDepth returns the count of "live" (not filtered, base-quality OK)
 // events at a position. We count pileupEventDel/RefSkip too because they
 // occupy a depth slot in upstream output (they're written as '*').
+// rawCoverage returns the count of pileup events at a column,
+// independent of base-quality filtering. Upstream emits a row when
+// the pileup engine yields any event, even if every event is then
+// filtered out by `-Q`.
+func rawCoverage(evs []pileupEvent) int {
+	n := 0
+	for i := range evs {
+		if evs[i].dropped {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 func liveDepth(evs []pileupEvent, minBQ uint8) int {
 	n := 0
 	for i := range evs {
 		if evs[i].dropped {
 			continue
 		}
-		if evs[i].kind == pileupEventBase {
-			if minBQ > 0 && evs[i].qual < minBQ {
-				continue
-			}
+		// Apply min-baseQ uniformly across base, deletion and refskip
+		// events, matching upstream's `c < min_baseQ` short-circuit
+		// in `bam_plcmd.c` (which sets c from the next M-base's qual
+		// for D / N positions).
+		if minBQ > 0 && evs[i].qual < minBQ {
+			continue
 		}
 		n++
 	}
@@ -251,10 +279,12 @@ func writeBasesColumn(bw *bufio.Writer, evs []pileupEvent, ref byte, opts Mpileu
 		if e.dropped {
 			continue
 		}
-		if e.kind == pileupEventBase {
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+		// Upstream applies the min-baseQ filter to every event (incl.
+		// deletions / refskips). Their `qual` is the quality of the
+		// next M-base in the read after the gap; an unmapped or
+		// sequence-less record gets 0.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
 		}
 		if e.readStart {
 			bw.WriteByte('^')
@@ -338,10 +368,12 @@ func writeQualsColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions) 
 		if e.dropped {
 			continue
 		}
-		if e.kind == pileupEventBase {
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+		// Upstream applies the min-baseQ filter to every event (incl.
+		// deletions / refskips). Their `qual` is the quality of the
+		// next M-base in the read after the gap; an unmapped or
+		// sequence-less record gets 0.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
 		}
 		bw.WriteByte(e.qual + 33)
 	}
@@ -355,10 +387,12 @@ func writeMapqColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions) {
 		if e.dropped {
 			continue
 		}
-		if e.kind == pileupEventBase {
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+		// Upstream applies the min-baseQ filter to every event (incl.
+		// deletions / refskips). Their `qual` is the quality of the
+		// next M-base in the read after the gap; an unmapped or
+		// sequence-less record gets 0.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
 		}
 		c := int(e.mapq) + 33
 		if c > 126 {
@@ -377,10 +411,12 @@ func writeReadBPColumn(bw *bufio.Writer, evs []pileupEvent, opts MpileupOptions)
 		if e.dropped {
 			continue
 		}
-		if e.kind == pileupEventBase {
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+		// Upstream applies the min-baseQ filter to every event (incl.
+		// deletions / refskips). Their `qual` is the quality of the
+		// next M-base in the read after the gap; an unmapped or
+		// sequence-less record gets 0.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
 		}
 		if !first {
 			bw.WriteByte(',')

@@ -276,7 +276,9 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 		if refLen <= 0 {
 			continue
 		}
-		// Walk windows.
+		// Walk windows. The whole-chrom default window must extend to
+		// include any read-overhang past refLen so upstream's
+		// "emit-every-covered-position" semantics still apply.
 		var windows [][2]int
 		if iv, ok := regionByChrom[chrom]; ok {
 			windows = mergeIntervals(iv)
@@ -297,8 +299,14 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 		for _, w := range windows {
 			beg0 := w[0]
 			end0 := w[1]
-			if end0 > refLen {
-				end0 = refLen
+			// Upstream's pileup engine reports read events past the
+			// contig length (a read overhang). Extend whole-chrom
+			// emission to the maximum read end so those positions
+			// still get emitted instead of being trimmed away. We
+			// only extend for the implicit whole-chrom window
+			// (end0 == refLen); explicit user regions stay bounded.
+			if end0 == refLen && maxEnd0 > end0 {
+				end0 = maxEnd0
 			}
 			if beg0 < 0 {
 				beg0 = 0

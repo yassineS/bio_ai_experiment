@@ -228,11 +228,14 @@ func TestMpileup_MinBaseQ_Drops(t *testing.T) {
 @SQ	SN:chr1	LN:30
 r1	0	chr1	10	60	3M	*	0	0	ACG	!!!
 `
-	// Phred qualities "!!!" are 0 each; MinBaseQ 10 should drop them all,
-	// yielding zero-depth output (which is omitted by default).
+	// Phred qualities "!!!" are 0 each; MinBaseQ 10 should drop them
+	// from the bases column. Per upstream, the row IS still emitted
+	// (the pileup engine reports the column as covered by the read),
+	// but with depth 0 and '*' placeholders for bases/quals.
 	out := runMpileupOnSAM(t, []string{sam}, MpileupOptions{MinBaseQ: 10}, nil, nil)
-	if out != "" {
-		t.Errorf("expected empty output (bases all below MinBaseQ): %q", out)
+	want := "chr1\t10\tN\t0\t*\t*\nchr1\t11\tN\t0\t*\t*\nchr1\t12\tN\t0\t*\t*\n"
+	if out != want {
+		t.Errorf("MinBaseQ output mismatch:\nwant=%q\ngot =%q", want, out)
 	}
 }
 
