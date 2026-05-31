@@ -127,16 +127,18 @@ type siteMissingStat struct {
 }
 
 type siteHWEStat struct {
-	chrom   string
-	pos     int
-	obsHom1 int
-	obsHet  int
-	obsHom2 int
-	expHom1 float64
-	expHet  float64
-	expHom2 float64
-	chiSq   float64
-	pValue  float64
+	chrom        string
+	pos          int
+	obsHom1      int
+	obsHet       int
+	obsHom2      int
+	expHom1      float64
+	expHet       float64
+	expHom2      float64
+	chiSq        float64
+	pValue       float64
+	pHetDeficit  float64
+	pHetExcess   float64
 }
 
 type sitePiStat struct {
@@ -566,10 +568,15 @@ func (s *statistics) addIndvMissingStat(v *vcf.Variant) {
 	}
 }
 
-// addHWEStat adds Hardy-Weinberg equilibrium statistics
+// addHWEStat adds Hardy-Weinberg equilibrium statistics. Upstream
+// (variant_file_output.cpp:340-351) only runs the test on biallelic SNPs
+// where every kept individual reports a fully diploid call — any
+// haploid genotype (e.g. "0" or "1" without a separator) disqualifies
+// the site.
 func (s *statistics) addHWEStat(v *vcf.Variant) {
-	// Only for biallelic sites
-	if len(v.Alt) != 1 {
+	// Only for biallelic sites. A `.` ALT field means monomorphic
+	// (REF-only) and isn't biallelic.
+	if len(v.Alt) != 1 || v.Alt[0] == "." || v.Alt[0] == "" {
 		return
 	}
 
@@ -580,8 +587,15 @@ func (s *statistics) addHWEStat(v *vcf.Variant) {
 
 	for _, sample := range v.Samples {
 		gt, ok := sample.Data["GT"]
-		if !ok || strings.Contains(gt, ".") {
+		if !ok || gt == "" || gt == "." {
 			continue
+		}
+
+		// Reject the site outright if any included sample has a
+		// non-diploid (haploid) genotype, matching upstream's
+		// is_diploid() guard.
+		if !strings.ContainsAny(gt, "/|") {
+			return
 		}
 
 		alleles := strings.FieldsFunc(gt, func(r rune) bool {
@@ -589,6 +603,9 @@ func (s *statistics) addHWEStat(v *vcf.Variant) {
 		})
 
 		if len(alleles) != 2 {
+			return
+		}
+		if alleles[0] == "." || alleles[1] == "." {
 			continue
 		}
 
@@ -627,20 +644,24 @@ func (s *statistics) addHWEStat(v *vcf.Variant) {
 		chiSq += math.Pow(float64(hom2)-expHom2, 2) / expHom2
 	}
 
-	// P-value (1 degree of freedom)
-	pValue := 1 - chiSquareCDF(chiSq, 1)
+	// Upstream uses the Wigginton/Cao/Abecasis exact test (SNPHWE)
+	// for all three P-values, not the chi-square asymptotic; see
+	// variant_file_output.cpp:365-372.
+	pHWE, pLo, pHi := snpHWEAll(het, hom1, hom2)
 
 	stat := siteHWEStat{
-		chrom:   v.Chrom,
-		pos:     v.Pos,
-		obsHom1: hom1,
-		obsHet:  het,
-		obsHom2: hom2,
-		expHom1: expHom1,
-		expHet:  expHet,
-		expHom2: expHom2,
-		chiSq:   chiSq,
-		pValue:  pValue,
+		chrom:       v.Chrom,
+		pos:         v.Pos,
+		obsHom1:     hom1,
+		obsHet:      het,
+		obsHom2:     hom2,
+		expHom1:     expHom1,
+		expHet:      expHet,
+		expHom2:     expHom2,
+		chiSq:       chiSq,
+		pValue:      pHWE,
+		pHetDeficit: pLo,
+		pHetExcess:  pHi,
 	}
 
 	s.siteHWE = append(s.siteHWE, stat)
@@ -1361,20 +1382,19 @@ func (s *statistics) outputHWE(prefix string) error {
 	}
 	defer f.Close()
 
-	// Upstream uses "CHR" (not "CHROM") and emits two additional
-	// one-sided P-value columns: P_HET_DEFICIT (excess of homozygotes)
-	// and P_HET_EXCESS (excess of heterozygotes). We don't track those
-	// directional P-values yet; emit the two-sided p_hwe in both columns
-	// so the column count and header match upstream byte-for-byte. See
-	// docs/PARITY_ROADMAP.md#vcftools for the gap.
+	// Upstream prints expected counts with `setprecision(2) << fixed`
+	// (variant_file_output.cpp:368-369), then switches to default
+	// precision + `scientific` for ChiSq_HWE/P_HWE/P_HET_DEFICIT/P_HET_EXCESS
+	// (lines 370-372). Default `cout.precision()` is 6, so the scientific
+	// output is %.6e.
 	fmt.Fprintln(f, "CHR\tPOS\tOBS(HOM1/HET/HOM2)\tE(HOM1/HET/HOM2)\tChiSq_HWE\tP_HWE\tP_HET_DEFICIT\tP_HET_EXCESS")
 
 	for _, stat := range s.siteHWE {
-		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.4f\t%.6g\t%.6g\t%.6g\n",
+		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.6e\t%.6e\t%.6e\t%.6e\n",
 			stat.chrom, stat.pos,
 			stat.obsHom1, stat.obsHet, stat.obsHom2,
 			stat.expHom1, stat.expHet, stat.expHom2,
-			stat.chiSq, stat.pValue, stat.pValue, stat.pValue)
+			stat.chiSq, stat.pValue, stat.pHetDeficit, stat.pHetExcess)
 	}
 
 	return nil
@@ -1676,6 +1696,10 @@ func (s *statistics) outputTsTvByQual(prefix string) error {
 }
 
 // outputDepth outputs per-individual mean read depth (.idepth).
+// Upstream walks samples in VCF declaration order
+// (variant_file_output.cpp:684-691) and emits MEAN_DEPTH with the
+// default `ostream <<` formatter (%g-style 6-sig-figs). When an
+// individual has no non-missing DP, mean = 0/0 → -nan.
 func (s *statistics) outputDepth(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".idepth")
 	if err != nil {
@@ -1686,18 +1710,26 @@ func (s *statistics) outputDepth(prefix string) error {
 	fmt.Fprintln(f, "INDV\tN_SITES\tMEAN_DEPTH")
 
 	var names []string
-	for name := range s.indvDepth {
-		names = append(names, name)
+	if s.header != nil {
+		names = s.header.Samples
+	} else {
+		for name := range s.indvDepth {
+			names = append(names, name)
+		}
+		sort.Strings(names)
 	}
-	sort.Strings(names)
 
 	for _, name := range names {
 		stat := s.indvDepth[name]
-		mean := 0.0
-		if stat.nSites > 0 {
+		var mean float64
+		var nSites int
+		if stat == nil || stat.nSites == 0 {
+			mean = math.NaN()
+		} else {
 			mean = float64(stat.sum) / float64(stat.nSites)
+			nSites = stat.nSites
 		}
-		fmt.Fprintf(f, "%s\t%d\t%.5f\n", stat.name, stat.nSites, mean)
+		fmt.Fprintf(f, "%s\t%d\t%s\n", name, nSites, formatCppDouble(mean))
 	}
 
 	return nil
