@@ -598,17 +598,44 @@ func mergeFormat(bk []variantRef) []string {
 
 // mergeInfo returns the union of INFO tags. Tags with comma-separated
 // per-allele values (one per ALT) are remapped to the new allele order. For
-// fixed-Number tags the first input that defines the tag wins.
+// fixed-Number tags the first input that defines the tag wins, except for
+// the default "sum" rules that upstream's info_rules_init applies (DP,
+// DP4, and AN/AC when an AC line is in the header): those are summed
+// across all inputs that define the tag.
 func mergeInfo(bk []variantRef, perSrc []map[int]int, nAlt int) (map[string]string, []string) {
 	out := map[string]string{}
 	var order []string
 	tagSeen := map[string]bool{}
+	// Default upstream rules — see info_rules_init() in vcfmerge.c.
+	// DP, DP4 are unconditionally summed; AN and AC are summed when an
+	// AC header line exists. We treat AN/AC as always-sum here because
+	// the live oracle defines them via the merged header when present.
+	sumRule := map[string]bool{
+		"DP":  true,
+		"DP4": true,
+		"AN":  true,
+		"AC":  true,
+		"QS":  true,
+		"I16": true,
+	}
 	for bi, ref := range bk {
 		for _, k := range ref.variant.InfoOrder {
 			v := ref.variant.Info[k]
 			if !tagSeen[k] {
 				tagSeen[k] = true
 				order = append(order, k)
+			}
+			if sumRule[k] {
+				// Sum element-wise over the comma-separated value.
+				// AC is per-ALT and is remapped to the merged ALT
+				// order before summing; everything else has a fixed
+				// element count.
+				if k == "AC" && nAlt > 0 {
+					out[k] = sumPerAlleleAC(out[k], v, perSrc[bi], len(ref.variant.Alt), nAlt)
+				} else {
+					out[k] = sumCSV(out[k], v)
+				}
+				continue
 			}
 			if _, exists := out[k]; exists {
 				continue
@@ -637,6 +664,86 @@ func mergeInfo(bk []variantRef, perSrc []map[int]int, nAlt int) (map[string]stri
 		}
 	}
 	return out, order
+}
+
+// sumCSV adds two comma-separated numeric strings element-wise. Missing
+// or non-numeric elements are passed through; if cur is empty the new
+// value is returned as-is. Integers stay integers; if either side has a
+// fractional part the sum is rendered as a float.
+func sumCSV(cur, add string) string {
+	if cur == "" {
+		return add
+	}
+	cp := strings.Split(cur, ",")
+	ap := strings.Split(add, ",")
+	n := len(cp)
+	if len(ap) > n {
+		n = len(ap)
+	}
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		var a, b string
+		if i < len(cp) {
+			a = cp[i]
+		}
+		if i < len(ap) {
+			b = ap[i]
+		}
+		out[i] = sumScalar(a, b)
+	}
+	return strings.Join(out, ",")
+}
+
+// sumScalar sums two numeric strings. "." or "" is treated as 0 if the
+// other side has a value. If both are missing the result is ".".
+func sumScalar(a, b string) string {
+	aMiss := a == "" || a == "."
+	bMiss := b == "" || b == "."
+	if aMiss && bMiss {
+		return "."
+	}
+	if aMiss {
+		return b
+	}
+	if bMiss {
+		return a
+	}
+	// Try integer addition first to preserve formatting.
+	ai, aerr := strconv.ParseInt(a, 10, 64)
+	bi, berr := strconv.ParseInt(b, 10, 64)
+	if aerr == nil && berr == nil {
+		return strconv.FormatInt(ai+bi, 10)
+	}
+	af, aerr2 := strconv.ParseFloat(a, 64)
+	bf, berr2 := strconv.ParseFloat(b, 64)
+	if aerr2 == nil && berr2 == nil {
+		return strconv.FormatFloat(af+bf, 'g', -1, 64)
+	}
+	return a
+}
+
+// sumPerAlleleAC remaps the per-ALT counts in v from the source allele
+// order to the merged allele order, then sums them into cur. nAlt is the
+// merged ALT count; srcAlt is this input's ALT count.
+func sumPerAlleleAC(cur, v string, srcMap map[int]int, srcAlt, nAlt int) string {
+	parts := strings.Split(v, ",")
+	remapped := make([]string, nAlt)
+	for i := range remapped {
+		remapped[i] = "."
+	}
+	for j, p := range parts {
+		if j >= srcAlt {
+			break
+		}
+		mappedIdx, ok := srcMap[j+1]
+		if !ok {
+			continue
+		}
+		if mappedIdx-1 >= 0 && mappedIdx-1 < len(remapped) {
+			remapped[mappedIdx-1] = p
+		}
+	}
+	return sumCSV(cur, strings.Join(remapped, ","))
 }
 
 // remapGTByMap rewrites a GT string ("0/1", "1|0", "./.", ...) using a
