@@ -1651,9 +1651,16 @@ Plus:
 
 **Genuine remaining samtools gaps** (everything else is done):
 
-- **`mpileup` MAQ genotype-likelihood model — slices 1-4 DONE; only
-  indel calling remains deferred.** The `mpileup` SNP MAQ-model port is
-  complete: it was sliced into four parts:
+- **`mpileup` MAQ genotype-likelihood model — DONE (all slices,
+  including indel calling).** NB this is the **`bcftools mpileup`**
+  engine (`tools/bcftools/pkg/bcftools/bam2bcf.go`); it is recorded here
+  for history. `samtools mpileup` itself is text-pileup only and rejects
+  BCF/VCF output (`-g/-u`) exactly as upstream does (see the
+  rejection-parity entry above). Indel calling — the legacy
+  probabilistic path AND the `--indels-cns` edlib path — is fully ported
+  and byte-matches upstream (`TestMpileupIndelADGolden`,
+  `TestMpileupIndelsCNSGolden`). The SNP MAQ-model port was sliced into
+  four parts:
   - **Slice 1 (DONE).** The MAQ error model (`errmod.c`) is ported to
     pure Go in the shared `pkg/htsgo/errmod` package (`errmod.Init` /
     `errmod.Cal`). Both `bcftools mpileup` and `samtools targetcut`
