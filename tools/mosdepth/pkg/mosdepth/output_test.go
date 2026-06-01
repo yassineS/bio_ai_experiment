@@ -143,7 +143,7 @@ func TestWriteDistribution(t *testing.T) {
 	hist := map[string][]int64{
 		"chr1": {3, 2, 5},
 	}
-	if err := writeDistribution(path, hist, []string{"chr1"}); err != nil {
+	if err := writeDistribution(path, hist, []string{"chr1"}, nil); err != nil {
 		t.Fatalf("writeDistribution: %v", err)
 	}
 	data, err := os.ReadFile(path)

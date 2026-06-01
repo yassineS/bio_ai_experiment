@@ -103,7 +103,7 @@ func buildBedTbi(path string) error {
 // where proportion is the fraction of bases (across the entire chrom or
 // genome) whose depth is >= the listed depth. The file always lists from
 // the highest observed depth down to 0 so consumers can plot it directly.
-func writeDistribution(path string, perChromHist map[string][]int64, chromOrder []string) error {
+func writeDistribution(path string, perChromHist map[string][]int64, chromOrder []string, forceEmit map[string]bool) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -112,10 +112,30 @@ func writeDistribution(path string, perChromHist map[string][]int64, chromOrder 
 	bw := bufio.NewWriter(f)
 	defer bw.Flush()
 
-	// Aggregate "total" histogram.
+	// Aggregate "total" histogram. To match upstream mosdepth we only
+	// roll up chromosomes that have at least one base of non-zero depth
+	// — chroms whose histogram is `[length]` (no reads ever covered any
+	// position) are excluded from the genome-wide row so the displayed
+	// proportions reflect the covered subset of the reference.
 	totalHist := []int64{}
+	chromHasCoverage := func(h []int64) bool {
+		for d := 1; d < len(h); d++ {
+			if h[d] > 0 {
+				return true
+			}
+		}
+		return false
+	}
 	for _, name := range chromOrder {
 		h := perChromHist[name]
+		// Skip chromosomes with no coverage that weren't in
+		// forceEmit (i.e. the BAM had no records there and the
+		// user didn't target them via --chrom). Chroms in
+		// forceEmit with no coverage still contribute their length
+		// to `total` so the genome-wide proportions reflect them.
+		if !chromHasCoverage(h) && !forceEmit[name] {
+			continue
+		}
 		if len(h) > len(totalHist) {
 			grown := make([]int64, len(h))
 			copy(grown, totalHist)
@@ -125,7 +145,7 @@ func writeDistribution(path string, perChromHist map[string][]int64, chromOrder 
 			totalHist[i] += c
 		}
 	}
-	emit := func(label string, hist []int64) error {
+	emit := func(label string, hist []int64, force bool) error {
 		if len(hist) == 0 {
 			return nil
 		}
@@ -134,6 +154,18 @@ func writeDistribution(path string, perChromHist map[string][]int64, chromOrder 
 			totalBases += c
 		}
 		if totalBases == 0 {
+			return nil
+		}
+		// Match upstream: skip chroms whose only depth is zero (i.e.
+		// no read ever covered any base), unless `force` says the
+		// user explicitly wants this row (chrom had records pre-
+		// filter or was named via --chrom). The `total` row is
+		// similarly restricted: see chromHasCoverage above.
+		var nonZero int64
+		for d := 1; d < len(hist); d++ {
+			nonZero += hist[d]
+		}
+		if nonZero == 0 && !force {
 			return nil
 		}
 		// Cumulative-from-top: bases at depth >= d.
@@ -153,11 +185,12 @@ func writeDistribution(path string, perChromHist map[string][]int64, chromOrder 
 		return nil
 	}
 	for _, name := range chromOrder {
-		if err := emit(name, perChromHist[name]); err != nil {
+		if err := emit(name, perChromHist[name], forceEmit[name]); err != nil {
 			return err
 		}
 	}
-	return emit("total", totalHist)
+	// `total` row is only emitted if any chrom contributed to it.
+	return emit("total", totalHist, len(totalHist) > 0)
 }
 
 // formatProportion renders a fractional proportion using the same width
@@ -181,10 +214,22 @@ type summaryRow struct {
 	mean   float64
 	minD   int32
 	maxD   int32
+	// forceEmit, when true, makes writeSummary include this row even
+	// if `bases == 0`. Used to mirror upstream mosdepth's behaviour of
+	// emitting an all-zero row for chromosomes that did have records
+	// in the BAM (which were then filtered out) or that the user
+	// explicitly targeted via `--chrom`.
+	forceEmit bool
 }
 
 // writeSummary emits the per-chromosome (plus total_region) summary file.
 // Columns: chrom, length, bases, mean, min, max.
+//
+// Per-chromosome rows whose `bases == 0` are skipped to match upstream
+// mosdepth (which never emits an all-zero chrom row even when the user
+// requested that chrom via `--chrom`). The `total` row only accumulates
+// across emitted rows; if every chromosome was skipped the total is
+// `total\t0\t0\t0.00\t0\t0`.
 func writeSummary(path string, rows []summaryRow) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -200,6 +245,9 @@ func writeSummary(path string, rows []summaryRow) error {
 	var totMin, totMax int32
 	first := true
 	for _, r := range rows {
+		if r.bases == 0 && !r.forceEmit {
+			continue
+		}
 		totLen += r.length
 		totBases += r.bases
 		if first {

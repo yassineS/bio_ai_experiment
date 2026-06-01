@@ -237,7 +237,7 @@ func Run(in io.Reader, opts Options) error {
 	// is sorted — buffering per-chrom slices keeps the algorithm correct
 	// even on a name-sorted input. Memory is O(records that match
 	// filters) which is acceptable for the typical mosdepth workload.
-	byChrom, err := groupRecords(rd, opts)
+	byChrom, rawChromPresent, err := groupRecords(rd, opts)
 	if err != nil {
 		return err
 	}
@@ -315,6 +315,11 @@ func Run(in io.Reader, opts Options) error {
 			bases:  sum,
 			minD:   minD,
 			maxD:   maxD,
+			// Upstream emits an all-zero row for chroms that had records
+			// in the BAM (even when all were dropped by --mapq, -R,
+			// --include-flag etc.) or that the user named via --chrom.
+			// Other chroms are dropped from both summary and dist.
+			forceEmit: rawChromPresent[r.Name] || (opts.Chrom != "" && r.Name == opts.Chrom),
 		}
 		if r.Length > 0 {
 			row.mean = float64(sum) / float64(r.Length)
@@ -406,7 +411,18 @@ func Run(in io.Reader, opts Options) error {
 		}
 	}
 
-	if err := writeDistribution(opts.Prefix+".mosdepth.global.dist.txt", perChromHist, chromOrder); err != nil {
+	// Build the per-chrom "forceEmit" set for writeDistribution:
+	// chroms that had records pre-filter, plus the chrom named via
+	// --chrom (if any), should appear in the dist even when their
+	// coverage is fully zero (e.g. all reads filtered by --mapq).
+	distForceEmit := map[string]bool{}
+	for k := range rawChromPresent {
+		distForceEmit[k] = true
+	}
+	if opts.Chrom != "" {
+		distForceEmit[opts.Chrom] = true
+	}
+	if err := writeDistribution(opts.Prefix+".mosdepth.global.dist.txt", perChromHist, chromOrder, distForceEmit); err != nil {
 		return err
 	}
 	if err := writeSummary(opts.Prefix+".mosdepth.summary.txt", summaryRows); err != nil {
@@ -476,20 +492,29 @@ func resolveRegions(hdr *sam.Header, opts Options) (map[string][]region, []strin
 // groupRecords drains rd into a map keyed by reference name, applying all
 // configured read-level filters. Reads with unknown / "*" RNAME are
 // dropped silently — they cannot contribute to depth on any reference.
-func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, error) {
-	out := map[string][]*sam.Record{}
+// The returned `rawPresent` set names every reference with at least one
+// (pre-filter) BAM record, so writeSummary / writeDistribution can
+// match upstream's "skip chroms with no records at all" behaviour
+// without skipping chroms whose records were all filtered out (e.g.
+// `-R MISSING` or `-Q 250`).
+func groupRecords(rd sam.Reader, opts Options) (kept map[string][]*sam.Record, rawPresent map[string]bool, err error) {
+	kept = map[string][]*sam.Record{}
+	rawPresent = map[string]bool{}
 	for {
-		rec, err := rd.Read()
-		if err == io.EOF {
-			return out, nil
+		rec, rerr := rd.Read()
+		if rerr == io.EOF {
+			return kept, rawPresent, nil
 		}
-		if err != nil {
-			return nil, fmt.Errorf("mosdepth: read record: %w", err)
+		if rerr != nil {
+			return nil, nil, fmt.Errorf("mosdepth: read record: %w", rerr)
+		}
+		if rec.Pos > 0 && rec.RName != "" && rec.RName != "*" {
+			rawPresent[rec.RName] = true
 		}
 		if !keepRecord(rec, opts) {
 			continue
 		}
-		out[rec.RName] = append(out[rec.RName], rec)
+		kept[rec.RName] = append(kept[rec.RName], rec)
 	}
 }
 
