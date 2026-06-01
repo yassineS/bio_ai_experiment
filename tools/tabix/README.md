@@ -72,6 +72,7 @@ form used internally.
 | `-f`  | `--force`         | Overwrite an existing `.tbi` index.              |
 | `-R`  | `--regions FILE`  | Read regions from a BED-like file.               |
 | `-T`  | `--targets FILE`  | Stream and post-filter to records inside FILE.   |
+| `-r`  | `--reheader FILE` | Replace the file's header with the content of FILE. |
 | `-l`  | `--list-chroms`   | Print chromosome names recorded in the index.    |
 | `-h`  | `--print-header`  | Also emit header lines from the queried file.    |
 |       | `--only-header`   | Emit only the header lines.                      |
@@ -115,6 +116,13 @@ Custom column layout (chrom in col 5, single position in col 6):
 tabix -s 5 -b 6 -c '#' weird.tsv.gz
 ```
 
+Post-filter to records inside a set of targets, and replace a header:
+
+```bash
+tabix -T targets.bed my.vcf.gz          # only records overlapping targets.bed
+tabix -r new_header.txt my.vcf.gz > out.vcf.gz   # rewrite the header
+```
+
 ## Library
 
 The CLI is a thin wrapper around `pkg/htsgo/tabix`:
@@ -147,11 +155,7 @@ Exported types:
 This v1 implementation matches upstream `tabix` for the documented build /
 query / list / header flags with the following intentional differences:
 
-1. **`-r` / `--reheader` is not implemented.** htslib's `tabix --reheader`
-   replaces the header lines of an existing bgzipped file in place; that
-   is a write-path operation orthogonal to indexing and queries. It will
-   land in a follow-up PR.
-2. **Linear-index "no record yet" sentinel.** Internally the builder uses
+1. **Linear-index "no record yet" sentinel.** Internally the builder uses
    `^uint64(0)` while accumulating per-tile minimum virtual offsets,
    replacing the sentinel with `0` (or the carry-forward of the last
    recorded offset, per the htslib convention) in `finalize()` before

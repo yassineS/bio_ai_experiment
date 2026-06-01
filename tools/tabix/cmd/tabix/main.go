@@ -70,6 +70,7 @@ type opts struct {
 	force       bool
 	regionsFile string
 	targetsFile string
+	reheader    string
 	listChroms  bool
 	printHdr    bool
 	onlyHdr     bool
@@ -95,6 +96,7 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	cliflag.BoolVar(fs, &o.force, "f", "force", false, "overwrite existing index")
 	cliflag.StringVar(fs, &o.regionsFile, "R", "regions", "", "BED-like regions file")
 	cliflag.StringVar(fs, &o.targetsFile, "T", "targets", "", "filter records by targets file")
+	cliflag.StringVar(fs, &o.reheader, "r", "reheader", "", "replace the header with FILE")
 	cliflag.BoolVar(fs, &o.listChroms, "l", "list-chroms", false, "list chromosomes in the index")
 	cliflag.BoolVar(fs, &o.printHdr, "h", "print-header", false, "emit header lines")
 	fs.BoolVar(&o.onlyHdr, "only-header", false, "emit only the header")
@@ -136,6 +138,11 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	switch {
 	case o.listChroms:
 		return runListChroms(dataPath, stdout, stderr)
+	case o.reheader != "" && len(regions) == 0 && o.regionsFile == "" &&
+		o.targetsFile == "" && !o.onlyHdr:
+		// Reheader mode: rewrite the bgzipped file's header block in place,
+		// streaming the result to stdout. Matches upstream `tabix -r FILE`.
+		return runReheader(dataPath, o.reheader, cfg, stdout, stderr)
 	case len(regions) == 0 && o.regionsFile == "" && o.targetsFile == "" && !o.onlyHdr:
 		// Build mode.
 		return runBuild(dataPath, cfg, o.force, o.noSaveIdx, stderr)
@@ -479,6 +486,137 @@ func recordInterval(rec []byte, cfg tabix.Config) (chrom string, beg, end int, o
 		beg = 0
 	}
 	return chrom, beg, end, true
+}
+
+// runReheader rewrites the header of a bgzipped data file, replacing every
+// leading meta-char line with the contents of headerPath, and streams the
+// resulting BGZF to stdout. It mirrors upstream tabix.c's reheader_file:
+// the new header is freshly BGZF-compressed, the remaining bytes of the data
+// block that held the header boundary are re-compressed too, and all
+// subsequent BGZF blocks (including the EOF marker) are copied verbatim so
+// the data payload stays byte-identical.
+func runReheader(dataPath, headerPath string, cfg tabix.Config, stdout, stderr io.Writer) int {
+	if err := reheaderFile(dataPath, headerPath, cfg, stdout); err != nil {
+		fmt.Fprintf(stderr, "tabix: reheader: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func reheaderFile(dataPath, headerPath string, cfg tabix.Config, stdout io.Writer) error {
+	in, err := os.Open(dataPath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	meta := byte(cfg.Meta)
+	br := bufio.NewReader(in)
+
+	// Read the first data block and find where the old header ends. Upstream
+	// keeps reading further blocks only while the header has not finished;
+	// `rest` collects the uncompressed bytes of the final header-spanning
+	// block that lie *after* the header (the start of the body).
+	var rest []byte
+	for {
+		rb, rerr := bgzip.ReadRawBlock(br)
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+		if rb.IsEOF {
+			// File had only a header (and the EOF marker); nothing follows.
+			break
+		}
+		body := rb.Uncompressed
+		skip := headerEnd(body, meta)
+		if skip < len(body) {
+			// Header finished within this block; the rest is body data.
+			rest = append(rest, body[skip:]...)
+			break
+		}
+		// Whole block was header; keep scanning subsequent blocks. (Upstream
+		// errors out if the body never starts, but reaching EOF simply means
+		// the file is all header, which we treat as an empty body.)
+	}
+
+	out := bgzip.NewWriter(stdout)
+
+	// Emit the new header, ensuring it ends with a newline (matches upstream,
+	// which appends '\n' to the final chunk if missing).
+	hdr, err := os.ReadFile(headerPath)
+	if err != nil {
+		return err
+	}
+	if len(hdr) > 0 && hdr[len(hdr)-1] != '\n' {
+		hdr = append(hdr, '\n')
+	}
+	if _, err := out.Write(hdr); err != nil {
+		return err
+	}
+
+	// Emit the trailing body bytes that shared the header's final block.
+	if len(rest) > 0 {
+		if _, err := out.Write(rest); err != nil {
+			return err
+		}
+	}
+	if err := out.Flush(); err != nil {
+		return err
+	}
+
+	// Copy every remaining BGZF block verbatim, including the EOF marker.
+	for {
+		rb, rerr := bgzip.ReadRawBlock(br)
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+		if err := out.WriteRaw(rb.Compressed); err != nil {
+			return err
+		}
+		if rb.IsEOF {
+			// The verbatim EOF marker already terminates the stream; do not
+			// let Close emit a second one.
+			return nil
+		}
+	}
+	return out.Close()
+}
+
+// headerEnd returns the offset of the first byte of body data in buf, i.e.
+// the index just past the last leading line that begins with meta. If every
+// line in buf is a header line the length of buf is returned. This matches
+// the boundary scan in upstream tabix.c's reheader_file.
+func headerEnd(buf []byte, meta byte) int {
+	if len(buf) == 0 || buf[0] != meta {
+		return 0
+	}
+	i := 0
+	for i < len(buf) {
+		// Advance to the end of the current header line.
+		nl := i
+		for nl < len(buf) && buf[nl] != '\n' {
+			nl++
+		}
+		if nl >= len(buf) {
+			// No newline before the block ends: header continues into the
+			// next block; report the whole block as header.
+			return len(buf)
+		}
+		next := nl + 1
+		if next >= len(buf) || buf[next] != meta {
+			// The line after this one is not a header line (or the block
+			// ends here): the header has finished.
+			return next
+		}
+		i = next
+	}
+	return len(buf)
 }
 
 // emitHeader streams every line at the top of dataPath that begins with the

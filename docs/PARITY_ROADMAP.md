@@ -1521,21 +1521,24 @@ suite run yet.
 
 ### `tabix`
 
-**Status:** 1 / 1 command, most flags.
+**Status:** 1 / 1 command, full flag set.
 
+- **`--reheader FILE`** — implemented. Rewrites the bgzipped file's header
+  block(s) in place, BGZF-compressing the new header and the body bytes that
+  shared the header's final block, then copying every subsequent BGZF block
+  (incl. the EOF marker) verbatim via `pkg/htsgo/bgzf`'s
+  `ReadRawBlock`/`WriteRaw`. Body bytes stay byte-identical; output is a valid,
+  re-indexable BGZF stream (mirrors upstream `tabix.c:reheader_file`).
 - **`--targets` strictness** — fixed. `--targets`/`-T` is now a true
   post-filter: it does not contribute query regions (whole-file scan unless
   positional/`-R` regions are given), and each record is emitted only if its
-  `[beg,end)` interval overlaps a target interval — distinct from `-R`'s region
+  `[beg,end)` interval overlaps a target interval. Distinct from `-R`'s region
   union. Tab- vs BED-format target coordinate conventions follow htslib regidx.
-
-Missing:
-
-- **`--reheader FILE`** — replace bgzipped file's header lines in place.
 
 **Validation:** live-oracle tests in `tools/tabix/cmd/tabix/main_test.go`
 assert byte-equality against the genuine `reference_code/htslib/tabix` binary
-for the `--targets`/`-R` paths (skipped if the binary is absent).
+for the `--targets`/`-R` paths (skipped if the binary is absent); reheader is
+validated by body-equality + reference re-index/query of the output.
 
 ### `samtools`
 
