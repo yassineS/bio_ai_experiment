@@ -128,3 +128,7 @@ __pycache__/
 
 # Claude Code local tooling state (agent worktrees, etc.)
 .claude/
+
+# Downloaded upstream oracle binary (not a submodule; fetched on demand
+# for live-parity testing — see reference_code/mosdepth/README.md).
+/reference_code/mosdepth/mosdepth
