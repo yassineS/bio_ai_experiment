@@ -308,18 +308,21 @@ func ParseQuantize(spec string) ([]int, error) {
 	return out, nil
 }
 
-// resolveQuantizeLabels returns the label string for each bin index
-// `i` in `[0, len(cutoffs)]` (one bin per gap plus the implicit
-// open-ended top bin). When the environment variable `MOSDEPTH_Q{i}`
-// is set, its value is used; otherwise the default sequence
-// `NO_COVERAGE`, `LOW_COVERAGE`, `CALLABLE`, `HIGH_COVERAGE`, then
-// `Q{i}` from index 4 onwards. Matches upstream mosdepth.
+// resolveQuantizeLabels returns the label string for each closed bin
+// `i` in `[0, len(cutoffs)-1)`. Bin `i` covers depth range
+// `[cutoffs[i], cutoffs[i+1])`. The default label is the literal
+// `"{cutoffs[i]}:{cutoffs[i+1]}"` string upstream mosdepth uses;
+// the environment variable `MOSDEPTH_Q{i}` overrides it when set.
+// Note that the open-ended top bin (`[cutoffs[N-1], +inf)`) is
+// intentionally not assigned a label and is omitted from
+// `.quantized.bed.gz` output to match upstream behaviour (the
+// depth-too-low bin `[-inf, cutoffs[0])` is also dropped at the
+// emission site in emitQuantized).
 func resolveQuantizeLabels(cutoffs []int) []string {
-	if len(cutoffs) == 0 {
+	if len(cutoffs) < 2 {
 		return nil
 	}
-	defaults := []string{"NO_COVERAGE", "LOW_COVERAGE", "CALLABLE", "HIGH_COVERAGE"}
-	n := len(cutoffs) - 1 + 1 // gaps + open-ended-top
+	n := len(cutoffs) - 1
 	labels := make([]string, n)
 	for i := 0; i < n; i++ {
 		envKey := fmt.Sprintf("MOSDEPTH_Q%d", i)
@@ -327,11 +330,7 @@ func resolveQuantizeLabels(cutoffs []int) []string {
 			labels[i] = v
 			continue
 		}
-		if i < len(defaults) {
-			labels[i] = defaults[i]
-			continue
-		}
-		labels[i] = fmt.Sprintf("Q%d", i)
+		labels[i] = fmt.Sprintf("%d:%d", cutoffs[i], cutoffs[i+1])
 	}
 	return labels
 }
@@ -340,15 +339,17 @@ func resolveQuantizeLabels(cutoffs []int) []string {
 func osLookupEnv(key string) (string, bool) { return os.LookupEnv(key) }
 
 // quantizeBin returns the bin index for a depth value given an ascending
-// cutoff list. Depth d falls into bin i when cutoffs[i] <= d <
-// cutoffs[i+1] (with -inf at index 0 if d < cutoffs[0]; i = len(cutoffs)
-// when d >= the last cutoff).
+// cutoff list. Bin `i` covers `[cutoffs[i], cutoffs[i+1])`. Depths
+// outside `[cutoffs[0], cutoffs[N-1])` return -1, signalling that the
+// caller should skip emission (upstream mosdepth drops both the
+// below-first-cutoff and at-or-above-last-cutoff runs from
+// `.quantized.bed.gz`).
 func quantizeBin(d int, cutoffs []int) int {
-	if len(cutoffs) == 0 {
-		return 0
+	if len(cutoffs) < 2 {
+		return -1
 	}
-	if d < cutoffs[0] {
-		return 0
+	if d < cutoffs[0] || d >= cutoffs[len(cutoffs)-1] {
+		return -1
 	}
 	// Walk in order — bins are typically few. A binary search is
 	// available but unnecessary at the expected scale.
@@ -357,16 +358,24 @@ func quantizeBin(d int, cutoffs []int) int {
 			return i
 		}
 	}
-	return len(cutoffs) - 1
+	return -1
 }
 
 // emitQuantized walks accum and emits one BED4 record per maximal run
 // of consecutive bases that share the same bin index. Labels match the
 // MOSDEPTH_Q{i} env-var override resolved by resolveQuantizeLabels.
+// Runs whose bin is -1 (depth outside `[cutoffs[0], cutoffs[N-1])`)
+// are skipped so the output matches upstream byte-for-byte.
 func emitQuantized(w *bedGzWriter, chrom string, a *covAccum, cutoffs []int, labels []string) error {
 	var emitErr error
 	var runStart int = -1
 	var runBin int = -1
+	flush := func(end int) {
+		if emitErr != nil || runStart < 0 || runBin < 0 {
+			return
+		}
+		emitErr = w.writeBED(chrom, runStart, end, labels[runBin])
+	}
 	a.emit(func(pos int, depth int32) {
 		if emitErr != nil {
 			return
@@ -378,7 +387,7 @@ func emitQuantized(w *bedGzWriter, chrom string, a *covAccum, cutoffs []int, lab
 			return
 		}
 		if bin != runBin {
-			emitErr = w.writeBED(chrom, runStart, pos, labels[runBin])
+			flush(pos)
 			runStart = pos
 			runBin = bin
 		}
@@ -391,9 +400,9 @@ func emitQuantized(w *bedGzWriter, chrom string, a *covAccum, cutoffs []int, lab
 		if end <= runStart {
 			end = runStart + 1
 		}
-		return w.writeBED(chrom, runStart, end, labels[runBin])
+		flush(end)
 	}
-	return nil
+	return emitErr
 }
 
 // stringSliceUnique returns a stable de-duplicated copy of in.

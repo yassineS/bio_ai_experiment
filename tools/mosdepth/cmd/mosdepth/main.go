@@ -45,9 +45,11 @@ Options:
   -m, --fragment-mode     score each pair as a single fragment span.
   -q, --quantize CUTOFFS  colon-separated cutoffs (e.g. 0:1:1000) for the
                           quantized.bed.gz output. Bin labels default to
-                          NO_COVERAGE, LOW_COVERAGE, CALLABLE,
-                          HIGH_COVERAGE, then Q4..; override per bin via
-                          the MOSDEPTH_Q{i} environment variables.
+                          "cutoffs[i]:cutoffs[i+1]" (e.g. "0:1", "1:1000");
+                          override per bin via the MOSDEPTH_Q{i}
+                          environment variables. The implicit
+                          below-first-cutoff and open-ended top bins are
+                          omitted from output to match upstream.
   -h, --help              show this help.
   -v, --version           print version and exit.
 

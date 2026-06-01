@@ -80,11 +80,13 @@ type Options struct {
 	// sorted ascending. A non-nil non-empty list produces a
 	// `<prefix>.quantized.bed.gz` output with one BED4 record per maximal
 	// run of consecutive bases that fall into the same bin. The bin
-	// index is `i` where `cutoffs[i] <= depth < cutoffs[i+1]` (with
-	// implicit -inf / +inf at the ends). Each record's 4th column is
-	// the bin label: the environment variable `MOSDEPTH_Q{i}` if set,
-	// otherwise the default label sequence
-	// `NO_COVERAGE`,`LOW_COVERAGE`,`CALLABLE`,`HIGH_COVERAGE`,`Q{i}`...
+	// index is `i` where `cutoffs[i] <= depth < cutoffs[i+1]`. The
+	// implicit below-first-cutoff bin (`[-inf, cutoffs[0])`) and the
+	// implicit open-ended top bin (`[cutoffs[N-1], +inf)`) are
+	// unconditionally omitted from the output to match upstream
+	// mosdepth. Each record's 4th column is the bin label: the
+	// environment variable `MOSDEPTH_Q{i}` if set, otherwise the literal
+	// `"cutoffs[i]:cutoffs[i+1]"` string (e.g. `"0:1"`, `"1:5"`).
 	Quantize []int
 
 	// FragmentMode, when true, scores each paired-end fragment as a
