@@ -340,10 +340,14 @@ func Run(in io.Reader, opts Options) error {
 
 		if regionsW != nil {
 			ivs := perChromRegions[r.Name]
+			// Track per-chrom region-summary aggregate so we can emit
+			// the upstream-compatible "<chrom>_region" / "total_region"
+			// rows in the summary file.
+			var regLen, regBases int64
+			var regMin, regMax int32
+			regFirst := true
 			for _, iv := range ivs {
 				bsum, perTh, mn, mx := accum.regionStats(iv.beg, iv.end, opts.Thresholds, nil)
-				_ = mn
-				_ = mx
 				width := iv.end - iv.beg
 				var mean float64
 				if width > 0 {
@@ -371,6 +375,39 @@ func Run(in io.Reader, opts Options) error {
 						return err
 					}
 				}
+				if width > 0 {
+					regLen += int64(width)
+					regBases += bsum
+					if regFirst {
+						regMin = mn
+						regMax = mx
+						regFirst = false
+					} else {
+						if mn < regMin {
+							regMin = mn
+						}
+						if mx > regMax {
+							regMax = mx
+						}
+					}
+				}
+			}
+			if !regFirst {
+				// Append a "<chrom>_region" summary row immediately
+				// after the chrom's plain row so the on-disk ordering
+				// matches upstream (chrom, chrom_region, next chrom, ...).
+				rrow := summaryRow{
+					chrom:     r.Name + "_region",
+					length:    regLen,
+					bases:     regBases,
+					minD:      regMin,
+					maxD:      regMax,
+					forceEmit: true,
+				}
+				if regLen > 0 {
+					rrow.mean = float64(regBases) / float64(regLen)
+				}
+				summaryRows = append(summaryRows, rrow)
 			}
 		}
 		// Free the accumulator's events explicitly to keep memory bounded.

@@ -222,14 +222,14 @@ type summaryRow struct {
 	forceEmit bool
 }
 
-// writeSummary emits the per-chromosome (plus total_region) summary file.
-// Columns: chrom, length, bases, mean, min, max.
+// writeSummary emits the per-chromosome (plus total / total_region)
+// summary file. Columns: chrom, length, bases, mean, min, max.
 //
-// Per-chromosome rows whose `bases == 0` are skipped to match upstream
-// mosdepth (which never emits an all-zero chrom row even when the user
-// requested that chrom via `--chrom`). The `total` row only accumulates
-// across emitted rows; if every chromosome was skipped the total is
-// `total\t0\t0\t0.00\t0\t0`.
+// Per-chromosome rows whose `bases == 0` and `!forceEmit` are skipped
+// to match upstream mosdepth. The `total` row aggregates emitted
+// non-`_region` rows; if `--by` was set so the input includes any
+// `<chrom>_region` rows, a parallel `total_region` row is emitted
+// right after `total` aggregating just those.
 func writeSummary(path string, rows []summaryRow) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -243,23 +243,46 @@ func writeSummary(path string, rows []summaryRow) error {
 	}
 	var totLen, totBases int64
 	var totMin, totMax int32
-	first := true
+	totFirst := true
+	var rtotLen, rtotBases int64
+	var rtotMin, rtotMax int32
+	rtotFirst := true
+	hasRegion := false
 	for _, r := range rows {
 		if r.bases == 0 && !r.forceEmit {
 			continue
 		}
-		totLen += r.length
-		totBases += r.bases
-		if first {
-			totMin = r.minD
-			totMax = r.maxD
-			first = false
-		} else {
-			if r.minD < totMin {
-				totMin = r.minD
+		isRegion := strings.HasSuffix(r.chrom, "_region")
+		if isRegion {
+			hasRegion = true
+			rtotLen += r.length
+			rtotBases += r.bases
+			if rtotFirst {
+				rtotMin = r.minD
+				rtotMax = r.maxD
+				rtotFirst = false
+			} else {
+				if r.minD < rtotMin {
+					rtotMin = r.minD
+				}
+				if r.maxD > rtotMax {
+					rtotMax = r.maxD
+				}
 			}
-			if r.maxD > totMax {
+		} else {
+			totLen += r.length
+			totBases += r.bases
+			if totFirst {
+				totMin = r.minD
 				totMax = r.maxD
+				totFirst = false
+			} else {
+				if r.minD < totMin {
+					totMin = r.minD
+				}
+				if r.maxD > totMax {
+					totMax = r.maxD
+				}
 			}
 		}
 		mean := r.mean
@@ -272,9 +295,21 @@ func writeSummary(path string, rows []summaryRow) error {
 	if totLen > 0 {
 		totMean = float64(totBases) / float64(totLen)
 	}
-	_, err = fmt.Fprintf(bw, "total\t%d\t%d\t%s\t%d\t%d\n",
-		totLen, totBases, formatMean(totMean), totMin, totMax)
-	return err
+	if _, err := fmt.Fprintf(bw, "total\t%d\t%d\t%s\t%d\t%d\n",
+		totLen, totBases, formatMean(totMean), totMin, totMax); err != nil {
+		return err
+	}
+	if hasRegion {
+		var rtotMean float64
+		if rtotLen > 0 {
+			rtotMean = float64(rtotBases) / float64(rtotLen)
+		}
+		if _, err := fmt.Fprintf(bw, "total_region\t%d\t%d\t%s\t%d\t%d\n",
+			rtotLen, rtotBases, formatMean(rtotMean), rtotMin, rtotMax); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // formatMean renders a mean depth with two decimal places.
