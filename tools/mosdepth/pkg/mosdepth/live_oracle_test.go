@@ -442,16 +442,69 @@ func TestLive_UseMedian(t *testing.T) {
 		commonSuffixes(".regions.bed.gz")...)
 }
 
-// TestLive_MeanMAPQ covers `--mean-mapq`. Not implemented in our port.
+// TestLive_MeanMAPQ asserts rejection-parity for `--mean-mapq`. This flag
+// does NOT exist in mosdepth 0.3.14 (nor in upstream master — there is no
+// mean-MAPQ accumulator or output column anywhere in mosdepth.nim). The
+// only MAPQ-related option is `-Q/--mapq`, a read filter. Since the flag
+// is not a feature, the correct parity behaviour is that BOTH the upstream
+// binary and our port reject it: each exits non-zero and produces no
+// output files. We verify exactly that — a real parity assertion rather
+// than a skip.
 func TestLive_MeanMAPQ(t *testing.T) {
-	t.Skip("not implemented: --mean-mapq; TODO in docs/PARITY_ROADMAP.md#mosdepth")
+	assertRejectionParity(t, "--mean-mapq")
 }
 
-// TestLive_D4 covers `-d / --d4`. Our port rejects --d4 with a clear
-// error; upstream emits a `.per-base.d4` file. This is a documented
-// non-goal for v1.
+// TestLive_D4 asserts rejection-parity for `-d / --d4`. The vendored
+// upstream mosdepth 0.3.14 binary was built WITHOUT the optional d4 feature
+// (D4 is gated behind `when defined(d4)` in mosdepth.nim and requires
+// linking the d4 C library), so it rejects `--d4` and never emits a
+// `.per-base.d4`. The canonical distributed mosdepth therefore declines d4,
+// and so does our port: both exit non-zero and write no `.d4` file. We
+// verify that parity directly. (If a `-d:d4` upstream build is ever
+// vendored as an oracle, this test should be upgraded to a byte-for-byte
+// comparison of the emitted `.per-base.d4`.)
 func TestLive_D4(t *testing.T) {
-	t.Skip("not implemented: --d4 (ErrD4NotImplemented); see docs/PARITY_ROADMAP.md#mosdepth")
+	assertRejectionParity(t, "--d4")
+}
+
+// assertRejectionParity runs both the upstream binary and our port with an
+// unsupported flag and asserts both decline it identically: a non-zero exit
+// and no output prefix files. This turns "feature absent from the reference
+// tool" into a positive, passing parity check instead of a skip.
+func assertRejectionParity(t *testing.T, flag string) {
+	t.Helper()
+	live, ours := requireLive(t)
+	bam := filepath.Join(liveFixtureDir(t), "ovl.bam")
+	ensureBAI(t, bam)
+
+	run := func(bin string) (exitOK bool, wroteOutput bool) {
+		dir := t.TempDir()
+		prefix := filepath.Join(dir, "rej")
+		cmd := exec.Command(bin, flag, prefix, bam)
+		err := cmd.Run()
+		// A clean run (err == nil, exit 0) would mean the flag was
+		// accepted — that is the failure we are guarding against.
+		exitOK = err != nil
+		entries, _ := filepath.Glob(prefix + "*")
+		wroteOutput = len(entries) > 0
+		return exitOK, wroteOutput
+	}
+
+	liveRejected, liveWrote := run(live)
+	if !liveRejected {
+		t.Fatalf("upstream mosdepth unexpectedly ACCEPTED %s; the oracle assumption is wrong", flag)
+	}
+	if liveWrote {
+		t.Fatalf("upstream mosdepth wrote output for %s despite rejecting it", flag)
+	}
+
+	oursRejected, oursWrote := run(ours)
+	if !oursRejected {
+		t.Errorf("our port accepted %s but upstream rejects it (no such feature in the distributed tool)", flag)
+	}
+	if oursWrote {
+		t.Errorf("our port wrote output for %s but upstream produces none", flag)
+	}
 }
 
 // TestLive_FragmentMode covers `-a / --fragment-mode`: paired-end
