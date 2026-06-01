@@ -429,6 +429,87 @@ func TestCall_TrimUnsupportedAltsDoesNothingWhenAllSupported(t *testing.T) {
 	}
 }
 
+// mcallVCFHeader declares the mpileup-style INFO/FORMAT tags (DP, I16, QS,
+// MQ0F, PL, AD) the faithful mcall path consumes. One sample (HG00100).
+const mcallVCFHeader = `##fileformat=VCFv4.2
+##contig=<ID=17,length=4200>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Raw read depth">
+##INFO=<ID=I16,Number=16,Type=Float,Description="Auxiliary tag used for calling, see description of bcf_callret1_t in bam2bcf.h">
+##INFO=<ID=QS,Number=R,Type=Float,Description="Auxiliary tag used for calling">
+##INFO=<ID=MQ0F,Number=1,Type=Float,Description="Fraction of MQ0 reads (smaller is better)">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="List of Phred-scaled genotype likelihoods">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (high-quality bases)">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG00100
+`
+
+func makeMcallVCF(records ...string) []byte {
+	return []byte(mcallVCFHeader + strings.Join(records, "\n") + "\n")
+}
+
+// TestCall_McallHomRef reproduces the pos-1 mpileup row from the live
+// fixture: a clean ref-only site (`<*>` only) must yield QUAL=129.588,
+// GT=0/0, INFO DP/MQ0F/AN/DP4/MQ (I16/QS dropped), FORMAT GT:AD.
+func TestCall_McallHomRef(t *testing.T) {
+	in := makeMcallVCF("17\t1\t.\tA\t<*>\t0\t.\tDP=5;I16=5,0,0,0,202,8170,0,0,145,4205,0,0,107,2459,0,0;QS=1,0;MQ0F=0\tPL:AD\t0,15,100:5,0")
+	got := runCall(t, in, CallOptions{Model: CallModelMultiallelic})
+	_, vs := parseCallOutput(t, got)
+	if len(vs) != 1 {
+		t.Fatalf("expected 1 record, got %d:\n%s", len(vs), got)
+	}
+	v := vs[0]
+	if len(v.Alt) != 1 || v.Alt[0] != "." {
+		t.Fatalf("ALT = %v want [.]", v.Alt)
+	}
+	if got := formatFloat32G(v.Qual); got != "129.588" {
+		t.Fatalf("QUAL = %q want 129.588", got)
+	}
+	if s := v.Samples[0]; s.Data["GT"] != "0/0" || s.Data["AD"] != "5" {
+		t.Fatalf("sample = %v want GT=0/0 AD=5", s.Data)
+	}
+	if _, ok := v.Samples[0].Data["PL"]; ok {
+		t.Fatalf("PL should be dropped for a ref-only site")
+	}
+	for k, want := range map[string]string{"AN": "2", "DP4": "5,0,0,0", "MQ": "29"} {
+		if v.Info[k] != want {
+			t.Fatalf("INFO/%s = %q want %q", k, v.Info[k], want)
+		}
+	}
+	if _, ok := v.Info["I16"]; ok {
+		t.Fatalf("INFO/I16 must be dropped")
+	}
+	if _, ok := v.Info["QS"]; ok {
+		t.Fatalf("INFO/QS must be dropped")
+	}
+}
+
+// TestCall_McallVariantHet reproduces the pos-828 SNP (T -> C,<*>): the
+// unseen allele is dropped, GT is the called het, QUAL/AC/DP4/MQ match
+// upstream, and PL/AD are re-indexed to the surviving T,C alleles.
+func TestCall_McallVariantHet(t *testing.T) {
+	in := makeMcallVCF("17\t828\t.\tT\tC,<*>\t0\t.\tDP=12;I16=1,1,3,7,71,2525,359,13309,120,7200,600,36000,41,841,166,3304;QS=0.165116,0.834884,0;MQ0F=0\tPL:AD\t216,0,35,223,65,255:2,10,0")
+	got := runCall(t, in, CallOptions{Model: CallModelMultiallelic})
+	_, vs := parseCallOutput(t, got)
+	if len(vs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(vs))
+	}
+	v := vs[0]
+	if len(v.Alt) != 1 || v.Alt[0] != "C" {
+		t.Fatalf("ALT = %v want [C] (<*> dropped)", v.Alt)
+	}
+	if got := formatFloat32G(v.Qual); got != "180.829" {
+		t.Fatalf("QUAL = %q want 180.829", got)
+	}
+	s := v.Samples[0]
+	if s.Data["GT"] != "0/1" || s.Data["PL"] != "216,0,35" || s.Data["AD"] != "2,10" {
+		t.Fatalf("sample = %v want GT=0/1 PL=216,0,35 AD=2,10", s.Data)
+	}
+	for k, want := range map[string]string{"AC": "1", "AN": "2", "DP4": "1,1,3,7", "MQ": "60"} {
+		if v.Info[k] != want {
+			t.Fatalf("INFO/%s = %q want %q", k, v.Info[k], want)
+		}
+	}
+}
+
 // writeFileBytes is a tiny helper used by TestCall_FileEntryPoint.
 func writeFileBytes(path string, b []byte) error {
 	return os.WriteFile(path, b, 0o644)

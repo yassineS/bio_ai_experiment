@@ -3467,11 +3467,29 @@ Plus:
 - **CSI seek** for region queries: today we validate via the index then
   linear-scan. Real chunk-seek is the natural follow-up.
 
-Subcommand-tail gaps on `bcftools call`:
+**`bcftools call -m` — DONE (multiallelic genotype-likelihood caller).**
+The v1 passthrough was replaced by a faithful port of `mcall.c`
+(`tools/bcftools/pkg/bcftools/callm.go`): `mcall_find_best_alleles` (the
+EM-style allele-frequency search over 1/2/3-allele combinations weighted
+by QS-derived frequencies), the per-site QUAL from the ref-vs-nonref
+probability (`-4.343*(ref_lk - logsumexp2(lk_sum, ref_lk))`),
+`mcall_call_genotypes` (per-sample max-likelihood GT), the allele-trimming
+maps that drop the unseen `<*>` allele and re-index PL (Number=G) / AD
+(Number=R), and the INFO rewrite (AN/AC from the called genotypes, DP4/MQ
+from the mpileup INFO/I16, I16/QS dropped, FORMAT collapsed to the called
+fields). The `mpileup -f ref.fa in.bam | call -m` pipeline now byte-matches
+genuine bcftools 1.23.1 over the whole `mpileup.1.bam` contig (4103 sites),
+including the `-v` (variants-only) and `-A` (keep-alts) variants. Verified
+by the live oracle `TestLiveCall` (was rejection-parity; now a real output
+comparison). The mcall path engages when the mpileup INFO/QS annotation is
+present; synthetic PL-only fixtures (no QS) still use the older heuristic.
 
-- **Full multi-allelic caller (`-m` on >2 ALT sites).** The v1 port
-  falls back to the consensus model for sites with more than one ALT;
-  upstream iterates over every allele combination.
+Subcommand-tail gaps remaining on `bcftools call`:
+
+- **`-C alleles --constrain`, trio calling (`-T`/`-C trio`), sample
+  groups (`-G`), and reference-panel AF priors.** Not yet ported; the
+  single-sample-group, no-constraint path that `mpileup | call -m`
+  produces is covered.
 - **BCF input.** Today `call` rejects BCF input with a roadmap-pointer
   error. The BCF reader's FORMAT-key reconstruction
   (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) is the prerequisite.
@@ -3480,9 +3498,11 @@ Subcommand-tail gaps on `bcftools call`:
   ploidy registry that's not yet wired in.
 - **Index-backed region queries** (`-r` reuses the post-filter path).
 - **`--gvcf` block-emit mode** (banded reference blocks).
-- **`-C alleles --constrain`** family.
+- **The consensus caller (`-c`).** Still the v1 heuristic, not a port of
+  `ccall.c`.
 
-**Validation:** no upstream-test-suite run yet.
+**Validation:** `call -m` byte-matches upstream on the mpileup oracle
+fixture (`TestLiveCall`); no full upstream-test-suite run yet.
 
 ### `mosdepth`
 

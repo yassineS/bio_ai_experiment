@@ -716,15 +716,46 @@ func assertRejectionParity(t *testing.T, args []string) {
 }
 
 // -------------------------------------------------------------------------
-// CALL — call has substantial known header / QUAL divergence from
-// upstream (see docs/PARITY_ROADMAP.md). The full-output oracle is
-// deferred; here we lock in rejection-parity on a missing-input
-// invocation so the live-oracle suite has no skips. The full call
-// matrix is exercised by call_test.go on synthetic PL fixtures.
+// CALL — the multiallelic caller (`call -m`) is a faithful port of
+// mcall.c. We generate the mpileup VCF with the live binary, then assert
+// our `call -m` output byte-matches upstream's over the whole contig
+// (4000+ sites: EM allele-frequency estimation, per-site QUAL, the
+// max-likelihood GT, and the INFO rewrite AN/AC/DP4/MQ). The same
+// fixture is exercised with -v (variants only) and -A (keep alts).
 // -------------------------------------------------------------------------
 
 func TestLiveCall(t *testing.T) {
-	assertRejectionParity(t, []string{"call", "-m", "/nonexistent/call/input.vcf"})
+	live, ours := requireLive(t)
+	mpDir, err := filepath.Abs(filepath.Join("..", "..", "testdata", "mpileup"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := filepath.Join(mpDir, "mpileup.ref.fa")
+	bam := filepath.Join(mpDir, "mpileup.1.bam")
+	if _, err := os.Stat(bam); err != nil {
+		t.Skip("no mpileup fixtures for live oracle")
+	}
+
+	// Produce the mpileup VCF with the genuine binary so the caller input
+	// is upstream-identical; both `call` binaries then consume it.
+	mp := runBin(t, live, "mpileup", "-f", ref, bam)
+	mpFile := filepath.Join(t.TempDir(), "mp.vcf")
+	if err := os.WriteFile(mpFile, mp, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"m", []string{"call", "-m", mpFile}},
+		{"m_v", []string{"call", "-m", "-v", mpFile}},
+		{"m_A", []string{"call", "-m", "-A", mpFile}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertEqualStdout(t, live, ours, tc.args...)
+		})
+	}
 }
 
 // -------------------------------------------------------------------------

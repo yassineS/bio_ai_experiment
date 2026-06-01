@@ -20,11 +20,14 @@ const (
 	CallModelNone CallModel = iota
 	// CallModelConsensus selects the original Li-2011 consensus caller (`-c`).
 	CallModelConsensus
-	// CallModelMultiallelic selects the multiallelic caller (`-m`). Our v1
-	// implementation handles biallelic sites with the same model as
-	// CallModelConsensus and falls back to CallModelConsensus for sites with
-	// more than one ALT allele. The remaining gap is tracked in
-	// docs/PARITY_ROADMAP.md (bcftools call section).
+	// CallModelMultiallelic selects the multiallelic caller (`-m`). When
+	// the mpileup INFO/QS annotation is present, Call runs the faithful
+	// port of mcall.c (see callm.go): EM allele-frequency estimation, the
+	// per-site QUAL, the max-likelihood GT, and the INFO rewrite
+	// (AN/AC/DP4/MQ). The mpileup | call -m pipeline byte-matches upstream.
+	// Synthetic PL-only fixtures (no QS) fall through to the heuristic
+	// path. Remaining gaps (trios, --constrain, sample groups) are tracked
+	// in docs/PARITY_ROADMAP.md (bcftools call section).
 	CallModelMultiallelic
 )
 
@@ -168,7 +171,7 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		return 0, err
 	}
 	hdr = filterHeaderSamples(hdr, opts.Samples)
-	hdr = augmentCallHeader(hdr)
+	hdr = augmentCallHeader(hdr, opts.Model)
 
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
@@ -212,21 +215,36 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 // augmentCallHeader inserts the meta lines that upstream bcftools adds
 // when calling: ##INFO/AC, ##INFO/AN, and the standard FORMAT/GT
 // declaration (idempotent when already present).
-func augmentCallHeader(hdr *vcf.Header) *vcf.Header {
+func augmentCallHeader(hdr *vcf.Header, model CallModel) *vcf.Header {
 	if hdr == nil {
 		return hdr
 	}
 	out := &vcf.Header{Samples: append([]string(nil), hdr.Samples...)}
-	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
+	// The multiallelic caller rewrites the INFO block: the auxiliary
+	// mpileup tags I16/QS are removed (they are consumed into DP4/MQ/QUAL)
+	// and FORMAT/GT plus INFO AC/AN/DP4/MQ are appended in upstream order.
+	dropMpileupAux := model == CallModelMultiallelic
+	for _, m := range hdr.MetaInfo {
+		if dropMpileupAux && (strings.HasPrefix(m, `##INFO=<ID=I16,`) || strings.HasPrefix(m, `##INFO=<ID=QS,`)) {
+			continue
+		}
+		out.MetaInfo = append(out.MetaInfo, m)
+	}
 	declarations := []struct {
 		marker string
 		line   string
 	}{
-		{`##INFO=<ID=AC,`, `##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes for each ALT allele">`},
-		{`##INFO=<ID=AN,`, `##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">`},
 		{`##FORMAT=<ID=GT,`, `##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">`},
+		{`##INFO=<ID=AC,`, `##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes for each ALT allele, in the same order as listed">`},
+		{`##INFO=<ID=AN,`, `##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">`},
+		{`##INFO=<ID=DP4,`, `##INFO=<ID=DP4,Number=4,Type=Integer,Description="Number of high-quality ref-forward , ref-reverse, alt-forward and alt-reverse bases">`},
+		{`##INFO=<ID=MQ,`, `##INFO=<ID=MQ,Number=1,Type=Integer,Description="Average mapping quality">`},
 	}
 	for _, d := range declarations {
+		// DP4/MQ are only emitted by the multiallelic path.
+		if !dropMpileupAux && (strings.HasPrefix(d.marker, `##INFO=<ID=DP4,`) || strings.HasPrefix(d.marker, `##INFO=<ID=MQ,`)) {
+			continue
+		}
 		found := false
 		for _, m := range out.MetaInfo {
 			if strings.HasPrefix(m, d.marker) {
@@ -258,6 +276,14 @@ func augmentCallHeader(hdr *vcf.Header) *vcf.Header {
 //   - The site is emitted iff !opts.VariantsOnly OR the site is variant
 //     OR opts.KeepAlts is set.
 func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
+	// The faithful multiallelic caller runs when -m is selected and the
+	// mpileup INFO/QS annotation is present. The synthetic PL-only
+	// fixtures (no QS) fall through to the heuristic path below.
+	if opts.Model == CallModelMultiallelic && hasQS(v) {
+		if out, keep, ok := mcallSite(v, opts); ok {
+			return out, keep
+		}
+	}
 	nAlts := len(v.Alt)
 	if nAlts == 1 && v.Alt[0] == "." {
 		nAlts = 0
