@@ -908,13 +908,20 @@ func TestLive_Split(t *testing.T) {
 
 // TestLive_Phase runs `samtools phase` against a small SAM with two
 // adjacent het sites at chr1:3 (G/T) and chr1:7 (G/C); identical to the
-// in-process TestPhase_TwoHetsConsistentChain fixture. The two binaries
-// disagree on output verbosity — upstream emits a CC header, an M-line
-// per allele, and an EV block per read; our v1 phase emits only the
-// per-het PS-label rows tracked in docs/PARITY_ROADMAP.md. Both,
-// however, agree on the set of het positions they call. We extract that
-// set from each output and require equality, locking in the
-// chromosome+position-level parity guarantee that v1 already provides.
+// in-process TestPhase_TwoHetsConsistentChain fixture.
+//
+// Two things are asserted. First, upstream phase output is
+// deterministic across runs (phase.c never seeds drand48, and the RNG
+// only routes -b reads, not the text stream) — two consecutive
+// upstream runs must be byte-identical. This is the proof that
+// byte-parity is the right goal for the CC/PS/FL/M lines, and the
+// reason the EV-ordering blocker (khash bucket iteration order) is the
+// only residual; see docs/PARITY_ROADMAP.md §phase. Second, the two
+// binaries disagree on output verbosity — upstream emits a CC header,
+// an M-line per allele, and an EV block per read; our port emits the
+// per-het PS-label rows — but both agree on the *set* of het positions
+// called. We extract that set from each output and require equality,
+// locking in the chromosome+position-level parity guarantee.
 func TestLive_Phase(t *testing.T) {
 	live, ours := requireLive(t)
 	dir := t.TempDir()
@@ -937,8 +944,20 @@ func TestLive_Phase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	up := runBin(t, live, "phase", bamPath)
+	up := runBin(t, live, "phase", "--no-PG", bamPath)
 	gp := runBin(t, ours, "phase", bamPath)
+
+	// Upstream phase output is deterministic: phase.c calls drand48()
+	// but never srand48(), so the default glibc seed yields a fixed
+	// sequence, and the RNG only affects -b read routing — never the
+	// CC/PS/FL/M/EV text stream. Lock that in: a second run must be
+	// byte-identical. This is the proof underpinning the byte-parity
+	// goal (and the EV-ordering blocker) documented in
+	// docs/PARITY_ROADMAP.md §phase.
+	up2 := runBin(t, live, "phase", "--no-PG", bamPath)
+	if !bytes.Equal(up, up2) {
+		t.Fatalf("upstream phase output is non-deterministic across runs:\nrun1=%q\nrun2=%q", up, up2)
+	}
 
 	upHets := phaseHetPositions(up)
 	ourHets := phaseHetPositions(gp)

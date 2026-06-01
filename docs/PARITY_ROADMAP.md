@@ -2092,10 +2092,30 @@ Plus:
   byte-for-byte, so the C-`float`-vs-Go-`float64` width concern did not
   materialise on the upstream fixtures. The note is kept for awareness
   on future high-coverage inputs.
-- **`phase` MCMC chimera repair.** The v1 port uses a greedy
-  adjacent-het vote in place of upstream `phase.c`'s MCMC
-  `phase_core` loop; `-b` per-haplotype BAM split is also deferred.
-  Detail in the `phase` subsection below.
+- **`phase` MCMC chimera repair + EV-line ordering.** The v1 port
+  uses a greedy adjacent-het vote in place of upstream `phase.c`'s
+  `dynaprog` Viterbi + `fragphase` chimera-repair loop. A
+  2026-06-01 investigation (see the `phase` subsection below)
+  established that upstream `samtools phase` output **is fully
+  deterministic** — `phase.c` calls `drand48()` but never
+  `srand48()`, so the default glibc seed gives a fixed sequence, and
+  the RNG only affects `-b` read routing, never the CC/PS/FL/M/EV
+  text stream (`diff` of two consecutive runs on the same BAM is
+  empty). The deterministic core (CC header, `PS`, `FL`, and
+  `M0/M1/M2` lines) is order-invariant — `cns`/`path`/`pcnt` are
+  pure accumulations independent of read order — and so is portable
+  to byte-parity. The **residual blocker is `EV`-line ordering**:
+  the EV block is `ks_introsort_rseq`-sorted by `vpos` only, an
+  unstable sort, so reads sharing a `vpos` are tie-broken by
+  htslib's `khash(64)` bucket-iteration order *after* a full
+  `bam_plp_auto` + `kh_put`/`kh_del`/`update_vpos` lifecycle. A
+  standalone replay of the khash+introsort on the obvious insertion
+  order did **not** reproduce the binary's EV order (the deletion-
+  aware bucket layout matters), so EV byte-parity requires porting
+  htslib's pileup engine and khash deletion semantics verbatim —
+  well beyond the in-tree appetite and out of scope for this pass.
+  The greedy `-b` per-haplotype BAM split (with `-A`/`-F`) is
+  implemented and tested. Detail in the `phase` subsection below.
 - **`targetcut` BAQ realignment with `-f` reference (DONE).** The
   HMM consensus mode is implemented (faithful port of
   `cut_target.c`, including the MAQ errmod port; see below). The
@@ -2334,26 +2354,62 @@ upstream Perl harness is replaced by an in-process SAM-text pipeline
 that exercises the same logical contract without depending on
 upstream's deflate library.
 
-**`phase` deferred features** (accepted on the CLI, behaviour partial):
+**`phase` determinism + EV-ordering blocker** (2026-06-01
+investigation):
 
-- **MCMC chimera repair**. Upstream's `phase.c` runs a
-  Markov-chain-Monte-Carlo loop (`phase_core`) that flips read-cluster
-  assignments to maximise haplotype consistency and resolve chimeric
-  reads at junctions. The v1 Go port replaces this with a greedy
-  same-vs-opposite vote between adjacent het sites. Tied junctions
-  emit label `0` (ambiguous) rather than being repaired by MCMC.
-  Tracked here; the upstream `FLAG_FIX_CHIMERA` flag is implicitly
-  disabled in v1.
-- **`-b STR` per-haplotype BAM split.** v1 emits the phased TSV
-  stream to `-o`/stdout but does not yet split the input BAM into
-  per-haplotype output BAMs (`<prefix>.0.bam` / `<prefix>.1.bam`
-  / `<prefix>.chimera.bam` in upstream). The flag is accepted on the
-  CLI and stored in `PhaseOptions.OutputPrefix` for a follow-up
-  wiring pass.
-- **`-F` use-full-read** is accepted on the CLI but is a no-op in v1
-  (we always walk the aligned slice as decoded from the CIGAR).
-- **`-A` mark-drop-in-chimera-output** is also a no-op pending the
-  `-b` split landing.
+Upstream `samtools phase` output is **fully deterministic**. `phase.c`
+calls `drand48()` (in `dump_aln`) but never seeds it with `srand48()`,
+so glibc's default seed produces a fixed sequence; moreover that RNG is
+only consulted for `-b` read routing of evidence-less / ambiguous
+reads, never for the CC/PS/FL/M/EV text stream. Proof — two consecutive
+runs on the same BAM are byte-identical:
+
+```
+samtools phase --no-PG x.bam > /tmp/p1.txt
+samtools phase --no-PG x.bam > /tmp/p2.txt
+diff /tmp/p1.txt /tmp/p2.txt   # empty
+```
+
+Because the upstream stream is deterministic, byte-parity *is* the
+target for it. The deterministic core — the `CC` comment header, the
+`PS` (phase-set span), `FL` (filtered region) and `M0/M1/M2` marker
+lines — is **order-invariant**: the per-position consensus `cns` (via
+the already-ported `pkg/htsgo/errmod` MAQ model + `gl2cns`), the
+`dynaprog` Viterbi `path`, and the `fragphase` `pcnt` accumulators are
+all read-order-independent sums, so a faithful port reaches those lines
+byte-exactly.
+
+The **residual blocker is `EV`-line ordering**. The EV evidence block
+is emitted after `ks_introsort_rseq`, an *unstable* introsort keyed on
+`vpos` alone; reads sharing a `vpos` (the common case — every read of a
+clean block starts at the same first variant) are tie-broken purely by
+the order they appear in htslib's `khash(64)` bucket iteration, which
+in turn depends on the open-addressing bucket layout produced by the
+full `bam_plp_auto` + `kh_put`/`kh_del`/`update_vpos` lifecycle. A
+standalone replay (real htslib `khash.h` + `ksort.h`) of the obvious
+insertion order did **not** reproduce the binary's observed EV order,
+confirming the deletion-aware bucket layout is load-bearing. Achieving
+EV byte-parity therefore requires porting htslib's streaming pileup
+engine *and* its khash deletion semantics verbatim — far beyond the
+in-tree appetite and deferred here. The live-oracle test consequently
+asserts (a) upstream determinism across runs and (b) het-position-set
+parity on the M-lines, the guarantees the current port provides.
+
+**`phase` features implemented:**
+
+- **`-b STR` per-haplotype BAM split** (`<prefix>.0.bam` /
+  `<prefix>.1.bam` / `<prefix>.chimera.bam`), with the `fragphase`
+  flip-point chimera detection (`FLIP_THRES`/`FLIP_PENALTY`) routing
+  chimeric reads to the `chimera` bucket. Evidence-less reads are
+  routed by a fixed-seed RNG (parity with upstream's drand48 routing
+  is explicitly not a goal; the seed is pinned for test determinism).
+- **`-A`** routes ambiguous reads to the chimera bucket in `-b` mode.
+- **`-F`** disables the chimera-repair flip-point search.
+
+**`phase` deferred features:**
+
+- **EV-line byte ordering** — blocked on the khash/pileup lifecycle
+  port described above.
 - **`-e`/`-l` site-list mode** (only-phase-listed-sites). The
   upstream `loadpos` path is not implemented; the Go port always
   discovers hets from the pileup. Upstream itself comments `-e` and
