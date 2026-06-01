@@ -3339,16 +3339,42 @@ Subcommand-tail gaps on `bcftools call`:
 
 ### `mosdepth`
 
-**Status:** 1 / 1 command, most flags.
+**Status:** 1 / 1 command, most flags. Live-binary oracle suite green
+against upstream 0.3.14 (`tools/mosdepth/pkg/mosdepth/live_oracle_test.go`,
+12 modes pass byte-for-byte, 3 skip-TODOs for non-v1 features).
 
 Missing:
 
 - **D4 output** (`-d/--d4`).
+- **`--use-median`** — output median depth (instead of mean) for
+  `--by` regions.
+- **`--mean-mapq`** — additional column for per-region mean MAPQ.
 - **Multi-threading** (`-t/--threads N`).
 - **`--mapq` 0-only fast-path** — upstream has a special fast loop.
 
 Closed (this wave):
 
+- **Live-binary oracle suite (vs upstream 0.3.14)** — new
+  `live_oracle_test.go` runs the genuine `reference_code/mosdepth/mosdepth`
+  binary and our port on identical fixtures and gunzip-then-byte-compares
+  every emitted file across 17 modes (bare, `-n`, `-c`, `-b` window,
+  `--by` BED, `-q` default labels, `-q` env override, `-T`, `-Q`, `-F`,
+  `-i`, `--fast-mode`, default no-fast-mode, `--fragment-mode`,
+  `--read-groups`, plus skip-TODOs for `--use-median`, `--mean-mapq`,
+  `--d4`). The whole file `t.Skip`s when the vendored upstream binary is
+  absent so CI without it still passes. Surfaced and fixed:
+  - **`-q` default labels** (was emitting `NO_COVERAGE`/`LOW_COVERAGE`
+    mnemonics, upstream uses literal `cutoffs[i]:cutoffs[i+1]` strings
+    like `"0:1"`, `"1:5"`).
+  - **`-q` open / closed bin handling** (upstream omits both the
+    below-first-cutoff and at-or-above-last-cutoff runs from
+    `.quantized.bed.gz` entirely; we were emitting them).
+  - **All-zero chrom rows in summary + dist** (upstream skips them
+    unless the chrom either had records pre-filter or was named via
+    `--chrom`; we were emitting an all-zero row for every reference in
+    the BAM header).
+  - **`<chrom>_region` and `total_region` summary rows** (upstream emits
+    these in `.mosdepth.summary.txt` whenever `--by` is set; we were not).
 - **`.csi` byte-equality** — RESOLVED. With the libdeflate port wired
   into `pkg/htsgo/bgzf`, the `.csi` BGZF framing is now byte-identical to
   genuine libdeflate output. `TestParity_IndexFiles_Skipped` became
@@ -3370,12 +3396,12 @@ Closed (this wave):
   (`mosdepth.ParseQuantize`), `Options.Quantize` field, CLI wiring on
   `-q/--quantize`, `.quantized.bed.gz` writer that emits one BED4
   record per maximal same-bin run, and per-bin label resolution
-  honouring `MOSDEPTH_Q{i}` env vars with default mnemonics
-  (`NO_COVERAGE`,`LOW_COVERAGE`,`CALLABLE`,`HIGH_COVERAGE`,`Q4..`).
-  `TestParity_Quantized` now passes byte-for-byte for both the
-  default-label and env-override paths.
+  honouring `MOSDEPTH_Q{i}` env vars (with `cutoffs[i]:cutoffs[i+1]`
+  defaults — see the live-oracle entry above for the post-correction
+  behaviour).
 
-**Validation:** no upstream-test-suite run yet.
+**Validation:** live-binary oracle vs upstream 0.3.14 (12 PASS, 3
+skip-TODO for unimplemented features above).
 
 ---
 
