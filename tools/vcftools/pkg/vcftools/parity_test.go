@@ -1539,9 +1539,10 @@ func TestParity_Relatedness2_Header(t *testing.T) {
 	}
 }
 
-// TestParity_LROH_Header — header for `--LROH`.
+// TestParity_LROH_Header — header for `--LROH`. Upstream requires a single
+// chromosome, so the fixture is restricted to contig 20.
 func TestParity_LROH_Header(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{LROH: true})
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{LROH: true, Chr: "20"})
 	lines := readFileLines(t, prefix+".LROH")
 	if len(lines) == 0 {
 		t.Fatalf("empty .LROH output")

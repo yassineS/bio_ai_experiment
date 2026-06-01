@@ -1496,9 +1496,13 @@ gate going forward): `--freq2`/`--counts2`, `--site-depth`/
 `--geno-r2`, `--geno-chisq`, `--relatedness2` (matches upstream's
 ordered N×N matrix and the simpler (N_AaAa − 2·N_AAaa)/(N_Aa[i]+N_Aa[j])
 phi formula; no KING-robust gap remains for the fixture), `--LROH`
-(header now matches the upstream 8-column layout — the HMM algorithm
-itself is unchanged so MIN_START/MAX_END collapse to AUTO_START/
-AUTO_END and N_MISMATCHES is 0), `--minDP`/`--minGQ` (missing-value
+(the forward-backward runs-of-homozygosity HMM is now fully ported —
+states, per-site emission/transition probabilities, decode and run
+extraction match `output_LROH` byte-for-byte; the live oracle exercises
+a ROH-rich fixture (`testdata/live/lroh_in.vcf`) that produces non-empty
+runs, so MIN_START/MAX_END and N_MISMATCHES are genuinely computed
+rather than collapsed, and the port also enforces upstream's --chr
+requirement), `--minDP`/`--minGQ` (missing-value
 samples are now masked as upstream does), and `--thin` (now uses
 position-distance instead of count-based thinning).
 
@@ -3341,16 +3345,50 @@ Subcommand-tail gaps on `bcftools call`:
 
 **Status:** 1 / 1 command, most flags. Live-binary oracle suite green
 against upstream 0.3.14 (`tools/mosdepth/pkg/mosdepth/live_oracle_test.go`,
-12 modes pass byte-for-byte, 3 skip-TODOs for non-v1 features).
+13 modes pass byte-for-byte; 2 modes have NO upstream oracle and are
+documented skips — see below).
 
 Missing:
 
-- **D4 output** (`-d/--d4`).
-- **`--use-median`** — output median depth (instead of mean) for
-  `--by` regions.
-- **`--mean-mapq`** — additional column for per-region mean MAPQ.
+- **D4 output** (`-d/--d4`). **No oracle in this repo.** D4 is gated in
+  mosdepth.nim behind `when defined(d4)` and requires linking the d4 C
+  library; the vendored `reference_code/mosdepth/mosdepth` 0.3.14 binary
+  was built WITHOUT `-d:d4`, so it rejects `--d4` ("error parsing
+  arguments") and never emits a `.per-base.d4`. With no upstream D4 bytes
+  to diff against — and no D4 reader available in the build environment to
+  independently validate output — a byte-exact ~500–700 LOC writer (header
+  + per-chrom dictionary-encoded intervals + secondary-frame index) cannot
+  be verified here and is deliberately deferred. `TestLive_D4` is a
+  documented skip with this exact reason (not a permanently-red `t.Errorf`,
+  which would break CI). Scope to close once an oracle exists: ~500–700
+  LOC for the writer plus a golden `.per-base.d4` fixture produced by a
+  `-d:d4` mosdepth build.
+- **`--mean-mapq`** — **not a real mosdepth feature.** No `--mean-mapq`
+  option, mean-MAPQ accumulator, or output column exists anywhere in
+  mosdepth 0.3.14 OR upstream master (`mosdepth.nim`); the only MAPQ flag
+  is `-Q/--mapq` (a read filter). The vendored binary rejects
+  `--mean-mapq`. There is therefore nothing to byte-match, and implementing
+  it would be inventing non-mosdepth behaviour. `TestLive_MeanMAPQ` is a
+  documented skip with this reason. If upstream ever adds it, revisit.
 - **Multi-threading** (`-t/--threads N`).
 - **`--mapq` 0-only fast-path** — upstream has a special fast loop.
+
+Closed (median wave):
+
+- **`--use-median`** (`-m/--use-median`) — region depth column now reports
+  the MEDIAN per-base depth (instead of the mean) when `--by` is set,
+  byte-matching upstream 0.3.14. Implemented via `covAccum.regionMedian`,
+  which reproduces upstream's `CountStat.median` exactly: bucket region
+  depths into a 65536-bin histogram (clamping the top bin), compute
+  `stop_n = int(0.5 + n/2)`, and return the first bin whose cumulative
+  count reaches `stop_n`. For an even base count this yields the LOWER of
+  the two central order statistics (mosdepth does NOT average the two
+  middle values). The summary `*_region` mean columns are unchanged (only
+  the regions.bed.gz depth column switches to median, matching upstream).
+  Rebound the fragment-mode short flag from `-m` to `-a` to match upstream
+  and free `-m` for `--use-median` (the `--fragment-mode` long form is
+  unchanged). `TestLive_UseMedian` now runs and passes byte-equal;
+  `TestCovAccumRegionMedian` locks the even-count lower-median convention.
 
 Closed (this wave):
 
@@ -3360,8 +3398,8 @@ Closed (this wave):
   every emitted file across 17 modes (bare, `-n`, `-c`, `-b` window,
   `--by` BED, `-q` default labels, `-q` env override, `-T`, `-Q`, `-F`,
   `-i`, `--fast-mode`, default no-fast-mode, `--fragment-mode`,
-  `--read-groups`, plus skip-TODOs for `--use-median`, `--mean-mapq`,
-  `--d4`). The whole file `t.Skip`s when the vendored upstream binary is
+  `--read-groups`, `--use-median`, plus documented no-oracle skips for
+  `--mean-mapq` and `--d4`). The whole file `t.Skip`s when the vendored upstream binary is
   absent so CI without it still passes. Surfaced and fixed:
   - **`-q` default labels** (was emitting `NO_COVERAGE`/`LOW_COVERAGE`
     mnemonics, upstream uses literal `cutoffs[i]:cutoffs[i+1]` strings
@@ -3400,8 +3438,9 @@ Closed (this wave):
   defaults — see the live-oracle entry above for the post-correction
   behaviour).
 
-**Validation:** live-binary oracle vs upstream 0.3.14 (12 PASS, 3
-skip-TODO for unimplemented features above).
+**Validation:** live-binary oracle vs upstream 0.3.14 (13 PASS, 2
+no-oracle documented skips: `--mean-mapq` and `--d4`, both unsupported by
+the vendored binary — see Missing above).
 
 ---
 

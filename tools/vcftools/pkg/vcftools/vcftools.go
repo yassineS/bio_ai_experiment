@@ -905,9 +905,13 @@ func Run(input io.Reader, params *Params) error {
 		rel2 = newRelatedness2Runner(filteredHeader.Samples)
 	}
 
-	// --LROH runner.
+	// --LROH runner. Upstream (variant_file_output.cpp) errors out unless a
+	// single chromosome is selected, so we mirror that requirement for parity.
 	var lroh *lrohRunner
 	if params.LROH {
+		if params.Chr == "" {
+			return fmt.Errorf("Require a chromosome (--chr) when outputting LROH")
+		}
 		lroh = newLROHRunner(filteredHeader.Samples, params.LROHMinVariants)
 	}
 

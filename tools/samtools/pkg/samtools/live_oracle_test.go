@@ -136,15 +136,6 @@ func fixture(t *testing.T, parts ...string) string {
 	return p
 }
 
-// decodeBAM returns the SAM-text body (records only, no header) of a
-// BAM file by piping it through the upstream binary's `view` for a
-// canonical decode. Used when raw-byte diff fails but record content
-// must still match.
-func decodeBAM(t *testing.T, live, bamPath string) []byte {
-	t.Helper()
-	return runBin(t, live, "view", bamPath)
-}
-
 // ---- view --------------------------------------------------------------
 
 // TestLive_View_DefaultSAM — `samtools view <sam>` (no header).
@@ -544,21 +535,56 @@ func TestLive_Fixmate(t *testing.T) {
 
 // ---- merge -------------------------------------------------------------
 
-// TestLive_Merge — two coord-sorted BAMs.
+// TestLive_Merge — two coord-sorted BAMs with DISTINCT @RG IDs.
+//
+// Upstream `merge` mints fresh suffixes via lrand48() for every colliding
+// @RG/@PG ID and seeds the PRNG with time(NULL), so byte-equality is
+// impossible whenever RG IDs collide (the prior records-only relaxation).
+// We sidestep that non-determinism by giving the two inputs disjoint @RG IDs
+// (rgA vs rgB): no collision occurs, no random rename happens, and upstream
+// merge becomes fully deterministic — at which point our merge output is
+// byte-identical.
 func TestLive_Merge(t *testing.T) {
 	live, ours := requireLive(t)
-	in := fixture(t, "test_input_1_a.sam")
 	dir := t.TempDir()
-	sorted := filepath.Join(dir, "in.bam")
-	if err := os.WriteFile(sorted, runBin(t, ours, "sort", in), 0644); err != nil {
+
+	const samA = "@HD\tVN:1.4\tSO:coordinate\n" +
+		"@SQ\tSN:ref1\tLN:45\n" +
+		"@SQ\tSN:ref2\tLN:40\n" +
+		"@RG\tID:rgA\tSM:sampleA\n" +
+		"ra1\t0\tref1\t5\t30\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\tRG:Z:rgA\n" +
+		"ra2\t0\tref1\t10\t30\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\tRG:Z:rgA\n" +
+		"ra3\t0\tref2\t3\t30\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\tRG:Z:rgA\n"
+	const samB = "@HD\tVN:1.4\tSO:coordinate\n" +
+		"@SQ\tSN:ref1\tLN:45\n" +
+		"@SQ\tSN:ref2\tLN:40\n" +
+		"@RG\tID:rgB\tSM:sampleB\n" +
+		"rb1\t0\tref1\t7\t30\t8M\t*\t0\t0\tTTTTGGGG\tIIIIIIII\tRG:Z:rgB\n" +
+		"rb2\t0\tref2\t1\t30\t8M\t*\t0\t0\tTTTTGGGG\tIIIIIIII\tRG:Z:rgB\n"
+
+	samAPath := filepath.Join(dir, "a.sam")
+	samBPath := filepath.Join(dir, "b.sam")
+	if err := os.WriteFile(samAPath, []byte(samA), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(samBPath, []byte(samB), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bamA := filepath.Join(dir, "a.bam")
+	bamB := filepath.Join(dir, "b.bam")
+	if err := os.WriteFile(bamA, runBin(t, ours, "sort", samAPath), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bamB, runBin(t, ours, "sort", samBPath), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	upOut := filepath.Join(dir, "up.bam")
 	ourOut := filepath.Join(dir, "ours.bam")
-	if _, code := runBinAllowFail(t, live, "merge", "--no-PG", upOut, sorted, sorted); code != 0 {
+	if _, code := runBinAllowFail(t, live, "merge", "--no-PG", upOut, bamA, bamB); code != 0 {
 		t.Fatalf("upstream merge failed: %d", code)
 	}
-	if _, code := runBinAllowFail(t, ours, "merge", ourOut, sorted, sorted); code != 0 {
+	if _, code := runBinAllowFail(t, ours, "merge", ourOut, bamA, bamB); code != 0 {
 		t.Fatalf("ours merge failed: %d", code)
 	}
 	upB, err := os.ReadFile(upOut)
@@ -570,25 +596,8 @@ func TestLive_Merge(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(upB, ourB) {
-		// Upstream `merge` mints fresh suffixes via `lrand48()` for
-		// every colliding @RG/@PG ID and seeds the PRNG with
-		// `time(NULL)` by default — making the output
-		// non-deterministic between invocations. Achieving byte
-		// equality requires (a) seeded `-s N` invocations on both
-		// sides and (b) a Go port of glibc's lrand48 LCG that
-		// matches upstream's exact call sequence (PG renaming
-		// interleaved with RG, cross-reference patching, etc.). The
-		// scope of that work exceeds this pass, so we fall back to
-		// a per-record-count oracle: each input has N primary
-		// records → merged output should contain 2N.
-		upDec := decodeBAM(t, live, upOut)
-		ourDec := decodeBAM(t, live, ourOut)
-		upLines := bytes.Count(upDec, []byte{'\n'})
-		ourLines := bytes.Count(ourDec, []byte{'\n'})
-		if upLines != ourLines {
-			t.Errorf("DIVERGENCE: merge: record-count mismatch (up=%d ours=%d)",
-				upLines, ourLines)
-		}
+		t.Errorf("DIVERGENCE: merge BAM bytes differ (len up=%d ours=%d)",
+			len(upB), len(ourB))
 	}
 }
 
