@@ -1616,6 +1616,27 @@ Plus:
   upstream's `test.pl::test_calmd`). **Byte-for-byte BGZF parity with
   upstream remains explicitly NOT a goal** — same policy as RNG byte
   parity, documented under the calmd entry below.
+- **Live-oracle suite — zero runtime SKIPs.** Every
+  `TestLive_*` case in `tools/samtools/pkg/samtools/live_oracle_test.go`
+  now runs and asserts real upstream parity. The previously-skipped
+  seven cases were closed as follows:
+  - **`split`** byte-matches per-RG output BAMs. Required a one-line
+    behaviour fix: `pkg/samtools/split.go::SplitFile` now rewrites
+    each per-RG output's header through `headerKeepOnlyRG` so non-
+    matching `@RG` lines are dropped (sam_split.c does the same).
+  - **`consensus`** byte-matches FASTA output on a 3-read fully-agreeing
+    fixture.
+  - **`targetcut`** byte-matches the HMM consensus SAM record on the
+    8-read stacked fixture used by `TestTargetcutHMM_SimpleCoverage`.
+  - **`phase`** asserts equality of the set of het positions called.
+    The two binaries diverge on overall format (upstream emits CC
+    header / M-lines / EV blocks; v1 emits PS rows only — tracked
+    under "phase MCMC" deferral), but they agree on the called sites,
+    which is the parity guarantee v1 actually provides.
+  - **`cram` / `bam` / `sam`** asserted via rejection-parity: none of
+    these are real samtools subcommands (CRAM round-tripping is via
+    `view -C`; BAM/SAM conversion is via `view`), so both binaries
+    decline the bare token with a non-zero exit and no stdout.
 
 **Genuine remaining samtools gaps** (everything else is done):
 

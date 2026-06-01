@@ -69,7 +69,11 @@ func SplitFile(inPath string, opts SplitOptions) error {
 			return ferr
 		}
 		bw := sam.NewBAMWriter(f)
-		if werr := bw.WriteHeader(hdr); werr != nil {
+		// Upstream samtools split rewrites each per-RG output's header to
+		// retain only the matching @RG line (sam_split.c). Match that so
+		// downstream tools see a single-RG header per file.
+		perRGHdr := headerKeepOnlyRG(hdr, rg.ID)
+		if werr := bw.WriteHeader(perRGHdr); werr != nil {
 			_ = f.Close()
 			cleanup()
 			return werr
@@ -175,6 +179,45 @@ func expandSplitPattern(pat, base, ext, rgID string) string {
 		sb.WriteByte(pat[i])
 	}
 	return sb.String()
+}
+
+// headerKeepOnlyRG returns a shallow copy of h with every @RG line that
+// does NOT match keepID dropped. The Lines slice is rebuilt so the BAM
+// header text only carries the surviving @RG record; @SQ/@HD/@PG/@CO
+// lines and ReadGroup order are otherwise preserved. The derived view
+// slices (Refs, ReadGroups, Programs, Comments, HDFields) are updated to
+// stay consistent with Lines.
+func headerKeepOnlyRG(h *sam.Header, keepID string) *sam.Header {
+	if h == nil {
+		return nil
+	}
+	out := &sam.Header{
+		Refs:     append([]sam.Reference(nil), h.Refs...),
+		Programs: append([]sam.Program(nil), h.Programs...),
+		Comments: append([]string(nil), h.Comments...),
+		HDFields: append([]sam.HeaderField(nil), h.HDFields...),
+	}
+	for _, line := range h.Lines {
+		if line.Tag == "RG" {
+			id := ""
+			for _, f := range line.Fields {
+				if f.Tag == "ID" {
+					id = f.Value
+					break
+				}
+			}
+			if id != keepID {
+				continue
+			}
+		}
+		out.Lines = append(out.Lines, line)
+	}
+	for _, rg := range h.ReadGroups {
+		if rg.ID == keepID {
+			out.ReadGroups = append(out.ReadGroups, rg)
+		}
+	}
+	return out
 }
 
 // splitInputName returns (basename without extension, extension with

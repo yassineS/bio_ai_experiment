@@ -832,44 +832,314 @@ func TestLive_View_BAMInput(t *testing.T) {
 	}
 }
 
-// ---- subcommands skipped for lack of fixture --------------------------
+// ---- split -------------------------------------------------------------
 
-// TestLive_Split — split by @RG. TODO: build a small fixture with
-// multiple @RG IDs and assert per-RG output BAMs match.
+// TestLive_Split builds a small multi-RG SAM in-test, converts it to a
+// BAM via our (byte-equal-to-upstream) view -b, then runs `samtools
+// split -f '%*_%!.bam'` with both binaries from separate workdirs and
+// asserts each per-RG output BAM is byte-identical.
+//
+// The fix that landed alongside this test: per-RG output headers now
+// retain only the @RG line matching that file's RG ID — upstream
+// (sam_split.c) does the same so a downstream viewer sees a single-RG
+// header per output. See headerKeepOnlyRG in split.go.
 func TestLive_Split(t *testing.T) {
-	t.Skip("no fixture: needs a small multi-RG BAM; TODO")
+	live, ours := requireLive(t)
+	dir := t.TempDir()
+
+	const multiRGSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:1000\n" +
+		"@RG\tID:rg1\tSM:s1\n" +
+		"@RG\tID:rg2\tSM:s2\n" +
+		"r1\t0\tchr1\t100\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:rg1\n" +
+		"r2\t0\tchr1\t150\t60\t5M\t*\t0\t0\tTGCAA\tIIIII\tRG:Z:rg2\n" +
+		"r3\t0\tchr1\t200\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:rg1\n" +
+		"r4\t0\tchr1\t250\t60\t5M\t*\t0\t0\tTGCAA\tIIIII\tRG:Z:rg2\n"
+
+	samPath := filepath.Join(dir, "in.sam")
+	if err := os.WriteFile(samPath, []byte(multiRGSAM), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bamPath := filepath.Join(dir, "in.bam")
+	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", samPath), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Upstream's `-f` pattern is relative to the cwd at invocation, so run
+	// each binary in its own subdir and look up its outputs there.
+	upDir := filepath.Join(dir, "up")
+	oursDir := filepath.Join(dir, "ours")
+	if err := os.Mkdir(upDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(oursDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	runIn := func(cwd, bin string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = cwd
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("%s %v in %s: %v", bin, args, cwd, err)
+		}
+	}
+	runIn(upDir, live, "split", "--no-PG", "-f", "%*_%!.bam", bamPath)
+	runIn(oursDir, ours, "split", "-f", "%*_%!.bam", bamPath)
+
+	for _, rg := range []string{"rg1", "rg2"} {
+		upB, err := os.ReadFile(filepath.Join(upDir, "in_"+rg+".bam"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ourB, err := os.ReadFile(filepath.Join(oursDir, "in_"+rg+".bam"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(upB, ourB) {
+			t.Errorf("DIVERGENCE: split per-RG %s BAM bytes differ "+
+				"(len up=%d ours=%d)", rg, len(upB), len(ourB))
+		}
+	}
 }
 
-// TestLive_Phase — phase haplotypes. TODO: phase fixture (paired
-// reads + heterozygous SNPs) not yet vendored.
+// ---- phase -------------------------------------------------------------
+
+// TestLive_Phase runs `samtools phase` against a small SAM with two
+// adjacent het sites at chr1:3 (G/T) and chr1:7 (G/C); identical to the
+// in-process TestPhase_TwoHetsConsistentChain fixture. The two binaries
+// disagree on output verbosity — upstream emits a CC header, an M-line
+// per allele, and an EV block per read; our v1 phase emits only the
+// per-het PS-label rows tracked in docs/PARITY_ROADMAP.md. Both,
+// however, agree on the set of het positions they call. We extract that
+// set from each output and require equality, locking in the
+// chromosome+position-level parity guarantee that v1 already provides.
 func TestLive_Phase(t *testing.T) {
-	t.Skip("no fixture: phase requires het-SNP coverage; TODO")
+	live, ours := requireLive(t)
+	dir := t.TempDir()
+
+	const phaseSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:100\n" +
+		"r_a\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r_b\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r_c\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r_d\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII\n" +
+		"r_e\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII\n" +
+		"r_f\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII\n"
+
+	samPath := filepath.Join(dir, "phase.sam")
+	if err := os.WriteFile(samPath, []byte(phaseSAM), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bamPath := filepath.Join(dir, "phase.bam")
+	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", samPath), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	up := runBin(t, live, "phase", bamPath)
+	gp := runBin(t, ours, "phase", bamPath)
+
+	upHets := phaseHetPositions(up)
+	ourHets := phaseHetPositions(gp)
+	want := []string{"chr1:3", "chr1:7"}
+	if !equalStringSets(upHets, want) {
+		t.Fatalf("upstream phase fixture assumption broken: got hets %v, want %v",
+			upHets, want)
+	}
+	if !equalStringSets(ourHets, want) {
+		t.Errorf("DIVERGENCE: phase het positions: ours=%v, upstream=%v",
+			ourHets, upHets)
+	}
 }
 
-// TestLive_Consensus — consensus base calling. TODO: vendor a small
-// consensus fixture with reference.
+// phaseHetPositions extracts the set of "<chrom>:<pos>" het sites from
+// either an upstream phase report (M0/M1/M2 rows) or our v1 phase
+// report (PS rows). Both encodings put the chromosome in column 1 and
+// the het position in either column 2 (PS rows) or column 3 (M-rows).
+func phaseHetPositions(out []byte) []string {
+	seen := make(map[string]struct{})
+	for _, ln := range bytes.Split(out, []byte("\n")) {
+		if len(ln) == 0 || ln[0] == '#' || bytes.HasPrefix(ln, []byte("CC")) {
+			continue
+		}
+		cols := bytes.Split(ln, []byte("\t"))
+		if len(cols) < 3 {
+			continue
+		}
+		switch string(cols[0]) {
+		case "PS":
+			seen[string(cols[1])+":"+string(cols[2])] = struct{}{}
+		case "M0", "M1", "M2":
+			if len(cols) < 4 {
+				continue
+			}
+			seen[string(cols[1])+":"+string(cols[3])] = struct{}{}
+		}
+	}
+	out2 := make([]string, 0, len(seen))
+	for k := range seen {
+		out2 = append(out2, k)
+	}
+	// Sort to give a deterministic ordering for test diagnostics.
+	for i := 1; i < len(out2); i++ {
+		for j := i; j > 0 && out2[j-1] > out2[j]; j-- {
+			out2[j-1], out2[j] = out2[j], out2[j-1]
+		}
+	}
+	return out2
+}
+
+// equalStringSets reports whether a and b contain the same elements,
+// ignoring order. Both inputs must be pre-deduplicated by caller.
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := make(map[string]struct{}, len(a))
+	for _, s := range a {
+		m[s] = struct{}{}
+	}
+	for _, s := range b {
+		if _, ok := m[s]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// ---- consensus ---------------------------------------------------------
+
+// TestLive_Consensus runs `samtools consensus` on a tiny 3-read fixture
+// where every read perfectly agrees with the reference. Both binaries
+// emit the same default-FASTA consensus, so the output is byte-equal.
+// Upstream's `consensus` does NOT accept --no-PG (it emits no @PG line
+// in FASTA mode), so we run both without it.
 func TestLive_Consensus(t *testing.T) {
-	t.Skip("no fixture: consensus needs ref + multi-read coverage; TODO")
+	live, ours := requireLive(t)
+	dir := t.TempDir()
+
+	const consSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:8\n" +
+		"r1\t0\tchr1\t1\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+		"r2\t0\tchr1\t1\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+		"r3\t0\tchr1\t1\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n"
+
+	samPath := filepath.Join(dir, "cons.sam")
+	if err := os.WriteFile(samPath, []byte(consSAM), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bamPath := filepath.Join(dir, "cons.bam")
+	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", samPath), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	up := runBin(t, live, "consensus", bamPath)
+	gp := runBin(t, ours, "consensus", bamPath)
+	if !bytes.Equal(up, gp) {
+		t.Errorf("DIVERGENCE: consensus output differs:\n--- up ---\n%s--- ours ---\n%s",
+			up, gp)
+	}
 }
 
-// TestLive_Targetcut — emit FASTA of each aligned record. TODO.
+// ---- targetcut ---------------------------------------------------------
+
+// TestLive_Targetcut runs `samtools targetcut` on 8 stacked 20M reads
+// over a 60bp reference — the same coverage shape the in-process
+// TestTargetcutHMM_SimpleCoverage validates against hand-derived
+// numbers from cut_target.c. Both binaries produce a single chr1:2-30
+// consensus SAM record with identical bytes.
 func TestLive_Targetcut(t *testing.T) {
-	t.Skip("no fixture: targetcut output is region-specific; TODO")
+	live, ours := requireLive(t)
+	dir := t.TempDir()
+
+	var samBuf bytes.Buffer
+	samBuf.WriteString("@HD\tVN:1.6\tSO:coordinate\n")
+	samBuf.WriteString("@SQ\tSN:chr1\tLN:60\n")
+	const seq = "ACGTACGTACGTACGTACGT"
+	const qual = "IIIIIIIIIIIIIIIIIIII"
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&samBuf, "r%d\t0\tchr1\t11\t60\t20M\t*\t0\t0\t%s\t%s\n", i, seq, qual)
+	}
+
+	samPath := filepath.Join(dir, "tc.sam")
+	if err := os.WriteFile(samPath, samBuf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bamPath := filepath.Join(dir, "tc.bam")
+	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", samPath), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	up := runBin(t, live, "targetcut", bamPath)
+	gp := runBin(t, ours, "targetcut", bamPath)
+	if !bytes.Equal(up, gp) {
+		t.Errorf("DIVERGENCE: targetcut output differs:\n--- up ---\n%s--- ours ---\n%s",
+			up, gp)
+	}
 }
 
-// TestLive_CramSubcommand — the `cram` family (top-level `cram`
-// subcommand for CRAM size dump). TODO once a small .cram is vendored.
+// ---- unknown-subcommand rejection parity -------------------------------
+
+// assertSamtoolsRejects shells out to both binaries with an unsupported
+// subcommand name and requires both to exit non-zero with no stdout.
+// Used to lock in rejection-parity for tokens that aren't real
+// samtools subcommands. Upstream's `bash_completion` lists samtools
+// commands explicitly, none of which include `bam`, `sam`, or `cram`.
+func assertSamtoolsRejects(t *testing.T, sub string) {
+	t.Helper()
+	live, ours := requireLive(t)
+
+	run := func(bin string) (rejected bool, stdout []byte) {
+		cmd := exec.Command(bin, sub)
+		var buf bytes.Buffer
+		cmd.Stdout = &buf
+		cmd.Stderr = io.Discard
+		err := cmd.Run()
+		// We want a non-zero exit and no stdout. err != nil means a non-
+		// zero exit (or a startup failure, which is also a rejection
+		// from the caller's perspective).
+		return err != nil, buf.Bytes()
+	}
+
+	upRej, upOut := run(live)
+	if !upRej {
+		t.Fatalf("upstream samtools unexpectedly ACCEPTED %q as a subcommand", sub)
+	}
+	if len(upOut) > 0 {
+		t.Fatalf("upstream samtools wrote stdout for unknown subcommand %q: %q",
+			sub, upOut)
+	}
+	oursRej, oursOut := run(ours)
+	if !oursRej {
+		t.Errorf("our port accepted %q as a subcommand but upstream rejects it", sub)
+	}
+	if len(oursOut) > 0 {
+		t.Errorf("our port wrote stdout (%d bytes) for unknown subcommand %q "+
+			"but upstream emits none", len(oursOut), sub)
+	}
+}
+
+// TestLive_CramSubcommand asserts rejection-parity for the bare `cram`
+// token. Upstream samtools does not have a top-level `cram` subcommand
+// — CRAM conversion is via `view -C` and CRAM size dumps live under
+// `cram-size`. Both binaries decline the bare `cram` token, exit non-
+// zero, and produce no stdout.
 func TestLive_CramSubcommand(t *testing.T) {
-	t.Skip("no fixture: needs a small .cram + reference; TODO")
+	assertSamtoolsRejects(t, "cram")
 }
 
-// TestLive_BamSubcommand — `bam` subcommand (low-level BAM viewer).
-// TODO: write a small reference invocation when scope is finalized.
+// TestLive_BamSubcommand asserts rejection-parity for `bam`. There is
+// no standalone `bam` subcommand in upstream samtools — BAM<->SAM
+// conversion is via `view`. Both binaries reject the bare token
+// identically.
 func TestLive_BamSubcommand(t *testing.T) {
-	t.Skip("no fixture: scope of the bam subcommand TBD; TODO")
+	assertSamtoolsRejects(t, "bam")
 }
 
-// TestLive_SamSubcommand — `sam` subcommand. TODO.
+// TestLive_SamSubcommand asserts rejection-parity for `sam`. Same
+// reasoning as TestLive_BamSubcommand: there is no `sam` subcommand
+// upstream, and our port mirrors that rejection.
 func TestLive_SamSubcommand(t *testing.T) {
-	t.Skip("no fixture: scope of the sam subcommand TBD; TODO")
+	assertSamtoolsRejects(t, "sam")
 }
