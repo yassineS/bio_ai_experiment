@@ -19,6 +19,7 @@ type builtinPluginFunc func(opts PluginOptions, out io.Writer, stderr io.Writer)
 // builtinPlugins maps a plugin name to its native Go implementation.
 var builtinPlugins = map[string]builtinPluginFunc{
 	"mendelian2": runBuiltinMendelian2,
+	"fill-tags":  runBuiltinFillTags,
 }
 
 // pluginArgs is a tiny getopt-style splitter for the verbatim plugin

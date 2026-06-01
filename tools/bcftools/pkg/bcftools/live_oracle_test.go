@@ -886,12 +886,32 @@ func TestLiveConsensus(t *testing.T) {
 
 // -------------------------------------------------------------------------
 // PLUGIN — upstream loads plugins via dlopen of `<name>.so`; our port
-// re-implements the common ones as native Go built-ins. A still-missing
-// plugin name keeps rejection-parity. (+fill-tags output parity is
-// asserted in TestLivePluginFillTags.)
+// re-implements the common ones (`fill-tags`, `mendelian2`) as native
+// Go built-ins so their output byte-matches upstream. `+fill-tags`
+// with the default "all" tag set is compared end-to-end (AC/AN/AF/MAF/
+// NS/AC_Hom/Het/Hemi/F_MISSING/HWE/ExcHet, including the HWE exact
+// test). A still-missing plugin name keeps rejection-parity.
 // -------------------------------------------------------------------------
 
 func TestLivePlugin(t *testing.T) {
+	live, ours := requireLive(t)
+	pluginDir := livePluginDir(t)
+	if pluginDir == "" {
+		t.Skip("vendored bcftools plugin .so directory not found")
+	}
+	fx := fixturePath(t, "basic.vcf")
+	env := []string{"BCFTOOLS_PLUGINS=" + pluginDir}
+	livOut := runBinEnv(t, live, env, "+fill-tags", fx)
+	ourOut := runBin(t, ours, "+fill-tags", fx)
+	if !bytes.Equal(stripProvenance(livOut), stripProvenance(ourOut)) {
+		t.Errorf("+fill-tags output diverges\n--- live ---\n%s\n--- ours ---\n%s",
+			snippet(livOut, 1200), snippet(ourOut, 1200))
+	}
+}
+
+// TestLivePluginRejection keeps the rejection-parity gate for an
+// unknown plugin name (neither binary can resolve it).
+func TestLivePluginRejection(t *testing.T) {
 	fx := fixturePath(t, "basic.vcf")
 	assertRejectionParity(t, []string{"+nosuchplugin", fx})
 }
