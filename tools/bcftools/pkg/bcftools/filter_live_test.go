@@ -117,6 +117,14 @@ func TestFilterLiveExcludeComplement(t *testing.T) {
 		`AC[0]>1`,
 		`N_ALT=1`,
 		`INFO/DP>50`,
+		`POS>200`,
+		`CHROM="chr1"`,
+		`REF="A"`,
+		`GT="het"`,
+		`GT="hom"`,
+		`FORMAT/DP>10`,
+		`N_PASS(GT="alt")>0`,
+		`STRLEN(REF)=1`,
 	}
 	for _, expr := range exprs {
 		t.Run(expr, func(t *testing.T) {

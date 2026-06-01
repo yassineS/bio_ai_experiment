@@ -2643,6 +2643,44 @@ to pass.
     entries above — but the live-oracle suite no longer relies on
     `t.Skip` to hide them.
 
+#### Filter expression engine (`-i`/`-e`)
+
+The `-i/-e` engine (`filter.go` + `vcffilter.go`, ported from
+`reference_code/bcftools/filter.c`) is shared by `view`, `query`, `csq`,
+`call`, and `filter`. Coverage of operands/functions, all byte-matched
+against genuine bcftools 1.23.1 on `testdata/parity/basic.vcf` and pinned
+in `testdata/filter_live/expected_matrix.tsv`
+(`TestFilterLiveMatrix`/`TestFilterLiveExcludeComplement`,
+`filter_live_test.go`):
+
+- **Column operands ✅** — `CHROM`, `POS`, `ID`, `REF`, `ALT` (and
+  `ALT[i]`), in addition to the pre-existing `QUAL`/`FILTER`.
+  `POS` is numeric; the others compare as strings; multi-`ALT` uses
+  any-element semantics. (`filter.c` `filters_set_chrom/pos/ref_string/
+  alt_string`.)
+- **`GT` genotype-class matching ✅** — class keywords `hom`/`het`/`hap`
+  (mode-3), `mis`/`alt`/`ref` (mode-4), and `RR`/`RA`(`AR`)/`AA`/`Aa`
+  (`aA`, case-sensitive het-alt)/`r`/`a` (mode-2), plus explicit forms
+  (`0/1`, `1|1`, …) compared verbatim against the formatted genotype so
+  phasing distinguishes `0/1` from `0|1` exactly as upstream. Default
+  any-sample semantics. Note: upstream does **not** define `hom_alt`/
+  `hom_ref`/`het_alt`/`miss` as keywords (they yield empty sets), so the
+  port treats them as explicit literals — matching upstream's empty
+  result. (`filter.c` `_filters_set_genotype{2,3,4}`.)
+- **`FORMAT/<TAG>` / `FMT/<TAG>` per-sample compare ✅** — any-sample-by
+  -default; `[i]` element selection supported. (`FORMAT/GT` routes to the
+  GT path.)
+- **Aggregation functions ✅** — `N_PASS`/`F_PASS` (count/fraction of
+  samples whose nested per-sample expr passed), `COUNT` (passing samples,
+  or present values for a bare FORMAT tag), and `SUM`/`MAX`/`MIN`/`AVG`
+  (`MEAN`) over per-sample numeric values. (`filter.c` `func_npass`/
+  `func_count`/`func_sum` family.)
+- **Scalar functions ✅** — `STRLEN(field)` (byte length; `.` → 0) and
+  `ABS(x)`. (`filter.c` `func_strlen`.)
+- **Not yet ported (deferred):** `ILEN`, `BINOM`/`FISHER`/`PHRED`,
+  `MEDIAN`/`STDEV`, the `SMPL_*`/`s*` per-sample-output aggregations,
+  regex `~`/`!~`, arithmetic operators (`+ - * /`), and `PERL.*`
+  subroutines. These were not part of the common-case sweep.
 
 #### Live-binary oracle coverage
 
