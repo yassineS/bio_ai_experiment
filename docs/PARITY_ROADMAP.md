@@ -2622,9 +2622,14 @@ to pass.
     the error-probability discordance / HWE data rows now match
     upstream `vcfgtcheck.c` byte-for-byte (default `-E 40`,
     `--calc-HWE-prob`).
+  - **byte-equal full-output** for `+mendelian2` (the `-m c` summary,
+    against the vendored `mendelian2.so` with BCFTOOLS_PLUGINS set) and
+    `+fill-tags` (default "all" tag set, against `fill-tags.so`). Both
+    are native Go built-ins; see the `+plugins` section below.
   - **rejection-parity** (both binaries exit non-zero, both produce
     empty stdout) for `call` (missing input file), `polysomy` (upstream
-    binary does not ship the subcommand), and `cnv` (no `-o`).
+    binary does not ship the subcommand), `cnv` (no `-o`), and an
+    unknown plugin name (`+nosuchplugin`).
   - The full-output oracle for `call` is still deferred — see "FAIL"
     entries above — but the live-oracle suite no longer relies on
     `t.Skip` to hide them.
@@ -2693,9 +2698,14 @@ to pass.
     the error-probability discordance / HWE data rows now match
     upstream `vcfgtcheck.c` byte-for-byte (default `-E 40`,
     `--calc-HWE-prob`).
+  - **byte-equal full-output** for `+mendelian2` (the `-m c` summary,
+    against the vendored `mendelian2.so` with BCFTOOLS_PLUGINS set) and
+    `+fill-tags` (default "all" tag set, against `fill-tags.so`). Both
+    are native Go built-ins; see the `+plugins` section below.
   - **rejection-parity** (both binaries exit non-zero, both produce
     empty stdout) for `call` (missing input file), `polysomy` (upstream
-    binary does not ship the subcommand), and `cnv` (no `-o`).
+    binary does not ship the subcommand), `cnv` (no `-o`), and an
+    unknown plugin name (`+nosuchplugin`).
   - The full-output oracle for `call` is still deferred — see "FAIL"
     entries above — but the live-oracle suite no longer relies on
     `t.Skip` to hide them.
@@ -2760,13 +2770,26 @@ but with a deliberate design divergence from upstream:
   its stderr. The contract is specified in `docs/PLUGIN_PROTOCOL.md`.
   The mechanism lives in `tools/bcftools/pkg/bcftools/plugin.go` with a
   reference example plugin under `tools/bcftools/plugins/example/`.
-  **Intentionally not ported:** the ~30 bundled upstream plugins
-  (`+fill-tags`, `+split-vep`, `+setGT`, `+prune`, `+fixploidy`, ...).
-  The plugin *system* exists so users can write their own plugins;
-  re-porting upstream's plugin catalogue is explicit non-goal scope.
-  Upstream plugin sources (`plugins/*.c`) remain vendored under
-  `reference_code/bcftools/` for anyone who wants to reimplement a
-  specific one as a standalone subprocess plugin.
+  **Built-in plugins:** a small set of the bundled upstream plugins are
+  re-implemented natively in Go and dispatched by `RunPlugin` before the
+  `BCFTOOLS_PLUGINS` executable search
+  (`tools/bcftools/pkg/bcftools/plugin_builtin.go`):
+  - **`+fill-tags`** — DONE for the default "all" tag set: AN, AC, AF,
+    MAF, NS, AC_Hom, AC_Het, AC_Hemi, F_MISSING, HWE, ExcHet (including
+    the Hardy-Weinberg exact test ported from `plugins/fill-tags.c:
+    calc_hwe`). Output byte-matches upstream on the live oracle
+    (`fill_tags.go`, `TestLivePlugin`). VAF/VAF1 header lines are
+    declared but per-record values are skipped without FORMAT/AD, as
+    upstream does; END/TYPE are excluded from "all"; population
+    grouping (`-S`/`--samples-file` with group tags) is not yet wired.
+  - **`+mendelian2`** — DONE: native built-in routing to the same
+    Mendelian2 core, so the `-m c` summary byte-matches upstream
+    `plugins/mendelian2.c:print_stats` (`TestLiveMendelian`).
+  **Still not ported:** the remaining ~28 bundled upstream plugins
+  (`+split-vep`, `+setGT`, `+prune`, `+fixploidy`, ...). Their sources
+  (`plugins/*.c`) remain vendored under `reference_code/bcftools/` for
+  anyone who wants to add a native built-in or a standalone subprocess
+  plugin.
 
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier

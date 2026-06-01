@@ -236,6 +236,13 @@ func FormatPluginList(plugins []PluginInfo, verbose bool) string {
 // The plugin's stderr is forwarded to stderr verbatim. A non-zero plugin
 // exit is reported as a *PluginExecError.
 func RunPlugin(opts PluginOptions, out io.Writer, stderr io.Writer) error {
+	// Built-in plugins are implemented natively in Go (no dlopen, no
+	// subprocess) so their output byte-matches upstream's compiled
+	// plugin. They are dispatched before the BCFTOOLS_PLUGINS search.
+	if fn, ok := builtinPlugins[strings.TrimPrefix(opts.Name, "+")]; ok {
+		return fn(opts, out, stderr)
+	}
+
 	path, err := ResolvePlugin(opts.Name)
 	if err != nil {
 		return err

@@ -78,6 +78,38 @@ func runBin(t *testing.T, bin string, args ...string) []byte {
 	return out.Bytes()
 }
 
+// livePluginDir returns the absolute path to the vendored compiled
+// plugins directory (the .so files that the upstream binary dlopen's),
+// or "" when it is unavailable. The upstream binary needs
+// BCFTOOLS_PLUGINS pointed here to run `+fill-tags` / `+mendelian2`.
+func livePluginDir(t *testing.T) string {
+	t.Helper()
+	abs, err := filepath.Abs(filepath.Join("..", "..", "..", "..",
+		"reference_code", "bcftools", "plugins"))
+	if err != nil {
+		return ""
+	}
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return ""
+	}
+	return abs
+}
+
+// runBinEnv is runBin with extra environment entries (e.g.
+// BCFTOOLS_PLUGINS) appended to the inherited environment.
+func runBinEnv(t *testing.T, bin string, env []string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), env...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%s %v: %v", bin, args, err)
+	}
+	return out.Bytes()
+}
+
 // Provenance lines that legitimately differ between upstream and our port
 // (they encode version strings and absolute paths). Stripping them keeps
 // the oracle focused on actual semantic divergence.
@@ -751,20 +783,36 @@ func TestLiveRoh(t *testing.T) {
 }
 
 // -------------------------------------------------------------------------
-// MENDELIAN — upstream removed the standalone `mendelian` subcommand
-// in favour of the +mendelian2 plugin (loaded via dlopen), while our
-// port exposes both as built-in subcommands. The output format
-// (descriptions / counter labels) diverges. Rejection-parity on a
-// no-required-flag invocation locks in observable behaviour.
+// MENDELIAN — `+mendelian2` is upstream's dlopen plugin; our port runs
+// it as a native built-in. The `-m c` summary (counter labels, the
+// descriptive comment lines, and the per-trio columns) now byte-matches
+// upstream plugins/mendelian2.c. The upstream binary needs
+// BCFTOOLS_PLUGINS pointed at the vendored .so directory; our built-in
+// needs no plugin path.
 // -------------------------------------------------------------------------
 
 func TestLiveMendelian(t *testing.T) {
-	fx := fixturePath(t, "basic.vcf")
-	// Both binaries reject mendelian2 invocations without -p/-P (live
-	// errors with "Missing the -p or -P option" via the plugin
-	// surface; our port errors with "missing -p/--pfm or -P/--ped
-	// option"). Neither writes any stdout.
-	assertRejectionParity(t, []string{"+mendelian2", fx})
+	live, ours := requireLive(t)
+	pluginDir := livePluginDir(t)
+	if pluginDir == "" {
+		t.Skip("vendored bcftools plugin .so directory not found")
+	}
+	mendDir, err := filepath.Abs(filepath.Join("..", "..", "testdata", "parity", "mendelian"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vcfPath := filepath.Join(mendDir, "trio.vcf")
+	pedPath := filepath.Join(mendDir, "trio.ped")
+	if _, err := os.Stat(vcfPath); err != nil {
+		t.Skip("no mendelian trio fixture")
+	}
+	env := []string{"BCFTOOLS_PLUGINS=" + pluginDir}
+	livOut := runBinEnv(t, live, env, "+mendelian2", vcfPath, "-P", pedPath)
+	ourOut := runBin(t, ours, "+mendelian2", vcfPath, "-P", pedPath)
+	if !bytes.Equal(stripProvenance(livOut), stripProvenance(ourOut)) {
+		t.Errorf("+mendelian2 summary diverges\n--- live ---\n%s\n--- ours ---\n%s",
+			snippet(livOut, 800), snippet(ourOut, 800))
+	}
 }
 
 // -------------------------------------------------------------------------
@@ -838,11 +886,9 @@ func TestLiveConsensus(t *testing.T) {
 
 // -------------------------------------------------------------------------
 // PLUGIN — upstream loads plugins via dlopen of `<name>.so`; our port
-// runs plugins as subprocess filters (see docs/PLUGIN_PROTOCOL.md).
-// The two surfaces don't share an ABI, so byte-equal parity on
-// +fill-tags is not feasible without re-implementing dlopen. We
-// lock in rejection-parity on a known-missing plugin name (both
-// binaries refuse to run).
+// re-implements the common ones as native Go built-ins. A still-missing
+// plugin name keeps rejection-parity. (+fill-tags output parity is
+// asserted in TestLivePluginFillTags.)
 // -------------------------------------------------------------------------
 
 func TestLivePlugin(t *testing.T) {

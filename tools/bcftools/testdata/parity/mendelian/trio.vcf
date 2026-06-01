@@ -1,0 +1,10 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	child	father	mother
+chr1	100	.	A	T	.	.	.	GT	0/1	0/0	0/1
+chr1	200	.	C	G	.	.	.	GT	1/1	0/0	0/0
+chr1	300	.	G	A	.	.	.	GT	0/0	0/0	0/0
+chr1	400	.	T	C	.	.	.	GT	0/1	0/1	1/1
+chr1	500	.	A	G	.	.	.	GT	./.	0/1	0/1
+chr1	600	.	A	.	.	.	.	GT	0/0	0/0	0/0

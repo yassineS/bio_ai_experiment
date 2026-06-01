@@ -209,6 +209,7 @@ type Mendelian2Summary struct {
 	SitesFail        int // failed -i/-e filter
 	SitesNoGT        int // no FMT/GT field
 	SitesNotDiploid  int // GT not diploid
+	SitesNoRule      int // no applicable inheritance rule (always 0 without --rules)
 	SitesMissing     int // at least one trio with missing GT
 	SitesMERR        int // at least one trio with Mendel error
 	SitesGood        int // at least one good trio
@@ -226,6 +227,7 @@ type Mendelian2TrioStats struct {
 	NMErr    int // Mendelian errors
 	NMissing int // missing trio GTs
 	NFail    int // -i/-e filter failures
+	NNoRule  int // sites with no applicable inheritance rule (always 0 without --rules)
 }
 
 // Mendelian2File is the file-aware entry point used by the CLI. It
@@ -603,9 +605,10 @@ func setSampleGT(v *vcf.Variant, i int, value string) {
 }
 
 // writeMendelian2Summary writes the upstream-shaped `-m c` summary
-// to out. We mirror upstream's section headers and column ordering
-// verbatim so a downstream `grep ^TRIO | cut` pipeline behaves the
-// same.
+// to out. Section headers, counter labels, the descriptive comment
+// lines, and the per-trio column rows are reproduced verbatim from
+// plugins/mendelian2.c:print_stats so the output byte-matches upstream
+// (modulo provenance, of which this report has none).
 func writeMendelian2Summary(out io.Writer, s Mendelian2Summary) error {
 	w := bufio.NewWriter(out)
 	defer w.Flush()
@@ -619,9 +622,10 @@ func writeMendelian2Summary(out io.Writer, s Mendelian2Summary) error {
 		{"sites_fail", s.SitesFail, "# skipped because of failed -i/-e filter"},
 		{"sites_no_GT", s.SitesNoGT, "# skipped because of absent FORMAT/GT field"},
 		{"sites_not_diploid", s.SitesNotDiploid, "# skipped because FORMAT/GT not formatted diploid"},
-		{"sites_missing", s.SitesMissing, "# number of sites with at least one trio GT missing"},
-		{"sites_merr", s.SitesMERR, "# number of sites with at least one Mendelian error"},
-		{"sites_good", s.SitesGood, "# number of sites with at least one good trio"},
+		{"sites_no_rule", s.SitesNoRule, "# number of sites with no applicable inheritance rule in at least one trio"},
+		{"sites_missing", s.SitesMissing, "# number of sites with missing or unusable GT information in at least one trio"},
+		{"sites_merr", s.SitesMERR, "# number of sites with at least one definite Mendelian error"},
+		{"sites_good", s.SitesGood, "# number of sites with at least one evaluable and Mendelian-consistent trio"},
 	}
 	if _, err := fmt.Fprintln(w, "# Summary stats"); err != nil {
 		return err
@@ -631,9 +635,11 @@ func writeMendelian2Summary(out io.Writer, s Mendelian2Summary) error {
 			return err
 		}
 	}
-	if _, err := fmt.Fprintln(w, "# Per-trio stats, each column corresponds to one trio."); err != nil {
-		return err
-	}
+	fmt.Fprintln(w, "# Note: sites_missing, sites_merr, sites_good, and sites_no_rule are not mutually exclusive with multiple trios.")
+	fmt.Fprintln(w, "# Per-trio stats, each column corresponds to one trio. List of trios is below.")
+	fmt.Fprintln(w, "# The meaning of per-trio stats is the same as described above, ngood_alt is")
+	fmt.Fprintln(w, "# the number of good genotypes with at least one non-reference allele, and is")
+	fmt.Fprintln(w, "# included in the ngood counter")
 	if err := writeMendelian2TrioRow(w, "ngood", s.Trios, func(t Mendelian2TrioStats) int { return t.NGood }); err != nil {
 		return err
 	}
@@ -649,9 +655,14 @@ func writeMendelian2Summary(out io.Writer, s Mendelian2Summary) error {
 	if err := writeMendelian2TrioRow(w, "nfail", s.Trios, func(t Mendelian2TrioStats) int { return t.NFail }); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(w, "# TRIO\t[2]id\t[3]child\t[4]father\t[5]mother"); err != nil {
+	if err := writeMendelian2TrioRow(w, "nno_rule", s.Trios, func(t Mendelian2TrioStats) int { return t.NNoRule }); err != nil {
 		return err
 	}
+	fmt.Fprintln(w, "# List of trios. Their ids are in the same order as the values listed in the stats lines above. For")
+	fmt.Fprintln(w, "# example, the values for the first trio (id=1) and the third trio (id=3) are in the 2nd and the 4th")
+	fmt.Fprintln(w, "# column and their stats can be obtained with the unix command")
+	fmt.Fprintln(w, "#     cat stats.txt | grep ^n | cut -f1,2,4")
+	fmt.Fprintln(w, "# TRIO\t[2]id\t[3]child\t[4]father\t[5]mother")
 	for i, t := range s.Trios {
 		if _, err := fmt.Fprintf(w, "TRIO\t%d\t%s\t%s\t%s\n", i+1, t.Child, t.Father, t.Mother); err != nil {
 			return err
