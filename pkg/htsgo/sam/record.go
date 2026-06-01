@@ -296,6 +296,12 @@ func ParseAux(field string) (Aux, error) {
 		if err != nil {
 			return Aux{}, fmt.Errorf("sam: aux 'i' parse: %w", err)
 		}
+		// Mirror htslib's sam_parse1/aux_parse (sam.c:2592-2620): a
+		// SAM-text integer is narrowed to the smallest BAM integer type
+		// that holds it. Programmatic tags added with an explicit width
+		// (fixmate MQ/ms, calmd NM via bam_aux_append) keep Type 'i' and
+		// are written as a fixed 4-byte int32 by the BAM writer.
+		a.Type = narrowAuxIntType(v)
 		a.Value = v
 	case 'f':
 		v, err := strconv.ParseFloat(val, 64)

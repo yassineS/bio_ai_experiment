@@ -501,19 +501,8 @@ func TestLive_Markdup(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(upB, ourB) {
-		// Decoded-record equivalence is the oracle — BAM raw bytes
-		// may legitimately differ because our pkg/htsgo BAM writer
-		// always encodes 'i' aux tags with the most compact integer
-		// type (C/c/S/s/I/i) while upstream htslib always writes the
-		// caller-requested width. Both encodings round-trip to the
-		// same value. Fixing this byte-level divergence requires a
-		// pkg/htsgo change, which is out of scope here.
-		upDec := decodeBAM(t, live, upOut)
-		ourDec := decodeBAM(t, live, ourOut)
-		if !bytes.Equal(upDec, ourDec) {
-			t.Errorf("DIVERGENCE: markdup records differ.\n--- up ---\n%s--- ours ---\n%s",
-				upDec, ourDec)
-		}
+		t.Errorf("DIVERGENCE: markdup BAM bytes differ (len up=%d ours=%d)",
+			len(upB), len(ourB))
 	}
 }
 
@@ -548,20 +537,8 @@ func TestLive_Fixmate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(upB, ourB) {
-		// Same decoded-records-only oracle as TestLive_Markdup:
-		// upstream htslib's BAM writer always uses the caller-
-		// requested integer width for 'i' aux tags (e.g. MQ:i: is
-		// stored as 4-byte i), whereas our pkg/htsgo BAM writer
-		// rewrites them to the most compact type (C/c/S/s/I/i). The
-		// records round-trip to the same SAM text but the BAM bytes
-		// differ. A byte-equal fix requires a pkg/htsgo writer
-		// change (out of scope here).
-		upDec := decodeBAM(t, live, upOut)
-		ourDec := decodeBAM(t, live, ourOut)
-		if !bytes.Equal(upDec, ourDec) {
-			t.Errorf("DIVERGENCE: fixmate records differ.\n--- up ---\n%s--- ours ---\n%s",
-				upDec, ourDec)
-		}
+		t.Errorf("DIVERGENCE: fixmate BAM bytes differ (len up=%d ours=%d)",
+			len(upB), len(ourB))
 	}
 }
 

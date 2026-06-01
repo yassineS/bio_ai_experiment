@@ -253,10 +253,19 @@ func encodeBAMAux(buf *bytes.Buffer, a Aux) error {
 		binary.LittleEndian.PutUint16(b[:], uint16(v))
 		buf.Write(b[:])
 	case 'i':
+		// htslib's bam_aux_append(..., 'i', 4, ...) — used by fixmate
+		// (MQ/ms), calmd (NM) and markdup — always writes a literal
+		// 4-byte signed int32 descriptor and never narrows it. SAM-text
+		// integers are narrowed at parse time instead (see ParseAux),
+		// so by the time a record reaches the writer the on-disk width
+		// is already fixed in Type and we honour it byte-for-byte. This
+		// matches htslib, where the only narrowing happens in
+		// sam_parse1's aux_parse, not in the BAM writer.
+		buf.WriteByte('i')
 		v, _ := a.Value.(int64)
-		// Choose the most compact integer encoding when writing from a
-		// generic 'i' aux to keep BAM files small.
-		writeBAMIntCompact(buf, v)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(int32(v)))
+		buf.Write(b[:])
 	case 'I':
 		buf.WriteByte('I')
 		v, _ := a.Value.(int64)
@@ -326,6 +335,40 @@ func encodeBAMAux(buf *bytes.Buffer, a Aux) error {
 		return fmt.Errorf("sam: unknown aux type %q", a.Type)
 	}
 	return nil
+}
+
+// narrowAuxIntType returns the smallest BAM integer type byte that can hold v,
+// replicating htslib's aux_parse narrowing for SAM-text 'i'/'I' integers
+// (sam.c:2592-2620):
+//
+//	negative: >= INT8_MIN  -> 'c'; else >= INT16_MIN -> 's'; else 'i'
+//	non-neg:  <= UINT8_MAX  -> 'C'; else <= UINT16_MAX -> 'S'; else 'I'
+//
+// A SAM-text integer is narrowed at parse time so that a record parsed from SAM
+// and written to BAM matches `samtools view -b` byte-for-byte. Programmatic
+// tags added with an explicit 'i'/'I' width (e.g. fixmate MQ/ms, calmd NM via
+// bam_aux_append) keep their declared type and are written at full width.
+func narrowAuxIntType(v int64) byte {
+	switch {
+	case v < 0:
+		switch {
+		case v >= math.MinInt8:
+			return 'c'
+		case v >= math.MinInt16:
+			return 's'
+		default:
+			return 'i'
+		}
+	default:
+		switch {
+		case v <= math.MaxUint8:
+			return 'C'
+		case v <= math.MaxUint16:
+			return 'S'
+		default:
+			return 'I'
+		}
+	}
 }
 
 // writeBAMIntCompact writes an integer aux value using the smallest BAM

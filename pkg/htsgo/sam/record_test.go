@@ -71,7 +71,16 @@ func TestParseAux(t *testing.T) {
 		in   string
 		want Aux
 	}{
-		{"NM:i:3", Aux{Tag: "NM", Type: 'i', Value: int64(3)}},
+		// htslib narrows SAM-text 'i'/'I' integers to the smallest BAM
+		// integer type at parse time (aux_parse, sam.c:2592-2620), so a
+		// small positive NM:i:3 lands as type 'C', not 'i'.
+		{"NM:i:3", Aux{Tag: "NM", Type: 'C', Value: int64(3)}},
+		{"XQ:i:255", Aux{Tag: "XQ", Type: 'C', Value: int64(255)}},
+		{"XQ:i:256", Aux{Tag: "XQ", Type: 'S', Value: int64(256)}},
+		{"XQ:i:65536", Aux{Tag: "XQ", Type: 'I', Value: int64(65536)}},
+		{"XN:i:-1", Aux{Tag: "XN", Type: 'c', Value: int64(-1)}},
+		{"XN:i:-200", Aux{Tag: "XN", Type: 's', Value: int64(-200)}},
+		{"XN:i:-40000", Aux{Tag: "XN", Type: 'i', Value: int64(-40000)}},
 		{"XF:f:1.5", Aux{Tag: "XF", Type: 'f', Value: 1.5}},
 		{"RG:Z:rg1", Aux{Tag: "RG", Type: 'Z', Value: "rg1"}},
 		{"XA:A:U", Aux{Tag: "XA", Type: 'A', Value: "U"}},
