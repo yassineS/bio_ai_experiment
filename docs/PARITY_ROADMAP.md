@@ -1523,13 +1523,19 @@ suite run yet.
 
 **Status:** 1 / 1 command, most flags.
 
+- **`--targets` strictness** — fixed. `--targets`/`-T` is now a true
+  post-filter: it does not contribute query regions (whole-file scan unless
+  positional/`-R` regions are given), and each record is emitted only if its
+  `[beg,end)` interval overlaps a target interval — distinct from `-R`'s region
+  union. Tab- vs BED-format target coordinate conventions follow htslib regidx.
+
 Missing:
 
 - **`--reheader FILE`** — replace bgzipped file's header lines in place.
-- **`--targets` strictness** — currently behaves as `-R`; needs to be a
-  true post-filter that only emits records strictly inside the targets.
 
-**Validation:** no full upstream-test-suite run yet.
+**Validation:** live-oracle tests in `tools/tabix/cmd/tabix/main_test.go`
+assert byte-equality against the genuine `reference_code/htslib/tabix` binary
+for the `--targets`/`-R` paths (skipped if the binary is absent).
 
 ### `samtools`
 

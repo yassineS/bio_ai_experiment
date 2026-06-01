@@ -71,7 +71,7 @@ form used internally.
 | `-0`  | `--zero-based`    | 0-based half-open coordinates (BED-style).       |
 | `-f`  | `--force`         | Overwrite an existing `.tbi` index.              |
 | `-R`  | `--regions FILE`  | Read regions from a BED-like file.               |
-| `-T`  | `--targets FILE`  | Restrict output to records overlapping FILE.     |
+| `-T`  | `--targets FILE`  | Stream and post-filter to records inside FILE.   |
 | `-l`  | `--list-chroms`   | Print chromosome names recorded in the index.    |
 | `-h`  | `--print-header`  | Also emit header lines from the queried file.    |
 |       | `--only-header`   | Emit only the header lines.                      |
@@ -151,11 +151,7 @@ query / list / header flags with the following intentional differences:
    replaces the header lines of an existing bgzipped file in place; that
    is a write-path operation orthogonal to indexing and queries. It will
    land in a follow-up PR.
-2. **`-T` / `--targets` is parsed but currently behaves as `-R`.** A real
-   targets filter (post-filter records to only those overlapping a set of
-   target regions) is a thin layer on top of the existing query path and
-   will be tightened up alongside the same PR as `--reheader`.
-3. **Linear-index "no record yet" sentinel.** Internally the builder uses
+2. **Linear-index "no record yet" sentinel.** Internally the builder uses
    `^uint64(0)` while accumulating per-tile minimum virtual offsets,
    replacing the sentinel with `0` (or the carry-forward of the last
    recorded offset, per the htslib convention) in `finalize()` before
