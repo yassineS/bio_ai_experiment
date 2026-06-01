@@ -84,15 +84,18 @@ type CSQOptions struct {
 	Statistics string
 
 	// IncludeExpr / ExcludeExpr are upstream's -i / -e expressions.
-	// v1 stores them but does not evaluate (the SNP classifier runs on
-	// every input record).
+	// They are compiled against the csq-augmented header and evaluated
+	// per record: records failing -i (or matching -e) are dropped,
+	// exactly as `bcftools view -i/-e` does.
 	IncludeExpr string
 	ExcludeExpr string
 
-	// Sample selection (upstream -s / -S). v1 stores them; no
-	// per-sample subsetting is done in v1 (consequences are
-	// position-driven, not sample-driven).
-	Samples     []string
+	// Sample selection (upstream -s / -S). SamplesSpec is the raw -s
+	// argument ("-" for "process no samples", a comma list, or a
+	// "^"-prefixed exclusion list). SamplesFile is the -S file path.
+	// The named samples restrict consequence calling and the per-sample
+	// FORMAT/BCSQ bitmask, mirroring upstream's smpl_ilist handling.
+	SamplesSpec string
 	SamplesFile string
 
 	// Regions / Targets — post-filters.
@@ -156,8 +159,29 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 	// Inject INFO meta-line for the consequence tag.
 	tag := opts.CustomTag
 	hdr.MetaInfo = ensureCSQInfoLine(hdr.MetaInfo, tag)
-	if len(hdr.Samples) > 0 {
+	// The per-sample FORMAT/BCSQ header is emitted only when at least
+	// one sample's consequences will be staged. `--samples -` ignores
+	// all samples (PHASE_DROP_GT upstream), so no FORMAT line is added.
+	if len(hdr.Samples) > 0 && opts.SamplesSpec != "-" {
 		hdr.MetaInfo = ensureCSQFormatLine(hdr.MetaInfo, tag)
+	}
+
+	// Compile -i / -e against the csq-augmented header so bare tags
+	// resolve the same way `bcftools view -i/-e` does. Records failing
+	// -i (or matching -e) are dropped before consequence calling, just
+	// like upstream's filter test in csq.c's process loop.
+	var includeF, excludeF *Filter
+	if opts.IncludeExpr != "" {
+		includeF, err = CompileFilterWithHeader(opts.IncludeExpr, hdr)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if opts.ExcludeExpr != "" {
+		excludeF, err = CompileFilterWithHeader(opts.ExcludeExpr, hdr)
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	out, cleanup, err := openCSQOutput(w, opts.OutputFormat, hdr)
@@ -177,7 +201,12 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 	// several records can be called jointly. Records are emitted in
 	// input order once their annotations are final.
 	opts.CustomTag = tag
-	eng := newHapEngine(idx, opts, hdr)
+	eng, err := newHapEngine(idx, opts, hdr)
+	if err != nil {
+		return 0, err
+	}
+	eng.includeF = includeF
+	eng.excludeF = excludeF
 	written := 0
 	emit := func() error {
 		for _, v := range eng.out {

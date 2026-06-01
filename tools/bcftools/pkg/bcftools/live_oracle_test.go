@@ -791,6 +791,32 @@ func TestLiveCsq(t *testing.T) {
 				filepath.Join(csqDir, tc.vcf))
 		})
 	}
+
+	// -i / -e and -s on the single-sample splice fixture. Upstream's
+	// -i/-e gate consequence calling (not record emission), and -s
+	// restricts which samples drive consequence calling and the
+	// FORMAT/BCSQ bitmask; assert both byte-match upstream.
+	splFA := filepath.Join(csqDir, "csq.splice.issue-2543.fa")
+	splGFF := filepath.Join(csqDir, "csq.splice.issue-2543.gff")
+	splVCF := filepath.Join(csqDir, "csq.splice.issue-2543.vcf")
+	flagCases := []struct {
+		name string
+		args []string
+	}{
+		{"include", []string{"-i", "QUAL=60"}},
+		{"include-filter", []string{"-i", `FILTER="PASS"`}},
+		{"exclude", []string{"-e", "QUAL=60"}},
+		{"exclude-keepall", []string{"-e", "QUAL<10"}},
+		{"samples", []string{"-s", "snippy"}},
+		{"samples-none", []string{"-s", "-"}},
+	}
+	for _, tc := range flagCases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"csq", "-f", splFA, "-g", splGFF}, tc.args...)
+			args = append(args, splVCF)
+			assertEqualStdout(t, live, ours, args...)
+		})
+	}
 }
 
 // -------------------------------------------------------------------------

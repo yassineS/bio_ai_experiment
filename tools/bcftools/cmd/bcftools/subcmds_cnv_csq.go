@@ -279,16 +279,16 @@ CSQ-specific options:
                                  each '-' for none. "0" disables.
 
 General options:
-  -e, --exclude EXPR             Accepted; v1 ignores (every record is processed).
-  -i, --include EXPR             Accepted; v1 ignores.
+  -e, --exclude EXPR             Exclude records for which EXPR is true.
+  -i, --include EXPR             Include only records for which EXPR is true.
       --no-version               Accepted; v1 never appends a version line.
   -o, --output FILE              Output file (default stdout).
   -O, --output-type b|u|z|v|t    Output format. v1 emits only "v" (VCF text).
   -r, --regions LIST             Region list (post-filter in v1).
   -R, --regions-file FILE        BED-like regions file.
       --regions-overlap 0|1|2    Accepted; v1 ignores.
-  -s, --samples -|LIST           Sample list. Accepted; v1 does not subset.
-  -S, --samples-file FILE        Samples file.
+  -s, --samples -|LIST           Samples to process ("-" for none, "^" to exclude).
+  -S, --samples-file FILE        File of samples to process (one per line).
   -t, --targets LIST             Like -r but always a post-filter.
   -T, --targets-file FILE        BED-like targets file.
       --targets-overlap 0|1|2    Accepted; v1 ignores.
@@ -406,10 +406,6 @@ func runCSQ(args []string) int {
 
 	// Silence "declared but not used".
 	_ = trimProtein
-	_ = excludeExpr
-	_ = includeExpr
-	_ = samples
-	_ = samplesFile
 	_ = regionsOverlap
 	_ = targetsOverlap
 	_ = threads
@@ -479,7 +475,7 @@ func runCSQ(args []string) int {
 		opts.TargetsFile = targetsFile
 	}
 	if samples != "" {
-		opts.Samples = bcftools.SplitCommaList(samples)
+		opts.SamplesSpec = samples
 	}
 	if samplesFile != "" {
 		opts.SamplesFile = samplesFile

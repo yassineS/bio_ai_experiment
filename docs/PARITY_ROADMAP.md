@@ -2856,9 +2856,12 @@ per-subcommand option-tail sections below):
   the `hap_node_t` tree, `cds_translate`, compound consequences,
   `@pos` reference pointers and `-p/-n` are ported, and the
   INFO/BCSQ output matches upstream byte-for-byte on the targeted
-  goldens. The remaining tail (`FORMAT/TBCSQ` text expansion,
-  `--unify-chr-names`, `-l/--local-csq`) is slice 4 — see the "csq
-  full-parity slicing plan" below.
+  goldens. `-i/-e` (consequence-calling gate, not record drop) and
+  `-s/-S` (sample subsetting of consequence calling + the
+  FORMAT/BCSQ bitmask) are now wired and byte-match upstream. The
+  remaining tail (`FORMAT/TBCSQ` text expansion, `--unify-chr-names`,
+  `-l/--local-csq`) is slice 4 — see the "csq full-parity slicing
+  plan" below.
 
 `stats` section parity (RESOLVED — all seven previously-deferred section
 goldens now match `bcftools stats -s -` byte-for-byte on
@@ -3234,11 +3237,19 @@ Option-tail gaps on `csq` (slices 1-3 done; slice 4 remains):
   refinement and compound-het bookkeeping are all handled.
 - `-p/--phase a|m|r|R|s` — load-bearing: the haplotype-construction
   modes are ported (`phaseRequire/Merge/AsIs/Skip/NonRef/DropGT`).
-- `-i/--include` / `-e/--exclude` — accepted; not yet evaluated
-  (slice 4). The expression evaluator already exists in
-  `pkg/bcftools`; the wire-up is a small follow-up.
-- `-s/--samples` / `-S/--samples-file` — accepted; the engine
-  currently walks every header sample. Sample subsetting is slice 4.
+- `-i/--include` / `-e/--exclude` — **wired**: the expression is
+  compiled against the csq-augmented header
+  (`CompileFilterWithHeader`) and evaluated per record. Mirrors
+  upstream csq.c:3709-3713 — a record failing `-i` (or matching `-e`)
+  is still **emitted**, but with consequence calling skipped (no BCSQ
+  annotation), rather than dropped as `view -i/-e` does. Byte-matches
+  upstream on the live-oracle subtests.
+- `-s/--samples` / `-S/--samples-file` — **wired**: the named samples
+  (header order, SMPL_STRICT; `^` negation and `-` = "no samples"
+  supported) restrict consequence calling and the per-sample
+  FORMAT/BCSQ bitmask, mirroring upstream's `smpl_ilist`. The
+  FORMAT/BCSQ field still spans the full header (unselected samples
+  get a 0 bitmask). Byte-matches upstream on the live-oracle subtests.
 - `-n/--ncsq INT` — parsed into the per-haplotype `FORMAT/BCSQ` cap
   (`ncsq2`); the cap becomes load-bearing once the `FORMAT/BCSQ`
   bitmask emission lands in slice 4.

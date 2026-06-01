@@ -18,6 +18,7 @@
 package bcftools
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -240,7 +241,15 @@ type hapEngine struct {
 	hdr     *vcf.Header
 	phase   int
 	samples []int // header indices of samples to process; nil when phaseDropGT
+	nsmpl   int   // full header sample count; FORMAT/BCSQ bitmask stride
 	ncsq2   int
+
+	// includeF / excludeF are the compiled -i / -e expressions. A
+	// record failing -i (or matching -e) is still emitted, but with
+	// consequence calling skipped, mirroring upstream csq.c's call_csq
+	// gate (csq.c:3709-3713) rather than `view`'s record drop.
+	includeF *Filter
+	excludeF *Filter
 	// nfmtBcsq is the per-sample width of FORMAT/BCSQ (number of
 	// int32 ints needed to hold ncsq2 effective bits, 30 per int).
 	// Mirrors upstream's args->nfmt_bcsq.
@@ -255,8 +264,10 @@ type hapEngine struct {
 	out []*vcf.Variant // finalised, ready-to-write records in order
 }
 
-// newHapEngine constructs an engine for the given index and options.
-func newHapEngine(idx *CSQIndex, opts CSQOptions, hdr *vcf.Header) *hapEngine {
+// newHapEngine constructs an engine for the given index and options. It
+// resolves the -s/-S sample subset against hdr (returning an error for a
+// strict-missing sample or unreadable samples file).
+func newHapEngine(idx *CSQIndex, opts CSQOptions, hdr *vcf.Header) (*hapEngine, error) {
 	e := &hapEngine{
 		idx:      idx,
 		opts:     opts,
@@ -264,16 +275,24 @@ func newHapEngine(idx *CSQIndex, opts CSQOptions, hdr *vcf.Header) *hapEngine {
 		pos2vbuf: map[int]*vbuf{},
 		hapTr:    map[string]*hapTranscript{},
 	}
+	if hdr != nil {
+		e.nsmpl = len(hdr.Samples)
+	}
 	e.phase = phaseByteToMode(opts.Phase)
 	if hdr == nil || len(hdr.Samples) == 0 {
 		e.phase = phaseDropGT
 	}
+	// Upstream's `--samples -` ignores all samples (PHASE_DROP_GT): no
+	// haplotype tree is built and no FORMAT/BCSQ is emitted.
+	if opts.SamplesSpec == "-" {
+		e.phase = phaseDropGT
+	}
 	if e.phase != phaseDropGT {
-		// All samples are processed (subsetting is a later slice).
-		e.samples = make([]int, len(hdr.Samples))
-		for i := range e.samples {
-			e.samples[i] = i
+		samples, err := resolveCSQSamples(hdr, opts.SamplesSpec, opts.SamplesFile)
+		if err != nil {
+			return nil, err
 		}
+		e.samples = samples
 	}
 	// ncsq2 mirrors upstream's args->ncsq2 (2*--ncsq): the per-haplotype
 	// consequence cap. slice 4: consumed by FORMAT/BCSQ emission.
@@ -283,7 +302,66 @@ func newHapEngine(idx *CSQIndex, opts CSQOptions, hdr *vcf.Header) *hapEngine {
 	}
 	e.ncsq2 *= 2
 	e.nfmtBcsq = ncsq2ToNfmt(e.ncsq2)
-	return e
+	return e, nil
+}
+
+// resolveCSQSamples maps the -s/-S sample selection to header indices in
+// header order, mirroring upstream's smpl_ilist_init(..., SMPL_STRICT)
+// (no SMPL_REORDER). An empty spec and file means "all samples". A
+// "^"-prefixed spec (or file) negates the selection. A named sample that
+// is absent from the header is a hard error (SMPL_STRICT). The "-" spec
+// is handled by the caller (it maps to PHASE_DROP_GT) and is not seen
+// here.
+func resolveCSQSamples(hdr *vcf.Header, spec, file string) ([]int, error) {
+	all := func() []int {
+		idx := make([]int, len(hdr.Samples))
+		for i := range idx {
+			idx[i] = i
+		}
+		return idx
+	}
+	if spec == "" && file == "" {
+		return all(), nil
+	}
+
+	var names []string
+	negate := false
+	if file != "" {
+		f := file
+		if strings.HasPrefix(f, "^") {
+			negate = true
+			f = f[1:]
+		}
+		loaded, err := LoadSamplesFile(f)
+		if err != nil {
+			return nil, err
+		}
+		names = loaded
+	} else {
+		s := spec
+		if strings.HasPrefix(s, "^") {
+			negate = true
+			s = s[1:]
+		}
+		names = SplitCommaList(s)
+	}
+
+	pos := indexSamples(hdr)
+	want := make(map[int]bool, len(names))
+	for _, n := range names {
+		i, ok := pos[n]
+		if !ok {
+			return nil, fmt.Errorf("bcftools csq: the sample %q is not present in the VCF header", n)
+		}
+		want[i] = true
+	}
+	out := make([]int, 0, len(hdr.Samples))
+	for i := range hdr.Samples {
+		if want[i] != negate {
+			out = append(out, i)
+		}
+	}
+	return out, nil
 }
 
 // ncsq2ToNfmt mirrors upstream's ncsq2_to_nfmt: the number of 32-bit

@@ -61,6 +61,15 @@ func (e *hapEngine) process(v *vcf.Variant) error {
 	if callCsq && len(rec.alt) == 2 && (rec.alt[1] == "" || rec.alt[1] == "*" || rec.alt[1] == ".") {
 		callCsq = false
 	}
+	// -i / -e gate consequence calling, not record emission: a record
+	// failing -i (or matching -e) is still written out, just without a
+	// BCSQ annotation. Ports csq.c:3709-3713.
+	if callCsq && e.includeF != nil && !e.includeF.Eval(v) {
+		callCsq = false
+	}
+	if callCsq && e.excludeF != nil && e.excludeF.Eval(v) {
+		callCsq = false
+	}
 	for i := 1; i < len(rec.alt); i++ {
 		if rec.alt[i] == "" {
 			rec.alt[i] = "."
@@ -183,7 +192,10 @@ func (e *hapEngine) setFmtBit(vrec *vrecBuf, ismpl, icsq2 int) {
 		return
 	}
 	if vrec.fmtBM == nil {
-		vrec.fmtBM = make([]uint32, len(e.samples)*e.nfmtBcsq)
+		// Keyed by header sample index (ismpl), so the stride spans the
+		// full header even when -s/-S restricts which samples are
+		// processed. Mirrors upstream's calloc(hdr_nsmpl, ...).
+		vrec.fmtBM = make([]uint32, e.nsmpl*e.nfmtBcsq)
 	}
 	ival, ibit := icsq2ToBit(icsq2)
 	if 1+ival > vrec.nfmt {
@@ -261,7 +273,10 @@ func (e *hapEngine) emitFmtBCSQ(vr *vrecBuf) {
 	if !hasTag {
 		rec.Format = append(rec.Format, tag)
 	}
-	for _, hdrIdx := range e.samples {
+	// FORMAT/BCSQ spans every header sample, not just the -s/-S subset:
+	// unprocessed samples carry a 0 bitmask (mirrors upstream's
+	// bcf_update_format_int32 over the full hdr_nsmpl-wide array).
+	for hdrIdx := 0; hdrIdx < e.nsmpl; hdrIdx++ {
 		if hdrIdx >= len(rec.Samples) {
 			continue
 		}

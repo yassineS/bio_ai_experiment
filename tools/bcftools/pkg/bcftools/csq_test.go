@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/gff"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // chr1 reference (1-based): positions 1..60
@@ -257,6 +258,99 @@ chr1	7	.	T	A	.	PASS	DP=10	GT	0/1
 	var out2 bytes.Buffer
 	if _, err := CSQ(strings.NewReader(phased), &out2, idx, CSQOptions{Phase: 'r'}); err != nil {
 		t.Errorf("phased het under -p require unexpectedly errored: %v", err)
+	}
+}
+
+func TestResolveCSQSamples(t *testing.T) {
+	hdr := &vcf.Header{Samples: []string{"A", "B", "C"}}
+	tests := []struct {
+		name    string
+		spec    string
+		want    []int
+		wantErr bool
+	}{
+		{"all", "", []int{0, 1, 2}, false},
+		{"single", "B", []int{1}, false},
+		{"list-header-order", "C,A", []int{0, 2}, false},
+		{"negate", "^B", []int{0, 2}, false},
+		{"negate-multi", "^A,C", []int{1}, false},
+		{"missing", "Z", nil, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveCSQSamples(hdr, tc.spec, "")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveCSQSamples(%q) = %v, want error", tc.spec, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveCSQSamples(%q): %v", tc.spec, err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("resolveCSQSamples(%q) = %v, want %v", tc.spec, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("resolveCSQSamples(%q) = %v, want %v", tc.spec, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestCSQIncludeExcludeGatesCalling(t *testing.T) {
+	idx := buildCSQIndex(t)
+	// chr1:7 T>A is a missense inside the CDS. With -i excluding the
+	// record, consequence calling is skipped but the record is still
+	// emitted (no BCSQ INFO tag), mirroring upstream csq.c:3709-3713.
+	const vcfIn = `##fileformat=VCFv4.2
+##contig=<ID=chr1>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	7	.	T	A	30	PASS	.	GT	0|1
+`
+	// Sanity: without a filter the missense is annotated.
+	var base bytes.Buffer
+	if _, err := CSQ(strings.NewReader(vcfIn), &base, idx, CSQOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(base.String(), "missense") {
+		t.Fatalf("baseline csq did not annotate missense:\n%s", base.String())
+	}
+
+	// -e QUAL=30 matches the record: calling is skipped, record kept.
+	var excl bytes.Buffer
+	if _, err := CSQ(strings.NewReader(vcfIn), &excl, idx, CSQOptions{ExcludeExpr: "QUAL=30"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(excl.String(), "missense") {
+		t.Errorf("-e QUAL=30 should skip consequence calling:\n%s", excl.String())
+	}
+	if !strings.Contains(excl.String(), "chr1\t7\t") {
+		t.Errorf("-e QUAL=30 should still emit the record:\n%s", excl.String())
+	}
+
+	// -i QUAL=30 matches: calling proceeds.
+	var incl bytes.Buffer
+	if _, err := CSQ(strings.NewReader(vcfIn), &incl, idx, CSQOptions{IncludeExpr: "QUAL=30"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(incl.String(), "missense") {
+		t.Errorf("-i QUAL=30 should keep consequence calling:\n%s", incl.String())
+	}
+
+	// -i QUAL=99 does not match: calling skipped, record still emitted.
+	var inclNo bytes.Buffer
+	if _, err := CSQ(strings.NewReader(vcfIn), &inclNo, idx, CSQOptions{IncludeExpr: "QUAL=99"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(inclNo.String(), "missense") {
+		t.Errorf("-i QUAL=99 (no match) should skip calling:\n%s", inclNo.String())
+	}
+	if !strings.Contains(inclNo.String(), "chr1\t7\t") {
+		t.Errorf("-i QUAL=99 should still emit the record:\n%s", inclNo.String())
 	}
 }
 
