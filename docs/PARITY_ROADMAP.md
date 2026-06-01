@@ -1565,13 +1565,15 @@ Missing subcommands (in rough priority order):
   accepted but treated as a no-op since we always run the full
   intersection. `-d/-D` (tag-value filter) and `-N` (qname file) landed
   in the view-d-D-N PR.
-- **`mpileup` tail** beyond PR #88 wiring: the remaining genuine gap is
-  BCF / genotype-likelihood output (`-g/-u`). `-aa` zero-fill of empty
-  contigs is implemented (see `TestMpileup_AA_ZeroFillTableDriven`). The
-  text-pileup path is complete. `-g/-u` requires the genotype-likelihood
-  model (`bam2bcf`) plus a BCF emit path; `reference_code/htslib`
-  (`errmod.c`, the MAQ likelihood) is now vendored, so the reference
-  source for the port is available — see the "deferred" note below.
+- **`mpileup` `-g/-u` (BCF output) — RESOLVED as rejection-parity.**
+  Upstream samtools 1.x **removed** BCF/VCF output from `samtools
+  mpileup`: the binary rejects `-g/-u` with "using samtools mpileup to
+  generate BCF or VCF files has been removed; please use bcftools
+  mpileup instead". Our port now mirrors that exact rejection (exit 1,
+  same message), so this is parity, not a gap — the genotype-likelihood
+  model lives in the fully-ported `bcftools mpileup`. `-aa` zero-fill of
+  empty contigs is implemented (see `TestMpileup_AA_ZeroFillTableDriven`);
+  the text-pileup path is complete.
 
 Plus:
 

@@ -81,9 +81,11 @@ type MpileupOptions struct {
 	BamList string
 }
 
-// ErrMpileupBCFNotImplemented is returned when callers pass -u/-g for BCF
-// output. Tracked at docs/PARITY_ROADMAP.md#samtools.
-var ErrMpileupBCFNotImplemented = fmt.Errorf("samtools mpileup: BCF output (-u/-g) not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
+// ErrMpileupBCFNotImplemented mirrors upstream samtools 1.x, which REMOVED
+// BCF/VCF output from `samtools mpileup` entirely: passing -u/-g is rejected
+// and the user is directed to `bcftools mpileup`. Matching upstream means
+// rejecting these flags, not implementing them — this is parity, not a gap.
+var ErrMpileupBCFNotImplemented = fmt.Errorf("samtools mpileup: using \"samtools mpileup\" to generate BCF or VCF files has been removed; please use \"bcftools mpileup\" instead")
 
 // ErrMpileupBAQNotImplemented is returned when callers pass -E (redo BAQ).
 // Tracked at docs/PARITY_ROADMAP.md#samtools.

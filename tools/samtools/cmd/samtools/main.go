@@ -1046,8 +1046,8 @@ Options:
   -s, --output-mapq          Append MAPQs column.
   -O, --output-BP            Append per-read positions column.
   -o, --output PATH          Output file (default stdout).
-  -u, --uncompressed-bcf     BCF output (NOT IMPLEMENTED; deferred).
-  -g, --bcf                  BCF output (NOT IMPLEMENTED; deferred).
+  -u, --uncompressed-bcf     BCF output: REMOVED (use "bcftools mpileup").
+  -g, --bcf                  BCF output: REMOVED (use "bcftools mpileup").
   -@, --threads N            Accepted; single-threaded in v1.
   -h, --help                 Show this help.
   -v, --version              Show version.
@@ -1058,8 +1058,10 @@ Notes:
     base for mismatch, * for deletion/refskip placeholder, +<len><seq> for
     insertions after the base, -<len><seq> for deletions starting after this
     position, ^<charq> for read start (charq = mapq + 33), $ for read end.
-  - -E (--redo-baq) and -u/-g (BCF output) are deferred per
-    docs/PARITY_ROADMAP.md#samtools.
+  - -u/-g (BCF/VCF output) was removed from "samtools mpileup" upstream;
+    we reject them with the same message, directing users to
+    "bcftools mpileup" (which is fully ported). -E (--redo-baq) is
+    deferred per docs/PARITY_ROADMAP.md#samtools.
 `
 
 func runMpileup(args []string) int {
@@ -1138,8 +1140,10 @@ func runMpileup(args []string) int {
 		return 0
 	}
 	if bcf || ubcf {
-		fmt.Fprintln(os.Stderr, "samtools mpileup: BCF output (-u/-g) not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
-		return 2
+		// Upstream samtools 1.x removed BCF/VCF output from mpileup and
+		// directs users to bcftools mpileup. Mirror that rejection.
+		fmt.Fprintln(os.Stderr, "samtools mpileup: using \"samtools mpileup\" to generate BCF or VCF files has been removed; please use \"bcftools mpileup\" instead")
+		return 1
 	}
 	if redoBAQ {
 		fmt.Fprintln(os.Stderr, "samtools mpileup: -E/--redo-baq not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
