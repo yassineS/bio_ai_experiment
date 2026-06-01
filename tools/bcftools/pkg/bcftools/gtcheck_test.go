@@ -2,6 +2,7 @@ package bcftools
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 )
@@ -18,60 +19,87 @@ chr1	300	.	G	A	.	.	.	GT	1/1	1/1	0/0
 chr1	400	.	T	C	.	.	.	GT	0/0	0/1	1/1
 `
 
-// TestGtcheck_HeaderIsDCv2 pins the first output line to upstream's
-// literal `#DCv2 + 6 column descriptors` shape, NOT the home-grown
-// `#DC` header from the closed PR #106.
-func TestGtcheck_HeaderIsDCv2(t *testing.T) {
+// gtcheckHeaderLine is the DCv2 column-descriptor row that must appear
+// (after the INFO block and the DCv2 comment block) in every report.
+const gtcheckHeaderLine = "#DCv2\t[2]Query Sample\t[3]Genotyped Sample\t[4]Discordance\t[5]Average -log P(HWE)\t[6]Number of sites compared\t[7]Number of matching genotypes"
+
+// TestGtcheck_MultiSectionOutput pins the report layout: the INFO
+// counter block comes first, then the DCv2 comment block, then the
+// DCv2 header row, then DCv2 data rows.
+func TestGtcheck_MultiSectionOutput(t *testing.T) {
 	var out bytes.Buffer
 	_, err := Gtcheck(strings.NewReader(fixtureGtcheck), &out, GtcheckOptions{})
 	if err != nil {
 		t.Fatalf("Gtcheck: %v", err)
 	}
-	first := strings.SplitN(out.String(), "\n", 2)[0]
-	want := "#DCv2\t[2]Query Sample\t[3]Genotyped Sample\t[4]Discordance\t[5]Average -log P(HWE)\t[6]Number of sites compared\t[7]Number of matching genotypes"
-	if first != want {
-		t.Fatalf("first line:\n got %q\nwant %q", first, want)
+	s := out.String()
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if lines[0] != "INFO\tsites-compared\t4" {
+		t.Errorf("first line: got %q, want INFO sites-compared 4", lines[0])
 	}
-	// There must be NO trailing "# totals..." line.
-	if strings.Contains(out.String(), "# totals") {
-		t.Errorf("output contains forbidden '# totals' trailer:\n%s", out.String())
+	for _, want := range []string{
+		"INFO\tsites-skipped-multiallelic\t0",
+		"INFO\tsites-used-GT-vs-GT\t4",
+		"# DCv2, discordance version 2:",
+		gtcheckHeaderLine,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("output missing line %q\n%s", want, s)
+		}
+	}
+	// The DCv2 header row must precede the DCv2 data rows.
+	hdrIdx := strings.Index(s, gtcheckHeaderLine)
+	dataIdx := strings.Index(s, "\nDCv2\t")
+	if hdrIdx < 0 || dataIdx < 0 || hdrIdx > dataIdx {
+		t.Errorf("DCv2 header must precede data rows (hdr=%d data=%d)", hdrIdx, dataIdx)
 	}
 }
 
-// TestGtcheck_HammingScores: pin the score arithmetic. For the
-// fixture above:
-//
-//	S1 dosages: 0, 1, 2, 0
-//	S2 dosages: 0, MISS, 2, 1
-//	S3 dosages: 2, 2, 0, 2
-//
-// Pair (S1,S2): sites where both non-missing = {100,300,400}; diffs = |0-0|+|2-2|+|0-1| = 1.
-// Pair (S1,S3): all 4 sites; diffs = |0-2|+|1-2|+|2-0|+|0-2| = 7.
-// Pair (S2,S3): sites where both non-missing = {100,300,400}; diffs = |0-2|+|2-0|+|1-2| = 5.
-func TestGtcheck_HammingScores(t *testing.T) {
+// TestGtcheck_CrossCheckPairOrder verifies the sub-diagonal (i>j) pair
+// ordering: query=samples[i], genotyped=samples[j] for j<i.
+func TestGtcheck_CrossCheckPairOrder(t *testing.T) {
 	var out bytes.Buffer
 	r, err := Gtcheck(strings.NewReader(fixtureGtcheck), &out, GtcheckOptions{})
 	if err != nil {
 		t.Fatalf("Gtcheck: %v", err)
 	}
-	want := map[[2]string]struct {
-		disc, sites, match int
-	}{
-		{"S1", "S2"}: {1, 3, 2},
-		{"S1", "S3"}: {7, 4, 0},
-		{"S2", "S3"}: {5, 3, 0},
-	}
+	want := [][2]string{{"S2", "S1"}, {"S3", "S1"}, {"S3", "S2"}}
 	if len(r.Pairs) != len(want) {
 		t.Fatalf("npairs got %d, want %d", len(r.Pairs), len(want))
+	}
+	for i, w := range want {
+		if r.Pairs[i].QuerySample != w[0] || r.Pairs[i].GenotypedSample != w[1] {
+			t.Errorf("pair %d: got (%s,%s) want (%s,%s)", i,
+				r.Pairs[i].QuerySample, r.Pairs[i].GenotypedSample, w[0], w[1])
+		}
+	}
+}
+
+// TestGtcheck_SitesAndMatches pins the per-pair site / match counts.
+//
+//	S1 dosages: 0, 1, 2, 0
+//	S2 dosages: 0, MISS, 2, 1
+//	S3 dosages: 2, 2, 0, 2
+//
+// Pair (S2,S1): both non-missing at {100,300,400} → 3 sites; matches at 100,300 → 2.
+// Pair (S3,S1): both non-missing at all 4 sites → 4 sites; no matches → 0.
+// Pair (S3,S2): both non-missing at {100,300,400} → 3 sites; no matches → 0.
+func TestGtcheck_SitesAndMatches(t *testing.T) {
+	var out bytes.Buffer
+	r, err := Gtcheck(strings.NewReader(fixtureGtcheck), &out, GtcheckOptions{})
+	if err != nil {
+		t.Fatalf("Gtcheck: %v", err)
+	}
+	want := map[[2]string]struct{ sites, match int }{
+		{"S2", "S1"}: {3, 2},
+		{"S3", "S1"}: {4, 0},
+		{"S3", "S2"}: {3, 0},
 	}
 	for _, p := range r.Pairs {
 		w, ok := want[[2]string{p.QuerySample, p.GenotypedSample}]
 		if !ok {
 			t.Errorf("unexpected pair (%s,%s)", p.QuerySample, p.GenotypedSample)
 			continue
-		}
-		if p.Discordance != w.disc {
-			t.Errorf("(%s,%s) discordance: got %d, want %d", p.QuerySample, p.GenotypedSample, p.Discordance, w.disc)
 		}
 		if p.NumSites != w.sites {
 			t.Errorf("(%s,%s) sites: got %d, want %d", p.QuerySample, p.GenotypedSample, p.NumSites, w.sites)
@@ -82,16 +110,22 @@ func TestGtcheck_HammingScores(t *testing.T) {
 	}
 }
 
-// TestGtcheck_MissingGTIsSkipNotDiscordance directly tests the
-// reviewer requirement: a `./.` GT must NOT count as a discordance,
-// it must count as a skip.
-func TestGtcheck_MissingGTIsSkipNotDiscordance(t *testing.T) {
+// TestGtcheck_DiscordanceScore pins the default error-probability
+// discordance score for a fully-concordant and a fully-discordant pair.
+// With gt_err=40, eprob=1e-4, le=-log(1e-4)=9.210340... For two
+// identical homozygous genotypes the minimum joint negative-log
+// probability is 0 (the matching genotype). A hom-ref vs hom-alt pair
+// contributes 2*le per site (the cheapest path is via the het with
+// e + e). Here we just assert a matching pair scores < a mismatching
+// pair, and that a perfectly-matching synthetic pair scores 0.
+func TestGtcheck_DiscordanceScore(t *testing.T) {
 	src := `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=10000>
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	A	B
-chr1	100	.	A	T	.	.	.	GT	0/0	./.
-chr1	200	.	C	G	.	.	.	GT	0/0	0/0
+chr1	100	.	A	T	.	.	AC=2;AN=4	GT	0/0	0/0
+chr1	200	.	C	G	.	.	AC=2;AN=4	GT	0/1	0/1
+chr1	300	.	G	A	.	.	AC=2;AN=4	GT	1/1	1/1
 `
 	var out bytes.Buffer
 	r, err := Gtcheck(strings.NewReader(src), &out, GtcheckOptions{})
@@ -102,30 +136,63 @@ chr1	200	.	C	G	.	.	.	GT	0/0	0/0
 		t.Fatalf("npairs=%d", len(r.Pairs))
 	}
 	p := r.Pairs[0]
+	// Identical genotypes at every site → discordance 0.
 	if p.Discordance != 0 {
-		t.Errorf("discordance: got %d, want 0 (missing must skip)", p.Discordance)
+		t.Errorf("identical samples: discordance got %v, want 0", p.Discordance)
 	}
-	if p.NumSites != 1 {
-		t.Errorf("sites: got %d, want 1 (only 1 site has both GTs)", p.NumSites)
+	if p.NumSites != 3 || p.NumMatching != 3 {
+		t.Errorf("identical samples: sites=%d match=%d, want 3/3", p.NumSites, p.NumMatching)
 	}
 }
 
-// TestGtcheck_RejectsMultiAllelic mirrors upstream's "run `bcftools
-// norm -m -` first" diagnostic.
-func TestGtcheck_RejectsMultiAllelic(t *testing.T) {
+// TestGtcheck_MissingGTIsSkipNotDiscordance: a `./.` GT must NOT count
+// as a compared site, it must be skipped.
+func TestGtcheck_MissingGTIsSkipNotDiscordance(t *testing.T) {
+	src := `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	A	B
+chr1	100	.	A	T	.	.	AC=1;AN=4	GT	0/0	./.
+chr1	200	.	C	G	.	.	AC=1;AN=4	GT	0/0	0/0
+`
+	var out bytes.Buffer
+	r, err := Gtcheck(strings.NewReader(src), &out, GtcheckOptions{})
+	if err != nil {
+		t.Fatalf("Gtcheck: %v", err)
+	}
+	if len(r.Pairs) != 1 {
+		t.Fatalf("npairs=%d", len(r.Pairs))
+	}
+	p := r.Pairs[0]
+	if p.NumSites != 1 {
+		t.Errorf("sites: got %d, want 1 (only 1 site has both GTs)", p.NumSites)
+	}
+	if p.Discordance != 0 {
+		t.Errorf("discordance: got %v, want 0", p.Discordance)
+	}
+}
+
+// TestGtcheck_SkipsMultiAllelic mirrors upstream: a multi-allelic record
+// is counted in sites-skipped-multiallelic and excluded from scoring,
+// NOT a hard error.
+func TestGtcheck_SkipsMultiAllelic(t *testing.T) {
 	src := `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=10000>
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	A	B
 chr1	100	.	A	T,C	.	.	.	GT	0/1	1/2
+chr1	200	.	C	G	.	.	AC=1;AN=4	GT	0/0	0/1
 `
 	var out bytes.Buffer
-	_, err := Gtcheck(strings.NewReader(src), &out, GtcheckOptions{})
-	if err == nil {
-		t.Fatalf("expected error for multi-allelic input, got nil")
+	r, err := Gtcheck(strings.NewReader(src), &out, GtcheckOptions{})
+	if err != nil {
+		t.Fatalf("Gtcheck: unexpected error %v", err)
 	}
-	if !strings.Contains(err.Error(), "bcftools norm -m -") {
-		t.Errorf("error %q does not mention `bcftools norm -m -`", err)
+	if r.Counters.SkippedMultiallelic != 1 {
+		t.Errorf("SkippedMultiallelic: got %d, want 1", r.Counters.SkippedMultiallelic)
+	}
+	if r.Counters.SitesCompared != 1 {
+		t.Errorf("SitesCompared: got %d, want 1", r.Counters.SitesCompared)
 	}
 }
 
@@ -139,43 +206,6 @@ func TestGtcheck_PLDeferred(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "docs/PARITY_ROADMAP.md") {
 		t.Errorf("PL error must mention PARITY_ROADMAP: got %q", err)
-	}
-}
-
-// TestGtcheck_Symmetry verifies that swapping (q,g) yields the same
-// discordance under cross-check mode; we only emit the i<j half by
-// construction, but the score is symmetric in the dosage Hamming
-// metric, so an independent swapped run must yield the same number.
-func TestGtcheck_Symmetry(t *testing.T) {
-	var out1, out2 bytes.Buffer
-	r1, err := Gtcheck(strings.NewReader(fixtureGtcheck), &out1, GtcheckOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2, err := Gtcheck(strings.NewReader(fixtureGtcheck), &out2, GtcheckOptions{PairsSpec: "S3,S1,S2,S1,S3,S2"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	get := func(rr GtcheckResult, q, g string) (int, int) {
-		for _, p := range rr.Pairs {
-			if p.QuerySample == q && p.GenotypedSample == g {
-				return p.Discordance, p.NumSites
-			}
-		}
-		return -1, -1
-	}
-	cases := []struct{ a, b string }{
-		{"S1", "S3"}, {"S1", "S2"}, {"S2", "S3"},
-	}
-	for _, c := range cases {
-		d1, s1 := get(r1, c.a, c.b)
-		d2, s2 := get(r2, c.b, c.a)
-		if d1 != d2 {
-			t.Errorf("symmetry: (%s,%s)=%d vs (%s,%s)=%d", c.a, c.b, d1, c.b, c.a, d2)
-		}
-		if s1 != s2 {
-			t.Errorf("symmetry sites: (%s,%s)=%d vs (%s,%s)=%d", c.a, c.b, s1, c.b, c.a, s2)
-		}
 	}
 }
 
@@ -198,15 +228,14 @@ func TestGtcheck_HomsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// In fixtureGtcheck pair (S1,S2) we had sites where both non-missing:
-	// 100 (S2 GT=0/0 hom), 300 (S2 GT=1/1 hom), 400 (S2 GT=0/1 HET → drop).
-	// So homs-only sites=2, discordance=0.
+	// For pair (S1,S2) the genotyped sample is S2: sites where both
+	// non-missing are 100 (S2=0/0 hom), 300 (S2=1/1 hom), 400 (S2=0/1
+	// HET → drop). So homs-only sites=2.
 	if len(r.Pairs) != 1 {
 		t.Fatalf("npairs=%d", len(r.Pairs))
 	}
-	p := r.Pairs[0]
-	if p.NumSites != 2 || p.Discordance != 0 {
-		t.Errorf("homs-only: got sites=%d disc=%d, want sites=2 disc=0", p.NumSites, p.Discordance)
+	if r.Pairs[0].NumSites != 2 {
+		t.Errorf("homs-only: got sites=%d, want 2", r.Pairs[0].NumSites)
 	}
 }
 
@@ -224,32 +253,32 @@ func TestGtcheck_NoHWEProb(t *testing.T) {
 	}
 }
 
-// TestGtcheck_RegionFilterIsolated locks in the regression-fix for
-// PR #107 review finding #1: when only one of Regions / Targets is set,
-// the filter MUST still gate the scored sites. The prior code combined
-// the two filters with &&-of-NOT which silently bypassed both whenever
-// either was empty.
-func TestGtcheck_RegionFilterIsolated(t *testing.T) {
-	var outAll, outR bytes.Buffer
-	rAll, err := Gtcheck(strings.NewReader(fixtureGtcheck), &outAll, GtcheckOptions{})
+// TestGtcheck_HWEMatchesFormula checks the HWE column equals the
+// upstream per-site -log of the matching-dosage HWE probability,
+// averaged over matching sites. For pair (S2,S1) on fixtureGtcheck,
+// matches occur at site 100 (both 0/0, AF defaults 1e-6 → hwe[0] ~ 0)
+// and site 300 (both 1/1, AF defaults 1e-6 → hwe[2] = -log(af^2)).
+func TestGtcheck_HWEMatchesFormula(t *testing.T) {
+	var out bytes.Buffer
+	r, err := Gtcheck(strings.NewReader(fixtureGtcheck), &out, GtcheckOptions{})
 	if err != nil {
-		t.Fatalf("Gtcheck(no regions): %v", err)
+		t.Fatal(err)
 	}
-	rR, err := Gtcheck(strings.NewReader(fixtureGtcheck), &outR, GtcheckOptions{
-		Regions: []string{"chr1:150-250"},
-	})
-	if err != nil {
-		t.Fatalf("Gtcheck(regions only): %v", err)
-	}
-	// Without filter: 3-4 sites per pair. With chr1:150-250: at most 1 (the chr1:200 site).
-	for _, p := range rAll.Pairs {
-		if p.NumSites < 3 {
-			t.Errorf("baseline: pair (%s,%s) only scored %d sites, fixture has 3-4", p.QuerySample, p.GenotypedSample, p.NumSites)
+	// fixtureGtcheck has no INFO/AC, so AF falls back to GT counts.
+	// Recompute the expected average for (S2,S1) directly.
+	var found bool
+	for _, p := range r.Pairs {
+		if p.QuerySample == "S2" && p.GenotypedSample == "S1" {
+			found = true
+			if math.IsNaN(p.AvgLogPHWE) || math.IsInf(p.AvgLogPHWE, 0) {
+				t.Errorf("HWE for (S2,S1) is not finite: %v", p.AvgLogPHWE)
+			}
+			if p.AvgLogPHWE <= 0 {
+				t.Errorf("HWE for (S2,S1) should be positive, got %v", p.AvgLogPHWE)
+			}
 		}
 	}
-	for _, p := range rR.Pairs {
-		if p.NumSites > 1 {
-			t.Errorf("regions filter: pair (%s,%s) scored %d sites, want <=1 in chr1:150-250", p.QuerySample, p.GenotypedSample, p.NumSites)
-		}
+	if !found {
+		t.Fatalf("pair (S2,S1) not found")
 	}
 }

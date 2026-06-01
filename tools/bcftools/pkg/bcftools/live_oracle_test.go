@@ -768,13 +768,18 @@ func TestLiveMendelian(t *testing.T) {
 }
 
 // -------------------------------------------------------------------------
-// GTCHECK — our port emits a single-line DCv2 row while upstream emits
-// the multi-section INFO/DCv2/PSC banner. Lock in rejection-parity
-// with no input file.
+// GTCHECK — full multi-section output parity in cross-check mode. The
+// port reproduces upstream's INFO counter block, the DCv2 comment
+// block, the DCv2 header row, and the error-probability discordance /
+// HWE data rows byte-for-byte (modulo the provenance banner stripped by
+// stripProvenance).
 // -------------------------------------------------------------------------
 
 func TestLiveGtcheck(t *testing.T) {
-	assertRejectionParity(t, []string{"gtcheck"})
+	live, ours := requireLive(t)
+	fx := fixturePath(t, "basic.vcf")
+	// Cross-check mode (no -g) accepts a plain VCF on both sides.
+	assertEqualStdout(t, live, ours, "gtcheck", fx)
 }
 
 // -------------------------------------------------------------------------

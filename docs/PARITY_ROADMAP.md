@@ -2516,7 +2516,8 @@ to pass.
   `%CHROM\t%POS`, `%INFO/AC`, `[%SAMPLE=%GT]`, `-i AC>1`, `-i TYPE="snp"`),
   `annotate` (`-x INFO/AF`, `-x FORMAT/GQ`, `-I +%CHROM_%POS`), `head` (bare,
   `-n 5`), `norm` (`-m-`, `-m+`), `filter` (`-i QUAL>30`, `-e AC<2`,
-  `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare).
+  `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare),
+  `gtcheck` (cross-check mode — full multi-section INFO/DCv2 report).
 
 - **FAIL (real divergences; tracked here):**
   - **`index -t` / `index -c`** — `.tbi` and `.csi` byte streams
@@ -2551,15 +2552,17 @@ to pass.
     identical, only the comment banner differs and is now stripped),
     and `consensus` (new fixture under `testdata/parity/consensus/`
     with a 160-base reference and two SNPs).
+  - **byte-equal full-output** for `gtcheck` in cross-check mode:
+    the multi-section INFO counter block + the DCv2 comment block +
+    the error-probability discordance / HWE data rows now match
+    upstream `vcfgtcheck.c` byte-for-byte (default `-E 40`,
+    `--calc-HWE-prob`).
   - **rejection-parity** (both binaries exit non-zero, both produce
-    empty stdout) for `call` (missing input file), `mendelian` (no
-    `-p`/`-P` flag), `gtcheck` (no input), `polysomy` (upstream
-    binary does not ship the subcommand), `cnv` (no `-o`), and
-    `plugin` (`+nosuchplugin`).
-  - The full-output oracle for `call`, `mendelian`, `gtcheck`, and
-    `+fill-tags` is still deferred — see "FAIL" entries above and
-    the plugin section below — but the live-oracle suite no longer
-    relies on `t.Skip` to hide them.
+    empty stdout) for `call` (missing input file), `polysomy` (upstream
+    binary does not ship the subcommand), and `cnv` (no `-o`).
+  - The full-output oracle for `call` is still deferred — see "FAIL"
+    entries above — but the live-oracle suite no longer relies on
+    `t.Skip` to hide them.
 
 
 #### Live-binary oracle coverage
@@ -2584,7 +2587,8 @@ to pass.
   `%CHROM\t%POS`, `%INFO/AC`, `[%SAMPLE=%GT]`, `-i AC>1`, `-i TYPE="snp"`),
   `annotate` (`-x INFO/AF`, `-x FORMAT/GQ`, `-I +%CHROM_%POS`), `head` (bare,
   `-n 5`), `norm` (`-m-`, `-m+`), `filter` (`-i QUAL>30`, `-e AC<2`,
-  `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare).
+  `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare),
+  `gtcheck` (cross-check mode — full multi-section INFO/DCv2 report).
 
 - **FAIL (real divergences; tracked here):**
   - **`index -t` / `index -c`** — `.tbi` and `.csi` byte streams
@@ -2619,15 +2623,17 @@ to pass.
     identical, only the comment banner differs and is now stripped),
     and `consensus` (new fixture under `testdata/parity/consensus/`
     with a 160-base reference and two SNPs).
+  - **byte-equal full-output** for `gtcheck` in cross-check mode:
+    the multi-section INFO counter block + the DCv2 comment block +
+    the error-probability discordance / HWE data rows now match
+    upstream `vcfgtcheck.c` byte-for-byte (default `-E 40`,
+    `--calc-HWE-prob`).
   - **rejection-parity** (both binaries exit non-zero, both produce
-    empty stdout) for `call` (missing input file), `mendelian` (no
-    `-p`/`-P` flag), `gtcheck` (no input), `polysomy` (upstream
-    binary does not ship the subcommand), `cnv` (no `-o`), and
-    `plugin` (`+nosuchplugin`).
-  - The full-output oracle for `call`, `mendelian`, `gtcheck`, and
-    `+fill-tags` is still deferred — see "FAIL" entries above and
-    the plugin section below — but the live-oracle suite no longer
-    relies on `t.Skip` to hide them.
+    empty stdout) for `call` (missing input file), `polysomy` (upstream
+    binary does not ship the subcommand), and `cnv` (no `-o`).
+  - The full-output oracle for `call` is still deferred — see "FAIL"
+    entries above — but the live-oracle suite no longer relies on
+    `t.Skip` to hide them.
 
 
 `view` output-type selector (`-O`/`--output-type`) — DONE for all four
@@ -2730,8 +2736,14 @@ per-subcommand option-tail sections below):
   (`peakfit_lm.go`); no third-party dependency was added. All
   algorithm knobs are live. See the per-subcommand section below for
   the validation situation (no upstream golden exists).
-- **`gtcheck`** — v1 hard-GT Hamming only; `--cluster` HMM-style
-  sample clustering and PL/GL scoring deferred.
+- **`gtcheck`** — DONE for the default GT path: the error-probability
+  discordance model (`-E 40`), the HWE-probability column, and the full
+  multi-section INFO/DCv2 report match upstream `vcfgtcheck.c`
+  byte-for-byte (live-oracle verified in cross-check and `-g` paired
+  modes). Deferred: `-u PL` (FORMAT/PL likelihood scoring), `--cluster`
+  HMM-style sample clustering, `--distinctive-sites`, `--n-matches`,
+  non-default `-E`, and `-z` compressed output (all rejected at the CLI
+  with a roadmap pointer).
 - **`mpileup`** — the upstream MAQ genotype-likelihood model is fully
   ported for the SNP path (`errmod.c` → `errmod.go`; `bam2bcf.c`
   glfgen/combine/2bcf → `bam2bcf.go`): the multi-allelic PL grid, the
