@@ -595,6 +595,10 @@ func (s *hapSplice) stageSplice() {
 	entry.typ.vcfIal = s.ial
 	entry.typ.gene = s.ht.tr.Gene
 	s.eng.csqPush(entry, s.recV)
+	// Mirror upstream csq_stage_splice -> csq_stage: splice consequences
+	// carry vcf_ial==ial, so the per-sample FORMAT/BCSQ bitmask is staged
+	// for haplotypes whose allele matches.
+	s.eng.stageSimpleFmtBits(entry, s.recV)
 }
 
 // eqPrefix reports whether the first n bytes of a and b are equal,
