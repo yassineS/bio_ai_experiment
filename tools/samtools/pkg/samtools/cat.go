@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -22,26 +23,31 @@ type CatOptions struct {
 	Threads int
 }
 
-// Cat concatenates the records from each input BAM stream into out.
-// The output's header is taken from the first input (or HeaderOverride
-// when set); subsequent inputs must agree on the @SQ ordering.
+// Cat concatenates the alignment blocks from each input BAM stream into out.
+// It mirrors htslib's bam_cat byte-for-byte: a single output header is written
+// (from the first input, or HeaderOverride when set), then each input's
+// alignment BGZF blocks are copied verbatim (bgzf_raw_read / bgzf_raw_write)
+// with that input's trailing EOF block stripped. A single canonical EOF block
+// is appended at the end. Re-encoding is avoided so the alignment blocks stay
+// byte-identical with the inputs.
 func Cat(inputs []io.Reader, out io.Writer, opts CatOptions) error {
 	if len(inputs) == 0 {
 		return errors.New("samtools cat: no input files")
 	}
 
-	// Open all readers and parse headers up front so we fail fast on
-	// header mismatches before writing any output.
-	readers := make([]*sam.BAMReader, 0, len(inputs))
+	// Inflate each input's leading blocks far enough to recover its header
+	// and the byte boundary of the first record, retaining the raw blocks so
+	// the alignment data can be copied verbatim afterwards.
+	parsed := make([]catInput, 0, len(inputs))
 	for i, in := range inputs {
-		br, err := sam.NewBAMReader(in)
+		ci, err := readCatInput(in)
 		if err != nil {
 			return fmt.Errorf("samtools cat: input %d: %w", i, err)
 		}
-		readers = append(readers, br)
+		parsed = append(parsed, ci)
 	}
 
-	hdr := readers[0].Header()
+	hdr := parsed[0].hdr
 	if opts.HeaderOverride != "" {
 		f, err := os.Open(opts.HeaderOverride)
 		if err != nil {
@@ -63,8 +69,8 @@ func Cat(inputs []io.Reader, out io.Writer, opts CatOptions) error {
 	// header. Cat without `-h` requires this for the output to be
 	// re-decodable; with `-h FILE` we let the user take responsibility.
 	if opts.HeaderOverride == "" {
-		for i := 1; i < len(readers); i++ {
-			if !sameRefTable(hdr.Refs, readers[i].Header().Refs) {
+		for i := 1; i < len(parsed); i++ {
+			if !sameRefTable(hdr.Refs, parsed[i].hdr.Refs) {
 				return fmt.Errorf("samtools cat: input %d has a different @SQ table than input 0", i)
 			}
 		}
@@ -75,21 +81,79 @@ func Cat(inputs []io.Reader, out io.Writer, opts CatOptions) error {
 		return err
 	}
 
-	for i, br := range readers {
-		for {
-			rec, err := br.Read()
-			if err == io.EOF {
-				break
+	for _, ci := range parsed {
+		if len(ci.leftover) > 0 {
+			if err := bw.WriteUncompressed(ci.leftover); err != nil {
+				return err
 			}
-			if err != nil {
-				return fmt.Errorf("samtools cat: input %d: %w", i, err)
+			if err := bw.Flush(); err != nil {
+				return err
 			}
-			if err := bw.Write(rec); err != nil {
+		}
+		for _, rb := range ci.blocks {
+			if err := bw.WriteRawBGZF(rb.Compressed); err != nil {
 				return err
 			}
 		}
 	}
 	return bw.Close()
+}
+
+// catInput holds one input's parsed header plus the raw alignment blocks to be
+// copied verbatim into the concatenated output.
+type catInput struct {
+	hdr      *sam.Header
+	leftover []byte            // record bytes that shared the header's block
+	blocks   []*bgzip.RawBlock // raw alignment blocks (EOF stripped)
+}
+
+// readCatInput inflates an input's leading BGZF blocks until the BAM header is
+// fully available, then collects the remaining raw alignment blocks (excluding
+// the trailing EOF marker) for verbatim copying.
+func readCatInput(in io.Reader) (catInput, error) {
+	var res catInput
+	var decoded []byte
+	var hdrLen int
+	for {
+		n, err := sam.BAMHeaderEncodedLen(decoded)
+		if err == nil {
+			hdrLen = n
+			break
+		}
+		rb, rerr := bgzip.ReadRawBlock(in)
+		if rerr != nil {
+			if rerr == io.EOF {
+				return res, io.ErrUnexpectedEOF
+			}
+			return res, rerr
+		}
+		if rb.IsEOF {
+			return res, io.ErrUnexpectedEOF
+		}
+		decoded = append(decoded, rb.Uncompressed...)
+	}
+	hdr, err := sam.ParseEncodedBAMHeader(decoded[:hdrLen])
+	if err != nil {
+		return res, err
+	}
+	res.hdr = hdr
+	res.leftover = decoded[hdrLen:]
+	for {
+		rb, rerr := bgzip.ReadRawBlock(in)
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return res, rerr
+		}
+		if rb.IsEOF {
+			// Strip the input's EOF marker; a single canonical EOF is
+			// appended after all inputs (matches htslib bam_cat).
+			continue
+		}
+		res.blocks = append(res.blocks, rb)
+	}
+	return res, nil
 }
 
 // sameRefTable reports whether two @SQ tables are byte-for-byte

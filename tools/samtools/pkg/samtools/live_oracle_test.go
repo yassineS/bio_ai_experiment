@@ -715,24 +715,8 @@ func TestLive_Reheader(t *testing.T) {
 	up := runBin(t, live, "reheader", "--no-PG", hdr, bam)
 	gp := runBin(t, ours, "reheader", hdr, bam)
 	if !bytes.Equal(up, gp) {
-		// Decoded-record equivalence is the oracle. Upstream
-		// `bam_reheader` does a raw BGZF-block copy of the input's
-		// record blocks; matching that byte-for-byte requires a
-		// raw-block API on pkg/htsgo/bgzf which is out of scope here.
-		upPath := filepath.Join(dir, "up.bam")
-		ourPath := filepath.Join(dir, "ours.bam")
-		_ = os.WriteFile(upPath, up, 0644)
-		_ = os.WriteFile(ourPath, gp, 0644)
-		// Use --no-PG to keep the upstream `view` decoder from
-		// injecting per-invocation @PG lines that embed the input
-		// path; otherwise the decoded headers only differ in the
-		// PG-line CL: column.
-		upDec := runBin(t, live, "view", "-h", "--no-PG", upPath)
-		ourDec := runBin(t, live, "view", "-h", "--no-PG", ourPath)
-		if !bytes.Equal(upDec, ourDec) {
-			t.Errorf("DIVERGENCE: reheader decoded records differ.\n--- up ---\n%s--- ours ---\n%s",
-				upDec, ourDec)
-		}
+		t.Errorf("DIVERGENCE: reheader BAM bytes differ (len up=%d ours=%d)",
+			len(up), len(gp))
 	}
 }
 
@@ -761,13 +745,10 @@ func TestLive_AddReplaceRG(t *testing.T) {
 
 // ---- cat ---------------------------------------------------------------
 
-// TestLive_Cat — concatenates two BAMs. Decoded records must match.
-// Raw BAM bytes legitimately differ because upstream's `bam_cat`
-// copies BGZF blocks verbatim from each input, preserving their
-// original block-layout, while our implementation decodes and
-// re-encodes records into fresh optimally-sized BGZF blocks. A
-// byte-equal fix requires a raw-BGZF-block passthrough API on
-// pkg/htsgo/bgzf, which is out of scope here.
+// TestLive_Cat — concatenates two BAMs. Upstream's `bam_cat` copies
+// each input's BGZF alignment blocks verbatim (stripping per-input EOF
+// markers) and writes a single trailing EOF; our cat does the same via
+// the pkg/htsgo/bgzf raw-block passthrough, so the output is byte-equal.
 func TestLive_Cat(t *testing.T) {
 	live, ours := requireLive(t)
 	in := fixture(t, "basic.sam")
@@ -779,16 +760,8 @@ func TestLive_Cat(t *testing.T) {
 	up := runBin(t, live, "cat", "--no-PG", bam, bam)
 	gp := runBin(t, ours, "cat", bam, bam)
 	if !bytes.Equal(up, gp) {
-		upPath := filepath.Join(dir, "up.bam")
-		ourPath := filepath.Join(dir, "ours.bam")
-		_ = os.WriteFile(upPath, up, 0644)
-		_ = os.WriteFile(ourPath, gp, 0644)
-		upDec := runBin(t, live, "view", "-h", "--no-PG", upPath)
-		ourDec := runBin(t, live, "view", "-h", "--no-PG", ourPath)
-		if !bytes.Equal(upDec, ourDec) {
-			t.Errorf("DIVERGENCE: cat decoded records differ.\n--- up ---\n%s--- ours ---\n%s",
-				upDec, ourDec)
-		}
+		t.Errorf("DIVERGENCE: cat BAM bytes differ (len up=%d ours=%d)",
+			len(up), len(gp))
 	}
 }
 

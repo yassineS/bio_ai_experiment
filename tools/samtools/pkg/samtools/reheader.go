@@ -144,7 +144,6 @@ func Reheader(in io.Reader, out io.Writer, opts ReheaderOptions) error {
 	return bw.Close()
 }
 
-
 // ReheaderFile is the high-level CLI entry point: opens inPath, runs
 // Reheader, and writes to outPath (or, when InPlace is set, atomically
 // swaps the rewritten file in over the input).
