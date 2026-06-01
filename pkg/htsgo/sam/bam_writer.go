@@ -88,6 +88,33 @@ func (bw *BAMWriter) Write(rec *Record) error {
 	return err
 }
 
+// WriteUncompressed writes raw (already BAM-encoded, uncompressed) bytes
+// through the BGZF compressor. It is used by the raw-block passthrough paths to
+// emit leftover record bytes that shared the header's final BGZF block in the
+// input, before switching to verbatim block copying.
+func (bw *BAMWriter) WriteUncompressed(p []byte) error {
+	_, err := bw.bw.Write(p)
+	return err
+}
+
+// WriteRawBGZF writes one or more complete, already-compressed BGZF members to
+// the underlying stream verbatim (after flushing any buffered records). It is
+// the BAM-level entry point for raw-block passthrough used by `samtools
+// reheader` and `samtools cat`, which copy the input's alignment blocks
+// byte-for-byte instead of re-encoding them. p must contain whole BGZF members
+// (e.g. bgzf.RawBlock.Compressed); the EOF marker should be omitted because
+// Close emits the canonical EOF block.
+func (bw *BAMWriter) WriteRawBGZF(p []byte) error {
+	return bw.bw.WriteRaw(p)
+}
+
+// Flush flushes the underlying BGZF writer's current partial block. It is used
+// after writing leftover decompressed bytes that shared the header's BGZF block
+// in the input, before raw-block passthrough begins.
+func (bw *BAMWriter) Flush() error {
+	return bw.bw.Flush()
+}
+
 // Close flushes the BGZF stream and emits the EOF block.
 func (bw *BAMWriter) Close() error {
 	if bw.closed {

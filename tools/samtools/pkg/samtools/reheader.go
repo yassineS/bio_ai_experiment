@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -35,23 +36,47 @@ type ReheaderOptions struct {
 	NoPG bool
 }
 
-// Reheader emits a new BAM stream that has the original record bodies
-// of the input but a replaced header. The operation is a streaming
-// re-encode: read the entire input header (text + binary @SQ table),
-// drop it, write the new header (re-derived @SQ table), then copy each
-// record body across.
+// Reheader emits a new BAM stream that has the original alignment blocks of the
+// input but a replaced header. It mirrors htslib's bam_reheader byte-for-byte:
+// the new header is written into its own BGZF block(s), then the input's
+// alignment BGZF blocks are copied verbatim (bgzf_raw_read / bgzf_raw_write) so
+// they remain byte-identical with the input — only the header block is
+// rewritten.
 //
-// The new header MUST contain an @SQ table whose order matches the
-// original — record refIDs are stored as integer indices into that
-// table and re-decoding requires the same ordering. Reheader fails
-// loudly if the table size differs.
+// The new header MUST contain an @SQ table whose order matches the original —
+// record refIDs are integer indices into that table and the records are copied
+// without rewriting, so the ordering must be preserved. Reheader fails loudly
+// if the table size differs.
 func Reheader(in io.Reader, out io.Writer, opts ReheaderOptions) error {
-	br, err := sam.NewBAMReader(in)
+	// Read leading BGZF blocks, inflating until the full BAM header is
+	// available, so we can locate the header/record boundary exactly as
+	// htslib's bam_hdr_read does (which may leave leftover record bytes in
+	// the header's final block).
+	var decoded []byte
+	var hdrLen int
+	for {
+		n, err := sam.BAMHeaderEncodedLen(decoded)
+		if err == nil {
+			hdrLen = n
+			break
+		}
+		rb, rerr := bgzip.ReadRawBlock(in)
+		if rerr != nil {
+			if rerr == io.EOF {
+				return io.ErrUnexpectedEOF
+			}
+			return rerr
+		}
+		if rb.IsEOF {
+			return io.ErrUnexpectedEOF
+		}
+		decoded = append(decoded, rb.Uncompressed...)
+	}
+
+	origHdr, err := sam.ParseEncodedBAMHeader(decoded[:hdrLen])
 	if err != nil {
 		return err
 	}
-	defer br.Close()
-	origHdr := br.Header()
 
 	newHdrText := opts.HeaderText
 	if newHdrText == "" && opts.HeaderPath != "" {
@@ -89,35 +114,36 @@ func Reheader(in io.Reader, out io.Writer, opts ReheaderOptions) error {
 	if err := bw.WriteHeader(newHdr); err != nil {
 		return err
 	}
-	for {
-		rec, err := br.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
+	// Leftover record bytes that shared the header's final BGZF block must be
+	// re-compressed; htslib does the same (bgzf_write + bgzf_flush) before the
+	// raw-block copy begins.
+	if leftover := decoded[hdrLen:]; len(leftover) > 0 {
+		if err := bw.WriteUncompressed(leftover); err != nil {
 			return err
 		}
-		// Refresh RName/RNext via the new header's order — the indices
-		// we hold on disk don't change but the names might if the user
-		// renamed an @SQ entry.
-		if rec.RName != "" && rec.RName != "*" {
-			idx := origHdr.RefIndex(rec.RName)
-			if idx >= 0 && idx < len(newHdr.Refs) {
-				rec.RName = newHdr.Refs[idx].Name
-			}
+		if err := bw.Flush(); err != nil {
+			return err
 		}
-		if rec.RNext != "" && rec.RNext != "*" && rec.RNext != "=" {
-			idx := origHdr.RefIndex(rec.RNext)
-			if idx >= 0 && idx < len(newHdr.Refs) {
-				rec.RNext = newHdr.Refs[idx].Name
-			}
+	}
+	// Copy the remaining input BGZF blocks verbatim. The input's own EOF block
+	// is copied too (htslib copies all raw bytes through end of file); the
+	// writer's Close then appends the canonical EOF, reproducing the upstream
+	// double-EOF layout.
+	for {
+		rb, rerr := bgzip.ReadRawBlock(in)
+		if rerr == io.EOF {
+			break
 		}
-		if err := bw.Write(rec); err != nil {
+		if rerr != nil {
+			return rerr
+		}
+		if err := bw.WriteRawBGZF(rb.Compressed); err != nil {
 			return err
 		}
 	}
 	return bw.Close()
 }
+
 
 // ReheaderFile is the high-level CLI entry point: opens inPath, runs
 // Reheader, and writes to outPath (or, when InPlace is set, atomically

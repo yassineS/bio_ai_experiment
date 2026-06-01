@@ -178,6 +178,30 @@ func (w *Writer) FlushTry(size int) error {
 	return nil
 }
 
+// WriteRaw flushes any buffered bytes (so block ordering is preserved) and
+// then writes p directly to the underlying stream without compressing it. p is
+// expected to be one or more complete BGZF members (e.g. blocks obtained from
+// ReadRawBlock). This is htslib's bgzf_raw_write: it lets a writer interleave
+// freshly-compressed blocks with verbatim-copied ones.
+func (w *Writer) WriteRaw(p []byte) error {
+	if w.err != nil {
+		return w.err
+	}
+	if w.closed {
+		return errors.New("bgzf: WriteRaw on closed Writer")
+	}
+	if w.n > 0 {
+		if err := w.flushBlock(); err != nil {
+			return err
+		}
+	}
+	if _, err := w.w.Write(p); err != nil {
+		w.err = err
+		return err
+	}
+	return nil
+}
+
 // Close flushes any buffered bytes, writes the BGZF EOF block, and releases
 // internal resources. Close does not close the underlying writer.
 func (w *Writer) Close() error {
@@ -321,6 +345,165 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// RawBlock is one complete BGZF gzip member kept in both its on-disk
+// compressed form and its inflated payload. It is produced by ReadRawBlock
+// and lets callers (samtools reheader / cat) copy alignment blocks verbatim —
+// mirroring htslib's bgzf_raw_read / bgzf_raw_write — while still being able to
+// inspect the decompressed bytes to find the header boundary.
+type RawBlock struct {
+	// Compressed is the full on-disk gzip member (header + deflate payload +
+	// CRC32/ISIZE footer). Writing it back out reproduces the input bytes.
+	Compressed []byte
+	// Uncompressed is the inflated payload (nil for the EOF marker, which has
+	// an empty payload).
+	Uncompressed []byte
+	// IsEOF reports whether this block is the 28-byte BGZF EOF marker.
+	IsEOF bool
+}
+
+// ReadRawBlock reads exactly one BGZF gzip member from r, returning both its
+// raw on-disk bytes and its inflated payload. It returns io.EOF when r is at
+// end of stream (no bytes left). Unlike Reader.Read it does not require, nor
+// stop at, the BGZF EOF marker: the EOF marker is returned like any other
+// block with IsEOF set, so callers can choose to copy or drop it.
+//
+// ReadRawBlock is the building block for raw-block passthrough (htslib's
+// bgzf_raw_read): a caller copies Compressed verbatim to keep alignment blocks
+// byte-identical with the input.
+func ReadRawBlock(r io.Reader) (*RawBlock, error) {
+	var fixed [12]byte
+	if _, err := io.ReadFull(r, fixed[:]); err != nil {
+		// A clean EOF before any byte means the stream is exhausted.
+		return nil, err
+	}
+	if fixed[0] != 0x1f || fixed[1] != 0x8b {
+		return nil, ErrBadMagic
+	}
+	if fixed[2] != 8 {
+		return nil, fmt.Errorf("bgzf: unsupported compression method %d", fixed[2])
+	}
+	flg := fixed[3]
+	if flg&flagFEXTRA == 0 {
+		return nil, ErrNoExtra
+	}
+	xlen := int(binary.LittleEndian.Uint16(fixed[10:12]))
+	if xlen < 6 {
+		return nil, ErrNoBCSubfield
+	}
+	extra := make([]byte, xlen)
+	if _, err := io.ReadFull(r, extra); err != nil {
+		return nil, ioErrUnexpected(err)
+	}
+	bsize, ok := findBCSubfield(extra)
+	if !ok {
+		return nil, ErrNoBCSubfield
+	}
+	blockLen := int(bsize) + 1
+	consumed := 12 + xlen
+	// FNAME/FCOMMENT/FHCRC are not produced by BGZF writers, but skip them
+	// defensively so the raw copy still captures the full member.
+	var skipName, skipComment []byte
+	if flg&flagFNAME != 0 {
+		b, err := readCString(r)
+		if err != nil {
+			return nil, ioErrUnexpected(err)
+		}
+		skipName = b
+		consumed += len(b)
+	}
+	if flg&flagFCOMMENT != 0 {
+		b, err := readCString(r)
+		if err != nil {
+			return nil, ioErrUnexpected(err)
+		}
+		skipComment = b
+		consumed += len(b)
+	}
+	var hcrc [2]byte
+	hasHCRC := flg&flagFHCRC != 0
+	if hasHCRC {
+		if _, err := io.ReadFull(r, hcrc[:]); err != nil {
+			return nil, ioErrUnexpected(err)
+		}
+		consumed += 2
+	}
+	if consumed > blockLen {
+		return nil, ErrBadBSIZE
+	}
+	deflatedLen := blockLen - consumed - 8
+	if deflatedLen < 0 {
+		return nil, fmt.Errorf("bgzf: invalid block layout (deflate length %d)", deflatedLen)
+	}
+	deflated := make([]byte, deflatedLen)
+	if _, err := io.ReadFull(r, deflated); err != nil {
+		return nil, ioErrUnexpected(err)
+	}
+	var footer [8]byte
+	if _, err := io.ReadFull(r, footer[:]); err != nil {
+		return nil, ioErrUnexpected(err)
+	}
+	wantCRC := binary.LittleEndian.Uint32(footer[0:4])
+	wantISIZE := binary.LittleEndian.Uint32(footer[4:8])
+
+	// Reassemble the full on-disk member.
+	raw := make([]byte, 0, blockLen)
+	raw = append(raw, fixed[:]...)
+	raw = append(raw, extra...)
+	raw = append(raw, skipName...)
+	raw = append(raw, skipComment...)
+	if hasHCRC {
+		raw = append(raw, hcrc[:]...)
+	}
+	raw = append(raw, deflated...)
+	raw = append(raw, footer[:]...)
+
+	rb := &RawBlock{Compressed: raw}
+	if wantISIZE == 0 && deflatedLen == 2 {
+		rb.IsEOF = true
+		return rb, nil
+	}
+	fr := flate.NewReader(bytes.NewReader(deflated))
+	defer fr.Close()
+	out := make([]byte, 0, wantISIZE)
+	buf := bytes.NewBuffer(out)
+	if _, err := io.Copy(buf, fr); err != nil {
+		return nil, err
+	}
+	decoded := buf.Bytes()
+	if uint32(len(decoded)) != wantISIZE {
+		return nil, ErrISIZE
+	}
+	if crc32.ChecksumIEEE(decoded) != wantCRC {
+		return nil, ErrChecksum
+	}
+	rb.Uncompressed = decoded
+	return rb, nil
+}
+
+// readCString reads bytes from r up to and including a terminating NUL and
+// returns them (NUL included).
+func readCString(r io.Reader) ([]byte, error) {
+	var out []byte
+	var b [1]byte
+	for {
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return out, err
+		}
+		out = append(out, b[0])
+		if b[0] == 0 {
+			return out, nil
+		}
+	}
+}
+
+// WriteRawBlock writes a previously-read compressed BGZF block to w verbatim,
+// mirroring htslib's bgzf_raw_write. The bytes are emitted unchanged, so an
+// alignment block copied from the input stays byte-identical on output.
+func WriteRawBlock(w io.Writer, rb *RawBlock) error {
+	_, err := w.Write(rb.Compressed)
+	return err
 }
 
 // Block is the decoded form of a single BGZF gzip member.

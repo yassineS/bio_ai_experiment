@@ -509,7 +509,7 @@ func main() {
 	relatedness := flag.Bool("relatedness", false, "Yang 2010 unadjusted A_jk relatedness (.relatedness)")
 	relatedness2 := flag.Bool("relatedness2", false, "KING-robust kinship coefficient (.relatedness2)")
 	lroh := flag.Bool("LROH", false, "Runs of homozygosity per individual (.LROH)")
-	lrohMin := flag.Int("LROH-min-variants", 0, "Minimum consecutive homozygous variants for an LROH run (default 10)")
+	lrohMin := flag.Int("LROH-min-variants", 0, "Minimum autozygous SNPs (min_SNPs) for an LROH run (default 0, matching upstream)")
 	phasedBlocks := flag.Bool("phased-blocks", false, "Per-individual contiguous phased-haplotype block boundaries (.blocks)")
 
 	// FILTER-name include/exclude

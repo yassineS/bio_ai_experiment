@@ -176,6 +176,64 @@ func (br *BAMReader) readHeader() error {
 	return nil
 }
 
+// ParseEncodedBAMHeader parses a Header from the encoded (uncompressed) BAM
+// header bytes (magic + l_text + text + n_ref + reference table). It is used by
+// raw-block passthrough paths that inflate the header out of band and need the
+// parsed @SQ table without consuming the alignment records.
+func ParseEncodedBAMHeader(data []byte) (*Header, error) {
+	br := &BAMReader{src: bytes.NewReader(data)}
+	if err := br.readHeader(); err != nil {
+		return nil, err
+	}
+	return br.hdr, nil
+}
+
+// BAMHeaderEncodedLen returns the number of bytes the encoded BAM header
+// (magic + l_text + text + n_ref + reference table) occupies at the start of
+// data. data must contain the full header; ErrShortHeader-style errors are
+// returned as a non-nil error when it does not. It is used by raw-block
+// passthrough paths (reheader / cat) to locate the byte boundary between the
+// header and the first alignment record after inflating the leading BGZF
+// blocks.
+func BAMHeaderEncodedLen(data []byte) (int, error) {
+	if len(data) < 12 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	if !bytes.Equal(data[:4], BAMMagic) {
+		return 0, ErrNotBAM
+	}
+	off := 4
+	lText := int(int32(binary.LittleEndian.Uint32(data[off : off+4])))
+	off += 4
+	if lText < 0 {
+		return 0, fmt.Errorf("sam: negative l_text %d", lText)
+	}
+	off += lText
+	if off+4 > len(data) {
+		return 0, io.ErrUnexpectedEOF
+	}
+	nRef := int(int32(binary.LittleEndian.Uint32(data[off : off+4])))
+	off += 4
+	if nRef < 0 {
+		return 0, fmt.Errorf("sam: negative n_ref %d", nRef)
+	}
+	for i := 0; i < nRef; i++ {
+		if off+4 > len(data) {
+			return 0, io.ErrUnexpectedEOF
+		}
+		lName := int(int32(binary.LittleEndian.Uint32(data[off : off+4])))
+		off += 4
+		if lName <= 0 {
+			return 0, fmt.Errorf("sam: bad l_name %d for ref %d", lName, i)
+		}
+		off += lName + 4 // name bytes + l_ref
+		if off > len(data) {
+			return 0, io.ErrUnexpectedEOF
+		}
+	}
+	return off, nil
+}
+
 // Read returns the next BAM record, or io.EOF when no more records are
 // available.
 func (br *BAMReader) Read() (*Record, error) {

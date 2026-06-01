@@ -431,12 +431,15 @@ func TestLive_FastModeDefaultOff(t *testing.T) {
 		commonSuffixes(".per-base.bed.gz")...)
 }
 
-// TestLive_UseMedian covers `-m / --use-median`. Upstream emits median
-// depth instead of mean for `--by` regions. Our port does not implement
-// `--use-median` and the `-m` short alias is bound to --fragment-mode,
-// so this test is skipped with a TODO.
+// TestLive_UseMedian covers `-m / --use-median`. Upstream emits the median
+// per-base depth instead of the mean for each `--by` region. Both binaries
+// are driven with `--by 100 --use-median` and the decoded regions.bed.gz
+// must match byte-for-byte.
 func TestLive_UseMedian(t *testing.T) {
-	t.Skip("not implemented: --use-median; TODO in docs/PARITY_ROADMAP.md#mosdepth")
+	livePrefix, oursPrefix := liveRunPair(t, "ovl.bam", nil,
+		[]string{"-c", "MT", "-n", "--by", "100", "--use-median"})
+	oracleCompareCommon(t, livePrefix, oursPrefix,
+		commonSuffixes(".regions.bed.gz")...)
 }
 
 // TestLive_MeanMAPQ covers `--mean-mapq`. Not implemented in our port.

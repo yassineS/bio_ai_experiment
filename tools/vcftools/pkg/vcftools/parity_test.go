@@ -1122,6 +1122,68 @@ func runOracleCase(t *testing.T, bin, in string, args []string, params *Params, 
 	}
 }
 
+// TestVcftoolsLiveOracleLROH drives the --LROH detector against the genuine
+// vcftools binary on a runs-of-homozygosity-rich fixture
+// (testdata/live/lroh_in.vcf) and asserts the .LROH output is byte-identical.
+//
+// Unlike the LROH-chr1 subtest of TestVcftoolsLiveOracleFull — whose fixture
+// (in.vcf) carries no autozygous runs, so BOTH binaries emit only the header —
+// this fixture contains long homozygous stretches that force the forward-
+// backward HMM to call non-empty runs. The test therefore proves the ported
+// algorithm (states / emission + transition probabilities / decode / run
+// extraction in relatedness.go) actually matches upstream, rather than passing
+// on an empty-rows tautology. It explicitly fails if the genuine binary's
+// output has no data rows, so the fixture can never silently regress to empty.
+func TestVcftoolsLiveOracleLROH(t *testing.T) {
+	bin := genuineVcftoolsBinary(t)
+
+	liveDir, err := filepath.Abs(filepath.Join("testdata", "live"))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	in := filepath.Join(liveDir, "lroh_in.vcf")
+
+	tmp := t.TempDir()
+	goldDir := filepath.Join(tmp, "gold")
+	if err := os.Mkdir(goldDir, 0o755); err != nil {
+		t.Fatalf("mkdir gold: %v", err)
+	}
+	goldPrefix := filepath.Join(goldDir, "out")
+	cmd := exec.Command(bin, "--vcf", in, "--chr", "1", "--LROH", "--out", goldPrefix)
+	cmd.Dir = goldDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("genuine vcftools --LROH failed: %v\n%s", err, out)
+	}
+
+	gold, err := os.ReadFile(goldPrefix + ".LROH")
+	if err != nil {
+		t.Fatalf("read genuine .LROH: %v", err)
+	}
+	// Guard against fixture rot: the genuine binary must emit data rows, not
+	// just the header, or this test degrades into the very tautology it exists
+	// to replace.
+	if dataRows := bytes.Count(gold, []byte("\n")) - 1; dataRows < 1 {
+		t.Fatalf("fixture produced no LROH data rows in genuine output:\n%s", gold)
+	}
+
+	portPrefix := filepath.Join(tmp, "port_out")
+	f, err := os.Open(in)
+	if err != nil {
+		t.Fatalf("open lroh_in.vcf: %v", err)
+	}
+	defer f.Close()
+	if err := Run(f, &Params{Chr: "1", LROH: true, OutPrefix: portPrefix}); err != nil {
+		t.Fatalf("port Run failed: %v", err)
+	}
+	got, err := os.ReadFile(portPrefix + ".LROH")
+	if err != nil {
+		t.Fatalf("read port .LROH: %v", err)
+	}
+	if !bytes.Equal(got, gold) {
+		t.Errorf(".LROH mismatch\n--- want (genuine) ---\n%s\n--- got (port) ---\n%s", gold, got)
+	}
+}
+
 // TestParity_TsTvByCount_Header — header byte-for-byte.
 func TestParity_TsTvByCount_Header(t *testing.T) {
 	prefix := runVcftoolsParity(t, "sample.vcf", &Params{TsTvByCount: true})

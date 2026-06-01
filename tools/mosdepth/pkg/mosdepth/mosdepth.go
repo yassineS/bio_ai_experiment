@@ -89,6 +89,14 @@ type Options struct {
 	// `"cutoffs[i]:cutoffs[i+1]"` string (e.g. `"0:1"`, `"1:5"`).
 	Quantize []int
 
+	// UseMedian, when true, reports the MEDIAN per-base depth of each
+	// `--by` region instead of the mean (CLI `-m/--use-median`). The
+	// median uses upstream mosdepth's CountStat convention: the lower of
+	// the two central order statistics for an even base count. It only
+	// affects the regions.bed.gz depth column; the summary mean columns
+	// and per-base output are unchanged.
+	UseMedian bool
+
 	// FragmentMode, when true, scores each paired-end fragment as a
 	// single contiguous span [POS, POS+TLEN) instead of summing both
 	// mates' aligned bases. Singletons / mate-unmapped reads still use
@@ -349,15 +357,21 @@ func Run(in io.Reader, opts Options) error {
 			for _, iv := range ivs {
 				bsum, perTh, mn, mx := accum.regionStats(iv.beg, iv.end, opts.Thresholds, nil)
 				width := iv.end - iv.beg
-				var mean float64
-				if width > 0 {
-					mean = float64(bsum) / float64(width)
+				// The regions.bed.gz depth column is the MEDIAN when
+				// --use-median is set, otherwise the mean. Upstream leaves
+				// the summary *_region rows on the mean regardless, so the
+				// regLen/regBases aggregation below stays mean-based.
+				var depthVal float64
+				if opts.UseMedian {
+					depthVal = accum.regionMedian(iv.beg, iv.end)
+				} else if width > 0 {
+					depthVal = float64(bsum) / float64(width)
 				}
 				extras := []string{}
 				if iv.name != "" {
 					extras = append(extras, iv.name)
 				}
-				extras = append(extras, formatMean(mean))
+				extras = append(extras, formatMean(depthVal))
 				if err := regionsW.writeBED(r.Name, iv.beg, iv.end, extras...); err != nil {
 					return err
 				}

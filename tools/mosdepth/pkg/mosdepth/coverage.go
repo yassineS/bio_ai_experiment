@@ -350,6 +350,92 @@ func (a *covAccum) regionStats(beg0, end0 int, thresholds []int, emitFn func(sta
 	return sum, perThreshold, minD, maxD
 }
 
+// medianHistSize is the number of histogram bins mosdepth allocates for a
+// CountStat when --use-median is requested (initCountStat[uint32](size =
+// 65536)). Depth values >= medianHistSize-1 are clamped into the final bin,
+// exactly mirroring upstream's `c.counts[min(c.counts.high, value)].inc`.
+const medianHistSize = 65536
+
+// regionMedian computes the median per-base depth across the half-open
+// interval [beg0, end0) using the identical algorithm to upstream mosdepth's
+// CountStat.median:
+//
+//	stop_n = int(0.5 + n*0.5)        // round-half-up of n/2
+//	walk depth bins ascending, accumulating counts;
+//	return the first bin whose cumulative count >= stop_n.
+//
+// For an even number of bases this yields the LOWER of the two middle values
+// (mosdepth does not average the two central order statistics). Depths are
+// bucketed into a histogram capped at medianHistSize-1 bins so that pathological
+// ultra-high depths clamp the same way upstream's fixed-size CountStat does.
+//
+// The returned value is the integer median depth as a float64 so callers can
+// format it with the same precision as the mean (e.g. "1.00"). When the region
+// is empty the result is 0, matching upstream's `if start > len: return 0`.
+func (a *covAccum) regionMedian(beg0, end0 int) float64 {
+	if beg0 < 0 {
+		beg0 = 0
+	}
+	if a.refLen > 0 && end0 > a.refLen {
+		end0 = a.refLen
+	}
+	if end0 <= beg0 {
+		return 0
+	}
+	a.sortEvents()
+	// Build the per-base depth histogram for the region. The histogram is
+	// grown lazily so the common shallow-coverage case stays cheap; bins are
+	// still capped at medianHistSize-1 to match upstream's CountStat sizing.
+	hist := make([]int64, 0, 16)
+	bump := func(depth int32, count int) {
+		d := int(depth)
+		if d < 0 {
+			d = 0
+		}
+		if d >= medianHistSize-1 {
+			d = medianHistSize - 1
+		}
+		if d >= len(hist) {
+			grown := make([]int64, d+1)
+			copy(grown, hist)
+			hist = grown
+		}
+		hist[d] += int64(count)
+	}
+	var depth int32
+	idx := 0
+	for idx < len(a.events) && a.events[idx].pos <= beg0 {
+		depth += a.events[idx].delta
+		idx++
+	}
+	pos := beg0
+	for pos < end0 {
+		nextPos := end0
+		if idx < len(a.events) && a.events[idx].pos < end0 {
+			nextPos = a.events[idx].pos
+		}
+		if nextPos <= pos {
+			nextPos = pos + 1
+		}
+		bump(depth, nextPos-pos)
+		pos = nextPos
+		for idx < len(a.events) && a.events[idx].pos == pos {
+			depth += a.events[idx].delta
+			idx++
+		}
+	}
+	n := end0 - beg0
+	stopN := int(0.5 + float64(n)*0.5)
+	cum := 0
+	for d, c := range hist {
+		cum += int(c)
+		if cum >= stopN {
+			return float64(d)
+		}
+	}
+	return 0
+}
+
 // sortEventSlice sorts a slice of covEvent by ascending position.
 //
 // This is a small, allocation-free quicksort tuned for the mostly-sorted

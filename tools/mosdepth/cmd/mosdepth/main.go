@@ -42,7 +42,8 @@ Options:
   -r, --read-groups LIST  comma list of allowed RG ids, or "OPS:X,Y" for the OPS aux tag.
   -l, --min-frag-len INT  minimum absolute TLEN.
   -u, --max-frag-len INT  maximum absolute TLEN.
-  -m, --fragment-mode     score each pair as a single fragment span.
+  -a, --fragment-mode     score each pair as a single fragment span.
+  -m, --use-median        report region MEDIAN depth (with --by) instead of mean.
   -q, --quantize CUTOFFS  colon-separated cutoffs (e.g. 0:1:1000) for the
                           quantized.bed.gz output. Bin labels default to
                           "cutoffs[i]:cutoffs[i+1]" (e.g. "0:1", "1:1000");
@@ -77,6 +78,7 @@ type runOptions struct {
 	minFragLen   int
 	maxFragLen   int
 	fragmentMode bool
+	useMedian    bool
 	quantize     string
 	showHelp     bool
 	showVersion  bool
@@ -102,7 +104,8 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	cliflag.StringVar(fs, &opts.readGroups, "r", "read-groups", "", "comma list of RG IDs (or OPS:...)")
 	cliflag.IntVar(fs, &opts.minFragLen, "l", "min-frag-len", 0, "min |TLEN|")
 	cliflag.IntVar(fs, &opts.maxFragLen, "u", "max-frag-len", 0, "max |TLEN|")
-	cliflag.BoolVar(fs, &opts.fragmentMode, "m", "fragment-mode", false, "score each pair as a fragment span")
+	cliflag.BoolVar(fs, &opts.fragmentMode, "a", "fragment-mode", false, "score each pair as a fragment span")
+	cliflag.BoolVar(fs, &opts.useMedian, "m", "use-median", false, "report region median depth instead of mean")
 	cliflag.StringVar(fs, &opts.quantize, "q", "quantize", "", "colon-separated cutoffs (e.g. 0:1:1000) for quantized.bed.gz")
 	cliflag.BoolVar(fs, &opts.showHelp, "h", "help", false, "help")
 	cliflag.BoolVar(fs, &opts.showVersion, "v", "version", false, "version")
@@ -164,6 +167,7 @@ func run(args []string) int {
 		MinFragLen:   opts.minFragLen,
 		MaxFragLen:   opts.maxFragLen,
 		FragmentMode: opts.fragmentMode,
+		UseMedian:    opts.useMedian,
 		Quantize:     qz,
 		Threads:      opts.threads,
 	}

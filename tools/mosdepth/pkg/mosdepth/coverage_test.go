@@ -142,6 +142,41 @@ func TestCovAccumRegionStats(t *testing.T) {
 	}
 }
 
+// TestCovAccumRegionMedian verifies the upstream CountStat median
+// convention, including the lower-median rule for even base counts.
+func TestCovAccumRegionMedian(t *testing.T) {
+	// Region [0,10): 7 bases at depth 1, 3 bases at depth 0.
+	// Sorted depths: 0,0,0,1,1,1,1,1,1,1. n=10 (even).
+	// stop_n = int(0.5 + 5) = 5. cum: depth0 -> 3 (<5), depth1 -> 10 (>=5) => 1.
+	a := newCovAccum(10)
+	a.add(0, 7) // depth 1 across 0..6
+	if m := a.regionMedian(0, 10); m != 1 {
+		t.Errorf("median(0,10): got %v, want 1", m)
+	}
+
+	// Even split exercising the LOWER-median rule: 5 bases depth 0, 5 depth 2.
+	// Sorted: 0,0,0,0,0,2,2,2,2,2. n=10, stop_n=5. cum: depth0 -> 5 (>=5) => 0.
+	b := newCovAccum(10)
+	b.addSigned(5, 10, 2) // depth 2 across 5..9
+	if m := b.regionMedian(0, 10); m != 0 {
+		t.Errorf("lower-median(0,10): got %v, want 0 (lower of the two middle values)", m)
+	}
+
+	// Odd count: 5 bases, depths 0,0,1,2,2. n=5, stop_n=int(0.5+2.5)=3.
+	// cum: depth0 -> 2 (<3), depth1 -> 3 (>=3) => 1.
+	c := newCovAccum(5)
+	c.add(2, 3)          // depth 1 at pos 2
+	c.addSigned(3, 5, 2) // depth 2 at pos 3,4
+	if m := c.regionMedian(0, 5); m != 1 {
+		t.Errorf("odd median(0,5): got %v, want 1", m)
+	}
+
+	// Empty region returns 0.
+	if m := a.regionMedian(5, 5); m != 0 {
+		t.Errorf("empty median: got %v, want 0", m)
+	}
+}
+
 // TestCovAccumRegionStats_Empty handles the degenerate case where end <= beg.
 func TestCovAccumRegionStats_Empty(t *testing.T) {
 	a := newCovAccum(20)
