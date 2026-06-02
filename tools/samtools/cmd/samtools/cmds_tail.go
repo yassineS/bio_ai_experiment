@@ -1433,11 +1433,15 @@ func runImport(args []string) int {
 		Uncompressed:    uncomp,
 		NoPG:            noPG,
 	}
-	_ = i1Path
-	_ = i2Path
-	_ = casavaForm
-	_ = barcodeTag
-	_ = qualityTag
+	if i1Path != "" || i2Path != "" {
+		fmt.Fprintln(os.Stderr, "samtools import: warning: --i1/--i2 index-read inputs are not yet implemented; index reads ignored")
+	}
+	if casavaForm {
+		fmt.Fprintln(os.Stderr, "samtools import: warning: -i CASAVA header parsing is not yet implemented")
+	}
+	if barcodeTag != "" || qualityTag != "" {
+		fmt.Fprintln(os.Stderr, "samtools import: warning: --barcode-tag / --quality-tag renaming is not yet implemented; defaults BC/QT used")
+	}
 	_ = threads
 	if _, err := samtools.FastqImportFiles(fs.Args(), out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools import: %v\n", err)
@@ -2052,15 +2056,28 @@ func runConsensus(args []string) int {
 	explicit := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 
-	// The accepted-but-not-implemented knobs (incl-flags, excl-flags,
-	// reference, ref-qual, block-size, input-fmt-option, verbosity, and
-	// the -t/-X bayesian config knobs) live in the symbol table because
-	// cliflag took their address; we deliberately don't route them into
-	// ConsensusOptions yet. They're listed in consensusUsage and tracked
-	// in docs/PARITY_ROADMAP.md.
-	_ = inclFlags
-	_ = exclFlags
-	_ = refFasta
+	// The accepted-but-not-implemented knobs are wired into the warn-
+	// on-misuse stance: each emits a stderr warning when set so users
+	// see a deterministic signal rather than silently-wrong output.
+	// docs/PARITY_ROADMAP.md tracks closure-stance per knob.
+	if inclFlags != "" || exclFlags != "" {
+		fmt.Fprintln(os.Stderr, "samtools consensus: warning: --rf/--ff flag filters are not yet implemented (v1's filter set is fixed)")
+	}
+	if refFasta != "" {
+		fmt.Fprintln(os.Stderr, "samtools consensus: warning: -T/--reference uncovered-base fill is not yet implemented")
+	}
+	if ignoreOvl {
+		fmt.Fprintln(os.Stderr, "samtools consensus: warning: --ignore-overlaps is not yet implemented; mates count independently")
+	}
+	if hetOnly {
+		fmt.Fprintln(os.Stderr, "samtools consensus: warning: --het-only is not yet implemented")
+	}
+	if bay.qualCal != "" {
+		fmt.Fprintln(os.Stderr, "samtools consensus: warning: -t/--qual-calibration applies the FLAT identity table only (per-machine tables not yet ported)")
+	}
+	if bay.config != "" {
+		fmt.Fprintln(os.Stderr, "samtools consensus: warning: -X/--config presets are not yet applied")
+	}
 	_ = refQual
 	_ = blockSize
 	_ = inFmtOpt

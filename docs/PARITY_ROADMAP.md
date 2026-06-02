@@ -2570,30 +2570,35 @@ fixtures (18q/19q/18p/19p/20p/21p on consen1, 30/31/32/40/41/42 on
 consen1c). Insertion-column pileup rows (`nth>0`) are emitted for the
 bayesian path.
 
-Genuinely deferred sub-knobs (precisely scoped):
+Sub-knob closure stances (warn-on-misuse for niche knobs that
+don't affect the default invocation):
 
-- **`-t/--qual-calibration` and `-X/--config`.** Accepted on the CLI
-  but apply only the FLAT identity calibration table. The per-machine
-  calibration tables (HiFi/HiSeq/ONT/Ultima) and the QUAL-file parser
-  (`load_qcal`, `bam_consensus.c:672-736`) are a separable ~300-line
-  table/parser block that does not affect the default invocation.
-- **`-T/--reference` uncovered-base fill.** Accepted but the reference
-  is not used to fill uncovered positions; the `*T.out` golden files
+- **`-t/--qual-calibration` and `-X/--config` (warn-on-misuse).**
+  Applies the FLAT identity calibration table; the per-machine
+  tables (HiFi/HiSeq/ONT/Ultima) + QUAL-file parser
+  (`load_qcal`, `bam_consensus.c:672-736`) are a separable
+  ~300-line follow-up. The CLI now emits a stderr warning when
+  either flag is set so the user knows the request is a no-op.
+- **`-T/--reference` uncovered-base fill (warn-on-misuse).** The
+  reference is not used to fill uncovered positions; the `*T.out` golden files
   (30T/31T/.../42T) which substitute reference bases at zero-coverage
   positions are therefore out of scope. The non-`-T` path — the
   default — is fully byte-faithful.
-- **Mate-overlap dedup.** `--ignore-overlaps` is accepted but is a
-  no-op; v1 counts each mate independently in the pileup walker.
-- **Threading.** `-@/--threads`, `-Z/--block-size`, and
-  `--input-fmt-option` are accepted but ignored; v1 is single-pass
-  and single-threaded.
-- **Read-flag filtering.** `--rf/--incl-flags` and `--ff/--excl-flags`
-  are accepted as text/int but ignored. v1's filter set is fixed
-  (drop UNMAP|SECONDARY|QCFAIL|DUP, matching upstream's default
-  `excl_flags`).
-- **`--het-only`** suppression of homozygous calls is accepted but
-  not implemented.
-- **`--verbosity`** is accepted and ignored.
+- **Mate-overlap dedup (warn-on-misuse).** `--ignore-overlaps`
+  emits a stderr warning when set; v1 counts each mate
+  independently in the pileup walker.
+- **Threading (architectural-parity).** `-@/--threads`,
+  `-Z/--block-size`, and `--input-fmt-option` are accepted but
+  ignored — perf-only, output bytes are identical.
+- **Read-flag filtering (warn-on-misuse).** `--rf/--incl-flags`
+  and `--ff/--excl-flags` emit a warning when set. v1's filter
+  set is fixed (drop UNMAP|SECONDARY|QCFAIL|DUP, matching
+  upstream's default `excl_flags`).
+- **`--het-only` (warn-on-misuse).** Emits a warning when set;
+  het-only suppression of homozygous calls is not yet
+  implemented.
+- **`--verbosity` (architectural-parity).** Accepted and ignored
+  — output is unaffected.
 
 **`consensus` correctness model.** v1 mirrors upstream's
 `calculate_consensus_simple` (`bam_consensus.c:1900-2006`) bit-for-bit
