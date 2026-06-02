@@ -2,6 +2,9 @@ package bcftools
 
 import (
 	"fmt"
+	"math"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -148,8 +151,110 @@ func (n *binOpNode) eval(v *vcf.Variant) any {
 			return false
 		}
 		return compare(n.op, n.lhs.eval(v), n.rhs.eval(v))
+	case "~", "!~":
+		return compareRegex(n.op, n.lhs.eval(v), n.rhs.eval(v))
+	case "+", "-", "*", "/":
+		return arith(n.op, n.lhs.eval(v), n.rhs.eval(v))
 	}
 	return false
+}
+
+// compareRegex implements ~/!~ over scalar or vector values. The right-hand
+// side is the pattern (string literal); on the left, any-element match
+// semantics are used for vectors. !~ is the negation of ~. Mirrors
+// filter.c::filter_regex.
+func compareRegex(op string, left, right any) bool {
+	pat, ok := right.(string)
+	if !ok {
+		return false
+	}
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		return false
+	}
+	matched := false
+	switch x := left.(type) {
+	case nil:
+		matched = false
+	case vecValue:
+		for _, e := range x {
+			if s, ok := e.(string); ok && re.MatchString(s) {
+				matched = true
+				break
+			}
+		}
+	case string:
+		matched = re.MatchString(x)
+	default:
+		matched = re.MatchString(asString(x))
+	}
+	if op == "!~" {
+		return !matched
+	}
+	return matched
+}
+
+// arith implements +, -, *, / over scalar or vector values. Vectors fold
+// element-wise (length 1 broadcasts). Mirrors filter.c's func_op2 family.
+// Division by zero or any non-numeric operand evaluates to nil.
+func arith(op string, a, b any) any {
+	av, aIsVec := a.(vecValue)
+	bv, bIsVec := b.(vecValue)
+	switch {
+	case aIsVec && bIsVec:
+		n := len(av)
+		if len(bv) > n {
+			n = len(bv)
+		}
+		out := make(vecValue, n)
+		for i := 0; i < n; i++ {
+			la := av[0]
+			if i < len(av) {
+				la = av[i]
+			}
+			lb := bv[0]
+			if i < len(bv) {
+				lb = bv[i]
+			}
+			out[i] = arithScalar(op, la, lb)
+		}
+		return out
+	case aIsVec:
+		out := make(vecValue, len(av))
+		for i, e := range av {
+			out[i] = arithScalar(op, e, b)
+		}
+		return out
+	case bIsVec:
+		out := make(vecValue, len(bv))
+		for i, e := range bv {
+			out[i] = arithScalar(op, a, e)
+		}
+		return out
+	}
+	return arithScalar(op, a, b)
+}
+
+func arithScalar(op string, a, b any) any {
+	af, aok := asFloat(a)
+	bf, bok := asFloat(b)
+	if !aok || !bok {
+		return nil
+	}
+	switch op {
+	case "+":
+		return af + bf
+	case "-":
+		return af - bf
+	case "*":
+		return af * bf
+	case "/":
+		if bf == 0 {
+			return nil
+		}
+		return af / bf
+	}
+	return nil
 }
 
 // sampleMask evaluates a comparison per sample when either operand is a
@@ -807,7 +912,7 @@ func (n *aggNode) eval(v *vcf.Variant) any {
 		default: // COUNT
 			return float64(npass)
 		}
-	case "SUM", "MAX", "MIN", "AVG":
+	case "SUM", "MAX", "MIN", "AVG", "MEDIAN", "STDEV":
 		return n.reduce(v)
 	}
 	return nil
@@ -895,6 +1000,27 @@ func (n *aggNode) reduce(v *vcf.Variant) any {
 			}
 		}
 		return m
+	case "MEDIAN":
+		sorted := append([]float64(nil), vals...)
+		sort.Float64s(sorted)
+		m := len(sorted) / 2
+		if len(sorted)%2 == 1 {
+			return sorted[m]
+		}
+		return (sorted[m-1] + sorted[m]) / 2
+	case "STDEV":
+		// Population standard deviation (upstream func_stdev uses 1/N).
+		var sum float64
+		for _, x := range vals {
+			sum += x
+		}
+		mean := sum / float64(len(vals))
+		var sq float64
+		for _, x := range vals {
+			d := x - mean
+			sq += d * d
+		}
+		return math.Sqrt(sq / float64(len(vals)))
 	default: // AVG
 		s := 0.0
 		for _, x := range vals {
@@ -1127,6 +1253,13 @@ func (p *parser) peek() byte {
 	return p.src[p.pos]
 }
 
+func (p *parser) peekAt(off int) byte {
+	if p.pos+off >= len(p.src) {
+		return 0
+	}
+	return p.src[p.pos+off]
+}
+
 func (p *parser) match(s string) bool {
 	if strings.HasPrefix(p.src[p.pos:], s) {
 		p.pos += len(s)
@@ -1210,7 +1343,7 @@ func (p *parser) parsePrimary() (node, error) {
 		}
 		return inner, nil
 	}
-	left, err := p.parseValue()
+	left, err := p.parseSum()
 	if err != nil {
 		return nil, err
 	}
@@ -1219,11 +1352,68 @@ func (p *parser) parsePrimary() (node, error) {
 	if op == "" {
 		return left, nil
 	}
-	right, err := p.parseValue()
+	right, err := p.parseSum()
 	if err != nil {
 		return nil, err
 	}
 	return &binOpNode{op: op, lhs: left, rhs: right}, nil
+}
+
+// parseSum implements + / - left-associative parsing over parseProduct.
+func (p *parser) parseSum() (node, error) {
+	left, err := p.parseProduct()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		p.skipSpace()
+		var op string
+		switch {
+		case p.peek() == '+':
+			op = "+"
+		case p.peek() == '-':
+			op = "-"
+		default:
+			return left, nil
+		}
+		p.pos++
+		right, err := p.parseProduct()
+		if err != nil {
+			return nil, err
+		}
+		left = &binOpNode{op: op, lhs: left, rhs: right}
+	}
+}
+
+// parseProduct implements * / / left-associative parsing over parseValue.
+func (p *parser) parseProduct() (node, error) {
+	left, err := p.parseValue()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		p.skipSpace()
+		var op string
+		switch {
+		case p.peek() == '*':
+			op = "*"
+		case p.peek() == '/' && p.peekAt(1) != '/':
+			// Allow tag references containing '/' (INFO/AF) to take
+			// precedence: only treat '/' as division when not followed
+			// by another '/' AND when followed by a space or a value.
+			// In practice tag refs are tokenised in parseIdent so by the
+			// time we get here a bare '/' is always the division op.
+			op = "/"
+		default:
+			return left, nil
+		}
+		p.pos++
+		right, err := p.parseValue()
+		if err != nil {
+			return nil, err
+		}
+		left = &binOpNode{op: op, lhs: left, rhs: right}
+	}
 }
 
 func (p *parser) matchCompareOp() string {
@@ -1236,6 +1426,8 @@ func (p *parser) matchCompareOp() string {
 		return "=="
 	case p.match("!="):
 		return "!="
+	case p.match("!~"):
+		return "!~"
 	case p.match("<="):
 		return "<="
 	case p.match(">="):
@@ -1247,6 +1439,8 @@ func (p *parser) matchCompareOp() string {
 		return "<"
 	case p.match(">"):
 		return ">"
+	case p.match("~"):
+		return "~"
 	}
 	return ""
 }
@@ -1308,8 +1502,22 @@ func (p *parser) parseNumber() (node, error) {
 
 func (p *parser) parseIdent() (node, error) {
 	start := p.pos
-	for p.pos < len(p.src) && (isIdentPart(p.src[p.pos]) || p.src[p.pos] == '/') {
-		p.pos++
+	// At most one '/' may appear inside an identifier, separating an INFO/
+	// or FORMAT/ prefix from the tag name. A second '/' is the division
+	// operator; without this cap "INFO/AF/2" parses as a single token.
+	slashSeen := false
+	for p.pos < len(p.src) {
+		c := p.src[p.pos]
+		if isIdentPart(c) {
+			p.pos++
+			continue
+		}
+		if c == '/' && !slashSeen {
+			slashSeen = true
+			p.pos++
+			continue
+		}
+		break
 	}
 	tok := p.src[start:p.pos]
 
@@ -1420,7 +1628,8 @@ func (p *parser) parseFunctionCall(name string) (node, bool, error) {
 	upper := strings.ToUpper(name)
 	var kind string
 	switch upper {
-	case "N_PASS", "F_PASS", "COUNT", "SUM", "MAX", "MIN", "AVG", "MEAN", "STRLEN", "ABS":
+	case "N_PASS", "F_PASS", "COUNT", "SUM", "MAX", "MIN", "AVG", "MEAN",
+		"STRLEN", "ABS", "MEDIAN", "STDEV", "PHRED":
 		kind = upper
 	default:
 		return nil, false, nil
@@ -1456,8 +1665,46 @@ func (p *parser) parseFunctionCall(name string) (node, bool, error) {
 		return &aggNode{kind: "MIN", inner: inner}, true, nil
 	case "AVG", "MEAN":
 		return &aggNode{kind: "AVG", inner: inner}, true, nil
+	case "MEDIAN":
+		return &aggNode{kind: "MEDIAN", inner: inner}, true, nil
+	case "STDEV":
+		return &aggNode{kind: "STDEV", inner: inner}, true, nil
+	case "PHRED":
+		return &phredNode{inner: inner}, true, nil
 	}
 	return nil, false, nil
+}
+
+// phredNode implements PHRED(x) = -10 * log10(x). Vectors map element-wise.
+// Mirrors filter.c::func_phred. A non-numeric or missing value evaluates to
+// nil (which the binOp engine then resolves via the missing semantic).
+type phredNode struct{ inner node }
+
+func (n *phredNode) eval(v *vcf.Variant) any {
+	val := n.inner.eval(v)
+	switch x := val.(type) {
+	case nil:
+		return nil
+	case vecValue:
+		out := make(vecValue, len(x))
+		for i, e := range x {
+			out[i] = phredOf(e)
+		}
+		return out
+	default:
+		return phredOf(x)
+	}
+}
+
+func phredOf(v any) any {
+	f, ok := asFloat(v)
+	if !ok {
+		return nil
+	}
+	if f <= 0 {
+		return nil
+	}
+	return -10 * math.Log10(f)
 }
 
 // identNode is a bare identifier whose meaning depends on context: when used as
