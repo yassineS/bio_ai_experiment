@@ -553,6 +553,28 @@ func TestLiveIsec(t *testing.T) {
 			t.Errorf("isec output %q differs", name)
 		}
 	}
+
+	// Tuple ("list of sites") byte-equality: without -p / -w, both
+	// implementations emit one line per kept site followed by the
+	// membership bitmask. The default-no-constraint path triggers
+	// upstream's OP_VENN error, so we exercise it with -n+1.
+	t.Run("tuple_default", func(t *testing.T) {
+		liveOut := runBin(t, live, "isec", "-n+1", a, b)
+		oursOut := runBin(t, ours, "isec", "-n+1", a, b)
+		if !bytes.Equal(liveOut, oursOut) {
+			t.Errorf("tuple output differs\n--- upstream ---\n%s\n--- ours ---\n%s", liveOut, oursOut)
+		}
+	})
+
+	// CollapseSome (-c some) used to over-merge because our key was
+	// (CHROM,POS,REF) — it now buckets and clusters on shared ALTs.
+	t.Run("collapse_some", func(t *testing.T) {
+		liveOut := runBin(t, live, "isec", "-c", "some", "-n+1", a, b)
+		oursOut := runBin(t, ours, "isec", "-c", "some", "-n+1", a, b)
+		if !bytes.Equal(liveOut, oursOut) {
+			t.Errorf("collapse=some tuple differs\n--- upstream ---\n%s\n--- ours ---\n%s", liveOut, oursOut)
+		}
+	})
 }
 
 // -------------------------------------------------------------------------

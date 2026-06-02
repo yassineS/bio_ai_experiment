@@ -250,6 +250,40 @@ func TestParseOutputFormat(t *testing.T) {
 	}
 }
 
+// TestParallelViewBCFDeterminism pins bcftools view -@ as a perf-only
+// knob: BGZF-framed output bytes (-O z, -O b, -O u) must match the
+// serial Threads <= 1 path exactly across thread counts. This is the
+// regression gate for the parallel writer wired into openOutput.
+func TestParallelViewBCFDeterminism(t *testing.T) {
+	formats := []struct {
+		name string
+		of   OutputFormat
+	}{
+		{"OutputVCFGz", OutputVCFGz},
+		{"OutputBCF", OutputBCF},
+		{"OutputBCFUncompressed", OutputBCFUncompressed},
+	}
+	threadsList := []int{2, 4, 8}
+	for _, f := range formats {
+		t.Run(f.name, func(t *testing.T) {
+			var serial bytes.Buffer
+			if _, err := View(strings.NewReader(sampleVCF), &serial, ViewOptions{OutputFormat: f.of}); err != nil {
+				t.Fatalf("serial: %v", err)
+			}
+			for _, threads := range threadsList {
+				var par bytes.Buffer
+				if _, err := View(strings.NewReader(sampleVCF), &par, ViewOptions{OutputFormat: f.of, Threads: threads}); err != nil {
+					t.Fatalf("threads=%d: %v", threads, err)
+				}
+				if !bytes.Equal(serial.Bytes(), par.Bytes()) {
+					t.Fatalf("%s -@ %d output differs from serial (serial=%d, parallel=%d)",
+						f.name, threads, serial.Len(), par.Len())
+				}
+			}
+		})
+	}
+}
+
 func TestViewVCFGzOutput(t *testing.T) {
 	var out bytes.Buffer
 	if _, err := View(strings.NewReader(sampleVCF), &out, ViewOptions{OutputFormat: OutputVCFGz}); err != nil {

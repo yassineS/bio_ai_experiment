@@ -34,7 +34,9 @@ func writeIsecInputs(t *testing.T, contents []string) []string {
 }
 
 // Hand-computed: input A has rs1, rs2; input B has rs1, rs3.
-// Intersection (-n =2) yields rs1 only. Default writes from input A.
+// Intersection (-n =2) yields rs1 (chr1:100 A→T) only. Without -p/-w the
+// default output is upstream's tuple "list of sites" form
+// (CHROM\tPOS\tREF\tALT\tBITS).
 func TestIsecIntersection(t *testing.T) {
 	a := isecVCF(
 		"chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1",
@@ -55,15 +57,15 @@ func TestIsecIntersection(t *testing.T) {
 	if n != 1 {
 		t.Errorf("intersection size = %d, want 1", n)
 	}
-	if !strings.Contains(stdout.String(), "rs1") {
-		t.Errorf("expected rs1 in stdout dump:\n%s", stdout.String())
-	}
-	if strings.Contains(stdout.String(), "rs2") || strings.Contains(stdout.String(), "rs3") {
-		t.Errorf("non-intersection records leaked:\n%s", stdout.String())
+	want := "chr1\t100\tA\tT\t11\n"
+	if stdout.String() != want {
+		t.Errorf("tuple output mismatch:\ngot:  %q\nwant: %q", stdout.String(), want)
 	}
 }
 
-// Hand-computed: union (no -n constraint) = rs1, rs2, rs3.
+// Hand-computed: union with -n+1 (without -n the two-input default is
+// upstream's OP_VENN error). Tuple output lists every site, marked with
+// per-input membership bits.
 func TestIsecUnion(t *testing.T) {
 	a := isecVCF(
 		"chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1",
@@ -75,16 +77,24 @@ func TestIsecUnion(t *testing.T) {
 	)
 	paths := writeIsecInputs(t, []string{a, b})
 	var stdout bytes.Buffer
-	n, err := IsecFiles(paths, &stdout, IsecOptions{})
+	n, err := IsecFiles(paths, &stdout, IsecOptions{
+		Nfiles: NfilesSpec{Mode: '+', N: 1},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 3 {
 		t.Errorf("union size = %d, want 3", n)
 	}
+	for _, want := range []string{"chr1\t100\tA\tT\t11", "chr1\t200\tC\tG\t10", "chr1\t300\tA\tT\t01"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("missing tuple line %q in:\n%s", want, stdout.String())
+		}
+	}
 }
 
-// Hand-computed: complement (records in A only) ⇒ -n ~10
+// Hand-computed: complement (records in A only) ⇒ -n ~10 — rs2 only, with
+// tuple bits = 10.
 func TestIsecBitmaskAOnly(t *testing.T) {
 	a := isecVCF(
 		"chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1",
@@ -105,8 +115,99 @@ func TestIsecBitmaskAOnly(t *testing.T) {
 	if n != 1 {
 		t.Errorf("A-only = %d, want 1 (rs2)", n)
 	}
-	if !strings.Contains(stdout.String(), "rs2") {
-		t.Errorf("rs2 missing from stdout:\n%s", stdout.String())
+	want := "chr1\t200\tC\tG\t10\n"
+	if stdout.String() != want {
+		t.Errorf("tuple output mismatch:\ngot:  %q\nwant: %q", stdout.String(), want)
+	}
+}
+
+// Tuple "list of sites" default: upstream emits an advisory stderr note
+// and the same tuple body. We capture the stderr writer to confirm parity.
+func TestIsecTupleDefaultStderrNote(t *testing.T) {
+	a := isecVCF("chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1")
+	b := isecVCF("chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1")
+	paths := writeIsecInputs(t, []string{a, b})
+	var stdout, stderr bytes.Buffer
+	if _, err := IsecFiles(paths, &stdout, IsecOptions{
+		Nfiles: NfilesSpec{Mode: '=', N: 2},
+		Stderr: &stderr,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "printing list of sites") {
+		t.Errorf("missing upstream stderr note; got:\n%s", stderr.String())
+	}
+}
+
+// Two inputs, no -n: upstream switches to OP_VENN and requires -p, erroring
+// with the exact text we mirror.
+func TestIsecVennRequiresPrefix(t *testing.T) {
+	a := isecVCF("chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1")
+	b := isecVCF("chr1\t100\trs1\tA\tT\t.\tPASS\t.\tGT\t0/1")
+	paths := writeIsecInputs(t, []string{a, b})
+	_, err := IsecFiles(paths, &bytes.Buffer{}, IsecOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Expected the -p option") {
+		t.Errorf("want OP_VENN error 'Expected the -p option', got %v", err)
+	}
+}
+
+// CollapseSome: REF must match AND at least one ALT must intersect. With
+// fixture A=chr1:100 A→T, chr1:200 C→G,T; B=chr1:100 A→C, chr1:200 C→G:
+// only chr1:200 collapses to a shared row (G in common). chr1:100 has
+// disjoint ALTs, so it splits into two single-reader rows.
+func TestIsecCollapseSome(t *testing.T) {
+	a := isecVCF(
+		"chr1\t100\t.\tA\tT\t.\tPASS\t.\tGT\t0/1",
+		"chr1\t200\t.\tC\tG,T\t.\tPASS\t.\tGT\t0/1",
+	)
+	b := isecVCF(
+		"chr1\t100\t.\tA\tC\t.\tPASS\t.\tGT\t0/1",
+		"chr1\t200\t.\tC\tG\t.\tPASS\t.\tGT\t0/1",
+	)
+	paths := writeIsecInputs(t, []string{a, b})
+	var stdout bytes.Buffer
+	n, err := IsecFiles(paths, &stdout, IsecOptions{
+		Collapse: CollapseSome,
+		Nfiles:   NfilesSpec{Mode: '=', N: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// =2 keeps only the chr1:200 cluster; chr1:100 splits into two
+	// non-intersecting singletons whose bits are 10 and 01.
+	if n != 1 {
+		t.Errorf("CollapseSome =2 size = %d, want 1", n)
+	}
+	want := "chr1\t200\tC\tG,T\t11\n"
+	if stdout.String() != want {
+		t.Errorf("CollapseSome tuple output mismatch:\ngot:  %q\nwant: %q", stdout.String(), want)
+	}
+}
+
+// Same fixture under -n+1: confirms the non-intersecting chr1:100 rows are
+// split rather than merged.
+func TestIsecCollapseSomeSplitDisjointAlts(t *testing.T) {
+	a := isecVCF(
+		"chr1\t100\t.\tA\tT\t.\tPASS\t.\tGT\t0/1",
+	)
+	b := isecVCF(
+		"chr1\t100\t.\tA\tC\t.\tPASS\t.\tGT\t0/1",
+	)
+	paths := writeIsecInputs(t, []string{a, b})
+	var stdout bytes.Buffer
+	n, err := IsecFiles(paths, &stdout, IsecOptions{
+		Collapse: CollapseSome,
+		Nfiles:   NfilesSpec{Mode: '+', N: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("CollapseSome split count = %d, want 2", n)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "chr1\t100\tA\tT\t10") || !strings.Contains(out, "chr1\t100\tA\tC\t01") {
+		t.Errorf("CollapseSome split output missing one of the rows:\n%s", out)
 	}
 }
 

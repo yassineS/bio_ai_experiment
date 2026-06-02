@@ -150,6 +150,9 @@ type IsecOptions struct {
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// Stderr receives advisory notes ("Note: -w option not given, ..."
+	// matching upstream). When nil, notes are silently dropped.
+	Stderr io.Writer
 }
 
 // IsecFiles is the file-aware entry point. It opens each path through
@@ -192,10 +195,19 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		return 0, fmt.Errorf("bcftools isec: -n ~bits length %d != number of inputs %d", len(opts.Nfiles.Bits), n)
 	}
 
-	// Build per-input keyed maps and the union key list with membership.
-	keyOf := func(v *vcf.Variant) string {
-		return collapseKey(v, opts.Collapse)
+	// Upstream OP_VENN rule: with exactly two inputs and no -n constraint,
+	// the Venn-diagram four-way projection is implied, and that mode
+	// requires -p (the four projections cannot be streamed to stdout in
+	// any useful way). Match the exact upstream error text.
+	if n == 2 && opts.Nfiles.Mode == 0 && opts.Prefix == "" {
+		return 0, fmt.Errorf("Expected the -p option")
 	}
+
+	// Build per-input keyed maps and the union key list with membership.
+	// CollapseSome cannot be reduced to a single string key (REF must
+	// match AND at least one ALT must be shared); the keyAlts /
+	// someBucket pair maintains per-(CHROM,POS,REF) clusters that the
+	// incoming variant joins iff its ALT set intersects an existing one.
 	type cell struct {
 		variant   *vcf.Variant
 		groupIdx  int
@@ -204,30 +216,62 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 	keyMembership := map[string]*[]bool{}
 	keyOrder := []string{}
 	keyVariants := map[string][]cell{}
+	keyAlts := map[string]map[string]bool{} // CollapseSome only
+	someBucket := map[string][]string{}     // (CHROM\tPOS\tREF) -> []key
+	someCount := 0
 	for gi, g := range groups {
 		for vi, v := range g {
-			k := keyOf(v)
+			c := cell{variant: v, groupIdx: gi, variantIx: vi}
+			var k string
+			if opts.Collapse == CollapseSome {
+				prefix := fmt.Sprintf("%s\t%d\t%s", v.Chrom, v.Pos, v.Ref)
+				for _, candidate := range someBucket[prefix] {
+					if altsIntersect(keyAlts[candidate], v.Alt) {
+						k = candidate
+						break
+					}
+				}
+				if k == "" {
+					someCount++
+					k = fmt.Sprintf("%s#%d", prefix, someCount)
+					someBucket[prefix] = append(someBucket[prefix], k)
+					keyAlts[k] = make(map[string]bool, len(v.Alt))
+				}
+				for _, a := range v.Alt {
+					keyAlts[k][a] = true
+				}
+			} else {
+				k = collapseKey(v, opts.Collapse)
+			}
 			if _, ok := keyMembership[k]; !ok {
 				m := make([]bool, n)
 				keyMembership[k] = &m
 				keyOrder = append(keyOrder, k)
 			}
 			(*keyMembership[k])[gi] = true
-			keyVariants[k] = append(keyVariants[k], cell{variant: v, groupIdx: gi, variantIx: vi})
+			keyVariants[k] = append(keyVariants[k], c)
 		}
 	}
 
-	// Sort the union key list using the first-input contig order as the
-	// primary signal. Ties fall back to lexicographic.
+	// Sort the union key list to match upstream's synced-reader iteration
+	// order: ascending (contig, POS) — then, at ties, by the (groupIdx,
+	// variantIx) of the first cell that introduced the key (i.e. the
+	// reader-arrival order). Pure lexicographic tie-breaking diverges
+	// from upstream when two records share POS but have different
+	// REF/ALT, so we use the recorded arrival order instead.
 	primaryOrder := contigOrder(headers[0])
 	sort.SliceStable(keyOrder, func(i, j int) bool {
-		ai, bi := keyVariants[keyOrder[i]][0].variant, keyVariants[keyOrder[j]][0].variant
-		ka := keyFor(ai, primaryOrder)
-		kb := keyFor(bi, primaryOrder)
+		ca := keyVariants[keyOrder[i]][0]
+		cb := keyVariants[keyOrder[j]][0]
+		ka := keyFor(ca.variant, primaryOrder)
+		kb := keyFor(cb.variant, primaryOrder)
 		if !ka.equal(kb) {
 			return ka.less(kb)
 		}
-		return keyOrder[i] < keyOrder[j]
+		if ca.groupIdx != cb.groupIdx {
+			return ca.groupIdx < cb.groupIdx
+		}
+		return ca.variantIx < cb.variantIx
 	})
 
 	// Decide which keys pass the -n constraint.
@@ -321,12 +365,16 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 	// Open the stdout writer if -w is set or both -p and -w are empty
 	// (default = dump from the first input).
 	writeFromInputs := opts.Write
-	openStdout := opts.Prefix == "" || len(writeFromInputs) > 0
+	// Three stdout branches mirror upstream:
+	//   - -w N: stream the chosen reader(s) as VCF/BCF.
+	//   - -p only (no -w): no stdout output (all goes to prefix files).
+	//   - neither -p nor -w: tuple "list of sites" format to stdout plus
+	//     the advisory stderr note.
+	tupleMode := opts.Prefix == "" && len(writeFromInputs) == 0
+	streamMode := len(writeFromInputs) > 0
 	var stdoutW variantWriter
 	var stdoutFinish func()
-	if openStdout {
-		// Header source: union (first input) when multiple write-targets,
-		// or the chosen input when exactly one.
+	if streamMode {
 		hdrIdx := 0
 		if len(writeFromInputs) == 1 {
 			if writeFromInputs[0]-1 >= 0 && writeFromInputs[0]-1 < n {
@@ -345,9 +393,9 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		if err := stdoutW.WriteHeader(); err != nil {
 			return 0, err
 		}
-		if len(writeFromInputs) == 0 {
-			writeFromInputs = []int{1}
-		}
+	}
+	if tupleMode && opts.Stderr != nil {
+		fmt.Fprintln(opts.Stderr, "Note: -w option not given, printing list of sites...")
 	}
 
 	// Walk the keys and emit.
@@ -388,8 +436,34 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 				}
 			}
 		}
-		// stdout dump: pick the first cell whose group is in writeFromInputs.
-		if openStdout {
+		if tupleMode {
+			// Upstream tuple shape: CHROM\tPOS\tREF\tALT(comma-joined)\tBITS\n
+			// using the variant from the first reader that had the row.
+			v := cells[0].variant
+			mem := *keyMembership[k]
+			bits := make([]byte, n)
+			for i, b := range mem {
+				if b {
+					bits[i] = '1'
+				} else {
+					bits[i] = '0'
+				}
+			}
+			refStr := v.Ref
+			if refStr == "" {
+				refStr = "."
+			}
+			altStr := "."
+			if len(v.Alt) > 0 {
+				altStr = strings.Join(v.Alt, ",")
+			}
+			if _, err := fmt.Fprintf(stdout, "%s\t%d\t%s\t%s\t%s\n", v.Chrom, v.Pos, refStr, altStr, string(bits)); err != nil {
+				return totalKept, err
+			}
+			continue
+		}
+		// stream mode: pick the first cell whose group is in writeFromInputs.
+		if streamMode {
 			for _, want := range writeFromInputs {
 				wi := want - 1
 				if wi < 0 || wi >= n {
@@ -408,7 +482,7 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		wrote:
 		}
 	}
-	if openStdout {
+	if streamMode {
 		_ = stdoutW.Flush()
 		stdoutFinish()
 	}
@@ -419,6 +493,20 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		c()
 	}
 	return totalKept, nil
+}
+
+// altsIntersect reports whether the existing ALT set shares any allele
+// with the incoming variant's ALT list. CollapseSome merge predicate.
+func altsIntersect(existing map[string]bool, incoming []string) bool {
+	if len(existing) == 0 || len(incoming) == 0 {
+		return false
+	}
+	for _, a := range incoming {
+		if existing[a] {
+			return true
+		}
+	}
+	return false
 }
 
 // collapseKey returns the canonical membership key for a variant under the
@@ -450,7 +538,12 @@ func collapseKey(v *vcf.Variant, mode CollapseMode) string {
 		}
 		return fmt.Sprintf("%s\t%d\t%s\t%s", v.Chrom, v.Pos, v.Ref, strings.Join(v.Alt, ","))
 	case CollapseSome:
-		return fmt.Sprintf("%s\t%d\t%s", v.Chrom, v.Pos, v.Ref)
+		// CollapseSome is handled out-of-band in Isec (see the
+		// someBucket / keyAlts path) — REF match plus shared-ALT can't
+		// reduce to a single string key. Falling through here returns
+		// the strict (CHROM,POS,REF,ALT) tuple so any stray call gets
+		// the strictest (and therefore safest) behaviour.
+		return fmt.Sprintf("%s\t%d\t%s\t%s", v.Chrom, v.Pos, v.Ref, strings.Join(v.Alt, ","))
 	}
 	return fmt.Sprintf("%s\t%d\t%s\t%s", v.Chrom, v.Pos, v.Ref, strings.Join(v.Alt, ","))
 }

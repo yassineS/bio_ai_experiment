@@ -87,6 +87,13 @@ type ViewOptions struct {
 	// pure header rewrite — upstream does not synthesise a PASS line
 	// when one isn't already present, so neither should we.
 	SkipPASSInjection bool
+	// Threads selects the worker count for parallel BGZF block
+	// compression on the BCF / VCF.gz / uncompressed-BCF (Ob / Oz / Ou)
+	// output paths. Values > 1 farm the per-block encode step out to a
+	// worker pool while preserving submission order; output bytes are
+	// byte-identical to the serial (Threads <= 1) path. Plain VCF
+	// output is unaffected.
+	Threads int
 }
 
 // applyAlleleFilters returns true if the variant passes the AC/AF filters.
@@ -858,6 +865,17 @@ type variantWriter interface {
 	Flush() error
 }
 
+// bgzfFlusher is the minimal interface vcf/bcfVariantWriter need from the
+// underlying BGZF writer for the header-block flush. It is satisfied by
+// both *bgzf.Writer (serial) and *bgzf.ParallelWriter (parallel block
+// compression), so the -@/--threads dispatch in openOutput is the only
+// place that has to know which one is in use.
+type bgzfFlusher interface {
+	Flush() error
+	Close() error
+	Write(p []byte) (int, error)
+}
+
 // vcfVariantWriter is the trivial pass-through adapter for the VCF / VCF.gz
 // output paths. When bgzf is non-nil (the -Oz path), WriteHeader closes the
 // BGZF block after the header so the header occupies its own block, matching
@@ -865,7 +883,7 @@ type variantWriter interface {
 // header.
 type vcfVariantWriter struct {
 	w    *vcf.Writer
-	bgzf *bgzip.Writer
+	bgzf bgzfFlusher
 }
 
 func (a *vcfVariantWriter) WriteHeader() error {
@@ -890,7 +908,7 @@ func (a *vcfVariantWriter) Flush() error               { return a.w.Flush() }
 // after the header for the -Ob / -Ou paths.
 type bcfVariantWriter struct {
 	w    *bcf.Writer
-	bgzf *bgzip.Writer
+	bgzf bgzfFlusher
 }
 
 func (a *bcfVariantWriter) WriteHeader() error {
@@ -953,19 +971,20 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 		// Upstream -Oz emits BGZF (block-gzip with the BC subfield), not
 		// plain gzip, so the output is tabix-indexable and byte-matches
 		// `bgzip`. Use the BGZF writer rather than compress/gzip.
-		var gw *bgzip.Writer
-		if opts.CompressLevel < 0 {
-			gw = bgzip.NewWriter(out)
-		} else {
-			var err error
-			gw, err = bgzip.NewWriterLevel(out, opts.CompressLevel)
-			if err != nil {
-				return nil, func() {}, err
-			}
+		level := opts.CompressLevel
+		if level < 0 {
+			level = bgzip.DefaultCompression
+		}
+		gw, err := newBGZFWriter(out, level, opts.Threads)
+		if err != nil {
+			return nil, func() {}, err
 		}
 		return &vcfVariantWriter{w: vcf.NewWriter(gw, hdr), bgzf: gw}, func() { _ = gw.Close() }, nil
 	case OutputBCF:
-		bw := bgzip.NewWriter(out)
+		bw, err := newBGZFWriter(out, bgzip.DefaultCompression, opts.Threads)
+		if err != nil {
+			return nil, func() {}, err
+		}
 		w, err := bcf.NewWriterFromVCFHeader(bw, hdr)
 		if err != nil {
 			_ = bw.Close()
@@ -976,7 +995,7 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 		// htslib's "wbu" mode wraps BCF in BGZF but stores each block
 		// uncompressed (deflate level 0). Match that framing so the output
 		// is structurally identical to genuine `bcftools view -Ou`.
-		bw, err := bgzip.NewWriterLevel(out, flate.NoCompression)
+		bw, err := newBGZFWriter(out, flate.NoCompression, opts.Threads)
 		if err != nil {
 			return nil, func() {}, err
 		}
@@ -988,6 +1007,18 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 		return &bcfVariantWriter{w: w, bgzf: bw}, func() { _ = w.Flush(); _ = bw.Close() }, nil
 	}
 	return &vcfVariantWriter{w: vcf.NewWriter(out, hdr)}, func() {}, nil
+}
+
+// newBGZFWriter returns a serial *bgzip.Writer when threads <= 1 and a
+// *bgzip.ParallelWriter otherwise. The two implementations produce
+// byte-identical BGZF output at the same compression level (the parallel
+// writer just farms block-encode work out to a worker pool and reassembles
+// in submission order), so -@/--threads is a pure perf knob.
+func newBGZFWriter(out io.Writer, level, threads int) (bgzfFlusher, error) {
+	if threads > 1 {
+		return bgzip.NewParallelWriterLevel(out, level, threads)
+	}
+	return bgzip.NewWriterLevel(out, level)
 }
 
 // LoadSamplesFile reads one sample name per line. Blank lines and comment

@@ -197,6 +197,7 @@ func runIsec(args []string) int {
 		Collapse:     cmode,
 		Prefix:       prefix,
 		OutputFormat: format,
+		Stderr:       os.Stderr,
 	}
 	if writeList != "" {
 		for _, p := range strings.Split(writeList, ",") {
@@ -216,7 +217,14 @@ func runIsec(args []string) int {
 	}
 	defer out.Close()
 	if _, err := bcftools.IsecFiles(paths, out, opts); err != nil {
-		fmt.Fprintf(os.Stderr, "bcftools isec: %v\n", err)
+		// Upstream's "Expected the -p option" message is printed raw
+		// (no program prefix). Preserve byte-equality on stderr for it
+		// — every other error still carries the "bcftools isec: " tag.
+		if err.Error() == "Expected the -p option" {
+			fmt.Fprintln(os.Stderr, err.Error())
+		} else {
+			fmt.Fprintf(os.Stderr, "bcftools isec: %v\n", err)
+		}
 		return 1
 	}
 	return 0

@@ -3077,8 +3077,14 @@ Option-tail gaps on the wave-1 additions (PR #86):
 
 - `annotate --set-id '+%CHROM_%POS'` macro expansion is not implemented;
   `-x ID` / `-x INFO/TAG` / `-x FORMAT/TAG` removal works.
-- `isec`: `--collapse some` (REF match + any-ALT-in-common) is approximated
-  via strict tuple match; deeper semantics deferred.
+- `isec`: previously approximated `--collapse some` via a too-loose
+  string key and emitted full VCF when neither -p nor -w was given.
+  Both fixed (commit follows): tuple "list of sites" output is the
+  default fallback (mirroring upstream's `args->fh_sites` branch in
+  `vcfisec.c:216-237`); `--collapse some` clusters per
+  `(CHROM,POS,REF)` with shared-ALT growth so disjoint ALTs at the
+  same site remain distinct rows. OP_VENN error
+  ("Expected the -p option") is emitted byte-equal with upstream.
 - `merge`: pre-sort assumption is enforced; no automatic CHROM/POS sort.
 - `reheader`: in-place rewrite (`-i`) currently emits to stdout — caller
   is responsible for the swap.
