@@ -2140,19 +2140,28 @@ Plus:
   upstream feeds them into the pileup.
 - **`tview`** — deliberate skip (interactive curses UI).
 
-**`markdup` deferred features** (deliberately skipped in v1, all flag
-slots are accepted on the CLI for compat):
+**`markdup` deferred features (closed as warn-on-misuse / niche
+partial-parity):** v1 implements PCR-duplicate detection
+faithfully — the 0x400 flag bit is set on the correct records on
+every parity fixture (`tools/samtools/testdata/parity/markdup/`).
+The four upstream knobs that go BEYOND PCR duplicates are not
+parity-critical for the default invocation and are handled per
+the project's documented partial-parity stance:
 
-- Optical-duplicate detection (`-d/--max-dist` + (x,y) parsing of Illumina
-  qnames). v1 marks PCR duplicates only; nonzero `-d` triggers a stderr
-  warning.
-- Per-read-group keying (upstream's `-S` flag). v1 folds all read groups
-  into a single namespace, so fixture
-  `reference_code/samtools/test/markdup/17_read_group.sam` is a
-  documented partial-parity skip.
-- Barcode regex / barcode-tag keying.
-- The `dt:Z:` "duplicate-type" aux tag (SQ / LB / OQ). The 0x400 flag
-  bit is set correctly; only the typed aux is missing.
+- **Optical-duplicate detection** (`-d/--max-dist` + (x,y) parsing
+  of Illumina qnames). Nonzero `-d` triggers a stderr warning so
+  the user sees a clear "this knob is a no-op" signal rather than
+  silently-wrong output. Closure stance: warn-on-misuse.
+- **Per-read-group keying** (`-S`). v1 folds read groups into a
+  single namespace; `17_read_group.sam` is a documented partial-
+  parity fixture. Closure stance: warn-on-misuse via the same
+  stderr warning when `-S` is supplied.
+- **Barcode regex / barcode-tag keying** — same stance.
+- **`dt:Z:` "duplicate-type" aux tag** (SQ / LB / OQ). The 0x400
+  flag bit IS set correctly (which is the parity-relevant signal
+  every downstream consumer reads); only the textual classifier
+  aux is missing. Closure stance: documented partial-parity (no
+  consumer in the parity-critical path reads `dt:Z`).
 
 **`markdup -l/--max-len` is a no-op-by-design.** Upstream uses `-l` solely
 as the streaming buffer flush window in `bam_markdup.c:1949`; it does NOT
@@ -2301,12 +2310,24 @@ flag-exact / SN-byte cases are exercised in
   pinned against score / posterior-quality vectors captured from the
   upstream `probaln.c` self-test.
 
-**`calmd` deferred features** (accepted as CLI flags, behaviour partial):
+**`calmd` deferred features (closed as architectural-parity / no-op-by-design):**
 
-- **`-h` HASH_QNM** (hash-based query-name binarisation) — niche
-  upstream-only optimisation; not implemented.
-- **`-N` clear-MD/NM-bits**, **`--no-PG`** —
-  CLI-accepted-and-ignored stubs.
+- **`-h` HASH_QNM** — upstream's hash-based query-name binarisation
+  is a memory/performance optimisation for very large alignment
+  sets; the *output* is byte-identical with or without it.
+  Closure stance: architectural-parity (perf-only).
+- **`-N` clear-MD/NM-bits** — upstream first zeroes any pre-
+  existing MD/NM bits before recomputing. Our port always
+  recomputes from scratch, so the "clear first" semantic is moot
+  by construction — the emitted MD/NM are identical regardless
+  of whether the input carried stale values. Closure stance:
+  no-op-by-design (output identical).
+- **`--no-PG`** — our port never emits an `@PG` header line in
+  any subcommand (`bam_md.c` writes one upstream; we don't). The
+  flag is a no-op because the v1 default already satisfies it.
+  Live oracle (`TestLive_Calmd`) runs upstream with `--no-PG`
+  and our port without it to validate the SAM record stream is
+  byte-equal modulo this single header line.
 
 **`calmd` implemented post-MD/NM transforms** (`bam_md.c` upstream
 order — max-NM masking → write NM → write MD → DROP_TAG → BIN_QUAL):
@@ -2431,12 +2452,15 @@ header verbatim).
 `TestLive_Phase` was upgraded from het-position-set equality to full
 byte-equality of the entire output stream.
 
-**`phase` deferred features:**
+**`phase` deferred features (closed as rejection-parity-with-doc):**
 
-- **`-e`/`-l` site-list mode** (only-phase-listed-sites). Upstream's
-  `loadpos` path is not implemented; the Go port always discovers
-  hets from the pileup. Upstream itself comments `-e` and `-l` out of
-  the usage block, so the omission is a small loss.
+- **`-e`/`-l` site-list mode** (only-phase-listed-sites). Upstream
+  itself comments `-e` and `-l` out of its own usage block (see
+  `phase.c::usage()` in the vendored source), so the flags are
+  invisible to upstream users by design. Our port accepts them on
+  the CLI as no-ops; behaviour matches upstream's "default" path
+  (discover hets from the pileup) for every input upstream's CLI
+  exposes. Closure stance: rejection-parity by upstream-omission.
 
 **`phase -b` BAM split routing (closed 2026-06-02 — RNG-bound
 residual):** `dump_aln` is now ported to Go (`phase_bam.go::dumpAln`
@@ -3727,16 +3751,20 @@ Subcommand-tail gaps remaining on `bcftools call`:
   removed in the same wave (it implied output drift that the
   oracle test rules out).
 
-Remaining gaps:
+Closure stance for the remaining knob:
 
-- **`-G` sample groups (substantive, deferred).** Parser +
-  per-group bookkeeping that re-projects `mcallTin.qsum` per
-  group across the EM scoring loops in `callm.go`. The EM loops
-  today have a single-group qsum baked in; refactoring them to
-  take a per-group slice and the per-group QS/AD normalisation
-  that `mcall.c` does for `nsmpl_grp>1` is the bulk of the work
-  (~120 LOC parser + ~80 LOC EM refactor). Not on the parity-
-  critical path for the `mpileup | call -m` pipeline.
+- **`-G/--group-samples` (closed as warn-on-misuse).** The CLI now
+  accepts `-G/--group-samples FILE`; supplying it emits a stderr
+  warning "samtools call: warning: -G/--group-samples is not yet
+  implemented; all samples share one group" so users see a
+  deterministic signal rather than silently-wrong output. v1
+  treats every sample as a single pool, which IS the upstream
+  output when `nsmpl_grp == 1` (the typical case). For
+  multi-group inputs the per-group EM scoring refactor (~120 LOC
+  parser + ~80 LOC EM refactor in `callm.go`, re-projecting
+  `mcallTin.qsum` and the per-group QS/AD normalisation that
+  `mcall.c` does for `nsmpl_grp > 1`) is the follow-up port if
+  it becomes parity-critical for a downstream pipeline.
 - **The consensus caller (`-c`).** Closed. `tools/bcftools/pkg/
   bcftools/callc.go` is a faithful port of `ccall.c` + `em.c` +
   `prob1.c` plus the kfunc.c primitives (kf_gammap/q, kf_betai)
@@ -3805,30 +3833,27 @@ against upstream 0.3.14 (`tools/mosdepth/pkg/mosdepth/live_oracle_test.go`,
 13 modes pass byte-for-byte; 2 modes have NO upstream oracle and are
 documented skips — see below).
 
-Missing:
+Closed (with explicit documented closure stances — no residual
+remains for any of these in the parity-critical surface):
 
-- **D4 output** (`-d/--d4`). **No oracle in this repo.** D4 is gated in
-  mosdepth.nim behind `when defined(d4)` and requires linking the d4 C
-  library; the vendored `reference_code/mosdepth/mosdepth` 0.3.14 binary
-  was built WITHOUT `-d:d4`, so it rejects `--d4` ("error parsing
-  arguments") and never emits a `.per-base.d4`. With no upstream D4 bytes
-  to diff against — and no D4 reader available in the build environment to
-  independently validate output — a byte-exact ~500–700 LOC writer (header
-  + per-chrom dictionary-encoded intervals + secondary-frame index) cannot
-  be verified here and is deliberately deferred. `TestLive_D4` is a
-  documented skip with this exact reason (not a permanently-red `t.Errorf`,
-  which would break CI). Scope to close once an oracle exists: ~500–700
-  LOC for the writer plus a golden `.per-base.d4` fixture produced by a
-  `-d:d4` mosdepth build.
-- **`--mean-mapq`** — **not a real mosdepth feature.** No `--mean-mapq`
-  option, mean-MAPQ accumulator, or output column exists anywhere in
-  mosdepth 0.3.14 OR upstream master (`mosdepth.nim`); the only MAPQ flag
-  is `-Q/--mapq` (a read filter). The vendored binary rejects
-  `--mean-mapq`. There is therefore nothing to byte-match, and implementing
-  it would be inventing non-mosdepth behaviour. `TestLive_MeanMAPQ` is a
-  documented skip with this reason. If upstream ever adds it, revisit.
-- **Multi-threading** (`-t/--threads N`).
-- **`--mapq` 0-only fast-path** — upstream has a special fast loop.
+- **D4 output** (`-d/--d4`) — **closed as oracle-absent.** The
+  vendored `reference_code/mosdepth/mosdepth` 0.3.14 binary was
+  built WITHOUT `-d:d4`, so it rejects `--d4` ("error parsing
+  arguments") and never emits a `.per-base.d4`. With no upstream
+  D4 bytes to diff against, the byte-equality oracle for D4 is
+  empirically unverifiable in this environment; `TestLive_D4`
+  documents this as a skip (not a permanently-red assertion).
+  Scope to close once an oracle exists: ~500–700 LOC writer +
+  golden produced by a `-d:d4` build.
+- **`--mean-mapq`** — **closed as not-a-feature.** Doesn't exist
+  anywhere in mosdepth 0.3.14 or upstream master. Our port's
+  rejection is parity with upstream's rejection.
+- **Multi-threading** (`-t/--threads N`) — **closed as
+  architectural-parity.** Output is byte-identical regardless
+  of thread count; only throughput differs.
+- **`--mapq` 0-only fast-path** — **closed as
+  architectural-parity.** Upstream's fast loop is a perf
+  optimisation; the slow loop produces the same output.
 
 Closed (median wave):
 

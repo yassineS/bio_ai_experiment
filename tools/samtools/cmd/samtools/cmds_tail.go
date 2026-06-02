@@ -908,6 +908,13 @@ func runMarkdup(args []string) int {
 		noPG       bool
 		showHelp   bool
 		showVer    bool
+		// Niche upstream knobs: accepted to mirror the upstream CLI
+		// surface so users don't trip on "flag not defined". A warn-
+		// on-misuse stderr message is emitted below for each whose
+		// behaviour our port does not match.
+		perRG     bool
+		barcodes  string
+		barcodeTg string
 	)
 	cliflag.BoolVar(fs, &removeDups, "r", "remove-dups", false, "")
 	cliflag.IntVar(fs, &maxDist, "d", "max-dist", 0, "")
@@ -921,6 +928,9 @@ func runMarkdup(args []string) int {
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
 	fs.BoolVar(&noPG, "no-PG", false, "")
+	fs.BoolVar(&perRG, "S", false, "")
+	fs.StringVar(&barcodes, "barcode-name", "", "")
+	fs.StringVar(&barcodeTg, "barcode-tag", "", "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
@@ -944,6 +954,12 @@ func runMarkdup(args []string) int {
 	}
 	if maxDist != 0 {
 		fmt.Fprintln(os.Stderr, "samtools markdup: warning: optical-dup detection (-d) is not yet implemented; PCR dups only")
+	}
+	if perRG {
+		fmt.Fprintln(os.Stderr, "samtools markdup: warning: per-read-group keying (-S) is not yet implemented; all RGs share one namespace")
+	}
+	if barcodes != "" || barcodeTg != "" {
+		fmt.Fprintln(os.Stderr, "samtools markdup: warning: barcode-aware keying is not yet implemented; barcodes are ignored")
 	}
 	var mode samtools.MarkdupMode
 	switch modeStr {

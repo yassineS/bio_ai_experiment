@@ -1082,6 +1082,7 @@ func runCall(args []string) int {
 		threads      int
 		gvcf         string
 		constrain    string
+		groupSamples string
 		showHelp     bool
 		showVer      bool
 	)
@@ -1104,6 +1105,7 @@ func runCall(args []string) int {
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	cliflag.StringVar(fs, &gvcf, "g", "gvcf", "", "Group non-variant sites into gVCF blocks by minimum per-sample DP (INT[,INT...])")
 	cliflag.StringVar(fs, &constrain, "C", "constrain", "", "Constrain calling to one of: alleles, trio (requires -T)")
+	cliflag.StringVar(fs, &groupSamples, "G", "group-samples", "", "Sample-group file for per-pool calling (accepted; warn-on-misuse — see PARITY_ROADMAP.md)")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -1184,6 +1186,9 @@ func runCall(args []string) int {
 	default:
 		fmt.Fprintf(os.Stderr, "bcftools call: unknown -C value %q (expect: alleles, trio)\n", constrain)
 		return 2
+	}
+	if groupSamples != "" {
+		fmt.Fprintln(os.Stderr, "bcftools call: warning: -G/--group-samples is not yet implemented; all samples share one group")
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
