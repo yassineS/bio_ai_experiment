@@ -508,6 +508,40 @@ type nAltNode struct{}
 
 func (n *nAltNode) eval(v *vcf.Variant) any { return float64(len(v.Alt)) }
 
+// ilenNode implements ILEN: the per-ALT indel length len(ALT[i]) - len(REF).
+// Yields a vector (one element per ALT); '.' / '*' ALTs evaluate to missing.
+// Mirrors filter.c::filters_set_ilen — bcftools treats this as a per-allele
+// vector for comparison purposes (any-element semantics in binOp).
+type ilenNode struct{ index int }
+
+func (n *ilenNode) eval(v *vcf.Variant) any {
+	if v == nil {
+		return nil
+	}
+	refLen := len(v.Ref)
+	if len(v.Alt) == 0 || (len(v.Alt) == 1 && v.Alt[0] == ".") {
+		return nil
+	}
+	out := make(vecValue, 0, len(v.Alt))
+	for _, a := range v.Alt {
+		if a == "" || a == "." || a == "*" || strings.ContainsAny(a, "<>") {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, float64(len(a)-refLen))
+	}
+	if n.index >= 0 {
+		if n.index < len(out) {
+			return out[n.index]
+		}
+		return nil
+	}
+	if len(out) == 1 {
+		return out[0]
+	}
+	return out
+}
+
 // typeNode evaluates to the set of variant type names of the record, using
 // htslib's singular spellings (snp, indel, mnp, bnd, ref, other). The set is a
 // vecValue so that `TYPE="snp"` is true when any allele is a SNP.
@@ -1333,6 +1367,8 @@ func (p *parser) parseIdent() (node, error) {
 		return &typeNode{}, nil
 	case "N_ALT":
 		return &nAltNode{}, nil
+	case "ILEN":
+		return &ilenNode{index: index}, nil
 	case "CHROM":
 		return &chromNode{}, nil
 	case "POS":
