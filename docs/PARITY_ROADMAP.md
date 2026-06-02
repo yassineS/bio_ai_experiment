@@ -1512,9 +1512,17 @@ position-distance instead of count-based thinning).
 
 Missing:
 
-- **Multi-threaded compression** (`-t / --threads N` is accepted but
-  single-threaded; BGZF is trivially parallel per block).
 - **Output-rename to follow upstream conventions on stdin**: minor.
+
+**Closed bgzip parity deferreds:**
+
+- **Multi-threaded compression (`-@`/`-t`/`--threads N`) — DONE.**
+  `pkg/htsgo/bgzf.ParallelWriter` runs block compression on a fixed
+  worker pool and writes results in submission order; with `-@ N > 1`
+  on-disk bytes are byte-identical to the serial path
+  (`TestParallelBgzipDeterminism` pins this across the oracle
+  fixtures). `-@` is now also accepted as the upstream short alias of
+  `-t`.
 
 **Validation:** round-trips through `tabix` work; no full upstream-test
 suite run yet.

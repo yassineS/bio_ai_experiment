@@ -40,6 +40,14 @@ func buildSeqNT16Table() [256]byte {
 	return t
 }
 
+// bgzfWriter is the minimal interface compressStream needs from the BGZF
+// writer. It is satisfied by both the serial bgzip.Writer and the parallel
+// bgzip.ParallelWriter so the same compress loop can drive either.
+type bgzfWriter interface {
+	Write(p []byte) (int, error)
+	Flush() error
+}
+
 // compressStream reads uncompressed bytes from src and writes a BGZF stream to
 // bw, replicating htslib bgzip's framing exactly. When the input is detected as
 // a textual bioinformatics format (and forceBinary is false) it applies the
@@ -47,7 +55,7 @@ func buildSeqNT16Table() [256]byte {
 // block(s) and each WINDOW_SIZE chunk of records is flushed at the last newline
 // boundary. Binary or undetected input streams straight through, letting the
 // writer pack natural 65280-byte blocks. compressStream does not close bw.
-func compressStream(bw *bgzip.Writer, src io.Reader, forceBinary bool) error {
+func compressStream(bw bgzfWriter, src io.Reader, forceBinary bool) error {
 	br := bufio.NewReaderSize(src, windowSize)
 
 	textual := false
@@ -64,7 +72,7 @@ func compressStream(bw *bgzip.Writer, src io.Reader, forceBinary bool) error {
 
 // streamBinary mirrors the binary branch of bgzip.c: read WINDOW_SIZE chunks
 // and write them through with no forced flushing.
-func streamBinary(bw *bgzip.Writer, br *bufio.Reader) error {
+func streamBinary(bw bgzfWriter, br *bufio.Reader) error {
 	buf := make([]byte, windowSize)
 	for {
 		c, err := io.ReadFull(br, buf)
@@ -86,7 +94,7 @@ func streamBinary(bw *bgzip.Writer, br *bufio.Reader) error {
 // WINDOW_SIZE buffer, accumulates the header into its own block, then flushes a
 // block boundary after the last newline of every chunk so records align to line
 // boundaries. Leftover bytes after the flush point carry to the next iteration.
-func streamText(bw *bgzip.Writer, br *bufio.Reader) error {
+func streamText(bw bgzfWriter, br *bufio.Reader) error {
 	buf := make([]byte, windowSize)
 	inHeader := true
 	n := 0

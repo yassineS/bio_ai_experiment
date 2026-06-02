@@ -36,7 +36,7 @@ func TestBgzipTextModeOracle(t *testing.T) {
 			}
 
 			var out bytes.Buffer
-			rc := runCompress("-", true, false, false, 6, false, bytes.NewReader(in), &out, &bytes.Buffer{})
+			rc := runCompress("-", true, false, false, 6, 1, false, bytes.NewReader(in), &out, &bytes.Buffer{})
 			if rc != 0 {
 				t.Fatalf("runCompress returned %d", rc)
 			}
@@ -60,10 +60,10 @@ func TestBgzipBinaryFlag(t *testing.T) {
 	// Forcing binary on a small single-block VCF should round-trip and yield a
 	// single data block, not the header-split text framing.
 	var textOut, binOut bytes.Buffer
-	if rc := runCompress("-", true, false, false, 6, false, bytes.NewReader(in), &textOut, &bytes.Buffer{}); rc != 0 {
+	if rc := runCompress("-", true, false, false, 6, 1, false, bytes.NewReader(in), &textOut, &bytes.Buffer{}); rc != 0 {
 		t.Fatalf("text-mode runCompress returned %d", rc)
 	}
-	if rc := runCompress("-", true, false, false, 6, true, bytes.NewReader(in), &binOut, &bytes.Buffer{}); rc != 0 {
+	if rc := runCompress("-", true, false, false, 6, 1, true, bytes.NewReader(in), &binOut, &bytes.Buffer{}); rc != 0 {
 		t.Fatalf("binary-mode runCompress returned %d", rc)
 	}
 	if bytes.Equal(textOut.Bytes(), binOut.Bytes()) {
@@ -95,6 +95,36 @@ func TestDetectTextual(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := detectTextual(tc.in); got != tc.want {
 				t.Errorf("detectTextual(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParallelBgzipDeterminism asserts that compressing the same inputs
+// with -@ 0 (serial path) and -@ 4 (parallel path) produces byte-identical
+// BGZF output across every oracle fixture. This is the regression gate
+// that pins the -@/--threads multi-thread implementation as a perf-only
+// change: any divergence in on-disk bytes between the two thread counts
+// would break the live-oracle tests and downstream tabix indices.
+func TestParallelBgzipDeterminism(t *testing.T) {
+	cases := []string{"small.vcf", "test.fa", "multiblock.txt", "test.bam"}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join("..", "..", "testdata", "oracle")
+			in, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatalf("read input: %v", err)
+			}
+			var serial, parallel bytes.Buffer
+			if rc := runCompress("-", true, false, false, 6, 1, false, bytes.NewReader(in), &serial, &bytes.Buffer{}); rc != 0 {
+				t.Fatalf("serial runCompress returned %d", rc)
+			}
+			if rc := runCompress("-", true, false, false, 6, 4, false, bytes.NewReader(in), &parallel, &bytes.Buffer{}); rc != 0 {
+				t.Fatalf("parallel runCompress returned %d", rc)
+			}
+			if !bytes.Equal(serial.Bytes(), parallel.Bytes()) {
+				t.Fatalf("parallel output differs from serial: serial=%d bytes, parallel=%d bytes",
+					serial.Len(), parallel.Len())
 			}
 		})
 	}

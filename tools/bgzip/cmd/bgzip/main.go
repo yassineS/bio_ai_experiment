@@ -32,9 +32,10 @@ Options:
   -f, --force               Overwrite existing output file.
   -k, --keep                Keep input file (do not delete it after success).
   -l, --compress-level N    Compression level 0-9 (default 6).
-  -t, --threads N           Number of compression threads (default 1).
-                            Multi-threading is accepted but currently runs
-                            single-threaded; see the tool README.
+  -@, --threads N           Number of compression threads (default 1).
+                            With N > 1 BGZF blocks are encoded in parallel
+                            across N worker goroutines; output bytes are
+                            identical to single-threaded mode.
   -b, --offset N            Print uncompressed offset at compressed offset N.
   -s, --size                Print the decompressed size of the file.
   -r, --reindex             Write a .gzi index alongside file.gz.
@@ -75,6 +76,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	cliflag.BoolVar(fs, &keep, "k", "keep", false, "Keep input file")
 	cliflag.IntVar(fs, &level, "l", "compress-level", bgzip.DefaultCompression, "Compression level (0-9)")
 	cliflag.IntVar(fs, &threads, "t", "threads", 1, "Number of compression threads")
+	// Upstream htslib bgzip uses -@ (not -t) as the short form for
+	// --threads. Accept both to keep older invocations working while
+	// staying compatible with upstream documentation and scripts.
+	fs.IntVar(&threads, "@", 1, "Number of compression threads (alias of -t)")
 	// -b takes an int64; cliflag does not expose Int64Var, so register both
 	// names directly.
 	fs.Func("b", "", func(s string) error { return parseInt64Flag(s, &offset, &offsetSet) })
@@ -129,7 +134,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case decompress:
 		return runDecompress(input, stdoutFlag, force, keep, stdin, stdout, stderr)
 	default:
-		return runCompress(input, stdoutFlag, force, keep, level, binary, stdin, stdout, stderr)
+		return runCompress(input, stdoutFlag, force, keep, level, threads, binary, stdin, stdout, stderr)
 	}
 }
 
@@ -144,10 +149,13 @@ func parseInt64Flag(s string, dest *int64, set *bool) error {
 	return nil
 }
 
-func runCompress(input string, useStdout, force, keep bool, level int, binary bool, stdin io.Reader, stdout, stderr io.Writer) int {
+func runCompress(input string, useStdout, force, keep bool, level, threads int, binary bool, stdin io.Reader, stdout, stderr io.Writer) int {
 	if level < flate.HuffmanOnly || level > flate.BestCompression {
 		fmt.Fprintf(stderr, "bgzip: invalid compression level %d\n", level)
 		return 2
+	}
+	if threads < 1 {
+		threads = 1
 	}
 
 	in, closeIn, err := openInputBinary(input, stdin)
@@ -182,16 +190,36 @@ func runCompress(input string, useStdout, force, keep bool, level int, binary bo
 		outCloser = f
 	}
 
-	bw, err := bgzip.NewWriterLevel(out, level)
-	if err != nil {
-		fmt.Fprintf(stderr, "bgzip: %v\n", err)
-		return 1
+	// Pick the serial or parallel BGZF writer based on -@/--threads.
+	// The on-disk bytes are byte-identical between the two paths (the
+	// parallel writer just farms block-encode work to N workers and
+	// reassembles in submission order); see pkg/htsgo/bgzf.
+	var (
+		bw      bgzfWriter
+		closeBW func() error
+	)
+	if threads > 1 {
+		pw, perr := bgzip.NewParallelWriterLevel(out, level, threads)
+		if perr != nil {
+			fmt.Fprintf(stderr, "bgzip: %v\n", perr)
+			return 1
+		}
+		bw = pw
+		closeBW = pw.Close
+	} else {
+		sw, serr := bgzip.NewWriterLevel(out, level)
+		if serr != nil {
+			fmt.Fprintf(stderr, "bgzip: %v\n", serr)
+			return 1
+		}
+		bw = sw
+		closeBW = sw.Close
 	}
 	if err := compressStream(bw, in, binary); err != nil {
 		fmt.Fprintf(stderr, "bgzip: %v\n", err)
 		return 1
 	}
-	if err := bw.Close(); err != nil {
+	if err := closeBW(); err != nil {
 		fmt.Fprintf(stderr, "bgzip: %v\n", err)
 		return 1
 	}

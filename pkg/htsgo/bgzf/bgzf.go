@@ -245,44 +245,50 @@ func (w *Writer) encodeBlock(payload []byte) error {
 	if err != nil {
 		return err
 	}
+	block, err := buildBGZFMember(payload, deflated)
+	if err != nil {
+		return err
+	}
+	if _, err := w.w.Write(block); err != nil {
+		return err
+	}
+	return nil
+}
 
+// buildBGZFMember serialises one complete BGZF gzip member (header +
+// deflate payload + CRC32/ISIZE footer) for the given uncompressed
+// payload and its already-deflated form. Returned as a single
+// freshly-allocated byte slice so the caller can hand it off to a
+// drainer or an io.Writer in one Write call. Shared by Writer.encodeBlock
+// and the ParallelWriter worker path so the two encoders produce
+// byte-identical output.
+func buildBGZFMember(payload, deflated []byte) ([]byte, error) {
 	// Compute the total compressed block size:
 	//   12 bytes fixed header + 6 bytes BC subfield + len(deflated)
 	//   + 8 bytes footer (CRC32 + ISIZE) = 26 + len(deflated).
 	blockLen := 12 + 6 + len(deflated) + 8
 	if blockLen > MaxCompressedBlockSize {
-		return fmt.Errorf("bgzf: compressed block size %d exceeds %d", blockLen, MaxCompressedBlockSize)
+		return nil, fmt.Errorf("bgzf: compressed block size %d exceeds %d", blockLen, MaxCompressedBlockSize)
 	}
-
-	var hdr [18]byte
-	hdr[0] = 0x1f
-	hdr[1] = 0x8b
-	hdr[2] = 8                                  // CM = deflate
-	hdr[3] = 0x04                               // FLG = FEXTRA
-	hdr[4], hdr[5], hdr[6], hdr[7] = 0, 0, 0, 0 // MTIME
-	hdr[8] = 0                                  // XFL
-	hdr[9] = 0xff                               // OS = unknown
+	out := make([]byte, blockLen)
+	out[0] = 0x1f
+	out[1] = 0x8b
+	out[2] = 8                                  // CM = deflate
+	out[3] = 0x04                               // FLG = FEXTRA
+	out[4], out[5], out[6], out[7] = 0, 0, 0, 0 // MTIME
+	out[8] = 0                                  // XFL
+	out[9] = 0xff                               // OS = unknown
 	// XLEN = 6 (one BC subfield: 4 bytes header + 2 bytes BSIZE)
-	binary.LittleEndian.PutUint16(hdr[10:12], 6)
-	hdr[12] = 'B'
-	hdr[13] = 'C'
-	binary.LittleEndian.PutUint16(hdr[14:16], 2)                  // SLEN = 2
-	binary.LittleEndian.PutUint16(hdr[16:18], uint16(blockLen-1)) // BSIZE = total-1
-
-	if _, err := w.w.Write(hdr[:]); err != nil {
-		return err
-	}
-	if _, err := w.w.Write(deflated); err != nil {
-		return err
-	}
-
-	var footer [8]byte
-	binary.LittleEndian.PutUint32(footer[0:4], crc32.ChecksumIEEE(payload))
-	binary.LittleEndian.PutUint32(footer[4:8], uint32(len(payload)))
-	if _, err := w.w.Write(footer[:]); err != nil {
-		return err
-	}
-	return nil
+	binary.LittleEndian.PutUint16(out[10:12], 6)
+	out[12] = 'B'
+	out[13] = 'C'
+	binary.LittleEndian.PutUint16(out[14:16], 2)                  // SLEN = 2
+	binary.LittleEndian.PutUint16(out[16:18], uint16(blockLen-1)) // BSIZE = total-1
+	copy(out[18:], deflated)
+	footerOff := 18 + len(deflated)
+	binary.LittleEndian.PutUint32(out[footerOff:footerOff+4], crc32.ChecksumIEEE(payload))
+	binary.LittleEndian.PutUint32(out[footerOff+4:footerOff+8], uint32(len(payload)))
+	return out, nil
 }
 
 // htslibLevelMap mirrors lvl_map[] in htslib's bgzf.c bgzf_compress:
