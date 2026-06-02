@@ -817,6 +817,54 @@ func TestLiveCall(t *testing.T) {
 			assertEqualStdout(t, live, ours, tc.args...)
 		})
 	}
+
+	// -C alleles -T sites.tsv: constrain the multiallelic caller to a
+	// user-supplied REF,ALT set per (CHROM,POS). The sites file is
+	// derived from the mpileup output above by selecting the first
+	// SNP allele at each record — guarantees the constraint set is a
+	// subset of upstream's natural calls, so any divergence is the
+	// projection itself (alsMap, PL re-index, INFO/QS reproject,
+	// FORMAT/AD reproject) misbehaving rather than mcall.c EM drift.
+	sitesTSV := filepath.Join(t.TempDir(), "sites.tsv")
+	{
+		var sb bytes.Buffer
+		for _, line := range strings.Split(string(mp), "\n") {
+			if line == "" || line[0] == '#' {
+				continue
+			}
+			f := strings.SplitN(line, "\t", 6)
+			if len(f) < 5 || len(f[3]) != 1 || strings.ContainsAny(f[3], "<>") {
+				continue
+			}
+			alts := strings.Split(f[4], ",")
+			alt := ""
+			for _, a := range alts {
+				if a == "<*>" || len(a) != 1 || strings.ContainsAny(a, "<>") {
+					continue
+				}
+				alt = a
+				break
+			}
+			if alt == "" {
+				continue
+			}
+			sb.WriteString(f[0])
+			sb.WriteByte('\t')
+			sb.WriteString(f[1])
+			sb.WriteByte('\t')
+			sb.WriteString(f[3])
+			sb.WriteByte(',')
+			sb.WriteString(alt)
+			sb.WriteByte('\n')
+		}
+		if err := os.WriteFile(sitesTSV, sb.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("m_C_alleles", func(t *testing.T) {
+		assertEqualStdout(t, live, ours,
+			"call", "-m", "-C", "alleles", "-T", sitesTSV, mpFile)
+	})
 }
 
 // -------------------------------------------------------------------------

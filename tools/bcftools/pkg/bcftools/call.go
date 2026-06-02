@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 
@@ -99,6 +100,20 @@ type CallOptions struct {
 	// records that share a per-sample MIN_DP bin are banded into a
 	// single INFO/END+MIN_DP record by callGVCFBlocker.
 	GVCFRange []int
+
+	// Constrain selects the upstream `-C` mode (none / alleles / trio).
+	// CallConstrainAlleles requires a sites TSV in ConstrainSites; the
+	// loader and per-record projection live in call_constrain.go.
+	// CallConstrainTrio mirrors upstream's own "todo: constrained trio
+	// calling temporarily disabled" runtime error.
+	Constrain CallConstrain
+	// ConstrainSites is the path to the -T sites file used with
+	// `-C alleles`. Format: CHROM\tPOS\tREF,ALT,... (1-based POS).
+	ConstrainSites string
+	// constrain holds the loaded sites lookup table. Populated in Call()
+	// from ConstrainSites when Constrain == CallConstrainAlleles; the
+	// callStreaming hot loop consults it per record.
+	constrain *ConstrainAlleles
 }
 
 // defaults applies upstream-equivalent defaults for any unset field.
@@ -221,6 +236,23 @@ func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
 	if len(opts.GVCFRange) > 0 && opts.Model == CallModelConsensus {
 		return 0, fmt.Errorf("bcftools call: gvcf -g option not functional with -c calling mode yet")
 	}
+	// `-C alleles` and `-C trio` resolution. Trio mirrors upstream's
+	// "todo: constrained trio calling temporarily disabled" runtime
+	// error (mcall.c:1608); alleles loads the sites TSV upfront so
+	// per-record projection in callStreaming is a hot-path lookup.
+	if opts.Constrain == CallConstrainTrio {
+		return 0, fmt.Errorf("todo: constrained trio calling temporarily disabled")
+	}
+	if opts.Constrain == CallConstrainAlleles && opts.constrain == nil {
+		if opts.ConstrainSites == "" {
+			return 0, fmt.Errorf("bcftools call: -C alleles requires -T sites_file")
+		}
+		ca, err := LoadConstrainAlleles(opts.ConstrainSites)
+		if err != nil {
+			return 0, err
+		}
+		opts.constrain = ca
+	}
 	if opts.PloidyTable == nil && (opts.PloidySpec == "GRCh37" || opts.PloidySpec == "GRCh38") {
 		tbl, err := BuildPloidyTableFromSpec(opts.PloidySpec)
 		if err != nil {
@@ -332,6 +364,22 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		}
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
+		}
+		// -C alleles: project the record onto the constrained allele
+		// set BEFORE the caller runs. Sites absent from the file are
+		// skipped (upstream mcall.c:1280-ish).
+		if opts.Constrain == CallConstrainAlleles && opts.constrain != nil {
+			site := opts.constrain.Lookup(v.Chrom, v.Pos)
+			if site == nil {
+				continue
+			}
+			ok, fatal := applyConstrainAlleles(v, site, os.Stderr)
+			if fatal {
+				return count, fmt.Errorf("bcftools call -C alleles: failed at %s:%d", v.Chrom, v.Pos)
+			}
+			if !ok {
+				continue
+			}
 		}
 		samplePloidy := perSamplePloidy(opts, sexes, v.Chrom, v.Pos, len(v.Samples))
 		called, keep := callVariant(v, opts, samplePloidy)

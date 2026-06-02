@@ -3608,18 +3608,20 @@ Subcommand-tail gaps remaining on `bcftools call`:
 - **`-C alleles --constrain`, trio calling (`-T`/`-C trio`), sample
   groups (`-G`), and reference-panel AF priors.** The single-sample-
   group, no-constraint path that `mpileup | call -m` produces is
-  covered, and the `-C alleles` machinery is in flight. Status per
-  upstream `mcall.c`:
-  - **`-C alleles` (partial).** The TSV parser + per-record allele
-    projection (`mcall_constrain_alleles`, mcall.c ~lines 1274-1413)
-    is ported in `call_constrain.go`: `LoadConstrainAlleles` for
-    the `CHROM\tPOS\tREF,ALT[,ALT...]` format and
-    `applyConstrainAlleles` to rewrite REF/ALT/PL/QS/AD via the
-    upstream `als_map` / `pl_map`. The `CallOptions.Constrain` /
-    `CallOptions.ConstrainSites` wiring on top of these helpers and
-    the `-C alleles` flag in `runCall` are pending — landing them
-    is the follow-up slice once the parallel `-c` (consensus port)
-    work has stabilised the shared `call.go` / `runCall` surface.
+  covered; `-C alleles` is now closed. Status per upstream
+  `mcall.c`:
+  - **`-C alleles` (closed).** Port of `mcall_constrain_alleles`
+    (mcall.c ~lines 1274-1413) in
+    `tools/bcftools/pkg/bcftools/call_constrain.go`:
+    `LoadConstrainAlleles` parses the
+    `CHROM\tPOS\tREF,ALT[,ALT...]` TSV; `applyConstrainAlleles`
+    rewrites REF/ALT, FORMAT/PL, INFO/QS, and FORMAT/AD via the
+    upstream `als_map` / `pl_map`. CLI wiring in `runCall` parses
+    `-C alleles` and pairs it with `-T sites.tsv` (the regions-
+    file loader is skipped under `-C alleles` since the file is a
+    sites TSV, not a BED). The `mpileup | call -m -C alleles -T`
+    pipeline byte-matches upstream end-to-end
+    (`TestLiveCall/m_C_alleles`).
   - **Trio constraint (`-C trio`) — mirrors upstream's own
     runtime error.** Upstream `mcall.c:1608` itself disables this
     path with `error("todo: constrained trio calling temporarily

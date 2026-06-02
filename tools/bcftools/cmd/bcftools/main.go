@@ -1081,6 +1081,7 @@ func runCall(args []string) int {
 		samplesFile  string
 		threads      int
 		gvcf         string
+		constrain    string
 		showHelp     bool
 		showVer      bool
 	)
@@ -1102,6 +1103,7 @@ func runCall(args []string) int {
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	cliflag.StringVar(fs, &gvcf, "g", "gvcf", "", "Group non-variant sites into gVCF blocks by minimum per-sample DP (INT[,INT...])")
+	cliflag.StringVar(fs, &constrain, "C", "constrain", "", "Constrain calling to one of: alleles, trio (requires -T)")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -1167,6 +1169,22 @@ func runCall(args []string) int {
 		OutputFormat:  format,
 		GVCFSpec:      gvcf,
 	}
+	switch constrain {
+	case "":
+		// no constraint
+	case "alleles":
+		opts.Constrain = bcftools.CallConstrainAlleles
+		opts.ConstrainSites = targetsFile
+		if opts.ConstrainSites == "" {
+			fmt.Fprintln(os.Stderr, "bcftools call: -C alleles requires -T sites_file")
+			return 2
+		}
+	case "trio":
+		opts.Constrain = bcftools.CallConstrainTrio
+	default:
+		fmt.Fprintf(os.Stderr, "bcftools call: unknown -C value %q (expect: alleles, trio)\n", constrain)
+		return 2
+	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
 	}
@@ -1182,7 +1200,7 @@ func runCall(args []string) int {
 	if targets != "" {
 		opts.Targets = bcftools.SplitCommaList(targets)
 	}
-	if targetsFile != "" {
+	if targetsFile != "" && constrain != "alleles" {
 		regs, err := bcftools.LoadRegionsFile(targetsFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
