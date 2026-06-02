@@ -1380,9 +1380,28 @@ func runImport(args []string) int {
 	defer out.Close()
 	// outBAM defaults to true so plain `samtools import` produces BAM
 	// (upstream behaviour). A `.sam` filename override flips us back to
-	// text SAM, matching upstream's mode autodetection.
+	// text SAM, matching upstream's mode autodetection. `-O / --output-fmt`
+	// wins over the filename heuristic, mirroring upstream.
 	if strings.HasSuffix(strings.ToLower(outPath), ".sam") {
 		outBAM = false
+	}
+	if outputFmt != "" {
+		head := strings.SplitN(strings.ToLower(outputFmt), ",", 2)[0]
+		switch head {
+		case "sam":
+			outBAM = false
+		case "bam":
+			outBAM = true
+		case "ubam":
+			outBAM = true
+			uncomp = true
+		case "cram":
+			fmt.Fprintln(os.Stderr, "samtools import: --output-fmt cram not supported in this port")
+			return 2
+		default:
+			fmt.Fprintf(os.Stderr, "samtools import: unknown --output-fmt %q\n", outputFmt)
+			return 2
+		}
 	}
 	opts := samtools.FastqImportOptions{
 		SinglePath:      sPath,
@@ -1403,7 +1422,6 @@ func runImport(args []string) int {
 	_ = casavaForm
 	_ = barcodeTag
 	_ = qualityTag
-	_ = outputFmt
 	_ = threads
 	if _, err := samtools.FastqImportFiles(fs.Args(), out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools import: %v\n", err)

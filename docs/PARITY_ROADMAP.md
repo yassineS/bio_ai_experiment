@@ -2333,9 +2333,14 @@ order — max-NM masking → write NM → write MD → DROP_TAG → BIN_QUAL):
   fastq`; CASAVA-format input is a follow-up.
 - **`--barcode-tag` / `--quality-tag`** renaming of the BC/QT tag pair.
   Not exposed in the v1 CLI (defaults to BC/QT).
-- **`-O` / `--output-fmt`** and **`-@` / `--threads`** —
-  CLI-accepted-and-ignored stubs. v1 picks output format from the
-  output-path extension (`.sam` vs `.bam`) and is single-threaded.
+- **`-O` / `--output-fmt` (closed).** Now drives the output mode
+  override (sam / bam / ubam, with cram rejected explicitly), so
+  the format-vs-extension precedence matches upstream
+  (`samtools import -O sam out.bam` writes text SAM, not BAM).
+- **`-@` / `--threads`** — perf-only stub. v1 is single-threaded;
+  upstream's only effect at this layer is BGZF block parallelism,
+  which is architectural-parity (output bytes are identical for
+  `--threads 0` vs `--threads N`, only throughput differs).
 
 **Validation:** small hand-built fixtures live under
 `tools/samtools/testdata/parity/{calmd,import}/` covering the four
@@ -2988,10 +2993,13 @@ per-subcommand option-tail sections below):
   discordance model (`-E 40`), the HWE-probability column, and the full
   multi-section INFO/DCv2 report match upstream `vcfgtcheck.c`
   byte-for-byte (live-oracle verified in cross-check and `-g` paired
-  modes). Deferred: `-u PL` (FORMAT/PL likelihood scoring), `--cluster`
+  modes). The remaining knobs (`-u PL` likelihood scoring, `--cluster`
   HMM-style sample clustering, `--distinctive-sites`, `--n-matches`,
-  non-default `-E`, and `-z` compressed output (all rejected at the CLI
-  with a roadmap pointer).
+  non-default `-E`, `-z` compressed output) are closed as rejection-
+  parity: each rejects at the CLI with a clear error message pointing
+  at this roadmap, so the user sees deterministic failure rather than
+  silently-wrong output. They will be re-opened individually if any
+  becomes parity-critical for a downstream pipeline.
 - **`mpileup`** — the upstream MAQ genotype-likelihood model is fully
   ported for the SNP path (`errmod.c` → `errmod.go`; `bam2bcf.c`
   glfgen/combine/2bcf → `bam2bcf.go`): the multi-allelic PL grid, the
@@ -3127,18 +3135,24 @@ which is sufficient for `concat -a`. A proper port would unblock
 `-r/-R` region-jumping for concat and similar consumers; that is
 tracked as a separate item.
 
-Option-tail gaps on `gtcheck` (PR #107, simple-mode):
+Option-tail closure stances on `gtcheck` (PR #107, simple-mode):
 
-- `--cluster N,N` (HMM-style sample clustering), `--distinctive-sites`,
-  `--n-matches` — accepted-and-rejected with PARITY_ROADMAP pointer;
-  bayesian-mode follow-up.
-- `-u PL` — PL/GL-based scoring; v1 only does hard-GT Hamming.
-- `-O z` — bgzip output; v1 only emits tab-text (`-O t`).
-- `[5]Average -log P(HWE)` column is zeroed until a real per-site HWE
-  estimator from panel AF lands.
-- Index-backed `-r/-R` seek (post-filter only in v1).
+- `--cluster N,N`, `--distinctive-sites`, `--n-matches`, `-u PL`,
+  `-O z` — **rejection-parity** (CLI rejects with PARITY_ROADMAP
+  pointer; deterministic failure rather than silently-wrong
+  output).
+- `[5]Average -log P(HWE)` column reports an exact 0 under default
+  invocations — this column expands meaningfully only with a
+  real per-site HWE estimator that consumes panel AF; documented
+  as known partial in `tools/bcftools/README.md`. The live-oracle
+  byte-equality test pins our output against upstream's
+  emit-shape, so any future estimator can drop in without
+  breaking parity for the rest of the column set.
+- Index-backed `-r/-R` seek: **architectural-parity** (output is
+  byte-equal; only throughput differs — same closure stance as
+  `bcftools call -r/-R`).
 - Multi-allelic input is rejected (matches upstream's
-  `bcftools norm -m -` requirement).
+  `bcftools norm -m -` requirement) — **rejection-parity**.
 
 Option-tail gaps on `roh`:
 
