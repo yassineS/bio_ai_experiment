@@ -49,23 +49,35 @@ func pl2p(pl int) float64 {
 
 // mcallTin groups the parsed inputs the caller needs per record.
 type mcallTin struct {
-	nals    int         // number of alleles including REF (and <*> if present)
-	ngts    int         // nals*(nals+1)/2
-	ploidy  int         // 1 or 2
-	nsmpl   int         // number of samples
-	pdg     [][]float64 // per-sample probability vector, length ngts
-	qsum    []float64   // normalized allele frequencies, length nals
-	unseen  int         // index of the <*> allele, or -1
-	thetaLn float64     // log(theta * Watterson factor)
+	nals   int // number of alleles including REF (and <*> if present)
+	ngts   int // nals*(nals+1)/2
+	ploidy int // representative ploidy (max across samples) — used
+	//  to choose the EM formula and the per-genotype
+	//  HWE weighting on the dominant branch. With
+	//  per-sample ploidy (e.g. --ploidy GRCh37 on chrY)
+	//  smplPloidy[i] is the authoritative value for
+	//  sample i.
+	nsmpl      int         // number of samples
+	pdg        [][]float64 // per-sample probability vector, length ngts
+	qsum       []float64   // normalized allele frequencies, length nals
+	unseen     int         // index of the <*> allele, or -1
+	thetaLn    float64     // log(theta * Watterson factor)
+	smplPloidy []int       // per-sample ploidy (0/1/2). When nil, every
+	// sample uses the global `ploidy` field.
 }
 
 // computeTheta replicates mcall.c init: theta scaled by the Watterson
 // factor aM over the total number of alleles, then logged.
 func computeTheta(prior float64, ploidy, nsmpl int) float64 {
+	return computeThetaN(prior, ploidy*nsmpl)
+}
+
+// computeThetaN is the n-aware variant used when per-sample ploidy
+// may differ (n = sum of per-sample ploidies).
+func computeThetaN(prior float64, n int) float64 {
 	if prior <= 0 {
 		return 0
 	}
-	n := ploidy * nsmpl
 	aM := 1.0
 	for i := 2; i < n; i++ {
 		aM += 1.0 / float64(i)
@@ -95,10 +107,32 @@ func hasQS(v *vcf.Variant) bool {
 // parseMcallInputs reads PL, QS, the allele list, and the unseen-allele
 // index off v. It returns nil when the record lacks the data the mcall
 // path needs (e.g. no PL or no QS), signalling the caller to fall back.
-func parseMcallInputs(v *vcf.Variant, opts CallOptions) *mcallTin {
+//
+// samplePloidy, when non-nil, overrides opts.Ploidy on a per-sample
+// basis. The site-level `ploidy` field is set to the max of those
+// values, which selects which EM branch (haploid vs diploid HWE) runs
+// — the per-sample value is consulted in genotype assignment, AC/AN,
+// and the per-sample HWE weighting via in.smplPloidy.
+func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int) *mcallTin {
 	ploidy := 2
 	if opts.Ploidy == PloidyHaploid {
 		ploidy = 1
+	}
+	if len(samplePloidy) > 0 {
+		// The site ploidy is the maximum across samples — that picks
+		// the diploid EM branch when any sample is diploid, which
+		// matches mcall.c's per-site uniform formula choice on the
+		// pdg/qsum loops. Per-sample ploidy is still honoured below
+		// (smplPloidy + genotype calling).
+		mx := 0
+		for _, p := range samplePloidy {
+			if p > mx {
+				mx = p
+			}
+		}
+		if mx > 0 {
+			ploidy = mx
+		}
 	}
 	nAlt := len(v.Alt)
 	if nAlt == 1 && v.Alt[0] == "." {
@@ -117,14 +151,23 @@ func parseMcallInputs(v *vcf.Variant, opts CallOptions) *mcallTin {
 	}
 
 	in := &mcallTin{
-		nals:   nals,
-		ngts:   ngts,
-		ploidy: ploidy,
-		nsmpl:  len(v.Samples),
-		unseen: unseen,
-		pdg:    make([][]float64, len(v.Samples)),
+		nals:       nals,
+		ngts:       ngts,
+		ploidy:     ploidy,
+		nsmpl:      len(v.Samples),
+		unseen:     unseen,
+		pdg:        make([][]float64, len(v.Samples)),
+		smplPloidy: samplePloidy,
 	}
-	in.thetaLn = computeTheta(opts.Prior, ploidy, len(v.Samples))
+	// Watterson aM in mcall.c uses the per-sample ploidy at INIT time
+	// (which is `ploidy_max(table)` across every sample, not the
+	// per-record value). With a PloidyTable that's ploidy_max; without
+	// it that's the global Ploidy.
+	totAlleles := ploidy * len(v.Samples)
+	if opts.PloidyTable != nil {
+		totAlleles = opts.PloidyTable.MaxPloidy() * len(v.Samples)
+	}
+	in.thetaLn = computeThetaN(opts.Prior, totAlleles)
 
 	for i, s := range v.Samples {
 		pls, ok := decodePLInts(s.Data["PL"], ngts)
@@ -184,6 +227,13 @@ const plMissing = -2147483647 // stand-in for bcf_int32_missing
 // filling we follow the unseen>=0 branch (mpileup always provides <*>).
 func setPdg(pls []int, ngts, nals, unseen int) []float64 {
 	pdg := make([]float64, ngts)
+	// A PL vector shorter than ngts is the text-VCF analogue of
+	// bcf_int32_vector_end on a diploid record — upstream treats it
+	// as "expect diploid GLs; if not diploid treat as missing", which
+	// collapses the whole sample to all-zero pdg.
+	if len(pls) < ngts {
+		return pdg
+	}
 	sum := 0.0
 	j := 0
 	for ; j < ngts && j < len(pls); j++ {
@@ -273,6 +323,19 @@ func mcallBestAlleles(in *mcallTin) (alsMask int, refLk, lkSum, maxLk float64) {
 		}
 	}
 
+	// smplP returns sample is' ploidy, falling back to the site-level
+	// value when smplPloidy isn't supplied. Ploidy=0 samples are
+	// IGNORED only in genotype assignment (mcall.c set_pdg ignores
+	// ploidy entirely, and the EM scoring loops feed every sample's
+	// pdg into lk_tot regardless of ploidy — only the per-sample HWE
+	// formula picks haploid vs diploid).
+	smplP := func(is int) int {
+		if is < len(in.smplPloidy) {
+			return in.smplPloidy[is]
+		}
+		return in.ploidy
+	}
+
 	// Single allele.
 	for ia := 0; ia < nals; ia++ {
 		lkTot := 0.0
@@ -313,12 +376,16 @@ func mcallBestAlleles(in *mcallTin) (alsMask int, refLk, lkSum, maxLk float64) {
 				iab := iaa - ia + ib
 				for is := 0; is < in.nsmpl; is++ {
 					p := in.pdg[is]
+					pl := smplP(is)
 					var val float64
-					if in.ploidy == 2 {
+					if pl == 2 || (len(in.smplPloidy) == 0 && in.ploidy == 2) {
 						val = fa2*p[iaa] + fb2*p[ibb] + fab*p[iab]
-					} else {
+					} else if pl == 1 {
 						val = fa*p[iaa] + fb*p[ibb]
 					}
+					// pl == 0 (or any other value) → val stays 0,
+					// matching upstream which leaves val=0 when neither
+					// the haploid nor diploid branch matches.
 					if val != 0 {
 						lkTot += math.Log(val)
 						lkSet = true
@@ -363,10 +430,11 @@ func mcallBestAlleles(in *mcallTin) (alsMask int, refLk, lkSum, maxLk float64) {
 					ibc := ibb - ib + ic
 					for is := 0; is < in.nsmpl; is++ {
 						p := in.pdg[is]
+						pl := smplP(is)
 						var val float64
-						if in.ploidy == 2 {
+						if pl == 2 || (len(in.smplPloidy) == 0 && in.ploidy == 2) {
 							val = fa2*p[iaa] + fb2*p[ibb] + fc2*p[icc] + fab*p[iab] + fac*p[iac] + fbc*p[ibc]
-						} else {
+						} else if pl == 1 {
 							val = fa*p[iaa] + fb*p[ibb] + fc*p[icc]
 						}
 						if val != 0 {
@@ -395,11 +463,11 @@ func mcallBestAlleles(in *mcallTin) (alsMask int, refLk, lkSum, maxLk float64) {
 // mcallSite runs the full multiallelic caller on v. It returns the
 // rewritten record and a keep flag. ok is false when the record lacks the
 // QS/PL data the algorithm needs (caller should fall back).
-func mcallSite(v *vcf.Variant, opts CallOptions) (out *vcf.Variant, keep bool, ok bool) {
+func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (out *vcf.Variant, keep bool, ok bool) {
 	if !hasQS(v) {
 		return nil, false, false
 	}
-	in := parseMcallInputs(v, opts)
+	in := parseMcallInputs(v, opts, samplePloidy)
 	if in == nil {
 		return nil, false, false
 	}
@@ -466,11 +534,22 @@ func mcallSite(v *vcf.Variant, opts CallOptions) (out *vcf.Variant, keep bool, o
 	if !callGenotypes {
 		// All-ref: GT 0/0 (or . if no data).
 		for i := 0; i < in.nsmpl; i++ {
-			if pdgAllZero(in.pdg[i]) || in.ploidy == 0 {
+			pl := in.ploidy
+			if i < len(in.smplPloidy) {
+				pl = in.smplPloidy[i]
+			}
+			if pdgAllZero(in.pdg[i]) || pl == 0 {
 				gts[i] = [2]int{-1, -1}
+				if pl == 0 {
+					// Ploidy-0 sample (e.g. F on chrY): emit "." with
+					// no allele, matching mcall.c's ploidy==0 branch.
+				}
+			} else if pl == 1 {
+				gts[i] = [2]int{0, -1}
+				ac[0]++
 			} else {
 				gts[i] = [2]int{0, 0}
-				ac[0] += in.ploidy
+				ac[0] += 2
 			}
 		}
 	} else {
@@ -596,7 +675,11 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 	for i, s := range v.Samples {
 		ns := vcf.Sample{Name: s.Name, Data: copyStringMap(s.Data)}
 		// GT
-		ns.Data["GT"] = renderGT(gts[i], in.ploidy)
+		pl := in.ploidy
+		if i < len(in.smplPloidy) {
+			pl = in.smplPloidy[i]
+		}
+		ns.Data["GT"] = renderGT(gts[i], pl)
 		// AD (Number=R) re-index
 		if ad, okAD := s.Data["AD"]; okAD {
 			ns.Data["AD"] = reindexNumberR(ad, in.nals, alsMap)
@@ -781,6 +864,9 @@ func quantizeQual(q float64) float64 {
 func mcallCallGenotype(in *mcallTin, alsMask int, alsMap []int, ismpl int) [2]int {
 	pdg := in.pdg[ismpl]
 	ploidy := in.ploidy
+	if ismpl < len(in.smplPloidy) {
+		ploidy = in.smplPloidy[ismpl]
+	}
 	if ploidy == 0 || pdgAllZero(pdg) {
 		return [2]int{-1, -1}
 	}

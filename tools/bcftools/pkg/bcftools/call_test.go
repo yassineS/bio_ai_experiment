@@ -235,18 +235,16 @@ func TestCall_HaploidPloidy(t *testing.T) {
 	}
 }
 
-// TestCall_PloidySpec_GRCh37Deferred asserts the documented v1 behaviour:
-// --ploidy GRCh37 (or GRCh38) is parsed but rejected at runtime with a
-// roadmap pointer.
-func TestCall_PloidySpec_GRCh37Deferred(t *testing.T) {
+// TestCall_PloidySpec_GRCh37Accepted asserts that --ploidy GRCh37 builds
+// the per-region ploidy table and runs without error on an autosome.
+// Per-chromosome behaviour is exercised by TestCall_PloidyGRCh37PerContig
+// and the live oracle suite.
+func TestCall_PloidySpec_GRCh37Accepted(t *testing.T) {
 	in := makeCallVCF("chr1\t100\t.\tA\tT\t.\t.\tDP=30\tGT:PL\t0/0:0,30,255\t0/0:0,30,255\t0/0:0,30,255")
 	var out bytes.Buffer
 	_, err := Call(bytes.NewReader(in), &out, CallOptions{Model: CallModelConsensus, PloidySpec: "GRCh37"})
-	if err == nil {
-		t.Fatalf("expected error for --ploidy GRCh37, got nil")
-	}
-	if !strings.Contains(err.Error(), "GRCh37") {
-		t.Fatalf("expected GRCh37 in error, got %q", err.Error())
+	if err != nil {
+		t.Fatalf("--ploidy GRCh37 should be accepted, got %v", err)
 	}
 }
 
@@ -513,4 +511,85 @@ func TestCall_McallVariantHet(t *testing.T) {
 // writeFileBytes is a tiny helper used by TestCall_FileEntryPoint.
 func writeFileBytes(path string, b []byte) error {
 	return os.WriteFile(path, b, 0o644)
+}
+
+// TestCall_PloidyTableGRCh37 exercises ParsePloidyTable and its
+// per-contig query: F is registered last so DefaultSexID() points at F
+// (matching vcfcall.c sample2sex initialisation). The query then
+// returns 2 for autosomes, 0 for chrY, 1 for chrM, and 2 for chrX.
+func TestCall_PloidyTableGRCh37(t *testing.T) {
+	tbl, err := BuildPloidyTableFromSpec("GRCh37")
+	if err != nil {
+		t.Fatalf("BuildPloidyTableFromSpec: %v", err)
+	}
+	if tbl == nil {
+		t.Fatal("expected non-nil ploidy table for GRCh37")
+	}
+	if got := tbl.SexName(tbl.DefaultSexID()); got != "F" {
+		t.Fatalf("default sex = %q, want F", got)
+	}
+	f := tbl.SexID("F")
+	m := tbl.SexID("M")
+	cases := []struct {
+		name       string
+		chrom      string
+		pos        int
+		sex        int
+		wantPloidy int
+	}{
+		{"chr1-F", "chr1", 100, f, 2},
+		{"chr1-M", "chr1", 100, m, 2},
+		{"X-F-anywhere", "X", 100, f, 2},
+		{"X-M-PAR1", "X", 50, m, 1},
+		{"X-M-mid", "X", 500_000, m, 2},
+		{"X-M-PAR2", "X", 100_000_000, m, 1},
+		{"Y-F", "Y", 100, f, 0},
+		{"Y-M", "Y", 100, m, 1},
+		{"MT-F", "MT", 100, f, 1},
+		{"MT-M", "MT", 100, m, 1},
+		{"chrM-F", "chrM", 100, f, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := tbl.Query(c.chrom, c.pos, c.sex)
+			if got != c.wantPloidy {
+				t.Fatalf("Query(%q,%d,sex=%d) = %d, want %d", c.chrom, c.pos, c.sex, got, c.wantPloidy)
+			}
+		})
+	}
+}
+
+// TestCall_PloidyGRCh37PerContig drives a synthetic mpileup-shaped
+// fixture with QS/I16 + PL on chrX, chrY, chrM and asserts the
+// per-contig output matches what upstream `bcftools call -m
+// --ploidy GRCh37` produces (encoded in the want strings below).
+func TestCall_PloidyGRCh37PerContig(t *testing.T) {
+	const hdr = `##fileformat=VCFv4.2
+##contig=<ID=chr1>
+##contig=<ID=X>
+##contig=<ID=Y>
+##contig=<ID=MT>
+##INFO=<ID=QS,Number=R,Type=Float,Description="QS">
+##INFO=<ID=I16,Number=16,Type=Float,Description="I16">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="PL">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+`
+	body := `chr1	100	.	A	G	.	.	QS=0.5,0.5;I16=10,10,10,10,400,400,400,400,30,30,30,30,30,30,30,30	PL	30,0,30
+X	100	.	A	G	.	.	QS=0.5,0.5;I16=10,10,10,10,400,400,400,400,30,30,30,30,30,30,30,30	PL	30,0,30
+Y	100	.	A	G	.	.	QS=0.5,0.5;I16=10,10,10,10,400,400,400,400,30,30,30,30,30,30,30,30	PL	30,0,30
+MT	100	.	A	G	.	.	QS=0.5,0.5;I16=10,10,10,10,400,400,400,400,30,30,30,30,30,30,30,30	PL	30,0,30
+`
+	in := []byte(hdr + body)
+	got := runCall(t, in, CallOptions{Model: CallModelMultiallelic, PloidySpec: "GRCh37"})
+	_, vs := parseCallOutput(t, got)
+	if len(vs) != 4 {
+		t.Fatalf("got %d records, want 4", len(vs))
+	}
+	// Default sex is F under the GRCh37 predefs.
+	wantGT := map[string]string{"chr1": "0/0", "X": "0/0", "Y": ".", "MT": "0"}
+	for _, v := range vs {
+		if got := v.Samples[0].Data["GT"]; got != wantGT[v.Chrom] {
+			t.Fatalf("%s: GT = %q, want %q", v.Chrom, got, wantGT[v.Chrom])
+		}
+	}
 }

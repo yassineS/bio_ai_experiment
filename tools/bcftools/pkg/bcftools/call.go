@@ -31,10 +31,10 @@ const (
 	CallModelMultiallelic
 )
 
-// PloidySpec selects the per-sample ploidy. Today only fixed ploidies (1
-// or 2 across every sample/contig) are honoured; the GRCh37/GRCh38 modes
-// that special-case chrX/Y/PAR are accepted by the CLI but rejected by
-// Call() with a roadmap-pointer error.
+// PloidySpec selects the per-sample ploidy. Fixed ploidies (1 or 2 across
+// every sample/contig) live here directly; the GRCh37/GRCh38 per-contig
+// sex-chromosome maps come through CallOptions.PloidyTable (see
+// call_ploidy.go).
 type PloidySpec int
 
 const (
@@ -60,13 +60,23 @@ type CallOptions struct {
 	// emitted as variant when posterior > 1 - PvalThreshold. The upstream
 	// default is 0.5, matching `-p 0.5`.
 	PvalThreshold float64
-	// Ploidy selects diploid (default) or haploid calling. The upstream
-	// GRCh37/GRCh38 modes are deferred (see docs/PARITY_ROADMAP.md).
+	// Ploidy selects diploid (default) or haploid calling. When
+	// PloidyTable is set it overrides this for the per-record, per-sample
+	// resolution; Ploidy is then used only as the global fallback.
 	Ploidy PloidySpec
 	// PloidySpec, when non-empty, is the textual ploidy spec ("2", "1",
-	// "GRCh37", ...). When set to GRCh37 or GRCh38 Call returns an error
-	// pointing at the roadmap.
+	// "GRCh37", ...). Setting it to one of the GRCh* aliases populates
+	// PloidyTable automatically when ParsePloidySpec is used.
 	PloidySpec string
+	// PloidyTable, when non-nil, replaces the global Ploidy with a
+	// per-region, per-sex map (built from --ploidy GRCh37/GRCh38 or a
+	// --ploidy-file argument).
+	PloidyTable *PloidyTable
+	// SampleSexes maps the input sample index to the sex id registered
+	// in PloidyTable. When nil every sample defaults to
+	// PloidyTable.DefaultSexID (the last registered sex, F for the
+	// GRCh predefs — matching vcfcall.c sample2sex initialisation).
+	SampleSexes []int
 	// OutputFormat passes through to the writer (see openOutput).
 	OutputFormat OutputFormat
 	// CompressLevel sets the gzip level for -O z output.
@@ -96,8 +106,7 @@ func (o *CallOptions) defaults() {
 }
 
 // ParsePloidySpec turns a "--ploidy" string into the typed value. The
-// returned spec string is preserved so Call() can reject GRCh37/GRCh38
-// with a deterministic error.
+// returned spec string is preserved so Call() can record provenance.
 func ParsePloidySpec(s string) (PloidySpec, string, error) {
 	switch strings.TrimSpace(s) {
 	case "", "2":
@@ -110,6 +119,73 @@ func ParsePloidySpec(s string) (PloidySpec, string, error) {
 	return 0, "", fmt.Errorf("bcftools call: unknown --ploidy %q (expect 1, 2, GRCh37, GRCh38)", s)
 }
 
+// BuildPloidyTableFromSpec returns a PloidyTable for one of the
+// recognised --ploidy aliases ("GRCh37", "GRCh38", "1", "2"), or nil
+// when the spec resolves to a simple uniform ploidy that doesn't need
+// the table machinery.
+func BuildPloidyTableFromSpec(spec string) (*PloidyTable, error) {
+	body := LookupPredefPloidy(spec)
+	if body == "" {
+		return nil, nil
+	}
+	return ParsePloidyTable(body, 2)
+}
+
+// resolveSampleSexes returns a sex-id slice of length nsmpl. When
+// opts.SampleSexes is set we use it (clamped to the registered range);
+// otherwise every sample defaults to PloidyTable.DefaultSexID(), which
+// matches vcfcall.c's `sample2sex[i] = args->nsex - 1` initialisation.
+func resolveSampleSexes(tbl *PloidyTable, samples []string, opts *CallOptions) []int {
+	if tbl == nil {
+		return nil
+	}
+	dflt := tbl.DefaultSexID()
+	out := make([]int, len(samples))
+	for i := range out {
+		out[i] = dflt
+	}
+	if opts != nil {
+		for i, sid := range opts.SampleSexes {
+			if i >= len(out) {
+				break
+			}
+			if sid >= 0 && sid < tbl.NSex() {
+				out[i] = sid
+			}
+		}
+	}
+	return out
+}
+
+// perSamplePloidy returns the per-sample ploidy slice for one record.
+// When opts.PloidyTable is nil it falls back to opts.Ploidy (the global
+// 1- or 2-uniform mode), so existing call sites keep working. nsmpl is
+// the number of input samples on the record.
+func perSamplePloidy(opts CallOptions, sexes []int, chrom string, pos, nsmpl int) []int {
+	if opts.PloidyTable == nil {
+		out := make([]int, nsmpl)
+		p := int(opts.Ploidy)
+		if p == 0 {
+			p = 2
+		}
+		for i := range out {
+			out[i] = p
+		}
+		return out
+	}
+	if len(sexes) < nsmpl {
+		// Pad with the table default (matches vcfcall.c init).
+		dflt := opts.PloidyTable.DefaultSexID()
+		ext := make([]int, nsmpl)
+		copy(ext, sexes)
+		for i := len(sexes); i < nsmpl; i++ {
+			ext[i] = dflt
+		}
+		sexes = ext
+	}
+	return opts.PloidyTable.PerSamplePloidy(chrom, pos, sexes[:nsmpl])
+}
+
 // Call streams VCF/BCF input from in, applies the consensus / multiallelic
 // variant caller, and writes the called records to out. It is the
 // streaming entry point used by `bcftools call` when no region query is
@@ -119,8 +195,12 @@ func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
 	if opts.Model == CallModelNone {
 		return 0, fmt.Errorf("bcftools call: a caller must be selected (-c / --consensus-caller or -m / --multiallelic-caller)")
 	}
-	if opts.PloidySpec == "GRCh37" || opts.PloidySpec == "GRCh38" {
-		return 0, fmt.Errorf("bcftools call: --ploidy %s is not implemented (see docs/PARITY_ROADMAP.md bcftools call)", opts.PloidySpec)
+	if opts.PloidyTable == nil && (opts.PloidySpec == "GRCh37" || opts.PloidySpec == "GRCh38") {
+		tbl, err := BuildPloidyTableFromSpec(opts.PloidySpec)
+		if err != nil {
+			return 0, err
+		}
+		opts.PloidyTable = tbl
 	}
 	parsedTargets, err := parseRegions(opts.Targets)
 	if err != nil {
@@ -173,6 +253,8 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	hdr = augmentCallHeader(hdr, opts.Model)
 
+	sexes := resolveSampleSexes(opts.PloidyTable, hdr.Samples, &opts)
+
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
@@ -200,7 +282,8 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
 		}
-		called, keep := callVariant(v, opts)
+		samplePloidy := perSamplePloidy(opts, sexes, v.Chrom, v.Pos, len(v.Samples))
+		called, keep := callVariant(v, opts, samplePloidy)
 		if !keep {
 			continue
 		}
@@ -275,12 +358,12 @@ func augmentCallHeader(hdr *vcf.Header, model CallModel) *vcf.Header {
 //     prior dominates the posterior.)
 //   - The site is emitted iff !opts.VariantsOnly OR the site is variant
 //     OR opts.KeepAlts is set.
-func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
+func callVariant(v *vcf.Variant, opts CallOptions, samplePloidy []int) (*vcf.Variant, bool) {
 	// The faithful multiallelic caller runs when -m is selected and the
 	// mpileup INFO/QS annotation is present. The synthetic PL-only
 	// fixtures (no QS) fall through to the heuristic path below.
 	if opts.Model == CallModelMultiallelic && hasQS(v) {
-		if out, keep, ok := mcallSite(v, opts); ok {
+		if out, keep, ok := mcallSite(v, opts, samplePloidy); ok {
 			return out, keep
 		}
 	}
@@ -290,11 +373,34 @@ func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
 		v.Alt = nil
 	}
 	nAlleles := nAlts + 1
+	// Effective per-sample ploidy. When --ploidy is the global "1" or
+	// "2" this matches opts.Ploidy for every sample; for the GRCh*
+	// tables the heuristic path still runs only when all samples on a
+	// record agree (mixed-sex PED is plumbed through the mcall path).
+	effPloidy := func(i int) PloidySpec {
+		if i < len(samplePloidy) {
+			if samplePloidy[i] == 1 {
+				return PloidyHaploid
+			}
+			if samplePloidy[i] == 0 {
+				return 0
+			}
+		}
+		return PloidyDiploid
+	}
 	plByGT := make([][]int, len(v.Samples))
 	mostLikely := make([]int, len(v.Samples))
+	gtPloidy := make([]PloidySpec, len(v.Samples))
 	haveGenotypeData := false
 	for i, s := range v.Samples {
-		pl, ok := decodePL(s.Data["PL"], nAlleles, opts.Ploidy)
+		p := effPloidy(i)
+		gtPloidy[i] = p
+		if p == 0 {
+			plByGT[i] = nil
+			mostLikely[i] = -1
+			continue
+		}
+		pl, ok := decodePL(s.Data["PL"], nAlleles, p)
 		if !ok {
 			plByGT[i] = nil
 			mostLikely[i] = -1
@@ -311,7 +417,7 @@ func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
 		if mostLikely[i] < 0 {
 			continue
 		}
-		a1, a2, ok := decomposeGTIndex(mostLikely[i], nAlleles, opts.Ploidy)
+		a1, a2, ok := decomposeGTIndex(mostLikely[i], nAlleles, gtPloidy[i])
 		if !ok {
 			continue
 		}
@@ -319,7 +425,7 @@ func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
 			ac[a1-1]++
 		}
 		an++
-		if opts.Ploidy == PloidyDiploid {
+		if gtPloidy[i] == PloidyDiploid {
 			if a2 > 0 && a2-1 < nAlts {
 				ac[a2-1]++
 			}
@@ -382,7 +488,11 @@ func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
 	for i, s := range v.Samples {
 		newSample := vcf.Sample{Name: s.Name, Data: copyStringMap(s.Data)}
 		if mostLikely[i] >= 0 {
-			newSample.Data["GT"] = encodeGT(mostLikely[i], nAlleles, opts.Ploidy)
+			newSample.Data["GT"] = encodeGT(mostLikely[i], nAlleles, gtPloidy[i])
+		} else if gtPloidy[i] == 0 {
+			// Samples with ploidy 0 (e.g. F on chrY) are emitted as
+			// missing, matching upstream mcall.c.
+			newSample.Data["GT"] = "."
 		}
 		out.Samples[i] = newSample
 	}

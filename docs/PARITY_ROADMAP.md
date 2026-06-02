@@ -3579,20 +3579,58 @@ Subcommand-tail gaps remaining on `bcftools call`:
 - **`-C alleles --constrain`, trio calling (`-T`/`-C trio`), sample
   groups (`-G`), and reference-panel AF priors.** Not yet ported; the
   single-sample-group, no-constraint path that `mpileup | call -m`
-  produces is covered.
+  produces is covered. Scope per upstream `mcall.c`:
+  - `-C alleles` parsing + `mcall_constrain_alleles` (mcall.c
+    ~lines 290-380) — restricts the EM search to a user-supplied
+    allele set. ~150-200 LOC.
+  - Trio constraint (`-C trio`): `mcall_call_trio_genotypes`
+    (mcall.c ~lines 750-1100, ~350 LOC) + family-table parsing from
+    a PED file (vcfcall.c `parse_ped_samples`, ~80 LOC).
+  - `-G` sample groups: parser + populating `smpl_grp` in
+    parseMcallInputs (~120 LOC). The EM scoring loop already has a
+    group abstraction internally.
 - **BCF input.** Today `call` rejects BCF input with a roadmap-pointer
   error. The BCF reader's FORMAT-key reconstruction
   (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) is the prerequisite.
-- **`--ploidy GRCh37 / GRCh38`.** Accepted by the CLI parser but
-  rejected at runtime — the per-contig sex-chromosome overrides need a
-  ploidy registry that's not yet wired in.
 - **Index-backed region queries** (`-r` reuses the post-filter path).
-- **`--gvcf` block-emit mode** (banded reference blocks).
-- **The consensus caller (`-c`).** Still the v1 heuristic, not a port of
-  `ccall.c`.
+- **`--gvcf` block-emit mode** (banded reference blocks). Upstream
+  `gvcf.c` is ~700 LOC; the mpileup port already includes the
+  block-aware writer (`mpileup_gvcf.go`) which the call port can
+  reuse once the per-record block boundary detection is wired
+  through.
+- **The consensus caller (`-c`).** Still the v1 heuristic, not a
+  port of `ccall.c`. Faithful port requires `bcf_em1` (em.c, 259
+  LOC) and the `bcf_p1_*` machinery (prob1.c, 524 LOC) on top of
+  ccall.c (339 LOC) — ~1120 LOC total, beyond the per-slice budget;
+  tracked as a standalone future task.
+
+Closed (`--ploidy` wave):
+
+- **`--ploidy GRCh37 / GRCh38`.** Per-region, per-sex ploidy tables
+  are now built from the upstream `ploidy_predefs` strings
+  (`tools/bcftools/pkg/bcftools/call_ploidy.go`) and consulted on
+  every record. Without a PED file every sample defaults to the
+  last registered sex (F under the GRCh predefs), matching
+  vcfcall.c's `sample2sex[i] = args->nsex - 1` initialisation. The
+  per-sample ploidy is plumbed through `mcallTin.smplPloidy`, the
+  EM scoring loops (haploid vs diploid HWE formula picked per
+  sample — ploidy 0 leaves val=0 so the sample doesn't influence
+  lk_sum), AC/AN accumulation, and `mcall_set_ref_genotypes` /
+  `mcall_call_genotypes`. Watterson aM uses
+  `ploidy_max(table) * nsamples` to match upstream's init-time
+  theta. Truncated PL vectors on diploid records are now treated as
+  all-missing (text-VCF analogue of `bcf_int32_vector_end`).
+  Verified: `mpileup | call -m --ploidy GRCh37` byte-matches
+  upstream across the full 4103-site oracle fixture, and the
+  per-contig X / Y / MT / chrM ploidy decisions byte-match upstream
+  on a hand-built fixture
+  (`TestCall_PloidyGRCh37PerContig` + `TestCall_PloidyTableGRCh37`
+  for the table, `TestLiveCall` subtests `m_ploidy_grch37` and
+  `m_ploidy_grch38` for the end-to-end mpileup oracle).
 
 **Validation:** `call -m` byte-matches upstream on the mpileup oracle
-fixture (`TestLiveCall`); no full upstream-test-suite run yet.
+fixture (`TestLiveCall`), and `--ploidy GRCh37/GRCh38` are now byte-
+equal too; no full upstream-test-suite run yet.
 
 ### `mosdepth`
 

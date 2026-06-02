@@ -751,6 +751,13 @@ func TestLiveCall(t *testing.T) {
 		{"m", []string{"call", "-m", mpFile}},
 		{"m_v", []string{"call", "-m", "-v", mpFile}},
 		{"m_A", []string{"call", "-m", "-A", mpFile}},
+		// --ploidy GRCh37 / 38: per-contig ploidy table. The mpileup
+		// fixture contigs (1, 19, etc.) all fall under the "*" default
+		// (F=2), so the output is identical to the diploid -m run —
+		// what we're really asserting is that --ploidy still byte-
+		// matches upstream and didn't regress the diploid path.
+		{"m_ploidy_grch37", []string{"call", "-m", "--ploidy", "GRCh37", mpFile}},
+		{"m_ploidy_grch38", []string{"call", "-m", "--ploidy", "GRCh38", mpFile}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertEqualStdout(t, live, ours, tc.args...)

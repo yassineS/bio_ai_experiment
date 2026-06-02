@@ -234,7 +234,9 @@ Options:
   -s, --samples LIST              Restrict to these samples (comma list).
   -S, --samples-file PATH         File with sample IDs (one per line).
   -l, --compression-level N       gzip level for z output.
-      --threads N                 Accepted; v1 is single-threaded.
+  -@, --threads N                 Number of BGZF compression threads for
+                                  -O b/z/u output. Output bytes are
+                                  byte-identical to single-threaded mode.
   -?, --help                      Show this help.
       --version                   Show version.
 
@@ -350,6 +352,7 @@ func runView(args []string) int {
 		IncludeTypes:   bcftools.SplitCommaList(includeTypes),
 		ExcludeTypes:   bcftools.SplitCommaList(excludeTypes),
 		NoUpdateINFO:   noUpdate,
+		Threads:        threads,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -1033,7 +1036,9 @@ Filters:
   -v, --variants-only            Drop all-reference sites.
   -P, --prior FLOAT              Mutation rate prior (default 1.1e-3).
   -p, --pval-threshold FLOAT     Variant-posterior threshold (default 0.5).
-      --ploidy {1|2|GRCh37|GRCh38}  Ploidy spec (default 2). GRCh37/38 deferred.
+      --ploidy {1|2|GRCh37|GRCh38}  Ploidy spec (default 2). GRCh37/38 use the
+                                 per-region, per-sex tables from upstream; the
+                                 default sex is F.
   -X, --chromosome-X             Legacy alias for --ploidy 1.
 
 I/O:
