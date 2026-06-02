@@ -1166,10 +1166,12 @@ func ccallTTest(n1, n2 int, a [4]float64) float64 {
 	if u1 <= u2 {
 		return 1.0
 	}
+	// Match the C path bit-for-bit: t = (u1-u2)/sqrt(denom) with the
+	// same `denom` arithmetic (even when zero, the C result is +Inf
+	// and v/(v+t*t)=0 → kfBetai(.,.,0)=0). We don't pre-guard
+	// denom; let the floating-point arithmetic produce +Inf / 0 /
+	// NaN per upstream.
 	denom := ((a[1] - float64(n1)*u1*u1) + (a[3] - float64(n2)*u2*u2)) / float64(n1+n2-2) * (1.0/float64(n1) + 1.0/float64(n2))
-	if denom <= 0 {
-		return 1.0
-	}
 	t := (u1 - u2) / math.Sqrt(denom)
 	v := float64(n1 + n2 - 2)
 	if t < 0 {
