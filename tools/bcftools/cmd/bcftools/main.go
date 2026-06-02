@@ -1040,6 +1040,9 @@ Filters:
                                  per-region, per-sex tables from upstream; the
                                  default sex is F.
   -X, --chromosome-X             Legacy alias for --ploidy 1.
+  -g, --gvcf INT[,INT...]        Group non-variant sites into gVCF blocks by
+                                 minimum per-sample DP (one block per bin).
+                                 Rejects --variants-only.
 
 I/O:
   -O, --output-type {v|z|u|b}    Output format (b/u require BCF writer).
@@ -1077,6 +1080,7 @@ func runCall(args []string) int {
 		samples      string
 		samplesFile  string
 		threads      int
+		gvcf         string
 		showHelp     bool
 		showVer      bool
 	)
@@ -1097,6 +1101,7 @@ func runCall(args []string) int {
 	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples list")
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.StringVar(fs, &gvcf, "g", "gvcf", "", "Group non-variant sites into gVCF blocks by minimum per-sample DP (INT[,INT...])")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -1160,6 +1165,7 @@ func runCall(args []string) int {
 		Ploidy:        ploidySpec,
 		PloidySpec:    ploidyText,
 		OutputFormat:  format,
+		GVCFSpec:      gvcf,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
