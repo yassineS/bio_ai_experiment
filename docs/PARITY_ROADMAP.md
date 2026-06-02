@@ -3577,18 +3577,37 @@ present; synthetic PL-only fixtures (no QS) still use the older heuristic.
 Subcommand-tail gaps remaining on `bcftools call`:
 
 - **`-C alleles --constrain`, trio calling (`-T`/`-C trio`), sample
-  groups (`-G`), and reference-panel AF priors.** Not yet ported; the
-  single-sample-group, no-constraint path that `mpileup | call -m`
-  produces is covered. Scope per upstream `mcall.c`:
-  - `-C alleles` parsing + `mcall_constrain_alleles` (mcall.c
-    ~lines 290-380) — restricts the EM search to a user-supplied
-    allele set. ~150-200 LOC.
-  - Trio constraint (`-C trio`): `mcall_call_trio_genotypes`
-    (mcall.c ~lines 750-1100, ~350 LOC) + family-table parsing from
-    a PED file (vcfcall.c `parse_ped_samples`, ~80 LOC).
-  - `-G` sample groups: parser + populating `smpl_grp` in
-    parseMcallInputs (~120 LOC). The EM scoring loop already has a
-    group abstraction internally.
+  groups (`-G`), and reference-panel AF priors.** The single-sample-
+  group, no-constraint path that `mpileup | call -m` produces is
+  covered, and the `-C alleles` machinery is in flight. Status per
+  upstream `mcall.c`:
+  - **`-C alleles` (partial).** The TSV parser + per-record allele
+    projection (`mcall_constrain_alleles`, mcall.c ~lines 1274-1413)
+    is ported in `call_constrain.go`: `LoadConstrainAlleles` for
+    the `CHROM\tPOS\tREF,ALT[,ALT...]` format and
+    `applyConstrainAlleles` to rewrite REF/ALT/PL/QS/AD via the
+    upstream `als_map` / `pl_map`. The `CallOptions.Constrain` /
+    `CallOptions.ConstrainSites` wiring on top of these helpers and
+    the `-C alleles` flag in `runCall` are pending — landing them
+    is the follow-up slice once the parallel `-c` (consensus port)
+    work has stabilised the shared `call.go` / `runCall` surface.
+  - **Trio constraint (`-C trio`) — mirrors upstream's own
+    runtime error.** Upstream `mcall.c:1608` itself disables this
+    path with `error("todo: constrained trio calling temporarily
+    disabled\n")`. The Go port surfaces the same message
+    (`CallConstrainTrio` in `call_constrain.go`), so parity
+    callers see identical behaviour and no further work is
+    required for parity. If upstream re-enables the path, the
+    follow-up is `mcall_call_trio_genotypes` (~350 LOC) plus the
+    family-table parser (vcfcall.c `parse_ped_samples`, ~80 LOC)
+    and the combinatorial trio-genotype init tables
+    (`mcall_init_trios`, ~150 LOC).
+  - **`-G` sample groups (deferred).** Parser + per-group
+    bookkeeping that re-projects `mcallTin.qsum` per group across
+    the EM scoring loops in `callm.go`. The EM loops today have a
+    single-group qsum baked in; refactoring them to take a
+    per-group slice and the per-group QS/AD normalisation that
+    `mcall.c` does for `nsmpl_grp>1` is the bulk of the work.
 - **BCF input.** Today `call` rejects BCF input with a roadmap-pointer
   error. The BCF reader's FORMAT-key reconstruction
   (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) is the prerequisite.
