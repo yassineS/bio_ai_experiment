@@ -3612,16 +3612,38 @@ Subcommand-tail gaps remaining on `bcftools call`:
   error. The BCF reader's FORMAT-key reconstruction
   (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) is the prerequisite.
 - **Index-backed region queries** (`-r` reuses the post-filter path).
-- **`--gvcf` block-emit mode** (banded reference blocks). Upstream
-  `gvcf.c` is ~700 LOC; the mpileup port already includes the
-  block-aware writer (`mpileup_gvcf.go`) which the call port can
-  reuse once the per-record block boundary detection is wired
-  through.
-- **The consensus caller (`-c`).** Still the v1 heuristic, not a
-  port of `ccall.c`. Faithful port requires `bcf_em1` (em.c, 259
-  LOC) and the `bcf_p1_*` machinery (prob1.c, 524 LOC) on top of
-  ccall.c (339 LOC) — ~1120 LOC total, beyond the per-slice budget;
-  tracked as a standalone future task.
+- **The consensus caller (`-c`).** Closed. `tools/bcftools/pkg/
+  bcftools/callc.go` is a faithful port of `ccall.c` + `em.c` +
+  `prob1.c` plus the kfunc.c primitives (kf_gammap/q, kf_betai)
+  the EM HWE / PV4 t-test path consumes. Activates when the input
+  carries the mpileup INFO/I16 annotation; synthetic PL-only
+  fixtures continue to use the existing v1 heuristic. The
+  `mpileup | call -c` pipeline byte-matches upstream end-to-end
+  (TestLiveCall/c — see `live_oracle_test.go`). Trio / sample-
+  group LRT (em[7..8], AF2) and the `contrast2` chi^2 stay at the
+  upstream-default -1 since the single-group ccall driver never
+  invokes them.
+
+Closed (`--gvcf` wave):
+
+- **`--gvcf INT[,INT...]` block-emit mode.** Wires the post-mcall
+  record stream through a Go port of upstream `gvcf.c::gvcf_write`
+  (`tools/bcftools/pkg/bcftools/callm_gvcf.go`). Consecutive
+  REF-only sites that share a per-sample MIN_DP bin are banded into
+  a single record carrying INFO/END (only when the span is ≥2
+  sites) + INFO/MIN_DP and FORMAT GT:DP per sample. The block emit
+  matches upstream's `bcf_clear1 → bcf_update_*` shape
+  byte-for-byte: ALT=`.` (REF-only), QUAL=`.`, FILTER=`.`, no
+  PL/QS (mcall.c:1529,1580 already removed them on ref-only
+  sites). Reuses helpers from `mpileup_gvcf.go`
+  (`parseGVCFRanges`, `bandFor`, `perSampleDP`) so the two block
+  writers stay in sync. Upstream's
+  `args.aux.flag&CALL_VARONLY && args.gvcf` rejection
+  (vcfcall.c:1190) and the "gvcf not functional with `-c`"
+  rejection (vcfcall.c:1182) are reproduced verbatim. Verified by
+  `TestLiveCall/m_gvcf_0_5_10` and `TestLiveCall/m_gvcf_5`
+  (byte-equal stdout vs upstream `bcftools call -m --gvcf …` on
+  the mpileup `-a DP` oracle fixture).
 
 Closed (`--ploidy` wave):
 

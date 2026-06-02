@@ -777,6 +777,15 @@ func TestLiveCall(t *testing.T) {
 	if err := os.WriteFile(mpFile, mp, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// `call --gvcf` rejects input lacking ##FORMAT=<ID=DP,...> in the
+	// header (vcfcall.c:723). The default mpileup output does not
+	// declare FORMAT/DP even though each record carries DP — request
+	// it explicitly with -a DP for the --gvcf-only subtests below.
+	mpDP := runBin(t, live, "mpileup", "-a", "DP", "-f", ref, bam)
+	mpDPFile := filepath.Join(t.TempDir(), "mp_dp.vcf")
+	if err := os.WriteFile(mpDPFile, mpDP, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -792,6 +801,17 @@ func TestLiveCall(t *testing.T) {
 		// matches upstream and didn't regress the diploid path.
 		{"m_ploidy_grch37", []string{"call", "-m", "--ploidy", "GRCh37", mpFile}},
 		{"m_ploidy_grch38", []string{"call", "-m", "--ploidy", "GRCh38", mpFile}},
+		// Consensus caller: with the ccall.c + em.c + prob1.c port
+		// (callc.go) the `-c` pipeline now byte-matches upstream
+		// (modulo provenance lines stripped by stripProvenance).
+		{"c", []string{"call", "-c", mpFile}},
+		// --gvcf banded blocks. Bands consecutive ref-only sites by
+		// per-sample MIN_DP bin; the body of every gVCF block plus
+		// every variant record byte-matches upstream
+		// (`reference_code/bcftools/bcftools call -m --gvcf 0,5,10`).
+		// See tools/bcftools/pkg/bcftools/callm_gvcf.go.
+		{"m_gvcf_0_5_10", []string{"call", "-m", "--gvcf", "0,5,10", mpDPFile}},
+		{"m_gvcf_5", []string{"call", "-m", "--gvcf", "5", mpDPFile}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertEqualStdout(t, live, ours, tc.args...)

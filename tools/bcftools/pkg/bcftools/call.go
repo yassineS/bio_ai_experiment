@@ -277,6 +277,13 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		return 0, err
 	}
 	hdr = filterHeaderSamples(hdr, opts.Samples)
+	// Match upstream's header insertion order: vcfcall.c:724 calls
+	// gvcf_update_header BEFORE the main loop, where mcall.c appends
+	// AC/AN/DP4/MQ. So the END/MIN_DP declarations precede the call
+	// caller's own AC/AN/DP4/MQ block in the emitted header.
+	if len(opts.GVCFRange) > 0 {
+		hdr = augmentGVCFHeader(hdr)
+	}
 	// For -c, when the input declares INFO/I16 we route through the
 	// faithful consensus port (callc.go) and rewrite the header
 	// accordingly. Otherwise the heuristic v1 augmentation applies
@@ -297,6 +304,16 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		return 0, err
 	}
 	defer finish()
+	// --gvcf wraps w with a blocker that bands consecutive post-mcall
+	// REF-only rows by per-sample MIN_DP. Variant rows pass through
+	// unchanged; the blocker calls inner.Write to flush an in-flight
+	// block before each variant row and on Flush(). Mirror of
+	// vcfcall.c:1250-1254 + gvcf.c::gvcf_write, adapted to the
+	// post-call record shape (ALT=".", FORMAT/GT:DP[:AD]) rather than
+	// mpileup's PL+<*> rows. See callm_gvcf.go.
+	if len(opts.GVCFRange) > 0 {
+		w = newCallGVCFBlocker(w, opts.GVCFRange)
+	}
 	if err := w.WriteHeader(); err != nil {
 		return 0, err
 	}
