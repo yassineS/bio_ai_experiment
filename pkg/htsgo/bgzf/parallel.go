@@ -222,6 +222,87 @@ func (p *ParallelWriter) FlushTry(size int) error {
 	return nil
 }
 
+// WriteRaw flushes any buffered bytes (so block ordering is preserved)
+// and then writes p directly to the underlying stream without
+// compressing it. p is expected to be one or more complete BGZF members
+// (e.g. blocks obtained from ReadRawBlock). Mirrors Writer.WriteRaw.
+//
+// To preserve sequence order across mixed compressed/verbatim members,
+// the buffered bytes are flushed, the worker pool is drained, and only
+// then are the raw bytes written. After WriteRaw returns the pool is
+// quiescent and subsequent Write/Flush calls resume normally.
+func (p *ParallelWriter) WriteRaw(buf []byte) error {
+	if err := p.getErr(); err != nil {
+		return err
+	}
+	if p.closed {
+		return errors.New("bgzf: WriteRaw on closed ParallelWriter")
+	}
+	if p.n > 0 {
+		if err := p.submitBlock(); err != nil {
+			return err
+		}
+	}
+	// Drain the worker pool so all preceding submitted blocks have been
+	// written before the raw bytes appear in the output.
+	if err := p.quiesce(); err != nil {
+		return err
+	}
+	if _, err := p.w.Write(buf); err != nil {
+		p.setErr(err)
+		return err
+	}
+	return nil
+}
+
+// quiesce waits for the worker pool to drain all currently-submitted
+// blocks to the underlying writer. It does NOT close the jobs channel;
+// after quiesce returns the producer may submit further blocks and the
+// workers/drainer remain running.
+func (p *ParallelWriter) quiesce() error {
+	// Synchronise via a marker job: submit a sentinel and wait for the
+	// drainer to observe a contiguous prefix up through it. The simplest
+	// approach is to send a zero-payload job that the worker turns into
+	// nothing on the wire; but the drainer's order-recovery state must
+	// see the seq slot. We instead repurpose the existing pipeline by
+	// sending a tiny dummy block IF the producer has buffered work to
+	// flush.
+	//
+	// In practice WriteRaw is rare (used only by reheader/cat) and
+	// performance here is not critical, so we use the heavy-handed
+	// option: close and recreate the worker pool. That guarantees all
+	// in-flight work has been drained before we write the raw bytes.
+	close(p.jobs)
+	<-p.done
+	p.workerWG.Wait()
+	p.drainerWG.Wait()
+	if err := p.getErr(); err != nil {
+		return err
+	}
+	// Recreate the pool so the writer is reusable.
+	workers := cap(p.jobs) / 2
+	if workers < 1 {
+		workers = 1
+	}
+	p.jobs = make(chan parWorkJob, workers*2)
+	p.done = make(chan struct{})
+	results := make(chan parWorkResult, workers*4)
+	p.workerWG.Add(workers)
+	for i := 0; i < workers; i++ {
+		go p.worker(results)
+	}
+	go func() {
+		p.workerWG.Wait()
+		close(results)
+	}()
+	p.drainerWG.Add(1)
+	go p.drainer(results)
+	// Reset nextSeq for the new pool — the drainer's expected-next
+	// counter starts at 0 again because it's a fresh drainer.
+	p.nextSeq = 0
+	return nil
+}
+
 // submitBlock hands the current buffer off to the worker pool. The buffer
 // payload is copied so the producer can immediately reuse p.buf.
 func (p *ParallelWriter) submitBlock() error {

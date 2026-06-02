@@ -10,9 +10,23 @@ import (
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
 
+// bgzfBlockWriter is the minimal interface BAMWriter needs from the
+// underlying BGZF writer. It is satisfied by both *bgzf.Writer (serial)
+// and *bgzf.ParallelWriter (parallel block compression). Output bytes are
+// byte-identical across the two implementations so callers can pick the
+// parallel writer to honour samtools -@/--threads without changing on-
+// disk format.
+type bgzfBlockWriter interface {
+	Write(p []byte) (int, error)
+	Flush() error
+	FlushTry(size int) error
+	WriteRaw(p []byte) error
+	Close() error
+}
+
 // BAMWriter emits BAM-encoded records on top of a BGZF stream.
 type BAMWriter struct {
-	bw     *bgzip.Writer
+	bw     bgzfBlockWriter
 	hdr    *Header
 	refMap map[string]int32
 	closed bool
@@ -22,6 +36,22 @@ type BAMWriter struct {
 // to w. Close must be called to finalise the BGZF EOF block.
 func NewBAMWriter(w io.Writer) *BAMWriter {
 	return &BAMWriter{bw: bgzip.NewWriter(w)}
+}
+
+// NewBAMWriterParallel is the multi-threaded variant of NewBAMWriter:
+// when threads > 1 the BGZF block-encode step is farmed out to a worker
+// pool. Output bytes are byte-identical to NewBAMWriter at the same
+// compression level; threads <= 1 returns a serial writer.
+func NewBAMWriterParallel(w io.Writer, threads int) *BAMWriter {
+	if threads <= 1 {
+		return NewBAMWriter(w)
+	}
+	pw, err := bgzip.NewParallelWriterLevel(w, bgzip.DefaultCompression, threads)
+	if err != nil {
+		// Fall back to the serial path on construction error.
+		return NewBAMWriter(w)
+	}
+	return &BAMWriter{bw: pw}
 }
 
 // WriteHeader serialises the header to BAM: magic, l_text, header text,

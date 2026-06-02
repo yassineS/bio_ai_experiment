@@ -1591,11 +1591,19 @@ Plus:
   See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
 - **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
   and `.csi`, and readers auto-detect index kind from file magic.
-- **Multi-threading (`-@`) — NOT done.** `-@/--threads` is accepted on
-  the CLI of `sort`, `index`, `view` (and elsewhere) but is a no-op
-  stub; v1 is single-threaded everywhere. The option value is stored on
-  the relevant options struct for a future parallel pass. This is the
-  one cross-cutting deferred item, not a completed feature.
+- **Multi-threading (`-@`) — output-side DONE.** `samtools sort -@`
+  parallelises the per-shard sort+encode step (commit `09255ff`);
+  `samtools view -@` and `bcftools view -@` now use the new
+  `pkg/htsgo/bgzf.ParallelWriter` for BAM / BCF / VCF.gz block
+  compression, with output bytes byte-identical to the serial path.
+  `bgzip -@` also uses the parallel writer (~3.0x on 100 MB random
+  input with `-@ 4`). The **input-side** decoder is still
+  single-threaded: a block-parallel BGZF Reader that preserves
+  `VirtualOffset()` semantics is invasive (the BAI/CSI builder consumes
+  per-record virtual offsets in input order) and remains deferred for a
+  future pass. `samtools index`, `samtools/bcftools mpileup`, and
+  `bcftools` BCF-input readers therefore still accept `-@` as a
+  documented no-op.
 
 **Closed samtools parity deferreds** (this PR — every previously
 `t.Skip(...)` parity gate now exercises the upstream behaviour):

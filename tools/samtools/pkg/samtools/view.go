@@ -109,14 +109,13 @@ type ViewOptions struct {
 	// conventional sibling `<input>.csi`/`<input>.bai` lookup; the index
 	// kind (CSI or BAI) is auto-detected from the file's magic bytes.
 	IndexPath string
-	// Threads is accepted for upstream-flag parity with samtools view -@/
-	// --threads. The view pipeline is IO-bound on the bgzf encode side and
-	// our in-tree bgzf writer does not expose a block-parallel mode, so
-	// the value is currently a no-op: View serialises the encode step to
-	// preserve byte-identical output. Decoupling the bgzf encode into a
-	// worker pool while preserving deterministic block boundaries is a
-	// roadmap item; for now this field is honoured by the CLI without
-	// silently changing behaviour.
+	// Threads selects the worker count for parallel BAM/BGZF block
+	// compression on the output side, matching samtools view
+	// -@/--threads. Values > 1 farm the per-block encode step out to a
+	// worker pool while preserving submission order, so output bytes are
+	// byte-identical to the serial (Threads <= 1) path. SAM-text output
+	// is unaffected (no BGZF involved); CRAM output is currently
+	// single-threaded.
 	Threads int
 }
 
@@ -512,7 +511,11 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 		}
 		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{QualityBinning: binning})
 	case opts.OutputBAM:
-		w = sam.NewBAMWriter(out)
+		// Honour -@/--threads: when threads > 1, the BAM writer's
+		// underlying BGZF stream uses a worker pool to compress blocks
+		// in parallel. Output bytes are byte-identical to the serial
+		// path.
+		w = sam.NewBAMWriterParallel(out, opts.Threads)
 	default:
 		w = sam.NewSAMWriter(out)
 	}

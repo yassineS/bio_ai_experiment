@@ -166,6 +166,28 @@ func TestViewBAMOutput(t *testing.T) {
 	}
 }
 
+// TestParallelViewBAMDeterminism pins -@ as a perf-only knob: the BAM
+// bytes produced by samtools view -@ N must match the serial -@ 0 path
+// exactly for every thread count. This is the regression gate for the
+// parallel BAM writer wired into openViewWriter.
+func TestParallelViewBAMDeterminism(t *testing.T) {
+	threadsList := []int{2, 4, 8}
+	var serial bytes.Buffer
+	if _, err := View(strings.NewReader(sampleSAM), &serial, ViewOptions{OutputBAM: true}); err != nil {
+		t.Fatalf("serial View: %v", err)
+	}
+	for _, threads := range threadsList {
+		var parallel bytes.Buffer
+		if _, err := View(strings.NewReader(sampleSAM), &parallel, ViewOptions{OutputBAM: true, Threads: threads}); err != nil {
+			t.Fatalf("View -@ %d: %v", threads, err)
+		}
+		if !bytes.Equal(serial.Bytes(), parallel.Bytes()) {
+			t.Fatalf("parallel BAM bytes differ from serial at -@ %d (serial=%d, parallel=%d)",
+				threads, serial.Len(), parallel.Len())
+		}
+	}
+}
+
 func TestViewRegionsLinearScan(t *testing.T) {
 	// Regions are now supported via linear scan (no .bai required). Pick a
 	// region that overlaps read1 (chr1:100) but not read2 (chr1:200).
