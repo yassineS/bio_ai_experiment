@@ -2725,16 +2725,23 @@ in `testdata/filter_live/expected_matrix.tsv`
   `func_count`/`func_sum` family.)
 - **Scalar functions ✅** — `STRLEN(field)` (byte length; `.` → 0) and
   `ABS(x)`. (`filter.c` `func_strlen`.)
-- **`ILEN` (closed for concrete ALTs).** Per-allele indel length
+- **`ILEN` (closed).** Per-allele indel length
   `len(ALT[i]) - len(REF)`, yielded as a `vecValue` so the
   any-element semantics flow through the existing binOp engine.
-  Comparisons `ILEN<0`, `ILEN=0`, `ILEN<=0` all byte-match upstream
-  on the live fixture (`TestFilterLiveMatrix` ILEN rows). Symbolic
-  ALTs (`<DEL>`, `<INS>` etc.) are dropped from the vector — the
-  `ILEN!=0` against `<DEL>` (where upstream returns true because
-  "missing != X" is true in filter.c's general missing semantic)
-  is a separately tracked edge case in the broader missing-value
-  comparison semantics, not an ILEN-specific gap.
+  All five operators (`<`, `<=`, `=`, `>=`, `>`, `!=`) byte-match
+  upstream on the live fixture (`TestFilterLiveMatrix` ILEN rows),
+  including `<DEL>`/`<INS>` symbolic ALTs which evaluate as
+  missing per upstream's filter.c. The general "missing != X is
+  true" semantic in `compare()` was fixed at the same time — see
+  the missing-comparison closure below.
+- **Missing-value comparison semantic (closed).** Upstream
+  filter.c treats `missing != X` as **true** and every other
+  operator on a missing value as false. Our `compare()` /
+  `compareScalar()` previously returned false for every operator
+  on nil; they now mirror upstream. This unblocked the ILEN
+  `<DEL>` edge case and corrects every `INFO/<absent>!=...`
+  comparison across `view -i/-e`, `filter`, `query`, and `call`'s
+  shared filter engine.
 - **Not yet ported (deferred):** `BINOM`/`FISHER`/`PHRED`,
   `MEDIAN`/`STDEV`, the `SMPL_*`/`s*` per-sample-output aggregations,
   regex `~`/`!~`, arithmetic operators (`+ - * /`), and `PERL.*`

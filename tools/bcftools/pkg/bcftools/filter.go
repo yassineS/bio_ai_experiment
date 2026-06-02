@@ -986,7 +986,11 @@ func truthy(v any) bool {
 // semantics; a nil operand (missing field) never matches.
 func compare(op string, a, b any) bool {
 	if a == nil || b == nil {
-		return false
+		// Upstream filter.c treats "missing != X" as true and every
+		// other operator (==, <, <=, >, >=) on a missing value as
+		// false. See filter_pass() in filter.c on the
+		// BCF_HT_INT/REAL missing path.
+		return op == "!=" && !(a == nil && b == nil)
 	}
 	av, aIsVec := a.(vecValue)
 	bv, bIsVec := b.(vecValue)
@@ -1023,7 +1027,7 @@ func compare(op string, a, b any) bool {
 // and falling back to lexical comparison when either side is non-numeric.
 func compareScalar(op string, a, b any) bool {
 	if a == nil || b == nil {
-		return false
+		return op == "!=" && !(a == nil && b == nil)
 	}
 	if af, aok := asFloat(a); aok {
 		if bf, bok := asFloat(b); bok {
