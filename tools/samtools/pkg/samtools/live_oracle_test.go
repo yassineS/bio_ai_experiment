@@ -906,22 +906,22 @@ func TestLive_Split(t *testing.T) {
 
 // ---- phase -------------------------------------------------------------
 
-// TestLive_Phase runs `samtools phase` against a small SAM with two
-// adjacent het sites at chr1:3 (G/T) and chr1:7 (G/C); identical to the
-// in-process TestPhase_TwoHetsConsistentChain fixture.
+// TestLive_Phase runs `samtools phase --no-PG` against a small SAM
+// with two adjacent het sites at chr1:3 (G/T) and chr1:7 (G/C); the
+// same fixture used by the in-process TestPhase tests but exercised
+// through both the upstream samtools binary and our port.
 //
-// Two things are asserted. First, upstream phase output is
-// deterministic across runs (phase.c never seeds drand48, and the RNG
-// only routes -b reads, not the text stream) — two consecutive
-// upstream runs must be byte-identical. This is the proof that
-// byte-parity is the right goal for the CC/PS/FL/M lines, and the
-// reason the EV-ordering blocker (khash bucket iteration order) is the
-// only residual; see docs/PARITY_ROADMAP.md §phase. Second, the two
-// binaries disagree on output verbosity — upstream emits a CC header,
-// an M-line per allele, and an EV block per read; our port emits the
-// per-het PS-label rows — but both agree on the *set* of het positions
-// called. We extract that set from each output and require equality,
-// locking in the chromosome+position-level parity guarantee.
+// Three things are asserted. First, upstream phase output is
+// deterministic across runs (phase.c calls drand48() but never seeds
+// it, and the RNG only routes -b reads, not the CC/PS/FL/M/EV text
+// stream) — two consecutive upstream runs must be byte-identical.
+// Second, the SET of het positions called must match. Third — and
+// this is what the port unlocked — the FULL upstream output stream
+// (CC banner + PS header + M-lines + EV block + // terminator) must
+// match our port byte-for-byte. The EV-line ordering is exact because
+// our port replicates upstream's khash bucket iteration and ksort
+// introsort orderings on identical insertion sequences. See
+// docs/PARITY_ROADMAP.md §phase.
 func TestLive_Phase(t *testing.T) {
 	live, ours := requireLive(t)
 	dir := t.TempDir()
@@ -945,15 +945,8 @@ func TestLive_Phase(t *testing.T) {
 	}
 
 	up := runBin(t, live, "phase", "--no-PG", bamPath)
-	gp := runBin(t, ours, "phase", bamPath)
+	gp := runBin(t, ours, "phase", "--no-PG", bamPath)
 
-	// Upstream phase output is deterministic: phase.c calls drand48()
-	// but never srand48(), so the default glibc seed yields a fixed
-	// sequence, and the RNG only affects -b read routing — never the
-	// CC/PS/FL/M/EV text stream. Lock that in: a second run must be
-	// byte-identical. This is the proof underpinning the byte-parity
-	// goal (and the EV-ordering blocker) documented in
-	// docs/PARITY_ROADMAP.md §phase.
 	up2 := runBin(t, live, "phase", "--no-PG", bamPath)
 	if !bytes.Equal(up, up2) {
 		t.Fatalf("upstream phase output is non-deterministic across runs:\nrun1=%q\nrun2=%q", up, up2)
@@ -969,6 +962,14 @@ func TestLive_Phase(t *testing.T) {
 	if !equalStringSets(ourHets, want) {
 		t.Errorf("DIVERGENCE: phase het positions: ours=%v, upstream=%v",
 			ourHets, upHets)
+	}
+
+	// Full byte-equality assertion. Our port reproduces upstream's
+	// CC/PS/M/EV/// stream including EV-line ordering. If this
+	// diverges in the future the failure message prints the diff.
+	if !bytes.Equal(up, gp) {
+		t.Errorf("DIVERGENCE: phase byte-stream differs\nupstream (%d bytes):\n%s\nours (%d bytes):\n%s",
+			len(up), up, len(gp), gp)
 	}
 }
 

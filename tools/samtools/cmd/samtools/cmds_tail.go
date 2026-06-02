@@ -1490,6 +1490,13 @@ func runPhase(args []string) int {
 	)
 	fs.BoolVar(&upstreamE, "e", false, "")
 	fs.IntVar(&upstreamL, "l", 0, "")
+	// --no-PG: upstream uses this to suppress @PG injection in the
+	// per-haplotype BAMs written under -b. Our port never injects @PG
+	// (those BAMs use a verbatim copy of the input header), so the flag
+	// is accepted-and-ignored. The TSV stream itself never carries @PG
+	// either, so the flag is a no-op for the byte-parity comparison.
+	var phaseNoPG bool
+	fs.BoolVar(&phaseNoPG, "no-PG", false, "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -1510,6 +1517,7 @@ func runPhase(args []string) int {
 	}
 	_ = upstreamE
 	_ = upstreamL
+	_ = phaseNoPG
 	if fs.NArg() == 0 {
 		fmt.Fprint(os.Stderr, phaseUsage)
 		return 2
@@ -1527,13 +1535,14 @@ func runPhase(args []string) int {
 	}
 	defer out.Close()
 	if _, err := samtools.Phase(in, out, samtools.PhaseOptions{
-		BlockWindow:   blockK,
-		MinMAPQ:       uint8(minMAPQ),
-		MinBaseQ:      uint8(minBaseQ),
-		MaxDepth:      maxDepth,
-		NoFixChimera:  noFixChimera,
-		DropAmbiguous: dropAmbig,
-		OutputPrefix:  outPrefix,
+		BlockWindow:    blockK,
+		MinMAPQ:        uint8(minMAPQ),
+		MinBaseQ:       uint8(minBaseQ),
+		MaxDepth:       maxDepth,
+		NoFixChimera:   noFixChimera,
+		DropAmbiguous:  dropAmbig,
+		OutputPrefix:   outPrefix,
+		UpstreamSchema: true,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools phase: %v\n", err)
 		return 1

@@ -2117,29 +2117,13 @@ Plus:
   byte-for-byte, so the C-`float`-vs-Go-`float64` width concern did not
   materialise on the upstream fixtures. The note is kept for awareness
   on future high-coverage inputs.
-- **`phase` is a v1 stub — does NOT match upstream output.** This
-  entry corrects the misdiagnosis recorded in commit `f8406cb` and
-  earlier roadmap text that claimed CC/PS/FL/M0/M1/M2 lines were
-  "reachable byte-exact" with only EV-ordering open. **They are not
-  emitted at all.** A 2026-06-02 audit established: our port emits
-  only two lines on the canonical `TestLive_Phase` fixture
-  (`PS\tchr1\t3\t1`, `PS\tchr1\t7\t2`) where upstream emits 18 lines
-  across `CC` header (14×), `PS`, `M1`, `EV` (6×), and `//`. The
-  existing `TestLive_Phase` parity assertion only checks the **set of
-  het positions** extracted via `phaseHetPositions` from BOTH schemas,
-  which is why it passes despite the schema gap.
-  Upstream `samtools phase` output is fully deterministic (`phase.c`
-  uses default-seed `drand48()` only for `-b` read routing), so
-  byte-parity *is* achievable. The real port requires:
-  (1) `count_all`+`count1` (~50 LOC), `dynaprog` Viterbi (~45 LOC),
-  `fragphase` chimera repair (~85 LOC), `genmask`/`clean_seqs`/
-  `update_vpos` (~60 LOC), the CC banner + emit loop (~110 LOC),
-  `gl2cns` (~15 LOC); (2) a streaming pileup matching `bam_plp_auto`
-  semantics for ordered `cns[]`/frag-map population (~200-400 LOC).
-  Realistic total: 700-1200 LOC + the pileup driver. The greedy `-b`
-  per-haplotype BAM split (with `-A`/`-F`) is implemented as a
-  best-effort v1 for the fixtures we have, but cannot be relied on for
-  full upstream-output parity until the engine above is ported.
+- **`phase` byte-for-byte parity achieved (2026-06-02).** The
+  earlier v1 stub (which emitted only `PS` lines on the canonical
+  fixture, ~2 lines vs upstream's 18) has been replaced with a
+  faithful port of `phase.c`. See the dedicated section below for
+  file-by-file scope. `TestLive_Phase` now asserts full byte-equality
+  of the entire CC/PS/M/EV stream and passes against `samtools
+  phase --no-PG` 1.23.1.
 - **`targetcut` BAQ realignment with `-f` reference (DONE).** The
   HMM consensus mode is implemented (faithful port of
   `cut_target.c`, including the MAQ errmod port; see below). The
@@ -2397,57 +2381,63 @@ diff /tmp/p1.txt /tmp/p2.txt   # empty
 Because the upstream stream is deterministic, byte-parity *is* the
 target for it.
 
-**Current state of our port (2026-06-02 audit, correcting earlier
-roadmap claims):** Our `phase` is a v1 stub that emits ONLY `PS`-line
-records (e.g. two lines `PS\tchr1\t3\t1`, `PS\tchr1\t7\t2` on the
-canonical fixture) where upstream emits 18 lines spanning the `CC`
-header (14×), `PS`, `M1`, `EV` (6×) and `//`. Earlier text on this
-page (and commit message `f8406cb`) asserted CC/PS/FL/M0/M1/M2 were
-"reachable byte-exact" with only EV-ordering open; **that was a
-misdiagnosis** — none of those lines are emitted today. The
-`TestLive_Phase` live-oracle assertion only checks the *set of het
-positions* extracted via `phaseHetPositions` from both schemas, which
-is why it passes despite the schema gap.
+**Current state of our port (2026-06-02, after schema port):**
+Byte-for-byte match against upstream `samtools phase --no-PG` on the
+canonical `TestLive_Phase` fixture. Our port now emits the full CC
+banner, the `PS` header, the per-het `M0`/`M1` marker lines, optional
+`FL` filter lines, the `EV` evidence block, and the `//` block
+terminator in upstream byte order — including EV-line ordering, which
+depends on the exact khash bucket layout and the ks_introsort
+partition order.
 
-**Genuine scope to close phase to byte-parity:**
+The port lives in `tools/samtools/pkg/samtools/`:
 
-1. `count_all`+`count1` (~50 LOC), `dynaprog` Viterbi (~45 LOC),
-   `fragphase` chimera repair (~85 LOC), `genmask`/`clean_seqs`/
-   `update_vpos` (~60 LOC), the CC banner + emit loop (~110 LOC),
-   `gl2cns` (~15 LOC), `phase` driver (~85 LOC).
-2. A streaming pileup matching `bam_plp_auto` deletion / refskip /
-   overlap-pair semantics so `cns[]` and the frag map see records in
-   upstream order (~200-400 LOC; our existing `mpileup_pileup.go` is
-   buffered, not streaming).
-3. Glue: `errmod.Init`/`Cal` already exists in `pkg/htsgo/errmod` and
-   covers the variant-call step at `min_varLOD`.
+- `phase_khash.go` — in-tree port of khash's
+  `KHASH_MAP_INIT_INT64` (linear probe, quadratic-step, kroundup32
+  resize, the `n_occupied >= upper_bound` resize trigger checked on
+  every put). This is the load-bearing piece for EV-line order: the
+  6-read × 2-put canonical fixture grows the table 4 → 8 → 16
+  buckets and the resulting bucket layout drives the seqs[] array
+  passed to ks_introsort.
+- `phase_ksort.go` — in-tree port of
+  `KSORT_INIT(rseq, frag_p, rseq_lt)`, including the median-of-3
+  pivot selection, the 16-element stop-recursing cutoff, and the
+  final `__ks_insertsort` cleanup pass.
+- `phase_algo.go` — Go translations of `count1`, `count_all`,
+  `dynaprog` (Viterbi forward + backtrack), `fragphase` (incl. the
+  chimera-repair flip-point search guarded by `FLIP_THRES` /
+  `FLIP_PENALTY`), `genmask`, `clean_seqs`, `update_vpos`, `gl2cns`.
+- `phase_pileup.go` — minimal streaming pileup driver matching the
+  subset of `bam_plp_auto` phase.c reads (no overlap-pair logic,
+  which phase.c doesn't invoke either).
+- `phase_emit.go` — the main loop (mirror of phase.c's `while
+  (bam_plp_auto ...)`) and `phaseEmit` (mirror of `phase()`).
+- `phase.go` — top-level `Phase()` dispatcher; new
+  `PhaseOptions.UpstreamSchema` selects the byte-faithful pipeline
+  (set true by the CLI).
 
-Realistic total: 700-1200 LOC + the pileup driver (~200-400 LOC).
-EV-line ordering specifically is *not* the load-bearing item — on the
-canonical fixture the bucket layout is plain alphabetic and a
-standalone `ksort.h` replay reproduces upstream's order byte-for-byte;
-the schema gap is the real work.
+The CLI accepts `--no-PG` (accepted-and-ignored: the TSV stream
+itself never carries `@PG`, and the BAM split files use the input
+header verbatim).
 
-**`phase` features actually implemented:**
-
-- **`-b STR` per-haplotype BAM split** (`<prefix>.0.bam` /
-  `<prefix>.1.bam` / `<prefix>.chimera.bam`), with the `fragphase`
-  flip-point chimera detection (`FLIP_THRES`/`FLIP_PENALTY`) routing
-  chimeric reads to the `chimera` bucket. Evidence-less reads are
-  routed by a fixed-seed RNG (parity with upstream's drand48 routing
-  is explicitly not a goal; the seed is pinned for test determinism).
-- **`-A`** routes ambiguous reads to the chimera bucket in `-b` mode.
-- **`-F`** disables the chimera-repair flip-point search.
-- **Het-position discovery + `PS`-line emission** — the v1 stream.
+`TestLive_Phase` was upgraded from het-position-set equality to full
+byte-equality of the entire output stream.
 
 **`phase` deferred features:**
 
-- **The full output schema** — CC header, FL, M0/M1/M2 marker lines,
-  and the EV evidence block. Scope above; needs its own port slice.
 - **`-e`/`-l` site-list mode** (only-phase-listed-sites). Upstream's
   `loadpos` path is not implemented; the Go port always discovers
   hets from the pileup. Upstream itself comments `-e` and `-l` out of
   the usage block, so the omission is a small loss.
+- **`-b` BAM split routing**: the per-haplotype BAM split (when
+  `OutputPrefix` is set) still uses the legacy greedy-v1 classifier
+  (the `phase_bam.go` `assignAndWrite` path) rather than upstream's
+  `dump_aln` routing on top of the new `dynaprog` results. The
+  in-process partition tests stay green; full upstream BAM-split
+  byte-parity would need the dump_aln port wired into `phaseEmit`.
+- The RNG used for evidence-less reads in `-b` mode is Go's
+  `math/rand` (fixed seed for test determinism); byte-parity with
+  upstream's `drand48()` is explicitly not a goal of this project.
 
 **`targetcut` HMM consensus mode** (implemented). The Go port is now
 a faithful translation of upstream `cut_target.c`: per-position
