@@ -90,6 +90,15 @@ type CallOptions struct {
 	TargetsFile string
 	Samples     []string
 	SamplesFile string
+	// GVCFSpec is the raw textual "--gvcf 0,5,10" value preserved for
+	// validation reporting. When non-empty, Call parses it into
+	// GVCFRange before streaming starts (see callm_gvcf.go).
+	GVCFSpec string
+	// GVCFRange is the parsed-and-sorted DP-threshold slice (upstream's
+	// _gvcf_t.dp_range). When non-empty, consecutive post-mcall REF-only
+	// records that share a per-sample MIN_DP bin are banded into a
+	// single INFO/END+MIN_DP record by callGVCFBlocker.
+	GVCFRange []int
 }
 
 // defaults applies upstream-equivalent defaults for any unset field.
@@ -195,6 +204,23 @@ func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
 	if opts.Model == CallModelNone {
 		return 0, fmt.Errorf("bcftools call: a caller must be selected (-c / --consensus-caller or -m / --multiallelic-caller)")
 	}
+	// Resolve --gvcf spec (library callers may leave the parsed slice
+	// nil and pass the textual form only).
+	if opts.GVCFSpec != "" && len(opts.GVCFRange) == 0 {
+		ranges, err := parseGVCFRanges(opts.GVCFSpec)
+		if err != nil {
+			return 0, err
+		}
+		opts.GVCFRange = ranges
+	}
+	// Upstream vcfcall.c:1190 rejects --variants-only with --gvcf.
+	if len(opts.GVCFRange) > 0 && opts.VariantsOnly {
+		return 0, fmt.Errorf("bcftools call: The two options cannot be combined: --variants-only and --gvcf")
+	}
+	// Upstream vcfcall.c:1182 rejects --gvcf with the consensus caller.
+	if len(opts.GVCFRange) > 0 && opts.Model == CallModelConsensus {
+		return 0, fmt.Errorf("bcftools call: gvcf -g option not functional with -c calling mode yet")
+	}
 	if opts.PloidyTable == nil && (opts.PloidySpec == "GRCh37" || opts.PloidySpec == "GRCh38") {
 		tbl, err := BuildPloidyTableFromSpec(opts.PloidySpec)
 		if err != nil {
@@ -251,7 +277,15 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		return 0, err
 	}
 	hdr = filterHeaderSamples(hdr, opts.Samples)
-	hdr = augmentCallHeader(hdr, opts.Model)
+	// For -c, when the input declares INFO/I16 we route through the
+	// faithful consensus port (callc.go) and rewrite the header
+	// accordingly. Otherwise the heuristic v1 augmentation applies
+	// (FORMAT/GT + AC/AN only).
+	if opts.Model == CallModelConsensus && headerHasInfo(hdr, "I16") {
+		hdr = augmentCallHeaderConsensus(hdr)
+	} else {
+		hdr = augmentCallHeader(hdr, opts.Model)
+	}
 
 	sexes := resolveSampleSexes(opts.PloidyTable, hdr.Samples, &opts)
 
@@ -364,6 +398,14 @@ func callVariant(v *vcf.Variant, opts CallOptions, samplePloidy []int) (*vcf.Var
 	// fixtures (no QS) fall through to the heuristic path below.
 	if opts.Model == CallModelMultiallelic && hasQS(v) {
 		if out, keep, ok := mcallSite(v, opts, samplePloidy); ok {
+			return out, keep
+		}
+	}
+	// The faithful consensus caller runs when -c is selected and the
+	// mpileup INFO/I16 annotation is present. The synthetic PL-only
+	// fixtures (no I16) fall through to the heuristic v1 path below.
+	if opts.Model == CallModelConsensus && hasI16(v) {
+		if out, keep, ok := ccallSite(v, opts, samplePloidy); ok {
 			return out, keep
 		}
 	}
