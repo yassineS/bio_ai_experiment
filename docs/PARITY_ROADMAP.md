@@ -2605,12 +2605,13 @@ to pass.
     choices, or relax the live oracle to compare inflated bytes.
   - **`mpileup`** — header order is correct after stripping
     provenance (`##bcftoolsVersion`/`##bcftoolsCommand`/`##reference`).
-    The remaining diff is numerical: I16 sums and PL fields differ
-    at ~18 sites (e.g. `chr=17 pos=175,177,604..,3009,3016,3054`)
-    where our base/mapping quality accumulation diverges from
-    upstream's `bam2bcf.c` for sites near read edges. *Fix scope:*
-    engine-level (deep audit of `tools/bcftools/pkg/bcftools/bam2bcf.go`
-    against `reference_code/bcftools/bam2bcf.c`); >>50 LOC, deferred.
+    Numerical drift on the `mpileup.1.bam` fixture (I16 sums and PL
+    fields differing at ~18 sites near 17:175/177/604..) is
+    **RESOLVED** by commit `39d92e6` ("bcftools mpileup: close BAQ
+    post-quality drift on mpileup.1.bam fixture") — two cooperating
+    bugs were fixed: per-rec BAQ ordering for columns before BAQ first
+    fired on a read, and a missing `max_indel==min_indel` term in
+    `MPLP_REALN_PARTIAL`. `TestLiveMpileupSmoke` is byte-clean.
 
   Closed in 2026-05-31 sweep: `merge` INFO/DP sum (commit 02717bc;
   `merge.c:merge_INFO_int_sum` rule applied to DP/DP4/AC/AN); `isec`
@@ -2719,12 +2720,13 @@ to pass.
     choices, or relax the live oracle to compare inflated bytes.
   - **`mpileup`** — header order is correct after stripping
     provenance (`##bcftoolsVersion`/`##bcftoolsCommand`/`##reference`).
-    The remaining diff is numerical: I16 sums and PL fields differ
-    at ~18 sites (e.g. `chr=17 pos=175,177,604..,3009,3016,3054`)
-    where our base/mapping quality accumulation diverges from
-    upstream's `bam2bcf.c` for sites near read edges. *Fix scope:*
-    engine-level (deep audit of `tools/bcftools/pkg/bcftools/bam2bcf.go`
-    against `reference_code/bcftools/bam2bcf.c`); >>50 LOC, deferred.
+    Numerical drift on the `mpileup.1.bam` fixture (I16 sums and PL
+    fields differing at ~18 sites near 17:175/177/604..) is
+    **RESOLVED** by commit `39d92e6` ("bcftools mpileup: close BAQ
+    post-quality drift on mpileup.1.bam fixture") — two cooperating
+    bugs were fixed: per-rec BAQ ordering for columns before BAQ first
+    fired on a read, and a missing `max_indel==min_indel` term in
+    `MPLP_REALN_PARTIAL`. `TestLiveMpileupSmoke` is byte-clean.
 
   Closed in 2026-05-31 sweep: `merge` INFO/DP sum (commit 02717bc;
   `merge.c:merge_INFO_int_sum` rule applied to DP/DP4/AC/AN); `isec`
@@ -2886,7 +2888,8 @@ per-subcommand option-tail sections below):
   the per-site bias annotations (VDB/SGB/RPBZ/MQBZ/BQBZ/MQSBZ/SCBZ),
   MQ0F and `MPLP_SMART_OVERLAPS` read-pair quality merging are all wired
   in and verified byte-for-byte against the upstream goldens (slices
-  1-4 done). Only indel calling (`bam2bcf_indel.c`) remains deferred.
+  1-4 done). Indel calling (`bam2bcf_indel.c`) is also fully ported and
+  byte-matches upstream (`TestMpileupIndelADGolden`).
 - **`call`** — consensus and biallelic multi-allelic calling are
   implemented; the full upstream multi-allelic `-m` grid over >2 ALTs
   pairs with the mpileup MAQ port.
@@ -3433,20 +3436,24 @@ Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
   `-D/--full-BAQ` clears `MPLP_REALN_PARTIAL` and forces full BAQ (every
   read realigned). The `<*>`-only `mpileup/*.out` golden records now
   byte-match (`TestMpileupBAQGoldens`).
-- **No bias annotations (slice 4 TODO).** VDB / SGB / RPBZ / MQBZ /
-  BQBZ / MQSBZ / SCBZ are not yet computed; records carry only
-  INFO/DP/I16/QS/MQ0F. The `calc_vdb` / `calc_SegBias` /
-  `calc_mwu_biasZ` machinery and the indel caller land in slice 4.
-- **No indel calling.** The full upstream indel realigner
-  (`bam2bcf_indel.c`) and the consensus indel mode
-  (`bam2bcf_edlib.c`) are deferred. Every knob that drives the indel
-  model — `-e/--ext-prob`, `-F/--gap-frac`, `-h/--tandem-qual`,
+- **Bias annotations — DONE (slice 4).** VDB / SGB / RPBZ / MQBZ /
+  BQBZ / MQSBZ / SCBZ / MQ0F are all computed and byte-match upstream
+  (`TestMpileupSNPGoldens`, `TestMpileupNMBZ*`). `calc_vdb`,
+  `calc_SegBias`, `calc_mwu_biasZ` and the float32 %g rendering are
+  all ported.
+- **Indel calling — DONE.** Both the legacy probabilistic realigner
+  (`bam2bcf_indel.c`, ported as `bam2bcf_indel.go`/`bam2bcf_indel_align.go`)
+  and the edlib consensus path (`bam2bcf_edlib.c`, ported as
+  `bam2bcf_indelcns.go`) byte-match upstream
+  (`TestMpileupIndelADGolden`, `TestMpileupIndelsCNSGolden`). Every
+  indel knob — `-e/--ext-prob`, `-F/--gap-frac`, `-h/--tandem-qual`,
   `--indel-bias`, `--indel-size`, `-I/--skip-indels`,
   `-L/--max-idepth`, `-m/--min-ireads`, `-M/--max-read-len`,
   `--open-prob`, `--indels-cns`, `--indels-2.0`, `--no-indels-cns`,
   `--ar-prob`, `--ambig-reads / --ar`, `--del-bias`, `--poly-mqual`,
-  `--no-poly-mqual`, `--score-vs-ref`, `--seqq-offset` — is accepted
-  at the CLI for parity but inert in v1. The v1 emit path is
+  `--no-poly-mqual`, `--score-vs-ref`, `--seqq-offset` — is wired into
+  the engine. The earlier "inert" notice below this line is historical.
+  The v1 emit path is
   equivalent to running upstream with `-I/--skip-indels` set.
 - **The FORMAT/PL grid is multi-allelic.** Slice 2 emits the full
   upper-triangle `g[z++] = a[j]*5 + a[i]` grid of
