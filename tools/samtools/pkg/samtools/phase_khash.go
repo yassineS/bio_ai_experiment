@@ -198,6 +198,30 @@ func (h *fragKhash) put(key uint64) (uint32, bool) {
 	return x, false
 }
 
+// get looks up key without inserting. Returns the bucket index and
+// true when the key is present, or (nBuckets, false) when it isn't.
+// Matches kh_get_##name in khash.h.
+func (h *fragKhash) get(key uint64) (uint32, bool) {
+	if h.nBuckets == 0 {
+		return 0, false
+	}
+	mask := h.nBuckets - 1
+	x := uint32(key) & mask
+	step := uint32(0)
+	last := x
+	for !khFlagIsEmpty(h.flags, x) && (khFlagIsDel(h.flags, x) || h.keys[x] != key) {
+		step++
+		x = (x + step) & mask
+		if x == last {
+			return h.nBuckets, false
+		}
+	}
+	if khFlagIsEither(h.flags, x) {
+		return h.nBuckets, false
+	}
+	return x, true
+}
+
 // del marks bucket k as deleted. Matches kh_del_##name in khash.h.
 func (h *fragKhash) del(k uint32) {
 	if k >= h.nBuckets || khFlagIsEither(h.flags, k) {

@@ -3,6 +3,8 @@ package samtools
 import (
 	"bufio"
 	"fmt"
+	"math"
+	"math/rand"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -30,8 +32,16 @@ type upstreamPhaseRunner struct {
 // CC banner is emitted once for the whole stream, not per-reference;
 // it is the caller's responsibility (see Phase).
 //
+// When bs is non-nil, after each block's phaseEmit completes (and
+// once more at the end of the reference) the per-read dump_aln
+// routing is invoked, dispatching each record into one of the three
+// BAM outputs. This matches upstream phase.c's interleaving of
+// phase()+dump_aln. rng is consumed for the evidence-less and is_flip
+// branches in dump_aln. opts is used for opts.DropAmbiguous
+// (FLAG_DROP_AMBI).
+//
 // Returns the number of het sites emitted on this reference.
-func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, bw *bufio.Writer) (int, error) {
+func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, bw *bufio.Writer, bs *bamSplitWriter, rng *rand.Rand, opts PhaseOptions) (int, error) {
 	pp := newPhaseStreamPileup(recs, rname)
 	em := errmod.Init(1.0 - 0.83)
 	bases := make([]uint16, 0, g.maxDepth)
@@ -41,6 +51,9 @@ func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, 
 	g.vposShift = 0
 	emitted := 0
 	q := make([]float32, 16)
+	// cursor over `recs` — head of the per-reference queue not yet
+	// passed to dump_aln. Only used when bs is non-nil.
+	cursor := 0
 
 	for {
 		col := pp.next()
@@ -160,6 +173,20 @@ func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, 
 				return emitted, err
 			}
 			emitted += n2
+			// dump_aln (phase.c:484) — drain queue front by current
+			// hash state, before updateVpos slides the indices. min_pos
+			// is cns[vpos]>>32 when a frag with vpos>=block_vpos exists
+			// (phase.c:411), else MaxInt32 to flush all queued reads.
+			if bs != nil {
+				minPos := int32(math.MaxInt32)
+				if hashHasFragSpanning(vpos, hash) {
+					minPos = int32(cns[vpos] >> 32)
+				}
+				cursor, err = dumpAln(recs, cursor, minPos, hash, bs, rng, opts.DropAmbiguous)
+				if err != nil {
+					return emitted, err
+				}
+			}
 			updateVpos(vpos, hash)
 			cns[0] = cns[vpos]
 			vpos = 0
@@ -173,8 +200,47 @@ func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, 
 			return emitted, err
 		}
 		emitted += n2
+		if bs != nil {
+			minPos := int32(math.MaxInt32)
+			if hashHasFragSpanning(vpos, hash) {
+				minPos = int32(cns[vpos] >> 32)
+			}
+			cursor, err = dumpAln(recs, cursor, minPos, hash, bs, rng, opts.DropAmbiguous)
+			if err != nil {
+				return emitted, err
+			}
+		}
+	}
+	// Final tail flush: any remaining queued reads beyond the last
+	// block on this reference go via dump_aln with min_pos = INT_MAX,
+	// matching upstream's after-loop drain (samtools phase.c:807-811
+	// implicit: phase() is called at the end and dump_aln drains all).
+	if bs != nil {
+		var err error
+		cursor, err = dumpAln(recs, cursor, int32(math.MaxInt32), hash, bs, rng, opts.DropAmbiguous)
+		if err != nil {
+			return emitted, err
+		}
+		_ = cursor
 	}
 	return emitted, nil
+}
+
+// hashHasFragSpanning returns true iff any live frag in `hash` has
+// vpos >= the given block-vpos. Mirrors the `i` flag computed by
+// upstream cleanSeqs (phase.c:410). Since our cleanSeqs runs inside
+// phaseEmit and discards its return value, the check is repeated here.
+func hashHasFragSpanning(vpos int, hash *fragKhash) bool {
+	for k := uint32(0); k < hash.end(); k++ {
+		if !hash.exist(k) {
+			continue
+		}
+		f := &hash.vals[k]
+		if int(f.vpos) >= vpos {
+			return true
+		}
+	}
+	return false
 }
 
 // nt16ToInt converts a single ACGT/N character to a 0..4 code (A=0,

@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -971,6 +972,85 @@ func TestLive_Phase(t *testing.T) {
 		t.Errorf("DIVERGENCE: phase byte-stream differs\nupstream (%d bytes):\n%s\nours (%d bytes):\n%s",
 			len(up), up, len(gp), gp)
 	}
+
+	// -b BAM split byte-parity. After the dump_aln port (phase_bam.go::
+	// dumpAln), every read with confident haplotype evidence is routed
+	// using upstream's exact phase.c::dump_aln state machine. Two RNG
+	// branches remain, both isolated to math/rand vs glibc's drand48:
+	//
+	//   - The per-call `is_flip` (phase.c:365) toggles 0↔1 buckets for
+	//     all non-chimera reads. Since drand48()'s first value is ~0.0
+	//     (`< 0.5`) and math/rand seed=1's first Float64 is ~0.6046
+	//     (`> 0.5`), our 0/1 buckets are the *complement* of upstream's
+	//     on the first dump_aln call. Subsequent calls toggle again
+	//     and the relationship depends on call count.
+	//   - Evidence-less reads (frag absent from hash, or unphased)
+	//     are routed to 0/1 by an extra drand48 (phase.c:388). The
+	//     test fixture has no such reads — every read overlaps both
+	//     hets — so this branch is not exercised here.
+	//
+	// What IS byte-equal is the chimera bucket: chimera membership is
+	// determined entirely by frag.flip / frag.ambig, with no RNG
+	// dependency. The {bucket0, bucket1} read SET is also fixed
+	// (modulo the 0↔1 swap); we assert that {0+1} unions match.
+	bamFile := func(prefix, suffix string) []byte {
+		fp := filepath.Join(dir, prefix+"."+suffix+".bam")
+		b, err := os.ReadFile(fp)
+		if err != nil {
+			t.Fatalf("read %s: %v", fp, err)
+		}
+		return b
+	}
+	runBin(t, live, "phase", "--no-PG", "-b", filepath.Join(dir, "up_split"), bamPath)
+	runBin(t, ours, "phase", "--no-PG", "-b", filepath.Join(dir, "our_split"), bamPath)
+	if !bytes.Equal(bamFile("up_split", "chimera"), bamFile("our_split", "chimera")) {
+		t.Errorf("DIVERGENCE: phase -b chimera bucket differs")
+	}
+	// {0 ∪ 1} membership equality via union of read-name sets.
+	upSet := mapSamReadNames(t, ours, filepath.Join(dir, "up_split.0.bam"),
+		filepath.Join(dir, "up_split.1.bam"))
+	ourSet := mapSamReadNames(t, ours, filepath.Join(dir, "our_split.0.bam"),
+		filepath.Join(dir, "our_split.1.bam"))
+	if !mapEqualString(upSet, ourSet) {
+		t.Errorf("DIVERGENCE: phase -b {0∪1} bucket membership differs: up=%v ours=%v",
+			upSet, ourSet)
+	}
+}
+
+// mapSamReadNames returns the multiset of read names in the union
+// of the supplied BAM files, decoded via the supplied samtools-style
+// binary's `view` subcommand.
+func mapSamReadNames(t *testing.T, bin string, bams ...string) map[string]int {
+	t.Helper()
+	out := map[string]int{}
+	for _, p := range bams {
+		body := runBin(t, bin, "view", p)
+		for _, line := range strings.Split(string(body), "\n") {
+			if line == "" {
+				continue
+			}
+			idx := strings.IndexByte(line, '\t')
+			if idx < 0 {
+				continue
+			}
+			out[line[:idx]]++
+		}
+	}
+	return out
+}
+
+// mapEqualString reports whether a and b have the same keys with
+// the same int values.
+func mapEqualString(a, b map[string]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // phaseHetPositions extracts the set of "<chrom>:<pos>" het sites from

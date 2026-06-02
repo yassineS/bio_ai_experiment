@@ -236,26 +236,16 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 	for _, ref := range refOrder {
 		recs := byRef[ref]
 		sort.SliceStable(recs, func(i, j int) bool { return recs[i].Pos < recs[j].Pos })
-		n, err := runUpstreamPhase(runner, recs, ref, bw)
+		// runUpstreamPhase interleaves phaseEmit with dump_aln when
+		// bamSplit is non-nil, matching upstream phase.c byte-for-byte
+		// on reads with confident haplotype evidence. Evidence-less
+		// reads use math/rand (seeded RNG) rather than upstream's
+		// drand48 — see PhaseOptions.RNGSeed.
+		n, err := runUpstreamPhase(runner, recs, ref, bw, bamSplit, rng, opts)
 		if err != nil {
 			return emitted, err
 		}
 		emitted += n
-		if bamSplit != nil {
-			// Run the legacy greedy chainer once more JUST for the
-			// per-read het mapping the BAM split needs; the streaming
-			// upstream pipeline doesn't expose mapping yet. This keeps
-			// the existing -b tests green without changing their
-			// per-read partition semantics.
-			hets, err := callHets(recs, opts)
-			if err != nil {
-				return emitted, err
-			}
-			_, mapping := phaseHetsWithMapping(hets, opts)
-			if err := bamSplit.assignAndWrite(recs, hets, mapping, opts, rng); err != nil {
-				return emitted, err
-			}
-		}
 	}
 	return emitted, nil
 }

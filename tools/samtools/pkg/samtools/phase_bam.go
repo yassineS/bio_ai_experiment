@@ -198,6 +198,113 @@ func (w *bamSplitWriter) assignAndWrite(
 	return nil
 }
 
+// dumpAln drains the front of `queue` (starting at `cursor`) for
+// reads whose alignment-end is at or before `minPos` (0-based ref
+// position of the next not-yet-emitted het). For each drained read
+// it looks up the qname's frag in `hash` and routes the record to
+// one of the three BAM outputs per upstream `dump_aln` (phase.c:361):
+//
+//   - frag absent → which=3 → random hap (drand48 in upstream;
+//     math/rand here, see PhaseOptions.RNGSeed).
+//   - frag.ambig: drop_ambi ? bucket=2 : bucket=3 (random hap).
+//   - frag.phased && frag.flip: bucket=2 (chimera).
+//   - frag.phased==0: bucket=3 (random hap).
+//   - else: bucket=frag.phase. Annotates ZP:A:Y (matches upstream
+//     phase.c:384 `bam_aux_append(b, "ZP", 'A', 1, ...)`).
+//
+// Upstream additionally re-flips a non-chimeric read with 50/50
+// probability (phase.c:386 `which = 1 - which` if is_flip). That
+// re-flip is also reproduced — it's the upstream call's evidence-
+// agnostic shuffle; with the same seed it lands the same way each
+// run, and across two upstream invocations it may diverge by RNG
+// state (rejection parity).
+//
+// Returns the new cursor (the number of reads dumped from the head).
+//
+// dropAmbi mirrors the FLAG_DROP_AMBI bit (upstream's -A).
+func dumpAln(
+	queue []*sam.Record,
+	cursor int,
+	minPos int32,
+	hash *fragKhash,
+	w *bamSplitWriter,
+	rng *rand.Rand,
+	dropAmbi bool,
+) (int, error) {
+	if w == nil {
+		return cursor, nil
+	}
+	// Upstream picks is_flip ONCE per dump_aln call (phase.c:365).
+	isFlip := rng.Float64() < 0.5
+	for cursor < len(queue) {
+		rec := queue[cursor]
+		// bam_endpos in 0-based-exclusive numerically equals our
+		// Record.EndPosition() in 1-based-inclusive. The upstream
+		// condition is `end > min_pos: break` so we drain while
+		// EndPosition() <= minPos.
+		if rec.EndPosition() > minPos {
+			break
+		}
+		key := x31HashString(rec.QName)
+		bucket, addZP := classifyDumpAln(key, hash, isFlip, dropAmbi, rng)
+		if addZP {
+			rec.Aux = append(rec.Aux, sam.Aux{Tag: "ZP", Type: 'A', Value: "Y"})
+		}
+		if err := w.writers[bucket].Write(rec); err != nil {
+			return cursor, fmt.Errorf("samtools phase: write %s: %w", w.names[bucket], err)
+		}
+		cursor++
+	}
+	return cursor, nil
+}
+
+// classifyDumpAln runs upstream phase.c::dump_aln's per-read
+// switch (phase.c:374-388) on the frag identified by `key`. Returns
+// the destination bucket (0/1/2) and whether the record should be
+// annotated with ZP:A:Y (true only for confidently phased reads).
+func classifyDumpAln(
+	key uint64,
+	hash *fragKhash,
+	isFlip bool,
+	dropAmbi bool,
+	rng *rand.Rand,
+) (int, bool) {
+	bucket := 3
+	addZP := false
+	if k, ok := hash.get(key); ok {
+		f := &hash.vals[k]
+		switch {
+		case f.ambig != 0:
+			if dropAmbi {
+				bucket = 2
+			} else {
+				bucket = 3
+			}
+		case f.phased != 0 && f.flip != 0:
+			bucket = 2
+		case f.phased == 0:
+			bucket = 3
+		default:
+			// phased and not flipped — confident haplotype call.
+			bucket = int(f.phase)
+			addZP = true
+		}
+		// Upstream phase.c:386: `if (which < 2 && is_flip) which = 1 - which`.
+		if bucket < 2 && isFlip {
+			bucket = 1 - bucket
+		}
+	}
+	if bucket == 3 {
+		// Evidence-less read: route 50/50 via the RNG.
+		if rng.Float64() < 0.5 {
+			bucket = 1
+		} else {
+			bucket = 0
+		}
+	}
+	return bucket, addZP
+}
+
 // hasChimeraFlipPoint searches for a per-read flip point that would
 // turn a chimeric read into two haplotype-consistent halves. It is
 // the Go port of the FLIP_THRES/FLIP_PENALTY scoring in upstream

@@ -2429,15 +2429,44 @@ byte-equality of the entire output stream.
   `loadpos` path is not implemented; the Go port always discovers
   hets from the pileup. Upstream itself comments `-e` and `-l` out of
   the usage block, so the omission is a small loss.
-- **`-b` BAM split routing**: the per-haplotype BAM split (when
-  `OutputPrefix` is set) still uses the legacy greedy-v1 classifier
-  (the `phase_bam.go` `assignAndWrite` path) rather than upstream's
-  `dump_aln` routing on top of the new `dynaprog` results. The
-  in-process partition tests stay green; full upstream BAM-split
-  byte-parity would need the dump_aln port wired into `phaseEmit`.
-- The RNG used for evidence-less reads in `-b` mode is Go's
-  `math/rand` (fixed seed for test determinism); byte-parity with
-  upstream's `drand48()` is explicitly not a goal of this project.
+
+**`phase -b` BAM split routing (closed 2026-06-02 — RNG-bound
+residual):** `dump_aln` is now ported to Go (`phase_bam.go::dumpAln`
++ `classifyDumpAln`) and interleaved with `phaseEmit` inside
+`runUpstreamPhase`, exactly matching upstream phase.c's
+`phase()`→`dump_aln(min_pos, hash)` pattern. The post-fragphase
+`frag_t` state (phase/phased/flip/ambig) drives every routing
+decision the same way upstream does — including the `ZP:A:Y` aux
+annotation on confidently phased reads. The
+`<prefix>.chimera.bam` file byte-matches upstream
+(`TestLive_Phase` assertion `cmp up.chimera.bam our.chimera.bam`)
+because chimera membership has no RNG dependency.
+
+What remains RNG-bound and intentionally NOT byte-equal:
+
+- **`<prefix>.0.bam` vs `<prefix>.1.bam` labelling.** Upstream's
+  `dump_aln` reads `drand48()` once per call for an `is_flip` toggle
+  that XORs every non-chimera bucket assignment (phase.c:386). Our
+  port reads `math/rand` (seed 1) for the same toggle. The first
+  draw differs (drand48 ≈ 0.0 vs math/rand seed=1 ≈ 0.6046), so on
+  the canonical fixture the 0/1 labels are SWAPPED relative to
+  upstream. The {bucket 0 ∪ bucket 1} read set is identical
+  (asserted by `TestLive_Phase`); only the file the labels point at
+  differs. The same swap is reproducible across runs of our port
+  because the seed is pinned (see `PhaseOptions.RNGSeed`).
+- **Evidence-less reads** (reads whose qname is absent from the
+  frag hash, or whose frag is unphased). These hit the second
+  `drand48` branch (phase.c:388) that randomly picks 0 or 1. Our
+  port uses the seeded `math/rand` stream for the same purpose.
+  The canonical fixture has zero evidence-less reads, so no test
+  coverage is RNG-blocked here today; the residual is exclusively
+  the .0/.1 swap above.
+
+Closing this RNG residual is out of scope per the
+[RNG / stochastic-output policy](#rng--stochastic-output-policy-2026-05-15-revised-2026-05-25);
+porting glibc drand48 + matching the call-count sequence would
+recover full byte-parity but is rejection-parity territory in this
+codebase.
 
 **`targetcut` HMM consensus mode** (implemented). The Go port is now
 a faithful translation of upstream `cut_target.c`: per-position
