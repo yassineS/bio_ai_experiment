@@ -2684,9 +2684,12 @@ to pass.
     empty stdout) for `call` (missing input file), `polysomy` (upstream
     binary does not ship the subcommand), `cnv` (no `-o`), and an
     unknown plugin name (`+nosuchplugin`).
-  - The full-output oracle for `call` is still deferred — see "FAIL"
-    entries above — but the live-oracle suite no longer relies on
-    `t.Skip` to hide them.
+  - The full-output oracle for `call` is now wired and byte-equals
+    upstream end-to-end on the mpileup fixture across 11 subtests
+    (see `TestLiveCall` — `-m`, `-m -v`, `-m -A`, `-c`,
+    `-m --gvcf 0,5,10`, `-m --gvcf 5`, `-m --ploidy GRCh37`,
+    `-m --ploidy GRCh38`, `-m -C alleles -T sites.tsv`, BCF input,
+    `-r` post-filter).
 
 #### Filter expression engine (`-i`/`-e`)
 
@@ -2799,9 +2802,12 @@ to pass.
     empty stdout) for `call` (missing input file), `polysomy` (upstream
     binary does not ship the subcommand), `cnv` (no `-o`), and an
     unknown plugin name (`+nosuchplugin`).
-  - The full-output oracle for `call` is still deferred — see "FAIL"
-    entries above — but the live-oracle suite no longer relies on
-    `t.Skip` to hide them.
+  - The full-output oracle for `call` is now wired and byte-equals
+    upstream end-to-end on the mpileup fixture across 11 subtests
+    (see `TestLiveCall` — `-m`, `-m -v`, `-m -A`, `-c`,
+    `-m --gvcf 0,5,10`, `-m --gvcf 5`, `-m --ploidy GRCh37`,
+    `-m --ploidy GRCh38`, `-m -C alleles -T sites.tsv`, BCF input,
+    `-r` post-filter).
 
 
 `view` output-type selector (`-O`/`--output-type`) — DONE for all four
@@ -3605,44 +3611,57 @@ present; synthetic PL-only fixtures (no QS) still use the older heuristic.
 
 Subcommand-tail gaps remaining on `bcftools call`:
 
-- **`-C alleles --constrain`, trio calling (`-T`/`-C trio`), sample
-  groups (`-G`), and reference-panel AF priors.** The single-sample-
-  group, no-constraint path that `mpileup | call -m` produces is
-  covered; `-C alleles` is now closed. Status per upstream
-  `mcall.c`:
-  - **`-C alleles` (closed).** Port of `mcall_constrain_alleles`
-    (mcall.c ~lines 1274-1413) in
-    `tools/bcftools/pkg/bcftools/call_constrain.go`:
-    `LoadConstrainAlleles` parses the
-    `CHROM\tPOS\tREF,ALT[,ALT...]` TSV; `applyConstrainAlleles`
-    rewrites REF/ALT, FORMAT/PL, INFO/QS, and FORMAT/AD via the
-    upstream `als_map` / `pl_map`. CLI wiring in `runCall` parses
-    `-C alleles` and pairs it with `-T sites.tsv` (the regions-
-    file loader is skipped under `-C alleles` since the file is a
-    sites TSV, not a BED). The `mpileup | call -m -C alleles -T`
-    pipeline byte-matches upstream end-to-end
-    (`TestLiveCall/m_C_alleles`).
-  - **Trio constraint (`-C trio`) — mirrors upstream's own
-    runtime error.** Upstream `mcall.c:1608` itself disables this
-    path with `error("todo: constrained trio calling temporarily
-    disabled\n")`. The Go port surfaces the same message
-    (`CallConstrainTrio` in `call_constrain.go`), so parity
-    callers see identical behaviour and no further work is
-    required for parity. If upstream re-enables the path, the
-    follow-up is `mcall_call_trio_genotypes` (~350 LOC) plus the
-    family-table parser (vcfcall.c `parse_ped_samples`, ~80 LOC)
-    and the combinatorial trio-genotype init tables
-    (`mcall_init_trios`, ~150 LOC).
-  - **`-G` sample groups (deferred).** Parser + per-group
-    bookkeeping that re-projects `mcallTin.qsum` per group across
-    the EM scoring loops in `callm.go`. The EM loops today have a
-    single-group qsum baked in; refactoring them to take a
-    per-group slice and the per-group QS/AD normalisation that
-    `mcall.c` does for `nsmpl_grp>1` is the bulk of the work.
-- **BCF input.** Today `call` rejects BCF input with a roadmap-pointer
-  error. The BCF reader's FORMAT-key reconstruction
-  (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) is the prerequisite.
-- **Index-backed region queries** (`-r` reuses the post-filter path).
+- **`-C alleles` (closed).** Port of `mcall_constrain_alleles`
+  (mcall.c ~lines 1274-1413) in
+  `tools/bcftools/pkg/bcftools/call_constrain.go`:
+  `LoadConstrainAlleles` parses the
+  `CHROM\tPOS\tREF,ALT[,ALT...]` TSV; `applyConstrainAlleles`
+  rewrites REF/ALT, FORMAT/PL, INFO/QS, and FORMAT/AD via the
+  upstream `als_map` / `pl_map`. CLI wiring in `runCall` parses
+  `-C alleles` and pairs it with `-T sites.tsv` (the regions-file
+  loader is skipped under `-C alleles` since the file is a sites
+  TSV, not a BED). The `mpileup | call -m -C alleles -T` pipeline
+  byte-matches upstream end-to-end (`TestLiveCall/m_C_alleles`).
+- **`-C trio` (closed as rejection-parity).** Upstream `mcall.c:1608`
+  itself disables this path with
+  `error("todo: constrained trio calling temporarily disabled\n")`.
+  The Go port surfaces the same message verbatim
+  (`CallConstrainTrio` in `call_constrain.go`), so callers see
+  identical behaviour. If upstream re-enables the path, the
+  follow-up is `mcall_call_trio_genotypes` (~350 LOC) plus the
+  family-table parser (vcfcall.c `parse_ped_samples`, ~80 LOC)
+  and the combinatorial trio-genotype init tables
+  (`mcall_init_trios`, ~150 LOC).
+- **BCF input (closed).** `callStreaming` now detects the BCF magic
+  and routes records through `bcf.NewReader` + `Record.ToVariant`,
+  feeding the same caller loop the VCF path uses (see the
+  `recordSource` adapter in `call.go`). The `call -m in.bcf`
+  pipeline byte-matches upstream stdout end-to-end on the
+  upstream-produced BCF of the mpileup oracle fixture
+  (`TestLiveCall/m_bcf_input`). The prerequisite — the BCF
+  reader's FORMAT-key reconstruction
+  (`docs/UPSTREAM_BUGS.md#bcf-fmt-keys-missing`) — landed in an
+  earlier wave; this wire-up consumes it.
+- **Index-backed region queries (closed as architectural-parity / perf-only).**
+  Upstream uses the tabix index to seek; our port scans the
+  stream and applies `-r`/`-R` as a post-filter. Output
+  byte-matches upstream on a bgzip-indexed mpileup fixture
+  (`TestLiveCall/m_r_region`). The residual is throughput on
+  large indexed inputs, not output correctness — captured here
+  for posterity; the misleading "deferred" stderr warning was
+  removed in the same wave (it implied output drift that the
+  oracle test rules out).
+
+Remaining gaps:
+
+- **`-G` sample groups (substantive, deferred).** Parser +
+  per-group bookkeeping that re-projects `mcallTin.qsum` per
+  group across the EM scoring loops in `callm.go`. The EM loops
+  today have a single-group qsum baked in; refactoring them to
+  take a per-group slice and the per-group QS/AD normalisation
+  that `mcall.c` does for `nsmpl_grp>1` is the bulk of the work
+  (~120 LOC parser + ~80 LOC EM refactor). Not on the parity-
+  critical path for the `mpileup | call -m` pipeline.
 - **The consensus caller (`-c`).** Closed. `tools/bcftools/pkg/
   bcftools/callc.go` is a faithful port of `ccall.c` + `em.c` +
   `prob1.c` plus the kfunc.c primitives (kf_gammap/q, kf_betai)

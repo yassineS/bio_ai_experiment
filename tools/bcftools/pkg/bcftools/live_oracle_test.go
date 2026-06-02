@@ -865,6 +865,37 @@ func TestLiveCall(t *testing.T) {
 		assertEqualStdout(t, live, ours,
 			"call", "-m", "-C", "alleles", "-T", sitesTSV, mpFile)
 	})
+
+	// BCF input through call -m: upstream's vcfcall.c accepts BCF
+	// natively, and now so does our port — the streamer routes BCF
+	// records through bcf.NewReader and reuses the same caller loop
+	// (see callStreaming in call.go). Convert the mpileup VCF to BCF
+	// with upstream, then assert byte-equality.
+	bcfFile := filepath.Join(t.TempDir(), "mp.bcf")
+	runBin(t, live, "view", "-Ob", "-o", bcfFile, mpFile)
+	t.Run("m_bcf_input", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "call", "-m", bcfFile)
+	})
+
+	// -r region post-filter: upstream uses the tabix index to seek; our
+	// port scans the stream and filters in-process. The OUTPUT is
+	// byte-exact (architectural-parity / perf-only residual). We assert
+	// this against a bgzip-indexed copy of the mpileup fixture so
+	// upstream can actually seek.
+	bgzipBin := filepath.Join(filepath.Dir(filepath.Dir(live)), "htslib", "bgzip")
+	if _, err := os.Stat(bgzipBin); err == nil {
+		gz := filepath.Join(t.TempDir(), "mp.vcf.gz")
+		// bgzip -k <plain> emits <plain>.gz; copy the plain VCF in first.
+		if err := os.WriteFile(strings.TrimSuffix(gz, ".gz"), mp, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runBin(t, bgzipBin, strings.TrimSuffix(gz, ".gz"))
+		runBin(t, live, "index", "-t", gz)
+		t.Run("m_r_region", func(t *testing.T) {
+			assertEqualStdout(t, live, ours,
+				"call", "-m", "-r", "17:103-110", gz)
+		})
+	}
 }
 
 // -------------------------------------------------------------------------

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
@@ -278,36 +279,75 @@ func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
 // CallFile is the file-aware entry point for `bcftools call`. Today it
 // always streams (no chunk-seek), but it does normalise the input path so
 // gzipped / bgzipped / plain files all work. Region queries are evaluated
-// as post-filters in v1 (matching the streaming path in `view`).
+// as post-filters: output byte-matches upstream's index-backed path, but
+// the whole stream is scanned. That is architectural-parity (perf only)
+// — see docs/PARITY_ROADMAP.md for the full residual rationale.
 func CallFile(path string, out io.Writer, opts CallOptions, stderr io.Writer) (int, error) {
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
 		return 0, err
 	}
 	defer in.Close()
-	if len(opts.Regions) > 0 && stderr != nil {
-		fmt.Fprintln(stderr, "bcftools call: index-backed region queries are deferred; treating -r as a post-filter")
-	}
 	return Call(in, out, opts)
 }
 
-// callStreaming is the inner loop. It consumes a VCF stream, dispatches
-// each record through the chosen caller, and writes the results. The
-// targets slice is the union of -t and (when no index is available) -r.
+// recordSource abstracts the input stream so callStreaming can consume
+// either a VCF (text) or a BCF (binary) stream without duplicating the
+// caller loop. Both adapters produce *vcf.Variant records.
+type recordSource interface {
+	Header() *vcf.Header
+	Read() (*vcf.Variant, error)
+}
+
+type vcfRecordSource struct {
+	r   *vcf.Reader
+	hdr *vcf.Header
+}
+
+func (s *vcfRecordSource) Header() *vcf.Header         { return s.hdr }
+func (s *vcfRecordSource) Read() (*vcf.Variant, error) { return s.r.Read() }
+
+type bcfRecordSource struct {
+	r   *bcf.Reader
+	hdr *vcf.Header
+}
+
+func (s *bcfRecordSource) Header() *vcf.Header { return s.hdr }
+func (s *bcfRecordSource) Read() (*vcf.Variant, error) {
+	rec, err := s.r.Read()
+	if err != nil {
+		return nil, err
+	}
+	v := rec.ToVariant(s.r.Header())
+	return v, nil
+}
+
+// callStreaming is the inner loop. It consumes a VCF or BCF stream,
+// dispatches each record through the chosen caller, and writes the
+// results. The targets slice is the union of -t and (when no index is
+// available) -r.
 func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []region) (int, error) {
 	br := bufio.NewReader(in)
 	head, err := br.Peek(5)
 	if err != nil && err != io.EOF {
 		return 0, err
 	}
+	var src recordSource
 	if len(head) >= 5 && head[0] == 'B' && head[1] == 'C' && head[2] == 'F' {
-		return 0, fmt.Errorf("bcftools call: BCF input is not yet wired through the caller; convert with `bcftools view in.bcf` first (see docs/PARITY_ROADMAP.md bcftools call)")
+		bcfr, err := bcf.NewReader(br)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools call: %w", err)
+		}
+		src = &bcfRecordSource{r: bcfr, hdr: bcfr.Header().VCF}
+	} else {
+		vr := vcf.NewReader(br)
+		vhdr, err := vr.ReadHeader()
+		if err != nil {
+			return 0, err
+		}
+		src = &vcfRecordSource{r: vr, hdr: vhdr}
 	}
-	r := vcf.NewReader(br)
-	hdr, err := r.ReadHeader()
-	if err != nil {
-		return 0, err
-	}
+	hdr := src.Header()
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	// Match upstream's header insertion order: vcfcall.c:724 calls
 	// gvcf_update_header BEFORE the main loop, where mcall.c appends
@@ -352,7 +392,7 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 
 	count := 0
 	for {
-		v, err := r.Read()
+		v, err := src.Read()
 		if err == io.EOF {
 			break
 		}
