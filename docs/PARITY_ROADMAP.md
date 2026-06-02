@@ -2109,30 +2109,29 @@ Plus:
   byte-for-byte, so the C-`float`-vs-Go-`float64` width concern did not
   materialise on the upstream fixtures. The note is kept for awareness
   on future high-coverage inputs.
-- **`phase` MCMC chimera repair + EV-line ordering.** The v1 port
-  uses a greedy adjacent-het vote in place of upstream `phase.c`'s
-  `dynaprog` Viterbi + `fragphase` chimera-repair loop. A
-  2026-06-01 investigation (see the `phase` subsection below)
-  established that upstream `samtools phase` output **is fully
-  deterministic** — `phase.c` calls `drand48()` but never
-  `srand48()`, so the default glibc seed gives a fixed sequence, and
-  the RNG only affects `-b` read routing, never the CC/PS/FL/M/EV
-  text stream (`diff` of two consecutive runs on the same BAM is
-  empty). The deterministic core (CC header, `PS`, `FL`, and
-  `M0/M1/M2` lines) is order-invariant — `cns`/`path`/`pcnt` are
-  pure accumulations independent of read order — and so is portable
-  to byte-parity. The **residual blocker is `EV`-line ordering**:
-  the EV block is `ks_introsort_rseq`-sorted by `vpos` only, an
-  unstable sort, so reads sharing a `vpos` are tie-broken by
-  htslib's `khash(64)` bucket-iteration order *after* a full
-  `bam_plp_auto` + `kh_put`/`kh_del`/`update_vpos` lifecycle. A
-  standalone replay of the khash+introsort on the obvious insertion
-  order did **not** reproduce the binary's EV order (the deletion-
-  aware bucket layout matters), so EV byte-parity requires porting
-  htslib's pileup engine and khash deletion semantics verbatim —
-  well beyond the in-tree appetite and out of scope for this pass.
-  The greedy `-b` per-haplotype BAM split (with `-A`/`-F`) is
-  implemented and tested. Detail in the `phase` subsection below.
+- **`phase` is a v1 stub — does NOT match upstream output.** This
+  entry corrects the misdiagnosis recorded in commit `f8406cb` and
+  earlier roadmap text that claimed CC/PS/FL/M0/M1/M2 lines were
+  "reachable byte-exact" with only EV-ordering open. **They are not
+  emitted at all.** A 2026-06-02 audit established: our port emits
+  only two lines on the canonical `TestLive_Phase` fixture
+  (`PS\tchr1\t3\t1`, `PS\tchr1\t7\t2`) where upstream emits 18 lines
+  across `CC` header (14×), `PS`, `M1`, `EV` (6×), and `//`. The
+  existing `TestLive_Phase` parity assertion only checks the **set of
+  het positions** extracted via `phaseHetPositions` from BOTH schemas,
+  which is why it passes despite the schema gap.
+  Upstream `samtools phase` output is fully deterministic (`phase.c`
+  uses default-seed `drand48()` only for `-b` read routing), so
+  byte-parity *is* achievable. The real port requires:
+  (1) `count_all`+`count1` (~50 LOC), `dynaprog` Viterbi (~45 LOC),
+  `fragphase` chimera repair (~85 LOC), `genmask`/`clean_seqs`/
+  `update_vpos` (~60 LOC), the CC banner + emit loop (~110 LOC),
+  `gl2cns` (~15 LOC); (2) a streaming pileup matching `bam_plp_auto`
+  semantics for ordered `cns[]`/frag-map population (~200-400 LOC).
+  Realistic total: 700-1200 LOC + the pileup driver. The greedy `-b`
+  per-haplotype BAM split (with `-A`/`-F`) is implemented as a
+  best-effort v1 for the fixtures we have, but cannot be relied on for
+  full upstream-output parity until the engine above is ported.
 - **`targetcut` BAQ realignment with `-f` reference (DONE).** The
   HMM consensus mode is implemented (faithful port of
   `cut_target.c`, including the MAQ errmod port; see below). The
@@ -2388,31 +2387,40 @@ diff /tmp/p1.txt /tmp/p2.txt   # empty
 ```
 
 Because the upstream stream is deterministic, byte-parity *is* the
-target for it. The deterministic core — the `CC` comment header, the
-`PS` (phase-set span), `FL` (filtered region) and `M0/M1/M2` marker
-lines — is **order-invariant**: the per-position consensus `cns` (via
-the already-ported `pkg/htsgo/errmod` MAQ model + `gl2cns`), the
-`dynaprog` Viterbi `path`, and the `fragphase` `pcnt` accumulators are
-all read-order-independent sums, so a faithful port reaches those lines
-byte-exactly.
+target for it.
 
-The **residual blocker is `EV`-line ordering**. The EV evidence block
-is emitted after `ks_introsort_rseq`, an *unstable* introsort keyed on
-`vpos` alone; reads sharing a `vpos` (the common case — every read of a
-clean block starts at the same first variant) are tie-broken purely by
-the order they appear in htslib's `khash(64)` bucket iteration, which
-in turn depends on the open-addressing bucket layout produced by the
-full `bam_plp_auto` + `kh_put`/`kh_del`/`update_vpos` lifecycle. A
-standalone replay (real htslib `khash.h` + `ksort.h`) of the obvious
-insertion order did **not** reproduce the binary's observed EV order,
-confirming the deletion-aware bucket layout is load-bearing. Achieving
-EV byte-parity therefore requires porting htslib's streaming pileup
-engine *and* its khash deletion semantics verbatim — far beyond the
-in-tree appetite and deferred here. The live-oracle test consequently
-asserts (a) upstream determinism across runs and (b) het-position-set
-parity on the M-lines, the guarantees the current port provides.
+**Current state of our port (2026-06-02 audit, correcting earlier
+roadmap claims):** Our `phase` is a v1 stub that emits ONLY `PS`-line
+records (e.g. two lines `PS\tchr1\t3\t1`, `PS\tchr1\t7\t2` on the
+canonical fixture) where upstream emits 18 lines spanning the `CC`
+header (14×), `PS`, `M1`, `EV` (6×) and `//`. Earlier text on this
+page (and commit message `f8406cb`) asserted CC/PS/FL/M0/M1/M2 were
+"reachable byte-exact" with only EV-ordering open; **that was a
+misdiagnosis** — none of those lines are emitted today. The
+`TestLive_Phase` live-oracle assertion only checks the *set of het
+positions* extracted via `phaseHetPositions` from both schemas, which
+is why it passes despite the schema gap.
 
-**`phase` features implemented:**
+**Genuine scope to close phase to byte-parity:**
+
+1. `count_all`+`count1` (~50 LOC), `dynaprog` Viterbi (~45 LOC),
+   `fragphase` chimera repair (~85 LOC), `genmask`/`clean_seqs`/
+   `update_vpos` (~60 LOC), the CC banner + emit loop (~110 LOC),
+   `gl2cns` (~15 LOC), `phase` driver (~85 LOC).
+2. A streaming pileup matching `bam_plp_auto` deletion / refskip /
+   overlap-pair semantics so `cns[]` and the frag map see records in
+   upstream order (~200-400 LOC; our existing `mpileup_pileup.go` is
+   buffered, not streaming).
+3. Glue: `errmod.Init`/`Cal` already exists in `pkg/htsgo/errmod` and
+   covers the variant-call step at `min_varLOD`.
+
+Realistic total: 700-1200 LOC + the pileup driver (~200-400 LOC).
+EV-line ordering specifically is *not* the load-bearing item — on the
+canonical fixture the bucket layout is plain alphabetic and a
+standalone `ksort.h` replay reproduces upstream's order byte-for-byte;
+the schema gap is the real work.
+
+**`phase` features actually implemented:**
 
 - **`-b STR` per-haplotype BAM split** (`<prefix>.0.bam` /
   `<prefix>.1.bam` / `<prefix>.chimera.bam`), with the `fragphase`
@@ -2422,15 +2430,16 @@ parity on the M-lines, the guarantees the current port provides.
   is explicitly not a goal; the seed is pinned for test determinism).
 - **`-A`** routes ambiguous reads to the chimera bucket in `-b` mode.
 - **`-F`** disables the chimera-repair flip-point search.
+- **Het-position discovery + `PS`-line emission** — the v1 stream.
 
 **`phase` deferred features:**
 
-- **EV-line byte ordering** — blocked on the khash/pileup lifecycle
-  port described above.
-- **`-e`/`-l` site-list mode** (only-phase-listed-sites). The
-  upstream `loadpos` path is not implemented; the Go port always
-  discovers hets from the pileup. Upstream itself comments `-e` and
-  `-l` out of the usage block, so the omission is a small loss.
+- **The full output schema** — CC header, FL, M0/M1/M2 marker lines,
+  and the EV evidence block. Scope above; needs its own port slice.
+- **`-e`/`-l` site-list mode** (only-phase-listed-sites). Upstream's
+  `loadpos` path is not implemented; the Go port always discovers
+  hets from the pileup. Upstream itself comments `-e` and `-l` out of
+  the usage block, so the omission is a small loss.
 
 **`targetcut` HMM consensus mode** (implemented). The Go port is now
 a faithful translation of upstream `cut_target.c`: per-position
