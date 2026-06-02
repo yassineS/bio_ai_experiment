@@ -34,11 +34,10 @@ Options:
                                  is accepted; v1 treats every neighbour as "indel".
   -G, --IndelGap INT             Filter clusters of indels separated by INT or fewer bp.
   -i, --include EXPR             Soft-filter sites where EXPR is false.
-      --mask [^]REGION           Soft-filter the named region. Accepted; v1 not
-                                 implemented (see docs/PARITY_ROADMAP.md#bcftools).
-  -M, --mask-file [^]FILE        Soft-filter regions in a BED-like file. Accepted; v1
-                                 not implemented (see docs/PARITY_ROADMAP.md#bcftools).
-      --mask-overlap 0|1|2       Mask-overlap mode. Accepted; v1 ignores.
+      --mask [^]REGION           Soft-filter records in REGION ("^" inverts). Requires -s.
+  -M, --mask-file [^]FILE        Soft-filter records overlapping a BED file ("^" inverts).
+                                 Requires -s.
+      --mask-overlap 0|1|2       0: POS in region, 1: record overlap (default), 2: variant overlap.
   -m, --mode +|x|+x              "+": append to existing FILTER (default: replace);
                                  "x": reset FILTER to PASS on passing sites.
       --no-version               Do not append a ##bcftools_filterCommand= header line.
@@ -62,10 +61,9 @@ Options:
       --version                  Show version.
 
 Notes:
-  - --mask / --mask-file replace failing records' FILTER with the soft
-    filter name from the per-region annotation. v1 doesn't load the
-    mask file, so passing -M/--mask-file errors out with a roadmap
-    pointer.
+  - --mask / --mask-file apply the configured -s/--soft-filter ID to
+    records overlapping any region. The "^" prefix on either flag
+    inverts (records outside the region get masked).
   - -g/--SnpGap accepts the upstream :TYPE qualifier (indel|mnp|bnd|other|overlap)
     but always treats every nearby indel as an "indel" type in v1.
 `
@@ -128,7 +126,6 @@ func runFilter(args []string) int {
 	fs.BoolVar(&showVer, "version", false, "")
 	// Reference once to silence "declared but not used" / "key part of
 	// the upstream surface but no v1 behaviour" notes.
-	_ = maskOverlap
 	_ = regionsOverlap
 	_ = targetsOverlap
 	_ = threads
@@ -149,12 +146,13 @@ func runFilter(args []string) int {
 		return 0
 	}
 
-	if deferred := checkFilterDeferred(checkFilterDeferredInputs{
-		maskRegion: maskRegion,
-		maskFile:   maskFile,
-	}); deferred != "" {
-		fmt.Fprintf(os.Stderr, "bcftools filter: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
-		return 2
+	// Upstream `vcffilter.c:656` rejects --mask / --mask-file without
+	// --soft-filter: match the exact text. We do this here (rather than
+	// inside the library) so the message lands on stderr without our
+	// "bcftools filter: " program prefix, byte-equal with upstream.
+	if (maskRegion != "" || maskFile != "") && softFilter == "" {
+		fmt.Fprintln(os.Stderr, "The option --soft-filter is required with --mask and --mask-file options")
+		return 1
 	}
 
 	mode, err := bcftools.ParseFilterMode(modeFlag)
@@ -207,6 +205,9 @@ func runFilter(args []string) int {
 		IndelGap:     indelGap,
 		RegionsFile:  regionsFile,
 		TargetsFile:  targetsFile,
+		MaskRegion:   maskRegion,
+		MaskFile:     maskFile,
+		MaskOverlap:  maskOverlap,
 		NoVersion:    noVersion,
 	}
 	if regions != "" {
@@ -230,18 +231,15 @@ func runFilter(args []string) int {
 	return 0
 }
 
-type checkFilterDeferredInputs struct {
-	maskRegion string
-	maskFile   string
-}
+// checkFilterDeferredInputs is kept (with no fields) so a future
+// regression test for any rejected-flag surface has somewhere to grow.
+// The previous --mask / -M v1-deferred branch landed in filter_mask.go.
+type checkFilterDeferredInputs struct{}
 
-func checkFilterDeferred(in checkFilterDeferredInputs) string {
-	switch {
-	case in.maskRegion != "":
-		return "--mask"
-	case in.maskFile != "":
-		return "-M/--mask-file"
-	}
+// checkFilterDeferred is the empty-set helper: every filter flag is
+// now either implemented or accepted-and-ignored. See the
+// TestCheckFilterDeferred comment for the historical context.
+func checkFilterDeferred(_ checkFilterDeferredInputs) string {
 	return ""
 }
 

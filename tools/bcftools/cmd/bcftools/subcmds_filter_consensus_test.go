@@ -2,31 +2,14 @@ package main
 
 import "testing"
 
-// TestCheckFilterDeferred locks in the upstream-flag-name surface
-// that runFilter hard-rejects rather than silently accepting. Per
-// the project parity rule (docs/PARITY_ROADMAP.md "Definition of 1:1")
-// every documented upstream flag must be recognised — either
-// implemented or gracefully rejected with a roadmap pointer. A
-// regression that drops any of these from the rejection set without
-// implementing the underlying behaviour is a parity bug.
+// TestCheckFilterDeferred is now an empty-set sentinel: every
+// documented filter flag is either implemented or gracefully
+// accepted-and-ignored. The previous --mask / -M deferred branch
+// landed when filter_mask.go shipped, so the set is empty. If a
+// future regression removes a flag from runFilter, add a test here.
 func TestCheckFilterDeferred(t *testing.T) {
 	if got := checkFilterDeferred(checkFilterDeferredInputs{}); got != "" {
-		t.Fatalf("empty input: got deferred=%q, want \"\"", got)
-	}
-	cases := []struct {
-		name string
-		in   checkFilterDeferredInputs
-		want string
-	}{
-		{"mask-region", checkFilterDeferredInputs{maskRegion: "chr1:100-200"}, "--mask"},
-		{"mask-file", checkFilterDeferredInputs{maskFile: "mask.bed"}, "-M/--mask-file"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := checkFilterDeferred(tc.in); got != tc.want {
-				t.Errorf("deferred(%s): got %q, want %q", tc.name, got, tc.want)
-			}
-		})
+		t.Errorf("empty input: got deferred=%q, want \"\"", got)
 	}
 }
 

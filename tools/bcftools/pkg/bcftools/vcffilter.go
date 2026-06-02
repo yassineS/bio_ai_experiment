@@ -117,6 +117,21 @@ type VCFFilterOptions struct {
 	Targets     []string
 	TargetsFile string
 
+	// MaskRegion is the upstream `--mask [^]REGION` flag: a single
+	// region spec ("chr[:beg-end]"). A leading '^' negates the mask
+	// (only records OUTSIDE the region are soft-filtered).
+	MaskRegion string
+	// MaskFile is the upstream `-M/--mask-file [^]FILE` flag: a BED-like
+	// file of regions. Leading '^' on the filename string negates.
+	MaskFile string
+	// MaskOverlap mirrors upstream's `--mask-overlap 0|1|2`:
+	//   0 - mask iff the record's POS falls inside the region.
+	//   1 - mask iff the record's [POS, POS+rlen-1] overlaps the region
+	//       (the upstream default).
+	//   2 - mask iff the *variant* (any allele's affected span) overlaps.
+	// Values outside 0..2 are treated as the default (1).
+	MaskOverlap int
+
 	// NoVersion suppresses the ##bcftools_filterCommand= header line we
 	// would otherwise inject.
 	NoVersion bool
@@ -184,6 +199,11 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 		return 0, fmt.Errorf("bcftools filter: %w", err)
 	}
 
+	mask, err := buildFilterMask(opts)
+	if err != nil {
+		return 0, fmt.Errorf("bcftools filter: %w", err)
+	}
+
 	// Pre-compute indel positions per chromosome for SnpGap/IndelGap.
 	indelPos := indelIndex(variants)
 
@@ -195,7 +215,7 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 		filterName = uniqueFilterName(hdr)
 	}
 	if filterName != "" {
-		ensureSoftFilterHeader(hdr, filterName, opts.IncludeExpr, opts.ExcludeExpr)
+		ensureSoftFilterHeaderForMode(hdr, filterName, opts.IncludeExpr, opts.ExcludeExpr, mask != nil)
 	}
 
 	if !opts.NoVersion {
@@ -225,6 +245,12 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 			if violatesGap(v, indelPos, opts.SnpGap, opts.IndelGap) {
 				fails = true
 			}
+		}
+		// Mask check: upstream pass &= !regidx_overlap(...). A masked
+		// record gets the soft-filter name even if the expression
+		// passed; an unmasked record's pass state is left untouched.
+		if mask != nil && maskMatches(mask, v) {
+			fails = true
 		}
 
 		// Hard-filter: when no -s/--soft-filter is in play, upstream's
@@ -421,6 +447,14 @@ func violatesGap(v *vcf.Variant, indels map[string][]int, snpGap, indelGap int) 
 // "Set if not true: <expr>" for -i (the empty-expr fallback keeps the
 // previous defensive wording).
 func ensureSoftFilterHeader(hdr *vcf.Header, name, includeExpr, excludeExpr string) {
+	ensureSoftFilterHeaderForMode(hdr, name, includeExpr, excludeExpr, false)
+}
+
+// ensureSoftFilterHeaderForMode is the mask-aware variant: when an
+// include/exclude expression is set the per-expression description
+// wins (upstream vcffilter.c:140-148), otherwise the mask-only path
+// uses "Record masked by region".
+func ensureSoftFilterHeaderForMode(hdr *vcf.Header, name, includeExpr, excludeExpr string, hasMask bool) {
 	if hdr == nil || name == "" {
 		return
 	}
@@ -436,6 +470,8 @@ func ensureSoftFilterHeader(hdr *vcf.Header, name, includeExpr, excludeExpr stri
 		desc = "Set if true: " + excludeExpr
 	case includeExpr != "":
 		desc = "Set if not true: " + includeExpr
+	case hasMask:
+		desc = "Record masked by region"
 	}
 	line := fmt.Sprintf(`##FILTER=<ID=%s,Description="%s">`, name, desc)
 	hdr.MetaInfo = append(hdr.MetaInfo, line)

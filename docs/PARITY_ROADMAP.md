@@ -3112,11 +3112,15 @@ Option-tail gaps on the convert/mendelian PR:
 
 Option-tail gaps on `filter` (this PR, simple-mode):
 
-- `--mask [^]REGION` and `-M/--mask-file [^]FILE` — accepted but
-  hard-rejected at runtime with a roadmap pointer. The CLI parses the
-  flag (so a downstream automation that always passes `-M ""` doesn't
-  break); the underlying BED-driven soft-filter logic is deferred.
-- `--mask-overlap 0|1|2` — accepted; v1 ignores (always treats POS-in-region).
+- `--mask [^]REGION` and `-M/--mask-file [^]FILE` — implemented. Records
+  whose POS (or REF span or variant span — see `--mask-overlap`) falls
+  inside any mask region pick up the configured `--soft-filter` ID.
+  Leading `^` inverts (records outside the region get masked).
+  Upstream's `--soft-filter` requirement is matched byte-for-byte
+  ("The option --soft-filter is required with --mask and --mask-file
+  options").
+- `--mask-overlap 0|1|2` — implemented: 0 = POS-in-region, 1 = record
+  REF span overlap (upstream default), 2 = variant span overlap.
 - `-W/--write-index[=FMT]` — accepted; v1 never auto-indexes outputs.
 - `-v/--verbosity INT` — accepted; v1 ignores.
 - `--regions-overlap` / `--targets-overlap` — accepted; v1 always

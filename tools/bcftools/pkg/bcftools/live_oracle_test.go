@@ -414,6 +414,11 @@ func TestLiveNorm(t *testing.T) {
 func TestLiveFilter(t *testing.T) {
 	live, ours := requireLive(t)
 	fx := fixturePath(t, "basic.vcf")
+	// Build an inline BED mask the mask-file subtest can point at.
+	maskBED := filepath.Join(t.TempDir(), "mask.bed")
+	if err := os.WriteFile(maskBED, []byte("chr1\t0\t300\nchr2\t0\t200\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name string
 		args []string
@@ -421,6 +426,13 @@ func TestLiveFilter(t *testing.T) {
 		{"include_qual_gt_30", []string{"filter", "-i", "QUAL>30", fx}},
 		{"exclude_ac_lt_2", []string{"filter", "-e", "AC<2", fx}},
 		{"soft_tag_lowq", []string{"filter", "-s", "LOWQ", "-e", "QUAL<10", fx}},
+		// Mask-driven soft-filter parity: previously rejected at the
+		// CLI with "v1 not implemented".
+		{"mask_region", []string{"filter", "--mask", "chr1:1-300", "--soft-filter", "MASKED", fx}},
+		{"mask_region_negate", []string{"filter", "--mask", "^chr1:1-300", "--soft-filter", "MASKED", fx}},
+		{"mask_file", []string{"filter", "--mask-file", maskBED, "--soft-filter", "MASKED", fx}},
+		{"mask_overlap_0", []string{"filter", "--mask-overlap", "0", "--mask-file", maskBED, "--soft-filter", "MASKED", fx}},
+		{"mask_with_expr", []string{"filter", "-i", "QUAL>=30", "--mask", "chr1:1-200", "--soft-filter", "MASKED", fx}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
