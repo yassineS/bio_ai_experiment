@@ -102,6 +102,23 @@ func TestMarkdupParity(t *testing.T) {
 			opts:        MarkdupOptions{Mode: MarkdupModeSequence, MaxDist: 2500, AddTag: true},
 			compareMode: "bytes",
 		},
+		{
+			// Regex-driven coord extraction: `--read-coords '(x):(y)$'
+			// --coords-order xy`. Skips the lane/tile prefix-match so
+			// duplicates with different lanes still classify SQ when
+			// the x/y distance is small.
+			name:   "12_optical_chain_regex",
+			input:  "12_optical_chain_regex.sam",
+			expect: "12_optical_chain_regex.expected.sam",
+			opts: MarkdupOptions{
+				Mode:            MarkdupModeSequence,
+				MaxDist:         2500,
+				AddTag:          true,
+				ReadCoordsRegex: `([[:digit:]]+):([[:digit:]]+)$`,
+				CoordsOrder:     "xy",
+			},
+			compareMode: "bytes",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

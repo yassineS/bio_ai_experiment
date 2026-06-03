@@ -43,6 +43,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -117,6 +118,18 @@ type MarkdupOptions struct {
 	// a duplicate primary. Without it, only the primary alignment is
 	// flagged.
 	MarkSupplementary bool
+	// ReadCoordsRegex is upstream's `--read-coords STR`: a regex
+	// (Go RE2 / POSIX ERE) whose capture groups carry the x, y
+	// coordinates (and optionally the lane/tile prefix) used by
+	// optical-dup detection. Setting it overrides the default
+	// colon-based parser.
+	ReadCoordsRegex string
+	// CoordsOrder mirrors `--coords-order`: a permutation of
+	// "txy" (default) describing which capture groups carry
+	// t (lane/tile), x, and y. Layouts without 't' ("xy" / "yx")
+	// disable the prefix-match step entirely, so only the (x, y)
+	// distance gates the optical classification.
+	CoordsOrder string
 }
 
 // MarkdupResult summarises a Markdup run.
@@ -174,13 +187,18 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 	}
 	singleSlots := make(map[markdupKey]*singleSlot)
 	primaryDup := make(map[string]dupInfo) // qname -> dup-of-info
+	// Compile the optional --read-coords regex once per Markdup call.
+	coordsRE, rerr := compileCoordsRegex(opts.ReadCoordsRegex, opts.CoordsOrder)
+	if rerr != nil {
+		return MarkdupResult{}, rerr
+	}
 	// dtFor returns the dt tag a duplicate should carry when -d is set,
 	// or "" when -d is off (so callers can compare/assign uniformly).
 	dtFor := func(originalQ, dupQ string) string {
 		if opts.MaxDist <= 0 {
 			return ""
 		}
-		if isOpticalDup(originalQ, dupQ, opts.MaxDist) {
+		if isOpticalDup(originalQ, dupQ, opts.MaxDist, coordsRE) {
 			return "SQ"
 		}
 		return "LB"
@@ -380,6 +398,95 @@ type dupInfo struct {
 	dt       string
 }
 
+// coordsRegex bundles the compiled --read-coords pattern and the
+// integer slot indices that hold x, y and (optionally) the lane/tile
+// prefix. tIdx == 0 means "no prefix slot".
+type coordsRegex struct {
+	re   *regexp.Regexp
+	xIdx int
+	yIdx int
+	tIdx int
+}
+
+// compileCoordsRegex compiles the --read-coords pattern and resolves
+// the --coords-order layout. Returns nil when both are empty.
+func compileCoordsRegex(pattern, order string) (*coordsRegex, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("markdup: bad --read-coords regex: %w", err)
+	}
+	c := &coordsRegex{re: re}
+	o := order
+	if o == "" {
+		o = "txy"
+	}
+	switch o {
+	case "txy", "tyx":
+		c.tIdx, c.xIdx, c.yIdx = 1, 2, 3
+	case "xyt", "yxt":
+		c.xIdx, c.yIdx, c.tIdx = 1, 2, 3
+	case "xty", "ytx":
+		c.xIdx, c.tIdx, c.yIdx = 1, 2, 3
+	case "xy", "yx":
+		c.xIdx, c.yIdx = 1, 2
+	default:
+		return nil, fmt.Errorf("markdup: unknown --coords-order %q", order)
+	}
+	return c, nil
+}
+
+// extractXY uses the compiled regex (if any) to pull x, y and the
+// shared lane/tile prefix from qname. Returns (x, y, prefix, ok).
+// prefix is the byte substring of qname used for downstream prefix
+// equality; when there is no t-slot it is empty.
+func (c *coordsRegex) extractXY(qname string) (int64, int64, string, bool) {
+	if c == nil || c.re == nil {
+		return 0, 0, "", false
+	}
+	m := c.re.FindStringSubmatchIndex(qname)
+	if m == nil {
+		return 0, 0, "", false
+	}
+	getStr := func(idx int) (string, bool) {
+		if idx <= 0 {
+			return "", true
+		}
+		so, eo := m[2*idx], m[2*idx+1]
+		if so < 0 || eo < 0 {
+			return "", false
+		}
+		return qname[so:eo], true
+	}
+	xs, ok := getStr(c.xIdx)
+	if !ok {
+		return 0, 0, "", false
+	}
+	ys, ok := getStr(c.yIdx)
+	if !ok {
+		return 0, 0, "", false
+	}
+	var prefix string
+	if c.tIdx > 0 {
+		ts, ok := getStr(c.tIdx)
+		if !ok {
+			return 0, 0, "", false
+		}
+		prefix = ts
+	}
+	x, err := strconv.ParseInt(xs, 10, 64)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	y, err := strconv.ParseInt(ys, 10, 64)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	return x, y, prefix, true
+}
+
 // parseIlluminaXY extracts the x and y coordinates from an Illumina-
 // style qname, returning ok=false when the qname does not have the
 // expected separator count. Mirrors upstream's
@@ -411,41 +518,60 @@ func parseIlluminaXY(qname string) (x, y int64, ok bool) {
 	return x, y, true
 }
 
-// isOpticalDup mirrors bam_markdup.c:is_optical_duplicate: the records
-// share the same lane/tile prefix and their x and y differ by at most
-// max_dist. Both qnames must parse cleanly.
-func isOpticalDup(originalQ, dupQ string, maxDist int) bool {
+// isOpticalDup mirrors bam_markdup.c:is_optical_duplicate. When rgx
+// is non-nil the regex-driven parser supplies x, y and the optional
+// lane/tile prefix; layouts without a t-slot ("xy"/"yx") skip the
+// prefix-match step entirely. Otherwise the upstream colon-based
+// parser is used (Illumina READNAME format).
+func isOpticalDup(originalQ, dupQ string, maxDist int, rgx *coordsRegex) bool {
 	if maxDist <= 0 {
 		return false
 	}
-	ox, oy, ook := parseIlluminaXY(originalQ)
-	if !ook {
-		return false
-	}
-	dx, dy, dok := parseIlluminaXY(dupQ)
-	if !dok {
-		return false
-	}
-	// Require the lane+tile prefix to match (upstream's memcmp of
-	// the t_beg..t_end span). For our purposes the prefix is every
-	// ':' separated token before the x column.
-	o := strings.Split(originalQ, ":")
-	d := strings.Split(dupQ, ":")
-	sepO := len(o) - 1
-	sepD := len(d) - 1
-	if sepO != sepD {
-		return false
-	}
-	prefixCols := 2
-	if sepO >= 5 {
-		prefixCols = 5
-	} else if sepO == 4 {
-		prefixCols = 3
-	}
-	for i := 0; i < prefixCols; i++ {
-		if o[i] != d[i] {
+	var ox, oy, dx, dy int64
+	var oPrefix, dPrefix string
+	var hasPrefix bool
+	if rgx != nil {
+		var ok bool
+		ox, oy, oPrefix, ok = rgx.extractXY(originalQ)
+		if !ok {
 			return false
 		}
+		dx, dy, dPrefix, ok = rgx.extractXY(dupQ)
+		if !ok {
+			return false
+		}
+		hasPrefix = rgx.tIdx > 0
+	} else {
+		var ok bool
+		ox, oy, ok = parseIlluminaXY(originalQ)
+		if !ok {
+			return false
+		}
+		dx, dy, ok = parseIlluminaXY(dupQ)
+		if !ok {
+			return false
+		}
+		// Lane/tile prefix from the colon parser: every ':'-
+		// separated token before the x column.
+		o := strings.Split(originalQ, ":")
+		d := strings.Split(dupQ, ":")
+		sepO := len(o) - 1
+		sepD := len(d) - 1
+		if sepO != sepD {
+			return false
+		}
+		prefixCols := 2
+		if sepO >= 5 {
+			prefixCols = 5
+		} else if sepO == 4 {
+			prefixCols = 3
+		}
+		oPrefix = strings.Join(o[:prefixCols], ":")
+		dPrefix = strings.Join(d[:prefixCols], ":")
+		hasPrefix = true
+	}
+	if hasPrefix && oPrefix != dPrefix {
+		return false
 	}
 	xd := ox - dx
 	if xd < 0 {

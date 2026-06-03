@@ -941,6 +941,8 @@ func runMarkdup(args []string) int {
 		barcodes  string
 		barcodeTg string
 		outFmt    string
+		readCoord string
+		coordOrd  string
 	)
 	cliflag.BoolVar(fs, &removeDups, "r", "remove-dups", false, "")
 	cliflag.IntVar(fs, &maxDist, "d", "max-dist", 0, "")
@@ -958,6 +960,8 @@ func runMarkdup(args []string) int {
 	fs.BoolVar(&perRG, "S", false, "")
 	fs.StringVar(&barcodes, "barcode-name", "", "")
 	fs.StringVar(&barcodeTg, "barcode-tag", "", "")
+	fs.StringVar(&readCoord, "read-coords", "", "")
+	fs.StringVar(&coordOrd, "coords-order", "", "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
@@ -1022,6 +1026,8 @@ func runMarkdup(args []string) int {
 		PGCommand:         strings.Join(os.Args, " "),
 		OutputSAM:         markdupOutputSAM(outFmt, outPath),
 		MarkSupplementary: perRG,
+		ReadCoordsRegex:   readCoord,
+		CoordsOrder:       coordOrd,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools markdup: %v\n", err)
 		return 1
