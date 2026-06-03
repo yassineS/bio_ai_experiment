@@ -1458,15 +1458,11 @@ func runImport(args []string) int {
 		Uncompressed:    uncomp,
 		NoPG:            noPG,
 		PGCommand:       strings.Join(os.Args, " "),
-	}
-	if i1Path != "" || i2Path != "" {
-		fmt.Fprintln(os.Stderr, "samtools import: warning: --i1/--i2 index-read inputs are not yet implemented; index reads ignored")
-	}
-	if casavaForm {
-		fmt.Fprintln(os.Stderr, "samtools import: warning: -i CASAVA header parsing is not yet implemented")
-	}
-	if barcodeTag != "" || qualityTag != "" {
-		fmt.Fprintln(os.Stderr, "samtools import: warning: --barcode-tag / --quality-tag renaming is not yet implemented; defaults BC/QT used")
+		Casava:          casavaForm,
+		BarcodeTag:      barcodeTag,
+		QualityTag:      qualityTag,
+		Index1Path:      i1Path,
+		Index2Path:      i2Path,
 	}
 	_ = threads
 	if _, err := samtools.FastqImportFiles(fs.Args(), out, opts); err != nil {

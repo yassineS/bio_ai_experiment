@@ -84,6 +84,24 @@ type FastqImportOptions struct {
 	// PGCommand is the raw command-line stored under @PG:CL when NoPG
 	// is false. The CLI populates this with os.Args.
 	PGCommand string
+	// Casava enables CASAVA-identifier parsing (`-i`). The first
+	// whitespace-separated token of each FASTQ description is split
+	// on ':' as `READNUM:FILTER:CTRL:BARCODE`; non-empty BARCODE is
+	// emitted as a BC:Z aux (renamed via BarcodeTag). FILTER == 'Y'
+	// also sets the QCFAIL flag, matching upstream.
+	Casava bool
+	// BarcodeTag is the aux tag used to carry the barcode sequence
+	// (CLI `--barcode-tag`, default "BC"). Two letters, A-Z0-9.
+	BarcodeTag string
+	// QualityTag is the aux tag used to carry the barcode qualities
+	// (CLI `--quality-tag`, default "QT"). Two letters, A-Z0-9.
+	QualityTag string
+	// Index1Path / Index2Path are the per-record index FASTQ files
+	// (CLI `--i1` / `--i2`). When set, each record gets a BC:Z aux
+	// (or BarcodeTag) carrying the concatenated index sequence and
+	// a QT:Z aux (or QualityTag) carrying the concatenated quality.
+	Index1Path string
+	Index2Path string
 }
 
 // FastqImport reads FASTQ records from the configured inputs and writes
@@ -235,10 +253,56 @@ type recordEmitter struct {
 	orderN  uint64
 }
 
+// barcodeTag returns the configured aux tag for barcode sequences,
+// defaulting to "BC" when not overridden.
+func (e *recordEmitter) barcodeTag() string {
+	if e.opts.BarcodeTag != "" {
+		return e.opts.BarcodeTag
+	}
+	return "BC"
+}
+
+// qualityTag returns the configured aux tag for barcode qualities,
+// defaulting to "QT" when not overridden.
+func (e *recordEmitter) qualityTag() string {
+	if e.opts.QualityTag != "" {
+		return e.opts.QualityTag
+	}
+	return "QT"
+}
+
+// parseCasavaIdentifier extracts the trailing BARCODE from a CASAVA-
+// style FASTQ description ("1:N:0:ATCG" → "ATCG"). Returns the
+// barcode string and whether the FILTER column is 'Y' (so callers
+// can set the QCFAIL flag). Empty input or a non-CASAVA description
+// returns ("", false).
+func parseCasavaIdentifier(desc string) (string, bool) {
+	if desc == "" {
+		return "", false
+	}
+	// Take the first whitespace-separated token.
+	tok := desc
+	for i := 0; i < len(desc); i++ {
+		if desc[i] == ' ' || desc[i] == '\t' {
+			tok = desc[:i]
+			break
+		}
+	}
+	parts := strings.Split(tok, ":")
+	if len(parts) != 4 {
+		return "", false
+	}
+	bc := parts[3]
+	qcfail := parts[1] == "Y"
+	return bc, qcfail
+}
+
 // emit writes one record after applying flag, name-suffix, aux-parsing, RG,
 // and --order policies. The mate set is applied by the caller (paired vs
-// singleton flag flips happen there).
-func (e *recordEmitter) emit(name, desc string, seq, qual []byte, flag uint16) error {
+// singleton flag flips happen there). indexBC / indexQT, when non-empty,
+// are emitted as BC:Z (or BarcodeTag) and QT:Z (or QualityTag) aux fields
+// — used by the --i1/--i2 walker to attach per-record index data.
+func (e *recordEmitter) emit(name, desc string, seq, qual []byte, flag uint16, indexBC, indexQT string) error {
 	qname := name
 	if e.strip {
 		qname = stripPairSuffix(qname)
@@ -256,6 +320,21 @@ func (e *recordEmitter) emit(name, desc string, seq, qual []byte, flag uint16) e
 		Seq:   string(seq),
 		// SAM quality is stored as raw Phred; FASTQ uses ASCII+33.
 		Qual: rawQualityFromFastq(qual),
+	}
+	if e.opts.Casava {
+		bc, qcfail := parseCasavaIdentifier(desc)
+		if bc != "" {
+			rec.Aux = append(rec.Aux, sam.Aux{Tag: e.barcodeTag(), Type: 'Z', Value: bc})
+		}
+		if qcfail {
+			rec.Flag |= sam.FlagQCFail
+		}
+	}
+	if indexBC != "" {
+		rec.Aux = append(rec.Aux, sam.Aux{Tag: e.barcodeTag(), Type: 'Z', Value: indexBC})
+	}
+	if indexQT != "" {
+		rec.Aux = append(rec.Aux, sam.Aux{Tag: e.qualityTag(), Type: 'Z', Value: indexQT})
 	}
 	if e.auxAll || len(e.auxList) > 0 {
 		auxes := parseFastqAux(desc, e.auxAll, e.auxList)
@@ -313,7 +392,7 @@ func walkSingle(path string, e *recordEmitter, mode fqSingleMode) (int, error) {
 				flag |= sam.FlagPaired | sam.FlagRead2
 			}
 		}
-		if err := e.emit(rec.name, rec.desc, rec.seq, rec.qual, flag); err != nil {
+		if err := e.emit(rec.name, rec.desc, rec.seq, rec.qual, flag, "", ""); err != nil {
 			return n, err
 		}
 		n++
@@ -337,6 +416,27 @@ func walkPaired(r1Path, r2Path string, e *recordEmitter) (int, error) {
 	defer r2.Close()
 	rd1 := newFastqLineReader(r1)
 	rd2 := newFastqLineReader(r2)
+	// Optional --i1 / --i2 index readers. Each per-pair pull yields a
+	// BC/QT pair shared between R1 and R2. Upstream uses '+' as the
+	// segment separator for two indices (matching the SAM-spec BC
+	// shape).
+	var rdI1, rdI2 *fastqLineReader
+	if e.opts.Index1Path != "" {
+		fi, ierr := iohelper.OpenReader(e.opts.Index1Path)
+		if ierr != nil {
+			return 0, fmt.Errorf("samtools import: open %s: %w", e.opts.Index1Path, ierr)
+		}
+		defer fi.Close()
+		rdI1 = newFastqLineReader(fi)
+	}
+	if e.opts.Index2Path != "" {
+		fi, ierr := iohelper.OpenReader(e.opts.Index2Path)
+		if ierr != nil {
+			return 0, fmt.Errorf("samtools import: open %s: %w", e.opts.Index2Path, ierr)
+		}
+		defer fi.Close()
+		rdI2 = newFastqLineReader(fi)
+	}
 	n := 0
 	for {
 		rec1, err1 := rd1.next()
@@ -353,18 +453,61 @@ func walkPaired(r1Path, r2Path string, e *recordEmitter) (int, error) {
 		if err1 != err2 {
 			return n, fmt.Errorf("samtools import: input files with differing number of records (%s vs %s)", r1Path, r2Path)
 		}
+		idxBC, idxQT, ierr := nextIndexBCQT(rdI1, rdI2, e.opts.Index1Path, e.opts.Index2Path)
+		if ierr != nil {
+			return n, ierr
+		}
 		flag1 := uint16(sam.FlagPaired | sam.FlagUnmapped | sam.FlagMateUnmapped | sam.FlagRead1)
 		flag2 := uint16(sam.FlagPaired | sam.FlagUnmapped | sam.FlagMateUnmapped | sam.FlagRead2)
-		if err := e.emit(rec1.name, rec1.desc, rec1.seq, rec1.qual, flag1); err != nil {
+		// Upstream attaches the --i1/--i2 BC/QT only to R1; R2 emerges
+		// without an index aux. Matches sam_import.c.
+		if err := e.emit(rec1.name, rec1.desc, rec1.seq, rec1.qual, flag1, idxBC, idxQT); err != nil {
 			return n, err
 		}
 		n++
-		if err := e.emit(rec2.name, rec2.desc, rec2.seq, rec2.qual, flag2); err != nil {
+		if err := e.emit(rec2.name, rec2.desc, rec2.seq, rec2.qual, flag2, "", ""); err != nil {
 			return n, err
 		}
 		n++
 	}
 	return n, nil
+}
+
+// nextIndexBCQT pulls one record from each non-nil index reader and
+// returns the concatenated barcode sequence + quality strings. Two
+// indices are joined with '+', matching upstream's BC formatting.
+// Returns "", "" when both readers are nil.
+func nextIndexBCQT(rdI1, rdI2 *fastqLineReader, i1Path, i2Path string) (string, string, error) {
+	var seq1, seq2, qual1, qual2 string
+	if rdI1 != nil {
+		r, err := rdI1.next()
+		if err != nil && err != io.EOF {
+			return "", "", fmt.Errorf("samtools import: read %s: %w", i1Path, err)
+		}
+		if err != io.EOF {
+			seq1 = string(r.seq)
+			qual1 = string(r.qual)
+		}
+	}
+	if rdI2 != nil {
+		r, err := rdI2.next()
+		if err != nil && err != io.EOF {
+			return "", "", fmt.Errorf("samtools import: read %s: %w", i2Path, err)
+		}
+		if err != io.EOF {
+			seq2 = string(r.seq)
+			qual2 = string(r.qual)
+		}
+	}
+	switch {
+	case seq1 != "" && seq2 != "":
+		return seq1 + "+" + seq2, qual1 + " " + qual2, nil
+	case seq1 != "":
+		return seq1, qual1, nil
+	case seq2 != "":
+		return seq2, qual2, nil
+	}
+	return "", "", nil
 }
 
 // fastqRecord is a lightweight FASTQ record. We don't use pkg/htsgo/fastq
