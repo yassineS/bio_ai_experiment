@@ -2082,22 +2082,21 @@ func runConsensus(args []string) int {
 	explicit := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 
-	// The accepted-but-not-implemented knobs are wired into the warn-
-	// on-misuse stance: each emits a stderr warning when set so users
-	// see a deterministic signal rather than silently-wrong output.
-	// docs/PARITY_ROADMAP.md tracks closure-stance per knob.
-	if inclFlags != "" || exclFlags != "" {
-		fmt.Fprintln(os.Stderr, "samtools consensus: warning: --rf/--ff flag filters are not yet implemented (v1's filter set is fixed)")
+	// Parse --rf/--ff flag specs. Empty input yields zero (default).
+	inclMask, ierr := samtools.ParseFlagSpec(inclFlags)
+	if ierr != nil {
+		fmt.Fprintf(os.Stderr, "samtools consensus: bad --rf/--incl-flags: %v\n", ierr)
+		return 2
 	}
-	if refFasta != "" {
-		fmt.Fprintln(os.Stderr, "samtools consensus: warning: -T/--reference uncovered-base fill is not yet implemented")
+	exclMask, eerr := samtools.ParseFlagSpec(exclFlags)
+	if eerr != nil {
+		fmt.Fprintf(os.Stderr, "samtools consensus: bad --ff/--excl-flags: %v\n", eerr)
+		return 2
 	}
-	if ignoreOvl {
-		fmt.Fprintln(os.Stderr, "samtools consensus: warning: --ignore-overlaps is not yet implemented; mates count independently")
-	}
-	if hetOnly {
-		fmt.Fprintln(os.Stderr, "samtools consensus: warning: --het-only is not yet implemented")
-	}
+	// --het-only is dead code in upstream bam_consensus.c (the field is
+	// initialised but never consumed; bam_consensus.c:232,2997,3097);
+	// our acceptance-without-action mirrors upstream exactly.
+	_ = hetOnly
 	if bay.qualCal != "" {
 		fmt.Fprintln(os.Stderr, "samtools consensus: warning: -t/--qual-calibration applies the FLAT identity table only (per-machine tables not yet ported)")
 	}
@@ -2146,6 +2145,12 @@ func runConsensus(args []string) int {
 		MinBaseQ:        uint8(minBQ),
 		LineLen:         lineLen,
 		IgnoreOverlaps:  ignoreOvl,
+		IncludeFlags:    inclMask,
+		IncludeFlagsSet: explicit["rf"] || explicit["incl-flags"],
+		ExcludeFlags:    exclMask,
+		ExcludeFlagsSet: explicit["ff"] || explicit["excl-flags"],
+		Reference:       refFasta,
+		RefQual:         refQual,
 		Output:          outPath,
 		Threads:         threads,
 	}

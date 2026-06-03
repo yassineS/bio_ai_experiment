@@ -79,6 +79,24 @@ type MpileupOptions struct {
 	// per line (CLI -b). Lines starting with '#' and blank lines are
 	// ignored. The resolved paths are appended to Inputs.
 	BamList string
+	// IncludeFlags is upstream's `--rf/--incl-flags`: a record is
+	// kept only when (Flag & IncludeFlags) == IncludeFlags. Default
+	// 0 keeps everything.
+	IncludeFlags uint16
+	// IncludeFlagsSet is true when the caller explicitly set
+	// IncludeFlags via the CLI. (Needed to disambiguate an explicit 0
+	// from "not set", which matters for parity with upstream's flag
+	// validation paths.)
+	IncludeFlagsSet bool
+	// ExcludeFlags is upstream's `--ff/--excl-flags`: when set,
+	// REPLACES the default UNMAP|SECONDARY|QCFAIL|DUP|SUPPLEMENTARY
+	// exclusion mask. A record is dropped when (Flag & ExcludeFlags)
+	// != 0.
+	ExcludeFlags uint16
+	// ExcludeFlagsSet is true when ExcludeFlags has been explicitly
+	// set, so an explicit 0 replaces the default (allowing the
+	// caller to keep duplicates / secondary records).
+	ExcludeFlagsSet bool
 }
 
 // ErrMpileupBCFNotImplemented mirrors upstream samtools 1.x, which REMOVED
@@ -359,9 +377,19 @@ func keepMpileupRecord(rec *sam.Record, opts MpileupOptions, hdr0 *sam.Header) b
 	if rec.Pos <= 0 || rec.RName == "" {
 		return false
 	}
-	// Match upstream defaults: drop unmapped, secondary, supplementary,
-	// QCfail, duplicate.
-	if rec.Flag&(sam.FlagUnmapped|sam.FlagSecondary|sam.FlagQCFail|sam.FlagDuplicate|sam.FlagSupplementary) != 0 {
+	// Upstream's default excl_flags: UNMAP|SECONDARY|QCFAIL|DUP. The
+	// `--ff/--excl-flags` flag REPLACES this default. Supplementary is
+	// also dropped by default per mpileup's mplp_get_read. Matching
+	// upstream means: when ExcludeFlagsSet, use that mask alone; else
+	// fall back to the default.
+	excl := uint16(sam.FlagUnmapped | sam.FlagSecondary | sam.FlagQCFail | sam.FlagDuplicate | sam.FlagSupplementary)
+	if opts.ExcludeFlagsSet {
+		excl = opts.ExcludeFlags
+	}
+	if excl != 0 && rec.Flag&excl != 0 {
+		return false
+	}
+	if opts.IncludeFlagsSet && opts.IncludeFlags != 0 && rec.Flag&opts.IncludeFlags != opts.IncludeFlags {
 		return false
 	}
 	// `-A` accepts reads whose mate is unmapped; without it, anomalous

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
@@ -103,6 +104,19 @@ type ConsensusOptions struct {
 	MinMAPQ uint8
 	// MinBaseQ skips bases with quality below this value (CLI --min-BQ).
 	MinBaseQ uint8
+	// IncludeFlags mirrors upstream `--rf/--incl-flags`: keep records
+	// whose Flag bits cover this mask. 0 (the default) keeps everything.
+	IncludeFlags uint16
+	// IncludeFlagsSet is true when the caller explicitly supplied
+	// --rf/--incl-flags, so an explicit 0 is distinguishable from
+	// "not set".
+	IncludeFlagsSet bool
+	// ExcludeFlags mirrors upstream `--ff/--excl-flags`: when set,
+	// REPLACES the default UNMAP|SECONDARY|QCFAIL|DUP exclusion mask.
+	ExcludeFlags uint16
+	// ExcludeFlagsSet is true when the caller explicitly supplied
+	// --ff/--excl-flags.
+	ExcludeFlagsSet bool
 	// AmbigCodes enables IUPAC ambiguity codes for heterozygous calls
 	// (CLI -A/--ambig).
 	AmbigCodes bool
@@ -132,10 +146,20 @@ type ConsensusOptions struct {
 	// (upstream --het-only). v1 accepts it but does not implement the
 	// filter; tracked in docs/PARITY_ROADMAP.md.
 	HetOnly bool
-	// IgnoreOverlaps is accepted for CLI compatibility but not
-	// implemented (v1 does not deduplicate mate-pair overlaps in the
-	// consensus walker).
+	// IgnoreOverlaps enables mate-overlap deduplication (mirrors
+	// upstream `samtools depth -s` and mpileup's -x). When set, the
+	// consensus walker uses the shared mpileup smart-overlap
+	// machinery to mask the redundant half of overlapping mate pairs
+	// so each fragment contributes at most one base per position.
 	IgnoreOverlaps bool
+	// Reference is the path to a FASTA reference (CLI `-T/--reference`).
+	// When set, zero-coverage positions emitted via -a/-aa use the
+	// reference base instead of 'N' and RefQual instead of '!'.
+	Reference string
+	// RefQual is the quality value assigned to reference-fill bases
+	// (CLI `--ref-qual`). Default 0; the qual byte written is
+	// `RefQual + '!'`.
+	RefQual int
 	// CountOrphans accepts reads with unmapped mates / anomalous pair
 	// flags. Upstream consensus' default `excl_flags` only drops
 	// UNMAP|SECONDARY|QCFAIL|DUP — paired-but-not-proper reads are
@@ -238,15 +262,32 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 	}
 	hdr := rd.Header()
 
+	// -T/--reference: open the FASTA so zero-coverage positions can
+	// be filled with the reference base (bam_consensus.c:2497-2506).
+	var refFA *fasta.RandomAccess
+	if opts.Reference != "" {
+		ra, ferr := fasta.OpenRandomAccess(opts.Reference)
+		if ferr != nil {
+			return fmt.Errorf("samtools consensus: open reference %s: %w", opts.Reference, ferr)
+		}
+		defer ra.Close()
+		refFA = ra
+	}
+
 	// Bucket records by chromosome up front. We reuse the same filter
 	// strategy as the mpileup walker (drop unmapped/secondary/etc,
 	// apply MAPQ floor), with the consensus-specific tweak that we
 	// always accept orphan mates (matching upstream consensus, which
 	// only excludes UNMAP|SECONDARY|QCFAIL|DUP).
 	mpopts := MpileupOptions{
-		MinMAPQ:      opts.MinMAPQ,
-		MinBaseQ:     opts.MinBaseQ,
-		CountOrphans: true,
+		MinMAPQ:         opts.MinMAPQ,
+		MinBaseQ:        opts.MinBaseQ,
+		CountOrphans:    true,
+		IgnoreOverlaps:  opts.IgnoreOverlaps,
+		IncludeFlags:    opts.IncludeFlags,
+		IncludeFlagsSet: opts.IncludeFlagsSet,
+		ExcludeFlags:    opts.ExcludeFlags,
+		ExcludeFlagsSet: opts.ExcludeFlagsSet,
 	}
 	byChrom, err := bucketByChrom(rd, mpopts, hdr)
 	if err != nil {
@@ -325,7 +366,18 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 			windows = [][2]int{{0, refLen}}
 		}
 
-		if err := emitConsensusContig(bw, chrom, refLen, windows, recs, posFilter, opts); err != nil {
+		// Fetch the contig's reference sequence once when -T is set. A
+		// missing reference contig is non-fatal: we fall back to 'N'
+		// fill, matching upstream which warns and continues.
+		var refSeq []byte
+		if refFA != nil {
+			if rlen := refFA.Length(chrom); rlen > 0 {
+				if rs, rerr := refFA.Fetch(chrom, 0, rlen); rerr == nil {
+					refSeq = rs
+				}
+			}
+		}
+		if err := emitConsensusContig(bw, chrom, refLen, windows, recs, posFilter, refSeq, opts); err != nil {
 			return err
 		}
 	}
@@ -445,9 +497,10 @@ type consensusCall struct {
 }
 
 // emitConsensusContig walks every window on chrom and emits per-format
-// records (FASTA/FASTQ/Pileup).
+// records (FASTA/FASTQ/Pileup). When refSeq is non-nil it is used to
+// fill zero-coverage positions instead of 'N' (CLI `-T/--reference`).
 func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][2]int,
-	recs []*sam.Record, posFilter *positionFilter, opts ConsensusOptions) error {
+	recs []*sam.Record, posFilter *positionFilter, refSeq []byte, opts ConsensusOptions) error {
 
 	// For FASTA/FASTQ we accumulate one buffer per contig and emit at
 	// the end. For pileup we stream line-by-line. firstCovIdx/lastCovIdx
@@ -545,10 +598,23 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				// FASTA / FASTQ accumulate. Every position is appended
 				// (uncovered ones as 'N') so internal gaps fill; the
 				// covered span is bracketed by firstCovIdx/lastCovIdx
-				// and leading/trailing N is trimmed unless -a.
+				// and leading/trailing N is trimmed unless -a. With
+				// -T/--reference set, fill with the reference base at
+				// the current 1-based position instead of 'N' and use
+				// `RefQual + '!'` for the quality byte, matching
+				// bam_consensus.c:2497-2506.
 				if call.base == 0 {
-					seqBuf = append(seqBuf, 'N')
-					qualBuf = append(qualBuf, '!')
+					if refSeq != nil && pos0 >= 0 && pos0 < len(refSeq) {
+						rb := refSeq[pos0]
+						if rb >= 'a' && rb <= 'z' {
+							rb -= 32 // uppercase
+						}
+						seqBuf = append(seqBuf, rb)
+						qualBuf = append(qualBuf, byte(opts.RefQual)+'!')
+					} else {
+						seqBuf = append(seqBuf, 'N')
+						qualBuf = append(qualBuf, '!')
+					}
 					continue
 				}
 				if call.base == '*' && !opts.ShowDel {

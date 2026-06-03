@@ -1089,6 +1089,8 @@ func runMpileup(args []string) int {
 		bcf       bool
 		ubcf      bool
 		threads   int
+		inclFlags string
+		exclFlags string
 		showHelp  bool
 		showVer   bool
 	)
@@ -1104,6 +1106,10 @@ func runMpileup(args []string) int {
 	cliflag.BoolVar(fs, &ignoreOvl, "x", "ignore-overlaps", false, "Discard overlapping mates")
 	cliflag.BoolVar(fs, &redoBAQ, "E", "redo-baq", false, "Re-compute BAQ (not implemented)")
 	cliflag.BoolVar(fs, &noBAQ, "B", "no-BAQ", false, "Disable BAQ (no-op in v1)")
+	cliflag.StringVar(fs, &inclFlags, "", "rf", "", "Required flag bits (alias --incl-flags)")
+	cliflag.StringVar(fs, &inclFlags, "", "incl-flags", "", "Required flag bits")
+	cliflag.StringVar(fs, &exclFlags, "", "ff", "", "Excluded flag bits (alias --excl-flags)")
+	cliflag.StringVar(fs, &exclFlags, "", "excl-flags", "", "Excluded flag bits")
 	cliflag.BoolVar(fs, &allPos, "a", "all-positions", false, "Emit zero-depth positions in covered range")
 	cliflag.BoolVar(fs, &allChrom, "", "all-positions-all-chroms", false, "Emit every reference position (-aa)")
 	cliflag.BoolVar(fs, &outMapq, "s", "output-mapq", false, "Append MAPQs column")
@@ -1157,6 +1163,16 @@ func runMpileup(args []string) int {
 		return 2
 	}
 
+	inclMask, ierr := samtools.ParseFlagSpec(inclFlags)
+	if ierr != nil {
+		fmt.Fprintf(os.Stderr, "samtools mpileup: bad --rf/--incl-flags: %v\n", ierr)
+		return 2
+	}
+	exclMask, eerr := samtools.ParseFlagSpec(exclFlags)
+	if eerr != nil {
+		fmt.Fprintf(os.Stderr, "samtools mpileup: bad --ff/--excl-flags: %v\n", eerr)
+		return 2
+	}
 	opts := samtools.MpileupOptions{
 		Inputs:                fs.Args(),
 		FastaRef:              fastaRef,
@@ -1176,6 +1192,10 @@ func runMpileup(args []string) int {
 		Output:                outPath,
 		Threads:               threads,
 		BamList:               bamList,
+		IncludeFlags:          inclMask,
+		IncludeFlagsSet:       inclFlags != "",
+		ExcludeFlags:          exclMask,
+		ExcludeFlagsSet:       exclFlags != "",
 	}
 
 	out, err := openOut(outPath)
