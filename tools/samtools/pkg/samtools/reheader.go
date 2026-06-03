@@ -30,10 +30,15 @@ type ReheaderOptions struct {
 	// caller arranges the file swap. We simply emit the rewritten BAM
 	// to the supplied writer either way.
 	InPlace bool
-	// NoPG suppresses the @PG record we would otherwise leave alone;
-	// since v1 never injects @PG, setting this is a no-op kept for
-	// flag-compat.
+	// NoPG suppresses the @PG line injection. By default, reheader
+	// appends a @PG line documenting the command via the shared
+	// InjectPG helper.
 	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args. (Distinct from
+	// `Command` above, which is the `-c CMD` shell pipeline applied
+	// to the existing header text.)
+	PGCommand string
 }
 
 // Reheader emits a new BAM stream that has the original alignment blocks of the
@@ -110,6 +115,7 @@ func Reheader(in io.Reader, out io.Writer, opts ReheaderOptions) error {
 			len(newHdr.Refs), len(origHdr.Refs))
 	}
 
+	newHdr = InjectPG(newHdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 	bw := sam.NewBAMWriter(out)
 	if err := bw.WriteHeader(newHdr); err != nil {
 		return err

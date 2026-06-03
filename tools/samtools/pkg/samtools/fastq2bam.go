@@ -77,9 +77,13 @@ type FastqImportOptions struct {
 	// underlying BGZF writer. Currently ignored (we always use the
 	// default level); the flag is accepted for compat.
 	Uncompressed bool
-	// NoPG suppresses @PG injection (we never inject @PG so this is a
-	// no-op).
+	// NoPG suppresses the @PG line injection. By default, import
+	// appends a @PG line documenting the command via the shared
+	// InjectPG helper.
 	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 }
 
 // FastqImport reads FASTQ records from the configured inputs and writes
@@ -144,6 +148,7 @@ func FastqImport(out io.Writer, opts FastqImportOptions) (int, error) {
 	} else {
 		w = sam.NewSAMWriter(out)
 	}
+	hdr = InjectPG(hdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 	if err := w.WriteHeader(hdr); err != nil {
 		return 0, err
 	}

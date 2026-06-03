@@ -19,6 +19,12 @@ type CatOptions struct {
 	// the first input. The override file must be a SAM header text file
 	// (matches upstream's `-h FILE`).
 	HeaderOverride string
+	// NoPG suppresses the @PG line injection. By default, cat appends
+	// a @PG line documenting the command via the shared InjectPG helper.
+	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 	// Threads is accepted for upstream-CLI compatibility; ignored.
 	Threads int
 }
@@ -76,6 +82,7 @@ func Cat(inputs []io.Reader, out io.Writer, opts CatOptions) error {
 		}
 	}
 
+	hdr = InjectPG(hdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 	bw := sam.NewBAMWriter(out)
 	if err := bw.WriteHeader(hdr); err != nil {
 		return err

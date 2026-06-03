@@ -62,8 +62,12 @@ type SortOptions struct {
 	// because shards are reassembled by submission-order sequence number
 	// before the k-way merge step.
 	Threads int
-	// NoPG is accepted but is a no-op (we don't inject @PG lines anyway).
+	// NoPG suppresses the @PG line injection. By default, sort appends
+	// a @PG line documenting the command via the shared InjectPG helper.
 	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 	// SecondaryByName, with Order == SortByTag, selects upstream's
 	// TagQueryName ordering (qname+FLAG tie-break). Default false matches
 	// upstream TagCoordinate (tid, pos+1, rev) tie-break.
@@ -711,6 +715,7 @@ func writeShard(dir, prefix string, idx int, hdr *sam.Header, recs []*sam.Record
 func writeOutput(out io.Writer, hdr *sam.Header, it recordIter, opts SortOptions) error {
 	// Stamp SO in @HD according to the chosen sort order.
 	stampSortOrder(hdr, opts.Order)
+	hdr = InjectPG(hdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 
 	var w sam.Writer
 	if opts.OutputSAM {

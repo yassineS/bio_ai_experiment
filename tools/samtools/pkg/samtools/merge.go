@@ -30,10 +30,14 @@ type MergeOptions struct {
 	CompressLevel int
 	// CollapsePG (-c) collapses identical @PG chains to a single line.
 	CollapsePG bool
-	// PreservePG (-p) keeps every @PG even when collapsable; note that v1
-	// never injects @PG so the PG handling here only affects what's
-	// preserved from inputs.
+	// PreservePG (-p) keeps every @PG even when collapsable.
 	PreservePG bool
+	// NoPG suppresses the @PG line injection. By default, merge appends
+	// a @PG line documenting the command via the shared InjectPG helper.
+	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 	// Threads is accepted for upstream-CLI compatibility; ignored.
 	Threads int
 }
@@ -152,6 +156,7 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 	}
 
 	bw := sam.NewBAMWriter(out)
+	hdr = InjectPG(hdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 	if err := bw.WriteHeader(hdr); err != nil {
 		return err
 	}

@@ -155,7 +155,7 @@ func TestLive_View_WithHeader(t *testing.T) {
 	live, ours := requireLive(t)
 	in := fixture(t, "basic.sam")
 	up := runBin(t, live, "view", "-h", "--no-PG", in)
-	gp := runBin(t, ours, "view", "-h", in)
+	gp := runBin(t, ours, "view", "-h", "--no-PG", in)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: view -h:\nupstream=%q\nours    =%q", up, gp)
 	}
@@ -166,7 +166,7 @@ func TestLive_View_HeaderOnly(t *testing.T) {
 	live, ours := requireLive(t)
 	in := fixture(t, "basic.sam")
 	up := runBin(t, live, "view", "-H", "--no-PG", in)
-	gp := runBin(t, ours, "view", "-H", in)
+	gp := runBin(t, ours, "view", "-H", "--no-PG", in)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: view -H:\nupstream=%q\nours    =%q", up, gp)
 	}
@@ -234,7 +234,7 @@ func TestLive_View_BAMRoundTrip(t *testing.T) {
 	live, ours := requireLive(t)
 	in := fixture(t, "basic.sam")
 	up := runBin(t, live, "view", "-b", "--no-PG", in)
-	gp := runBin(t, ours, "view", "-b", in)
+	gp := runBin(t, ours, "view", "-b", "--no-PG", in)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: view -b BAM bytes differ (len up=%d ours=%d)",
 			len(up), len(gp))
@@ -249,7 +249,7 @@ func TestLive_Sort_CoordBAM(t *testing.T) {
 	live, ours := requireLive(t)
 	in := fixture(t, "test_input_1_a.sam")
 	up := runBin(t, live, "sort", "--no-PG", in)
-	gp := runBin(t, ours, "sort", in)
+	gp := runBin(t, ours, "sort", "--no-PG", in)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: sort coord BAM bytes differ (len up=%d ours=%d)",
 			len(up), len(gp))
@@ -261,7 +261,7 @@ func TestLive_Sort_CoordSAM(t *testing.T) {
 	live, ours := requireLive(t)
 	in := fixture(t, "test_input_1_a.sam")
 	up := runBin(t, live, "sort", "--no-PG", "-O", "sam", in)
-	gp := runBin(t, ours, "sort", "-O", "sam", in)
+	gp := runBin(t, ours, "sort", "--no-PG", "-O", "sam", in)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: sort -O sam:\nup len=%d ours len=%d\n--- up ---\n%s--- ours ---\n%s",
 			len(up), len(gp), up, gp)
@@ -273,7 +273,7 @@ func TestLive_Sort_ByName(t *testing.T) {
 	live, ours := requireLive(t)
 	in := fixture(t, "sort_name_input_1.sam")
 	up := runBin(t, live, "sort", "--no-PG", "-n", "-O", "sam", in)
-	gp := runBin(t, ours, "sort", "-n", "-O", "sam", in)
+	gp := runBin(t, ours, "sort", "--no-PG", "-n", "-O", "sam", in)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: sort -n:\nup=%q\nours=%q", up, gp)
 	}
@@ -284,7 +284,7 @@ func TestLive_Sort_ByTag(t *testing.T) {
 	live, ours := requireLive(t)
 	in := fixture(t, "test_input_1_a.sam")
 	up := runBin(t, live, "sort", "--no-PG", "-t", "RG", "-O", "sam", in)
-	gp := runBin(t, ours, "sort", "-t", "RG", "-O", "sam", in)
+	gp := runBin(t, ours, "sort", "--no-PG", "-t", "RG", "-O", "sam", in)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: sort -t RG:\nup=%q\nours=%q", up, gp)
 	}
@@ -481,7 +481,7 @@ func TestLive_Markdup(t *testing.T) {
 	if _, code := runBinAllowFail(t, live, "markdup", "--no-PG", sorted, upOut); code != 0 {
 		t.Fatalf("upstream markdup failed: %d", code)
 	}
-	if _, code := runBinAllowFail(t, ours, "markdup", sorted, ourOut); code != 0 {
+	if _, code := runBinAllowFail(t, ours, "markdup", "--no-PG", sorted, ourOut); code != 0 {
 		t.Fatalf("ours markdup failed: %d", code)
 	}
 	upB, err := os.ReadFile(upOut)
@@ -517,7 +517,7 @@ func TestLive_Fixmate(t *testing.T) {
 	if _, code := runBinAllowFail(t, live, "fixmate", "--no-PG", nameSorted, upOut); code != 0 {
 		t.Fatalf("upstream fixmate failed: %d", code)
 	}
-	if _, code := runBinAllowFail(t, ours, "fixmate", nameSorted, ourOut); code != 0 {
+	if _, code := runBinAllowFail(t, ours, "fixmate", "--no-PG", nameSorted, ourOut); code != 0 {
 		t.Fatalf("ours fixmate failed: %d", code)
 	}
 	upB, err := os.ReadFile(upOut)
@@ -573,10 +573,10 @@ func TestLive_Merge(t *testing.T) {
 	}
 	bamA := filepath.Join(dir, "a.bam")
 	bamB := filepath.Join(dir, "b.bam")
-	if err := os.WriteFile(bamA, runBin(t, ours, "sort", samAPath), 0644); err != nil {
+	if err := os.WriteFile(bamA, runBin(t, ours, "sort", "--no-PG", samAPath), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bamB, runBin(t, ours, "sort", samBPath), 0644); err != nil {
+	if err := os.WriteFile(bamB, runBin(t, ours, "sort", "--no-PG", samBPath), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -585,7 +585,7 @@ func TestLive_Merge(t *testing.T) {
 	if _, code := runBinAllowFail(t, live, "merge", "--no-PG", upOut, bamA, bamB); code != 0 {
 		t.Fatalf("upstream merge failed: %d", code)
 	}
-	if _, code := runBinAllowFail(t, ours, "merge", ourOut, bamA, bamB); code != 0 {
+	if _, code := runBinAllowFail(t, ours, "merge", "--no-PG", ourOut, bamA, bamB); code != 0 {
 		t.Fatalf("ours merge failed: %d", code)
 	}
 	upB, err := os.ReadFile(upOut)
@@ -611,11 +611,16 @@ func TestLive_Calmd(t *testing.T) {
 	ref := fixture(t, "calmd", "realn01.fa")
 	dir := t.TempDir()
 	bamIn := filepath.Join(dir, "in.bam")
-	if err := os.WriteFile(bamIn, runBin(t, ours, "view", "-b", "-h", samIn), 0644); err != nil {
+	if err := os.WriteFile(bamIn, runBin(t, ours, "view", "-b", "-h", "--no-PG", samIn), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// Both binaries inject a @PG line by default; that line's CL field
+	// records the absolute path of the binary which differs between the
+	// vendored upstream and our locally-built port. Pass --no-PG to both
+	// so we compare the per-record stream proper, not the build-path
+	// metadata.
 	up := runBin(t, live, "calmd", "--no-PG", bamIn, ref)
-	gp := runBin(t, ours, "calmd", bamIn, ref)
+	gp := runBin(t, ours, "calmd", "--no-PG", bamIn, ref)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: calmd: aux-tag emission order differs from "+
 			"upstream. Upstream preserves original tag order and appends "+
@@ -634,7 +639,7 @@ func TestLive_Mpileup(t *testing.T) {
 	dir := t.TempDir()
 	bam := filepath.Join(dir, "in.bam")
 	// Need a coord-sorted, indexed BAM for mpileup.
-	sorted := runBin(t, ours, "sort", samIn)
+	sorted := runBin(t, ours, "sort", "--no-PG", samIn)
 	if err := os.WriteFile(bam, sorted, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +680,7 @@ func TestLive_Quickcheck_BAM_OK(t *testing.T) {
 	in := fixture(t, "basic.sam")
 	dir := t.TempDir()
 	bam := filepath.Join(dir, "x.bam")
-	if err := os.WriteFile(bam, runBin(t, ours, "view", "-b", in), 0644); err != nil {
+	if err := os.WriteFile(bam, runBin(t, ours, "view", "-b", "--no-PG", in), 0644); err != nil {
 		t.Fatal(err)
 	}
 	_, upCode := runBinAllowFail(t, live, "quickcheck", bam)
@@ -711,7 +716,7 @@ func TestLive_Reheader(t *testing.T) {
 
 	// Build a BAM via our port (byte-equal to upstream).
 	bam := filepath.Join(dir, "in.bam")
-	if err := os.WriteFile(bam, runBin(t, ours, "view", "-b", in), 0644); err != nil {
+	if err := os.WriteFile(bam, runBin(t, ours, "view", "-b", "--no-PG", in), 0644); err != nil {
 		t.Fatal(err)
 	}
 	hdr := filepath.Join(dir, "hdr.sam")
@@ -723,7 +728,7 @@ func TestLive_Reheader(t *testing.T) {
 		t.Fatal(err)
 	}
 	up := runBin(t, live, "reheader", "--no-PG", hdr, bam)
-	gp := runBin(t, ours, "reheader", hdr, bam)
+	gp := runBin(t, ours, "reheader", "--no-PG", hdr, bam)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: reheader BAM bytes differ (len up=%d ours=%d)",
 			len(up), len(gp))
@@ -740,11 +745,11 @@ func TestLive_AddReplaceRG(t *testing.T) {
 	in := fixture(t, "basic.sam")
 	dir := t.TempDir()
 	bam := filepath.Join(dir, "in.bam")
-	if err := os.WriteFile(bam, runBin(t, ours, "view", "-b", in), 0644); err != nil {
+	if err := os.WriteFile(bam, runBin(t, ours, "view", "-b", "--no-PG", in), 0644); err != nil {
 		t.Fatal(err)
 	}
 	up := runBin(t, live, "addreplacerg", "--no-PG", "-r", `ID:newrg\tSM:s9`, bam)
-	gp := runBin(t, ours, "addreplacerg", "-r", `ID:newrg\tSM:s9`, bam)
+	gp := runBin(t, ours, "addreplacerg", "--no-PG", "-r", `ID:newrg\tSM:s9`, bam)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: addreplacerg: ours defaults to "+
 			"mode=orphan_only (only fills records missing RG); upstream "+
@@ -764,11 +769,11 @@ func TestLive_Cat(t *testing.T) {
 	in := fixture(t, "basic.sam")
 	dir := t.TempDir()
 	bam := filepath.Join(dir, "in.bam")
-	if err := os.WriteFile(bam, runBin(t, ours, "view", "-b", in), 0644); err != nil {
+	if err := os.WriteFile(bam, runBin(t, ours, "view", "-b", "--no-PG", in), 0644); err != nil {
 		t.Fatal(err)
 	}
 	up := runBin(t, live, "cat", "--no-PG", bam, bam)
-	gp := runBin(t, ours, "cat", bam, bam)
+	gp := runBin(t, ours, "cat", "--no-PG", bam, bam)
 	if !bytes.Equal(up, gp) {
 		t.Errorf("DIVERGENCE: cat BAM bytes differ (len up=%d ours=%d)",
 			len(up), len(gp))
@@ -803,7 +808,7 @@ func TestLive_Import(t *testing.T) {
 	if err := os.WriteFile(upPath, runBin(t, live, "import", "--no-PG", fq), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ourPath, runBin(t, ours, "import", fq), 0644); err != nil {
+	if err := os.WriteFile(ourPath, runBin(t, ours, "import", "--no-PG", fq), 0644); err != nil {
 		t.Fatal(err)
 	}
 	upDec := runBin(t, live, "view", upPath)
@@ -862,7 +867,7 @@ func TestLive_Split(t *testing.T) {
 		t.Fatal(err)
 	}
 	bamPath := filepath.Join(dir, "in.bam")
-	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", samPath), 0644); err != nil {
+	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", "--no-PG", samPath), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -887,7 +892,7 @@ func TestLive_Split(t *testing.T) {
 		}
 	}
 	runIn(upDir, live, "split", "--no-PG", "-f", "%*_%!.bam", bamPath)
-	runIn(oursDir, ours, "split", "-f", "%*_%!.bam", bamPath)
+	runIn(oursDir, ours, "split", "--no-PG", "-f", "%*_%!.bam", bamPath)
 
 	for _, rg := range []string{"rg1", "rg2"} {
 		upB, err := os.ReadFile(filepath.Join(upDir, "in_"+rg+".bam"))
@@ -941,7 +946,7 @@ func TestLive_Phase(t *testing.T) {
 		t.Fatal(err)
 	}
 	bamPath := filepath.Join(dir, "phase.bam")
-	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", samPath), 0644); err != nil {
+	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", "--no-PG", samPath), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1130,7 +1135,7 @@ func TestLive_Consensus(t *testing.T) {
 		t.Fatal(err)
 	}
 	bamPath := filepath.Join(dir, "cons.bam")
-	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", samPath), 0644); err != nil {
+	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", "--no-PG", samPath), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1167,7 +1172,7 @@ func TestLive_Targetcut(t *testing.T) {
 		t.Fatal(err)
 	}
 	bamPath := filepath.Join(dir, "tc.bam")
-	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", samPath), 0644); err != nil {
+	if err := os.WriteFile(bamPath, runBin(t, ours, "view", "-b", "--no-PG", samPath), 0644); err != nil {
 		t.Fatal(err)
 	}
 

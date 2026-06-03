@@ -75,10 +75,12 @@ type ViewOptions struct {
 	// resulting filtered record set is identical, so we always perform the
 	// full intersection regardless.
 	MultiRegion bool
-	// NoPG suppresses the @PG line emission (placeholder; the view pipeline
-	// does not currently inject an @PG line, so this is a no-op kept for
-	// flag compatibility).
+	// NoPG suppresses the @PG line emission. By default, view appends a
+	// @PG line documenting the command via the shared InjectPG helper.
 	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 	// TagFilters is the conjunction of aux-tag predicates derived from
 	// `-d TAG[:VAL]` and `-D TAG:FILE`. A record is kept only when every
 	// filter matches. Empty means no tag filtering.
@@ -524,6 +526,7 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 	// cannot be written without a header.
 	emitHeader := opts.HeaderOnly || opts.WithHeader || opts.OutputBAM || opts.OutputCRAM
 	if emitHeader {
+		hdr = InjectPG(hdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 		if err := w.WriteHeader(hdr); err != nil {
 			return nil, err
 		}

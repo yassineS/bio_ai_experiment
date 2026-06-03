@@ -98,9 +98,13 @@ type MarkdupOptions struct {
 	AddTag bool
 	// Threads is accepted for upstream-CLI compatibility; ignored.
 	Threads int
-	// NoPG suppresses @PG injection. v1 never injects @PG so this is a
-	// no-op kept for flag-compat.
+	// NoPG suppresses the @PG line injection. By default, markdup
+	// appends a @PG line documenting the command via the shared
+	// InjectPG helper.
 	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 }
 
 // MarkdupResult summarises a Markdup run.
@@ -274,7 +278,8 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		return res, fmt.Errorf("markdup pass 2 header: %w", err)
 	}
 	bw := sam.NewBAMWriter(out)
-	if err := bw.WriteHeader(br2.Header()); err != nil {
+	outHdr := InjectPG(br2.Header(), "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
+	if err := bw.WriteHeader(outHdr); err != nil {
 		return res, err
 	}
 	for {

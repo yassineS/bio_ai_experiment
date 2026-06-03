@@ -20,9 +20,13 @@ type FixmateOptions struct {
 	// RemoveUnmapped (-r) drops records where both this read and its
 	// mate are unmapped (and unpaired entirely-unmapped singletons).
 	RemoveUnmapped bool
-	// NoPG suppresses @PG injection. v1 never injects @PG so this is a
-	// no-op kept for flag-compat.
+	// NoPG suppresses the @PG line injection. By default, fixmate
+	// appends a @PG line documenting the command via the shared
+	// InjectPG helper.
 	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 	// Threads is accepted for upstream-CLI compatibility; ignored.
 	Threads int
 }
@@ -44,7 +48,7 @@ func Fixmate(in io.Reader, out io.Writer, opts FixmateOptions) error {
 	if err != nil {
 		return err
 	}
-	hdr := br.Header()
+	hdr := InjectPG(br.Header(), "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 	bw := sam.NewBAMWriter(out)
 	if err := bw.WriteHeader(hdr); err != nil {
 		return err

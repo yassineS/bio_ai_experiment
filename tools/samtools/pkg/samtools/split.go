@@ -21,8 +21,13 @@ type SplitOptions struct {
 	// Unidentified is the path to write reads with no RG (or whose RG ID
 	// is not in the @RG table). Empty means "discard them".
 	Unidentified string
-	// NoPG is accepted; v1 never injects @PG lines.
+	// NoPG suppresses the @PG line injection. By default, split appends
+	// a @PG line to every per-RG output documenting the command via the
+	// shared InjectPG helper.
 	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 }
 
 // splitOut wraps one open per-RG output file.
@@ -73,6 +78,7 @@ func SplitFile(inPath string, opts SplitOptions) error {
 		// retain only the matching @RG line (sam_split.c). Match that so
 		// downstream tools see a single-RG header per file.
 		perRGHdr := headerKeepOnlyRG(hdr, rg.ID)
+		perRGHdr = InjectPG(perRGHdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 		if werr := bw.WriteHeader(perRGHdr); werr != nil {
 			_ = f.Close()
 			cleanup()
@@ -89,7 +95,8 @@ func SplitFile(inPath string, opts SplitOptions) error {
 			return ferr
 		}
 		bw := sam.NewBAMWriter(f)
-		if werr := bw.WriteHeader(hdr); werr != nil {
+		unidentHdr := InjectPG(hdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
+		if werr := bw.WriteHeader(unidentHdr); werr != nil {
 			_ = f.Close()
 			cleanup()
 			return werr

@@ -2310,24 +2310,26 @@ flag-exact / SN-byte cases are exercised in
   pinned against score / posterior-quality vectors captured from the
   upstream `probaln.c` self-test.
 
-**`calmd` deferred features (closed as architectural-parity / no-op-by-design):**
+**`calmd` (ported in full):**
 
-- **`-h` HASH_QNM** — upstream's hash-based query-name binarisation
-  is a memory/performance optimisation for very large alignment
-  sets; the *output* is byte-identical with or without it.
-  Closure stance: architectural-parity (perf-only).
-- **`-N` clear-MD/NM-bits** — upstream first zeroes any pre-
-  existing MD/NM bits before recomputing. Our port always
-  recomputes from scratch, so the "clear first" semantic is moot
-  by construction — the emitted MD/NM are identical regardless
-  of whether the input carried stale values. Closure stance:
-  no-op-by-design (output identical).
-- **`--no-PG`** — our port never emits an `@PG` header line in
-  any subcommand (`bam_md.c` writes one upstream; we don't). The
-  flag is a no-op because the v1 default already satisfies it.
-  Live oracle (`TestLive_Calmd`) runs upstream with `--no-PG`
-  and our port without it to validate the SAM record stream is
-  byte-equal modulo this single header line.
+- **`-N`** — when set, clears the UPDATE_MD|UPDATE_NM bits in
+  flt_flag (`bam_md.c:380`), so neither NM nor MD is written.
+  Pre-existing tags survive unchanged. Implemented via
+  `CalmdOptions.SkipUpdateMDNM`, which gates the
+  `updateNMAux`/`updateMDAux` calls in `calmd.go`. Verified
+  alongside the live oracle.
+- **`-h` HASH_QNM** — upstream defines the bit
+  (`bam_md.c:47,379`) but never reads it; the flag is accepted
+  as a no-op in upstream too, so our acceptance-without-warning
+  is byte-equal.
+- **`--no-PG`** — calmd now injects a `@PG` header line by
+  default (program "samtools", subcommand "samtools.calmd",
+  version "0.1.0", chained onto the input's last `@PG` via
+  `PP:`) using the shared `InjectPG` helper in `pgline.go`.
+  `--no-PG` suppresses it. `TestLive_Calmd` now passes
+  `--no-PG` to both binaries so the per-record stream
+  comparison is unaffected by the build-path metadata stored
+  in each side's `CL:` field.
 
 **`calmd` implemented post-MD/NM transforms** (`bam_md.c` upstream
 order — max-NM masking → write NM → write MD → DROP_TAG → BIN_QUAL):

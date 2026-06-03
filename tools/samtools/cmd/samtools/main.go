@@ -320,6 +320,7 @@ func runView(args []string) int {
 		BedPath:            regFile,
 		MultiRegion:        multiRegion,
 		NoPG:               noPG,
+		PGCommand:          strings.Join(os.Args, " "),
 		Reference:          refFile,
 		CRAMQualityBinning: cramQBin,
 		IndexPath:          indexPath,
@@ -608,6 +609,7 @@ func runSort(args []string) int {
 		OutputSAM:       outputSAM,
 		Threads:         threads,
 		NoPG:            noPG,
+		PGCommand:       strings.Join(os.Args, " "),
 		SecondaryByName: secondaryByName,
 	}
 

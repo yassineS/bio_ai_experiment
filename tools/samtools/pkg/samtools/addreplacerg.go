@@ -34,8 +34,13 @@ type AddReplaceRGOptions struct {
 	RGID string
 	// Mode selects orphan-only vs overwrite-all behaviour.
 	Mode AddReplaceRGMode
-	// NoPG is accepted; v1 never emits @PG lines so this is a no-op.
+	// NoPG suppresses the @PG line injection. By default, addreplacerg
+	// appends a @PG line documenting the command via the shared
+	// InjectPG helper.
 	NoPG bool
+	// PGCommand is the raw command-line stored under @PG:CL when NoPG
+	// is false. The CLI populates this with os.Args.
+	PGCommand string
 	// OutputBAM forces BAM output. Upstream's `addreplacerg` defaults
 	// to SAM text when writing to stdout; set this to true (via
 	// -O bam or an .bam output suffix at the CLI layer) to emit BAM.
@@ -80,6 +85,7 @@ func AddReplaceRG(in io.Reader, out io.Writer, opts AddReplaceRGOptions) error {
 		removeOtherRGs(hdr, id)
 	}
 
+	hdr = InjectPG(hdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 	var bw sam.Writer
 	if opts.OutputBAM {
 		bw = sam.NewBAMWriter(out)

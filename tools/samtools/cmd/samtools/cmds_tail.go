@@ -234,6 +234,7 @@ func runCat(args []string) int {
 		outPath  string
 		fofn     string
 		threads  int
+		noPG     bool
 		showHelp bool
 		showVer  bool
 	)
@@ -241,6 +242,7 @@ func runCat(args []string) int {
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
 	fs.StringVar(&fofn, "b", "", "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
+	fs.BoolVar(&noPG, "no-PG", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
@@ -278,6 +280,8 @@ func runCat(args []string) int {
 	defer out.Close()
 	if err := samtools.CatFiles(paths, out, samtools.CatOptions{
 		HeaderOverride: hdrPath,
+		NoPG:           noPG,
+		PGCommand:      strings.Join(os.Args, " "),
 		Threads:        threads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools cat: %v\n", err)
@@ -339,7 +343,7 @@ func runReheader(args []string) int {
 	}
 
 	positional := fs.Args()
-	opts := samtools.ReheaderOptions{Command: cmd, InPlace: inPlace, NoPG: noPG}
+	opts := samtools.ReheaderOptions{Command: cmd, InPlace: inPlace, NoPG: noPG, PGCommand: strings.Join(os.Args, " ")}
 	var bamPath string
 	switch {
 	case cmd != "" && len(positional) == 1:
@@ -486,6 +490,7 @@ func runAddReplaceRG(args []string) int {
 		RGID:      rgID,
 		Mode:      rgMode,
 		NoPG:      noPG,
+		PGCommand: strings.Join(os.Args, " "),
 		OutputBAM: outputBAM,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
@@ -571,6 +576,7 @@ func runFixmate(args []string) int {
 		AddMateCigar:   addMC,
 		RemoveUnmapped: rmUnmap,
 		NoPG:           noPG,
+		PGCommand:      strings.Join(os.Args, " "),
 		Threads:        threads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools fixmate: %v\n", err)
@@ -609,6 +615,7 @@ func runMerge(args []string) int {
 		forceRG    string
 		collapsePG bool
 		preservePG bool
+		noPG       bool
 		compLevel  int
 		threads    int
 		showHelp   bool
@@ -624,6 +631,7 @@ func runMerge(args []string) int {
 	fs.StringVar(&forceRG, "r", "", "")
 	fs.BoolVar(&collapsePG, "c", false, "")
 	fs.BoolVar(&preservePG, "p", false, "")
+	fs.BoolVar(&noPG, "no-PG", false, "")
 	fs.IntVar(&compLevel, "l", -1, "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -690,6 +698,8 @@ func runMerge(args []string) int {
 		CompressLevel:  compLevel,
 		CollapsePG:     collapsePG,
 		PreservePG:     preservePG,
+		NoPG:           noPG,
+		PGCommand:      strings.Join(os.Args, " "),
 		Threads:        threads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools merge: %v\n", err)
@@ -852,6 +862,7 @@ func runSplit(args []string) int {
 		Pattern:      pattern,
 		Unidentified: unident,
 		NoPG:         noPG,
+		PGCommand:    strings.Join(os.Args, " "),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools split: %v\n", err)
 		return 1
@@ -998,6 +1009,7 @@ func runMarkdup(args []string) int {
 		AddTag:       addTag,
 		Threads:      threads,
 		NoPG:         noPG,
+		PGCommand:    strings.Join(os.Args, " "),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools markdup: %v\n", err)
 		return 1
@@ -1263,9 +1275,7 @@ func runCalmd(args []string) int {
 	refPath := fs.Arg(1)
 	_ = threads // accepted, ignored
 	_ = sInFmt  // we auto-detect
-	_ = clearMDNM
-	_ = noPG
-	_ = hashQNM
+	_ = hashQNM // upstream defines HASH_QNM but never consumes it (bam_md.c:47,379); -h is a no-op there too
 	out, err := openOut(outPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools calmd: %v\n", err)
@@ -1273,17 +1283,20 @@ func runCalmd(args []string) int {
 	}
 	defer out.Close()
 	opts := samtools.CalmdOptions{
-		UseEqual:     useEqual,
-		OutputBAM:    outBAM,
-		Uncompressed: uncomp,
-		ExtendedBAQ:  extBAQ,
-		AdjustCapQ:   adjustA,
-		RealignBAQ:   realnR,
-		CapMapQ:      capQ,
-		Quiet:        quiet,
-		DropTags:     dropTag,
-		BinQual:      binQual,
-		MaxNM:        maxNM,
+		UseEqual:       useEqual,
+		OutputBAM:      outBAM,
+		Uncompressed:   uncomp,
+		ExtendedBAQ:    extBAQ,
+		AdjustCapQ:     adjustA,
+		RealignBAQ:     realnR,
+		CapMapQ:        capQ,
+		Quiet:          quiet,
+		DropTags:       dropTag,
+		BinQual:        binQual,
+		MaxNM:          maxNM,
+		SkipUpdateMDNM: clearMDNM,
+		NoPG:           noPG,
+		PGCommand:      strings.Join(os.Args, " "),
 	}
 	if err := samtools.CalmdFile(inPath, out, refPath, opts, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools calmd: %v\n", err)
@@ -1432,6 +1445,7 @@ func runImport(args []string) int {
 		OutputBAM:       outBAM,
 		Uncompressed:    uncomp,
 		NoPG:            noPG,
+		PGCommand:       strings.Join(os.Args, " "),
 	}
 	if i1Path != "" || i2Path != "" {
 		fmt.Fprintln(os.Stderr, "samtools import: warning: --i1/--i2 index-read inputs are not yet implemented; index reads ignored")

@@ -163,14 +163,15 @@ func TestParity_View_T07_HeaderOnly(t *testing.T) {
 	in := openParity(t, "basic.sam")
 	defer in.Close()
 	var out bytes.Buffer
-	if _, err := View(in, &out, ViewOptions{HeaderOnly: true}); err != nil {
+	if _, err := View(in, &out, ViewOptions{HeaderOnly: true, NoPG: true}); err != nil {
 		t.Fatalf("View: %v", err)
 	}
 	body := out.String()
 	if !strings.HasPrefix(body, "@HD") {
 		t.Errorf("header-only: missing @HD prefix\n%s", body)
 	}
-	// 5 header lines (@HD + 2x @SQ + 2x @RG); no record lines.
+	// 5 header lines (@HD + 2x @SQ + 2x @RG); no record lines. NoPG
+	// suppresses the @PG injection so this stays at 5.
 	if got := strings.Count(body, "\n"); got != 5 {
 		t.Errorf("header-only: got %d lines, want 5\n%s", got, body)
 	}
@@ -198,14 +199,15 @@ func TestParity_View_T08_Region(t *testing.T) {
 func TestParity_View_T09_SAMtoBAMtoSAM(t *testing.T) {
 	in := openParity(t, "basic.sam")
 	defer in.Close()
-	// Stage 1: SAM → BAM
+	// Stage 1: SAM → BAM. Suppress @PG so the round-trip stays
+	// byte-identical against the input fixture.
 	var bamBuf bytes.Buffer
-	if _, err := View(in, &bamBuf, ViewOptions{OutputBAM: true}); err != nil {
+	if _, err := View(in, &bamBuf, ViewOptions{OutputBAM: true, NoPG: true}); err != nil {
 		t.Fatalf("View SAM→BAM: %v", err)
 	}
 	// Stage 2: BAM → SAM with -h.
 	var samBuf bytes.Buffer
-	if _, err := View(bytes.NewReader(bamBuf.Bytes()), &samBuf, ViewOptions{WithHeader: true}); err != nil {
+	if _, err := View(bytes.NewReader(bamBuf.Bytes()), &samBuf, ViewOptions{WithHeader: true, NoPG: true}); err != nil {
 		t.Fatalf("View BAM→SAM: %v", err)
 	}
 	// We expect the data lines to match exactly. The header may shuffle key

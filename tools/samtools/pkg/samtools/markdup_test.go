@@ -30,6 +30,10 @@ func runMarkdupToSAM(t *testing.T, samPath string, opts MarkdupOptions) string {
 		}
 		return f, nil
 	}
+	// Compare against the upstream test fixture, which does not carry
+	// a samtools.markdup @PG line; pass NoPG so our injection does not
+	// add one either.
+	opts.NoPG = true
 	var buf bytes.Buffer
 	if _, err := Markdup(opener, &buf, opts); err != nil {
 		t.Fatalf("Markdup: %v", err)

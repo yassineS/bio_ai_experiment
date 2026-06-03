@@ -77,6 +77,19 @@ type CalmdOptions struct {
 	// NM is >= MaxNM (the -n flag). Matching SEQ bases become '=' and their
 	// qualities become 0. The emitted NM/MD are unaffected.
 	MaxNM int
+	// SkipUpdateMDNM is the -N flag: clear the UPDATE_NM|UPDATE_MD bits.
+	// When set, neither NM nor MD is written to the record. Pre-existing
+	// MD/NM aux tags survive unchanged; absent tags stay absent. Useful
+	// when -r BAQ realignment is the only desired transformation.
+	SkipUpdateMDNM bool
+	// NoPG suppresses the @PG header line injection. When the (Header,
+	// PGRecord) helper from pg.go is used, calmd writes a @PG line
+	// documenting the command; --no-PG suppresses that. Independent of
+	// the per-record transforms.
+	NoPG bool
+	// PGCommand, when non-empty, is the raw command-line stored under
+	// @PG:CL when NoPG is false. The CLI fills this with os.Args.
+	PGCommand string
 }
 
 // Calmd reads SAM/BAM records from in, fills in MD + NM aux tags by
@@ -98,6 +111,7 @@ func Calmd(in io.Reader, out io.Writer, refPath string, opts CalmdOptions, warnW
 		return fmt.Errorf("samtools calmd: open input: %w", err)
 	}
 	hdr := r.Header()
+	hdr = InjectPG(hdr, "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 
 	var w sam.Writer
 	if opts.OutputBAM || opts.Uncompressed {
@@ -167,12 +181,16 @@ func Calmd(in io.Reader, out io.Writer, refPath string, opts CalmdOptions, warnW
 			rec.Seq = edited
 		}
 		// Upstream ordering (bam_md.c): max-NM masking → write NM → write
-		// MD → DROP_TAG → BIN_QUAL.
+		// MD → DROP_TAG → BIN_QUAL. With -N (SkipUpdateMDNM) the NM/MD
+		// writes are skipped; the MaxNM mask still uses the freshly
+		// computed NM threshold per bam_md.c:157.
 		if opts.MaxNM > 0 && nm >= opts.MaxNM {
 			maskMatches(rec, curSeq)
 		}
-		updateNMAux(rec, nm, opts.Quiet, warnW)
-		updateMDAux(rec, md, opts.Quiet, warnW)
+		if !opts.SkipUpdateMDNM {
+			updateNMAux(rec, nm, opts.Quiet, warnW)
+			updateMDAux(rec, md, opts.Quiet, warnW)
+		}
 		if opts.DropTags {
 			dropOtherTags(rec)
 		}
