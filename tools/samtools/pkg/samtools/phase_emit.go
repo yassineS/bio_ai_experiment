@@ -21,6 +21,13 @@ type upstreamPhaseRunner struct {
 	maxDepth   int
 	fixChimera bool
 
+	// Optional site filter (CLI -l/-e). When siteSet is non-nil a
+	// position is in_set iff its (chrom, 1-based pos) appears in
+	// the set; listExcl gates whether out-of-set positions are
+	// dropped entirely (FLAG_LIST_EXCL).
+	siteSet  map[string]map[int]struct{}
+	listExcl bool
+
 	// runtime state
 	vposShift int // total het sites emitted on the current chromosome
 }
@@ -109,8 +116,25 @@ func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, 
 		}
 		em.Cal(bases, 4, q)
 		c := gl2cns(q)
+		// Site-list gating (phase.c:757-758). When the list is
+		// non-nil, a position is "in_set" iff its (chrom, 1-based
+		// pos) appears there. -e (listExcl) drops positions
+		// outside the list entirely; otherwise the normal LOD
+		// test is bypassed for in-set positions so the user can
+		// force phasing at chosen sites.
+		inSet := false
+		if g.siteSet != nil {
+			if perChrom, ok := g.siteSet[rname]; ok {
+				if _, ok := perChrom[pos0+1]; ok {
+					inSet = true
+				}
+			}
+			if g.listExcl && !inSet {
+				continue
+			}
+		}
 		// Not a variant?
-		if int((c&0xffff)>>2) < g.minVarLOD {
+		if !inSet && int((c&0xffff)>>2) < g.minVarLOD {
 			continue
 		}
 		// Push variant to cns.

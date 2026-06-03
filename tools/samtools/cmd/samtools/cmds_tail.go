@@ -1541,15 +1541,17 @@ func runPhase(args []string) int {
 	fs.BoolVar(&noFixChimera, "F", false, "")
 	fs.BoolVar(&noFixChimera, "no-fix-chimera", false, "")
 	fs.BoolVar(&dropAmbig, "A", false, "")
-	// Upstream phase.c:631 declares `-e` (use empirical-Bayes prior) and
-	// `-l INT` (block-merge length cap). Both are accepted-and-ignored
-	// for CLI parity per docs/PARITY_ROADMAP.md "phase MCMC" deferral.
+	// Upstream phase.c: `-l FILE` loads a site list and `-e` makes
+	// the list exclusive (positions outside the list are dropped).
+	// Both are commented out of upstream's usage block (phase.c
+	// usage()), but the flag table still consumes them and the
+	// loadpos path remains live (phase.c:526-559).
 	var (
-		upstreamE bool
-		upstreamL int
+		listFile      string
+		listExclusive bool
 	)
-	fs.BoolVar(&upstreamE, "e", false, "")
-	fs.IntVar(&upstreamL, "l", 0, "")
+	fs.BoolVar(&listExclusive, "e", false, "")
+	fs.StringVar(&listFile, "l", "", "")
 	// --no-PG: upstream uses this to suppress @PG injection in the
 	// per-haplotype BAMs written under -b. Our port never injects @PG
 	// (those BAMs use a verbatim copy of the input header), so the flag
@@ -1575,8 +1577,6 @@ func runPhase(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
-	_ = upstreamE
-	_ = upstreamL
 	_ = phaseNoPG
 	if fs.NArg() == 0 {
 		fmt.Fprint(os.Stderr, phaseUsage)
@@ -1603,6 +1603,8 @@ func runPhase(args []string) int {
 		DropAmbiguous:  dropAmbig,
 		OutputPrefix:   outPrefix,
 		UpstreamSchema: true,
+		SiteListPath:   listFile,
+		ListExclusive:  listExclusive,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools phase: %v\n", err)
 		return 1

@@ -64,7 +64,10 @@ import (
 	"io"
 	"math/rand"
 	"sort"
+	"strconv"
+	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -114,6 +117,16 @@ type PhaseOptions struct {
 	// chainer. The CLI sets this to true by default; library callers
 	// must opt in.
 	UpstreamSchema bool
+	// SiteListPath is the path to a phase site list (CLI `-l FILE`).
+	// Each line is `CHROM\tPOS` (1-based). Sites in this set are
+	// always treated as candidate hets regardless of the LOD test,
+	// matching phase.c::loadpos.
+	SiteListPath string
+	// ListExclusive mirrors upstream `-e`. When set together with
+	// SiteListPath, ONLY positions in the list are phased; sites
+	// outside the list are dropped even when their LOD exceeds the
+	// threshold. Matches phase.c FLAG_LIST_EXCL.
+	ListExclusive bool
 }
 
 // Phase default constants matching upstream samtools phase.c.
@@ -130,6 +143,42 @@ const (
 	flipPenalty   = 2
 	flipThreshold = 4
 )
+
+// loadPhaseSites parses a phase site list file of the upstream
+// loadpos shape: each non-comment line is "CHROM<sep>POS" with
+// 1-based POS. Whitespace separators are tolerated. Returned map is
+// indexed [chrom][pos1].
+func loadPhaseSites(path string) (map[string]map[int]struct{}, error) {
+	f, err := iohelper.OpenReader(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	out := map[string]map[int]struct{}{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pos, perr := strconv.Atoi(fields[1])
+		if perr != nil || pos <= 0 {
+			continue
+		}
+		if _, ok := out[fields[0]]; !ok {
+			out[fields[0]] = map[int]struct{}{}
+		}
+		out[fields[0]][pos] = struct{}{}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 // Phase reads SAM/BAM records from in, identifies het SNPs, and writes
 // the phased-position TSV to out. Returns the number of het sites
@@ -230,6 +279,14 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 	}
 	if opts.BlockWindow != 0 {
 		runner.k = opts.BlockWindow
+	}
+	if opts.SiteListPath != "" {
+		set, lerr := loadPhaseSites(opts.SiteListPath)
+		if lerr != nil {
+			return 0, fmt.Errorf("samtools phase: %w", lerr)
+		}
+		runner.siteSet = set
+		runner.listExcl = opts.ListExclusive
 	}
 
 	emitted := 0

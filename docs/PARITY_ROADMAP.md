@@ -2464,15 +2464,15 @@ header verbatim).
 `TestLive_Phase` was upgraded from het-position-set equality to full
 byte-equality of the entire output stream.
 
-**`phase` deferred features (closed as rejection-parity-with-doc):**
-
-- **`-e`/`-l` site-list mode** (only-phase-listed-sites). Upstream
-  itself comments `-e` and `-l` out of its own usage block (see
-  `phase.c::usage()` in the vendored source), so the flags are
-  invisible to upstream users by design. Our port accepts them on
-  the CLI as no-ops; behaviour matches upstream's "default" path
-  (discover hets from the pileup) for every input upstream's CLI
-  exposes. Closure stance: rejection-parity by upstream-omission.
+**`phase` site-list mode (`-l`/`-e`) — ported.**
+Loads a phase site list from the path supplied to `-l FILE`
+(format: `CHROM<sep>POS` per line, 1-based). When the list is
+non-nil, positions matching the list are treated as candidate
+hets regardless of the LOD threshold. `-e` (FLAG_LIST_EXCL)
+makes the list exclusive: positions outside the list are
+skipped entirely, matching phase.c:757-758. Implemented in
+`PhaseOptions.SiteListPath` + `ListExclusive` and consumed in
+`runUpstreamPhase` via `g.siteSet`/`g.listExcl`.
 
 **`phase -b` BAM split routing (closed 2026-06-02 — RNG-bound
 residual):** `dump_aln` is now ported to Go (`phase_bam.go::dumpAln`
