@@ -2140,28 +2140,38 @@ Plus:
   upstream feeds them into the pileup.
 - **`tview`** — deliberate skip (interactive curses UI).
 
-**`markdup` deferred features (closed as warn-on-misuse / niche
-partial-parity):** v1 implements PCR-duplicate detection
-faithfully — the 0x400 flag bit is set on the correct records on
-every parity fixture (`tools/samtools/testdata/parity/markdup/`).
-The four upstream knobs that go BEYOND PCR duplicates are not
-parity-critical for the default invocation and are handled per
-the project's documented partial-parity stance:
+**`markdup` (mostly ported):**
 
-- **Optical-duplicate detection** (`-d/--max-dist` + (x,y) parsing
-  of Illumina qnames). Nonzero `-d` triggers a stderr warning so
-  the user sees a clear "this knob is a no-op" signal rather than
-  silently-wrong output. Closure stance: warn-on-misuse.
-- **Per-read-group keying** (`-S`). v1 folds read groups into a
-  single namespace; `17_read_group.sam` is a documented partial-
-  parity fixture. Closure stance: warn-on-misuse via the same
-  stderr warning when `-S` is supplied.
-- **Barcode regex / barcode-tag keying** — same stance.
-- **`dt:Z:` "duplicate-type" aux tag** (SQ / LB / OQ). The 0x400
-  flag bit IS set correctly (which is the parity-relevant signal
-  every downstream consumer reads); only the textual classifier
-  aux is missing. Closure stance: documented partial-parity (no
-  consumer in the parity-critical path reads `dt:Z`).
+- **Optical-duplicate detection (`-d/--max-dist`) — ported.**
+  Implements the upstream Illumina qname parser
+  (`get_coordinates_colons`, bam_markdup.c:686): valid layouts
+  have 3, 4, 6, or 7 ':' separators with x and y the trailing
+  numeric fields. When -d > 0, each duplicate's (lane/tile
+  prefix, x, y) is compared against the kept record; matches
+  within `-d` pixels classify the duplicate as `dt:Z:SQ`
+  (optical), otherwise `dt:Z:LB` (library). The fixture-10
+  optical-chain golden byte-matches with
+  `markdup --mode s -d 2500 -t -O sam --no-PG -S`
+  (`TestMarkdupParity/10_optical_chain`).
+- **`dt:Z:` aux tag — ported.** Emitted on every duplicate when
+  -d is set, with the SQ/LB classifier above.
+- **`-S` supplementary propagation — ported.**
+  `MarkdupOptions.MarkSupplementary` propagates the dup flag onto
+  secondary/supplementary/unmapped members of a duplicate qname.
+  Without it, only the primary alignment is marked, matching
+  upstream's tempfile second pass (bam_markdup.c:2074-2080).
+- **`-O sam`/`--output-fmt sam` — ported.**
+  `MarkdupOptions.OutputSAM` writes text SAM directly, allowing
+  byte-equal comparison against upstream's `.expected.sam`
+  goldens without a BAM round-trip.
+
+Remaining partial:
+
+- **Barcode regex / barcode-tag keying.** `--barcode-name` /
+  `--barcode-tag` are accepted on the CLI but trigger a stderr
+  warning rather than gating dedup. The fixture-12 regex mode
+  (`--read-coords`) sits in the same slice — implementing the
+  regex parser would unlock the `12_optical_chain_regex` golden.
 
 **`markdup -l/--max-len` is a no-op-by-design.** Upstream uses `-l` solely
 as the streaming buffer flush window in `bam_markdup.c:1949`; it does NOT

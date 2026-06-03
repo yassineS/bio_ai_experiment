@@ -32,38 +32,15 @@ func runMarkdupToSAM(t *testing.T, samPath string, opts MarkdupOptions) string {
 	}
 	// Compare against the upstream test fixture, which does not carry
 	// a samtools.markdup @PG line; pass NoPG so our injection does not
-	// add one either.
+	// add one either. Write SAM text directly so aux-tag ordering is
+	// stable against the upstream golden.
 	opts.NoPG = true
+	opts.OutputSAM = true
 	var buf bytes.Buffer
 	if _, err := Markdup(opener, &buf, opts); err != nil {
 		t.Fatalf("Markdup: %v", err)
 	}
-	// Re-decode the BAM and serialise to SAM text for stable comparison.
-	br, err := sam.NewReader(&buf)
-	if err != nil {
-		t.Fatalf("re-read header: %v", err)
-	}
-	var out bytes.Buffer
-	if _, err := br.Header().WriteTo(&out); err != nil {
-		t.Fatalf("write header: %v", err)
-	}
-	sw := sam.NewSAMWriter(&out)
-	for {
-		rec, err := br.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		if err := sw.Write(rec); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-	}
-	if err := sw.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	return out.String()
+	return buf.String()
 }
 
 // TestMarkdupParity exercises the byte-identical / flag-parity cases that
@@ -100,6 +77,8 @@ func TestMarkdupParity(t *testing.T) {
 			name:        "18_primary_duplicate_count",
 			input:       "18_primary_duplicate_count.sam",
 			expect:      "18_primary_duplicate_count.expected.sam",
+			// test.pl invocation uses `-S` (supp-aware) + -t + --mode t.
+			opts:        MarkdupOptions{MarkSupplementary: true, AddTag: true},
 			compareMode: "flags",
 		},
 		{
@@ -111,6 +90,17 @@ func TestMarkdupParity(t *testing.T) {
 			expect:      "5_markdup.expected.sam",
 			opts:        MarkdupOptions{Mode: MarkdupModeSequence},
 			compareMode: "flag-count",
+		},
+		{
+			// Optical-duplicate chaining (sequence mode + -d 2500 + -t).
+			// Mirrors test.pl's `samtools markdup -d 2500 --mode s -t`
+			// invocation. The expected golden carries the dt:Z (SQ/LB)
+			// classification per duplicate; our port byte-matches it.
+			name:        "10_optical_chain",
+			input:       "10_optical_chain.sam",
+			expect:      "10_optical_chain.expected.sam",
+			opts:        MarkdupOptions{Mode: MarkdupModeSequence, MaxDist: 2500, AddTag: true},
+			compareMode: "bytes",
 		},
 	}
 	for _, tc := range cases {

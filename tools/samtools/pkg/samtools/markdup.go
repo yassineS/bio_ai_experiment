@@ -44,6 +44,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
@@ -69,9 +70,12 @@ type MarkdupOptions struct {
 	// RemoveDups drops marked records from the output instead of just
 	// flagging them.
 	RemoveDups bool
-	// MaxDist (optical-dup distance) is accepted for CLI parity; v1 does
-	// not implement optical-dup detection. A nonzero value triggers a
-	// stderr warning emitted by the CLI runner, not the library.
+	// MaxDist is upstream's -d/--max-dist: the maximum (x,y) pixel
+	// distance separating two duplicate reads on the same lane/tile for
+	// the duplicate to be classified as optical (dt:Z:SQ) rather than
+	// library (dt:Z:LB). Setting MaxDist > 0 enables optical-dup
+	// classification and triggers the dt:Z tag emission described in
+	// bam_markdup.c:976-985.
 	MaxDist int
 	// Mode selects the keying scheme. Default zero value is template mode.
 	Mode MarkdupMode
@@ -105,6 +109,14 @@ type MarkdupOptions struct {
 	// PGCommand is the raw command-line stored under @PG:CL when NoPG
 	// is false. The CLI populates this with os.Args.
 	PGCommand string
+	// OutputSAM forces SAM-text output (mirrors `-O sam`). Default
+	// false → BAM, matching upstream when -O is unspecified.
+	OutputSAM bool
+	// MarkSupplementary mirrors upstream's `-S`: propagate the dup
+	// flag onto secondary / supplementary / unmapped alignments of
+	// a duplicate primary. Without it, only the primary alignment is
+	// flagged.
+	MarkSupplementary bool
 }
 
 // MarkdupResult summarises a Markdup run.
@@ -161,7 +173,18 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		entry *markdupEntry
 	}
 	singleSlots := make(map[markdupKey]*singleSlot)
-	primaryDup := make(map[string]string) // qname -> dup-of-qname
+	primaryDup := make(map[string]dupInfo) // qname -> dup-of-info
+	// dtFor returns the dt tag a duplicate should carry when -d is set,
+	// or "" when -d is off (so callers can compare/assign uniformly).
+	dtFor := func(originalQ, dupQ string) string {
+		if opts.MaxDist <= 0 {
+			return ""
+		}
+		if isOpticalDup(originalQ, dupQ, opts.MaxDist) {
+			return "SQ"
+		}
+		return "LB"
+	}
 
 	rc1, err := opener()
 	if err != nil {
@@ -209,20 +232,20 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 				if entry.paired {
 					// Incoming pair displaces the singleton.
 					if !slot.entry.paired {
-						primaryDup[slot.entry.qname] = entry.qname
+						primaryDup[slot.entry.qname] = dupInfo{bestName: entry.qname, dt: dtFor(entry.qname, slot.entry.qname)}
 					}
 					slot.entry = entry
 				} else {
 					// Slot is paired, incoming is singleton — mark incoming.
-					primaryDup[entry.qname] = slot.entry.qname
+					primaryDup[entry.qname] = dupInfo{bestName: slot.entry.qname, dt: dtFor(slot.entry.qname, entry.qname)}
 				}
 			} else if !entry.paired {
 				// Two singletons at the same coord: keep highest score.
 				if betterEntry(entry, slot.entry) {
-					primaryDup[slot.entry.qname] = entry.qname
+					primaryDup[slot.entry.qname] = dupInfo{bestName: entry.qname, dt: dtFor(entry.qname, slot.entry.qname)}
 					slot.entry = entry
 				} else {
-					primaryDup[entry.qname] = slot.entry.qname
+					primaryDup[entry.qname] = dupInfo{bestName: slot.entry.qname, dt: dtFor(slot.entry.qname, entry.qname)}
 				}
 			}
 			// Two paired records at the same single-key: defer to pair_hash.
@@ -262,7 +285,7 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 			if _, already := primaryDup[e.qname]; already {
 				continue
 			}
-			primaryDup[e.qname] = bestName
+			primaryDup[e.qname] = dupInfo{bestName: bestName, dt: dtFor(bestName, e.qname)}
 		}
 	}
 	res.Duplicates = len(primaryDup)
@@ -277,7 +300,12 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 	if err != nil {
 		return res, fmt.Errorf("markdup pass 2 header: %w", err)
 	}
-	bw := sam.NewBAMWriter(out)
+	var bw sam.Writer
+	if opts.OutputSAM {
+		bw = sam.NewSAMWriter(out)
+	} else {
+		bw = sam.NewBAMWriter(out)
+	}
 	outHdr := InjectPG(br2.Header(), "samtools", "samtools", "0.1.0", opts.PGCommand, opts.NoPG)
 	if err := bw.WriteHeader(outHdr); err != nil {
 		return res, err
@@ -293,15 +321,21 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		if opts.ClearTags {
 			rec.Aux = stripAuxTags(rec.Aux, "do", "dt", "mc")
 		}
-		if dupOf, ok := primaryDup[rec.QName]; ok {
-			// Mark every record sharing this qname (primary + supp + secondary)
-			// so the dup flag propagates to non-primary alignments too —
-			// but never mark an unmapped record, matching upstream which
-			// only flags entries that occupy a real coordinate.
-			if !rec.IsUnmapped() {
+		if info, ok := primaryDup[rec.QName]; ok {
+			// Without `-S` upstream marks only the primary alignment of
+			// each duplicate qname (bam_markdup.c:2074-2080). With `-S`
+			// the dup flag is propagated to every supp/secondary/unmapped
+			// member of the qname; our MarkSupplementary mirrors that.
+			isAux := rec.Flag&(sam.FlagSecondary|sam.FlagSupplementary) != 0
+			if !rec.IsUnmapped() && (!isAux || opts.MarkSupplementary) {
 				rec.Flag |= sam.FlagDuplicate
 				if opts.AddTag {
-					setAuxStringMD(rec, "do", dupOf)
+					setAuxStringMD(rec, "do", info.bestName)
+				}
+				if info.dt != "" {
+					// Upstream writes dt:Z whenever -d is set
+					// (bam_markdup.c:977-985), independent of -t.
+					setAuxStringMD(rec, "dt", info.dt)
 				}
 			}
 		}
@@ -335,6 +369,93 @@ type markdupEntry struct {
 	flag   uint16
 	score  int64
 	paired bool
+}
+
+// dupInfo carries the post-resolution duplicate metadata for a single
+// duplicate record: the qname of the kept "original" and the dt tag
+// value upstream would write (`""` when -d is off, `"SQ"` for optical,
+// `"LB"` for library — see bam_markdup.c:977-985).
+type dupInfo struct {
+	bestName string
+	dt       string
+}
+
+// parseIlluminaXY extracts the x and y coordinates from an Illumina-
+// style qname, returning ok=false when the qname does not have the
+// expected separator count. Mirrors upstream's
+// `get_coordinates_colons` (bam_markdup.c:686): valid layouts have
+// 3, 4, 6 or 7 ':' separators; x and y are the 6th-from-end and
+// 5th-from-end fields for sep ≥ 5, or the 2nd-and-3rd / 3rd-and-4th
+// fields for the older 4-/5-element formats.
+func parseIlluminaXY(qname string) (x, y int64, ok bool) {
+	parts := strings.Split(qname, ":")
+	sep := len(parts) - 1
+	var xs, ys string
+	switch sep {
+	case 3:
+		xs, ys = parts[2], parts[3]
+	case 4:
+		xs, ys = parts[3], parts[4]
+	case 6, 7:
+		xs, ys = parts[5], parts[6]
+	default:
+		return 0, 0, false
+	}
+	var err error
+	if x, err = strconv.ParseInt(xs, 10, 64); err != nil {
+		return 0, 0, false
+	}
+	if y, err = strconv.ParseInt(ys, 10, 64); err != nil {
+		return 0, 0, false
+	}
+	return x, y, true
+}
+
+// isOpticalDup mirrors bam_markdup.c:is_optical_duplicate: the records
+// share the same lane/tile prefix and their x and y differ by at most
+// max_dist. Both qnames must parse cleanly.
+func isOpticalDup(originalQ, dupQ string, maxDist int) bool {
+	if maxDist <= 0 {
+		return false
+	}
+	ox, oy, ook := parseIlluminaXY(originalQ)
+	if !ook {
+		return false
+	}
+	dx, dy, dok := parseIlluminaXY(dupQ)
+	if !dok {
+		return false
+	}
+	// Require the lane+tile prefix to match (upstream's memcmp of
+	// the t_beg..t_end span). For our purposes the prefix is every
+	// ':' separated token before the x column.
+	o := strings.Split(originalQ, ":")
+	d := strings.Split(dupQ, ":")
+	sepO := len(o) - 1
+	sepD := len(d) - 1
+	if sepO != sepD {
+		return false
+	}
+	prefixCols := 2
+	if sepO >= 5 {
+		prefixCols = 5
+	} else if sepO == 4 {
+		prefixCols = 3
+	}
+	for i := 0; i < prefixCols; i++ {
+		if o[i] != d[i] {
+			return false
+		}
+	}
+	xd := ox - dx
+	if xd < 0 {
+		xd = -xd
+	}
+	yd := oy - dy
+	if yd < 0 {
+		yd = -yd
+	}
+	return xd <= int64(maxDist) && yd <= int64(maxDist)
 }
 
 // singleKey returns the upstream "single_key" for rec — the key used in
