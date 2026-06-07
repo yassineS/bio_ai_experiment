@@ -1629,7 +1629,8 @@ func (p *parser) parseFunctionCall(name string) (node, bool, error) {
 	var kind string
 	switch upper {
 	case "N_PASS", "F_PASS", "COUNT", "SUM", "MAX", "MIN", "AVG", "MEAN",
-		"STRLEN", "ABS", "MEDIAN", "STDEV", "PHRED":
+		"STRLEN", "ABS", "MEDIAN", "STDEV", "PHRED",
+		"BINOM", "FISHER":
 		kind = upper
 	default:
 		return nil, false, nil
@@ -1638,14 +1639,29 @@ func (p *parser) parseFunctionCall(name string) (node, bool, error) {
 		return nil, false, nil
 	}
 	p.pos++ // consume '('
-	inner, err := p.parseExpr()
-	if err != nil {
-		return nil, true, err
+	// Multi-argument functions (BINOM / FISHER) parse a
+	// comma-separated list; the single-arg families take one
+	// expression as before.
+	multiArg := kind == "BINOM" || kind == "FISHER"
+	args := []node{}
+	for {
+		expr, err := p.parseExpr()
+		if err != nil {
+			return nil, true, err
+		}
+		args = append(args, expr)
+		p.skipSpace()
+		if multiArg && p.peek() == ',' {
+			p.pos++
+			continue
+		}
+		break
 	}
 	p.skipSpace()
 	if !p.match(")") {
 		return nil, true, fmt.Errorf("bcftools: missing ')' in %s() at %d", name, p.pos)
 	}
+	inner := args[0]
 	switch kind {
 	case "STRLEN":
 		return &strlenNode{inner: inner}, true, nil
@@ -1671,8 +1687,243 @@ func (p *parser) parseFunctionCall(name string) (node, bool, error) {
 		return &aggNode{kind: "STDEV", inner: inner}, true, nil
 	case "PHRED":
 		return &phredNode{inner: inner}, true, nil
+	case "BINOM":
+		if len(args) < 1 || len(args) > 2 {
+			return nil, true, fmt.Errorf("bcftools: BINOM() takes 1 or 2 arguments, got %d", len(args))
+		}
+		return &binomNode{args: args}, true, nil
+	case "FISHER":
+		// Upstream silently evaluates unsupported FISHER() arg counts
+		// to "missing" so the comparison filter drops the record. We
+		// match by storing the args verbatim; fisherNode.eval returns
+		// nil for non-{1,2}-arg shapes.
+		return &fisherNode{args: args}, true, nil
 	}
 	return nil, false, nil
+}
+
+// binomNode implements BINOM(tag) and BINOM(tag1, tag2) — the
+// per-sample two-sided binomial test against p=0.5, mirroring
+// upstream filter.c::func_binom and bcftools.h::calc_binom_two_sided.
+type binomNode struct{ args []node }
+
+func (n *binomNode) eval(v *vcf.Variant) any {
+	if v == nil {
+		return nil
+	}
+	// One-arg form: BINOM(tag) with tag a Number=R per-sample
+	// vector (typically FORMAT/AD). For each diploid sample with
+	// a non-missing GT="a/b", compute calc_binom_two_sided(tag[a],
+	// tag[b], 0.5). Returns a per-sample vecValue.
+	if len(n.args) == 1 {
+		return n.evalSingleTag(v)
+	}
+	// Two-arg form: BINOM(tag1, tag2) — per-sample scalars.
+	return n.evalTwoTag(v)
+}
+
+func (n *binomNode) evalSingleTag(v *vcf.Variant) any {
+	per := perSampleTagValues(n.args[0], v)
+	if per == nil {
+		return nil
+	}
+	out := make(vecValue, len(v.Samples))
+	for i, val := range per {
+		alleles, _, ploidy := parseGT(v.Samples[i].Data["GT"])
+		if ploidy != 2 || len(alleles) < 2 || alleles[0] < 0 || alleles[1] < 0 {
+			out[i] = nil
+			continue
+		}
+		vals := toFloatSlice(val)
+		a, b := alleles[0], alleles[1]
+		if a >= len(vals) || b >= len(vals) {
+			out[i] = nil
+			continue
+		}
+		p := calcBinomTwoSided(int(vals[a]), int(vals[b]), 0.5)
+		if p < 0 {
+			out[i] = nil
+		} else {
+			out[i] = p
+		}
+	}
+	return out
+}
+
+func (n *binomNode) evalTwoTag(v *vcf.Variant) any {
+	per1 := perSampleTagValues(n.args[0], v)
+	per2 := perSampleTagValues(n.args[1], v)
+	if per1 == nil || per2 == nil {
+		// Both scalar (e.g. BINOM(2, 5)).
+		af, aok := asFloat(n.args[0].eval(v))
+		bf, bok := asFloat(n.args[1].eval(v))
+		if !aok || !bok {
+			return nil
+		}
+		p := calcBinomTwoSided(int(af), int(bf), 0.5)
+		if p < 0 {
+			return nil
+		}
+		return p
+	}
+	out := make(vecValue, len(v.Samples))
+	for i := 0; i < len(v.Samples); i++ {
+		af, aok := asFloat(per1[i])
+		bf, bok := asFloat(per2[i])
+		if !aok || !bok {
+			out[i] = nil
+			continue
+		}
+		p := calcBinomTwoSided(int(af), int(bf), 0.5)
+		if p < 0 {
+			out[i] = nil
+		} else {
+			out[i] = p
+		}
+	}
+	return out
+}
+
+// perSampleTagValues returns a per-sample slice of values for the
+// given expression node when it resolves to a FORMAT tag. Supports
+// both formatNode (explicit FMT/X or FORMAT/X) and tagNode whose
+// header source is FORMAT. Returns nil when neither.
+func perSampleTagValues(n node, v *vcf.Variant) []any {
+	if sp, ok := n.(sampleProducer); ok {
+		return sp.evalSamples(v)
+	}
+	if tn, ok := n.(*tagNode); ok && tn.source == tagFormat {
+		out := make([]any, len(v.Samples))
+		for i, s := range v.Samples {
+			raw, present := s.Data[tn.name]
+			if !present {
+				continue
+			}
+			out[i] = tn.indexed(formatValue(raw))
+		}
+		return out
+	}
+	return nil
+}
+
+// fisherNode implements FISHER(a,b,c,d): the two-tailed Fisher
+// exact p-value on the 2x2 contingency table. Mirrors upstream
+// filter.c::func_fisher's scalar branch.
+type fisherNode struct{ args []node }
+
+func (n *fisherNode) eval(v *vcf.Variant) any {
+	if v == nil {
+		return nil
+	}
+	// Upstream filter.c::func_fisher only honours the 1-arg (single
+	// 4-element tag) and 2-arg (two Number=R per-sample tags) forms;
+	// a 4-scalar invocation `FISHER(a,b,c,d)` silently returns no
+	// matches. Match that behaviour rather than evaluating the
+	// scalar table (which would diverge from upstream's empty
+	// output).
+	if len(n.args) == 1 {
+		// FISHER(INFO/DP4) — 4-element vector.
+		vals := toFloatSlice(n.args[0].eval(v))
+		if len(vals) < 4 {
+			return nil
+		}
+		_, _, two := mpileupFisherExact(int64(vals[0]), int64(vals[1]),
+			int64(vals[2]), int64(vals[3]))
+		return two
+	}
+	if len(n.args) == 2 {
+		// FISHER(FORMAT/ADF, FORMAT/ADR) — per-sample 2x2 table.
+		// For each sample with a non-missing diploid GT we pick
+		// the ALT allele index from GT and compute Fisher exact
+		// on (tag1[REF], tag1[ALT], tag2[REF], tag2[ALT]). Falls
+		// back to the scalar-vector form when neither arg is a
+		// sample producer (or neither resolves to a FORMAT tag).
+		per1 := perSampleTagValues(n.args[0], v)
+		per2 := perSampleTagValues(n.args[1], v)
+		if per1 == nil || per2 == nil {
+			vals1 := toFloatSlice(n.args[0].eval(v))
+			vals2 := toFloatSlice(n.args[1].eval(v))
+			if len(vals1) < 2 || len(vals2) < 2 {
+				return nil
+			}
+			_, _, two := mpileupFisherExact(int64(vals1[0]), int64(vals1[1]),
+				int64(vals2[0]), int64(vals2[1]))
+			return two
+		}
+		out := make(vecValue, len(v.Samples))
+		for i := 0; i < len(v.Samples); i++ {
+			vals1 := toFloatSlice(per1[i])
+			vals2 := toFloatSlice(per2[i])
+			alleles, _, ploidy := parseGT(v.Samples[i].Data["GT"])
+			altIdx := 1
+			if ploidy >= 2 && len(alleles) >= 2 {
+				if alleles[0] > 0 {
+					altIdx = alleles[0]
+				}
+				if alleles[1] > 0 {
+					altIdx = alleles[1]
+				}
+			}
+			if len(vals1) <= altIdx || len(vals2) <= altIdx {
+				out[i] = nil
+				continue
+			}
+			_, _, two := mpileupFisherExact(int64(vals1[0]), int64(vals1[altIdx]),
+				int64(vals2[0]), int64(vals2[altIdx]))
+			out[i] = two
+		}
+		return out
+	}
+	return nil
+}
+
+// calcBinomTwoSided ports bcftools.h::calc_binom_two_sided. Uses
+// the kfBetai regularized incomplete beta function (already ported
+// for callc.go) to compute the two-tailed binomial p-value at
+// p=aprob.
+func calcBinomTwoSided(na, nb int, aprob float64) float64 {
+	if na == 0 && nb == 0 {
+		return -1
+	}
+	if na == nb {
+		return 1
+	}
+	var prob float64
+	if na > nb {
+		prob = 2 * kfBetai(float64(na), float64(nb+1), aprob)
+	} else {
+		prob = 2 * kfBetai(float64(nb), float64(na+1), aprob)
+	}
+	if prob > 1 {
+		prob = 1
+	}
+	return prob
+}
+
+// toFloatSlice flattens any (scalar / vecValue / []float64) into a
+// []float64 for the BINOM/FISHER scalar branches.
+func toFloatSlice(v any) []float64 {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case []float64:
+		return x
+	case vecValue:
+		out := make([]float64, 0, len(x))
+		for _, e := range x {
+			if f, ok := asFloat(e); ok {
+				out = append(out, f)
+			} else {
+				out = append(out, 0)
+			}
+		}
+		return out
+	default:
+		if f, ok := asFloat(x); ok {
+			return []float64{f}
+		}
+		return nil
+	}
 }
 
 // phredNode implements PHRED(x) = -10 * log10(x). Vectors map element-wise.
