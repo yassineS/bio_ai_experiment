@@ -205,6 +205,14 @@ func (o *CallOptions) defaults() {
 	if o.Ploidy == 0 {
 		o.Ploidy = PloidyDiploid
 	}
+	// CompressLevel 0 from CLI-uninitialized callers means "default"
+	// rather than "no compression"; flip to -1 so openOutput picks
+	// bgzip.DefaultCompression. Explicit 0 from the upstream `-O z0`
+	// shape goes through ParseOutputFormat which would need to set
+	// a non-zero sentinel — out of scope for the default path.
+	if o.CompressLevel == 0 {
+		o.CompressLevel = -1
+	}
 }
 
 // ParsePloidySpec turns a "--ploidy" string into the typed value. The
