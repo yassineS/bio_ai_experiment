@@ -59,6 +59,12 @@ type bayesOptions struct {
 	hetScale    float64
 	homopolyFix float64 // 0 disables; otherwise the poly_adj multiplier
 	homopolyRed float64 // homopoly-redux: poly_mul for RECALL mode
+	// Quality-calibration tables (mirrors upstream qcal_t.smap /
+	// umap / omap). nil → FLAT identity. Filled by the CLI runner
+	// from -t/--qual-calibration or -X/--config.
+	qcalS *[101]int
+	qcalU *[101]int
+	qcalO *[101]int
 }
 
 // consProbs holds the precomputed log-probability matrices for one
@@ -196,22 +202,34 @@ type bayesProbSet struct {
 // buildBayesProbSet constructs the consProbs matrices for a given mode,
 // mirroring the consensus_init calls in upstream main_consensus.
 func buildBayesProbSet(o bayesOptions) bayesProbSet {
-	q := &flatQCal
+	// Default: FLAT identity table. When the caller supplied a
+	// `-t/--qual-calibration` or `-X NAME` preset, the resolved
+	// tables come through o.qcal{S,U,O}.
+	qS, qU, qO := &flatQCal, &flatQCal, &flatQCal
+	if o.qcalS != nil {
+		qS = o.qcalS
+	}
+	if o.qcalU != nil {
+		qU = o.qcalU
+	}
+	if o.qcalO != nil {
+		qO = o.qcalO
+	}
 	var ps bayesProbSet
 	switch o.mode {
 	case modePrecise:
 		ps.precise = consensusInit(o.pHet, o.pIndel, 0.3*o.hetScale,
-			o.homopolyRed, q, q, q, modePrecise)
+			o.homopolyRed, qS, qU, qO, modePrecise)
 	case modeMixed:
 		ps.precise = consensusInit(math.Pow(o.pHet, 0.7), math.Pow(o.pIndel, 0.7),
-			0.3*o.hetScale, o.homopolyRed, q, q, q, modePrecise)
+			0.3*o.hetScale, o.homopolyRed, qS, qU, qO, modePrecise)
 	}
 	recallPoly := 0.01
 	if o.mode == modeRecall {
 		recallPoly = o.homopolyRed
 	}
 	ps.recall = consensusInit(o.pHet, o.pIndel, o.hetScale, recallPoly,
-		q, q, q, modeRecall)
+		qS, qU, qO, modeRecall)
 	return ps
 }
 

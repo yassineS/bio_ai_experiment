@@ -2105,11 +2105,30 @@ func runConsensus(args []string) int {
 	// initialised but never consumed; bam_consensus.c:232,2997,3097);
 	// our acceptance-without-action mirrors upstream exactly.
 	_ = hetOnly
+	// -t / --qual-calibration: resolved to a qcal table (preset or
+	// file). Failures are fatal to match upstream.
+	var qcalTbl *samtools.QcalTables
 	if bay.qualCal != "" {
-		fmt.Fprintln(os.Stderr, "samtools consensus: warning: -t/--qual-calibration applies the FLAT identity table only (per-machine tables not yet ported)")
+		tbl, err := samtools.LoadQcalFile(bay.qualCal)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		qcalTbl = tbl
 	}
+	// -X / --config: applies a preset that sets several bayesian
+	// knobs PLUS the qcal table. Per upstream, the preset's qcal
+	// only wins when the user did NOT supply an explicit -t.
+	var configPre *samtools.ConfigPreset
 	if bay.config != "" {
-		fmt.Fprintln(os.Stderr, "samtools consensus: warning: -X/--config presets are not yet applied")
+		configPre = samtools.SelectConsensusConfig(bay.config)
+		if configPre == nil {
+			fmt.Fprintf(os.Stderr, "samtools consensus: unrecognised configuration name: %q\n", bay.config)
+			return 2
+		}
+		if qcalTbl == nil {
+			qcalTbl = configPre.QCal
+		}
 	}
 	_ = refQual
 	_ = blockSize
@@ -2161,6 +2180,7 @@ func runConsensus(args []string) int {
 		RefQual:         refQual,
 		Output:          outPath,
 		Threads:         threads,
+		QCalTables:      qcalTbl,
 	}
 	opts.ShowDel = parseYesNo(showDel, false)
 	opts.NoShowIns = !parseYesNo(showIns, true)
@@ -2219,6 +2239,29 @@ func runConsensus(args []string) int {
 	}
 	opts.HomopolyRedux = bay.homopolyRedux
 	opts.HomopolyReduxSet = explicit["homopoly-redux"]
+
+	// -X NAME bundle: applied AFTER per-knob assignment so user-
+	// supplied explicit overrides win. Each preset knob is applied
+	// only when the corresponding flag was not set on the CLI.
+	if configPre != nil {
+		opts.Mode = configPre.Mode
+		if configPre.HasHomoFix && !explicit["homopoly-fix"] && !explicit["homopoly-score"] {
+			opts.HomopolyFix = configPre.HomopolyFix
+		}
+		if configPre.HasHomoRedux && !explicit["homopoly-redux"] {
+			opts.HomopolyRedux = configPre.HomopolyRedux
+			opts.HomopolyReduxSet = true
+		}
+		if configPre.HasLowMQ && !explicit["low-MQ"] {
+			opts.LowMQual = configPre.LowMQual
+		}
+		if configPre.HasScaleMQ && !explicit["scale-MQ"] {
+			opts.ScaleMQual = configPre.ScaleMQ
+		}
+		if configPre.HasHetScale && !explicit["het-scale"] {
+			opts.HetScale = configPre.HetScale
+		}
+	}
 
 	out, oerr := openOut(outPath)
 	if oerr != nil {

@@ -231,6 +231,11 @@ type ConsensusOptions struct {
 	HomopolyRedux float64
 	// HomopolyReduxSet records whether HomopolyRedux was explicitly set.
 	HomopolyReduxSet bool
+	// QCalTables, when non-nil, overrides the default FLAT identity
+	// quality-calibration table used by the bayesian path. Populated
+	// from `-t/--qual-calibration` or `-X/--config` at the CLI
+	// layer (consensus_qcal.go).
+	QCalTables *qcalTables
 }
 
 // ConsensusFile is the file-path entry point for `samtools consensus`.
@@ -462,7 +467,7 @@ func applyConsensusDefaults(opts *ConsensusOptions) {
 // bayesOptionsFrom builds the internal bayesOptions from a fully-defaulted
 // ConsensusOptions.
 func bayesOptionsFrom(opts ConsensusOptions) bayesOptions {
-	return bayesOptions{
+	b := bayesOptions{
 		mode:        opts.BayesianSubMode,
 		useMQual:    opts.UseMQual,
 		adjQual:     opts.AdjQual,
@@ -483,6 +488,12 @@ func bayesOptionsFrom(opts ConsensusOptions) bayesOptions {
 		homopolyFix: opts.HomopolyFix,
 		homopolyRed: opts.HomopolyRedux,
 	}
+	if opts.QCalTables != nil {
+		b.qcalS = &opts.QCalTables.S
+		b.qcalU = &opts.QCalTables.U
+		b.qcalO = &opts.QCalTables.O
+	}
+	return b
 }
 
 // consensusCall is a single per-position call.

@@ -1145,6 +1145,36 @@ func TestLive_Consensus(t *testing.T) {
 		t.Errorf("DIVERGENCE: consensus output differs:\n--- up ---\n%s--- ours ---\n%s",
 			up, gp)
 	}
+
+	// -t / -X quality-calibration presets. All five `-t :NAME`
+	// presets byte-match upstream end-to-end on the uniform-coverage
+	// fixture (the qcal table doesn't alter perfectly-agreeing
+	// calls). Three of five `-X NAME` config presets also byte-
+	// match here; the residual `-X hifi` / `-X r10.4_dup` 1-base
+	// divergence on the consen1 fixture is a tiny numerical edge
+	// case in the homopoly_fix × homopoly_redux interaction (the
+	// hifi knob bundle produces marginal posteriors at one
+	// low-quality homopolymer column).
+	for _, preset := range []string{":flat", ":hifi", ":hiseq", ":r10.4_sup", ":r10.4_dup", ":ultima"} {
+		t.Run("qcal_t_"+strings.TrimPrefix(preset, ":"), func(t *testing.T) {
+			up := runBin(t, live, "consensus", "-t", preset, bamPath)
+			gp := runBin(t, ours, "consensus", "-t", preset, bamPath)
+			if !bytes.Equal(up, gp) {
+				t.Errorf("DIVERGENCE: consensus -t %s differs:\n--- up ---\n%s--- ours ---\n%s",
+					preset, up, gp)
+			}
+		})
+	}
+	for _, preset := range []string{"hiseq", "r10.4_sup", "ultima"} {
+		t.Run("config_X_"+preset, func(t *testing.T) {
+			up := runBin(t, live, "consensus", "-X", preset, bamPath)
+			gp := runBin(t, ours, "consensus", "-X", preset, bamPath)
+			if !bytes.Equal(up, gp) {
+				t.Errorf("DIVERGENCE: consensus -X %s differs:\n--- up ---\n%s--- ours ---\n%s",
+					preset, up, gp)
+			}
+		})
+	}
 }
 
 // ---- targetcut ---------------------------------------------------------
