@@ -1188,7 +1188,7 @@ func runCall(args []string) int {
 		return 2
 	}
 	if groupSamples != "" {
-		fmt.Fprintln(os.Stderr, "bcftools call: warning: -G/--group-samples is not yet implemented; all samples share one group")
+		opts.GroupSamplesFile = groupSamples
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)

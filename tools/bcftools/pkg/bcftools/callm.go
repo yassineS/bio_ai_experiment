@@ -47,6 +47,21 @@ func pl2p(pl int) float64 {
 
 // (logsumexp2 lives in bam2bcf.go and is shared.)
 
+// mcallGroup holds one sample-group's per-record state: the sample
+// indices that participate, the per-group qsum, and the per-group
+// best-allele results that mcallBestAlleles fills in (mirrors
+// upstream smpl_grp_t). A solo group covering every sample is the
+// default when -G is not supplied.
+type mcallGroup struct {
+	samples []int
+	qsum    []float64
+	// Filled in by mcallBestAlleles.
+	alsMask int
+	refLk   float64
+	lkSum   float64
+	maxLk   float64
+}
+
 // mcallTin groups the parsed inputs the caller needs per record.
 type mcallTin struct {
 	nals   int // number of alleles including REF (and <*> if present)
@@ -57,12 +72,13 @@ type mcallTin struct {
 	//  per-sample ploidy (e.g. --ploidy GRCh37 on chrY)
 	//  smplPloidy[i] is the authoritative value for
 	//  sample i.
-	nsmpl      int         // number of samples
-	pdg        [][]float64 // per-sample probability vector, length ngts
-	qsum       []float64   // normalized allele frequencies, length nals
-	unseen     int         // index of the <*> allele, or -1
-	thetaLn    float64     // log(theta * Watterson factor)
-	smplPloidy []int       // per-sample ploidy (0/1/2). When nil, every
+	nsmpl   int         // number of samples
+	pdg     [][]float64 // per-sample probability vector, length ngts
+	qsum    []float64   // normalized allele frequencies (pooled-group view)
+	groups  []mcallGroup
+	unseen  int     // index of the <*> allele, or -1
+	thetaLn float64 // log(theta * Watterson factor)
+	smplPloidy []int // per-sample ploidy (0/1/2). When nil, every
 	// sample uses the global `ploidy` field.
 }
 
@@ -179,7 +195,9 @@ func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int) *mca
 	}
 
 	// INFO/QS -> qsum (raw allele frequencies). Missing trailing alleles
-	// (typical ref-only <*> site) get qsum=0.
+	// (typical ref-only <*> site) get qsum=0. This pooled view is kept
+	// as the always-available default; per-group qsums (when -G is
+	// active) replace it via buildGroupQsums below.
 	qs := parseFloatList(v.Info["QS"])
 	in.qsum = make([]float64, nals)
 	for i := 0; i < nals && i < len(qs); i++ {
@@ -195,7 +213,110 @@ func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int) *mca
 			in.qsum[i] /= sum
 		}
 	}
+	// Build per-group qsums. When no resolved groups are supplied the
+	// caller still sees a single group covering every sample, with
+	// the pooled qsum cloned in. Mirrors mcall.c's nsmpl_grp==1
+	// fast path.
+	in.groups = buildMcallGroups(v, opts, in.nals, in.qsum)
 	return in
+}
+
+// buildMcallGroups partitions samples per -G and recomputes the per-
+// group qsum from the configured tag (default: AD; QS when present).
+// When opts.sampleGroups is nil, a single group covering every
+// sample with the pooled qsum is returned — keeping the original
+// single-group code path bit-equal.
+func buildMcallGroups(v *vcf.Variant, opts CallOptions, nals int, pooledQS []float64) []mcallGroup {
+	if opts.sampleGroups == nil {
+		g := mcallGroup{samples: make([]int, len(v.Samples))}
+		for i := range v.Samples {
+			g.samples[i] = i
+		}
+		g.qsum = append([]float64(nil), pooledQS...)
+		return []mcallGroup{g}
+	}
+	resolved, err := opts.sampleGroups.Resolve(headerSamplesFromVariant(v))
+	if err != nil {
+		// Resolution errors should have been caught at Call() init;
+		// fall back to single-group to avoid panic in the hot loop.
+		g := mcallGroup{samples: make([]int, len(v.Samples))}
+		for i := range v.Samples {
+			g.samples[i] = i
+		}
+		g.qsum = append([]float64(nil), pooledQS...)
+		return []mcallGroup{g}
+	}
+	// nsmpl_grp == 1 is mcall.c's fast path: even with -G supplied,
+	// when the file resolves to a single group upstream skips the
+	// AD-based recomputation and uses INFO/QS directly (mcall.c:1446).
+	// Match the same behaviour so single-group -G byte-equals the
+	// no-group default.
+	if len(resolved) == 1 {
+		g := mcallGroup{samples: append([]int(nil), resolved[0].Indices...)}
+		g.qsum = append([]float64(nil), pooledQS...)
+		return []mcallGroup{g}
+	}
+	// Choose the per-sample tag: explicit override wins, else QS, else AD.
+	tag := opts.GroupSamplesTag
+	if tag == "" {
+		tag = opts.sampleGroups.Tag
+	}
+	if tag == "" {
+		// QS is only emitted at the INFO level by mpileup; the
+		// FORMAT-level fallback is AD. When -G is active mpileup
+		// must have been run with `-a AD` (or `-a QS`).
+		tag = "AD"
+	}
+	out := make([]mcallGroup, len(resolved))
+	for gi, rg := range resolved {
+		g := mcallGroup{samples: append([]int(nil), rg.Indices...)}
+		g.qsum = make([]float64, nals)
+		for _, isidx := range rg.Indices {
+			if isidx >= len(v.Samples) {
+				continue
+			}
+			raw, ok := v.Samples[isidx].Data[tag]
+			if !ok {
+				continue
+			}
+			vals := parseFloatList(raw)
+			sum := 0.0
+			for _, x := range vals {
+				if x > 0 {
+					sum += x
+				}
+			}
+			if sum == 0 {
+				continue
+			}
+			for j := 0; j < nals && j < len(vals); j++ {
+				if vals[j] > 0 {
+					g.qsum[j] += vals[j] / sum
+				}
+			}
+		}
+		// Normalize per-group so qsum sums to 1 (mcall.c:1523-1528).
+		s := 0.0
+		for _, q := range g.qsum {
+			s += q
+		}
+		if s != 0 {
+			for j := range g.qsum {
+				g.qsum[j] /= s
+			}
+		}
+		out[gi] = g
+	}
+	return out
+}
+
+// headerSamplesFromVariant returns the sample names declared on v.
+func headerSamplesFromVariant(v *vcf.Variant) []string {
+	out := make([]string, len(v.Samples))
+	for i, s := range v.Samples {
+		out[i] = s.Name
+	}
+	return out
 }
 
 // decodePLInts parses a "0,15,100" PL string into ints. Missing entries
@@ -301,8 +422,28 @@ func setPdg(pls []int, ngts, nals, unseen int) []float64 {
 }
 
 // mcallBestAlleles ports mcall_find_best_alleles. It returns the allele
-// bitmask of the most likely combination, plus ref_lk, lk_sum, max_lk.
-func mcallBestAlleles(in *mcallTin) (alsMask int, refLk, lkSum, maxLk float64) {
+// bitmask of the most likely combination, plus ref_lk, lk_sum, max_lk
+// for the supplied sample group. When grp is nil the pooled view
+// (in.groups[0] when populated, else every sample with the global
+// qsum) is used.
+func mcallBestAlleles(in *mcallTin, grp *mcallGroup) (alsMask int, refLk, lkSum, maxLk float64) {
+	if grp == nil {
+		if len(in.groups) > 0 {
+			grp = &in.groups[0]
+		} else {
+			// Build a transient pooled view (only triggered by very
+			// old callers that bypass parseMcallInputs).
+			tmp := mcallGroup{samples: make([]int, in.nsmpl), qsum: in.qsum}
+			for i := 0; i < in.nsmpl; i++ {
+				tmp.samples[i] = i
+			}
+			grp = &tmp
+		}
+	}
+	qsum := grp.qsum
+	if qsum == nil {
+		qsum = in.qsum
+	}
 	nals := in.nals
 	ninf := math.Inf(-1)
 	refLk, maxLk, lkSum = ninf, ninf, ninf
@@ -341,7 +482,7 @@ func mcallBestAlleles(in *mcallTin) (alsMask int, refLk, lkSum, maxLk float64) {
 		lkTot := 0.0
 		lkSet := false
 		iaa := (ia+1)*(ia+2)/2 - 1
-		for is := 0; is < in.nsmpl; is++ {
+		for _, is := range grp.samples {
 			p := in.pdg[is]
 			if iaa < len(p) && p[iaa] != 0 {
 				lkTot += math.Log(p[iaa])
@@ -359,22 +500,22 @@ func mcallBestAlleles(in *mcallTin) (alsMask int, refLk, lkSum, maxLk float64) {
 	// Two alleles.
 	if nals > 1 {
 		for ia := 0; ia < nals; ia++ {
-			if in.qsum[ia] == 0 {
+			if qsum[ia] == 0 {
 				continue
 			}
 			iaa := (ia+1)*(ia+2)/2 - 1
 			for ib := 0; ib < ia; ib++ {
-				if in.qsum[ib] == 0 {
+				if qsum[ib] == 0 {
 					continue
 				}
 				lkTot := 0.0
 				lkSet := false
-				fa := in.qsum[ia] / (in.qsum[ia] + in.qsum[ib])
-				fb := in.qsum[ib] / (in.qsum[ia] + in.qsum[ib])
+				fa := qsum[ia] / (qsum[ia] + qsum[ib])
+				fb := qsum[ib] / (qsum[ia] + qsum[ib])
 				fa2, fb2, fab := fa*fa, fb*fb, 2*fa*fb
 				ibb := (ib+1)*(ib+2)/2 - 1
 				iab := iaa - ia + ib
-				for is := 0; is < in.nsmpl; is++ {
+				for _, is := range grp.samples {
 					p := in.pdg[is]
 					pl := smplP(is)
 					var val float64
@@ -405,30 +546,30 @@ func mcallBestAlleles(in *mcallTin) (alsMask int, refLk, lkSum, maxLk float64) {
 	// Three alleles.
 	if nals > 2 {
 		for ia := 0; ia < nals; ia++ {
-			if in.qsum[ia] == 0 {
+			if qsum[ia] == 0 {
 				continue
 			}
 			iaa := (ia+1)*(ia+2)/2 - 1
 			for ib := 0; ib < ia; ib++ {
-				if in.qsum[ib] == 0 {
+				if qsum[ib] == 0 {
 					continue
 				}
 				ibb := (ib+1)*(ib+2)/2 - 1
 				iab := iaa - ia + ib
 				for ic := 0; ic < ib; ic++ {
-					if in.qsum[ic] == 0 {
+					if qsum[ic] == 0 {
 						continue
 					}
 					lkTot := 0.0
 					lkSet := false
-					tot := in.qsum[ia] + in.qsum[ib] + in.qsum[ic]
-					fa, fb, fc := in.qsum[ia]/tot, in.qsum[ib]/tot, in.qsum[ic]/tot
+					tot := qsum[ia] + qsum[ib] + qsum[ic]
+					fa, fb, fc := qsum[ia]/tot, qsum[ib]/tot, qsum[ic]/tot
 					fa2, fb2, fc2 := fa*fa, fb*fb, fc*fc
 					fab, fac, fbc := 2*fa*fb, 2*fa*fc, 2*fb*fc
 					icc := (ic+1)*(ic+2)/2 - 1
 					iac := iaa - ia + ic
 					ibc := ibb - ib + ic
-					for is := 0; is < in.nsmpl; is++ {
+					for _, is := range grp.samples {
 						p := in.pdg[is]
 						pl := smplP(is)
 						var val float64
@@ -472,11 +613,31 @@ func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (out *vcf.V
 		return nil, false, false
 	}
 
-	alsMask, refLk, lkSum, maxLk := mcallBestAlleles(in)
 	ninf := math.Inf(-1)
 	var maxQual float64 = ninf
-	if maxLk != ninf {
-		maxQual = -4.343 * (refLk - logsumexp2(lkSum, refLk))
+	var refLk, lkSum float64 = ninf, ninf
+	alsMask := 0
+	// Per-group best-allele scan (mcall.c:1538-1554). For each group
+	// the unioned mask drives the site's final allele set; the qual
+	// reported in INFO is the maximum across groups, with the
+	// matching group's refLk and lkSum carried along so the QUAL
+	// posterior is computed from the same group's likelihoods.
+	for gi := range in.groups {
+		gMask, gRefLk, gLkSum, gMaxLk := mcallBestAlleles(in, &in.groups[gi])
+		in.groups[gi].alsMask = gMask
+		in.groups[gi].refLk = gRefLk
+		in.groups[gi].lkSum = gLkSum
+		in.groups[gi].maxLk = gMaxLk
+		alsMask |= gMask
+		if gMaxLk == ninf {
+			continue
+		}
+		q := -4.343 * (gRefLk - logsumexp2(gLkSum, gRefLk))
+		if maxQual == ninf || q > maxQual {
+			maxQual = q
+			refLk = gRefLk
+			lkSum = gLkSum
+		}
 	}
 
 	// Make sure REF is always present.
@@ -553,14 +714,19 @@ func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (out *vcf.V
 			}
 		}
 	} else {
-		for i := 0; i < in.nsmpl; i++ {
-			g := mcallCallGenotype(in, alsMask, alsMap, i)
-			gts[i] = g
-			if g[0] >= 0 {
-				ac[g[0]]++
-			}
-			if g[1] >= 0 {
-				ac[g[1]]++
+		// Iterate per-group so each sample uses its group's local
+		// alsMask + qsum for genotype assignment (mcall.c:1610).
+		for gi := range in.groups {
+			grp := &in.groups[gi]
+			for _, is := range grp.samples {
+				g := mcallCallGenotype(in, alsMask, alsMap, is, grp)
+				gts[is] = g
+				if g[0] >= 0 {
+					ac[g[0]]++
+				}
+				if g[1] >= 0 {
+					ac[g[1]]++
+				}
 			}
 		}
 		for i := 1; i < nalsNew; i++ {
@@ -860,8 +1026,12 @@ func quantizeQual(q float64) float64 {
 
 // mcallCallGenotype ports mcall_call_genotypes for one sample, returning
 // the called (a,b) alleles in the *new* (trimmed) allele numbering.
-// Missing samples return {-1,-1}.
-func mcallCallGenotype(in *mcallTin, alsMask int, alsMap []int, ismpl int) [2]int {
+// Missing samples return {-1,-1}. When grp is non-nil the group's
+// own alsMask and qsum gate the per-allele scoring, mirroring
+// upstream's per-group genotype call; passing nil uses the supplied
+// alsMask plus the pooled qsum (backwards-compat for any callers
+// that haven't been updated).
+func mcallCallGenotype(in *mcallTin, alsMask int, alsMap []int, ismpl int, grp *mcallGroup) [2]int {
 	pdg := in.pdg[ismpl]
 	ploidy := in.ploidy
 	if ismpl < len(in.smplPloidy) {
@@ -869,6 +1039,13 @@ func mcallCallGenotype(in *mcallTin, alsMask int, alsMap []int, ismpl int) [2]in
 	}
 	if ploidy == 0 || pdgAllZero(pdg) {
 		return [2]int{-1, -1}
+	}
+	qsum := in.qsum
+	if grp != nil {
+		alsMask = grp.alsMask
+		if grp.qsum != nil {
+			qsum = grp.qsum
+		}
 	}
 
 	// Default fallback: 0/0.
@@ -885,9 +1062,9 @@ func mcallCallGenotype(in *mcallTin, alsMask int, alsMap []int, ismpl int) [2]in
 		iaa := (ia+1)*(ia+2)/2 - 1
 		var lk float64
 		if ploidy == 2 {
-			lk = pdg[iaa] * in.qsum[ia] * in.qsum[ia]
+			lk = pdg[iaa] * qsum[ia] * qsum[ia]
 		} else {
-			lk = pdg[iaa] * in.qsum[ia]
+			lk = pdg[iaa] * qsum[ia]
 		}
 		if bestLk < lk {
 			bestLk = lk
@@ -906,7 +1083,7 @@ func mcallCallGenotype(in *mcallTin, alsMask int, alsMap []int, ismpl int) [2]in
 					continue
 				}
 				iab := iaa - ia + ib
-				lk := 2 * pdg[iab] * in.qsum[ia] * in.qsum[ib]
+				lk := 2 * pdg[iab] * qsum[ia] * qsum[ib]
 				if bestLk < lk {
 					bestLk = lk
 					g0 = alsMap[ib]

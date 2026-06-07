@@ -115,6 +115,23 @@ type CallOptions struct {
 	// from ConstrainSites when Constrain == CallConstrainAlleles; the
 	// callStreaming hot loop consults it per record.
 	constrain *ConstrainAlleles
+	// GroupSamplesFile is the upstream `-G FILE` argument. Empty means
+	// "one pooled group" (the default, identical to v1 behaviour).
+	// The literal "-" places every sample in its own group
+	// (nsmpl_grp == nsmpl). Otherwise the path is a two-column file
+	// of `SAMPLE<tab>GROUP` lines parsed by LoadSampleGroups.
+	GroupSamplesFile string
+	// GroupSamplesTag, when set, names the FORMAT tag whose per-sample
+	// counts are summed to build the per-group qsum. Upstream defaults
+	// to "QS" when the input header declares it, otherwise "AD"
+	// (mcall.c:277-285). Setting this to "AD" or "QS" forces the
+	// choice.
+	GroupSamplesTag string
+	// sampleGroups holds the parsed group table once the input header
+	// is known. Populated by Call() / CallFile() from
+	// GroupSamplesFile; the callStreaming loop hands it to the mcall
+	// path.
+	sampleGroups *SampleGroups
 }
 
 // defaults applies upstream-equivalent defaults for any unset field.
@@ -260,6 +277,13 @@ func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
 			return 0, err
 		}
 		opts.PloidyTable = tbl
+	}
+	if opts.GroupSamplesFile != "" && opts.sampleGroups == nil {
+		sg, err := LoadSampleGroups(opts.GroupSamplesFile)
+		if err != nil {
+			return 0, err
+		}
+		opts.sampleGroups = sg
 	}
 	parsedTargets, err := parseRegions(opts.Targets)
 	if err != nil {

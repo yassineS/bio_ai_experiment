@@ -3768,20 +3768,27 @@ Subcommand-tail gaps remaining on `bcftools call`:
   removed in the same wave (it implied output drift that the
   oracle test rules out).
 
-Closure stance for the remaining knob:
+- **`-G/--group-samples` (closed).** Real port of upstream
+  `init_sample_groups` (mcall.c:253-355) plus the per-group EM
+  refactor. `LoadSampleGroups` parses the `SAMPLE<tab>GROUP`
+  table (the literal "-" means "every sample is its own group");
+  `Resolve` materialises the per-group sample-index partition
+  against the input VCF header. `buildMcallGroups` in
+  `callm.go` recomputes per-group qsum from FORMAT/AD when
+  nsmpl_grp > 1, matching mcall.c:1460-1497; the single-group
+  fast path uses INFO/QS so it stays bit-equal to the no-G
+  default. `mcallBestAlleles` and `mcallCallGenotype` were
+  refactored to take a `*mcallGroup` so the EM scoring and
+  genotype assignment iterate over each group's own samples
+  and use the group's local qsum + alsMask. The per-group
+  `alsMask` is unioned into the site's final allele set and
+  the max-qual group's refLk/lkSum feed the emitted QUAL.
 
-- **`-G/--group-samples` (closed as warn-on-misuse).** The CLI now
-  accepts `-G/--group-samples FILE`; supplying it emits a stderr
-  warning "samtools call: warning: -G/--group-samples is not yet
-  implemented; all samples share one group" so users see a
-  deterministic signal rather than silently-wrong output. v1
-  treats every sample as a single pool, which IS the upstream
-  output when `nsmpl_grp == 1` (the typical case). For
-  multi-group inputs the per-group EM scoring refactor (~120 LOC
-  parser + ~80 LOC EM refactor in `callm.go`, re-projecting
-  `mcallTin.qsum` and the per-group QS/AD normalisation that
-  `mcall.c` does for `nsmpl_grp > 1`) is the follow-up port if
-  it becomes parity-critical for a downstream pipeline.
+  Verified: `TestLiveCall/m_G_dash_per_sample` (every sample
+  its own group) and `TestLiveCall/m_G_two_groups`
+  (HG00100→popA, HG00101→popB) byte-equal upstream
+  end-to-end on a fresh `mpileup -a AD` of mpileup.1.bam +
+  mpileup.2.bam.
 - **The consensus caller (`-c`).** Closed. `tools/bcftools/pkg/
   bcftools/callc.go` is a faithful port of `ccall.c` + `em.c` +
   `prob1.c` plus the kfunc.c primitives (kf_gammap/q, kf_betai)

@@ -896,6 +896,34 @@ func TestLiveCall(t *testing.T) {
 				"call", "-m", "-r", "17:103-110", gz)
 		})
 	}
+
+	// -G sample groups (mcall.c::init_sample_groups). Builds a fresh
+	// multi-sample mpileup with `-a AD` (mandatory for -G's per-group
+	// AD-based qsum recomputation) using mpileup.1+mpileup.2, then
+	// exercises the two non-degenerate -G shapes through both
+	// binaries (the degenerate "single resolved group" file is
+	// equivalent to the no-G default and is covered above):
+	//
+	//   * `-G -`: every sample is its own group (nsmpl_grp==nsmpl)
+	//   * named two-group file: HG00100 → popA, HG00101 → popB
+	bam2 := filepath.Join(mpDir, "mpileup.2.bam")
+	if _, err := os.Stat(bam2); err == nil {
+		mp2 := runBin(t, live, "mpileup", "-a", "AD", "-f", ref, bam, bam2)
+		mpADFile := filepath.Join(t.TempDir(), "mp_ad2.vcf")
+		if err := os.WriteFile(mpADFile, mp2, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		twoGroup := filepath.Join(t.TempDir(), "g2.tsv")
+		if err := os.WriteFile(twoGroup, []byte("HG00100\tpopA\nHG00101\tpopB\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Run("m_G_dash_per_sample", func(t *testing.T) {
+			assertEqualStdout(t, live, ours, "call", "-m", "-G", "-", mpADFile)
+		})
+		t.Run("m_G_two_groups", func(t *testing.T) {
+			assertEqualStdout(t, live, ours, "call", "-m", "-G", twoGroup, mpADFile)
+		})
+	}
 }
 
 // -------------------------------------------------------------------------
