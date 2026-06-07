@@ -2585,12 +2585,20 @@ bayesian path.
 Sub-knob closure stances (warn-on-misuse for niche knobs that
 don't affect the default invocation):
 
-- **`-t/--qual-calibration` and `-X/--config` (warn-on-misuse).**
-  Applies the FLAT identity calibration table; the per-machine
-  tables (HiFi/HiSeq/ONT/Ultima) + QUAL-file parser
-  (`load_qcal`, `bam_consensus.c:672-736`) are a separable
-  ~300-line follow-up. The CLI now emits a stderr warning when
-  either flag is set so the user knows the request is a no-op.
+- **`-t/--qual-calibration` and `-X/--config` (ported).** The
+  six upstream static_qcal[] presets (FLAT, HiFi, HiSeq, ONT
+  R10.4 super, R10.4 duplex, Ultima) are vendored verbatim in
+  `tools/samtools/pkg/samtools/consensus_qcal.go`. LoadQcalFile
+  ports load_qcal (file format `QUAL <q> <s> <u> <o>`, ascending
+  q, linear-hold for gaps) plus the `:NAME` preset shorthand.
+  SelectConsensusConfig returns the `-X NAME` knob bundle
+  (mode + homopoly + low-MQ + scale-MQ + het-scale). All five
+  `-t :NAME` presets byte-match upstream; three of five
+  `-X NAME` configs byte-match (hiseq, r10.4_sup, ultima). One
+  residual remains on `-X hifi` / `-X r10.4_dup` (a 1-base
+  divergence at a low-quality homopolymer column under the
+  hifi knob bundle's specific homopoly_fix × homopoly_redux
+  interaction).
 - **`-T/--reference` uncovered-base fill (warn-on-misuse).** The
   reference is not used to fill uncovered positions; the `*T.out` golden files
   (30T/31T/.../42T) which substitute reference bases at zero-coverage
