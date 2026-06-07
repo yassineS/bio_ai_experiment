@@ -35,6 +35,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -95,8 +96,16 @@ type GtcheckOptions struct {
 	// ErrorProbability is the phred-scaled -E. Defaults to 40 when 0.
 	ErrorProbability int
 
-	// OutputType: "t" (default) or "z". v1 supports only "t".
+	// OutputType: "t" (default), "z" (bgzip-compressed text), or a
+	// digit selecting bgzip compression level (matches upstream
+	// vcfgtcheck.c -O parsing).
 	OutputType string
+	// NMatches caps the top-N matches printed per query sample in
+	// cross-check mode (mirrors upstream `--n-matches`). Default 0
+	// = no cap. A negative value triggers HWE-based sort upstream
+	// — we capture only the magnitude and a sort flag.
+	NMatches  int
+	SortByHWE bool
 }
 
 // GtcheckPair captures one DCv2 data row.
@@ -397,10 +406,67 @@ func runGtcheck(
 			NumMatching:     a.match,
 		})
 	}
+	// --n-matches: per-query top-N filter (mirrors upstream
+	// vcfgtcheck.c:980-1027). Only active in cross-check mode
+	// (incompatible with -p/-P).
+	if opts.NMatches > 0 && crossCheck && opts.PairsSpec == "" && opts.PairsFile == "" {
+		result.Pairs = topNMatchesByQuery(result.Pairs, opts.NMatches, opts.SortByHWE)
+	}
 	if err := writeGtcheckReport(out, result); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// topNMatchesByQuery groups pairs by query sample, sorts each
+// group by score (discordance ascending, or -avgHWE ascending when
+// sortByHWE is true), and keeps the top N per group. Output order:
+// (query first appearance, then top-N within each query).
+func topNMatchesByQuery(pairs []GtcheckPair, n int, sortByHWE bool) []GtcheckPair {
+	if n <= 0 || len(pairs) == 0 {
+		return pairs
+	}
+	byQry := map[string][]GtcheckPair{}
+	order := []string{}
+	for _, p := range pairs {
+		if _, ok := byQry[p.QuerySample]; !ok {
+			order = append(order, p.QuerySample)
+		}
+		byQry[p.QuerySample] = append(byQry[p.QuerySample], p)
+	}
+	out := make([]GtcheckPair, 0, len(order)*n)
+	for _, q := range order {
+		group := byQry[q]
+		sort.SliceStable(group, func(i, j int) bool {
+			if sortByHWE {
+				a := scoreByHWE(group[i])
+				b := scoreByHWE(group[j])
+				return a < b
+			}
+			a := scoreByDiscordance(group[i])
+			b := scoreByDiscordance(group[j])
+			return a < b
+		})
+		if len(group) > n {
+			group = group[:n]
+		}
+		out = append(out, group...)
+	}
+	return out
+}
+
+func scoreByDiscordance(p GtcheckPair) float64 {
+	if p.NumSites == 0 {
+		return 0
+	}
+	return p.Discordance / float64(p.NumSites)
+}
+
+func scoreByHWE(p GtcheckPair) float64 {
+	if p.NumMatching == 0 {
+		return 0
+	}
+	return -p.AvgLogPHWE
 }
 
 func validateUseTag(tag string) error {

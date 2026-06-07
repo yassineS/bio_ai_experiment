@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
 )
 
@@ -175,6 +176,15 @@ func runGtcheck(args []string) int {
 		return 2
 	}
 
+	// Upstream `--n-matches -N` triggers HWE-based sort (n
+	// negated). Capture the magnitude in NMatches and set
+	// SortByHWE accordingly.
+	nM := nMatches
+	sortHWE := false
+	if nM < 0 {
+		sortHWE = true
+		nM = -nM
+	}
 	opts := bcftools.GtcheckOptions{
 		GenotypesFile:    genotypesFile,
 		PairsSpec:        pairsSpec,
@@ -192,6 +202,8 @@ func runGtcheck(args []string) int {
 		DryRun:           dryRun,
 		ErrorProbability: errorProbability,
 		OutputType:       outputType,
+		NMatches:         nM,
+		SortByHWE:        sortHWE,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -206,8 +218,16 @@ func runGtcheck(args []string) int {
 		return 1
 	}
 	defer out.Close()
-
-	if _, err := bcftools.GtcheckFile(rest[0], out, opts); err != nil {
+	// -O z: wrap the output stream in a BGZF writer so the tab
+	// text body is bgzip-compressed (mirrors upstream
+	// vcfgtcheck.c -O z handling — FT_VCF_GZ).
+	var emit io.Writer = out
+	if outputType == "z" {
+		bw := bgzip.NewWriter(out)
+		defer bw.Close()
+		emit = bw
+	}
+	if _, err := bcftools.GtcheckFile(rest[0], emit, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools gtcheck: %v\n", err)
 		return 1
 	}
@@ -248,10 +268,6 @@ func checkGtcheckDeferred(in checkGtcheckDeferredInputs) string {
 		return "--cluster"
 	case in.distinctiveSites != "":
 		return "--distinctive-sites"
-	case in.nMatches != 0:
-		return "--n-matches"
-	case in.outputType != "" && in.outputType != "t":
-		return "-O z (compressed output)"
 	}
 	return ""
 }

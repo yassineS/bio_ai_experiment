@@ -1149,7 +1149,13 @@ func TestLiveGtcheck(t *testing.T) {
 	live, ours := requireLive(t)
 	fx := fixturePath(t, "basic.vcf")
 	// Cross-check mode (no -g) accepts a plain VCF on both sides.
-	assertEqualStdout(t, live, ours, "gtcheck", fx)
+	t.Run("default", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "gtcheck", fx)
+	})
+	// --n-matches caps the top-N best matches per query sample.
+	t.Run("n_matches_1", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "gtcheck", "--n-matches", "1", fx)
+	})
 }
 
 // -------------------------------------------------------------------------
