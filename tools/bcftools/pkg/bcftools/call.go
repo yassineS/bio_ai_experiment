@@ -132,6 +132,66 @@ type CallOptions struct {
 	// GroupSamplesFile; the callStreaming loop hands it to the mcall
 	// path.
 	sampleGroups *SampleGroups
+	// NoVersion mirrors upstream `--no-version`: when true, the
+	// `##bcftools_callVersion` / `##bcftools_callCommand` header
+	// lines are NOT appended. Default false (always append, matching
+	// upstream's default).
+	NoVersion bool
+	// PGCommand is the raw command-line stored in the
+	// `##bcftools_callCommand` header line when NoVersion is false.
+	// The CLI populates this with os.Args.
+	PGCommand string
+	// KeepUnseen mirrors upstream `-*/--keep-unseen-allele`: keep
+	// the `<*>` / `<NON_REF>` allele on output when it survived to
+	// the trimmed allele set. Default false (drop the unseen
+	// allele, matching upstream's default).
+	KeepUnseen bool
+	// KeepMaskedRef mirrors upstream `-M/--keep-masked-ref`: by
+	// default mcall.c drops records whose REF base is `N` (mcall.c
+	// line ~1340); -M overrides that and keeps them.
+	KeepMaskedRef bool
+	// SkipVariants is upstream `-V TYPE`: drop records of the named
+	// type ("indels" or "snps"). Empty (the default) skips nothing.
+	SkipVariants string
+	// RegionsOverlap mirrors upstream `--regions-overlap 0|1|2`:
+	// the overlap semantic between the user's region(s) and a
+	// record. 0 = POS-in-region, 1 (default) = any-overlap,
+	// 2 = variant-overlaps. Accepted but currently a no-op (our
+	// post-filter applies the equivalent of mode 1 — any overlap).
+	RegionsOverlap int
+	// PloidyFile is upstream `--ploidy-file FILE`: space/tab
+	// delimited CHROM,FROM,TO,SEX,PLOIDY. Resolved at Call()
+	// init into a PloidyTable so the regular per-record path
+	// applies it.
+	PloidyFile string
+	// PriorAN / PriorAC mirror upstream `-F AN,AC`: incorporate
+	// prior allele frequencies determined from the named INFO
+	// tags (typically a panel-built file). When both are set, the
+	// per-record qsum is reweighted before EM scoring.
+	PriorAN string
+	PriorAC string
+	// InsertMissed mirrors upstream `-i/--insert-missed`: when used
+	// with `-T sites.tsv`, emit records for every site in the
+	// targets file even if mpileup didn't supply data for that
+	// position (the emitted record is REF/. with QUAL=.).
+	InsertMissed bool
+	// Annotate lists optional FORMAT tags to populate on output
+	// (mirrors upstream `-a/--annotate LIST`). Lowercase aliases
+	// permitted; "?" prints the available tags and exits at the
+	// CLI layer.
+	Annotate string
+	// WriteIndex mirrors upstream `-W/--write-index[=FMT]`: index
+	// the output file (.csi by default, .tbi when explicitly
+	// requested).
+	WriteIndex string
+	// NovelRate is upstream `-n/--novel-rate` (only meaningful with
+	// constrained trio calling, which upstream itself disables).
+	// Accepted but not consulted — upstream's trio path is
+	// rejected before novel-rate would be used.
+	NovelRate string
+	// Verbosity is upstream `--verbosity INT`: accepted-and-ignored
+	// (mirrors htslib's verbosity sink).
+	Verbosity int
 }
 
 // defaults applies upstream-equivalent defaults for any unset field.
@@ -278,6 +338,17 @@ func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
 		}
 		opts.PloidyTable = tbl
 	}
+	if opts.PloidyTable == nil && opts.PloidyFile != "" {
+		body, err := loadPloidyFileText(opts.PloidyFile)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools call: --ploidy-file %s: %w", opts.PloidyFile, err)
+		}
+		tbl, err := ParsePloidyTable(body, 2)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools call: --ploidy-file %s: %w", opts.PloidyFile, err)
+		}
+		opts.PloidyTable = tbl
+	}
 	if opts.GroupSamplesFile != "" && opts.sampleGroups == nil {
 		sg, err := LoadSampleGroups(opts.GroupSamplesFile)
 		if err != nil {
@@ -389,6 +460,13 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 	} else {
 		hdr = augmentCallHeader(hdr, opts.Model)
 	}
+	// -a annotate: declare any requested FORMAT/INFO tags. Upstream
+	// adds these right after the FORMAT/GT declaration, before
+	// AC/AN/DP4/MQ — augmentCallAnnotateHeader splices accordingly.
+	hdr = augmentCallAnnotateHeader(hdr, parseCallAnnotateFlags(opts.Annotate))
+	if !opts.NoVersion {
+		hdr = appendCallProvenance(hdr, opts.PGCommand)
+	}
 
 	sexes := resolveSampleSexes(opts.PloidyTable, hdr.Samples, &opts)
 
@@ -429,6 +507,11 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
 		}
+		// -M / --keep-masked-ref: by default mcall.c drops records
+		// whose REF base is N (masked reference). Without -M, skip.
+		if !opts.KeepMaskedRef && (v.Ref == "N" || v.Ref == "n") {
+			continue
+		}
 		// -C alleles: project the record onto the constrained allele
 		// set BEFORE the caller runs. Sites absent from the file are
 		// skipped (upstream mcall.c:1280-ish).
@@ -437,6 +520,14 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 			if site == nil {
 				continue
 			}
+			// -i/--insert-missed: flush every site that precedes
+			// the current record's position (per upstream
+			// tgt_flush, vcfcall.c:467-484).
+			if opts.InsertMissed {
+				if err := flushMissedSites(w, opts.constrain, v.Chrom, v.Pos, hdr); err != nil {
+					return count, err
+				}
+			}
 			ok, fatal := applyConstrainAlleles(v, site, os.Stderr)
 			if fatal {
 				return count, fmt.Errorf("bcftools call -C alleles: failed at %s:%d", v.Chrom, v.Pos)
@@ -444,10 +535,17 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 			if !ok {
 				continue
 			}
+			site.used = true
 		}
 		samplePloidy := perSamplePloidy(opts, sexes, v.Chrom, v.Pos, len(v.Samples))
 		called, keep := callVariant(v, opts, samplePloidy)
 		if !keep {
+			continue
+		}
+		// -V indels|snps: classify the CALLED record (post-trim).
+		// Mirrors upstream vcfcall.c:1201 (bcf_is_snp on the
+		// post-mcall record).
+		if opts.SkipVariants != "" && calledVariantTypeMatches(called, opts.SkipVariants) {
 			continue
 		}
 		if err := w.Write(called); err != nil {
@@ -455,7 +553,190 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		}
 		count++
 	}
+	// End-of-stream `-i` flush: emit synthetic records for any
+	// sites in the -T file that mpileup never produced.
+	if opts.InsertMissed && opts.constrain != nil {
+		if err := flushMissedSites(w, opts.constrain, "", 1<<30, hdr); err != nil {
+			return count, err
+		}
+	}
 	return count, w.Flush()
+}
+
+// flushMissedSites emits synthetic records for every constrain-
+// alleles site that hasn't been consumed yet, up to (but not
+// including) the supplied cursor (chrom, pos1). When chrom == ""
+// the cursor is treated as past-the-end and every remaining site
+// is flushed. Mirrors upstream vcfcall.c::tgt_flush_region (lines
+// 467-484): synthetic records carry REF/ALT from the sites file,
+// missing QUAL, missing per-sample GTs.
+func flushMissedSites(w variantWriter, ca *ConstrainAlleles, chrom string, pos1 int, hdr *vcf.Header) error {
+	if ca == nil {
+		return nil
+	}
+	for _, site := range ca.order {
+		if site.used {
+			continue
+		}
+		if chrom != "" {
+			if site.chrom != chrom {
+				continue
+			}
+			if site.pos >= pos1 {
+				continue
+			}
+		}
+		site.used = true
+		rec := &vcf.Variant{
+			Chrom:     site.chrom,
+			Pos:       site.pos,
+			ID:        ".",
+			Ref:       site.alleles[0],
+			Alt:       append([]string(nil), site.alleles[1:]...),
+			Qual:      -1,
+			Filter:    []string{"."},
+			Info:      map[string]string{},
+			InfoOrder: nil,
+			Format:    []string{"GT"},
+			Samples:   make([]vcf.Sample, len(hdr.Samples)),
+		}
+		for i, name := range hdr.Samples {
+			rec.Samples[i] = vcf.Sample{
+				Name: name,
+				Data: map[string]string{"GT": "."},
+			}
+		}
+		if err := w.Write(rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// augmentCallAnnotateHeader inserts the FORMAT/INFO declarations the
+// `-a/--annotate` set requests right after the FORMAT/GT line (so
+// `GT, GQ, GP, ...` appear in upstream's emit order). Idempotent
+// when an existing identical declaration is already present.
+func augmentCallAnnotateHeader(hdr *vcf.Header, annot callAnnotateFlags) *vcf.Header {
+	if hdr == nil || (!annot.gq && !annot.gp && !annot.pv4) {
+		return hdr
+	}
+	out := &vcf.Header{
+		Samples:  append([]string(nil), hdr.Samples...),
+		MetaInfo: append([]string(nil), hdr.MetaInfo...),
+	}
+	insertAfterGT := func(line string) {
+		// Find the index of the FORMAT/GT declaration; insert
+		// after it. If absent, append at the end.
+		idx := -1
+		for i, m := range out.MetaInfo {
+			if strings.HasPrefix(m, `##FORMAT=<ID=GT,`) {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			out.MetaInfo = append(out.MetaInfo, line)
+			return
+		}
+		tail := append([]string{line}, out.MetaInfo[idx+1:]...)
+		out.MetaInfo = append(out.MetaInfo[:idx+1], tail...)
+	}
+	if annot.gq && !headerHasFormat(out, "GQ") {
+		insertAfterGT(`##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Phred-scaled Genotype Quality">`)
+	}
+	if annot.gp && !headerHasFormat(out, "GP") {
+		insertAfterGT(`##FORMAT=<ID=GP,Number=G,Type=Float,Description="Phred-scaled Genotype Probabilities">`)
+	}
+	if annot.pv4 && !headerHasInfo(out, "PV4") {
+		out.MetaInfo = append(out.MetaInfo,
+			`##INFO=<ID=PV4,Number=4,Type=Float,Description="P-values for strand bias, baseQ bias, mapQ bias and tail distance bias">`)
+	}
+	return out
+}
+
+// headerHasFormat reports whether hdr declares ##FORMAT=<ID=id,...>.
+func headerHasFormat(hdr *vcf.Header, id string) bool {
+	prefix := `##FORMAT=<ID=` + id + `,`
+	for _, m := range hdr.MetaInfo {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// loadPloidyFileText slurps a ploidy file into a single string for
+// ParsePloidyTable. Gzip / stdin (`-`) routing is handled by
+// iohelper.OpenReader.
+func loadPloidyFileText(path string) (string, error) {
+	r, err := iohelper.OpenReader(path)
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// calledVariantTypeMatches mirrors upstream vcfcall.c:1201 — the
+// `-V` filter runs on the POST-call record using the htslib
+// `bcf_is_snp` classification: every allele (REF + every ALT) must
+// have length 1 for is_snp=true, otherwise is_indel=true. Ref-only
+// records (no ALTs, or ALT==".") count as is_snp=true because the
+// single REF allele is length 1. `-V snps` then drops them.
+func calledVariantTypeMatches(v *vcf.Variant, kind string) bool {
+	if v == nil {
+		return false
+	}
+	allLen1 := len(v.Ref) == 1
+	if allLen1 {
+		for _, a := range v.Alt {
+			if a == "" || a == "." {
+				continue
+			}
+			if len(a) != 1 {
+				allLen1 = false
+				break
+			}
+		}
+	}
+	isSNP := allLen1
+	isIndel := !allLen1
+	switch strings.ToLower(kind) {
+	case "indels":
+		return isIndel
+	case "snps":
+		return isSNP
+	}
+	return false
+}
+
+// appendCallProvenance adds the upstream `##bcftools_callVersion`
+// and `##bcftools_callCommand` lines that document the producer.
+// Mirrors upstream vcfcall.c's bcf_hdr_append_version path; --no-
+// version on the CLI suppresses these.
+func appendCallProvenance(hdr *vcf.Header, cmd string) *vcf.Header {
+	if hdr == nil {
+		return hdr
+	}
+	out := &vcf.Header{
+		Samples:  append([]string(nil), hdr.Samples...),
+		MetaInfo: append([]string(nil), hdr.MetaInfo...),
+	}
+	out.MetaInfo = append(out.MetaInfo,
+		`##bcftools_callVersion=bio_ai_experiment`,
+	)
+	if cmd == "" {
+		cmd = "call"
+	}
+	out.MetaInfo = append(out.MetaInfo,
+		`##bcftools_callCommand=`+cmd,
+	)
+	return out
 }
 
 // augmentCallHeader inserts the meta lines that upstream bcftools adds

@@ -71,10 +71,16 @@ type constrainSite struct {
 	chrom   string
 	pos     int
 	alleles []string
+	used    bool // for `-i/--insert-missed`: flips true once mpileup
+	// has surfaced this site (so the flush-missed
+	// pass at end-of-stream doesn't re-emit it).
 }
 
 type ConstrainAlleles struct {
 	byKey map[string]*constrainSite
+	// order tracks insertion order so the -i flush can emit missed
+	// sites in the same order they appeared in the input file.
+	order []*constrainSite
 }
 
 func LoadConstrainAlleles(path string) (*ConstrainAlleles, error) {
@@ -113,7 +119,9 @@ func parseConstrainAlleles(r io.Reader) (*ConstrainAlleles, error) {
 		if _, exists := out.byKey[key]; exists {
 			continue
 		}
-		out.byKey[key] = &constrainSite{chrom: fields[0], pos: pos, alleles: alleles}
+		site := &constrainSite{chrom: fields[0], pos: pos, alleles: alleles}
+		out.byKey[key] = site
+		out.order = append(out.order, site)
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("bcftools call -C alleles: %w", err)

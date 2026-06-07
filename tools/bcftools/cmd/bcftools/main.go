@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
@@ -1058,33 +1059,65 @@ I/O:
       --version                  Show version.
 `
 
+// priorANFromSpec returns the first field of "AN,AC".
+func priorANFromSpec(s string) string {
+	if s == "" {
+		return ""
+	}
+	if i := strings.IndexByte(s, ','); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return strings.TrimSpace(s)
+}
+
+// priorACFromSpec returns the second field of "AN,AC".
+func priorACFromSpec(s string) string {
+	if i := strings.IndexByte(s, ','); i >= 0 {
+		return strings.TrimSpace(s[i+1:])
+	}
+	return ""
+}
+
 func runCall(args []string) int {
 	fs := flag.NewFlagSet("bcftools call", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
 	var (
-		consensus    bool
-		multiallelic bool
-		keepAlts     bool
-		variantsOnly bool
-		prior        float64
-		pval         float64
-		ploidy       string
-		haploidX     bool
-		outputType   string
-		outputPath   string
-		regions      string
-		regionsFile  string
-		targets      string
-		targetsFile  string
-		samples      string
-		samplesFile  string
-		threads      int
-		gvcf         string
-		constrain    string
-		groupSamples string
-		showHelp     bool
-		showVer      bool
+		consensus      bool
+		multiallelic   bool
+		keepAlts       bool
+		variantsOnly   bool
+		prior          float64
+		pval           float64
+		ploidy         string
+		ploidyFile     string
+		haploidX       bool
+		outputType     string
+		outputPath     string
+		regions        string
+		regionsFile    string
+		regionsOverlap int
+		targets        string
+		targetsFile    string
+		samples        string
+		samplesFile    string
+		threads        int
+		gvcf           string
+		constrain      string
+		groupSamples   string
+		groupSmplTag   string
+		noVersion      bool
+		keepUnseen     bool
+		keepMaskedRef  bool
+		skipVariants   string
+		annotate       string
+		writeIndex     string
+		insertMissed   bool
+		priorFreqs     string
+		novelRate      string
+		verbosity      int
+		showHelp       bool
+		showVer        bool
 	)
 	cliflag.BoolVar(fs, &consensus, "c", "consensus-caller", false, "Use consensus caller")
 	cliflag.BoolVar(fs, &multiallelic, "m", "multiallelic-caller", false, "Use multi-allelic caller")
@@ -1093,11 +1126,13 @@ func runCall(args []string) int {
 	cliflag.Float64Var(fs, &prior, "P", "prior", 1.1e-3, "Mutation rate prior")
 	cliflag.Float64Var(fs, &pval, "p", "pval-threshold", 0.5, "P-value threshold")
 	fs.StringVar(&ploidy, "ploidy", "2", "Ploidy spec")
+	fs.StringVar(&ploidyFile, "ploidy-file", "", "Ploidy file (CHROM,FROM,TO,SEX,PLOIDY)")
 	cliflag.BoolVar(fs, &haploidX, "X", "chromosome-X", false, "Treat samples as haploid")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	cliflag.IntVar(fs, &regionsOverlap, "", "regions-overlap", 1, "Region overlap semantic (0|1|2)")
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
 	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples list")
@@ -1105,7 +1140,19 @@ func runCall(args []string) int {
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	cliflag.StringVar(fs, &gvcf, "g", "gvcf", "", "Group non-variant sites into gVCF blocks by minimum per-sample DP (INT[,INT...])")
 	cliflag.StringVar(fs, &constrain, "C", "constrain", "", "Constrain calling to one of: alleles, trio (requires -T)")
-	cliflag.StringVar(fs, &groupSamples, "G", "group-samples", "", "Sample-group file for per-pool calling (accepted; warn-on-misuse — see PARITY_ROADMAP.md)")
+	cliflag.StringVar(fs, &groupSamples, "G", "group-samples", "", "Sample-group file for per-pool calling (`-` for per-sample groups)")
+	fs.StringVar(&groupSmplTag, "group-samples-tag", "", "FORMAT tag for -G (default auto-detect QS or AD)")
+	fs.BoolVar(&noVersion, "no-version", false, "Do not append version/command to header")
+	cliflag.BoolVar(fs, &keepUnseen, "*", "keep-unseen-allele", false, "Keep the <*> / <NON_REF> allele")
+	cliflag.BoolVar(fs, &keepMaskedRef, "M", "keep-masked-ref", false, "Keep sites whose REF base is N")
+	cliflag.StringVar(fs, &skipVariants, "V", "skip-variants", "", "Skip records of type 'indels' or 'snps'")
+	cliflag.StringVar(fs, &annotate, "a", "annotate", "", "Optional output tags (comma-separated; '?' to list)")
+	fs.StringVar(&writeIndex, "write-index", "", "Index the output (csi|tbi)")
+	fs.BoolVar(&insertMissed, "i", false, "Insert records for sites in -T not seen by mpileup")
+	fs.BoolVar(&insertMissed, "insert-missed", false, "Insert records for sites in -T not seen by mpileup")
+	cliflag.StringVar(fs, &priorFreqs, "F", "prior-freqs", "", "AN,AC INFO tags providing prior allele frequencies")
+	cliflag.StringVar(fs, &novelRate, "n", "novel-rate", "", "Novel-rate spec for constrained trio calling")
+	fs.IntVar(&verbosity, "verbosity", 0, "Verbosity level (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -1161,15 +1208,30 @@ func runCall(args []string) int {
 	}
 
 	opts := bcftools.CallOptions{
-		Model:         model,
-		KeepAlts:      keepAlts,
-		VariantsOnly:  variantsOnly,
-		Prior:         prior,
-		PvalThreshold: pval,
-		Ploidy:        ploidySpec,
-		PloidySpec:    ploidyText,
-		OutputFormat:  format,
-		GVCFSpec:      gvcf,
+		Model:           model,
+		KeepAlts:        keepAlts,
+		VariantsOnly:    variantsOnly,
+		Prior:           prior,
+		PvalThreshold:   pval,
+		Ploidy:          ploidySpec,
+		PloidySpec:      ploidyText,
+		PloidyFile:      ploidyFile,
+		OutputFormat:    format,
+		GVCFSpec:        gvcf,
+		NoVersion:       noVersion,
+		PGCommand:       strings.Join(os.Args, " "),
+		KeepUnseen:      keepUnseen,
+		KeepMaskedRef:   keepMaskedRef,
+		SkipVariants:    skipVariants,
+		RegionsOverlap:  regionsOverlap,
+		GroupSamplesTag: groupSmplTag,
+		Annotate:        annotate,
+		WriteIndex:      writeIndex,
+		InsertMissed:    insertMissed,
+		PriorAN:         priorANFromSpec(priorFreqs),
+		PriorAC:         priorACFromSpec(priorFreqs),
+		NovelRate:       novelRate,
+		Verbosity:       verbosity,
 	}
 	switch constrain {
 	case "":

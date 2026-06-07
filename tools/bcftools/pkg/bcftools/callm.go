@@ -218,7 +218,68 @@ func parseMcallInputs(v *vcf.Variant, opts CallOptions, samplePloidy []int) *mca
 	// the pooled qsum cloned in. Mirrors mcall.c's nsmpl_grp==1
 	// fast path.
 	in.groups = buildMcallGroups(v, opts, in.nals, in.qsum)
+	// -F AN,AC: when prior allele frequencies are supplied via INFO
+	// tags, reweight every group's qsum by (qsum + 0.5*ac) / (nsmpl
+	// + 0.5*an), then re-normalise so each group's qsum sums to 1.
+	// Matches mcall.c:1498-1528.
+	if opts.PriorAN != "" && opts.PriorAC != "" {
+		applyPriorFreqs(v, in, opts.PriorAN, opts.PriorAC)
+	}
 	return in
+}
+
+// applyPriorFreqs reweights every group's qsum using the INFO/<AN>
+// and INFO/<AC> values supplied via `-F AN,AC`. The reweighting
+// formula mirrors upstream mcall.c:1511-1518.
+func applyPriorFreqs(v *vcf.Variant, in *mcallTin, anTag, acTag string) {
+	if v == nil || in == nil {
+		return
+	}
+	anStr, ok := v.Info[anTag]
+	if !ok {
+		return
+	}
+	an, err := strconv.Atoi(strings.TrimSpace(anStr))
+	if err != nil || an <= 0 {
+		return
+	}
+	acStr, ok := v.Info[acTag]
+	if !ok {
+		return
+	}
+	ac := parseIntList(acStr)
+	if len(ac) != in.nals-1 {
+		return
+	}
+	ac0 := an
+	for i := 0; i < in.nals-1; i++ {
+		ac0 -= ac[i]
+	}
+	if ac0 < 0 {
+		return
+	}
+	for gi := range in.groups {
+		grp := &in.groups[gi]
+		nsmpl := float64(len(grp.samples))
+		denom := nsmpl + 0.5*float64(an)
+		if denom == 0 || len(grp.qsum) < in.nals {
+			continue
+		}
+		for i := 0; i < in.nals-1; i++ {
+			grp.qsum[i+1] = (grp.qsum[i+1] + 0.5*float64(ac[i])) / denom
+		}
+		grp.qsum[0] = (grp.qsum[0] + 0.5*float64(ac0)) / denom
+		// Re-normalise (mcall.c:1521-1528).
+		s := 0.0
+		for _, q := range grp.qsum {
+			s += q
+		}
+		if s != 0 {
+			for j := range grp.qsum {
+				grp.qsum[j] /= s
+			}
+		}
+	}
 }
 
 // buildMcallGroups partitions samples per -G and recomputes the per-
@@ -651,13 +712,24 @@ func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (out *vcf.V
 	isVariant := alsMask != 1
 
 	// Build the new allele set, dropping the unseen allele unless
-	// -A/keep-unseen requests it. Without keep-unseen, the <*> allele is
-	// always dropped.
+	// -A/keep-unseen requests it. With keep-unseen on a ref-only
+	// site upstream forcibly adds the unseen allele (mcall.c:1564-
+	// 1568) so the output retains `<*>` and the per-sample PL
+	// vector against the unseen genotype.
 	nalsOri := in.nals
-	keepUnseen := false // we do not implement --keep-unseen-allele here
+	keepUnseen := opts.KeepUnseen
 	newMask := 0
+	addedCount := 0
 	for i := 0; i < nalsOri; i++ {
-		if i > 0 && i == in.unseen && !keepUnseen {
+		// CALL_KEEP_UNSEEN: if we have exactly the REF in the new
+		// mask and hit the unseen index, force-include it
+		// (mcall.c:1564 — `i==unseen && nals_new==1`).
+		if keepUnseen && i == in.unseen && addedCount == 1 {
+			newMask |= 1 << i
+			addedCount++
+			continue
+		}
+		if i > 0 && i == in.unseen {
 			continue
 		}
 		if opts.KeepAlts {
@@ -665,6 +737,7 @@ func mcallSite(v *vcf.Variant, opts CallOptions, samplePloidy []int) (out *vcf.V
 		}
 		if alsMask&(1<<i) != 0 {
 			newMask |= 1 << i
+			addedCount++
 		}
 	}
 	if newMask&1 == 0 {
@@ -759,6 +832,125 @@ func pdgAllZero(p []float64) bool {
 	return true
 }
 
+// callAnnotateFlags captures which `-a` tags the caller requested.
+// Mirrors upstream's CALL_FMT_GQ / CALL_FMT_GP / CALL_FMT_PV4 bit
+// flags (vcfcall.c:868-871 and call.h:37-39).
+type callAnnotateFlags struct {
+	gq, gp, pv4 bool
+}
+
+func parseCallAnnotateFlags(spec string) callAnnotateFlags {
+	out := callAnnotateFlags{}
+	if spec == "" {
+		return out
+	}
+	for _, tok := range strings.Split(spec, ",") {
+		t := strings.ToUpper(strings.TrimSpace(tok))
+		switch t {
+		case "GQ", "FORMAT/GQ", "FMT/GQ":
+			out.gq = true
+		case "GP", "FORMAT/GP", "FMT/GP":
+			out.gp = true
+		case "PV4", "INFO/PV4":
+			out.pv4 = true
+		}
+	}
+	return out
+}
+
+// computeCallGQ ports the upstream `-a GQ` formula: per-sample
+// genotype quality is `-4.34294 * log(1 - max/sum)`, where `gps`
+// are the per-genotype likelihoods (per-sample, restricted to the
+// group's allowed alleles and the per-sample ploidy). The integer
+// result is capped at INT8_MAX=127 (mcall.c:881).
+//
+// Returns "." for missing samples (no pdg signal, or all gps==0).
+func computeCallGQ(in *mcallTin, grp *mcallGroup, alsMap []int, ismpl int) string {
+	if in == nil || ismpl >= len(in.pdg) {
+		return "."
+	}
+	pdg := in.pdg[ismpl]
+	if pdgAllZero(pdg) {
+		return "."
+	}
+	ploidy := in.ploidy
+	if ismpl < len(in.smplPloidy) {
+		ploidy = in.smplPloidy[ismpl]
+	}
+	if ploidy == 0 {
+		return "."
+	}
+	qsum := in.qsum
+	alsMask := -1
+	if grp != nil {
+		alsMask = grp.alsMask
+		if grp.qsum != nil {
+			qsum = grp.qsum
+		}
+	}
+	maxVal, sumVal := 0.0, 0.0
+	visit := func(g float64) {
+		if g > maxVal {
+			maxVal = g
+		}
+		sumVal += g
+	}
+	for ia := 0; ia < in.nals; ia++ {
+		if alsMask >= 0 && alsMask&(1<<ia) == 0 {
+			continue
+		}
+		if alsMap != nil && ia < len(alsMap) && alsMap[ia] < 0 {
+			continue
+		}
+		iaa := (ia+1)*(ia+2)/2 - 1
+		if ploidy == 2 {
+			visit(pdg[iaa] * qsum[ia] * qsum[ia])
+			for ib := 0; ib < ia; ib++ {
+				if alsMask >= 0 && alsMask&(1<<ib) == 0 {
+					continue
+				}
+				if alsMap != nil && ib < len(alsMap) && alsMap[ib] < 0 {
+					continue
+				}
+				iab := iaa - ia + ib
+				visit(2 * pdg[iab] * qsum[ia] * qsum[ib])
+			}
+		} else if ploidy == 1 {
+			visit(pdg[iaa] * qsum[ia])
+		}
+	}
+	if maxVal <= 0 || sumVal <= 0 {
+		return "0"
+	}
+	frac := 1 - maxVal/sumVal
+	// frac can underflow to 0 when one genotype completely dominates
+	// (pdg ≈ delta function). Upstream's log(1 - max/sum) becomes
+	// -Inf in that case; the int cast that follows then clamps via
+	// INT8_MAX (mcall.c:881). Mirror with an explicit cap.
+	if frac <= 0 {
+		return "127"
+	}
+	gq := -4.34294 * math.Log(frac)
+	gqi := int(gq)
+	if gqi > 127 {
+		gqi = 127
+	}
+	if gqi < 0 {
+		gqi = 0
+	}
+	return strconv.Itoa(gqi)
+}
+
+// appendUnique appends s to keys unless it's already present.
+func appendUnique(keys []string, s string) []string {
+	for _, k := range keys {
+		if k == s {
+			return keys
+		}
+	}
+	return append(keys, s)
+}
+
 // parseFloatList parses a comma-separated float list ("1,0" or
 // "0.165116,0.834884,0"). Non-numeric entries (e.g. ".") become 0.
 func parseFloatList(s string) []float64 {
@@ -837,6 +1029,19 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 		}
 	}
 
+	annot := parseCallAnnotateFlags(opts.Annotate)
+	// Build a per-sample → *mcallGroup index for the GQ formula
+	// (each group's local qsum + alsMask drives the per-sample
+	// genotype-posterior calculation).
+	sampleGrp := make([]*mcallGroup, in.nsmpl)
+	for gi := range in.groups {
+		grp := &in.groups[gi]
+		for _, is := range grp.samples {
+			if is >= 0 && is < in.nsmpl {
+				sampleGrp[is] = grp
+			}
+		}
+	}
 	out.Samples = make([]vcf.Sample, in.nsmpl)
 	for i, s := range v.Samples {
 		ns := vcf.Sample{Name: s.Name, Data: copyStringMap(s.Data)}
@@ -850,7 +1055,7 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 		if ad, okAD := s.Data["AD"]; okAD {
 			ns.Data["AD"] = reindexNumberR(ad, in.nals, alsMap)
 		}
-		// PL re-index or drop
+		// PL re-index or drop.
 		if keepPL {
 			if _, okPL := s.Data["PL"]; okPL {
 				pls, ok := decodePLInts(s.Data["PL"], in.ngts)
@@ -869,12 +1074,22 @@ func mcallEmit(v *vcf.Variant, in *mcallTin, opts CallOptions, alsMap []int, nal
 		} else {
 			delete(ns.Data, "PL")
 		}
+		// Upstream emits GQ only on variant sites where PL is
+		// retained; matches mcall.c:845.
+		if annot.gq && keepPL {
+			ns.Data["GQ"] = computeCallGQ(in, sampleGrp[i], alsMap, i)
+		}
 		out.Samples[i] = ns
 	}
 
 	// FORMAT order: upstream keeps the input FORMAT order with GT
-	// prepended, then PL removed for ref-only sites.
+	// prepended, then PL removed for ref-only sites. When -a GQ is
+	// set AND PL is retained (variant site), GQ is appended after
+	// PL — mirroring mcall.c which only emits GQ alongside PL.
 	out.Format = rebuildFormat(v.Format, keepPL)
+	if annot.gq && keepPL {
+		out.Format = appendUnique(out.Format, "GQ")
+	}
 
 	// --- QUAL ----------------------------------------------------------
 	if nAC != 0 {

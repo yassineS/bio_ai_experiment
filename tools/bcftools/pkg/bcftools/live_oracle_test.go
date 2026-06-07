@@ -924,6 +924,103 @@ func TestLiveCall(t *testing.T) {
 			assertEqualStdout(t, live, ours, "call", "-m", "-G", twoGroup, mpADFile)
 		})
 	}
+
+	// -a GQ: per-sample FORMAT/GQ on variant sites.
+	t.Run("m_a_GQ", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "call", "-m", "-a", "GQ", mpFile)
+	})
+
+	// -i/--insert-missed with -C alleles -T sites.tsv: synthetic
+	// records emitted for sites in the sites file that mpileup
+	// never produced. Build a sites TSV from the mpileup oracle
+	// plus one site (17:5000) outside the input range so the
+	// end-of-stream flush is exercised.
+	missedSites := filepath.Join(t.TempDir(), "sites_miss.tsv")
+	{
+		var sb bytes.Buffer
+		// Take the first concrete-SNP site so the present-site
+		// portion of the output is non-trivial.
+		for _, line := range strings.Split(string(mp), "\n") {
+			if line == "" || line[0] == '#' {
+				continue
+			}
+			f := strings.SplitN(line, "\t", 6)
+			if len(f) < 5 || len(f[3]) != 1 || strings.ContainsAny(f[3], "<>") {
+				continue
+			}
+			alts := strings.Split(f[4], ",")
+			alt := ""
+			for _, a := range alts {
+				if a == "<*>" || len(a) != 1 || strings.ContainsAny(a, "<>") {
+					continue
+				}
+				alt = a
+				break
+			}
+			if alt == "" {
+				continue
+			}
+			sb.WriteString(f[0])
+			sb.WriteByte('\t')
+			sb.WriteString(f[1])
+			sb.WriteByte('\t')
+			sb.WriteString(f[3])
+			sb.WriteByte(',')
+			sb.WriteString(alt)
+			sb.WriteByte('\n')
+			break
+		}
+		// Past-end site for the flush-on-EOF path (the fixture's
+		// contig 17 has length 4200; pos 5000 is past every input
+		// record).
+		sb.WriteString("17\t5000\tA,T\n")
+		if err := os.WriteFile(missedSites, sb.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("m_C_alleles_insert_missed", func(t *testing.T) {
+		assertEqualStdout(t, live, ours,
+			"call", "-m", "-C", "alleles", "-T", missedSites, "-i", mpFile)
+	})
+
+	// -V indels: skip indel records; -V snps: skip SNP records.
+	t.Run("m_V_indels", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "call", "-m", "-V", "indels", mpFile)
+	})
+	t.Run("m_V_snps", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "call", "-m", "-V", "snps", mpFile)
+	})
+
+	// -* / --keep-unseen-allele: retain the <*> ALT in the output.
+	t.Run("m_keep_unseen", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "call", "-m", "-*", mpFile)
+	})
+
+	// -M / --keep-masked-ref: by default mcall.c drops records whose
+	// REF base is N; -M overrides. The mpileup fixture has no N
+	// REFs so the test exercises the codepath without observable
+	// drift, but the comparison anchors the implementation.
+	t.Run("m_keep_masked_ref", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "call", "-m", "-M", mpFile)
+	})
+
+	// -F AN,AC: incorporate prior allele frequencies from the input
+	// INFO tags. The mpileup fixture lacks the panel-AF tags so
+	// the formula is a no-op; the assertion anchors the wiring.
+	t.Run("m_F_prior_freqs", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "call", "-m", "-F", "AN,AC", mpFile)
+	})
+
+	// --ploidy-file FILE: per-region per-sex ploidy override. A
+	// uniform diploid file produces the same output as the default
+	// diploid run; pin the round-trip.
+	ploidyFile := filepath.Join(t.TempDir(), "ploidy.txt")
+	if err := os.WriteFile(ploidyFile, []byte("17 1 4200 M 2\n17 1 4200 F 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("m_ploidy_file", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "call", "-m", "--ploidy-file", ploidyFile, mpFile)
+	})
 }
 
 // -------------------------------------------------------------------------
