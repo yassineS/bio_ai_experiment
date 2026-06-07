@@ -130,6 +130,21 @@ type MarkdupOptions struct {
 	// disable the prefix-match step entirely, so only the (x, y)
 	// distance gates the optical classification.
 	CoordsOrder string
+	// BarcodeTag mirrors upstream `--barcode-tag TAG`: when set,
+	// the named aux-tag string on each record is folded into the
+	// dedup key (bam_markdup.c:489-499). Two duplicates with the
+	// same coordinates but different barcodes are NOT considered
+	// duplicates of each other.
+	BarcodeTag string
+	// BarcodeName mirrors `--barcode-name`: when true the
+	// barcode is extracted from the QNAME (default regex matches
+	// the trailing colon-separated barcode field). BarcodeRegex
+	// overrides the default extraction pattern.
+	BarcodeName bool
+	// BarcodeRegex mirrors `--barcode-rgx`: a Go RE2 / POSIX-ERE
+	// pattern with one capture group selecting the barcode
+	// substring out of QNAME. Implies BarcodeName.
+	BarcodeRegex string
 }
 
 // MarkdupResult summarises a Markdup run.
@@ -192,6 +207,14 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 	if rerr != nil {
 		return MarkdupResult{}, rerr
 	}
+	// Compile the optional --barcode-rgx regex once per call (when
+	// --barcode-name is set with an explicit pattern). The default
+	// pattern when only --barcode-name is set mirrors upstream's
+	// default qname-tail extraction.
+	barcodeRE, berr := compileBarcodeRegex(opts)
+	if berr != nil {
+		return MarkdupResult{}, berr
+	}
 	// dtFor returns the dt tag a duplicate should carry when -d is set,
 	// or "" when -d is off (so callers can compare/assign uniformly).
 	dtFor := func(originalQ, dupQ string) string {
@@ -240,7 +263,11 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		}
 
 		// single_hash bookkeeping (every record gets a single-key).
-		sKey := singleKey(rec, hdr)
+		// Compute the per-record barcode hash up front so both keys
+		// see the same value (mirrors bam_markdup.c's per-record
+		// param->barcode lookup).
+		barcode := computeMarkdupBarcode(rec, opts, barcodeRE)
+		sKey := singleKey(rec, hdr, barcode)
 		if slot, ok := singleSlots[sKey]; ok {
 			// Pairing wins. If the incoming is paired and the slot's
 			// occupant is not (or vice versa), the unpaired side is
@@ -274,7 +301,7 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		// pair_hash bookkeeping (paired records only).
 		if entry.paired {
 			res.Paired++
-			pKey, single := buildKey(rec, opts.Mode, hdr)
+			pKey, single := buildKey(rec, opts.Mode, hdr, barcode)
 			if !single {
 				pairBuckets[pKey] = append(pairBuckets[pKey], entry)
 			}
@@ -380,6 +407,10 @@ type markdupKey struct {
 	Leftmost    int8
 	Single      int8
 	ReadGroup   int32
+	// Barcode is the upstream `--barcode-tag` hash folded into the
+	// dedup key (mirrors bam_markdup.c:489-499). Zero means "no
+	// barcode contribution" (default).
+	Barcode uint64
 }
 
 type markdupEntry struct {
@@ -584,9 +615,84 @@ func isOpticalDup(originalQ, dupQ string, maxDist int, rgx *coordsRegex) bool {
 	return xd <= int64(maxDist) && yd <= int64(maxDist)
 }
 
+// compileBarcodeRegex turns the markdup --barcode-name / --barcode-rgx
+// pair into a compiled pattern. The default pattern when
+// --barcode-name is set without --barcode-rgx mirrors upstream's
+// fallback (capture the trailing colon-separated token of the
+// QNAME — the "Illumina pool index" suffix).
+func compileBarcodeRegex(opts MarkdupOptions) (*regexp.Regexp, error) {
+	if !opts.BarcodeName && opts.BarcodeRegex == "" {
+		return nil, nil
+	}
+	pat := opts.BarcodeRegex
+	if pat == "" {
+		pat = `:([!-?A-~]+)$`
+	}
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		return nil, fmt.Errorf("markdup: bad --barcode-rgx: %w", err)
+	}
+	return re, nil
+}
+
+// computeMarkdupBarcode returns the per-record barcode hash that
+// folds into the dedup key when --barcode-tag or --barcode-name is
+// set. Returns 0 when no barcode source is configured. Mirrors
+// bam_markdup.c's do_hash(bar, strlen(bar)) — we use FNV-1a for an
+// identical bucketing guarantee (same bytes → same uint64).
+func computeMarkdupBarcode(rec *sam.Record, opts MarkdupOptions, re *regexp.Regexp) uint64 {
+	if opts.BarcodeTag != "" {
+		if v, ok := getAuxString(rec, opts.BarcodeTag); ok {
+			return fnv1a([]byte(v))
+		}
+		return 0
+	}
+	if re != nil {
+		m := re.FindStringSubmatchIndex(rec.QName)
+		if m == nil || len(m) < 4 || m[2] < 0 {
+			return 0
+		}
+		return fnv1a([]byte(rec.QName[m[2]:m[3]]))
+	}
+	return 0
+}
+
+// getAuxString extracts the string value of a Type=Z aux tag from
+// rec. Returns ok=false when the tag is absent or non-string.
+func getAuxString(rec *sam.Record, tag string) (string, bool) {
+	for _, a := range rec.Aux {
+		if a.Tag != tag {
+			continue
+		}
+		if s, ok := a.Value.(string); ok {
+			return s, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// fnv1a computes a 64-bit FNV-1a hash of b. Used for stable bucket
+// keys on barcode strings (output not observable; the hash only
+// needs to be deterministic + collision-resistant within a run).
+func fnv1a(b []byte) uint64 {
+	const (
+		offset uint64 = 14695981039346656037
+		prime  uint64 = 1099511628211
+	)
+	h := offset
+	for _, c := range b {
+		h ^= uint64(c)
+		h *= prime
+	}
+	return h
+}
+
 // singleKey returns the upstream "single_key" for rec — the key used in
 // the single-end duplicate hash that every primary record participates in.
-func singleKey(rec *sam.Record, hdr *sam.Header) markdupKey {
+// When barcode is non-zero, it is folded into the key so duplicates with
+// different barcodes don't collide (mirrors bam_markdup.c:489-499).
+func singleKey(rec *sam.Record, hdr *sam.Header, barcode uint64) markdupKey {
 	thisRef := int32(hdr.RefIndex(rec.RName)) + 1
 	var coord int64
 	var orient int8
@@ -602,6 +708,7 @@ func singleKey(rec *sam.Record, hdr *sam.Header) markdupKey {
 		ThisCoord:   coord,
 		Orientation: orient,
 		Single:      1,
+		Barcode:     barcode,
 	}
 }
 
@@ -664,8 +771,9 @@ func calcScore(rec *sam.Record) int64 {
 }
 
 // buildKey returns the bucket key for rec. The second return is true when
-// the record is keyed as a singleton.
-func buildKey(rec *sam.Record, mode MarkdupMode, hdr *sam.Header) (markdupKey, bool) {
+// the record is keyed as a singleton. When barcode is non-zero, it is
+// folded into the key (mirrors bam_markdup.c:489-499).
+func buildKey(rec *sam.Record, mode MarkdupMode, hdr *sam.Header, barcode uint64) (markdupKey, bool) {
 	thisRef := int32(hdr.RefIndex(rec.RName)) + 1 // +1 so zero never appears
 	thisCoord := unclippedStart(rec)
 	thisEnd := unclippedEnd(rec)
@@ -688,6 +796,7 @@ func buildKey(rec *sam.Record, mode MarkdupMode, hdr *sam.Header) (markdupKey, b
 			ThisCoord:   coord,
 			Orientation: orient,
 			Single:      1,
+			Barcode:     barcode,
 		}, true
 	}
 
@@ -749,6 +858,7 @@ func buildKey(rec *sam.Record, mode MarkdupMode, hdr *sam.Header) (markdupKey, b
 		OtherCoord:  otherCoord,
 		Orientation: orient,
 		Leftmost:    left,
+		Barcode:     barcode,
 	}, false
 }
 

@@ -119,6 +119,18 @@ func TestMarkdupParity(t *testing.T) {
 			},
 			compareMode: "bytes",
 		},
+		{
+			// --barcode-tag BC: barcode hash folds into the dedup
+			// key so records sharing coords but differing barcodes
+			// are NOT duplicates of each other. Three-record
+			// fixture: r1 + r2 share BC=ATCG → r2 marked dup; r3
+			// has BC=GGGG → kept independent.
+			name:        "19_barcode_tag",
+			input:       "19_barcode_tag.sam",
+			expect:      "19_barcode_tag.expected.sam",
+			opts:        MarkdupOptions{BarcodeTag: "BC"},
+			compareMode: "bytes",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

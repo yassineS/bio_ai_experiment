@@ -937,12 +937,14 @@ func runMarkdup(args []string) int {
 		showVer    bool
 		// Niche upstream knobs: still partial. Accepted on the CLI to
 		// match upstream's flag surface.
-		perRG     bool
-		barcodes  string
-		barcodeTg string
-		outFmt    string
-		readCoord string
-		coordOrd  string
+		perRG       bool
+		barcodes    string
+		barcodeTag  string
+		barcodeName bool
+		barcodeRgx  string
+		outFmt      string
+		readCoord   string
+		coordOrd    string
 	)
 	cliflag.BoolVar(fs, &removeDups, "r", "remove-dups", false, "")
 	cliflag.IntVar(fs, &maxDist, "d", "max-dist", 0, "")
@@ -958,10 +960,12 @@ func runMarkdup(args []string) int {
 	cliflag.StringVar(fs, &outFmt, "O", "output-fmt", "", "Output format override (sam/bam/ubam)")
 	fs.BoolVar(&noPG, "no-PG", false, "")
 	fs.BoolVar(&perRG, "S", false, "")
-	fs.StringVar(&barcodes, "barcode-name", "", "")
-	fs.StringVar(&barcodeTg, "barcode-tag", "", "")
+	fs.BoolVar(&barcodeName, "barcode-name", false, "")
+	fs.StringVar(&barcodeTag, "barcode-tag", "", "")
+	fs.StringVar(&barcodeRgx, "barcode-rgx", "", "")
 	fs.StringVar(&readCoord, "read-coords", "", "")
 	fs.StringVar(&coordOrd, "coords-order", "", "")
+	_ = barcodes
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
@@ -982,9 +986,6 @@ func runMarkdup(args []string) int {
 	if fs.NArg() == 0 {
 		fmt.Fprint(os.Stderr, markdupUsage)
 		return 2
-	}
-	if barcodes != "" || barcodeTg != "" {
-		fmt.Fprintln(os.Stderr, "samtools markdup: warning: barcode-aware keying is not yet implemented; barcodes are ignored")
 	}
 	var mode samtools.MarkdupMode
 	switch modeStr {
@@ -1028,6 +1029,9 @@ func runMarkdup(args []string) int {
 		MarkSupplementary: perRG,
 		ReadCoordsRegex:   readCoord,
 		CoordsOrder:       coordOrd,
+		BarcodeTag:        barcodeTag,
+		BarcodeName:       barcodeName,
+		BarcodeRegex:      barcodeRgx,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools markdup: %v\n", err)
 		return 1
