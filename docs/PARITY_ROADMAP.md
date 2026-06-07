@@ -2824,12 +2824,25 @@ in `testdata/filter_live/expected_matrix.tsv`
   `!~` as the proper inverse of `~`, which is the documented
   semantic. Verified for `~` by matrix rows `CHROM~"chr1"` and
   `ID~"rs"`.
-- **Not yet ported (deferred):** `BINOM`/`FISHER`, the `SMPL_*`/`s*`
-  per-sample-output aggregations, and `PERL.*` subroutines. These
-  three are explicitly out of the common-case sweep; BINOM/FISHER
-  in particular would reuse the in-tree `kfunc` (kf_betai etc.)
-  primitives ported for the consensus caller, so closure scope is
-  understood when it becomes parity-critical.
+- **`BINOM` and `FISHER` (closed).** Real ports of
+  filter.c::func_binom (line 2311) and filter.c::func_fisher
+  (line 2163). Supported call shapes:
+  - `BINOM(tag)` — per-sample diploid two-sided binomial test
+    on `tag[GT_a]` vs `tag[GT_b]` (typical: `BINOM(AD)`).
+  - `BINOM(tag1, tag2)` — per-sample two-scalar test, falling
+    back to a site-level test when neither arg is a sample
+    producer.
+  - `FISHER(INFO/DP4)` — site-level 2x2 Fisher exact on the
+    4-element tag.
+  - `FISHER(FORMAT/ADF, FORMAT/ADR)` — per-sample 2x2 with the
+    ALT allele index pulled from each sample's GT.
+  Use the in-tree `kfBetai` (from callc.go) and
+  `mpileupFisherExact` (from mpileup_fmt.go) primitives.
+  Verified byte-equal against `bcftools view -i` on
+  hand-built AD / ADF/ADR / DP4 fixtures.
+- **Still deferred:** the `SMPL_*` / `s*` per-sample-output
+  aggregations and `PERL.*` subroutines. These two are
+  out of the common-case sweep.
 
 #### Live-binary oracle coverage
 
