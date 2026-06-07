@@ -1059,6 +1059,54 @@ I/O:
       --version                  Show version.
 `
 
+// preprocessOptionalArg expands `--flag` (or `-W`) without a value into
+// `--flag=defaultVal` so the Go flag package doesn't treat the next
+// positional as the flag's value. `--flag=X` and `--flag X` are
+// untouched.
+func preprocessOptionalArg(args []string, flagName, defaultVal string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == flagName {
+			// Peek next arg: if it looks like a value (no leading
+			// '-'), assume the user meant `--flag VALUE` and pass
+			// through; otherwise expand to `--flag=defaultVal`.
+			if i+1 < len(args) {
+				next := args[i+1]
+				if next == "" || next[0] != '-' {
+					// Check if next looks like a positional file (e.g. has
+					// '/' or ends in .vcf / .bcf / .gz) — heuristic.
+					if looksLikePositional(next) {
+						out = append(out, flagName+"="+defaultVal)
+						continue
+					}
+				}
+			} else {
+				// Trailing bare flag.
+				out = append(out, flagName+"="+defaultVal)
+				continue
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// looksLikePositional reports whether s looks more like an input file
+// path than an option value (heuristic: contains '/', '.', or ends in
+// common suffixes).
+func looksLikePositional(s string) bool {
+	if strings.ContainsAny(s, "/") {
+		return true
+	}
+	for _, suf := range []string{".vcf", ".bcf", ".gz", ".bgz", ".tbi", ".csi"} {
+		if strings.HasSuffix(s, suf) {
+			return true
+		}
+	}
+	return false
+}
+
 // priorANFromSpec returns the first field of "AN,AC".
 func priorANFromSpec(s string) string {
 	if s == "" {
@@ -1157,6 +1205,11 @@ func runCall(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
+	// Pre-process bare `--write-index` / `-W` (no value) into the
+	// explicit `--write-index=csi` form so Go's flag package
+	// doesn't swallow the next positional as its argument.
+	args = preprocessOptionalArg(args, "--write-index", "csi")
+	args = preprocessOptionalArg(args, "-W", "csi")
 	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, callUsage)
@@ -1294,11 +1347,34 @@ func runCall(args []string) int {
 		fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
 		return 1
 	}
-	defer out.Close()
 
 	if _, err := bcftools.CallFile(rest[0], out, opts, os.Stderr); err != nil {
+		_ = out.Close()
 		fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
 		return 1
+	}
+	if err := out.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
+		return 1
+	}
+	// -W/--write-index: after the output is fully written, index
+	// it via the in-tree bcftools.BuildIndex machinery. The
+	// optional FMT suffix selects "csi" (default) or "tbi".
+	if writeIndex != "" && outputPath != "" {
+		fmt2 := bcftools.IndexCSI
+		switch strings.ToLower(writeIndex) {
+		case "", "csi":
+			fmt2 = bcftools.IndexCSI
+		case "tbi":
+			fmt2 = bcftools.IndexTBI
+		default:
+			fmt.Fprintf(os.Stderr, "bcftools call: unknown --write-index format %q (expect csi|tbi)\n", writeIndex)
+			return 2
+		}
+		if _, err := bcftools.BuildIndex(outputPath, bcftools.IndexOptions{Format: fmt2}); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools call: --write-index: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }
