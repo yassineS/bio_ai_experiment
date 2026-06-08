@@ -134,8 +134,10 @@ func TestQueryTGT(t *testing.T) {
 func TestQueryHeader(t *testing.T) {
 	out := runQuery(t, queryVCF, QueryOptions{Format: `%CHROM\t%POS\t%REF\n`, PrintHeader: true})
 	first := strings.SplitN(out, "\n", 2)[0]
-	if !strings.HasPrefix(first, "# ") {
-		t.Errorf("header row missing '# ' prefix: %q", first)
+	// Upstream byte-format: "#[1]CHROM\t[2]POS\t[3]REF" — no space
+	// between `#` and `[1]`. Match accordingly.
+	if !strings.HasPrefix(first, "#") {
+		t.Errorf("header row missing '#' prefix: %q", first)
 	}
 	if !strings.Contains(first, "CHROM") || !strings.Contains(first, "POS") || !strings.Contains(first, "REF") {
 		t.Errorf("header row missing token names: %q", first)
