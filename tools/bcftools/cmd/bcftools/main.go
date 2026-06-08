@@ -217,28 +217,48 @@ Usage:
 
 Options:
   -O, --output-type {v|z|u|b}     v=VCF (default), z=VCF.gz, u=uncompressed BCF, b=compressed BCF.
-                                  (u and b are NOT YET IMPLEMENTED in this slice.)
   -o, --output PATH               Output file (default stdout).
   -h, --header-only               Emit only the header.
   -H, --no-header                 Drop the header.
+      --with-header               Print both header and records (default).
+      --no-version                Do not append provenance lines.
   -G, --drop-genotypes            Drop FORMAT and per-sample columns.
+  -A, --trim-unseen-allele [N]    Remove <*>/<NON_REF> (-A) or at all sites (-AA).
+  -a, --trim-alt-alleles          Trim ALTs not seen in any remaining sample's GT.
   -c, --min-ac N                  Minimum allele count.
   -C, --max-ac N                  Maximum allele count.
   -q, --min-af FLOAT              Minimum allele frequency.
   -Q, --max-af FLOAT              Maximum allele frequency.
+  -g, --genotype [^]hom|het|miss  Keep sites with at least one matching GT.
   -i, --include EXPR              Keep records matching expression.
   -e, --exclude EXPR              Drop records matching expression.
   -f, --apply-filters NAME[,..]   Keep only PASS or named filters.
+  -k, --known                     Keep sites with non-'.' ID.
+  -n, --novel                     Keep sites with '.' ID.
+  -m, --min-alleles N             Minimum REF+ALT count.
+  -M, --max-alleles N             Maximum REF+ALT count.
+  -p, --phased                    Keep sites where all called GTs are phased.
+  -P, --exclude-phased            Drop such sites.
+  -u, --uncalled                  Keep sites without a called genotype.
+  -U, --exclude-uncalled          Drop such sites.
+  -x, --private                   (Deferred — rejection-parity.)
+  -X, --exclude-private           (Deferred — rejection-parity.)
   -r, --regions chr[:beg-end[,..]] Region(s) (uses .tbi when available).
   -R, --regions-file PATH         BED-like regions file.
+      --regions-overlap 0|1|2     Region inclusion rule [1].
   -t, --targets chr[:beg-end[,..]] Like -r but always a post-filter.
   -T, --targets-file PATH         BED-like targets file (post-filter).
-  -s, --samples LIST              Restrict to these samples (comma list).
-  -S, --samples-file PATH         File with sample IDs (one per line).
+      --targets-overlap 0|1|2     Target inclusion rule [0].
+  -s, --samples LIST              Restrict to these samples (prefix with '^' to exclude).
+  -S, --samples-file PATH         File with sample IDs (prefix with '^' to exclude).
+      --force-samples             Warn about unknown subset samples instead of failing.
+  -I, --no-update                 Do not (re)calculate INFO/AC and INFO/AN.
+  -v, --types LIST                Include comma-list of variant types.
+  -V, --exclude-types LIST        Exclude variant types.
+  -W, --write-index[=FMT]         Auto-index output (csi|tbi).
+      --verbosity INT             Verbosity level.
   -l, --compression-level N       gzip level for z output.
-  -@, --threads N                 Number of BGZF compression threads for
-                                  -O b/z/u output. Output bytes are
-                                  byte-identical to single-threaded mode.
+  -@, --threads N                 Number of BGZF compression threads.
   -?, --help                      Show this help.
       --version                   Show version.
 
@@ -252,36 +272,56 @@ func runView(args []string) int {
 	fs.SetOutput(io.Discard) // we print usage ourselves
 
 	var (
-		outputType    string
-		outputPath    string
-		headerOnly    bool
-		noHeader      bool
-		dropGT        bool
-		minAC         int
-		maxAC         int
-		minAF         float64
-		maxAF         float64
-		includeExpr   string
-		excludeExpr   string
-		applyFilters  string
-		regions       string
-		regionsFile   string
-		targets       string
-		targetsFile   string
-		samples       string
-		samplesFile   string
-		compressLevel int
-		threads       int
-		includeTypes  string
-		excludeTypes  string
-		noUpdate      bool
-		showHelp      bool
-		showVer       bool
+		outputType      string
+		outputPath      string
+		headerOnly      bool
+		noHeader        bool
+		withHeader      bool
+		dropGT          bool
+		minAC           int
+		maxAC           int
+		minAF           float64
+		maxAF           float64
+		includeExpr     string
+		excludeExpr     string
+		applyFilters    string
+		regions         string
+		regionsFile     string
+		regionsOverlap  int
+		targets         string
+		targetsFile     string
+		targetsOverlap  int
+		samples         string
+		samplesFile     string
+		forceSamples    bool
+		compressLevel   int
+		threads         int
+		includeTypes    string
+		excludeTypes    string
+		noUpdate        bool
+		trimAlts        bool
+		trimUnseen      int
+		genotypeFilter  string
+		knownOnly       bool
+		novelOnly       bool
+		minAlleles      int
+		maxAlleles      int
+		phasedOnly      bool
+		excludePhased   bool
+		uncalledOnly    bool
+		excludeUncalled bool
+		privateOnly     bool
+		excludePrivate  bool
+		writeIndex      string
+		verbosity       int
+		showHelp        bool
+		showVer         bool
 	)
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.BoolVar(fs, &headerOnly, "h", "header-only", false, "Header only")
 	cliflag.BoolVar(fs, &noHeader, "H", "no-header", false, "Drop header")
+	fs.BoolVar(&withHeader, "with-header", false, "Print both header and records (default)")
 	cliflag.BoolVar(fs, &dropGT, "G", "drop-genotypes", false, "Drop genotypes")
 	cliflag.IntVar(fs, &minAC, "c", "min-ac", 0, "Min allele count")
 	cliflag.IntVar(fs, &maxAC, "C", "max-ac", 0, "Max allele count")
@@ -292,18 +332,45 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &applyFilters, "f", "apply-filters", "", "Filter list")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	fs.IntVar(&regionsOverlap, "regions-overlap", 1, "Region inclusion rule (0|1|2)")
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
-	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples")
-	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
+	fs.IntVar(&targetsOverlap, "targets-overlap", 0, "Target inclusion rule (0|1|2)")
+	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples (prefix with '^' to exclude)")
+	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file (prefix with '^' to exclude)")
+	fs.BoolVar(&forceSamples, "force-samples", false, "Only warn about unknown subset samples")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	cliflag.StringVar(fs, &includeTypes, "v", "types", "", "Include only listed variant types (snps,indels,mnps,bnd,other)")
 	cliflag.StringVar(fs, &excludeTypes, "V", "exclude-types", "", "Exclude listed variant types")
 	cliflag.BoolVar(fs, &noUpdate, "I", "no-update", false, "Do not (re)calculate INFO fields for the subset (currently INFO/AC and INFO/AN)")
+	cliflag.BoolVar(fs, &trimAlts, "a", "trim-alt-alleles", false, "Trim ALT alleles not seen in genotypes")
+	cliflag.IntVar(fs, &trimUnseen, "A", "trim-unseen-allele", 0, "Remove '<*>'/'<NON_REF>' (1) or at all sites (2)")
+	cliflag.StringVar(fs, &genotypeFilter, "g", "genotype", "", "Require [^]hom|het|miss genotype on any sample")
+	cliflag.BoolVar(fs, &knownOnly, "k", "known", false, "Keep only sites with non-'.' ID")
+	cliflag.BoolVar(fs, &novelOnly, "n", "novel", false, "Keep only sites with '.' ID")
+	cliflag.IntVar(fs, &minAlleles, "m", "min-alleles", 0, "Minimum number of alleles (REF+ALT)")
+	cliflag.IntVar(fs, &maxAlleles, "M", "max-alleles", 0, "Maximum number of alleles (REF+ALT)")
+	cliflag.BoolVar(fs, &phasedOnly, "p", "phased", false, "Select sites where all called genotypes are phased")
+	cliflag.BoolVar(fs, &excludePhased, "P", "exclude-phased", false, "Exclude sites where all called genotypes are phased")
+	cliflag.BoolVar(fs, &uncalledOnly, "u", "uncalled", false, "Select sites without a called genotype")
+	cliflag.BoolVar(fs, &excludeUncalled, "U", "exclude-uncalled", false, "Exclude sites without a called genotype")
+	cliflag.BoolVar(fs, &privateOnly, "x", "private", false, "Select sites where non-ref alleles are private to subset samples (deferred)")
+	cliflag.BoolVar(fs, &excludePrivate, "X", "exclude-private", false, "Exclude sites where non-ref alleles are private to subset samples (deferred)")
+	cliflag.StringVar(fs, &writeIndex, "W", "write-index", "", "Automatically index output (csi|tbi)")
+	fs.IntVar(&verbosity, "verbosity", 0, "Verbosity level")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+
+	// -W/--write-index accepts a bare form (no value); expand to upstream's default.
+	args = preprocessOptionalArg(args, "-W", "csi")
+	args = preprocessOptionalArg(args, "--write-index", "csi")
+	// -A is upstream's counting flag: bare `-A` ≡ 1 (record-level trim),
+	// `-AA` ≡ 2 (trim everywhere). Collapse to `-A=N`.
+	args = collapseRepeatedShortFlag(args, "-A", "trim-unseen-allele")
+	args = preprocessFlagOrBare(args, "-A", "1")
+	args = preprocessFlagOrBare(args, "--trim-unseen-allele", "1")
 
 	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -338,23 +405,99 @@ func runView(args []string) int {
 		fmt.Fprintln(os.Stderr, "bcftools view: only one of -v/--types or -V/--exclude-types can be given")
 		return 2
 	}
+	if knownOnly && novelOnly {
+		fmt.Fprintln(os.Stderr, "bcftools view: only one of -k/--known and -n/--novel can be given")
+		return 2
+	}
+	if phasedOnly && excludePhased {
+		fmt.Fprintln(os.Stderr, "bcftools view: only one of -p/--phased and -P/--exclude-phased can be given")
+		return 2
+	}
+	if uncalledOnly && excludeUncalled {
+		fmt.Fprintln(os.Stderr, "bcftools view: only one of -u/--uncalled and -U/--exclude-uncalled can be given")
+		return 2
+	}
+	if regionsOverlap < 0 || regionsOverlap > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools view: --regions-overlap must be 0, 1 or 2 (got %d)\n", regionsOverlap)
+		return 2
+	}
+	if targetsOverlap < 0 || targetsOverlap > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools view: --targets-overlap must be 0, 1 or 2 (got %d)\n", targetsOverlap)
+		return 2
+	}
+	if writeIndex != "" && writeIndex != "csi" && writeIndex != "tbi" {
+		fmt.Fprintf(os.Stderr, "bcftools view: --write-index must be csi or tbi (got %q)\n", writeIndex)
+		return 2
+	}
+	if privateOnly || excludePrivate {
+		// Rejection-parity: requires sample-subset bookkeeping that's
+		// not yet wired into the view loop. Queued for follow-up.
+		fmt.Fprintln(os.Stderr, "bcftools view: -x/-X --private/--exclude-private is to be implemented, please open an issue on github")
+		return 1
+	}
+	if withHeader && headerOnly {
+		fmt.Fprintln(os.Stderr, "bcftools view: --with-header conflicts with --header-only")
+		return 2
+	}
+	// `-A` / `--trim-unseen-allele`: 0=off, 1=record-level, 2=trim everywhere.
+	if trimUnseen < 0 || trimUnseen > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools view: -A may appear at most twice (got count=%d)\n", trimUnseen)
+		return 2
+	}
+
+	noVersionFlag := fs.Lookup("no-version")
+	noVersion := noVersionFlag != nil && noVersionFlag.Value.String() == "true"
+
+	// Parse `^`-prefixed sample lists.
+	samplesExclude := false
+	if strings.HasPrefix(samples, "^") {
+		samples = samples[1:]
+		samplesExclude = true
+	}
+	samplesFileExclude := false
+	sf := samplesFile
+	if strings.HasPrefix(sf, "^") {
+		sf = sf[1:]
+		samplesFileExclude = true
+	}
+
 	opts := bcftools.ViewOptions{
-		OutputFormat:   format,
-		HeaderOnly:     headerOnly,
-		NoHeader:       noHeader,
-		DropGenotypes:  dropGT,
-		MinAlleleCount: minAC,
-		MaxAlleleCount: maxAC,
-		MinAlleleFreq:  minAF,
-		MaxAlleleFreq:  maxAF,
-		IncludeExpr:    includeExpr,
-		ExcludeExpr:    excludeExpr,
-		ApplyFilters:   bcftools.SplitCommaList(applyFilters),
-		CompressLevel:  compressLevel,
-		IncludeTypes:   bcftools.SplitCommaList(includeTypes),
-		ExcludeTypes:   bcftools.SplitCommaList(excludeTypes),
-		NoUpdateINFO:   noUpdate,
-		Threads:        threads,
+		OutputFormat:        format,
+		HeaderOnly:          headerOnly,
+		NoHeader:            noHeader,
+		DropGenotypes:       dropGT,
+		MinAlleleCount:      minAC,
+		MaxAlleleCount:      maxAC,
+		MinAlleleFreq:       minAF,
+		MaxAlleleFreq:       maxAF,
+		IncludeExpr:         includeExpr,
+		ExcludeExpr:         excludeExpr,
+		ApplyFilters:        bcftools.SplitCommaList(applyFilters),
+		CompressLevel:       compressLevel,
+		IncludeTypes:        bcftools.SplitCommaList(includeTypes),
+		ExcludeTypes:        bcftools.SplitCommaList(excludeTypes),
+		NoUpdateINFO:        noUpdate,
+		Threads:             threads,
+		TrimAltAlleles:      trimAlts,
+		TrimUnseenAllele:    trimUnseen >= 1,
+		TrimUnseenAlleleAll: trimUnseen >= 2,
+		ForceSamples:        forceSamples,
+		SamplesExclude:      samplesExclude || samplesFileExclude,
+		GenotypeFilter:      genotypeFilter,
+		Known:               knownOnly,
+		Novel:               novelOnly,
+		MinAlleles:          minAlleles,
+		MaxAlleles:          maxAlleles,
+		Phased:              phasedOnly,
+		ExcludePhased:       excludePhased,
+		Uncalled:            uncalledOnly,
+		ExcludeUncalled:     excludeUncalled,
+		RegionsOverlap:      regionsOverlap,
+		TargetsOverlap:      targetsOverlap,
+		WriteIndex:          writeIndex,
+		Verbosity:           verbosity,
+		NoVersion:           noVersion,
+		PGCommand:           strings.Join(os.Args, " "),
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -384,14 +527,14 @@ func runView(args []string) int {
 	if samples != "" {
 		opts.Samples = bcftools.SplitCommaList(samples)
 	}
-	if samplesFile != "" {
-		names, err := bcftools.LoadSamplesFile(samplesFile)
+	if sf != "" {
+		names, err := bcftools.LoadSamplesFile(sf)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bcftools view: %v\n", err)
 			return 1
 		}
 		opts.Samples = append(opts.Samples, names...)
-		opts.SamplesFile = samplesFile
+		opts.SamplesFile = sf
 	}
 
 	out, err := openOutFile(outputPath)
@@ -1226,6 +1369,39 @@ I/O:
   -?, --help                     Show this help.
       --version                  Show version.
 `
+
+// collapseRepeatedShortFlag finds runs of `-X` (consecutive occurrences
+// of the same short flag) and rewrites them as `--longName=N` where N is
+// the run length. Mirrors upstream's "counting" short-flag convention
+// (e.g. `view -AA` ≡ 2, `view -A` ≡ 1). Long-flag occurrences are not
+// rewritten. Only operates on the same flag character — `-AB` is left
+// alone.
+func collapseRepeatedShortFlag(args []string, shortFlag, longName string) []string {
+	if len(shortFlag) != 2 || shortFlag[0] != '-' {
+		return args
+	}
+	out := make([]string, 0, len(args))
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		// Match `-AAA` style: leading '-', followed by 1+ repetitions of
+		// the flag char. Avoid touching long flags or compound `-aB`.
+		if len(a) >= 2 && a[0] == '-' && a[1] != '-' && a[1] == shortFlag[1] {
+			n := 0
+			for n < len(a)-1 && a[1+n] == shortFlag[1] {
+				n++
+			}
+			if n == len(a)-1 {
+				out = append(out, "--"+longName+"="+strconv.Itoa(n))
+				i++
+				continue
+			}
+		}
+		out = append(out, a)
+		i++
+	}
+	return out
+}
 
 // preprocessFlagOrBare expands `flagName` to `flagName=defaultVal`
 // whenever it is bare (last arg) OR immediately followed by another

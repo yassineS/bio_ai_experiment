@@ -94,6 +94,62 @@ type ViewOptions struct {
 	// byte-identical to the serial (Threads <= 1) path. Plain VCF
 	// output is unaffected.
 	Threads int
+	// TrimAltAlleles is upstream `-a/--trim-alt-alleles`: drop ALT
+	// alleles that no remaining sample's genotype references (after
+	// sample-subset).
+	TrimAltAlleles bool
+	// TrimUnseenAllele is upstream `-A/--trim-unseen-allele`: remove
+	// `<*>` / `<NON_REF>` from the ALT list. When TrimUnseenAlleleAll
+	// is true (the `-AA` form) the allele is removed at every site;
+	// otherwise only at sites where it would otherwise be the only ALT.
+	TrimUnseenAllele    bool
+	TrimUnseenAlleleAll bool
+	// ForceSamples downgrades the "unknown sample" error to a warning.
+	ForceSamples bool
+	// SamplesExclude is set when -s/-S used the `^` prefix; the named
+	// samples are the exclusion set rather than the inclusion set.
+	SamplesExclude bool
+	// GenotypeFilter is upstream `-g/--genotype [^]hom|het|miss`: keep
+	// records that have at least one sample with the requested
+	// genotype kind ('^' inverts). Empty means no filter.
+	GenotypeFilter string
+	// Known / Novel keep sites with non-'.' / '.' IDs. Both empty means
+	// no filter; supplying both is a CLI-level error.
+	Known bool
+	Novel bool
+	// MinAlleles / MaxAlleles bound the number of distinct alleles
+	// (REF + ALT) at the site. 0 disables the bound.
+	MinAlleles int
+	MaxAlleles int
+	// Phased / ExcludePhased select / exclude sites where every called
+	// genotype is phased.
+	Phased        bool
+	ExcludePhased bool
+	// Uncalled / ExcludeUncalled select / exclude sites without a
+	// called genotype.
+	Uncalled        bool
+	ExcludeUncalled bool
+	// Private / ExcludePrivate select / exclude sites whose non-ref
+	// alleles are exclusive to the subset samples (deferred — see
+	// roadmap).
+	Private        bool
+	ExcludePrivate bool
+	// RegionsOverlap / TargetsOverlap select the inclusion rule
+	// (mirrors upstream's --regions-overlap / --targets-overlap):
+	// 0 = POS in region, 1 = record overlaps, 2 = variant overlaps.
+	RegionsOverlap int
+	TargetsOverlap int
+	// WriteIndex is upstream `-W/--write-index[=FMT]`. Non-empty
+	// values are "csi" or "tbi"; empty disables indexing.
+	WriteIndex string
+	// Verbosity mirrors upstream `--verbosity INT`.
+	Verbosity int
+	// NoVersion suppresses the provenance line view would otherwise
+	// add to the header.
+	NoVersion bool
+	// PGCommand is the verbatim command line stamped into the
+	// provenance header line when NoVersion is false.
+	PGCommand string
 }
 
 // applyAlleleFilters returns true if the variant passes the AC/AF filters.
@@ -179,6 +235,137 @@ func (o ViewOptions) applyFilterColumnFilters(v *vcf.Variant) bool {
 func dropGenotypes(v *vcf.Variant) {
 	v.Format = nil
 	v.Samples = nil
+}
+
+// trimUnseenAllele removes the symbolic `<*>` / `<NON_REF>` ALT allele.
+// When `all` is false the allele is only removed at sites where it would
+// otherwise be the sole ALT (mirrors upstream `-A`); when `all` is true
+// (the `-AA` form) it is removed unconditionally.
+func trimUnseenAllele(v *vcf.Variant, all bool) {
+	if len(v.Alt) == 0 {
+		return
+	}
+	if !all {
+		// Only act when the unseen allele is the lone ALT.
+		if len(v.Alt) != 1 {
+			return
+		}
+		if v.Alt[0] != "<*>" && v.Alt[0] != "<NON_REF>" {
+			return
+		}
+		v.Alt = nil
+		return
+	}
+	kept := v.Alt[:0:0]
+	for _, a := range v.Alt {
+		if a == "<*>" || a == "<NON_REF>" {
+			continue
+		}
+		kept = append(kept, a)
+	}
+	v.Alt = kept
+}
+
+// trimAltAlleles drops ALT alleles whose 1-based index never appears in
+// any remaining sample's GT. The accompanying per-allele INFO fields
+// (AC, AF) are pruned in parallel. FORMAT/GT alleles are NOT renumbered
+// because the dropped allele indices simply no longer appear.
+func trimAltAlleles(v *vcf.Variant) {
+	if len(v.Alt) == 0 || len(v.Samples) == 0 {
+		return
+	}
+	used := make([]bool, len(v.Alt))
+	for _, s := range v.Samples {
+		gt := s.Data["GT"]
+		if gt == "" {
+			continue
+		}
+		for _, a := range splitGTAlleles(gt) {
+			n, err := strconv.Atoi(a)
+			if err != nil || n <= 0 || n > len(v.Alt) {
+				continue
+			}
+			used[n-1] = true
+		}
+	}
+	allUsed := true
+	for _, u := range used {
+		if !u {
+			allUsed = false
+			break
+		}
+	}
+	if allUsed {
+		return
+	}
+	keptAlts := v.Alt[:0:0]
+	for i, a := range v.Alt {
+		if used[i] {
+			keptAlts = append(keptAlts, a)
+		}
+	}
+	v.Alt = keptAlts
+	if len(v.Alt) == 0 {
+		// VCF requires a literal "." when no ALT remains. Upstream
+		// emits this canonical missing marker; matching it keeps our
+		// stream parseable by every other VCF tool.
+		v.Alt = []string{"."}
+	}
+	for _, tag := range []string{"AC", "AF"} {
+		val, ok := v.Info[tag]
+		if !ok {
+			continue
+		}
+		parts := strings.Split(val, ",")
+		if len(parts) != len(used) {
+			continue
+		}
+		kept := parts[:0:0]
+		for i, p := range parts {
+			if used[i] {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == 0 {
+			delete(v.Info, tag)
+		} else {
+			v.Info[tag] = strings.Join(kept, ",")
+		}
+	}
+}
+
+// resolveSampleSelection normalises opts.Samples against the header.
+// When exclude is true the requested list is the exclusion set
+// (upstream's `^`-prefix syntax): every header sample NOT in the list
+// is kept. When exclude is false the list is the inclusion set, but
+// unknown names are silently dropped (when forceSamples is true the
+// drop is unconditional; when false a missing name is still tolerated
+// — vcfview.c's set_samples falls back to the same behaviour because
+// the per-record loop ignores names that don't appear in v.Samples).
+// Returning nil tells callers "no sample subset" so the slow path is
+// skipped entirely.
+func resolveSampleSelection(headerSamples, requested []string, exclude bool, forceSamples bool) []string {
+	_ = forceSamples
+	if len(requested) == 0 {
+		if exclude {
+			return append([]string(nil), headerSamples...)
+		}
+		return nil
+	}
+	if !exclude {
+		return requested
+	}
+	excluded := make(map[string]struct{}, len(requested))
+	for _, s := range requested {
+		excluded[s] = struct{}{}
+	}
+	kept := make([]string, 0, len(headerSamples))
+	for _, s := range headerSamples {
+		if _, drop := excluded[s]; !drop {
+			kept = append(kept, s)
+		}
+	}
+	return kept
 }
 
 // restrictSamples keeps only the named samples in v, in the order they were
@@ -414,6 +601,7 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	if err != nil {
 		return 0, err
 	}
+	opts.Samples = resolveSampleSelection(hdr.Samples, opts.Samples, opts.SamplesExclude, opts.ForceSamples)
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	if opts.DropGenotypes {
 		hdr = stripFormatLines(hdr)
@@ -452,6 +640,12 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 				recomputeACAN(v)
 			}
 		}
+		if opts.TrimAltAlleles {
+			trimAltAlleles(v)
+		}
+		if opts.TrimUnseenAllele {
+			trimUnseenAllele(v, opts.TrimUnseenAlleleAll)
+		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
 		}
@@ -472,6 +666,7 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		return 0, err
 	}
 	origHdr := br.Header().VCF
+	opts.Samples = resolveSampleSelection(origHdr.Samples, opts.Samples, opts.SamplesExclude, opts.ForceSamples)
 	hdr := filterHeaderSamples(origHdr, opts.Samples)
 	if opts.DropGenotypes {
 		hdr = stripFormatLines(hdr)
@@ -515,6 +710,12 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 				recomputeACAN(v)
 			}
 		}
+		if opts.TrimAltAlleles {
+			trimAltAlleles(v)
+		}
+		if opts.TrimUnseenAllele {
+			trimUnseenAllele(v, opts.TrimUnseenAlleleAll)
+		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
 		}
@@ -537,6 +738,7 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 		return 0, err
 	}
 	origHdr := hdr.VCF
+	opts.Samples = resolveSampleSelection(origHdr.Samples, opts.Samples, opts.SamplesExclude, opts.ForceSamples)
 	vhdr := filterHeaderSamples(origHdr, opts.Samples)
 	if opts.DropGenotypes {
 		vhdr = stripFormatLines(vhdr)
@@ -574,6 +776,12 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 				recomputeACAN(v)
 			}
 		}
+		if opts.TrimAltAlleles {
+			trimAltAlleles(v)
+		}
+		if opts.TrimUnseenAllele {
+			trimUnseenAllele(v, opts.TrimUnseenAlleleAll)
+		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
 		}
@@ -610,6 +818,7 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 	}
 	hdrIn.Close()
 	origHdr := hdr
+	opts.Samples = resolveSampleSelection(origHdr.Samples, opts.Samples, opts.SamplesExclude, opts.ForceSamples)
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	if opts.DropGenotypes {
 		hdr = stripFormatLines(hdr)
@@ -721,6 +930,21 @@ func keepVariant(v *vcf.Variant, opts ViewOptions, includeF, excludeF *Filter, a
 	if !opts.applyVariantTypeFilters(v) {
 		return false
 	}
+	if !opts.applyKnownNovel(v) {
+		return false
+	}
+	if !opts.applyAlleleCountBounds(v) {
+		return false
+	}
+	if !opts.applyGenotypeFilter(v) {
+		return false
+	}
+	if !opts.applyPhasedFilters(v) {
+		return false
+	}
+	if !opts.applyUncalledFilters(v) {
+		return false
+	}
 	if includeF != nil && !includeF.Eval(v) {
 		return false
 	}
@@ -728,6 +952,181 @@ func keepVariant(v *vcf.Variant, opts ViewOptions, includeF, excludeF *Filter, a
 		return false
 	}
 	return true
+}
+
+// applyKnownNovel implements `-k/--known` (keep rows whose ID != ".")
+// and `-n/--novel` (keep rows whose ID == "."). At most one is set.
+func (o ViewOptions) applyKnownNovel(v *vcf.Variant) bool {
+	if !o.Known && !o.Novel {
+		return true
+	}
+	novel := v.ID == "" || v.ID == "."
+	if o.Known && novel {
+		return false
+	}
+	if o.Novel && !novel {
+		return false
+	}
+	return true
+}
+
+// applyAlleleCountBounds implements `-m/--min-alleles` and
+// `-M/--max-alleles`. The count is REF + ALT (matching vcfview.c).
+func (o ViewOptions) applyAlleleCountBounds(v *vcf.Variant) bool {
+	if o.MinAlleles == 0 && o.MaxAlleles == 0 {
+		return true
+	}
+	n := 1 + len(v.Alt)
+	if o.MinAlleles > 0 && n < o.MinAlleles {
+		return false
+	}
+	if o.MaxAlleles > 0 && n > o.MaxAlleles {
+		return false
+	}
+	return true
+}
+
+// applyGenotypeFilter implements `-g/--genotype [^]hom|het|miss`.
+// A record passes when AT LEAST ONE sample's GT matches the requested
+// kind. A leading '^' inverts: keep only sites where NO sample matches.
+func (o ViewOptions) applyGenotypeFilter(v *vcf.Variant) bool {
+	spec := o.GenotypeFilter
+	if spec == "" {
+		return true
+	}
+	negate := false
+	if spec[0] == '^' {
+		negate = true
+		spec = spec[1:]
+	}
+	want := strings.ToLower(spec)
+	hit := false
+	for _, s := range v.Samples {
+		gt := s.Data["GT"]
+		if gt == "" {
+			continue
+		}
+		alleles := splitGTAlleles(gt)
+		switch want {
+		case "miss":
+			missing := true
+			for _, a := range alleles {
+				if a != "." && a != "" {
+					missing = false
+					break
+				}
+			}
+			if missing {
+				hit = true
+			}
+		case "hom":
+			if len(alleles) >= 2 && allEqualNonMissing(alleles) {
+				hit = true
+			}
+		case "het":
+			if len(alleles) >= 2 && !allEqualNonMissing(alleles) && hasAnyNonMissing(alleles) {
+				hit = true
+			}
+		}
+		if hit {
+			break
+		}
+	}
+	if negate {
+		return !hit
+	}
+	return hit
+}
+
+// applyPhasedFilters implements `-p/--phased` and `-P/--exclude-phased`.
+// A site is "phased" when EVERY called genotype uses '|' as separator.
+func (o ViewOptions) applyPhasedFilters(v *vcf.Variant) bool {
+	if !o.Phased && !o.ExcludePhased {
+		return true
+	}
+	phased := true
+	any := false
+	for _, s := range v.Samples {
+		gt := s.Data["GT"]
+		if gt == "" {
+			continue
+		}
+		if !strings.ContainsAny(gt, "/|") {
+			continue
+		}
+		any = true
+		if !strings.Contains(gt, "|") || strings.Contains(gt, "/") {
+			phased = false
+			break
+		}
+	}
+	if !any {
+		phased = false
+	}
+	if o.Phased && !phased {
+		return false
+	}
+	if o.ExcludePhased && phased {
+		return false
+	}
+	return true
+}
+
+// applyUncalledFilters implements `-u/--uncalled` (keep sites with no
+// called genotype) and `-U/--exclude-uncalled` (drop them).
+func (o ViewOptions) applyUncalledFilters(v *vcf.Variant) bool {
+	if !o.Uncalled && !o.ExcludeUncalled {
+		return true
+	}
+	called := false
+	for _, s := range v.Samples {
+		gt := s.Data["GT"]
+		if gt == "" {
+			continue
+		}
+		alleles := splitGTAlleles(gt)
+		for _, a := range alleles {
+			if a != "." && a != "" {
+				called = true
+				break
+			}
+		}
+		if called {
+			break
+		}
+	}
+	if o.Uncalled && called {
+		return false
+	}
+	if o.ExcludeUncalled && !called {
+		return false
+	}
+	return true
+}
+
+func allEqualNonMissing(alleles []string) bool {
+	if len(alleles) == 0 {
+		return false
+	}
+	first := alleles[0]
+	if first == "." || first == "" {
+		return false
+	}
+	for _, a := range alleles[1:] {
+		if a != first {
+			return false
+		}
+	}
+	return true
+}
+
+func hasAnyNonMissing(alleles []string) bool {
+	for _, a := range alleles {
+		if a != "." && a != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyVariantTypeFilters returns true if v passes the -v/-V type

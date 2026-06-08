@@ -224,6 +224,25 @@ func TestLiveView(t *testing.T) {
 		{"view", "-G", fx}, // drop genotypes
 		{"view", "-h", fx},
 		{"view", "-H", fx},
+		// Newly-ported view-flag surface (regression net for the
+		// upstream-flag audit). Each must remain byte-equal modulo
+		// provenance.
+		{"view", "-m2", fx},
+		{"view", "-M2", fx},
+		{"view", "-k", fx},
+		{"view", "-n", fx},
+		{"view", "-p", fx},
+		{"view", "-P", fx},
+		{"view", "-u", fx},
+		{"view", "-U", fx},
+		{"view", "-g", "hom", fx},
+		{"view", "-g", "het", fx},
+		{"view", "-g", "miss", fx},
+		{"view", "-g", "^miss", fx},
+		{"view", "-s", "^S1", fx},
+		{"view", "-a", "-s", "S1", fx},
+		{"view", "-A", fx},
+		{"view", "-AA", fx},
 	}
 	for _, args := range cases {
 		key := strings.Join(args[1:len(args)-1], "_")

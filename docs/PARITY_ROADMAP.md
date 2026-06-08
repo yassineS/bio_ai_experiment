@@ -2684,8 +2684,10 @@ to pass.
 **Coverage (subcommand → status, vs upstream 1.23.1):**
 
 - **PASS (byte-equal modulo provenance):** `view` (bare, `-v snps`, `-v
-  indels`, `-v mnps`, `-V snps`, `-s S1`, `-s S1,S3`, `-c 1`, `-f .,PASS`,
-  `--no-update`, `-G`, `-h`, `-H`), `view -Oz` (inflated), `view -Ob`
+  indels`, `-v mnps`, `-V snps`, `-s S1`, `-s S1,S3`, `-s ^S1`, `-c 1`,
+  `-f .,PASS`, `--no-update`, `-G`, `-h`, `-H`, `-m2`, `-M2`, `-k`, `-n`,
+  `-p`, `-P`, `-u`, `-U`, `-g hom|het|miss|^miss`, `-a -s S1`, `-A`,
+  `-AA`), `view -Oz` (inflated), `view -Ob`
   (decoded-by-live), `view` from `.vcf.gz`, `view` from `.bcf`,
   `view --regions chr1`, `stats` (bare, `-s -`, `-f PASS`), `query` (`-l`,
   `%CHROM\t%POS`, `%INFO/AC`, `[%SAMPLE=%GT]`, `-i AC>1`, `-i TYPE="snp"`),
@@ -2868,8 +2870,10 @@ to pass.
 **Coverage (subcommand → status, vs upstream 1.23.1):**
 
 - **PASS (byte-equal modulo provenance):** `view` (bare, `-v snps`, `-v
-  indels`, `-v mnps`, `-V snps`, `-s S1`, `-s S1,S3`, `-c 1`, `-f .,PASS`,
-  `--no-update`, `-G`, `-h`, `-H`), `view -Oz` (inflated), `view -Ob`
+  indels`, `-v mnps`, `-V snps`, `-s S1`, `-s S1,S3`, `-s ^S1`, `-c 1`,
+  `-f .,PASS`, `--no-update`, `-G`, `-h`, `-H`, `-m2`, `-M2`, `-k`, `-n`,
+  `-p`, `-P`, `-u`, `-U`, `-g hom|het|miss|^miss`, `-a -s S1`, `-A`,
+  `-AA`), `view -Oz` (inflated), `view -Ob`
   (decoded-by-live), `view` from `.vcf.gz`, `view` from `.bcf`,
   `view --regions chr1`, `stats` (bare, `-s -`, `-f PASS`), `query` (`-l`,
   `%CHROM\t%POS`, `%INFO/AC`, `[%SAMPLE=%GT]`, `-i AC>1`, `-i TYPE="snp"`),
