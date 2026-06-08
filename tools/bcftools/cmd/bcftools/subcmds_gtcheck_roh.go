@@ -87,7 +87,9 @@ func runGtcheck(args []string) int {
 		distinctiveSites  string
 		nMatches          int
 		gtsOnlyDeprecated bool
+		keepRefs          bool
 		threads           int
+		verbosity         int
 		showHelp          bool
 		showVer           bool
 		// Combined -s/-S forms with the upstream "qry:" / "gt:" prefix
@@ -123,7 +125,9 @@ func runGtcheck(args []string) int {
 	// Upstream-deprecated `-G/--GTs-only`. We MUST accept it AND emit
 	// the literal upstream deprecation error.
 	cliflag.BoolVar(fs, &gtsOnlyDeprecated, "G", "GTs-only", false, "Deprecated upstream alias")
+	fs.BoolVar(&keepRefs, "keep-refs", false, "Keep monoallelic sites with no ALT (accepted)")
 	fs.IntVar(&threads, "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level (accepted)")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -131,6 +135,8 @@ func runGtcheck(args []string) int {
 	_ = regionsOverlap
 	_ = targetsOverlap
 	_ = threads
+	_ = verbosity
+	_ = keepRefs
 	_ = samplesCombinedFile
 
 	if err := parseFlags(fs, args); err != nil {
@@ -372,6 +378,7 @@ func runRoh(args []string) int {
 		targetsFile     string
 		targetsOverlap  int
 		threads         int
+		verbosity       int
 		hwToAz          float64
 		azToHw          float64
 		viterbiTraining float64
@@ -414,6 +421,7 @@ func runRoh(args []string) int {
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
 	fs.IntVar(&targetsOverlap, "targets-overlap", 0, "")
 	fs.IntVar(&threads, "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level (accepted)")
 	// -a/-H — the reviewer's requirement #10. The library accepts
 	// these; the PR #106 CLI wrongly rejected them as "deferred".
 	cliflag.Float64Var(fs, &hwToAz, "a", "hw-to-az", bcftools.DefaultHWtoAZ, "HW->AZ transition")
