@@ -153,7 +153,15 @@ func runGtcheck(args []string) int {
 		return 2
 	}
 
-	// Reject the v1-deferred flags with a roadmap pointer.
+	// --cluster: upstream's vcfgtcheck.c:1423-1432 explicitly
+	// errors out with "The -c option is to be implemented, please
+	// open an issue on github". Our port mirrors that exact text
+	// for rejection-parity (the feature is non-functional upstream
+	// too, so byte-equality is the correct closure stance).
+	if cluster != "" {
+		fmt.Fprintln(os.Stderr, "The -c option is to be implemented, please open an issue on github")
+		return 1
+	}
 	if deferred := checkGtcheckDeferred(checkGtcheckDeferredInputs{
 		cluster:          cluster,
 		distinctiveSites: distinctiveSites,
