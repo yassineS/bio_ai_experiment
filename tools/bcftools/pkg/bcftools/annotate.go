@@ -50,15 +50,27 @@ type AnnotateOptions struct {
 	Annotations string
 	// Columns is the comma list described in the package docstring.
 	Columns string
-	// HeaderLines is a path whose `##...` lines are injected into the
-	// output header.
+	// ColumnsFile is `-C/--columns-file FILE`: read column names (one per
+	// row) from a file, equivalent to passing them via `-c`. An optional
+	// second whitespace-separated token on each row selects a merge type
+	// for `-l/--merge-logic` (currently rejected with rejection-parity).
+	ColumnsFile string
+	// HeaderLines is `-h/--header-lines FILE`: a file whose `##...` lines
+	// are injected into the output header.
 	HeaderLines string
+	// HeaderLine is `-H/--header-line STR`: one or more literal `##...`
+	// header lines appended to the output header. Repeatable.
+	HeaderLine []string
 	// Remove is the comma-list `-x` argument.
 	Remove string
 	// Regions is a post-filter on the input records.
 	Regions []string
-	// RegionsFile is the BED-like sidecar.
+	// RegionsFile is the BED-like sidecar for `-R/--regions-file`.
 	RegionsFile string
+	// RegionsOverlap is upstream `--regions-overlap 0|1|2`. v1 accepts
+	// the flag for parity but applies a post-filter based on simple
+	// record-overlap (matching the default 1).
+	RegionsOverlap int
 	// RenameChromMap is the two-column tab file driving `--rename-chrs`.
 	RenameChromMap string
 	// OutputFormat selects the output encoding. Defaults to OutputVCF.
@@ -71,6 +83,41 @@ type AnnotateOptions struct {
 	// unconditionally replaced. An empty string leaves the ID column
 	// untouched. Mirrors vcfannotate.c:3250-3253.
 	SetID string
+	// IncludeExpr / ExcludeExpr are upstream `-i/--include` and
+	// `-e/--exclude` filter expressions. Records are dropped (or, with
+	// KeepSites, passed through unmodified) when ExcludeExpr is true or
+	// IncludeExpr is false.
+	IncludeExpr string
+	ExcludeExpr string
+	// KeepSites mirrors upstream `-k/--keep-sites`: instead of discarding
+	// sites that fail -i/-e, leave them unchanged in the output.
+	KeepSites bool
+	// MarkSites is upstream `-m/--mark-sites [+-]TAG`: tag sites that
+	// match (+) or do not match (-) the -a source with INFO/TAG.
+	MarkSites string
+	// Samples is upstream `-s/--samples [^]LIST`: comma-separated list
+	// of samples to annotate (or exclude when prefixed with "^").
+	Samples []string
+	// SamplesFile is upstream `-S/--samples-file [^]FILE`: read sample
+	// names from a file, "^"-prefix inverts.
+	SamplesFile string
+	// SamplesExclude is set when -s/-S used the `^` prefix; the named
+	// samples are the exclusion set rather than the inclusion set.
+	SamplesExclude bool
+	// Force mirrors upstream `--force`: continue past malformed records
+	// instead of failing.
+	Force bool
+	// NoVersion suppresses the `##bcftools_annotateVersion` /
+	// `##bcftools_annotateCommand` provenance lines.
+	NoVersion bool
+	// PGCommand is the verbatim command line stamped into the
+	// provenance header line when NoVersion is false.
+	PGCommand string
+	// WriteIndex is upstream `-W/--write-index[=FMT]`. Non-empty
+	// values are "csi" or "tbi"; empty disables indexing.
+	WriteIndex string
+	// Verbosity mirrors upstream `--verbosity INT`.
+	Verbosity int
 }
 
 // AnnotateFile is the file-aware entry point. It opens path through
@@ -121,13 +168,55 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 		}
 	}
 
-	// -h/--header-lines: prepend extra meta lines (after fileformat).
+	// -h/--header-lines: append extra meta lines to the end of the
+	// header (matches upstream vcfannotate.c::init_header_lines).
 	if opts.HeaderLines != "" {
 		extra, err := readHeaderLines(opts.HeaderLines)
 		if err != nil {
 			return 0, fmt.Errorf("bcftools annotate: -h %s: %w", opts.HeaderLines, err)
 		}
-		hdr = injectMetaLines(hdr, extra)
+		hdr = appendMetaLines(hdr, extra)
+	}
+	// -H/--header-line STR (repeatable): each entry is a literal `##...`
+	// line appended to the output header.
+	if len(opts.HeaderLine) > 0 {
+		extra := make([]string, 0, len(opts.HeaderLine))
+		for _, line := range opts.HeaderLine {
+			line = strings.TrimRight(line, "\r\n")
+			if line == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "##") {
+				return 0, fmt.Errorf("bcftools annotate: -H %q: must begin with ##", line)
+			}
+			extra = append(extra, line)
+		}
+		hdr = appendMetaLines(hdr, extra)
+	}
+
+	// -s/-S samples restriction. Upstream's `annotate -s` restricts
+	// the set of samples whose per-sample data is overwritten when -a
+	// transfers FORMAT/* columns; it does NOT drop sample columns from
+	// the output. We currently parse and accept the list (so it round-
+	// trips alongside provenance) but do not project the per-sample
+	// payload because the FORMAT-transfer path is not yet implemented
+	// (tracked in PARITY_ROADMAP). The sample list will be wired into
+	// the FORMAT-transfer path when that lands.
+	_ = opts.Samples
+
+	// -C/--columns-file FILE: read columns from a file (one per row).
+	// Lines may contain an optional second whitespace-separated token,
+	// which selects the merge-logic type — currently rejected.
+	if opts.ColumnsFile != "" {
+		extra, err := readColumnsFile(opts.ColumnsFile)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools annotate: -C %s: %w", opts.ColumnsFile, err)
+		}
+		if opts.Columns != "" {
+			opts.Columns = opts.Columns + "," + extra
+		} else {
+			opts.Columns = extra
+		}
 	}
 
 	// -a + -c: column mapping.
@@ -135,18 +224,26 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("bcftools annotate: -c: %w", err)
 	}
+	matched := map[*vcf.Variant]bool{}
 	if opts.Annotations != "" && len(cols) > 0 {
 		switch {
 		case strings.HasSuffix(opts.Annotations, ".vcf") ||
 			strings.HasSuffix(opts.Annotations, ".vcf.gz") ||
 			strings.HasSuffix(opts.Annotations, ".bcf"):
-			if err := applyVCFAnnotations(opts.Annotations, recs, cols); err != nil {
+			if err := applyVCFAnnotations(opts.Annotations, recs, cols, matched); err != nil {
 				return 0, fmt.Errorf("bcftools annotate: %w", err)
 			}
 		default:
-			if err := applyTableAnnotations(opts.Annotations, recs, cols, hdr); err != nil {
+			if err := applyTableAnnotations(opts.Annotations, recs, cols, hdr, matched); err != nil {
 				return 0, fmt.Errorf("bcftools annotate: %w", err)
 			}
+		}
+	}
+	// -m/--mark-sites [+-]TAG: tag sites that match (+) or do not match
+	// (-) the -a source with INFO/TAG=1.
+	if opts.MarkSites != "" {
+		if err := applyMarkSites(recs, hdr, opts.MarkSites, matched, opts.Annotations != ""); err != nil {
+			return 0, fmt.Errorf("bcftools annotate: --mark-sites: %w", err)
 		}
 	}
 
@@ -162,8 +259,57 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 		}
 	}
 
-	// Region post-filter.
-	regions, err := parseRegions(opts.Regions)
+	// -i/--include and -e/--exclude expressions: filter records (or pass
+	// through when -k/--keep-sites is set).
+	var (
+		incF, excF *Filter
+		failed     map[*vcf.Variant]bool
+	)
+	if opts.IncludeExpr != "" {
+		f, err := CompileFilterWithHeader(opts.IncludeExpr, hdr)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools annotate: --include: %w", err)
+		}
+		incF = f
+	}
+	if opts.ExcludeExpr != "" {
+		f, err := CompileFilterWithHeader(opts.ExcludeExpr, hdr)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools annotate: --exclude: %w", err)
+		}
+		excF = f
+	}
+	if incF != nil || excF != nil {
+		failed = map[*vcf.Variant]bool{}
+		for _, v := range recs {
+			ok := true
+			if incF != nil && !incF.Eval(v) {
+				ok = false
+			}
+			if ok && excF != nil && excF.Eval(v) {
+				ok = false
+			}
+			if !ok {
+				failed[v] = true
+			}
+		}
+	}
+
+	// --no-version: stamp provenance unless suppressed.
+	if !opts.NoVersion {
+		stampAnnotateProvenance(hdr, opts.PGCommand)
+	}
+
+	// Region post-filter. Merge -r and -R into one set.
+	regionsSpec := opts.Regions
+	if opts.RegionsFile != "" {
+		regs, err := LoadRegionsFile(opts.RegionsFile)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools annotate: -R %s: %w", opts.RegionsFile, err)
+		}
+		regionsSpec = append(regionsSpec, regs...)
+	}
+	regions, err := parseRegions(regionsSpec)
 	if err != nil {
 		return 0, err
 	}
@@ -184,12 +330,63 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 		if len(regions) > 0 && !overlapsAny(v, regions) {
 			continue
 		}
+		if failed[v] && !opts.KeepSites {
+			continue
+		}
 		if err := w.Write(v); err != nil {
 			return count, err
 		}
 		count++
 	}
 	return count, w.Flush()
+}
+
+// readColumnsFile reads `-C/--columns-file` entries: one column name per
+// non-blank, non-comment line. A second whitespace-separated token (the
+// merge-logic type) is rejected with rejection-parity to flag the
+// unimplemented behaviour up front.
+func readColumnsFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	var names []string
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) > 1 {
+			return "", fmt.Errorf("--merge-logic is to be implemented, please open an issue on github")
+		}
+		names = append(names, fields[0])
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return strings.Join(names, ","), nil
+}
+
+// stampAnnotateProvenance appends the upstream-style
+// `##bcftools_annotateVersion` / `##bcftools_annotateCommand` lines to
+// hdr. Mirrors appendNormProvenance.
+func stampAnnotateProvenance(hdr *vcf.Header, cmdLine string) {
+	if hdr == nil {
+		return
+	}
+	hdr.MetaInfo = append(hdr.MetaInfo,
+		`##bcftools_annotateVersion=bio_ai_experiment`,
+	)
+	if cmdLine == "" {
+		cmdLine = "annotate"
+	}
+	hdr.MetaInfo = append(hdr.MetaInfo,
+		`##bcftools_annotateCommand=`+cmdLine,
+	)
 }
 
 // annColumn is one entry in the parsed -c list.
@@ -233,7 +430,7 @@ func parseAnnColumns(spec string) ([]annColumn, error) {
 // chosen columns onto each matching record. Matching uses the (CHROM, POS)
 // key by default; (CHROM, POS, REF) and (CHROM, POS, REF, ALT) tighten the
 // match when those columns are present in the column spec.
-func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, hdr *vcf.Header) error {
+func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, hdr *vcf.Header, matched map[*vcf.Variant]bool) error {
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
 		return err
@@ -310,6 +507,9 @@ func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, h
 		if !ok {
 			continue
 		}
+		if matched != nil {
+			matched[v] = true
+		}
 		if row.id != "" && row.id != "." {
 			v.ID = row.id
 		}
@@ -342,7 +542,7 @@ func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, h
 
 // applyVCFAnnotations transfers the named INFO/FILTER fields from the
 // matching records of a VCF/BCF annotation file to the input records.
-func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn) error {
+func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn, matched map[*vcf.Variant]bool) error {
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
 		return err
@@ -377,6 +577,9 @@ func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn) err
 		if !ok {
 			continue
 		}
+		if matched != nil {
+			matched[v] = true
+		}
 		for tag := range wantInfo {
 			val, has := src.Info[tag]
 			if !has {
@@ -395,6 +598,51 @@ func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn) err
 		}
 		if wantID && src.ID != "" && src.ID != "." {
 			v.ID = src.ID
+		}
+	}
+	return nil
+}
+
+// applyMarkSites implements `-m/--mark-sites [+-]TAG`: when the leading
+// sign is '+' (or absent) the TAG flag is set on records that matched
+// the -a source; when the sign is '-' it is set on records that did NOT
+// match. Mirrors vcfannotate.c:mark_sites.
+func applyMarkSites(recs []*vcf.Variant, hdr *vcf.Header, spec string, matched map[*vcf.Variant]bool, haveAnnSource bool) error {
+	mark := true
+	tag := spec
+	switch spec[0] {
+	case '+':
+		tag = spec[1:]
+		mark = true
+	case '-':
+		tag = spec[1:]
+		mark = false
+	}
+	if tag == "" {
+		return fmt.Errorf("--mark-sites: missing TAG name in %q", spec)
+	}
+	if !haveAnnSource {
+		// Without -a we have no notion of "matched"; treat all sites as
+		// unmatched (mark="-" => all sites tagged; mark="+" => no
+		// sites tagged), matching upstream's interpretation.
+	}
+	if !hasInfoLine(hdr, tag) {
+		hdr.MetaInfo = append([]string{hdr.MetaInfo[0],
+			fmt.Sprintf(`##INFO=<ID=%s,Number=0,Type=Flag,Description="Site %s -a source (added by bcftools annotate --mark-sites)">`,
+				tag,
+				map[bool]string{true: "matched", false: "did not match"}[mark])},
+			hdr.MetaInfo[1:]...)
+	}
+	for _, v := range recs {
+		isMatch := matched[v]
+		if (mark && isMatch) || (!mark && !isMatch) {
+			if v.Info == nil {
+				v.Info = map[string]string{}
+			}
+			if _, exists := v.Info[tag]; !exists {
+				v.InfoOrder = append(v.InfoOrder, tag)
+			}
+			v.Info[tag] = "" // Flag (Number=0): no value, just presence.
 		}
 	}
 	return nil
@@ -584,6 +832,24 @@ func loadChromRenameMap(path string) (map[string]string, error) {
 		out[strings.TrimSpace(fields[0])] = strings.TrimSpace(fields[1])
 	}
 	return out, sc.Err()
+}
+
+// appendMetaLines appends extra ##... lines to the end of hdr,
+// de-duplicating by exact-string equality. Matches upstream's behaviour
+// of placing -h/-H lines after the existing meta block.
+func appendMetaLines(hdr *vcf.Header, extra []string) *vcf.Header {
+	seen := map[string]bool{}
+	for _, m := range hdr.MetaInfo {
+		seen[m] = true
+	}
+	for _, m := range extra {
+		if seen[m] {
+			continue
+		}
+		hdr.MetaInfo = append(hdr.MetaInfo, m)
+		seen[m] = true
+	}
+	return hdr
 }
 
 // injectMetaLines inserts extra ##... lines into hdr after the

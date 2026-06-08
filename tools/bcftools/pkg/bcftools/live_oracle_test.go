@@ -377,6 +377,11 @@ func TestLiveQuery(t *testing.T) {
 func TestLiveAnnotate(t *testing.T) {
 	live, ours := requireLive(t)
 	fx := fixturePath(t, "basic.vcf")
+	// Header-lines file fixture for `-h`.
+	hdrFile := filepath.Join(t.TempDir(), "extra_header.txt")
+	if err := os.WriteFile(hdrFile, []byte("##test_extra=from_file\n##another=line2\n"), 0o644); err != nil {
+		t.Fatalf("write header-lines file: %v", err)
+	}
 	cases := []struct {
 		name string
 		args []string
@@ -384,6 +389,15 @@ func TestLiveAnnotate(t *testing.T) {
 		{"remove_info_af", []string{"annotate", "-x", "INFO/AF", fx}},
 		{"remove_format_gq", []string{"annotate", "-x", "FORMAT/GQ", fx}},
 		{"set_id", []string{"annotate", "-I", `+%CHROM\_%POS`, fx}},
+		// Newly-ported flag surface — regression net for the upstream audit.
+		{"include_ac_gt_1", []string{"annotate", "-i", "AC>1", fx}},
+		{"exclude_qual_lt_10", []string{"annotate", "-e", "QUAL<10", fx}},
+		{"header_line_repeatable", []string{"annotate",
+			"-H", "##test=v",
+			"-H", "##another=v2",
+			fx}},
+		{"header_lines_file", []string{"annotate", "-h", hdrFile, fx}},
+		{"samples_s1", []string{"annotate", "-s", "S1", fx}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

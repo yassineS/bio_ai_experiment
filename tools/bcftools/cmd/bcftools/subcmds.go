@@ -498,50 +498,128 @@ Options:
   -a, --annotations FILE     Annotation source: TAB-delimited (.tab.gz) or VCF.
   -c, --columns LIST         Comma list mapping annotation columns to record
                              fields. Examples: CHROM,POS,REF,ALT,INFO/AC,INFO/AN
+  -C, --columns-file FILE    Read column names from FILE (one per row).
+  -e, --exclude EXPR         Exclude sites for which the expression is true.
+      --force                Continue past parsing errors (best effort).
+  -H, --header-line STR      Literal ##... line appended to the header (repeatable).
   -h, --header-lines FILE    Inject these ##... lines into the output header.
-  -x, --remove FIELD,...     Drop fields from the records (INFO/TAG, FILTER, ID).
+  -i, --include EXPR         Include only sites for which the expression is true.
+  -I, --set-id [+]FORMAT     Set ID via a bcftools query-like format string.
+  -k, --keep-sites           Keep -i/-e-excluded sites in the output unmodified.
+  -l, --merge-logic TAG:TYPE Merge logic for overlapping annotations (deferred).
+  -m, --mark-sites [+-]TAG   Tag matched (+) or unmatched (-) sites with INFO/TAG.
+      --min-overlap ANN:VCF  Required fractional overlap (deferred).
+      --no-version           Do not stamp the provenance line on the header.
+      --pair-logic STR       Variant-matching mode (deferred).
   -r, --regions LIST         Region post-filter chr[:beg-end[,...]].
+  -R, --regions-file FILE    BED-like sidecar listing regions.
+      --regions-overlap N    0|1|2 region inclusion rule (accepted; default 1).
+      --rename-annots FILE   Rename annotations (deferred).
       --rename-chrs FILE     Two-column tab file (OLD<TAB>NEW) renaming CHROM.
+  -s, --samples [^]LIST      Restrict (or exclude with ^) per-sample annotations.
+  -S, --samples-file [^]FILE Same as -s but read from FILE.
+      --single-overlaps      Single-overlap mode (deferred).
+  -x, --remove FIELD,...     Drop fields from the records (INFO/TAG, FILTER, ID).
   -O, --output-type {v|z|u|b}  Output format.
   -o, --output PATH          Output file (default stdout).
-  -l, --compression-level N  gzip level for -O z output.
       --threads N            Accepted; v1 is single-threaded.
+  -v, --verbosity INT        Verbosity level (accepted, ignored).
+  -W, --write-index[=FMT]    Automatically index the output (csi|tbi).
   -?, --help                 Show this help.
       --version              Show version.
 `
+
+// repeatedString is a flag.Value that accumulates each occurrence of a
+// repeatable string flag (e.g. `-H ##line1 -H ##line2`).
+type repeatedString struct{ values *[]string }
+
+func (r repeatedString) String() string {
+	if r.values == nil || len(*r.values) == 0 {
+		return ""
+	}
+	return strings.Join(*r.values, ",")
+}
+
+func (r repeatedString) Set(s string) error {
+	*r.values = append(*r.values, s)
+	return nil
+}
 
 func runAnnotate(args []string) int {
 	fs := flag.NewFlagSet("bcftools annotate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		annsFile      string
-		columns       string
-		headerLines   string
-		remove        string
-		regions       string
-		renameChrs    string
-		outputType    string
-		outputPath    string
-		compressLevel int
-		threads       int
-		setID         string
-		showHelp      bool
-		showVer       bool
+		annsFile       string
+		columns        string
+		columnsFile    string
+		headerLines    string
+		headerLineList []string
+		remove         string
+		regions        string
+		regionsFile    string
+		regionsOverlap int
+		renameChrs     string
+		renameAnnots   string
+		outputType     string
+		outputPath     string
+		compressLevel  int
+		threads        int
+		setID          string
+		includeExpr    string
+		excludeExpr    string
+		keepSites      bool
+		markSites      string
+		mergeLogic     string
+		minOverlap     string
+		pairLogic      string
+		singleOverlaps bool
+		samples        string
+		samplesFile    string
+		force          bool
+		writeIndex     string
+		verbosity      int
+		showHelp       bool
+		showVer        bool
 	)
 	cliflag.StringVar(fs, &annsFile, "a", "annotations", "", "Annotation source")
 	cliflag.StringVar(fs, &columns, "c", "columns", "", "Column mapping")
-	cliflag.StringVar(fs, &headerLines, "H", "header-lines", "", "Header lines file")
+	cliflag.StringVar(fs, &columnsFile, "C", "columns-file", "", "Columns file")
+	cliflag.StringVar(fs, &headerLines, "h", "header-lines", "", "Header lines file")
+	// -H/--header-line is repeatable.
+	fs.Var(repeatedString{&headerLineList}, "H", "Header line (repeatable)")
+	fs.Var(repeatedString{&headerLineList}, "header-line", "Header line (repeatable)")
 	cliflag.StringVar(fs, &remove, "x", "remove", "", "Fields to drop")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
+	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	fs.IntVar(&regionsOverlap, "regions-overlap", 1, "Region inclusion rule (0|1|2)")
 	cliflag.StringVar(fs, &setID, "I", "set-id", "", "Set ID column using a query-like format string")
+	cliflag.StringVar(fs, &includeExpr, "i", "include", "", "Include expression")
+	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
+	cliflag.BoolVar(fs, &keepSites, "k", "keep-sites", false, "Keep -i/-e-excluded sites unchanged")
+	cliflag.StringVar(fs, &markSites, "m", "mark-sites", "", "Mark matched/unmatched sites with INFO/TAG")
+	cliflag.StringVar(fs, &mergeLogic, "l", "merge-logic", "", "Merge logic (deferred)")
+	fs.StringVar(&minOverlap, "min-overlap", "", "Min overlap (deferred)")
+	fs.StringVar(&pairLogic, "pair-logic", "", "Pair logic (deferred)")
+	fs.BoolVar(&singleOverlaps, "single-overlaps", false, "Single overlaps mode (deferred)")
+	fs.StringVar(&renameAnnots, "rename-annots", "", "Rename annotations (deferred)")
+	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples (^ to exclude)")
+	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file (^ to exclude)")
+	fs.BoolVar(&force, "force", false, "Continue past parsing errors")
 	fs.StringVar(&renameChrs, "rename-chrs", "", "Rename CHROM via two-col map")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
-	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
+	fs.IntVar(&compressLevel, "compression-level", -1, "gzip level")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.StringVar(fs, &writeIndex, "W", "write-index", "", "Automatically index output (csi|tbi)")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	registerNoVersionIfAbsent(fs)
+
+	// -W/--write-index accepts a bare form; expand to the upstream default.
+	args = preprocessOptionalArg(args, "-W", "csi")
+	args = preprocessOptionalArg(args, "--write-index", "csi")
 
 	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -562,24 +640,95 @@ func runAnnotate(args []string) int {
 		fmt.Fprint(os.Stderr, annotateUsage)
 		return 2
 	}
+	// Deferred-but-accepted flags: rejection-parity diagnostics so the
+	// user sees a clear signal rather than silently-wrong output.
+	if mergeLogic != "" {
+		fmt.Fprintln(os.Stderr, "bcftools annotate: --merge-logic is to be implemented, please open an issue on github")
+		return 1
+	}
+	if minOverlap != "" {
+		fmt.Fprintln(os.Stderr, "bcftools annotate: --min-overlap is to be implemented, please open an issue on github")
+		return 1
+	}
+	if pairLogic != "" {
+		fmt.Fprintln(os.Stderr, "bcftools annotate: --pair-logic is to be implemented, please open an issue on github")
+		return 1
+	}
+	if singleOverlaps {
+		fmt.Fprintln(os.Stderr, "bcftools annotate: --single-overlaps is to be implemented, please open an issue on github")
+		return 1
+	}
+	if renameAnnots != "" {
+		fmt.Fprintln(os.Stderr, "bcftools annotate: --rename-annots is to be implemented, please open an issue on github")
+		return 1
+	}
+	if regionsOverlap < 0 || regionsOverlap > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools annotate: --regions-overlap must be 0, 1 or 2 (got %d)\n", regionsOverlap)
+		return 2
+	}
+	if writeIndex != "" && writeIndex != "csi" && writeIndex != "tbi" {
+		fmt.Fprintf(os.Stderr, "bcftools annotate: --write-index must be csi or tbi (got %q)\n", writeIndex)
+		return 2
+	}
 	format, err := bcftools.ParseOutputFormat(outputType)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+
+	// Parse `^`-prefixed sample lists.
+	samplesExclude := false
+	if strings.HasPrefix(samples, "^") {
+		samples = samples[1:]
+		samplesExclude = true
+	}
+	sf := samplesFile
+	if strings.HasPrefix(sf, "^") {
+		sf = sf[1:]
+		samplesExclude = true
+	}
+
+	noVersionFlag := fs.Lookup("no-version")
+	noVersion := noVersionFlag != nil && noVersionFlag.Value.String() == "true"
+
 	opts := bcftools.AnnotateOptions{
 		Annotations:    annsFile,
 		Columns:        columns,
+		ColumnsFile:    columnsFile,
 		HeaderLines:    headerLines,
+		HeaderLine:     headerLineList,
 		Remove:         remove,
-		RegionsFile:    "",
+		RegionsFile:    regionsFile,
+		RegionsOverlap: regionsOverlap,
 		RenameChromMap: renameChrs,
 		OutputFormat:   format,
 		CompressLevel:  compressLevel,
 		SetID:          setID,
+		IncludeExpr:    includeExpr,
+		ExcludeExpr:    excludeExpr,
+		KeepSites:      keepSites,
+		MarkSites:      markSites,
+		SamplesExclude: samplesExclude,
+		Force:          force,
+		NoVersion:      noVersion,
+		PGCommand:      strings.Join(os.Args, " "),
+		WriteIndex:     writeIndex,
+		Verbosity:      verbosity,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
+	}
+	if samples != "" {
+		opts.Samples = bcftools.SplitCommaList(samples)
+	}
+	if sf != "" {
+		names, err := bcftools.LoadSamplesFile(sf)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools annotate: %v\n", err)
+			return 1
+		}
+		opts.Samples = append(opts.Samples, names...)
+		opts.SamplesFile = sf
 	}
 	out, err := openOutFile(outputPath)
 	if err != nil {
