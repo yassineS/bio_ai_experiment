@@ -29,7 +29,13 @@ type HeadOptions struct {
 	NumLines int
 	// SamplesOnly causes the command to print one sample-name per line
 	// (parsed from the `#CHROM` line) and skip every other meta line.
+	// Deprecated: superseded by SamplesRecords on the CLI; kept so
+	// in-tree callers can still ask for a plain sample-name listing.
 	SamplesOnly bool
+	// SamplesRecords mirrors upstream `-s INT`: emit INT lines starting
+	// with the `#CHROM` header line (so the output is the `#CHROM` line
+	// itself followed by INT-1 variant records).
+	SamplesRecords int
 	// NumRecords, when > 0, appends that many variant records after the
 	// full header. This mirrors upstream's `-n/--records INT`.
 	NumRecords int
@@ -54,10 +60,10 @@ func Head(in io.Reader, out io.Writer, opts HeadOptions) error {
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
 
-	// When `-n/--records` is requested we need a full streaming reader so
-	// we can decode records after the header. Otherwise we can take the
-	// fast header-only path.
-	if opts.NumRecords > 0 {
+	// When `-n/--records` or `-s INT` is requested we need a full
+	// streaming reader so we can decode records after the header.
+	// Otherwise we can take the fast header-only path.
+	if opts.NumRecords > 0 || opts.SamplesRecords > 0 {
 		return headWithRecords(in, bw, opts)
 	}
 
@@ -108,6 +114,25 @@ func headWithRecords(in io.Reader, bw *bufio.Writer, opts HeadOptions) error {
 		return err
 	}
 	ensurePASSFilter(hdr)
+	// Upstream `-s INT` prints the #CHROM line followed by the first
+	// INT variant records (no preceding ##... meta lines).
+	if opts.SamplesRecords > 0 {
+		if _, err := fmt.Fprintln(bw, buildChromLine(hdr)); err != nil {
+			return err
+		}
+		extra := opts.SamplesRecords
+		if extra > len(recs) {
+			extra = len(recs)
+		}
+		w := vcf.NewWriter(bw, hdr)
+		// We don't call WriteHeader — only records below #CHROM.
+		for i := 0; i < extra; i++ {
+			if err := w.Write(recs[i]); err != nil {
+				return err
+			}
+		}
+		return w.Flush()
+	}
 	w := vcf.NewWriter(bw, hdr)
 	if err := w.WriteHeader(); err != nil {
 		return err

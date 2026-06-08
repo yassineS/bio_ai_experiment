@@ -402,6 +402,9 @@ func TestLiveHead(t *testing.T) {
 	for _, args := range [][]string{
 		{"head", fx},
 		{"head", "-n", "5", fx},
+		{"head", "-h", "3", fx},
+		{"head", "-s", "1", fx},
+		{"head", "-s", "2", fx},
 	} {
 		t.Run(strings.Join(args[1:len(args)-1], "_"), func(t *testing.T) {
 			assertEqualStdout(t, live, ours, args...)
@@ -631,7 +634,17 @@ func TestLiveReheader(t *testing.T) {
 	if err := os.WriteFile(mapPath, []byte("S1\tNEW1\nS2\tNEW2\nS3\tNEW3\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	assertEqualStdout(t, live, ours, "reheader", "-s", mapPath, fx)
+	t.Run("samples-file_-s", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "reheader", "-s", mapPath, fx)
+	})
+	// -n is upstream's comma-list new-sample-names form.
+	t.Run("samples-list_-n", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "reheader", "-n", "A,B,C", fx)
+	})
+	// -N is upstream's samples-file. We accept -s as legacy alias too.
+	t.Run("samples-file_-N", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "reheader", "-N", mapPath, fx)
+	})
 }
 
 // -------------------------------------------------------------------------

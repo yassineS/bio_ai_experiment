@@ -41,6 +41,11 @@ type ReheaderOptions struct {
 	// is treated as a `OLD\tNEW` mapping; otherwise the file is a flat
 	// list of new names applied positionally.
 	SamplesFile string
+	// SamplesList is upstream `-n/--samples-list LIST` — a single
+	// comma-separated list of new sample names. When set the names are
+	// applied positionally (same semantics as SamplesFile's flat-list
+	// branch). Both SamplesList and SamplesFile being set is an error.
+	SamplesList []string
 	// FaiFile, when non-empty, is a samtools FAI index whose first two
 	// columns (NAME, LENGTH) are used to rebuild the `##contig` lines.
 	FaiFile string
@@ -92,16 +97,22 @@ func Reheader(in io.Reader, out io.Writer, opts ReheaderOptions) (int, error) {
 		}
 	}
 
+	if opts.SamplesFile != "" && len(opts.SamplesList) > 0 {
+		return 0, fmt.Errorf("bcftools reheader: --samples-file and --samples-list are mutually exclusive")
+	}
 	if opts.SamplesFile != "" {
 		mapping, names, err := loadSamplesRename(opts.SamplesFile)
 		if err != nil {
-			return 0, fmt.Errorf("bcftools reheader: -s %s: %w", opts.SamplesFile, err)
+			return 0, fmt.Errorf("bcftools reheader: -N %s: %w", opts.SamplesFile, err)
 		}
 		hdr = renameHeaderSamples(hdr, mapping, names)
-		// Variant.Samples carry the old names — refresh them to keep the
-		// in-memory representation consistent for downstream writers.
 		for _, v := range recs {
 			renameVariantSamples(v, mapping, names, hdr.Samples)
+		}
+	} else if len(opts.SamplesList) > 0 {
+		hdr = renameHeaderSamples(hdr, nil, opts.SamplesList)
+		for _, v := range recs {
+			renameVariantSamples(v, nil, opts.SamplesList, hdr.Samples)
 		}
 	}
 

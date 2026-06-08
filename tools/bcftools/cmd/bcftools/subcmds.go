@@ -237,11 +237,13 @@ Usage:
 
 Options:
   -m, --max-mem MEM          Memory budget for the sort (default 768M, accepted but in-memory in v1).
-  -T, --tmpdir DIR           Tmpdir for the external-merge step (accepted, unused in v1).
+  -T, --temp-dir DIR         Tmpdir for the external-merge step (accepted, unused in v1).
   -O, --output-type {v|z|u|b}  Output format.
   -o, --output PATH          Output file (default stdout).
   -l, --compression-level N  gzip level for -O z output.
       --threads N            Accepted; v1 is single-threaded.
+  -v, --verbosity INT        Verbosity level (accepted).
+  -W, --write-index[=FMT]    Auto-index the output (csi|tbi) (accepted).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -256,18 +258,27 @@ func runSort(args []string) int {
 		outputPath    string
 		compressLevel int
 		threads       int
+		verbosity     int
+		writeIndex    string
 		showHelp      bool
 		showVer       bool
 	)
 	cliflag.StringVar(fs, &maxMem, "m", "max-mem", "768M", "Max RAM (accepted, no-op)")
-	cliflag.StringVar(fs, &tmpDir, "T", "tmpdir", "", "Tmpdir (accepted, no-op)")
+	// -T accepts both upstream's `--temp-dir` and our legacy `--tmpdir`.
+	cliflag.StringVar(fs, &tmpDir, "T", "temp-dir", "", "Tmpdir (accepted, no-op)")
+	fs.StringVar(&tmpDir, "tmpdir", "", "Alias for --temp-dir (legacy)")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level")
+	cliflag.StringVar(fs, &writeIndex, "W", "write-index", "", "Auto-index output")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+
+	args = preprocessOptionalArg(args, "-W", "csi")
+	args = preprocessOptionalArg(args, "--write-index", "csi")
 
 	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -317,26 +328,29 @@ Usage:
   bcftools head [options] <in.vcf[.gz]|in.bcf>
 
 Options:
-  -h, --headers N            Print only the first N header lines.
-  -n, --records N            Print the first N variant records after the header.
-  -s, --samples              Print one sample-name per line and exit.
-  -?, --help                 Show this help.
-      --version              Show version.
+  -h, --headers INT      Display INT header lines [all].
+  -n, --records INT      Display INT variant record lines [none].
+  -s, --samples INT      Display INT records starting with the #CHROM line.
+  -v, --verbosity INT    Verbosity level (accepted).
+  -?, --help             Show this help.
+      --version          Show version.
 `
 
 func runHead(args []string) int {
 	fs := flag.NewFlagSet("bcftools head", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		numLines    int
-		numRecords  int
-		samplesOnly bool
-		showHelp    bool
-		showVer     bool
+		numLines       int
+		numRecords     int
+		samplesRecords int
+		verbosity      int
+		showHelp       bool
+		showVer        bool
 	)
 	cliflag.IntVar(fs, &numLines, "h", "headers", 0, "Number of header lines to print")
 	cliflag.IntVar(fs, &numRecords, "n", "records", 0, "Number of variant records to print after the header")
-	cliflag.BoolVar(fs, &samplesOnly, "s", "samples", false, "Print sample names only")
+	cliflag.IntVar(fs, &samplesRecords, "s", "samples", 0, "Print INT records starting with #CHROM line")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -361,9 +375,9 @@ func runHead(args []string) int {
 		return 2
 	}
 	if err := bcftools.HeadFile(rest[0], os.Stdout, bcftools.HeadOptions{
-		NumLines:    numLines,
-		NumRecords:  numRecords,
-		SamplesOnly: samplesOnly,
+		NumLines:       numLines,
+		NumRecords:     numRecords,
+		SamplesRecords: samplesRecords,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools head: %v\n", err)
 		return 1
@@ -378,13 +392,17 @@ Usage:
 
 Options:
   -h, --header FILE          Replace entire header with the contents of FILE.
-  -s, --samples FILE         Sample-rename file (one new name per line, OR
-                             tab-separated old<TAB>new mapping).
+  -n, --samples-list LIST    New sample names as a comma-separated list.
+  -N, --samples-file FILE    File with new sample names (one per line, OR
+                             tab-separated old<TAB>new mapping). Upstream
+                             alias -s / --samples is also accepted.
   -f, --fai FILE             Rebuild ##contig lines from a samtools FAI.
+  -T, --temp-prefix PATH     Accepted; tmp-file template is unused in v1.
   -O, --output-type {v|z|u|b}  Output format.
   -o, --output PATH          Output file (default stdout).
   -l, --compression-level N  gzip level for -O z output.
       --threads N            Accepted; v1 is single-threaded.
+  -v, --verbosity INT        Verbosity level (accepted).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -395,21 +413,30 @@ func runReheader(args []string) int {
 	var (
 		headerFile    string
 		samplesFile   string
+		samplesList   string
 		faiFile       string
+		tempPrefix    string
 		outputType    string
 		outputPath    string
 		compressLevel int
 		threads       int
+		verbosity     int
 		showHelp      bool
 		showVer       bool
 	)
 	cliflag.StringVar(fs, &headerFile, "h", "header", "", "Replacement header file")
-	cliflag.StringVar(fs, &samplesFile, "s", "samples", "", "Sample rename file")
+	cliflag.StringVar(fs, &samplesFile, "N", "samples-file", "", "New sample names file")
+	cliflag.StringVar(fs, &samplesList, "n", "samples-list", "", "New sample names (comma list)")
+	// `-s/--samples` is upstream's legacy alias for `-N/--samples-file`.
+	fs.StringVar(&samplesFile, "s", "", "Alias for -N/--samples-file (legacy)")
+	fs.StringVar(&samplesFile, "samples", "", "Alias for --samples-file (legacy)")
 	cliflag.StringVar(fs, &faiFile, "f", "fai", "", "FAI for ##contig rebuild")
+	cliflag.StringVar(fs, &tempPrefix, "T", "temp-prefix", "", "Tmp-file template (accepted, no-op)")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -444,9 +471,14 @@ func runReheader(args []string) int {
 		return 1
 	}
 	defer out.Close()
+	var samplesListSlice []string
+	if samplesList != "" {
+		samplesListSlice = bcftools.SplitCommaList(samplesList)
+	}
 	if _, err := bcftools.ReheaderFile(rest[0], out, bcftools.ReheaderOptions{
 		HeaderFile:    headerFile,
 		SamplesFile:   samplesFile,
+		SamplesList:   samplesListSlice,
 		FaiFile:       faiFile,
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
