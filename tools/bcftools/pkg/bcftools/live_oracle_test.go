@@ -490,7 +490,12 @@ func TestLiveConcat(t *testing.T) {
 	live, ours := requireLive(t)
 	a := fixturePath(t, "concat_a.vcf")
 	b := fixturePath(t, "concat_b.vcf")
-	assertEqualStdout(t, live, ours, "concat", a, b)
+	t.Run("bare", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "concat", a, b)
+	})
+	t.Run("-G", func(t *testing.T) {
+		assertEqualStdout(t, live, ours, "concat", "-G", a, b)
+	})
 }
 
 // -------------------------------------------------------------------------

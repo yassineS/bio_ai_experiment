@@ -35,6 +35,16 @@ type ConcatOptions struct {
 	MinPQ int
 	// Ligate is accepted but ignored in v1 (matches upstream's `-l`).
 	Ligate bool
+	// RmDupsMode mirrors upstream `-d snps|indels|both|all|exact`. When
+	// empty, falls back to RemoveDuplicates (exact). Used together with
+	// AllowOverlaps; like upstream, applies after sort-merge.
+	RmDupsMode string
+	// DropGenotypes mirrors upstream `-G`: strip FORMAT and per-sample
+	// data from every emitted record.
+	DropGenotypes bool
+	// Regions, when non-empty, is a post-filter on the merged stream
+	// (chr[:beg-end] list). Implemented in-memory after sort-merge.
+	Regions []string
 }
 
 // Concat reads VCF input from readers in order, merges their headers, and
@@ -94,6 +104,29 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 	}
 	if opts.RemoveDuplicates {
 		records = dedupAdjacent(records)
+	}
+	if len(opts.Regions) > 0 {
+		regs, err := parseRegions(opts.Regions)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools concat: --regions: %w", err)
+		}
+		kept := records[:0:0]
+		for _, v := range records {
+			if overlapsAny(v, regs) {
+				kept = append(kept, v)
+			}
+		}
+		records = kept
+	}
+	if opts.DropGenotypes {
+		// Drop sample columns from both the header and every record so
+		// the writer emits the FORMAT-less form.
+		merged.Samples = nil
+		merged = stripFormatLines(merged)
+		for _, v := range records {
+			v.Format = nil
+			v.Samples = nil
+		}
 	}
 
 	w, finish, err := openOutput(out, ViewOptions{

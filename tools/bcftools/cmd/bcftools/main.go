@@ -925,13 +925,26 @@ Usage:
 
 Options:
   -a, --allow-overlaps       Sort-merge across inputs (default is plain concat).
-  -D, --remove-duplicates    Drop adjacent duplicate records.
+  -c, --compact-PS           Emit PS tag only at the start of each block (accepted).
+  -d, --rm-dups MODE         Drop duplicates: snps|indels|both|all|exact.
+  -D, --remove-duplicates    Alias for -d exact.
   -f, --file-list PATH       File of input paths (one per line).
+  -G, --drop-genotypes       Drop FORMAT and per-sample columns.
+  -l, --ligate               Accepted but no-op in v1 (imputation chunks).
+      --ligate-force         Accepted but no-op in v1.
+      --ligate-warn          Accepted but no-op in v1.
+  -n, --naive                Accepted (concat without recompression — v1 always re-emits).
+      --naive-force          Accepted (same as --naive without header compat check).
+      --no-version           Suppress the bcftools provenance header lines.
   -O, --output-type {v|z|u|b}  Output format. (u/b need a BCF writer.)
   -o, --output PATH          Output file (default stdout).
   -q, --min-PQ INT           Accepted but no-op in v1.
-  -l, --ligate               Accepted but no-op in v1 (imputation chunks).
+  -r, --regions LIST         Region post-filter (chr[:beg-end]).
+  -R, --regions-file PATH    BED-like regions file.
+      --regions-overlap N    Region inclusion rule (0|1|2) (accepted).
       --threads N            Accepted; v1 is single-threaded.
+  -v, --verbosity INT        Verbosity level (accepted).
+  -W, --write-index[=FMT]    Auto-index output (csi|tbi) (accepted).
       --compression-level N  gzip level for -O z output.
   -?, --help                 Show this help.
       --version              Show version.
@@ -943,29 +956,57 @@ func runConcat(args []string) int {
 
 	var (
 		allowOverlaps    bool
+		compactPS        bool
+		rmDups           string
 		removeDuplicates bool
 		fileList         string
+		dropGT           bool
 		outputType       string
 		outputPath       string
 		minPQ            int
 		ligate           bool
+		ligateForce      bool
+		ligateWarn       bool
+		naive            bool
+		naiveForce       bool
+		regions          string
+		regionsFile      string
+		regionsOverlap   int
+		writeIndex       string
+		verbosity        int
 		compressLevel    int
 		threads          int
 		showHelp         bool
 		showVer          bool
 	)
 	cliflag.BoolVar(fs, &allowOverlaps, "a", "allow-overlaps", false, "Sort-merge across inputs")
+	cliflag.BoolVar(fs, &compactPS, "c", "compact-PS", false, "Emit PS tag only at the start of each block")
+	cliflag.StringVar(fs, &rmDups, "d", "rm-dups", "", "Drop duplicate records (snps|indels|both|all|exact)")
 	cliflag.BoolVar(fs, &removeDuplicates, "D", "remove-duplicates", false, "Drop adjacent duplicate records")
 	cliflag.StringVar(fs, &fileList, "f", "file-list", "", "File of input paths")
+	cliflag.BoolVar(fs, &dropGT, "G", "drop-genotypes", false, "Drop FORMAT and per-sample columns")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &minPQ, "q", "min-PQ", 0, "Minimum PQ (accepted, ignored)")
 	cliflag.BoolVar(fs, &ligate, "l", "ligate", false, "Ligate (accepted, ignored)")
+	fs.BoolVar(&ligateForce, "ligate-force", false, "Ligate-force (accepted, no-op)")
+	fs.BoolVar(&ligateWarn, "ligate-warn", false, "Ligate-warn (accepted, no-op)")
+	cliflag.BoolVar(fs, &naive, "n", "naive", false, "Naive concat (accepted; v1 always re-emits)")
+	fs.BoolVar(&naiveForce, "naive-force", false, "Naive-force (accepted)")
+	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
+	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	fs.IntVar(&regionsOverlap, "regions-overlap", 1, "Region inclusion rule (0|1|2)")
+	cliflag.StringVar(fs, &writeIndex, "W", "write-index", "", "Auto-index output")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level")
 	fs.IntVar(&compressLevel, "compression-level", -1, "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	registerNoVersionIfAbsent(fs)
+
+	args = preprocessOptionalArg(args, "-W", "csi")
+	args = preprocessOptionalArg(args, "--write-index", "csi")
 
 	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -992,6 +1033,22 @@ func runConcat(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	if regionsOverlap < 0 || regionsOverlap > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools concat: --regions-overlap must be 0, 1 or 2 (got %d)\n", regionsOverlap)
+		return 2
+	}
+	if writeIndex != "" && writeIndex != "csi" && writeIndex != "tbi" {
+		fmt.Fprintf(os.Stderr, "bcftools concat: --write-index must be csi or tbi (got %q)\n", writeIndex)
+		return 2
+	}
+	if removeDuplicates {
+		rmDups = "exact"
+	}
+	// Upstream rejection-parity: -r/-R require -a (the synced reader).
+	if (regions != "" || regionsFile != "") && !allowOverlaps {
+		fmt.Fprintln(os.Stderr, "bcftools concat: The -r/-R option is supported only with -a")
+		return 1
+	}
 
 	out, err := openOutFile(outputPath)
 	if err != nil {
@@ -1000,13 +1057,29 @@ func runConcat(args []string) int {
 	}
 	defer out.Close()
 
+	var regionsSlice []string
+	if regions != "" {
+		regionsSlice = bcftools.SplitCommaList(regions)
+	}
+	if regionsFile != "" {
+		regs, err := bcftools.LoadRegionsFile(regionsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools concat: %v\n", err)
+			return 1
+		}
+		regionsSlice = append(regionsSlice, regs...)
+	}
+
 	opts := bcftools.ConcatOptions{
 		OutputFormat:     format,
 		AllowOverlaps:    allowOverlaps,
-		RemoveDuplicates: removeDuplicates,
+		RemoveDuplicates: removeDuplicates || rmDups != "",
+		RmDupsMode:       rmDups,
 		FileList:         fileList,
 		MinPQ:            minPQ,
 		Ligate:           ligate,
+		DropGenotypes:    dropGT,
+		Regions:          regionsSlice,
 		CompressLevel:    compressLevel,
 	}
 	if _, err := bcftools.ConcatFiles(paths, out, opts); err != nil {
