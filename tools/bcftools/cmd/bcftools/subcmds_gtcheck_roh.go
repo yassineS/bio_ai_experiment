@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
@@ -185,6 +186,17 @@ func runGtcheck(args []string) int {
 		sortHWE = true
 		nM = -nM
 	}
+	// --distinctive-sites takes either a fraction (0,1] or an
+	// integer count (>1).
+	var distSitesF float64
+	if distinctiveSites != "" {
+		f, err := strconv.ParseFloat(distinctiveSites, 64)
+		if err != nil || f <= 0 {
+			fmt.Fprintf(os.Stderr, "bcftools gtcheck: bad --distinctive-sites %q (expect fraction in (0,1] or count > 1)\n", distinctiveSites)
+			return 2
+		}
+		distSitesF = f
+	}
 	opts := bcftools.GtcheckOptions{
 		GenotypesFile:    genotypesFile,
 		PairsSpec:        pairsSpec,
@@ -204,6 +216,7 @@ func runGtcheck(args []string) int {
 		OutputType:       outputType,
 		NMatches:         nM,
 		SortByHWE:        sortHWE,
+		DistinctiveSites: distSitesF,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -266,8 +279,6 @@ func checkGtcheckDeferred(in checkGtcheckDeferredInputs) string {
 	switch {
 	case in.cluster != "":
 		return "--cluster"
-	case in.distinctiveSites != "":
-		return "--distinctive-sites"
 	}
 	return ""
 }

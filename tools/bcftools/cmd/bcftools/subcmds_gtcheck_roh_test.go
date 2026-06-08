@@ -19,10 +19,8 @@ func TestCheckGtcheckDeferred(t *testing.T) {
 		want string
 	}{
 		{"cluster", checkGtcheckDeferredInputs{cluster: "2,4"}, "--cluster"},
-		{"distinctive-sites", checkGtcheckDeferredInputs{distinctiveSites: "0.1"}, "--distinctive-sites"},
-		// --n-matches and -O z are now real-ported (the deferred
-		// checker no longer rejects them); only --cluster and
-		// --distinctive-sites remain in the rejection set.
+		// --n-matches, -O z, and --distinctive-sites are now real-
+		// ported; only --cluster remains in the rejection set.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

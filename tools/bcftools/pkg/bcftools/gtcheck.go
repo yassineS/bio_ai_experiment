@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/bits"
 	"os"
 	"sort"
 	"strconv"
@@ -106,6 +107,22 @@ type GtcheckOptions struct {
 	// — we capture only the magnitude and a sort flag.
 	NMatches  int
 	SortByHWE bool
+	// DistinctiveSites is upstream `--distinctive-sites`: when set,
+	// emit a DS section listing the smallest set of sites whose
+	// genotype mismatches collectively distinguish the requested
+	// number of pairs. Values in (0,1] are treated as a fraction
+	// of total pairs; >1 are absolute counts. Mirrors
+	// vcfgtcheck.c::diff_sites_init.
+	DistinctiveSites float64
+}
+
+// distSiteRow is the per-site row collected during cross-check
+// when --distinctive-sites is active.
+type distSiteRow struct {
+	ndiff int
+	chrom string
+	pos   int
+	bits  []uint64
 }
 
 // GtcheckPair captures one DCv2 data row.
@@ -283,6 +300,36 @@ func runGtcheck(
 		key := [2]string{p.QuerySample, p.GenotypedSample}
 		accums[key] = &acc{}
 	}
+	// --distinctive-sites bookkeeping: per-site index of which
+	// pairs were discordant. Allocated only when the option is
+	// active (mirrors upstream diff_sites_init). Upstream requires
+	// -p/-P paired mode; mirror that rejection.
+	var distSites []distSiteRow
+	distActive := opts.DistinctiveSites > 0
+	if distActive && opts.PairsSpec == "" && opts.PairsFile == "" {
+		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: the experimental option --distinctive-sites requires -p/-P")
+	}
+	// Resolve the target count: when 0 < f <= 1 treat as a
+	// fraction of npairs; otherwise an absolute count.
+	distTarget := 0
+	if distActive {
+		if opts.DistinctiveSites <= 1 {
+			distTarget = int(opts.DistinctiveSites * float64(len(pairs)))
+		} else {
+			distTarget = int(opts.DistinctiveSites)
+		}
+		if distTarget <= 0 {
+			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: --distinctive-sites value too low: %d", distTarget)
+		}
+		if distTarget > len(pairs) {
+			distTarget = len(pairs)
+		}
+	}
+
+	pairIndex := map[[2]string]int{}
+	for i, p := range pairs {
+		pairIndex[[2]string{p.QuerySample, p.GenotypedSample}] = i
+	}
 
 	var counters GtcheckCounters
 	for _, qv := range varsQ {
@@ -340,6 +387,15 @@ func runGtcheck(
 			}
 		}
 
+		// Per-record bitset of discordant pairs (for
+		// --distinctive-sites). Reset per record; populated
+		// inside the pair loop.
+		var diffBits []uint64
+		if distActive {
+			diffBits = make([]uint64, (len(pairs)+63)/64)
+		}
+		ndiffPerSite := 0
+
 		for _, p := range pairs {
 			a := accums[[2]string{p.QuerySample, p.GenotypedSample}]
 			gs := gData[p.GenotypedSample]
@@ -363,22 +419,39 @@ func runGtcheck(
 			}
 			a.pdiff += min
 
+			matchedBits := qs.dsg & gs.dsg
 			if !opts.NoHWEProb {
-				match := qs.dsg & gs.dsg
-				if match != 0 {
+				if matchedBits != 0 {
 					hd := math.Inf(1)
 					for k := 0; k < 3; k++ {
-						if (1<<k)&match != 0 && hwe[k] < hd {
+						if (1<<k)&matchedBits != 0 && hwe[k] < hd {
 							hd = hwe[k]
 						}
 					}
 					a.hweAcc += hd
 					a.match++
 				}
-			} else if qs.dsg&gs.dsg != 0 {
+			} else if matchedBits != 0 {
 				a.match++
 			}
 			a.sites++
+
+			// Discordance for --distinctive-sites: the pair is
+			// distinguished at this site iff the dosages do
+			// not share any bit.
+			if distActive && matchedBits == 0 {
+				idx := pairIndex[[2]string{p.QuerySample, p.GenotypedSample}]
+				diffBits[idx>>6] |= 1 << (uint(idx) & 63)
+				ndiffPerSite++
+			}
+		}
+		if distActive && ndiffPerSite > 0 {
+			distSites = append(distSites, distSiteRow{
+				ndiff: ndiffPerSite,
+				chrom: qv.Chrom,
+				pos:   qv.Pos,
+				bits:  diffBits,
+			})
 		}
 		if opts.DryRun {
 			break
@@ -415,7 +488,78 @@ func runGtcheck(
 	if err := writeGtcheckReport(out, result); err != nil {
 		return result, err
 	}
+	// --distinctive-sites: after the DCv2 body, emit the DS block
+	// (greedy site selection covering distTarget pairs per block).
+	if distActive && len(distSites) > 0 {
+		if err := writeDistinctiveSites(out, distSites, len(pairs), distTarget); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+// writeDistinctiveSites is the Go port of
+// vcfgtcheck.c::report_distinctive_sites (line 832-871). It sorts the
+// per-site discordant-pair bitsets by ndiff (descending), then greedily
+// walks them assigning new pairs to a block until distTarget pairs are
+// distinguished; at that point a new block starts. Emits one `DS` row
+// per site that adds at least one new pair.
+func writeDistinctiveSites(out io.Writer, sites []distSiteRow, npairs, distTarget int) error {
+	// Sort by ndiff descending; tie-break by (chrom, pos) for
+	// determinism (upstream uses a random tag — we use the natural
+	// order so the output is reproducible across runs).
+	sort.SliceStable(sites, func(i, j int) bool {
+		if sites[i].ndiff != sites[j].ndiff {
+			return sites[i].ndiff > sites[j].ndiff
+		}
+		if sites[i].chrom != sites[j].chrom {
+			return sites[i].chrom < sites[j].chrom
+		}
+		return sites[i].pos < sites[j].pos
+	})
+	bw := bufio.NewWriter(out)
+	bw.WriteString("# DS, distinctive sites:\n")
+	bw.WriteString("#     - chromosome\n")
+	bw.WriteString("#     - position\n")
+	bw.WriteString("#     - cumulative number of pairs distinguished by this block\n")
+	bw.WriteString("#     - block id\n")
+	bw.WriteString("#DS\t[2]Chromosome\t[3]Position\t[4]Cumulative number of distinct pairs\t[5]Block id\n")
+	blk := make([]uint64, (npairs+63)/64)
+	ndiffTot := 0
+	iblock := 0
+	ndiffMin := distTarget
+	if ndiffMin > npairs {
+		ndiffMin = npairs
+	}
+	for _, s := range sites {
+		ndiffNew := 0
+		for w, mask := range s.bits {
+			if mask == 0 {
+				continue
+			}
+			// Bits set in this site but not yet in the block.
+			fresh := mask & ^blk[w]
+			if fresh == 0 {
+				continue
+			}
+			blk[w] |= fresh
+			ndiffNew += bits.OnesCount64(fresh)
+		}
+		if ndiffNew == 0 {
+			continue
+		}
+		ndiffTot += ndiffNew
+		fmt.Fprintf(bw, "DS\t%s\t%d\t%d\t%d\n", s.chrom, s.pos, ndiffTot, iblock)
+		if ndiffTot < ndiffMin {
+			continue
+		}
+		iblock++
+		ndiffTot = 0
+		for i := range blk {
+			blk[i] = 0
+		}
+	}
+	return bw.Flush()
 }
 
 // topNMatchesByQuery groups pairs by query sample, sorts each
