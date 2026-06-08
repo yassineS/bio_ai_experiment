@@ -632,22 +632,30 @@ func runQuery(args []string) int {
 	fs.SetOutput(io.Discard)
 
 	var (
-		format       string
-		printHeader  bool
-		listSamples  bool
-		samples      string
-		samplesFile  string
-		regions      string
-		regionsFile  string
-		targets      string
-		targetsFile  string
-		includeExpr  string
-		excludeExpr  string
-		applyFilters string
-		outputPath   string
-		threads      int
-		showHelp     bool
-		showVer      bool
+		format          string
+		printHeader     bool
+		listSamples     bool
+		samples         string
+		samplesFile     string
+		regions         string
+		regionsFile     string
+		regionsOverlap  int
+		targets         string
+		targetsFile     string
+		targetsOverlap  int
+		includeExpr     string
+		excludeExpr     string
+		applyFilters    string
+		printFiltered   string
+		disableNewline  bool
+		allowUndefTags  bool
+		forceSamples    bool
+		vcfList         string
+		verbosity       int
+		outputPath      string
+		threads         int
+		showHelp        bool
+		showVer         bool
 	)
 	cliflag.StringVar(fs, &format, "f", "format", "", "Format string")
 	cliflag.BoolVar(fs, &printHeader, "H", "print-header", false, "Print header row")
@@ -656,11 +664,19 @@ func runQuery(args []string) int {
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Regions")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	fs.IntVar(&regionsOverlap, "regions-overlap", 1, "")
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
+	fs.IntVar(&targetsOverlap, "targets-overlap", 1, "")
 	cliflag.StringVar(fs, &includeExpr, "i", "include", "", "Include expression")
 	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
 	cliflag.StringVar(fs, &applyFilters, "F", "apply-filters", "", "FILTER name list to keep")
+	fs.StringVar(&printFiltered, "print-filtered", "", "Print STR for filter-failing records")
+	cliflag.BoolVar(fs, &disableNewline, "N", "disable-automatic-newline", false, "Suppress implicit newline")
+	cliflag.BoolVar(fs, &allowUndefTags, "u", "allow-undef-tags", false, "Allow undefined tag references")
+	fs.BoolVar(&forceSamples, "force-samples", false, "Continue past missing sample names")
+	cliflag.StringVar(fs, &vcfList, "v", "vcf-list", "", "File of VCF paths")
+	fs.IntVar(&verbosity, "verbosity", 0, "Verbosity (accepted, ignored)")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
@@ -692,15 +708,23 @@ func runQuery(args []string) int {
 	}
 
 	opts := bcftools.QueryOptions{
-		Format:       format,
-		PrintHeader:  printHeader,
-		ListSamples:  listSamples,
-		IncludeExpr:  includeExpr,
-		ExcludeExpr:  excludeExpr,
-		ApplyFilters: bcftools.SplitCommaList(applyFilters),
-		SamplesFile:  samplesFile,
-		RegionsFile:  regionsFile,
-		TargetsFile:  targetsFile,
+		Format:             format,
+		PrintHeader:        printHeader,
+		ListSamples:        listSamples,
+		IncludeExpr:        includeExpr,
+		ExcludeExpr:        excludeExpr,
+		ApplyFilters:       bcftools.SplitCommaList(applyFilters),
+		SamplesFile:        samplesFile,
+		RegionsFile:        regionsFile,
+		TargetsFile:        targetsFile,
+		PrintFiltered:      printFiltered,
+		DisableAutoNewline: disableNewline,
+		AllowUndefTags:     allowUndefTags,
+		ForceSamples:       forceSamples,
+		VCFList:            vcfList,
+		RegionsOverlap:     regionsOverlap,
+		TargetsOverlap:     targetsOverlap,
+		Verbosity:          verbosity,
 	}
 	if samples != "" {
 		opts.Samples = bcftools.SplitCommaList(samples)

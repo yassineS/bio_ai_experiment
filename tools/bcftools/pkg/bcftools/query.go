@@ -72,6 +72,32 @@ type QueryOptions struct {
 	// Upstream bcftools query maps `-F` here because `-f` is the format
 	// string. An empty list disables the filter.
 	ApplyFilters []string
+	// PrintFiltered is upstream `--print-filtered STR`: a string
+	// substituted for records that fail the include/exclude
+	// expression. Empty (default) drops the record entirely,
+	// matching upstream's no-flag behaviour.
+	PrintFiltered string
+	// DisableAutoNewline mirrors upstream `-N/--disable-automatic-newline`:
+	// when true, format-string emit does NOT append an implicit
+	// newline at the end of each record.
+	DisableAutoNewline bool
+	// AllowUndefTags mirrors upstream `-u/--allow-undef-tags`:
+	// undefined tag references resolve to "." rather than aborting.
+	AllowUndefTags bool
+	// ForceSamples mirrors upstream `--force-samples`: continue past
+	// missing sample names in -s/-S rather than erroring.
+	ForceSamples bool
+	// VCFList is upstream `-v/--vcf-list FILE`: a file listing
+	// additional VCF input paths (one per line), processed in turn.
+	VCFList string
+	// RegionsOverlap (0|1|2) mirrors upstream's region overlap
+	// semantic. Accepted; v1 uses any-overlap (mode 1).
+	RegionsOverlap int
+	// TargetsOverlap (0|1|2) — same shape for targets.
+	TargetsOverlap int
+	// Verbosity mirrors upstream `--verbosity INT` (accepted /
+	// ignored — output unaffected).
+	Verbosity int
 }
 
 // Query streams VCF or BCF from in, applies opts, and writes the formatted
@@ -213,7 +239,7 @@ func queryVCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 		if !keepQueryVariant(v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.Samples); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.Samples, opts.DisableAutoNewline); err != nil {
 			return count, err
 		}
 		count++
@@ -260,7 +286,7 @@ func queryBCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 		if !keepQueryVariant(v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.VCF.Samples); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.VCF.Samples, opts.DisableAutoNewline); err != nil {
 			return count, err
 		}
 		count++
@@ -300,7 +326,7 @@ func queryBCFRegions(path string, out io.Writer, opts QueryOptions) (int, error)
 		if !keepQueryVariant(v, opts, includeF, excludeF, true, regs) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.VCF.Samples); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.VCF.Samples, opts.DisableAutoNewline); err != nil {
 			return count, err
 		}
 		count++
@@ -367,7 +393,7 @@ func queryTBI(path string, hdr *vcf.Header, regs []region, opts QueryOptions, in
 		if !keepQueryVariant(v, opts, includeF, excludeF, true, regs) {
 			continue
 		}
-		if err := emitRecord(w, tokens, v, sampleFilter, hdr.Samples); err != nil {
+		if err := emitRecord(w, tokens, v, sampleFilter, hdr.Samples, opts.DisableAutoNewline); err != nil {
 			return count, err
 		}
 		count++
@@ -685,7 +711,11 @@ func filterSamplesByName(wanted, headerSamples []string) []string {
 // emitRecord formats one variant per the token list and writes it to w.
 // headerSamples carries the header-level sample names, used to resolve
 // the `%SAMPLE` placeholder inside `[ ... ]` brackets.
-func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter []int, headerSamples []string) error {
+// emitRecord renders one format-string instance for v and writes it
+// to w. Upstream auto-appends a newline; passing
+// disableAutoNewline=true opts out (matching `-N/--disable-automatic-
+// newline`).
+func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter []int, headerSamples []string, disableAutoNewline bool) error {
 	var sb strings.Builder
 	for _, t := range tokens {
 		switch t.Kind {
@@ -717,8 +747,35 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 			}
 		}
 	}
-	_, err := w.Write([]byte(sb.String()))
+	out := sb.String()
+	// Upstream rule: auto-append \n to each record's rendered text
+	// ONLY when the format string itself contains no '\n'. `-N`
+	// (DisableAutoNewline) suppresses the auto-add regardless.
+	if !disableAutoNewline && !formatHasNewline(tokens) {
+		out += "\n"
+	}
+	_, err := w.Write([]byte(out))
 	return err
+}
+
+// formatHasNewline reports whether the parsed format tokens contain
+// any explicit newline literal.
+func formatHasNewline(tokens []FormatToken) bool {
+	for _, t := range tokens {
+		switch t.Kind {
+		case TokenLiteral:
+			if strings.Contains(t.Text, "\n") {
+				return true
+			}
+		case TokenSample:
+			for _, inner := range t.Inner {
+				if inner.Kind == TokenLiteral && strings.Contains(inner.Text, "\n") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // formatPlaceholderSamples wraps formatPlaceholder with knowledge of the
