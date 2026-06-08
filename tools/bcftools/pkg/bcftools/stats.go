@@ -33,6 +33,7 @@ type StatsOptions struct {
 	AFBins          []float64 // -a; if nil we use the upstream default
 	Collapse        string    // -c
 	FirstAlleleOnly bool      // -1
+	SplitByID       bool      // -I/--split-by-ID: per-section split into known vs novel
 	AFTag           string    // --af-tag
 	InputFile       string    // for the header line
 }

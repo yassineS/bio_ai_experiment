@@ -570,23 +570,30 @@ Usage:
   bcftools stats [options] <in.vcf[.gz]|in.bcf>
 
 Options:
-  -s, --samples LIST              Restrict to these samples (comma list).
+  -s, --samples LIST              Restrict to these samples (comma list, '-' = all).
   -S, --samples-file PATH         File with sample IDs (one per line).
   -r, --regions chr[:beg-end[,..]] Region(s) — applied as a post-filter (no index).
   -R, --regions-file PATH         BED-like regions file.
+      --regions-overlap 0|1|2     Region inclusion rule [1] (accepted).
   -t, --targets chr[:beg-end[,..]] Like -r but always a post-filter.
   -T, --targets-file PATH         BED-like targets file.
+      --targets-overlap 0|1|2     Target inclusion rule [0] (accepted).
   -i, --include EXPR              Keep records matching expression.
   -e, --exclude EXPR              Drop records matching expression.
+  -E, --exons FILE.gz             Tab-delimited exons for indel frameshift (deferred).
+  -F, --fasta-ref FILE            Reference FASTA for INDEL context (deferred).
   -f, --apply-filters NAME[,..]   Keep only PASS or named filters.
   -d, --depth MIN,MAX,STEP        Depth-distribution bins (default 0,500,1).
-  -a, --af-bins LIST              Allele-frequency bin edges (default 0,0.1,...,0.9,0.99,1.0).
-  -c, --collapse {none|snps|indels|both|all|some|id}
-                                  Multi-allelic site collapse rule. (Accepted; v1 always treats each ALT separately.)
-  -1, --1st-allele-only           Count only the 1st ALT allele.
+  -a, --af-bins LIST              Allele-frequency bin edges.
       --af-tag TAG                INFO tag to read AF from (default: compute from GT).
+  -c, --collapse {none|snps|indels|both|all|some|id}
+                                  Multi-allelic site collapse rule. (Accepted.)
+  -1, --1st-allele-only           Count only the 1st ALT allele.
+  -I, --split-by-ID               Report known vs novel separately.
+  -u, --user-tstv TAG[:min:max:n] Custom Ts/Tv binning (deferred).
   -o, --output PATH               Output file (default stdout).
       --threads N                 Accepted; v1 is single-threaded.
+  -v, --verbosity INT             Verbosity level (accepted).
   -h, --help                      Show this help.
       --version                   Show version.
 `
@@ -600,8 +607,10 @@ func runStatsCmd(args []string) int {
 		samplesFile     string
 		regions         string
 		regionsFile     string
+		regionsOverlap  int
 		targets         string
 		targetsFile     string
+		targetsOverlap  int
 		includeExpr     string
 		excludeExpr     string
 		applyFilters    string
@@ -610,8 +619,13 @@ func runStatsCmd(args []string) int {
 		collapse        string
 		firstAlleleOnly bool
 		afTag           string
+		exonsFile       string
+		fastaRef        string
+		splitByID       bool
+		userTstv        string
 		outputPath      string
 		threads         int
+		verbosity       int
 		showHelp        bool
 		showVersion     bool
 	)
@@ -619,18 +633,25 @@ func runStatsCmd(args []string) int {
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	fs.IntVar(&regionsOverlap, "regions-overlap", 1, "Region inclusion rule (0|1|2)")
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
+	fs.IntVar(&targetsOverlap, "targets-overlap", 0, "Target inclusion rule (0|1|2)")
 	cliflag.StringVar(fs, &includeExpr, "i", "include", "", "Include expression")
 	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
+	cliflag.StringVar(fs, &exonsFile, "E", "exons", "", "Exons FILE.gz (deferred)")
+	cliflag.StringVar(fs, &fastaRef, "F", "fasta-ref", "", "FASTA reference (deferred)")
 	cliflag.StringVar(fs, &applyFilters, "f", "apply-filters", "", "Filter list")
 	cliflag.StringVar(fs, &depthSpec, "d", "depth", "", "Depth spec MIN,MAX,STEP")
 	cliflag.StringVar(fs, &afBinsSpec, "a", "af-bins", "", "AF bin edges")
 	cliflag.StringVar(fs, &collapse, "c", "collapse", "none", "Collapse rule")
 	cliflag.BoolVar(fs, &firstAlleleOnly, "1", "1st-allele-only", false, "1st ALT only")
+	cliflag.BoolVar(fs, &splitByID, "I", "split-by-ID", false, "Report known vs novel separately")
+	cliflag.StringVar(fs, &userTstv, "u", "user-tstv", "", "User Ts/Tv tag spec (deferred)")
 	fs.StringVar(&afTag, "af-tag", "", "INFO AF tag")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
@@ -657,12 +678,38 @@ func runStatsCmd(args []string) int {
 	}
 	input := rest[0]
 
+	// Rejection-parity: -F/-E/-u drive sections we do not yet emit
+	// (indel context from FASTA, frameshift call against exons, custom
+	// Ts/Tv binning). Falling through silently would diverge from
+	// upstream output, so refuse instead.
+	if fastaRef != "" {
+		fmt.Fprintln(os.Stderr, "bcftools stats: --fasta-ref is to be implemented, please open an issue on github")
+		return 1
+	}
+	if exonsFile != "" {
+		fmt.Fprintln(os.Stderr, "bcftools stats: --exons is to be implemented, please open an issue on github")
+		return 1
+	}
+	if userTstv != "" {
+		fmt.Fprintln(os.Stderr, "bcftools stats: --user-tstv is to be implemented, please open an issue on github")
+		return 1
+	}
+	if regionsOverlap < 0 || regionsOverlap > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools stats: --regions-overlap must be 0, 1 or 2 (got %d)\n", regionsOverlap)
+		return 2
+	}
+	if targetsOverlap < 0 || targetsOverlap > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools stats: --targets-overlap must be 0, 1 or 2 (got %d)\n", targetsOverlap)
+		return 2
+	}
+
 	opts := bcftools.StatsOptions{
 		IncludeExpr:     includeExpr,
 		ExcludeExpr:     excludeExpr,
 		ApplyFilters:    bcftools.SplitCommaList(applyFilters),
 		Collapse:        collapse,
 		FirstAlleleOnly: firstAlleleOnly,
+		SplitByID:       splitByID,
 		AFTag:           afTag,
 		InputFile:       input,
 	}
