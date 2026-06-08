@@ -1013,13 +1013,13 @@ func runMarkdup(args []string) int {
 	}
 	defer out.Close()
 	if _, err := samtools.Markdup(opener, out, samtools.MarkdupOptions{
-		RemoveDups:   removeDups,
-		MaxDist:      maxDist,
-		Mode:         mode,
-		TmpDir:       tmpDir,
-		MaxLen:       maxLen,
-		IncludeFlags: uint16(includeF),
-		ExcludeFlags: uint16(excludeF),
+		RemoveDups:        removeDups,
+		MaxDist:           maxDist,
+		Mode:              mode,
+		TmpDir:            tmpDir,
+		MaxLen:            maxLen,
+		IncludeFlags:      uint16(includeF),
+		ExcludeFlags:      uint16(excludeF),
 		ClearTags:         clearTags,
 		AddTag:            addTag,
 		Threads:           threads,

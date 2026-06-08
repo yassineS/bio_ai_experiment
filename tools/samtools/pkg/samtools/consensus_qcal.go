@@ -323,18 +323,18 @@ func loadQcalFile(path string) (*qcalTables, error) {
 // unrecognised names. The caller MUST also load the matching qcal
 // preset; the field naming mirrors ConsensusOptions exactly.
 type configPreset struct {
-	QCal         *qcalTables
-	Mode         ConsensusMode
-	HomopolyFix  float64
+	QCal          *qcalTables
+	Mode          ConsensusMode
+	HomopolyFix   float64
 	HomopolyRedux float64
-	LowMQual     int
-	ScaleMQ      float64
-	HetScale     float64
-	HasHomoFix   bool
-	HasHomoRedux bool
-	HasLowMQ     bool
-	HasScaleMQ   bool
-	HasHetScale  bool
+	LowMQual      int
+	ScaleMQ       float64
+	HetScale      float64
+	HasHomoFix    bool
+	HasHomoRedux  bool
+	HasLowMQ      bool
+	HasScaleMQ    bool
+	HasHetScale   bool
 }
 
 // SelectConsensusConfig returns the upstream `-X NAME` parameter

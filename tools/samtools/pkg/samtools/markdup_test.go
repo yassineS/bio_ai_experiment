@@ -74,9 +74,9 @@ func TestMarkdupParity(t *testing.T) {
 			compareMode: "bytes",
 		},
 		{
-			name:        "18_primary_duplicate_count",
-			input:       "18_primary_duplicate_count.sam",
-			expect:      "18_primary_duplicate_count.expected.sam",
+			name:   "18_primary_duplicate_count",
+			input:  "18_primary_duplicate_count.sam",
+			expect: "18_primary_duplicate_count.expected.sam",
 			// test.pl invocation uses `-S` (supp-aware) + -t + --mode t.
 			opts:        MarkdupOptions{MarkSupplementary: true, AddTag: true},
 			compareMode: "flags",

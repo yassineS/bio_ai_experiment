@@ -30,19 +30,34 @@ const (
 	// CheckRefSkip silently drops records whose REF does not match the
 	// FASTA. Useful when running against draft assemblies.
 	CheckRefSkip
+	// CheckRefExclude drops records whose REF does not match the FASTA.
+	// Upstream `--check-ref x` semantic: silently exclude (mode `s` in our
+	// older help text was a misnomer; we keep both `s` and `x` as aliases
+	// for backward compatibility, matching upstream which accepts both).
+	CheckRefExclude
+	// CheckRefSet rewrites the REF field to match the FASTA in-place
+	// (upstream `--check-ref s`). Note: the older value of CheckRefSkip
+	// for `s` is preserved as an alias for callers that depended on it.
+	CheckRefSet
 )
 
-// ParseCheckRefMode turns the `e|w|s` flag value into a typed enum.
+// ParseCheckRefMode turns the `e|w|x|s` flag value into a typed enum.
 func ParseCheckRefMode(s string) (CheckRefMode, error) {
 	switch strings.ToLower(s) {
 	case "", "e":
 		return CheckRefError, nil
 	case "w":
 		return CheckRefWarn, nil
+	case "x":
+		return CheckRefExclude, nil
 	case "s":
+		// Upstream `s` means "set bad REF to the FASTA value". Our older
+		// API used `s` for "skip" — preserved as an alias for backward
+		// compatibility; for byte-equal output with upstream, prefer `x`
+		// when the intent is to drop mismatched sites.
 		return CheckRefSkip, nil
 	}
-	return 0, fmt.Errorf("bcftools norm: unknown --check-ref value %q (expect e, w or s)", s)
+	return 0, fmt.Errorf("bcftools norm: unknown --check-ref value %q (expect e, w, x or s)", s)
 }
 
 // MultiallelicMode encodes the body of the `-m` flag (`-snps`, `+indels` etc.).
@@ -144,8 +159,18 @@ type NormOptions struct {
 	RmDup RmDupMode
 	// Atomize decomposes complex variants into single-base atomic events.
 	Atomize bool
+	// AtomOverlaps selects the symbol used when atomize emits an overlap
+	// allele. Upstream `--atom-overlaps '*'|.` — '*' is the default
+	// (star allele), '.' substitutes the missing allele.
+	AtomOverlaps byte
 	// DoNotNormalize skips left-alignment. Useful in `-m` only pipelines.
+	// Kept as an alias for NoRealign; both flags map onto the same gate.
 	DoNotNormalize bool
+	// NoRealign is upstream's `-N --no-realign [NUM]`. When NoRealign is
+	// true, left-alignment is skipped for indels whose REF or ALT length
+	// exceeds NoRealignMaxLen (zero means "skip for all").
+	NoRealign       bool
+	NoRealignMaxLen int
 	// StrictFilter applies -f filters before splitting; when false they
 	// run after splitting (matching upstream's default ordering).
 	StrictFilter bool
@@ -156,6 +181,55 @@ type NormOptions struct {
 	Targets      []string
 	TargetsFile  string
 	ApplyFilters []string
+	// IncludeExpr / ExcludeExpr are filter expressions (upstream
+	// `-i/--include` and `-e/--exclude`). A record is dropped if
+	// ExcludeExpr evaluates true OR IncludeExpr evaluates false.
+	IncludeExpr string
+	ExcludeExpr string
+	// RegionsOverlap / TargetsOverlap select the inclusion rule for
+	// region/target filtering (upstream `--regions-overlap` /
+	// `--targets-overlap`). 0=POS in region, 1=record overlaps,
+	// 2=variant overlaps. Defaults match upstream: regions=1, targets=0.
+	RegionsOverlap int
+	TargetsOverlap int
+	// Sort controls record ordering on output. "chr_pos" (default)
+	// mirrors upstream's coordinate sort; "lex" uses contig lexicographic
+	// order.
+	Sort string
+	// SiteWin is the buffer (in bp) for sorting records whose position
+	// changed during left-alignment. We materialise the whole file in
+	// memory so SiteWin is bookkeeping for parity diagnostics today.
+	SiteWin int
+	// Force tells norm to continue past malformed records instead of
+	// aborting. Mirrors upstream's `--force`.
+	Force bool
+	// GffAnnot is the path supplied to upstream's `-g/--gff-annot` for
+	// the HGVS 3'-rule right-alignment. Currently rejected with a
+	// rejection-parity message at the CLI layer.
+	GffAnnot string
+	// KeepSum names INFO tags whose vector-sum should be preserved when
+	// splitting multiallelics. Upstream `--keep-sum TAG[,TAG...]`.
+	KeepSum []string
+	// MultiOverlaps selects the fill value for the missing-when-splitting
+	// case. Upstream `--multi-overlaps 0|.`: '0' = reference (default),
+	// '.' = missing.
+	MultiOverlaps byte
+	// OldRecTag, when non-empty, asks norm to annotate every modified
+	// record with INFO/<OldRecTag>=<orig>. Upstream `--old-rec-tag STR`.
+	OldRecTag string
+	// NoVersion suppresses the provenance line norm would otherwise add
+	// to the header.
+	NoVersion bool
+	// PGCommand is the verbatim command line stamped into the provenance
+	// header line when NoVersion is false.
+	PGCommand string
+	// WriteIndex is upstream's `-W/--write-index[=FMT]` knob. Non-empty
+	// values are "csi" or "tbi"; an empty value disables indexing.
+	WriteIndex string
+	// Verbosity mirrors upstream's `-v/--verbosity` knob. The current
+	// port writes nothing extra at higher levels; it is accepted for
+	// CLI parity with upstream pipelines.
+	Verbosity int
 	// OutputFormat / CompressLevel mirror view's writer wiring.
 	OutputFormat  OutputFormat
 	CompressLevel int
@@ -276,6 +350,47 @@ func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormO
 	// 1. region/target filtering.
 	variants = filterByRegions(variants, regions, targets)
 
+	// 1b. -i/-e partition: records that fail the include expression or
+	// match the exclude expression are skipped by every subsequent
+	// transform and re-merged at the very end (matching upstream's
+	// "normalize only matching records" semantics).
+	var (
+		passthrough []*vcf.Variant
+		incF, excF  *Filter
+	)
+	if opts.IncludeExpr != "" {
+		f, err := CompileFilterWithHeader(opts.IncludeExpr, hdr)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools norm: --include: %w", err)
+		}
+		incF = f
+	}
+	if opts.ExcludeExpr != "" {
+		f, err := CompileFilterWithHeader(opts.ExcludeExpr, hdr)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools norm: --exclude: %w", err)
+		}
+		excF = f
+	}
+	if incF != nil || excF != nil {
+		kept := variants[:0:0]
+		for _, v := range variants {
+			matched := true
+			if incF != nil && !incF.Eval(v) {
+				matched = false
+			}
+			if matched && excF != nil && excF.Eval(v) {
+				matched = false
+			}
+			if matched {
+				kept = append(kept, v)
+			} else {
+				passthrough = append(passthrough, v)
+			}
+		}
+		variants = kept
+	}
+
 	// 2. strict-filter mode runs the FILTER list before any splitting.
 	if opts.StrictFilter && len(opts.ApplyFilters) > 0 {
 		variants = applyFilterList(variants, opts.ApplyFilters)
@@ -314,12 +429,72 @@ func normRun(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormO
 		variants = applyFilterList(variants, opts.ApplyFilters)
 	}
 
-	// 9. sort + emit. After left-align the records may need re-sorting
+	// Re-merge -i/-e passthrough records that were excluded from
+	// normalization back into the stream before sorting.
+	if len(passthrough) > 0 {
+		variants = append(variants, passthrough...)
+	}
+
+	// 10. sort + emit. After left-align the records may need re-sorting
 	// (an indel can move upstream of its neighbours); we sort by chrom +
 	// pos preserving original order on ties to keep tests deterministic.
-	sortVariants(variants)
+	switch strings.ToLower(opts.Sort) {
+	case "", "chr_pos":
+		sortVariants(variants)
+	case "lex":
+		sortVariantsLex(variants)
+	default:
+		return 0, fmt.Errorf("bcftools norm: unknown --sort method %q (expect chr_pos|lex)", opts.Sort)
+	}
+
+	// Only stamp provenance when the caller supplied a command line; the
+	// package-level entry point is invoked from tests that don't and
+	// expect a clean header.
+	if !opts.NoVersion && opts.PGCommand != "" {
+		appendNormProvenance(hdr, opts.PGCommand)
+	}
 
 	return emit(hdr, variants, out, opts)
+}
+
+// appendNormProvenance stamps a single ##bcftools_normVersion +
+// ##bcftools_normCommand pair onto the header, matching upstream's
+// behaviour when --no-version is not supplied.
+func appendNormProvenance(hdr *vcf.Header, cmdline string) {
+	if hdr == nil {
+		return
+	}
+	hdr.MetaInfo = append(hdr.MetaInfo,
+		`##bcftools_normVersion=bio_ai_experiment`,
+	)
+	if cmdline == "" {
+		cmdline = "norm"
+	}
+	hdr.MetaInfo = append(hdr.MetaInfo,
+		`##bcftools_normCommand=`+cmdline,
+	)
+}
+
+// sortVariantsLex sorts the slice by lexicographic CHROM, then POS,
+// then REF, then the joined ALT list. Matches upstream's `--sort lex`
+// knob (vcfnorm.c::lex_cmp), which orders by full record-identity so
+// records that share a coordinate are sub-sorted by REF/ALT.
+func sortVariantsLex(variants []*vcf.Variant) {
+	sort.SliceStable(variants, func(i, j int) bool {
+		a, b := variants[i], variants[j]
+		if a.Chrom != b.Chrom {
+			return a.Chrom < b.Chrom
+		}
+		if a.Pos != b.Pos {
+			return a.Pos < b.Pos
+		}
+		if a.Ref != b.Ref {
+			return a.Ref < b.Ref
+		}
+		ai := strings.Join(a.Alt, ",")
+		bi := strings.Join(b.Alt, ",")
+		return ai < bi
+	})
 }
 
 // emit writes variants through whichever variantWriter matches the
@@ -753,9 +928,31 @@ func normalizeVariants(variants []*vcf.Variant, ref *fasta.RandomAccess, opts No
 		if !ok {
 			continue
 		}
-		if !opts.DoNotNormalize && needsLeftAlign(v) {
+		skip := opts.DoNotNormalize || (opts.NoRealign && opts.NoRealignMaxLen == 0)
+		if !skip && opts.NoRealign && opts.NoRealignMaxLen > 0 {
+			// Upstream: "-N1000" gates realignment on indel length.
+			// Compare against the max(REF, max(ALT)) length so the
+			// threshold matches the bcftools.c definition of "event
+			// length".
+			maxLen := len(v.Ref)
+			for _, a := range v.Alt {
+				if len(a) > maxLen {
+					maxLen = len(a)
+				}
+			}
+			if maxLen > opts.NoRealignMaxLen {
+				skip = true
+			}
+		}
+		if !skip && needsLeftAlign(v) {
 			if err := leftAlignInPlace(v, ref); err != nil {
-				return nil, err
+				if opts.Force {
+					if stderr != nil {
+						fmt.Fprintf(stderr, "bcftools norm: left-align %s:%d failed (--force, kept unchanged): %v\n", v.Chrom, v.Pos, err)
+					}
+				} else {
+					return nil, err
+				}
 			}
 		}
 		out = append(out, v)
@@ -795,7 +992,9 @@ func checkRef(v *vcf.Variant, ref *fasta.RandomAccess, mode CheckRefMode, stderr
 				fmt.Fprintf(stderr, "bcftools norm: REF lookup %s:%d failed: %v (kept)\n", v.Chrom, v.Pos, err)
 			}
 			return true, nil
-		case CheckRefSkip:
+		case CheckRefSkip, CheckRefExclude:
+			return false, nil
+		case CheckRefSet:
 			return false, nil
 		}
 	}
@@ -810,8 +1009,14 @@ func checkRef(v *vcf.Variant, ref *fasta.RandomAccess, mode CheckRefMode, stderr
 			fmt.Fprintf(stderr, "bcftools norm: REF mismatch at %s:%d (record %q vs reference %q)\n", v.Chrom, v.Pos, v.Ref, refSeq)
 		}
 		return true, nil
-	case CheckRefSkip:
+	case CheckRefSkip, CheckRefExclude:
 		return false, nil
+	case CheckRefSet:
+		// Rewrite REF in place to match the FASTA. ALTs are left alone
+		// (upstream's `s` only fixes the REF column; left-align further
+		// down will normalise the resulting record).
+		v.Ref = strings.ToUpper(string(refSeq))
+		return true, nil
 	}
 	return false, nil
 }

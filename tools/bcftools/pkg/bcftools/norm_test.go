@@ -369,7 +369,8 @@ func TestParseCheckRefMode(t *testing.T) {
 		{"e", CheckRefError, false},
 		{"w", CheckRefWarn, false},
 		{"s", CheckRefSkip, false},
-		{"x", 0, true},
+		{"x", CheckRefExclude, false},
+		{"q", 0, true},
 	}
 	for _, c := range cases {
 		got, err := ParseCheckRefMode(c.in)

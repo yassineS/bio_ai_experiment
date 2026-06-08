@@ -397,9 +397,18 @@ func TestLiveHead(t *testing.T) {
 func TestLiveNorm(t *testing.T) {
 	live, ours := requireLive(t)
 	fx := fixturePath(t, "basic.vcf")
+	bx := fixturePath(t, "biallelic.vcf")
+	dx := fixturePath(t, "dup.vcf")
 	for _, args := range [][]string{
 		{"norm", "-m-", fx},
 		{"norm", "-m+", fx},
+		// Newly-ported norm flag surface — keep this matrix as the
+		// regression net for the upstream-flag audit.
+		{"norm", "-D", dx},
+		{"norm", "-d", "both", "-i", "AC=1", bx},
+		{"norm", "-d", "none", "-N", bx},
+		{"norm", "-d", "none", "-N5", bx},
+		{"norm", "-d", "none", "-S", "lex", bx},
 	} {
 		t.Run(strings.Join(args[1:len(args)-1], "_"), func(t *testing.T) {
 			assertEqualStdout(t, live, ours, args...)

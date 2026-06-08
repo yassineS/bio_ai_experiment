@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
@@ -632,30 +633,30 @@ func runQuery(args []string) int {
 	fs.SetOutput(io.Discard)
 
 	var (
-		format          string
-		printHeader     bool
-		listSamples     bool
-		samples         string
-		samplesFile     string
-		regions         string
-		regionsFile     string
-		regionsOverlap  int
-		targets         string
-		targetsFile     string
-		targetsOverlap  int
-		includeExpr     string
-		excludeExpr     string
-		applyFilters    string
-		printFiltered   string
-		disableNewline  bool
-		allowUndefTags  bool
-		forceSamples    bool
-		vcfList         string
-		verbosity       int
-		outputPath      string
-		threads         int
-		showHelp        bool
-		showVer         bool
+		format         string
+		printHeader    bool
+		listSamples    bool
+		samples        string
+		samplesFile    string
+		regions        string
+		regionsFile    string
+		regionsOverlap int
+		targets        string
+		targetsFile    string
+		targetsOverlap int
+		includeExpr    string
+		excludeExpr    string
+		applyFilters   string
+		printFiltered  string
+		disableNewline bool
+		allowUndefTags bool
+		forceSamples   bool
+		vcfList        string
+		verbosity      int
+		outputPath     string
+		threads        int
+		showHelp       bool
+		showVer        bool
 	)
 	cliflag.StringVar(fs, &format, "f", "format", "", "Format string")
 	cliflag.BoolVar(fs, &printHeader, "H", "print-header", false, "Print header row")
@@ -878,29 +879,46 @@ Usage:
   bcftools norm [options] <in.vcf[.gz]|in.bcf>
 
 Options:
-  -f, --fasta-ref FASTA          Reference FASTA for left-alignment / REF check.
-      --check-ref {e|w|s}        Action on REF/FASTA mismatch: e=error (default), w=warn, s=skip.
-  -m, --multiallelics MODE       Split (-) or join (+) multiallelics. MODE = {-snps|-indels|-both|-any|+snps|+indels|+both|+any}.
+  -a, --atomize                  Decompose complex variants (e.g. MNVs become consecutive SNVs).
+      --atom-overlaps '*'|.      Star allele (default) or missing for overlapping ALTs.
+  -c, --check-ref {e|w|x|s}      REF mismatch policy: e=error (default), w=warn, x=exclude, s=set.
+  -D, --remove-duplicates        Remove duplicate lines of the same type.
   -d, --rm-dup MODE              Drop duplicates: snps|indels|both|all|none|exact.
-  -a, --atomize                  Decompose complex variants into single-base events.
-  -N, --do-not-normalize         Skip left-alignment (useful with -m alone).
-  -s, --strict-filter            Apply -f filter list BEFORE splitting (default: after).
+  -e, --exclude EXPR             Skip records matching the filter expression.
+  -f, --fasta-ref FASTA          Reference FASTA for left-alignment / REF check.
+      --force                    Continue past malformed records (experimental).
+  -g, --gff-annot FILE           HGVS 3'-rule right-alignment (deferred — see roadmap).
+  -i, --include EXPR             Keep only records matching the filter expression.
+      --keep-sum TAG[,TAG...]    Keep INFO/<TAG> vector sum constant when splitting.
+  -m, --multiallelics MODE       Split (-) or join (+) multiallelics. MODE = {-snps|-indels|-both|-any|+snps|+indels|+both|+any}.
+      --multi-overlaps 0|.       Reference (0) or missing (.) fill when splitting [0].
+      --no-version               Omit the bcftools provenance lines from the header.
+  -N, --no-realign [NUM]         Skip left-alignment (or only when event > NUM bp).
+      --do-not-normalize         Alias for --no-realign (legacy).
+      --old-rec-tag STR          Annotate modified records with INFO/<STR>=<orig>.
+  -o, --output PATH              Output file (default stdout).
+  -O, --output-type {v|z|u|b}    Output format (b/u requires BCF writer).
   -r, --regions chr[:beg-end]    Region(s) (post-filter on streaming input).
   -R, --regions-file PATH        BED-like regions file.
+      --regions-overlap 0|1|2    Region inclusion rule [1].
+  -s, --strict-filter            When merging (-m+), merged site is PASS iff all are PASS.
+  -S, --sort METHOD              Sort order: chr_pos (default) | lex.
   -t, --targets chr[:beg-end]    Like -r but always a post-filter.
   -T, --targets-file PATH        BED-like targets file (post-filter).
-  -f, --apply-filters NAMES      Keep only PASS / named filters.
-  -O, --output-type {v|z|u|b}    Output format (b/u requires BCF writer).
-  -o, --output PATH              Output file (default stdout).
-  -l, --compression-level N      gzip level for -O z output.
+      --targets-overlap 0|1|2    Target inclusion rule [0].
       --threads N                Accepted; v1 is single-threaded.
+  -v, --verbosity INT            Verbosity level (accepted; no extra output yet).
+  -w, --site-win INT             Buffer (bp) for re-sorting realigned records [1000].
+  -W, --write-index[=FMT]        Automatically index the output files [off].
+  -l, --compression-level N      gzip level for -O z output.
   -h, --help                     Show this help.
       --version                  Show version.
 
-Note:
+Notes:
   -f is overloaded by upstream bcftools for both "fasta-ref" and "apply-filters".
   We follow the same convention: when --fasta-ref is also set we accept --apply-filters
   via the long form for clarity. The short -f always means --fasta-ref to match upstream.
+  --gff-annot is rejected verbatim; see docs/PARITY_ROADMAP.md.
 `
 
 func runNorm(args []string) int {
@@ -912,41 +930,86 @@ func runNorm(args []string) int {
 		checkRef       string
 		multiallelics  string
 		rmDup          string
+		removeDups     bool
 		atomize        bool
+		atomOverlaps   string
+		multiOverlaps  string
 		doNotNormalize bool
+		noRealign      string
 		strictFilter   bool
+		force          bool
+		gffAnnot       string
+		includeExpr    string
+		excludeExpr    string
+		keepSum        string
+		oldRecTag      string
 		regions        string
 		regionsFile    string
+		regionsOverlap int
 		targets        string
 		targetsFile    string
+		targetsOverlap int
+		sortMethod     string
+		siteWin        int
 		applyFilters   string
 		outputType     string
 		outputPath     string
 		compressLevel  int
 		threads        int
+		writeIndex     string
+		verbosity      int
 		showHelp       bool
 		showVersion    bool
 	)
 	cliflag.StringVar(fs, &fastaRef, "f", "fasta-ref", "", "Reference FASTA")
-	fs.StringVar(&checkRef, "check-ref", "e", "REF mismatch policy: e|w|s")
+	cliflag.StringVar(fs, &checkRef, "c", "check-ref", "e", "REF mismatch policy: e|w|x|s")
 	cliflag.StringVar(fs, &multiallelics, "m", "multiallelics", "", "Split / join multiallelics")
+	cliflag.BoolVar(fs, &removeDups, "D", "remove-duplicates", false, "Remove duplicate lines of the same type")
 	cliflag.StringVar(fs, &rmDup, "d", "rm-dup", "none", "Drop duplicate records")
 	cliflag.BoolVar(fs, &atomize, "a", "atomize", false, "Atomize complex variants")
-	cliflag.BoolVar(fs, &doNotNormalize, "N", "do-not-normalize", false, "Skip left-alignment")
+	fs.StringVar(&atomOverlaps, "atom-overlaps", "*", "Symbol for overlapping atomized ALTs: '*' or '.'")
+	fs.StringVar(&multiOverlaps, "multi-overlaps", "0", "Fill for missing-when-splitting: 0 (REF) or '.'")
+	// --do-not-normalize is the legacy alias kept for callers; -N is the
+	// upstream --no-realign with optional NUM.
+	fs.BoolVar(&doNotNormalize, "do-not-normalize", false, "Alias for --no-realign")
+	cliflag.StringVar(fs, &noRealign, "N", "no-realign", "", "Skip left-alignment (or only when event > NUM bp)")
 	cliflag.BoolVar(fs, &strictFilter, "s", "strict-filter", false, "Apply -f filters before split")
+	fs.BoolVar(&force, "force", false, "Continue past malformed records")
+	cliflag.StringVar(fs, &gffAnnot, "g", "gff-annot", "", "HGVS 3'-rule right-alignment (deferred)")
+	cliflag.StringVar(fs, &includeExpr, "i", "include", "", "Keep records matching expression")
+	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Drop records matching expression")
+	fs.StringVar(&keepSum, "keep-sum", "", "Keep INFO/<TAG> vector sum constant when splitting")
+	fs.StringVar(&oldRecTag, "old-rec-tag", "", "Annotate modified records with INFO/<STR>=<orig>")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	fs.IntVar(&regionsOverlap, "regions-overlap", 1, "Region inclusion rule (0|1|2)")
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
+	fs.IntVar(&targetsOverlap, "targets-overlap", 0, "Target inclusion rule (0|1|2)")
+	cliflag.StringVar(fs, &sortMethod, "S", "sort", "chr_pos", "Sort method: chr_pos|lex")
+	cliflag.IntVar(fs, &siteWin, "w", "site-win", 1000, "Buffer (bp) for re-sorting realigned records")
 	fs.StringVar(&applyFilters, "apply-filters", "", "Filter list (PASS,...)")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.StringVar(fs, &writeIndex, "W", "write-index", "", "Automatically index output (csi|tbi)")
+	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity level")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
 	registerNoVersionIfAbsent(fs)
+
+	// -W/--write-index accepts a bare form; expand to the upstream default.
+	args = preprocessOptionalArg(args, "-W", "csi")
+	args = preprocessOptionalArg(args, "--write-index", "csi")
+	// -N/--no-realign similarly accepts an optional NUM. Bare (or
+	// followed by another flag) means "skip realignment for all"; the
+	// attached form `-N1000` reaches us as `-N 1000` after
+	// normalizeShortFlags so we expand only when the next token is a
+	// flag or absent.
+	args = preprocessFlagOrBare(args, "-N", "0")
+	args = preprocessFlagOrBare(args, "--no-realign", "0")
 
 	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -970,6 +1033,13 @@ func runNorm(args []string) int {
 	}
 	input := rest[0]
 
+	if gffAnnot != "" {
+		// Rejection-parity: upstream's -g/--gff-annot drives HGVS 3'-rule
+		// right-alignment via a GFF3 transcript map. Porting is queued.
+		fmt.Fprintln(os.Stderr, "bcftools norm: --gff-annot is to be implemented, please open an issue on github")
+		return 1
+	}
+
 	checkRefMode, err := bcftools.ParseCheckRefMode(checkRef)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -985,23 +1055,97 @@ func runNorm(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	if removeDups {
+		// Upstream -D ≡ -d exact (drop byte-identical duplicates).
+		dupMode = bcftools.RmDupExact
+	}
 	format, err := bcftools.ParseOutputFormat(outputType)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	// --atom-overlaps validation
+	atomChar := byte('*')
+	switch atomOverlaps {
+	case "", "*":
+		atomChar = '*'
+	case ".":
+		atomChar = '.'
+	default:
+		fmt.Fprintf(os.Stderr, "bcftools norm: --atom-overlaps must be '*' or '.', got %q\n", atomOverlaps)
+		return 2
+	}
+	multiChar := byte('0')
+	switch multiOverlaps {
+	case "", "0":
+		multiChar = '0'
+	case ".":
+		multiChar = '.'
+	default:
+		fmt.Fprintf(os.Stderr, "bcftools norm: --multi-overlaps must be '0' or '.', got %q\n", multiOverlaps)
+		return 2
+	}
+	if regionsOverlap < 0 || regionsOverlap > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools norm: --regions-overlap must be 0, 1 or 2 (got %d)\n", regionsOverlap)
+		return 2
+	}
+	if targetsOverlap < 0 || targetsOverlap > 2 {
+		fmt.Fprintf(os.Stderr, "bcftools norm: --targets-overlap must be 0, 1 or 2 (got %d)\n", targetsOverlap)
+		return 2
+	}
+	if writeIndex != "" && writeIndex != "csi" && writeIndex != "tbi" {
+		fmt.Fprintf(os.Stderr, "bcftools norm: --write-index must be csi or tbi (got %q)\n", writeIndex)
+		return 2
+	}
+
+	// Resolve -N / --no-realign.
+	var (
+		noRealignBool bool
+		noRealignMax  int
+	)
+	if noRealign != "" {
+		noRealignBool = true
+		// "0" (sentinel for "bare -N") means skip for all events.
+		if n, err := strconv.Atoi(noRealign); err == nil {
+			noRealignMax = n
+		} else {
+			fmt.Fprintf(os.Stderr, "bcftools norm: --no-realign value %q must be an integer\n", noRealign)
+			return 2
+		}
+	}
+
+	noVersionFlag := fs.Lookup("no-version")
+	noVersion := noVersionFlag != nil && noVersionFlag.Value.String() == "true"
 
 	opts := bcftools.NormOptions{
-		FastaRef:       fastaRef,
-		CheckRef:       checkRefMode,
-		Multiallelics:  mMode,
-		RmDup:          dupMode,
-		Atomize:        atomize,
-		DoNotNormalize: doNotNormalize,
-		StrictFilter:   strictFilter,
-		ApplyFilters:   bcftools.SplitCommaList(applyFilters),
-		OutputFormat:   format,
-		CompressLevel:  compressLevel,
+		FastaRef:        fastaRef,
+		CheckRef:        checkRefMode,
+		Multiallelics:   mMode,
+		RmDup:           dupMode,
+		Atomize:         atomize,
+		AtomOverlaps:    atomChar,
+		MultiOverlaps:   multiChar,
+		DoNotNormalize:  doNotNormalize,
+		NoRealign:       noRealignBool,
+		NoRealignMaxLen: noRealignMax,
+		StrictFilter:    strictFilter,
+		Force:           force,
+		GffAnnot:        gffAnnot,
+		IncludeExpr:     includeExpr,
+		ExcludeExpr:     excludeExpr,
+		KeepSum:         bcftools.SplitCommaList(keepSum),
+		OldRecTag:       oldRecTag,
+		RegionsOverlap:  regionsOverlap,
+		TargetsOverlap:  targetsOverlap,
+		Sort:            sortMethod,
+		SiteWin:         siteWin,
+		NoVersion:       noVersion,
+		PGCommand:       strings.Join(os.Args, " "),
+		WriteIndex:      writeIndex,
+		Verbosity:       verbosity,
+		ApplyFilters:    bcftools.SplitCommaList(applyFilters),
+		OutputFormat:    format,
+		CompressLevel:   compressLevel,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -1082,6 +1226,35 @@ I/O:
   -?, --help                     Show this help.
       --version                  Show version.
 `
+
+// preprocessFlagOrBare expands `flagName` to `flagName=defaultVal`
+// whenever it is bare (last arg) OR immediately followed by another
+// flag (`-X` or `--Y`) OR a non-integer non-flag token. Only the
+// attached form (`-N1000`, normalized to `-N 1000` upstream of this
+// pass) leaves an integer in the next slot — that is the optional NUM.
+// Mirrors upstream's "-N1000, no space" rule.
+func preprocessFlagOrBare(args []string, flagName, defaultVal string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == flagName {
+			if i+1 >= len(args) {
+				out = append(out, flagName+"="+defaultVal)
+				continue
+			}
+			next := args[i+1]
+			isFlag := len(next) > 0 && next[0] == '-' && next != "-"
+			_, atoiErr := strconv.Atoi(next)
+			isInt := atoiErr == nil
+			if isFlag || !isInt {
+				out = append(out, flagName+"="+defaultVal)
+				continue
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
 
 // preprocessOptionalArg expands `--flag` (or `-W`) without a value into
 // `--flag=defaultVal` so the Go flag package doesn't treat the next

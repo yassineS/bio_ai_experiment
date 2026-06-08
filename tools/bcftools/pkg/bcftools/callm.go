@@ -72,13 +72,13 @@ type mcallTin struct {
 	//  per-sample ploidy (e.g. --ploidy GRCh37 on chrY)
 	//  smplPloidy[i] is the authoritative value for
 	//  sample i.
-	nsmpl   int         // number of samples
-	pdg     [][]float64 // per-sample probability vector, length ngts
-	qsum    []float64   // normalized allele frequencies (pooled-group view)
-	groups  []mcallGroup
-	unseen  int     // index of the <*> allele, or -1
-	thetaLn float64 // log(theta * Watterson factor)
-	smplPloidy []int // per-sample ploidy (0/1/2). When nil, every
+	nsmpl      int         // number of samples
+	pdg        [][]float64 // per-sample probability vector, length ngts
+	qsum       []float64   // normalized allele frequencies (pooled-group view)
+	groups     []mcallGroup
+	unseen     int     // index of the <*> allele, or -1
+	thetaLn    float64 // log(theta * Watterson factor)
+	smplPloidy []int   // per-sample ploidy (0/1/2). When nil, every
 	// sample uses the global `ploidy` field.
 }
 

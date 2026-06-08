@@ -2690,7 +2690,8 @@ to pass.
   `view --regions chr1`, `stats` (bare, `-s -`, `-f PASS`), `query` (`-l`,
   `%CHROM\t%POS`, `%INFO/AC`, `[%SAMPLE=%GT]`, `-i AC>1`, `-i TYPE="snp"`),
   `annotate` (`-x INFO/AF`, `-x FORMAT/GQ`, `-I +%CHROM_%POS`), `head` (bare,
-  `-n 5`), `norm` (`-m-`, `-m+`), `filter` (`-i QUAL>30`, `-e AC<2`,
+  `-n 5`), `norm` (`-m-`, `-m+`, `-D`, `-d both -i AC=1`, `-d none -N`,
+  `-d none -N5`, `-d none -S lex`), `filter` (`-i QUAL>30`, `-e AC<2`,
   `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare),
   `gtcheck` (cross-check mode — full multi-section INFO/DCv2 report).
 
@@ -2873,7 +2874,8 @@ to pass.
   `view --regions chr1`, `stats` (bare, `-s -`, `-f PASS`), `query` (`-l`,
   `%CHROM\t%POS`, `%INFO/AC`, `[%SAMPLE=%GT]`, `-i AC>1`, `-i TYPE="snp"`),
   `annotate` (`-x INFO/AF`, `-x FORMAT/GQ`, `-I +%CHROM_%POS`), `head` (bare,
-  `-n 5`), `norm` (`-m-`, `-m+`), `filter` (`-i QUAL>30`, `-e AC<2`,
+  `-n 5`), `norm` (`-m-`, `-m+`, `-D`, `-d both -i AC=1`, `-d none -N`,
+  `-d none -N5`, `-d none -S lex`), `filter` (`-i QUAL>30`, `-e AC<2`,
   `-s LOWQ -e QUAL<10`), `sort`, `concat`, `reheader -s`, `convert` (bare),
   `gtcheck` (cross-check mode — full multi-section INFO/DCv2 report).
 
