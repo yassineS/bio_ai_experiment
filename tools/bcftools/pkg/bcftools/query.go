@@ -46,8 +46,14 @@ type QueryOptions struct {
 	// Anything else is emitted verbatim.
 	Format string
 	// PrintHeader emits a "# " prefixed header row derived from the format
-	// string (the `-H` / `--print-header` flag).
+	// string (the `-H` / `--print-header` flag). Backwards-compatible boolean
+	// form; new callers should set PrintHeaderMode instead.
 	PrintHeader bool
+	// PrintHeaderMode mirrors upstream's `-H`/`-HH` counting convention:
+	// 1 → annotate columns with [N] indices (single -H), 2 → strip the
+	// indices (double -HH). 0 disables the header row entirely. When
+	// non-zero this field takes precedence over PrintHeader.
+	PrintHeaderMode int
 	// ListSamples short-circuits formatting and emits one sample name per
 	// line (the `-l` / `--list-samples` flag).
 	ListSamples bool
@@ -221,8 +227,8 @@ func queryVCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 	}
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
-	if opts.PrintHeader {
-		if err := writeHeaderRow(bw, tokens, opts.Samples, hdr.Samples); err != nil {
+	if mode := queryHeaderMode(opts); mode > 0 {
+		if err := writeHeaderRowMode(bw, tokens, opts.Samples, hdr.Samples, mode); err != nil {
 			return 0, err
 		}
 	}
@@ -267,8 +273,8 @@ func queryBCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 	}
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
-	if opts.PrintHeader {
-		if err := writeHeaderRow(bw, tokens, opts.Samples, hdr.VCF.Samples); err != nil {
+	if mode := queryHeaderMode(opts); mode > 0 {
+		if err := writeHeaderRowMode(bw, tokens, opts.Samples, hdr.VCF.Samples, mode); err != nil {
 			return 0, err
 		}
 	}
@@ -314,8 +320,8 @@ func queryBCFRegions(path string, out io.Writer, opts QueryOptions) (int, error)
 	}
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
-	if opts.PrintHeader {
-		if err := writeHeaderRow(bw, tokens, opts.Samples, hdr.VCF.Samples); err != nil {
+	if mode := queryHeaderMode(opts); mode > 0 {
+		if err := writeHeaderRowMode(bw, tokens, opts.Samples, hdr.VCF.Samples, mode); err != nil {
 			return 0, err
 		}
 	}
@@ -364,8 +370,8 @@ func queryVCFRegions(path string, out io.Writer, opts QueryOptions, stderr io.Wr
 	}
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
-	if opts.PrintHeader {
-		if err := writeHeaderRow(bw, tokens, opts.Samples, hdr.Samples); err != nil {
+	if mode := queryHeaderMode(opts); mode > 0 {
+		if err := writeHeaderRowMode(bw, tokens, opts.Samples, hdr.Samples, mode); err != nil {
 			return 0, err
 		}
 	}
@@ -642,11 +648,31 @@ func readPlaceholder(src string) (string, int, error) {
 	return src[:i], i, nil
 }
 
+// queryHeaderMode returns the effective -H mode based on the options.
+// 0 disables the header row entirely; 1 emits with [N] indices; 2 omits
+// the indices.
+func queryHeaderMode(opts QueryOptions) int {
+	if opts.PrintHeaderMode > 0 {
+		return opts.PrintHeaderMode
+	}
+	if opts.PrintHeader {
+		return 1
+	}
+	return 0
+}
+
 // writeHeaderRow emits the `-H` derived header line. The format string is
 // scanned and each placeholder contributes its name (with the leading `#` only
 // on the first column). Sample-repeated groups expand to one column per sample
 // per placeholder.
 func writeHeaderRow(w io.Writer, tokens []FormatToken, requested, headerSamples []string) error {
+	return writeHeaderRowMode(w, tokens, requested, headerSamples, 1)
+}
+
+// writeHeaderRowMode is the mode-aware variant used by the -HH path.
+// mode = 1 (single -H): include "[N]" column-index brackets.
+// mode = 2 (double -HH): omit the brackets, emit the bare column name.
+func writeHeaderRowMode(w io.Writer, tokens []FormatToken, requested, headerSamples []string, mode int) error {
 	samples := headerSamples
 	if len(requested) > 0 {
 		samples = filterSamplesByName(requested, headerSamples)
@@ -658,7 +684,7 @@ func writeHeaderRow(w io.Writer, tokens []FormatToken, requested, headerSamples 
 		case TokenLiteral:
 			sb.WriteString(t.Text)
 		case TokenPlaceholder:
-			writeHeaderColumn(&sb, t.Text, &col)
+			writeHeaderColumnMode(&sb, t.Text, &col, mode)
 		case TokenSample:
 			for sIdx, name := range samples {
 				_ = sIdx
@@ -667,7 +693,7 @@ func writeHeaderRow(w io.Writer, tokens []FormatToken, requested, headerSamples 
 					case TokenLiteral:
 						sb.WriteString(inner.Text)
 					case TokenPlaceholder:
-						writeHeaderColumn(&sb, inner.Text+":"+name, &col)
+						writeHeaderColumnMode(&sb, inner.Text+":"+name, &col, mode)
 					}
 				}
 			}
@@ -684,10 +710,24 @@ func writeHeaderRow(w io.Writer, tokens []FormatToken, requested, headerSamples 
 // writeHeaderColumn appends one column header to sb, prefixing the first
 // column with the conventional "# " marker.
 func writeHeaderColumn(sb *strings.Builder, name string, col *int) {
-	if *col == 1 {
-		sb.WriteString("# [1]" + name)
+	writeHeaderColumnMode(sb, name, col, 1)
+}
+
+// writeHeaderColumnMode appends one column. mode = 1 emits [N]name; mode = 2
+// emits bare name.
+func writeHeaderColumnMode(sb *strings.Builder, name string, col *int, mode int) {
+	if mode == 2 {
+		if *col == 1 {
+			sb.WriteString("#" + name)
+		} else {
+			sb.WriteString(name)
+		}
 	} else {
-		sb.WriteString("[" + strconv.Itoa(*col) + "]" + name)
+		if *col == 1 {
+			sb.WriteString("#[1]" + name)
+		} else {
+			sb.WriteString("[" + strconv.Itoa(*col) + "]" + name)
+		}
 	}
 	*col++
 }

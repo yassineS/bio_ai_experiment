@@ -824,7 +824,7 @@ func runQuery(args []string) int {
 
 	var (
 		format         string
-		printHeader    bool
+		printHeader    int
 		listSamples    bool
 		samples        string
 		samplesFile    string
@@ -849,7 +849,11 @@ func runQuery(args []string) int {
 		showVer        bool
 	)
 	cliflag.StringVar(fs, &format, "f", "format", "", "Format string")
-	cliflag.BoolVar(fs, &printHeader, "H", "print-header", false, "Print header row")
+	// -H counts repetitions: -H = 1 (include column [N] indices), -HH = 2
+	// (omit indices). collapseRepeatedShortFlag normalises the doubled
+	// form to --print-header=N. Long form `--print-header` is treated as
+	// the single-H form by default.
+	cliflag.IntVar(fs, &printHeader, "H", "print-header", 0, "Print header row (-H=1, -HH=2)")
 	cliflag.BoolVar(fs, &listSamples, "l", "list-samples", false, "List samples and exit")
 	cliflag.StringVar(fs, &samples, "s", "samples", "", "Sample list")
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
@@ -861,8 +865,12 @@ func runQuery(args []string) int {
 	fs.IntVar(&targetsOverlap, "targets-overlap", 1, "")
 	cliflag.StringVar(fs, &includeExpr, "i", "include", "", "Include expression")
 	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
-	cliflag.StringVar(fs, &applyFilters, "F", "apply-filters", "", "FILTER name list to keep")
-	fs.StringVar(&printFiltered, "print-filtered", "", "Print STR for filter-failing records")
+	// Upstream `bcftools query` does NOT have an --apply-filters knob; we
+	// keep ours as a long-only convenience so existing scripts continue
+	// to work, but the short letter -F is reserved for upstream's
+	// --print-filtered.
+	fs.StringVar(&applyFilters, "apply-filters", "", "FILTER name list to keep (our extension)")
+	cliflag.StringVar(fs, &printFiltered, "F", "print-filtered", "", "Print STR for filter-failing records")
 	cliflag.BoolVar(fs, &disableNewline, "N", "disable-automatic-newline", false, "Suppress implicit newline")
 	cliflag.BoolVar(fs, &allowUndefTags, "u", "allow-undef-tags", false, "Allow undefined tag references")
 	fs.BoolVar(&forceSamples, "force-samples", false, "Continue past missing sample names")
@@ -873,6 +881,13 @@ func runQuery(args []string) int {
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+
+	// `-H`/`-HH` count: collapse repeated short flags first so the
+	// printHeader IntVar gets the right value. `-H` alone becomes
+	// `--print-header=1`, `-HH` becomes `--print-header=2`.
+	args = collapseRepeatedShortFlag(args, "-H", "print-header")
+	// Bare `--print-header` (no value) defaults to 1.
+	args = preprocessFlagOrBare(args, "--print-header", "1")
 
 	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -900,7 +915,8 @@ func runQuery(args []string) int {
 
 	opts := bcftools.QueryOptions{
 		Format:             format,
-		PrintHeader:        printHeader,
+		PrintHeader:        printHeader > 0,
+		PrintHeaderMode:    printHeader,
 		ListSamples:        listSamples,
 		IncludeExpr:        includeExpr,
 		ExcludeExpr:        excludeExpr,
