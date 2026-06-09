@@ -2523,12 +2523,16 @@ Option-tail gaps on `csq` (slices 1-3 done; slice 4 remains):
 - `-n/--ncsq INT` — parsed into the per-haplotype `FORMAT/BCSQ` cap
   (`ncsq2`); the cap becomes load-bearing once the `FORMAT/BCSQ`
   bitmask emission lands in slice 4.
-- `-B/--trim-protein-seq INT` — accepted; v1 does not truncate
-  predictions.
-- `-b/--brief-predictions` — hard-rejected with a roadmap pointer
-  (upstream deprecates this flag itself).
-- `-C/--genetic-code INT|l` — only `0` (standard) is accepted in
-  v1; other tables are hard-rejected with a roadmap pointer.
+- `-B/--trim-protein-seq INT` — **implemented**: amino-acid
+  predictions in INFO/BCSQ are abbreviated to the first `INT`
+  residues plus `..<index>` (ports `kprint_aa_prediction`).
+- `-b/--brief-predictions` — **implemented**: upstream alias for
+  `-B 1`. Validated byte-for-byte against the upstream binary
+  (`tools/bcftools/testdata/parity/csq/`).
+- `-C/--genetic-code INT|l` — **implemented** for the transcribed
+  NCBI tables (`0, 1, 2, 3, 5`; `l` lists them). Codon translation
+  uses the selected table; validated against the upstream binary.
+  Additional tables can be added by appending to `gencodeTables`.
 - `-l/--local-csq` — accepted; v1 always operates per-record.
 - `--unify-chr-names LIST` — only `0` (no rewriting) is accepted in
   v1; non-zero specs are hard-rejected.

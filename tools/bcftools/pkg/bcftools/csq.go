@@ -65,11 +65,14 @@ type CSQOptions struct {
 	// v1 reports every matching transcript without a cap; the field is
 	// retained for parity.
 	NCSQ int
-	// TrimProteinSeq is upstream's -B/--trim-protein-seq. v1 accepts
-	// and stores it; no trimming is performed.
+	// TrimProteinSeq is upstream's -B/--trim-protein-seq (and the alias
+	// -b/--brief-predictions, which sets it to 1). When >0 each
+	// amino-acid prediction in INFO/BCSQ is abbreviated to its first N
+	// residues followed by "..<index>". Mirrors args->brief_predictions.
 	TrimProteinSeq int
-	// GeneticCode is upstream's -C/--genetic-code. v1 supports only
-	// the standard table (0). Non-zero values are rejected.
+	// GeneticCode is upstream's -C/--genetic-code: the NCBI translation
+	// table id used for codon->amino-acid translation. 0 is the standard
+	// simplified table; see gencodeTables for the supported ids.
 	GeneticCode int
 	// Verbosity is upstream's -v/--verbose / --verbosity.
 	Verbosity int

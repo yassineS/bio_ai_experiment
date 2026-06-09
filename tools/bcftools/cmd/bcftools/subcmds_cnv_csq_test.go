@@ -21,9 +21,6 @@ func TestCheckCSQDeferred(t *testing.T) {
 		in   checkCSQDeferredInputs
 		want string
 	}{
-		// Still genuinely deferred:
-		{"brief", checkCSQDeferredInputs{brief: true}, "-b/--brief-predictions"},
-		{"genetic-code 1", checkCSQDeferredInputs{geneticCode: "1"}, "-C/--genetic-code 1 (only standard table 0 in v1)"},
 		// Unknown -O type must still be rejected with the format hint.
 		{"-O t", checkCSQDeferredInputs{outputType: "t"}, "-O t (expect v|z|b|u)"},
 		// Now-implemented flags must NOT be rejected:
@@ -93,9 +90,23 @@ func TestCSQRunInputs(t *testing.T) {
 	if rc := runCSQ([]string{"-f", "ref.fa", "some.vcf"}); rc != 2 {
 		t.Errorf("missing -g rc=%d want 2", rc)
 	}
-	// Hard-rejected deferred flags must error out before any I/O.
-	// -b/--brief-predictions is still in the deferred set; rc=2.
-	if rc := runCSQ([]string{"-b", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 2 {
-		t.Errorf("-b must be rejected, got rc=%d", rc)
+	// An unknown genetic-code table is rejected up front (rc=2) before
+	// any file I/O.
+	if rc := runCSQ([]string{"-C", "99", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 2 {
+		t.Errorf("-C 99 must be rejected, got rc=%d", rc)
+	}
+	// A non-numeric genetic code is rejected.
+	if rc := runCSQ([]string{"-C", "xyz", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 2 {
+		t.Errorf("-C xyz must be rejected, got rc=%d", rc)
+	}
+	// -C l lists the tables and exits 0.
+	if rc := runCSQ([]string{"-C", "l"}); rc != 0 {
+		t.Errorf("-C l should list tables and exit 0, got rc=%d", rc)
+	}
+	// -b/--brief-predictions is now implemented: it passes the deferred
+	// gate and fails later only because the input files are absent (rc=1),
+	// not rc=2.
+	if rc := runCSQ([]string{"-b", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 1 {
+		t.Errorf("-b should be accepted (file-open failure rc=1), got rc=%d", rc)
 	}
 }
