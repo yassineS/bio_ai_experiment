@@ -3,7 +3,11 @@
 This document tracks the status of bioinformatics tools being ported from
 their original implementations to Go.
 
-**Last Updated**: 2026-05-15
+**Last Updated**: 2026-06-09 (post PRs #220–#225)
+
+> For the skimmable per-tool completion table (implemented / remaining /
+> % / effort) and the path-to-done, see the top-level
+> [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
 
 > **Project goal: 1:1 feature parity** with the upstream tool for every port
 > in this repo. Past revisions of this file labelled tools "Complete" when
@@ -26,10 +30,22 @@ the way.
 
 ### Progress Summary
 
-- **Tools with a working subset**: 25 (8 original + 22 bedtools subcommands +
-  `bgzip` + `tabix` + `samtools` (24 subcommands) + `bcftools` (24 subcommands),
-  the htslib core landed May 2026 with three rounds of tail-cleanup in
-  PRs #86/#87/#88)
+- **Tools with a working port** (counting each `bed*` subcommand tool
+  separately): 8 original QC/format tools + **35 bedtools subcommands** +
+  `bgzip` + `tabix` + `htsfile` + `mosdepth` + `samtools` (24 functional
+  subcommands) + `bcftools` (24 subcommands). The htslib core landed May
+  2026; CRAM read+write and `.csi` landed across PRs #162–#189.
+- **Completion (toward 1:1 upstream parity), per the top-level
+  [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md):** seqtk / sickle /
+  skewer / fastp / htsfile **done**; vcftools ~97% (146/146 flags),
+  prinseq ~95%, bgzip/tabix ~92%, mosdepth ~85%, bedtools ~90%,
+  samtools ~88%, bcftools ~70%. Biggest remaining boulders: bcftools
+  `convert`'s ~18 modes, mpileup indel calling + samtools `-g/-u` BCF
+  output, and csq slice 4.
+- **#220–#225 closures (treat as merged):** bcftools `view -x/-X`,
+  `stats -u`, `csq -b/-C` (standard table); samtools `consensus
+  --het-only`; mosdepth `-d/--d4`; vcftools 0 unsupported flags; a
+  repo-wide golden→live-parity test cleanup + a `samtools depth` flag fix.
 - **Tools tested**: 25 (package-level tests; `cmd/` entry points have no tests)
 - **Test coverage (statements, `go test -cover`)** — main tools:
   vcftools ~83%, seqtk ~86%, fastp ~77%, sickle ~82%, **bcftools 85%**,
@@ -848,20 +864,21 @@ fixtures.
 
 ## Tool Comparison Matrix
 
-| Tool | Original Lang | Go Version | Commands | Tests | Docs | Performance | Gzip |
-|------|---------------|------------|----------|-------|------|-------------|------|
-| seqtk | C | 1.0.0 | 11 | ✓ | ✓ | 1.05-1.1x | - |
-| PRINSEQ | Perl | 1.0.0 | 2 | ✓ | ✓ | 1.2-1.35x | - |
-| sickle | C | 1.1.0 | 2 | ✓ | ✓ | 0.96-1.0x | ✓ |
-| skewer | C++ | 1.0.0 | 2 | ✓ | ✓ | ~1.0x | ✓ |
-| fastp | C++ | 1.0.0 | 1 | ✓ | ✓ | ~1.1x | ✓ |
-| bedmerge | C++ (bedtools) | 1.0.0 | 1 | ✓ | ✓ | ~2.0x | ✓ |
-| bedintersect | C++ (bedtools) | 1.0.0 | 1 | ✓ | ✓ | ~1.0x | ✓ |
-| vcftools | C++/Perl | 1.0.0 | 1 | ✓ | ✓ | ~1.0x | ✓ |
-| bgzip | C (htslib) | 1.0.0 | 1 | ✓ | ✓ | n/a | (is the format) |
-| tabix | C (htslib) | 1.0.0 | 1 | ✓ | ✓ | n/a | ✓ |
-| samtools | C (htslib) | 1.0.0 | 5 | ✓ | ✓ | n/a (v1) | ✓ |
-| bcftools | C (htslib) | 1.0.0 | 1 | ✓ | ✓ | n/a (v1) | ✓ |
+| Tool | Original Lang | Subcommands | % to 1:1 | Tests | Docs | Gzip/BGZF |
+|------|---------------|------------:|---------:|-------|------|-----------|
+| seqtk | C | 24 | 100% | ✓ | ✓ | - |
+| PRINSEQ | Perl | 3 | ~95% | ✓ | ✓ | - |
+| sickle | C | 2 | 100% | ✓ | ✓ | ✓ |
+| skewer | C++ | 2 | 100% | ✓ | ✓ | ✓ |
+| fastp | C++ | 1 | ~85% | ✓ | ✓ | ✓ |
+| bedtools (bed*) | C++ | 35 | ~90% | ✓ | ✓ | ✓ |
+| vcftools | C++/Perl | 1 | ~97% | ✓ | ✓ | ✓ |
+| bgzip | C (htslib) | 1 | ~92% | ✓ | ✓ | (is the format) |
+| tabix | C (htslib) | 1 | ~92% | ✓ | ✓ | ✓ |
+| htsfile | C (htslib) | 1 | ~98% | ✓ | ✓ | ✓ |
+| mosdepth | Nim | 1 | ~85% | ✓ | ✓ | ✓ |
+| samtools | C (htslib) | 24 | ~88% | ✓ | ✓ | ✓ (+CRAM, .csi) |
+| bcftools | C (htslib) | 24 | ~70% | ✓ | ✓ | ✓ |
 
 ---
 
