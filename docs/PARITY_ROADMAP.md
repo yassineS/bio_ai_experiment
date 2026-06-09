@@ -341,6 +341,44 @@ Graph-data (PR `claude/prinseq-graph-data-land`):
   `example1.gd`. See `tools/PARITY_VALIDATION.md > prinseq parity
   validation` for the test layout.
 
+Quality-trim window/step/rule + range filters (PR
+`claude/festive-planck-n9o2lm-prinseq-trim-range`):
+
+- `--trim_qual_window <int>` / `--trim_qual_step <int>` /
+  `--trim_qual_type <min|max|mean|sum>` / `--trim_qual_rule <lt|gt|et>`
+  — the full sliding-window quality-trimming machinery
+  (`prinseq-lite.pl:3215-3287`). The window starts at the read end,
+  advances by the step each time the rule passes, shrinks to the
+  remaining bases near the far end, and aggregates the window score by
+  type before comparing it against `--trim_qual_left/right`. Implemented
+  in `trimQualityWindow` / `scanQualTrim`; defaults match upstream
+  (window=1, step=1, type=min, rule=lt). The existing per-base
+  `--trim_qual_left/right` flags now route through this code as the
+  window=1 case.
+- `--trim_to_len <int>` — hard-trim each read to at most N bases from
+  the 5' end, applied after all other trimming and before the
+  length/GC filters (`prinseq-lite.pl:3382-3385`). The `length > N`
+  guard means equal-or-shorter reads are untouched.
+- `--range_len <ranges>` / `--range_gc <ranges>` — comma-separated
+  `min-max` range filters on the trimmed length and the integer GC
+  percentage (`prinseq-lite.pl:3403, 3458`, `checkRange` at 2548).
+  GC% is truncated toward zero (`sprintf("%d", gc*100/len)`) before the
+  comparison, and the upstream AND-across-ranges semantics of
+  `checkRange` are reproduced exactly (disjoint ranges therefore reject
+  everything — mirrored deliberately).
+
+These also surfaced upstream's `zero_length` filter
+(`prinseq-lite.pl:3389-3392`): a read trimmed to length 0 is now dropped
+rather than emitted as an empty record.
+
+**Validation:** byte-for-byte against the live Perl oracle. The tests in
+`tools/prinseq/pkg/prinseq/trim_range_parity_test.go` run
+`perl reference_code/prinseq/prinseq-lite.pl` and the Go port on the same
+fixtures and compare the `-out_good` output byte-for-byte (these flags use
+only core Perl modules and produce deterministic output). Strong unit tests
+live in `tools/prinseq/pkg/prinseq/trim_range_test.go` and CLI-wiring tests
+in `tools/prinseq/cmd/prinseq/trim_range_cli_test.go`.
+
 Still missing (all niche knobs, not in scope for this PR):
 
 - The PNG report generation flow (`prinseq-graphs.pl`). Out of
@@ -348,8 +386,6 @@ Still missing (all niche knobs, not in scope for this PR):
   equivalent visualisation surface without depending on a Perl
   graphics stack.
 - A handful of niche knobs not in the original five-flag scope:
-  `--range_len`, `--range_gc`, `--trim_qual_window`,
-  `--trim_qual_step`, `--trim_qual_rule`, `--trim_to_len`,
   `--seq_case`, `--dna_rna`, `--line_width`, `--rm_header`,
   `--no_qual_header`, `--qual_noscale`, `--exact_only`, `--params`,
   `--custom_params`, `--seq_num`. None of these were on the agreed

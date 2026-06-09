@@ -257,6 +257,32 @@ func runFilter(args []string) {
 	cliflag.IntVar(fs, &trimTailLeft, "", "trim-tail-left", 0, "Trim poly-A/T from 5' end (min length)")
 	cliflag.IntVar(fs, &trimTailRight, "", "trim-tail-right", 0, "Trim poly-A/T from 3' end (min length)")
 
+	// Sliding-window quality-trim controls (prinseq-lite.pl 0.20.4).
+	// Upstream defaults: window=1, step=1, type=min, rule=lt. We register
+	// both the upstream underscore spelling and a hyphenated long form.
+	// Window/step defaults are applied after parsing, only when quality
+	// trimming is requested, mirroring upstream's lazy default-fill.
+	var trimQualWindow, trimQualStep, trimToLen int
+	var trimQualType, trimQualRule string
+	cliflag.IntVar(fs, &trimQualWindow, "", "trim_qual_window", 0, "Sliding-window size for quality trimming (default 1)")
+	fs.IntVar(&trimQualWindow, "trim-qual-window", 0, "")
+	cliflag.IntVar(fs, &trimQualStep, "", "trim_qual_step", 0, "Step size for the quality-trim window (default 1)")
+	fs.IntVar(&trimQualStep, "trim-qual-step", 0, "")
+	cliflag.StringVar(fs, &trimQualType, "", "trim_qual_type", "", "Window score type: min (default), max, mean, sum")
+	fs.StringVar(&trimQualType, "trim-qual-type", "", "")
+	cliflag.StringVar(fs, &trimQualRule, "", "trim_qual_rule", "", "Window comparison rule: lt (default), gt, et")
+	fs.StringVar(&trimQualRule, "trim-qual-rule", "", "")
+	cliflag.IntVar(fs, &trimToLen, "", "trim_to_len", 0, "Hard-trim reads to at most this length")
+	fs.IntVar(&trimToLen, "trim-to-len", 0, "")
+
+	// Range filters (prinseq-lite.pl 0.20.4): comma-separated min-max
+	// ranges for length and integer GC percentage.
+	var rangeLen, rangeGC string
+	cliflag.StringVar(fs, &rangeLen, "", "range_len", "", "Keep reads whose length is in the given ranges (e.g. 50-100,250-300)")
+	fs.StringVar(&rangeLen, "range-len", "", "")
+	cliflag.StringVar(fs, &rangeGC, "", "range_gc", "", "Keep reads whose GC%% is in the given ranges (e.g. 50-60,75-90)")
+	fs.StringVar(&rangeGC, "range-gc", "", "")
+
 	// Duplicate removal options
 	var derep, derepMin int
 	cliflag.IntVar(fs, &derep, "d", "derep", 0, "Remove duplicates: 1=exact, 4=revcomp, 5=both")
@@ -289,8 +315,10 @@ Input/Output Options:
 Filter Options:
   -l, --min-length INT      Minimum sequence length
   -L, --max-length INT      Maximum sequence length
+  --range_len RANGES        Keep lengths within ranges (e.g. 50-100,250-300)
   -g, --min-gc FLOAT        Minimum GC content (0-100)
   -G, --max-gc FLOAT        Maximum GC content (0-100)
+  --range_gc RANGES         Keep GC%% within ranges (e.g. 50-60,75-90)
   -q, --min-quality FLOAT   Minimum mean quality score
   -Q, --max-quality FLOAT   Maximum mean quality score
   -n, --max-ns INT          Maximum number of Ns (alias: -ns_max_n)
@@ -312,6 +340,11 @@ Trimming Options:
   --trim-right-p INT        Trim percentage from 3' end
   --trim-qual-left INT      Quality threshold for 5' trimming
   --trim-qual-right INT     Quality threshold for 3' trimming
+  --trim_qual_window INT    Sliding-window size for quality trim (default 1)
+  --trim_qual_step INT      Step size for the quality-trim window (default 1)
+  --trim_qual_type TYPE     Window score: min (default), max, mean, sum
+  --trim_qual_rule RULE     Window rule: lt (default), gt, et
+  --trim_to_len INT         Hard-trim reads to at most this length
   --trim-n-left INT         Trim poly-N from 5' end
   --trim-n-right INT        Trim poly-N from 3' end
   --trim-tail-left INT      Trim poly-A/T from 5' end
@@ -399,6 +432,31 @@ Examples:
 		os.Exit(1)
 	}
 
+	// Apply upstream's lazy defaults for the quality-trim window/step.
+	// prinseq-lite.pl fills trim_qual_window=1 and trim_qual_step=1 only
+	// when quality trimming is active; an explicit 0 from the user is
+	// treated the same as unset here. trim_qual_type/rule default to
+	// min/lt inside the package, so we leave empty strings alone.
+	if trimQualL > 0 || trimQualR > 0 {
+		if trimQualWindow <= 0 {
+			trimQualWindow = 1
+		}
+		if trimQualStep <= 0 {
+			trimQualStep = 1
+		}
+	}
+
+	// Validate trim_qual_rule / trim_qual_type up front, matching
+	// upstream's "invalid value for ..." errors (prinseq-lite.pl:880-894).
+	if trimQualRule != "" && trimQualRule != "lt" && trimQualRule != "gt" && trimQualRule != "et" {
+		fmt.Fprintln(os.Stderr, "Error: invalid value for --trim_qual_rule (expected lt, gt or et)")
+		os.Exit(1)
+	}
+	if trimQualType != "" && trimQualType != "min" && trimQualType != "max" && trimQualType != "mean" && trimQualType != "sum" {
+		fmt.Fprintln(os.Stderr, "Error: invalid value for --trim_qual_type (expected min, max, mean or sum)")
+		os.Exit(1)
+	}
+
 	// Set default thresholds for complexity filtering if method is specified
 	if lcMethod != "" && lcThreshold == 0 {
 		if lcMethod == "dust" {
@@ -457,6 +515,14 @@ Examples:
 		NonIUPAC:      noniupac,
 		SeqID:         seqID,
 		OutFormat:     outFormat,
+
+		TrimQualWindow: trimQualWindow,
+		TrimQualStep:   trimQualStep,
+		TrimQualType:   trimQualType,
+		TrimQualRule:   trimQualRule,
+		TrimToLen:      trimToLen,
+		RangeLen:       rangeLen,
+		RangeGC:        rangeGC,
 	}
 
 	// Open the seq_id_mappings TSV writer (when requested). Upstream
