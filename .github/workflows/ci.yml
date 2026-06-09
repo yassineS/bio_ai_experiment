@@ -46,6 +46,10 @@ jobs:
           autoreconf -i
           ./configure
           make -j"$(nproc)"
+      - name: Build bcftools
+        run: |
+          cd reference_code/bcftools
+          make -j"$(nproc)"
       - name: Build samtools
         run: |
           cd reference_code/samtools
