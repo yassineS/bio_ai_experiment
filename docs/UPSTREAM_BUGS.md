@@ -609,6 +609,77 @@ but turned out to be documented features:
   was just decoding all qualities with offset 33 regardless of `-t`. Fixed
   inline in this PR (see `tools/PARITY_VALIDATION.md > sickle`).
 
+## samtools consensus <a id="samtools-consensus"></a>
+
+### `samtools consensus --het-only` is a dead option (parsed, never read) <a id="samtools-consensus-het-only"></a>
+
+**Severity:** documented contract violated — `--help` / the man page
+advertise `--het-only` as "Only output heterozygous sites", but the flag
+has no effect whatsoever on the output.
+
+**Upstream behaviour (the bug).** In the vendored samtools
+(`reference_code/samtools` at submodule commit
+`e406d9eb0f7051b04c98a00f9aeb8f3de11b85dc`,
+`bam_consensus.c`):
+
+- the option is declared on the `consensus_opts` struct —
+  `bam_consensus.c:232` (`int het_only;`),
+- default-initialised to 0 — `bam_consensus.c:2997`
+  (`.het_only = 0,`),
+- registered in the long-option table — `bam_consensus.c:3049`
+  (`{"het-only", no_argument, NULL, 6}`),
+- and SET on parse — `bam_consensus.c:3097`
+  (`case 6: opts.het_only = 1; break;`).
+
+But `opts.het_only` is **never read** anywhere else: a repo-wide grep for
+the symbol returns exactly those four sites (declaration, default, parse —
+the getopt entry matches the literal string `"het-only"`, not the
+variable). The consensus calling and output paths never branch on it, so
+`samtools consensus --het-only` produces byte-for-byte identical output to
+`samtools consensus` without the flag. This is a classic dead option: the
+flag is accepted (no error) but silently inert, violating the documented
+contract.
+
+**Why it's a bug, not a design choice.** The flag's name and the man-page
+text promise the consensus will be restricted to heterozygous-called
+positions; a user passing `--het-only` reasonably expects homozygous and
+no-call positions to be filtered out, and gets a full consensus instead —
+silently wrong output for the user's intent.
+
+**Fixed in port** (PR #221). Our Go `samtools consensus` implements the
+intended behaviour: `--het-only` restricts output to HETEROZYGOUS-called
+positions, suppressing homozygous and no-call positions.
+
+- FASTA/FASTQ: suppressed positions render as `N` (coordinates
+  preserved); leading/trailing non-het runs trim away like uncovered
+  positions, unless `-a`/`-aa` forces full-length emission.
+- pileup: suppressed rows are omitted entirely.
+- Het-ness is determined INDEPENDENTLY of `--ambig`: in simple mode a
+  position is het when `score2 >= het_fract*score1` on a confidently-
+  called position; in bayesian mode when the het log-odds is positive on
+  a confident call (depth/cutoff gated).
+
+The fix lives in
+`tools/samtools/pkg/samtools/consensus.go` (the `HetOnly` option, the
+`consensusCall.isHet` field computed in `callConsensus` and
+`callConsensusBayesian`, and the emit-loop suppression) and is wired on
+the CLI in `tools/samtools/cmd/samtools/cmds_tail.go`.
+
+**Tests.** Unit tests
+(`TestConsensus_HetOnly_SuppressesHomozygous`,
+`TestConsensus_HetOnly_AllHomozygous`,
+`TestConsensus_HetOnly_OffIsUnaffected` in
+`tools/samtools/pkg/samtools/consensus_test.go`) cover both calling modes
+and both the `--ambig` and non-ambig paths. A live upstream test
+(`TestConsensus_HetOnlyUpstreamBug` in
+`tools/samtools/pkg/samtools/consensus_upstream_test.go`) builds the
+vendored samtools and DEMONSTRATES the bug: it asserts upstream
+`consensus --het-only` output is identical to upstream WITHOUT the flag
+(proving upstream ignores it), and that our Go `--het-only` output DIFFERS
+from our own no-flag output (the intentional, correct divergence). It also
+confirms our baseline (no-flag) consensus still matches upstream's, so the
+divergence is confined to the flag.
+
 ## skewer <a id="skewer"></a>
 
 ### skewer compile failure on modern libstdc++

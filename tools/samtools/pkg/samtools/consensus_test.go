@@ -642,11 +642,11 @@ func writeStringFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o600)
 }
 
-// hetOnlyNoOpSAM has four reads spanning chr1:1-3 with a heterozygous
+// hetOnlySAM has four reads spanning chr1:1-3 with a heterozygous
 // flanking pair (A/C at pos1 and pos3) and a homozygous middle (G at
-// pos2). It deliberately contains both het and homozygous positions so
-// that an output filter, if one existed, would visibly change the result.
-const hetOnlyNoOpSAM = `@HD	VN:1.6
+// pos2). It deliberately mixes het and homozygous positions so that
+// --het-only's suppression of the homozygous column is visible.
+const hetOnlySAM = `@HD	VN:1.6
 @SQ	SN:chr1	LN:3
 r1	0	chr1	1	60	3M	*	0	0	AGA	III
 r2	0	chr1	1	60	3M	*	0	0	AGA	III
@@ -654,22 +654,100 @@ r3	0	chr1	1	60	3M	*	0	0	CGC	III
 r4	0	chr1	1	60	3M	*	0	0	CGC	III
 `
 
-// TestConsensus_HetOnly_NoOp verifies --het-only is an accepted no-op:
-// consensus output is byte-for-byte identical whether or not HetOnly is
-// set, matching the upstream binary (which parses --het-only but never
-// consumes it, so it has no effect there either). Both FASTA and pileup
-// output modes are checked, with --ambig on so heterozygous positions are
-// actually emitted as IUPAC codes and any spurious filtering would show.
-func TestConsensus_HetOnly_NoOp(t *testing.T) {
-	for _, format := range []ConsensusFormat{ConsensusFASTA, ConsensusPileup} {
-		base := ConsensusOptions{Format: format, AmbigCodes: true}
-		het := base
-		het.HetOnly = true
-		withoutFlag := runConsensusOnSAM(t, hetOnlyNoOpSAM, base)
-		withFlag := runConsensusOnSAM(t, hetOnlyNoOpSAM, het)
-		if withFlag != withoutFlag {
-			t.Errorf("--het-only changed %v output: with=%q without=%q",
-				format, withFlag, withoutFlag)
+// allHomozSAM has three identical reads spelling ACGTA — every position
+// is homozygous, so --het-only must suppress all of them.
+const allHomozSAM = `@HD	VN:1.6
+@SQ	SN:chr1	LN:5
+r1	0	chr1	1	60	5M	*	0	0	ACGTA	IIIII
+r2	0	chr1	1	60	5M	*	0	0	ACGTA	IIIII
+r3	0	chr1	1	60	5M	*	0	0	ACGTA	IIIII
+`
+
+// TestConsensus_HetOnly_SuppressesHomozygous covers the implemented
+// --het-only behaviour across both calling modes (simple + bayesian) and
+// both the --ambig and non-ambig paths. The homozygous middle position
+// (pos2, all-G) must be suppressed: rendered 'N' in FASTA (coordinates
+// preserved) and omitted entirely in pileup. The flanking heterozygous
+// positions (pos1, pos3) survive.
+func TestConsensus_HetOnly_SuppressesHomozygous(t *testing.T) {
+	for _, mode := range []ConsensusMode{ConsensusModeSimple, ConsensusModeBayesian} {
+		for _, ambig := range []bool{false, true} {
+			modeName := "simple"
+			if mode == ConsensusModeBayesian {
+				modeName = "bayesian"
+			}
+			t.Run(modeName+"_ambig", func(t *testing.T) {
+				// FASTA: homozygous middle becomes N, flanks kept.
+				faOpts := ConsensusOptions{Format: ConsensusFASTA, Mode: mode, AmbigCodes: ambig, HetOnly: true}
+				fa := runConsensusOnSAM(t, hetOnlySAM, faOpts)
+				// The middle character must always be 'N' (homozygous
+				// suppressed). With --ambig the flanks are the het code
+				// 'M'; without --ambig the flanks cannot be represented
+				// as a single base and fall to 'N', but they are still
+				// emitted (not deleted), so the record stays length 3.
+				wantFA := ">chr1\nMNM\n"
+				if !ambig {
+					wantFA = ">chr1\nNNN\n"
+				}
+				if fa != wantFA {
+					t.Errorf("FASTA het-only (ambig=%v): got %q want %q", ambig, fa, wantFA)
+				}
+
+				// Pileup: homozygous middle row omitted; only pos1 and
+				// pos3 rows remain.
+				puOpts := faOpts
+				puOpts.Format = ConsensusPileup
+				pu := runConsensusOnSAM(t, hetOnlySAM, puOpts)
+				if strings.Contains(pu, "\t2\t") {
+					t.Errorf("pileup het-only kept homozygous pos2 row: %q", pu)
+				}
+				lines := strings.Split(strings.TrimRight(pu, "\n"), "\n")
+				if len(lines) != 2 {
+					t.Fatalf("pileup het-only: want 2 rows (pos1,pos3), got %d: %q", len(lines), pu)
+				}
+				for _, l := range lines {
+					if !strings.HasPrefix(l, "chr1\t1\t") && !strings.HasPrefix(l, "chr1\t3\t") {
+						t.Errorf("pileup het-only: unexpected row %q", l)
+					}
+				}
+			})
 		}
+	}
+}
+
+// TestConsensus_HetOnly_AllHomozygous verifies that an input with no
+// heterozygous positions yields empty FASTA/pileup output (the covered
+// span trims away) and an all-'N' record under -a, for both calling
+// modes.
+func TestConsensus_HetOnly_AllHomozygous(t *testing.T) {
+	for _, mode := range []ConsensusMode{ConsensusModeSimple, ConsensusModeBayesian} {
+		fa := runConsensusOnSAM(t, allHomozSAM, ConsensusOptions{
+			Format: ConsensusFASTA, Mode: mode, AmbigCodes: true, HetOnly: true})
+		if fa != "" {
+			t.Errorf("mode %v: all-homozygous FASTA het-only: want empty, got %q", mode, fa)
+		}
+		pu := runConsensusOnSAM(t, allHomozSAM, ConsensusOptions{
+			Format: ConsensusPileup, Mode: mode, AmbigCodes: true, HetOnly: true})
+		if pu != "" {
+			t.Errorf("mode %v: all-homozygous pileup het-only: want empty, got %q", mode, pu)
+		}
+		// -a forces full-length emission: every position masked to 'N'.
+		faAll := runConsensusOnSAM(t, allHomozSAM, ConsensusOptions{
+			Format: ConsensusFASTA, Mode: mode, AmbigCodes: true, HetOnly: true, AllPositions: true})
+		if faAll != ">chr1\nNNNNN\n" {
+			t.Errorf("mode %v: all-homozygous FASTA het-only -a: got %q want %q",
+				mode, faAll, ">chr1\nNNNNN\n")
+		}
+	}
+}
+
+// TestConsensus_HetOnly_OffIsUnaffected sanity-checks that without
+// HetOnly the homozygous middle position is present (so the suppression
+// tests above are exercising a real difference, not a degenerate input).
+func TestConsensus_HetOnly_OffIsUnaffected(t *testing.T) {
+	pu := runConsensusOnSAM(t, hetOnlySAM, ConsensusOptions{
+		Format: ConsensusPileup, AmbigCodes: true})
+	if !strings.Contains(pu, "chr1\t2\t") {
+		t.Errorf("without het-only, expected homozygous pos2 row present: %q", pu)
 	}
 }
