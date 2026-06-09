@@ -1337,14 +1337,31 @@ Filed as a parity-only workaround; we don't replicate the bug.
 
 **Status:** 1 / 1 command, most flags.
 
-Missing:
+Done:
 
-- **Multi-threaded compression** (`-t / --threads N` is accepted but
-  single-threaded; BGZF is trivially parallel per block).
-- **Output-rename to follow upstream conventions on stdin**: minor.
+- **Multi-threaded compression** (`-@ / -t / --threads N`) — DONE.
+  BGZF is block-parallel by construction, so `pkg/htsgo/bgzf.MultiWriter`
+  deflates blocks across N worker goroutines and a single ordering
+  collector writes the framed blocks back in their original sequence,
+  yielding a valid BGZF stream (canonical EOF block, decodable blocks)
+  for any thread count. Single- and multi-threaded output are
+  byte-identical at equal block boundaries, and both decompress to the
+  same plaintext. The `.gzi` index stays correct because block sizes and
+  order are preserved.
+- **Output-rename / `-o, --output FILE`** — DONE. Reading stdin without
+  `-c` writes BGZF to stdout; `-o FILE` names the output explicitly (the
+  upstream convention for naming stdin output). `-o -` is normalised to
+  `-c` (stdout), matching htslib.
 
-**Validation:** round-trips through `tabix` work; no full upstream-test
-suite run yet.
+**Validation:** live parity against htslib's `bgzip`
+(`TestBgzip_ThreadsUpstreamParity`, on-demand submodule build): our
+`-@N` output decompresses to byte-identical plaintext via both upstream
+`bgzip -d` and our own reader; upstream `bgzip -@N` output decompresses
+via our reader; single- vs multi-thread outputs decompress-equal; and
+the stream is structurally valid. Note: multi-threaded compressed bytes
+are not guaranteed byte-identical to upstream (block boundaries differ),
+so parity is asserted on the recovered plaintext plus structural
+invariants. Round-trips through `tabix` continue to work.
 
 ### `tabix`
 

@@ -182,7 +182,8 @@ func (w *Writer) flushBlock() error {
 // given payload (which may be empty — that's how the EOF block is built, though
 // EOFBlock is hard-coded for cross-implementation byte-identity).
 func (w *Writer) encodeBlock(payload []byte) error {
-	// Run deflate on the payload.
+	// Run deflate on the payload via the reusable per-Writer scratch buffer and
+	// flate.Writer, then serialise the framed block to the underlying writer.
 	w.deflated.Reset()
 	w.fw.Reset(&w.deflated)
 	if _, err := w.fw.Write(payload); err != nil {
@@ -191,45 +192,55 @@ func (w *Writer) encodeBlock(payload []byte) error {
 	if err := w.fw.Close(); err != nil {
 		return err
 	}
-	deflated := w.deflated.Bytes()
+	frame, err := frameBlock(payload, w.deflated.Bytes(), nil)
+	if err != nil {
+		return err
+	}
+	_, err = w.w.Write(frame)
+	return err
+}
 
-	// Compute the total compressed block size:
+// frameBlock wraps an already-deflated payload in the BGZF gzip-member framing
+// (fixed gzip header + BC subfield + deflate body + CRC32/ISIZE footer) and
+// returns the complete on-disk block. The deflated argument must be the raw
+// deflate (no gzip wrapping) of payload. dst, when non-nil and large enough, is
+// reused as the destination buffer to avoid an allocation per block; otherwise
+// a fresh slice is allocated.
+func frameBlock(payload, deflated, dst []byte) ([]byte, error) {
+	// Total compressed block size:
 	//   12 bytes fixed header + 6 bytes BC subfield + len(deflated)
 	//   + 8 bytes footer (CRC32 + ISIZE) = 26 + len(deflated).
 	blockLen := 12 + 6 + len(deflated) + 8
 	if blockLen > MaxCompressedBlockSize {
-		return fmt.Errorf("bgzf: compressed block size %d exceeds %d", blockLen, MaxCompressedBlockSize)
+		return nil, fmt.Errorf("bgzf: compressed block size %d exceeds %d", blockLen, MaxCompressedBlockSize)
 	}
 
-	var hdr [18]byte
-	hdr[0] = 0x1f
-	hdr[1] = 0x8b
-	hdr[2] = 8                                  // CM = deflate
-	hdr[3] = 0x04                               // FLG = FEXTRA
-	hdr[4], hdr[5], hdr[6], hdr[7] = 0, 0, 0, 0 // MTIME
-	hdr[8] = 0                                  // XFL
-	hdr[9] = 0xff                               // OS = unknown
+	if cap(dst) >= blockLen {
+		dst = dst[:blockLen]
+	} else {
+		dst = make([]byte, blockLen)
+	}
+
+	dst[0] = 0x1f
+	dst[1] = 0x8b
+	dst[2] = 8                                  // CM = deflate
+	dst[3] = 0x04                               // FLG = FEXTRA
+	dst[4], dst[5], dst[6], dst[7] = 0, 0, 0, 0 // MTIME
+	dst[8] = 0                                  // XFL
+	dst[9] = 0xff                               // OS = unknown
 	// XLEN = 6 (one BC subfield: 4 bytes header + 2 bytes BSIZE)
-	binary.LittleEndian.PutUint16(hdr[10:12], 6)
-	hdr[12] = 'B'
-	hdr[13] = 'C'
-	binary.LittleEndian.PutUint16(hdr[14:16], 2)                  // SLEN = 2
-	binary.LittleEndian.PutUint16(hdr[16:18], uint16(blockLen-1)) // BSIZE = total-1
+	binary.LittleEndian.PutUint16(dst[10:12], 6)
+	dst[12] = 'B'
+	dst[13] = 'C'
+	binary.LittleEndian.PutUint16(dst[14:16], 2)                  // SLEN = 2
+	binary.LittleEndian.PutUint16(dst[16:18], uint16(blockLen-1)) // BSIZE = total-1
 
-	if _, err := w.w.Write(hdr[:]); err != nil {
-		return err
-	}
-	if _, err := w.w.Write(deflated); err != nil {
-		return err
-	}
+	copy(dst[18:18+len(deflated)], deflated)
 
-	var footer [8]byte
-	binary.LittleEndian.PutUint32(footer[0:4], crc32.ChecksumIEEE(payload))
-	binary.LittleEndian.PutUint32(footer[4:8], uint32(len(payload)))
-	if _, err := w.w.Write(footer[:]); err != nil {
-		return err
-	}
-	return nil
+	foot := dst[18+len(deflated):]
+	binary.LittleEndian.PutUint32(foot[0:4], crc32.ChecksumIEEE(payload))
+	binary.LittleEndian.PutUint32(foot[4:8], uint32(len(payload)))
+	return dst, nil
 }
 
 func min(a, b int) int {
