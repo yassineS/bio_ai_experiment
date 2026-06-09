@@ -62,8 +62,10 @@ type Options struct {
 	// are skipped entirely. Empty means "all chromosomes".
 	Chrom string
 
-	// D4Output, when true, requests D4 output. Not yet implemented; Run
-	// returns an error.
+	// D4Output, when true, writes the per-base depth track to
+	// <prefix>.per-base.d4 in the dense D4 binary format instead of the
+	// bgzipped per-base BED (matching upstream mosdepth's --d4 behavior).
+	// It has no effect when NoPerBase is set or when --by selects regions.
 	D4Output bool
 
 	// ReadGroups, when non-empty, keeps reads whose RG aux tag is in the
@@ -80,9 +82,6 @@ type Options struct {
 	Threads int
 }
 
-// ErrD4NotImplemented is returned when the user requests D4 output.
-var ErrD4NotImplemented = errors.New("mosdepth: D4 output not yet implemented")
-
 // ErrByConflict is returned when both ByBED and ByWindow are set.
 var ErrByConflict = errors.New("mosdepth: -b/--by cannot specify both a BED file and an integer window")
 
@@ -95,9 +94,6 @@ var ErrByConflict = errors.New("mosdepth: -b/--by cannot specify both a BED file
 // that tests can drive it from an in-memory BAM buffer; the CLI front-end
 // opens the file and passes its handle.
 func Run(in io.Reader, opts Options) error {
-	if opts.D4Output {
-		return ErrD4NotImplemented
-	}
 	if opts.ByBED != "" && opts.ByWindow > 0 {
 		return ErrByConflict
 	}
@@ -122,13 +118,29 @@ func Run(in io.Reader, opts Options) error {
 		return err
 	}
 
-	// Open per-base writer up front (so we can stream into it as we
-	// process each chrom and discard depth arrays).
+	// Per-base output is emitted only when --by isn't set (matches
+	// upstream). When --by IS set, upstream skips per-base unless
+	// explicitly requested; we follow the same rule. When --d4 is set the
+	// per-base track is written to <prefix>.per-base.d4 in the dense D4
+	// binary format instead of the bgzipped BED.
+	wantPerBase := !opts.NoPerBase && len(perChromRegions) == 0
+
 	var perBaseW *bedGzWriter
-	if !opts.NoPerBase && len(perChromRegions) == 0 {
-		// Per-base only emitted when --by isn't set (matches upstream).
-		// When --by IS set, upstream skips per-base unless explicitly
-		// requested. We follow the same rule.
+	var d4W *d4Writer
+	if wantPerBase && opts.D4Output {
+		chroms := make([]d4Chrom, 0, len(hdr.Refs))
+		for _, r := range hdr.Refs {
+			if opts.Chrom != "" && r.Name != opts.Chrom {
+				continue
+			}
+			chroms = append(chroms, d4Chrom{Name: r.Name, Length: int64(r.Length)})
+		}
+		w, perr := newD4Writer(opts.Prefix+".per-base.d4", chroms)
+		if perr != nil {
+			return perr
+		}
+		d4W = w
+	} else if wantPerBase {
 		p, perr := newBedGzWriter(opts.Prefix + ".per-base.bed.gz")
 		if perr != nil {
 			return perr
@@ -222,6 +234,11 @@ func Run(in io.Reader, opts Options) error {
 				return err
 			}
 		}
+		if d4W != nil {
+			if err := d4W.writeChrom(r.Name, d4DenseDepths(accum)); err != nil {
+				return err
+			}
+		}
 
 		if regionsW != nil {
 			ivs := perChromRegions[r.Name]
@@ -268,6 +285,11 @@ func Run(in io.Reader, opts Options) error {
 			return err
 		}
 		if err := buildBedTbi(perBaseW.path); err != nil {
+			return err
+		}
+	}
+	if d4W != nil {
+		if err := d4W.Close(); err != nil {
 			return err
 		}
 	}

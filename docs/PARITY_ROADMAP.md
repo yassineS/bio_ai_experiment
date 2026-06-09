@@ -2776,11 +2776,17 @@ Subcommand-tail gaps on `bcftools call`:
 Missing:
 
 - **`.csi`** output (currently emits `.tbi`).
-- **D4 output** (`-d/--d4`).
 - **Multi-threading** (`-t/--threads N`).
 - **`--mapq` 0-only fast-path** — upstream has a special fast loop.
 
-**Validation:** no upstream-test-suite run yet.
+Implemented:
+
+- **D4 output** (`-d/--d4`) — writes `<prefix>.per-base.d4` as a dense D4
+  binary track (32-bit values, no secondary table). Validated by
+  round-trip against the per-base BED output (upstream is Nim, so there
+  is no C binary to diff against; `d4tools` interop is not asserted).
+
+**Validation:** no upstream-test-suite run yet; D4 validated by round-trip.
 
 ---
 

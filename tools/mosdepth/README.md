@@ -57,7 +57,7 @@ Outputs (always emitted unless a flag below suppresses one):
 | `-n` | `--no-per-base` | Suppress the per-base output. |
 | `-T` | `--thresholds LIST` | Comma list of integer thresholds (e.g. `1,5,10,30`). |
 | `-c` | `--chrom STRING` | Restrict to one chromosome. |
-| `-d` | `--d4` | Accepted; D4 output is not yet implemented (returns a clear error). |
+| `-d` | `--d4` | Write the per-base depth track to `<prefix>.per-base.d4` in the dense D4 binary format instead of the bgzipped BED. |
 | `-r` | `--read-groups LIST` | Comma list of allowed RG ids; prefix the first with `OPS:` to filter on the OPS aux tag instead. |
 | `-l` | `--min-frag-len INT` | Minimum absolute TLEN to include. |
 | `-u` | `--max-frag-len INT` | Maximum absolute TLEN to include. |
@@ -84,8 +84,17 @@ the in-tree `pkg/htsgo/tabix.Build`. Consumers that read either
 format (e.g. `bcftools`, `tabix`) work transparently — the underlying
 chunk/bin layout is identical. CSI emission is on the roadmap.
 
-D4 output (`-d/--d4`) is accepted for CLI compatibility but rejected
-with `mosdepth: D4 output not yet implemented`.
+D4 output (`-d/--d4`) writes the per-base depth track to
+`<prefix>.per-base.d4` in the dense D4 binary container (a magic header,
+a length-prefixed JSON chromosome index, and the dense per-base depth
+stream). The dense values use a fixed 32-bit width with no secondary
+(overflow) table — simple and exact, but ~4x larger on disk than
+upstream's smaller-bit-width dense tracks, so a whole-genome D4 file is
+several gigabytes. Because upstream mosdepth is Nim (no C binary to diff
+against) and `d4tools` is not assumed present, correctness is validated
+by round-trip: the depths decoded from the D4 file are asserted to match
+the per-base BED output for the same BAM. Full `d4tools` binary interop
+is not asserted. When `--d4` is set the per-base BED is not written.
 
 The runtime is single-threaded; the `-t/--threads` flag is accepted for
 compatibility with existing pipelines. A future slice may parallelise
@@ -119,11 +128,13 @@ Coverage targets ≥85% on `pkg/mosdepth`. Tests cover:
 - Summary file — chr/total rows match hand-computed mean.
 - `.tbi` indexes round-trip through `tabix.QueryBytes` so the produced
   files are tabix-readable end-to-end.
-- `-d/--d4` is rejected with a clear error.
+- `-d/--d4` D4 output round-trips: the dense depth track decoded back
+  from the `.per-base.d4` file matches the per-base BED depths exactly.
 
 ## Status
 
 - v1: per-base, per-region (BED), per-window, thresholds, distribution,
-  summary, TBI indexes.
-- Roadmap: CSI output, D4 output, multi-threaded chrom sweep, CRAM input
-  (depends on the project's CRAM reader landing first).
+  summary, TBI indexes, dense D4 per-base output.
+- Roadmap: CSI output, smaller-bit-width / sparse D4 encoding,
+  multi-threaded chrom sweep, CRAM input (depends on the project's CRAM
+  reader landing first).

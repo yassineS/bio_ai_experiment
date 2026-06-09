@@ -105,7 +105,8 @@ func TestRun_Successful(t *testing.T) {
 	}
 }
 
-func TestRun_D4Rejected(t *testing.T) {
+// TestRun_D4Output checks that `-d` writes a per-base D4 file (and no BED).
+func TestRun_D4Output(t *testing.T) {
 	dir := t.TempDir()
 	cigar, _ := sam.ParseCigar("5M")
 	bam := makeBAM(t, []sam.Reference{{Name: "chr1", Length: 20}}, []*sam.Record{
@@ -114,8 +115,14 @@ func TestRun_D4Rejected(t *testing.T) {
 	bamPath := filepath.Join(dir, "in.bam")
 	os.WriteFile(bamPath, bam, 0644)
 	prefix := filepath.Join(dir, "out")
-	if rc := run([]string{"-d", prefix, bamPath}); rc != 1 {
-		t.Errorf("D4 rc: got %d, want 1", rc)
+	if rc := run([]string{"-d", prefix, bamPath}); rc != 0 {
+		t.Fatalf("D4 rc: got %d, want 0", rc)
+	}
+	if _, err := os.Stat(prefix + ".per-base.d4"); err != nil {
+		t.Errorf("per-base.d4 missing: %v", err)
+	}
+	if _, err := os.Stat(prefix + ".per-base.bed.gz"); err == nil {
+		t.Errorf("per-base.bed.gz should not be written with -d")
 	}
 }
 

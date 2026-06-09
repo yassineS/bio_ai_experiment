@@ -23,7 +23,8 @@ Usage:
 Outputs:
   <prefix>.mosdepth.global.dist.txt   cumulative depth distribution.
   <prefix>.mosdepth.summary.txt       per-chrom + total summary.
-  <prefix>.per-base.bed.gz [.tbi]     per-base depth (omitted with --by or --no-per-base).
+  <prefix>.per-base.bed.gz [.tbi]     per-base depth (omitted with --by, --no-per-base, or --d4).
+  <prefix>.per-base.d4                per-base depth in dense D4 binary format (when --d4 is set).
   <prefix>.regions.bed.gz [.tbi]      per-region depth (when --by is set).
   <prefix>.thresholds.bed.gz [.tbi]   threshold proportions (when --thresholds set).
 
@@ -38,7 +39,7 @@ Options:
   -n, --no-per-base       alias for --no-per-base.
   -T, --thresholds LIST   comma list of integer thresholds, e.g. 1,5,10,30.
   -c, --chrom STRING      restrict to one chromosome.
-  -d, --d4                request D4 output (not yet implemented).
+  -d, --d4                write per-base depth to <prefix>.per-base.d4 (dense D4) instead of BED.
   -r, --read-groups LIST  comma list of allowed RG ids, or "OPS:X,Y" for the OPS aux tag.
   -l, --min-frag-len INT  minimum absolute TLEN.
   -u, --max-frag-len INT  maximum absolute TLEN.
@@ -48,7 +49,9 @@ Options:
 Deviations from upstream mosdepth (Nim):
   - Indexes are tabix .tbi (not .csi). Consumers that read TBI work
     transparently; the underlying chunk/bin layout is the same.
-  - D4 output (-d/--d4) is rejected with a clear error in v1.
+  - D4 output (-d/--d4) writes a dense per-base track (bit width 32,
+    no secondary table). The metadata + dense layout are validated by
+    round-trip; full d4tools binary interop is not asserted.
   - Threads is accepted for compatibility; the v1 engine is
     single-threaded.
 `

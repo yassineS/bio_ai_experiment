@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -461,12 +462,100 @@ func TestRunSummaryPerChrom(t *testing.T) {
 	}
 }
 
-// TestRunD4Rejected ensures D4Output triggers a clear error.
-func TestRunD4Rejected(t *testing.T) {
+// bedToDense expands per-base BED runs (chrom\tstart\tend\tdepth) into a
+// dense per-base depth array for chrom of the given length. Positions not
+// covered by any run default to 0.
+func bedToDense(t *testing.T, lines []string, chrom string, length int) []int32 {
+	t.Helper()
+	out := make([]int32, length)
+	for _, ln := range lines {
+		if ln == "" {
+			continue
+		}
+		f := strings.Split(ln, "\t")
+		if len(f) < 4 || f[0] != chrom {
+			continue
+		}
+		start := atoiT(t, f[1])
+		end := atoiT(t, f[2])
+		depth := atoiT(t, f[3])
+		for p := start; p < end && p < length; p++ {
+			out[p] = int32(depth)
+		}
+	}
+	return out
+}
+
+func atoiT(t *testing.T, s string) int {
+	t.Helper()
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatalf("Atoi(%q): %v", s, err)
+	}
+	return v
+}
+
+// TestRunD4RoundTrip is the parity guarantee for D4 output: because upstream
+// mosdepth is Nim (no C binary to diff against) and d4tools is not assumed
+// present, correctness is validated by round-trip. We run mosdepth once with
+// the default per-base BED output and once with --d4, then assert the depths
+// decoded from the D4 file exactly match the per-base BED depths for every
+// position of every chromosome.
+func TestRunD4RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	refs := fixtureRefs()
+	bam := makeBAM(t, refs, fixtureRecords(t))
+
+	bedPrefix := filepath.Join(dir, "bed")
+	if err := Run(bytes.NewReader(bam), Options{Prefix: bedPrefix, ExcludeFlag: DefaultExcludeFlag}); err != nil {
+		t.Fatalf("Run (BED): %v", err)
+	}
+	d4Prefix := filepath.Join(dir, "d4")
+	if err := Run(bytes.NewReader(bam), Options{Prefix: d4Prefix, ExcludeFlag: DefaultExcludeFlag, D4Output: true}); err != nil {
+		t.Fatalf("Run (D4): %v", err)
+	}
+
+	// The D4 file should exist; the BED file should NOT (D4 replaces it).
+	if _, err := os.Stat(d4Prefix + ".per-base.d4"); err != nil {
+		t.Fatalf("expected D4 file: %v", err)
+	}
+	if _, err := os.Stat(d4Prefix + ".per-base.bed.gz"); err == nil {
+		t.Errorf("per-base.bed.gz should not be written when --d4 is set")
+	}
+
+	bedLines := readGz(t, bedPrefix+".per-base.bed.gz")
+	r, err := openD4Reader(d4Prefix + ".per-base.d4")
+	if err != nil {
+		t.Fatalf("openD4Reader: %v", err)
+	}
+	for _, ref := range refs {
+		want := bedToDense(t, bedLines, ref.Name, int(ref.Length))
+		got, err := r.chromDepths(ref.Name)
+		if err != nil {
+			t.Fatalf("chromDepths(%q): %v", ref.Name, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: D4 length %d, want %d", ref.Name, len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s pos %d: D4 depth %d, BED depth %d", ref.Name, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+// TestRunD4NoPerBase confirms --d4 produces no per-base file when --no-per-base
+// is also set.
+func TestRunD4NoPerBase(t *testing.T) {
+	dir := t.TempDir()
 	bam := makeBAM(t, fixtureRefs(), fixtureRecords(t))
-	err := Run(bytes.NewReader(bam), Options{Prefix: "/tmp/m", D4Output: true})
-	if err == nil || !strings.Contains(err.Error(), "D4") {
-		t.Errorf("expected D4 error, got %v", err)
+	prefix := filepath.Join(dir, "out")
+	if err := Run(bytes.NewReader(bam), Options{Prefix: prefix, D4Output: true, NoPerBase: true, ExcludeFlag: DefaultExcludeFlag}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Stat(prefix + ".per-base.d4"); err == nil {
+		t.Errorf("per-base.d4 should not be written with --no-per-base")
 	}
 }
 
