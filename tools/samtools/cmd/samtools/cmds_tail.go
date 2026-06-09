@@ -1666,7 +1666,11 @@ Options:
       --mark-ins            Prepend '+' before inserted base/qual (default off).
   -A, --ambig               Emit IUPAC ambiguity codes for hets.
   -d, --min-depth INT       Minimum depth (default 1).
-      --het-only            Suppress non-het calls (accepted; not implemented).
+      --het-only            Restrict output to heterozygous-called positions;
+                            homozygous/no-call positions become 'N' (FASTA/
+                            FASTQ) or are omitted (pileup). NOTE: this fixes an
+                            upstream dead-option bug — samtools parses
+                            --het-only but never acts on it.
       --ref-qual INT        QUAL for reference bases (accepted; not used in v1).
       --default-qual INT    Default qual when a base has none (accepted; v1
                             uses the per-base qual unchanged).
@@ -1912,7 +1916,7 @@ func runConsensus(args []string) int {
 	cliflag.StringVar(fs, &showDel, "", "show-del", "no", "Show deletions")
 	cliflag.StringVar(fs, &showIns, "", "show-ins", "yes", "Include insertions")
 	cliflag.BoolVar(fs, &markIns, "", "mark-ins", false, "Mark inserted bases with '+'")
-	cliflag.BoolVar(fs, &hetOnly, "", "het-only", false, "Only emit het calls (accepted; not implemented)")
+	cliflag.BoolVar(fs, &hetOnly, "", "het-only", false, "Restrict output to heterozygous positions (fixes upstream dead-option bug)")
 
 	cliflag.StringVar(fs, &refFasta, "T", "reference", "", "Reference FASTA")
 	cliflag.IntVar(fs, &refQual, "", "ref-qual", 0, "Reference qual")

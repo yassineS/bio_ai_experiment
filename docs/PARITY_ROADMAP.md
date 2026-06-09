@@ -2147,8 +2147,18 @@ Genuinely deferred sub-knobs (precisely scoped):
   are accepted as text/int but ignored. v1's filter set is fixed
   (drop UNMAP|SECONDARY|QCFAIL|DUP, matching upstream's default
   `excl_flags`).
-- **`--het-only`** suppression of homozygous calls is accepted but
-  not implemented.
+- **`--het-only`** restricts output to HETEROZYGOUS-called positions
+  (homozygous and no-call positions become `N` in FASTA/FASTQ — with
+  coordinates preserved — and are omitted entirely in pileup). This is a
+  DELIBERATE divergence from upstream, which parses `--het-only` into its
+  options struct but never reads it (a dead-option bug — the flag is inert
+  upstream through samtools 1.22). We implement the intended
+  heterozygous-only filtering the flag name promises. Het-ness is
+  determined independently of `--ambig`. See
+  [docs/UPSTREAM_BUGS.md#samtools-consensus-het-only](UPSTREAM_BUGS.md#samtools-consensus-het-only)
+  for the bug write-up. Pinned by `TestConsensus_HetOnly_*` (unit) and the
+  live `TestConsensus_HetOnlyUpstreamBug` (which proves upstream ignores
+  the flag and our output correctly diverges).
 - **`--verbosity`** is accepted and ignored.
 
 **`consensus` correctness model.** v1 mirrors upstream's
