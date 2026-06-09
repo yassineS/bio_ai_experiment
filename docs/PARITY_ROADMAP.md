@@ -2147,8 +2147,13 @@ Genuinely deferred sub-knobs (precisely scoped):
   are accepted as text/int but ignored. v1's filter set is fixed
   (drop UNMAP|SECONDARY|QCFAIL|DUP, matching upstream's default
   `excl_flags`).
-- **`--het-only`** suppression of homozygous calls is accepted but
-  not implemented.
+- **`--het-only`** is accepted as a no-op, matching upstream exactly.
+  The upstream samtools binary parses `--het-only` into its options
+  struct but never reads it again (dead through samtools 1.22), so the
+  flag has no effect there. We mirror that: the flag is accepted but
+  inert, and consensus output is byte-for-byte identical with or without
+  it. A parity test (`TestConsensus_HetOnly_NoOp`) asserts that identity
+  for both FASTA and pileup modes.
 - **`--verbosity`** is accepted and ignored.
 
 **`consensus` correctness model.** v1 mirrors upstream's

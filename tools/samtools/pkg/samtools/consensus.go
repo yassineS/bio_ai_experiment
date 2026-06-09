@@ -128,9 +128,12 @@ type ConsensusOptions struct {
 	// FASTA/FASTQ — upstream's --mark-ins. v1 wires the option but
 	// only implements it when NoShowIns=false.
 	MarkIns bool
-	// HetOnly, when true, suppresses calls that are not heterozygous
-	// (upstream --het-only). v1 accepts it but does not implement the
-	// filter; tracked in docs/PARITY_ROADMAP.md.
+	// HetOnly corresponds to upstream's --het-only flag. It is accepted
+	// for compatibility but has no effect: the upstream samtools binary
+	// (through 1.22) parses --het-only into its options struct yet never
+	// reads it, so the flag is inert there too. We match that exactly —
+	// consensus output is byte-for-byte identical whether or not HetOnly
+	// is set. Tracked in docs/PARITY_ROADMAP.md.
 	HetOnly bool
 	// IgnoreOverlaps is accepted for CLI compatibility but not
 	// implemented (v1 does not deduplicate mate-pair overlaps in the

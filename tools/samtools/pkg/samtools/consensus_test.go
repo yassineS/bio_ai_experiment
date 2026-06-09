@@ -641,3 +641,35 @@ func TestConsensus_FormatTable(t *testing.T) {
 func writeStringFile(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o600)
 }
+
+// hetOnlyNoOpSAM has four reads spanning chr1:1-3 with a heterozygous
+// flanking pair (A/C at pos1 and pos3) and a homozygous middle (G at
+// pos2). It deliberately contains both het and homozygous positions so
+// that an output filter, if one existed, would visibly change the result.
+const hetOnlyNoOpSAM = `@HD	VN:1.6
+@SQ	SN:chr1	LN:3
+r1	0	chr1	1	60	3M	*	0	0	AGA	III
+r2	0	chr1	1	60	3M	*	0	0	AGA	III
+r3	0	chr1	1	60	3M	*	0	0	CGC	III
+r4	0	chr1	1	60	3M	*	0	0	CGC	III
+`
+
+// TestConsensus_HetOnly_NoOp verifies --het-only is an accepted no-op:
+// consensus output is byte-for-byte identical whether or not HetOnly is
+// set, matching the upstream binary (which parses --het-only but never
+// consumes it, so it has no effect there either). Both FASTA and pileup
+// output modes are checked, with --ambig on so heterozygous positions are
+// actually emitted as IUPAC codes and any spurious filtering would show.
+func TestConsensus_HetOnly_NoOp(t *testing.T) {
+	for _, format := range []ConsensusFormat{ConsensusFASTA, ConsensusPileup} {
+		base := ConsensusOptions{Format: format, AmbigCodes: true}
+		het := base
+		het.HetOnly = true
+		withoutFlag := runConsensusOnSAM(t, hetOnlyNoOpSAM, base)
+		withFlag := runConsensusOnSAM(t, hetOnlyNoOpSAM, het)
+		if withFlag != withoutFlag {
+			t.Errorf("--het-only changed %v output: with=%q without=%q",
+				format, withFlag, withoutFlag)
+		}
+	}
+}
