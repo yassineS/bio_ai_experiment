@@ -66,7 +66,17 @@ type ViewOptions struct {
 	TargetsFile    string   // -T
 	Samples        []string // -s
 	SamplesFile    string   // -S
-	CompressLevel  int      // -l
+	// Private (-x/--private) keeps only sites whose non-reference alleles are
+	// carried exclusively by the subset samples: the non-reference allele
+	// count within the subset is greater than zero AND equals the
+	// non-reference allele count across all samples (none outside the subset).
+	// It is meaningful only together with a sample subset (-s/-S).
+	Private bool
+	// ExcludePrivate (-X/--exclude-private) is the inverse of Private: it drops
+	// sites whose non-reference alleles are carried exclusively by the subset
+	// samples. Like Private, it requires a sample subset to take effect.
+	ExcludePrivate bool
+	CompressLevel  int // -l
 }
 
 // applyAlleleFilters returns true if the variant passes the AC/AF filters.
@@ -131,6 +141,68 @@ func computeAC(v *vcf.Variant) (ac, an int) {
 		}
 	}
 	return ac, an
+}
+
+// nonRefACOver returns the total non-reference allele count summed across the
+// samples in v whose names appear in want. When want is nil every sample is
+// counted. The second return value reports whether any of the counted samples
+// carried a GT field at all (mirroring upstream's requirement that a GT FORMAT
+// field be present before the private filter is evaluated).
+func nonRefACOver(v *vcf.Variant, want map[string]bool) (ac int, hasGT bool) {
+	for _, s := range v.Samples {
+		if want != nil && !want[s.Name] {
+			continue
+		}
+		gt, ok := s.Data["GT"]
+		if !ok {
+			continue
+		}
+		hasGT = true
+		gt = strings.ReplaceAll(gt, "|", "/")
+		for _, a := range strings.Split(gt, "/") {
+			if a == "." || a == "" {
+				continue
+			}
+			if n, err := strconv.Atoi(a); err == nil && n > 0 {
+				ac++
+			}
+		}
+	}
+	return ac, hasGT
+}
+
+// passesPrivateFilter implements the -x/--private and -X/--exclude-private
+// selectors. A site is "private" to the subset when the non-reference allele
+// count within the subset is greater than zero AND equals the non-reference
+// allele count across all samples (i.e. no non-reference allele is carried
+// outside the subset). This mirrors upstream bcftools vcfview.c, which applies
+// the test after sample subsetting and only when a GT FORMAT field is present.
+//
+// With no sample subset, or no GT data, the filter is a no-op (the variant is
+// kept) — matching upstream, where the private check is gated on the sample
+// subset being non-empty and the allele counts being recomputed from GTs.
+func passesPrivateFilter(v *vcf.Variant, opts ViewOptions) bool {
+	if !opts.Private && !opts.ExcludePrivate {
+		return true
+	}
+	if len(opts.Samples) == 0 {
+		return true
+	}
+	want := make(map[string]bool, len(opts.Samples))
+	for _, name := range opts.Samples {
+		want[name] = true
+	}
+	acFull, fullHasGT := nonRefACOver(v, nil)
+	acSub, subHasGT := nonRefACOver(v, want)
+	if !fullHasGT || !subHasGT {
+		return true
+	}
+	isPrivate := acSub > 0 && acFull == acSub
+	if opts.Private {
+		return isPrivate
+	}
+	// ExcludePrivate: drop private sites, keep everything else.
+	return !isPrivate
 }
 
 // applyFilterColumnFilters returns true if v passes the -f filter list.
@@ -608,6 +680,9 @@ func keepVariant(v *vcf.Variant, opts ViewOptions, includeF, excludeF *Filter, a
 		return false
 	}
 	if !opts.applyAlleleFilters(v) {
+		return false
+	}
+	if !passesPrivateFilter(v, opts) {
 		return false
 	}
 	if includeF != nil && !includeF.Eval(v) {

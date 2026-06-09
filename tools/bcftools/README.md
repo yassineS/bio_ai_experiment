@@ -162,6 +162,8 @@ go build ./tools/bcftools/cmd/bcftools
 | `-T`  | `--targets-file`      | BED-like targets file (post-filter). |
 | `-s`  | `--samples`           | Restrict samples to this comma list. |
 | `-S`  | `--samples-file`      | File of sample IDs (one per line). |
+| `-x`  | `--private`           | Keep only sites whose non-reference alleles are exclusive (private) to the subset samples. Requires a subset (`-s`/`-S`). |
+| `-X`  | `--exclude-private`   | Inverse of `-x`: drop sites private to the subset samples. |
 | `-l`  | `--compression-level` | gzip level for `-O z` output. |
 |       | `--threads`           | Accepted; v1 is single-threaded. |
 | `-?`  | `--help`              | Show help. |
