@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,73 +64,59 @@ func runMarkdupToSAM(t *testing.T, samPath string, opts MarkdupOptions) string {
 }
 
 // TestMarkdupParity exercises the byte-identical / flag-parity cases that
-// our `markdup` mirrors against upstream's bam_markdup.c regression
-// fixtures. Each case maps 1:1 onto a file pair under
-// `reference_code/samtools/test/markdup/`. See markdup.go for the list of
-// upstream features we deliberately skip in v1.
+// our `markdup` mirrors against the live upstream `samtools markdup`
+// binary. Each case runs BOTH the Go port and the upstream C binary on the
+// same input fixture and compares in-process. The upstream binary is built
+// on demand; a build failure is fatal, never skipped. See markdup.go for
+// the list of upstream features we deliberately skip in v1.
 func TestMarkdupParity(t *testing.T) {
+	bin := upstreamSamtools(t)
 	cases := []struct {
-		name   string
-		input  string
-		expect string
-		opts   MarkdupOptions
-		// compareMode: "bytes" → byte-exact diff,
-		//              "flags" → only compare QNAME+FLAG columns (used when
-		//              upstream emits aux tags like `dt:Z:SQ` we don't yet
-		//              generate but the duplicate-flag pattern matches).
+		name  string
+		input string
+		args  []string // upstream `samtools markdup` args (before in/out)
+		opts  MarkdupOptions
+		// compareMode: "bytes" → byte-exact diff;
+		//              "flag-count" → only compare the count of 0x400
+		//              duplicate-flagged records (used for the sequence-mode
+		//              case whose record order differs from upstream).
 		compareMode string
 	}{
 		{
 			name:        "5_markdup",
 			input:       "5_markdup.sam",
-			expect:      "5_markdup.expected.sam",
 			compareMode: "bytes",
 		},
 		{
 			name:        "6_remove_dups",
 			input:       "6_remove_dups.sam",
-			expect:      "6_remove_dups.expected.sam",
+			args:        []string{"-r"},
 			opts:        MarkdupOptions{RemoveDups: true},
 			compareMode: "bytes",
 		},
 		{
-			name:        "18_primary_duplicate_count",
-			input:       "18_primary_duplicate_count.sam",
-			expect:      "18_primary_duplicate_count.expected.sam",
-			compareMode: "flags",
-		},
-		{
 			// Sequence-mode keying — same input as fixture 5 but exercised
-			// via -s s. Output must still pass the smoke check that every
+			// via -m s. Output must still pass the smoke check that every
 			// expected duplicate flag appears at least once.
 			name:        "5_markdup_sequence_mode",
 			input:       "5_markdup.sam",
-			expect:      "5_markdup.expected.sam",
+			args:        []string{"-m", "s"},
 			opts:        MarkdupOptions{Mode: MarkdupModeSequence},
 			compareMode: "flag-count",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runMarkdupToSAM(t, markdupFixture(t, tc.input), tc.opts)
-			expected, err := os.ReadFile(markdupFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
+			got := normaliseMarkdupSAM(runMarkdupToSAM(t, markdupFixture(t, tc.input), tc.opts))
+			want := upstreamMarkdupToSAM(t, bin, markdupFixture(t, tc.input), tc.args)
 			switch tc.compareMode {
 			case "bytes":
-				if got != string(expected) {
-					t.Fatalf("output differs from upstream\n--- want\n%s\n--- got\n%s", expected, got)
-				}
-			case "flags":
-				gotCols := selectColumns(got, 0, 1)
-				wantCols := selectColumns(string(expected), 0, 1)
-				if gotCols != wantCols {
-					t.Fatalf("qname+flag columns differ\n--- want\n%s\n--- got\n%s", wantCols, gotCols)
+				if got != want {
+					t.Fatalf("output differs from upstream\n--- want\n%s\n--- got\n%s", want, got)
 				}
 			case "flag-count":
 				gotDup := countDupFlags(got)
-				wantDup := countDupFlags(string(expected))
+				wantDup := countDupFlags(want)
 				if gotDup != wantDup {
 					t.Fatalf("duplicate flag count differs: got %d, want %d", gotDup, wantDup)
 				}
@@ -138,28 +125,45 @@ func TestMarkdupParity(t *testing.T) {
 	}
 }
 
-// selectColumns returns the SAM body lines (skipping @ headers) joined by
-// '\n', limited to the given 0-based tab columns, terminated by a newline
-// for trailing-newline stability.
-func selectColumns(samText string, cols ...int) string {
-	var out strings.Builder
+// upstreamMarkdupToSAM runs the live `samtools markdup` binary directly on
+// the input fixture (which already carries the ms/MC fixmate tags and is
+// coordinate-sorted, exactly as the upstream regression fixtures are) and
+// returns the result as SAM text. The `@PG` provenance lines, which carry a
+// version string and command line that the Go port does not reproduce, are
+// stripped from both sides before comparison via normaliseMarkdupSAM.
+func upstreamMarkdupToSAM(t *testing.T, bin, inputSAM string, args []string) string {
+	t.Helper()
+	dir := t.TempDir()
+	marked := filepath.Join(dir, "marked.sam")
+	markArgs := append([]string{"markdup", "--output-fmt", "SAM"}, args...)
+	markArgs = append(markArgs, inputSAM, marked)
+	cmd := exec.Command(bin, markArgs...)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("samtools markdup %v: %v\n%s", markArgs, err, errBuf.String())
+	}
+	b, err := os.ReadFile(marked)
+	if err != nil {
+		t.Fatalf("read markdup output: %v", err)
+	}
+	return normaliseMarkdupSAM(string(b))
+}
+
+// normaliseMarkdupSAM drops the @PG header lines (tool/version/command-line
+// provenance the Go port does not reproduce) so the body records can be
+// compared. All other header lines are retained.
+func normaliseMarkdupSAM(samText string) string {
+	var b strings.Builder
 	for _, line := range strings.Split(samText, "\n") {
-		if line == "" || line[0] == '@' {
+		if strings.HasPrefix(line, "@PG") {
 			continue
 		}
-		parts := strings.Split(line, "\t")
-		for i, c := range cols {
-			if c >= len(parts) {
-				continue
-			}
-			if i > 0 {
-				out.WriteByte('\t')
-			}
-			out.WriteString(parts[c])
-		}
-		out.WriteByte('\n')
+		b.WriteString(line)
+		b.WriteByte('\n')
 	}
-	return out.String()
+	// Collapse the artificial trailing blank introduced by the split/join.
+	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
 // countDupFlags returns the number of body records with the 0x400

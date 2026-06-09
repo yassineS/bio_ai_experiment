@@ -7,9 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"sync"
 	"testing"
-	"time"
 )
 
 // statsUSRSection extracts the USR (user-tstv) section from a full stats
@@ -205,7 +203,7 @@ func TestStatsUserTSTV_IntFloatFormat(t *testing.T) {
 // skips). A Float-typed tag (BQB) and an Integer-typed tag (MQ) are both
 // exercised so the `%e` vs `%.0f` bin-label divergence is covered live.
 func TestStats_UserTSTVUpstreamParity(t *testing.T) {
-	bin := ensureUpstreamBcftools(t)
+	bin := upstreamBcftools(t)
 	fixture := statsFixturePath(t)
 	in := readStatsFixtureVCF(t)
 
@@ -256,131 +254,4 @@ func readStatsFixtureVCF(t *testing.T) []byte {
 		t.Fatalf("read user-tstv fixture: %v", err)
 	}
 	return data
-}
-
-var (
-	upstreamBcftoolsOnce sync.Once
-	upstreamBcftoolsPath string
-	upstreamBcftoolsErr  error
-)
-
-// ensureUpstreamBcftools returns the path to a working upstream bcftools
-// binary, building it from the vendored submodules on first use. The build
-// is memoised with sync.Once so a single `go test ./tools/bcftools/...`
-// invocation pays for it at most once. On unrecoverable failure the calling
-// test is FAILED (t.Fatalf), never skipped — the owner's rule is that the
-// live upstream parity test must actually execute.
-func ensureUpstreamBcftools(t *testing.T) string {
-	t.Helper()
-	upstreamBcftoolsOnce.Do(func() {
-		upstreamBcftoolsPath, upstreamBcftoolsErr = buildUpstreamBcftools(t)
-	})
-	if upstreamBcftoolsErr != nil {
-		t.Fatalf("upstream bcftools unavailable: %v", upstreamBcftoolsErr)
-	}
-	return upstreamBcftoolsPath
-}
-
-// repoRootDir resolves the absolute path of the repository root (four levels
-// above the package directory tools/bcftools/pkg/bcftools).
-func repoRootDir(t *testing.T) string {
-	t.Helper()
-	abs, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
-	if err != nil {
-		t.Fatalf("abs repo root: %v", err)
-	}
-	return abs
-}
-
-// referenceRoot resolves the absolute path of reference_code/<name>.
-func referenceRoot(t *testing.T, name string) string {
-	t.Helper()
-	return filepath.Join(repoRootDir(t), "reference_code", name)
-}
-
-// buildUpstreamBcftools locates an already-built `bcftools` under
-// reference_code/bcftools, and otherwise initialises the htslib + bcftools
-// submodules (recursively, so htslib's nested htscodecs is present) and
-// builds them. It returns the absolute path to the resulting binary.
-func buildUpstreamBcftools(t *testing.T) (string, error) {
-	t.Helper()
-	bcftoolsDir := referenceRoot(t, "bcftools")
-	htslibDir := referenceRoot(t, "htslib")
-	binary := filepath.Join(bcftoolsDir, "bcftools")
-
-	if isExecutable(binary) {
-		return binary, nil
-	}
-
-	// Initialise the submodules recursively from the repo root. htslib's
-	// ./configure aborts without its nested htscodecs submodule, so a
-	// non-recursive init is not enough.
-	if err := runBuildStep(t, repoRootDir(t), "git", "submodule", "update", "--init", "--recursive",
-		"reference_code/htslib", "reference_code/bcftools"); err != nil {
-		return "", fmt.Errorf("submodule init: %w", err)
-	}
-
-	// Build htslib first (autoreconf + configure + make). bcftools links
-	// against this in-tree htslib build.
-	if err := runBuildStep(t, htslibDir, "autoreconf", "-i"); err != nil {
-		return "", fmt.Errorf("htslib autoreconf: %w", err)
-	}
-	if err := runBuildStep(t, htslibDir, "./configure"); err != nil {
-		return "", fmt.Errorf("htslib configure: %w", err)
-	}
-	if err := runBuildStep(t, htslibDir, "make", "-j"); err != nil {
-		return "", fmt.Errorf("htslib make: %w", err)
-	}
-
-	// Build bcftools with plain make. Do NOT run bcftools' ./configure — it
-	// can clobber htslib's config.mk and break the in-tree link.
-	if err := runBuildStep(t, bcftoolsDir, "make", "-j"); err != nil {
-		return "", fmt.Errorf("bcftools make: %w", err)
-	}
-
-	if !isExecutable(binary) {
-		return "", fmt.Errorf("bcftools build finished but %s is missing/not executable", binary)
-	}
-	return binary, nil
-}
-
-// isExecutable reports whether path exists and has an execute bit set.
-func isExecutable(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
-}
-
-// runBuildStep runs a build/setup command in dir (the calling process's cwd
-// when dir is empty). Network-touching steps (git submodule update) are
-// retried with exponential backoff (2/4/8/16s) so transient fetch failures
-// don't fail the build outright.
-func runBuildStep(t *testing.T, dir, name string, args ...string) error {
-	t.Helper()
-	network := name == "git"
-	backoff := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
-
-	var lastErr error
-	attempts := 1
-	if network {
-		attempts = len(backoff) + 1
-	}
-	for attempt := 0; attempt < attempts; attempt++ {
-		if attempt > 0 {
-			t.Logf("retrying %s %v (attempt %d) after %s", name, args, attempt+1, backoff[attempt-1])
-			time.Sleep(backoff[attempt-1])
-		}
-		cmd := exec.Command(name, args...)
-		if dir != "" {
-			cmd.Dir = dir
-		}
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			return nil
-		}
-		lastErr = fmt.Errorf("%s %v: %v\n%s", name, args, err, out)
-		if !network {
-			break
-		}
-	}
-	return lastErr
 }
