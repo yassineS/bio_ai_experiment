@@ -1350,13 +1350,32 @@ suite run yet.
 
 **Status:** 1 / 1 command, most flags.
 
-Missing:
+Done:
 
-- **`--reheader FILE`** — replace bgzipped file's header lines in place.
-- **`--targets` strictness** — currently behaves as `-R`; needs to be a
-  true post-filter that only emits records strictly inside the targets.
+- **`--reheader FILE`** (`-r`) — replaces the leading meta-char header of a
+  bgzipped file with the contents of FILE and re-emits a valid bgzipped
+  stream to stdout (`pkg/htsgo/tabix.Reheader`). A trailing newline is
+  appended to the replacement header when absent so the first data line is
+  never merged. Note: upstream htslib's own `tabix -r` is **broken at the
+  vendored commit** — it segfaults without `--threads N` and corrupts the
+  data body for typical single-/multi-block inputs — so it cannot serve as a
+  byte-for-byte producer oracle. Parity is instead validated by using
+  upstream tabix as a *consumer*: it re-indexes and queries the Go output
+  correctly and sees the replacement header verbatim
+  (`TestTabix_ReheaderUpstreamParity`).
+- **`--targets` strictness** (`-T`) — now a true overlap post-filter
+  (`pkg/htsgo/tabix.Targets`), distinct from `-R`'s index-jump: only records
+  overlapping the target intervals are emitted. Coordinate conventions match
+  htslib regidx (BED filename → 0-based half-open; otherwise 1-based
+  inclusive; chromosome-only lines select the whole chromosome). When `-T`
+  is given without an explicit region the whole file is streamed, mirroring
+  upstream's `.` region.
 
-**Validation:** no full upstream-test-suite run yet.
+**Validation:** live upstream-binary parity tests
+(`TestTabix_TargetsStrictUpstreamParity` byte-for-byte across tab/BED,
+boundary, adjacent, chrom-only, and region-combined cases;
+`TestTabix_ReheaderUpstreamParity` via the consumer round-trip above) plus
+strong in-package unit tests. No full upstream-test-suite run yet.
 
 ### `samtools`
 

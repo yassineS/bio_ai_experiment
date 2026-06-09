@@ -44,17 +44,16 @@ Options:
   -c, --meta-char CHAR             Comment-line prefix (default '#').
   -0, --zero-based                 0-based half-open coordinates (BED-style).
   -f, --force                      Overwrite an existing .tbi index.
-  -R, --regions FILE               Read regions from a BED-like file.
-  -T, --targets FILE               Restrict output to records overlapping FILE.
+  -R, --regions FILE               Read regions from a BED-like file (index-jump).
+  -T, --targets FILE               Stream records overlapping intervals in FILE
+                                   (strict post-filter, distinct from -R).
+  -r, --reheader FILE              Replace the header with the contents of FILE.
   -l, --list-chroms                Print chromosome names from the index.
   -h, --print-header               Also emit header lines when querying.
       --only-header                Emit only the header from the file.
   -D                               Do not save the index (only relevant for build).
       --help                       Show this help and exit.
   -v, --version                    Show version and exit.
-
-Deviations from upstream tabix:
-  --reheader is not implemented in this version.
 `
 
 func main() {
@@ -72,6 +71,7 @@ type opts struct {
 	force       bool
 	regionsFile string
 	targetsFile string
+	reheader    string
 	listChroms  bool
 	printHdr    bool
 	onlyHdr     bool
@@ -96,7 +96,8 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	cliflag.BoolVar(fs, &o.zeroBased, "0", "zero-based", false, "0-based half-open coordinates")
 	cliflag.BoolVar(fs, &o.force, "f", "force", false, "overwrite existing index")
 	cliflag.StringVar(fs, &o.regionsFile, "R", "regions", "", "BED-like regions file")
-	cliflag.StringVar(fs, &o.targetsFile, "T", "targets", "", "filter records by targets file")
+	cliflag.StringVar(fs, &o.targetsFile, "T", "targets", "", "strict overlap post-filter from targets file")
+	cliflag.StringVar(fs, &o.reheader, "r", "reheader", "", "replace the header with the contents of FILE")
 	cliflag.BoolVar(fs, &o.listChroms, "l", "list-chroms", false, "list chromosomes in the index")
 	cliflag.BoolVar(fs, &o.printHdr, "h", "print-header", false, "emit header lines")
 	fs.BoolVar(&o.onlyHdr, "only-header", false, "emit only the header")
@@ -138,12 +139,28 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	switch {
 	case o.listChroms:
 		return runListChroms(dataPath, stdout, stderr)
-	case len(regions) == 0 && o.regionsFile == "" && !o.onlyHdr:
+	case len(regions) > 0 || o.regionsFile != "" || o.targetsFile != "" || o.onlyHdr:
+		// Query mode: any of positional regions, -R, -T, or --only-header
+		// (mirrors upstream tabix's main dispatch condition).
+		return runQuery(dataPath, regions, o, cfg, stdout, stderr)
+	case o.reheader != "":
+		// Reheader mode: replace the header and re-emit a bgzipped stream.
+		return runReheader(dataPath, o, cfg, stdout, stderr)
+	default:
 		// Build mode.
 		return runBuild(dataPath, cfg, o.force, o.noSaveIdx, stderr)
-	default:
-		return runQuery(dataPath, regions, o, cfg, stdout, stderr)
 	}
+}
+
+// runReheader replaces the leading header of the bgzipped file at dataPath
+// with the contents of o.reheader and writes a fresh bgzipped stream to
+// stdout, mirroring upstream tabix's `--reheader` behavior.
+func runReheader(dataPath string, o opts, cfg tabix.Config, stdout, stderr io.Writer) int {
+	if err := tabix.Reheader(dataPath, o.reheader, byte(cfg.Meta), stdout); err != nil {
+		fmt.Fprintf(stderr, "tabix: reheader: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func resolveConfig(o opts) (tabix.Config, error) {
@@ -272,6 +289,16 @@ func runQuery(dataPath string, regions []string, o opts, _ tabix.Config, stdout,
 		return 0
 	}
 
+	// Load the -T/--targets strict overlap filter, if requested.
+	var targets *tabix.Targets
+	if o.targetsFile != "" {
+		targets, err = tabix.LoadTargets(o.targetsFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "tabix: targets: %v\n", err)
+			return 1
+		}
+	}
+
 	// Collect query regions from --regions FILE and positional args.
 	var rs []region
 	if o.regionsFile != "" {
@@ -306,14 +333,25 @@ func runQuery(dataPath string, regions []string, o opts, _ tabix.Config, stdout,
 		rs = append(rs, reg)
 	}
 
+	// When -T is given without any explicit region, upstream streams the
+	// whole file (the "." region), letting the targets filter do the work.
+	if len(rs) == 0 && targets != nil {
+		for _, chrom := range idx.Chroms() {
+			rs = append(rs, region{chrom: chrom, beg: 0, end: 1 << 30})
+		}
+	}
+
 	for _, r := range rs {
-		records, err := idx.QueryBytes(dataPath, r.chrom, r.beg, r.end)
+		records, err := idx.QueryRecords(dataPath, r.chrom, r.beg, r.end)
 		if err != nil {
 			fmt.Fprintf(stderr, "tabix: query %s: %v\n", r.chrom, err)
 			return 1
 		}
 		for _, rec := range records {
-			stdout.Write(rec)
+			if targets != nil && !targets.Overlaps(r.chrom, rec.Beg, rec.End) {
+				continue
+			}
+			stdout.Write(rec.Line)
 			fmt.Fprintln(stdout)
 		}
 	}
