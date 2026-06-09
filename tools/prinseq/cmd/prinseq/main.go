@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -241,6 +243,22 @@ func runFilter(args []string) {
 	var phred64 bool
 	fs.BoolVar(&phred64, "phred64", false, "")
 
+	// Sequence/header transforms and misc knobs (prinseq-lite.pl 0.20.4).
+	// Registered under their upstream single-dash names; Go's flag package
+	// accepts both `-name` and `--name`.
+	var seqCase, dnaRna, customParams, paramsFile string
+	var rmHeader, noQualHeader, exactOnly bool
+	var seqNum, lineWidth int
+	fs.StringVar(&seqCase, "seq_case", "", "")    // upper|lower
+	fs.StringVar(&dnaRna, "dna_rna", "", "")      // dna|rna
+	fs.BoolVar(&rmHeader, "rm_header", false, "") // drop original header comment
+	fs.BoolVar(&noQualHeader, "no_qual_header", false, "")
+	fs.IntVar(&lineWidth, "line_width", 0, "")      // FASTA/QUAL wrap width
+	fs.IntVar(&seqNum, "seq_num", 0, "")            // keep first N passing records
+	fs.BoolVar(&exactOnly, "exact_only", false, "") // exact-only dedup
+	fs.StringVar(&customParams, "custom_params", "", "")
+	fs.StringVar(&paramsFile, "params", "", "")
+
 	// Trimming options
 	var trimLeft, trimRight, trimLeftP, trimRightP int
 	var trimQualL, trimQualR, trimNsLeft, trimNsRight int
@@ -304,6 +322,17 @@ Identifier / Output-format Options:
                             4=FASTQ+FASTA, 5=FASTQ+FASTA+QUAL
   --phred64                 Input FASTQ uses Phred+64 (alias for
                             -t illumina)
+
+Sequence/Header Transform Options:
+  --seq_case upper|lower    Force sequence case
+  --dna_rna dna|rna         Convert T<->U (preserves case)
+  --rm_header               Drop the original header comment
+  --no_qual_header          Emit a bare "+" line in FASTQ output
+  --line_width INT          Wrap FASTA/QUAL output at N chars (0 = no wrap)
+  --seq_num INT             Keep only the first N passing records
+  --exact_only              Restrict duplicate detection to exact dups
+  --custom_params STRING    Dinucleotide-odds complexity rules
+  --params FILE             Read parameters from a file
 
 Trimming Options:
   --trim-left INT           Trim bases from 5' end
@@ -429,6 +458,76 @@ Examples:
 		os.Exit(1)
 	}
 
+	// --params <file> supplies parameters from a file (one "key value" per
+	// line, leading '-' optional; '#' comments ignored), mirroring upstream
+	// readParamsFile (prinseq-lite.pl:2353-2369). Values from the file fill
+	// in flags this command supports only when the flag was NOT given on the
+	// command line (CLI takes precedence, matching upstream's
+	// "command-line wins" ordering at lines 553-560).
+	lineWidthSet := flagSet(fs, "line_width")
+	if paramsFile != "" {
+		params, err := readParamsFile(paramsFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading params file: %v\n", err)
+			os.Exit(1)
+		}
+		if _, ok := params["line_width"]; ok && !lineWidthSet {
+			lineWidthSet = true
+		}
+		setFromParams(fs, params, map[string]*string{
+			"seq_case":      &seqCase,
+			"dna_rna":       &dnaRna,
+			"custom_params": &customParams,
+		}, map[string]*int{
+			"line_width": &lineWidth,
+			"seq_num":    &seqNum,
+		}, map[string]*bool{
+			"rm_header":      &rmHeader,
+			"no_qual_header": &noQualHeader,
+			"exact_only":     &exactOnly,
+		})
+	}
+
+	// Resolve the effective FASTA/QUAL line width, replicating upstream's
+	// $linelen rule (prinseq-lite.pl:931-939): a pure-FASTQ output
+	// (out_format 3) never wraps; an explicit --line_width (CLI or params
+	// file) wins verbatim (including an explicit 0 = no wrap); otherwise the
+	// default is the LINE_WIDTH constant (60). The Go writers treat the
+	// resolved value literally, so we materialise the default here.
+	if outFormat == 3 {
+		lineWidth = 0
+	} else if !lineWidthSet {
+		lineWidth = 60
+	}
+
+	// Validate --seq_case / --dna_rna domains (prinseq-lite.pl:912-924).
+	if seqCase != "" && seqCase != "upper" && seqCase != "lower" {
+		fmt.Fprintln(os.Stderr, "Error: --seq_case must be 'upper' or 'lower'")
+		os.Exit(1)
+	}
+	if dnaRna != "" && dnaRna != "dna" && dnaRna != "rna" {
+		fmt.Fprintln(os.Stderr, "Error: --dna_rna must be 'dna' or 'rna'")
+		os.Exit(1)
+	}
+	// --no_qual_header only applies to a pure-FASTQ output stream. Upstream
+	// rejects it whenever the resolved out_format is not 3
+	// (prinseq-lite.pl:792-793), i.e. for the FASTA (1), FASTA+QUAL (2),
+	// FASTQ+FASTA (4) and FASTQ+FASTA+QUAL (5) modes. out_format 0 means
+	// "preserve the input format"; that is only pure FASTQ when the input is
+	// FASTQ, so reject the FASTA-input case here as well.
+	if noQualHeader {
+		pureFastq := outFormat == 3 || (outFormat == 0 && isFastq)
+		if !pureFastq {
+			fmt.Fprintln(os.Stderr, "Error: --no_qual_header can only be used for FASTQ outputs")
+			os.Exit(1)
+		}
+	}
+	// --exact_only requires derep mode 1 and/or 4 (prinseq-lite.pl:833-837).
+	if exactOnly && derep != 0 && derep != 1 && derep != 4 && derep != 5 {
+		fmt.Fprintln(os.Stderr, "Error: --exact_only can only be used with --derep options 1 and/or 4")
+		os.Exit(1)
+	}
+
 	// Set filter options
 	opts := prinseq.FilterOptions{
 		MinLen:        minLen,
@@ -457,6 +556,14 @@ Examples:
 		NonIUPAC:      noniupac,
 		SeqID:         seqID,
 		OutFormat:     outFormat,
+		SeqCase:       seqCase,
+		DNARNA:        dnaRna,
+		RmHeader:      rmHeader,
+		NoQualHeader:  noQualHeader,
+		SeqNum:        seqNum,
+		ExactOnly:     exactOnly,
+		QualLineWidth: lineWidth,
+		CustomParams:  prinseq.ParseCustomParams(customParams),
 	}
 
 	// Open the seq_id_mappings TSV writer (when requested). Upstream
@@ -582,6 +689,82 @@ Examples:
 		if err2 := prinseq.Filter(reader, writer, isFastq, opts); err2 != nil {
 			fmt.Fprintf(os.Stderr, "Error filtering sequences: %v\n", err2)
 			os.Exit(1)
+		}
+	}
+}
+
+// readParamsFile parses a `-params` file into a key->value map, mirroring
+// upstream readParamsFile (prinseq-lite.pl:2353-2369): '#'-comment lines and
+// blank lines are skipped, fields are whitespace-split, the key has any
+// leading '-' stripped, and the value is the remaining fields rejoined with a
+// single space (empty when the key stands alone, e.g. a boolean flag).
+func readParamsFile(path string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	params := make(map[string]string)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r")
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		key := strings.TrimPrefix(fields[0], "-")
+		key = strings.TrimPrefix(key, "-")
+		val := ""
+		if len(fields) > 1 {
+			val = strings.Join(fields[1:], " ")
+		}
+		params[key] = val
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return params, nil
+}
+
+// flagSet reports whether the named flag was explicitly set on the command
+// line for the given FlagSet.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// setFromParams applies params-file values to the supplied destinations, but
+// only for keys that were NOT given on the command line (CLI wins). Invalid
+// numeric/boolean values cause an exit, matching upstream's strict parsing.
+func setFromParams(fs *flag.FlagSet, params map[string]string,
+	strs map[string]*string, ints map[string]*int, bools map[string]*bool) {
+	for name, dst := range strs {
+		if v, ok := params[name]; ok && !flagSet(fs, name) {
+			*dst = v
+		}
+	}
+	for name, dst := range ints {
+		if v, ok := params[name]; ok && !flagSet(fs, name) {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: params file value for %q must be an integer\n", name)
+				os.Exit(1)
+			}
+			*dst = n
+		}
+	}
+	for name, dst := range bools {
+		if _, ok := params[name]; ok && !flagSet(fs, name) {
+			*dst = true
 		}
 	}
 }

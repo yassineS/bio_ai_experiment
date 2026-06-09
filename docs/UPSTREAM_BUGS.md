@@ -736,6 +736,23 @@ No upstream bugs surfaced — PRINSEQ-lite's documented behaviour
 agreed with the corpus we tested for every option we exercised
 (see the prinseq table for the 18 cases).
 
+### `--seq_id` trailing-comment divergence (resolved on our side)
+
+**Severity:** behavioural (our port only); **Status:** fixed.
+
+Our earlier `--seq_id` implementation rewrote the header to just
+`<prefix><N>`, dropping any trailing FASTA/FASTQ comment. Upstream
+`prinseq-lite.pl:3685-3704` emits `$sid.($header ? ' '.$header : '')`,
+i.e. it replaces only the identifier token and re-appends the original
+comment. The PR
+`claude/festive-planck-n9o2lm-prinseq-transforms-misc` resolves this:
+`renameDescription` now rewrites only the id and `joinHeader` re-attaches
+the comment, so `>read1 sample=A` with `--seq_id S_` becomes
+`>S_1 sample=A`, matching upstream byte-for-byte (verified by
+`TestParityTransforms/seq_id_fasta` and `/seq_id_fastq`). The mapping TSV
+written by `--seq_id_mappings` still keys on the bare identifier (`$sid`),
+matching upstream line 3646.
+
 ### `--graph_data` JSON key order is non-deterministic (`prinseq-lite.pl:2050-2287`)
 
 **Severity:** behavioural / reproducibility (not a numerical bug).
