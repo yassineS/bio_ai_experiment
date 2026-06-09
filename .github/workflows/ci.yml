@@ -24,6 +24,38 @@ jobs:
       - name: Note
         run: echo "CI is temporarily disabled. Checks are run locally by contributing agents and documented in each PR."
 
+  upstream-parity:
+    name: Upstream parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      - name: Install htslib build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
+      - name: Build htslib
+        run: |
+          cd reference_code/htslib
+          autoreconf -i
+          ./configure
+          make -j
+      - name: Build bcftools
+        run: |
+          cd reference_code/bcftools
+          make -j
+      - name: Run upstream-parity tests
+        # Scoped to the live upstream-binary parity tests this job builds for
+        # (bcftools view -x/-X). Other tools' `*Upstream*` tests need binaries
+        # this job does not build, so they are intentionally excluded.
+        run: go test -run 'PrivateUpstreamParity' ./tools/bcftools/...
+
 # --- Previous job definitions (kept for easy re-enable) -----------------------
 #
 #  lint:

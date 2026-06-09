@@ -558,6 +558,13 @@ func TestViewPrivate(t *testing.T) {
 			opts: ViewOptions{Private: true},
 			want: []string{"priv1", "shared", "priv2", "noalt", "outonly"},
 		},
+		{
+			// ExcludePrivate is likewise a no-op without a subset: nothing is
+			// dropped (upstream gates the test on n_samples > 0).
+			name: "exclude-private without subset is no-op",
+			opts: ViewOptions{ExcludePrivate: true},
+			want: []string{"priv1", "shared", "priv2", "noalt", "outonly"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -606,32 +613,4 @@ func dataRecordsStripINFO(vcfText string) []string {
 		out = append(out, strings.Join(fields, "\t"))
 	}
 	return out
-}
-
-// TestParityViewPrivate_Golden compares our -x/-X record selection against
-// the committed upstream golden outputs (captured from bcftools 1.x
-// `view --no-version -s S1,S2 -x/-X`). The comparison blanks the INFO column
-// because upstream recomputes INFO/AC/AN after subsetting and our port does
-// not (tracked separately). Every other column — including the GT genotypes
-// of the retained samples — must match byte-for-byte.
-func TestParityViewPrivate_Golden(t *testing.T) {
-	in := readParity(t, filepath.Join("view", "private.vcf"))
-	cases := []struct {
-		golden string
-		opts   ViewOptions
-	}{
-		{"view_private.expected.vcf", ViewOptions{Samples: []string{"S1", "S2"}, Private: true}},
-		{"view_exclude_private.expected.vcf", ViewOptions{Samples: []string{"S1", "S2"}, ExcludePrivate: true}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.golden, func(t *testing.T) {
-			want := readParity(t, filepath.Join("view", tc.golden))
-			gotBytes := runParityView(t, in, tc.opts)
-			got := dataRecordsStripINFO(string(gotBytes))
-			wantRecs := dataRecordsStripINFO(string(want))
-			if !equalStrings(got, wantRecs) {
-				t.Fatalf("record selection mismatch vs upstream golden.\nwant: %v\ngot:  %v", wantRecs, got)
-			}
-		})
-	}
 }
