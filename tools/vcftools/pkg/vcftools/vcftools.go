@@ -1236,8 +1236,10 @@ func Run(input io.Reader, params *Params) error {
 		// Filter samples
 		filteredVariant := filterVariantSamples(variant, keepSamples)
 
-		// Apply genotype-level filters
-		filteredVariant = filterGenotypes(filteredVariant, params)
+		// Apply genotype-level filters. genoFiltered names the samples whose
+		// genotype was dropped here, used by the per-individual missingness
+		// path to populate N_GENOTYPES_FILTERED.
+		filteredVariant, genoFiltered := filterGenotypes(filteredVariant, params)
 
 		// --phased (also implied by --ldhat, --ldhelmet, --IMPUTE,
 		// --hapcount): drop sites with any unphased kept-individual
@@ -1275,7 +1277,7 @@ func Run(input io.Reader, params *Params) error {
 		// behaviour to match upstream.
 
 		// Update statistics
-		stats.addVariant(filteredVariant, params)
+		stats.addVariant(filteredVariant, params, genoFiltered)
 
 		// Feed LD runner (writes pairwise output incrementally).
 		if ldRun != nil {
@@ -2312,8 +2314,13 @@ func filterVariantSamples(v *vcf.Variant, keepSamples map[string]bool) *vcf.Vari
 	return filtered
 }
 
-// filterGenotypes applies genotype-level filters (sets genotypes to missing if they fail filters)
-func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
+// filterGenotypes applies genotype-level filters (sets genotypes to missing if
+// they fail filters). The second return value is the set of sample names whose
+// genotype was dropped by a filter at this site, which the per-individual
+// missingness path counts as N_GENOTYPES_FILTERED (a genotype-filtered call is
+// distinct from a genuinely missing one — see addIndvMissingStat). It is nil
+// when no genotype filter is active.
+func filterGenotypes(v *vcf.Variant, params *Params) (*vcf.Variant, map[string]bool) {
 	// Build the FT-flag set once per call so the hot loop just probes a map.
 	var ftDropSet map[string]struct{}
 	if len(params.RemoveFilteredGenoList) > 0 {
@@ -2330,7 +2337,16 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 
 	// If no genotype filters specified, return as-is.
 	if params.MinDP == 0 && params.MaxDP == 0 && params.MinGQ == 0 && !ftFilterActive {
-		return v
+		return v, nil
+	}
+
+	// Names of samples whose genotype was dropped by a filter at this site.
+	var genoFiltered map[string]bool
+	markFiltered := func(name string) {
+		if genoFiltered == nil {
+			genoFiltered = make(map[string]bool)
+		}
+		genoFiltered[name] = true
 	}
 
 	// Create a copy to avoid modifying original
@@ -2346,28 +2362,38 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 		Format: v.Format,
 	}
 
+	// Upstream gates DP/GQ genotype filters on the SITE FORMAT carrying the
+	// field (DP_idx != -1 / GQ_idx != -1 in vcf_entry.cpp:540-577). When the
+	// FORMAT lacks the tag, no genotype at that site is filtered, regardless
+	// of the threshold. We mirror that by probing v.Format once per site.
+	dpFilterActive := (params.MinDP > 0 || params.MaxDP > 0) && formatHasTag(v.Format, "DP")
+	gqFilterActive := params.MinGQ > 0 && formatHasTag(v.Format, "GQ")
+
 	for _, sample := range v.Samples {
-		// Check DP (depth) filter
-		if params.MinDP > 0 || params.MaxDP > 0 {
-			if dpStr, ok := sample.Data["DP"]; ok {
-				if dp, err := strconv.Atoi(dpStr); err == nil {
-					if (params.MinDP > 0 && dp < params.MinDP) || (params.MaxDP > 0 && dp > params.MaxDP) {
-						filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
-						continue
-					}
-				}
+		// Check DP (depth) filter. Upstream parses a missing/"." depth as -1
+		// (str2double/get_indv_DEPTH default), so a sample with no DP value at
+		// a DP-bearing site is filtered by --minDP (since -1 < min_depth) but
+		// never by --maxDP. See filter_genotypes_by_depth (vcf_entry.cpp:540).
+		if dpFilterActive {
+			dp := genotypeIntField(sample, "DP")
+			if (params.MinDP > 0 && dp < params.MinDP) || (params.MaxDP > 0 && dp > params.MaxDP) {
+				filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
+				markFiltered(sample.Name)
+				continue
 			}
 		}
 
-		// Check GQ (genotype quality) filter
-		if params.MinGQ > 0 {
-			if gqStr, ok := sample.Data["GQ"]; ok {
-				if gq, err := strconv.Atoi(gqStr); err == nil {
-					if gq < params.MinGQ {
-						filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
-						continue
-					}
-				}
+		// Check GQ (genotype quality) filter. As with DP, a missing/"." GQ is
+		// -1 and therefore below any positive --minGQ threshold, so it is
+		// filtered (vcf_entry.cpp:560-577 + set_indv_GQUALITY at
+		// vcf_entry_setters.cpp:171). Upstream caps GQ at 99, but that only
+		// matters for thresholds above 99, which --minGQ never reaches here.
+		if gqFilterActive {
+			gq := genotypeIntField(sample, "GQ")
+			if gq < params.MinGQ {
+				filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
+				markFiltered(sample.Name)
+				continue
 			}
 		}
 
@@ -2387,6 +2413,7 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 			if ftEntries, hasFT := parseSampleFT(sample); hasFT {
 				if shouldDropByFT(ftEntries, params.RemoveFilteredGenoAll, ftDropSet) {
 					filtered.Samples = append(filtered.Samples, sampleWithMissingGT(sample))
+					markFiltered(sample.Name)
 					continue
 				}
 			}
@@ -2396,7 +2423,39 @@ func filterGenotypes(v *vcf.Variant, params *Params) *vcf.Variant {
 		filtered.Samples = append(filtered.Samples, sample)
 	}
 
-	return filtered
+	return filtered, genoFiltered
+}
+
+// formatHasTag reports whether the variant FORMAT list contains tag. Mirrors
+// upstream's DP_idx/GQ_idx != -1 gate on the genotype DP/GQ filters.
+func formatHasTag(format []string, tag string) bool {
+	for _, f := range format {
+		if f == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// genotypeIntField returns the integer value of a sample's numeric FORMAT
+// field (e.g. DP or GQ), mapping a missing, empty, "." or unparsable value to
+// -1. This matches upstream's str2double(..., -1) plus get_indv_DEPTH /
+// get_indv_GQUALITY defaults, so filtering on a missing value behaves exactly
+// as vcftools does (a -1 placeholder that falls below any positive threshold).
+func genotypeIntField(sample vcf.Sample, tag string) int {
+	raw, ok := sample.Data[tag]
+	if !ok || raw == "" || raw == "." {
+		return -1
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		// Upstream parses via atof; a non-integer (e.g. "30.0") truncates.
+		if f, ferr := strconv.ParseFloat(raw, 64); ferr == nil {
+			return int(f)
+		}
+		return -1
+	}
+	return v
 }
 
 // sampleWithMissingGT clones a sample and replaces its GT field with "./."

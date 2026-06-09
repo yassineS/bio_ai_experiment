@@ -777,6 +777,58 @@ func TestParity_MissingIndv(t *testing.T) {
 	}
 }
 
+// TestMissingIndv_GenoFilteredColumn pins the .imiss layout when a
+// genotype-level filter (--minGQ) is active, without requiring the upstream
+// binary. It locks in the upstream-exact values verified by the live test:
+// genotype-filtered calls populate N_GENOTYPES_FILTERED (not N_MISS) and are
+// excluded from N_DATA, and F_MISS uses %g formatting. These expected numbers
+// were produced by the upstream vcftools binary on sample.vcf.
+func TestMissingIndv_GenoFilteredColumn(t *testing.T) {
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{MissingIndv: true, MinGQ: 30})
+	got := readFileLines(t, prefix+".imiss")
+	want := []string{
+		"INDV\tN_DATA\tN_GENOTYPES_FILTERED\tN_MISS\tF_MISS",
+		"NA00001\t9\t3\t0\t0",
+		"NA00002\t8\t4\t0\t0",
+		"NA00003\t11\t1\t1\t0.0909091",
+	}
+	if len(got) != len(want) {
+		t.Fatalf(".imiss: got %d lines, want %d\n%v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf(".imiss line %d:\n got=%q\nwant=%q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestGenotypeIsMissing pins the upstream "first allele only" missingness
+// rule used by output_indv_missingness (alleles.first == -1).
+func TestGenotypeIsMissing(t *testing.T) {
+	cases := []struct {
+		gt   string
+		want bool
+	}{
+		{"", true},
+		{".", true},
+		{"./.", true},
+		{".|.", true},
+		{"./1", true},  // first allele missing
+		{".|0", true},  // first allele missing
+		{"0/.", false}, // first allele present, second missing
+		{"0|.", false},
+		{"0/0", false},
+		{"1|2", false},
+		{"1", false}, // haploid present
+		{"0", false},
+	}
+	for _, tc := range cases {
+		if got := genotypeIsMissing(tc.gt); got != tc.want {
+			t.Errorf("genotypeIsMissing(%q) = %v, want %v", tc.gt, got, tc.want)
+		}
+	}
+}
+
 // TestParity_Depth — byte-for-byte.
 func TestParity_Depth(t *testing.T) {
 	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Depth: true})
