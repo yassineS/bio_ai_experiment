@@ -109,4 +109,14 @@ func TestCSQRunInputs(t *testing.T) {
 	if rc := runCSQ([]string{"-b", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 1 {
 		t.Errorf("-b should be accepted (file-open failure rc=1), got rc=%d", rc)
 	}
+	// -B/--trim-protein-seq with an explicit length is accepted (rc=1 from
+	// the absent input files, not the rc=2 argument-rejection path).
+	if rc := runCSQ([]string{"-B", "2", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 1 {
+		t.Errorf("-B 2 should be accepted (file-open failure rc=1), got rc=%d", rc)
+	}
+	// Upstream rejects -B < 1; we mirror that with an up-front rc=2 before
+	// any file I/O.
+	if rc := runCSQ([]string{"-B", "-1", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 2 {
+		t.Errorf("-B -1 must be rejected (rc=2), got rc=%d", rc)
+	}
 }
