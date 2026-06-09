@@ -3,6 +3,8 @@ package samtools
 import (
 	"bytes"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -529,47 +531,57 @@ func TestParseConsensusMode(t *testing.T) {
 	}
 }
 
-// TestConsensus_BayesianUpstreamParity checks our bayesian output
-// byte-for-byte against the golden files in the vendored upstream
-// `reference_code/samtools/test/consensus/` corpus. Fixtures requiring a
-// reference FASTA (-T, the *T.out goldens) are out of scope for v1 and
-// are not exercised here; see docs/PARITY_ROADMAP.md#samtools.
+// TestConsensus_BayesianUpstreamParity runs BOTH the live upstream
+// `samtools consensus` binary and the Go port on the same vendored fixture
+// and asserts the bayesian output is identical, replacing the former
+// golden-file comparison. The upstream binary is built on demand and a
+// build failure is fatal, never skipped. Each case's `args` is the exact
+// invocation from reference_code/samtools/test/consensus/consensus.reg.
+// Fixtures requiring a reference FASTA (-T, the *T.out goldens) are out of
+// scope for v1 and are not exercised here; see docs/PARITY_ROADMAP.md.
 func TestConsensus_BayesianUpstreamParity(t *testing.T) {
+	bin := upstreamSamtools(t)
 	const fixDir = "../../../../reference_code/samtools/test/consensus"
-	if _, err := os.Stat(fixDir); err != nil {
-		t.Skipf("upstream consensus fixtures not present (%v); run `git submodule update --init reference_code/samtools`", err)
-	}
 	cases := []struct {
-		golden string
-		input  string
-		opts   ConsensusOptions
+		name  string
+		input string
+		args  []string // upstream `samtools consensus` args (sans input file)
+		opts  ConsensusOptions
 	}{
-		{"18q.out", "consen1.sam", consBayes(ConsensusFASTQ, 0, false, false, "", "")},
-		{"19q.out", "consen1.sam", consBayes(ConsensusFASTQ, 19, false, false, "", "")},
-		{"18p.out", "consen1.sam", consBayes(ConsensusPileup, 0, false, false, "", "")},
-		{"19p.out", "consen1.sam", consBayes(ConsensusPileup, 19, false, false, "", "")},
-		{"20p.out", "consen1.sam", consBayes(ConsensusPileup, 30, false, true, "", "")},
-		{"21p.out", "consen1.sam", consBayes(ConsensusPileup, 31, false, true, "", "")},
-		{"30.out", "consen1c.sam", consBayes(ConsensusFASTQ, 0, true, false, "yes", "no")},
-		{"31.out", "consen1c.sam", consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 1)},
-		{"32.out", "consen1c.sam", consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 2)},
-		{"40.out", "consen1c.sam", consBayes(ConsensusPileup, 0, true, false, "yes", "no")},
-		{"41.out", "consen1c.sam", consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 1)},
-		{"42.out", "consen1c.sam", consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 2)},
+		{"18q", "consen1.sam", []string{"-f", "fastq", "--no-use-MQ", "-C", "0", "-m", "bayesian"}, consBayes(ConsensusFASTQ, 0, false, false, "", "")},
+		{"19q", "consen1.sam", []string{"-f", "fastq", "--no-use-MQ", "-C", "19", "-m", "bayesian"}, consBayes(ConsensusFASTQ, 19, false, false, "", "")},
+		{"18p", "consen1.sam", []string{"-f", "pileup", "--no-use-MQ", "-C", "0", "-m", "bayesian"}, consBayes(ConsensusPileup, 0, false, false, "", "")},
+		{"19p", "consen1.sam", []string{"-f", "pileup", "--no-use-MQ", "-C", "19", "-m", "bayesian"}, consBayes(ConsensusPileup, 19, false, false, "", "")},
+		{"20p", "consen1.sam", []string{"-f", "pileup", "--no-use-MQ", "-C", "30", "-A", "-m", "bayesian"}, consBayes(ConsensusPileup, 30, false, true, "", "")},
+		{"21p", "consen1.sam", []string{"-f", "pileup", "--no-use-MQ", "-C", "31", "-A", "-m", "bayesian"}, consBayes(ConsensusPileup, 31, false, true, "", "")},
+		{"30", "consen1c.sam", []string{"-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayes(ConsensusFASTQ, 0, true, false, "yes", "no")},
+		{"31", "consen1c.sam", []string{"-a", "-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 1)},
+		{"32", "consen1c.sam", []string{"-aa", "-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 2)},
+		{"40", "consen1c.sam", []string{"-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayes(ConsensusPileup, 0, true, false, "yes", "no")},
+		{"41", "consen1c.sam", []string{"-a", "-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 1)},
+		{"42", "consen1c.sam", []string{"-aa", "-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 2)},
 	}
 	for _, c := range cases {
-		t.Run(c.golden, func(t *testing.T) {
-			samBytes, err := os.ReadFile(fixDir + "/" + c.input)
+		t.Run(c.name, func(t *testing.T) {
+			input := filepath.Join(fixDir, c.input)
+			samBytes, err := os.ReadFile(input)
 			if err != nil {
 				t.Fatalf("read input %s: %v", c.input, err)
 			}
-			want, err := os.ReadFile(fixDir + "/expected/" + c.golden)
-			if err != nil {
-				t.Fatalf("read golden %s: %v", c.golden, err)
+
+			// Live upstream invocation.
+			cmd := exec.Command(bin, append(append([]string{"consensus"}, c.args...), input)...)
+			var upOut, upErr bytes.Buffer
+			cmd.Stdout = &upOut
+			cmd.Stderr = &upErr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("upstream samtools consensus %v: %v\n%s", c.args, err, upErr.String())
 			}
+
+			// Go port.
 			got := runConsensusOnSAM(t, string(samBytes), c.opts)
-			if got != string(want) {
-				t.Errorf("%s mismatch:\n--- got ---\n%s\n--- want ---\n%s", c.golden, got, want)
+			if got != upOut.String() {
+				t.Errorf("%s mismatch:\n--- got (go) ---\n%s\n--- want (upstream) ---\n%s", c.name, got, upOut.String())
 			}
 		})
 	}

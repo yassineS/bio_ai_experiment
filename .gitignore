@@ -5,6 +5,9 @@
 *.so
 *.dylib
 
+# Cross-process build lock used by the live upstream-binary parity tests
+reference_code/.bio-build.lock
+
 # Tool binaries in root directory
 /seqtk
 /prinseq

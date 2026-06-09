@@ -35,6 +35,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,6 +72,24 @@ func openParity(t *testing.T, name string) *os.File {
 		t.Fatalf("open %s: %v", p, err)
 	}
 	return f
+}
+
+// upstreamSamtoolsRun runs the live `samtools` binary with the given args
+// (the named input fixture is supplied separately as the final argument)
+// and returns stdout. The upstream binary is built on demand; a build
+// failure is fatal, never skipped. This replaces reading committed
+// .expected golden files in the parity tests below.
+func upstreamSamtoolsRun(t *testing.T, args ...string) []byte {
+	t.Helper()
+	bin := upstreamSamtools(t)
+	cmd := exec.Command(bin, args...)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("upstream samtools %v: %v\n%s", args, err, errBuf.String())
+	}
+	return out.Bytes()
 }
 
 // ---- view --------------------------------------------------------------
@@ -299,7 +318,7 @@ func TestParity_Sort_T01_Coordinate(t *testing.T) {
 		t.Fatalf("Sort: %v", err)
 	}
 	got := stripPGAndCO(out.Bytes())
-	want := stripPGAndCO(readParity(t, "pos.sort.expected.sam"))
+	want := stripPGAndCO(upstreamSamtoolsRun(t, "sort", "-O", "sam", parityPath(t, "test_input_1_a.sam")))
 	if !bytes.Equal(got, want) {
 		t.Errorf("coordinate sort mismatch.\nwant:\n%s\ngot:\n%s", want, got)
 	}
@@ -532,7 +551,7 @@ func TestParity_Depth_T01_Basic(t *testing.T) {
 	if err := Depth([]io.Reader{in}, &out, DepthOptions{ExcludeFlags: DefaultDepthExcludeFlags}); err != nil {
 		t.Fatalf("Depth: %v", err)
 	}
-	want := readParity(t, "depth_basic.expected.txt")
+	want := upstreamSamtoolsRun(t, "depth", parityPath(t, "basic.sam"))
 	if !bytes.Equal(out.Bytes(), want) {
 		t.Errorf("depth mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
 	}
@@ -672,14 +691,39 @@ func TestParity_Fastq_T01_BasicPaired(t *testing.T) {
 	}
 	got1, _ := os.ReadFile(r1)
 	got2, _ := os.ReadFile(r2)
-	want1 := readParity(t, "1.1.fq.expected")
-	want2 := readParity(t, "1.2.fq.expected")
+	want1, want2 := upstreamFastqPaired(t, "bam2fq.001.sam", "")
 	if !bytes.Equal(got1, want1) {
 		t.Errorf("1.fq mismatch.\nwant:\n%s\ngot:\n%s", want1, got1)
 	}
 	if !bytes.Equal(got2, want2) {
 		t.Errorf("2.fq mismatch.\nwant:\n%s\ngot:\n%s", want2, got2)
 	}
+}
+
+// upstreamFastqPaired runs `samtools fastq -1 r1 -2 r2 [-s s] <input>` live
+// and returns the R1 and R2 file contents. If singletonOut is non-empty a
+// `-s` file is requested at that temp path and its contents are written
+// there (caller reads it separately).
+func upstreamFastqPaired(t *testing.T, input, singletonOut string) (r1, r2 []byte) {
+	t.Helper()
+	bin := upstreamSamtools(t)
+	dir := t.TempDir()
+	up1 := filepath.Join(dir, "up1.fq")
+	up2 := filepath.Join(dir, "up2.fq")
+	args := []string{"fastq", "-1", up1, "-2", up2}
+	if singletonOut != "" {
+		args = append(args, "-s", singletonOut)
+	}
+	args = append(args, parityPath(t, input))
+	cmd := exec.Command(bin, args...)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("upstream samtools fastq %v: %v\n%s", args, err, errBuf.String())
+	}
+	r1, _ = os.ReadFile(up1)
+	r2, _ = os.ReadFile(up2)
+	return r1, r2
 }
 
 // fastq.t02 — paired + singleton tracking but no singletons (no mate-less
@@ -701,9 +745,9 @@ func TestParity_Fastq_T02_PairedNoSingleton(t *testing.T) {
 	got1, _ := os.ReadFile(r1)
 	got2, _ := os.ReadFile(r2)
 	gots, _ := os.ReadFile(s)
-	want1 := readParity(t, "2.1.fq.expected")
-	want2 := readParity(t, "2.2.fq.expected")
-	wants := readParity(t, "2.s.fq.expected")
+	wantSing := filepath.Join(t.TempDir(), "up_s.fq")
+	want1, want2 := upstreamFastqPaired(t, "bam2fq.001.sam", wantSing)
+	wants, _ := os.ReadFile(wantSing)
 	if !bytes.Equal(got1, want1) {
 		t.Errorf("1.fq mismatch.\nwant:\n%s\ngot:\n%s", want1, got1)
 	}
@@ -711,7 +755,7 @@ func TestParity_Fastq_T02_PairedNoSingleton(t *testing.T) {
 		t.Errorf("2.fq mismatch.\nwant:\n%s\ngot:\n%s", want2, got2)
 	}
 	if !bytes.Equal(gots, wants) {
-		t.Errorf("s.fq mismatch (want empty).\ngot:\n%s", gots)
+		t.Errorf("s.fq mismatch.\nwant:\n%s\ngot:\n%s", wants, gots)
 	}
 }
 
@@ -762,10 +806,10 @@ func TestParity_Fastq_T05_Interleaved(t *testing.T) {
 		t.Fatalf("Fastq: %v", err)
 	}
 	got, _ := os.ReadFile(o)
-	// The interleaved record count should be 2 * the number of records in
-	// 1.1.fq.expected (each pair contributes one R1 line + one R2 line).
-	want1 := readParity(t, "1.1.fq.expected")
-	want2 := readParity(t, "1.2.fq.expected")
+	// The interleaved record count should be the sum of the R1 and R2
+	// record counts upstream emits for the same input (each pair
+	// contributes one R1 line + one R2 line).
+	want1, want2 := upstreamFastqPaired(t, "bam2fq.001.sam", "")
 	pairs1 := bytes.Count(want1, []byte("@ref"))
 	pairs2 := bytes.Count(want2, []byte("@ref"))
 	expectedHeaders := pairs1 + pairs2
@@ -823,7 +867,7 @@ func TestParity_Flagstat_T01_Comprehensive(t *testing.T) {
 	if err := Flagstat(in, &out); err != nil {
 		t.Fatalf("Flagstat: %v", err)
 	}
-	want := readParity(t, "flagstat_basic.expected.txt")
+	want := upstreamSamtoolsRun(t, "flagstat", parityPath(t, "flagstat_basic.sam"))
 	if !bytes.Equal(out.Bytes(), want) {
 		t.Errorf("flagstat mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
 	}
@@ -837,7 +881,7 @@ func TestParity_Flagstat_T02_Empty(t *testing.T) {
 	if err := Flagstat(in, &out); err != nil {
 		t.Fatalf("Flagstat: %v", err)
 	}
-	want := readParity(t, "flagstat_empty.expected.txt")
+	want := upstreamSamtoolsRun(t, "flagstat", parityPath(t, "empty.sam"))
 	if !bytes.Equal(out.Bytes(), want) {
 		t.Errorf("empty flagstat mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
 	}
@@ -1161,27 +1205,36 @@ func TestParity_Idxstats_T02_OutputFormat(t *testing.T) {
 	}
 }
 
-// idxstats.t03 — upstream golden output (from reference_code/samtools/test/idxstats/).
-func TestParity_Idxstats_T03_UpstreamGolden(t *testing.T) {
-	abs, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "samtools", "test", "idxstats", "test_input_1_a.bam.expected"))
-	if err != nil {
-		t.Fatal(err)
+// idxstats.t03 — live parity against the upstream `samtools idxstats`
+// binary. The committed test_input_1_a.sam fixture is converted to an
+// indexed BAM with the upstream binary, then BOTH the upstream
+// `samtools idxstats` and the Go Idxstats port run on it and their 4-column
+// TSV output is compared. (The upstream regression corpus ships only the
+// .expected golden, not the source BAM, so we rebuild the BAM from the
+// committed SAM rather than reading the committed golden.)
+func TestParity_Idxstats_T03_UpstreamParity(t *testing.T) {
+	bin := upstreamSamtools(t)
+	dir := t.TempDir()
+	bamPath := filepath.Join(dir, "in.bam")
+
+	// SAM -> sorted, indexed BAM via the upstream binary.
+	if out, err := exec.Command(bin, "sort", "-o", bamPath, parityPath(t, "test_input_1_a.sam")).CombinedOutput(); err != nil {
+		t.Fatalf("samtools sort: %v\n%s", err, out)
 	}
-	if _, err := os.Stat(abs); err != nil {
-		t.Skip("upstream samtools idxstats fixture not available; init reference_code/samtools submodule")
+	if out, err := exec.Command(bin, "index", bamPath).CombinedOutput(); err != nil {
+		t.Fatalf("samtools index: %v\n%s", err, out)
 	}
-	want, err := os.ReadFile(abs)
-	if err != nil {
-		t.Fatalf("read golden: %v", err)
+
+	// Upstream idxstats.
+	want := upstreamSamtoolsRun(t, "idxstats", bamPath)
+
+	// Go port.
+	var got bytes.Buffer
+	if err := IdxstatsFile(bamPath, &got); err != nil {
+		t.Fatalf("IdxstatsFile: %v", err)
 	}
-	// We don't have the source BAM checked in — just verify the
-	// expected file has the 4-column shape so any future BAM
-	// vendoring can be slotted in trivially.
-	for i, line := range strings.Split(strings.TrimRight(string(want), "\n"), "\n") {
-		fields := strings.Split(line, "\t")
-		if len(fields) != 4 {
-			t.Errorf("upstream line %d has %d fields, want 4: %q", i, len(fields), line)
-		}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Errorf("idxstats mismatch.\nwant:\n%s\ngot:\n%s", want, got.String())
 	}
 }
 

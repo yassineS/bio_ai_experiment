@@ -2,14 +2,16 @@ package bcftools
 
 import (
 	"bytes"
-	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // rohGoldenDir is where the upstream bcftools `roh` fixtures are
-// vendored: roh.1.vcf.gz, roh.1.tab.gz and the roh.1.*.out goldens.
+// vendored: roh.1.vcf.gz and roh.1.tab.gz. The expected regions are
+// produced live by the upstream `bcftools roh` binary at test time, not
+// from committed golden files.
 const rohGoldenDir = "../../testdata/roh"
 
 // stripComments drops the leading "#"-prefixed header lines, matching
@@ -26,84 +28,139 @@ func stripComments(s string) string {
 	return b.String()
 }
 
-// TestRoh_UpstreamGoldens replays the four `roh` invocations from
-// reference_code/bcftools/test/test.pl and compares our output
-// byte-for-byte (after dropping the comment header, exactly as
-// test.pl does) against the upstream roh.1.*.out goldens.
+// TestRoh_UpstreamParity replays the seven `roh` invocations from
+// reference_code/bcftools/test/test.pl (lines 1094-1100), running BOTH the
+// live upstream `bcftools roh` binary and the Go RohFile port on the same
+// fixture and comparing their output in-process (after dropping the comment
+// header, exactly as test.pl's `| grep -v ^#` does). The upstream binary is
+// built on demand; a build failure is fatal, never skipped.
 //
-// test.pl invocations (lines 1094-1100):
+// test.pl invocations:
 //
-//	roh.1.1.out: -Or -G30 --AF-dflt 0.4
-//	roh.1.1.out: -Or -G30 --AF-file roh.1.tab.gz
-//	roh.1.1.out: -Or -G30 --AF-file roh.1.tab.gz --ignore-homref
-//	roh.1.2.out: -G30 --AF-dflt 0.4 -r 1:100174876-100318245
-//	roh.1.3.out: -G30 --AF-dflt 0.4 -r 1:100174876-100318245 --ignore-homref
-//	roh.1.3.out: -G30 --AF-dflt 0.4 -r 1:... --ignore-homref --include-noalt
-//	roh.1.4.out: -G30 --AF-dflt 0.4 -r 1:100174876-100318245 --include-noalt
-func TestRoh_UpstreamGoldens(t *testing.T) {
+//	-Or -G30 --AF-dflt 0.4
+//	-Or -G30 --AF-file roh.1.tab.gz
+//	-Or -G30 --AF-file roh.1.tab.gz --ignore-homref
+//	-G30 --AF-dflt 0.4 -r 1:100174876-100318245
+//	-G30 --AF-dflt 0.4 -r 1:100174876-100318245 --ignore-homref
+//	-G30 --AF-dflt 0.4 -r 1:... --ignore-homref --include-noalt
+//	-G30 --AF-dflt 0.4 -r 1:100174876-100318245 --include-noalt
+func TestRoh_UpstreamParity(t *testing.T) {
+	bin := upstreamBcftools(t)
 	vcf := filepath.Join(rohGoldenDir, "roh.1.vcf.gz")
 	tab := filepath.Join(rohGoldenDir, "roh.1.tab.gz")
 	region := "1:100174876-100318245"
 
+	// The upstream binary needs a .csi index alongside the VCF to honour
+	// `-r`, and a .tbi alongside the AF tab file. The Go port reads
+	// sequentially and needs neither. Build indexed copies in a temp dir so
+	// the committed fixture tree stays index-free.
+	idxVCF := indexedVCFCopy(t, bin, vcf)
+	idxTab := indexedTabCopy(t, bin, tab)
+
 	cases := []struct {
-		name   string
-		golden string
-		opts   RohOptions
+		name string
+		args []string // upstream CLI args
+		opts RohOptions
 	}{
 		{
-			name:   "Or_AFdflt",
-			golden: "roh.1.1.out",
-			opts:   RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), OutputTypes: "r"},
+			name: "Or_AFdflt",
+			args: []string{"-Or", "-G30", "--AF-dflt", "0.4"},
+			opts: RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), OutputTypes: "r"},
 		},
 		{
-			name:   "Or_AFfile",
-			golden: "roh.1.1.out",
-			opts:   RohOptions{GTsOnly: 30, AFFile: tab, OutputTypes: "r"},
+			name: "Or_AFfile",
+			args: []string{"-Or", "-G30", "--AF-file", idxTab},
+			opts: RohOptions{GTsOnly: 30, AFFile: tab, OutputTypes: "r"},
 		},
 		{
-			name:   "Or_AFfile_ignoreHomref",
-			golden: "roh.1.1.out",
-			opts:   RohOptions{GTsOnly: 30, AFFile: tab, IgnoreHomRef: true, OutputTypes: "r"},
+			name: "Or_AFfile_ignoreHomref",
+			args: []string{"-Or", "-G30", "--AF-file", idxTab, "--ignore-homref"},
+			opts: RohOptions{GTsOnly: 30, AFFile: tab, IgnoreHomRef: true, OutputTypes: "r"},
 		},
 		{
-			name:   "region_AFdflt",
-			golden: "roh.1.2.out",
-			opts:   RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), Regions: []string{region}},
+			name: "region_AFdflt",
+			args: []string{"-G30", "--AF-dflt", "0.4", "-r", region},
+			opts: RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), Regions: []string{region}},
 		},
 		{
-			name:   "region_AFdflt_ignoreHomref",
-			golden: "roh.1.3.out",
-			opts:   RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), Regions: []string{region}, IgnoreHomRef: true},
+			name: "region_AFdflt_ignoreHomref",
+			args: []string{"-G30", "--AF-dflt", "0.4", "-r", region, "--ignore-homref"},
+			opts: RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), Regions: []string{region}, IgnoreHomRef: true},
 		},
 		{
-			name:   "region_AFdflt_ignoreHomref_noalt",
-			golden: "roh.1.3.out",
-			opts:   RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), Regions: []string{region}, IgnoreHomRef: true, IncludeNoalt: true},
+			name: "region_AFdflt_ignoreHomref_noalt",
+			args: []string{"-G30", "--AF-dflt", "0.4", "-r", region, "--ignore-homref", "--include-noalt"},
+			opts: RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), Regions: []string{region}, IgnoreHomRef: true, IncludeNoalt: true},
 		},
 		{
-			name:   "region_AFdflt_noalt",
-			golden: "roh.1.4.out",
-			opts:   RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), Regions: []string{region}, IncludeNoalt: true},
+			name: "region_AFdflt_noalt",
+			args: []string{"-G30", "--AF-dflt", "0.4", "-r", region, "--include-noalt"},
+			opts: RohOptions{GTsOnly: 30, AFDflt: AFDfltPtr(0.4), Regions: []string{region}, IncludeNoalt: true},
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			want, err := os.ReadFile(filepath.Join(rohGoldenDir, c.golden))
-			if err != nil {
-				t.Fatalf("read golden: %v", err)
+			// Live upstream invocation (uses the indexed VCF copy).
+			cmd := exec.Command(bin, append([]string{"roh"}, append(c.args, idxVCF)...)...)
+			var upOut, upErr bytes.Buffer
+			cmd.Stdout = &upOut
+			cmd.Stderr = &upErr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("upstream bcftools roh %v: %v\n%s", c.args, err, upErr.String())
 			}
+			want := stripComments(upOut.String())
+
+			// Go port.
 			var out bytes.Buffer
 			if _, err := RohFile(vcf, &out, c.opts); err != nil {
 				t.Fatalf("RohFile: %v", err)
 			}
 			got := stripComments(out.String())
-			if got != string(want) {
-				t.Errorf("output mismatch for %s\n--- got ---\n%s\n--- want ---\n%s",
-					c.golden, got, want)
+
+			if got != want {
+				t.Errorf("output mismatch for %v\n--- got (go) ---\n%s\n--- want (upstream) ---\n%s",
+					c.args, got, want)
 			}
 		})
 	}
+}
+
+// indexedVCFCopy copies a bgzipped VCF into a temp dir and runs
+// `bcftools index` so the upstream binary can honour region (`-r`)
+// queries. It returns the temp-dir VCF path.
+func indexedVCFCopy(t *testing.T, bin, vcf string) string {
+	t.Helper()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, filepath.Base(vcf))
+	if err := copyFile(vcf, dst); err != nil {
+		t.Fatalf("copy %s: %v", vcf, err)
+	}
+	cmd := exec.Command(bin, "index", dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bcftools index %s: %v\n%s", dst, err, out)
+	}
+	return dst
+}
+
+// indexedTabCopy copies a bgzipped CHR\tPOS\tREF,ALT\tAF allele-frequency
+// table into a temp dir and tabix-indexes it (`-s1 -b2 -e2`, matching
+// upstream's bcf_sr_set_targets), returning the temp-dir path. The tabix
+// binary is the one built next to the vendored htslib.
+func indexedTabCopy(t *testing.T, bcftoolsBin, tab string) string {
+	t.Helper()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, filepath.Base(tab))
+	if err := copyFile(tab, dst); err != nil {
+		t.Fatalf("copy %s: %v", tab, err)
+	}
+	referenceCode := filepath.Dir(filepath.Dir(bcftoolsBin)) // .../reference_code
+	tabix := filepath.Join(referenceCode, "htslib", "tabix")
+	cmd := exec.Command(tabix, "-s1", "-b2", "-e2", dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("tabix %s: %v\n%s", dst, err, out)
+	}
+	return dst
 }
 
 // TestRoh_DistanceScaledTransitions confirms that the transition
