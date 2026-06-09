@@ -29,11 +29,35 @@ type StatsOptions struct {
 	DepthMin        int      // -d MIN,MAX,STEP
 	DepthMax        int
 	DepthStep       int
-	AFBins          []float64 // -a; if nil we use the upstream default
-	Collapse        string    // -c
-	FirstAlleleOnly bool      // -1
-	AFTag           string    // --af-tag
-	InputFile       string    // for the header line
+	AFBins          []float64      // -a; if nil we use the upstream default
+	Collapse        string         // -c
+	FirstAlleleOnly bool           // -1
+	AFTag           string         // --af-tag
+	UserTSTV        []UserTSTVSpec // -u/--user-tstv
+	InputFile       string         // for the header line
+}
+
+// UserTSTVSpec describes a single `-u/--user-tstv TAG[:min:max:n]` request:
+// collect transition/transversion counts for 1st-ALT SNPs stratified by the
+// numeric INFO tag Tag, binned into NBins buckets spanning [Min,Max]. Idx
+// selects an element of a multi-valued tag (e.g. PV4[1]); it defaults to 0.
+type UserTSTVSpec struct {
+	Tag   string  // INFO tag name
+	Idx   int     // value index for multi-valued tags (default 0)
+	Min   float64 // lower edge of the binning range (default 0)
+	Max   float64 // upper edge of the binning range (default 1)
+	NBins int     // number of bins (default 100)
+}
+
+// userTSTVAcc holds the per-spec transition/transversion bin counters that
+// accumulate over the streamed records. vals_ts/vals_tv mirror upstream's
+// uint64 arrays sized to NBins. isFloat tracks whether the INFO tag is of
+// Float type (it governs the bin-value print format in the USR section).
+type userTSTVAcc struct {
+	spec    UserTSTVSpec
+	valsTs  []uint64
+	valsTv  []uint64
+	isFloat bool
 }
 
 // defaultAFBins matches the upstream `bcftools stats` default of 11 bins
@@ -103,10 +127,16 @@ type statsResult struct {
 	// HWE: AF -> (n_obs, accumulated chi-square sum).
 	hweObs    map[int]int
 	hweChiSum map[int]float64
+
+	// USR: per-spec Ts/Tv-by-tag accumulators (-u/--user-tstv).
+	userTSTV []*userTSTVAcc
 }
 
 // newStatsResult prepares accumulators sized to the requested sample set.
-func newStatsResult(opts StatsOptions, headerSamples []string) *statsResult {
+// metaInfo carries the header's `##` meta lines so that USR (-u/--user-tstv)
+// can resolve the numeric type of each requested INFO tag; pass nil when no
+// USR specs are configured.
+func newStatsResult(opts StatsOptions, headerSamples []string, metaInfo []string) *statsResult {
 	r := &statsResult{
 		opts:          opts,
 		headerSamples: headerSamples,
@@ -151,7 +181,70 @@ func newStatsResult(opts StatsOptions, headerSamples []string) *statsResult {
 	r.psiNDel = make([]int, len(r.samples))
 	r.psiNHet = make([]int, len(r.samples))
 	r.psiNAA = make([]int, len(r.samples))
+
+	for _, spec := range opts.UserTSTV {
+		acc := &userTSTVAcc{
+			spec:    spec,
+			valsTs:  make([]uint64, spec.NBins),
+			valsTv:  make([]uint64, spec.NBins),
+			isFloat: infoTagIsFloat(metaInfo, spec.Tag),
+		}
+		r.userTSTV = append(r.userTSTV, acc)
+	}
 	return r
+}
+
+// infoTagIsFloat reports whether the INFO tag named tag is declared with
+// Type=Float in the header meta lines. Tags declared Type=Integer (or any
+// non-Float numeric) return false. Mirrors upstream's BCF_HT_REAL test which
+// chooses the `%e` vs `%.0f` bin-value print format in the USR section.
+func infoTagIsFloat(metaInfo []string, tag string) bool {
+	prefix := "##INFO=<"
+	for _, line := range metaInfo {
+		if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, ">") {
+			continue
+		}
+		fields := parseStructuredMeta(line[len(prefix) : len(line)-1])
+		if fields["ID"] == tag {
+			return strings.EqualFold(fields["Type"], "Float")
+		}
+	}
+	return false
+}
+
+// parseStructuredMeta splits the body of an angle-bracket VCF meta line
+// (e.g. `ID=DP,Number=1,Type=Integer,Description="..."`) into its key/value
+// pairs, honouring double-quoted values that may themselves contain commas.
+func parseStructuredMeta(body string) map[string]string {
+	out := make(map[string]string)
+	var key, val strings.Builder
+	inKey := true
+	inQuote := false
+	flush := func() {
+		if key.Len() > 0 {
+			out[key.String()] = val.String()
+		}
+		key.Reset()
+		val.Reset()
+		inKey = true
+	}
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		switch {
+		case c == '"':
+			inQuote = !inQuote
+		case c == '=' && inKey && !inQuote:
+			inKey = false
+		case c == ',' && !inQuote:
+			flush()
+		case inKey:
+			key.WriteByte(c)
+		default:
+			val.WriteByte(c)
+		}
+	}
+	flush()
+	return out
 }
 
 // filterSampleSet returns the intersection of `headerSamples` and `want`
@@ -211,7 +304,7 @@ func statsFromVCF(in io.Reader, out io.Writer, opts StatsOptions) (*statsResult,
 	if err != nil {
 		return nil, err
 	}
-	res := newStatsResult(opts, hdr.Samples)
+	res := newStatsResult(opts, hdr.Samples, hdr.MetaInfo)
 	includeF, excludeF, err := compileStatsExpressions(opts)
 	if err != nil {
 		return nil, err
@@ -246,7 +339,7 @@ func statsFromBCF(in io.Reader, out io.Writer, opts StatsOptions) (*statsResult,
 		return nil, err
 	}
 	hdr := br.Header().VCF
-	res := newStatsResult(opts, hdr.Samples)
+	res := newStatsResult(opts, hdr.Samples, hdr.MetaInfo)
 	includeF, excludeF, err := compileStatsExpressions(opts)
 	if err != nil {
 		return nil, err
@@ -455,6 +548,18 @@ func accumulate(r *statsResult, v *vcf.Variant) {
 		}
 	}
 
+	// USR (-u/--user-tstv): stratify the 1st-ALT Ts/Tv by a numeric INFO
+	// tag. Upstream only counts the first ALT allele and only when it is a
+	// SNP whose REF differs from ALT.
+	if len(r.userTSTV) > 0 && len(alts) > 0 {
+		first := alts[0]
+		if classifyVariant(v.Ref, first) == "snp" &&
+			strings.ToUpper(v.Ref) != strings.ToUpper(first) {
+			isTs := transitionType(v.Ref, first) == "ts"
+			accumulateUserTSTV(r, v, isTs)
+		}
+	}
+
 	// DP binning — INFO/DP first, falling back to per-sample DP sum.
 	if dp, ok := siteDepth(v); ok {
 		bin := dpBin(r.opts, dp)
@@ -555,6 +660,66 @@ func transitionType(ref, alt string) string {
 		return "ts"
 	}
 	return "tv"
+}
+
+// accumulateUserTSTV folds a 1st-ALT SNP into every configured USR
+// accumulator. For each spec it reads the numeric INFO tag at the requested
+// index, maps the value to a bin, and bumps the ts or tv counter. Records
+// where the tag is absent or the index is out of range are skipped — exactly
+// as upstream does.
+func accumulateUserTSTV(r *statsResult, v *vcf.Variant, isTs bool) {
+	for _, acc := range r.userTSTV {
+		val, ok := infoTagValue(v, acc.spec.Tag, acc.spec.Idx)
+		if !ok {
+			continue
+		}
+		idx := userTSTVBin(acc.spec, val)
+		if isTs {
+			acc.valsTs[idx]++
+		} else {
+			acc.valsTv[idx]++
+		}
+	}
+}
+
+// infoTagValue returns the idx-th comma-separated numeric value of INFO tag in
+// v. It reports false when the tag is missing, empty, has fewer than idx+1
+// values, or the selected value is not a number.
+func infoTagValue(v *vcf.Variant, tag string, idx int) (float64, bool) {
+	raw, ok := v.Info[tag]
+	if !ok || raw == "" || raw == "." {
+		return 0, false
+	}
+	parts := strings.Split(raw, ",")
+	if idx < 0 || idx >= len(parts) {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(parts[idx], 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// userTSTVBin maps a value to its bin index following upstream's rule:
+// values at or below Min land in bin 0, values at or above Max land in the
+// last bin, and intermediate values scale linearly across (NBins-1) steps.
+func userTSTVBin(spec UserTSTVSpec, val float64) int {
+	switch {
+	case val <= spec.Min:
+		return 0
+	case val >= spec.Max:
+		return spec.NBins - 1
+	default:
+		idx := int((val - spec.Min) / (spec.Max - spec.Min) * float64(spec.NBins-1))
+		if idx < 0 {
+			idx = 0
+		}
+		if idx > spec.NBins-1 {
+			idx = spec.NBins - 1
+		}
+		return idx
+	}
 }
 
 // computeAF returns the allele frequency of the first ALT allele. When
@@ -837,6 +1002,9 @@ func writeStats(out io.Writer, r *statsResult) error {
 	if err := writeST(bw, r); err != nil {
 		return err
 	}
+	if err := writeUSR(bw, r); err != nil {
+		return err
+	}
 	if err := writeDP(bw, r); err != nil {
 		return err
 	}
@@ -920,6 +1088,35 @@ func writeST(bw *bufio.Writer, r *statsResult) error {
 	return nil
 }
 
+// writeUSR emits the USR (user-tstv) sections, one per -u/--user-tstv spec.
+// Each row reports a non-empty bin's [value, total SNPs, transitions,
+// transversions]; bins with no observations are omitted, mirroring upstream.
+func writeUSR(bw *bufio.Writer, r *statsResult) error {
+	for _, acc := range r.userTSTV {
+		spec := acc.spec
+		label := fmt.Sprintf("%s/%d", spec.Tag, spec.Idx)
+		fmt.Fprintf(bw, "# USR:%s\t[2]id\t[3]%s\t[4]number of SNPs\t[5]number of transitions (1st ALT)\t[6]number of transversions (1st ALT)\n", label, label)
+		for j := 0; j < spec.NBins; j++ {
+			total := acc.valsTs[j] + acc.valsTv[j]
+			if total == 0 {
+				continue // skip empty bins
+			}
+			var val float64
+			if spec.NBins > 1 {
+				val = spec.Min + (spec.Max-spec.Min)*float64(j)/float64(spec.NBins-1)
+			} else {
+				val = spec.Min
+			}
+			if acc.isFloat {
+				fmt.Fprintf(bw, "USR:%s\t0\t%e\t%d\t%d\t%d\n", label, val, total, acc.valsTs[j], acc.valsTv[j])
+			} else {
+				fmt.Fprintf(bw, "USR:%s\t0\t%.0f\t%d\t%d\t%d\n", label, val, total, acc.valsTs[j], acc.valsTv[j])
+			}
+		}
+	}
+	return nil
+}
+
 func writeDP(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# DP, Depth distribution:")
 	fmt.Fprintln(bw, "# DP\t[2]id\t[3]bin\t[4]number of genotypes\t[5]fraction of genotypes (%)\t[6]number of sites\t[7]fraction of sites (%)")
@@ -998,6 +1195,69 @@ func unionMapKeys(ms ...map[int]int) []int {
 		out = append(out, k)
 	}
 	return out
+}
+
+// ParseUserTSTV parses a `-u/--user-tstv` argument of the form
+// `TAG[:min:max:n]`. The TAG portion may carry a value index, e.g. `PV4[1]`.
+// Omitted binning fields default to min=0, max=1, n=100 (matching upstream
+// bcftools). Returns an error for an empty tag, a malformed index, an
+// unparseable number, or a non-positive bin count.
+func ParseUserTSTV(s string) (UserTSTVSpec, error) {
+	spec := UserTSTVSpec{Min: 0, Max: 1, NBins: 100, Idx: 0}
+	if s == "" {
+		return spec, fmt.Errorf("bcftools stats: -u/--user-tstv requires a TAG")
+	}
+	tag := s
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		tag = s[:i]
+		rest := strings.Split(s[i+1:], ":")
+		if len(rest) > 3 {
+			return spec, fmt.Errorf("bcftools stats: -u/--user-tstv: too many fields in %q", s)
+		}
+		if len(rest) >= 1 && rest[0] != "" {
+			f, err := strconv.ParseFloat(rest[0], 64)
+			if err != nil {
+				return spec, fmt.Errorf("bcftools stats: -u/--user-tstv: bad min in %q: %w", s, err)
+			}
+			spec.Min = f
+		}
+		if len(rest) >= 2 && rest[1] != "" {
+			f, err := strconv.ParseFloat(rest[1], 64)
+			if err != nil {
+				return spec, fmt.Errorf("bcftools stats: -u/--user-tstv: bad max in %q: %w", s, err)
+			}
+			spec.Max = f
+		}
+		if len(rest) >= 3 && rest[2] != "" {
+			n, err := strconv.Atoi(rest[2])
+			if err != nil {
+				return spec, fmt.Errorf("bcftools stats: -u/--user-tstv: bad n in %q: %w", s, err)
+			}
+			if n <= 0 {
+				return spec, fmt.Errorf("bcftools stats: -u/--user-tstv: number of bins must be positive in %q", s)
+			}
+			spec.NBins = n
+		}
+	}
+	// Optional value index: TAG[idx].
+	if strings.HasSuffix(tag, "]") {
+		open := strings.LastIndexByte(tag, '[')
+		if open < 0 {
+			return spec, fmt.Errorf("bcftools stats: -u/--user-tstv: malformed index in %q", s)
+		}
+		idxStr := tag[open+1 : len(tag)-1]
+		n, err := strconv.Atoi(idxStr)
+		if err != nil || n < 0 {
+			return spec, fmt.Errorf("bcftools stats: -u/--user-tstv: bad index in %q", s)
+		}
+		spec.Idx = n
+		tag = tag[:open]
+	}
+	if tag == "" {
+		return spec, fmt.Errorf("bcftools stats: -u/--user-tstv requires a TAG in %q", s)
+	}
+	spec.Tag = tag
+	return spec, nil
 }
 
 // ParseDepthSpec parses "MIN,MAX,STEP" into its three components. Empty
