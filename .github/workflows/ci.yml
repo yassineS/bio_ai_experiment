@@ -24,6 +24,39 @@ jobs:
       - name: Note
         run: echo "CI is temporarily disabled. Checks are run locally by contributing agents and documented in each PR."
 
+  upstream-parity:
+    name: Upstream parity (live)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      - name: Install htslib build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool \
+            zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev
+      - name: Build htslib
+        run: |
+          cd reference_code/htslib
+          autoreconf -i
+          ./configure
+          make -j"$(nproc)"
+      - name: Build bcftools
+        run: |
+          cd reference_code/bcftools
+          make -j"$(nproc)"
+      - name: Build samtools
+        run: |
+          cd reference_code/samtools
+          make -j"$(nproc)"
+      - name: Run live upstream-parity tests
+        run: go test -run Upstream ./tools/...
+
 # --- Previous job definitions (kept for easy re-enable) -----------------------
 #
 #  lint:

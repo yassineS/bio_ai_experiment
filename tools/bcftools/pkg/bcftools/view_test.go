@@ -475,3 +475,142 @@ func TestRestrictSamplesUnknown(t *testing.T) {
 		t.Errorf("got %+v", v.Samples)
 	}
 }
+
+// privateVCF mirrors testdata/parity/view/private.vcf: subset {S1,S2}.
+//
+//	priv1   S1=0/1 S2=0/0 S3=0/0 -> acSub=1 acFull=1 -> private
+//	shared  S1=0/1 S2=0/0 S3=0/1 -> acSub=1 acFull=2 -> not private
+//	priv2   S1=0/0 S2=1/1 S3=0/0 -> acSub=2 acFull=2 -> private
+//	noalt   all 0/0              -> acSub=0          -> not private
+//	outonly S1=0/0 S2=0/0 S3=0/1 -> acSub=0 acFull=1 -> not private
+const privateVCF = `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3
+chr1	100	priv1	A	T	30	PASS	DP=10	GT	0/1	0/0	0/0
+chr1	200	shared	C	G	30	PASS	DP=10	GT	0/1	0/0	0/1
+chr1	300	priv2	G	A	30	PASS	DP=10	GT	0/0	1/1	0/0
+chr1	400	noalt	T	C	30	PASS	DP=10	GT	0/0	0/0	0/0
+chr1	500	outonly	A	G	30	PASS	DP=10	GT	0/0	0/0	0/1
+`
+
+// recordIDs returns the ID column of every data record in a VCF string,
+// preserving order.
+func recordIDs(out string) []string {
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 3 {
+			ids = append(ids, fields[2])
+		}
+	}
+	return ids
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestViewPrivate exercises -x/--private and -X/--exclude-private record
+// selection against the embedded private fixture.
+func TestViewPrivate(t *testing.T) {
+	cases := []struct {
+		name string
+		opts ViewOptions
+		want []string
+	}{
+		{
+			name: "private subset S1,S2",
+			opts: ViewOptions{Samples: []string{"S1", "S2"}, Private: true},
+			want: []string{"priv1", "priv2"},
+		},
+		{
+			name: "exclude-private subset S1,S2",
+			opts: ViewOptions{Samples: []string{"S1", "S2"}, ExcludePrivate: true},
+			want: []string{"shared", "noalt", "outonly"},
+		},
+		{
+			name: "private subset S3",
+			opts: ViewOptions{Samples: []string{"S3"}, Private: true},
+			want: []string{"outonly"},
+		},
+		{
+			name: "exclude-private subset S3",
+			opts: ViewOptions{Samples: []string{"S3"}, ExcludePrivate: true},
+			want: []string{"priv1", "shared", "priv2", "noalt"},
+		},
+		{
+			// Without a sample subset the private filter is a no-op: every
+			// record is kept (matches upstream gating on n_samples).
+			name: "private without subset is no-op",
+			opts: ViewOptions{Private: true},
+			want: []string{"priv1", "shared", "priv2", "noalt", "outonly"},
+		},
+		{
+			// ExcludePrivate is likewise a no-op without a subset: nothing is
+			// dropped (upstream gates the test on n_samples > 0).
+			name: "exclude-private without subset is no-op",
+			opts: ViewOptions{ExcludePrivate: true},
+			want: []string{"priv1", "shared", "priv2", "noalt", "outonly"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := runView(t, privateVCF, tc.opts)
+			got := recordIDs(out)
+			if !equalStrings(got, tc.want) {
+				t.Fatalf("got IDs %v, want %v\noutput:\n%s", got, tc.want, out)
+			}
+		})
+	}
+}
+
+// TestViewPrivateNoGT verifies the private filter is a no-op when the records
+// carry no GT field (upstream evaluates it only after recomputing AC from
+// genotypes).
+func TestViewPrivateNoGT(t *testing.T) {
+	const noGT = `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="DP">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr1	100	a	A	T	30	PASS	DP=10
+chr1	200	b	C	G	30	PASS	DP=10
+`
+	out := runView(t, noGT, ViewOptions{Samples: []string{"S1"}, Private: true})
+	if got := recordIDs(out); !equalStrings(got, []string{"a", "b"}) {
+		t.Fatalf("private filter should be a no-op without GT; got %v\n%s", got, out)
+	}
+}
+
+// dataRecordsStripINFO returns each VCF data line with the INFO column (field
+// index 7) blanked. Upstream `bcftools view -s ... -x/-X` recomputes INFO
+// AC/AN after subsetting (a separate, documented gap — see
+// TestParityView_SampleSubset); blanking INFO lets us assert byte-for-byte
+// parity on the record *selection* and every other column the private filter
+// governs.
+func dataRecordsStripINFO(vcfText string) []string {
+	var out []string
+	for _, line := range strings.Split(vcfText, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) > 7 {
+			fields[7] = "."
+		}
+		out = append(out, strings.Join(fields, "\t"))
+	}
+	return out
+}

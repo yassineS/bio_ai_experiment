@@ -233,6 +233,8 @@ Options:
   -T, --targets-file PATH         BED-like targets file (post-filter).
   -s, --samples LIST              Restrict to these samples (comma list).
   -S, --samples-file PATH         File with sample IDs (one per line).
+  -x, --private                   Print only sites private to the subset.
+  -X, --exclude-private           Exclude sites private to the subset.
   -l, --compression-level N       gzip level for z output.
       --threads N                 Accepted; v1 is single-threaded.
   -?, --help                      Show this help.
@@ -266,6 +268,8 @@ func runView(args []string) int {
 		targetsFile   string
 		samples       string
 		samplesFile   string
+		privateVars   bool
+		excludePriv   bool
 		compressLevel int
 		threads       int
 		showHelp      bool
@@ -289,6 +293,8 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
 	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples")
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
+	cliflag.BoolVar(fs, &privateVars, "x", "private", false, "Print only sites private to the subset samples")
+	cliflag.BoolVar(fs, &excludePriv, "X", "exclude-private", false, "Exclude sites private to the subset samples")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
@@ -336,7 +342,13 @@ func runView(args []string) int {
 		IncludeExpr:    includeExpr,
 		ExcludeExpr:    excludeExpr,
 		ApplyFilters:   bcftools.SplitCommaList(applyFilters),
+		Private:        privateVars,
+		ExcludePrivate: excludePriv,
 		CompressLevel:  compressLevel,
+	}
+	if privateVars && excludePriv {
+		fmt.Fprintln(os.Stderr, "bcftools view: only one of -x or -X can be given")
+		return 2
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
