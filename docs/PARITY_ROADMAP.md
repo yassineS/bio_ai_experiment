@@ -2323,6 +2323,17 @@ Option-tail gaps on the wave-1 additions (PR #86):
 - `sort`: `-m/--max-mem` and `-T/--tmpdir` are accepted but always
   in-memory.
 
+Option-tail progress on `stats`:
+
+- `-u/--user-tstv TAG[:min:max:n]` — **implemented**. Collects 1st-ALT
+  Ts/Tv counts stratified by a numeric INFO tag, binned into `n` buckets
+  over `[min,max]` (defaults `0:1:100`), including the `TAG[idx]`
+  multi-value index form. The `USR:TAG/idx` section is byte-for-byte
+  identical to upstream `bcftools stats -u` for both Float (`%e` bin
+  labels) and Integer (`%.0f` bin labels) tags — validated against the
+  C binary built from `reference_code/bcftools` and committed as goldens
+  under `tools/bcftools/testdata/parity/stats/`.
+
 Option-tail gaps on the convert/mendelian PR:
 
 - `convert`: v1 covers only the pass-through round-trip
