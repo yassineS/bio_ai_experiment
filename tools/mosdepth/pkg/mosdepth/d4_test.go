@@ -19,7 +19,11 @@ func TestD4WriterReaderRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newD4Writer: %v", err)
 	}
+	// 100000 exceeds the SimpleRange{0,128} dictionary, so it is clamped to
+	// the sentinel code 127 in the primary table — exactly as upstream
+	// mosdepth's per-base D4 output caps over-dictionary depths.
 	depthsA := []int32{0, 1, 2, 100000, 0}
+	wantA := []int32{0, 1, 2, 127, 0}
 	depthsB := []int32{7, 7, 0}
 	if err := w.writeChrom("chrA", depthsA); err != nil {
 		t.Fatalf("writeChrom chrA: %v", err)
@@ -43,8 +47,8 @@ func TestD4WriterReaderRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chromDepths chrB: %v", err)
 	}
-	if !equalInt32(gotA, depthsA) {
-		t.Errorf("chrA: got %v, want %v", gotA, depthsA)
+	if !equalInt32(gotA, wantA) {
+		t.Errorf("chrA: got %v, want %v", gotA, wantA)
 	}
 	if !equalInt32(gotB, depthsB) {
 		t.Errorf("chrB: got %v, want %v", gotB, depthsB)

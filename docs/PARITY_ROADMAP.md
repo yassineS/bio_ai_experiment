@@ -2781,12 +2781,21 @@ Missing:
 
 Implemented:
 
-- **D4 output** (`-d/--d4`) — writes `<prefix>.per-base.d4` as a dense D4
-  binary track (32-bit values, no secondary table). Validated by
-  round-trip against the per-base BED output (upstream is Nim, so there
-  is no C binary to diff against; `d4tools` interop is not asserted).
+- **D4 output** (`-d/--d4`) — writes `<prefix>.per-base.d4` as a real D4
+  framefile that is **byte-identical** to the upstream `mosdepth_d4`
+  binary's output for the same BAM (same on-disk size). The track uses
+  the upstream encoding: a 7-bit-packed primary table with the
+  `SimpleRange{0,128}` dictionary, depths ≥ 128 clamped to the all-ones
+  code 127 (matching upstream's per-base d4 writer, which leaves the
+  secondary table empty), plus the `.metadata`, `.stab` and `.index`
+  framefile members. No documented byte exceptions — the files match
+  exactly, including the embedded JSON metadata.
 
-**Validation:** no upstream-test-suite run yet; D4 validated by round-trip.
+**Validation:** `TestD4_UpstreamBinaryParity` downloads the official
+`mosdepth_d4` release binary, runs it and our implementation on a fixture
+BAM, and asserts the two `.per-base.d4` files are byte-for-byte equal
+(verified: 3863 / 3863 bytes, identical). The broader upstream
+functional-test suite is still pending.
 
 ---
 

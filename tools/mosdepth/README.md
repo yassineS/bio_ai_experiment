@@ -85,16 +85,24 @@ format (e.g. `bcftools`, `tabix`) work transparently — the underlying
 chunk/bin layout is identical. CSI emission is on the roadmap.
 
 D4 output (`-d/--d4`) writes the per-base depth track to
-`<prefix>.per-base.d4` in the dense D4 binary container (a magic header,
-a length-prefixed JSON chromosome index, and the dense per-base depth
-stream). The dense values use a fixed 32-bit width with no secondary
-(overflow) table — simple and exact, but ~4x larger on disk than
-upstream's smaller-bit-width dense tracks, so a whole-genome D4 file is
-several gigabytes. Because upstream mosdepth is Nim (no C binary to diff
-against) and `d4tools` is not assumed present, correctness is validated
-by round-trip: the depths decoded from the D4 file are asserted to match
-the per-base BED output for the same BAM. Full `d4tools` binary interop
-is not asserted. When `--d4` is set the per-base BED is not written.
+`<prefix>.per-base.d4` in the real [D4](https://github.com/38/d4-format)
+binary container, matching the upstream mosdepth binary **byte-for-byte**.
+The file is a d4-framefile: the `d4\xdd\xdd` magic, a `.metadata` stream
+(the JSON header with the chromosome list, the `SimpleRange{0,128}`
+dictionary, and the denominator), a bit-width-packed `.ptab` primary
+table (7 bits per base, all chromosomes concatenated in header order), a
+`.stab` secondary-table sub-directory, and a `.index` sub-directory.
+Depths ≥ 128 are clamped to the all-ones primary code (127), exactly as
+upstream's d4 C-binding writer does for its per-base output (the
+chromosome summary still reports the true maximum depth); the secondary
+table is therefore empty. The on-disk size equals upstream's.
+
+Parity is validated **against the real binary**, not a golden file:
+`TestD4_UpstreamBinaryParity` downloads the official `mosdepth_d4`
+release binary, runs it and our implementation on the same fixture BAM,
+and asserts the two `.per-base.d4` files are byte-identical (and that our
+reader decodes both to the same per-base depths). When `--d4` is set the
+per-base BED is not written.
 
 The runtime is single-threaded; the `-t/--threads` flag is accepted for
 compatibility with existing pipelines. A future slice may parallelise
@@ -128,13 +136,13 @@ Coverage targets ≥85% on `pkg/mosdepth`. Tests cover:
 - Summary file — chr/total rows match hand-computed mean.
 - `.tbi` indexes round-trip through `tabix.QueryBytes` so the produced
   files are tabix-readable end-to-end.
-- `-d/--d4` D4 output round-trips: the dense depth track decoded back
-  from the `.per-base.d4` file matches the per-base BED depths exactly.
+- `-d/--d4` D4 output is byte-identical to the upstream `mosdepth_d4`
+  binary on the same BAM (`TestD4_UpstreamBinaryParity`), plus a
+  writer/reader round-trip on a hand-built track.
 
 ## Status
 
 - v1: per-base, per-region (BED), per-window, thresholds, distribution,
-  summary, TBI indexes, dense D4 per-base output.
-- Roadmap: CSI output, smaller-bit-width / sparse D4 encoding,
-  multi-threaded chrom sweep, CRAM input (depends on the project's CRAM
-  reader landing first).
+  summary, TBI indexes, byte-identical D4 per-base output.
+- Roadmap: CSI output, multi-threaded chrom sweep, CRAM input (depends on
+  the project's CRAM reader landing first).
