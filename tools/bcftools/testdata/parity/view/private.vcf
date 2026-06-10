@@ -1,0 +1,10 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3
+chr1	100	priv1	A	T	30	PASS	DP=10	GT	0/1	0/0	0/0
+chr1	200	shared	C	G	30	PASS	DP=10	GT	0/1	0/0	0/1
+chr1	300	priv2	G	A	30	PASS	DP=10	GT	0/0	1/1	0/0
+chr1	400	noalt	T	C	30	PASS	DP=10	GT	0/0	0/0	0/0
+chr1	500	outonly	A	G	30	PASS	DP=10	GT	0/0	0/0	0/1

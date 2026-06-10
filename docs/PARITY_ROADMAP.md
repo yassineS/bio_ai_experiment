@@ -2749,6 +2749,19 @@ Plus:
 
 - **`bcftools view`** more flags: `--regions-overlap`, `--targets-overlap`,
   `--no-version`, `--write-index`, `--phased`.
+  - **Implemented:** `-x/--private` and `-X/--exclude-private` (select /
+    exclude sites whose non-reference alleles are exclusive to the sample
+    subset). Mirrors upstream `vcfview.c`
+    (`non_ref_ac_sub > 0 && non_ref_ac == non_ref_ac_sub`); applied after
+    sample subsetting, gated on a `-s`/`-S` subset and a GT FORMAT field.
+    Validated by table-driven unit tests plus a live upstream-parity test
+    (`TestView_PrivateUpstreamParity`) that builds the upstream C binary
+    from the vendored submodules and compares record selection in-process
+    (`bcftools view -s S1,S2 -x/-X`); no committed golden snapshots. The
+    input fixture lives under `tools/bcftools/testdata/parity/view/`.
+    INFO/AC/AN recomputation after subsetting remains the separate
+    documented gap (see the `view -s` note above), so the comparison
+    blanks the INFO column.
 - **CSI seek** for region queries: today we validate via the index then
   linear-scan. Real chunk-seek is the natural follow-up.
 
