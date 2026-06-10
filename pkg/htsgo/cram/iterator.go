@@ -276,7 +276,7 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	if err != nil {
 		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
-	refBases, refStart, err := rr.resolveSliceReference(sl.Header)
+	refBases, refStart, err := rr.resolveSliceReference(sl)
 	if err != nil {
 		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
@@ -295,9 +295,16 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	return nil
 }
 
-// resolveSliceReference resolves and MD5-verifies the reference span a
-// slice covers, when a reference source is attached. It returns the
-// span bytes and the 1-based coordinate of the span's first base.
+// resolveSliceReference resolves the reference span a slice covers. It
+// returns the span bytes and the 1-based coordinate of the span's first
+// base.
+//
+// An embedded reference (the slice's own per-span reference block,
+// written by samtools' embed_ref mode) takes priority: it is
+// self-contained, needs no external FASTA/REF_CACHE source, and — like
+// htslib — is trusted verbatim without an MD5 cross-check. Only when no
+// embedded reference is present does it consult the attached external
+// sources, MD5-verifying the span.
 //
 // It resolves a single-reference slice (RefSeqID >= 0). An
 // unmapped-reads slice (RefSeqID == -1) and a multi-reference slice
@@ -305,11 +312,28 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 // reference bases and the latter resolves its references per record
 // against the contig table, both falling back to the C4b 'N' fill — so
 // they return a nil span. A nil span with no source is the C4b path.
-func (rr *RecordReader) resolveSliceReference(sh *SliceHeader) ([]byte, int32, error) {
-	if !rr.refResolver.hasSource() {
+func (rr *RecordReader) resolveSliceReference(sl *Slice) ([]byte, int32, error) {
+	sh := sl.Header
+	if sh.RefSeqID < 0 {
 		return nil, 0, nil
 	}
-	if sh.RefSeqID < 0 {
+	// An embedded reference is the slice's own copy of its reference
+	// span. It is the most direct source and is honoured whether or not
+	// an external reference is also configured.
+	if sl.HasEmbeddedReference() {
+		bases, err := sl.EmbeddedReference()
+		if err != nil {
+			return nil, 0, err
+		}
+		// The embedded block begins at AlignmentStart; trim any trailing
+		// bytes past the slice span so refStart+span indexing matches the
+		// span exactly (htslib indexes [ref_start, ref_end]).
+		if sh.AlignmentSpan >= 0 && int(sh.AlignmentSpan) <= len(bases) {
+			bases = bases[:sh.AlignmentSpan]
+		}
+		return bases, sh.AlignmentStart, nil
+	}
+	if !rr.refResolver.hasSource() {
 		return nil, 0, nil
 	}
 	contig, err := rr.refNameByID(sh.RefSeqID)

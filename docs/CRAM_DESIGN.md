@@ -78,7 +78,7 @@ Candidate libraries to evaluate when the time comes:
 
 | Version | Decode | Encode | Notes |
 |---------|:------:|:------:|-------|
-| 2.1     | ✅     | ❌     | Legacy; archives still have it. Decode-only is enough. |
+| 2.1     | ✅     | ❌     | Legacy; archives still have it. Decode proven byte-exact vs live `samtools view` (embedded-reference round-trip); only a record-counter ≥ 2^28 edge remains — see `CRAM_ROADMAP.md` §"Documented decode remainder". |
 | 3.0     | ✅     | ✅     | Most-deployed format. Full read+write. |
 | 3.1     | ✅     | ✅     | Adds rANS 4x16; full read+write. |
 | 4.0     | ❌     | ❌     | Spec not finalised. Defer. |

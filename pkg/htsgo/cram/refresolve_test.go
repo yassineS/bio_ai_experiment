@@ -275,7 +275,11 @@ func TestResolveSliceReferenceUnmapped(t *testing.T) {
 		refResolver: &referenceResolver{custom: &stubReference{name: "chr1", seq: "ACGT"}},
 	}
 	for _, id := range []int32{-1, -2} {
-		bases, _, err := rr.resolveSliceReference(&SliceHeader{RefSeqID: id, AlignmentStart: 1, AlignmentSpan: 4})
+		sl := &Slice{
+			Header:   &SliceHeader{RefSeqID: id, AlignmentStart: 1, AlignmentSpan: 4, EmbeddedRefID: -1},
+			external: map[int32]*Block{},
+		}
+		bases, _, err := rr.resolveSliceReference(sl)
 		if err != nil || bases != nil {
 			t.Errorf("RefSeqID %d should resolve to nil span; got %v,%v", id, bases, err)
 		}

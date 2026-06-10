@@ -156,6 +156,48 @@ func (sl *Slice) NewSource() (*SeriesSource, error) {
 	return &SeriesSource{s: s}, nil
 }
 
+// HasEmbeddedReference reports whether the slice carries an embedded
+// reference block — a per-slice copy of the reference span the slice's
+// reads align to, written by samtools' embed_ref mode. A slice with an
+// embedded reference needs no external FASTA, REF_CACHE or REF_PATH to
+// reconstruct its sequences.
+func (sl *Slice) HasEmbeddedReference() bool {
+	return sl.Header != nil && sl.Header.EmbeddedRefID >= 0 && sl.external[sl.Header.EmbeddedRefID] != nil
+}
+
+// EmbeddedReference decompresses and returns the slice's embedded
+// reference bases. The returned span begins at the slice header's
+// AlignmentStart and must be at least AlignmentSpan bases long
+// (matching htslib's cram_decode_slice embed_ref handling). It returns
+// an error if the slice declares an embedded reference id whose block is
+// absent or decompresses to a span shorter than the slice covers.
+//
+// Unlike an external reference, an embedded reference is not MD5-checked
+// against the slice header: the bases come from the file itself, so
+// there is no separate source to disagree with — htslib likewise trusts
+// the embedded block verbatim.
+func (sl *Slice) EmbeddedReference() ([]byte, error) {
+	if sl.Header == nil || sl.Header.EmbeddedRefID < 0 {
+		return nil, fmt.Errorf("cram: slice carries no embedded reference")
+	}
+	b := sl.external[sl.Header.EmbeddedRefID]
+	if b == nil {
+		return nil, fmt.Errorf("cram: slice declares embedded reference block id %d but it is absent",
+			sl.Header.EmbeddedRefID)
+	}
+	bases, err := b.Decompress()
+	if err != nil {
+		return nil, fmt.Errorf("cram: decompressing embedded reference block (content id %d): %w",
+			sl.Header.EmbeddedRefID, err)
+	}
+	if int64(len(bases)) < int64(sl.Header.AlignmentSpan) {
+		return nil, fmt.Errorf("cram: embedded reference is %d bases, too small for slice span %d-%d",
+			len(bases), sl.Header.AlignmentStart,
+			int64(sl.Header.AlignmentStart)+int64(sl.Header.AlignmentSpan)-1)
+	}
+	return bases, nil
+}
+
 // HasSeriesData reports whether the named data series has on-disk data
 // in this slice. A series whose encoding draws from an external block
 // (EXTERNAL, BYTE_ARRAY_STOP) carries no values when that block is

@@ -88,6 +88,45 @@ func TestReconstructMappedAllFeatures(t *testing.T) {
 	}
 }
 
+// TestReconstructMatchRunBeforeDeletion is a regression test for the
+// feature-ordering fix: a deletion (or any non-read-consuming feature)
+// preceded by a stretch of reference-match positions must emit the match
+// run *before* the deletion. The earlier implementation only flushed the
+// pending match run before read-consuming features, so a read whose
+// features were "I at 5, then D at 9" decoded as "...1D7M" instead of
+// "...4M1D3M". With a reference attached, the match bases are copied from
+// it, exactly as htslib's cram_decode.c does (it emits "pos > seq_pos" as
+// a match run before every feature).
+func TestReconstructMatchRunBeforeDeletion(t *testing.T) {
+	rd := newReconDecoder(false)
+	// Reference covering positions 1..20 so the match runs resolve to real
+	// bases rather than 'N'.
+	rd.refBases = []byte("ACGTACGTACGTACGTACGT")
+	rd.refStart = 1
+	// Read of length 8: 4 match bases, an insertion of 2, 4 more match
+	// bases, a 1-base deletion, then 3 trailing match bases — i.e. the SAM
+	// CIGAR 4M2I4M1D3M but expressed as positional read features. The 4M
+	// before the deletion must precede the D in the output CIGAR.
+	feats := []readFeature{
+		{code: featInsertion, pos: 5, bases: []byte("TT")}, // insertion after the first 4M.
+		{code: featDeletion, pos: 11, length: 1},           // deletion after 4M2I4M (in-read pos 11).
+	}
+	seq, _, cig, err := rd.reconstructMapped(feats, 13, 1)
+	if err != nil {
+		t.Fatalf("reconstructMapped: %v", err)
+	}
+	if cig.String() != "4M2I4M1D3M" {
+		t.Errorf("cigar = %q, want 4M2I4M1D3M (match run must precede the deletion)", cig.String())
+	}
+	// The inserted bases are literal; the match runs come from the
+	// reference. Reference pos 1-4 = ACGT, insertion TT, ref pos 5-8 =
+	// ACGT, deletion (no read base, ref pos 9 skipped), ref pos 10-12 =
+	// CGT.
+	if string(seq) != "ACGTTTACGTCGT" {
+		t.Errorf("seq = %q, want ACGTTTACGTCGT", seq)
+	}
+}
+
 // TestReconstructQualityStretch checks the "q" feature, a stretch of
 // quality scores annotating already-placed bases.
 func TestReconstructQualityStretch(t *testing.T) {

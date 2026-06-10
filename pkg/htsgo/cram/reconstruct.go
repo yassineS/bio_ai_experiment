@@ -44,31 +44,33 @@ func (rd *recordDecoder) reconstructMapped(feats []readFeature, readLen, recPos 
 			return nil, nil, nil, errFormat("read feature %d at in-read position %d is out of range (read length %d)",
 				fi, f.pos, readLen)
 		}
-		// writePos is the in-read coordinate the feature is applied at. A
-		// base-consuming feature starts a new read position (the gap
-		// before it is an implicit match run). A non-consuming feature
-		// (a quality score, a deletion, a reference skip, padding or a
-		// hard clip) carries no read bases and is applied at its own
-		// declared position without disturbing the read cursor.
+		// Every feature is positioned by its in-read coordinate. The run of
+		// read positions between the read cursor and the feature is an
+		// implicit reference match — emitted here, before the feature
+		// itself, for EVERY feature kind (htslib's cram_decode.c does this
+		// for deletions and reference skips too, not just base-consuming
+		// features; emitting the gap only before consuming features
+		// mis-orders e.g. "4M1D" into "1D" preceding the 4M). A feature
+		// whose position equals the cursor (a quality annotation, or a
+		// deletion right at the cursor) contributes no gap.
+		if featStart > readPos {
+			gap := featStart - readPos
+			if cerr := rd.fillReferenceMatch(seq, covered, readPos, recPos+refOffset, gap); cerr != nil {
+				return nil, nil, nil, wrapf(cerr, "read feature %d match run", fi)
+			}
+			ops.add(sam.CigarMatch, gap)
+			readPos = featStart
+			refOffset += gap
+		} else if featStart < readPos && featConsumesRead(f.code) {
+			return nil, nil, nil, errFormat("read feature %d at in-read position %d is behind the read cursor %d",
+				fi, f.pos, readPos)
+		}
+		// A read-consuming feature is applied at the cursor (now equal to
+		// featStart). A non-consuming positional feature — a quality
+		// annotation — is applied at its own declared coordinate, which may
+		// lie within bases already written, without moving the cursor.
 		writePos := readPos
-		if featConsumesRead(f.code) {
-			if featStart < readPos {
-				return nil, nil, nil, errFormat("read feature %d at in-read position %d is behind the read cursor %d",
-					fi, f.pos, readPos)
-			}
-			if featStart > readPos {
-				// The gap before a base-consuming feature is a reference
-				// match: copy the reference bases (or fill 'N') and emit M.
-				gap := featStart - readPos
-				if cerr := rd.fillReferenceMatch(seq, covered, readPos, recPos+refOffset, gap); cerr != nil {
-					return nil, nil, nil, wrapf(cerr, "read feature %d match run", fi)
-				}
-				ops.add(sam.CigarMatch, gap)
-				readPos = featStart
-				refOffset += gap
-			}
-			writePos = readPos
-		} else {
+		if !featConsumesRead(f.code) {
 			writePos = featStart
 		}
 		consumedRead, consumedRef, ferr := rd.applyFeature(f, seq, qual, covered, writePos, recPos+refOffset, &ops)
