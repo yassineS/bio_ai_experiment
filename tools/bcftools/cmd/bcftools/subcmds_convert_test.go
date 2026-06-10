@@ -29,11 +29,6 @@ func TestCheckConvertDeferred(t *testing.T) {
 		{"keep-duplicates", checkConvertDeferredInputs{keepDuplicates: true}, "--keep-duplicates"},
 		{"sex", checkConvertDeferredInputs{sexFlag: "M"}, "--sex"},
 		{"vcf-ids", checkConvertDeferredInputs{vcfIds: true}, "--vcf-ids"},
-		{"hapsample", checkConvertDeferredInputs{hapsample: "x"}, "--hapsample"},
-		{"hapsample2vcf", checkConvertDeferredInputs{hapsample2vcf: "x"}, "--hapsample2vcf"},
-		{"haploid2diploid", checkConvertDeferredInputs{haploid2diploid: true}, "--haploid2diploid"},
-		{"haplegendsample", checkConvertDeferredInputs{haplegendsample: "x"}, "--haplegendsample"},
-		{"haplegendsample2vcf", checkConvertDeferredInputs{haplegendsample2vcf: "x"}, "--haplegendsample2vcf"},
 		{"tsv2vcf", checkConvertDeferredInputs{tsv2vcf: "x"}, "--tsv2vcf"},
 		{"columns", checkConvertDeferredInputs{columnsFlag: "CHROM,POS"}, "-c/--columns"},
 	}

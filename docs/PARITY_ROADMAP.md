@@ -2325,13 +2325,25 @@ Option-tail gaps on the wave-1 additions (PR #86):
 
 Option-tail gaps on the convert/mendelian PR:
 
-- `convert`: v1 covers only the pass-through round-trip
-  (VCF↔BCF↔VCF.gz) with sample/region filtering and -i/-e expressions.
-  The full upstream `vcfconvert.c` covers many extra shapes
-  (`--gvcf2vcf`, `--haplegendsample2vcf`, `--hapsample2vcf`,
-  `--tsv2vcf`, `--gensample2vcf`, `--gvcf`, PLINK / GEN / HAP).
-  These are explicit follow-ups; the CLI emits a usage block that
-  lists them under "Deferred output paths".
+- `convert`: v1 covers the pass-through round-trip
+  (VCF↔BCF↔VCF.gz) with sample/region filtering and -i/-e expressions,
+  **plus the full IMPUTE2 HAP/legend family**: `--hapsample`,
+  `--hapsample2vcf`, `--haplegendsample`, `--haplegendsample2vcf` and
+  the `--haploid2diploid` modifier (`tools/bcftools/pkg/bcftools/convert_hap.go`).
+  The HAP exporters mirror `vcfconvert.c`'s `vcf_to_hapsample` /
+  `vcf_to_haplegendsample` and `convert.c`'s `process_gt_to_hap[2]`
+  byte-for-byte (BGZF `.hap.gz`/`.legend.gz` content, plain `.samples`,
+  no-ALT / non-biallelic skip counters and the per-run summary line);
+  the inverse `*2vcf` importers mirror `hapsample_to_vcf` /
+  `haplegendsample_to_vcf` including the `rev_als` allele-orientation
+  check and the synthetic END/GT/contig header. Validated against the
+  live upstream binary in `convert_hap_test.go` (no goldens). The
+  `--vcf-ids` modifier is still deferred, so the `--vcf-ids`-only hap
+  ID format is not yet emitted.
+  The remaining upstream `vcfconvert.c` shapes
+  (`--gvcf2vcf`, `--tsv2vcf`, `--gensample`/`--gensample2vcf`,
+  `--gvcf`, PLINK / GEN, `--3N6`, `--tag`, `--columns`) stay deferred
+  and hard-reject with a roadmap pointer.
 - `mendelian`: the v1 port detects Mendelian inconsistencies for
   PED-style trios (one or more `-t CHILD,FATHER,MOTHER` flags, or
   `-T trio-file`), emits `INFO/MERR` per record, and supports the
