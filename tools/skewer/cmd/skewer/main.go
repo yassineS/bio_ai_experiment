@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -59,6 +60,34 @@ func main() {
 	}
 }
 
+// gzipWriteCloser wraps a destination WriteCloser so writes are gzip-compressed.
+// Closing it flushes and closes the gzip stream then the underlying destination,
+// mirroring upstream skewer's -z/--compress.
+type gzipWriteCloser struct {
+	gz   *gzip.Writer
+	dest io.WriteCloser
+}
+
+func (g *gzipWriteCloser) Write(p []byte) (int, error) { return g.gz.Write(p) }
+
+func (g *gzipWriteCloser) Close() error {
+	if err := g.gz.Close(); err != nil {
+		g.dest.Close()
+		return err
+	}
+	return g.dest.Close()
+}
+
+// maybeGzip wraps w in a gzip compressor when on is true; otherwise it returns w
+// unchanged. It honors the -z/--compress compatibility flag by forcing gzip
+// output regardless of the output filename's extension, as upstream skewer does.
+func maybeGzip(w io.WriteCloser, on bool) io.WriteCloser {
+	if !on {
+		return w
+	}
+	return &gzipWriteCloser{gz: gzip.NewWriter(w), dest: w}
+}
+
 func runSingleEnd() {
 	fs := flag.NewFlagSet("skewer se", flag.ExitOnError)
 
@@ -73,6 +102,7 @@ func runSingleEnd() {
 		minOverlap    int
 		errorRate     float64
 		quiet         bool
+		compress      bool
 		autoDetect    bool
 		jsonOutput    string
 		htmlReport    string
@@ -90,6 +120,7 @@ func runSingleEnd() {
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 0, "Quality threshold for trimming (default: 0)")
 	cliflag.IntVar(fs, &minOverlap, "m", "min-overlap", 3, "Minimum overlap for adapter detection (default: 3)")
 	cliflag.Float64Var(fs, &errorRate, "r", "error-rate", 0.1, "Maximum error rate (default: 0.1)")
+	cliflag.BoolVar(fs, &compress, "z", "compress", false, "Gzip-compress the output stream (upstream -z)")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
 	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
 	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics as JSON to file")
@@ -110,6 +141,7 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT  Quality threshold for trimming (default: 0)\n")
 		fmt.Fprintf(os.Stderr, "  -m, --min-overlap INT     Minimum overlap for adapter detection (default: 3)\n")
 		fmt.Fprintf(os.Stderr, "  -r, --error-rate FLOAT    Maximum error rate (default: 0.1)\n")
+		fmt.Fprintf(os.Stderr, "  -z, --compress            Gzip-compress the output stream (upstream -z)\n")
 		fmt.Fprintf(os.Stderr, "  -a, --auto-detect         Auto-detect adapter sequences\n")
 		fmt.Fprintf(os.Stderr, "  --json FILE               Output statistics as JSON to file\n")
 		fmt.Fprintf(os.Stderr, "  --html-report FILE        Generate HTML report to file\n")
@@ -123,7 +155,10 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "  skewer se -i input.fastq -o output.fastq --umi-length 8 --json stats.json\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	// Validate required arguments
 	if inputFile == "" {
@@ -148,11 +183,12 @@ func runSingleEnd() {
 	if outFileName == "" {
 		outFileName = "-"
 	}
-	output, err := iohelper.OpenWriter(outFileName)
+	rawOut, err := iohelper.OpenWriter(outFileName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 		os.Exit(1)
 	}
+	output := maybeGzip(rawOut, compress)
 	defer output.Close()
 
 	// Set up trim options
@@ -217,6 +253,7 @@ func runPairedEnd() {
 		minOverlap    int
 		errorRate     float64
 		quiet         bool
+		compress      bool
 		autoDetect    bool
 		jsonOutput    string
 		htmlReport    string
@@ -237,6 +274,7 @@ func runPairedEnd() {
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 0, "Quality threshold for trimming (default: 0)")
 	cliflag.IntVar(fs, &minOverlap, "m", "min-overlap", 3, "Minimum overlap for adapter detection (default: 3)")
 	cliflag.Float64Var(fs, &errorRate, "r", "error-rate", 0.1, "Maximum error rate (default: 0.1)")
+	cliflag.BoolVar(fs, &compress, "z", "compress", false, "Gzip-compress the output streams (upstream -z)")
 	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
 	cliflag.BoolVar(fs, &autoDetect, "a", "auto-detect", false, "Auto-detect adapter sequences")
 	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics as JSON to file")
@@ -260,6 +298,7 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "  -q, --qual-threshold INT  Quality threshold for trimming (default: 0)\n")
 		fmt.Fprintf(os.Stderr, "  -m, --min-overlap INT     Minimum overlap for adapter detection (default: 3)\n")
 		fmt.Fprintf(os.Stderr, "  -r, --error-rate FLOAT    Maximum error rate (default: 0.1)\n")
+		fmt.Fprintf(os.Stderr, "  -z, --compress            Gzip-compress the output stream (upstream -z)\n")
 		fmt.Fprintf(os.Stderr, "  -a, --auto-detect         Auto-detect adapter sequences\n")
 		fmt.Fprintf(os.Stderr, "  --json FILE               Output statistics as JSON to file\n")
 		fmt.Fprintf(os.Stderr, "  --html-report FILE        Generate HTML report to file\n")
@@ -272,7 +311,10 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "  skewer pe -i R1.fastq -j R2.fastq -o R1_trim.fastq -p R2_trim.fastq --auto-detect\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	// Validate required arguments
 	if inputFile1 == "" || inputFile2 == "" {
@@ -305,28 +347,31 @@ func runPairedEnd() {
 	defer input2.Close()
 
 	// Open output files (with automatic gzip support)
-	output1, err := iohelper.OpenWriter(outputFile1)
+	raw1, err := iohelper.OpenWriter(outputFile1)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating first output file: %v\n", err)
 		os.Exit(1)
 	}
+	output1 := maybeGzip(raw1, compress)
 	defer output1.Close()
 
-	output2, err := iohelper.OpenWriter(outputFile2)
+	raw2, err := iohelper.OpenWriter(outputFile2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating second output file: %v\n", err)
 		os.Exit(1)
 	}
+	output2 := maybeGzip(raw2, compress)
 	defer output2.Close()
 
 	// Open optional single output file (with automatic gzip support)
 	var outSingle io.Writer
 	if outputSingle != "" {
-		f, err := iohelper.OpenWriter(outputSingle)
+		rawS, err := iohelper.OpenWriter(outputSingle)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating single output file: %v\n", err)
 			os.Exit(1)
 		}
+		f := maybeGzip(rawS, compress)
 		defer f.Close()
 		outSingle = f
 	}
@@ -474,7 +519,10 @@ func runBatch() {
 		fmt.Fprintf(os.Stderr, "  skewer batch -f files.txt -d output/ -x AGATCGGAAGAGC -w 8\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	// Validate required arguments
 	if fileList == "" {

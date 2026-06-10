@@ -228,7 +228,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -333,7 +336,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -401,7 +407,10 @@ Example:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -481,7 +490,10 @@ Options:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -540,7 +552,10 @@ Options:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -607,7 +622,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -690,7 +708,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if minN < 1 {
 		fmt.Fprintf(os.Stderr, "Error: -n/--min-n is required and must be >= 1\n")
@@ -757,7 +778,10 @@ Options:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -862,7 +886,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -941,7 +968,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1005,7 +1035,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1073,7 +1106,10 @@ Examples:
 `, seqtk.DefaultHrunMinLen)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1147,7 +1183,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1207,7 +1246,10 @@ Examples:
 `, seqtk.DefaultGapMinSize)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1279,7 +1321,10 @@ Examples:
 `, seqtk.DefaultGCMinFrac, seqtk.DefaultGCMinLength, seqtk.DefaultGCXDropoff)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1347,7 +1392,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1418,7 +1466,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1494,7 +1545,10 @@ Examples:
 `, seqtk.DefaultSplitN, seqtk.DefaultSplitN)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -1551,7 +1605,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1619,7 +1676,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -1720,7 +1780,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -1823,7 +1886,10 @@ Examples:
 `, seqtk.DefaultFqchkQThres, seqtk.DefaultFqchkQThres)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1904,7 +1970,10 @@ Examples:
 `, seqtk.DefaultHetyWinSize, seqtk.DefaultHetyNStart, seqtk.DefaultHetyWinSize, seqtk.DefaultHetyNStart)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1979,7 +2048,10 @@ Examples:
 `)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -2079,7 +2151,10 @@ Examples:
 			seqtk.DefaultTeloMotif, seqtk.DefaultTeloPenalty, seqtk.DefaultTeloMaxDrop, seqtk.DefaultTeloMinScore)
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()

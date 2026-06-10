@@ -69,6 +69,16 @@ idempotent on already-canonical arguments, so wiring an existing tool through it
 never changes the meaning of a command line that already worked. (Use
 `cliflag.Normalize` if you only need the rewritten argument slice.)
 
+> **Do not wire `cliflag.Parse` into tools whose CLI uses single-dash *long*
+> options** (one dash, multi-character word, e.g. `prinseq stats -fastq`,
+> `-min_len`). That idiom — inherited from Perl's `Getopt::Long` — is mutually
+> exclusive with POSIX short-flag bundling: `cliflag.Normalize` would read
+> `-fastq` as the cluster `-f -a -s -t -q` and reject it. `prinseq` deliberately
+> keeps plain `fs.Parse` for upstream compatibility; bundling buys it nothing
+> because upstream `prinseq` has no clustered short options. The seq/trim tools
+> that *were* rolled out (`seqtk`, `fastp`, `sickle`, `skewer`) document long
+> options with the GNU double-dash form (`--input`), so they are safe.
+
 ## Option Naming Conventions
 
 ### Short Options (Single Letter)
@@ -260,6 +270,12 @@ an upstream tool (e.g. samtools' `-Q`/`-D` phase flags), and note why.
 - 2026-06-10: Added `cliflag.Parse`/`cliflag.Normalize` for getopt-compatible
   POSIX short-flag bundling (`-bS`) and value concatenation (`-q20`); `samtools
   view` is the first tool wired through it, with repo-wide rollout to follow
+- 2026-06-10: Rolled the sequence/trimming tools `seqtk`, `fastp`, `sickle`, and
+  `skewer` through `cliflag.Parse` at every subcommand parse site. Added upstream
+  retro-compat short flags: `sickle` `-z`/`--quiet`, `-g`/`--gzip-output`,
+  `-d`/`--debug` (compat no-op); `skewer` `-z`/`--compress`. `prinseq` was left on
+  plain `fs.Parse` because its single-dash long options are incompatible with
+  POSIX bundling (see the note above)
 - Future: May be extended as more tools are ported
 
 ## References
