@@ -128,9 +128,19 @@ type ConsensusOptions struct {
 	// FASTA/FASTQ — upstream's --mark-ins. v1 wires the option but
 	// only implements it when NoShowIns=false.
 	MarkIns bool
-	// HetOnly, when true, suppresses calls that are not heterozygous
-	// (upstream --het-only). v1 accepts it but does not implement the
-	// filter; tracked in docs/PARITY_ROADMAP.md.
+	// HetOnly corresponds to upstream's --het-only flag (CLI --het-only).
+	// When true, the consensus is restricted to HETEROZYGOUS-called
+	// positions: homozygous and no-call positions are suppressed. In
+	// FASTA/FASTQ they are rendered as 'N' (coordinates preserved); in
+	// pileup the rows are omitted entirely. Het-ness is determined
+	// independently of AmbigCodes (simple mode: score2 >= het_fract*score1
+	// on a confident call; bayesian mode: positive het log-odds on a
+	// confident call).
+	//
+	// NOTE: upstream samtools (through 1.22) parses --het-only into its
+	// options struct but never reads it again, so the flag is a no-op
+	// there (a dead-option bug). We implement the intended behaviour. See
+	// docs/UPSTREAM_BUGS.md and docs/PARITY_ROADMAP.md.
 	HetOnly bool
 	// IgnoreOverlaps is accepted for CLI compatibility but not
 	// implemented (v1 does not deduplicate mate-pair overlaps in the
@@ -442,6 +452,13 @@ type consensusCall struct {
 	// Phred+33 byte capped at 93.
 	qual  int
 	depth int // usable depth (post-MinBaseQ)
+	// isHet reports whether this position was called heterozygous,
+	// determined INDEPENDENTLY of AmbigCodes. In simple mode it is
+	// `score2 >= het_fract*score1` on a confidently-called position; in
+	// bayesian mode it is a positive het log-odds on a confident call.
+	// Used to implement --het-only (HetOnly), which suppresses every
+	// non-heterozygous position from the output.
+	isHet bool
 }
 
 // emitConsensusContig walks every window on chrom and emits per-format
@@ -518,6 +535,15 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				if totalDepth == 0 && !opts.AllPositions {
 					continue
 				}
+				// --het-only: in pileup mode, omit every row whose
+				// position was not called heterozygous (homozygous and
+				// no-call positions are dropped entirely). This is the
+				// intended behaviour the flag name implies; upstream
+				// samtools parses --het-only but never acts on it (a
+				// dead option — see docs/UPSTREAM_BUGS.md).
+				if opts.HetOnly && !call.isHet {
+					continue
+				}
 				// Honour --show-del in pileup mode too: when the
 				// call is '*' and ShowDel is false, suppress the
 				// row, matching bam_consensus.c:2244.
@@ -547,6 +573,20 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				// covered span is bracketed by firstCovIdx/lastCovIdx
 				// and leading/trailing N is trimmed unless -a.
 				if call.base == 0 {
+					seqBuf = append(seqBuf, 'N')
+					qualBuf = append(qualBuf, '!')
+					continue
+				}
+				// --het-only: render every non-heterozygous position as
+				// 'N' to preserve coordinates (homozygous and no-call
+				// positions are masked, not deleted). We treat the 'N'
+				// exactly like an uncovered position — it fills internal
+				// gaps but does not extend the covered span, so leading
+				// and trailing non-het runs trim away (unless -a). The
+				// intended behaviour the flag implies; upstream samtools
+				// parses --het-only but never acts on it (a dead option —
+				// see docs/UPSTREAM_BUGS.md).
+				if opts.HetOnly && !call.isHet {
 					seqBuf = append(seqBuf, 'N')
 					qualBuf = append(qualBuf, '!')
 					continue
@@ -738,7 +778,14 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 	// with upstream is cheaper than guarding.
 	// Het condition mirrors upstream bam_consensus.c:1982 exactly:
 	// score2 >= het_fract * score1 && ambig. No extra guards.
-	if opts.AmbigCodes && float64(s2) >= opts.MinHetFraction*float64(s1) {
+	//
+	// hetSite records whether the two top alleles satisfy the
+	// heterozygosity test INDEPENDENTLY of --ambig. It is the gate for
+	// --het-only (HetOnly). We require s1>0 so that an empty/uncalled
+	// column is not spuriously flagged het (when s1==0, s2==0 too and
+	// 0 >= 0 would otherwise hold).
+	hetSite := s1 > 0 && float64(s2) >= opts.MinHetFraction*float64(s1)
+	if opts.AmbigCodes && hetSite {
 		used |= call2
 		usedScore += s2
 	}
@@ -746,6 +793,19 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 	// Single fraction gate (upstream bam_consensus.c:1988-1994).
 	depthOK := totDepth >= opts.MinDepth
 	callOK := tscore > 0 && float64(usedScore) >= opts.MinCallFraction*float64(tscore)
+	// isHet for --het-only is computed independently of --ambig: a
+	// position counts as heterozygous when the two top alleles pass the
+	// het-fract test (hetSite) AND the het-inclusive call (call1|call2)
+	// is itself confident — i.e. it clears the same depth/call-fraction
+	// gates upstream uses to accept a call. We evaluate the call gate on
+	// the het-inclusive score (s1+s2) so the determination does not
+	// depend on whether --ambig happened to widen usedScore above.
+	hetInclusiveScore := s1
+	if hetSite {
+		hetInclusiveScore += s2
+	}
+	hetCallOK := tscore > 0 && float64(hetInclusiveScore) >= opts.MinCallFraction*float64(tscore)
+	isHet := hetSite && depthOK && hetCallOK
 	if !depthOK || !callOK {
 		// "But note shallow gaps are still called gaps, not N, as
 		//  we're still more confident there is no base than it is
@@ -769,7 +829,7 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 	if used != 0 && tscore > 0 {
 		qual = int(100 * float64(usedScore) / float64(tscore))
 	}
-	return consensusCall{base: base, qual: qual, depth: totDepth}, totDepth
+	return consensusCall{base: base, qual: qual, depth: totDepth, isHet: isHet}, totDepth
 }
 
 // callConsensusBayesian runs the Gap5-derived bayesian caller on one
@@ -826,7 +886,29 @@ func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
 			return consensusCall{}, 0
 		}
 	}
-	return consensusCall{base: cb, qual: cq, depth: cons.depth}, td
+	// isHet for --het-only, determined independently of --ambig. A
+	// positive het log-odds means the bayesian caller favours a
+	// two-allele genotype; we additionally require that genotype to
+	// survive the SAME confidence gates bayesCallToBase applies when it
+	// emits a het IUPAC base (with --ambig assumed on): the depth floor,
+	// and the cutoff-downgrade that would otherwise turn the call into
+	// 'N'. Mirroring bayesCallToBase exactly (rather than a looser
+	// hetLogOdd>=consCutoff test) keeps the het-only decision consistent
+	// with the base the caller would actually render — including the
+	// corner case of a heterozygote involving a gap allele, which
+	// bayesCallToBase exempts from the cutoff downgrade.
+	isHet := cons.hetLogOdd > 0 && cons.depth >= o.minDepth
+	if isHet {
+		// Replicate bayesCallToBase's downgrade-to-N test for the het
+		// branch (cb is the het IUPAC code, cq = hetLogOdd). The base is
+		// never '*' on the het branch, so only the cutoff + gap-allele
+		// exemption matter.
+		if cons.hetLogOdd < o.consCutoff &&
+			cons.hetCall%5 != 4 && cons.hetCall/5 != 4 {
+			isHet = false
+		}
+	}
+	return consensusCall{base: cb, qual: cq, depth: cons.depth, isHet: isHet}, td
 }
 
 // bayesInsertionColumn is one nth>0 insertion column produced for a
