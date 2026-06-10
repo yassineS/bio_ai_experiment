@@ -41,7 +41,9 @@ Output:
   -O, --output-type v|z|u|b      VCF (default), VCF.gz, uncompressed
                                  BCF, or BCF.
       --no-version               Skip version line in the header.
-      --threads INT              Accepted; v1 is single-threaded.
+      --threads INT              Worker threads for parallel BGZF compression
+                                 of z/b output (pileup itself is single-threaded
+                                 in v1; >1 enables parallel output compression).
 
 Read filtering:
   -A, --count-orphans            Keep anomalous read pairs.
@@ -365,19 +367,20 @@ func runMpileup(args []string) int {
 		// --indels-2.0 is an alias for --indels-cns upstream; --no-indels-cns
 		// overrides both. Resolve precedence here so MpileupOptions.IndelsCNS
 		// is the single source of truth downstream.
-		IndelsCNS:    (mf.indelsCNS || mf.indels20) && !mf.noIndelsCNS,
-		NoIndelsCNS:  mf.noIndelsCNS,
-		GVCFBlock:    mf.gvcf,
-		NoReference:  mf.noReference,
-		OutputFormat: format,
-		Output:       mf.outputPath,
-		Threads:      mf.threads,
-		NoVersion:    mf.noVersion,
-		Verbosity:    mf.verbosity,
-		FlagIncl:     mf.flagAllUnset,
-		FlagExcl:     mf.flagAnySet,
-		FlagAny:      mf.flagAnyUnset,
-		FlagLS:       mf.flagLS,
+		IndelsCNS:     (mf.indelsCNS || mf.indels20) && !mf.noIndelsCNS,
+		NoIndelsCNS:   mf.noIndelsCNS,
+		GVCFBlock:     mf.gvcf,
+		NoReference:   mf.noReference,
+		OutputFormat:  format,
+		Output:        mf.outputPath,
+		CompressLevel: -1, // mpileup has no -l flag; use default BGZF level.
+		Threads:       mf.threads,
+		NoVersion:     mf.noVersion,
+		Verbosity:     mf.verbosity,
+		FlagIncl:      mf.flagAllUnset,
+		FlagExcl:      mf.flagAnySet,
+		FlagAny:       mf.flagAnyUnset,
+		FlagLS:        mf.flagLS,
 	}
 	if mf.regions != "" {
 		opts.Regions = bcftools.SplitCommaList(mf.regions)

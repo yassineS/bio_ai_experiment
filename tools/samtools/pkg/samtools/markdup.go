@@ -30,7 +30,6 @@
 // Skipped intentionally (documented in PARITY_ROADMAP.md):
 //   - Optical-dup detection (-d/--max-dist). The flag is accepted but a
 //     warning is printed; PCR duplicates only are marked.
-//   - Multi-threading (-@/--threads). The flag is accepted but ignored.
 //   - Barcode regex / read-group hashing modes. The flag is accepted but
 //     barcodes are folded into the key as `0` (i.e. ignored).
 //   - The `do` ("duplicate-of") tag tracks the *qname* of the kept record
@@ -96,7 +95,9 @@ type MarkdupOptions struct {
 	// AddTag writes the `do` aux tag (qname of the kept record) onto each
 	// flagged duplicate.
 	AddTag bool
-	// Threads is accepted for upstream-CLI compatibility; ignored.
+	// Threads sets the BGZF compression worker count from `-@/--threads`. A
+	// value above 1 compresses the marked BAM output in parallel; the decoded
+	// records are byte-identical to the single-threaded path.
 	Threads int
 	// NoPG suppresses @PG injection. v1 never injects @PG so this is a
 	// no-op kept for flag-compat.
@@ -273,8 +274,18 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 	if err != nil {
 		return res, fmt.Errorf("markdup pass 2 header: %w", err)
 	}
-	bw := sam.NewBAMWriter(out)
+	bw := sam.NewBAMWriterThreads(out, opts.Threads)
+	// closeBW drains the parallel BGZF back end's worker goroutines on any
+	// early error return. Close is idempotent, so the success path's explicit
+	// Close still reports the flush/EOF error.
+	closed := false
+	closeBW := func() {
+		if !closed {
+			_ = bw.Close()
+		}
+	}
 	if err := bw.WriteHeader(br2.Header()); err != nil {
+		closeBW()
 		return res, err
 	}
 	for {
@@ -283,6 +294,7 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 			break
 		}
 		if err != nil {
+			closeBW()
 			return res, fmt.Errorf("markdup pass 2: %w", err)
 		}
 		if opts.ClearTags {
@@ -304,10 +316,12 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 			continue
 		}
 		if err := bw.Write(rec); err != nil {
+			closeBW()
 			return res, err
 		}
 		res.Written++
 	}
+	closed = true
 	return res, bw.Close()
 }
 

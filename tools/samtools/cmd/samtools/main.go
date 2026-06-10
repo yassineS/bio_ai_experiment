@@ -158,7 +158,7 @@ Options:
   -T, --reference <fasta>     Reference FASTA for decoding reference-backed
                               CRAM input (needs a sibling .fai). Ignored
                               for SAM/BAM. CRAM input is auto-detected.
-  -@, --threads <int>         Accepted; single-threaded in v1.
+  -@, --threads <int>         BGZF compression worker count for BAM output.
       --no-PG                 Suppress @PG line emission.
       --help                  Show this help.
       --version               Show version.
@@ -229,7 +229,7 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &subsample, "s", "subsample", "", "Subsample fraction")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output file")
 	cliflag.StringVar(fs, &refFile, "T", "reference", "", "Reference FASTA for CRAM input")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "BGZF compression worker count for BAM output")
 	cliflag.BoolVar(fs, &noPG, "", "no-PG", false, "Suppress @PG line")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -321,6 +321,7 @@ func runView(args []string) int {
 		Reference:          refFile,
 		CRAMQualityBinning: cramQBin,
 		IndexPath:          indexPath,
+		Threads:            threads,
 	}
 
 	// Honour the output file extension when no format was given: a .bam
@@ -491,7 +492,7 @@ Options:
   -m, --max-mem N[K|M|G]      Per-shard memory budget (default 768M).
   -T, --tmpdir PREFIX         Temporary-file prefix.
   -l, --compress-level N      Output BGZF deflate level 0..9.
-  -@, --threads N             Accepted; v1 is single-threaded.
+  -@, --threads N             BGZF compression worker count for BAM/shard output.
       --no-PG                 Suppress @PG injection (v1 never injects).
   -h, --help                  Show this help.
   -v, --version               Show version.
@@ -522,7 +523,7 @@ func runSort(args []string) int {
 	cliflag.StringVar(fs, &maxMem, "m", "max-mem", "", "Per-shard memory budget")
 	cliflag.StringVar(fs, &tmpdir, "T", "tmpdir", "", "Temp file prefix")
 	cliflag.IntVar(fs, &compLevel, "l", "compress-level", -1, "BGZF deflate level")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "BGZF compression worker count for BAM/shard output")
 	cliflag.BoolVar(fs, &noPG, "", "no-PG", false, "No @PG injection")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")

@@ -1721,11 +1721,32 @@ Plus:
   See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
 - **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
   and `.csi`, and readers auto-detect index kind from file magic.
-- **Multi-threading (`-@`) — NOT done.** `-@/--threads` is accepted on
-  the CLI of `sort`, `index`, `view` (and elsewhere) but is a no-op
-  stub; v1 is single-threaded everywhere. The option value is stored on
-  the relevant options struct for a future parallel pass. This is the
-  one cross-cutting deferred item, not a completed feature.
+- **Multi-threading (`-@`) — DONE for the BAM-writing subcommands
+  (`view`, `sort`, `markdup`).** These now drive a parallel BGZF
+  compressor when `-@/--threads N` (N > 1) is given, via the new
+  `sam.NewBAMWriterThreads` back end built on `bgzf.MultiWriter` (the
+  same block-parallel writer used by `bgzip`). BGZF is block-parallel by
+  construction — every block is an independent gzip member — so the
+  decoded BAM body is byte-identical regardless of thread count. `sort`
+  also compresses its temporary external-merge shards in parallel.
+  Validated by `tools/samtools/pkg/samtools/threads_test.go`: for
+  `view`, `sort`, and `markdup` the decompressed BAM body of `-@ {2..8}`
+  is byte-for-byte equal to `-@ 1`, and the decoded record set matches a
+  live upstream `samtools` binary built from the vendored submodule
+  (`TestThreads_View_UpstreamParity`, `TestThreads_Sort_UpstreamParity`,
+  `t.Fatalf` never `t.Skip`). A benchmark (`BenchmarkThreads_ViewBAM`)
+  shows the parallel path's throughput gain. Compressed *bytes* may
+  differ from upstream's (block boundaries depend on buffering timing);
+  the contract is decode-equality, exactly as for the `bgzip` MultiWriter.
+
+  **Remaining single-threaded under `-@`** (the flag is accepted but
+  currently a no-op for these): `markdup` pass-1 scan, `view`/`sort`
+  *input* BGZF decode (a parallel BGZF *reader* is future work), CRAM
+  encode/decode, and the non-BAM-writing subcommands (`flagstat`,
+  `idxstats`, `depth`, `stats`, `mpileup`, `fastq`, `index`, `merge`,
+  `cat`, `fixmate`, `reheader`, `addreplacerg`, `split`, `calmd`,
+  `consensus`, `coverage`, `phase`, `targetcut`). The dominant
+  IO-bound win — parallel BGZF compression of BAM output — is covered.
 
 **Genuine remaining samtools gaps** (everything else is done):
 
@@ -2576,6 +2597,44 @@ mendelian2/polysomy PR (`mendelian2`, `polysomy`), the cnv/csq PR
 (`cnv` + `csq`), and the mpileup PR (**`mpileup`**).
 
 All bcftools subcommands now have an implementation in the Go port.
+
+**Multi-threaded output compression** (`-@ / --threads N`) — DONE for the
+output-writer subcommands. Like upstream (which calls htslib
+`hts_set_threads` on the output file), the Go port now performs genuine
+parallel BGZF compression of bgzipped output when `N > 1`, reusing the
+shared block-parallel `pkg/htsgo/bgzf.MultiWriter` (the same writer used
+by `bgzip` and samtools threading). The shared `openOutput` writer path
+selects `MultiWriter` for `-O z` (VCF.gz) and `-O b` (BCF) whenever
+`Threads > 1`, so the flag is wired end-to-end through **`view`,
+`concat`, `norm`, `call`, `annotate`, `sort`, `merge`**, and (via its own
+writer) **`mpileup`** output. As part of this change `-O z` now emits
+BGZF (gzip-compatible) rather than plain `compress/gzip`, matching
+upstream's `.vcf.gz` framing. Output decodes byte-identically regardless
+of the thread count (every BGZF block is an independent gzip member);
+compressed bytes may differ at block boundaries, so parity is asserted on
+the **decoded** records. The pileup/call computation itself remains
+single-threaded in v1 — only the output-compression stage is
+parallelised, which is the dominant win for `-O z`/`-O b` workloads.
+
+**`-@` still single-threaded (output threading not yet wired):**
+`isec`, `convert`, `reheader`, `mendelian`, `mendelian2`, `csq`,
+`filter`/`vcffilter`, and `plugin` accept `--threads` but ignore it
+today; `gtcheck`, `roh`, `cnv`, `polysomy`, `consensus`, and `query`/
+`stats`/`index` either have no BGZF-framed record output or do not accept
+`-@`. Wiring the remaining `openOutput` callers (`isec`, `convert`,
+`reheader`, `mendelian*`, `vcffilter`) is mechanical — they share the
+same writer chokepoint — and is tracked as a follow-up.
+
+**Validation:** live upstream-binary parity (`view_threads_test.go`, the
+uniquely-named `upstreamBcftoolsThreads` sync.Once builder, never
+`t.Skip`): our `-@ {2,4,8}` output decodes byte-identically to our `-@ 1`
+output for both `-O z` and `-O b`, and the decoded records match the live
+upstream `bcftools view -O z` / `-O b --threads 4` output on a
+multi-block VCF fixture. Race-clean (`go test -race`). The isolated
+parallel-compression speedup (~3x at 4 threads) is demonstrated by
+`BenchmarkMultiWriter` in `pkg/htsgo/bgzf`; end-to-end `view` throughput
+moves little because VCF text (de)serialisation, not deflate, dominates
+that path (`BenchmarkViewThreadsVCFGz`).
 
 Closed in the #220–#225 wave: `view -x/--private` & `-X/--exclude-private`
 (private-allele site filter), `stats -u/--user-tstv` (user-defined Ts/Tv

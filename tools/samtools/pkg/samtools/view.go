@@ -109,6 +109,12 @@ type ViewOptions struct {
 	// conventional sibling `<input>.csi`/`<input>.bai` lookup; the index
 	// kind (CSI or BAI) is auto-detected from the file's magic bytes.
 	IndexPath string
+	// Threads is the BGZF compression worker count from `-@/--threads`. A
+	// value above 1 enables the parallel BGZF back end for BAM output; the
+	// decoded records are byte-identical to single-threaded output. It has no
+	// effect on SAM output (uncompressed text) and is a no-op for CRAM, whose
+	// container does not yet parallelise. 0 or 1 means single-threaded.
+	Threads int
 }
 
 // TagFilter is a single aux-tag predicate as derived from samtools view's
@@ -503,7 +509,7 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 		}
 		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{QualityBinning: binning})
 	case opts.OutputBAM:
-		w = sam.NewBAMWriter(out)
+		w = sam.NewBAMWriterThreads(out, opts.Threads)
 	default:
 		w = sam.NewSAMWriter(out)
 	}
@@ -511,14 +517,15 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 	// — it is always emitted regardless of -h/-H. CRAM in particular
 	// cannot be written without a header.
 	emitHeader := opts.HeaderOnly || opts.WithHeader || opts.OutputBAM || opts.OutputCRAM
-	if emitHeader {
-		if err := w.WriteHeader(hdr); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := w.WriteHeader(nil); err != nil {
-			return nil, err
-		}
+	hdrArg := hdr
+	if !emitHeader {
+		hdrArg = nil
+	}
+	if err := w.WriteHeader(hdrArg); err != nil {
+		// Close the writer so a parallel BGZF back end's worker goroutines
+		// drain rather than blocking forever on the unconsumed job channel.
+		_ = w.Close()
+		return nil, err
 	}
 	return w, nil
 }

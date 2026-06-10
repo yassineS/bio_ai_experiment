@@ -862,7 +862,7 @@ Options:
       --exclude-flags N   Drop records with ANY bit set.
   -c, --clear-tags        Clear pre-existing dup tags (do/dt/mc).
   -t, --add-tag           Write the 'do' aux tag on flagged duplicates.
-  -@, --threads N         Accepted; v1 is single-threaded.
+  -@, --threads N         BGZF compression worker count for BAM output.
   -o, --output FILE       Output path (default stdout).
       --no-PG             Suppress @PG injection (we never inject anyway).
   -h, --help              Show this help.

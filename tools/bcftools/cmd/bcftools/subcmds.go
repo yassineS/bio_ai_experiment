@@ -50,7 +50,8 @@ Options:
   -O, --output-type {v|z|u|b}  Output format.
   -o, --output PATH          Output file (default stdout).
   -l, --compression-level N  gzip level for -O z output.
-      --threads N            Accepted; v1 is single-threaded.
+  -@, --threads N            Worker threads for parallel BGZF compression of
+                             z/b output (>1 enables it).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -116,6 +117,7 @@ func runMerge(args []string) int {
 		MergeMode:     mode,
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
+		Threads:       threads,
 		RegionsFile:   regionsFile,
 	}
 	if regions != "" {
@@ -255,7 +257,8 @@ Options:
   -O, --output-type {v|z|u|b}  Output format.
   -o, --output PATH          Output file (default stdout).
   -l, --compression-level N  gzip level for -O z output.
-      --threads N            Accepted; v1 is single-threaded.
+  -@, --threads N            Worker threads for parallel BGZF compression of
+                             z/b output (>1 enables it).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -316,6 +319,7 @@ func runSort(args []string) int {
 	if _, err := bcftools.SortFile(rest[0], out, bcftools.SortOptions{
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
+		Threads:       threads,
 		MaxMem:        maxMem,
 		TmpDir:        tmpDir,
 	}); err != nil {
@@ -394,7 +398,8 @@ Options:
   -O, --output-type {v|z|u|b}  Output format.
   -o, --output PATH          Output file (default stdout).
   -l, --compression-level N  gzip level for -O z output.
-      --threads N            Accepted; v1 is single-threaded.
+  -@, --threads N            Worker threads for parallel BGZF compression of
+                             z/b output (>1 enables it).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -494,7 +499,8 @@ Options:
   -O, --output-type {v|z|u|b}  Output format.
   -o, --output PATH          Output file (default stdout).
   -l, --compression-level N  gzip level for -O z output.
-      --threads N            Accepted; v1 is single-threaded.
+  -@, --threads N            Worker threads for parallel BGZF compression of
+                             z/b output (>1 enables it).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -581,6 +587,7 @@ func runAnnotate(args []string) int {
 		SingleOverlaps: singleOverlaps,
 		OutputFormat:   format,
 		CompressLevel:  compressLevel,
+		Threads:        threads,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)

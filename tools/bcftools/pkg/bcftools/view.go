@@ -2,7 +2,6 @@ package bcftools
 
 import (
 	"bufio"
-	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -77,6 +76,12 @@ type ViewOptions struct {
 	// samples. Like Private, it requires a sample subset to take effect.
 	ExcludePrivate bool
 	CompressLevel  int // -l
+	// Threads is the value of -@/--threads. When greater than 1 and the
+	// selected output format is BGZF-framed (-O z VCF.gz or -O b BCF), the
+	// output is compressed by a pool of that many worker goroutines via
+	// bgzf.MultiWriter. The framed result decodes byte-identically regardless
+	// of the thread count. A value of 0 or 1 uses the single-threaded writer.
+	Threads int
 }
 
 // applyAlleleFilters returns true if the variant passes the AC/AF filters.
@@ -854,13 +859,16 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 	ensurePASSFilter(hdr)
 	switch opts.OutputFormat {
 	case OutputVCFGz:
-		gw, err := gzipWriter(out, opts.CompressLevel)
+		bw, err := newBGZFOutput(out, opts.CompressLevel, opts.Threads)
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return &vcfVariantWriter{w: vcf.NewWriter(gw, hdr)}, func() { _ = gw.Close() }, nil
+		return &vcfVariantWriter{w: vcf.NewWriter(bw, hdr)}, func() { _ = bw.Close() }, nil
 	case OutputBCF:
-		bw := bgzip.NewWriter(out)
+		bw, err := newBGZFOutput(out, opts.CompressLevel, opts.Threads)
+		if err != nil {
+			return nil, func() {}, err
+		}
 		w, err := bcf.NewWriterFromVCFHeader(bw, hdr)
 		if err != nil {
 			_ = bw.Close()
@@ -913,13 +921,29 @@ func LoadSamplesFilePairs(path string) ([][2]string, error) {
 	return pairs, sc.Err()
 }
 
-// gzipWriter returns a gzip writer at the requested level (or default if
-// level < 0).
-func gzipWriter(out io.Writer, level int) (*gzip.Writer, error) {
+// newBGZFOutput returns a BGZF io.WriteCloser for compressed VCF.gz (-O z) and
+// BCF (-O b) output. It mirrors upstream bcftools, which writes BGZF (a
+// gzip-compatible block format) for both. A level < 0 selects the package
+// default compression level.
+//
+// When threads > 1 the returned writer is a bgzf.MultiWriter that compresses
+// blocks across that many worker goroutines; otherwise it is the
+// single-threaded bgzf.Writer. Because every BGZF block is an independent gzip
+// member, both paths produce a stream that decodes to byte-identical plaintext
+// regardless of the thread count. The caller must Close the returned writer to
+// flush the final block and emit the BGZF EOF marker.
+//
+// The concrete result (*bgzf.Writer or *bgzf.MultiWriter) satisfies
+// bgzfFlusher, so callers can wire it into a vcf/bcfVariantWriter to flush the
+// header block (matching upstream htslib's vcf_hdr_write / bcf_hdr_write).
+func newBGZFOutput(out io.Writer, level, threads int) (bgzfFlusher, error) {
 	if level < 0 {
-		return gzip.NewWriter(out), nil
+		level = bgzip.DefaultCompression
 	}
-	return gzip.NewWriterLevel(out, level)
+	if threads > 1 {
+		return bgzip.NewMultiWriter(out, level, threads)
+	}
+	return bgzip.NewWriterLevel(out, level)
 }
 
 // LoadSamplesFile reads one sample name per line. Blank lines and comment
