@@ -32,9 +32,12 @@ Options:
   -f, --force               Overwrite existing output file.
   -k, --keep                Keep input file (do not delete it after success).
   -l, --compress-level N    Compression level 0-9 (default 6).
-  -t, --threads N           Number of compression threads (default 1).
-                            Multi-threading is accepted but currently runs
-                            single-threaded; see the tool README.
+  -o, --output FILE         Write output to the named FILE. Use '-' for stdout.
+                            This is the way to name the output when the input is
+                            stdin (otherwise stdin output goes to stdout).
+  -@, -t, --threads N       Number of compression threads (default 1).
+                            Blocks are compressed in parallel; output and the
+                            .gzi index stay correct regardless of thread count.
   -b, --offset N            Print uncompressed offset at compressed offset N.
   -s, --size                Print the decompressed size of the file.
   -r, --reindex             Write a .gzi index alongside file.gz.
@@ -59,6 +62,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		keep        bool
 		level       int
 		threads     int
+		writeFname  string
 		offset      int64
 		offsetSet   bool
 		showSize    bool
@@ -72,7 +76,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	cliflag.BoolVar(fs, &force, "f", "force", false, "Force overwrite")
 	cliflag.BoolVar(fs, &keep, "k", "keep", false, "Keep input file")
 	cliflag.IntVar(fs, &level, "l", "compress-level", bgzip.DefaultCompression, "Compression level (0-9)")
+	cliflag.StringVar(fs, &writeFname, "o", "output", "", "Write output to the named file")
 	cliflag.IntVar(fs, &threads, "t", "threads", 1, "Number of compression threads")
+	// Upstream bgzip's canonical short flag for threads is -@; accept it as an
+	// alias so existing command lines keep working.
+	fs.IntVar(&threads, "@", 1, "")
 	// -b takes an int64; cliflag does not expose Int64Var, so register both
 	// names directly.
 	fs.Func("b", "", func(s string) error { return parseInt64Flag(s, &offset, &offsetSet) })
@@ -103,6 +111,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	// Upstream bgzip treats `-o -` and `--output -` as a request for stdout,
+	// equivalent to -c. Normalise that here so the output-naming logic below
+	// only deals with real file paths.
+	if writeFname == "-" {
+		writeFname = ""
+		stdoutFlag = true
+	}
+	if writeFname != "" && stdoutFlag {
+		fmt.Fprintf(stderr, "bgzip: cannot write to %s and stdout at the same time\n", writeFname)
+		return 2
+	}
+
 	rest := fs.Args()
 	var input string
 	if len(rest) == 0 {
@@ -123,9 +143,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case reindex:
 		return runReindex(input, stdout, stderr)
 	case decompress:
-		return runDecompress(input, stdoutFlag, force, keep, stdin, stdout, stderr)
+		return runDecompress(input, writeFname, stdoutFlag, force, keep, stdin, stdout, stderr)
 	default:
-		return runCompress(input, stdoutFlag, force, keep, level, stdin, stdout, stderr)
+		return runCompress(input, writeFname, stdoutFlag, force, keep, level, threads, stdin, stdout, stderr)
 	}
 }
 
@@ -140,7 +160,7 @@ func parseInt64Flag(s string, dest *int64, set *bool) error {
 	return nil
 }
 
-func runCompress(input string, useStdout, force, keep bool, level int, stdin io.Reader, stdout, stderr io.Writer) int {
+func runCompress(input, writeFname string, useStdout, force, keep bool, level, threads int, stdin io.Reader, stdout, stderr io.Writer) int {
 	if level < flate.HuffmanOnly || level > flate.BestCompression {
 		fmt.Fprintf(stderr, "bgzip: invalid compression level %d\n", level)
 		return 2
@@ -153,15 +173,34 @@ func runCompress(input string, useStdout, force, keep bool, level int, stdin io.
 	}
 	defer closeIn()
 
+	// Decide where output goes. An explicit -o/--output FILE always wins; it is
+	// how the output is named when the input is stdin. Otherwise stdin (or -c)
+	// writes to stdout and a named input file produces "<input>.gz".
 	var (
 		outName   string
 		out       io.Writer
 		outCloser io.Closer
 	)
-	if useStdout || input == "-" {
+	switch {
+	case writeFname != "":
+		outName = writeFname
+		if !force {
+			if _, err := os.Stat(outName); err == nil {
+				fmt.Fprintf(stderr, "bgzip: %s already exists; use -f to overwrite\n", outName)
+				return 1
+			}
+		}
+		f, err := os.Create(outName)
+		if err != nil {
+			fmt.Fprintf(stderr, "bgzip: %v\n", err)
+			return 1
+		}
+		out = f
+		outCloser = f
+	case useStdout || input == "-":
 		out = stdout
 		outCloser = io.NopCloser(nil)
-	} else {
+	default:
 		outName = input + ".gz"
 		if !force {
 			if _, err := os.Stat(outName); err == nil {
@@ -178,16 +217,29 @@ func runCompress(input string, useStdout, force, keep bool, level int, stdin io.
 		outCloser = f
 	}
 
-	bw, err := bgzip.NewWriterLevel(out, level)
+	bw, err := newCompressor(out, level, threads)
 	if err != nil {
 		fmt.Fprintf(stderr, "bgzip: %v\n", err)
 		return 1
 	}
+	// Ensure the compressor is always closed so the MultiWriter's worker
+	// goroutines drain even when the copy below fails partway through. Close is
+	// idempotent, so the explicit Close on the success path is harmless.
+	bwClosed := false
+	closeCompressor := func() error {
+		if bwClosed {
+			return nil
+		}
+		bwClosed = true
+		return bw.Close()
+	}
+	defer closeCompressor()
+
 	if _, err := io.Copy(bw, in); err != nil {
 		fmt.Fprintf(stderr, "bgzip: %v\n", err)
 		return 1
 	}
-	if err := bw.Close(); err != nil {
+	if err := closeCompressor(); err != nil {
 		fmt.Fprintf(stderr, "bgzip: %v\n", err)
 		return 1
 	}
@@ -198,7 +250,9 @@ func runCompress(input string, useStdout, force, keep bool, level int, stdin io.
 		}
 	}
 
-	if outName != "" && !keep && !useStdout && input != "-" {
+	// Only delete the input when we compressed a real named file in place and
+	// the user did not ask to keep it or redirect output elsewhere.
+	if input != "-" && !keep && !useStdout && writeFname == "" {
 		if err := os.Remove(input); err != nil {
 			fmt.Fprintf(stderr, "bgzip: %v\n", err)
 			return 1
@@ -207,7 +261,17 @@ func runCompress(input string, useStdout, force, keep bool, level int, stdin io.
 	return 0
 }
 
-func runDecompress(input string, useStdout, force, keep bool, stdin io.Reader, stdout, stderr io.Writer) int {
+// newCompressor returns a BGZF write-closer using the single-threaded Writer
+// when threads <= 1 and the concurrent MultiWriter otherwise. Both produce a
+// valid BGZF stream terminated by the EOF marker on Close.
+func newCompressor(out io.Writer, level, threads int) (io.WriteCloser, error) {
+	if threads <= 1 {
+		return bgzip.NewWriterLevel(out, level)
+	}
+	return bgzip.NewMultiWriter(out, level, threads)
+}
+
+func runDecompress(input, writeFname string, useStdout, force, keep bool, stdin io.Reader, stdout, stderr io.Writer) int {
 	in, closeIn, err := openInputBinary(input, stdin)
 	if err != nil {
 		fmt.Fprintf(stderr, "bgzip: %v\n", err)
@@ -227,10 +291,26 @@ func runDecompress(input string, useStdout, force, keep bool, stdin io.Reader, s
 		out       io.Writer
 		outCloser io.Closer
 	)
-	if useStdout || input == "-" {
+	switch {
+	case writeFname != "":
+		outName = writeFname
+		if !force {
+			if _, err := os.Stat(outName); err == nil {
+				fmt.Fprintf(stderr, "bgzip: %s already exists; use -f to overwrite\n", outName)
+				return 1
+			}
+		}
+		f, err := os.Create(outName)
+		if err != nil {
+			fmt.Fprintf(stderr, "bgzip: %v\n", err)
+			return 1
+		}
+		out = f
+		outCloser = f
+	case useStdout || input == "-":
 		out = stdout
 		outCloser = io.NopCloser(nil)
-	} else {
+	default:
 		if !strings.HasSuffix(input, ".gz") {
 			fmt.Fprintf(stderr, "bgzip: input %s does not end in .gz\n", input)
 			return 1
@@ -260,7 +340,7 @@ func runDecompress(input string, useStdout, force, keep bool, stdin io.Reader, s
 			return 1
 		}
 	}
-	if outName != "" && !keep && !useStdout && input != "-" {
+	if input != "-" && !keep && !useStdout && writeFname == "" {
 		if err := os.Remove(input); err != nil {
 			fmt.Fprintf(stderr, "bgzip: %v\n", err)
 			return 1
