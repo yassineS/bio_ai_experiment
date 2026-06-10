@@ -275,8 +275,8 @@ Usage:
   bcftools consensus [options] <in.vcf[.gz]|in.bcf>
 
 Options:
-  -c, --chain FILE               Write a chain file for liftover. Accepted;
-                                 v1 not implemented (see docs/PARITY_ROADMAP.md#bcftools).
+  -c, --chain FILE               Write a liftover chain file (UCSC chain format)
+                                 mapping reference to consensus coordinates.
   -a, --absent CHAR              Replace positions absent from VCF with CHAR.
   -e, --exclude EXPR             Exclude sites where EXPR is true.
   -f, --fasta-ref FILE           Reference sequence in FASTA format (required).
@@ -287,8 +287,8 @@ Options:
                                    I: IUPAC code (see also -I).
                                    LR,LA: longer allele, REF/ALT on ties.
                                    SR,SA: shorter allele, REF/ALT on ties.
-                                   NpIu: phased index / unphased IUPAC (accepted;
-                                         v1 not implemented).
+                                   NpIu: allele index N for phased GTs, IUPAC
+                                         code for unphased GTs (e.g. "2pIu").
   -i, --include EXPR             Include sites where EXPR is true.
   -I, --iupac-codes              Encode het genotypes as IUPAC ambiguity codes.
       --mark-del CHAR            Replace deleted bases with CHAR (not removed).
@@ -384,14 +384,6 @@ func runConsensus(args []string) int {
 		return 0
 	}
 
-	if deferred := checkConsensusDeferred(checkConsensusDeferredInputs{
-		chainFile: chainFile,
-		haplotype: haplotype,
-	}); deferred != "" {
-		fmt.Fprintf(os.Stderr, "bcftools consensus: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
-		return 2
-	}
-
 	rest := fs.Args()
 	if len(rest) == 0 {
 		fmt.Fprintln(os.Stderr, "bcftools consensus: missing input file")
@@ -482,6 +474,7 @@ func runConsensus(args []string) int {
 		IUPACCodes:     iupacCodes,
 		IncludeExpr:    includeExpr,
 		ExcludeExpr:    excludeExpr,
+		ChainFile:      chainFile,
 	}
 	if maskFile != "" {
 		regs, err := bcftools.LoadMaskBED(maskFile)
@@ -504,42 +497,6 @@ func runConsensus(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-type checkConsensusDeferredInputs struct {
-	chainFile string
-	haplotype string
-}
-
-func checkConsensusDeferred(in checkConsensusDeferredInputs) string {
-	switch {
-	case in.chainFile != "":
-		return "-c/--chain (liftover chain output)"
-	case isPhasedIUPAC(in.haplotype):
-		return "-H NpIu (phased-index / unphased-IUPAC)"
-	}
-	return ""
-}
-
-// isPhasedIUPAC matches upstream's "NpIu" haplotype encoding ("phased
-// index, unphased IUPAC"). Example: "2pIu".
-func isPhasedIUPAC(s string) bool {
-	if len(s) < 3 {
-		return false
-	}
-	// Must contain "pI" between an integer prefix and a "u" suffix.
-	for i := 1; i < len(s)-1; i++ {
-		if s[i] == 'p' && i+2 < len(s)+1 && len(s)-i-1 >= 2 && s[i+1] == 'I' && s[i+2] == 'u' && i+3 == len(s) {
-			// Prefix must be a positive integer.
-			for k := 0; k < i; k++ {
-				if s[k] < '0' || s[k] > '9' {
-					return false
-				}
-			}
-			return i > 0
-		}
-	}
-	return false
 }
 
 // parseSingleCharMark validates --mark-del (single character only).

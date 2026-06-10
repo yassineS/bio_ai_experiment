@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
+)
 
 // TestCheckFilterDeferred locks in the upstream-flag-name surface
 // that runFilter hard-rejects rather than silently accepting. Per
@@ -24,32 +28,6 @@ func TestCheckFilterDeferred(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := checkFilterDeferred(tc.in); got != tc.want {
-				t.Errorf("deferred(%s): got %q, want %q", tc.name, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestCheckConsensusDeferred is the corresponding test for consensus.
-func TestCheckConsensusDeferred(t *testing.T) {
-	if got := checkConsensusDeferred(checkConsensusDeferredInputs{}); got != "" {
-		t.Fatalf("empty input: got deferred=%q, want \"\"", got)
-	}
-	cases := []struct {
-		name string
-		in   checkConsensusDeferredInputs
-		want string
-	}{
-		{"chain", checkConsensusDeferredInputs{chainFile: "out.chain"}, "-c/--chain (liftover chain output)"},
-		{"NpIu", checkConsensusDeferredInputs{haplotype: "2pIu"}, "-H NpIu (phased-index / unphased-IUPAC)"},
-		// Other haplotype codes must not be flagged as deferred.
-		{"R", checkConsensusDeferredInputs{haplotype: "R"}, ""},
-		{"LA", checkConsensusDeferredInputs{haplotype: "LA"}, ""},
-		{"2", checkConsensusDeferredInputs{haplotype: "2"}, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := checkConsensusDeferred(tc.in); got != tc.want {
 				t.Errorf("deferred(%s): got %q, want %q", tc.name, got, tc.want)
 			}
 		})
@@ -83,24 +61,40 @@ func TestParseSnpGap(t *testing.T) {
 	}
 }
 
-// TestIsPhasedIUPAC matches upstream's "NpIu" haplotype encoding.
-func TestIsPhasedIUPAC(t *testing.T) {
+// TestParseHaplotypeNpIu checks the "NpIu" (phased-index / unphased-IUPAC)
+// haplotype encoding parses into HapPhasedIUPAC with the right index, and
+// that malformed variants are rejected.
+func TestParseHaplotypeNpIu(t *testing.T) {
 	cases := []struct {
-		in   string
-		want bool
+		in      string
+		wantSel bcftools.HaplotypeSelector
+		wantIdx int
+		wantErr bool
 	}{
-		{"", false},
-		{"R", false},
-		{"2", false},
-		{"2pIu", true},
-		{"10pIu", true},
-		{"2pIuX", false},
-		{"pIu", false},
-		{"apIu", false},
+		{"2pIu", bcftools.HapPhasedIUPAC, 2, false},
+		{"1pIu", bcftools.HapPhasedIUPAC, 1, false},
+		{"10pIu", bcftools.HapPhasedIUPAC, 10, false},
+		{"2PIU", bcftools.HapPhasedIUPAC, 2, false}, // case-insensitive suffix
+		{"2", bcftools.HapIndex, 2, false},
+		{"I", bcftools.HapIUPAC, 0, false},
+		{"2pIuX", 0, 0, true},
+		{"pIu", 0, 0, true},
+		{"apIu", 0, 0, true},
 	}
 	for _, tc := range cases {
-		if got := isPhasedIUPAC(tc.in); got != tc.want {
-			t.Errorf("isPhasedIUPAC(%q) = %v, want %v", tc.in, got, tc.want)
+		sel, idx, err := bcftools.ParseHaplotypeSelector(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("ParseHaplotypeSelector(%q): expected error, got sel=%v idx=%d", tc.in, sel, idx)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseHaplotypeSelector(%q): unexpected error %v", tc.in, err)
+			continue
+		}
+		if sel != tc.wantSel || idx != tc.wantIdx {
+			t.Errorf("ParseHaplotypeSelector(%q) = (%v,%d), want (%v,%d)", tc.in, sel, idx, tc.wantSel, tc.wantIdx)
 		}
 	}
 }
