@@ -64,10 +64,41 @@ there we have ~30 subcommands not yet started.
 
 ---
 
+## Current status (2026-06-09, post PRs #220–#225)
+
+A skimmable per-tool completion table lives in the top-level
+[`PROJECT_STATUS.md`](../PROJECT_STATUS.md). Quick state:
+
+- **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp`, `htsfile`.
+- **Near done (small tails):** `prinseq` (~95%), `vcftools` (146/146
+  flags, ~97%, output-column polish only), `bgzip`/`tabix` (~92%),
+  `mosdepth` (~85%).
+- **Medium remaining:** `bedtools` (35/~40 subcommands, option-tail
+  polish), `samtools` (~88%; the one genuine gap is mpileup `-g/-u`
+  BCF/genotype-likelihood output).
+- **Large remaining:** `bcftools` (~70%; the boulders are mpileup indel
+  calling, `convert`'s ~18 modes, and csq slice 4).
+
+Recently closed (PRs #220–#225, treat as merged):
+
+- **bcftools**: `view -x/--private` & `-X/--exclude-private`; `stats
+  -u/--user-tstv`; `csq -b/--brief-predictions` & `-C/--genetic-code`
+  (standard table). csq `-O` non-text output is still deferred (slice 4).
+- **samtools**: `consensus --het-only` (implemented as a fix for an
+  upstream dead-option bug — see `UPSTREAM_BUGS.md`); `--ignore-overlaps`
+  landed earlier. Still deferred: mpileup `-g/-u` BCF output.
+- **mosdepth**: `-d/--d4` (byte-identical to upstream). Still deferred:
+  `-t/--threads`.
+- **vcftools**: 0 unsupported flags.
+- A repo-wide test cleanup (#225) converted all golden tests to live
+  upstream-binary parity and fixed a `samtools depth` flag bug.
+
 ## Per-tool gap list
 
-Numbers reflect state at 2026-05-14 (post-#71). Update when each gap is
-closed.
+Numbers reflect state at 2026-06-09. The per-tool prose below is kept in
+sync as gaps close; where a sub-note still reads "accepted but rejected"
+for one of the #220–#225 items above, the summary in this header and in
+`PROJECT_STATUS.md` is authoritative.
 
 ### `seqtk`
 
@@ -1605,10 +1636,15 @@ wave-1 tail (`merge`, `coverage`, `idxstats`, `cat`, `reheader`,
 `addreplacerg`, `fixmate`, `dict`, `split`, `quickcheck`), the
 heavy-hitter pair `markdup` + `stats`, the calmd/import pair
 (**`calmd`** + **`import`**), the niche pair landed in the
-phase/targetcut PR (**`phase`** + **`targetcut`**), and now
+phase/targetcut PR (**`phase`** + **`targetcut`**), and
 **`consensus`** (simple- and bayesian-mode FASTA/FASTQ/pileup; the
 Gap5 posterior caller and the NM-halo MAPQ adjustment are byte-faithful
-to upstream's default `MODE_RECALL`).
+to upstream's default `MODE_RECALL`; `--het-only` and `--ignore-overlaps`
+landed in the #220–#225 wave).
+
+**The single genuine remaining samtools gap is mpileup `-g/-u`
+BCF/genotype-likelihood output** (needs the bam2bcf emit path). Everything
+else is either done or the cross-cutting multi-threading (`-@`) deferral.
 
 Missing subcommands (in rough priority order):
 
@@ -2510,6 +2546,13 @@ mendelian2/polysomy PR (`mendelian2`, `polysomy`), the cnv/csq PR
 
 All bcftools subcommands now have an implementation in the Go port.
 
+Closed in the #220–#225 wave: `view -x/--private` & `-X/--exclude-private`
+(private-allele site filter), `stats -u/--user-tstv` (user-defined Ts/Tv
+binning), and `csq -b/--brief-predictions` & `-C/--genetic-code` (standard
+table 0). The remaining boulders are mpileup indel calling, `convert`'s
+~18 modes, and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`, `-O`
+non-text output).
+
 The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
 but with a deliberate design divergence from upstream:
 
@@ -3175,8 +3218,11 @@ Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
 - `--seed` — accepted; ignored (no subsampling below the 255-read
   errmod cap).
 
-Option-tail gaps on `consensus` (this PR, simple-mode):
+Option-tail gaps on `consensus` (simple-mode):
 
+- `--het-only` — **DONE (PR #220–#225 wave).** Implemented as a fix for
+  an upstream dead-option bug (the upstream flag is parsed but never
+  consulted); see `UPSTREAM_BUGS.md`. `--ignore-overlaps` landed earlier.
 - `-c/--chain FILE` — **implemented.** Writes a UCSC-format liftover
   chain mapping reference to consensus coordinates alongside the
   consensus FASTA. The chain engine (`consensus_chain.go`) mirrors
@@ -3251,7 +3297,8 @@ Subcommand-tail gaps on `bcftools call`:
 
 ### `mosdepth`
 
-**Status:** 1 / 1 command, most flags.
+**Status:** 1 / 1 command, most flags. **`-d/--d4` is DONE** (byte-identical
+to upstream, #220–#225 wave).
 
 Done:
 
