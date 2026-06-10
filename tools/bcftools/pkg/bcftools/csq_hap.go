@@ -66,13 +66,98 @@ const csqCompoundFull = csqSynonymous | csqMissense | csqStopLost | csqStopGaine
 	csqStartLost | csqStopRetained | csqInframeAlter | csqIncompleteCDS |
 	csqUpstreamStop | csqStartRetained | csqElongation | csqTruncation
 
-// Standard genetic code (NCBI table 0/1), indexed as in csq.c's
-// gencode tables: idx = (nt4[c0]<<4)|(nt4[c1]<<2)|nt4[c2] with
+// gencode is a single NCBI genetic-code table, the Go analogue of
+// csq.c's gencode_t. Code holds the amino acid and Stop holds the
+// start/stop annotation ('*', 'M' or '-') for each of the 64 codons,
+// indexed as idx = (nt4[c0]<<4)|(nt4[c1]<<2)|nt4[c2] with
 // A=0,C=1,G=2,T=3.
-const (
-	gencodeCode = "KNKNTTTTRSRSIIMIQHQHPPPPRRRRLLLLEDEDAAAAGGGGVVVV*Y*YSSSS*CWCLFLF"
-	gencodeStop = "--------------M---------------------------------*-*-----*-------"
-)
+type gencode struct {
+	// ID is the NCBI translation-table number selected by
+	// -C/--genetic-code (with 0 being bcftools' "standard simplified"
+	// variant of table 1).
+	ID int
+	// Name is the human-readable table name.
+	Name string
+	// Code maps each of the 64 codons to its amino-acid letter.
+	Code string
+	// Stop marks start ('M') and stop ('*') codons; '-' otherwise.
+	Stop string
+}
+
+// gencodeTables transcribes csq.c's gencode_tables (generated upstream
+// by misc/gencode-tables from the NCBI translation tables). Table 0 is
+// bcftools' "standard simplified" variant of NCBI table 1. New tables
+// can be added by appending the corresponding NCBI entry.
+var gencodeTables = []gencode{
+	{ID: 0, Name: "Standard simplified",
+		Code: "KNKNTTTTRSRSIIMIQHQHPPPPRRRRLLLLEDEDAAAAGGGGVVVV*Y*YSSSS*CWCLFLF",
+		Stop: "--------------M---------------------------------*-*-----*-------"},
+	{ID: 1, Name: "Standard",
+		Code: "KNKNTTTTRSRSIIMIQHQHPPPPRRRRLLLLEDEDAAAAGGGGVVVV*Y*YSSSS*CWCLFLF",
+		Stop: "--------------M---------------M-----------------*-*-----*-----M-"},
+	{ID: 2, Name: "Vertebrate Mitochondrial",
+		Code: "KNKNTTTT*S*SMIMIQHQHPPPPRRRRLLLLEDEDAAAAGGGGVVVV*Y*YSSSSWCWCLFLF",
+		Stop: "--------*-*-MMMM------------------------------M-*-*-------------"},
+	{ID: 3, Name: "Yeast Mitochondrial",
+		Code: "KNKNTTTTRSRSMIMIQHQHPPPPRRRRTTTTEDEDAAAAGGGGVVVV*Y*YSSSSWCWCLFLF",
+		Stop: "------------M-M-------------------------------M-*-*-------------"},
+	{ID: 5, Name: "Invertebrate Mitochondrial",
+		Code: "KNKNTTTTSSSSMIMIQHQHPPPPRRRRLLLLEDEDAAAAGGGGVVVV*Y*YSSSSWCWCLFLF",
+		Stop: "------------MMMM------------------------------M-*-*-----------M-"},
+}
+
+// gencodeByID returns the genetic-code table for the given NCBI id (0
+// is bcftools' standard simplified table). It reports false when no
+// table with that id has been transcribed.
+func gencodeByID(id int) (*gencode, bool) {
+	for i := range gencodeTables {
+		if gencodeTables[i].ID == id {
+			return &gencodeTables[i], true
+		}
+	}
+	return nil, false
+}
+
+// standardGencode is the default table (NCBI 0 / standard simplified),
+// used by the engine when -C/--genetic-code is unset.
+var standardGencode = &gencodeTables[0]
+
+// GeneticCodeKnown reports whether the given NCBI translation-table id
+// is supported by `bcftools csq -C/--genetic-code`.
+func GeneticCodeKnown(id int) bool {
+	_, ok := gencodeByID(id)
+	return ok
+}
+
+// GeneticCodeIDs returns the supported -C/--genetic-code table ids as a
+// comma-separated string (for error messages), e.g. "0, 1, 2, 3, 5".
+func GeneticCodeIDs() string {
+	var sb strings.Builder
+	for i, gc := range gencodeTables {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(strconv.Itoa(gc.ID))
+	}
+	return sb.String()
+}
+
+// GeneticCodeListing renders the supported genetic-code tables in the
+// same id/name/code/stop layout upstream prints for `-C l`.
+func GeneticCodeListing() string {
+	var sb strings.Builder
+	for _, gc := range gencodeTables {
+		sb.WriteString(strconv.Itoa(gc.ID))
+		sb.WriteByte('\t')
+		sb.WriteString(gc.Name)
+		sb.WriteString("\n\t")
+		sb.WriteString(gc.Code)
+		sb.WriteString("\n\t")
+		sb.WriteString(gc.Stop)
+		sb.WriteString("\n\n")
+	}
+	return sb.String()
+}
 
 // nt4 maps a DNA base to 0..3 (A,C,G,T); 4 for anything else.
 var nt4 = func() [256]uint8 {
@@ -100,43 +185,45 @@ var cnt4 = func() [256]uint8 {
 	return t
 }()
 
-// dna2aa translates a forward-strand codon to its amino acid.
-func dna2aa(c0, c1, c2 byte) byte {
+// dna2aa translates a forward-strand codon to its amino acid using the
+// selected genetic-code table.
+func (gc *gencode) dna2aa(c0, c1, c2 byte) byte {
 	idx := int(nt4[c0])<<4 | int(nt4[c1])<<2 | int(nt4[c2])
 	if idx > 63 {
 		return 'X'
 	}
-	return gencodeCode[idx]
+	return gc.Code[idx]
 }
 
 // dna2stop returns the stop/start annotation ('*', 'M' or '-') of a
-// forward-strand codon.
-func dna2stop(c0, c1, c2 byte) byte {
+// forward-strand codon under the selected genetic-code table.
+func (gc *gencode) dna2stop(c0, c1, c2 byte) byte {
 	idx := int(nt4[c0])<<4 | int(nt4[c1])<<2 | int(nt4[c2])
 	if idx > 63 {
 		return 0
 	}
-	return gencodeStop[idx]
+	return gc.Stop[idx]
 }
 
 // cdna2aa translates a reverse-strand codon (read on the forward
-// strand) to its amino acid.
-func cdna2aa(c0, c1, c2 byte) byte {
+// strand) to its amino acid using the selected genetic-code table.
+func (gc *gencode) cdna2aa(c0, c1, c2 byte) byte {
 	idx := int(cnt4[c2])<<4 | int(cnt4[c1])<<2 | int(cnt4[c0])
 	if idx > 63 {
 		return 'X'
 	}
-	return gencodeCode[idx]
+	return gc.Code[idx]
 }
 
 // cdna2stop returns the stop/start annotation of a reverse-strand
-// codon read on the forward strand.
-func cdna2stop(c0, c1, c2 byte) byte {
+// codon read on the forward strand under the selected genetic-code
+// table.
+func (gc *gencode) cdna2stop(c0, c1, c2 byte) byte {
 	idx := int(cnt4[c2])<<4 | int(cnt4[c1])<<2 | int(cnt4[c0])
 	if idx > 63 {
 		return 0
 	}
-	return gencodeStop[idx]
+	return gc.Stop[idx]
 }
 
 // strandCode converts a gff.Strand to csq.c's STRAND_FWD / STRAND_REV.
@@ -241,6 +328,13 @@ type hapEngine struct {
 	phase   int
 	samples []int // header indices of samples to process; nil when phaseDropGT
 	ncsq2   int
+	// gencode is the selected NCBI translation table (-C/--genetic-code),
+	// defaulting to the standard simplified table when unset.
+	gencode *gencode
+	// brief is the -b/--brief-predictions / -B/--trim-protein-seq value:
+	// 0 means full amino-acid predictions, N>0 truncates each prediction
+	// to the first N residues. Mirrors upstream's args->brief_predictions.
+	brief int
 	// nfmtBcsq is the per-sample width of FORMAT/BCSQ (number of
 	// int32 ints needed to hold ncsq2 effective bits, 30 per int).
 	// Mirrors upstream's args->nfmt_bcsq.
@@ -264,6 +358,18 @@ func newHapEngine(idx *CSQIndex, opts CSQOptions, hdr *vcf.Header) *hapEngine {
 		pos2vbuf: map[int]*vbuf{},
 		hapTr:    map[string]*hapTranscript{},
 	}
+	// Select the genetic-code table. Unknown ids fall back to the
+	// standard table; the CLI validates -C/--genetic-code up front so
+	// the engine never sees an unknown id in practice.
+	if gc, ok := gencodeByID(opts.GeneticCode); ok {
+		e.gencode = gc
+	} else {
+		e.gencode = standardGencode
+	}
+	// brief_predictions: -b sets 1, -B sets N. The CLI maps both onto
+	// opts.TrimProteinSeq (1 for -b), matching upstream where -b and -B
+	// share args->brief_predictions.
+	e.brief = opts.TrimProteinSeq
 	e.phase = phaseByteToMode(opts.Phase)
 	if hdr == nil || len(hdr.Samples) == 0 {
 		e.phase = phaseDropGT

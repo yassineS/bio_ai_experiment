@@ -49,13 +49,13 @@ func (e *hapEngine) hapInit(ht *hapTranscript, parent, child *hapNode, icds int,
 		// Do not check starts in incomplete CDS (first codon not M).
 		if !rev {
 			c := ht.ref[nRefPad+cdsBeg0-ht.beg0:]
-			if dna2stop(c[0], c[1], c[2]) != 'M' {
+			if e.gencode.dna2stop(c[0], c[1], c[2]) != 'M' {
 				s.checkStart = false
 			}
 		} else {
 			base := nRefPad + cdsBeg0 - ht.beg0 + cdsLen - 3
 			c := ht.ref[base:]
-			if cdna2stop(c[0], c[1], c[2]) != 'M' {
+			if e.gencode.cdna2stop(c[0], c[1], c[2]) != 'M' {
 				s.checkStart = false
 			}
 		}
@@ -163,8 +163,9 @@ type translated struct {
 // query transcript to translate; sbeg is its offset within the full
 // query transcript; rbeg/rend bound seq within the reference; seqM is
 // the total query transcript length. fill triggers frameshift fill to
-// the transcript end.
-func cdsTranslate(ref, seq []byte, sbeg, rbeg, rend, strand int, fill int, seqM int) translated {
+// the transcript end. gc selects the genetic-code table used for codon
+// translation.
+func cdsTranslate(gc *gencode, ref, seq []byte, sbeg, rbeg, rend, strand int, fill int, seqM int) translated {
 	var tseq, tstop []byte
 	if len(seq) == 0 {
 		return translated{aa: []byte{'?'}, stop: []byte{'?'}}
@@ -183,13 +184,13 @@ func cdsTranslate(ref, seq []byte, sbeg, rbeg, rend, strand int, fill int, seqM 
 		length := len(seq) - i + npad
 		var codon int // index into seq
 		if i == 3 {
-			tseq = append(tseq, dna2aa(tmp[0], tmp[1], tmp[2]))
-			tstop = append(tstop, dna2stop(tmp[0], tmp[1], tmp[2]))
+			tseq = append(tseq, gc.dna2aa(tmp[0], tmp[1], tmp[2]))
+			tstop = append(tstop, gc.dna2stop(tmp[0], tmp[1], tmp[2]))
 			codon = 3 - npad
 			end := codon + length - 1 - (length % 3)
 			for codon < end {
-				tseq = append(tseq, dna2aa(seq[codon], seq[codon+1], seq[codon+2]))
-				tstop = append(tstop, dna2stop(seq[codon], seq[codon+1], seq[codon+2]))
+				tseq = append(tseq, gc.dna2aa(seq[codon], seq[codon+1], seq[codon+2]))
+				tstop = append(tstop, gc.dna2stop(seq[codon], seq[codon+1], seq[codon+2]))
 				codon += 3
 			}
 			i = 0
@@ -205,14 +206,14 @@ func cdsTranslate(ref, seq []byte, sbeg, rbeg, rend, strand int, fill int, seqM 
 				tmp[i] = ref[rcodon]
 				rcodon++
 			}
-			tseq = append(tseq, dna2aa(tmp[0], tmp[1], tmp[2]))
-			tstop = append(tstop, dna2stop(tmp[0], tmp[1], tmp[2]))
+			tseq = append(tseq, gc.dna2aa(tmp[0], tmp[1], tmp[2]))
+			tstop = append(tstop, gc.dna2stop(tmp[0], tmp[1], tmp[2]))
 		}
 		if fill != 0 {
 			end := len(ref) - nRefPad
 			for rcodon+3 <= end {
-				tseq = append(tseq, dna2aa(ref[rcodon], ref[rcodon+1], ref[rcodon+2]))
-				tstop = append(tstop, dna2stop(ref[rcodon], ref[rcodon+1], ref[rcodon+2]))
+				tseq = append(tseq, gc.dna2aa(ref[rcodon], ref[rcodon+1], ref[rcodon+2]))
+				tstop = append(tstop, gc.dna2stop(ref[rcodon], ref[rcodon+1], ref[rcodon+2]))
 				rcodon += 3
 			}
 		}
@@ -237,12 +238,12 @@ func cdsTranslate(ref, seq []byte, sbeg, rbeg, rend, strand int, fill int, seqM 
 		}
 		var codon int // index into seq, start of a codon
 		if i == -1 {
-			tseq = append(tseq, cdna2aa(tmp[0], tmp[1], tmp[2]))
-			tstop = append(tstop, cdna2stop(tmp[0], tmp[1], tmp[2]))
+			tseq = append(tseq, gc.cdna2aa(tmp[0], tmp[1], tmp[2]))
+			tstop = append(tstop, gc.cdna2stop(tmp[0], tmp[1], tmp[2]))
 			codon = end - 3
 			for codon >= 0 {
-				tseq = append(tseq, cdna2aa(seq[codon], seq[codon+1], seq[codon+2]))
-				tstop = append(tstop, cdna2stop(seq[codon], seq[codon+1], seq[codon+2]))
+				tseq = append(tseq, gc.cdna2aa(seq[codon], seq[codon+1], seq[codon+2]))
+				tstop = append(tstop, gc.cdna2stop(seq[codon], seq[codon+1], seq[codon+2]))
 				codon -= 3
 			}
 			// 0 - codon == leftover bases at the start of seq
@@ -266,14 +267,14 @@ func cdsTranslate(ref, seq []byte, sbeg, rbeg, rend, strand int, fill int, seqM 
 				tmp[i] = ref[refEnd]
 				i--
 			}
-			tseq = append(tseq, cdna2aa(tmp[0], tmp[1], tmp[2]))
-			tstop = append(tstop, cdna2stop(tmp[0], tmp[1], tmp[2]))
+			tseq = append(tseq, gc.cdna2aa(tmp[0], tmp[1], tmp[2]))
+			tstop = append(tstop, gc.cdna2stop(tmp[0], tmp[1], tmp[2]))
 		}
 		if fill != 0 {
 			c := refEnd - 3
 			for c >= nRefPad {
-				tseq = append(tseq, cdna2aa(ref[c], ref[c+1], ref[c+2]))
-				tstop = append(tstop, cdna2stop(ref[c], ref[c+1], ref[c+2]))
+				tseq = append(tseq, gc.cdna2aa(ref[c], ref[c+1], ref[c+2]))
+				tstop = append(tstop, gc.cdna2stop(ref[c], ref[c+1], ref[c+2]))
 				c -= 3
 			}
 		}
@@ -414,9 +415,9 @@ func (e *hapEngine) flushHaplotype(w *hapWalk, istack int) {
 			} else {
 				fill = 0
 			}
-			w.tseq = cdsTranslate(sref, altSeq, icur, rbeg, rend, strandFwd, fill, sseqM)
+			w.tseq = cdsTranslate(e.gencode, sref, altSeq, icur, rbeg, rend, strandFwd, fill, sseqM)
 			refSeq := sref[nRefPad+rbeg : nRefPad+w.node2rend(i)]
-			w.tref = cdsTranslate(sref, refSeq, rbeg, rbeg, rend, strandFwd, fill, srefM)
+			w.tref = cdsTranslate(e.gencode, sref, refSeq, rbeg, rbeg, rend, strandFwd, fill, srefM)
 
 			e.hapAddCsq(w, w.stack[istack].node, 0, ibeg, i, dlen, indel)
 			ibeg = -1
@@ -473,9 +474,9 @@ func (e *hapEngine) flushHaplotype(w *hapWalk, istack int) {
 			} else {
 				fill = 0
 			}
-			w.tseq = cdsTranslate(sref, altSeq, icur, rbeg, rend, strandRev, fill, sseqM)
+			w.tseq = cdsTranslate(e.gencode, sref, altSeq, icur, rbeg, rend, strandRev, fill, sseqM)
 			refSeq := sref[nRefPad+rbeg : nRefPad+w.node2rend(ibeg)]
-			w.tref = cdsTranslate(sref, refSeq, rbeg, rbeg, rend, strandRev, fill, srefM)
+			w.tref = cdsTranslate(e.gencode, sref, refSeq, rbeg, rbeg, rend, strandRev, fill, srefM)
 
 			e.hapAddCsq(w, w.stack[istack].node, sseqM, i, ibeg, dlen, indel)
 			ibeg = -1
@@ -637,11 +638,11 @@ func (e *hapEngine) hapAddCsq(w *hapWalk, node *hapNode, tlen, ibeg, iend, dlen 
 		}
 		str.WriteByte('|')
 		str.WriteString(strconv.Itoa(aaRbeg))
-		str.Write(tref.aa)
+		e.kprintAAPrediction(&str, aaRbeg, tref.aa, tref.stop)
 		if typ&csqSynonymous == 0 {
 			str.WriteByte('>')
 			str.WriteString(strconv.Itoa(aaSbeg))
-			str.Write(tseq.aa)
+			e.kprintAAPrediction(&str, aaSbeg, tseq.aa, tseq.stop)
 		}
 		str.WriteByte('|')
 	}
@@ -798,6 +799,29 @@ func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) {
 	csq.vrec = vrec
 	csq.idx = len(vrec.vcsq)
 	vrec.vcsq = append(vrec.vcsq, csq.typ)
+}
+
+// kprintAAPrediction ports csq.c's kprint_aa_prediction: it appends an
+// amino-acid prediction to str. With brief predictions disabled (or a
+// prediction too short to abbreviate) the full amino-acid string is
+// written. Otherwise only the first e.brief residues are written,
+// followed by ".." and the 1-based residue index just past the
+// prediction (dropping a trailing stop codon from the length, as
+// upstream does).
+func (e *hapEngine) kprintAAPrediction(str *strings.Builder, beg int, aa, stop []byte) {
+	if e.brief == 0 || len(aa)-e.brief < 3 {
+		str.Write(aa)
+		return
+	}
+	length := len(aa)
+	if length > 0 && stop[length-1] == '*' {
+		length--
+	}
+	for i := 0; i < length && i < e.brief; i++ {
+		str.WriteByte(aa[i])
+	}
+	str.WriteString("..")
+	str.WriteString(strconv.Itoa(beg + length))
 }
 
 // kputVcsq ports csq.c's kput_vcsq: it renders one vcsq into the

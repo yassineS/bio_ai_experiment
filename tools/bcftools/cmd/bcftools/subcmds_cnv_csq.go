@@ -266,9 +266,9 @@ Required:
   -g, --gff-annot FILE           GFF3 annotation.
 
 CSQ-specific options:
-  -b, --brief-predictions        Accepted (deprecated upstream alias for -B 1).
-  -B, --trim-protein-seq INT     Accepted; v1 does not trim long predictions.
-  -C, --genetic-code INT|l       Genetic code table; v1 supports only 0 (standard).
+  -b, --brief-predictions        Brief amino-acid predictions (alias for -B 1).
+  -B, --trim-protein-seq INT     Abbreviate amino-acid predictions to INT residues.
+  -C, --genetic-code INT|l       NCBI translation table (0,1,2,3,5; "l" lists them).
   -c, --custom-tag STRING        INFO tag name (default BCSQ).
   -l, --local-csq                Local (non-haplotype-aware) calling.
   -n, --ncsq INT                 Maximum per-haplotype consequences per site [16].
@@ -389,14 +389,41 @@ func runCSQ(args []string) int {
 	}
 	// Hard-reject deferred flags.
 	if deferred := checkCSQDeferred(checkCSQDeferredInputs{
-		geneticCode:   geneticCode,
 		unifyChrNames: unifyChrNames,
 		dumpGFF:       dumpGFF,
 		outputType:    outputType,
-		brief:         brief,
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools csq: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
+	}
+
+	// -C/--genetic-code: "l"/"L" lists the supported tables and exits;
+	// otherwise an integer selects an NCBI translation table.
+	if geneticCode == "l" || geneticCode == "L" {
+		fmt.Print(bcftools.GeneticCodeListing())
+		return 0
+	}
+	geneticCodeID, err := strconv.Atoi(geneticCode)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools csq: could not parse -C/--genetic-code %q\n", geneticCode)
+		return 2
+	}
+	if !bcftools.GeneticCodeKnown(geneticCodeID) {
+		fmt.Fprintf(os.Stderr, "bcftools csq: -C/--genetic-code %d: no such table (supported: %s); more tables tracked in docs/PARITY_ROADMAP.md#bcftools\n", geneticCodeID, bcftools.GeneticCodeIDs())
+		return 2
+	}
+
+	// -b/--brief-predictions is upstream's alias for -B 1; -B/--trim-protein-seq
+	// takes an explicit length. Both feed args->brief_predictions, with the
+	// later flag winning, so honour -B when given and fall back to -b.
+	// Upstream rejects -B < 1, so do the same (0 stays "unset").
+	if trimProtein < 0 {
+		fmt.Fprintf(os.Stderr, "bcftools csq: could not parse -B/--trim-protein-seq %d\n", trimProtein)
+		return 2
+	}
+	briefLen := trimProtein
+	if briefLen == 0 && brief {
+		briefLen = 1
 	}
 
 	if _, err := bcftools.ParseCSQPhase(phase); err != nil {
@@ -405,7 +432,6 @@ func runCSQ(args []string) int {
 	}
 
 	// Silence "declared but not used".
-	_ = trimProtein
 	_ = excludeExpr
 	_ = includeExpr
 	_ = samples
@@ -441,7 +467,8 @@ func runCSQ(args []string) int {
 		CustomTag:      customTag,
 		LocalCSQ:       localCSQ,
 		NCSQ:           ncsq,
-		TrimProteinSeq: trimProtein,
+		TrimProteinSeq: briefLen,
+		GeneticCode:    geneticCodeID,
 		Verbosity:      verbosity,
 		Quiet:          quiet,
 		Force:          force,
@@ -503,25 +530,17 @@ func runCSQ(args []string) int {
 // rejects (rather than silently accepts) because their behaviour is
 // non-trivial and would be a misleading no-op.
 type checkCSQDeferredInputs struct {
-	geneticCode   string
 	unifyChrNames string
 	dumpGFF       string
 	outputType    string
-	brief         bool
 }
 
 func checkCSQDeferred(in checkCSQDeferredInputs) string {
-	if in.brief {
-		return "-b/--brief-predictions"
-	}
 	switch in.outputType {
 	case "", "v", "z", "b", "u":
 		// All four output formats are supported via openCSQOutput.
 	default:
 		return "-O " + in.outputType + " (expect v|z|b|u)"
-	}
-	if in.geneticCode != "" && in.geneticCode != "0" {
-		return "-C/--genetic-code " + in.geneticCode + " (only standard table 0 in v1)"
 	}
 	// --unify-chr-names is honoured by the CSQ engine; no deferral needed.
 	_ = in.unifyChrNames
