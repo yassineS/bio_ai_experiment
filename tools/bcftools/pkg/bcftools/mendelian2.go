@@ -38,9 +38,22 @@ import (
 	"strconv"
 	"strings"
 
+	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
+
+// openBGZFVCFOutput wraps out in a BGZF writer and returns a VCF
+// variant writer plus a finish func that flushes and closes the BGZF
+// stream (writing the BGZF EOF block). Unlike openOutput's plain-gzip
+// OutputVCFGz path, the result is block-gzip and therefore indexable,
+// which -W/--write-index requires.
+func openBGZFVCFOutput(out io.Writer, hdr *vcf.Header) (variantWriter, func()) {
+	ensurePASSFilter(hdr)
+	bw := bgzip.NewWriter(out)
+	w := &vcfVariantWriter{vcf.NewWriter(bw, hdr)}
+	return w, func() { _ = w.Flush(); _ = bw.Close() }
+}
 
 // Mendelian2Mode is a bitmask of the upstream `-m c|[adeEgmMS]`
 // letters. Multiple modes can be combined for VCF/BCF output; the
@@ -197,6 +210,17 @@ type Mendelian2Options struct {
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// Rules is the per-contig ploidy / inheritance model (the
+	// `--rules` assembly or `--rules-file`). When nil, the GRCh37
+	// built-in table is used, matching upstream's default. The rules
+	// make the evaluator sex-aware: PAR regions stay diploid, the
+	// male-specific X is haploid maternal, Y is haploid paternal for
+	// males and absent for females, MT is haploid maternal.
+	Rules *MendelianRules
+	// BGZF, when true, writes gzipped VCF output as BGZF (block-gzip)
+	// rather than plain gzip, so it can be indexed for -W/--write-index.
+	// It only affects OutputVCFGz output.
+	BGZF bool
 }
 
 // Mendelian2Summary is the rollup returned by Mendelian2. Mirrors
@@ -212,6 +236,7 @@ type Mendelian2Summary struct {
 	SitesMissing     int // at least one trio with missing GT
 	SitesMERR        int // at least one trio with Mendel error
 	SitesGood        int // at least one good trio
+	SitesNoRule      int // at least one trio with no applicable inheritance rule
 	TotalRecords     int // total record count (sum of all paths above)
 	RecordsWithError int // alias for SitesMERR for callers that already
 	// speak the legacy Mendelian shape.
@@ -226,6 +251,7 @@ type Mendelian2TrioStats struct {
 	NMErr    int // Mendelian errors
 	NMissing int // missing trio GTs
 	NFail    int // -i/-e filter failures
+	NNoRule  int // sites with no applicable inheritance rule for this trio
 }
 
 // Mendelian2File is the file-aware entry point used by the CLI. It
@@ -247,6 +273,10 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 	if opts.Mode == 0 {
 		opts.Mode = Mendelian2Count
 	}
+	rules := opts.Rules
+	if rules == nil {
+		rules = defaultMendelianRules()
+	}
 
 	hdr, variants, err := readAllVariants(in)
 	if err != nil {
@@ -261,7 +291,7 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 		return Mendelian2Summary{}, fmt.Errorf("bcftools mendelian2: no complete trio found in input")
 	}
 
-	indices, err := resolveMendelian2Indices(hdr, trios)
+	indices, err := resolveMendelian2Indices(hdr, trios, rules)
 	if err != nil {
 		return Mendelian2Summary{}, fmt.Errorf("bcftools mendelian2: %w", err)
 	}
@@ -282,12 +312,17 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 	var writer variantWriter
 	var finish func()
 	if needWriter {
-		writer, finish, err = openOutput(out, ViewOptions{
-			OutputFormat:  opts.OutputFormat,
-			CompressLevel: opts.CompressLevel,
-		}, annotatedHdr)
-		if err != nil {
-			return summary, fmt.Errorf("bcftools mendelian2: %w", err)
+		if opts.BGZF && opts.OutputFormat == OutputVCFGz {
+			// BGZF VCF so the result is indexable for -W/--write-index.
+			writer, finish = openBGZFVCFOutput(out, annotatedHdr)
+		} else {
+			writer, finish, err = openOutput(out, ViewOptions{
+				OutputFormat:  opts.OutputFormat,
+				CompressLevel: opts.CompressLevel,
+			}, annotatedHdr)
+			if err != nil {
+				return summary, fmt.Errorf("bcftools mendelian2: %w", err)
+			}
 		}
 		defer finish()
 		if err := writer.WriteHeader(); err != nil {
@@ -327,17 +362,21 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 			continue
 		}
 
-		hasGood, hasErr, hasMiss, totalErr := evaluateTrios(v, indices, summary.Trios)
-		if hasGood {
+		eval := evaluateTrios(v, indices, rules, summary.Trios)
+		if eval.hasGood {
 			summary.SitesGood++
 		}
-		if hasErr {
+		if eval.hasErr {
 			summary.SitesMERR++
 			summary.RecordsWithError++
 		}
-		if hasMiss {
+		if eval.hasMiss {
 			summary.SitesMissing++
 		}
+		if eval.hasNoRule {
+			summary.SitesNoRule++
+		}
+		hasGood, hasErr, hasMiss, totalErr := eval.hasGood, eval.hasErr, eval.hasMiss, eval.totalErr
 
 		// Drop precedences (E,M,S) take effect first.
 		if opts.Mode&Mendelian2DropErr != 0 && hasErr {
@@ -353,7 +392,7 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 
 		// `-m d` rewrites offending trio GTs to ./. but keeps the row.
 		if opts.Mode&Mendelian2DeleteGT != 0 && hasErr {
-			rewriteTrioGTs(v, indices, summary.Trios)
+			rewriteTrioGTs(v, indices, rules)
 		}
 
 		// `-m a` annotates INFO/MERR with the per-site error count.
@@ -485,14 +524,24 @@ func parsePEDFile(path string, hdr *vcf.Header) ([]Mendelian2Trio, error) {
 	return out, nil
 }
 
+// mendelian2TrioIndex pairs a trio's three column positions with the
+// sex-rule dictionary index used to pick the per-site inheritance
+// rule. It mirrors upstream's `trio_t.idx[]` plus `trio_t.sex_id`.
+type mendelian2TrioIndex struct {
+	trioIndex
+	sexID int
+}
+
 // resolveMendelian2Indices maps each trio's three sample names to
-// their column positions in the input header.
-func resolveMendelian2Indices(hdr *vcf.Header, trios []Mendelian2Trio) ([]trioIndex, error) {
+// their column positions in the input header and resolves the trio's
+// SEX_ID against the active rule set (so the per-site ploidy /
+// inheritance rule can be looked up later).
+func resolveMendelian2Indices(hdr *vcf.Header, trios []Mendelian2Trio, rules *MendelianRules) ([]mendelian2TrioIndex, error) {
 	byName := make(map[string]int, len(hdr.Samples))
 	for i, s := range hdr.Samples {
 		byName[s] = i
 	}
-	out := make([]trioIndex, len(trios))
+	out := make([]mendelian2TrioIndex, len(trios))
 	for i, t := range trios {
 		c, ok := byName[t.Child]
 		if !ok {
@@ -506,7 +555,11 @@ func resolveMendelian2Indices(hdr *vcf.Header, trios []Mendelian2Trio) ([]trioIn
 		if !ok {
 			return nil, fmt.Errorf("trio %d (%s/%s/%s): mother sample not in input", i+1, t.Child, t.Father, t.Mother)
 		}
-		out[i] = trioIndex{child: c, father: f, mother: m}
+		sexID, err := rules.SexIDFor(t.Sex)
+		if err != nil {
+			return nil, fmt.Errorf("trio %d (%s/%s/%s): %w", i+1, t.Child, t.Father, t.Mother, err)
+		}
+		out[i] = mendelian2TrioIndex{trioIndex: trioIndex{child: c, father: f, mother: m}, sexID: sexID}
 	}
 	return out, nil
 }
@@ -543,50 +596,227 @@ func classifyRecord(v *vcf.Variant) skipReason {
 	return skipNone
 }
 
-// evaluateTrios runs every trio through the consistency rule and
-// updates per-trio counters in stats. Returns (anyGood, anyErr,
-// anyMiss, totalErrors).
-func evaluateTrios(v *vcf.Variant, indices []trioIndex, stats []Mendelian2TrioStats) (bool, bool, bool, int) {
-	var anyGood, anyErr, anyMiss bool
-	var totalErr int
-	for i, idx := range indices {
-		child, father, mother, complete := readTrioGenotypes(v, idx)
-		if !complete {
-			anyMiss = true
-			stats[i].NMissing++
-			continue
-		}
-		ok := mendelianConsistent(child, father, mother, false)
-		if ok {
-			anyGood = true
-			stats[i].NGood++
-			if !(child[0] == 0 && child[1] == 0 && father[0] == 0 && father[1] == 0 && mother[0] == 0 && mother[1] == 0) {
-				stats[i].NGoodAlt++
-			}
-			continue
-		}
-		anyErr = true
-		stats[i].NMErr++
-		totalErr++
-	}
-	return anyGood, anyErr, anyMiss, totalErr
+// mendelian2Eval is the per-site rollup returned by evaluateTrios.
+type mendelian2Eval struct {
+	hasGood   bool
+	hasErr    bool
+	hasMiss   bool
+	hasNoRule bool
+	totalErr  int
 }
 
-// rewriteTrioGTs sets every offending trio's GT field to "./.".
-// Used for `-m d` (the "set bad GTs to missing" mode).
-func rewriteTrioGTs(v *vcf.Variant, indices []trioIndex, stats []Mendelian2TrioStats) {
+// siteRuleSpan returns the 0-based inclusive [beg,end] coordinates of v
+// used for rule overlap. It mirrors upstream's
+// `rec->pos .. rec->pos+rec->rlen-1`, where rlen is the span of the
+// REF allele.
+func siteRuleSpan(v *vcf.Variant) (beg, end int) {
+	beg = v.Pos - 1
+	rlen := len(v.Ref)
+	if rlen < 1 {
+		rlen = 1
+	}
+	end = beg + rlen - 1
+	if end < beg {
+		end = beg
+	}
+	return beg, end
+}
+
+// evaluateTrios runs every trio through the rule-aware consistency
+// check and updates per-trio counters in stats. The per-site rule for
+// each trio is resolved from rules using the trio's sex_id and the
+// site's coordinates, so haploid X / Y / MT regions are handled
+// exactly as upstream's collect_stats does.
+func evaluateTrios(v *vcf.Variant, indices []mendelian2TrioIndex, rules *MendelianRules, stats []Mendelian2TrioStats) mendelian2Eval {
+	var res mendelian2Eval
+	beg, end := siteRuleSpan(v)
 	for i, idx := range indices {
-		child, father, mother, complete := readTrioGenotypes(v, idx)
-		if !complete {
-			continue
+		rule := rules.rulesFor(v.Chrom, beg, end, idx.sexID)
+		outcome := evaluateTrioWithRule(v, idx, rule)
+		switch {
+		case outcome.norule:
+			res.hasNoRule = true
+			stats[i].NNoRule++
+		case outcome.good:
+			res.hasGood = true
+			stats[i].NGood++
+			if outcome.goodAlt {
+				stats[i].NGoodAlt++
+			}
 		}
-		if mendelianConsistent(child, father, mother, false) {
+		if outcome.miss {
+			res.hasMiss = true
+			stats[i].NMissing++
+		}
+		if outcome.merr {
+			res.hasErr = true
+			stats[i].NMErr++
+			res.totalErr++
+		}
+	}
+	return res
+}
+
+// trioOutcome is one trio's classification at one site.
+type trioOutcome struct {
+	good    bool
+	goodAlt bool
+	merr    bool
+	miss    bool
+	norule  bool
+}
+
+// evaluateTrioWithRule classifies a single trio at a single site under
+// rule. It is a direct port of the per-trio body of upstream's
+// collect_stats (mendelian2.c), including its haploid (ploidy==1) and
+// diploid (ploidy==2) branches and the "one parent missing but the kid
+// is consistent with the other" leniency.
+func evaluateTrioWithRule(v *vcf.Variant, idx mendelian2TrioIndex, rule MendelianRule) trioOutcome {
+	if rule.Inherits == 0 {
+		return trioOutcome{norule: true}
+	}
+
+	kid1, kid2, nal := parseGTBits(sampleData(v, idx.child))
+
+	// Too few alleles: count as missing.
+	if nal < rule.Ploidy {
+		return trioOutcome{miss: true}
+	}
+
+	// Too many alleles: treat a hom diploid call in a haploid region as
+	// haploid (1/1 -> 1); a het diploid call there is a ploidy error.
+	ploidyErr := false
+	if nal > rule.Ploidy {
+		if kid1 != kid2 {
+			ploidyErr = true
+		} else {
+			nal = rule.Ploidy
+		}
+	}
+
+	if rule.Ploidy == 1 {
+		parentIdx := idx.father
+		if rule.Inherits&inheritMother != 0 {
+			parentIdx = idx.mother
+		}
+		parent, nalParent := parseParentBits(sampleData(v, parentIdx))
+		var out trioOutcome
+		if nalParent == 0 {
+			out.miss = true
+		}
+		if ploidyErr {
+			out.merr = true
+		}
+		if nalParent == 0 || ploidyErr {
+			return out
+		}
+		if parent&kid1 != 0 {
+			out.good = true
+			// Matches upstream's `if ( parent!=1 || parent!=kid1 )`.
+			if parent != 1 || parent != kid1 {
+				out.goodAlt = true
+			}
+			return out
+		}
+		out.merr = true
+		return out
+	}
+
+	mom, nalMom := parseParentBits(sampleData(v, idx.mother))
+	dad, nalDad := parseParentBits(sampleData(v, idx.father))
+	if (kid1&dad != 0 && kid2&mom != 0) || (kid1&mom != 0 && kid2&dad != 0) {
+		out := trioOutcome{good: true}
+		if dad != 1 || mom != 1 || (kid1|kid2) != 1 {
+			out.goodAlt = true
+		}
+		return out
+	}
+	var out trioOutcome
+	if nalMom == 0 || nalDad == 0 {
+		out.miss = true
+	}
+	if nalMom == 0 && nalDad == 0 {
+		return out // both parents missing
+	}
+	if nalMom == 0 && ((kid1|kid2)&dad != 0) {
+		return out // one parent missing but the kid is consistent with the other
+	}
+	if nalDad == 0 && ((kid1|kid2)&mom != 0) {
+		return out
+	}
+	out.merr = true
+	return out
+}
+
+// parseGTBits parses a single sample's GT string into the per-allele
+// bitmasks used by the Mendelian rule. It returns the bitmask of the
+// first allele (a), of the second allele (b), and the number of called
+// alleles (1 haploid, 2 diploid). A missing or half-missing genotype
+// yields (0,0,0), matching upstream's parse_gt which does not support
+// half-missing calls.
+func parseGTBits(gt string) (a, b uint64, nal int) {
+	if gt == "" || gt == "." {
+		return 0, 0, 0
+	}
+	s := strings.ReplaceAll(gt, "|", "/")
+	parts := strings.Split(s, "/")
+	if len(parts) == 0 {
+		return 0, 0, 0
+	}
+	a0, ok := parseAlleleIdx(parts[0])
+	if !ok {
+		return 0, 0, 0
+	}
+	a = uint64(1) << a0
+	if len(parts) == 1 {
+		return a, 0, 1
+	}
+	a1, ok := parseAlleleIdx(parts[1])
+	if !ok {
+		// Half-missing: upstream resets both and reports missing.
+		return 0, 0, 0
+	}
+	b = uint64(1) << a1
+	return a, b, 2
+}
+
+// parseParentBits returns the OR of a parent's allele bitmasks (the
+// set of alleles the parent can transmit) and the number of called
+// alleles. It mirrors upstream's `parse_gt(&gt, ngt, &p, &p)`, which
+// folds both alleles into a single mask because a parent transmits one
+// of either allele. A missing or half-missing genotype yields (0,0).
+func parseParentBits(gt string) (mask uint64, nal int) {
+	a, b, n := parseGTBits(gt)
+	return a | b, n
+}
+
+// parseAlleleIdx parses one allele index (a non-missing, non-negative
+// integer < 64 so the bitmask cannot overflow). Returns ok == false for
+// missing (".") or out-of-range alleles.
+func parseAlleleIdx(s string) (int, bool) {
+	if s == "" || s == "." {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 || n >= 64 {
+		return 0, false
+	}
+	return n, true
+}
+
+// rewriteTrioGTs sets every offending trio's GTs (child, father,
+// mother) to missing for `-m d`. It re-runs the same rule-aware check
+// the stats pass used so only Mendelian-erroneous trios are touched.
+func rewriteTrioGTs(v *vcf.Variant, indices []mendelian2TrioIndex, rules *MendelianRules) {
+	beg, end := siteRuleSpan(v)
+	for _, idx := range indices {
+		rule := rules.rulesFor(v.Chrom, beg, end, idx.sexID)
+		if !evaluateTrioWithRule(v, idx, rule).merr {
 			continue
 		}
 		setSampleGT(v, idx.child, "./.")
 		setSampleGT(v, idx.father, "./.")
 		setSampleGT(v, idx.mother, "./.")
-		_ = stats[i] // counter already bumped in evaluateTrios
 	}
 }
 
@@ -602,10 +832,11 @@ func setSampleGT(v *vcf.Variant, i int, value string) {
 	v.Samples[i].Data["GT"] = value
 }
 
-// writeMendelian2Summary writes the upstream-shaped `-m c` summary
-// to out. We mirror upstream's section headers and column ordering
-// verbatim so a downstream `grep ^TRIO | cut` pipeline behaves the
-// same.
+// writeMendelian2Summary writes the upstream-shaped `-m c` summary to
+// out. Every line — section headers, counter labels, trailing comments
+// and the per-trio table — is reproduced verbatim from upstream's
+// print_stats (mendelian2.c) so the count output is byte-for-byte
+// identical to `bcftools +mendelian2 -m c`.
 func writeMendelian2Summary(out io.Writer, s Mendelian2Summary) error {
 	w := bufio.NewWriter(out)
 	defer w.Flush()
@@ -619,9 +850,10 @@ func writeMendelian2Summary(out io.Writer, s Mendelian2Summary) error {
 		{"sites_fail", s.SitesFail, "# skipped because of failed -i/-e filter"},
 		{"sites_no_GT", s.SitesNoGT, "# skipped because of absent FORMAT/GT field"},
 		{"sites_not_diploid", s.SitesNotDiploid, "# skipped because FORMAT/GT not formatted diploid"},
-		{"sites_missing", s.SitesMissing, "# number of sites with at least one trio GT missing"},
-		{"sites_merr", s.SitesMERR, "# number of sites with at least one Mendelian error"},
-		{"sites_good", s.SitesGood, "# number of sites with at least one good trio"},
+		{"sites_no_rule", s.SitesNoRule, "# number of sites with no applicable inheritance rule in at least one trio"},
+		{"sites_missing", s.SitesMissing, "# number of sites with missing or unusable GT information in at least one trio"},
+		{"sites_merr", s.SitesMERR, "# number of sites with at least one definite Mendelian error"},
+		{"sites_good", s.SitesGood, "# number of sites with at least one evaluable and Mendelian-consistent trio"},
 	}
 	if _, err := fmt.Fprintln(w, "# Summary stats"); err != nil {
 		return err
@@ -631,8 +863,16 @@ func writeMendelian2Summary(out io.Writer, s Mendelian2Summary) error {
 			return err
 		}
 	}
-	if _, err := fmt.Fprintln(w, "# Per-trio stats, each column corresponds to one trio."); err != nil {
-		return err
+	for _, line := range []string{
+		"# Note: sites_missing, sites_merr, sites_good, and sites_no_rule are not mutually exclusive with multiple trios.",
+		"# Per-trio stats, each column corresponds to one trio. List of trios is below.",
+		"# The meaning of per-trio stats is the same as described above, ngood_alt is",
+		"# the number of good genotypes with at least one non-reference allele, and is",
+		"# included in the ngood counter",
+	} {
+		if _, err := fmt.Fprintln(w, line); err != nil {
+			return err
+		}
 	}
 	if err := writeMendelian2TrioRow(w, "ngood", s.Trios, func(t Mendelian2TrioStats) int { return t.NGood }); err != nil {
 		return err
@@ -649,8 +889,19 @@ func writeMendelian2Summary(out io.Writer, s Mendelian2Summary) error {
 	if err := writeMendelian2TrioRow(w, "nfail", s.Trios, func(t Mendelian2TrioStats) int { return t.NFail }); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(w, "# TRIO\t[2]id\t[3]child\t[4]father\t[5]mother"); err != nil {
+	if err := writeMendelian2TrioRow(w, "nno_rule", s.Trios, func(t Mendelian2TrioStats) int { return t.NNoRule }); err != nil {
 		return err
+	}
+	for _, line := range []string{
+		"# List of trios. Their ids are in the same order as the values listed in the stats lines above. For",
+		"# example, the values for the first trio (id=1) and the third trio (id=3) are in the 2nd and the 4th",
+		"# column and their stats can be obtained with the unix command",
+		"#     cat stats.txt | grep ^n | cut -f1,2,4",
+		"# TRIO\t[2]id\t[3]child\t[4]father\t[5]mother",
+	} {
+		if _, err := fmt.Fprintln(w, line); err != nil {
+			return err
+		}
 	}
 	for i, t := range s.Trios {
 		if _, err := fmt.Fprintf(w, "TRIO\t%d\t%s\t%s\t%s\n", i+1, t.Child, t.Father, t.Mother); err != nil {

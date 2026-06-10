@@ -2614,15 +2614,39 @@ Option-tail gaps on `filter` (this PR, simple-mode):
 - BCF output (`-O b|u`) round-trips through the shared `pkg/htsgo/bcf`
   writer; CSI auto-indexing is the `-W` follow-up above.
 
-Option-tail gaps on `mendelian2` (PR #109, simple-mode):
+Option-tail status on `mendelian2`:
 
-- `--rules ASSEMBLY` — predefined inheritance rules (GRCh37 / GRCh38
-  / `list?`). Accepted but rejected at runtime with a roadmap pointer;
-  v1 uses the chrX heuristic from the legacy `mendelian` port instead.
-- `--rules-file FILE` — custom inheritance rules file. Accepted; v1
-  rejects at runtime.
-- `-W/--write-index[=FMT]` — auto-index output. Accepted; v1 never
-  auto-indexes.
+- `--rules ASSEMBLY[?]` — predefined inheritance rules. **DONE.** The
+  GRCh37 / GRCh38 tables (`rules_predefs[]` in `mendelian2.c`) are
+  ported verbatim into `mendelian2_rules.go` and drive a per-site,
+  per-sex (1X / 2X) ploidy + inheritance model that replaces the old
+  chrX-only heuristic: PAR regions stay diploid, the male-specific X
+  is haploid maternal, Y is haploid paternal for males / absent for
+  females, MT is haploid maternal. `list` / `list?` print the
+  catalogue and `GRCh38?` prints that assembly's detailed table, each
+  exiting 255 like upstream. Live-binary parity: `-m c` count output
+  is byte-for-byte identical to `bcftools +mendelian2 --rules ...`
+  across GRCh37/GRCh38 × male/female (see
+  `TestLiveParity_RulesCountMode`).
+- `--rules-file FILE` — custom `SEX_ID CHROM:BEG-END INHERITED_FROM`
+  rules file. **DONE.** Same parser as the built-in tables; count
+  output matches the live upstream binary
+  (`TestLiveParity_RulesFileCountMode`).
+- `-W/--write-index[=csi|tbi]` — auto-index output. **DONE** for
+  bgzipped VCF output (`-Oz -o FILE`): the in-tree CSI/TBI writer
+  (`BuildIndex`) is invoked after the output is flushed, and the live
+  upstream `bcftools` reads the resulting index for region queries
+  (`TestLiveParity_WriteIndexEmitsValidIndex`). Output is emitted as
+  BGZF (not plain gzip) when `-W` is requested so it is indexable.
+  Indexing a non-bgzipped / stdout output is rejected. (Go's `flag`
+  parser stops at the first positional, so flags must precede the
+  input file — a pre-existing limitation shared by every bcftools
+  subcommand here.)
+- `-m a` VCF output annotates INFO/MERR (per-site error count) like
+  upstream but does not yet add the companion MGOOD/MMISS/MNORULE
+  INFO fields; `-m d` sets offending GTs to `./.` regardless of the
+  site ploidy. Count-mode parity is exact; these VCF-output deltas
+  remain.
 - `--regions-overlap 0|1|2`, `--targets-overlap 0|1|2` — accepted;
   v1 always uses POS-in-region semantics.
 - `-v/--verbosity INT`, `--no-version` — accepted; v1 ignores both.
