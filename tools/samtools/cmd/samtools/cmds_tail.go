@@ -715,8 +715,7 @@ func runCoverage(args []string) int {
 		showHelp bool
 		showVer  bool
 	)
-	fs.Var(&regions, "r", "")
-	fs.Var(&regions, "region", "")
+	cliflag.Var(fs, &regions, "r", "region", "")
 	cliflag.IntVar(fs, &minMAPQ, "q", "min-mapq", 0, "")
 	cliflag.IntVar(fs, &minBaseQ, "Q", "min-baseq", 0, "")
 	cliflag.IntVar(fs, &incFlags, "f", "include-flags", 0, "")
@@ -1457,8 +1456,7 @@ func runPhase(args []string) int {
 	fs.IntVar(&minMAPQ, "q", samtools.DefaultPhaseMinMAPQ, "")
 	fs.IntVar(&minBaseQ, "Q", samtools.DefaultPhaseMinBaseQ, "")
 	fs.IntVar(&maxDepth, "D", samtools.DefaultPhaseMaxDepth, "")
-	fs.BoolVar(&noFixChimera, "F", false, "")
-	fs.BoolVar(&noFixChimera, "no-fix-chimera", false, "")
+	cliflag.BoolVar(fs, &noFixChimera, "F", "no-fix-chimera", false, "")
 	fs.BoolVar(&dropAmbig, "A", false, "")
 	// Upstream phase.c: `-l FILE` loads a site list and `-e` makes
 	// the list exclusive (positions outside the list are dropped).
@@ -1904,8 +1902,7 @@ func runConsensus(args []string) int {
 	cliflag.StringVar(fs, &formatStr, "f", "format", "fasta", "Output format")
 	cliflag.StringVar(fs, &modeStr, "m", "mode", "bayesian", "Consensus mode")
 	fs.Var(&allPos, "a", "Output all bases (repeat for all contigs)")
-	fs.Var(&regions, "r", "")
-	fs.Var(&regions, "region", "")
+	cliflag.Var(fs, &regions, "r", "region", "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &lineLen, "l", "line-len", 70, "Line wrap")
 

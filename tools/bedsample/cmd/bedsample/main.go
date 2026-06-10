@@ -60,10 +60,8 @@ func main() {
 	// given seed reproduces upstream `bedtools sample` byte-for-byte.
 	fs.Int64Var(&seed, "seed", 0, "PRNG seed (0 = time-based)")
 	fs.BoolVar(&header, "header", false, "Forward header lines")
-	fs.BoolVar(&showHelp, "h", false, "Help")
-	fs.BoolVar(&showHelp, "help", false, "Help")
-	fs.BoolVar(&showVersion, "v", false, "Version")
-	fs.BoolVar(&showVersion, "version", false, "Version")
+	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Help")
+	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Version")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)

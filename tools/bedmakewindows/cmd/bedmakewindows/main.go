@@ -67,10 +67,8 @@ func main() {
 	cliflag.StringVar(fs, &idName, "i", "id-name", "none", "Naming strategy")
 	fs.BoolVar(&reverse, "reverse", false, "Reverse numbering")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output path")
-	fs.BoolVar(&showHelp, "h", false, "Help")
-	fs.BoolVar(&showHelp, "help", false, "Help")
-	fs.BoolVar(&showVersion, "v", false, "Version")
-	fs.BoolVar(&showVersion, "version", false, "Version")
+	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Help")
+	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Version")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)

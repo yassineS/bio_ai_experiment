@@ -77,10 +77,8 @@ func main() {
 	cliflag.BoolVar(fs, &split, "split", "split", false, "Concatenate BED12 blocks")
 	cliflag.BoolVar(fs, &rna, "rna", "rna", false, "Emit U in place of T")
 	cliflag.BoolVar(fs, &fullHeader, "fullHeader", "full-header", false, "Index by full FASTA header line")
-	fs.BoolVar(&showHelp, "h", false, "Help")
-	fs.BoolVar(&showHelp, "help", false, "Help")
-	fs.BoolVar(&showVersion, "v", false, "Version")
-	fs.BoolVar(&showVersion, "version", false, "Version")
+	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Help")
+	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Version")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)

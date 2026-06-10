@@ -911,9 +911,7 @@ func randbaseCommand() {
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
 	// Negative sentinel means "no -s provided"; we'll time-seed in that case.
-	// Use Int64Var directly since cliflag doesn't expose an int64 helper.
-	fs.Int64Var(&seed, "s", -1, "Random seed for reproducibility (default: time-seeded)")
-	fs.Int64Var(&seed, "seed", -1, "Random seed for reproducibility (default: time-seeded)")
+	cliflag.Int64Var(fs, &seed, "s", "seed", -1, "Random seed for reproducibility (default: time-seeded)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk randbase [options] <in.fa>

@@ -54,10 +54,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&base, "base", bedlinks.DefaultBase, "UCSC base URL")
 	fs.StringVar(&org, "org", bedlinks.DefaultOrg, "UCSC organism")
 	fs.StringVar(&db, "db", bedlinks.DefaultDB, "UCSC db / build")
-	fs.BoolVar(&showHelp, "h", false, "Help")
-	fs.BoolVar(&showHelp, "help", false, "Help")
-	fs.BoolVar(&showVersion, "v", false, "Version")
-	fs.BoolVar(&showVersion, "version", false, "Version")
+	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Help")
+	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Version")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err)
