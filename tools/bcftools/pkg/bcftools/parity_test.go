@@ -1210,8 +1210,26 @@ func TestParityAnnotate_RemoveInfoTag(t *testing.T) {
 	}
 }
 
-// TestParityAnnotate_SetID — `-I '+%CHROM_%POS'` populates ID columns
-// that are currently '.' (only when not already set).
+// TestParityAnnotate_SetID — `-I '+%CHROM\_%POS'` populates ID columns
+// that are currently '.' (only when not already set). The exhaustive
+// byte-for-byte upstream comparison lives in annotate_advanced_test.go
+// (TestAnnotateParity_SetIDMacros); this case pins the only-if-empty rule.
 func TestParityAnnotate_SetID(t *testing.T) {
-	t.Skip("annotate -I/--set-id not yet implemented (see docs/PARITY_ROADMAP.md bcftools annotate)")
+	in := `##fileformat=VCFv4.2
+##contig=<ID=1,length=1000>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	100	.	A	G	.	.	.
+1	200	keep	C	T	.	.	.
+`
+	var out bytes.Buffer
+	if _, err := Annotate(strings.NewReader(in), &out, AnnotateOptions{SetID: `+%CHROM\_%POS`}); err != nil {
+		t.Fatalf("Annotate: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "1\t100\t1_100\t") {
+		t.Fatalf("expected ID 1_100 for the missing-ID record; got:\n%s", got)
+	}
+	if !strings.Contains(got, "1\t200\tkeep\t") {
+		t.Fatalf("expected the pre-set ID 'keep' to be preserved; got:\n%s", got)
+	}
 }
