@@ -77,10 +77,31 @@ type ProcessOptions struct {
 	BaseCorrection      bool
 	CorrectionThreshold int
 
+	// Overlap-based base correction (paired-end), upstream --correction.
+	// When enabled, mismatched bases inside the detected PE overlap are
+	// corrected using the higher-quality mate (see overlap.go).
+	Correction bool
+
+	// Overlap analysis knobs shared by --correction and merge. These map
+	// directly to upstream's --overlap_len_require / --overlap_diff_limit /
+	// --overlap_diff_percent_limit.
+	OverlapRequire          int // Minimum overlap length (default 30).
+	OverlapDiffLimit        int // Maximum mismatched bases in overlap (default 5).
+	OverlapDiffPercentLimit int // Maximum mismatch percentage in overlap (default 20).
+
 	// Overlap analysis (paired-end)
 	MergeOverlap bool
 	MinOverlap   int
 	MaxMismatch  int
+
+	// Overrepresentation analysis, upstream -p / -P.
+	OverrepAnalysis bool // Enable overrepresented-sequence analysis.
+	OverrepSampling int  // 1-in-N sampling rate (default 20).
+
+	// Output splitting, upstream -s / -S / -d.
+	SplitNumber       int // --split: split into this many files (2-999).
+	SplitByLines      int // --split_by_lines: max lines per output file.
+	SplitPrefixDigits int // --split_prefix_digits: zero-pad width (default 4).
 
 	// Multi-threading
 	Threads int
@@ -99,46 +120,55 @@ type ProcessOptions struct {
 // DefaultProcessOptions returns default processing options.
 func DefaultProcessOptions() ProcessOptions {
 	return ProcessOptions{
-		Adapter3:            "",
-		Adapter5:            "",
-		DetectAdapter:       false,
-		QualThreshold:       15,
-		MinLength:           15,
-		MaxLength:           0, // no limit
-		QualPercent:         40,
-		LowComplexity:       false,
-		ComplexityThreshold: 0.3,
-		TrimPolyG:           false,
-		TrimPolyX:           false,
-		PolyGMinLen:         10,
-		CutFront:            false,
-		CutTail:             false,
-		CutRight:            false,
-		CutWindowSize:       4,
-		CutMeanQuality:      20,
-		MaxNCount:           5,
-		MaxNPercent:         20.0,
-		LengthRequired:      15,
-		LengthLimit:         0,
-		UMILength:           0,
-		UMILocation:         "",
-		UMI:                 false,
-		UMILoc:              "",
-		UMILen:              0,
-		UMIPrefix:           "",
-		UMISkip:             0,
-		DupCalcAccuracy:     0,
-		Dedup:               false,
-		BaseCorrection:      false,
-		CorrectionThreshold: 20,
-		MergeOverlap:        false,
-		MinOverlap:          30,
-		MaxMismatch:         5,
-		Threads:             1,
-		HTMLReport:          "",
-		JSONReport:          "",
-		DetectAdapterPE:     false,
-		DetectAdapterSE:     false,
+		Adapter3:                "",
+		Adapter5:                "",
+		DetectAdapter:           false,
+		QualThreshold:           15,
+		MinLength:               15,
+		MaxLength:               0, // no limit
+		QualPercent:             40,
+		LowComplexity:           false,
+		ComplexityThreshold:     0.3,
+		TrimPolyG:               false,
+		TrimPolyX:               false,
+		PolyGMinLen:             10,
+		CutFront:                false,
+		CutTail:                 false,
+		CutRight:                false,
+		CutWindowSize:           4,
+		CutMeanQuality:          20,
+		MaxNCount:               5,
+		MaxNPercent:             20.0,
+		LengthRequired:          15,
+		LengthLimit:             0,
+		UMILength:               0,
+		UMILocation:             "",
+		UMI:                     false,
+		UMILoc:                  "",
+		UMILen:                  0,
+		UMIPrefix:               "",
+		UMISkip:                 0,
+		DupCalcAccuracy:         0,
+		Dedup:                   false,
+		BaseCorrection:          false,
+		CorrectionThreshold:     20,
+		Correction:              false,
+		OverlapRequire:          30,
+		OverlapDiffLimit:        5,
+		OverlapDiffPercentLimit: 20,
+		MergeOverlap:            false,
+		MinOverlap:              30,
+		MaxMismatch:             5,
+		OverrepAnalysis:         false,
+		OverrepSampling:         20,
+		SplitNumber:             0,
+		SplitByLines:            0,
+		SplitPrefixDigits:       4,
+		Threads:                 1,
+		HTMLReport:              "",
+		JSONReport:              "",
+		DetectAdapterPE:         false,
+		DetectAdapterSE:         false,
 	}
 }
 
@@ -174,6 +204,7 @@ type ProcessStats struct {
 	UMIExtracted        int    // Legacy counter (kept for back-compat with older tests/scripts).
 	UMIProcessed        int    // Count of records that had a UMI extracted.
 	BasesCorrected      int64
+	CorrectedReads      int64 // Reads with >=1 base corrected by overlap analysis (--correction).
 	OverlappingReads    int
 	MergedReads         int
 
@@ -196,6 +227,10 @@ type ProcessStats struct {
 	// Length histograms BEFORE and AFTER filtering, indexed by read (0/1).
 	LengthHistBefore [2]map[int]int64
 	LengthHistAfter  [2]map[int]int64
+
+	// Overrepresented-sequence analyzers, indexed by read (0/1), populated
+	// when OverrepAnalysis is enabled. Tracks the before-filtering stream.
+	overrep [2]*overrepAnalyzer
 
 	// Aggregate quality buckets BEFORE filtering, totals across both reads.
 	Q20BasesBefore int64
@@ -293,6 +328,9 @@ func (s *ProcessStats) recordBefore(record *fastq.Record, readIdx int, encoding 
 			s.Q30BasesBefore++
 		}
 	}
+	if s.overrep[readIdx] != nil {
+		s.overrep[readIdx].sampleRead(string(record.Sequence))
+	}
 }
 
 // recordAfter updates the AFTER-filtering histograms for a single record
@@ -347,20 +385,14 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 	writer2 := fastq.NewWriter(output2, encoding)
 
 	stats := &ProcessStats{}
-	var dupTracker *DupTracker
-	if opts.DupCalcAccuracy > 0 || opts.Dedup {
-		acc := opts.DupCalcAccuracy
-		if acc <= 0 {
-			acc = dupAccuracyDefault
-		}
-		dupTracker = NewDupTracker(acc)
-	}
+	dupTracker := newDupTrackerForOpts(opts)
 
 	// Process with multi-threading if enabled. UMI and duplication
 	// tracking serialize through the input pipeline because they need a
 	// deterministic per-record view, so we fall back to single-threaded
 	// mode when either is active.
-	if opts.Threads > 1 && !opts.UMI && opts.UMILength == 0 && dupTracker == nil {
+	if opts.Threads > 1 && !opts.UMI && opts.UMILength == 0 && dupTracker == nil &&
+		!opts.Correction && !opts.OverrepAnalysis {
 		return processPairedEndParallel(reader1, reader2, writer1, writer2, encoding, opts, stats)
 	}
 
@@ -409,75 +441,38 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 		}
 	}
 
-	processPair := func(record1, record2 *fastq.Record) error {
-		stats.TotalReads += 2
-		stats.TotalBases += int64(len(record1.Sequence) + len(record2.Sequence))
-		stats.recordBefore(record1, 0, encoding)
-		stats.recordBefore(record2, 1, encoding)
-
-		// Duplication evaluation: hash the R1 sequence (matches upstream
-		// fastp). When --dedup is on and the read is a duplicate, drop
-		// both mates and skip further processing.
-		if dupTracker != nil {
-			isDup := dupTracker.Observe(record1.Sequence)
-			if isDup && opts.Dedup {
-				stats.DedupDropped += 2
-				return nil
+	// Overrepresentation analysis (upstream -p): buffer remaining pairs so
+	// each stream's candidate hot-sequence map is built before sampling.
+	if opts.OverrepAnalysis {
+		for {
+			r1, err1 := reader1.Read()
+			r2, err2 := reader2.Read()
+			if err1 == io.EOF && err2 == io.EOF {
+				break
 			}
-		}
-
-		// Extract UMI if configured
-		if opts.UMI || opts.UMILength > 0 {
-			record1, record2 = applyUMI(record1, record2, opts, stats)
-		}
-
-		// Check for overlap and merge if enabled
-		if opts.MergeOverlap {
-			overlap := analyzeOverlap(record1, record2, opts, encoding)
-			if overlap.HasOverlap {
-				stats.OverlappingReads++
-				if overlap.OverlapLength >= opts.MinOverlap && overlap.Mismatches <= opts.MaxMismatch {
-					merged := &fastq.Record{
-						ID:          record1.ID,
-						Description: record1.Description,
-						Sequence:    []byte(overlap.MergedSeq),
-						Quality:     overlap.MergedQual,
-					}
-					processed, pass := processRecord(merged, opts, stats, encoding)
-					if pass {
-						if err := writer1.Write(processed); err != nil {
-							return fmt.Errorf("error writing merged read: %w", err)
-						}
-						stats.CleanReads++
-						stats.CleanBases += int64(len(processed.Sequence))
-						stats.MergedReads++
-						stats.recordAfter(processed, 0, encoding)
-					}
-					return nil
-				}
+			if err1 == io.EOF || err2 == io.EOF {
+				return stats, fmt.Errorf("paired files have different number of reads")
 			}
-		}
-
-		processed1, pass1 := processRecord(record1, opts, stats, encoding)
-		processed2, pass2 := processRecord(record2, opts, stats, encoding)
-
-		if pass1 && pass2 {
-			if err := writer1.Write(processed1); err != nil {
-				return fmt.Errorf("error writing read1: %w", err)
+			if err1 != nil {
+				return stats, fmt.Errorf("error reading read1: %w", err1)
 			}
-			if err := writer2.Write(processed2); err != nil {
-				return fmt.Errorf("error writing read2: %w", err)
+			if err2 != nil {
+				return stats, fmt.Errorf("error reading read2: %w", err2)
 			}
-			stats.CleanReads += 2
-			stats.CleanBases += int64(len(processed1.Sequence) + len(processed2.Sequence))
-			stats.recordAfter(processed1, 0, encoding)
-			stats.recordAfter(processed2, 1, encoding)
+			detectBuffer = append(detectBuffer, readPair{r1: r1, r2: r2})
 		}
-		return nil
+		seqs1 := make([]*fastq.Record, len(detectBuffer))
+		seqs2 := make([]*fastq.Record, len(detectBuffer))
+		for i, p := range detectBuffer {
+			seqs1[i] = p.r1
+			seqs2[i] = p.r2
+		}
+		stats.overrep[0] = newOverrepAnalyzer(recordSeqs(seqs1), opts.OverrepSampling, evaluatedSeqLen(seqs1))
+		stats.overrep[1] = newOverrepAnalyzer(recordSeqs(seqs2), opts.OverrepSampling, evaluatedSeqLen(seqs2))
 	}
 
 	for _, p := range detectBuffer {
-		if err := processPair(p.r1, p.r2); err != nil {
+		if err := processPairOnce(p.r1, p.r2, writer1, writer2, encoding, opts, stats, dupTracker); err != nil {
 			return stats, err
 		}
 	}
@@ -497,12 +492,11 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 		if err2 != nil {
 			return stats, fmt.Errorf("error reading read2: %w", err2)
 		}
-		if err := processPair(record1, record2); err != nil {
+		if err := processPairOnce(record1, record2, writer1, writer2, encoding, opts, stats, dupTracker); err != nil {
 			return stats, err
 		}
 	}
 
-	// Flush writers and return early; the old loop body is removed below.
 	if err := writer1.Flush(); err != nil {
 		return stats, fmt.Errorf("error flushing output1: %w", err)
 	}
@@ -511,6 +505,194 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 	}
 	finalizeDupStats(stats, dupTracker)
 	return stats, nil
+}
+
+// processPairOnce runs the full paired-end pipeline for one read pair,
+// writing surviving reads to writer1/writer2 (or, in merge mode, the merged
+// read to writer1). Shared by the streaming and split code paths.
+func processPairOnce(record1, record2 *fastq.Record, writer1, writer2 recordWriter, encoding fastq.QualityEncoding, opts ProcessOptions, stats *ProcessStats, dupTracker *DupTracker) error {
+	stats.TotalReads += 2
+	stats.TotalBases += int64(len(record1.Sequence) + len(record2.Sequence))
+	stats.recordBefore(record1, 0, encoding)
+	stats.recordBefore(record2, 1, encoding)
+
+	// Duplication evaluation: hash the R1 sequence (matches upstream
+	// fastp). When --dedup is on and the read is a duplicate, drop
+	// both mates and skip further processing.
+	if dupTracker != nil {
+		isDup := dupTracker.Observe(record1.Sequence)
+		if isDup && opts.Dedup {
+			stats.DedupDropped += 2
+			return nil
+		}
+	}
+
+	// Extract UMI if configured
+	if opts.UMI || opts.UMILength > 0 {
+		record1, record2 = applyUMI(record1, record2, opts, stats)
+	}
+
+	// Overlap-based base correction (upstream --correction). Mismatched
+	// bases inside the detected PE overlap are corrected using the
+	// higher-quality mate, in place, before any per-read processing.
+	if opts.Correction {
+		rcSeq2 := reverseComplement(string(record2.Sequence))
+		ov := analyzeOverlapPair(string(record1.Sequence), rcSeq2,
+			opts.OverlapDiffLimit, opts.OverlapRequire,
+			float64(opts.OverlapDiffPercentLimit)/100.0)
+		if ov.Overlapped {
+			stats.OverlappingReads++
+			if n, reads := correctByOverlapAnalysis(record1, record2, ov, encoding); n > 0 {
+				stats.BasesCorrected += int64(n)
+				stats.CorrectedReads += int64(reads)
+			}
+		}
+	}
+
+	// Check for overlap and merge if enabled
+	if opts.MergeOverlap {
+		overlap := analyzeOverlap(record1, record2, opts, encoding)
+		if overlap.HasOverlap {
+			stats.OverlappingReads++
+			if overlap.OverlapLength >= opts.MinOverlap && overlap.Mismatches <= opts.MaxMismatch {
+				merged := &fastq.Record{
+					ID:          record1.ID,
+					Description: record1.Description,
+					Sequence:    []byte(overlap.MergedSeq),
+					Quality:     overlap.MergedQual,
+				}
+				processed, pass := processRecord(merged, opts, stats, encoding)
+				if pass {
+					if err := writer1.Write(processed); err != nil {
+						return fmt.Errorf("error writing merged read: %w", err)
+					}
+					stats.CleanReads++
+					stats.CleanBases += int64(len(processed.Sequence))
+					stats.MergedReads++
+					stats.recordAfter(processed, 0, encoding)
+				}
+				return nil
+			}
+		}
+	}
+
+	processed1, pass1 := processRecord(record1, opts, stats, encoding)
+	processed2, pass2 := processRecord(record2, opts, stats, encoding)
+
+	if pass1 && pass2 {
+		if err := writer1.Write(processed1); err != nil {
+			return fmt.Errorf("error writing read1: %w", err)
+		}
+		if err := writer2.Write(processed2); err != nil {
+			return fmt.Errorf("error writing read2: %w", err)
+		}
+		stats.CleanReads += 2
+		stats.CleanBases += int64(len(processed1.Sequence) + len(processed2.Sequence))
+		stats.recordAfter(processed1, 0, encoding)
+		stats.recordAfter(processed2, 1, encoding)
+	}
+	return nil
+}
+
+// ProcessPairedEndSplit processes paired-end FASTQ reads with all filters,
+// routing surviving read pairs across numbered split files derived from
+// outputBase1/outputBase2 (e.g. 0001.out1.fq / 0001.out2.fq). Split
+// parameters come from opts. It buffers the input to size the splits,
+// matching upstream's read-number evaluation. Merge mode is not supported
+// alongside splitting (upstream rejects that combination).
+func ProcessPairedEndSplit(input1, input2 io.Reader, outputBase1, outputBase2 string, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
+	opts = normalizeUMIOptions(opts)
+	reader1 := fastq.NewReader(input1, encoding)
+	reader2 := fastq.NewReader(input2, encoding)
+	stats := &ProcessStats{}
+	dupTracker := newDupTrackerForOpts(opts)
+
+	records1, err := drainRecords(reader1)
+	if err != nil {
+		return stats, err
+	}
+	records2, err := drainRecords(reader2)
+	if err != nil {
+		return stats, err
+	}
+	if len(records1) != len(records2) {
+		return stats, fmt.Errorf("paired files have different number of reads")
+	}
+
+	if opts.DetectAdapterPE {
+		sample := len(records1)
+		if sample > adapterDetectSampleSize {
+			sample = adapterDetectSampleSize
+		}
+		pairs := make([][2]*fastq.Record, sample)
+		for i := 0; i < sample; i++ {
+			pairs[i] = [2]*fastq.Record{records1[i], records2[i]}
+		}
+		r1Adapter, r2Adapter := DetectAdaptersFromPairs(pairs)
+		stats.DetectedAdapterR1 = r1Adapter
+		stats.DetectedAdapterR2 = r2Adapter
+		if r1Adapter != "" {
+			stats.DetectedAdapter = r1Adapter
+		}
+		if opts.Adapter3 == "" && r1Adapter != "" {
+			opts.Adapter3 = r1Adapter
+		}
+		if opts.Adapter5 == "" && r2Adapter != "" {
+			opts.Adapter5 = r2Adapter
+		}
+	}
+	if opts.OverrepAnalysis {
+		stats.overrep[0] = newOverrepAnalyzer(recordSeqs(records1), opts.OverrepSampling, evaluatedSeqLen(records1))
+		stats.overrep[1] = newOverrepAnalyzer(recordSeqs(records2), opts.OverrepSampling, evaluatedSeqLen(records2))
+	}
+
+	cfg := resolveSplitConfig(opts, len(records1))
+	sw1 := newSplitWriter(outputBase1, cfg, encoding)
+	sw2 := newSplitWriter(outputBase2, cfg, encoding)
+
+	for i := range records1 {
+		if err := processPairOnce(records1[i], records2[i], sw1, sw2, encoding, opts, stats, dupTracker); err != nil {
+			return stats, err
+		}
+	}
+	if err := sw1.Close(); err != nil {
+		return stats, fmt.Errorf("error closing split output1: %w", err)
+	}
+	if err := sw2.Close(); err != nil {
+		return stats, fmt.Errorf("error closing split output2: %w", err)
+	}
+	finalizeDupStats(stats, dupTracker)
+	return stats, nil
+}
+
+// drainRecords reads all remaining records from r into a slice. Used when
+// overrepresentation analysis needs to seed a hot-sequence map from the
+// full input before the main processing pass.
+func drainRecords(r *fastq.Reader) ([]*fastq.Record, error) {
+	var out []*fastq.Record
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return out, fmt.Errorf("error reading FASTQ: %w", err)
+		}
+		out = append(out, rec)
+	}
+}
+
+// evaluatedSeqLen returns the maximum sequence length over records, the
+// per-stream "evaluated read length" upstream uses to size the
+// overrepresentation step windows. Returns 0 for an empty slice.
+func evaluatedSeqLen(records []*fastq.Record) int {
+	maxLen := 0
+	for _, r := range records {
+		if r != nil && len(r.Sequence) > maxLen {
+			maxLen = len(r.Sequence)
+		}
+	}
+	return maxLen
 }
 
 // finalizeDupStats copies the final duplication metrics out of the
@@ -525,30 +707,99 @@ func finalizeDupStats(stats *ProcessStats, tracker *DupTracker) {
 	stats.DupTotal = tracker.Total()
 }
 
-// ProcessSingleEnd processes single-end FASTQ reads with all filters.
+// ProcessSingleEnd processes single-end FASTQ reads with all filters,
+// writing the surviving reads to a single output writer.
 func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
 	opts = normalizeUMIOptions(opts)
 	reader := fastq.NewReader(input, encoding)
 	writer := fastq.NewWriter(output, encoding)
 
 	stats := &ProcessStats{}
-	var dupTracker *DupTracker
-	if opts.DupCalcAccuracy > 0 || opts.Dedup {
-		acc := opts.DupCalcAccuracy
-		if acc <= 0 {
-			acc = dupAccuracyDefault
-		}
-		dupTracker = NewDupTracker(acc)
-	}
+	dupTracker := newDupTrackerForOpts(opts)
 
 	// Process with multi-threading if enabled. UMI and duplication
 	// tracking serialize through the input pipeline because they need a
 	// deterministic per-record view, so we fall back to single-threaded
 	// mode when either is active.
-	if opts.Threads > 1 && !opts.UMI && opts.UMILength == 0 && dupTracker == nil {
+	if opts.Threads > 1 && !opts.UMI && opts.UMILength == 0 && dupTracker == nil && !opts.OverrepAnalysis {
 		return processSingleEndParallel(reader, writer, encoding, opts, stats)
 	}
 
+	if err := runSingleEnd(reader, writer, encoding, opts, stats, dupTracker); err != nil {
+		return stats, err
+	}
+	if err := writer.Flush(); err != nil {
+		return stats, fmt.Errorf("error flushing output: %w", err)
+	}
+	finalizeDupStats(stats, dupTracker)
+	return stats, nil
+}
+
+// ProcessSingleEndSplit processes single-end FASTQ reads with all filters,
+// routing the surviving reads across numbered split files derived from
+// outputBase (e.g. 0001.out.fq, 0002.out.fq). The split parameters come
+// from opts (SplitNumber / SplitByLines / SplitPrefixDigits). It buffers
+// the input to size the splits, matching upstream's read-number evaluation.
+func ProcessSingleEndSplit(input io.Reader, outputBase string, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
+	opts = normalizeUMIOptions(opts)
+	reader := fastq.NewReader(input, encoding)
+	stats := &ProcessStats{}
+	dupTracker := newDupTrackerForOpts(opts)
+
+	records, err := drainRecords(reader)
+	if err != nil {
+		return stats, err
+	}
+
+	// SE adapter auto-detect over the buffered records, mirroring the
+	// streaming path.
+	if opts.DetectAdapterSE && opts.Adapter3 == "" {
+		sample := records
+		if len(sample) > adapterDetectSampleSize {
+			sample = sample[:adapterDetectSampleSize]
+		}
+		stats.DetectedAdapter = DetectAdapterSE(sample)
+		stats.DetectedAdapterR1 = stats.DetectedAdapter
+		if stats.DetectedAdapter != "" {
+			opts.Adapter3 = stats.DetectedAdapter
+		}
+	}
+	if opts.OverrepAnalysis {
+		stats.overrep[0] = newOverrepAnalyzer(recordSeqs(records), opts.OverrepSampling, evaluatedSeqLen(records))
+	}
+
+	cfg := resolveSplitConfig(opts, len(records))
+	sw := newSplitWriter(outputBase, cfg, encoding)
+
+	for _, rec := range records {
+		if err := processOneSE(rec, sw, encoding, opts, stats, dupTracker); err != nil {
+			return stats, err
+		}
+	}
+	if err := sw.Close(); err != nil {
+		return stats, fmt.Errorf("error closing split output: %w", err)
+	}
+	finalizeDupStats(stats, dupTracker)
+	return stats, nil
+}
+
+// newDupTrackerForOpts builds a duplication tracker when dup evaluation or
+// dedup is requested, or returns nil.
+func newDupTrackerForOpts(opts ProcessOptions) *DupTracker {
+	if opts.DupCalcAccuracy <= 0 && !opts.Dedup {
+		return nil
+	}
+	acc := opts.DupCalcAccuracy
+	if acc <= 0 {
+		acc = dupAccuracyDefault
+	}
+	return NewDupTracker(acc)
+}
+
+// runSingleEnd runs the single-end processing loop against reader, writing
+// surviving records to writer. It does not flush or finalize stats; the
+// caller owns those steps so split and non-split paths can share the body.
+func runSingleEnd(reader *fastq.Reader, writer recordWriter, encoding fastq.QualityEncoding, opts ProcessOptions, stats *ProcessStats, dupTracker *DupTracker) error {
 	// Buffer reads when SE adapter detection is requested so the same
 	// reads can be inspected before processing. We only buffer up to
 	// adapterDetectSampleSize records; remaining reads stream normally.
@@ -561,7 +812,7 @@ func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityE
 				break
 			}
 			if err != nil {
-				return stats, fmt.Errorf("error reading FASTQ: %w", err)
+				return fmt.Errorf("error reading FASTQ: %w", err)
 			}
 			detectBuffer = append(detectBuffer, record)
 		}
@@ -572,42 +823,22 @@ func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityE
 		}
 	}
 
-	processOne := func(record *fastq.Record) error {
-		stats.TotalReads++
-		originalLength := len(record.Sequence)
-		stats.TotalBases += int64(originalLength)
-		stats.recordBefore(record, 0, encoding)
-
-		// Duplication tracking: hash the read sequence and optionally
-		// drop duplicates when --dedup is on.
-		if dupTracker != nil {
-			isDup := dupTracker.Observe(record.Sequence)
-			if isDup && opts.Dedup {
-				stats.DedupDropped++
-				return nil
-			}
+	// Overrepresentation analysis (upstream -p): buffer the remaining
+	// records so the candidate hot-sequence map can be built from a sample
+	// of the full input before the main pass samples against it.
+	if opts.OverrepAnalysis {
+		rest, err := drainRecords(reader)
+		if err != nil {
+			return err
 		}
-
-		// Extract UMI if configured
-		if opts.UMI || opts.UMILength > 0 {
-			record, _ = applyUMI(record, nil, opts, stats)
-		}
-
-		processed, pass := processRecord(record, opts, stats, encoding)
-		if pass {
-			if err := writer.Write(processed); err != nil {
-				return fmt.Errorf("error writing FASTQ: %w", err)
-			}
-			stats.CleanReads++
-			stats.CleanBases += int64(len(processed.Sequence))
-			stats.recordAfter(processed, 0, encoding)
-		}
-		return nil
+		all := append(detectBuffer, rest...)
+		detectBuffer = all
+		stats.overrep[0] = newOverrepAnalyzer(recordSeqs(all), opts.OverrepSampling, evaluatedSeqLen(all))
 	}
 
 	for _, rec := range detectBuffer {
-		if err := processOne(rec); err != nil {
-			return stats, err
+		if err := processOneSE(rec, writer, encoding, opts, stats, dupTracker); err != nil {
+			return err
 		}
 	}
 
@@ -617,20 +848,48 @@ func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityE
 			break
 		}
 		if err != nil {
-			return stats, fmt.Errorf("error reading FASTQ: %w", err)
+			return fmt.Errorf("error reading FASTQ: %w", err)
 		}
-		if err := processOne(record); err != nil {
-			return stats, err
+		if err := processOneSE(record, writer, encoding, opts, stats, dupTracker); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// processOneSE runs the full single-end pipeline for one record and writes
+// it to writer if it survives filtering. Shared by the streaming and split
+// code paths.
+func processOneSE(record *fastq.Record, writer recordWriter, encoding fastq.QualityEncoding, opts ProcessOptions, stats *ProcessStats, dupTracker *DupTracker) error {
+	stats.TotalReads++
+	stats.TotalBases += int64(len(record.Sequence))
+	stats.recordBefore(record, 0, encoding)
+
+	// Duplication tracking: hash the read sequence and optionally drop
+	// duplicates when --dedup is on.
+	if dupTracker != nil {
+		isDup := dupTracker.Observe(record.Sequence)
+		if isDup && opts.Dedup {
+			stats.DedupDropped++
+			return nil
 		}
 	}
 
-	// Flush writer
-	if err := writer.Flush(); err != nil {
-		return stats, fmt.Errorf("error flushing output: %w", err)
+	// Extract UMI if configured.
+	if opts.UMI || opts.UMILength > 0 {
+		record, _ = applyUMI(record, nil, opts, stats)
 	}
 
-	finalizeDupStats(stats, dupTracker)
-	return stats, nil
+	processed, pass := processRecord(record, opts, stats, encoding)
+	if pass {
+		if err := writer.Write(processed); err != nil {
+			return fmt.Errorf("error writing FASTQ: %w", err)
+		}
+		stats.CleanReads++
+		stats.CleanBases += int64(len(processed.Sequence))
+		stats.recordAfter(processed, 0, encoding)
+	}
+	return nil
 }
 
 // processRecord applies all processing steps to a single record.

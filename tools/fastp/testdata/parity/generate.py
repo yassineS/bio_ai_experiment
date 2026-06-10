@@ -143,6 +143,42 @@ def main():
         dup.append((f"d_{i}", seq, hi_q(60)))
     write("se_dup.fq", dup)
 
+    # 11) Paired-end overlap-correction fixture: 30 pairs of 100bp reads with
+    # an ~80bp overlap and one low-quality base error injected into R1 inside
+    # the overlap, so `--correction` corrects exactly one base per pair.
+    def revcomp(s):
+        return s[::-1].translate(str.maketrans("ACGTN", "TGCAN"))
+
+    random.seed(101)
+    cr1, cr2 = [], []
+    for i in range(30):
+        insert = "".join(random.choice("ACGT") for _ in range(120))
+        r1 = list(insert[:100])
+        q1 = ["I"] * 100
+        r2 = revcomp(insert[20:120])
+        q2 = ["I"] * 100
+        pos = random.randint(40, 90)
+        r1[pos] = "A" if r1[pos] != "A" else "C"
+        q1[pos] = "#"  # phred 2, low quality -> correctable
+        cr1.append((f"cp_{i}", "".join(r1), "".join(q1)))
+        cr2.append((f"cp_{i}", r2, "".join(q2)))
+    write("corr_r1.fq", cr1)
+    write("corr_r2.fq", cr2)
+
+    # 12) Overrepresentation/split fixture: 6000 SE reads of 100bp with a 50bp
+    # motif injected into one third, large enough to trigger upstream's
+    # overrepresentation analysis and multi-file splitting.
+    random.seed(202)
+    motif = "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTAC"
+    ora = []
+    for i in range(6000):
+        if i % 3 == 0:
+            seq = motif + "".join(random.choice("ACGT") for _ in range(50))
+        else:
+            seq = "".join(random.choice("ACGT") for _ in range(100))
+        ora.append((f"o_{i}", seq, "I" * 100))
+    write("ora.fq", ora)
+
 
 if __name__ == "__main__":
     main()
