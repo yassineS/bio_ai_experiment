@@ -30,6 +30,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -417,14 +418,71 @@ func TestParity_Quantized(t *testing.T) {
 	t.Skip("known gap: -q/--quantize not implemented yet; see docs/PARITY_ROADMAP.md#mosdepth")
 }
 
-// TestParity_D4Rejected mirrors `--d4`. Our port rejects it with a clear
-// error rather than silently emitting nothing.
-func TestParity_D4Rejected(t *testing.T) {
-	tmp := t.TempDir()
-	bamPath := filepath.Join(fixtureDir(t), "ovl.bam")
-	err := OpenAndRun(bamPath, Options{Prefix: filepath.Join(tmp, "t"), D4Output: true})
-	if err == nil || !strings.Contains(err.Error(), "D4") {
-		t.Fatalf("expected D4 error, got %v", err)
+// TestParity_D4RoundTrip mirrors `--d4` against a real fixture BAM. Upstream
+// mosdepth is Nim, so there is no C binary to diff against; instead we assert
+// the per-base depths decoded from the D4 file match the per-base BED depths
+// produced for the same input (round-trip parity).
+func TestParity_D4RoundTrip(t *testing.T) {
+	bamFile := "ovl.bam"
+	// ovl.bam declares the full GRCh37 reference but its reads only cover
+	// MT. A dense D4 track over the whole genome would be multi-gigabyte, so
+	// we scope this round-trip to MT via --chrom. This is purely a test
+	// constraint; the writer handles all declared chromosomes.
+	bedPrefix := runParity(t, bamFile, Options{ExcludeFlag: DefaultExcludeFlag, Chrom: "MT"})
+	d4Prefix := runParity(t, bamFile, Options{ExcludeFlag: DefaultExcludeFlag, D4Output: true, Chrom: "MT"})
+
+	bedLines := readGzLines(t, bedPrefix+".per-base.bed.gz")
+	// Collapse the BED into per-chrom dense arrays keyed by the end coord of
+	// the last run (the chromosome length).
+	lengths := map[string]int{}
+	for _, ln := range bedLines {
+		f := strings.Split(ln, "\t")
+		if len(f) < 4 {
+			continue
+		}
+		end, err := strconv.Atoi(f[2])
+		if err != nil {
+			continue
+		}
+		if end > lengths[f[0]] {
+			lengths[f[0]] = end
+		}
+	}
+
+	r, err := openD4Reader(d4Prefix + ".per-base.d4")
+	if err != nil {
+		t.Fatalf("openD4Reader: %v", err)
+	}
+	for chrom, length := range lengths {
+		want := make([]int32, length)
+		for _, ln := range bedLines {
+			f := strings.Split(ln, "\t")
+			if len(f) < 4 || f[0] != chrom {
+				continue
+			}
+			start, _ := strconv.Atoi(f[1])
+			end, _ := strconv.Atoi(f[2])
+			depth, _ := strconv.Atoi(f[3])
+			for p := start; p < end && p < length; p++ {
+				want[p] = int32(depth)
+			}
+		}
+		got, err := r.chromDepths(chrom)
+		if err != nil {
+			t.Fatalf("chromDepths(%q): %v", chrom, err)
+		}
+		// The D4 array spans the full reference length; compare the prefix
+		// the BED covers (BED omits trailing zero runs past the last event
+		// only when the run is non-zero — emitRuns always flushes to refLen,
+		// so lengths should match, but guard anyway).
+		if len(got) < length {
+			t.Fatalf("%s: D4 length %d < BED length %d", chrom, len(got), length)
+		}
+		for i := 0; i < length; i++ {
+			if got[i] != want[i] {
+				t.Fatalf("%s pos %d: D4 depth %d, BED depth %d", chrom, i, got[i], want[i])
+			}
+		}
 	}
 }
 
