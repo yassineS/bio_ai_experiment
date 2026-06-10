@@ -330,8 +330,22 @@ Graph-data (PR `claude/prinseq-graph-data-land`):
 - `--graph_stats CODES` (lines 994-1015): the upstream stat
   selector CSV (`ld,gc,qd,ns,pt,ts,aq,de,da,sc,dn`). Supported and
   enforced — unknown codes return an error as upstream does.
-- `--qual_noscale` (lines 989-993). Toggles the relative
-  (100-bin) `quals` table.
+- `--qual_noscale` (lines 989-993). **Done.** Wired on the
+  `prinseq graph_data` subcommand (`cmd/prinseq/main.go`,
+  `--qual_noscale`) through `GraphDataOptions.QualNoscale`. Upstream's
+  `$scale` defaults to 1; setting `--qual_noscale` flips it to 0,
+  which (a) suppresses the relative (100-bin) `quals` table during
+  collection (`AddQual`, graphdata.go:525) while leaving the absolute
+  per-position table (emitted as `qualsbin`) untouched, and (b) writes
+  `"scale":0` instead of `"scale":1` into the emitted `.gd` JSON
+  (graphdata.go:1571-1576). It is a graph-data-only knob — the
+  `stats`/`filter` paths do no fixed-bin quality scaling, so the flag
+  has no effect there (matching upstream, where `$scale` is referenced
+  only by `getQualStats` and the graph-data JSON emitter). Validated
+  byte-for-byte (semantic-tree-equal) against the live upstream Perl
+  oracle for both scaled and `--qual_noscale` runs in
+  `tools/prinseq/pkg/prinseq/qual_noscale_test.go`
+  (`runUpstreamPrinseqQualNoscale`).
 - The byte-level emit deviates from upstream in one
   way: **map keys are emitted in lexicographic order**, where
   upstream uses Perl-hash iteration order (Perl >= 5.18 randomises
@@ -351,9 +365,10 @@ Still missing (all niche knobs, not in scope for this PR):
   `--range_len`, `--range_gc`, `--trim_qual_window`,
   `--trim_qual_step`, `--trim_qual_rule`, `--trim_to_len`,
   `--seq_case`, `--dna_rna`, `--line_width`, `--rm_header`,
-  `--no_qual_header`, `--qual_noscale`, `--exact_only`, `--params`,
+  `--no_qual_header`, `--exact_only`, `--params`,
   `--custom_params`, `--seq_num`. None of these were on the agreed
-  scope for this PR.
+  scope for this PR. (`--qual_noscale` is now done — see the
+  graph-data section above.)
 
 **Validation:** no upstream-test-suite run yet. Upstream PRINSEQ-lite has no
 formal test suite — we'd need to construct one from the documented examples.
