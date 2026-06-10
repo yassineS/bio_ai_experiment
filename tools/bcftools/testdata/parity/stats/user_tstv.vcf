@@ -1,0 +1,15 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=100000>
+##INFO=<ID=BQB,Number=1,Type=Float,Description="Base quality bias score">
+##INFO=<ID=MQ,Number=1,Type=Integer,Description="Mapping quality">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr1	100	.	A	G	50	.	BQB=0.05;MQ=10
+chr1	200	.	C	T	50	.	BQB=0.15;MQ=20
+chr1	300	.	G	A	50	.	BQB=0.25;MQ=30
+chr1	400	.	A	C	50	.	BQB=0.35;MQ=40
+chr1	500	.	C	G	50	.	BQB=0.45;MQ=50
+chr1	600	.	T	A	50	.	BQB=0.55;MQ=60
+chr1	700	.	G	T	50	.	BQB=0.65;MQ=70
+chr1	800	.	T	C	50	.	BQB=0.95;MQ=95
+chr1	900	.	A	T	50	.	BQB=1.50;MQ=120
+chr1	1000	.	G	C	50	.	BQB=-0.20;MQ=5
