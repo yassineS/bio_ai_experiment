@@ -6,12 +6,13 @@
 // O(N) memory. The seed is configurable (`-seed`) for deterministic
 // replays; when seed=0 we fall back to a time-based seed.
 //
-// Mirrors upstream `bedtools sample -i FILE -n N [-seed SEED] [-header]`.
-// Notes vs. upstream:
+// Mirrors upstream `bedtools sample -i FILE -n N [-seed SEED] [-header]`
+// byte-for-byte for a given seed: the reservoir replacement uses a Go port
+// of the same std::mt19937_64 engine and rejection-sampling bound upstream
+// uses (see mt19937.go), and the kept records are emitted in reservoir-slot
+// order — exactly as upstream's `giveFinalReport` does for BED output (it
+// only re-sorts when the output type is BAM). Notes vs. upstream:
 //
-//   - Output order is the input file order (preserves the first-appearance
-//     ordering of sampled records). Upstream behaves the same way in
-//     practice — it never re-sorts.
 //   - The reservoir guarantees uniform sampling without replacement when N
 //     <= total records. When N > total records we emit every record and
 //     return an error from the library so the CLI wrapper can mirror
@@ -23,8 +24,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"math/rand"
-	"sort"
 	"strings"
 	"time"
 )
@@ -66,21 +65,24 @@ func Sample(r io.Reader, w io.Writer, opts Options) (int, error) {
 	if seed == 0 {
 		seed = time.Now().UnixNano()
 	}
-	rng := rand.New(rand.NewSource(seed))
+	// Upstream seeds std::mt19937_64 with the (int) seed value; mirror that
+	// by reinterpreting the seed's low bits as the unsigned engine seed.
+	rng := newMT19937_64(uint64(seed))
 
 	bw := bufio.NewWriter(w)
 	defer bw.Flush()
 
-	// reservoirSlot tracks the original 0-based index of each sampled
-	// record so we can emit them in input order.
-	type slot struct {
-		index int
-		line  string
-	}
-	reservoir := make([]slot, 0, opts.N)
+	// reservoir holds up to N kept lines in upstream's slot order: a new
+	// record either fills the next empty slot (during the fill phase) or
+	// replaces an existing slot chosen by the RNG. The final output is this
+	// slice in slot order — no re-sort, matching upstream's BED path.
+	reservoir := make([]string, 0, opts.N)
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	// total mirrors upstream's _currRecordNum: it counts every data record
+	// seen so far, and is incremented BEFORE the replacement draw so the
+	// draw range is [0, total) for the total-th record (1-based).
 	total := 0
 	for sc.Scan() {
 		raw := sc.Text()
@@ -103,17 +105,18 @@ func Sample(r io.Reader, w io.Writer, opts Options) (int, error) {
 			continue
 		}
 
-		if len(reservoir) < opts.N {
-			reservoir = append(reservoir, slot{index: total, line: raw})
-		} else {
-			// Pick a random index in [0, total]. If it falls inside the
-			// reservoir, replace that slot.
-			j := rng.Intn(total + 1)
-			if j < opts.N {
-				reservoir[j] = slot{index: total, line: raw}
-			}
-		}
 		total++
+		if len(reservoir) < opts.N {
+			// Fill phase: no RNG draw, exactly as upstream's keepRecord.
+			reservoir = append(reservoir, raw)
+			continue
+		}
+		// Replacement phase: draw an index in [0, total) and replace that
+		// slot when it lands inside the reservoir.
+		idx := rng.randRange(uint64(total))
+		if idx < uint64(opts.N) {
+			reservoir[idx] = raw
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return 0, err
@@ -123,12 +126,9 @@ func Sample(r io.Reader, w io.Writer, opts Options) (int, error) {
 		return 0, &ErrTooFewRecords{Have: total, Want: opts.N}
 	}
 
-	// Emit in input order (sorted by `index`).
-	sort.Slice(reservoir, func(i, j int) bool {
-		return reservoir[i].index < reservoir[j].index
-	})
-	for _, s := range reservoir {
-		if _, err := bw.WriteString(s.line); err != nil {
+	// Emit in reservoir-slot order (upstream does not re-sort BED output).
+	for _, line := range reservoir {
+		if _, err := bw.WriteString(line); err != nil {
 			return 0, err
 		}
 		if err := bw.WriteByte('\n'); err != nil {
