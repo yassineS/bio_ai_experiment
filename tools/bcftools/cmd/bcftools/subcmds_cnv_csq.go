@@ -294,7 +294,7 @@ General options:
   -t, --targets LIST             Like -r but always a post-filter.
   -T, --targets-file FILE        BED-like targets file.
       --targets-overlap 0|1|2    Accepted; v1 ignores.
-      --threads INT              Accepted; v1 is single-threaded.
+  -@, --threads INT              Worker threads for parallel BGZF compression of -O z/-O b.
   -v, --verbose / --verbosity INT  Accepted; v1 ignores.
   -W, --write-index[=FMT]        Accepted; v1 never auto-indexes outputs.
   -q, --quiet                    Accepted; deprecated upstream.
@@ -366,7 +366,7 @@ func runCSQ(args []string) int {
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
 	fs.IntVar(&targetsOverlap, "targets-overlap", 0, "")
-	fs.IntVar(&threads, "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 1, "Verbosity (accepted, ignored)")
 	fs.IntVar(&verbosity, "verbose", 1, "Verbose (alias for --verbosity)")
 	cliflag.StringVar(fs, &writeIndex, "W", "write-index", "", "Auto-index outputs (accepted, ignored)")
@@ -441,7 +441,6 @@ func runCSQ(args []string) int {
 	_ = samplesFile
 	_ = regionsOverlap
 	_ = targetsOverlap
-	_ = threads
 	_ = verbosity
 	_ = writeIndex
 	_ = quiet
@@ -479,6 +478,7 @@ func runCSQ(args []string) int {
 		ExcludeExpr:    excludeExpr,
 		DumpGFF:        dumpGFF,
 		UnifyChrNames:  unifyChrNames,
+		Threads:        threads,
 	}
 	if ph, err := bcftools.ParseCSQPhase(phase); err == nil {
 		opts.Phase = ph

@@ -45,6 +45,10 @@ type PluginOptions struct {
 	OutputFormat OutputFormat
 	// CompressLevel forwards the -l gzip level for OutputVCFGz.
 	CompressLevel int
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
+	// the framed result decodes byte-identically regardless of thread count.
+	Threads int
 }
 
 // PluginNotFoundError is returned when a plugin name cannot be resolved to
@@ -293,6 +297,7 @@ func writePluginOutput(vcfBytes []byte, out io.Writer, opts PluginOptions) error
 	w, cleanup, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, hdr)
 	if err != nil {
 		return err

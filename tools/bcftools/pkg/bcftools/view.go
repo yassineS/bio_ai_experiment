@@ -764,9 +764,10 @@ type variantWriter interface {
 
 // bgzfFlusher is the minimal interface a vcf/bcfVariantWriter needs from the
 // underlying BGZF writer for the header-block flush. It is satisfied by
-// *bgzf.Writer (serial block compression). Salvaged from PR #219 so the
-// mpileup -Ob/-Oz output paths can close the BGZF block after the header,
-// matching upstream htslib's vcf_hdr_write / bcf_hdr_write semantics.
+// *bgzf.Writer (serial block compression) and by *bgzf.MultiWriter (parallel
+// block compression, returned when -@/--threads > 1). Salvaged from PR #219 so
+// the view/call/mpileup -Ob/-Oz output paths can close the BGZF block after the
+// header, matching upstream htslib's vcf_hdr_write / bcf_hdr_write semantics.
 type bgzfFlusher interface {
 	Flush() error
 	Close() error
@@ -852,9 +853,12 @@ func ensurePASSFilter(hdr *vcf.Header) {
 }
 
 // openOutput returns a variantWriter plus a cleanup function. The cleanup
-// closes any wrapping compressor that needs an explicit Close (gzip for -O z,
-// bgzip for -O b). We deliberately do not close `out` itself — the caller
-// still owns it.
+// closes any wrapping compressor that needs an explicit Close (BGZF for -O z
+// and -O b). For the BGZF paths the variantWriter is given the bgzf flusher so
+// WriteHeader closes the header into its own BGZF block, matching upstream
+// htslib's vcf_hdr_write / bcf_hdr_write (which call bgzf_flush after the
+// header) and keeping tabix/.csi offsets clean. We deliberately do not close
+// `out` itself — the caller still owns it.
 func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter, func(), error) {
 	ensurePASSFilter(hdr)
 	switch opts.OutputFormat {
@@ -863,7 +867,7 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return &vcfVariantWriter{w: vcf.NewWriter(bw, hdr)}, func() { _ = bw.Close() }, nil
+		return &vcfVariantWriter{w: vcf.NewWriter(bw, hdr), bgzf: bw}, func() { _ = bw.Close() }, nil
 	case OutputBCF:
 		bw, err := newBGZFOutput(out, opts.CompressLevel, opts.Threads)
 		if err != nil {
@@ -874,7 +878,7 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 			_ = bw.Close()
 			return nil, func() {}, err
 		}
-		return &bcfVariantWriter{w: w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
+		return &bcfVariantWriter{w: w, bgzf: bw}, func() { _ = w.Flush(); _ = bw.Close() }, nil
 	case OutputBCFUncompressed:
 		w, err := bcf.NewWriterFromVCFHeader(out, hdr)
 		if err != nil {
@@ -921,10 +925,10 @@ func LoadSamplesFilePairs(path string) ([][2]string, error) {
 	return pairs, sc.Err()
 }
 
-// newBGZFOutput returns a BGZF io.WriteCloser for compressed VCF.gz (-O z) and
-// BCF (-O b) output. It mirrors upstream bcftools, which writes BGZF (a
-// gzip-compatible block format) for both. A level < 0 selects the package
-// default compression level.
+// newBGZFOutput returns a bgzfFlusher (a BGZF io.WriteCloser that also exposes
+// Flush) for compressed VCF.gz (-O z) and BCF (-O b) output. It mirrors
+// upstream bcftools, which writes BGZF (a gzip-compatible block format) for
+// both. A level < 0 selects the package default compression level.
 //
 // When threads > 1 the returned writer is a bgzf.MultiWriter that compresses
 // blocks across that many worker goroutines; otherwise it is the

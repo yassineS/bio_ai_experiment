@@ -152,7 +152,8 @@ Options:
   -w, --write LIST           Comma-separated 1-based input indices to write to stdout.
   -O, --output-type {v|z}    Output format.
   -o, --output PATH          Output file (default stdout) — used when -p is not set.
-      --threads N            Accepted; v1 is single-threaded.
+  -@, --threads N            Worker threads for parallel BGZF compression of
+                             -O z / -O b output (default 0 = serial).
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -177,7 +178,7 @@ func runIsec(args []string) int {
 	cliflag.StringVar(fs, &writeList, "w", "write", "", "Inputs to dump to stdout")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
@@ -221,6 +222,7 @@ func runIsec(args []string) int {
 		Collapse:     cmode,
 		Prefix:       prefix,
 		OutputFormat: format,
+		Threads:      threads,
 	}
 	if writeList != "" {
 		for _, p := range strings.Split(writeList, ",") {
@@ -424,7 +426,7 @@ func runReheader(args []string) int {
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -465,6 +467,7 @@ func runReheader(args []string) int {
 		FaiFile:       faiFile,
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
+		Threads:       threads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools reheader: %v\n", err)
 		return 1

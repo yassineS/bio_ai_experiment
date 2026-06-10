@@ -2606,8 +2606,10 @@ shared block-parallel `pkg/htsgo/bgzf.MultiWriter` (the same writer used
 by `bgzip` and samtools threading). The shared `openOutput` writer path
 selects `MultiWriter` for `-O z` (VCF.gz) and `-O b` (BCF) whenever
 `Threads > 1`, so the flag is wired end-to-end through **`view`,
-`concat`, `norm`, `call`, `annotate`, `sort`, `merge`**, and (via its own
-writer) **`mpileup`** output. As part of this change `-O z` now emits
+`concat`, `norm`, `call`, `annotate`, `sort`, `merge`, `isec`,
+`convert`, `reheader`, `mendelian`, `mendelian2`, `csq`,
+`filter`/`vcffilter`, and `plugin`**, and (via its own writer)
+**`mpileup`** output. As part of this change `-O z` now emits
 BGZF (gzip-compatible) rather than plain `compress/gzip`, matching
 upstream's `.vcf.gz` framing. Output decodes byte-identically regardless
 of the thread count (every BGZF block is an independent gzip member);
@@ -2616,21 +2618,36 @@ the **decoded** records. The pileup/call computation itself remains
 single-threaded in v1 — only the output-compression stage is
 parallelised, which is the dominant win for `-O z`/`-O b` workloads.
 
-**`-@` still single-threaded (output threading not yet wired):**
-`isec`, `convert`, `reheader`, `mendelian`, `mendelian2`, `csq`,
-`filter`/`vcffilter`, and `plugin` accept `--threads` but ignore it
-today; `gtcheck`, `roh`, `cnv`, `polysomy`, `consensus`, and `query`/
-`stats`/`index` either have no BGZF-framed record output or do not accept
-`-@`. Wiring the remaining `openOutput` callers (`isec`, `convert`,
-`reheader`, `mendelian*`, `vcffilter`) is mechanical — they share the
-same writer chokepoint — and is tracked as a follow-up.
+**Threading tail wired (follow-up complete):** the remaining
+`openOutput` callers — `isec`, `convert`, `reheader`, `mendelian`,
+`mendelian2`, `csq`, `filter`/`vcffilter`, and the `plugin` output path —
+now route their bgzipped output through the same `bgzf.MultiWriter`
+chokepoint when `Threads > 1`, so `-@/--threads` is honoured end-to-end
+for every BGZF-framed-output bcftools subcommand. (mendelian2's
+`-W`-only BGZF-VCF path was also folded onto `newBGZFOutput`, so it
+threads and flushes the header into its own block too.) The remaining
+subcommands — `gtcheck`, `roh`, `cnv`, `polysomy`, `consensus`, and
+`query`/`stats`/`index` — either have no BGZF-framed record output or do
+not accept `-@`.
+
+Additionally, the shared `view`/`call`/etc. `openOutput` now flushes the
+header into its own BGZF block for `-O z`/`-O b` (matching upstream
+htslib's `bgzf_flush` after `vcf_hdr_write` / `bcf_hdr_write`), bringing
+it in line with the `mpileup` writer and keeping tabix/.csi virtual
+offsets clean.
 
 **Validation:** live upstream-binary parity (`view_threads_test.go`, the
 uniquely-named `upstreamBcftoolsThreads` sync.Once builder, never
 `t.Skip`): our `-@ {2,4,8}` output decodes byte-identically to our `-@ 1`
 output for both `-O z` and `-O b`, and the decoded records match the live
 upstream `bcftools view -O z` / `-O b --threads 4` output on a
-multi-block VCF fixture. Race-clean (`go test -race`). The isolated
+multi-block VCF fixture. The threading tail adds `thread_tail_test.go`
+(uniquely-named `upstreamBcftoolsThreadTail` sync.Once builder, never
+`t.Skip`): `convert`/`reheader`/`filter`/`isec`/`mendelian2` `-@ {2,4,8}`
+output decodes byte-identically to `-@ 1` (and matches the live upstream
+binary where an `-O z` surface exists), plus structural assertions that
+`view -Oz`/`-Ob` now place the whole header in its own first BGZF block.
+Race-clean (`go test -race`). The isolated
 parallel-compression speedup (~3x at 4 threads) is demonstrated by
 `BenchmarkMultiWriter` in `pkg/htsgo/bgzf`; end-to-end `view` throughput
 moves little because VCF text (de)serialisation, not deflate, dominates

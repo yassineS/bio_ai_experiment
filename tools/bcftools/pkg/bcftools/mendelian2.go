@@ -38,21 +38,28 @@ import (
 	"strconv"
 	"strings"
 
-	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // openBGZFVCFOutput wraps out in a BGZF writer and returns a VCF
 // variant writer plus a finish func that flushes and closes the BGZF
-// stream (writing the BGZF EOF block). Unlike openOutput's plain-gzip
-// OutputVCFGz path, the result is block-gzip and therefore indexable,
-// which -W/--write-index requires.
-func openBGZFVCFOutput(out io.Writer, hdr *vcf.Header) (variantWriter, func()) {
+// stream (writing the BGZF EOF block). openOutput's OutputVCFGz path
+// already emits BGZF (block-gzip); this helper exists so the
+// -W/--write-index path can force BGZF VCF even when the requested
+// container would otherwise stay plain text. The header is flushed into
+// its own BGZF block (matching openOutput / upstream htslib), and when
+// threads > 1 block compression runs in parallel via bgzf.MultiWriter,
+// producing output that decodes byte-identically regardless of thread
+// count.
+func openBGZFVCFOutput(out io.Writer, hdr *vcf.Header, level, threads int) (variantWriter, func(), error) {
 	ensurePASSFilter(hdr)
-	bw := bgzip.NewWriter(out)
-	w := &vcfVariantWriter{w: vcf.NewWriter(bw, hdr)}
-	return w, func() { _ = w.Flush(); _ = bw.Close() }
+	bw, err := newBGZFOutput(out, level, threads)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	w := &vcfVariantWriter{w: vcf.NewWriter(bw, hdr), bgzf: bw}
+	return w, func() { _ = w.Flush(); _ = bw.Close() }, nil
 }
 
 // Mendelian2Mode is a bitmask of the upstream `-m c|[adeEgmMS]`
@@ -210,6 +217,10 @@ type Mendelian2Options struct {
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
+	// the framed result decodes byte-identically regardless of thread count.
+	Threads int
 	// Rules is the per-contig ploidy / inheritance model (the
 	// `--rules` assembly or `--rules-file`). When nil, the GRCh37
 	// built-in table is used, matching upstream's default. The rules
@@ -314,11 +325,15 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 	if needWriter {
 		if opts.BGZF && opts.OutputFormat == OutputVCFGz {
 			// BGZF VCF so the result is indexable for -W/--write-index.
-			writer, finish = openBGZFVCFOutput(out, annotatedHdr)
+			writer, finish, err = openBGZFVCFOutput(out, annotatedHdr, opts.CompressLevel, opts.Threads)
+			if err != nil {
+				return summary, fmt.Errorf("bcftools mendelian2: %w", err)
+			}
 		} else {
 			writer, finish, err = openOutput(out, ViewOptions{
 				OutputFormat:  opts.OutputFormat,
 				CompressLevel: opts.CompressLevel,
+				Threads:       opts.Threads,
 			}, annotatedHdr)
 			if err != nil {
 				return summary, fmt.Errorf("bcftools mendelian2: %w", err)

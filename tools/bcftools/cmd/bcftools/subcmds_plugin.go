@@ -37,6 +37,7 @@ Options (host side; must precede the plugin name or --):
   -r, --regions chr[:b-e]    Restrict input records fed to the plugin.
   -R, --regions-file PATH    BED-like regions file.
       --compression-level N  gzip level for -O z output.
+  -@, --threads N            Worker threads for parallel BGZF compression of -O z.
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -102,6 +103,7 @@ func runPlugin(args []string, pluginName string) int {
 		regions       string
 		regionsFile   string
 		compressLevel int
+		threads       int
 		showHelp      bool
 		showVer       bool
 	)
@@ -112,6 +114,7 @@ func runPlugin(args []string, pluginName string) int {
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
 	fs.IntVar(&compressLevel, "compression-level", -1, "gzip level")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
@@ -158,6 +161,7 @@ func runPlugin(args []string, pluginName string) int {
 		Args:          pluginArgs,
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
+		Threads:       threads,
 		RegionsFile:   regionsFile,
 	}
 	if regions != "" {
