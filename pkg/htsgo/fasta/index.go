@@ -395,6 +395,13 @@ func NewRandomAccess(r io.ReaderAt, idx *Index) *RandomAccess {
 	return &RandomAccess{r: r, idx: idx, close: func() error { return nil }}
 }
 
+// newRandomAccessWithCloser wraps a ReaderAt + index and installs a custom
+// Close hook (used by the .gzi partial-decompression backend, which owns an
+// open file handle that must be released on Close).
+func newRandomAccessWithCloser(r io.ReaderAt, idx *Index, closeFn func() error) *RandomAccess {
+	return &RandomAccess{r: r, idx: idx, close: closeFn}
+}
+
 // Close releases the underlying file (if any).
 func (ra *RandomAccess) Close() error {
 	if ra.close != nil {

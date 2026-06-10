@@ -11,15 +11,21 @@
 //     back to its compressed-stream offset, enabling O(1) seek without
 //     full decompression.
 //
-// For the small reference genomes we care about in tests and most
-// bedtools use cases, the BGZF stream comfortably fits in memory.
-// OpenRandomAccessBGZF therefore takes the pragmatic path: decompress
-// the whole BGZF stream into a byte slice and reuse BuildIndex on it.
-// This avoids 200+ lines of partial-decompression seek logic while
-// remaining byte-for-byte compatible with upstream's `getfasta -fi
-// ref.fa.gz` output. Streaming/.gzi-based seeking can be layered on
-// later without API churn — see the `loadGZIBlockOffsets` helper which
-// is wired up so callers can verify the sidecar `.gzi` exists.
+// OpenRandomAccessBGZF chooses between two backends:
+//
+//   - When both a samtools-style `.fai` (offsets into the uncompressed
+//     stream) and a `.gzi` (BGZF block index) sidecar are present, it
+//     serves Fetch through a bgzf.SeekReader that inflates only the
+//     blocks overlapping each request — true partial decompression,
+//     matching `samtools faidx ref.fa.gz` without holding the whole
+//     reference in memory.
+//   - Otherwise it falls back to the pragmatic path: decompress the
+//     whole BGZF stream into a byte slice and reuse BuildIndex on it.
+//     For the small reference genomes we care about in tests and most
+//     bedtools use cases, the BGZF stream comfortably fits in memory.
+//
+// Both paths are byte-for-byte compatible with upstream's
+// `getfasta -fi ref.fa.gz` output.
 package fasta
 
 import (
@@ -29,6 +35,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
@@ -131,6 +138,73 @@ func decompressBGZF(path string) ([]byte, error) {
 	return data, nil
 }
 
+// gziReaderAt is an io.ReaderAt over a BGZF stream that decompresses only the
+// blocks overlapping each ReadAt request, using a .gzi block index. It is the
+// partial-decompression backend for OpenRandomAccessBGZF, replacing the
+// whole-file in-memory decompress when a .gzi sidecar is present. ReadAt
+// requests are serialised with a mutex because the underlying bgzf.SeekReader
+// keeps a single decoded-block cursor and is not safe for concurrent use; the
+// FASTA Fetch path makes one small ReadAt per call, so the contention cost is
+// negligible compared with re-decompressing whole references.
+type gziReaderAt struct {
+	mu  sync.Mutex
+	sr  *bgzip.SeekReader
+	src io.Closer
+}
+
+// ReadAt satisfies io.ReaderAt by seeking the BGZF stream to the requested
+// uncompressed offset and inflating exactly enough blocks to fill p. It mirrors
+// os.File.ReadAt semantics: a short read at end of stream returns io.EOF.
+func (g *gziReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.sr.SeekTo(off); err != nil {
+		if errors.Is(err, bgzip.ErrSeekPastEnd) {
+			return 0, io.EOF
+		}
+		return 0, err
+	}
+	n, err := io.ReadFull(g.sr, p)
+	// Normalise the partial-read sentinel to io.EOF so callers that key on
+	// os.File.ReadAt semantics (fasta.RandomAccess.Fetch tolerates io.EOF on a
+	// final short slice) behave identically on the .gzi-backed path.
+	if err == io.ErrUnexpectedEOF {
+		err = io.EOF
+	}
+	return n, err
+}
+
+// Close releases the underlying file handle.
+func (g *gziReaderAt) Close() error {
+	if g.src != nil {
+		return g.src.Close()
+	}
+	return nil
+}
+
+// newGZIReaderAt builds a gziReaderAt for the BGZF file at path using the
+// sidecar <path>.gzi. It returns (nil, nil) when no .gzi is present so the
+// caller can fall back to the whole-file in-memory path.
+func newGZIReaderAt(path string) (*gziReaderAt, error) {
+	gziPath := path + ".gzi"
+	gziData, err := os.ReadFile(gziPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	index, err := bgzip.ReadGZI(bytes.NewReader(gziData))
+	if err != nil {
+		return nil, fmt.Errorf("fasta: reading .gzi: %w", err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return &gziReaderAt{sr: bgzip.NewSeekReader(f, index), src: f}, nil
+}
+
 // OpenRandomAccessBGZF opens a BGZF-compressed FASTA (`.fa.gz`) for
 // random-access fetches. It uses the same on-disk conventions as
 // `samtools faidx` on a bgzipped FASTA:
@@ -158,6 +232,26 @@ func OpenRandomAccessBGZF(path string) (*RandomAccess, error) {
 	if !bgzf {
 		return nil, fmt.Errorf("fasta: %q is not BGZF-compressed", path)
 	}
+
+	// Fast path: when BOTH the samtools-style .fai (offsets into the
+	// uncompressed stream) AND the .gzi (BGZF block index) are present, we can
+	// serve Fetch without ever decompressing the whole file — the .fai gives
+	// the uncompressed byte range and the .gzi lets the SeekReader inflate
+	// only the overlapping blocks. This matches `samtools faidx ref.fa.gz`
+	// behaviour and is the partial-decompression seek the roadmap called for.
+	if fi, ferr := LoadIndex(path + ".fai"); ferr == nil {
+		ra, gerr := newGZIReaderAt(path)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if ra != nil {
+			return newRandomAccessWithCloser(ra, fi, ra.Close), nil
+		}
+	} else if !os.IsNotExist(ferr) {
+		return nil, ferr
+	}
+
+	// Fallback: decompress the whole BGZF stream into memory and index it.
 	payload, err := decompressBGZF(path)
 	if err != nil {
 		return nil, err

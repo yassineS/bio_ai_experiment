@@ -557,10 +557,15 @@ Option-tail gaps on the wave-2 additions:
   compatible `.fa.gz.fai` is honoured when present, otherwise the
   index is rebuilt from the decompressed payload. Upstream
   `getfasta.t18` (BGZF FASTA + `-split` BED12) now passes byte-for-byte
-  using the upstream `t.fa.gz` fixture. Partial-decompression seek via
-  `.gzi` is a future optimization; the in-memory path is sufficient
-  for parity and for the reference genomes bedtools is typically used
-  against.
+  using the upstream `t.fa.gz` fixture. **Partial-decompression seek via
+  `.gzi` is now implemented** (htsgo-gzi-bcf PR): when both the
+  samtools-style `.fa.gz.fai` (uncompressed-stream offsets) and the
+  `.fa.gz.gzi` block index are present, `OpenRandomAccessBGZF` serves
+  `Fetch` through a `bgzf.SeekReader`-backed `io.ReaderAt` that inflates
+  only the blocks overlapping each request — no whole-file decompress.
+  The in-memory decompress remains as the fallback when no `.gzi` is
+  present. The seek path is validated against upstream `bgzip -i`-produced
+  `.gz`+`.gzi` sidecars in `pkg/htsgo/fasta/bgzf_test.go`.
 - `bedsort` — `-header` is now implemented (this PR): leading
   `#`-prefixed comment, `track`, and `browser` directive lines are
   buffered and emitted verbatim ahead of the sorted body. Upstream
@@ -1337,14 +1342,32 @@ Filed as a parity-only workaround; we don't replicate the bug.
 
 **Status:** 1 / 1 command, most flags.
 
+Closed (htsgo-gzi-bcf PR):
+
+- **`.gzi` random-access seek** (`bgzip -b N -s M`). `pkg/htsgo/bgzf`
+  gains `SeekReader` (mirrors htslib `bgzf_useek`): given an
+  `io.ReaderAt` over a BGZF stream and a `.gzi` block index, it
+  binary-searches the index for the block owning a requested
+  uncompressed offset, inflates only the overlapping blocks, and reads a
+  region without decompressing the whole file. A sparse index is
+  tolerated (it walks the compressed stream forward for unindexed
+  blocks). Our existing `WriteGZI`/`ReadGZI` already matched htslib's
+  on-disk `.gzi` format; the seek path is the missing consumer.
+  **Validated live** against the upstream `bgzip` binary
+  (`pkg/htsgo/bgzf/seek_test.go`): our `SeekReader` reproduces
+  `bgzip -b/-s` region extraction byte-for-byte, our `WriteGZI` output is
+  byte-identical to `bgzip -r`, and upstream `bgzip -b/-s` extracts
+  correctly using a `.gzi` we wrote.
+
 Missing:
 
 - **Multi-threaded compression** (`-t / --threads N` is accepted but
   single-threaded; BGZF is trivially parallel per block).
 - **Output-rename to follow upstream conventions on stdin**: minor.
 
-**Validation:** round-trips through `tabix` work; no full upstream-test
-suite run yet.
+**Validation:** round-trips through `tabix` work; the `.gzi` seek path is
+validated byte-for-byte against the live upstream `bgzip` binary (see
+above). No full upstream-test suite run yet.
 
 ### `tabix`
 
@@ -2758,8 +2781,13 @@ Subcommand-tail gaps on `bcftools call`:
   falls back to the consensus model for sites with more than one ALT;
   upstream iterates over every allele combination.
 - **BCF input.** Today `call` rejects BCF input with a roadmap-pointer
-  error. The BCF reader's FORMAT-key reconstruction
-  (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) is the prerequisite.
+  error. The former prerequisite — the BCF reader's FORMAT-key
+  reconstruction (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) — is
+  **now resolved**: the htsgo-gzi-bcf PR confirmed via live `bcftools`
+  round-trips that every FORMAT key (int8- and int16-encoded, including
+  string/ragged-vector/phased/all-missing FORMAT values) reconstructs
+  correctly, and pinned it with `TestBCF_FormatKeyParity`. Wiring BCF
+  input into `call` is now a plumbing task, not blocked on the reader.
 - **`--ploidy GRCh37 / GRCh38`.** Accepted by the CLI parser but
   rejected at runtime — the per-contig sex-chromosome overrides need a
   ploidy registry that's not yet wired in.
