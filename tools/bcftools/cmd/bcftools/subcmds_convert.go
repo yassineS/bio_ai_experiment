@@ -168,12 +168,72 @@ func runConvert(args []string) int {
 		return 1
 	}
 
+	format, err := bcftools.ParseOutputFormat(outputType)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	// --tsv2vcf and --gvcf2vcf are implemented modes; dispatch them before
+	// the deferred-mode gate (which still rejects gen/hap export).
+	if tsv2vcf != "" {
+		out, err := openOutFile(outputPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return 1
+		}
+		defer out.Close()
+		opts := bcftools.TSV2VCFOptions{
+			FastaRef:       fastaRef,
+			Columns:        columnsFlag,
+			SamplesFile:    samplesFile,
+			KeepDuplicates: keepDuplicates,
+			OutputFormat:   format,
+			CompressLevel:  compressLevel,
+			NoVersion:      noVersion,
+		}
+		if samples != "" {
+			opts.Samples = bcftools.SplitCommaList(samples)
+		}
+		if _, err := bcftools.TSV2VCFFile(tsv2vcf, out, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if gvcf2vcf {
+		rest := fs.Args()
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "bcftools convert: missing input file")
+			fmt.Fprint(os.Stderr, convertUsage)
+			return 2
+		}
+		out, err := openOutFile(outputPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return 1
+		}
+		defer out.Close()
+		opts := bcftools.GVCFToVCFOptions{
+			FastaRef:      fastaRef,
+			IncludeExpr:   includeExpr,
+			ExcludeExpr:   excludeExpr,
+			OutputFormat:  format,
+			CompressLevel: compressLevel,
+			NoVersion:     noVersion,
+		}
+		if _, err := bcftools.GVCFToVCFFile(rest[0], out, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
 	// Reject conversion modes that aren't implemented in v1 with a
 	// clear error pointing at docs/PARITY_ROADMAP.md (rather than
 	// silently accepting and producing the wrong output). The GEN/sample
 	// family (-g/-G/--tag/--3N6/--sex/--vcf-ids) is handled below.
 	if deferred := checkConvertDeferred(checkConvertDeferredInputs{
-		gvcf2vcf:            gvcf2vcf,
 		fastaRef:            fastaRef,
 		gvcfBlocks:          gvcfBlocks,
 		keepDuplicates:      keepDuplicates,
@@ -182,8 +242,6 @@ func runConvert(args []string) int {
 		haploid2diploid:     haploid2diploid,
 		haplegendsample:     haplegendsample,
 		haplegendsample2vcf: haplegendsample2vcf,
-		tsv2vcf:             tsv2vcf,
-		columnsFlag:         columnsFlag,
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools convert: %s not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
@@ -223,11 +281,6 @@ func runConvert(args []string) int {
 		return 2
 	}
 
-	format, err := bcftools.ParseOutputFormat(outputType)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
 	opts := bcftools.ConvertOptions{
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
@@ -265,7 +318,6 @@ func runConvert(args []string) int {
 // v1 recognises but does not implement. checkConvertDeferred returns
 // the upstream flag name when any are set, or "" if none.
 type checkConvertDeferredInputs struct {
-	gvcf2vcf            bool
 	fastaRef            string
 	gvcfBlocks          string
 	keepDuplicates      bool
@@ -274,15 +326,14 @@ type checkConvertDeferredInputs struct {
 	haploid2diploid     bool
 	haplegendsample     string
 	haplegendsample2vcf string
-	tsv2vcf             string
-	columnsFlag         string
 }
 
 func checkConvertDeferred(in checkConvertDeferredInputs) string {
 	switch {
-	case in.gvcf2vcf:
-		return "--gvcf2vcf"
 	case in.fastaRef != "":
+		// Bare -f/--fasta-ref (without --tsv2vcf or --gvcf2vcf, both of
+		// which are dispatched earlier) implies an unimplemented gen/hap
+		// export mode owned by a sibling PR.
 		return "-f/--fasta-ref"
 	case in.gvcfBlocks != "":
 		return "--gvcf"
@@ -298,10 +349,6 @@ func checkConvertDeferred(in checkConvertDeferredInputs) string {
 		return "--haplegendsample"
 	case in.haplegendsample2vcf != "":
 		return "--haplegendsample2vcf"
-	case in.tsv2vcf != "":
-		return "--tsv2vcf"
-	case in.columnsFlag != "":
-		return "-c/--columns"
 	}
 	return ""
 }

@@ -2487,12 +2487,29 @@ Option-tail gaps on the convert/mendelian PR:
   (built on demand in `convert_gen_test.go`) for both directions across
   GT/PL/GP, `--3N6`, `--vcf-ids`, and `--sex`.
 
-  Still deferred (other `vcfconvert.c` shapes, separate follow-ups):
-  `--gvcf2vcf`, `--gvcf`, `--haplegendsample`, `--haplegendsample2vcf`,
-  `--hapsample`, `--hapsample2vcf`, `--haploid2diploid`, `--tsv2vcf`,
-  `-c/--columns`, `-f/--fasta-ref`, `--keep-duplicates` (PLINK / HAP /
-  gVCF / TSV paths). The CLI still parses these and emits a roadmap
-  pointer when set.
+  plus the **TSV→VCF** and **gVCF→VCF** import shapes:
+  - `--tsv2vcf FILE` with `-c/--columns`, `-f/--fasta-ref`,
+    `-s/-S` (the AA genotype path), and `--keep-duplicates` (a no-op
+    here, matching upstream's tsv_to_vcf which never consults it).
+    The column setters CHROM/POS/ID/REF/ALT/AA mirror
+    `reference_code/bcftools/tsv2vcf.c` and `vcfconvert.c`
+    (`tsv_to_vcf`); REF and the `##contig` header are filled from the
+    faidx-indexed reference. Live-upstream byte-for-byte parity tests
+    cover the REF/ALT path, the AA genotype path (incl. indel-skip and
+    all-missing rows), and `--keep-duplicates`.
+  - `--gvcf2vcf` (with `-f/--fasta-ref`) expands reference blocks
+    (symbolic ALT `<*>`/`<X>`/`<NON_REF>` or REF-only plus `INFO/END`)
+    into one per-site record, fetching each REF base from the
+    reference and dropping `INFO/END`. The malformed-gVCF overlap
+    clamp from `gvcf_next_line` is reproduced. `-i/-e` filters pass a
+    failing record through verbatim, as upstream does. Live-upstream
+    parity tests cover the basic expansion and the overlap clamp.
+
+  Still deferred (sibling follow-ups): the HAP/legend family
+  (`--hapsample`, `--hapsample2vcf`, `--haplegendsample`,
+  `--haplegendsample2vcf`, `--haploid2diploid`) and `--gvcf`
+  (block-output pairing). These remain hard-rejected in
+  `checkConvertDeferred` with a roadmap pointer.
 - `mendelian`: the v1 port detects Mendelian inconsistencies for
   PED-style trios (one or more `-t CHILD,FATHER,MOTHER` flags, or
   `-T trio-file`), emits `INFO/MERR` per record, and supports the
