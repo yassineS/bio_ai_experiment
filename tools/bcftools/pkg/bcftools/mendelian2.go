@@ -51,7 +51,7 @@ import (
 func openBGZFVCFOutput(out io.Writer, hdr *vcf.Header) (variantWriter, func()) {
 	ensurePASSFilter(hdr)
 	bw := bgzip.NewWriter(out)
-	w := &vcfVariantWriter{vcf.NewWriter(bw, hdr)}
+	w := &vcfVariantWriter{w: vcf.NewWriter(bw, hdr)}
 	return w, func() { _ = w.Flush(); _ = bw.Close() }
 }
 

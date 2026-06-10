@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
@@ -20,18 +22,21 @@ const (
 	CallModelNone CallModel = iota
 	// CallModelConsensus selects the original Li-2011 consensus caller (`-c`).
 	CallModelConsensus
-	// CallModelMultiallelic selects the multiallelic caller (`-m`). Our v1
-	// implementation handles biallelic sites with the same model as
-	// CallModelConsensus and falls back to CallModelConsensus for sites with
-	// more than one ALT allele. The remaining gap is tracked in
-	// docs/PARITY_ROADMAP.md (bcftools call section).
+	// CallModelMultiallelic selects the multiallelic caller (`-m`). When
+	// the mpileup INFO/QS annotation is present, Call runs the faithful
+	// port of mcall.c (see callm.go): EM allele-frequency estimation, the
+	// per-site QUAL, the max-likelihood GT, and the INFO rewrite
+	// (AN/AC/DP4/MQ). The mpileup | call -m pipeline byte-matches upstream.
+	// Synthetic PL-only fixtures (no QS) fall through to the heuristic
+	// path. Remaining gaps (trios, --constrain, sample groups) are tracked
+	// in docs/PARITY_ROADMAP.md (bcftools call section).
 	CallModelMultiallelic
 )
 
-// PloidySpec selects the per-sample ploidy. Today only fixed ploidies (1
-// or 2 across every sample/contig) are honoured; the GRCh37/GRCh38 modes
-// that special-case chrX/Y/PAR are accepted by the CLI but rejected by
-// Call() with a roadmap-pointer error.
+// PloidySpec selects the per-sample ploidy. Fixed ploidies (1 or 2 across
+// every sample/contig) live here directly; the GRCh37/GRCh38 per-contig
+// sex-chromosome maps come through CallOptions.PloidyTable (see
+// call_ploidy.go).
 type PloidySpec int
 
 const (
@@ -57,13 +62,23 @@ type CallOptions struct {
 	// emitted as variant when posterior > 1 - PvalThreshold. The upstream
 	// default is 0.5, matching `-p 0.5`.
 	PvalThreshold float64
-	// Ploidy selects diploid (default) or haploid calling. The upstream
-	// GRCh37/GRCh38 modes are deferred (see docs/PARITY_ROADMAP.md).
+	// Ploidy selects diploid (default) or haploid calling. When
+	// PloidyTable is set it overrides this for the per-record, per-sample
+	// resolution; Ploidy is then used only as the global fallback.
 	Ploidy PloidySpec
 	// PloidySpec, when non-empty, is the textual ploidy spec ("2", "1",
-	// "GRCh37", ...). When set to GRCh37 or GRCh38 Call returns an error
-	// pointing at the roadmap.
+	// "GRCh37", ...). Setting it to one of the GRCh* aliases populates
+	// PloidyTable automatically when ParsePloidySpec is used.
 	PloidySpec string
+	// PloidyTable, when non-nil, replaces the global Ploidy with a
+	// per-region, per-sex map (built from --ploidy GRCh37/GRCh38 or a
+	// --ploidy-file argument).
+	PloidyTable *PloidyTable
+	// SampleSexes maps the input sample index to the sex id registered
+	// in PloidyTable. When nil every sample defaults to
+	// PloidyTable.DefaultSexID (the last registered sex, F for the
+	// GRCh predefs — matching vcfcall.c sample2sex initialisation).
+	SampleSexes []int
 	// OutputFormat passes through to the writer (see openOutput).
 	OutputFormat OutputFormat
 	// CompressLevel sets the gzip level for -O z output.
@@ -80,6 +95,106 @@ type CallOptions struct {
 	TargetsFile string
 	Samples     []string
 	SamplesFile string
+	// GVCFSpec is the raw textual "--gvcf 0,5,10" value preserved for
+	// validation reporting. When non-empty, Call parses it into
+	// GVCFRange before streaming starts (see callm_gvcf.go).
+	GVCFSpec string
+	// GVCFRange is the parsed-and-sorted DP-threshold slice (upstream's
+	// _gvcf_t.dp_range). When non-empty, consecutive post-mcall REF-only
+	// records that share a per-sample MIN_DP bin are banded into a
+	// single INFO/END+MIN_DP record by callGVCFBlocker.
+	GVCFRange []int
+
+	// Constrain selects the upstream `-C` mode (none / alleles / trio).
+	// CallConstrainAlleles requires a sites TSV in ConstrainSites; the
+	// loader and per-record projection live in call_constrain.go.
+	// CallConstrainTrio mirrors upstream's own "todo: constrained trio
+	// calling temporarily disabled" runtime error.
+	Constrain CallConstrain
+	// ConstrainSites is the path to the -T sites file used with
+	// `-C alleles`. Format: CHROM\tPOS\tREF,ALT,... (1-based POS).
+	ConstrainSites string
+	// constrain holds the loaded sites lookup table. Populated in Call()
+	// from ConstrainSites when Constrain == CallConstrainAlleles; the
+	// callStreaming hot loop consults it per record.
+	constrain *ConstrainAlleles
+	// GroupSamplesFile is the upstream `-G FILE` argument. Empty means
+	// "one pooled group" (the default, identical to v1 behaviour).
+	// The literal "-" places every sample in its own group
+	// (nsmpl_grp == nsmpl). Otherwise the path is a two-column file
+	// of `SAMPLE<tab>GROUP` lines parsed by LoadSampleGroups.
+	GroupSamplesFile string
+	// GroupSamplesTag, when set, names the FORMAT tag whose per-sample
+	// counts are summed to build the per-group qsum. Upstream defaults
+	// to "QS" when the input header declares it, otherwise "AD"
+	// (mcall.c:277-285). Setting this to "AD" or "QS" forces the
+	// choice.
+	GroupSamplesTag string
+	// sampleGroups holds the parsed group table once the input header
+	// is known. Populated by Call() / CallFile() from
+	// GroupSamplesFile; the callStreaming loop hands it to the mcall
+	// path.
+	sampleGroups *SampleGroups
+	// NoVersion mirrors upstream `--no-version`: when true, the
+	// `##bcftools_callVersion` / `##bcftools_callCommand` header
+	// lines are NOT appended. Default false (always append, matching
+	// upstream's default).
+	NoVersion bool
+	// PGCommand is the raw command-line stored in the
+	// `##bcftools_callCommand` header line when NoVersion is false.
+	// The CLI populates this with os.Args.
+	PGCommand string
+	// KeepUnseen mirrors upstream `-*/--keep-unseen-allele`: keep
+	// the `<*>` / `<NON_REF>` allele on output when it survived to
+	// the trimmed allele set. Default false (drop the unseen
+	// allele, matching upstream's default).
+	KeepUnseen bool
+	// KeepMaskedRef mirrors upstream `-M/--keep-masked-ref`: by
+	// default mcall.c drops records whose REF base is `N` (mcall.c
+	// line ~1340); -M overrides that and keeps them.
+	KeepMaskedRef bool
+	// SkipVariants is upstream `-V TYPE`: drop records of the named
+	// type ("indels" or "snps"). Empty (the default) skips nothing.
+	SkipVariants string
+	// RegionsOverlap mirrors upstream `--regions-overlap 0|1|2`:
+	// the overlap semantic between the user's region(s) and a
+	// record. 0 = POS-in-region, 1 (default) = any-overlap,
+	// 2 = variant-overlaps. Accepted but currently a no-op (our
+	// post-filter applies the equivalent of mode 1 — any overlap).
+	RegionsOverlap int
+	// PloidyFile is upstream `--ploidy-file FILE`: space/tab
+	// delimited CHROM,FROM,TO,SEX,PLOIDY. Resolved at Call()
+	// init into a PloidyTable so the regular per-record path
+	// applies it.
+	PloidyFile string
+	// PriorAN / PriorAC mirror upstream `-F AN,AC`: incorporate
+	// prior allele frequencies determined from the named INFO
+	// tags (typically a panel-built file). When both are set, the
+	// per-record qsum is reweighted before EM scoring.
+	PriorAN string
+	PriorAC string
+	// InsertMissed mirrors upstream `-i/--insert-missed`: when used
+	// with `-T sites.tsv`, emit records for every site in the
+	// targets file even if mpileup didn't supply data for that
+	// position (the emitted record is REF/. with QUAL=.).
+	InsertMissed bool
+	// Annotate lists optional FORMAT tags to populate on output
+	// (mirrors upstream `-a/--annotate LIST`). Lowercase aliases
+	// permitted; "?" prints the available tags and exits at the
+	// CLI layer.
+	Annotate string
+	// WriteIndex mirrors upstream `-W/--write-index[=FMT]`: index
+	// the output file (.csi by default, .tbi when explicitly
+	// requested).
+	WriteIndex string
+	// NovelRate is upstream `-n/--novel-rate` (only meaningful with
+	// constrained trio calling, which upstream itself disables).
+	// Accepted but not consulted — upstream's trio path is
+	// rejected before novel-rate would be used.
+	NovelRate string
+	// Verbosity is upstream `--verbosity INT`: accepted-and-ignored
+	// (mirrors htslib's verbosity sink).
+	Verbosity int
 }
 
 // defaults applies upstream-equivalent defaults for any unset field.
@@ -93,11 +208,18 @@ func (o *CallOptions) defaults() {
 	if o.Ploidy == 0 {
 		o.Ploidy = PloidyDiploid
 	}
+	// CompressLevel 0 from CLI-uninitialized callers means "default"
+	// rather than "no compression"; flip to -1 so openOutput picks
+	// bgzip.DefaultCompression. Explicit 0 from the upstream `-O z0`
+	// shape goes through ParseOutputFormat which would need to set
+	// a non-zero sentinel — out of scope for the default path.
+	if o.CompressLevel == 0 {
+		o.CompressLevel = -1
+	}
 }
 
 // ParsePloidySpec turns a "--ploidy" string into the typed value. The
-// returned spec string is preserved so Call() can reject GRCh37/GRCh38
-// with a deterministic error.
+// returned spec string is preserved so Call() can record provenance.
 func ParsePloidySpec(s string) (PloidySpec, string, error) {
 	switch strings.TrimSpace(s) {
 	case "", "2":
@@ -110,6 +232,73 @@ func ParsePloidySpec(s string) (PloidySpec, string, error) {
 	return 0, "", fmt.Errorf("bcftools call: unknown --ploidy %q (expect 1, 2, GRCh37, GRCh38)", s)
 }
 
+// BuildPloidyTableFromSpec returns a PloidyTable for one of the
+// recognised --ploidy aliases ("GRCh37", "GRCh38", "1", "2"), or nil
+// when the spec resolves to a simple uniform ploidy that doesn't need
+// the table machinery.
+func BuildPloidyTableFromSpec(spec string) (*PloidyTable, error) {
+	body := LookupPredefPloidy(spec)
+	if body == "" {
+		return nil, nil
+	}
+	return ParsePloidyTable(body, 2)
+}
+
+// resolveSampleSexes returns a sex-id slice of length nsmpl. When
+// opts.SampleSexes is set we use it (clamped to the registered range);
+// otherwise every sample defaults to PloidyTable.DefaultSexID(), which
+// matches vcfcall.c's `sample2sex[i] = args->nsex - 1` initialisation.
+func resolveSampleSexes(tbl *PloidyTable, samples []string, opts *CallOptions) []int {
+	if tbl == nil {
+		return nil
+	}
+	dflt := tbl.DefaultSexID()
+	out := make([]int, len(samples))
+	for i := range out {
+		out[i] = dflt
+	}
+	if opts != nil {
+		for i, sid := range opts.SampleSexes {
+			if i >= len(out) {
+				break
+			}
+			if sid >= 0 && sid < tbl.NSex() {
+				out[i] = sid
+			}
+		}
+	}
+	return out
+}
+
+// perSamplePloidy returns the per-sample ploidy slice for one record.
+// When opts.PloidyTable is nil it falls back to opts.Ploidy (the global
+// 1- or 2-uniform mode), so existing call sites keep working. nsmpl is
+// the number of input samples on the record.
+func perSamplePloidy(opts CallOptions, sexes []int, chrom string, pos, nsmpl int) []int {
+	if opts.PloidyTable == nil {
+		out := make([]int, nsmpl)
+		p := int(opts.Ploidy)
+		if p == 0 {
+			p = 2
+		}
+		for i := range out {
+			out[i] = p
+		}
+		return out
+	}
+	if len(sexes) < nsmpl {
+		// Pad with the table default (matches vcfcall.c init).
+		dflt := opts.PloidyTable.DefaultSexID()
+		ext := make([]int, nsmpl)
+		copy(ext, sexes)
+		for i := len(sexes); i < nsmpl; i++ {
+			ext[i] = dflt
+		}
+		sexes = ext
+	}
+	return opts.PloidyTable.PerSamplePloidy(chrom, pos, sexes[:nsmpl])
+}
+
 // Call streams VCF/BCF input from in, applies the consensus / multiallelic
 // variant caller, and writes the called records to out. It is the
 // streaming entry point used by `bcftools call` when no region query is
@@ -119,8 +308,64 @@ func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
 	if opts.Model == CallModelNone {
 		return 0, fmt.Errorf("bcftools call: a caller must be selected (-c / --consensus-caller or -m / --multiallelic-caller)")
 	}
-	if opts.PloidySpec == "GRCh37" || opts.PloidySpec == "GRCh38" {
-		return 0, fmt.Errorf("bcftools call: --ploidy %s is not implemented (see docs/PARITY_ROADMAP.md bcftools call)", opts.PloidySpec)
+	// Resolve --gvcf spec (library callers may leave the parsed slice
+	// nil and pass the textual form only).
+	if opts.GVCFSpec != "" && len(opts.GVCFRange) == 0 {
+		ranges, err := parseGVCFRanges(opts.GVCFSpec)
+		if err != nil {
+			return 0, err
+		}
+		opts.GVCFRange = ranges
+	}
+	// Upstream vcfcall.c:1190 rejects --variants-only with --gvcf.
+	if len(opts.GVCFRange) > 0 && opts.VariantsOnly {
+		return 0, fmt.Errorf("bcftools call: The two options cannot be combined: --variants-only and --gvcf")
+	}
+	// Upstream vcfcall.c:1182 rejects --gvcf with the consensus caller.
+	if len(opts.GVCFRange) > 0 && opts.Model == CallModelConsensus {
+		return 0, fmt.Errorf("bcftools call: gvcf -g option not functional with -c calling mode yet")
+	}
+	// `-C alleles` and `-C trio` resolution. Trio mirrors upstream's
+	// "todo: constrained trio calling temporarily disabled" runtime
+	// error (mcall.c:1608); alleles loads the sites TSV upfront so
+	// per-record projection in callStreaming is a hot-path lookup.
+	if opts.Constrain == CallConstrainTrio {
+		return 0, fmt.Errorf("todo: constrained trio calling temporarily disabled")
+	}
+	if opts.Constrain == CallConstrainAlleles && opts.constrain == nil {
+		if opts.ConstrainSites == "" {
+			return 0, fmt.Errorf("bcftools call: -C alleles requires -T sites_file")
+		}
+		ca, err := LoadConstrainAlleles(opts.ConstrainSites)
+		if err != nil {
+			return 0, err
+		}
+		opts.constrain = ca
+	}
+	if opts.PloidyTable == nil && (opts.PloidySpec == "GRCh37" || opts.PloidySpec == "GRCh38") {
+		tbl, err := BuildPloidyTableFromSpec(opts.PloidySpec)
+		if err != nil {
+			return 0, err
+		}
+		opts.PloidyTable = tbl
+	}
+	if opts.PloidyTable == nil && opts.PloidyFile != "" {
+		body, err := loadPloidyFileText(opts.PloidyFile)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools call: --ploidy-file %s: %w", opts.PloidyFile, err)
+		}
+		tbl, err := ParsePloidyTable(body, 2)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools call: --ploidy-file %s: %w", opts.PloidyFile, err)
+		}
+		opts.PloidyTable = tbl
+	}
+	if opts.GroupSamplesFile != "" && opts.sampleGroups == nil {
+		sg, err := LoadSampleGroups(opts.GroupSamplesFile)
+		if err != nil {
+			return 0, err
+		}
+		opts.sampleGroups = sg
 	}
 	parsedTargets, err := parseRegions(opts.Targets)
 	if err != nil {
@@ -140,38 +385,101 @@ func Call(in io.Reader, out io.Writer, opts CallOptions) (int, error) {
 // CallFile is the file-aware entry point for `bcftools call`. Today it
 // always streams (no chunk-seek), but it does normalise the input path so
 // gzipped / bgzipped / plain files all work. Region queries are evaluated
-// as post-filters in v1 (matching the streaming path in `view`).
+// as post-filters: output byte-matches upstream's index-backed path, but
+// the whole stream is scanned. That is architectural-parity (perf only)
+// — see docs/PARITY_ROADMAP.md for the full residual rationale.
 func CallFile(path string, out io.Writer, opts CallOptions, stderr io.Writer) (int, error) {
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
 		return 0, err
 	}
 	defer in.Close()
-	if len(opts.Regions) > 0 && stderr != nil {
-		fmt.Fprintln(stderr, "bcftools call: index-backed region queries are deferred; treating -r as a post-filter")
-	}
 	return Call(in, out, opts)
 }
 
-// callStreaming is the inner loop. It consumes a VCF stream, dispatches
-// each record through the chosen caller, and writes the results. The
-// targets slice is the union of -t and (when no index is available) -r.
+// recordSource abstracts the input stream so callStreaming can consume
+// either a VCF (text) or a BCF (binary) stream without duplicating the
+// caller loop. Both adapters produce *vcf.Variant records.
+type recordSource interface {
+	Header() *vcf.Header
+	Read() (*vcf.Variant, error)
+}
+
+type vcfRecordSource struct {
+	r   *vcf.Reader
+	hdr *vcf.Header
+}
+
+func (s *vcfRecordSource) Header() *vcf.Header         { return s.hdr }
+func (s *vcfRecordSource) Read() (*vcf.Variant, error) { return s.r.Read() }
+
+type bcfRecordSource struct {
+	r   *bcf.Reader
+	hdr *vcf.Header
+}
+
+func (s *bcfRecordSource) Header() *vcf.Header { return s.hdr }
+func (s *bcfRecordSource) Read() (*vcf.Variant, error) {
+	rec, err := s.r.Read()
+	if err != nil {
+		return nil, err
+	}
+	v := rec.ToVariant(s.r.Header())
+	return v, nil
+}
+
+// callStreaming is the inner loop. It consumes a VCF or BCF stream,
+// dispatches each record through the chosen caller, and writes the
+// results. The targets slice is the union of -t and (when no index is
+// available) -r.
 func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []region) (int, error) {
 	br := bufio.NewReader(in)
 	head, err := br.Peek(5)
 	if err != nil && err != io.EOF {
 		return 0, err
 	}
+	var src recordSource
 	if len(head) >= 5 && head[0] == 'B' && head[1] == 'C' && head[2] == 'F' {
-		return 0, fmt.Errorf("bcftools call: BCF input is not yet wired through the caller; convert with `bcftools view in.bcf` first (see docs/PARITY_ROADMAP.md bcftools call)")
+		bcfr, err := bcf.NewReader(br)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools call: %w", err)
+		}
+		src = &bcfRecordSource{r: bcfr, hdr: bcfr.Header().VCF}
+	} else {
+		vr := vcf.NewReader(br)
+		vhdr, err := vr.ReadHeader()
+		if err != nil {
+			return 0, err
+		}
+		src = &vcfRecordSource{r: vr, hdr: vhdr}
 	}
-	r := vcf.NewReader(br)
-	hdr, err := r.ReadHeader()
-	if err != nil {
-		return 0, err
-	}
+	hdr := src.Header()
 	hdr = filterHeaderSamples(hdr, opts.Samples)
-	hdr = augmentCallHeader(hdr)
+	// Match upstream's header insertion order: vcfcall.c:724 calls
+	// gvcf_update_header BEFORE the main loop, where mcall.c appends
+	// AC/AN/DP4/MQ. So the END/MIN_DP declarations precede the call
+	// caller's own AC/AN/DP4/MQ block in the emitted header.
+	if len(opts.GVCFRange) > 0 {
+		hdr = augmentGVCFHeader(hdr)
+	}
+	// For -c, when the input declares INFO/I16 we route through the
+	// faithful consensus port (callc.go) and rewrite the header
+	// accordingly. Otherwise the heuristic v1 augmentation applies
+	// (FORMAT/GT + AC/AN only).
+	if opts.Model == CallModelConsensus && headerHasInfo(hdr, "I16") {
+		hdr = augmentCallHeaderConsensus(hdr)
+	} else {
+		hdr = augmentCallHeader(hdr, opts.Model)
+	}
+	// -a annotate: declare any requested FORMAT/INFO tags. Upstream
+	// adds these right after the FORMAT/GT declaration, before
+	// AC/AN/DP4/MQ — augmentCallAnnotateHeader splices accordingly.
+	hdr = augmentCallAnnotateHeader(hdr, parseCallAnnotateFlags(opts.Annotate))
+	if !opts.NoVersion {
+		hdr = appendCallProvenance(hdr, opts.PGCommand)
+	}
+
+	sexes := resolveSampleSexes(opts.PloidyTable, hdr.Samples, &opts)
 
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
@@ -182,13 +490,23 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		return 0, err
 	}
 	defer finish()
+	// --gvcf wraps w with a blocker that bands consecutive post-mcall
+	// REF-only rows by per-sample MIN_DP. Variant rows pass through
+	// unchanged; the blocker calls inner.Write to flush an in-flight
+	// block before each variant row and on Flush(). Mirror of
+	// vcfcall.c:1250-1254 + gvcf.c::gvcf_write, adapted to the
+	// post-call record shape (ALT=".", FORMAT/GT:DP[:AD]) rather than
+	// mpileup's PL+<*> rows. See callm_gvcf.go.
+	if len(opts.GVCFRange) > 0 {
+		w = newCallGVCFBlocker(w, opts.GVCFRange)
+	}
 	if err := w.WriteHeader(); err != nil {
 		return 0, err
 	}
 
 	count := 0
 	for {
-		v, err := r.Read()
+		v, err := src.Read()
 		if err == io.EOF {
 			break
 		}
@@ -201,8 +519,45 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
 		}
-		called, keep := callVariant(v, opts)
+		// -M / --keep-masked-ref: by default mcall.c drops records
+		// whose REF base is N (masked reference). Without -M, skip.
+		if !opts.KeepMaskedRef && (v.Ref == "N" || v.Ref == "n") {
+			continue
+		}
+		// -C alleles: project the record onto the constrained allele
+		// set BEFORE the caller runs. Sites absent from the file are
+		// skipped (upstream mcall.c:1280-ish).
+		if opts.Constrain == CallConstrainAlleles && opts.constrain != nil {
+			site := opts.constrain.Lookup(v.Chrom, v.Pos)
+			if site == nil {
+				continue
+			}
+			// -i/--insert-missed: flush every site that precedes
+			// the current record's position (per upstream
+			// tgt_flush, vcfcall.c:467-484).
+			if opts.InsertMissed {
+				if err := flushMissedSites(w, opts.constrain, v.Chrom, v.Pos, hdr); err != nil {
+					return count, err
+				}
+			}
+			ok, fatal := applyConstrainAlleles(v, site, os.Stderr)
+			if fatal {
+				return count, fmt.Errorf("bcftools call -C alleles: failed at %s:%d", v.Chrom, v.Pos)
+			}
+			if !ok {
+				continue
+			}
+			site.used = true
+		}
+		samplePloidy := perSamplePloidy(opts, sexes, v.Chrom, v.Pos, len(v.Samples))
+		called, keep := callVariant(v, opts, samplePloidy)
 		if !keep {
+			continue
+		}
+		// -V indels|snps: classify the CALLED record (post-trim).
+		// Mirrors upstream vcfcall.c:1201 (bcf_is_snp on the
+		// post-mcall record).
+		if opts.SkipVariants != "" && calledVariantTypeMatches(called, opts.SkipVariants) {
 			continue
 		}
 		if err := w.Write(called); err != nil {
@@ -210,27 +565,225 @@ func callStreaming(in io.Reader, out io.Writer, opts CallOptions, targets []regi
 		}
 		count++
 	}
+	// End-of-stream `-i` flush: emit synthetic records for any
+	// sites in the -T file that mpileup never produced.
+	if opts.InsertMissed && opts.constrain != nil {
+		if err := flushMissedSites(w, opts.constrain, "", 1<<30, hdr); err != nil {
+			return count, err
+		}
+	}
 	return count, w.Flush()
+}
+
+// flushMissedSites emits synthetic records for every constrain-
+// alleles site that hasn't been consumed yet, up to (but not
+// including) the supplied cursor (chrom, pos1). When chrom == ""
+// the cursor is treated as past-the-end and every remaining site
+// is flushed. Mirrors upstream vcfcall.c::tgt_flush_region (lines
+// 467-484): synthetic records carry REF/ALT from the sites file,
+// missing QUAL, missing per-sample GTs.
+func flushMissedSites(w variantWriter, ca *ConstrainAlleles, chrom string, pos1 int, hdr *vcf.Header) error {
+	if ca == nil {
+		return nil
+	}
+	for _, site := range ca.order {
+		if site.used {
+			continue
+		}
+		if chrom != "" {
+			if site.chrom != chrom {
+				continue
+			}
+			if site.pos >= pos1 {
+				continue
+			}
+		}
+		site.used = true
+		rec := &vcf.Variant{
+			Chrom:     site.chrom,
+			Pos:       site.pos,
+			ID:        ".",
+			Ref:       site.alleles[0],
+			Alt:       append([]string(nil), site.alleles[1:]...),
+			Qual:      -1,
+			Filter:    []string{"."},
+			Info:      map[string]string{},
+			InfoOrder: nil,
+			Format:    []string{"GT"},
+			Samples:   make([]vcf.Sample, len(hdr.Samples)),
+		}
+		for i, name := range hdr.Samples {
+			rec.Samples[i] = vcf.Sample{
+				Name: name,
+				Data: map[string]string{"GT": "."},
+			}
+		}
+		if err := w.Write(rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// augmentCallAnnotateHeader inserts the FORMAT/INFO declarations the
+// `-a/--annotate` set requests right after the FORMAT/GT line (so
+// `GT, GQ, GP, ...` appear in upstream's emit order). Idempotent
+// when an existing identical declaration is already present.
+func augmentCallAnnotateHeader(hdr *vcf.Header, annot callAnnotateFlags) *vcf.Header {
+	if hdr == nil || (!annot.gq && !annot.gp && !annot.pv4) {
+		return hdr
+	}
+	out := &vcf.Header{
+		Samples:  append([]string(nil), hdr.Samples...),
+		MetaInfo: append([]string(nil), hdr.MetaInfo...),
+	}
+	insertAfterGT := func(line string) {
+		// Find the index of the FORMAT/GT declaration; insert
+		// after it. If absent, append at the end.
+		idx := -1
+		for i, m := range out.MetaInfo {
+			if strings.HasPrefix(m, `##FORMAT=<ID=GT,`) {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			out.MetaInfo = append(out.MetaInfo, line)
+			return
+		}
+		tail := append([]string{line}, out.MetaInfo[idx+1:]...)
+		out.MetaInfo = append(out.MetaInfo[:idx+1], tail...)
+	}
+	if annot.gq && !headerHasFormat(out, "GQ") {
+		insertAfterGT(`##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Phred-scaled Genotype Quality">`)
+	}
+	if annot.gp && !headerHasFormat(out, "GP") {
+		insertAfterGT(`##FORMAT=<ID=GP,Number=G,Type=Float,Description="Phred-scaled Genotype Probabilities">`)
+	}
+	if annot.pv4 && !headerHasInfo(out, "PV4") {
+		out.MetaInfo = append(out.MetaInfo,
+			`##INFO=<ID=PV4,Number=4,Type=Float,Description="P-values for strand bias, baseQ bias, mapQ bias and tail distance bias">`)
+	}
+	return out
+}
+
+// headerHasFormat reports whether hdr declares ##FORMAT=<ID=id,...>.
+func headerHasFormat(hdr *vcf.Header, id string) bool {
+	prefix := `##FORMAT=<ID=` + id + `,`
+	for _, m := range hdr.MetaInfo {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// loadPloidyFileText slurps a ploidy file into a single string for
+// ParsePloidyTable. Gzip / stdin (`-`) routing is handled by
+// iohelper.OpenReader.
+func loadPloidyFileText(path string) (string, error) {
+	r, err := iohelper.OpenReader(path)
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// calledVariantTypeMatches mirrors upstream vcfcall.c:1201 — the
+// `-V` filter runs on the POST-call record using the htslib
+// `bcf_is_snp` classification: every allele (REF + every ALT) must
+// have length 1 for is_snp=true, otherwise is_indel=true. Ref-only
+// records (no ALTs, or ALT==".") count as is_snp=true because the
+// single REF allele is length 1. `-V snps` then drops them.
+func calledVariantTypeMatches(v *vcf.Variant, kind string) bool {
+	if v == nil {
+		return false
+	}
+	allLen1 := len(v.Ref) == 1
+	if allLen1 {
+		for _, a := range v.Alt {
+			if a == "" || a == "." {
+				continue
+			}
+			if len(a) != 1 {
+				allLen1 = false
+				break
+			}
+		}
+	}
+	isSNP := allLen1
+	isIndel := !allLen1
+	switch strings.ToLower(kind) {
+	case "indels":
+		return isIndel
+	case "snps":
+		return isSNP
+	}
+	return false
+}
+
+// appendCallProvenance adds the upstream `##bcftools_callVersion`
+// and `##bcftools_callCommand` lines that document the producer.
+// Mirrors upstream vcfcall.c's bcf_hdr_append_version path; --no-
+// version on the CLI suppresses these.
+func appendCallProvenance(hdr *vcf.Header, cmd string) *vcf.Header {
+	if hdr == nil {
+		return hdr
+	}
+	out := &vcf.Header{
+		Samples:  append([]string(nil), hdr.Samples...),
+		MetaInfo: append([]string(nil), hdr.MetaInfo...),
+	}
+	out.MetaInfo = append(out.MetaInfo,
+		`##bcftools_callVersion=bio_ai_experiment`,
+	)
+	if cmd == "" {
+		cmd = "call"
+	}
+	out.MetaInfo = append(out.MetaInfo,
+		`##bcftools_callCommand=`+cmd,
+	)
+	return out
 }
 
 // augmentCallHeader inserts the meta lines that upstream bcftools adds
 // when calling: ##INFO/AC, ##INFO/AN, and the standard FORMAT/GT
 // declaration (idempotent when already present).
-func augmentCallHeader(hdr *vcf.Header) *vcf.Header {
+func augmentCallHeader(hdr *vcf.Header, model CallModel) *vcf.Header {
 	if hdr == nil {
 		return hdr
 	}
 	out := &vcf.Header{Samples: append([]string(nil), hdr.Samples...)}
-	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
+	// The multiallelic caller rewrites the INFO block: the auxiliary
+	// mpileup tags I16/QS are removed (they are consumed into DP4/MQ/QUAL)
+	// and FORMAT/GT plus INFO AC/AN/DP4/MQ are appended in upstream order.
+	dropMpileupAux := model == CallModelMultiallelic
+	for _, m := range hdr.MetaInfo {
+		if dropMpileupAux && (strings.HasPrefix(m, `##INFO=<ID=I16,`) || strings.HasPrefix(m, `##INFO=<ID=QS,`)) {
+			continue
+		}
+		out.MetaInfo = append(out.MetaInfo, m)
+	}
 	declarations := []struct {
 		marker string
 		line   string
 	}{
-		{`##INFO=<ID=AC,`, `##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes for each ALT allele">`},
-		{`##INFO=<ID=AN,`, `##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">`},
 		{`##FORMAT=<ID=GT,`, `##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">`},
+		{`##INFO=<ID=AC,`, `##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes for each ALT allele, in the same order as listed">`},
+		{`##INFO=<ID=AN,`, `##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">`},
+		{`##INFO=<ID=DP4,`, `##INFO=<ID=DP4,Number=4,Type=Integer,Description="Number of high-quality ref-forward , ref-reverse, alt-forward and alt-reverse bases">`},
+		{`##INFO=<ID=MQ,`, `##INFO=<ID=MQ,Number=1,Type=Integer,Description="Average mapping quality">`},
 	}
 	for _, d := range declarations {
+		// DP4/MQ are only emitted by the multiallelic path.
+		if !dropMpileupAux && (strings.HasPrefix(d.marker, `##INFO=<ID=DP4,`) || strings.HasPrefix(d.marker, `##INFO=<ID=MQ,`)) {
+			continue
+		}
 		found := false
 		for _, m := range out.MetaInfo {
 			if strings.HasPrefix(m, d.marker) {
@@ -261,18 +814,57 @@ func augmentCallHeader(hdr *vcf.Header) *vcf.Header {
 //     prior dominates the posterior.)
 //   - The site is emitted iff !opts.VariantsOnly OR the site is variant
 //     OR opts.KeepAlts is set.
-func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
+func callVariant(v *vcf.Variant, opts CallOptions, samplePloidy []int) (*vcf.Variant, bool) {
+	// The faithful multiallelic caller runs when -m is selected and the
+	// mpileup INFO/QS annotation is present. The synthetic PL-only
+	// fixtures (no QS) fall through to the heuristic path below.
+	if opts.Model == CallModelMultiallelic && hasQS(v) {
+		if out, keep, ok := mcallSite(v, opts, samplePloidy); ok {
+			return out, keep
+		}
+	}
+	// The faithful consensus caller runs when -c is selected and the
+	// mpileup INFO/I16 annotation is present. The synthetic PL-only
+	// fixtures (no I16) fall through to the heuristic v1 path below.
+	if opts.Model == CallModelConsensus && hasI16(v) {
+		if out, keep, ok := ccallSite(v, opts, samplePloidy); ok {
+			return out, keep
+		}
+	}
 	nAlts := len(v.Alt)
 	if nAlts == 1 && v.Alt[0] == "." {
 		nAlts = 0
 		v.Alt = nil
 	}
 	nAlleles := nAlts + 1
+	// Effective per-sample ploidy. When --ploidy is the global "1" or
+	// "2" this matches opts.Ploidy for every sample; for the GRCh*
+	// tables the heuristic path still runs only when all samples on a
+	// record agree (mixed-sex PED is plumbed through the mcall path).
+	effPloidy := func(i int) PloidySpec {
+		if i < len(samplePloidy) {
+			if samplePloidy[i] == 1 {
+				return PloidyHaploid
+			}
+			if samplePloidy[i] == 0 {
+				return 0
+			}
+		}
+		return PloidyDiploid
+	}
 	plByGT := make([][]int, len(v.Samples))
 	mostLikely := make([]int, len(v.Samples))
+	gtPloidy := make([]PloidySpec, len(v.Samples))
 	haveGenotypeData := false
 	for i, s := range v.Samples {
-		pl, ok := decodePL(s.Data["PL"], nAlleles, opts.Ploidy)
+		p := effPloidy(i)
+		gtPloidy[i] = p
+		if p == 0 {
+			plByGT[i] = nil
+			mostLikely[i] = -1
+			continue
+		}
+		pl, ok := decodePL(s.Data["PL"], nAlleles, p)
 		if !ok {
 			plByGT[i] = nil
 			mostLikely[i] = -1
@@ -289,7 +881,7 @@ func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
 		if mostLikely[i] < 0 {
 			continue
 		}
-		a1, a2, ok := decomposeGTIndex(mostLikely[i], nAlleles, opts.Ploidy)
+		a1, a2, ok := decomposeGTIndex(mostLikely[i], nAlleles, gtPloidy[i])
 		if !ok {
 			continue
 		}
@@ -297,7 +889,7 @@ func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
 			ac[a1-1]++
 		}
 		an++
-		if opts.Ploidy == PloidyDiploid {
+		if gtPloidy[i] == PloidyDiploid {
 			if a2 > 0 && a2-1 < nAlts {
 				ac[a2-1]++
 			}
@@ -360,7 +952,11 @@ func callVariant(v *vcf.Variant, opts CallOptions) (*vcf.Variant, bool) {
 	for i, s := range v.Samples {
 		newSample := vcf.Sample{Name: s.Name, Data: copyStringMap(s.Data)}
 		if mostLikely[i] >= 0 {
-			newSample.Data["GT"] = encodeGT(mostLikely[i], nAlleles, opts.Ploidy)
+			newSample.Data["GT"] = encodeGT(mostLikely[i], nAlleles, gtPloidy[i])
+		} else if gtPloidy[i] == 0 {
+			// Samples with ploidy 0 (e.g. F on chrY) are emitted as
+			// missing, matching upstream mcall.c.
+			newSample.Data["GT"] = "."
 		}
 		out.Samples[i] = newSample
 	}

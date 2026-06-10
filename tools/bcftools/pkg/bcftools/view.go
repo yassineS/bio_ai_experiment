@@ -762,19 +762,62 @@ type variantWriter interface {
 	Flush() error
 }
 
-// vcfVariantWriter is the trivial pass-through adapter for the VCF / VCF.gz
-// output paths.
-type vcfVariantWriter struct{ w *vcf.Writer }
+// bgzfFlusher is the minimal interface a vcf/bcfVariantWriter needs from the
+// underlying BGZF writer for the header-block flush. It is satisfied by
+// *bgzf.Writer (serial block compression). Salvaged from PR #219 so the
+// mpileup -Ob/-Oz output paths can close the BGZF block after the header,
+// matching upstream htslib's vcf_hdr_write / bcf_hdr_write semantics.
+type bgzfFlusher interface {
+	Flush() error
+	Close() error
+	Write(p []byte) (int, error)
+}
 
-func (a *vcfVariantWriter) WriteHeader() error         { return a.w.WriteHeader() }
+// vcfVariantWriter is the trivial pass-through adapter for the VCF / VCF.gz
+// output paths. When bgzf is non-nil (the -Oz path), WriteHeader closes the
+// BGZF block after the header so the header occupies its own block, matching
+// upstream bcftools / htslib's vcf_hdr_write which calls bgzf_flush after the
+// header.
+type vcfVariantWriter struct {
+	w    *vcf.Writer
+	bgzf bgzfFlusher
+}
+
+func (a *vcfVariantWriter) WriteHeader() error {
+	if err := a.w.WriteHeader(); err != nil {
+		return err
+	}
+	if a.bgzf != nil {
+		if err := a.w.Flush(); err != nil {
+			return err
+		}
+		return a.bgzf.Flush()
+	}
+	return nil
+}
 func (a *vcfVariantWriter) Write(v *vcf.Variant) error { return a.w.Write(v) }
 func (a *vcfVariantWriter) Flush() error               { return a.w.Flush() }
 
 // bcfVariantWriter wraps a bcf.Writer so View can treat both output formats
-// the same way.
-type bcfVariantWriter struct{ w *bcf.Writer }
+// the same way. As with vcfVariantWriter, a non-nil bgzf closes the BGZF block
+// after the header for the -Ob / -Ou paths.
+type bcfVariantWriter struct {
+	w    *bcf.Writer
+	bgzf bgzfFlusher
+}
 
-func (a *bcfVariantWriter) WriteHeader() error         { return a.w.WriteHeader() }
+func (a *bcfVariantWriter) WriteHeader() error {
+	if err := a.w.WriteHeader(); err != nil {
+		return err
+	}
+	if a.bgzf != nil {
+		if err := a.w.Flush(); err != nil {
+			return err
+		}
+		return a.bgzf.Flush()
+	}
+	return nil
+}
 func (a *bcfVariantWriter) Write(v *vcf.Variant) error { return a.w.Write(v) }
 func (a *bcfVariantWriter) Flush() error               { return a.w.Flush() }
 
@@ -820,7 +863,7 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return &vcfVariantWriter{vcf.NewWriter(bw, hdr)}, func() { _ = bw.Close() }, nil
+		return &vcfVariantWriter{w: vcf.NewWriter(bw, hdr)}, func() { _ = bw.Close() }, nil
 	case OutputBCF:
 		bw, err := newBGZFOutput(out, opts.CompressLevel, opts.Threads)
 		if err != nil {
@@ -831,15 +874,51 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 			_ = bw.Close()
 			return nil, func() {}, err
 		}
-		return &bcfVariantWriter{w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
+		return &bcfVariantWriter{w: w}, func() { _ = w.Flush(); _ = bw.Close() }, nil
 	case OutputBCFUncompressed:
 		w, err := bcf.NewWriterFromVCFHeader(out, hdr)
 		if err != nil {
 			return nil, func() {}, err
 		}
-		return &bcfVariantWriter{w}, func() { _ = w.Flush() }, nil
+		return &bcfVariantWriter{w: w}, func() { _ = w.Flush() }, nil
 	}
-	return &vcfVariantWriter{vcf.NewWriter(out, hdr)}, func() {}, nil
+	return &vcfVariantWriter{w: vcf.NewWriter(out, hdr)}, func() {}, nil
+}
+
+// LoadSamplesFilePairs reads a samples file like LoadSamplesFile but
+// also returns the optional second whitespace-separated column as a
+// rename target. Each result entry is {name, alias}; alias is "" when
+// the line carries only one field. Mirrors bam_smpl_add_samples
+// (bam_sample.c) which threads the second column as a per-sample
+// rename map. Lines starting with `#` and blank lines are ignored.
+// Salvaged from PR #219 for the mpileup -S/--samples-file path.
+func LoadSamplesFilePairs(path string) ([][2]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	var pairs [][2]string
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		var name, alias string
+		if i := strings.IndexAny(line, "\t "); i >= 0 {
+			name = line[:i]
+			alias = strings.TrimSpace(line[i:])
+		} else {
+			name = line
+		}
+		if name == "" {
+			continue
+		}
+		pairs = append(pairs, [2]string{name, alias})
+	}
+	return pairs, sc.Err()
 }
 
 // newBGZFOutput returns a BGZF io.WriteCloser for compressed VCF.gz (-O z) and
@@ -853,7 +932,11 @@ func openOutput(out io.Writer, opts ViewOptions, hdr *vcf.Header) (variantWriter
 // member, both paths produce a stream that decodes to byte-identical plaintext
 // regardless of the thread count. The caller must Close the returned writer to
 // flush the final block and emit the BGZF EOF marker.
-func newBGZFOutput(out io.Writer, level, threads int) (io.WriteCloser, error) {
+//
+// The concrete result (*bgzf.Writer or *bgzf.MultiWriter) satisfies
+// bgzfFlusher, so callers can wire it into a vcf/bcfVariantWriter to flush the
+// header block (matching upstream htslib's vcf_hdr_write / bcf_hdr_write).
+func newBGZFOutput(out io.Writer, level, threads int) (bgzfFlusher, error) {
 	if level < 0 {
 		level = bgzip.DefaultCompression
 	}

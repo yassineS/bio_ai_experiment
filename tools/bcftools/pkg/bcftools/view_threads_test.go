@@ -14,7 +14,6 @@ package bcftools
 
 import (
 	"bytes"
-	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -79,23 +78,6 @@ func makeLargeVCF(nRecords int) string {
 			(i%30)+1, (i%40)+1, (i%50)+1)
 	}
 	return b.String()
-}
-
-// gunzipBytes fully decodes a gzip/BGZF byte stream to its plaintext. A BGZF
-// stream is a sequence of standard gzip members, so the stdlib gzip reader
-// (with Multistream enabled, the default) decodes it transparently.
-func gunzipBytes(t *testing.T, data []byte) []byte {
-	t.Helper()
-	gr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("gzip.NewReader: %v", err)
-	}
-	defer gr.Close()
-	out, err := io.ReadAll(gr)
-	if err != nil {
-		t.Fatalf("gzip read: %v", err)
-	}
-	return out
 }
 
 // bcfToVCFText decodes a BGZF-framed BCF byte stream back to VCF text via the

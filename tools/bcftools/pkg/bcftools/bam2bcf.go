@@ -292,31 +292,59 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *err
 			b = int(p.aux>>16) & 0x3f
 			q = int(p.aux) & 0xff
 			seqQ = q
-			// Legacy REF-rescue heuristic for the !indels_v20 && !edlib
-			// path (bam2bcf.c:338-348, originally e4e161068 fix for #1446).
-			// At homopolymer / tandem-repeat sites bcf_cgp_compute_indelQ
-			// often returns q == 0 for REF-type reads, so without this
-			// rescue they would fail the min-baseQ gate below and be
-			// undercounted in I16 / QS / AD. Upstream's heuristic: when
-			// the read has no indel in its CIGAR (p.indel == 0) and
-			// either the sample is shallow enough that q < _n/2 or deeper
-			// than 20 reads, reclassify the read as REF (b = 0), promote
-			// q to the read's raw base quality at qpos and rebuild seqQ
-			// as a 3:2 blend of the old seqQ and the base quality. Cap
-			// seqQ to 40 once the pile exceeds 20 reads to dampen
-			// overconfident calls.
 			N := len(pile)
-			if p.indel == 0 && (q < N/2 || N > 20) {
-				rawQ := 0
-				if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
-					rawQ = int(p.rec.Qual[p.qpos])
+			// CNS-only branch (bam2bcf.c:317-327): when --indels-cns is
+			// active, the legacy REF-rescue heuristic is skipped (only the
+			// !indels_v20 && !edlib path runs it). Instead, if NO read in
+			// this sample has an indel in its CIGAR but the read carries
+			// a non-zero indelQ from another sample's candidate, drop the
+			// indelQ and use the raw base quality with seqQ = 99 (the
+			// "basic sequence confidences" fallback).
+			if opts.IndelsCNS {
+				indelInSample := false
+				for k := range pile {
+					if pile[k].indel != 0 {
+						indelInSample = true
+						break
+					}
 				}
-				b = 0
-				q = rawQ
-				seqQ = (3*seqQ + 2*rawQ) / 8
-			}
-			if N > 20 && seqQ > 40 {
-				seqQ = 40
+				if !indelInSample && (p.aux&0xff) != 0 {
+					rawQ := 0
+					if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
+						rawQ = int(p.rec.Qual[p.qpos])
+					}
+					if rawQ > maxBQ {
+						rawQ = maxBQ
+					}
+					q = rawQ
+					seqQ = 99
+				}
+			} else {
+				// Legacy REF-rescue heuristic for the !indels_v20 && !edlib
+				// path (bam2bcf.c:338-348, originally e4e161068 fix for #1446).
+				// At homopolymer / tandem-repeat sites bcf_cgp_compute_indelQ
+				// often returns q == 0 for REF-type reads, so without this
+				// rescue they would fail the min-baseQ gate below and be
+				// undercounted in I16 / QS / AD. Upstream's heuristic: when
+				// the read has no indel in its CIGAR (p.indel == 0) and
+				// either the sample is shallow enough that q < _n/2 or deeper
+				// than 20 reads, reclassify the read as REF (b = 0), promote
+				// q to the read's raw base quality at qpos and rebuild seqQ
+				// as a 3:2 blend of the old seqQ and the base quality. Cap
+				// seqQ to 40 once the pile exceeds 20 reads to dampen
+				// overconfident calls.
+				if p.indel == 0 && (q < N/2 || N > 20) {
+					rawQ := 0
+					if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
+						rawQ = int(p.rec.Qual[p.qpos])
+					}
+					b = 0
+					q = rawQ
+					seqQ = (3*seqQ + 2*rawQ) / 8
+				}
+				if N > 20 && seqQ > 40 {
+					seqQ = 40
+				}
 			}
 			// Upstream reads baseQ AFTER the heuristic from p->aux>>8&0xff
 			// (bam2bcf.c:420) — i.e. the pre-heuristic seqQ bits stored by
@@ -337,6 +365,47 @@ func bcfCallGlfgenCore(pile []pileupBase, ref4 int, opts MpileupOptions, em *err
 					}
 				}
 				continue
+			}
+			// CNS-only seqQ cap and realigned-read dampener (TEST 6,
+			// bam2bcf.c:386-415). Active only with --indels-cns.
+			if opts.IndelsCNS {
+				cap20 := N
+				if cap20 > 20 {
+					cap20 = 20
+				}
+				seqQOffset := opts.SeqQOffset
+				if seqQOffset == 0 {
+					seqQOffset = 120
+				}
+				if cs := seqQOffset - cap20*5; seqQ > cs {
+					seqQ = cs
+				}
+				indelInSample := false
+				for k := range pile {
+					if pile[k].indel != 0 {
+						indelInSample = true
+						break
+					}
+				}
+				if indelInSample && p.indel == 0 && b != 0 {
+					alt := seqQ/2 + 5
+					if alt < seqQ {
+						seqQ = alt
+					}
+					rawQ := 0
+					if p.rec != nil && p.qpos >= 0 && p.qpos < len(p.rec.Qual) {
+						rawQ = int(p.rec.Qual[p.qpos])
+					}
+					a := rawQ/4 + 10
+					bv := q/4 + 1
+					min := a
+					if bv < min {
+						min = bv
+					}
+					if min < q {
+						q = min
+					}
+				}
 			}
 		} else {
 			b = p.base4
@@ -589,6 +658,13 @@ type bcfCall struct {
 	// B2BFmtSCR is set on the fmt_flag.
 	scrTotal int
 	scr      []int
+	// dp4 holds the per-sample DP4 row: [fwdRef, revRef, fwdAlt, revAlt],
+	// one [4]int per sample in input order. It mirrors upstream's
+	// bc->DP4 (bam2bcf.c:1052-1058), sourced from calls[i].anno[0..3].
+	// Always populated by bcfCallCombine — the per-sample FORMAT
+	// DP/DV/DP4/SP renderers read it when the corresponding fmt_flag
+	// bit is set.
+	dp4 [][4]int
 }
 
 // bcfCallCombineIndel is the Go port of the `ref_base < 0` branch of
@@ -727,6 +803,7 @@ func bcfCallCombineIndel(calls []bcfCallret, snpCalls []bcfCallret, bca *bcfCall
 	}
 
 	// Combine I16 / depth annotations (bam2bcf.c:1138-1148).
+	call.dp4 = make([][4]int, len(calls))
 	for i := range calls {
 		r := &calls[i]
 		call.depth += int(r.anno[0] + r.anno[1] + r.anno[2] + r.anno[3])
@@ -735,6 +812,7 @@ func bcfCallCombineIndel(calls []bcfCallret, snpCalls []bcfCallret, bca *bcfCall
 		for k := 0; k < 16; k++ {
 			call.anno[k] += r.anno[k]
 		}
+		call.dp4[i] = perSampleDP4(r)
 	}
 
 	// Sum the per-sample SNP-flavored bias tallies (refPos/altPos via
@@ -750,21 +828,16 @@ func bcfCallCombineIndel(calls []bcfCallret, snpCalls []bcfCallret, bca *bcfCall
 		}
 	}
 
-	// NM histograms accumulate across BOTH SNP and indel glfgen passes
-	// in upstream (the bca-level ref_nm/alt_nm arrays are shared and
-	// only cleared by bcf_callaux_clean per position). Sum the indel
-	// pass (`calls`) and the SNP pass (`snpCalls`) for the indel
-	// combine's NMBZ.
+	// NM histograms for the indel-pass NMBZ. Upstream's bca->ref_nm /
+	// bca->alt_nm are wiped by bcf_callaux_clean between the SNP and
+	// indel passes (mpileup.c:580, 593 — the clean call before the
+	// indel glfgen at line 593 clears the shared B2B_N_NM slot via the
+	// `else` branch in bcf_callaux_clean, bam2bcf.c:219-223). So the
+	// indel-row NMBZ at bam2bcf.c:1185 sees ONLY the indel-pass NM
+	// tallies, never the SNP-pass ones — sum just `calls` here.
 	var refNm, altNm [b2bNNm]int
 	for i := range calls {
 		r := &calls[i]
-		for k := 0; k < b2bNNm; k++ {
-			refNm[k] += r.refNm[k]
-			altNm[k] += r.altNm[k]
-		}
-	}
-	for i := range snpCalls {
-		r := &snpCalls[i]
 		for k := 0; k < b2bNNm; k++ {
 			refNm[k] += r.refNm[k]
 			altNm[k] += r.altNm[k]
@@ -947,6 +1020,7 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 	}
 
 	// Combine I16 / depth annotations (bam2bcf.c:1138-1148).
+	call.dp4 = make([][4]int, len(calls))
 	for i := range calls {
 		r := &calls[i]
 		call.depth += int(r.anno[0] + r.anno[1] + r.anno[2] + r.anno[3])
@@ -955,6 +1029,7 @@ func bcfCallCombine(calls []bcfCallret, ref4 int) bcfCall {
 		for j := 0; j < 16; j++ {
 			call.anno[j] += r.anno[j]
 		}
+		call.dp4[i] = perSampleDP4(r)
 	}
 
 	// Fold per-sample SCR tallies into the call (bam2bcf.c:1060-1066).
