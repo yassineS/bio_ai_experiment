@@ -76,20 +76,28 @@ func (w *bedGzWriter) Close() error {
 	return w.f.Close()
 }
 
-// buildBedTbi runs the project's tabix builder against a freshly-closed
-// bgzipped BED file at path, writing the .tbi alongside. Errors are
-// returned to the caller; an empty file is allowed and produces an empty
-// index.
-func buildBedTbi(path string) error {
+// csiMinShift is the minimum-shift parameter mosdepth (via htslib's
+// tbx_index_build) uses when building a CSI index: 14, matching the BAI/TBI
+// bin scheme. Combined with the default depth of 5 this addresses positions
+// up to 1<<29 (~536 Mbp), enough for any human chromosome.
+const csiMinShift = 14
+
+// buildBedCsi runs the project's CSI builder against a freshly-closed
+// bgzipped BED file at path, writing the .csi alongside (path + ".csi").
+// Upstream mosdepth emits a CSI — not a TBI — for its bgzipped per-base,
+// regions, and thresholds BED outputs, so this matches its on-disk layout.
+// Errors are returned to the caller; an empty file is allowed and produces
+// an empty index.
+func buildBedCsi(path string) error {
 	cfg, err := tabix.PresetConfig(tabix.PresetBED)
 	if err != nil {
 		return err
 	}
-	idx, err := tabix.Build(path, cfg)
+	idx, err := tabix.BuildCSIFromDataFile(path, cfg, csiMinShift)
 	if err != nil {
-		return fmt.Errorf("tabix build %s: %w", path, err)
+		return fmt.Errorf("csi build %s: %w", path, err)
 	}
-	return idx.WriteFile(path + ".tbi")
+	return idx.WriteFile(path + ".csi")
 }
 
 // writeDistribution emits the cumulative depth-distribution file at path.

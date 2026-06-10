@@ -12,10 +12,13 @@ package mosdepth
 //
 // Two intentional differences from upstream:
 //
-//  1. Indexes. Upstream emits `.csi`; we emit `.tbi`. Parity tests
-//     assert on the bgzipped data files and the plain-text summary /
-//     distribution files only. Index files are deliberately not diffed —
-//     see docs/PARITY_ROADMAP.md#mosdepth.
+//  1. Indexes. Like upstream, we now emit a `.csi` alongside each
+//     bgzipped BED output (built with min_shift=14, depth=5 to match
+//     htslib's tbx_index_build). Parity tests assert on the bgzipped
+//     data files and the plain-text summary / distribution files; the
+//     `.csi` is validated structurally and via round-trip query rather
+//     than byte-diffed against upstream's (see TestParity_IndexFiles_Csi
+//     and TestRunCsiReadable).
 //
 //  2. Default-mode overlap-pair detection. Upstream subtracts one copy
 //     of depth where mate pairs overlap; our v1 engine does not. As a
@@ -32,6 +35,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
 // fixtureDir returns the absolute path to tools/mosdepth/testdata/parity.
@@ -445,7 +450,30 @@ func TestParity_EmptyTids(t *testing.T) {
 	}
 }
 
-// TestParity_IndexFiles_Skipped documents the .csi/.tbi deviation.
-func TestParity_IndexFiles_Skipped(t *testing.T) {
-	t.Skip("known deviation: upstream emits .csi, we emit .tbi; see docs/PARITY_ROADMAP.md#mosdepth")
+// TestParity_IndexFiles_Csi confirms that, like upstream mosdepth, we now
+// emit a .csi (not a .tbi) alongside each bgzipped BED output, and that the
+// .csi is a structurally valid index of its companion .bed.gz.
+func TestParity_IndexFiles_Csi(t *testing.T) {
+	// Restrict to the small MT contig so the window sweep stays cheap; the
+	// CSI's structure and round-trip behaviour are contig-independent.
+	prefix := runParity(t, "ovl.bam", Options{
+		Chrom:       "MT",
+		ByWindow:    100,
+		FastMode:    true,
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	dataPath := prefix + ".regions.bed.gz"
+	if _, err := os.Stat(dataPath + ".csi"); err != nil {
+		t.Fatalf(".csi missing: %v", err)
+	}
+	if _, err := os.Stat(dataPath + ".tbi"); err == nil {
+		t.Errorf("unexpected .tbi emitted; upstream emits .csi only")
+	}
+	csi, err := tabix.ReadCSIFile(dataPath + ".csi")
+	if err != nil {
+		t.Fatalf("ReadCSIFile: %v", err)
+	}
+	if len(csi.Refs) == 0 {
+		t.Fatalf("csi has no reference entries")
+	}
 }

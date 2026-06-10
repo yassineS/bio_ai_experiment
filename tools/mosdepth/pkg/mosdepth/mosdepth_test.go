@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -488,9 +489,9 @@ func TestRunEmptyPrefix(t *testing.T) {
 	}
 }
 
-// TestRunRegionsTbiReadable confirms the regions .tbi round-trips through
-// tabix.QueryBytes on a single chromosome.
-func TestRunRegionsTbiReadable(t *testing.T) {
+// TestRunRegionsCsiReadable confirms the regions .csi round-trips through
+// CSI.QueryBytes on a single chromosome.
+func TestRunRegionsCsiReadable(t *testing.T) {
 	dir := t.TempDir()
 	refs := []sam.Reference{{Name: "chr1", Length: 30}}
 	recs := []*sam.Record{
@@ -503,22 +504,23 @@ func TestRunRegionsTbiReadable(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	dataPath := prefix + ".regions.bed.gz"
-	idx, err := tabix.ReadFile(dataPath + ".tbi")
+	csi, err := tabix.ReadCSIFile(dataPath + ".csi")
 	if err != nil {
-		t.Fatalf("ReadFile tbi: %v", err)
+		t.Fatalf("ReadCSIFile: %v", err)
 	}
-	rows, err := idx.QueryBytes(dataPath, "chr1", 0, 15)
+	rows, err := csi.QueryBytes(dataPath, "chr1", 0, 15)
 	if err != nil {
 		t.Fatalf("QueryBytes: %v", err)
 	}
 	if len(rows) == 0 {
-		t.Errorf("expected at least one row from regions tbi query")
+		t.Errorf("expected at least one row from regions csi query")
 	}
 }
 
-// TestRunTbiReadable rebuilds the TBI for the per-base file and queries
-// chr1:10-15 via tabix to confirm the index round-trips.
-func TestRunTbiReadable(t *testing.T) {
+// TestRunCsiReadable confirms the per-base .csi is structurally valid and
+// queries chr1:10-15 via the in-tree CSI reader to confirm the index
+// round-trips against the same .bed.gz it indexes.
+func TestRunCsiReadable(t *testing.T) {
 	dir := t.TempDir()
 	bam := makeBAM(t, fixtureRefs(), fixtureRecords(t))
 	prefix := filepath.Join(dir, "out")
@@ -527,20 +529,125 @@ func TestRunTbiReadable(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	dataPath := prefix + ".per-base.bed.gz"
-	tbiPath := dataPath + ".tbi"
-	if _, err := os.Stat(tbiPath); err != nil {
-		t.Fatalf(".tbi missing: %v", err)
+	csiPath := dataPath + ".csi"
+	if _, err := os.Stat(csiPath); err != nil {
+		t.Fatalf(".csi missing: %v", err)
 	}
-	idx, err := tabix.ReadFile(tbiPath)
+	// Structural validity: the magic + (min_shift, depth) header must match
+	// what htslib's tbx_index_build emits for a default CSI.
+	csi, err := tabix.ReadCSIFile(csiPath)
 	if err != nil {
-		t.Fatalf("tabix.ReadFile: %v", err)
+		t.Fatalf("ReadCSIFile: %v", err)
 	}
-	rows, err := idx.QueryBytes(dataPath, "chr1", 10, 15)
+	if csi.MinShift != csiMinShift {
+		t.Errorf("csi MinShift = %d; want %d", csi.MinShift, csiMinShift)
+	}
+	if csi.Depth != 5 {
+		t.Errorf("csi Depth = %d; want 5", csi.Depth)
+	}
+	rows, err := csi.QueryBytes(dataPath, "chr1", 10, 15)
 	if err != nil {
-		t.Fatalf("tabix QueryBytes: %v", err)
+		t.Fatalf("csi QueryBytes: %v", err)
 	}
 	if len(rows) == 0 {
-		t.Errorf("tabix query returned no rows")
+		t.Errorf("csi query returned no rows")
+	}
+}
+
+// TestMapqFastPathPredicateAgreement asserts the fast-path keep predicate
+// (keepRecordNoMapq) and the general predicate (keepRecord) make identical
+// decisions for every fixture record when no MAPQ filter is in effect.
+func TestMapqFastPathPredicateAgreement(t *testing.T) {
+	opts := Options{ExcludeFlag: DefaultExcludeFlag, MinMAPQ: 0}
+	if !mapqFastPath(opts) {
+		t.Fatalf("mapqFastPath should be eligible with MinMAPQ==0")
+	}
+	for _, rec := range fixtureRecords(t) {
+		if got, want := keepRecordNoMapq(rec, opts), keepRecord(rec, opts); got != want {
+			t.Errorf("record %s: fast=%v general=%v; want agreement", rec.QName, got, want)
+		}
+	}
+}
+
+// runForBytes runs the pipeline against bam under opts and returns the raw
+// bytes of the named output suffix (e.g. ".per-base.bed.gz").
+func runForBytes(t *testing.T, bam []byte, opts Options, suffix string) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	prefix := filepath.Join(dir, "out")
+	opts.Prefix = prefix
+	if err := Run(bytes.NewReader(bam), opts); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	b, err := os.ReadFile(prefix + suffix)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", suffix, err)
+	}
+	return b
+}
+
+// TestMapqFastPathByteIdentical proves that the --mapq 0 fast path produces
+// byte-identical output to the general (forced) path on the same BAM, across
+// every text and bgzipped output file. The fast path is a pure performance
+// optimisation, so any byte difference would be a correctness regression.
+func TestMapqFastPathByteIdentical(t *testing.T) {
+	bam := makeBAM(t, fixtureRefs(), fixtureRecords(t))
+	base := Options{ExcludeFlag: DefaultExcludeFlag, MinMAPQ: 0, Thresholds: []int{1, 5}, ByWindow: 10}
+	suffixes := []string{
+		".regions.bed.gz",
+		".thresholds.bed.gz",
+		".mosdepth.global.dist.txt",
+		".mosdepth.summary.txt",
+	}
+	for _, suffix := range suffixes {
+		disableMapqFastPath = false
+		fast := runForBytes(t, bam, base, suffix)
+		disableMapqFastPath = true
+		general := runForBytes(t, bam, base, suffix)
+		disableMapqFastPath = false
+		if !bytes.Equal(fast, general) {
+			t.Errorf("%s: fast-path output differs from general path (%d vs %d bytes)",
+				suffix, len(fast), len(general))
+		}
+	}
+	// Also exercise the per-base output (emitted only when --by is absent).
+	pbBase := Options{ExcludeFlag: DefaultExcludeFlag, MinMAPQ: 0}
+	disableMapqFastPath = false
+	fastPB := runForBytes(t, bam, pbBase, ".per-base.bed.gz")
+	disableMapqFastPath = true
+	generalPB := runForBytes(t, bam, pbBase, ".per-base.bed.gz")
+	disableMapqFastPath = false
+	if !bytes.Equal(fastPB, generalPB) {
+		t.Errorf(".per-base.bed.gz: fast-path output differs from general path")
+	}
+}
+
+// TestRunCsiReadableByRealTabix confirms a real `tabix` binary can read our
+// .bed.gz + .csi pair, when such a binary is reachable on PATH. When it is
+// not (the common CI case), the test reports the absence and returns —
+// htslib is an optional, hard-to-vendor dependency, so its presence cannot
+// be assumed. The in-tree round-trip in TestRunCsiReadable provides the
+// always-on validation.
+func TestRunCsiReadableByRealTabix(t *testing.T) {
+	tabixBin, err := exec.LookPath("tabix")
+	if err != nil {
+		t.Logf("tabix binary not on PATH; relying on in-tree CSI round-trip (TestRunCsiReadable)")
+		return
+	}
+	dir := t.TempDir()
+	bam := makeBAM(t, fixtureRefs(), fixtureRecords(t))
+	prefix := filepath.Join(dir, "out")
+	if err := Run(bytes.NewReader(bam), Options{Prefix: prefix, ExcludeFlag: DefaultExcludeFlag}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	dataPath := prefix + ".per-base.bed.gz"
+	// tabix consults <dataPath>.csi automatically when present.
+	out, err := exec.Command(tabixBin, dataPath, "chr1:11-15").CombinedOutput()
+	if err != nil {
+		t.Fatalf("tabix query failed: %v\n%s", err, out)
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		t.Errorf("tabix returned no rows for chr1:11-15 using our .csi")
 	}
 }
 

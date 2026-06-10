@@ -25,9 +25,9 @@ type Options struct {
 	// Prefix is the output-file prefix. Files written are:
 	//   <prefix>.mosdepth.global.dist.txt
 	//   <prefix>.mosdepth.summary.txt
-	//   <prefix>.per-base.bed.gz                (and .tbi)         — unless NoPerBase
-	//   <prefix>.regions.bed.gz                 (and .tbi)         — only when ByBED/ByWindow is set
-	//   <prefix>.thresholds.bed.gz              (and .tbi)         — only when Thresholds is non-empty
+	//   <prefix>.per-base.bed.gz                (and .csi)         — unless NoPerBase
+	//   <prefix>.regions.bed.gz                 (and .csi)         — only when ByBED/ByWindow is set
+	//   <prefix>.thresholds.bed.gz              (and .csi)         — only when Thresholds is non-empty
 	Prefix string
 
 	// ByBED is a path to a BED file of regions. Mutually exclusive with
@@ -262,12 +262,13 @@ func Run(in io.Reader, opts Options) error {
 		accum.events = nil
 	}
 
-	// Close output writers + build TBIs.
+	// Close output writers + build CSI indexes (matching upstream mosdepth,
+	// which emits .csi alongside each bgzipped BED output).
 	if perBaseW != nil {
 		if err := perBaseW.Close(); err != nil {
 			return err
 		}
-		if err := buildBedTbi(perBaseW.path); err != nil {
+		if err := buildBedCsi(perBaseW.path); err != nil {
 			return err
 		}
 	}
@@ -275,7 +276,7 @@ func Run(in io.Reader, opts Options) error {
 		if err := regionsW.Close(); err != nil {
 			return err
 		}
-		if err := buildBedTbi(regionsW.path); err != nil {
+		if err := buildBedCsi(regionsW.path); err != nil {
 			return err
 		}
 	}
@@ -283,7 +284,7 @@ func Run(in io.Reader, opts Options) error {
 		if err := thresholdsW.Close(); err != nil {
 			return err
 		}
-		if err := buildBedTbi(thresholdsW.path); err != nil {
+		if err := buildBedCsi(thresholdsW.path); err != nil {
 			return err
 		}
 	}
@@ -355,10 +356,33 @@ func resolveRegions(hdr *sam.Header, opts Options) (map[string][]region, []strin
 	return out, stringSliceUnique(names), nil
 }
 
+// disableMapqFastPath, when set, forces groupRecords onto the general
+// keep-predicate path even when the fast path would otherwise apply. It
+// exists solely so tests can prove the fast and general paths produce
+// byte-identical output; production code never touches it.
+var disableMapqFastPath bool
+
+// mapqFastPath reports whether the MAPQ-free fast path may be taken for opts.
+// Upstream mosdepth special-cases the common `--mapq 0` invocation (no MAPQ
+// filter) by dropping the per-read MAPQ comparison from the hot loop. The
+// fast path is purely a performance optimisation: its output is identical to
+// the general path because, when MinMAPQ == 0, the MAPQ predicate
+// `rec.MapQ < 0` is unsatisfiable and never rejects a read.
+func mapqFastPath(opts Options) bool { return opts.MinMAPQ == 0 && !disableMapqFastPath }
+
 // groupRecords drains rd into a map keyed by reference name, applying all
 // configured read-level filters. Reads with unknown / "*" RNAME are
 // dropped silently — they cannot contribute to depth on any reference.
+//
+// When no MAPQ filter is in effect (opts.MinMAPQ == 0, see mapqFastPath) the
+// per-read keep predicate is bound once to keepRecordNoMapq, which omits the
+// MAPQ comparison from the hot loop. This mirrors upstream mosdepth's
+// `--mapq 0` fast path and is byte-for-byte equivalent to the general path.
 func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, error) {
+	keep := keepRecord
+	if mapqFastPath(opts) {
+		keep = keepRecordNoMapq
+	}
 	out := map[string][]*sam.Record{}
 	for {
 		rec, err := rd.Read()
@@ -368,16 +392,38 @@ func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, error)
 		if err != nil {
 			return nil, fmt.Errorf("mosdepth: read record: %w", err)
 		}
-		if !keepRecord(rec, opts) {
+		if !keep(rec, opts) {
 			continue
 		}
 		out[rec.RName] = append(out[rec.RName], rec)
 	}
 }
 
-// keepRecord applies every per-read filter configured on opts and returns
-// true if the read should contribute to depth.
+// keepRecord applies every per-read filter configured on opts — including the
+// MAPQ floor — and returns true if the read should contribute to depth.
 func keepRecord(rec *sam.Record, opts Options) bool {
+	if !keepRecordCommon(rec, opts) {
+		return false
+	}
+	if opts.MinMAPQ > 0 && rec.MapQ < opts.MinMAPQ {
+		return false
+	}
+	return keepRecordTail(rec, opts)
+}
+
+// keepRecordNoMapq is the `--mapq 0` fast-path keep predicate: it applies
+// every filter except the MAPQ floor, which is a no-op when MinMAPQ == 0.
+// Callers must only use it when mapqFastPath(opts) is true.
+func keepRecordNoMapq(rec *sam.Record, opts Options) bool {
+	if !keepRecordCommon(rec, opts) {
+		return false
+	}
+	return keepRecordTail(rec, opts)
+}
+
+// keepRecordCommon applies the position, chromosome, and SAM-flag filters
+// shared by both the general and fast-path keep predicates.
+func keepRecordCommon(rec *sam.Record, opts Options) bool {
 	if rec.Pos <= 0 || rec.RName == "" || rec.RName == "*" {
 		return false
 	}
@@ -390,9 +436,12 @@ func keepRecord(rec *sam.Record, opts Options) bool {
 	if opts.IncludeFlag != 0 && rec.Flag&opts.IncludeFlag != opts.IncludeFlag {
 		return false
 	}
-	if opts.MinMAPQ > 0 && rec.MapQ < opts.MinMAPQ {
-		return false
-	}
+	return true
+}
+
+// keepRecordTail applies the fragment-length and read-group filters that run
+// after the MAPQ check in both keep predicates.
+func keepRecordTail(rec *sam.Record, opts Options) bool {
 	if opts.MinFragLen > 0 || opts.MaxFragLen > 0 {
 		t := int(rec.TLen)
 		if t < 0 {

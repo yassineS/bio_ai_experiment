@@ -35,12 +35,12 @@ Outputs (always emitted unless a flag below suppresses one):
   where `proportion` is the fraction of bases at depth ≥ `depth`.
 - `<prefix>.mosdepth.summary.txt` — per-chromosome summary
   (`chrom\tlength\tbases\tmean\tmin\tmax`) plus a `total` row.
-- `<prefix>.per-base.bed.gz` (with `.tbi`) — per-base depth as
+- `<prefix>.per-base.bed.gz` (with `.csi`) — per-base depth as
   collapsed equal-depth BED runs. Omitted when `--by` is set or
   `--no-per-base` is passed.
-- `<prefix>.regions.bed.gz` (with `.tbi`) — only when `--by` is set.
+- `<prefix>.regions.bed.gz` (with `.csi`) — only when `--by` is set.
   Columns: `chrom\tstart\tend\t[region-name\t]mean-depth`.
-- `<prefix>.thresholds.bed.gz` (with `.tbi`) — only when `-T/--thresholds`
+- `<prefix>.thresholds.bed.gz` (with `.csi`) — only when `-T/--thresholds`
   is set. Columns: `chrom\tstart\tend\tregion\tNXcount\t...` listing the
   number of bases at or above each integer threshold inside the region.
 
@@ -77,12 +77,27 @@ every base without materialising a per-base depth array. Each chromosome
 is emitted before the next is processed, keeping memory bounded to one
 chromosome's-worth of events.
 
-## Deviations from upstream
+## Indexes
 
-mosdepth in Nim emits CSI indexes; our port emits TBI indexes built with
-the in-tree `pkg/htsgo/tabix.Build`. Consumers that read either
-format (e.g. `bcftools`, `tabix`) work transparently — the underlying
-chunk/bin layout is identical. CSI emission is on the roadmap.
+Like upstream mosdepth (which calls htslib's `tbx_index_build`), our port
+emits a `.csi` index alongside each bgzipped BED output, built with the
+in-tree `pkg/htsgo/tabix.BuildCSIFromDataFile`. The CSI uses `min_shift=14,
+depth=5` — the htslib default — so it indexes any chromosome up to 1<<29
+(~536 Mbp) and is read transparently by `tabix`, `bcftools`, and htslib.
+Round-trip validation (build the index, query it back, confirm the right
+records come out) lives in `TestRunCsiReadable` / `TestParity_IndexFiles_Csi`;
+when a real `tabix` binary is on `PATH`, `TestRunCsiReadableByRealTabix`
+additionally confirms it can read our `.bed.gz` + `.csi`.
+
+## Performance: `--mapq 0` fast path
+
+When no MAPQ filter is in effect (`--mapq 0`, the default), the record
+filter binds a fast keep-predicate (`keepRecordNoMapq`) once and omits the
+per-read MAPQ comparison from the hot loop, mirroring upstream mosdepth's
+fast path. The output is byte-for-byte identical to the general path;
+`TestMapqFastPathByteIdentical` proves this across every output file.
+
+## Deviations from upstream
 
 D4 output (`-d/--d4`) is accepted for CLI compatibility but rejected
 with `mosdepth: D4 output not yet implemented`.
@@ -117,13 +132,14 @@ Coverage targets ≥85% on `pkg/mosdepth`. Tests cover:
 - `--chrom` restriction (only one chromosome appears in any output).
 - Distribution file CDF — `total\t0` is always 1.00.
 - Summary file — chr/total rows match hand-computed mean.
-- `.tbi` indexes round-trip through `tabix.QueryBytes` so the produced
-  files are tabix-readable end-to-end.
+- `.csi` indexes round-trip through `CSI.QueryBytes` so the produced
+  files are tabix/htslib-readable end-to-end.
+- `--mapq 0` fast path is byte-identical to the general path.
 - `-d/--d4` is rejected with a clear error.
 
 ## Status
 
 - v1: per-base, per-region (BED), per-window, thresholds, distribution,
-  summary, TBI indexes.
-- Roadmap: CSI output, D4 output, multi-threaded chrom sweep, CRAM input
+  summary, CSI indexes, `--mapq 0` fast path.
+- Roadmap: D4 output, multi-threaded chrom sweep, CRAM input
   (depends on the project's CRAM reader landing first).
