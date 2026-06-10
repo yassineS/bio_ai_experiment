@@ -11,6 +11,8 @@ import (
 	"github.com/yassineS/bio_ai_experiment/tools/bedmerge/pkg/bedmerge"
 )
 
+const version = "1.0.0"
+
 const usage = `bedmerge - Merge overlapping or adjacent BED intervals
 
 Usage:
@@ -37,6 +39,7 @@ Options:
                          collapse, first, last, mode, antimode
       --streaming        Use streaming mode for very large files
   -h, --help             Show this help message
+  -v, --version          Show version information and exit
 
 Examples:
   # Merge overlapping intervals
@@ -117,10 +120,18 @@ func main() {
 	var help bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help message")
 
+	var showVersion bool
+	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Show version information")
+
 	flag.Parse()
 
 	if help {
 		fmt.Fprint(os.Stderr, usage)
+		os.Exit(0)
+	}
+
+	if showVersion {
+		fmt.Printf("bedmerge version %s\n", version)
 		os.Exit(0)
 	}
 

@@ -192,6 +192,8 @@ Examples:
 
 func seqCommand() {
 	fs := flag.NewFlagSet("seq", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var revComp, phred64 bool
 	var output string
 	var minLen, maxLen int
@@ -232,6 +234,8 @@ Examples:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -302,6 +306,8 @@ Examples:
 
 func subseqCommand() {
 	fs := flag.NewFlagSet("subseq", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 	var lineLen int
 
@@ -340,6 +346,8 @@ Examples:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -381,6 +389,8 @@ Examples:
 
 func sampleCommand() {
 	fs := flag.NewFlagSet("sample", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var phred64 bool
 	var output string
 
@@ -411,6 +421,8 @@ Example:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -466,6 +478,8 @@ Example:
 
 func trimfqCommand() {
 	fs := flag.NewFlagSet("trimfq", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var quality int
 	var phred64 bool
 	var output string
@@ -494,6 +508,8 @@ Options:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -531,6 +547,8 @@ Options:
 
 func fq2faCommand() {
 	fs := flag.NewFlagSet("fq2fa", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var phred64 bool
 	var output string
 
@@ -556,6 +574,8 @@ Options:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -593,6 +613,8 @@ Options:
 
 func mergePECommand() {
 	fs := flag.NewFlagSet("mergepe", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -626,6 +648,8 @@ Examples:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -669,6 +693,8 @@ Examples:
 
 func cutNCommand() {
 	fs := flag.NewFlagSet("cutN", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var minN int
 	var gaps bool
 	var output string
@@ -713,6 +739,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if minN < 1 {
 		fmt.Fprintf(os.Stderr, "Error: -n/--min-n is required and must be >= 1\n")
 		fs.Usage()
@@ -753,6 +781,8 @@ Examples:
 
 func compCommand() {
 	fs := flag.NewFlagSet("comp", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var phred64, summary bool
 
 	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding for FASTQ (default: Phred+33)")
@@ -782,6 +812,8 @@ Options:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -850,6 +882,8 @@ Options:
 
 func mutfaCommand() {
 	fs := flag.NewFlagSet("mutfa", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -890,6 +924,8 @@ Examples:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -933,6 +969,8 @@ Examples:
 
 func randbaseCommand() {
 	fs := flag.NewFlagSet("randbase", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 	var seed int64
 
@@ -973,6 +1011,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -1007,6 +1047,8 @@ Examples:
 
 func hpcCommand() {
 	fs := flag.NewFlagSet("hpc", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -1039,6 +1081,8 @@ Examples:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1073,6 +1117,8 @@ Examples:
 // upstream positional form (a second non-flag argument overrides -l).
 func hrunCommand() {
 	fs := flag.NewFlagSet("hrun", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var minLen int
 	var output string
 
@@ -1110,6 +1156,8 @@ Examples:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 1 {
 		fs.Usage()
@@ -1154,6 +1202,8 @@ Examples:
 // is the project-wide `-o/--output` convenience.
 func listhetCommand() {
 	fs := flag.NewFlagSet("listhet", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -1188,6 +1238,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -1217,6 +1269,8 @@ Examples:
 
 func gapCommand() {
 	fs := flag.NewFlagSet("gap", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var minSize int
 	var output string
 
@@ -1251,6 +1305,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -1280,6 +1336,8 @@ Examples:
 
 func gcCommand() {
 	fs := flag.NewFlagSet("gc", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var minLen int
 	var minFrac, xDropoff float64
 	var isAT bool
@@ -1326,6 +1384,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -1361,6 +1421,8 @@ Examples:
 
 func dropseCommand() {
 	fs := flag.NewFlagSet("dropse", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -1397,6 +1459,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -1426,6 +1490,8 @@ Examples:
 
 func renameCommand() {
 	fs := flag.NewFlagSet("rename", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -1471,6 +1537,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -1504,6 +1572,8 @@ Examples:
 
 func splitCommand() {
 	fs := flag.NewFlagSet("split", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var n, lineLen int
 
 	cliflag.IntVar(fs, &n, "n", "num", seqtk.DefaultSplitN, "Number of output files")
@@ -1550,6 +1620,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 2 {
 		fs.Usage()
 		os.Exit(1)
@@ -1574,6 +1646,8 @@ Examples:
 
 func sizeCommand() {
 	fs := flag.NewFlagSet("size", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -1610,6 +1684,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -1639,6 +1715,8 @@ Examples:
 
 func famaskCommand() {
 	fs := flag.NewFlagSet("famask", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -1680,6 +1758,8 @@ Examples:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 2 {
 		fs.Usage()
@@ -1723,6 +1803,8 @@ Examples:
 
 func mergefaCommand() {
 	fs := flag.NewFlagSet("mergefa", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, false)
 	var quality int
 	var intersect, haploid, mask, randhet bool
 	var output string
@@ -1785,6 +1867,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 2 {
 		fs.Usage()
 		os.Exit(1)
@@ -1839,6 +1923,8 @@ Examples:
 
 func fqchkCommand() {
 	fs := flag.NewFlagSet("fqchk", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var qthres int
 	var output string
 
@@ -1891,6 +1977,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -1920,6 +2008,8 @@ Examples:
 
 func hetyCommand() {
 	fs := flag.NewFlagSet("hety", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var winSize, nStart int
 	var lowerMask bool
 	var output string
@@ -1975,6 +2065,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 1 {
 		fs.Usage()
 		os.Exit(1)
@@ -2009,6 +2101,8 @@ Examples:
 
 func kfreqCommand() {
 	fs := flag.NewFlagSet("kfreq", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var output string
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
@@ -2053,6 +2147,8 @@ Examples:
 		os.Exit(2)
 	}
 
+	hv.handle(fs)
+
 	if fs.NArg() < 2 {
 		fs.Usage()
 		os.Exit(1)
@@ -2083,6 +2179,8 @@ Examples:
 
 func teloCommand() {
 	fs := flag.NewFlagSet("telo", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs, true)
 	var motif string
 	var penalty, maxDrop, minScore int
 	var showProfile bool
@@ -2155,6 +2253,8 @@ Examples:
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	if fs.NArg() < 1 {
 		fs.Usage()

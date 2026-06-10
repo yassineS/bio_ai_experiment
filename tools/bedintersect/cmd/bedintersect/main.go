@@ -10,6 +10,8 @@ import (
 	"github.com/yassineS/bio_ai_experiment/tools/bedintersect/pkg/bedintersect"
 )
 
+const version = "1.0.0"
+
 const usage = `bedintersect - Find intersecting intervals between two BED files
 
 Usage:
@@ -38,6 +40,8 @@ Options:
   -t, --tree            Use interval tree for large B files
   -S, --stats           Print statistics to stderr
   -h, --help            Show this help message
+      --version         Show version information and exit
+                        (note: -v is --invert above, matching bedtools)
 
 Examples:
   # Find overlapping regions
@@ -140,10 +144,19 @@ func main() {
 	help := flag.Bool("h", false, "Show help message")
 	flag.BoolVar(help, "help", false, "Show help message")
 
+	// -v is taken by --invert (upstream bedtools parity), so version is
+	// exposed only as the long --version flag.
+	showVersion := flag.Bool("version", false, "Show version information")
+
 	flag.Parse()
 
 	if *help {
 		fmt.Fprint(os.Stderr, usage)
+		os.Exit(0)
+	}
+
+	if *showVersion {
+		fmt.Printf("bedintersect version %s\n", version)
 		os.Exit(0)
 	}
 

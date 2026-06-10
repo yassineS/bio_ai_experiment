@@ -353,6 +353,29 @@ an upstream tool (e.g. samtools' `-Q`/`-D` phase flags), and note why.
   port alias, and the upstream flag names `-f/--fasta`, `-a/--fragment-mode`,
   `-q/--quantize`, `-m/--use-median` accepted (the last three rejected as
   not-yet-implemented rather than silently ignored)
+- 2026-06-10: Cross-cutting `-h/-v` + exit-code + stdin/stdout conformance
+  sweep. Closed the remaining per-subcommand `-h/--help` and `-v/--version`
+  gaps: every `seqtk` subcommand (25), every `sickle` subcommand (`se`, `pe`,
+  `batch`), and every `prinseq` subcommand (`stats`, `filter`, `graph`,
+  `graph_data`, `report`, `benchmark`, `api`, `batch`) now answer
+  `-h/--help` (usage, exit 0) and `-v/--version` (version banner, exit 0).
+  `fastp` gained `-v/--version`; `bedmerge` gained `-v/--version`. Where the
+  POSIX short letter already carries an upstream meaning the short form is
+  kept and only the long flag is added/retained — `seqtk mergefa -h` stays
+  `--haploid` (so `--help` is the help spelling there), and `bedintersect -v`
+  stays `--invert` (bedtools parity), with version exposed as `--version`
+  only. The htslib family (`samtools`/`bcftools` subcommands, `tabix`) keeps
+  its prior compromise unchanged: long `--help`/`--version` are uniform while
+  short `-h` (include-header / print-header) and `-v` (verbosity) retain
+  their upstream meanings. Exit-code review confirmed usage/parse errors exit
+  2 (via `cliflag.Parse`/`flag.ExitOnError`) and runtime/IO errors exit 1
+  across the touched tools; no compliant tool was changed. `-` stdin/stdout
+  audit: `prinseq` (the one tool deliberately off `iohelper`) now treats a
+  bare `-o -`/`--output -` as stdout in `filter`/`graph`/`report` instead of
+  creating a file literally named `-`; all other tools already route their
+  primary I/O through `iohelper` and honor `-`. Added live-binary CLI
+  conformance tests for the changed tools plus representative compliant ones
+  (`bedslop`, `samtools`).
 - Future: May be extended as more tools are ported
 
 ## References

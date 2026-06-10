@@ -11,6 +11,9 @@ import (
 	"github.com/yassineS/bio_ai_experiment/tools/fastp/pkg/fastp"
 )
 
+// version is the fastp port's version, reported by -v/--version.
+const version = "1.0.0"
+
 const usage = `fastp - All-in-one FASTQ preprocessor
 
 Usage:
@@ -107,6 +110,7 @@ Options:
   Other:
     -t, --qual-type TYPE      Quality type: sanger, illumina (default: sanger)
     -h, --help                Show this help and exit
+    -v, --version             Show version information and exit
     --quiet                   Don't print statistics
 
 Examples:
@@ -191,6 +195,7 @@ func main() {
 		jsonReport          string
 		detectAdapterForPE  bool
 		showHelp            bool
+		showVersion         bool
 		// Duplication evaluation
 		dupCalcAccuracy int
 		dedup           bool
@@ -302,6 +307,7 @@ func main() {
 	cliflag.StringVar(fs, &htmlReport, "", "html", "", "HTML report output file")
 	cliflag.StringVar(fs, &jsonReport, "", "json", "", "JSON report output file")
 	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Show usage and exit")
+	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Show version information and exit")
 
 	// Automatic adapter detection
 	cliflag.BoolVar(fs, &detectAdapterForPE, "", "detect_adapter_for_pe", false, "Enable overlap-based adapter detection for paired-end")
@@ -326,6 +332,11 @@ func main() {
 
 	if showHelp {
 		fs.Usage()
+		os.Exit(0)
+	}
+
+	if showVersion {
+		fmt.Printf("fastp version %s\n", version)
 		os.Exit(0)
 	}
 

@@ -87,6 +87,8 @@ Use "prinseq <command> -h" for more information about a command.`)
 
 func runStats(args []string) {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var fastq, fasta string
 	var jsonOutput, enhanced bool
@@ -112,6 +114,8 @@ Options:
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	hv.handle()
 
 	// Determine input file and format
 	var inputFile string
@@ -181,6 +185,8 @@ Options:
 
 func runFilter(args []string) {
 	fs := flag.NewFlagSet("filter", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	// Input/output options
 	var input1, input2, output1, output2, outBad string
@@ -418,6 +424,8 @@ Examples:
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	hv.handle()
 
 	// Determine format
 	var isFastq bool
@@ -708,7 +716,7 @@ Examples:
 		defer reader2.Close()
 
 		var writer1, writer2 io.WriteCloser
-		if output1 == "" {
+		if output1 == "" || output1 == "-" {
 			writer1 = os.Stdout
 		} else {
 			writer1, err = os.Create(output1)
@@ -741,7 +749,7 @@ Examples:
 		defer reader.Close()
 
 		var writer io.WriteCloser
-		if output1 == "" {
+		if output1 == "" || output1 == "-" {
 			writer = os.Stdout
 		} else {
 			writer, err = os.Create(output1)
@@ -848,6 +856,8 @@ func hasSuffix(s string, suffixes ...string) bool {
 
 func runGraph(args []string) {
 	fs := flag.NewFlagSet("graph", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var fastq, fasta, graphType, output string
 	var svg bool
@@ -875,6 +885,8 @@ Options:
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	hv.handle()
 
 	var inputFile string
 	var isFastq bool
@@ -904,7 +916,7 @@ Options:
 	}
 
 	var writer io.WriteCloser = os.Stdout
-	if output != "" {
+	if output != "" && output != "-" {
 		writer, err = os.Create(output)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
@@ -938,6 +950,8 @@ Options:
 // not specified.
 func runGraphData(args []string) {
 	fs := flag.NewFlagSet("graph_data", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var fastq, fasta, graphData, graphStats string
 	var phred64, qualNoScale, noHeader bool
@@ -970,6 +984,8 @@ Options:
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	hv.handle()
 
 	var inputFile string
 	var isFastq bool
@@ -1063,6 +1079,8 @@ func nowUpstreamFmt() string {
 
 func runReport(args []string) {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var fastq, fasta, output string
 	cliflag.StringVar(fs, &fastq, "", "fastq", "", "Input FASTQ file")
@@ -1085,6 +1103,8 @@ Options:
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	hv.handle()
 
 	var inputFile string
 	var isFastq bool
@@ -1114,7 +1134,7 @@ Options:
 	}
 
 	var writer io.WriteCloser = os.Stdout
-	if output != "" {
+	if output != "" && output != "-" {
 		writer, err = os.Create(output)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
@@ -1131,6 +1151,8 @@ Options:
 
 func runBenchmark(args []string) {
 	fs := flag.NewFlagSet("benchmark", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var fastq, fasta string
 	var jsonOutput bool
@@ -1154,6 +1176,8 @@ Options:
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	hv.handle()
 
 	var inputFile string
 	var isFastq bool
@@ -1196,6 +1220,8 @@ Options:
 
 func runAPI(args []string) {
 	fs := flag.NewFlagSet("api", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var addr string
 	cliflag.StringVar(fs, &addr, "a", "addr", ":8080", "Server address")
@@ -1219,6 +1245,8 @@ Examples:
 		os.Exit(1)
 	}
 
+	hv.handle()
+
 	server := prinseq.NewAPIServer(addr)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting server: %v\n", err)
@@ -1228,6 +1256,8 @@ Examples:
 
 func runBatch(args []string) {
 	fs := flag.NewFlagSet("batch", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var outputDir string
 	var workers int
@@ -1268,6 +1298,8 @@ Examples:
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	hv.handle()
 
 	inputFiles := fs.Args()
 	if len(inputFiles) == 0 {

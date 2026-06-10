@@ -54,7 +54,7 @@ func main() {
 		fmt.Print(usage)
 		os.Exit(0)
 	case "-v", "--version", "version":
-		fmt.Println("sickle version 1.0.0 (Go implementation)")
+		fmt.Println(sickleVersion)
 		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown command %q\n\n", command)
@@ -104,6 +104,8 @@ func mustOpenWriter(filename, label string) io.WriteCloser {
 
 func runSingleEnd() {
 	fs := flag.NewFlagSet("sickle se", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var (
 		fastqFile       string
@@ -168,6 +170,8 @@ func runSingleEnd() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	// Validate required arguments
 	if fastqFile == "" {
@@ -258,6 +262,8 @@ func runSingleEnd() {
 
 func runPairedEnd() {
 	fs := flag.NewFlagSet("sickle pe", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var (
 		fastqFile1      string
@@ -333,6 +339,8 @@ func runPairedEnd() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	// Validate required arguments
 	if fastqFile1 == "" || fastqFile2 == "" {
@@ -447,6 +455,8 @@ func runPairedEnd() {
 
 func runBatch() {
 	fs := flag.NewFlagSet("sickle batch", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
 
 	var (
 		fileList        string
@@ -510,6 +520,8 @@ func runBatch() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	hv.handle(fs)
 
 	// Validate required arguments
 	if fileList == "" {
