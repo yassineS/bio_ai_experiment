@@ -13,10 +13,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
@@ -44,7 +46,8 @@ Common Options:
       --targets-overlap 0|1|2     Accepted; v1 uses POS-in-region.
       --no-version                Do not append version+command to header.
   -v, --verbosity INT             Accepted; v1 ignores.
-  -W, --write-index[=FMT]         Auto-index outputs (accepted; v1 never indexes).
+  -W, --write-index[=csi|tbi]     Write a .csi/.tbi index for a bgzipped
+                                  output (requires -o FILE and -Oz).
 
 Mendelian2 options:
   -m, --mode c|[adeEgmMS]         Output mode (default c). Multiple modes can
@@ -66,18 +69,44 @@ Mendelian2 options:
                                   mom, sex, phenotype). Trios are derived
                                   automatically: every row whose dad AND mom
                                   AND child are all in the input VCF.
-      --rules ASSEMBLY[?]         Predefined inheritance rules
-                                  (accepted; v1 uses the chrX heuristic only).
-      --rules-file FILE           Inheritance rules file
-                                  (accepted; v1 not implemented).
+      --rules ASSEMBLY[?]         Predefined inheritance rules (GRCh37 default,
+                                  also GRCh38; "list"/"list?" to enumerate).
+      --rules-file FILE           Custom per-contig ploidy/inheritance rules
+                                  file (SEX_ID CHROM:BEG-END INHERITED_FROM).
 
   -h, --help                      Show this help.
       --version                   Show version.
 
-Deferred flags (accepted but rejected at runtime; see
-docs/PARITY_ROADMAP.md#bcftools): --rules (assembly), --rules-file,
---regions-overlap, --targets-overlap, --write-index, --verbosity.
+Deferred flags (accepted but applied as a post-filter / no-op; see
+docs/PARITY_ROADMAP.md#bcftools): --regions-overlap, --targets-overlap,
+--verbosity.
 `
+
+// optionalStringValue is a flag.Value for options whose argument is
+// optional (getopt `optional_argument`). A bare `-W` sets present=true
+// without consuming the next token; `-W=csi` records the value. It lets
+// -W/--write-index behave like upstream's `-W[=FMT]`.
+type optionalStringValue struct {
+	target  *string
+	present *bool
+}
+
+func (o *optionalStringValue) String() string {
+	if o == nil || o.target == nil {
+		return ""
+	}
+	return *o.target
+}
+
+func (o *optionalStringValue) Set(s string) error {
+	*o.target = s
+	*o.present = true
+	return nil
+}
+
+// IsBoolFlag lets the flag package accept a bare `-W` (no argument)
+// without consuming the next token, while `-W=csi` still works.
+func (o *optionalStringValue) IsBoolFlag() bool { return true }
 
 func runMendelian2(args []string) int {
 	fs := flag.NewFlagSet("bcftools mendelian2", flag.ContinueOnError)
@@ -101,6 +130,7 @@ func runMendelian2(args []string) int {
 		outputPath     string
 		noVersion      bool
 		writeIndex     string
+		writeIndexSet  bool
 		verbosity      int
 		showHelp       bool
 		showVer        bool
@@ -117,12 +147,18 @@ func runMendelian2(args []string) int {
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
 	fs.IntVar(&targetsOverlap, "targets-overlap", 0, "Target overlap mode (accepted)")
-	fs.StringVar(&rules, "rules", "", "Predefined inheritance rules (accepted; v1 not implemented)")
-	fs.StringVar(&rulesFile, "rules-file", "", "Inheritance rules file (accepted; v1 not implemented)")
+	fs.StringVar(&rules, "rules", "", "Predefined inheritance rules (GRCh37/GRCh38, \"list\" to enumerate)")
+	fs.StringVar(&rulesFile, "rules-file", "", "Custom inheritance rules file")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	fs.BoolVar(&noVersion, "no-version", false, "Do not append version+cmd to header")
-	cliflag.StringVar(fs, &writeIndex, "W", "write-index", "", "Auto-index output (accepted)")
+	// -W/--write-index takes an OPTIONAL value (csi|tbi). A bare flag
+	// means "index with the default format". optionalStringValue makes
+	// `-W` work without consuming the following positional argument,
+	// matching upstream's getopt `optional_argument`.
+	wi := &optionalStringValue{target: &writeIndex, present: &writeIndexSet}
+	fs.Var(wi, "W", "Write an index for a bgzipped output [optional csi|tbi]")
+	fs.Var(wi, "write-index", "Write an index for a bgzipped output [optional csi|tbi]")
 	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity (accepted)")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "?", false, "")
@@ -143,13 +179,35 @@ func runMendelian2(args []string) int {
 		return 0
 	}
 
-	if deferred := checkMendelian2Deferred(checkMendelian2DeferredInputs{
-		rules:      rules,
-		rulesFile:  rulesFile,
-		writeIndex: writeIndex,
-	}); deferred != "" {
-		fmt.Fprintf(os.Stderr, "bcftools mendelian2: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
+	if rules != "" && rulesFile != "" {
+		fmt.Fprintln(os.Stderr, "bcftools mendelian2: --rules and --rules-file are mutually exclusive")
 		return 2
+	}
+
+	// Resolve the inheritance rules: a custom --rules-file, a named
+	// --rules assembly (or its "list"/"list?" catalogue), or the
+	// GRCh37 default when neither is given. Mirrors init_rules.
+	var ruleSet *bcftools.MendelianRules
+	switch {
+	case rulesFile != "":
+		rs, err := bcftools.LoadMendelianRulesFile(rulesFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools mendelian2: %v\n", err)
+			return 2
+		}
+		ruleSet = rs
+	case rules != "":
+		rs, err := bcftools.LoadMendelianRulesByName(rules)
+		if err != nil {
+			var listErr *bcftools.ErrMendelianRulesList
+			if errors.As(err, &listErr) {
+				fmt.Fprint(os.Stderr, listErr.Listing)
+				return 255
+			}
+			fmt.Fprintf(os.Stderr, "bcftools mendelian2: %v\n", err)
+			return 2
+		}
+		ruleSet = rs
 	}
 
 	rest := fs.Args()
@@ -185,6 +243,7 @@ func runMendelian2(args []string) int {
 		ExcludeExpr:   excludeExpr,
 		OutputFormat:  format,
 		CompressLevel: -1,
+		Rules:         ruleSet,
 	}
 	if pfm != "" {
 		parsed, err := bcftools.ParseMendelian2PFM(pfm)
@@ -193,6 +252,26 @@ func runMendelian2(args []string) int {
 			return 2
 		}
 		opts.PFM = &parsed
+	}
+
+	// -W/--write-index is only meaningful when we emit an indexable
+	// (bgzipped) VCF/BCF to a real file, which in turn requires a
+	// VCF/BCF-producing mode (anything other than pure count).
+	if writeIndexSet {
+		if modeBits == bcftools.Mendelian2Count {
+			fmt.Fprintln(os.Stderr, "bcftools mendelian2: -W/--write-index requires a VCF/BCF output mode (not -m c)")
+			return 2
+		}
+		if outputPath == "" || outputPath == "-" {
+			fmt.Fprintln(os.Stderr, "bcftools mendelian2: -W/--write-index requires -o FILE")
+			return 2
+		}
+		if format != bcftools.OutputVCFGz {
+			fmt.Fprintln(os.Stderr, "bcftools mendelian2: -W/--write-index requires a bgzipped output (-Oz)")
+			return 2
+		}
+		// Emit BGZF (block-gzip) so the file is indexable.
+		opts.BGZF = true
 	}
 
 	// Acknowledge the surface-only flags so the linter doesn't bark.
@@ -210,33 +289,44 @@ func runMendelian2(args []string) int {
 		fmt.Fprintf(os.Stderr, "bcftools mendelian2: %v\n", err)
 		return 1
 	}
-	defer out.Close()
 
 	if _, err := bcftools.Mendelian2File(rest[0], out, opts); err != nil {
+		out.Close()
 		fmt.Fprintf(os.Stderr, "bcftools mendelian2: %v\n", err)
 		return 1
+	}
+	// Flush/close the output before indexing so the on-disk bytes are
+	// complete (BuildIndex re-opens and scans the file).
+	if err := out.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools mendelian2: %v\n", err)
+		return 1
+	}
+
+	if writeIndexSet {
+		if _, err := bcftools.BuildIndex(outputPath, parseWriteIndexFormat(writeIndex, outputPath)); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools mendelian2: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }
 
-// checkMendelian2DeferredInputs groups the v1-recognised-but-deferred
-// flag values; the surface MUST stay stable (see test).
-type checkMendelian2DeferredInputs struct {
-	rules      string
-	rulesFile  string
-	writeIndex string
-}
-
-func checkMendelian2Deferred(in checkMendelian2DeferredInputs) string {
-	switch {
-	case in.rules != "":
-		return "--rules"
-	case in.rulesFile != "":
-		return "--rules-file"
-	case in.writeIndex != "":
-		return "-W/--write-index"
+// parseWriteIndexFormat maps the optional -W/--write-index argument
+// ("", "csi", or "tbi") and the output path to IndexOptions. Upstream's
+// default for a bgzipped VCF is .csi; an explicit "tbi" selects the
+// tabix flavour. The index is always written with Force so a stale
+// index from a previous run is overwritten, matching upstream's
+// auto-index behaviour.
+func parseWriteIndexFormat(arg, outputPath string) bcftools.IndexOptions {
+	opts := bcftools.IndexOptions{Format: bcftools.IndexCSI, Force: true}
+	switch strings.ToLower(strings.TrimPrefix(arg, "=")) {
+	case "tbi":
+		opts.Format = bcftools.IndexTBI
+	case "csi", "":
+		opts.Format = bcftools.IndexCSI
 	}
-	return ""
+	_ = outputPath
+	return opts
 }
 
 const polysomyUsage = `bcftools polysomy - detect chromosomal copy number from B-allele frequency.

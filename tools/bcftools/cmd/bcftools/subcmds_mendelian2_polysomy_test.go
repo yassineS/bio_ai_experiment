@@ -1,31 +1,36 @@
 package main
 
-import "testing"
+import (
+	"testing"
 
-// TestCheckMendelian2Deferred locks in the upstream-flag-name surface
-// that runMendelian2 hard-rejects rather than silently accepting.
-// Per the project parity rule (docs/PARITY_ROADMAP.md "Definition of
-// 1:1") every documented upstream flag must be recognised — either
-// implemented or gracefully rejected with a roadmap pointer. A
-// regression that drops any of these from the rejection set without
-// implementing the underlying behaviour is a parity bug.
-func TestCheckMendelian2Deferred(t *testing.T) {
-	if got := checkMendelian2Deferred(checkMendelian2DeferredInputs{}); got != "" {
-		t.Fatalf("empty inputs: got deferred=%q, want \"\"", got)
-	}
+	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
+)
+
+// TestParseWriteIndexFormat checks that the optional -W/--write-index
+// argument maps to the right index flavour. The bare flag (and an
+// explicit "csi") yields a forced .csi index; "tbi" selects the tabix
+// flavour. These were previously deferred; they are now wired so the
+// mapping is the parity surface worth locking in.
+func TestParseWriteIndexFormat(t *testing.T) {
 	cases := []struct {
 		name string
-		in   checkMendelian2DeferredInputs
-		want string
+		arg  string
+		want bcftools.IndexFormat
 	}{
-		{"rules", checkMendelian2DeferredInputs{rules: "GRCh38"}, "--rules"},
-		{"rules-file", checkMendelian2DeferredInputs{rulesFile: "rules.txt"}, "--rules-file"},
-		{"write-index", checkMendelian2DeferredInputs{writeIndex: "csi"}, "-W/--write-index"},
+		{"default", "", bcftools.IndexCSI},
+		{"csi", "csi", bcftools.IndexCSI},
+		{"csi-equals", "=csi", bcftools.IndexCSI},
+		{"tbi", "tbi", bcftools.IndexTBI},
+		{"tbi-equals", "=tbi", bcftools.IndexTBI},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := checkMendelian2Deferred(tc.in); got != tc.want {
-				t.Errorf("deferred(%s): got %q, want %q", tc.name, got, tc.want)
+			got := parseWriteIndexFormat(tc.arg, "out.vcf.gz")
+			if got.Format != tc.want {
+				t.Errorf("parseWriteIndexFormat(%q): got %v, want %v", tc.arg, got.Format, tc.want)
+			}
+			if !got.Force {
+				t.Errorf("parseWriteIndexFormat(%q): Force should be true", tc.arg)
 			}
 		})
 	}
