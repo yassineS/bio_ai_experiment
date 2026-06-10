@@ -14,9 +14,11 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
-// DefaultDepthExcludeFlags matches upstream samtools depth's default `-F`
-// value of 0x4 (unmapped reads).
-const DefaultDepthExcludeFlags uint16 = sam.FlagUnmapped
+// DefaultDepthExcludeFlags matches upstream samtools depth's default
+// filter-out flag list, UNMAP,SECONDARY,QCFAIL,DUP (see
+// reference_code/samtools/bam2depth.c: .flag = BAM_FUNMAP | BAM_FSECONDARY
+// | BAM_FDUP | BAM_FQCFAIL).
+const DefaultDepthExcludeFlags uint16 = sam.FlagUnmapped | sam.FlagSecondary | sam.FlagQCFail | sam.FlagDuplicate
 
 // DepthOptions configures the behaviour of Depth.
 type DepthOptions struct {

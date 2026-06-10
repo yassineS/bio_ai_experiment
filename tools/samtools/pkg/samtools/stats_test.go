@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"hash/crc32"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,25 @@ import (
 func statsFixture(t *testing.T, name string) string {
 	t.Helper()
 	return filepath.Join("..", "..", "testdata", "parity", "stat", name)
+}
+
+// upstreamStats runs the live `samtools stats` binary on the given input
+// fixture (plus any extra args, e.g. `-r ref.fa`) and returns its full
+// text output. The upstream binary is built on demand; a build failure is
+// fatal. This replaces reading committed `.stats.expected` golden files.
+func upstreamStats(t *testing.T, inputPath string, extraArgs ...string) string {
+	t.Helper()
+	bin := upstreamSamtools(t)
+	args := append([]string{"stats"}, extraArgs...)
+	args = append(args, inputPath)
+	cmd := exec.Command(bin, args...)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("upstream samtools stats %v: %v\n%s", args, err, errBuf.String())
+	}
+	return out.String()
 }
 
 // extractSN returns only the body lines starting with "SN\t" from a
@@ -39,17 +59,16 @@ func extractSN(blob string) string {
 // section the entire downstream ecosystem actually consumes.
 func TestStatsSNParity(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  string
-		expect string
-		opts   StatsOptions
+		name  string
+		input string
+		opts  StatsOptions
 	}{
-		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected", StatsOptions{}},
-		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected", StatsOptions{}},
-		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected", StatsOptions{}},
-		{"7_supp", "7_supp.sam", "7.stats.expected", StatsOptions{}},
-		{"8_secondary", "8_secondary.sam", "8.stats.expected", StatsOptions{}},
-		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected", StatsOptions{}},
+		{"1_map_cigar", "1_map_cigar.sam", StatsOptions{}},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", StatsOptions{}},
+		{"5_insert_cigar", "5_insert_cigar.sam", StatsOptions{}},
+		{"7_supp", "7_supp.sam", StatsOptions{}},
+		{"8_secondary", "8_secondary.sam", StatsOptions{}},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam", StatsOptions{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,11 +82,7 @@ func TestStatsSNParity(t *testing.T) {
 				t.Fatalf("Stats: %v", err)
 			}
 			gotSN := extractSN(out.String())
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			wantSN := extractSN(string(expected))
+			wantSN := extractSN(upstreamStats(t, statsFixture(t, tc.input)))
 			if gotSN != wantSN {
 				t.Fatalf("SN section differs\n--- want\n%s\n--- got\n%s", wantSN, gotSN)
 			}
@@ -97,16 +112,15 @@ func extractSection(blob, tag string) string {
 // all-zero rows, in the default (non-sparse) mode.
 func TestStatsCycleSectionParity(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  string
-		expect string
+		name  string
+		input string
 	}{
-		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected"},
-		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected"},
-		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected"},
-		{"7_supp", "7_supp.sam", "7.stats.expected"},
-		{"8_secondary", "8_secondary.sam", "8.stats.expected"},
-		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected"},
+		{"1_map_cigar", "1_map_cigar.sam"},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam"},
+		{"5_insert_cigar", "5_insert_cigar.sam"},
+		{"7_supp", "7_supp.sam"},
+		{"8_secondary", "8_secondary.sam"},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam"},
 	}
 	sections := []string{"FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "IC", "ID", "IS"}
 	for _, tc := range cases {
@@ -120,11 +134,7 @@ func TestStatsCycleSectionParity(t *testing.T) {
 			if err := Stats(in, &out, StatsOptions{}); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			got, want := out.String(), string(expected)
+			got, want := out.String(), upstreamStats(t, statsFixture(t, tc.input))
 			for _, sec := range sections {
 				if extractSection(got, sec) != extractSection(want, sec) {
 					t.Errorf("%s section differs\n--- want\n%s\n--- got\n%s",
@@ -160,15 +170,14 @@ func TestStatsBarcodeParity(t *testing.T) {
 	cases := []struct {
 		name     string
 		input    string
-		expect   string
 		sections []string
 	}{
 		{
-			"bc", "13_barcodes_ok.sam", "13.barcodes.bc.ok.expected",
+			"bc", "13_barcodes_ok.sam",
 			[]string{"CHK", "SN", "FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "BCC", "QTQ", "IS", "RL", "FRL", "LRL", "MAPQ", "ID", "IC", "COV", "GCD"},
 		},
 		{
-			"ox_bz", "13_barcodes_ok_ox_bz.sam", "13.barcodes.ox.ok.expected",
+			"ox_bz", "13_barcodes_ok_ox_bz.sam",
 			[]string{"CHK", "SN", "FFQ", "LFQ", "GCF", "GCL", "GCC", "GCT", "FBC", "FTC", "LBC", "LTC", "BCC", "QTQ", "OXC", "BZQ", "IS", "RL", "FRL", "LRL", "MAPQ", "ID", "IC", "COV", "GCD"},
 		},
 	}
@@ -183,11 +192,7 @@ func TestStatsBarcodeParity(t *testing.T) {
 			if err := Stats(in, &out, StatsOptions{}); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			got, want := out.String(), string(expected)
+			got, want := out.String(), upstreamStats(t, statsFixture(t, tc.input))
 			// The per-barcode sections carry a trailing segment digit on the
 			// tag (BCC1/BCC2/QTQ1/...), so they need prefix matching.
 			isBarcodeSec := map[string]bool{"BCC": true, "QTQ": true, "OXC": true, "BZQ": true}
@@ -253,16 +258,15 @@ func extractCommentHeader(blob, prefix string) string {
 // used for the sequences checksum.
 func TestStatsCHKParity(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  string
-		expect string
+		name  string
+		input string
 	}{
-		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected"},
-		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected"},
-		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected"},
-		{"7_supp", "7_supp.sam", "7.stats.expected"},
-		{"8_secondary", "8_secondary.sam", "8.stats.expected"},
-		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected"},
+		{"1_map_cigar", "1_map_cigar.sam"},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam"},
+		{"5_insert_cigar", "5_insert_cigar.sam"},
+		{"7_supp", "7_supp.sam"},
+		{"8_secondary", "8_secondary.sam"},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -275,11 +279,7 @@ func TestStatsCHKParity(t *testing.T) {
 			if err := Stats(in, &out, StatsOptions{}); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			got, want := out.String(), string(expected)
+			got, want := out.String(), upstreamStats(t, statsFixture(t, tc.input))
 			if extractSection(got, "CHK") != extractSection(want, "CHK") {
 				t.Errorf("CHK row differs\n--- want\n%s--- got\n%s",
 					extractSection(want, "CHK"), extractSection(got, "CHK"))
@@ -302,15 +302,14 @@ func TestStatsCOVParity(t *testing.T) {
 	cases := []struct {
 		name   string
 		input  string
-		expect string
 		sorted bool
 	}{
-		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected", true},
-		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected", true},
-		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected", true},
-		{"7_supp", "7_supp.sam", "7.stats.expected", true},
-		{"8_secondary", "8_secondary.sam", "8.stats.expected", true},
-		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected", false},
+		{"1_map_cigar", "1_map_cigar.sam", true},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", true},
+		{"5_insert_cigar", "5_insert_cigar.sam", true},
+		{"7_supp", "7_supp.sam", true},
+		{"8_secondary", "8_secondary.sam", true},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,11 +322,7 @@ func TestStatsCOVParity(t *testing.T) {
 			if err := Stats(in, &out, StatsOptions{}); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			got, want := out.String(), string(expected)
+			got, want := out.String(), upstreamStats(t, statsFixture(t, tc.input))
 			if extractSection(got, "COV") != extractSection(want, "COV") {
 				t.Errorf("COV rows differ\n--- want\n%s--- got\n%s",
 					extractSection(want, "COV"), extractSection(got, "COV"))
@@ -355,15 +350,14 @@ func TestStatsGCDParity(t *testing.T) {
 	cases := []struct {
 		name   string
 		input  string
-		expect string
 		sorted bool
 	}{
-		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected", true},
-		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected", true},
-		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected", true},
-		{"7_supp", "7_supp.sam", "7.stats.expected", true},
-		{"8_secondary", "8_secondary.sam", "8.stats.expected", true},
-		{"10_map_cigar_unsorted", "10_map_cigar.sam", "10.stats.expected", false},
+		{"1_map_cigar", "1_map_cigar.sam", true},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", true},
+		{"5_insert_cigar", "5_insert_cigar.sam", true},
+		{"7_supp", "7_supp.sam", true},
+		{"8_secondary", "8_secondary.sam", true},
+		{"10_map_cigar_unsorted", "10_map_cigar.sam", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -376,11 +370,7 @@ func TestStatsGCDParity(t *testing.T) {
 			if err := Stats(in, &out, StatsOptions{}); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			got, want := out.String(), string(expected)
+			got, want := out.String(), upstreamStats(t, statsFixture(t, tc.input))
 			if extractSection(got, "GCD") != extractSection(want, "GCD") {
 				t.Errorf("GCD rows differ\n--- want\n%s--- got\n%s",
 					extractSection(want, "GCD"), extractSection(got, "GCD"))
@@ -405,14 +395,13 @@ func TestStatsGCDParity(t *testing.T) {
 // the reference-derived GC path still matches the golden files exactly.
 func TestStatsGCDReferenceParity(t *testing.T) {
 	cases := []struct {
-		input  string
-		expect string
+		input string
 	}{
-		{"1_map_cigar.sam", "1.stats.expected"},
-		{"2_equal_cigar_full_seq.sam", "2.stats.expected"},
-		{"5_insert_cigar.sam", "5.stats.expected"},
-		{"7_supp.sam", "7.stats.expected"},
-		{"8_secondary.sam", "8.stats.expected"},
+		{"1_map_cigar.sam"},
+		{"2_equal_cigar_full_seq.sam"},
+		{"5_insert_cigar.sam"},
+		{"7_supp.sam"},
+		{"8_secondary.sam"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {
@@ -426,11 +415,8 @@ func TestStatsGCDReferenceParity(t *testing.T) {
 			if err := Stats(in, &out, opts); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			got, want := out.String(), string(expected)
+			got := out.String()
+			want := upstreamStats(t, statsFixture(t, tc.input), "-r", statsFixture(t, "test.fa"))
 			if extractSection(got, "GCD") != extractSection(want, "GCD") {
 				t.Errorf("GCD rows differ (reference path)\n--- want\n%s--- got\n%s",
 					extractSection(want, "GCD"), extractSection(got, "GCD"))
@@ -861,18 +847,18 @@ func TestStatsSparseThinsISOnly(t *testing.T) {
 // does not implement.
 func TestStatsTargetRegionsParity(t *testing.T) {
 	cases := []struct {
-		name   string
-		expect string
-		opts   StatsOptions
+		name      string
+		extraArgs []string // upstream `samtools stats` flags before the input
+		opts      StatsOptions
 	}{
 		{
 			"default-threshold",
-			"11.stats.expected",
+			[]string{"-t", statsFixture(t, "11.stats.targets")},
 			StatsOptions{TargetBED: statsFixture(t, "11.stats.targets")},
 		},
 		{
 			"cov-threshold-4",
-			"11.stats.g4.expected",
+			[]string{"-g", "4", "-t", statsFixture(t, "11.stats.targets")},
 			StatsOptions{TargetBED: statsFixture(t, "11.stats.targets"), CovThreshold: 4},
 		},
 	}
@@ -887,11 +873,8 @@ func TestStatsTargetRegionsParity(t *testing.T) {
 			if err := Stats(in, &out, tc.opts); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			got, want := out.String(), string(expected)
+			got := out.String()
+			want := upstreamStats(t, statsFixture(t, "11_target.sam"), tc.extraArgs...)
 			if extractSN(got) != extractSN(want) {
 				t.Errorf("SN section differs\n--- want\n%s\n--- got\n%s",
 					extractSN(want), extractSN(got))
@@ -1100,15 +1083,14 @@ func TestStatsTargetRegionsDeletionBoundary(t *testing.T) {
 // in the N column because the "*" quality string makes qual+1 wrap to 0.
 func TestStatsMPCParity(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  string
-		expect string
+		name  string
+		input string
 	}{
-		{"1_map_cigar", "1_map_cigar.sam", "1.stats.expected"},
-		{"2_equal_cigar", "2_equal_cigar_full_seq.sam", "2.stats.expected"},
-		{"5_insert_cigar", "5_insert_cigar.sam", "5.stats.expected"},
-		{"7_supp", "7_supp.sam", "7.stats.expected"},
-		{"8_secondary", "8_secondary.sam", "8.stats.expected"},
+		{"1_map_cigar", "1_map_cigar.sam"},
+		{"2_equal_cigar", "2_equal_cigar_full_seq.sam"},
+		{"5_insert_cigar", "5_insert_cigar.sam"},
+		{"7_supp", "7_supp.sam"},
+		{"8_secondary", "8_secondary.sam"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1122,11 +1104,8 @@ func TestStatsMPCParity(t *testing.T) {
 			if err := Stats(in, &out, opts); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			got, want := out.String(), string(expected)
+			got := out.String()
+			want := upstreamStats(t, statsFixture(t, tc.input), "-r", statsFixture(t, "test.fa"))
 			if extractSection(got, "MPC") != extractSection(want, "MPC") {
 				t.Errorf("MPC rows differ\n--- want\n%s--- got\n%s",
 					extractSection(want, "MPC"), extractSection(got, "MPC"))
@@ -1176,25 +1155,27 @@ func TestStatsMPCGatedOnRefSeq(t *testing.T) {
 // RFS section itself.
 func TestStatsRFSParity(t *testing.T) {
 	cases := []struct {
-		name   string
-		expect string
-		opts   func(t *testing.T) StatsOptions
+		name string
+		args func(t *testing.T) []string // upstream `samtools stats` flags
+		opts func(t *testing.T) StatsOptions
 	}{
 		{
-			name:   "no_reference",
-			expect: "16.stats.expected",
-			opts:   func(t *testing.T) StatsOptions { return StatsOptions{RefStats: true} },
+			name: "no_reference",
+			args: func(t *testing.T) []string { return []string{"--ref-stats"} },
+			opts: func(t *testing.T) StatsOptions { return StatsOptions{RefStats: true} },
 		},
 		{
-			name:   "with_reference",
-			expect: "17.stats.expected",
+			name: "with_reference",
+			args: func(t *testing.T) []string { return []string{"--ref-stats", "-r", statsFixture(t, "test1.fa")} },
 			opts: func(t *testing.T) StatsOptions {
 				return StatsOptions{RefStats: true, RefSeq: statsFixture(t, "test1.fa")}
 			},
 		},
 		{
-			name:   "with_reference_and_targets",
-			expect: "19.stats.expected",
+			name: "with_reference_and_targets",
+			args: func(t *testing.T) []string {
+				return []string{"--ref-stats", "-r", statsFixture(t, "test1.fa"), "-t", statsFixture(t, "11.stats.targets")}
+			},
 			opts: func(t *testing.T) StatsOptions {
 				return StatsOptions{
 					RefStats:  true,
@@ -1215,13 +1196,10 @@ func TestStatsRFSParity(t *testing.T) {
 			if err := Stats(in, &out, tc.opts(t)); err != nil {
 				t.Fatalf("Stats: %v", err)
 			}
-			expected, err := os.ReadFile(statsFixture(t, tc.expect))
-			if err != nil {
-				t.Fatalf("read expected: %v", err)
-			}
-			if extractSection(out.String(), "RFS") != string(expected) {
+			want := extractSection(upstreamStats(t, statsFixture(t, "11_target.sam"), tc.args(t)...), "RFS")
+			if extractSection(out.String(), "RFS") != want {
 				t.Errorf("RFS rows differ\n--- want\n%s--- got\n%s",
-					string(expected), extractSection(out.String(), "RFS"))
+					want, extractSection(out.String(), "RFS"))
 			}
 		})
 	}

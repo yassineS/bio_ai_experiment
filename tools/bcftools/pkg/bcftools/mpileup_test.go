@@ -3,6 +3,7 @@ package bcftools
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -302,20 +303,28 @@ func mpileupStarRecords(t *testing.T, bam, ref, region string, noBAQ bool) []str
 	return out
 }
 
-// goldenStarRecords reads the upstream golden, keeps records on chrom in
-// the inclusive [beg,end] window whose ALT is `<*>`, and strips the
-// FORMAT/AD column the golden was produced with (`-a -AD`) so the
-// remaining fields can be compared byte-for-byte against our PL-only
-// output. The `<*>`-only records carry no bias annotations, so once the
-// AD subfield is removed the line must match exactly.
-func goldenStarRecords(t *testing.T, goldenPath, chrom string, beg, end int) []string {
+// upstreamStarRecords runs the live `bcftools mpileup -a -AD -r <region>`
+// binary over the same BAM/FASTA and keeps records on chrom in the
+// inclusive [beg,end] window whose ALT is `<*>`. With `-a -AD` the FORMAT
+// column is PL-only, matching mpileupStarRecords, so the lines can be
+// compared byte-for-byte. The upstream binary needs a BAM index for `-r`;
+// a temp indexed copy is built if the fixture lacks a sidecar.
+func upstreamStarRecords(t *testing.T, bin, bam, ref, region, chrom string, beg, end int) []string {
 	t.Helper()
-	b, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatalf("read golden %s: %v", goldenPath, err)
+	inBAM := bam
+	if !fileExists(bam+".bai") && !fileExists(bam+".csi") {
+		inBAM = indexedBAMCopy(t, bin, bam)
 	}
-	var out []string
-	for _, ln := range strings.Split(string(b), "\n") {
+	cmd := exec.Command(bin, "mpileup", "--no-version", "-a", "-AD",
+		"-f", ref, "-r", region, "-Ov", inBAM)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("upstream bcftools mpileup -r %s: %v\n%s", region, err, errBuf.String())
+	}
+	var recs []string
+	for _, ln := range strings.Split(out.String(), "\n") {
 		if ln == "" || strings.HasPrefix(ln, "#") {
 			continue
 		}
@@ -327,53 +336,31 @@ func goldenStarRecords(t *testing.T, goldenPath, chrom string, beg, end int) []s
 		if err != nil || pos < beg || pos > end {
 			continue
 		}
-		// Drop the AD half of FORMAT (`PL:AD` -> `PL`) and every
-		// sample's `:AD` subfield value.
-		fmtTags := strings.Split(f[8], ":")
-		keep := fmtTags[:0]
-		var adIdx = -1
-		for i, tag := range strings.Split(f[8], ":") {
-			if tag == "AD" {
-				adIdx = i
-				continue
-			}
-			keep = append(keep, tag)
-		}
-		f[8] = strings.Join(keep, ":")
-		if adIdx >= 0 {
-			for s := 9; s < len(f); s++ {
-				parts := strings.Split(f[s], ":")
-				if adIdx < len(parts) {
-					parts = append(parts[:adIdx], parts[adIdx+1:]...)
-				}
-				f[s] = strings.Join(parts, ":")
-			}
-		}
-		out = append(out, strings.Join(f, "\t"))
+		recs = append(recs, ln)
 	}
-	return out
+	return recs
 }
 
 // TestMpileupBAQGoldens is the slice-3 byte-for-byte parity check. With
-// BAQ wired, mpileup over the upstream mpileup.3.bam fixture must match
-// the upstream golden mpileup/mpileup.11.out on every `<*>`-only record
-// (those carry no slice-4 bias annotations).
+// BAQ wired, mpileup over the upstream mpileup.3.bam fixture must match the
+// live upstream `bcftools mpileup` output on every `<*>`-only record (those
+// carry no slice-4 bias annotations).
 //
 // Region 17:1-1116 is used: it is free of overlapping read pairs, so the
 // not-yet-ported MPLP_SMART_OVERLAPS quality merging cannot perturb the
-// comparison. The default (BAQ-on) output is compared to the golden; the
-// test also runs -B (BAQ-off) and asserts it diverges on at least one
-// column, proving the MPLP_REALN_PARTIAL heuristic does trigger BAQ on
-// the indel-bearing columns in this region (and that BAQ then matches
-// upstream byte-for-byte, since the golden compare above is the BAQ-on
+// comparison. The default (BAQ-on) output is compared to the upstream
+// binary; the test also runs -B (BAQ-off) and asserts it diverges on at
+// least one column, proving the MPLP_REALN_PARTIAL heuristic does trigger
+// BAQ on the indel-bearing columns in this region (and that BAQ then
+// matches upstream byte-for-byte, since the compare above is the BAQ-on
 // path).
 func TestMpileupBAQGoldens(t *testing.T) {
 	bam := referenceFixture(t, "mpileup/mpileup.3.bam")
 	ref := referenceFixture(t, "mpileup/mpileup.ref.fa")
-	golden := referenceFixturePath(t, "mpileup/mpileup.11.out")
+	bin := upstreamBcftools(t)
 
 	got := mpileupStarRecords(t, bam, ref, "17:1-1116", false)
-	want := goldenStarRecords(t, golden, "17", 1, 1116)
+	want := upstreamStarRecords(t, bin, bam, ref, "17:1-1116", "17", 1, 1116)
 	if len(got) != len(want) {
 		t.Fatalf("record count: got %d, want %d", len(got), len(want))
 	}
@@ -399,15 +386,6 @@ func TestMpileupBAQGoldens(t *testing.T) {
 		t.Error("-B output identical to default: BAQ was never applied, so this test would not actually exercise BAQ")
 	}
 	t.Logf("BAQ active: %d/%d `<*>`-only columns differ between -B and the default", diffs, len(got))
-}
-
-// TestMpileupBAQGoldensDeferred is retained for history. The slice-4
-// work (bias annotations, INFO/QS float32 rounding, smart-overlaps)
-// closed the SNP gaps it used to track; the full byte-for-byte parity
-// check now lives in TestMpileupSNPGoldens and the remaining deferred
-// goldens are catalogued by TestMpileupGoldensDeferred.
-func TestMpileupBAQGoldensDeferred(t *testing.T) {
-	t.Skip("superseded by TestMpileupSNPGoldens and TestMpileupGoldensDeferred")
 }
 
 // TestMpileupBCFRoundTrip verifies that -O b output is well-formed BCF

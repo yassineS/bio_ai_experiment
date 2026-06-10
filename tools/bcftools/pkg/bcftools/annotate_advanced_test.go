@@ -17,7 +17,6 @@ package bcftools
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,11 +121,6 @@ func runIn(dir, name string, args ...string) ([]byte, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	return cmd.CombinedOutput()
-}
-
-// errf wraps fmt.Errorf for the build-failure messages.
-func errf(format string, a ...interface{}) error {
-	return fmt.Errorf(format, a...)
 }
 
 // annotateVersionRE drops the upstream provenance lines.

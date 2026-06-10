@@ -203,10 +203,7 @@ func TestStatsUserTSTV_IntFloatFormat(t *testing.T) {
 // skips). A Float-typed tag (BQB) and an Integer-typed tag (MQ) are both
 // exercised so the `%e` vs `%.0f` bin-label divergence is covered live.
 func TestStats_UserTSTVUpstreamParity(t *testing.T) {
-	bin, binErr := ensureUpstreamBcftools(t)
-	if binErr != nil || bin == "" {
-		t.Fatalf("upstream bcftools unavailable: %v", binErr)
-	}
+	bin := upstreamBcftools(t)
 	fixture := statsFixturePath(t)
 	in := readStatsFixtureVCF(t)
 

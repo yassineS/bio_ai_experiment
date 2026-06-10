@@ -3,6 +3,7 @@ package samtools
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -373,9 +374,30 @@ func extractTag(t *testing.T, text, tag string) map[string]string {
 	return out
 }
 
+// upstreamCalmd runs the live `samtools calmd` binary on the realn01
+// fixture with the given args and returns its SAM-text output. The upstream
+// binary is built on demand; a build failure is fatal. This replaces
+// reading committed realn01_exp*.sam golden files.
+func upstreamCalmd(t *testing.T, args ...string) string {
+	t.Helper()
+	bin := upstreamSamtools(t)
+	sam := parityPath(t, "calmd/realn01.sam")
+	ref := parityPath(t, "calmd/realn01.fa")
+	cmdArgs := append([]string{"calmd"}, args...)
+	cmdArgs = append(cmdArgs, sam, ref)
+	cmd := exec.Command(bin, cmdArgs...)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("upstream samtools calmd %v: %v\n%s", cmdArgs, err, errBuf.String())
+	}
+	return out.String()
+}
+
 // TestCalmd_RealignBAQ verifies the -r flag drives BAQ realignment: each
-// record in the output carries a BQ:Z tag byte-identical to htslib's
-// realn01_exp.sam golden (which test_realn produced with the same input).
+// record in the output carries a BQ:Z tag byte-identical to the live
+// upstream `samtools calmd -r` output on the same input.
 func TestCalmd_RealignBAQ(t *testing.T) {
 	in := openParity(t, "calmd/realn01.sam")
 	defer in.Close()
@@ -387,10 +409,9 @@ func TestCalmd_RealignBAQ(t *testing.T) {
 	}
 	got := extractTag(t, buf.String(), "BQ")
 
-	goldText := string(readParity(t, "calmd/realn01_exp.sam"))
-	want := extractTag(t, goldText, "BQ")
+	want := extractTag(t, upstreamCalmd(t, "-r"), "BQ")
 	if len(want) == 0 {
-		t.Fatal("golden has no BQ tags")
+		t.Fatal("upstream output has no BQ tags")
 	}
 	for q, w := range want {
 		if got[q] != w {
@@ -401,7 +422,8 @@ func TestCalmd_RealignBAQ(t *testing.T) {
 
 // TestCalmd_ApplyBAQ verifies the -rA combination applies BAQ to the base
 // qualities and writes a ZQ:Z tag. The adjusted qualities and ZQ tag are
-// checked byte-for-byte against htslib's realn01_exp-a.sam golden.
+// checked byte-for-byte against the live upstream `samtools calmd -rA`
+// output.
 func TestCalmd_ApplyBAQ(t *testing.T) {
 	in := openParity(t, "calmd/realn01.sam")
 	defer in.Close()
@@ -413,7 +435,7 @@ func TestCalmd_ApplyBAQ(t *testing.T) {
 	}
 	gotRecs := indexCalmdSAM(t, buf.String())
 
-	goldRecs := indexCalmdSAM(t, string(readParity(t, "calmd/realn01_exp-a.sam")))
+	goldRecs := indexCalmdSAM(t, upstreamCalmd(t, "-r", "-A"))
 	checked := 0
 	for q, gold := range goldRecs {
 		goldZQ, hasZQ := gold.GetAux("ZQ")
