@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // TestCheckCSQDeferred locks in the upstream-flag surface that runCSQ
 // hard-rejects rather than silently accepting. Per the project parity
@@ -23,6 +27,7 @@ func TestCheckCSQDeferred(t *testing.T) {
 	}{
 		// Still genuinely deferred:
 		{"brief", checkCSQDeferredInputs{brief: true}, "-b/--brief-predictions"},
+		{"local-csq", checkCSQDeferredInputs{localCSQ: true}, "-l/--local-csq"},
 		{"genetic-code 1", checkCSQDeferredInputs{geneticCode: "1"}, "-C/--genetic-code 1 (only standard table 0 in v1)"},
 		// Unknown -O type must still be rejected with the format hint.
 		{"-O t", checkCSQDeferredInputs{outputType: "t"}, "-O t (expect v|z|b|u)"},
@@ -98,4 +103,55 @@ func TestCSQRunInputs(t *testing.T) {
 	if rc := runCSQ([]string{"-b", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 2 {
 		t.Errorf("-b must be rejected, got rc=%d", rc)
 	}
+}
+
+// TestCSQRunOutputFormatAndDumpGFF drives runCSQ end-to-end through the
+// CLI with -O b (BCF output) and --dump-gff, verifying both new slice-4
+// flags are wired (the -O value reaches CSQOptions.OutputFormat and the
+// dump file is written). It uses the vendored csq fixture.
+func TestCSQRunOutputFormatAndDumpGFF(t *testing.T) {
+	const fixtures = "../../testdata/csq"
+	for _, f := range []string{"csq.vcf", "csq.fa", "csq.gff3"} {
+		if _, err := os.Stat(filepath.Join(fixtures, f)); err != nil {
+			t.Skipf("vendored fixture %s missing: %v", f, err)
+		}
+	}
+	dir := t.TempDir()
+	outBCF := filepath.Join(dir, "out.bcf")
+	dump := filepath.Join(dir, "dump.gff.gz")
+	rc := runCSQ([]string{
+		"-p", "a",
+		"-f", filepath.Join(fixtures, "csq.fa"),
+		"-g", filepath.Join(fixtures, "csq.gff3"),
+		"-O", "b", "-o", outBCF,
+		"--dump-gff", dump,
+		filepath.Join(fixtures, "csq.vcf"),
+	})
+	if rc != 0 {
+		t.Fatalf("runCSQ rc=%d, want 0", rc)
+	}
+	bi, err := os.Stat(outBCF)
+	if err != nil || bi.Size() == 0 {
+		t.Fatalf("BCF output not written: err=%v size=%d", err, fileSize(bi))
+	}
+	// -O b emits BGZF-framed BCF, so the file starts with the gzip magic
+	// (0x1f 0x8b); the "BCF\2" magic lives inside the compressed stream.
+	hdr, err := os.ReadFile(outBCF)
+	if err != nil {
+		t.Fatalf("read bcf: %v", err)
+	}
+	if len(hdr) < 2 || hdr[0] != 0x1f || hdr[1] != 0x8b {
+		t.Errorf("output is not BGZF-framed (magic=%x)", hdr[:min(4, len(hdr))])
+	}
+	di, err := os.Stat(dump)
+	if err != nil || di.Size() == 0 {
+		t.Fatalf("--dump-gff output not written: err=%v size=%d", err, fileSize(di))
+	}
+}
+
+func fileSize(fi os.FileInfo) int64 {
+	if fi == nil {
+		return -1
+	}
+	return fi.Size()
 }

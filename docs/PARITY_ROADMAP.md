@@ -2271,13 +2271,20 @@ per-subcommand option-tail sections below):
 - **`call`** — consensus and biallelic multi-allelic calling are
   implemented; the full upstream multi-allelic `-m` grid over >2 ALTs
   pairs with the mpileup MAQ port.
-- **`csq`** — haplotype-aware consequence engine (slices 1-3 done):
+- **`csq`** — haplotype-aware consequence engine (slices 1-4 done):
   the `hap_node_t` tree, `cds_translate`, compound consequences,
   `@pos` reference pointers and `-p/-n` are ported, and the
   INFO/BCSQ output matches upstream byte-for-byte on the targeted
-  goldens. The remaining tail (`FORMAT/TBCSQ` text expansion,
-  `--unify-chr-names`, `-l/--local-csq`) is slice 4 — see the "csq
-  full-parity slicing plan" below.
+  goldens. Slice 4 added the GFF/output tail: `FORMAT/TBCSQ`
+  per-haplotype text expansion (`query -f'[%TBCSQ\n]'`,
+  `expandTBCSQ`), `--unify-chr-names` contig reconciliation,
+  `--dump-gff FILE` model dumping (byte-exact vs upstream `gff_dump`),
+  and non-text `-O b|u|z` output via the in-tree BCF/BGZF writers —
+  all validated byte-for-byte against the live upstream binary in
+  `csq_slice4_test.go`. The one remaining deferral is
+  `-l/--local-csq` (per-record, non-haplotype-aware `test_cds_local`),
+  which the CLI hard-rejects; see the "csq full-parity slicing plan"
+  below.
 
 Option-tail gaps on `gtcheck` (PR #107, simple-mode):
 
@@ -2506,7 +2513,8 @@ Option-tail gaps on `cnv` (full HMM port):
   per-marker SNP data; the port honours upstream's behaviour (treat
   each record as one marker regardless of REF/ALT).
 
-Option-tail gaps on `csq` (slices 1-3 done; slice 4 remains):
+Option-tail gaps on `csq` (slices 1-4 done; only `-l/--local-csq`
+remains):
 
 - **The engine IS haplotype-aware.** `bcftools csq` now phases
   variants per haplotype, walks the GFF transcripts, builds the
@@ -2521,20 +2529,32 @@ Option-tail gaps on `csq` (slices 1-3 done; slice 4 remains):
 - `-s/--samples` / `-S/--samples-file` — accepted; the engine
   currently walks every header sample. Sample subsetting is slice 4.
 - `-n/--ncsq INT` — parsed into the per-haplotype `FORMAT/BCSQ` cap
-  (`ncsq2`); the cap becomes load-bearing once the `FORMAT/BCSQ`
-  bitmask emission lands in slice 4.
+  (`ncsq2`), load-bearing for the bitmask emission and its
+  `FORMAT/TBCSQ` text expansion (slice 4, `expandTBCSQ`).
 - `-B/--trim-protein-seq INT` — accepted; v1 does not truncate
   predictions.
 - `-b/--brief-predictions` — hard-rejected with a roadmap pointer
   (upstream deprecates this flag itself).
 - `-C/--genetic-code INT|l` — only `0` (standard) is accepted in
   v1; other tables are hard-rejected with a roadmap pointer.
-- `-l/--local-csq` — accepted; v1 always operates per-record.
-- `--unify-chr-names LIST` — only `0` (no rewriting) is accepted in
-  v1; non-zero specs are hard-rejected.
-- `--dump-gff` — hard-rejected; v1 has no GFF dump path.
-- `-O b|u|z|t` — only `-O v` (VCF text) is supported in v1; the
-  others are hard-rejected with a roadmap pointer.
+- `-l/--local-csq` — **hard-rejected** (the one slice-4 deferral): it
+  selects the per-record, non-haplotype-aware `test_cds_local` caller,
+  which is not yet ported. The CLI rejects `-l` rather than silently
+  producing haplotype-aware output under a flag that promises
+  otherwise.
+- `--unify-chr-names 0|VCF,GFF,FAI` — **done (slice 4)**: the three
+  comma-separated prefixes reconcile VCF/GFF/FASTA contig namespaces
+  (`parseUnifyChrNames` / `unifyChrName`); `0` disables. Validated vs
+  the live upstream binary.
+- `--dump-gff FILE` — **done (slice 4)**: writes the parsed GFF model
+  (genes/transcripts/CDS/UTR/exons) as a BGZF GFF3, byte-exact with
+  upstream `gff_dump` on position-ordered inputs (`csq_dump.go`).
+- `FORMAT/TBCSQ` — **done (slice 4)**: per-haplotype text expansion of
+  the `FORMAT/BCSQ` bitmask (`query -f'[%TBCSQ\n]'`, `expandTBCSQ`),
+  byte-for-byte vs upstream.
+- `-O b|u|z|v` — **done (slice 4)**: VCF text (`v`), BGZF VCF (`z`)
+  and BCF (`b`/`u`) via the in-tree writers (`openCSQOutput`);
+  the streaming-text `t` form remains unsupported.
 - `--threads`, `-v/--verbosity`, `-W/--write-index`, `--force`,
   `--no-version`, `-q/--quiet` — accepted; v1 ignores.
 - The minimal GFF3 parser (`pkg/htsgo/gff`) understands `gene`,
@@ -2620,34 +2640,44 @@ SO-term precedence ordering.
   per-record classifier. *Passes byte-for-byte:* `csq.1.out`,
   `csq.oob-codon.out`, `csq.splice.issue-2543.1.out` — see
   `csq_golden_test.go::TestCSQGoldenINFO`.
-- **Slice 4 — GFF/output tail.** The `FORMAT/BCSQ` per-haplotype
-  bitmask and the `FORMAT/TBCSQ` `bcftools query` expansion (needed by
-  `csq.2.out` / `csq.3.out`, which run `query -f'[%TBCSQ\n]'`);
-  `--unify-chr-names LIST` (the 3-field VCF/GFF/FAI rename spec
-  exercised by `csq.chr.out` / `csq.yychr.out` / the `csq.nchr` +
-  `csq.ychr` matrix), `-l/--local-csq` (`test_cds_local`),
-  `--dump-gff`, BCF/`-O b|u|z` output, and `-i/-e` filter wire-up.
-  Also the `GF_NMD`/`NMD_transcript` branch of upstream `kput_vcsq`:
-  `kputVcsq` currently omits NMD-transcript consequence emission, not
-  exercised by the slice 1-3 goldens — it lands here in the slice-4
-  tail.
-  *Unblocks:* `csq.2.out`, `csq.3.out` (`--ncsq 64`), `csq.chr.out`,
-  `csq.yychr.out`, and the `csq.nchr`/`csq.ychr` `--unify-chr-names`
-  matrix (test.pl lines 1081-1092).
+- **Slice 4 — GFF/output tail. DONE** (except `-l/--local-csq`). The
+  `FORMAT/TBCSQ` `bcftools query` expansion (`expandTBCSQ`, decoding
+  the per-haplotype `FORMAT/BCSQ` bitmask into the `hap1\thap2`
+  consequence list); `--unify-chr-names 0|VCF,GFF,FAI` (the 3-field
+  rename spec, `parseUnifyChrNames` / `unifyChrName`); `--dump-gff
+  FILE` (the parsed gene/transcript/CDS/UTR/exon model written as a
+  BGZF GFF3, byte-exact with upstream `gff_dump`, `csq_dump.go`); and
+  BCF / `-O b|u|z` output via the in-tree BCF/BGZF writers
+  (`openCSQOutput`, sharing `bcftools view`'s writer). All four are
+  validated **byte-for-byte against the live upstream binary** in
+  `csq_slice4_test.go` (`TestCSQSlice4{DumpGFF,OutputFormats,TBCSQ,
+  UnifyChrNames}`). The BCF writer gained unified-dictionary IDX
+  dedup across INFO/FILTER/FORMAT (needed because `BCSQ` is both an
+  INFO and a FORMAT tag) plus deterministic INFO emission ordering
+  via `InfoOrder` (`pkg/htsgo/bcf`). **Still deferred:**
+  `-l/--local-csq` (`test_cds_local`, hard-rejected by the CLI) and
+  the `-i/-e` filter wire-up. Also the `GF_NMD`/`NMD_transcript`
+  branch of upstream `kput_vcsq`: `kputVcsq` currently omits
+  NMD-transcript consequence emission.
+  *Unblocks:* the `FORMAT/TBCSQ` and `--unify-chr-names` parity paths;
+  the `csq.2.out` / `csq.3.out` / `csq.chr.out` goldens still require
+  their (uncommitted) `.out` fixtures to run under
+  `TestCSQGoldenINFO`.
 
-Status: slices 1+2 (the per-record consequence logic) and slice 3 (the
-haplotype-aware engine) **DONE** — see `csq_hap.go`, `csq_splice.go`,
-`csq_engine.go`, `csq_process.go` and the golden test
-`csq_golden_test.go`. The standalone v1 per-record classifier has been
-folded into the engine; `csq_classify.go` now holds only the shared
-`csqStrings` table and the `csq*` SO-term bit constants. The `bcftools csq` INFO/BCSQ
-output now matches upstream byte-for-byte on `csq.1.out`,
-`csq.oob-codon.out` and `csq.splice.issue-2543.1.out`. Slice 4 (the
-GFF/output tail — `FORMAT/TBCSQ` text expansion and the
-`--unify-chr-names` matrix) remains; `csq.2.out` / `csq.3.out` are
-deferred there because they validate the `FORMAT/TBCSQ` per-haplotype
-field via `bcftools query`, a cross-tool output-formatting feature
-distinct from the haplotype engine.
+Status: slices 1+2 (the per-record consequence logic), slice 3 (the
+haplotype-aware engine) and slice 4 (the GFF/output tail) **DONE** —
+see `csq_hap.go`, `csq_splice.go`, `csq_engine.go`, `csq_process.go`,
+`csq_dump.go`, the `expandTBCSQ`/`unifyChrName` paths, and the tests
+`csq_golden_test.go` + `csq_slice4_test.go`. The standalone v1
+per-record classifier has been folded into the engine;
+`csq_classify.go` now holds only the shared `csqStrings` table and the
+`csq*` SO-term bit constants. The `bcftools csq` INFO/BCSQ output
+matches upstream byte-for-byte on `csq.1.out`, `csq.oob-codon.out` and
+`csq.splice.issue-2543.1.out`, and slice 4's `FORMAT/TBCSQ`,
+`--dump-gff`, `--unify-chr-names` and `-O b|u|z` paths are validated
+byte-for-byte against the live upstream binary. The single remaining
+deferral is `-l/--local-csq` (`test_cds_local`), hard-rejected by the
+CLI.
 
 Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
 

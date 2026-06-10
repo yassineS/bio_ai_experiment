@@ -21,11 +21,16 @@
 //   - csq_process.go    — the vbuf/pos2vbuf buffer and the
 //                         test_cds/utr/splice/tscript dispatch.
 //
-// The remaining tail (FORMAT/TBCSQ text expansion, --unify-chr-names,
-// -l/--local-csq) is slice 4; see docs/PARITY_ROADMAP.md "csq
-// full-parity slicing plan". The CLI accepts the full upstream
-// getopt_long surface; flags we don't yet honour either no-op or
-// hard-reject with a roadmap pointer.
+// Slice 4 added the GFF/output tail: FORMAT/TBCSQ per-haplotype text
+// expansion (the query path, see query.go expandTBCSQ),
+// --unify-chr-names contig reconciliation (parseUnifyChrNames /
+// unifyChrName), --dump-gff model dumping (csq_dump.go, byte-exact vs
+// upstream gff_dump), and non-text -O b|u|z output via the in-tree
+// BCF/BGZF writers (openCSQOutput). The one remaining deferral is
+// -l/--local-csq (per-record, non-haplotype-aware calling) — see
+// docs/PARITY_ROADMAP.md "csq full-parity slicing plan". The CLI
+// accepts the full upstream getopt_long surface; flags we don't yet
+// honour either no-op or hard-reject with a roadmap pointer.
 
 package bcftools
 
@@ -51,9 +56,10 @@ type CSQOptions struct {
 	// CustomTag is the INFO tag to write under, default "BCSQ".
 	CustomTag string
 
-	// LocalCSQ matches upstream's -l/--local-csq (predict per-record
-	// rather than per-haplotype). v1 always operates per-record so this
-	// flag is effectively a no-op but accepted for parity.
+	// LocalCSQ matches upstream's -l/--local-csq (predict per-record,
+	// non-haplotype-aware, via upstream test_cds_local). Not yet ported:
+	// the CLI hard-rejects -l so this field is currently unused by the
+	// engine. Retained so callers can detect the request.
 	LocalCSQ bool
 
 	// Phase is upstream's -p/--phase {a|m|r|R|s}. v1 stores it for
@@ -101,16 +107,20 @@ type CSQOptions struct {
 	Targets     []string
 	TargetsFile string
 
-	// OutputFormat — upstream supports v/z/u/b/t. v1 emits only `v`
-	// (uncompressed VCF text).
+	// OutputFormat — upstream supports v/z/u/b/t. This port emits v
+	// (VCF text), z (BGZF VCF), b (BCF) and u (uncompressed BCF) via the
+	// in-tree writers; the streaming-text `t` form is not supported.
 	OutputFormat OutputFormat
 
-	// DumpGFF is upstream's --dump-gff. Accepted; v1 does not produce
-	// debug dumps.
+	// DumpGFF is upstream's --dump-gff FILE. When set, CSQFile writes the
+	// parsed GFF model (genes/transcripts/CDS/UTR/exons) to FILE as a
+	// BGZF-compressed trimmed GFF3, byte-exact with upstream gff_dump on
+	// position-ordered inputs (see DumpGFF / csq_dump.go).
 	DumpGFF string
-	// UnifyChrNames is upstream's --unify-chr-names. Accepted; v1
-	// honours the special "0" value (no rewriting); other specs are
-	// stored but unused.
+	// UnifyChrNames is upstream's --unify-chr-names VCF,GFF,FAI. The
+	// special value "0" (or empty) disables rewriting; otherwise the
+	// three comma-separated prefixes reconcile VCF/GFF/FASTA contig
+	// namespaces (see parseUnifyChrNames / unifyChrName).
 	UnifyChrNames string
 }
 
@@ -131,6 +141,11 @@ func CSQFile(vcfPath string, w io.Writer, opts CSQOptions) (int, error) {
 	idx, err := loadCSQIndexUnified(opts.FastaRef, opts.GFFAnnot, prefixVCF, prefixGFF, prefixFAI)
 	if err != nil {
 		return 0, err
+	}
+	if opts.DumpGFF != "" {
+		if err := dumpCSQGFFToFile(opts.DumpGFF, idx); err != nil {
+			return 0, err
+		}
 	}
 	r, err := iohelper.OpenReader(vcfPath)
 	if err != nil {
@@ -277,6 +292,30 @@ type CSQIndex struct {
 	// ByChrom indexes transcript IDs by contig for fast position
 	// lookup.
 	ByChrom map[string][]*CSQTranscript
+
+	// Genes holds the parsed gene features in GFF appearance order.
+	// Retained only for --dump-gff (mirrors upstream's gid2gene table).
+	Genes []*CSQGene
+}
+
+// CSQGene is one gene feature retained for the --dump-gff output. It
+// mirrors the upstream gff.c gf_gene_t fields that gff_dump emits.
+type CSQGene struct {
+	// ID is the bare gene accession (Ensembl "gene:" prefix stripped).
+	ID string
+	// Name is the gene Name/gene_name attribute (falls back to ID).
+	Name string
+	// Chrom is the contig (rewritten under --unify-chr-names).
+	Chrom string
+	// Strand is the gene strand.
+	Strand gff.Strand
+	// Beg and End are the 1-based inclusive gene span.
+	Beg int
+	End int
+	// Used reports whether at least one of the gene's transcripts was
+	// linked to a child CDS/exon/UTR feature, matching upstream's
+	// gene->used flag set in gff_parse.
+	Used bool
 }
 
 // CSQTranscript is a single transcript's structure: its CDS exons,
@@ -285,6 +324,7 @@ type CSQIndex struct {
 type CSQTranscript struct {
 	ID       string
 	Gene     string
+	GeneID   string // bare parent gene accession, for --dump-gff Parent=
 	Biotype  string
 	Chrom    string
 	Strand   gff.Strand
@@ -308,6 +348,11 @@ type CSQTranscript struct {
 	// start_lost / stop_lost on incomplete annotations.
 	Trim5 bool
 	Trim3 bool
+
+	// Used reports whether the transcript was linked to at least one
+	// child CDS/exon/UTR feature. Mirrors upstream's tr->used flag and
+	// is emitted by --dump-gff.
+	Used bool
 }
 
 // CSQExon is one exon (genomic coordinates, 1-based inclusive). For a
@@ -406,8 +451,12 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 		return nil, fmt.Errorf("read gff: %w", err)
 	}
 
-	// First pass: map gene ID -> gene name + biotype.
+	// First pass: map gene ID -> gene name + biotype, and retain the
+	// gene span/strand for --dump-gff. genesByID points into idx.Genes
+	// (preserving GFF appearance order) so the transcript pass can mark
+	// the parent gene Used.
 	geneInfo := map[string]struct{ name, biotype string }{}
+	genesByID := map[string]*CSQGene{}
 	for _, f := range feats {
 		if !isGeneType(f.Type) {
 			continue
@@ -431,6 +480,22 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 			biotype = "protein_coding"
 		}
 		geneInfo[id] = struct{ name, biotype string }{name, biotype}
+		// Key by the bare accession (the GFF "gene:" prefix stripped), so
+		// the transcript pass — which records t.GeneID via
+		// stripGFFPrefix(parent) — can find and mark the parent gene Used.
+		bareID := stripGFFPrefix(id)
+		if _, seen := genesByID[bareID]; !seen {
+			g := &CSQGene{
+				ID:     bareID,
+				Name:   name,
+				Chrom:  unifyChrName(f.Seqid, prefixGFF, prefixVCF),
+				Strand: f.Strand,
+				Beg:    f.Start,
+				End:    f.End,
+			}
+			genesByID[bareID] = g
+			idx.Genes = append(idx.Genes, g)
+		}
 	}
 
 	// Second pass: collect transcripts. A transcript is any feature
@@ -464,6 +529,7 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 		idx.Transcripts[tid] = &CSQTranscript{
 			ID:      stripGFFPrefix(tid),
 			Gene:    gi.name,
+			GeneID:  stripGFFPrefix(parent),
 			Biotype: biotype,
 			Chrom:   unifyChrName(f.Seqid, prefixGFF, prefixVCF),
 			Strand:  f.Strand,
@@ -472,24 +538,40 @@ func loadCSQIndexUnified(fastaPath, gffPath, prefixVCF, prefixGFF, prefixFAI str
 		}
 	}
 
-	// Third pass: collect CDS and full exons under each transcript.
+	// Third pass: collect CDS and full exons under each transcript. A
+	// transcript (and, transitively, its gene) is marked Used the moment
+	// it is linked to a child feature, mirroring upstream gff_parse.
 	for _, f := range feats {
 		switch f.Type {
 		case "CDS":
 			if t := idx.Transcripts[firstParent(f.Parent())]; t != nil {
 				t.CDSExons = append(t.CDSExons, CSQExon{Start: f.Start, End: f.End, Phase: f.Phase})
+				t.Used = true
 			}
 		case "exon":
 			if t := idx.Transcripts[firstParent(f.Parent())]; t != nil {
 				t.Exons = append(t.Exons, CSQExon{Start: f.Start, End: f.End})
+				t.Used = true
 			}
 		case "five_prime_UTR", "5UTR", "five_prime_utr":
 			if t := idx.Transcripts[firstParent(f.Parent())]; t != nil {
 				t.UTRs = append(t.UTRs, CSQUTR{Start: f.Start, End: f.End, Prime5: true})
+				t.Used = true
 			}
 		case "three_prime_UTR", "3UTR", "three_prime_utr":
 			if t := idx.Transcripts[firstParent(f.Parent())]; t != nil {
 				t.UTRs = append(t.UTRs, CSQUTR{Start: f.Start, End: f.End, Prime5: false})
+				t.Used = true
+			}
+		}
+	}
+
+	// Propagate transcript Used flags up to their parent genes for the
+	// --dump-gff `used=` column.
+	for _, t := range idx.Transcripts {
+		if t.Used {
+			if g := genesByID[t.GeneID]; g != nil {
+				g.Used = true
 			}
 		}
 	}

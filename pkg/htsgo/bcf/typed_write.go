@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -48,10 +49,15 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 		raw   string
 	}
 	pairs := make([]infoPair, 0, len(v.Info))
-	for name, raw := range v.Info {
+	// Emit INFO fields in the variant's recorded order (InfoOrder), not
+	// Go map-iteration order, so the BCF byte stream is deterministic and
+	// matches the input/VCF-text ordering. Any keys absent from InfoOrder
+	// (defensive) are appended afterwards in a stable name order.
+	seen := make(map[string]bool, len(v.Info))
+	emit := func(name, raw string) {
 		idx, ok := w.infoIndex[name]
 		if !ok {
-			continue
+			return
 		}
 		// idx is the *unified* dictionary IDX, not a slice position —
 		// look up via DictByIDX so we resolve regardless of which of
@@ -63,6 +69,29 @@ func (w *Writer) encodeRecord(v *vcf.Variant) ([]byte, []byte, error) {
 			entry = *e
 		}
 		pairs = append(pairs, infoPair{key: idx, entry: entry, raw: raw})
+	}
+	for _, name := range v.InfoOrder {
+		if seen[name] {
+			continue
+		}
+		raw, ok := v.Info[name]
+		if !ok {
+			continue
+		}
+		seen[name] = true
+		emit(name, raw)
+	}
+	if len(seen) != len(v.Info) {
+		rest := make([]string, 0, len(v.Info)-len(seen))
+		for name := range v.Info {
+			if !seen[name] {
+				rest = append(rest, name)
+			}
+		}
+		sort.Strings(rest)
+		for _, name := range rest {
+			emit(name, v.Info[name])
+		}
 	}
 
 	// Shared portion.
