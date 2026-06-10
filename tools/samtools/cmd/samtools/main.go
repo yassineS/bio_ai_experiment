@@ -204,6 +204,12 @@ func runView(args []string) int {
 	)
 	cliflag.BoolVar(fs, &outBAM, "b", "bam", false, "Output BAM")
 	cliflag.BoolVar(fs, &outCRAM, "C", "cram", false, "Output CRAM")
+	// -S is upstream samtools' legacy "input is SAM" switch (sam_view.c:999
+	// `case 'S': break;`). Modern samtools auto-detects the input format, so
+	// the flag is a no-op kept for backward compatibility — and so the common
+	// bundled invocation `samtools view -bS in.sam` parses.
+	var ignoreSAMInput bool
+	cliflag.BoolVar(fs, &ignoreSAMInput, "S", "", false, "Ignored: input format is auto-detected (legacy)")
 	cliflag.StringVar(fs, &outFmt, "O", "output-fmt", "", "Output format (sam|bam|cram)")
 	fs.Var(&outFmtOpts, "output-fmt-option", "")
 	cliflag.BoolVar(fs, &withHdr, "h", "with-header", false, "Include header")
@@ -232,7 +238,10 @@ func runView(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// (-bS == -b -S) and value concatenation (-q20 == -q 20) work the way
+	// upstream samtools' getopt parser accepts them.
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, viewUsage)
 		return 2

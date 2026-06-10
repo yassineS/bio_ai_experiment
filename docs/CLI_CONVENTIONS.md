@@ -23,6 +23,51 @@ upstream alias may still be accepted as a long option (e.g. `--qual-type`).
 3. **Discoverability**: Provide helpful error messages and comprehensive help text
 4. **Backward compatibility**: Where possible, maintain compatibility with original tool options, but never at the cost of POSIX compliance once a tool is at parity
 5. **`--` ends option parsing** and `-` (alone) means stdin/stdout; both are required for compliance
+6. **POSIX short-flag bundling and value concatenation**: clustered short
+   flags (`-bS` == `-b -S`) and value-attached short flags (`-q20` == `-q 20`)
+   are accepted, matching the getopt parsers of the upstream C tools
+
+## POSIX short-flag bundling and value concatenation
+
+Upstream bioinformatics tools parse their command lines with `getopt(3)`, which
+accepts two short-flag idioms that Go's standard `flag` package does **not**
+support out of the box:
+
+- **Bundling** — several boolean short flags may share one dash:
+  `samtools view -bS in.bam` is exactly `-b -S`. Any run of boolean short flags
+  may be clustered: `-hb`, `-bSH`, etc.
+- **Value concatenation** — a value-taking short flag may carry its value with
+  no separating space: `-q20` is `-q 20`, `-@4` is `-@ 4`.
+- **Mixed clusters** — bundling and concatenation combine left-to-right. The
+  first value-taking flag in a cluster ends it and consumes the remainder as
+  its value: `-bSq20` is `-b -S -q 20`. When that flag is the last character
+  (`-bSq 20`), the value is taken from the following argument.
+
+These idioms compose with the rest of the conventions: a long option
+(`--min-mapq=20`), the `--` terminator, and a bare `-` (stdin/stdout) are all
+passed through untouched. An unknown short character in a cluster is rejected
+with a "flag provided but not defined" error (exit code 2), exactly as upstream
+getopt rejects an unknown option.
+
+To get this behaviour, parse the `*flag.FlagSet` through
+[`cliflag.Parse`](../pkg/cliflag/posix.go) instead of calling `fs.Parse`
+directly:
+
+```go
+// Drop-in replacement for fs.Parse(args). On error, print usage and exit 2.
+if err := cliflag.Parse(fs, args); err != nil {
+    fmt.Fprintln(os.Stderr, err)
+    fmt.Fprint(os.Stderr, usage)
+    return 2
+}
+```
+
+`cliflag.Parse` introspects the FlagSet to distinguish boolean switches (whose
+`flag.Value` reports `IsBoolFlag() == true`) from value-taking flags, expands
+the clusters into Go-flag-canonical tokens, and then calls `fs.Parse`. It is
+idempotent on already-canonical arguments, so wiring an existing tool through it
+never changes the meaning of a command line that already worked. (Use
+`cliflag.Normalize` if you only need the rewritten argument slice.)
 
 ## Option Naming Conventions
 
@@ -212,6 +257,9 @@ an upstream tool (e.g. samtools' `-Q`/`-D` phase flags), and note why.
 - 2025-10-20: Initial version established for PRINSEQ tool
 - 2026-05-13: Formalised POSIX-compliant CLI as a hard requirement for any
   tool to be considered "complete" (alongside 100% feature parity)
+- 2026-06-10: Added `cliflag.Parse`/`cliflag.Normalize` for getopt-compatible
+  POSIX short-flag bundling (`-bS`) and value concatenation (`-q20`); `samtools
+  view` is the first tool wired through it, with repo-wide rollout to follow
 - Future: May be extended as more tools are ported
 
 ## References
