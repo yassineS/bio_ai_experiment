@@ -67,8 +67,18 @@ bgzip -d [options] file.gz
 | `-b N`| `--offset N`          | Print the uncompressed byte offset that corresponds to compressed offset N. |
 | `-s`  | `--size`              | Print the decompressed size of the file. |
 | `-r`  | `--reindex`           | Write a `.gzi` index alongside `file.gz`. |
+| `-i`  | `--index`             | Accepted; write a `.gzi` while compressing (use `-r` in v1). No-op. |
+| `-I F`| `--index-name F`      | Accepted; index file name. No-op. |
+| `-g`  | `--rebgzip`           | Accepted; rebgzip a raw stream via an existing index. No-op. |
 | `-h`  | `--help`              | Show help and exit. |
 | `-v`  | `--version`           | Show version and exit. |
+
+Command lines are parsed through the shared `cliflag.Parse` getopt layer, so
+POSIX short-flag bundling (`-cd` == `-c -d`) and value concatenation
+(`-l6` == `-l 6`) work the way upstream bgzip accepts them. The `-i`/`-I`/`-g`
+flags above are upstream getopt spellings registered as accepted no-ops so
+those bundled forms parse. Note `-t` is this port's `--threads` alias rather
+than upstream's "test" switch (see "Deviations").
 
 ### Examples
 

@@ -75,10 +75,19 @@ form used internally.
 | `-r`  | `--reheader FILE` | Replace the header with the contents of FILE.    |
 | `-l`  | `--list-chroms`   | Print chromosome names recorded in the index.    |
 | `-h`  | `--print-header`  | Also emit header lines from the queried file.    |
-|       | `--only-header`   | Emit only the header lines.                      |
+| `-H`  | `--only-header`   | Emit only the header lines.                      |
+| `-C`  | `--csi`           | Emit a CSI index instead of `.tbi`.              |
+| `-m`  | `--csi-min-shift` | CSI `min_shift` parameter (default 14).          |
+| `-@`  |                   | Threads (accepted; index build/query is single-threaded). |
 | `-D`  |                   | Do not save the index (for `build` mode only).   |
 |       | `--help`          | Show help and exit.                              |
 | `-v`  | `--version`       | Show version and exit.                           |
+
+Command lines are parsed through the shared `cliflag.Parse` getopt layer, so
+POSIX short-flag bundling (`-fl` == `-f -l`) and value concatenation
+(`-pvcf` == `-p vcf`) work the way upstream tabix accepts them. The `-H`/`-C`/
+`-m`/`-@` short flags above are the upstream getopt spellings, registered so
+those bundled forms parse.
 
 ### Presets
 

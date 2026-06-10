@@ -455,11 +455,23 @@ func runFlagstat(args []string) int {
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	if err := fs.Parse(args); err != nil {
+	// Upstream flagstat (bam_stat.c getopt "@:O:") accepts -@ (threads) and
+	// -O (output format). This port emits the default text report and is
+	// single-threaded, so both are accepted no-ops kept for compatibility —
+	// and so bundled clusters that include them parse.
+	var (
+		fsThreads int
+		fsOutFmt  string
+	)
+	cliflag.IntVar(fs, &fsThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.StringVar(fs, &fsOutFmt, "O", "output-fmt", "", "Output format (accepted; default text)")
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, flagstatUsage)
 		return 2
 	}
+	_ = fsThreads
+	_ = fsOutFmt
 	if showHelp {
 		fmt.Print(flagstatUsage)
 		return 0
@@ -534,12 +546,53 @@ func runSort(args []string) int {
 	cliflag.BoolVar(fs, &noPG, "", "no-PG", false, "No @PG injection")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream sort (bam_sort.c getopt "l:m:nNo:O:T:@:t:MI:K:uRw:H") also
+	// accepts several minimiser/minhash sort-order knobs and an uncompressed
+	// switch. The MinHash ordering itself is out of this port's scope; the
+	// flags are registered as accepted stubs so legacy command lines — and
+	// bundled clusters that include them — still parse:
+	//   -M        sort by minimiser/minhash order (accepted; coordinate sort)
+	//   -I FILE   minimiser reference (accepted no-op)
+	//   -K N      minimiser k-mer size (accepted no-op)
+	//   -w N      minimiser window (accepted no-op)
+	//   -R        disable reverse-complement minimiser probing (accepted no-op)
+	//   -H        do not squash homopolymers in minimiser order (accepted no-op)
+	var (
+		sortMinHash  bool
+		sortMinRef   string
+		sortKmer     int
+		sortWindow   int
+		sortTryRev   bool
+		sortNoSquash bool
+		sortUncomp   bool
+	)
+	cliflag.BoolVar(fs, &sortMinHash, "M", "", false, "Minimiser sort order (accepted; coordinate sort)")
+	cliflag.StringVar(fs, &sortMinRef, "I", "", "", "Minimiser reference (accepted no-op)")
+	cliflag.IntVar(fs, &sortKmer, "K", "", 0, "Minimiser k-mer (accepted no-op)")
+	cliflag.IntVar(fs, &sortWindow, "w", "", 0, "Minimiser window (accepted no-op)")
+	cliflag.BoolVar(fs, &sortTryRev, "R", "", false, "Disable reverse minimiser probe (accepted no-op)")
+	cliflag.BoolVar(fs, &sortNoSquash, "H", "", false, "No homopolymer squash (accepted no-op)")
+	// -u: upstream sets compression level 0 (uncompressed BAM). Force BAM
+	// output at the lowest level so this matches the upstream effect.
+	cliflag.BoolVar(fs, &sortUncomp, "u", "", false, "Uncompressed BAM output")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, sortUsage)
 		return 2
 	}
+	if sortUncomp {
+		compLevel = 0
+		if outFmt == "" {
+			outFmt = "bam"
+		}
+	}
+	_ = sortMinHash
+	_ = sortMinRef
+	_ = sortKmer
+	_ = sortWindow
+	_ = sortTryRev
+	_ = sortNoSquash
 	if showHelp {
 		fmt.Print(sortUsage)
 		return 0
@@ -668,12 +721,18 @@ func runIndex(args []string) int {
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream index (bam_index.c getopt "bcm:Mo:@:") accepts -M to index
+	// multiple input files at once. This port indexes a single file; -M is
+	// accepted as a no-op for compatibility so bundled clusters parse.
+	var indexMulti bool
+	cliflag.BoolVar(fs, &indexMulti, "M", "", false, "Multiple inputs (accepted; single-file in v1)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, indexUsage)
 		return 2
 	}
+	_ = indexMulti
 	if showHelp {
 		fmt.Print(indexUsage)
 		return 0
@@ -718,7 +777,9 @@ Usage:
   samtools depth [options] <in1.bam> [<in2.bam> ...]
 
 Options:
-  -a, --all                 Emit positions with 0 depth too (within covered ranges).
+  -a, --all                 Emit positions with 0 depth too (within covered
+                            ranges). Repeatable: -aa (or -a -a) extends to every
+                            position of every reference, like -A.
   -A, --all-trans           Emit every position of every reference.
   -r, --region chr[:S-E]    Limit to region (chr name only or range).
   -b, --bed FILE            Limit to BED regions.
@@ -738,7 +799,8 @@ func runDepth(args []string) int {
 	fs := flag.NewFlagSet("samtools depth", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		allPos   bool
+		allCount countFlag
+		allLong  bool
 		allTrans bool
 		regions  multiString
 		bedPath  string
@@ -753,7 +815,15 @@ func runDepth(args []string) int {
 		showHelp bool
 		showVer  bool
 	)
-	cliflag.BoolVar(fs, &allPos, "a", "all", false, "Emit zero-depth positions")
+	// Upstream depth treats -a as repeatable (bam2depth.c `opt.all_pos++`):
+	// one -a emits zero-depth positions inside covered regions; a second
+	// (-aa, or -a -a) extends to every reference position. Registering the
+	// short -a as a count flag lets cliflag.Parse expand the fused `-aa` to
+	// `-a -a` with the same meaning. The long --all spelling keeps the
+	// single-step behaviour; --all-trans / -A still force the all-references
+	// mode.
+	cliflag.Var(fs, &allCount, "a", "", "Emit zero-depth positions (repeat for all reference positions)")
+	cliflag.BoolVar(fs, &allLong, "", "all", false, "Emit zero-depth positions")
 	cliflag.BoolVar(fs, &allTrans, "A", "all-trans", false, "Emit every reference position")
 	cliflag.Var(fs, &regions, "r", "region", "")
 	cliflag.StringVar(fs, &bedPath, "b", "bed", "", "BED of regions")
@@ -769,8 +839,27 @@ func runDepth(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream depth (bam2depth.c getopt "@:q:Q:JHd:m:l:g:G:o:ar:Xf:b:s")
+	// exposes a few short flags this port does not act on. Register them as
+	// accepted stubs (matching upstream where each is a no-op or unsupported
+	// here) so legacy command lines and bundled clusters parse:
+	//   -J  include deletions in the depth (upstream default is to skip them;
+	//       this port already counts coverage spans, so accepted no-op)
+	//   -s  remove overlapping mate bases (accepted no-op in v1)
+	//   -X  expect an explicit index-file argument (accepted no-op)
+	//   -H  emit a column header line (accepted no-op)
+	var (
+		depthInclDel   bool
+		depthRmOvl     bool
+		depthCustomIdx bool
+		depthHeader    bool
+	)
+	fs.BoolVar(&depthInclDel, "J", false, "")
+	fs.BoolVar(&depthRmOvl, "s", false, "")
+	fs.BoolVar(&depthCustomIdx, "X", false, "")
+	fs.BoolVar(&depthHeader, "H", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		if err == flag.ErrHelp {
 			fmt.Print(depthUsage)
 			return 0
@@ -779,6 +868,10 @@ func runDepth(args []string) int {
 		fmt.Fprint(os.Stderr, depthUsage)
 		return 2
 	}
+	_ = depthInclDel
+	_ = depthRmOvl
+	_ = depthCustomIdx
+	_ = depthHeader
 	if showHelp {
 		fmt.Print(depthUsage)
 		return 0
@@ -791,6 +884,15 @@ func runDepth(args []string) int {
 		fmt.Fprintln(os.Stderr, "samtools depth: missing input file")
 		fmt.Fprint(os.Stderr, depthUsage)
 		return 2
+	}
+
+	// Resolve the -a count, --all long flag, and -A/--all-trans into the two
+	// booleans the engine uses: any -a (or --all) → all positions inside
+	// covered regions; a second -a (i.e. -aa) or -A/--all-trans → every
+	// reference position.
+	allPos := allCount >= 1 || allLong
+	if allCount >= 2 {
+		allTrans = true
 	}
 
 	opts := samtools.DepthOptions{
@@ -938,13 +1040,29 @@ func runFastq(args []string) int {
 	cliflag.BoolVar(fs, &noCO, "t", "no-CO", false, "No @CO emission (no-op)")
 	cliflag.StringVar(fs, &compLevel, "c", "compress-level", "", "Gzip level for .gz outputs")
 	cliflag.BoolVar(fs, &useOQ, "O", "use-qq", false, "Use OQ aux tag for quality")
-	cliflag.IntVar(fs, &threads, "", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream fastq (bam_fastq.c getopt "0:1:2:o:f:F:G:niNOs:c:tT:v:@:d:D:")
+	// exposes a few short flags this port does not act on. Register them as
+	// accepted stubs so legacy command lines and bundled clusters parse:
+	//   -i        emit the Illumina-style index/casava tag (accepted no-op)
+	//   -d STR[:VAL]  keep records with this aux tag (accepted no-op)
+	//   -D STR:FILE   keep records with aux tag in FILE (accepted no-op)
+	// (-v is intentionally this port's version switch rather than upstream's
+	// default-quality value; -@ is the canonical threads short flag.)
+	var (
+		fqIllumina bool
+		fqTagSpec  string
+		fqTagFile  string
+	)
+	fs.BoolVar(&fqIllumina, "i", false, "")
+	fs.StringVar(&fqTagSpec, "d", "", "")
+	fs.StringVar(&fqTagFile, "D", "", "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		if err == flag.ErrHelp {
 			fmt.Print(fastqUsage)
 			return 0
@@ -953,6 +1071,9 @@ func runFastq(args []string) int {
 		fmt.Fprint(os.Stderr, fastqUsage)
 		return 2
 	}
+	_ = fqIllumina
+	_ = fqTagSpec
+	_ = fqTagFile
 	if showHelp {
 		fmt.Print(fastqUsage)
 		return 0
@@ -1070,7 +1191,7 @@ func runMpileup(args []string) int {
 		ignoreOvl bool
 		redoBAQ   bool
 		noBAQ     bool
-		allPos    bool
+		allPosCnt countFlag
 		allChrom  bool
 		outMapq   bool
 		outBP     bool
@@ -1092,7 +1213,13 @@ func runMpileup(args []string) int {
 	cliflag.BoolVar(fs, &ignoreOvl, "x", "ignore-overlaps", false, "Discard overlapping mates")
 	cliflag.BoolVar(fs, &redoBAQ, "E", "redo-baq", false, "Re-compute BAQ (not implemented)")
 	cliflag.BoolVar(fs, &noBAQ, "B", "no-BAQ", false, "Disable BAQ (no-op in v1)")
-	cliflag.BoolVar(fs, &allPos, "a", "all-positions", false, "Emit zero-depth positions in covered range")
+	// -a is repeatable upstream (mplp.all++): one -a emits zero-depth
+	// positions inside covered regions; a second (-aa, or -a -a) extends to
+	// every reference position. A count flag lets cliflag.Parse expand the
+	// bundled `-aa` to `-a -a` and have it mean the same thing — no special
+	// pre-pass needed. The long --all-positions-all-chroms remains a
+	// shortcut for "all twice".
+	cliflag.Var(fs, &allPosCnt, "a", "all-positions", "Emit zero-depth positions (repeat for all reference positions)")
 	cliflag.BoolVar(fs, &allChrom, "", "all-positions-all-chroms", false, "Emit every reference position (-aa)")
 	cliflag.BoolVar(fs, &outMapq, "s", "output-mapq", false, "Append MAPQs column")
 	cliflag.BoolVar(fs, &outBP, "O", "output-BP", false, "Append per-read positions column")
@@ -1100,19 +1227,39 @@ func runMpileup(args []string) int {
 	cliflag.BoolVar(fs, &ubcf, "u", "uncompressed-bcf", false, "Uncompressed BCF genotype-likelihood output")
 	cliflag.BoolVar(fs, &bcf, "g", "bcf", false, "BCF genotype-likelihood output")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads")
+	// Upstream mpileup (bam_plcmd.c getopt "Af:r:l:q:Q:RC:Bd:b:o:EG:6OsxXaM")
+	// has several short flags this port does not act on. Register them as
+	// accepted stubs so legacy command lines and bundled clusters parse:
+	//   -R        ignore read groups (accepted no-op)
+	//   -6        input quals are Illumina-1.3+ encoded (accepted no-op)
+	//   -M        print base modifications column (accepted no-op)
+	//   -X        expect an explicit index-file argument (accepted no-op)
+	//   -C N      mapping-quality adjustment coefficient (accepted no-op)
+	//   -G FILE   exclude read groups listed in FILE (accepted no-op)
+	var (
+		mpIgnoreRG   bool
+		mpIllumina   bool
+		mpPrintMods  bool
+		mpCustomIdx  bool
+		mpCapQ       int
+		mpExclRGFile string
+	)
+	fs.BoolVar(&mpIgnoreRG, "R", false, "")
+	fs.BoolVar(&mpIllumina, "6", false, "")
+	fs.BoolVar(&mpPrintMods, "M", false, "")
+	fs.BoolVar(&mpCustomIdx, "X", false, "")
+	fs.IntVar(&mpCapQ, "C", 0, "")
+	fs.StringVar(&mpExclRGFile, "G", "", "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	// Pre-process args: upstream samtools accepts `-aa` as a fused short
-	// for "all positions, all chromosomes". Go's flag package rejects
-	// `-aa` since `aa` isn't a registered flag; rewrite to the long form
-	// before parsing. Bare `--` ends rewriting (positional args after it
-	// are passed through untouched).
-	args = expandShortAA(args)
-
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// works the way upstream samtools' getopt parser accepts them — including
+	// the fused `-aa` ("all positions, all chromosomes"), which the -a count
+	// flag above turns into two increments.
+	if err := cliflag.Parse(fs, args); err != nil {
 		if err == flag.ErrHelp {
 			fmt.Print(mpileupUsage)
 			return 0
@@ -1120,6 +1267,19 @@ func runMpileup(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, mpileupUsage)
 		return 2
+	}
+	_ = mpIgnoreRG
+	_ = mpIllumina
+	_ = mpPrintMods
+	_ = mpCustomIdx
+	_ = mpCapQ
+	_ = mpExclRGFile
+	// Resolve the repeatable -a count into the two booleans the engine uses:
+	// one -a → all positions in covered range; two or more (or
+	// --all-positions-all-chroms) → every reference position.
+	allPos := allPosCnt >= 1
+	if allPosCnt >= 2 {
+		allChrom = true
 	}
 	if showHelp {
 		fmt.Print(mpileupUsage)
@@ -1217,29 +1377,4 @@ func runMpileup(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-// expandShortAA rewrites `-aa` to `--all-positions-all-chroms` in args.
-// Upstream samtools accepts the fused short form; Go's flag package does
-// not. Tokens after a bare `--` are passed through untouched.
-func expandShortAA(args []string) []string {
-	out := make([]string, 0, len(args))
-	endOfFlags := false
-	for _, a := range args {
-		if endOfFlags {
-			out = append(out, a)
-			continue
-		}
-		if a == "--" {
-			endOfFlags = true
-			out = append(out, a)
-			continue
-		}
-		if a == "-aa" {
-			out = append(out, "--all-positions-all-chroms")
-			continue
-		}
-		out = append(out, a)
-	}
-	return out
 }

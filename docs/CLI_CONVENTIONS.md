@@ -69,6 +69,40 @@ idempotent on already-canonical arguments, so wiring an existing tool through it
 never changes the meaning of a command line that already worked. (Use
 `cliflag.Normalize` if you only need the rewritten argument slice.)
 
+### Exception: the bedtools family does NOT use POSIX bundling
+
+The `bed*` tools (and any other re-implementation of an upstream `bedtools`
+subcommand) are an explicit, deliberate **exception** to the bundling rule
+above. Upstream `bedtools` does **not** parse with `getopt(3)`; it uses
+**multi-character flag names behind a single dash** — `-wa`, `-wb`, `-loj`,
+`-wao`, `-wo`, `-sorted`, `-nonamecheck`, `-split`, `-iobuf`, etc. These are
+single options whose names happen to be longer than one character, not clusters
+of short flags.
+
+Go's standard `flag` package already handles this natively: it treats `-wa` and
+`--wa` identically and looks up the flag literally named `wa`. So bedtools-family
+tools **must keep calling `flag.Parse` / `fs.Parse` directly** and must **NOT**
+be routed through `cliflag.Parse`. Doing so would be actively wrong:
+`cliflag.Parse` would expand `-wa` into `-w -a` and then reject `-w` as an
+unknown short flag, breaking drop-in compatibility with every upstream bedtools
+command line.
+
+Concretely:
+
+- **Do** register each upstream flag name with its real name, e.g.
+  `flag.BoolVar(&writeA, "wa", false, ...)` or
+  `cliflag.BoolVar(fs, &writeA, "wa", "write-a", false, ...)`. Both `-wa` and
+  `--wa` then work, and a GNU-style long alias (`--write-a`) can be offered
+  alongside.
+- **Don't** call `cliflag.Parse`/`cliflag.Normalize` in a `bed*` tool, and
+  don't "fix" `-wa`-style flags into `-w -a` bundling.
+
+Live-binary retro-compat tests assert this for representative tools (see
+`tools/bedintersect/cmd/bedintersect/upstream_compat_test.go`,
+`tools/bedmerge/.../upstream_compat_test.go`,
+`tools/bedmap/.../upstream_compat_test.go`): they drive the upstream multi-char
+single-dash command line through both our binary and the live upstream
+`bedtools` and compare output.
 > **Do not wire `cliflag.Parse` into tools whose CLI uses single-dash *long*
 > options** (one dash, multi-character word, e.g. `prinseq stats -fastq`,
 > `-min_len`). That idiom — inherited from Perl's `Getopt::Long` — is mutually
@@ -289,6 +323,20 @@ an upstream tool (e.g. samtools' `-Q`/`-D` phase flags), and note why.
 - 2026-06-10: Added `cliflag.Parse`/`cliflag.Normalize` for getopt-compatible
   POSIX short-flag bundling (`-bS`) and value concatenation (`-q20`); `samtools
   view` is the first tool wired through it, with repo-wide rollout to follow
+- 2026-06-10: Documented the bedtools-family exception — upstream `bedtools`
+  uses multi-character single-dash flag NAMES (`-wa`, `-loj`, `-sorted`), not
+  getopt bundling, so `bed*` tools keep Go `flag` parsing and must NOT use
+  `cliflag.Parse`. Added live-upstream-binary retro-compat tests.
+- 2026-06-10: Rolled `cliflag.Parse` out across the htslib-family CLIs — all
+  remaining `samtools` subcommands (sort, index, flagstat, depth, fastq,
+  mpileup, idxstats, quickcheck, dict, cat, reheader, addreplacerg, fixmate,
+  merge, coverage, split, markdup, stats, calmd, import, phase, targetcut,
+  consensus), plus `tabix`, `bgzip`, and `htsfile`. Each subcommand now also
+  registers the upstream getopt short flags it previously lacked (legacy /
+  no-op compat flags) so bundled clusters that include them parse and behave
+  like upstream. Repeatable `-a` (mpileup, depth) is now a count flag so the
+  fused `-aa` ("all positions, all chromosomes") resolves through the same
+  bundling path as upstream rather than a bespoke pre-pass.
 - 2026-06-10: Rolled the sequence/trimming tools `seqtk`, `fastp`, `sickle`, and
   `skewer` through `cliflag.Parse` at every subcommand parse site. Added upstream
   retro-compat short flags: `sickle` `-z`/`--quiet`, `-g`/`--gzip-output`,

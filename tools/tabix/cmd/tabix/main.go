@@ -84,7 +84,7 @@ type opts struct {
 
 func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("tabix", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // we print parse errors and usage ourselves
 	o := opts{}
 
 	cliflag.StringVar(fs, &o.preset, "p", "preset", "", "preset {gff|bed|sam|vcf}")
@@ -100,17 +100,35 @@ func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	cliflag.StringVar(fs, &o.reheader, "r", "reheader", "", "replace the header with the contents of FILE")
 	cliflag.BoolVar(fs, &o.listChroms, "l", "list-chroms", false, "list chromosomes in the index")
 	cliflag.BoolVar(fs, &o.printHdr, "h", "print-header", false, "emit header lines")
-	fs.BoolVar(&o.onlyHdr, "only-header", false, "emit only the header")
+	// Upstream tabix (tabix.c getopt "hH?0b:c:e:fm:p:s:S:lr:CR:T:D@:") spells
+	// several of these with a short flag this port previously offered only in
+	// long form. Register the upstream short names so bundled clusters that
+	// include them parse:
+	//   -H  emit only the header (upstream sets print_header + header_only)
+	//   -C  emit a CSI index instead of .tbi
+	//   -m  CSI min_shift parameter
+	cliflag.BoolVar(fs, &o.onlyHdr, "H", "only-header", false, "emit only the header")
 	fs.BoolVar(&o.noSaveIdx, "D", false, "do not save the index")
-	fs.BoolVar(&o.csiOutput, "csi", false, "emit a CSI index instead of .tbi")
-	fs.IntVar(&o.csiMinShift, "csi-min-shift", 0, "CSI min_shift parameter (default 14)")
+	cliflag.BoolVar(fs, &o.csiOutput, "C", "csi", false, "emit a CSI index instead of .tbi")
+	cliflag.IntVar(fs, &o.csiMinShift, "m", "csi-min-shift", 0, "CSI min_shift parameter (default 14)")
+	// -@ threads: upstream accepts a worker count; this port is single-threaded
+	// for index build/query, so accept and ignore it (and so `-@N` clusters
+	// parse). No long alias upstream.
+	var threads int
+	cliflag.IntVar(fs, &threads, "@", "", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&o.showHelp, "help", false, "show help")
 	cliflag.BoolVar(fs, &o.showVersion, "v", "version", false, "show version")
 
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// (-fl == -f -l) and value concatenation (-pvcf == -p vcf) work the way
+	// upstream tabix's getopt parser accepts them.
+	if err := cliflag.Parse(fs, args); err != nil {
+		fmt.Fprintln(stderr, err)
+		fmt.Fprint(stderr, usage)
 		return 2
 	}
+	_ = threads
 	if o.showHelp {
 		fmt.Fprint(stdout, usage)
 		return 0
