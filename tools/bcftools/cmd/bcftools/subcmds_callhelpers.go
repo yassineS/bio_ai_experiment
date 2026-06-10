@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 )
 
 // This file holds the bcftools-call CLI helpers salvaged from PR #219
@@ -10,77 +12,20 @@ import (
 // file to keep the salvage self-contained and avoid clobbering main's
 // independent subcmds.go/main.go changes.
 
-// boolFlag is the optional interface the standard library's flag package
-// uses to recognise boolean flags (those that do not consume a following
-// value). We use it to distinguish value-taking short flags from boolean
-// ones when normalising getopt-style attached values.
-type boolFlag interface {
-	IsBoolFlag() bool
-}
-
-// valueTakingShortFlags inspects fs and returns the set of registered
-// single-character flag names that consume a value (i.e. are NOT boolean
-// flags). These are the only short flags for which an attached value
-// (`-Xvalue`) is meaningful in upstream getopt semantics.
-func valueTakingShortFlags(fs *flag.FlagSet) map[byte]bool {
-	set := make(map[byte]bool)
-	fs.VisitAll(func(f *flag.Flag) {
-		if len(f.Name) != 1 {
-			return
-		}
-		if bf, ok := f.Value.(boolFlag); ok && bf.IsBoolFlag() {
-			return
-		}
-		set[f.Name[0]] = true
-	})
-	return set
-}
-
-// normalizeShortFlags rewrites getopt-style attached short-flag values
-// into the two-token form that Go's flag package accepts. Upstream
-// bcftools is getopt-based and accepts a value attached directly to a
-// single-letter flag (e.g. `-Ob`, `norm -m-`, `-m+`, `-mboth`); Go's
-// flag package only accepts `-X value` or `-X=value`. For each argument
-// of the form `-X...` where X is a registered value-taking short flag
-// and extra characters follow X, it splits the token into `-X` and the
-// remainder. So `-Ob` -> `-O b`, `-m-` -> `-m -`, `-mboth` -> `-m both`.
-//
-// It deliberately leaves untouched:
-//   - long flags (`--foo`, `--foo=bar`),
-//   - boolean short flags (which take no value),
-//   - the `-X=value` form (already valid; passed through),
-//   - a bare `-` (stdin/stdout),
-//   - everything after a bare `--` (end-of-options marker).
-func normalizeShortFlags(fs *flag.FlagSet, args []string) []string {
-	values := valueTakingShortFlags(fs)
-	out := make([]string, 0, len(args)+2)
-	for i, a := range args {
-		if a == "--" {
-			out = append(out, args[i:]...)
-			break
-		}
-		// Candidate: a single-dash flag with at least one char after
-		// the flag letter, and not a long flag (`--`) or bare `-`.
-		if len(a) > 2 && a[0] == '-' && a[1] != '-' {
-			if values[a[1]] && a[2] != '=' {
-				out = append(out, a[:2], a[2:])
-				continue
-			}
-		}
-		out = append(out, a)
-	}
-	return out
-}
-
 // parseFlags is the shared parse entry point for every bcftools
 // subcommand. It (1) ensures `--no-version` is accepted (see
-// registerNoVersionIfAbsent) and (2) normalises getopt-style attached
-// short-flag values (see normalizeShortFlags) so all subcommands accept
-// the upstream attached short-flag forms (`-Ob`, `-m-`, ...) and
-// `--no-version` uniformly, before delegating to fs.Parse.
+// registerNoVersionIfAbsent) and (2) routes parsing through
+// cliflag.Parse, which applies POSIX getopt normalization — short-flag
+// bundling (`-hG` == `-h -G`), attached/value-concatenated short flags
+// (`-Ob` == `-O b`, `-m-` == `-m -`, `-mboth` == `-m both`), the `--`
+// end-of-options terminator, and bare `-` (stdin/stdout) — before
+// delegating to fs.Parse. This gives every bcftools subcommand the same
+// upstream getopt-compatible argument handling that samtools view
+// already uses. On error the caller prints usage and exits with code 2,
+// exactly as for a plain fs.Parse failure.
 func parseFlags(fs *flag.FlagSet, args []string) error {
 	registerNoVersionIfAbsent(fs)
-	return fs.Parse(normalizeShortFlags(fs, args))
+	return cliflag.Parse(fs, args)
 }
 
 // registerNoVersionIfAbsent registers a no-op `--no-version` boolean flag
