@@ -258,17 +258,237 @@ func trimSequence(seq, qual string, opts FilterOptions) (string, string) {
 		seqBytes, qualBytes = trimPolyATRight(seqBytes, qualBytes, opts.TrimTailRight)
 	}
 
-	// Apply quality-based trimming from left
-	if opts.TrimQualL > 0 && len(qualBytes) > 0 {
-		seqBytes, qualBytes = trimQualityLeft(seqBytes, qualBytes, opts.TrimQualL, phredOffset(opts.QualType))
+	// Apply sliding-window quality-based trimming. Upstream evaluates
+	// the left side first, then the right side over the already
+	// left-trimmed read (prinseq-lite.pl:3215-3287).
+	if (opts.TrimQualL > 0 || opts.TrimQualR > 0) && len(qualBytes) > 0 {
+		seqBytes, qualBytes = trimQualityWindow(seqBytes, qualBytes, opts)
 	}
 
-	// Apply quality-based trimming from right
-	if opts.TrimQualR > 0 && len(qualBytes) > 0 {
-		seqBytes, qualBytes = trimQualityRight(seqBytes, qualBytes, opts.TrimQualR, phredOffset(opts.QualType))
+	// Apply trim_to_len: hard-trim to a maximum length from the 5' end.
+	// Upstream runs this AFTER quality trimming and BEFORE the length/GC
+	// filters (prinseq-lite.pl:3382-3385). The `length > trim_to_len`
+	// guard means equal-or-shorter reads are left untouched.
+	if opts.TrimToLen > 0 && len(seqBytes) > opts.TrimToLen {
+		seqBytes = seqBytes[:opts.TrimToLen]
+		if len(qualBytes) > 0 {
+			qualBytes = qualBytes[:opts.TrimToLen]
+		}
 	}
 
 	return string(seqBytes), string(qualBytes)
+}
+
+// trimQualityWindow performs prinseq's sliding-window quality trimming on
+// both ends of a read. It mirrors prinseq-lite.pl:3215-3287 exactly:
+//
+//   - The window starts at the read end and advances by TrimQualStep each
+//     time the rule is satisfied. The window shrinks to the remaining bases
+//     near the far end (so the last partial window can be size 1).
+//   - The window's score is aggregated by TrimQualType: "min" (default),
+//     "max", "mean", or "sum". A window of size 1 always uses the raw value.
+//     For "sum", a partial final window (smaller than TrimQualWindow) ends
+//     the loop without trimming further.
+//   - The rule compares the score against the per-end threshold:
+//     "lt" trims while score < threshold, "gt" while score > threshold,
+//     "et" while score == threshold.
+//
+// The left side is processed first; the right side then operates on the
+// already left-trimmed read using a reversed view of the quality scores,
+// matching upstream's `reverse(@$qualsnums)` and `$length -= $begintmp`.
+func trimQualityWindow(seq, qual []byte, opts FilterOptions) ([]byte, []byte) {
+	nums := decodeQual(qual, phredOffset(opts.QualType))
+
+	window := opts.TrimQualWindow
+	if window <= 0 {
+		window = 1
+	}
+	step := opts.TrimQualStep
+	if step <= 0 {
+		step = 1
+	}
+	qtype := opts.TrimQualType
+	if qtype == "" {
+		qtype = "min"
+	}
+	rule := opts.TrimQualRule
+	if rule == "" {
+		rule = "lt"
+	}
+
+	length := len(nums)
+
+	// Left.
+	beginTmp := 0
+	if opts.TrimQualL > 0 {
+		beginTmp = scanQualTrim(nums, length, window, step, qtype, rule, opts.TrimQualL)
+		if beginTmp >= length {
+			// Whole read trimmed away; the length filter will drop it.
+			beginTmp = length
+		}
+		if beginTmp > 0 {
+			seq = seq[beginTmp:]
+			qual = qual[beginTmp:]
+		}
+	}
+
+	// Right. Operate on the read remaining after the left trim, using a
+	// reversed copy of the quality scores (upstream reverses the FULL
+	// quality array, then limits the scan to length-beginTmp).
+	if opts.TrimQualR > 0 {
+		rightLen := length - beginTmp
+		rev := make([]int, len(nums))
+		for i := range nums {
+			rev[i] = nums[len(nums)-1-i]
+		}
+		endTmp := scanQualTrim(rev, rightLen, window, step, qtype, rule, opts.TrimQualR)
+		if endTmp >= rightLen {
+			endTmp = rightLen
+		}
+		if endTmp > 0 && endTmp <= len(seq) {
+			seq = seq[:len(seq)-endTmp]
+			qual = qual[:len(qual)-endTmp]
+		}
+	}
+
+	return seq, qual
+}
+
+// scanQualTrim returns the number of bases to trim from the start of nums
+// (limited to the first `length` entries) under prinseq's window/step/type/
+// rule scheme. It is shared by the left and right passes; the right pass
+// supplies a reversed score array. See trimQualityWindow for the semantics.
+func scanQualTrim(nums []int, length, window, step int, qtype, rule string, threshold int) int {
+	trimmed := 0
+	i := 0
+	for i < length {
+		// The effective window shrinks near the far end.
+		w := window
+		if i+window > length {
+			w = length - i
+		}
+		var val float64
+		switch {
+		case w == 1:
+			val = float64(nums[i])
+		case qtype == "min":
+			val = float64(minInt(nums[i : i+w]))
+		case qtype == "max":
+			val = float64(maxInt(nums[i : i+w]))
+		case qtype == "mean":
+			val = meanInt(nums[i : i+w])
+		case qtype == "sum":
+			if w < window {
+				// Partial final window: upstream `last`s without trimming.
+				return trimmed
+			}
+			val = float64(sumInt(nums[i : i+w]))
+		default:
+			return trimmed
+		}
+		if qualRuleMatches(rule, val, threshold) {
+			trimmed += step
+			i += step
+		} else {
+			break
+		}
+	}
+	return trimmed
+}
+
+// qualRuleMatches implements prinseq's trim_qual_rule comparison: "lt" is
+// true when val < threshold, "gt" when val > threshold, "et" when
+// val == threshold (prinseq-lite.pl:3236).
+func qualRuleMatches(rule string, val float64, threshold int) bool {
+	t := float64(threshold)
+	switch rule {
+	case "gt":
+		return val > t
+	case "et":
+		return val == t
+	default: // "lt"
+		return val < t
+	}
+}
+
+// minInt returns the smallest element of a non-empty slice.
+func minInt(xs []int) int {
+	m := xs[0]
+	for _, x := range xs[1:] {
+		if x < m {
+			m = x
+		}
+	}
+	return m
+}
+
+// maxInt returns the largest element of a non-empty slice.
+func maxInt(xs []int) int {
+	m := xs[0]
+	for _, x := range xs[1:] {
+		if x > m {
+			m = x
+		}
+	}
+	return m
+}
+
+// sumInt returns the sum of the slice's elements.
+func sumInt(xs []int) int {
+	s := 0
+	for _, x := range xs {
+		s += x
+	}
+	return s
+}
+
+// meanInt returns the arithmetic mean of a non-empty slice as a float, the
+// same value upstream's getArrayMean produces.
+func meanInt(xs []int) float64 {
+	return float64(sumInt(xs)) / float64(len(xs))
+}
+
+// trimQualityLeft trims bases from the 5' end while each base's decoded
+// quality score is below threshold. It is the window=1/step=1/type=min/
+// rule=lt special case of trimQualityWindow and is retained as a small,
+// directly-testable entry point. The whole-read case (everything below
+// threshold) leaves the read untouched, matching the original behaviour
+// the package's filter loop relies on.
+func trimQualityLeft(seq, qual []byte, threshold, offset int) ([]byte, []byte) {
+	nums := decodeQual(qual, offset)
+	trimmed := scanQualTrim(nums, len(nums), 1, 1, "min", "lt", threshold)
+	if trimmed > 0 && trimmed < len(seq) {
+		seq = seq[trimmed:]
+		qual = qual[trimmed:]
+	}
+	return seq, qual
+}
+
+// trimQualityRight trims bases from the 3' end while each base's decoded
+// quality score is below threshold. It mirrors trimQualityLeft on the
+// reversed read.
+func trimQualityRight(seq, qual []byte, threshold, offset int) ([]byte, []byte) {
+	nums := decodeQual(qual, offset)
+	rev := make([]int, len(nums))
+	for i := range nums {
+		rev[i] = nums[len(nums)-1-i]
+	}
+	trimmed := scanQualTrim(rev, len(rev), 1, 1, "min", "lt", threshold)
+	if trimmed > 0 && trimmed < len(seq) {
+		seq = seq[:len(seq)-trimmed]
+		qual = qual[:len(qual)-trimmed]
+	}
+	return seq, qual
+}
+
+// decodeQual converts ASCII quality bytes to integer Phred scores under the
+// given offset.
+func decodeQual(qual []byte, offset int) []int {
+	nums := make([]int, len(qual))
+	for i := range qual {
+		nums[i] = int(qual[i]) - offset
+	}
+	return nums
 }
 
 func trimPolyNLeft(seq, qual []byte, minLen int) ([]byte, []byte) {
@@ -397,40 +617,6 @@ func phredOffset(qualType string) int {
 	return 33
 }
 
-func trimQualityLeft(seq, qual []byte, threshold, offset int) ([]byte, []byte) {
-	trimPos := 0
-	for i := 0; i < len(qual); i++ {
-		if int(qual[i])-offset < threshold {
-			trimPos = i + 1
-		} else {
-			break
-		}
-	}
-
-	if trimPos > 0 && trimPos < len(seq) {
-		seq = seq[trimPos:]
-		qual = qual[trimPos:]
-	}
-	return seq, qual
-}
-
-func trimQualityRight(seq, qual []byte, threshold, offset int) ([]byte, []byte) {
-	trimPos := len(qual)
-	for i := len(qual) - 1; i >= 0; i-- {
-		if int(qual[i])-offset < threshold {
-			trimPos = i
-		} else {
-			break
-		}
-	}
-
-	if trimPos < len(seq) {
-		seq = seq[:trimPos]
-		qual = qual[:trimPos]
-	}
-	return seq, qual
-}
-
 // FilterOptions holds filtering parameters
 type FilterOptions struct {
 	MinLen        int
@@ -492,6 +678,45 @@ type FilterOptions struct {
 	FastaOut      io.Writer
 	QualOut       io.Writer
 	QualLineWidth int
+
+	// Sliding-window quality trimming and range filters (mirrors
+	// prinseq-lite.pl 0.20.4):
+	//
+	//   TrimQualWindow — `-trim_qual_window`: window size in bases used
+	//                    when evaluating the quality trimming rule. The
+	//                    upstream default is 1 (per-base trimming);
+	//                    callers should default this to 1 whenever
+	//                    TrimQualL/TrimQualR are in use to match upstream.
+	//   TrimQualStep   — `-trim_qual_step`: how many bases the window
+	//                    advances after a window satisfies the rule.
+	//                    Upstream default 1.
+	//   TrimQualType   — `-trim_qual_type`: how the window's score is
+	//                    aggregated before comparison: "min" (default),
+	//                    "max", "mean" or "sum" (prinseq-lite.pl:3219-3232).
+	//   TrimQualRule   — `-trim_qual_rule`: comparison between the window
+	//                    score and the TrimQualL/TrimQualR threshold:
+	//                    "lt" (default; trim while score < threshold),
+	//                    "gt" (trim while score > threshold) or "et"
+	//                    (trim while score == threshold)
+	//                    (prinseq-lite.pl:3236, 3276).
+	//   TrimToLen      — `-trim_to_len`: hard-trim each read to at most
+	//                    this many bases from the 5' end, applied AFTER all
+	//                    other trimming and BEFORE the length/GC filters
+	//                    (prinseq-lite.pl:3382-3385). Zero disables it.
+	//   RangeLen       — `-range_len`: comma-separated "min-max" ranges; a
+	//                    read passes only when its trimmed length lies
+	//                    within every listed range (prinseq-lite.pl:3403,
+	//                    checkRange at 2548). Empty disables it.
+	//   RangeGC        — `-range_gc`: comma-separated "min-max" ranges
+	//                    applied to the integer GC percentage
+	//                    (prinseq-lite.pl:3458). Empty disables it.
+	TrimQualWindow int
+	TrimQualStep   int
+	TrimQualType   string
+	TrimQualRule   string
+	TrimToLen      int
+	RangeLen       string
+	RangeGC        string
 }
 
 // Filter filters a FASTA/FASTQ file based on the given options
@@ -871,11 +1096,24 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
 	seqLen := len(seq)
 
+	// Zero-length reads are always dropped. Upstream marks any read that
+	// trimming reduced to length 0 as bad via its `zero_length` filter
+	// (prinseq-lite.pl:3389-3392), independent of any min_len setting.
+	if seqLen == 0 {
+		return true
+	}
+
 	// Length filters
 	if opts.MinLen > 0 && seqLen < opts.MinLen {
 		return true
 	}
 	if opts.MaxLen > 0 && seqLen > opts.MaxLen {
+		return true
+	}
+	// range_len: reject when the length is outside the requested
+	// range(s) (prinseq-lite.pl:3403). Upstream applies this after the
+	// min_len/max_len checks.
+	if opts.RangeLen != "" && !checkRange(opts.RangeLen, seqLen) {
 		return true
 	}
 
@@ -898,6 +1136,18 @@ func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
 		}
 		if opts.MaxGC > 0 && gcContent > opts.MaxGC {
 			return true
+		}
+		// range_gc: reject when the integer GC percentage is outside
+		// the requested range(s). Upstream truncates the percentage to
+		// an integer via sprintf("%d", gc*100/len) before the
+		// checkRange comparison (prinseq-lite.pl:3450-3460), so we
+		// truncate toward zero here too rather than reusing the float
+		// gcContent above.
+		if opts.RangeGC != "" {
+			gcInt := (gcCount * 100) / seqLen
+			if !checkRange(opts.RangeGC, gcInt) {
+				return true
+			}
 		}
 	}
 
@@ -1042,6 +1292,80 @@ func shouldFilterDuplicate(seq string, seenSeqs map[string]int, opts FilterOptio
 	}
 
 	return false
+}
+
+// checkRange reports whether val lies within the comma-separated set of
+// "min-max" ranges, faithfully reproducing prinseq-lite.pl's checkRange
+// (lines 2548-2557). Note the upstream semantics: the value must lie
+// within EVERY listed range — the helper returns false as soon as val is
+// below the lower bound or above the upper bound of any range. With
+// disjoint ranges (e.g. "10-20,40-50") this means nothing passes; we
+// mirror that behaviour exactly rather than "fixing" it to an OR.
+//
+// Malformed range tokens are treated leniently, matching Perl's loose
+// numeric coercion: a token without a "-" parses its single number as the
+// lower bound with an implicit upper bound of 0 (so any positive value
+// fails), and non-numeric fields coerce to 0.
+func checkRange(ranges string, val int) bool {
+	for _, r := range splitOn(ranges, ',') {
+		parts := splitOn(r, '-')
+		lo := atoiOrZero(parts[0])
+		hi := 0
+		if len(parts) > 1 {
+			hi = atoiOrZero(parts[1])
+		}
+		if val < lo || val > hi {
+			return false
+		}
+	}
+	return true
+}
+
+// splitOn splits s on the single byte sep, returning at least one element
+// (the empty string when s is empty). It avoids pulling in strings.Split's
+// behaviour differences for the simple cases checkRange needs and keeps the
+// Perl `split(/\,/)` / `split(/\-/)` semantics of dropping nothing.
+func splitOn(s string, sep byte) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == sep {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, s[start:])
+	return out
+}
+
+// atoiOrZero parses a leading signed integer from s (after trimming ASCII
+// spaces), returning 0 when no digits are present. This matches Perl's
+// numeric coercion of a string in a comparison context, which is how
+// upstream's split fields are used.
+func atoiOrZero(s string) int {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	neg := false
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		neg = s[i] == '-'
+		i++
+	}
+	n := 0
+	got := false
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		n = n*10 + int(s[i]-'0')
+		i++
+		got = true
+	}
+	if !got {
+		return 0
+	}
+	if neg {
+		return -n
+	}
+	return n
 }
 
 func reverseComplement(seq string) string {
