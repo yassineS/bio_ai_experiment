@@ -48,6 +48,8 @@ Common Options:
   -v, --verbosity INT             Accepted; v1 ignores.
   -W, --write-index[=csi|tbi]     Write a .csi/.tbi index for a bgzipped
                                   output (requires -o FILE and -Oz).
+  -@, --threads N                 Worker threads for parallel BGZF compression
+                                  of -O z / -O b output (default 0 = serial).
 
 Mendelian2 options:
   -m, --mode c|[adeEgmMS]         Output mode (default c). Multiple modes can
@@ -132,6 +134,7 @@ func runMendelian2(args []string) int {
 		writeIndex     string
 		writeIndexSet  bool
 		verbosity      int
+		threads        int
 		showHelp       bool
 		showVer        bool
 	)
@@ -159,6 +162,7 @@ func runMendelian2(args []string) int {
 	wi := &optionalStringValue{target: &writeIndex, present: &writeIndexSet}
 	cliflag.Var(fs, wi, "W", "write-index", "Write an index for a bgzipped output [optional csi|tbi]")
 	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity (accepted)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -242,6 +246,7 @@ func runMendelian2(args []string) int {
 		ExcludeExpr:   excludeExpr,
 		OutputFormat:  format,
 		CompressLevel: -1,
+		Threads:       threads,
 		Rules:         ruleSet,
 	}
 	if pfm != "" {

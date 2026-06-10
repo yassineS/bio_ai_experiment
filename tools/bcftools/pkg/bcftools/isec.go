@@ -150,6 +150,10 @@ type IsecOptions struct {
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
+	// the framed result decodes byte-identically regardless of thread count.
+	Threads int
 }
 
 // IsecFiles is the file-aware entry point. It opens each path through
@@ -261,6 +265,7 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 			w, finish, err := openOutput(f, ViewOptions{
 				OutputFormat:  opts.OutputFormat,
 				CompressLevel: opts.CompressLevel,
+				Threads:       opts.Threads,
 			}, headers[i])
 			if err != nil {
 				_ = f.Close()
@@ -321,6 +326,7 @@ func Isec(headers []*vcf.Header, groups [][]*vcf.Variant, stdout io.Writer, opts
 		w, finish, err := openOutput(stdout, ViewOptions{
 			OutputFormat:  opts.OutputFormat,
 			CompressLevel: opts.CompressLevel,
+			Threads:       opts.Threads,
 		}, headers[hdrIdx])
 		if err != nil {
 			return 0, err

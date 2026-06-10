@@ -49,6 +49,10 @@ type ReheaderOptions struct {
 	// CompressLevel is the gzip level for -O z output (negative means
 	// gzip's default).
 	CompressLevel int
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
+	// the framed result decodes byte-identically regardless of thread count.
+	Threads int
 }
 
 // ReheaderFile is the file-aware entry point for `bcftools reheader`. It
@@ -108,6 +112,7 @@ func Reheader(in io.Reader, out io.Writer, opts ReheaderOptions) (int, error) {
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, hdr)
 	if err != nil {
 		return 0, err

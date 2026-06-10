@@ -55,7 +55,7 @@ Options:
   -t, --targets LIST             Like -r but always a post-filter.
   -T, --targets-file FILE        BED-like targets file (post-filter).
       --targets-overlap 0|1|2    Accepted; v1 always uses POS-in-region.
-      --threads N                Accepted; v1 is single-threaded.
+  -@, --threads N                Worker threads for parallel BGZF compression of -O z/-O b.
   -v, --verbosity INT            Accepted; v1 ignores.
   -W, --write-index[=FMT]        Accepted; v1 does not auto-index outputs.
   -?, --help                     Show this help.
@@ -120,7 +120,7 @@ func runFilter(args []string) int {
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
 	fs.IntVar(&targetsOverlap, "targets-overlap", 0, "")
-	fs.IntVar(&threads, "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity (accepted, ignored)")
 	cliflag.StringVar(fs, &writeIndex, "W", "write-index", "", "Auto-index outputs (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
@@ -131,7 +131,6 @@ func runFilter(args []string) int {
 	_ = maskOverlap
 	_ = regionsOverlap
 	_ = targetsOverlap
-	_ = threads
 	_ = verbosity
 	_ = writeIndex
 
@@ -198,6 +197,7 @@ func runFilter(args []string) int {
 
 	opts := bcftools.VCFFilterOptions{
 		OutputFormat: format,
+		Threads:      threads,
 		IncludeExpr:  includeExpr,
 		ExcludeExpr:  excludeExpr,
 		SoftFilter:   softFilter,
