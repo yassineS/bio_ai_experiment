@@ -660,6 +660,35 @@ func splitNullStrings(buf []byte) []string {
 // represent one full record (no trailing newline). If chrom is not in the
 // index the result is an empty slice and no error.
 func (idx *Index) QueryBytes(dataPath, chrom string, beg, end int) ([][]byte, error) {
+	recs, err := idx.QueryRecords(dataPath, chrom, beg, end)
+	if err != nil || len(recs) == 0 {
+		return nil, err
+	}
+	out := make([][]byte, len(recs))
+	for i := range recs {
+		out[i] = recs[i].Line
+	}
+	return out, nil
+}
+
+// Record is a single matched line together with its parsed 0-based half-open
+// interval [Beg, End). It is returned by QueryRecords so callers can apply
+// further coordinate-aware filtering (for example tabix's -T/--targets strict
+// post-filter) without re-parsing the line.
+type Record struct {
+	// Line is the raw record bytes with no trailing newline. The slice is a
+	// private copy and is safe to retain.
+	Line []byte
+	// Beg and End are the record's 0-based half-open coordinates on the
+	// queried chromosome.
+	Beg, End int
+}
+
+// QueryRecords behaves like QueryBytes but returns each matched line wrapped
+// in a Record that also carries the line's parsed [Beg, End) interval. beg and
+// end are 0-based half-open. If chrom is not in the index the result is an
+// empty slice and no error.
+func (idx *Index) QueryRecords(dataPath, chrom string, beg, end int) ([]Record, error) {
 	chunks, refID, err := idx.RegionChunks(chrom, beg, end)
 	if err != nil {
 		return nil, err
@@ -738,15 +767,16 @@ func (idx *Index) RegionChunks(chrom string, beg, end int) ([]Chunk, int, error)
 }
 
 // readRegionRecords decodes the requested chunks from dataPath and returns
-// every record line whose interval overlaps [beg, end) on chrom.
-func (idx *Index) readRegionRecords(dataPath, chrom string, beg, end int, chunks []Chunk) ([][]byte, error) {
+// every record whose interval overlaps [beg, end) on chrom, each carrying its
+// parsed [Beg, End) coordinates.
+func (idx *Index) readRegionRecords(dataPath, chrom string, beg, end int, chunks []Chunk) ([]Record, error) {
 	f, err := os.Open(dataPath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	var out [][]byte
+	var out []Record
 	var fieldBuf [64][]byte
 	for _, c := range chunks {
 		if c.Beg >= c.End {
@@ -787,7 +817,7 @@ func (idx *Index) readRegionRecords(dataPath, chrom string, beg, end int, chunks
 				// Copy because the underlying buffer is reused.
 				cp := make([]byte, len(line))
 				copy(cp, line)
-				out = append(out, cp)
+				out = append(out, Record{Line: cp, Beg: rbeg, End: rend})
 			}
 		}
 	}
