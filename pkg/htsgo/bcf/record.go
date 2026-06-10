@@ -364,14 +364,24 @@ func splitPerSample(tv TypedValue, nSample int, entry *DictEntry, _ int32, _ *He
 			}
 		}
 	case TypeChar:
-		// FORMAT char vectors are encoded as a flat string with no
-		// per-sample separator on the wire; treat the whole thing as one
-		// string assigned to sample 0 if the dimension exceeds nSample.
+		// FORMAT char vectors are encoded as a flat string with one
+		// fixed-width per-sample slot on the wire. The slot width is the
+		// descriptor's per-sample dimension (tv.Length), which htslib pads
+		// with trailing NULs so every sample occupies the same number of
+		// bytes. Strides derived from len(s)/nSample coincide with tv.Length
+		// for well-formed input, but we use tv.Length directly so a final
+		// sample whose payload happens to be all-NUL (and might be trimmed by
+		// a non-conforming encoder) still lands in the right slot.
 		s := tv.String
-		// Pad/truncate to nSample using length // dim slicing.
-		stride := len(s) / nSample
-		if stride == 0 {
-			stride = len(s)
+		stride := dim
+		if stride*nSample > len(s) {
+			// Fall back to an even split when the payload is shorter than the
+			// declared width would imply (defensive; should not happen with
+			// htslib output).
+			stride = len(s) / nSample
+			if stride == 0 {
+				stride = len(s)
+			}
 		}
 		for i := 0; i < nSample && i*stride < len(s); i++ {
 			end := (i + 1) * stride

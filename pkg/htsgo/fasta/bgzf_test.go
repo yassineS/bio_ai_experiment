@@ -3,8 +3,11 @@ package fasta
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
@@ -232,5 +235,154 @@ func TestBuildIndexBytes(t *testing.T) {
 	}
 	if _, ok := idxF.Get("chr1 X"); !ok {
 		t.Errorf("full-header index missing %q", "chr1 X")
+	}
+}
+
+// upstreamBgzipForFasta locates/builds the htslib bgzip binary used to produce
+// real .gz + .gzi sidecars for the partial-decompression Fetch parity test.
+var (
+	fastaBgzipOnce sync.Once
+	fastaBgzipPath string
+	fastaBgzipErr  error
+)
+
+func upstreamBgzipForFasta(t *testing.T) string {
+	t.Helper()
+	fastaBgzipOnce.Do(func() {
+		htslibDir, err := filepath.Abs("../../../reference_code/htslib")
+		if err != nil {
+			fastaBgzipErr = err
+			return
+		}
+		bin := filepath.Join(htslibDir, "bgzip")
+		if _, statErr := os.Stat(bin); statErr == nil {
+			fastaBgzipPath = bin
+			return
+		}
+		if _, statErr := os.Stat(filepath.Join(htslibDir, "config.mk")); statErr != nil {
+			for _, args := range [][]string{{"autoreconf", "-i"}, {"./configure"}} {
+				cmd := exec.Command(args[0], args[1:]...)
+				cmd.Dir = htslibDir
+				if out, runErr := cmd.CombinedOutput(); runErr != nil {
+					fastaBgzipErr = fmt.Errorf("%v: %v\n%s", args, runErr, out)
+					return
+				}
+			}
+		}
+		cmd := exec.Command("make", "-j4", "bgzip")
+		cmd.Dir = htslibDir
+		if out, runErr := cmd.CombinedOutput(); runErr != nil {
+			fastaBgzipErr = fmt.Errorf("make bgzip: %v\n%s", runErr, out)
+			return
+		}
+		fastaBgzipPath = bin
+	})
+	if fastaBgzipErr != nil {
+		t.Fatalf("locating/building upstream bgzip: %v", fastaBgzipErr)
+	}
+	if fastaBgzipPath == "" {
+		t.Fatalf("upstream bgzip not available")
+	}
+	return fastaBgzipPath
+}
+
+// TestBGZFFetch_GZIPartialSeekParity confirms that OpenRandomAccessBGZF, when a
+// .gzi sidecar (produced by upstream bgzip) is present, serves Fetch via the
+// SeekReader partial-decompression path and returns bytes identical to a plain
+// uncompressed FASTA Fetch over the same data.
+func TestBGZFFetch_GZIPartialSeekParity(t *testing.T) {
+	bgzip := upstreamBgzipForFasta(t)
+	dir := t.TempDir()
+
+	// Build a multi-contig FASTA whose total size spans several BGZF blocks.
+	var fa bytes.Buffer
+	contigs := map[string]string{}
+	bases := []byte("ACGTN")
+	for c := 0; c < 4; c++ {
+		name := fmt.Sprintf("chr%d", c+1)
+		fmt.Fprintf(&fa, ">%s\n", name)
+		var seq bytes.Buffer
+		n := 20000 + c*7000
+		for i := 0; i < n; i++ {
+			seq.WriteByte(bases[(i*7+c)%len(bases)])
+		}
+		contigs[name] = seq.String()
+		// Wrap at 60 columns like samtools faidx expects.
+		s := seq.Bytes()
+		for i := 0; i < len(s); i += 60 {
+			end := i + 60
+			if end > len(s) {
+				end = len(s)
+			}
+			fa.Write(s[i:end])
+			fa.WriteByte('\n')
+		}
+	}
+
+	plainPath := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(plainPath, fa.Bytes(), 0o644); err != nil {
+		t.Fatalf("write plain fasta: %v", err)
+	}
+
+	// Compress with upstream bgzip -i (writes ref.fa.gz + ref.fa.gz.gzi).
+	gzPath := plainPath + ".gz"
+	if out, err := exec.Command(bgzip, "-i", "-k", plainPath).CombinedOutput(); err != nil {
+		t.Fatalf("bgzip -i: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(gzPath + ".gzi"); err != nil {
+		t.Fatalf("expected .gzi sidecar: %v", err)
+	}
+
+	// Build the samtools-style .fai (offsets into the uncompressed stream) by
+	// indexing the plain FASTA, and copy it to the .gz.fai location.
+	plainIdx, err := BuildIndex(plainPath)
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	if err := plainIdx.Save(gzPath + ".fai"); err != nil {
+		t.Fatalf("Save index: %v", err)
+	}
+
+	// Open both the compressed (.gzi-backed) and plain references.
+	bgzfRA, err := OpenRandomAccessBGZF(gzPath)
+	if err != nil {
+		t.Fatalf("OpenRandomAccessBGZF: %v", err)
+	}
+	defer bgzfRA.Close()
+	// Confirm the partial-seek backend is in use (not the in-memory fallback).
+	if _, ok := bgzfRA.r.(*gziReaderAt); !ok {
+		t.Fatalf("expected gziReaderAt backend, got %T", bgzfRA.r)
+	}
+
+	plainRA, err := OpenRandomAccess(plainPath)
+	if err != nil {
+		t.Fatalf("OpenRandomAccess plain: %v", err)
+	}
+	defer plainRA.Close()
+
+	type reg struct {
+		name       string
+		start, end int64
+	}
+	regions := []reg{
+		{"chr1", 0, 10},
+		{"chr1", 100, 200},
+		{"chr2", 0, 27000},
+		{"chr3", 12345, 12400},
+		{"chr4", 40000 - 5, 40000},
+		{"chr1", 19990, 20000},
+	}
+	for _, r := range regions {
+		got, err := bgzfRA.Fetch(r.name, r.start, r.end)
+		if err != nil {
+			t.Fatalf("bgzf Fetch %s:%d-%d: %v", r.name, r.start, r.end, err)
+		}
+		want, err := plainRA.Fetch(r.name, r.start, r.end)
+		if err != nil {
+			t.Fatalf("plain Fetch %s:%d-%d: %v", r.name, r.start, r.end, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s:%d-%d mismatch:\n got=%s\nwant=%s", r.name, r.start, r.end, got, want)
+		}
 	}
 }

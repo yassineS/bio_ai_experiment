@@ -570,13 +570,22 @@ discrepancies in our Go code (not upstream), all fixed inline:
 <a id="bcf-fmt-keys-missing"></a>
 
 - **Our BCF reader drops per-record FORMAT keys on htslib-produced
-  input** — after the int64 and IDX-strip fixes in this PR, the header
-  parses fine but per-record `FmtKeys` come back as
-  `[<resolved>, -1, -1, ...]`: only the first key resolves correctly,
-  the rest decode as `MissingInt32`. This is almost certainly a bug in
-  our `decodeIndiv` (probably mis-counting the dictionary index width
-  for n_sample > 0 when the key entry is itself a typed-int vector,
-  but we haven't bottomed it out). Workaround: use VCF / VCF.gz input.
+  input** — RESOLVED (htsgo-gzi-bcf PR). The historical symptom was
+  per-record `FmtKeys` decoding as `[<resolved>, -1, -1, ...]` (only the
+  first key resolving, the rest as `MissingInt32`). This is no longer
+  reproducible: `decodeIndiv` + `DecodeTypedInt` correctly read each
+  FORMAT key (whether the dictionary index is int8- or int16-encoded)
+  and `DecodeFormatTyped` advances the offset correctly across every
+  per-sample value type, so subsequent keys resolve. Verified by live
+  `bcftools view -O b` → our reader → VCF-text round-trips in
+  `pkg/htsgo/bcf/fmtkey_parity_test.go` (`TestBCF_FormatKeyParity`),
+  which exercises many numeric keys, string FORMAT fields, mixed ploidy,
+  ragged int/float vectors with vector-end padding, phased GT,
+  all-missing samples, ragged per-sample strings, and int16-encoded keys
+  (dictionary padded past 127 entries). The reader no longer requires the
+  VCF/VCF.gz workaround. (The `splitPerSample` TypeChar path was also
+  hardened to slice per-sample slots by the descriptor's per-sample
+  width `tv.Length` rather than `len(s)/nSample`.)
 
 <a id="bcf-info-order"></a>
 
