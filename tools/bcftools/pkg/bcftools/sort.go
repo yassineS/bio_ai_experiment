@@ -27,6 +27,9 @@ type SortOptions struct {
 	// CompressLevel is the gzip level for -O z output (negative means
 	// gzip's default).
 	CompressLevel int
+	// Threads is the -@/--threads value; >1 enables parallel BGZF compression
+	// of -O z and -O b output via bgzf.MultiWriter (see ViewOptions.Threads).
+	Threads int
 	// MaxMem is the upstream `-m/--max-mem` value (e.g. "768M"). Currently
 	// accepted but not enforced; v1 always sorts in-memory.
 	MaxMem string
@@ -61,6 +64,7 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) (int, error) {
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, hdr)
 	if err != nil {
 		return 0, err

@@ -91,6 +91,9 @@ type MergeOptions struct {
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// Threads is the -@/--threads value; >1 enables parallel BGZF compression
+	// of -O z and -O b output via bgzf.MultiWriter (see ViewOptions.Threads).
+	Threads int
 }
 
 // MergeFiles is the file-aware entry point. It opens each path through
@@ -170,6 +173,7 @@ func Merge(headers []*vcf.Header, groups [][]*vcf.Variant, out io.Writer, opts M
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, mergedHdr)
 	if err != nil {
 		return 0, err

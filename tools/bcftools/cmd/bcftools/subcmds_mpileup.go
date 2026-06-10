@@ -41,7 +41,9 @@ Output:
   -O, --output-type v|z|u|b      VCF (default), VCF.gz, uncompressed
                                  BCF, or BCF.
       --no-version               Skip version line in the header.
-      --threads INT              Accepted; v1 is single-threaded.
+      --threads INT              Worker threads for parallel BGZF compression
+                                 of z/b output (pileup itself is single-threaded
+                                 in v1; >1 enables parallel output compression).
 
 Read filtering:
   -A, --count-orphans            Keep anomalous read pairs.
@@ -368,6 +370,7 @@ func runMpileup(args []string) int {
 		NoReference:    mf.noReference,
 		OutputFormat:   format,
 		Output:         mf.outputPath,
+		CompressLevel:  -1, // mpileup has no -l flag; use default BGZF level.
 		Threads:        mf.threads,
 		NoVersion:      mf.noVersion,
 		Verbosity:      mf.verbosity,

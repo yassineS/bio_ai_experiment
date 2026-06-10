@@ -236,7 +236,8 @@ Options:
   -x, --private                   Print only sites private to the subset.
   -X, --exclude-private           Exclude sites private to the subset.
   -l, --compression-level N       gzip level for z output.
-      --threads N                 Accepted; v1 is single-threaded.
+  -@, --threads N                 Worker threads for parallel BGZF compression
+                                  of z/b output (>1 enables it).
   -?, --help                      Show this help.
       --version                   Show version.
 
@@ -345,6 +346,7 @@ func runView(args []string) int {
 		Private:        privateVars,
 		ExcludePrivate: excludePriv,
 		CompressLevel:  compressLevel,
+		Threads:        threads,
 	}
 	if privateVars && excludePriv {
 		fmt.Fprintln(os.Stderr, "bcftools view: only one of -x or -X can be given")
@@ -759,7 +761,8 @@ Options:
   -o, --output PATH          Output file (default stdout).
   -q, --min-PQ INT           Accepted but no-op in v1.
   -l, --ligate               Accepted but no-op in v1 (imputation chunks).
-      --threads N            Accepted; v1 is single-threaded.
+  -@, --threads N            Worker threads for parallel BGZF compression of
+                             z/b output (>1 enables it).
       --compression-level N  gzip level for -O z output.
   -?, --help                 Show this help.
       --version              Show version.
@@ -836,6 +839,7 @@ func runConcat(args []string) int {
 		MinPQ:            minPQ,
 		Ligate:           ligate,
 		CompressLevel:    compressLevel,
+		Threads:          threads,
 	}
 	if _, err := bcftools.ConcatFiles(paths, out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools concat: %v\n", err)
@@ -865,7 +869,8 @@ Options:
   -O, --output-type {v|z|u|b}    Output format (b/u requires BCF writer).
   -o, --output PATH              Output file (default stdout).
   -l, --compression-level N      gzip level for -O z output.
-      --threads N                Accepted; v1 is single-threaded.
+  -@, --threads N                Worker threads for parallel BGZF compression
+                                 of z/b output (>1 enables it).
   -h, --help                     Show this help.
       --version                  Show version.
 
@@ -973,6 +978,7 @@ func runNorm(args []string) int {
 		ApplyFilters:   bcftools.SplitCommaList(applyFilters),
 		OutputFormat:   format,
 		CompressLevel:  compressLevel,
+		Threads:        threads,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -1044,7 +1050,8 @@ I/O:
   -T, --targets-file PATH        BED-like targets file (post-filter).
   -s, --samples LIST             Restrict to these samples.
   -S, --samples-file PATH        File of sample IDs (one per line).
-      --threads N                Accepted; v1 is single-threaded.
+  -@, --threads N                Worker threads for parallel BGZF compression
+                                 of z/b output (>1 enables it).
   -?, --help                     Show this help.
       --version                  Show version.
 `
@@ -1154,6 +1161,7 @@ func runCall(args []string) int {
 		Ploidy:        ploidySpec,
 		PloidySpec:    ploidyText,
 		OutputFormat:  format,
+		Threads:       threads,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
