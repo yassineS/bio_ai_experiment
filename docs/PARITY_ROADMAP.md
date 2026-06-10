@@ -1750,8 +1750,38 @@ Plus:
   FLAG filtering, `-s/-S/-G` sample/read-group selection, IUPAC REF
   bases, indel/SCR fixtures).
 
-  **Indel-caller sub-slicing (in progress).** The remaining indel work
-  is broken into five sub-slices:
+  **Indel-caller sub-slicing (DONE — legacy caller at parity).** The
+  legacy (non-`--indels-cns`) indel caller is fully ported: indel
+  candidate generation, per-sample indel genotype likelihoods, and the
+  indel-row BCF emission (`ALT`, `INFO/INDEL`, `INFO/IDV`, `INFO/IMF`,
+  `FORMAT/PL`/`AD`). The work was broken into five sub-slices, all
+  complete. A live-upstream parity harness now backs this:
+  `mpileup_indel_parity_test.go` builds the upstream `bcftools` binary
+  from the `reference_code/bcftools` submodule (once, via `sync.Once` in
+  `upstreamBcftoolsMpileupIndel`) and diffs its `-Ov` output against the
+  Go port — `TestMpileupIndelParity_Insertion_Live` asserts the full
+  insertion INDEL record byte-for-byte on `indel-AD.2` (G→GTAAA… at
+  11:75), and `TestMpileupIndelParity_Deletion_Live` asserts the
+  candidate-generation outcome plus `INFO/IDV,IMF,DP` field-for-field on
+  `indel-AD.1` (which carries three deletions and one insertion). Both
+  `t.Fatalf` on any deterministic mismatch. The only remaining unported
+  path is `--indels-cns` (the edlib consensus realigner, a separate
+  algorithm — see the explicit note in sub-slice 4e.7 and below).
+
+  **`--indels-cns` / `--indels-2.0` remainder (DEFERRED, separate
+  algorithm).** Upstream's consensus indel caller (`bam2bcf_edlib.c` /
+  `bam2bcf_iaux.c`, reached via `mpileup --indels-cns`) realigns reads
+  against an edlib-built consensus haplotype rather than the legacy
+  probaln-against-each-candidate path this slice ports. It is a distinct
+  algorithm, not a refinement of the legacy caller, so it is left
+  deferred: the `--indels-cns`, `--indels-2.0`, and `--no-indels-cns`
+  flags are accepted on the CLI and ignored (the legacy caller runs
+  regardless), documented at `subcmds_mpileup.go:93-95` and
+  `mpileup.go:433-436`. Porting it would require an in-tree edlib
+  equivalent and the `bam2bcf_iaux.c` consensus machinery — its own
+  conversation. The legacy-caller homopolymer residuals catalogued below
+  (single-ULP probaln drift on a handful of deep reads) are independent
+  of `--indels-cns` and tracked separately.
 
   - **4a + 4b (DONE).** Pileup data model + STR finder + indel
     candidate-type discovery helpers. `pileupBase` now carries the
@@ -1798,11 +1828,11 @@ Plus:
     (`TestBcfCgpComputeIndelQ_BitPattern`) with a hand-derived
     expectation; the orchestrator has a clean-site -1 reject test and
     an indel-site smoke test.
-  - **4e (in progress).** Indel-aware branches of `bcf_call_glfgen` /
+  - **4e (DONE).** Indel-aware branches of `bcf_call_glfgen` /
     `bcf_call_combine` / `bcf_call2bcf` and emission of the
-    INDEL/IDV/IMF INFO tags; golden tests land here. Broken into
-    cross-cutting sub-slices since the targeted goldens require more
-    than just the indel branch of glfgen+2bcf:
+    INDEL/IDV/IMF INFO tags; golden and live-upstream tests land here.
+    Broken into cross-cutting sub-slices since the targeted goldens
+    require more than just the indel branch of glfgen+2bcf:
     - **4e.1 (DONE).** FORMAT/AD support and `-a/--annotate` parsing.
       `parseFormatFlag` (`mpileup.go`) is the Go port of
       `parse_format_flag` (mpileup.c:1141) with bit constants
