@@ -22,9 +22,10 @@ import (
 	"testing"
 )
 
-// upstreamPrinseqPath returns the path to the vendored prinseq-lite.pl, or
-// "" if the submodule is not checked out.
-func upstreamPrinseqPath() string {
+// upstreamPrinseqPathTrim returns the path to the vendored prinseq-lite.pl, or
+// "" if the submodule is not checked out. Uniquely named so it does not
+// collide with the sibling transforms parity test's helper.
+func upstreamPrinseqPathTrim() string {
 	p := filepath.Join("..", "..", "..", "..", "reference_code", "prinseq", "prinseq-lite.pl")
 	if _, err := os.Stat(p); err != nil {
 		return ""
@@ -43,7 +44,7 @@ func upstreamPrinseqPath() string {
 // sibling prinseq parity PR.
 func runUpstreamPrinseqTrim(t *testing.T, input []byte, isFastq bool, extraFlags ...string) []byte {
 	t.Helper()
-	pl := upstreamPrinseqPath()
+	pl := upstreamPrinseqPathTrim()
 	if pl == "" {
 		t.Skip("upstream prinseq-lite.pl not checked out; skipping live parity")
 	}
@@ -95,8 +96,10 @@ func runUpstreamPrinseqTrim(t *testing.T, input []byte, isFastq bool, extraFlags
 	return data
 }
 
-// runGoFilter runs the Go port's Filter over the input and returns the bytes.
-func runGoFilter(t *testing.T, input []byte, isFastq bool, opts FilterOptions) []byte {
+// runGoFilterTrim runs the Go port's Filter over the input and returns the
+// bytes. Uniquely named to avoid colliding with the transforms parity test's
+// runGoFilter helper.
+func runGoFilterTrim(t *testing.T, input []byte, isFastq bool, opts FilterOptions) []byte {
 	t.Helper()
 	var out bytes.Buffer
 	if err := Filter(bytes.NewReader(input), &out, isFastq, opts); err != nil {
@@ -182,7 +185,7 @@ func TestLiveParity_TrimQualWindow_LeftRight(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			want := runUpstreamPrinseqTrim(t, in, true, tc.flags...)
-			got := runGoFilter(t, in, true, tc.opts)
+			got := runGoFilterTrim(t, in, true, tc.opts)
 			if !bytes.Equal(got, want) {
 				t.Fatalf("trim_qual %s mismatch.\nwant:\n%s\ngot:\n%s", tc.name, want, got)
 			}
@@ -196,7 +199,7 @@ func TestLiveParity_TrimToLen(t *testing.T) {
 	for _, n := range cases {
 		t.Run("len", func(t *testing.T) {
 			want := runUpstreamPrinseqTrim(t, in, true, "-trim_to_len", itoa(n))
-			got := runGoFilter(t, in, true, FilterOptions{TrimToLen: n})
+			got := runGoFilterTrim(t, in, true, FilterOptions{TrimToLen: n})
 			if !bytes.Equal(got, want) {
 				t.Fatalf("trim_to_len %d mismatch.\nwant:\n%s\ngot:\n%s", n, want, got)
 			}
@@ -210,7 +213,7 @@ func TestLiveParity_RangeLen(t *testing.T) {
 	for _, r := range cases {
 		t.Run(r, func(t *testing.T) {
 			want := runUpstreamPrinseqTrim(t, in, false, "-range_len", r)
-			got := runGoFilter(t, in, false, FilterOptions{RangeLen: r})
+			got := runGoFilterTrim(t, in, false, FilterOptions{RangeLen: r})
 			if !bytes.Equal(got, want) {
 				t.Fatalf("range_len %s mismatch.\nwant:\n%s\ngot:\n%s", r, want, got)
 			}
@@ -224,7 +227,7 @@ func TestLiveParity_RangeGC(t *testing.T) {
 	for _, r := range cases {
 		t.Run(r, func(t *testing.T) {
 			want := runUpstreamPrinseqTrim(t, in, false, "-range_gc", r)
-			got := runGoFilter(t, in, false, FilterOptions{RangeGC: r})
+			got := runGoFilterTrim(t, in, false, FilterOptions{RangeGC: r})
 			if !bytes.Equal(got, want) {
 				t.Fatalf("range_gc %s mismatch.\nwant:\n%s\ngot:\n%s", r, want, got)
 			}

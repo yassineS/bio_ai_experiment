@@ -308,15 +308,15 @@ parity is not enforced):
   (lines 801-802), the on-disk filename layout differs.
 - The QUAL output uses the upstream `convertQualArrayToString`
   layout (two-character space-padded decimal, single-space separated,
-  wrapped every `LINE_WIDTH=60` values; lines 45 and 2531-2546). We
-  do **not** currently expose the upstream `-line_width` knob; the
-  default is fixed at 60 via `QualLineWidth` on `FilterOptions` so
-  future PRs can plumb it through.
-- The `--seq_id` rename drops any trailing whitespace/comment from
-  the original FASTA description. **This is a divergence from upstream**:
-  upstream `prinseq-lite.pl:3683-3691` emits
-  `$sid.($header ? ' '.$header : '')`, preserving any trailing comment.
-  Tracked here for future-PR follow-up.
+  wrapped every `LINE_WIDTH=60` values; lines 45 and 2531-2546). The
+  upstream `-line_width` knob is now exposed as `--line_width`; it
+  overrides the default 60-column wrap for both FASTA and QUAL output
+  (0 = no wrap).
+- The `--seq_id` rename now **preserves** any trailing whitespace/comment
+  from the original FASTA/FASTQ description, matching upstream
+  `prinseq-lite.pl:3685-3704` (`$sid.($header ? ' '.$header : '')`). The
+  earlier divergence (comment dropped) is **resolved**; see
+  `docs/UPSTREAM_BUGS.md > prinseq`.
 
 Graph-data (PR `claude/prinseq-graph-data-land`):
 
@@ -379,23 +379,54 @@ only core Perl modules and produce deterministic output). Strong unit tests
 live in `tools/prinseq/pkg/prinseq/trim_range_test.go` and CLI-wiring tests
 in `tools/prinseq/cmd/prinseq/trim_range_cli_test.go`.
 
-Still missing (all niche knobs, not in scope for this PR):
+Sequence/header transforms + misc knobs (PR
+`claude/festive-planck-n9o2lm-prinseq-transforms-misc`):
+
+- `--seq_case <upper|lower>` (lines 912-918, 3664-3671) — force the
+  emitted sequence case.
+- `--dna_rna <dna|rna>` (lines 920-927, 3672-3679) — convert T<->U,
+  preserving case.
+- `--rm_header` (lines 133, 3651-3653) — drop the original trailing
+  header comment, leaving only the identifier.
+- `--no_qual_header` (lines 153, 792-793, 3686) — emit a bare `+`
+  line in FASTQ output. Validated to require FASTQ output.
+- `--line_width <int>` (lines 132, 934-936, 3699-3714) — wrap
+  FASTA/QUAL output at N chars (0 = no wrap); feeds the shared
+  `QualLineWidth`.
+- `--seq_num <int>` (lines 110, 3147-3150) — keep only the first N
+  records that pass all other filters.
+- `--exact_only` (lines 154, 833-849, 3604-3628) — restrict
+  duplicate detection to exact (and revcomp) duplicates. Our derep is
+  exact-only by construction, so this is accepted and validated to
+  require `--derep` 1/4/5.
+- `--params <file>` / `--custom_params <string>` (lines 553-560,
+  1069-1085, 2353-2369, 3484-3503) — parameters file and custom
+  dinucleotide/repeat complexity rules. Rules are `<bases> <count>`
+  (`%` count = percentage); evaluated against the upper-cased sequence.
+
+Still missing (all niche knobs, not in scope):
 
 - The PNG report generation flow (`prinseq-graphs.pl`). Out of
   scope — the Go `graph` and `report` subcommands cover the
   equivalent visualisation surface without depending on a Perl
   graphics stack.
-- A handful of niche knobs not in the original five-flag scope:
+- `--qual_noscale` remains unported (the only niche knob still
+  outstanding after the trim-range and transforms/misc PRs landed
   `--seq_case`, `--dna_rna`, `--line_width`, `--rm_header`,
-  `--no_qual_header`, `--qual_noscale`, `--exact_only`, `--params`,
-  `--custom_params`, `--seq_num`. None of these were on the agreed
-  scope for this PR.
+  `--no_qual_header`, `--exact_only`, `--params`, `--custom_params`,
+  `--seq_num`, `--range_len`, `--range_gc`, `--trim_qual_window`,
+  `--trim_qual_step`, `--trim_qual_rule`, and `--trim_to_len`).
 
-**Validation:** no upstream-test-suite run yet. Upstream PRINSEQ-lite has no
-formal test suite — we'd need to construct one from the documented examples.
-The new flags are covered by hand-built unit tests in
-`tools/prinseq/pkg/prinseq/missing_flags_test.go` (10 sub-cases for
-`--ns_max_p` boundaries, 5 sub-cases for `--out_format`, plus
+**Validation:** the transform/misc knobs are validated **live** against the
+upstream Perl `prinseq-lite.pl` — `TestParityTransforms` in
+`tools/prinseq/pkg/prinseq/transforms_test.go` runs the real script via a
+uniquely-named `runUpstreamPrinseqXform` oracle and compares the good-output
+file byte-for-byte for 17 flag/format combinations (skipping only when perl or
+the submodule is unavailable). Strong unit tests cover the transform helpers
+and the dedup/seq_num/line_width paths; CLI integration tests in
+`tools/prinseq/cmd/prinseq/transforms_cli_test.go` cover `--params` precedence,
+`--custom_params`, and the validation error paths. Earlier flags remain covered
+by `missing_flags_test.go` (`--ns_max_p` boundaries, `--out_format`,
 `--noniupac`, `--seq_id_mappings`, `--phred64`).
 
 ### `sickle`
