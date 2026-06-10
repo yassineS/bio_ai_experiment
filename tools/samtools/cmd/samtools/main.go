@@ -1026,8 +1026,8 @@ Options:
   -s, --output-mapq          Append MAPQs column.
   -O, --output-BP            Append per-read positions column.
   -o, --output PATH          Output file (default stdout).
-  -u, --uncompressed-bcf     BCF output (NOT IMPLEMENTED; deferred).
-  -g, --bcf                  BCF output (NOT IMPLEMENTED; deferred).
+  -u, --uncompressed-bcf     Uncompressed BCF genotype-likelihood output.
+  -g, --bcf                  BCF genotype-likelihood output (FORMAT/PL).
   -@, --threads N            Accepted; single-threaded in v1.
   -h, --help                 Show this help.
   -v, --version              Show version.
@@ -1038,8 +1038,14 @@ Notes:
     base for mismatch, * for deletion/refskip placeholder, +<len><seq> for
     insertions after the base, -<len><seq> for deletions starting after this
     position, ^<charq> for read start (charq = mapq + 33), $ for read end.
-  - -E (--redo-baq) and -u/-g (BCF output) are deferred per
-    docs/PARITY_ROADMAP.md#samtools.
+  - -g/-u request BCF (and uncompressed-BCF) genotype-likelihood output
+    instead of the text pileup. Upstream samtools removed this path (1.10+)
+    in favour of "bcftools mpileup"; this port restores it by delegating to
+    the shared bcftools mpileup engine, emitting per-site FORMAT/PL with the
+    <*> unseen allele. -f/--fasta-ref is required. Full indel calling is the
+    deferred remainder tracked in docs/PARITY_ROADMAP.md#samtools.
+  - -E (--redo-baq) is honoured by the -g/-u path; in the text path it is
+    deferred per docs/PARITY_ROADMAP.md#samtools.
 `
 
 func runMpileup(args []string) int {
@@ -1085,8 +1091,8 @@ func runMpileup(args []string) int {
 	cliflag.BoolVar(fs, &outMapq, "s", "output-mapq", false, "Append MAPQs column")
 	cliflag.BoolVar(fs, &outBP, "O", "output-BP", false, "Append per-read positions column")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "Output path")
-	cliflag.BoolVar(fs, &ubcf, "u", "uncompressed-bcf", false, "BCF output (not implemented)")
-	cliflag.BoolVar(fs, &bcf, "g", "bcf", false, "BCF output (not implemented)")
+	cliflag.BoolVar(fs, &ubcf, "u", "uncompressed-bcf", false, "Uncompressed BCF genotype-likelihood output")
+	cliflag.BoolVar(fs, &bcf, "g", "bcf", false, "BCF genotype-likelihood output")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -1117,17 +1123,59 @@ func runMpileup(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
-	if bcf || ubcf {
-		fmt.Fprintln(os.Stderr, "samtools mpileup: BCF output (-u/-g) not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
-		return 2
-	}
-	if redoBAQ {
-		fmt.Fprintln(os.Stderr, "samtools mpileup: -E/--redo-baq not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
-		return 2
-	}
 	if fs.NArg() == 0 && bamList == "" {
 		fmt.Fprintln(os.Stderr, "samtools mpileup: missing input file")
 		fmt.Fprint(os.Stderr, mpileupUsage)
+		return 2
+	}
+
+	// -g/-u: BCF / uncompressed-BCF genotype-likelihood output. Upstream
+	// removed this from `samtools mpileup` (1.10+) in favour of `bcftools
+	// mpileup`; we restore it by delegating to the shared bcftools mpileup
+	// engine (the htslib bam2bcf port). See tools/samtools/pkg/samtools/
+	// mpileup_bcf.go. The samtools text-path defaults for -Q (13) and -d
+	// (8000) do not apply to the genotype-likelihood caller; only honour
+	// these flags when the user set them explicitly, letting the bcftools
+	// engine fill its own upstream defaults (min-BQ 1, max-depth 250)
+	// otherwise.
+	if bcf || ubcf {
+		bopts := samtools.MpileupBCFOptions{
+			Inputs:         fs.Args(),
+			FastaRef:       fastaRef,
+			BamList:        bamList,
+			Regions:        []string(regions),
+			PositionsFile:  posFile,
+			MinMAPQ:        uint8(minMAPQ),
+			CountOrphans:   orphans,
+			IgnoreOverlaps: ignoreOvl,
+			NoBAQ:          noBAQ,
+			RedoBAQ:        redoBAQ,
+			Uncompressed:   ubcf,
+			Output:         outPath,
+			Threads:        threads,
+		}
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "Q", "min-baseq":
+				bopts.MinBaseQ = uint8(minBaseQ)
+			case "d", "max-depth":
+				bopts.MaxDepth = maxDepth
+			}
+		})
+		out, err := openOut(outPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "samtools mpileup: %v\n", err)
+			return 1
+		}
+		defer out.Close()
+		if err := samtools.MpileupBCF(bopts, out); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if redoBAQ {
+		fmt.Fprintln(os.Stderr, "samtools mpileup: -E/--redo-baq not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
 		return 2
 	}
 
