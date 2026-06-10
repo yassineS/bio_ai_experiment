@@ -2325,13 +2325,34 @@ Option-tail gaps on the wave-1 additions (PR #86):
 
 Option-tail gaps on the convert/mendelian PR:
 
-- `convert`: v1 covers only the pass-through round-trip
-  (VCF↔BCF↔VCF.gz) with sample/region filtering and -i/-e expressions.
-  The full upstream `vcfconvert.c` covers many extra shapes
-  (`--gvcf2vcf`, `--haplegendsample2vcf`, `--hapsample2vcf`,
-  `--tsv2vcf`, `--gensample2vcf`, `--gvcf`, PLINK / GEN / HAP).
-  These are explicit follow-ups; the CLI emits a usage block that
-  lists them under "Deferred output paths".
+- `convert`: v1 covers the pass-through round-trip
+  (VCF↔BCF↔VCF.gz) with sample/region filtering and -i/-e expressions,
+  **plus the full Oxford GEN/sample family**:
+  - `-g/--gensample PREFIX|GEN,SAMPLE` — VCF/BCF → `.gen`(.gz)+`.samples`.
+  - `-G/--gensample2vcf PREFIX|GEN,SAMPLE` — `.gen`+`.sample` → VCF/BCF.
+  - `--tag {GT|PL|GP}` — FORMAT tag driving the `.gen` genotype
+    probability triples (default `GT`); mirrors upstream's
+    `process_gt_to_prob3` / `process_pl_to_prob3` / `process_gp_to_prob3`.
+  - `--3N6` — the 3*N+6 column layout (leading bare-CHROM column).
+  - `--sex FILE` — adds the `sex` column to the `.sample` file
+    ("ID\\t[MF]"); every sample must have an entry (matches
+    `init_sample2sex`).
+  - `--vcf-ids` — VCF IDs in the `.gen` ID column. Import also handles
+    the IMPUTE2 reference-panel case where the CHROM:POS_REF_ALT label
+    sits in the second column and `--` in the first.
+  - `--chrom` — deprecated upstream; v1 errors with the same
+    "please use --3N6 instead" message and a non-zero exit.
+
+  Validated byte-for-byte against the live upstream `bcftools` binary
+  (built on demand in `convert_gen_test.go`) for both directions across
+  GT/PL/GP, `--3N6`, `--vcf-ids`, and `--sex`.
+
+  Still deferred (other `vcfconvert.c` shapes, separate follow-ups):
+  `--gvcf2vcf`, `--gvcf`, `--haplegendsample`, `--haplegendsample2vcf`,
+  `--hapsample`, `--hapsample2vcf`, `--haploid2diploid`, `--tsv2vcf`,
+  `-c/--columns`, `-f/--fasta-ref`, `--keep-duplicates` (PLINK / HAP /
+  gVCF / TSV paths). The CLI still parses these and emits a roadmap
+  pointer when set.
 - `mendelian`: the v1 port detects Mendelian inconsistencies for
   PED-style trios (one or more `-t CHILD,FATHER,MOTHER` flags, or
   `-T trio-file`), emits `INFO/MERR` per record, and supports the
