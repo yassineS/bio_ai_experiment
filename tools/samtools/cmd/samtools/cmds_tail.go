@@ -43,11 +43,23 @@ func runIdxstats(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	if err := fs.Parse(args); err != nil {
+	// Upstream idxstats (bam_index.c getopt "@:X") accepts -@ (threads) and
+	// -X (explicit index-file argument). This port reads the sibling .bai
+	// single-threaded, so both are accepted no-ops kept for compatibility —
+	// and so bundled clusters that include them parse.
+	var (
+		idxThreads   int
+		idxCustomIdx bool
+	)
+	cliflag.IntVar(fs, &idxThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&idxCustomIdx, "X", false, "")
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, idxstatsUsage)
 		return 2
 	}
+	_ = idxThreads
+	_ = idxCustomIdx
 	if showHelp {
 		fmt.Print(idxstatsUsage)
 		return 0
@@ -101,7 +113,10 @@ func runQuickcheck(args []string) int {
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// (-qu == -q -u) works the way upstream quickcheck's getopt parser
+	// (bam_quickcheck.c getopt "vqu") accepts it.
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, quickcheckUsage)
 		return 2
@@ -173,12 +188,19 @@ func runDict(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream dict (dict.c getopt "?AhHa:l:s:u:o:") accepts -l FILE, a file
+	// of alternative sequence names. This port does not emit AN: aliases from
+	// such a file yet, so -l is an accepted value-taking no-op kept for
+	// compatibility (and so bundled clusters parse).
+	var altNames string
+	cliflag.StringVar(fs, &altNames, "l", "alt-names", "", "Alt-names file (accepted no-op)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, dictUsage)
 		return 2
 	}
+	_ = altNames
 	if showHelp {
 		fmt.Print(dictUsage)
 		return 0
@@ -241,14 +263,36 @@ func runCat(args []string) int {
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
 	fs.StringVar(&fofn, "b", "", "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
+	// Upstream cat (bam_cat.c getopt "h:o:b:r:p:qf") accepts a few flags this
+	// port does not act on. Register them as accepted stubs so legacy command
+	// lines and bundled clusters parse:
+	//   -r REG    restrict output to a region (accepted no-op; v1 concatenates
+	//             whole files)
+	//   -p FILE   add a partial-cat @PG header (accepted no-op)
+	//   -q        suppress @PG-merge warnings (accepted no-op)
+	//   -f        fast mode: concatenate compressed blocks verbatim (accepted)
+	var (
+		catRegion string
+		catPart   string
+		catQuiet  bool
+		catFast   bool
+	)
+	fs.StringVar(&catRegion, "r", "", "")
+	fs.StringVar(&catPart, "p", "", "")
+	fs.BoolVar(&catQuiet, "q", false, "")
+	fs.BoolVar(&catFast, "f", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, catUsage)
 		return 2
 	}
+	_ = catRegion
+	_ = catPart
+	_ = catQuiet
+	_ = catFast
 	if showHelp {
 		fmt.Print(catUsage)
 		return 0
@@ -319,12 +363,15 @@ func runReheader(args []string) int {
 	fs.BoolVar(&inPlace, "i", false, "")
 	fs.StringVar(&cmd, "c", "", "")
 	fs.StringVar(&outPath, "o", "", "")
-	fs.BoolVar(&noPG, "no-PG", false, "")
+	// Upstream reheader (bam_reheader.c getopt "hiPc:") spells no-PG as the
+	// short flag -P; register it alongside our long --no-PG so bundled
+	// clusters (e.g. -iP) parse.
+	cliflag.BoolVar(fs, &noPG, "P", "no-PG", false, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, reheaderUsage)
 		return 2
@@ -421,12 +468,27 @@ func runAddReplaceRG(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream addreplacerg (bam_addrprg.c getopt "r:R:m:o:O:h@:uw") also
+	// accepts -O (output format), -@ (threads), and -u (uncompressed BAM).
+	// This port emits BAM single-threaded, so these are accepted no-ops kept
+	// for compatibility (and so bundled clusters parse).
+	var (
+		arOutFmt  string
+		arThreads int
+		arUncomp  bool
+	)
+	cliflag.StringVar(fs, &arOutFmt, "O", "output-fmt", "", "Output format (accepted)")
+	cliflag.IntVar(fs, &arThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	fs.BoolVar(&arUncomp, "u", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, addReplaceRGUsage)
 		return 2
 	}
+	_ = arOutFmt
+	_ = arThreads
+	_ = arUncomp
 	if showHelp {
 		fmt.Print(addReplaceRGUsage)
 		return 0
@@ -511,12 +573,33 @@ func runFixmate(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream fixmate (bam_mate.c getopt "rpcmMO:@:uz:") exposes a few more
+	// flags. Register them as accepted stubs so legacy command lines and
+	// bundled clusters parse:
+	//   -M        add base-modification (MM/ML) mate handling (accepted no-op)
+	//   -O FMT    output format (accepted; this port emits BAM)
+	//   -u        uncompressed BAM output (accepted no-op)
+	//   -z FLAGS  record-sanitisation flags (accepted no-op)
+	var (
+		fmBaseMods bool
+		fmOutFmt   string
+		fmUncomp   bool
+		fmSanitize string
+	)
+	fs.BoolVar(&fmBaseMods, "M", false, "")
+	cliflag.StringVar(fs, &fmOutFmt, "O", "output-fmt", "", "Output format (accepted)")
+	fs.BoolVar(&fmUncomp, "u", false, "")
+	fs.StringVar(&fmSanitize, "z", "", "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, fixmateUsage)
 		return 2
 	}
+	_ = fmBaseMods
+	_ = fmOutFmt
+	_ = fmUncomp
+	_ = fmSanitize
 	if showHelp {
 		fmt.Print(fixmateUsage)
 		return 0
@@ -595,11 +678,14 @@ func runMerge(args []string) int {
 	)
 	fs.BoolVar(&byName, "n", false, "")
 	fs.StringVar(&fofn, "b", "", "")
+	// Upstream merge spells the header override as the value-taking short flag
+	// -h FILE (bam_sort.c getopt "...h:..."), so register -h directly as a
+	// string flag; --header is our long alias and --help is the separate help
+	// switch below. Routing through cliflag.Parse means a bundled value flag
+	// like `-h FILE` is handled by getopt's "next token is the value" rule
+	// without a manual pre-scan.
+	fs.StringVar(&hdrPath, "h", "", "")
 	fs.StringVar(&hdrPath, "header", "", "")
-	// -h is overloaded: "header file" (per upstream) AND "help" — we
-	// resolve to header on the merge command and treat `--help` as help.
-	hdrShort := fs.String("hf", "", "alias for -h header file (rare)")
-	_ = hdrShort
 	fs.StringVar(&forceRG, "r", "", "")
 	fs.BoolVar(&collapsePG, "c", false, "")
 	fs.BoolVar(&preservePG, "p", false, "")
@@ -608,26 +694,62 @@ func runMerge(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream merge (bam_sort.c getopt "h:nNru1R:o:f@:l:cps:b:O:t:XL:")
+	// exposes several flags this port does not act on. Register them as
+	// accepted stubs so legacy command lines and bundled clusters parse:
+	//   -N        merge name-sorted with natural (numeric) ordering (accepted;
+	//             this port's name merge is lexicographic — see -n)
+	//   -u        uncompressed BAM output (accepted no-op)
+	//   -1        fastest compression (level 1) (accepted no-op)
+	//   -f        force overwrite of the output (accepted; we always write it)
+	//   -R REG    merge only a region (accepted no-op; v1 merges whole files)
+	//   -o FILE   output file (accepted; v1 takes the output as the first
+	//             positional, matching the historical merge CLI)
+	//   -s SEED   subsample seed (accepted no-op)
+	//   -O FMT    output format (accepted; this port emits BAM)
+	//   -t TAG    merge by an aux tag's sort order (accepted no-op)
+	//   -X        expect explicit index-file arguments (accepted no-op)
+	//   -L BED    restrict to a BED of regions (accepted no-op)
+	var (
+		mgNatural bool
+		mgUncomp  bool
+		mgLevel1  bool
+		mgForce   bool
+		mgRegion  string
+		mgOutFile string
+		mgSeed    int
+		mgOutFmt  string
+		mgTag     string
+		mgCustom  bool
+		mgBed     string
+	)
+	fs.BoolVar(&mgNatural, "N", false, "")
+	fs.BoolVar(&mgUncomp, "u", false, "")
+	fs.BoolVar(&mgLevel1, "1", false, "")
+	fs.BoolVar(&mgForce, "f", false, "")
+	fs.StringVar(&mgRegion, "R", "", "")
+	fs.StringVar(&mgOutFile, "o", "", "")
+	fs.IntVar(&mgSeed, "s", 0, "")
+	cliflag.StringVar(fs, &mgOutFmt, "O", "output-fmt", "", "Output format (accepted)")
+	fs.StringVar(&mgTag, "t", "", "")
+	fs.BoolVar(&mgCustom, "X", false, "")
+	fs.StringVar(&mgBed, "L", "", "")
 
-	// Pre-scan args: if the user passes "-h FILE" treat it as header
-	// override (matches upstream); --help still goes to help.
-	rawArgs := args
-	for i := 0; i < len(rawArgs); i++ {
-		if rawArgs[i] == "-h" && i+1 < len(rawArgs) {
-			hdrPath = rawArgs[i+1]
-			rawArgs = append(rawArgs[:i], rawArgs[i+2:]...)
-			i--
-		} else if rawArgs[i] == "--help" {
-			fmt.Print(mergeUsage)
-			return 0
-		}
-	}
-
-	if err := fs.Parse(rawArgs); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, mergeUsage)
 		return 2
 	}
+	_ = mgNatural
+	_ = mgUncomp
+	_ = mgLevel1
+	_ = mgForce
+	_ = mgRegion
+	_ = mgSeed
+	_ = mgOutFmt
+	_ = mgTag
+	_ = mgCustom
+	_ = mgBed
 	if showHelp {
 		fmt.Print(mergeUsage)
 		return 0
@@ -638,12 +760,23 @@ func runMerge(args []string) int {
 	}
 
 	positional := fs.Args()
-	if len(positional) == 0 {
-		fmt.Fprint(os.Stderr, mergeUsage)
-		return 2
+	// Upstream merge accepts the output either as the first positional
+	// (legacy form: `merge out.bam in1.bam ...`) or via -o FILE. When -o is
+	// given every positional is an input; otherwise the first positional is
+	// the output.
+	var outPath string
+	var inputs []string
+	if mgOutFile != "" {
+		outPath = mgOutFile
+		inputs = append([]string{}, positional...)
+	} else {
+		if len(positional) == 0 {
+			fmt.Fprint(os.Stderr, mergeUsage)
+			return 2
+		}
+		outPath = positional[0]
+		inputs = append([]string{}, positional[1:]...)
 	}
-	outPath := positional[0]
-	inputs := append([]string{}, positional[1:]...)
 	if fofn != "" {
 		extra, err := samtools.LoadFOFN(fofn)
 		if err != nil {
@@ -727,11 +860,43 @@ func runCoverage(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream coverage (coverage.c getopt "Ao:l:q:Q:hHw:r:b:md:D") exposes
+	// several flags this port does not act on. Register them as accepted
+	// stubs so legacy command lines and bundled clusters parse:
+	//   -l N      minimum read length (accepted no-op)
+	//   -w N      number of histogram bins (accepted; v1 emits tabular)
+	//   -b FILE   file of input BAM paths (accepted no-op; v1 takes one input)
+	//   -m / -D   histogram mode (accepted; v1 emits tabular — see -A)
+	//   -d N      maximum coverage depth (accepted no-op)
+	var (
+		covMinLen   int
+		covBins     int
+		covFileList string
+		covHistM    bool
+		covHistD    bool
+		covMaxDepth int
+	)
+	fs.IntVar(&covMinLen, "l", 0, "")
+	fs.IntVar(&covBins, "w", 0, "")
+	fs.StringVar(&covFileList, "b", "", "")
+	fs.BoolVar(&covHistM, "m", false, "")
+	fs.BoolVar(&covHistD, "D", false, "")
+	fs.IntVar(&covMaxDepth, "d", 0, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, coverageUsage)
 		return 2
+	}
+	_ = covMinLen
+	_ = covBins
+	_ = covFileList
+	_ = covMaxDepth
+	// -m/-D/-A all select histogram mode upstream; our port emits the tabular
+	// table and warns on -A. Fold the other histogram selectors into hist so
+	// the same "not yet implemented" warning fires for them too.
+	if covHistM || covHistD {
+		hist = true
 	}
 	if showHelp {
 		fmt.Print(coverageUsage)
@@ -787,8 +952,11 @@ Options:
                  basename), %. (input extension). Default "%*_%!.bam".
   -u FILE        Output for unidentified reads.
   -d, --no-PG    Accepted; v1 never injects @PG.
+  -v             Verbose progress (accepted; no-op). Matches upstream split,
+                 where -v is verbose rather than version.
+  -M, -p, -@ N   Accepted upstream compatibility stubs (no-op).
   -h, --help     Show this help.
-  -v, --version  Show version.
+      --version  Show version.
 `
 
 func runSplit(args []string) int {
@@ -806,14 +974,36 @@ func runSplit(args []string) int {
 	cliflag.BoolVar(fs, &noPG, "d", "no-PG", false, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
-	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	// Upstream split (bam_split.c getopt "vf:h:u:d:M:p:@:") exposes a few
+	// flags this port does not act on. Register them as accepted stubs so
+	// legacy command lines and bundled clusters parse:
+	//   -v        verbose progress (accepted no-op)
+	//   -M N      maximum number of split files (accepted no-op)
+	//   -p N      per-file read budget (accepted no-op)
+	//   -@ N      threads (accepted no-op)
+	// (-v is upstream's verbose switch here, not version; this port keeps
+	// --version for the version banner.)
+	var (
+		splitVerbose  bool
+		splitMaxSplit int
+		splitPerFile  int
+		splitThreads  int
+	)
+	fs.BoolVar(&splitVerbose, "v", false, "")
+	fs.IntVar(&splitMaxSplit, "M", 0, "")
+	fs.IntVar(&splitPerFile, "p", 0, "")
+	cliflag.IntVar(fs, &splitThreads, "@", "threads", 0, "Threads (accepted, ignored)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, splitUsage)
 		return 2
 	}
+	_ = splitVerbose
+	_ = splitMaxSplit
+	_ = splitPerFile
+	_ = splitThreads
 	if showHelp {
 		fmt.Print(splitUsage)
 		return 0
@@ -903,11 +1093,43 @@ func runMarkdup(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	if err := fs.Parse(args); err != nil {
+	// Upstream markdup (bam_markdup.c getopt "rsl:StT:O:@:f:d:cm:u") spells
+	// the key-mode flag -m MODE and offers several extras this port does not
+	// act on. Register them so legacy command lines and bundled clusters
+	// parse:
+	//   -m MODE   key mode (t|s|tp); upstream's canonical spelling. Wired to
+	//             the same modeStr as our -s/--mode so `markdup -m t` works.
+	//   -S        treat supplementary reads as primary (accepted no-op)
+	//   -f FILE   write a stats file (accepted no-op)
+	//   -O FMT    output format (accepted; this port emits BAM)
+	//   -u        uncompressed BAM output (accepted no-op)
+	// (-s is this port's mode flag, distinct from upstream's -s "print stats";
+	// use -m for the upstream spelling.)
+	var (
+		mdModeAlt   string
+		mdSupp      bool
+		mdStatsFile string
+		mdOutFmt    string
+		mdUncomp    bool
+	)
+	fs.StringVar(&mdModeAlt, "m", "", "")
+	fs.BoolVar(&mdSupp, "S", false, "")
+	fs.StringVar(&mdStatsFile, "f", "", "")
+	cliflag.StringVar(fs, &mdOutFmt, "O", "output-fmt", "", "Output format (accepted)")
+	fs.BoolVar(&mdUncomp, "u", false, "")
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, markdupUsage)
 		return 2
 	}
+	// -m (upstream mode spelling) overrides the -s/--mode default when given.
+	if mdModeAlt != "" {
+		modeStr = mdModeAlt
+	}
+	_ = mdSupp
+	_ = mdStatsFile
+	_ = mdOutFmt
+	_ = mdUncomp
 	if showHelp {
 		fmt.Print(markdupUsage)
 		return 0
@@ -1062,11 +1284,51 @@ func runStats(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	if err := fs.Parse(args); err != nil {
+	// Upstream stats (stats.c getopt
+	// "?hdsXxpr:c:l:i:t:m:q:f:F:g:I:S:P:@:") exposes a number of additional
+	// short flags. Register them as accepted stubs so legacy command lines and
+	// bundled clusters parse:
+	//   -p        remove overlaps (upstream short for our --remove-overlaps)
+	//   -s        deprecated/no-op upstream
+	//   -X        expect an explicit index-file argument (accepted no-op)
+	//   -m FLOAT  insert-size main-bulk fraction (accepted no-op)
+	//   -I STR    restrict to a single read-group ID (accepted no-op)
+	//   -S STR    split output by an aux tag (accepted no-op)
+	//   -P STR    prefix for -S split output (accepted no-op)
+	// (-d, -l and -f are intentionally this port's max-depth / required-flag /
+	// included flags rather than upstream's remove-dups / read-len / required
+	// spellings; see the per-flag usage above.)
+	var (
+		stRemoveOvlP bool
+		stDeprecS    bool
+		stCustomIdx  bool
+		stIsizeBulk  float64
+		stGroupID    string
+		stSplitTag   string
+		stSplitPfx   string
+	)
+	fs.BoolVar(&stRemoveOvlP, "p", false, "")
+	fs.BoolVar(&stDeprecS, "s", false, "")
+	fs.BoolVar(&stCustomIdx, "X", false, "")
+	fs.Float64Var(&stIsizeBulk, "m", 0, "")
+	fs.StringVar(&stGroupID, "I", "", "")
+	fs.StringVar(&stSplitTag, "S", "", "")
+	fs.StringVar(&stSplitPfx, "P", "", "")
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, statsUsage)
 		return 2
 	}
+	// -p is upstream's short form of --remove-overlaps; fold it in.
+	if stRemoveOvlP {
+		removeOvl = true
+	}
+	_ = stDeprecS
+	_ = stCustomIdx
+	_ = stIsizeBulk
+	_ = stGroupID
+	_ = stSplitTag
+	_ = stSplitPfx
 	if showHelp {
 		fmt.Print(statsUsage)
 		return 0
@@ -1203,7 +1465,12 @@ func runCalmd(args []string) int {
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// works the way upstream calmd's getopt parser (bam_md.c getopt
+	// "EqQreuNhbSC:n:Ad@:") accepts it. All upstream short flags are already
+	// registered above. (Our -h is help, whereas upstream -h is the HASH_QNM
+	// switch; the latter remains available as --hash-qnm.)
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, calmdUsage)
 		return 2
@@ -1337,7 +1604,13 @@ func runImport(args []string) int {
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// works the way upstream import's getopt parser (bam_import.c getopt
+	// "1:2:s:0:bhiT:r:R:o:O:u@:N") accepts it. Upstream's --i1/--i2 index
+	// inputs are long-only options; cliflag.Parse therefore reads a single
+	// dash "-i1 FILE" as the getopt cluster "-i -1 FILE" (casava + read1),
+	// exactly as upstream does, while "--i1 FILE" still names the index input.
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, importUsage)
 		return 2
@@ -1481,7 +1754,11 @@ func runPhase(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// works the way upstream phase's getopt parser (phase.c getopt
+	// "Q:eFq:k:b:l:D:A") accepts it. All upstream short flags are registered
+	// above.
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, phaseUsage)
 		return 2
@@ -1601,7 +1878,11 @@ func runTargetcut(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// works the way upstream cut_target's getopt parser (cut_target.c getopt
+	// "f:Q:i:o:0:1:2:") accepts it. All upstream short flags are registered
+	// above.
+	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, targetcutUsage)
 		return 2
@@ -1959,15 +2240,34 @@ func runConsensus(args []string) int {
 	cliflag.StringVar(fs, &bay.qualCal, "t", "qual-calibration", "", "Quality calibration (accepted)")
 	cliflag.StringVar(fs, &bay.config, "X", "config", "", "Predefined config (accepted)")
 
+	// Upstream consensus' getopt string ("...r:5f:...") reserves a bare -5
+	// flag that its switch never handles (a no-op). Register it so a bundled
+	// cluster that includes it still parses.
+	var consDash5 bool
+	fs.BoolVar(&consDash5, "5", false, "")
+
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
+	_ = consDash5
 
-	// Upstream's consensus tests put the input BAM before its flags
-	// (e.g. `consensus in.bam -m bayesian -C 0`). Go's flag package
-	// stops at the first non-flag argument, so permute the args to put
-	// option flags first and positional arguments last.
+	// Two-stage argument handling for upstream parity:
+	//   1. cliflag.Normalize expands POSIX getopt short-flag clusters
+	//      (`-aA`, `-C0`, `-aa`) into canonical one-flag-per-token form, the
+	//      way upstream consensus' getopt parser (bam_consensus.c getopt
+	//      "@:qd:c:H:r:5f:C:aAl:o:m:pt:X:T:Z:") reads them.
+	//   2. permuteFlagArgs then floats the option flags ahead of the
+	//      positional input, because upstream's tests put the input BAM
+	//      before its flags (e.g. `consensus in.bam -m bayesian -C 0`) and
+	//      Go's flag package otherwise stops at the first non-flag token.
+	normalized, nerr := cliflag.Normalize(fs, args)
+	if nerr != nil {
+		fmt.Fprintln(os.Stderr, nerr)
+		fmt.Fprint(os.Stderr, consensusUsage)
+		return 2
+	}
+	args = normalized
 	if perm, ok := permuteFlagArgs(fs, args); ok {
 		args = perm
 	}

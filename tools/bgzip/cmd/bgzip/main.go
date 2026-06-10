@@ -53,7 +53,7 @@ func main() {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bgzip", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // we print parse errors and usage ourselves
 
 	var (
 		stdoutFlag  bool
@@ -91,12 +91,38 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	cliflag.BoolVar(fs, &reindex, "r", "reindex", false, "Write .gzi index")
 	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Show version")
+	// Upstream bgzip (bgzip.c getopt "cdh?fb:@:s:iI:l:grtko:") also accepts a
+	// few flags this port does not act on yet. Register them as accepted
+	// stubs so legacy command lines — and any bundled cluster that includes
+	// them — still parse, matching upstream's surface:
+	//   -i        write a .gzi index while compressing (we don't auto-index;
+	//             use -r/--reindex). Accepted no-op.
+	//   -I FILE   name of the index file. Accepted no-op.
+	//   -g        rebgzip a raw stream using an existing index. Accepted no-op.
+	// (-t is intentionally our --threads alias rather than upstream's "test"
+	// switch; see the README "Deviations" section.)
+	var (
+		indexOnCompress bool
+		indexFname      string
+		rebgzip         bool
+	)
+	cliflag.BoolVar(fs, &indexOnCompress, "i", "index", false, "Ignored: write .gzi while compressing (use -r) (legacy)")
+	cliflag.StringVar(fs, &indexFname, "I", "index-name", "", "Ignored: index file name (legacy)")
+	cliflag.BoolVar(fs, &rebgzip, "g", "rebgzip", false, "Ignored: rebgzip a raw stream (legacy)")
 
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 
-	if err := fs.Parse(args); err != nil {
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// (-cd == -c -d) and value concatenation (-l6 == -l 6) work the way
+	// upstream bgzip's getopt parser accepts them.
+	if err := cliflag.Parse(fs, args); err != nil {
+		fmt.Fprintln(stderr, err)
+		fmt.Fprint(stderr, usage)
 		return 2
 	}
+	_ = indexOnCompress
+	_ = indexFname
+	_ = rebgzip
 	if showHelp {
 		fmt.Fprint(stdout, usage)
 		return 0

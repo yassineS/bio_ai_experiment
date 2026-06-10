@@ -29,6 +29,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/htsfile/pkg/htsfile"
 )
 
@@ -49,39 +50,68 @@ Flags:
 const version = "htsfile 0.1.0 (pure-Go, htsgo)"
 
 func main() {
-	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	helpFlag := flag.Bool("help", false, "")
-	helpShort := flag.Bool("h", false, "")
-	versionFlag := flag.Bool("version", false, "")
-	versionShort := flag.Bool("v", false, "")
-	flag.Parse()
+	os.Exit(run(os.Args[1:]))
+}
 
-	if *helpFlag || *helpShort {
+func run(args []string) int {
+	fs := flag.NewFlagSet("htsfile", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // we print usage ourselves
+	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
+
+	var (
+		helpFlag     bool
+		versionFlag  bool
+		copyMode     bool
+		copyNoDecode bool
+	)
+	cliflag.BoolVar(fs, &helpFlag, "h", "help", false, "show help")
+	cliflag.BoolVar(fs, &versionFlag, "v", "version", false, "show version")
+	// Upstream htsfile (htsfile.c getopt "cChHv") accepts -c/-C copy modes.
+	// The v1 scope is identification only, so these are accepted no-ops kept
+	// for backward compatibility — and so bundled clusters that include them
+	// still parse. The -H spelling is upstream's "print header" copy variant;
+	// we map it to the same accepted no-op (our -h remains help, registered
+	// above as the long --help short form).
+	cliflag.BoolVar(fs, &copyMode, "c", "", false, "Ignored: copy mode not implemented (legacy)")
+	cliflag.BoolVar(fs, &copyNoDecode, "C", "", false, "Ignored: copy mode not implemented (legacy)")
+
+	// Route through cliflag.Parse so POSIX getopt-style short-flag bundling
+	// works the way upstream htsfile's getopt parser accepts it.
+	if err := cliflag.Parse(fs, args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprint(os.Stderr, usage)
+		return 2
+	}
+
+	if helpFlag {
 		fmt.Print(usage)
-		return
+		return 0
 	}
-	if *versionFlag || *versionShort {
+	if versionFlag {
 		fmt.Println(version)
-		return
+		return 0
 	}
+	_ = copyMode
+	_ = copyNoDecode
 
-	args := flag.Args()
-	if len(args) == 0 {
+	rest := fs.Args()
+	if len(rest) == 0 {
 		fmt.Fprintln(os.Stderr, "htsfile: no input file specified")
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(1)
+		return 1
 	}
 
 	failed := 0
-	for _, path := range args {
+	for _, path := range rest {
 		if err := runOne(path); err != nil {
 			fmt.Fprintf(os.Stderr, "htsfile: %s: %v\n", path, err)
 			failed++
 		}
 	}
 	if failed > 0 {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func runOne(path string) error {

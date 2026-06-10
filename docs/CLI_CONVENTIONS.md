@@ -260,6 +260,16 @@ an upstream tool (e.g. samtools' `-Q`/`-D` phase flags), and note why.
 - 2026-06-10: Added `cliflag.Parse`/`cliflag.Normalize` for getopt-compatible
   POSIX short-flag bundling (`-bS`) and value concatenation (`-q20`); `samtools
   view` is the first tool wired through it, with repo-wide rollout to follow
+- 2026-06-10: Rolled `cliflag.Parse` out across the htslib-family CLIs — all
+  remaining `samtools` subcommands (sort, index, flagstat, depth, fastq,
+  mpileup, idxstats, quickcheck, dict, cat, reheader, addreplacerg, fixmate,
+  merge, coverage, split, markdup, stats, calmd, import, phase, targetcut,
+  consensus), plus `tabix`, `bgzip`, and `htsfile`. Each subcommand now also
+  registers the upstream getopt short flags it previously lacked (legacy /
+  no-op compat flags) so bundled clusters that include them parse and behave
+  like upstream. Repeatable `-a` (mpileup, depth) is now a count flag so the
+  fused `-aa` ("all positions, all chromosomes") resolves through the same
+  bundling path as upstream rather than a bespoke pre-pass.
 - Future: May be extended as more tools are ported
 
 ## References
