@@ -1,164 +1,61 @@
-# Bio AI Experiment - Documentation
+# Documentation map
 
-Welcome to the Bio AI Experiment documentation!
+This file is the index of the project's documentation. Its main job is to
+state **which document owns which kind of information**, so status and
+progress content lives in exactly one place and contributors don't re-fork it.
 
-## Quick Links
+## Single source of truth — who owns what
 
-- [Main README](../README.md) - Project overview
-- [Contributing Guide](../CONTRIBUTING.md) - How to contribute
-- [Project Roadmap](ROADMAP.md) - Project phases and timeline
-- [htsgo Roadmap](HTSGO_ROADMAP.md) - Consolidating format/index code into a shared htslib-equivalent library
-- [CRAM Design Notes](CRAM_DESIGN.md) - Up-front decisions for the CRAM port
-- [Agent Coordination](../.github/agents/COORDINATION.md) - How agents work together
+| You want… | Go to | Notes |
+|-----------|-------|-------|
+| Top-level "distance to done" completion table | [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) | Skimmable per-tool % + biggest boulders. **Owns** the summary view. |
+| Authoritative per-tool parity gap list | [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) | The canonical, detailed "what's missing per subcommand/flag" tracker. **Owns** the gap detail. |
+| Per-subcommand feature inventory + test/coverage notes | [`../tools/PORTING_STATUS.md`](../tools/PORTING_STATUS.md) | Feature-by-feature checklist; defers the headline % to `PROJECT_STATUS.md`. |
+| Validated-parity test methodology + skip ledger | [`../tools/PARITY_VALIDATION.md`](../tools/PARITY_VALIDATION.md) | How parity is proven against upstream corpora. |
+| Upstream bugs we fixed on port | [`UPSTREAM_BUGS.md`](UPSTREAM_BUGS.md) | Deviations from upstream that are intentional fixes. |
+| Documented intentional CLI differences | [`../tools/CLI_DIFFERENCES.md`](../tools/CLI_DIFFERENCES.md) | Where our flags/behaviour intentionally differ. |
+| Which **new** tools to port next | [`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking_2026.md) | A priority list for *new* ports, not a deprioritise filter for existing ones. |
+| How to use a specific tool | `../tools/<tool>/README.md` | Per-tool usage + parity notes. |
+| Repo layout, build/test commands, deps policy | [`../CLAUDE.md`](../CLAUDE.md) | The orientation doc for contributors and AI agents. |
+| How to contribute (PRs, issues, setup) | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Workflow and coding standards. |
 
-## Documentation Structure
+If two documents disagree on status, **`PROJECT_STATUS.md` (summary) and
+`PARITY_ROADMAP.md` (detail) win.** Everything else links to them rather than
+restating numbers.
 
-This documentation is organized into several sections:
+## Design and reference docs (own their topic, not status)
 
-### For Users
+- [`GOLANG_GUIDE.md`](GOLANG_GUIDE.md) — Go patterns and best practices used here.
+- [`CLI_CONVENTIONS.md`](CLI_CONVENTIONS.md) — the canonical CLI flag spec
+  (POSIX short + GNU long via `pkg/cliflag`).
+- [`CRAM_DESIGN.md`](CRAM_DESIGN.md) / [`CRAM_ROADMAP.md`](CRAM_ROADMAP.md) —
+  the CRAM port's up-front decisions and remaining work.
+- [`HTSGO_ROADMAP.md`](HTSGO_ROADMAP.md) — consolidating format/index code
+  into the shared `pkg/htsgo` htslib-equivalent library.
+- [`PLUGIN_PROTOCOL.md`](PLUGIN_PROTOCOL.md) — the bcftools plugin subprocess
+  protocol.
+- [`../pkg/htsgo/README.md`](../pkg/htsgo/README.md) — format library docs.
+- [`../PERFORMANCE_BENCHMARKS.md`](../PERFORMANCE_BENCHMARKS.md) — speed vs
+  the originals.
 
-- **Getting Started**
-  - [Installation Guide](getting-started/installation.md) *(Coming Soon)*
-  - [Quick Start](getting-started/quickstart.md) *(Coming Soon)*
-  - [Tool Catalog](catalog/) *(Coming Soon)*
+## Agent role descriptions
 
-- **User Guides**
-  - [Using Recoded Tools](guides/using-tools.md) *(Coming Soon)*
-  - [MCP Integration Guide](guides/mcp-integration.md) *(Coming Soon)*
-  - [Troubleshooting](guides/troubleshooting.md) *(Coming Soon)*
+The AI agents that build this repo are described under
+[`../.github/agents/`](../.github/agents/): tool-analysis, golang-recoding,
+testing, documentation, and mcp-server roles, plus a
+[coordination guide](../.github/agents/COORDINATION.md).
 
-### For Contributors
+## Archived docs
 
-- **Development**
-  - [Contributing Guide](../CONTRIBUTING.md)
-  - [Code Style Guide](development/code-style.md) *(Coming Soon)*
-  - [Testing Guide](development/testing.md) *(Coming Soon)*
-  - [Documentation Guide](development/documentation.md) *(Coming Soon)*
+Point-in-time summaries that are kept for history (not current status) live in
+[`archive/`](archive/). Don't read them for "where are we now" — use
+`PROJECT_STATUS.md`.
 
-- **Agent Guides**
-  - [Tool Analysis Agent](../.github/agents/tool-analysis-agent.md)
-  - [GoLang Recoding Agent](../.github/agents/golang-recoding-agent.md)
-  - [Testing Agent](../.github/agents/testing-agent.md)
-  - [Documentation Agent](../.github/agents/documentation-agent.md)
-  - [MCP Server Agent](../.github/agents/mcp-server-agent.md)
-  - [Agent Coordination](../.github/agents/COORDINATION.md)
+## Documentation conventions
 
-### API Reference
-
-- **Tools**
-  - [Tools Overview](../tools/README.md)
-  - Individual tool API docs *(Coming Soon)*
-
-- **MCP Servers**
-  - [MCP Servers Overview](../mcp-servers/README.md)
-  - Individual MCP server docs *(Coming Soon)*
-
-### Project Information
-
-- **About**
-  - [Project Goals](../README.md#project-goals)
-  - [Roadmap](ROADMAP.md)
-  - [License](../LICENSE)
-
-- **Analysis**
-  - [Tool Analysis Template](../analysis/TEMPLATE.md)
-  - Individual tool analyses *(Coming Soon)*
-
-## Documentation Guidelines
-
-When contributing documentation:
-
-1. **Use clear, simple language**
-   - Write for diverse audiences
-   - Avoid jargon where possible
-   - Explain technical terms
-
-2. **Include examples**
-   - Show code examples
-   - Provide command-line examples
-   - Include expected outputs
-
-3. **Keep it current**
-   - Update docs with code changes
-   - Review regularly
-   - Fix broken links
-
-4. **Structure well**
-   - Use consistent formatting
-   - Create clear hierarchies
-   - Link related sections
-
-## Documentation Tools
-
-- **Markdown**: All documentation is written in Markdown
-- **Go Doc**: API documentation for Go packages
-- **TypeScript Doc**: API documentation for MCP servers
-
-## Finding Information
-
-### Search Tips
-
-Use GitHub's search to find specific information:
-
-- Search in this repository
-- Filter by file type (`.md` for documentation)
-- Use quotes for exact phrases
-
-### Table of Contents
-
-Most documentation pages include a table of contents for easy navigation.
-
-## Getting Help
-
-If you can't find what you're looking for:
-
-1. Check this documentation index
-2. Search the repository
-3. Review existing issues
-4. Open a new issue with your question
-
-## Contributing to Documentation
-
-Documentation improvements are always welcome! See the [Documentation Agent Guide](../.github/agents/documentation-agent.md) for standards and best practices.
-
-### Quick Start for Doc Contributors
-
-1. Fork the repository
-2. Make your documentation changes
-3. Ensure links work
-4. Submit a pull request
-
-## Documentation Status
-
-| Section | Status | Priority |
-|---------|--------|----------|
-| Project Overview | ✓ Complete | High |
-| Contributing Guide | ✓ Complete | High |
-| Agent Guides | ✓ Complete | High |
-| Roadmap | ✓ Complete | High |
-| Tool Documentation | ○ Planned | High |
-| User Guides | ○ Planned | Medium |
-| API Reference | ○ Planned | Medium |
-| Tutorials | ○ Planned | Low |
-
-**Legend**:
-
-- ✓ Complete
-- ◐ In Progress  
-- ○ Planned
-- ● Not Started
-
-## Feedback
-
-Documentation feedback is valuable! If you find:
-
-- Unclear explanations
-- Missing information
-- Broken links
-- Outdated content
-
-Please open an issue or submit a pull request.
-
----
-
-**Last Updated**: 2024-10-20
+- Keep Markdown well-formed: the markdown lint over `**/*.md` is part of the
+  (currently `workflow_dispatch`-only) CI job and is run locally on PRs.
+- Put status/progress facts in the owning document above and **link** to them
+  elsewhere instead of copying — duplicated status is how docs go stale.
+- Document exported Go identifiers with complete-sentence doc comments
+  (see [`GOLANG_GUIDE.md`](GOLANG_GUIDE.md)).

@@ -121,12 +121,17 @@ git checkout -b feature/your-feature-name
 
 ### Building
 
+This repository is a **single Go module** (`github.com/yassineS/bio_ai_experiment`);
+there is no per-tool `go.mod`. Run all Go commands from the repo root.
+
 ```bash
-# Build all tools
-cd tools/[tool-name]
+# Build everything
 go build ./...
 
-# Build specific package
+# Build a single tool's binary
+go build ./tools/seqtk/cmd/seqtk
+
+# Build the shared packages
 go build ./pkg/...
 ```
 
@@ -227,18 +232,24 @@ Understanding the project structure will help you navigate the codebase:
 
 ```
 bio_ai_experiment/
+├── go.mod               # single Go module; no per-tool go.mod
 ├── .github/
-│   └── agents/          # Agent configuration files
+│   └── agents/          # Agent role descriptions
+├── pkg/                 # shared libraries (htsgo, cliflag, ...)
 ├── tools/               # Recoded bioinformatics tools
-│   └── [tool-name]/
-│       ├── cmd/         # Command-line interface
-│       ├── pkg/         # Library code
-│       ├── tests/       # Tests
-│       └── docs/        # Tool-specific docs
-├── analysis/            # Tool analysis reports
-├── mcp-servers/         # MCP server implementations
+│   └── <tool>/
+│       ├── cmd/<tool>/main.go   # CLI entry point
+│       ├── pkg/<tool>/          # tool logic + inline *_test.go
+│       └── README.md            # per-tool usage + parity notes
+├── analysis/            # Tool ranking + analysis reports
+├── mcp-servers/         # MCP server implementations (planned)
 └── docs/                # Project documentation
 ```
+
+Tests live **inline** next to the code as `*_test.go` under
+`tools/<tool>/pkg/<tool>/` — there is no separate `tests/` or per-tool
+`docs/` subtree (older docs that describe one are stale). For the current
+tool-by-tool status see [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 ## Working with Agents
 

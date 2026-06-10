@@ -1,6 +1,7 @@
 # Testing Agent
 
 ## Purpose
+
 This agent is responsible for creating comprehensive test suites for recoded bioinformatics tools, ensuring correctness, reliability, and robustness.
 
 ## Responsibilities
@@ -44,24 +45,20 @@ This agent is responsible for creating comprehensive test suites for recoded bio
 
 ## Test Organization
 
+This is a **single Go module**; tests live **inline** next to the code as
+`*_test.go` (not in a separate `tests/` tree). The actual layout is:
+
 ```
-tools/[tool-name]/tests/
-├── unit/
-│   ├── core_test.go
-│   ├── io_test.go
-│   └── utils_test.go
-├── integration/
-│   ├── cli_test.go
-│   └── workflow_test.go
-├── edge_cases/
-│   └── edge_cases_test.go
-├── benchmarks/
-│   └── benchmark_test.go
-└── testdata/
-    ├── unit/              # Unit test data
-    ├── integration/       # Integration test data
-    └── edge_cases/        # Edge case test data
+tools/<tool>/pkg/<tool>/
+├── <tool>.go
+├── <tool>_test.go         # unit + table-driven tests
+└── <tool>_bench_test.go   # benchmarks (where perf matters)
 ```
+
+Test fixtures live in a `testdata/` directory alongside the package that
+uses them (Go's standard convention). Validated-parity suites that run the
+upstream test corpus through our port live under the tool's own
+`testdata/parity/`; see [`../../tools/PARITY_VALIDATION.md`](../../tools/PARITY_VALIDATION.md).
 
 ## Testing Standards
 
@@ -74,6 +71,7 @@ tools/[tool-name]/tests/
 - Mock external dependencies
 
 Example:
+
 ```go
 func TestProcessSequence(t *testing.T) {
     tests := []struct {
@@ -126,6 +124,7 @@ func TestProcessSequence(t *testing.T) {
 - Report memory allocations
 
 Example:
+
 ```go
 func BenchmarkProcessLargeFile(b *testing.B) {
     data := generateTestData(1000000)

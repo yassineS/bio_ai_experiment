@@ -2,17 +2,25 @@
 
 Go re-implementations of popular bioinformatics CLI tools. Each is in its own
 subdirectory; they all live in the same Go module (`github.com/yassineS/bio_ai_experiment`),
-no per-tool `go.mod`, no third-party dependencies.
+no per-tool `go.mod`. Third-party deps are kept to the sanctioned minimum
+(`gonum` for linalg; `ulikunitz/xz` confined to the CRAM codec layer) — see
+[`../CLAUDE.md`](../CLAUDE.md).
+
+> **Source of truth for status.** The parity percentages below are a quick
+> index only. The canonical, skimmable completion table lives in
+> [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md), and the authoritative
+> per-tool gap list lives in [`../docs/PARITY_ROADMAP.md`](../docs/PARITY_ROADMAP.md).
+> When the numbers here disagree, those two files win.
 
 ## Tools in this directory
 
-| Tool | Maps to | Purpose | Coverage |
+| Tool | Maps to | Purpose | Parity |
 |------|---------|---------|---------:|
-| [`seqtk`](seqtk/) | seqtk | FASTA/Q processing (comp/fq2fa/seq/sample/trimfq/subseq/mergepe/cutN/mutfa/randbase/hpc) | ~70% |
-| [`prinseq`](prinseq/) | PRINSEQ-lite | FASTA/Q stats + filtering | 99.9% |
-| [`sickle`](sickle/) | sickle | Quality trimming | ~82% |
+| [`seqtk`](seqtk/) | seqtk | FASTA/Q processing (all 24 subcommands; byte-parity vs v1.5) | 100% |
+| [`prinseq`](prinseq/) | PRINSEQ-lite | FASTA/Q stats + filtering | ~95% |
+| [`sickle`](sickle/) | sickle | Quality trimming | 100% |
 | [`skewer`](skewer/) | skewer | Adapter trimming | 100% |
-| [`fastp`](fastp/) | fastp | All-in-one preprocessor (cut/sliding-window/HTML+JSON reports/auto-adapter) | ~76% |
+| [`fastp`](fastp/) | fastp | All-in-one preprocessor (cut/sliding-window/HTML+JSON reports/auto-adapter) | ~85% |
 | [`bedmerge`](bedmerge/) | bedtools merge | Merge overlapping intervals | 100% |
 | [`bedintersect`](bedintersect/) | bedtools intersect | Interval intersection | 100% |
 | [`bedsort`](bedsort/) | bedtools sort | Sort BED files | 92% |
@@ -48,11 +56,13 @@ no per-tool `go.mod`, no third-party dependencies.
 | [`bedlinks`](bedlinks/) | bedtools links | Emit a UCSC Genome Browser HTML link table | 87% |
 | [`bedpairtobed`](bedpairtobed/) | bedtools pairtobed | Overlap BEDPE pairs against a BED (either/both/neither/notboth/xor) | 90% |
 | [`bedpairtopair`](bedpairtopair/) | bedtools pairtopair | Overlap two BEDPE files (both/either/neither/notboth + slop) | 91% |
-| [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD analysis | ~68% |
-| [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | 90% |
-| [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | 86% |
-| [`samtools`](samtools/) | htslib `samtools` | SAM/BAM tools: `view`/`sort`/`index`/`depth`/`fastq`/`flagstat`/`merge`/`coverage`/`idxstats`/`cat`/`reheader`/`addreplacerg`/`fixmate`/`dict`/`split`/`quickcheck`/`mpileup`/`markdup`/`stats` (19 subcommands) | 86% |
-| [`bcftools`](bcftools/) | htslib `bcftools` | VCF/BCF tools: `view`/`index`/`stats`/`query`/`concat`/`norm`/`call`/`annotate`/`head`/`isec`/`merge`/`reheader`/`sort` (13 subcommands) | 85% |
+| [`vcftools`](vcftools/) | vcftools | VCF filtering/stats/conversion + LD/RoH/relatedness/PCA (146/146 long flags) | ~97% |
+| [`bgzip`](bgzip/) | htslib `bgzip` | Block-gzip codec used by `.vcf.gz`, BAM, BCF, tabix | ~92% |
+| [`tabix`](tabix/) | htslib `tabix` | Region index for bgzipped VCF/BED/GFF/SAM | ~92% |
+| [`htsfile`](htsfile/) | htslib `htsfile` | Identify file format / compression | ~98% |
+| [`mosdepth`](mosdepth/) | mosdepth | Fast BAM/CRAM depth over windows/BED (`-d/--d4` byte-identical) | ~85% |
+| [`samtools`](samtools/) | htslib `samtools` | SAM/BAM/CRAM tools — 24 functional subcommands: `view`/`sort`/`index`/`depth`/`fastq`/`flagstat`/`merge`/`coverage`/`idxstats`/`cat`/`reheader`/`addreplacerg`/`fixmate`/`dict`/`split`/`quickcheck`/`mpileup`/`markdup`/`stats`/`calmd`/`import`/`phase`/`targetcut`/`consensus` | ~88% |
+| [`bcftools`](bcftools/) | htslib `bcftools` | VCF/BCF tools — 24 subcommands: `view`/`index`/`stats`/`query`/`concat`/`norm`/`call`/`annotate`/`head`/`isec`/`merge`/`reheader`/`sort`/`filter`/`consensus`/`convert`/`mendelian`/`mendelian2`/`gtcheck`/`roh`/`polysomy`/`cnv`/`csq`/`mpileup` (+ `plugin`) | ~70% |
 
 For up-to-date per-tool feature lists and migration notes, see each tool's
 own `README.md`, [`PORTING_STATUS.md`](PORTING_STATUS.md), and the
@@ -127,7 +137,16 @@ rules.
 
 ## CI
 
-The CI workflow is currently disabled (manual-only via
-`workflow_dispatch`). Contributors run `gofmt -l`, `go vet`, `go test -race
--cover`, `go build`, and `markdownlint` locally and document the output in
-each PR description.
+The CI workflow (`.github/workflows/ci.yml`) is currently disabled
+(manual-only via `workflow_dispatch`) while the project iterates; the full
+check set is kept commented in the file. Run it locally before pushing and
+document the output in the PR:
+
+```bash
+gofmt -l .
+go vet ./...
+go test -race -cover ./...
+go build ./...
+```
+
+Stick to Go 1.21 language/stdlib features (the commented CI config pins 1.21).

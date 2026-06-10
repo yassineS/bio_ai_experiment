@@ -1,6 +1,7 @@
 # GoLang Recoding Agent
 
 ## Purpose
+
 This agent is responsible for recoding bioinformatics tools in Go, maintaining functionality while improving performance, maintainability, and code quality.
 
 ## Responsibilities
@@ -40,30 +41,24 @@ This agent is responsible for recoding bioinformatics tools in Go, maintaining f
 
 ### Code Structure
 
+The repository is a **single Go module** — there is **no per-tool `go.mod`**,
+and tests live inline as `*_test.go` next to the code (no separate `tests/`
+or per-tool `docs/` subtree). The actual layout is:
+
 ```
-tools/[tool-name]/
+tools/<tool>/
 ├── cmd/
-│   └── [tool-name]/
-│       └── main.go           # CLI entry point
+│   └── <tool>/
+│       └── main.go           # CLI entry point (arg parsing + wiring only)
 ├── pkg/
-│   └── [tool-name]/
-│       ├── core.go           # Core functionality
-│       ├── io.go             # Input/output handling
-│       ├── process.go        # Processing logic
-│       └── utils.go          # Utility functions
-├── tests/
-│   ├── unit_test.go          # Unit tests
-│   └── integration_test.go   # Integration tests
-├── testdata/
-│   ├── input/                # Test input files
-│   └── expected/             # Expected output files
-├── docs/
-│   ├── API.md                # API documentation
-│   └── USAGE.md              # Usage guide
-├── go.mod
-├── go.sum
-└── README.md
+│   └── <tool>/
+│       ├── <tool>.go         # tool logic (split into focused files)
+│       └── <tool>_test.go    # inline table-driven tests
+└── README.md                 # usage + parity notes
 ```
+
+Shared format parsing/writing lives under `pkg/htsgo/`; reuse it rather than
+re-implementing FASTA/FASTQ/VCF/BED/SAM/BAM/BCF/BGZF handling.
 
 ### Coding Standards
 

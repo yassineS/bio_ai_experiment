@@ -28,9 +28,14 @@ tools are vendored as git submodules under `reference_code/` for reference.
 └── .github/agents/           # role descriptions for the AI agents that build this repo
 ```
 
-Implemented tools so far: `seqtk`, `prinseq`, `sickle`, `skewer`, `fastp`,
-`bedmerge`, `bedintersect`, `vcftools`. Each has its own `README.md` under
-`tools/<tool>/`.
+Implemented tools so far: the QC/format set (`seqtk`, `prinseq`, `sickle`,
+`skewer`, `fastp`, `vcftools`, `mosdepth`), the htslib core (`bgzip`,
+`tabix`, `htsfile`, `samtools` with 24 subcommands, `bcftools` with 24
+subcommands), and ~37 `bed*` tools covering the bedtools surface
+(`bedmerge`, `bedintersect`, `bedmap`, …). Each has its own `README.md`
+under `tools/<tool>/`. For the current per-tool completion table see
+`PROJECT_STATUS.md`; for the authoritative gap list see
+`docs/PARITY_ROADMAP.md`.
 
 ### Important: it is ONE Go module
 
@@ -153,20 +158,26 @@ specific one; you usually don't.
 - `docs/CLI_CONVENTIONS.md` — the canonical CLI flag spec.
 - `pkg/htsgo/README.md` — format library docs (post-migration home;
   superseded `pkg/bioformats/README.md`).
-- `tools/PORTING_STATUS.md`, `tools/IMPLEMENTATION_SUMMARY.md` — tool-by-tool status.
+- `docs/README.md` — the **docs map**: which document owns which kind of
+  status/design info (start here when unsure where something lives).
+- `PROJECT_STATUS.md` — top-level completion table (the summary view).
+- `docs/PARITY_ROADMAP.md` — authoritative per-tool parity gap list.
+- `tools/PORTING_STATUS.md` — per-subcommand feature inventory + test notes.
 - `tools/<tool>/README.md` — per-tool usage and parity notes.
 - `.github/agents/*.md` — the agent roles (tool-analysis, golang-recoding, testing,
   documentation, mcp-server) and how the work is divided.
 
 ## Caveats / known stale docs
 
-Some documents predate the current code and describe an aspirational structure
-that wasn't followed:
+The major status docs were consolidated (see `docs/README.md`, the docs map):
+`PROJECT_STATUS.md` (summary table) and `docs/PARITY_ROADMAP.md` (gap detail)
+are the source of truth; `tools/README.md`, `tools/PORTING_STATUS.md`, and the
+`.github/agents/*` structure diagrams were corrected to the single-module
+reality and now link to those two rather than restating status.
 
-- `tools/README.md` claims the `tools/` dir is empty and that each tool has its
-  own `go.mod`/`go.sum` and a `tests/` + `testdata/` + `docs/` subtree. In
-  reality tools are populated, share the root module, and keep tests inline.
-- `PROJECT_STATUS.md` says "0 tools implemented" — outdated.
+A few point-in-time summaries are retained for history only under
+`docs/archive/` (e.g. the former `tools/IMPLEMENTATION_SUMMARY.md` lineage) —
+don't read them for "where are we now."
 
-When in doubt, trust the actual code over these older Markdown files, and feel
-free to update the stale docs as part of related work.
+When in doubt, trust the actual code and the two source-of-truth status docs
+over any older Markdown, and feel free to fix stale docs as part of related work.
