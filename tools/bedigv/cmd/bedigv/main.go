@@ -70,10 +70,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&useNames, "name", false, "Append BED name column to filenames")
 	fs.IntVar(&slop, "slop", 0, "Flank each interval (bp) in the goto locus")
 	fs.StringVar(&imgType, "img", "png", "Snapshot extension (png|eps|svg|jpg)")
-	fs.BoolVar(&showHelp, "h", false, "Help")
-	fs.BoolVar(&showHelp, "help", false, "Help")
-	fs.BoolVar(&showVersion, "v", false, "Version")
-	fs.BoolVar(&showVersion, "version", false, "Version")
+	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Help")
+	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Version")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err)

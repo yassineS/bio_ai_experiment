@@ -166,16 +166,40 @@ prinseq filter --input1 R1.fastq --input2 R2.fastq --output1 out_R1.fastq --outp
 
 ### Go Implementation
 
-For Go tools using the standard `flag` package, we implement a custom flag type that accepts both short and long options:
+For Go tools using the standard `flag` package, register flags through the
+shared [`pkg/cliflag`](../pkg/cliflag/cliflag.go) helpers. Each helper registers
+the same destination under both the short and long name on one `*flag.FlagSet`,
+so a single call gives you both forms. Either name may be empty to register only
+one form (e.g. a long-only `--input-fmt-option`).
 
 ```go
-// Define both short and long versions
-fs.String("i", "", "")
-fs.String("input", "", "Input file (use '-' for stdin)")
+fs := flag.NewFlagSet("mytool", flag.ContinueOnError)
 
-// Or use a helper function
-addFlag(fs, "i", "input", "", "Input file (use '-' for stdin)")
+cliflag.StringVar(fs, &input, "i", "input", "", "Input file (use '-' for stdin)")
+cliflag.IntVar(fs, &minLen, "l", "min-length", 0, "Minimum sequence length")
+cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Show help")
 ```
+
+Available helpers (all in `pkg/cliflag`):
+
+| Helper                 | Backing type      | Typical use                         |
+| ---------------------- | ----------------- | ----------------------------------- |
+| `StringVar`            | `string`          | paths, format names                 |
+| `IntVar`               | `int`             | counts, thresholds                  |
+| `Int64Var`             | `int64`           | seeds, large counts                 |
+| `Uint64Var`            | `uint64`          | non-negative large counts           |
+| `Float64Var`           | `float64`         | quality/fraction thresholds         |
+| `BoolVar`              | `bool`            | toggles, `--help`/`--version`       |
+| `DurationVar`          | `time.Duration`   | timeouts                            |
+| `Var`                  | `flag.Value`      | repeatable flags / custom parsing   |
+
+Use `cliflag.Var` for repeatable flags (e.g. `-r/--region` that may appear
+multiple times): both forms accumulate into the same destination. Only
+hand-roll `fs.*Var` directly when a flag is intentionally single-form to match
+an upstream tool (e.g. samtools' `-Q`/`-D` phase flags), and note why.
+
+`cliflag.FormatUsage(short, long, valueType, description)` renders an aligned
+`-s, --long TYPE   description` usage line.
 
 ### Validation
 

@@ -599,8 +599,7 @@ func runMendelian(args []string) int {
 		showHelp      bool
 		showVer       bool
 	)
-	fs.Var(&trioFlag, "t", "Trio CHILD,FATHER,MOTHER (may repeat)")
-	fs.Var(&trioFlag, "trio", "Trio CHILD,FATHER,MOTHER (may repeat)")
+	cliflag.Var(fs, &trioFlag, "t", "trio", "Trio CHILD,FATHER,MOTHER (may repeat)")
 	cliflag.StringVar(fs, &trioFile, "T", "trio-file", "", "Trio file")
 	cliflag.BoolVar(fs, &count, "c", "count", false, "Summary mode")
 	cliflag.BoolVar(fs, &deleteFlag, "d", "delete", false, "Delete bad records")

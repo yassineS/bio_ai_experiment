@@ -157,8 +157,7 @@ func runMendelian2(args []string) int {
 	// `-W` work without consuming the following positional argument,
 	// matching upstream's getopt `optional_argument`.
 	wi := &optionalStringValue{target: &writeIndex, present: &writeIndexSet}
-	fs.Var(wi, "W", "Write an index for a bgzipped output [optional csi|tbi]")
-	fs.Var(wi, "write-index", "Write an index for a bgzipped output [optional csi|tbi]")
+	cliflag.Var(fs, wi, "W", "write-index", "Write an index for a bgzipped output [optional csi|tbi]")
 	cliflag.IntVar(fs, &verbosity, "v", "verbosity", 0, "Verbosity (accepted)")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "?", false, "")
