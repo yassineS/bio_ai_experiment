@@ -54,3 +54,50 @@ func TestRandbaseSeedShortAndLong(t *testing.T) {
 		t.Errorf("-s and --seed produced different output:\n-s:     %q\n--seed: %q", short, long)
 	}
 }
+
+// TestSeqBundledParsesAndEquivalent asserts that a bundled short-flag cluster
+// mixing boolean switches and a value-concat ("-r6l30": -r -6 -l 30) parses
+// through cliflag.Parse and yields output byte-identical to the fully expanded
+// canonical form. Upstream seqtk's `seq` redefines -l/-L semantics relative to
+// our port, so this is an in-binary bundled==canonical equivalence assertion
+// (the parsing-rollout invariant) rather than an upstream byte-parity check.
+func TestSeqBundledParsesAndEquivalent(t *testing.T) {
+	bin := buildSeqtk(t)
+
+	// Three FASTQ records of differing length so the -l 30 length filter is
+	// observable; quality lines are present so -6 has a defined meaning.
+	const fq = "@a\n" +
+		"ACGTACGTACGTACGTACGTACGTACGTACGT\n" + // 32 bp, kept
+		"+\n" +
+		"IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n" +
+		"@b\n" +
+		"ACGTACGT\n" + // 8 bp, dropped by -l 30
+		"+\n" +
+		"IIIIIIII\n"
+	in := filepath.Join(t.TempDir(), "in.fq")
+	if err := os.WriteFile(in, []byte(fq), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(args ...string) []byte {
+		full := append([]string{"seq"}, append(args, in)...)
+		cmd := exec.Command(bin, full...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("seqtk seq %v: %v\n%s", args, err, stderr.String())
+		}
+		return stdout.Bytes()
+	}
+
+	bundled := run("-r6l30")
+	canonical := run("-r", "-6", "-l", "30")
+
+	if len(bundled) == 0 {
+		t.Fatal("empty output from bundled form")
+	}
+	if !bytes.Equal(bundled, canonical) {
+		t.Errorf("bundled -r6l30 vs canonical differ:\nbundled:   %q\ncanonical: %q", bundled, canonical)
+	}
+}

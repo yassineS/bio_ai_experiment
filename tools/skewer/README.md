@@ -64,6 +64,7 @@ Options:
 - `-q, --qual-threshold INT` - Quality threshold for trimming (default: 0)
 - `-m, --min-overlap INT` - Minimum overlap for adapter detection (default: 3)
 - `-r, --error-rate FLOAT` - Maximum error rate (default: 0.1)
+- `-z, --compress` - Gzip-compress the output stream regardless of filename (upstream `-z`)
 - `-a, --auto-detect` - Auto-detect adapter sequences
 - `--json FILE` - Output statistics as JSON to file
 - `--html-report FILE` - Generate HTML report to file
@@ -94,6 +95,7 @@ Options:
 - `-q, --qual-threshold INT` - Quality threshold for trimming (default: 0)
 - `-m, --min-overlap INT` - Minimum overlap for adapter detection (default: 3)
 - `-r, --error-rate FLOAT` - Maximum error rate (default: 0.1)
+- `-z, --compress` - Gzip-compress the output stream regardless of filename (upstream `-z`)
 - `-a, --auto-detect` - Auto-detect adapter sequences
 - `--json FILE` - Output statistics as JSON to file
 - `--html-report FILE` - Generate HTML report to file

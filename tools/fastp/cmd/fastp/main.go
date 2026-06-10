@@ -319,7 +319,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	fs.Parse(os.Args[1:])
+	if err := cliflag.Parse(fs, os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	if showHelp {
 		fs.Usage()

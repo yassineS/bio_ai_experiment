@@ -63,7 +63,9 @@ Options:
 - `-w, --window-size INT` - Window size for quality assessment (default: 10)
 - `-x, --no-fiveprime` - Don't trim 5' end
 - `-n, --trunc-n` - Truncate sequences at position of first N
-- `--quiet` - Don't print statistics (also suppresses the auto-detect notice)
+- `-z, --quiet` - Don't print statistics (also suppresses the auto-detect notice)
+- `-g, --gzip-output` - Gzip-compress the output stream regardless of filename (upstream `-g`)
+- `-d, --debug` - Upstream debug flag, accepted for command-line compatibility (no effect)
 - `--json FILE` - Output statistics in JSON format to file
 - `--html FILE` - Generate HTML report to file
 - `--progress` - Show progress reporting
@@ -91,7 +93,9 @@ Options:
 - `-w, --window-size INT` - Window size for quality assessment (default: 10)
 - `-x, --no-fiveprime` - Don't trim 5' end
 - `-n, --trunc-n` - Truncate sequences at position of first N
-- `--quiet` - Don't print statistics (also suppresses the auto-detect notice)
+- `-z, --quiet` - Don't print statistics (also suppresses the auto-detect notice)
+- `-g, --gzip-output` - Gzip-compress the output stream regardless of filename (upstream `-g`)
+- `-d, --debug` - Upstream debug flag, accepted for command-line compatibility (no effect)
 - `--json FILE` - Output statistics in JSON format to file
 - `--html FILE` - Generate HTML report to file
 - `--progress` - Show progress reporting
@@ -374,7 +378,7 @@ the test list and a per-case description. The parity tests live in
 |---------|----------------|-------------------|-------|
 | CLI Options | Short only (-f, -o) | Short and long (--fastq-file) | More user-friendly |
 | Quality Types | sanger, illumina, solexa | sanger, illumina, solexa | Same support |
-| Gzip Support | Built-in (-g flag) | Built-in (automatic by .gz extension) | Automatic detection |
+| Gzip Support | Built-in (-g flag) | Built-in (automatic by .gz extension; -g/--gzip-output forces it) | Automatic detection plus upstream -g |
 | Statistics | Basic counts | Detailed percentages | More informative |
 | Error Messages | Minimal | Detailed | Better debugging |
 | Memory Usage | Similar | Similar | Both use streaming |
