@@ -54,7 +54,10 @@ type SortOptions struct {
 	// OutputSAM forces text SAM output (overrides OutputBAM when both set —
 	// SAM wins).
 	OutputSAM bool
-	// Threads is accepted but ignored — the v1 pipeline is single-threaded.
+	// Threads sets the BGZF compression worker count from `-@/--threads`. A
+	// value above 1 compresses both the temporary sort shards and the final
+	// BAM output in parallel; the decoded records are byte-identical to the
+	// single-threaded path. It has no effect on SAM output.
 	Threads int
 	// NoPG is accepted but is a no-op (we don't inject @PG lines anyway).
 	NoPG bool
@@ -122,7 +125,7 @@ func Sort(in io.Reader, out io.Writer, opts SortOptions) error {
 			return nil
 		}
 		sort.SliceStable(buffer, func(a, b int) bool { return cmp(buffer[a], buffer[b]) })
-		path, ferr := writeShard(tmpBaseDir, tmpName, len(shards), hdr, buffer)
+		path, ferr := writeShard(tmpBaseDir, tmpName, len(shards), hdr, buffer, opts.Threads)
 		if ferr != nil {
 			return ferr
 		}
@@ -440,13 +443,13 @@ func tagLess(a, b *sam.Record, tag string) bool {
 
 // writeShard creates a tmp BAM file and writes the given (already sorted)
 // records to it. Returns the file path.
-func writeShard(dir, prefix string, idx int, hdr *sam.Header, recs []*sam.Record) (string, error) {
+func writeShard(dir, prefix string, idx int, hdr *sam.Header, recs []*sam.Record, threads int) (string, error) {
 	path := filepath.Join(dir, fmt.Sprintf("%s.%d.%d.bam", prefix, os.Getpid(), idx))
 	f, err := os.Create(path)
 	if err != nil {
 		return "", err
 	}
-	bw := sam.NewBAMWriter(f)
+	bw := sam.NewBAMWriterThreads(f, threads)
 	if err := bw.WriteHeader(hdr); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
@@ -482,11 +485,23 @@ func writeOutput(out io.Writer, hdr *sam.Header, it recordIter, opts SortOptions
 	if opts.OutputSAM {
 		w = sam.NewSAMWriter(out)
 	} else {
-		// Default: BAM.
-		bw := sam.NewBAMWriter(out)
+		// Default: BAM. The parallel BGZF back end (-@/--threads) compresses
+		// blocks concurrently; the decoded records are identical to the
+		// single-threaded path.
+		bw := sam.NewBAMWriterThreads(out, opts.Threads)
 		w = bw
 	}
+	// closeOnErr ensures a parallel BGZF back end's worker goroutines drain on
+	// any early return; Close is idempotent so the success path's explicit
+	// Close is still the one whose error is reported.
+	closed := false
+	closeOnErr := func() {
+		if !closed {
+			_ = w.Close()
+		}
+	}
 	if err := w.WriteHeader(hdr); err != nil {
+		closeOnErr()
 		return err
 	}
 	for {
@@ -495,12 +510,15 @@ func writeOutput(out io.Writer, hdr *sam.Header, it recordIter, opts SortOptions
 			break
 		}
 		if err != nil {
+			closeOnErr()
 			return err
 		}
 		if err := w.Write(rec); err != nil {
+			closeOnErr()
 			return err
 		}
 	}
+	closed = true
 	return w.Close()
 }
 

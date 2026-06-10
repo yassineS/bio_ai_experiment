@@ -11,18 +11,50 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
+// bgzfWriteCloser is the minimal interface shared by the single-threaded
+// bgzip.Writer and the parallel bgzip.MultiWriter. It lets BAMWriter switch
+// between the two BGZF back ends without any other change to its record
+// encoding, since both produce a valid BGZF stream that decodes to identical
+// plaintext.
+type bgzfWriteCloser interface {
+	io.Writer
+	Close() error
+}
+
 // BAMWriter emits BAM-encoded records on top of a BGZF stream.
 type BAMWriter struct {
-	bw     *bgzip.Writer
+	bw     bgzfWriteCloser
 	hdr    *Header
 	refMap map[string]int32
 	closed bool
 }
 
 // NewBAMWriter constructs a BAMWriter that writes BGZF-compressed BAM bytes
-// to w. Close must be called to finalise the BGZF EOF block.
+// to w using a single-threaded BGZF back end. Close must be called to finalise
+// the BGZF EOF block.
 func NewBAMWriter(w io.Writer) *BAMWriter {
 	return &BAMWriter{bw: bgzip.NewWriter(w)}
+}
+
+// NewBAMWriterThreads constructs a BAMWriter whose BGZF compression is spread
+// across up to threads concurrent goroutines. A threads value of 1 or below is
+// equivalent to NewBAMWriter (no goroutines are spawned). Because BGZF is
+// block-parallel by construction — every block is an independent gzip member —
+// the BAM records decode identically regardless of the thread count, matching
+// upstream samtools' -@/--threads behaviour. The compression level matches the
+// single-threaded writer's default so a parallel and a serial BAM decode to the
+// same bytes.
+func NewBAMWriterThreads(w io.Writer, threads int) *BAMWriter {
+	if threads <= 1 {
+		return NewBAMWriter(w)
+	}
+	mw, err := bgzip.NewMultiWriter(w, bgzip.DefaultCompression, threads)
+	if err != nil {
+		// DefaultCompression is always a valid flate level, so this never
+		// fails in practice; fall back to the serial writer to stay safe.
+		return NewBAMWriter(w)
+	}
+	return &BAMWriter{bw: mw}
 }
 
 // WriteHeader serialises the header to BAM: magic, l_text, header text,

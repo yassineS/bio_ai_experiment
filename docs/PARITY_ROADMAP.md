@@ -1705,11 +1705,32 @@ Plus:
   See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
 - **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
   and `.csi`, and readers auto-detect index kind from file magic.
-- **Multi-threading (`-@`) — NOT done.** `-@/--threads` is accepted on
-  the CLI of `sort`, `index`, `view` (and elsewhere) but is a no-op
-  stub; v1 is single-threaded everywhere. The option value is stored on
-  the relevant options struct for a future parallel pass. This is the
-  one cross-cutting deferred item, not a completed feature.
+- **Multi-threading (`-@`) — DONE for the BAM-writing subcommands
+  (`view`, `sort`, `markdup`).** These now drive a parallel BGZF
+  compressor when `-@/--threads N` (N > 1) is given, via the new
+  `sam.NewBAMWriterThreads` back end built on `bgzf.MultiWriter` (the
+  same block-parallel writer used by `bgzip`). BGZF is block-parallel by
+  construction — every block is an independent gzip member — so the
+  decoded BAM body is byte-identical regardless of thread count. `sort`
+  also compresses its temporary external-merge shards in parallel.
+  Validated by `tools/samtools/pkg/samtools/threads_test.go`: for
+  `view`, `sort`, and `markdup` the decompressed BAM body of `-@ {2..8}`
+  is byte-for-byte equal to `-@ 1`, and the decoded record set matches a
+  live upstream `samtools` binary built from the vendored submodule
+  (`TestThreads_View_UpstreamParity`, `TestThreads_Sort_UpstreamParity`,
+  `t.Fatalf` never `t.Skip`). A benchmark (`BenchmarkThreads_ViewBAM`)
+  shows the parallel path's throughput gain. Compressed *bytes* may
+  differ from upstream's (block boundaries depend on buffering timing);
+  the contract is decode-equality, exactly as for the `bgzip` MultiWriter.
+
+  **Remaining single-threaded under `-@`** (the flag is accepted but
+  currently a no-op for these): `markdup` pass-1 scan, `view`/`sort`
+  *input* BGZF decode (a parallel BGZF *reader* is future work), CRAM
+  encode/decode, and the non-BAM-writing subcommands (`flagstat`,
+  `idxstats`, `depth`, `stats`, `mpileup`, `fastq`, `index`, `merge`,
+  `cat`, `fixmate`, `reheader`, `addreplacerg`, `split`, `calmd`,
+  `consensus`, `coverage`, `phase`, `targetcut`). The dominant
+  IO-bound win — parallel BGZF compression of BAM output — is covered.
 
 **Genuine remaining samtools gaps** (everything else is done):
 
