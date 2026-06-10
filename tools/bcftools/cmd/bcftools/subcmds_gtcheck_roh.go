@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
@@ -24,14 +25,15 @@ Usage:
   bcftools gtcheck [options] [-g <genotypes.vcf.gz>] <query.vcf.gz>
 
 Options:
-      --distinctive-sites SPEC   Accepted; v1 not implemented (see docs/PARITY_ROADMAP.md#bcftools).
+      --distinctive-sites NUM    Emit the minimal set of sites distinguishing at least NUM pairs (requires -p/-P).
       --dry-run                  Stop after first record (time estimation).
-  -E, --error-probability INT    Phred-scaled error probability (default 40). Accepted; not applied in v1 hard-GT mode.
+  -E, --error-probability INT    Phred-scaled genotyping error probability (default 40). 0 = integer-mismatch scoring.
   -e, --exclude EXPR             Drop sites for which EXPR is true. Accepts upstream's qry:/gt: prefix.
   -g, --genotypes FILE           Panel of "truth" genotypes.
   -H, --homs-only                Restrict scoring to sites where the panel GT is homozygous (requires -g).
   -i, --include EXPR             Keep sites for which EXPR is true (qry:/gt: prefix accepted).
-      --n-matches INT            Accepted; v1 not implemented (see PARITY_ROADMAP).
+      --keep-refs                Keep monoallelic (no-ALT) sites instead of skipping them.
+      --n-matches INT            Print only the top INT matches per query sample. Negative sorts by HWE prob. 0 = all.
       --no-HWE-prob              Disable the -log P(HWE) column.
   -o, --output FILE              Write output to FILE (default stdout).
   -O, --output-type t|z          t = tab-text (default), z = compressed (v1 supports only t).
@@ -45,16 +47,18 @@ Options:
   -t, --targets REGION           Like -r but always a post-filter.
   -T, --targets-file FILE        BED-like targets file.
       --targets-overlap 0|1|2    Accepted; v1 always uses POS-in-region.
-  -u, --use TAG[,TAG2]           Scoring tag for query (and -g panel). v1 implements GT only; PL is rejected.
-      --cluster N,N              Accepted; v1 not implemented (see PARITY_ROADMAP).
+  -u, --use TAG[,TAG2]           Scoring tag for query (and -g panel): GT or PL. Auto-detected per record by default.
+      --cluster N,N              Accepted; not implemented (upstream itself rejects it, see docs/PARITY_ROADMAP.md#bcftools).
   -G, --GTs-only                 Upstream-deprecated alias; rejected with upstream's literal deprecation error.
       --threads N                Accepted; v1 is single-threaded.
   -?, --help                     Show this help.
       --version                  Show version.
 
-Note: v1 ports only the hard-GT (-u GT) path. PL-likelihood scoring
-(-u PL), clustering (--cluster), distinctive-sites, and -E-weighted
-scoring are tracked in docs/PARITY_ROADMAP.md#bcftools.
+Notes: GT and PL scoring, the probability/integer discordance paths,
+the HWE column, --n-matches trimming and --distinctive-sites are
+implemented. The remaining gaps (-O z compressed output, the -c/--cluster
+dendrogram, and filter expressions) are tracked in
+docs/PARITY_ROADMAP.md#bcftools.
 `
 
 func runGtcheck(args []string) int {
@@ -69,6 +73,7 @@ func runGtcheck(args []string) int {
 		allSites          bool
 		homsOnly          bool
 		noHWEProb         bool
+		keepRefs          bool
 		regions           string
 		regionsFile       string
 		regionsOverlap    int
@@ -97,10 +102,11 @@ func runGtcheck(args []string) int {
 	cliflag.StringVar(fs, &genotypesFile, "g", "genotypes", "", "Genotypes panel")
 	cliflag.StringVar(fs, &pairsSpec, "p", "pairs", "", "Comma-separated pairs")
 	cliflag.StringVar(fs, &pairsFile, "P", "pairs-file", "", "Pairs file")
-	cliflag.StringVar(fs, &useTag, "u", "use", "GT", "Scoring tag (GT only; PL rejected)")
+	cliflag.StringVar(fs, &useTag, "u", "use", "", "Scoring tag: GT or PL (auto-detected from the header when unset)")
 	fs.BoolVar(&allSites, "all-sites", false, "Include all sites")
 	cliflag.BoolVar(fs, &homsOnly, "H", "homs-only", false, "Panel homozygotes only")
 	fs.BoolVar(&noHWEProb, "no-HWE-prob", false, "Disable HWE-prob column")
+	fs.BoolVar(&keepRefs, "keep-refs", false, "Keep monoallelic (no-ALT) sites")
 	cliflag.StringVar(fs, &samplesCombined, "s", "samples", "", "Samples (qry:/gt: prefix supported)")
 	cliflag.StringVar(fs, &samplesCombinedFile, "S", "samples-file", "", "Samples file")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Regions (post-filter in v1)")
@@ -151,15 +157,35 @@ func runGtcheck(args []string) int {
 		return 2
 	}
 
-	// Reject the v1-deferred flags with a roadmap pointer.
+	// Reject only the genuinely unimplemented flags (the -c/--cluster
+	// dendrogram and -O z compressed output). PL scoring, --n-matches
+	// and --distinctive-sites are implemented below.
 	if deferred := checkGtcheckDeferred(checkGtcheckDeferredInputs{
-		cluster:          cluster,
-		distinctiveSites: distinctiveSites,
-		nMatches:         nMatches,
-		outputType:       outputType,
+		cluster:    cluster,
+		outputType: outputType,
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools gtcheck: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
+	}
+
+	// Parse --distinctive-sites NUM (the optional ,MEM,TMP suffix that
+	// upstream accepts is irrelevant to the in-memory port and is
+	// dropped). NUM <= 1 is a fraction of pairs, NUM > 1 an absolute
+	// count.
+	var dsValue float64
+	dsSet := false
+	if distinctiveSites != "" {
+		numField := distinctiveSites
+		if i := strings.IndexByte(numField, ','); i >= 0 {
+			numField = numField[:i]
+		}
+		v, perr := strconv.ParseFloat(strings.TrimSpace(numField), 64)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "bcftools gtcheck: could not parse --distinctive-sites %s\n", distinctiveSites)
+			return 2
+		}
+		dsValue = v
+		dsSet = true
 	}
 
 	rest := fs.Args()
@@ -176,22 +202,27 @@ func runGtcheck(args []string) int {
 	}
 
 	opts := bcftools.GtcheckOptions{
-		GenotypesFile:    genotypesFile,
-		PairsSpec:        pairsSpec,
-		PairsFile:        pairsFile,
-		UseTag:           useTag,
-		AllSites:         allSites,
-		HomsOnly:         homsOnly,
-		NoHWEProb:        noHWEProb,
-		SamplesQry:       qSamples,
-		SamplesGT:        gSamples,
-		RegionsFile:      regionsFile,
-		TargetsFile:      targetsFile,
-		IncludeExpr:      includeExpr,
-		ExcludeExpr:      excludeExpr,
-		DryRun:           dryRun,
-		ErrorProbability: errorProbability,
-		OutputType:       outputType,
+		GenotypesFile:        genotypesFile,
+		PairsSpec:            pairsSpec,
+		PairsFile:            pairsFile,
+		UseTag:               useTag,
+		AllSites:             allSites,
+		HomsOnly:             homsOnly,
+		NoHWEProb:            noHWEProb,
+		KeepRefs:             keepRefs,
+		SamplesQry:           qSamples,
+		SamplesGT:            gSamples,
+		RegionsFile:          regionsFile,
+		TargetsFile:          targetsFile,
+		IncludeExpr:          includeExpr,
+		ExcludeExpr:          excludeExpr,
+		DryRun:               dryRun,
+		ErrorProbability:     errorProbability,
+		ErrorProbabilityZero: errorProbability == 0,
+		DistinctiveSites:     dsValue,
+		HasDistinctiveSites:  dsSet,
+		NMatches:             nMatches,
+		OutputType:           outputType,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -233,23 +264,17 @@ func splitSamplesArg(arg string) (qry, gt []string, err error) {
 	return nil, nil, fmt.Errorf("Which one? Query samples (qry:%s) or genotype samples (gt:%s)?", arg, arg)
 }
 
-// checkGtcheckDeferredInputs groups the flag values that v1 recognises
-// but does not implement.
+// checkGtcheckDeferredInputs groups the flag values that the port
+// recognises but does not implement.
 type checkGtcheckDeferredInputs struct {
-	cluster          string
-	distinctiveSites string
-	nMatches         int
-	outputType       string
+	cluster    string
+	outputType string
 }
 
 func checkGtcheckDeferred(in checkGtcheckDeferredInputs) string {
 	switch {
 	case in.cluster != "":
 		return "--cluster"
-	case in.distinctiveSites != "":
-		return "--distinctive-sites"
-	case in.nMatches != 0:
-		return "--n-matches"
 	case in.outputType != "" && in.outputType != "t":
 		return "-O z (compressed output)"
 	}
