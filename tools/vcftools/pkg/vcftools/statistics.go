@@ -132,10 +132,20 @@ type sitePiStat struct {
 }
 
 type indvMissingStat struct {
-	name     string
+	name string
+	// nMissing counts genotypes whose call is missing (first allele "."),
+	// among those that passed genotype-level filtering. Maps to upstream's
+	// indv_N_missing (variant_file_output.cpp:830).
 	nMissing int
-	nTotal   int
-	fMiss    float64
+	// nTotal counts genotypes that passed genotype-level filtering and were
+	// parsed. Maps to upstream's indv_N_tot (variant_file_output.cpp:831)
+	// and is emitted as the N_DATA column.
+	nTotal int
+	// nGenoFiltered counts genotypes excluded by a genotype-level filter
+	// (--minDP/--maxDP/--minGQ/--remove-filtered-geno*). Maps to upstream's
+	// indv_N_geno_filtered (variant_file_output.cpp:823) and is emitted as
+	// the N_GENOTYPES_FILTERED column.
+	nGenoFiltered int
 }
 
 type tsTvBinStat struct {
@@ -231,8 +241,10 @@ func newStatistics(header *vcf.Header) *statistics {
 	}
 }
 
-// addVariant adds a variant to the statistics
-func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
+// addVariant adds a variant to the statistics. genoFiltered names the samples
+// whose genotype was dropped by a genotype-level filter at this site (nil when
+// none were); it is consumed only by the per-individual missingness path.
+func (s *statistics) addVariant(v *vcf.Variant, params *Params, genoFiltered map[string]bool) {
 	// Allele frequency
 	if params.Freq || params.Counts {
 		s.addFrequencyStat(v, params.Derived)
@@ -255,7 +267,7 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params) {
 
 	// Individual missingness
 	if params.MissingIndv {
-		s.addIndvMissingStat(v)
+		s.addIndvMissingStat(v, genoFiltered)
 	}
 
 	// Hardy-Weinberg
@@ -491,23 +503,48 @@ func (s *statistics) addSiteMissingStat(v *vcf.Variant) {
 	s.siteMissing = append(s.siteMissing, stat)
 }
 
-// addIndvMissingStat adds individual missingness statistics
-func (s *statistics) addIndvMissingStat(v *vcf.Variant) {
+// addIndvMissingStat adds individual missingness statistics. The
+// genoFiltered set names the samples whose genotype was dropped by a
+// genotype-level filter (--minDP/--maxDP/--minGQ/--remove-filtered-geno*)
+// for this site; those are counted as N_GENOTYPES_FILTERED and excluded
+// from N_DATA/N_MISS, mirroring upstream's include_genotype[ui]==false
+// branch in variant_file_output.cpp:821-832.
+func (s *statistics) addIndvMissingStat(v *vcf.Variant, genoFiltered map[string]bool) {
 	for _, sample := range v.Samples {
-		if s.indvMissing[sample.Name] == nil {
-			s.indvMissing[sample.Name] = &indvMissingStat{
-				name: sample.Name,
-			}
+		stat := s.indvMissing[sample.Name]
+		if stat == nil {
+			stat = &indvMissingStat{name: sample.Name}
+			s.indvMissing[sample.Name] = stat
 		}
 
-		stat := s.indvMissing[sample.Name]
-		stat.nTotal++
+		if genoFiltered[sample.Name] {
+			stat.nGenoFiltered++
+			continue
+		}
 
-		gt, ok := sample.Data["GT"]
-		if !ok || gt == "." || gt == "./." || gt == ".|." {
+		stat.nTotal++
+		if genotypeIsMissing(sample.Data["GT"]) {
 			stat.nMissing++
 		}
 	}
+}
+
+// genotypeIsMissing reports whether a GT string has a missing call, matching
+// upstream's `alleles.first == -1` test in output_indv_missingness
+// (variant_file_output.cpp:829). Only the FIRST allele decides: vcftools
+// parses the substring up to the first '/' or '|' (or the whole string for a
+// haploid call) and maps "." to -1 (vcf_entry_setters.cpp:69-92, 121-150).
+// So "./1" is missing, "0/." is NOT, "1" (haploid) is NOT, and an absent or
+// empty GT is missing.
+func genotypeIsMissing(gt string) bool {
+	if gt == "" {
+		return true
+	}
+	first := gt
+	if i := strings.IndexAny(gt, "/|"); i >= 0 {
+		first = gt[:i]
+	}
+	return first == "" || first == "."
 }
 
 // addHWEStat adds Hardy-Weinberg equilibrium statistics
@@ -1175,9 +1212,13 @@ func (s *statistics) outputMissingIndv(prefix string) error {
 
 	for _, name := range names {
 		stat := s.indvMissing[name]
-		stat.fMiss = float64(stat.nMissing) / float64(stat.nTotal)
-		fmt.Fprintf(f, "%s\t%d\t0\t%d\t%.6f\n",
-			stat.name, stat.nTotal, stat.nMissing, stat.fMiss)
+		// F_MISS = N_MISS / N_DATA. Upstream prints it via the C++ ostream
+		// default (six significant digits, %g style); N_DATA == 0 yields a
+		// 0/0 division whose libstdc++ output is "-nan"
+		// (variant_file_output.cpp:841). formatDiscordance reproduces both.
+		fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s\n",
+			stat.name, stat.nTotal, stat.nGenoFiltered, stat.nMissing,
+			formatDiscordance(stat.nMissing, stat.nTotal))
 	}
 
 	return nil
