@@ -114,6 +114,13 @@ type CSQOptions struct {
 	// (VCF text), z (BGZF VCF), b (BCF) and u (uncompressed BCF) via the
 	// in-tree writers; the streaming-text `t` form is not supported.
 	OutputFormat OutputFormat
+	// CompressLevel is the gzip level for -O z output (negative selects
+	// the package default).
+	CompressLevel int
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
+	// the framed result decodes byte-identically regardless of thread count.
+	Threads int
 
 	// DumpGFF is upstream's --dump-gff FILE. When set, CSQFile writes the
 	// parsed GFF model (genes/transcripts/CDS/UTR/exons) to FILE as a
@@ -178,7 +185,7 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 		hdr.MetaInfo = ensureCSQFormatLine(hdr.MetaInfo, tag)
 	}
 
-	out, cleanup, err := openCSQOutput(w, opts.OutputFormat, hdr)
+	out, cleanup, err := openCSQOutput(w, opts.OutputFormat, opts.CompressLevel, opts.Threads, hdr)
 	if err != nil {
 		return 0, err
 	}
@@ -239,8 +246,8 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 // requested -O format. Supports VCF text, VCF.gz, compressed BCF and
 // uncompressed BCF (shared with `bcftools view` so the BCF writer logic
 // stays in one place).
-func openCSQOutput(w io.Writer, format OutputFormat, hdr *vcf.Header) (variantWriter, func(), error) {
-	return openOutput(w, ViewOptions{OutputFormat: format}, hdr)
+func openCSQOutput(w io.Writer, format OutputFormat, level, threads int, hdr *vcf.Header) (variantWriter, func(), error) {
+	return openOutput(w, ViewOptions{OutputFormat: format, CompressLevel: level, Threads: threads}, hdr)
 }
 
 // ensureCSQInfoLine inserts (or replaces) the ##INFO=<ID=...> header

@@ -140,6 +140,26 @@ go build ./tools/bcftools/cmd/bcftools
 ./bcftools stats -r chr1:100-200 -d 0,100,10 input.vcf
 ```
 
+## POSIX short-flag handling (all subcommands)
+
+Every subcommand parses its arguments through `pkg/cliflag`'s
+`cliflag.Parse`, so it accepts the same getopt-style short-flag forms as
+upstream bcftools in addition to GNU long flags:
+
+- **Bundling**: `view -hG` is equivalent to `view -h -G`; boolean short
+  flags can be clustered (`call -mv` == `call -m -v`).
+- **Value concatenation**: `-Ob` == `-O b`, `norm -m-` == `norm -m -`,
+  `stats -s-` == `stats -s -`.
+- `--` ends option parsing; a bare `-` means stdin/stdout.
+
+A handful of upstream legacy/compat short flags are also accepted so old
+command lines (including bundled ones) keep working: `norm -D` (alias of
+`-d exact`), `call -f` (alias of `-a`/`--annotate`), `call -Y` (deprecated
+alias of `--ploidy Y`), `call -N` (omit-REF-N, the default), and
+`plugin -lv`/`-l -v` (verbose plugin listing). Like upstream getopt, the
+short `-O=v` *equals* form is not accepted; use `-O v`, `-Ov`, or the long
+`--output-type=v` form.
+
 ## Supported flags
 
 | Short | Long                  | Meaning |

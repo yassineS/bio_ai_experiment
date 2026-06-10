@@ -103,6 +103,15 @@ Live-binary retro-compat tests assert this for representative tools (see
 `tools/bedmap/.../upstream_compat_test.go`): they drive the upstream multi-char
 single-dash command line through both our binary and the live upstream
 `bedtools` and compare output.
+> **Do not wire `cliflag.Parse` into tools whose CLI uses single-dash *long*
+> options** (one dash, multi-character word, e.g. `prinseq stats -fastq`,
+> `-min_len`). That idiom — inherited from Perl's `Getopt::Long` — is mutually
+> exclusive with POSIX short-flag bundling: `cliflag.Normalize` would read
+> `-fastq` as the cluster `-f -a -s -t -q` and reject it. `prinseq` deliberately
+> keeps plain `fs.Parse` for upstream compatibility; bundling buys it nothing
+> because upstream `prinseq` has no clustered short options. The seq/trim tools
+> that *were* rolled out (`seqtk`, `fastp`, `sickle`, `skewer`) document long
+> options with the GNU double-dash form (`--input`), so they are safe.
 
 ## Option Naming Conventions
 
@@ -299,6 +308,22 @@ an upstream tool (e.g. samtools' `-Q`/`-D` phase flags), and note why.
   uses multi-character single-dash flag NAMES (`-wa`, `-loj`, `-sorted`), not
   getopt bundling, so `bed*` tools keep Go `flag` parsing and must NOT use
   `cliflag.Parse`. Added live-upstream-binary retro-compat tests.
+- 2026-06-10: Rolled `cliflag.Parse` out across the htslib-family CLIs — all
+  remaining `samtools` subcommands (sort, index, flagstat, depth, fastq,
+  mpileup, idxstats, quickcheck, dict, cat, reheader, addreplacerg, fixmate,
+  merge, coverage, split, markdup, stats, calmd, import, phase, targetcut,
+  consensus), plus `tabix`, `bgzip`, and `htsfile`. Each subcommand now also
+  registers the upstream getopt short flags it previously lacked (legacy /
+  no-op compat flags) so bundled clusters that include them parse and behave
+  like upstream. Repeatable `-a` (mpileup, depth) is now a count flag so the
+  fused `-aa` ("all positions, all chromosomes") resolves through the same
+  bundling path as upstream rather than a bespoke pre-pass.
+- 2026-06-10: Rolled the sequence/trimming tools `seqtk`, `fastp`, `sickle`, and
+  `skewer` through `cliflag.Parse` at every subcommand parse site. Added upstream
+  retro-compat short flags: `sickle` `-z`/`--quiet`, `-g`/`--gzip-output`,
+  `-d`/`--debug` (compat no-op); `skewer` `-z`/`--compress`. `prinseq` was left on
+  plain `fs.Parse` because its single-dash long options are incompatible with
+  POSIX bundling (see the note above)
 - Future: May be extended as more tools are ported
 
 ## References

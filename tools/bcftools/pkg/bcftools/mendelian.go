@@ -98,6 +98,10 @@ type MendelianOptions struct {
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
+	// the framed result decodes byte-identically regardless of thread count.
+	Threads int
 }
 
 // MendelianFile is the file-aware entry point used by the CLI. It opens
@@ -184,6 +188,7 @@ func Mendelian(in io.Reader, out io.Writer, opts MendelianOptions) (MendelianSum
 		writer, finish, err = openOutput(out, ViewOptions{
 			OutputFormat:  opts.OutputFormat,
 			CompressLevel: opts.CompressLevel,
+			Threads:       opts.Threads,
 		}, annotatedHdr)
 		if err != nil {
 			return summary, fmt.Errorf("bcftools mendelian: %w", err)

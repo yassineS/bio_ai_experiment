@@ -30,7 +30,7 @@ Options:
   -T, --targets-file FILE      BED-like targets file (post-filter).
   -i, --include EXPR           Keep records matching expression.
   -e, --exclude EXPR           Drop records matching expression.
-      --threads N              Accepted; v1 is single-threaded.
+  -@, --threads N              Worker threads for parallel BGZF compression of -O z/-O b.
   -h, --help                   Show this help.
       --version                Show version.
 
@@ -146,13 +146,13 @@ func runConvert(args []string) int {
 	fs.StringVar(&haplegendsample2vcf, "haplegendsample2vcf", "", "")
 	fs.StringVar(&tsv2vcf, "tsv2vcf", "", "")
 	cliflag.StringVar(fs, &columnsFlag, "c", "columns", "", "")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level for -O z")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, convertUsage)
 		return 2
@@ -308,6 +308,7 @@ func runConvert(args []string) int {
 	opts := bcftools.ConvertOptions{
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
+		Threads:       threads,
 		ForceSamples:  forceSamples,
 		IncludeExpr:   includeExpr,
 		ExcludeExpr:   excludeExpr,
@@ -576,7 +577,7 @@ Options:
   -O, --output-type {v|z|u|b}     Output format (ignored under -c).
   -o, --output PATH               Output file (default stdout).
   -l, --compression-level N       gzip level for -O z output.
-      --threads N                 Accepted; v1 is single-threaded.
+  -@, --threads N                 Worker threads for parallel BGZF compression of -O z/-O b.
   -h, --help                      Show this help.
       --version                   Show version.
 `
@@ -608,12 +609,12 @@ func runMendelian(args []string) int {
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level for -O z")
-	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, mendelianUsage)
 		return 2
@@ -652,6 +653,7 @@ func runMendelian(args []string) int {
 		RulesFile:     rules,
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
+		Threads:       threads,
 	}
 	for _, s := range trioFlag {
 		t, err := bcftools.ParseTrioFlag(s)

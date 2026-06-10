@@ -37,6 +37,7 @@ Options (host side; must precede the plugin name or --):
   -r, --regions chr[:b-e]    Restrict input records fed to the plugin.
   -R, --regions-file PATH    BED-like regions file.
       --compression-level N  gzip level for -O z output.
+  -@, --threads N            Worker threads for parallel BGZF compression of -O z.
   -?, --help                 Show this help.
       --version              Show version.
 `
@@ -102,21 +103,27 @@ func runPlugin(args []string, pluginName string) int {
 		regions       string
 		regionsFile   string
 		compressLevel int
+		threads       int
 		showHelp      bool
 		showVer       bool
 	)
 	cliflag.BoolVar(fs, &listPlugins, "l", "list-plugins", false, "List plugins")
+	// Upstream parses `plugin -lv` with getopt as `-l -v`, where `-v` is the
+	// verbose switch. Register `-v` as that switch and keep the historical
+	// two-character `-lv` token as a synonym so both forms work.
 	fs.BoolVar(&listVerbose, "lv", false, "List plugins verbosely")
+	fs.BoolVar(&listVerbose, "v", false, "Verbose listing (use with -l)")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
 	fs.IntVar(&compressLevel, "compression-level", -1, "gzip level")
+	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(hostArgs); err != nil {
+	if err := parseFlags(fs, hostArgs); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, pluginUsage)
 		return 2
@@ -158,6 +165,7 @@ func runPlugin(args []string, pluginName string) int {
 		Args:          pluginArgs,
 		OutputFormat:  format,
 		CompressLevel: compressLevel,
+		Threads:       threads,
 		RegionsFile:   regionsFile,
 	}
 	if regions != "" {
