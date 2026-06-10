@@ -844,7 +844,14 @@ Closed in wave 10 (this PR):
   (`TestMaxIndv_Count` table-driven cases). `MaxIndvSet` gates the
   cap so `--max-indv 0` ("drop every sample") is distinguishable from
   the default. Pinned by `TestMaxIndv_Count` and
-  `TestMaxIndv_Unset_NoOp`. ✅
+  `TestMaxIndv_Unset_NoOp`. **Live-binary contract validation added**
+  (`TestVcftools_MaxIndvUpstream`): per the RNG / stochastic-output
+  policy above, it runs both the upstream binary and the Go port over
+  the same fixture for N = 1..4 and asserts the deterministic contract
+  rather than byte-parity — both tools keep `min(N, |all|)`
+  individuals (COUNT), the Go port's kept set is a subset of the input
+  samples (SUBSET), and the Go selection is the stable, documented
+  first-N-in-header-order prefix (DETERMINISM). ✅
 - **`--keep-INFO-all`** — upstream-deprecated synonym for
   `--recode-INFO-all`. Both `parameters.cpp:267` and `:318` write
   to the same `recode_all_INFO` parameter bit; the CLI ORs them
@@ -1243,8 +1250,23 @@ per the CLAUDE.md "don't replicate upstream constraints" rule.
 
 Other (per-output column-set gaps, not flag-count gaps):
 
-- **Per-individual output**: the per-individual `.imiss` row layout
-  still has fields we don't emit (we have `--missing-indv`).
+- ~~**Per-individual output**: the per-individual `.imiss` row layout
+  still has fields we don't emit (we have `--missing-indv`).~~
+  **Closed.** `--missing-indv` now emits the upstream 5-column
+  layout `INDV N_DATA N_GENOTYPES_FILTERED N_MISS F_MISS` with
+  upstream-exact values: N_GENOTYPES_FILTERED counts genotypes dropped
+  by a genotype-level filter (`--minDP/--maxDP/--minGQ/--remove-filtered-geno*`)
+  and excludes them from N_DATA/N_MISS, matching
+  `output_indv_missingness` (variant_file_output.cpp:776-845). Missing
+  calls follow upstream's first-allele-only rule (`alleles.first == -1`),
+  so `./1` counts as missing but `0/.` does not. F_MISS uses libstdc++
+  `%g` formatting (six significant digits; `-nan` for a 0/0 ratio). The
+  underlying `filterGenotypes` DP/GQ paths were also brought into line
+  with upstream's `DP_idx/GQ_idx != -1` site-FORMAT gate and its
+  missing-value-as-(-1) semantics. Pinned by the live-binary
+  `TestVcftools_MissingIndvUpstreamParity` (no-filter, `--minGQ`,
+  `--minDP` cases), plus `TestMissingIndv_GenoFilteredColumn` and
+  `TestGenotypeIsMissing` unit tests.
 - ~~**Diff family**: per-site / per-indv discordance outputs
   (`--diff-site-discordance`, `--diff-indv-discordance`) still emit a
   simpler column set than upstream's richer `.diff.sites` /
