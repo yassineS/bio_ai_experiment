@@ -3,12 +3,16 @@
 This document tracks the status of bioinformatics tools being ported from
 their original implementations to Go.
 
-**Last Updated**: 2026-06-09 (post PRs #220–#225)
+**Last Updated**: 2026-06-10 (post PRs #220–#252)
 
-> For the skimmable per-tool completion table (implemented / remaining /
-> % / effort) and the path-to-done, see the top-level
-> [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
-
+> **This file is the per-subcommand feature inventory, not the status
+> headline.** For the skimmable per-tool completion table (implemented /
+> remaining / % / effort) and the path-to-done, see the top-level
+> [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) — it owns the percentages.
+> For the authoritative gap list see
+> [`../docs/PARITY_ROADMAP.md`](../docs/PARITY_ROADMAP.md). The docs map in
+> [`../docs/README.md`](../docs/README.md) explains which doc owns what.
+>
 > **Project goal: 1:1 feature parity** with the upstream tool for every port
 > in this repo. Past revisions of this file labelled tools "Complete" when
 > only a working subset was in place — that wording has been removed.
@@ -35,17 +39,19 @@ the way.
   `bgzip` + `tabix` + `htsfile` + `mosdepth` + `samtools` (24 functional
   subcommands) + `bcftools` (24 subcommands). The htslib core landed May
   2026; CRAM read+write and `.csi` landed across PRs #162–#189.
-- **Completion (toward 1:1 upstream parity), per the top-level
-  [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md):** seqtk / sickle /
-  skewer / fastp / htsfile **done**; vcftools ~97% (146/146 flags),
-  prinseq ~95%, bgzip/tabix ~92%, mosdepth ~85%, bedtools ~90%,
-  samtools ~88%, bcftools ~70%. Biggest remaining boulders: bcftools
-  `convert`'s ~18 modes, mpileup indel calling + samtools `-g/-u` BCF
-  output, and csq slice 4.
-- **#220–#225 closures (treat as merged):** bcftools `view -x/-X`,
-  `stats -u`, `csq -b/-C` (standard table); samtools `consensus
-  --het-only`; mosdepth `-d/--d4`; vcftools 0 unsupported flags; a
-  repo-wide golden→live-parity test cleanup + a `samtools depth` flag fix.
+- **Completion (toward 1:1 upstream parity):** see the headline table in
+  [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) — it owns the per-tool
+  percentages and the biggest-boulders list. In short, the QC/format set
+  (seqtk, sickle, skewer, fastp, htsfile) is **done**; vcftools is at
+  146/146 flags; bcftools is the largest remaining surface (the classic
+  `bam2bcf_indel` indel caller, `convert`'s ~18 modes, and csq slice 4).
+- **#220–#252 closures (treat as merged):** bcftools `view -x/-X`,
+  `stats -u`, `csq -b/-C`, `call` modes (`-m`/`-c`/`--gvcf`/`-C alleles`/
+  `-G`/`--ploidy`), `mpileup --indels-cns`, `convert`, `gtcheck`,
+  `mendelian2`, `consensus`, `annotate`; samtools `consensus --het-only`,
+  `phase`, mpileup genotype-likelihood BCF/VCF emit, and view/sort/markdup
+  `-@` threading; mosdepth `-d/--d4`; vcftools 0 unsupported flags; a
+  repo-wide golden→live-parity test cleanup.
 - **Tools tested**: 25 (package-level tests; `cmd/` entry points have no tests)
 - **Test coverage (statements, `go test -cover`)** — main tools:
   vcftools ~83%, seqtk ~86%, fastp ~77%, sickle ~82%, **bcftools 85%**,

@@ -163,25 +163,28 @@ identify but choose not to carry over are tracked in
 - `pkg/cliflag` — POSIX short + GNU long flag wiring on a standard
   `flag.FlagSet`.
 
-### Tools ported (working subset; not 1:1)
+### Tools ported
 
-23 tool ports as of 2026-05-14. See [`tools/README.md`](tools/README.md) and
-[`tools/PORTING_STATUS.md`](tools/PORTING_STATUS.md) for the per-tool table
-with statement-coverage numbers and feature notes; see
-[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) for the per-tool gap list
-against upstream.
+~50 tool ports as of 2026-06. The canonical completion table lives in
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md); [`tools/README.md`](tools/README.md)
+indexes every tool, [`tools/PORTING_STATUS.md`](tools/PORTING_STATUS.md) is the
+per-subcommand feature inventory, and
+[`docs/PARITY_ROADMAP.md`](docs/PARITY_ROADMAP.md) is the authoritative gap
+list. See [`docs/README.md`](docs/README.md) for the docs map (which doc owns
+what).
 
 Highlights:
 
-- **htslib core** (May 2026): `bgzip`, `tabix`, `samtools`
-  (view/sort/index/depth/fastq/flagstat/mpileup), `bcftools`
-  (view/index/stats/query/concat/norm/call), `mosdepth`.
-- **bedtools subset**: `bedmerge`, `bedintersect`, `bedsort`, `bedslop`,
-  `bedcomplement`, `bedsubtract`, `bedflank`, `bedclosest`, `bedgenomecov`,
-  `bedjaccard`, `bedgroupby`, `bed12tobed6`, `bedmakewindows`.
-- **Sequence preprocessing**: `seqtk`, `fastp`, `prinseq`, `sickle`,
-  `skewer`.
-- **VCF**: `vcftools` (~60 of ~147 options).
+- **htslib core**: `bgzip`, `tabix`, `htsfile`, `mosdepth`, `samtools`
+  (24 functional subcommands incl. CRAM r/w, `mpileup`, `phase`,
+  `consensus`), `bcftools` (24 subcommands incl. `call`, `mpileup
+  --indels-cns`, `convert`, `gtcheck`, `csq`, `roh`).
+- **bedtools surface**: ~37 `bed*` tools (`bedmerge`, `bedintersect`,
+  `bedmap`, `bedcoverage`, `bedfisher`, …) covering the bedtools subcommand
+  set.
+- **Sequence preprocessing**: `seqtk` (byte-parity vs v1.5), `fastp`,
+  `prinseq`, `sickle`, `skewer`.
+- **VCF**: `vcftools` (146/146 upstream long flags).
 
 ### Validated parity against upstream test suites
 
@@ -207,9 +210,12 @@ common-path tests pass but 1:1 byte-equivalence with upstream is untested.
 
 ### CI
 
-The CI workflow is currently disabled (manual-only via `workflow_dispatch`).
-Contributors run `gofmt -l`, `go vet`, `go test -race -cover`, `go build`,
-and `markdownlint` locally and document the output in each PR description.
+The CI workflow (`.github/workflows/ci.yml`) is currently a no-op
+(`workflow_dispatch`-only) while the project is in heavy iteration; the full
+job config (`gofmt -l`, `go vet ./...`, `go test -race -cover ./...`,
+`go build ./...`, markdown lint over `**/*.md`) is kept commented in the file
+ready to re-enable. Run those checks locally before pushing and record the
+output in your PR.
 
 ## Documentation
 
