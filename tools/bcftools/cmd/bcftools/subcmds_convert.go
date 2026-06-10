@@ -34,12 +34,20 @@ Options:
   -h, --help                   Show this help.
       --version                Show version.
 
+GEN/sample conversion modes (Oxford .gen+.sample):
+  -g, --gensample PREFIX|GEN,SAMPLE     VCF/BCF -> .gen+.sample.
+  -G, --gensample2vcf PREFIX|GEN,SAMPLE .gen+.sample -> VCF/BCF.
+      --tag {GT|PL|GP}                  FORMAT tag driving .gen probabilities (default GT).
+      --3N6                             3*N+6 column .gen layout (leading CHROM column).
+      --sex FILE                        Add a sex column to the .sample file ("ID<TAB>[MF]").
+      --vcf-ids                         Use VCF IDs in the .gen ID column.
+      --chrom                           Deprecated; errors (use --3N6).
+
 Accepted-and-deferred conversion modes (parse cleanly; v1 emits a
 "not implemented" error pointing at docs/PARITY_ROADMAP.md if any
 are actually set):
-  --gvcf2vcf, --gvcf, -f/--fasta-ref, -g/--gensample,
-  -G/--gensample2vcf, --3N6, --tag, --chrom, --keep-duplicates,
-  --sex, --vcf-ids, --hapsample, --hapsample2vcf, --haploid2diploid,
+  --gvcf2vcf, --gvcf, -f/--fasta-ref, --keep-duplicates,
+  --hapsample, --hapsample2vcf, --haploid2diploid,
   --haplegendsample, --haplegendsample2vcf, --tsv2vcf, -c/--columns.
 
 Accepted-and-ignored stubs (no-op against the round-trip flow):
@@ -153,21 +161,22 @@ func runConvert(args []string) int {
 		return 0
 	}
 
+	// --chrom is deprecated upstream and simply errors, pointing the user at
+	// --3N6. Mirror that behaviour exactly (including the exit status).
+	if chromFlag != "" {
+		fmt.Fprintln(os.Stderr, "The --chrom option has been deprecated, please use --3N6 instead")
+		return 1
+	}
+
 	// Reject conversion modes that aren't implemented in v1 with a
 	// clear error pointing at docs/PARITY_ROADMAP.md (rather than
-	// silently accepting and producing the wrong output).
+	// silently accepting and producing the wrong output). The GEN/sample
+	// family (-g/-G/--tag/--3N6/--sex/--vcf-ids) is handled below.
 	if deferred := checkConvertDeferred(checkConvertDeferredInputs{
 		gvcf2vcf:            gvcf2vcf,
 		fastaRef:            fastaRef,
 		gvcfBlocks:          gvcfBlocks,
-		gensample:           gensample,
-		gensample2vcf:       gensample2vcf,
-		threeN6:             threeN6,
-		tagFlag:             tagFlag,
-		chromFlag:           chromFlag,
 		keepDuplicates:      keepDuplicates,
-		sexFlag:             sexFlag,
-		vcfIds:              vcfIds,
 		hapsample:           hapsample,
 		hapsample2vcf:       hapsample2vcf,
 		haploid2diploid:     haploid2diploid,
@@ -178,6 +187,26 @@ func runConvert(args []string) int {
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools convert: %s not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
+	}
+
+	// GEN/sample conversion modes (Oxford .gen+.sample).
+	if gensample != "" || gensample2vcf != "" {
+		return runConvertGenSample(convertGenInputs{
+			gensample:     gensample,
+			gensample2vcf: gensample2vcf,
+			tag:           tagFlag,
+			threeN6:       threeN6,
+			vcfIds:        vcfIds,
+			sexFile:       sexFlag,
+			keepDup:       keepDuplicates,
+			noVersion:     noVersion,
+			includeExpr:   includeExpr,
+			excludeExpr:   excludeExpr,
+			outputType:    outputType,
+			compressLevel: compressLevel,
+			outputPath:    outputPath,
+			rest:          fs.Args(),
+		})
 	}
 	// Silently-ignored stubs (matching upstream when the flag is a
 	// no-op or an indexing optimisation the v1 doesn't need).
@@ -239,14 +268,7 @@ type checkConvertDeferredInputs struct {
 	gvcf2vcf            bool
 	fastaRef            string
 	gvcfBlocks          string
-	gensample           string
-	gensample2vcf       string
-	threeN6             bool
-	tagFlag             string
-	chromFlag           string
 	keepDuplicates      bool
-	sexFlag             string
-	vcfIds              bool
 	hapsample           string
 	hapsample2vcf       string
 	haploid2diploid     bool
@@ -264,22 +286,8 @@ func checkConvertDeferred(in checkConvertDeferredInputs) string {
 		return "-f/--fasta-ref"
 	case in.gvcfBlocks != "":
 		return "--gvcf"
-	case in.gensample != "":
-		return "-g/--gensample"
-	case in.gensample2vcf != "":
-		return "-G/--gensample2vcf"
-	case in.threeN6:
-		return "--3N6"
-	case in.tagFlag != "":
-		return "--tag"
-	case in.chromFlag != "":
-		return "--chrom"
 	case in.keepDuplicates:
 		return "--keep-duplicates"
-	case in.sexFlag != "":
-		return "--sex"
-	case in.vcfIds:
-		return "--vcf-ids"
 	case in.hapsample != "":
 		return "--hapsample"
 	case in.hapsample2vcf != "":
@@ -296,6 +304,73 @@ func checkConvertDeferred(in checkConvertDeferredInputs) string {
 		return "-c/--columns"
 	}
 	return ""
+}
+
+// convertGenInputs groups the parsed flag values that drive the GEN/sample
+// conversion modes (-g/--gensample and -G/--gensample2vcf).
+type convertGenInputs struct {
+	gensample     string
+	gensample2vcf string
+	tag           string
+	threeN6       bool
+	vcfIds        bool
+	sexFile       string
+	keepDup       bool
+	noVersion     bool
+	includeExpr   string
+	excludeExpr   string
+	outputType    string
+	compressLevel int
+	outputPath    string
+	rest          []string
+}
+
+// runConvertGenSample dispatches the VCF<->GEN/sample conversion. It returns
+// the process exit code.
+func runConvertGenSample(in convertGenInputs) int {
+	opts := bcftools.GenSampleOptions{
+		Tag:            in.tag,
+		ThreeN6:        in.threeN6,
+		VCFIDs:         in.vcfIds,
+		SexFile:        in.sexFile,
+		KeepDuplicates: in.keepDup,
+		NoVersion:      in.noVersion,
+		IncludeExpr:    in.includeExpr,
+		ExcludeExpr:    in.excludeExpr,
+		CompressLevel:  in.compressLevel,
+	}
+
+	// -G/--gensample2vcf: GEN+sample -> VCF/BCF.
+	if in.gensample2vcf != "" {
+		format, err := bcftools.ParseOutputFormat(in.outputType)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		opts.OutputFormat = format
+		out, err := openOutFile(in.outputPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return 1
+		}
+		defer out.Close()
+		if err := bcftools.GenSampleToVCFFile(in.gensample2vcf, out, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	// -g/--gensample: VCF/BCF -> GEN+sample.
+	if len(in.rest) == 0 {
+		fmt.Fprintln(os.Stderr, "bcftools convert: missing input file")
+		return 2
+	}
+	if err := bcftools.VCFToGenSampleFile(in.rest[0], in.gensample, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 const mendelianUsage = `bcftools mendelian - detect Mendelian-inconsistent genotypes.
