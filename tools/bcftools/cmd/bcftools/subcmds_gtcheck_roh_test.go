@@ -13,14 +13,15 @@ func TestCheckGtcheckDeferred(t *testing.T) {
 	if got := checkGtcheckDeferred(checkGtcheckDeferredInputs{outputType: "t"}); got != "" {
 		t.Fatalf("default outputType=t: got deferred=%q, want \"\"", got)
 	}
+	// PL scoring, --n-matches and --distinctive-sites are now
+	// implemented; only the -c/--cluster dendrogram (which upstream
+	// itself rejects) and -O z compressed output remain deferred.
 	cases := []struct {
 		name string
 		in   checkGtcheckDeferredInputs
 		want string
 	}{
 		{"cluster", checkGtcheckDeferredInputs{cluster: "2,4"}, "--cluster"},
-		{"distinctive-sites", checkGtcheckDeferredInputs{distinctiveSites: "0.1"}, "--distinctive-sites"},
-		{"n-matches", checkGtcheckDeferredInputs{nMatches: 5}, "--n-matches"},
 		{"output-type-z", checkGtcheckDeferredInputs{outputType: "z"}, "-O z (compressed output)"},
 	}
 	for _, tc := range cases {

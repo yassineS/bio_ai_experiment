@@ -2611,8 +2611,23 @@ per-subcommand option-tail sections below):
   (`peakfit_lm.go`); no third-party dependency was added. All
   algorithm knobs are live. See the per-subcommand section below for
   the validation situation (no upstream golden exists).
-- **`gtcheck`** — v1 hard-GT Hamming only; `--cluster` HMM-style
-  sample clustering and PL/GL scoring deferred.
+- **`gtcheck`** — full discordance engine ported (`vcfgtcheck.c`):
+  the dosage-bitmask concordance model, the probability discordance
+  score (default `-E 40`) and the integer-mismatch score (`-E 0`), the
+  per-site `-log P(HWE)` column (allele frequency from INFO/AC,AN or
+  counted from FORMAT/GT), GT **and** PL scoring with upstream's
+  header-driven auto tag selection (query prefers PL, panel prefers
+  GT), `-u GT,PL`/`-u PL,GT` mixing, cross-check (lower-triangle) and
+  `-g` panel modes, explicit `-p/-P` pairs (sorted by sample index),
+  `--n-matches` top-N trimming (incl. the cross-check `i>ism` half),
+  the monoallelic-site skip and `--keep-refs`, and `--distinctive-sites`
+  with the `hts_srand48(0)`/`lrand48` tie-break reproduced exactly. All
+  scoring/output paths are verified byte-for-byte against the live
+  upstream binary in `gtcheck_parity_test.go` (modulo the
+  non-reproducible provenance header and timing line, which are
+  stripped). Remaining deferrals: the `-c/--cluster` dendrogram (which
+  upstream itself rejects as "to be implemented"), `-O z` compressed
+  output, and filter expressions (`-i/-e gt:/qry:`).
 - **`mpileup`** — the upstream MAQ genotype-likelihood model is fully
   ported for the SNP path (`errmod.c` → `errmod.go`; `bam2bcf.c`
   glfgen/combine/2bcf → `bam2bcf.go`): the multi-allelic PL grid, the
@@ -2639,18 +2654,35 @@ per-subcommand option-tail sections below):
   which the CLI hard-rejects; see the "csq full-parity slicing plan"
   below.
 
-Option-tail gaps on `gtcheck` (PR #107, simple-mode):
+Option-tail status on `gtcheck`:
 
-- `--cluster N,N` (HMM-style sample clustering), `--distinctive-sites`,
-  `--n-matches` — accepted-and-rejected with PARITY_ROADMAP pointer;
-  bayesian-mode follow-up.
-- `-u PL` — PL/GL-based scoring; v1 only does hard-GT Hamming.
-- `-O z` — bgzip output; v1 only emits tab-text (`-O t`).
-- `[5]Average -log P(HWE)` column is zeroed until a real per-site HWE
-  estimator from panel AF lands.
-- Index-backed `-r/-R` seek (post-filter only in v1).
+- `-u PL` / `-u GT,PL` / `-u PL,GT` — **implemented.** PL→dosage and
+  PL→probability (`pl_to_dsg`/`pl_to_prob`) ported; tag selection is
+  header-driven (query prefers PL, panel prefers GT) with the
+  per-record `set_data` fallback.
+- `-E`-weighted probability scoring — **implemented** and is the
+  default (`-E 40`). `-E 0` selects the integer-mismatch path. The
+  `[5]Average -log P(HWE)` column carries the real per-site HWE
+  estimate (AF from INFO/AC,AN or counted from FORMAT/GT).
+- `--n-matches INT` (incl. negative = sort-by-HWE) — **implemented**,
+  including the cross-check half-triangle `i>ism` emission rule.
+- `--distinctive-sites NUM[,MEM[,TMP]]` — **implemented.** Greedy block
+  selection with the `hts_srand48(0)`/`lrand48` tie-break reproduced in
+  pure Go. The `,MEM,TMP` external-sort suffix is parsed and ignored
+  (the port sorts in memory). NOTE: upstream builds a `# DS` comment
+  header but never writes it; we reproduce that quirk and emit only the
+  `DS` data rows.
+- `--keep-refs` and the monoallelic-site skip — **implemented.**
+- `--cluster N,N` — deferred (upstream itself errors "to be
+  implemented"); accepted-and-rejected with a PARITY_ROADMAP pointer.
+- `-O z` — bgzip output; only tab-text (`-O t`) is emitted.
+- Filter expressions (`-i/-e` with `gt:`/`qry:` prefixes) are parsed but
+  not yet applied.
+- Index-backed `-r/-R` seek (post-filter only).
 - Multi-allelic input is rejected (matches upstream's
   `bcftools norm -m -` requirement).
+- Validation: `gtcheck_parity_test.go` builds/locates the live upstream
+  binary and asserts byte-for-byte equality across every mode above.
 
 Option-tail gaps on `roh`:
 

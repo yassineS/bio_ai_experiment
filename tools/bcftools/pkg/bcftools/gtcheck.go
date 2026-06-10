@@ -2,36 +2,55 @@ package bcftools
 
 // bcftools gtcheck — sample-identity / contamination check.
 //
-// Upstream reference: reference_code/bcftools/vcfgtcheck.c. The output
-// header for the table is the literal string `#DCv2` followed by tab-
-// separated column descriptors:
+// Faithful port of reference_code/bcftools/vcfgtcheck.c. The output
+// matches upstream's "#DCv2" discordance table byte-for-byte (modulo the
+// non-reproducible "# This file was produced by ..." provenance header
+// and the "INFO\tTime required ..." timing line, which depend on the
+// command line, working directory and wall-clock time).
 //
-//   #DCv2	[2]Query Sample	[3]Genotyped Sample	[4]Discordance
-//   	[5]Average -log P(HWE)	[6]Number of sites compared
-//   	[7]Number of matching genotypes
+// Scoring model (vcfgtcheck.c process_line):
 //
-// The v1 port covers the hard-GT (`-u GT`) path. We:
-//   - reject multi-allelic records with the exact upstream "run
-//     `bcftools norm -m -` first" diagnostic (anything with len(ALT)>1
-//     OR a comma-separated ALT field);
-//   - score each (query, genotyped) pair via biallelic GT-dosage Hamming
-//     distance (0/0=0, 0/1=1, 1/1=2; ./. is a skip, NOT a discordance);
-//   - emit one row per pair, ordered (qrySample, gtSample).
+//   - Each sample's genotype at a biallelic site is reduced to a dosage
+//     bitmask: 1<<dose, so dose 0 -> 1, dose 1 -> 2, dose 2 -> 4. PL
+//     genotypes can be ambiguous (multiple minima), giving a bitmask with
+//     several bits set. A missing genotype is 0.
+//   - Two samples are concordant at a site when (qry_dsg & gt_dsg) != 0.
 //
-// Out of scope for v1, tracked in docs/PARITY_ROADMAP.md#bcftools:
-//   - `-u PL` (likelihood-based scoring),
-//   - `--cluster`, `--distinctive-sites`, `--n-matches`,
-//   - `-E/--error-probability`-weighted scoring.
+//   - With -E/--error-probability != 0 (DEFAULT is 40): the discordance
+//     is a probability score. Each dosage/PL is turned into a vector of
+//     three negative-log probabilities (one per genotype 0/0, 0/1, 1/1)
+//     and the per-site contribution is min_G(qry_prob[G] + gt_prob[G]).
+//     The column is printed in "%e" scientific notation.
+//   - With -E 0 (only reachable via --distinctive-sites today): the
+//     discordance is the integer count of discordant sites, printed "%u".
 //
-// All of these are accepted at the CLI for surface-parity and rejected
-// with a clear pointer to the roadmap.
+//   - The Average -log P(HWE) column (unless --no-HWE-prob) accumulates,
+//     over MATCHING sites only, -log of the HWE genotype probability for
+//     the matched dosage, using the site allele frequency from INFO/AC,AN
+//     when present and otherwise counted from FORMAT/GT across all
+//     samples of the record. The reported value is hwe_prob / nmatch.
+//
+// Tag selection mirrors upstream's -u/--use: GT or PL, auto-detected per
+// record (GT preferred, falling back to PL when GT is absent, or the
+// reverse when PL is requested). Diploid GT/PL only.
+//
+// Pair enumeration:
+//   - -p/-P explicit pairs: emitted in the given order (qry, gt).
+//   - cross-check (no -g): the lower triangle, query = sample[i],
+//     gt = sample[j] for j < i, i.e. rows (S2,S1), (S3,S1), (S3,S2)...
+//   - paired (-g): every query sample against every panel sample.
+//
+// --distinctive-sites finds the minimal set of sites that distinguish at
+// least NUM sample pairs and emits the "#DS" block after the table.
 
 import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -39,15 +58,10 @@ import (
 )
 
 // GtcheckOptions controls the behaviour of Gtcheck / GtcheckFile.
-//
-// The struct documents v1 surface explicitly: only the upstream flags
-// that have a real effect are reflected here. CLI-only flags that are
-// "parse and reject with PARITY_ROADMAP pointer" live in the CLI runner
-// (subcmds_gtcheck_roh.go) so the library stays small.
 type GtcheckOptions struct {
 	// GenotypesFile is the -g panel of "truth" genotypes. When empty,
 	// gtcheck runs in cross-check mode: every query sample versus
-	// every other query sample, half-square (i<j).
+	// every other query sample (lower triangle).
 	GenotypesFile string
 
 	// PairsSpec is the upstream -p comma list. Layout depends on
@@ -58,18 +72,22 @@ type GtcheckOptions struct {
 	// per line. Blank lines and '#' comments are ignored.
 	PairsFile string
 
-	// UseTag picks the scoring tag: only "GT" is implemented in v1.
-	// "PL" is parsed and rejected with a PARITY_ROADMAP pointer.
+	// UseTag picks the scoring tag, upstream -u/--use. One or two
+	// comma-separated tags ("GT", "PL"): the first applies to the
+	// query, the second (default = first) to the -g panel. Empty
+	// means "auto" (GT preferred, PL fallback).
 	UseTag string
 
-	// AllSites includes every site, even those where the query GT is
-	// missing for every sample. Off by default (matches upstream).
+	// AllSites is accepted for surface parity; upstream itself rejects
+	// -a as "to be implemented", so the field is currently unused.
 	AllSites bool
 	// HomsOnly restricts scoring to sites where the panel genotype is
 	// homozygous (-H/--homs-only).
 	HomsOnly bool
 	// NoHWEProb disables the HWE-probability column (set to 0.0).
 	NoHWEProb bool
+	// KeepRefs disables the monoallelic-site skip (upstream --keep-refs).
+	KeepRefs bool
 
 	// SamplesQry / SamplesGT restrict the cohorts. Both are post-filtered
 	// against the input headers.
@@ -77,7 +95,7 @@ type GtcheckOptions struct {
 	SamplesGT  []string
 
 	// Regions / Targets / Include / Exclude are accepted but applied
-	// only as a post-filter on CHROM[:beg-end] in v1.
+	// only as a post-filter on CHROM[:beg-end].
 	Regions     []string
 	RegionsFile string
 	Targets     []string
@@ -86,25 +104,55 @@ type GtcheckOptions struct {
 	ExcludeExpr string
 
 	// DryRun mirrors upstream `--dry-run`: process exactly one record
-	// then return (used for time-estimation).
+	// then return (used for time-estimation). No table is written.
 	DryRun bool
 
-	// ErrorProbability is the phred-scaled -E. Recorded for traceability;
-	// the hard-GT score is unweighted in v1.
+	// ErrorProbability is the phred-scaled -E. The effective default is
+	// 40 (matching upstream): a zero value here means "unset, use 40".
+	// To force the integer-mismatch path set ErrorProbabilityZero (or
+	// use --distinctive-sites, which forces it). Negative is treated as
+	// 0.
 	ErrorProbability int
+	// ErrorProbabilityZero forces -E 0 (integer mismatch scoring) even
+	// though the ErrorProbability zero value otherwise means "default
+	// 40". The CLI sets this when the user passes -E 0 explicitly.
+	ErrorProbabilityZero bool
 
-	// OutputType: "t" (default) or "z". v1 supports only "t".
+	// DistinctiveSites enables the --distinctive-sites block. The value
+	// is the NUM field: a fraction (<=1) of pairs or an absolute count
+	// (>1). Requires -p/-P. Setting it forces ErrorProbability to 0.
+	DistinctiveSites float64
+	// HasDistinctiveSites distinguishes "--distinctive-sites 0" (which
+	// upstream rejects) from "not set".
+	HasDistinctiveSites bool
+
+	// NMatches is upstream --n-matches: print only the top INT matches
+	// per query sample, sorted by average discordance. A negative value
+	// sorts by HWE probability instead. 0 means unlimited.
+	NMatches int
+
+	// OutputType: "t" (default) or "z". Only "t" is supported.
 	OutputType string
 }
 
-// GtcheckPair captures one row of the #DCv2 output.
+// GtcheckPair captures one row of the #DCv2 output. Discordance is held
+// both as the floating-point probability score (DiscScore) and, when the
+// integer path is active, as the count (DiscCount); IsInteger selects
+// which one is emitted.
 type GtcheckPair struct {
 	QuerySample     string
 	GenotypedSample string
-	Discordance     int
+	DiscScore       float64
+	DiscCount       int
+	IsInteger       bool
 	AvgLogPHWE      float64
 	NumSites        int
 	NumMatching     int
+
+	// queryIdx/gtIdx are the indices into the chosen sample cohorts,
+	// retained so --n-matches and cross-check ordering can be applied.
+	queryIdx int
+	gtIdx    int
 }
 
 // GtcheckResult is the full pair table.
@@ -112,9 +160,7 @@ type GtcheckResult struct {
 	Pairs []GtcheckPair
 }
 
-// GtcheckFile is the file-aware entry point used by the CLI. It opens
-// the query (and optional panel) through iohelper, scores each pair,
-// and writes the #DCv2 table to out.
+// GtcheckFile is the file-aware entry point used by the CLI.
 func GtcheckFile(queryPath string, out io.Writer, opts GtcheckOptions) (GtcheckResult, error) {
 	if opts.GenotypesFile != "" {
 		gIn, err := openVariantReader(opts.GenotypesFile)
@@ -137,15 +183,13 @@ func GtcheckFile(queryPath string, out io.Writer, opts GtcheckOptions) (GtcheckR
 	return Gtcheck(in, out, opts)
 }
 
-// openVariantReader opens a VCF/BCF/gzipped-VCF input. It returns an
-// io.ReadCloser to give the caller control of lifetime.
+// openVariantReader opens a VCF/BCF/gzipped-VCF input.
 func openVariantReader(path string) (io.ReadCloser, error) {
 	return iohelper.OpenReader(path)
 }
 
 // Gtcheck is the cross-check entry point: every query sample vs every
-// other query sample. Pairs are emitted in (i<j) order using the input
-// header's sample ordering.
+// other query sample (lower triangle).
 func Gtcheck(in io.Reader, out io.Writer, opts GtcheckOptions) (GtcheckResult, error) {
 	hdr, vars, err := readAllVariants(in)
 	if err != nil {
@@ -167,16 +211,127 @@ func GtcheckPaired(qIn, gIn io.Reader, out io.Writer, opts GtcheckOptions) (Gtch
 	return runGtcheck(hdrQ, varsQ, hdrG, varsG, out, opts, false)
 }
 
-// runGtcheck is the shared scoring path. crossCheck=true means the
-// query and panel are the same cohort and we emit only the i<j half.
+// tagMode is a per-sample-set tag selection: GT, PL, or auto.
+type tagMode int
+
+const (
+	tagAuto tagMode = -1
+	tagPL   tagMode = 0
+	tagGT   tagMode = 1
+)
+
+// parseUseTag parses upstream's -u/--use spec into (query, panel) modes.
+func parseUseTag(spec string) (qry, gt tagMode, err error) {
+	s := strings.TrimSpace(spec)
+	if s == "" {
+		return tagAuto, tagAuto, nil
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) > 2 {
+		return 0, 0, fmt.Errorf("bcftools gtcheck: failed to parse --use %q", spec)
+	}
+	parse1 := func(t string) (tagMode, error) {
+		switch strings.ToUpper(strings.TrimSpace(t)) {
+		case "GT":
+			return tagGT, nil
+		case "PL":
+			return tagPL, nil
+		default:
+			return 0, fmt.Errorf("bcftools gtcheck: failed to parse --use %q; only GT and PL are supported", spec)
+		}
+	}
+	qry, err = parse1(parts[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(parts) == 2 {
+		gt, err = parse1(parts[1])
+		if err != nil {
+			return 0, 0, err
+		}
+	} else {
+		gt = qry
+	}
+	return qry, gt, nil
+}
+
+// gtcheckState carries the scoring lookup tables for one run.
+type gtcheckState struct {
+	opts     GtcheckOptions
+	useErr   bool // gt_err != 0: probability scoring
+	calcHWE  bool
+	dsg2prob map[uint8][3]float64
+}
+
+// effectiveErrorProbability resolves the phred-scaled -E that scoring
+// should use. The zero value of ErrorProbability means "default 40";
+// ErrorProbabilityZero forces 0 (the integer path). A negative value is
+// clamped to 0.
+func effectiveErrorProbability(opts GtcheckOptions) int {
+	if opts.ErrorProbabilityZero {
+		return 0
+	}
+	e := opts.ErrorProbability
+	if e == 0 {
+		return 40
+	}
+	if e < 0 {
+		return 0
+	}
+	return e
+}
+
+// newState builds the scoring lookup tables.
+func newState(opts GtcheckOptions) *gtcheckState {
+	st := &gtcheckState{opts: opts}
+	gtErr := effectiveErrorProbability(opts)
+	st.calcHWE = !opts.NoHWEProb
+	if gtErr != 0 {
+		st.useErr = true
+		eprob := math.Pow(10, -0.1*float64(gtErr))
+		l := -math.Log(eprob)
+		inf := math.Inf(1)
+		// Index by the single-bit dosage mask (1,2,4). Mirrors
+		// upstream args->dsg2prob.
+		st.dsg2prob = map[uint8][3]float64{
+			0: {inf, inf, inf},
+			1: {0, l, 2 * l},
+			2: {l, 0, l},
+			4: {2 * l, l, 0},
+		}
+	}
+	return st
+}
+
+// runGtcheck is the shared scoring path.
 func runGtcheck(
 	hdrQ *vcf.Header, varsQ []*vcf.Variant,
 	hdrG *vcf.Header, varsG []*vcf.Variant,
 	out io.Writer, opts GtcheckOptions, crossCheck bool,
 ) (GtcheckResult, error) {
-	if err := validateUseTag(opts.UseTag); err != nil {
+	qryMode, gtMode, err := parseUseTag(opts.UseTag)
+	if err != nil {
 		return GtcheckResult{}, err
 	}
+
+	// Resolve the auto (-u unset) tag selection from the headers, exactly
+	// once, mirroring upstream init_data(): the query prefers PL (falls
+	// back to GT), the panel prefers GT (falls back to PL). In
+	// cross-check mode the panel tag follows the query tag.
+	qryUseGT, err := resolveHeaderTag(qryMode, varsQ, true, "query")
+	if err != nil {
+		return GtcheckResult{}, err
+	}
+	var gtUseGT bool
+	if crossCheck {
+		gtUseGT = qryUseGT
+	} else {
+		gtUseGT, err = resolveHeaderTag(gtMode, varsG, false, "panel")
+		if err != nil {
+			return GtcheckResult{}, err
+		}
+	}
+
 	if opts.RegionsFile != "" {
 		extra, err := LoadRegionsFile(opts.RegionsFile)
 		if err != nil {
@@ -210,39 +365,72 @@ func runGtcheck(
 		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: no samples to compare (qry=%d gt=%d)", len(qSamples), len(gSamples))
 	}
 
-	pairs, err := buildPairs(qSamples, gSamples, opts, crossCheck)
+	usePairs := opts.PairsSpec != "" || opts.PairsFile != ""
+	if opts.HasDistinctiveSites && !usePairs {
+		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: the experimental option --distinctive-sites requires -p/-P")
+	}
+	if opts.HomsOnly && crossCheck {
+		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: the option --homs-only requires --genotypes")
+	}
+
+	// --distinctive-sites forces the integer path (gt_err = 0).
+	if opts.HasDistinctiveSites {
+		opts.ErrorProbabilityZero = true
+	}
+	st := newState(opts)
+
+	pairs, err := buildPairList(qSamples, gSamples, opts, crossCheck)
 	if err != nil {
 		return GtcheckResult{}, err
 	}
+	if len(pairs) == 0 {
+		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: no sample pairs to compare")
+	}
 
-	// Build (CHROM,POS) -> *Variant lookup for the panel so cross-file
-	// joining is O(1) per query record.
+	// Validate the resolved --distinctive-sites threshold, mirroring
+	// upstream diff_sites_init: a NUM that resolves to <= 0 sites is an
+	// error.
+	if opts.HasDistinctiveSites {
+		if n := resolveDistinctiveNsites(opts.DistinctiveSites, len(pairs)); n <= 0 {
+			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: the value for --distinctive-sites was set too low: %d", n)
+		}
+	}
+
 	panelByPos := indexByPos(varsG)
 	qSampleIdx := indexSamples(hdrQ)
 	gSampleIdx := indexSamples(hdrG)
 
-	type acc struct {
-		disc  int
-		match int
-		sites int
-		// Cumulative -log10(P(HWE)) for the HOM-REF / HOM-ALT / HET
-		// allele-counts seen at scored sites. v1 uses a fixed
-		// dummy of 0 when NoHWEProb is set; otherwise it sums
-		// -log10(0.5) per site as a sentinel until upstream's
-		// real per-site HWE estimator lands.
-		hweAcc float64
+	for i := range pairs {
+		qi, ok := qSampleIdx[pairs[i].QuerySample]
+		if !ok {
+			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: query sample %q not in header", pairs[i].QuerySample)
+		}
+		gi, ok2 := gSampleIdx[pairs[i].GenotypedSample]
+		if !ok2 {
+			return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: genotyped sample %q not in header", pairs[i].GenotypedSample)
+		}
+		pairs[i].queryIdx = qi
+		pairs[i].gtIdx = gi
+		pairs[i].IsInteger = !st.useErr
 	}
-	accums := make(map[[2]string]*acc, len(pairs))
-	for _, p := range pairs {
-		key := [2]string{p.QuerySample, p.GenotypedSample}
-		accums[key] = &acc{}
+
+	// Upstream sorts explicit -p/-P pairs by (query index, gt index)
+	// before scoring (qsort cmp_pair). The auto-generated cross-check /
+	// paired lists are already in that order.
+	if usePairs {
+		sort.SliceStable(pairs, func(a, b int) bool {
+			if pairs[a].queryIdx != pairs[b].queryIdx {
+				return pairs[a].queryIdx < pairs[b].queryIdx
+			}
+			return pairs[a].gtIdx < pairs[b].gtIdx
+		})
 	}
+
+	stats := &gtcheckStats{}
+	ds := newDistinctiveCollector(opts, len(pairs))
 
 	sites := 0
 	for _, qv := range varsQ {
-		// Apply region / targets post-filters independently. Either
-		// filter being set is sufficient to drop a non-matching
-		// variant; both unset means everything passes.
 		if len(opts.Regions) > 0 && !regionMatches(qv, opts.Regions) {
 			continue
 		}
@@ -253,91 +441,417 @@ func runGtcheck(
 		if !crossCheck {
 			gv = panelByPos[posKey(qv)]
 			if gv == nil {
+				stats.skipNoMatch++
 				continue
 			}
 			if err := rejectIfMultiAllelic(gv, "panel"); err != nil {
 				return GtcheckResult{}, err
 			}
 		}
-		sites++
-		for _, p := range pairs {
-			a := accums[[2]string{p.QuerySample, p.GenotypedSample}]
-			qIdx, ok := qSampleIdx[p.QuerySample]
-			if !ok {
-				continue
-			}
-			gIdx, ok2 := gSampleIdx[p.GenotypedSample]
-			if !ok2 {
-				continue
-			}
-			qDose, qOK := gtDose(qv, qIdx)
-			gDose, gOK := gtDose(gv, gIdx)
-			if !qOK || !gOK {
-				// Missing → skip (NOT a discordance).
-				continue
-			}
-			if opts.HomsOnly && gDose == 1 {
-				continue
-			}
-			a.sites++
-			d := qDose - gDose
-			if d < 0 {
-				d = -d
-			}
-			a.disc += d
-			if d == 0 {
-				a.match++
-			}
-			if !opts.NoHWEProb {
-				// v1 placeholder: the column is zeroed until a
-				// real per-site HWE estimator from panel AF
-				// lands (tracked in PARITY_ROADMAP). A non-zero
-				// constant placeholder (like -log10(0.5)) was
-				// worse than zero — every row would read the
-				// same useless number.
-				a.hweAcc += 0
-			}
+
+		// Skip monoallelic (no-ALT) sites unless --keep-refs, mirroring
+		// upstream is_input_okay(): a site is skipped when every reader's
+		// record has no ALT allele.
+		if !opts.KeepRefs && isMonoallelic(qv) && (crossCheck || isMonoallelic(gv)) {
+			stats.skipMono++
+			continue
 		}
+
+		// Per-record tag with the upstream set_data() fallback: use the
+		// globally resolved tag, but flip to the other tag if this
+		// record lacks it.
+		qUseGT, qOK := recordTag(qv, qryUseGT)
+		if !qOK {
+			stats.skipNoData++
+			continue
+		}
+		gUseGT := qUseGT
+		gOK := true
+		if !crossCheck {
+			gUseGT, gOK = recordTag(gv, gtUseGT)
+		}
+		if !gOK {
+			stats.skipNoData++
+			continue
+		}
+
+		sites++
+		stats.compared++
+		stats.bumpUsed(qUseGT, gUseGT)
+
+		var hweDsg [8]float64
+		if st.calcHWE {
+			hweDsg = computeHWEDsg(siteAF(gv))
+		}
+
+		ds.resetSite()
+		for pi := range pairs {
+			p := &pairs[pi]
+			gDsg, gProb := sampleDsgProb(gv, p.gtIdx, gUseGT, st)
+			if gDsg == 0 {
+				continue
+			}
+			if opts.HomsOnly && gDsg&5 == 0 {
+				continue
+			}
+			qDsg, qProb := sampleDsgProb(qv, p.queryIdx, qUseGT, st)
+			if qDsg == 0 {
+				continue
+			}
+
+			if st.useErr {
+				min := qProb[0] + gProb[0]
+				if v := qProb[1] + gProb[1]; v < min {
+					min = v
+				}
+				if v := qProb[2] + gProb[2]; v < min {
+					min = v
+				}
+				p.DiscScore += min
+			}
+			match := qDsg & gDsg
+			if match == 0 {
+				if !st.useErr {
+					p.DiscCount++
+				}
+				ds.markDiff(pi)
+			} else if st.calcHWE {
+				p.AvgLogPHWE += hweDsg[match]
+				p.NumMatching++
+			}
+			p.NumSites++
+		}
+		ds.pushSite(qv.Chrom, qv.Pos)
+
 		if opts.DryRun {
 			break
 		}
 	}
 
-	if !opts.AllSites && sites == 0 {
-		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: no overlapping scoreable sites between query and -g panel")
+	if opts.DryRun {
+		// Upstream writes no table on --dry-run.
+		return GtcheckResult{Pairs: pairs}, nil
 	}
 
-	result := GtcheckResult{Pairs: make([]GtcheckPair, 0, len(pairs))}
-	for _, p := range pairs {
-		a := accums[[2]string{p.QuerySample, p.GenotypedSample}]
-		avgHWE := 0.0
-		if a.sites > 0 && !opts.NoHWEProb {
-			avgHWE = a.hweAcc / float64(a.sites)
+	// Finalise averaged HWE.
+	result := GtcheckResult{Pairs: pairs}
+	for i := range result.Pairs {
+		p := &result.Pairs[i]
+		if st.calcHWE && p.NumMatching > 0 {
+			p.AvgLogPHWE = p.AvgLogPHWE / float64(p.NumMatching)
+		} else {
+			p.AvgLogPHWE = 0
 		}
-		result.Pairs = append(result.Pairs, GtcheckPair{
-			QuerySample:     p.QuerySample,
-			GenotypedSample: p.GenotypedSample,
-			Discordance:     a.disc,
-			AvgLogPHWE:      avgHWE,
-			NumSites:        a.sites,
-			NumMatching:     a.match,
-		})
+		if !st.calcHWE {
+			p.NumMatching = 0
+		}
 	}
-	if err := writeGtcheckDCv2(out, result); err != nil {
+
+	if err := writeGtcheckReport(out, result, stats, st, opts, crossCheck, qSamples, gSamples); err != nil {
 		return result, err
+	}
+	if opts.HasDistinctiveSites {
+		if err := ds.report(out); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }
 
+// resolveHeaderTag picks GT or PL for an entire cohort, mirroring
+// upstream init_data(). It returns true for GT, false for PL. An explicit
+// mode (from -u) is honoured (erroring if that tag is absent from every
+// record). The auto mode prefers PL for the query cohort and GT for the
+// panel cohort, falling back to the other tag.
+func resolveHeaderTag(mode tagMode, vars []*vcf.Variant, isQuery bool, label string) (bool, error) {
+	hasGT := cohortHasTag(vars, "GT")
+	hasPL := cohortHasTag(vars, "PL")
+	switch mode {
+	case tagGT:
+		if !hasGT {
+			return false, fmt.Errorf("bcftools gtcheck: the GT tag is not present in the %s", label)
+		}
+		return true, nil
+	case tagPL:
+		if !hasPL {
+			return false, fmt.Errorf("bcftools gtcheck: the PL tag is not present in the %s", label)
+		}
+		return false, nil
+	default: // auto
+		if isQuery {
+			if hasPL {
+				return false, nil
+			}
+			if hasGT {
+				return true, nil
+			}
+		} else {
+			if hasGT {
+				return true, nil
+			}
+			if hasPL {
+				return false, nil
+			}
+		}
+		return false, fmt.Errorf("bcftools gtcheck: neither PL nor GT tag is present in the %s", label)
+	}
+}
+
+// recordTag applies upstream's per-record set_data() fallback: prefer the
+// cohort-resolved tag, but flip to the other if this record lacks it.
+// Returns (useGT, ok); ok is false when neither tag is present.
+func recordTag(v *vcf.Variant, preferGT bool) (useGT bool, ok bool) {
+	if preferGT {
+		if recordHasTag(v, "GT") {
+			return true, true
+		}
+		if recordHasTag(v, "PL") {
+			return false, true
+		}
+		return false, false
+	}
+	if recordHasTag(v, "PL") {
+		return false, true
+	}
+	if recordHasTag(v, "GT") {
+		return true, true
+	}
+	return false, false
+}
+
+func recordHasTag(v *vcf.Variant, tag string) bool {
+	for i := range v.Samples {
+		if _, ok := v.Samples[i].Data[tag]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// cohortHasTag reports whether any record carries the FORMAT tag. Upstream
+// checks the header; the htsgo VCF model does not retain a typed FORMAT
+// header set, so we probe the records (equivalent for well-formed input).
+func cohortHasTag(vars []*vcf.Variant, tag string) bool {
+	for _, v := range vars {
+		if recordHasTag(v, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+// sampleDsgProb returns the dosage bitmask and the three negative-log
+// probabilities (only meaningful when st.useErr) for a sample.
+func sampleDsgProb(v *vcf.Variant, idx int, useGT bool, st *gtcheckState) (uint8, [3]float64) {
+	var prob [3]float64
+	if v == nil || idx < 0 || idx >= len(v.Samples) {
+		return 0, prob
+	}
+	if useGT {
+		dsg := gtToDsg(v.Samples[idx].Data["GT"])
+		if dsg != 0 && st.useErr {
+			prob = st.dsg2prob[dsg]
+		}
+		return dsg, prob
+	}
+	pls, ok := parsePL(v.Samples[idx].Data["PL"])
+	if !ok {
+		return 0, prob
+	}
+	dsg := plToDsg(pls)
+	if dsg != 0 && st.useErr {
+		prob = plToProb(pls)
+	}
+	return dsg, prob
+}
+
+// gtToDsg converts a diploid FORMAT/GT string to a single-bit dosage
+// bitmask (1<<dose). Returns 0 for missing or non-diploid.
+func gtToDsg(gt string) uint8 {
+	if gt == "" {
+		return 0
+	}
+	gt = strings.ReplaceAll(gt, "|", "/")
+	parts := strings.Split(gt, "/")
+	if len(parts) != 2 {
+		return 0
+	}
+	dose := 0
+	for _, p := range parts {
+		switch p {
+		case ".":
+			return 0
+		case "0":
+			// no-op
+		case "1":
+			dose++
+		default:
+			return 0
+		}
+	}
+	return 1 << uint(dose)
+}
+
+// parsePL parses a diploid (3-value) FORMAT/PL string. Returns false if
+// missing or not exactly three values.
+func parsePL(s string) ([3]int, bool) {
+	var out [3]int
+	if s == "" || s == "." {
+		return out, false
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		if p == "." {
+			return out, false
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// plToDsg mirrors upstream pl_to_dsg: the dosage bitmask is the set of
+// genotypes attaining the minimum PL.
+func plToDsg(pl [3]int) uint8 {
+	min := pl[0]
+	if pl[1] < min {
+		min = pl[1]
+	}
+	if pl[2] < min {
+		min = pl[2]
+	}
+	var dsg uint8
+	if pl[0] == min {
+		dsg |= 1
+	}
+	if pl[1] == min {
+		dsg |= 2
+	}
+	if pl[2] == min {
+		dsg |= 4
+	}
+	return dsg
+}
+
+// plToProb mirrors upstream pl_to_prob: convert PLs to linear
+// probabilities, normalise, then take the negative log.
+func plToProb(pl [3]int) [3]float64 {
+	var prob [3]float64
+	for i := 0; i < 3; i++ {
+		p := pl[i]
+		if p < 0 || p >= 255 {
+			p = 255
+		}
+		prob[i] = math.Pow(10, -0.1*float64(p))
+	}
+	sum := prob[0] + prob[1] + prob[2]
+	for i := 0; i < 3; i++ {
+		prob[i] = -math.Log(prob[i] / sum)
+	}
+	return prob
+}
+
+// computeHWEDsg builds the hwe_dsg lookup keyed by the dosage-match
+// bitmask, mirroring upstream's per-record construction.
+func computeHWEDsg(af float64) [8]float64 {
+	var hwe [3]float64
+	hwe[0] = -math.Log((1 - af) * (1 - af))
+	hwe[1] = -math.Log(2 * af * (1 - af))
+	hwe[2] = -math.Log(af * af)
+	var out [8]float64
+	out[0] = 0
+	inf := math.Inf(1)
+	for i := 1; i < 8; i++ {
+		out[i] = inf
+		for k := 0; k < 3; k++ {
+			if (1<<uint(k))&i != 0 && out[i] > hwe[k] {
+				out[i] = hwe[k]
+			}
+		}
+	}
+	return out
+}
+
+// siteAF computes the ALT allele frequency for a record, preferring
+// INFO/AC,AN and falling back to counting FORMAT/GT over all samples.
+// Mirrors bcf_calc_ac(BCF_UN_INFO|BCF_UN_FMT). A site with no observed
+// allele uses the upstream sentinel of 1e-6.
+func siteAF(v *vcf.Variant) float64 {
+	if v == nil {
+		return 1e-6
+	}
+	ac0, ac1, ok := acFromInfo(v)
+	if !ok {
+		ac0, ac1 = acFromGT(v)
+	}
+	if len(v.Alt) < 1 || v.Alt[0] == "." || v.Alt[0] == "" {
+		ac1 = 0
+	}
+	if ac0+ac1 == 0 {
+		return 1e-6
+	}
+	return float64(ac1) / float64(ac0+ac1)
+}
+
+// acFromInfo reads INFO/AC and INFO/AN. For a biallelic record AC is the
+// ALT count and AN-AC the REF count.
+func acFromInfo(v *vcf.Variant) (ac0, ac1 int, ok bool) {
+	acStr, hasAC := v.Info["AC"]
+	anStr, hasAN := v.Info["AN"]
+	if !hasAC || !hasAN {
+		return 0, 0, false
+	}
+	acField := acStr
+	if i := strings.IndexByte(acField, ','); i >= 0 {
+		acField = acField[:i]
+	}
+	ac1, err := strconv.Atoi(strings.TrimSpace(acField))
+	if err != nil {
+		return 0, 0, false
+	}
+	an, err := strconv.Atoi(strings.TrimSpace(anStr))
+	if err != nil {
+		return 0, 0, false
+	}
+	ac0 = an - ac1
+	if ac0 < 0 {
+		ac0 = 0
+	}
+	return ac0, ac1, true
+}
+
+// acFromGT counts REF (ac0) and ALT (ac1) alleles from FORMAT/GT across
+// all samples of the record.
+func acFromGT(v *vcf.Variant) (ac0, ac1 int) {
+	for i := range v.Samples {
+		gt := v.Samples[i].Data["GT"]
+		if gt == "" {
+			continue
+		}
+		gt = strings.ReplaceAll(gt, "|", "/")
+		for _, a := range strings.Split(gt, "/") {
+			switch a {
+			case "0":
+				ac0++
+			case "1":
+				ac1++
+			}
+		}
+	}
+	return ac0, ac1
+}
+
+// validateUseTag is retained for callers/tests that only want to confirm
+// a tag spec parses.
 func validateUseTag(tag string) error {
-	t := strings.ToUpper(strings.TrimSpace(tag))
-	if t == "" || t == "GT" {
-		return nil
-	}
-	if t == "PL" || strings.HasPrefix(t, "PL,") || strings.HasSuffix(t, ",PL") {
-		return fmt.Errorf("bcftools gtcheck: PL mode not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools")
-	}
-	return fmt.Errorf("bcftools gtcheck: -u %q not recognised; only GT is implemented (PL deferred, see docs/PARITY_ROADMAP.md#bcftools)", tag)
+	_, _, err := parseUseTag(tag)
+	return err
 }
 
 // rejectMultiAllelic mirrors upstream's input-shape check.
@@ -350,9 +864,7 @@ func rejectMultiAllelic(vars []*vcf.Variant, label string) error {
 	return nil
 }
 
-// rejectIfMultiAllelic enforces the biallelic input constraint that
-// upstream's vcfgtcheck.c expects: any ALT > 1 ALT means the caller
-// must run `bcftools norm -m -` first.
+// rejectIfMultiAllelic enforces the biallelic input constraint.
 func rejectIfMultiAllelic(v *vcf.Variant, label string) error {
 	if v == nil {
 		return nil
@@ -366,37 +878,22 @@ func rejectIfMultiAllelic(v *vcf.Variant, label string) error {
 	return nil
 }
 
-// gtDose returns the biallelic dosage of the FORMAT/GT field for the
-// given sample-index: 0 for 0/0, 1 for 0/1 or 1/0, 2 for 1/1. The
-// second return is false if the GT is missing or unparseable.
-func gtDose(v *vcf.Variant, idx int) (int, bool) {
-	if v == nil || idx < 0 || idx >= len(v.Samples) {
-		return 0, false
+// isMonoallelic reports whether the record has no usable ALT allele
+// (ALT is absent, ".", or "<NON_REF>"-style), i.e. bcf_get_variant_types
+// would classify it as VCF_REF.
+func isMonoallelic(v *vcf.Variant) bool {
+	if v == nil {
+		return true
 	}
-	gt, ok := v.Samples[idx].Data["GT"]
-	if !ok || gt == "" || gt == "." || gt == "./." || gt == ".|." {
-		return 0, false
+	if len(v.Alt) == 0 {
+		return true
 	}
-	// Strip phasing.
-	gt = strings.ReplaceAll(gt, "|", "/")
-	parts := strings.Split(gt, "/")
-	dose := 0
-	for _, p := range parts {
-		if p == "." {
-			return 0, false
-		}
-		// Anything other than 0 or 1 in v1 (multi-allelic) was
-		// rejected upstream of this call.
-		switch p {
-		case "0":
-			// no-op
-		case "1":
-			dose++
-		default:
-			return 0, false
+	for _, a := range v.Alt {
+		if a != "" && a != "." {
+			return false
 		}
 	}
-	return dose, true
+	return true
 }
 
 func posKey(v *vcf.Variant) string {
@@ -438,10 +935,11 @@ func selectSamples(hdrSamples, want []string) []string {
 	return out
 }
 
-// buildPairs assembles the (query, genotype) pair list. When PairsSpec
-// or PairsFile is set, use those; otherwise the default is "all qry
-// vs all gt", with crossCheck mode using the i<j half-square.
-func buildPairs(qSamples, gSamples []string, opts GtcheckOptions, crossCheck bool) ([]GtcheckPair, error) {
+// buildPairList assembles the (query, genotype) pair list. With -p/-P the
+// explicit list is used. Otherwise cross-check uses the lower triangle
+// (query = larger-indexed sample) and the paired (-g) mode uses every
+// query vs every panel sample.
+func buildPairList(qSamples, gSamples []string, opts GtcheckOptions, crossCheck bool) ([]GtcheckPair, error) {
 	if opts.PairsSpec != "" || opts.PairsFile != "" {
 		parts, err := loadPairs(opts.PairsSpec, opts.PairsFile)
 		if err != nil {
@@ -459,21 +957,20 @@ func buildPairs(qSamples, gSamples []string, opts GtcheckOptions, crossCheck boo
 		}
 		return pairs, nil
 	}
-	pairs := make([]GtcheckPair, 0, len(qSamples)*len(gSamples))
 	if crossCheck {
-		// Half-square i<j.
-		sortedQ := append([]string{}, qSamples...)
-		sort.Strings(sortedQ)
-		for i := 0; i < len(sortedQ); i++ {
-			for j := i + 1; j < len(sortedQ); j++ {
+		// Lower triangle: query = sample[i], gt = sample[j], j < i.
+		pairs := make([]GtcheckPair, 0, len(qSamples)*(len(qSamples)-1)/2)
+		for i := 0; i < len(qSamples); i++ {
+			for j := 0; j < i; j++ {
 				pairs = append(pairs, GtcheckPair{
-					QuerySample:     sortedQ[i],
-					GenotypedSample: sortedQ[j],
+					QuerySample:     qSamples[i],
+					GenotypedSample: qSamples[j],
 				})
 			}
 		}
 		return pairs, nil
 	}
+	pairs := make([]GtcheckPair, 0, len(qSamples)*len(gSamples))
 	for _, q := range qSamples {
 		for _, g := range gSamples {
 			pairs = append(pairs, GtcheckPair{
@@ -531,8 +1028,8 @@ func loadPairs(spec, path string) ([]string, error) {
 	return out, nil
 }
 
-// regionMatches returns true if the variant CHROM[:beg-end] is in any
-// of the given specs. An empty spec list returns true (no filter).
+// regionMatches returns true if the variant CHROM[:beg-end] is in any of
+// the given specs. An empty spec list returns true (no filter).
 func regionMatches(v *vcf.Variant, specs []string) bool {
 	if len(specs) == 0 {
 		return true
@@ -556,7 +1053,6 @@ func regionMatches(v *vcf.Variant, specs []string) bool {
 }
 
 func parseRegionSpec(s string) (chrom string, beg, end int, err error) {
-	// CHROM, CHROM:beg, CHROM:beg-end.
 	if !strings.Contains(s, ":") {
 		return s, 0, 0, nil
 	}
@@ -581,28 +1077,7 @@ func parseRegionSpec(s string) (chrom string, beg, end int, err error) {
 	return chrom, beg, beg, nil
 }
 
-// writeGtcheckDCv2 emits the upstream "#DCv2" table. Columns match
-// vcfgtcheck.c exactly:
-//
-//	#DCv2 \t [2]Query Sample \t [3]Genotyped Sample \t [4]Discordance
-//	\t [5]Average -log P(HWE) \t [6]Number of sites compared
-//	\t [7]Number of matching genotypes
-func writeGtcheckDCv2(out io.Writer, r GtcheckResult) error {
-	w := bufio.NewWriter(out)
-	if _, err := w.WriteString("#DCv2\t[2]Query Sample\t[3]Genotyped Sample\t[4]Discordance\t[5]Average -log P(HWE)\t[6]Number of sites compared\t[7]Number of matching genotypes\n"); err != nil {
-		return err
-	}
-	for _, p := range r.Pairs {
-		if _, err := fmt.Fprintf(w,
-			"DCv2\t%s\t%s\t%d\t%.6f\t%d\t%d\n",
-			p.QuerySample, p.GenotypedSample, p.Discordance, p.AvgLogPHWE, p.NumSites, p.NumMatching); err != nil {
-			return err
-		}
-	}
-	return w.Flush()
-}
-
-// posStr is a small helper to avoid pulling strconv just for one fmt.
+// posStr is a small helper for position formatting.
 func posStr(p int) string {
-	return fmt.Sprintf("%d", p)
+	return strconv.Itoa(p)
 }
