@@ -43,12 +43,17 @@ GEN/sample conversion modes (Oxford .gen+.sample):
       --vcf-ids                         Use VCF IDs in the .gen ID column.
       --chrom                           Deprecated; errors (use --3N6).
 
+IMPUTE2 HAP/legend conversion modes (implemented):
+      --hapsample PREFIX           VCF/BCF -> .hap + .samples.
+      --hapsample2vcf PREFIX       .hap + .samples -> VCF/BCF.
+      --haplegendsample PREFIX     VCF/BCF -> .hap + .legend + .samples.
+      --haplegendsample2vcf PREFIX .hap + .legend + .samples -> VCF/BCF.
+      --haploid2diploid            Emit haploid genotypes as diploid homozygotes.
+
 Accepted-and-deferred conversion modes (parse cleanly; v1 emits a
 "not implemented" error pointing at docs/PARITY_ROADMAP.md if any
 are actually set):
-  --gvcf2vcf, --gvcf, -f/--fasta-ref, --keep-duplicates,
-  --hapsample, --hapsample2vcf, --haploid2diploid,
-  --haplegendsample, --haplegendsample2vcf, --tsv2vcf, -c/--columns.
+  --gvcf (block-output pairing).
 
 Accepted-and-ignored stubs (no-op against the round-trip flow):
   --regions-overlap, --targets-overlap, --no-version,
@@ -234,14 +239,7 @@ func runConvert(args []string) int {
 	// silently accepting and producing the wrong output). The GEN/sample
 	// family (-g/-G/--tag/--3N6/--sex/--vcf-ids) is handled below.
 	if deferred := checkConvertDeferred(checkConvertDeferredInputs{
-		fastaRef:            fastaRef,
-		gvcfBlocks:          gvcfBlocks,
-		keepDuplicates:      keepDuplicates,
-		hapsample:           hapsample,
-		hapsample2vcf:       hapsample2vcf,
-		haploid2diploid:     haploid2diploid,
-		haplegendsample:     haplegendsample,
-		haplegendsample2vcf: haplegendsample2vcf,
+		gvcfBlocks: gvcfBlocks,
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools convert: %s not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
@@ -265,6 +263,32 @@ func runConvert(args []string) int {
 			outputPath:    outputPath,
 			rest:          fs.Args(),
 		})
+	}
+
+	// HAP/legend (IMPUTE2) conversion modes. These are mutually
+	// exclusive with the round-trip flow and with each other; dispatch
+	// to the dedicated entry points in convert_hap.go.
+	if hapMode, err := runConvertHap(convertHapInputs{
+		hapsample:           hapsample,
+		hapsample2vcf:       hapsample2vcf,
+		haplegendsample:     haplegendsample,
+		haplegendsample2vcf: haplegendsample2vcf,
+		haploid2diploid:     haploid2diploid,
+		outputType:          outputType,
+		outputPath:          outputPath,
+		compressLevel:       compressLevel,
+		samples:             samples,
+		samplesFile:         samplesFile,
+		forceSamples:        forceSamples,
+		regions:             regions,
+		regionsFile:         regionsFile,
+		targets:             targets,
+		targetsFile:         targetsFile,
+		includeExpr:         includeExpr,
+		excludeExpr:         excludeExpr,
+		rest:                fs.Args(),
+	}); hapMode {
+		return err
 	}
 	// Silently-ignored stubs (matching upstream when the flag is a
 	// no-op or an indexing optimisation the v1 doesn't need).
@@ -314,41 +338,152 @@ func runConvert(args []string) int {
 	return 0
 }
 
+// convertHapInputs groups the flag values consumed by the HAP/legend
+// (IMPUTE2) conversion modes of `bcftools convert`.
+type convertHapInputs struct {
+	hapsample           string
+	hapsample2vcf       string
+	haplegendsample     string
+	haplegendsample2vcf string
+	haploid2diploid     bool
+	outputType          string
+	outputPath          string
+	compressLevel       int
+	samples             string
+	samplesFile         string
+	forceSamples        bool
+	regions             string
+	regionsFile         string
+	targets             string
+	targetsFile         string
+	includeExpr         string
+	excludeExpr         string
+	rest                []string
+}
+
+// runConvertHap dispatches the HAP/legend conversion modes. The first
+// return value reports whether one of these modes was actually requested;
+// when true, the second value is the process exit code. When false the
+// caller falls through to the standard round-trip flow.
+func runConvertHap(in convertHapInputs) (bool, int) {
+	// Exactly one of the four file-naming modes may be set.
+	set := 0
+	if in.hapsample != "" {
+		set++
+	}
+	if in.hapsample2vcf != "" {
+		set++
+	}
+	if in.haplegendsample != "" {
+		set++
+	}
+	if in.haplegendsample2vcf != "" {
+		set++
+	}
+	if set == 0 {
+		// --haploid2diploid alone is a modifier with no base mode; it is
+		// silently ignored by the round-trip flow, matching upstream
+		// where it only affects the hap exporters.
+		return false, 0
+	}
+	if set > 1 {
+		fmt.Fprintln(os.Stderr, "bcftools convert: only one of --hapsample/--hapsample2vcf/--haplegendsample/--haplegendsample2vcf may be given")
+		return true, 2
+	}
+
+	hapOpts := bcftools.HapConvertOptions{
+		Hap2Dip:      in.haploid2diploid,
+		ForceSamples: in.forceSamples,
+		SamplesFile:  in.samplesFile,
+		RegionsFile:  in.regionsFile,
+		TargetsFile:  in.targetsFile,
+		IncludeExpr:  in.includeExpr,
+		ExcludeExpr:  in.excludeExpr,
+	}
+	if in.samples != "" {
+		hapOpts.Samples = bcftools.SplitCommaList(in.samples)
+	}
+	if in.regions != "" {
+		hapOpts.Regions = bcftools.SplitCommaList(in.regions)
+	}
+	if in.targets != "" {
+		hapOpts.Targets = bcftools.SplitCommaList(in.targets)
+	}
+
+	format, err := bcftools.ParseOutputFormat(in.outputType)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return true, 2
+	}
+	hapOpts.OutputFormat = format
+	hapOpts.CompressLevel = in.compressLevel
+
+	// VCF -> hap exporters need a positional input file.
+	switch {
+	case in.hapsample != "":
+		if len(in.rest) == 0 {
+			fmt.Fprintln(os.Stderr, "bcftools convert: missing input file")
+			return true, 2
+		}
+		hapOpts.Prefix = in.hapsample
+		if _, err := bcftools.VCFToHapSample(in.rest[0], hapOpts, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return true, 1
+		}
+		return true, 0
+	case in.haplegendsample != "":
+		if len(in.rest) == 0 {
+			fmt.Fprintln(os.Stderr, "bcftools convert: missing input file")
+			return true, 2
+		}
+		hapOpts.Prefix = in.haplegendsample
+		if _, err := bcftools.VCFToHapLegendSample(in.rest[0], hapOpts, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return true, 1
+		}
+		return true, 0
+	case in.hapsample2vcf != "":
+		out, err := openOutFile(in.outputPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return true, 1
+		}
+		defer out.Close()
+		if _, err := bcftools.HapSampleToVCF(in.hapsample2vcf, out, hapOpts, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return true, 1
+		}
+		return true, 0
+	case in.haplegendsample2vcf != "":
+		out, err := openOutFile(in.outputPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return true, 1
+		}
+		defer out.Close()
+		if _, err := bcftools.HapLegendSampleToVCF(in.haplegendsample2vcf, out, hapOpts, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+			return true, 1
+		}
+		return true, 0
+	}
+	return false, 0
+}
+
 // checkConvertDeferredInputs groups the conversion-mode flag values that
 // v1 recognises but does not implement. checkConvertDeferred returns
 // the upstream flag name when any are set, or "" if none.
 type checkConvertDeferredInputs struct {
-	fastaRef            string
-	gvcfBlocks          string
-	keepDuplicates      bool
-	hapsample           string
-	hapsample2vcf       string
-	haploid2diploid     bool
-	haplegendsample     string
-	haplegendsample2vcf string
+	gvcfBlocks string
 }
 
 func checkConvertDeferred(in checkConvertDeferredInputs) string {
 	switch {
-	case in.fastaRef != "":
-		// Bare -f/--fasta-ref (without --tsv2vcf or --gvcf2vcf, both of
-		// which are dispatched earlier) implies an unimplemented gen/hap
-		// export mode owned by a sibling PR.
-		return "-f/--fasta-ref"
 	case in.gvcfBlocks != "":
+		// --gvcf block-output pairing is the only convert mode not yet
+		// implemented in v1 (the GEN/sample, TSV→VCF, gVCF→VCF and
+		// IMPUTE2 HAP/legend families all dispatch earlier).
 		return "--gvcf"
-	case in.keepDuplicates:
-		return "--keep-duplicates"
-	case in.hapsample != "":
-		return "--hapsample"
-	case in.hapsample2vcf != "":
-		return "--hapsample2vcf"
-	case in.haploid2diploid:
-		return "--haploid2diploid"
-	case in.haplegendsample != "":
-		return "--haplegendsample"
-	case in.haplegendsample2vcf != "":
-		return "--haplegendsample2vcf"
 	}
 	return ""
 }

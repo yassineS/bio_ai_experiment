@@ -2505,11 +2505,23 @@ Option-tail gaps on the convert/mendelian PR:
     failing record through verbatim, as upstream does. Live-upstream
     parity tests cover the basic expansion and the overlap clamp.
 
-  Still deferred (sibling follow-ups): the HAP/legend family
-  (`--hapsample`, `--hapsample2vcf`, `--haplegendsample`,
-  `--haplegendsample2vcf`, `--haploid2diploid`) and `--gvcf`
-  (block-output pairing). These remain hard-rejected in
-  `checkConvertDeferred` with a roadmap pointer.
+  **plus the full IMPUTE2 HAP/legend family**: `--hapsample`,
+  `--hapsample2vcf`, `--haplegendsample`, `--haplegendsample2vcf` and
+  the `--haploid2diploid` modifier (`tools/bcftools/pkg/bcftools/convert_hap.go`).
+  The HAP exporters mirror `vcfconvert.c`'s `vcf_to_hapsample` /
+  `vcf_to_haplegendsample` and `convert.c`'s `process_gt_to_hap[2]`
+  byte-for-byte (BGZF `.hap.gz`/`.legend.gz` content, plain `.samples`,
+  no-ALT / non-biallelic skip counters and the per-run summary line);
+  the inverse `*2vcf` importers mirror `hapsample_to_vcf` /
+  `haplegendsample_to_vcf` including the `rev_als` allele-orientation
+  check and the synthetic END/GT/contig header. Validated against the
+  live upstream binary in `convert_hap_test.go` (no goldens). The
+  `--vcf-ids` modifier is still deferred, so the `--vcf-ids`-only hap
+  ID format is not yet emitted.
+
+  Still deferred (sibling follow-up): only `--gvcf` block-output
+  pairing remains, hard-rejected in `checkConvertDeferred` with a
+  roadmap pointer.
 - `mendelian`: the v1 port detects Mendelian inconsistencies for
   PED-style trios (one or more `-t CHILD,FATHER,MOTHER` flags, or
   `-T trio-file`), emits `INFO/MERR` per record, and supports the
