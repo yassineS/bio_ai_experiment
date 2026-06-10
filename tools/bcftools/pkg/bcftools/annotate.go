@@ -79,6 +79,9 @@ type AnnotateOptions struct {
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// Threads is the -@/--threads value; >1 enables parallel BGZF compression
+	// of -O z and -O b output via bgzf.MultiWriter (see ViewOptions.Threads).
+	Threads int
 }
 
 // AnnotateFile is the file-aware entry point. It opens path through
@@ -235,6 +238,7 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, hdr)
 	if err != nil {
 		return 0, err

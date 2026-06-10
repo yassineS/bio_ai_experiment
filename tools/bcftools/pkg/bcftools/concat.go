@@ -31,6 +31,9 @@ type ConcatOptions struct {
 	FileList string
 	// CompressLevel is the gzip level for -O z output.
 	CompressLevel int
+	// Threads is the -@/--threads value; >1 enables parallel BGZF compression
+	// of -O z and -O b output via bgzf.MultiWriter (see ViewOptions.Threads).
+	Threads int
 	// MinPQ is accepted but ignored in v1 (matches upstream's `-q`).
 	MinPQ int
 	// Ligate is accepted but ignored in v1 (matches upstream's `-l`).
@@ -81,6 +84,7 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, merged)
 	if err != nil {
 		return 0, err

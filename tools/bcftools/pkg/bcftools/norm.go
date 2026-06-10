@@ -159,6 +159,9 @@ type NormOptions struct {
 	// OutputFormat / CompressLevel mirror view's writer wiring.
 	OutputFormat  OutputFormat
 	CompressLevel int
+	// Threads is the -@/--threads value; >1 enables parallel BGZF compression
+	// of -O z and -O b output via bgzf.MultiWriter (see ViewOptions.Threads).
+	Threads int
 }
 
 // NormFile is the high-level entry point matching ViewFile's signature.
@@ -328,6 +331,7 @@ func emit(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts NormOpti
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, hdr)
 	if err != nil {
 		return 0, err

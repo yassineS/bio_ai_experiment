@@ -44,7 +44,6 @@
 package bcftools
 
 import (
-	"compress/gzip"
 	"container/heap"
 	"fmt"
 	"io"
@@ -57,7 +56,6 @@ import (
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
-	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -450,7 +448,9 @@ type MpileupOptions struct {
 	// CompressLevel is upstream's --compression-level (gzip level for -O z).
 	CompressLevel int
 
-	// Threads is upstream's --threads (accepted; single-threaded).
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter
+	// (the pileup computation itself remains single-threaded in v1).
 	Threads int
 	// NoVersion is upstream's --no-version (omit the version line).
 	NoVersion bool
@@ -2479,15 +2479,16 @@ func buildMpileupHeader(opts MpileupOptions, chroms []string, chromLen map[strin
 func openMpileupOutput(out io.Writer, opts MpileupOptions, hdr *vcf.Header) (variantWriter, func(), error) {
 	switch opts.OutputFormat {
 	case OutputVCFGz:
-		gw := gzip.NewWriter(out)
-		if opts.CompressLevel > 0 {
-			if g, err := gzip.NewWriterLevel(out, opts.CompressLevel); err == nil {
-				gw = g
-			}
+		bw, err := newBGZFOutput(out, opts.CompressLevel, opts.Threads)
+		if err != nil {
+			return nil, func() {}, err
 		}
-		return &vcfVariantWriter{vcf.NewWriter(gw, hdr)}, func() { _ = gw.Close() }, nil
+		return &vcfVariantWriter{vcf.NewWriter(bw, hdr)}, func() { _ = bw.Close() }, nil
 	case OutputBCF:
-		bw := bgzip.NewWriter(out)
+		bw, err := newBGZFOutput(out, opts.CompressLevel, opts.Threads)
+		if err != nil {
+			return nil, func() {}, err
+		}
 		w, err := bcf.NewWriterFromVCFHeader(bw, hdr)
 		if err != nil {
 			_ = bw.Close()
