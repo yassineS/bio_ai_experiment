@@ -3027,11 +3027,18 @@ Subcommand-tail gaps on `bcftools call`:
 
 **Status:** 1 / 1 command, most flags.
 
+Done:
+
+- **`.csi`** output — now emits a `.csi` (min_shift=14, depth=5, matching
+  htslib's `tbx_index_build`) alongside each bgzipped BED output, replacing
+  the earlier `.tbi`. Built via `pkg/htsgo/tabix.BuildCSIFromDataFile`.
+- **`--mapq 0` fast-path** — when no MAPQ filter is in effect the record
+  filter binds a MAPQ-free keep-predicate once, dropping the per-read MAPQ
+  comparison from the hot loop. Verified byte-identical to the general path.
+
 Missing:
 
-- **`.csi`** output (currently emits `.tbi`).
 - **Multi-threading** (`-t/--threads N`).
-- **`--mapq` 0-only fast-path** — upstream has a special fast loop.
 
 Implemented:
 
@@ -3048,8 +3055,12 @@ Implemented:
 **Validation:** `TestD4_UpstreamBinaryParity` downloads the official
 `mosdepth_d4` release binary, runs it and our implementation on a fixture
 BAM, and asserts the two `.per-base.d4` files are byte-for-byte equal
-(verified: 3863 / 3863 bytes, identical). The broader upstream
-functional-test suite is still pending.
+(verified: 3863 / 3863 bytes, identical). `.csi` validated structurally
+and via in-tree round-trip query (`TestRunCsiReadable`,
+`TestParity_IndexFiles_Csi`), plus an optional real-`tabix` read when the
+binary is on `PATH` (`TestRunCsiReadableByRealTabix`). Fast-path
+byte-identity proven by `TestMapqFastPathByteIdentical`. The broader
+upstream functional-test suite is still pending.
 
 ---
 

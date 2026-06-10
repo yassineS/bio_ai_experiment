@@ -419,6 +419,61 @@ func (c *CSI) RegionChunks(refID int, beg, end int64) []CSIChunk {
 	return merged
 }
 
+// ConfigFromAux reconstructs the column Config stored in a tabix-style CSI
+// aux block (the 6 leading int32 values written by SetAuxFromTabix). It
+// returns the zero Config and false when the aux block is too short to hold
+// a config header.
+func (c *CSI) ConfigFromAux() (Config, bool) {
+	if len(c.Aux) < 24 {
+		return Config{}, false
+	}
+	g := func(off int) int32 { return int32(binary.LittleEndian.Uint32(c.Aux[off : off+4])) }
+	return Config{
+		Format: g(0),
+		ColSeq: g(4),
+		ColBeg: g(8),
+		ColEnd: g(12),
+		Meta:   g(16),
+		Skip:   g(20),
+	}, true
+}
+
+// QueryBytes returns every raw record line in dataPath whose interval
+// overlaps [beg, end) on chrom, using c as the index. beg and end are
+// 0-based half-open. It is the CSI counterpart of Index.QueryBytes and is
+// driven entirely by the column Config carried in the CSI aux block. If
+// chrom is not in the index the result is an empty slice and no error.
+func (c *CSI) QueryBytes(dataPath, chrom string, beg, end int) ([][]byte, error) {
+	cfg, ok := c.ConfigFromAux()
+	if !ok {
+		return nil, fmt.Errorf("csi: aux block lacks a column config")
+	}
+	refID := ChromIDInCSI(c, chrom)
+	if refID < 0 {
+		return nil, nil
+	}
+	chunks := c.RegionChunks(refID, int64(beg), int64(end))
+	if len(chunks) == 0 {
+		return nil, nil
+	}
+	// Reuse the TBI record decoder via an ephemeral Index that shares the
+	// column Config and name dictionary.
+	idx := &Index{Config: cfg, Names: c.Names}
+	tbiChunks := make([]Chunk, len(chunks))
+	for i, ch := range chunks {
+		tbiChunks[i] = Chunk{Beg: ch.Beg, End: ch.End}
+	}
+	recs, err := idx.readRegionRecords(dataPath, chrom, beg, end, tbiChunks)
+	if err != nil || len(recs) == 0 {
+		return nil, err
+	}
+	out := make([][]byte, len(recs))
+	for i := range recs {
+		out[i] = recs[i].Line
+	}
+	return out, nil
+}
+
 // ChromIDInCSI returns the dictionary index of name in c.Names, or -1 if
 // the name is unknown.
 func ChromIDInCSI(c *CSI, name string) int {

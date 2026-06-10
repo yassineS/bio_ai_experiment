@@ -82,7 +82,7 @@ func TestStringSliceUnique(t *testing.T) {
 	}
 }
 
-// TestBedGzWriterAndIndex: write a tiny bed.gz, build a TBI, read it back.
+// TestBedGzWriterAndIndex: write a tiny bed.gz, build a CSI, read it back.
 func TestBedGzWriterAndIndex(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.bed.gz")
@@ -99,11 +99,11 @@ func TestBedGzWriterAndIndex(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := buildBedTbi(path); err != nil {
-		t.Fatalf("buildBedTbi: %v", err)
+	if err := buildBedCsi(path); err != nil {
+		t.Fatalf("buildBedCsi: %v", err)
 	}
-	if _, err := os.Stat(path + ".tbi"); err != nil {
-		t.Errorf("tbi missing: %v", err)
+	if _, err := os.Stat(path + ".csi"); err != nil {
+		t.Errorf("csi missing: %v", err)
 	}
 }
 

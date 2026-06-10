@@ -23,10 +23,10 @@ Usage:
 Outputs:
   <prefix>.mosdepth.global.dist.txt   cumulative depth distribution.
   <prefix>.mosdepth.summary.txt       per-chrom + total summary.
-  <prefix>.per-base.bed.gz [.tbi]     per-base depth (omitted with --by, --no-per-base, or --d4).
+  <prefix>.per-base.bed.gz [.csi]     per-base depth (omitted with --by, --no-per-base, or --d4).
   <prefix>.per-base.d4                per-base depth in D4 binary format (when --d4 is set).
-  <prefix>.regions.bed.gz [.tbi]      per-region depth (when --by is set).
-  <prefix>.thresholds.bed.gz [.tbi]   threshold proportions (when --thresholds set).
+  <prefix>.regions.bed.gz [.csi]      per-region depth (when --by is set).
+  <prefix>.thresholds.bed.gz [.csi]   threshold proportions (when --thresholds set).
 
 Options:
   -t, --threads INT       accepted; v1 is single-threaded.
@@ -47,8 +47,6 @@ Options:
   -v, --version           print version and exit.
 
 Deviations from upstream mosdepth (Nim):
-  - Indexes are tabix .tbi (not .csi). Consumers that read TBI work
-    transparently; the underlying chunk/bin layout is the same.
   - D4 output (-d/--d4) is byte-identical to the upstream mosdepth
     binary: a real D4 framefile with a 7-bit-packed primary table
     (SimpleRange{0,128}), validated against the real mosdepth_d4 binary.
