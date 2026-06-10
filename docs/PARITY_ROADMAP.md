@@ -16,6 +16,22 @@ The companion file [`../analysis/tool_ranking_2026.md`](../analysis/tool_ranking
 ranks **next** tools to port. It is **not** a "deprioritise existing tools"
 filter — existing tools all get carried to 1:1.
 
+> **Salvage of PR #219 (this branch).** The high-value bcftools/samtools
+> parity from the stale, conflicting PR #219 was lifted onto current
+> `main` without that PR's ~320k lines of committed test-trace fixtures.
+> **Salvaged and validated** (live-oracle byte-parity against the
+> vendored upstream binaries, no committed goldens): bcftools `call`
+> modes (`-m` / `-c` / `--gvcf` / `-C alleles` / `-G` / `--ploidy
+> GRCh37|GRCh38` / `--ploidy-file`), bcftools `mpileup --indels-cns`
+> (with the pure-Go `pkg/htsgo/edlib` port), and samtools `phase` (full
+> `phase.c` upstream-schema emit + `-l`/`-e` site lists). **Deferred to
+> a follow-up** (not in this branch): the new `pkg/bamtobed` +
+> `tools/bamtobed` + `tools/bedgenomecov` tools, and the broad PR-#219
+> live-oracle suites for the many *other* subcommands (csq, convert,
+> roh, gtcheck, view-types, …) whose PR-#219 implementations diverge
+> from main's current, separately-validated versions — those tests were
+> trimmed to the salvaged surface to avoid regressing main.
+
 ## Definition of "1:1"
 
 A tool is **1:1** when:
@@ -1804,20 +1820,22 @@ Plus:
   path is `--indels-cns` (the edlib consensus realigner, a separate
   algorithm — see the explicit note in sub-slice 4e.7 and below).
 
-  **`--indels-cns` / `--indels-2.0` remainder (DEFERRED, separate
-  algorithm).** Upstream's consensus indel caller (`bam2bcf_edlib.c` /
-  `bam2bcf_iaux.c`, reached via `mpileup --indels-cns`) realigns reads
-  against an edlib-built consensus haplotype rather than the legacy
-  probaln-against-each-candidate path this slice ports. It is a distinct
-  algorithm, not a refinement of the legacy caller, so it is left
-  deferred: the `--indels-cns`, `--indels-2.0`, and `--no-indels-cns`
-  flags are accepted on the CLI and ignored (the legacy caller runs
-  regardless), documented at `subcmds_mpileup.go:93-95` and
-  `mpileup.go:433-436`. Porting it would require an in-tree edlib
-  equivalent and the `bam2bcf_iaux.c` consensus machinery — its own
-  conversation. The legacy-caller homopolymer residuals catalogued below
-  (single-ULP probaln drift on a handful of deep reads) are independent
-  of `--indels-cns` and tracked separately.
+  **`--indels-cns` (DONE — salvaged from PR #219).** Upstream's
+  consensus indel caller (`bam2bcf_edlib.c` / `bam2bcf_iaux.c`, reached
+  via `mpileup --indels-cns`) realigns reads against an edlib-built
+  consensus haplotype rather than the legacy
+  probaln-against-each-candidate path. It is now ported in-tree:
+  `bam2bcf_indelcns.go` implements the consensus indel caller and the
+  glocal alignment scoring on top of a pure-Go edlib port
+  (`pkg/htsgo/edlib/`, Myers bit-vector + NW). The `--indels-cns` flag
+  is wired through `subcmds_mpileup.go` / `mpileup.go`. Live-oracle
+  parity is asserted byte-for-byte against the upstream binary in
+  `TestLiveMpileupIndelsCNS` on the `indel-AD.1` fixture (header +
+  every record identical modulo provenance). The `--indels-2.0` /
+  `--no-indels-cns` variants remain accepted-and-(mostly)-ignored. The
+  legacy-caller homopolymer residuals catalogued below (single-ULP
+  probaln drift on a handful of deep reads) are independent of
+  `--indels-cns` and tracked separately.
 
   - **4a + 4b (DONE).** Pileup data model + STR finder + indel
     candidate-type discovery helpers. `pileupBase` now carries the
@@ -2367,6 +2385,19 @@ full `realn0{1,2,3}` golden corpus. The upstream
 byte-identical with ours (different libdeflate). Logical correctness
 is covered by hand-computed expected values in the table tests.
 
+**`phase` upstream-schema emit (DONE — salvaged from PR #219).** The
+byte-faithful upstream `phase` text stream (CC banner + PS / FL / M /
+EV / `//`) is ported across `phase_algo.go`, `phase_emit.go`,
+`phase_frag.go`, `phase_khash.go`, `phase_ksort.go`, and
+`phase_pileup.go`. The port reproduces upstream's khash bucket
+iteration and ksort introsort orderings on identical insertion
+sequences, so EV-line ordering matches upstream exactly. The CLI sets
+`UpstreamSchema` by default. The `-l FILE` site list and `-e`
+exclusive mode (upstream `loadpos`) are implemented
+(`SiteListPath` / `ListExclusive`). Live-oracle byte-parity of the
+whole stream is asserted against the upstream binary in
+`TestLivePhase` (`tools/samtools/pkg/samtools/phase_live_oracle_test.go`).
+
 **`phase` deferred features** (accepted on the CLI, behaviour partial):
 
 - **MCMC chimera repair**. Upstream's `phase.c` runs a
@@ -2387,10 +2418,10 @@ is covered by hand-computed expected values in the table tests.
   (we always walk the aligned slice as decoded from the CIGAR).
 - **`-A` mark-drop-in-chimera-output** is also a no-op pending the
   `-b` split landing.
-- **`-e`/`-l` site-list mode** (only-phase-listed-sites). The
-  upstream `loadpos` path is not implemented; the Go port always
-  discovers hets from the pileup. Upstream itself comments `-e` and
-  `-l` out of the usage block, so the omission is a small loss.
+- **`-e`/`-l` site-list mode** (only-phase-listed-sites) — **DONE
+  (salvaged from PR #219).** `-l FILE` loads a `CHROM<tab>POS` site
+  list (`loadPhaseSites`) and `-e` makes it exclusive, matching
+  upstream's `loadpos` / `FLAG_LIST_EXCL`.
 
 **`targetcut` HMM consensus mode** (implemented). The Go port is now
 a faithful translation of upstream `cut_target.c`: per-position
@@ -3273,27 +3304,41 @@ Plus:
 - **CSI seek** for region queries: today we validate via the index then
   linear-scan. Real chunk-seek is the natural follow-up.
 
-Subcommand-tail gaps on `bcftools call`:
+Subcommand-tail gaps on `bcftools call` (largely **CLOSED — salvaged
+from PR #219**):
 
-- **Full multi-allelic caller (`-m` on >2 ALT sites).** The v1 port
-  falls back to the consensus model for sites with more than one ALT;
-  upstream iterates over every allele combination.
-- **BCF input.** Today `call` rejects BCF input with a roadmap-pointer
-  error. The former prerequisite — the BCF reader's FORMAT-key
-  reconstruction (`docs/UPSTREAM_BUGS.md`, `bcf-fmt-keys-missing`) — is
-  **now resolved**: the htsgo-gzi-bcf PR confirmed via live `bcftools`
-  round-trips that every FORMAT key (int8- and int16-encoded, including
-  string/ragged-vector/phased/all-missing FORMAT values) reconstructs
-  correctly, and pinned it with `TestBCF_FormatKeyParity`. Wiring BCF
-  input into `call` is now a plumbing task, not blocked on the reader.
-- **`--ploidy GRCh37 / GRCh38`.** Accepted by the CLI parser but
-  rejected at runtime — the per-contig sex-chromosome overrides need a
-  ploidy registry that's not yet wired in.
-- **Index-backed region queries** (`-r` reuses the post-filter path).
-- **`--gvcf` block-emit mode** (banded reference blocks).
-- **`-C alleles --constrain`** family.
+- **Full multi-allelic caller (`-m`) — DONE (salvaged from PR #219).**
+  `callm.go` is a faithful port of `mcall.c`: EM allele-frequency
+  estimation, per-site QUAL, the max-likelihood GT, and the INFO
+  rewrite (AN/AC/DP4/MQ). The consensus caller (`-c`) is ported in
+  `callc.go`. Live-oracle parity over a whole 4000+-site contig is
+  asserted in `TestLiveCall` (`call -m`, `-v`, `-A`, BCF input,
+  regions, and the items below).
+- **`--ploidy GRCh37 / GRCh38` and `--ploidy-file` — DONE (salvaged).**
+  `call_ploidy.go` builds the per-region, per-sex ploidy table from the
+  predefined GRCh37/GRCh38 maps or a `--ploidy-file`; the default sex is
+  F (matching `vcfcall.c` sample2sex init). Gated by
+  `TestLiveCall/m_ploidy_grch37`, `/m_ploidy_grch38`, `/m_ploidy_file`.
+- **`--gvcf` block-emit mode — DONE (salvaged).** `callm_gvcf.go` +
+  `mpileup_gvcf.go` band consecutive REF-only records sharing a
+  per-sample MIN_DP bin into a single `INFO/END`+`MIN_DP` record.
+  Gated by `TestLiveCall/m_gvcf_0_5_10`, `/m_gvcf_5`.
+- **`-C alleles` / `-T sites.tsv` constrain family — DONE (salvaged).**
+  `call_constrain.go` loads the sites TSV and projects each record;
+  `-C trio` mirrors upstream's own runtime "temporarily disabled"
+  error. Gated by `TestLiveCall/m_C_alleles`,
+  `/m_C_alleles_insert_missed`.
+- **`-G` sample groups, `-V` skip-variants, `-*`/`-M` allele flags,
+  `-F` prior-freqs — DONE (salvaged).** `call_groups.go` plus the
+  CallOptions wiring in `call.go` / `cmd/bcftools/main.go`. Gated by
+  `TestLiveCall/m_G_*`, `/m_V_*`, `/m_keep_*`, `/m_F_prior_freqs`.
+- **Index-backed region queries** (`-r` reuses the post-filter path) —
+  still uses the linear-scan post-filter; real CSI chunk-seek remains a
+  follow-up.
 
-**Validation:** no upstream-test-suite run yet.
+**Validation:** live-oracle byte-parity against the vendored upstream
+binary in `TestLiveCall` (built on demand from `reference_code/bcftools`,
+no committed goldens).
 
 ### `mosdepth`
 

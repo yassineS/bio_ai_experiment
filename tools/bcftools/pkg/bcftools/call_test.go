@@ -235,18 +235,16 @@ func TestCall_HaploidPloidy(t *testing.T) {
 	}
 }
 
-// TestCall_PloidySpec_GRCh37Deferred asserts the documented v1 behaviour:
-// --ploidy GRCh37 (or GRCh38) is parsed but rejected at runtime with a
-// roadmap pointer.
-func TestCall_PloidySpec_GRCh37Deferred(t *testing.T) {
+// TestCall_PloidySpec_GRCh37Accepted asserts that --ploidy GRCh37 builds
+// the per-region ploidy table and runs without error on an autosome.
+// Per-chromosome behaviour is exercised by TestCall_PloidyGRCh37PerContig
+// and the live oracle suite.
+func TestCall_PloidySpec_GRCh37Accepted(t *testing.T) {
 	in := makeCallVCF("chr1\t100\t.\tA\tT\t.\t.\tDP=30\tGT:PL\t0/0:0,30,255\t0/0:0,30,255\t0/0:0,30,255")
 	var out bytes.Buffer
 	_, err := Call(bytes.NewReader(in), &out, CallOptions{Model: CallModelConsensus, PloidySpec: "GRCh37"})
-	if err == nil {
-		t.Fatalf("expected error for --ploidy GRCh37, got nil")
-	}
-	if !strings.Contains(err.Error(), "GRCh37") {
-		t.Fatalf("expected GRCh37 in error, got %q", err.Error())
+	if err != nil {
+		t.Fatalf("--ploidy GRCh37 should be accepted, got %v", err)
 	}
 }
 
@@ -429,7 +427,169 @@ func TestCall_TrimUnsupportedAltsDoesNothingWhenAllSupported(t *testing.T) {
 	}
 }
 
+// mcallVCFHeader declares the mpileup-style INFO/FORMAT tags (DP, I16, QS,
+// MQ0F, PL, AD) the faithful mcall path consumes. One sample (HG00100).
+const mcallVCFHeader = `##fileformat=VCFv4.2
+##contig=<ID=17,length=4200>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Raw read depth">
+##INFO=<ID=I16,Number=16,Type=Float,Description="Auxiliary tag used for calling, see description of bcf_callret1_t in bam2bcf.h">
+##INFO=<ID=QS,Number=R,Type=Float,Description="Auxiliary tag used for calling">
+##INFO=<ID=MQ0F,Number=1,Type=Float,Description="Fraction of MQ0 reads (smaller is better)">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="List of Phred-scaled genotype likelihoods">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (high-quality bases)">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG00100
+`
+
+func makeMcallVCF(records ...string) []byte {
+	return []byte(mcallVCFHeader + strings.Join(records, "\n") + "\n")
+}
+
+// TestCall_McallHomRef reproduces the pos-1 mpileup row from the live
+// fixture: a clean ref-only site (`<*>` only) must yield QUAL=129.588,
+// GT=0/0, INFO DP/MQ0F/AN/DP4/MQ (I16/QS dropped), FORMAT GT:AD.
+func TestCall_McallHomRef(t *testing.T) {
+	in := makeMcallVCF("17\t1\t.\tA\t<*>\t0\t.\tDP=5;I16=5,0,0,0,202,8170,0,0,145,4205,0,0,107,2459,0,0;QS=1,0;MQ0F=0\tPL:AD\t0,15,100:5,0")
+	got := runCall(t, in, CallOptions{Model: CallModelMultiallelic})
+	_, vs := parseCallOutput(t, got)
+	if len(vs) != 1 {
+		t.Fatalf("expected 1 record, got %d:\n%s", len(vs), got)
+	}
+	v := vs[0]
+	if len(v.Alt) != 1 || v.Alt[0] != "." {
+		t.Fatalf("ALT = %v want [.]", v.Alt)
+	}
+	if got := formatFloat32G(v.Qual); got != "129.588" {
+		t.Fatalf("QUAL = %q want 129.588", got)
+	}
+	if s := v.Samples[0]; s.Data["GT"] != "0/0" || s.Data["AD"] != "5" {
+		t.Fatalf("sample = %v want GT=0/0 AD=5", s.Data)
+	}
+	if _, ok := v.Samples[0].Data["PL"]; ok {
+		t.Fatalf("PL should be dropped for a ref-only site")
+	}
+	for k, want := range map[string]string{"AN": "2", "DP4": "5,0,0,0", "MQ": "29"} {
+		if v.Info[k] != want {
+			t.Fatalf("INFO/%s = %q want %q", k, v.Info[k], want)
+		}
+	}
+	if _, ok := v.Info["I16"]; ok {
+		t.Fatalf("INFO/I16 must be dropped")
+	}
+	if _, ok := v.Info["QS"]; ok {
+		t.Fatalf("INFO/QS must be dropped")
+	}
+}
+
+// TestCall_McallVariantHet reproduces the pos-828 SNP (T -> C,<*>): the
+// unseen allele is dropped, GT is the called het, QUAL/AC/DP4/MQ match
+// upstream, and PL/AD are re-indexed to the surviving T,C alleles.
+func TestCall_McallVariantHet(t *testing.T) {
+	in := makeMcallVCF("17\t828\t.\tT\tC,<*>\t0\t.\tDP=12;I16=1,1,3,7,71,2525,359,13309,120,7200,600,36000,41,841,166,3304;QS=0.165116,0.834884,0;MQ0F=0\tPL:AD\t216,0,35,223,65,255:2,10,0")
+	got := runCall(t, in, CallOptions{Model: CallModelMultiallelic})
+	_, vs := parseCallOutput(t, got)
+	if len(vs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(vs))
+	}
+	v := vs[0]
+	if len(v.Alt) != 1 || v.Alt[0] != "C" {
+		t.Fatalf("ALT = %v want [C] (<*> dropped)", v.Alt)
+	}
+	if got := formatFloat32G(v.Qual); got != "180.829" {
+		t.Fatalf("QUAL = %q want 180.829", got)
+	}
+	s := v.Samples[0]
+	if s.Data["GT"] != "0/1" || s.Data["PL"] != "216,0,35" || s.Data["AD"] != "2,10" {
+		t.Fatalf("sample = %v want GT=0/1 PL=216,0,35 AD=2,10", s.Data)
+	}
+	for k, want := range map[string]string{"AC": "1", "AN": "2", "DP4": "1,1,3,7", "MQ": "60"} {
+		if v.Info[k] != want {
+			t.Fatalf("INFO/%s = %q want %q", k, v.Info[k], want)
+		}
+	}
+}
+
 // writeFileBytes is a tiny helper used by TestCall_FileEntryPoint.
 func writeFileBytes(path string, b []byte) error {
 	return os.WriteFile(path, b, 0o644)
+}
+
+// TestCall_PloidyTableGRCh37 exercises ParsePloidyTable and its
+// per-contig query: F is registered last so DefaultSexID() points at F
+// (matching vcfcall.c sample2sex initialisation). The query then
+// returns 2 for autosomes, 0 for chrY, 1 for chrM, and 2 for chrX.
+func TestCall_PloidyTableGRCh37(t *testing.T) {
+	tbl, err := BuildPloidyTableFromSpec("GRCh37")
+	if err != nil {
+		t.Fatalf("BuildPloidyTableFromSpec: %v", err)
+	}
+	if tbl == nil {
+		t.Fatal("expected non-nil ploidy table for GRCh37")
+	}
+	if got := tbl.SexName(tbl.DefaultSexID()); got != "F" {
+		t.Fatalf("default sex = %q, want F", got)
+	}
+	f := tbl.SexID("F")
+	m := tbl.SexID("M")
+	cases := []struct {
+		name       string
+		chrom      string
+		pos        int
+		sex        int
+		wantPloidy int
+	}{
+		{"chr1-F", "chr1", 100, f, 2},
+		{"chr1-M", "chr1", 100, m, 2},
+		{"X-F-anywhere", "X", 100, f, 2},
+		{"X-M-PAR1", "X", 50, m, 1},
+		{"X-M-mid", "X", 500_000, m, 2},
+		{"X-M-PAR2", "X", 100_000_000, m, 1},
+		{"Y-F", "Y", 100, f, 0},
+		{"Y-M", "Y", 100, m, 1},
+		{"MT-F", "MT", 100, f, 1},
+		{"MT-M", "MT", 100, m, 1},
+		{"chrM-F", "chrM", 100, f, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := tbl.Query(c.chrom, c.pos, c.sex)
+			if got != c.wantPloidy {
+				t.Fatalf("Query(%q,%d,sex=%d) = %d, want %d", c.chrom, c.pos, c.sex, got, c.wantPloidy)
+			}
+		})
+	}
+}
+
+// TestCall_PloidyGRCh37PerContig drives a synthetic mpileup-shaped
+// fixture with QS/I16 + PL on chrX, chrY, chrM and asserts the
+// per-contig output matches what upstream `bcftools call -m
+// --ploidy GRCh37` produces (encoded in the want strings below).
+func TestCall_PloidyGRCh37PerContig(t *testing.T) {
+	const hdr = `##fileformat=VCFv4.2
+##contig=<ID=chr1>
+##contig=<ID=X>
+##contig=<ID=Y>
+##contig=<ID=MT>
+##INFO=<ID=QS,Number=R,Type=Float,Description="QS">
+##INFO=<ID=I16,Number=16,Type=Float,Description="I16">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="PL">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+`
+	body := `chr1	100	.	A	G	.	.	QS=0.5,0.5;I16=10,10,10,10,400,400,400,400,30,30,30,30,30,30,30,30	PL	30,0,30
+X	100	.	A	G	.	.	QS=0.5,0.5;I16=10,10,10,10,400,400,400,400,30,30,30,30,30,30,30,30	PL	30,0,30
+Y	100	.	A	G	.	.	QS=0.5,0.5;I16=10,10,10,10,400,400,400,400,30,30,30,30,30,30,30,30	PL	30,0,30
+MT	100	.	A	G	.	.	QS=0.5,0.5;I16=10,10,10,10,400,400,400,400,30,30,30,30,30,30,30,30	PL	30,0,30
+`
+	in := []byte(hdr + body)
+	got := runCall(t, in, CallOptions{Model: CallModelMultiallelic, PloidySpec: "GRCh37"})
+	_, vs := parseCallOutput(t, got)
+	if len(vs) != 4 {
+		t.Fatalf("got %d records, want 4", len(vs))
+	}
+	// Default sex is F under the GRCh37 predefs.
+	wantGT := map[string]string{"chr1": "0/0", "X": "0/0", "Y": ".", "MT": "0"}
+	for _, v := range vs {
+		if got := v.Samples[0].Data["GT"]; got != wantGT[v.Chrom] {
+			t.Fatalf("%s: GT = %q, want %q", v.Chrom, got, wantGT[v.Chrom])
+		}
+	}
 }

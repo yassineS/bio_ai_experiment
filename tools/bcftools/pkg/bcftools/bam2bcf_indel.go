@@ -157,6 +157,10 @@ func newBcfCallauxIndel(opts MpileupOptions) *bcfCallauxIndel {
 	if indelWin == 0 {
 		indelWin = DefaultMpileupIndelSize
 	}
+	polyMQ := 0
+	if opts.PolyMQual {
+		polyMQ = 1
+	}
 	return &bcfCallauxIndel{
 		OpenQ:        openQ,
 		ExtQ:         extQ,
@@ -168,6 +172,8 @@ func newBcfCallauxIndel(opts MpileupOptions) *bcfCallauxIndel {
 		DelBias:      opts.DelBias,
 		ReadLen:      opts.MaxReadLen,
 		SeqQOffset:   opts.SeqQOffset,
+		PolyMQual:    polyMQ,
+		VsRef:        opts.ScoreVsRef,
 	}
 }
 

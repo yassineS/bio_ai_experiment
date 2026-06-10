@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
@@ -1032,8 +1033,13 @@ Filters:
   -v, --variants-only            Drop all-reference sites.
   -P, --prior FLOAT              Mutation rate prior (default 1.1e-3).
   -p, --pval-threshold FLOAT     Variant-posterior threshold (default 0.5).
-      --ploidy {1|2|GRCh37|GRCh38}  Ploidy spec (default 2). GRCh37/38 deferred.
+      --ploidy {1|2|GRCh37|GRCh38}  Ploidy spec (default 2). GRCh37/38 use the
+                                 per-region, per-sex tables from upstream; the
+                                 default sex is F.
   -X, --chromosome-X             Legacy alias for --ploidy 1.
+  -g, --gvcf INT[,INT...]        Group non-variant sites into gVCF blocks by
+                                 minimum per-sample DP (one block per bin).
+                                 Rejects --variants-only.
 
 I/O:
   -O, --output-type {v|z|u|b}    Output format (b/u require BCF writer).
@@ -1054,25 +1060,41 @@ func runCall(args []string) int {
 	fs.SetOutput(io.Discard)
 
 	var (
-		consensus    bool
-		multiallelic bool
-		keepAlts     bool
-		variantsOnly bool
-		prior        float64
-		pval         float64
-		ploidy       string
-		haploidX     bool
-		outputType   string
-		outputPath   string
-		regions      string
-		regionsFile  string
-		targets      string
-		targetsFile  string
-		samples      string
-		samplesFile  string
-		threads      int
-		showHelp     bool
-		showVer      bool
+		consensus      bool
+		multiallelic   bool
+		keepAlts       bool
+		variantsOnly   bool
+		prior          float64
+		pval           float64
+		ploidy         string
+		ploidyFile     string
+		haploidX       bool
+		outputType     string
+		outputPath     string
+		regions        string
+		regionsFile    string
+		regionsOverlap int
+		targets        string
+		targetsFile    string
+		samples        string
+		samplesFile    string
+		threads        int
+		gvcf           string
+		constrain      string
+		groupSamples   string
+		groupSmplTag   string
+		noVersion      bool
+		keepUnseen     bool
+		keepMaskedRef  bool
+		skipVariants   string
+		annotate       string
+		writeIndex     string
+		insertMissed   bool
+		priorFreqs     string
+		novelRate      string
+		verbosity      int
+		showHelp       bool
+		showVer        bool
 	)
 	cliflag.BoolVar(fs, &consensus, "c", "consensus-caller", false, "Use consensus caller")
 	cliflag.BoolVar(fs, &multiallelic, "m", "multiallelic-caller", false, "Use multi-allelic caller")
@@ -1081,21 +1103,43 @@ func runCall(args []string) int {
 	cliflag.Float64Var(fs, &prior, "P", "prior", 1.1e-3, "Mutation rate prior")
 	cliflag.Float64Var(fs, &pval, "p", "pval-threshold", 0.5, "P-value threshold")
 	fs.StringVar(&ploidy, "ploidy", "2", "Ploidy spec")
+	fs.StringVar(&ploidyFile, "ploidy-file", "", "Ploidy file (CHROM,FROM,TO,SEX,PLOIDY)")
 	cliflag.BoolVar(fs, &haploidX, "X", "chromosome-X", false, "Treat samples as haploid")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
+	cliflag.IntVar(fs, &regionsOverlap, "", "regions-overlap", 1, "Region overlap semantic (0|1|2)")
 	cliflag.StringVar(fs, &targets, "t", "targets", "", "Targets (post-filter)")
 	cliflag.StringVar(fs, &targetsFile, "T", "targets-file", "", "Targets file")
 	cliflag.StringVar(fs, &samples, "s", "samples", "", "Samples list")
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.StringVar(fs, &gvcf, "g", "gvcf", "", "Group non-variant sites into gVCF blocks by minimum per-sample DP (INT[,INT...])")
+	cliflag.StringVar(fs, &constrain, "C", "constrain", "", "Constrain calling to one of: alleles, trio (requires -T)")
+	cliflag.StringVar(fs, &groupSamples, "G", "group-samples", "", "Sample-group file for per-pool calling (`-` for per-sample groups)")
+	fs.StringVar(&groupSmplTag, "group-samples-tag", "", "FORMAT tag for -G (default auto-detect QS or AD)")
+	fs.BoolVar(&noVersion, "no-version", false, "Do not append version/command to header")
+	cliflag.BoolVar(fs, &keepUnseen, "*", "keep-unseen-allele", false, "Keep the <*> / <NON_REF> allele")
+	cliflag.BoolVar(fs, &keepMaskedRef, "M", "keep-masked-ref", false, "Keep sites whose REF base is N")
+	cliflag.StringVar(fs, &skipVariants, "V", "skip-variants", "", "Skip records of type 'indels' or 'snps'")
+	cliflag.StringVar(fs, &annotate, "a", "annotate", "", "Optional output tags (comma-separated; '?' to list)")
+	fs.StringVar(&writeIndex, "write-index", "", "Index the output (csi|tbi)")
+	fs.BoolVar(&insertMissed, "i", false, "Insert records for sites in -T not seen by mpileup")
+	fs.BoolVar(&insertMissed, "insert-missed", false, "Insert records for sites in -T not seen by mpileup")
+	cliflag.StringVar(fs, &priorFreqs, "F", "prior-freqs", "", "AN,AC INFO tags providing prior allele frequencies")
+	cliflag.StringVar(fs, &novelRate, "n", "novel-rate", "", "Novel-rate spec for constrained trio calling")
+	fs.IntVar(&verbosity, "verbosity", 0, "Verbosity level (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	// Pre-process bare `--write-index` / `-W` (no value) into the
+	// explicit `--write-index=csi` form so Go's flag package
+	// doesn't swallow the next positional as its argument.
+	args = preprocessOptionalArg(args, "--write-index", "csi")
+	args = preprocessOptionalArg(args, "-W", "csi")
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, callUsage)
 		return 2
@@ -1146,14 +1190,49 @@ func runCall(args []string) int {
 	}
 
 	opts := bcftools.CallOptions{
-		Model:         model,
-		KeepAlts:      keepAlts,
-		VariantsOnly:  variantsOnly,
-		Prior:         prior,
-		PvalThreshold: pval,
-		Ploidy:        ploidySpec,
-		PloidySpec:    ploidyText,
-		OutputFormat:  format,
+		Model:           model,
+		KeepAlts:        keepAlts,
+		VariantsOnly:    variantsOnly,
+		Prior:           prior,
+		PvalThreshold:   pval,
+		Ploidy:          ploidySpec,
+		PloidySpec:      ploidyText,
+		PloidyFile:      ploidyFile,
+		OutputFormat:    format,
+		GVCFSpec:        gvcf,
+		NoVersion:       noVersion,
+		PGCommand:       strings.Join(os.Args, " "),
+		KeepUnseen:      keepUnseen,
+		KeepMaskedRef:   keepMaskedRef,
+		SkipVariants:    skipVariants,
+		RegionsOverlap:  regionsOverlap,
+		GroupSamplesTag: groupSmplTag,
+		Annotate:        annotate,
+		WriteIndex:      writeIndex,
+		InsertMissed:    insertMissed,
+		PriorAN:         priorANFromSpec(priorFreqs),
+		PriorAC:         priorACFromSpec(priorFreqs),
+		NovelRate:       novelRate,
+		Verbosity:       verbosity,
+	}
+	switch constrain {
+	case "":
+		// no constraint
+	case "alleles":
+		opts.Constrain = bcftools.CallConstrainAlleles
+		opts.ConstrainSites = targetsFile
+		if opts.ConstrainSites == "" {
+			fmt.Fprintln(os.Stderr, "bcftools call: -C alleles requires -T sites_file")
+			return 2
+		}
+	case "trio":
+		opts.Constrain = bcftools.CallConstrainTrio
+	default:
+		fmt.Fprintf(os.Stderr, "bcftools call: unknown -C value %q (expect: alleles, trio)\n", constrain)
+		return 2
+	}
+	if groupSamples != "" {
+		opts.GroupSamplesFile = groupSamples
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -1170,7 +1249,7 @@ func runCall(args []string) int {
 	if targets != "" {
 		opts.Targets = bcftools.SplitCommaList(targets)
 	}
-	if targetsFile != "" {
+	if targetsFile != "" && constrain != "alleles" {
 		regs, err := bcftools.LoadRegionsFile(targetsFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
@@ -1197,11 +1276,34 @@ func runCall(args []string) int {
 		fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
 		return 1
 	}
-	defer out.Close()
 
 	if _, err := bcftools.CallFile(rest[0], out, opts, os.Stderr); err != nil {
+		_ = out.Close()
 		fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
 		return 1
+	}
+	if err := out.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools call: %v\n", err)
+		return 1
+	}
+	// -W/--write-index: after the output is fully written, index
+	// it via the in-tree bcftools.BuildIndex machinery. The
+	// optional FMT suffix selects "csi" (default) or "tbi".
+	if writeIndex != "" && outputPath != "" {
+		fmt2 := bcftools.IndexCSI
+		switch strings.ToLower(writeIndex) {
+		case "", "csi":
+			fmt2 = bcftools.IndexCSI
+		case "tbi":
+			fmt2 = bcftools.IndexTBI
+		default:
+			fmt.Fprintf(os.Stderr, "bcftools call: unknown --write-index format %q (expect csi|tbi)\n", writeIndex)
+			return 2
+		}
+		if _, err := bcftools.BuildIndex(outputPath, bcftools.IndexOptions{Format: fmt2}); err != nil {
+			fmt.Fprintf(os.Stderr, "bcftools call: --write-index: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }

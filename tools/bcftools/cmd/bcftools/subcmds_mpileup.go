@@ -33,7 +33,7 @@ indel calling remain deferred — see docs/PARITY_ROADMAP.md#bcftools.
 Input:
   -b, --bam-list FILE            File of BAM paths (one per line).
   -f, --fasta-ref FILE           Reference FASTA (required).
-  -G, --read-groups FILE         Read-group file (accepted; v1 ignores).
+  -G, --read-groups FILE         Select/rename samples by read group (^ = exclude).
       --ignore-RG                Ignore @RG tags (long-only upstream).
 
 Output:
@@ -90,9 +90,9 @@ Indel model (accepted; v1 emits no indel records):
   -M, --max-read-len INT         Accepted; v1 ignores.
       --indel-bias FLOAT         Accepted; v1 ignores.
       --indel-size INT           Accepted; v1 ignores.
-      --indels-cns               Accepted; v1 ignores.
-      --indels-2.0               Accepted; v1 ignores.
-      --no-indels-cns            Accepted; v1 ignores.
+      --indels-cns               Use consensus-based indel caller (via edlib).
+      --indels-2.0               Alias for --indels-cns.
+      --no-indels-cns            Use legacy probabilistic indel caller (default).
       --open-prob INT            Accepted; v1 ignores.
       --del-bias FLOAT           Accepted; v1 ignores.
       --poly-mqual               Accepted; v1 ignores.
@@ -288,7 +288,7 @@ func runMpileup(args []string) int {
 	mf := &mpileupFlags{}
 	registerMpileupFlags(fs, mf)
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, mpileupUsage)
 		return 2
@@ -362,19 +362,22 @@ func runMpileup(args []string) int {
 		ScoreVsRef:     mf.scoreVsRef,
 		SeqQOffset:     mf.seqQOffset,
 		SkipIndels:     mf.skipIndels,
-		IndelsCNS:      mf.indelsCNS,
-		NoIndelsCNS:    mf.noIndelsCNS,
-		GVCFBlock:      mf.gvcf,
-		NoReference:    mf.noReference,
-		OutputFormat:   format,
-		Output:         mf.outputPath,
-		Threads:        mf.threads,
-		NoVersion:      mf.noVersion,
-		Verbosity:      mf.verbosity,
-		FlagIncl:       mf.flagAllUnset,
-		FlagExcl:       mf.flagAnySet,
-		FlagAny:        mf.flagAnyUnset,
-		FlagLS:         mf.flagLS,
+		// --indels-2.0 is an alias for --indels-cns upstream; --no-indels-cns
+		// overrides both. Resolve precedence here so MpileupOptions.IndelsCNS
+		// is the single source of truth downstream.
+		IndelsCNS:    (mf.indelsCNS || mf.indels20) && !mf.noIndelsCNS,
+		NoIndelsCNS:  mf.noIndelsCNS,
+		GVCFBlock:    mf.gvcf,
+		NoReference:  mf.noReference,
+		OutputFormat: format,
+		Output:       mf.outputPath,
+		Threads:      mf.threads,
+		NoVersion:    mf.noVersion,
+		Verbosity:    mf.verbosity,
+		FlagIncl:     mf.flagAllUnset,
+		FlagExcl:     mf.flagAnySet,
+		FlagAny:      mf.flagAnyUnset,
+		FlagLS:       mf.flagLS,
 	}
 	if mf.regions != "" {
 		opts.Regions = bcftools.SplitCommaList(mf.regions)
