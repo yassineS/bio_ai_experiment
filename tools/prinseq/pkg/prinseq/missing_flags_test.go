@@ -115,9 +115,11 @@ func TestSeqIDAndMappings_TSVFormat(t *testing.T) {
 		t.Fatalf("Filter: %v", err)
 	}
 
-	// Headers should be rewritten to seq1/seq2/seq3, dropping any
-	// trailing whitespace/comment from the original description.
-	want := ">seq1\nACGTACGT\n>seq2\nACGTACGT\n>seq3\nACGTACGT\n"
+	// Headers should be rewritten to seq1/seq2/seq3 while PRESERVING any
+	// trailing comment, matching upstream's
+	// `$sid.($header ? ' '.$header : '')` (prinseq-lite.pl:3685-3704). The
+	// first record keeps its " some comment" suffix.
+	want := ">seq1 some comment\nACGTACGT\n>seq2\nACGTACGT\n>seq3\nACGTACGT\n"
 	if out.String() != want {
 		t.Fatalf("renamed FASTA mismatch\nwant:\n%s\ngot:\n%s", want, out.String())
 	}

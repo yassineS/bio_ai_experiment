@@ -717,6 +717,93 @@ type FilterOptions struct {
 	TrimToLen      int
 	RangeLen       string
 	RangeGC        string
+
+	// Sequence/header transforms and misc knobs (this PR; semantics from
+	// prinseq-lite.pl 0.20.4):
+	//
+	//   SeqCase     — implements `-seq_case <upper|lower>` (force the
+	//                 emitted sequence to upper- or lower-case;
+	//                 prinseq-lite.pl:3664-3671). Empty leaves the case
+	//                 untouched.
+	//   DNARNA      — implements `-dna_rna <dna|rna>`: "dna" maps U->T /
+	//                 u->t, "rna" maps T->U / t->u, preserving case
+	//                 (prinseq-lite.pl:3672-3679). Empty disables.
+	//   RmHeader    — implements `-rm_header`: drop the trailing FASTA/FASTQ
+	//                 comment, leaving only the identifier
+	//                 (prinseq-lite.pl:3651-3653, `$header = undef`).
+	//   NoQualHeader — implements `-no_qual_header`: emit a bare "+" line
+	//                 on FASTQ output instead of repeating the id
+	//                 (prinseq-lite.pl:3686).
+	//   SeqNum      — implements `-seq_num <int>`: keep only the first N
+	//                 records that pass all other filters
+	//                 (prinseq-lite.pl:3147-3150). Zero disables.
+	//   ExactOnly   — accepts `-exact_only` for CLI compatibility. Upstream
+	//                 uses it to restrict duplicate detection to exact (and,
+	//                 with derep&4, reverse-complement) duplicates, skipping
+	//                 the heuristic 5'/3' prefix/suffix dedup
+	//                 (prinseq-lite.pl:3604-3628). This Go port never
+	//                 implemented that prefix/suffix heuristic — its derep is
+	//                 already exact-only — so the flag is a documented no-op
+	//                 here: it is validated against the derep mode at the CLI
+	//                 layer but does not alter Filter's behaviour.
+	//   CustomParams — implements `-custom_params <string>` /
+	//                 `-params <file>`: a list of complexity rules
+	//                 evaluated against the upper-cased sequence
+	//                 (prinseq-lite.pl:1069-1085, 3484-3503).
+	SeqCase      string
+	DNARNA       string
+	RmHeader     bool
+	NoQualHeader bool
+	SeqNum       int
+	ExactOnly    bool
+	CustomParams []CustomParam
+}
+
+// CustomParam is one parsed `-custom_params` rule (prinseq-lite.pl:1069-1085).
+// Bases is an upper-cased A/C/G/T/N pattern. When Percent is false the rule
+// rejects a read whose upper-cased sequence contains Bases repeated Count
+// times in a row. When Percent is true the rule rejects a read in which the
+// fraction of Bases occurrences exceeds Count percent of the read length.
+type CustomParam struct {
+	Bases   string
+	Count   int
+	Percent bool
+}
+
+// ParseCustomParams parses a `-custom_params` string into a slice of
+// CustomParam rules following upstream semantics (prinseq-lite.pl:1071-1085):
+// rules are separated by ';'; each rule is "<bases> <count>" separated by
+// whitespace. The bases token must consist solely of UPPER-CASE A/C/G/T/N:
+// upstream validates with `$bases = ($tmp[0] =~ tr/ACGTN//); next if($bases <
+// length($tmp[0]))`, and `tr/ACGTN//` only counts upper-case characters, so a
+// token containing any lower-case letter fails the length check and is
+// skipped. A '%' anywhere in the count marks a percentage rule. Tokens that
+// fail validation are silently skipped, exactly as upstream's `next`
+// statements do.
+func ParseCustomParams(s string) []CustomParam {
+	var rules []CustomParam
+	for _, rule := range splitTrim(s, ';') {
+		fields := splitWhitespace(rule)
+		if len(fields) != 2 {
+			continue
+		}
+		bases := fields[0]
+		if !allUpperACGTN(bases) {
+			continue
+		}
+		countStr := fields[1]
+		percent := false
+		if containsByte(countStr, '%') {
+			countStr = removeByte(countStr, '%')
+			percent = true
+		}
+		n, ok := parseUint(countStr)
+		if !ok {
+			continue
+		}
+		rules = append(rules, CustomParam{Bases: upperASCII(bases), Count: n, Percent: percent})
+	}
+	return rules
 }
 
 // Filter filters a FASTA/FASTQ file based on the given options
@@ -737,7 +824,10 @@ func getQualityEncoding(qualType string) fastq.QualityEncoding {
 
 func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 	fastaReader := fasta.NewReader(reader)
-	fastaWriter := fasta.NewWriter(writer, 80)
+	// We write good records via writePrinseqFastaWidth so that --line_width,
+	// --seq_id comment preservation, and the case/DNA-RNA transforms all
+	// apply; the bad stream keeps the plain fasta.Writer layout.
+	fastaBW := bufio.NewWriter(writer)
 
 	var badWriter *fasta.Writer
 	if opts.OutBad != nil {
@@ -757,10 +847,28 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 		}
 
 		origDesc := record.Description
+		origID, origComment := splitHeader(origDesc)
+		if origID == "" {
+			origID = firstToken(origDesc)
+		}
 		seq := string(record.Sequence)
 
 		// Apply trimming
 		seq, _ = trimSequence(seq, "", opts)
+
+		// Enforce --seq_num: keep only the first N passing records.
+		// Upstream checks `seq_num <= seqcount` before emitting
+		// (prinseq-lite.pl:3147-3150); seqCount counts records already
+		// written, so once we have emitted SeqNum the rest are rejected.
+		if opts.SeqNum > 0 && seqCount >= opts.SeqNum {
+			if badWriter != nil {
+				record.Sequence = []byte(seq)
+				if err := badWriter.Write(record); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
@@ -787,35 +895,38 @@ func filterFasta(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 			continue
 		}
 
-		// Apply --seq_id renaming. Upstream only renames records that
-		// pass the filters (prinseq-lite.pl:3640-3648).
+		// This record passes; it counts towards --seq_num and gets a
+		// fresh --seq_id counter value.
+		seqCount++
+
+		// Resolve the output identifier and trailing comment.
+		id := origID
+		comment := origComment
 		if opts.SeqID != "" {
-			seqCount++
-			origID := record.ID
-			if origID == "" {
-				// Fasta reader's record exposes Description; the
-				// upstream "$seqid" is the first whitespace-
-				// delimited token. Fall back to the full
-				// description if no whitespace is present.
-				origID = firstToken(origDesc)
-			}
-			newDesc := renameDescription(opts.SeqID, seqCount)
-			record.Description = newDesc
-			if err := writeSeqIDMapping(opts.SeqIDMap, origID, newDesc); err != nil {
+			id = renameDescription(opts.SeqID, seqCount)
+			if err := writeSeqIDMapping(opts.SeqIDMap, origID, id); err != nil {
 				return err
 			}
 		}
+		// --rm_header drops the trailing comment (prinseq-lite.pl:3651).
+		if opts.RmHeader {
+			comment = ""
+		}
 
-		// Update record with trimmed sequence
+		// Apply sequence transforms (case, DNA<->RNA).
+		seq = applySeqCase(seq, opts.SeqCase)
+		seq = applyDNARNA(seq, opts.DNARNA)
+
+		record.Description = joinHeader(id, comment)
 		record.Sequence = []byte(seq)
 
-		// Write filtered record
-		if err := fastaWriter.Write(record); err != nil {
+		// Write filtered record honouring --line_width.
+		if err := writePrinseqFastaWidth(fastaBW, record.Description, record.Sequence, opts.QualLineWidth); err != nil {
 			return err
 		}
 	}
 
-	if err := fastaWriter.Flush(); err != nil {
+	if err := fastaBW.Flush(); err != nil {
 		return err
 	}
 	if badWriter != nil {
@@ -837,6 +948,270 @@ func firstToken(s string) string {
 	return s
 }
 
+// splitHeader splits a full FASTA/FASTQ description line into the upstream
+// `$sid` (the first whitespace-delimited token) and `$header` (everything
+// after the first run of whitespace, with that leading whitespace removed).
+// This mirrors upstream's `/^[\@\>](\S+)\s*(.*)$/` capture
+// (prinseq-lite.pl:1660, 1678): the comment is the trailing remainder.
+func splitHeader(desc string) (id, comment string) {
+	i := 0
+	for i < len(desc) && desc[i] != ' ' && desc[i] != '\t' {
+		i++
+	}
+	id = desc[:i]
+	for i < len(desc) && (desc[i] == ' ' || desc[i] == '\t') {
+		i++
+	}
+	comment = desc[i:]
+	return id, comment
+}
+
+// joinHeader recombines an identifier and trailing comment into the
+// upstream output form `$sid.($header ? ' '.$header : ”)`
+// (prinseq-lite.pl:3685, 3704). An empty comment yields just the id.
+func joinHeader(id, comment string) string {
+	if comment == "" {
+		return id
+	}
+	return id + " " + comment
+}
+
+// applySeqCase forces the sequence case for `-seq_case`
+// (prinseq-lite.pl:3664-3671). An unrecognised mode leaves seq untouched.
+func applySeqCase(seq, mode string) string {
+	switch mode {
+	case "upper":
+		return upperASCII(seq)
+	case "lower":
+		return lowerASCII(seq)
+	default:
+		return seq
+	}
+}
+
+// applyDNARNA converts between DNA and RNA for `-dna_rna`
+// (prinseq-lite.pl:3672-3679). "dna" maps U/u to T/t; "rna" maps T/t to
+// U/u; case is preserved. Other modes leave seq untouched.
+func applyDNARNA(seq, mode string) string {
+	var from, to byte
+	switch mode {
+	case "dna":
+		from, to = 'U', 'T'
+	case "rna":
+		from, to = 'T', 'U'
+	default:
+		return seq
+	}
+	fromLower := from | 0x20
+	toLower := to | 0x20
+	b := []byte(seq)
+	for i := range b {
+		switch b[i] {
+		case from:
+			b[i] = to
+		case fromLower:
+			b[i] = toLower
+		}
+	}
+	return string(b)
+}
+
+// shouldFilterCustomParams reports whether the upper-cased sequence seqUpper
+// matches any custom-params rejection rule (prinseq-lite.pl:3484-3503).
+func shouldFilterCustomParams(seqUpper string, rules []CustomParam) bool {
+	length := len(seqUpper)
+	for _, p := range rules {
+		if p.Percent {
+			if length == 0 {
+				continue
+			}
+			occ := countOccurrences(seqUpper, p.Bases)
+			if float64(100*occ)/float64(length) > float64(p.Count) {
+				return true
+			}
+		} else {
+			if p.Count <= 0 {
+				continue
+			}
+			if containsSubstr(seqUpper, repeatString(p.Bases, p.Count)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// upperASCII upper-cases ASCII letters in s without touching other bytes.
+func upperASCII(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'a' && b[i] <= 'z' {
+			b[i] -= 0x20
+		}
+	}
+	return string(b)
+}
+
+// lowerASCII lower-cases ASCII letters in s without touching other bytes.
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 0x20
+		}
+	}
+	return string(b)
+}
+
+// allUpperACGTN reports whether every byte of s is one of the UPPER-CASE
+// bases A/C/G/T/N. It models upstream's custom_params validation, where
+// `tr/ACGTN//` counts only upper-case characters, so any lower-case letter
+// causes the rule to be skipped (prinseq-lite.pl:1075-1076).
+func allUpperACGTN(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case 'A', 'C', 'G', 'T', 'N':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// splitTrim splits s on sep and trims surrounding ASCII whitespace from each
+// field, mirroring upstream's `split(/\s*;\s*/, ...)`-style behaviour.
+func splitTrim(s string, sep byte) []string {
+	var out []string
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == sep {
+			out = append(out, trimSpace(s[start:i]))
+			start = i + 1
+		}
+	}
+	return out
+}
+
+// splitWhitespace splits s into non-empty runs separated by ASCII whitespace.
+func splitWhitespace(s string) []string {
+	var out []string
+	start := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' {
+			if start >= 0 {
+				out = append(out, s[start:i])
+				start = -1
+			}
+		} else if start < 0 {
+			start = i
+		}
+	}
+	if start >= 0 {
+		out = append(out, s[start:])
+	}
+	return out
+}
+
+// trimSpace removes leading and trailing ASCII spaces and tabs from s.
+func trimSpace(s string) string {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	j := len(s)
+	for j > i && (s[j-1] == ' ' || s[j-1] == '\t') {
+		j--
+	}
+	return s[i:j]
+}
+
+// containsByte reports whether s contains byte c.
+func containsByte(s string, c byte) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return true
+		}
+	}
+	return false
+}
+
+// removeByte returns s with every occurrence of byte c removed.
+func removeByte(s string, c byte) string {
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != c {
+			b = append(b, s[i])
+		}
+	}
+	return string(b)
+}
+
+// parseUint parses a non-negative base-10 integer. ok is false when s is
+// empty or contains a non-digit, matching upstream's `^\d+$` guard.
+func parseUint(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n, true
+}
+
+// repeatString returns s concatenated n times (n <= 0 yields "").
+func repeatString(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	b := make([]byte, 0, len(s)*n)
+	for i := 0; i < n; i++ {
+		b = append(b, s...)
+	}
+	return string(b)
+}
+
+// containsSubstr reports whether s contains sub. An empty sub never matches
+// (upstream skips zero-repeat rules).
+func containsSubstr(s, sub string) bool {
+	if sub == "" {
+		return false
+	}
+	if len(sub) > len(s) {
+		return false
+	}
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// countOccurrences counts non-overlapping occurrences of sub in s, matching
+// the behaviour of Perl's `$n++ while($seq =~ /$v/g)` for a literal pattern.
+func countOccurrences(s, sub string) int {
+	if sub == "" {
+		return 0
+	}
+	count := 0
+	for i := 0; i+len(sub) <= len(s); {
+		if s[i:i+len(sub)] == sub {
+			count++
+			i += len(sub)
+		} else {
+			i++
+		}
+	}
+	return count
+}
+
 // writePrinseqFastq writes one FASTQ record in the upstream PRINSEQ-lite
 // layout, which repeats the sequence header on the "+" separator line
 // (e.g. "+read1\n" rather than the bare "+\n" emitted by sickle / fastp).
@@ -844,19 +1219,33 @@ func firstToken(s string) string {
 // Centralising the write here lets us swap encodings later without
 // touching the filter loop.
 func writePrinseqFastq(w *bufio.Writer, rec *fastq.Record) error {
-	if _, err := fmt.Fprintf(w, "@%s\n", rec.Description); err != nil {
+	return writePrinseqFastqHeader(w, rec.Description, rec.Sequence, rec.Quality, false)
+}
+
+// writePrinseqFastqHeader writes one FASTQ record with explicit control over
+// the "+" separator line. When noQualHeader is true the separator is the bare
+// "+" upstream emits under -no_qual_header (prinseq-lite.pl:3686); otherwise
+// it repeats the description, matching the default layout.
+func writePrinseqFastqHeader(w *bufio.Writer, desc string, seq, qual []byte, noQualHeader bool) error {
+	if _, err := fmt.Fprintf(w, "@%s\n", desc); err != nil {
 		return err
 	}
-	if _, err := w.Write(rec.Sequence); err != nil {
+	if _, err := w.Write(seq); err != nil {
 		return err
 	}
 	if err := w.WriteByte('\n'); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "+%s\n", rec.Description); err != nil {
-		return err
+	if noQualHeader {
+		if _, err := w.WriteString("+\n"); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintf(w, "+%s\n", desc); err != nil {
+			return err
+		}
 	}
-	if _, err := w.Write(rec.Quality); err != nil {
+	if _, err := w.Write(qual); err != nil {
 		return err
 	}
 	return w.WriteByte('\n')
@@ -869,8 +1258,34 @@ func writePrinseqFastq(w *bufio.Writer, rec *fastq.Record) error {
 // (prinseq-lite.pl:3704-3708, where the substitution `s/(.{$linelen})/$1\n/g`
 // is gated on `$linelen` being non-zero).
 func writePrinseqFasta(w *bufio.Writer, desc string, seq []byte) error {
+	return writePrinseqFastaWidth(w, desc, seq, 0)
+}
+
+// writePrinseqFastaWidth writes one FASTA record, wrapping the sequence every
+// lineWidth bytes when lineWidth > 0. Upstream's wrap is the substitution
+// `s/(.{$linelen})/$1\n/g` gated on a non-zero `$linelen`
+// (prinseq-lite.pl:3699-3702); lineWidth <= 0 emits the sequence unwrapped.
+func writePrinseqFastaWidth(w *bufio.Writer, desc string, seq []byte, lineWidth int) error {
 	if _, err := fmt.Fprintf(w, ">%s\n", desc); err != nil {
 		return err
+	}
+	if lineWidth > 0 {
+		for off := 0; off < len(seq); off += lineWidth {
+			end := off + lineWidth
+			if end > len(seq) {
+				end = len(seq)
+			}
+			if _, err := w.Write(seq[off:end]); err != nil {
+				return err
+			}
+			if err := w.WriteByte('\n'); err != nil {
+				return err
+			}
+		}
+		if len(seq) == 0 {
+			return w.WriteByte('\n')
+		}
+		return nil
 	}
 	if _, err := w.Write(seq); err != nil {
 		return err
@@ -948,14 +1363,12 @@ func writeSeqIDMapping(w io.Writer, origID, newID string) error {
 	return err
 }
 
-// renameDescription returns the rewritten header used by `--seq_id`.
-// The new identifier is "<SeqID><counter>".
-//
-// Documented divergence from upstream (prinseq-lite.pl:3683-3691):
-// upstream emits `$sid.($header ? ' '.$header : ”)`, so a record with
-// a trailing comment like `@read1 sample=A` becomes `@<prefix>N sample=A`
-// — the comment is PRESERVED. The Go port currently drops the comment;
-// tracked under docs/PARITY_ROADMAP.md#prinseq-lite as a known divergence.
+// renameDescription returns the new IDENTIFIER used by `--seq_id`:
+// "<SeqID><counter>". It replaces only the upstream `$sid` token; the
+// caller re-attaches any trailing comment via joinHeader so that a record
+// like "@read1 sample=A" becomes "@<prefix>N sample=A", matching upstream's
+// `$sid.($header ? ' '.$header : ”)` (prinseq-lite.pl:3685-3691). The
+// earlier divergence that dropped the comment has been resolved.
 func renameDescription(prefix string, counter int) string {
 	return fmt.Sprintf("%s%d", prefix, counter)
 }
@@ -1000,11 +1413,28 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 			return err
 		}
 
+		origID, origComment := splitHeader(record.Description)
+		if origID == "" {
+			origID = record.ID
+		}
 		seq := string(record.Sequence)
 		qual := string(record.Quality)
 
 		// Apply trimming
 		seq, qual = trimSequence(seq, qual, opts)
+
+		// Enforce --seq_num (prinseq-lite.pl:3147-3150): once SeqNum good
+		// records are emitted, reject the rest.
+		if opts.SeqNum > 0 && seqCount >= opts.SeqNum {
+			if bbw != nil {
+				record.Sequence = []byte(seq)
+				record.Quality = []byte(qual)
+				if err := writePrinseqFastq(bbw, record); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 
 		// Check for duplicates if derep is enabled
 		if opts.Derep > 0 {
@@ -1033,42 +1463,52 @@ func filterFastq(reader io.Reader, writer io.Writer, opts FilterOptions) error {
 			continue
 		}
 
-		// Apply --seq_id renaming (only on records that pass).
+		// This record passes; advance the --seq_num / --seq_id counter.
+		seqCount++
+
+		// Resolve output identifier and trailing comment.
+		id := origID
+		comment := origComment
 		if opts.SeqID != "" {
-			seqCount++
-			origID := record.ID
-			newDesc := renameDescription(opts.SeqID, seqCount)
-			record.Description = newDesc
-			if err := writeSeqIDMapping(opts.SeqIDMap, origID, newDesc); err != nil {
+			id = renameDescription(opts.SeqID, seqCount)
+			if err := writeSeqIDMapping(opts.SeqIDMap, origID, id); err != nil {
 				return err
 			}
 		}
+		if opts.RmHeader {
+			comment = ""
+		}
 
-		// Update record with trimmed sequence and quality
+		// Apply sequence transforms (case, DNA<->RNA).
+		seq = applySeqCase(seq, opts.SeqCase)
+		seq = applyDNARNA(seq, opts.DNARNA)
+
+		desc := joinHeader(id, comment)
+		record.Description = desc
 		record.Sequence = []byte(seq)
 		record.Quality = []byte(qual)
 
 		// Write primary output. Format depends on --out_format.
 		if primaryFasta {
-			if err := writePrinseqFasta(bw, record.Description, record.Sequence); err != nil {
+			if err := writePrinseqFastaWidth(bw, desc, record.Sequence, opts.QualLineWidth); err != nil {
 				return err
 			}
 		} else {
-			if err := writePrinseqFastq(bw, record); err != nil {
+			if err := writePrinseqFastqHeader(bw, desc, record.Sequence, record.Quality, opts.NoQualHeader); err != nil {
 				return err
 			}
 		}
 
 		// Optional secondary FASTA output (out_format 4/5).
 		if fastaBW != nil {
-			if err := writePrinseqFasta(fastaBW, record.Description, record.Sequence); err != nil {
+			if err := writePrinseqFastaWidth(fastaBW, desc, record.Sequence, opts.QualLineWidth); err != nil {
 				return err
 			}
 		}
 
 		// Optional QUAL output (out_format 2/5).
 		if qualBW != nil {
-			if err := writePrinseqQual(qualBW, record.Description, record.Quality, qualOffset, opts.QualLineWidth); err != nil {
+			if err := writePrinseqQual(qualBW, desc, record.Quality, qualOffset, opts.QualLineWidth); err != nil {
 				return err
 			}
 		}
@@ -1189,6 +1629,15 @@ func shouldFilterSequence(seq, qual string, opts FilterOptions) bool {
 			return true
 		}
 		if opts.MaxQualMean > 0 && avgQual > opts.MaxQualMean {
+			return true
+		}
+	}
+
+	// Custom-params complexity rules (upstream `-custom_params` /
+	// `-params`; prinseq-lite.pl:3484-3503). Rules are matched against the
+	// upper-cased sequence.
+	if len(opts.CustomParams) > 0 {
+		if shouldFilterCustomParams(upperASCII(seq), opts.CustomParams) {
 			return true
 		}
 	}
