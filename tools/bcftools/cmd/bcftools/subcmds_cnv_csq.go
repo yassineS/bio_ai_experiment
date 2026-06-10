@@ -125,7 +125,7 @@ func runCNV(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, cnvUsage)
 		return 2
@@ -376,7 +376,7 @@ func runCSQ(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, csqUsage)
 		return 2

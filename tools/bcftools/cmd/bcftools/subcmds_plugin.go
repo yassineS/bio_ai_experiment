@@ -108,7 +108,11 @@ func runPlugin(args []string, pluginName string) int {
 		showVer       bool
 	)
 	cliflag.BoolVar(fs, &listPlugins, "l", "list-plugins", false, "List plugins")
+	// Upstream parses `plugin -lv` with getopt as `-l -v`, where `-v` is the
+	// verbose switch. Register `-v` as that switch and keep the historical
+	// two-character `-lv` token as a synonym so both forms work.
 	fs.BoolVar(&listVerbose, "lv", false, "List plugins verbosely")
+	fs.BoolVar(&listVerbose, "v", false, "Verbose listing (use with -l)")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
@@ -119,7 +123,7 @@ func runPlugin(args []string, pluginName string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(hostArgs); err != nil {
+	if err := parseFlags(fs, hostArgs); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, pluginUsage)
 		return 2

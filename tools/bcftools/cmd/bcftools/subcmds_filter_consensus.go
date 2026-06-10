@@ -134,7 +134,7 @@ func runFilter(args []string) int {
 	_ = verbosity
 	_ = writeIndex
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, filterUsage)
 		return 2
@@ -370,7 +370,7 @@ func runConsensus(args []string) int {
 	_ = regionsOverlap
 	_ = verbosity
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, consensusUsage)
 		return 2

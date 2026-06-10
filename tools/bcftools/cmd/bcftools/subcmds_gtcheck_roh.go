@@ -137,7 +137,7 @@ func runGtcheck(args []string) int {
 	_ = threads
 	_ = samplesCombinedFile
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, gtcheckUsage)
 		return 2
@@ -413,7 +413,7 @@ func runRoh(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, rohUsage)
 		return 2

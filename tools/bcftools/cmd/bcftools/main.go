@@ -167,7 +167,7 @@ func runIndex(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, indexUsage)
 		return 2
@@ -303,7 +303,7 @@ func runView(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, viewUsage)
 		return 2
@@ -492,7 +492,7 @@ func runStatsCmd(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, statsUsage)
 		return 2
@@ -666,7 +666,7 @@ func runQuery(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Stderr.WriteString(queryUsage)
 		return 2
@@ -799,7 +799,7 @@ func runConcat(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, concatUsage)
 		return 2
@@ -890,6 +890,7 @@ func runNorm(args []string) int {
 		checkRef       string
 		multiallelics  string
 		rmDup          string
+		rmDupExact     bool
 		atomize        bool
 		doNotNormalize bool
 		strictFilter   bool
@@ -909,6 +910,9 @@ func runNorm(args []string) int {
 	fs.StringVar(&checkRef, "check-ref", "e", "REF mismatch policy: e|w|s")
 	cliflag.StringVar(fs, &multiallelics, "m", "multiallelics", "", "Split / join multiallelics")
 	cliflag.StringVar(fs, &rmDup, "d", "rm-dup", "none", "Drop duplicate records")
+	// Upstream `-D` is functional but deprecated: an alias of `-d exact`.
+	// Registering it keeps legacy and bundled (`-aD`) command lines working.
+	fs.BoolVar(&rmDupExact, "D", false, "Deprecated alias for -d exact")
 	cliflag.BoolVar(fs, &atomize, "a", "atomize", false, "Atomize complex variants")
 	cliflag.BoolVar(fs, &doNotNormalize, "N", "do-not-normalize", false, "Skip left-alignment")
 	cliflag.BoolVar(fs, &strictFilter, "s", "strict-filter", false, "Apply -f filters before split")
@@ -925,7 +929,7 @@ func runNorm(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVersion, "version", false, "")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, normUsage)
 		return 2
@@ -956,6 +960,9 @@ func runNorm(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
+	}
+	if rmDupExact {
+		rmDup = "exact"
 	}
 	dupMode, err := bcftools.ParseRmDupMode(rmDup)
 	if err != nil {
@@ -1076,6 +1083,8 @@ func runCall(args []string) int {
 		ploidy         string
 		ploidyFile     string
 		haploidX       bool
+		haploidY       bool
+		omitRefN       bool
 		outputType     string
 		outputPath     string
 		regions        string
@@ -1112,6 +1121,9 @@ func runCall(args []string) int {
 	fs.StringVar(&ploidy, "ploidy", "2", "Ploidy spec")
 	fs.StringVar(&ploidyFile, "ploidy-file", "", "Ploidy file (CHROM,FROM,TO,SEX,PLOIDY)")
 	cliflag.BoolVar(fs, &haploidX, "X", "chromosome-X", false, "Treat samples as haploid")
+	// Upstream `-Y` is a deprecated alias for `--ploidy Y`; like `-X` it
+	// flags haploid handling. Registered so legacy and bundled forms parse.
+	cliflag.BoolVar(fs, &haploidY, "Y", "chromosome-Y", false, "Deprecated alias of --ploidy Y (treat samples as haploid)")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
@@ -1131,6 +1143,14 @@ func runCall(args []string) int {
 	cliflag.BoolVar(fs, &keepMaskedRef, "M", "keep-masked-ref", false, "Keep sites whose REF base is N")
 	cliflag.StringVar(fs, &skipVariants, "V", "skip-variants", "", "Skip records of type 'indels' or 'snps'")
 	cliflag.StringVar(fs, &annotate, "a", "annotate", "", "Optional output tags (comma-separated; '?' to list)")
+	// Upstream `-f, --format-fields` is a deprecated alias of `-a, --annotate`;
+	// it falls through to the same handling. Share the destination so legacy
+	// command lines (including bundled forms) keep working.
+	cliflag.StringVar(fs, &annotate, "f", "format-fields", "", "Deprecated alias of -a, --annotate")
+	// Upstream `-N` omits sites where the first REF base is N — the modern
+	// default. We always omit such sites, so `-N` is an accepted no-op that
+	// keeps legacy and bundled (`-vN`) command lines parsing.
+	fs.BoolVar(&omitRefN, "N", false, "Omit sites whose first REF base is N (default; accepted no-op)")
 	fs.StringVar(&writeIndex, "write-index", "", "Index the output (csi|tbi)")
 	cliflag.BoolVar(fs, &insertMissed, "i", "insert-missed", false, "Insert records for sites in -T not seen by mpileup")
 	cliflag.StringVar(fs, &priorFreqs, "F", "prior-freqs", "", "AN,AC INFO tags providing prior allele frequencies")
@@ -1184,10 +1204,13 @@ func runCall(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if haploidX {
+	if haploidX || haploidY {
 		ploidySpec = bcftools.PloidyHaploid
 		ploidyText = "1"
 	}
+	// `-N` requests the default behaviour (omit sites whose first REF base is
+	// N), which we always apply; it is accepted for upstream compatibility.
+	_ = omitRefN
 
 	format, err := bcftools.ParseOutputFormat(outputType)
 	if err != nil {
