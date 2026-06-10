@@ -46,10 +46,14 @@ The main objectives of this repository are to use AI agents to:
    - Repeat the analysis-recode-test-document cycle until tools are robust
    - Continuously refine based on findings and feedback
 
-7. **MCP Integration**
-   - Write Model Context Protocol (MCP) servers for each tool
-   - Simplify integration of bioinformatics tools with Large Language Models
-   - Enable easier access to bioinformatics capabilities through AI interfaces
+7. **Robust, Drop-in POSIX CLIs** (the project's interface direction)
+   - Expose every tool as a standalone, POSIX-compliant command-line program
+   - Keep retro-compatibility with the upstream tool's flags so each port is a
+     drop-in replacement (getopt-style bundling, short + long options) — see
+     [docs/CLI_CONVENTIONS.md](docs/CLI_CONVENTIONS.md)
+   - The earlier plan to ship per-tool Model Context Protocol (MCP) servers has
+     been **descoped**; standalone CLIs are the supported interface (see
+     [mcp-servers/README.md](mcp-servers/README.md))
 
 ## Ultimate Goals
 

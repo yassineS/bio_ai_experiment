@@ -23,7 +23,7 @@ tools are vendored as git submodules under `reference_code/` for reference.
 │       └── pkg/<tool>/*.go           # tool logic + *_test.go
 ├── reference_code/           # git submodules: upstream sources of the original tools
 ├── analysis/                 # Python scripts + CSV/JSON/Markdown ranking the top ~200 tools
-├── mcp-servers/              # MCP server implementations (planned; currently just a README)
+├── mcp-servers/              # DESCOPED: MCP servers not being built (see its README)
 ├── docs/                     # project docs (see below)
 └── .github/agents/           # role descriptions for the AI agents that build this repo
 ```
@@ -165,7 +165,8 @@ specific one; you usually don't.
 - `tools/PORTING_STATUS.md` — per-subcommand feature inventory + test notes.
 - `tools/<tool>/README.md` — per-tool usage and parity notes.
 - `.github/agents/*.md` — the agent roles (tool-analysis, golang-recoding, testing,
-  documentation, mcp-server) and how the work is divided.
+  documentation) and how the work is divided. The mcp-server role is deprecated:
+  MCP servers are descoped in favor of drop-in POSIX CLIs.
 
 ## Caveats / known stale docs
 

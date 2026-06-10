@@ -42,8 +42,11 @@ restating numbers.
 
 The AI agents that build this repo are described under
 [`../.github/agents/`](../.github/agents/): tool-analysis, golang-recoding,
-testing, documentation, and mcp-server roles, plus a
-[coordination guide](../.github/agents/COORDINATION.md).
+testing, and documentation roles, plus a
+[coordination guide](../.github/agents/COORDINATION.md). The mcp-server role is
+**deprecated** — MCP servers are not being built (the project ships drop-in
+POSIX CLIs instead); see
+[`../.github/agents/mcp-server-agent.md`](../.github/agents/mcp-server-agent.md).
 
 ## Archived docs
 
