@@ -2456,8 +2456,29 @@ Option-tail gaps on `roh`:
 
 Option-tail gaps on the wave-1 additions (PR #86):
 
-- `annotate --set-id '+%CHROM_%POS'` macro expansion is not implemented;
-  `-x ID` / `-x INFO/TAG` / `-x FORMAT/TAG` removal works.
+- `annotate`: the deferred option-tail is now implemented and validated
+  byte-for-byte against the live upstream binary (see
+  `tools/bcftools/pkg/bcftools/annotate_advanced_test.go`):
+  - `--set-id [+]<FORMAT>` macro expansion — the non-FORMAT subset of the
+    `bcftools query` macro language (`%CHROM`, `%POS`, `%POS0`, `%END`,
+    `%END0`, `%ID`, `%REF`, `%ALT`, `%FIRST_ALT`, `%QUAL`, `%FILTER`,
+    `%TYPE`, `%INFO/TAG` and bare `%TAG`), `\t`/`\n`/`\<c>` escapes, and the
+    leading-`+` "only if ID empty" prefix. `%TYPE` ports htslib's
+    `bcf_set_variant_type` (case-sensitive single-base SNP/REF, MNP, INDEL,
+    OTHER, BND, OVERLAP).
+  - `--merge-logic <tag:logic>` for range (BEG/END, aka FROM/TO) tables —
+    `first` (default), `append`, `append-missing`, `unique`, `sum`, `avg`,
+    `min`, `max`. Integer-typed `avg` truncates like upstream. Repeated
+    `--merge-logic` flags accumulate (comma-joined) as upstream does.
+  - `--min-overlap <ann:vcf>` reciprocal-overlap thresholds.
+  - `--pair-logic <exact|some|all|any|snps|indels|both|id>` for VCF sources,
+    ported from htslib's `bcf_sr_sort` pairing-score table.
+  - `--single-overlaps` (apply only the first overlapping row).
+  - `--rename-annots <file>` (rename INFO/FORMAT/FILTER tags in the header
+    and per-record).
+  Still deferred: `-c CHROM,FROM,TO` BED-style annotation against arbitrary
+  INFO array setters with `-i/-e` filter expressions on the annotation rows,
+  and `--mark-sites`.
 - `isec`: `--collapse some` (REF match + any-ALT-in-common) is approximated
   via strict tuple match; deeper semantics deferred.
 - `merge`: pre-sort assumption is enforced; no automatic CHROM/POS sort.

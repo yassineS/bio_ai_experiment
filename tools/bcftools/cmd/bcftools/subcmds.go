@@ -15,6 +15,28 @@ import (
 	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
 )
 
+// commaAccumFlag is a flag.Value that joins every occurrence of a repeated
+// flag with commas, mirroring how upstream bcftools accumulates repeated
+// `-l/--merge-logic` arguments into one comma-separated string.
+type commaAccumFlag struct {
+	value *string
+}
+
+func (f commaAccumFlag) String() string {
+	if f.value == nil {
+		return ""
+	}
+	return *f.value
+}
+
+func (f commaAccumFlag) Set(s string) error {
+	if *f.value != "" {
+		*f.value += ","
+	}
+	*f.value += s
+	return nil
+}
+
 const mergeUsage = `bcftools merge - combine multiple per-sample VCF/BCF files.
 
 Usage:
@@ -458,6 +480,17 @@ Options:
   -x, --remove FIELD,...     Drop fields from the records (INFO/TAG, FILTER, ID).
   -r, --regions LIST         Region post-filter chr[:beg-end[,...]].
       --rename-chrs FILE     Two-column tab file (OLD<TAB>NEW) renaming CHROM.
+      --rename-annots FILE   Rename annotations: TYPE/old<TAB>new (TYPE=INFO|FORMAT|FILTER).
+  -I, --set-id [+]FORMAT     Set the ID column from a query-like macro string.
+                             Macros: %CHROM,%POS,%REF,%ALT,%FIRST_ALT,%QUAL,
+                             %FILTER,%TYPE,%END,%INFO/TAG. A leading + only sets
+                             missing IDs.
+      --merge-logic TAG:TYPE Multi-overlap merge logic for range tables
+                             (first|append|append-missing|unique|sum|avg|min|max).
+      --min-overlap ANN:VCF  Minimum overlap fraction (annotation:VCF, 0-1).
+      --pair-logic STR       Allele pairing for VCF sources
+                             (exact|some|all|snps|indels|both|id) [some].
+      --single-overlaps      Apply only the first overlapping annotation row.
   -O, --output-type {v|z|u|b}  Output format.
   -o, --output PATH          Output file (default stdout).
   -l, --compression-level N  gzip level for -O z output.
@@ -470,18 +503,24 @@ func runAnnotate(args []string) int {
 	fs := flag.NewFlagSet("bcftools annotate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		annsFile      string
-		columns       string
-		headerLines   string
-		remove        string
-		regions       string
-		renameChrs    string
-		outputType    string
-		outputPath    string
-		compressLevel int
-		threads       int
-		showHelp      bool
-		showVer       bool
+		annsFile       string
+		columns        string
+		headerLines    string
+		remove         string
+		regions        string
+		renameChrs     string
+		renameAnnots   string
+		setID          string
+		mergeLogic     string
+		minOverlap     string
+		pairLogic      string
+		singleOverlaps bool
+		outputType     string
+		outputPath     string
+		compressLevel  int
+		threads        int
+		showHelp       bool
+		showVer        bool
 	)
 	cliflag.StringVar(fs, &annsFile, "a", "annotations", "", "Annotation source")
 	cliflag.StringVar(fs, &columns, "c", "columns", "", "Column mapping")
@@ -489,6 +528,12 @@ func runAnnotate(args []string) int {
 	cliflag.StringVar(fs, &remove, "x", "remove", "", "Fields to drop")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	fs.StringVar(&renameChrs, "rename-chrs", "", "Rename CHROM via two-col map")
+	fs.StringVar(&renameAnnots, "rename-annots", "", "Rename INFO/FORMAT/FILTER tags via map file")
+	cliflag.StringVar(fs, &setID, "I", "set-id", "", "Set ID column from a macro string")
+	fs.Var(commaAccumFlag{&mergeLogic}, "merge-logic", "Multi-overlap merge logic TAG:TYPE")
+	fs.StringVar(&minOverlap, "min-overlap", "", "Minimum overlap fraction ANN:VCF")
+	fs.StringVar(&pairLogic, "pair-logic", "", "Allele pairing mode for VCF sources")
+	fs.BoolVar(&singleOverlaps, "single-overlaps", false, "Apply only the first overlapping row")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
@@ -499,11 +544,11 @@ func runAnnotate(args []string) int {
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		fmt.Fprint(os.Stderr, annotateUsage)
+		io.WriteString(os.Stderr, annotateUsage)
 		return 2
 	}
 	if showHelp {
-		fmt.Print(annotateUsage)
+		io.WriteString(os.Stdout, annotateUsage)
 		return 0
 	}
 	if showVer {
@@ -513,7 +558,7 @@ func runAnnotate(args []string) int {
 	rest := fs.Args()
 	if len(rest) == 0 {
 		fmt.Fprintln(os.Stderr, "bcftools annotate: missing input file")
-		fmt.Fprint(os.Stderr, annotateUsage)
+		io.WriteString(os.Stderr, annotateUsage)
 		return 2
 	}
 	format, err := bcftools.ParseOutputFormat(outputType)
@@ -528,6 +573,12 @@ func runAnnotate(args []string) int {
 		Remove:         remove,
 		RegionsFile:    "",
 		RenameChromMap: renameChrs,
+		RenameAnnots:   renameAnnots,
+		SetID:          setID,
+		MergeLogic:     mergeLogic,
+		MinOverlap:     minOverlap,
+		PairLogic:      pairLogic,
+		SingleOverlaps: singleOverlaps,
 		OutputFormat:   format,
 		CompressLevel:  compressLevel,
 	}

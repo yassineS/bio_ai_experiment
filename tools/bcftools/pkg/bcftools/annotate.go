@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -61,6 +62,19 @@ type AnnotateOptions struct {
 	RegionsFile string
 	// RenameChromMap is the two-column tab file driving `--rename-chrs`.
 	RenameChromMap string
+	// SetID is the `--set-id [+]<FORMAT>` macro string. Empty disables it.
+	SetID string
+	// MergeLogic is the raw `--merge-logic` argument (TAG:LOGIC[,...]).
+	MergeLogic string
+	// MinOverlap is the raw `--min-overlap ANN:VCF` argument.
+	MinOverlap string
+	// PairLogic is the raw `--pair-logic` argument (default "some").
+	PairLogic string
+	// SingleOverlaps enables `--single-overlaps` (apply only the first
+	// overlapping annotation row).
+	SingleOverlaps bool
+	// RenameAnnots is the `--rename-annots` map file path.
+	RenameAnnots string
 	// OutputFormat selects the output encoding. Defaults to OutputVCF.
 	OutputFormat OutputFormat
 	// CompressLevel is the gzip level for -O z output.
@@ -124,17 +138,61 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 		hdr = injectMetaLines(hdr, extra)
 	}
 
+	// --rename-annots: rename existing INFO/FORMAT/FILTER tags. Upstream
+	// applies this before the source annotations are transferred.
+	if opts.RenameAnnots != "" {
+		maps, err := loadRenameAnnots(opts.RenameAnnots)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools annotate: --rename-annots %s: %w", opts.RenameAnnots, err)
+		}
+		applyRenameAnnots(recs, hdr, maps)
+	}
+
+	// Parse the advanced overlap/merge/pair options.
+	mergeLogic, err := ParseMergeLogicSpec(opts.MergeLogic)
+	if err != nil {
+		return 0, fmt.Errorf("bcftools annotate: %w", err)
+	}
+	if opts.SingleOverlaps && opts.MergeLogic != "" {
+		return 0, fmt.Errorf("bcftools annotate: the options --merge-logic and --single-overlaps cannot be combined")
+	}
+	minOverlap, err := ParseMinOverlap(opts.MinOverlap)
+	if err != nil {
+		return 0, fmt.Errorf("bcftools annotate: %w", err)
+	}
+	if opts.MinOverlap != "" && opts.SingleOverlaps {
+		return 0, fmt.Errorf("bcftools annotate: the options --single-overlaps and --min-overlap cannot be combined")
+	}
+	pairLogic := PairSome
+	if opts.PairLogic != "" {
+		pairLogic, err = ParsePairLogic(opts.PairLogic)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools annotate: %w", err)
+		}
+	}
+
 	// -a + -c: column mapping.
 	cols, err := parseAnnColumns(opts.Columns)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools annotate: -c: %w", err)
 	}
+	isVCFSource := strings.HasSuffix(opts.Annotations, ".vcf") ||
+		strings.HasSuffix(opts.Annotations, ".vcf.gz") ||
+		strings.HasSuffix(opts.Annotations, ".bcf")
+	if opts.MinOverlap != "" && isVCFSource {
+		return 0, fmt.Errorf("bcftools annotate: the --min-overlap option cannot be used when annotating from a VCF")
+	}
+	if opts.MergeLogic != "" && isVCFSource {
+		return 0, fmt.Errorf("bcftools annotate: the --merge-logic is intended for use with BED or TAB-delimited files only.")
+	}
 	if opts.Annotations != "" && len(cols) > 0 {
 		switch {
-		case strings.HasSuffix(opts.Annotations, ".vcf") ||
-			strings.HasSuffix(opts.Annotations, ".vcf.gz") ||
-			strings.HasSuffix(opts.Annotations, ".bcf"):
-			if err := applyVCFAnnotations(opts.Annotations, recs, cols); err != nil {
+		case isVCFSource:
+			if err := applyVCFAnnotations(opts.Annotations, recs, cols, pairLogic, hdr); err != nil {
+				return 0, fmt.Errorf("bcftools annotate: %w", err)
+			}
+		case hasRangeColumns(cols):
+			if err := applyTableRangeAnnotations(opts.Annotations, recs, cols, hdr, mergeLogic, minOverlap, opts.SingleOverlaps); err != nil {
 				return 0, fmt.Errorf("bcftools annotate: %w", err)
 			}
 		default:
@@ -147,6 +205,25 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 	// -x: field removal.
 	if opts.Remove != "" {
 		applyRemovals(recs, hdr, opts.Remove)
+	}
+
+	// --set-id: macro-expand the ID column. Upstream applies this last, after
+	// every other transformation.
+	if opts.SetID != "" {
+		prog, err := ParseSetID(opts.SetID)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools annotate: --set-id: %w", err)
+		}
+		for _, v := range recs {
+			val, ok := prog.expand(v)
+			if !ok {
+				continue
+			}
+			if prog.onlyIfEmpty && v.ID != "" && v.ID != "." {
+				continue
+			}
+			v.ID = val
+		}
 	}
 
 	// Region post-filter.
@@ -181,8 +258,9 @@ func Annotate(in io.Reader, out io.Writer, opts AnnotateOptions) (int, error) {
 
 // annColumn is one entry in the parsed -c list.
 type annColumn struct {
-	// Kind: "CHROM", "POS", "REF", "ALT", "ID", "FILTER", "INFO" or "-"
-	// (the "skip" sentinel).
+	// Kind: "CHROM", "POS", "BEG", "END", "REF", "ALT", "ID", "FILTER",
+	// "INFO" or "-" (the "skip" sentinel). BEG/END (aliases FROM/TO) mark
+	// the interval columns of a range-style annotation table.
 	Kind string
 	// Tag is the INFO tag when Kind == "INFO".
 	Tag string
@@ -202,6 +280,10 @@ func parseAnnColumns(spec string) ([]annColumn, error) {
 			return nil, fmt.Errorf("empty entry in -c %q", spec)
 		case "-":
 			out = append(out, annColumn{Kind: "-"})
+		case "BEG", "FROM":
+			out = append(out, annColumn{Kind: "BEG"})
+		case "END", "TO":
+			out = append(out, annColumn{Kind: "END"})
 		case "CHROM", "POS", "REF", "ALT", "ID", "FILTER":
 			out = append(out, annColumn{Kind: p})
 		default:
@@ -327,22 +409,200 @@ func applyTableAnnotations(path string, recs []*vcf.Variant, cols []annColumn, h
 	return nil
 }
 
-// applyVCFAnnotations transfers the named INFO/FILTER fields from the
-// matching records of a VCF/BCF annotation file to the input records.
-func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn) error {
+// hasRangeColumns reports whether the -c spec includes BEG/END (FROM/TO)
+// interval columns, selecting the range-overlap annotation path instead of
+// the point-key path.
+func hasRangeColumns(cols []annColumn) bool {
+	beg, end := false, false
+	for _, c := range cols {
+		switch c.Kind {
+		case "BEG":
+			beg = true
+		case "END":
+			end = true
+		}
+	}
+	return beg && end
+}
+
+// annRangeRow is one parsed interval row of a range-style annotation table.
+type annRangeRow struct {
+	chrom    string
+	beg, end int
+	id       string
+	filter   string
+	assigns  []struct{ tag, value string }
+}
+
+// applyTableRangeAnnotations reads a TAB-delimited annotation table whose
+// columns include CHROM,BEG,END (range form) and copies the chosen columns
+// onto every overlapping VCF record. Multi-overlap merging is governed by
+// mergeLogic (default first), the per-row overlap thresholds by minOverlap,
+// and singleOverlaps restricts to the first overlapping row. It mirrors the
+// observable behaviour of annotate_from_regidx.
+func applyTableRangeAnnotations(path string, recs []*vcf.Variant, cols []annColumn, hdr *vcf.Header, mergeLogic map[string]MergeLogic, minOverlap MinOverlap, singleOverlaps bool) error {
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	_, annRecs, err := readAllVariants(in)
+
+	chromIdx, begIdx, endIdx := -1, -1, -1
+	for i, c := range cols {
+		switch c.Kind {
+		case "CHROM":
+			chromIdx = i
+		case "BEG":
+			begIdx = i
+		case "END":
+			endIdx = i
+		}
+	}
+	if chromIdx < 0 || begIdx < 0 || endIdx < 0 {
+		return fmt.Errorf("annotation table needs CHROM, BEG and END columns")
+	}
+
+	// Read all interval rows, grouped by chromosome.
+	byChrom := map[string][]annRangeRow{}
+	br := bufio.NewReader(in)
+	for {
+		line, rerr := br.ReadString('\n')
+		if line == "" && rerr != nil {
+			break
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" || strings.HasPrefix(line, "#") {
+			if rerr != nil {
+				break
+			}
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < len(cols) {
+			if rerr != nil {
+				break
+			}
+			continue
+		}
+		beg, err1 := strconv.Atoi(strings.TrimSpace(fields[begIdx]))
+		end, err2 := strconv.Atoi(strings.TrimSpace(fields[endIdx]))
+		if err1 != nil || err2 != nil {
+			if rerr != nil {
+				break
+			}
+			continue
+		}
+		row := annRangeRow{chrom: fields[chromIdx], beg: beg, end: end}
+		for i, c := range cols {
+			switch c.Kind {
+			case "ID":
+				row.id = fields[i]
+			case "FILTER":
+				row.filter = fields[i]
+			case "INFO":
+				row.assigns = append(row.assigns, struct{ tag, value string }{c.Tag, fields[i]})
+			}
+		}
+		byChrom[row.chrom] = append(byChrom[row.chrom], row)
+		if rerr != nil {
+			break
+		}
+	}
+
+	for _, v := range recs {
+		vbeg := v.Pos
+		vend := variantEnd(v)
+		// Collect overlapping rows in table order.
+		var overlaps []annRangeRow
+		for _, row := range byChrom[v.Chrom] {
+			if vbeg > row.end || vend < row.beg {
+				continue
+			}
+			if !passesMinOverlap(minOverlap, row.beg, row.end, vbeg, vend) {
+				continue
+			}
+			overlaps = append(overlaps, row)
+			if singleOverlaps {
+				break
+			}
+		}
+		if len(overlaps) == 0 {
+			continue
+		}
+
+		// ID and FILTER follow first-overlap semantics.
+		first := overlaps[0]
+		if first.id != "" && first.id != "." {
+			v.ID = first.id
+		}
+		if first.filter != "" && first.filter != "." {
+			v.Filter = strings.Split(first.filter, ";")
+		}
+
+		// Merge INFO assignments per the chosen logic.
+		accs := map[string]*mergeAccumulator{}
+		var tagOrder []string
+		for _, row := range overlaps {
+			for _, a := range row.assigns {
+				acc, ok := accs[a.tag]
+				if !ok {
+					logic := mergeLogic[a.tag]
+					acc = newMergeAccumulator(logic, infoTagIsInteger(hdr, a.tag))
+					accs[a.tag] = acc
+					tagOrder = append(tagOrder, a.tag)
+				}
+				acc.add(a.value)
+			}
+		}
+		for _, tag := range tagOrder {
+			val, ok := accs[tag].reduce()
+			if !ok {
+				continue
+			}
+			if v.Info == nil {
+				v.Info = map[string]string{}
+			}
+			if _, exists := v.Info[tag]; !exists {
+				v.InfoOrder = append(v.InfoOrder, tag)
+			}
+			v.Info[tag] = val
+		}
+	}
+
+	// Inject ##INFO header lines for tags we wrote that are not yet declared.
+	for _, c := range cols {
+		if c.Kind != "INFO" {
+			continue
+		}
+		if !hasInfoLine(hdr, c.Tag) {
+			hdr.MetaInfo = append([]string{hdr.MetaInfo[0],
+				fmt.Sprintf(`##INFO=<ID=%s,Number=.,Type=String,Description="Added by bcftools annotate">`, c.Tag)},
+				hdr.MetaInfo[1:]...)
+		}
+	}
+	return nil
+}
+
+// applyVCFAnnotations transfers the named INFO/FILTER fields from the
+// matching records of a VCF/BCF annotation file to the input records. The
+// pairLogic mode controls how an annotation record is paired with an input
+// record (see --pair-logic).
+func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn, pairLogic PairLogic, hdr *vcf.Header) error {
+	in, err := iohelper.OpenReader(path)
 	if err != nil {
 		return err
 	}
-	// Index by (CHROM, POS, REF, ALT).
-	idx := map[string]*vcf.Variant{}
+	defer in.Close()
+	annHdr, annRecs, err := readAllVariants(in)
+	if err != nil {
+		return err
+	}
+	// Group annotation records by (CHROM, POS) so pair-logic can scan the
+	// candidates at a site.
+	byPos := map[string][]*vcf.Variant{}
 	for _, v := range annRecs {
-		idx[strictKey(v)] = v
+		k := v.Chrom + "\t" + strconv.Itoa(v.Pos)
+		byPos[k] = append(byPos[k], v)
 	}
 	wantInfo := map[string]bool{}
 	wantFilter := false
@@ -360,8 +620,14 @@ func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn) err
 		}
 	}
 	for _, v := range recs {
-		src, ok := idx[strictKey(v)]
-		if !ok {
+		var src *vcf.Variant
+		for _, cand := range byPos[v.Chrom+"\t"+strconv.Itoa(v.Pos)] {
+			if pairLogicMatches(v, cand, pairLogic) {
+				src = cand
+				break
+			}
+		}
+		if src == nil {
 			continue
 		}
 		for tag := range wantInfo {
@@ -384,7 +650,36 @@ func applyVCFAnnotations(path string, recs []*vcf.Variant, cols []annColumn) err
 			v.ID = src.ID
 		}
 	}
+	// Carry the source's ##INFO header definitions for each transferred tag
+	// into the output header (matching upstream, which copies the matching
+	// header records from the annotation file). We iterate cols (not the
+	// wantInfo map) so the appended lines follow the -c column order.
+	for _, c := range cols {
+		if c.Kind != "INFO" || c.Tag == "" {
+			continue
+		}
+		if hasInfoLine(hdr, c.Tag) {
+			continue
+		}
+		def := findMetaLineByID(annHdr, "INFO", c.Tag)
+		if def == "" {
+			def = fmt.Sprintf(`##INFO=<ID=%s,Number=.,Type=String,Description="Added by bcftools annotate">`, c.Tag)
+		}
+		hdr.MetaInfo = append(hdr.MetaInfo, def)
+	}
 	return nil
+}
+
+// findMetaLineByID returns the verbatim ##<kind>=<...ID=id...> meta line from
+// hdr, or "" when no such line exists.
+func findMetaLineByID(hdr *vcf.Header, kind, id string) string {
+	for _, m := range hdr.MetaInfo {
+		k, mid := structuredID(m)
+		if k == kind && mid == id {
+			return m
+		}
+	}
+	return ""
 }
 
 // applyRemovals processes -x/--remove. Each entry is one of `INFO/TAG`,
@@ -497,31 +792,24 @@ func loadChromRenameMap(path string) (map[string]string, error) {
 	return out, sc.Err()
 }
 
-// injectMetaLines inserts extra ##... lines into hdr after the
-// ##fileformat line (or at the top if none is present), de-duplicating by
-// exact-string equality.
+// injectMetaLines appends extra ##... lines to the end of hdr's meta block
+// (just before the #CHROM line), de-duplicating by exact-string equality.
+// This mirrors upstream's bcf_hdr_append, which adds new header records after
+// the existing ones.
 func injectMetaLines(hdr *vcf.Header, extra []string) *vcf.Header {
 	out := &vcf.Header{Samples: hdr.Samples}
-	insertAt := 0
-	for i, m := range hdr.MetaInfo {
-		out.MetaInfo = append(out.MetaInfo, m)
-		if strings.HasPrefix(m, "##fileformat=") {
-			insertAt = i + 1
-		}
-	}
+	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
 	seen := map[string]bool{}
 	for _, m := range out.MetaInfo {
 		seen[m] = true
 	}
-	added := []string{}
 	for _, m := range extra {
 		if seen[m] {
 			continue
 		}
-		added = append(added, m)
+		out.MetaInfo = append(out.MetaInfo, m)
 		seen[m] = true
 	}
-	out.MetaInfo = append(out.MetaInfo[:insertAt], append(added, out.MetaInfo[insertAt:]...)...)
 	return out
 }
 
@@ -537,9 +825,18 @@ func hasInfoLine(hdr *vcf.Header, tag string) bool {
 	return false
 }
 
-// strictKey is the canonical key for VCF-source annotation matching.
-func strictKey(v *vcf.Variant) string {
-	return fmt.Sprintf("%s\t%d\t%s\t%s", v.Chrom, v.Pos, v.Ref, strings.Join(v.Alt, ","))
+// infoTagIsInteger reports whether the ##INFO line for tag declares
+// Type=Integer. It is used so the numeric merge reductions truncate integer
+// tags exactly as upstream does.
+func infoTagIsInteger(hdr *vcf.Header, tag string) bool {
+	for _, m := range hdr.MetaInfo {
+		k, id := structuredID(m)
+		if k != "INFO" || id != tag {
+			continue
+		}
+		return strings.Contains(m, "Type=Integer")
+	}
+	return false
 }
 
 // buildTableKey assembles the lookup key for a TSV row. The set of key
