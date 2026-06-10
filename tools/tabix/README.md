@@ -70,8 +70,9 @@ form used internally.
 | `-c`  | `--meta-char C`   | Comment-line prefix character (default `#`).     |
 | `-0`  | `--zero-based`    | 0-based half-open coordinates (BED-style).       |
 | `-f`  | `--force`         | Overwrite an existing `.tbi` index.              |
-| `-R`  | `--regions FILE`  | Read regions from a BED-like file.               |
-| `-T`  | `--targets FILE`  | Restrict output to records overlapping FILE.     |
+| `-R`  | `--regions FILE`  | Read regions from a BED-like file (index-jump).  |
+| `-T`  | `--targets FILE`  | Strict overlap post-filter from FILE (≠ `-R`).   |
+| `-r`  | `--reheader FILE` | Replace the header with the contents of FILE.    |
 | `-l`  | `--list-chroms`   | Print chromosome names recorded in the index.    |
 | `-h`  | `--print-header`  | Also emit header lines from the queried file.    |
 |       | `--only-header`   | Emit only the header lines.                      |
@@ -147,14 +148,22 @@ Exported types:
 This v1 implementation matches upstream `tabix` for the documented build /
 query / list / header flags with the following intentional differences:
 
-1. **`-r` / `--reheader` is not implemented.** htslib's `tabix --reheader`
-   replaces the header lines of an existing bgzipped file in place; that
-   is a write-path operation orthogonal to indexing and queries. It will
-   land in a follow-up PR.
-2. **`-T` / `--targets` is parsed but currently behaves as `-R`.** A real
-   targets filter (post-filter records to only those overlapping a set of
-   target regions) is a thin layer on top of the existing query path and
-   will be tightened up alongside the same PR as `--reheader`.
+1. **`-r` / `--reheader`** replaces the leading meta-char header of the
+   bgzipped file with the contents of FILE and re-emits a valid bgzipped
+   stream to stdout (`tabix.Reheader`). A trailing newline is appended to
+   the replacement header when absent. Upstream htslib's own `tabix -r` is
+   broken at the vendored commit (it segfaults without `--threads N` and
+   corrupts the body for typical inputs), so parity is validated by having
+   upstream tabix *consume* the Go output — re-indexing and querying it
+   correctly — rather than as a byte-for-byte producer oracle.
+2. **`-T` / `--targets`** is a true strict overlap post-filter, distinct
+   from `-R`'s index-jump: only records overlapping the target intervals are
+   emitted. Coordinate conventions match htslib regidx (a `.bed`/`.bed.gz`
+   filename → 0-based half-open; any other → 1-based inclusive; a
+   chromosome-only line selects the whole chromosome). With `-T` and no
+   explicit region the whole file is streamed, matching upstream's `.`
+   region. Byte-for-byte parity with upstream `tabix -T` is covered by live
+   tests.
 3. **Linear-index "no record yet" sentinel.** Internally the builder uses
    `^uint64(0)` while accumulating per-tile minimum virtual offsets,
    replacing the sentinel with `0` (or the carry-forward of the last
