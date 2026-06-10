@@ -21,11 +21,13 @@ import (
 //	HapIndex   — apply the N-th allele (1-based). HapIndexValue is N.
 //	HapRef     — REF allele in het genotypes.
 //	HapAlt     — ALT allele in het genotypes.
-//	HapIUPAC   — IUPAC ambiguity code in het genotypes.
+//	HapIUPAC   — IUPAC ambiguity code for all genotypes.
 //	HapLongRef — longer allele, breaking ties with REF.
 //	HapLongAlt — longer allele, breaking ties with ALT.
 //	HapShortRef — shorter allele, breaking ties with REF.
 //	HapShortAlt — shorter allele, breaking ties with ALT.
+//	HapPhasedIUPAC — the N-th allele for phased genotypes, IUPAC code for
+//	  unphased ones (upstream's "NpIu" form). HapIndexValue is N.
 type HaplotypeSelector int
 
 // HaplotypeSelector enumeration; see the type doc for the upstream code
@@ -40,6 +42,7 @@ const (
 	HapLongAlt
 	HapShortRef
 	HapShortAlt
+	HapPhasedIUPAC
 )
 
 // MarkCase encodes the "uc" / "lc" / single-char highlight modes used by
@@ -111,17 +114,40 @@ func ParseHaplotypeSelector(s string) (HaplotypeSelector, int, error) {
 	case "SA":
 		return HapShortAlt, 0, nil
 	}
-	// Try a plain integer (the "N" form). Upstream also recognises a
-	// trailing "pIu" qualifier ("phased index / IUPAC for unphased")
-	// which v1 rejects with a roadmap pointer in the CLI layer.
-	n, err := strconv.Atoi(s)
+	// The "NpIu" form: index N for phased genotypes, IUPAC for unphased.
+	// Upstream parses the leading integer then accepts a trailing "pIu"
+	// (case-insensitive). "1pIu" / "2pIu" are the documented examples.
+	digits := s
+	suffix := false
+	if i := indexNonDigit(s); i >= 0 {
+		digits = s[:i]
+		if !strings.EqualFold(s[i:], "pIu") {
+			return 0, 0, fmt.Errorf("could not parse haplotype %q, expected a number optionally followed by \"pIu\"", s)
+		}
+		suffix = true
+	}
+	n, err := strconv.Atoi(digits)
 	if err != nil {
 		return 0, 0, fmt.Errorf("unrecognised haplotype selector %q", s)
 	}
 	if n < 1 {
 		return 0, 0, fmt.Errorf("haplotype index %d must be >= 1", n)
 	}
+	if suffix {
+		return HapPhasedIUPAC, n, nil
+	}
 	return HapIndex, n, nil
+}
+
+// indexNonDigit returns the index of the first non-ASCII-digit byte in s,
+// or -1 if s is all digits (or empty).
+func indexNonDigit(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return i
+		}
+	}
+	return -1
 }
 
 // ConsensusOptions controls the behaviour of Consensus / ConsensusFile.
@@ -182,6 +208,12 @@ type ConsensusOptions struct {
 	// LineWidth controls the wrapped FASTA output width. Zero means use
 	// the upstream default of 60.
 	LineWidth int
+
+	// ChainFile, when non-empty, is the path of a liftover chain file to
+	// write alongside the consensus FASTA. It mirrors upstream's
+	// -c/--chain. The chain maps reference coordinates to the modified
+	// consensus coordinates in UCSC chain format.
+	ChainFile string
 }
 
 // MaskRegion is one half-open BED-style mask range.
@@ -258,6 +290,21 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 		lineWidth = 60
 	}
 
+	// Optional liftover chain output. The chain writer is shared across
+	// all sequences so the running chain identifier auto-increments.
+	var cw *chainWriter
+	if opts.ChainFile != "" {
+		f, err := openChainFile(opts.ChainFile)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools consensus: %w", err)
+		}
+		cw = &chainWriter{bw: bufio.NewWriter(f), closer: f}
+		defer func() {
+			cw.flush()
+			cw.closer.Close()
+		}()
+	}
+
 	bw := bufio.NewWriter(out)
 	applied := 0
 	for _, rec := range opts.Reference {
@@ -281,6 +328,13 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 		sort.SliceStable(vars, func(i, j int) bool { return vars[i].Pos < vars[j].Pos })
 		offset := 0
 		lastEnd := 0
+		// chain accumulates the liftover blocks for this sequence when
+		// -c/--chain is requested. The reference origin is 0 because the
+		// port emits whole contigs (no -r region windowing).
+		var chain *Chain
+		if cw != nil {
+			chain = NewChain(0)
+		}
 		for _, v := range vars {
 			// Skip overlapping variants (upstream emits a warning; we
 			// follow the "first wins" rule for v1 to keep coordinates
@@ -326,12 +380,34 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) (int, error) 
 			}
 			newSeq = append(newSeq, seq[end:]...)
 			seq = newSeq
+			// Record the indel as a chain gap before advancing the offset.
+			// Upstream pushes only when the emitted length differs from the
+			// reference run (len_diff != 0); mark-del padding keeps the run
+			// equal and therefore emits no gap. offset is fa_mod_off here:
+			// the cumulative shift *before* this variant.
+			if chain != nil {
+				lenDiff := emitted - len(ref)
+				if lenDiff != 0 {
+					if len(ref) > 0 && len(alt) > 0 && lowerByte(ref[0]) == lowerByte(alt[0]) {
+						// Indels usually carry the base before the event:
+						// extend the ungapped block by one base.
+						chain.pushGap(origStart+1, len(ref)-1, origStart+1+offset, emitted-1)
+					} else {
+						chain.pushGap(origStart, len(ref), origStart+offset, emitted)
+					}
+				}
+			}
 			// Track the coordinate shift by the ACTUAL emitted run
 			// vs. ref consumed. With mark-del padding, emitted==len(ref)
 			// so offset is unchanged (downstream coordinates align).
 			offset += emitted - len(ref)
 			lastEnd = origStart + len(ref)
 			applied++
+		}
+		if chain != nil {
+			if err := cw.writeChain(chain, rec.ID, len(rec.Sequence)); err != nil {
+				return applied, err
+			}
 		}
 
 		name := opts.Prefix + rec.ID
@@ -372,11 +448,11 @@ func selectAllele(v *vcf.Variant, sampleIdx int, opts ConsensusOptions) (string,
 	if !ok {
 		return "", false
 	}
-	// Normalize phase.
-	parts := strings.FieldsFunc(gt, func(r rune) bool { return r == '/' || r == '|' })
+	parts := splitGT(gt)
 	if len(parts) == 0 {
 		return "", false
 	}
+	phased := gtIsPhased(gt)
 	// Missing GT handling.
 	allMissing := true
 	for _, p := range parts {
@@ -391,32 +467,27 @@ func selectAllele(v *vcf.Variant, sampleIdx int, opts ConsensusOptions) (string,
 		}
 		return "", false
 	}
-	// IUPAC mode (-I or HapIUPAC). Only meaningful for biallelic SNPs;
-	// fall back to ALT for other cases.
-	if opts.IUPACCodes || opts.Haplotype == HapIUPAC {
-		if len(v.Ref) == 1 && len(v.Alt[0]) == 1 {
-			a1 := alleleBase(parts[0], v)
-			a2 := a1
-			if len(parts) > 1 {
-				a2 = alleleBase(parts[1], v)
-			}
-			if iupac := iupacCode(a1, a2); iupac != 0 {
-				return string([]byte{iupac}), true
-			}
+	// Phased-index / unphased-IUPAC (upstream "NpIu"). Mirrors
+	// apply_variant: when allele==PICK_IUPAC and a haplotype index is set,
+	// the IUPAC branch is taken only for unphased genotypes; phased
+	// genotypes fall through to plain haplotype-index selection.
+	if opts.Haplotype == HapPhasedIUPAC {
+		if phased {
+			return phasedIndexAllele(parts, opts.HaplotypeIndex, v, opts)
 		}
-		return v.Alt[0], true
+		return iupacAllele(parts, v, opts)
+	}
+	// IUPAC mode (-I or -H I). Upstream applies the IUPAC ambiguity code
+	// over every allele present in the genotype.
+	if opts.IUPACCodes || opts.Haplotype == HapIUPAC {
+		return iupacAllele(parts, v, opts)
 	}
 	switch opts.Haplotype {
 	case HapIndex:
-		// 1-based ALT index from -H N. ALT[0] corresponds to N=1; N==0
-		// means REF.
-		if opts.HaplotypeIndex == 0 {
-			return v.Ref, true
-		}
-		if opts.HaplotypeIndex-1 < len(v.Alt) {
-			return v.Alt[opts.HaplotypeIndex-1], true
-		}
-		return "", false
+		// -H N selects the N-th haplotype slot of the genotype (1-based),
+		// regardless of phasing, then resolves it to an allele. This
+		// mirrors upstream's use_hap branch (ialt = GT[haplotype-1]).
+		return phasedIndexAllele(parts, opts.HaplotypeIndex, v, opts)
 	case HapRef:
 		if isHet(parts) {
 			return v.Ref, true
@@ -464,6 +535,204 @@ func selectAllele(v *vcf.Variant, sampleIdx int, opts ConsensusOptions) (string,
 	return alleleString(parts[0], v), true
 }
 
+// splitGT splits a raw GT string on the phase separators ('/' and '|') and
+// returns the allele-index tokens (e.g. "0", "1", ".").
+func splitGT(gt string) []string {
+	return strings.FieldsFunc(gt, func(r rune) bool { return r == '/' || r == '|' })
+}
+
+// gtIsPhased reports whether a raw GT string represents a phased genotype.
+// Upstream treats a genotype as phased when its alleles carry the phase
+// bit, which in VCF text corresponds to a '|' separator. A haploid call is
+// trivially phased.
+func gtIsPhased(gt string) bool {
+	for i := 0; i < len(gt); i++ {
+		if gt[i] == '/' {
+			return false
+		}
+	}
+	// No '/' separator: either a haploid call (trivially phased) or '|'
+	// separators throughout (phased).
+	return true
+}
+
+// phasedIndexAllele returns the allele indexed by the 1-based GT slot idx,
+// mirroring upstream's use_hap branch (ialt = GT[haplotype-1]).
+//
+// When idx exceeds the genotype's ploidy, upstream emits the -M/--missing
+// character only if the genotype's first or last slot is itself missing,
+// otherwise it warns and skips the record. When the addressed slot names a
+// missing allele, the missing character is emitted if -M is set, otherwise
+// the record is skipped.
+func phasedIndexAllele(parts []string, idx int, v *vcf.Variant, opts ConsensusOptions) (string, bool) {
+	if idx < 1 {
+		idx = 1
+	}
+	if idx > len(parts) {
+		// Out-of-range haplotype index: only emit missing when the
+		// genotype edges are themselves missing (upstream's check on
+		// ptr[0] / ptr[fmt->n-1]); otherwise skip.
+		if opts.Missing != 0 && len(parts) > 0 && (parts[0] == "." || parts[len(parts)-1] == ".") {
+			return string(opts.Missing), true
+		}
+		return "", false
+	}
+	slot := parts[idx-1]
+	if slot == "." || slot == "" {
+		if opts.Missing != 0 {
+			return string(opts.Missing), true
+		}
+		return "", false
+	}
+	return alleleString(slot, v), true
+}
+
+// iupacAllele encodes the alleles present in a genotype as an IUPAC
+// ambiguity string, mirroring upstream's iupac_set_allele: it OR-s the
+// per-position IUPAC bitmasks across every (non-symbolic) allele in the
+// genotype and emits the result on the longest allele. When no allele
+// admits an IUPAC encoding it falls back to the first allele present.
+func iupacAllele(parts []string, v *vcf.Variant, opts ConsensusOptions) (string, bool) {
+	// Collect the distinct allele indices present in the genotype.
+	seen := map[int]bool{}
+	order := []int{}
+	for _, p := range parts {
+		if p == "." || p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			continue
+		}
+		if !seen[n] {
+			seen[n] = true
+			order = append(order, n)
+		}
+	}
+	if len(order) == 0 {
+		if opts.Missing != 0 {
+			return string(opts.Missing), true
+		}
+		return "", false
+	}
+
+	var fallback string
+	haveFallback := false
+	maxLen := 0
+	var bitmask []byte
+	target := ""
+	targetLen := 0
+	for _, n := range order {
+		al := alleleIndexString(n, v)
+		if !haveFallback {
+			fallback = al
+			haveFallback = true
+		}
+		mask := make([]byte, len(al))
+		ok := true
+		for j := 0; j < len(al); j++ {
+			b := iupac2bitmask(al[j])
+			if b < 0 {
+				ok = false
+				break
+			}
+			mask[j] = byte(b)
+		}
+		if !ok {
+			continue // symbolic allele / invalid character
+		}
+		if len(al) > maxLen {
+			grown := make([]byte, len(al))
+			copy(grown, bitmask)
+			bitmask = grown
+			maxLen = len(al)
+		}
+		for j := 0; j < len(al); j++ {
+			bitmask[j] |= mask[j]
+		}
+		// Upstream tracks the longest *ALT* allele (index > 0) as target.
+		if n > 0 && len(al) > targetLen {
+			targetLen = len(al)
+			target = al
+		}
+	}
+	if targetLen == 0 {
+		// No usable ALT allele; emit the fallback (first allele present).
+		return fallback, true
+	}
+	out := []byte(target)
+	for j := 0; j < targetLen; j++ {
+		out[j] = bitmask2iupac(bitmask[j])
+	}
+	return string(out), true
+}
+
+// alleleIndexString returns the allele string for a numeric GT allele
+// index (0 == REF, N == ALT[N-1]).
+func alleleIndexString(n int, v *vcf.Variant) string {
+	if n == 0 {
+		return v.Ref
+	}
+	if n-1 < len(v.Alt) {
+		return v.Alt[n-1]
+	}
+	return v.Ref
+}
+
+// iupac2bitmask maps a single nucleotide or IUPAC ambiguity character to a
+// 4-bit mask (A=1, C=2, G=4, T=8). It returns -1 for any character that is
+// not a defined IUPAC code (symbolic alleles, gaps, etc.). The mapping is
+// case-insensitive and matches htslib/bcftools' iupac2bitmask table.
+func iupac2bitmask(c byte) int {
+	if c >= 'a' && c <= 'z' {
+		c -= 32
+	}
+	switch c {
+	case 'A':
+		return 1
+	case 'C':
+		return 2
+	case 'G':
+		return 4
+	case 'T':
+		return 8
+	case 'M':
+		return 1 | 2
+	case 'R':
+		return 1 | 4
+	case 'W':
+		return 1 | 8
+	case 'S':
+		return 2 | 4
+	case 'Y':
+		return 2 | 8
+	case 'K':
+		return 4 | 8
+	case 'V':
+		return 1 | 2 | 4
+	case 'H':
+		return 1 | 2 | 8
+	case 'D':
+		return 1 | 4 | 8
+	case 'B':
+		return 2 | 4 | 8
+	case 'N':
+		return 1 | 2 | 4 | 8
+	}
+	return -1
+}
+
+// bitmask2iupac is the inverse of iupac2bitmask: it maps a 4-bit nucleotide
+// mask (1..15) to its IUPAC ambiguity character, returning 0 for an
+// out-of-range mask. It matches htslib/bcftools' bitmask2iupac table.
+func bitmask2iupac(mask byte) byte {
+	table := [16]byte{'.', 'A', 'C', 'M', 'G', 'R', 'S', 'V', 'T', 'W', 'Y', 'H', 'K', 'D', 'B', 'N'}
+	if mask == 0 || mask > 15 {
+		return 0
+	}
+	return table[mask]
+}
+
 // alleleString returns the full allele string (REF or ALT[N-1]) for one
 // slot of a GT field. Missing or malformed slots return v.Ref.
 func alleleString(slot string, v *vcf.Variant) string {
@@ -481,15 +750,6 @@ func alleleString(slot string, v *vcf.Variant) string {
 		return v.Alt[n-1]
 	}
 	return v.Ref
-}
-
-// alleleBase returns the first base of allele N for IUPAC handling.
-func alleleBase(slot string, v *vcf.Variant) byte {
-	s := alleleString(slot, v)
-	if len(s) == 0 {
-		return 'N'
-	}
-	return s[0]
 }
 
 // isHet returns true when the parsed GT slots represent a heterozygous

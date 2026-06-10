@@ -2727,10 +2727,22 @@ Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
 
 Option-tail gaps on `consensus` (this PR, simple-mode):
 
-- `-c/--chain FILE` — liftover chain file. Accepted; v1 rejects with a
-  roadmap pointer at runtime.
-- `-H NpIu` — phased-index / unphased-IUPAC encoding. Accepted; v1
-  rejects with a roadmap pointer.
+- `-c/--chain FILE` — **implemented.** Writes a UCSC-format liftover
+  chain mapping reference to consensus coordinates alongside the
+  consensus FASTA. The chain engine (`consensus_chain.go`) mirrors
+  upstream's `init_chain` / `push_chain_gap` / `print_chain`, including
+  the back-to-back gap merge and the 1-base block extension when REF
+  and ALT share their leading base. Byte-for-byte parity against the
+  live upstream binary is locked in by `consensus_chain_parity_test.go`
+  (chain file AND consensus FASTA compared).
+- `-H N` / `-H NpIu` / `-H I` — **implemented.** `-H N` selects the
+  N-th haplotype slot of FORMAT/GT (resolved through the GT, matching
+  upstream's `ialt = GT[haplotype-1]`, not a bare ALT index). `-H NpIu`
+  applies the N-th haplotype for phased genotypes and an IUPAC
+  ambiguity code for unphased ones; `-H I` applies IUPAC codes for all
+  genotypes. The IUPAC encoder OR-s the per-position nucleotide
+  bitmasks across the genotype's alleles (mirroring `iupac_set_allele`).
+  Live-upstream parity is covered by `TestConsensusHaplotypeParity`.
 - `--regions-overlap 0|1|2` — accepted; v1 ignores (no synced-reader
   region jump path).
 - `-v/--verbosity INT` — accepted; v1 ignores.
