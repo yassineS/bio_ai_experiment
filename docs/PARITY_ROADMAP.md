@@ -2325,13 +2325,30 @@ Option-tail gaps on the wave-1 additions (PR #86):
 
 Option-tail gaps on the convert/mendelian PR:
 
-- `convert`: v1 covers only the pass-through round-trip
-  (VCF↔BCF↔VCF.gz) with sample/region filtering and -i/-e expressions.
-  The full upstream `vcfconvert.c` covers many extra shapes
-  (`--gvcf2vcf`, `--haplegendsample2vcf`, `--hapsample2vcf`,
-  `--tsv2vcf`, `--gensample2vcf`, `--gvcf`, PLINK / GEN / HAP).
-  These are explicit follow-ups; the CLI emits a usage block that
-  lists them under "Deferred output paths".
+- `convert`: v1 covers the pass-through round-trip
+  (VCF↔BCF↔VCF.gz) with sample/region filtering and -i/-e expressions,
+  plus the **TSV→VCF** and **gVCF→VCF** import shapes:
+  - `--tsv2vcf FILE` with `-c/--columns`, `-f/--fasta-ref`,
+    `-s/-S` (the AA genotype path), and `--keep-duplicates` (a no-op
+    here, matching upstream's tsv_to_vcf which never consults it).
+    The column setters CHROM/POS/ID/REF/ALT/AA mirror
+    `reference_code/bcftools/tsv2vcf.c` and `vcfconvert.c`
+    (`tsv_to_vcf`); REF and the `##contig` header are filled from the
+    faidx-indexed reference. Live-upstream byte-for-byte parity tests
+    cover the REF/ALT path, the AA genotype path (incl. indel-skip and
+    all-missing rows), and `--keep-duplicates`.
+  - `--gvcf2vcf` (with `-f/--fasta-ref`) expands reference blocks
+    (symbolic ALT `<*>`/`<X>`/`<NON_REF>` or REF-only plus `INFO/END`)
+    into one per-site record, fetching each REF base from the
+    reference and dropping `INFO/END`. The malformed-gVCF overlap
+    clamp from `gvcf_next_line` is reproduced. `-i/-e` filters pass a
+    failing record through verbatim, as upstream does. Live-upstream
+    parity tests cover the basic expansion and the overlap clamp.
+
+  Still deferred (sibling follow-ups): `--haplegendsample2vcf`,
+  `--hapsample2vcf`, `--gensample2vcf`, `--gvcf` (block-output
+  pairing), PLINK / GEN / HAP export. These remain hard-rejected in
+  `checkConvertDeferred` with a roadmap pointer.
 - `mendelian`: the v1 port detects Mendelian inconsistencies for
   PED-style trios (one or more `-t CHILD,FATHER,MOTHER` flags, or
   `-T trio-file`), emits `INFO/MERR` per record, and supports the

@@ -18,7 +18,10 @@ func TestCheckConvertDeferred(t *testing.T) {
 		in   checkConvertDeferredInputs
 		want string
 	}{
-		{"gvcf2vcf", checkConvertDeferredInputs{gvcf2vcf: true}, "--gvcf2vcf"},
+		// --tsv2vcf, --gvcf2vcf and -c/--columns are now implemented and
+		// dispatched in runConvert before this gate, so they are no longer
+		// part of the deferred set. Bare -f/--fasta-ref (without those two
+		// modes) still implies an unimplemented gen/hap export.
 		{"fasta-ref", checkConvertDeferredInputs{fastaRef: "ref.fa"}, "-f/--fasta-ref"},
 		{"gvcf", checkConvertDeferredInputs{gvcfBlocks: "10,20"}, "--gvcf"},
 		{"gensample", checkConvertDeferredInputs{gensample: "x"}, "-g/--gensample"},
@@ -34,8 +37,6 @@ func TestCheckConvertDeferred(t *testing.T) {
 		{"haploid2diploid", checkConvertDeferredInputs{haploid2diploid: true}, "--haploid2diploid"},
 		{"haplegendsample", checkConvertDeferredInputs{haplegendsample: "x"}, "--haplegendsample"},
 		{"haplegendsample2vcf", checkConvertDeferredInputs{haplegendsample2vcf: "x"}, "--haplegendsample2vcf"},
-		{"tsv2vcf", checkConvertDeferredInputs{tsv2vcf: "x"}, "--tsv2vcf"},
-		{"columns", checkConvertDeferredInputs{columnsFlag: "CHROM,POS"}, "-c/--columns"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
