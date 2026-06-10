@@ -656,9 +656,16 @@ func main() {
 	// take effect (the boolean below is checked immediately after parse).
 	versionFlag := flag.Bool("version", false, "Print VCFtools version and exit")
 
-	// Help
+	// Help. Upstream vcftools (parameters.cpp:654) treats all of "-h",
+	// "-?", "-help", "--?", "--help", "--h" as the help trigger. Go's
+	// flag package matches a registered name under either a single or a
+	// double dash, so registering the bare names "h", "help", and "?"
+	// accepts every upstream spelling (e.g. flag name "h" matches both
+	// "-h" and "--h"; "?" matches "-?" and "--?"; "help" matches "-help"
+	// and "--help"). All three point at the same boolean.
 	help := flag.Bool("h", false, "Show help message")
 	flag.BoolVar(help, "help", false, "Show help message")
+	flag.BoolVar(help, "?", false, "Show help message (upstream alias)")
 
 	flag.Parse()
 

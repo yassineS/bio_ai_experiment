@@ -215,6 +215,31 @@ func TestCLI_KeepINFOAndRecodeINFOAreSeparate(t *testing.T) {
 	}
 }
 
+// TestCLI_HelpAliases — upstream vcftools (parameters.cpp:654) accepts
+// every one of "-h", "-?", "-help", "--?", "--help", "--h" as the help
+// trigger. Go's flag package matches a registered name under either a
+// single or double dash, so registering the bare names "h", "help" and
+// "?" must accept all six spellings and exit 0 without consuming input.
+// This also guards the deliberate decision NOT to POSIX-bundle vcftools:
+// "-help" must mean the help flag, never the cluster -h -e -l -p.
+func TestCLI_HelpAliases(t *testing.T) {
+	bin := buildVcftools(t)
+	for _, arg := range []string{"-h", "--help", "-help", "--h", "-?", "--?"} {
+		cmd := exec.Command(bin, arg)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Errorf("help alias %q: exit error %v; stderr=%s", arg, err, stderr.String())
+			continue
+		}
+		combined := stdout.String() + stderr.String()
+		if !strings.Contains(combined, "vcftools - Utilities for VCF") {
+			t.Errorf("help alias %q: missing usage banner; got:\n%s", arg, combined)
+		}
+	}
+}
+
 // TestCLI_RemoveINFOSiteFilter — wave-18 fix-on-port. `--remove-INFO TAG`
 // is now a SITE FILTER (upstream parameters.cpp:328 +
 // entry_filters.cpp:1068-1086). It must drop sites where the named

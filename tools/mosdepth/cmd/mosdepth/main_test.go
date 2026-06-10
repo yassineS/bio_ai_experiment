@@ -145,3 +145,95 @@ func TestUint8Clamp(t *testing.T) {
 		t.Errorf("uint8Clamp behaves unexpectedly")
 	}
 }
+
+// TestParseFlags_DocoptBundling proves the cliflag.Parse routing gives
+// mosdepth the same clustered short-flag and value-concatenation parsing
+// that upstream's docopt parser provides: "-nx" == "-n -x" and "-Q20" ==
+// "-Q 20". We compare the parsed runOptions of the bundled and canonical
+// argv forms field-by-field (positionals included) so any divergence
+// fails the test.
+func TestParseFlags_DocoptBundling(t *testing.T) {
+	cases := []struct {
+		name      string
+		bundled   []string
+		canonical []string
+	}{
+		{"two-bools", []string{"-nx", "p", "b.bam"}, []string{"-n", "-x", "p", "b.bam"}},
+		{"bool-then-value-concat", []string{"-xQ20", "p", "b.bam"}, []string{"-x", "-Q", "20", "p", "b.bam"}},
+		{"value-concat", []string{"-Q30", "p", "b.bam"}, []string{"-Q", "30", "p", "b.bam"}},
+		{"value-next-arg", []string{"-Q", "30", "p", "b.bam"}, []string{"-Q", "30", "p", "b.bam"}},
+		{"bool-cluster-then-value-next", []string{"-nxQ", "30", "p", "b.bam"}, []string{"-n", "-x", "-Q", "30", "p", "b.bam"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotOpts, gotPos, err := parseFlags(tc.bundled)
+			if err != nil {
+				t.Fatalf("bundled parse %v: %v", tc.bundled, err)
+			}
+			wantOpts, wantPos, err := parseFlags(tc.canonical)
+			if err != nil {
+				t.Fatalf("canonical parse %v: %v", tc.canonical, err)
+			}
+			if *gotOpts != *wantOpts {
+				t.Errorf("bundled %v parsed to %+v, canonical %v parsed to %+v",
+					tc.bundled, *gotOpts, tc.canonical, *wantOpts)
+			}
+			if strings.Join(gotPos, ",") != strings.Join(wantPos, ",") {
+				t.Errorf("positionals: bundled %v, canonical %v", gotPos, wantPos)
+			}
+		})
+	}
+}
+
+// TestParseFlags_ReadGroupsUpstreamShort confirms -R is the upstream short
+// for --read-groups and that the lowercase -r port alias resolves to the
+// same value, with -R winning when both are supplied.
+func TestParseFlags_ReadGroupsUpstreamShort(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-R", "rg1,rg2", "p", "b.bam"}, "rg1,rg2"},
+		{[]string{"--read-groups", "rg3", "p", "b.bam"}, "rg3"},
+		{[]string{"-r", "rg4", "p", "b.bam"}, "rg4"},
+		{[]string{"-r", "lower", "-R", "upper", "p", "b.bam"}, "upper"},
+	} {
+		opts, _, err := parseFlags(tc.args)
+		if err != nil {
+			t.Fatalf("parse %v: %v", tc.args, err)
+		}
+		if opts.readGroups != tc.want {
+			t.Errorf("parse %v: readGroups=%q, want %q", tc.args, opts.readGroups, tc.want)
+		}
+	}
+}
+
+// TestRun_UnimplementedFlagsRejected confirms upstream flags this port
+// parses but does not implement are rejected with exit code 2 rather than
+// silently producing divergent output.
+func TestRun_UnimplementedFlagsRejected(t *testing.T) {
+	for _, args := range [][]string{
+		{"-a", "p", "b.bam"},
+		{"--fragment-mode", "p", "b.bam"},
+		{"-q", "0:1:2", "p", "b.bam"},
+		{"--quantize", "0:1:2", "p", "b.bam"},
+		{"-m", "p", "b.bam"},
+		{"--use-median", "p", "b.bam"},
+	} {
+		if rc := run(args); rc != 2 {
+			t.Errorf("run %v: rc=%d, want 2", args, rc)
+		}
+	}
+}
+
+// TestParseFlags_FastaAccepted confirms -f/--fasta parses (CRAM reference)
+// without error even though CRAM input is not yet supported.
+func TestParseFlags_FastaAccepted(t *testing.T) {
+	opts, _, err := parseFlags([]string{"-f", "ref.fa", "p", "b.bam"})
+	if err != nil {
+		t.Fatalf("parse -f: %v", err)
+	}
+	if opts.fasta != "ref.fa" {
+		t.Errorf("fasta=%q, want %q", opts.fasta, "ref.fa")
+	}
+}

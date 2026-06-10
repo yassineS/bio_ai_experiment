@@ -35,23 +35,39 @@ Options:
   -F, --flag INT          exclude reads with ANY of these flag bits (default 1796).
   -i, --include-flag INT  keep only reads with ALL of these flag bits.
   -x, --fast-mode         skip CIGAR walking (faster, slightly inaccurate near indels).
-      --no-per-base       suppress the per-base output file.
-  -n, --no-per-base       alias for --no-per-base.
+  -n, --no-per-base       suppress the per-base output file.
   -T, --thresholds LIST   comma list of integer thresholds, e.g. 1,5,10,30.
   -c, --chrom STRING      restrict to one chromosome.
-  -d, --d4                write per-base depth to <prefix>.per-base.d4 (D4 format) instead of BED.
-  -r, --read-groups LIST  comma list of allowed RG ids, or "OPS:X,Y" for the OPS aux tag.
+      --d4                write per-base depth to <prefix>.per-base.d4 (D4 format) instead of BED.
+  -d                      port-only short alias for --d4.
+  -R, --read-groups LIST  comma list of allowed RG ids, or "OPS:X,Y" for the OPS aux tag.
+  -r                      port-only lowercase alias for -R/--read-groups.
   -l, --min-frag-len INT  minimum absolute TLEN.
   -u, --max-frag-len INT  maximum absolute TLEN.
+  -f, --fasta FILE        FASTA reference for CRAM input (accepted; CRAM not yet supported, ignored).
+  -a, --fragment-mode     full-fragment coverage (upstream flag; not yet implemented — rejected).
+  -q, --quantize SEGS     quantized output (upstream flag; not yet implemented — rejected).
+  -m, --use-median        per-region median (upstream flag; not yet implemented — rejected).
   -h, --help              show this help.
   -v, --version           print version and exit.
 
+Short-flag bundling (docopt parity): single-char short flags may be
+clustered like upstream's docopt parser, e.g. "-nx" == "-n -x" and
+"-Q20" == "-Q 20".
+
 Deviations from upstream mosdepth (Nim):
-  - D4 output (-d/--d4) is byte-identical to the upstream mosdepth
+  - D4 output (--d4) is byte-identical to the upstream mosdepth
     binary: a real D4 framefile with a 7-bit-packed primary table
     (SimpleRange{0,128}), validated against the real mosdepth_d4 binary.
+    Upstream exposes only the long --d4; this port additionally accepts
+    a -d short alias.
+  - Upstream's short read-groups flag is -R; this port also accepts a
+    lowercase -r alias.
   - Threads is accepted for compatibility; the v1 engine is
     single-threaded.
+  - -a/--fragment-mode, -q/--quantize and -m/--use-median are parsed for
+    CLI parity but not yet implemented; supplying them is rejected
+    (exit 2) rather than silently ignored.
 `
 
 type runOptions struct {
@@ -67,8 +83,13 @@ type runOptions struct {
 	chrom       string
 	d4          bool
 	readGroups  string
+	readGroupsR string
 	minFragLen  int
 	maxFragLen  int
+	fasta       string
+	fragmentLen bool
+	quantize    string
+	useMedian   bool
 	showHelp    bool
 	showVersion bool
 }
@@ -89,14 +110,36 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	fs.BoolVar(&opts.noPerBase2, "no-per-base-only", false, "suppress per-base output (deprecated alias)")
 	cliflag.StringVar(fs, &opts.thresholds, "T", "thresholds", "", "thresholds list")
 	cliflag.StringVar(fs, &opts.chrom, "c", "chrom", "", "restrict to one chromosome")
+	// --d4 is the upstream-canonical name (upstream has no short form for
+	// it); -d is a port-only convenience alias retained for backward
+	// compatibility with earlier releases of this port. Both target the
+	// same boolean.
 	cliflag.BoolVar(fs, &opts.d4, "d", "d4", false, "D4 output")
-	cliflag.StringVar(fs, &opts.readGroups, "r", "read-groups", "", "comma list of RG IDs (or OPS:...)")
+	// -R/--read-groups is the upstream spelling (capital R, docopt). -r is
+	// a port-only lowercase alias retained for backward compatibility;
+	// both feed the same value (last-set wins, resolved below).
+	cliflag.StringVar(fs, &opts.readGroupsR, "R", "read-groups", "", "comma list of RG IDs (or OPS:...)")
+	fs.StringVar(&opts.readGroups, "r", "", "comma list of RG IDs (port-only lowercase alias for -R)")
 	cliflag.IntVar(fs, &opts.minFragLen, "l", "min-frag-len", 0, "min |TLEN|")
 	cliflag.IntVar(fs, &opts.maxFragLen, "u", "max-frag-len", 0, "max |TLEN|")
+	// Upstream flags this port parses for CLI parity but does not yet
+	// implement. -f/--fasta only matters for CRAM input (not supported
+	// yet) so it is accepted and ignored; -a/--fragment-mode,
+	// -q/--quantize and -m/--use-median change the numerical output, so
+	// supplying them is rejected in run() rather than silently ignored.
+	cliflag.StringVar(fs, &opts.fasta, "f", "fasta", "", "FASTA reference for CRAM (accepted; CRAM not yet supported)")
+	cliflag.BoolVar(fs, &opts.fragmentLen, "a", "fragment-mode", false, "count full-fragment coverage (not yet implemented)")
+	cliflag.StringVar(fs, &opts.quantize, "q", "quantize", "", "quantized output segments (not yet implemented)")
+	cliflag.BoolVar(fs, &opts.useMedian, "m", "use-median", false, "use per-region median (not yet implemented)")
 	cliflag.BoolVar(fs, &opts.showHelp, "h", "help", false, "help")
 	cliflag.BoolVar(fs, &opts.showVersion, "v", "version", false, "version")
-	if err := fs.Parse(args); err != nil {
+	if err := cliflag.Parse(fs, args); err != nil {
 		return nil, nil, err
+	}
+	// Resolve the -r / -R read-group aliases: -R (upstream) wins when both
+	// are set; otherwise whichever is non-empty.
+	if opts.readGroupsR != "" {
+		opts.readGroups = opts.readGroupsR
 	}
 	return opts, fs.Args(), nil
 }
@@ -113,6 +156,21 @@ func run(args []string) int {
 	if opts.showVersion {
 		fmt.Println(version)
 		return 0
+	}
+	// Reject upstream flags that this port parses for CLI parity but does
+	// not yet implement, when they would change the output. Silently
+	// ignoring them would produce results that disagree with upstream.
+	if opts.fragmentLen {
+		fmt.Fprintln(os.Stderr, "mosdepth: -a/--fragment-mode is not yet implemented in this port")
+		return 2
+	}
+	if opts.quantize != "" {
+		fmt.Fprintln(os.Stderr, "mosdepth: -q/--quantize is not yet implemented in this port")
+		return 2
+	}
+	if opts.useMedian {
+		fmt.Fprintln(os.Stderr, "mosdepth: -m/--use-median is not yet implemented in this port")
+		return 2
 	}
 	if len(positional) != 2 {
 		fmt.Fprint(os.Stderr, usage)

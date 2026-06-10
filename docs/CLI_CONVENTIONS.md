@@ -78,6 +78,25 @@ never changes the meaning of a command line that already worked. (Use
 > because upstream `prinseq` has no clustered short options. The seq/trim tools
 > that *were* rolled out (`seqtk`, `fastp`, `sickle`, `skewer`) document long
 > options with the GNU double-dash form (`--input`), so they are safe.
+>
+> `vcftools` is in the same camp as `prinseq` and stays on the standard
+> `flag` package (no bundling). Upstream `vcftools`
+> (`reference_code/vcftools/src/cpp/parameters.cpp`) parses its command line
+> by exact full-token string comparison (`in_str == "--chr"`,
+> `in_str == "-c"`), is almost entirely `--double-dash-long` flags, and
+> accepts single-dash *multi-char* help spellings such as `-help` and `-?`.
+> It has no clustered getopt options, so bundling buys it nothing and would
+> mis-read `-help` as `-h -e -l -p`. Determination: **long-flag-only — do not
+> bundle.** Its only short flag is `-c` (alias for `--stdout`), already wired.
+>
+> `mosdepth` is the opposite case. Upstream is Nim + **docopt**, which *does*
+> cluster single-char short flags (`-nx` == `-n -x`) and concatenates values
+> (`-Q20` == `-Q 20`). Its options are single-char short + `--long`
+> (`-t/--threads`, `-b/--by`, `-Q/--mapq`, `-x/--fast-mode`, `-R/--read-groups`,
+> …). Determination: **docopt bundling — route through `cliflag.Parse`.** The
+> port registers the upstream short letters (notably `-R` for `--read-groups`,
+> with a port-only lowercase `-r` alias) and keeps `--d4` as the canonical
+> long form (upstream has no short for it; `-d` is a port-only alias).
 
 ## Option Naming Conventions
 
@@ -276,6 +295,16 @@ an upstream tool (e.g. samtools' `-Q`/`-D` phase flags), and note why.
   `-d`/`--debug` (compat no-op); `skewer` `-z`/`--compress`. `prinseq` was left on
   plain `fs.Parse` because its single-dash long options are incompatible with
   POSIX bundling (see the note above)
+- 2026-06-10: Determined the CLI convention for `vcftools` and `mosdepth` from
+  their upstreams and applied bundling only where warranted. `vcftools` =
+  long-flag-only (exact full-token parser, single-dash multi-char help
+  spellings); left on the standard `flag` package and given the upstream help
+  aliases `-?`/`--?` and `-help`/`--h`. `mosdepth` = docopt (clusters short
+  flags); routed through `cliflag.Parse`, with the upstream short `-R` for
+  `--read-groups` (port-only `-r` alias), `--d4` kept canonical with a `-d`
+  port alias, and the upstream flag names `-f/--fasta`, `-a/--fragment-mode`,
+  `-q/--quantize`, `-m/--use-median` accepted (the last three rejected as
+  not-yet-implemented rather than silently ignored)
 - Future: May be extended as more tools are ported
 
 ## References

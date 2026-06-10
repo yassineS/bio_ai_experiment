@@ -57,12 +57,21 @@ Outputs (always emitted unless a flag below suppresses one):
 | `-n` | `--no-per-base` | Suppress the per-base output. |
 | `-T` | `--thresholds LIST` | Comma list of integer thresholds (e.g. `1,5,10,30`). |
 | `-c` | `--chrom STRING` | Restrict to one chromosome. |
-| `-d` | `--d4` | Write the per-base depth track to `<prefix>.per-base.d4` in the dense D4 binary format instead of the bgzipped BED. |
-| `-r` | `--read-groups LIST` | Comma list of allowed RG ids; prefix the first with `OPS:` to filter on the OPS aux tag instead. |
+| — | `--d4` | Write the per-base depth track to `<prefix>.per-base.d4` in the dense D4 binary format instead of the bgzipped BED. Upstream has no short form; `-d` is a port-only alias. |
+| `-R` | `--read-groups LIST` | Comma list of allowed RG ids; prefix the first with `OPS:` to filter on the OPS aux tag instead. (`-r` is a port-only lowercase alias.) |
 | `-l` | `--min-frag-len INT` | Minimum absolute TLEN to include. |
 | `-u` | `--max-frag-len INT` | Maximum absolute TLEN to include. |
+| `-f` | `--fasta FILE` | FASTA reference for CRAM input. Accepted for parity; CRAM is not yet supported, so the value is ignored. |
+| `-a` | `--fragment-mode` | Upstream flag, not yet implemented in this port: supplying it is rejected (exit 2). |
+| `-q` | `--quantize SEGS` | Upstream flag, not yet implemented in this port: supplying it is rejected (exit 2). |
+| `-m` | `--use-median` | Upstream flag, not yet implemented in this port: supplying it is rejected (exit 2). |
 | `-h` | `--help` | Show help. |
 | `-v` | `--version` | Show version. |
+
+Single-char short flags may be clustered docopt-style (`-nx` == `-n -x`)
+and values may be concatenated (`-Q20` == `-Q 20`), matching upstream
+mosdepth's docopt command-line parser. `-v/--version` is a port
+convenience not present in upstream's docopt usage.
 
 BED region input format (for `--by`): `chrom\tstart\tend\t[name]` — the
 optional 4th column populates the per-region output as upstream does.
