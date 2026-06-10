@@ -498,23 +498,51 @@ for the per-case description.
 ### `fastp`
 
 **Status:** Single `fastp` command with sliding-window cut, auto adapter
-detection, HTML+JSON reports, duplication evaluation, UMI processing.
+detection, HTML+JSON reports, duplication evaluation, UMI processing,
+**overlap-based PE base correction (`--correction`), overrepresentation
+analysis (`-p`/`-P`), and output splitting (`-s`/`-S`/`-d`)**.
 
-Missing:
+Done in the `claude/festive-planck-n9o2lm-fastp-tail` PR:
 
-- **Overrepresented sequence analysis** (`--overrepresentation_analysis`,
-  `--overrepresentation_sampling`).
-- **Base-correction in PE overlap** (`--correction`).
-- **Quality-trimming overlap mode** (`--overlap_len_require`,
-  `--overlap_diff_limit`, `--overlap_diff_percent_limit`).
-- **PolyG/polyX more knobs**: `--poly_g_min_len`, `--poly_x_min_len`.
-- **Splitting output**: `--split`, `--split_by_lines`, `--split_prefix_digits`.
+- **Base-correction in PE overlap** (`-c`/`--correction`): verbatim port of
+  upstream `OverlapAnalysis::analyze` (overlapanalysis.cpp) +
+  `BaseCorrector::correctByOverlapAnalysis` (basecorrector.cpp) in
+  `tools/fastp/pkg/fastp/overlap.go`. Byte-for-byte parity with upstream on
+  corrected reads, plus matching `corrected_reads`/`corrected_bases` JSON
+  fields. Knobs `--overlap_len_require` / `--overlap_diff_limit` /
+  `--overlap_diff_percent_limit` wired through.
+- **Overrepresented sequence analysis** (`-p`/`--overrepresentation_analysis`,
+  `-P`/`--overrepresentation_sampling`): verbatim two-phase port of
+  `Evaluator::computeOverRepSeq` + `Stats::statRead`/`overRepPassed` in
+  `tools/fastp/pkg/fastp/overrepresentation.go`. Emits
+  `overrepresented_sequences` under `read{1,2}_before_filtering` in JSON,
+  matching upstream sequence set + counts exactly on the test fixture.
+- **Splitting output** (`-s`/`--split`, `-S`/`--split_by_lines`,
+  `-d`/`--split_prefix_digits`): `tools/fastp/pkg/fastp/split.go`. File
+  naming and per-file boundaries match upstream byte-for-byte in
+  single-thread mode, including the PACK_SIZE=256 rollover quantization
+  (upstream's `markProcessed` is per-pack).
+
+Remaining (documented):
+
+- **PolyG/polyX more knobs**: `--poly_g_min_len`, `--poly_x_min_len` (the
+  shared `--poly-g-min-len` exists; the separate poly-X knob does not).
 - **Adapter list output to FASTA**: `--adapter_fasta`.
-- **Disable adapter trimming**: `--disable_adapter_trimming`.
-- **JSON schema completeness**: a few sub-fields under
-  `before_filtering`/`after_filtering` and the per-cycle base content
-  arrays are present but a handful of additional keys upstream emits
-  are still missing. Run upstream `fastp` on a sample input and diff.
+- **Disable adapter trimming flag name**: behaviour is reachable by leaving
+  adapters empty / not enabling detection; the explicit
+  `--disable_adapter_trimming` flag name is not yet a no-op alias.
+- **Merge mode** (`-m`/`--merge`, `--merged_out`, `--include_unmerged`): the
+  Go port has a legacy `--merge-overlap` heuristic, not the upstream
+  overlap-analysis-driven merge writer. Not addressed in this PR.
+- **`--split` read-count estimation under multi-threading**: the Go split is
+  single-threaded and sizes files from the exact buffered read count;
+  upstream's multi-threaded byte-extrapolated estimate produces a different
+  (non-deterministic) per-file distribution. Total content + order are
+  identical; only the multi-thread file boundaries differ. Single-thread
+  (`-w 1`) is byte-for-byte identical.
+- **JSON schema completeness**: `corrected_reads`/`corrected_bases` and
+  `overrepresented_sequences` are now emitted; a `kmer_count` block and a
+  couple of minor summary sub-fields upstream emits remain absent.
 
 #### Validated-parity audit
 
@@ -566,9 +594,26 @@ Bugs fixed inline by the `claude/fastp-adapter-autodetect` follow-up PR:
   detected for read1" path). `TestParity_Fastp_Case15_SEAutoDetect` is
   no longer skipped.
 
-**Validation:** **16-case parity test suite, 16 passing, 0
-documented `t.Skip`. 1:1 parity achieved** (post
-`claude/fastp-adapter-autodetect`).
+Features added by the `claude/festive-planck-n9o2lm-fastp-tail` PR
+(`--correction` + overlap analysis, overrepresentation analysis, output
+splitting), with live-upstream parity tests in
+`tools/fastp/pkg/fastp/parity_tail_test.go` (uniquely-named
+`upstreamFastp` builder, `sync.Once`, `t.Fatalf` when the binary is
+available):
+
+- `TestParity_Fastp_Correction`: corrected R1/R2 bytes and
+  `corrected_reads`/`corrected_bases` JSON match upstream exactly.
+- `TestParity_Fastp_Overrepresentation`: `overrepresented_sequences` set
+  and counts match upstream exactly.
+- `TestParity_Fastp_SplitByLines` / `TestParity_Fastp_SplitByNumber`:
+  all numbered split files byte-for-byte identical to upstream `-w 1`.
+
+**Validation:** **16-case core parity suite (16 passing, 0 `t.Skip`) plus
+4 new live-parity tests for the tail features. 1:1 parity achieved** for
+`--correction`, overrepresentation analysis, and single-thread splitting;
+see the "Remaining (documented)" list above for the residual gaps
+(merge-writer mode, `--adapter_fasta`, poly-X knob, multi-thread split
+distribution).
 
 ### bedtools (35 subcommands ported)
 

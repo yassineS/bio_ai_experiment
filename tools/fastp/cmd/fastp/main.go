@@ -82,7 +82,20 @@ Options:
     --merge-overlap           Merge overlapping paired-end reads
     --min-overlap INT         Minimum overlap length (default: 30)
     --max-mismatch INT        Maximum mismatches in overlap (default: 5)
-  
+    -c, --correction          Enable overlap-based base correction (PE only)
+    --overlap_len_require INT     Min length to detect PE overlap (default: 30)
+    --overlap_diff_limit INT      Max mismatched bases in PE overlap (default: 5)
+    --overlap_diff_percent_limit INT  Max mismatch percent in PE overlap (default: 20)
+
+  Overrepresentation Analysis:
+    -p, --overrepresentation_analysis  Enable overrepresented sequence analysis
+    -P, --overrepresentation_sampling INT  1-in-N sampling rate (default: 20)
+
+  Output Splitting:
+    -s, --split INT           Split output into INT files (2-999)
+    -S, --split_by_lines INT  Split output by lines per file (>=1000, mult. of 4)
+    -d, --split_prefix_digits INT  Zero-pad width for split prefix (default: 4)
+
   Performance:
     -w, --threads INT         Number of threads (default: 1)
   
@@ -186,6 +199,18 @@ func main() {
 		umiLoc    string
 		umiLen    int
 		umiPrefix string
+		// Overlap-based correction (fastp-aligned flag names)
+		correction              bool
+		overlapLenRequire       int
+		overlapDiffLimit        int
+		overlapDiffPercentLimit int
+		// Overrepresentation analysis
+		overrepAnalysis bool
+		overrepSampling int
+		// Output splitting
+		splitNumber       int
+		splitByLines      int
+		splitPrefixDigits int
 	)
 
 	// Input/Output
@@ -253,6 +278,21 @@ func main() {
 	cliflag.IntVar(fs, &minOverlap, "", "min-overlap", 30, "Minimum overlap length")
 	cliflag.IntVar(fs, &maxMismatch, "", "max-mismatch", 5, "Maximum mismatches in overlap")
 
+	// Overlap-based base correction (paired-end), upstream flag names.
+	cliflag.BoolVar(fs, &correction, "c", "correction", false, "Enable base correction in overlapped regions (PE only)")
+	cliflag.IntVar(fs, &overlapLenRequire, "", "overlap_len_require", 30, "Minimum length to detect PE overlap (default 30)")
+	cliflag.IntVar(fs, &overlapDiffLimit, "", "overlap_diff_limit", 5, "Maximum mismatched bases in PE overlap (default 5)")
+	cliflag.IntVar(fs, &overlapDiffPercentLimit, "", "overlap_diff_percent_limit", 20, "Maximum mismatch percentage in PE overlap (default 20)")
+
+	// Overrepresentation analysis.
+	cliflag.BoolVar(fs, &overrepAnalysis, "p", "overrepresentation_analysis", false, "Enable overrepresented sequence analysis")
+	cliflag.IntVar(fs, &overrepSampling, "P", "overrepresentation_sampling", 20, "One in N reads sampled for ORA (1-10000, default 20)")
+
+	// Output splitting.
+	cliflag.IntVar(fs, &splitNumber, "s", "split", 0, "Split output into this many files (2-999)")
+	cliflag.IntVar(fs, &splitByLines, "S", "split_by_lines", 0, "Split output by max lines per file (>=1000, multiple of 4)")
+	cliflag.IntVar(fs, &splitPrefixDigits, "d", "split_prefix_digits", 4, "Zero-pad width for split file prefixes (1-10, default 4)")
+
 	// Multi-threading
 	cliflag.IntVar(fs, &threads, "w", "threads", 1, "Number of threads (default: 1)")
 
@@ -308,46 +348,65 @@ func main() {
 
 	// Set up processing options
 	opts := fastp.ProcessOptions{
-		Adapter3:            adapter3,
-		Adapter5:            adapter5,
-		DetectAdapter:       detectAdapter,
-		QualThreshold:       qualThreshold,
-		MinLength:           minLength,
-		MaxLength:           maxLength,
-		QualPercent:         qualPercent,
-		LowComplexity:       lowComplexity,
-		ComplexityThreshold: complexityThreshold,
-		TrimPolyG:           trimPolyG,
-		TrimPolyX:           trimPolyX,
-		PolyGMinLen:         polyGMinLen,
-		CutFront:            cutFront,
-		CutTail:             cutTail,
-		CutRight:            cutRight,
-		CutWindowSize:       cutWindowSize,
-		CutMeanQuality:      cutMeanQuality,
-		MaxNCount:           maxNCount,
-		MaxNPercent:         maxNPercent,
-		LengthRequired:      minLength,
-		LengthLimit:         maxLength,
-		UMILength:           umiLength,
-		UMILocation:         umiLocation,
-		UMI:                 umiEnable,
-		UMILoc:              umiLoc,
-		UMILen:              umiLen,
-		UMIPrefix:           umiPrefix,
-		UMISkip:             umiSkip,
-		DupCalcAccuracy:     dupCalcAccuracy,
-		Dedup:               dedup,
-		BaseCorrection:      baseCorrection,
-		CorrectionThreshold: correctionThreshold,
-		MergeOverlap:        mergeOverlap,
-		MinOverlap:          minOverlap,
-		MaxMismatch:         maxMismatch,
-		Threads:             threads,
-		HTMLReport:          htmlReport,
-		JSONReport:          jsonReport,
-		DetectAdapterPE:     detectAdapterForPE,
-		DetectAdapterSE:     detectAdapter, // legacy --detect-adapter triggers SE detection
+		Adapter3:                adapter3,
+		Adapter5:                adapter5,
+		DetectAdapter:           detectAdapter,
+		QualThreshold:           qualThreshold,
+		MinLength:               minLength,
+		MaxLength:               maxLength,
+		QualPercent:             qualPercent,
+		LowComplexity:           lowComplexity,
+		ComplexityThreshold:     complexityThreshold,
+		TrimPolyG:               trimPolyG,
+		TrimPolyX:               trimPolyX,
+		PolyGMinLen:             polyGMinLen,
+		CutFront:                cutFront,
+		CutTail:                 cutTail,
+		CutRight:                cutRight,
+		CutWindowSize:           cutWindowSize,
+		CutMeanQuality:          cutMeanQuality,
+		MaxNCount:               maxNCount,
+		MaxNPercent:             maxNPercent,
+		LengthRequired:          minLength,
+		LengthLimit:             maxLength,
+		UMILength:               umiLength,
+		UMILocation:             umiLocation,
+		UMI:                     umiEnable,
+		UMILoc:                  umiLoc,
+		UMILen:                  umiLen,
+		UMIPrefix:               umiPrefix,
+		UMISkip:                 umiSkip,
+		DupCalcAccuracy:         dupCalcAccuracy,
+		Dedup:                   dedup,
+		BaseCorrection:          baseCorrection,
+		CorrectionThreshold:     correctionThreshold,
+		Correction:              correction,
+		OverlapRequire:          overlapLenRequire,
+		OverlapDiffLimit:        overlapDiffLimit,
+		OverlapDiffPercentLimit: overlapDiffPercentLimit,
+		MergeOverlap:            mergeOverlap,
+		MinOverlap:              minOverlap,
+		MaxMismatch:             maxMismatch,
+		OverrepAnalysis:         overrepAnalysis,
+		OverrepSampling:         overrepSampling,
+		SplitNumber:             splitNumber,
+		SplitByLines:            splitByLines,
+		SplitPrefixDigits:       splitPrefixDigits,
+		Threads:                 threads,
+		HTMLReport:              htmlReport,
+		JSONReport:              jsonReport,
+		DetectAdapterPE:         detectAdapterForPE,
+		DetectAdapterSE:         detectAdapter, // legacy --detect-adapter triggers SE detection
+	}
+
+	// Splitting mode: --split / --split_by_lines route output across
+	// numbered files. Validate the knobs the way upstream does.
+	splitEnabled := splitNumber > 0 || splitByLines > 0
+	if splitEnabled {
+		if err := validateSplit(splitNumber, splitByLines, splitPrefixDigits, mergeOverlap); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	var stats *fastp.ProcessStats
@@ -369,21 +428,25 @@ func main() {
 		}
 		defer input2.Close()
 
-		output1, err := iohelper.OpenWriter(out1File)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file 1: %v\n", err)
-			os.Exit(1)
-		}
-		defer output1.Close()
+		if splitEnabled {
+			stats, err = fastp.ProcessPairedEndSplit(input1, input2, out1File, out2File, encoding, opts)
+		} else {
+			output1, oerr := iohelper.OpenWriter(out1File)
+			if oerr != nil {
+				fmt.Fprintf(os.Stderr, "Error creating output file 1: %v\n", oerr)
+				os.Exit(1)
+			}
+			defer output1.Close()
 
-		output2, err := iohelper.OpenWriter(out2File)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file 2: %v\n", err)
-			os.Exit(1)
-		}
-		defer output2.Close()
+			output2, oerr := iohelper.OpenWriter(out2File)
+			if oerr != nil {
+				fmt.Fprintf(os.Stderr, "Error creating output file 2: %v\n", oerr)
+				os.Exit(1)
+			}
+			defer output2.Close()
 
-		stats, err = fastp.ProcessPairedEnd(input1, input2, output1, output2, encoding, opts)
+			stats, err = fastp.ProcessPairedEnd(input1, input2, output1, output2, encoding, opts)
+		}
 	} else {
 		// Single-end mode
 		input, err := iohelper.OpenReader(inputFile)
@@ -393,14 +456,18 @@ func main() {
 		}
 		defer input.Close()
 
-		output, err := iohelper.OpenWriter(outputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-			os.Exit(1)
-		}
-		defer output.Close()
+		if splitEnabled {
+			stats, err = fastp.ProcessSingleEndSplit(input, outputFile, encoding, opts)
+		} else {
+			output, oerr := iohelper.OpenWriter(outputFile)
+			if oerr != nil {
+				fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", oerr)
+				os.Exit(1)
+			}
+			defer output.Close()
 
-		stats, err = fastp.ProcessSingleEnd(input, output, encoding, opts)
+			stats, err = fastp.ProcessSingleEnd(input, output, encoding, opts)
+		}
 	}
 
 	if err != nil {
@@ -434,6 +501,32 @@ func main() {
 	if !quiet {
 		printStats(stats)
 	}
+}
+
+// validateSplit checks the --split / --split_by_lines / --split_prefix_digits
+// inputs the way upstream options.cpp does and reports the first problem.
+func validateSplit(splitNumber, splitByLines, digits int, merge bool) error {
+	if merge {
+		return fmt.Errorf("splitting mode cannot work with merging mode")
+	}
+	if splitNumber > 0 && splitByLines > 0 {
+		return fmt.Errorf("you cannot set both --split and --split_by_lines, please choose either")
+	}
+	if digits < 0 || digits > 10 {
+		return fmt.Errorf("--split_prefix_digits should be 0~10")
+	}
+	if splitNumber > 0 && (splitNumber < 2 || splitNumber >= 1000) {
+		return fmt.Errorf("--split (number of files) should be 2~999")
+	}
+	if splitByLines > 0 {
+		if splitByLines%4 != 0 {
+			return fmt.Errorf("--split_by_lines should be a multiple of 4")
+		}
+		if splitByLines < 1000 {
+			return fmt.Errorf("--split_by_lines should be >= 1000")
+		}
+	}
+	return nil
 }
 
 func getQualityEncoding(qualType string) fastq.QualityEncoding {

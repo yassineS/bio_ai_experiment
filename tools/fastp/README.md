@@ -108,6 +108,34 @@ the JSON and HTML reports.
 fastp -i input.fastq -o output.fastq --base-correction --correction-threshold 20
 ```
 
+### Overlap-based Base Correction (Paired-End)
+
+```bash
+# Correct mismatched bases in the PE overlap using the higher-quality mate.
+# Verbatim port of upstream's --correction; --base-correction above is a
+# separate (legacy) SE feature that masks low-quality bases to N.
+fastp -I R1.fastq -O out1.fastq --in2 R2.fastq --out2 out2.fastq --correction \
+  --overlap_len_require 30 --overlap_diff_limit 5 --overlap_diff_percent_limit 20
+```
+
+### Overrepresented Sequence Analysis
+
+```bash
+# Sample 1 in every N reads (default 20) and report overrepresented sequences
+# under read{1,2}_before_filtering in the JSON report.
+fastp -i input.fastq -o output.fastq -p -P 20 --json report.json
+```
+
+### Splitting Output Into Multiple Files
+
+```bash
+# Split into 4 files (0001.out.fq .. 0004.out.fq).
+fastp -i input.fastq -o out.fq -s 4
+
+# Split so each file holds at most 4000 lines (1000 reads), 3-digit prefix.
+fastp -i input.fastq -o out.fq -S 4000 -d 3
+```
+
 ### Merge Overlapping Paired-End Reads
 
 ```bash
@@ -360,14 +388,28 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ **UMI/barcode processing** (`read1`, `read2`, `per_read`, `index1`,
   `index2`, `per_index`)
 - ✅ **Base correction**
-- ✅ **Overlap analysis for paired-end**
+- ✅ **Overlap-based PE base correction** (`-c`/`--correction`) and overlap
+  knobs (`--overlap_len_require`/`--overlap_diff_limit`/`--overlap_diff_percent_limit`)
+- ✅ **Overrepresentation analysis** (`-p`/`--overrepresentation_analysis`,
+  `-P`/`--overrepresentation_sampling`)
+- ✅ **Output splitting** (`-s`/`--split`, `-S`/`--split_by_lines`,
+  `-d`/`--split_prefix_digits`)
 - ✅ **Multi-threading support**
 - ✅ **Duplication evaluation** (`--dup_calc_accuracy`) and dedup
   (`--dedup`)
 
 ### Not Implemented (from original)
 
-None - all major features are now implemented!
+- Overlap-analysis-driven **merge writer** (`-m`/`--merge`, `--merged_out`,
+  `--include_unmerged`) — the port has a legacy `--merge-overlap` heuristic
+  only.
+- **`--adapter_fasta`** (trim against a FASTA list of adapters).
+- Separate **`--poly_x_min_len`** knob (poly-X shares `--poly-g-min-len`).
+- The explicit **`--disable_adapter_trimming`** flag name (the behaviour is
+  reachable by not enabling adapters/detection).
+- Under multi-threading, **`--split`** file boundaries differ from upstream's
+  byte-extrapolated estimate; single-thread (`-w 1`) is byte-for-byte
+  identical (total content/order always match).
 
 ## Testing
 

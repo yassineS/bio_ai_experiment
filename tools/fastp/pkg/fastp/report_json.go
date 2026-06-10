@@ -45,6 +45,8 @@ type jsonSummarySection struct {
 
 type jsonFiltering struct {
 	PassedFilterReads  int64 `json:"passed_filter_reads"`
+	CorrectedReads     int64 `json:"corrected_reads,omitempty"`
+	CorrectedBases     int64 `json:"corrected_bases,omitempty"`
 	LowQualityReads    int64 `json:"low_quality_reads"`
 	TooManyNReads      int64 `json:"too_many_N_reads"`
 	LowComplexityReads int64 `json:"low_complexity_reads"`
@@ -66,14 +68,15 @@ type jsonAdapterCutting struct {
 }
 
 type jsonReadStats struct {
-	TotalReads         int64                `json:"total_reads"`
-	TotalBases         int64                `json:"total_bases"`
-	Q20Bases           int64                `json:"q20_bases"`
-	Q30Bases           int64                `json:"q30_bases"`
-	TotalCycles        int                  `json:"total_cycles"`
-	QualityCurves      map[string][]float64 `json:"quality_curves,omitempty"`
-	ContentCurves      map[string][]float64 `json:"content_curves,omitempty"`
-	LengthDistribution map[string]int64     `json:"length_distribution,omitempty"`
+	TotalReads               int64                `json:"total_reads"`
+	TotalBases               int64                `json:"total_bases"`
+	Q20Bases                 int64                `json:"q20_bases"`
+	Q30Bases                 int64                `json:"q30_bases"`
+	TotalCycles              int                  `json:"total_cycles"`
+	QualityCurves            map[string][]float64 `json:"quality_curves,omitempty"`
+	ContentCurves            map[string][]float64 `json:"content_curves,omitempty"`
+	LengthDistribution       map[string]int64     `json:"length_distribution,omitempty"`
+	OverrepresentedSequences map[string]int64     `json:"overrepresented_sequences,omitempty"`
 }
 
 type jsonTool struct {
@@ -160,6 +163,8 @@ func buildJSONReport(stats *ProcessStats) reportJSON {
 		},
 		FilteringResult: jsonFiltering{
 			PassedFilterReads:  int64(stats.CleanReads),
+			CorrectedReads:     stats.CorrectedReads,
+			CorrectedBases:     stats.BasesCorrected,
 			LowQualityReads:    int64(stats.LowQualityReads),
 			TooManyNReads:      int64(stats.TooManyNReads),
 			LowComplexityReads: int64(stats.LowComplexityReads),
@@ -214,6 +219,11 @@ func buildReadStats(s *ProcessStats, readIdx int, before bool) jsonReadStats {
 		qc, cc := cycleCurves(s, readIdx)
 		out.QualityCurves = qc
 		out.ContentCurves = cc
+		// Overrepresented sequences are sampled on the before-filtering
+		// stream (upstream emits them under read{1,2}_before_filtering).
+		if s.overrep[readIdx] != nil {
+			out.OverrepresentedSequences = s.overrep[readIdx].passedSequences()
+		}
 	}
 	return out
 }
