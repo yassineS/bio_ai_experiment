@@ -5,9 +5,12 @@ package bedsample
 // Cases mirror reference_code/bedtools/test/sample/test-sample.sh. The
 // upstream suite generates its fixture at test time via `bedtools random`;
 // we vendor an equivalent fixture (`mainFile.bed`, 1000 records with a
-// `#header` line) under tools/bedsample/testdata/parity/. We can't
-// byte-for-byte match upstream's PRNG (different algorithm), so the
-// observable parity invariants are:
+// `#header` line) under tools/bedsample/testdata/parity/.
+//
+// As of the std::mt19937_64 port (mt19937.go) this port also matches upstream
+// BYTE-FOR-BYTE for a given seed; that is asserted directly against the live
+// upstream binary in upstream_parity_test.go. The cases here cover the
+// observable invariants without needing the binary:
 //
 //   - `-n N` yields exactly N records.
 //   - Two runs with the same `-seed` are identical.

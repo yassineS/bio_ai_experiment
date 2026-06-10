@@ -55,8 +55,9 @@ func main() {
 	cliflag.StringVar(fs, &inFile, "i", "input", "", "Input BED file")
 	cliflag.StringVar(fs, &outFile, "o", "output", "", "Output file")
 	cliflag.IntVar(fs, &n, "n", "number", 0, "Number of records to draw")
-	// math/rand seed is int64, but cliflag only exposes int. We register
-	// the long form ourselves to match.
+	// The seed is int64; cliflag only exposes int, so register the long
+	// form directly. It feeds the std::mt19937_64-compatible engine, so a
+	// given seed reproduces upstream `bedtools sample` byte-for-byte.
 	fs.Int64Var(&seed, "seed", 0, "PRNG seed (0 = time-based)")
 	fs.BoolVar(&header, "header", false, "Forward header lines")
 	fs.BoolVar(&showHelp, "h", false, "Help")

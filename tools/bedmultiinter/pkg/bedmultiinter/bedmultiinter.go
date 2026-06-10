@@ -4,6 +4,10 @@
 // number of input files contributing, a comma-list of contributing file
 // names, and N 0/1 indicator columns (one per input).
 //
+// Each input file may be BED, VCF, or GFF: the format is autodetected from
+// the first non-header data line (matching upstream BedFile), and
+// coordinates are converted to BED-style 0-based half-open spans.
+//
 // Algorithm: a per-chromosome event sweep. For each chromosome we read
 // every input file's intervals (merging adjacent / overlapping records
 // within a single file, as upstream does), then sort the START and END
@@ -26,8 +30,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	bedpkg "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // Options configures Run.
@@ -306,21 +308,171 @@ func writeHeader(bw *bufio.Writer, opts Options) {
 	bw.WriteByte('\n')
 }
 
-// readAndMerge reads every record from r, groups by chrom, and merges
-// records that overlap or abut within a single file. Returns a map
-// chrom -> sorted, merged [start,end) intervals.
-func readAndMerge(r io.Reader) (map[string][][2]int, error) {
-	rd := bedpkg.NewReader(r)
-	byChrom := map[string][][2]int{}
-	for {
-		rec, err := rd.Read()
-		if err == io.EOF {
-			break
+// interval is one parsed [start,end) span on a chromosome, format-agnostic.
+type interval struct {
+	chrom      string
+	start, end int
+}
+
+// inputFormat tags the autodetected format of an input file.
+type inputFormat int
+
+const (
+	formatUnknown inputFormat = iota
+	formatBED
+	formatVCF
+	formatGFF
+)
+
+// isInteger reports whether s is a base-10 integer, matching upstream's
+// isInteger (which accepts an optional leading sign).
+func isInteger(s string) bool {
+	if s == "" {
+		return false
+	}
+	_, err := strconv.Atoi(s)
+	return err == nil
+}
+
+// detectFormat classifies a tokenized data line as BED, VCF, or GFF using
+// upstream BedFile::parseLine's precedence: BED first (cols 2,3 integer),
+// then VCF (col 2 integer and ≥8 cols), then GFF (8 or 9 cols with cols 4,5
+// integer). Returns formatUnknown when none match.
+func detectFormat(fields []string) inputFormat {
+	n := len(fields)
+	if n < 3 {
+		return formatUnknown
+	}
+	if isInteger(fields[1]) && isInteger(fields[2]) {
+		return formatBED
+	}
+	if isInteger(fields[1]) && n >= 8 {
+		return formatVCF
+	}
+	if (n == 8 || n == 9) && isInteger(fields[3]) && isInteger(fields[4]) {
+		return formatGFF
+	}
+	return formatUnknown
+}
+
+// parseTyped converts a tokenized data line into a 0-based half-open
+// interval according to the resolved format. The coordinate conventions
+// mirror upstream's parseVcfLine / parseGffLine / parseBedLine exactly:
+//
+//   - BED: start = col2, end = col3 (already 0-based half-open).
+//   - VCF: start = POS-1, end = start + len(REF) (col4, the affected
+//     reference allele); a 1-based, REF-length span.
+//   - GFF: start = col4-1, end = col5 (1-based inclusive → 0-based
+//     half-open).
+func parseTyped(fields []string, format inputFormat) (interval, error) {
+	switch format {
+	case formatBED:
+		start, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return interval{}, fmt.Errorf("invalid BED start %q: %w", fields[1], err)
 		}
+		end, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return interval{}, fmt.Errorf("invalid BED end %q: %w", fields[2], err)
+		}
+		return interval{chrom: fields[0], start: start, end: end}, nil
+	case formatVCF:
+		pos, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return interval{}, fmt.Errorf("invalid VCF POS %q: %w", fields[1], err)
+		}
+		start := pos - 1
+		end := start + len(fields[3])
+		if start < 0 || end < start {
+			return interval{}, fmt.Errorf("malformed VCF entry: start=%d end=%d", start, end)
+		}
+		return interval{chrom: fields[0], start: start, end: end}, nil
+	case formatGFF:
+		gstart, err := strconv.Atoi(fields[3])
+		if err != nil {
+			return interval{}, fmt.Errorf("invalid GFF start %q: %w", fields[3], err)
+		}
+		gend, err := strconv.Atoi(fields[4])
+		if err != nil {
+			return interval{}, fmt.Errorf("invalid GFF end %q: %w", fields[4], err)
+		}
+		start := gstart - 1
+		end := gend
+		if start < 0 || end < start {
+			return interval{}, fmt.Errorf("malformed GFF entry: start=%d end=%d", start, end)
+		}
+		return interval{chrom: fields[0], start: start, end: end}, nil
+	default:
+		return interval{}, fmt.Errorf("unknown input format")
+	}
+}
+
+// readIntervals reads every data line from r, autodetecting BED/VCF/GFF
+// from the first non-header line and applying that format to the remainder
+// of the file (matching upstream, which locks the file type on the first
+// data record). Header lines (`#`, `track`, `browser`) and blank lines are
+// skipped. `##fileformat=VCF` in the header forces VCF detection up front,
+// as upstream's GetHeader does.
+func readIntervals(r io.Reader) ([]interval, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	var out []interval
+	format := formatUnknown
+	headerForcedVCF := false
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "track") ||
+			strings.HasPrefix(trimmed, "browser") {
+			if strings.HasPrefix(line, "##fileformat=VCF") {
+				headerForcedVCF = true
+			}
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if format == formatUnknown {
+			if headerForcedVCF {
+				format = formatVCF
+			} else {
+				format = detectFormat(fields)
+			}
+			if format == formatUnknown {
+				return nil, fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", line)
+			}
+		}
+		iv, err := parseTyped(fields, format)
 		if err != nil {
 			return nil, err
 		}
-		byChrom[rec.Chrom] = append(byChrom[rec.Chrom], [2]int{rec.ChromStart, rec.ChromEnd})
+		out = append(out, iv)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// readAndMerge reads every record from r, groups by chrom, and merges
+// records that overlap or abut within a single file. Returns a map
+// chrom -> sorted, merged [start,end) intervals.
+//
+// The input format (BED, VCF, or GFF) is autodetected from the first
+// non-header data line, mirroring upstream's BedFile::parseLine: a line
+// whose 2nd and 3rd columns are integers is BED; a line whose 2nd column
+// is an integer with ≥8 columns is VCF; a line with exactly 8 or 9 columns
+// whose 4th and 5th columns are integers is GFF. Coordinates are converted
+// to BED-style 0-based half-open spans exactly as upstream does.
+func readAndMerge(r io.Reader) (map[string][][2]int, error) {
+	intervals, err := readIntervals(r)
+	if err != nil {
+		return nil, err
+	}
+	byChrom := map[string][][2]int{}
+	for _, iv := range intervals {
+		byChrom[iv.chrom] = append(byChrom[iv.chrom], [2]int{iv.start, iv.end})
 	}
 	for chrom, ivs := range byChrom {
 		sort.Slice(ivs, func(i, j int) bool {

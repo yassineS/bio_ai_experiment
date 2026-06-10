@@ -4,11 +4,13 @@
 // original A columns followed by N integer columns — one per input file —
 // holding the overlap count.
 //
-// Upstream supports BED *and* indexed BAM inputs. This port now supports
-// both. BAM inputs are decoded via pkg/htsgo/sam.NewBAMReader and the
-// MAPQ filter (`-q`) and per-position depth cap (`-D`) are honoured. CRAM
-// remains deferred (we don't have a CRAM reader yet — see
-// docs/CRAM_DESIGN.md); the CLI surfaces a clear error in that case.
+// Upstream supports BED, BAM, *and* CRAM inputs. This port supports all
+// three. BAM and CRAM inputs are decoded via pkg/htsgo/alnio (which routes
+// CRAM to pkg/htsgo/cram and BAM to pkg/htsgo/sam); the MAPQ filter (`-q`)
+// and per-interval depth cap (`-D`) are honoured for both. A CRAM input may
+// supply a decode reference via Options.Reference (`-T` / the REF_CACHE
+// environment variable), though multicov only reads alignment coordinates
+// and so decodes CRAM correctly even without a reference.
 //
 // Internally each input file is loaded into a per-chromosome interval
 // tree (`pkg/htsgo/bed.IntervalTree`), and the A file is streamed
@@ -35,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	bedpkg "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
@@ -73,9 +76,18 @@ type Options struct {
 	// comparison (mirrors upstream's exact arithmetic). Ignored for BED
 	// inputs.
 	Split bool
+	// Reference is the path to a FASTA reference used to decode
+	// reference-backed CRAM inputs (the analogue of `samtools view -T` /
+	// upstream htslib's `CRAM_OPT_REFERENCE`). It is ignored for BED and
+	// BAM inputs, which carry their coordinates inline. multicov only needs
+	// each alignment's reference span (POS, CIGAR, FLAG, MAPQ), none of
+	// which require base reconstruction, so a CRAM input decodes correctly
+	// even when Reference is empty; the option exists for completeness. The
+	// REF_CACHE environment variable is also honoured.
+	Reference string
 }
 
-// SourceKind tags an input as BED or BAM (CRAM is rejected at the CLI layer).
+// SourceKind tags an input as BED, BAM, or CRAM.
 type SourceKind int
 
 const (
@@ -85,6 +97,11 @@ const (
 	// pkg/htsgo/sam.NewBAMReader). Each primary alignment contributes
 	// one interval over [Pos-1, Pos-1+ReferenceLength()) on its reference.
 	SourceBAM
+	// SourceCRAM is a CRAM file (decoded via pkg/htsgo/alnio, which routes
+	// to pkg/htsgo/cram). It is handled identically to SourceBAM once
+	// decoded: each primary alignment contributes one reference-span
+	// interval. Options.Reference supplies the optional decode reference.
+	SourceCRAM
 )
 
 // Source pairs an io.Reader with its file-format tag so a single Run call
@@ -148,18 +165,26 @@ func RunSources(aR io.Reader, srcs []Source, out io.Writer, opts Options) (int, 
 				return 0, fmt.Errorf("file %d (BED): %w", i+1, err)
 			}
 			trees[i] = t
-		case SourceBAM:
+		case SourceBAM, SourceCRAM:
+			label := "BAM"
+			if s.Kind == SourceCRAM {
+				label = "CRAM"
+			}
+			ar, err := alnio.NewReaderWithReference(s.Reader, opts.Reference)
+			if err != nil {
+				return 0, fmt.Errorf("file %d (%s): %w", i+1, label, err)
+			}
 			if opts.Split {
-				t, meta, err := indexBAMSplit(s.Reader, opts.MinMAPQ)
+				t, meta, err := indexAlignmentsSplit(ar, opts.MinMAPQ)
 				if err != nil {
-					return 0, fmt.Errorf("file %d (BAM): %w", i+1, err)
+					return 0, fmt.Errorf("file %d (%s): %w", i+1, label, err)
 				}
 				trees[i] = t
 				splitMeta[i] = meta
 			} else {
-				t, err := indexBAM(s.Reader, opts.MinMAPQ)
+				t, err := indexAlignments(ar, opts.MinMAPQ)
 				if err != nil {
-					return 0, fmt.Errorf("file %d (BAM): %w", i+1, err)
+					return 0, fmt.Errorf("file %d (%s): %w", i+1, label, err)
 				}
 				trees[i] = t
 			}
@@ -198,13 +223,13 @@ func RunSources(aR io.Reader, srcs []Source, out io.Writer, opts Options) (int, 
 		}
 		for i, t := range trees {
 			var n int
-			if kinds[i] == SourceBAM && opts.Split {
+			if isAlignment(kinds[i]) && opts.Split {
 				n = countOverlapsSplit(rec, t[rec.Chrom], splitMeta[i], opts)
 			} else {
 				n = countOverlaps(rec, t[rec.Chrom], opts, effFracB)
 			}
-			// MaxDepth caps the reported count for BAM inputs.
-			if kinds[i] == SourceBAM && opts.MaxDepth > 0 && n > opts.MaxDepth {
+			// MaxDepth caps the reported count for BAM/CRAM inputs.
+			if isAlignment(kinds[i]) && opts.MaxDepth > 0 && n > opts.MaxDepth {
 				n = opts.MaxDepth
 			}
 			if _, err := fmt.Fprintf(bw, "\t%d", n); err != nil {
@@ -333,23 +358,26 @@ func indexBED(r io.Reader) (map[string]*bedpkg.IntervalTree, error) {
 	return buildTrees(byChrom), nil
 }
 
-// indexBAM decodes every primary alignment from a BGZF-wrapped BAM stream,
-// drops unmapped / secondary / supplementary / duplicate / QC-fail records
-// (matching `bedtools multicov`'s default record filter), enforces the
-// caller-supplied MAPQ floor, and returns a per-reference interval tree
-// over the alignments' reference spans. The recorded interval is
-// [Pos-1, Pos-1+ReferenceLength()) and the BAM strand is the FLAG-derived
-// `-` / `+` so `-s` / `-S` keep working on BAM inputs.
+// isAlignment reports whether a SourceKind is a SAM-family alignment input
+// (BAM or CRAM), as opposed to a plain BED file. Alignment inputs share the
+// `-split`, `-q`, and `-D` handling that BED inputs ignore.
+func isAlignment(k SourceKind) bool {
+	return k == SourceBAM || k == SourceCRAM
+}
+
+// indexAlignments decodes every primary alignment from a SAM-family reader
+// (BAM or CRAM, supplied by pkg/htsgo/alnio), drops unmapped / secondary /
+// supplementary / duplicate / QC-fail records (matching `bedtools
+// multicov`'s default record filter), enforces the caller-supplied MAPQ
+// floor, and returns a per-reference interval tree over the alignments'
+// reference spans. The recorded interval is [Pos-1, Pos-1+ReferenceLength())
+// and the strand is the FLAG-derived `-` / `+` so `-s` / `-S` keep working.
 //
-// `-split` (per-block CIGAR coverage) is handled by indexBAMSplit; this
-// function is only called when Options.Split is false. With Split off the
-// recorded interval is the full reference footprint of each alignment,
+// `-split` (per-block CIGAR coverage) is handled by indexAlignmentsSplit;
+// this function is only called when Options.Split is false. With Split off
+// the recorded interval is the full reference footprint of each alignment,
 // which is what upstream emits without `-split`.
-func indexBAM(r io.Reader, minMAPQ int) (map[string]*bedpkg.IntervalTree, error) {
-	br, err := sam.NewBAMReader(r)
-	if err != nil {
-		return nil, err
-	}
+func indexAlignments(br sam.Reader, minMAPQ int) (map[string]*bedpkg.IntervalTree, error) {
 	byChrom := map[string][]*bedpkg.Record{}
 	for {
 		rec, err := br.Read()
@@ -400,9 +428,9 @@ type splitAln struct {
 	footprint int
 }
 
-// indexBAMSplit is the `-split` counterpart of indexBAM: it walks each
-// alignment's CIGAR and emits one `bed.Record` per contiguous reference-
-// consuming op-run (M/=/X). N ops break a block, advance the reference,
+// indexAlignmentsSplit is the `-split` counterpart of indexAlignments: it
+// walks each alignment's CIGAR and emits one `bed.Record` per contiguous
+// reference-consuming op-run (M/=/X). N ops break a block, advance the reference,
 // and contribute zero coverage — the whole point of `-split`. D, I, S, H,
 // P are handled to upstream's semantics:
 //
@@ -418,11 +446,7 @@ type splitAln struct {
 // `countOverlapsSplit` can group hits back to their parent alignment for
 // the once-per-alignment counting rule and the footprint-fraction filter.
 // The returned `[]splitAln` is indexed by that same alignment index.
-func indexBAMSplit(r io.Reader, minMAPQ int) (map[string]*bedpkg.IntervalTree, []splitAln, error) {
-	br, err := sam.NewBAMReader(r)
-	if err != nil {
-		return nil, nil, err
-	}
+func indexAlignmentsSplit(br sam.Reader, minMAPQ int) (map[string]*bedpkg.IntervalTree, []splitAln, error) {
 	byChrom := map[string][]*bedpkg.Record{}
 	var alns []splitAln
 	for {

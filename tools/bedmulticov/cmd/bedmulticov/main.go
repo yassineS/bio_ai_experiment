@@ -27,9 +27,11 @@ Options:
   -files FILE..          One or more B files (BED or BAM, auto-detected by
                          extension). Variadic.
   -bams FILE..           Alias for -files (kept for upstream compatibility).
-  -q,  --mapq N          Minimum MAPQ for BAM inputs (default 0; ignored for
-                         BED inputs).
-  -D,  --max-depth N     Cap per-A-interval depth count for BAM inputs
+  -T,  --reference FILE  FASTA reference for decoding CRAM inputs (optional;
+                         REF_CACHE is also honoured). Ignored for BED/BAM.
+  -q,  --mapq N          Minimum MAPQ for BAM/CRAM inputs (default 0; ignored
+                         for BED inputs).
+  -D,  --max-depth N     Cap per-A-interval depth count for BAM/CRAM inputs
                          (default 64000; ignored for BED inputs).
   -s,  --strand          Same-strand overlaps only.
   -S,  --opposite        Opposite-strand overlaps only.
@@ -45,14 +47,15 @@ Options:
 
 Notes:
   - BAM input is supported (BGZF-wrapped, decoded via pkg/htsgo/sam).
-  - CRAM input is NOT yet supported — a clear error is surfaced for any
-    .cram path; see docs/CRAM_DESIGN.md.
+  - CRAM input is supported (decoded via pkg/htsgo/alnio -> pkg/htsgo/cram);
+    -T/--reference supplies the optional decode reference.
   - The output preserves A's columns verbatim and appends one integer
     count column per input file, matching upstream's column ordering.
 
 Examples:
   bedmulticov -bed a.bed -files b1.bed b2.bed
   bedmulticov -bed a.bed -bams b1.bam b2.bam -q 20
+  bedmulticov -bed a.bed -bams b1.cram -T ref.fa
   bedmulticov -bed a.bed -files b1.bed b2.bed -s -f 0.5
 `
 
@@ -69,6 +72,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	var (
 		bedPath, output       string
+		reference             string
 		mapq, maxDepth        int
 		sameStrand, oppStrand bool
 		reciprocal            bool
@@ -78,6 +82,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 	)
 
 	cliflag.StringVar(fs, &bedPath, "", "bed", "", "A BED file (required)")
+	cliflag.StringVar(fs, &reference, "T", "reference", "", "FASTA reference for CRAM inputs")
 	cliflag.IntVar(fs, &mapq, "q", "mapq", 0, "Min MAPQ for BAM inputs")
 	cliflag.IntVar(fs, &maxDepth, "D", "max-depth", 64000, "Cap per-A-interval depth count for BAM inputs (0 disables)")
 	cliflag.BoolVar(fs, &sameStrand, "s", "strand", false, "Same-strand overlaps only")
@@ -116,12 +121,6 @@ func run(argv []string, stdout, stderr *os.File) error {
 	if len(all) == 0 {
 		return fmt.Errorf("at least one -files or -bams <FILE> is required (use -h for help)")
 	}
-	// Reject CRAM explicitly — we don't have a CRAM reader yet.
-	for _, p := range all {
-		if strings.HasSuffix(strings.ToLower(p), ".cram") {
-			return fmt.Errorf("CRAM input not yet supported: %q (see docs/CRAM_DESIGN.md)", p)
-		}
-	}
 
 	aR, err := iohelper.OpenReader(bedPath)
 	if err != nil {
@@ -137,15 +136,21 @@ func run(argv []string, stdout, stderr *os.File) error {
 		}
 	}()
 	for _, p := range all {
-		if strings.HasSuffix(strings.ToLower(p), ".bam") {
-			// BAM is BGZF-wrapped; iohelper would auto-decode the BGZF
-			// layer and break sam.NewBAMReader. Open raw.
+		lower := strings.ToLower(p)
+		if strings.HasSuffix(lower, ".bam") || strings.HasSuffix(lower, ".cram") {
+			// BAM is BGZF-wrapped and CRAM carries its own framing; both
+			// must be opened raw — iohelper would strip/garble the
+			// container. alnio sniffs the leading bytes to pick the decoder.
+			kind := bedmulticov.SourceBAM
+			if strings.HasSuffix(lower, ".cram") {
+				kind = bedmulticov.SourceCRAM
+			}
 			f, err := os.Open(p)
 			if err != nil {
 				return fmt.Errorf("opening input %q: %w", p, err)
 			}
 			closers = append(closers, f)
-			sources = append(sources, bedmulticov.Source{Reader: f, Kind: bedmulticov.SourceBAM})
+			sources = append(sources, bedmulticov.Source{Reader: f, Kind: kind})
 			continue
 		}
 		f, err := iohelper.OpenReader(p)
@@ -171,6 +176,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		MinMAPQ:        mapq,
 		MaxDepth:       maxDepth,
 		Split:          split,
+		Reference:      reference,
 	}
 	if _, err := bedmulticov.RunSources(aR, sources, w, opts); err != nil {
 		return err

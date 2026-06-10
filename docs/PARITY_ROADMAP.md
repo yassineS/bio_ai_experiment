@@ -524,6 +524,14 @@ has no missing subcommands**.
 Missing subcommands: none. All algorithmic, BEDPE, and converter
 subcommands are ported. Remaining bedtools work is option-tail polish.
 
+CRAM-input + option-tail wave (this PR): `bedmulticov` now accepts CRAM
+inputs anywhere it accepts BAM; `bedmultiinter` now autodetects VCF/GFF
+inputs and takes `-names` as a space-separated variadic list; `bedsample`
+now reproduces upstream's seeded sampler byte-for-byte via an in-tree
+`std::mt19937_64` port. All three closures are backed by live-upstream
+parity tests (build the real `bedtools` binary, compare byte-for-byte,
+`t.Fatalf` never `t.Skip`). See the per-subcommand notes below.
+
 Resolved in the column-ops + discrepancies wave:
 
 - `bedjaccard` now pre-merges A and B before computing intersection /
@@ -565,11 +573,20 @@ Option-tail gaps on the wave-2 additions:
   `#`-prefixed comment, `track`, and `browser` directive lines are
   buffered and emitted verbatim ahead of the sorted body. Upstream
   `sort.t09` now passes byte-for-byte.
-- `bedsample` — output PRNG is Go `math/rand` and is not byte-compatible
-  with upstream's C++ sampler. Seeded runs are deterministic within
-  `bedsample` (same seed → same output) but cross-tool record-for-record
-  parity with upstream is not feasible without porting upstream's
-  `random_shuffle`.
+- `bedsample` — **byte-for-byte parity with upstream's seeded sampler is
+  now achieved** (this wave). The reservoir replacement uses an in-tree,
+  stdlib-only Go port of `std::mt19937_64` (`mt19937.go`) — the exact
+  64-bit Mersenne Twister upstream's default (non-`USE_RAND`) build uses —
+  together with upstream's exact rejection-sampling bound
+  (`rand_range`: `max = mt.max() - (mt.max() % limit); do n = mt(); while
+  (n >= max); return n % limit`). The fill phase draws no RNG and BED
+  output is emitted in reservoir-slot order (upstream only re-sorts when
+  the output type is BAM), mirroring `sampleFile.cpp`. A live-upstream
+  test (`upstream_parity_test.go`) asserts byte-for-byte equality across
+  several `(N, seed)` pairs plus the `-header` and `N == total` (fill-only)
+  cases. Caveat: parity holds against a **default** upstream build; a
+  `USE_RAND=1` build (glibc `rand()`) is platform-dependent and out of
+  scope.
 - `bedmulticov` — <a id="bedmulticov-bam"></a>BAM input is wired through
   via `pkg/htsgo/sam.NewBAMReader`; primary alignments contribute
   one interval each over their reference span, and `-q` MAPQ filter +
@@ -586,12 +603,34 @@ Option-tail gaps on the wave-2 additions:
   preserved here for byte-for-byte parity (mirrors
   `multiBamCov.cpp::FindBlockedOverlaps`). Upstream `multicov.t5`
   through `t9` now pass.
-  **CRAM** input remains deferred — see `docs/CRAM_DESIGN.md`; the CLI
-  surfaces a clear error for `.cram`.
-- `bedmultiinter` — VCF/GFF input not implemented (upstream autodetects
-  these via `BedFile`). Input is assumed sorted; out-of-order records
-  within a single file are tolerated only because each file is
-  re-sorted and merged before the sweep.
+  **CRAM** input is now supported (this wave): `.cram` inputs are routed
+  through `pkg/htsgo/alnio.NewReaderWithReference` (which dispatches CRAM
+  to `pkg/htsgo/cram` and BAM to `pkg/htsgo/sam`), so every `-bams` /
+  `-files` path that accepts BAM also accepts CRAM. The same `-q` MAPQ
+  filter, `-D` depth cap, `-s`/`-S` strand filter, and `-split` block math
+  apply unchanged (multicov reads only POS/CIGAR/FLAG/MAPQ, none of which
+  need base reconstruction, so CRAM decodes correctly even without a
+  reference; `-T`/`--reference` and `REF_CACHE` are honoured when present).
+  A live-upstream parity test (`upstream_parity_test.go`) builds upstream
+  `bedtools`, generates a `.crai` for an htslib-produced CRAM fixture via
+  the in-tree `cram.CreateCRAI` (proving index interop), and asserts
+  byte-for-byte parity for the default, `-q`, and `-s` cases.
+- `bedmultiinter` — **VCF/GFF input is now implemented** (this wave). The
+  input format is autodetected per file from the first non-header data
+  line, mirroring upstream `BedFile::parseLine`'s precedence (BED when
+  cols 2,3 are integers; VCF when col 2 is an integer and there are ≥8
+  cols; GFF when there are exactly 8 or 9 cols with integer cols 4,5),
+  with a `##fileformat=VCF` header forcing VCF. Coordinates are converted
+  to 0-based half-open spans exactly as upstream does (VCF: `POS-1 ..
+  POS-1+len(REF)`; GFF: `start-1 .. end`). A live-upstream parity test
+  covers a mixed VCF+GFF+BED 3-way intersection and the upstream issue311
+  single-record VCF/GFF fixtures, byte-for-byte. Input is still assumed
+  sorted; out-of-order records within a single file are tolerated only
+  because each file is re-sorted and merged before the sweep.
+  CLI: `-names` is now space-separated variadic (`-names A B C`), matching
+  upstream's `multiIntersectBedMain.cpp` argument loop (previously the
+  port took a single comma-separated token, which broke drop-in
+  compatibility).
 
 Column-op closure: the shared `bedmerge.ApplyOp` (used by `bedmerge`,
 `bedgroupby`, `bedmap`, and `bedcoverage`) now supports the full

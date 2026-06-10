@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -23,7 +22,8 @@ Usage:
 
 Options:
   -i FILE..              N input BED files (variadic; required, '-' for stdin).
-  -names CSV             Comma-separated labels (one per input). Default:
+  -names NAME..          Space-separated labels (one per input), matching
+                         upstream's variadic '-names A B C' syntax. Default:
                          per-file 1-based index in the 'list' column and the
                          filename in the header row.
   -empty                 Emit '0'-count regions at chrom heads, tails, and
@@ -42,7 +42,7 @@ Output columns:
 
 Examples:
   bedmultiinter -i a.bed b.bed c.bed
-  bedmultiinter -i a.bed b.bed c.bed -header -names A,B,C
+  bedmultiinter -i a.bed b.bed c.bed -header -names A B C
   bedmultiinter -i a.bed b.bed c.bed -empty -g sizes.txt -header
 `
 
@@ -58,7 +58,6 @@ func run(argv []string, stdout, stderr *os.File) error {
 	fs.SetOutput(stderr)
 
 	var (
-		names         string
 		genome        string
 		filler        string
 		output        string
@@ -68,7 +67,6 @@ func run(argv []string, stdout, stderr *os.File) error {
 		help, showVer bool
 	)
 
-	cliflag.StringVar(fs, &names, "", "names", "", "Comma-separated labels")
 	cliflag.StringVar(fs, &genome, "g", "genome", "", "Chrom-sizes file")
 	cliflag.StringVar(fs, &filler, "", "filler", "0", "Indicator for absent files")
 	cliflag.BoolVar(fs, &empty, "", "empty", false, "Emit 0-count regions")
@@ -80,8 +78,12 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 
-	// Variadic -i pre-extracted before the rest of the flags are parsed.
-	filesPaths, argvRest := extractVarArg(argv, []string{"-i", "--i"})
+	// Variadic -i and -names pre-extracted before the rest of the flags are
+	// parsed. Both mirror upstream's space-separated multi-value syntax
+	// (`-i a.bed b.bed`, `-names A B C`); everything up to the next
+	// dash-prefixed token belongs to the flag.
+	filesPaths, argv1 := extractVarArg(argv, []string{"-i", "--i"})
+	nameSlice, argvRest := extractVarArg(argv1, []string{"-names", "--names"})
 
 	if err := fs.Parse(argvRest); err != nil {
 		return err
@@ -106,14 +108,12 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	// Resolve names: explicit -names overrides; otherwise no per-row
 	// labels (numeric indices in the list column) but the header (if
-	// requested) shows raw filenames as supplied.
-	var nameSlice []string
-	if names != "" {
-		nameSlice = strings.Split(names, ",")
-		if len(nameSlice) != len(filesPaths) {
-			return fmt.Errorf("-names supplies %d labels but -i has %d files",
-				len(nameSlice), len(filesPaths))
-		}
+	// requested) shows raw filenames as supplied. Upstream rejects a
+	// mismatched count ("The number of file titles (-names) does not match
+	// the number of files (-i)").
+	if len(nameSlice) > 0 && len(nameSlice) != len(filesPaths) {
+		return fmt.Errorf("the number of file titles (-names=%d) does not match the number of files (-i=%d)",
+			len(nameSlice), len(filesPaths))
 	}
 
 	// Optional chrom-size map for -empty.

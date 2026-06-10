@@ -275,13 +275,19 @@ func TestParity_T10_BAMInput_MultiFile(t *testing.T) {
 	}
 }
 
-// Smoke check that the BAM-input rejection path returns an error
-// (consumed by the CLI; here we exercise the option-validation surface).
-func TestRun_RejectsConflictingFlagsAtLibraryLayer(t *testing.T) {
-	// We can't easily route a .bam path through Run (it expects pre-opened
-	// readers), so the CLI-layer rejection is exercised by
-	// TestCLI_RejectsBAM. This helper documents the contract.
-	if strings.HasSuffix("dummy.bam", ".bam") { // tautology — intentional
-		return
+// TestRunSources_CRAMInput exercises the CRAM path through RunSources using
+// the real htslib-produced a.cram fixture (no upstream binary needed). Both
+// of its mapped reads overlap chr1:10000-10100; neither overlaps chr1:9000-9500.
+func TestRunSources_CRAMInput(t *testing.T) {
+	cR := openFixture(t, "a.cram")
+	a := "chr1\t10000\t10100\tregion1\nchr1\t9000\t9500\tregion2\n"
+	var got bytes.Buffer
+	if _, err := RunSources(strings.NewReader(a),
+		[]Source{{Reader: cR, Kind: SourceCRAM}}, &got, Options{}); err != nil {
+		t.Fatalf("RunSources(CRAM): %v", err)
+	}
+	want := "chr1\t10000\t10100\tregion1\t2\nchr1\t9000\t9500\tregion2\t0\n"
+	if got.String() != want {
+		t.Fatalf("CRAM mismatch:\n got: %q\nwant: %q", got.String(), want)
 	}
 }

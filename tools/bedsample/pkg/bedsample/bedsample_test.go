@@ -84,15 +84,47 @@ func TestSample_NoReplacement(t *testing.T) {
 	}
 }
 
-func TestSample_OutputOrderMatchesInput(t *testing.T) {
+func TestSample_OutputIsSubsetOfInput(t *testing.T) {
+	// Upstream emits sampled BED records in reservoir-slot order, NOT input
+	// order (it only re-sorts when the output type is BAM). So the only
+	// invariants we can assert are: every output line is a distinct input
+	// record, and the count is exactly N.
 	in := buildInput(50)
+	inputSet := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimRight(in, "\n"), "\n") {
+		inputSet[line] = true
+	}
+
 	var buf bytes.Buffer
 	if _, err := Sample(strings.NewReader(in), &buf, Options{N: 20, Seed: 99}); err != nil {
 		t.Fatalf("Sample: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	// Each line begins with `chr1\t<start>\t<end>` where <start> is
-	// monotonic. Output must be sorted by input order.
+	if len(lines) != 20 {
+		t.Fatalf("got %d lines, want 20", len(lines))
+	}
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		if !inputSet[line] {
+			t.Errorf("output line %q is not an input record", line)
+		}
+		if seen[line] {
+			t.Errorf("output line %q appears more than once", line)
+		}
+		seen[line] = true
+	}
+}
+
+func TestSample_FillPhasePreservesInputOrder(t *testing.T) {
+	// When N >= total records the reservoir never enters the replacement
+	// phase, so the slot order equals input order. This documents upstream's
+	// fill-phase behaviour (keepRecord without an RNG draw).
+	in := buildInput(15)
+	var buf bytes.Buffer
+	if _, err := Sample(strings.NewReader(in), &buf, Options{N: 15, Seed: 99}); err != nil {
+		t.Fatalf("Sample: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	prev := -1
 	for _, line := range lines {
 		parts := strings.Split(line, "\t")
@@ -104,7 +136,7 @@ func TestSample_OutputOrderMatchesInput(t *testing.T) {
 			t.Fatalf("bad int %q: %v", parts[1], err)
 		}
 		if n <= prev {
-			t.Errorf("output not in input order: %d after %d", n, prev)
+			t.Errorf("fill-phase output not in input order: %d after %d", n, prev)
 		}
 		prev = n
 	}
