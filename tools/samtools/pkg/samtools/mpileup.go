@@ -81,10 +81,6 @@ type MpileupOptions struct {
 	BamList string
 }
 
-// ErrMpileupBCFNotImplemented is returned when callers pass -u/-g for BCF
-// output. Tracked at docs/PARITY_ROADMAP.md#samtools.
-var ErrMpileupBCFNotImplemented = fmt.Errorf("samtools mpileup: BCF output (-u/-g) not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
-
 // ErrMpileupBAQNotImplemented is returned when callers pass -E (redo BAQ).
 // Tracked at docs/PARITY_ROADMAP.md#samtools.
 var ErrMpileupBAQNotImplemented = fmt.Errorf("samtools mpileup: -E/--redo-baq not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")

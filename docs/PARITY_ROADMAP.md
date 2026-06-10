@@ -1516,13 +1516,44 @@ Missing subcommands (in rough priority order):
   accepted but treated as a no-op since we always run the full
   intersection. `-d/-D` (tag-value filter) and `-N` (qname file) landed
   in the view-d-D-N PR.
-- **`mpileup` tail** beyond PR #88 wiring: the remaining genuine gap is
-  BCF / genotype-likelihood output (`-g/-u`). `-aa` zero-fill of empty
-  contigs is implemented (see `TestMpileup_AA_ZeroFillTableDriven`). The
-  text-pileup path is complete. `-g/-u` requires the genotype-likelihood
-  model (`bam2bcf`) plus a BCF emit path; `reference_code/htslib`
-  (`errmod.c`, the MAQ likelihood) is now vendored, so the reference
-  source for the port is available — see the "deferred" note below.
+- **`mpileup` BCF / genotype-likelihood output (`-g/-u`) — DONE.** `-aa`
+  zero-fill of empty contigs is implemented (see
+  `TestMpileup_AA_ZeroFillTableDriven`); the text-pileup path is complete.
+  `-g` (BGZF-compressed BCF) and `-u` (uncompressed BCF) now emit the
+  per-site genotype-likelihood records (`FORMAT/PL`, the `<*>` unseen
+  allele, `INFO/DP/I16/QS/MQ0F`, `FORMAT/AD`).
+
+  Upstream note: modern `samtools mpileup` (the vendored
+  `reference_code/samtools` is 1.23.1) **removed** BCF/VCF output entirely
+  (the `-g`/`-u` short options are no longer in the getopt string;
+  upstream prints "using samtools mpileup to generate BCF or VCF files has
+  been removed … please use bcftools mpileup instead"). `bcftools mpileup`
+  is upstream's sanctioned replacement and is itself a thin driver over the
+  same htslib bam2bcf genotype-likelihood pipeline. Rather than re-port
+  bam2bcf a second time, `samtools mpileup -g/-u` **delegates** to the
+  already-ported, golden-validated bcftools mpileup engine
+  (`tools/bcftools/pkg/bcftools`: `errmod` MAQ model →
+  `bcf_call_glfgen`/`combine`/`2bcf` → `pkg/htsgo/bcf` emit). The wiring
+  lives in `tools/samtools/pkg/samtools/mpileup_bcf.go` (`MpileupBCF` /
+  `MpileupBCFOptions`) and the cmd `-g/-u` branch in
+  `cmd/samtools/main.go`. `-Q`/`-d` use the genotype-likelihood-caller
+  defaults (min-BQ 1, max-depth 250) unless explicitly set; `-l` maps to
+  bcftools `--targets-file`.
+
+  Validation: `TestMpileupBCF_*` (in `mpileup_bcf_test.go`) build a
+  FASTA+SAM fixture, run `MpileupBCF`, decode the emitted BCF back to VCF
+  text through the in-tree BCF reader (`bcftools.ViewFile`), and assert the
+  PL/`<*>`/`AD` records; `-g` and `-u` decode to identical records. The
+  cmd-level `TestRunMpileupBCFWiring` drives the real CLI args. A live
+  upstream `samtools mpileup -g` comparison is not possible (the path was
+  removed upstream); the delegated bcftools mpileup engine is itself
+  validated byte-for-byte against `bcftools mpileup` goldens
+  (`mpileup.11.out`, `mpileup.12.out`, …) — see the bcftools section below.
+
+  Remainder: the bcftools mpileup port's deferred indel caller
+  (`bam2bcf_indel.c`) is inherited here — the SNP genotype-likelihood path
+  is complete, full indel-row calling is the shared deferred item tracked
+  in the bcftools section (slice 4 / `bam2bcf_indel`).
 
 Plus:
 
