@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -62,6 +63,45 @@ func main() {
 	}
 }
 
+// gzipWriteCloser wraps a destination WriteCloser so that data written to it is
+// gzip-compressed. Closing it flushes and closes the gzip stream and then the
+// underlying destination, mirroring upstream sickle's -g/--gzip-output.
+type gzipWriteCloser struct {
+	gz   *gzip.Writer
+	dest io.WriteCloser
+}
+
+func (g *gzipWriteCloser) Write(p []byte) (int, error) { return g.gz.Write(p) }
+
+func (g *gzipWriteCloser) Close() error {
+	if err := g.gz.Close(); err != nil {
+		g.dest.Close()
+		return err
+	}
+	return g.dest.Close()
+}
+
+// maybeGzip wraps w in a gzip compressor when on is true; otherwise it returns w
+// unchanged. It lets the -g/--gzip-output compatibility flag force gzip output
+// regardless of the output filename's extension, as upstream sickle does.
+func maybeGzip(w io.WriteCloser, on bool) io.WriteCloser {
+	if !on {
+		return w
+	}
+	return &gzipWriteCloser{gz: gzip.NewWriter(w), dest: w}
+}
+
+// mustOpenWriter opens filename for writing (with transparent gzip-by-extension
+// via iohelper) and exits with an error message tagged by label on failure.
+func mustOpenWriter(filename, label string) io.WriteCloser {
+	w, err := iohelper.OpenWriter(filename)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating %s file: %v\n", label, err)
+		os.Exit(1)
+	}
+	return w
+}
+
 func runSingleEnd() {
 	fs := flag.NewFlagSet("sickle se", flag.ExitOnError)
 
@@ -75,6 +115,8 @@ func runSingleEnd() {
 		noFivePrime     bool
 		truncateN       bool
 		quiet           bool
+		gzipOutput      bool
+		debugCompat     bool
 		jsonOutput      string
 		htmlReport      string
 		progress        bool
@@ -90,7 +132,9 @@ func runSingleEnd() {
 	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
 	cliflag.BoolVar(fs, &noFivePrime, "x", "no-fiveprime", false, "Don't trim 5' end")
 	cliflag.BoolVar(fs, &truncateN, "n", "trunc-n", false, "Truncate sequences at position of first N")
-	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &quiet, "z", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &gzipOutput, "g", "gzip-output", false, "Gzip-compress the output stream (upstream -g)")
+	cliflag.BoolVar(fs, &debugCompat, "d", "debug", false, "Upstream debug flag, accepted for compatibility (no effect)")
 	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics in JSON format to file")
 	cliflag.StringVar(fs, &htmlReport, "", "html", "", "Generate HTML report to file")
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
@@ -108,7 +152,9 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
 		fmt.Fprintf(os.Stderr, "  -x, --no-fiveprime          Don't trim 5' end\n")
 		fmt.Fprintf(os.Stderr, "  -n, --trunc-n               Truncate sequences at position of first N\n")
-		fmt.Fprintf(os.Stderr, "  --quiet                     Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "  -z, --quiet                 Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "  -g, --gzip-output           Gzip-compress the output stream (upstream -g)\n")
+		fmt.Fprintf(os.Stderr, "  -d, --debug                 Upstream debug flag, accepted for compatibility (no effect)\n")
 		fmt.Fprintf(os.Stderr, "  --json FILE                 Output statistics in JSON format to file\n")
 		fmt.Fprintf(os.Stderr, "  --html FILE                 Generate HTML report to file\n")
 		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
@@ -118,7 +164,10 @@ func runSingleEnd() {
 		fmt.Fprintf(os.Stderr, "  sickle se -f input.fastq -o output.fastq -q 20 -l 20\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	// Validate required arguments
 	if fastqFile == "" {
@@ -155,12 +204,17 @@ func runSingleEnd() {
 	if outFileName == "" {
 		outFileName = "-"
 	}
-	outFile, err := iohelper.OpenWriter(outFileName)
+	rawOut, err := iohelper.OpenWriter(outFileName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 		os.Exit(1)
 	}
+	outFile := maybeGzip(rawOut, gzipOutput)
 	defer outFile.Close()
+
+	// The upstream -d/--debug flag only printed internal cut coordinates; it is
+	// accepted for command-line compatibility but has no effect here.
+	_ = debugCompat
 
 	// Set up trim options
 	opts := sickle.TrimOptions{
@@ -218,6 +272,8 @@ func runPairedEnd() {
 		noFivePrime     bool
 		truncateN       bool
 		quiet           bool
+		gzipOutput      bool
+		debugCompat     bool
 		jsonOutput      string
 		htmlReport      string
 		progress        bool
@@ -236,7 +292,9 @@ func runPairedEnd() {
 	cliflag.IntVar(fs, &windowSize, "w", "window-size", 10, "Window size for quality assessment (default: 10)")
 	cliflag.BoolVar(fs, &noFivePrime, "x", "no-fiveprime", false, "Don't trim 5' end")
 	cliflag.BoolVar(fs, &truncateN, "n", "trunc-n", false, "Truncate sequences at position of first N")
-	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &quiet, "z", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &gzipOutput, "g", "gzip-output", false, "Gzip-compress the output streams (upstream -g)")
+	cliflag.BoolVar(fs, &debugCompat, "d", "debug", false, "Upstream debug flag, accepted for compatibility (no effect)")
 	cliflag.StringVar(fs, &jsonOutput, "", "json", "", "Output statistics in JSON format to file")
 	cliflag.StringVar(fs, &htmlReport, "", "html", "", "Generate HTML report to file")
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
@@ -257,7 +315,9 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "  -w, --window-size INT       Window size for quality assessment (default: 10)\n")
 		fmt.Fprintf(os.Stderr, "  -x, --no-fiveprime          Don't trim 5' end\n")
 		fmt.Fprintf(os.Stderr, "  -n, --trunc-n               Truncate sequences at position of first N\n")
-		fmt.Fprintf(os.Stderr, "  --quiet                     Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "  -z, --quiet                 Don't print statistics\n")
+		fmt.Fprintf(os.Stderr, "  -g, --gzip-output           Gzip-compress the output streams (upstream -g)\n")
+		fmt.Fprintf(os.Stderr, "  -d, --debug                 Upstream debug flag, accepted for compatibility (no effect)\n")
 		fmt.Fprintf(os.Stderr, "  --json FILE                 Output statistics in JSON format to file\n")
 		fmt.Fprintf(os.Stderr, "  --html FILE                 Generate HTML report to file\n")
 		fmt.Fprintf(os.Stderr, "  --progress                  Show progress reporting\n")
@@ -269,7 +329,10 @@ func runPairedEnd() {
 		fmt.Fprintf(os.Stderr, "to both R1 and R2. Mismatched encodings between mates are not handled separately.\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	// Validate required arguments
 	if fastqFile1 == "" || fastqFile2 == "" {
@@ -313,29 +376,31 @@ func runPairedEnd() {
 		os.Exit(1)
 	}
 
+	// The upstream -d/--debug flag only printed internal cut coordinates; it is
+	// accepted for command-line compatibility but has no effect here.
+	_ = debugCompat
+
 	// Open output files (with automatic gzip support)
-	out1, err := iohelper.OpenWriter(outputFile1)
+	raw1, err := iohelper.OpenWriter(outputFile1)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating first output file: %v\n", err)
 		os.Exit(1)
 	}
+	out1 := maybeGzip(raw1, gzipOutput)
 	defer out1.Close()
 
-	out2, err := iohelper.OpenWriter(outputFile2)
+	raw2, err := iohelper.OpenWriter(outputFile2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating second output file: %v\n", err)
 		os.Exit(1)
 	}
+	out2 := maybeGzip(raw2, gzipOutput)
 	defer out2.Close()
 
 	// Open optional single output file (with automatic gzip support)
 	var outSingle io.Writer
 	if outputSingle != "" {
-		f, err := iohelper.OpenWriter(outputSingle)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating single output file: %v\n", err)
-			os.Exit(1)
-		}
+		f := maybeGzip(mustOpenWriter(outputSingle, "single output"), gzipOutput)
 		defer f.Close()
 		outSingle = f
 	}
@@ -410,7 +475,7 @@ func runBatch() {
 	cliflag.IntVar(fs, &numWorkers, "j", "jobs", 4, "Number of parallel workers (default: 4)")
 	cliflag.BoolVar(fs, &noFivePrime, "x", "no-fiveprime", false, "Don't trim 5' end")
 	cliflag.BoolVar(fs, &truncateN, "n", "trunc-n", false, "Truncate sequences at position of first N")
-	cliflag.BoolVar(fs, &quiet, "", "quiet", false, "Don't print statistics")
+	cliflag.BoolVar(fs, &quiet, "z", "quiet", false, "Don't print statistics")
 	cliflag.BoolVar(fs, &jsonOutput, "", "json", false, "Output statistics in JSON format for each file")
 	cliflag.BoolVar(fs, &htmlReport, "", "html", false, "Generate HTML report for each file")
 	cliflag.BoolVar(fs, &progress, "", "progress", false, "Show progress reporting")
@@ -441,7 +506,10 @@ func runBatch() {
 		fmt.Fprintf(os.Stderr, "\nThe input list file should contain one FASTQ file path per line.\n")
 	}
 
-	fs.Parse(os.Args[2:])
+	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	// Validate required arguments
 	if fileList == "" {

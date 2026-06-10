@@ -21,6 +21,10 @@ type ConvertOptions struct {
 	OutputFormat OutputFormat
 	// CompressLevel forwards the -l gzip level when OutputFormat is OutputVCFGz.
 	CompressLevel int
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
+	// the framed result decodes byte-identically regardless of thread count.
+	Threads int
 
 	// Samples / SamplesFile restrict the per-sample columns to the named
 	// set (in the requested order). Missing names are skipped silently
@@ -129,6 +133,7 @@ func writeConverted(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opt
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, hdr)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools convert: %w", err)

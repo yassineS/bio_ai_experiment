@@ -87,6 +87,10 @@ type VCFFilterOptions struct {
 	// OutputFormat / CompressLevel forward to the shared openOutput helper.
 	OutputFormat  OutputFormat
 	CompressLevel int
+	// Threads is upstream's -@/--threads. When greater than 1 it enables
+	// parallel BGZF compression of -O z and -O b output via bgzf.MultiWriter;
+	// the framed result decodes byte-identically regardless of thread count.
+	Threads int
 
 	// IncludeExpr / ExcludeExpr drive the soft-filter decision. A record
 	// passes the test when (include matches) OR (exclude does not match).
@@ -205,6 +209,7 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 	w, finish, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
+		Threads:       opts.Threads,
 	}, hdr)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools filter: %w", err)
