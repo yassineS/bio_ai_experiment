@@ -9,27 +9,32 @@ import (
 )
 
 // wantInput1ARecords is the expected text-SAM body of decoding
-// dat/test_input_1_a.cram. Records 1-14 are byte-for-byte equal to the
-// sibling dat/test_input_1_a.sam; record 15 (the unmapped read u1)
-// differs from that file because CRAM does not store an unmapped read's
-// mapping quality or CIGAR — samtools' own dat/reset/basic.cram.input
-// .expected confirms the decode is "u1 4 * 0 0 * * 0 0 ...". The CRAM
-// file is reference-free (RR preservation flag false), so every base is
+// dat/test_input_1_a.cram. It is byte-for-byte equal to `samtools view`
+// of that fixture (the parity oracle): the fields match the sibling
+// dat/test_input_1_a.sam except for the RG/PG tag order (RG comes from a
+// CRAM data series and is appended after the dictionary tags) and record
+// 15 (the unmapped read u1, which CRAM stores without mapping quality or
+// CIGAR — decoded as "u1 4 * 0 0 * * 0 0 ..."). The CRAM file is
+// reference-free (RR preservation flag false), so every base is
 // recovered with no external reference.
+// The tag order mirrors samtools view of this fixture: a record's RG tag
+// comes from a dedicated CRAM data series (not the tag dictionary), so on
+// decode it is appended after the dictionary tags (e.g. PG) rather than
+// in the original SAM's position — exactly htslib's behaviour.
 var wantInput1ARecords = []string{
-	"r000\t99\tinsert\t50\t30\t10M\t=\t80\t30\tATTTAGCTAC\tAAAAAAAAAA\tRG:Z:cow\tPG:Z:bull",
-	"r000\t211\tinsert\t80\t30\t10M\t=\t50\t-30\tCCCAATCATT\tAAAAAAAAAA\tRG:Z:cow\tPG:Z:bull",
-	"r001\t163\tref1\t7\t30\t8M4I4M1D3M\t=\t37\t39\tTTAGATAAAGAGGATACTG\t*\tXX:B:S,12561,2,20,112\tYY:i:100\tRG:Z:fish\tPG:Z:colt",
+	"r000\t99\tinsert\t50\t30\t10M\t=\t80\t30\tATTTAGCTAC\tAAAAAAAAAA\tPG:Z:bull\tRG:Z:cow",
+	"r000\t211\tinsert\t80\t30\t10M\t=\t50\t-30\tCCCAATCATT\tAAAAAAAAAA\tPG:Z:bull\tRG:Z:cow",
+	"r001\t163\tref1\t7\t30\t8M4I4M1D3M\t=\t37\t39\tTTAGATAAAGAGGATACTG\t*\tXX:B:S,12561,2,20,112\tYY:i:100\tPG:Z:colt\tRG:Z:fish",
 	"r002\t0\tref1\t9\t30\t1S2I6M1P1I1P1I4M2I\t*\t0\t0\tAAAAGATAAGGGATAAA\t*\tXA:Z:abc\tXB:i:-10\tPG:Z:colt",
 	"r003\t0\tref1\t9\t30\t5H6M\t*\t0\t0\tAGCTAA\t*\tRG:Z:cow",
-	"r004\t0\tref1\t16\t30\t6M14N1I5M\t*\t0\t0\tATAGCTCTCAGC\t*\tRG:Z:colt\tPG:Z:colt",
-	"r003\t16\tref1\t29\t30\t6H5M\t*\t0\t0\tTAGGC\t*\tRG:Z:cow\tPG:Z:colt",
-	"r001\t83\tref1\t37\t30\t9M\t=\t7\t-39\tCAGCGCCAT\t*\tRG:Z:fish\tPG:Z:colt",
-	"x1\t0\tref2\t1\t30\t20M\t*\t0\t0\tAGGTTTTATAAAACAAATAA\t*\tRG:Z:colt\tPG:Z:bull",
-	"x2\t0\tref2\t2\t30\t21M\t*\t0\t0\tGGTTTTATAAAACAAATAATT\t?????????????????????\tRG:Z:colt\tPG:Z:bull",
-	"x3\t0\tref2\t6\t30\t9M4I13M\t*\t0\t0\tTTATAAAACAAATAATTAAGTCTACA\t??????????????????????????\tRG:Z:fish\tPG:Z:bull",
-	"x4\t0\tref2\t10\t30\t25M\t*\t0\t0\tCAAATAATTAAGTCTACAGAGCAAC\t?????????????????????????\tRG:Z:fish\tPG:Z:bull",
-	"x5\t0\tref2\t12\t30\t24M\t*\t0\t0\tAATAATTAAGTCTACAGAGCAACT\t????????????????????????\tRG:Z:fish\tPG:Z:bull",
+	"r004\t0\tref1\t16\t30\t6M14N1I5M\t*\t0\t0\tATAGCTCTCAGC\t*\tPG:Z:colt\tRG:Z:colt",
+	"r003\t16\tref1\t29\t30\t6H5M\t*\t0\t0\tTAGGC\t*\tPG:Z:colt\tRG:Z:cow",
+	"r001\t83\tref1\t37\t30\t9M\t=\t7\t-39\tCAGCGCCAT\t*\tPG:Z:colt\tRG:Z:fish",
+	"x1\t0\tref2\t1\t30\t20M\t*\t0\t0\tAGGTTTTATAAAACAAATAA\t*\tPG:Z:bull\tRG:Z:colt",
+	"x2\t0\tref2\t2\t30\t21M\t*\t0\t0\tGGTTTTATAAAACAAATAATT\t?????????????????????\tPG:Z:bull\tRG:Z:colt",
+	"x3\t0\tref2\t6\t30\t9M4I13M\t*\t0\t0\tTTATAAAACAAATAATTAAGTCTACA\t??????????????????????????\tPG:Z:bull\tRG:Z:fish",
+	"x4\t0\tref2\t10\t30\t25M\t*\t0\t0\tCAAATAATTAAGTCTACAGAGCAAC\t?????????????????????????\tPG:Z:bull\tRG:Z:fish",
+	"x5\t0\tref2\t12\t30\t24M\t*\t0\t0\tAATAATTAAGTCTACAGAGCAACT\t????????????????????????\tPG:Z:bull\tRG:Z:fish",
 	"x6\t0\tref2\t14\t30\t23M\t*\t0\t0\tTAATTAAGTCTACAGAGCAACTA\t???????????????????????\tRG:Z:cow",
 	"u1\t4\t*\t0\t0\t*\t*\t0\t0\tTAATTAAGTCTACAGAAAAAAAA\t???????????????????????",
 }
@@ -230,20 +235,28 @@ func TestCigarBuilder(t *testing.T) {
 	}
 }
 
-// TestMergeAux checks that the read-group tag is spliced in before the
-// program tag, or appended when no program tag is present.
+// TestMergeAux checks that the data-series read-group tag is appended
+// after the dictionary tags (htslib's order), is suppressed when the
+// dictionary already carries an RG tag, and adds nothing when nil.
 func TestMergeAux(t *testing.T) {
 	rg := &sam.Aux{Tag: "RG", Type: 'Z', Value: "grp"}
 	xx := sam.Aux{Tag: "XX", Type: 'i', Value: int64(1)}
 	pg := sam.Aux{Tag: "PG", Type: 'Z', Value: "prog"}
 
+	// RG from the data series is appended last, after the dictionary tags.
 	got := mergeAux([]sam.Aux{xx, pg}, rg)
-	if len(got) != 3 || got[1].Tag != "RG" {
-		t.Errorf("RG should be spliced before PG, got %v", auxTags(got))
+	if len(got) != 3 || got[2].Tag != "RG" {
+		t.Errorf("RG should be appended after the dictionary tags, got %v", auxTags(got))
 	}
 	got = mergeAux([]sam.Aux{xx}, rg)
 	if len(got) != 2 || got[1].Tag != "RG" {
-		t.Errorf("RG should be appended when no PG, got %v", auxTags(got))
+		t.Errorf("RG should be appended last, got %v", auxTags(got))
+	}
+	// A dictionary that already carries RG suppresses the data-series RG.
+	dictRG := sam.Aux{Tag: "RG", Type: 'Z', Value: "dict"}
+	got = mergeAux([]sam.Aux{dictRG, xx}, rg)
+	if len(got) != 2 || got[0].Value != "dict" {
+		t.Errorf("a dictionary RG should be kept and the data-series RG dropped, got %v", auxTags(got))
 	}
 	if got := mergeAux([]sam.Aux{xx}, nil); len(got) != 1 {
 		t.Errorf("nil RG should add nothing, got %v", auxTags(got))

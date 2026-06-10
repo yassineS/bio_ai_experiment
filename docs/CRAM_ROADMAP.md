@@ -5,13 +5,41 @@ up-front decisions). This doc is the *how*: the shopping plan, the
 PR-by-PR execution sequence, and the testing + compliance strategy.
 
 **Status: read/write + all block codecs + lossy quality binning
-complete (C1–C11, C-LZMA, C-Arith, C-FQZComp, C-NameTok landed).**
+complete (C1–C11, C-LZMA, C-Arith, C-FQZComp, C-NameTok landed); the
+C-EmbedRef closure pass landed embedded-reference decode, the `cF`
+internal-tag strip, the htslib RG/PG aux-order rule, and a
+feature-ordering fix that unblocked v2.1 decode.**
 Pure-Go CRAM v3.0/v3.1 read and write, reference resolution, `.crai`
 index read/write, and samtools-CLI integration are all merged, every
 CRAM block compression method (0–8 — raw, gzip, bzip2, LZMA, rANS
 4x8/4x16, the arith_dynamic range coder, fqzcomp and the name
 tokeniser) is implemented, and opt-in lossy quality-score binning on
 the encode side is landed. The CRAM roadmap is complete.
+
+**Documented decode remainder** (small, precise, all behind clear
+errors — never a silent wrong answer):
+
+- **v2.1 slice-header record counter.** htslib reads a v2 slice
+  header's record-counter field as a 32-bit varint (ITF-8) and a v3
+  one as 64-bit (LTF-8); this reader always reads LTF-8. The two
+  encodings coincide for every value < 2^28, so realistic v2.1 files
+  decode byte-exactly (proven by the live-samtools parity test for an
+  embedded-reference v2.1 round-trip). They diverge only for a
+  record-counter ≥ 2^28 — i.e. a v2.1 file with > ~268 M reads in the
+  slices preceding the one being read — at which point the field
+  misparses. Threading the container's major version into
+  `parseSliceHeader` is the fix; deferred because it changes the
+  public `ParseDataContainer(*Container)` signature and the edge is
+  vanishingly rare for a legacy dialect.
+- **Network REF_PATH / EBI URL fetch.** An unresolvable reference is a
+  clear error naming the missing MD5; the sandbox does no network
+  reference fetch (CRAM_DESIGN §"Reference resolution"). Embedded
+  reference, an explicit `--reference` FASTA, and the local REF_CACHE
+  directory all work.
+- **X_EXT (bzip2) *encode*** for the arith / name-tokeniser codecs:
+  decode works via stdlib `compress/bzip2`; Go has no bzip2 encoder
+  and none is sanctioned, so X_EXT encode returns a clear error.
+- **CRAM v4.0** is out of scope (spec not finalised).
 
 ---
 
@@ -385,3 +413,44 @@ limitation here.
   works via stdlib `compress/bzip2`, but Go has no bzip2 encoder and
   none is in the sanctioned dependency set, so X_EXT *encode* returns
   a clear error. `FuzzArithDecode` (1M+ execs clean).
+- **C-EmbedRef** — landed (audit + closure pass). Closed four real
+  decode-parity gaps surfaced by comparing our reader against live
+  `samtools view` of `samtools` `view -C` output (the SAM
+  `dat/test_input_1_a.sam`, which samtools embeds-reference because no
+  external reference is available for its M5-less `@SQ` lines):
+  1. **Embedded reference.** A slice written with samtools' `embed_ref`
+     carries its reference span as a block (the slice header's
+     `EmbeddedRefID`). The decoder never consumed it, so every
+     reference-match base reconstructed as `N`. `Slice.EmbeddedReference`
+     decompresses the block and `RecordReader.resolveSliceReference`
+     now prefers it over any external source — self-contained, no
+     external FASTA/REF_CACHE needed, and (like htslib) trusted verbatim
+     with no MD5 cross-check. This is the single highest-value fix: it
+     turned `NNN…` sequences into byte-exact ones.
+  2. **`cF` internal tag.** htslib writes a single-byte `cF` ("CRAM
+     flags", type `C`) tag into the slice tag dictionary and *strips*
+     it on read (`cram_decode.c`, "Remove cF tag"). The reader was
+     surfacing it as a spurious `cF:i:` SAM aux. It is now drained from
+     the data series but never emitted.
+  3. **RG/PG aux order.** A record's `RG` comes from a dedicated CRAM
+     data series, not the tag dictionary; htslib emits the dictionary
+     tags first and appends `RG` last (unless `RG` is itself in the
+     dictionary, in which case it is emitted in place). The reader had
+     a heuristic that inserted `RG` *before* `PG`; it now matches
+     htslib exactly.
+  4. **Feature ordering.** The read-feature → CIGAR reconstruction only
+     flushed the pending reference-match run before *read-consuming*
+     features, so a deletion or reference skip preceded by a match run
+     mis-ordered (e.g. `4M1D` → `1D` ahead of the `4M`). htslib emits
+     the match gap before *every* feature; the reconstruction now does
+     too.
+  Together these unblocked **v2.1 decode** for the realistic case: the
+  same fixture round-trips byte-exactly through `samtools view -C
+  --output-fmt-option version=2.1`, closing the long-standing "v2.1
+  decode deferred" item for everything but the > 2^28-read
+  record-counter edge documented above. Validation: live-upstream
+  parity tests (`parity_test.go`, the `upstreamSamtoolsCram` `sync.Once`
+  builder, `t.Fatalf` never `t.Skip`) assert v3.0 and v2.1
+  embedded-reference decode byte-for-byte against `samtools view`, plus
+  a strong unit regression for the feature-ordering CIGAR fix and the
+  `cF`/RG-order rules.

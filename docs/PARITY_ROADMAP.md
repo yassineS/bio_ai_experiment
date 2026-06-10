@@ -1718,7 +1718,16 @@ Plus:
 - **CRAM** read/write throughout — DONE. Landed across PRs #162–#180
   (the rANS 4x8/4x16 codecs are in-tree pure Go; `ulikunitz/xz` is the
   only sanctioned third-party dep, confined to the LZMA block codec).
-  See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
+  A later audit + closure pass (C-EmbedRef) added embedded-reference
+  decode, stripped the internal `cF` tag, matched htslib's RG/PG aux
+  ordering, fixed read-feature → CIGAR ordering for deletions, and
+  thereby unblocked **v2.1 decode** for the realistic case — all proven
+  byte-for-byte against live `samtools view`. Remaining decode gaps are
+  small and behind clear errors: the v2.1 record-counter ITF-8/LTF-8
+  edge for files with > 2^28 reads before the read slice, the network
+  REF_PATH/EBI fetch (an unresolvable reference is a clear MD5 error),
+  X_EXT bzip2 *encode* (no Go bzip2 encoder), and CRAM v4.0 (spec not
+  final). See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
 - **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
   and `.csi`, and readers auto-detect index kind from file magic.
 - **Multi-threading (`-@`) — DONE for the BAM-writing subcommands

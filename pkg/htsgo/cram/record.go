@@ -353,27 +353,24 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	return dr, nil
 }
 
-// mergeAux interleaves the read-group aux tag into the dictionary tag
-// list. samtools writes the RG:Z tag immediately before the program
-// (PG) tag; when the record carries no PG tag, RG is appended last. A
-// nil rg adds nothing.
+// mergeAux appends the read-group aux tag, reconstructed from the RG
+// data series, to the dictionary tag list. It mirrors htslib's
+// cram_decode.c: when RG appears in the tag dictionary it is emitted in
+// its dictionary position (so the data-series RG is suppressed here),
+// otherwise the data-series RG tag is appended after every dictionary
+// tag. A nil rg adds nothing.
 func mergeAux(dictTags []sam.Aux, rg *sam.Aux) []sam.Aux {
 	if rg == nil {
 		return dictTags
 	}
-	out := make([]sam.Aux, 0, len(dictTags)+1)
-	inserted := false
-	for _, a := range dictTags {
-		if !inserted && a.Tag == "PG" {
-			out = append(out, *rg)
-			inserted = true
+	for i := range dictTags {
+		if dictTags[i].Tag == "RG" {
+			// The dictionary already carries RG; htslib emits it in place
+			// and does not also append the data-series value.
+			return dictTags
 		}
-		out = append(out, a)
 	}
-	if !inserted {
-		out = append(out, *rg)
-	}
-	return out
+	return append(dictTags, *rg)
 }
 
 // decodeSliceRecords decodes every record of one slice and resolves the
@@ -612,6 +609,16 @@ func (rd *recordDecoder) decodeTags(tl int32, index int) ([]sam.Aux, error) {
 		if err != nil {
 			return nil, wrapf(err, "record %d tag %q value", index, key.String())
 		}
+		// "cF" (CRAM flags, a single byte typed 'C') is an internal tag
+		// htslib writes and then strips on read — it is not part of the
+		// SAM record. Its value bytes must still be drained from the data
+		// series (done above), but the tag is never emitted. The bits
+		// suppress auto-regeneration of MD/NM; this decoder does not
+		// auto-generate either, so the suppression is implicit and only
+		// the tag-drop matters here. (htslib cram_decode.c "Remove cF tag".)
+		if isCRAMFlagsTag(key, raw) {
+			continue
+		}
 		aux, perr := decodeTagValue(key, raw)
 		if perr != nil {
 			return nil, wrapf(perr, "record %d tag %q", index, key.String())
@@ -619,6 +626,15 @@ func (rd *recordDecoder) decodeTags(tl int32, index int) ([]sam.Aux, error) {
 		out = append(out, aux)
 	}
 	return out, nil
+}
+
+// isCRAMFlagsTag reports whether a tag key/value is the internal "cF"
+// CRAM-flags tag (a single byte typed 'C'), which htslib drains but does
+// not surface as a SAM auxiliary field. It mirrors the
+// `TN[-3]=='c' && TN[-2]=='F' && TN[-1]=='C' && out_sz == 1` guard in
+// htslib's cram_decode.c.
+func isCRAMFlagsTag(key tagKey, raw []byte) bool {
+	return key[0] == 'c' && key[1] == 'F' && key[2] == 'C' && len(raw) == 1
 }
 
 // readGroupTag turns a CRAM RG data-series value into the SAM "RG:Z:"

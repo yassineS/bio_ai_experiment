@@ -103,11 +103,11 @@ func TestV31UsesRANS4x16(t *testing.T) {
 	}
 }
 
-// TestNewV31CodecsRejected confirms that a v3.1 codec still unimplemented
-// — the name tokeniser (method 8) — is rejected with a clear error
-// rather than mis-decoded or panicking. The arith_dynamic and fqzcomp
-// codecs (methods 6 and 7) are now implemented; garbage payloads for
-// them must still surface a decode error, not a panic.
+// TestNewV31CodecsRejected confirms that the v3.1 block codecs all
+// surface a clear decode error on garbage input rather than mis-decoding
+// or panicking. The arith_dynamic (method 6), fqzcomp (method 7) and
+// name-tokeniser (method 8) codecs are all implemented now; this test
+// guards their error paths, not their absence.
 func TestNewV31CodecsRejected(t *testing.T) {
 	for _, m := range []CompressionMethod{CompArith, CompFQZComp, CompNameTok} {
 		b := Block{Method: m, UncompressedSize: 4, Data: []byte{1, 2, 3, 4}}
