@@ -24,11 +24,11 @@ const (
 	OutputVCF OutputFormat = iota
 	// OutputVCFGz is gzip-compressed VCF.
 	OutputVCFGz
-	// OutputBCF marks compressed BCF output. NOT IMPLEMENTED in this slice;
-	// the runner returns an explanatory error so callers do not silently get
-	// the wrong format.
+	// OutputBCF marks compressed BCF output. The csq path writes it via
+	// openCSQOutput; the view runner still defers it (see viewBCFStream).
 	OutputBCF
-	// OutputBCFUncompressed marks uncompressed BCF output. Also deferred.
+	// OutputBCFUncompressed marks uncompressed BCF output. As with
+	// OutputBCF, csq writes it but view defers it.
 	OutputBCFUncompressed
 )
 

@@ -188,6 +188,14 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 	// FILTER references would point at the wrong entry and downstream
 	// readers (ours or htslib's) would see two PASS entries.
 	nextIDX := int32(1)
+	// htslib's BCF dictionary is unified across INFO/FILTER/FORMAT and
+	// deduplicated by tag name: a ##FORMAT=<ID=X> following ##INFO=<ID=X>
+	// (e.g. csq's BCSQ, which is both INFO and FORMAT) reuses the same
+	// IDX rather than getting a fresh one. parseTextHeader applies the
+	// same dedup, so the IDX we annotate here must match it or the
+	// on-wire FORMAT references point at the wrong dictionary entry
+	// ("Invalid FORMAT id N" in htslib). PASS is implicit at IDX=0.
+	nameIDX := map[string]int32{"PASS": 0}
 	for _, m := range vh.MetaInfo {
 		line := m
 		if strings.HasPrefix(line, "##fileformat=") {
@@ -198,12 +206,11 @@ func buildBCFTextHeader(vh *vcf.Header) string {
 			if isExplicitPASSFilter(line) {
 				continue
 			}
-			line = annotateIDX(line, nextIDX)
-			nextIDX++
-		case strings.HasPrefix(line, "##INFO="),
-			strings.HasPrefix(line, "##FORMAT="):
-			line = annotateIDX(line, nextIDX)
-			nextIDX++
+			line = annotateIDX(line, dictIDX(structuredID(line, "##FILTER="), nameIDX, &nextIDX))
+		case strings.HasPrefix(line, "##INFO="):
+			line = annotateIDX(line, dictIDX(structuredID(line, "##INFO="), nameIDX, &nextIDX))
+		case strings.HasPrefix(line, "##FORMAT="):
+			line = annotateIDX(line, dictIDX(structuredID(line, "##FORMAT="), nameIDX, &nextIDX))
 		}
 		sb.WriteString(line)
 		sb.WriteByte('\n')
@@ -245,6 +252,42 @@ func isExplicitPASSFilter(line string) bool {
 		return true
 	}
 	return false
+}
+
+// dictIDX returns the unified-dictionary IDX for a structured header
+// line's tag, reusing an already-assigned IDX when the same name has
+// been seen before (htslib's name-dedup across INFO/FILTER/FORMAT) and
+// otherwise allocating the next free value. id "" (an unparseable line)
+// gets a fresh IDX so the line is still emitted with a unique slot.
+func dictIDX(id string, nameIDX map[string]int32, next *int32) int32 {
+	if id != "" {
+		if v, ok := nameIDX[id]; ok {
+			return v
+		}
+	}
+	v := *next
+	*next++
+	if id != "" {
+		nameIDX[id] = v
+	}
+	return v
+}
+
+// structuredID extracts the ID= value from a structured header line
+// (after stripping the given ##KIND= prefix). It returns "" when no ID
+// attribute is present. ID is always the first, unquoted attribute per
+// the VCF convention.
+func structuredID(line, prefix string) string {
+	body := strings.TrimPrefix(line, prefix)
+	body = strings.TrimPrefix(body, "<")
+	if !strings.HasPrefix(body, "ID=") {
+		return ""
+	}
+	body = body[len("ID="):]
+	if i := strings.IndexAny(body, ",>"); i >= 0 {
+		return body[:i]
+	}
+	return body
 }
 
 // annotateIDX inserts `,IDX=n` immediately before the closing `>` of a

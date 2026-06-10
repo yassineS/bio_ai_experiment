@@ -254,10 +254,11 @@ const csqUsage = `bcftools csq - predict variant consequences against a GFF.
 Usage:
   bcftools csq [options] -f ref.fa -g anno.gff3 <in.vcf[.gz]|in.bcf>
 
-V1 SIMPLIFICATION: only the protein-coding SNP classifier is wired.
-Indels, splice-site, compound-het, and haplotype-aware phasing are
-tracked in docs/PARITY_ROADMAP.md#bcftools. Output is VCF text with an
-INFO/BCSQ tag of the form
+The haplotype-aware consequence engine annotates an INFO/BCSQ tag and a
+per-haplotype FORMAT/BCSQ bitmask (expand with the TBCSQ convert tag via
+bcftools query). Output is VCF text (-O v), BGZF VCF (-O z), or BCF
+(-O b|u). The remaining -l/--local-csq per-record caller is tracked in
+docs/PARITY_ROADMAP.md#bcftools. The BCSQ tag has the form
 
   consequence|gene|transcript|biotype|strand|aa_change|dna_change
 
@@ -283,7 +284,8 @@ General options:
   -i, --include EXPR             Accepted; v1 ignores.
       --no-version               Accepted; v1 never appends a version line.
   -o, --output FILE              Output file (default stdout).
-  -O, --output-type b|u|z|v|t    Output format. v1 emits only "v" (VCF text).
+  -O, --output-type b|u|z|v      Output format: b (BCF), u (uncompressed BCF),
+                                 z (BGZF VCF), v (VCF text). 't' is unsupported.
   -r, --regions LIST             Region list (post-filter in v1).
   -R, --regions-file FILE        BED-like regions file.
       --regions-overlap 0|1|2    Accepted; v1 ignores.
@@ -392,6 +394,7 @@ func runCSQ(args []string) int {
 		unifyChrNames: unifyChrNames,
 		dumpGFF:       dumpGFF,
 		outputType:    outputType,
+		localCSQ:      localCSQ,
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools csq: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
@@ -444,7 +447,6 @@ func runCSQ(args []string) int {
 	_ = quiet
 	_ = noVersion
 	_ = force
-	_ = localCSQ
 
 	rest := fs.Args()
 	if len(rest) == 0 {
@@ -480,6 +482,12 @@ func runCSQ(args []string) int {
 	}
 	if ph, err := bcftools.ParseCSQPhase(phase); err == nil {
 		opts.Phase = ph
+	}
+	if of, err := bcftools.ParseOutputFormat(outputType); err == nil {
+		opts.OutputFormat = of
+	} else {
+		fmt.Fprintf(os.Stderr, "bcftools csq: %v\n", err)
+		return 2
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -533,9 +541,18 @@ type checkCSQDeferredInputs struct {
 	unifyChrNames string
 	dumpGFF       string
 	outputType    string
+	localCSQ      bool
 }
 
 func checkCSQDeferred(in checkCSQDeferredInputs) string {
+	if in.localCSQ {
+		// -l/--local-csq selects the per-record (non-haplotype-aware)
+		// caller (upstream test_cds_local). The port only implements the
+		// haplotype-aware path, so honouring -l would silently produce
+		// haplotype-aware output under a flag that promises otherwise —
+		// a misleading no-op. Reject until test_cds_local is ported.
+		return "-l/--local-csq"
+	}
 	switch in.outputType {
 	case "", "v", "z", "b", "u":
 		// All four output formats are supported via openCSQOutput.
@@ -544,7 +561,7 @@ func checkCSQDeferred(in checkCSQDeferredInputs) string {
 	}
 	// --unify-chr-names is honoured by the CSQ engine; no deferral needed.
 	_ = in.unifyChrNames
-	// --dump-gff is honoured below via CSQFile / CSQOptions.DumpGFF.
+	// --dump-gff is honoured by CSQFile / CSQOptions.DumpGFF; no deferral.
 	_ = in.dumpGFF
 	return ""
 }

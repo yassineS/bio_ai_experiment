@@ -498,3 +498,110 @@ func TestEncodeFormatFieldsEncodesEmpty(t *testing.T) {
 		t.Errorf("expected missing for empty sample list, got %v", got)
 	}
 }
+
+// TestWriterSharedInfoFormatName reproduces the bcftools-csq scenario
+// where a tag (BCSQ) is declared as BOTH an INFO and a FORMAT field. The
+// BCF dictionary is name-deduplicated across INFO/FILTER/FORMAT, so both
+// declarations must share one IDX; emitting separate IDX values produces
+// an "Invalid FORMAT id" failure in downstream readers. The record must
+// round-trip with the FORMAT value intact.
+func TestWriterSharedInfoFormatName(t *testing.T) {
+	vh := &vcf.Header{
+		MetaInfo: []string{
+			"##fileformat=VCFv4.2",
+			"##contig=<ID=1>",
+			"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
+			"##INFO=<ID=BCSQ,Number=.,Type=String,Description=\"csq\">",
+			"##FORMAT=<ID=BCSQ,Number=.,Type=Integer,Description=\"bitmask\">",
+		},
+		Samples: []string{"S1"},
+	}
+	var buf bytes.Buffer
+	w, err := NewWriterFromVCFHeader(&buf, vh)
+	if err != nil {
+		t.Fatalf("NewWriterFromVCFHeader: %v", err)
+	}
+	v := &vcf.Variant{
+		Chrom: "1", Pos: 10, ID: ".", Ref: "A", Alt: []string{"T"}, Qual: -1,
+		Filter:    []string{"PASS"},
+		Info:      map[string]string{"BCSQ": "missense|G|T|protein_coding"},
+		InfoOrder: []string{"BCSQ"},
+		Format:    []string{"GT", "BCSQ"},
+		Samples:   []vcf.Sample{{Data: map[string]string{"GT": "1|0", "BCSQ": "1"}}},
+	}
+	if err := w.Write(v); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewReader(&buf)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	recs, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("records=%d, want 1", len(recs))
+	}
+	got := recs[0].ToVariant(r.Header())
+	if got.Info["BCSQ"] != "missense|G|T|protein_coding" {
+		t.Errorf("INFO/BCSQ round-trip: %q", got.Info["BCSQ"])
+	}
+	if len(got.Samples) != 1 || got.Samples[0].Data["BCSQ"] != "1" {
+		t.Errorf("FORMAT/BCSQ round-trip: %+v", got.Samples)
+	}
+}
+
+// TestWriterInfoOrderDeterministic checks that multiple INFO fields are
+// emitted in the variant's recorded InfoOrder rather than Go map order,
+// so repeated encodes are byte-identical.
+func TestWriterInfoOrderDeterministic(t *testing.T) {
+	vh := &vcf.Header{
+		MetaInfo: []string{
+			"##fileformat=VCFv4.2",
+			"##contig=<ID=1>",
+			"##INFO=<ID=EXP,Number=.,Type=String,Description=\"x\">",
+			"##INFO=<ID=BCSQ,Number=.,Type=String,Description=\"y\">",
+		},
+	}
+	mk := func() []byte {
+		var buf bytes.Buffer
+		w, err := NewWriterFromVCFHeader(&buf, vh)
+		if err != nil {
+			t.Fatalf("NewWriterFromVCFHeader: %v", err)
+		}
+		v := &vcf.Variant{
+			Chrom: "1", Pos: 1, ID: ".", Ref: "A", Alt: []string{"T"}, Qual: -1,
+			Filter:    []string{"PASS"},
+			Info:      map[string]string{"EXP": "a", "BCSQ": "b"},
+			InfoOrder: []string{"EXP", "BCSQ"},
+		}
+		if err := w.Write(v); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if err := w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	a, b := mk(), mk()
+	if !bytes.Equal(a, b) {
+		t.Errorf("BCF encode not deterministic across runs")
+	}
+	// And the decoded INFO order matches InfoOrder.
+	r, err := NewReader(bytes.NewReader(a))
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	recs, err := r.ReadAll()
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("ReadAll: recs=%d err=%v", len(recs), err)
+	}
+	got := recs[0].ToVariant(r.Header())
+	if strings.Join(got.InfoOrder, ",") != "EXP,BCSQ" {
+		t.Errorf("decoded InfoOrder=%v, want [EXP BCSQ]", got.InfoOrder)
+	}
+}
