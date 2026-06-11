@@ -258,8 +258,9 @@ Usage:
 The haplotype-aware consequence engine annotates an INFO/BCSQ tag and a
 per-haplotype FORMAT/BCSQ bitmask (expand with the TBCSQ convert tag via
 bcftools query). Output is VCF text (-O v), BGZF VCF (-O z), or BCF
-(-O b|u). The remaining -l/--local-csq per-record caller is tracked in
-docs/PARITY_ROADMAP.md#bcftools. The BCSQ tag has the form
+(-O b|u). -l/--local-csq selects the per-record (non-haplotype-aware)
+caller, which annotates each record independently without phasing
+variants into haplotypes. The BCSQ tag has the form
 
   consequence|gene|transcript|biotype|strand|aa_change|dna_change
 
@@ -395,7 +396,6 @@ func runCSQ(args []string) int {
 		unifyChrNames: unifyChrNames,
 		dumpGFF:       dumpGFF,
 		outputType:    outputType,
-		localCSQ:      localCSQ,
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools csq: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
@@ -542,18 +542,9 @@ type checkCSQDeferredInputs struct {
 	unifyChrNames string
 	dumpGFF       string
 	outputType    string
-	localCSQ      bool
 }
 
 func checkCSQDeferred(in checkCSQDeferredInputs) string {
-	if in.localCSQ {
-		// -l/--local-csq selects the per-record (non-haplotype-aware)
-		// caller (upstream test_cds_local). The port only implements the
-		// haplotype-aware path, so honouring -l would silently produce
-		// haplotype-aware output under a flag that promises otherwise —
-		// a misleading no-op. Reject until test_cds_local is ported.
-		return "-l/--local-csq"
-	}
 	switch in.outputType {
 	case "", "v", "z", "b", "u":
 		// All four output formats are supported via openCSQOutput.

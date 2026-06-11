@@ -13,9 +13,10 @@ import (
 //
 // The v1 port covers the common-case "round-trip VCF/BCF through a
 // different container format with optional sample / region filtering"
-// pipeline. Upstream's `vcfconvert.c` supports many more shapes
-// (gVCF↔VCF, HAPLEGEND/HAPSAMPLE export, PLINK tped, etc.); those are
-// tracked in docs/PARITY_ROADMAP.md and deferred.
+// pipeline plus the GEN/HAP/HAPLEGEND/TSV/gVCF modes wired in
+// subcmds_convert.go. Upstream's `vcfconvert.c` advertises PLINK
+// (`--plink`/`--tped`) options too, but those lines are commented out
+// upstream with no implementation, so there is nothing to port there.
 type ConvertOptions struct {
 	// OutputFormat is the requested container (-O v|z|b|u).
 	OutputFormat OutputFormat

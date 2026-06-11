@@ -582,8 +582,6 @@ What remains **genuinely open** (see `docs/PARITY_ROADMAP.md` for the
 authoritative gap list):
 
 - `convert` PLINK exporters (the GEN/HAP/TSV/gVCF modes are done).
-- `csq -l/--local-csq` (per-record, non-haplotype-aware path), which the
-  CLI hard-rejects.
 - `gtcheck -c/--cluster` dendrogram (upstream itself errors "to be
   implemented") and `gtcheck` filter expressions.
 - `query %N_ALT` (**not** an upstream `query` token — non-goal).
