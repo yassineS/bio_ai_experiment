@@ -306,7 +306,58 @@ Option-tail gaps (per existing subcommand):
   with upstream's constant 11 by default); RNG byte-parity is
   explicitly NOT a goal per the policy in the section above.
 
-**Validation:** no upstream-test-suite run yet.
+**Option-tail closure (this iteration).** The remaining per-subcommand
+flag gaps to upstream are now closed, each verified live against a
+freshly built `reference_code/seqtk` binary (no goldens) by the
+`upstreamSeqtkOpts` `sync.Once` builder in
+`tools/seqtk/pkg/seqtk/opts_parity_test.go` (byte-for-byte, `t.Fatalf`
+never `t.Skip`):
+
+- `seq` — re-ported to upstream's full `stk_seq` flag set
+  (`getopt("N12q:l:Q:aACrn:s:f:M:L:cVUX:SF:xR")`, seqtk.c:1392) in
+  `tools/seqtk/pkg/seqtk/seq.go`. Now implemented and parity-tested:
+  `-A`/`-a` (force FASTA, drop quality), `-C` (drop header comment),
+  `-r` (reverse complement), `-l INT` (residues per line),
+  `-L INT` (drop sequences shorter than INT), `-q INT`/`-X INT`/`-n CHAR`
+  (quality masking to lowercase or CHAR), `-Q INT` (quality shift),
+  `-U` (uppercase), `-V` (shift quality by `(-Q)-33`), `-N` (drop
+  sequences with ambiguous bases), `-M FILE` (mask BED/name-list regions
+  via a 1:1 port of `stk_reg_read`+`stk_mask`), and `-c` (mask the
+  complement region). **No `-T` flag exists upstream** (the task's `-T`
+  was a phantom — `seq`'s getopt has no `T`); skipped. `-1`/`-2`
+  (odd/even read selection), `-s`/`-f` (seq-level fraction sampling) and
+  `-S`/`-x`/`-F`/`-R` remain unported and are noted as a residual minor
+  gap (not requested in this unit).
+- `comp -r FILE` — restrict composition to BED/name-list regions
+  (`CompWithRegions` in `comp.go`); each region emits a row whose lead
+  columns are `name\tbeg\tend` rather than `name\tlen`, matching
+  `stk_comp` (seqtk.c:512-514). Byte-parity tested.
+- `sample -2` and `-s SEED` — `stk_sample` (seqtk.c:1228) two-pass mode
+  and seeded reservoir sampler are ported byte-for-byte, including a 1:1
+  port of upstream's krand MT19937-64 RNG (`sample.go`). This also
+  closes the previously-skipped `sample`/RNG parity gap: `SampleN`,
+  `SampleFraction`, and the `-2` two-pass path now match upstream
+  exactly. (The legacy `Sample`/every-Nth helper is retained only for
+  back-compat callers and its skipped fixture test.)
+- `trimfq -L INT` (retain at most INT bp from the 5'-end) plus the full
+  Mott-algorithm trimming and `-q FLOAT`/`-l INT`/`-b INT`/`-e INT`
+  paths are ported byte-for-byte (`TrimFQ` in `trimfq.go`, a 1:1 port of
+  `stk_trimfq`, seqtk.c:361). This closes the previously-skipped
+  `trimfq` parity gap. **There is no `-B` flag upstream** (trimfq's
+  getopt is `"l:q:b:e:L:"`; the task's `-B` was a phantom, the real
+  option is lowercase `-b` = trim-from-left); skipped.
+- `subseq` regex/name-pattern mode — **not an upstream feature.**
+  Upstream `stk_subseq` (`getopt("tl:s")`, seqtk.c:678) does exact
+  sequence-name matching against a BED or name-list file only; there is
+  no regex mode. The existing `Subseq` already does exact name-list /
+  BED matching. Nothing to add; documented as a non-gap.
+- `mutfa --inverse` — **not an upstream feature.** Upstream `stk_mutfa`
+  (seqtk.c:913) takes no flags at all (positional `<in.fa> <in.snp>`);
+  there is no inverse-mask option. Documented as a non-gap.
+
+**Validation:** no upstream-test-suite run yet. The option-tail flags
+above are validated live against the built upstream binary (Tier:
+live-upstream byte parity, `upstreamSeqtkOpts` builder).
 
 ### `prinseq-lite`
 
