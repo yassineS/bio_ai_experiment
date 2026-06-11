@@ -23,10 +23,29 @@ type IntersectOptions struct {
 	Distance   bool    // Report distance to nearest B feature
 	Closest    bool    // Report closest B feature for each A
 	UseTree    bool    // Use interval tree for large B files
+
+	// LeftJoin enables -loj: report every A record, appending the overlapping
+	// B record (or a null B placeholder when there are no overlaps).
+	LeftJoin bool
+	// WriteOverlap enables -wo: report A and B for each overlap, followed by
+	// the number of overlapping bases.
+	WriteOverlap bool
+	// WriteAllOverlap enables -wao: like WriteOverlap, but also report A with a
+	// null B and an overlap count of 0 when A has no overlaps.
+	WriteAllOverlap bool
+	// Split enables -split: treat BED12 blocks as separate intervals when
+	// determining overlaps and counting overlapping bases.
+	Split bool
 }
 
 // Intersect finds intervals in A that overlap with intervals in B.
 func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptions) (int, error) {
+	// The join/overlap output modes (-loj, -wo, -wao, -wa -wb) echo A and B
+	// columns verbatim and in B-file order, so they use a separate raw,
+	// line-preserving code path.
+	if opts.usesJoinMode() {
+		return intersectJoin(readerA, readerB, writer, opts)
+	}
 	// Read all B intervals (database to search against)
 	bedReaderB := bed.NewReader(readerB)
 	var intervalsB []*bed.Record
@@ -198,10 +217,8 @@ func findOverlaps(a *bed.Record, bIntervals []*bed.Record, opts IntersectOptions
 		}
 
 		// Check strand if required
-		if opts.StrandSpec {
-			if a.Strand != "" && b.Strand != "" && a.Strand != b.Strand {
-				continue
-			}
+		if opts.StrandSpec && !sameStrandMatch(a.Strand, b.Strand) {
+			continue
 		}
 
 		// Calculate overlap
@@ -214,21 +231,36 @@ func findOverlaps(a *bed.Record, bIntervals []*bed.Record, opts IntersectOptions
 			continue
 		}
 
+		// Lengths used for the -f/-F fraction tests. With -split these are the
+		// summed block lengths and the overlap is the non-redundant block
+		// overlap (mirroring BlockMgr::findBlockedOverlaps); otherwise they are
+		// the whole-span lengths.
+		lenA := a.ChromEnd - a.ChromStart
+		lenB := b.ChromEnd - b.ChromStart
+		fracOverlap := overlapLen
+		if opts.Split {
+			blockOverlap, aSum, bSum := splitBlockOverlap(a, b)
+			if blockOverlap <= 0 {
+				continue
+			}
+			fracOverlap = blockOverlap
+			lenA = aSum
+			lenB = bSum
+		}
+
 		// Check minimum overlap
 		if overlapLen < opts.MinOverlap {
 			continue
 		}
 
 		// Check fraction of A that overlaps
-		lenA := a.ChromEnd - a.ChromStart
-		fracA := float64(overlapLen) / float64(lenA)
+		fracA := float64(fracOverlap) / float64(lenA)
 		if opts.FractionA > 0 && fracA < opts.FractionA {
 			continue
 		}
 
 		// Check fraction of B that overlaps
-		lenB := b.ChromEnd - b.ChromStart
-		fracB := float64(overlapLen) / float64(lenB)
+		fracB := float64(fracOverlap) / float64(lenB)
 		if opts.FractionB > 0 && fracB < opts.FractionB {
 			continue
 		}
@@ -260,10 +292,8 @@ func findClosest(a *bed.Record, bIntervals []*bed.Record, opts IntersectOptions)
 		}
 
 		// Check strand if required
-		if opts.StrandSpec {
-			if a.Strand != "" && b.Strand != "" && a.Strand != b.Strand {
-				continue
-			}
+		if opts.StrandSpec && !sameStrandMatch(a.Strand, b.Strand) {
+			continue
 		}
 
 		// Calculate distance
@@ -453,6 +483,52 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 	}
 
 	return stats, nil
+}
+
+// splitBlockOverlap returns the non-redundant overlapping bases between A and B
+// when treating BED12 records as their constituent blocks, along with the
+// summed A-block and B-block lengths used by the fraction tests. Records that
+// are not valid BED12 fall back to their whole span (a single block).
+func splitBlockOverlap(a, b *bed.Record) (overlap, aSum, bSum int) {
+	aBlocks := typedBlocks(a)
+	bBlocks := typedBlocks(b)
+	var ovs []block
+	for _, hb := range bBlocks {
+		for _, kb := range aBlocks {
+			s := max(kb.start, hb.start)
+			e := min(kb.end, hb.end)
+			if e > s {
+				ovs = append(ovs, block{s, e})
+			}
+		}
+	}
+	return nonRedundantOverlap(ovs), blockSum(aBlocks), blockSum(bBlocks)
+}
+
+// typedBlocks expands a typed bed.Record into absolute block intervals, or
+// returns the whole span when the record has no BED12 blocks.
+func typedBlocks(r *bed.Record) []block {
+	if r.BlockCount <= 0 || len(r.BlockSizes) != r.BlockCount || len(r.BlockStarts) != r.BlockCount {
+		return []block{{r.ChromStart, r.ChromEnd}}
+	}
+	blks := make([]block, 0, r.BlockCount)
+	for i := 0; i < r.BlockCount; i++ {
+		s := r.ChromStart + r.BlockStarts[i]
+		blks = append(blks, block{s, s + r.BlockSizes[i]})
+	}
+	return blks
+}
+
+// sameStrandMatch reports whether two strand columns count as the same strand
+// under `-s`, matching upstream Record::sameChromIntersects. Only "+" and "-"
+// are real strands; ".", "*", and a missing column are all UNKNOWN and can
+// never satisfy a same-strand requirement, so a hit is reported only when both
+// strands are a known value and equal.
+func sameStrandMatch(a, b string) bool {
+	if a != "+" && a != "-" {
+		return false
+	}
+	return a == b
 }
 
 func max(a, b int) int {
