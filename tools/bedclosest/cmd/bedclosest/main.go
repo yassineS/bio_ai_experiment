@@ -40,6 +40,10 @@ Options:
                            a (relative to A's strand), or b (relative to B's).
   -N                       Require strict overlap; non-overlapping B intervals
                            are treated as infinitely far away.
+  -iu                      Ignore B features upstream of A (requires -D).
+  -id                      Ignore B features downstream of A (requires -D).
+  -fu                      Force the closest upstream B feature (requires -D).
+  -fd                      Force the closest downstream B feature (requires -D).
   -t MODE                  Tie-break mode for equally close B's:
                              all   - emit one row per tied B (default)
                              first - emit only the first (in B's input order)
@@ -87,6 +91,12 @@ func main() {
 	var requireOverlap bool
 	fs.BoolVar(&requireOverlap, "N", false, "Require strict overlap")
 
+	var ignoreUp, ignoreDown, forceUp, forceDown bool
+	fs.BoolVar(&ignoreUp, "iu", false, "Ignore features in B that are upstream of A (requires -D)")
+	fs.BoolVar(&ignoreDown, "id", false, "Ignore features in B that are downstream of A (requires -D)")
+	fs.BoolVar(&forceUp, "fu", false, "Force the closest upstream feature in B (requires -D)")
+	fs.BoolVar(&forceDown, "fd", false, "Force the closest downstream feature in B (requires -D)")
+
 	var tieMode string
 	fs.StringVar(&tieMode, "t", "all", "Tie-break: all|first|last")
 
@@ -125,6 +135,35 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Validate the directional flags against upstream's ContextClosest rules.
+	if ignoreUp && ignoreDown {
+		fmt.Fprintln(os.Stderr, "Error: Request either -iu OR -id, not both.")
+		os.Exit(2)
+	}
+	if forceUp && forceDown {
+		fmt.Fprintln(os.Stderr, "Error: Request either -fu OR -fd, not both.")
+		os.Exit(2)
+	}
+	if ignoreUp && forceUp {
+		fmt.Fprintln(os.Stderr, "Error: Request either -iu OR -fu, not both.")
+		os.Exit(2)
+	}
+	if ignoreDown && forceDown {
+		fmt.Fprintln(os.Stderr, "Error: Request either -id OR -fd, not both.")
+		os.Exit(2)
+	}
+	// -iu/-id/-fu/-fd require an explicit stranded distance mode (-D).
+	dGiven := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "D" {
+			dGiven = true
+		}
+	})
+	if (ignoreUp || ignoreDown || forceUp || forceDown) && !dGiven {
+		fmt.Fprintln(os.Stderr, "Error: When requesting -iu, -id, -fu, or -fd, you also need to specify -D.")
+		os.Exit(2)
+	}
+
 	readerA, err := iohelper.OpenReader(aFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening A: %v\n", err)
@@ -147,10 +186,14 @@ func main() {
 	defer writer.Close()
 
 	opts := bedclosest.Options{
-		PrintDistance:  printDist,
-		DistanceMode:   dm,
-		RequireOverlap: requireOverlap,
-		TieBreak:       tb,
+		PrintDistance:    printDist,
+		DistanceMode:     dm,
+		RequireOverlap:   requireOverlap,
+		TieBreak:         tb,
+		IgnoreUpstream:   ignoreUp,
+		IgnoreDownstream: ignoreDown,
+		ForceUpstream:    forceUp,
+		ForceDownstream:  forceDown,
 	}
 	if _, err := bedclosest.Closest(readerA, readerB, writer, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

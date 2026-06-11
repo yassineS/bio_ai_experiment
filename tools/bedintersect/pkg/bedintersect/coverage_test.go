@@ -431,8 +431,9 @@ func TestIntersectWithStatsWriteB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IntersectWithStats failed: %v", err)
 	}
-	if strings.TrimSpace(buf.String()) != "chr1\t150\t250" {
-		t.Errorf("expected B record, got %q", buf.String())
+	// -wb alone: A clipped to the overlap, then the full original B.
+	if strings.TrimSpace(buf.String()) != "chr1\t150\t200\tchr1\t150\t250" {
+		t.Errorf("expected clipped A + full B record, got %q", buf.String())
 	}
 }
 

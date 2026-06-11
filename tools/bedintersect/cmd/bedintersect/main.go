@@ -157,6 +157,12 @@ func main() {
 
 	split := flag.Bool("split", false, "Treat split BAM/BED12 entries as distinct intervals")
 
+	// -bed requests BED text output when a BAM file is provided. This port
+	// always emits BED text (BAM alignments are converted to BED12 on input),
+	// so -bed is accepted for drop-in compatibility and is effectively the
+	// default. It is harmless on non-BAM input.
+	bedOut := flag.Bool("bed", false, "When using BAM input, write output as BED (default for this port)")
+
 	help := flag.Bool("h", false, "Show help message")
 	flag.BoolVar(help, "help", false, "Show help message")
 
@@ -175,6 +181,7 @@ func main() {
 		fmt.Printf("bedintersect version %s\n", version)
 		os.Exit(0)
 	}
+	_ = *bedOut // accepted for compatibility; this port always emits BED text.
 
 	// Validate required inputs
 	if *inputA == "" || *inputB == "" {

@@ -13,86 +13,6 @@ import (
 	"strings"
 )
 
-// rawRecord is a single BED line that preserves its original column layout.
-// The default path parses into typed bed.Record, which loses fidelity (e.g.
-// a score of "0" round-trips to nothing); the join modes need byte-for-byte
-// reproduction of the input, so they keep the raw fields here.
-type rawRecord struct {
-	fields []string // original tab-separated columns, verbatim
-	chrom  string
-	start  int
-	end    int
-	strand string // strand column (index 5) if present, else ""
-	line   string // original line joined by tabs (== strings.Join(fields,"\t"))
-}
-
-// newRawScanner returns a bufio.Scanner sized to handle the long BED12 / BED+
-// lines the join modes may encounter (default 64KiB token limit is too small).
-func newRawScanner(r io.Reader) *bufio.Scanner {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	return scanner
-}
-
-// isSkippableBEDLine reports whether a line is a comment / track / browser /
-// blank line that the default bed.Reader also skips.
-func isSkippableBEDLine(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	return trimmed == "" || strings.HasPrefix(trimmed, "#") ||
-		strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser")
-}
-
-// parseRawLine parses one data line into a column-preserving rawRecord. It is
-// the single parse routine used for both A (streamed) and B (slurped) so the
-// two never drift.
-func parseRawLine(line string) (*rawRecord, error) {
-	fields := strings.Split(line, "\t")
-	if len(fields) < 3 {
-		return nil, fmt.Errorf("BED record must have at least 3 fields, got %d", len(fields))
-	}
-	start, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return nil, fmt.Errorf("invalid chromStart %s: %v", fields[1], err)
-	}
-	end, err := strconv.Atoi(fields[2])
-	if err != nil {
-		return nil, fmt.Errorf("invalid chromEnd %s: %v", fields[2], err)
-	}
-	rec := &rawRecord{
-		fields: fields,
-		chrom:  fields[0],
-		start:  start,
-		end:    end,
-		line:   strings.Join(fields, "\t"),
-	}
-	if len(fields) > 5 {
-		rec.strand = fields[5]
-	}
-	return rec, nil
-}
-
-// readRawRecords reads every BED data line from r, preserving columns. Track,
-// browser, comment and blank lines are skipped (matching the default reader).
-func readRawRecords(r io.Reader) ([]*rawRecord, error) {
-	var recs []*rawRecord
-	scanner := newRawScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if isSkippableBEDLine(line) {
-			continue
-		}
-		rec, err := parseRawLine(line)
-		if err != nil {
-			return nil, err
-		}
-		recs = append(recs, rec)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return recs, nil
-}
-
 // block is a half-open sub-interval [start,end) of a record. For non-split
 // records (or records without BED12 blocks) the single block equals the whole
 // record span.
@@ -108,7 +28,7 @@ type block struct {
 // zero-length whole-span block is expanded to [p-1,p+1] so it can still
 // intersect, matching upstream's adjustZeroLength (the split overlap counter
 // reports the expanded width, with no zero-length correction).
-func blocksOf(rec *rawRecord, split bool) []block {
+func blocksOf(rec *inRecord, split bool) []block {
 	wholeSpan := func() []block {
 		s, e, _ := effectiveBounds(rec.start, rec.end)
 		return []block{{s, e}}
@@ -116,44 +36,17 @@ func blocksOf(rec *rawRecord, split bool) []block {
 	if !split {
 		return wholeSpan()
 	}
-	blks, ok := bed12Blocks(rec)
+	// Only BED12 and BAM records carry block columns; VCF/GFF are always a
+	// single span (matching the raw path's inBlocks so -split agrees across the
+	// join and default output modes for the same input).
+	if rec.format != fmtBED && rec.format != fmtBAM {
+		return wholeSpan()
+	}
+	blks, ok := bed12BlocksFromFields(rec.fields, rec.start)
 	if !ok {
 		return wholeSpan()
 	}
 	return blks
-}
-
-// bed12Blocks expands a BED12 record's blocks into absolute [start,end) ranges.
-// It returns ok=false when the record is not parseable as BED12 (fewer than 12
-// columns, or malformed block columns), in which case callers fall back to the
-// whole span.
-func bed12Blocks(rec *rawRecord) ([]block, bool) {
-	if len(rec.fields) < 12 {
-		return nil, false
-	}
-	blockCount, err := strconv.Atoi(rec.fields[9])
-	if err != nil || blockCount <= 0 {
-		return nil, false
-	}
-	sizes := splitCSV(rec.fields[10])
-	starts := splitCSV(rec.fields[11])
-	if len(sizes) != blockCount || len(starts) != blockCount {
-		return nil, false
-	}
-	blks := make([]block, 0, blockCount)
-	for i := 0; i < blockCount; i++ {
-		off, err := strconv.Atoi(starts[i])
-		if err != nil {
-			return nil, false
-		}
-		size, err := strconv.Atoi(sizes[i])
-		if err != nil {
-			return nil, false
-		}
-		s := rec.start + off
-		blks = append(blks, block{s, s + size})
-	}
-	return blks, true
 }
 
 // splitCSV splits a comma-separated list, dropping a single trailing comma
@@ -178,7 +71,7 @@ func blockSum(blks []block) int {
 // joinHit records a B record that passed all overlap filters for a given A,
 // together with the total overlapping bases used by -wo/-wao.
 type joinHit struct {
-	b            *rawRecord
+	b            *inRecord
 	overlapBases int
 }
 
@@ -187,7 +80,7 @@ type joinHit struct {
 // fraction filters with split-aware block math when opts.Split is set. The
 // candidate scan uses full-record spans (as upstream's bin index does); block
 // refinement only affects hit determination and overlap counts.
-func findJoinHits(a *rawRecord, bRecords []*rawRecord, opts IntersectOptions) []joinHit {
+func findJoinHits(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []joinHit {
 	if opts.Split {
 		return findJoinHitsSplit(a, bRecords, opts)
 	}
@@ -254,7 +147,7 @@ func findJoinHits(a *rawRecord, bRecords []*rawRecord, opts IntersectOptions) []
 // that B; and the -f/-F/-r fraction tests are applied ONCE across all hits
 // combined (non-redundant overlap over the A block-sum and the summed B block
 // lengths). If a combined test fails, every hit for this A is dropped.
-func findJoinHitsSplit(a *rawRecord, bRecords []*rawRecord, opts IntersectOptions) []joinHit {
+func findJoinHitsSplit(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []joinHit {
 	aBlocks := blocksOf(a, true)
 	aBlockSum := blockSum(aBlocks)
 	var hits []joinHit
@@ -371,6 +264,24 @@ func nullDBString(dbType dbRecordType, numFields int) string {
 		return ".\t-1\t-1\t.\t-1\t."
 	case dbBed12:
 		return ".\t-1\t-1\t.\t-1\t.\t.\t.\t.\t.\t.\t."
+	case dbVCF:
+		// VcfRecord::printNull: chrom ".", POS "-1", then "." for every other
+		// column (the affected reference span is not echoed for a null VCF).
+		var sb strings.Builder
+		sb.WriteString(".\t-1")
+		for i := 2; i < numFields; i++ {
+			sb.WriteString("\t.")
+		}
+		return sb.String()
+	case dbGFF:
+		// GffRecord::printNull: seqid/source/type ".", start/end "-1", then "."
+		// for every remaining column (score, strand, frame, attributes).
+		var sb strings.Builder
+		sb.WriteString(".\t.\t.\t-1\t-1")
+		for i := 5; i < numFields; i++ {
+			sb.WriteString("\t.")
+		}
+		return sb.String()
 	default: // dbBedPlus / dbBed6Plus: "." "-1" "-1" then "." for each extra col.
 		var sb strings.Builder
 		sb.WriteString(".\t-1\t-1")
@@ -394,17 +305,27 @@ const (
 	dbBed12
 	dbBed6Plus
 	dbBedPlus
+	dbVCF
+	dbGFF
 )
 
 // classifyDB determines the database record type from the first data record of
 // B, mirroring FileRecordTypeChecker::isBedFormat's column-count + content
 // rules. It also returns the field count, which the BED+ null shape depends on.
-func classifyDB(bRecords []*rawRecord) (dbRecordType, int) {
+func classifyDB(bRecords []*inRecord) (dbRecordType, int) {
 	if len(bRecords) == 0 {
 		return dbBed3, 3
 	}
 	f := bRecords[0].fields
 	n := len(f)
+	// VCF and GFF B files have format-specific null placeholder shapes
+	// (mirroring VcfRecord::printNull / GffRecord::printNull).
+	switch bRecords[0].format {
+	case fmtVCF:
+		return dbVCF, n
+	case fmtGFF:
+		return dbGFF, n
+	}
 	switch {
 	case n == 3:
 		return dbBed3, 3
@@ -453,7 +374,7 @@ func isNumericField(s string) bool {
 // echoing A and B columns verbatim in B-file order. It returns the number of
 // output lines written.
 func intersectJoin(readerA, readerB io.Reader, w io.Writer, opts IntersectOptions) (int, error) {
-	bRecords, err := readRawRecords(readerB)
+	bRecords, err := readInRecords(readerB)
 	if err != nil {
 		return 0, fmt.Errorf("error reading B intervals: %w", err)
 	}
@@ -461,7 +382,7 @@ func intersectJoin(readerA, readerB io.Reader, w io.Writer, opts IntersectOption
 	nullB := nullDBString(dbType, dbFields)
 
 	// Index B by chromosome, preserving file order within each chromosome.
-	byChrom := make(map[string][]*rawRecord)
+	byChrom := make(map[string][]*inRecord)
 	for _, b := range bRecords {
 		byChrom[b.chrom] = append(byChrom[b.chrom], b)
 	}
@@ -470,19 +391,11 @@ func intersectJoin(readerA, readerB io.Reader, w io.Writer, opts IntersectOption
 	bw := &bufWriter{w: out}
 	count := 0
 
-	// A is streamed (not slurped) so large query files stay memory-light; it
-	// uses the same parse routine as B via parseRawLine.
-	aReader := newRawScanner(readerA)
-	for aReader.Scan() {
-		line := aReader.Text()
-		if isSkippableBEDLine(line) {
-			continue
-		}
-		a, err := parseRawLine(line)
-		if err != nil {
-			return 0, err
-		}
-
+	aRecords, err := readInRecords(readerA)
+	if err != nil {
+		return 0, fmt.Errorf("error reading A intervals: %w", err)
+	}
+	for _, a := range aRecords {
 		hits := findJoinHits(a, byChrom[a.chrom], opts)
 
 		if len(hits) == 0 {
@@ -516,9 +429,6 @@ func intersectJoin(readerA, readerB io.Reader, w io.Writer, opts IntersectOption
 			bw.writeString("\n")
 			count++
 		}
-	}
-	if err := aReader.Err(); err != nil {
-		return 0, err
 	}
 	if bw.err != nil {
 		return 0, bw.err

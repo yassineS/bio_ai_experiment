@@ -46,6 +46,13 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 	if opts.usesJoinMode() {
 		return intersectJoin(readerA, readerB, writer, opts)
 	}
+	// The bedintersect-only distance/closest extensions (-d/-k) keep the legacy
+	// typed bed.Record path. Every upstream-parity mode (default intersection,
+	// -wa, -wb, -c, -v) uses the raw column-preserving path so input columns
+	// echo verbatim and BAM/VCF/GFF inputs are supported.
+	if !opts.Distance && !opts.Closest {
+		return intersectRaw(readerA, readerB, writer, opts)
+	}
 	// Read all B intervals (database to search against)
 	bedReaderB := bed.NewReader(readerB)
 	var intervalsB []*bed.Record
@@ -330,6 +337,13 @@ type Stats struct {
 
 // IntersectWithStats performs intersection and returns detailed statistics.
 func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptions) (*Stats, error) {
+	// Every upstream-parity output mode uses the raw, column-preserving path so
+	// the output matches `bedtools intersect` byte-for-byte (and supports
+	// BAM/VCF/GFF inputs). Only the bedintersect-only -d/-k extensions fall
+	// through to the legacy typed path below.
+	if !opts.Distance && !opts.Closest {
+		return intersectRawWithStats(readerA, readerB, writer, opts)
+	}
 	// Read all B intervals
 	bedReaderB := bed.NewReader(readerB)
 	var intervalsB []*bed.Record
