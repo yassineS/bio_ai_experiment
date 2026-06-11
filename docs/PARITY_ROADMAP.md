@@ -103,8 +103,10 @@ Recently closed (PRs #220–#225, treat as merged):
 - **samtools**: `consensus --het-only` (implemented as a fix for an
   upstream dead-option bug — see `UPSTREAM_BUGS.md`); `--ignore-overlaps`
   landed earlier. Still deferred: mpileup `-g/-u` BCF output.
-- **mosdepth**: `-d/--d4` (byte-identical to upstream). Still deferred:
-  `-t/--threads`.
+- **mosdepth**: `-d/--d4`, `-a/--fragment-mode`, `-q/--quantize`, and
+  `-t/--threads` (all byte-identical to the upstream v0.3.14 binary;
+  threads produces identical output for any count). Still deferred:
+  `-m/--use-median`.
 - **vcftools**: 0 unsupported flags.
 - A repo-wide test cleanup (#225) converted all golden tests to live
   upstream-binary parity and fixed a `samtools depth` flag bug.
@@ -826,25 +828,55 @@ byte-for-byte equality (`t.Fatalf`, never `t.Skip`) across the BED3–BED12
 null shapes, `-split` block math, zero-length intervals, B-order
 preservation, and the UNKNOWN-strand cases.
 
-Documented `bedintersect` remainder (NOT implemented in this wave):
+bedtools-gaps closure wave (this PR): the items previously listed as
+`bedintersect`/`bedclosest` remainder are now implemented and pinned
+byte-for-byte against the live upstream `bedtools` binary
+(`upstreamBedtoolsGaps`, `sync.Once`, `t.Fatalf` — never `t.Skip`):
 
-- **BAM / VCF / GFF inputs.** `-split` BAM CIGAR-N splitting, and VCF/GFF
-  interval coercion, are out of scope; the tool reads BED only. The join
-  path rejects non-BED input rather than silently mis-parsing it.
+- **BAM / VCF / GFF inputs on `-a`/`-b`.** `tools/bedintersect/pkg/bedintersect/input.go`
+  autodetects the format (BAM by BGZF/`BAM\x01` magic; otherwise BED/VCF/GFF
+  by upstream `BedFile::parseLine` precedence) and converts each record to a
+  common 0-based half-open `inRecord` that echoes its original columns
+  verbatim. BAM alignments render as BED12 with CIGAR-N block splitting
+  (`-bed`), VCF spans are `POS-1 .. POS-1+len(REF)` (the line echoes
+  unclipped), GFF is `start-1 .. end`. Clipped-BAM output keeps the original
+  thickStart/thickEnd/block columns, matching upstream `BamRecord::print`
+  exactly (the blocks describe the original span, not the clip — verified
+  against upstream `-split`/`-wo`). Parity:
+  `cmd/bedintersect/gaps_parity_test.go` (`TestGapsParity_BAMInput`,
+  `TestGapsParity_VCFGFFInput`, including the `-s` strandless case).
+- **`-c` count column.** The raw column-preserving path echoes every original
+  column before the trailing count (the old typed `bed.Writer` dropped a
+  score of `0` and the strand column). Pinned by
+  `TestGapsParity_CountColumnDrop`.
+- **`bedclosest` directional flags (`-iu`/`-id`/`-fu`/`-fd`).** Implemented
+  with the `-D`-orientation sweep semantics from upstream `CloseSweep`
+  (`classifyStream`). The "requires `-D`" guard matches upstream exactly:
+  any `-D` value (including `-D ref`) satisfies it — upstream only errors when
+  `-D` is entirely absent (verified against the live binary; `_haveStrandedDistMode`
+  is set for `-D ref` too). Pinned by `TestGapsParity_ClosestDirectional`.
+- **`bedclosest -D a/-D b` signed-distance sign fix.** The non-directional
+  `signedDistance` previously flipped the `-D b` sign on a reverse-strand B;
+  upstream (`_bDist && _dbForward`) flips on a FORWARD-strand B. `signedDistance`
+  now reuses `classifyStream` so the directional and non-directional paths
+  agree, matching upstream across every geometry/strand/mode
+  (`TestGapsParity_ClosestSignedDistance`, 36 combinations).
+- **`-sortedtree`/`--tree` B index.** `opts.UseTree` now actually selects an
+  augmented interval tree over `inRecord` (`treeFinder`/`inIntervalTree`)
+  instead of being a silent no-op in an unreachable typed branch; the tree
+  path re-sorts candidates into B-file order so output stays byte-identical
+  to the linear scan and to upstream (`TestGapsParity_UseTree`). The dead
+  typed `findOverlaps`/`Overlap`/`splitBlockOverlap`/`typedBlocks` helpers and
+  the `bed.Record` `IntervalTree` alias they used were removed.
+
+Residual `bedintersect` notes (still as before):
+
 - **Ragged B files.** Upstream hard-errors when a B file's records have
   inconsistent field counts; the null-shape classification here keys off
   the first B record. Genuine BED is uniform, so this only differs on
-  malformed input (ours is lenient where upstream aborts).
-- **The pre-existing `-c` typed-writer column drop** (a score of `0`
-  round-trips to nothing in the default count/intersection path) is
-  unchanged — it predates this wave and lives in the typed `bed.Writer`,
-  not the join path.
-- **`bedclosest` directional flags (`-id`/`-iu`/`-fu`/`-fd`).** Not
-  implemented. They require `-D` orientation and select/ignore B features
-  by upstream/downstream position with sweep-direction subtleties; the
-  existing `bedclosest` already implements signed `-D` (ref/a/b), `-N`,
-  and the tie modes. The directional ignore/force flags are deferred to a
-  dedicated wave rather than shipped half-correct.
+  malformed input (ours is lenient where upstream aborts). The new
+  BED/VCF/GFF reader does validate the per-line field count against the
+  locked format and errors like upstream's type checker.
 
 CRAM-input + option-tail wave (this PR): `bedmulticov` now accepts CRAM
 inputs anywhere it accepts BAM; `bedmultiinter` now autodetects VCF/GFF
@@ -3753,8 +3785,9 @@ no committed goldens).
 
 ### `mosdepth`
 
-**Status:** 1 / 1 command, most flags. **`-d/--d4` is DONE** (byte-identical
-to upstream, #220–#225 wave).
+**Status:** 1 / 1 command, most flags. **`-d/--d4`, `-a/--fragment-mode`,
+`-q/--quantize`, and `-t/--threads` are all DONE** (byte-identical to the
+upstream v0.3.14 binary). Only `-m/--use-median` remains unimplemented.
 
 Done:
 
@@ -3767,10 +3800,37 @@ Done:
 
 Missing:
 
-- **Multi-threading** (`-t/--threads N`).
+- **`-m/--use-median`** — per-region median instead of mean. Parsed for
+  CLI parity but rejected (exit 2) rather than silently emitting means.
+- **Default-mode overlap-pair correction** — our default (non-fast) mode
+  does not subtract double-counted depth where mate pairs overlap; output
+  matches upstream's `--fast-mode` (see `UPSTREAM_BUGS.md`). Unchanged by
+  this wave.
 
 Implemented:
 
+- **`-a/--fragment-mode`** — counts coverage across the whole template
+  (fragment) between properly-paired mates rather than the aligned reads
+  only. Only read1 of a proper, non-supplementary pair contributes; it
+  covers `[min(read,mate) start, +|TLEN|)`. **Byte-identical** to the
+  upstream `mosdepth` v0.3.14 binary on the `full-fragment-pairs` fixture
+  (`TestUpstream_FragmentMode_Parity`).
+- **`-q/--quantize SEGS`** — bins per-base depth into the user's
+  `:`-separated segments and writes `<prefix>.quantized.bed.gz` (plus a
+  `.csi`). Mirrors upstream's segment parsing (leading/trailing `:`
+  prepend `0` / append the open-ended top bin), the `MOSDEPTH_Q*` label
+  overrides, and the "skip depths outside the range" gap behaviour.
+  **Byte-identical** to upstream across basic / leading-colon /
+  trailing-colon / env-label specs (`TestUpstream_Quantize_Parity`).
+- **`-t/--threads N`** — real parallelism for BGZF/BAM decode. A new
+  in-tree parallel BGZF reader (`pkg/htsgo/bgzf.MultiReader`,
+  symmetric to the existing `MultiWriter`) inflates blocks across N
+  worker goroutines and reassembles the decoded byte stream in order, so
+  the decoded bytes — and every output file — are **byte-identical** for
+  any thread count. Threads < 2 falls back to the sequential reader.
+  Verified by `TestThreads_OutputIdentical` (threads {1,2,4,8} identical;
+  multi-block fixture spans 66 BGZF blocks) and
+  `bgzf.TestMultiReader_MatchesSequential`.
 - **D4 output** (`-d/--d4`) — writes `<prefix>.per-base.d4` as a real D4
   framefile that is **byte-identical** to the upstream `mosdepth_d4`
   binary's output for the same BAM (same on-disk size). The track uses
@@ -3788,8 +3848,15 @@ BAM, and asserts the two `.per-base.d4` files are byte-for-byte equal
 and via in-tree round-trip query (`TestRunCsiReadable`,
 `TestParity_IndexFiles_Csi`), plus an optional real-`tabix` read when the
 binary is on `PATH` (`TestRunCsiReadableByRealTabix`). Fast-path
-byte-identity proven by `TestMapqFastPathByteIdentical`. The broader
-upstream functional-test suite is still pending.
+byte-identity proven by `TestMapqFastPathByteIdentical`.
+`--fragment-mode`, `--quantize`, and `-t/--threads` are validated
+byte-for-byte against the upstream `mosdepth` v0.3.14 release binary
+(`TestUpstream_FragmentMode_Parity`, `TestUpstream_Quantize_Parity`,
+`TestThreads_OutputIdentical`); the binary is fetched from the GitHub
+release with retry/backoff and cached, overridable via `MOSDEPTH_BIN`.
+Offline these fall back to internal-consistency assertions and log the
+reduced tier (never a silent skip). The broader upstream functional-test
+suite is still pending.
 
 ---
 

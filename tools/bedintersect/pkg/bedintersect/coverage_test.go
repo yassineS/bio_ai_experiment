@@ -431,8 +431,9 @@ func TestIntersectWithStatsWriteB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IntersectWithStats failed: %v", err)
 	}
-	if strings.TrimSpace(buf.String()) != "chr1\t150\t250" {
-		t.Errorf("expected B record, got %q", buf.String())
+	// -wb alone: A clipped to the overlap, then the full original B.
+	if strings.TrimSpace(buf.String()) != "chr1\t150\t200\tchr1\t150\t250" {
+		t.Errorf("expected clipped A + full B record, got %q", buf.String())
 	}
 }
 
@@ -591,76 +592,101 @@ func TestFindOverlapsStrandMatch(t *testing.T) {
 	}
 }
 
-// --- IntervalTree: uncovered branches -------------------------------------
+// --- inIntervalTree (raw-path B index): uncovered branches ----------------
 
-// TestBuildTreeLeftSubtreeMaxLarger covers the "node.Max = node.Left.Max"
-// branch in buildTree by giving the left subtree an interval whose ChromEnd
-// is larger than the root's. The Max propagated up should be the left's.
-func TestBuildTreeLeftSubtreeMaxLarger(t *testing.T) {
-	// Sorted by ChromStart so buildTree builds a balanced tree:
-	//   mid = (0+2)/2 = 1 -> root = intervals[1], with ChromEnd = 150.
-	//   Left = intervals[0] (ChromStart 50, ChromEnd 1000) — large end.
-	//   Right = intervals[2].
-	// The root must update Max = max(150, 1000, 250) = 1000 via Left.
-	intervals := []*bed.Record{
-		{Chrom: "chr1", ChromStart: 50, ChromEnd: 1000},
-		{Chrom: "chr1", ChromStart: 100, ChromEnd: 150},
-		{Chrom: "chr1", ChromStart: 200, ChromEnd: 250},
+// inTreeQueryEnds returns the ends of the records overlapping [start,end),
+// as a set, for order-independent assertions.
+func inTreeQueryEnds(tree *inIntervalTree, start, end int) map[int]bool {
+	got := map[int]bool{}
+	for _, r := range tree.query(&inRecord{chrom: "chr1", start: start, end: end}) {
+		got[r.end] = true
 	}
-	tree := NewIntervalTree(intervals)
-	if tree.Root.Max != 1000 {
-		t.Errorf("expected root.Max=1000 (from left subtree), got %d", tree.Root.Max)
+	return got
+}
+
+// TestInTreeBasicQuery covers a single overlapping hit among several records,
+// porting the basic/no-overlap cases the old shared-tree alias tests held.
+func TestInTreeBasicQuery(t *testing.T) {
+	tree := newInIntervalTree([]*inRecord{
+		{chrom: "chr1", start: 10, end: 20},
+		{chrom: "chr1", start: 30, end: 40},
+		{chrom: "chr1", start: 50, end: 60},
+	})
+	if got := inTreeQueryEnds(tree, 35, 45); len(got) != 1 || !got[40] {
+		t.Errorf("expected single hit ending at 40, got %v", got)
 	}
-	// Also exercise a query that prunes via the (query.ChromStart >= node.Max)
-	// check (bedintersect.go:77) at the root level.
-	res := tree.Query(&bed.Record{Chrom: "chr1", ChromStart: 5000, ChromEnd: 6000})
-	if len(res) != 0 {
+	// Gap between records: no overlap.
+	if got := inTreeQueryEnds(tree, 21, 29); len(got) != 0 {
+		t.Errorf("expected no hits in the inter-record gap, got %v", got)
+	}
+}
+
+// TestInTreeMultipleAndAllOverlap covers a query that overlaps several records
+// and a query that spans every record, exercising both subtree descents.
+func TestInTreeMultipleAndAllOverlap(t *testing.T) {
+	tree := newInIntervalTree([]*inRecord{
+		{chrom: "chr1", start: 10, end: 30},
+		{chrom: "chr1", start: 20, end: 40},
+		{chrom: "chr1", start: 35, end: 50},
+		{chrom: "chr1", start: 60, end: 70},
+	})
+	// Overlaps the first three but not the disjoint fourth.
+	if got := inTreeQueryEnds(tree, 25, 38); len(got) != 3 || !got[30] || !got[40] || !got[50] {
+		t.Errorf("expected hits ending {30,40,50}, got %v", got)
+	}
+	// A query spanning everything returns all four.
+	if got := inTreeQueryEnds(tree, 0, 100); len(got) != 4 {
+		t.Errorf("expected all 4 records, got %v", got)
+	}
+}
+
+// TestInTreeLeftSubtreeMaxLarger covers the "node.max = node.left.max"
+// propagation in buildInTree: a left-subtree record whose end exceeds the
+// root's must raise the root's max, and an out-of-range query must prune at the
+// root via the (a.start >= node.max) guard.
+func TestInTreeLeftSubtreeMaxLarger(t *testing.T) {
+	recs := []*inRecord{
+		{chrom: "chr1", start: 50, end: 1000},
+		{chrom: "chr1", start: 100, end: 150},
+		{chrom: "chr1", start: 200, end: 250},
+	}
+	tree := newInIntervalTree(recs)
+	if tree.root.max != 1000 {
+		t.Errorf("expected root.max=1000 (from left subtree), got %d", tree.root.max)
+	}
+	if res := tree.query(&inRecord{chrom: "chr1", start: 5000, end: 6000}); len(res) != 0 {
 		t.Errorf("expected 0 results from out-of-range query, got %d", len(res))
 	}
 }
 
-// TestQueryNodeNilGuard covers the nil-node guard in queryNode by invoking
-// Query on a tree whose Root has nil children. While buildTree wouldn't
-// normally pass a nil node (the callers check), the explicit guard is reached
-// when the tree has a single node and the recursive descent reaches a leaf.
-// We also assert tree.Query handles a Root==nil tree (empty intervals).
-func TestQueryNodeNilGuard(t *testing.T) {
-	// Empty tree -> Root nil -> Query returns nil before entering queryNode.
-	empty := NewIntervalTree(nil)
-	if got := empty.Query(&bed.Record{Chrom: "chr1", ChromStart: 1, ChromEnd: 2}); got != nil {
-		t.Errorf("empty Query: expected nil, got %v", got)
+// TestInTreeNilAndSingleNode covers the empty-tree short-circuit and the
+// nil-child guard reached when descending a single-node tree.
+func TestInTreeNilAndSingleNode(t *testing.T) {
+	if got := newInIntervalTree(nil).query(&inRecord{chrom: "chr1", start: 1, end: 2}); got != nil {
+		t.Errorf("empty query: expected nil, got %v", got)
 	}
-	// Single-node tree: queryNode will be invoked with a non-nil node, then
-	// recurse into nil Left/Right and hit the guard.
-	tree := NewIntervalTree([]*bed.Record{{Chrom: "chr1", ChromStart: 100, ChromEnd: 200}})
-	res := tree.Query(&bed.Record{Chrom: "chr1", ChromStart: 150, ChromEnd: 175})
-	if len(res) != 1 {
+	tree := newInIntervalTree([]*inRecord{{chrom: "chr1", start: 100, end: 200}})
+	if res := tree.query(&inRecord{chrom: "chr1", start: 150, end: 175}); len(res) != 1 {
 		t.Errorf("expected 1 result, got %d", len(res))
 	}
-
-	// Note: the explicit nil-guard branch inside the internal queryNode
-	// recursion is now covered by the shared bed.IntervalTree tests in
-	// pkg/htsgo/bed/. We can no longer call it directly from this
-	// package because the method moved out of bedintersect when the tree was
-	// lifted into pkg/htsgo/bed.
 }
 
-// TestFindOverlapsChromMismatch directly calls findOverlaps with a B slice
-// that contains a record on a different chromosome to A. Normal callers feed
-// the per-chromosome chromIndex, so this defensive skip branch
-// (bedintersect.go:198-200) is otherwise unreachable.
-func TestFindOverlapsChromMismatch(t *testing.T) {
-	a := &bed.Record{Chrom: "chr1", ChromStart: 100, ChromEnd: 200}
-	bs := []*bed.Record{
-		{Chrom: "chr2", ChromStart: 100, ChromEnd: 300}, // skipped: wrong chrom
-		{Chrom: "chr1", ChromStart: 150, ChromEnd: 250}, // overlaps
+// TestRawOverlapsChromMismatch directly calls rawOverlaps with a B slice that
+// contains a record on a different chromosome to A. Normal callers feed the
+// per-chromosome bucket, so this defensive skip branch is otherwise
+// unreachable.
+func TestRawOverlapsChromMismatch(t *testing.T) {
+	a := &inRecord{chrom: "chr1", start: 100, end: 200}
+	bs := []*inRecord{
+		{chrom: "chr2", start: 100, end: 300}, // skipped: wrong chrom
+		{chrom: "chr1", start: 150, end: 250}, // overlaps
 	}
-	overlaps := findOverlaps(a, bs, IntersectOptions{MinOverlap: 1})
-	if len(overlaps) != 1 {
-		t.Fatalf("expected 1 overlap (chr1 only), got %d", len(overlaps))
+	hits := rawOverlaps(a, bs, IntersectOptions{MinOverlap: 1})
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 overlap (chr1 only), got %d", len(hits))
 	}
-	if overlaps[0].B.Chrom != "chr1" {
-		t.Errorf("expected overlap with chr1 B, got %s", overlaps[0].B.Chrom)
+	if hits[0].b.chrom != "chr1" {
+		t.Errorf("expected overlap with chr1 B, got %s", hits[0].b.chrom)
 	}
 }
 

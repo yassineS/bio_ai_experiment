@@ -66,6 +66,57 @@ type Options struct {
 	// TieBreak controls how ties (multiple equally-close B intervals) are
 	// resolved. Default TieAll.
 	TieBreak TieBreak
+
+	// IgnoreUpstream (`-iu`) drops B features that are upstream of A; the
+	// closest B is selected only among downstream and overlapping features.
+	// IgnoreDownstream (`-id`) is the symmetric flag. Upstream/downstream is
+	// determined relative to the active stranded distance mode (`-D`), so both
+	// require DistanceMode != DistanceRef-by-default — the CLI enforces that
+	// they are only set together with an explicit `-D`.
+	IgnoreUpstream   bool
+	IgnoreDownstream bool
+
+	// ForceUpstream (`-fu`) reports the closest upstream B in preference to any
+	// equally-or-closer downstream/overlapping B; ForceDownstream (`-fd`) is the
+	// symmetric flag. Like the ignore flags, these are meaningful only with an
+	// explicit `-D`.
+	ForceUpstream   bool
+	ForceDownstream bool
+}
+
+// streamDir classifies a non-overlapping B hit as upstream or downstream of A
+// under the active distance mode, mirroring upstream CloseSweep::considerRecord.
+type streamDir int
+
+const (
+	streamOverlap streamDir = iota
+	streamUpstream
+	streamDownstream
+)
+
+// classifyStream returns whether B is upstream, downstream, or overlapping A,
+// mirroring the UPSTREAM/DOWNSTREAM assignment in CloseSweep::considerRecord.
+// A B to the right of A (b.Start >= a.End) is normally DOWNSTREAM, but becomes
+// UPSTREAM when (A_dist && A is reverse-strand) or (B_dist && B is
+// forward-strand); a B to the left is the mirror image. Overlaps are neither.
+func classifyStream(a, b *Row, opts Options) streamDir {
+	if a.Start < b.End && b.Start < a.End {
+		return streamOverlap
+	}
+	flip := (opts.DistanceMode == DistanceA && a.Strand == "-") ||
+		(opts.DistanceMode == DistanceB && b.Strand == "+")
+	if b.Start >= a.End {
+		// B is to the right of A.
+		if flip {
+			return streamUpstream
+		}
+		return streamDownstream
+	}
+	// B is to the left of A.
+	if flip {
+		return streamDownstream
+	}
+	return streamUpstream
 }
 
 // Row is the parsed representation of a BED line. The original fields are
@@ -237,6 +288,13 @@ func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
 		return []hit{{b: MissingRow, dist: -1}}
 	}
 
+	// The directional flags (-iu/-id/-fu/-fd) change which candidates are
+	// eligible and the selection priority, so they take a dedicated stream-aware
+	// path rather than the plain closest-by-absolute-distance scan below.
+	if opts.IgnoreUpstream || opts.IgnoreDownstream || opts.ForceUpstream || opts.ForceDownstream {
+		return closestForDirectional(a, bs, opts)
+	}
+
 	idx := sort.Search(len(bs), func(i int) bool { return bs[i].Start >= a.Start })
 
 	bestAbs := int64(math.MaxInt64)
@@ -319,6 +377,137 @@ func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
 	}
 }
 
+// refGap returns the absolute reference gap between non-overlapping A and B,
+// using upstream's (gap + 1) convention so touching intervals report 1. It
+// assumes A and B do not overlap (the caller classifies overlaps separately).
+func refGap(a, b *Row) int64 {
+	if b.Start >= a.End {
+		return int64(b.Start-a.End) + 1
+	}
+	return int64(a.Start-b.End) + 1
+}
+
+// dcand is a directional-path candidate: its index in B, signed distance,
+// absolute distance, and stream classification relative to A.
+type dcand struct {
+	idx    int
+	signed int64
+	abs    int64
+	stream streamDir
+}
+
+// closestForDirectional selects the closest B for A honouring the directional
+// flags, mirroring CloseSweep::finalizeSelections for the single-closest
+// (k=1) case this tool reports:
+//
+//   - Each B on A's chromosome is classified as overlap/upstream/downstream
+//     (classifyStream), and -iu/-id drop the corresponding stream entirely.
+//   - -fu (forceUpstream) consumes the closest upstream feature(s) first, even
+//     ahead of overlaps; -fd does the same for downstream. Only if the forced
+//     stream is empty does selection fall through to overlaps, then to the
+//     closest of the remaining upstream/downstream features.
+//   - Without a force flag, overlaps win (distance 0), then the closest of the
+//     surviving upstream/downstream features, with ties resolved per TieBreak.
+func closestForDirectional(a *Row, bs []*Row, opts Options) []hit {
+	var overlaps, ups, downs []dcand
+	for i, b := range bs {
+		if a.Chrom != b.Chrom {
+			continue
+		}
+		stream := classifyStream(a, b, opts)
+		abs := refGap(a, b)
+		// Mirror CloseSweep::finalizeSelections, where the reported distance sign
+		// is derived from the stream classification: upstream features are
+		// negative, downstream positive, overlaps zero. signedDistance reuses the
+		// same classifyStream decision, so the directional and non-directional
+		// paths agree on the sign (including the -D b mode).
+		switch stream {
+		case streamOverlap:
+			overlaps = append(overlaps, dcand{i, 0, 0, streamOverlap})
+		case streamUpstream:
+			if !opts.IgnoreUpstream && !opts.RequireOverlap {
+				ups = append(ups, dcand{i, -abs, abs, streamUpstream})
+			}
+		case streamDownstream:
+			if !opts.IgnoreDownstream && !opts.RequireOverlap {
+				downs = append(downs, dcand{i, abs, abs, streamDownstream})
+			}
+		}
+	}
+
+	// closestOf returns the minimum-abs-distance candidates from a stream group
+	// (all ties at that distance), in B input order.
+	closestOf := func(group []dcand) []dcand {
+		if len(group) == 0 {
+			return nil
+		}
+		best := int64(math.MaxInt64)
+		for _, c := range group {
+			if c.abs < best {
+				best = c.abs
+			}
+		}
+		var out []dcand
+		for _, c := range group {
+			if c.abs == best {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+
+	var chosen []dcand
+	switch {
+	case opts.ForceUpstream:
+		if chosen = closestOf(ups); chosen == nil {
+			if chosen = overlaps; len(chosen) == 0 {
+				chosen = closestOf(downs)
+			} else {
+				chosen = closestOf(overlaps)
+			}
+		}
+	case opts.ForceDownstream:
+		if chosen = closestOf(downs); chosen == nil {
+			if chosen = overlaps; len(chosen) == 0 {
+				chosen = closestOf(ups)
+			} else {
+				chosen = closestOf(overlaps)
+			}
+		}
+	default:
+		// No force flag (-iu / -id only): overlaps win, then the closest of the
+		// surviving upstream/downstream features.
+		if len(overlaps) > 0 {
+			chosen = closestOf(overlaps)
+		} else {
+			rest := append(append([]dcand(nil), ups...), downs...)
+			chosen = closestOf(rest)
+		}
+	}
+
+	if len(chosen) == 0 {
+		if opts.RequireOverlap {
+			return nil
+		}
+		return []hit{{b: MissingRow, dist: -1}}
+	}
+
+	sort.Slice(chosen, func(i, j int) bool { return chosen[i].idx < chosen[j].idx })
+	switch opts.TieBreak {
+	case TieFirst:
+		return []hit{{b: bs[chosen[0].idx], dist: chosen[0].signed}}
+	case TieLast:
+		last := chosen[len(chosen)-1]
+		return []hit{{b: bs[last.idx], dist: last.signed}}
+	default:
+		out := make([]hit, 0, len(chosen))
+		for _, c := range chosen {
+			out = append(out, hit{b: bs[c.idx], dist: c.signed})
+		}
+		return out
+	}
+}
+
 // signedDistance returns the signed distance between A and B according to
 // opts.DistanceMode. 0 means they overlap (truly share at least one base on a
 // 0-based half-open interval); touching records (b.start == a.end or
@@ -331,34 +520,26 @@ func signedDistance(a, b *Row, opts Options) int64 {
 	if a.Start < b.End && b.Start < a.End {
 		return 0
 	}
-	var refSigned int64
+	// Magnitude of the gap: (b.start - a.end) + 1 to the right, or
+	// (a.start - b.end) + 1 to the left, matching upstream's currDist.
+	var magnitude int64
 	if b.Start >= a.End {
-		// B is downstream of A. Upstream uses (B.start - A.end) + 1, so a 0-bp
-		// gap (touching intervals) is reported as 1.
-		refSigned = int64(b.Start-a.End) + 1
+		magnitude = int64(b.Start-a.End) + 1
 	} else {
-		// B is upstream of A.
-		refSigned = -(int64(a.Start-b.End) + 1)
+		magnitude = int64(a.Start-b.End) + 1
 	}
-	switch opts.DistanceMode {
-	case DistanceA:
-		if a.Strand == "-" {
-			return -refSigned
-		}
-		return refSigned
-	case DistanceB:
-		if b.Strand == "-" {
-			return -refSigned
-		}
-		return refSigned
-	case DistanceAbsolute:
-		if refSigned < 0 {
-			return -refSigned
-		}
-		return refSigned
-	default: // DistanceRef
-		return refSigned
+	if opts.DistanceMode == DistanceAbsolute {
+		return magnitude
 	}
+	// The sign is negative when the hit is classified UPSTREAM of A and
+	// positive when DOWNSTREAM, exactly as upstream CloseSweep applies
+	// `0 - dist` to upstream records and `+dist` to downstream ones. Reuse
+	// classifyStream so the non-directional and directional paths agree on
+	// the convention (-D a flips on A reverse-strand, -D b on B forward-strand).
+	if classifyStream(a, b, opts) == streamUpstream {
+		return -magnitude
+	}
+	return magnitude
 }
 
 // writeRow writes one output row: A's columns, then B's columns, then the

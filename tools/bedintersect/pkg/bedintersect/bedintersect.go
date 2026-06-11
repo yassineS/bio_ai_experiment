@@ -46,45 +46,27 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 	if opts.usesJoinMode() {
 		return intersectJoin(readerA, readerB, writer, opts)
 	}
-	// Read all B intervals (database to search against)
-	bedReaderB := bed.NewReader(readerB)
-	var intervalsB []*bed.Record
+	// Every upstream-parity output mode (default intersection, -wa, -wb, -c, -v)
+	// uses the raw column-preserving path so input columns echo verbatim and
+	// BAM/VCF/GFF inputs are supported; opts.UseTree selects the interval-tree
+	// index there. Only the bedintersect-only distance/closest extensions
+	// (-d/-k) keep the legacy typed bed.Record path below.
+	if !opts.Distance && !opts.Closest {
+		return intersectRaw(readerA, readerB, writer, opts)
+	}
+	return intersectClosest(readerA, readerB, writer, opts)
+}
 
-	for {
-		record, err := bedReaderB.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return 0, fmt.Errorf("error reading B intervals: %w", err)
-		}
-		intervalsB = append(intervalsB, record)
+// intersectClosest implements the bedintersect-only -d/-k distance/closest
+// extensions over the typed bed.Record model. It is not part of the
+// upstream-parity surface (upstream `bedtools intersect` has no distance mode);
+// the dedicated `bedclosest` tool covers `bedtools closest`.
+func intersectClosest(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptions) (int, error) {
+	chromIndex, err := readChromIndex(readerB)
+	if err != nil {
+		return 0, err
 	}
 
-	// Sort B intervals for efficient searching
-	sort.Slice(intervalsB, func(i, j int) bool {
-		if intervalsB[i].Chrom != intervalsB[j].Chrom {
-			return intervalsB[i].Chrom < intervalsB[j].Chrom
-		}
-		return intervalsB[i].ChromStart < intervalsB[j].ChromStart
-	})
-
-	// Create chromosome index and optionally interval trees
-	chromIndex := make(map[string][]*bed.Record)
-	chromTrees := make(map[string]*IntervalTree)
-
-	for _, interval := range intervalsB {
-		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
-	}
-
-	// Build interval trees for each chromosome if UseTree is enabled
-	if opts.UseTree {
-		for chrom, intervals := range chromIndex {
-			chromTrees[chrom] = NewIntervalTree(intervals)
-		}
-	}
-
-	// Process A intervals
 	bedReaderA := bed.NewReader(readerA)
 	bedWriter := bed.NewWriter(writer)
 	count := 0
@@ -98,185 +80,76 @@ func Intersect(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptio
 			return 0, fmt.Errorf("error reading A intervals: %w", err)
 		}
 
-		// Handle distance and closest modes
-		if opts.Distance || opts.Closest {
-			closest, dist := findClosest(recordA, chromIndex[recordA.Chrom], opts)
-			if closest != nil {
-				if opts.Distance {
-					// Write A interval with distance in name field
-					result := &bed.Record{
-						Chrom:      recordA.Chrom,
-						ChromStart: recordA.ChromStart,
-						ChromEnd:   recordA.ChromEnd,
-						Name:       fmt.Sprintf("%d", dist),
-					}
-					if err := bedWriter.Write(result); err != nil {
-						return 0, fmt.Errorf("error writing result: %w", err)
-					}
-					count++
-				} else if opts.Closest {
-					// Write the closest B interval
-					if err := bedWriter.Write(closest); err != nil {
-						return 0, fmt.Errorf("error writing result: %w", err)
-					}
-					count++
-				}
-			} else {
-				// No B intervals on this chromosome
-				if opts.Distance {
-					result := &bed.Record{
-						Chrom:      recordA.Chrom,
-						ChromStart: recordA.ChromStart,
-						ChromEnd:   recordA.ChromEnd,
-						Name:       "-1",
-					}
-					if err := bedWriter.Write(result); err != nil {
-						return 0, fmt.Errorf("error writing result: %w", err)
-					}
-					count++
-				}
-			}
-			continue
-		}
-
-		// Find overlaps using interval tree or linear search
-		var overlaps []*Overlap
-		if opts.UseTree {
-			if tree, ok := chromTrees[recordA.Chrom]; ok {
-				candidates := tree.Query(recordA)
-				overlaps = findOverlaps(recordA, candidates, opts)
-			}
-		} else {
-			overlaps = findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
-		}
-
-		if opts.NoOverlap {
-			// Report if no overlaps found
-			if len(overlaps) == 0 {
-				if err := bedWriter.Write(recordA); err != nil {
-					return 0, fmt.Errorf("error writing result: %w", err)
-				}
-				count++
-			}
-		} else if opts.Count {
-			// Append the overlap count as the final column, preserving all
-			// of A's columns (matches `bedtools intersect -c`).
-			result := *recordA
-			result.ExtraFields = append(append([]string(nil), recordA.ExtraFields...), fmt.Sprintf("%d", len(overlaps)))
-			if err := bedWriter.Write(&result); err != nil {
+		closest, dist := findClosest(recordA, chromIndex[recordA.Chrom], opts)
+		result, write := closestResult(recordA, closest, dist, opts)
+		if write {
+			if err := bedWriter.Write(result); err != nil {
 				return 0, fmt.Errorf("error writing result: %w", err)
 			}
 			count++
-		} else {
-			// Report each overlap
-			for _, overlap := range overlaps {
-				var result *bed.Record
-				if opts.WriteB {
-					result = overlap.B
-				} else if opts.WriteA {
-					result = recordA
-				} else {
-					// Write intersection: clip A to the overlap range but
-					// preserve A's name/score/strand and any extra columns
-					// (matches `bedtools intersect` default behaviour).
-					clip := *recordA
-					clip.ChromStart = max(recordA.ChromStart, overlap.B.ChromStart)
-					clip.ChromEnd = min(recordA.ChromEnd, overlap.B.ChromEnd)
-					result = &clip
-				}
-				if err := bedWriter.Write(result); err != nil {
-					return 0, fmt.Errorf("error writing result: %w", err)
-				}
-				count++
-			}
 		}
 	}
 
 	if err := bedWriter.Flush(); err != nil {
 		return 0, fmt.Errorf("error flushing output: %w", err)
 	}
-
 	return count, nil
 }
 
-// Overlap represents an overlapping interval pair.
-type Overlap struct {
-	A          *bed.Record
-	B          *bed.Record
-	OverlapLen int
+// readChromIndex reads every B record and buckets it by chromosome, sorted by
+// start, for the typed distance/closest path.
+func readChromIndex(readerB io.Reader) (map[string][]*bed.Record, error) {
+	bedReaderB := bed.NewReader(readerB)
+	var intervalsB []*bed.Record
+	for {
+		record, err := bedReaderB.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("error reading B intervals: %w", err)
+		}
+		intervalsB = append(intervalsB, record)
+	}
+	sort.Slice(intervalsB, func(i, j int) bool {
+		if intervalsB[i].Chrom != intervalsB[j].Chrom {
+			return intervalsB[i].Chrom < intervalsB[j].Chrom
+		}
+		return intervalsB[i].ChromStart < intervalsB[j].ChromStart
+	})
+	chromIndex := make(map[string][]*bed.Record)
+	for _, interval := range intervalsB {
+		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
+	}
+	return chromIndex, nil
 }
 
-// findOverlaps finds all intervals in B that overlap with A.
-func findOverlaps(a *bed.Record, bIntervals []*bed.Record, opts IntersectOptions) []*Overlap {
-	var overlaps []*Overlap
-
-	for _, b := range bIntervals {
-		// Skip if chromosomes don't match
-		if a.Chrom != b.Chrom {
-			continue
+// closestResult builds the output record for the -d/-k path and reports whether
+// it should be written. -d emits A's coordinates with the distance in the name
+// field (or -1 when no B is on the chromosome); -k emits the closest B record
+// (and nothing when there is none).
+func closestResult(recordA, closest *bed.Record, dist int, opts IntersectOptions) (*bed.Record, bool) {
+	if closest == nil {
+		if opts.Distance {
+			return &bed.Record{
+				Chrom:      recordA.Chrom,
+				ChromStart: recordA.ChromStart,
+				ChromEnd:   recordA.ChromEnd,
+				Name:       "-1",
+			}, true
 		}
-
-		// Check strand if required
-		if opts.StrandSpec && !sameStrandMatch(a.Strand, b.Strand) {
-			continue
-		}
-
-		// Calculate overlap
-		overlapStart := max(a.ChromStart, b.ChromStart)
-		overlapEnd := min(a.ChromEnd, b.ChromEnd)
-		overlapLen := overlapEnd - overlapStart
-
-		// Check if there's an overlap
-		if overlapLen <= 0 {
-			continue
-		}
-
-		// Lengths used for the -f/-F fraction tests. With -split these are the
-		// summed block lengths and the overlap is the non-redundant block
-		// overlap (mirroring BlockMgr::findBlockedOverlaps); otherwise they are
-		// the whole-span lengths.
-		lenA := a.ChromEnd - a.ChromStart
-		lenB := b.ChromEnd - b.ChromStart
-		fracOverlap := overlapLen
-		if opts.Split {
-			blockOverlap, aSum, bSum := splitBlockOverlap(a, b)
-			if blockOverlap <= 0 {
-				continue
-			}
-			fracOverlap = blockOverlap
-			lenA = aSum
-			lenB = bSum
-		}
-
-		// Check minimum overlap
-		if overlapLen < opts.MinOverlap {
-			continue
-		}
-
-		// Check fraction of A that overlaps
-		fracA := float64(fracOverlap) / float64(lenA)
-		if opts.FractionA > 0 && fracA < opts.FractionA {
-			continue
-		}
-
-		// Check fraction of B that overlaps
-		fracB := float64(fracOverlap) / float64(lenB)
-		if opts.FractionB > 0 && fracB < opts.FractionB {
-			continue
-		}
-
-		// Note: Reciprocal mode is satisfied by the two checks above when
-		// callers supply both FractionA and FractionB, which is how the CLI
-		// wires it (-r combined with -f and -F). No additional check needed.
-
-		overlaps = append(overlaps, &Overlap{
-			A:          a,
-			B:          b,
-			OverlapLen: overlapLen,
-		})
+		return nil, false
 	}
-
-	return overlaps
+	if opts.Distance {
+		return &bed.Record{
+			Chrom:      recordA.Chrom,
+			ChromStart: recordA.ChromStart,
+			ChromEnd:   recordA.ChromEnd,
+			Name:       fmt.Sprintf("%d", dist),
+		}, true
+	}
+	// opts.Closest
+	return closest, true
 }
 
 // findClosest finds the closest interval in B to A and returns the distance.
@@ -330,47 +203,29 @@ type Stats struct {
 
 // IntersectWithStats performs intersection and returns detailed statistics.
 func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptions) (*Stats, error) {
-	// Read all B intervals
-	bedReaderB := bed.NewReader(readerB)
-	var intervalsB []*bed.Record
+	// Every upstream-parity output mode uses the raw, column-preserving path so
+	// the output matches `bedtools intersect` byte-for-byte (and supports
+	// BAM/VCF/GFF inputs). Only the bedintersect-only -d/-k extensions fall
+	// through to the legacy typed path below.
+	if !opts.Distance && !opts.Closest {
+		return intersectRawWithStats(readerA, readerB, writer, opts)
+	}
+	return intersectClosestWithStats(readerA, readerB, writer, opts)
+}
 
-	for {
-		record, err := bedReaderB.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("error reading B intervals: %w", err)
-		}
-		intervalsB = append(intervalsB, record)
+// intersectClosestWithStats is intersectClosest plus per-A hit accounting for
+// the -S stats summary, over the typed bed.Record -d/-k path.
+func intersectClosestWithStats(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptions) (*Stats, error) {
+	chromIndex, err := readChromIndex(readerB)
+	if err != nil {
+		return nil, err
+	}
+	intervalsB := 0
+	for _, recs := range chromIndex {
+		intervalsB += len(recs)
 	}
 
-	sort.Slice(intervalsB, func(i, j int) bool {
-		if intervalsB[i].Chrom != intervalsB[j].Chrom {
-			return intervalsB[i].Chrom < intervalsB[j].Chrom
-		}
-		return intervalsB[i].ChromStart < intervalsB[j].ChromStart
-	})
-
-	chromIndex := make(map[string][]*bed.Record)
-	chromTrees := make(map[string]*IntervalTree)
-
-	for _, interval := range intervalsB {
-		chromIndex[interval.Chrom] = append(chromIndex[interval.Chrom], interval)
-	}
-
-	// Build interval trees for each chromosome if UseTree is enabled
-	if opts.UseTree {
-		for chrom, intervals := range chromIndex {
-			chromTrees[chrom] = NewIntervalTree(intervals)
-		}
-	}
-
-	stats := &Stats{
-		IntervalsB: len(intervalsB),
-	}
-
-	// Process A intervals
+	stats := &Stats{IntervalsB: intervalsB}
 	bedReaderA := bed.NewReader(readerA)
 	bedWriter := bed.NewWriter(writer)
 
@@ -384,96 +239,16 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 		}
 
 		stats.IntervalsA++
-
-		// Handle distance and closest modes
-		if opts.Distance || opts.Closest {
-			closest, dist := findClosest(recordA, chromIndex[recordA.Chrom], opts)
-			if closest != nil {
-				stats.IntervalsAHit++
-				if opts.Distance {
-					result := &bed.Record{
-						Chrom:      recordA.Chrom,
-						ChromStart: recordA.ChromStart,
-						ChromEnd:   recordA.ChromEnd,
-						Name:       fmt.Sprintf("%d", dist),
-					}
-					if err := bedWriter.Write(result); err != nil {
-						return nil, fmt.Errorf("error writing result: %w", err)
-					}
-				} else if opts.Closest {
-					if err := bedWriter.Write(closest); err != nil {
-						return nil, fmt.Errorf("error writing result: %w", err)
-					}
-				}
-			} else {
-				stats.IntervalsAMiss++
-				if opts.Distance {
-					result := &bed.Record{
-						Chrom:      recordA.Chrom,
-						ChromStart: recordA.ChromStart,
-						ChromEnd:   recordA.ChromEnd,
-						Name:       "-1",
-					}
-					if err := bedWriter.Write(result); err != nil {
-						return nil, fmt.Errorf("error writing result: %w", err)
-					}
-				}
-			}
-			continue
-		}
-
-		// Find overlaps using interval tree or linear search
-		var overlaps []*Overlap
-		if opts.UseTree {
-			if tree, ok := chromTrees[recordA.Chrom]; ok {
-				candidates := tree.Query(recordA)
-				overlaps = findOverlaps(recordA, candidates, opts)
-			}
-		} else {
-			overlaps = findOverlaps(recordA, chromIndex[recordA.Chrom], opts)
-		}
-
-		if len(overlaps) > 0 {
+		closest, dist := findClosest(recordA, chromIndex[recordA.Chrom], opts)
+		if closest != nil {
 			stats.IntervalsAHit++
-			stats.Overlaps += len(overlaps)
 		} else {
 			stats.IntervalsAMiss++
 		}
-
-		// Write output (same logic as Intersect)
-		if opts.NoOverlap {
-			if len(overlaps) == 0 {
-				if err := bedWriter.Write(recordA); err != nil {
-					return nil, fmt.Errorf("error writing result: %w", err)
-				}
-			}
-		} else if opts.Count {
-			result := &bed.Record{
-				Chrom:      recordA.Chrom,
-				ChromStart: recordA.ChromStart,
-				ChromEnd:   recordA.ChromEnd,
-				Name:       fmt.Sprintf("%d", len(overlaps)),
-			}
+		result, write := closestResult(recordA, closest, dist, opts)
+		if write {
 			if err := bedWriter.Write(result); err != nil {
 				return nil, fmt.Errorf("error writing result: %w", err)
-			}
-		} else {
-			for _, overlap := range overlaps {
-				var result *bed.Record
-				if opts.WriteB {
-					result = overlap.B
-				} else if opts.WriteA {
-					result = recordA
-				} else {
-					result = &bed.Record{
-						Chrom:      recordA.Chrom,
-						ChromStart: max(recordA.ChromStart, overlap.B.ChromStart),
-						ChromEnd:   min(recordA.ChromEnd, overlap.B.ChromEnd),
-					}
-				}
-				if err := bedWriter.Write(result); err != nil {
-					return nil, fmt.Errorf("error writing result: %w", err)
-				}
 			}
 		}
 	}
@@ -481,42 +256,7 @@ func IntersectWithStats(readerA, readerB io.Reader, writer io.Writer, opts Inter
 	if err := bedWriter.Flush(); err != nil {
 		return nil, fmt.Errorf("error flushing output: %w", err)
 	}
-
 	return stats, nil
-}
-
-// splitBlockOverlap returns the non-redundant overlapping bases between A and B
-// when treating BED12 records as their constituent blocks, along with the
-// summed A-block and B-block lengths used by the fraction tests. Records that
-// are not valid BED12 fall back to their whole span (a single block).
-func splitBlockOverlap(a, b *bed.Record) (overlap, aSum, bSum int) {
-	aBlocks := typedBlocks(a)
-	bBlocks := typedBlocks(b)
-	var ovs []block
-	for _, hb := range bBlocks {
-		for _, kb := range aBlocks {
-			s := max(kb.start, hb.start)
-			e := min(kb.end, hb.end)
-			if e > s {
-				ovs = append(ovs, block{s, e})
-			}
-		}
-	}
-	return nonRedundantOverlap(ovs), blockSum(aBlocks), blockSum(bBlocks)
-}
-
-// typedBlocks expands a typed bed.Record into absolute block intervals, or
-// returns the whole span when the record has no BED12 blocks.
-func typedBlocks(r *bed.Record) []block {
-	if r.BlockCount <= 0 || len(r.BlockSizes) != r.BlockCount || len(r.BlockStarts) != r.BlockCount {
-		return []block{{r.ChromStart, r.ChromEnd}}
-	}
-	blks := make([]block, 0, r.BlockCount)
-	for i := 0; i < r.BlockCount; i++ {
-		s := r.ChromStart + r.BlockStarts[i]
-		blks = append(blks, block{s, s + r.BlockSizes[i]})
-	}
-	return blks
 }
 
 // sameStrandMatch reports whether two strand columns count as the same strand
