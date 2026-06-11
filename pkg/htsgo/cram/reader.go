@@ -20,6 +20,12 @@ type Container struct {
 	Blocks []Block
 	// Index is the container's zero-based position in the file.
 	Index int
+	// Major is the CRAM major version of the file the container came
+	// from. It is threaded into the slice-header parse because the
+	// record-counter field's width (ITF-8 for v2, LTF-8 for v3+) depends
+	// on it. Containers produced by Reader.Next carry it; a zero value
+	// (only possible for a hand-built Container) is treated as v3+.
+	Major uint8
 }
 
 // Reader walks the structural tree of a CRAM stream: its file
@@ -115,7 +121,7 @@ func (rd *Reader) Next() (*Container, error) {
 		rd.sawEOF = true
 		return nil, io.EOF
 	}
-	c := &Container{Header: hdr, Index: rd.count}
+	c := &Container{Header: hdr, Index: rd.count, Major: rd.def.Major}
 	rd.count++
 	// The container header's Length field is the byte size of all the
 	// blocks that follow. Walking by NumBlocks is the simplest correct

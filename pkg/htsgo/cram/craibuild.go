@@ -74,7 +74,7 @@ func BuildCRAI(r io.Reader) ([]CRAIEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		sliceEntries, err := craiSliceEntries(blockEnds, containerOffset)
+		sliceEntries, err := craiSliceEntries(blockEnds, containerOffset, def.Major)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +127,12 @@ func craiContainerBlocks(br *bufio.Reader, def FileDefinition, hdr ContainerHead
 // reference span from the slice header, the slice-header block's
 // body-relative offset as SliceOffset, and the summed byte size of the
 // slice-header block and its data blocks as SliceSize.
-func craiSliceEntries(blocks []craiBlock, containerOffset int64) ([]CRAIEntry, error) {
+//
+// major is the CRAM file's major version; it is threaded into the
+// slice-header parse so the record-counter field is read with the right
+// width (ITF-8 for v2, LTF-8 for v3+) and the fields after it stay
+// aligned.
+func craiSliceEntries(blocks []craiBlock, containerOffset int64, major uint8) ([]CRAIEntry, error) {
 	var entries []CRAIEntry
 	for i := 0; i < len(blocks); i++ {
 		b := &blocks[i]
@@ -140,7 +145,7 @@ func craiSliceEntries(blocks []craiBlock, containerOffset int64) ([]CRAIEntry, e
 		if err != nil {
 			return nil, wrapf(err, "slice-header block at body offset %d", b.bodyOffset)
 		}
-		sh, err := parseSliceHeader(payload)
+		sh, err := parseSliceHeader(payload, major)
 		if err != nil {
 			return nil, wrapf(err, "slice header at body offset %d", b.bodyOffset)
 		}

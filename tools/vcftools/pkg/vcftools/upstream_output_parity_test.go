@@ -304,3 +304,52 @@ func recodeSampleNames(t *testing.T, path string) []string {
 }
 
 func maxIndvName(n int) string { return "max_indv_" + strconv.Itoa(n) }
+
+// TestVcftools_FreqUpstreamParity compares the --freq (.frq) and --counts
+// (.frq.count) outputs of the Go port against the live upstream binary,
+// byte-for-byte, on a purely-biallelic fixture.
+//
+// Upstream's output_frequency (variant_file_output.cpp:131) writes each
+// allele frequency straight to a default-configured C++ ostream, i.e.
+// `defaultfloat` with precision 6: six significant digits, trailing zeros
+// stripped. So 6/12 prints "0.5" (not "0.500000"), 1/12 prints "0.0833333",
+// and 11/12 prints "0.916667". The Go port previously emitted "%.6f"
+// ("0.500000"); this test pins the corrected formatting.
+//
+// The fixture is deliberately all-biallelic so the Go port (which restricts
+// --freq/--counts to biallelic loci — the multi-allelic gap tracked in
+// docs/PARITY_ROADMAP.md#vcftools) emits exactly the same rows upstream does,
+// making a byte-for-byte file comparison valid.
+func TestVcftools_FreqUpstreamParity(t *testing.T) {
+	vcf := fixtureVCF(t, "freq_fmt_fixture.vcf")
+
+	cases := []struct {
+		name   string
+		upArg  string
+		suffix string
+		params *Params
+	}{
+		{"freq", "--freq", ".frq", &Params{Freq: true}},
+		{"counts", "--counts", ".frq.count", &Params{Counts: true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upPrefix := runUpstream(t, vcf, tc.upArg)
+			goPrefix := runGo(t, vcf, tc.params)
+
+			want := readLinesTrim(t, upPrefix+tc.suffix)
+			got := readLinesTrim(t, goPrefix+tc.suffix)
+			if len(want) != len(got) {
+				t.Fatalf("%s line count: want %d, got %d\nwant=%q\ngot=%q",
+					tc.suffix, len(want), len(got), want, got)
+			}
+			for i := range want {
+				if want[i] != got[i] {
+					t.Errorf("%s line %d mismatch:\nwant: %q\ngot:  %q",
+						tc.suffix, i, want[i], got[i])
+				}
+			}
+		})
+	}
+}

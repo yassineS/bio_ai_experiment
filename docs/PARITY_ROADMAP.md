@@ -1574,6 +1574,29 @@ Other (per-output column-set gaps, not flag-count gaps):
      golden regenerated on musl / macOS libc / MSVC could
      print `nan` or `NaN` instead. Re-running the goldens on
      a non-glibc system would require updating the literal.
+- ~~**`--freq` / `--counts` float formatting**: the `.frq` allele-frequency
+  column printed `%.6f` (`0.500000`), but upstream's `output_frequency`
+  (`variant_file_output.cpp:131`) writes each freq straight to a default
+  C++ ostream — `defaultfloat` with precision 6, i.e. six *significant*
+  digits with trailing zeros stripped (`0.5`, `0.0833333`, `1`, `0`).~~
+  **Closed.** A `formatFreq` helper (`statistics.go`) uses Go's
+  `strconv.FormatFloat(v, 'g', 6, 64)`, which reproduces the C++ default
+  ostream output byte-for-byte (verified over a 12.5M-ratio sweep against a
+  live `ostringstream`, including the sub-`1e-4` scientific-notation
+  threshold and round-half-to-even at the 6th digit). `--counts` was already
+  integer-formatted and is unaffected. Pinned by the live-binary
+  `TestVcftools_FreqUpstreamParity` (`--freq` + `--counts` byte-for-byte on
+  the all-biallelic `freq_fmt_fixture.vcf`); the `freq.expected.frq` and
+  `derived.expected.frq` goldens were regenerated to the upstream format.
+  The same fix was applied to `outputFrequency2` (`--freq2`).
+- **`--freq2` / `--counts2` output schema** (open, algorithmic — not just
+  formatting): the Go port writes `<prefix>.frq2` / `.frq.count2` with a
+  PLINK-style `CHROM POS N_CHR REF_FREQ ALT_FREQ` layout, whereas upstream's
+  `suppress_allele_output` branch writes the SAME `.frq` / `.frq.count`
+  files as `--freq` / `--counts` but with the allele labels stripped
+  (header `{FREQ}` / `{COUNT}`, bare tab-separated values for all N
+  alleles). Bringing this to parity is a column-set/suffix change beyond the
+  float-formatting fix above and is tracked here as a separate gap.
 - **Other**: small-format columns gaps tracked in
   `tools/PORTING_STATUS.md`.
 
@@ -1781,12 +1804,19 @@ Plus:
   decode, stripped the internal `cF` tag, matched htslib's RG/PG aux
   ordering, fixed read-feature → CIGAR ordering for deletions, and
   thereby unblocked **v2.1 decode** for the realistic case — all proven
-  byte-for-byte against live `samtools view`. Remaining decode gaps are
-  small and behind clear errors: the v2.1 record-counter ITF-8/LTF-8
-  edge for files with > 2^28 reads before the read slice, the network
+  byte-for-byte against live `samtools view`. The v2.1 slice-header
+  record-counter ITF-8/LTF-8 edge (files with ≥ 2^28 reads before the
+  read slice) is now also **closed** (C-V21): `parseSliceHeader` takes
+  the container's CRAM major version and reads the counter as ITF-8 for
+  v2 / LTF-8 for v3+, matching htslib `cram_decode_slice_header`,
+  validated by a 2^28-boundary unit test plus the live-samtools v2.1
+  round-trip. Remaining gaps are behind clear errors: the network
   REF_PATH/EBI fetch (an unresolvable reference is a clear MD5 error),
-  X_EXT bzip2 *encode* (no Go bzip2 encoder), and CRAM v4.0 (spec not
-  final). See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
+  X_EXT bzip2 *encode* (no Go bzip2 encoder and none sanctioned; a
+  correct in-tree port is ~1.5–2.5 kLOC for a rare optional codec the
+  writer never emits, so it is documented-deferred and errors cleanly —
+  never silent wrong output), and CRAM v4.0 (spec not final). See
+  `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
 - **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
   and `.csi`, and readers auto-detect index kind from file magic.
 - **Multi-threading (`-@`) — DONE for the BAM-writing subcommands

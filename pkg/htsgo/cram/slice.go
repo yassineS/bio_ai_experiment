@@ -59,6 +59,15 @@ func ParseDataContainer(c *Container) (*DataContainer, error) {
 	}
 	dc := &DataContainer{Compression: ch}
 
+	// The slice-header record-counter width depends on the CRAM major
+	// version (ITF-8 for v2, LTF-8 for v3+). Containers from Reader.Next
+	// carry the version; a hand-built Container leaves Major zero, which
+	// we treat as v3+ to preserve the historical LTF-8 default.
+	major := c.Major
+	if major == 0 {
+		major = 3
+	}
+
 	// Walk the blocks after the compression header. They alternate: a
 	// slice-header block (content type MAPPED_SLICE) followed by that
 	// slice's NumBlocks data blocks.
@@ -73,7 +82,7 @@ func ParseDataContainer(c *Container) (*DataContainer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cram: container %d slice %d header: %w", c.Index, len(dc.Slices), err)
 		}
-		sh, err := parseSliceHeader(hdrPayload)
+		sh, err := parseSliceHeader(hdrPayload, major)
 		if err != nil {
 			return nil, fmt.Errorf("cram: container %d slice %d header: %w", c.Index, len(dc.Slices), err)
 		}
