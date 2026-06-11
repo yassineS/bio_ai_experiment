@@ -2,11 +2,11 @@
 
 `mosdepth` is a pure-Go port of brentp's
 [mosdepth](https://github.com/brentp/mosdepth) — fast per-base and
-per-region BAM depth-of-coverage.
+per-region BAM/CRAM depth-of-coverage.
 
 The original is written in Nim, which is the install-pain story we keep
 seeing in CI/conda environments. This port is a single static Go binary
-sitting on top of our in-tree SAM/BAM, BGZF, and tabix libraries — no
+sitting on top of our in-tree SAM/BAM, CRAM, BGZF, and tabix libraries — no
 htslib, no Nim toolchain.
 
 `mosdepth` is pick #5 of the 2026 next-up list in
@@ -25,8 +25,17 @@ The binary has no third-party dependencies and no `cgo`.
 ## Usage
 
 ```bash
-mosdepth [options] <prefix> <in.bam>
+mosdepth [options] <prefix> <in.bam|in.cram>
 ```
+
+The input format (SAM, BAM, or CRAM) is auto-detected from its leading
+bytes — the filename extension is not consulted. CRAM input is decoded
+through the in-tree `pkg/htsgo/cram` reader (via `pkg/htsgo/alnio`);
+supply the decode reference with `-f/--fasta` (or the samtools-style
+`--reference` alias), and the `REF_CACHE` environment variable is honoured
+as an additional reference source. An embedded-reference CRAM decodes with
+no `-f`. Because depth depends only on alignment coordinates, every output
+file is byte-identical whether the input is a BAM or the equivalent CRAM.
 
 Outputs (always emitted unless a flag below suppresses one):
 
@@ -64,7 +73,7 @@ Outputs (always emitted unless a flag below suppresses one):
 | `-R` | `--read-groups LIST` | Comma list of allowed RG ids; prefix the first with `OPS:` to filter on the OPS aux tag instead. (`-r` is a port-only lowercase alias.) |
 | `-l` | `--min-frag-len INT` | Minimum absolute TLEN to include. |
 | `-u` | `--max-frag-len INT` | Maximum absolute TLEN to include. |
-| `-f` | `--fasta FILE` | FASTA reference for CRAM input. Accepted for parity; CRAM is not yet supported, so the value is ignored. |
+| `-f` | `--fasta FILE` | FASTA reference (with sibling `.fai`) for decoding reference-backed CRAM input. The `--reference` long alias is also accepted. Ignored for BAM/SAM input. `REF_CACHE` is honoured regardless. |
 | `-a` | `--fragment-mode` | Count coverage across the whole template (fragment) between properly-paired mates rather than the aligned reads only. Only read1 of a proper, non-supplementary pair contributes, covering `[min(read,mate) start, +\|TLEN\|)`. Byte-identical to upstream v0.3.14. Mutually exclusive with `-x/--fast-mode` (rejected, exit 2). |
 | `-q` | `--quantize SEGS` | Bin per-base depth into the `:`-separated segments (e.g. `0:1:4:`) and write `<prefix>.quantized.bed.gz`. A leading `:` prepends `0`; a trailing `:` adds an open-ended top bin (`N:inf`). Labels default to `lo:hi` and can be overridden per bin with `MOSDEPTH_Q<i>` env vars. Depths outside the range leave a gap (no line). Byte-identical to upstream v0.3.14. |
 | `-m` | `--use-median` | Report the per-region **median** depth instead of the mean in the `--by` regions output. Changes only the `<prefix>.regions.bed.gz` depth column; the summary, distribution, thresholds, quantized, and per-base outputs are unaffected — exactly as upstream does (only `imean()` routes through the median histogram). Byte-identical to upstream v0.3.14. |
@@ -197,7 +206,9 @@ Coverage targets ≥85% on `pkg/mosdepth`. Tests cover:
 
 - v1: per-base, per-region (BED), per-window, thresholds, distribution,
   summary, CSI indexes, `--mapq 0` fast path, byte-identical D4
-  per-base output, `--fragment-mode`, `--quantize`, `--use-median`, and
-  multi-threaded (`-t/--threads`) BGZF decode.
-- Roadmap: default-mode overlap-pair correction, CRAM input (depends on
-  the project's CRAM reader landing first).
+  per-base output, `--fragment-mode`, `--quantize`, `--use-median`,
+  multi-threaded (`-t/--threads`) BGZF decode, and **CRAM input**
+  (`-f/--fasta`/`--reference` + `REF_CACHE`; output byte-identical to the
+  equivalent BAM and to upstream `mosdepth` on the CRAM —
+  `TestCRAM_InputMatchesBAM` / `TestCRAM_InputMatchesUpstream`).
+- Roadmap: default-mode overlap-pair correction.

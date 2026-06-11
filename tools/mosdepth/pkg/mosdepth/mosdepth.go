@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	bgzf "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -101,6 +102,16 @@ type Options struct {
 	// throughput. 0 or 1 means single-threaded. See OpenAndRun.
 	Threads int
 
+	// Fasta names a FASTA reference (with a sibling .fai) used to decode
+	// reference-backed CRAM input (CLI -f/--fasta / --reference). It is
+	// ignored for BAM and SAM input, which carry their sequence inline. When
+	// empty, a CRAM input still decodes — reference-derived bases fall back to
+	// 'N' — and the REF_CACHE environment variable is honoured as an
+	// additional CRAM reference source regardless of this value. Depth only
+	// depends on alignment coordinates, so CRAM depth output is identical to
+	// the equivalent BAM whether or not a reference is supplied.
+	Fasta string
+
 	// UseMedian, when true, makes the per-region (--by) output report the
 	// median per-base depth instead of the mean, matching upstream mosdepth's
 	// -m/--use-median. It affects ONLY the regions.bed.gz depth column; the
@@ -113,24 +124,48 @@ type Options struct {
 // ErrByConflict is returned when both ByBED and ByWindow are set.
 var ErrByConflict = errors.New("mosdepth: -b/--by cannot specify both a BED file and an integer window")
 
-// Run executes a full mosdepth pipeline against the BAM bytes streaming in
-// from in. The header is read first, then records are streamed and depth
+// Run executes a full mosdepth pipeline against the SAM/BAM bytes streaming
+// in from in. The header is read first, then records are streamed and depth
 // is accumulated per reference. When the cursor moves to a new reference
 // (or input EOF) the previous reference's outputs are emitted.
 //
 // The function intentionally takes an io.Reader rather than a file path so
 // that tests can drive it from an in-memory BAM buffer; the CLI front-end
-// opens the file and passes its handle.
+// opens the file and passes its handle. CRAM input, which needs its own
+// reference-aware decoder, is routed through OpenAndRun / runWithReader.
 func Run(in io.Reader, opts Options) error {
+	if err := validateOptions(opts); err != nil {
+		return err
+	}
+	rd, err := sam.NewReader(in)
+	if err != nil {
+		return fmt.Errorf("mosdepth: open BAM: %w", err)
+	}
+	return runWithReader(rd, opts)
+}
+
+// validateOptions checks the option-level invariants that do not depend on the
+// input stream, so they can be reported before any reader is opened. It is
+// called by every entry point (Run, OpenAndRun) to keep error ordering stable
+// regardless of input format.
+func validateOptions(opts Options) error {
 	if opts.ByBED != "" && opts.ByWindow > 0 {
 		return ErrByConflict
 	}
 	if opts.Prefix == "" {
 		return fmt.Errorf("mosdepth: empty output prefix")
 	}
-	rd, err := sam.NewReader(in)
-	if err != nil {
-		return fmt.Errorf("mosdepth: open BAM: %w", err)
+	return nil
+}
+
+// runWithReader executes the mosdepth pipeline against an already-opened
+// alignment reader. Depth is computed identically whether rd decodes BAM,
+// SAM, or CRAM, so CRAM input yields byte-for-byte the same outputs as the
+// equivalent BAM. Callers must validate opts (see validateOptions) before
+// opening rd.
+func runWithReader(rd sam.Reader, opts Options) error {
+	if err := validateOptions(opts); err != nil {
+		return err
 	}
 	hdr := rd.Header()
 	if hdr == nil {
@@ -689,22 +724,51 @@ func readerForFile(path string) (io.Reader, io.Closer, error) {
 // OpenAndRun is the convenience entry point used by the CLI: open path,
 // stream it through Run, and ensure the file handle is closed.
 //
+// The input format (SAM, BAM, or CRAM) is auto-detected from its leading
+// bytes. CRAM input is decoded through pkg/htsgo/alnio, honouring
+// opts.Fasta (-f/--fasta) and the REF_CACHE environment variable for
+// reference resolution; depth output is identical to the equivalent BAM.
+//
 // When opts.Threads >= 2 and the input is BGZF-compressed (the usual BAM
 // case), the BGZF blocks are decompressed concurrently across opts.Threads
 // worker goroutines via bgzf.NewMultiReader. The decoded byte stream — and
 // therefore every output file — is byte-for-byte identical to the
 // single-threaded path regardless of the thread count; threading only affects
-// decode throughput.
+// decode throughput. CRAM carries its own block framing and is read
+// single-threaded.
 func OpenAndRun(path string, opts Options) error {
+	if err := validateOptions(opts); err != nil {
+		return err
+	}
 	r, c, err := readerForFile(path)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 
+	// Sniff the leading bytes to detect CRAM, which needs the reference-aware
+	// alnio decoder rather than sam.NewReader. SAM/BAM fall through to the
+	// existing (optionally BGZF-threaded) path unchanged. The bufio reader is
+	// reused below so the peeked bytes are not lost.
+	br := bufio.NewReader(r)
+	head, _ := br.Peek(16)
+	if looksLikeCRAM(head) {
+		rd, rerr := alnio.NewReaderWithReference(br, opts.Fasta)
+		if rerr != nil {
+			return fmt.Errorf("mosdepth: open CRAM: %w", rerr)
+		}
+		// The CRAM reader owns the reference-FASTA handle opened by
+		// NewReaderWithReference; close it so the descriptor is not leaked
+		// (alnio returns it typed as sam.Reader, but the concrete CRAM reader
+		// implements io.Closer).
+		if rc, ok := rd.(io.Closer); ok {
+			defer rc.Close()
+		}
+		return runWithReader(rd, opts)
+	}
+	r = br
+
 	if opts.Threads >= 2 {
-		br := bufio.NewReader(r)
-		head, _ := br.Peek(16)
 		if looksLikeBGZF(head) {
 			mr, merr := bgzf.NewMultiReader(br, opts.Threads)
 			if merr != nil {
@@ -718,6 +782,14 @@ func OpenAndRun(path string, opts Options) error {
 		return Run(br, opts)
 	}
 	return Run(r, opts)
+}
+
+// looksLikeCRAM reports whether b begins with the four-byte "CRAM" file
+// magic. CRAM has its own container framing (it is never BGZF-wrapped at the
+// file level), so this sniff is sufficient to route the input to the
+// reference-aware alnio decoder instead of sam.NewReader.
+func looksLikeCRAM(b []byte) bool {
+	return len(b) >= 4 && b[0] == 'C' && b[1] == 'R' && b[2] == 'A' && b[3] == 'M'
 }
 
 // looksLikeBGZF reports whether b begins with a BGZF gzip header (gzip magic +
