@@ -88,8 +88,8 @@ func TestArith_EncodeMatchesHTScodecs(t *testing.T) {
 
 // TestArith_U32ComplianceVectors decodes the htscodecs arith_dynamic u32
 // vectors. The u32 corpus file is fed to the codec verbatim (no q-file
-// cut/strip transform). Suffix 4 is X_EXT (a bzip2 payload); decode is
-// supported, encode is not (Go has no stdlib bzip2 encoder).
+// cut/strip transform). Suffix 4 is X_EXT (a bzip2 payload); both decode
+// and (round-trip) encode are supported via the in-tree bzip2 codec.
 func TestArith_U32ComplianceVectors(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(htscodecsDir, "dat", "u32"))
 	if err != nil {
@@ -120,8 +120,10 @@ func TestArith_U32ComplianceVectors(t *testing.T) {
 }
 
 // TestArith_U32EncodeMatchesHTScodecs checks the encoder reproduces the
-// non-X_EXT u32 vectors byte-exactly. Suffix 4 (X_EXT) is excluded: it
-// needs a bzip2 encoder, which Go's standard library does not provide.
+// non-X_EXT u32 vectors byte-exactly. Suffix 4 (X_EXT) is excluded: our
+// in-tree bzip2 encoder round-trips correctly (see
+// TestArith_XEXTEncodeRoundTrip) but does not reproduce libbz2's exact
+// Huffman-optimised byte stream, so it cannot match that golden vector.
 func TestArith_U32EncodeMatchesHTScodecs(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(htscodecsDir, "dat", "u32"))
 	if err != nil {
@@ -151,12 +153,29 @@ func TestArith_U32EncodeMatchesHTScodecs(t *testing.T) {
 	}
 }
 
-// TestArith_XEXTEncodeUnsupported pins the documented encoder gap:
-// X_EXT (bzip2) encode returns a clear error rather than producing a
-// wrong stream.
-func TestArith_XEXTEncodeUnsupported(t *testing.T) {
-	if _, err := ArithEncode(bytes.Repeat([]byte("ACGT"), 100), x4x16Ext); err == nil {
-		t.Fatal("expected an error for X_EXT encode")
+// TestArith_XEXTEncodeRoundTrip exercises the X_EXT (bzip2) encode path
+// now that an in-tree bzip2 encoder exists: an X_EXT-encoded stream must
+// decode back to the original through the same ArithDecode used for the
+// htscodecs vectors.
+func TestArith_XEXTEncodeRoundTrip(t *testing.T) {
+	inputs := [][]byte{
+		bytes.Repeat([]byte("ACGT"), 100),
+		[]byte("the quick brown fox jumps over the lazy dog"),
+		bytes.Repeat([]byte{0x00}, 5000),
+		{},
+	}
+	for _, in := range inputs {
+		enc, err := ArithEncode(in, x4x16Ext)
+		if err != nil {
+			t.Fatalf("X_EXT encode (%d bytes): %v", len(in), err)
+		}
+		got, err := ArithDecode(enc)
+		if err != nil {
+			t.Fatalf("X_EXT decode (%d bytes): %v", len(in), err)
+		}
+		if !bytes.Equal(got, in) {
+			t.Fatalf("X_EXT round-trip mismatch: got %d bytes, want %d", len(got), len(in))
+		}
 	}
 }
 
