@@ -40,6 +40,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -194,38 +195,55 @@ func seqCommand() {
 	fs := flag.NewFlagSet("seq", flag.ExitOnError)
 	var hv subFlags
 	hv.register(fs, true)
-	var revComp, phred64 bool
-	var output string
-	var minLen, maxLen int
-	var pattern string
+	var revComp, forceFASTA, dropComment, upper, dropAmbig, shiftQual, maskComplement bool
+	var output, maskFile, maskCharStr string
+	var lineLen, minLen, qualThres, maxQual, qualShift int
 
 	cliflag.BoolVar(fs, &revComp, "r", "reverse", false, "Reverse complement sequences")
-	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	cliflag.BoolVar(fs, &forceFASTA, "A", "fasta", false, "Force FASTA output (discard quality)")
+	cliflag.BoolVar(fs, &dropComment, "C", "drop-comment", false, "Drop the comment at header lines")
+	cliflag.BoolVar(fs, &upper, "U", "upper", false, "Convert all bases to uppercase")
+	cliflag.BoolVar(fs, &dropAmbig, "N", "drop-ambig", false, "Drop sequences containing ambiguous bases")
+	cliflag.BoolVar(fs, &shiftQual, "V", "shift-quality", false, "Shift quality by '(-Q) - 33'")
+	cliflag.BoolVar(fs, &maskComplement, "c", "mask-complement", false, "Mask the complement of -M regions")
+	cliflag.IntVar(fs, &lineLen, "l", "line-len", 0, "Number of residues per line (0 = no wrapping)")
+	cliflag.IntVar(fs, &minLen, "L", "min-len", 0, "Drop sequences shorter than INT")
+	cliflag.IntVar(fs, &qualThres, "q", "min-qual", 0, "Mask bases with quality lower than INT")
+	cliflag.IntVar(fs, &maxQual, "X", "max-qual", 255, "Mask bases with quality higher than INT")
+	cliflag.IntVar(fs, &qualShift, "Q", "qual-shift", 33, "Quality shift: ASCII-INT gives base quality")
+	cliflag.StringVar(fs, &maskCharStr, "n", "mask-char", "", "Masked bases converted to CHAR (default: lowercase)")
+	cliflag.StringVar(fs, &maskFile, "M", "mask-file", "", "Mask regions in a BED or name-list FILE")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
-	cliflag.IntVar(fs, &minLen, "l", "min-len", 0, "Minimum sequence length (0 = no filter)")
-	cliflag.IntVar(fs, &maxLen, "L", "max-len", 0, "Maximum sequence length (0 = no filter)")
-	cliflag.StringVar(fs, &pattern, "n", "name", "", "Filter by sequence name pattern")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk seq [options] <input>
 
-Transform sequences.
+Common transformation of FASTA/Q (a faithful port of upstream "seqtk seq").
 
 Arguments:
   <input>    Input file (use '-' for stdin, supports .gz and .bz2)
 
 Options:
-  -r, --reverse          Reverse complement sequences
-  -l, --min-len INT      Minimum sequence length (0 = no filter)
-  -L, --max-len INT      Maximum sequence length (0 = no filter)
-  -n, --name PATTERN     Filter by sequence name pattern
-  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
+  -q, --min-qual INT     Mask bases with quality lower than INT [0]
+  -X, --max-qual INT     Mask bases with quality higher than INT [255]
+  -n, --mask-char CHAR   Masked bases converted to CHAR (default: lowercase)
+  -l, --line-len INT     Number of residues per line; 0 = no wrapping [0]
+  -Q, --qual-shift INT   Quality shift: ASCII-INT gives base quality [33]
+  -M, --mask-file FILE   Mask regions in a BED or name-list FILE
+  -L, --min-len INT      Drop sequences shorter than INT [0]
+  -c, --mask-complement  Mask the complement region (effective with -M)
+  -r, --reverse          Reverse complement
+  -A, --fasta            Force FASTA output (discard quality)
+  -C, --drop-comment     Drop the comment at header lines
+  -N, --drop-ambig       Drop sequences containing ambiguous bases
+  -V, --shift-quality    Shift quality by '(-Q) - 33'
+  -U, --upper            Convert all bases to uppercase
   -o, --output FILE      Output file (default: stdout, supports .gz)
 
 Examples:
-  seqtk seq -r reads.fastq > rev_comp.fastq
-  seqtk seq -l 100 -L 500 reads.fastq > filtered.fastq
-  seqtk seq -n "chr1" sequences.fasta > chr1.fasta
+  seqtk seq -A reads.fastq > reads.fasta
+  seqtk seq -C -r genome.fa > rc.fa
+  seqtk seq -M mask.bed -n N genome.fa > masked.fa
 
 `)
 	}
@@ -244,20 +262,6 @@ Examples:
 
 	inputFile := fs.Arg(0)
 
-	// Detect file type (before opening to avoid consuming stdin)
-	var isFastq bool
-	var err error
-	if inputFile != "-" {
-		isFastq, err = seqtk.GetFileType(inputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		// For stdin, assume FASTQ (could be improved with buffered detection)
-		isFastq = true
-	}
-
 	// Open input with compression support
 	input, err := seqtk.OpenInput(inputFile)
 	if err != nil {
@@ -274,32 +278,26 @@ Examples:
 	}
 	defer out.Close()
 
-	encoding := fastq.Phred33
-	if phred64 {
-		encoding = fastq.Phred64
+	opts := seqtk.DefaultSeqOptions()
+	opts.RevComp = revComp
+	opts.ForceFASTA = forceFASTA
+	opts.DropComment = dropComment
+	opts.Uppercase = upper
+	opts.DropAmbig = dropAmbig
+	opts.ShiftQual = shiftQual
+	opts.MaskComplent = maskComplement
+	opts.LineLen = lineLen
+	opts.MinLen = minLen
+	opts.QualThres = qualThres
+	opts.MaxQual = maxQual
+	opts.QualShift = qualShift
+	opts.MaskFile = maskFile
+	if maskCharStr != "" {
+		opts.MaskChar = maskCharStr[0]
 	}
 
-	// Check if any transformation or filter is specified
-	hasFilter := minLen > 0 || maxLen > 0 || pattern != ""
-
-	if revComp {
-		if err := seqtk.ReverseComplement(input, out, isFastq, encoding); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	} else if hasFilter {
-		opts := seqtk.FilterOptions{
-			MinLength: minLen,
-			MaxLength: maxLen,
-			Pattern:   pattern,
-		}
-		if err := seqtk.Filter(input, out, opts, isFastq, encoding); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		// Just copy through (could add more transformations here)
-		fmt.Fprintf(os.Stderr, "No transformation specified. Use -r for reverse complement or -l/-L/-n for filtering.\n")
+	if err := seqtk.SeqRun(input, out, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -391,28 +389,34 @@ func sampleCommand() {
 	fs := flag.NewFlagSet("sample", flag.ExitOnError)
 	var hv subFlags
 	hv.register(fs, true)
-	var phred64 bool
 	var output string
+	var seed int64
+	var twoPass bool
 
-	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	cliflag.Int64Var(fs, &seed, "s", "seed", 11, "RNG seed [11]")
+	cliflag.BoolVar(fs, &twoPass, "2", "two-pass", false, "2-pass mode: slower but much lower memory")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: seqtk sample [options] <input> <fraction>
+		fmt.Fprintf(os.Stderr, `Usage: seqtk sample [-2] [-s seed=11] <input> <frac>|<number>
 
-Subsample sequences randomly.
+Subsample sequences with upstream seqtk's seeded reservoir sampler. A
+<frac> below 1 samples each record with that probability; a value of 1 or
+greater is rounded to a record count and that many records are drawn.
 
 Arguments:
-  <input>      Input FASTA/FASTQ file (use '-' for stdin, supports .gz and .bz2)
-  <fraction>   Fraction of sequences to sample (0.0-1.0)
+  <input>           Input FASTA/FASTQ file (use '-' for stdin, supports .gz)
+  <frac>|<number>   Fraction in [0,1) or an integer record count
 
 Options:
-  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
+  -s, --seed INT         RNG seed [11]
+  -2, --two-pass         2-pass mode: slower but much lower memory (count only)
   -o, --output FILE      Output file (default: stdout, supports .gz)
 
 Example:
-  seqtk sample reads.fastq 0.1 > sample.fastq
-  cat reads.fastq.gz | seqtk sample - 0.1 > sample.fastq
+  seqtk sample -s100 reads.fastq 0.1 > sample.fastq
+  seqtk sample -s100 reads.fastq 1000 > sample.fastq
+  seqtk sample -2 -s100 reads.fastq 1000 > sample.fastq
 
 `)
 	}
@@ -430,32 +434,11 @@ Example:
 	}
 
 	inputFile := fs.Arg(0)
-	var fraction float64
-	if _, err := fmt.Sscanf(fs.Arg(1), "%f", &fraction); err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid fraction: %v\n", err)
+	var frac float64
+	if _, err := fmt.Sscanf(fs.Arg(1), "%f", &frac); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid fraction/number: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Detect file type
-	var isFastq bool
-	var err error
-	if inputFile != "-" {
-		isFastq, err = seqtk.GetFileType(inputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error detecting file type: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		isFastq = true // Default to FASTQ for stdin
-	}
-
-	// Open input with compression support
-	input, err := seqtk.OpenInput(inputFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
-		os.Exit(1)
-	}
-	defer input.Close()
 
 	// Open output with compression support
 	out, err := seqtk.OpenOutput(output)
@@ -465,12 +448,38 @@ Example:
 	}
 	defer out.Close()
 
-	encoding := fastq.Phred33
-	if phred64 {
-		encoding = fastq.Phred64
+	// Match upstream: frac >= 1.0 means "draw this many records"; otherwise
+	// it is a per-record sampling fraction.
+	if frac >= 1.0 {
+		num := uint64(frac + 0.499)
+		if twoPass && inputFile == "-" {
+			fmt.Fprintln(os.Stderr, seqtk.ErrTwoPassStdin)
+			os.Exit(1)
+		}
+		input, err := seqtk.OpenInput(inputFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+			os.Exit(1)
+		}
+		defer input.Close()
+		reopen := func() (io.ReadCloser, error) { return seqtk.OpenInput(inputFile) }
+		if err := seqtk.SampleN(input, out, num, seed, twoPass, reopen); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
-	if err := seqtk.Sample(input, out, fraction, isFastq, encoding); err != nil {
+	if twoPass {
+		fmt.Fprintf(os.Stderr, "[W::sample] when sampling a fraction, option -2 is ignored.\n")
+	}
+	input, err := seqtk.OpenInput(inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+		os.Exit(1)
+	}
+	defer input.Close()
+	if err := seqtk.SampleFraction(input, out, frac, seed); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -480,28 +489,37 @@ func trimfqCommand() {
 	fs := flag.NewFlagSet("trimfq", flag.ExitOnError)
 	var hv subFlags
 	hv.register(fs, true)
-	var quality int
-	var phred64 bool
+	var errorRate float64
+	var minLen, left, right, fixedLen int
 	var output string
 
-	cliflag.IntVar(fs, &quality, "q", "quality", 20, "Minimum quality threshold")
-	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding (default: Phred+33)")
+	opts := seqtk.DefaultTrimFQOptions()
+	cliflag.Float64Var(fs, &errorRate, "q", "error-rate", opts.ErrorRate, "Error-rate threshold (disabled by -b/-e/-L)")
+	cliflag.IntVar(fs, &minLen, "l", "min-len", opts.MinLen, "Maximally trim down to INT bp (Mott path)")
+	cliflag.IntVar(fs, &left, "b", "trim-left", 0, "Trim INT bp from the left (non-zero disables -q/-l)")
+	cliflag.IntVar(fs, &right, "e", "trim-right", 0, "Trim INT bp from the right (non-zero disables -q/-l)")
+	cliflag.IntVar(fs, &fixedLen, "L", "fixed-len", 0, "Retain at most INT bp from the 5'-end (non-zero disables -q/-l)")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk trimfq [options] <input>
 
-Trim FASTQ sequences based on quality.
+Trim FASTQ using the modified Mott algorithm (a faithful port of upstream
+"seqtk trimfq"). With -b/-e/-L the Mott path is disabled and reads are
+trimmed by fixed offsets instead.
 
 Arguments:
   <input>    Input FASTQ file (use '-' for stdin, supports .gz and .bz2)
 
 Options:
-  -q, --quality INT      Minimum quality threshold (default: 20)
-  -6, --phred64          Use Phred+64 quality encoding (default: Phred+33)
+  -q, --error-rate FLOAT Error-rate threshold (disabled by -b/-e/-L) [%.2f]
+  -l, --min-len INT      Maximally trim down to INT bp (disabled by -b/-e) [%d]
+  -b, --trim-left INT    Trim INT bp from the left (non-zero disables -q/-l) [0]
+  -e, --trim-right INT   Trim INT bp from the right (non-zero disables -q/-l) [0]
+  -L, --fixed-len INT    Retain at most INT bp from the 5'-end (non-zero disables -q/-l) [0]
   -o, --output FILE      Output file (default: stdout, supports .gz)
 
-`)
+`, opts.ErrorRate, opts.MinLen)
 	}
 
 	if err := cliflag.Parse(fs, os.Args[2:]); err != nil {
@@ -534,12 +552,18 @@ Options:
 	}
 	defer out.Close()
 
-	encoding := fastq.Phred33
-	if phred64 {
-		encoding = fastq.Phred64
+	opts.ErrorRate = errorRate
+	opts.MinLen = minLen
+	opts.Left = left
+	opts.Right = right
+	// Upstream's -L default is -1 (off); the CLI uses 0 as "not set".
+	if fixedLen > 0 {
+		opts.FixedLen = fixedLen
+	} else {
+		opts.FixedLen = -1
 	}
 
-	if err := seqtk.TrimQuality(input, out, quality, encoding); err != nil {
+	if err := seqtk.TrimFQ(input, out, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -784,9 +808,11 @@ func compCommand() {
 	var hv subFlags
 	hv.register(fs, true)
 	var phred64, summary bool
+	var regionFile string
 
 	cliflag.BoolVar(fs, &phred64, "6", "phred64", false, "Use Phred+64 quality encoding for FASTQ (default: Phred+33)")
 	cliflag.BoolVar(fs, &summary, "", "summary", false, "Emit summary statistics (legacy) instead of upstream per-record output")
+	cliflag.StringVar(fs, &regionFile, "r", "region", "", "Restrict composition to regions in a BED or name-list FILE")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk comp [options] <input>
@@ -796,11 +822,16 @@ one tab-separated row per input record with the columns:
 
     name\tlen\t#A\t#C\t#G\t#T\t#2\t#3\t#4\t#CpG\t#tv\t#ts\t#CpG-ts
 
+With -r, only records named in FILE are reported and each listed region
+yields one row whose leading columns are "name\tbeg\tend" (the region
+bounds) rather than "name\tlen", matching upstream "seqtk comp -r".
+
 Arguments:
   <input>    Input file (use '-' for stdin, supports .gz and .bz2)
 
 Options:
   -6, --phred64          Use Phred+64 quality encoding for FASTQ (default: Phred+33)
+  -r, --region FILE      Restrict composition to regions in a BED or name-list FILE
       --summary          Emit summary statistics instead of upstream-format
                          per-record rows (legacy behaviour from before the
                          2026-05-14 parity audit).
@@ -845,7 +876,15 @@ Options:
 
 	if !summary {
 		// Upstream-compatible per-record output (the default).
-		if err := seqtk.Comp(input, os.Stdout); err != nil {
+		var regions *seqtk.RegionSet
+		if regionFile != "" {
+			regions, err = seqtk.ReadRegionFile(regionFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading region file: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if err := seqtk.CompWithRegions(input, os.Stdout, regions); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
