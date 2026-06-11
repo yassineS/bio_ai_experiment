@@ -150,7 +150,9 @@ func TestIntersectWriteB(t *testing.T) {
 
 	fileB := `chr1	150	250`
 
-	expected := `chr1	150	250
+	// -wb alone echoes A clipped to the overlap, then the full original B —
+	// matching `bedtools intersect -wb` byte-for-byte.
+	expected := `chr1	150	200	chr1	150	250
 `
 
 	readerA := strings.NewReader(fileA)

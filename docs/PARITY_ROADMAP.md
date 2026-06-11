@@ -828,25 +828,55 @@ byte-for-byte equality (`t.Fatalf`, never `t.Skip`) across the BED3–BED12
 null shapes, `-split` block math, zero-length intervals, B-order
 preservation, and the UNKNOWN-strand cases.
 
-Documented `bedintersect` remainder (NOT implemented in this wave):
+bedtools-gaps closure wave (this PR): the items previously listed as
+`bedintersect`/`bedclosest` remainder are now implemented and pinned
+byte-for-byte against the live upstream `bedtools` binary
+(`upstreamBedtoolsGaps`, `sync.Once`, `t.Fatalf` — never `t.Skip`):
 
-- **BAM / VCF / GFF inputs.** `-split` BAM CIGAR-N splitting, and VCF/GFF
-  interval coercion, are out of scope; the tool reads BED only. The join
-  path rejects non-BED input rather than silently mis-parsing it.
+- **BAM / VCF / GFF inputs on `-a`/`-b`.** `tools/bedintersect/pkg/bedintersect/input.go`
+  autodetects the format (BAM by BGZF/`BAM\x01` magic; otherwise BED/VCF/GFF
+  by upstream `BedFile::parseLine` precedence) and converts each record to a
+  common 0-based half-open `inRecord` that echoes its original columns
+  verbatim. BAM alignments render as BED12 with CIGAR-N block splitting
+  (`-bed`), VCF spans are `POS-1 .. POS-1+len(REF)` (the line echoes
+  unclipped), GFF is `start-1 .. end`. Clipped-BAM output keeps the original
+  thickStart/thickEnd/block columns, matching upstream `BamRecord::print`
+  exactly (the blocks describe the original span, not the clip — verified
+  against upstream `-split`/`-wo`). Parity:
+  `cmd/bedintersect/gaps_parity_test.go` (`TestGapsParity_BAMInput`,
+  `TestGapsParity_VCFGFFInput`, including the `-s` strandless case).
+- **`-c` count column.** The raw column-preserving path echoes every original
+  column before the trailing count (the old typed `bed.Writer` dropped a
+  score of `0` and the strand column). Pinned by
+  `TestGapsParity_CountColumnDrop`.
+- **`bedclosest` directional flags (`-iu`/`-id`/`-fu`/`-fd`).** Implemented
+  with the `-D`-orientation sweep semantics from upstream `CloseSweep`
+  (`classifyStream`). The "requires `-D`" guard matches upstream exactly:
+  any `-D` value (including `-D ref`) satisfies it — upstream only errors when
+  `-D` is entirely absent (verified against the live binary; `_haveStrandedDistMode`
+  is set for `-D ref` too). Pinned by `TestGapsParity_ClosestDirectional`.
+- **`bedclosest -D a/-D b` signed-distance sign fix.** The non-directional
+  `signedDistance` previously flipped the `-D b` sign on a reverse-strand B;
+  upstream (`_bDist && _dbForward`) flips on a FORWARD-strand B. `signedDistance`
+  now reuses `classifyStream` so the directional and non-directional paths
+  agree, matching upstream across every geometry/strand/mode
+  (`TestGapsParity_ClosestSignedDistance`, 36 combinations).
+- **`-sortedtree`/`--tree` B index.** `opts.UseTree` now actually selects an
+  augmented interval tree over `inRecord` (`treeFinder`/`inIntervalTree`)
+  instead of being a silent no-op in an unreachable typed branch; the tree
+  path re-sorts candidates into B-file order so output stays byte-identical
+  to the linear scan and to upstream (`TestGapsParity_UseTree`). The dead
+  typed `findOverlaps`/`Overlap`/`splitBlockOverlap`/`typedBlocks` helpers and
+  the `bed.Record` `IntervalTree` alias they used were removed.
+
+Residual `bedintersect` notes (still as before):
+
 - **Ragged B files.** Upstream hard-errors when a B file's records have
   inconsistent field counts; the null-shape classification here keys off
   the first B record. Genuine BED is uniform, so this only differs on
-  malformed input (ours is lenient where upstream aborts).
-- **The pre-existing `-c` typed-writer column drop** (a score of `0`
-  round-trips to nothing in the default count/intersection path) is
-  unchanged — it predates this wave and lives in the typed `bed.Writer`,
-  not the join path.
-- **`bedclosest` directional flags (`-id`/`-iu`/`-fu`/`-fd`).** Not
-  implemented. They require `-D` orientation and select/ignore B features
-  by upstream/downstream position with sweep-direction subtleties; the
-  existing `bedclosest` already implements signed `-D` (ref/a/b), `-N`,
-  and the tie modes. The directional ignore/force flags are deferred to a
-  dedicated wave rather than shipped half-correct.
+  malformed input (ours is lenient where upstream aborts). The new
+  BED/VCF/GFF reader does validate the per-line field count against the
+  locked format and errors like upstream's type checker.
 
 CRAM-input + option-tail wave (this PR): `bedmulticov` now accepts CRAM
 inputs anywhere it accepts BAM; `bedmultiinter` now autodetects VCF/GFF
@@ -1908,13 +1938,16 @@ Plus:
   the container's CRAM major version and reads the counter as ITF-8 for
   v2 / LTF-8 for v3+, matching htslib `cram_decode_slice_header`,
   validated by a 2^28-boundary unit test plus the live-samtools v2.1
-  round-trip. Remaining gaps are behind clear errors: the network
-  REF_PATH/EBI fetch (an unresolvable reference is a clear MD5 error),
-  X_EXT bzip2 *encode* (no Go bzip2 encoder and none sanctioned; a
-  correct in-tree port is ~1.5–2.5 kLOC for a rare optional codec the
-  writer never emits, so it is documented-deferred and errors cleanly —
-  never silent wrong output), and CRAM v4.0 (spec not final). See
-  `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
+  round-trip. **X_EXT bzip2 *encode* is now DONE**: an in-tree
+  pure-Go bzip2 encoder (`pkg/htsgo/cram/codec/bzip2_encode.go`, stdlib
+  only — Go's `compress/bzip2` is decode-only) backs both the X_EXT
+  external codec and a new method-2 (bzip2) block-codec candidate; its
+  output decodes byte-for-byte under Go `compress/bzip2`, the system
+  `bzip2 -d` (libbz2), and upstream samtools (verified by
+  `bzip2_parity_test.go`). Remaining gaps are behind clear errors: the
+  network REF_PATH/EBI fetch (an unresolvable reference is a clear MD5
+  error) and CRAM v4.0 (spec not final). See `docs/CRAM_DESIGN.md` and
+  `docs/CRAM_ROADMAP.md`.
 - **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
   and `.csi`, and readers auto-detect index kind from file magic.
 - **Multi-threading (`-@`) — DONE for the BAM-writing subcommands

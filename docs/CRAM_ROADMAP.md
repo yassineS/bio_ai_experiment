@@ -45,22 +45,24 @@ errors — never a silent wrong answer):
   reference, an explicit `--reference` FASTA, and the local REF_CACHE
   directory all work.
 - **X_EXT (bzip2) *encode*** for the arith / name-tokeniser codecs —
-  **DEFERRED (documented), not a correctness gap.** Decode works via
-  stdlib `compress/bzip2`. Encode is unsupported because Go has no
-  standard-library bzip2 *encoder* and none is sanctioned (CLAUDE.md
-  permits exactly one CRAM third-party dep, `ulikunitz/xz`, for LZMA
-  decode only). A correct in-tree bzip2 encoder is a large port — the
-  full bzip2 pipeline (BWT with suffix-array sorting, MTF, the two RLE
-  stages, and multi-table Huffman with selector coding) is roughly
-  1.5–2.5 kLOC of carefully-tested code — for a *rare optional* codec
-  that this writer never emits: `chooseBlockCompression` only ever
-  selects raw / gzip / rANS-4x16, and the encoders never auto-select
-  the X_EXT order bit. X_EXT encode is reached only if a caller
-  explicitly requests it, and then returns a clear error
-  (`arith: X_EXT (bzip2) encode is unsupported …`) — never silent
-  wrong output (verified: the encoders auto-select X_CAT/raw, not
-  X_EXT). Implementing it is not in scope; it would warrant its own
-  conversation and dependency review if a real workload ever needs it.
+  **DONE.** Go ships `compress/bzip2` decode-only, so a pure-Go in-tree
+  bzip2 *encoder* now lives in `pkg/htsgo/cram/codec/bzip2_encode.go`
+  (the full pipeline: RLE1 → BWT via Manber-Myers rank-doubling → MTF +
+  RLE2 → multi-table Huffman with selector coding → MSB-first bitstream,
+  `BZh` header, pi-digit block magic, per-block + combined stream CRC32,
+  EOS magic). No new dependency — stdlib only — so the sanctioned-dep
+  list (CLAUDE.md: `ulikunitz/xz` for LZMA decode is still the only CRAM
+  third-party dep) is unchanged. The encoder is wired into the X_EXT
+  arith transform (`arith_transform.go`) and offered as a block codec
+  candidate in `chooseBlockCompression` (method 2, bzip2). Correctness
+  gates: our output decodes byte-for-byte under Go `compress/bzip2`, the
+  system `bzip2 -d` (libbz2), and upstream samtools — a CRAM samtools
+  writes with `use_bzip2=1` decodes through our reader, and our
+  writer's method-2 blocks decode through libbz2, both byte-exact (see
+  `bzip2_parity_test.go`, `bzip2_encode_test.go`). Note: the encoder
+  round-trips correctly but does not reproduce libbz2's exact
+  Huffman-optimised byte stream, so the htscodecs `u32.4` golden vector
+  is matched on *decode* and round-trip, not on byte-exact re-encode.
 - **CRAM v4.0** is out of scope (spec not finalised).
 
 ---
@@ -91,7 +93,7 @@ Per `CRAM_DESIGN.md` the no-deps rule is relaxed *only* inside
 | rANS 4x8 | **In-tree pure Go** (preference #2, not #3) | ~300-400 LOC decoder + similar encoder. A textbook static-rANS coder — well within the codebase's in-tree appetite (bgzf/tabix/bcf all went this route). No dep. |
 | rANS 4x16 | **In-tree pure Go** | Same family; the 4x16 normalisation + the v3.1 "order bits" (RLE / bit-packing / striping transforms) add ~400 LOC. Still tractable in-tree. |
 | LZMA (decode) | **`github.com/ulikunitz/xz`** (BSD-2) | Genuinely hard to port; LZMA is a rare optional per-block CRAM codec. This is the *one* sanctioned dep. Confined to `codec/lzma.go`. |
-| gzip / bzip2 / RAW | **stdlib** (`compress/gzip`, `compress/bzip2`) | bzip2 stdlib is decode-only — fine, CRAM rarely bzip2-encodes and v1 write uses gzip/rANS. |
+| gzip / bzip2 / RAW | **stdlib decode** (`compress/gzip`, `compress/bzip2`) + **in-tree bzip2 encode** (`codec/bzip2_encode.go`) | Go's `compress/bzip2` is decode-only, so the bzip2 *encoder* is a pure-Go in-tree port (no new dep). Backs CRAM block method 2 and the X_EXT external codec; output verified against libbz2 + samtools. |
 
 **Net effect:** the only new `go.mod` entry for the whole CRAM
 project is `ulikunitz/xz`, and it is reachable only from
@@ -431,10 +433,13 @@ limitation here.
   the rANS 4x16 transform/varint/pack helpers — only the entropy core
   differs). `block.go` method-6 dispatch now decodes. Byte-exact
   against all 32 `arith/q*` + `u32` vectors for decode and 31/32 for
-  encode — the one gap is `u32.4` (X_EXT, a bzip2 payload): decode
-  works via stdlib `compress/bzip2`, but Go has no bzip2 encoder and
-  none is in the sanctioned dependency set, so X_EXT *encode* returns
-  a clear error. `FuzzArithDecode` (1M+ execs clean).
+  byte-exact encode. The one byte-exact-encode exception is `u32.4`
+  (X_EXT, a bzip2 payload): X_EXT *encode* is now implemented via the
+  in-tree pure-Go bzip2 encoder (`codec/bzip2_encode.go`, stdlib only)
+  and round-trips correctly, but does not reproduce libbz2's exact
+  Huffman-optimised bytes, so it is matched on decode/round-trip rather
+  than byte-for-byte against that golden vector. `FuzzArithDecode`
+  (1M+ execs clean).
 - **C-EmbedRef** — landed (audit + closure pass). Closed four real
   decode-parity gaps surfaced by comparing our reader against live
   `samtools view` of `samtools` `view -C` output (the SAM
@@ -498,9 +503,11 @@ limitation here.
   impractical to build (it needs ~268 M reads), so the unit test covers
   the divergence directly and the live round-trip covers the realistic
   v2.1 file. This closes the last documented v2.1-decode item.
-  Separately, an honest re-assessment of **X_EXT (bzip2) encode**
-  confirms it stays deferred: a correct in-tree bzip2 encoder is a
-  ~1.5–2.5 kLOC port (BWT + MTF + RLE + multi-table Huffman) for a rare
-  optional codec the writer never emits, and no bzip2 encoder is
-  sanctioned. The X_EXT encode path errors cleanly and is never
-  auto-selected — no silent wrong output.
+  Separately, **X_EXT (bzip2) encode** is now **implemented** (it was
+  previously deferred): the in-tree pure-Go bzip2 encoder
+  (`codec/bzip2_encode.go`, ~800 LOC, stdlib only — BWT via Manber-Myers
+  rank-doubling + MTF + the two RLE stages + multi-table Huffman) backs
+  both the X_EXT arith transform and a new method-2 (bzip2) block-codec
+  candidate. Its output decodes byte-for-byte under Go `compress/bzip2`,
+  the system `bzip2 -d` (libbz2), and upstream samtools; no new
+  dependency was added.
