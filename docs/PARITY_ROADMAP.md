@@ -1906,13 +1906,16 @@ Plus:
   the container's CRAM major version and reads the counter as ITF-8 for
   v2 / LTF-8 for v3+, matching htslib `cram_decode_slice_header`,
   validated by a 2^28-boundary unit test plus the live-samtools v2.1
-  round-trip. Remaining gaps are behind clear errors: the network
-  REF_PATH/EBI fetch (an unresolvable reference is a clear MD5 error),
-  X_EXT bzip2 *encode* (no Go bzip2 encoder and none sanctioned; a
-  correct in-tree port is ~1.5–2.5 kLOC for a rare optional codec the
-  writer never emits, so it is documented-deferred and errors cleanly —
-  never silent wrong output), and CRAM v4.0 (spec not final). See
-  `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
+  round-trip. **X_EXT bzip2 *encode* is now DONE**: an in-tree
+  pure-Go bzip2 encoder (`pkg/htsgo/cram/codec/bzip2_encode.go`, stdlib
+  only — Go's `compress/bzip2` is decode-only) backs both the X_EXT
+  external codec and a new method-2 (bzip2) block-codec candidate; its
+  output decodes byte-for-byte under Go `compress/bzip2`, the system
+  `bzip2 -d` (libbz2), and upstream samtools (verified by
+  `bzip2_parity_test.go`). Remaining gaps are behind clear errors: the
+  network REF_PATH/EBI fetch (an unresolvable reference is a clear MD5
+  error) and CRAM v4.0 (spec not final). See `docs/CRAM_DESIGN.md` and
+  `docs/CRAM_ROADMAP.md`.
 - **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
   and `.csi`, and readers auto-detect index kind from file magic.
 - **Multi-threading (`-@`) — DONE for the BAM-writing subcommands

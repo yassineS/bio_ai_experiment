@@ -33,12 +33,12 @@ package codec
 //	Huffman up to 6 canonical Huffman tables, selected per 50-symbol
 //	       group, iteratively refined to minimise total code length.
 //
-// This is a correctness-first port. The block sort uses Go's sort on
-// rotation indices (O(n log n) comparisons, each up to O(n)); it is not
-// the bzip2 reference's fallback/main sort, but it produces an identical
-// BWT and the output decodes byte-for-byte under compress/bzip2, the
-// system bzip2 -d, and htslib. See bzip2_encode_test.go for the
-// round-trip and cross-tool gates.
+// This is a correctness-first port. The block sort ranks the cyclic
+// rotations with rank-doubling (Manber-Myers, O(n log n) total — see
+// sortCyclicRotations); it is not the bzip2 reference's fallback/main
+// sort, but it produces an identical BWT and the output decodes
+// byte-for-byte under compress/bzip2, the system bzip2 -d, and htslib.
+// See bzip2_encode_test.go for the round-trip and cross-tool gates.
 
 import (
 	"fmt"
@@ -135,6 +135,14 @@ func bzip2Encode(src []byte, level int) ([]byte, error) {
 	if limit < 1 {
 		limit = 1
 	}
+	// A block's symbol stream is at most one MTF/RLE2 symbol per RLE1 byte
+	// plus the EOB marker, so its selector count is at most
+	// ceil((limit+1)/bzGroupSize). Cap the per-block byte budget so that
+	// count can never exceed the 15-bit selector field (bounded here by the
+	// reference's bzMaxSelectors), independent of the block-size level.
+	if maxByLimit := bzMaxSelectors*bzGroupSize - 1; limit > maxByLimit {
+		limit = maxByLimit
+	}
 	srcOff := 0
 	for srcOff < len(src) {
 		blk, consumed := rle1EncodeBlock(src[srcOff:], limit)
@@ -183,7 +191,7 @@ func encodeBlock(w *bitWriter, blk []byte, crc uint32) {
 		}
 	}
 	nInUse := len(seqToUnseq)
-	eob := nInUse + 1 // RUNA=0, RUNB=1, then literals 2..nInUse, EOB=nInUse+1
+	// Alphabet: RUNA=0, RUNB=1, then literals 2..nInUse, EOB=nInUse+1.
 	alphaSize := nInUse + 2
 
 	// MTF + RLE2: turn the BWT bytes into the MTF/RLE2 symbol stream.
@@ -192,7 +200,7 @@ func encodeBlock(w *bitWriter, blk []byte, crc uint32) {
 
 	// Build the Huffman tables and per-group selectors.
 	nGroups := chooseNumTables(len(mtfv))
-	lengths, selectors := buildHuffmanTables(mtfv, alphaSize, eob, nGroups)
+	lengths, selectors := buildHuffmanTables(mtfv, alphaSize, nGroups)
 
 	// Emit the symbol map.
 	var inUse16 [16]bool
@@ -427,7 +435,7 @@ func chooseNumTables(nMTF int) int {
 // then iterates (selector assignment -> per-table cost -> rebuild
 // lengths) a few times, mirroring BZ2_compressBlock. It returns the
 // per-table code lengths and the per-group selector list.
-func buildHuffmanTables(mtfv []uint16, alphaSize, eob, nGroups int) ([6][bzMaxAlphaSize]uint8, []byte) {
+func buildHuffmanTables(mtfv []uint16, alphaSize, nGroups int) ([6][bzMaxAlphaSize]uint8, []byte) {
 	var lengths [6][bzMaxAlphaSize]uint8
 	nMTF := len(mtfv)
 
@@ -623,9 +631,6 @@ func huffmanBuild(weights []int, lengths []uint8, maxLen int) bool {
 	n := len(weights)
 	// Node array: leaves 0..n-1, internal nodes appended.
 	nodes := make([]huffNode, n, 2*n)
-	type leaf struct {
-		idx int
-	}
 	// Heap of node indices ordered by weight (ascending), tie-broken by
 	// index for determinism.
 	heap := make([]int, n)

@@ -497,7 +497,7 @@ func encodeBlock(version Version, ct BlockContentType, contentID int32, payload 
 // wins and raw is always in the running, so the stored payload is never
 // larger than the input — the block stays decodable even if a codec
 // misbehaves. bzip2 is produced by the in-tree pure-Go encoder
-// (codec.bzip2Encode); its output is read back by this package's
+// (codec.Bzip2Encode); its output is read back by this package's
 // Decompress and by upstream htslib/samtools alike.
 func chooseBlockCompression(version Version, payload []byte) (CompressionMethod, []byte) {
 	method := CompRaw
