@@ -85,6 +85,35 @@ func TestProbalnGlocalVectors(t *testing.T) {
 	}
 }
 
+// TestProbalnGlocalHomopolymerFloatWidth pins the single-ULP rounding case
+// that motivated matching htslib's float-width g_qual2prob table. htslib
+// stores the per-base error probabilities as C `float` (32-bit) and only
+// promotes them to double inside the forward/backward recurrences; keeping
+// the table at full float64 precision instead perturbs the scaled DP enough
+// to flip the integer Phred score by one unit at long homopolymer columns.
+//
+// This ref/query pair is one such case: it straddles many 'A' homopolymer
+// runs with a single-base deletion, at the low base quality (q=12) where the
+// emission probabilities matter most. The upstream probaln.c self-test
+// (compiled standalone) returns 140 for these inputs. The pre-fix float64
+// table returned 141; matching the float-width table returns 140 like
+// htslib. See docs/PARITY_ROADMAP.md (mpileup probaln residual, now closed).
+func TestProbalnGlocalHomopolymerFloatWidth(t *testing.T) {
+	ref := residues("TCTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATACGAAAAAAAAAAAAAAAAAAAAAAAAAATCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATAAAAAAAAAAAAGCAAAAAAAAAAAAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAAAAAAAAAACAAAAAGAAAAAAAAAACCAAAAAAAAAAAAAAAAAAAAAAGCTAAAAAAAAAAAAAGAAAAAAAAAAAAAAAAGTTCAAAAAAAATAAAAAAAAAAAAAAAAAAAAAAAAAAC")
+	query := residues("TCTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATACGAAAAAAAAAAAAAAAAAAAAAAAAATCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATAAAAAAAAAAAAGCAAAAAAAAAAAAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAAAAAAAAAACAAAAAGAAAAAAAAAACCAAAAAAAAAAAAAAAAAAAAAAGCTAAAAAAAAAAAAAGAAAAAAAAAAAAAAAAGTTCAAAAAAAATAAAAAAAAAAAAAAAAAAAAAAAAAAC")
+	iqual := make([]byte, len(query))
+	for i := range iqual {
+		iqual[i] = 12
+	}
+	score, err := ProbalnGlocal(ref, query, iqual, Par{D: 0.001, E: 0.1, BW: 13}, nil, nil)
+	if err != nil {
+		t.Fatalf("ProbalnGlocal error: %v", err)
+	}
+	if score != 140 {
+		t.Errorf("homopolymer float-width score = %d, want 140 (htslib float-table value; 141 is the pre-fix float64 drift)", score)
+	}
+}
+
 // TestProbalnGlocalDegenerate exercises the early-return paths: empty ref or
 // query, and the likelihood-only mode (nil state/q).
 func TestProbalnGlocalDegenerate(t *testing.T) {

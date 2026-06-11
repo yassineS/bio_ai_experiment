@@ -18,13 +18,18 @@ package bcftools
 //     row is compared byte-for-byte.
 //   - indel-AD.1 has three *deletions* (000000F:537 AC->A, :538 CT->C,
 //     :655 CACAATACAA->CACAA) and one *insertion* (:658 AA->AAATTA).
-//     The indel-CALLING core (CHROM/POS/REF/ALT/INFO IDV,IMF,DP) is
-//     deterministic and compared field-for-field across every indel
-//     record; the I16 base-quality sums and the QS/VDB columns drift by
-//     a single read at the deepest homopolymer columns (the documented
-//     "single-ULP probaln rounding" residual, PARITY_ROADMAP.md slice
-//     4e cluster 3) so those columns are excluded from the strict diff
-//     and asserted only for the candidate-generation outcome.
+//     Every indel record — including the I16 base-quality sums and the
+//     QS/VDB columns that formerly drifted by a single read at the
+//     deepest homopolymer columns — now matches upstream byte-for-byte.
+//     That former "single-ULP probaln rounding" residual was traced to
+//     htslib storing its g_qual2prob error-probability table as C `float`
+//     (32-bit) while the Go port held it at full float64 precision; the
+//     ~1e-8 per-entry difference propagated through the forward/backward
+//     DP and flipped the integer Phred score by one unit at long
+//     homopolymer columns. The Go probaln port (pkg/htsgo/baq) now rounds
+//     that table through float32 to match htslib, so the strict diff
+//     covers the whole INDEL record. See PARITY_ROADMAP.md (mpileup
+//     probaln residual, closed).
 //
 // Per the established loop these tests t.Fatalf on any deterministic
 // mismatch — they never t.Skip to paper over a regression. The only
@@ -259,13 +264,13 @@ func TestMpileupIndelParity_Insertion_Live(t *testing.T) {
 }
 
 // TestMpileupIndelParity_Deletion_Live checks the deletion-bearing
-// indel-AD.1 fixture against the live upstream binary. The
-// candidate-generation outcome (the set of called INDEL alleles) and the
-// deterministic INFO tags (IDV, IMF, DP) are compared field-for-field
-// for every indel record. The I16/QS/VDB columns are excluded from the
-// strict diff because they drift by one read at the deepest homopolymer
-// columns (documented single-ULP probaln residual); those columns are
-// covered byte-for-byte on the simpler indel-AD.2 fixture above.
+// indel-AD.1 fixture against the live upstream binary. Every INDEL record
+// is compared byte-for-byte over its full text — including the I16
+// base-quality sums and the QS/VDB columns that formerly drifted by one
+// read at the deepest homopolymer columns. That single-ULP probaln
+// residual was closed by matching htslib's float-width g_qual2prob table
+// in pkg/htsgo/baq (see the package note above), so there is no longer any
+// reason to exclude those columns.
 func TestMpileupIndelParity_Deletion_Live(t *testing.T) {
 	bin, srcMissing := upstreamBcftoolsMpileupIndel(t)
 	if srcMissing {
@@ -308,12 +313,19 @@ func TestMpileupIndelParity_Deletion_Live(t *testing.T) {
 		if !ok {
 			t.Fatalf("go port is missing upstream INDEL allele %s (candidate generation diverged)", key)
 		}
+		// Sanity-check the deterministic calling core first for a clearer
+		// failure message, then assert the whole record is byte-identical
+		// (this is where the former single-ULP I16/QS probaln drift lived).
 		for _, tag := range []string{"IDV", "IMF", "DP", "INDEL"} {
 			gv, uv := infoField(goRec, tag), infoField(upRec, tag)
 			if gv != uv {
 				t.Fatalf("INDEL %s INFO/%s mismatch: go=%q upstream=%q\n upstream: %s\n go:       %s",
 					key, tag, gv, uv, upRec, goRec)
 			}
+		}
+		if goRec != upRec {
+			t.Fatalf("INDEL record %s mismatch (full byte-for-byte diff; probaln float-width residual should be closed):\n upstream: %s\n go:       %s",
+				key, upRec, goRec)
 		}
 	}
 }

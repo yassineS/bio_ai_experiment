@@ -47,10 +47,19 @@ var ErrProbalnFailed = errors.New("baq: probaln_glocal failed")
 
 // qual2prob is the g_qual2prob table: index i holds 10^(-i/10), the error
 // probability for a Phred quality of i.
+//
+// htslib declares this table as a C `float` array (`static float
+// g_qual2prob[256]`) and computes each entry as `pow(10, -i/10.)` (a double)
+// stored into a float, so every entry is rounded to 32-bit precision before
+// use. The forward/backward recurrences then promote those floats back to
+// double for the actual arithmetic. To reproduce htslib bit-for-bit we must
+// apply the same float32 rounding here: storing full float64 values diverges
+// by ~1e-8..1e-11 per entry, which is enough to flip the single-ULP Phred
+// rounding at long homopolymer columns (the documented I16/QS indel drift).
 var qual2prob = func() [256]float64 {
 	var t [256]float64
 	for i := range t {
-		t[i] = math.Pow(10, -float64(i)/10.0)
+		t[i] = float64(float32(math.Pow(10, -float64(i)/10.0)))
 	}
 	return t
 }()

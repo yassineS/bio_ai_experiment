@@ -1895,7 +1895,9 @@ Plus:
   `--no-indels-cns` variants remain accepted-and-(mostly)-ignored. The
   legacy-caller homopolymer residuals catalogued below (single-ULP
   probaln drift on a handful of deep reads) are independent of
-  `--indels-cns` and tracked separately.
+  `--indels-cns`; they have now been **closed** by matching htslib's
+  `float`-width `g_qual2prob` table in `pkg/htsgo/baq` (see cluster 3
+  in slice 4e below for the root cause and validation).
 
   - **4a + 4b (DONE).** Pileup data model + STR finder + indel
     candidate-type discovery helpers. `pileupBase` now carries the
@@ -2187,22 +2189,46 @@ Plus:
          upstream, and the orchestrator's `tbeg`/`tend`/`rStart`/
          `rEnd` / ref2-slice positioning matches upstream
          byte-for-byte (verified by `bcfCgpAlignScore`'s
-         existing tests). The remaining divergence is in the
+         existing tests). The remaining divergence was in the
          `probaln_glocal` score itself for reads whose query
          window straddles a homopolymer run — at most-frequent /
-         long homopolymers, two indel types can produce
+         long homopolymers, two indel types could produce
          `probaln_glocal` returns that differ by a single Phred
          unit, and a one-unit drift in the underlying HMM
-         likelihoods (rounding inside the forward/backward DP)
-         flips the tie-break. The HMM port lives in
-         `pkg/bcftools/.../baq.ProbalnGlocal` and the residual is
-         a "single ULP rounding inside the forward DP at long
-         homopolymer columns" item rather than a `bam2bcf.c`
-         port gap. Out of scope for this slice — fixing it
-         requires either (a) reproducing C's exact left-to-right
-         multiply order inside the HMM transition step, or (b)
-         accepting these as RNG-class residuals (a handful of
-         reads per homopolymer column at depths > 100).
+         likelihoods flipped the tie-break.
+
+         **CLOSED (float-width alignment).** Root cause was a
+         `float` vs `double` width mismatch, not FP-operation
+         order. htslib declares its per-base error-probability
+         table as a C `float` array (`static float
+         g_qual2prob[256]`, populated by `pow(10, -i/10.)` stored
+         into a `float`) and the per-query `qual[]` buffer is also
+         `float`; the forward/backward recurrences only promote
+         those values back to `double` when they enter the
+         (double-typed) HMM transition expressions. The Go port in
+         `pkg/htsgo/baq` held the same table at full `float64`
+         precision, so each entry differed from htslib's
+         float-rounded value by ~1e-8..1e-11. That tiny difference
+         propagated through the scaled forward DP and, at long
+         homopolymer columns on deep reads, flipped the integer
+         `(int)(Pr1 + .499)` Phred score by one unit. Rounding the
+         `qual2prob` table through `float32` (so it equals
+         htslib's `float` table bit-for-bit, then promotes to
+         `float64` for the arithmetic exactly as C promotes
+         `float`→`double`) closes the drift. A standalone fuzz over
+         20k homopolymer-straddling alignments found exactly one
+         integer-score divergence between the float64 and float32
+         tables (141 vs 140); the upstream `probaln.c` self-test
+         returns 140, matching the float32 path. That case is
+         pinned as `TestProbalnGlocalHomopolymerFloatWidth` in
+         `pkg/htsgo/baq/probaln_test.go`. With the fix, the live
+         indel parity test now diffs the **full** `indel-AD.1`
+         INDEL records (I16, QS, VDB included) byte-for-byte
+         against the upstream binary
+         (`TestMpileupIndelParity_Deletion_Live`), and the
+         `annot-NMBZ.3.1` `chr16:75` column likewise agrees. No
+         algorithmic behaviour changed — only the table's storage
+         width was matched to htslib.
 
   One accepted divergence: `errmod_cal`'s downsampling of piles deeper
   than 255 reads uses Go's RNG rather than htslib's `drand48`, so
