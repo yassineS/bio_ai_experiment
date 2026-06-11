@@ -208,21 +208,34 @@ func TestParseFlags_ReadGroupsUpstreamShort(t *testing.T) {
 	}
 }
 
-// TestRun_UnimplementedFlagsRejected confirms upstream flags this port
-// parses but does not implement are rejected with exit code 2 rather than
-// silently producing divergent output.
+// TestRun_UnimplementedFlagsRejected confirms the remaining upstream flag
+// this port parses but does not implement (-m/--use-median) is rejected with
+// exit code 2 rather than silently producing divergent output. It also
+// confirms -a/-x are mutually exclusive.
 func TestRun_UnimplementedFlagsRejected(t *testing.T) {
 	for _, args := range [][]string{
-		{"-a", "p", "b.bam"},
-		{"--fragment-mode", "p", "b.bam"},
-		{"-q", "0:1:2", "p", "b.bam"},
-		{"--quantize", "0:1:2", "p", "b.bam"},
 		{"-m", "p", "b.bam"},
 		{"--use-median", "p", "b.bam"},
+		{"-a", "-x", "p", "b.bam"}, // fragment-mode and fast-mode conflict
 	} {
 		if rc := run(args); rc != 2 {
 			t.Errorf("run %v: rc=%d, want 2", args, rc)
 		}
+	}
+}
+
+// TestParseFlags_FragmentAndQuantizeAccepted confirms -a/--fragment-mode and
+// -q/--quantize now parse and feed the Options without being rejected.
+func TestParseFlags_FragmentAndQuantizeAccepted(t *testing.T) {
+	opts, _, err := parseFlags([]string{"-a", "--quantize", "0:1:4", "p", "b.bam"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !opts.fragmentLen {
+		t.Errorf("fragmentLen not set")
+	}
+	if opts.quantize != "0:1:4" {
+		t.Errorf("quantize=%q, want 0:1:4", opts.quantize)
 	}
 }
 

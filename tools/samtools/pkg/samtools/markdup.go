@@ -10,8 +10,9 @@
 //  2. All records sharing a key form a duplicate bucket. Within each bucket
 //     the record with the **highest sum of base qualities >= 15** is kept;
 //     every other record in the bucket gets the 0x400 (duplicate) flag set.
-//  3. Supplementary/secondary records inherit the duplicate state of their
-//     primary mate via a (qname → dup) lookup that is built during pass 1.
+//  3. By default supplementary/secondary records are emitted untouched. Under
+//     `-S` they inherit the duplicate state of their primary mate via a
+//     (qname → dup) lookup built during pass 1.
 //
 // This v1 supports:
 //   - Template (-s t) and sequence-position (-s s) modes; mode `tp`
@@ -22,19 +23,29 @@
 //     the qname of the chosen original).
 //   - `--include-flags / --exclude-flags` filter; matching records are kept
 //     out of the duplicate scoring entirely.
+//   - `-S` (mark supplementary/secondary duplicates) and the upstream default
+//     of leaving non-primary records untouched.
+//   - `-s/--stats` and `-f FILE` duplicate-statistics reporting, including the
+//     Picard-style ESTIMATED_LIBRARY_SIZE solve.
+//   - `-d` optical-duplicate detection: each flagged duplicate is compared to
+//     the chosen original by Illumina read-name tile coordinates and tagged
+//     dt:Z:SQ (optical) or dt:Z:LB (library) accordingly.
 //   - Streaming two-pass over the same input reader: the caller passes a
 //     "rewinder" — a factory that yields a fresh `io.Reader` per pass — so
 //     compressed and uncompressed inputs alike can be re-read without us
 //     having to seek.
 //
-// Skipped intentionally (documented in PARITY_ROADMAP.md):
-//   - Optical-dup detection (-d/--max-dist). The flag is accepted but a
-//     warning is printed; PCR duplicates only are marked.
+// Skipped intentionally (documented in docs/PARITY_ROADMAP.md):
 //   - Barcode regex / read-group hashing modes. The flag is accepted but
 //     barcodes are folded into the key as `0` (i.e. ignored).
 //   - The `do` ("duplicate-of") tag tracks the *qname* of the kept record
 //     rather than the upstream binary offset because we do not have file
 //     positions in our streaming pipeline.
+//   - Optical detection uses the pairwise original-vs-duplicate comparison;
+//     upstream's `--read-coords` regex and the check_chain whole-cluster
+//     re-expansion (which can promote a duplicate-of-a-duplicate to optical)
+//     are not reproduced. Read names must use the colon-delimited Illumina
+//     layout for `-d` to take effect.
 package samtools
 
 import (
@@ -42,6 +53,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
+	"os"
 	"strconv"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -68,9 +81,10 @@ type MarkdupOptions struct {
 	// RemoveDups drops marked records from the output instead of just
 	// flagging them.
 	RemoveDups bool
-	// MaxDist (optical-dup distance) is accepted for CLI parity; v1 does
-	// not implement optical-dup detection. A nonzero value triggers a
-	// stderr warning emitted by the CLI runner, not the library.
+	// MaxDist is upstream's `-d` optical-duplicate distance. When greater
+	// than zero, each flagged duplicate is compared to the chosen original by
+	// Illumina read-name tile coordinates; if both axes are within MaxDist the
+	// duplicate is counted as optical and tagged dt:Z:SQ, otherwise dt:Z:LB.
 	MaxDist int
 	// Mode selects the keying scheme. Default zero value is template mode.
 	Mode MarkdupMode
@@ -99,13 +113,37 @@ type MarkdupOptions struct {
 	// value above 1 compresses the marked BAM output in parallel; the decoded
 	// records are byte-identical to the single-threaded path.
 	Threads int
+	// Supp mirrors upstream's `-S`: when set, supplementary, secondary and
+	// mate-unmapped non-primary alignments whose primary was flagged as a
+	// duplicate are themselves flagged (and counted under "DUPLICATE NON
+	// PRIMARY"). When clear — the upstream default — non-primary records are
+	// never marked, even if a same-qname primary is a duplicate.
+	Supp bool
+	// Stats requests the summary statistics report (upstream `-s`). When
+	// StatsFile is empty the report goes to StatsWriter (typically stderr);
+	// otherwise it is written to StatsFile.
+	Stats bool
+	// StatsFile, when non-empty, writes the stats report to the named file
+	// (upstream `-f FILE`, which also implies Stats).
+	StatsFile string
+	// StatsWriter receives the text stats report when Stats is set and
+	// StatsFile is empty. A nil value silences the report.
+	StatsWriter io.Writer
 	// NoPG suppresses @PG injection. v1 never injects @PG so this is a
 	// no-op kept for flag-compat.
 	NoPG bool
 }
 
-// MarkdupResult summarises a Markdup run.
+// MarkdupResult summarises a Markdup run. The fields mirror the counters
+// upstream's bam_markdup.c prints under `-s`.
 type MarkdupResult struct {
+	// Reading is the total number of records read from the input.
+	Reading int
+	// Writing is the total number of records emitted to the writer.
+	Writing int
+	// Excluded is the number of records skipped from scoring because they hit
+	// the exclude mask (secondary, supplementary, unmapped or qcfail).
+	Excluded int
 	// Examined is the number of primary records processed (after include /
 	// exclude flag filtering).
 	Examined int
@@ -114,16 +152,43 @@ type MarkdupResult struct {
 	Paired int
 	// Single is the number of singletons keyed (mate unmapped or unpaired).
 	Single int
-	// Duplicates is the number of records flagged as duplicates (0x400
-	// added). Counts both primary and supplementary/secondary inherits.
+	// DuplicatePair is the number of paired primary records flagged duplicate.
+	DuplicatePair int
+	// DuplicateSingle is the number of single primary records flagged duplicate.
+	DuplicateSingle int
+	// DuplicatePairOptical / DuplicateSingleOptical count the optical subset of
+	// the paired / single duplicates (nonzero only when MaxDist > 0).
+	DuplicatePairOptical   int
+	DuplicateSingleOptical int
+	// DuplicateNonPrimary is the number of non-primary (supplementary /
+	// secondary) records flagged duplicate (nonzero only with Supp).
+	DuplicateNonPrimary int
+	// DuplicateNonPrimaryOptical is the optical subset of DuplicateNonPrimary.
+	DuplicateNonPrimaryOptical int
+	// Duplicates is the total number of records flagged as duplicates (0x400
+	// added), kept for backward compatibility with existing callers/tests.
 	Duplicates int
-	// Written is the number of records emitted to the writer.
+	// Written is the number of records emitted to the writer (alias of
+	// Writing, retained for backward compatibility).
 	Written int
 }
 
 // ReaderOpener returns a fresh sam.Reader-able io.Reader for each pass. Used
 // to support two-pass streaming without seek.
 type ReaderOpener func() (io.ReadCloser, error)
+
+// dupInfo records, for a qname flagged as a duplicate, the qname of the
+// chosen original and whether the duplicate was keyed as a pair or a single.
+type dupInfo struct {
+	dupOf  string
+	paired bool
+	// suppLink mirrors the chosen-duplicate's suppLink: only when set is the
+	// qname eligible for non-primary (-S) duplicate marking, matching
+	// upstream's add_duplicate gate.
+	suppLink bool
+	// optical is set during pass 2 once the read names have been compared.
+	optical bool
+}
 
 // Markdup runs the two-pass mark-duplicate algorithm using opener for both
 // passes and emits BAM to out.
@@ -158,7 +223,7 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		entry *markdupEntry
 	}
 	singleSlots := make(map[markdupKey]*singleSlot)
-	primaryDup := make(map[string]string) // qname -> dup-of-qname
+	primaryDup := make(map[string]*dupInfo) // qname -> dup classification
 
 	rc1, err := opener()
 	if err != nil {
@@ -180,19 +245,23 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 			_ = rc1.Close()
 			return res, fmt.Errorf("markdup pass 1: %w", err)
 		}
+		res.Reading++
+		// Upstream's exclude mask is SECONDARY|SUPPLEMENTARY|UNMAP|QCFAIL
+		// (bam_markdup.c:1692-1696). Records hitting it — including unmapped
+		// reads — are counted as EXCLUDED and skipped; everything else,
+		// including records that already carry the duplicate flag, is EXAMINED
+		// and (re-)scored.
 		if !primaryEligible(rec, opts) {
-			continue
-		}
-		if rec.IsUnmapped() {
-			// Unmapped primary records are never scored or marked.
+			res.Excluded++
 			continue
 		}
 		res.Examined++
 		entry := &markdupEntry{
-			qname:  rec.QName,
-			flag:   rec.Flag,
-			score:  calcScore(rec),
-			paired: rec.IsPaired() && !rec.IsMateUnmapped(),
+			qname:    rec.QName,
+			flag:     rec.Flag,
+			score:    calcScore(rec),
+			paired:   rec.IsPaired() && !rec.IsMateUnmapped(),
+			suppLink: hasSuppLink(rec),
 		}
 
 		// single_hash bookkeeping (every record gets a single-key).
@@ -206,20 +275,20 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 				if entry.paired {
 					// Incoming pair displaces the singleton.
 					if !slot.entry.paired {
-						primaryDup[slot.entry.qname] = entry.qname
+						primaryDup[slot.entry.qname] = &dupInfo{dupOf: entry.qname, paired: false, suppLink: slot.entry.suppLink}
 					}
 					slot.entry = entry
 				} else {
 					// Slot is paired, incoming is singleton — mark incoming.
-					primaryDup[entry.qname] = slot.entry.qname
+					primaryDup[entry.qname] = &dupInfo{dupOf: slot.entry.qname, paired: false, suppLink: entry.suppLink}
 				}
 			} else if !entry.paired {
 				// Two singletons at the same coord: keep highest score.
 				if betterEntry(entry, slot.entry) {
-					primaryDup[slot.entry.qname] = entry.qname
+					primaryDup[slot.entry.qname] = &dupInfo{dupOf: entry.qname, paired: false, suppLink: slot.entry.suppLink}
 					slot.entry = entry
 				} else {
-					primaryDup[entry.qname] = slot.entry.qname
+					primaryDup[entry.qname] = &dupInfo{dupOf: slot.entry.qname, paired: false, suppLink: entry.suppLink}
 				}
 			}
 			// Two paired records at the same single-key: defer to pair_hash.
@@ -240,7 +309,8 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 	}
 	_ = rc1.Close()
 
-	// Resolve each pair-bucket: keep best, mark rest.
+	// Resolve each pair-bucket: keep best, mark rest. A pair duplicate
+	// overrides any earlier single classification for the same qname.
 	for _, entries := range pairBuckets {
 		if len(entries) < 2 {
 			continue
@@ -256,13 +326,19 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 			if i == bestIdx {
 				continue
 			}
-			if _, already := primaryDup[e.qname]; already {
+			if d, already := primaryDup[e.qname]; already && d.paired {
+				// Already marked as a pair duplicate (e.g. the other mate's
+				// bucket resolved first). Don't clobber dupOf/paired, but OR in
+				// this mate's supp link: upstream registers the qname for -S
+				// marking when ANY of its reads carries SA/XA or an unmapped
+				// mate, so suppLink must accumulate across both mates rather
+				// than depend on map-iteration order.
+				d.suppLink = d.suppLink || e.suppLink
 				continue
 			}
-			primaryDup[e.qname] = bestName
+			primaryDup[e.qname] = &dupInfo{dupOf: bestName, paired: true, suppLink: e.suppLink}
 		}
 	}
-	res.Duplicates = len(primaryDup)
 
 	// ---- Pass 2: re-stream and emit --------------------------------------
 	rc2, err := opener()
@@ -288,6 +364,22 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		closeBW()
 		return res, err
 	}
+	// opticalCache memoises the per-qname-pair optical classification so the
+	// (potentially repeated) read-name parsing runs at most once per pair.
+	opticalCache := make(map[string]bool)
+	isOptical := func(d *dupInfo, dupQName string) bool {
+		if opts.MaxDist <= 0 {
+			return false
+		}
+		key := d.dupOf + "\x00" + dupQName
+		if v, ok := opticalCache[key]; ok {
+			return v
+		}
+		v := opticalDuplicate(d.dupOf, dupQName, opts.MaxDist)
+		opticalCache[key] = v
+		return v
+	}
+
 	for {
 		rec, err := br2.Read()
 		if err == io.EOF {
@@ -300,15 +392,55 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 		if opts.ClearTags {
 			rec.Aux = stripAuxTags(rec.Aux, "do", "dt", "mc")
 		}
-		if dupOf, ok := primaryDup[rec.QName]; ok {
-			// Mark every record sharing this qname (primary + supp + secondary)
-			// so the dup flag propagates to non-primary alignments too —
-			// but never mark an unmapped record, matching upstream which
-			// only flags entries that occupy a real coordinate.
-			if !rec.IsUnmapped() {
+		nonPrimary := rec.Flag&(sam.FlagSecondary|sam.FlagSupplementary) != 0 || rec.IsUnmapped()
+		if d, ok := primaryDup[rec.QName]; ok && !rec.IsUnmapped() {
+			if !nonPrimary {
+				// Primary duplicate: always marked. Count per record so a
+				// duplicate pair contributes 2 to DUPLICATE PAIR, matching
+				// upstream's per-pair-key accounting.
 				rec.Flag |= sam.FlagDuplicate
+				optical := isOptical(d, rec.QName)
+				if d.paired {
+					res.DuplicatePair++
+					if optical {
+						res.DuplicatePairOptical++
+					}
+				} else {
+					res.DuplicateSingle++
+					if optical {
+						res.DuplicateSingleOptical++
+					}
+				}
+				// Upstream mark_duplicates writes 'do' before 'dt'.
 				if opts.AddTag {
-					setAuxStringMD(rec, "do", dupOf)
+					setAuxStringMD(rec, "do", d.dupOf)
+				}
+				if opts.MaxDist > 0 {
+					if optical {
+						setAuxStringMD(rec, "dt", "SQ")
+					} else {
+						setAuxStringMD(rec, "dt", "LB")
+					}
+				}
+			} else if opts.Supp && d.suppLink {
+				// Non-primary record whose primary is a duplicate: only marked
+				// under -S, and only when the chosen duplicate primary carried
+				// an SA/XA tag or an unmapped mate (upstream's add_duplicate
+				// gate populates the dup_hash only in that case).
+				rec.Flag |= sam.FlagDuplicate
+				res.DuplicateNonPrimary++
+				optical := isOptical(d, rec.QName)
+				// Upstream's supplementary pass writes 'do' before 'dt'.
+				if opts.AddTag {
+					setAuxStringMD(rec, "do", d.dupOf)
+				}
+				if opts.MaxDist > 0 {
+					if optical {
+						setAuxStringMD(rec, "dt", "SQ")
+						res.DuplicateNonPrimaryOptical++
+					} else {
+						setAuxStringMD(rec, "dt", "LB")
+					}
 				}
 			}
 		}
@@ -319,7 +451,13 @@ func Markdup(opener ReaderOpener, out io.Writer, opts MarkdupOptions) (MarkdupRe
 			closeBW()
 			return res, err
 		}
-		res.Written++
+		res.Writing++
+	}
+	res.Written = res.Writing
+	res.Duplicates = res.DuplicatePair + res.DuplicateSingle + res.DuplicateNonPrimary
+	if werr := writeMarkdupStats(opts, &res); werr != nil {
+		closeBW()
+		return res, werr
 	}
 	closed = true
 	return res, bw.Close()
@@ -344,6 +482,12 @@ type markdupEntry struct {
 	flag   uint16
 	score  int64
 	paired bool
+	// suppLink records whether this record carries the links upstream uses to
+	// gate supplementary-duplicate marking (an SA or XA aux tag, or a flagged
+	// unmapped mate). Only when the *chosen duplicate* primary has suppLink set
+	// does upstream add the qname to its dup_hash, so a non-primary alignment
+	// is marked under -S only in that case.
+	suppLink bool
 }
 
 // singleKey returns the upstream "single_key" for rec — the key used in
@@ -387,8 +531,12 @@ const (
 	mdLeftRI   = 1
 )
 
-// primaryEligible reports whether the record should participate in the
-// duplicate-scoring buckets.
+// primaryEligible reports whether the record is EXAMINED (eligible for
+// duplicate scoring) rather than EXCLUDED. It mirrors upstream's exclude mask
+// SECONDARY|SUPPLEMENTARY|UNMAP|QCFAIL (bam_markdup.c:1692-1699): unmapped
+// reads are excluded, but records that merely already carry the duplicate
+// flag are NOT — they are re-examined (and, under -c, would have had FDUP
+// cleared first).
 func primaryEligible(rec *sam.Record, opts MarkdupOptions) bool {
 	if opts.IncludeFlags != 0 && rec.Flag&opts.IncludeFlags != opts.IncludeFlags {
 		return false
@@ -396,8 +544,7 @@ func primaryEligible(rec *sam.Record, opts MarkdupOptions) bool {
 	if opts.ExcludeFlags != 0 && rec.Flag&opts.ExcludeFlags != 0 {
 		return false
 	}
-	// secondary / supplementary / already-dup / qc-fail are not scored.
-	if rec.Flag&(sam.FlagSecondary|sam.FlagSupplementary|sam.FlagDuplicate|sam.FlagQCFail) != 0 {
+	if rec.Flag&(sam.FlagSecondary|sam.FlagSupplementary|sam.FlagUnmapped|sam.FlagQCFail) != 0 {
 		return false
 	}
 	return true
@@ -744,6 +891,237 @@ func setAuxStringMD(rec *sam.Record, tag, val string) {
 		}
 	}
 	rec.Aux = append(rec.Aux, sam.Aux{Tag: tag, Type: 'Z', Value: val})
+}
+
+// hasSuppLink reports whether rec carries an SA or XA aux tag or has an
+// unmapped mate. Upstream's add_duplicate only registers a duplicate's qname
+// in the dup_hash (used to mark non-primary alignments under -S) when one of
+// these holds, so only such duplicates can propagate to their supplementary /
+// secondary alignments.
+func hasSuppLink(rec *sam.Record) bool {
+	if rec.IsPaired() && rec.IsMateUnmapped() {
+		return true
+	}
+	if _, ok := rec.GetAux("SA"); ok {
+		return true
+	}
+	if _, ok := rec.GetAux("XA"); ok {
+		return true
+	}
+	return false
+}
+
+// ----- Optical-duplicate detection (-d) -------------------------------------
+
+// markdupCoords holds the parsed Illumina read-name coordinates: the x/y
+// tile coordinates and the [0,tEnd) prefix (machine/run/flowcell/lane/tile)
+// that must match between two read names for them to be on the same tile.
+type markdupCoords struct {
+	x, y int64
+	tEnd int
+}
+
+// parseMarkdupCoords reproduces upstream bam_markdup.c get_coordinates_colons:
+// it counts the colon separators in qname and, for the recognised Illumina
+// layouts (3, 4, 6 or 7 colons), extracts the x and y coordinates and the
+// prefix length used as the same-tile test. It returns ok=false when the name
+// does not match a known layout or a coordinate cannot be parsed.
+func parseMarkdupCoords(qname string) (markdupCoords, bool) {
+	sep := 0
+	xpos, ypos := 0, 0
+	for pos := 0; pos < len(qname); pos++ {
+		if qname[pos] != ':' {
+			continue
+		}
+		sep++
+		switch sep {
+		case 2:
+			xpos = pos + 1
+		case 3:
+			ypos = pos + 1
+		case 4: // HiSeq style names
+			xpos = ypos
+			ypos = pos + 1
+		case 5: // Newer Illumina format
+			xpos = pos + 1
+		case 6:
+			ypos = pos + 1
+		}
+	}
+	if !(sep == 3 || sep == 4 || sep == 6 || sep == 7) {
+		return markdupCoords{}, false
+	}
+	x, okx := parseLeadingInt(qname[xpos:])
+	if !okx {
+		return markdupCoords{}, false
+	}
+	y, oky := parseLeadingInt(qname[ypos:])
+	if !oky {
+		return markdupCoords{}, false
+	}
+	return markdupCoords{x: x, y: y, tEnd: xpos}, true
+}
+
+// parseLeadingInt mirrors C's strtol(s, &end, 10) used for the x/y
+// coordinates: it parses an optional sign and leading decimal digits and
+// reports ok=false when no digits were consumed (end == s).
+func parseLeadingInt(s string) (int64, bool) {
+	i := 0
+	neg := false
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		neg = s[i] == '-'
+		i++
+	}
+	start := i
+	var v int64
+	overflow := false
+	const maxInt64 = int64(^uint64(0) >> 1)
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		d := int64(s[i] - '0')
+		// Saturate at int64 max on overflow, matching C strtol clamping to
+		// LONG_MAX (so an out-of-range coordinate stays "far away" rather
+		// than wrapping to a small value).
+		if overflow || v > (maxInt64-d)/10 {
+			overflow = true
+			v = maxInt64
+		} else {
+			v = v*10 + d
+		}
+		i++
+	}
+	if i == start {
+		return 0, false
+	}
+	if neg {
+		v = -v
+	}
+	return v, true
+}
+
+// opticalDuplicate reports whether dup is an optical duplicate of ori: the
+// two read names must share the same tile prefix and their x and y tile
+// coordinates must each be within maxDist. Mirrors upstream's
+// is_optical_duplicate.
+func opticalDuplicate(ori, dup string, maxDist int) bool {
+	oc, ok := parseMarkdupCoords(ori)
+	if !ok {
+		return false
+	}
+	dc, ok := parseMarkdupCoords(dup)
+	if !ok {
+		return false
+	}
+	if oc.tEnd != dc.tEnd || ori[:oc.tEnd] != dup[:dc.tEnd] {
+		return false
+	}
+	xdiff := oc.x - dc.x
+	if xdiff < 0 {
+		xdiff = -xdiff
+	}
+	if xdiff > int64(maxDist) {
+		return false
+	}
+	ydiff := oc.y - dc.y
+	if ydiff < 0 {
+		ydiff = -ydiff
+	}
+	return ydiff <= int64(maxDist)
+}
+
+// ----- Stats report (-s / -f) -----------------------------------------------
+
+// writeMarkdupStats emits the upstream-format duplicate statistics summary
+// when requested. The report goes to opts.StatsFile when set, otherwise to
+// opts.StatsWriter. The leading "COMMAND:" line that upstream prints is
+// intentionally omitted: it echoes the verbatim argv, which the library layer
+// does not have. The CLI runner prepends an equivalent line.
+func writeMarkdupStats(opts MarkdupOptions, res *MarkdupResult) error {
+	if !opts.Stats && opts.StatsFile == "" {
+		return nil
+	}
+	var w io.Writer
+	if opts.StatsFile != "" {
+		f, err := os.Create(opts.StatsFile)
+		if err != nil {
+			return fmt.Errorf("markdup: cannot write stats to %s: %w", opts.StatsFile, err)
+		}
+		defer f.Close()
+		w = f
+	} else {
+		if opts.StatsWriter == nil {
+			return nil
+		}
+		w = opts.StatsWriter
+	}
+	FormatMarkdupStats(w, res)
+	return nil
+}
+
+// FormatMarkdupStats writes the duplicate-statistics block (everything from
+// the READ line onward) to w, matching upstream bam_markdup.c write_stats.
+func FormatMarkdupStats(w io.Writer, res *MarkdupResult) {
+	els := estimateLibrarySize(res.Paired, res.DuplicatePair, res.DuplicatePairOptical)
+	fmt.Fprintf(w,
+		"READ: %d\n"+
+			"WRITTEN: %d\n"+
+			"EXCLUDED: %d\n"+
+			"EXAMINED: %d\n"+
+			"PAIRED: %d\n"+
+			"SINGLE: %d\n"+
+			"DUPLICATE PAIR: %d\n"+
+			"DUPLICATE SINGLE: %d\n"+
+			"DUPLICATE PAIR OPTICAL: %d\n"+
+			"DUPLICATE SINGLE OPTICAL: %d\n"+
+			"DUPLICATE NON PRIMARY: %d\n"+
+			"DUPLICATE NON PRIMARY OPTICAL: %d\n"+
+			"DUPLICATE PRIMARY TOTAL: %d\n"+
+			"DUPLICATE TOTAL: %d\n"+
+			"ESTIMATED_LIBRARY_SIZE: %d\n",
+		res.Reading, res.Writing, res.Excluded, res.Examined, res.Paired, res.Single,
+		res.DuplicatePair, res.DuplicateSingle, res.DuplicatePairOptical, res.DuplicateSingleOptical,
+		res.DuplicateNonPrimary, res.DuplicateNonPrimaryOptical,
+		res.DuplicateSingle+res.DuplicatePair,
+		res.DuplicateSingle+res.DuplicatePair+res.DuplicateNonPrimary, els)
+}
+
+// coverageEquation is the rearranged Lander/Waterman coverage equation solved
+// by estimateLibrarySize. Mirrors upstream bam_markdup.c coverage_equation.
+func coverageEquation(x, c, n float64) float64 {
+	return c/x - 1 + math.Exp(-n/x)
+}
+
+// estimateLibrarySize ports upstream bam_markdup.c estimate_library_size: a
+// bisection solve of the coverage equation over the paired-read counts. It
+// returns 0 when the inputs cannot yield an estimate (matching upstream's
+// guarded early returns; the accompanying warnings are not reproduced).
+func estimateLibrarySize(pairedReads, pairedDuplicateReads, optical int) int {
+	nonOpticalPairs := (pairedReads - optical) / 2
+	uniquePairs := (pairedReads - pairedDuplicateReads) / 2
+	duplicatePairs := (pairedDuplicateReads - optical) / 2
+
+	if !(nonOpticalPairs != 0 && duplicatePairs != 0 && uniquePairs != 0 && nonOpticalPairs > duplicatePairs) {
+		return 0
+	}
+	m := 1.0
+	M := 100.0
+	if coverageEquation(m*float64(uniquePairs), float64(uniquePairs), float64(nonOpticalPairs)) < 0 {
+		return 0
+	}
+	for coverageEquation(M*float64(uniquePairs), float64(uniquePairs), float64(nonOpticalPairs)) > 0 {
+		M *= 10
+	}
+	for i := 0; i < 40; i++ {
+		r := (m + M) / 2
+		u := coverageEquation(r*float64(uniquePairs), float64(uniquePairs), float64(nonOpticalPairs))
+		if u > 0 {
+			m = r
+		} else if u < 0 {
+			M = r
+		} else {
+			break
+		}
+	}
+	return int(float64(uniquePairs) * (m + M) / 2)
 }
 
 // ----- Helpers used by the CLI runner ---------------------------------------

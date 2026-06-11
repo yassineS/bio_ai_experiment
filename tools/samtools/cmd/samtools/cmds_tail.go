@@ -7,6 +7,7 @@ package main
 // into the library options struct, and call into pkg/samtools.
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -822,13 +823,21 @@ Tabular output (default):
 
 Options:
   -r, --region SPEC      Restrict to region (repeatable).
+  -l, --min-read-len N   Ignore reads shorter than N bp.
   -q, --min-mapq N       Skip records with MAPQ below N.
   -Q, --min-baseq N      Skip bases with quality below N.
   -f, --include-flags N  Required flag bits.
   -F, --exclude-flags N  Excluded flag bits (default 0xF04).
+      --min-depth N      Minimum depth to count a position as covered [1].
+  -d, --depth N          Accepted; depth cap (no-op — the Go port does not
+                         clamp depth).
   -o, --output PATH      Output path (default stdout).
   -H                     Suppress the column-header line.
-  -A                     ASCII-histogram mode (NOT YET IMPLEMENTED).
+  -m, --histogram        Show the per-reference histogram instead of the table.
+  -D, --plot-depth       Plot summed depth per bin (implies histogram).
+  -A, --ascii            Render the histogram with ASCII (".", ":") glyphs
+                         instead of UTF-8 block characters (implies histogram).
+  -w, --n-bins N         Histogram bin count (implies histogram) [40].
   -h, --help             Show this help.
   -v, --version          Show version.
 `
@@ -855,47 +864,46 @@ func runCoverage(args []string) int {
 	cliflag.IntVar(fs, &excFlags, "F", "exclude-flags", 0, "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
 	fs.BoolVar(&noHdr, "H", false, "")
-	fs.BoolVar(&hist, "A", false, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	// Upstream coverage (coverage.c getopt "Ao:l:q:Q:hHw:r:b:md:D") exposes
-	// several flags this port does not act on. Register them as accepted
-	// stubs so legacy command lines and bundled clusters parse:
-	//   -l N      minimum read length (accepted no-op)
-	//   -w N      number of histogram bins (accepted; v1 emits tabular)
-	//   -b FILE   file of input BAM paths (accepted no-op; v1 takes one input)
-	//   -m / -D   histogram mode (accepted; v1 emits tabular — see -A)
-	//   -d N      maximum coverage depth (accepted no-op)
+	// Histogram mode (upstream coverage.c getopt "Ao:l:q:Q:hHw:r:b:md:D").
+	// Any of -A / -m / -D / -w turns on histogram output. -A selects the
+	// ASCII glyph ramp; -D plots summed depth; -w sets the bin count.
 	var (
-		covMinLen   int
-		covBins     int
-		covFileList string
+		covAscii    bool
 		covHistM    bool
 		covHistD    bool
+		covBins     int
+		covMinLen   int
+		covMinDepth int
+	)
+	cliflag.BoolVar(fs, &covAscii, "A", "ascii", false, "")
+	cliflag.BoolVar(fs, &covHistM, "m", "histogram", false, "")
+	cliflag.BoolVar(fs, &covHistD, "D", "plot-depth", false, "")
+	cliflag.IntVar(fs, &covBins, "w", "n-bins", 0, "")
+	cliflag.IntVar(fs, &covMinLen, "l", "min-read-len", 0, "")
+	fs.IntVar(&covMinDepth, "min-depth", 0, "")
+	// Upstream extras the Go port accepts but does not act on:
+	//   -b FILE   file of input BAM paths (the Go port takes one input)
+	//   -d N      maximum coverage depth (the Go delta-map path does not clamp)
+	var (
+		covFileList string
 		covMaxDepth int
 	)
-	fs.IntVar(&covMinLen, "l", 0, "")
-	fs.IntVar(&covBins, "w", 0, "")
 	fs.StringVar(&covFileList, "b", "", "")
-	fs.BoolVar(&covHistM, "m", false, "")
-	fs.BoolVar(&covHistD, "D", false, "")
-	fs.IntVar(&covMaxDepth, "d", 0, "")
+	cliflag.IntVar(fs, &covMaxDepth, "d", "depth", 0, "")
 
 	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, coverageUsage)
 		return 2
 	}
-	_ = covMinLen
-	_ = covBins
 	_ = covFileList
 	_ = covMaxDepth
-	// -m/-D/-A all select histogram mode upstream; our port emits the tabular
-	// table and warns on -A. Fold the other histogram selectors into hist so
-	// the same "not yet implemented" warning fires for them too.
-	if covHistM || covHistD {
+	// -A / -m / -D / -w each enable histogram mode upstream.
+	if covAscii || covHistM || covHistD || covBins > 0 {
 		hist = true
 	}
 	if showHelp {
@@ -909,9 +917,6 @@ func runCoverage(args []string) int {
 	if fs.NArg() == 0 {
 		fmt.Fprint(os.Stderr, coverageUsage)
 		return 2
-	}
-	if hist {
-		fmt.Fprintln(os.Stderr, "samtools coverage: -A (ASCII histogram) is not yet implemented; tabular mode below")
 	}
 	in, err := iohelper.OpenReader(fs.Arg(0))
 	if err != nil {
@@ -931,7 +936,12 @@ func runCoverage(args []string) int {
 		MinBaseQ:     uint8(minBaseQ),
 		IncludeFlags: uint16(incFlags),
 		ExcludeFlags: uint16(excFlags),
+		MinReadLen:   covMinLen,
+		MinDepth:     covMinDepth,
 		Histogram:    hist,
+		PlotDepth:    covHistD,
+		ASCII:        covAscii,
+		NBins:        covBins,
 		HeaderOff:    noHdr,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools coverage: %v\n", err)
@@ -1041,9 +1051,13 @@ in each bucket with the 0x400 (duplicate) flag.
 
 Options:
   -r, --remove-dups       Drop duplicates from output (vs just marking).
-  -d, --max-dist N        Optical-dup distance. v1 accepts the flag but
-                          does NOT implement optical-dup detection.
-  -s, --mode {t|s|tp}     Key mode: template (default), sequence, or
+  -d, --max-dist N        Optical-duplicate distance: flag a duplicate as
+                          optical (dt:Z:SQ) when its Illumina read-name tile
+                          coordinates are within N of the kept original.
+  -s, --stats             Print duplicate statistics (to stderr / -f file).
+  -f, --stats-file FILE   Write the statistics to FILE (implies -s).
+  -S                      Also mark supplementary/secondary duplicates.
+  -m, --mode {t|s|tp}     Key mode: template (default), sequence, or
                           template+position (folded into template).
   -T, --tmpdir PATH       Accepted; v1 keeps state in memory.
   -l, --max-len N         Max read length considered (default 300).
@@ -1076,10 +1090,19 @@ func runMarkdup(args []string) int {
 		noPG       bool
 		showHelp   bool
 		showVer    bool
+		doStats    bool
+		statsFile  string
+		supp       bool
 	)
 	cliflag.BoolVar(fs, &removeDups, "r", "remove-dups", false, "")
 	cliflag.IntVar(fs, &maxDist, "d", "max-dist", 0, "")
-	cliflag.StringVar(fs, &modeStr, "s", "mode", "t", "")
+	// -s/--stats prints the duplicate-statistics summary (upstream's -s).
+	cliflag.BoolVar(fs, &doStats, "s", "stats", false, "")
+	cliflag.StringVar(fs, &statsFile, "f", "stats-file", "", "")
+	fs.BoolVar(&supp, "S", false, "")
+	// -m/--mode is the key-mode flag (upstream's -m). The mode list is
+	// {t|s|tp}; default template.
+	cliflag.StringVar(fs, &modeStr, "m", "mode", "t", "")
 	cliflag.StringVar(fs, &tmpDir, "T", "tmpdir", "", "")
 	cliflag.IntVar(fs, &maxLen, "l", "max-len", 300, "")
 	fs.IntVar(&includeF, "include-flags", 0, "")
@@ -1093,28 +1116,14 @@ func runMarkdup(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
-	// Upstream markdup (bam_markdup.c getopt "rsl:StT:O:@:f:d:cm:u") spells
-	// the key-mode flag -m MODE and offers several extras this port does not
-	// act on. Register them so legacy command lines and bundled clusters
-	// parse:
-	//   -m MODE   key mode (t|s|tp); upstream's canonical spelling. Wired to
-	//             the same modeStr as our -s/--mode so `markdup -m t` works.
-	//   -S        treat supplementary reads as primary (accepted no-op)
-	//   -f FILE   write a stats file (accepted no-op)
-	//   -O FMT    output format (accepted; this port emits BAM)
+	// Upstream markdup (bam_markdup.c getopt "rsl:StT:O:@:f:d:cm:u") extras the
+	// Go port accepts but does not act on:
+	//   -O FMT    output format (this port emits BAM)
 	//   -u        uncompressed BAM output (accepted no-op)
-	// (-s is this port's mode flag, distinct from upstream's -s "print stats";
-	// use -m for the upstream spelling.)
 	var (
-		mdModeAlt   string
-		mdSupp      bool
-		mdStatsFile string
-		mdOutFmt    string
-		mdUncomp    bool
+		mdOutFmt string
+		mdUncomp bool
 	)
-	fs.StringVar(&mdModeAlt, "m", "", "")
-	fs.BoolVar(&mdSupp, "S", false, "")
-	fs.StringVar(&mdStatsFile, "f", "", "")
 	cliflag.StringVar(fs, &mdOutFmt, "O", "output-fmt", "", "Output format (accepted)")
 	fs.BoolVar(&mdUncomp, "u", false, "")
 	if err := cliflag.Parse(fs, args); err != nil {
@@ -1122,12 +1131,6 @@ func runMarkdup(args []string) int {
 		fmt.Fprint(os.Stderr, markdupUsage)
 		return 2
 	}
-	// -m (upstream mode spelling) overrides the -s/--mode default when given.
-	if mdModeAlt != "" {
-		modeStr = mdModeAlt
-	}
-	_ = mdSupp
-	_ = mdStatsFile
 	_ = mdOutFmt
 	_ = mdUncomp
 	if showHelp {
@@ -1141,9 +1144,6 @@ func runMarkdup(args []string) int {
 	if fs.NArg() == 0 {
 		fmt.Fprint(os.Stderr, markdupUsage)
 		return 2
-	}
-	if maxDist != 0 {
-		fmt.Fprintln(os.Stderr, "samtools markdup: warning: optical-dup detection (-d) is not yet implemented; PCR dups only")
 	}
 	var mode samtools.MarkdupMode
 	switch modeStr {
@@ -1170,7 +1170,13 @@ func runMarkdup(args []string) int {
 		return 1
 	}
 	defer out.Close()
-	if _, err := samtools.Markdup(opener, out, samtools.MarkdupOptions{
+	// -f implies -s. The CLI owns the destination so it can prepend the
+	// upstream-style "COMMAND:" line (which echoes the argv) to both the
+	// stderr report and the -f stats file; the library only formats the
+	// counter block.
+	wantStats := doStats || statsFile != ""
+	var statsBuf bytes.Buffer
+	res, err := samtools.Markdup(opener, out, samtools.MarkdupOptions{
 		RemoveDups:   removeDups,
 		MaxDist:      maxDist,
 		Mode:         mode,
@@ -1181,11 +1187,31 @@ func runMarkdup(args []string) int {
 		ClearTags:    clearTags,
 		AddTag:       addTag,
 		Threads:      threads,
+		Supp:         supp,
+		Stats:        wantStats,
+		StatsWriter:  &statsBuf,
 		NoPG:         noPG,
-	}); err != nil {
+	})
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools markdup: %v\n", err)
 		return 1
 	}
+	if wantStats {
+		// Upstream prints "COMMAND: <argv>" then the counter block then a
+		// trailing blank line.
+		command := fmt.Sprintf("COMMAND: samtools markdup %s\n", strings.Join(args, " "))
+		report := append([]byte(command), statsBuf.Bytes()...)
+		report = append(report, '\n')
+		if statsFile != "" {
+			if werr := os.WriteFile(statsFile, report, 0o644); werr != nil {
+				fmt.Fprintf(os.Stderr, "samtools markdup: cannot write stats to %s: %v\n", statsFile, werr)
+				return 1
+			}
+		} else {
+			_, _ = os.Stderr.Write(report)
+		}
+	}
+	_ = res
 	return 0
 }
 
