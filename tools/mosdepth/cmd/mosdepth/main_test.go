@@ -208,18 +208,33 @@ func TestParseFlags_ReadGroupsUpstreamShort(t *testing.T) {
 	}
 }
 
-// TestRun_UnimplementedFlagsRejected confirms the remaining upstream flag
-// this port parses but does not implement (-m/--use-median) is rejected with
-// exit code 2 rather than silently producing divergent output. It also
-// confirms -a/-x are mutually exclusive.
-func TestRun_UnimplementedFlagsRejected(t *testing.T) {
+// TestRun_ConflictingFlagsRejected confirms mutually exclusive flag
+// combinations are rejected with exit code 2 rather than silently producing
+// divergent output. (-m/--use-median is now implemented, so it is no longer
+// rejected — see TestParseFlags_UseMedianAccepted.)
+func TestRun_ConflictingFlagsRejected(t *testing.T) {
 	for _, args := range [][]string{
-		{"-m", "p", "b.bam"},
-		{"--use-median", "p", "b.bam"},
 		{"-a", "-x", "p", "b.bam"}, // fragment-mode and fast-mode conflict
 	} {
 		if rc := run(args); rc != 2 {
 			t.Errorf("run %v: rc=%d, want 2", args, rc)
+		}
+	}
+}
+
+// TestParseFlags_UseMedianAccepted confirms -m/--use-median now parses and
+// feeds opts.useMedian instead of being rejected.
+func TestParseFlags_UseMedianAccepted(t *testing.T) {
+	for _, args := range [][]string{
+		{"-m", "p", "b.bam"},
+		{"--use-median", "p", "b.bam"},
+	} {
+		opts, _, err := parseFlags(args)
+		if err != nil {
+			t.Fatalf("parse %v: %v", args, err)
+		}
+		if !opts.useMedian {
+			t.Errorf("parse %v: useMedian not set", args)
 		}
 	}
 }

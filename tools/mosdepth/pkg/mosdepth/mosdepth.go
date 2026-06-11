@@ -100,6 +100,14 @@ type Options struct {
 	// decoded output is identical regardless of this value; it only affects
 	// throughput. 0 or 1 means single-threaded. See OpenAndRun.
 	Threads int
+
+	// UseMedian, when true, makes the per-region (--by) output report the
+	// median per-base depth instead of the mean, matching upstream mosdepth's
+	// -m/--use-median. It affects ONLY the regions.bed.gz depth column; the
+	// summary, distribution, thresholds, quantized, and per-base outputs are
+	// unchanged — upstream routes only the regions mean through its
+	// median-capable imean(), leaving the sum-based summary mean intact.
+	UseMedian bool
 }
 
 // ErrByConflict is returned when both ByBED and ByWindow are set.
@@ -289,19 +297,33 @@ func Run(in io.Reader, opts Options) error {
 		if regionsW != nil {
 			ivs := perChromRegions[r.Name]
 			for _, iv := range ivs {
-				bsum, perTh, mn, mx := accum.regionStats(iv.beg, iv.end, opts.Thresholds, nil)
+				// When --use-median is set, build the depth histogram in the
+				// same regionStats sweep that computes the thresholds, so the
+				// median and mean share a single pass over the event list and
+				// an identical per-base depth profile (see medianHist).
+				var mh medianHist
+				var emit func(start, end int, depth int32)
+				if opts.UseMedian {
+					emit = mh.addRun
+				}
+				bsum, perTh, mn, mx := accum.regionStats(iv.beg, iv.end, opts.Thresholds, emit)
 				_ = mn
 				_ = mx
 				width := iv.end - iv.beg
-				var mean float64
-				if width > 0 {
-					mean = float64(bsum) / float64(width)
+				var stat float64
+				if opts.UseMedian {
+					// Upstream routes the regions depth column through
+					// imean(), which returns the histogram median when
+					// --use-median is set. Only this column changes.
+					stat = mh.median()
+				} else if width > 0 {
+					stat = float64(bsum) / float64(width)
 				}
 				extras := []string{}
 				if iv.name != "" {
 					extras = append(extras, iv.name)
 				}
-				extras = append(extras, formatMean(mean))
+				extras = append(extras, formatMean(stat))
 				if err := regionsW.writeBED(r.Name, iv.beg, iv.end, extras...); err != nil {
 					return err
 				}

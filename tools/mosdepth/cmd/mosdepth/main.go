@@ -48,7 +48,7 @@ Options:
   -f, --fasta FILE        FASTA reference for CRAM input (accepted; CRAM not yet supported, ignored).
   -a, --fragment-mode     count coverage across the whole fragment (proper pairs only); excludes -x.
   -q, --quantize SEGS     ':'-separated depth bins, e.g. 0:1:4:; writes <prefix>.quantized.bed.gz.
-  -m, --use-median        per-region median (upstream flag; not yet implemented — rejected).
+  -m, --use-median        report the per-region MEDIAN depth (with --by) instead of the mean.
   -h, --help              show this help.
   -v, --version           print version and exit.
 
@@ -67,8 +67,9 @@ Deviations from upstream mosdepth (Nim):
   - -t/--threads spreads BGZF block decompression across N goroutines;
     the decoded stream and every output file are byte-identical for any
     thread count (it only affects throughput).
-  - -m/--use-median is parsed for CLI parity but not yet implemented;
-    supplying it is rejected (exit 2) rather than silently ignored.
+  - -m/--use-median changes ONLY the regions.bed.gz depth column to the
+    histogram median (matching upstream's depthstat.CountStat); the
+    summary, distribution, thresholds, and per-base outputs are unaffected.
 `
 
 type runOptions struct {
@@ -124,13 +125,12 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	cliflag.IntVar(fs, &opts.minFragLen, "l", "min-frag-len", 0, "min |TLEN|")
 	cliflag.IntVar(fs, &opts.maxFragLen, "u", "max-frag-len", 0, "max |TLEN|")
 	// -f/--fasta only matters for CRAM input (not supported yet) so it is
-	// accepted and ignored. -a/--fragment-mode and -q/--quantize are now
-	// implemented; -m/--use-median changes numerical output and is still
-	// rejected in run() rather than silently ignored.
+	// accepted and ignored. -a/--fragment-mode, -q/--quantize and
+	// -m/--use-median are all implemented and wired into mosdepth.Options.
 	cliflag.StringVar(fs, &opts.fasta, "f", "fasta", "", "FASTA reference for CRAM (accepted; CRAM not yet supported)")
 	cliflag.BoolVar(fs, &opts.fragmentLen, "a", "fragment-mode", false, "count full-fragment coverage (proper pairs only)")
 	cliflag.StringVar(fs, &opts.quantize, "q", "quantize", "", "quantized output segments, e.g. 0:1:4:")
-	cliflag.BoolVar(fs, &opts.useMedian, "m", "use-median", false, "use per-region median (not yet implemented)")
+	cliflag.BoolVar(fs, &opts.useMedian, "m", "use-median", false, "report per-region median depth instead of mean")
 	cliflag.BoolVar(fs, &opts.showHelp, "h", "help", false, "help")
 	cliflag.BoolVar(fs, &opts.showVersion, "v", "version", false, "version")
 	if err := cliflag.Parse(fs, args); err != nil {
@@ -156,12 +156,6 @@ func run(args []string) int {
 	if opts.showVersion {
 		fmt.Println(version)
 		return 0
-	}
-	// -m/--use-median is still unimplemented; reject it rather than silently
-	// producing means where the user asked for medians.
-	if opts.useMedian {
-		fmt.Fprintln(os.Stderr, "mosdepth: -m/--use-median is not yet implemented in this port")
-		return 2
 	}
 	// Upstream's hot loop lets --fragment-mode take precedence over
 	// --fast-mode; the two are conceptually exclusive (fragment coverage vs.
@@ -212,6 +206,7 @@ func run(args []string) int {
 		FragmentMode: opts.fragmentLen,
 		Quantize:     quant,
 		Threads:      opts.threads,
+		UseMedian:    opts.useMedian,
 	}
 	if err := mosdepth.OpenAndRun(bam, mo); err != nil {
 		fmt.Fprintln(os.Stderr, err)
