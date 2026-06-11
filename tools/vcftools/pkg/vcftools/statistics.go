@@ -1019,6 +1019,18 @@ func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
 
 // Output functions
 
+// formatFreq formats an allele frequency the way upstream's
+// `ostream << double` does in output_frequency (variant_file_output.cpp:131).
+// Upstream writes the value straight to a default-configured ostream, which
+// uses C++ `defaultfloat` with precision 6: six *significant* digits with
+// trailing zeros stripped (so 3/4 prints as "0.75", not "0.750000", and 1/3
+// prints as "0.333333"). Go's `strconv.FormatFloat(v, 'g', 6, 64)` reproduces
+// that byte-for-byte. Allele frequencies lie in [0, 1], so we never reach the
+// exponent-notation threshold for ordinary inputs.
+func formatFreq(v float64) string {
+	return strconv.FormatFloat(v, 'g', 6, 64)
+}
+
 // outputFrequency outputs allele frequency statistics
 func (s *statistics) outputFrequency(prefix string, counts bool) error {
 	suffix := ".frq"
@@ -1063,10 +1075,10 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 				firstAllele, firstCount,
 				secondAllele, secondCount)
 		} else {
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%.6f\t%s:%.6f\n",
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%s\t%s:%s\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
-				firstAllele, firstFreq,
-				secondAllele, secondFreq)
+				firstAllele, formatFreq(firstFreq),
+				secondAllele, formatFreq(secondFreq))
 		}
 	}
 
@@ -1084,8 +1096,9 @@ func (s *statistics) outputFrequency2(prefix string) error {
 	fmt.Fprintln(f, "CHROM\tPOS\tN_CHR\tREF_FREQ\tALT_FREQ")
 
 	for _, stat := range s.siteFrequencies {
-		fmt.Fprintf(f, "%s\t%d\t%d\t%.6f\t%.6f\n",
-			stat.chrom, stat.pos, stat.nChr, stat.refFreq, stat.altFreq)
+		fmt.Fprintf(f, "%s\t%d\t%d\t%s\t%s\n",
+			stat.chrom, stat.pos, stat.nChr,
+			formatFreq(stat.refFreq), formatFreq(stat.altFreq))
 	}
 
 	return nil
