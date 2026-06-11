@@ -2903,15 +2903,26 @@ across both modes, all three formats, and the `plain`/`mark-ins`/
 `show-del`/`ambig`/`all-pos`/`no-show-ins`/`use-qual`/`min-bq` flag
 variants.
 
-Remaining indel-adjacent gap (precisely scoped):
+Remaining indel-adjacent gap: **none** — closed.
 
-- **`-a/--all-positions` in pileup format** does not yet emit the
-  placeholder `N\t0\t*\t*` rows upstream prints for deletion-only and
-  zero-coverage reference positions (including upstream's quirky
-  duplicate rows at deletion sites). FASTA/FASTQ `-a` and pileup without
-  `-a` are byte-faithful; only the `-a`-with-pileup empty-row emission
-  is outstanding. This is an emission-layer concern orthogonal to the
-  indel caller itself (the per-position calls are already correct).
+- **`-a/--all-positions` in pileup format** (DONE). The placeholder
+  `<chrom>\t<pos>\t0\t0\tN\t0\t*\t*` rows that upstream prints for
+  deletion-only and zero-coverage reference positions are now emitted,
+  reproducing upstream's `empty_pileup2` byte-for-byte — including its
+  quirky duplicate rows at deletion sites (a suppressed `'*'` column does
+  not advance `last_pos`, so each deletion position is re-filled by every
+  following column: a D-bp deletion run yields the position emitted
+  `D, D-1, … , 1` times). The fill is driven by a per-window
+  `last_pos` cursor that mirrors `basic_pileup`/`empty_pileup2`
+  (`bam_consensus.c:2202`/`2832-2842`): genuine pileup columns trigger a
+  lazy gap fill back to the last emitted row, and a tail fill closes out
+  the window. Leading/internal/trailing gaps, `-aa` empty contigs, and
+  the `-l`/BED filter (placeholders are confined to selected positions)
+  are all handled. Validated by the live
+  `TestConsensus_AllPositionsUpstreamParity` sweep (simple + bayesian
+  modes × `-a`/`-aa` × `--show-del` on/off, byte-for-byte against the
+  freshly-built upstream binary) plus deterministic unit tests
+  (`TestConsensus_AllPositionsPileup_*`).
 
 Genuinely deferred sub-knobs (precisely scoped):
 
