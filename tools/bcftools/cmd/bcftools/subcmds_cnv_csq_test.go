@@ -25,11 +25,6 @@ func TestCheckCSQDeferred(t *testing.T) {
 		in   checkCSQDeferredInputs
 		want string
 	}{
-		// Still genuinely deferred: -l/--local-csq selects the per-record
-		// (non-haplotype-aware) caller, which the v1 engine does not
-		// implement, so it is hard-rejected rather than silently treated
-		// as haplotype-aware.
-		{"local-csq", checkCSQDeferredInputs{localCSQ: true}, "-l/--local-csq"},
 		// Unknown -O type must still be rejected with the format hint.
 		{"-O t", checkCSQDeferredInputs{outputType: "t"}, "-O t (expect v|z|b|u)"},
 		// Now-implemented flags must NOT be rejected:
@@ -127,6 +122,12 @@ func TestCSQRunInputs(t *testing.T) {
 	// any file I/O.
 	if rc := runCSQ([]string{"-B", "-1", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 2 {
 		t.Errorf("-B -1 must be rejected (rc=2), got rc=%d", rc)
+	}
+	// -l/--local-csq is now implemented (the per-record caller): it passes
+	// the deferred gate and fails later only because the input files are
+	// absent (rc=1), not the rc=2 argument-rejection path.
+	if rc := runCSQ([]string{"-l", "-f", "ref.fa", "-g", "anno.gff", "some.vcf"}); rc != 1 {
+		t.Errorf("-l should be accepted (file-open failure rc=1), got rc=%d", rc)
 	}
 }
 

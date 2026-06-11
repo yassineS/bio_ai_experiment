@@ -26,9 +26,9 @@
 // --unify-chr-names contig reconciliation (parseUnifyChrNames /
 // unifyChrName), --dump-gff model dumping (csq_dump.go, byte-exact vs
 // upstream gff_dump), and non-text -O b|u|z output via the in-tree
-// BCF/BGZF writers (openCSQOutput). The one remaining deferral is
-// -l/--local-csq (per-record, non-haplotype-aware calling) — see
-// docs/PARITY_ROADMAP.md "csq full-parity slicing plan". The CLI
+// BCF/BGZF writers (openCSQOutput). -l/--local-csq (the per-record,
+// non-haplotype-aware caller, upstream test_cds_local) is ported in
+// csq_local.go and selected when CSQOptions.LocalCSQ is set. The CLI
 // accepts the full upstream getopt_long surface; flags we don't yet
 // honour either no-op or hard-reject with a roadmap pointer.
 
@@ -56,10 +56,11 @@ type CSQOptions struct {
 	// CustomTag is the INFO tag to write under, default "BCSQ".
 	CustomTag string
 
-	// LocalCSQ matches upstream's -l/--local-csq (predict per-record,
-	// non-haplotype-aware, via upstream test_cds_local). Not yet ported:
-	// the CLI hard-rejects -l so this field is currently unused by the
-	// engine. Retained so callers can detect the request.
+	// LocalCSQ matches upstream's -l/--local-csq: predict consequences
+	// per-record (non-haplotype-aware) via the ported test_cds_local
+	// (see csq_local.go). Each record's coding consequence is derived
+	// from its own ref/alt against the spliced reference, so compound
+	// consequences spanning several records are not joined.
 	LocalCSQ bool
 
 	// Phase is upstream's -p/--phase {a|m|r|R|s}. v1 stores it for

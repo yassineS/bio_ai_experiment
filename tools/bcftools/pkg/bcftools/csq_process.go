@@ -82,9 +82,18 @@ func (e *hapEngine) process(v *vcf.Variant) error {
 	vb := e.vbufPush(rec)
 
 	if !hasSymbolicAlt(rec) {
-		hit, err := e.testCDS(rec, vb)
-		if err != nil {
-			return err
+		var hit bool
+		if e.opts.LocalCSQ {
+			// -l/--local-csq: annotate this record's coding consequence
+			// independently (no haplotype tree). test_cds_local does not
+			// extend vb.keepUntil, so records flush per-record.
+			hit = e.testCDSLocal(rec)
+		} else {
+			var err error
+			hit, err = e.testCDS(rec, vb)
+			if err != nil {
+				return err
+			}
 		}
 		hit = e.testUTR(rec) || hit
 		hit = e.testSplice(rec) || hit

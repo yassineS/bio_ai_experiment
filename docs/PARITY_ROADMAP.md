@@ -101,7 +101,7 @@ A skimmable per-tool completion table lives in the top-level
 Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
 the canonical version with effort sizing): samtools `consensus` pileup
 `-a` placeholder rows; htsgo `hfile` cloud I/O; bcftools `convert` PLINK
-exporters; bcftools `csq -l/--local-csq`; bcftools `gtcheck -c/--cluster`
+exporters; bcftools `gtcheck -c/--cluster`
 plus its filter expressions; mosdepth CRAM input; CRAM BCF-FORMAT-key edge
 cases, network ref fetch, and v4.0; bgzip `-t`, tabix
 `--reheader`/`--targets`; and scattered per-output column / niche-flag
@@ -3003,8 +3003,8 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 and `mpileup` (SNP slices 1–4 + legacy `bam2bcf_indel` + `--indels-cns`).
 
 All bcftools subcommands now have a real implementation in the Go port.
-The genuinely-remaining gaps are small: `convert` PLINK exporters,
-`csq -l/--local-csq`, and `gtcheck -c/--cluster` + filter expressions.
+The genuinely-remaining gaps are small: `convert` PLINK exporters
+and `gtcheck -c/--cluster` + filter expressions.
 `som` and `tview` are deliberate **non-goals** (see PROJECT_STATUS.md);
 `query %N_ALT` / `import --skipBamQ` are **not** upstream flags.
 
@@ -3073,7 +3073,7 @@ legacy `bam2bcf_indel` path and `--indels-cns`), the `convert` GEN/HAP/TSV/
 gVCF modes, and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`,
 `--dump-gff`, `-O b|u|z` non-text output) all landed and are live-oracle
 validated (see the per-subcommand sections below). The only bcftools items
-still open are `convert`'s PLINK exporters, `csq -l/--local-csq`, and
+still open are `convert`'s PLINK exporters and
 `gtcheck`'s `-c/--cluster` dendrogram + filter expressions.
 
 The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
@@ -3173,10 +3173,10 @@ per-subcommand option-tail sections below):
   `--dump-gff FILE` model dumping (byte-exact vs upstream `gff_dump`),
   and non-text `-O b|u|z` output via the in-tree BCF/BGZF writers —
   all validated byte-for-byte against the live upstream binary in
-  `csq_slice4_test.go`. The one remaining deferral is
-  `-l/--local-csq` (per-record, non-haplotype-aware `test_cds_local`),
-  which the CLI hard-rejects; see the "csq full-parity slicing plan"
-  below.
+  `csq_slice4_test.go`. `-l/--local-csq` (per-record,
+  non-haplotype-aware `test_cds_local`) is now ported in `csq_local.go`
+  and validated byte-for-byte (INFO/BCSQ) against the live upstream
+  binary; see the "csq full-parity slicing plan" below.
 
 Option-tail status on `gtcheck`:
 
@@ -3582,8 +3582,7 @@ Option-tail gaps on `cnv` (full HMM port):
   per-marker SNP data; the port honours upstream's behaviour (treat
   each record as one marker regardless of REF/ALT).
 
-Option-tail gaps on `csq` (slices 1-4 done; only `-l/--local-csq`
-remains):
+Option-tail status on `csq` (slices 1-4 done, plus `-l/--local-csq`):
 
 - **The engine IS haplotype-aware.** `bcftools csq` now phases
   variants per haplotype, walks the GFF transcripts, builds the
@@ -3610,11 +3609,13 @@ remains):
   NCBI tables (`0, 1, 2, 3, 5`; `l` lists them). Codon translation
   uses the selected table; validated against the upstream binary.
   Additional tables can be added by appending to `gencodeTables`.
-- `-l/--local-csq` — **hard-rejected** (the one slice-4 deferral): it
-  selects the per-record, non-haplotype-aware `test_cds_local` caller,
-  which is not yet ported. The CLI rejects `-l` rather than silently
-  producing haplotype-aware output under a flag that promises
-  otherwise.
+- `-l/--local-csq` — **implemented**: selects the per-record,
+  non-haplotype-aware caller (`test_cds_local`, ported in
+  `csq_local.go`). Each record's coding consequence is derived from its
+  own ref/alt against the spliced reference, so compound consequences
+  spanning several records are not joined (unlike the default
+  haplotype-aware path). Validated byte-for-byte (INFO/BCSQ) against the
+  live upstream binary (`TestCSQ_LocalUpstreamParity`).
 - `--unify-chr-names 0|VCF,GFF,FAI` — **done (slice 4)**: the three
   comma-separated prefixes reconcile VCF/GFF/FASTA contig namespaces
   (`parseUnifyChrNames` / `unifyChrName`); `0` disables. Validated vs
@@ -3713,7 +3714,7 @@ SO-term precedence ordering.
   per-record classifier. *Passes byte-for-byte:* `csq.1.out`,
   `csq.oob-codon.out`, `csq.splice.issue-2543.1.out` — see
   `csq_golden_test.go::TestCSQGoldenINFO`.
-- **Slice 4 — GFF/output tail. DONE** (except `-l/--local-csq`). The
+- **Slice 4 — GFF/output tail. DONE.** The
   `FORMAT/TBCSQ` `bcftools query` expansion (`expandTBCSQ`, decoding
   the per-haplotype `FORMAT/BCSQ` bitmask into the `hap1\thap2`
   consequence list); `--unify-chr-names 0|VCF,GFF,FAI` (the 3-field
@@ -3728,7 +3729,6 @@ SO-term precedence ordering.
   dedup across INFO/FILTER/FORMAT (needed because `BCSQ` is both an
   INFO and a FORMAT tag) plus deterministic INFO emission ordering
   via `InfoOrder` (`pkg/htsgo/bcf`). **Still deferred:**
-  `-l/--local-csq` (`test_cds_local`, hard-rejected by the CLI) and
   the `-i/-e` filter wire-up. Also the `GF_NMD`/`NMD_transcript`
   branch of upstream `kput_vcsq`: `kputVcsq` currently omits
   NMD-transcript consequence emission.
@@ -3748,9 +3748,10 @@ per-record classifier has been folded into the engine;
 matches upstream byte-for-byte on `csq.1.out`, `csq.oob-codon.out` and
 `csq.splice.issue-2543.1.out`, and slice 4's `FORMAT/TBCSQ`,
 `--dump-gff`, `--unify-chr-names` and `-O b|u|z` paths are validated
-byte-for-byte against the live upstream binary. The single remaining
-deferral is `-l/--local-csq` (`test_cds_local`), hard-rejected by the
-CLI.
+byte-for-byte against the live upstream binary. `-l/--local-csq`
+(`test_cds_local`, the per-record non-haplotype-aware caller) is now
+ported in `csq_local.go` and validated byte-for-byte (INFO/BCSQ)
+against the live upstream binary (`TestCSQ_LocalUpstreamParity`).
 
 Option-tail gaps on `mpileup` (SNP-only MAQ model; slices 1, 2 & 3 done):
 
