@@ -57,13 +57,17 @@ func FuzzSliceHeader(f *testing.F) {
 	}))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
-		sh, err := parseSliceHeader(data)
-		if err != nil {
-			return
-		}
-		// A successful parse must produce a self-consistent header.
-		if int(sh.NumBlocks) < 0 {
-			t.Fatalf("parsed a negative block count %d", sh.NumBlocks)
+		// Exercise both the v2 (ITF-8 counter) and v3+ (LTF-8 counter)
+		// branches; neither may panic on arbitrary input.
+		for _, major := range []uint8{2, 3} {
+			sh, err := parseSliceHeader(data, major)
+			if err != nil {
+				continue
+			}
+			// A successful parse must produce a self-consistent header.
+			if int(sh.NumBlocks) < 0 {
+				t.Fatalf("parsed a negative block count %d", sh.NumBlocks)
+			}
 		}
 	})
 }

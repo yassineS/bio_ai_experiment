@@ -19,26 +19,48 @@ the encode side is landed. The CRAM roadmap is complete.
 **Documented decode remainder** (small, precise, all behind clear
 errors — never a silent wrong answer):
 
-- **v2.1 slice-header record counter.** htslib reads a v2 slice
-  header's record-counter field as a 32-bit varint (ITF-8) and a v3
-  one as 64-bit (LTF-8); this reader always reads LTF-8. The two
+- **v2.1 slice-header record counter — CLOSED.** htslib reads a v2
+  slice header's record-counter field as a 32-bit varint (ITF-8) and a
+  v3 one as 64-bit (LTF-8) (`cram/cram_decode.c`,
+  `cram_decode_slice_header`). The reader now threads the container's
+  CRAM major version through `ParseDataContainer` →
+  `parseSliceHeader(p, major)` so a v2 slice reads the counter as
+  ITF-8 and a v3+ slice as LTF-8, matching htslib exactly. The
+  `Container` type gained a `Major` field (populated by `Reader.Next`;
+  a hand-built zero-value container is treated as v3+, preserving the
+  historical LTF-8 default), and the `.crai` builder threads the file
+  definition's major into its own slice-header parse. The two
   encodings coincide for every value < 2^28, so realistic v2.1 files
-  decode byte-exactly (proven by the live-samtools parity test for an
-  embedded-reference v2.1 round-trip). They diverge only for a
-  record-counter ≥ 2^28 — i.e. a v2.1 file with > ~268 M reads in the
-  slices preceding the one being read — at which point the field
-  misparses. Threading the container's major version into
-  `parseSliceHeader` is the fix; deferred because it changes the
-  public `ParseDataContainer(*Container)` signature and the edge is
-  vanishingly rare for a legacy dialect.
+  already decoded byte-exactly; the fix additionally handles a
+  record-counter ≥ 2^28 (a v2.1 file with ≥ ~268 M reads in the
+  slices preceding the one being read), where the encodings diverge.
+  Validation: the live-samtools v2.1 parity round-trip
+  (`TestEmbeddedReferenceParity/v2.1`, `TestV21RecordCounterParity`)
+  plus a focused unit test (`TestParseSliceHeaderRecordCounterWidth`)
+  proving the ITF-8 vs LTF-8 branch decodes the counter and keeps
+  every trailing field aligned for v2 vs v3 at the 2^28 boundary.
 - **Network REF_PATH / EBI URL fetch.** An unresolvable reference is a
   clear error naming the missing MD5; the sandbox does no network
   reference fetch (CRAM_DESIGN §"Reference resolution"). Embedded
   reference, an explicit `--reference` FASTA, and the local REF_CACHE
   directory all work.
-- **X_EXT (bzip2) *encode*** for the arith / name-tokeniser codecs:
-  decode works via stdlib `compress/bzip2`; Go has no bzip2 encoder
-  and none is sanctioned, so X_EXT encode returns a clear error.
+- **X_EXT (bzip2) *encode*** for the arith / name-tokeniser codecs —
+  **DEFERRED (documented), not a correctness gap.** Decode works via
+  stdlib `compress/bzip2`. Encode is unsupported because Go has no
+  standard-library bzip2 *encoder* and none is sanctioned (CLAUDE.md
+  permits exactly one CRAM third-party dep, `ulikunitz/xz`, for LZMA
+  decode only). A correct in-tree bzip2 encoder is a large port — the
+  full bzip2 pipeline (BWT with suffix-array sorting, MTF, the two RLE
+  stages, and multi-table Huffman with selector coding) is roughly
+  1.5–2.5 kLOC of carefully-tested code — for a *rare optional* codec
+  that this writer never emits: `chooseBlockCompression` only ever
+  selects raw / gzip / rANS-4x16, and the encoders never auto-select
+  the X_EXT order bit. X_EXT encode is reached only if a caller
+  explicitly requests it, and then returns a clear error
+  (`arith: X_EXT (bzip2) encode is unsupported …`) — never silent
+  wrong output (verified: the encoders auto-select X_CAT/raw, not
+  X_EXT). Implementing it is not in scope; it would warrant its own
+  conversation and dependency review if a real workload ever needs it.
 - **CRAM v4.0** is out of scope (spec not finalised).
 
 ---
@@ -448,9 +470,37 @@ limitation here.
   same fixture round-trips byte-exactly through `samtools view -C
   --output-fmt-option version=2.1`, closing the long-standing "v2.1
   decode deferred" item for everything but the > 2^28-read
-  record-counter edge documented above. Validation: live-upstream
-  parity tests (`parity_test.go`, the `upstreamSamtoolsCram` `sync.Once`
-  builder, `t.Fatalf` never `t.Skip`) assert v3.0 and v2.1
-  embedded-reference decode byte-for-byte against `samtools view`, plus
-  a strong unit regression for the feature-ordering CIGAR fix and the
-  `cF`/RG-order rules.
+  record-counter edge (since closed — see C-V21 below). Validation:
+  live-upstream parity tests (`parity_test.go`, the
+  `upstreamSamtoolsCram` `sync.Once` builder, `t.Fatalf` never
+  `t.Skip`) assert v3.0 and v2.1 embedded-reference decode
+  byte-for-byte against `samtools view`, plus a strong unit regression
+  for the feature-ordering CIGAR fix and the `cF`/RG-order rules.
+- **C-V21** — landed. The CRAM v2.1 slice-header record-counter edge.
+  htslib reads the slice record-counter as ITF-8 (32-bit) for CRAM
+  major version 2 and LTF-8 (64-bit) for v3+; the reader previously
+  always read LTF-8 (the two coincide below 2^28). `parseSliceHeader`
+  now takes the container's major version and selects ITF-8 for v2 /
+  LTF-8 for v3+, matching `cram/cram_decode.c`. The version is threaded
+  cleanly: `Container` gained a `Major` field (set by `Reader.Next`),
+  `ParseDataContainer` reads it (a hand-built zero-value container
+  defaults to v3+ for backward compatibility), and the `.crai` builder
+  threads the file definition's major into its slice-header parse —
+  important because every field after the counter (block count, content
+  ids, MD5) shifts when the counter width is wrong. Validation:
+  `TestParseSliceHeaderRecordCounterWidth` proves the ITF-8/LTF-8
+  branch decodes the counter and keeps the trailing fields aligned at
+  the 2^28 boundary for v2 vs v3; the live-samtools v2.1 round-trips
+  (`TestEmbeddedReferenceParity/v2.1`, `TestV21RecordCounterParity`,
+  the latter via a uniquely-named `upstreamSamtoolsCramV21` helper)
+  assert byte-for-byte parity against `samtools view` and a monotonic,
+  non-negative per-slice record counter. A ≥ 2^28-record fixture is
+  impractical to build (it needs ~268 M reads), so the unit test covers
+  the divergence directly and the live round-trip covers the realistic
+  v2.1 file. This closes the last documented v2.1-decode item.
+  Separately, an honest re-assessment of **X_EXT (bzip2) encode**
+  confirms it stays deferred: a correct in-tree bzip2 encoder is a
+  ~1.5–2.5 kLOC port (BWT + MTF + RLE + multi-table Huffman) for a rare
+  optional codec the writer never emits, and no bzip2 encoder is
+  sanctioned. The X_EXT encode path errors cleanly and is never
+  auto-selected — no silent wrong output.
