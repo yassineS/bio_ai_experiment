@@ -174,6 +174,116 @@ func runUpstreamConsensus(t *testing.T, bin, samPath string, args ...string) str
 	return string(out)
 }
 
+// indelConsensusSAM is an indel-rich fixture used by the live indel-parity
+// test. It mixes:
+//   - a 3bp insertion (5M3I5M) shared by three reads, one with a SNP inside
+//     the inserted run so the insertion columns exercise both homozygous and
+//     heterozygous calls;
+//   - a 2bp deletion (3M2D5M) on a strand-mixed pair;
+//   - a read (a6, 8M) that terminates exactly at the reference base preceding
+//     a downstream insertion — it must NOT pad that insertion column, which
+//     is the membership rule ported from consensus_pileup.c::get_next_base;
+//   - a 1bp insertion (4M1I4M) carrying a heterozygous inserted base.
+//
+// Coordinates are deliberately chosen so the insertion-column depth differs
+// between the engine's "spanning" set and a naive "all reads in the base
+// column" set, which is exactly what regressed before the fix.
+const indelConsensusSAM = `@HD	VN:1.6
+@SQ	SN:chr1	LN:20
+a1	0	chr1	1	60	5M3I5M	*	0	0	ACGTAGGGCATGC	IIIIIIIIIIIII
+a2	16	chr1	1	60	5M3I5M	*	0	0	ACGTAGGGCATGC	IIIIIIIIIIIII
+a3	0	chr1	1	60	5M3I5M	*	0	0	ACGTAGTGCATGC	IIIIIIIIIIIII
+a7	0	chr1	1	60	10M	*	0	0	ACGTAGCATG	II#III+III
+a4	0	chr1	3	60	3M2D5M	*	0	0	GTACATGC	IIIIIIII
+a5	16	chr1	3	60	3M2D5M	*	0	0	GTACATGC	IIIIIIII
+a6	0	chr1	8	60	8M	*	0	0	CATGCTTA	IIIIIIII
+b1	0	chr1	12	60	4M1I4M	*	0	0	TTAAGCGTA	HHHHHHHHH
+b2	0	chr1	12	60	4M1I4M	*	0	0	TTAATCGTA	HHHHHHHHH
+`
+
+// upstreamSamtoolsConsensusIndel is the LIVE indel-parity check. It builds
+// (or reuses) the vendored upstream samtools binary and compares its
+// `consensus` output byte-for-byte against the Go port over an indel-rich
+// fixture, sweeping the simple and bayesian modes, the FASTA/FASTQ/pileup
+// formats, and the indel-relevant flags (--mark-ins, --show-del, -A, -a).
+// Per the project's testing rules it never calls t.Skip on a build failure:
+// an inability to produce the upstream binary is a hard failure.
+func upstreamSamtoolsConsensusIndel(t *testing.T) {
+	t.Helper()
+	bin := upstreamSamtoolsBinary(t)
+
+	samPath := filepath.Join(t.TempDir(), "indel.sam")
+	if err := os.WriteFile(samPath, []byte(indelConsensusSAM), 0o600); err != nil {
+		t.Fatalf("write indel fixture: %v", err)
+	}
+
+	modes := []struct {
+		cli string
+		mod ConsensusMode
+	}{
+		{"simple", ConsensusModeSimple},
+		{"bayesian", ConsensusModeBayesian},
+	}
+	formats := []struct {
+		cli string
+		fmt ConsensusFormat
+	}{
+		{"fasta", ConsensusFASTA},
+		{"fastq", ConsensusFASTQ},
+		{"pileup", ConsensusPileup},
+	}
+	// Each variant pairs the extra upstream CLI flags with the matching Go
+	// ConsensusOptions mutation, so the two invocations are equivalent.
+	variants := []struct {
+		name    string
+		cliArgs []string
+		apply   func(*ConsensusOptions)
+	}{
+		{"plain", nil, func(*ConsensusOptions) {}},
+		{"mark-ins", []string{"--mark-ins"}, func(o *ConsensusOptions) { o.MarkIns = true }},
+		{"show-del", []string{"--show-del", "yes"}, func(o *ConsensusOptions) { o.ShowDel = true }},
+		{"ambig", []string{"-A"}, func(o *ConsensusOptions) { o.AmbigCodes = true }},
+		{"all-pos", []string{"-a"}, func(o *ConsensusOptions) { o.AllPositions = true }},
+		{"no-show-ins", []string{"--show-ins", "no"}, func(o *ConsensusOptions) { o.NoShowIns = true }},
+		// --use-qual and --min-BQ route the insertion-column pads through
+		// the simple gap bucket; these variants pin the gap-quality
+		// weighting (score[16] += 8*q) and the pad min-qual gate so the
+		// inserted-vs-pad call fraction matches upstream.
+		{"use-qual", []string{"-q"}, func(o *ConsensusOptions) { o.UseQual = true }},
+		{"min-bq", []string{"--min-BQ", "20"}, func(o *ConsensusOptions) { o.MinBaseQ = 20 }},
+	}
+
+	for _, m := range modes {
+		for _, f := range formats {
+			for _, v := range variants {
+				name := m.cli + "_" + f.cli + "_" + v.name
+				t.Run(name, func(t *testing.T) {
+					args := append([]string{"-m", m.cli, "-f", f.cli}, v.cliArgs...)
+					up := runUpstreamConsensus(t, bin, samPath, args...)
+
+					opts := ConsensusOptions{Mode: m.mod, Format: f.fmt}
+					v.apply(&opts)
+					got := runConsensusOnSAM(t, indelConsensusSAM, opts)
+
+					if got != up {
+						t.Fatalf("indel parity mismatch (%s):\n--- upstream ---\n%s\n--- go ---\n%s",
+							name, up, got)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestConsensus_IndelUpstreamParity runs the live indel-parity sweep. It is
+// skipped only in -short mode (which omits the expensive upstream build).
+func TestConsensus_IndelUpstreamParity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live upstream build/parity test in -short mode")
+	}
+	upstreamSamtoolsConsensusIndel(t)
+}
+
 // cmdError is a build/command failure carrying the captured output so
 // the test log shows exactly what went wrong.
 type cmdError struct {

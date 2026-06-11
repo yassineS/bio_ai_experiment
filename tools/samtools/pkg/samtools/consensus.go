@@ -22,10 +22,10 @@ const (
 	// carry the per-position call confidence (Phred+33, capped at 93).
 	ConsensusFASTQ
 	// ConsensusPileup emits the samtools consensus pileup row format:
-	// "chrom\tpos\tnth\tdepth\tcall\tcq\tseq\tqual\n". nth is always
-	// 0 in v1; upstream emits insertion-column rows with nth>0 when
-	// --show-ins is yes (the default), and this is tracked as a
-	// deferred item in docs/PARITY_ROADMAP.md#samtools.
+	// "chrom\tpos\tnth\tdepth\tcall\tcq\tseq\tqual\n". The nth==0 row is
+	// the reference column; insertion columns are emitted as additional
+	// rows with nth>0 when --show-ins is yes (the default), matching
+	// upstream for both simple and bayesian modes.
 	ConsensusPileup
 )
 
@@ -65,10 +65,10 @@ type ConsensusOptions struct {
 	// Format selects FASTA / FASTQ / Pileup output (CLI -f/--format).
 	Format ConsensusFormat
 	// Mode picks the per-position algorithm (CLI -m/--mode). Upstream's
-	// default is MODE_RECALL (a bayesian mode); ConsensusFile/Consensus
-	// honour ConsensusModeBayesian by emitting a stderr warning and
-	// falling back to ConsensusModeSimple, since v1 only implements
-	// simple mode.
+	// default is MODE_RECALL (a bayesian mode). Both ConsensusModeSimple
+	// and ConsensusModeBayesian (the Gap5 posterior caller, including its
+	// RECALL/PRECISE/MIXED/116 sub-modes) are fully implemented; the bare
+	// `samtools consensus` invocation runs ConsensusModeBayesian.
 	Mode ConsensusMode
 	// AllPositions emits zero-coverage positions as 'N' across the full
 	// length of every contig that has at least one read (CLI -a). When
@@ -124,9 +124,10 @@ type ConsensusOptions struct {
 	// upstream default is "show insertions" (show_ins=1); the zero
 	// value of NoShowIns (false) reproduces it.
 	NoShowIns bool
-	// MarkIns prepends '+' to every inserted base/qual emitted in
-	// FASTA/FASTQ — upstream's --mark-ins. v1 wires the option but
-	// only implements it when NoShowIns=false.
+	// MarkIns prepends '_' to every inserted column emitted in
+	// FASTA/FASTQ — upstream's --mark-ins (the marker byte is '_' in both
+	// the seq and qual streams; bam_consensus.c:2409-2412). Only effective
+	// when NoShowIns=false.
 	MarkIns bool
 	// HetOnly corresponds to upstream's --het-only flag (CLI --het-only).
 	// When true, the consensus is restricted to HETEROZYGOUS-called
@@ -544,20 +545,25 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				if opts.HetOnly && !call.isHet {
 					continue
 				}
-				// Honour --show-del in pileup mode too: when the
-				// call is '*' and ShowDel is false, suppress the
-				// row, matching bam_consensus.c:2244.
-				if call.base == '*' && !opts.ShowDel {
-					continue
+				// Honour --show-del in pileup mode too: when the call is
+				// '*' and ShowDel is false, suppress the nth==0 row,
+				// matching bam_consensus.c:2244. Note this suppresses ONLY
+				// the reference (nth==0) row: upstream invokes basic_pileup
+				// independently per nth, so a deletion-called reference
+				// column does NOT suppress the nth>0 insertion columns that
+				// follow it — those are emitted below on their own merits.
+				if !(call.base == '*' && !opts.ShowDel) {
+					if err := writeConsensusPileupRow(bw, chrom, pos1, totalDepth, call, events[col], opts); err != nil {
+						return err
+					}
 				}
-				if err := writeConsensusPileupRow(bw, chrom, pos1, totalDepth, call, events[col], opts); err != nil {
-					return err
-				}
-				// nth>0 insertion columns (bayesian mode only). Upstream
-				// emits one pileup row per inserted column when --show-ins
-				// is on (the default).
-				if opts.Mode == ConsensusModeBayesian && !opts.NoShowIns {
-					insCols := callConsensusBayesianInsertions(events[col], recs, bayesReads, bayes, bayesProbs)
+				// nth>0 insertion columns. Upstream emits one pileup row
+				// per inserted column when --show-ins is on (the default),
+				// for both simple and bayesian modes (basic_pileup runs
+				// consensus_base — which dispatches to the active caller —
+				// on every nth>0 column).
+				if !opts.NoShowIns {
+					insCols := consensusInsertionColumns(events[col], recs, bayesReads, bayes, bayesProbs, pos1, opts)
 					for nth, ic := range insCols {
 						if ic.call.base == '*' && !opts.ShowDel {
 							continue
@@ -591,44 +597,49 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 					qualBuf = append(qualBuf, '!')
 					continue
 				}
-				if call.base == '*' && !opts.ShowDel {
-					// Suppress deletion placeholder.
-					continue
-				}
-				if firstCovIdx < 0 {
-					firstCovIdx = len(seqBuf)
-				}
-				seqBuf = append(seqBuf, call.base)
-				qualBuf = append(qualBuf, phredByte(call.qual))
-				lastCovIdx = len(seqBuf)
-				if !opts.NoShowIns {
-					if opts.Mode == ConsensusModeBayesian {
-						insCols := callConsensusBayesianInsertions(events[col], recs, bayesReads, bayes, bayesProbs)
-						for _, ic := range insCols {
-							if ic.call.base == 0 || ic.call.base == 'N' {
-								continue
-							}
-							if ic.call.base == '*' {
-								continue
-							}
-							if opts.MarkIns {
-								seqBuf = append(seqBuf, '+')
-								qualBuf = append(qualBuf, '+')
-							}
-							seqBuf = append(seqBuf, ic.call.base)
-							qualBuf = append(qualBuf, phredByte(ic.call.qual))
-						}
-					} else if insSeq, insQuals := callConsensusInsertion(events[col], opts); len(insSeq) > 0 {
-						if opts.MarkIns {
-							// Upstream prepends a single '+' marker; we
-							// keep that semantic and mirror it for qual.
-							seqBuf = append(seqBuf, '+')
-							qualBuf = append(qualBuf, '+')
-						}
-						seqBuf = append(seqBuf, insSeq...)
-						qualBuf = append(qualBuf, insQuals...)
+				// Emit the reference (nth==0) base unless it is a
+				// deletion placeholder suppressed by --show-del off. The
+				// suppression is scoped to the nth==0 base only: upstream
+				// invokes basic_fasta independently per nth, so a
+				// deletion-called reference column still has its nth>0
+				// insertion columns emitted below.
+				if !(call.base == '*' && !opts.ShowDel) {
+					if firstCovIdx < 0 {
+						firstCovIdx = len(seqBuf)
 					}
+					seqBuf = append(seqBuf, call.base)
+					qualBuf = append(qualBuf, phredByte(call.qual))
 					lastCovIdx = len(seqBuf)
+				}
+				if !opts.NoShowIns {
+					// Insertion columns (nth>0). Upstream's basic_fasta
+					// emits the inserted column's call whenever cb != '*'
+					// (bam_consensus.c:2439) — including 'N' calls — and,
+					// under --mark-ins, prepends a single '_' to BOTH the
+					// seq and qual stream once per inserted column
+					// (bam_consensus.c:2409-2412). A '*' inserted call is
+					// never emitted. This holds for simple and bayesian
+					// modes alike.
+					insCols := consensusInsertionColumns(events[col], recs, bayesReads, bayes, bayesProbs, pos1, opts)
+					for _, ic := range insCols {
+						cb := ic.call.base
+						if cb == 0 {
+							cb = 'N'
+						}
+						if cb == '*' {
+							continue
+						}
+						if firstCovIdx < 0 {
+							firstCovIdx = len(seqBuf)
+						}
+						if opts.MarkIns {
+							seqBuf = append(seqBuf, '_')
+							qualBuf = append(qualBuf, '_')
+						}
+						seqBuf = append(seqBuf, cb)
+						qualBuf = append(qualBuf, phredByte(ic.call.qual))
+						lastCovIdx = len(seqBuf)
+					}
 				}
 			}
 		}
@@ -696,11 +707,19 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 		if e.dropped {
 			continue
 		}
+		if e.kind == pileupEventRefSkip {
+			// Reference skips don't contribute to consensus.
+			continue
+		}
+		// Upstream applies the min-qual gate to EVERY event (base and
+		// gap alike) before bucketing, using the event's carried quality
+		// (bam_consensus.c:1925-1931). A pad/deletion event below the
+		// floor is therefore dropped just like a base.
+		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
+			continue
+		}
 		switch e.kind {
 		case pileupEventBase:
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
 			b := upper(e.base)
 			seqi := baseToSeqi(b)
 			if seqi == 0 {
@@ -736,11 +755,16 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 			}
 			totDepth++
 		case pileupEventDel:
+			// Gap bucket. Upstream weights the fixed gap score by the
+			// event quality under --use-qual: score[16] += 8 * (use_qual
+			// ? q : 1) (bam_consensus.c:1953).
+			var q uint64 = 1
+			if opts.UseQual {
+				q = uint64(e.qual)
+			}
 			freq[16]++
-			score[16] += 8
+			score[16] += 8 * q
 			totDepth++
-		case pileupEventRefSkip:
-			// Reference skips don't contribute to consensus.
 		}
 	}
 
@@ -922,13 +946,14 @@ type bayesInsertionColumn struct {
 }
 
 // callConsensusBayesianInsertions builds the nth>0 insertion columns for a
-// reference column and runs the bayesian caller on each. Every read in the
-// base column participates: a read with an nth inserted base contributes
-// it, otherwise it contributes a '*' pad — matching upstream's pileup
-// engine which emits insertion columns with pad bases for non-inserting
-// reads.
+// reference column and runs the bayesian caller on each. A read in the base
+// column participates only when it survives into the insertion column (see
+// spansInsertionColumn): a read with an nth inserted base contributes it,
+// any other surviving read contributes a '*' pad — matching upstream's
+// pileup engine, which pads non-inserting reads but drops reads that end at
+// the reference position. pos1 is the 1-based reference position.
 func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
-	bayesReads []*bayesRead, o bayesOptions, ps bayesProbSet) []bayesInsertionColumn {
+	bayesReads []*bayesRead, o bayesOptions, ps bayesProbSet, pos1 int) []bayesInsertionColumn {
 
 	// Stable order so the per-read seq/qual columns match upstream.
 	sortEvents(evs)
@@ -954,6 +979,9 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 		td := 0
 		for _, e := range evs {
 			if e.dropped || e.kind == pileupEventRefSkip {
+				continue
+			}
+			if !spansInsertionColumn(e, recs, pos1) {
 				continue
 			}
 			var bp bayesPileupBase
@@ -1010,86 +1038,142 @@ func callConsensusBayesianInsertions(evs []pileupEvent, recs []*sam.Record,
 	return cols
 }
 
-// callConsensusInsertion derives a consensus for an inserted-sequence
-// annotation attached to the current event slice. The simplest
-// faithful behaviour (matching upstream's "show_ins yes" / simple
-// mode) is: if a majority of reads carry an insertion at this position,
-// emit its consensus sequence; otherwise nothing.
+// callConsensusSimpleInsertions builds the nth>0 insertion columns for a
+// reference column and runs the simple frequency caller on each, mirroring
+// upstream's pileup engine (consensus_pileup.c): for each inserted column
+// every spanning read participates — a read with an nth inserted base
+// contributes it, otherwise it contributes a '*' pad. The simple caller
+// (callConsensus) is then run on the synthesised column exactly as
+// consensus_base() dispatches to calculate_consensus_simple() for nth>0
+// columns. This makes simple-mode insertion handling byte-faithful with
+// upstream in both FASTA/FASTQ and pileup output.
 //
-// The gate uses MinCallFraction (reviewer correctness finding #8) —
-// there is no separate "min fraction" knob.
-func callConsensusInsertion(evs []pileupEvent, opts ConsensusOptions) ([]byte, []byte) {
-	withIns := 0
-	insSeqs := [][]byte{}
-	live := 0
+// The returned columns carry the per-read seq/qual bytes (upper/lower-cased
+// by strand, '*'/'#' for pads) needed by the pileup seq/qual fields. pos1 is
+// the 1-based reference position whose insertion follows.
+func callConsensusSimpleInsertions(evs []pileupEvent, recs []*sam.Record,
+	pos1 int, opts ConsensusOptions) []bayesInsertionColumn {
+
+	// Stable order so the per-read seq/qual columns match upstream.
+	sortEvents(evs)
+
+	maxIns := 0
 	for _, e := range evs {
 		if e.dropped || e.kind != pileupEventBase {
 			continue
 		}
-		if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-			continue
-		}
-		live++
-		if e.insAfter != "" {
-			withIns++
-			insSeqs = append(insSeqs, []byte(strings.ToUpper(e.insAfter)))
+		if len(e.insAfter) > maxIns {
+			maxIns = len(e.insAfter)
 		}
 	}
-	if live == 0 || withIns == 0 {
-		return nil, nil
+	if maxIns == 0 {
+		return nil
 	}
-	if float64(withIns)/float64(live) < opts.MinCallFraction {
-		return nil, nil
-	}
-	maxLen := 0
-	for _, s := range insSeqs {
-		if len(s) > maxLen {
-			maxLen = len(s)
-		}
-	}
-	if maxLen == 0 {
-		return nil, nil
-	}
-	seq := make([]byte, maxLen)
-	qual := make([]byte, maxLen)
-	for c := 0; c < maxLen; c++ {
-		var cnt [256]int
-		for _, s := range insSeqs {
-			if c >= len(s) {
+
+	cols := make([]bayesInsertionColumn, maxIns)
+	for nth := 1; nth <= maxIns; nth++ {
+		colEvs := make([]pileupEvent, 0, len(evs))
+		seq := make([]byte, 0, len(evs))
+		qual := make([]byte, 0, len(evs))
+		td := 0
+		for _, e := range evs {
+			if e.dropped || e.kind == pileupEventRefSkip {
 				continue
 			}
-			cnt[s[c]]++
-		}
-		bestB := byte('N')
-		bestC := 0
-		total := 0
-		for b, n := range cnt {
-			if n > 0 {
-				total += n
+			if !spansInsertionColumn(e, recs, pos1) {
+				continue
 			}
-			if n > bestC {
-				bestC = n
-				bestB = byte(b)
+			var ce pileupEvent
+			ce.readIdx = e.readIdx
+			ce.mapq = e.mapq
+			ce.isReverse = e.isReverse
+			var b byte = '*'
+			var q byte
+			if e.kind == pileupEventBase && nth <= len(e.insAfter) {
+				ib := upper(e.insAfter[nth-1])
+				ce.kind = pileupEventBase
+				ce.base = ib
+				// The nth inserted base sits at query offset
+				// (readBP-1)+nth in the read's SEQ.
+				seqOff := e.readBP - 1 + nth
+				var rec *sam.Record
+				if e.readIdx >= 0 && e.readIdx < len(recs) {
+					rec = recs[e.readIdx]
+				}
+				if rec != nil && seqOff >= 0 && seqOff < len(rec.Qual) {
+					q = rec.Qual[seqOff]
+				}
+				ce.qual = q
+				b = ib
+				if e.isReverse {
+					b = lower(b)
+				}
+			} else {
+				// Pad: '*' deletion placeholder. Upstream's pileup engine
+				// carries the read's current base quality into the column.
+				ce.kind = pileupEventDel
+				q = e.qual
+				ce.qual = q
+				if e.isReverse {
+					b = '#'
+				}
 			}
+			colEvs = append(colEvs, ce)
+			seq = append(seq, b)
+			qual = append(qual, q+33)
+			td++
 		}
-		if total == 0 || float64(bestC)/float64(total) < opts.MinCallFraction {
-			seq[c] = 'N'
-			qual[c] = '!'
-			continue
+		call, _ := callConsensus(colEvs, opts)
+		cols[nth-1] = bayesInsertionColumn{
+			call:  call,
+			depth: td,
+			seq:   seq,
+			qual:  qual,
 		}
-		seq[c] = bestB
-		q := int(100 * float64(bestC) / float64(total))
-		qual[c] = phredByte(q)
 	}
-	return seq, qual
+	return cols
+}
+
+// consensusInsertionColumns dispatches to the simple or bayesian insertion
+// column builder per opts.Mode, returning one bayesInsertionColumn per
+// inserted nth-column. This is the single entry point both the FASTA/FASTQ
+// and pileup emitters use so the two modes share identical insertion
+// semantics with upstream. pos1 is the 1-based reference position of the
+// base column whose insertion follows.
+func consensusInsertionColumns(evs []pileupEvent, recs []*sam.Record,
+	bayesReads []*bayesRead, bayes bayesOptions, bayesProbs bayesProbSet,
+	pos1 int, opts ConsensusOptions) []bayesInsertionColumn {
+
+	if opts.Mode == ConsensusModeBayesian {
+		return callConsensusBayesianInsertions(evs, recs, bayesReads, bayes, bayesProbs, pos1)
+	}
+	return callConsensusSimpleInsertions(evs, recs, pos1, opts)
+}
+
+// spansInsertionColumn reports whether the read behind event e participates
+// in the insertion column that follows reference position pos1. Upstream's
+// pileup engine (consensus_pileup.c::get_next_base) only keeps a read in an
+// nth>0 column while the read still has unconsumed bases: a read whose
+// alignment terminates exactly at pos1 reaches EOF and is removed before the
+// insertion column, so it neither inserts nor pads there. A read therefore
+// participates iff it carries an insertion at pos1 (insAfter set) or its
+// alignment extends to a later reference position.
+func spansInsertionColumn(e pileupEvent, recs []*sam.Record, pos1 int) bool {
+	if e.insAfter != "" {
+		return true
+	}
+	if e.readIdx < 0 || e.readIdx >= len(recs) {
+		return false
+	}
+	return int(recs[e.readIdx].EndPosition()) > pos1
 }
 
 // writeConsensusPileupRow emits one row of the samtools consensus
 // pileup schema: chrom\tpos\tnth\tdepth\tcall\tcq\tseq\tqual\n.
 //
-// nth is always 0 in v1. Upstream's `--show-ins yes` default emits
-// extra rows with nth>0 for the columns of each insertion; v1 does
-// not yet emit those rows (deferred — docs/PARITY_ROADMAP.md).
+// This writes the nth==0 (reference) row. The nth>0 insertion-column
+// rows that upstream emits under `--show-ins yes` (the default) are
+// written separately by writeConsensusInsertionPileupRow.
 func writeConsensusPileupRow(bw *bufio.Writer, chrom string, pos1, depth int,
 	call consensusCall, evs []pileupEvent, opts ConsensusOptions) error {
 
@@ -1103,9 +1187,11 @@ func writeConsensusPileupRow(bw *bufio.Writer, chrom string, pos1, depth int,
 		var q byte
 		switch e.kind {
 		case pileupEventBase:
-			if opts.MinBaseQ > 0 && e.qual < opts.MinBaseQ {
-				continue
-			}
+			// The displayed seq/qual columns and the row depth are the
+			// RAW pileup column — upstream's basic_pileup loop emits every
+			// overlapping read's base/qual with no min-BQ filter
+			// (bam_consensus.c:2274-2285); --min-BQ affects only the
+			// consensus call, not the displayed column.
 			b = upper(e.base)
 			if e.isReverse {
 				b = lower(b)
@@ -1120,9 +1206,16 @@ func writeConsensusPileupRow(bw *bufio.Writer, chrom string, pos1, depth int,
 		case pileupEventRefSkip:
 			continue
 		}
+		if q > 93 {
+			q = 93 // upstream MIN(qual,93) before +'!'
+		}
 		seq = append(seq, b)
 		qual = append(qual, q+33)
 	}
+	// Row depth is the raw column read count (the number of displayed
+	// reads), matching upstream's `depth` argument — distinct from the
+	// min-BQ-filtered depth used by the consensus caller.
+	depth = len(seq)
 
 	cb := call.base
 	if cb == 0 {

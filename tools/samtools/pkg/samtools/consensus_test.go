@@ -276,8 +276,9 @@ func TestConsensus_FASTA_Insertion_MarkIns(t *testing.T) {
 		Format:  ConsensusFASTA,
 		MarkIns: true,
 	})
-	// MarkIns prepends '+' before the inserted base.
-	want := ">chr1\nAC+TGA\n"
+	// MarkIns prepends '_' before each inserted column, matching upstream
+	// bam_consensus.c:2409-2412 (the marker byte is '_', not '+').
+	want := ">chr1\nAC_TGA\n"
 	if out != want {
 		t.Errorf("mark-ins: got %q want %q", out, want)
 	}

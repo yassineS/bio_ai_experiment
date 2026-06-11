@@ -2839,8 +2839,40 @@ byte-exact. The default invocation (`MODE_RECALL`, MQUAL + NM-adjust
 on) is byte-for-byte parity with upstream on the
 `reference_code/samtools/test/consensus/` corpus for the non-`-T`
 fixtures (18q/19q/18p/19p/20p/21p on consen1, 30/31/32/40/41/42 on
-consen1c). Insertion-column pileup rows (`nth>0`) are emitted for the
-bayesian path.
+consen1c).
+
+**Indel calling** (insertions and deletions) is implemented and
+byte-faithful for both `simple` and `bayesian` modes across
+FASTA/FASTQ/pileup. Insertion-column rows (`nth>0`) are emitted by a
+single per-mode dispatcher (`consensusInsertionColumns`) that the
+FASTA/FASTQ and pileup emitters share. The insertion-column membership
+rule is ported from upstream's pileup engine
+(`consensus_pileup.c::get_next_base`): a read whose alignment terminates
+exactly at the reference position is removed before the insertion column,
+so it neither inserts nor pads there (`spansInsertionColumn`). Deletion
+columns (`*`) honour `--show-del` for both the `nth==0` row and, crucially,
+do NOT suppress the following `nth>0` insertion columns — upstream invokes
+its emit callback independently per `nth`. The simple-mode gap bucket is
+quality-weighted under `--use-qual` (`score[16] += 8*q`), the per-event
+min-qual gate is applied to gap/pad events as well as bases, and the
+pileup display columns (seq/qual/depth) are the RAW pileup column,
+unfiltered by `--min-BQ` (which affects only the consensus call) —
+all matching `bam_consensus.c`. A live parity sweep
+(`TestConsensus_IndelUpstreamParity`) compares the Go port against the
+freshly-built upstream binary byte-for-byte over an indel-rich fixture
+across both modes, all three formats, and the `plain`/`mark-ins`/
+`show-del`/`ambig`/`all-pos`/`no-show-ins`/`use-qual`/`min-bq` flag
+variants.
+
+Remaining indel-adjacent gap (precisely scoped):
+
+- **`-a/--all-positions` in pileup format** does not yet emit the
+  placeholder `N\t0\t*\t*` rows upstream prints for deletion-only and
+  zero-coverage reference positions (including upstream's quirky
+  duplicate rows at deletion sites). FASTA/FASTQ `-a` and pileup without
+  `-a` are byte-faithful; only the `-a`-with-pileup empty-row emission
+  is outstanding. This is an emission-layer concern orthogonal to the
+  indel caller itself (the per-position calls are already correct).
 
 Genuinely deferred sub-knobs (precisely scoped):
 
