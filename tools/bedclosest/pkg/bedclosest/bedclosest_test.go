@@ -176,8 +176,12 @@ func TestClosestStrandB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "\t-11") {
-		t.Errorf("expected -D b to flip sign with B on minus strand; got %q", got)
+	// Upstream flips the -D b sign only when B is FORWARD-strand (matching
+	// CloseSweep's `_bDist && _dbForward`). B is to the right of A and on the
+	// '-' strand, so there is no flip: the distance stays downstream-positive
+	// (+11), matching `bedtools closest -D b`.
+	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "\t11") {
+		t.Errorf("expected -D b NOT to flip sign with B on minus strand; got %q", got)
 	}
 }
 
@@ -260,8 +264,16 @@ func TestSignedDistanceModes(t *testing.T) {
 	if d := signedDistance(aMinus, bDown, Options{DistanceMode: DistanceA}); d != -11 {
 		t.Errorf("a-strand flip = %d, want -11", d)
 	}
-	if d := signedDistance(aPlus, bUp, Options{DistanceMode: DistanceB}); d != 41 {
-		t.Errorf("b-strand flip = %d, want 41", d)
+	// -D b flips on a FORWARD-strand B (upstream's `_bDist && _dbForward`). bUp
+	// is on the '-' strand and lies upstream (left) of A, so it stays
+	// upstream-negative (-41), matching `bedtools closest -D b`.
+	if d := signedDistance(aPlus, bUp, Options{DistanceMode: DistanceB}); d != -41 {
+		t.Errorf("b-strand (reverse) no flip = %d, want -41", d)
+	}
+	// A forward-strand B upstream of A DOES flip to downstream-positive under -D b.
+	bUpFwd := &Row{Chrom: "chr1", Start: 50, End: 60, Strand: "+"}
+	if d := signedDistance(aPlus, bUpFwd, Options{DistanceMode: DistanceB}); d != 41 {
+		t.Errorf("b-strand (forward) flip = %d, want 41", d)
 	}
 }
 

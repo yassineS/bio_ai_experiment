@@ -206,6 +206,35 @@ func TestGapsParity_CountColumnDrop(t *testing.T) {
 	}
 }
 
+// TestGapsParity_UseTree pins that the interval-tree B index (--tree) produces
+// the same output as upstream's default intersect across the parity modes. The
+// tree path returns candidates out of order and re-sorts them into B-file
+// order, so this guards that the re-sort matches upstream's input-order echo.
+func TestGapsParity_UseTree(t *testing.T) {
+	bt := upstreamBedtoolsGaps(t)
+	ours := buildOurs(t)
+	dir := t.TempDir()
+
+	// B intentionally NOT sorted by start, and with several overlaps per A, so
+	// the tree's out-of-order traversal differs from file order.
+	a := writeFile(t, dir, "a.bed", "chr1\t100\t200\ta1\t0\t+\nchr1\t300\t360\ta2\t0\t-\nchr2\t10\t90\ta3\t0\t+\n")
+	b := writeFile(t, dir, "b.bed",
+		"chr1\t180\t220\tb3\t0\t-\nchr1\t90\t110\tb1\t0\t+\nchr1\t150\t170\tb2\t0\t+\n"+
+			"chr1\t310\t320\tb4\t0\t-\nchr1\t340\t400\tb5\t0\t+\nchr2\t50\t100\tb6\t0\t+\n")
+
+	for _, m := range [][]string{{}, {"-wa"}, {"-wb"}, {"-c"}, {"-v"}, {"-s"}, {"-s", "-c"}, {"-wa", "-wb"}} {
+		t.Run(joinArgs(m), func(t *testing.T) {
+			up := append([]string{"intersect", "-a", a, "-b", b}, m...)
+			want := runCapture(t, bt, up...)
+			our := append([]string{"-a", a, "-b", b, "--tree"}, m...)
+			got := runCapture(t, ours, our...)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("--tree mismatch %v\nupstream:\n%s\nours:\n%s", m, want, got)
+			}
+		})
+	}
+}
+
 // joinArgs renders a flag slice into a filesystem-safe subtest suffix.
 func joinArgs(args []string) string {
 	if len(args) == 0 {

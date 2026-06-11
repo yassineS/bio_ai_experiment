@@ -418,10 +418,9 @@ func closestForDirectional(a *Row, bs []*Row, opts Options) []hit {
 		abs := refGap(a, b)
 		// Mirror CloseSweep::finalizeSelections, where the reported distance sign
 		// is derived from the stream classification: upstream features are
-		// negative, downstream positive, overlaps zero. This keeps the sign
-		// consistent with the same upstream/downstream decision used by the
-		// ignore/force flags (unlike signedDistance, which derives the sign
-		// independently and disagrees for the -D b mode).
+		// negative, downstream positive, overlaps zero. signedDistance reuses the
+		// same classifyStream decision, so the directional and non-directional
+		// paths agree on the sign (including the -D b mode).
 		switch stream {
 		case streamOverlap:
 			overlaps = append(overlaps, dcand{i, 0, 0, streamOverlap})
@@ -521,34 +520,26 @@ func signedDistance(a, b *Row, opts Options) int64 {
 	if a.Start < b.End && b.Start < a.End {
 		return 0
 	}
-	var refSigned int64
+	// Magnitude of the gap: (b.start - a.end) + 1 to the right, or
+	// (a.start - b.end) + 1 to the left, matching upstream's currDist.
+	var magnitude int64
 	if b.Start >= a.End {
-		// B is downstream of A. Upstream uses (B.start - A.end) + 1, so a 0-bp
-		// gap (touching intervals) is reported as 1.
-		refSigned = int64(b.Start-a.End) + 1
+		magnitude = int64(b.Start-a.End) + 1
 	} else {
-		// B is upstream of A.
-		refSigned = -(int64(a.Start-b.End) + 1)
+		magnitude = int64(a.Start-b.End) + 1
 	}
-	switch opts.DistanceMode {
-	case DistanceA:
-		if a.Strand == "-" {
-			return -refSigned
-		}
-		return refSigned
-	case DistanceB:
-		if b.Strand == "-" {
-			return -refSigned
-		}
-		return refSigned
-	case DistanceAbsolute:
-		if refSigned < 0 {
-			return -refSigned
-		}
-		return refSigned
-	default: // DistanceRef
-		return refSigned
+	if opts.DistanceMode == DistanceAbsolute {
+		return magnitude
 	}
+	// The sign is negative when the hit is classified UPSTREAM of A and
+	// positive when DOWNSTREAM, exactly as upstream CloseSweep applies
+	// `0 - dist` to upstream records and `+dist` to downstream ones. Reuse
+	// classifyStream so the non-directional and directional paths agree on
+	// the convention (-D a flips on A reverse-strand, -D b on B forward-strand).
+	if classifyStream(a, b, opts) == streamUpstream {
+		return -magnitude
+	}
+	return magnitude
 }
 
 // writeRow writes one output row: A's columns, then B's columns, then the

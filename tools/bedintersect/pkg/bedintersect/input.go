@@ -38,6 +38,10 @@ type inRecord struct {
 	line   string // original tab-joined columns, verbatim
 	fields []string
 	format recordFormat
+	// order is the record's position within its chromosome's B slice. It lets
+	// the interval-tree path restore B-file order (upstream echoes overlapping
+	// B records in input order) after an out-of-order tree query.
+	order int
 }
 
 // clippedLine renders this record clipped to the overlap span [s,e) (0-based),

@@ -10,8 +10,134 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 )
+
+// inFinder returns the B records overlapping A. It abstracts over the two B
+// lookup strategies: a per-chromosome linear scan, and the augmented
+// interval-tree index used under -sortedtree (opts.UseTree) for large B files.
+type inFinder interface {
+	overlaps(a *inRecord, opts IntersectOptions) []rawHit
+}
+
+// linearFinder scans the chromosome's B slice in file order. O(A*B) per
+// chromosome but allocation-free in setup; the default for modest inputs.
+type linearFinder struct {
+	byChrom map[string][]*inRecord
+}
+
+func (f linearFinder) overlaps(a *inRecord, opts IntersectOptions) []rawHit {
+	return rawOverlaps(a, f.byChrom[a.chrom], opts)
+}
+
+// treeFinder answers overlap queries with one augmented interval tree per
+// chromosome in O(log n + k). Tree queries return hits out of file order, so
+// the candidate slice is re-sorted by each record's original position before
+// the fraction/strand filters run, preserving upstream's B-file output order.
+type treeFinder struct {
+	trees map[string]*inIntervalTree
+}
+
+func newTreeFinder(byChrom map[string][]*inRecord) treeFinder {
+	trees := make(map[string]*inIntervalTree, len(byChrom))
+	for chrom, recs := range byChrom {
+		trees[chrom] = newInIntervalTree(recs)
+	}
+	return treeFinder{trees: trees}
+}
+
+func (f treeFinder) overlaps(a *inRecord, opts IntersectOptions) []rawHit {
+	tree, ok := f.trees[a.chrom]
+	if !ok {
+		return nil
+	}
+	cands := tree.query(a)
+	sort.Slice(cands, func(i, j int) bool { return cands[i].order < cands[j].order })
+	return rawOverlaps(a, cands, opts)
+}
+
+// newFinder picks the tree- or linear-scan B index based on opts.UseTree, and
+// stamps each B record with its in-chromosome order so the tree path can
+// restore file order.
+func newFinder(bRecords []*inRecord, opts IntersectOptions) inFinder {
+	byChrom := make(map[string][]*inRecord)
+	for _, b := range bRecords {
+		b.order = len(byChrom[b.chrom])
+		byChrom[b.chrom] = append(byChrom[b.chrom], b)
+	}
+	if opts.UseTree {
+		return newTreeFinder(byChrom)
+	}
+	return linearFinder{byChrom: byChrom}
+}
+
+// inIntervalNode is a node in the augmented interval tree over inRecords. max is
+// the largest end across the subtree, used to prune queries.
+type inIntervalNode struct {
+	rec         *inRecord
+	max         int
+	left, right *inIntervalNode
+}
+
+// inIntervalTree is a balanced augmented BST over a single chromosome's B
+// records, mirroring pkg/htsgo/bed.IntervalTree but keyed on inRecord so the
+// raw column-preserving path can use it for BED/VCF/GFF/BAM inputs alike.
+type inIntervalTree struct {
+	root *inIntervalNode
+}
+
+// newInIntervalTree builds a balanced tree from one chromosome's records. The
+// slice is sorted by start so the median split yields a balanced tree.
+func newInIntervalTree(recs []*inRecord) *inIntervalTree {
+	if len(recs) == 0 {
+		return &inIntervalTree{}
+	}
+	sorted := append([]*inRecord(nil), recs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].start < sorted[j].start })
+	return &inIntervalTree{root: buildInTree(sorted, 0, len(sorted)-1)}
+}
+
+func buildInTree(recs []*inRecord, lo, hi int) *inIntervalNode {
+	if lo > hi {
+		return nil
+	}
+	mid := (lo + hi) / 2
+	node := &inIntervalNode{rec: recs[mid], max: recs[mid].end}
+	node.left = buildInTree(recs, lo, mid-1)
+	node.right = buildInTree(recs, mid+1, hi)
+	if node.left != nil && node.left.max > node.max {
+		node.max = node.left.max
+	}
+	if node.right != nil && node.right.max > node.max {
+		node.max = node.right.max
+	}
+	return node
+}
+
+// query returns every record whose span overlaps a's span (half-open). The
+// chromosome is implied by the tree, so it is not re-compared here.
+func (t *inIntervalTree) query(a *inRecord) []*inRecord {
+	if t.root == nil {
+		return nil
+	}
+	var out []*inRecord
+	queryInNode(t.root, a, &out)
+	return out
+}
+
+func queryInNode(node *inIntervalNode, a *inRecord, out *[]*inRecord) {
+	if node == nil || a.start >= node.max {
+		return
+	}
+	queryInNode(node.left, a, out)
+	if a.start < node.rec.end && a.end > node.rec.start {
+		*out = append(*out, node.rec)
+	}
+	if a.end > node.rec.start {
+		queryInNode(node.right, a, out)
+	}
+}
 
 // intersectRaw runs the default / -wa / -wb / -c / -v output modes over the
 // raw inRecord model. Returns the number of output lines written.
@@ -20,13 +146,10 @@ func intersectRaw(readerA, readerB io.Reader, writer io.Writer, opts IntersectOp
 	if err != nil {
 		return 0, fmt.Errorf("error reading B intervals: %w", err)
 	}
-	// B is indexed by chromosome but kept in original file order within each
-	// chromosome: upstream echoes overlapping B records in the order they appear
-	// in the B file (not sorted), so the output matches byte-for-byte.
-	byChrom := make(map[string][]*inRecord)
-	for _, b := range bRecords {
-		byChrom[b.chrom] = append(byChrom[b.chrom], b)
-	}
+	// Index B by chromosome. Either path preserves upstream's B-file output
+	// order: the linear scan walks the slice in file order, and the tree path
+	// re-sorts each query's candidates back into it.
+	finder := newFinder(bRecords, opts)
 
 	aRecords, err := readInRecords(readerA)
 	if err != nil {
@@ -35,6 +158,24 @@ func intersectRaw(readerA, readerB io.Reader, writer io.Writer, opts IntersectOp
 
 	bw := bufio.NewWriter(writer)
 	count := 0
+	for _, a := range aRecords {
+		hits := finder.overlaps(a, opts)
+		if err := emitRawOutput(bw, a, hits, opts, &count); err != nil {
+			return count, err
+		}
+	}
+	if err := bw.Flush(); err != nil {
+		return count, fmt.Errorf("error flushing output: %w", err)
+	}
+	return count, nil
+}
+
+// emitRawOutput writes the output line(s) for one A record and its B hits under
+// the default / -wa / -wb / -c / -v output modes, exactly as upstream `bedtools
+// intersect` prints them, and bumps *count once per emitted line. It is shared
+// by intersectRaw and intersectRawWithStats so the two stay byte-for-byte
+// identical, and writes straight to the buffer (no per-record slice).
+func emitRawOutput(bw *bufio.Writer, a *inRecord, hits []rawHit, opts IntersectOptions, count *int) error {
 	emit := func(s string) error {
 		if _, err := bw.WriteString(s); err != nil {
 			return fmt.Errorf("error writing result: %w", err)
@@ -42,51 +183,38 @@ func intersectRaw(readerA, readerB io.Reader, writer io.Writer, opts IntersectOp
 		if err := bw.WriteByte('\n'); err != nil {
 			return fmt.Errorf("error writing result: %w", err)
 		}
+		*count++
 		return nil
 	}
-
-	for _, a := range aRecords {
-		hits := rawOverlaps(a, byChrom[a.chrom], opts)
-
-		switch {
-		case opts.NoOverlap: // -v: emit A (verbatim) only when there are no hits
-			if len(hits) == 0 {
-				if err := emit(a.line); err != nil {
-					return count, err
-				}
-				count++
+	switch {
+	case opts.NoOverlap: // -v: emit A (verbatim) only when there are no hits
+		if len(hits) == 0 {
+			return emit(a.line)
+		}
+		return nil
+	case opts.Count: // -c: A (verbatim) + the overlap count as a trailing column
+		return emit(a.line + "\t" + strconv.Itoa(len(hits)))
+	default:
+		for _, h := range hits {
+			var line string
+			switch {
+			case opts.WriteA && opts.WriteB:
+				line = a.line + "\t" + h.b.line
+			case opts.WriteB:
+				// -wb alone: A clipped to the overlap, then full original B.
+				line = a.clippedLine(h.start, h.end) + "\t" + h.b.line
+			case opts.WriteA:
+				line = a.line
+			default:
+				// Default: A clipped to the overlap span, columns verbatim.
+				line = a.clippedLine(h.start, h.end)
 			}
-		case opts.Count: // -c: A (verbatim) + the overlap count as a trailing column
-			if err := emit(a.line + "\t" + strconv.Itoa(len(hits))); err != nil {
-				return count, err
-			}
-			count++
-		default:
-			for _, h := range hits {
-				var out string
-				switch {
-				case opts.WriteA && opts.WriteB:
-					out = a.line + "\t" + h.b.line
-				case opts.WriteB:
-					// -wb alone: A clipped to the overlap, then full original B.
-					out = a.clippedLine(h.start, h.end) + "\t" + h.b.line
-				case opts.WriteA:
-					out = a.line
-				default:
-					// Default: A clipped to the overlap span, columns verbatim.
-					out = a.clippedLine(h.start, h.end)
-				}
-				if err := emit(out); err != nil {
-					return count, err
-				}
-				count++
+			if err := emit(line); err != nil {
+				return err
 			}
 		}
+		return nil
 	}
-	if err := bw.Flush(); err != nil {
-		return count, fmt.Errorf("error flushing output: %w", err)
-	}
-	return count, nil
 }
 
 // intersectRawWithStats is intersectRaw plus per-A hit accounting for the -S
@@ -97,10 +225,7 @@ func intersectRawWithStats(readerA, readerB io.Reader, writer io.Writer, opts In
 	if err != nil {
 		return nil, fmt.Errorf("error reading B intervals: %w", err)
 	}
-	byChrom := make(map[string][]*inRecord)
-	for _, b := range bRecords {
-		byChrom[b.chrom] = append(byChrom[b.chrom], b)
-	}
+	finder := newFinder(bRecords, opts)
 	aRecords, err := readInRecords(readerA)
 	if err != nil {
 		return nil, fmt.Errorf("error reading A intervals: %w", err)
@@ -108,54 +233,18 @@ func intersectRawWithStats(readerA, readerB io.Reader, writer io.Writer, opts In
 
 	stats := &Stats{IntervalsB: len(bRecords)}
 	bw := bufio.NewWriter(writer)
-	emit := func(s string) error {
-		if _, err := bw.WriteString(s); err != nil {
-			return fmt.Errorf("error writing result: %w", err)
-		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return fmt.Errorf("error writing result: %w", err)
-		}
-		return nil
-	}
-
+	discard := 0
 	for _, a := range aRecords {
 		stats.IntervalsA++
-		hits := rawOverlaps(a, byChrom[a.chrom], opts)
+		hits := finder.overlaps(a, opts)
 		if len(hits) > 0 {
 			stats.IntervalsAHit++
 			stats.Overlaps += len(hits)
 		} else {
 			stats.IntervalsAMiss++
 		}
-
-		switch {
-		case opts.NoOverlap:
-			if len(hits) == 0 {
-				if err := emit(a.line); err != nil {
-					return stats, err
-				}
-			}
-		case opts.Count:
-			if err := emit(a.line + "\t" + strconv.Itoa(len(hits))); err != nil {
-				return stats, err
-			}
-		default:
-			for _, h := range hits {
-				var out string
-				switch {
-				case opts.WriteA && opts.WriteB:
-					out = a.line + "\t" + h.b.line
-				case opts.WriteB:
-					out = a.clippedLine(h.start, h.end) + "\t" + h.b.line
-				case opts.WriteA:
-					out = a.line
-				default:
-					out = a.clippedLine(h.start, h.end)
-				}
-				if err := emit(out); err != nil {
-					return stats, err
-				}
-			}
+		if err := emitRawOutput(bw, a, hits, opts, &discard); err != nil {
+			return stats, err
 		}
 	}
 	if err := bw.Flush(); err != nil {

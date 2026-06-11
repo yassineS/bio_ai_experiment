@@ -9,6 +9,7 @@ package bedclosest
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,6 +109,55 @@ func runOurClosest(t *testing.T, aData, bData string, opts Options) []byte {
 		t.Fatalf("Closest failed: %v", err)
 	}
 	return out.Bytes()
+}
+
+// TestGapsParity_ClosestSignedDistance asserts byte-for-byte parity for the
+// signed-distance column under -D ref/a/b across every geometry (B upstream,
+// downstream, overlapping) and both A and B strands. This pins the
+// non-directional signedDistance sign convention to upstream: -D a flips on a
+// reverse-strand A, and -D b flips on a FORWARD-strand B (NOT reverse).
+func TestGapsParity_ClosestSignedDistance(t *testing.T) {
+	bt := upstreamBedtoolsGaps(t)
+
+	modeFor := func(d string) DistanceMode {
+		switch d {
+		case "a":
+			return DistanceA
+		case "b":
+			return DistanceB
+		default:
+			return DistanceRef
+		}
+	}
+
+	aStrands := []string{"+", "-"}
+	bStrands := []string{"+", "-"}
+	// B records upstream, overlapping, and downstream of A (100..200).
+	bGeoms := map[string]string{
+		"up":   "chr1\t50\t60\tb\t.\t%s\n",
+		"ovl":  "chr1\t150\t160\tb\t.\t%s\n",
+		"down": "chr1\t300\t400\tb\t.\t%s\n",
+	}
+
+	for _, dmode := range []string{"ref", "a", "b"} {
+		for _, as := range aStrands {
+			for _, bs := range bStrands {
+				for geom, bTmpl := range bGeoms {
+					name := dmode + "_a" + as + "_b" + bs + "_" + geom
+					t.Run(name, func(t *testing.T) {
+						aData := "chr1\t100\t200\ta\t.\t" + as + "\n"
+						bData := fmt.Sprintf(bTmpl, bs)
+						want := runUpstreamClosest(t, bt, aData, bData, "-D", dmode)
+						opts := Options{PrintDistance: true, DistanceMode: modeFor(dmode)}
+						got := runOurClosest(t, aData, bData, opts)
+						if !bytes.Equal(got, want) {
+							t.Fatalf("mismatch %s\nupstream:\n%s\nours:\n%s", name, want, got)
+						}
+					})
+				}
+			}
+		}
+	}
 }
 
 // TestGapsParity_ClosestDirectional asserts byte-for-byte parity for the

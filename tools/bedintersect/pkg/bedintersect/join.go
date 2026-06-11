@@ -102,7 +102,7 @@ func findJoinHits(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []jo
 			continue
 		}
 		// MinOverlap is a bedintersect-specific knob (upstream intersect has no
-		// -m); honour it here so the join modes match the default findOverlaps
+		// -m); honour it here so the join modes match the default rawOverlaps
 		// path, which also filters on the detected overlap length. This is
 		// tested before the zero-length correction so a zero-length hit (which
 		// reports 0 overlapping bases but is still a valid intersection under
