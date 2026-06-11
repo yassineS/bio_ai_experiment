@@ -54,8 +54,9 @@ HMM options:
   -P, --same-prob FLOAT          Prior of -s/-c being the same.
   -W, --baum-welch FLOAT         Baum-Welch convergence threshold (hidden upstream).
   -x, --xy-prob FLOAT            Transition probability.
-      --AF-file FILE             AF-tab file; rejected (per-site AF support
-                                 deferred, see docs/PARITY_ROADMAP.md#bcftools).
+      --AF-file FILE             Read allele frequencies from FILE
+                                 (CHR<TAB>POS<TAB>REF,ALT<TAB>AF). Acts as a
+                                 targets filter and sets per-site genotype freqs.
 
   -h, -?, --help                 Show this help.
       --version                  Show version.
@@ -141,7 +142,7 @@ func runCNV(args []string) int {
 	// The HMM tuning knobs (bafWeight, errProb, lrrWeight, optimize,
 	// sameProb, baumWelch, xyProb, lrrSmoothWin) feed CNVOptions below
 	// and drive the HMM. --AF-file is passed through to CNVFile, which
-	// hard-rejects a non-empty value (per-site AF support is deferred).
+	// uses it as a targets filter and per-site genotype-frequency source.
 	// These remaining flags are accepted for CLI parity but have no
 	// effect: --regions-overlap / --targets-overlap select the overlap
 	// mode, and --verbosity is a logging level.

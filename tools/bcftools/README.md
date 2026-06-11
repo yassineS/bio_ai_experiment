@@ -294,9 +294,11 @@ Supported flags (all accept POSIX short + GNU long forms):
 | `%FILTER`        | `;`-joined FILTER column.                            |
 | `%TYPE`          | `SNP` / `MNP` / `INDEL` / `OTHER`.                   |
 | `%INFO/<TAG>`    | INFO field by name. Missing keys render as `.`.      |
+| `%INFO`          | The entire INFO column, in record order.             |
 | `%GT`            | Raw GT (sample context only).                        |
 | `%TGT`           | Translated genotype (`0/1` -> `A/T`).                |
-| `%FMT/<TAG>`     | Sample FORMAT field by name.                         |
+| `%SAMPLE`        | Sample name (sample context only).                   |
+| `%FMT/<TAG>`     | Sample FORMAT field by name (incl. `Character` tags). |
 | `[%TOKEN ...]`   | Sample-repeated: emit inner once per sample, tab-joined. |
 | `\n`, `\t`       | Literal newline / tab.                               |
 

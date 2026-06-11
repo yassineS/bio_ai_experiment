@@ -746,7 +746,7 @@ func TestQueryAltMissing(t *testing.T) {
 	// Build a Variant with zero ALT (e.g. gVCF reference block uses ".").
 	// Since vcf.Read uses "." as a single-element split, we test directly:
 	v := &vcf.Variant{Chrom: "x", Pos: 1, Ref: "A"}
-	if got := formatPlaceholder("ALT", v, -1); got != "." {
+	if got := formatPlaceholder("ALT", v, -1, nil); got != "." {
 		t.Errorf("empty ALT: got %q", got)
 	}
 }

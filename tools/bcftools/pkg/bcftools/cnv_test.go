@@ -3,8 +3,12 @@ package bcftools
 import (
 	"bytes"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // vcfHeaderSingle is a minimal single-sample BAF/LRR VCF header.
@@ -374,27 +378,66 @@ chr1	1	.	A	C	.	.	.	.
 	}
 }
 
-func TestCNVAFFileRejected(t *testing.T) {
-	// --AF-file is a deliberate deferral: upstream recomputes the
-	// per-site genotype frequencies from it and uses it as a targets
-	// filter (vcfcnv.c:735-739, :27-31, :1429). Honouring the flag
-	// without that support would silently produce wrong output, so a
-	// non-empty value must be a hard error.
+func TestCNVAFFileTargetsFilter(t *testing.T) {
+	// --AF-file acts as a targets filter: sites whose CHROM:POS is absent
+	// from the file are dropped before being added to the per-contig
+	// observation buffer (vcfcnv.c uses the AF-file as the targets index).
 	input := `##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="gt">
+##FORMAT=<ID=BAF,Number=1,Type=Float,Description="baf">
 ##contig=<ID=chr1>
-#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT
-chr1	1	.	A	C	.	.	.	.
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	100	.	A	C	.	.	.	GT:BAF	0/1:0.5
+chr1	200	.	A	C	.	.	.	GT:BAF	0/1:0.5
+chr1	300	.	A	C	.	.	.	GT:BAF	0/1:0.5
 `
+	// AF file lists only positions 100 and 300.
+	afPath := writeCNVTempFile(t, "chr1\t100\tA,C\t0.2\nchr1\t300\tA,C\t0.3\n")
+
+	af, err := loadCNVAFFile(afPath)
+	if err != nil {
+		t.Fatalf("loadCNVAFFile: %v", err)
+	}
+	// Position 200 is absent → not listed.
+	if _, listed := af.lookup(&vcf.Variant{Chrom: "chr1", Pos: 200, Ref: "A", Alt: []string{"C"}}); listed {
+		t.Errorf("pos 200 should not be listed")
+	}
+	// Position 100 with matching alleles → listed, AF 0.2.
+	if got, listed := af.lookup(&vcf.Variant{Chrom: "chr1", Pos: 100, Ref: "A", Alt: []string{"C"}}); !listed || got != 0.2 {
+		t.Errorf("pos 100: got af=%v listed=%v, want 0.2 true", got, listed)
+	}
+	// Position 300 with NON-matching alleles → listed (targets), default AF.
+	if got, listed := af.lookup(&vcf.Variant{Chrom: "chr1", Pos: 300, Ref: "A", Alt: []string{"T"}}); !listed || got != cnvNonrefAFDflt {
+		t.Errorf("pos 300 allele mismatch: got af=%v listed=%v, want %v true", got, listed, cnvNonrefAFDflt)
+	}
+
+	// Multiallelic match: the full ALT vector (joined) must match the
+	// file's REF,ALT1,ALT2 entry, not just the first ALT.
+	maPath := writeCNVTempFile(t, "chr2\t500\tA,C,G\t0.4\n")
+	maAF, err := loadCNVAFFile(maPath)
+	if err != nil {
+		t.Fatalf("loadCNVAFFile (multiallelic): %v", err)
+	}
+	if got, listed := maAF.lookup(&vcf.Variant{Chrom: "chr2", Pos: 500, Ref: "A", Alt: []string{"C", "G"}}); !listed || got != 0.4 {
+		t.Errorf("multiallelic match: got af=%v listed=%v, want 0.4 true", got, listed)
+	}
+
+	// End-to-end: the run must succeed (no rejection) and consume only
+	// the two listed sites.
 	var out bytes.Buffer
-	_, err := CNV(strings.NewReader(input), &out, CNVOptions{AFFile: "afs.tab"})
-	if err == nil {
-		t.Fatalf("expected --AF-file to be rejected")
+	if _, err := CNV(strings.NewReader(input), &out, CNVOptions{QuerySample: "S1", AFFile: afPath}); err != nil {
+		t.Fatalf("CNV with --AF-file: %v", err)
 	}
-	if !strings.Contains(err.Error(), "AF-file") {
-		t.Errorf("error %q does not mention --AF-file", err)
+}
+
+// writeCNVTempFile writes content to a temp file and returns its path.
+func writeCNVTempFile(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "afs.tab")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
 	}
-	// The rejection fires before sample resolution; the empty-AFFile
-	// happy path is exercised by the other CNV tests in this file.
+	return p
 }
 
 func TestParseFloatField(t *testing.T) {

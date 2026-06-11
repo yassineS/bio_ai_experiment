@@ -303,7 +303,7 @@ General Options:
   -M, --rec-rate FLOAT           Constant recombination rate per bp for distance-scaled transitions.
   -o, --output FILE              Write output to FILE.
   -O, --output-type [srz]        Output sections: s = per-site, r = per-region, z = compressed.
-                                  Default "sr". v1 does not yet emit gzipped output.
+                                  Default "sr". z wraps the text output in BGZF.
   -r, --regions REGION           Comma-separated regions (post-filter in v1).
   -R, --regions-file FILE        Regions file.
       --regions-overlap 0|1|2    Accepted; v1 always uses POS-in-region.
@@ -427,13 +427,6 @@ func runRoh(args []string) int {
 		return 0
 	}
 
-	if deferred := checkRohDeferred(checkRohDeferredInputs{
-		outputType: outputType,
-	}); deferred != "" {
-		fmt.Fprintf(os.Stderr, "bcftools roh: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
-		return 2
-	}
-
 	rest := fs.Args()
 	if len(rest) == 0 {
 		fmt.Fprintln(os.Stderr, "bcftools roh: missing input file")
@@ -492,15 +485,4 @@ func runRoh(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-type checkRohDeferredInputs struct {
-	outputType string
-}
-
-func checkRohDeferred(in checkRohDeferredInputs) string {
-	if strings.ContainsRune(in.outputType, 'z') {
-		return "-O z (compressed output)"
-	}
-	return ""
 }

@@ -36,6 +36,7 @@
 package bcftools
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"math"
@@ -116,10 +117,12 @@ type CNVOptions struct {
 	// When non-zero, the transition matrix is re-estimated per contig.
 	BaumWelch float64
 
-	// AFFile is upstream's --AF-file. A non-empty value is rejected by
-	// CNV / CNVFile: per-site allele-frequency support is deferred (see
-	// docs/PARITY_ROADMAP.md#bcftools). When empty the port uses the
-	// fixed default genotype frequencies (the common case).
+	// AFFile is upstream's --AF-file (CHR<TAB>POS<TAB>REF,ALT<TAB>AF). It
+	// acts as a targets filter (sites whose position is absent are
+	// skipped) and supplies the per-site non-reference allele frequency
+	// used to recompute the genotype frequencies fRR/fRA/fAA under
+	// Hardy-Weinberg. When empty the port uses the fixed default genotype
+	// frequencies.
 	AFFile string
 
 	// Regions / Targets / RegionsFile / TargetsFile are post-filters.
@@ -264,20 +267,29 @@ type cnvContig struct {
 	queryLRR []float64
 	ctrlBAF  []float64
 	ctrlLRR  []float64
+	// nonrefAF holds the per-site non-reference allele frequency from
+	// --AF-file (vcfcnv.c's nonref_afs). It is nil when no AF-file is in
+	// use, in which case the fixed default genotype frequencies apply.
+	nonrefAF []float64
 }
 
 // CNV reads VCF records from r, runs the copy-number HMM per contig,
 // and writes the region summary TSV to w. It returns the number of
 // region rows written.
 func CNV(r io.Reader, w io.Writer, opts CNVOptions) (int, error) {
-	// --AF-file is a deliberate deferral. Upstream's vcfcnv.c recomputes
-	// the genotype frequencies fRR/fRA/fAA per site from the AF file
-	// (vcfcnv.c:735-739) and also uses it as a targets filter, dropping
-	// sites absent from the file (vcfcnv.c:27-31, :1429). This port does
-	// neither; honouring the flag would silently produce wrong output,
-	// so reject it instead. Tracked in docs/PARITY_ROADMAP.md#bcftools.
+	// --AF-file (vcfcnv.c). It acts as a targets filter (sites whose
+	// CHROM:POS is absent from the file are skipped) AND supplies the
+	// per-site non-reference allele frequency that drives the genotype
+	// frequencies fRR/fRA/fAA. When the site's POS is listed but its
+	// REF/ALT alleles do not match, upstream falls back to
+	// nonref_af_dflt = 0.1 (vcfcnv.c:1194,:1257).
+	var afFile *cnvAFFile
 	if opts.AFFile != "" {
-		return 0, fmt.Errorf("--AF-file is not implemented; per-site allele-frequency support is deferred (see docs/PARITY_ROADMAP.md#bcftools)")
+		af, ferr := loadCNVAFFile(opts.AFFile)
+		if ferr != nil {
+			return 0, ferr
+		}
+		afFile = af
 	}
 
 	vr := vcf.NewReader(r)
@@ -309,6 +321,17 @@ func CNV(r io.Reader, w io.Writer, opts CNVOptions) (int, error) {
 		}
 		if len(regionSpecs) > 0 && !regionMatches(v, regionSpecs) {
 			continue
+		}
+
+		// --AF-file targets filter: skip sites whose position is not
+		// listed (vcfcnv.c uses the AF-file as the SnpSift targets index).
+		var siteAF float64
+		if afFile != nil {
+			af, listed := afFile.lookup(v)
+			if !listed {
+				continue
+			}
+			siteAF = af
 		}
 
 		qb, qBAFok := cnvSampleBAF(v, query)
@@ -356,6 +379,9 @@ func CNV(r io.Reader, w io.Writer, opts CNVOptions) (int, error) {
 			cur.ctrlBAF = append(cur.ctrlBAF, cb)
 			cur.ctrlLRR = append(cur.ctrlLRR, cl)
 		}
+		if afFile != nil {
+			cur.nonrefAF = append(cur.nonrefAF, siteAF)
+		}
 	}
 
 	bw := newCNVTSVWriter(w, paired, query, control)
@@ -379,6 +405,96 @@ func CNV(r io.Reader, w io.Writer, opts CNVOptions) (int, error) {
 		}
 	}
 	return written, nil
+}
+
+// cnvAFRecord is one CHR<TAB>POS<TAB>REF,ALT[,ALT2...]<TAB>AF entry from
+// an --AF-file. ref is the first (reference) allele and alt is the
+// comma-joined list of the remaining (alternate) alleles, so a match is
+// tested against the record's full allele vector exactly as upstream's
+// read_AF does. af is the alternate-allele frequency.
+type cnvAFRecord struct {
+	ref string
+	alt string
+	af  float64
+}
+
+// cnvAFFile indexes an --AF-file by "chrom\x00pos". A position present
+// with no allele-match still counts as "listed" (so the targets filter
+// keeps it), but uses the default non-reference AF.
+type cnvAFFile struct {
+	byPos map[string][]cnvAFRecord
+}
+
+// cnvNonrefAFDflt is upstream's nonref_af_dflt (vcfcnv.c:1257): the AF
+// used when a site's position is listed but its alleles do not match.
+const cnvNonrefAFDflt = 0.1
+
+// loadCNVAFFile parses an --AF-file into a cnvAFFile. The format mirrors
+// roh's: CHR<TAB>POS<TAB>REF,ALT<TAB>AF, one record per line, '#'
+// comments skipped.
+func loadCNVAFFile(path string) (*cnvAFFile, error) {
+	in, err := iohelper.OpenReader(path)
+	if err != nil {
+		return nil, fmt.Errorf("bcftools cnv: --AF-file: %w", err)
+	}
+	defer in.Close()
+	out := &cnvAFFile{byPos: map[string][]cnvAFRecord{}}
+	sc := bufio.NewScanner(in)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 4 {
+			continue
+		}
+		pos, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		// Column 3 is REF,ALT[,ALT2...]; split off the REF and keep the
+		// remaining ALTs comma-joined so multiallelic entries can match
+		// the record's full allele vector.
+		alleles := strings.SplitN(fields[2], ",", 2)
+		if len(alleles) != 2 {
+			return nil, fmt.Errorf("bcftools cnv: --AF-file: expected two comma-separated alleles (REF,ALT) in column 3: %q", line)
+		}
+		af, err := strconv.ParseFloat(fields[3], 64)
+		if err != nil {
+			// A missing "." AF is allowed; treat it like a no-match (the
+			// default is applied at lookup time).
+			af = -1
+		}
+		key := cnvAFKey(fields[0], pos)
+		out.byPos[key] = append(out.byPos[key], cnvAFRecord{ref: alleles[0], alt: alleles[1], af: af})
+	}
+	return out, sc.Err()
+}
+
+// lookup mirrors vcfcnv.c's read_AF + targets index: the second return
+// value reports whether the record's position is listed at all (the
+// targets filter), and the first is the non-reference AF to use — the
+// matched value when the record's full allele vector (REF + all ALTs)
+// equals a file entry, else the default cnvNonrefAFDflt.
+func (a *cnvAFFile) lookup(v *vcf.Variant) (float64, bool) {
+	recs, ok := a.byPos[cnvAFKey(v.Chrom, v.Pos)]
+	if !ok {
+		return 0, false
+	}
+	alt := strings.Join(v.Alt, ",")
+	for _, r := range recs {
+		if r.ref == v.Ref && r.alt == alt && r.af >= 0 {
+			return r.af, true
+		}
+	}
+	return cnvNonrefAFDflt, true
+}
+
+// cnvAFKey builds the chrom+position index key for cnvAFFile.
+func cnvAFKey(chrom string, pos int) string {
+	return chrom + "\x00" + strconv.Itoa(pos)
 }
 
 // cnvResolveSamples picks the query and control sample names, applying
@@ -812,12 +928,12 @@ func bafLikelyHet(v float64) bool { return v > 0.25 && v < 0.75 }
 // cnvEmissionProbs computes the [nsites*nstates] emission-probability
 // array for one contig, mirroring vcfcnv.c's set_emission_probs. It
 // reuses the per-sample observation probabilities and forms their
-// outer product in paired mode.
-func cnvEmissionProbs(query, control *cnvSample, nsites, nstates int, paired bool, opts CNVOptions) []float64 {
-	// Fixed default genotype frequencies. Upstream's set_emission_probs
-	// recomputes these per site from --AF-file's nonref_afs when that
-	// file is given (vcfcnv.c:735-739); that path is deferred and CNV
-	// rejects a non-empty --AF-file, so the defaults are always used.
+// outer product in paired mode. nonrefAF, when non-nil, supplies the
+// per-site non-reference allele frequency from --AF-file; the genotype
+// frequencies fRR/fRA/fAA are then recomputed per site under
+// Hardy-Weinberg (vcfcnv.c:735-739) instead of using the fixed defaults.
+func cnvEmissionProbs(query, control *cnvSample, nsites, nstates int, paired bool, opts CNVOptions, nonrefAF []float64) []float64 {
+	// Fixed default genotype frequencies, used when no AF-file is given.
 	fRR, fRA, fAA := 0.76, 0.14, 0.098
 	bafBias := opts.bafWeight()
 	lrrBias := opts.lrrWeight()
@@ -825,10 +941,18 @@ func cnvEmissionProbs(query, control *cnvSample, nsites, nstates int, paired boo
 
 	eprob := make([]float64, nsites*nstates)
 	for i := 0; i < nsites; i++ {
-		query.setObservedProb(i, fRR, fRA, fAA, bafBias, lrrBias, errProb)
+		rr, ra, aa := fRR, fRA, fAA
+		if nonrefAF != nil {
+			// Hardy-Weinberg genotype frequencies from the site AF.
+			af := nonrefAF[i]
+			rr = (1 - af) * (1 - af)
+			ra = 2 * af * (1 - af)
+			aa = af * af
+		}
+		query.setObservedProb(i, rr, ra, aa, bafBias, lrrBias, errProb)
 		dst := eprob[i*nstates : (i+1)*nstates]
 		if paired {
-			control.setObservedProb(i, fRR, fRA, fAA, bafBias, lrrBias, errProb)
+			control.setObservedProb(i, rr, ra, aa, bafBias, lrrBias, errProb)
 			for a := 0; a < cnvNStates; a++ {
 				for b := 0; b < cnvNStates; b++ {
 					dst[a*cnvNStates+b] = query.pobs[a] * control.pobs[b]
@@ -1021,7 +1145,7 @@ func cnvCallContig(c *cnvContig, query, control string, opts CNVOptions) ([]CNVR
 	if opts.Optimize > 0 && opts.Optimize < 1 {
 		niter := 0
 		for {
-			eprob := cnvEmissionProbs(qs, cs, nsites, nstates, paired, opts)
+			eprob := cnvEmissionProbs(qs, cs, nsites, nstates, paired, opts, c.nonrefAF)
 			h.runFwdBwd(nsites, eprob, c.pos)
 			done := cnvUpdateSample(qs, h.fwd, nstates, nsites, 0, paired, opts.Optimize)
 			if paired {
@@ -1049,7 +1173,7 @@ func cnvCallContig(c *cnvContig, query, control string, opts CNVOptions) ([]CNVR
 		}
 	}
 
-	eprob := cnvEmissionProbs(qs, cs, nsites, nstates, paired, opts)
+	eprob := cnvEmissionProbs(qs, cs, nsites, nstates, paired, opts, c.nonrefAF)
 
 	// --baum-welch: re-estimate the transition matrix until the mean
 	// self-transition probability stabilises.

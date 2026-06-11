@@ -1,9 +1,11 @@
 package bcftools
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -121,6 +123,21 @@ type VCFFilterOptions struct {
 	Targets     []string
 	TargetsFile string
 
+	// MaskRegions / MaskFile carry the upstream --mask / -M,--mask-file
+	// soft-filter regions. A record whose coordinates overlap a mask
+	// region fails the filter (so it is tagged with the soft-filter
+	// name), mirroring vcffilter.c's `pass &= mpass`. When MaskNegate is
+	// set the sense is inverted (the leading '^' on the region/file
+	// argument): a record fails when it does NOT overlap any mask region.
+	MaskRegions []string
+	MaskFile    string
+	MaskNegate  bool
+	// MaskOverlap selects how a record's span is compared with the mask:
+	// 0 = POS only, 1 = the whole REF span (POS..POS+len(REF)-1, the
+	// upstream default), 2 = the variant boundaries. v1 supports 0 and 1;
+	// 2 is treated as 1 (the spans coincide for non-symbolic records).
+	MaskOverlap int
+
 	// NoVersion suppresses the ##bcftools_filterCommand= header line we
 	// would otherwise inject.
 	NoVersion bool
@@ -153,6 +170,13 @@ func VCFFilterFile(path string, out io.Writer, opts VCFFilterOptions) (int, erro
 			return 0, fmt.Errorf("bcftools filter: %w", err)
 		}
 		opts.Targets = append(opts.Targets, regs...)
+	}
+	if opts.MaskFile != "" {
+		regs, err := loadMaskFile(opts.MaskFile)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools filter: --mask-file: %w", err)
+		}
+		opts.MaskRegions = append(opts.MaskRegions, regs...)
 	}
 	r, err := iohelper.OpenReader(path)
 	if err != nil {
@@ -187,6 +211,12 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 	if err != nil {
 		return 0, fmt.Errorf("bcftools filter: %w", err)
 	}
+
+	maskRegions, err := parseRegions(opts.MaskRegions)
+	if err != nil {
+		return 0, fmt.Errorf("bcftools filter: %w", err)
+	}
+	hasMask := len(opts.MaskRegions) > 0
 
 	// Pre-compute indel positions per chromosome for SnpGap/IndelGap.
 	indelPos := indelIndex(variants)
@@ -231,6 +261,13 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 				fails = true
 			}
 		}
+		// Upstream folds the mask into the pass flag with `pass &= mpass`
+		// (vcffilter.c:700-708): a masked record fails. mpass is 0 when
+		// the record overlaps the mask (or, with negation, when it does
+		// not). Combine it as fails ||= masked.
+		if hasMask && maskFails(v, maskRegions, opts.MaskNegate, opts.MaskOverlap) {
+			fails = true
+		}
 
 		applyFilterDecision(v, fails, filterName, opts)
 		if err := w.Write(v); err != nil {
@@ -239,6 +276,116 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 		count++
 	}
 	return count, w.Flush()
+}
+
+// loadMaskFile reads a --mask-file into 1-based "chrom:beg-end" region
+// specs. It mirrors htslib regidx_init's NULL-parser extension detection
+// (regidx.c:247-268): a ".bed"/".bed.gz"/".bed.bgz" file is parsed as
+// BED (0-based half-open), otherwise it is parsed as the 1-based
+// tab-delimited form (regidx_parse_tab). A bare chromosome name (single
+// column) selects the whole contig.
+func loadMaskFile(path string) ([]string, error) {
+	bed := isBEDPath(path)
+	in, err := iohelper.OpenReader(path)
+	if err != nil {
+		return nil, err
+	}
+	defer in.Close()
+	sc := bufio.NewScanner(in)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	var out []string
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 1 {
+			out = append(out, fields[0])
+			continue
+		}
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("bad mask-file line %q", line)
+		}
+		begRaw, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("bad start in mask-file: %w", err)
+		}
+		var beg, end int
+		if bed {
+			// BED: 0-based half-open [start,end) → 1-based inclusive.
+			beg = begRaw + 1
+			if len(fields) >= 3 {
+				e, err := strconv.Atoi(fields[2])
+				if err != nil {
+					return nil, fmt.Errorf("bad end in mask-file: %w", err)
+				}
+				end = e
+			} else {
+				end = beg
+			}
+		} else {
+			// tab: 1-based inclusive; missing END column → END=POS. A
+			// present-but-malformed END is a hard error, matching the BED
+			// branch (and htslib regidx_parse_tab, which errors on a
+			// non-numeric coordinate).
+			beg = begRaw
+			if len(fields) >= 3 {
+				e, err := strconv.Atoi(fields[2])
+				if err != nil {
+					return nil, fmt.Errorf("bad end in mask-file: %w", err)
+				}
+				end = e
+			} else {
+				end = beg
+			}
+		}
+		out = append(out, fmt.Sprintf("%s:%d-%d", fields[0], beg, end))
+	}
+	return out, sc.Err()
+}
+
+// isBEDPath reports whether a mask-file path has a BED extension, using
+// the same suffixes htslib's regidx_init checks.
+func isBEDPath(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".bed") ||
+		strings.HasSuffix(lower, ".bed.gz") ||
+		strings.HasSuffix(lower, ".bed.bgz")
+}
+
+// maskFails reports whether the mask soft-filter should fail the record.
+// It mirrors vcffilter.c: with mask_overlap==0 only POS is tested,
+// otherwise the record's REF span (POS..POS+len(REF)-1) is tested for an
+// overlap with any mask region. The record "fails" (mpass==0) when it
+// overlaps a mask region; negate inverts the sense (the '^' prefix).
+func maskFails(v *vcf.Variant, mask []region, negate bool, overlap int) bool {
+	var hit bool
+	if overlap == 0 {
+		hit = posInRegions(v.Chrom, v.Pos, mask)
+	} else {
+		hit = overlapsAny(v, mask)
+	}
+	if negate {
+		// mpass = overlap ? 0 : 1 then flipped → masked when it does NOT
+		// overlap any region.
+		return !hit
+	}
+	return hit
+}
+
+// posInRegions reports whether a single 1-based position lies in any of
+// the given regions (used for --mask-overlap 0).
+func posInRegions(chrom string, pos int, regions []region) bool {
+	for _, r := range regions {
+		if r.chrom != chrom {
+			continue
+		}
+		if pos >= r.beg && pos <= r.end {
+			return true
+		}
+	}
+	return false
 }
 
 // evaluateFilter returns true when the record FAILS the expression

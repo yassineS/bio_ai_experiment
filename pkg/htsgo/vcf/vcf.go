@@ -427,6 +427,17 @@ func (v *Variant) GetInfoString(key string) (string, bool) {
 	return val, ok
 }
 
+// InfoString reconstructs the full INFO column ("KEY=VAL;FLAG;..."),
+// preserving the original key order recorded in InfoOrder. It returns
+// "." for an empty INFO, matching the VCF missing-value convention.
+func (v *Variant) InfoString() string {
+	s := formatInfo(v.Info, v.InfoOrder)
+	if s == "" {
+		return "."
+	}
+	return s
+}
+
 // GetInfoInt returns an INFO field value as an integer.
 func (v *Variant) GetInfoInt(key string) (int, error) {
 	val, ok := v.Info[key]

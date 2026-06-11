@@ -2962,9 +2962,10 @@ per-subcommand option-tail sections below):
 - **`roh`** — full port: 2-state Viterbi + forward-backward HMM
   (`vcfroh.c` + `HMM.c`) with physical-distance- and genetic-map-scaled
   transitions, allele-frequency estimation and Baum-Welch
-  Viterbi training. Validated byte-for-byte against the upstream
-  `roh.1.*.out` goldens. The only remaining gap is PL-based emission
-  (`-G` hard-GT is the supported path) and `-O z`.
+  Viterbi training, plus `-G/--GTs-only` hard-GT emission and `-O z`
+  BGZF output. Validated byte-for-byte against the upstream
+  `roh.1.*.out` goldens and the live binary. The only remaining gap is
+  PL-based emission (`-G` hard-GT is the supported path).
 - **`polysomy`** — DONE: faithful port of the upstream
   Gaussian-mixture peak fit (`polysomy.c` + `peakfit.c`). The GSL
   Levenberg-Marquardt solver is ported in-tree as pure Go
@@ -3057,11 +3058,16 @@ Option-tail gaps on `roh`:
   (`-b/--buffer-size`). RG/ST quality scores are forward-backward
   phred scores and match upstream byte-for-byte on the
   `roh.1.*.out` goldens.
-- `-O z` — bgzip output; v1 only emits tab-text. Remaining gap.
-- PL-based emission scoring is not ported; `-G/--GTs-only` hard-GT
-  mode is the supported emission path (the upstream test corpus
-  uses `-G30`). `-e PL,...` falls back to rejecting sites with no
-  usable genotype rather than reading PLs.
+- `-O z` — **DONE.** The text output is wrapped in a BGZF writer
+  (`bgzf.NewWriter`), mirroring upstream's `bgzf_open(.., "wg")`; the
+  framed bytes decode byte-identically to upstream. Bare `-O z` (no
+  `s`/`r`) defaults the sections to `s`+`r` first, matching
+  vcfroh.c:1246. Validated against the live binary in
+  `TestSubfeatRohOzParity` (both `-Osrz` and bare `-Oz`).
+- `-G/--GTs-only FLOAT` hard-GT emission — **DONE** (the supported
+  emission path; the upstream test corpus uses `-G30`). PL-based
+  emission scoring is the remaining gap: `-e PL,...` falls back to
+  rejecting sites with no usable genotype rather than reading PLs.
 
 Option-tail gaps on the wave-1 additions (PR #86):
 
@@ -3178,11 +3184,21 @@ Option-tail gaps on the convert/mendelian PR:
 
 Option-tail gaps on `filter` (this PR, simple-mode):
 
-- `--mask [^]REGION` and `-M/--mask-file [^]FILE` — accepted but
-  hard-rejected at runtime with a roadmap pointer. The CLI parses the
-  flag (so a downstream automation that always passes `-M ""` doesn't
-  break); the underlying BED-driven soft-filter logic is deferred.
-- `--mask-overlap 0|1|2` — accepted; v1 ignores (always treats POS-in-region).
+- `--mask [^]REGION` and `-M/--mask-file [^]FILE` — **DONE.** The mask
+  region set is loaded (`loadMaskFile` mirrors htslib `regidx_init`'s
+  extension detection: `.bed`/`.bed.gz`/`.bed.bgz` → 0-based BED,
+  otherwise 1-based `CHR,POS[,END]` tab), and a record's span is tested
+  for overlap; a hit fails the filter so the record is tagged with the
+  `-s/--soft-filter` name, mirroring vcffilter.c's `pass &= mpass`. The
+  leading `^` negates the source. `--soft-filter` is required (matching
+  vcffilter.c:656). When both `--mask` and `-M` are given the file mask
+  wins (upstream stores both into one `mask_list`, last write wins).
+  Validated byte-for-byte against the live upstream binary
+  (`TestSubfeatFilterMaskParity`: BED, tab, negation, `--mask` string,
+  `--mask-overlap 0`).
+- `--mask-overlap 0|1|2` — **DONE** for modes 0 (POS only) and 1 (REF
+  span, the default). Mode 2 (variant boundaries) is treated as 1; the
+  spans coincide for non-symbolic records.
 - `-W/--write-index[=FMT]` — accepted; v1 never auto-indexes outputs.
 - `-v/--verbosity INT` — accepted; v1 ignores.
 - `--regions-overlap` / `--targets-overlap` — accepted; v1 always
@@ -3191,6 +3207,44 @@ Option-tail gaps on `filter` (this PR, simple-mode):
   is parsed but always treated as "indel" in v1.
 - BCF output (`-O b|u`) round-trips through the shared `pkg/htsgo/bcf`
   writer; CSI auto-indexing is the `-W` follow-up above.
+
+Option-tail status on `query` format tokens:
+
+- Bare `%INFO` (whole INFO column) and `%SAMPLE` (per-sample name inside
+  a `[ ... ]` group) — **DONE.** `%INFO` reconstructs the original INFO
+  column in record order via `vcf.Variant.InfoString()`, mirroring
+  convert.c's `process_info` with a NULL key; `%SAMPLE` resolves the
+  sample index to its header name. Char-typed FORMAT/INFO tags
+  (`%FMT/<char-tag>` and bare char tags) already round-trip through the
+  VCF string value. Validated byte-for-byte against the live binary in
+  `TestSubfeatQueryTokensParity`.
+- `%N_ALT` is **NOT** a `query -f` format token: upstream `convert.c`
+  has no such tag and `bcftools query -f '%N_ALT'` errors with "no such
+  tag defined in the VCF header: INFO/N_ALT". `N_ALT` exists only in the
+  `-i/-e` filter-expression language (`filter.c:3384`), computed on the
+  fly. There is therefore nothing to port here; adding a `%N_ALT` format
+  token would diverge from upstream.
+
+Status on `som` (self-organizing-map filtering) — **NOT SHIPPED, by
+design**:
+
+- Upstream `bcftools som` (`vcfsom.c`) is a standalone train/classify
+  tool over a tab-separated annotation file (`annots.tab.gz`), not a VCF
+  filter. Crucially it is **broken in the vendored upstream**:
+  `som_write_map` (`vcfsom.c:170`) checks `fwrite("SOMv1",5,1,fp)!=5`,
+  but `fwrite` returns the element count (1), so the comparison is always
+  true and `--train` calls `error()` and exits 255 after truncating the
+  `.som` map to 5 bytes. Consequently `--classify` can never read a map
+  (it fails with "Could not parse %s.som", exit 255), and
+  `som --train` on a missing file segfaults (exit 139). The subcommand
+  is effectively dead upstream.
+- A faithful, byte-exact port would therefore reproduce a tool that
+  always crashes; a *working* SOM would diverge from upstream. Per the
+  "mirror upstream exactly / do not fake anything" rule, `som` is left
+  unported and is not registered in the dispatch. Porting it would also
+  require reproducing glibc's `random()` (TYPE_3 additive-feedback PRNG)
+  to match the weight initialisation, which only matters if the
+  upstream write bug is fixed first. See `docs/UPSTREAM_BUGS.md`.
 
 Option-tail status on `mendelian2`:
 
@@ -3329,18 +3383,19 @@ Option-tail gaps on `cnv` (full HMM port):
   / `--xy-prob` and observe a different decode. Byte-for-byte parity
   against upstream is NOT claimed because upstream emits no
   comparable golden.
-- `--AF-file` — **rejected** (a non-empty value is a hard error)
-  pending per-site allele-frequency support. Upstream's `vcfcnv.c`
-  uses the AF file two ways: it recomputes the per-site genotype
-  frequencies fRR/fRA/fAA from each site's `nonref_afs[i]`
-  (`vcfcnv.c:735-739`) instead of the fixed defaults, and it acts as
-  a targets filter — sites absent from the AF file are dropped
-  (`vcfcnv.c:27-31`, `:1429`). This port implements neither, so a
-  `--AF-file` run would silently diverge in both the emission model
-  and the site set; the port rejects the flag rather than produce
-  wrong output. Wiring per-site AFs into the emission model and the
-  targets filter is the one remaining deferred piece. Without it the
-  port always uses the fixed defaults fRR/fRA/fAA = 0.76/0.14/0.098.
+- `--AF-file` — **DONE.** Upstream's `vcfcnv.c` uses the AF file two
+  ways and the port now mirrors both: (1) it acts as a targets filter
+  (sites whose CHROM:POS is absent are dropped, `vcfcnv.c:27-31`,
+  `:1429`), and (2) it recomputes the per-site genotype frequencies
+  fRR/fRA/fAA under Hardy-Weinberg from each site's non-reference AF
+  (`vcfcnv.c:735-739`) instead of the fixed defaults. The lookup
+  mirrors `read_AF`: the AF is used only when the record's full allele
+  vector (REF + all ALTs) matches a file entry, otherwise the listed
+  site falls back to `nonref_af_dflt = 0.1` (`vcfcnv.c:1257`). When no
+  AF file is given the port still uses the fixed defaults
+  fRR/fRA/fAA = 0.76/0.14/0.098. Validated against the live binary in
+  `TestSubfeatCNVAFFileParity` (RG region, quality and site/HET counts
+  byte-identical) and a targets-filter / multiallelic-match unit test.
 - `-o/--output-dir` — upstream writes per-sample / per-region plot
   data and several `.tab`/`.cn` files into this directory; this port
   streams a single summary TSV (the upstream `summary.tab` "RG"

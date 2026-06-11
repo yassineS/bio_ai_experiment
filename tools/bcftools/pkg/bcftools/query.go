@@ -213,7 +213,7 @@ func queryVCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 		if !keepQueryVariant(v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.Samples); err != nil {
 			return count, err
 		}
 		count++
@@ -260,7 +260,7 @@ func queryBCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 		if !keepQueryVariant(v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.VCF.Samples); err != nil {
 			return count, err
 		}
 		count++
@@ -300,7 +300,7 @@ func queryBCFRegions(path string, out io.Writer, opts QueryOptions) (int, error)
 		if !keepQueryVariant(v, opts, includeF, excludeF, true, regs) {
 			continue
 		}
-		if err := emitRecord(bw, tokens, v, sampleFilter); err != nil {
+		if err := emitRecord(bw, tokens, v, sampleFilter, hdr.VCF.Samples); err != nil {
 			return count, err
 		}
 		count++
@@ -367,7 +367,7 @@ func queryTBI(path string, hdr *vcf.Header, regs []region, opts QueryOptions, in
 		if !keepQueryVariant(v, opts, includeF, excludeF, true, regs) {
 			continue
 		}
-		if err := emitRecord(w, tokens, v, sampleFilter); err != nil {
+		if err := emitRecord(w, tokens, v, sampleFilter, hdr.Samples); err != nil {
 			return count, err
 		}
 		count++
@@ -682,14 +682,17 @@ func filterSamplesByName(wanted, headerSamples []string) []string {
 }
 
 // emitRecord formats one variant per the token list and writes it to w.
-func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter []int) error {
+// headerSamples supplies the per-sample names used by the %SAMPLE token
+// inside `[ ... ]` groups; an index into it is taken from sampleFilter (or
+// the natural order when sampleFilter is nil).
+func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter []int, headerSamples []string) error {
 	var sb strings.Builder
 	for _, t := range tokens {
 		switch t.Kind {
 		case TokenLiteral:
 			sb.WriteString(t.Text)
 		case TokenPlaceholder:
-			sb.WriteString(formatPlaceholder(t.Text, v, -1))
+			sb.WriteString(formatPlaceholder(t.Text, v, -1, headerSamples))
 		case TokenSample:
 			indexes := sampleFilter
 			if indexes == nil {
@@ -708,7 +711,7 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 					case TokenLiteral:
 						sb.WriteString(inner.Text)
 					case TokenPlaceholder:
-						sb.WriteString(formatPlaceholder(inner.Text, v, idx))
+						sb.WriteString(formatPlaceholder(inner.Text, v, idx, headerSamples))
 					}
 				}
 			}
@@ -721,8 +724,9 @@ func emitRecord(w io.Writer, tokens []FormatToken, v *vcf.Variant, sampleFilter 
 // formatPlaceholder resolves a single placeholder against v. sampleIdx is the
 // sample index when evaluating inside `[ ... ]`, or -1 when in the outer
 // scope (in which case sample-only placeholders fall back to a missing
-// value).
-func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int) string {
+// value). headerSamples carries the VCF sample names so the %SAMPLE token
+// can resolve sampleIdx to a name.
+func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int, headerSamples []string) string {
 	switch name {
 	case "CHROM":
 		return v.Chrom
@@ -753,6 +757,17 @@ func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int) string {
 		return strings.Join(v.Filter, ";")
 	case "TYPE":
 		return variantType(v)
+	case "INFO":
+		// Bare %INFO (no /TAG) emits the entire INFO column, mirroring
+		// upstream convert.c's process_info with a NULL key.
+		return formatWholeInfo(v)
+	case "SAMPLE":
+		// %SAMPLE resolves to the per-sample name inside a [ ... ] group;
+		// outside one it has no sample and prints ".".
+		if sampleIdx < 0 || sampleIdx >= len(headerSamples) {
+			return "."
+		}
+		return headerSamples[sampleIdx]
 	case "GT":
 		if sampleIdx < 0 {
 			return "."
@@ -791,6 +806,13 @@ func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int) string {
 		return sampleField(v, sampleIdx, name)
 	}
 	return "."
+}
+
+// formatWholeInfo renders the entire INFO column, mirroring upstream
+// convert.c's process_info when the format tag is a bare %INFO (no /TAG).
+// Key order follows the record's original INFO order.
+func formatWholeInfo(v *vcf.Variant) string {
+	return v.InfoString()
 }
 
 // expandTBCSQ ports upstream convert.c's process_tbcsq: it decodes the

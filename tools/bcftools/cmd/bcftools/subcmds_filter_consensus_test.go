@@ -1,37 +1,44 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
 )
 
-// TestCheckFilterDeferred locks in the upstream-flag-name surface
-// that runFilter hard-rejects rather than silently accepting. Per
-// the project parity rule (docs/PARITY_ROADMAP.md "Definition of 1:1")
-// every documented upstream flag must be recognised — either
-// implemented or gracefully rejected with a roadmap pointer. A
-// regression that drops any of these from the rejection set without
-// implementing the underlying behaviour is a parity bug.
-func TestCheckFilterDeferred(t *testing.T) {
-	if got := checkFilterDeferred(checkFilterDeferredInputs{}); got != "" {
-		t.Fatalf("empty input: got deferred=%q, want \"\"", got)
+// TestFilterMaskRequiresSoftFilter locks in upstream's rule that
+// --mask / -M,--mask-file requires -s/--soft-filter (vcffilter.c:656):
+// runFilter must reject a mask without a soft-filter name and accept it
+// with one.
+func TestFilterMaskRequiresSoftFilter(t *testing.T) {
+	dir := t.TempDir()
+	vcf := writeMainTempFile(t, dir, "f.vcf", "##fileformat=VCFv4.2\n"+
+		"##contig=<ID=1>\n"+
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"+
+		"1\t100\t.\tA\tT\t50\t.\t.\n")
+	bed := writeMainTempFile(t, dir, "m.bed", "1\t50\t150\n")
+
+	// Mask without -s must fail (rc 2).
+	if rc := runFilter([]string{"-M", bed, "--no-version", vcf}); rc != 2 {
+		t.Fatalf("mask without soft-filter: rc=%d, want 2", rc)
 	}
-	cases := []struct {
-		name string
-		in   checkFilterDeferredInputs
-		want string
-	}{
-		{"mask-region", checkFilterDeferredInputs{maskRegion: "chr1:100-200"}, "--mask"},
-		{"mask-file", checkFilterDeferredInputs{maskFile: "mask.bed"}, "-M/--mask-file"},
+	// Mask with -s must succeed (rc 0).
+	out := filepath.Join(dir, "out.vcf")
+	if rc := runFilter([]string{"-M", bed, "-s", "MASK", "-o", out, "--no-version", vcf}); rc != 0 {
+		t.Fatalf("mask with soft-filter: rc=%d, want 0", rc)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := checkFilterDeferred(tc.in); got != tc.want {
-				t.Errorf("deferred(%s): got %q, want %q", tc.name, got, tc.want)
-			}
-		})
+}
+
+// writeMainTempFile writes content to dir/name and returns its path.
+func writeMainTempFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
 	}
+	return p
 }
 
 // TestParseSnpGap accepts the upstream "INT[:TYPE]" form.

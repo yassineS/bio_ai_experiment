@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 
+	bgzf "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
@@ -172,8 +173,12 @@ func Roh(in io.Reader, out io.Writer, opts RohOptions) (RohResult, error) {
 	if opts.AZtoHW <= 0 {
 		opts.AZtoHW = DefaultAZtoHW
 	}
-	if opts.OutputTypes == "" {
-		opts.OutputTypes = "sr"
+	// Default the output sections to both ST and RG. Upstream
+	// (vcfroh.c:1246) adds OUTPUT_ST|OUTPUT_RG when the output type is
+	// empty OR contains only the compression flag, so `-O z` alone still
+	// emits both sections, just BGZF-framed.
+	if !strings.ContainsRune(opts.OutputTypes, 's') && !strings.ContainsRune(opts.OutputTypes, 'r') {
+		opts.OutputTypes = "sr" + opts.OutputTypes
 	}
 	if opts.SamplesFile != "" {
 		extra, err := LoadSamplesFile(opts.SamplesFile)
@@ -351,6 +356,22 @@ func Roh(in io.Reader, out io.Writer, opts RohOptions) (RohResult, error) {
 			}
 			runRohSample(&result, sample, blk.chrom, blk.markers, opts, gmap, bufMax, bufOlap)
 		}
+	}
+
+	// -O z requests BGZF-compressed output. Upstream opens the output
+	// stream through bgzf_open(.., "wg") and writes the identical text
+	// bytes (vcfroh.c:290), so we wrap out in a BGZF writer and emit the
+	// same content; the framed result decodes byte-identically.
+	if strings.ContainsRune(opts.OutputTypes, 'z') {
+		bz := bgzf.NewWriter(out)
+		if err := writeRoh(bz, result, opts.OutputTypes); err != nil {
+			bz.Close()
+			return result, err
+		}
+		if err := bz.Close(); err != nil {
+			return result, err
+		}
+		return result, nil
 	}
 
 	if err := writeRoh(out, result, opts.OutputTypes); err != nil {

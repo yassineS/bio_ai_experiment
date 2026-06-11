@@ -55,6 +55,30 @@ warrant a closer look:_
 
 ### To investigate
 
+#### bcftools-som-write-map
+
+- **bcftools `som --train` always fails / `--classify` is unusable.**
+  `vcfsom.c:170` (`som_write_map`) writes the map header with
+  `fwrite("SOMv1",5,1,fp)` and checks the result `!=5`. `fwrite` returns
+  the number of **elements** written (1 here, since `nmemb==1`), not the
+  byte count, so the comparison is always true and the code calls
+  `error("Failed to write 5 bytes\n")`, which `exit()`s with status 255
+  after the file has been truncated to those 5 bytes. As a result every
+  `bcftools som --train -p PREFIX ...` invocation aborts before writing a
+  usable `PREFIX.som`, and `bcftools som --classify -p PREFIX` then fails
+  with "Could not parse PREFIX.som" (also exit 255). `som --train` on a
+  missing input file segfaults (exit 139). The `som` subcommand is
+  therefore effectively dead upstream.
+
+  Disposition: **track-only / not ported.** A byte-exact port would
+  reproduce a tool that always crashes; a working SOM would diverge from
+  upstream. The Go port deliberately does not register `som` in the
+  dispatch. If upstream ever fixes the `fwrite` check, a port would also
+  need to reproduce glibc's `random()` (TYPE_3 additive-feedback PRNG)
+  to match the SOM weight initialisation byte-for-byte. See
+  `docs/PARITY_ROADMAP.md` (the `som` status note in the bcftools
+  section).
+
 #### vcftools-site-pi
 
 - **vcftools `--site-pi` formula** — upstream computes a per-genotype

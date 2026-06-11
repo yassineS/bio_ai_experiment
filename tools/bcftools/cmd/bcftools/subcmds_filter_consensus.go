@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/tools/bcftools/pkg/bcftools"
@@ -34,11 +35,12 @@ Options:
                                  is accepted; v1 treats every neighbour as "indel".
   -G, --IndelGap INT             Filter clusters of indels separated by INT or fewer bp.
   -i, --include EXPR             Soft-filter sites where EXPR is false.
-      --mask [^]REGION           Soft-filter the named region. Accepted; v1 not
-                                 implemented (see docs/PARITY_ROADMAP.md#bcftools).
-  -M, --mask-file [^]FILE        Soft-filter regions in a BED-like file. Accepted; v1
-                                 not implemented (see docs/PARITY_ROADMAP.md#bcftools).
-      --mask-overlap 0|1|2       Mask-overlap mode. Accepted; v1 ignores.
+      --mask [^]REGION           Soft-filter the named region(s); "^" negates the set.
+  -M, --mask-file [^]FILE        Soft-filter regions listed in a file; "^" negates.
+                                 The file is parsed as BED (0-based) when its name ends
+                                 in .bed/.bed.gz/.bed.bgz, otherwise 1-based CHR,POS[,END].
+      --mask-overlap 0|1|2       Mask if POS in the region (0), record overlaps (1,
+                                 default) or variant overlaps (2). v1 treats 2 as 1.
   -m, --mode +|x|+x              "+": append to existing FILTER (default: replace);
                                  "x": reset FILTER to PASS on passing sites.
       --no-version               Do not append a ##bcftools_filterCommand= header line.
@@ -62,10 +64,10 @@ Options:
       --version                  Show version.
 
 Notes:
-  - --mask / --mask-file replace failing records' FILTER with the soft
-    filter name from the per-region annotation. v1 doesn't load the
-    mask file, so passing -M/--mask-file errors out with a roadmap
-    pointer.
+  - --mask / --mask-file tag records overlapping (or, with "^", not
+    overlapping) the mask region set with the -s/--soft-filter name,
+    combined with -i/-e via upstream's "pass &= mpass" semantics.
+    --soft-filter is required with either mask option.
   - -g/--SnpGap accepts the upstream :TYPE qualifier (indel|mnp|bnd|other|overlap)
     but always treats every nearby indel as an "indel" type in v1.
 `
@@ -128,7 +130,6 @@ func runFilter(args []string) int {
 	fs.BoolVar(&showVer, "version", false, "")
 	// Reference once to silence "declared but not used" / "key part of
 	// the upstream surface but no v1 behaviour" notes.
-	_ = maskOverlap
 	_ = regionsOverlap
 	_ = targetsOverlap
 	_ = verbosity
@@ -148,11 +149,30 @@ func runFilter(args []string) int {
 		return 0
 	}
 
-	if deferred := checkFilterDeferred(checkFilterDeferredInputs{
-		maskRegion: maskRegion,
-		maskFile:   maskFile,
-	}); deferred != "" {
-		fmt.Fprintf(os.Stderr, "bcftools filter: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
+	// --mask / -M,--mask-file: a leading '^' negates that source's region
+	// set. Upstream stores both into one mask_list (vcffilter.c:629-630),
+	// so only one mask is ever active and -M/--mask-file wins when both
+	// are given; mirror that here rather than merging the two with a
+	// single shared negation. The mask soft-filter requires
+	// -s/--soft-filter (vcffilter.c:656).
+	maskNegate := false
+	maskRegionArg := ""
+	maskFileArg := ""
+	if maskFile != "" {
+		maskFileArg = maskFile
+		if strings.HasPrefix(maskFileArg, "^") {
+			maskNegate = true
+			maskFileArg = maskFileArg[1:]
+		}
+	} else if maskRegion != "" {
+		maskRegionArg = maskRegion
+		if strings.HasPrefix(maskRegionArg, "^") {
+			maskNegate = true
+			maskRegionArg = maskRegionArg[1:]
+		}
+	}
+	if (maskRegionArg != "" || maskFileArg != "") && softFilter == "" {
+		fmt.Fprintln(os.Stderr, "The option --soft-filter is required with --mask and --mask-file options")
 		return 2
 	}
 
@@ -207,6 +227,9 @@ func runFilter(args []string) int {
 		IndelGap:     indelGap,
 		RegionsFile:  regionsFile,
 		TargetsFile:  targetsFile,
+		MaskFile:     maskFileArg,
+		MaskNegate:   maskNegate,
+		MaskOverlap:  maskOverlap,
 		NoVersion:    noVersion,
 	}
 	if regions != "" {
@@ -214,6 +237,9 @@ func runFilter(args []string) int {
 	}
 	if targets != "" {
 		opts.Targets = bcftools.SplitCommaList(targets)
+	}
+	if maskRegionArg != "" {
+		opts.MaskRegions = bcftools.SplitCommaList(maskRegionArg)
 	}
 
 	out, err := openOutFile(outputPath)
@@ -228,21 +254,6 @@ func runFilter(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-type checkFilterDeferredInputs struct {
-	maskRegion string
-	maskFile   string
-}
-
-func checkFilterDeferred(in checkFilterDeferredInputs) string {
-	switch {
-	case in.maskRegion != "":
-		return "--mask"
-	case in.maskFile != "":
-		return "-M/--mask-file"
-	}
-	return ""
 }
 
 // parseSnpGap accepts the upstream "INT" or "INT:TYPE[,TYPE,...]" form
