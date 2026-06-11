@@ -34,6 +34,11 @@ Options:
   -v, --invert          Report A entries with NO overlap with B
   -wa, --write-a        Write original A entry (default: write intersection)
   -wb, --write-b        Write B entry instead of A
+                        (with -wa: write A and B side-by-side per overlap)
+  -loj                  Left outer join: report every A; B is null when no overlap
+  -wo                   Write A, B and the number of overlapping bases per overlap
+  -wao                  Like -wo, but also report A (with null B and 0) when no overlap
+  -split                Treat split BAM/BED12 entries as distinct intervals
   -c, --count           Report count of B overlaps for each A
   -d, --distance        Report distance to nearest B feature
   -k, --closest         Output closest B feature for each A
@@ -141,6 +146,17 @@ func main() {
 	useTree := flag.Bool("t", false, "Use interval tree for large B files")
 	flag.BoolVar(useTree, "tree", false, "Use interval tree for large B files")
 
+	leftJoin := flag.Bool("loj", false, "Left outer join: report every A, with null B when no overlap")
+	flag.BoolVar(leftJoin, "left-outer-join", false, "Left outer join")
+
+	writeOverlap := flag.Bool("wo", false, "Write A, B and the number of overlapping bases")
+	flag.BoolVar(writeOverlap, "write-overlap", false, "Write A, B and the number of overlapping bases")
+
+	writeAllOverlap := flag.Bool("wao", false, "Write A, B and overlap bases, including 0 for no overlap")
+	flag.BoolVar(writeAllOverlap, "write-all-overlap", false, "Write A, B and overlap bases (incl. 0)")
+
+	split := flag.Bool("split", false, "Treat split BAM/BED12 entries as distinct intervals")
+
 	help := flag.Bool("h", false, "Show help message")
 	flag.BoolVar(help, "help", false, "Show help message")
 
@@ -193,18 +209,22 @@ func main() {
 
 	// Set options
 	opts := bedintersect.IntersectOptions{
-		MinOverlap: *minOverlap,
-		FractionA:  *fractionA,
-		FractionB:  *fractionB,
-		StrandSpec: *strandSpec,
-		NoOverlap:  *invert,
-		WriteA:     *writeA,
-		WriteB:     *writeB,
-		Count:      *count,
-		Reciprocal: *reciprocal,
-		Distance:   *distance,
-		Closest:    *closest,
-		UseTree:    *useTree,
+		MinOverlap:      *minOverlap,
+		FractionA:       *fractionA,
+		FractionB:       *fractionB,
+		StrandSpec:      *strandSpec,
+		NoOverlap:       *invert,
+		WriteA:          *writeA,
+		WriteB:          *writeB,
+		Count:           *count,
+		Reciprocal:      *reciprocal,
+		Distance:        *distance,
+		Closest:         *closest,
+		UseTree:         *useTree,
+		LeftJoin:        *leftJoin,
+		WriteOverlap:    *writeOverlap,
+		WriteAllOverlap: *writeAllOverlap,
+		Split:           *split,
 	}
 
 	// Perform intersection
