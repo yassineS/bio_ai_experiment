@@ -103,8 +103,10 @@ Recently closed (PRs #220–#225, treat as merged):
 - **samtools**: `consensus --het-only` (implemented as a fix for an
   upstream dead-option bug — see `UPSTREAM_BUGS.md`); `--ignore-overlaps`
   landed earlier. Still deferred: mpileup `-g/-u` BCF output.
-- **mosdepth**: `-d/--d4` (byte-identical to upstream). Still deferred:
-  `-t/--threads`.
+- **mosdepth**: `-d/--d4`, `-a/--fragment-mode`, `-q/--quantize`, and
+  `-t/--threads` (all byte-identical to the upstream v0.3.14 binary;
+  threads produces identical output for any count). Still deferred:
+  `-m/--use-median`.
 - **vcftools**: 0 unsupported flags.
 - A repo-wide test cleanup (#225) converted all golden tests to live
   upstream-binary parity and fixed a `samtools depth` flag bug.
@@ -3670,8 +3672,9 @@ no committed goldens).
 
 ### `mosdepth`
 
-**Status:** 1 / 1 command, most flags. **`-d/--d4` is DONE** (byte-identical
-to upstream, #220–#225 wave).
+**Status:** 1 / 1 command, most flags. **`-d/--d4`, `-a/--fragment-mode`,
+`-q/--quantize`, and `-t/--threads` are all DONE** (byte-identical to the
+upstream v0.3.14 binary). Only `-m/--use-median` remains unimplemented.
 
 Done:
 
@@ -3684,10 +3687,37 @@ Done:
 
 Missing:
 
-- **Multi-threading** (`-t/--threads N`).
+- **`-m/--use-median`** — per-region median instead of mean. Parsed for
+  CLI parity but rejected (exit 2) rather than silently emitting means.
+- **Default-mode overlap-pair correction** — our default (non-fast) mode
+  does not subtract double-counted depth where mate pairs overlap; output
+  matches upstream's `--fast-mode` (see `UPSTREAM_BUGS.md`). Unchanged by
+  this wave.
 
 Implemented:
 
+- **`-a/--fragment-mode`** — counts coverage across the whole template
+  (fragment) between properly-paired mates rather than the aligned reads
+  only. Only read1 of a proper, non-supplementary pair contributes; it
+  covers `[min(read,mate) start, +|TLEN|)`. **Byte-identical** to the
+  upstream `mosdepth` v0.3.14 binary on the `full-fragment-pairs` fixture
+  (`TestUpstream_FragmentMode_Parity`).
+- **`-q/--quantize SEGS`** — bins per-base depth into the user's
+  `:`-separated segments and writes `<prefix>.quantized.bed.gz` (plus a
+  `.csi`). Mirrors upstream's segment parsing (leading/trailing `:`
+  prepend `0` / append the open-ended top bin), the `MOSDEPTH_Q*` label
+  overrides, and the "skip depths outside the range" gap behaviour.
+  **Byte-identical** to upstream across basic / leading-colon /
+  trailing-colon / env-label specs (`TestUpstream_Quantize_Parity`).
+- **`-t/--threads N`** — real parallelism for BGZF/BAM decode. A new
+  in-tree parallel BGZF reader (`pkg/htsgo/bgzf.MultiReader`,
+  symmetric to the existing `MultiWriter`) inflates blocks across N
+  worker goroutines and reassembles the decoded byte stream in order, so
+  the decoded bytes — and every output file — are **byte-identical** for
+  any thread count. Threads < 2 falls back to the sequential reader.
+  Verified by `TestThreads_OutputIdentical` (threads {1,2,4,8} identical;
+  multi-block fixture spans 66 BGZF blocks) and
+  `bgzf.TestMultiReader_MatchesSequential`.
 - **D4 output** (`-d/--d4`) — writes `<prefix>.per-base.d4` as a real D4
   framefile that is **byte-identical** to the upstream `mosdepth_d4`
   binary's output for the same BAM (same on-disk size). The track uses
@@ -3705,8 +3735,15 @@ BAM, and asserts the two `.per-base.d4` files are byte-for-byte equal
 and via in-tree round-trip query (`TestRunCsiReadable`,
 `TestParity_IndexFiles_Csi`), plus an optional real-`tabix` read when the
 binary is on `PATH` (`TestRunCsiReadableByRealTabix`). Fast-path
-byte-identity proven by `TestMapqFastPathByteIdentical`. The broader
-upstream functional-test suite is still pending.
+byte-identity proven by `TestMapqFastPathByteIdentical`.
+`--fragment-mode`, `--quantize`, and `-t/--threads` are validated
+byte-for-byte against the upstream `mosdepth` v0.3.14 release binary
+(`TestUpstream_FragmentMode_Parity`, `TestUpstream_Quantize_Parity`,
+`TestThreads_OutputIdentical`); the binary is fetched from the GitHub
+release with retry/backoff and cached, overridable via `MOSDEPTH_BIN`.
+Offline these fall back to internal-consistency assertions and log the
+reduced tier (never a silent skip). The broader upstream functional-test
+suite is still pending.
 
 ---
 

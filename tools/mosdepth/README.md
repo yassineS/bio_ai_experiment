@@ -40,6 +40,9 @@ Outputs (always emitted unless a flag below suppresses one):
   `--no-per-base` is passed.
 - `<prefix>.regions.bed.gz` (with `.csi`) — only when `--by` is set.
   Columns: `chrom\tstart\tend\t[region-name\t]mean-depth`.
+- `<prefix>.quantized.bed.gz` (with `.csi`) — only when `-q/--quantize`
+  is set. Columns: `chrom\tstart\tend\tlabel`, one collapsed run per
+  contiguous quantize bin.
 - `<prefix>.thresholds.bed.gz` (with `.csi`) — only when `-T/--thresholds`
   is set. Columns: `chrom\tstart\tend\tregion\tNXcount\t...` listing the
   number of bases at or above each integer threshold inside the region.
@@ -48,10 +51,10 @@ Outputs (always emitted unless a flag below suppresses one):
 
 | Short | Long | Description |
 | --- | --- | --- |
-| `-t` | `--threads INT` | Accepted; v1 is single-threaded. |
+| `-t` | `--threads INT` | Number of BGZF/BAM decompression threads. Blocks are inflated across N goroutines and reassembled in order, so every output file is byte-identical for any thread count; it only affects throughput. `<2` runs single-threaded. |
 | `-b` | `--by FILE_OR_INT` | BED file of regions, or an integer window size in bases. |
 | `-Q` | `--mapq INT` | Minimum MAPQ (default 0). |
-| `-F` | `--flag INT` | Exclude reads with ANY of these flag bits (default `1796` = `0x704`: unmapped, secondary, QC-fail, duplicate, supplementary). |
+| `-F` | `--flag INT` | Exclude reads with ANY of these flag bits (default `1796` = `0x704`: unmapped, secondary, QC-fail, duplicate). Matches upstream; supplementary reads are NOT excluded by default. |
 | `-i` | `--include-flag INT` | Keep only reads with ALL of these flag bits. |
 | `-x` | `--fast-mode` | Skip CIGAR walking; treat each read as covering POS..POS+ReferenceLength. ~3x faster, slightly inaccurate near indels. |
 | `-n` | `--no-per-base` | Suppress the per-base output. |
@@ -62,8 +65,8 @@ Outputs (always emitted unless a flag below suppresses one):
 | `-l` | `--min-frag-len INT` | Minimum absolute TLEN to include. |
 | `-u` | `--max-frag-len INT` | Maximum absolute TLEN to include. |
 | `-f` | `--fasta FILE` | FASTA reference for CRAM input. Accepted for parity; CRAM is not yet supported, so the value is ignored. |
-| `-a` | `--fragment-mode` | Upstream flag, not yet implemented in this port: supplying it is rejected (exit 2). |
-| `-q` | `--quantize SEGS` | Upstream flag, not yet implemented in this port: supplying it is rejected (exit 2). |
+| `-a` | `--fragment-mode` | Count coverage across the whole template (fragment) between properly-paired mates rather than the aligned reads only. Only read1 of a proper, non-supplementary pair contributes, covering `[min(read,mate) start, +\|TLEN\|)`. Byte-identical to upstream v0.3.14. Mutually exclusive with `-x/--fast-mode` (rejected, exit 2). |
+| `-q` | `--quantize SEGS` | Bin per-base depth into the `:`-separated segments (e.g. `0:1:4:`) and write `<prefix>.quantized.bed.gz`. A leading `:` prepends `0`; a trailing `:` adds an open-ended top bin (`N:inf`). Labels default to `lo:hi` and can be overridden per bin with `MOSDEPTH_Q<i>` env vars. Depths outside the range leave a gap (no line). Byte-identical to upstream v0.3.14. |
 | `-m` | `--use-median` | Upstream flag, not yet implemented in this port: supplying it is rejected (exit 2). |
 | `-h` | `--help` | Show help. |
 | `-v` | `--version` | Show version. |
@@ -128,9 +131,27 @@ and asserts the two `.per-base.d4` files are byte-identical (and that our
 reader decodes both to the same per-base depths). When `--d4` is set the
 per-base BED is not written.
 
-The runtime is single-threaded; the `-t/--threads` flag is accepted for
-compatibility with existing pipelines. A future slice may parallelise
-the per-chromosome event sweep.
+**Fragment mode** (`-a/--fragment-mode`) — counts coverage across the
+whole template between properly-paired mates rather than the aligned
+reads only. Following upstream, only read1 of a proper, non-supplementary
+pair contributes; it covers `[min(read,mate) start, +|TLEN|)`. The
+per-base output is byte-identical to the upstream v0.3.14 binary
+(`TestUpstream_FragmentMode_Parity`). It is mutually exclusive with
+`--fast-mode`.
+
+**Quantize** (`-q/--quantize`) — bins per-base depth into the user's
+`:`-separated segments and writes `<prefix>.quantized.bed.gz`, mirroring
+upstream's segment parsing, `MOSDEPTH_Q*` labelling, and gap behaviour
+for depths outside the range. Byte-identical to upstream v0.3.14
+(`TestUpstream_Quantize_Parity`).
+
+**Threads** (`-t/--threads`) — BGZF block decompression is spread across
+N worker goroutines via the in-tree `pkg/htsgo/bgzf.MultiReader`, which
+inflates blocks concurrently and reassembles the decoded byte stream in
+order. The decoded bytes — and therefore every output file — are
+byte-identical for any thread count; threading only affects decode
+throughput. `<2` falls back to the sequential reader. Verified by
+`TestThreads_OutputIdentical` and `bgzf.TestMultiReader_MatchesSequential`.
 
 **Overlap-pair detection** — upstream subtracts one copy of depth where
 the two ends of a mate-paired fragment overlap on the reference. Our v1
@@ -164,11 +185,18 @@ Coverage targets ≥85% on `pkg/mosdepth`. Tests cover:
 - `-d/--d4` D4 output is byte-identical to the upstream `mosdepth_d4`
   binary on the same BAM (`TestD4_UpstreamBinaryParity`), plus a
   writer/reader round-trip on a hand-built track.
+- `-a/--fragment-mode`, `-q/--quantize`, and `-t/--threads` are validated
+  byte-for-byte against the upstream `mosdepth` v0.3.14 release binary
+  (`TestUpstream_FragmentMode_Parity`, `TestUpstream_Quantize_Parity`,
+  `TestThreads_OutputIdentical`); set `MOSDEPTH_BIN` to point at a local
+  copy. Offline they fall back to internal-consistency checks and log the
+  tier rather than skipping silently.
 
 ## Status
 
 - v1: per-base, per-region (BED), per-window, thresholds, distribution,
   summary, CSI indexes, `--mapq 0` fast path, byte-identical D4
-  per-base output.
-- Roadmap: multi-threaded chrom sweep, CRAM input (depends on the
-  project's CRAM reader landing first).
+  per-base output, `--fragment-mode`, `--quantize`, and multi-threaded
+  (`-t/--threads`) BGZF decode.
+- Roadmap: `-m/--use-median`, default-mode overlap-pair correction, CRAM
+  input (depends on the project's CRAM reader landing first).

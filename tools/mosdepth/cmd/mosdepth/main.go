@@ -26,10 +26,11 @@ Outputs:
   <prefix>.per-base.bed.gz [.csi]     per-base depth (omitted with --by, --no-per-base, or --d4).
   <prefix>.per-base.d4                per-base depth in D4 binary format (when --d4 is set).
   <prefix>.regions.bed.gz [.csi]      per-region depth (when --by is set).
+  <prefix>.quantized.bed.gz [.csi]    quantized depth segments (when --quantize set).
   <prefix>.thresholds.bed.gz [.csi]   threshold proportions (when --thresholds set).
 
 Options:
-  -t, --threads INT       accepted; v1 is single-threaded.
+  -t, --threads INT       BGZF/BAM decompression threads (output is identical for any value).
   -b, --by FILE_OR_INT    BED of regions or fixed integer window size.
   -Q, --mapq INT          minimum MAPQ (default 0).
   -F, --flag INT          exclude reads with ANY of these flag bits (default 1796).
@@ -45,8 +46,8 @@ Options:
   -l, --min-frag-len INT  minimum absolute TLEN.
   -u, --max-frag-len INT  maximum absolute TLEN.
   -f, --fasta FILE        FASTA reference for CRAM input (accepted; CRAM not yet supported, ignored).
-  -a, --fragment-mode     full-fragment coverage (upstream flag; not yet implemented — rejected).
-  -q, --quantize SEGS     quantized output (upstream flag; not yet implemented — rejected).
+  -a, --fragment-mode     count coverage across the whole fragment (proper pairs only); excludes -x.
+  -q, --quantize SEGS     ':'-separated depth bins, e.g. 0:1:4:; writes <prefix>.quantized.bed.gz.
   -m, --use-median        per-region median (upstream flag; not yet implemented — rejected).
   -h, --help              show this help.
   -v, --version           print version and exit.
@@ -63,11 +64,11 @@ Deviations from upstream mosdepth (Nim):
     a -d short alias.
   - Upstream's short read-groups flag is -R; this port also accepts a
     lowercase -r alias.
-  - Threads is accepted for compatibility; the v1 engine is
-    single-threaded.
-  - -a/--fragment-mode, -q/--quantize and -m/--use-median are parsed for
-    CLI parity but not yet implemented; supplying them is rejected
-    (exit 2) rather than silently ignored.
+  - -t/--threads spreads BGZF block decompression across N goroutines;
+    the decoded stream and every output file are byte-identical for any
+    thread count (it only affects throughput).
+  - -m/--use-median is parsed for CLI parity but not yet implemented;
+    supplying it is rejected (exit 2) rather than silently ignored.
 `
 
 type runOptions struct {
@@ -99,7 +100,7 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	opts := &runOptions{flag: int(mosdepth.DefaultExcludeFlag)}
-	cliflag.IntVar(fs, &opts.threads, "t", "threads", 1, "accepted; single-threaded")
+	cliflag.IntVar(fs, &opts.threads, "t", "threads", 1, "BGZF decompression threads")
 	cliflag.StringVar(fs, &opts.by, "b", "by", "", "BED file or window size")
 	cliflag.IntVar(fs, &opts.mapq, "Q", "mapq", 0, "min MAPQ")
 	cliflag.IntVar(fs, &opts.flag, "F", "flag", int(mosdepth.DefaultExcludeFlag), "exclude flag bits")
@@ -122,14 +123,13 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	fs.StringVar(&opts.readGroups, "r", "", "comma list of RG IDs (port-only lowercase alias for -R)")
 	cliflag.IntVar(fs, &opts.minFragLen, "l", "min-frag-len", 0, "min |TLEN|")
 	cliflag.IntVar(fs, &opts.maxFragLen, "u", "max-frag-len", 0, "max |TLEN|")
-	// Upstream flags this port parses for CLI parity but does not yet
-	// implement. -f/--fasta only matters for CRAM input (not supported
-	// yet) so it is accepted and ignored; -a/--fragment-mode,
-	// -q/--quantize and -m/--use-median change the numerical output, so
-	// supplying them is rejected in run() rather than silently ignored.
+	// -f/--fasta only matters for CRAM input (not supported yet) so it is
+	// accepted and ignored. -a/--fragment-mode and -q/--quantize are now
+	// implemented; -m/--use-median changes numerical output and is still
+	// rejected in run() rather than silently ignored.
 	cliflag.StringVar(fs, &opts.fasta, "f", "fasta", "", "FASTA reference for CRAM (accepted; CRAM not yet supported)")
-	cliflag.BoolVar(fs, &opts.fragmentLen, "a", "fragment-mode", false, "count full-fragment coverage (not yet implemented)")
-	cliflag.StringVar(fs, &opts.quantize, "q", "quantize", "", "quantized output segments (not yet implemented)")
+	cliflag.BoolVar(fs, &opts.fragmentLen, "a", "fragment-mode", false, "count full-fragment coverage (proper pairs only)")
+	cliflag.StringVar(fs, &opts.quantize, "q", "quantize", "", "quantized output segments, e.g. 0:1:4:")
 	cliflag.BoolVar(fs, &opts.useMedian, "m", "use-median", false, "use per-region median (not yet implemented)")
 	cliflag.BoolVar(fs, &opts.showHelp, "h", "help", false, "help")
 	cliflag.BoolVar(fs, &opts.showVersion, "v", "version", false, "version")
@@ -157,19 +157,23 @@ func run(args []string) int {
 		fmt.Println(version)
 		return 0
 	}
-	// Reject upstream flags that this port parses for CLI parity but does
-	// not yet implement, when they would change the output. Silently
-	// ignoring them would produce results that disagree with upstream.
-	if opts.fragmentLen {
-		fmt.Fprintln(os.Stderr, "mosdepth: -a/--fragment-mode is not yet implemented in this port")
-		return 2
-	}
-	if opts.quantize != "" {
-		fmt.Fprintln(os.Stderr, "mosdepth: -q/--quantize is not yet implemented in this port")
-		return 2
-	}
+	// -m/--use-median is still unimplemented; reject it rather than silently
+	// producing means where the user asked for medians.
 	if opts.useMedian {
 		fmt.Fprintln(os.Stderr, "mosdepth: -m/--use-median is not yet implemented in this port")
+		return 2
+	}
+	// Upstream's hot loop lets --fragment-mode take precedence over
+	// --fast-mode; the two are conceptually exclusive (fragment coverage vs.
+	// per-read fast coverage). Reject the combination so users get a clear
+	// error instead of a silently-fragment result.
+	if opts.fragmentLen && opts.fastMode {
+		fmt.Fprintln(os.Stderr, "mosdepth: -a/--fragment-mode and -x/--fast-mode are mutually exclusive")
+		return 2
+	}
+	quant, err := mosdepth.ParseQuantize(opts.quantize)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	if len(positional) != 2 {
@@ -191,21 +195,23 @@ func run(args []string) int {
 		return 1
 	}
 	mo := mosdepth.Options{
-		Prefix:      prefix,
-		ByBED:       bedPath,
-		ByWindow:    winSize,
-		MinMAPQ:     uint8Clamp(opts.mapq),
-		ExcludeFlag: uint16(opts.flag),
-		IncludeFlag: uint16(opts.includeFlag),
-		FastMode:    opts.fastMode,
-		NoPerBase:   opts.noPerBase || opts.noPerBase2,
-		Thresholds:  th,
-		Chrom:       opts.chrom,
-		D4Output:    opts.d4,
-		ReadGroups:  mosdepth.ParseReadGroups(opts.readGroups),
-		MinFragLen:  opts.minFragLen,
-		MaxFragLen:  opts.maxFragLen,
-		Threads:     opts.threads,
+		Prefix:       prefix,
+		ByBED:        bedPath,
+		ByWindow:     winSize,
+		MinMAPQ:      uint8Clamp(opts.mapq),
+		ExcludeFlag:  uint16(opts.flag),
+		IncludeFlag:  uint16(opts.includeFlag),
+		FastMode:     opts.fastMode,
+		NoPerBase:    opts.noPerBase || opts.noPerBase2,
+		Thresholds:   th,
+		Chrom:        opts.chrom,
+		D4Output:     opts.d4,
+		ReadGroups:   mosdepth.ParseReadGroups(opts.readGroups),
+		MinFragLen:   opts.minFragLen,
+		MaxFragLen:   opts.maxFragLen,
+		FragmentMode: opts.fragmentLen,
+		Quantize:     quant,
+		Threads:      opts.threads,
 	}
 	if err := mosdepth.OpenAndRun(bam, mo); err != nil {
 		fmt.Fprintln(os.Stderr, err)

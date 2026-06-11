@@ -413,14 +413,57 @@ func TestParity_FlagExclude(t *testing.T) {
 
 // TestParity_FragmentMode mirrors
 // `run fragment_mode $exe t --fragment-mode tests/full-fragment-pairs.bam`.
-// --fragment-mode is not yet implemented.
+// Implemented: full byte-for-byte validation against the upstream binary
+// lives in TestUpstream_FragmentMode_Parity. This case pins the exact
+// fragment-coverage runs so a regression fails even when the upstream binary
+// is unavailable.
 func TestParity_FragmentMode(t *testing.T) {
-	t.Skip("known gap: --fragment-mode not implemented yet; see docs/PARITY_ROADMAP.md#mosdepth")
+	prefix := runParity(t, "full-fragment-pairs.bam", Options{
+		FragmentMode: true,
+		ExcludeFlag:  DefaultExcludeFlag,
+	})
+	got := readGzLines(t, prefix+".per-base.bed.gz")
+	want := []string{
+		"chr22:20000000-23000000\t0\t17318\t0",
+		"chr22:20000000-23000000\t17318\t17320\t1",
+		"chr22:20000000-23000000\t17320\t17420\t2",
+		"chr22:20000000-23000000\t17420\t17756\t1",
+		"chr22:20000000-23000000\t17756\t52130\t0",
+		"chr22:20000000-23000000\t52130\t52135\t1",
+		"chr22:20000000-23000000\t52135\t52235\t2",
+		"chr22:20000000-23000000\t52235\t52546\t1",
+		"chr22:20000000-23000000\t52546\t3000001\t0",
+	}
+	if !equalLines(got, want) {
+		t.Fatalf("fragment-mode per-base mismatch.\nwant:\n%s\ngot:\n%s",
+			strings.Join(want, "\n"), strings.Join(got, "\n"))
+	}
 }
 
-// TestParity_Quantized mirrors `-q 0:1:1000`. Not implemented.
+// TestParity_Quantized mirrors `-q 0:1:4`. Implemented: byte-for-byte
+// validation against the upstream binary lives in
+// TestUpstream_Quantize_Parity. This case pins the MT segments so a
+// regression fails without the upstream binary.
 func TestParity_Quantized(t *testing.T) {
-	t.Skip("known gap: -q/--quantize not implemented yet; see docs/PARITY_ROADMAP.md#mosdepth")
+	quants, err := ParseQuantize("0:1:4")
+	if err != nil {
+		t.Fatalf("ParseQuantize: %v", err)
+	}
+	prefix := runParity(t, "ovl.bam", Options{
+		FastMode:    true,
+		Chrom:       "MT",
+		Quantize:    quants,
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	got := linesWithPrefix(readGzLines(t, prefix+".quantized.bed.gz"), "MT\t")
+	want := []string{
+		"MT\t0\t80\t1:4",
+		"MT\t80\t16569\t0:1",
+	}
+	if !equalLines(got, want) {
+		t.Fatalf("quantize MT mismatch.\nwant:\n%s\ngot:\n%s",
+			strings.Join(want, "\n"), strings.Join(got, "\n"))
+	}
 }
 
 // TestParity_D4RoundTrip mirrors `--d4` against a real fixture BAM. Upstream

@@ -94,6 +94,31 @@ func (a *covAccum) addRecord(rec *sam.Record, fast bool) {
 	}
 }
 
+// addFragment adds full-fragment coverage for a single properly-paired,
+// non-supplementary read1 record, mirroring upstream mosdepth's
+// --fragment-mode. It covers the whole template between the mates: the span
+// starts at min(read start, mate start) — both 0-based — and extends for the
+// absolute insert size (|TLEN|). The caller is responsible for gating on the
+// read1 / proper-pair / supplementary flags before calling this.
+func (a *covAccum) addFragment(rec *sam.Record) {
+	if rec.Pos <= 0 {
+		return
+	}
+	start := int(rec.Pos) - 1     // 0-based read start.
+	matePos := int(rec.PNext) - 1 // 0-based mate start (PNext is 1-based; 0 when unset).
+	if matePos >= 0 && matePos < start {
+		start = matePos
+	}
+	isize := int(rec.TLen)
+	if isize < 0 {
+		isize = -isize
+	}
+	if isize <= 0 {
+		return
+	}
+	a.add(start, start+isize)
+}
+
 // sortEvents sorts events by position ascending. Equal positions keep their
 // relative order so emit() applies all deltas at a position atomically; a
 // stable sort isn't required because emit() collapses ties.

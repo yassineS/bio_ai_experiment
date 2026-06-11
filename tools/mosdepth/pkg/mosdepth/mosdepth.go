@@ -10,15 +10,18 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	bgzf "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // DefaultExcludeFlag is mosdepth's default `-F` value: drop reads that are
-// unmapped (0x4), secondary (0x100), QC-fail (0x200), duplicate (0x400),
-// or supplementary (0x800). OR'd together this is 0x704 = 1796 — the same
-// value upstream prints when invoked with --help.
+// unmapped (0x4), secondary (0x100), QC-fail (0x200), or duplicate (0x400).
+// OR'd together this is 0x704 = 1796 — the exact value upstream mosdepth
+// prints when invoked with --help. Note it does NOT include supplementary
+// (0x800): upstream's default keeps supplementary alignments, so excluding
+// them here would diverge from upstream per-base/region depth.
 const DefaultExcludeFlag uint16 = sam.FlagUnmapped | sam.FlagSecondary |
-	sam.FlagQCFail | sam.FlagDuplicate | sam.FlagSupplementary
+	sam.FlagQCFail | sam.FlagDuplicate
 
 // Options configures a single mosdepth run.
 type Options struct {
@@ -78,7 +81,24 @@ type Options struct {
 	MinFragLen int
 	MaxFragLen int
 
-	// Threads is accepted for compatibility; v1 is single-threaded.
+	// FragmentMode, when true, counts coverage across the whole template
+	// (fragment) of each properly-paired read pair rather than across the
+	// aligned reads only — matching upstream mosdepth's --fragment-mode.
+	// Only read1 of a proper, non-supplementary pair contributes; it covers
+	// [min(read,mate) start, +|TLEN|). Mutually exclusive with FastMode in
+	// upstream's hot loop (fragment-mode takes precedence when both are set
+	// upstream; this port rejects the combination at the CLI).
+	FragmentMode bool
+
+	// Quantize, when non-empty, holds the parsed quantize bin boundaries
+	// (see ParseQuantize). When set, mosdepth writes a
+	// <prefix>.quantized.bed.gz binning each base's depth into the
+	// corresponding labelled segment, matching upstream's --quantize output.
+	Quantize []int
+
+	// Threads sets the number of BAM/BGZF decompression worker threads. The
+	// decoded output is identical regardless of this value; it only affects
+	// throughput. 0 or 1 means single-threaded. See OpenAndRun.
 	Threads int
 }
 
@@ -148,6 +168,23 @@ func Run(in io.Reader, opts Options) error {
 		perBaseW = p
 	}
 
+	var quantW *bedGzWriter
+	var quantLabels []string
+	if len(opts.Quantize) > 0 {
+		q, qerr := newBedGzWriter(opts.Prefix + ".quantized.bed.gz")
+		if qerr != nil {
+			if perBaseW != nil {
+				_ = perBaseW.Close()
+			}
+			if d4W != nil {
+				_ = d4W.Close()
+			}
+			return qerr
+		}
+		quantW = q
+		quantLabels = quantizeLabels(opts.Quantize)
+	}
+
 	var regionsW *bedGzWriter
 	if len(perChromRegions) > 0 {
 		p, perr := newBedGzWriter(opts.Prefix + ".regions.bed.gz")
@@ -208,7 +245,11 @@ func Run(in io.Reader, opts Options) error {
 		recs := byChrom[r.Name]
 		accum := newCovAccum(int(r.Length))
 		for _, rec := range recs {
-			accum.addRecord(rec, opts.FastMode)
+			if opts.FragmentMode {
+				accum.addFragment(rec)
+			} else {
+				accum.addRecord(rec, opts.FastMode)
+			}
 		}
 		// Per-base emission: collapse runs of equal depth.
 		hist := accumHistogram(accum)
@@ -236,6 +277,11 @@ func Run(in io.Reader, opts Options) error {
 		}
 		if d4W != nil {
 			if err := d4W.writeChrom(r.Name, d4DenseDepths(accum)); err != nil {
+				return err
+			}
+		}
+		if quantW != nil {
+			if err := emitQuantized(quantW, r.Name, accum, opts.Quantize, quantLabels); err != nil {
 				return err
 			}
 		}
@@ -291,6 +337,14 @@ func Run(in io.Reader, opts Options) error {
 	}
 	if d4W != nil {
 		if err := d4W.Close(); err != nil {
+			return err
+		}
+	}
+	if quantW != nil {
+		if err := quantW.Close(); err != nil {
+			return err
+		}
+		if err := buildBedCsi(quantW.path); err != nil {
 			return err
 		}
 	}
@@ -481,6 +535,16 @@ func keepRecordTail(rec *sam.Record, opts Options) bool {
 			return false
 		}
 	}
+	if opts.FragmentMode {
+		// Upstream --fragment-mode counts only read1 of a proper,
+		// non-supplementary pair; everything else is skipped before it can
+		// contribute fragment coverage.
+		if rec.Flag&sam.FlagRead2 != 0 ||
+			rec.Flag&sam.FlagProperPair == 0 ||
+			rec.Flag&sam.FlagSupplementary != 0 {
+			return false
+		}
+	}
 	return true
 }
 
@@ -602,11 +666,51 @@ func readerForFile(path string) (io.Reader, io.Closer, error) {
 
 // OpenAndRun is the convenience entry point used by the CLI: open path,
 // stream it through Run, and ensure the file handle is closed.
+//
+// When opts.Threads >= 2 and the input is BGZF-compressed (the usual BAM
+// case), the BGZF blocks are decompressed concurrently across opts.Threads
+// worker goroutines via bgzf.NewMultiReader. The decoded byte stream — and
+// therefore every output file — is byte-for-byte identical to the
+// single-threaded path regardless of the thread count; threading only affects
+// decode throughput.
 func OpenAndRun(path string, opts Options) error {
 	r, c, err := readerForFile(path)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+
+	if opts.Threads >= 2 {
+		br := bufio.NewReader(r)
+		head, _ := br.Peek(16)
+		if looksLikeBGZF(head) {
+			mr, merr := bgzf.NewMultiReader(br, opts.Threads)
+			if merr != nil {
+				return fmt.Errorf("mosdepth: open parallel BGZF: %w", merr)
+			}
+			defer mr.Close()
+			return Run(mr, opts)
+		}
+		// Not BGZF (raw BAM or SAM): nothing to parallelise; fall through to
+		// the sequential path with the peeked bytes preserved.
+		return Run(br, opts)
+	}
 	return Run(r, opts)
+}
+
+// looksLikeBGZF reports whether b begins with a BGZF gzip header (gzip magic +
+// the BC subfield). It mirrors the sniff used by the sam and iohelper packages
+// and gates whether OpenAndRun engages the parallel BGZF reader.
+func looksLikeBGZF(b []byte) bool {
+	if len(b) < 16 {
+		return false
+	}
+	if b[0] != 0x1f || b[1] != 0x8b || b[2] != 0x08 || b[3]&0x04 == 0 {
+		return false
+	}
+	xlen := uint16(b[10]) | uint16(b[11])<<8
+	if xlen < 6 {
+		return false
+	}
+	return b[12] == 'B' && b[13] == 'C' && b[14] == 0x02 && b[15] == 0x00
 }
