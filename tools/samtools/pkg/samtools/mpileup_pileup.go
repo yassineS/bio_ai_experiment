@@ -571,22 +571,26 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 		return
 	}
 
-	// Mark the aligned bases bordering each ref-skip (CIGAR N) run as
-	// ref-skip boundaries. Upstream's consensus pileup engine sets
-	// p->ref_skip on the M base immediately before an N (consensus_pileup.c:
-	// 251-260) and on the first M base after an N (lines 239-244); its
-	// Gap5/bayesian caller then excludes those bases from the consensus
-	// depth (bam_consensus.c:1333). tmp is in reference order, so a base
-	// adjacent to a RefSkip entry is exactly such a boundary. (The simple
-	// caller and the displayed pileup column ignore the flag.)
+	// Mark the positions bordering each ref-skip (CIGAR N) run as ref-skip
+	// boundaries. Upstream's consensus pileup engine sets p->ref_skip on the
+	// position immediately before an N (consensus_pileup.c:251-260, when the
+	// next op is CREF_SKIP) and on the first position after an N
+	// (lines 239-244, `if (p->eof && p->base != '.')`); its Gap5/bayesian
+	// caller then excludes those positions from the consensus depth
+	// (bam_consensus.c:1333). Crucially the upstream test is `p->base != '.'`
+	// — ANY non-ref-skip position, so a deletion ('*') or pad directly
+	// abutting the N is flagged too, not only an aligned base. tmp is in
+	// reference order, so any non-RefSkip entry adjacent to a RefSkip entry
+	// is exactly such a boundary. (The simple caller and the displayed
+	// pileup column ignore the flag; only the bayesian depth uses it.)
 	for i := range tmp {
 		if tmp[i].kind != pileupEventRefSkip {
 			continue
 		}
-		if i > 0 && tmp[i-1].kind == pileupEventBase {
+		if i > 0 && tmp[i-1].kind != pileupEventRefSkip {
 			tmp[i-1].refSkipBoundary = true
 		}
-		if i+1 < len(tmp) && tmp[i+1].kind == pileupEventBase {
+		if i+1 < len(tmp) && tmp[i+1].kind != pileupEventRefSkip {
 			tmp[i+1].refSkipBoundary = true
 		}
 	}

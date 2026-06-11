@@ -1029,6 +1029,14 @@ func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
 			bp.base4 = 16
 			bp.qual = e.qual
 			bp.seqOff = e.readBP - 1
+			// A deletion ('*') position directly abutting a ref-skip run
+			// also carries upstream's p->ref_skip flag (consensus_pileup.c:
+			// 240 tests `p->base != '.'`, which a deletion satisfies), so
+			// the Gap5/bayesian caller excludes it from cons.depth just
+			// like an exon base boundary. Mirror that here.
+			if e.refSkipBoundary {
+				bp.refSkip = true
+			}
 		case pileupEventRefSkip:
 			bp.refSkip = true
 			bp.seqOff = e.readBP - 1

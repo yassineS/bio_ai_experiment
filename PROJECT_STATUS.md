@@ -59,13 +59,7 @@ The list below is the *definitive* remaining-gap set (each is small and
 individually scoped). Everything not on this list is either done or a
 documented **non-goal** (see "Non-goals" below).
 
-1. **samtools `consensus` pileup `-a` placeholder rows** — `-a` in pileup
-   format does not yet emit the `N\t0\t*\t*` rows upstream prints for
-   deletion-only / zero-coverage positions (and the upstream duplicate
-   rows at deletion sites). FASTA/FASTQ `-a` and pileup without `-a` are
-   byte-faithful; this is an emission-layer concern, the per-position
-   calls are already correct. *Small.*
-2. **htsgo `hfile` cloud I/O** — remote (S3 / http(s)) alignment/variant
+1. **htsgo `hfile` cloud I/O** — remote (S3 / http(s)) alignment/variant
    file access is not implemented (deferred P3 in `docs/HTSGO_ROADMAP.md`).
    Local files, BGZF, and `.gzi`/`.crai`/`.csi` seek all work. *Medium.*
 3. **bcftools `gtcheck -c/--cluster`** (dendrogram, which upstream itself

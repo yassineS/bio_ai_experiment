@@ -342,6 +342,23 @@ g3	0	chr1	8	60	3M5D3M	*	0	0	AAACCC	IIIIII
 g4	0	chr1	8	60	8M2I3M	*	0	0	AAAGGGGGTTCCC	IIIIIIIIIIIII
 `
 
+// delAdjacentRefSkipSAM pins the subtle boundary case where a DELETION (not
+// an aligned base) directly abuts a ref-skip (CIGAR N) run. Upstream flags
+// such a position with p->ref_skip too — its test is `p->base != '.'`
+// (consensus_pileup.c:240), which a deletion '*' satisfies — so the
+// Gap5/bayesian caller excludes it from cons.depth exactly like an exon-base
+// boundary. Read t2 carries `4M1D10N5M`: position 5 is a deletion bordering
+// the N intron, while t1/t3 cover position 5 with real bases, so the column
+// mixes a ref-skip-flagged deletion with un-flagged bases — the precise shape
+// that distinguishes "deletion boundary excluded" from "deletion boundary
+// counted" in the bayesian depth, and thus the call/qual near the column.
+const delAdjacentRefSkipSAM = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:24
+t1	0	chr1	1	60	5M10N5M	*	0	0	ACGTAGGGCA	IIIIIIIIII
+t2	0	chr1	1	60	4M1D10N5M	*	0	0	ACGTGGGCA	IIIIIIIII
+t3	16	chr1	1	60	5M10N5M	*	0	0	ACGTAGGGCA	IIIIIIIIII
+`
+
 // upstreamSamtoolsConsensusAll is the LIVE parity check for the
 // -a/--all-positions pileup placeholder rows. It builds (or reuses) the
 // vendored upstream samtools binary and compares its `consensus -a/-aa
@@ -370,6 +387,7 @@ func upstreamSamtoolsConsensusAll(t *testing.T) {
 		{"gaps", allPosConsensusSAM},
 		{"refskip", refSkipConsensusSAM},
 		{"delins-run", delInsRunConsensusSAM},
+		{"del-adj-refskip", delAdjacentRefSkipSAM},
 	}
 
 	modes := []struct {
@@ -378,6 +396,18 @@ func upstreamSamtoolsConsensusAll(t *testing.T) {
 	}{
 		{"simple", ConsensusModeSimple},
 		{"bayesian", ConsensusModeBayesian},
+	}
+	// Sweep all three output formats. pileup is the placeholder-row workhorse;
+	// fasta/fastq additionally pin the intron-column emission (simple emits a
+	// real 'N' that extends the covered span, bayesian emits '*' for the same
+	// column — both verified live against upstream's basic_fasta).
+	formats := []struct {
+		cli string
+		fmt ConsensusFormat
+	}{
+		{"pileup", ConsensusPileup},
+		{"fasta", ConsensusFASTA},
+		{"fastq", ConsensusFASTQ},
 	}
 	variants := []struct {
 		name    string
@@ -398,6 +428,15 @@ func upstreamSamtoolsConsensusAll(t *testing.T) {
 			o.AllContigs = true
 			o.ShowDel = true
 		}},
+		// A non-zero --min-BQ pins the displayed-depth vs call-depth split at
+		// intron columns: the ref-skip '.' (effective quality 0) is excluded
+		// from the call's tot_depth by the min-qual gate, while the displayed
+		// pileup column still counts it. The fixtures' real bases are Q40
+		// ('I'), so only the ref-skip events are filtered.
+		{"a_minBQ1", []string{"-a", "--min-BQ", "1"}, func(o *ConsensusOptions) {
+			o.AllPositions = true
+			o.MinBaseQ = 1
+		}},
 	}
 
 	for _, fx := range fixtures {
@@ -406,21 +445,23 @@ func upstreamSamtoolsConsensusAll(t *testing.T) {
 			t.Fatalf("write %s fixture: %v", fx.name, err)
 		}
 		for _, m := range modes {
-			for _, v := range variants {
-				name := fx.name + "_" + m.cli + "_" + v.name
-				t.Run(name, func(t *testing.T) {
-					args := append([]string{"-m", m.cli, "-f", "pileup"}, v.cliArgs...)
-					up := runUpstreamConsensus(t, bin, samPath, args...)
+			for _, ff := range formats {
+				for _, v := range variants {
+					name := fx.name + "_" + m.cli + "_" + ff.cli + "_" + v.name
+					t.Run(name, func(t *testing.T) {
+						args := append([]string{"-m", m.cli, "-f", ff.cli}, v.cliArgs...)
+						up := runUpstreamConsensus(t, bin, samPath, args...)
 
-					opts := ConsensusOptions{Mode: m.mod, Format: ConsensusPileup}
-					v.apply(&opts)
-					got := runConsensusOnSAM(t, fx.sam, opts)
+						opts := ConsensusOptions{Mode: m.mod, Format: ff.fmt}
+						v.apply(&opts)
+						got := runConsensusOnSAM(t, fx.sam, opts)
 
-					if got != up {
-						t.Fatalf("all-positions pileup parity mismatch (%s):\n--- upstream ---\n%s\n--- go ---\n%s",
-							name, up, got)
-					}
-				})
+						if got != up {
+							t.Fatalf("all-positions parity mismatch (%s):\n--- upstream ---\n%s\n--- go ---\n%s",
+								name, up, got)
+						}
+					})
+				}
 			}
 		}
 	}
