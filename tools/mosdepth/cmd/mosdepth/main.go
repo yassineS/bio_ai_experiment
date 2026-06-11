@@ -15,10 +15,10 @@ import (
 
 const version = "0.1.0"
 
-const usage = `mosdepth - pure-Go per-base/per-region BAM depth.
+const usage = `mosdepth - pure-Go per-base/per-region BAM/CRAM depth.
 
 Usage:
-  mosdepth [options] <prefix> <in.bam>
+  mosdepth [options] <prefix> <in.bam|in.cram>
 
 Outputs:
   <prefix>.mosdepth.global.dist.txt   cumulative depth distribution.
@@ -45,7 +45,7 @@ Options:
   -r                      port-only lowercase alias for -R/--read-groups.
   -l, --min-frag-len INT  minimum absolute TLEN.
   -u, --max-frag-len INT  maximum absolute TLEN.
-  -f, --fasta FILE        FASTA reference for CRAM input (accepted; CRAM not yet supported, ignored).
+  -f, --fasta FILE        FASTA reference for decoding CRAM input (--reference alias; honours REF_CACHE).
   -a, --fragment-mode     count coverage across the whole fragment (proper pairs only); excludes -x.
   -q, --quantize SEGS     ':'-separated depth bins, e.g. 0:1:4:; writes <prefix>.quantized.bed.gz.
   -m, --use-median        report the per-region MEDIAN depth (with --by) instead of the mean.
@@ -89,6 +89,7 @@ type runOptions struct {
 	minFragLen  int
 	maxFragLen  int
 	fasta       string
+	reference   string
 	fragmentLen bool
 	quantize    string
 	useMedian   bool
@@ -124,10 +125,13 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	fs.StringVar(&opts.readGroups, "r", "", "comma list of RG IDs (port-only lowercase alias for -R)")
 	cliflag.IntVar(fs, &opts.minFragLen, "l", "min-frag-len", 0, "min |TLEN|")
 	cliflag.IntVar(fs, &opts.maxFragLen, "u", "max-frag-len", 0, "max |TLEN|")
-	// -f/--fasta only matters for CRAM input (not supported yet) so it is
-	// accepted and ignored. -a/--fragment-mode, -q/--quantize and
-	// -m/--use-median are all implemented and wired into mosdepth.Options.
-	cliflag.StringVar(fs, &opts.fasta, "f", "fasta", "", "FASTA reference for CRAM (accepted; CRAM not yet supported)")
+	// -f/--fasta names the FASTA reference used to decode reference-backed
+	// CRAM input; it is ignored for BAM and SAM (which carry sequence
+	// inline). --reference is a samtools-style long alias for the same value.
+	// -a/--fragment-mode, -q/--quantize and -m/--use-median are all
+	// implemented and wired into mosdepth.Options.
+	cliflag.StringVar(fs, &opts.fasta, "f", "fasta", "", "FASTA reference for CRAM input")
+	fs.StringVar(&opts.reference, "reference", "", "FASTA reference for CRAM input (samtools-style alias for -f/--fasta)")
 	cliflag.BoolVar(fs, &opts.fragmentLen, "a", "fragment-mode", false, "count full-fragment coverage (proper pairs only)")
 	cliflag.StringVar(fs, &opts.quantize, "q", "quantize", "", "quantized output segments, e.g. 0:1:4:")
 	cliflag.BoolVar(fs, &opts.useMedian, "m", "use-median", false, "report per-region median depth instead of mean")
@@ -140,6 +144,12 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	// are set; otherwise whichever is non-empty.
 	if opts.readGroupsR != "" {
 		opts.readGroups = opts.readGroupsR
+	}
+	// Resolve the -f/--fasta and --reference aliases for the CRAM decode
+	// reference: --reference (samtools-style) wins when both are set;
+	// otherwise whichever is non-empty.
+	if opts.reference != "" {
+		opts.fasta = opts.reference
 	}
 	return opts, fs.Args(), nil
 }
@@ -207,6 +217,7 @@ func run(args []string) int {
 		Quantize:     quant,
 		Threads:      opts.threads,
 		UseMedian:    opts.useMedian,
+		Fasta:        opts.fasta,
 	}
 	if err := mosdepth.OpenAndRun(bam, mo); err != nil {
 		fmt.Fprintln(os.Stderr, err)

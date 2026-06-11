@@ -89,7 +89,7 @@ A skimmable per-tool completion table lives in the top-level
 - **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp` (~97%), `htsfile`.
 - **Near done (small tails):** `prinseq` (~95%), `vcftools` (146/146
   flags, ~98%, output-column polish only), `bgzip`/`tabix` (~92%),
-  `mosdepth` (~95%; only CRAM input remains), `bedtools` (37 bed* tools,
+  `mosdepth` (~98%; CRAM input now landed), `bedtools` (37 bed* tools,
   no missing subcommands, ~95%).
 - **Near done (variant-calling now landed):** `samtools` (~97%) and
   `bcftools` (~96%). The former "boulders" are closed: full multi-allelic
@@ -102,7 +102,7 @@ Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
 the canonical version with effort sizing): samtools `consensus` pileup
 `-a` placeholder rows; htsgo `hfile` cloud I/O; bcftools `convert` PLINK
 exporters; bcftools `gtcheck -c/--cluster`
-plus its filter expressions; mosdepth CRAM input; CRAM BCF-FORMAT-key edge
+plus its filter expressions; CRAM BCF-FORMAT-key edge
 cases, network ref fetch, and v4.0; bgzip `-t`, tabix
 `--reheader`/`--targets`; and scattered per-output column / niche-flag
 polish (vcftools, prinseq, a few bedtools tails).
@@ -131,7 +131,10 @@ Recently closed (this wave, treat as merged):
 - **mosdepth**: `-d/--d4`, `-a/--fragment-mode`, `-q/--quantize`,
   `-t/--threads`, and `-m/--use-median` (all byte-identical to the
   upstream v0.3.14 binary; threads produces identical output for any
-  count). No deferred flags remain (only CRAM input is unwired).
+  count); **CRAM input** (`-f/--fasta`/`--reference` + `REF_CACHE`,
+  auto-detected and routed through `pkg/htsgo/alnio`; per-base / regions /
+  summary output byte-identical to the equivalent BAM and to upstream
+  `mosdepth` on the CRAM). No deferred flags remain.
 - **bedtools**: BAM input (`bedintersect`, `bedmulticov`); VCF/GFF input
   (`bedintersect`, `bedmultiinter`); `bedclosest` direction flags
   (`-D`/`-id`/`-iu`/`-fu`/`-fd`/`-t`); `bedintersect -c`; `bedsample` RNG
@@ -2903,15 +2906,26 @@ across both modes, all three formats, and the `plain`/`mark-ins`/
 `show-del`/`ambig`/`all-pos`/`no-show-ins`/`use-qual`/`min-bq` flag
 variants.
 
-Remaining indel-adjacent gap (precisely scoped):
+Remaining indel-adjacent gap: **none** — closed.
 
-- **`-a/--all-positions` in pileup format** does not yet emit the
-  placeholder `N\t0\t*\t*` rows upstream prints for deletion-only and
-  zero-coverage reference positions (including upstream's quirky
-  duplicate rows at deletion sites). FASTA/FASTQ `-a` and pileup without
-  `-a` are byte-faithful; only the `-a`-with-pileup empty-row emission
-  is outstanding. This is an emission-layer concern orthogonal to the
-  indel caller itself (the per-position calls are already correct).
+- **`-a/--all-positions` in pileup format** (DONE). The placeholder
+  `<chrom>\t<pos>\t0\t0\tN\t0\t*\t*` rows that upstream prints for
+  deletion-only and zero-coverage reference positions are now emitted,
+  reproducing upstream's `empty_pileup2` byte-for-byte — including its
+  quirky duplicate rows at deletion sites (a suppressed `'*'` column does
+  not advance `last_pos`, so each deletion position is re-filled by every
+  following column: a D-bp deletion run yields the position emitted
+  `D, D-1, … , 1` times). The fill is driven by a per-window
+  `last_pos` cursor that mirrors `basic_pileup`/`empty_pileup2`
+  (`bam_consensus.c:2202`/`2832-2842`): genuine pileup columns trigger a
+  lazy gap fill back to the last emitted row, and a tail fill closes out
+  the window. Leading/internal/trailing gaps, `-aa` empty contigs, and
+  the `-l`/BED filter (placeholders are confined to selected positions)
+  are all handled. Validated by the live
+  `TestConsensus_AllPositionsUpstreamParity` sweep (simple + bayesian
+  modes × `-a`/`-aa` × `--show-del` on/off, byte-for-byte against the
+  freshly-built upstream binary) plus deterministic unit tests
+  (`TestConsensus_AllPositionsPileup_*`).
 
 Genuinely deferred sub-knobs (precisely scoped):
 
@@ -3923,12 +3937,24 @@ no committed goldens).
 ### `mosdepth`
 
 **Status:** 1 / 1 command, all flags. **`-d/--d4`, `-a/--fragment-mode`,
-`-q/--quantize`, `-t/--threads`, and `-m/--use-median` are all DONE**
-(byte-identical to the upstream v0.3.14 binary). No flags remain
+`-q/--quantize`, `-t/--threads`, `-m/--use-median`, and CRAM input are all
+DONE** (byte-identical to the upstream v0.3.14 binary). No flags remain
 unimplemented.
 
 Done:
 
+- **CRAM input** — `.cram` inputs are auto-detected (by the `CRAM` file
+  magic) and decoded through `pkg/htsgo/alnio.NewReaderWithReference`, which
+  dispatches to the in-tree `pkg/htsgo/cram` reader. `-f/--fasta` (and the
+  samtools-style `--reference` alias) supplies the decode reference and
+  `REF_CACHE` is honoured; an embedded-reference CRAM decodes with no `-f`.
+  Depth depends only on alignment coordinates, so per-base / regions /
+  summary / distribution / thresholds / quantized outputs are
+  **byte-identical** to the equivalent BAM. Validated by
+  `TestCRAM_InputMatchesBAM` (BAM-vs-CRAM byte parity across five option
+  modes, with and without `-f`, on a samtools-transcoded `ovl.bam`) and
+  `TestCRAM_InputMatchesUpstream` (byte-identical to the upstream `mosdepth`
+  binary run on the same CRAM).
 - **`.csi`** output — now emits a `.csi` (min_shift=14, depth=5, matching
   htslib's `tbx_index_build`) alongside each bgzipped BED output, replacing
   the earlier `.tbi`. Built via `pkg/htsgo/tabix.BuildCSIFromDataFile`.
@@ -3938,9 +3964,6 @@ Done:
 
 Missing:
 
-- **CRAM input** — `-f/--fasta` is accepted but the alignment reader is
-  BAM-only (`sam.NewReader`); CRAM coverage input is not yet wired through
-  `pkg/htsgo/alnio`. This is the one genuine remaining mosdepth gap.
 - **Default-mode overlap-pair correction** — our default (non-fast) mode
   does not subtract double-counted depth where mate pairs overlap; output
   matches upstream's `--fast-mode` (see `UPSTREAM_BUGS.md`). Unchanged by

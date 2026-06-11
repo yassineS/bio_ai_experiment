@@ -284,6 +284,106 @@ func TestConsensus_IndelUpstreamParity(t *testing.T) {
 	upstreamSamtoolsConsensusIndel(t)
 }
 
+// allPosConsensusSAM is a fixture exercising the -a/--all-positions pileup
+// placeholder-row emission. It is engineered to contain every flavour of
+// position the placeholder mechanism must reproduce:
+//
+//   - a LEADING zero-coverage gap (positions 1-2 are uncovered);
+//   - a covered run (positions 3-7);
+//   - a DELETION-only run inside the reads (the 3bp deletion at positions
+//     8-10 from `5M3D5M` at pos 3), which upstream emits as placeholder
+//     `N 0 * *` rows AND duplicates at the leading deletion positions
+//     (last_pos is not advanced for a suppressed '*' column);
+//   - an INTERNAL zero-coverage gap between two covered blocks on chr1;
+//   - a TRAILING zero-coverage gap (the contig is longer than any read);
+//   - a wholly UNCOVERED contig (chr2) that only -aa fills.
+const allPosConsensusSAM = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:28
+@SQ	SN:chr2	LN:6
+d1	0	chr1	3	60	5M3D5M	*	0	0	ACGTAACGTA	IIIIIIIIII
+d2	0	chr1	3	60	5M3D5M	*	0	0	ACGTAACGTA	IIIIIIIIII
+d3	16	chr1	3	60	5M3D5M	*	0	0	ACGTAACGTA	IIIIIIIIII
+e1	0	chr1	20	60	4M	*	0	0	TTGG	IIII
+e2	0	chr1	20	60	4M	*	0	0	TTGG	IIII
+`
+
+// upstreamSamtoolsConsensusAll is the LIVE parity check for the
+// -a/--all-positions pileup placeholder rows. It builds (or reuses) the
+// vendored upstream samtools binary and compares its `consensus -a/-aa
+// --format pileup` output byte-for-byte against the Go port over a fixture
+// with leading/internal/trailing zero-coverage gaps, a deletion-only run
+// (which exercises upstream's duplicate placeholder rows), and an entirely
+// uncovered contig. It sweeps the simple and bayesian modes and the
+// --show-del on/off setting. Per the project's testing rules it never calls
+// t.Skip on a build failure: an inability to produce the upstream binary is a
+// hard failure.
+func upstreamSamtoolsConsensusAll(t *testing.T) {
+	t.Helper()
+	bin := upstreamSamtoolsBinary(t)
+
+	samPath := filepath.Join(t.TempDir(), "allpos.sam")
+	if err := os.WriteFile(samPath, []byte(allPosConsensusSAM), 0o600); err != nil {
+		t.Fatalf("write all-positions fixture: %v", err)
+	}
+
+	modes := []struct {
+		cli string
+		mod ConsensusMode
+	}{
+		{"simple", ConsensusModeSimple},
+		{"bayesian", ConsensusModeBayesian},
+	}
+	variants := []struct {
+		name    string
+		cliArgs []string
+		apply   func(*ConsensusOptions)
+	}{
+		{"a", []string{"-a"}, func(o *ConsensusOptions) { o.AllPositions = true }},
+		{"aa", []string{"-aa"}, func(o *ConsensusOptions) {
+			o.AllPositions = true
+			o.AllContigs = true
+		}},
+		{"a_show-del", []string{"-a", "--show-del", "yes"}, func(o *ConsensusOptions) {
+			o.AllPositions = true
+			o.ShowDel = true
+		}},
+		{"aa_show-del", []string{"-aa", "--show-del", "yes"}, func(o *ConsensusOptions) {
+			o.AllPositions = true
+			o.AllContigs = true
+			o.ShowDel = true
+		}},
+	}
+
+	for _, m := range modes {
+		for _, v := range variants {
+			name := m.cli + "_" + v.name
+			t.Run(name, func(t *testing.T) {
+				args := append([]string{"-m", m.cli, "-f", "pileup"}, v.cliArgs...)
+				up := runUpstreamConsensus(t, bin, samPath, args...)
+
+				opts := ConsensusOptions{Mode: m.mod, Format: ConsensusPileup}
+				v.apply(&opts)
+				got := runConsensusOnSAM(t, allPosConsensusSAM, opts)
+
+				if got != up {
+					t.Fatalf("all-positions pileup parity mismatch (%s):\n--- upstream ---\n%s\n--- go ---\n%s",
+						name, up, got)
+				}
+			})
+		}
+	}
+}
+
+// TestConsensus_AllPositionsUpstreamParity runs the live -a/--all-positions
+// pileup placeholder-row parity sweep. It is skipped only in -short mode
+// (which omits the expensive upstream build).
+func TestConsensus_AllPositionsUpstreamParity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live upstream build/parity test in -short mode")
+	}
+	upstreamSamtoolsConsensusAll(t)
+}
+
 // cmdError is a build/command failure carrying the captured output so
 // the test log shows exactly what went wrong.
 type cmdError struct {
