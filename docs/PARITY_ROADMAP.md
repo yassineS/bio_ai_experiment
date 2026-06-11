@@ -100,12 +100,18 @@ A skimmable per-tool completion table lives in the top-level
 
 Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
 the canonical version with effort sizing): samtools `consensus` pileup
-`-a` placeholder rows; htsgo `hfile` cloud I/O; bcftools `convert` PLINK
-exporters; bcftools `gtcheck -c/--cluster`
+`-a` placeholder rows; htsgo `hfile` cloud I/O; bcftools `gtcheck -c/--cluster`
 plus its filter expressions; CRAM BCF-FORMAT-key edge
-cases, network ref fetch, and v4.0; bgzip `-t`, tabix
-`--reheader`/`--targets`; and scattered per-output column / niche-flag
-polish (vcftools, prinseq, a few bedtools tails).
+cases, network ref fetch, and v4.0; bgzip's upstream `--test` integrity
+flag (we bind `-t` to `--threads` — documented deviation); and scattered
+per-output column / niche-flag polish (vcftools, prinseq, a few bedtools
+tails).
+
+Not a gap (phantom feature): bcftools `convert` PLINK exporters. Upstream
+`vcfconvert.c` has the `--plink`/`--tped` options **commented out** (lines
+~1697–1699) with no `case 'p'`, no `--plink` long option, and no
+implementation — PLINK export lives in the `plink` tool, not in bcftools
+`convert`. Nothing to port.
 
 Recently closed (this wave, treat as merged):
 
@@ -3017,8 +3023,10 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 and `mpileup` (SNP slices 1–4 + legacy `bam2bcf_indel` + `--indels-cns`).
 
 All bcftools subcommands now have a real implementation in the Go port.
-The genuinely-remaining gaps are small: `convert` PLINK exporters
-and `gtcheck -c/--cluster` + filter expressions.
+The genuinely-remaining gap is small: `gtcheck -c/--cluster` + filter
+expressions. `convert` PLINK exporters are a **phantom feature** —
+upstream comments the `--plink`/`--tped` options out (no implementation),
+so there is nothing to port. `csq -l/--local-csq` is now implemented.
 `som` and `tview` are deliberate **non-goals** (see PROJECT_STATUS.md);
 `query %N_ALT` / `import --skipBamQ` are **not** upstream flags.
 
@@ -3086,9 +3094,10 @@ The former "boulders" are now **closed**: mpileup indel calling (both the
 legacy `bam2bcf_indel` path and `--indels-cns`), the `convert` GEN/HAP/TSV/
 gVCF modes, and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`,
 `--dump-gff`, `-O b|u|z` non-text output) all landed and are live-oracle
-validated (see the per-subcommand sections below). The only bcftools items
-still open are `convert`'s PLINK exporters and
-`gtcheck`'s `-c/--cluster` dendrogram + filter expressions.
+validated (see the per-subcommand sections below). The only bcftools item
+still open is `gtcheck`'s `-c/--cluster` dendrogram + filter expressions.
+(`convert`'s PLINK exporters are a phantom — upstream leaves them
+commented out — and `csq -l/--local-csq` is now implemented.)
 
 The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
 but with a deliberate design divergence from upstream:
