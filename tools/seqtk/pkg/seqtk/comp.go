@@ -93,23 +93,34 @@ var bitCntTable = [16]byte{4, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4}
 // reference_code/seqtk/seqtk.c) — see the package-level comment above for
 // the field definitions.
 func Comp(in io.Reader, w io.Writer) error {
+	return CompWithRegions(in, w, nil)
+}
+
+// CompWithRegions is Comp with optional region restriction (upstream `comp -r
+// FILE`). When regions is non-nil, only records whose name appears in the
+// region hash are reported, and for each listed [beg,end) interval one output
+// row is emitted with the columns "name\tbeg\tend" followed by the 11 counts
+// computed over that interval (matching upstream's stk_comp). When regions is
+// nil the whole-record path is used and the leading columns are "name\tlen".
+func CompWithRegions(in io.Reader, w io.Writer, regions *regHash) error {
 	br, isFastq := peekIsFastq(in)
 	bw := bufio.NewWriter(w)
 
-	emit := func(name string, seq []byte) error {
+	// countInterval computes the 11 composition counts over seq[beg:end],
+	// reading neighbour bytes outside the interval for CpG context exactly as
+	// upstream does (seq[beg-1] lookback, seq[i+1] lookahead).
+	countInterval := func(seq []byte, beg, end int) [11]int64 {
 		var cnt [11]int64
-		// Track the previous base and current base in seq_nt16 / bitcnt form.
-		// la / lb correspond to upstream's "last ASCII" / "last seq_nt16" carry.
-		var lb int = -1 // first iteration: no previous base
-		for i := 0; i < len(seq); i++ {
+		var lb int = -1
+		if beg > 0 {
+			lb = int(seqNT16Table[seq[beg-1]])
+		}
+		for i := beg; i < end; i++ {
 			b := int(seqNT16Table[seq[i]])
 			c := int(bitCntTable[b])
-			// nb / nc: lookahead used by upstream's CpG detection.
-			var nb int
+			nb := -1
 			if i+1 < len(seq) {
 				nb = int(seqNT16Table[seq[i+1]])
-			} else {
-				nb = -1
 			}
 			isCpG := false
 			if b == 2 || b == 10 { // C or Y
@@ -140,16 +151,47 @@ func Comp(in io.Reader, w io.Writer) error {
 			}
 			lb = b
 		}
-		// Format: name, length, then 11 count columns.
-		if _, err := fmt.Fprintf(bw, "%s\t%d", name, len(seq)); err != nil {
-			return err
-		}
+		return cnt
+	}
+
+	writeCounts := func(cnt [11]int64) error {
 		for _, v := range cnt {
 			if _, err := fmt.Fprintf(bw, "\t%d", v); err != nil {
 				return err
 			}
 		}
 		return bw.WriteByte('\n')
+	}
+
+	emit := func(name string, seq []byte) error {
+		if regions != nil {
+			intervals, ok := regions.m[name]
+			if !ok {
+				return nil
+			}
+			for _, iv := range intervals {
+				beg, end := int(iv[0]), int(iv[1])
+				if beg < 0 {
+					beg = 0
+				}
+				if end > len(seq) {
+					end = len(seq)
+				}
+				cnt := countInterval(seq, beg, end)
+				if _, err := fmt.Fprintf(bw, "%s\t%d\t%d", name, iv[0], iv[1]); err != nil {
+					return err
+				}
+				if err := writeCounts(cnt); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		cnt := countInterval(seq, 0, len(seq))
+		if _, err := fmt.Fprintf(bw, "%s\t%d", name, len(seq)); err != nil {
+			return err
+		}
+		return writeCounts(cnt)
 	}
 
 	if isFastq {
