@@ -46,7 +46,14 @@ type SliceHeader struct {
 // alignment span, record count, record counter, block count, an ITF-8
 // array of block content ids, the embedded-reference block id, the
 // 16-byte reference MD5, and any optional trailing tag bytes.
-func parseSliceHeader(p []byte) (*SliceHeader, error) {
+//
+// The major argument is the container's CRAM major version. It selects
+// the encoding of the record-counter field: htslib reads it as a 32-bit
+// varint (ITF-8) for CRAM v2 and as a 64-bit varint (LTF-8) for v3+
+// (cram/cram_decode.c, cram_decode_slice_header). The two encodings
+// coincide for every value below 2^28, so the distinction only matters
+// for a v2 slice whose preceding records number 2^28 or more.
+func parseSliceHeader(p []byte, major uint8) (*SliceHeader, error) {
 	s := &SliceHeader{}
 	off := 0
 	var err error
@@ -62,7 +69,16 @@ func parseSliceHeader(p []byte) (*SliceHeader, error) {
 	if s.NumRecords, off, err = sliceITF8(p, off, "slice record count"); err != nil {
 		return nil, err
 	}
-	if s.RecordCounter, off, err = sliceLTF8(p, off, "slice record counter"); err != nil {
+	// CRAM v2 stores the record counter as ITF-8 (32-bit); v3+ uses
+	// LTF-8 (64-bit). Reading the wrong width would misalign every field
+	// that follows once the counter reaches 2^28.
+	if major <= 2 {
+		var rc int32
+		if rc, off, err = sliceITF8(p, off, "slice record counter"); err != nil {
+			return nil, err
+		}
+		s.RecordCounter = int64(rc)
+	} else if s.RecordCounter, off, err = sliceLTF8(p, off, "slice record counter"); err != nil {
 		return nil, err
 	}
 	if s.NumBlocks, off, err = sliceITF8(p, off, "slice block count"); err != nil {

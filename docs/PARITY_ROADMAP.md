@@ -736,6 +736,65 @@ has no missing subcommands**.
 Missing subcommands: none. All algorithmic, BEDPE, and converter
 subcommands are ported. Remaining bedtools work is option-tail polish.
 
+`bedintersect` behavioral-flags wave: the previously
+recognized-but-unimplemented join/overlap output flags now run to
+byte-for-byte parity with the live upstream binary:
+
+- **`-loj`** (left outer join): every A record is echoed, with the
+  overlapping B appended, or a null-B placeholder when A has no overlap.
+  The null shape is derived from the B file's detected record type
+  (`. -1 -1` for BED3, plus the right trailing `.`/`-1` columns for
+  BED4/5/6/12/bedGraph/BED+ — mirroring `RecordOutputMgr::null` and the
+  per-type `printNull` methods).
+- **`-wo`** (write overlap): A, B and the overlapping base count per
+  overlap. A-with-no-hits is omitted.
+- **`-wao`** (write all + overlap): like `-wo` but A-with-no-hits is also
+  emitted, with a null B and an overlap of `0`.
+- **`-wa -wb`** combined: A and B columns side-by-side per overlap.
+- **`-split`**: BED12 records are split into their blocks; a B is a hit
+  only if a block of A overlaps a block of B, and the `-wo`/`-wao`
+  overlap count is the summed per-block overlap. The `-f`/`-F`/`-r`
+  fraction tests under `-split` use the combined non-redundant overlap
+  over the A and B block sums (once per A, dropping all hits on failure),
+  matching `BlockMgr::findBlockedOverlaps`; the non-split path keeps the
+  per-record fraction test from `Record::sameChromIntersects`.
+
+These modes echo the original A and B input columns verbatim and in the
+original B-file order (not sorted), via a raw line-preserving parser in
+`tools/bedintersect/pkg/bedintersect/join.go`. Zero-length records
+(`start==end`) are expanded to `[p-1,p+1]` for detection (non-split and
+split paths) with the upstream overlap-count corrections. The fix also
+corrected the `-s` same-strand filter across all intersect paths: `.`,
+`*` and a missing strand column are UNKNOWN and can never satisfy `-s`
+(previously they were treated as wildcards, over-reporting hits).
+
+Parity is enforced by `cmd/bedintersect/behavioral_parity_test.go`,
+which builds the real upstream `bedtools` (uniquely-named
+`upstreamBedtoolsBehavioral` builder, `sync.Once`) and asserts
+byte-for-byte equality (`t.Fatalf`, never `t.Skip`) across the BED3–BED12
+null shapes, `-split` block math, zero-length intervals, B-order
+preservation, and the UNKNOWN-strand cases.
+
+Documented `bedintersect` remainder (NOT implemented in this wave):
+
+- **BAM / VCF / GFF inputs.** `-split` BAM CIGAR-N splitting, and VCF/GFF
+  interval coercion, are out of scope; the tool reads BED only. The join
+  path rejects non-BED input rather than silently mis-parsing it.
+- **Ragged B files.** Upstream hard-errors when a B file's records have
+  inconsistent field counts; the null-shape classification here keys off
+  the first B record. Genuine BED is uniform, so this only differs on
+  malformed input (ours is lenient where upstream aborts).
+- **The pre-existing `-c` typed-writer column drop** (a score of `0`
+  round-trips to nothing in the default count/intersection path) is
+  unchanged — it predates this wave and lives in the typed `bed.Writer`,
+  not the join path.
+- **`bedclosest` directional flags (`-id`/`-iu`/`-fu`/`-fd`).** Not
+  implemented. They require `-D` orientation and select/ignore B features
+  by upstream/downstream position with sweep-direction subtleties; the
+  existing `bedclosest` already implements signed `-D` (ref/a/b), `-N`,
+  and the tie modes. The directional ignore/force flags are deferred to a
+  dedicated wave rather than shipped half-correct.
+
 CRAM-input + option-tail wave (this PR): `bedmulticov` now accepts CRAM
 inputs anywhere it accepts BAM; `bedmultiinter` now autodetects VCF/GFF
 inputs and takes `-names` as a space-separated variadic list; `bedsample`
@@ -1560,6 +1619,29 @@ Other (per-output column-set gaps, not flag-count gaps):
      golden regenerated on musl / macOS libc / MSVC could
      print `nan` or `NaN` instead. Re-running the goldens on
      a non-glibc system would require updating the literal.
+- ~~**`--freq` / `--counts` float formatting**: the `.frq` allele-frequency
+  column printed `%.6f` (`0.500000`), but upstream's `output_frequency`
+  (`variant_file_output.cpp:131`) writes each freq straight to a default
+  C++ ostream — `defaultfloat` with precision 6, i.e. six *significant*
+  digits with trailing zeros stripped (`0.5`, `0.0833333`, `1`, `0`).~~
+  **Closed.** A `formatFreq` helper (`statistics.go`) uses Go's
+  `strconv.FormatFloat(v, 'g', 6, 64)`, which reproduces the C++ default
+  ostream output byte-for-byte (verified over a 12.5M-ratio sweep against a
+  live `ostringstream`, including the sub-`1e-4` scientific-notation
+  threshold and round-half-to-even at the 6th digit). `--counts` was already
+  integer-formatted and is unaffected. Pinned by the live-binary
+  `TestVcftools_FreqUpstreamParity` (`--freq` + `--counts` byte-for-byte on
+  the all-biallelic `freq_fmt_fixture.vcf`); the `freq.expected.frq` and
+  `derived.expected.frq` goldens were regenerated to the upstream format.
+  The same fix was applied to `outputFrequency2` (`--freq2`).
+- **`--freq2` / `--counts2` output schema** (open, algorithmic — not just
+  formatting): the Go port writes `<prefix>.frq2` / `.frq.count2` with a
+  PLINK-style `CHROM POS N_CHR REF_FREQ ALT_FREQ` layout, whereas upstream's
+  `suppress_allele_output` branch writes the SAME `.frq` / `.frq.count`
+  files as `--freq` / `--counts` but with the allele labels stripped
+  (header `{FREQ}` / `{COUNT}`, bare tab-separated values for all N
+  alleles). Bringing this to parity is a column-set/suffix change beyond the
+  float-formatting fix above and is tracked here as a separate gap.
 - **Other**: small-format columns gaps tracked in
   `tools/PORTING_STATUS.md`.
 
@@ -1767,12 +1849,19 @@ Plus:
   decode, stripped the internal `cF` tag, matched htslib's RG/PG aux
   ordering, fixed read-feature → CIGAR ordering for deletions, and
   thereby unblocked **v2.1 decode** for the realistic case — all proven
-  byte-for-byte against live `samtools view`. Remaining decode gaps are
-  small and behind clear errors: the v2.1 record-counter ITF-8/LTF-8
-  edge for files with > 2^28 reads before the read slice, the network
+  byte-for-byte against live `samtools view`. The v2.1 slice-header
+  record-counter ITF-8/LTF-8 edge (files with ≥ 2^28 reads before the
+  read slice) is now also **closed** (C-V21): `parseSliceHeader` takes
+  the container's CRAM major version and reads the counter as ITF-8 for
+  v2 / LTF-8 for v3+, matching htslib `cram_decode_slice_header`,
+  validated by a 2^28-boundary unit test plus the live-samtools v2.1
+  round-trip. Remaining gaps are behind clear errors: the network
   REF_PATH/EBI fetch (an unresolvable reference is a clear MD5 error),
-  X_EXT bzip2 *encode* (no Go bzip2 encoder), and CRAM v4.0 (spec not
-  final). See `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
+  X_EXT bzip2 *encode* (no Go bzip2 encoder and none sanctioned; a
+  correct in-tree port is ~1.5–2.5 kLOC for a rare optional codec the
+  writer never emits, so it is documented-deferred and errors cleanly —
+  never silent wrong output), and CRAM v4.0 (spec not final). See
+  `docs/CRAM_DESIGN.md` and `docs/CRAM_ROADMAP.md`.
 - **`.csi` index** — DONE (PR #189); `samtools index` emits both `.bai`
   and `.csi`, and readers auto-detect index kind from file magic.
 - **Multi-threading (`-@`) — DONE for the BAM-writing subcommands

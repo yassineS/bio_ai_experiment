@@ -49,7 +49,14 @@ bedintersect -a genes.bed -b peaks.bed > overlaps.bed
 - `-s, --strand` - Only report hits on same strand
 - `-v, --invert` - Report A entries with NO overlap with B
 - `-wa, --write-a` - Write original A entry (default: write intersection)
-- `-wb, --write-b` - Write B entry instead of A
+- `-wb, --write-b` - Write B entry instead of A (with `-wa`: write A and B
+  side-by-side per overlap)
+- `-loj` - Left outer join: report every A; B is null when there is no overlap
+- `-wo` - Write A, B and the number of overlapping bases per overlap
+- `-wao` - Like `-wo`, but also report A (with null B and overlap `0`) when there
+  is no overlap
+- `-split` - Treat split BED12 entries as distinct intervals (block-aware
+  overlap and overlap-base counting)
 - `-c, --count` - Report count of B overlaps for each A
 - `-d, --distance` - Report distance to nearest B feature
 - `-k, --closest` - Output closest B feature for each A
@@ -398,6 +405,16 @@ go test -cover ./pkg/bedintersect
 - ✅ Distance to nearest feature (use -d flag)
 - ✅ Output closest feature (use -k flag)
 - ✅ Streaming mode for file A (always enabled)
+- ✅ Left outer join (`-loj`), write-overlap (`-wo`/`-wao`), `-wa -wb`
+  side-by-side, and `-split` block-aware overlap — all validated
+  byte-for-byte against the upstream `bedtools intersect` binary (BED3–BED12
+  null shapes, zero-length intervals, B-file order, and `-s` UNKNOWN-strand
+  handling).
+
+These join/overlap modes echo the original A and B input columns verbatim,
+in the original B-file order, matching upstream. BAM/VCF/GFF inputs and the
+`bedclosest` directional flags (`-id`/`-iu`/`-fu`/`-fd`) remain out of scope —
+see `docs/PARITY_ROADMAP.md` for the documented remainder.
 
 ## Future Enhancements
 
