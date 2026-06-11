@@ -103,10 +103,10 @@ Recently closed (PRs #220–#225, treat as merged):
 - **samtools**: `consensus --het-only` (implemented as a fix for an
   upstream dead-option bug — see `UPSTREAM_BUGS.md`); `--ignore-overlaps`
   landed earlier. Still deferred: mpileup `-g/-u` BCF output.
-- **mosdepth**: `-d/--d4`, `-a/--fragment-mode`, `-q/--quantize`, and
-  `-t/--threads` (all byte-identical to the upstream v0.3.14 binary;
-  threads produces identical output for any count). Still deferred:
-  `-m/--use-median`.
+- **mosdepth**: `-d/--d4`, `-a/--fragment-mode`, `-q/--quantize`,
+  `-t/--threads`, and `-m/--use-median` (all byte-identical to the
+  upstream v0.3.14 binary; threads produces identical output for any
+  count). No deferred flags remain.
 - **vcftools**: 0 unsupported flags.
 - A repo-wide test cleanup (#225) converted all golden tests to live
   upstream-binary parity and fixed a `samtools depth` flag bug.
@@ -3872,9 +3872,10 @@ no committed goldens).
 
 ### `mosdepth`
 
-**Status:** 1 / 1 command, most flags. **`-d/--d4`, `-a/--fragment-mode`,
-`-q/--quantize`, and `-t/--threads` are all DONE** (byte-identical to the
-upstream v0.3.14 binary). Only `-m/--use-median` remains unimplemented.
+**Status:** 1 / 1 command, all flags. **`-d/--d4`, `-a/--fragment-mode`,
+`-q/--quantize`, `-t/--threads`, and `-m/--use-median` are all DONE**
+(byte-identical to the upstream v0.3.14 binary). No flags remain
+unimplemented.
 
 Done:
 
@@ -3887,8 +3888,6 @@ Done:
 
 Missing:
 
-- **`-m/--use-median`** — per-region median instead of mean. Parsed for
-  CLI parity but rejected (exit 2) rather than silently emitting means.
 - **Default-mode overlap-pair correction** — our default (non-fast) mode
   does not subtract double-counted depth where mate pairs overlap; output
   matches upstream's `--fast-mode` (see `UPSTREAM_BUGS.md`). Unchanged by
@@ -3918,6 +3917,22 @@ Implemented:
   Verified by `TestThreads_OutputIdentical` (threads {1,2,4,8} identical;
   multi-block fixture spans 66 BGZF blocks) and
   `bgzf.TestMultiReader_MatchesSequential`.
+- **`-m/--use-median`** — reports the per-region **median** depth instead
+  of the mean in the `--by` regions output, mirroring upstream's
+  `imean()` routing through `depthstat.CountStat`: a depth histogram
+  (size 65536, top bucket folds in depths ≥ 65535) whose median is the
+  first depth where the cumulative count reaches
+  `stop_n = int(0.5 + n*0.5)` (round-half-up of n/2; even counts take the
+  upper-middle value, not an average). Changes **only** the
+  `regions.bed.gz` depth column — the summary, distribution, thresholds,
+  quantized, and per-base outputs are untouched, exactly as upstream does.
+  The histogram is built from the same `regionStats` sweep that computes
+  the mean/threshold columns (single pass, identical depth profile).
+  **Byte-identical** to upstream v0.3.14 on the `ovl.bam` MT region
+  (`TestUpstream_UseMedian_Parity`), with a mean-vs-median divergence
+  cross-check (`TestUpstream_UseMedian_DiffersFromMean`) and direct unit
+  coverage of odd/even/empty/cap-fold cases (`TestRegionMedian_Unit`,
+  `TestRegionMedian_CapFold`).
 - **D4 output** (`-d/--d4`) — writes `<prefix>.per-base.d4` as a real D4
   framefile that is **byte-identical** to the upstream `mosdepth_d4`
   binary's output for the same BAM (same on-disk size). The track uses
@@ -3936,10 +3951,10 @@ and via in-tree round-trip query (`TestRunCsiReadable`,
 `TestParity_IndexFiles_Csi`), plus an optional real-`tabix` read when the
 binary is on `PATH` (`TestRunCsiReadableByRealTabix`). Fast-path
 byte-identity proven by `TestMapqFastPathByteIdentical`.
-`--fragment-mode`, `--quantize`, and `-t/--threads` are validated
-byte-for-byte against the upstream `mosdepth` v0.3.14 release binary
-(`TestUpstream_FragmentMode_Parity`, `TestUpstream_Quantize_Parity`,
-`TestThreads_OutputIdentical`); the binary is fetched from the GitHub
+`--fragment-mode`, `--quantize`, `-t/--threads`, and `--use-median` are
+validated byte-for-byte against the upstream `mosdepth` v0.3.14 release
+binary (`TestUpstream_FragmentMode_Parity`, `TestUpstream_Quantize_Parity`,
+`TestThreads_OutputIdentical`, `TestUpstream_UseMedian_Parity`); the binary is fetched from the GitHub
 release with retry/backoff and cached, overridable via `MOSDEPTH_BIN`.
 Offline these fall back to internal-consistency assertions and log the
 reduced tier (never a silent skip). The broader upstream functional-test

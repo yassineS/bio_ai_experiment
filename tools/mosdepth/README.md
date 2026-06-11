@@ -67,7 +67,7 @@ Outputs (always emitted unless a flag below suppresses one):
 | `-f` | `--fasta FILE` | FASTA reference for CRAM input. Accepted for parity; CRAM is not yet supported, so the value is ignored. |
 | `-a` | `--fragment-mode` | Count coverage across the whole template (fragment) between properly-paired mates rather than the aligned reads only. Only read1 of a proper, non-supplementary pair contributes, covering `[min(read,mate) start, +\|TLEN\|)`. Byte-identical to upstream v0.3.14. Mutually exclusive with `-x/--fast-mode` (rejected, exit 2). |
 | `-q` | `--quantize SEGS` | Bin per-base depth into the `:`-separated segments (e.g. `0:1:4:`) and write `<prefix>.quantized.bed.gz`. A leading `:` prepends `0`; a trailing `:` adds an open-ended top bin (`N:inf`). Labels default to `lo:hi` and can be overridden per bin with `MOSDEPTH_Q<i>` env vars. Depths outside the range leave a gap (no line). Byte-identical to upstream v0.3.14. |
-| `-m` | `--use-median` | Upstream flag, not yet implemented in this port: supplying it is rejected (exit 2). |
+| `-m` | `--use-median` | Report the per-region **median** depth instead of the mean in the `--by` regions output. Changes only the `<prefix>.regions.bed.gz` depth column; the summary, distribution, thresholds, quantized, and per-base outputs are unaffected — exactly as upstream does (only `imean()` routes through the median histogram). Byte-identical to upstream v0.3.14. |
 | `-h` | `--help` | Show help. |
 | `-v` | `--version` | Show version. |
 
@@ -185,10 +185,11 @@ Coverage targets ≥85% on `pkg/mosdepth`. Tests cover:
 - `-d/--d4` D4 output is byte-identical to the upstream `mosdepth_d4`
   binary on the same BAM (`TestD4_UpstreamBinaryParity`), plus a
   writer/reader round-trip on a hand-built track.
-- `-a/--fragment-mode`, `-q/--quantize`, and `-t/--threads` are validated
-  byte-for-byte against the upstream `mosdepth` v0.3.14 release binary
-  (`TestUpstream_FragmentMode_Parity`, `TestUpstream_Quantize_Parity`,
-  `TestThreads_OutputIdentical`); set `MOSDEPTH_BIN` to point at a local
+- `-a/--fragment-mode`, `-q/--quantize`, `-t/--threads`, and
+  `-m/--use-median` are validated byte-for-byte against the upstream
+  `mosdepth` v0.3.14 release binary (`TestUpstream_FragmentMode_Parity`,
+  `TestUpstream_Quantize_Parity`, `TestThreads_OutputIdentical`,
+  `TestUpstream_UseMedian_Parity`); set `MOSDEPTH_BIN` to point at a local
   copy. Offline they fall back to internal-consistency checks and log the
   tier rather than skipping silently.
 
@@ -196,7 +197,7 @@ Coverage targets ≥85% on `pkg/mosdepth`. Tests cover:
 
 - v1: per-base, per-region (BED), per-window, thresholds, distribution,
   summary, CSI indexes, `--mapq 0` fast path, byte-identical D4
-  per-base output, `--fragment-mode`, `--quantize`, and multi-threaded
-  (`-t/--threads`) BGZF decode.
-- Roadmap: `-m/--use-median`, default-mode overlap-pair correction, CRAM
-  input (depends on the project's CRAM reader landing first).
+  per-base output, `--fragment-mode`, `--quantize`, `--use-median`, and
+  multi-threaded (`-t/--threads`) BGZF decode.
+- Roadmap: default-mode overlap-pair correction, CRAM input (depends on
+  the project's CRAM reader landing first).

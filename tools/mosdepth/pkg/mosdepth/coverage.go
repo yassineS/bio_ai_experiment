@@ -274,6 +274,82 @@ func (a *covAccum) regionStats(beg0, end0 int, thresholds []int, emitFn func(sta
 	return sum, perThreshold, minD, maxD
 }
 
+// medianHistCap mirrors upstream mosdepth's CountStat histogram size of
+// 65536 (initCountStat[uint32](size = 65536) when --use-median is set). Depth
+// values are clamped to the highest index, so any per-base depth at or above
+// medianHistCap-1 contributes to the top bucket — identical to upstream's
+// `c.counts[min(c.counts.high, value)].inc`.
+const medianHistCap = 65536
+
+// medianHist is a depth histogram that mirrors upstream mosdepth's
+// depthstat.CountStat: counts[d] is the number of bases observed at depth d,
+// with depths >= medianHistCap-1 folded into the top bucket. It is fed one
+// collapsed [start, end, depth] run at a time (matching regionStats' emitFn
+// signature) so a region's median can be derived from the same single sweep
+// that computes the mean and per-threshold columns.
+type medianHist struct {
+	counts []int64
+	n      int64
+}
+
+// addRun records a constant-depth run of length end-start at the given depth,
+// folding out-of-range depths into the histogram's endpoints exactly as
+// upstream's `c.counts[min(c.counts.high, value)].inc` does. Its signature
+// matches regionStats' emitFn so it can be passed directly as the callback.
+func (h *medianHist) addRun(start, end int, depth int32) {
+	dv := int(depth)
+	if dv < 0 {
+		dv = 0
+	}
+	if dv > medianHistCap-1 {
+		dv = medianHistCap - 1
+	}
+	if dv >= len(h.counts) {
+		grown := make([]int64, dv+1)
+		copy(grown, h.counts)
+		h.counts = grown
+	}
+	runLen := int64(end - start)
+	h.counts[dv] += runLen
+	h.n += runLen
+}
+
+// median returns the histogram median as a float64, matching upstream
+// depthstat.CountStat.median: it walks depths ascending and returns the first
+// depth at which the cumulative count reaches stop_n = int(0.5 + n*0.5)
+// (round-half-up of n/2). An empty histogram yields 0, matching upstream's
+// behaviour when no bases contribute.
+func (h *medianHist) median() float64 {
+	if h.n == 0 {
+		return 0
+	}
+	stopN := int64(0.5 + float64(h.n)*0.5)
+	var cum int64
+	for d, cnt := range h.counts {
+		cum += cnt
+		if cum >= stopN {
+			return float64(d)
+		}
+	}
+	return 0
+}
+
+// regionMedian computes the per-base depth median across the half-open
+// interval [beg0, end0) on this accumulator, returning the integer median
+// depth as a float64 (upstream prints it through the same float formatter as
+// the mean).
+//
+// The per-base depth profile is obtained from the same regionStats sweep that
+// produces the mean/threshold columns: its emitFn fires once per collapsed
+// [start, end, depth] run, so the histogram is built in that single pass
+// rather than re-walking the event list. This keeps median and mean computed
+// against an identical depth profile by construction.
+func (a *covAccum) regionMedian(beg0, end0 int) float64 {
+	var h medianHist
+	a.regionStats(beg0, end0, nil, h.addRun)
+	return h.median()
+}
+
 // sortEventSlice sorts a slice of covEvent by ascending position.
 //
 // This is a small, allocation-free quicksort tuned for the mostly-sorted
