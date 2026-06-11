@@ -41,6 +41,11 @@ Options:
   -b, --offset N            Print uncompressed offset at compressed offset N.
   -s, --size                Print the decompressed size of the file.
   -r, --reindex             Write a .gzi index alongside file.gz.
+      --test                Test the integrity of a BGZF file: decompress it
+                            fully, write nothing, and exit non-zero on any
+                            error. (Upstream spells this -t/--test; this port
+                            binds -t to --threads, so only the long --test
+                            form is offered — see the README "Deviations".)
   -h, --help                Show this help and exit.
   -v, --version             Show version and exit.
 
@@ -67,6 +72,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		offsetSet   bool
 		showSize    bool
 		reindex     bool
+		test        bool
 		showHelp    bool
 		showVersion bool
 	)
@@ -89,6 +95,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	})
 	cliflag.BoolVar(fs, &showSize, "s", "size", false, "Print decompressed size")
 	cliflag.BoolVar(fs, &reindex, "r", "reindex", false, "Write .gzi index")
+	// Upstream's integrity check is -t/--test, but this port already binds -t
+	// to --threads, so --test is registered as a long-only flag (documented
+	// deviation). It decompresses the whole stream and discards the output.
+	fs.BoolVar(&test, "test", false, "Test the integrity of a BGZF file")
 	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Show version")
 	// Upstream bgzip (bgzip.c getopt "cdh?fb:@:s:iI:l:grtko:") also accepts a
@@ -162,6 +172,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	// Mode dispatch — query flags first since they don't modify the input.
 	switch {
+	case test:
+		return runTest(input, stdin, stderr)
 	case offsetSet:
 		return runOffset(input, offset, stdout, stderr)
 	case showSize:
@@ -371,6 +383,33 @@ func runDecompress(input, writeFname string, useStdout, force, keep bool, stdin 
 			fmt.Fprintf(stderr, "bgzip: %v\n", err)
 			return 1
 		}
+	}
+	return 0
+}
+
+// runTest verifies the integrity of a BGZF stream the way upstream bgzip's
+// -t/--test does: it decompresses the entire input, discarding the output,
+// and reports any error. The input is never modified, nothing is written to
+// stdout, and a decode failure (truncated stream, bad CRC, corrupt block)
+// yields a non-zero exit code.
+func runTest(input string, stdin io.Reader, stderr io.Writer) int {
+	in, closeIn, err := openInputBinary(input, stdin)
+	if err != nil {
+		fmt.Fprintf(stderr, "bgzip: %v\n", err)
+		return 1
+	}
+	defer closeIn()
+
+	br, err := bgzip.NewReader(in)
+	if err != nil {
+		fmt.Fprintf(stderr, "bgzip: %v\n", err)
+		return 1
+	}
+	defer br.Close()
+
+	if _, err := io.Copy(io.Discard, br); err != nil {
+		fmt.Fprintf(stderr, "bgzip: %v\n", err)
+		return 1
 	}
 	return 0
 }

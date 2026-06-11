@@ -34,6 +34,66 @@ func decodeBGZF(t *testing.T, data []byte) []byte {
 	return plain.Bytes()
 }
 
+// TestIntegrityCheckValidStream verifies that `bgzip --test` on a well-formed
+// BGZF file decompresses cleanly, writes nothing to stdout, and exits 0
+// without touching the input.
+func TestIntegrityCheckValidStream(t *testing.T) {
+	dir := t.TempDir()
+	plain := bytes.Repeat([]byte("ACGTACGTNN\n"), 20000)
+
+	// Produce a real multi-block BGZF file via the compress path.
+	gzPath := filepath.Join(dir, "data.gz")
+	if code, _, stderr := runCLI(t, []string{"-@", "2", "-o", gzPath}, plain); code != 0 {
+		t.Fatalf("compress exit=%d stderr=%s", code, stderr)
+	}
+	before, err := os.ReadFile(gzPath)
+	if err != nil {
+		t.Fatalf("read gz: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, []string{"--test", gzPath}, nil)
+	if code != 0 {
+		t.Fatalf("--test on valid stream exit=%d stderr=%s", code, stderr)
+	}
+	if len(stdout) != 0 {
+		t.Fatalf("--test wrote %d bytes to stdout; want none", len(stdout))
+	}
+	after, err := os.ReadFile(gzPath)
+	if err != nil {
+		t.Fatalf("re-read gz: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("--test modified the input file")
+	}
+}
+
+// TestIntegrityCheckCorruptStream verifies that `bgzip --test` exits non-zero
+// when the compressed payload is corrupted (CRC / inflate failure), and via
+// stdin too (no on-disk file needed).
+func TestIntegrityCheckCorruptStream(t *testing.T) {
+	plain := bytes.Repeat([]byte("the quick brown fox\n"), 5000)
+	code, stdout, _ := runCLI(t, []string{"-c"}, plain)
+	if code != 0 {
+		t.Fatalf("compress exit=%d", code)
+	}
+	good := stdout
+
+	// Flip bytes in the middle of the first block's deflate payload (past the
+	// 18-byte BGZF header) so the block decodes to wrong data / bad CRC.
+	corrupt := append([]byte(nil), good...)
+	if len(corrupt) < 40 {
+		t.Fatalf("compressed output unexpectedly short: %d bytes", len(corrupt))
+	}
+	for i := 20; i < 30; i++ {
+		corrupt[i] ^= 0xff
+	}
+
+	code, _, _ = runCLI(t, []string{"--test", "-"}, corrupt)
+	if code == 0 {
+		t.Fatalf("--test accepted a corrupted stream; want non-zero exit")
+	}
+}
+
 func TestCompressStdinToStdout(t *testing.T) {
 	in := []byte("the quick brown fox\n")
 	code, stdout, stderr := runCLI(t, []string{"-c"}, in)

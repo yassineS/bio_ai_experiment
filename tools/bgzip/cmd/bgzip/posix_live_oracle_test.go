@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,6 +149,63 @@ func TestBgzipPosixBundlingEquivalentToCanonical(t *testing.T) {
 				t.Fatalf("bundled %v not equivalent to canonical %v", tc.bundled, tc.canonical)
 			}
 		})
+	}
+}
+
+// runBgzipExit runs bin with args+stdin and returns only the exit code,
+// without failing the test on a non-zero status (used to compare error
+// signalling between binaries).
+func runBgzipExit(t *testing.T, bin string, stdin []byte, args ...string) int {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Stdin = bytes.NewReader(stdin)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	err := cmd.Run()
+	if err == nil {
+		return 0
+	}
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode()
+	}
+	t.Fatalf("%s %v failed to run: %v", bin, args, err)
+	return -1
+}
+
+// TestLiveBgzipIntegrityCheckMatchesUpstream verifies that our long-only
+// `--test` integrity check agrees with upstream's `-t/--test` on the
+// success/failure decision for both a valid and a deliberately corrupted
+// BGZF stream. (We diverge from upstream only on the flag spelling — -t is
+// our --threads alias — not on the behaviour.)
+func TestLiveBgzipIntegrityCheckMatchesUpstream(t *testing.T) {
+	ours := buildOurBgzipBinary(t)
+	up := upstreamBgzipBinary(t)
+
+	payload := []byte("integrity payload\n" + makeFiller(40000))
+	// Build a genuine multi-block BGZF with upstream so neither side has an
+	// encoder advantage in the test fixture.
+	good := runBgzipStdin(t, up, payload, "-c")
+
+	// Valid stream: both must accept it (exit 0).
+	if c := runBgzipExit(t, up, good, "-t"); c != 0 {
+		t.Fatalf("upstream -t rejected a valid stream: exit %d", c)
+	}
+	if c := runBgzipExit(t, ours, good, "--test", "-"); c != 0 {
+		t.Fatalf("our --test rejected a valid stream: exit %d", c)
+	}
+
+	// Corrupt stream: both must reject it (non-zero exit).
+	corrupt := append([]byte(nil), good...)
+	for i := 20; i < 30 && i < len(corrupt); i++ {
+		corrupt[i] ^= 0xff
+	}
+	upExit := runBgzipExit(t, up, corrupt, "-t")
+	ourExit := runBgzipExit(t, ours, corrupt, "--test", "-")
+	if upExit == 0 {
+		t.Fatalf("upstream -t accepted a corrupted stream (exit 0); fixture not actually corrupt")
+	}
+	if ourExit == 0 {
+		t.Fatalf("our --test accepted a corrupted stream that upstream -t rejected (exit %d)", upExit)
 	}
 }
 

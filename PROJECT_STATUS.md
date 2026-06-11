@@ -62,17 +62,13 @@ documented **non-goal** (see "Non-goals" below).
 1. **htsgo `hfile` cloud I/O** — remote (S3 / http(s)) alignment/variant
    file access is not implemented (deferred P3 in `docs/HTSGO_ROADMAP.md`).
    Local files, BGZF, and `.gzi`/`.crai`/`.csi` seek all work. *Medium.*
-3. **bcftools `gtcheck -c/--cluster`** (dendrogram, which upstream itself
+2. **bcftools `gtcheck -c/--cluster`** (dendrogram, which upstream itself
    errors "to be implemented") and `gtcheck` filter expressions. *Small.*
-4. **CRAM long-tail correctness + perf** — some BCF FORMAT-key
+3. **CRAM long-tail correctness + perf** — some BCF FORMAT-key
    reconstruction edge cases and the network REF_PATH/EBI reference fetch
    (an unresolvable reference is surfaced as a clear MD5 error); CRAM v4.0
    awaits a final spec. *Medium.*
-5. **bgzip `--test` integrity flag** — upstream's `-t/--test` verifies a
-   BGZF file by decompressing it; the port binds `-t` to `--threads` and
-   does not yet offer the long `--test` integrity check (documented
-   deviation; `bgzip -d -c file | … ` is the workaround). *Small.*
-6. **Scattered option-tail polish** — vcftools per-output column sets;
+4. **Scattered option-tail polish** — vcftools per-output column sets;
    prinseq niche knobs; a handful of bedtools per-subcommand flag tails.
    Individually *small*.
 

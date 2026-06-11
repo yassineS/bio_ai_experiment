@@ -141,15 +141,18 @@ parsed, _ := bgzip.ReadGZI(gziIn)
 
 ## Deviations from upstream
 
-This v1 implementation matches upstream `bgzip` for all documented behaviour
-above with two known deviations:
+This implementation matches upstream `bgzip` for all documented behaviour
+above with these known deviations:
 
-1. **`-t` / `--threads` is single-threaded.** The flag is accepted (so wrapper
-   scripts that pass `-t 4` keep working) but compression runs in a single
-   goroutine. Block-level parallel compression is a natural follow-up — the
-   block format is already independent — but is out of scope for this initial
-   port. Decompression in upstream htslib is single-threaded too, so there is
-   no behavioural difference there.
+1. **`-t` is `--threads`, not upstream's `--test`.** Upstream `bgzip` spells
+   its integrity-check flag `-t/--test`, whereas this port binds the short
+   `-t` (alongside `-@`) to `--threads`, matching the more common ergonomic of
+   the htslib tool family. The integrity check is therefore offered under the
+   **long-only `--test`** flag: it decompresses the whole stream, writes
+   nothing, leaves the input untouched, and exits non-zero on any decode error
+   — behaviourally identical to upstream `-t` (verified live against the
+   vendored `bgzip -t`). Block-level parallel compression under `-@`/`-t` is
+   implemented (blocks are independent), so `-t N` genuinely uses N threads.
 2. **`.gzi` semantics follow htslib's `bgzf_index_dump`:** the implicit
    leading `(0, 0)` block is *not* written, so the file is
    `8 + 16*(N−1)` bytes for an N-block input. This matches what tabix
