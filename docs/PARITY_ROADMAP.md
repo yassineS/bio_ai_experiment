@@ -2419,19 +2419,73 @@ Plus:
   upstream feeds them into the pileup.
 - **`tview`** — deliberate skip (interactive curses UI).
 
-**`markdup` deferred features** (deliberately skipped in v1, all flag
-slots are accepted on the CLI for compat):
+**`markdup` implemented features** (closed in the per-subcommand
+sub-features PR; live-validated byte-for-byte against the upstream binary
+in `subfeatures_live_oracle_test.go`):
 
-- Optical-duplicate detection (`-d/--max-dist` + (x,y) parsing of Illumina
-  qnames). v1 marks PCR duplicates only; nonzero `-d` triggers a stderr
-  warning.
-- Per-read-group keying (upstream's `-S` flag). v1 folds all read groups
-  into a single namespace, so fixture
-  `reference_code/samtools/test/markdup/17_read_group.sam` is a
+- **`-d` optical-duplicate detection (DONE).** Each flagged duplicate is
+  compared to the chosen original by the colon-delimited Illumina read-name
+  tile coordinates (a port of `bam_markdup.c` `get_coordinates_colons` +
+  `is_optical_duplicate`). Within `-d N` on both x and y axes the duplicate
+  is counted as optical and tagged `dt:Z:SQ`; otherwise `dt:Z:LB`. The
+  `--read-coords` regex variant and the `check_chain` whole-cluster
+  re-expansion (which can promote a duplicate-of-a-duplicate to optical) are
+  not reproduced — read names must use the colon Illumina layout.
+- **`-s/--stats` and `-f FILE` (DONE).** The full duplicate-statistics block
+  (READ / WRITTEN / EXCLUDED / EXAMINED / PAIRED / SINGLE / DUPLICATE
+  PAIR|SINGLE|PAIR OPTICAL|SINGLE OPTICAL|NON PRIMARY|NON PRIMARY OPTICAL /
+  DUPLICATE PRIMARY TOTAL / DUPLICATE TOTAL / ESTIMATED_LIBRARY_SIZE) is
+  emitted, including the Picard-style library-size bisection solve. The CLI
+  prepends the upstream `COMMAND:` line; byte-parity is asserted on the
+  counter block (the COMMAND line echoes the verbatim argv and so differs by
+  design between the two binaries).
+- **`-S` supplementary/secondary duplicate marking (DONE).** By default
+  non-primary records are emitted untouched (matching upstream). Under `-S`
+  a non-primary record is flagged only when its primary duplicate carried an
+  SA/XA aux tag or an unmapped mate, mirroring upstream's `add_duplicate`
+  gate, and is counted under DUPLICATE NON PRIMARY. (Earlier the Go port
+  over-marked all same-qname non-primary records by default — fixed here.)
+- **`dt:Z:` "duplicate-type" aux tag (DONE under `-d`).** Written as SQ
+  (optical) or LB (library) for every flagged duplicate when `-d` is active,
+  in upstream's `do`-then-`dt` aux order.
+- **EXCLUDED / EXAMINED accounting (corrected here).** The eligibility mask
+  now matches upstream exactly (`SECONDARY|SUPPLEMENTARY|UNMAP|QCFAIL`): an
+  unmapped primary counts as EXCLUDED, and a record that merely already
+  carries the duplicate flag is EXAMINED (re-scored) rather than excluded.
+  (The library-size "unable to calculate" stderr warnings upstream prints in
+  degenerate cases are not reproduced.)
+
+**`markdup` still-deferred features** (flag slots accepted on the CLI for
+compat):
+
+- Per-read-group statistics split (`--read-groups`) and barcode
+  regex / barcode-tag keying. The single-group counters are byte-exact;
+  multi-group output and barcode keying are not split. Fixture
+  `reference_code/samtools/test/markdup/17_read_group.sam` remains a
   documented partial-parity skip.
-- Barcode regex / barcode-tag keying.
-- The `dt:Z:` "duplicate-type" aux tag (SQ / LB / OQ). The 0x400 flag
-  bit is set correctly; only the typed aux is missing.
+- The `--json` stats variant (the text `-s` form is the validated target).
+
+**`coverage` histogram mode (DONE).** The `-m` (UTF block histogram),
+`-A` (ASCII `.`/`:` ramp), `-D` (plot summed depth per bin) and `-w N`
+(bin count) modes are a faithful port of `coverage.c` `print_hist`: the
+per-bin breadth/depth fill, the 10-row block-character ramp
+(`round(8*(val-bin)/rowsize)-1`), the side-panel statistics
+(reads/filtered/covered/percent/mean cov/baseQ/mapQ/bin width/max bin),
+and the centered K/M/G/T x-axis labels. Without a TTY the bin count
+defaults to 40 (upstream's terminal-width fallback). The tabular mode was
+also corrected to upstream's exact `print_tabular_line` formatting (header
+`meanbaseq`/`meanmapq`, `%g` coverage/meandepth, `%.3g` baseQ/mapQ), and
+baseQ is now summed only at covered positions so `--min-depth` matches.
+Live-validated in `subfeatures_live_oracle_test.go::TestLiveCoverageHistogram`
+across `-m / -A / -D / -w / -Q / -q / --min-depth` and the tabular form.
+
+**`targetcut` multi-region output (DONE — no separate "multi-window"
+flag).** Upstream `cut_target.c` (getopt `f:Q:i:o:0:1:2:`) has no
+window-size CLI option; the multi-region behaviour is the 2-state Viterbi
+HMM emitting one consensus SAM record per identified covered/callable
+segment, which the Go port already implements (see the `targetcut` BAQ
+section). There is nothing additional to port beyond what landed in the
+phase/targetcut PR.
 
 **`markdup -l/--max-len` is a no-op-by-design.** Upstream uses `-l` solely
 as the streaming buffer flush window in `bam_markdup.c:1949`; it does NOT
@@ -2580,6 +2634,19 @@ flag-exact / SN-byte cases are exercised in
   pinned against score / posterior-quality vectors captured from the
   upstream `probaln.c` self-test.
 
+**`calmd -C` / `-e` / `-u` (DONE).** Despite an earlier note that these
+were "deferred", the library and CLI implement them:
+
+- **`-C INT`** caps MAPQ via `sam_cap_mapq` (threshold `> 10`), see the BAQ
+  paragraph above.
+- **`-e`** rewrites matching M-op SEQ bases to `=` (NM/MD still computed
+  against the original base).
+- **`-u`** emits uncompressed BAM (implies `-b`).
+
+These are live-validated byte-for-byte against the upstream binary in
+`subfeatures_live_oracle_test.go::TestLiveCalmdKnobs` (records identical
+modulo the `@PG` line the Go port omits by design).
+
 **`calmd` deferred features** (accepted as CLI flags, behaviour partial):
 
 - **`-h` HASH_QNM** (hash-based query-name binarisation) — niche
@@ -2615,6 +2682,12 @@ order — max-NM masking → write NM → write MD → DROP_TAG → BIN_QUAL):
 - **`-O` / `--output-fmt`** and **`-@` / `--threads`** —
   CLI-accepted-and-ignored stubs. v1 picks output format from the
   output-path extension (`.sam` vs `.bam`) and is single-threaded.
+
+**Note on `import --skipBamQ`.** There is no `--skipBamQ` flag in upstream
+`samtools import` (getopt string `1:2:s:0:bhiT:r:R:o:O:u@:N`, long options
+`--i1/--i2/--r1/--r2/--rg/--rg-line/--order/--barcode-tag/--quality-tag/
+--name2/--no-PG`). The tool reads FASTQ, never BAM, so there is no "BAM
+pair-position recovery" path to port — nothing to do here.
 
 **Validation:** small hand-built fixtures live under
 `tools/samtools/testdata/parity/{calmd,import}/` covering the four
@@ -2771,6 +2844,13 @@ Genuinely deferred sub-knobs (precisely scoped):
   live `TestConsensus_HetOnlyUpstreamBug` (which proves upstream ignores
   the flag and our output correctly diverges).
 - **`--verbosity`** is accepted and ignored.
+- **Indel calling (REMAINING).** `samtools consensus` only emits
+  substitution/base consensus; the gap5-derived posterior **indel** caller
+  (the insertion/deletion-aware branch of `calculate_consensus_gap5`) is a
+  larger separate algorithm and is **not** ported. This is the one
+  consciously-left-out consensus item; the per-subcommand sub-features PR
+  explicitly scoped it out (it is not a small/medium knob like the items
+  above).
 
 **`consensus` correctness model.** v1 mirrors upstream's
 `calculate_consensus_simple` (`bam_consensus.c:1900-2006`) bit-for-bit
