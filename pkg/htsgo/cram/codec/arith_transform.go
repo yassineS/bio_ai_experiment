@@ -264,13 +264,18 @@ func arithCompressTo(in []byte, order int) ([]byte, error) {
 	}
 
 	if order&x4x16Ext != 0 {
-		// X_EXT compresses with libbz2 in htscodecs. Go's standard
-		// library ships a bzip2 *decoder* only, and adding a third-party
-		// bzip2 encoder is outside the sanctioned dependency set
-		// (CLAUDE.md). Decode of X_EXT streams is fully supported; encode
-		// is the documented gap.
-		return nil, fmt.Errorf("arith: X_EXT (bzip2) encode is unsupported — " +
-			"Go has no standard-library bzip2 encoder; decode is supported")
+		// X_EXT compresses with libbz2 in htscodecs. Go's standard library
+		// ships a bzip2 *decoder* only, so the encoder lives in-tree
+		// (bzip2_encode.go). The wire layout is: the format byte, a varint
+		// of the raw length, then a standard bzip2 stream of the input.
+		bz, err := bzip2Encode(in, 9)
+		if err != nil {
+			return nil, fmt.Errorf("arith: X_EXT bzip2 encode: %w", err)
+		}
+		out := []byte{x4x16Ext}
+		out = varPutU32(out, uint32(len(in)))
+		out = append(out, bz...)
+		return out, nil
 	}
 
 	if order&x4x16Stripe != 0 {

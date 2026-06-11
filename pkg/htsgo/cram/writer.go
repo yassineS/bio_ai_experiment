@@ -20,13 +20,13 @@ import (
 type Version int
 
 const (
-	// VersionV30 is CRAM v3.0: the writer compresses each block with raw
-	// or gzip. It is the default and the format every existing caller
-	// gets.
+	// VersionV30 is CRAM v3.0: the writer compresses each block with raw,
+	// gzip or bzip2. It is the default and the format every existing
+	// caller gets.
 	VersionV30 Version = iota
-	// VersionV31 is CRAM v3.1: in addition to raw and gzip the writer may
-	// compress a block with the rANS 4x16 codec (block method 5), the
-	// distinguishing capability of v3.1.
+	// VersionV31 is CRAM v3.1: in addition to raw, gzip and bzip2 the
+	// writer may compress a block with the rANS 4x16 codec (block method
+	// 5), the distinguishing capability of v3.1.
 	VersionV31
 )
 
@@ -491,11 +491,14 @@ func encodeBlock(version Version, ct BlockContentType, contentID int32, payload 
 
 // chooseBlockCompression picks the block compression method for a
 // payload and returns it together with the bytes to store. The candidate
-// set depends on the CRAM version: v3.0 considers raw (method 0) and
-// gzip (method 1); v3.1 additionally considers rANS 4x16 (method 5), its
-// distinguishing codec. The smallest candidate wins and raw is always in
-// the running, so the stored payload is never larger than the input —
-// the block stays decodable even if a codec misbehaves.
+// set depends on the CRAM version: every version considers raw (method
+// 0), gzip (method 1) and bzip2 (method 2); v3.1 additionally considers
+// rANS 4x16 (method 5), its distinguishing codec. The smallest candidate
+// wins and raw is always in the running, so the stored payload is never
+// larger than the input — the block stays decodable even if a codec
+// misbehaves. bzip2 is produced by the in-tree pure-Go encoder
+// (codec.Bzip2Encode); its output is read back by this package's
+// Decompress and by upstream htslib/samtools alike.
 func chooseBlockCompression(version Version, payload []byte) (CompressionMethod, []byte) {
 	method := CompRaw
 	stored := payload
@@ -506,6 +509,9 @@ func chooseBlockCompression(version Version, payload []byte) (CompressionMethod,
 	}
 	if gz := gzipCompress(payload); len(gz) < len(stored) {
 		method, stored = CompGzip, gz
+	}
+	if bz, err := codec.Bzip2Encode(payload); err == nil && len(bz) < len(stored) {
+		method, stored = CompBzip2, bz
 	}
 	if version == VersionV31 {
 		// rANS 4x16 is a v3.1-only codec; never offer it for v3.0. Order 0

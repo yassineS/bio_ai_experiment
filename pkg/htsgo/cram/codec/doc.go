@@ -12,9 +12,14 @@
 //   - arith_dynamic — CRAM v3.1's adaptive range coder (compression
 //     method 6). Order-0 and order-1 adaptive models plus the shared
 //     PACK/RLE/STRIPE/CAT transform layer. Implemented in arith.go and
-//     arith_transform.go. Decode is fully supported; encode is too,
-//     except the rare X_EXT (bzip2) transform — Go has no standard-
-//     library bzip2 encoder, so X_EXT encode returns an error.
+//     arith_transform.go. Both decode and encode are supported,
+//     including the rare X_EXT (bzip2) transform: Go's standard library
+//     has no bzip2 encoder, so an in-tree one lives in bzip2_encode.go.
+//   - bzip2 — a pure-Go in-tree bzip2 *encoder* (bzip2_encode.go),
+//     the counterpart to compress/bzip2's decoder. It backs the X_EXT
+//     external codec above and CRAM bzip2 blocks (compression method 2);
+//     its output is byte-compatible with compress/bzip2, the system
+//     bzip2 and htslib/libbz2.
 //   - fqzcomp   — CRAM v3.1's quality-score codec (compression
 //     method 7). A parameterised context model driving the same
 //     adaptive range coder as arith_dynamic. Implemented in
