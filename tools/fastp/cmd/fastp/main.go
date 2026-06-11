@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
@@ -33,7 +34,9 @@ Options:
     -x, --adapter3 SEQ        3' adapter sequence
     -y, --adapter5 SEQ        5' adapter sequence
     --detect-adapter          Auto-detect adapter sequences
-  
+    -A, --disable_adapter_trimming  Disable all adapter trimming
+    --adapter_fasta FILE      Trim reads by all sequences in this FASTA file
+
   Quality Filtering:
     -q, --qual-threshold INT  Quality threshold (default: 15)
     --qual-percent INT        Percent of bases meeting quality (default: 40)
@@ -50,6 +53,12 @@ Options:
     --trim-poly-g             Enable poly-G tail trimming
     --trim-poly-x             Enable poly-X tail trimming
     --poly-g-min-len INT      Minimum poly-G length (default: 10)
+    --poly_x_min_len INT      Minimum poly-X length (default: 10)
+
+  Overlap Merge (Paired-end):
+    -m, --merge               Merge overlapping read pairs into single reads
+    --merged_out FILE         File to store merged reads (or use stdout)
+    --include_unmerged        Write unmerged/unpaired reads to the merge stream
 
   Sliding-window Quality Trimming:
     -5, --cut-front           Drop low-quality bases from the 5' end (sliding window)
@@ -163,6 +172,8 @@ func main() {
 		adapter3            string
 		adapter5            string
 		detectAdapter       bool
+		disableAdapter      bool
+		adapterFasta        string
 		qualType            string
 		qualThreshold       int
 		qualPercent         int
@@ -173,6 +184,7 @@ func main() {
 		trimPolyG           bool
 		trimPolyX           bool
 		polyGMinLen         int
+		polyXMinLen         int
 		cutFront            bool
 		cutTail             bool
 		cutRight            bool
@@ -190,6 +202,9 @@ func main() {
 		mergeOverlap        bool
 		minOverlap          int
 		maxMismatch         int
+		merge               bool
+		mergedOut           string
+		includeUnmerged     bool
 		threads             int
 		htmlReport          string
 		jsonReport          string
@@ -230,6 +245,8 @@ func main() {
 	cliflag.StringVar(fs, &adapter3, "x", "adapter3", "", "3' adapter sequence")
 	cliflag.StringVar(fs, &adapter5, "y", "adapter5", "", "5' adapter sequence")
 	cliflag.BoolVar(fs, &detectAdapter, "", "detect-adapter", false, "Auto-detect adapter sequences")
+	cliflag.BoolVar(fs, &disableAdapter, "A", "disable_adapter_trimming", false, "Disable all adapter trimming")
+	cliflag.StringVar(fs, &adapterFasta, "", "adapter_fasta", "", "Trim reads by all sequences in this FASTA file")
 
 	// Quality filtering
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 15, "Quality threshold (default: 15)")
@@ -247,6 +264,8 @@ func main() {
 	cliflag.BoolVar(fs, &trimPolyG, "", "trim-poly-g", false, "Enable poly-G tail trimming")
 	cliflag.BoolVar(fs, &trimPolyX, "", "trim-poly-x", false, "Enable poly-X tail trimming")
 	cliflag.IntVar(fs, &polyGMinLen, "", "poly-g-min-len", 10, "Minimum poly-G length (default: 10)")
+	cliflag.IntVar(fs, &polyGMinLen, "", "poly_g_min_len", 10, "Minimum poly-G length (alias of --poly-g-min-len)")
+	cliflag.IntVar(fs, &polyXMinLen, "", "poly_x_min_len", 10, "Minimum poly-X length (default: 10)")
 
 	// Sliding-window quality trimming
 	cliflag.BoolVar(fs, &cutFront, "5", "cut-front", false, "Drop low-quality bases from the 5' end (sliding window)")
@@ -279,9 +298,14 @@ func main() {
 	cliflag.IntVar(fs, &correctionThreshold, "", "correction-threshold", 20, "Base correction quality threshold")
 
 	// Overlap analysis (paired-end)
-	cliflag.BoolVar(fs, &mergeOverlap, "", "merge-overlap", false, "Merge overlapping paired-end reads")
+	cliflag.BoolVar(fs, &mergeOverlap, "", "merge-overlap", false, "Merge overlapping paired-end reads (legacy)")
 	cliflag.IntVar(fs, &minOverlap, "", "min-overlap", 30, "Minimum overlap length")
 	cliflag.IntVar(fs, &maxMismatch, "", "max-mismatch", 5, "Maximum mismatches in overlap")
+
+	// Overlap-driven merge writer (upstream -m/--merge family).
+	cliflag.BoolVar(fs, &merge, "m", "merge", false, "Merge overlapping read pairs into single reads")
+	cliflag.StringVar(fs, &mergedOut, "", "merged_out", "", "File to store merged reads")
+	cliflag.BoolVar(fs, &includeUnmerged, "", "include_unmerged", false, "Write unmerged/unpaired reads to the merge stream")
 
 	// Overlap-based base correction (paired-end), upstream flag names.
 	cliflag.BoolVar(fs, &correction, "c", "correction", false, "Enable base correction in overlapped regions (PE only)")
@@ -340,8 +364,13 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Determine mode: paired-end or single-end
+	// Determine mode: paired-end or single-end. In merge mode the merged
+	// output is written to --merged_out, so out1/out2 are optional (they
+	// only carry unmerged pairs when --include_unmerged is NOT used).
 	isPaired := (in1File != "" && in2File != "" && out1File != "" && out2File != "")
+	if merge && in1File != "" && in2File != "" && (mergedOut != "" || (out1File != "" && out2File != "")) {
+		isPaired = true
+	}
 	isSingle := (inputFile != "" && outputFile != "")
 
 	if !isPaired && !isSingle {
@@ -360,11 +389,33 @@ func main() {
 	// Determine quality encoding
 	encoding := getQualityEncoding(qualType)
 
+	// Load --adapter_fasta sequences if requested. Sequences shorter than
+	// 6 bp are skipped with a stderr warning, mirroring upstream.
+	var adapterFastaSeqs []string
+	if adapterFasta != "" {
+		fa, oerr := iohelper.OpenReader(adapterFasta)
+		if oerr != nil {
+			fmt.Fprintf(os.Stderr, "Error opening --adapter_fasta file: %v\n", oerr)
+			os.Exit(1)
+		}
+		seqs, skipped := fastp.LoadAdapterFasta(fa)
+		fa.Close()
+		for _, s := range skipped {
+			fmt.Fprintf(os.Stderr, "skip too short adapter sequence in %s (6bp required): %s\n", adapterFasta, s)
+		}
+		adapterFastaSeqs = seqs
+	}
+
 	// Set up processing options
 	opts := fastp.ProcessOptions{
 		Adapter3:                adapter3,
 		Adapter5:                adapter5,
 		DetectAdapter:           detectAdapter,
+		DisableAdapterTrimming:  disableAdapter,
+		AdapterFasta:            adapterFastaSeqs,
+		PolyXMinLen:             polyXMinLen,
+		Merge:                   merge,
+		IncludeUnmerged:         includeUnmerged,
 		QualThreshold:           qualThreshold,
 		MinLength:               minLength,
 		MaxLength:               maxLength,
@@ -444,6 +495,27 @@ func main() {
 
 		if splitEnabled {
 			stats, err = fastp.ProcessPairedEndSplit(input1, input2, out1File, out2File, encoding, opts)
+		} else if merge {
+			// Merge mode: merged reads go to --merged_out (or stdout / out1
+			// fallback); out1/out2 receive unmerged pairs when given.
+			var mergeOutW io.WriteCloser
+			if mergedOut != "" {
+				mergeOutW, err = iohelper.OpenWriter(mergedOut)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error creating merged output file: %v\n", err)
+					os.Exit(1)
+				}
+				defer mergeOutW.Close()
+			}
+			out1W := openOptionalWriter(out1File)
+			out2W := openOptionalWriter(out2File)
+			defer out1W.Close()
+			defer out2W.Close()
+			var mw io.Writer
+			if mergeOutW != nil {
+				mw = mergeOutW
+			}
+			stats, err = fastp.ProcessPairedEndMerge(input1, input2, out1W, out2W, mw, encoding, opts)
 		} else {
 			output1, oerr := iohelper.OpenWriter(out1File)
 			if oerr != nil {
@@ -542,6 +614,26 @@ func validateSplit(splitNumber, splitByLines, digits int, merge bool) error {
 	}
 	return nil
 }
+
+// openOptionalWriter opens path for writing, or returns a no-op writer
+// when path is empty. Used in merge mode where --out1/--out2 are optional
+// (they only carry unmerged pairs).
+func openOptionalWriter(path string) io.WriteCloser {
+	if path == "" {
+		return nopWriteCloser{io.Discard}
+	}
+	w, err := iohelper.OpenWriter(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file %q: %v\n", path, err)
+		os.Exit(1)
+	}
+	return w
+}
+
+// nopWriteCloser adds a no-op Close to an io.Writer.
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
 
 func getQualityEncoding(qualType string) fastq.QualityEncoding {
 	switch qualType {

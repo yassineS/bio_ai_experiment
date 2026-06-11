@@ -139,8 +139,33 @@ fastp -i input.fastq -o out.fq -S 4000 -d 3
 ### Merge Overlapping Paired-End Reads
 
 ```bash
-# Merge overlapping paired-end reads
+# Merge overlapping pairs into single reads (upstream -m/--merge).
+# Merged reads go to --merged_out; merge auto-enables base correction.
+fastp --in1 R1.fastq --in2 R2.fastq --merge --merged_out merged.fastq
+
+# Also keep unmerged/unpaired survivors in the merge stream
+fastp --in1 R1.fastq --in2 R2.fastq --merge --include_unmerged \
+  --merged_out merged.fastq
+
+# Legacy heuristic merge (project extension, not upstream-faithful)
 fastp -I R1.fastq -O out1.fastq --in2 R2.fastq --out2 out2.fastq --merge-overlap
+```
+
+### Trim by a FASTA List of Adapters / Disable Adapter Trimming
+
+```bash
+# Trim read1 (and read2 if PE) by every sequence in adapters.fa (>=6 bp)
+fastp -i input.fastq -o output.fastq --adapter_fasta adapters.fa
+
+# Disable all adapter trimming
+fastp -i input.fastq -o output.fastq -A   # --disable_adapter_trimming
+```
+
+### Poly-X Tail Trimming With a Dedicated Length
+
+```bash
+# Poly-X uses its own --poly_x_min_len (independent of poly-G's knob)
+fastp -i input.fastq -o output.fastq --trim-poly-x --poly_x_min_len 12
 ```
 
 ### Multi-threaded Processing with HTML Report

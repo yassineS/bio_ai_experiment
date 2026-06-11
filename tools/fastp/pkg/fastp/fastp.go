@@ -27,6 +27,17 @@ type ProcessOptions struct {
 	Adapter5      string
 	DetectAdapter bool
 
+	// DisableAdapterTrimming maps to upstream --disable_adapter_trimming
+	// (-A). When set, all adapter trimming (explicit Adapter3/Adapter5,
+	// auto-detection, and AdapterFasta) is skipped.
+	DisableAdapterTrimming bool
+
+	// AdapterFasta holds adapter sequences loaded from --adapter_fasta.
+	// Every read (R1 and, in PE mode, R2) is trimmed against each of these
+	// sequences after any explicit/auto-detected adapter pass. Ordered by
+	// sorted FASTA contig name to mirror upstream's std::map iteration.
+	AdapterFasta []string
+
 	// Quality filtering
 	QualThreshold int
 	MinLength     int
@@ -41,6 +52,7 @@ type ProcessOptions struct {
 	TrimPolyG   bool
 	TrimPolyX   bool
 	PolyGMinLen int
+	PolyXMinLen int // Minimum poly-X length (upstream --poly_x_min_len, default 10).
 
 	// Sliding-window quality trimming
 	CutFront       bool // Slide a window from the 5' end; trim leading bases while window mean quality < threshold
@@ -94,6 +106,14 @@ type ProcessOptions struct {
 	MinOverlap   int
 	MaxMismatch  int
 
+	// Overlap-driven merge writer, upstream -m/--merge family. When Merge
+	// is set, overlapping pairs are merged into a single read (via the
+	// upstream OverlapAnalysis::merge port) and written to the merge
+	// stream; non-overlapping pairs are dropped unless IncludeUnmerged is
+	// set, in which case each surviving mate is written to the merge stream.
+	Merge           bool
+	IncludeUnmerged bool
+
 	// Overrepresentation analysis, upstream -p / -P.
 	OverrepAnalysis bool // Enable overrepresented-sequence analysis.
 	OverrepSampling int  // 1-in-N sampling rate (default 20).
@@ -132,6 +152,7 @@ func DefaultProcessOptions() ProcessOptions {
 		TrimPolyG:               false,
 		TrimPolyX:               false,
 		PolyGMinLen:             10,
+		PolyXMinLen:             10,
 		CutFront:                false,
 		CutTail:                 false,
 		CutRight:                false,
@@ -159,6 +180,8 @@ func DefaultProcessOptions() ProcessOptions {
 		MergeOverlap:            false,
 		MinOverlap:              30,
 		MaxMismatch:             5,
+		Merge:                   false,
+		IncludeUnmerged:         false,
 		OverrepAnalysis:         false,
 		OverrepSampling:         20,
 		SplitNumber:             0,
@@ -378,11 +401,35 @@ type OverlapResult struct {
 
 // ProcessPairedEnd processes paired-end FASTQ reads with all filters.
 func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
+	return ProcessPairedEndMerge(input1, input2, output1, output2, nil, encoding, opts)
+}
+
+// ProcessPairedEndMerge processes paired-end FASTQ reads with all filters,
+// additionally honouring the upstream merge writer (-m/--merge family).
+// When opts.Merge is set, overlapping pairs are merged and written to
+// mergeOutput; non-overlapping pairs go to output1/output2 only when
+// --include_unmerged routes them there (in which case they are written to
+// mergeOutput, matching upstream). When mergeOutput is nil and opts.Merge is
+// set, merged reads are written to output1 (upstream's
+// "compatible with fastp 0.19.8" fallback). When opts.Merge is unset,
+// mergeOutput is ignored and behaviour is identical to ProcessPairedEnd.
+func ProcessPairedEndMerge(input1, input2 io.Reader, output1, output2, mergeOutput io.Writer, encoding fastq.QualityEncoding, opts ProcessOptions) (*ProcessStats, error) {
 	opts = normalizeUMIOptions(opts)
 	reader1 := fastq.NewReader(input1, encoding)
 	reader2 := fastq.NewReader(input2, encoding)
 	writer1 := fastq.NewWriter(output1, encoding)
 	writer2 := fastq.NewWriter(output2, encoding)
+
+	// Resolve the merge writer. In merge mode without an explicit
+	// --merged_out, upstream falls back to writing merged reads to out1.
+	var mergeWriter *fastq.Writer
+	if opts.Merge {
+		if mergeOutput != nil {
+			mergeWriter = fastq.NewWriter(mergeOutput, encoding)
+		} else {
+			mergeWriter = writer1
+		}
+	}
 
 	stats := &ProcessStats{}
 	dupTracker := newDupTrackerForOpts(opts)
@@ -392,7 +439,7 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 	// deterministic per-record view, so we fall back to single-threaded
 	// mode when either is active.
 	if opts.Threads > 1 && !opts.UMI && opts.UMILength == 0 && dupTracker == nil &&
-		!opts.Correction && !opts.OverrepAnalysis {
+		!opts.Correction && !opts.OverrepAnalysis && !opts.Merge {
 		return processPairedEndParallel(reader1, reader2, writer1, writer2, encoding, opts, stats)
 	}
 
@@ -472,7 +519,7 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 	}
 
 	for _, p := range detectBuffer {
-		if err := processPairOnce(p.r1, p.r2, writer1, writer2, encoding, opts, stats, dupTracker); err != nil {
+		if err := processPairOnce(p.r1, p.r2, writer1, writer2, mergeWriter, encoding, opts, stats, dupTracker); err != nil {
 			return stats, err
 		}
 	}
@@ -492,7 +539,7 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 		if err2 != nil {
 			return stats, fmt.Errorf("error reading read2: %w", err2)
 		}
-		if err := processPairOnce(record1, record2, writer1, writer2, encoding, opts, stats, dupTracker); err != nil {
+		if err := processPairOnce(record1, record2, writer1, writer2, mergeWriter, encoding, opts, stats, dupTracker); err != nil {
 			return stats, err
 		}
 	}
@@ -503,6 +550,13 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 	if err := writer2.Flush(); err != nil {
 		return stats, fmt.Errorf("error flushing output2: %w", err)
 	}
+	// Flush the merge writer when it is a distinct stream (when it aliases
+	// writer1 it was already flushed above).
+	if mergeWriter != nil && mergeWriter != writer1 {
+		if err := mergeWriter.Flush(); err != nil {
+			return stats, fmt.Errorf("error flushing merged output: %w", err)
+		}
+	}
 	finalizeDupStats(stats, dupTracker)
 	return stats, nil
 }
@@ -510,7 +564,7 @@ func ProcessPairedEnd(input1, input2 io.Reader, output1, output2 io.Writer, enco
 // processPairOnce runs the full paired-end pipeline for one read pair,
 // writing surviving reads to writer1/writer2 (or, in merge mode, the merged
 // read to writer1). Shared by the streaming and split code paths.
-func processPairOnce(record1, record2 *fastq.Record, writer1, writer2 recordWriter, encoding fastq.QualityEncoding, opts ProcessOptions, stats *ProcessStats, dupTracker *DupTracker) error {
+func processPairOnce(record1, record2 *fastq.Record, writer1, writer2, mergeWriter recordWriter, encoding fastq.QualityEncoding, opts ProcessOptions, stats *ProcessStats, dupTracker *DupTracker) error {
 	stats.TotalReads += 2
 	stats.TotalBases += int64(len(record1.Sequence) + len(record2.Sequence))
 	stats.recordBefore(record1, 0, encoding)
@@ -549,7 +603,18 @@ func processPairOnce(record1, record2 *fastq.Record, writer1, writer2 recordWrit
 		}
 	}
 
-	// Check for overlap and merge if enabled
+	// Overlap-driven merge writer (upstream -m/--merge). Trim each mate,
+	// then run the upstream overlap analysis on the trimmed reads, merge an
+	// overlapping pair into a single read, and write it to mergeWriter. When
+	// the pair does not overlap, the surviving mates are dropped unless
+	// --include_unmerged is set, in which case each passing mate is written
+	// to the merge stream. This branch fully owns the pair's output.
+	if opts.Merge {
+		return processMergePair(record1, record2, mergeWriter, encoding, opts, stats)
+	}
+
+	// Legacy overlap merge path (the project's pre-upstream-port merge).
+	// Kept for backward compatibility with the --merge-overlap flag.
 	if opts.MergeOverlap {
 		overlap := analyzeOverlap(record1, record2, opts, encoding)
 		if overlap.HasOverlap {
@@ -590,6 +655,75 @@ func processPairOnce(record1, record2 *fastq.Record, writer1, writer2 recordWrit
 		stats.CleanBases += int64(len(processed1.Sequence) + len(processed2.Sequence))
 		stats.recordAfter(processed1, 0, encoding)
 		stats.recordAfter(processed2, 1, encoding)
+	}
+	return nil
+}
+
+// processMergePair implements upstream fastp's merging mode for one read
+// pair (peprocessor.cpp:488-523). Each mate is trimmed, the upstream
+// overlap analysis is run on the trimmed reads, and an overlapping pair is
+// merged via mergeOverlappedPair and written to mergeWriter after passing
+// the filters. A non-overlapping pair is dropped unless IncludeUnmerged is
+// set, in which case each surviving mate is written to mergeWriter.
+func processMergePair(record1, record2 *fastq.Record, mergeWriter recordWriter, encoding fastq.QualityEncoding, opts ProcessOptions, stats *ProcessStats) error {
+	t1 := trimRecord(record1, opts, stats, encoding)
+	t2 := trimRecord(record2, opts, stats, encoding)
+
+	// Upstream auto-enables base correction whenever merging is on
+	// (options.cpp:115-117), and the peprocessor applies it to the trimmed
+	// reads before the merge overlap analysis. Mirror that here so the
+	// merged sequence reflects corrected bases.
+	if opts.Correction || opts.Merge {
+		cov := analyzeOverlapPair(string(t1.Sequence), reverseComplement(string(t2.Sequence)),
+			opts.OverlapDiffLimit, opts.OverlapRequire,
+			float64(opts.OverlapDiffPercentLimit)/100.0)
+		if cov.Overlapped {
+			if n, reads := correctByOverlapAnalysis(t1, t2, cov, encoding); n > 0 {
+				stats.BasesCorrected += int64(n)
+				stats.CorrectedReads += int64(reads)
+			}
+		}
+	}
+
+	ov := analyzeOverlapPair(string(t1.Sequence), reverseComplement(string(t2.Sequence)),
+		opts.OverlapDiffLimit, opts.OverlapRequire,
+		float64(opts.OverlapDiffPercentLimit)/100.0)
+
+	if ov.Overlapped {
+		stats.OverlappingReads++
+		merged := mergeOverlappedPair(t1, t2, ov)
+		processed, pass := filterRecord(merged, opts, stats, encoding)
+		if pass {
+			if err := mergeWriter.Write(processed); err != nil {
+				return fmt.Errorf("error writing merged read: %w", err)
+			}
+			stats.CleanReads++
+			stats.CleanBases += int64(len(processed.Sequence))
+			stats.MergedReads++
+			stats.recordAfter(processed, 0, encoding)
+		}
+		return nil
+	}
+
+	if opts.IncludeUnmerged {
+		p1, pass1 := filterRecord(t1, opts, stats, encoding)
+		if pass1 {
+			if err := mergeWriter.Write(p1); err != nil {
+				return fmt.Errorf("error writing unmerged read1: %w", err)
+			}
+			stats.CleanReads++
+			stats.CleanBases += int64(len(p1.Sequence))
+			stats.recordAfter(p1, 0, encoding)
+		}
+		p2, pass2 := filterRecord(t2, opts, stats, encoding)
+		if pass2 {
+			if err := mergeWriter.Write(p2); err != nil {
+				return fmt.Errorf("error writing unmerged read2: %w", err)
+			}
+			stats.CleanReads++
+			stats.CleanBases += int64(len(p2.Sequence))
+			stats.recordAfter(p2, 0, encoding)
+		}
 	}
 	return nil
 }
@@ -651,7 +785,7 @@ func ProcessPairedEndSplit(input1, input2 io.Reader, outputBase1, outputBase2 st
 	sw2 := newSplitWriter(outputBase2, cfg, encoding)
 
 	for i := range records1 {
-		if err := processPairOnce(records1[i], records2[i], sw1, sw2, encoding, opts, stats, dupTracker); err != nil {
+		if err := processPairOnce(records1[i], records2[i], sw1, sw2, nil, encoding, opts, stats, dupTracker); err != nil {
 			return stats, err
 		}
 	}
@@ -892,8 +1026,21 @@ func processOneSE(record *fastq.Record, writer recordWriter, encoding fastq.Qual
 	return nil
 }
 
-// processRecord applies all processing steps to a single record.
+// processRecord applies all processing steps (trimming + filtering) to a
+// single record, returning the surviving record and whether it passed.
 func processRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats, encoding fastq.QualityEncoding) (*fastq.Record, bool) {
+	trimmed := trimRecord(record, opts, stats, encoding)
+	return filterRecord(trimmed, opts, stats, encoding)
+}
+
+// trimRecord applies the per-read trimming steps (base correction, adapter
+// trimming including --adapter_fasta, poly-G, poly-X, sliding-window
+// quality cut, and quality-based end trimming) and returns the trimmed
+// record. It never rejects a read; length/N/quality/complexity filtering is
+// the job of filterRecord. Splitting the two mirrors upstream fastp, which
+// trims each mate before the merge/overlap analysis and only then applies
+// passFilter.
+func trimRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats, encoding fastq.QualityEncoding) *fastq.Record {
 	seq := string(record.Sequence)
 	qual := record.Quality
 
@@ -907,22 +1054,49 @@ func processRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStat
 		record.Quality = qual
 	}
 
-	// Step 1: Trim adapters if specified
-	if opts.Adapter5 != "" {
-		pos := findAdapter(seq, opts.Adapter5)
-		if pos >= 0 {
-			start = pos + len(opts.Adapter5)
-			stats.AdapterTrimmedReads++
-			stats.AdapterTrimmedBases += int64(pos + len(opts.Adapter5))
+	// Step 1: Trim adapters if specified. Suppressed entirely when
+	// --disable_adapter_trimming is set (upstream gates the whole adapter
+	// block on adapter.enabled == !disable_adapter_trimming).
+	if !opts.DisableAdapterTrimming {
+		explicitTrimmed := false
+		if opts.Adapter5 != "" {
+			pos := findAdapter(seq, opts.Adapter5)
+			if pos >= 0 {
+				start = pos + len(opts.Adapter5)
+				stats.AdapterTrimmedReads++
+				stats.AdapterTrimmedBases += int64(pos + len(opts.Adapter5))
+				explicitTrimmed = true
+			}
 		}
-	}
 
-	if opts.Adapter3 != "" {
-		pos := findAdapter(seq[start:], opts.Adapter3)
-		if pos >= 0 {
-			end = start + pos
-			stats.AdapterTrimmedReads++
-			stats.AdapterTrimmedBases += int64(len(seq) - end)
+		if opts.Adapter3 != "" {
+			pos := findAdapter(seq[start:], opts.Adapter3)
+			if pos >= 0 {
+				end = start + pos
+				stats.AdapterTrimmedReads++
+				stats.AdapterTrimmedBases += int64(len(seq) - end)
+				explicitTrimmed = true
+			}
+		}
+
+		// --adapter_fasta: trim the current window against every loaded
+		// adapter, mirroring upstream's AdapterTrimmer::trimByMultiSequences.
+		// The read counter is incremented only when the explicit-adapter
+		// pass did NOT already trim (and thus already count) this read —
+		// upstream passes incTrimmedCounter = !trimmed (seprocessor.cpp:246,
+		// filterresult.cpp:124-128). Bases are always accumulated.
+		if len(opts.AdapterFasta) > 0 && end > start {
+			window := &fastq.Record{
+				Sequence: []byte(seq[start:end]),
+				Quality:  qual[start:end],
+			}
+			if n, trimmed := trimByMultiSequences(window, opts.AdapterFasta, false); trimmed {
+				end -= n
+				if !explicitTrimmed {
+					stats.AdapterTrimmedReads++
+				}
+				stats.AdapterTrimmedBases += int64(n)
+			}
 		}
 	}
 
@@ -943,13 +1117,21 @@ func processRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStat
 		}
 	}
 
-	// Step 3: Trim poly-X tails if enabled
+	// Step 3: Trim poly-X tails if enabled.
+	//
+	// Uses trimPolyXUpstream, a verbatim port of upstream's PolyX::trimPolyX
+	// (reference_code/fastp/src/polyx.cpp:49-116): it tolerates 1 mismatch
+	// per 8 bases scanned (capped at 5), treats N as every base, and picks
+	// the most frequent of A/T/C/G as the poly base. The length threshold is
+	// --poly_x_min_len, defaulting to 10 but independent of poly-G's knob.
 	if opts.TrimPolyX {
-		for _, base := range []byte{'A', 'T', 'C'} {
-			polyLen := countPolyTail(seq[start:end], rune(base))
-			if polyLen >= opts.PolyGMinLen {
-				end -= polyLen
-			}
+		polyXMin := opts.PolyXMinLen
+		if polyXMin <= 0 {
+			polyXMin = 10
+		}
+		newEnd, trimmed := trimPolyXUpstream(seq[start:end], polyXMin)
+		if trimmed > 0 {
+			end = start + newEnd
 		}
 	}
 
@@ -971,6 +1153,26 @@ func processRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStat
 	if opts.QualThreshold > 0 {
 		start, end = trimByQuality(qual[start:end], opts.QualThreshold, start, end, encoding)
 	}
+
+	// Return the trimmed window. Length/N/quality/complexity filtering is
+	// deferred to filterRecord so the merge path can interpose its overlap
+	// analysis between trimming and filtering (as upstream does).
+	return &fastq.Record{
+		ID:          record.ID,
+		Description: record.Description,
+		Sequence:    record.Sequence[start:end],
+		Quality:     record.Quality[start:end],
+	}
+}
+
+// filterRecord applies the length, N-content, quality-percentage, and
+// complexity filters to an already-trimmed record. It returns the record
+// (possibly resized by --length_limit) and whether it passed all filters.
+func filterRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats, encoding fastq.QualityEncoding) (*fastq.Record, bool) {
+	seq := string(record.Sequence)
+	qual := record.Quality
+	start := 0
+	end := len(seq)
 
 	// Check if read is too short after trimming
 	if end-start < opts.MinLength || end-start < opts.LengthRequired {

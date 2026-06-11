@@ -547,7 +547,9 @@ for the per-case description.
 **Status:** Single `fastp` command with sliding-window cut, auto adapter
 detection, HTML+JSON reports, duplication evaluation, UMI processing,
 **overlap-based PE base correction (`--correction`), overrepresentation
-analysis (`-p`/`-P`), and output splitting (`-s`/`-S`/`-d`)**.
+analysis (`-p`/`-P`), output splitting (`-s`/`-S`/`-d`), the overlap-driven
+merge writer (`-m`/`--merge`/`--merged_out`/`--include_unmerged`),
+`--adapter_fasta`, `--poly_x_min_len`, and `--disable_adapter_trimming`**.
 
 Done in the `claude/festive-planck-n9o2lm-fastp-tail` PR:
 
@@ -570,17 +572,35 @@ Done in the `claude/festive-planck-n9o2lm-fastp-tail` PR:
   single-thread mode, including the PACK_SIZE=256 rollover quantization
   (upstream's `markProcessed` is per-pack).
 
+Done in the `claude/festive-planck-n9o2lm-fastp-merge` PR (merge writer +
+adapter-fasta + poly-X knob + disable-adapter flag):
+
+- **Merge mode** (`-m`/`--merge`, `--merged_out`, `--include_unmerged`):
+  verbatim port of upstream `OverlapAnalysis::merge`
+  (overlapanalysis.cpp:152-183) plus the peprocessor merge dispatch
+  (peprocessor.cpp:488-523) in `tools/fastp/pkg/fastp/merge.go`
+  (`mergeOverlappedPair`) and `fastp.go` (`processMergePair`). The
+  per-read pipeline is split into `trimRecord` + `filterRecord` so the
+  merge overlap analysis interposes between trimming and filtering, as
+  upstream does. Merge auto-enables base correction
+  (options.cpp:115-117), reproduced here. Merged read names carry the
+  upstream ` merged_<len1>_<len2>` suffix. The legacy `--merge-overlap`
+  heuristic is retained as a separate flag for back-compat.
+- **`--adapter_fasta FILE`**: verbatim port of
+  `AdapterTrimmer::trimByMultiSequences` / `trimBySequence`
+  (adaptertrimmer.cpp:47-170) + `Matcher::matchWithOneInsertion`
+  (matcher.cpp:10-54) in `merge.go`, with the FASTA loader mirroring
+  `Options::loadFastaAdapters` (options.cpp:52-79) — adapters < 6 bp
+  skipped, ordered by sorted contig name (upstream `std::map` order).
+- **`--poly_x_min_len`**: the naive consecutive-base poly-X counter was
+  replaced by a verbatim port of `PolyX::trimPolyX` (polyx.cpp:49-116)
+  with its own length knob (`PolyXMinLen`), independent of poly-G's.
+- **`--disable_adapter_trimming` (`-A`)**: explicit flag wired to gate the
+  entire adapter block (matching upstream `adapter.enabled =
+  !disable_adapter_trimming`).
+
 Remaining (documented):
 
-- **PolyG/polyX more knobs**: `--poly_g_min_len`, `--poly_x_min_len` (the
-  shared `--poly-g-min-len` exists; the separate poly-X knob does not).
-- **Adapter list output to FASTA**: `--adapter_fasta`.
-- **Disable adapter trimming flag name**: behaviour is reachable by leaving
-  adapters empty / not enabling detection; the explicit
-  `--disable_adapter_trimming` flag name is not yet a no-op alias.
-- **Merge mode** (`-m`/`--merge`, `--merged_out`, `--include_unmerged`): the
-  Go port has a legacy `--merge-overlap` heuristic, not the upstream
-  overlap-analysis-driven merge writer. Not addressed in this PR.
 - **`--split` read-count estimation under multi-threading**: the Go split is
   single-threaded and sizes files from the exact buffered read count;
   upstream's multi-threaded byte-extrapolated estimate produces a different
@@ -588,8 +608,13 @@ Remaining (documented):
   identical; only the multi-thread file boundaries differ. Single-thread
   (`-w 1`) is byte-for-byte identical.
 - **JSON schema completeness**: `corrected_reads`/`corrected_bases` and
-  `overrepresented_sequences` are now emitted; a `kmer_count` block and a
-  couple of minor summary sub-fields upstream emits remain absent.
+  `overrepresented_sequences` are now emitted; a `kmer_count` block, the
+  `merged_and_filtered` summary block (emitted by upstream in merge mode),
+  and a couple of minor summary sub-fields upstream emits remain absent.
+  Merge-mode parity is asserted on the **merged FASTQ output bytes** (which
+  are byte-for-byte identical), not yet on the `merged_and_filtered` JSON
+  block — the `MergedReads` top-line counter is tracked in `ProcessStats`
+  but not surfaced in the JSON report.
 
 #### Validated-parity audit
 
@@ -655,12 +680,32 @@ available):
 - `TestParity_Fastp_SplitByLines` / `TestParity_Fastp_SplitByNumber`:
   all numbered split files byte-for-byte identical to upstream `-w 1`.
 
+Features added by the `claude/festive-planck-n9o2lm-fastp-merge` PR
+(merge writer, `--adapter_fasta`, `--poly_x_min_len`,
+`--disable_adapter_trimming`), with live-upstream parity tests in
+`tools/fastp/pkg/fastp/parity_merge_test.go` (uniquely-named
+`ensureUpstreamFastpMerge` builder, `sync.Once`, `t.Fatalf` — never
+`t.Skip`):
+
+- `TestParity_Fastp_Merge_Basic`: merged FASTQ bytes match upstream
+  `--merge --merged_out` exactly on the overlapping `corr_*` fixtures.
+- `TestParity_Fastp_Merge_IncludeUnmerged`: `--include_unmerged` routes
+  surviving mates into the merge stream byte-for-byte on non-overlapping
+  `pe_*` fixtures.
+- `TestParity_Fastp_AdapterFasta`: `--adapter_fasta` output matches
+  upstream byte-for-byte.
+- `TestParity_Fastp_DisableAdapterTrimming`: `-A` output matches upstream.
+- `TestParity_Fastp_PolyXMinLen`: `--poly_x_min_len` at 5/10/15 matches
+  upstream `PolyX::trimPolyX` byte-for-byte.
+
 **Validation:** **16-case core parity suite (16 passing, 0 `t.Skip`) plus
-4 new live-parity tests for the tail features. 1:1 parity achieved** for
-`--correction`, overrepresentation analysis, and single-thread splitting;
-see the "Remaining (documented)" list above for the residual gaps
-(merge-writer mode, `--adapter_fasta`, poly-X knob, multi-thread split
-distribution).
+4 tail-feature live-parity tests plus 5 merge/adapter/poly-X live-parity
+tests. 1:1 parity achieved** for `--correction`, overrepresentation
+analysis, single-thread splitting, the overlap merge writer,
+`--adapter_fasta`, `--poly_x_min_len`, and `--disable_adapter_trimming`.
+The only documented residuals are the multi-thread split distribution and
+the `merged_and_filtered` JSON block (merged FASTQ output bytes are
+byte-identical).
 
 ### bedtools (35 subcommands ported)
 
