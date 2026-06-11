@@ -475,6 +475,28 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 	var seqBuf, qualBuf []byte
 	firstCovIdx, lastCovIdx := -1, -1
 
+	// pileupLastPos tracks upstream's c->last_pos for the -a/--all-positions
+	// pileup placeholder mechanism (basic_pileup, bam_consensus.c:2202). It
+	// is the 1-based reference position of the last row actually emitted; 0
+	// means "nothing emitted yet on this contig" (upstream resets last_pos to
+	// the region start — 0 for a whole-contig walk — at the first column of a
+	// new tid). Zero-coverage and suppressed deletion-only positions are NOT
+	// emitted inline; they are filled lazily as placeholder rows when the next
+	// genuine pileup column is reached, and finally by a tail fill at the end
+	// of the contig. Because a suppressed deletion column does not advance
+	// last_pos, the same gap span is re-emitted at each following column —
+	// reproducing upstream's quirky duplicate placeholder rows at deletion
+	// sites.
+	pileupAll := opts.Format == ConsensusPileup && opts.AllPositions
+	// pileupLastPos tracks the 1-based reference position of the last pileup
+	// row actually emitted within the current window; it is reset to the
+	// window's start at the top of each window so placeholder fill is scoped
+	// to the requested span and never bridges the void between two disjoint
+	// regions. Upstream clamps the fill to the iterator's [beg, end) when a
+	// region is given (bam_consensus.c:2832-2842); processing one window at a
+	// time reproduces that per region.
+	pileupLastPos := 0
+
 	// For bayesian mode, build the per-read NM-halo state once per
 	// contig (indexed by the record's position in recs) and the
 	// parameter-set matrices once.
@@ -502,6 +524,10 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 		if beg0 >= end0 {
 			continue
 		}
+		// Reset the placeholder cursor to this window's start (1-based
+		// last_pos == beg0 means "nothing emitted yet inside the window", so
+		// the first fill covers beg0+1..). Whole-contig walks use beg0 == 0.
+		pileupLastPos = beg0
 		// Build per-position event slices for this window by reusing
 		// the mpileup accumulator. This guarantees the consensus is
 		// byte-faithful with what `samtools mpileup` reports for the
@@ -533,8 +559,27 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 
 			switch opts.Format {
 			case ConsensusPileup:
-				if totalDepth == 0 && !opts.AllPositions {
+				column := hasPileupColumn(events[col])
+				if !pileupAll {
+					// Without -a, zero-coverage positions never produce a
+					// row at all.
+					if !column {
+						continue
+					}
+				} else if !column {
+					// With -a, a genuine zero-coverage position is NOT a
+					// pileup callback in upstream; it is emitted only by the
+					// placeholder gap mechanism when the next real column is
+					// reached (or by the contig tail fill). Defer it.
 					continue
+				}
+				// We are at a genuine pileup column. Under -a, first emit
+				// upstream's placeholder rows for every gap position since
+				// the last emitted row (basic_pileup, bam_consensus.c:2227).
+				if pileupAll && pos1 > pileupLastPos+1 {
+					if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, pos1-1, posFilter); err != nil {
+						return err
+					}
 				}
 				// --het-only: in pileup mode, omit every row whose
 				// position was not called heterozygous (homozygous and
@@ -552,10 +597,19 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				// independently per nth, so a deletion-called reference
 				// column does NOT suppress the nth>0 insertion columns that
 				// follow it — those are emitted below on their own merits.
+				//
+				// Under -a, a suppressed deletion column does NOT advance
+				// pileupLastPos: upstream's basic_pileup returns early at
+				// bam_consensus.c:2244 without updating c->last_pos, so the
+				// position is re-filled as a placeholder row by every later
+				// column — the source of upstream's duplicate placeholder
+				// rows at deletion sites. We reproduce that by only advancing
+				// pileupLastPos when a real (non-suppressed) row is emitted.
 				if !(call.base == '*' && !opts.ShowDel) {
 					if err := writeConsensusPileupRow(bw, chrom, pos1, totalDepth, call, events[col], opts); err != nil {
 						return err
 					}
+					pileupLastPos = pos1
 				}
 				// nth>0 insertion columns. Upstream emits one pileup row
 				// per inserted column when --show-ins is on (the default),
@@ -641,6 +695,18 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 						lastCovIdx = len(seqBuf)
 					}
 				}
+			}
+		}
+
+		// Pileup -a tail fill: emit placeholder rows for the remainder of
+		// this window after the last emitted row, through to the window end
+		// (basic_pileup's end-of-loop empty_pileup2, bam_consensus.c:2832-
+		// 2842). This covers a deletion-only or zero-coverage run trailing
+		// the final genuine row, and the window's leading gap when it has no
+		// coverage at all.
+		if pileupAll && pileupLastPos < end0 {
+			if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, end0, posFilter); err != nil {
+				return err
 			}
 		}
 	}
@@ -1166,6 +1232,48 @@ func spansInsertionColumn(e pileupEvent, recs []*sam.Record, pos1 int) bool {
 		return false
 	}
 	return int(recs[e.readIdx].EndPosition()) > pos1
+}
+
+// hasPileupColumn reports whether the position's event slice represents a
+// genuine pileup column — i.e. at least one read overlaps it (via a base,
+// deletion, or reference-skip CIGAR op). This mirrors the set of positions at
+// which upstream's pileup engine invokes its per-column callback
+// (basic_pileup); zero-coverage positions are never callbacks and are emitted
+// only via the placeholder-row gap mechanism under -a/--all-positions.
+func hasPileupColumn(evs []pileupEvent) bool {
+	for _, e := range evs {
+		if !e.dropped {
+			return true
+		}
+	}
+	return false
+}
+
+// writeEmptyPileupRows emits one placeholder pileup row per reference position
+// in the inclusive 1-based range [start1, end1], reproducing upstream's
+// empty_pileup2 (bam_consensus.c:2101). Each row is
+// "<chrom>\t<pos>\t0\t0\tN\t0\t*\t*\n": nth 0, depth 0, an 'N' call with
+// quality 0, and '*' for both the seq and qual columns. Upstream substitutes
+// reference bases for the 'N' call only when a -T/--reference FASTA is loaded,
+// which the Go port does not yet support, so the call is always 'N'.
+//
+// When posFilter is non-nil (the -l/--positions convenience), positions it
+// excludes are skipped, so the placeholder fill never emits rows for
+// coordinates the caller restricted out — matching the inline row path, which
+// also honours the filter.
+func writeEmptyPileupRows(bw *bufio.Writer, chrom string, start1, end1 int, posFilter *positionFilter) error {
+	for pos1 := start1; pos1 <= end1; pos1++ {
+		if posFilter != nil && !posFilter.contains(chrom, pos1) {
+			continue
+		}
+		if _, err := bw.WriteString(chrom); err != nil {
+			return err
+		}
+		bw.WriteByte('\t')
+		bw.WriteString(strconv.Itoa(pos1))
+		bw.WriteString("\t0\t0\tN\t0\t*\t*\n")
+	}
+	return nil
 }
 
 // writeConsensusPileupRow emits one row of the samtools consensus
