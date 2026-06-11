@@ -764,3 +764,91 @@ func TestConsensus_HetOnly_OffIsUnaffected(t *testing.T) {
 		t.Errorf("without het-only, expected homozygous pos2 row present: %q", pu)
 	}
 }
+
+// delGapSAM places a 3bp deletion (5M3D5M at pos 3 → deletions at 8,9,10) on
+// three reads of a 16bp contig, covering positions 3-7 and 11-15, with a
+// leading (1-2) and a trailing (16) zero-coverage gap. It is the deterministic
+// counterpart of the live
+// all-positions parity sweep, pinning the placeholder-row format and the
+// upstream duplicate-row quirk at deletion sites without needing the upstream
+// binary.
+const delGapSAM = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:16
+d1	0	chr1	3	60	5M3D5M	*	0	0	ACGTAACGTA	IIIIIIIIII
+d2	0	chr1	3	60	5M3D5M	*	0	0	ACGTAACGTA	IIIIIIIIII
+d3	0	chr1	3	60	5M3D5M	*	0	0	ACGTAACGTA	IIIIIIIIII
+`
+
+// TestConsensus_AllPositionsPileup_DeletionAndGaps pins the exact -a pileup
+// output: leading/trailing zero-coverage placeholder rows, and the deletion
+// run 8,9,10 emitted as placeholders with upstream's duplicate-row quirk
+// (last_pos is not advanced for a suppressed '*' column, so each deletion
+// position is re-emitted by every following column: 8×3, 9×2, 10×1).
+func TestConsensus_AllPositionsPileup_DeletionAndGaps(t *testing.T) {
+	got := runConsensusOnSAM(t, delGapSAM, ConsensusOptions{
+		Mode: ConsensusModeSimple, Format: ConsensusPileup, AllPositions: true})
+	want := "chr1\t1\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t2\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t3\t0\t3\tA\t100\tAAA\tIII\n" +
+		"chr1\t4\t0\t3\tC\t100\tCCC\tIII\n" +
+		"chr1\t5\t0\t3\tG\t100\tGGG\tIII\n" +
+		"chr1\t6\t0\t3\tT\t100\tTTT\tIII\n" +
+		"chr1\t7\t0\t3\tA\t100\tAAA\tIII\n" +
+		// Deletion run 8,9,10 with the duplicate quirk.
+		"chr1\t8\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t8\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t9\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t8\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t9\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t10\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t11\t0\t3\tA\t100\tAAA\tIII\n" +
+		"chr1\t12\t0\t3\tC\t100\tCCC\tIII\n" +
+		"chr1\t13\t0\t3\tG\t100\tGGG\tIII\n" +
+		"chr1\t14\t0\t3\tT\t100\tTTT\tIII\n" +
+		"chr1\t15\t0\t3\tA\t100\tAAA\tIII\n" +
+		// Trailing zero-coverage tail fill.
+		"chr1\t16\t0\t0\tN\t0\t*\t*\n"
+	if got != want {
+		t.Fatalf("all-positions pileup mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestConsensus_AllPositionsPileup_ShowDelKeepsDeletionRows checks that with
+// --show-del the deletion columns are emitted as genuine '*' rows (advancing
+// last_pos), so the duplicate placeholder quirk disappears.
+func TestConsensus_AllPositionsPileup_ShowDelKeepsDeletionRows(t *testing.T) {
+	got := runConsensusOnSAM(t, delGapSAM, ConsensusOptions{
+		Format: ConsensusPileup, AllPositions: true, ShowDel: true})
+	// With show-del the deletion columns are real rows: depth 3, call '*',
+	// each emitted exactly once and no duplicate placeholders.
+	for _, pos := range []string{"chr1\t8\t0\t3\t*\t", "chr1\t9\t0\t3\t*\t", "chr1\t10\t0\t3\t*\t"} {
+		if strings.Count(got, pos) != 1 {
+			t.Fatalf("expected exactly one show-del deletion row %q, got %d:\n%s",
+				pos, strings.Count(got, pos), got)
+		}
+	}
+	if strings.Contains(got, "chr1\t8\t0\t0\tN") {
+		t.Fatalf("show-del should not emit placeholder rows at deletion sites:\n%s", got)
+	}
+}
+
+// TestConsensus_AllPositionsPileup_BEDFilterScopesPlaceholders verifies the
+// -l/BED position filter (opts.BEDPath) confines the -a placeholder fill to
+// the selected positions: rows for excluded coordinates are never emitted,
+// not even as depth-0 placeholders.
+func TestConsensus_AllPositionsPileup_BEDFilterScopesPlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	bed := filepath.Join(dir, "sel.bed")
+	// BED is 0-based half-open: chr1 1..4 selects 1-based positions 2,3,4.
+	if err := os.WriteFile(bed, []byte("chr1\t1\t4\n"), 0o600); err != nil {
+		t.Fatalf("write bed: %v", err)
+	}
+	got := runConsensusOnSAM(t, delGapSAM, ConsensusOptions{
+		Mode: ConsensusModeSimple, Format: ConsensusPileup, AllPositions: true, BEDPath: bed})
+	want := "chr1\t2\t0\t0\tN\t0\t*\t*\n" +
+		"chr1\t3\t0\t3\tA\t100\tAAA\tIII\n" +
+		"chr1\t4\t0\t3\tC\t100\tCCC\tIII\n"
+	if got != want {
+		t.Fatalf("BED-filtered all-positions pileup mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
