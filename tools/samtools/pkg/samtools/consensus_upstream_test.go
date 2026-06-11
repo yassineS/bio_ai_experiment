@@ -307,23 +307,69 @@ e1	0	chr1	20	60	4M	*	0	0	TTGG	IIII
 e2	0	chr1	20	60	4M	*	0	0	TTGG	IIII
 `
 
+// refSkipConsensusSAM exercises the -a pileup ref-skip (CIGAR N / intron)
+// edge case. Three spliced reads carry a 10bp N intron (`5M10N5M` and a
+// strand-mixed `4M10N5M`), so chr1:6-15 is covered ONLY by ref-skip events.
+// Upstream keeps those reads in the column, counts them in depth, and renders
+// each as '.', so an intron row is `depth 3 / N / ... / !!!` — NOT a
+// zero-coverage placeholder. The exon bases bordering the intron (positions 5
+// and 16) additionally carry upstream's p->ref_skip flag, which only the
+// bayesian/Gap5 caller honours (excluding them from its depth), so the
+// simple- and bayesian-mode boundaries differ; this fixture pins both.
+const refSkipConsensusSAM = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:24
+s1	0	chr1	1	60	5M10N5M	*	0	0	ACGTAGGGCA	IIIIIIIIII
+s2	0	chr1	1	60	5M10N5M	*	0	0	ACGTAGGGCA	IIIIIIIIII
+s3	16	chr1	2	60	4M10N5M	*	0	0	CGTAGGGCA	IIIIIIIII
+`
+
+// delInsRunConsensusSAM exercises the interaction of a suppressed deletion
+// RUN with an insertion at its trailing edge under -a. Three reads carry a
+// 5bp deletion (`3M5D3M` at pos 8 -> del at chr1:11-15); a fourth read
+// (`8M2I3M`) spans the whole run with real bases AND inserts 2bp immediately
+// after position 15. With --show-del off, the nth==0 deletion rows for
+// 11-15 are all suppressed (3 dels outvote 1 base), so c->last_pos never
+// advances through the run. At position 15 the insertion columns (nth>0) are
+// also pad-suppressed, and upstream RE-RUNS its gap fill at every nth
+// (bam_consensus.c:2227), emitting the leading `11..14` placeholder block
+// once per nth before last_pos finally advances. This is the per-nth gap-fill
+// duplication and the insertion-row last_pos advance the Go port must mirror.
+const delInsRunConsensusSAM = `@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:24
+g1	0	chr1	8	60	3M5D3M	*	0	0	AAACCC	IIIIII
+g2	0	chr1	8	60	3M5D3M	*	0	0	AAACCC	IIIIII
+g3	0	chr1	8	60	3M5D3M	*	0	0	AAACCC	IIIIII
+g4	0	chr1	8	60	8M2I3M	*	0	0	AAAGGGGGTTCCC	IIIIIIIIIIIII
+`
+
 // upstreamSamtoolsConsensusAll is the LIVE parity check for the
 // -a/--all-positions pileup placeholder rows. It builds (or reuses) the
 // vendored upstream samtools binary and compares its `consensus -a/-aa
-// --format pileup` output byte-for-byte against the Go port over a fixture
-// with leading/internal/trailing zero-coverage gaps, a deletion-only run
-// (which exercises upstream's duplicate placeholder rows), and an entirely
-// uncovered contig. It sweeps the simple and bayesian modes and the
-// --show-del on/off setting. Per the project's testing rules it never calls
-// t.Skip on a build failure: an inability to produce the upstream binary is a
-// hard failure.
+// --format pileup` output byte-for-byte against the Go port over three
+// fixtures:
+//   - allPosConsensusSAM: leading/internal/trailing zero-coverage gaps, a
+//     deletion-only run (upstream's duplicate placeholder rows), and an
+//     entirely uncovered contig (-aa);
+//   - refSkipConsensusSAM: a spliced read with a long CIGAR N intron, so
+//     intron positions are ref-skip columns (depth>0, '.' bases), not gaps;
+//   - delInsRunConsensusSAM: a suppressed deletion run whose trailing edge
+//     carries an insertion, exercising the per-nth gap-fill duplication and
+//     the insertion-row last_pos advance.
+//
+// It sweeps the simple and bayesian modes and the --show-del on/off setting.
+// Per the project's testing rules it never calls t.Skip on a build failure:
+// an inability to produce the upstream binary is a hard failure.
 func upstreamSamtoolsConsensusAll(t *testing.T) {
 	t.Helper()
 	bin := upstreamSamtoolsBinary(t)
 
-	samPath := filepath.Join(t.TempDir(), "allpos.sam")
-	if err := os.WriteFile(samPath, []byte(allPosConsensusSAM), 0o600); err != nil {
-		t.Fatalf("write all-positions fixture: %v", err)
+	fixtures := []struct {
+		name string
+		sam  string
+	}{
+		{"gaps", allPosConsensusSAM},
+		{"refskip", refSkipConsensusSAM},
+		{"delins-run", delInsRunConsensusSAM},
 	}
 
 	modes := []struct {
@@ -354,22 +400,28 @@ func upstreamSamtoolsConsensusAll(t *testing.T) {
 		}},
 	}
 
-	for _, m := range modes {
-		for _, v := range variants {
-			name := m.cli + "_" + v.name
-			t.Run(name, func(t *testing.T) {
-				args := append([]string{"-m", m.cli, "-f", "pileup"}, v.cliArgs...)
-				up := runUpstreamConsensus(t, bin, samPath, args...)
+	for _, fx := range fixtures {
+		samPath := filepath.Join(t.TempDir(), fx.name+".sam")
+		if err := os.WriteFile(samPath, []byte(fx.sam), 0o600); err != nil {
+			t.Fatalf("write %s fixture: %v", fx.name, err)
+		}
+		for _, m := range modes {
+			for _, v := range variants {
+				name := fx.name + "_" + m.cli + "_" + v.name
+				t.Run(name, func(t *testing.T) {
+					args := append([]string{"-m", m.cli, "-f", "pileup"}, v.cliArgs...)
+					up := runUpstreamConsensus(t, bin, samPath, args...)
 
-				opts := ConsensusOptions{Mode: m.mod, Format: ConsensusPileup}
-				v.apply(&opts)
-				got := runConsensusOnSAM(t, allPosConsensusSAM, opts)
+					opts := ConsensusOptions{Mode: m.mod, Format: ConsensusPileup}
+					v.apply(&opts)
+					got := runConsensusOnSAM(t, fx.sam, opts)
 
-				if got != up {
-					t.Fatalf("all-positions pileup parity mismatch (%s):\n--- upstream ---\n%s\n--- go ---\n%s",
-						name, up, got)
-				}
-			})
+					if got != up {
+						t.Fatalf("all-positions pileup parity mismatch (%s):\n--- upstream ---\n%s\n--- go ---\n%s",
+							name, up, got)
+					}
+				})
+			}
 		}
 	}
 }

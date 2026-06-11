@@ -76,6 +76,18 @@ type pileupEvent struct {
 	// info); the bases column is always rendered as explicit N/n in
 	// that case rather than the dot/comma match form.
 	noSeq bool
+	// refSkipBoundary marks an aligned base (pileupEventBase) that sits
+	// immediately before or after a ref-skip (CIGAR N) run for this read.
+	// Upstream's consensus pileup engine flags such a base with p->ref_skip
+	// (consensus_pileup.c:239-244, 251-260): the Gap5/bayesian caller then
+	// excludes it from its depth (bam_consensus.c:1333), so an exon base at
+	// the very edge of an intron does not count toward the bayesian
+	// consensus. The base is still displayed verbatim in the pileup seq
+	// column (basic_pileup emits p->base, the real base), and the SIMPLE
+	// caller ignores the flag entirely — only the bayesian depth is
+	// affected. This is read solely by the consensus bayesian path; mpileup
+	// does not consult it.
+	refSkipBoundary bool
 }
 
 // emitMpileupWindow walks every position in [beg0, end0) on chrom, gathers
@@ -420,15 +432,16 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 	// then we know which one is first and which is last so we can attach
 	// ^/$ markers.
 	type tmpEvent struct {
-		pos0     int
-		col      int // column index into evs (-1 when out of window)
-		kind     pileupEventKind
-		base     byte
-		qual     byte
-		readBP   int
-		insAfter string
-		delAfter int
-		delBases string
+		pos0            int
+		col             int // column index into evs (-1 when out of window)
+		kind            pileupEventKind
+		base            byte
+		qual            byte
+		readBP          int
+		insAfter        string
+		delAfter        int
+		delBases        string
+		refSkipBoundary bool
 	}
 	tmp := make([]tmpEvent, 0, 8)
 
@@ -558,6 +571,26 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 		return
 	}
 
+	// Mark the aligned bases bordering each ref-skip (CIGAR N) run as
+	// ref-skip boundaries. Upstream's consensus pileup engine sets
+	// p->ref_skip on the M base immediately before an N (consensus_pileup.c:
+	// 251-260) and on the first M base after an N (lines 239-244); its
+	// Gap5/bayesian caller then excludes those bases from the consensus
+	// depth (bam_consensus.c:1333). tmp is in reference order, so a base
+	// adjacent to a RefSkip entry is exactly such a boundary. (The simple
+	// caller and the displayed pileup column ignore the flag.)
+	for i := range tmp {
+		if tmp[i].kind != pileupEventRefSkip {
+			continue
+		}
+		if i > 0 && tmp[i-1].kind == pileupEventBase {
+			tmp[i-1].refSkipBoundary = true
+		}
+		if i+1 < len(tmp) && tmp[i+1].kind == pileupEventBase {
+			tmp[i+1].refSkipBoundary = true
+		}
+	}
+
 	// Find first and last in-window indices so ^/$ markers go on a visible
 	// event (we follow upstream: ^ goes on the very first emitted event for
 	// the read; if the leading events are out of window we still mark the
@@ -584,19 +617,20 @@ func accumulateRecordEvents(rec *sam.Record, readIdx, beg0, end0 int, evs [][]pi
 			continue
 		}
 		ev := pileupEvent{
-			kind:      t.kind,
-			readIdx:   readIdx,
-			base:      t.base,
-			qual:      t.qual,
-			mapq:      mapq,
-			readBP:    t.readBP,
-			isReverse: isReverse,
-			noSeq:     noSeq,
-			readStart: i == firstVisible && tmp[firstVisible].pos0 == int(rec.Pos)-1,
-			readEnd:   i == lastVisible && lastVisible == len(tmp)-1,
-			insAfter:  t.insAfter,
-			delAfter:  t.delAfter,
-			delBases:  t.delBases,
+			kind:            t.kind,
+			readIdx:         readIdx,
+			base:            t.base,
+			qual:            t.qual,
+			mapq:            mapq,
+			readBP:          t.readBP,
+			isReverse:       isReverse,
+			noSeq:           noSeq,
+			readStart:       i == firstVisible && tmp[firstVisible].pos0 == int(rec.Pos)-1,
+			readEnd:         i == lastVisible && lastVisible == len(tmp)-1,
+			insAfter:        t.insAfter,
+			delAfter:        t.delAfter,
+			delBases:        t.delBases,
+			refSkipBoundary: t.refSkipBoundary,
 		}
 		evs[t.col] = append(evs[t.col], ev)
 	}

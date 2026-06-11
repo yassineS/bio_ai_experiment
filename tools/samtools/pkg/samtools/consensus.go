@@ -444,6 +444,15 @@ func bayesOptionsFrom(opts ConsensusOptions) bayesOptions {
 	}
 }
 
+// consensusNaNQual is the quality value upstream prints for a simple-mode
+// pileup column that has reads but no scoring base (tscore == 0) yet whose
+// call escaped the "downgrade to N" branch — typically an intron position
+// covered only by ref-skip (CIGAR N) reads. Upstream computes the quality as
+// `100.0 * used_score / tscore` == 100.0*0/0 == NaN and casts it to a 32-bit
+// C int, which yields INT_MIN on every platform samtools targets. We hold the
+// exact sentinel so the pileup quality column matches byte-for-byte.
+const consensusNaNQual = -2147483648
+
 // consensusCall is a single per-position call.
 type consensusCall struct {
 	base byte // 'A','C','G','T','*','N' or IUPAC ambig code when AmbigCodes set
@@ -573,68 +582,81 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 					// reached (or by the contig tail fill). Defer it.
 					continue
 				}
-				// We are at a genuine pileup column. Under -a, first emit
-				// upstream's placeholder rows for every gap position since
-				// the last emitted row (basic_pileup, bam_consensus.c:2227).
-				if pileupAll && pos1 > pileupLastPos+1 {
-					if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, pos1-1, posFilter); err != nil {
-						return err
-					}
+				// We are at a genuine pileup column. Upstream's basic_pileup
+				// is invoked once per nth (nth==0 base column, then one call
+				// per insertion column) and re-runs its gap-fill / suppression
+				// / last_pos block on EVERY call (bam_consensus.c:2185-2298).
+				// We model that here by looping nth over the base column and
+				// each insertion column, performing the same per-nth steps so
+				// the output matches upstream line-for-line — including its
+				// quirk of re-emitting a leading gap at each nth while last_pos
+				// stays unadvanced through a suppressed nth==0 deletion.
+				var insCols []bayesInsertionColumn
+				if !opts.NoShowIns {
+					insCols = consensusInsertionColumns(events[col], recs, bayesReads, bayes, bayesProbs, pos1, opts)
 				}
-				// --het-only: in pileup mode, omit every row whose
-				// position was not called heterozygous (homozygous and
-				// no-call positions are dropped entirely). This is the
-				// intended behaviour the flag name implies; upstream
-				// samtools parses --het-only but never acts on it (a
-				// dead option — see docs/UPSTREAM_BUGS.md).
+				// --het-only is an intentional divergence (upstream parses but
+				// never acts on it — a dead option; see docs/UPSTREAM_BUGS.md).
+				// A non-het position is dropped entirely: under -a we still
+				// advance pileupLastPos past it so the het-suppressed column is
+				// not resurrected as a zero-depth placeholder row by a later
+				// column's gap fill, honouring --het-only's "drop entirely"
+				// contract. This short-circuits the whole position (nth==0 and
+				// all insertion columns), since the position is suppressed.
 				if opts.HetOnly && !call.isHet {
-					// Under -a, advance past this covered position so the
-					// het-suppressed column is not resurrected as a zero-depth
-					// placeholder row by a later column's gap fill — honouring
-					// --het-only's "drop entirely" contract. (--het-only has no
-					// upstream parity oracle; upstream parses but never acts on
-					// it — see docs/UPSTREAM_BUGS.md.)
 					if pileupAll {
 						pileupLastPos = pos1
 					}
 					continue
 				}
-				// Honour --show-del in pileup mode too: when the call is
-				// '*' and ShowDel is false, suppress the nth==0 row,
-				// matching bam_consensus.c:2244. Note this suppresses ONLY
-				// the reference (nth==0) row: upstream invokes basic_pileup
-				// independently per nth, so a deletion-called reference
-				// column does NOT suppress the nth>0 insertion columns that
-				// follow it — those are emitted below on their own merits.
-				//
-				// Under -a, a suppressed deletion column does NOT advance
-				// pileupLastPos: upstream's basic_pileup returns early at
-				// bam_consensus.c:2244 without updating c->last_pos, so the
-				// position is re-filled as a placeholder row by every later
-				// column — the source of upstream's duplicate placeholder
-				// rows at deletion sites. We reproduce that by only advancing
-				// pileupLastPos when a real (non-suppressed) row is emitted.
-				if !(call.base == '*' && !opts.ShowDel) {
-					if err := writeConsensusPileupRow(bw, chrom, pos1, totalDepth, call, events[col], opts); err != nil {
-						return err
-					}
-					pileupLastPos = pos1
-				}
-				// nth>0 insertion columns. Upstream emits one pileup row
-				// per inserted column when --show-ins is on (the default),
-				// for both simple and bayesian modes (basic_pileup runs
-				// consensus_base — which dispatches to the active caller —
-				// on every nth>0 column).
-				if !opts.NoShowIns {
-					insCols := consensusInsertionColumns(events[col], recs, bayesReads, bayes, bayesProbs, pos1, opts)
-					for nth, ic := range insCols {
-						if ic.call.base == '*' && !opts.ShowDel {
-							continue
-						}
-						if err := writeConsensusInsertionPileupRow(bw, chrom, pos1, nth+1, ic, opts); err != nil {
+				for nth := 0; nth <= len(insCols); nth++ {
+					// Per-nth gap fill: upstream re-runs empty_pileup2 at the
+					// top of every basic_pileup call (bam_consensus.c:2227), so
+					// a gap preceding a position whose nth==0 deletion row is
+					// suppressed (leaving last_pos unadvanced) is re-emitted at
+					// the next nth — reproduced here by gap-filling inside the
+					// nth loop rather than once before it.
+					if pileupAll && pos1 > pileupLastPos+1 {
+						if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, pos1-1, posFilter); err != nil {
 							return err
 						}
 					}
+					if nth == 0 {
+						// Honour --show-del: when the call is '*' and ShowDel
+						// is false, suppress the nth==0 row (bam_consensus.c:
+						// 2244). This suppresses ONLY the reference row; the
+						// nth>0 insertion columns follow on their own merits.
+						// A suppressed deletion column does NOT advance
+						// pileupLastPos (upstream returns early without updating
+						// c->last_pos), so the gap before it is re-filled at the
+						// next nth — upstream's duplicate placeholder rows.
+						if call.base == '*' && !opts.ShowDel {
+							continue
+						}
+						if err := writeConsensusPileupRow(bw, chrom, pos1, totalDepth, call, events[col], opts); err != nil {
+							return err
+						}
+						// Upstream sets c->last_pos = pos when any row for the
+						// position is emitted, including an insertion row; we set
+						// it here once the first non-suppressed nth emits.
+						pileupLastPos = pos1
+						continue
+					}
+					// nth>0 insertion column. Upstream emits one pileup row per
+					// inserted column when --show-ins is on (the default), for
+					// both simple and bayesian modes.
+					ic := insCols[nth-1]
+					if ic.call.base == '*' && !opts.ShowDel {
+						continue
+					}
+					if err := writeConsensusInsertionPileupRow(bw, chrom, pos1, nth, ic, opts); err != nil {
+						return err
+					}
+					// Emitting an insertion row also advances last_pos
+					// (bam_consensus.c:2295). When the nth==0 deletion was
+					// suppressed this is the only place the position's last_pos
+					// gets set, preventing a spurious re-emission downstream.
+					pileupLastPos = pos1
 				}
 			default:
 				// FASTA / FASTQ accumulate. Every position is appended
@@ -783,7 +805,20 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 			continue
 		}
 		if e.kind == pileupEventRefSkip {
-			// Reference skips don't contribute to consensus.
+			// Reference skips contribute no base/gap SCORE (upstream's
+			// base4 is 0, so every seqi2X[0] weight is 0), but upstream
+			// still counts them in tot_depth (bam_consensus.c:1955 runs
+			// unconditionally after the b<16 branch). Upstream's pileup
+			// engine assigns a ref-skip quality of 0 (consensus_pileup.c:
+			// 216), so a non-zero --min-BQ excludes it via the same min-qual
+			// gate that drops a base (q < min_qual → continue, before the
+			// tot_depth++). We therefore gate on quality 0 — independent of
+			// the event's carried (read-base) quality — and only then count
+			// it. An intron-only column thus stays a confident 'N' (no
+			// score) rather than an empty no-call.
+			if opts.MinBaseQ == 0 {
+				totDepth++
+			}
 			continue
 		}
 		// Upstream applies the min-qual gate to EVERY event (base and
@@ -889,23 +924,33 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 		usedScore += s2
 	}
 
-	// Single fraction gate (upstream bam_consensus.c:1988-1994).
-	depthOK := totDepth >= opts.MinDepth
-	callOK := tscore > 0 && float64(usedScore) >= opts.MinCallFraction*float64(tscore)
+	// Single fraction gate, mirroring upstream bam_consensus.c:1988-1994
+	// EXACTLY: `tot_depth < min_depth || used_score < call_fract*tscore`.
+	// Crucially there is NO `tscore > 0` guard: when tscore is 0 (a column
+	// with reads but no scoring base — e.g. an intron covered only by
+	// ref-skip reads), the comparison `0 < 0` is false, so the downgrade is
+	// NOT triggered and used_base retains call1, which stays at its initial
+	// 15 ('N') because no score ever beat 0. A `tscore > 0` guard would
+	// wrongly force the downgrade here and lose upstream's INT_MIN quality.
+	notCall := totDepth < opts.MinDepth ||
+		float64(usedScore) < opts.MinCallFraction*float64(tscore)
 	// isHet for --het-only is computed independently of --ambig: a
 	// position counts as heterozygous when the two top alleles pass the
 	// het-fract test (hetSite) AND the het-inclusive call (call1|call2)
 	// is itself confident — i.e. it clears the same depth/call-fraction
 	// gates upstream uses to accept a call. We evaluate the call gate on
 	// the het-inclusive score (s1+s2) so the determination does not
-	// depend on whether --ambig happened to widen usedScore above.
+	// depend on whether --ambig happened to widen usedScore above. The
+	// `tscore > 0` guard here is deliberate: --het-only is our own
+	// extension (no upstream oracle), and a het call on a zero-score
+	// column is meaningless.
 	hetInclusiveScore := s1
 	if hetSite {
 		hetInclusiveScore += s2
 	}
 	hetCallOK := tscore > 0 && float64(hetInclusiveScore) >= opts.MinCallFraction*float64(tscore)
-	isHet := hetSite && depthOK && hetCallOK
-	if !depthOK || !callOK {
+	isHet := hetSite && totDepth >= opts.MinDepth && hetCallOK
+	if notCall {
 		// "But note shallow gaps are still called gaps, not N, as
 		//  we're still more confident there is no base than it is
 		//  A, C, G or T." — upstream comment.
@@ -923,10 +968,20 @@ func callConsensus(evs []pileupEvent, opts ConsensusOptions) (consensusCall, int
 		base = 'N'
 	}
 
-	// Confidence as a 0..100 integer (upstream's formula).
+	// Confidence, mirroring upstream's `*qual = used_base ? 100.0 *
+	// used_score / tscore : 0` (bam_consensus.c:2003). When used_base is
+	// non-zero but tscore is 0 (the intron / ref-skip-only column whose
+	// call1 stayed 15), upstream computes 100.0*0/0 == NaN and casts it to
+	// a C int, which on every platform samtools targets yields INT_MIN
+	// (-2147483648). We reproduce that sentinel exactly so the pileup row's
+	// quality column is byte-for-byte identical.
 	qual := 0
-	if used != 0 && tscore > 0 {
-		qual = int(100 * float64(usedScore) / float64(tscore))
+	if used != 0 {
+		if tscore == 0 {
+			qual = consensusNaNQual
+		} else {
+			qual = int(100 * float64(usedScore) / float64(tscore))
+		}
 	}
 	return consensusCall{base: base, qual: qual, depth: totDepth, isHet: isHet}, totDepth
 }
@@ -961,6 +1016,15 @@ func callConsensusBayesian(evs []pileupEvent, recs []*sam.Record,
 			bp.base4 = byte(baseToSeqi(upper(e.base)))
 			bp.qual = e.qual
 			bp.seqOff = e.readBP - 1
+			// An exon base abutting a ref-skip (CIGAR N) run carries
+			// upstream's p->ref_skip flag, so the Gap5/bayesian caller
+			// excludes it from the consensus depth (bam_consensus.c:1333)
+			// even though it is a real, displayed base. Mirror that by
+			// flagging the gap5 view as a ref-skip; the displayed pileup
+			// column still renders e.base via writeConsensusPileupRow.
+			if e.refSkipBoundary {
+				bp.refSkip = true
+			}
 		case pileupEventDel:
 			bp.base4 = 16
 			bp.qual = e.qual
@@ -1321,7 +1385,15 @@ func writeConsensusPileupRow(bw *bufio.Writer, chrom string, pos1, depth int,
 			}
 			q = e.qual
 		case pileupEventRefSkip:
-			continue
+			// Upstream's consensus pileup engine keeps a ref-skip (CIGAR N)
+			// read in the column, counts it in depth, and renders its base as
+			// '.' with quality 0 (consensus_pileup.c:214-220 sets p->base='.',
+			// p->qual=0; basic_pileup then emits it in the seq/qual columns and
+			// counts it via depth++). It is NOT lowercased on the reverse strand
+			// — '.' has no case. So an intron position covered only by spliced
+			// reads prints those reads' '.' rather than collapsing to depth 0.
+			b = '.'
+			q = 0
 		}
 		if q > 93 {
 			q = 93 // upstream MIN(qual,93) before +'!'
