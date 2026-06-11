@@ -8,14 +8,16 @@ subcommands. The current implementation ships:
 - `bcftools concat` — concatenate VCF/BCF files.
 - `bcftools norm` — left-align indels, split/join multi-allelics, atomize, dedup.
 - `bcftools call` — variant calling from per-position genotype likelihoods
-  (consensus + biallelic multi-allelic).
+  (consensus `-c` + full multi-allelic `-m`).
 - `bcftools index` — build a `.csi` (or `.tbi`) index for a BCF / VCF.gz.
 - `bcftools stats` — sectioned summary numbers compatible with
   `plot-vcfstats`.
 - `bcftools convert` — re-emit VCF/BCF in a different format (`-O v|z|b|u`)
-  with optional sample / region filtering. Upstream's exotic shapes
-  (gVCF↔VCF, HAPLEGEND/HAPSAMPLE, PLINK) are tracked in
-  `docs/PARITY_ROADMAP.md` and deferred.
+  with optional sample / region filtering, plus the GEN/HAP/TSV conversion
+  modes: `--gvcf2vcf`, `--tsv2vcf`, `--gensample`/`--gensample2vcf`,
+  `--hapsample`/`--hapsample2vcf`, `--haplegendsample`/`--haplegendsample2vcf`.
+  Only the PLINK exporters remain unported (tracked in
+  `docs/PARITY_ROADMAP.md`).
 - `bcftools mendelian` — detect Mendelian-inconsistent genotypes given
   one or more `CHILD,FATHER,MOTHER` trios. Emits `INFO/MERR` per
   record (annotate mode), a TSV trio rollup (`-c`), or a filtered
@@ -164,7 +166,7 @@ short `-O=v` *equals* form is not accepted; use `-O v`, `-Ov`, or the long
 
 | Short | Long                  | Meaning |
 | ----- | --------------------- | ------- |
-| `-O`  | `--output-type`       | `v` (default), `z`, `u`, `b`. `u`/`b` (BCF output) is **NOT YET implemented**; see scope below. |
+| `-O`  | `--output-type`       | `v` (default), `z` (BGZF VCF), `u` (uncompressed BCF), `b` (BGZF BCF). All four output types are implemented (BCF via the in-tree `pkg/htsgo/bcf` writer). |
 | `-o`  | `--output`            | Output path (defaults to stdout). |
 | `-h`  | `--header-only`       | Emit only the header. Help is on `-?` / `--help`. |
 | `-H`  | `--no-header`         | Drop the header. |
@@ -489,7 +491,7 @@ most-likely genotype per sample, and emits the standard variant record.
 # Consensus caller (Li 2011), drop all-reference sites.
 bcftools call -c -v input.vcf > out.vcf
 
-# Multi-allelic caller (v1: biallelic-only) writing gzipped VCF.
+# Multi-allelic caller writing BGZF-compressed VCF.
 bcftools call -m -v -O z -o out.vcf.gz input.vcf
 
 # Treat samples as haploid (e.g. for chrY).
@@ -507,12 +509,12 @@ bcftools call -c -v -p 0.01 -P 1e-4 input.vcf
 | Short | Long                    | Meaning |
 | ----- | ----------------------- | ------- |
 | `-c`  | `--consensus-caller`    | Old Li-2011 consensus caller. |
-| `-m`  | `--multiallelic-caller` | Multi-allelic caller (v1: biallelic-only; falls back to consensus on multi-allelic sites). |
+| `-m`  | `--multiallelic-caller` | Full multi-allelic caller (the `-m` PL grid over >2 ALTs pairs with the mpileup MAQ port). |
 | `-A`  | `--keep-alts`           | Emit every declared ALT, even those with zero supporting reads. |
 | `-v`  | `--variants-only`       | Drop all-reference sites. |
 | `-P`  | `--prior`               | Mutation rate prior (default `1.1e-3`). |
 | `-p`  | `--pval-threshold`      | Variant-posterior threshold (default `0.5`). |
-|       | `--ploidy`              | `2` (default), `1`, or `GRCh37` / `GRCh38` (deferred). |
+|       | `--ploidy`              | `2` (default), `1`, `GRCh37`, `GRCh38`, or `--ploidy-file`. All implemented. |
 | `-X`  | `--chromosome-X`        | Legacy alias for `--ploidy 1`. |
 | `-O`  | `--output-type`         | `v`, `z`, `u`, `b` (same semantics as `view`). |
 | `-o`  | `--output`              | Output file (default stdout). |
@@ -546,48 +548,51 @@ For each input site:
 
 ### Calling algorithm (multi-allelic, `-m`)
 
-Upstream's full multi-allelic caller iterates over every possible allele
+The full multi-allelic caller iterates over every possible allele
 combination and picks the most likely combined genotype across all
-samples. **Our v1 implementation handles biallelic sites with the same
-maths as `-c` and falls back to `-c` for multi-allelic sites.** Sites
-with >2 alleles still produce a valid call (the most likely per-sample
-genotype is selected from the full PL vector) but the posterior is
-computed as if the site were biallelic with the most-supported ALT.
-Tracked in `docs/PARITY_ROADMAP.md` under the `bcftools call` entry.
+samples. This is now implemented: the `-m` PL grid over >2 ALTs pairs
+with the mpileup MAQ port (the consensus `-c` path also remains
+available). See `docs/PARITY_ROADMAP.md` under the `bcftools call`
+entry for the validation detail.
 
 ### Deviations from upstream
 
-- **No BCF input.** The current decoder doesn't reconstruct
-  `FORMAT/PL` from htslib-produced BCF (see `docs/UPSTREAM_BUGS.md`
-  `bcf-fmt-keys-missing`). Convert with `bcftools view in.bcf > in.vcf`
-  first. Tracked in the roadmap.
-- **`--ploidy GRCh37` / `GRCh38` are rejected** at runtime; v1 only
-  supports fixed ploidies. The CLI parses the spec so existing scripts
-  fail early with a clear error.
+- **BCF input edge cases.** Some htslib-produced BCF `FORMAT`-key
+  reconstruction edge cases remain (see `docs/UPSTREAM_BUGS.md`
+  `bcf-fmt-keys-missing`); for those, convert with
+  `bcftools view in.bcf > in.vcf` first. Tracked in the roadmap.
 - **No index-backed region queries** for `-r`; the flag is honoured as
   a post-filter. The view-side CSI seek will move here in a follow-up.
-- **Multi-allelic caller** is biallelic-only, as described above.
 
 ## Scope and deferred work
 
-What ships in this slice:
+All 24 bcftools subcommands now ship: `view`, `index`, `stats`, `query`,
+`concat`, `norm`, `call`, `merge`, `annotate`, `isec`, `sort`, `reheader`,
+`convert`, `mendelian`, `mendelian2`, `gtcheck`, `roh`, `filter`,
+`consensus`, `mpileup`, `cnv`, `polysomy`, `csq`, and `plugin`. BCF
+read + write (`-O u`/`-O b`), VCF and BGZF VCF I/O (`-O v`/`-O z`),
+CSI/TBI indexing, and multi-threaded (`-@`) output compression are all
+in. The full multi-allelic `-m` caller, `--ploidy GRCh37`/`GRCh38`,
+mpileup SNP genotype likelihoods (slices 1–4) plus both the legacy
+`bam2bcf_indel` and the `--indels-cns` (edlib) indel callers, the csq
+haplotype engine (slices 1–4), and the `roh`/`cnv`/`polysomy` HMMs are
+implemented and live-oracle validated.
 
-- `view`, `index`, `stats`, `query`, `concat`, `norm`, `call`,
-  `merge`, `annotate`, `isec`, `sort`, `reheader`, `convert`,
-  `mendelian`, `gtcheck`, `roh` subcommands.
-- BCF reader + writer (CHROM/POS/REF/ALT/QUAL/FILTER/INFO + per-sample FORMAT).
-- VCF and BGZF-wrapped VCF input.
-- VCF and gzip-VCF (`-O v`, `-O z`) output for most subcommands.
-- CSI / TBI index reading and writing.
+What remains **genuinely open** (see `docs/PARITY_ROADMAP.md` for the
+authoritative gap list):
 
-What is **deferred** to a follow-up PR:
-
-- Other subcommands (`csq`, `filter`, `mpileup`, `consensus`,
-  `polysomy`, `cnv`, `mendelian2`, `+plugins`, ...).
-- The plugin system (`bcftools plugin`).
-- `bcftools stats -E exons.tab.gz` (upstream's exon-overlap section).
-- BCF input for `bcftools call`, the full multi-allelic caller, and
-  GRCh37 / GRCh38 ploidy specs.
+- `convert` PLINK exporters (the GEN/HAP/TSV/gVCF modes are done).
+- `csq -l/--local-csq` (per-record, non-haplotype-aware path), which the
+  CLI hard-rejects.
+- `gtcheck -c/--cluster` dendrogram (upstream itself errors "to be
+  implemented") and `gtcheck` filter expressions.
+- `query %N_ALT` (**not** an upstream `query` token — non-goal).
+- `bcftools som` is a deliberate **non-goal**: the upstream source has an
+  `fwrite`-return bug that crashes; see `docs/UPSTREAM_BUGS.md`.
+- `bcftools tview` is a deliberate skip (interactive ncurses; no pipeline
+  use).
+- The ~30 bundled upstream `.so` plugins are non-goal scope (the plugin
+  *system* — a VCF-on-stdin/stdout subprocess protocol — is implemented).
 
 ## How records flow
 
@@ -606,7 +611,7 @@ streaming dispatcher in pkg bcftools
 filter pipeline (region / -t / -f / -c / -C / -q / -Q / -i / -e / -s / -G)
         │
         ▼
-vcf.Writer  →  stdout / -o file / gzip wrap when -O z
+vcf.Writer  →  stdout / -o file / BGZF wrap when -O z / BCF when -O b|u
 ```
 
 ## Tests

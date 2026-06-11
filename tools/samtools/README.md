@@ -71,8 +71,8 @@ detected; pass `-` to read from stdin.
 | `-M`  | `--use-multi-region-iterator` | Accepted (we always run the full intersection). |
 | `-s`  | `--subsample F`           | Keep fraction `F`, or `<seed>.<frac>`.        |
 | `-o`  | `--output PATH`           | Output file (default stdout).                 |
-| `-T`  | `--reference FASTA`       | Accepted; CRAM is not supported in v1.        |
-| `-@`  | `--threads N`             | Accepted; single-threaded in v1.              |
+| `-T`  | `--reference FASTA`       | Reference FASTA (used for CRAM resolution).   |
+| `-@`  | `--threads N`             | Parallel BGZF compression of the BAM output.  |
 |       | `--no-PG`                 | Suppress `@PG` line emission.                 |
 |       | `--help`                  | Show help.                                    |
 |       | `--version`               | Show version.                                 |
@@ -268,14 +268,17 @@ qualities ≥ 15).
 |       | `--exclude-flags N` | Drop records with ANY bit set.          |
 | `-c`  | `--clear-tags`   | Strip pre-existing `do`/`dt`/`mc` tags.    |
 | `-t`  | `--add-tag`      | Write `do:Z:<winner-qname>` on duplicates. |
-| `-@`  | `--threads N`    | Accepted; v1 is single-threaded.           |
+| `-d`  | `--max-dist N`   | Optical-duplicate max pixel distance.       |
+| `-s`  | `--stats`        | Emit the Picard-style duplicate-stats report. |
+| `-S`  |                  | Mark supplementary/secondary of a duplicate too. |
+| `-@`  | `--threads N`    | Parallel BGZF compression of the BAM output. |
 | `-o`  | `--output PATH`  | Output BAM (default stdout).               |
 |       | `--no-PG`        | Suppress `@PG` line emission.              |
 
 Byte-parity validated against upstream's `test/markdup/5_markdup.sam` and
 `6_remove_dups.sam`; flag-parity on `18_primary_duplicate_count.sam`.
-See `PARITY_VALIDATION.md` for the deferred-feature list (optical-dup
-detection, per-RG keying, `dt:Z:` tag).
+Optical-duplicate detection (`-d`), the stats report (`-s`/`-S`), and
+supplementary marking (`-S`) are implemented; see `PARITY_VALIDATION.md`.
 
 ### `samtools stats`
 
@@ -325,10 +328,17 @@ follow-up PRs.
   on the record's reference. The walk is always a linear scan (no
   `.bai` shortcut yet); `-M`/`--use-multi-region-iterator` is accepted but
   produces an identical record set, so we always run the full intersection.
-- **CRAM** is not supported. The `-T/--reference` flag is accepted (so
-  pipelines passing it through do not break) but has no effect.
-- **Multi-threading.** `-@/--threads` is accepted by every subcommand but
-  the v1 pipelines are single-threaded.
+- **CRAM** read and write are supported throughout (rANS 4x8/4x16 in-tree
+  pure Go; `ulikunitz/xz` confined to the LZMA block codec; X_EXT bzip2
+  encode in-tree). The `-T/--reference` FASTA is consumed for CRAM
+  reference resolution. v2.1 decode and v3.0/v3.1 read+write are validated
+  byte-for-byte against live `samtools`; the only residuals are the network
+  REF_PATH/EBI fetch and CRAM v4.0 (spec not final).
+- **Multi-threading.** `-@/--threads` drives a genuine parallel BGZF
+  compressor for the BAM-writing subcommands (`view`, `sort`, `markdup`);
+  decoded output is byte-identical across thread counts. It is still a
+  no-op for parallel *input* BGZF/CRAM decode and the non-BAM-writing
+  subcommands (one shared deferred parallel-read pass, not per-tool gaps).
 - **`--no-PG`** is accepted but has no observable effect — none of our
   subcommands inject a `@PG` line into the header.
 - `samtools sort` produces deterministic output (stable sort + QName

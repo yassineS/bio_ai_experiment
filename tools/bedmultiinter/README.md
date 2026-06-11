@@ -91,8 +91,9 @@ Coverage: ~86.9% on `pkg/bedmultiinter` (race + cover, 2026-05-15).
 
 ## Limitations
 
-- VCF / GFF input not implemented (upstream accepts these via its
-  `BedFile` autodetect; this port reads BED only).
+- BED, VCF, and GFF inputs are all supported: each file's format is
+  autodetected per data line (VCF: `POS-1`..`POS-1+len(REF)`; GFF:
+  `col4-1`..`col5`), mirroring upstream's `BedFile` autodetect.
 - Input files are assumed sorted by chrom/start; out-of-order records
   on a chromosome are tolerated only because each file's intervals are
   re-sorted and merged before the sweep. Strict upstream behaviour

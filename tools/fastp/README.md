@@ -423,18 +423,24 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ **Duplication evaluation** (`--dup_calc_accuracy`) and dedup
   (`--dedup`)
 
-### Not Implemented (from original)
+### Implemented since the original draft of this list
 
-- Overlap-analysis-driven **merge writer** (`-m`/`--merge`, `--merged_out`,
-  `--include_unmerged`) — the port has a legacy `--merge-overlap` heuristic
-  only.
-- **`--adapter_fasta`** (trim against a FASTA list of adapters).
-- Separate **`--poly_x_min_len`** knob (poly-X shares `--poly-g-min-len`).
-- The explicit **`--disable_adapter_trimming`** flag name (the behaviour is
-  reachable by not enabling adapters/detection).
+- ✅ Overlap-analysis-driven **merge writer** (`-m`/`--merge`,
+  `--merged_out`, `--include_unmerged`) — a verbatim port of upstream's
+  `OverlapAnalysis::merge`; merged FASTQ output is byte-for-byte identical.
+  (The legacy `--merge-overlap` heuristic is retained as a separate flag.)
+- ✅ **`--adapter_fasta`** (trim against a FASTA list of adapters).
+- ✅ Separate **`--poly_x_min_len`** knob (independent of poly-G).
+- ✅ The explicit **`--disable_adapter_trimming`** (`-A`) flag.
+
+### Documented residuals (not 1:1)
+
 - Under multi-threading, **`--split`** file boundaries differ from upstream's
   byte-extrapolated estimate; single-thread (`-w 1`) is byte-for-byte
   identical (total content/order always match).
+- The **`merged_and_filtered`** JSON summary block (and a couple of minor
+  JSON sub-fields) are not yet emitted; the merged FASTQ output *bytes* are
+  byte-identical to upstream.
 
 ## Testing
 

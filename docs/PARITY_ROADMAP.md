@@ -80,36 +80,65 @@ there we have ~30 subcommands not yet started.
 
 ---
 
-## Current status (2026-06-09, post PRs #220–#225)
+## Current status (2026-06-11, post the ~70-PR wave)
 
 A skimmable per-tool completion table lives in the top-level
-[`PROJECT_STATUS.md`](../PROJECT_STATUS.md). Quick state:
+[`PROJECT_STATUS.md`](../PROJECT_STATUS.md), which also carries the
+**definitive remaining-gap list** and the **non-goals** list. Quick state:
 
-- **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp`, `htsfile`.
+- **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp` (~97%), `htsfile`.
 - **Near done (small tails):** `prinseq` (~95%), `vcftools` (146/146
-  flags, ~97%, output-column polish only), `bgzip`/`tabix` (~92%),
-  `mosdepth` (~85%).
-- **Medium remaining:** `bedtools` (35/~40 subcommands, option-tail
-  polish), `samtools` (~88%; the one genuine gap is mpileup `-g/-u`
-  BCF/genotype-likelihood output).
-- **Large remaining:** `bcftools` (~70%; the boulders are mpileup indel
-  calling, `convert`'s ~18 modes, and csq slice 4).
+  flags, ~98%, output-column polish only), `bgzip`/`tabix` (~92%),
+  `mosdepth` (~95%; only CRAM input remains), `bedtools` (37 bed* tools,
+  no missing subcommands, ~95%).
+- **Near done (variant-calling now landed):** `samtools` (~97%) and
+  `bcftools` (~96%). The former "boulders" are closed: full multi-allelic
+  `call`, mpileup SNP slices 1–4, **both** the legacy `bam2bcf_indel` and
+  the `--indels-cns` (edlib) indel callers, the csq haplotype engine
+  through **slice 4**, and `convert`'s GEN/HAP/TSV/gVCF modes are all
+  implemented and live-oracle validated.
 
-Recently closed (PRs #220–#225, treat as merged):
+Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
+the canonical version with effort sizing): samtools `consensus` pileup
+`-a` placeholder rows; htsgo `hfile` cloud I/O; bcftools `convert` PLINK
+exporters; bcftools `csq -l/--local-csq`; bcftools `gtcheck -c/--cluster`
+plus its filter expressions; mosdepth CRAM input; CRAM BCF-FORMAT-key edge
+cases, network ref fetch, and v4.0; bgzip `-t`, tabix
+`--reheader`/`--targets`; and scattered per-output column / niche-flag
+polish (vcftools, prinseq, a few bedtools tails).
 
-- **bcftools**: `view -x/--private` & `-X/--exclude-private`; `stats
-  -u/--user-tstv`; `csq -b/--brief-predictions` & `-C/--genetic-code`
-  (standard table). csq `-O` non-text output is still deferred (slice 4).
-- **samtools**: `consensus --het-only` (implemented as a fix for an
-  upstream dead-option bug — see `UPSTREAM_BUGS.md`); `--ignore-overlaps`
-  landed earlier. Still deferred: mpileup `-g/-u` BCF output.
+Recently closed (this wave, treat as merged):
+
+- **bcftools**: full multi-allelic `-m` `call`; `--ploidy GRCh37/38` +
+  `--ploidy-file`; `convert` `--gvcf2vcf`/`--tsv2vcf`/`--gensample(2vcf)`/
+  `--hapsample(2vcf)`/`--haplegendsample(2vcf)`; `annotate`; `consensus`
+  chain + iupac; `mendelian2` rule engine; `gtcheck` (PL/cluster minus the
+  dendrogram); `filter -M/--mask-file`; `cnv --AF-file`; `roh -O z`;
+  `query %INFO/<tag>` + `%SAMPLE`; csq **slice 4** (FORMAT/TBCSQ,
+  `--unify-chr-names`, `--dump-gff`, `-O b|u|z`); mpileup legacy
+  `bam2bcf_indel` **and** `--indels-cns`; BCF `-O u|b` output throughout;
+  `-@` output-compression threading.
+  > NOTE: a few CLI flag-help strings still read "accepted; v1 not
+  > implemented" / "accepted, ignored" (e.g. `filter -M`,
+  > `mpileup --indels-cns`); those strings are **stale** — the features are
+  > fully wired (verified in code). The help text is a cosmetic follow-up.
+- **samtools**: `coverage -A` ASCII histogram; `markdup -d` (optical-dup),
+  `-s`/`-S` (stats / supplementary marking); `calmd -C` (cap MAPQ, gated on
+  `>10`), `-e` (`=` for match), `-u` (uncompressed BAM); `consensus`
+  per-position indel calling + `--het-only`; `phase` `-l/-e` site lists;
+  mpileup `-g/-u` BCF/genotype-likelihood emit (delegates to the bcftools
+  engine); CRAM r/w + X_EXT bzip2 encode; `-@` view/sort/markdup threading.
 - **mosdepth**: `-d/--d4`, `-a/--fragment-mode`, `-q/--quantize`,
   `-t/--threads`, and `-m/--use-median` (all byte-identical to the
   upstream v0.3.14 binary; threads produces identical output for any
-  count). No deferred flags remain.
-- **vcftools**: 0 unsupported flags.
-- A repo-wide test cleanup (#225) converted all golden tests to live
-  upstream-binary parity and fixed a `samtools depth` flag bug.
+  count). No deferred flags remain (only CRAM input is unwired).
+- **bedtools**: BAM input (`bedintersect`, `bedmulticov`); VCF/GFF input
+  (`bedintersect`, `bedmultiinter`); `bedclosest` direction flags
+  (`-D`/`-id`/`-iu`/`-fu`/`-fd`/`-t`); `bedintersect -c`; `bedsample` RNG
+  byte-parity (std::mt19937_64 port).
+- **vcftools**: 0 unsupported flags; `--freq2`/`--counts2` schema complete.
+- **CRAM**: X_EXT bzip2 *encode* (in-tree pure-Go); v2.1 decode + v3.0/3.1
+  read+write validated byte-for-byte against live `samtools`.
 
 ## Per-tool gap list
 
@@ -760,9 +789,16 @@ The only documented residuals are the multi-thread split distribution and
 the `merged_and_filtered` JSON block (merged FASTQ output bytes are
 byte-identical).
 
-### bedtools (35 subcommands ported)
+### bedtools (all subcommands ported)
 
-**Status:** 35 of ~40 subcommands (~88%). 141 passing parity tests
+**Status:** ~95%. All upstream bedtools subcommands are ported across the
+37 `bed*` tool dirs (no missing subcommands). BAM input (`bedintersect`,
+`bedmulticov`, incl. CRAM on `bedmulticov`), VCF/GFF input (`bedintersect`,
+`bedmultiinter`), `bedclosest` direction flags
+(`-D`/`-id`/`-iu`/`-fu`/`-fd`/`-t`), `bedintersect -c`, and `bedsample`
+RNG byte-parity have all landed. Remaining work is scattered per-subcommand
+option-tail polish (and CRAM input on the BED-only tools). 141 passing parity
+tests
 against the upstream test suite (across PR #55 + Phase-3 wave 1 + wave
 2 simple + wave 2 algo) + 17 new cases from wave 3 (PR #87) + 6 cases
 from the reldist/fisher full-parity wave (PR #90) + 6 cases from the
@@ -1868,9 +1904,12 @@ Gap5 posterior caller and the NM-halo MAPQ adjustment are byte-faithful
 to upstream's default `MODE_RECALL`; `--het-only` and `--ignore-overlaps`
 landed in the #220–#225 wave).
 
-**The single genuine remaining samtools gap is mpileup `-g/-u`
-BCF/genotype-likelihood output** (needs the bam2bcf emit path). Everything
-else is either done or the cross-cutting multi-threading (`-@`) deferral.
+**mpileup `-g/-u` BCF/genotype-likelihood output is now DONE** (it delegates
+to the ported bcftools mpileup engine — slices 1–4 plus both indel callers).
+The single genuine remaining samtools gap is **`consensus` pileup `-a`
+placeholder rows** (the `N\t0\t*\t*` deletion-only / zero-coverage emission;
+the per-position calls themselves are already correct). Everything else is
+either done or the cross-cutting multi-threading (`-@`) input-decode deferral.
 
 Missing subcommands (in rough priority order):
 
@@ -2955,15 +2994,19 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 
 ### `bcftools`
 
-**Status:** 24 of ~30 subcommands (~80%). `view`, `index`, `stats`, `query`,
-`concat`, `norm`, `call` (consensus + biallelic multi-allelic), the PR #86
-wave-1 tail (`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`), the
-convert/mendelian PR (`convert`, `mendelian`), the gtcheck/roh PR (`gtcheck`,
-`roh`), the filter/consensus PR (`filter`, `consensus`), the
-mendelian2/polysomy PR (`mendelian2`, `polysomy`), the cnv/csq PR
-(`cnv` + `csq`), and the mpileup PR (**`mpileup`**).
+**Status:** all 24 subcommands present (~96%). `view`, `index`, `stats`,
+`query`, `concat`, `norm`, `call` (consensus + **full** multi-allelic),
+`annotate`, `head`, `isec`, `merge`, `reheader`, `sort`, `convert`
+(pass-through + GEN/HAP/TSV/gVCF modes), `mendelian`, `gtcheck`, `roh`,
+`filter` (incl. `-M/--mask-file`), `consensus` (chain + iupac),
+`mendelian2`, `polysomy`, `cnv` (incl. `--AF-file`), `csq` (slices 1–4),
+and `mpileup` (SNP slices 1–4 + legacy `bam2bcf_indel` + `--indels-cns`).
 
-All bcftools subcommands now have an implementation in the Go port.
+All bcftools subcommands now have a real implementation in the Go port.
+The genuinely-remaining gaps are small: `convert` PLINK exporters,
+`csq -l/--local-csq`, and `gtcheck -c/--cluster` + filter expressions.
+`som` and `tview` are deliberate **non-goals** (see PROJECT_STATUS.md);
+`query %N_ALT` / `import --skipBamQ` are **not** upstream flags.
 
 **Multi-threaded output compression** (`-@ / --threads N`) — DONE for the
 output-writer subcommands. Like upstream (which calls htslib
@@ -3023,9 +3066,15 @@ that path (`BenchmarkViewThreadsVCFGz`).
 Closed in the #220–#225 wave: `view -x/--private` & `-X/--exclude-private`
 (private-allele site filter), `stats -u/--user-tstv` (user-defined Ts/Tv
 binning), and `csq -b/--brief-predictions` & `-C/--genetic-code` (standard
-table 0). The remaining boulders are mpileup indel calling, `convert`'s
-~18 modes, and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`, `-O`
-non-text output).
+table 0).
+
+The former "boulders" are now **closed**: mpileup indel calling (both the
+legacy `bam2bcf_indel` path and `--indels-cns`), the `convert` GEN/HAP/TSV/
+gVCF modes, and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`,
+`--dump-gff`, `-O b|u|z` non-text output) all landed and are live-oracle
+validated (see the per-subcommand sections below). The only bcftools items
+still open are `convert`'s PLINK exporters, `csq -l/--local-csq`, and
+`gtcheck`'s `-c/--cluster` dendrogram + filter expressions.
 
 The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
 but with a deliberate design divergence from upstream:
@@ -3888,6 +3937,9 @@ Done:
 
 Missing:
 
+- **CRAM input** — `-f/--fasta` is accepted but the alignment reader is
+  BAM-only (`sam.NewReader`); CRAM coverage input is not yet wired through
+  `pkg/htsgo/alnio`. This is the one genuine remaining mosdepth gap.
 - **Default-mode overlap-pair correction** — our default (non-fast) mode
   does not subtract double-counted depth where mate pairs overlap; output
   matches upstream's `--fast-mode` (see `UPSTREAM_BUGS.md`). Unchanged by

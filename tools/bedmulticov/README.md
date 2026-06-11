@@ -88,8 +88,10 @@ pass byte-for-byte against real in-memory BAM streams — see
   `>` (a bedtools 2.x quirk in `multiBamCov.cpp::FindBlockedOverlaps`
   preserved here for byte-for-byte parity).
 
-CRAM input is not yet supported — see `docs/CRAM_DESIGN.md`; the CLI
-surfaces a clear error for `.cram` paths.
+BED, BAM, **and** CRAM inputs are all supported (BAM/CRAM are decoded via
+`pkg/htsgo/alnio`, which routes CRAM to `pkg/htsgo/cram`); the `-q` MAPQ
+filter and `-D` per-interval depth cap are honoured for both. A
+reference-backed CRAM may be passed a FASTA for base reconstruction.
 
 ## Tests
 
@@ -101,7 +103,5 @@ Coverage: ~88.8% on `pkg/bedmulticov` (race + cover, 2026-05-15).
 
 ## Limitations
 
-- CRAM input is not yet supported (no CRAM reader; see
-  `docs/CRAM_DESIGN.md`).
 - Stranded fraction semantics follow `bedintersect`'s convention: with
   `-s` / `-S`, records with an empty strand on either side do not match.

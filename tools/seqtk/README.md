@@ -1102,8 +1102,12 @@ Apache License 2.0 - See [LICENSE](../../LICENSE) for details.
 
 ### Current Limitations
 
-- Some advanced features from original seqtk not yet implemented
-- Performance similar to original (optimizations ongoing)
+All 24 upstream seqtk v1.5 subcommands are implemented and byte-parity
+validated; seqtk is at **1:1 parity** (see `docs/PARITY_ROADMAP.md`).
+The only residual seqtk option-tail items are the minor `seq` read/seq-level
+selectors (`-1`/`-2`/`-s`/`-f`/`-S`/`-x`/`-F`/`-R`). RNG-using subcommands
+(`sample`, `randbase`) are reproducible within the tool; `sample` now
+additionally ports the upstream MT19937-64 RNG and is byte-exact.
 
 ### Roadmap
 
@@ -1113,7 +1117,7 @@ Apache License 2.0 - See [LICENSE](../../LICENSE) for details.
 - [x] Add subsequence extraction command
 - [x] Add paired-end interleaving (`mergepe`) and cut-at-N-runs (`cutN`) commands
 - [x] Add point-mutation (`mutfa`), random IUPAC resolution (`randbase`), and homopolymer compression (`hpc`) commands
-- [ ] Implement additional seqtk commands (mergefa, telo, etc.)
+- [x] Implement all remaining seqtk subcommands (`mergefa`, `telo`, `hrun`, `listhet`, `kfreq`, `size`, …)
 - [ ] Add parallel processing for very large files
 - [ ] Optimize memory usage for ReadAll operations
 
