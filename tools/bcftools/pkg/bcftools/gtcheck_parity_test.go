@@ -237,6 +237,16 @@ func TestParityGtcheck_AllModes(t *testing.T) {
 		{"nmatches-neg2", []string{"--n-matches", "-2"}, GtcheckOptions{NMatches: -2}},
 		{"nmatches-GT-3", []string{"-u", "GT", "--n-matches", "3"}, GtcheckOptions{UseTag: "GT", NMatches: 3}},
 		{"pairs", []string{"-p", "S3,S1,S1,S2,S2,S6"}, GtcheckOptions{PairsSpec: "S3,S1,S1,S2,S2,S6"}},
+		// -i/-e filter expressions (the AC INFO field varies per site in the
+		// fixture, so these drop a subset of sites and change the scoring).
+		{"include-AC", []string{"-i", "INFO/AC>3"}, GtcheckOptions{IncludeExpr: "INFO/AC>3"}},
+		{"include-qry-AC", []string{"-i", "qry:INFO/AC>3"}, GtcheckOptions{IncludeExpr: "qry:INFO/AC>3"}},
+		{"include-GT-AC", []string{"-u", "GT", "-i", "INFO/AC>=4"}, GtcheckOptions{UseTag: "GT", IncludeExpr: "INFO/AC>=4"}},
+		// Use the qry:-prefixed -e form: upstream's bare `-e EXPR` has a quirk
+		// where strtol(EXPR) clobbers the error-probability to 0 (integer
+		// scoring); the prefixed form avoids it on both sides. See
+		// docs/UPSTREAM_BUGS.md.
+		{"exclude-qry-AC", []string{"-e", "qry:INFO/AC<4"}, GtcheckOptions{ExcludeExpr: "qry:INFO/AC<4"}},
 	}
 
 	for _, tc := range cases {

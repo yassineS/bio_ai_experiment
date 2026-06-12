@@ -897,3 +897,25 @@ intentional design choice because:
 
 Per the disposition policy at the top of this file, fixing on our
 side and documenting the deviation is the right call.
+
+## bcftools gtcheck: `-e EXPR` silently forces integer scoring
+
+Upstream `vcfgtcheck.c`'s option parser, in `case 'e'`, runs
+`args->gt_err = strtol(optarg, &tmp, 10)` before deciding whether the
+argument is a filter expression or the deprecated `-e` error-probability
+value. For a non-numeric filter such as `-e 'INFO/AC<4'`, `strtol`
+returns 0 and the code then (correctly) treats the argument as an
+exclude filter — but the `gt_err` side effect has already happened, so
+the error probability is left at 0. A `gt_err` of 0 selects the
+integer-mismatch scoring path (equivalent to `-E 0`), so the discordance
+column switches from the abstract floating-point score to a raw integer
+mismatch count purely as a side effect of using `-e` with a filter. The
+`qry:`/`gt:`-prefixed form and `-i` (include) are unaffected — only the
+bare `-e EXPR` branch runs the `strtol`.
+
+**Our behaviour:** `-e EXPR` applies the exclude filter without touching
+the error-probability / scoring mode; the scoring stays whatever `-E` /
+`-u` (or the default) selected, which is what a user reasonably expects.
+A user who genuinely wants integer scoring passes `-E 0` explicitly. The
+live parity tests use the `qry:`-prefixed `-e` form so both sides agree;
+the bare-`-e` scoring-mode flip is the documented, intentional deviation.

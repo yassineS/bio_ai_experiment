@@ -94,8 +94,11 @@ type GtcheckOptions struct {
 	SamplesQry []string
 	SamplesGT  []string
 
-	// Regions / Targets / Include / Exclude are accepted but applied
-	// only as a post-filter on CHROM[:beg-end].
+	// Regions / Targets restrict processing to CHROM[:beg-end] (applied as
+	// a post-filter). IncludeExpr / ExcludeExpr are upstream's -i/-e filter
+	// expressions: they drop non-matching sites before scoring and accept
+	// the `qry:` / `gt:` scope prefix (an unprefixed expression applies to
+	// both the query and the genotype reader).
 	Regions     []string
 	RegionsFile string
 	Targets     []string
@@ -195,7 +198,15 @@ func Gtcheck(in io.Reader, out io.Writer, opts GtcheckOptions) (GtcheckResult, e
 	if err != nil {
 		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: %w", err)
 	}
-	return runGtcheck(hdr, vars, hdr, vars, out, opts, true)
+	qInc, qExc, _, _, ferr := compileGtcheckFilters(opts)
+	if ferr != nil {
+		return GtcheckResult{}, ferr
+	}
+	// In cross-check mode there is only the query reader, so just the
+	// qry-scoped filter applies (a bare, unprefixed expression is qry-scoped
+	// here too). Each dropped site is one skipped position.
+	vars, dropped := applyGtcheckFilter(vars, qInc, qExc)
+	return runGtcheck(hdr, vars, hdr, vars, out, opts, true, uint32(len(dropped)))
 }
 
 // GtcheckPaired is the -g panel entry point.
@@ -208,7 +219,99 @@ func GtcheckPaired(qIn, gIn io.Reader, out io.Writer, opts GtcheckOptions) (Gtch
 	if err != nil {
 		return GtcheckResult{}, fmt.Errorf("bcftools gtcheck: panel: %w", err)
 	}
-	return runGtcheck(hdrQ, varsQ, hdrG, varsG, out, opts, false)
+	qInc, qExc, gInc, gExc, ferr := compileGtcheckFilters(opts)
+	if ferr != nil {
+		return GtcheckResult{}, ferr
+	}
+	var dropQ, dropG []*vcf.Variant
+	varsQ, dropQ = applyGtcheckFilter(varsQ, qInc, qExc)
+	varsG, dropG = applyGtcheckFilter(varsG, gInc, gExc)
+	// Upstream counts one skipped site per merged position at which either
+	// reader's record was filtered out (vcfgtcheck.c:1131-1133), so the skip
+	// count is the number of distinct CHROM:POS positions dropped from either
+	// file rather than the raw sum.
+	skipped := countDistinctPositions(dropQ, dropG)
+	return runGtcheck(hdrQ, varsQ, hdrG, varsG, out, opts, false, skipped)
+}
+
+// countDistinctPositions counts the distinct CHROM:POS positions across the
+// supplied variant slices.
+func countDistinctPositions(groups ...[]*vcf.Variant) uint32 {
+	seen := make(map[string]struct{})
+	for _, g := range groups {
+		for _, v := range g {
+			seen[v.Chrom+"\x00"+strconv.Itoa(v.Pos)] = struct{}{}
+		}
+	}
+	return uint32(len(seen))
+}
+
+// gtcheckFilterScope splits an upstream gtcheck filter expression into its
+// scope ("qry", "gt", or "" for an unprefixed expression that applies to
+// both readers) and the bare expression, mirroring vcfgtcheck.c's handling of
+// the `qry:` / `gt:` prefix on -i/-e.
+func gtcheckFilterScope(expr string) (scope, bare string) {
+	switch {
+	case strings.HasPrefix(expr, "qry:"):
+		return "qry", expr[len("qry:"):]
+	case strings.HasPrefix(expr, "gt:"):
+		return "gt", expr[len("gt:"):]
+	default:
+		return "", expr
+	}
+}
+
+// compileGtcheckFilters compiles the -i/--include and -e/--exclude expressions
+// into per-reader (query and genotype) include/exclude Filters, honouring the
+// `qry:` / `gt:` scope prefix. An unprefixed expression applies to both
+// readers, matching upstream (vcfgtcheck.c sets both qry_filter and gt_filter
+// for a bare expression).
+func compileGtcheckFilters(opts GtcheckOptions) (qInc, qExc, gInc, gExc *Filter, err error) {
+	if opts.IncludeExpr != "" {
+		scope, bare := gtcheckFilterScope(opts.IncludeExpr)
+		f, cerr := CompileFilter(bare)
+		if cerr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("bcftools gtcheck: --include: %w", cerr)
+		}
+		if scope == "qry" || scope == "" {
+			qInc = f
+		}
+		if scope == "gt" || scope == "" {
+			gInc = f
+		}
+	}
+	if opts.ExcludeExpr != "" {
+		scope, bare := gtcheckFilterScope(opts.ExcludeExpr)
+		f, cerr := CompileFilter(bare)
+		if cerr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("bcftools gtcheck: --exclude: %w", cerr)
+		}
+		if scope == "qry" || scope == "" {
+			qExc = f
+		}
+		if scope == "gt" || scope == "" {
+			gExc = f
+		}
+	}
+	return qInc, qExc, gInc, gExc, nil
+}
+
+// applyGtcheckFilter splits vars into the variants that pass the include
+// filter (if any) and fail the exclude filter (if any) — kept — and those that
+// do not — dropped — mirroring upstream's per-site filter_test gate that skips
+// non-matching sites before scoring.
+func applyGtcheckFilter(vars []*vcf.Variant, inc, exc *Filter) (kept, dropped []*vcf.Variant) {
+	if inc == nil && exc == nil {
+		return vars, nil
+	}
+	for _, v := range vars {
+		if (inc == nil || inc.Eval(v)) && (exc == nil || !exc.Eval(v)) {
+			kept = append(kept, v)
+		} else {
+			dropped = append(dropped, v)
+		}
+	}
+	return kept, dropped
 }
 
 // tagMode is a per-sample-set tag selection: GT, PL, or auto.
@@ -308,6 +411,7 @@ func runGtcheck(
 	hdrQ *vcf.Header, varsQ []*vcf.Variant,
 	hdrG *vcf.Header, varsG []*vcf.Variant,
 	out io.Writer, opts GtcheckOptions, crossCheck bool,
+	filterSkipped uint32,
 ) (GtcheckResult, error) {
 	qryMode, gtMode, err := parseUseTag(opts.UseTag)
 	if err != nil {
@@ -426,7 +530,7 @@ func runGtcheck(
 		})
 	}
 
-	stats := &gtcheckStats{}
+	stats := &gtcheckStats{skipFilter: filterSkipped}
 	ds := newDistinctiveCollector(opts, len(pairs))
 
 	sites := 0
