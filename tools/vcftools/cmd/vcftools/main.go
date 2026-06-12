@@ -101,8 +101,8 @@ Genotype Filtering:
 Statistics Output:
   --freq                Output allele frequency
   --counts              Output allele counts
-  --freq2               Alternative allele frequency format
-  --counts2             Alternative allele counts format
+  --freq2               Allele frequency without allele labels (.frq)
+  --counts2             Allele counts without allele labels (.frq.count)
   --derived             With --freq/--counts, reorder so ancestral (INFO/AA)
                         allele is first; drops sites without a matching AA
   --depth               Output mean read depth per individual (.idepth)

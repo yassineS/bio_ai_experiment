@@ -2526,26 +2526,21 @@ func shouldDropByFT(ftEntries []string, removeAll bool, namedDrops map[string]st
 
 // outputStatistics outputs all requested statistics
 func outputStatistics(stats *statistics, params *Params) error {
-	if params.Freq {
-		if err := stats.outputFrequency(params.OutPrefix, false); err != nil {
+	// Upstream models --freq/--freq2 (and --counts/--counts2) as a single
+	// output_freq / output_counts flag plus one global suppress_allele_output
+	// toggle that the "2" variants set (parameters.cpp:198-225). The "2"
+	// variants write the SAME .frq / .frq.count file as the plain variants —
+	// only the allele label is suppressed — and the suppress flag, once set by
+	// any "2" flag, applies to all frequency/count output.
+	suppressAlleles := params.Freq2 || params.Counts2
+	if params.Freq || params.Freq2 {
+		if err := stats.outputFrequency(params.OutPrefix, false, suppressAlleles); err != nil {
 			return err
 		}
 	}
 
-	if params.Counts {
-		if err := stats.outputFrequency(params.OutPrefix, true); err != nil {
-			return err
-		}
-	}
-
-	if params.Freq2 {
-		if err := stats.outputFrequency2(params.OutPrefix); err != nil {
-			return err
-		}
-	}
-
-	if params.Counts2 {
-		if err := stats.outputCounts2(params.OutPrefix); err != nil {
+	if params.Counts || params.Counts2 {
+		if err := stats.outputFrequency(params.OutPrefix, true, suppressAlleles); err != nil {
 			return err
 		}
 	}

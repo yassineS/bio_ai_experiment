@@ -331,6 +331,11 @@ func TestVcftools_FreqUpstreamParity(t *testing.T) {
 	}{
 		{"freq", "--freq", ".frq", &Params{Freq: true}},
 		{"counts", "--counts", ".frq.count", &Params{Counts: true}},
+		// --freq2 / --counts2 write the SAME .frq / .frq.count file as the
+		// plain variants but strip the allele label (header {FREQ}/{COUNT},
+		// bare values) via upstream's suppress_allele_output flag.
+		{"freq2", "--freq2", ".frq", &Params{Freq2: true}},
+		{"counts2", "--counts2", ".frq.count", &Params{Counts2: true}},
 	}
 
 	for _, tc := range cases {
