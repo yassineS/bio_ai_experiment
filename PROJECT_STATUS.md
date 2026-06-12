@@ -72,11 +72,11 @@ documented **non-goal** (see "Non-goals" below).
    `query -r`, and `.crai`-indexed CRAM `samtools view` (seek-based container
    reader, live-upstream-parity validated).
 2. **CRAM long-tail correctness + perf** — some BCF FORMAT-key reconstruction
-   edge cases; the network REF_PATH/EBI reference fetch (an unresolvable
-   reference is surfaced as a clear MD5 error); CRAM v4.0 awaits a final spec.
-   (`samtools view -T` over CRAM now regenerates the reference-derived
-   `MD:Z`/`NM:i` tags via the shared `pkg/htsgo/mdnm`, live-parity validated.)
-   *Medium.*
+   edge cases; CRAM v4.0 awaits a final spec. (`samtools view -T` over CRAM now
+   regenerates the reference-derived `MD:Z`/`NM:i` tags via the shared
+   `pkg/htsgo/mdnm`; the network REF_PATH/EBI reference fetch is implemented
+   (opt-in via REF_PATH, see `pkg/htsgo/cram` RefPathReference) — both
+   live-parity / httptest validated.) *Medium → small.*
 3. **Scattered option-tail polish** — vcftools per-output column sets (the
    BCF-binary I/O family is the heavy remainder); prinseq niche knobs.
    Individually *small*.

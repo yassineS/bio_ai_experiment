@@ -59,9 +59,9 @@ func (f *FASTAReference) Close() error { return f.ra.Close() }
 // first two hex characters, then the next two, then the remaining 28.
 //
 // REF_CACHE resolution is keyed by MD5, so a contig is resolved through
-// ResolveByMD5 rather than by name. The network REF_PATH URL-fetch
-// mechanism is deliberately not implemented; a cache miss is a clear
-// error naming the missing digest.
+// ResolveByMD5 rather than by name. A cache miss is a clear error naming
+// the missing digest; the network REF_PATH URL-fetch source (see
+// RefPathReference) is consulted separately, after the cache, when set.
 type RefCacheReference struct {
 	dir string
 }

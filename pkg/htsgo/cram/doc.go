@@ -66,8 +66,11 @@
 // never produces sequence against the wrong reference. Without a
 // reference the bases an external reference would supply are filled with
 // 'N' and NeedsReference reports it. The network REF_PATH URL-fetch
-// mechanism is out of scope: an unresolvable reference is a clear error
-// naming the missing MD5.
+// mechanism is also supported (opt-in via the REF_PATH environment
+// variable; see RefPathReference / UseRefPathFromEnv): a reference
+// addressed only by MD5 is fetched from a URL endpoint — the EBI ENA
+// registry by default — when every local source misses. An unresolvable
+// reference is a clear error naming the missing MD5.
 //
 // CRAM index (.crai): ReadCRAI / OpenCRAI parse the gzip-compressed TSV
 // index that accompanies a CRAM file. CRAIIndex.Query (and the
