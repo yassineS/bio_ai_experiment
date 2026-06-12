@@ -37,7 +37,7 @@ evidence-based estimate of remaining surface — not a rosy reading.
 | **fastp** | single cmd; sliding-window, auto-adapter, HTML+JSON, dup-eval, UMI, PE base `--correction`, overrepresentation (`-p/-P`), `--split*`, merge writer (`-m`), `--adapter_fasta`, `--poly_x_min_len`, `--disable_adapter_trimming`; 16/16 + 9 tail parity | multi-thread `--split` file-boundary distribution; `merged_and_filtered` JSON block (merged FASTQ bytes are byte-identical) | **~97%** | small |
 | **bedtools** | 37 bed* tools; no missing subcommands; 141+ parity tests; BAM input (`bedintersect`/`bedmulticov`), VCF/GFF input (`bedintersect`/`bedmultiinter`), `bedclosest` direction flags, `intersect -c` | scattered option-tail polish; CRAM input deferred | **~95%** | small (long tail) |
 | **vcftools** | single cmd; **146/146 upstream long flags (100%)**, incl. BCF I/O, PCA, LD, RoH, relatedness, `--freq2`/`--counts2` (schema complete) | per-output column-set polish only; `--max-indv` uses deterministic truncation not upstream RNG shuffle (RNG-policy non-goal) | **~98%** | small |
-| **bcftools** | 24 subcommands (all present); mpileup MAQ SNP model (slices 1–4) + legacy `bam2bcf_indel` + `--indels-cns` (edlib realigner) + BAQ + bias tags; full multi-allelic `call` (`-m`/`-c`/`--gvcf`/`-C alleles`/`-G`/`--ploidy GRCh37/38`/`--ploidy-file`); `convert` GEN/HAP/TSV/gVCF modes; `gtcheck`/`mendelian2`/`consensus` (chain+iupac)/`annotate`; `filter -M`/`cnv --AF-file`/`roh -Oz`/`query %INFO/%SAMPLE`; csq slices 1–4 (FORMAT/TBCSQ, --unify-chr-names, -O b\|u\|z, --dump-gff); full HMM `roh`/`cnv`/`polysomy`; subprocess plugin system; `csq -l/--local-csq` (test_cds_local) | `gtcheck -c/--cluster` + filter exprs; `convert` PLINK exporters (phantom — commented out upstream); `query %N_ALT` (non-goal); `som`/`tview` (non-goals) | **~97%** | small |
+| **bcftools** | 24 subcommands (all present); mpileup MAQ SNP model (slices 1–4) + legacy `bam2bcf_indel` + `--indels-cns` (edlib realigner) + BAQ + bias tags; full multi-allelic `call` (`-m`/`-c`/`--gvcf`/`-C alleles`/`-G`/`--ploidy GRCh37/38`/`--ploidy-file`); `convert` GEN/HAP/TSV/gVCF modes; `gtcheck`/`mendelian2`/`consensus` (chain+iupac)/`annotate`; `filter -M`/`cnv --AF-file`/`roh -Oz`/`query %INFO/%SAMPLE`; csq slices 1–4 (FORMAT/TBCSQ, --unify-chr-names, -O b\|u\|z, --dump-gff); full HMM `roh`/`cnv`/`polysomy`; subprocess plugin system; `csq -l/--local-csq` (test_cds_local); `gtcheck` `-i`/`-e` filter expressions (qry:/gt: scope); remote URL inputs (`view -r`/`query -r` via hfile) | `convert` PLINK exporters (phantom — commented out upstream); `gtcheck -c/--cluster` (non-goal — commented out upstream); `query %N_ALT` (non-goal); `som`/`tview` (non-goals) | **~98%** | small |
 | **samtools** | 24 functional subcommands; CRAM r/w + bzip2 encode done; `.csi` done; consensus `--het-only` + indel calling; `coverage -A`; `markdup -d/-s/-S`; `calmd -C/-e/-u`; `phase` (full upstream-schema emit); mpileup MAQ **BCF/VCF emit (slices 1–4) + legacy indel + --indels-cns** done; `-@` threading **done for view/sort/markdup** | consensus pileup `-a` placeholder rows (deletion/zero-cov); `-@` parallel *input* BGZF/CRAM decode + non-BAM-writing subcommands; `tview` (deliberate skip) | **~97%** | small |
 | **mosdepth** | single cmd; ALL flags wired incl. `-d/--d4`, `--fragment-mode`, `--quantize`, `-t/--threads`, `--use-median`, `--mapq` fast-path; emits `.csi` | CRAM input (`-f/--fasta` accepted but BAM-only decode) | **~95%** | small |
 | **bgzip** | 1/1 cmd, most flags | multi-threaded compression (`-t`) | **~92%** | small |
@@ -70,15 +70,14 @@ documented **non-goal** (see "Non-goals" below).
    opens (`iohelper`/`alnio` — whole-file ops, incl. live CRAM decode) and the
    indexed region-query paths (`samtools view`/`idxstats`/`mpileup`, `tabix`,
    `bcftools view -r`). Remaining tails: indexed **CRAM** region query over
-   remote (the `.crai` seek path is BAM-only today — a pre-existing gap, not
-   specific to remote) and `bcftools query -r`. *Small.*
-2. **bcftools `gtcheck -c/--cluster`** (dendrogram, which upstream itself
-   errors "to be implemented") and `gtcheck` filter expressions. *Small.*
-3. **CRAM long-tail correctness + perf** — some BCF FORMAT-key
+   remote — the `.crai` seek path was BAM-only (a pre-existing gap, not
+   specific to remote); this is the one cloud-I/O tail still in progress.
+   `bcftools query -r` and `view -r` now work over remote URLs.
+2. **CRAM long-tail correctness + perf** — some BCF FORMAT-key
    reconstruction edge cases and the network REF_PATH/EBI reference fetch
    (an unresolvable reference is surfaced as a clear MD5 error); CRAM v4.0
    awaits a final spec. *Medium.*
-4. **Scattered option-tail polish** — vcftools per-output column sets;
+3. **Scattered option-tail polish** — vcftools per-output column sets;
    prinseq niche knobs; a handful of bedtools per-subcommand flag tails.
    Individually *small*.
 
@@ -99,6 +98,10 @@ These are deliberately not ported and should not be counted against parity:
 - **`bcftools`/`samtools tview`** — interactive ncurses viewer, no pipeline
   use, would require an ncurses dependency.
 - **`query %N_ALT`** and **`import --skipBamQ`** — **not** upstream flags.
+- **`bcftools gtcheck -c/--cluster`** — the cluster/dendrogram option is
+  **commented out** in upstream's usage (`vcfgtcheck.c`); it is unadvertised
+  dead surface, so there is nothing to port. (`gtcheck`'s `-i`/`-e` filter
+  expressions, the real feature, are implemented.)
 - **RNG byte-parity** for `seqtk sample`/`randbase`, `vcftools --max-indv`,
   `bedshuffle`/`bedsample` — policy is structural invariants + within-tool
   reproducibility, **not** byte-identity with upstream's C RNG (see the RNG
