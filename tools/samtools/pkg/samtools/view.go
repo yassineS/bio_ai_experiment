@@ -17,6 +17,7 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/cram"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -254,6 +255,18 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 		defer f.Close()
 		return View(f, out, opts)
 	}
+	// CRAM input uses a .crai index and a container-seek model rather than
+	// the BGZF virtual-offset model the .bai/.csi paths below assume. Detect
+	// a CRAM file from its 4-byte magic (sniffed from the seekable handle, so
+	// a remote object is read with a tiny ranged GET, not downloaded whole)
+	// and route it to the dedicated .crai-indexed query path.
+	isCRAM, sniffErr := pathIsCRAM(inPath)
+	if sniffErr != nil {
+		return 0, sniffErr
+	}
+	if isCRAM {
+		return viewCRAMIndexed(inPath, out, opts, warnW)
+	}
 	// An explicit -X/--customized-index path overrides the sibling-file
 	// lookup. The index kind is auto-detected from its 4-byte magic, so a
 	// caller may point at either a .csi or a .bai regardless of extension.
@@ -324,15 +337,144 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 	return viewIndexed(f, idx, out, opts)
 }
 
+// pathIsCRAM reports whether the file at path begins with the four-byte
+// CRAM magic. It reads only the first four bytes through openSeekable, so a
+// remote object is probed with a tiny ranged GET rather than downloaded
+// whole. A path that cannot be opened (e.g. a missing file) is not a CRAM —
+// the error is left for the downstream open to report with full context.
+func pathIsCRAM(path string) (bool, error) {
+	f, err := openSeekable(path)
+	if err != nil {
+		// Defer the error: the BAM path below re-opens path and will report
+		// the failure with its own context. Treat an unopenable path as
+		// not-CRAM so the existing diagnostics are preserved.
+		return false, nil
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false, nil
+	}
+	return string(magic[:]) == "CRAM", nil
+}
+
+// viewCRAMIndexed answers a region query against a CRAM file using its
+// sibling .crai index (or the explicit -X/--customized-index path), seeking
+// to the containers the regions overlap instead of streaming the whole file.
+// When no .crai is found it falls back to the streaming View path, writing a
+// warning to warnW (which may be nil).
+//
+// It honours opts.Reference and the REF_CACHE environment variable exactly
+// as the streaming path does, so reference-backed CRAM reconstructs its
+// bases. Emission reuses the shared keepRecord / subsample / region / BED
+// pipeline so a CRAM region query filters identically to BAM.
+func viewCRAMIndexed(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (int, error) {
+	craiPath := inPath + ".crai"
+	if opts.IndexPath != "" {
+		craiPath = opts.IndexPath
+	}
+	craiBytes, craiErr := hfile.ReadFile(craiPath)
+	if craiErr != nil {
+		if warnW != nil {
+			fmt.Fprintf(warnW, "samtools view: no CRAM index at %s, falling back to linear scan\n", craiPath)
+		}
+		f, err := openSeekable(inPath)
+		if err != nil {
+			return 0, err
+		}
+		defer f.Close()
+		return View(f, out, opts)
+	}
+	idx, err := cram.ReadCRAI(bytes.NewReader(craiBytes))
+	if err != nil {
+		return 0, fmt.Errorf("samtools view: read %s: %w", craiPath, err)
+	}
+
+	f, err := openSeekable(inPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	rr, err := cram.NewRegionReader(f, idx)
+	if err != nil {
+		return 0, err
+	}
+	defer rr.Close()
+	if opts.Reference != "" {
+		if err := rr.SetReferenceFASTA(opts.Reference); err != nil {
+			return 0, err
+		}
+	}
+	rr.UseRefCacheFromEnv()
+
+	hdr := rr.Header()
+	resolved, _, perr := region.ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })
+	if perr != nil {
+		return 0, perr
+	}
+	bedFilter, berr := loadBedFilter(opts.BedPath)
+	if berr != nil {
+		return 0, berr
+	}
+
+	w, werr := openViewWriter(out, hdr, opts)
+	if werr != nil {
+		return 0, werr
+	}
+	if opts.HeaderOnly {
+		return 0, closeViewWriter(w)
+	}
+
+	rng := newSubsampleRNG(opts)
+	matched := 0
+	// QueryRegion already restricts each query's records to its reference and
+	// coordinate range; iterate the resolved regions in order and emit each
+	// region's overlapping records, applying the same per-record filters the
+	// BAM indexed path uses. Records are de-duplicated within a region by the
+	// RegionReader's container-overlap test; across regions a record may
+	// legitimately appear once per overlapping region, matching upstream
+	// samtools' multi-region behaviour.
+	for _, reg := range resolved {
+		recs, qerr := rr.Query(reg)
+		if qerr != nil {
+			return matched, qerr
+		}
+		for _, rec := range recs {
+			if !keepRecord(rec, &opts, rng) {
+				continue
+			}
+			if bedFilter != nil && !bedFilter(rec) {
+				continue
+			}
+			matched++
+			if opts.Count {
+				continue
+			}
+			if err := w.Write(rec); err != nil {
+				return matched, err
+			}
+		}
+	}
+	if opts.Count {
+		fmt.Fprintln(out, matched)
+		return matched, nil
+	}
+	if err := closeViewWriter(w); err != nil {
+		return matched, err
+	}
+	return matched, nil
+}
+
 // viewIndexed performs an indexed region scan against a .bai index: it
 // parses regions, computes chunk unions, seeks into each chunk's
 // compressed offset, decodes records until each chunk's end virtual
 // offset, and emits records overlapping any requested region.
 //
 // This path is BAM-only: it does BGZF virtual-offset seeks against a .bai
-// index. CRAM uses a .crai index and a different seek model; indexed CRAM
-// region query is a separate roadmap item, so a CRAM file reaches the
-// streaming path above, not here.
+// index. CRAM uses a .crai index and a different seek model, handled by
+// viewCRAMIndexed; ViewFile sniffs the input's magic and routes a CRAM file
+// there before reaching this function.
 func viewIndexed(f io.ReadSeeker, idx *bam.BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
 	return viewIndexedChunks(f, out, opts, func(hdr *sam.Header, resolved []region.ResolvedRegion) []bam.BAIChunk {
 		return bam.UnionChunks(idx, resolved)

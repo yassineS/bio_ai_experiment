@@ -245,16 +245,9 @@ func (rr *RecordReader) fillNextSlice() error {
 		if len(c.Blocks) == 0 || c.Blocks[0].ContentType != ContentCompressionHeader {
 			continue // a non-data container; keep looking.
 		}
-		dc, err := ParseDataContainer(c)
-		if err != nil {
+		if err := rr.decodeContainerInto(c, &rr.pending); err != nil {
 			rr.done = true
-			return wrapf(err, "container %d", c.Index)
-		}
-		for si, sl := range dc.Slices {
-			if err := rr.decodeSlice(dc.Compression, sl, c.Index, si); err != nil {
-				rr.done = true
-				return err
-			}
+			return err
 		}
 		if len(rr.pending) > 0 {
 			return nil
@@ -263,36 +256,61 @@ func (rr *RecordReader) fillNextSlice() error {
 	}
 }
 
-// decodeSlice decodes every record of one slice into the pending buffer.
-func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerIdx, sliceIdx int) error {
+// decodeContainerInto parses one structural data container and appends
+// every reconstructed record of its slices to dst, in file order. It is
+// the offset-agnostic core shared by the sequential fillNextSlice path
+// and the seek-based RegionReader: a container at any byte offset is
+// self-contained (it carries its own compression-header block), so this
+// method needs only the per-file context (refNames, readGroups,
+// refResolver) that RecordReader already gathered from offset 0.
+func (rr *RecordReader) decodeContainerInto(c *Container, dst *[]*sam.Record) error {
+	dc, err := ParseDataContainer(c)
+	if err != nil {
+		return wrapf(err, "container %d", c.Index)
+	}
+	for si, sl := range dc.Slices {
+		recs, err := rr.decodeSlice(dc.Compression, sl, c.Index, si)
+		if err != nil {
+			return err
+		}
+		*dst = append(*dst, recs...)
+	}
+	return nil
+}
+
+// decodeSlice decodes and returns every record of one slice. The caller
+// appends the returned records to its pending/result buffer; factoring
+// the decode to return its records (rather than appending to a fixed
+// field) lets both the sequential reader and the seek-based RegionReader
+// reuse it.
+func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerIdx, sliceIdx int) ([]*sam.Record, error) {
 	if sl.Header == nil {
-		return errFormat("container %d slice %d has no header", containerIdx, sliceIdx)
+		return nil, errFormat("container %d slice %d has no header", containerIdx, sliceIdx)
 	}
 	if sl.Header.NumRecords < 0 {
-		return errFormat("container %d slice %d declares a negative record count %d",
+		return nil, errFormat("container %d slice %d declares a negative record count %d",
 			containerIdx, sliceIdx, sl.Header.NumRecords)
 	}
 	src, err := sl.NewSource()
 	if err != nil {
-		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
+		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
 	refBases, refStart, err := rr.resolveSliceReference(sl)
 	if err != nil {
-		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
+		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
 	dec, err := newRecordDecoder(h, sl.Header, src, rr.refNames, rr.readGroups, refBases, refStart)
 	if err != nil {
-		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
+		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
 	recs, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
-		return wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
+		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
 	if dec.needsReference {
 		rr.needsReference = true
 	}
-	rr.pending = append(rr.pending, recs...)
-	return nil
+	return recs, nil
 }
 
 // resolveSliceReference resolves the reference span a slice covers. It
