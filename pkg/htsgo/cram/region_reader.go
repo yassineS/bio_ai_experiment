@@ -93,11 +93,12 @@ func (rg *RegionReader) Close() error {
 // records, and keeps only the records whose reference span overlaps the
 // region.
 //
-// Overlap matches upstream samtools' coordinate-region semantics exactly: a
-// record overlaps chr:beg-end (1-based inclusive) iff it is mapped to the
-// region's reference and rec.Pos <= end and rec.EndPosition() >= beg.
-// Unmapped reads (and reads whose CIGAR consumes no reference) are excluded
-// from a coordinate region.
+// Overlap matches upstream samtools' coordinate-region semantics exactly — the
+// same rule the BAM indexed path applies: a record overlaps chr:beg-end iff it
+// is placed on the region's reference (its RName matches) and its
+// [POS, POS+refLen) footprint intersects the region. A flag-unmapped but
+// mate-placed read is included at its recorded POS (as upstream's coordinate
+// iterator does); only a truly unplaced read (no reference name) is excluded.
 func (rg *RegionReader) Query(reg region.ResolvedRegion) ([]*sam.Record, error) {
 	hits := rg.idx.QueryRegion(reg)
 	if len(hits) == 0 {
