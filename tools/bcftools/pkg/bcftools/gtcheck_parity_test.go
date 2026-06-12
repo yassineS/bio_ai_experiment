@@ -179,7 +179,7 @@ func runGoGtcheck(t *testing.T, queryPath string, opts GtcheckOptions) string {
 }
 
 // parityFixtureVCF is a 6-sample, multi-site biallelic VCF carrying both
-// GT and PL plus INFO/AC,AN, exercising every scoring path.
+// GT and PL plus AC,AN, exercising every scoring path.
 const parityFixtureVCF = `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=1000000>
 ##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count">
@@ -239,14 +239,14 @@ func TestParityGtcheck_AllModes(t *testing.T) {
 		{"pairs", []string{"-p", "S3,S1,S1,S2,S2,S6"}, GtcheckOptions{PairsSpec: "S3,S1,S1,S2,S2,S6"}},
 		// -i/-e filter expressions (the AC INFO field varies per site in the
 		// fixture, so these drop a subset of sites and change the scoring).
-		{"include-AC", []string{"-i", "INFO/AC>3"}, GtcheckOptions{IncludeExpr: "INFO/AC>3"}},
-		{"include-qry-AC", []string{"-i", "qry:INFO/AC>3"}, GtcheckOptions{IncludeExpr: "qry:INFO/AC>3"}},
-		{"include-GT-AC", []string{"-u", "GT", "-i", "INFO/AC>=4"}, GtcheckOptions{UseTag: "GT", IncludeExpr: "INFO/AC>=4"}},
+		{"include-AC", []string{"-i", "AC>3"}, GtcheckOptions{IncludeExpr: "AC>3"}},
+		{"include-qry-AC", []string{"-i", "qry:AC>3"}, GtcheckOptions{IncludeExpr: "qry:AC>3"}},
+		{"include-GT-AC", []string{"-u", "GT", "-i", "AC>=4"}, GtcheckOptions{UseTag: "GT", IncludeExpr: "AC>=4"}},
 		// Use the qry:-prefixed -e form: upstream's bare `-e EXPR` has a quirk
 		// where strtol(EXPR) clobbers the error-probability to 0 (integer
 		// scoring); the prefixed form avoids it on both sides. See
 		// docs/UPSTREAM_BUGS.md.
-		{"exclude-qry-AC", []string{"-e", "qry:INFO/AC<4"}, GtcheckOptions{ExcludeExpr: "qry:INFO/AC<4"}},
+		{"exclude-qry-AC", []string{"-e", "qry:AC<4"}, GtcheckOptions{ExcludeExpr: "qry:AC<4"}},
 	}
 
 	for _, tc := range cases {

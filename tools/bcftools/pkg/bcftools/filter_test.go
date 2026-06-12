@@ -217,3 +217,41 @@ func TestSplitCommaList(t *testing.T) {
 		t.Fatal("empty input should give nil")
 	}
 }
+
+// TestFilterBareTagResolution verifies that a bare identifier resolves to an
+// INFO tag (the upstream shorthand: `DP>10` means `INFO/DP>10`) and to the
+// builtin VCF columns, while a bare token that is neither still behaves as a
+// string constant.
+func TestFilterBareTagResolution(t *testing.T) {
+	v := mkVariant() // DP=42, AF=0.25, H2 flag; POS=100, QUAL=30, REF=A, ALT=T
+	cases := []struct {
+		expr string
+		want bool
+	}{
+		{"DP>10", true},           // bare INFO tag, numeric — the reported bug
+		{"DP>100", false},         // bare INFO tag, numeric, fails
+		{"DP=42", true},           // bare INFO tag equality
+		{"AF<0.5", true},          // bare float INFO tag
+		{"INFO/DP>10", true},      // explicit form still works
+		{"H2", true},              // bare INFO flag, present
+		{"POS>50", true},          // builtin column
+		{"POS>200", false},        // builtin column, fails
+		{"QUAL>=30", true},        // builtin QUAL
+		{"QUAL>30", false},        // builtin QUAL boundary
+		{"CHROM=chr1", true},      // builtin CHROM vs bare-string comparand
+		{"REF=A", true},           // builtin REF
+		{"ALT=T", true},           // builtin ALT
+		{"N_ALT=1", true},         // builtin N_ALT
+		{`FILTER="PASS"`, true},   // bare comparand still a string constant
+		{"MISSINGTAG=foo", false}, // absent tag falls back to its own name "MISSINGTAG" != "foo"
+	}
+	for _, c := range cases {
+		f, err := CompileFilter(c.expr)
+		if err != nil {
+			t.Fatalf("CompileFilter(%q): %v", c.expr, err)
+		}
+		if got := f.Eval(v); got != c.want {
+			t.Errorf("Eval(%q) = %v, want %v", c.expr, got, c.want)
+		}
+	}
+}

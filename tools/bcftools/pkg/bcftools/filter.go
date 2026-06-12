@@ -423,8 +423,49 @@ func (p *parser) parseIdent() (node, error) {
 	case tok == "false":
 		return &literalNode{value: false}, nil
 	}
-	// Bare identifier: treat as a string literal so `FILTER=PASS` works.
-	return &literalNode{value: tok}, nil
+	// A bare identifier resolves, in order, to a builtin column, an INFO tag
+	// present on the record, or — failing both — a string constant (so
+	// `FILTER="PASS"` and other bare-string comparands still work). This
+	// mirrors upstream bcftools, which lets `AC>3` mean `INFO/AC>3` without
+	// the explicit prefix.
+	return &fieldNode{name: tok}, nil
+}
+
+// fieldNode resolves a bare identifier at evaluation time. It first matches the
+// well-known VCF columns (QUAL, POS, CHROM, ID, REF, ALT, N_ALT), then a
+// present INFO tag of the same name (a value-less INFO flag evaluates true),
+// and otherwise falls back to the identifier text as a string constant so a
+// bare comparand such as the `PASS` in `FILTER="PASS"` keeps its literal
+// meaning.
+type fieldNode struct{ name string }
+
+func (n *fieldNode) eval(v *vcf.Variant) any {
+	switch n.name {
+	case "QUAL":
+		if v.Qual < 0 {
+			return nil // missing QUAL ('.') — comparisons against it fail
+		}
+		return v.Qual
+	case "POS":
+		return float64(v.Pos)
+	case "CHROM":
+		return v.Chrom
+	case "ID":
+		return v.ID
+	case "REF":
+		return v.Ref
+	case "ALT":
+		return strings.Join(v.Alt, ",")
+	case "N_ALT":
+		return float64(len(v.Alt))
+	}
+	if val, ok := v.Info[n.name]; ok {
+		if val == "" {
+			return true // value-less INFO flag: present means true
+		}
+		return val
+	}
+	return n.name
 }
 
 func isIdentStart(c byte) bool {
