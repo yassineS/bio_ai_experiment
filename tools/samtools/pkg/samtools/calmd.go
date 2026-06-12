@@ -25,11 +25,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/mdnm"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -185,109 +185,57 @@ func Calmd(in io.Reader, out io.Writer, refPath string, opts CalmdOptions, warnW
 	return w.Close()
 }
 
-// fillMDNM walks rec's CIGAR against ref (0-based contig bases). It returns
-// the MD string, the NM count, and — when useEqual is true — a copy of the
-// read sequence with M-op match bases rewritten to '='. The edited sequence
-// is the empty string when useEqual is false (caller should not assign).
+// fillMDNM computes rec's MD string and NM count against ref (0-based
+// contig bases) and — when useEqual is true — returns a copy of the read
+// sequence with M-op match bases rewritten to '='. The edited sequence is
+// the empty string when useEqual is false (caller should not assign).
+//
+// The MD/NM computation is delegated to the shared mdnm.Compute so calmd
+// and the CRAM decoder share one implementation; ref is the whole contig
+// here, so refOffset is 0. The '=' sequence rewrite (the calmd-only -e
+// behaviour) is applied here, reusing the same base-match test mdnm uses.
 func fillMDNM(rec *sam.Record, ref []byte, useEqual bool) (string, int, string, error) {
-	var (
-		mdBuf   []byte
-		nm      int
-		matched int
-		qpos    int
-		rpos    = int(rec.Pos) - 1 // BAM/0-based on the reference
-	)
+	md, nm := mdnm.Compute(rec, ref, 0)
+	if !useEqual {
+		return md, nm, "", nil
+	}
+	return md, nm, equalRewrite(rec, ref), nil
+}
+
+// equalRewrite returns a copy of rec's read sequence with every M/=/X-op base
+// that matches the reference rewritten to '=', mirroring upstream calmd's -e
+// flag. The walk reuses the same reference-coordinate bookkeeping and
+// out-of-bounds break semantics as mdnm.Compute.
+func equalRewrite(rec *sam.Record, ref []byte) string {
+	seq := []byte(rec.Seq)
+	edited := make([]byte, len(seq))
+	copy(edited, seq)
+	rpos := int(rec.Pos) - 1
 	if rpos < 0 {
 		rpos = 0
 	}
-	seq := []byte(rec.Seq)
-	var edited []byte
-	if useEqual {
-		edited = make([]byte, len(seq))
-		copy(edited, seq)
-	}
-
-	flushRun := func() {
-		mdBuf = strconv.AppendInt(mdBuf, int64(matched), 10)
-		matched = 0
-	}
-
+	qpos := 0
 	for _, op := range rec.Cigar {
-		opCode := op.Op()
 		oplen := int(op.Length())
-		switch opCode {
+		switch op.Op() {
 		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
-			truncated := false
 			for j := 0; j < oplen; j++ {
 				if rpos+j >= len(ref) || qpos+j >= len(seq) {
-					// Out of bounds — upstream "break" semantics: leave
-					// the rest of the read alone. The MD up to here is
-					// still emitted in the final flush.
-					truncated = true
-					break
+					return string(edited)
 				}
 				if baseMatches(seq[qpos+j], ref[rpos+j]) {
-					matched++
-					if useEqual {
-						edited[qpos+j] = '='
-					}
-				} else {
-					flushRun()
-					mdBuf = append(mdBuf, upperByte(ref[rpos+j]))
-					nm++
+					edited[qpos+j] = '='
 				}
-			}
-			if truncated {
-				// Stop processing further CIGAR ops — flush match-run
-				// and return.
-				flushRun()
-				return string(mdBuf), nm, string(editedOrEmpty(edited, useEqual)), nil
 			}
 			rpos += oplen
 			qpos += oplen
-		case sam.CigarDeletion:
-			flushRun()
-			mdBuf = append(mdBuf, '^')
-			actual := 0
-			for j := 0; j < oplen; j++ {
-				if rpos+j >= len(ref) {
-					break
-				}
-				mdBuf = append(mdBuf, upperByte(ref[rpos+j]))
-				actual++
-			}
-			nm += actual
-			rpos += actual
-			if actual < oplen {
-				// Upstream bam_md.c:121 breaks out of the whole CIGAR loop
-				// when the deletion can't be fully consumed from the
-				// reference; the trailing kputw(matched=0) at line 129
-				// still appends the "0" terminator.
-				flushRun()
-				return string(mdBuf), nm, string(editedOrEmpty(edited, useEqual)), nil
-			}
-		case sam.CigarInsertion:
-			nm += oplen
-			qpos += oplen
-		case sam.CigarSoftClip:
-			qpos += oplen
-		case sam.CigarSkipped:
+		case sam.CigarDeletion, sam.CigarSkipped:
 			rpos += oplen
-		case sam.CigarHardClip, sam.CigarPadding:
-			// neither consumes query nor reference for our purposes
+		case sam.CigarInsertion, sam.CigarSoftClip:
+			qpos += oplen
 		}
 	}
-	flushRun()
-	return string(mdBuf), nm, string(editedOrEmpty(edited, useEqual)), nil
-}
-
-// editedOrEmpty returns the edited buffer when useEqual is true, otherwise
-// a nil slice so the caller's string conversion is the cheap empty string.
-func editedOrEmpty(buf []byte, useEqual bool) []byte {
-	if !useEqual {
-		return nil
-	}
-	return buf
+	return string(edited)
 }
 
 // upperByte folds an ASCII byte to uppercase. Non-letters pass through.

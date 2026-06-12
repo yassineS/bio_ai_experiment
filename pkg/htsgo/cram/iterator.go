@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"io"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/mdnm"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -310,7 +311,88 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	if dec.needsReference {
 		rr.needsReference = true
 	}
+	// MD/NM are regenerated only against an EXTERNAL reference (a FASTA or
+	// REF_CACHE attached via SetReference / SetRefCache), matching upstream
+	// `samtools view -T ref file.cram`. An embedded reference is deliberately
+	// excluded: upstream `samtools view file.cram` of an embed_ref CRAM emits
+	// no MD/NM (it only regenerates them when given an external reference),
+	// and an embed_ref=2 reduced reference does not even carry the full base
+	// content the walk would need. So regeneration is suppressed for an
+	// embedded-reference slice even though its bases reconstruct the SEQ.
+	if !sl.HasEmbeddedReference() {
+		regenerateMDNM(recs, refBases, refStart)
+	}
 	return recs, nil
+}
+
+// regenerateMDNM appends the reference-derived MD:Z and NM:i aux tags to
+// every mapped record that lacks them, matching upstream `samtools view -T
+// ref file.cram`. It is gated exactly as htslib's cram_decode_seq is (see
+// reference_code/htslib/cram/cram_decode.c:1118-1119): a reference must be
+// available for the slice (refBases non-nil), the record must be mapped
+// (placed on a reference), and the record must not already carry the tag.
+// Records with no reference span, unmapped records, and records that already
+// carry the tag are left untouched.
+//
+// The MD and NM tags are inserted in the exact position htslib's cram_to_bam
+// writes them: htslib appends MD then NM to the per-record aux block (after
+// every dictionary tag), then appends the data-series RG:Z tag *after* that
+// aux block (reference_code/htslib/cram/cram_decode.c:3183-3197). Our
+// reconstruction appends that data-series RG as the final aux tag, so when
+// the last existing tag is RG the new MD/NM are spliced in just before it;
+// otherwise (no trailing data-series RG — including the case where RG was
+// emitted in its tag-dictionary position) they go at the very end. Within the
+// pair MD always precedes NM.
+//
+// refBases is the slice's reference span and refStart is the 1-based
+// reference coordinate of refBases[0], so the 0-based offset passed to
+// mdnm.Compute is refStart-1. A nil refBases (no external/embedded reference,
+// or an unmapped/multi-reference slice) means "no reference available" and
+// suppresses regeneration entirely.
+func regenerateMDNM(recs []*sam.Record, refBases []byte, refStart int32) {
+	if refBases == nil {
+		return
+	}
+	refOffset := int(refStart) - 1
+	for _, rec := range recs {
+		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" || len(rec.Cigar) == 0 {
+			continue
+		}
+		_, hasMD := rec.GetAux("MD")
+		_, hasNM := rec.GetAux("NM")
+		if hasMD && hasNM {
+			continue
+		}
+		md, nm := mdnm.Compute(rec, refBases, refOffset)
+		var add []sam.Aux
+		if !hasMD {
+			add = append(add, sam.Aux{Tag: "MD", Type: 'Z', Value: md})
+		}
+		if !hasNM {
+			add = append(add, sam.Aux{Tag: "NM", Type: 'i', Value: int64(nm)})
+		}
+		rec.Aux = insertBeforeTrailingRG(rec.Aux, add)
+		rec.InvalidateAuxIndex()
+	}
+}
+
+// insertBeforeTrailingRG returns aux with add spliced in immediately before a
+// trailing RG tag, or appended at the end when the last tag is not RG. This
+// mirrors htslib writing the data-series RG:Z tag after the rest of the aux
+// block: a record whose final tag is the data-series RG gets MD/NM placed
+// just ahead of it, exactly as `samtools view -T ref` emits them.
+func insertBeforeTrailingRG(aux, add []sam.Aux) []sam.Aux {
+	if len(add) == 0 {
+		return aux
+	}
+	if n := len(aux); n > 0 && aux[n-1].Tag == "RG" {
+		out := make([]sam.Aux, 0, n+len(add))
+		out = append(out, aux[:n-1]...)
+		out = append(out, add...)
+		out = append(out, aux[n-1])
+		return out
+	}
+	return append(aux, add...)
 }
 
 // resolveSliceReference resolves the reference span a slice covers. It

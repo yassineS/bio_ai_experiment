@@ -76,6 +76,35 @@ func upstreamViewRegion(t *testing.T, bin, cramPath, refPath, region string) []s
 	return sortedBodyLines(string(out))
 }
 
+// upstreamViewRegionKeepMDNM is upstreamViewRegion but keeps the
+// reference-derived MD:Z and NM:i aux tags, so a caller can assert byte-for-
+// byte parity including the regenerated tags.
+func upstreamViewRegionKeepMDNM(t *testing.T, bin, cramPath, refPath, region string) []string {
+	t.Helper()
+	cmd := exec.Command(bin, "view", "-T", refPath, cramPath, region)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("upstream samtools view %s: %v", region, err)
+	}
+	return sortedBodyLinesKeepMDNM(string(out))
+}
+
+// sortedBodyLinesKeepMDNM is sortedBodyLines without the MD/NM strip: it
+// splits SAM text into non-header, non-empty lines verbatim and sorts them.
+// It is used by the parity test that asserts the MD:Z and NM:i tags the
+// CRAM decoder now regenerates match upstream exactly.
+func sortedBodyLinesKeepMDNM(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if line == "" || strings.HasPrefix(line, "@") {
+			continue
+		}
+		out = append(out, line)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // sortedBodyLines splits SAM text into non-header, non-empty lines, strips
 // the auto-regenerated MD/NM aux tags, and sorts the result. Sorting makes
 // the comparison independent of intra-region record ordering (both
@@ -268,5 +297,62 @@ func TestViewCRAMRemoteIndexedQuery(t *testing.T) {
 		if local[i] != remote[i] {
 			t.Fatalf("remote/local record %d differ:\n local=%q\nremote=%q", i, local[i], remote[i])
 		}
+	}
+}
+
+// TestViewCRAMMDNMUpstreamParity is the LIVE parity check for the
+// reference-derived MD:Z and NM:i aux tags the CRAM decoder regenerates. It
+// asserts the Go ViewFile output matches `samtools view -T ref file.cram`
+// byte-for-byte INCLUDING the MD and NM tags — the strip that the other CRAM
+// region tests apply is deliberately absent here. The whole-reference query
+// exercises every container; the sub-region exercises the indexed seek path.
+// Per the project rules it never skips on a build failure.
+func TestViewCRAMMDNMUpstreamParity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live upstream build/parity test in -short mode")
+	}
+	bin := upstreamSamtoolsBinary(t)
+	cramPath, _, refPath := cramRegionFixture(t)
+
+	// Sanity: upstream must actually emit MD/NM for this reference-backed
+	// CRAM, otherwise the assertion would be vacuous.
+	whole := upstreamViewRegionKeepMDNM(t, bin, cramPath, refPath, "17")
+	sawTags := false
+	for _, line := range whole {
+		if strings.Contains(line, "\tMD:Z:") && strings.Contains(line, "\tNM:i:") {
+			sawTags = true
+			break
+		}
+	}
+	if !sawTags {
+		t.Fatalf("upstream emitted no MD/NM tags for the fixture — the parity check would be vacuous")
+	}
+
+	regions := []string{
+		"17",           // whole reference: every container.
+		"17:1000-2000", // a sub-region spanning several containers.
+	}
+	for _, region := range regions {
+		t.Run(region, func(t *testing.T) {
+			want := upstreamViewRegionKeepMDNM(t, bin, cramPath, refPath, region)
+
+			var buf bytes.Buffer
+			if _, err := ViewFile(cramPath, &buf, ViewOptions{
+				Regions:    []string{region},
+				Reference:  refPath,
+				WithHeader: false,
+			}, io.Discard); err != nil {
+				t.Fatalf("ViewFile(%s): %v", region, err)
+			}
+			got := sortedBodyLinesKeepMDNM(buf.String())
+			if len(got) != len(want) {
+				t.Fatalf("region %s: got %d records, upstream %d", region, len(got), len(want))
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("region %s record %d mismatch (MD/NM kept):\n got=%q\nwant=%q", region, i, got[i], want[i])
+				}
+			}
+		})
 	}
 }
