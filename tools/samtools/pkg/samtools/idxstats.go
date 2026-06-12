@@ -1,11 +1,12 @@
 package samtools
 
 import (
+	"bytes"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -32,7 +33,7 @@ type IdxstatsRow struct {
 // is to error out — but we keep parity with htslib's behaviour by
 // returning a clear error pointing at how to build the index).
 func Idxstats(bamPath string) ([]IdxstatsRow, error) {
-	in, err := os.Open(bamPath)
+	in, err := openSeekable(bamPath)
 	if err != nil {
 		return nil, err
 	}
@@ -45,10 +46,8 @@ func Idxstats(bamPath string) ([]IdxstatsRow, error) {
 	hdr := br.Header()
 
 	baiPath := bamPath + ".bai"
-	bf, err := os.Open(baiPath)
-	if err == nil {
-		defer bf.Close()
-		idx, ierr := bam.ReadBAI(bf)
+	if baiBytes, berr := hfile.ReadFile(baiPath); berr == nil {
+		idx, ierr := bam.ReadBAI(bytes.NewReader(baiBytes))
 		if ierr == nil {
 			return idxstatsFromIndex(hdr, idx), nil
 		}

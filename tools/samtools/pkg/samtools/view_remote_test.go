@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +65,68 @@ func TestViewFileRemoteIndexedQuery(t *testing.T) {
 	}
 	if n2 != 0 {
 		t.Errorf("remote chrUnknown count: got %d, want 0", n2)
+	}
+}
+
+// TestIdxstatsRemote proves `samtools idxstats URL` reads the BAM header and
+// the sibling .bai (fetched via hfile) over HTTP, returning the same rows as
+// the equivalent local file.
+func TestIdxstatsRemote(t *testing.T) {
+	bamBytes := samToBAM(t, sortedSAM)
+	var baiBuf bytes.Buffer
+	if err := Index(bytes.NewReader(bamBytes), &baiBuf, IndexOptions{}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/in.bam", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "in.bam", time.Unix(0, 0), bytes.NewReader(bamBytes))
+	})
+	mux.HandleFunc("/in.bam.bai", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "in.bam.bai", time.Unix(0, 0), bytes.NewReader(baiBuf.Bytes()))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rows, err := Idxstats(srv.URL + "/in.bam")
+	if err != nil {
+		t.Fatalf("Idxstats(remote): %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("Idxstats(remote): no rows")
+	}
+	// The trailing row is always the unplaced "*" row.
+	if rows[len(rows)-1].Name != "*" {
+		t.Errorf("last row name = %q, want *", rows[len(rows)-1].Name)
+	}
+}
+
+// TestMpileupRemoteStreaming proves `samtools mpileup URL` reads a BAM served
+// over HTTP through the hfile-backed open path, producing the same output as
+// the equivalent local file.
+func TestMpileupRemoteStreaming(t *testing.T) {
+	bamBytes := samToBAM(t, sortedSAM)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "in.bam", time.Unix(0, 0), bytes.NewReader(bamBytes))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	localPath := filepath.Join(dir, "in.bam")
+	if err := os.WriteFile(localPath, bamBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var remoteOut, localOut bytes.Buffer
+	if err := MpileupFile(MpileupOptions{Inputs: []string{srv.URL + "/in.bam"}}, &remoteOut); err != nil {
+		t.Fatalf("MpileupFile(remote): %v", err)
+	}
+	if err := MpileupFile(MpileupOptions{Inputs: []string{localPath}}, &localOut); err != nil {
+		t.Fatalf("MpileupFile(local): %v", err)
+	}
+	if remoteOut.String() != localOut.String() {
+		t.Fatalf("remote mpileup output differs from local:\n--- remote ---\n%s\n--- local ---\n%s",
+			remoteOut.String(), localOut.String())
 	}
 }
 
