@@ -9,17 +9,23 @@ import (
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
-	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
 // readTabixLines runs a tabix-backed region query and returns the raw record
-// bytes. It is shared by the query and concat region paths.
+// bytes. It is shared by the query and concat region paths. The .tbi index and
+// the data file are opened through the hfile-aware helpers, so path may be a
+// local file or a remote http(s)://, s3:// or gs:// URL.
 func readTabixLines(path string, regs []region) ([][]byte, error) {
-	idx, err := tabix.ReadFile(path + ".tbi")
+	idx, err := readTabixIndex(path)
 	if err != nil {
 		return nil, fmt.Errorf("load .tbi: %w", err)
 	}
+	src, err := openSeekable(path)
+	if err != nil {
+		return nil, err
+	}
+	defer src.Close()
 	var out [][]byte
 	for _, reg := range regs {
 		beg := reg.beg - 1
@@ -27,7 +33,7 @@ func readTabixLines(path string, regs []region) ([][]byte, error) {
 			beg = 0
 		}
 		end := reg.end
-		lines, qerr := idx.QueryBytes(path, reg.chrom, beg, end)
+		lines, qerr := idx.QueryBytesReader(src, reg.chrom, beg, end)
 		if qerr != nil {
 			return out, qerr
 		}

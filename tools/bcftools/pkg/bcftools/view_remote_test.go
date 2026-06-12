@@ -158,3 +158,36 @@ func TestViewFileRemoteStreaming(t *testing.T) {
 		t.Errorf("remote streaming records: got %d, want 3", recordsOf(remote.String()))
 	}
 }
+
+// TestQueryFileRemoteVCFGzRegion proves `bcftools query -r URL` runs the
+// .tbi-backed region query over a bgzipped VCF served via HTTP, matching the
+// local indexed query byte-for-byte.
+func TestQueryFileRemoteVCFGzRegion(t *testing.T) {
+	bgzPath := buildVCFGzFixture(t)
+	dataBytes, _ := os.ReadFile(bgzPath)
+	tbiBytes, _ := os.ReadFile(bgzPath + ".tbi")
+
+	srv := serveFiles(t, map[string][]byte{
+		"x.vcf.gz":     dataBytes,
+		"x.vcf.gz.tbi": tbiBytes,
+	})
+	defer srv.Close()
+	url := srv.URL + "/x.vcf.gz"
+
+	opts := QueryOptions{Format: "%CHROM\t%POS\t%REF\t%ALT\n", Regions: []string{"chr1:90-150"}}
+
+	var local bytes.Buffer
+	if _, err := QueryFile(bgzPath, &local, opts, io.Discard); err != nil {
+		t.Fatalf("QueryFile(local): %v", err)
+	}
+	var remote bytes.Buffer
+	if _, err := QueryFile(url, &remote, opts, io.Discard); err != nil {
+		t.Fatalf("QueryFile(remote): %v", err)
+	}
+	if remote.String() != local.String() {
+		t.Errorf("remote query -r mismatch:\nremote:\n%s\nlocal:\n%s", remote.String(), local.String())
+	}
+	if remote.Len() == 0 {
+		t.Error("remote query -r produced no output")
+	}
+}
