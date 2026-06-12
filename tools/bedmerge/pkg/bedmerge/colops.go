@@ -23,41 +23,49 @@ type ColumnOps struct {
 // vocabulary of bedtools' `KeyListOps` (see
 // reference_code/bedtools/src/utils/KeyListOps/KeyListOps.cpp).
 var validOps = map[string]bool{
-	"sum":            true,
-	"min":            true,
-	"max":            true,
-	"absmin":         true,
-	"absmax":         true,
-	"mean":           true,
-	"median":         true,
-	"stdev":          true,
-	"sstdev":         true,
-	"count":          true,
-	"count_distinct": true,
-	"distinct":       true,
-	"collapse":       true,
-	"cat":            true,
-	"cat_uniq":       true,
-	"first":          true,
-	"last":           true,
-	"mode":           true,
-	"antimode":       true,
+	"sum":                    true,
+	"min":                    true,
+	"max":                    true,
+	"absmin":                 true,
+	"absmax":                 true,
+	"mean":                   true,
+	"median":                 true,
+	"stdev":                  true,
+	"sstdev":                 true,
+	"count":                  true,
+	"count_distinct":         true,
+	"distinct":               true,
+	"collapse":               true,
+	"cat":                    true,
+	"cat_uniq":               true,
+	"first":                  true,
+	"last":                   true,
+	"mode":                   true,
+	"antimode":               true,
+	"concat":                 true,
+	"distinct_only":          true,
+	"distinct_sort_num":      true,
+	"distinct_sort_num_desc": true,
+	"freqasc":                true,
+	"freqdesc":               true,
 }
 
 // numericOps is the set of operations that require their column values to
 // parse as numbers.
 var numericOps = map[string]bool{
-	"sum":      true,
-	"min":      true,
-	"max":      true,
-	"absmin":   true,
-	"absmax":   true,
-	"mean":     true,
-	"median":   true,
-	"stdev":    true,
-	"sstdev":   true,
-	"mode":     true,
-	"antimode": true,
+	"sum":                    true,
+	"min":                    true,
+	"max":                    true,
+	"absmin":                 true,
+	"absmax":                 true,
+	"mean":                   true,
+	"median":                 true,
+	"stdev":                  true,
+	"sstdev":                 true,
+	"mode":                   true,
+	"antimode":               true,
+	"distinct_sort_num":      true,
+	"distinct_sort_num_desc": true,
 }
 
 // ParseColumnOps parses the comma-separated -c columns string and -o operations
@@ -486,6 +494,28 @@ func applyOp(op string, col int, vals []string) (string, error) {
 				return ".", nil
 			}
 			return formatNum(v), nil
+		case "distinct_sort_num", "distinct_sort_num_desc":
+			// Upstream getDistinctSortNum: sort numerically (asc or desc),
+			// then emit the run-length-unique values delimiter-joined
+			// (KeyListOpsMethods.cpp). std::unique collapses only adjacent
+			// equal values, which after a full sort is the set of distinct
+			// values.
+			sorted := make([]float64, len(nums))
+			copy(sorted, nums)
+			sort.Float64s(sorted)
+			if op == "distinct_sort_num_desc" {
+				for i, j := 0, len(sorted)-1; i < j; i, j = i+1, j-1 {
+					sorted[i], sorted[j] = sorted[j], sorted[i]
+				}
+			}
+			var out []string
+			for i, n := range sorted {
+				if i > 0 && n == sorted[i-1] {
+					continue
+				}
+				out = append(out, formatNum(n))
+			}
+			return strings.Join(out, ","), nil
 		case "mode":
 			return modeOrAntimode(vals, true), nil
 		case "antimode":
@@ -507,15 +537,10 @@ func applyOp(op string, col int, vals []string) (string, error) {
 		}
 		return strconv.Itoa(n), nil
 	case "distinct":
-		seen := map[string]bool{}
-		var out []string
-		for _, v := range vals {
-			if !seen[v] {
-				seen[v] = true
-				out = append(out, v)
-			}
-		}
-		return strings.Join(out, ","), nil
+		// Upstream getDistinct iterates its std::map<string,int> freqMap, so
+		// the unique values come out in ascending value-string order (verified
+		// against the live bedtools binary).
+		return strings.Join(sortedKeys(freqCounts(vals)), ","), nil
 	case "collapse":
 		return strings.Join(vals, ","), nil
 	case "cat":
@@ -536,12 +561,67 @@ func applyOp(op string, col int, vals []string) (string, error) {
 			}
 		}
 		return strings.Join(out, ""), nil
+	case "concat":
+		// Upstream getConcat: collapse with an empty delimiter — every value,
+		// in order, run together. Identical to the bedmap-friendly "cat" alias.
+		return strings.Join(vals, ""), nil
+	case "distinct_only":
+		// Upstream getDistinctOnly: the values that occur exactly once, in
+		// value-string-sorted order (the order of upstream's freqMap, a
+		// std::map<string,int>).
+		counts := freqCounts(vals)
+		var out []string
+		for _, k := range sortedKeys(counts) {
+			if counts[k] == 1 {
+				out = append(out, k)
+			}
+		}
+		return strings.Join(out, ","), nil
+	case "freqasc", "freqdesc":
+		// Upstream getFreqAsc/getFreqDesc: "value:count" pairs ordered by
+		// count (ascending or descending). Upstream inserts the value-string-
+		// sorted freqMap into a multimap keyed by count, so ties within a
+		// count are broken by value-string ascending; we reproduce that with a
+		// stable sort over value-string-sorted keys.
+		counts := freqCounts(vals)
+		keys := sortedKeys(counts)
+		sort.SliceStable(keys, func(i, j int) bool {
+			if op == "freqasc" {
+				return counts[keys[i]] < counts[keys[j]]
+			}
+			return counts[keys[i]] > counts[keys[j]]
+		})
+		var out []string
+		for _, k := range keys {
+			out = append(out, fmt.Sprintf("%s:%d", k, counts[k]))
+		}
+		return strings.Join(out, ","), nil
 	case "first":
 		return vals[0], nil
 	case "last":
 		return vals[len(vals)-1], nil
 	}
 	return "", fmt.Errorf("unsupported operation %q", op)
+}
+
+// freqCounts tallies how many times each value appears.
+func freqCounts(vals []string) map[string]int {
+	counts := make(map[string]int, len(vals))
+	for _, v := range vals {
+		counts[v]++
+	}
+	return counts
+}
+
+// sortedKeys returns the keys of counts in ascending string order, matching
+// the iteration order of upstream bedtools' std::map<string,int> freqMap.
+func sortedKeys(counts map[string]int) []string {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // modeOrAntimode returns the most (mode=true) or least (mode=false) frequent

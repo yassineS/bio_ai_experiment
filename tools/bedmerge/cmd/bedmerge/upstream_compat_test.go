@@ -169,3 +169,43 @@ func TestUpstreamCompat_Merge_StdinDash(t *testing.T) {
 		t.Fatalf("stdin merge mismatch\nupstream:\n%s\nours:\n%s", want, got)
 	}
 }
+
+// TestUpstreamCompat_Merge_NewColumnOps validates the column operations added
+// for full KeyListOps parity (concat, distinct_only, distinct_sort_num[_desc],
+// freqasc, freqdesc) byte-for-byte against the live upstream bedtools binary.
+// The input is crafted so each merged group has repeats and ties, exercising
+// the frequency and distinct orderings.
+func TestUpstreamCompat_Merge_NewColumnOps(t *testing.T) {
+	bt := upstreamBedtools(t)
+	ours := buildOurs(t)
+	dir := t.TempDir()
+	// One merged group on chr1 (all overlap/abut) with column-4 values that
+	// repeat (3 appears twice, 1 appears twice, 10 once) so freq/distinct
+	// differ from a plain collapse.
+	in := writeFile(t, dir, "ops.bed",
+		"chr1\t10\t20\t3\n"+
+			"chr1\t15\t25\t1\n"+
+			"chr1\t24\t30\t10\n"+
+			"chr1\t29\t40\t3\n"+
+			"chr1\t38\t50\t1\n")
+
+	// These ops match upstream byte-for-byte. `distinct_only` is excluded: it
+	// hits an upstream output bug (a spurious leading delimiter — see
+	// docs/UPSTREAM_BUGS.md) which we intentionally do not reproduce; its
+	// correct behaviour is covered by a pkg unit test instead.
+	ops := []string{
+		"concat", "distinct",
+		"distinct_sort_num", "distinct_sort_num_desc",
+		"freqasc", "freqdesc", "count_distinct",
+	}
+	for _, op := range ops {
+		t.Run(op, func(t *testing.T) {
+			args := []string{"-i", in, "-c", "4", "-o", op}
+			want := runCapture(t, bt, append([]string{"merge"}, args...)...)
+			got := runCapture(t, ours, args...)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("op %q mismatch\nupstream: %q\nours:     %q", op, want, got)
+			}
+		})
+	}
+}

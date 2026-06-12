@@ -413,7 +413,7 @@ func TestMergeColumnOps(t *testing.T) {
 				"chr2\t5\t15\t1\n",
 		},
 		{
-			name:  "distinct keeps first-seen order without dups",
+			name:  "distinct lists unique values in sorted order",
 			cols:  "4",
 			ops:   "distinct",
 			input: columnOpsInput,
