@@ -71,14 +71,14 @@ documented **non-goal** (see "Non-goals" below).
    path: `samtools view`/`idxstats`/`mpileup`, `tabix`, `bcftools view -r` /
    `query -r`, and `.crai`-indexed CRAM `samtools view` (seek-based container
    reader, live-upstream-parity validated).
-2. **CRAM long-tail correctness + perf** — `samtools view` over CRAM does not
-   regenerate the reference-derived `MD:Z`/`NM:i` tags upstream recomputes
-   (orthogonal to region seeking); some BCF FORMAT-key reconstruction edge
-   cases; the network REF_PATH/EBI reference fetch (an unresolvable reference
-   is surfaced as a clear MD5 error); CRAM v4.0 awaits a final spec. *Medium.*
-3. **Scattered option-tail polish** — vcftools per-output column sets;
-   prinseq niche knobs; a handful of bedtools per-subcommand flag tails; the
-   filter engine's bare-INFO-tag resolution (`AC` vs `INFO/AC`).
+2. **CRAM long-tail correctness + perf** — some BCF FORMAT-key reconstruction
+   edge cases; the network REF_PATH/EBI reference fetch (an unresolvable
+   reference is surfaced as a clear MD5 error); CRAM v4.0 awaits a final spec.
+   (`samtools view -T` over CRAM now regenerates the reference-derived
+   `MD:Z`/`NM:i` tags via the shared `pkg/htsgo/mdnm`, live-parity validated.)
+   *Medium.*
+3. **Scattered option-tail polish** — vcftools per-output column sets (the
+   BCF-binary I/O family is the heavy remainder); prinseq niche knobs.
    Individually *small*.
 
 Cross-cutting: **multi-threading (`-@`/`-t`)** has landed for the dominant
