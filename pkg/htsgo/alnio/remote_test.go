@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -78,4 +80,60 @@ func TestOpenReaderRemoteBAM(t *testing.T) {
 	if _, err := rd.Read(); err != io.EOF {
 		t.Errorf("second Read = %v, want io.EOF", err)
 	}
+}
+
+// TestOpenReaderRemoteCRAM proves a real CRAM file served over HTTP (with full
+// Range support, as S3/GCS provide) decodes through the hfile-backed remote
+// path identically to the same file read locally. It uses the vendored
+// htslib/samtools CRAM corpus fixture.
+func TestOpenReaderRemoteCRAM(t *testing.T) {
+	path := filepath.Join(samtoolsTestDir, "dat/test_input_1_a.cram")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skip("samtools submodule not initialised — CRAM fixture unavailable")
+	}
+
+	// Local decode for the expected record set.
+	lf, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open local CRAM: %v", err)
+	}
+	defer lf.Close()
+	localRd, err := NewReader(lf)
+	if err != nil {
+		t.Fatalf("NewReader(local CRAM): %v", err)
+	}
+	wantRecs, err := readAll(localRd)
+	if err != nil {
+		t.Fatalf("local CRAM ReadAll: %v", err)
+	}
+
+	// Serve the same bytes over HTTP with Range support and decode via the URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "test.cram", time.Unix(0, 0), bytes.NewReader(data))
+	}))
+	defer srv.Close()
+
+	rd, err := OpenReader(srv.URL+"/test.cram", "")
+	if err != nil {
+		t.Fatalf("OpenReader(remote CRAM): %v", err)
+	}
+	defer rd.Close()
+	gotRecs, err := readAll(rd)
+	if err != nil {
+		t.Fatalf("remote CRAM ReadAll: %v", err)
+	}
+
+	if len(gotRecs) != len(wantRecs) {
+		t.Fatalf("remote CRAM decoded %d records, local decoded %d", len(gotRecs), len(wantRecs))
+	}
+	if len(gotRecs) == 0 {
+		t.Fatal("CRAM fixture decoded to zero records")
+	}
+	for i := range gotRecs {
+		if got, w := recordText(t, gotRecs[i]), recordText(t, wantRecs[i]); got != w {
+			t.Errorf("remote CRAM record %d mismatch:\n got: %s\nwant: %s", i, got, w)
+		}
+	}
+	t.Logf("remote CRAM: decoded %d records identically to local", len(gotRecs))
 }
