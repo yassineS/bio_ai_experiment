@@ -59,26 +59,26 @@ The list below is the *definitive* remaining-gap set (each is small and
 individually scoped). Everything not on this list is either done or a
 documented **non-goal** (see "Non-goals" below).
 
-1. **htsgo `hfile` cloud I/O — done; small tails remain.** The
-   `pkg/htsgo/hfile` backend (HTTP(S)/S3/GCS, stdlib-only, hand-rolled AWS
-   SigV4 + GCS bearer token, read-ahead-buffered `OpenSeekable`) is **done**
-   and **validated against live infrastructure**: HTTPS, anonymous S3
-   (`s3://1000genomes`), and public GCS (`gs://gcp-public-data--broad-references`)
-   backends; a `tabix` region query over the 214 MB 1000 Genomes chr22 VCF on
-   S3; and a `samtools view` region count over a 188 MB exome BAM on S3 (both
-   fetch only the index + the chunk). Remote URLs flow through the streaming
-   opens (`iohelper`/`alnio` — whole-file ops, incl. live CRAM decode) and the
-   indexed region-query paths (`samtools view`/`idxstats`/`mpileup`, `tabix`,
-   `bcftools view -r`). Remaining tails: indexed **CRAM** region query over
-   remote — the `.crai` seek path was BAM-only (a pre-existing gap, not
-   specific to remote); this is the one cloud-I/O tail still in progress.
-   `bcftools query -r` and `view -r` now work over remote URLs.
-2. **CRAM long-tail correctness + perf** — some BCF FORMAT-key
-   reconstruction edge cases and the network REF_PATH/EBI reference fetch
-   (an unresolvable reference is surfaced as a clear MD5 error); CRAM v4.0
-   awaits a final spec. *Medium.*
+1. **htsgo `hfile` cloud I/O — DONE.** The `pkg/htsgo/hfile` backend
+   (HTTP(S)/S3/GCS, stdlib-only, hand-rolled AWS SigV4 + GCS bearer token,
+   read-ahead-buffered `OpenSeekable`) is complete and **validated against
+   live infrastructure**: HTTPS, anonymous S3 (`s3://1000genomes`), and public
+   GCS (`gs://gcp-public-data--broad-references`) backends; a `tabix` region
+   query over the 214 MB 1000 Genomes chr22 VCF on S3; and a `samtools view`
+   region count over a 188 MB exome BAM on S3 (both fetch only the index + the
+   chunk). Remote URLs flow through the streaming opens (`iohelper`/`alnio` —
+   whole-file ops, incl. live CRAM decode) and **every** indexed region-query
+   path: `samtools view`/`idxstats`/`mpileup`, `tabix`, `bcftools view -r` /
+   `query -r`, and `.crai`-indexed CRAM `samtools view` (seek-based container
+   reader, live-upstream-parity validated).
+2. **CRAM long-tail correctness + perf** — `samtools view` over CRAM does not
+   regenerate the reference-derived `MD:Z`/`NM:i` tags upstream recomputes
+   (orthogonal to region seeking); some BCF FORMAT-key reconstruction edge
+   cases; the network REF_PATH/EBI reference fetch (an unresolvable reference
+   is surfaced as a clear MD5 error); CRAM v4.0 awaits a final spec. *Medium.*
 3. **Scattered option-tail polish** — vcftools per-output column sets;
-   prinseq niche knobs; a handful of bedtools per-subcommand flag tails.
+   prinseq niche knobs; a handful of bedtools per-subcommand flag tails; the
+   filter engine's bare-INFO-tag resolution (`AC` vs `INFO/AC`).
    Individually *small*.
 
 Cross-cutting: **multi-threading (`-@`/`-t`)** has landed for the dominant
