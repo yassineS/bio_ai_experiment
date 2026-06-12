@@ -245,8 +245,9 @@ func newStatistics(header *vcf.Header) *statistics {
 // whose genotype was dropped by a genotype-level filter at this site (nil when
 // none were); it is consumed only by the per-individual missingness path.
 func (s *statistics) addVariant(v *vcf.Variant, params *Params, genoFiltered map[string]bool) {
-	// Allele frequency
-	if params.Freq || params.Counts {
+	// Allele frequency. The "2" (suppress-allele) variants drive the same
+	// per-site collection as the plain --freq / --counts flags.
+	if params.Freq || params.Counts || params.Freq2 || params.Counts2 {
 		s.addFrequencyStat(v, params.Derived)
 	}
 
@@ -1032,7 +1033,7 @@ func formatFreq(v float64) string {
 }
 
 // outputFrequency outputs allele frequency statistics
-func (s *statistics) outputFrequency(prefix string, counts bool) error {
+func (s *statistics) outputFrequency(prefix string, counts bool, suppressAlleles bool) error {
 	suffix := ".frq"
 	if counts {
 		suffix = ".frq.count"
@@ -1049,9 +1050,22 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 	// header text, not a per-allele wrapper. The data rows below have one
 	// tab-separated `allele:value` entry per allele (no braces). See
 	// reference_code/vcftools/src/cpp/variant_file_output.cpp around line 36.
-	if counts {
+	//
+	// Under --freq2 / --counts2 (suppress_allele_output, suppressAlleles
+	// here) the allele label is stripped from both header and rows: the
+	// header collapses to `{FREQ}` / `{COUNT}` and each row prints the bare
+	// tab-separated value for every allele with no `allele:` prefix
+	// (variant_file_output.cpp:42-48, 118-127, 146-156). The output file is
+	// the SAME `.frq` / `.frq.count` as --freq / --counts — upstream's
+	// `--freq2` only toggles the suppress flag, it does not change the suffix.
+	switch {
+	case counts && suppressAlleles:
+		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{COUNT}")
+	case counts:
 		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{ALLELE:COUNT}")
-	} else {
+	case suppressAlleles:
+		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{FREQ}")
+	default:
 		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{ALLELE:FREQ}")
 	}
 
@@ -1069,54 +1083,26 @@ func (s *statistics) outputFrequency(prefix string, counts bool) error {
 			firstCount, secondCount = stat.altCount, stat.refCount
 			firstFreq, secondFreq = stat.altFreq, stat.refFreq
 		}
-		if counts {
+		switch {
+		case counts && suppressAlleles:
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\t%d\n",
+				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
+				firstCount, secondCount)
+		case counts:
 			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%d\t%s:%d\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
 				firstAllele, firstCount,
 				secondAllele, secondCount)
-		} else {
+		case suppressAlleles:
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s\t%s\n",
+				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
+				formatFreq(firstFreq), formatFreq(secondFreq))
+		default:
 			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%s\t%s:%s\n",
 				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
 				firstAllele, formatFreq(firstFreq),
 				secondAllele, formatFreq(secondFreq))
 		}
-	}
-
-	return nil
-}
-
-// outputFrequency2 outputs alternative allele frequency format
-func (s *statistics) outputFrequency2(prefix string) error {
-	f, err := iohelper.OpenWriter(prefix + ".frq2")
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	fmt.Fprintln(f, "CHROM\tPOS\tN_CHR\tREF_FREQ\tALT_FREQ")
-
-	for _, stat := range s.siteFrequencies {
-		fmt.Fprintf(f, "%s\t%d\t%d\t%s\t%s\n",
-			stat.chrom, stat.pos, stat.nChr,
-			formatFreq(stat.refFreq), formatFreq(stat.altFreq))
-	}
-
-	return nil
-}
-
-// outputCounts2 outputs alternative allele counts format
-func (s *statistics) outputCounts2(prefix string) error {
-	f, err := iohelper.OpenWriter(prefix + ".frq.count2")
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	fmt.Fprintln(f, "CHROM\tPOS\tN_CHR\tREF_COUNT\tALT_COUNT")
-
-	for _, stat := range s.siteFrequencies {
-		fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\n",
-			stat.chrom, stat.pos, stat.nChr, stat.refCount, stat.altCount)
 	}
 
 	return nil

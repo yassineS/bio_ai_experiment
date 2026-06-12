@@ -1764,14 +1764,18 @@ Other (per-output column-set gaps, not flag-count gaps):
   the all-biallelic `freq_fmt_fixture.vcf`); the `freq.expected.frq` and
   `derived.expected.frq` goldens were regenerated to the upstream format.
   The same fix was applied to `outputFrequency2` (`--freq2`).
-- **`--freq2` / `--counts2` output schema** (open, algorithmic — not just
-  formatting): the Go port writes `<prefix>.frq2` / `.frq.count2` with a
-  PLINK-style `CHROM POS N_CHR REF_FREQ ALT_FREQ` layout, whereas upstream's
-  `suppress_allele_output` branch writes the SAME `.frq` / `.frq.count`
-  files as `--freq` / `--counts` but with the allele labels stripped
-  (header `{FREQ}` / `{COUNT}`, bare tab-separated values for all N
-  alleles). Bringing this to parity is a column-set/suffix change beyond the
-  float-formatting fix above and is tracked here as a separate gap.
+- ~~**`--freq2` / `--counts2` output schema**~~ **Closed.** Previously the Go
+  port wrote `<prefix>.frq2` / `.frq.count2` with a PLINK-style
+  `CHROM POS N_CHR REF_FREQ ALT_FREQ` layout. It now mirrors upstream's
+  `suppress_allele_output` branch (parameters.cpp:198-225,
+  variant_file_output.cpp:42-156): `--freq2` / `--counts2` write the SAME
+  `.frq` / `.frq.count` files as `--freq` / `--counts` with the allele labels
+  stripped — header `{FREQ}` / `{COUNT}` and bare tab-separated values — and
+  the single `suppress_allele_output` toggle (set by either "2" flag) applies
+  to all frequency/count output. The dedicated `outputFrequency2` /
+  `outputCounts2` writers were removed in favour of a `suppressAlleles`
+  parameter on `outputFrequency`. Pinned by `--freq2` / `--counts2` cases in
+  the live-binary `TestVcftools_FreqUpstreamParity`.
 - **Other**: small-format columns gaps tracked in
   `tools/PORTING_STATUS.md`.
 
