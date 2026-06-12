@@ -80,6 +80,13 @@ func ReadFile(name string) ([]byte, error) {
 		return nil, err
 	}
 	defer h.Close()
+	// Prefer a single un-ranged GET: it is one request and stays correct even
+	// against a server that ignores Range (returns 200 with the whole body),
+	// which the ranged-ReadAt path would mis-stitch. Falls back to ReadAll for
+	// any handle that does not support a whole-resource fetch.
+	if wr, ok := h.(wholeReader); ok {
+		return wr.readWhole()
+	}
 	return io.ReadAll(h)
 }
 

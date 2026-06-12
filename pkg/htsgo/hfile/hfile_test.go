@@ -769,3 +769,25 @@ func TestS3AnonymousUnsigned(t *testing.T) {
 		t.Fatal("anonymous request should be unsigned")
 	}
 }
+
+// TestReadFileNonRangeServer verifies ReadFile is correct even when the server
+// ignores Range and returns the whole body for every request (200). The ranged
+// ReadAt path would mis-stitch such responses; readWhole avoids it.
+func TestReadFileNonRangeServer(t *testing.T) {
+	// Large enough that io.ReadAll over ranged ReadAt would do several reads.
+	body := bytes.Repeat([]byte("REFERENCE"), 100000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Deliberately ignore Range: always write the whole body with 200.
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	got, err := ReadFile(srv.URL)
+	if err != nil {
+		t.Fatalf("ReadFile(non-range server): %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("ReadFile(non-range server): got %d bytes, want %d", len(got), len(body))
+	}
+}

@@ -233,6 +233,30 @@ func (h *httpHandle) Close() error {
 	return nil
 }
 
+// readWhole downloads the entire resource in a single un-ranged GET. Unlike
+// reading the handle through repeated ranged ReadAt calls, it is correct even
+// when the server ignores Range and returns the whole body for every request
+// (a plain HTTP server with no byte-range support), and it is a single request
+// rather than one per buffer fill. It backs hfile.ReadFile for remote URLs.
+func (h *httpHandle) readWhole() ([]byte, error) {
+	resp, err := h.do(http.MethodGet, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return nil, fmt.Errorf("hfile: GET %s: unexpected status %s", h.url, resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// wholeReader is implemented by handles that can fetch their entire content in
+// one request. The S3 and GCS handles satisfy it through their embedded
+// httpHandle.
+type wholeReader interface {
+	readWhole() ([]byte, error)
+}
+
 // do performs an HTTP request for the handle's URL with the given method
 // and extra headers, retrying on transient failures with exponential
 // backoff per the HTS_RETRY_* configuration.
