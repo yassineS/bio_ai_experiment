@@ -171,13 +171,10 @@ func OpenReader(filename string) (io.ReadCloser, error) {
 // local file. Stdin ("-"/"") is handled by the caller and never reaches here.
 func openSource(filename string) (io.ReadCloser, error) {
 	if hfile.IsRemote(filename) {
-		h, err := hfile.Open(filename)
-		if err != nil {
-			return nil, err
-		}
-		// hfile.Handle is an io.ReadCloser (Read + Close); the extra ReaderAt
-		// and Size methods are unused on this sequential path.
-		return h, nil
+		// OpenSeekable gives read-ahead buffering, so the sequential scan
+		// here pulls the object in a few large ranged GETs rather than one
+		// tiny GET per Read. The returned SeekHandle is an io.ReadCloser.
+		return hfile.OpenSeekable(filename)
 	}
 	return os.Open(filename)
 }

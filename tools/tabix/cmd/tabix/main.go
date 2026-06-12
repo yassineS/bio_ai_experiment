@@ -27,43 +27,13 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
-// seekableCloser is a read-seekable handle that must be closed when done. A
-// local *os.File satisfies it directly; a remote hfile handle is adapted to it
-// via an io.SectionReader over the handle's ranged ReadAt.
-type seekableCloser interface {
-	io.ReadSeeker
-	io.Closer
-}
-
-// remoteSeekable adapts an hfile.Handle to a seekable, closable reader by
-// layering an io.SectionReader (which provides Seek over ReadAt) on top of it
-// while delegating Close to the underlying handle.
-type remoteSeekable struct {
-	*io.SectionReader
-	h hfile.Handle
-}
-
-func (r *remoteSeekable) Close() error { return r.h.Close() }
-
 // openSeekable opens path for indexed random access. A remote URL (http(s)://,
-// s3://, gs://) is opened through hfile and wrapped so it presents the same
-// io.ReadSeeker the local *os.File path provides; any other path is opened from
-// disk. The caller must Close the result. It mirrors the helper of the same
-// name in tools/samtools (a different package).
-func openSeekable(path string) (seekableCloser, error) {
-	if hfile.IsRemote(path) {
-		h, err := hfile.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		size, err := h.Size()
-		if err != nil {
-			h.Close()
-			return nil, err
-		}
-		return &remoteSeekable{SectionReader: io.NewSectionReader(h, 0, size), h: h}, nil
-	}
-	return os.Open(path)
+// s3://, gs://) is opened through hfile with read-ahead buffering so the many
+// small sequential reads the BGZF decoder performs coalesce into a few large
+// ranged GETs; a local path is opened from disk. The caller must Close the
+// result.
+func openSeekable(path string) (hfile.SeekHandle, error) {
+	return hfile.OpenSeekable(path)
 }
 
 // readIndex loads the sibling .tbi index for dataPath, transparently handling

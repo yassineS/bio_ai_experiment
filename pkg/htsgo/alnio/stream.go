@@ -30,7 +30,10 @@ func osOpen(path string) (*os.File, error) { return os.Open(path) }
 // straight from cloud storage; any other path is opened as a local file.
 func openAlnSource(path string) (io.ReadCloser, error) {
 	if hfile.IsRemote(path) {
-		return hfile.Open(path)
+		// OpenSeekable adds read-ahead buffering so the sequential alignment
+		// scan pulls the object in a few large ranged GETs. The returned
+		// SeekHandle satisfies io.ReadCloser.
+		return hfile.OpenSeekable(path)
 	}
 	return osOpen(path)
 }
