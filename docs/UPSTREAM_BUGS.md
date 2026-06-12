@@ -919,3 +919,30 @@ the error-probability / scoring mode; the scoring stays whatever `-E` /
 A user who genuinely wants integer scoring passes `-E 0` explicitly. The
 live parity tests use the `qry:`-prefixed `-e` form so both sides agree;
 the bare-`-e` scoring-mode flip is the documented, intentional deviation.
+
+## bedtools merge/groupby `distinct_only`: spurious leading delimiter
+
+`KeyListOpsMethods::getDistinctOnly()` (reference_code/bedtools, KeyListOps)
+walks the value-string-sorted `freqMap` and appends a delimiter before every
+element except the FIRST ENTRY OF THE MAP — not the first element actually
+emitted:
+
+```cpp
+for (; _freqIter != _freqMap.end(); _freqIter++) {
+    if (_freqIter->second > 1) continue;            // skip repeated values
+    if (_freqIter != _freqMap.begin()) _retStr += _delimStr;
+    _retStr.append(_freqIter->first);
+}
+```
+
+When the first map key has frequency > 1 it is skipped, but the very next
+emitted (frequency-1) value still sees `_freqIter != _freqMap.begin()` as true
+and so is prefixed with a delimiter. The result has a leading comma, e.g. for
+values `3,1,10,3,1` (counts 1→2, 3→2, 10→1) upstream prints `,10` instead of
+`10`.
+
+**Our behaviour:** `distinct_only` emits only the genuine frequency-1 values
+(value-string sorted) with no spurious leading delimiter — `10` for the example
+above. This is the documented, intentional deviation; all other KeyListOps
+operations (`distinct`, `concat`, `distinct_sort_num[_desc]`, `freqasc`,
+`freqdesc`, …) match the live upstream binary byte-for-byte.

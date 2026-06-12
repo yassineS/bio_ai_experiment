@@ -108,3 +108,36 @@ func TestParseColumnOps_NewOps(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyOp_KeyListOpsParity covers the KeyListOps operations added for full
+// bedtools parity: concat, distinct (sorted), distinct_only, distinct_sort_num
+// (asc/desc) and freqasc/freqdesc. The non-distinct_only cases match the live
+// upstream binary (see cmd/bedmerge upstream-compat test); distinct_only is
+// asserted to our CORRECTED output — upstream prints a spurious leading
+// delimiter (documented in docs/UPSTREAM_BUGS.md) which we do not reproduce.
+func TestApplyOp_KeyListOpsParity(t *testing.T) {
+	// values: 3,1,10,3,1 -> counts {1:2, 3:2, 10:1}; sorted string keys: 1,10,3
+	vals := []string{"3", "1", "10", "3", "1"}
+	cases := []struct {
+		op   string
+		want string
+	}{
+		{"concat", "311031"},                 // all values, no delimiter
+		{"distinct", "1,10,3"},               // unique, value-string sorted
+		{"distinct_only", "10"},              // freq==1 only, no leading comma (upstream emits ",10")
+		{"distinct_sort_num", "1,3,10"},      // numeric ascending unique
+		{"distinct_sort_num_desc", "10,3,1"}, // numeric descending unique
+		{"freqasc", "10:1,1:2,3:2"},          // by count asc, ties by value-string asc
+		{"freqdesc", "1:2,3:2,10:1"},         // by count desc, ties by value-string asc
+	}
+	for _, c := range cases {
+		got, err := ApplyOp(c.op, 4, vals)
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", c.op, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s: got %q want %q", c.op, got, c.want)
+		}
+	}
+}
