@@ -5,19 +5,35 @@
 package bcftools
 
 import (
+	"bytes"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
 
-// HasCSI reports whether path has a sibling .csi index file.
+// HasCSI reports whether path has a sibling .csi index file. For remote URLs
+// the probe is an existence check through hfile (a HEAD/ranged request that
+// 404s when the index is absent), matching htslib's remote index discovery.
 func HasCSI(path string) bool {
-	_, err := os.Stat(path + ".csi")
-	return err == nil
+	return siblingExists(path + ".csi")
+}
+
+// readCSI loads the sibling .csi index for path, transparently handling remote
+// URLs by downloading the (small) index bytes through hfile.
+func readCSI(path string) (*tabix.CSI, error) {
+	csiPath := path + ".csi"
+	if hfile.IsRemote(path) {
+		raw, err := hfile.ReadFile(csiPath)
+		if err != nil {
+			return nil, err
+		}
+		return tabix.ReadCSIGz(bytes.NewReader(raw))
+	}
+	return tabix.ReadCSIFile(csiPath)
 }
 
 // ReadBCFRegions returns every record in path whose (chrom, beg, end)
@@ -30,7 +46,7 @@ func HasCSI(path string) bool {
 // filtering step. A future slice can swap in a true chunk-seek path; the CSI
 // integrity tests stay valid either way.
 func ReadBCFRegions(path string, regions []region) (*bcf.Header, []*bcf.Record, error) {
-	csi, err := tabix.ReadCSIFile(path + ".csi")
+	csi, err := readCSI(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("bcftools view: load .csi: %w", err)
 	}

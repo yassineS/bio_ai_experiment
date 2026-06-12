@@ -86,9 +86,11 @@ func BuildIndex(inputPath string, opts IndexOptions) (string, error) {
 }
 
 // looksLikeBCF returns true if the first decoded bytes of path are the BCF
-// magic. We sniff through bgzip if the file is BGZF.
+// magic. We sniff through bgzip if the file is BGZF. The open is routed through
+// openSeekable so a remote URL (http(s)/s3/gs) is sniffed via a ranged read of
+// just its leading bytes rather than a full download.
 func looksLikeBCF(path string) (bool, error) {
-	f, err := os.Open(path)
+	f, err := openSeekable(path)
 	if err != nil {
 		return false, err
 	}

@@ -630,7 +630,15 @@ func ReadFile(path string) (*Index, error) {
 		return nil, err
 	}
 	defer f.Close()
-	br, err := bgzip.NewReader(f)
+	return ReadGz(f)
+}
+
+// ReadGz parses a BGZF-compressed .tbi index read from r. It is the
+// reader-based counterpart of ReadFile, used when the index bytes come from a
+// source other than the local filesystem (for example a remote sibling index
+// downloaded through hfile.ReadFile and wrapped in a bytes.Reader).
+func ReadGz(r io.Reader) (*Index, error) {
+	br, err := bgzip.NewReader(r)
 	if err != nil {
 		return nil, err
 	}
@@ -671,6 +679,22 @@ func (idx *Index) QueryBytes(dataPath, chrom string, beg, end int) ([][]byte, er
 	return out, nil
 }
 
+// QueryBytesReader behaves like QueryBytes but reads the bgzipped data from
+// src, an already-open seekable stream, rather than opening a path. It is used
+// for transparent remote (http(s)/s3/gs) access where src is fronted by a
+// ranged-read handle. beg and end are 0-based half-open.
+func (idx *Index) QueryBytesReader(src io.ReadSeeker, chrom string, beg, end int) ([][]byte, error) {
+	recs, err := idx.QueryRecordsReader(src, chrom, beg, end)
+	if err != nil || len(recs) == 0 {
+		return nil, err
+	}
+	out := make([][]byte, len(recs))
+	for i := range recs {
+		out[i] = recs[i].Line
+	}
+	return out, nil
+}
+
 // Record is a single matched line together with its parsed 0-based half-open
 // interval [Beg, End). It is returned by QueryRecords so callers can apply
 // further coordinate-aware filtering (for example tabix's -T/--targets strict
@@ -696,7 +720,28 @@ func (idx *Index) QueryRecords(dataPath, chrom string, beg, end int) ([]Record, 
 	if len(chunks) == 0 || refID < 0 {
 		return nil, nil
 	}
-	return idx.readRegionRecords(dataPath, chrom, beg, end, chunks)
+	f, err := os.Open(dataPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return idx.readRegionRecords(f, chrom, beg, end, chunks)
+}
+
+// QueryRecordsReader behaves like QueryRecords but reads the bgzipped data
+// from src, an already-open seekable stream, rather than opening a path. It is
+// the entry point used for transparent remote (http(s)/s3/gs) access where the
+// data file is fronted by a ranged-read handle; callers retain ownership of
+// src and must close it themselves. beg and end are 0-based half-open.
+func (idx *Index) QueryRecordsReader(src io.ReadSeeker, chrom string, beg, end int) ([]Record, error) {
+	chunks, refID, err := idx.RegionChunks(chrom, beg, end)
+	if err != nil {
+		return nil, err
+	}
+	if len(chunks) == 0 || refID < 0 {
+		return nil, nil
+	}
+	return idx.readRegionRecords(src, chrom, beg, end, chunks)
 }
 
 // RegionChunks returns the set of merged chunks that may contain records
@@ -766,23 +811,18 @@ func (idx *Index) RegionChunks(chrom string, beg, end int) ([]Chunk, int, error)
 	return merged, refID, nil
 }
 
-// readRegionRecords decodes the requested chunks from dataPath and returns
-// every record whose interval overlaps [beg, end) on chrom, each carrying its
-// parsed [Beg, End) coordinates.
-func (idx *Index) readRegionRecords(dataPath, chrom string, beg, end int, chunks []Chunk) ([]Record, error) {
-	f, err := os.Open(dataPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
+// readRegionRecords decodes the requested chunks from src (an already-open
+// seekable bgzipped stream) and returns every record whose interval overlaps
+// [beg, end) on chrom, each carrying its parsed [Beg, End) coordinates. The
+// caller owns src and is responsible for closing it.
+func (idx *Index) readRegionRecords(src io.ReadSeeker, chrom string, beg, end int, chunks []Chunk) ([]Record, error) {
 	var out []Record
 	var fieldBuf [64][]byte
 	for _, c := range chunks {
 		if c.Beg >= c.End {
 			continue
 		}
-		data, err := readVirtualRange(f, c.Beg, c.End)
+		data, err := readVirtualRange(src, c.Beg, c.End)
 		if err != nil {
 			return nil, err
 		}
@@ -826,17 +866,19 @@ func (idx *Index) readRegionRecords(dataPath, chrom string, beg, end int, chunks
 
 // readVirtualRange seeks to the compressed block that contains begV and
 // reads sequentially until the byte at endV (exclusive) has been decoded,
-// returning the decompressed bytes from begV.Uoff() through endV.
-func readVirtualRange(f *os.File, begV, endV VOffset) ([]byte, error) {
+// returning the decompressed bytes from begV.Uoff() through endV. src may be a
+// local *os.File or any other seekable bgzipped stream (for example a ranged
+// remote handle wrapped in an io.SectionReader).
+func readVirtualRange(src io.ReadSeeker, begV, endV VOffset) ([]byte, error) {
 	startBlock := begV.Coff()
 	startInBlock := begV.Uoff()
 	endBlock := endV.Coff()
 	endInBlock := endV.Uoff()
 
-	if _, err := f.Seek(startBlock, io.SeekStart); err != nil {
+	if _, err := src.Seek(startBlock, io.SeekStart); err != nil {
 		return nil, err
 	}
-	br, err := bgzip.NewReader(f)
+	br, err := bgzip.NewReader(src)
 	if err != nil {
 		return nil, err
 	}

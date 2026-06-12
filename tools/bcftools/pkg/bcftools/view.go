@@ -11,7 +11,6 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
-	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
@@ -293,10 +292,11 @@ func ViewFile(path string, out io.Writer, opts ViewOptions, stderr io.Writer) (i
 	return viewStreaming(in, out, opts, true, parsedTargets)
 }
 
-// hasTabixIndex returns true if path has a sibling .tbi file.
+// hasTabixIndex returns true if path has a sibling .tbi file. For remote URLs
+// the probe is an existence check through hfile (a HEAD/ranged request that
+// 404s when the index is absent), matching htslib's remote index discovery.
 func hasTabixIndex(path string) bool {
-	_, err := os.Stat(path + ".tbi")
-	return err == nil
+	return siblingExists(path + ".tbi")
 }
 
 // region captures one parsed `chr:start-end` window in 1-based inclusive
@@ -560,7 +560,7 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 
 // viewRegions executes index-backed region queries on a bgzipped VCF.
 func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer) (int, error) {
-	idx, err := tabix.ReadFile(path + ".tbi")
+	idx, err := readTabixIndex(path)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools view: load .tbi: %w", err)
 	}
@@ -568,6 +568,16 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 	if err != nil {
 		return 0, err
 	}
+
+	// Open the bgzipped data file once for the whole batch of region queries.
+	// openSeekable returns a *os.File for local paths and a ranged remote
+	// handle (http(s)/s3/gs) wrapped in an io.SectionReader for URLs, so the
+	// same index-driven seek path serves both.
+	data, err := openSeekable(path)
+	if err != nil {
+		return 0, err
+	}
+	defer data.Close()
 
 	// Read the header through iohelper for the metadata. We use a separate
 	// stream for that because the tabix queries deliver record bytes only.
@@ -618,7 +628,7 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 			beg = 0
 		}
 		end := reg.end
-		lines, qerr := idx.QueryBytes(path, reg.chrom, beg, end)
+		lines, qerr := idx.QueryBytesReader(data, reg.chrom, beg, end)
 		if qerr != nil {
 			return count, qerr
 		}

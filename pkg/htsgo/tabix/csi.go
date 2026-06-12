@@ -305,7 +305,15 @@ func ReadCSIFile(path string) (*CSI, error) {
 		return nil, err
 	}
 	defer f.Close()
-	br, err := bgzip.NewReader(f)
+	return ReadCSIGz(f)
+}
+
+// ReadCSIGz parses a BGZF-compressed .csi index read from r. It is the
+// reader-based counterpart of ReadCSIFile, used when the index bytes come from
+// a source other than the local filesystem (for example a remote sibling index
+// downloaded through hfile.ReadFile and wrapped in a bytes.Reader).
+func ReadCSIGz(r io.Reader) (*CSI, error) {
+	br, err := bgzip.NewReader(r)
 	if err != nil {
 		return nil, err
 	}
@@ -456,6 +464,39 @@ func (c *CSI) QueryBytes(dataPath, chrom string, beg, end int) ([][]byte, error)
 	if len(chunks) == 0 {
 		return nil, nil
 	}
+	f, err := os.Open(dataPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return c.queryChunks(f, cfg, chrom, beg, end, chunks)
+}
+
+// QueryBytesReader is the reader-based counterpart of QueryBytes: it returns
+// every raw record line read from src (an already-open seekable bgzipped stream)
+// whose interval overlaps [beg, end) on chrom. It is the entry point used for
+// transparent remote (http(s)/s3/gs) access; the caller owns src and must close
+// it. beg and end are 0-based half-open.
+func (c *CSI) QueryBytesReader(src io.ReadSeeker, chrom string, beg, end int) ([][]byte, error) {
+	cfg, ok := c.ConfigFromAux()
+	if !ok {
+		return nil, fmt.Errorf("csi: aux block lacks a column config")
+	}
+	refID := ChromIDInCSI(c, chrom)
+	if refID < 0 {
+		return nil, nil
+	}
+	chunks := c.RegionChunks(refID, int64(beg), int64(end))
+	if len(chunks) == 0 {
+		return nil, nil
+	}
+	return c.queryChunks(src, cfg, chrom, beg, end, chunks)
+}
+
+// queryChunks decodes the given CSI chunks from src and returns the matching
+// record lines. It is shared by QueryBytes (local file) and QueryBytesReader
+// (already-open stream).
+func (c *CSI) queryChunks(src io.ReadSeeker, cfg Config, chrom string, beg, end int, chunks []CSIChunk) ([][]byte, error) {
 	// Reuse the TBI record decoder via an ephemeral Index that shares the
 	// column Config and name dictionary.
 	idx := &Index{Config: cfg, Names: c.Names}
@@ -463,7 +504,7 @@ func (c *CSI) QueryBytes(dataPath, chrom string, beg, end int) ([][]byte, error)
 	for i, ch := range chunks {
 		tbiChunks[i] = Chunk{Beg: ch.Beg, End: ch.End}
 	}
-	recs, err := idx.readRegionRecords(dataPath, chrom, beg, end, tbiChunks)
+	recs, err := idx.readRegionRecords(src, chrom, beg, end, tbiChunks)
 	if err != nil || len(recs) == 0 {
 		return nil, err
 	}

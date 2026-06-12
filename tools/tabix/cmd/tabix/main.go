@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -22,8 +23,62 @@ import (
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
+
+// seekableCloser is a read-seekable handle that must be closed when done. A
+// local *os.File satisfies it directly; a remote hfile handle is adapted to it
+// via an io.SectionReader over the handle's ranged ReadAt.
+type seekableCloser interface {
+	io.ReadSeeker
+	io.Closer
+}
+
+// remoteSeekable adapts an hfile.Handle to a seekable, closable reader by
+// layering an io.SectionReader (which provides Seek over ReadAt) on top of it
+// while delegating Close to the underlying handle.
+type remoteSeekable struct {
+	*io.SectionReader
+	h hfile.Handle
+}
+
+func (r *remoteSeekable) Close() error { return r.h.Close() }
+
+// openSeekable opens path for indexed random access. A remote URL (http(s)://,
+// s3://, gs://) is opened through hfile and wrapped so it presents the same
+// io.ReadSeeker the local *os.File path provides; any other path is opened from
+// disk. The caller must Close the result. It mirrors the helper of the same
+// name in tools/samtools (a different package).
+func openSeekable(path string) (seekableCloser, error) {
+	if hfile.IsRemote(path) {
+		h, err := hfile.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		size, err := h.Size()
+		if err != nil {
+			h.Close()
+			return nil, err
+		}
+		return &remoteSeekable{SectionReader: io.NewSectionReader(h, 0, size), h: h}, nil
+	}
+	return os.Open(path)
+}
+
+// readIndex loads the sibling .tbi index for dataPath, transparently handling
+// remote URLs by downloading the index bytes through hfile.
+func readIndex(dataPath string) (*tabix.Index, error) {
+	tbiPath := dataPath + ".tbi"
+	if hfile.IsRemote(dataPath) {
+		raw, err := hfile.ReadFile(tbiPath)
+		if err != nil {
+			return nil, err
+		}
+		return tabix.ReadGz(bytes.NewReader(raw))
+	}
+	return tabix.ReadFile(tbiPath)
+}
 
 const version = "1.0.0"
 
@@ -241,8 +296,7 @@ func runBuild(dataPath string, cfg tabix.Config, force, noSave bool, stderr io.W
 }
 
 func runListChroms(dataPath string, stdout, stderr io.Writer) int {
-	tbiPath := dataPath + ".tbi"
-	idx, err := tabix.ReadFile(tbiPath)
+	idx, err := readIndex(dataPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "tabix: %v\n", err)
 		return 1
@@ -290,8 +344,7 @@ func parseRegion(s string) (region, error) {
 }
 
 func runQuery(dataPath string, regions []string, o opts, _ tabix.Config, stdout, stderr io.Writer) int {
-	tbiPath := dataPath + ".tbi"
-	idx, err := tabix.ReadFile(tbiPath)
+	idx, err := readIndex(dataPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "tabix: %v\n", err)
 		return 1
@@ -359,8 +412,19 @@ func runQuery(dataPath string, regions []string, o opts, _ tabix.Config, stdout,
 		}
 	}
 
+	// Open the bgzipped data file once for the whole batch of region queries.
+	// openSeekable returns a *os.File for local paths and a ranged remote
+	// handle (http(s)/s3/gs) wrapped in an io.SectionReader for URLs, so the
+	// same index-driven seek path serves both.
+	data, err := openSeekable(dataPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "tabix: %v\n", err)
+		return 1
+	}
+	defer data.Close()
+
 	for _, r := range rs {
-		records, err := idx.QueryRecords(dataPath, r.chrom, r.beg, r.end)
+		records, err := idx.QueryRecordsReader(data, r.chrom, r.beg, r.end)
 		if err != nil {
 			fmt.Fprintf(stderr, "tabix: query %s: %v\n", r.chrom, err)
 			return 1
@@ -379,7 +443,7 @@ func runQuery(dataPath string, regions []string, o opts, _ tabix.Config, stdout,
 // emitHeader streams every line at the top of dataPath that begins with the
 // configured comment character to stdout, stopping at the first data line.
 func emitHeader(dataPath string, cfg tabix.Config, stdout io.Writer) error {
-	f, err := os.Open(dataPath)
+	f, err := openSeekable(dataPath)
 	if err != nil {
 		return err
 	}
