@@ -115,7 +115,7 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 	readers := make([]sam.Reader, len(opts.Inputs))
 	closers := make([]io.Closer, len(opts.Inputs))
 	for i, path := range opts.Inputs {
-		f, err := os.Open(path)
+		f, err := openSeekable(path)
 		if err != nil {
 			closeAll(closers)
 			return fmt.Errorf("samtools mpileup: %w", err)
