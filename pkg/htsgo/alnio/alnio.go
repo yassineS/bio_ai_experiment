@@ -81,6 +81,7 @@ func NewReaderWithReference(r io.Reader, referenceFASTA string) (sam.Reader, err
 			}
 		}
 		rr.UseRefCacheFromEnv()
+		rr.UseRefPathFromEnv()
 		return rr, nil
 	}
 	dec, err := decompressStream(sniffed)
@@ -149,6 +150,7 @@ func newReaderFromStream(rc io.ReadCloser, referenceFASTA string) (Reader, error
 			}
 		}
 		rr.UseRefCacheFromEnv()
+		rr.UseRefPathFromEnv()
 		return &cramReader{rr: rr, src: rc}, nil
 	default:
 		// SAM/BAM streams may themselves be gzip/BGZF-compressed at the

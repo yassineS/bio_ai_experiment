@@ -407,6 +407,7 @@ func viewCRAMIndexed(inPath string, out io.Writer, opts ViewOptions, warnW io.Wr
 		}
 	}
 	rr.UseRefCacheFromEnv()
+	rr.UseRefPathFromEnv()
 
 	hdr := rr.Header()
 	resolved, _, perr := region.ResolveRegions(opts.Regions, func(name string) int { return hdr.RefIndex(name) })

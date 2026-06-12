@@ -78,6 +78,11 @@ func (rg *RegionReader) SetRefCache(dir string) { rg.rr.SetRefCache(dir) }
 // cache was attached and mirrors RecordReader.UseRefCacheFromEnv.
 func (rg *RegionReader) UseRefCacheFromEnv() bool { return rg.rr.UseRefCacheFromEnv() }
 
+// UseRefPathFromEnv attaches the network REF_PATH URL-fetch source named by the
+// REF_PATH environment variable, if set, mirroring
+// RecordReader.UseRefPathFromEnv.
+func (rg *RegionReader) UseRefPathFromEnv() bool { return rg.rr.UseRefPathFromEnv() }
+
 // Close releases the underlying reference FASTA handle, if any was attached.
 // It does not close the io.ReadSeeker, whose lifetime the caller owns.
 func (rg *RegionReader) Close() error {

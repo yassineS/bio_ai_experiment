@@ -23,6 +23,9 @@ type referenceResolver struct {
 	// FASTAReference nor a RefCacheReference; it is name-addressed like
 	// the FASTA path. It is nil unless SetReference was given one.
 	custom ReferenceSource
+	// refpath is the network REF_PATH URL-fetch source, consulted by MD5
+	// after every local source misses. It is nil unless REF_PATH was set.
+	refpath *RefPathReference
 
 	// lastContig and lastBases memoise the most recently fetched whole
 	// reference sequence (FASTA path) so consecutive slices on the same
@@ -35,7 +38,7 @@ type referenceResolver struct {
 // all. A resolver with no FASTA, REF_CACHE or custom source behaves as
 // if no reference were supplied.
 func (rr *referenceResolver) hasSource() bool {
-	return rr != nil && (rr.fasta != nil || rr.cache != nil || rr.custom != nil)
+	return rr != nil && (rr.fasta != nil || rr.cache != nil || rr.custom != nil || rr.refpath != nil)
 }
 
 // sliceReference resolves and MD5-verifies the reference span a slice
@@ -122,6 +125,30 @@ func (rr *referenceResolver) sliceReference(sh *SliceHeader, contig, contigMD5 s
 		spanBases := whole[start-1 : end]
 		// The cache key proved the whole sequence; the slice-span MD5
 		// still must verify that the slice header agrees on the span.
+		if verr := verifyReferenceMD5(spanBases, sh.ReferenceMD5, contig, start, sh.AlignmentSpan); verr != nil {
+			return nil, verr
+		}
+		return spanBases, nil
+	}
+
+	// Network REF_PATH: like the cache, the whole reference sequence is keyed
+	// by its MD5 — fetched from a URL endpoint (the EBI ENA registry by
+	// default) when every local source has missed.
+	if rr.refpath != nil {
+		key, err := cacheKey(contigMD5, sh.ReferenceMD5, contig, start, span)
+		if err != nil {
+			return nil, errors.Join(priorErr, err)
+		}
+		whole, err := rr.refpath.ResolveByMD5(key)
+		if err != nil {
+			return nil, errors.Join(priorErr, err)
+		}
+		end := int(start-1) + int(span)
+		if end > len(whole) || start < 1 {
+			return nil, errFormat("REF_PATH reference for MD5 %s is %d bases, too short for slice span %d-%d",
+				formatMD5(key), len(whole), start, start+span-1)
+		}
+		spanBases := whole[start-1 : end]
 		if verr := verifyReferenceMD5(spanBases, sh.ReferenceMD5, contig, start, sh.AlignmentSpan); verr != nil {
 			return nil, verr
 		}

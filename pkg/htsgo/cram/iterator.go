@@ -143,6 +143,24 @@ func (rr *RecordReader) UseRefCacheFromEnv() bool {
 	return true
 }
 
+// UseRefPathFromEnv attaches the network REF_PATH URL-fetch source named by the
+// REF_PATH environment variable as a last-resort reference, consulted by MD5
+// after an explicit FASTA and REF_CACHE both miss. It mirrors htslib's REF_PATH
+// mechanism but is opt-in: it activates only when REF_PATH is set (so an
+// offline decode never silently reaches out to the network). It reports whether
+// a network source was attached.
+func (rr *RecordReader) UseRefPathFromEnv() bool {
+	p, ok := RefPathFromEnv()
+	if !ok {
+		return false
+	}
+	if rr.refResolver == nil {
+		rr.refResolver = &referenceResolver{}
+	}
+	rr.refResolver.refpath = p
+	return true
+}
+
 // Header returns the SAM header parsed from the CRAM file's first
 // container. The header is available immediately after NewRecordReader.
 func (rr *RecordReader) Header() *sam.Header { return rr.header }
