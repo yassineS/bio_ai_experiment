@@ -5,6 +5,8 @@ import (
 	"compress/gzip"
 	"io"
 	"os"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 )
 
 // isStdin reports whether path names standard input. The empty string and
@@ -21,6 +23,17 @@ func stdinReader() io.Reader { return os.Stdin }
 // os.Open kept as a package function so the file-opening seam is easy to
 // stub in tests.
 func osOpen(path string) (*os.File, error) { return os.Open(path) }
+
+// openAlnSource opens an alignment file by path or URL for sequential reading.
+// A remote URL (http(s)://, s3://, gs://) is opened through the hfile package
+// so that `samtools`/`bcftools`-style tools can read a BAM/CRAM/SAM object
+// straight from cloud storage; any other path is opened as a local file.
+func openAlnSource(path string) (io.ReadCloser, error) {
+	if hfile.IsRemote(path) {
+		return hfile.Open(path)
+	}
+	return osOpen(path)
+}
 
 // decompressStream returns a reader that transparently decompresses a
 // plain-gzip-compressed SAM stream. It sniffs the leading bytes without

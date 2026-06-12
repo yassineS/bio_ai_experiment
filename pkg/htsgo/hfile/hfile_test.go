@@ -72,6 +72,38 @@ func newRangeServer(body []byte) (*rangeServer, *httptest.Server) {
 	return rs, httptest.NewServer(rs)
 }
 
+// --- ReadFile -------------------------------------------------------------
+
+func TestReadFileRemoteAndLocal(t *testing.T) {
+	// Remote: download an HTTP object in full.
+	_, srv := newRangeServer(payload)
+	defer srv.Close()
+	got, err := ReadFile(srv.URL)
+	if err != nil {
+		t.Fatalf("ReadFile(remote): %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("ReadFile(remote): got %d bytes, want %d", len(got), len(payload))
+	}
+
+	// Local: read a temp file, including the file:// form.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "local.dat")
+	want := []byte("local file contents\n")
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	for _, name := range []string{path, "file://" + path} {
+		got, err := ReadFile(name)
+		if err != nil {
+			t.Fatalf("ReadFile(%q): %v", name, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("ReadFile(%q): got %q, want %q", name, got, want)
+		}
+	}
+}
+
 // --- HTTP backend tests -----------------------------------------------------
 
 func TestHTTPReadAt(t *testing.T) {

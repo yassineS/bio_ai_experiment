@@ -99,10 +99,13 @@ A skimmable per-tool completion table lives in the top-level
   implemented and live-oracle validated.
 
 Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
-the canonical version with effort sizing): htsgo `hfile` cloud I/O; bcftools
-`gtcheck -c/--cluster` plus its filter expressions; CRAM BCF-FORMAT-key edge
-cases, network ref fetch, and v4.0; and scattered per-output column /
-niche-flag polish (vcftools, prinseq, a few bedtools tails).
+the canonical version with effort sizing): htsgo `hfile` cloud I/O is now
+wired for streaming (all whole-file ops) and the flagship `samtools view`
+indexed region path — what remains is threading the same opener through the
+other indexed region-query subcommands; bcftools `gtcheck -c/--cluster` plus
+its filter expressions; CRAM BCF-FORMAT-key edge cases, network ref fetch,
+and v4.0; and scattered per-output column / niche-flag polish (vcftools,
+prinseq, a few bedtools tails).
 
 Recently closed: samtools `consensus` pileup `-a` placeholder rows (incl.
 ref-skip columns, per-nth gap-fill duplication, INT_MIN quality, and

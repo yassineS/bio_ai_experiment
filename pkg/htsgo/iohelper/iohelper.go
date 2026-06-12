@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 )
 
 // sniffSize is the number of bytes peeked from the head of a file to detect
@@ -121,20 +122,24 @@ func DetectFormat(r io.Reader) (Format, io.Reader, error) {
 // through the BGZF decoder and a plain .gz is read through compress/gzip.
 //
 // A filename of "-" or "" reads from standard input without any decompression.
+// A remote URL (http://, https://, s3:// or gs://) is opened through the
+// hfile package, so a bgzipped or gzipped object served from S3, GCS or an
+// HTTP server is decompressed transparently just like a local file.
+//
 // The caller is responsible for closing the returned ReadCloser; Close releases
-// the decompressor (if any) and the underlying file.
+// the decompressor (if any) and the underlying file or remote handle.
 func OpenReader(filename string) (io.ReadCloser, error) {
 	if filename == "-" || filename == "" {
 		// Read from stdin - no compression detection for stdin.
 		return &noCloseReader{os.Stdin}, nil
 	}
 
-	file, err := os.Open(filename)
+	src, err := openSource(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	br := bufio.NewReader(file)
+	br := bufio.NewReader(src)
 	// Peek may return fewer than sniffSize bytes for very short files; that's
 	// fine — bgzfSniff and the plain-gzip check both handle short input.
 	head, _ := br.Peek(sniffSize)
@@ -143,22 +148,38 @@ func OpenReader(filename string) (io.ReadCloser, error) {
 	case bgzfSniff(head):
 		bgr, err := bgzip.NewReader(br)
 		if err != nil {
-			file.Close()
+			src.Close()
 			return nil, err
 		}
-		return &bgzfReadCloser{bgr: bgr, file: file}, nil
+		return &bgzfReadCloser{bgr: bgr, src: src}, nil
 	case gzipSniff(head):
 		gzr, err := gzip.NewReader(br)
 		if err != nil {
-			file.Close()
+			src.Close()
 			return nil, err
 		}
-		return &readCloserWrapper{gzr: gzr, file: file}, nil
+		return &readCloserWrapper{gzr: gzr, src: src}, nil
 	default:
 		// Not compressed — return the buffered reader so peeked bytes are not
-		// lost. The caller's Close will release the underlying file.
-		return &plainReadCloser{r: br, file: file}, nil
+		// lost. The caller's Close will release the underlying source.
+		return &plainReadCloser{r: br, src: src}, nil
 	}
+}
+
+// openSource opens filename and returns a raw (undecoded) ReadCloser. Remote
+// URLs are routed through the hfile package; everything else is opened as a
+// local file. Stdin ("-"/"") is handled by the caller and never reaches here.
+func openSource(filename string) (io.ReadCloser, error) {
+	if hfile.IsRemote(filename) {
+		h, err := hfile.Open(filename)
+		if err != nil {
+			return nil, err
+		}
+		// hfile.Handle is an io.ReadCloser (Read + Close); the extra ReaderAt
+		// and Size methods are unused on this sequential path.
+		return h, nil
+	}
+	return os.Open(filename)
 }
 
 // OpenWriter opens a file for writing, automatically handling gzip compression.
@@ -248,10 +269,12 @@ func (w *noCloseWriter) Close() error {
 	return nil // Don't close stdout
 }
 
-// readCloserWrapper wraps a gzip.Reader and its underlying file for proper cleanup
+// readCloserWrapper wraps a gzip.Reader and its underlying source for proper
+// cleanup. The source is an *os.File for local inputs or an hfile remote
+// handle for URLs.
 type readCloserWrapper struct {
-	gzr  *gzip.Reader
-	file *os.File
+	gzr *gzip.Reader
+	src io.Closer
 }
 
 func (r *readCloserWrapper) Read(p []byte) (n int, err error) {
@@ -263,20 +286,20 @@ func (r *readCloserWrapper) Close() error {
 	if r.gzr != nil {
 		err = r.gzr.Close()
 	}
-	if r.file != nil {
-		if ferr := r.file.Close(); ferr != nil && err == nil {
+	if r.src != nil {
+		if ferr := r.src.Close(); ferr != nil && err == nil {
 			err = ferr
 		}
 	}
 	return err
 }
 
-// bgzfReadCloser wraps a bgzip.Reader and its underlying file. The bgzip
+// bgzfReadCloser wraps a bgzip.Reader and its underlying source. The bgzip
 // reader does not own its source, so Close releases both the decoder and the
-// file descriptor.
+// source (a local file descriptor or a remote hfile handle).
 type bgzfReadCloser struct {
-	bgr  *bgzip.Reader
-	file *os.File
+	bgr *bgzip.Reader
+	src io.Closer
 }
 
 func (r *bgzfReadCloser) Read(p []byte) (int, error) {
@@ -288,22 +311,22 @@ func (r *bgzfReadCloser) Close() error {
 	if r.bgr != nil {
 		err = r.bgr.Close()
 	}
-	if r.file != nil {
-		if ferr := r.file.Close(); ferr != nil && err == nil {
+	if r.src != nil {
+		if ferr := r.src.Close(); ferr != nil && err == nil {
 			err = ferr
 		}
 	}
 	return err
 }
 
-// plainReadCloser wraps a buffered reader and its underlying file so that
-// uncompressed inputs still close the file descriptor when the caller is done.
-// We need a separate type (rather than returning the *os.File directly) because
-// peeking into the bufio.Reader during format sniffing means the first bytes
-// have already been consumed from the file and the buffered reader owns them.
+// plainReadCloser wraps a buffered reader and its underlying source so that
+// uncompressed inputs still close the source when the caller is done. We need
+// a separate type (rather than returning the source directly) because peeking
+// into the bufio.Reader during format sniffing means the first bytes have
+// already been consumed from the source and the buffered reader owns them.
 type plainReadCloser struct {
-	r    *bufio.Reader
-	file *os.File
+	r   *bufio.Reader
+	src io.Closer
 }
 
 func (r *plainReadCloser) Read(p []byte) (int, error) {
@@ -311,8 +334,8 @@ func (r *plainReadCloser) Read(p []byte) (int, error) {
 }
 
 func (r *plainReadCloser) Close() error {
-	if r.file != nil {
-		return r.file.Close()
+	if r.src != nil {
+		return r.src.Close()
 	}
 	return nil
 }

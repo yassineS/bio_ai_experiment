@@ -109,7 +109,7 @@ func OpenReader(path, referenceFASTA string) (Reader, error) {
 	if isStdin(path) {
 		return newReaderFromStream(io.NopCloser(stdinReader()), referenceFASTA)
 	}
-	f, err := osOpen(path)
+	f, err := openAlnSource(path)
 	if err != nil {
 		return nil, err
 	}

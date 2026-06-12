@@ -17,6 +17,7 @@ package hfile
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -63,6 +64,23 @@ func Open(name string) (Handle, error) {
 	default:
 		return nil, fmt.Errorf("hfile: unsupported URL scheme in %q", name)
 	}
+}
+
+// ReadFile reads the entire contents of name and returns them. It is the
+// hfile analogue of os.ReadFile: a remote URL is downloaded in full through
+// the appropriate backend, and a local path is read from disk. It is intended
+// for small sibling files such as BAI/CSI/TBI/CRAI indexes that accompany a
+// remote alignment object.
+func ReadFile(name string) ([]byte, error) {
+	if !IsRemote(name) {
+		return os.ReadFile(strings.TrimPrefix(name, "file://"))
+	}
+	h, err := Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer h.Close()
+	return io.ReadAll(h)
 }
 
 // IsRemote reports whether name refers to a remote resource handled by one

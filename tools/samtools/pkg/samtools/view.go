@@ -17,9 +17,48 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/hfile"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
+
+// seekableCloser is a read-seekable handle that must be closed when done. A
+// local *os.File satisfies it directly; a remote hfile handle is adapted to
+// it via an io.SectionReader over the handle's ranged ReadAt.
+type seekableCloser interface {
+	io.ReadSeeker
+	io.Closer
+}
+
+// remoteSeekable adapts an hfile.Handle to a seekable, closable reader by
+// layering an io.SectionReader (which provides Seek over ReadAt) on top of it
+// while delegating Close to the underlying handle.
+type remoteSeekable struct {
+	*io.SectionReader
+	h hfile.Handle
+}
+
+func (r *remoteSeekable) Close() error { return r.h.Close() }
+
+// openSeekable opens path for indexed random access. A remote URL (http(s)://,
+// s3://, gs://) is opened through hfile and wrapped so it presents the same
+// io.ReadSeeker the local *os.File path provides; any other path is opened
+// from disk. The caller must Close the result.
+func openSeekable(path string) (seekableCloser, error) {
+	if hfile.IsRemote(path) {
+		h, err := hfile.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		size, err := h.Size()
+		if err != nil {
+			h.Close()
+			return nil, err
+		}
+		return &remoteSeekable{SectionReader: io.NewSectionReader(h, 0, size), h: h}, nil
+	}
+	return os.Open(path)
+}
 
 // ViewOptions configures the behaviour of View. Zero values disable the
 // corresponding filter.
@@ -237,7 +276,7 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 	// (opts.BedPath) is handled inside View() as a post-filter and doesn't
 	// require an index.
 	if len(opts.Regions) == 0 {
-		f, err := os.Open(inPath)
+		f, err := openSeekable(inPath)
 		if err != nil {
 			return 0, err
 		}
@@ -248,11 +287,11 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 	// lookup. The index kind is auto-detected from its 4-byte magic, so a
 	// caller may point at either a .csi or a .bai regardless of extension.
 	if opts.IndexPath != "" {
-		idxBytes, ierr := os.ReadFile(opts.IndexPath)
+		idxBytes, ierr := hfile.ReadFile(opts.IndexPath)
 		if ierr != nil {
 			return 0, fmt.Errorf("samtools view: read index %s: %w", opts.IndexPath, ierr)
 		}
-		f, err := os.Open(inPath)
+		f, err := openSeekable(inPath)
 		if err != nil {
 			return 0, err
 		}
@@ -276,12 +315,12 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 	// Prefer a coordinate-sorted index (.csi) over .bai — it covers the
 	// larger coordinate range CSI supports.
 	csiPath := inPath + ".csi"
-	if csiBytes, csiErr := os.ReadFile(csiPath); csiErr == nil {
+	if csiBytes, csiErr := hfile.ReadFile(csiPath); csiErr == nil {
 		idx, ierr := bam.ReadCSI(bytes.NewReader(csiBytes))
 		if ierr != nil {
 			return 0, fmt.Errorf("samtools view: read %s: %w", csiPath, ierr)
 		}
-		f, err := os.Open(inPath)
+		f, err := openSeekable(inPath)
 		if err != nil {
 			return 0, err
 		}
@@ -289,12 +328,12 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 		return viewIndexedCSI(f, idx, out, opts)
 	}
 	baiPath := inPath + ".bai"
-	baiBytes, baiErr := os.ReadFile(baiPath)
+	baiBytes, baiErr := hfile.ReadFile(baiPath)
 	if baiErr != nil {
 		if warnW != nil {
 			fmt.Fprintf(warnW, "samtools view: no index at %s, falling back to linear scan\n", baiPath)
 		}
-		f, err := os.Open(inPath)
+		f, err := openSeekable(inPath)
 		if err != nil {
 			return 0, err
 		}
@@ -306,7 +345,7 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 		return 0, fmt.Errorf("samtools view: read %s: %w", baiPath, ierr)
 	}
 
-	f, err := os.Open(inPath)
+	f, err := openSeekable(inPath)
 	if err != nil {
 		return 0, err
 	}
@@ -323,7 +362,7 @@ func ViewFile(inPath string, out io.Writer, opts ViewOptions, warnW io.Writer) (
 // index. CRAM uses a .crai index and a different seek model; indexed CRAM
 // region query is a separate roadmap item, so a CRAM file reaches the
 // streaming path above, not here.
-func viewIndexed(f *os.File, idx *bam.BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
+func viewIndexed(f io.ReadSeeker, idx *bam.BAIIndex, out io.Writer, opts ViewOptions) (int, error) {
 	return viewIndexedChunks(f, out, opts, func(hdr *sam.Header, resolved []region.ResolvedRegion) []bam.BAIChunk {
 		return bam.UnionChunks(idx, resolved)
 	})
@@ -333,7 +372,7 @@ func viewIndexed(f *os.File, idx *bam.BAIIndex, out io.Writer, opts ViewOptions)
 // CSI shares the BAI chunk model, so the seek-and-scan loop is identical;
 // only the chunk-lookup index differs. CSI is preferred when present
 // because it addresses references beyond the BAI 2^29 bp ceiling.
-func viewIndexedCSI(f *os.File, idx *bam.CSIIndex, out io.Writer, opts ViewOptions) (int, error) {
+func viewIndexedCSI(f io.ReadSeeker, idx *bam.CSIIndex, out io.Writer, opts ViewOptions) (int, error) {
 	return viewIndexedChunks(f, out, opts, func(hdr *sam.Header, resolved []region.ResolvedRegion) []bam.BAIChunk {
 		return bam.UnionChunksCSI(idx, resolved)
 	})
@@ -342,7 +381,7 @@ func viewIndexedCSI(f *os.File, idx *bam.CSIIndex, out io.Writer, opts ViewOptio
 // viewIndexedChunks is the index-kind-agnostic seek-and-scan core shared by
 // the .bai and .csi indexed-query paths. unionFn resolves the requested
 // regions to a sorted, merged BAIChunk slice for the relevant index.
-func viewIndexedChunks(f *os.File, out io.Writer, opts ViewOptions, unionFn func(*sam.Header, []region.ResolvedRegion) []bam.BAIChunk) (int, error) {
+func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn func(*sam.Header, []region.ResolvedRegion) []bam.BAIChunk) (int, error) {
 	// Need the header — open a BAM reader first.
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return 0, err

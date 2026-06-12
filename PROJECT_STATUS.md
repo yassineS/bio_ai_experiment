@@ -59,9 +59,16 @@ The list below is the *definitive* remaining-gap set (each is small and
 individually scoped). Everything not on this list is either done or a
 documented **non-goal** (see "Non-goals" below).
 
-1. **htsgo `hfile` cloud I/O** — remote (S3 / http(s)) alignment/variant
-   file access is not implemented (deferred P3 in `docs/HTSGO_ROADMAP.md`).
-   Local files, BGZF, and `.gzi`/`.crai`/`.csi` seek all work. *Medium.*
+1. **htsgo `hfile` cloud I/O — remaining indexed consumers.** The
+   `pkg/htsgo/hfile` backend (HTTP(S)/S3/GCS, stdlib-only, hand-rolled AWS
+   SigV4) is **done**, and remote URLs now flow through the two streaming
+   open paths (`iohelper.OpenReader`, `alnio.OpenReader`) — so whole-file
+   operations across the toolset read `http(s)://`, `s3://` and `gs://`
+   objects transparently — plus the flagship indexed `samtools view region`
+   path (ranged-GET seek + sibling `.bai`/`.csi` fetch). What remains is
+   threading the same `openSeekable` / `hfile.ReadFile` pattern through the
+   other indexed region-query subcommands (`samtools idxstats`/`mpileup`,
+   `tabix` region, `bcftools view -r`). *Small (mechanical).*
 2. **bcftools `gtcheck -c/--cluster`** (dendrogram, which upstream itself
    errors "to be implemented") and `gtcheck` filter expressions. *Small.*
 3. **CRAM long-tail correctness + perf** — some BCF FORMAT-key
