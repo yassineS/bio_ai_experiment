@@ -99,13 +99,18 @@ A skimmable per-tool completion table lives in the top-level
   implemented and live-oracle validated.
 
 Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
-the canonical version with effort sizing): htsgo `hfile` cloud I/O is now
-wired for streaming (all whole-file ops) and the flagship `samtools view`
-indexed region path — what remains is threading the same opener through the
-other indexed region-query subcommands; bcftools `gtcheck -c/--cluster` plus
-its filter expressions; CRAM BCF-FORMAT-key edge cases, network ref fetch,
-and v4.0; and scattered per-output column / niche-flag polish (vcftools,
-prinseq, a few bedtools tails).
+the canonical version with effort sizing). Cloud I/O is **complete**
+(streaming + every indexed region path, incl. `.crai` CRAM, live-validated
+against S3/GCS/HTTPS); CRAM `MD`/`NM` regeneration and the network REF_PATH
+fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
+KeyListOps ops are **done** (`-c/--cluster` is a non-goal — upstream comments
+it out). The genuine tail left is heavier or blocked:
+  - the broader BCF/VCF **non-diploid FORMAT** reconstruction (our `vcf.Variant`
+    coerces non-diploid GTs to missing rather than tracking ploidy);
+  - vcftools **BCF-binary I/O** (`--bcf`/`--recode-bcf`/`--diff-bcf`/`--contigs`)
+    — heavy, blocked on the htsgo BCF-writer path;
+  - CRAM **v4.0** — awaits a finalised upstream spec (out of scope);
+  - a few scattered per-output column / niche-flag polish items.
 
 Recently closed: samtools `consensus` pileup `-a` placeholder rows (incl.
 ref-skip columns, per-nth gap-fill duplication, INT_MIN quality, and
