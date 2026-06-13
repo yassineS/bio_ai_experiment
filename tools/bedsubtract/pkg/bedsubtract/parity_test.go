@@ -4,9 +4,9 @@ package bedsubtract
 //
 // Cases are mirrored from reference_code/bedtools/test/subtract/test-subtract.sh.
 // Inputs and expected outputs live under tools/bedsubtract/testdata/parity/.
-// Tests for upstream features bedsubtract does not implement (notably `-N`,
-// which sums coverage across all B overlaps and drops A as a whole) are
-// wrapped in t.Skip with a one-line rationale.
+// The full surface — including `-N` (union-coverage drop, t9/t10/t21) — is
+// exercised here; every case asserts byte-for-byte against the upstream
+// expected output.
 
 import (
 	"bytes"
@@ -114,15 +114,23 @@ func TestParity_Subtract_T8_RemoveEntireF01(t *testing.T) {
 	}
 }
 
-// subtract.t9 — -N sums coverage across all B overlaps and drops A iff that
-// union exceeds the fraction. bedsubtract has no `-N` option.
+// subtract.t9 — -N -f 0.4: union of d.bed overlaps covers 4/10 = 0.40 of
+// c.bed, which is NOT strictly > 0.40, so A is emitted unchanged.
 func TestParity_Subtract_T9_DashN(t *testing.T) {
-	t.Skip("unimplemented: -N (union-coverage drop) option")
+	got := runSubtractParity(t, "c.bed", []string{"d.bed"}, Options{RemoveSum: true, MinFraction: 0.4})
+	want := readSubtractParity(t, "t9_N_f04.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// subtract.t10 — same as t9 with a slightly different threshold.
+// subtract.t10 — -N -f 0.39: 0.40 > 0.39, so A is dropped entirely.
 func TestParity_Subtract_T10_DashNStricter(t *testing.T) {
-	t.Skip("unimplemented: -N (union-coverage drop) option")
+	got := runSubtractParity(t, "c.bed", []string{"d.bed"}, Options{RemoveSum: true, MinFraction: 0.39})
+	want := readSubtractParity(t, "t10_N_f039.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // subtract.t19 — multiple -b databases (b.bed AND b2.bed) concatenated.
@@ -143,7 +151,12 @@ func TestParity_Subtract_T20_TwoDatabasesF08(t *testing.T) {
 	}
 }
 
-// subtract.t21 — -f 0.6 -N with two DBs.
+// subtract.t21 — -f 0.6 -N with two DBs: a1 is dropped (union > 60%) while
+// a2 survives unchanged.
 func TestParity_Subtract_T21_TwoDBsNFraction(t *testing.T) {
-	t.Skip("unimplemented: -N (union-coverage drop) option")
+	got := runSubtractParity(t, "a.bed", []string{"b.bed", "b2.bed"}, Options{RemoveSum: true, MinFraction: 0.6})
+	want := readSubtractParity(t, "t21_two_db_N_f06.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }

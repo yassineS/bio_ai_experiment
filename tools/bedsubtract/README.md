@@ -27,8 +27,11 @@ bedsubtract -a <fileA.bed> -b <fileB.bed> [options]
 - `-b, --b FILE` - Input BED file B (use `-` for stdin)
 - `-o, --output FILE` - Output BED file (`-` for stdout, default: stdout)
 - `-A` - If any part of A overlaps B, drop the entire A interval
-- `-N, --min-fraction NUM` - Only subtract when overlap covers at least NUM
-  (0..1) of A
+- `-f, --min-fraction NUM` - Only subtract an individual B interval when that
+  overlap covers at least NUM (0..1) of A
+- `-N, --removeSum` - Drop A entirely when the union of all overlapping B
+  intervals covers more than `-f` of A (per-B fraction filtering disabled);
+  otherwise emit A unchanged. Requires `-f` in (0.0, 1.0]
 - `-s, --strand` - Only subtract same-strand B intervals (BED6+)
 - `-S` - Only subtract opposite-strand B intervals (BED6+)
 - `-h, --help` - Show help message
