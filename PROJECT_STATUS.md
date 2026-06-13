@@ -72,19 +72,21 @@ documented **non-goal** (see "Non-goals" below).
    `query -r`, and `.crai`-indexed CRAM `samtools view` (seek-based container
    reader, live-upstream-parity validated).
 2. **CRAM long-tail correctness + perf** — some BCF FORMAT-key reconstruction
-   edge cases; CRAM v4.0 awaits a final spec. (`samtools view -T` over CRAM now
-   regenerates the reference-derived `MD:Z`/`NM:i` tags via the shared
-   `pkg/htsgo/mdnm`; the network REF_PATH/EBI reference fetch is implemented
-   (opt-in via REF_PATH, see `pkg/htsgo/cram` RefPathReference) — both
-   live-parity / httptest validated.) *Medium → small.*
-3. **Scattered option-tail polish — effectively closed.** bcftools
-   `concat --ligate` (live-parity), mendelian2 `sites_not_diploid`, and
-   vcftools's BCF-binary I/O family (`--bcf`/`--recode-bcf`/`--diff-bcf`/
-   `--contigs`, roundtrip-tested) are all implemented; vcftools has no
-   long-flag gaps. `convert` PLINK exporters (PLINK1 spec) and `som`
-   train/classify (upstream write bug fixed) are now implemented. What is
-   left are the in-flight `samtools tview` (text/HTML) and CRAM v4.0, plus
-   gtcheck `-c/--cluster` clustering (own design — upstream is an error stub).
+   edge cases remain; **CRAM v4.0 decode is implemented** (uint7-varint +
+   64-bit positions, version-threaded; 15/15-record byte-for-byte parity vs
+   an upstream-written v4.0 CRAM; the v4 transform codecs XPACK/XRLE/XDELTA
+   are parsed but error on decode — no v4 fixture uses them). (`samtools
+   view -T` over CRAM regenerates `MD:Z`/`NM:i` via `pkg/htsgo/mdnm`; the
+   network REF_PATH/EBI reference fetch is implemented — both live-parity /
+   httptest validated.) *Small.*
+3. **Scattered option-tail polish — closed.** bcftools `concat --ligate`
+   (live-parity), mendelian2 `sites_not_diploid`, and vcftools's BCF-binary
+   I/O family (`--bcf`/`--recode-bcf`/`--diff-bcf`/`--contigs`,
+   roundtrip-tested) are all implemented; vcftools has no long-flag gaps.
+   `convert` PLINK exporters (PLINK1 spec), `som` train/classify (upstream
+   write bug fixed), `gtcheck -c/--cluster` clustering, and `samtools tview`
+   text/HTML (byte-for-byte) are now all implemented. No actionable
+   option-tail gaps remain.
 
 Cross-cutting: **multi-threading (`-@`/`-t`)** has landed for the dominant
 BAM-output path — `samtools view`/`sort`/`markdup` and mosdepth `-t` drive a

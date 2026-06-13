@@ -103,13 +103,15 @@ the canonical version with effort sizing). Cloud I/O is **complete**
 (streaming + every indexed region path, incl. `.crai` CRAM, live-validated
 against S3/GCS/HTTPS); CRAM `MD`/`NM` regeneration and the network REF_PATH
 fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
-KeyListOps ops are **done** (`-c/--cluster` is a non-goal — upstream comments
-it out). The genuine tail left is heavier or blocked:
-  - CRAM **v4.0** — awaits a finalised upstream spec (out of scope);
-  (gtcheck `-c/--cluster` clustering is now implemented as this port's own
-    design — upstream leaves it an error stub.)
-    (`convert` PLINK and `som` train/classify, formerly non-goals, are now
-    implemented; `samtools tview` text/HTML and CRAM v4.0 are in flight.)
+KeyListOps ops are **done**. The former "non-goals" are now all implemented:
+  - **CRAM v4.0 decode** — uint7-varint + 64-bit positions, version-threaded,
+    byte-for-byte parity vs an upstream-written v4.0 CRAM (the v4 transform
+    codecs XPACK/XRLE/XDELTA are parsed but not yet decoded — no fixture
+    exercises them);
+  - `gtcheck -c/--cluster` clustering (own design — upstream is an error stub);
+  - `bcftools convert` PLINK exporters, `bcftools som`, and `samtools tview`
+    (text/HTML) are all implemented. The only deliberate carve-out left is
+    `samtools tview -d C` interactive curses (would need a TTY UI dependency).
 
   Recently closed (so no longer in this list): bcftools `concat --ligate`
   phased ligation; mendelian2 `sites_not_diploid` (non-diploid records are
