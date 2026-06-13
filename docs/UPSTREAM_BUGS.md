@@ -625,13 +625,12 @@ discrepancies in our Go code (not upstream), all fixed inline:
 
 <a id="bcf-info-order"></a>
 
-- **Our BCF writer does not preserve `InfoOrder` on encode** — the
-  reader-side fix in this PR populates `Variant.InfoOrder` so the VCF
-  writer can preserve key order, but the BCF writer still iterates the
-  map directly. Consequently a VCF→BCF→VCF round-trip shuffles INFO
-  keys. The fix is to teach `bcf.NewWriterFromVCFHeader` /
-  `bcf.Writer.Write` to consult `InfoOrder` in addition to the existing
-  dict-order pass.
+- **Our BCF writer does not preserve `InfoOrder` on encode** —
+  RESOLVED. `bcf.Writer.encodeRecord` (typed_write.go) now emits INFO
+  fields in the variant's recorded `InfoOrder` (then any stragglers in a
+  stable name order), so a VCF→BCF→VCF round-trip preserves INFO key
+  order. Pinned by `TestWriterInfoOrderDeterministic`
+  (pkg/htsgo/bcf/writer_test.go).
 
 ### Non-bugs we considered (closed)
 

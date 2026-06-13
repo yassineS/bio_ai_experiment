@@ -43,7 +43,7 @@ evidence-based estimate of remaining surface — not a rosy reading.
 | **bgzip** | 1/1 cmd, most flags | multi-threaded compression (`-t`) | **~92%** | small |
 | **tabix** | 1/1 cmd, most flags | `--reheader`; true `--targets` post-filter strictness | **~92%** | small |
 | **htsfile** | 1/1 cmd | none (intentional `-c` omission) | **~98%** | done |
-| **CRAM / htsgo formats** | CRAM read+write **v2/v3 + v4.0** (uint7-varint + 64-bit pos; v4 transform codecs XPACK/XRLE/XDELTA decode; rANS 4x8/4x16 in-tree, LZMA via ulikunitz/xz); writer output (v3 **and** v4) decodes through upstream samtools (live cross-checks); BGZF, BAI/CSI, SAM/BAM, BCF v2.2, tabix index | partial-decompress seek via `.gzi` (perf); BCF FORMAT-key reconstruction edge cases | **~93%** | small |
+| **CRAM / htsgo formats** | CRAM read+write **v2/v3 + v4.0** (uint7-varint + 64-bit pos; v4 transform codecs XPACK/XRLE/XDELTA decode; rANS 4x8/4x16 in-tree, LZMA via ulikunitz/xz); writer output (v3 **and** v4) decodes through upstream samtools (live cross-checks); BGZF, BAI/CSI, SAM/BAM, BCF v2.2, tabix index | partial-decompress seek via `.gzi` (perf only) | **~95%** | small |
 
 Percentages weight *remaining feature surface and effort*, not flag counts
 alone — e.g. vcftools is 100% on flags but ~98% because a few outputs still
@@ -71,8 +71,7 @@ documented **non-goal** (see "Non-goals" below).
    path: `samtools view`/`idxstats`/`mpileup`, `tabix`, `bcftools view -r` /
    `query -r`, and `.crai`-indexed CRAM `samtools view` (seek-based container
    reader, live-upstream-parity validated).
-2. **CRAM long-tail correctness + perf** — some BCF FORMAT-key reconstruction
-   edge cases remain. **CRAM v4.0 is implemented for read AND write**
+2. **CRAM long-tail correctness + perf.** **CRAM v4.0 is implemented for read AND write**
    (uint7-varint + 64-bit positions, version-threaded; the v4 transform
    codecs XPACK/XRLE/XDELTA decode; v4.0 decode is 15/15-record byte-for-byte
    vs an upstream-written v4.0 CRAM, and our v4.0 **and** v3.0 writer output
