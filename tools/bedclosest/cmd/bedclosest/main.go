@@ -38,7 +38,9 @@ Options:
   -d, --distance           Print signed distance column (default: true)
   -D MODE                  Strandedness of the distance sign: ref (default),
                            a (relative to A's strand), or b (relative to B's).
-  -N                       Require strict overlap; non-overlapping B intervals
+  -N                       Require the closest B to have a different name
+                           (BED column 4) than A.
+      --require-overlap    Require strict overlap; non-overlapping B intervals
                            are treated as infinitely far away.
   -iu                      Ignore B features upstream of A (requires -D).
   -id                      Ignore B features downstream of A (requires -D).
@@ -91,8 +93,13 @@ func main() {
 	var distMode string
 	fs.StringVar(&distMode, "D", "ref", "Distance sign mode: ref|a|b")
 
+	// -N is the upstream "force different names" filter; the bedclosest
+	// strict-overlap extension keeps the long-only --require-overlap form.
+	var differentNames bool
+	fs.BoolVar(&differentNames, "N", false, "Require the closest B to have a different name (column 4) than A")
+
 	var requireOverlap bool
-	fs.BoolVar(&requireOverlap, "N", false, "Require strict overlap")
+	cliflag.BoolVar(fs, &requireOverlap, "", "require-overlap", false, "Require strict overlap (non-overlapping B treated as infinitely far)")
 
 	var ignoreUp, ignoreDown, forceUp, forceDown bool
 	fs.BoolVar(&ignoreUp, "iu", false, "Ignore features in B that are upstream of A (requires -D)")
@@ -208,6 +215,7 @@ func main() {
 		ForceDownstream:  forceDown,
 		SameStrand:       sameStrand,
 		OppositeStrand:   oppositeStrand,
+		DifferentNames:   differentNames,
 	}
 	if _, err := bedclosest.Closest(readerA, readerB, writer, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

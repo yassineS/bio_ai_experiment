@@ -128,6 +128,31 @@ func TestClosestRequireOverlap(t *testing.T) {
 	}
 }
 
+func TestClosestDifferentNames(t *testing.T) {
+	// A "g1" sits between B "g1" (nearer) and B "g2" (farther). With -N the
+	// same-named B is skipped, so the farther different-named B is reported.
+	a := "chr1\t100\t110\tg1\n"
+	b := "chr1\t115\t125\tg1\nchr1\t140\t150\tg2\n"
+
+	// Without -N the nearest B (same name g1) wins.
+	got, _, err := runClosest(t, a, b, Options{PrintDistance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "\tg1\tchr1\t115\t125\tg1\t") {
+		t.Errorf("without -N expected nearest same-name B, got %q", got)
+	}
+
+	// With -N the same-name B is excluded; g2 is reported instead.
+	gotN, _, err := runClosest(t, a, b, Options{PrintDistance: true, DifferentNames: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotN, "\tg1\tchr1\t140\t150\tg2\t") {
+		t.Errorf("with -N expected the different-name B g2, got %q", gotN)
+	}
+}
+
 func TestClosestDifferentChrom(t *testing.T) {
 	a := "chr1\t10\t20\n"
 	b := "chr2\t10\t20\n"

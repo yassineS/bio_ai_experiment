@@ -89,6 +89,11 @@ type Options struct {
 	// OppositeStrand (`-S`) restricts the candidate B intervals to those on
 	// the opposite strand to A.
 	OppositeStrand bool
+
+	// DifferentNames (`-N`) requires the reported closest B to have a
+	// different name (BED column 4) than A; a B sharing A's name is excluded
+	// from candidate consideration. Matches upstream bedtools closest -N.
+	DifferentNames bool
 }
 
 // Validate reports configuration errors that cannot be captured by the type
@@ -116,6 +121,24 @@ func strandMatch(a, b *Row, opts Options) bool {
 		return a.Strand == b.Strand
 	}
 	return a.Strand != b.Strand
+}
+
+// nameOf returns a row's BED name (column 4) or "" when absent.
+func nameOf(r *Row) string {
+	if len(r.Fields) >= 4 {
+		return r.Fields[3]
+	}
+	return ""
+}
+
+// nameEligible reports whether B is an eligible candidate for A under the
+// -N (different-names) filter. With -N off every B qualifies; with -N on a B
+// sharing A's name (column 4) is excluded, matching upstream bedtools closest.
+func nameEligible(a, b *Row, opts Options) bool {
+	if !opts.DifferentNames {
+		return true
+	}
+	return nameOf(a) != nameOf(b)
 }
 
 // streamDir classifies a non-overlapping B hit as upstream or downstream of A
@@ -341,10 +364,10 @@ func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
 	}
 	var cands []cand
 	consider := func(i int) {
-		// Strand-ineligible B's are skipped before they can influence bestAbs or
-		// the candidate set, so the closest is chosen purely among the
-		// strand-matching subset (upstream bug281 cache-purge semantics).
-		if !strandMatch(a, bs[i], opts) {
+		// Strand- and name-ineligible B's are skipped before they can influence
+		// bestAbs or the candidate set, so the closest is chosen purely among the
+		// eligible subset (upstream bug281 cache-purge semantics).
+		if !strandMatch(a, bs[i], opts) || !nameEligible(a, bs[i], opts) {
 			return
 		}
 		signed := signedDistance(a, bs[i], opts)
@@ -457,9 +480,9 @@ func closestForDirectional(a *Row, bs []*Row, opts Options) []hit {
 		if a.Chrom != b.Chrom {
 			continue
 		}
-		// Skip strand-ineligible B's entirely so they never enter the candidate
-		// pools (overlaps/ups/downs), matching the non-directional path.
-		if !strandMatch(a, b, opts) {
+		// Skip strand- and name-ineligible B's entirely so they never enter the
+		// candidate pools (overlaps/ups/downs), matching the non-directional path.
+		if !strandMatch(a, b, opts) || !nameEligible(a, b, opts) {
 			continue
 		}
 		stream := classifyStream(a, b, opts)

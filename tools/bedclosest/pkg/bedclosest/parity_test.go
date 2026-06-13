@@ -5,9 +5,9 @@ package bedclosest
 // Cases are mirrored from reference_code/bedtools/test/closest/test-closest.sh.
 // Inputs and expected outputs live under tools/bedclosest/testdata/parity/.
 // Tests for upstream features bedclosest does not implement (notably the
-// -N "force different names" option, -k k-nearest, and multi-DB input with
-// -names/-filenames) are wrapped in t.Skip with a one-line rationale. The
-// strand filters -s/-S are implemented (see t7/t8 below).
+// -k k-nearest, and multi-DB input with -names/-filenames) are wrapped in
+// t.Skip with a one-line rationale. The strand filters -s/-S (t7/t8) and the
+// -N different-names filter (t6) are implemented and asserted below.
 //
 // Note: bedclosest matches the upstream `(b.start - a.end) + 1` distance
 // formula, so two touching records report distance 1 (not 0).
@@ -85,9 +85,17 @@ func TestParity_Closest_T5_Named(t *testing.T) {
 	}
 }
 
-// closest.t6 — `-N` forces the closest B to have a *different* name than A.
+// closest.t6 — `-N` forces the closest B to have a *different* name than A,
+// so each query skips its same-named B in favour of the next-nearest. The hit
+// selection is identical to upstream; the distance column uses bedclosest's
+// signed -D ref convention (a left-side B is negative), whereas upstream's t6
+// used absolute -d — the same house-style difference noted for t7/t8.
 func TestParity_Closest_T6_DifferentNames(t *testing.T) {
-	t.Skip("unimplemented: -N (force different names) option")
+	got := runClosestParity(t, "a.names.bed", "b.names.bed", Options{PrintDistance: true, DifferentNames: true})
+	want := readClosestParity(t, "t6_diffnames.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // closest.t7 — `-s` (same-strand) filter. A is on '+', the only B is on '-',

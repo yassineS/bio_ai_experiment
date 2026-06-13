@@ -38,8 +38,10 @@ bedclosest -a <fileA.bed> -b <fileB.bed> [options]
   - `ref` (default): downstream is positive on the reference
   - `a`: relative to A's strand (BED6 col 6); flips on `-`-strand A
   - `b`: relative to B's strand
-- `-N` - Require strict overlap; non-overlapping B intervals are treated as
-  infinite (skipped)
+- `-N` - Require the closest B to have a different name (BED column 4) than A;
+  a B sharing A's name is skipped from candidate consideration
+- `--require-overlap` - Require strict overlap; non-overlapping B intervals are
+  treated as infinite (skipped)
 - `-s` - Require the closest B to be on the SAME strand as A (BED6 col 6).
   Non-matching B intervals are skipped from candidate consideration.
 - `-S` - Require the closest B to be on the OPPOSITE strand to A. Mutually
@@ -60,8 +62,11 @@ bedclosest -a genes.sorted.bed -b peaks.sorted.bed > out.bed
 # Suppress the distance column
 bedclosest -a a.bed -b b.bed --distance=false > out.bed
 
-# Only report when A overlaps a B
+# Only report a B with a different name than A
 bedclosest -a a.bed -b b.bed -N > out.bed
+
+# Only report when A overlaps a B
+bedclosest -a a.bed -b b.bed --require-overlap > out.bed
 
 # Single hit per A (first in B input order on ties)
 bedclosest -a a.bed -b b.bed -t first > out.bed
@@ -79,8 +84,8 @@ bedclosest -a a.bed -b b.bed -S > out.bed
   `.gz` is supported.
 - Output: A's columns, then B's columns, then signed distance (when `-d`).
 - When A's chromosome has no B records, a sentinel B of
-  `.\t-1\t-1` with distance `-1` is emitted (unless `-N` is set, in which case
-  the A line is omitted).
+  `.\t-1\t-1` with distance `-1` is emitted (unless `--require-overlap` is set,
+  in which case the A line is omitted).
 
 ## Algorithm
 
