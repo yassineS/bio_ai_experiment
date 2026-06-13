@@ -7,7 +7,7 @@ intersection, union, Jaccard index and overlap count.
 ## Features
 
 - Single streaming sweep over the inputs (memory is independent of file size)
-- Strand-aware overlap (`-s` same-strand, `-S` opposite-strand)
+- Strand-aware overlap (`-s` same-strand, `-S <+|->` single-strand filter)
 - Overlap-fraction thresholds (`-f` for A, `-F` for B)
 - Errors out on unsorted input rather than producing wrong answers
 - Transparent gzip support and `-` for stdin/stdout
@@ -31,7 +31,7 @@ bedjaccard -a <fileA.bed> -b <fileB.bed> [options]
 - `-b, --b FILE` Second sorted BED file (required)
 - `--output FILE` Output file (default: stdout)
 - `-s, --strand` Same-strand overlaps only (BED6 strand column required)
-- `-S, --opposite-strand` Opposite-strand overlaps only
+- `-S <+|->` Restrict both inputs to the given strand before overlap
 - `-f FRACTION` Require >= FRACTION of A overlapped by B (0..1)
 - `-F FRACTION` Require >= FRACTION of B overlapped by A (0..1)
 - `-h, --help` Show help
@@ -63,6 +63,9 @@ bedjaccard -a peaksA.bed -b peaksB.bed
 
 # Same strand only
 bedjaccard -a a.bed -b b.bed -s
+
+# Forward strand only (both inputs restricted to '+')
+bedjaccard -a a.bed -b b.bed -S +
 
 # Require >= 50% of A to be overlapped by B for the pair to count
 bedjaccard -a a.bed -b b.bed -f 0.5

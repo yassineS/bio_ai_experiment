@@ -26,10 +26,16 @@ import (
 
 // Options configures the Jaccard computation.
 type Options struct {
-	// SameStrand causes only same-strand B intervals to be considered for an A.
+	// SameStrand ("-s") considers only same-strand A/B pairs; records with an
+	// unknown ("." or empty) strand are dropped, matching upstream's
+	// SAME_STRAND_EITHER merge mode.
 	SameStrand bool
-	// OppositeStrand causes only opposite-strand B intervals to be considered.
-	OppositeStrand bool
+	// StrandFilter ("-S <+|->") restricts BOTH inputs to records on the given
+	// strand before the merge/intersection, matching upstream's
+	// SAME_STRAND_FORWARD / SAME_STRAND_REVERSE modes. It is mutually
+	// exclusive with SameStrand. (Upstream jaccard has no opposite-strand
+	// mode; -S takes a strand argument.)
+	StrandFilter string
 	// FractionA: require at least this fraction of A to overlap B for the
 	// pair to count (0..1). Zero disables the check.
 	FractionA float64
@@ -49,8 +55,11 @@ type Result struct {
 // writes a two-line tab-separated table (header then values) to w. The Result
 // is also returned for programmatic use.
 func Run(a, b io.Reader, w io.Writer, opts Options) (*Result, error) {
-	if opts.SameStrand && opts.OppositeStrand {
+	if opts.SameStrand && opts.StrandFilter != "" {
 		return nil, errors.New("-s and -S are mutually exclusive")
+	}
+	if opts.StrandFilter != "" && opts.StrandFilter != "+" && opts.StrandFilter != "-" {
+		return nil, fmt.Errorf("-S must be + or -, got %q", opts.StrandFilter)
 	}
 	if opts.FractionA < 0 || opts.FractionA > 1 {
 		return nil, fmt.Errorf("-f must be in [0,1], got %v", opts.FractionA)
@@ -94,9 +103,11 @@ func formatJaccard(j float64) string {
 // is in play, the merge runs per-strand so cross-strand records don't
 // collapse into one.
 func jaccard(aReader, bReader io.Reader, opts Options) (*Result, error) {
-	perStrand := opts.SameStrand || opts.OppositeStrand
-	ra := newMergingReader(bed.NewReader(aReader), perStrand)
-	rb := newMergingReader(bed.NewReader(bReader), perStrand)
+	// -S restricts both inputs to one strand before merging; -s merges
+	// per-strand and keeps only same-strand pairs.
+	perStrand := opts.SameStrand || opts.StrandFilter != ""
+	ra := newMergingReader(bed.NewReader(aReader), perStrand, opts.StrandFilter)
+	rb := newMergingReader(bed.NewReader(bReader), perStrand, opts.StrandFilter)
 
 	var active []*bed.Record
 	var (
@@ -242,21 +253,16 @@ func sortedAfter(prev, next *bed.Record) bool {
 	return next.ChromStart >= prev.ChromStart
 }
 
-// strandOK applies -s/-S filtering. If neither flag is set, any strand
-// combination passes. Empty/dot strands never match an explicit filter
-// (matching bedtools' behaviour: BED6 is required for -s/-S).
+// strandOK applies the per-pair -s filter. With -s only same-strand pairs
+// count (an unknown "." or empty strand on either side never matches). The
+// -S single-strand filter is applied earlier (records on the other strand
+// are dropped before merging), so no per-pair check is needed for it.
 func strandOK(a, b *bed.Record, opts Options) bool {
-	switch {
-	case opts.SameStrand:
+	if opts.SameStrand {
 		if a.Strand == "" || a.Strand == "." || b.Strand == "" || b.Strand == "." {
 			return false
 		}
 		return a.Strand == b.Strand
-	case opts.OppositeStrand:
-		if a.Strand == "" || a.Strand == "." || b.Strand == "" || b.Strand == "." {
-			return false
-		}
-		return (a.Strand == "+" && b.Strand == "-") || (a.Strand == "-" && b.Strand == "+")
 	}
 	return true
 }
@@ -296,6 +302,9 @@ func fractionOK(a, b *bed.Record, overlap int, opts Options) bool {
 type mergingReader struct {
 	in        *bed.Reader
 	perStrand bool
+	// strandFilter, when non-empty ("+" or "-"), drops every raw record on a
+	// different strand before merging (upstream -S single-strand filter).
+	strandFilter string
 
 	// Pending merges, keyed by strand bucket. When perStrand is false the
 	// only key in use is "" (single bucket). For perStrand we use the
@@ -316,11 +325,12 @@ type mergingReader struct {
 	lastIn *bed.Record
 }
 
-func newMergingReader(r *bed.Reader, perStrand bool) *mergingReader {
+func newMergingReader(r *bed.Reader, perStrand bool, strandFilter string) *mergingReader {
 	return &mergingReader{
-		in:        r,
-		perStrand: perStrand,
-		pending:   make(map[string]*bed.Record),
+		in:           r,
+		perStrand:    perStrand,
+		strandFilter: strandFilter,
+		pending:      make(map[string]*bed.Record),
 	}
 }
 
@@ -368,6 +378,12 @@ func (m *mergingReader) Read() (*bed.Record, error) {
 				rec.Chrom, rec.ChromStart, rec.ChromEnd)
 		}
 		m.lastIn = rec
+
+		// -S single-strand filter: drop every record not on the wanted
+		// strand before it can be merged or counted.
+		if m.strandFilter != "" && rec.Strand != m.strandFilter {
+			continue
+		}
 
 		// Under a stranded merge, upstream's FileRecordMergeMgr drops
 		// any record with an UNKNOWN (".") or missing strand (see

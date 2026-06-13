@@ -105,12 +105,33 @@ func TestStrandSame(t *testing.T) {
 	}
 }
 
-func TestStrandOpposite(t *testing.T) {
+func TestStrandFilterForward(t *testing.T) {
+	// -S + keeps only '+'-strand records on BOTH sides, then computes jaccard
+	// normally. A has one '+' (0..10); B has a '+' (0..10) and a '-' (0..10).
+	// Only the '+' B survives: intersect 10, union 10+10-10=10, N=1.
 	a := "chr1\t0\t10\ta\t0\t+\n"
 	b := "chr1\t0\t10\tx\t0\t+\nchr1\t0\t10\ty\t0\t-\n"
-	res, _ := runOf(t, a, b, Options{OppositeStrand: true})
-	if res.N != 1 || res.Intersection != 10 || res.Union != 20 {
+	res, _ := runOf(t, a, b, Options{StrandFilter: "+"})
+	if res.N != 1 || res.Intersection != 10 || res.Union != 10 {
 		t.Errorf("got %+v", res)
+	}
+}
+
+func TestStrandFilterReverseDropsAll(t *testing.T) {
+	// -S - keeps only '-' records; A has none, so there is no intersection.
+	a := "chr1\t0\t10\ta\t0\t+\n"
+	b := "chr1\t0\t10\tx\t0\t+\nchr1\t0\t10\ty\t0\t-\n"
+	res, _ := runOf(t, a, b, Options{StrandFilter: "-"})
+	if res.N != 0 || res.Intersection != 0 {
+		t.Errorf("got %+v want no overlap", res)
+	}
+}
+
+func TestStrandFilterInvalid(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := Run(strings.NewReader(""), strings.NewReader(""), &buf,
+		Options{StrandFilter: "x"}); err == nil {
+		t.Fatal("expected error for invalid -S argument")
 	}
 }
 
@@ -163,7 +184,7 @@ func TestFractionOutOfRange(t *testing.T) {
 func TestStrandFlagsMutuallyExclusive(t *testing.T) {
 	var buf bytes.Buffer
 	if _, err := Run(strings.NewReader(""), strings.NewReader(""), &buf,
-		Options{SameStrand: true, OppositeStrand: true}); err == nil {
+		Options{SameStrand: true, StrandFilter: "+"}); err == nil {
 		t.Fatal("expected error for -s and -S together")
 	}
 }

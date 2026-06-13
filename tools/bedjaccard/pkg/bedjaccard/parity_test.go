@@ -9,8 +9,9 @@ package bedjaccard
 // both A and B before computing intersection / union (mirroring upstream's
 // `setUseMergedIntervals(true)` in ContextJaccard.cpp), so cases against
 // b.bed / c.bed / mixedStrands.bed are byte-for-byte parity with upstream.
+// The `-S` single-strand filter (t12/t13) is implemented and asserted.
 // Cases still wrapped in t.Skip are unrelated to the merge step (BAM /
-// VCF / GFF input, `-split`, `-S` single-strand filter, large fixtures).
+// VCF / GFF input, `-split`, large fixtures).
 
 import (
 	"bytes"
@@ -133,11 +134,25 @@ func TestParity_Jaccard_T11_MixedStrandsS(t *testing.T) {
 		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
+
+// jaccard.t12 — `-S +` restricts both inputs to the forward strand.
 func TestParity_Jaccard_T12_MixedStrandsSPlus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runJaccardParity(t, "aMixedStrands.bed", "bMixedStrands.bed",
+		Options{StrandFilter: "+"})
+	want := readJaccardParity(t, "t12_mixed_s_plus.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
+// jaccard.t13 — `-S -` restricts both inputs to the reverse strand.
 func TestParity_Jaccard_T13_MixedStrandsSMinus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runJaccardParity(t, "aMixedStrands.bed", "bMixedStrands.bed",
+		Options{StrandFilter: "-"})
+	want := readJaccardParity(t, "t13_mixed_s_minus.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // jaccard.t14 — a645.bed vs b645.bed: each side has disjoint records, no

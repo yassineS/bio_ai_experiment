@@ -714,7 +714,7 @@ and reuses `pkg/htsgo/bed` + `pkg/htsgo/iohelper`.
 | `bedflank` | `bedtools flank` | 92.2% | Flank-only `slop` variant |
 | `bedclosest` | `bedtools closest` | 92.8% | Sweep on sorted input; `-D ref/a/b`, `-N` (different-names), `--require-overlap`, `-t all/first/last`, `-s`/`-S` strand filters |
 | `bedgenomecov` | `bedtools genomecov` | 94.0% | histogram / `-bg` / `-bga` / `-d` / `-dz`; `-strand`, `-max`, `-scale`, `-5`/`-3` |
-| `bedjaccard` | `bedtools jaccard` | 96.3% | Streaming sweep; `-s`/`-S`, `-f`/`-F` |
+| `bedjaccard` | `bedtools jaccard` | 96.3% | Streaming sweep; `-s` same-strand, `-S <+\|->` single-strand filter, `-f`/`-F`; full `test-jaccard.sh` strand parity (t11/t12/t13) |
 
 Smoke tests for each are hand-verified against expected output (see the
 respective PRs and READMEs). **Validated parity against the upstream `bedtools`
