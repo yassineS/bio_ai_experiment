@@ -91,9 +91,15 @@
 // placeholder, paired read names are deduplicated (the upstream mate's
 // name is copied from the downstream mate), and the QO preservation flag
 // drives reverse-strand quality reversal. The end-of-file marker is a
-// distinct 31-byte sentinel. The transform codecs (XPACK/XRLE/XDELTA) are
-// recognised by id but not decoded; a series that uses one errors clearly.
-// Version dispatch is threaded through FileDefinition.Major via a small
+// distinct 31-byte sentinel. The transform codecs XPACK (bit-packing),
+// XRLE (run-length) and XDELTA (delta) now decode: each wraps one or two
+// sub-codecs (dispatched recursively through the same codec table) and
+// reverses the transform — XPACK expands packed bytes through its reverse
+// map (htscodecs hts_unpack, least-significant-symbol-first), XRLE expands
+// runs from a literal and a length stream (hts_rle_decode), and XDELTA
+// prefix-sums zig-zag deltas (value-at-a-time for the 32-bit integer path,
+// 2-byte words for the block path). Version dispatch is threaded through
+// FileDefinition.Major via a small
 // intReader so the v2/v3 path is byte-for-byte unchanged.
 //
 // Integer encodings: CRAM v2/v3 use two self-delimiting integer

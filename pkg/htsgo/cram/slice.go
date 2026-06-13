@@ -228,9 +228,47 @@ func (sl *Slice) HasSeriesData(h *CompressionHeader, key string) bool {
 		return false
 	}
 	switch enc.ID {
-	case EncodingExternal, EncodingByteArrayStop:
+	case EncodingExternal, EncodingByteArrayStop,
+		EncodingVarintUnsigned, EncodingVarintSigned:
+		// CRAM v4 VARINT codecs draw from an external block exactly as
+		// EXTERNAL does, so their presence is the block's presence.
 		return sl.external[enc.ExternalID] != nil
+	case EncodingConstByte, EncodingConstInt:
+		// A constant series carries no block but always has a (constant)
+		// value, so it is always present.
+		return true
+	case EncodingXPack, EncodingXRLE, EncodingXDelta:
+		// A transform codec has data when the block(s) its sub-codec(s)
+		// draw from are present.
+		return sl.encodingBlocksPresent(enc)
 	default:
+		return true
+	}
+}
+
+// encodingBlocksPresent reports whether every external block an encoding
+// ultimately reads from is present in the slice. It descends through the
+// CRAM v4 transform codecs (XPACK / XRLE / XDELTA) to their wrapped
+// sub-encoding(s); a CORE-bitstream or constant leaf is treated as present
+// since it needs no external block.
+func (sl *Slice) encodingBlocksPresent(enc *Encoding) bool {
+	if enc == nil || enc.ID == EncodingNull {
+		return true
+	}
+	switch enc.ID {
+	case EncodingExternal, EncodingByteArrayStop,
+		EncodingVarintUnsigned, EncodingVarintSigned:
+		return sl.external[enc.ExternalID] != nil
+	case EncodingConstByte, EncodingConstInt:
+		return true
+	case EncodingByteArrayLen:
+		return sl.encodingBlocksPresent(enc.LenEnc) && sl.encodingBlocksPresent(enc.ValEnc)
+	case EncodingXPack, EncodingXDelta:
+		return sl.encodingBlocksPresent(enc.SubEnc)
+	case EncodingXRLE:
+		return sl.encodingBlocksPresent(enc.LenSubEnc) && sl.encodingBlocksPresent(enc.LitSubEnc)
+	default:
+		// CORE-bitstream encodings (HUFFMAN, BETA, …) carry no external block.
 		return true
 	}
 }
@@ -326,13 +364,18 @@ func (sl *Slice) DrainSeries(h *CompressionHeader, source *SeriesSource, key str
 	case EncodingByteArrayLen:
 		ba, err := enc.drainByteArrayLen(source.s)
 		return DrainResult{ByteArrays: ba, Count: len(ba)}, err
-	case EncodingExternal:
-		if SeriesValueKind(key) == SeriesByte {
+	case EncodingExternal, EncodingVarintUnsigned, EncodingVarintSigned:
+		if enc.ID == EncodingExternal && SeriesValueKind(key) == SeriesByte {
 			b, err := enc.drainRawBytes(source.s)
 			return DrainResult{Bytes: b, Count: len(b)}, err
 		}
 		iv, err := enc.drainInts(source.s)
 		return DrainResult{Ints: iv, Count: len(iv)}, err
+	case EncodingXPack, EncodingXRLE:
+		// CRAM v4 transform codecs expand a self-delimiting external block,
+		// so the whole expanded byte series can be drained.
+		b, err := enc.drainRawBytes(source.s)
+		return DrainResult{Bytes: b, Count: len(b)}, err
 	default:
 		return DrainResult{}, fmt.Errorf("cram: %s series %q is not drainable; it is read from the shared CORE bitstream and needs a record count", enc.ID, key)
 	}
@@ -359,9 +402,12 @@ func (sl *Slice) DrainTag(h *CompressionHeader, source *SeriesSource, tag string
 	case EncodingByteArrayLen:
 		ba, err := enc.drainByteArrayLen(source.s)
 		return DrainResult{ByteArrays: ba, Count: len(ba)}, err
-	case EncodingExternal:
+	case EncodingExternal, EncodingVarintUnsigned, EncodingVarintSigned:
 		iv, err := enc.drainInts(source.s)
 		return DrainResult{Ints: iv, Count: len(iv)}, err
+	case EncodingXPack, EncodingXRLE:
+		b, err := enc.drainRawBytes(source.s)
+		return DrainResult{Bytes: b, Count: len(b)}, err
 	default:
 		return DrainResult{}, fmt.Errorf("cram: %s tag %q is not drainable from a self-delimiting block", enc.ID, tag)
 	}
@@ -378,8 +424,11 @@ func (sl *Slice) TagDrainable(h *CompressionHeader, tag string) bool {
 		return false
 	}
 	switch enc.ID {
-	case EncodingExternal, EncodingByteArrayStop:
+	case EncodingExternal, EncodingByteArrayStop,
+		EncodingVarintUnsigned, EncodingVarintSigned:
 		return sl.external[enc.ExternalID] != nil
+	case EncodingXPack, EncodingXRLE:
+		return sl.encodingBlocksPresent(enc)
 	case EncodingByteArrayLen:
 		if enc.LenEnc == nil || enc.LenEnc.ID != EncodingExternal {
 			return false
@@ -407,8 +456,11 @@ func (sl *Slice) Drainable(h *CompressionHeader, key string) bool {
 		return false
 	}
 	switch enc.ID {
-	case EncodingExternal, EncodingByteArrayStop:
+	case EncodingExternal, EncodingByteArrayStop,
+		EncodingVarintUnsigned, EncodingVarintSigned:
 		return sl.external[enc.ExternalID] != nil
+	case EncodingXPack, EncodingXRLE:
+		return sl.encodingBlocksPresent(enc)
 	case EncodingByteArrayLen:
 		if enc.LenEnc == nil || enc.LenEnc.ID != EncodingExternal {
 			return false
