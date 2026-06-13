@@ -388,3 +388,58 @@ type fakeVariant struct {
 	alts []string
 	fmts []string
 }
+
+// TestMendelian2_SitesNotDiploid verifies a record with a sample of ploidy > 2
+// is counted as sites_not_diploid and skipped from evaluation (not counted as
+// an error or good site), while diploid and all-haploid records are evaluated
+// normally — matching upstream mendelian2.c:620 (ngt != 2*nsmpl && ngt != nsmpl).
+func TestMendelian2_SitesNotDiploid(t *testing.T) {
+	const fixture = `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	CHILD	FATHER	MOTHER
+chr1	10	.	A	T	.	PASS	.	GT	0/1	0/0	0/1
+chr1	20	.	A	T	.	PASS	.	GT	0/1/1	0/0	0/1
+chr1	30	.	A	T	.	PASS	.	GT	0|1|0	0|0	1|1
+`
+	var out bytes.Buffer
+	sum, err := Mendelian2(strings.NewReader(fixture), &out, Mendelian2Options{
+		Trios: []Mendelian2Trio{{Child: "CHILD", Father: "FATHER", Mother: "MOTHER"}},
+	})
+	if err != nil {
+		t.Fatalf("Mendelian2: %v", err)
+	}
+	if sum.TotalRecords != 3 {
+		t.Fatalf("TotalRecords = %d, want 3", sum.TotalRecords)
+	}
+	// chr1:20 (triploid child) and chr1:30 (triploid all) are not-diploid.
+	if sum.SitesNotDiploid != 2 {
+		t.Errorf("SitesNotDiploid = %d, want 2", sum.SitesNotDiploid)
+	}
+	// Only chr1:10 is evaluated; it is Mendelian-consistent, so no errors.
+	if sum.SitesMERR != 0 {
+		t.Errorf("SitesMERR = %d, want 0 (non-diploid sites must not be evaluated)", sum.SitesMERR)
+	}
+	_ = out
+}
+
+// TestMendelian2_AllHaploidIsDiploidOK confirms an all-haploid record (max
+// ploidy 1, ngt == nsmpl) is NOT counted as not-diploid.
+func TestMendelian2_AllHaploidIsDiploidOK(t *testing.T) {
+	const fixture = `##fileformat=VCFv4.2
+##contig=<ID=chrX,length=1000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	CHILD	FATHER	MOTHER
+chrX	10	.	A	T	.	PASS	.	GT	1	0	1
+`
+	var out bytes.Buffer
+	sum, err := Mendelian2(strings.NewReader(fixture), &out, Mendelian2Options{
+		Trios: []Mendelian2Trio{{Child: "CHILD", Father: "FATHER", Mother: "MOTHER"}},
+	})
+	if err != nil {
+		t.Fatalf("Mendelian2: %v", err)
+	}
+	if sum.SitesNotDiploid != 0 {
+		t.Errorf("SitesNotDiploid = %d, want 0 (all-haploid is allowed)", sum.SitesNotDiploid)
+	}
+}

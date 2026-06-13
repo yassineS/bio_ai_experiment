@@ -375,6 +375,14 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 				}
 			}
 			continue
+		case skipNotDiploid:
+			summary.SitesNotDiploid++
+			if needWriter && opts.Mode&Mendelian2DropSkip == 0 {
+				if err := writer.Write(v); err != nil {
+					return summary, err
+				}
+			}
+			continue
 		}
 
 		eval := evaluateTrios(v, indices, rules, summary.Trios)
@@ -583,10 +591,11 @@ func resolveMendelian2Indices(hdr *vcf.Header, trios []Mendelian2Trio, rules *Me
 type skipReason int
 
 const (
-	skipNone    skipReason = iota
-	skipRefOnly            // no ALT alleles
-	skipManyAls            // > 64 ALTs (bitmask would overflow)
-	skipNoGT               // FORMAT/GT is not declared on the record
+	skipNone       skipReason = iota
+	skipRefOnly               // no ALT alleles
+	skipManyAls               // > 64 ALTs (bitmask would overflow)
+	skipNoGT                  // FORMAT/GT is not declared on the record
+	skipNotDiploid            // FORMAT/GT has a sample of ploidy > 2
 )
 
 // classifyRecord returns the skip-reason for v, mirroring the
@@ -608,7 +617,33 @@ func classifyRecord(v *vcf.Variant) skipReason {
 	if !hasGT {
 		return skipNoGT
 	}
+	// Upstream skips a record (sites_not_diploid) when bcf_get_genotypes
+	// reports a max ploidy that is neither 1 nor 2 — i.e. some sample is
+	// triploid or higher (mendelian2.c:620). bcf_get_genotypes pads every
+	// sample to the record's max ploidy, so the test is over all samples.
+	if p := maxGTPloidy(v); p > 2 {
+		return skipNotDiploid
+	}
 	return skipNone
+}
+
+// maxGTPloidy returns the maximum number of allele slots across all samples'
+// FORMAT/GT, mirroring the max ploidy bcf_get_genotypes reports for a record
+// (it pads every sample to that width). A GT carries one more allele than its
+// count of '/' and '|' separators; samples without a GT value are ignored.
+func maxGTPloidy(v *vcf.Variant) int {
+	maxP := 0
+	for i := range v.Samples {
+		gt, ok := v.Samples[i].Data["GT"]
+		if !ok || gt == "" {
+			continue
+		}
+		p := strings.Count(gt, "/") + strings.Count(gt, "|") + 1
+		if p > maxP {
+			maxP = p
+		}
+	}
+	return maxP
 }
 
 // mendelian2Eval is the per-site rollup returned by evaluateTrios.
