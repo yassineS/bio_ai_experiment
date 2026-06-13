@@ -37,7 +37,7 @@ the way.
 - **Tools with a working port** (counting each `bed*` subcommand tool
   separately): 8 original QC/format tools + **35 bedtools subcommands** +
   `bgzip` + `tabix` + `htsfile` + `mosdepth` + `samtools` (25 functional
-  subcommands, including `tview`'s non-interactive text/HTML modes) +
+  subcommands, including `tview`'s text/HTML and interactive `-d C` modes) +
   `bcftools` (25 subcommands — `som` was added with the upstream
   `fwrite`-return write bug fixed so train→classify works; see
   `docs/UPSTREAM_BUGS.md#bcftools-som-write-map`). The htslib core landed
@@ -887,7 +887,7 @@ fixtures.
 | tabix | C (htslib) | 1 | ~92% | ✓ | ✓ | ✓ |
 | htsfile | C (htslib) | 1 | ~98% | ✓ | ✓ | ✓ |
 | mosdepth | Nim | 1 | ~85% | ✓ | ✓ | ✓ |
-| samtools | C (htslib) | 25 | ~88% | ✓ | ✓ | ✓ (+CRAM, .csi, tview -d T/H) |
+| samtools | C (htslib) | 25 | ~88% | ✓ | ✓ | ✓ (+CRAM, .csi, tview -d T/H/C) |
 | bcftools | C (htslib) | 24 | ~70% | ✓ | ✓ | ✓ |
 
 ---

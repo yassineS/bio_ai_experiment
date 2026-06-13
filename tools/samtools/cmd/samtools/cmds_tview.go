@@ -1,11 +1,11 @@
 package main
 
-// cmds_tview.go wires the `samtools tview` subcommand. Only the
-// non-interactive display modes are supported: -d T (text) and -d H (html),
-// which render the alignment-viewer frame to stdout. The interactive ncurses
-// mode (-d C, and the bare default which upstream treats as curses) is a
-// deliberate non-goal — it needs a TTY UI library this project does not
-// depend on — so it is rejected with a clear pointer to -d T / -d H.
+// cmds_tview.go wires the `samtools tview` subcommand across all three display
+// modes: -d T (text) and -d H (html) render the alignment-viewer frame to
+// stdout, while -d C (and the bare default on a TTY, which upstream treats as
+// curses) runs the interactive viewer. The interactive mode is a pure-Go
+// raw-mode terminal loop (no ncurses dependency); it requires a TTY and prints
+// a clear message — pointing at -d T / -d H — when stdin/stdout is a pipe.
 
 import (
 	"flag"
@@ -17,16 +17,18 @@ import (
 	"github.com/yassineS/bio_ai_experiment/tools/samtools/pkg/samtools"
 )
 
-const tviewUsage = `samtools tview - text/HTML alignment viewer.
+const tviewUsage = `samtools tview - interactive / text / HTML alignment viewer.
 
 Usage:
   samtools tview [options] <in.bam|in.cram> [ref.fasta]
 
 Options:
-  -d, --display T|H|C   Output as (T)ext or (H)tml. (C)urses is not supported
-                        in this port; use -d T or -d H in a pipeline.
+  -d, --display T|H|C   Output as (T)ext, (H)tml, or interactive (C)urses.
+                        Default is interactive on a terminal. -d C requires a
+                        TTY; use -d T or -d H in a pipeline.
   -p, --position REG    Start at this region (chr or chr:pos).
-  -w, --width INT       Display width in columns (default 80).
+  -w, --width INT       Display width in columns (default: terminal width, or
+                        80 for -d T/-d H).
   -s, --sample STR      Show only reads from this sample or read group.
   -T, --reference FA    Reference FASTA (also given positionally as ref.fasta).
   -i, --hide-inserts    Accepted for compatibility (insertion columns are not
@@ -40,8 +42,13 @@ Notes:
     (forward/reverse), mismatches the read base (UPPER/lower by strand),
     deletions '*', reference skips '>'/'<'.
   - -d H emits the same grid as a coloured HTML document.
-  - The interactive ncurses viewer (-d C, and the bare default) is not built:
-    this port targets pipelines, so it has no TTY UI dependency.
+  - -d C (or the bare default on a TTY) is the interactive viewer: a pure-Go
+    raw-mode terminal loop (no ncurses). It reuses the same frame renderer.
+    Keys: arrows / h j k l scroll; H/L page 20 cols; space / backspace page a
+    screen; Ctrl-H/Ctrl-L jump 1000; 0 or Home jump to start; g go to chr:pos;
+    m/b/n/N colour mode; . dot toggle; i insertions; r by-read-name; ? help;
+    q or Esc quit. Piped -d C exits with a message (use -d T / -d H). On
+    non-Linux platforms -d C reports that it requires Linux.
 `
 
 func runTview(args []string) int {
@@ -96,9 +103,10 @@ func runTview(args []string) int {
 	}
 
 	// Resolve the display mode. Upstream maps the first char of -d:
-	// H/h -> html, T/t -> text, C/c (and the default) -> curses. We support
-	// only the two non-interactive modes; curses (and the bare default) is a
-	// hard error pointing at -d T / -d H.
+	// H/h -> html, T/t -> text, C/c (and the bare default) -> curses. This port
+	// supports all three: the curses-equivalent is an interactive pure-Go
+	// raw-mode loop.
+	interactive := false
 	var mode samtools.TviewMode
 	switch {
 	case len(display) > 0 && (display[0] == 'H' || display[0] == 'h'):
@@ -106,9 +114,8 @@ func runTview(args []string) int {
 	case len(display) > 0 && (display[0] == 'T' || display[0] == 't'):
 		mode = samtools.TviewText
 	default:
-		fmt.Fprintln(os.Stderr,
-			"samtools tview: interactive curses mode not supported; use -d T or -d H")
-		return 2
+		// -d C, or the bare default: the interactive viewer.
+		interactive = true
 	}
 
 	// The reference may be supplied positionally as the second argument or
@@ -127,6 +134,15 @@ func runTview(args []string) int {
 		Mode:        mode,
 		HideInserts: hideInserts,
 	}
+
+	if interactive {
+		if err := samtools.RunTviewInteractiveStdio(opts); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+		return 0
+	}
+
 	if err := samtools.Tview(opts, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1

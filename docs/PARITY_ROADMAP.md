@@ -110,8 +110,9 @@ KeyListOps ops are **done**. The former "non-goals" are now all implemented:
     exercises them);
   - `gtcheck -c/--cluster` clustering (own design — upstream is an error stub);
   - `bcftools convert` PLINK exporters, `bcftools som`, and `samtools tview`
-    (text/HTML) are all implemented. The only deliberate carve-out left is
-    `samtools tview -d C` interactive curses (would need a TTY UI dependency).
+    (text/HTML **and** the interactive `-d C` viewer) are all implemented. The
+    `-d C` viewer is pure-Go (Linux raw-mode termios, no ncurses); on non-Linux
+    platforms it reports that interactive mode requires Linux.
 
   Recently closed (so no longer in this list): bcftools `concat --ligate`
   phased ligation; mendelian2 `sites_not_diploid` (non-diploid records are
@@ -1949,18 +1950,25 @@ either done or the cross-cutting multi-threading (`-@`) input-decode deferral.
 
 Missing subcommands (in rough priority order):
 
-- **`tview`** — alignment viewer. The non-interactive **text (`-d T`)
-  and HTML (`-d H`)** display modes are **implemented** and verified
-  byte-for-byte against the vendored upstream binary
+- **`tview`** — alignment viewer, **all three display modes
+  implemented**. The non-interactive **text (`-d T`) and HTML (`-d H`)**
+  modes are verified byte-for-byte against the vendored upstream binary
   (`tools/samtools/pkg/samtools/tview.go`, `TestTviewLiveParity`):
   the ruler / reference / consensus (bam2bcf `bcf_call_glfgen` +
   errmod) / packed read rows (the `bam_lpileup.c` level-pool greedy
   packing), insertion-column expansion, the `-d`/`-p`/`-w`/`-s`/`-T`/`-i`
   flags, and the strand/match/mismatch/deletion/refskip characters all
-  match. The interactive **ncurses (`-d C`) mode is a deliberate
-  non-goal** (it needs a TTY UI dependency this project avoids); the CLI
-  rejects `-d C` and the bare default with a clear message pointing at
-  `-d T` / `-d H`.
+  match. The interactive **`-d C` viewer** (and the bare default on a
+  TTY) is a **pure-Go raw-mode loop, no ncurses**
+  (`tview_interactive.go` + `tview_tty_linux.go`): it puts the terminal
+  in cbreak/no-echo via the `TCGETS`/`TCSETS` termios ioctls, sizes the
+  window via `TIOCGWINSZ`, reuses the same frame renderer, and handles
+  the upstream `bam_tview_curses.c` key bindings (arrow/`hjkl` scroll,
+  paging, `0`/Home, `g` goto, `.`/`i`/`r` toggles, `m`/`b`/`n`/`N`
+  colour modes, `?` help, `q`/Esc quit). The key→action and
+  action→state logic is unit-tested without a TTY; the termios core is
+  the small untestable part. Piped `-d C` exits with a message pointing
+  at `-d T` / `-d H`; non-Linux `-d C` reports it requires Linux.
 - **`view` flag-tail**: `-X`/`--customized-index` (explicit index-file
   argument after `<in.bam>`) is implemented — the index kind (.bai or
   .csi) is auto-detected from the file's magic. `-L bed` landed as a
@@ -2533,9 +2541,10 @@ Plus:
   reference fetched via `fasta.RandomAccess`. The stderr warning
   is gone; the BAQ-adjusted qualities feed `gencns` exactly as
   upstream feeds them into the pileup.
-- **`tview`** — non-interactive text (`-d T`) and HTML (`-d H`) modes
-  implemented (byte-for-byte parity); interactive curses (`-d C`) is a
-  deliberate non-goal (no TTY UI dependency).
+- **`tview`** — text (`-d T`) and HTML (`-d H`) modes implemented
+  (byte-for-byte parity), plus the interactive `-d C` viewer (pure-Go
+  Linux raw-mode termios, no ncurses; piped/non-Linux `-d C` exits with
+  a clear message).
 
 **`markdup` implemented features** (closed in the per-subcommand
 sub-features PR; live-validated byte-for-byte against the upstream binary
@@ -3066,7 +3075,8 @@ implemented as this port's own design (upstream leaves it an error stub).
 `convert` PLINK exporters (`--plink`/`--tped`/`--plink-bed`, PLINK1 spec),
 `csq -l/--local-csq`, `concat --ligate`, and `som` train/classify (upstream
 `fwrite`-return write bug fixed) are implemented; samtools `tview` text/HTML
-(`-d T`/`-d H`) is implemented with only the interactive curses `-d C` left out.
+(`-d T`/`-d H`) and the interactive `-d C` viewer (pure-Go Linux raw-mode
+termios, no ncurses) are all implemented.
 `query %N_ALT` / `import --skipBamQ` are **not** upstream flags.
 
 **Multi-threaded output compression** (`-@ / --threads N`) — DONE for the
