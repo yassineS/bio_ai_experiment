@@ -1940,9 +1940,18 @@ either done or the cross-cutting multi-threading (`-@`) input-decode deferral.
 
 Missing subcommands (in rough priority order):
 
-- **`tview`** — terminal viewer. **Deliberate skip** (interactive
-  curses UI; near-zero pipeline usage and would require an ncurses
-  dependency). Not on the roadmap.
+- **`tview`** — alignment viewer. The non-interactive **text (`-d T`)
+  and HTML (`-d H`)** display modes are **implemented** and verified
+  byte-for-byte against the vendored upstream binary
+  (`tools/samtools/pkg/samtools/tview.go`, `TestTviewLiveParity`):
+  the ruler / reference / consensus (bam2bcf `bcf_call_glfgen` +
+  errmod) / packed read rows (the `bam_lpileup.c` level-pool greedy
+  packing), insertion-column expansion, the `-d`/`-p`/`-w`/`-s`/`-T`/`-i`
+  flags, and the strand/match/mismatch/deletion/refskip characters all
+  match. The interactive **ncurses (`-d C`) mode is a deliberate
+  non-goal** (it needs a TTY UI dependency this project avoids); the CLI
+  rejects `-d C` and the bare default with a clear message pointing at
+  `-d T` / `-d H`.
 - **`view` flag-tail**: `-X`/`--customized-index` (explicit index-file
   argument after `<in.bam>`) is implemented — the index kind (.bai or
   .csi) is auto-detected from the file's magic. `-L bed` landed as a
@@ -2515,7 +2524,9 @@ Plus:
   reference fetched via `fasta.RandomAccess`. The stderr warning
   is gone; the BAQ-adjusted qualities feed `gencns` exactly as
   upstream feeds them into the pileup.
-- **`tview`** — deliberate skip (interactive curses UI).
+- **`tview`** — non-interactive text (`-d T`) and HTML (`-d H`) modes
+  implemented (byte-for-byte parity); interactive curses (`-d C`) is a
+  deliberate non-goal (no TTY UI dependency).
 
 **`markdup` implemented features** (closed in the per-subcommand
 sub-features PR; live-validated byte-for-byte against the upstream binary
@@ -3045,8 +3056,11 @@ The genuinely-remaining gap is small: `gtcheck -c/--cluster` + filter
 expressions. `convert` PLINK exporters are a **phantom feature** —
 upstream comments the `--plink`/`--tped` options out (no implementation),
 so there is nothing to port. `csq -l/--local-csq` is now implemented.
-`som` and `tview` are deliberate **non-goals** (see PROJECT_STATUS.md);
-`query %N_ALT` / `import --skipBamQ` are **not** upstream flags.
+`som` is a deliberate **non-goal** (see PROJECT_STATUS.md); samtools
+`tview` is implemented for its non-interactive `-d T`/`-d H` modes with
+only the interactive curses `-d C` mode left out (see the samtools
+section above); `query %N_ALT` / `import --skipBamQ` are **not** upstream
+flags.
 
 **Multi-threaded output compression** (`-@ / --threads N`) — DONE for the
 output-writer subcommands. Like upstream (which calls htslib

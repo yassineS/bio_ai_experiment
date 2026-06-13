@@ -49,6 +49,7 @@ Subcommands:
   phase         Phase haplotypes from heterozygous SNPs.
   targetcut     Emit FASTA slice of each aligned read.
   consensus     Call per-position consensus base (FASTA/FASTQ/pileup).
+  tview         Text/HTML alignment viewer (-d T | -d H).
   help          Show this help.
   version       Show version.
 `
@@ -107,6 +108,8 @@ func main() {
 		os.Exit(runTargetcut(os.Args[2:]))
 	case "consensus":
 		os.Exit(runConsensus(os.Args[2:]))
+	case "tview":
+		os.Exit(runTview(os.Args[2:]))
 	case "help", "-h", "--help":
 		fmt.Print(rootUsage)
 		return

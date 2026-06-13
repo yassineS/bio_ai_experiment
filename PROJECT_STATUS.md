@@ -38,7 +38,7 @@ evidence-based estimate of remaining surface — not a rosy reading.
 | **bedtools** | 37 bed* tools; no missing subcommands; 141+ parity tests; BAM input (`bedintersect`/`bedmulticov`), VCF/GFF input (`bedintersect`/`bedmultiinter`), `bedclosest` direction flags, `intersect -c` | scattered option-tail polish; CRAM input deferred | **~95%** | small (long tail) |
 | **vcftools** | single cmd; **146/146 upstream long flags (100%)**, incl. BCF I/O, PCA, LD, RoH, relatedness, `--freq2`/`--counts2` (schema complete) | per-output column-set polish only; `--max-indv` uses deterministic truncation not upstream RNG shuffle (RNG-policy non-goal) | **~98%** | small |
 | **bcftools** | 24 subcommands (all present); mpileup MAQ SNP model (slices 1–4) + legacy `bam2bcf_indel` + `--indels-cns` (edlib realigner) + BAQ + bias tags; full multi-allelic `call` (`-m`/`-c`/`--gvcf`/`-C alleles`/`-G`/`--ploidy GRCh37/38`/`--ploidy-file`); `convert` GEN/HAP/TSV/gVCF modes; `gtcheck`/`mendelian2`/`consensus` (chain+iupac)/`annotate`; `filter -M`/`cnv --AF-file`/`roh -Oz`/`query %INFO/%SAMPLE`; csq slices 1–4 (FORMAT/TBCSQ, --unify-chr-names, -O b\|u\|z, --dump-gff); full HMM `roh`/`cnv`/`polysomy`; subprocess plugin system; `csq -l/--local-csq` (test_cds_local); `gtcheck` `-i`/`-e` filter expressions (qry:/gt: scope); remote URL inputs (`view -r`/`query -r` via hfile) | `convert` PLINK exporters (phantom — commented out upstream); `gtcheck -c/--cluster` (non-goal — commented out upstream); `query %N_ALT` (non-goal); `som`/`tview` (non-goals) | **~98%** | small |
-| **samtools** | 24 functional subcommands; CRAM r/w + bzip2 encode done; `.csi` done; consensus `--het-only` + indel calling; `coverage -A`; `markdup -d/-s/-S`; `calmd -C/-e/-u`; `phase` (full upstream-schema emit); mpileup MAQ **BCF/VCF emit (slices 1–4) + legacy indel + --indels-cns** done; `-@` threading **done for view/sort/markdup** | consensus pileup `-a` placeholder rows (deletion/zero-cov); `-@` parallel *input* BGZF/CRAM decode + non-BAM-writing subcommands; `tview` (deliberate skip) | **~97%** | small |
+| **samtools** | 25 functional subcommands; CRAM r/w + bzip2 encode done; `.csi` done; consensus `--het-only` + indel calling; `coverage -A`; `markdup -d/-s/-S`; `calmd -C/-e/-u`; `phase` (full upstream-schema emit); mpileup MAQ **BCF/VCF emit (slices 1–4) + legacy indel + --indels-cns** done; `tview` **text (`-d T`) + HTML (`-d H`) byte-for-byte parity** done; `-@` threading **done for view/sort/markdup** | consensus pileup `-a` placeholder rows (deletion/zero-cov); `-@` parallel *input* BGZF/CRAM decode + non-BAM-writing subcommands; `tview -d C` interactive curses (deliberate non-goal) | **~97%** | small |
 | **mosdepth** | single cmd; ALL flags wired incl. `-d/--d4`, `--fragment-mode`, `--quantize`, `-t/--threads`, `--use-median`, `--mapq` fast-path; emits `.csi` | CRAM input (`-f/--fasta` accepted but BAM-only decode) | **~95%** | small |
 | **bgzip** | 1/1 cmd, most flags | multi-threaded compression (`-t`) | **~92%** | small |
 | **tabix** | 1/1 cmd, most flags | `--reheader`; true `--targets` post-filter strictness | **~92%** | small |
@@ -99,8 +99,10 @@ These are deliberately not ported and should not be counted against parity:
 - **`bcftools som`** — the upstream source has an `fwrite`-return bug that
   reproduces as a crash when ported; documented in
   [`docs/UPSTREAM_BUGS.md`](docs/UPSTREAM_BUGS.md).
-- **`bcftools`/`samtools tview`** — interactive ncurses viewer, no pipeline
-  use, would require an ncurses dependency.
+- **`samtools tview`** — the non-interactive text (`-d T`) and HTML (`-d H`)
+  viewer modes are **implemented** (byte-for-byte parity with upstream, see
+  `tools/samtools/README.md`); only the interactive ncurses **`-d C`** mode is
+  a deliberate non-goal (no pipeline use, would require a TTY UI dependency).
 - **`query %N_ALT`** and **`import --skipBamQ`** — **not** upstream flags.
 - **`bcftools gtcheck -c/--cluster`** — the cluster/dendrogram option is
   **commented out** in upstream's usage (`vcfgtcheck.c`); it is unadvertised
