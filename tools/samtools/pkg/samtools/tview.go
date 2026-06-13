@@ -1,14 +1,14 @@
 package samtools
 
-// tview.go implements `samtools tview`'s NON-INTERACTIVE display backends:
+// tview.go implements `samtools tview`'s non-interactive display backends:
 // the text (`-d T`) and HTML (`-d H`) "alignment viewers". Both render the
 // same in-memory character grid (the "screen") that upstream's
 // bam_tview.c::base_draw_aln builds for a region, then serialise it — the
 // text backend as a plain character grid, the HTML backend as a coloured
-// <pre>/<span> markup. The interactive ncurses backend (`-d C`) is a
-// deliberate non-goal here (it needs a TTY UI library, an external
-// dependency this project avoids); the CLI emits a clear error pointing the
-// user at -d T / -d H.
+// <pre>/<span> markup. The screen-building pipeline here is shared with the
+// interactive `-d C` viewer (tview_interactive.go), which reuses the exact
+// same grid; its terminal layer lives in tview_tty_linux.go (pure-Go
+// raw-mode termios, no ncurses dependency).
 //
 // # Faithfulness to upstream
 //
@@ -264,13 +264,33 @@ func Tview(opts TviewOptions, out io.Writer) error {
 		return err
 	}
 
+	screen, err := buildTviewScreenForWindow(rd, ref, chrom, leftPos0, mcol, rgSet, opts.HideInserts)
+	if err != nil {
+		return err
+	}
+
+	switch opts.Mode {
+	case TviewHTML:
+		return renderTviewHTML(out, screen, chrom, leftPos0)
+	default:
+		return renderTviewText(out, screen)
+	}
+}
+
+// buildTviewScreenForWindow collects the records overlapping the display
+// window [leftPos0, leftPos0+mcol) on chrom, fetches the reference slab, runs
+// the consensus caller, and returns the rendered screen grid. It is the shared
+// core of both the non-interactive Tview entry point and the interactive
+// viewer, which calls it once per redraw on a freshly-opened reader (alnio has
+// no index iterator, so each frame re-scans the file).
+func buildTviewScreenForWindow(rd sam.Reader, ref *fasta.RandomAccess, chrom string, leftPos0, mcol int, rgSet map[string]struct{}, hideInserts bool) (*tvScreen, error) {
 	// Read every record on the contig that overlaps the display window
 	// [leftPos0, leftPos0+mcol). alnio is a streaming reader (no index
 	// iterator), so we scan and filter — the window is small (mcol columns),
 	// so the retained set is bounded by coverage over those columns.
 	recs, err := tviewCollectRecords(rd, chrom, leftPos0, leftPos0+mcol, rgSet)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Fetch the reference slab for the window (clamped to the contig).
@@ -284,21 +304,73 @@ func Tview(opts TviewOptions, out io.Writer) error {
 		if int64(leftPos0) < end {
 			b, ferr := ref.Fetch(chrom, int64(leftPos0), end)
 			if ferr != nil {
-				return fmt.Errorf("samtools tview: fetch reference %s:%d-%d: %w", chrom, leftPos0, end, ferr)
+				return nil, fmt.Errorf("samtools tview: fetch reference %s:%d-%d: %w", chrom, leftPos0, end, ferr)
 			}
 			refSlab = b
 		}
 	}
 
 	em := errmod.Init(tvErrModDepCorr)
-	screen := drawTviewScreen(recs, refSlab, leftPos0, mcol, em, opts.HideInserts)
+	return drawTviewScreen(recs, refSlab, leftPos0, mcol, em, hideInserts), nil
+}
 
-	switch opts.Mode {
-	case TviewHTML:
-		return renderTviewHTML(out, screen, chrom, leftPos0)
-	default:
-		return renderTviewText(out, screen)
+// tviewResolveStartForOpts opens opts.Input (and optional reference) and
+// returns the displayed contig and 0-based left position, without building a
+// screen. The interactive `-d C` loop calls it once to seed its starting view
+// (so a bare `-d C` with no -p starts where `-d T` would).
+func tviewResolveStartForOpts(opts TviewOptions) (string, int, error) {
+	rd, err := alnio.OpenReader(opts.Input, opts.Reference)
+	if err != nil {
+		return "", 0, fmt.Errorf("samtools tview: %w", err)
 	}
+	defer rd.Close()
+	hdr := rd.Header()
+
+	var ref *fasta.RandomAccess
+	if opts.Reference != "" {
+		ref, err = fasta.OpenRandomAccess(opts.Reference)
+		if err != nil {
+			return "", 0, fmt.Errorf("samtools tview: open reference %s: %w", opts.Reference, err)
+		}
+		defer ref.Close()
+	}
+	return tviewResolveStart(hdr, ref, opts.Position)
+}
+
+// tviewRenderWindowAt opens opts.Input fresh, fetches the records overlapping
+// the window starting at the 0-based leftPos0 on chrom, and returns the
+// rendered screen grid. The interactive viewer calls it once per redraw: alnio
+// is a streaming reader with no index iterator, so each frame re-opens and
+// re-scans the file. The window width comes from mcol (the live terminal
+// width), overriding opts.Width.
+func tviewRenderWindowAt(opts TviewOptions, chrom string, leftPos0, mcol int) (*tvScreen, error) {
+	if mcol <= 0 {
+		mcol = DefaultTviewWidth
+	}
+	rd, err := alnio.OpenReader(opts.Input, opts.Reference)
+	if err != nil {
+		return nil, fmt.Errorf("samtools tview: %w", err)
+	}
+	defer rd.Close()
+	hdr := rd.Header()
+
+	var ref *fasta.RandomAccess
+	if opts.Reference != "" {
+		ref, err = fasta.OpenRandomAccess(opts.Reference)
+		if err != nil {
+			return nil, fmt.Errorf("samtools tview: open reference %s: %w", opts.Reference, err)
+		}
+		defer ref.Close()
+	}
+
+	var rgSet map[string]struct{}
+	if opts.Sample != "" {
+		rgSet = tviewSampleReadGroups(hdr, opts.Sample)
+		if len(rgSet) == 0 {
+			return nil, fmt.Errorf("samtools tview: the sample or read group %q is not present", opts.Sample)
+		}
+	}
+	return buildTviewScreenForWindow(rd, ref, chrom, leftPos0, mcol, rgSet, opts.HideInserts)
 }
 
 // tviewResolveStart picks the displayed contig and 0-based left position.

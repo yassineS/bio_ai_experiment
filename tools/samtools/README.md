@@ -320,26 +320,28 @@ parity. `-x/--sparse` thins all-zero IS rows only.
 
 ### `samtools tview`
 
-A pipeline-friendly alignment viewer. Only the **non-interactive** display
-modes are built: `-d T` (plain text) and `-d H` (HTML). Both render the same
-character grid upstream's `bam_tview.c` builds for a region — a ruler line, the
-reference bases, a per-position consensus, then one row per read with
-non-overlapping reads packed greedily onto shared rows. The text mode emits the
-grid as plain characters (no ANSI escapes — upstream only colourises a TTY); the
-HTML mode wraps each cell in a coloured `<span>`, a direct port of
-`bam_tview_html.c`. Both are verified **byte-for-byte** against the vendored
-upstream binary (`TestTviewLiveParity`).
+An alignment viewer with three display modes. `-d T` (plain text) and `-d H`
+(HTML) are pipeline-friendly; `-d C` (and the bare default on a terminal) is the
+**interactive** viewer. All three render the same character grid upstream's
+`bam_tview.c` builds for a region — a ruler line, the reference bases, a
+per-position consensus, then one row per read with non-overlapping reads packed
+greedily onto shared rows. The text mode emits the grid as plain characters (no
+ANSI escapes — upstream only colourises a TTY); the HTML mode wraps each cell in
+a coloured `<span>`, a direct port of `bam_tview_html.c`. Both non-interactive
+modes are verified **byte-for-byte** against the vendored upstream binary
+(`TestTviewLiveParity`).
 
 ```bash
 samtools tview -d T -p chr1:10000 -w 160 aln.bam ref.fa   # text grid
 samtools tview -d H -p chr1:10000 aln.bam ref.fa > view.html
+samtools tview aln.bam ref.fa                             # interactive (TTY)
 ```
 
 | Short | Long              | Description                                                      |
 |-------|-------------------|-----------------------------------------------------------------|
-| `-d`  | `--display T\|H\|C` | Text / HTML output. `C` (curses) is unsupported (see below).    |
+| `-d`  | `--display T\|H\|C` | Text / HTML / interactive (curses) output. Default: interactive on a TTY. |
 | `-p`  | `--position REG`  | Start at this region (`chr` or `chr:pos`).                       |
-| `-w`  | `--width INT`     | Display width in columns (default 80).                           |
+| `-w`  | `--width INT`     | Display width in columns (default: terminal width, or 80 for T/H).|
 | `-s`  | `--sample STR`    | Show only reads from this `@RG` sample (`SM:`) or read-group ID. |
 | `-T`  | `--reference FA`  | Reference FASTA (also accepted positionally as `ref.fasta`).     |
 | `-i`  | `--hide-inserts`  | Hide insertion columns (default expands them).                  |
@@ -353,10 +355,36 @@ level-pool algorithm (a freed row is reusable after the upstream two-column gap,
 lowest free row first). BAM and CRAM inputs are accepted; CRAM uses `-T` as the
 decode reference.
 
-**Interactive curses mode (`-d C`) is a deliberate non-goal.** It needs a TTY
-UI library, an external dependency this project avoids. Requesting `-d C` (or
-the bare default, which upstream treats as curses) prints
-`interactive curses mode not supported; use -d T or -d H` and exits non-zero.
+**Interactive mode (`-d C`)** is implemented in **pure Go (Linux, no
+ncurses)**. It puts the terminal into raw (cbreak/no-echo) mode via the
+`TCGETS`/`TCSETS` termios ioctls, queries the window size with `TIOCGWINSZ`
+(falling back to 80×40), and reuses the exact same frame renderer as `-d T`,
+redrawing with ANSI escapes after each keystroke. The original termios is
+restored on exit (and on panic, via `defer`). Key bindings (ported from
+`bam_tview_curses.c`):
+
+| Key | Action |
+|-----|--------|
+| `←`/`h`, `→`/`l` | scroll one column |
+| `↑`/`k`, `↓`/`j` | scroll read rows |
+| `H` / `L` | page 20 columns left / right |
+| space / backspace | page one screen right / left |
+| `Ctrl-H` / `Ctrl-L` | jump 1000 columns left / right |
+| `0` / Home | jump to the start of the contig |
+| `g` (or `/`) | prompt for a `chr:pos` region and jump |
+| `m` / `b` / `n` / `N` | colour mode: map-q / base-q / nucleotide / none |
+| `.` | toggle base-vs-dot |
+| `i` | toggle insertion columns |
+| `r` | toggle by-read-name colour |
+| `?` | help screen (any key returns) |
+| `q` / `Esc` / `Ctrl-C` | quit |
+
+The OS-specific termios/ioctl code is isolated in `tview_tty_linux.go`; the
+key→action map and action→state machine are pure functions (`tview_interactive.go`)
+unit-tested without a TTY. **Piped `-d C` exits with a clear message** (use
+`-d T` / `-d H` in pipelines) rather than garbling the stream. On **non-Linux
+platforms** `-d C` reports that interactive mode requires Linux (the rest of the
+tool still builds and runs).
 
 ## Deviations from upstream samtools
 
