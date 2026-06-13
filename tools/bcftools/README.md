@@ -74,6 +74,22 @@ subcommands. The current implementation ships:
   VCF with `INFO/DP`, `INFO/I16`, and biallelic `FORMAT/PL`. BAQ
   recalibration, indel calling, and the full MAQ likelihood model
   are tracked in `docs/PARITY_ROADMAP.md`.
+- `bcftools som` — Self-Organizing Map (Kohonen map) variant
+  classifier. `--train` reads a VCF/BCF, extracts the per-site INFO
+  annotation vector (`-t/--training-annots`, default
+  `QUAL,MQ,MQ0F,BQB,MQB,RPB,SGB`, min/max-normalised onto [0,1]),
+  trains a 2-D map of the given `-s/--size` (default 20) with the usual
+  learning-rate / radius decay, and writes a usable `<prefix>.som`.
+  `--classify` loads that map and prints one SOM score per site
+  (`1 - dist/sqrt(kdim)`, higher = more training-like). The on-disk map
+  format is **our own** clean, versioned binary format (magic `SOMGO1`)
+  because upstream's `SOMv1` layout is unusable: upstream's
+  `som_write_map` (`vcfsom.c:170`) has an `fwrite`-return bug that aborts
+  `--train` after truncating the map to 5 bytes (see
+  `docs/UPSTREAM_BUGS.md#bcftools-som-write-map`); this port fixes it so
+  the train→classify pipeline works. Upstream's `-f/--nfold` /
+  `-m/--merge` cross-validation knobs are accepted as surface only (v1
+  trains a single map).
 - `bcftools plugin` — run a user-supplied plugin over a VCF/BCF, also
   reachable as the `bcftools +<name>` shorthand. Unlike upstream — which
   loads plugins as native shared objects via `dlopen` — this port runs a
@@ -587,10 +603,12 @@ authoritative gap list):
 - `gtcheck -c/--cluster` dendrogram (upstream itself errors "to be
   implemented") and `gtcheck` filter expressions.
 - `query %N_ALT` (**not** an upstream `query` token — non-goal).
-- `bcftools som` is a deliberate **non-goal**: the upstream source has an
-  `fwrite`-return bug that crashes; see `docs/UPSTREAM_BUGS.md`.
 - `bcftools tview` is a deliberate skip (interactive ncurses; no pipeline
   use).
+
+(`bcftools som` is now **implemented** — the upstream `fwrite`-return write
+bug is fixed so train→classify works; see `docs/UPSTREAM_BUGS.md` and the
+`som` entry above.)
 - The ~30 bundled upstream `.so` plugins are non-goal scope (the plugin
   *system* — a VCF-on-stdin/stdout subprocess protocol — is implemented).
 
