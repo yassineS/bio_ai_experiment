@@ -77,9 +77,10 @@ documented **non-goal** (see "Non-goals" below).
    `pkg/htsgo/mdnm`; the network REF_PATH/EBI reference fetch is implemented
    (opt-in via REF_PATH, see `pkg/htsgo/cram` RefPathReference) — both
    live-parity / httptest validated.) *Medium → small.*
-3. **Scattered option-tail polish** — vcftools per-output column sets (the
-   BCF-binary I/O family is the heavy remainder); prinseq niche knobs.
-   Individually *small*.
+3. **Scattered option-tail polish** — the heavy remainder is vcftools's
+   BCF-binary I/O family; prinseq niche knobs. (bcftools `concat --ligate`
+   phased ligation is now implemented, live-parity validated.)
+   Individually *small*, except BCF-binary I/O.
 
 Cross-cutting: **multi-threading (`-@`/`-t`)** has landed for the dominant
 BAM-output path — `samtools view`/`sort`/`markdup` and mosdepth `-t` drive a
