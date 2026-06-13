@@ -83,17 +83,14 @@ func encodeContainer(version Version, binning QualityBinning, records []*sam.Rec
 	compBlock := encodeBlock(version, ContentCompressionHeader, 0, compHeader)
 
 	// Assemble the slice: a slice-header block followed by the slice's data
-	// blocks. The simple writer never uses the CORE bitstream, but CRAM v4
-	// requires an (empty) CORE block as the slice's first data block —
-	// htslib's decoder demands s->block[0] be of type CORE — so a v4 slice
-	// leads with one. It is omitted for v2/v3 to keep their output
-	// byte-for-byte unchanged. The CORE block is counted in num_blocks but
-	// not listed among the block-content ids, matching cram_encode.c.
+	// blocks. The simple writer never uses the CORE bitstream, but htslib's
+	// decoder demands a slice's first data block (s->block[0]) be of type
+	// CORE for EVERY CRAM version — without it `samtools view` fails with
+	// "Failure to decode slice". So every slice leads with an empty CORE
+	// block. It is counted in num_blocks but not listed among the
+	// block-content ids, matching cram_encode.c.
 	extBlocks, contentIDs := enc.buffers.blocks(version, enc.tagKeysSorted())
-	var dataBlocks [][]byte
-	if version.usesUint7() {
-		dataBlocks = append(dataBlocks, encodeBlock(version, ContentCoreData, 0, nil))
-	}
+	dataBlocks := [][]byte{encodeBlock(version, ContentCoreData, 0, nil)}
 	dataBlocks = append(dataBlocks, extBlocks...)
 
 	startPos, span := sliceSpan(records)

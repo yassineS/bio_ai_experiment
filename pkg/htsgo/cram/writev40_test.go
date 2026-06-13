@@ -447,3 +447,41 @@ func samtoolsView(t *testing.T, samtools, path string) []string {
 	}
 	return cleaned
 }
+
+// TestWriteCRAMV30SamtoolsCrossCheck proves the v3.0 writer output is now
+// decodable by upstream samtools. Before the per-slice CORE block was added,
+// `samtools view` failed our v3 output with "Failure to decode slice"; this
+// pins the fix using the same field-by-field comparison as the v4 cross-check.
+func TestWriteCRAMV30SamtoolsCrossCheck(t *testing.T) {
+	samtools := upstreamSamtoolsCram(t)
+	h := writerTestHeader()
+	records := v40CrossCheckRecords()
+	dir := t.TempDir()
+
+	v3Path := filepath.Join(dir, "ours.v3.cram")
+	if err := writeRecordsToFile(v3Path, h, records, VersionV30); err != nil {
+		t.Fatalf("writing v3.0 CRAM: %v", err)
+	}
+	if maj := openMajor(t, v3Path); maj != 3 {
+		t.Fatalf("our v3 file reports CRAM major %d, want 3", maj)
+	}
+
+	got := map[string][]string{}
+	for _, line := range samtoolsView(t, samtools, v3Path) {
+		f := strings.Split(line, "\t")
+		if len(f) < 11 {
+			t.Fatalf("samtools emitted a short SAM line: %q", line)
+		}
+		got[f[0]+"/"+f[1]] = f
+	}
+	if len(got) != len(records) {
+		t.Fatalf("samtools decoded %d records from our v3 file, want %d", len(got), len(records))
+	}
+	for i, rec := range records {
+		f, ok := got[rec.QName+"/"+flagString(rec.Flag)]
+		if !ok {
+			t.Fatalf("record %d (%s) absent from samtools' v3 decode", i, rec.QName)
+		}
+		assertSAMFieldsMatch(t, i, f, rec)
+	}
+}

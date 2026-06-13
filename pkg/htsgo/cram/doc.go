@@ -44,17 +44,18 @@
 // ITF-8, byte runs raw, byte arrays via BYTE_ARRAY_LEN); for v4 the
 // integer series move to the VARINT_UNSIGNED / VARINT_SIGNED codecs (the
 // v4 decoder restricts EXTERNAL to byte data) while the byte series stay
-// EXTERNAL / BYTE_ARRAY_*. A v4 slice additionally leads with an empty
-// CORE block, which htslib's decoder requires as the slice's first block;
-// v3 emits no CORE block. Each data block is gzip-compressed when that
-// shrinks it (v3.1 may additionally use rANS 4x16). Every record is
-// encoded "detached" so it carries its own mate fields, which makes
-// RNEXT/PNEXT/TLEN round-trip without the downstream-mate optimisation.
-// One slice is written per container, capped at a fixed record count. The
-// output is valid CRAM — it re-reads through RecordReader, and the v4.0
-// output decodes field-for-field through upstream samtools (proven by the
-// live cross-check in writev40_test.go) — but is not optimised for
-// compression ratio and is not byte-identical to samtools' own encoder. A
+// EXTERNAL / BYTE_ARRAY_*. Every slice (all versions) leads with an empty
+// CORE block, which htslib's decoder requires as the slice's first block —
+// without it `samtools view` fails the slice. Each data block is
+// gzip-compressed when that shrinks it (v3.1 may additionally use rANS
+// 4x16). Every record is encoded "detached" so it carries its own mate
+// fields, which makes RNEXT/PNEXT/TLEN round-trip without the
+// downstream-mate optimisation. One slice is written per container, capped
+// at a fixed record count. The output is valid CRAM — it re-reads through
+// RecordReader, and BOTH the v3.0 and v4.0 output decode field-for-field
+// through upstream samtools (proven by the live cross-checks in
+// writev40_test.go) — but is not optimised for compression ratio and is not
+// byte-identical to samtools' own encoder. A
 // record shape the simple writer cannot encode (an unknown reference, a
 // CIGAR/SEQ length mismatch, an unsupported CIGAR operation) is rejected
 // by Write with a clear error. The CIGAR match operators =, X and M all
@@ -109,9 +110,9 @@
 // series (it does not emit XPACK/XRLE/XDELTA, which the decoder reads but
 // the writer does not need). It keeps the v3 writer's RG-as-data-series
 // handling (RG travels as an ordinary auxiliary tag, the RG series being
-// the -1 sentinel), which the v4 decoder's mergeAux path reproduces. Each
-// v4 slice leads with an empty CORE block that htslib's decoder requires
-// as the slice's first block. The transform codecs XPACK (bit-packing),
+// the -1 sentinel), which the v4 decoder's mergeAux path reproduces. (Like
+// every version, each v4 slice leads with an empty CORE block that htslib's
+// decoder requires as the slice's first block.) The transform codecs XPACK (bit-packing),
 // XRLE (run-length) and XDELTA (delta) now decode: each wraps one or two
 // sub-codecs (dispatched recursively through the same codec table) and
 // reverses the transform — XPACK expands packed bytes through its reverse
