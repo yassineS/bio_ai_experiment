@@ -127,19 +127,30 @@ func TestParseEncodingV4ByteArrayStop(t *testing.T) {
 	}
 }
 
-// TestParseEncodingV4Transform confirms a v4 transform codec (XPACK etc.)
-// is recognised at parse time (so the file is not rejected) but reports a
-// clear error when a series actually tries to decode through it.
+// TestParseEncodingV4Transform confirms a v4 XPACK transform codec parses
+// its nbits, reverse map and wrapped sub-encoding (the full decode is
+// exercised in transform_test.go).
 func TestParseEncodingV4Transform(t *testing.T) {
-	enc, _, err := parseEncoding(newIntReader(4), encEncodingV4(EncodingXPack, []byte{0x00, 0x00}), 0)
+	// nbits=2, nval=4, map P,A,C,K, wrapping EXTERNAL content id 5.
+	params := appendUint7(nil, 2)
+	params = appendUint7(params, 4)
+	for _, v := range []byte{'P', 'A', 'C', 'K'} {
+		params = appendUint7(params, uint64(v))
+	}
+	sub := appendUint7(nil, 5) // EXTERNAL content id
+	params = append(params, encEncodingV4(EncodingExternal, sub)...)
+
+	enc, _, err := parseEncoding(newIntReader(4), encEncodingV4(EncodingXPack, params), 0)
 	if err != nil {
-		t.Fatalf("parseEncoding XPACK should be accepted: %v", err)
+		t.Fatalf("parseEncoding XPACK: %v", err)
 	}
-	if enc.ID != EncodingXPack {
-		t.Fatalf("XPACK id = %s, want XPACK", enc.ID)
+	if enc.ID != EncodingXPack || enc.PackBits != 2 || len(enc.PackMap) != 4 {
+		t.Fatalf("XPACK parsed wrong: %+v", enc)
 	}
-	s := &seriesSource{core: newBitReader(nil), external: map[int32]*byteCursor{}, blocks: map[int32][]byte{}, reader: newIntReader(4)}
-	if _, derr := enc.decodeInt(s); derr == nil {
-		t.Error("decoding through an XPACK encoding should error (transform codecs are not implemented)")
+	if string(enc.PackMap) != "PACK" {
+		t.Errorf("XPACK map = %q, want PACK", enc.PackMap)
+	}
+	if enc.SubEnc == nil || enc.SubEnc.ID != EncodingExternal || enc.SubEnc.ExternalID != 5 {
+		t.Errorf("XPACK sub-encoding parsed wrong: %+v", enc.SubEnc)
 	}
 }

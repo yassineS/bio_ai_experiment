@@ -184,22 +184,40 @@ func (enc *Encoding) drainInts(s *seriesSource) ([]int32, error) {
 	if enc == nil || enc.ID == EncodingNull {
 		return nil, nil
 	}
-	if enc.ID != EncodingExternal {
-		return nil, fmt.Errorf("cram: %s is not drainable; only EXTERNAL series have a self-delimiting block", enc.ID)
-	}
-	c, err := s.cursor(enc.ExternalID)
-	if err != nil {
-		return nil, err
-	}
-	var out []int32
-	for !c.exhausted() {
-		v, err := c.readInt()
+	switch enc.ID {
+	case EncodingExternal:
+		c, err := s.cursor(enc.ExternalID)
 		if err != nil {
-			return out, fmt.Errorf("cram: EXTERNAL value %d: %w", len(out), err)
+			return nil, err
 		}
-		out = append(out, v)
+		var out []int32
+		for !c.exhausted() {
+			v, err := c.readInt()
+			if err != nil {
+				return out, fmt.Errorf("cram: EXTERNAL value %d: %w", len(out), err)
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	case EncodingVarintUnsigned, EncodingVarintSigned:
+		// CRAM v4: a varint series is a self-delimiting uint7 stream in its
+		// external block, so it drains like EXTERNAL with the offset applied.
+		c, err := s.cursor(enc.ExternalID)
+		if err != nil {
+			return nil, err
+		}
+		var out []int32
+		for !c.exhausted() {
+			v, err := c.readVarintInt(enc.ID == EncodingVarintSigned)
+			if err != nil {
+				return out, fmt.Errorf("cram: VARINT value %d: %w", len(out), err)
+			}
+			out = append(out, v+int32(enc.VarintOffset))
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("cram: %s is not drainable; only EXTERNAL and VARINT series have a self-delimiting block", enc.ID)
 	}
-	return out, nil
 }
 
 // drainByteArrayLen decodes every value of a BYTE_ARRAY_LEN series whose
@@ -275,14 +293,28 @@ func (enc *Encoding) drainRawBytes(s *seriesSource) ([]byte, error) {
 	if enc == nil || enc.ID == EncodingNull {
 		return nil, nil
 	}
-	if enc.ID != EncodingExternal {
-		return nil, fmt.Errorf("cram: %s is not a raw-byte EXTERNAL series", enc.ID)
+	switch enc.ID {
+	case EncodingExternal:
+		c, err := s.cursor(enc.ExternalID)
+		if err != nil {
+			return nil, err
+		}
+		return c.readN(c.remaining())
+	case EncodingXPack, EncodingXRLE:
+		// CRAM v4 XPACK / XRLE expand a whole external block at once, so the
+		// full expanded output is the drained byte series.
+		out, err := enc.transformBytes(s)
+		if err != nil {
+			return nil, err
+		}
+		// Return the bytes not yet served positionally, draining the rest.
+		tb := enc.transform
+		rest := append([]byte(nil), out[tb.pos:]...)
+		tb.pos = len(out)
+		return rest, nil
+	default:
+		return nil, fmt.Errorf("cram: %s is not a raw-byte EXTERNAL or transform series", enc.ID)
 	}
-	c, err := s.cursor(enc.ExternalID)
-	if err != nil {
-		return nil, err
-	}
-	return c.readN(c.remaining())
 }
 
 // drainByteArrays decodes byte-array values through enc until the
@@ -356,6 +388,25 @@ func (enc *Encoding) decodeInt(s *seriesSource) (int32, error) {
 	case EncodingConstByte, EncodingConstInt:
 		// CRAM v4: every value is the same constant; no block is read.
 		return int32(enc.ConstValue), nil
+	case EncodingXDelta:
+		// CRAM v4 XDELTA value-at-a-time integer path
+		// (cram_xdelta_decode_int): decode one delta through the sub-codec,
+		// un-zig-zag it, and prefix-sum onto the running previous value.
+		raw, err := enc.SubEnc.decodeInt(s)
+		if err != nil {
+			return 0, fmt.Errorf("cram: XDELTA delta: %w", err)
+		}
+		enc.deltaLast += int32(unzigzag32(uint32(raw)))
+		return enc.deltaLast, nil
+	case EncodingXPack, EncodingXRLE:
+		// CRAM v4 XPACK / XRLE wrap a byte-valued series; an integer read
+		// yields the next expanded byte (cram_x*_decode_char serves bytes
+		// from the expanded block).
+		b, err := enc.readTransform(s, 1)
+		if err != nil {
+			return 0, err
+		}
+		return int32(b[0]), nil
 	case EncodingHuffman:
 		t, err := enc.huffmanDecoder()
 		if err != nil {
@@ -481,6 +532,16 @@ func (enc *Encoding) decodeByteArray(s *seriesSource) ([]byte, error) {
 			return nil, err
 		}
 		return []byte{b}, nil
+	case EncodingXPack, EncodingXRLE:
+		// A transform-wrapped byte series read one value at a time yields a
+		// single expanded byte.
+		return enc.readTransform(s, 1)
+	case EncodingXDelta:
+		v, err := enc.decodeInt(s)
+		if err != nil {
+			return nil, err
+		}
+		return []byte{byte(v)}, nil
 	default:
 		return nil, fmt.Errorf("cram: %s cannot decode a byte array", enc.ID)
 	}
@@ -512,6 +573,22 @@ func (enc *Encoding) decodeRawBytes(s *seriesSource, n int) ([]byte, error) {
 			return nil, err
 		}
 		return c.readN(n)
+	case EncodingXPack, EncodingXRLE:
+		// CRAM v4 XPACK / XRLE serve their expanded bytes positionally.
+		return enc.readTransform(s, n)
+	case EncodingXDelta:
+		// CRAM v4 XDELTA over a byte series reconstructs each byte through
+		// the value-at-a-time prefix-sum path (cram_xdelta_decode_int); the
+		// 2-byte block path is reached via decodeByteArrayBlock instead.
+		out := make([]byte, n)
+		for i := 0; i < n; i++ {
+			v, err := enc.decodeInt(s)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = byte(v)
+		}
+		return out, nil
 	case EncodingHuffman, EncodingBeta:
 		// Byte-valued sub-encoding: each decoded int is a single byte.
 		// A value outside 0-255 is truncated; callers use this only for

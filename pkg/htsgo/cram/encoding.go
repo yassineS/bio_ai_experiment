@@ -135,6 +135,43 @@ type Encoding struct {
 	// or CONST_INT encoding (CRAM v4); the series carries no data block.
 	ConstValue int64
 
+	// SubEnc is the single sub-encoding wrapped by a CRAM v4 XPACK or
+	// XDELTA transform codec. The transform decodes its source bytes
+	// through this sub-encoding and then reverses the transform.
+	SubEnc *Encoding
+
+	// LenSubEnc and LitSubEnc are the length and literal sub-encodings of a
+	// CRAM v4 XRLE transform codec: LenSubEnc supplies the run lengths and
+	// LitSubEnc the literal byte stream.
+	LenSubEnc *Encoding
+	LitSubEnc *Encoding
+
+	// PackBits is the per-symbol bit width of an XPACK encoding (0..7); the
+	// number of packed symbols per source byte is 8/PackBits.
+	PackBits int32
+
+	// PackMap is the XPACK reverse map: PackMap[i] is the real byte value of
+	// packed symbol index i. Its length is the alphabet size (nval, 0..256).
+	PackMap []byte
+
+	// RLESyms is the set of byte values that carry an explicit run length in
+	// an XRLE encoding; a literal not in this set stands for a single byte.
+	RLESyms []byte
+
+	// DeltaWordSize is the byte width of each delta in an XDELTA encoding
+	// (1, 2 or 4); the value-at-a-time int path uses a 32-bit word.
+	DeltaWordSize int32
+
+	// transform caches the lazily expanded output of a CRAM v4 transform
+	// codec (XPACK / XRLE / the XDELTA block path), so the series reads its
+	// bytes positionally as htslib serves them from a cached block.
+	transform *transformBlock
+
+	// deltaLast is the running previous value of the XDELTA value-at-a-time
+	// integer path (cram_xdelta_decode_int): each decoded delta is added to
+	// it to reconstruct the next value.
+	deltaLast int32
+
 	// major is the CRAM major version of the container the encoding came
 	// from. It selects the integer encoding (uint7 for v4, ITF-8 for
 	// v2/v3) when this encoding pulls integer values from an external
@@ -264,13 +301,76 @@ func parseEncoding(r intReader, p []byte, off int) (*Encoding, int, error) {
 				}
 			}
 		}
-	case EncodingXPack, EncodingXRLE, EncodingXDelta:
-		// CRAM v4 transform codecs. They are recognised so the parser does
-		// not reject the file, but their decode is not implemented: a
-		// series that actually uses one returns an error at decode time
-		// rather than a silently wrong result. The parameter bytes are
-		// skipped wholesale (cur jumps to end below).
-		cur = end
+	case EncodingXPack:
+		// CRAM v4 XPACK (cram_codecs.c cram_xpack_decode_init): nbits, nval,
+		// nval reverse-map bytes, then one wrapped sub-encoding.
+		enc.PackBits, cur, err = readIntParam(r, body, cur, "XPACK nbits")
+		// htscodecs hts_pack only emits 1, 2, 4 or 8 symbols per byte, so
+		// nbits is one of 0 (single-symbol alphabet), 1, 2 or 4 (8/nbits must
+		// divide a byte evenly). Reject anything else rather than mis-unpack.
+		if err == nil && enc.PackBits != 0 && enc.PackBits != 1 && enc.PackBits != 2 && enc.PackBits != 4 {
+			return nil, off, fmt.Errorf("cram: XPACK encoding declares %d bits (must be 0, 1, 2 or 4)", enc.PackBits)
+		}
+		var nval int32
+		if err == nil {
+			nval, cur, err = readIntParam(r, body, cur, "XPACK nval")
+		}
+		if err == nil && (nval < 0 || nval > 256) {
+			return nil, off, fmt.Errorf("cram: XPACK encoding declares %d map entries (must be 0..256)", nval)
+		}
+		if err == nil {
+			enc.PackMap = make([]byte, nval)
+			for i := int32(0); i < nval && err == nil; i++ {
+				var v int32
+				v, cur, err = readIntParam(r, body, cur, "XPACK map entry")
+				if err == nil && (v < 0 || v >= 256) {
+					return nil, off, fmt.Errorf("cram: XPACK map entry %d is %d (must be 0..255)", i, v)
+				}
+				if err == nil {
+					enc.PackMap[i] = byte(v)
+				}
+			}
+		}
+		if err == nil {
+			enc.SubEnc, cur, err = parseSubEncoding(r, body, cur, "XPACK")
+		}
+	case EncodingXRLE:
+		// CRAM v4 XRLE (cram_codecs.c cram_xrle_decode_init): nrle, that many
+		// RLE-symbol bytes, then a length sub-encoding and a literal
+		// sub-encoding (each as encoding-id, sub-size, sub-params).
+		var nrle int32
+		nrle, cur, err = readIntParam(r, body, cur, "XRLE symbol count")
+		if err == nil && (nrle < 0 || nrle > 256) {
+			return nil, off, fmt.Errorf("cram: XRLE encoding declares %d run symbols (must be 0..256)", nrle)
+		}
+		if err == nil {
+			enc.RLESyms = make([]byte, 0, nrle)
+			for i := int32(0); i < nrle && err == nil; i++ {
+				var v int32
+				v, cur, err = readIntParam(r, body, cur, "XRLE run symbol")
+				// htslib silently drops out-of-range symbols (rep_score is a
+				// 256-entry table); mirror that rather than failing.
+				if err == nil && v >= 0 && v < 256 {
+					enc.RLESyms = append(enc.RLESyms, byte(v))
+				}
+			}
+		}
+		if err == nil {
+			enc.LenSubEnc, cur, err = parseSubEncoding(r, body, cur, "XRLE length")
+		}
+		if err == nil {
+			enc.LitSubEnc, cur, err = parseSubEncoding(r, body, cur, "XRLE literal")
+		}
+	case EncodingXDelta:
+		// CRAM v4 XDELTA (cram_codecs.c cram_xdelta_decode_init): word size,
+		// then one wrapped sub-encoding.
+		enc.DeltaWordSize, cur, err = readIntParam(r, body, cur, "XDELTA word size")
+		if err == nil && enc.DeltaWordSize != 1 && enc.DeltaWordSize != 2 && enc.DeltaWordSize != 4 {
+			return nil, off, fmt.Errorf("cram: XDELTA encoding declares word size %d (must be 1, 2 or 4)", enc.DeltaWordSize)
+		}
+		if err == nil {
+			enc.SubEnc, cur, err = parseSubEncoding(r, body, cur, "XDELTA")
+		}
 	default:
 		return nil, off, fmt.Errorf("cram: unknown data-series encoding id %d", id)
 	}
@@ -283,6 +383,20 @@ func parseEncoding(r intReader, p []byte, off int) (*Encoding, int, error) {
 		return nil, off, fmt.Errorf("cram: %s encoding parameters overran their %d-byte block", enc.ID, plen)
 	}
 	return enc, end, nil
+}
+
+// parseSubEncoding reads one sub-encoding wrapped by a CRAM v4 transform
+// codec at off within p. The on-wire layout — encoding id, parameter-byte
+// count, then that many parameter bytes — is identical to a top-level
+// encoding (cram_codecs.c stores the sub-codec via the same
+// cram_decoder_init path), so it delegates to parseEncoding and only
+// annotates the error with which transform the sub-encoding belongs to.
+func parseSubEncoding(r intReader, p []byte, off int, what string) (*Encoding, int, error) {
+	enc, next, err := parseEncoding(r, p, off)
+	if err != nil {
+		return nil, off, fmt.Errorf("cram: %s sub-encoding: %w", what, err)
+	}
+	return enc, next, nil
 }
 
 // readIntParam reads one version-aware unsigned 32-bit encoding parameter

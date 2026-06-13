@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -207,7 +208,38 @@ func readInRecords(r io.Reader) ([]*inRecord, error) {
 			return recs, nil
 		}
 	}
+	if len(magic) >= 4 && string(magic) == "CRAM" {
+		return readCRAMRecords(br)
+	}
 	return readTextRecords(br)
+}
+
+// readCRAMRecords decodes a CRAM stream into inRecords. Like the BAM path it
+// only needs each mapped alignment's coordinate fields (RName, Pos, CIGAR,
+// MAPQ, strand) — which CRAM stores directly — so no decode reference is
+// required; the reader honours REF_CACHE/REF_PATH if set but the 'N'-base
+// fallback is irrelevant to interval extraction. Unmapped reads are skipped,
+// matching the BAM path and upstream `bedtools intersect` over CRAM.
+func readCRAMRecords(br *bufio.Reader) ([]*inRecord, error) {
+	reader, err := alnio.NewReaderWithReference(br, "")
+	if err != nil {
+		return nil, fmt.Errorf("error opening CRAM: %w", err)
+	}
+	var out []*inRecord
+	for {
+		rec, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("error reading CRAM: %w", err)
+		}
+		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" {
+			continue
+		}
+		out = append(out, bamToBED12(rec))
+	}
+	return out, nil
 }
 
 // readTextRecords reads BED/VCF/GFF records from an already-peeked reader.
