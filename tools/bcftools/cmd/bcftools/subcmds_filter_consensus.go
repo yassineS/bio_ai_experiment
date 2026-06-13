@@ -107,8 +107,8 @@ func runFilter(args []string) int {
 	cliflag.StringVar(fs, &snpGapSpec, "g", "SnpGap", "", "SNP gap (INT[:TYPE])")
 	cliflag.IntVar(fs, &indelGap, "G", "IndelGap", 0, "Indel gap (INT)")
 	cliflag.StringVar(fs, &includeExpr, "i", "include", "", "Include expression")
-	fs.StringVar(&maskRegion, "mask", "", "Mask region (accepted; v1 not implemented)")
-	cliflag.StringVar(fs, &maskFile, "M", "mask-file", "", "Mask file (accepted; v1 not implemented)")
+	fs.StringVar(&maskRegion, "mask", "", "Soft-filter regions (prefix ^ to negate)")
+	cliflag.StringVar(fs, &maskFile, "M", "mask-file", "", "Soft-filter regions from BED/region file (prefix ^ to negate)")
 	fs.IntVar(&maskOverlap, "mask-overlap", 1, "")
 	cliflag.StringVar(fs, &modeFlag, "m", "mode", "", "Mode (+|x|+x)")
 	fs.BoolVar(&noVersion, "no-version", false, "Do not append ##bcftools_filterCommand")
@@ -353,7 +353,7 @@ func runConsensus(args []string) int {
 		showVer        bool
 	)
 
-	cliflag.StringVar(fs, &chainFile, "c", "chain", "", "Liftover chain file (accepted; v1 not implemented)")
+	cliflag.StringVar(fs, &chainFile, "c", "chain", "", "Write a liftover chain file (UCSC chain format)")
 	cliflag.StringVar(fs, &absent, "a", "absent", "", "Replace absent positions with CHAR")
 	cliflag.StringVar(fs, &excludeExpr, "e", "exclude", "", "Exclude expression")
 	cliflag.StringVar(fs, &fastaRef, "f", "fasta-ref", "", "Reference FASTA")

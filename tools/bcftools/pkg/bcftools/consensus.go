@@ -154,9 +154,10 @@ func indexNonDigit(s string) int {
 //
 // The v1 port covers the common-case "apply SNPs and simple indels from
 // a VCF to a reference FASTA, optionally restricted to one sample's
-// genotype" pipeline. Upstream-only features (the --chain liftover file,
-// --mask BED replacement, BCF/regions input via the synced reader) are
-// tracked in docs/PARITY_ROADMAP.md and gated in the CLI.
+// genotype" pipeline, plus the --chain liftover file (ChainFile) and the
+// --mask BED replacement (Mask / MaskWith) — both byte-for-byte matched
+// against upstream. Remaining upstream-only surface (BCF/regions input via
+// the synced reader) is tracked in docs/PARITY_ROADMAP.md.
 type ConsensusOptions struct {
 	// Reference holds the parsed FASTA records (in input order).
 	Reference []*fasta.Record
