@@ -38,8 +38,10 @@ the way.
   separately): 8 original QC/format tools + **35 bedtools subcommands** +
   `bgzip` + `tabix` + `htsfile` + `mosdepth` + `samtools` (25 functional
   subcommands, including `tview`'s non-interactive text/HTML modes) +
-  `bcftools` (24 subcommands). The htslib core landed May
-  2026; CRAM read+write and `.csi` landed across PRs #162–#189.
+  `bcftools` (25 subcommands — `som` was added with the upstream
+  `fwrite`-return write bug fixed so train→classify works; see
+  `docs/UPSTREAM_BUGS.md#bcftools-som-write-map`). The htslib core landed
+  May 2026; CRAM read+write and `.csi` landed across PRs #162–#189.
 - **Completion (toward 1:1 upstream parity):** see the headline table in
   [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) — it owns the per-tool
   percentages and the biggest-boulders list. In short, the QC/format set

@@ -48,7 +48,7 @@ Options:
   -T, --targets-file FILE        BED-like targets file.
       --targets-overlap 0|1|2    Accepted; v1 always uses POS-in-region.
   -u, --use TAG[,TAG2]           Scoring tag for query (and -g panel): GT or PL. Auto-detected per record by default.
-      --cluster N,N              Accepted; not implemented (upstream itself rejects it, see docs/PARITY_ROADMAP.md#bcftools).
+  -c, --cluster MIN,MAX          Cluster cross-check samples by pairwise error: merge samples within MAX (MAX<0 derives it from MIN).
   -G, --GTs-only                 Upstream-deprecated alias; rejected with upstream's literal deprecation error.
       --threads N                Accepted; v1 is single-threaded.
   -?, --help                     Show this help.
@@ -121,7 +121,7 @@ func runGtcheck(args []string) int {
 	cliflag.IntVar(fs, &errorProbability, "E", "error-probability", 40, "Phred error probability")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "t", "Output type (t or z)")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output file")
-	fs.StringVar(&cluster, "cluster", "", "Cluster N,N (accepted; v1 not implemented)")
+	cliflag.StringVar(fs, &cluster, "c", "cluster", "", "Cluster MIN,MAX")
 	fs.StringVar(&distinctiveSites, "distinctive-sites", "", "Find distinguishing sites (accepted; v1 not implemented)")
 	fs.IntVar(&nMatches, "n-matches", 0, "Top-N matches (accepted; v1 not implemented)")
 	// Upstream-deprecated `-G/--GTs-only`. We MUST accept it AND emit
@@ -166,6 +166,19 @@ func runGtcheck(args []string) int {
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools gtcheck: %s is not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
+	}
+
+	// Parse -c/--cluster MIN,MAX into the clustering thresholds.
+	var clusterMin, clusterMax float64
+	clusterSet := false
+	if cluster != "" {
+		var perr error
+		clusterMin, clusterMax, perr = parseGtcheckCluster(cluster)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "bcftools gtcheck: %v\n", perr)
+			return 2
+		}
+		clusterSet = true
 	}
 
 	// Parse --distinctive-sites NUM (the optional ,MEM,TMP suffix that
@@ -223,6 +236,9 @@ func runGtcheck(args []string) int {
 		HasDistinctiveSites:  dsSet,
 		NMatches:             nMatches,
 		OutputType:           outputType,
+		Cluster:              clusterSet,
+		ClusterMin:           clusterMin,
+		ClusterMax:           clusterMax,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)
@@ -273,12 +289,29 @@ type checkGtcheckDeferredInputs struct {
 
 func checkGtcheckDeferred(in checkGtcheckDeferredInputs) string {
 	switch {
-	case in.cluster != "":
-		return "--cluster"
 	case in.outputType != "" && in.outputType != "t":
 		return "-O z (compressed output)"
 	}
 	return ""
+}
+
+// parseGtcheckCluster parses the `-c/--cluster MIN,MAX` argument into its two
+// floats. Both are required (matching upstream's MIN,MAX surface); MAX may be
+// negative (upstream's "derive it" sentinel, default -0.3).
+func parseGtcheckCluster(s string) (min, max float64, err error) {
+	parts := strings.Split(s, ",")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("--cluster expects MIN,MAX, got %q", s)
+	}
+	min, err = strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("--cluster MIN %q: %w", parts[0], err)
+	}
+	max, err = strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("--cluster MAX %q: %w", parts[1], err)
+	}
+	return min, max, nil
 }
 
 const rohUsage = `bcftools roh - detect runs of autozygosity (ROH).

@@ -136,6 +136,19 @@ type GtcheckOptions struct {
 
 	// OutputType: "t" (default) or "z". Only "t" is supported.
 	OutputType string
+
+	// Cluster enables `-c/--cluster MIN,MAX`: group the (cross-check) query
+	// samples into clusters of putatively-identical individuals by their
+	// pairwise discordance. ClusterMax is the maximum within-cluster average
+	// error rate (samples no further apart than this are merged); ClusterMin
+	// is the minimum between-cluster error expected to separate distinct
+	// individuals (reported, and used as the threshold when ClusterMax is
+	// negative — upstream's default is [0.23,-0.3], where the negative MAX
+	// means "derive it"). Upstream leaves -c as an unimplemented error stub,
+	// so the clustering and its output are this port's own design.
+	Cluster    bool
+	ClusterMin float64
+	ClusterMax float64
 }
 
 // GtcheckPair captures one row of the #DCv2 output. Discordance is held
@@ -659,7 +672,118 @@ func runGtcheck(
 			return result, err
 		}
 	}
+	if opts.Cluster && crossCheck {
+		if err := writeGtcheckClusters(out, result, opts); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+// pairAvgError returns the per-pair average discordance (an error rate in
+// [0,1]): the integer mismatch count or the floating-point discordance score,
+// divided by the number of compared sites. Pairs with no compared sites are
+// treated as maximally discordant (1) so they never cluster together.
+func pairAvgError(p GtcheckPair) float64 {
+	if p.NumSites <= 0 {
+		return 1
+	}
+	if p.IsInteger {
+		return float64(p.DiscCount) / float64(p.NumSites)
+	}
+	return p.DiscScore / float64(p.NumSites)
+}
+
+// writeGtcheckClusters groups the cross-check query samples into clusters of
+// putatively-identical individuals by single-linkage over the pairwise average
+// error: two samples join the same cluster when their error is at most the
+// effective max threshold (opts.ClusterMax, or opts.ClusterMin when ClusterMax
+// is negative — upstream's "derive it" sentinel). The CLUSTER section lists
+// each cluster's members and its mean within-cluster error. Upstream's -c is an
+// unimplemented error stub, so this format is this port's own design.
+func writeGtcheckClusters(out io.Writer, result GtcheckResult, opts GtcheckOptions) error {
+	thr := opts.ClusterMax
+	if thr < 0 {
+		thr = opts.ClusterMin
+	}
+
+	// Collect the sample set (cross-check pairs are query×query) and index it.
+	idx := map[string]int{}
+	var samples []string
+	add := func(name string) {
+		if _, ok := idx[name]; !ok {
+			idx[name] = len(samples)
+			samples = append(samples, name)
+		}
+	}
+	for _, p := range result.Pairs {
+		add(p.QuerySample)
+		add(p.GenotypedSample)
+	}
+
+	// Union-find single-linkage: merge any pair within the threshold.
+	parent := make([]int, len(samples))
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(x int) int {
+		for parent[x] != x {
+			parent[x] = parent[parent[x]]
+			x = parent[x]
+		}
+		return x
+	}
+	union := func(a, b int) {
+		ra, rb := find(a), find(b)
+		if ra != rb {
+			parent[ra] = rb
+		}
+	}
+	for _, p := range result.Pairs {
+		if pairAvgError(p) <= thr {
+			union(idx[p.QuerySample], idx[p.GenotypedSample])
+		}
+	}
+
+	// Group samples by cluster root, preserving first-seen order.
+	members := map[int][]string{}
+	var roots []int
+	for i, name := range samples {
+		r := find(i)
+		if _, ok := members[r]; !ok {
+			roots = append(roots, r)
+		}
+		members[r] = append(members[r], name)
+	}
+
+	// Per-cluster mean within-cluster error (over the pairs whose both ends
+	// fall in the cluster), for reporting.
+	clusterOf := func(name string) int { return find(idx[name]) }
+	sumErr := map[int]float64{}
+	cntErr := map[int]int{}
+	for _, p := range result.Pairs {
+		if clusterOf(p.QuerySample) == clusterOf(p.GenotypedSample) {
+			r := clusterOf(p.QuerySample)
+			sumErr[r] += pairAvgError(p)
+			cntErr[r]++
+		}
+	}
+
+	bw := bufio.NewWriter(out)
+	defer bw.Flush()
+	fmt.Fprintf(bw, "# Clustering of query samples by pairwise discordance (-c %g,%g; threshold %g).\n",
+		opts.ClusterMin, opts.ClusterMax, thr)
+	fmt.Fprintln(bw, "# CLUSTER, [2]Cluster, [3]N samples, [4]Mean within-cluster error, [5]Samples")
+	for i, r := range roots {
+		mean := 0.0
+		if cntErr[r] > 0 {
+			mean = sumErr[r] / float64(cntErr[r])
+		}
+		fmt.Fprintf(bw, "CLUSTER\t%d\t%d\t%.6g\t%s\n",
+			i+1, len(members[r]), mean, strings.Join(members[r], ","))
+	}
+	return nil
 }
 
 // resolveHeaderTag picks GT or PL for an entire cohort, mirroring

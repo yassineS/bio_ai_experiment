@@ -14,9 +14,10 @@ import (
 // The v1 port covers the common-case "round-trip VCF/BCF through a
 // different container format with optional sample / region filtering"
 // pipeline plus the GEN/HAP/HAPLEGEND/TSV/gVCF modes wired in
-// subcmds_convert.go. Upstream's `vcfconvert.c` advertises PLINK
-// (`--plink`/`--tped`) options too, but those lines are commented out
-// upstream with no implementation, so there is nothing to port there.
+// subcmds_convert.go. Upstream's `vcfconvert.c` leaves its PLINK
+// (`--plink`/`--tped`) option block commented out with no
+// implementation; the PLINK exporters in convert_plink.go implement
+// those modes against the PLINK1 file-format spec instead.
 type ConvertOptions struct {
 	// OutputFormat is the requested container (-O v|z|b|u).
 	OutputFormat OutputFormat
