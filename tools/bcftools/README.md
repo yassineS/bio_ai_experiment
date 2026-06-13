@@ -356,8 +356,10 @@ and `-D` to collapse duplicate (chrom, pos, ref, alt) records.
 | `-f`  | `--file-list`        | Read inputs from a file (one path per line). |
 | `-O`  | `--output-type`      | `v` (default), `z`, `u`, `b`. |
 | `-o`  | `--output`           | Output path (default stdout). |
-| `-q`  | `--min-PQ`           | Accepted; no-op in v1. |
-| `-l`  | `--ligate`           | Accepted; no-op in v1 (chunked imputation). |
+| `-l`  | `--ligate`           | Ligate overlapping phased chunks (chunked imputation output): the overlap is emitted once, phase is reconciled across chunks, and `FORMAT/PS` and `FORMAT/PQ` are added. |
+| `-q`  | `--min-PQ`           | Break the phase set when a sample's phasing quality at a boundary is below this value (default 30). |
+|       | `--ligate-force`     | Ligate even non-overlapping chunks, keeping all sites. |
+|       | `--ligate-warn`      | Drop sites in imperfect overlaps instead of erroring. |
 |       | `--compression-level`| gzip level for `-O z` output. |
 |       | `--threads`          | Accepted; v1 is single-threaded. |
 | `-?`  | `--help`             | Show help. |

@@ -760,8 +760,10 @@ Options:
   -f, --file-list PATH       File of input paths (one per line).
   -O, --output-type {v|z|u|b}  Output format. (u/b need a BCF writer.)
   -o, --output PATH          Output file (default stdout).
-  -q, --min-PQ INT           Accepted but no-op in v1.
-  -l, --ligate               Accepted but no-op in v1 (imputation chunks).
+  -l, --ligate               Ligate overlapping phased chunks (imputation output).
+  -q, --min-PQ INT           Break phase set if phasing quality is below INT [30].
+      --ligate-force         Ligate even non-overlapping chunks, keep all sites.
+      --ligate-warn          Drop sites in imperfect overlaps.
   -@, --threads N            Worker threads for parallel BGZF compression of
                              z/b output (>1 enables it).
       --compression-level N  gzip level for -O z output.
@@ -781,6 +783,8 @@ func runConcat(args []string) int {
 		outputPath       string
 		minPQ            int
 		ligate           bool
+		ligateForce      bool
+		ligateWarn       bool
 		compressLevel    int
 		threads          int
 		showHelp         bool
@@ -791,8 +795,10 @@ func runConcat(args []string) int {
 	cliflag.StringVar(fs, &fileList, "f", "file-list", "", "File of input paths")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
-	cliflag.IntVar(fs, &minPQ, "q", "min-PQ", 0, "Minimum PQ (accepted, ignored)")
-	cliflag.BoolVar(fs, &ligate, "l", "ligate", false, "Ligate (accepted, ignored)")
+	cliflag.IntVar(fs, &minPQ, "q", "min-PQ", 30, "Break phase set below this phasing quality")
+	cliflag.BoolVar(fs, &ligate, "l", "ligate", false, "Ligate overlapping phased chunks")
+	fs.BoolVar(&ligateForce, "ligate-force", false, "")
+	fs.BoolVar(&ligateWarn, "ligate-warn", false, "")
 	fs.IntVar(&compressLevel, "compression-level", -1, "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
@@ -811,6 +817,10 @@ func runConcat(args []string) int {
 	if showVer {
 		fmt.Println(version)
 		return 0
+	}
+	if ligateForce && ligateWarn {
+		fmt.Fprintln(os.Stderr, "bcftools concat: the options cannot be combined: --ligate-force and --ligate-warn")
+		return 2
 	}
 
 	paths := fs.Args()
@@ -839,6 +849,8 @@ func runConcat(args []string) int {
 		FileList:         fileList,
 		MinPQ:            minPQ,
 		Ligate:           ligate,
+		LigateForce:      ligateForce,
+		LigateWarn:       ligateWarn,
 		CompressLevel:    compressLevel,
 		Threads:          threads,
 	}

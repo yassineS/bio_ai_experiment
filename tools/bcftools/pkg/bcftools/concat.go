@@ -34,10 +34,20 @@ type ConcatOptions struct {
 	// Threads is the -@/--threads value; >1 enables parallel BGZF compression
 	// of -O z and -O b output via bgzf.MultiWriter (see ViewOptions.Threads).
 	Threads int
-	// MinPQ is accepted but ignored in v1 (matches upstream's `-q`).
+	// MinPQ is the `-q/--min-PQ` value: when a sample's phase quality at a
+	// chunk boundary is below MinPQ a new phase set starts for that sample.
+	// Upstream's default is 30.
 	MinPQ int
-	// Ligate is accepted but ignored in v1 (matches upstream's `-l`).
+	// Ligate enables phased concatenation (`-l/--ligate`): overlapping phased
+	// chunks are ligated, the overlap is emitted once, phase is reconciled
+	// across chunks, and FORMAT/PS and FORMAT/PQ are added.
 	Ligate bool
+	// LigateForce (`--ligate-force`) downgrades the "chunks do not overlap"
+	// error to a clean join, keeping all sites.
+	LigateForce bool
+	// LigateWarn (`--ligate-warn`) drops sites in imperfect overlaps instead
+	// of erroring.
+	LigateWarn bool
 }
 
 // Concat reads VCF input from readers in order, merges their headers, and
@@ -70,9 +80,17 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 
 	// Build the merged record stream.
 	var records []*vcf.Variant
-	if opts.AllowOverlaps {
+	switch {
+	case opts.Ligate:
+		// Phased concat: ligate overlapping phased chunks and inject PS/PQ.
+		ensureLigateHeaders(merged)
+		records, err = ligateConcat(merged, groups, opts)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools concat: %w", err)
+		}
+	case opts.AllowOverlaps:
 		records = mergeSorted(groups, contigOrder(merged))
-	} else {
+	default:
 		for _, g := range groups {
 			records = append(records, g...)
 		}
