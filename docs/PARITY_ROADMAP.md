@@ -105,12 +105,16 @@ against S3/GCS/HTTPS); CRAM `MD`/`NM` regeneration and the network REF_PATH
 fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
 KeyListOps ops are **done** (`-c/--cluster` is a non-goal — upstream comments
 it out). The genuine tail left is heavier or blocked:
-  - the broader BCF/VCF **non-diploid FORMAT** reconstruction (our `vcf.Variant`
-    coerces non-diploid GTs to missing rather than tracking ploidy);
-  - vcftools **BCF-binary I/O** (`--bcf`/`--recode-bcf`/`--diff-bcf`/`--contigs`)
-    — heavy, blocked on the htsgo BCF-writer path;
   - CRAM **v4.0** — awaits a finalised upstream spec (out of scope);
-  - a few scattered per-output column / niche-flag polish items.
+  - the documented **non-goals** (gtcheck `-c/--cluster`, `convert` PLINK,
+    `som`/`tview` — all upstream-dead or non-pipeline).
+
+  Recently closed (so no longer in this list): bcftools `concat --ligate`
+  phased ligation; mendelian2 `sites_not_diploid` (non-diploid records are
+  now counted and skipped); vcftools BCF-binary I/O
+  (`--bcf`/`--recode-bcf`/`--diff-bcf`/`--contigs`, roundtrip-tested — the
+  former htsgo-BCF-writer blocker has landed); the filter engine's
+  bare-INFO-tag resolution.
 
 Recently closed: samtools `consensus` pileup `-a` placeholder rows (incl.
 ref-skip columns, per-nth gap-fill duplication, INT_MIN quality, and

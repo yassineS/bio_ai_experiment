@@ -445,10 +445,11 @@ fastp 1.0.1 (see [PARITY_ROADMAP](../docs/PARITY_ROADMAP.md#fastp))
 **Original**: C++/Perl (Danecek et al.)  
 **Category**: VCF Manipulation / Population Genetics
 
-**Status**: **145 of 146 unique upstream long flags (~99%)**; after
-wave 19 the remaining long-flag gap is the 4 BCF-binary I/O flags
-(`--bcf`, `--diff-bcf`, `--recode-bcf`, `--contigs`), all HEAVY and
-blocked on BCF binary reader/writer (htsgo PR-G). The PCA trio
+**Status**: **all 146 unique upstream long flags (100%)**. The
+BCF-binary I/O flags (`--bcf`, `--diff-bcf`, `--recode-bcf`,
+`--contigs`) are implemented on the `pkg/htsgo/bcf` reader/writer
+(the former "htsgo PR-G" blocker has landed) — `TestRun_BCFInput_Roundtrip`
+exercises the full `--recode-bcf → --bcf` pipeline. The PCA trio
 (`--pca`, `--pca-no-norm`, `--pca-snp-loadings`) landed in wave 19
 via gonum's symmetric eigensolver (the project's second sanctioned
 third-party dep zone — see CLAUDE.md), with byte-level parity
@@ -489,9 +490,9 @@ upstream's keep-then-remove ordering. Wave 19 lands the PCA family
 `mat.SymEigen` and fixes a latent upstream memory-safety bug in
 `output_PCA`'s jagged `M[i]` loop on missing genotypes. See
 `docs/UPSTREAM_BUGS.md#fix-on-port-resolved` for all three
-migration writeups. After wave 19 the only remaining gap is the
-BCF-binary family (`--bcf` / `--diff-bcf` / `--recode-bcf` /
-`--contigs`, HEAVY and blocked on htsgo PR-G).
+migration writeups. The BCF-binary family (`--bcf` / `--diff-bcf` /
+`--recode-bcf` / `--contigs`) is now implemented on the htsgo BCF
+reader/writer — no vcftools long-flag gaps remain.
 
 **Implemented Commands**:
 

@@ -77,10 +77,13 @@ documented **non-goal** (see "Non-goals" below).
    `pkg/htsgo/mdnm`; the network REF_PATH/EBI reference fetch is implemented
    (opt-in via REF_PATH, see `pkg/htsgo/cram` RefPathReference) — both
    live-parity / httptest validated.) *Medium → small.*
-3. **Scattered option-tail polish** — the heavy remainder is vcftools's
-   BCF-binary I/O family; prinseq niche knobs. (bcftools `concat --ligate`
-   phased ligation is now implemented, live-parity validated.)
-   Individually *small*, except BCF-binary I/O.
+3. **Scattered option-tail polish — effectively closed.** bcftools
+   `concat --ligate` (live-parity), mendelian2 `sites_not_diploid`, and
+   vcftools's BCF-binary I/O family (`--bcf`/`--recode-bcf`/`--diff-bcf`/
+   `--contigs`, roundtrip-tested) are all implemented; vcftools has no
+   long-flag gaps. What is left are documented **non-goals** (CRAM v4.0
+   awaits a finalised spec; gtcheck `-c/--cluster`, `convert` PLINK,
+   `som`/`tview` are upstream-dead/non-pipeline).
 
 Cross-cutting: **multi-threading (`-@`/`-t`)** has landed for the dominant
 BAM-output path — `samtools view`/`sort`/`markdup` and mosdepth `-t` drive a
