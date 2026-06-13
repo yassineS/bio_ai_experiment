@@ -44,6 +44,9 @@ Options:
   -id                      Ignore B features downstream of A (requires -D).
   -fu                      Force the closest upstream B feature (requires -D).
   -fd                      Force the closest downstream B feature (requires -D).
+  -s                       Require the closest B to be on the SAME strand as A.
+  -S                       Require the closest B to be on the OPPOSITE strand.
+                           -s and -S are mutually exclusive.
   -t MODE                  Tie-break mode for equally close B's:
                              all   - emit one row per tied B (default)
                              first - emit only the first (in B's input order)
@@ -99,6 +102,11 @@ func main() {
 
 	var tieMode string
 	fs.StringVar(&tieMode, "t", "all", "Tie-break: all|first|last")
+
+	// Strand filters mirror upstream's bare -s/-S (no long form upstream).
+	var sameStrand, oppositeStrand bool
+	fs.BoolVar(&sameStrand, "s", false, "Require the closest B to be on the same strand as A")
+	fs.BoolVar(&oppositeStrand, "S", false, "Require the closest B to be on the opposite strand to A")
 
 	var help, showVersion bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help message")
@@ -163,6 +171,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error: When requesting -iu, -id, -fu, or -fd, you also need to specify -D.")
 		os.Exit(2)
 	}
+	if sameStrand && oppositeStrand {
+		fmt.Fprintln(os.Stderr, "Error: Request either -s OR -S, not both.")
+		os.Exit(2)
+	}
 
 	readerA, err := iohelper.OpenReader(aFile)
 	if err != nil {
@@ -194,6 +206,8 @@ func main() {
 		IgnoreDownstream: ignoreDown,
 		ForceUpstream:    forceUp,
 		ForceDownstream:  forceDown,
+		SameStrand:       sameStrand,
+		OppositeStrand:   oppositeStrand,
 	}
 	if _, err := bedclosest.Closest(readerA, readerB, writer, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

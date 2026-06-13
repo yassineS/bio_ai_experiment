@@ -5,9 +5,9 @@ package bedclosest
 // Cases are mirrored from reference_code/bedtools/test/closest/test-closest.sh.
 // Inputs and expected outputs live under tools/bedclosest/testdata/parity/.
 // Tests for upstream features bedclosest does not implement (notably the
-// strand filters -s/-S, -N "force different names", -k k-nearest, multi-DB
-// input with -names/-filenames) are wrapped in t.Skip with a one-line
-// rationale.
+// -N "force different names" option, -k k-nearest, and multi-DB input with
+// -names/-filenames) are wrapped in t.Skip with a one-line rationale. The
+// strand filters -s/-S are implemented (see t7/t8 below).
 //
 // Note: bedclosest matches the upstream `(b.start - a.end) + 1` distance
 // formula, so two touching records report distance 1 (not 0).
@@ -90,12 +90,24 @@ func TestParity_Closest_T6_DifferentNames(t *testing.T) {
 	t.Skip("unimplemented: -N (force different names) option")
 }
 
-// closest.t7 / t8 — `-s` and `-S` strand filters.
+// closest.t7 — `-s` (same-strand) filter. A is on '+', the only B is on '-',
+// so no candidate survives and A reports the "no closest B" MissingRow.
 func TestParity_Closest_T7_SameStrand(t *testing.T) {
-	t.Skip("unimplemented: -s (same-strand) filter")
+	got := runClosestParity(t, "strand-test-a.bed", "strand-test-b.bed", Options{PrintDistance: true, SameStrand: true})
+	want := readClosestParity(t, "t7_same.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
+// closest.t8 — `-S` (opposite-strand) filter. A is on '+', the only B is on
+// '-', so it is the (overlapping, distance 0) closest opposite-strand hit.
 func TestParity_Closest_T8_OppositeStrand(t *testing.T) {
-	t.Skip("unimplemented: -S (opposite-strand) filter")
+	got := runClosestParity(t, "strand-test-a.bed", "strand-test-b.bed", Options{PrintDistance: true, OppositeStrand: true})
+	want := readClosestParity(t, "t8_opposite.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // closest.t9 — report ALL overlapping features when ties (default tie mode).

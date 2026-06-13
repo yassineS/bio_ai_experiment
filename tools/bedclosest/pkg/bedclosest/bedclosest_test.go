@@ -331,3 +331,67 @@ func TestClosestMultipleAOnSameChrom(t *testing.T) {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
 }
+
+// TestStrandMatch exercises the strand predicate directly across the no-filter,
+// same-strand (-s), and opposite-strand (-S) modes, including unknown strands.
+func TestStrandMatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		aStrand string
+		bStrand string
+		opts    Options
+		want    bool
+	}{
+		{"no filter always matches", "+", "-", Options{}, true},
+		{"same: equal +/+", "+", "+", Options{SameStrand: true}, true},
+		{"same: equal -/-", "-", "-", Options{SameStrand: true}, true},
+		{"same: differ +/-", "+", "-", Options{SameStrand: true}, false},
+		{"opposite: differ +/-", "+", "-", Options{OppositeStrand: true}, true},
+		{"opposite: differ -/+", "-", "+", Options{OppositeStrand: true}, true},
+		{"opposite: equal +/+", "+", "+", Options{OppositeStrand: true}, false},
+		{"same: unknown A strand excluded", ".", "-", Options{SameStrand: true}, false},
+		{"same: unknown B strand excluded", "+", ".", Options{SameStrand: true}, false},
+		{"opposite: empty A strand excluded", "", "-", Options{OppositeStrand: true}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := &Row{Strand: tt.aStrand}
+			b := &Row{Strand: tt.bStrand}
+			if got := strandMatch(a, b, tt.opts); got != tt.want {
+				t.Errorf("strandMatch(%q,%q,%+v) = %v, want %v", tt.aStrand, tt.bStrand, tt.opts, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSameAndOppositeStrandMutuallyExclusive verifies Validate (and Closest)
+// reject setting both -s and -S.
+func TestSameAndOppositeStrandMutuallyExclusive(t *testing.T) {
+	opts := Options{SameStrand: true, OppositeStrand: true}
+	if err := opts.Validate(); err == nil {
+		t.Fatal("Validate: expected error for -s and -S together, got nil")
+	}
+	_, _, err := runClosest(t, "chr1\t10\t20\ta\t0\t+\n", "chr1\t30\t40\tb\t0\t+\n", opts)
+	if err == nil {
+		t.Fatal("Closest: expected error for -s and -S together, got nil")
+	}
+}
+
+// TestSameStrandFilterSelection confirms the strand filter participates in
+// candidate selection rather than post-filtering an already-chosen B: the
+// geometrically closer B is on the wrong strand and must be skipped so the
+// farther same-strand B wins.
+func TestSameStrandFilterSelection(t *testing.T) {
+	a := "chr1\t100\t110\ta\t0\t+\n"
+	// B[120,130) on '-' is closest by distance but wrong strand; B[200,210) on
+	// '+' is the closest eligible candidate under -s.
+	b := "chr1\t120\t130\tnear\t0\t-\nchr1\t200\t210\tfar\t0\t+\n"
+	got, _, err := runClosest(t, a, b, Options{PrintDistance: true, SameStrand: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "chr1\t100\t110\ta\t0\t+\tchr1\t200\t210\tfar\t0\t+\t91\n"
+	if got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}

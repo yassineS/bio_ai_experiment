@@ -82,6 +82,40 @@ type Options struct {
 	// explicit `-D`.
 	ForceUpstream   bool
 	ForceDownstream bool
+
+	// SameStrand (`-s`) restricts the candidate B intervals to those on the
+	// same strand as A; SameStrand and OppositeStrand are mutually exclusive.
+	SameStrand bool
+	// OppositeStrand (`-S`) restricts the candidate B intervals to those on
+	// the opposite strand to A.
+	OppositeStrand bool
+}
+
+// Validate reports configuration errors that cannot be captured by the type
+// system, mirroring upstream's mutually-exclusive flag checks.
+func (o Options) Validate() error {
+	if o.SameStrand && o.OppositeStrand {
+		return fmt.Errorf("-s and -S are mutually exclusive")
+	}
+	return nil
+}
+
+// strandMatch reports whether B is an eligible candidate for A under the strand
+// filters. With neither -s nor -S set every B is eligible. With -s, only B's on
+// the same strand as A qualify; with -S, only B's on the opposite strand. A
+// missing or unknown strand (empty or ".") on either side cannot be classified
+// as same or opposite, so such a B is excluded, matching upstream bedtools.
+func strandMatch(a, b *Row, opts Options) bool {
+	if !opts.SameStrand && !opts.OppositeStrand {
+		return true
+	}
+	if a.Strand == "" || a.Strand == "." || b.Strand == "" || b.Strand == "." {
+		return false
+	}
+	if opts.SameStrand {
+		return a.Strand == b.Strand
+	}
+	return a.Strand != b.Strand
 }
 
 // streamDir classifies a non-overlapping B hit as upstream or downstream of A
@@ -196,6 +230,9 @@ func CheckSorted(rows []*Row, label string) error {
 // (chrom, start); otherwise it returns an error. Returns the number of output
 // rows.
 func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error) {
+	if err := opts.Validate(); err != nil {
+		return 0, err
+	}
 	aRows, err := ReadAll(readerA)
 	if err != nil {
 		return 0, fmt.Errorf("error reading A: %w", err)
@@ -304,6 +341,12 @@ func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
 	}
 	var cands []cand
 	consider := func(i int) {
+		// Strand-ineligible B's are skipped before they can influence bestAbs or
+		// the candidate set, so the closest is chosen purely among the
+		// strand-matching subset (upstream bug281 cache-purge semantics).
+		if !strandMatch(a, bs[i], opts) {
+			return
+		}
 		signed := signedDistance(a, bs[i], opts)
 		if opts.RequireOverlap && signed != 0 {
 			return
@@ -412,6 +455,11 @@ func closestForDirectional(a *Row, bs []*Row, opts Options) []hit {
 	var overlaps, ups, downs []dcand
 	for i, b := range bs {
 		if a.Chrom != b.Chrom {
+			continue
+		}
+		// Skip strand-ineligible B's entirely so they never enter the candidate
+		// pools (overlaps/ups/downs), matching the non-directional path.
+		if !strandMatch(a, b, opts) {
 			continue
 		}
 		stream := classifyStream(a, b, opts)

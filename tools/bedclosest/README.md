@@ -40,6 +40,10 @@ bedclosest -a <fileA.bed> -b <fileB.bed> [options]
   - `b`: relative to B's strand
 - `-N` - Require strict overlap; non-overlapping B intervals are treated as
   infinite (skipped)
+- `-s` - Require the closest B to be on the SAME strand as A (BED6 col 6).
+  Non-matching B intervals are skipped from candidate consideration.
+- `-S` - Require the closest B to be on the OPPOSITE strand to A. Mutually
+  exclusive with `-s`.
 - `-t MODE` - Tie-break among equally-close B's:
   - `all` (default) - emit one row per tied B in B's input order
   - `first` - emit only the first tied B
@@ -61,6 +65,12 @@ bedclosest -a a.bed -b b.bed -N > out.bed
 
 # Single hit per A (first in B input order on ties)
 bedclosest -a a.bed -b b.bed -t first > out.bed
+
+# Closest B on the same strand as A (skips opposite-strand B's)
+bedclosest -a a.bed -b b.bed -s > out.bed
+
+# Closest B on the opposite strand to A
+bedclosest -a a.bed -b b.bed -S > out.bed
 ```
 
 ## Format
