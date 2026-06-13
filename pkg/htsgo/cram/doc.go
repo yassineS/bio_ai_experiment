@@ -32,27 +32,35 @@
 // the decoded stream as text SAM via WriteSAM.
 //
 // Writing (C8): RecordWriter encodes a sam.Header plus a stream of
-// sam.Records as a CRAM v3.0 file — the inverse of RecordReader.
+// sam.Records as a CRAM file — the inverse of RecordReader. It targets
+// CRAM v3.0 (the default), v3.1, or v4.0, selected by the Version passed
+// to NewRecordWriterVersion / WriteCRAMVersion / CreateCRAMVersion.
 // Construct one with NewRecordWriter (or CreateCRAM for a file path),
 // feed records with Write, and finalise with Close; WriteCRAM is a
 // one-shot convenience. The writer is deliberately simple: it produces
 // reference-free CRAM (a mapped read's bases are stored literally as a
-// base-stretch read feature rather than diffed against a reference), it
-// encodes every data series with the EXTERNAL codec (integers as ITF-8,
-// byte runs raw, byte arrays via BYTE_ARRAY_LEN) and never uses the CORE
-// bitstream, and it gzip-compresses each data block when that shrinks
-// it. Every record is encoded "detached" so it carries its own mate
-// fields, which makes RNEXT/PNEXT/TLEN round-trip without the
-// downstream-mate optimisation. One slice is written per container,
-// capped at a fixed record count. The output is valid CRAM — it
-// re-reads through RecordReader and through samtools — but is not
-// optimised for compression ratio and is not byte-identical to
-// samtools' own encoder. A record shape the simple writer cannot encode
-// (an unknown reference, a CIGAR/SEQ length mismatch, an unsupported
-// CIGAR operation) is rejected by Write with a clear error. The CIGAR
-// match operators =, X and M all encode as a copy of the read bases, so
-// a = or X run re-reads as M — expected CRAM lossiness, the same kind
-// as an unmapped read losing its MAPQ and CIGAR.
+// base-stretch read feature rather than diffed against a reference). For
+// v3 it encodes every data series with the EXTERNAL codec (integers as
+// ITF-8, byte runs raw, byte arrays via BYTE_ARRAY_LEN); for v4 the
+// integer series move to the VARINT_UNSIGNED / VARINT_SIGNED codecs (the
+// v4 decoder restricts EXTERNAL to byte data) while the byte series stay
+// EXTERNAL / BYTE_ARRAY_*. A v4 slice additionally leads with an empty
+// CORE block, which htslib's decoder requires as the slice's first block;
+// v3 emits no CORE block. Each data block is gzip-compressed when that
+// shrinks it (v3.1 may additionally use rANS 4x16). Every record is
+// encoded "detached" so it carries its own mate fields, which makes
+// RNEXT/PNEXT/TLEN round-trip without the downstream-mate optimisation.
+// One slice is written per container, capped at a fixed record count. The
+// output is valid CRAM — it re-reads through RecordReader, and the v4.0
+// output decodes field-for-field through upstream samtools (proven by the
+// live cross-check in writev40_test.go) — but is not optimised for
+// compression ratio and is not byte-identical to samtools' own encoder. A
+// record shape the simple writer cannot encode (an unknown reference, a
+// CIGAR/SEQ length mismatch, an unsupported CIGAR operation) is rejected
+// by Write with a clear error. The CIGAR match operators =, X and M all
+// encode as a copy of the read bases, so a = or X run re-reads as M —
+// expected CRAM lossiness, the same kind as an unmapped read losing its
+// MAPQ and CIGAR.
 //
 // Reference resolution (C5) completes the reference-backed decode path.
 // A reference-free CRAM file is fully recoverable on its own; a
@@ -78,20 +86,32 @@
 // range overlaps a wanted region, giving a caller the container and
 // slice byte offsets to seek to.
 //
-// CRAM v4.0 decode: the v4.0 draft is supported for decode (encode stays
-// v3.0). v4 keeps the v3 container/block/slice tree but changes the
-// variable-length integers and the data-series codec set. Every integer —
-// container header, block header, slice header, the compression-header
-// maps and the per-encoding parameters — is a big-endian uint7 LEB128
-// varint (htscodecs varint.h, cram_io.c uint7_get_*) rather than ITF-8 /
-// LTF-8, with signed fields zig-zag encoded; alignment coordinates widen
-// to 64-bit. The integer data series move to the VARINT_UNSIGNED,
-// VARINT_SIGNED and CONST_INT/CONST_BYTE codecs (EXTERNAL is restricted to
-// byte data), the read group appears in the tag dictionary as an "RG*"
-// placeholder, paired read names are deduplicated (the upstream mate's
-// name is copied from the downstream mate), and the QO preservation flag
-// drives reverse-strand quality reversal. The end-of-file marker is a
-// distinct 31-byte sentinel. The transform codecs XPACK (bit-packing),
+// CRAM v4.0: the v4.0 draft is supported for both decode and encode. v4
+// keeps the v3 container/block/slice tree but changes the variable-length
+// integers and the data-series codec set. Every integer — container
+// header, block header, slice header, the compression-header maps and the
+// per-encoding parameters — is a big-endian uint7 LEB128 varint (htscodecs
+// varint.h, cram_io.c uint7_get_*) rather than ITF-8 / LTF-8, with signed
+// fields zig-zag encoded; alignment coordinates widen to 64-bit. The
+// integer data series move to the VARINT_UNSIGNED, VARINT_SIGNED and
+// CONST_INT/CONST_BYTE codecs (EXTERNAL is restricted to byte data); the
+// read group appears in the tag dictionary as an "RG*" placeholder, paired
+// read names are deduplicated (the upstream mate's name is copied from the
+// downstream mate), and the QO preservation flag drives reverse-strand
+// quality reversal. The end-of-file marker is a distinct 31-byte sentinel.
+//
+// The v4.0 writer (VersionV40) emits this framing: a major-4/minor-0 file
+// definition, uint7 varints for every header/map/encoding integer, 64-bit
+// alignment coordinates, the distinct 31-byte v4 EOF marker, and the
+// simplest decoder-supported codec set — VARINT_UNSIGNED for the
+// non-negative integer series, VARINT_SIGNED for the series that can be
+// negative (RI, RG, NS, TS), and EXTERNAL / BYTE_ARRAY_* for the byte
+// series (it does not emit XPACK/XRLE/XDELTA, which the decoder reads but
+// the writer does not need). It keeps the v3 writer's RG-as-data-series
+// handling (RG travels as an ordinary auxiliary tag, the RG series being
+// the -1 sentinel), which the v4 decoder's mergeAux path reproduces. Each
+// v4 slice leads with an empty CORE block that htslib's decoder requires
+// as the slice's first block. The transform codecs XPACK (bit-packing),
 // XRLE (run-length) and XDELTA (delta) now decode: each wraps one or two
 // sub-codecs (dispatched recursively through the same codec table) and
 // reverses the transform — XPACK expands packed bytes through its reverse

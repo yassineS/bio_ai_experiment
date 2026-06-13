@@ -64,6 +64,8 @@ func encodeContainer(version Version, binning QualityBinning, records []*sam.Rec
 	refID, multiRef := sliceRefScope(records, refIndex)
 
 	enc := &recordEncoder{
+		version:  version,
+		intw:     newIntWriter(version),
 		refIndex: refIndex,
 		multiRef: multiRef,
 		binning:  binning,
@@ -77,21 +79,31 @@ func encodeContainer(version Version, binning QualityBinning, records []*sam.Rec
 	// tag keys; each record's TL series value indexes it.
 	tagDict := enc.tagDictionary()
 
-	compHeader := encodeCompressionHeader(multiRef, tagDict, enc.tagKeysSorted())
+	compHeader := encodeCompressionHeader(version, multiRef, tagDict, enc.tagKeysSorted())
 	compBlock := encodeBlock(version, ContentCompressionHeader, 0, compHeader)
 
-	// Assemble the slice: a slice-header block followed by the external
-	// data blocks. The slice-header block's content-id list and block
-	// count must match the data blocks that follow it.
-	dataBlocks, contentIDs := enc.buffers.blocks(version, enc.tagKeysSorted())
+	// Assemble the slice: a slice-header block followed by the slice's data
+	// blocks. The simple writer never uses the CORE bitstream, but CRAM v4
+	// requires an (empty) CORE block as the slice's first data block —
+	// htslib's decoder demands s->block[0] be of type CORE — so a v4 slice
+	// leads with one. It is omitted for v2/v3 to keep their output
+	// byte-for-byte unchanged. The CORE block is counted in num_blocks but
+	// not listed among the block-content ids, matching cram_encode.c.
+	extBlocks, contentIDs := enc.buffers.blocks(version, enc.tagKeysSorted())
+	var dataBlocks [][]byte
+	if version.usesUint7() {
+		dataBlocks = append(dataBlocks, encodeBlock(version, ContentCoreData, 0, nil))
+	}
+	dataBlocks = append(dataBlocks, extBlocks...)
 
 	startPos, span := sliceSpan(records)
-	sliceHeader := encodeSliceHeader(sliceHeaderFields{
+	sliceHeader := encodeSliceHeader(version, sliceHeaderFields{
 		refSeqID:       refID,
 		alignmentStart: startPos,
 		alignmentSpan:  span,
 		numRecords:     int32(len(records)),
 		recordCounter:  recordCounter,
+		numBlocks:      int32(len(dataBlocks)),
 		contentIDs:     contentIDs,
 	})
 	sliceHeaderBlock := encodeBlock(version, ContentMappedSlice, 0, sliceHeader)
@@ -108,7 +120,7 @@ func encodeContainer(version Version, binning QualityBinning, records []*sam.Rec
 	}
 
 	numBlocks := int32(1 /*comp header*/ + 1 /*slice header*/ + len(dataBlocks))
-	hdr := containerHeaderBytes(containerFields{
+	hdr := containerHeaderBytes(version, containerFields{
 		length:        int32(len(body)),
 		refSeqID:      refID,
 		startPos:      startPos,
@@ -198,7 +210,14 @@ type sliceHeaderFields struct {
 	alignmentSpan  int32
 	numRecords     int32
 	recordCounter  int64
-	contentIDs     []int32
+	// numBlocks is the count of the slice's data blocks INCLUDING the CORE
+	// block; contentIDs lists only the EXTERNAL blocks' content ids. The two
+	// differ by one for a CRAM v4 slice, which carries an (empty) CORE block
+	// that htslib requires as s->block[0] but does not list among the
+	// block-content ids. For v3 the writer emits no CORE block, so
+	// numBlocks == len(contentIDs).
+	numBlocks  int32
+	contentIDs []int32
 }
 
 // encodeSliceHeader serialises a CRAM slice-header block payload: the
@@ -206,26 +225,65 @@ type sliceHeaderFields struct {
 // and content-id list, the embedded-reference id (-1, none) and a
 // 16-byte zero reference MD5. It is the writer-side inverse of
 // parseSliceHeader.
-func encodeSliceHeader(f sliceHeaderFields) []byte {
+//
+// For CRAM v2/v3 every field is ITF-8 / LTF-8. For CRAM v4.0 the ref_seq_id
+// is a signed (zig-zag) uint7 varint, the alignment start and span are
+// 64-bit uint7 varints, the record counter is a 64-bit uint7 varint, and
+// the remaining counts and ids are unsigned uint7 varints — matching
+// cram_decode.c's major>=4 slice-header read.
+func encodeSliceHeader(version Version, f sliceHeaderFields) []byte {
+	iw := newIntWriter(version)
 	var b []byte
-	b = appendITF8(b, f.refSeqID)
-	b = appendITF8(b, f.alignmentStart)
-	b = appendITF8(b, f.alignmentSpan)
-	b = appendITF8(b, f.numRecords)
-	b = appendLTF8(b, f.recordCounter)
-	// The slice header carries the block count twice: the NumBlocks
-	// field and, separately, the length of the block-content-id array.
-	b = appendITF8(b, int32(len(f.contentIDs)))
-	b = appendITF8(b, int32(len(f.contentIDs)))
-	for _, id := range f.contentIDs {
-		b = appendITF8(b, id)
+	// ref_seq_id is signed (-1 unmapped, -2 multi-reference).
+	b = iw.s32(b, f.refSeqID)
+	if version.usesUint7() {
+		// The alignment start and span widen to 64-bit in v4.
+		b = iw.u64(b, int64(f.alignmentStart))
+		b = iw.u64(b, int64(f.alignmentSpan))
+	} else {
+		b = iw.u32(b, f.alignmentStart)
+		b = iw.u32(b, f.alignmentSpan)
 	}
-	b = appendITF8(b, -1) // no embedded reference block.
+	b = iw.u32(b, f.numRecords)
+	b = iw.u64(b, f.recordCounter)
+	// The slice header carries the block count (num_blocks, which includes
+	// the CORE block) and, separately, the length of the block-content-id
+	// array (num_content_ids, EXTERNAL blocks only). They coincide for v3
+	// (no CORE block) and differ by one for v4.
+	b = iw.u32(b, f.numBlocks)
+	b = iw.u32(b, int32(len(f.contentIDs)))
+	for _, id := range f.contentIDs {
+		b = iw.u32(b, id)
+	}
+	// Embedded-reference block id (htslib ref_base_id), read as an UNSIGNED
+	// varint. The "no embedded reference" sentinel differs by version: CRAM
+	// v2/v3 use -1 (which ITF-8 round-trips as 0xffffffff), whereas CRAM v4
+	// uses 0 — htslib writes ref_base_id with varint_put32 (unsigned) and
+	// chooses 0 for the no-embedded-ref case (cram_encode.c, major>=4). A
+	// signed -1 here would zig-zag to 1 and htslib would read it as a real
+	// block id, derailing the decode.
+	if version.usesUint7() {
+		b = iw.u32(b, 0)
+	} else {
+		b = iw.u32(b, -1)
+	}
 	// A reference-free slice records an all-zero reference MD5; the
 	// decoder only checks the MD5 when a reference source is attached.
 	b = append(b, make([]byte, 16)...)
 	return b
 }
+
+// putU appends an unsigned integer data-series value through the encoder's
+// version-aware framing: ITF-8 for v2/v3, an unsigned uint7 varint for v4.
+// It is used for every non-negative integer data series, whose v4 encoding
+// is VARINT_UNSIGNED.
+func (e *recordEncoder) putU(dst []byte, v int32) []byte { return e.intw.u32(dst, v) }
+
+// putS appends a signed integer data-series value: ITF-8 (whose
+// sign-extension round-trips a small negative) for v2/v3, a signed
+// (zig-zag) uint7 varint for v4. It is used for the series that can carry a
+// negative value (RI, RG, NS, TS), whose v4 encoding is VARINT_SIGNED.
+func (e *recordEncoder) putS(dst []byte, v int32) []byte { return e.intw.s32(dst, v) }
 
 // blocks turns the populated series buffers into on-disk external data
 // blocks and the parallel list of their content ids. Only non-empty
@@ -282,6 +340,13 @@ func (sb *seriesBuffers) blocks(version Version, tagKeys []tagKey) (data [][]byt
 // buffers. It also accumulates the set of distinct tag combinations (the
 // tag dictionary) and the running base count.
 type recordEncoder struct {
+	// version is the CRAM format being written. It selects the integer
+	// framing of every data series: ITF-8 for v2/v3, uint7 varints for v4.
+	version Version
+	// intw is the version-aware integer serialiser used for every integer
+	// data series and length field.
+	intw intWriter
+
 	refIndex map[string]int32
 	multiRef bool
 	// binning is the lossy quality-binning scheme applied to each
@@ -366,28 +431,31 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 	// optimisation).
 	cf := int32(cfQualityPreserved | cfDetached)
 
-	b.bf = appendITF8(b.bf, int32(rec.Flag))
-	b.cf = appendITF8(b.cf, cf)
+	b.bf = e.putU(b.bf, int32(rec.Flag))
+	b.cf = e.putU(b.cf, cf)
 
 	refID := recordRefID(rec, e.refIndex)
 	if e.multiRef {
-		b.ri = appendITF8(b.ri, refID)
+		// RI can be -1 (unmapped within a multi-reference slice), so it is a
+		// signed series (VARINT_SIGNED in v4).
+		b.ri = e.putS(b.ri, refID)
 	}
 
 	readLen := len(rec.Seq)
 	if rec.Seq == "*" {
 		readLen = 0
 	}
-	b.rl = appendITF8(b.rl, int32(readLen))
+	b.rl = e.putU(b.rl, int32(readLen))
 	e.numBases += int64(readLen)
 
 	// Alignment position is stored absolute (the preservation map's AP
 	// entry is false), so no running delta is needed.
-	b.ap = appendITF8(b.ap, rec.Pos)
+	b.ap = e.putU(b.ap, rec.Pos)
 
 	// The read group always travels as an ordinary auxiliary tag, so the
-	// RG data series is the no-read-group sentinel -1 for every record.
-	b.rg = appendITF8(b.rg, -1)
+	// RG data series is the no-read-group sentinel -1 for every record. -1
+	// makes RG a signed series (VARINT_SIGNED in v4).
+	b.rg = e.putS(b.rg, -1)
 
 	// Read names are preserved; an empty / "*" QNAME is stored as the
 	// empty string, which round-trips to "".
@@ -403,7 +471,7 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 	}
 
 	tl := e.tagLine(rec)
-	b.tl = appendITF8(b.tl, tl)
+	b.tl = e.putU(b.tl, tl)
 	if err := e.encodeTags(rec); err != nil {
 		return err
 	}
@@ -414,7 +482,7 @@ func (e *recordEncoder) encodeRecord(rec *sam.Record) error {
 	// rec.Qual is never modified and the default writer stays lossless.
 	quality := e.binning.BinQuality(normaliseQuality(rec.Qual, readLen))
 	if mapped {
-		b.mq = appendITF8(b.mq, int32(rec.MapQ))
+		b.mq = e.putU(b.mq, int32(rec.MapQ))
 		if err := e.encodeFeatures(rec, readLen); err != nil {
 			return err
 		}
@@ -441,7 +509,7 @@ func (e *recordEncoder) encodeMate(rec *sam.Record) error {
 	if rec.Flag&sam.FlagMateUnmapped != 0 {
 		mf |= mfMateUnmapped
 	}
-	b.mf = appendITF8(b.mf, mf)
+	b.mf = e.putU(b.mf, mf)
 
 	// The mate reference id: RNEXT "=" means the record's own reference,
 	// "*"/"" means none (-1), any other name indexes the @SQ lines.
@@ -458,9 +526,11 @@ func (e *recordEncoder) encodeMate(rec *sam.Record) error {
 			nsID = -1
 		}
 	}
-	b.ns = appendITF8(b.ns, nsID)
-	b.np = appendITF8(b.np, rec.PNext)
-	b.ts = appendITF8(b.ts, rec.TLen)
+	// NS can be -1 and TS (the template length) can be negative, so both are
+	// signed series (VARINT_SIGNED in v4); NP (mate position) is non-negative.
+	b.ns = e.putS(b.ns, nsID)
+	b.np = e.putU(b.np, rec.PNext)
+	b.ts = e.putS(b.ts, rec.TLen)
 	return nil
 }
 
@@ -523,7 +593,7 @@ func (e *recordEncoder) encodeTags(rec *sam.Record) error {
 		if err != nil {
 			return fmt.Errorf("tag %q: %w", a.Tag, err)
 		}
-		e.buffers.tagLens[key] = appendITF8(e.buffers.tagLens[key], int32(len(raw)))
+		e.buffers.tagLens[key] = e.putU(e.buffers.tagLens[key], int32(len(raw)))
 		e.buffers.tagVals[key] = append(e.buffers.tagVals[key], raw...)
 	}
 	return nil

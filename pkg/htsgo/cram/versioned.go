@@ -67,3 +67,57 @@ func (r intReader) s64(p []byte, off int) (int64, int, error) {
 	}
 	return ltf8At(p, off)
 }
+
+// intWriter is the encode-side mirror of intReader: a version-aware
+// serialiser for the variable-length integers that frame a CRAM container.
+// The v3 writer (uint7 false) appends ITF-8 / LTF-8 exactly as before; the
+// v4.0 writer (uint7 true) appends uint7 LEB128 varints, with signed fields
+// zig-zag coded. Threading one intWriter through the container, block,
+// slice-header, compression-header and encoding serialisers keeps the v3
+// on-disk bytes byte-for-byte unchanged while emitting valid v4 framing,
+// the inverse of how intReader threads the decode side.
+type intWriter struct {
+	// uint7 selects the v4 uint7 put path when true, the v3 ITF-8/LTF-8
+	// path when false.
+	uint7 bool
+}
+
+// newIntWriter returns an intWriter for the given CRAM writer version.
+func newIntWriter(v Version) intWriter { return intWriter{uint7: v.usesUint7()} }
+
+// u32 appends an unsigned 32-bit field to dst. v4 uses the uint7 varint;
+// v3 uses ITF-8 (whose sign-extension already round-trips a small negative
+// a v3 caller treats as signed, e.g. a ref id, so v3 callers reuse this).
+func (w intWriter) u32(dst []byte, v int32) []byte {
+	if w.uint7 {
+		return appendUint7(dst, uint64(uint32(v)))
+	}
+	return appendITF8(dst, v)
+}
+
+// s32 appends a signed 32-bit field to dst. v4 zig-zag encodes it as a
+// uint7 varint; v3 falls back to ITF-8, whose sign-extension already
+// yields the correct signed value (matching the decode-side intReader.s32).
+func (w intWriter) s32(dst []byte, v int32) []byte {
+	if w.uint7 {
+		return appendSint7(dst, int64(v))
+	}
+	return appendITF8(dst, v)
+}
+
+// u64 appends an unsigned 64-bit field to dst (uint7 for v4, LTF-8 for v3).
+func (w intWriter) u64(dst []byte, v int64) []byte {
+	if w.uint7 {
+		return appendUint7(dst, uint64(v))
+	}
+	return appendLTF8(dst, v)
+}
+
+// s64 appends a signed 64-bit field to dst (zig-zag uint7 for v4, LTF-8 for
+// v3).
+func (w intWriter) s64(dst []byte, v int64) []byte {
+	if w.uint7 {
+		return appendSint7(dst, v)
+	}
+	return appendLTF8(dst, v)
+}

@@ -28,19 +28,39 @@ const (
 	// writer may compress a block with the rANS 4x16 codec (block method
 	// 5), the distinguishing capability of v3.1.
 	VersionV31
+	// VersionV40 is CRAM v4.0 (the draft format). It keeps the v3
+	// container/block/slice tree and CRC32 fields but encodes every
+	// variable-length integer as a uint7 LEB128 varint rather than ITF-8 /
+	// LTF-8, widens the alignment coordinates to 64-bit, stores its integer
+	// data series through the VARINT_UNSIGNED / VARINT_SIGNED codecs (rather
+	// than EXTERNAL-of-ITF8), and terminates the file with the distinct
+	// 31-byte v4 EOF marker. Block compression is the v3.0 set
+	// (raw/gzip/bzip2): the v4 framing change is orthogonal to which block
+	// codec is chosen.
+	VersionV40
 )
 
-// fileDefinition returns the on-disk file-definition version for v. Both
-// CRAM v3.0 and v3.1 carry major version 3; only the minor version
-// differs.
+// fileDefinition returns the on-disk file-definition version for v. CRAM
+// v3.0 and v3.1 carry major version 3 (only the minor differs); v4.0
+// carries major version 4.
 func (v Version) fileDefinition() FileDefinition {
 	switch v {
 	case VersionV31:
 		return FileDefinition{Major: 3, Minor: 1}
+	case VersionV40:
+		return FileDefinition{Major: 4, Minor: 0}
 	default:
 		return FileDefinition{Major: 3, Minor: 0}
 	}
 }
+
+// usesUint7 reports whether this writer version frames its
+// variable-length integers as uint7 varints (CRAM v4.0) rather than
+// ITF-8 / LTF-8 (v2.x / v3.x). It is the single predicate that steers the
+// container, block, slice-header, compression-header and data-series
+// framing onto the v4 path, mirroring FileDefinition.usesUint7 on the
+// decode side.
+func (v Version) usesUint7() bool { return v.fileDefinition().Major >= 4 }
 
 // String returns the version as a "major.minor" string.
 func (v Version) String() string {
@@ -336,8 +356,9 @@ func (rw *RecordWriter) Write(rec *sam.Record) error {
 	return nil
 }
 
-// Close flushes the final partial slice, appends the CRAM v3 EOF marker,
-// and releases the file handle when the writer was created by
+// Close flushes the final partial slice, appends the version-appropriate
+// CRAM EOF marker (the 38-byte v3 sentinel, or the 31-byte v4 sentinel for
+// CRAM v4.0), and releases the file handle when the writer was created by
 // CreateCRAM. It is safe to call Close more than once.
 func (rw *RecordWriter) Close() error {
 	if rw.closed {
@@ -348,7 +369,11 @@ func (rw *RecordWriter) Close() error {
 		rw.flushContainer()
 	}
 	if rw.err == nil {
-		if _, err := rw.w.Write(eofMarkerV3); err != nil {
+		marker := eofMarkerV3
+		if rw.version.usesUint7() {
+			marker = eofMarkerV4
+		}
+		if _, err := rw.w.Write(marker); err != nil {
 			rw.err = fmt.Errorf("cram: writing EOF marker: %w", err)
 		}
 	}
@@ -424,7 +449,7 @@ func (rw *RecordWriter) writeFileHeader() error {
 	// The file-header container holds exactly the header block. Its
 	// reference fields are the unmapped/no-data sentinels.
 	body := headerBlock
-	hdr := containerHeaderBytes(containerFields{
+	hdr := containerHeaderBytes(rw.version, containerFields{
 		length:        int32(len(body)),
 		refSeqID:      0,
 		startPos:      0,
@@ -470,18 +495,21 @@ func (rw *RecordWriter) flushContainer() error {
 	return nil
 }
 
-// encodeBlock assembles a complete on-disk CRAM v3 block from a content
+// encodeBlock assembles a complete on-disk CRAM block from a content
 // type, content id and uncompressed payload. The payload is compressed
 // with whichever method chooseBlockCompression picks for the writer's
 // version — never larger than raw — and the trailing IEEE CRC32 over the
-// whole block is appended.
+// whole block is appended. The content id and the two size fields are
+// framed as ITF-8 for CRAM v2/v3 and as uint7 varints for v4, the inverse
+// of readBlock.
 func encodeBlock(version Version, ct BlockContentType, contentID int32, payload []byte) []byte {
 	method, stored := chooseBlockCompression(version, payload)
+	iw := newIntWriter(version)
 	var b []byte
 	b = append(b, byte(method), byte(ct))
-	b = appendITF8(b, contentID)
-	b = appendITF8(b, int32(len(stored)))
-	b = appendITF8(b, int32(len(payload)))
+	b = iw.u32(b, contentID)
+	b = iw.u32(b, int32(len(stored)))
+	b = iw.u32(b, int32(len(payload)))
 	b = append(b, stored...)
 	crc := crc32.Checksum(b, crc32.IEEETable)
 	var crcBuf [4]byte
@@ -554,24 +582,49 @@ type containerFields struct {
 	landmarks     []int32
 }
 
-// containerHeaderBytes serialises a CRAM v3 container header: the fixed
-// 4-byte little-endian length, the ITF-8/LTF-8 fields, the landmark
-// array, and the trailing IEEE CRC32 over all of it. It is the writer-
-// side inverse of parseContainerHeader.
-func containerHeaderBytes(f containerFields) []byte {
-	var lenBuf [4]byte
-	binary.LittleEndian.PutUint32(lenBuf[:], uint32(f.length))
-	b := append([]byte(nil), lenBuf[:]...)
-	b = appendITF8(b, f.refSeqID)
-	b = appendITF8(b, f.startPos)
-	b = appendITF8(b, f.alignmentSpan)
-	b = appendITF8(b, f.numRecords)
-	b = appendLTF8(b, f.recordCounter)
-	b = appendLTF8(b, f.numBases)
-	b = appendITF8(b, f.numBlocks)
-	b = appendITF8(b, int32(len(f.landmarks)))
-	for _, lm := range f.landmarks {
-		b = appendITF8(b, lm)
+// containerHeaderBytes serialises a CRAM container header and the trailing
+// IEEE CRC32 over it. It is the writer-side inverse of
+// parseContainerHeader.
+//
+// For CRAM v2/v3 the length is a fixed 4-byte little-endian int32 (matching
+// htslib's on-disk reality, which back-patches it) and the remaining fields
+// are ITF-8 / LTF-8. For CRAM v4.0 every field — the length included — is a
+// uint7 varint: ref_seq_id is signed (zig-zag), the alignment start and
+// span are 64-bit varints, and the counts and landmarks are unsigned
+// varints (cram_io.c cram_write_container, major>=4 branch).
+func containerHeaderBytes(version Version, f containerFields) []byte {
+	iw := newIntWriter(version)
+	var b []byte
+	if version.usesUint7() {
+		// v4: the length is a uint7 varint, not a fixed 4-byte int32.
+		b = iw.u32(b, f.length)
+		// ref_seq_id is signed; the alignment start and span widen to 64-bit.
+		b = iw.s32(b, f.refSeqID)
+		b = iw.u64(b, int64(f.startPos))
+		b = iw.u64(b, int64(f.alignmentSpan))
+		b = iw.u32(b, f.numRecords)
+		b = iw.u64(b, f.recordCounter)
+		b = iw.u64(b, f.numBases)
+		b = iw.u32(b, f.numBlocks)
+		b = iw.u32(b, int32(len(f.landmarks)))
+		for _, lm := range f.landmarks {
+			b = iw.u32(b, lm)
+		}
+	} else {
+		var lenBuf [4]byte
+		binary.LittleEndian.PutUint32(lenBuf[:], uint32(f.length))
+		b = append(b, lenBuf[:]...)
+		b = appendITF8(b, f.refSeqID)
+		b = appendITF8(b, f.startPos)
+		b = appendITF8(b, f.alignmentSpan)
+		b = appendITF8(b, f.numRecords)
+		b = appendLTF8(b, f.recordCounter)
+		b = appendLTF8(b, f.numBases)
+		b = appendITF8(b, f.numBlocks)
+		b = appendITF8(b, int32(len(f.landmarks)))
+		for _, lm := range f.landmarks {
+			b = appendITF8(b, lm)
+		}
 	}
 	crc := crc32.Checksum(b, crc32.IEEETable)
 	var crcBuf [4]byte

@@ -99,30 +99,30 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 		return fmt.Errorf("CIGAR consumed %d read bases but SEQ has %d", readPos, readLen)
 	}
 
-	b.fn = appendITF8(b.fn, int32(len(feats)))
+	b.fn = e.putU(b.fn, int32(len(feats)))
 	var prevPos int32
 	for _, f := range feats {
 		b.fc = append(b.fc, f.code)
-		b.fp = appendITF8(b.fp, f.pos-prevPos)
+		b.fp = e.putU(b.fp, f.pos-prevPos)
 		prevPos = f.pos
 		switch f.code {
 		case featBases:
-			b.bbLen = appendITF8(b.bbLen, int32(len(f.bases)))
+			b.bbLen = e.putU(b.bbLen, int32(len(f.bases)))
 			b.bb = append(b.bb, f.bases...)
 		case featInsertion:
-			b.inLen = appendITF8(b.inLen, int32(len(f.bases)))
+			b.inLen = e.putU(b.inLen, int32(len(f.bases)))
 			b.in = append(b.in, f.bases...)
 		case featSoftClip:
-			b.scLen = appendITF8(b.scLen, int32(len(f.bases)))
+			b.scLen = e.putU(b.scLen, int32(len(f.bases)))
 			b.sc = append(b.sc, f.bases...)
 		case featDeletion:
-			b.dl = appendITF8(b.dl, f.length)
+			b.dl = e.putU(b.dl, f.length)
 		case featRefSkip:
-			b.rs = appendITF8(b.rs, f.length)
+			b.rs = e.putU(b.rs, f.length)
 		case featPadding:
-			b.pd = appendITF8(b.pd, f.length)
+			b.pd = e.putU(b.pd, f.length)
 		case featHardClip:
-			b.hc = appendITF8(b.hc, f.length)
+			b.hc = e.putU(b.hc, f.length)
 		}
 	}
 	return nil
