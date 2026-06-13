@@ -34,6 +34,8 @@ Options:
   -o, --output FILE        Output BED file ('-' for stdout, default: stdout)
   -g, --genome FILE        Chromosome sizes file (required). One
                            'chrom<TAB>size' per line (or samtools .fai).
+  -L, --limit              Only emit chromosomes that had records in the input
+                           (skip chromosomes present only in the genome file).
   -h, --help               Show this help message and exit
   -v, --version            Show version information and exit
 
@@ -53,6 +55,9 @@ func main() {
 	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input BED file")
 	cliflag.StringVar(fs, &outputFile, "o", "output", "", "Output BED file")
 	cliflag.StringVar(fs, &genomeFile, "g", "genome", "", "Chrom-sizes file (required)")
+
+	var limitToInput bool
+	cliflag.BoolVar(fs, &limitToInput, "L", "limit", false, "Only emit chromosomes present in the input")
 
 	var help, showVersion bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help message")
@@ -105,7 +110,7 @@ func main() {
 	}
 	defer out.Close()
 
-	if _, err := bedcomplement.Complement(in, out, os.Stderr, sizes, order); err != nil {
+	if _, err := bedcomplement.Complement(in, out, os.Stderr, sizes, order, limitToInput); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

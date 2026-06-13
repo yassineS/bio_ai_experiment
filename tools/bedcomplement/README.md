@@ -36,6 +36,7 @@ bedcomplement [options] -g <genome.sizes>
 | `-i, --input FILE` | Input sorted BED file (`-` for stdin, default stdin) |
 | `-o, --output FILE` | Output BED file (`-` for stdout, default stdout) |
 | `-g, --genome FILE` | Chrom-sizes file (`chrom<TAB>size`). Required. |
+| `-L, --limit` | Only emit chromosomes that had records in the input. |
 | `-h, --help` | Show help and exit |
 | `-v, --version` | Show version and exit |
 

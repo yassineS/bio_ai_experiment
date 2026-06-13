@@ -4,9 +4,10 @@ package bedcomplement
 //
 // Cases are mirrored from reference_code/bedtools/test/complement/test-complement.sh.
 // Each case has a small `.in.bed` and corresponding `.genome` plus an
-// `.expected.bed`. Tests that exercise upstream features bedcomplement does
-// not implement (notably -L, which restricts the output to chromosomes seen
-// in the input) are wrapped in t.Skip with a one-line rationale.
+// `.expected.bed`. The `-L` flag (restrict output to chromosomes seen in the
+// input) is implemented and asserted (t9b). The one remaining skip is the
+// out-of-range-record warning case (t9), where only the upstream stderr
+// wording differs.
 
 import (
 	"bytes"
@@ -26,6 +27,10 @@ func readComplementParity(t *testing.T, name string) []byte {
 }
 
 func runComplementParity(t *testing.T, inputFile, genomeFile string) []byte {
+	return runComplementParityLimit(t, inputFile, genomeFile, false)
+}
+
+func runComplementParityLimit(t *testing.T, inputFile, genomeFile string, limitToInput bool) []byte {
 	t.Helper()
 	in := readComplementParity(t, inputFile)
 	g := readComplementParity(t, genomeFile)
@@ -34,7 +39,7 @@ func runComplementParity(t *testing.T, inputFile, genomeFile string) []byte {
 		t.Fatalf("ReadChromSizes %s: %v", genomeFile, err)
 	}
 	var buf bytes.Buffer
-	if _, err := Complement(bytes.NewReader(in), &buf, io.Discard, sizes, order); err != nil {
+	if _, err := Complement(bytes.NewReader(in), &buf, io.Discard, sizes, order, limitToInput); err != nil {
 		t.Fatalf("Complement failed: %v", err)
 	}
 	return buf.Bytes()
@@ -122,9 +127,13 @@ func TestParity_Complement_T9_RecordExceedsChrom(t *testing.T) {
 
 // complement.t9b / t10 (script duplicates 'complement.t9' label) — issue #503,
 // the -L flag limits output to chromosomes that had records in the input.
-// bedcomplement always emits all chromosomes in the genome file.
+// With -L only chr1 (the chromosome with intervals) is emitted.
 func TestParity_Complement_T9b_DashLLimit(t *testing.T) {
-	t.Skip("unimplemented: -L flag (limit output to chromosomes present in input)")
+	got := runComplementParityLimit(t, "issue_503.bed", "issue_503.genome", true)
+	want := readComplementParity(t, "t9b_limit.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // complement.t10 — same input as t9b but WITHOUT -L: emit gaps on chr1 plus
