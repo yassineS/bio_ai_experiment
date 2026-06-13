@@ -106,7 +106,8 @@ fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
 KeyListOps ops are **done** (`-c/--cluster` is a non-goal — upstream comments
 it out). The genuine tail left is heavier or blocked:
   - CRAM **v4.0** — awaits a finalised upstream spec (out of scope);
-  - gtcheck `-c/--cluster` — commented out upstream (an error stub).
+  (gtcheck `-c/--cluster` clustering is now implemented as this port's own
+    design — upstream leaves it an error stub.)
     (`convert` PLINK and `som` train/classify, formerly non-goals, are now
     implemented; `samtools tview` text/HTML and CRAM v4.0 are in flight.)
 

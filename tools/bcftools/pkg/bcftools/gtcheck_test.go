@@ -362,3 +362,50 @@ func TestValidateUseTag(t *testing.T) {
 		}
 	}
 }
+
+// TestGtcheckCluster groups cross-check samples by pairwise discordance. The
+// fixture has two replicate pairs (A1≈A2, B1≈B2) that differ between groups,
+// so -c with a small max should yield exactly two clusters {A1,A2} and {B1,B2}.
+func TestGtcheckCluster(t *testing.T) {
+	const fixture = `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	A1	A2	B1	B2
+chr1	10	.	A	T	.	.	.	GT	0/0	0/0	1/1	1/1
+chr1	20	.	C	G	.	.	.	GT	0/1	0/1	0/0	0/0
+chr1	30	.	G	A	.	.	.	GT	1/1	1/1	0/1	0/1
+chr1	40	.	T	C	.	.	.	GT	0/0	0/0	1/1	1/1
+chr1	50	.	A	G	.	.	.	GT	0/1	0/1	1/1	1/1
+`
+	var out bytes.Buffer
+	_, err := Gtcheck(strings.NewReader(fixture), &out, GtcheckOptions{
+		UseTag:               "GT",
+		ErrorProbabilityZero: true, // integer mismatch scoring
+		Cluster:              true,
+		ClusterMin:           0.20,
+		ClusterMax:           0.05,
+	})
+	if err != nil {
+		t.Fatalf("Gtcheck: %v", err)
+	}
+	var clusters [][]string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "CLUSTER\t") {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		clusters = append(clusters, strings.Split(f[len(f)-1], ","))
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("got %d clusters, want 2:\n%s", len(clusters), out.String())
+	}
+	// Each cluster must be a single replicate pair (A* together, B* together).
+	for _, c := range clusters {
+		if len(c) != 2 {
+			t.Fatalf("cluster %v has %d members, want 2", c, len(c))
+		}
+		if c[0][0] != c[1][0] { // same leading letter (A or B)
+			t.Errorf("cluster %v mixes individuals", c)
+		}
+	}
+}
