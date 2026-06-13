@@ -339,10 +339,61 @@ r1	0	chr1	7	60	3M	*	0	0	CGT	III
 	}
 }
 
-func TestMpileup_BCFOutput_NotImplemented(t *testing.T) {
-	if err := MpileupFile(MpileupOptions{Inputs: []string{"x"}, RedoBAQ: true}, &bytes.Buffer{}); err == nil {
-		t.Errorf("expected error for RedoBAQ=true")
+// TestMpileup_BAQ_LowersQualities verifies that BAQ realignment runs by
+// default when a reference is supplied (lowering the per-base qualities
+// near the read ends), that -B/NoBAQ leaves the raw qualities untouched,
+// and that -E/RedoBAQ is accepted rather than rejected.
+func TestMpileup_BAQ_LowersQualities(t *testing.T) {
+	dir := t.TempDir()
+	// A 20 bp read that matches the reference exactly. BAQ tapers the
+	// alignment-uncertainty cost in from each end, so the qualities near
+	// the read edges drop below the flat input Phred 40 ('I').
+	refSeq := "TTACGTACGTGGCCAATTGGACGTACGTAA"
+	faPath := writeFasta(t, dir, "chr1", refSeq)
+	ra, err := fasta.OpenRandomAccess(faPath)
+	if err != nil {
+		t.Fatalf("open ref: %v", err)
 	}
+	defer ra.Close()
+	readSeq := refSeq[5:25] // 20 bp, exact match starting at 1-based pos 6
+	sam := "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:30\n" +
+		"r1\t0\tchr1\t6\t60\t20M\t*\t0\t0\t" + readSeq + "\t" + strings.Repeat("I", 20) + "\n"
+
+	// Default (BAQ on): at least one quality must drop below 'I'.
+	withBAQ := runMpileupOnSAM(t, []string{sam}, MpileupOptions{}, ra, nil)
+	if !mpileupHasLoweredQual(withBAQ) {
+		t.Errorf("expected BAQ to lower some qualities below 'I':\n%s", withBAQ)
+	}
+
+	// -B (NoBAQ): every emitted base keeps its raw 'I' quality.
+	noBAQ := runMpileupOnSAM(t, []string{sam}, MpileupOptions{NoBAQ: true}, ra, nil)
+	if mpileupHasLoweredQual(noBAQ) {
+		t.Errorf("with -B no quality should be lowered:\n%s", noBAQ)
+	}
+
+	// -E (RedoBAQ): accepted, and (like the default) applies BAQ.
+	redoBAQ := runMpileupOnSAM(t, []string{sam}, MpileupOptions{RedoBAQ: true}, ra, nil)
+	if !mpileupHasLoweredQual(redoBAQ) {
+		t.Errorf("expected -E BAQ to lower some qualities:\n%s", redoBAQ)
+	}
+}
+
+// mpileupHasLoweredQual reports whether any quality character in the 6th
+// (quals) column of a text-mpileup output is below 'I' (Phred 40), i.e.
+// BAQ lowered at least one base.
+func mpileupHasLoweredQual(out string) bool {
+	for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		cols := strings.Split(ln, "\t")
+		if len(cols) < 6 {
+			continue
+		}
+		for i := 0; i < len(cols[5]); i++ {
+			if cols[5][i] < 'I' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // writeFasta writes a tiny single-contig FASTA, builds its .fai sibling

@@ -1976,6 +1976,20 @@ Missing subcommands (in rough priority order):
   accepted but treated as a no-op since we always run the full
   intersection. `-d/-D` (tag-value filter) and `-N` (qname file) landed
   in the view-d-D-N PR.
+- **`mpileup` text BAQ (`-B`/`-E`) — DONE.** The text-pileup path now
+  applies BAQ realignment by default whenever a reference (`-f`) is
+  supplied, matching upstream `bam_plcmd.c:442`
+  (`sam_prob_realn(b, ref, ref_len, (MPLP_REDO_BAQ) ? 7 : 3)`):
+  `applyTextMpileupBAQ` in `mpileup.go` fetches each contig once and runs
+  `baq.SamProbRealn` in apply+extend mode on every bucketed read, lowering
+  the per-base qualities in place before they feed the quality column and
+  the `-Q` depth filter. `-B/--no-BAQ` disables it; `-E/--redo-BAQ` adds
+  `baq.FlagRedo` (flag 7), recomputing BAQ and ignoring any pre-existing
+  `BQ` tag. Previously `-B` was a silent no-op and `-E` was rejected.
+  Byte-for-byte parity with `samtools mpileup` is confirmed for the
+  default, `-B`, and `-E` modes (`TestMpileup_BAQ_LowersQualities` plus a
+  live cross-check). (The `bcftools mpileup` genotype-likelihood path
+  applied BAQ already — slice 3 below.)
 - **`mpileup` BCF / genotype-likelihood output (`-g/-u`) — DONE.** `-aa`
   zero-fill of empty contigs is implemented (see
   `TestMpileup_AA_ZeroFillTableDriven`); the text-pileup path is complete.

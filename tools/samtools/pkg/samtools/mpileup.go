@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/baq"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -65,11 +66,14 @@ type MpileupOptions struct {
 	OutputMapQ bool
 	// OutputBP appends a per-read read-position column (CLI -O).
 	OutputBP bool
-	// NoBAQ is accepted for upstream-flag compatibility and is a no-op:
-	// this v1 never applies BAQ. CLI -B.
+	// NoBAQ disables BAQ (per-Base Alignment Quality) realignment — CLI
+	// -B. BAQ is applied by default whenever a reference (FastaRef) is
+	// supplied, matching upstream `bam_plcmd.c:442` (the MPLP_REALN
+	// default). With -B the raw input base qualities are used unchanged.
 	NoBAQ bool
-	// RedoBAQ is accepted but rejected with a clear "not implemented"
-	// error — CLI -E. Deferred per PARITY_ROADMAP.md.
+	// RedoBAQ recomputes BAQ from scratch, discarding any pre-existing BQ
+	// aux tag — CLI -E. It maps to the extended-BAQ flag with the redo bit
+	// set (upstream passes 7 instead of 3 to sam_prob_realn).
 	RedoBAQ bool
 	// Output is the path to write to (default stdout). CLI -o.
 	Output string
@@ -80,10 +84,6 @@ type MpileupOptions struct {
 	// ignored. The resolved paths are appended to Inputs.
 	BamList string
 }
-
-// ErrMpileupBAQNotImplemented is returned when callers pass -E (redo BAQ).
-// Tracked at docs/PARITY_ROADMAP.md#samtools.
-var ErrMpileupBAQNotImplemented = fmt.Errorf("samtools mpileup: -E/--redo-baq not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
 
 // MpileupFile is the file-path entry point for the CLI. It opens each
 // BAM/SAM input, the reference FASTA (when given), the positions BED (when
@@ -96,9 +96,6 @@ var ErrMpileupBAQNotImplemented = fmt.Errorf("samtools mpileup: -E/--redo-baq no
 // relevant chunks; otherwise it falls back to a linear scan. The
 // per-position emission logic is identical either way.
 func MpileupFile(opts MpileupOptions, out io.Writer) error {
-	if opts.RedoBAQ {
-		return ErrMpileupBAQNotImplemented
-	}
 	// Resolve the BAM list (one path per line).
 	if opts.BamList != "" {
 		extra, err := readBamList(opts.BamList)
@@ -163,9 +160,6 @@ func MpileupFile(opts MpileupOptions, out io.Writer) error {
 // io.Readers; the output writer receives text mpileup records. The reference
 // (refFA) and positions filter (posFilter) may be nil.
 func Mpileup(inputs []io.Reader, out io.Writer, opts MpileupOptions, refFA *fasta.RandomAccess, posFilter *positionFilter) error {
-	if opts.RedoBAQ {
-		return ErrMpileupBAQNotImplemented
-	}
 	if len(inputs) == 0 {
 		return fmt.Errorf("samtools mpileup: no inputs")
 	}
@@ -221,6 +215,17 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 			return rerr
 		}
 		perInputRecs[i] = recs
+	}
+
+	// Apply BAQ (per-Base Alignment Quality) realignment. Upstream
+	// (bam_plcmd.c:442) realigns every read with sam_prob_realn whenever a
+	// reference is loaded and -B was not given; -E adds the redo bit. This
+	// lowers the per-base qualities in place, which then feed the quality
+	// column and the min-base-quality (-Q) depth filter.
+	if refFA != nil && !opts.NoBAQ {
+		if err := applyTextMpileupBAQ(perInputRecs, refFA, opts); err != nil {
+			return err
+		}
 	}
 
 	bw := bufio.NewWriter(out)
@@ -306,6 +311,55 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 				perInputChromRecs, refFA, posFilter,
 				opts, minPos0, maxEnd0); err != nil {
 				return err
+			}
+		}
+	}
+	return nil
+}
+
+// textMpileupBAQFlag derives the realn flag passed to baq.SamProbRealn.
+// Upstream samtools text mpileup always realigns in apply+extend mode
+// (bam_plcmd.c passes 3 = BAQ_APPLY|BAQ_EXTEND), and -E adds the redo bit
+// (passing 7 = BAQ_APPLY|BAQ_EXTEND|BAQ_REDO).
+func textMpileupBAQFlag(opts MpileupOptions) int {
+	flag := baq.FlagApply | baq.FlagExtend
+	if opts.RedoBAQ {
+		flag |= baq.FlagRedo
+	}
+	return flag
+}
+
+// applyTextMpileupBAQ realigns every bucketed read's base qualities in
+// place using BAQ, contig by contig. Each contig's reference sequence is
+// fetched once (records are bucketed per chrom) and reused across inputs,
+// mirroring samtools calmd's single-slot reference cache. A read with no
+// BAQ work (unmapped, no M/=/X, etc.) is left untouched: SamProbRealn
+// returns a benign -1/-3 in those cases, and only a hard alignment failure
+// (-4 and below) is surfaced as an error.
+func applyTextMpileupBAQ(perInputRecs []map[string][]*sam.Record, refFA *fasta.RandomAccess, opts MpileupOptions) error {
+	flag := textMpileupBAQFlag(opts)
+	// Collect the set of contigs that carry records, so we fetch each
+	// reference span exactly once.
+	contigSeq := map[string][]byte{}
+	for _, recs := range perInputRecs {
+		for chrom := range recs {
+			if _, ok := contigSeq[chrom]; ok {
+				continue
+			}
+			seq, err := refFA.Fetch(chrom, 0, refFA.Length(chrom))
+			if err != nil {
+				return fmt.Errorf("samtools mpileup: BAQ fetch %s: %w", chrom, err)
+			}
+			contigSeq[chrom] = seq
+		}
+	}
+	for _, recs := range perInputRecs {
+		for chrom, list := range recs {
+			ref := contigSeq[chrom]
+			for _, rec := range list {
+				if r := baq.SamProbRealn(rec, ref, flag); r < -3 {
+					return fmt.Errorf("samtools mpileup: BAQ alignment failed for read %q", rec.QName)
+				}
 			}
 		}
 	}
