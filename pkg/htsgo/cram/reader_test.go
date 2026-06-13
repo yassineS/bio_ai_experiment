@@ -252,13 +252,30 @@ func TestRejectNonCRAM(t *testing.T) {
 }
 
 // TestRejectUnsupportedVersion checks that a CRAM file declaring a major
-// version outside {2,3} is rejected.
+// version outside {2,3,4} is rejected. CRAM v4.0 decode is now supported,
+// so a still-unsupported version (5) is used here.
 func TestRejectUnsupportedVersion(t *testing.T) {
 	in := make([]byte, fileDefSize)
 	copy(in, "CRAM")
-	in[4] = 4 // major version 4 — out of scope
+	in[4] = 5 // major version 5 — out of scope
 	if _, err := NewReader(bytes.NewReader(in)); err == nil {
-		t.Errorf("expected error for CRAM major version 4")
+		t.Errorf("expected error for CRAM major version 5")
+	}
+}
+
+// TestAcceptV4Version confirms a CRAM v4.0 file definition is accepted
+// (the structural reader recognises major version 4).
+func TestAcceptV4Version(t *testing.T) {
+	in := make([]byte, fileDefSize)
+	copy(in, "CRAM")
+	in[4] = 4 // major version 4
+	in[5] = 0 // minor version 0
+	rd, err := NewReader(bytes.NewReader(in))
+	if err != nil {
+		t.Fatalf("CRAM v4.0 file definition rejected: %v", err)
+	}
+	if got := rd.FileDefinition().VersionString(); got != "4.0" {
+		t.Errorf("version = %q, want 4.0", got)
 	}
 }
 

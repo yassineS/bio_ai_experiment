@@ -29,7 +29,7 @@ func FuzzCompressionHeader(f *testing.F) {
 		}
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		h, err := parseCompressionHeader(data)
+		h, err := parseCompressionHeader(data, 3)
 		if err != nil {
 			return
 		}

@@ -179,6 +179,9 @@ func (rd *recordDecoder) byteSeries(key string) (byte, error) {
 			return 0, wrapf(err, "data series %q", key)
 		}
 		return byte(v), nil
+	case EncodingConstByte, EncodingConstInt:
+		// CRAM v4: a constant byte-valued series (no block read).
+		return byte(enc.ConstValue), nil
 	default:
 		return 0, errFormat("data series %q has %s encoding, which is not byte-valued", key, enc.ID)
 	}
@@ -322,7 +325,7 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	if err != nil {
 		return nil, wrapf(err, "record %d tag line", index)
 	}
-	tags, err := rd.decodeTags(tl, index)
+	tags, rgEmitted, err := rd.decodeTags(tl, rgValue, index)
 	if err != nil {
 		return nil, err
 	}
@@ -345,11 +348,29 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 		}
 	}
 
+	// When the QO preservation flag is off (quality scores stored in
+	// reference/original orientation rather than read orientation), a
+	// reverse-strand read's quality string was written reversed relative
+	// to the emitted SEQ, so flip it back. This mirrors htslib's
+	// cram_decode.c `!qs_seq_orient` handling. CRAM v3.1+ and v4 writers
+	// commonly set QO=0; older files default qs_seq_orient on (QO true),
+	// which makes this a no-op.
+	if !rd.h.Preservation.QualityScoreSeqOrient && rec.Flag&sam.FlagReverse != 0 {
+		reverseQual(rec.Qual)
+	}
+
 	// The auxiliary tags are assembled from the dictionary-stored tags
-	// and the read-group data series. samtools emits the read-group tag
-	// immediately before the program tag (or last when no program tag is
-	// present), so the RG tag is spliced in at that position.
-	rec.Aux = mergeAux(tags, rd.readGroupTag(rgValue))
+	// and the read-group data series. For CRAM v2/v3 the RG tag is not in
+	// the dictionary, so it is spliced in here at the position samtools
+	// emits it (immediately before the program tag, or last when none).
+	// For CRAM v4 the dictionary already carries an "RG*" placeholder that
+	// decodeTags expanded in place, so rgEmitted is set and no second copy
+	// is added.
+	if rgEmitted {
+		rec.Aux = tags
+	} else {
+		rec.Aux = mergeAux(tags, rd.readGroupTag(rgValue))
+	}
 	return dr, nil
 }
 
@@ -371,6 +392,16 @@ func mergeAux(dictTags []sam.Aux, rg *sam.Aux) []sam.Aux {
 		}
 	}
 	return append(dictTags, *rg)
+}
+
+// reverseQual reverses a quality slice in place. It is applied to a
+// reverse-strand read when the container's QO preservation flag is off,
+// so the emitted QUAL is in read orientation. An all-0xff "no quality"
+// slice is unchanged by the reversal.
+func reverseQual(q []byte) {
+	for i, j := 0, len(q)-1; i < j; i, j = i+1, j-1 {
+		q[i], q[j] = q[j], q[i]
+	}
 }
 
 // decodeSliceRecords decodes every record of one slice and resolves the
@@ -452,6 +483,18 @@ func resolveMates(decoded []*decodedRecord) error {
 // mate-reverse and mate-unmapped flag bits are copied from the mate's
 // own flags, and the template length is computed from the pair's span.
 func linkMates(up, down *sam.Record) {
+	// CRAM v4 deduplicates a within-slice pair's read name: the upstream
+	// mate stores an empty name (a bare stop byte) and the decoder copies
+	// it from the downstream mate (htslib cram_decode.c, the
+	// `cr->name_len == 0` mate-copy branch). A pair always shares a QNAME,
+	// so copying either way that is non-empty is safe; older CRAM versions
+	// store both names and never hit this.
+	if up.QName == "" && down.QName != "" {
+		up.QName = down.QName
+	} else if down.QName == "" && up.QName != "" {
+		down.QName = up.QName
+	}
+
 	setMateFields(up, down)
 	setMateFields(down, up)
 
@@ -586,28 +629,56 @@ func (rd *recordDecoder) decodeMate(dr *decodedRecord, cf int32, index int) erro
 // (TL) value: TL indexes the tag dictionary, whose entry lists the tags
 // the record carries, and each tag's value is then read from its
 // per-tag data series.
-func (rd *recordDecoder) decodeTags(tl int32, index int) ([]sam.Aux, error) {
+//
+// rgValue is the record's RG data-series value, threaded in for the CRAM
+// v4 case where the read-group tag appears in the tag dictionary as a
+// placeholder "RG*" (type byte '*'): the value is then emitted in its
+// dictionary position rather than appended afterwards. The returned
+// rgEmitted flag tells the caller to suppress the separate RG append in
+// that case. CRAM v2/v3 leave RG out of the dictionary, so rgEmitted is
+// false and the caller appends it as before.
+func (rd *recordDecoder) decodeTags(tl int32, rgValue int32, index int) (aux []sam.Aux, rgEmitted bool, err error) {
 	if tl < 0 {
-		return nil, errFormat("record %d declares a negative tag-line index %d", index, tl)
+		return nil, false, errFormat("record %d declares a negative tag-line index %d", index, tl)
 	}
 	if int(tl) >= len(rd.tagDict) {
 		// A TL of 0 with an empty dictionary means "no tags".
 		if tl == 0 {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, errFormat("record %d tag-line index %d has no tag-dictionary entry (%d entries)",
+		return nil, false, errFormat("record %d tag-line index %d has no tag-dictionary entry (%d entries)",
 			index, tl, len(rd.tagDict))
 	}
 	keys := rd.tagDict[tl]
 	out := make([]sam.Aux, 0, len(keys))
 	for _, key := range keys {
+		// CRAM v4 stores certain tags in the dictionary as placeholders
+		// whose type byte is '*' (0x2a), to be filled in by the decoder
+		// rather than read from a per-tag block (cram_decode.c, the
+		// `TN[2] == '*'` branch). RG* is the read group; NM*/MD* are
+		// MD/NM regeneration placeholders.
+		if rd.h.major >= 4 && key[2] == '*' {
+			if key[0] == 'R' && key[1] == 'G' {
+				if rg := rd.readGroupTag(rgValue); rg != nil {
+					out = append(out, *rg)
+				}
+				rgEmitted = true
+				continue
+			}
+			// NM*/MD* (and any other '*' placeholder) carry no per-tag
+			// block: they are regenerated from the reference if one is
+			// attached (see iterator.go regenerateMDNM), so nothing is
+			// read or emitted here. This matches htslib inserting an empty
+			// placeholder it later overwrites.
+			continue
+		}
 		enc := rd.h.Tags[key]
 		if enc == nil {
-			return nil, errFormat("record %d tag %q is not in the tag-encoding map", index, key.String())
+			return nil, false, errFormat("record %d tag %q is not in the tag-encoding map", index, key.String())
 		}
-		raw, err := enc.decodeByteArray(rd.src.s)
-		if err != nil {
-			return nil, wrapf(err, "record %d tag %q value", index, key.String())
+		raw, derr := enc.decodeByteArray(rd.src.s)
+		if derr != nil {
+			return nil, false, wrapf(derr, "record %d tag %q value", index, key.String())
 		}
 		// "cF" (CRAM flags, a single byte typed 'C') is an internal tag
 		// htslib writes and then strips on read — it is not part of the
@@ -619,13 +690,13 @@ func (rd *recordDecoder) decodeTags(tl int32, index int) ([]sam.Aux, error) {
 		if isCRAMFlagsTag(key, raw) {
 			continue
 		}
-		aux, perr := decodeTagValue(key, raw)
+		val, perr := decodeTagValue(key, raw)
 		if perr != nil {
-			return nil, wrapf(perr, "record %d tag %q", index, key.String())
+			return nil, false, wrapf(perr, "record %d tag %q", index, key.String())
 		}
-		out = append(out, aux)
+		out = append(out, val)
 	}
-	return out, nil
+	return out, rgEmitted, nil
 }
 
 // isCRAMFlagsTag reports whether a tag key/value is the internal "cF"

@@ -78,10 +78,29 @@
 // range overlaps a wanted region, giving a caller the container and
 // slice byte offsets to seek to.
 //
-// Integer encodings: CRAM uses two self-delimiting integer encodings,
-// ITF-8 (a 1-5 byte 32-bit value) and LTF-8 (a 1-9 byte 64-bit value).
-// Both are read by counting the leading 1-bits of the first byte. They
-// are distinct from the varints used inside the rANS codec sub-package.
+// CRAM v4.0 decode: the v4.0 draft is supported for decode (encode stays
+// v3.0). v4 keeps the v3 container/block/slice tree but changes the
+// variable-length integers and the data-series codec set. Every integer —
+// container header, block header, slice header, the compression-header
+// maps and the per-encoding parameters — is a big-endian uint7 LEB128
+// varint (htscodecs varint.h, cram_io.c uint7_get_*) rather than ITF-8 /
+// LTF-8, with signed fields zig-zag encoded; alignment coordinates widen
+// to 64-bit. The integer data series move to the VARINT_UNSIGNED,
+// VARINT_SIGNED and CONST_INT/CONST_BYTE codecs (EXTERNAL is restricted to
+// byte data), the read group appears in the tag dictionary as an "RG*"
+// placeholder, paired read names are deduplicated (the upstream mate's
+// name is copied from the downstream mate), and the QO preservation flag
+// drives reverse-strand quality reversal. The end-of-file marker is a
+// distinct 31-byte sentinel. The transform codecs (XPACK/XRLE/XDELTA) are
+// recognised by id but not decoded; a series that uses one errors clearly.
+// Version dispatch is threaded through FileDefinition.Major via a small
+// intReader so the v2/v3 path is byte-for-byte unchanged.
+//
+// Integer encodings: CRAM v2/v3 use two self-delimiting integer
+// encodings, ITF-8 (a 1-5 byte 32-bit value) and LTF-8 (a 1-9 byte 64-bit
+// value), both read by counting the leading 1-bits of the first byte;
+// CRAM v4 uses the uint7 varint described above. They are all distinct
+// from the varints used inside the rANS codec sub-package.
 //
 // Block compression: method 0 is raw, 1 is gzip, 2 is bzip2, 4 is
 // rANS 4x8 and 5 is rANS 4x16 — all supported. Methods 3 (LZMA), 6
@@ -98,5 +117,7 @@
 //
 // References:
 //   - CRAM format specification v3.0 and v3.1 (hsformats.github.io).
+//   - CRAM v4.0 draft (htslib cram_io.c / cram_decode.c major>=4 paths).
+//   - htscodecs varint.h (the uint7 varint encoding v4 adopts).
 //   - htslib cram/cram_io.c, cram/cram_structs.h.
 package cram

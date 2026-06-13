@@ -42,7 +42,7 @@ func TestParseCompressionHeaderBasic(t *testing.T) {
 	tag.Write(encEncoding(EncodingByteArrayStop, append([]byte{0}, encITF8(20)...)))
 
 	payload := buildCompressionHeader(1, pres, 1, ds.Bytes(), 1, tag.Bytes())
-	h, err := parseCompressionHeader(payload)
+	h, err := parseCompressionHeader(payload, 3)
 	if err != nil {
 		t.Fatalf("parseCompressionHeader: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestParseCompressionHeaderBasic(t *testing.T) {
 // booleans take their CRAM defaults when no entry is written.
 func TestParseCompressionHeaderDefaults(t *testing.T) {
 	payload := buildCompressionHeader(0, nil, 0, nil, 0, nil)
-	h, err := parseCompressionHeader(payload)
+	h, err := parseCompressionHeader(payload, 3)
 	if err != nil {
 		t.Fatalf("parseCompressionHeader: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestParseCompressionHeaderSMandTD(t *testing.T) {
 	pres.WriteByte(1)
 
 	payload := buildCompressionHeader(3, pres.Bytes(), 0, nil, 0, nil)
-	h, err := parseCompressionHeader(payload)
+	h, err := parseCompressionHeader(payload, 3)
 	if err != nil {
 		t.Fatalf("parseCompressionHeader: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestParseCompressionHeaderSMandTD(t *testing.T) {
 func TestParseCompressionHeaderUnknownKey(t *testing.T) {
 	pres := []byte{'Z', 'Z', 0}
 	payload := buildCompressionHeader(1, pres, 0, nil, 0, nil)
-	if _, err := parseCompressionHeader(payload); err == nil {
+	if _, err := parseCompressionHeader(payload, 3); err == nil {
 		t.Errorf("unknown preservation key should be rejected")
 	}
 }
@@ -132,7 +132,7 @@ func TestParseCompressionHeaderTruncated(t *testing.T) {
 					t.Errorf("parseCompressionHeader panicked at truncation %d: %v", n, r)
 				}
 			}()
-			if _, err := parseCompressionHeader(full[:n]); err == nil && n < len(full) {
+			if _, err := parseCompressionHeader(full[:n], 3); err == nil && n < len(full) {
 				t.Errorf("expected error for compression header truncated to %d bytes", n)
 			}
 		}()
@@ -144,7 +144,7 @@ func TestParseCompressionHeaderTruncated(t *testing.T) {
 func TestParseCompressionHeaderBadMapSize(t *testing.T) {
 	// A preservation map claiming a huge size.
 	payload := append(encITF8(9999), encITF8(0)...)
-	if _, err := parseCompressionHeader(payload); err == nil {
+	if _, err := parseCompressionHeader(payload, 3); err == nil {
 		t.Errorf("oversized map should be rejected")
 	}
 }

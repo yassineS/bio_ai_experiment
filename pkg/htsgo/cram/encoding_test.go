@@ -17,7 +17,7 @@ func encEncoding(id EncodingID, params []byte) []byte {
 
 // TestParseEncodingNull parses a NULL encoding.
 func TestParseEncodingNull(t *testing.T) {
-	enc, off, err := parseEncoding(encEncoding(EncodingNull, nil), 0)
+	enc, off, err := parseEncoding(newIntReader(3), encEncoding(EncodingNull, nil), 0)
 	if err != nil {
 		t.Fatalf("parseEncoding NULL: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestParseEncodingNull(t *testing.T) {
 // TestParseEncodingExternal parses an EXTERNAL encoding and reads its
 // content id.
 func TestParseEncodingExternal(t *testing.T) {
-	enc, _, err := parseEncoding(encEncoding(EncodingExternal, encITF8(37)), 0)
+	enc, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingExternal, encITF8(37)), 0)
 	if err != nil {
 		t.Fatalf("parseEncoding EXTERNAL: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestParseEncodingExternal(t *testing.T) {
 // TestParseEncodingByteArrayStop parses a BYTE_ARRAY_STOP encoding.
 func TestParseEncodingByteArrayStop(t *testing.T) {
 	params := append([]byte{0x09}, encITF8(13)...) // stop byte 0x09, content id 13
-	enc, _, err := parseEncoding(encEncoding(EncodingByteArrayStop, params), 0)
+	enc, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingByteArrayStop, params), 0)
 	if err != nil {
 		t.Fatalf("parseEncoding BYTE_ARRAY_STOP: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestParseEncodingByteArrayLen(t *testing.T) {
 	var params bytes.Buffer
 	params.Write(encEncoding(EncodingExternal, encITF8(42)))
 	params.Write(encEncoding(EncodingExternal, encITF8(37)))
-	enc, _, err := parseEncoding(encEncoding(EncodingByteArrayLen, params.Bytes()), 0)
+	enc, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingByteArrayLen, params.Bytes()), 0)
 	if err != nil {
 		t.Fatalf("parseEncoding BYTE_ARRAY_LEN: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestParseEncodingByteArrayLen(t *testing.T) {
 // TestParseEncodingBeta parses a BETA encoding and its offset/nbits.
 func TestParseEncodingBeta(t *testing.T) {
 	params := append(encITF8(5), encITF8(4)...)
-	enc, _, err := parseEncoding(encEncoding(EncodingBeta, params), 0)
+	enc, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingBeta, params), 0)
 	if err != nil {
 		t.Fatalf("parseEncoding BETA: %v", err)
 	}
@@ -86,26 +86,26 @@ func TestParseEncodingBeta(t *testing.T) {
 // TestParseEncodingBetaBadNumBits rejects a BETA width outside 0..32.
 func TestParseEncodingBetaBadNumBits(t *testing.T) {
 	params := append(encITF8(0), encITF8(33)...)
-	if _, _, err := parseEncoding(encEncoding(EncodingBeta, params), 0); err == nil {
+	if _, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingBeta, params), 0); err == nil {
 		t.Errorf("BETA with 33 bits should be rejected")
 	}
 }
 
 // TestParseEncodingSubexpGammaGolomb parses the remaining integer codes.
 func TestParseEncodingSubexpGammaGolomb(t *testing.T) {
-	enc, _, err := parseEncoding(encEncoding(EncodingSubexp, append(encITF8(1), encITF8(3)...)), 0)
+	enc, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingSubexp, append(encITF8(1), encITF8(3)...)), 0)
 	if err != nil || enc.Offset != 1 || enc.K != 3 {
 		t.Errorf("SUBEXP parse wrong: %+v err=%v", enc, err)
 	}
-	enc, _, err = parseEncoding(encEncoding(EncodingGamma, encITF8(2)), 0)
+	enc, _, err = parseEncoding(newIntReader(3), encEncoding(EncodingGamma, encITF8(2)), 0)
 	if err != nil || enc.Offset != 2 {
 		t.Errorf("GAMMA parse wrong: %+v err=%v", enc, err)
 	}
-	enc, _, err = parseEncoding(encEncoding(EncodingGolomb, append(encITF8(0), encITF8(7)...)), 0)
+	enc, _, err = parseEncoding(newIntReader(3), encEncoding(EncodingGolomb, append(encITF8(0), encITF8(7)...)), 0)
 	if err != nil || enc.M != 7 {
 		t.Errorf("GOLOMB parse wrong: %+v err=%v", enc, err)
 	}
-	enc, _, err = parseEncoding(encEncoding(EncodingGolombRice, append(encITF8(0), encITF8(4)...)), 0)
+	enc, _, err = parseEncoding(newIntReader(3), encEncoding(EncodingGolombRice, append(encITF8(0), encITF8(4)...)), 0)
 	if err != nil || enc.K != 4 {
 		t.Errorf("GOLOMB_RICE parse wrong: %+v err=%v", enc, err)
 	}
@@ -114,7 +114,7 @@ func TestParseEncodingSubexpGammaGolomb(t *testing.T) {
 // TestParseEncodingGolombBadM rejects a GOLOMB divisor that is not
 // positive.
 func TestParseEncodingGolombBadM(t *testing.T) {
-	if _, _, err := parseEncoding(encEncoding(EncodingGolomb, append(encITF8(0), encITF8(0)...)), 0); err == nil {
+	if _, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingGolomb, append(encITF8(0), encITF8(0)...)), 0); err == nil {
 		t.Errorf("GOLOMB with M=0 should be rejected")
 	}
 }
@@ -131,7 +131,7 @@ func TestParseEncodingHuffman(t *testing.T) {
 	for _, l := range []int32{1, 2, 2} {
 		params.Write(encITF8(l))
 	}
-	enc, _, err := parseEncoding(encEncoding(EncodingHuffman, params.Bytes()), 0)
+	enc, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingHuffman, params.Bytes()), 0)
 	if err != nil {
 		t.Fatalf("parseEncoding HUFFMAN: %v", err)
 	}
@@ -152,14 +152,14 @@ func TestParseEncodingHuffmanMismatch(t *testing.T) {
 	params.Write(encITF8(2))
 	params.Write(encITF8(1)) // 1 bit length, not 2
 	params.Write(encITF8(3))
-	if _, _, err := parseEncoding(encEncoding(EncodingHuffman, params.Bytes()), 0); err == nil {
+	if _, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingHuffman, params.Bytes()), 0); err == nil {
 		t.Errorf("HUFFMAN with mismatched counts should be rejected")
 	}
 }
 
 // TestParseEncodingUnknown rejects an unknown codec id.
 func TestParseEncodingUnknown(t *testing.T) {
-	if _, _, err := parseEncoding(encEncoding(EncodingID(99), nil), 0); err == nil {
+	if _, _, err := parseEncoding(newIntReader(3), encEncoding(EncodingID(99), nil), 0); err == nil {
 		t.Errorf("unknown encoding id should be rejected")
 	}
 }
@@ -178,7 +178,7 @@ func TestParseEncodingTruncated(t *testing.T) {
 					t.Errorf("parseEncoding panicked at truncation %d: %v", n, r)
 				}
 			}()
-			_, _, _ = parseEncoding(full[:n], 0)
+			_, _, _ = parseEncoding(newIntReader(3), full[:n], 0)
 		}()
 	}
 }

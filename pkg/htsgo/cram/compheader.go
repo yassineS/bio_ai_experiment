@@ -36,6 +36,13 @@ type PreservationMap struct {
 	// ReferenceRequired is the RR entry: whether decoding needs the
 	// external reference sequence. CRAM default: true.
 	ReferenceRequired bool
+	// QualityScoreSeqOrient is the QO entry: whether quality scores are
+	// stored in read (sequence) orientation (true) or in original
+	// reference orientation (false). When false, the quality string of a
+	// reverse-strand read is reversed on decode (htslib's qs_seq_orient).
+	// CRAM default: true. CRAM v3.1+ and v4 writers emit this key; older
+	// files leave it absent and so default true.
+	QualityScoreSeqOrient bool
 	// SubstitutionMatrix is the SM entry: the five raw bytes of the
 	// base-substitution code matrix. It is nil when no SM entry was
 	// written.
@@ -44,9 +51,9 @@ type PreservationMap struct {
 	// bytes. It is nil when no TD entry was written. The dictionary is a
 	// run of NUL-separated tag-key lists; C4b interprets it.
 	TagDictionary []byte
-	// hasRN, hasAP and hasRR record whether the corresponding entry was
-	// present, so a caller can distinguish "absent" from "false".
-	hasRN, hasAP, hasRR bool
+	// hasRN, hasAP, hasRR and hasQO record whether the corresponding entry
+	// was present, so a caller can distinguish "absent" from "false".
+	hasRN, hasAP, hasRR, hasQO bool
 }
 
 // CompressionHeader is the fully-parsed data of a container's
@@ -62,6 +69,11 @@ type CompressionHeader struct {
 	DataSeries map[dataSeriesKey]*Encoding
 	// Tags maps each three-byte tag key to its Encoding.
 	Tags map[tagKey]*Encoding
+	// major is the CRAM major version of the container the header came
+	// from. It steers the per-encoding integer reads (uint7 for v4,
+	// ITF-8 for v2/v3) and is threaded into each slice's data-series
+	// decode so EXTERNAL/VARINT values are read in the right encoding.
+	major uint8
 }
 
 // Encoding returns the encoding declared for the named two-character
@@ -77,34 +89,37 @@ func (h *CompressionHeader) Encoding(key string) *Encoding {
 // parseCompressionHeader parses the data of a CRAM compression-header
 // block. The block payload, once decompressed, holds three consecutive
 // maps: the preservation map, the data-series encoding map and the
-// tag-encoding map. Each map is framed as an ITF-8 byte size followed
-// by an ITF-8 entry count.
-func parseCompressionHeader(p []byte) (*CompressionHeader, error) {
+// tag-encoding map. Each map is framed as a byte size followed by an
+// entry count, both ITF-8 for CRAM v2/v3 and uint7 for v4. The major
+// argument threads the version through every integer read.
+func parseCompressionHeader(p []byte, major uint8) (*CompressionHeader, error) {
 	h := &CompressionHeader{
 		DataSeries: make(map[dataSeriesKey]*Encoding),
 		Tags:       make(map[tagKey]*Encoding),
+		major:      major,
 	}
+	r := newIntReader(major)
 	off := 0
 	var err error
-	if off, err = parsePreservationMap(p, off, &h.Preservation); err != nil {
+	if off, err = parsePreservationMap(r, p, off, &h.Preservation); err != nil {
 		return nil, err
 	}
-	if off, err = parseDataSeriesMap(p, off, h.DataSeries); err != nil {
+	if off, err = parseDataSeriesMap(r, p, off, h.DataSeries); err != nil {
 		return nil, err
 	}
-	if _, err = parseTagEncodingMap(p, off, h.Tags); err != nil {
+	if _, err = parseTagEncodingMap(r, p, off, h.Tags); err != nil {
 		return nil, err
 	}
 	return h, nil
 }
 
-// mapFrame reads the ITF-8 byte-size and ITF-8 entry-count that prefix
-// every CRAM compression-header map. It returns the offset of the first
-// entry, the offset just past the map (size bytes past the entry
-// count), and the entry count. The size field measures the bytes from
-// the entry count onward.
-func mapFrame(p []byte, off int, what string) (entryOff, mapEnd int, count int32, err error) {
-	size, n, err := itf8At(p, off)
+// mapFrame reads the byte-size and entry-count that prefix every CRAM
+// compression-header map (ITF-8 for v2/v3, uint7 for v4). It returns the
+// offset of the first entry, the offset just past the map (size bytes
+// past the entry count), and the entry count. The size field measures the
+// bytes from the entry count onward.
+func mapFrame(r intReader, p []byte, off int, what string) (entryOff, mapEnd int, count int32, err error) {
+	size, n, err := r.u32(p, off)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("cram: %s map size: %w", what, err)
 	}
@@ -116,7 +131,7 @@ func mapFrame(p []byte, off int, what string) (entryOff, mapEnd int, count int32
 	if mapEnd > len(p) || mapEnd < off {
 		return 0, 0, 0, fmt.Errorf("cram: %s map (%d bytes) overruns the compression header", what, size)
 	}
-	count, n, err = itf8At(p, off)
+	count, n, err = r.u32(p, off)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("cram: %s map entry count: %w", what, err)
 	}
@@ -129,17 +144,20 @@ func mapFrame(p []byte, off int, what string) (entryOff, mapEnd int, count int32
 
 // parsePreservationMap parses the CRAM preservation map starting at off.
 // Each entry is a two-byte key followed by a value whose shape depends
-// on the key: RN, AP and RR carry a single boolean byte; SM carries
-// five raw bytes; TD carries an ITF-8-prefixed byte run. Unknown keys
-// cannot be skipped (their value length is not self-describing), so an
-// unknown key is reported as an error.
-func parsePreservationMap(p []byte, off int, pm *PreservationMap) (int, error) {
+// on the key: RN, AP, RR and QO carry a single boolean byte (as do the
+// CRAM 1.0 legacy keys MI, UI and PI, which are read and discarded); SM
+// carries five raw bytes; TD carries a varint-prefixed byte run (ITF-8
+// for v2/v3, uint7 for v4). Unknown keys cannot be skipped (their value
+// length is not self-describing), so an unknown key is reported as an
+// error.
+func parsePreservationMap(r intReader, p []byte, off int, pm *PreservationMap) (int, error) {
 	// CRAM defaults apply when an entry is absent.
 	pm.ReadNamesIncluded = true
 	pm.APDelta = true
 	pm.ReferenceRequired = true
+	pm.QualityScoreSeqOrient = true
 
-	entryOff, mapEnd, count, err := mapFrame(p, off, "preservation")
+	entryOff, mapEnd, count, err := mapFrame(r, p, off, "preservation")
 	if err != nil {
 		return off, err
 	}
@@ -151,7 +169,7 @@ func parsePreservationMap(p []byte, off int, pm *PreservationMap) (int, error) {
 		key := [2]byte{p[cur], p[cur+1]}
 		cur += 2
 		switch string(key[:]) {
-		case "RN", "AP", "RR":
+		case "RN", "AP", "RR", "QO", "MI", "UI", "PI":
 			if cur >= mapEnd {
 				return off, fmt.Errorf("cram: preservation map %s entry: truncated boolean", key)
 			}
@@ -164,6 +182,10 @@ func parsePreservationMap(p []byte, off int, pm *PreservationMap) (int, error) {
 				pm.APDelta, pm.hasAP = b, true
 			case "RR":
 				pm.ReferenceRequired, pm.hasRR = b, true
+			case "QO":
+				pm.QualityScoreSeqOrient, pm.hasQO = b, true
+				// MI/UI/PI are CRAM 1.0 booleans with no v3/v4 meaning; the
+				// byte is consumed above and otherwise ignored.
 			}
 		case "SM":
 			// The substitution matrix is exactly five bytes.
@@ -173,9 +195,9 @@ func parsePreservationMap(p []byte, off int, pm *PreservationMap) (int, error) {
 			pm.SubstitutionMatrix = append([]byte(nil), p[cur:cur+5]...)
 			cur += 5
 		case "TD":
-			// The tag dictionary is an ITF-8 byte count then that many
+			// The tag dictionary is a varint byte count then that many
 			// raw bytes.
-			n, m, terr := itf8At(p, cur)
+			n, m, terr := r.u32(p, cur)
 			if terr != nil {
 				return off, fmt.Errorf("cram: preservation map TD entry size: %w", terr)
 			}
@@ -197,9 +219,9 @@ func parsePreservationMap(p []byte, off int, pm *PreservationMap) (int, error) {
 
 // parseDataSeriesMap parses the CRAM data-series encoding map starting
 // at off. Each entry is a two-byte data-series key followed by one
-// parsed Encoding.
-func parseDataSeriesMap(p []byte, off int, out map[dataSeriesKey]*Encoding) (int, error) {
-	entryOff, mapEnd, count, err := mapFrame(p, off, "data-series")
+// parsed Encoding (read in the version's integer encoding).
+func parseDataSeriesMap(r intReader, p []byte, off int, out map[dataSeriesKey]*Encoding) (int, error) {
+	entryOff, mapEnd, count, err := mapFrame(r, p, off, "data-series")
 	if err != nil {
 		return off, err
 	}
@@ -210,7 +232,7 @@ func parseDataSeriesMap(p []byte, off int, out map[dataSeriesKey]*Encoding) (int
 		}
 		key := dataSeriesKey{p[cur], p[cur+1]}
 		cur += 2
-		enc, next, perr := parseEncoding(p[:mapEnd], cur)
+		enc, next, perr := parseEncoding(r, p[:mapEnd], cur)
 		if perr != nil {
 			return off, fmt.Errorf("cram: data-series %s: %w", key, perr)
 		}
@@ -224,24 +246,24 @@ func parseDataSeriesMap(p []byte, off int, out map[dataSeriesKey]*Encoding) (int
 }
 
 // parseTagEncodingMap parses the CRAM tag-encoding map starting at off.
-// Each entry's key is an ITF-8 integer whose three low bytes are the
-// tag's two-character name and one-character value type; the key is
-// followed by one parsed Encoding.
-func parseTagEncodingMap(p []byte, off int, out map[tagKey]*Encoding) (int, error) {
-	entryOff, mapEnd, count, err := mapFrame(p, off, "tag-encoding")
+// Each entry's key is a varint (ITF-8 for v2/v3, uint7 for v4) whose
+// three low bytes are the tag's two-character name and one-character
+// value type; the key is followed by one parsed Encoding.
+func parseTagEncodingMap(r intReader, p []byte, off int, out map[tagKey]*Encoding) (int, error) {
+	entryOff, mapEnd, count, err := mapFrame(r, p, off, "tag-encoding")
 	if err != nil {
 		return off, err
 	}
 	cur := entryOff
 	for i := int32(0); i < count; i++ {
-		id, n, terr := itf8At(p[:mapEnd], cur)
+		id, n, terr := r.u32(p[:mapEnd], cur)
 		if terr != nil {
 			return off, fmt.Errorf("cram: tag-encoding map entry %d key: %w", i, terr)
 		}
 		cur += n
 		u := uint32(id)
 		key := tagKey{byte(u >> 16), byte(u >> 8), byte(u)}
-		enc, next, perr := parseEncoding(p[:mapEnd], cur)
+		enc, next, perr := parseEncoding(r, p[:mapEnd], cur)
 		if perr != nil {
 			return off, fmt.Errorf("cram: tag %s: %w", key, perr)
 		}

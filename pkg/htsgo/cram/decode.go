@@ -7,11 +7,13 @@ import (
 // byteCursor is a forward-only reader over an external block's
 // uncompressed payload. CRAM external data series are laid out
 // back-to-back in their block, so a series decoder pulls values from a
-// cursor that tracks its position; ITF-8 integers and raw byte runs are
-// both read through it.
+// cursor that tracks its position; variable-length integers and raw byte
+// runs are both read through it. The integer format is ITF-8 for CRAM
+// v2/v3 and uint7 varints for v4, selected by the cursor's intReader.
 type byteCursor struct {
 	data []byte
 	pos  int
+	r    intReader
 }
 
 // remaining reports how many unread bytes the cursor still has.
@@ -42,9 +44,33 @@ func (c *byteCursor) readN(n int) ([]byte, error) {
 	return out, nil
 }
 
-// readITF8 reads an ITF-8 integer from the cursor, advancing past it.
-func (c *byteCursor) readITF8() (int32, error) {
-	v, n, err := itf8At(c.data, c.pos)
+// readInt reads one version-aware unsigned 32-bit integer from the
+// cursor (ITF-8 for v2/v3, uint7 for v4), advancing past it. It is the
+// EXTERNAL-integer read used by the v2/v3 integer data series; v4 stores
+// integers through the VARINT codecs instead (see readVarintInt /
+// readVarintLong).
+func (c *byteCursor) readInt() (int32, error) {
+	v, n, err := c.r.u32(c.data, c.pos)
+	if err != nil {
+		return 0, err
+	}
+	c.pos += n
+	return v, nil
+}
+
+// readVarintInt reads one v4 uint7 32-bit value (unsigned or, when signed
+// is true, zig-zag signed) from the cursor, advancing past it. It backs
+// the VARINT_UNSIGNED / VARINT_SIGNED integer codecs, whose offset the
+// caller adds.
+func (c *byteCursor) readVarintInt(signed bool) (int32, error) {
+	var v int32
+	var n int
+	var err error
+	if signed {
+		v, n, err = sint7At32(c.data, c.pos)
+	} else {
+		v, n, err = uint7At32(c.data, c.pos)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -67,6 +93,9 @@ type seriesSource struct {
 	// blocks maps a content id to the external block's decompressed
 	// payload.
 	blocks map[int32][]byte
+	// reader is the version-aware integer reader handed to every cursor so
+	// EXTERNAL integer values are read as ITF-8 (v2/v3) or uint7 (v4).
+	reader intReader
 }
 
 // totalBytes returns the combined size of the slice's CORE bitstream and
@@ -120,7 +149,7 @@ func (s *seriesSource) cursor(id int32) (*byteCursor, error) {
 	if !ok {
 		return nil, fmt.Errorf("cram: no external block with content id %d", id)
 	}
-	c := &byteCursor{data: data}
+	c := &byteCursor{data: data, r: s.reader}
 	s.external[id] = c
 	return c, nil
 }
@@ -164,7 +193,7 @@ func (enc *Encoding) drainInts(s *seriesSource) ([]int32, error) {
 	}
 	var out []int32
 	for !c.exhausted() {
-		v, err := c.readITF8()
+		v, err := c.readInt()
 		if err != nil {
 			return out, fmt.Errorf("cram: EXTERNAL value %d: %w", len(out), err)
 		}
@@ -204,7 +233,7 @@ func (enc *Encoding) drainByteArrayLen(s *seriesSource) ([][]byte, error) {
 		}
 		var out [][]byte
 		for !c.exhausted() {
-			ln, lerr := c.readITF8()
+			ln, lerr := c.readInt()
 			if lerr != nil {
 				return out, fmt.Errorf("cram: BYTE_ARRAY_LEN value %d length: %w", len(out), lerr)
 			}
@@ -310,7 +339,23 @@ func (enc *Encoding) decodeInt(s *seriesSource) (int32, error) {
 		if err != nil {
 			return 0, err
 		}
-		return c.readITF8()
+		return c.readInt()
+	case EncodingVarintUnsigned, EncodingVarintSigned:
+		// CRAM v4: integers are stored as uint7 varints in an external
+		// block, with a constant offset added. VARINT_SIGNED applies the
+		// zig-zag transform before adding the offset.
+		c, err := s.cursor(enc.ExternalID)
+		if err != nil {
+			return 0, err
+		}
+		v, err := c.readVarintInt(enc.ID == EncodingVarintSigned)
+		if err != nil {
+			return 0, err
+		}
+		return v + int32(enc.VarintOffset), nil
+	case EncodingConstByte, EncodingConstInt:
+		// CRAM v4: every value is the same constant; no block is read.
+		return int32(enc.ConstValue), nil
 	case EncodingHuffman:
 		t, err := enc.huffmanDecoder()
 		if err != nil {

@@ -136,13 +136,13 @@ func TestDecodeReadNameSynthesised(t *testing.T) {
 func TestDecodeTagsErrors(t *testing.T) {
 	rd := &recordDecoder{h: refFreeHeader()}
 	// A TL of 0 with an empty dictionary yields no tags, not an error.
-	if tags, err := rd.decodeTags(0, 0); err != nil || tags != nil {
+	if tags, _, err := rd.decodeTags(0, -1, 0); err != nil || tags != nil {
 		t.Errorf("decodeTags(0) = %v, %v; want nil,nil", tags, err)
 	}
-	if _, err := rd.decodeTags(-1, 0); err == nil {
+	if _, _, err := rd.decodeTags(-1, -1, 0); err == nil {
 		t.Error("a negative tag-line index should error")
 	}
-	if _, err := rd.decodeTags(7, 0); err == nil {
+	if _, _, err := rd.decodeTags(7, -1, 0); err == nil {
 		t.Error("an out-of-range tag-line index should error")
 	}
 }

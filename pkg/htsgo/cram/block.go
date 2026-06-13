@@ -170,11 +170,12 @@ func (b *Block) SupportedMethod() bool {
 }
 
 // readBlock parses one CRAM block from r: the 1-byte compression
-// method, 1-byte content type, ITF-8 content id, ITF-8 compressed size,
-// ITF-8 uncompressed size, the compressed data bytes, and — for CRAM
-// v3+ — the trailing 4-byte little-endian CRC32. The CRC32 covers the
-// block header and its data, and is validated here; a mismatch means
-// the block was mis-delineated and is reported as an error.
+// method, 1-byte content type, content id, compressed size, uncompressed
+// size, the compressed data bytes, and — for CRAM v3+ — the trailing
+// 4-byte little-endian CRC32. The three size/id fields are ITF-8 for
+// CRAM v2/v3 and uint7 varints for v4. The CRC32 covers the block header
+// and its data, and is validated here; a mismatch means the block was
+// mis-delineated and is reported as an error.
 //
 // maxData is an upper bound — the number of bytes still available in
 // the enclosing container — on the block's compressed payload. A block
@@ -192,13 +193,19 @@ func readBlock(r io.Reader, def FileDefinition, maxData int64) (Block, error) {
 	b.Method = CompressionMethod(hdr[0])
 	b.ContentType = BlockContentType(hdr[1])
 	var err error
-	if b.ContentID, _, err = readITF8(cr); err != nil {
+	readInt := func() (int32, int, error) {
+		if def.usesUint7() {
+			return readUint7_32(cr)
+		}
+		return readITF8(cr)
+	}
+	if b.ContentID, _, err = readInt(); err != nil {
 		return b, fmt.Errorf("cram: block content id: %w", err)
 	}
-	if b.CompressedSize, _, err = readITF8(cr); err != nil {
+	if b.CompressedSize, _, err = readInt(); err != nil {
 		return b, fmt.Errorf("cram: block compressed size: %w", err)
 	}
-	if b.UncompressedSize, _, err = readITF8(cr); err != nil {
+	if b.UncompressedSize, _, err = readInt(); err != nil {
 		return b, fmt.Errorf("cram: block uncompressed size: %w", err)
 	}
 	if b.CompressedSize < 0 {

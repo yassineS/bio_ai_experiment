@@ -16,7 +16,7 @@ const fileDefSize = 26
 // FileDefinition is the fixed-size header that opens every CRAM file. It
 // records the format version and a free-form file identifier.
 type FileDefinition struct {
-	// Major is the CRAM major version number (2 or 3 in practice).
+	// Major is the CRAM major version number (2, 3 or 4 in practice).
 	Major uint8
 	// Minor is the CRAM minor version number (0 or 1 in practice).
 	Minor uint8
@@ -28,15 +28,29 @@ type FileDefinition struct {
 // supported reports whether the file definition is a CRAM version this
 // package can parse. CRAM major version 3 (v3.0 and v3.1) is the primary
 // target; major version 2 is recognised structurally but its containers
-// omit the CRC32 fields, which changes parsing.
+// omit the CRC32 fields, which changes parsing. Major version 4 (the v4.0
+// draft) is recognised for decode: it keeps the v3 container/block/slice
+// layout but encodes every variable-length integer as a uint7 varint and
+// uses a new set of data-series codecs (see varint.go and the v4 codec
+// branches in encoding.go / decode.go).
 func (d FileDefinition) supported() bool {
-	return d.Major == 2 || d.Major == 3
+	return d.Major == 2 || d.Major == 3 || d.Major == 4
 }
 
 // hasCRC reports whether containers and blocks in this CRAM version carry
-// the trailing 4-byte CRC32. CRAM v3.0 and later embed it; v2 does not.
+// the trailing 4-byte CRC32. CRAM v3.0 and later (including v4) embed it;
+// v2 does not.
 func (d FileDefinition) hasCRC() bool {
 	return d.Major >= 3
+}
+
+// usesUint7 reports whether this CRAM version encodes its variable-length
+// integers as uint7 varints rather than ITF-8 / LTF-8. CRAM v4.0 and later
+// do; v2.x and v3.x do not. It is the single predicate that steers every
+// integer read in the container, block, slice-header, compression-header
+// and data-series codec parsers onto the v4 path.
+func (d FileDefinition) usesUint7() bool {
+	return d.Major >= 4
 }
 
 // VersionString returns the version as a "major.minor" string.
@@ -75,7 +89,7 @@ func readFileDefinition(r io.Reader) (FileDefinition, error) {
 	d.Minor = buf[5]
 	copy(d.FileID[:], buf[6:26])
 	if !d.supported() {
-		return d, fmt.Errorf("cram: unsupported CRAM major version %d (this parser supports 2 and 3)",
+		return d, fmt.Errorf("cram: unsupported CRAM major version %d (this parser supports 2, 3 and 4)",
 			d.Major)
 	}
 	return d, nil

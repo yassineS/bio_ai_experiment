@@ -16,6 +16,11 @@ type Slice struct {
 	core *Block
 	// external maps each external data block's content id to the block.
 	external map[int32]*Block
+	// major is the CRAM major version of the container the slice belongs
+	// to. It is threaded into the seriesSource so EXTERNAL/VARINT integer
+	// values are read in the matching format (ITF-8 for v2/v3, uint7 for
+	// v4).
+	major uint8
 }
 
 // DataContainer is a CRAM data container parsed one level deeper than
@@ -49,24 +54,26 @@ func ParseDataContainer(c *Container) (*DataContainer, error) {
 		return nil, fmt.Errorf("cram: container %d's first block is %s, not a compression header",
 			c.Index, first.ContentType)
 	}
-	payload, err := first.Decompress()
-	if err != nil {
-		return nil, fmt.Errorf("cram: container %d compression header: %w", c.Index, err)
-	}
-	ch, err := parseCompressionHeader(payload)
-	if err != nil {
-		return nil, fmt.Errorf("cram: container %d compression header: %w", c.Index, err)
-	}
-	dc := &DataContainer{Compression: ch}
-
-	// The slice-header record-counter width depends on the CRAM major
-	// version (ITF-8 for v2, LTF-8 for v3+). Containers from Reader.Next
-	// carry the version; a hand-built Container leaves Major zero, which
-	// we treat as v3+ to preserve the historical LTF-8 default.
+	// The integer encoding throughout the container — compression-header
+	// maps, per-encoding parameters, slice headers and data-series values
+	// — depends on the CRAM major version: ITF-8/LTF-8 for v2/v3, uint7
+	// varints for v4. Containers from Reader.Next carry the version; a
+	// hand-built Container leaves Major zero, which we treat as v3+ to
+	// preserve the historical default.
 	major := c.Major
 	if major == 0 {
 		major = 3
 	}
+
+	payload, err := first.Decompress()
+	if err != nil {
+		return nil, fmt.Errorf("cram: container %d compression header: %w", c.Index, err)
+	}
+	ch, err := parseCompressionHeader(payload, major)
+	if err != nil {
+		return nil, fmt.Errorf("cram: container %d compression header: %w", c.Index, err)
+	}
+	dc := &DataContainer{Compression: ch}
 
 	// Walk the blocks after the compression header. They alternate: a
 	// slice-header block (content type MAPPED_SLICE) followed by that
@@ -87,7 +94,7 @@ func ParseDataContainer(c *Container) (*DataContainer, error) {
 			return nil, fmt.Errorf("cram: container %d slice %d header: %w", c.Index, len(dc.Slices), err)
 		}
 		i++
-		sl := &Slice{Header: sh, external: make(map[int32]*Block)}
+		sl := &Slice{Header: sh, external: make(map[int32]*Block), major: major}
 		if int(sh.NumBlocks) > len(c.Blocks)-i {
 			return nil, fmt.Errorf("cram: container %d slice %d declares %d data blocks but only %d remain",
 				c.Index, len(dc.Slices), sh.NumBlocks, len(c.Blocks)-i)
@@ -141,6 +148,7 @@ func (sl *Slice) newSeriesSource() (*seriesSource, error) {
 		core:     core,
 		external: make(map[int32]*byteCursor),
 		blocks:   blocks,
+		reader:   newIntReader(sl.major),
 	}, nil
 }
 
