@@ -106,10 +106,9 @@ fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
 KeyListOps ops are **done** (`-c/--cluster` is a non-goal — upstream comments
 it out). The genuine tail left is heavier or blocked:
   - CRAM **v4.0** — awaits a finalised upstream spec (out of scope);
-  - the documented **non-goals** (gtcheck `-c/--cluster`, `convert` PLINK,
-    `tview` — upstream-dead or non-pipeline). (`som` was a non-goal but is
-    now shipped with the upstream write bug fixed — see the `som` status
-    note in the bcftools section.)
+  - gtcheck `-c/--cluster` — commented out upstream (an error stub).
+    (`convert` PLINK and `som` train/classify, formerly non-goals, are now
+    implemented; `samtools tview` text/HTML and CRAM v4.0 are in flight.)
 
   Recently closed (so no longer in this list): bcftools `concat --ligate`
   phased ligation; mendelian2 `sites_not_diploid` (non-diploid records are
@@ -123,11 +122,16 @@ ref-skip columns, per-nth gap-fill duplication, INT_MIN quality, and
 deletion ref-skip boundaries — 120-subtest live oracle); bgzip's `--test`
 integrity check (long-only, since `-t` binds to `--threads`).
 
-Not a gap (phantom feature): bcftools `convert` PLINK exporters. Upstream
-`vcfconvert.c` has the `--plink`/`--tped` options **commented out** (lines
-~1697–1699) with no `case 'p'`, no `--plink` long option, and no
-implementation — PLINK export lives in the `plink` tool, not in bcftools
-`convert`. Nothing to port.
+Implemented (this wave): bcftools `convert` PLINK exporters. Upstream
+`vcfconvert.c` leaves the `--plink`/`--tped`/`--bin` option block
+**commented out** (lines ~1697–1699) with no implementation, so there is
+no upstream binary to diff against. The Go port implements them to the
+PLINK1 file-format spec: `-p`/`--plink` (`.ped`+`.map`), `--tped`
+(`.tped`+`.tfam`), and `--plink-bed` (binary `.bed`+`.bim`+`.fam`,
+SNP-major, `A1=ALT`/`A2=REF`). Multi-allelic and no-ALT records are
+skipped with a warning (PLINK is biallelic). Byte-exact `.bed` tests plus
+text round-trip tests live in `convert_plink_test.go`; see the per-tool
+README for the conventions.
 
 Recently closed (this wave, treat as merged):
 
@@ -3043,13 +3047,13 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 and `mpileup` (SNP slices 1–4 + legacy `bam2bcf_indel` + `--indels-cns`).
 
 All bcftools subcommands now have a real implementation in the Go port.
-The genuinely-remaining gap is small: `gtcheck -c/--cluster` + filter
-expressions. `convert` PLINK exporters are a **phantom feature** —
-upstream comments the `--plink`/`--tped` options out (no implementation),
-so there is nothing to port. `csq -l/--local-csq` is now implemented.
-`som` is now **shipped** (the upstream `fwrite`-return write bug is fixed
-so train→classify works — see the `som` status note below); `tview` is a
-deliberate **non-goal** (see PROJECT_STATUS.md); `query %N_ALT` /
+The genuinely-remaining gap is `gtcheck -c/--cluster` (the cluster
+dendrogram is an error stub upstream). `convert` PLINK exporters
+(`--plink`/`--tped`/`--plink-bed`) are now implemented to the PLINK1 spec
+(upstream comments those options out, so there was no upstream to diff);
+`csq -l/--local-csq` and `concat --ligate` are implemented; `som` is now
+**shipped** (the upstream `fwrite`-return write bug is fixed so
+train→classify works). `tview` text/HTML is in flight. `query %N_ALT` /
 `import --skipBamQ` are **not** upstream flags.
 
 **Multi-threaded output compression** (`-@ / --threads N`) — DONE for the
@@ -3114,12 +3118,13 @@ table 0).
 
 The former "boulders" are now **closed**: mpileup indel calling (both the
 legacy `bam2bcf_indel` path and `--indels-cns`), the `convert` GEN/HAP/TSV/
-gVCF modes, and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`,
-`--dump-gff`, `-O b|u|z` non-text output) all landed and are live-oracle
-validated (see the per-subcommand sections below). The only bcftools item
-still open is `gtcheck`'s `-c/--cluster` dendrogram + filter expressions.
-(`convert`'s PLINK exporters are a phantom — upstream leaves them
-commented out — and `csq -l/--local-csq` is now implemented.)
+gVCF modes plus the PLINK exporters (`--plink`/`--tped`/`--plink-bed`,
+implemented to the PLINK1 spec since upstream comments those options out),
+and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`, `--dump-gff`,
+`-O b|u|z` non-text output) all landed and are live-oracle validated (see
+the per-subcommand sections below). The only bcftools item still open is
+`gtcheck`'s `-c/--cluster` dendrogram + filter expressions.
+(`csq -l/--local-csq` is now implemented.)
 
 The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
 but with a deliberate design divergence from upstream:
