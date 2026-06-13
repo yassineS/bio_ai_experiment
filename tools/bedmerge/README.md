@@ -42,9 +42,11 @@ bedmerge input.bed > merged.bed
 
 - `-d, --distance INT` - Maximum distance between intervals to merge (default: 0)
 - `-s, --strand` - Merge only intervals on the same strand
+- `-S <+|->` - Merge only intervals on the given strand (mutually exclusive
+  with `-s`)
 - `-i, --input FILE` - Input BED file (default: stdin)
 - `--output FILE` - Output BED file (default: stdout)
-- `-S, --stats` - Print merge statistics to stderr
+- `--stats` - Print merge statistics to stderr
 - `--count` - Output count of merged intervals as name field
 - `-g, --bedgraph` - Input/output in bedGraph format (chrom, start, end, score)
 - `-c, --columns LIST` - Comma-separated 1-based input columns to aggregate over each
@@ -78,10 +80,17 @@ bedmerge -s input.bed > merged.bed
 
 Only merges intervals on the same strand (respects strand column if present).
 
+To merge only one strand (dropping the other strand and unknown `.` records),
+use `-S +` or `-S -`:
+
+```bash
+bedmerge -S + input.bed > plus_merged.bed
+```
+
 #### Show merge statistics
 
 ```bash
-bedmerge -S input.bed > merged.bed
+bedmerge --stats input.bed > merged.bed
 ```
 
 Outputs statistics to stderr:

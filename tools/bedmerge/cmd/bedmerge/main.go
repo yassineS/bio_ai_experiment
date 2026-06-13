@@ -26,9 +26,10 @@ Description:
 Options:
   -d, --distance INT     Maximum distance between intervals to merge (default: 0)
   -s, --strand           Merge only intervals on the same strand
+  -S <+|->               Merge only intervals on the given strand
   -i, --input FILE       Input BED file (default: stdin)
       --output FILE      Output BED file (default: stdout)
-  -S, --stats            Print merge statistics to stderr
+      --stats            Print merge statistics to stderr
       --count            Output count of merged intervals as name field
   -g, --bedgraph         Input/output in bedGraph format (chrom, start, end, score)
   -c, --columns LIST     Comma-separated 1-based input columns to aggregate
@@ -93,6 +94,9 @@ func main() {
 	var strandSpec bool
 	cliflag.BoolVar(fs, &strandSpec, "s", "strand", false, "Merge only intervals on the same strand")
 
+	var strandFilter string
+	fs.StringVar(&strandFilter, "S", "", "Merge only intervals on the given strand (+ or -)")
+
 	var inputFile string
 	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input BED file (default: stdin)")
 
@@ -100,7 +104,7 @@ func main() {
 	cliflag.StringVar(fs, &outputFile, "", "output", "", "Output BED file (default: stdout)")
 
 	var showStats bool
-	cliflag.BoolVar(fs, &showStats, "S", "stats", false, "Print merge statistics to stderr")
+	cliflag.BoolVar(fs, &showStats, "", "stats", false, "Print merge statistics to stderr")
 
 	var showCount bool
 	cliflag.BoolVar(fs, &showCount, "", "count", false, "Output count of merged intervals as name field")
@@ -165,10 +169,11 @@ func main() {
 
 	// Set merge options
 	opts := bedmerge.MergeOptions{
-		MaxDistance: distance,
-		StrandSpec:  strandSpec,
-		Streaming:   streaming,
-		ColumnOps:   columnOps,
+		MaxDistance:  distance,
+		StrandSpec:   strandSpec,
+		StrandFilter: strandFilter,
+		Streaming:    streaming,
+		ColumnOps:    columnOps,
 		OutputFields: bedmerge.OutputFields{
 			Count:    showCount,
 			BedGraph: bedGraph,

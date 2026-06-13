@@ -172,6 +172,10 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 		if len(fields) > 5 {
 			strand = fields[5]
 		}
+		// -S single-strand filter: drop records on the other strand.
+		if opts.StrandFilter != "" && strand != opts.StrandFilter {
+			continue
+		}
 		// Verify the requested columns exist.
 		for _, c := range co.Columns {
 			if c > len(fields) {

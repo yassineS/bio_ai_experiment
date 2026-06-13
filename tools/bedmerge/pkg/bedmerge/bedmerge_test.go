@@ -32,6 +32,51 @@ chr1	300	400
 	}
 }
 
+func TestMergeStrandFilter(t *testing.T) {
+	// Mixed strands: only the requested strand survives, then a positional
+	// merge runs over the survivors (BED3 output).
+	input := "chr1\t10\t50\ta\t0\t+\n" +
+		"chr1\t20\t60\tb\t0\t-\n" +
+		"chr1\t40\t80\tc\t0\t+\n" +
+		"chr1\t30\t70\td\t0\t.\n"
+
+	plus, err := mergeToString(input, MergeOptions{StrandFilter: "+"})
+	if err != nil {
+		t.Fatalf("Merge(+): %v", err)
+	}
+	if plus != "chr1\t10\t80\n" {
+		t.Errorf("-S +: want chr1 10 80, got %q", plus)
+	}
+
+	minus, err := mergeToString(input, MergeOptions{StrandFilter: "-"})
+	if err != nil {
+		t.Fatalf("Merge(-): %v", err)
+	}
+	if minus != "chr1\t20\t60\n" {
+		t.Errorf("-S -: want chr1 20 60, got %q", minus)
+	}
+}
+
+func TestMergeStrandFilterValidation(t *testing.T) {
+	// -S with a bad argument is rejected.
+	if _, err := Merge(strings.NewReader(""), &bytes.Buffer{}, MergeOptions{StrandFilter: "x"}); err == nil {
+		t.Error("expected error for invalid -S argument")
+	}
+	// -s and -S together are rejected.
+	if _, err := Merge(strings.NewReader(""), &bytes.Buffer{}, MergeOptions{StrandFilter: "+", StrandSpec: true}); err == nil {
+		t.Error("expected error for -s and -S together")
+	}
+}
+
+// mergeToString runs Merge on an input string and returns the output.
+func mergeToString(input string, opts MergeOptions) (string, error) {
+	var buf bytes.Buffer
+	if _, err := Merge(strings.NewReader(input), &buf, opts); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
 func TestMergeAdjacent(t *testing.T) {
 	input := `chr1	100	200
 chr1	200	300

@@ -23,7 +23,12 @@ type MergeOptions struct {
 	MaxDistance  int          // Maximum distance between intervals to merge (default: 0)
 	StrandSpec   bool         // Merge only intervals on the same strand
 	OutputFields OutputFields // Fields to include in output
-	Streaming    bool         // Use streaming mode for large files
+	// StrandFilter ("-S <strand>"), when non-empty, must be "+" or "-": only
+	// records on that strand are kept, and the survivors are merged
+	// positionally (NOT per-strand), matching upstream bedtools merge -S.
+	// It is mutually exclusive with StrandSpec ("-s").
+	StrandFilter string
+	Streaming    bool // Use streaming mode for large files
 	// ColumnOps, when non-nil, requests bedtools-merge-style aggregation of
 	// input columns (the -c/-o options). When set, output columns are
 	// chrom, start, end followed by one aggregated value per requested column.
@@ -33,6 +38,9 @@ type MergeOptions struct {
 // Merge reads BED intervals, sorts them, and merges overlapping/adjacent intervals.
 // Returns the number of merged intervals.
 func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
+	if err := validateStrandOptions(opts); err != nil {
+		return 0, err
+	}
 	// Column-aggregation mode (bedtools merge -c/-o style).
 	if opts.ColumnOps != nil {
 		return mergeWithColumnOps(reader, writer, opts)
@@ -54,6 +62,11 @@ func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 		}
 		if err != nil {
 			return 0, fmt.Errorf("error reading BED record: %w", err)
+		}
+
+		// -S single-strand filter: drop records on the other strand.
+		if strandFiltered(record, opts) {
+			continue
 		}
 
 		// If bedGraph input mode, parse the name field as score
@@ -93,6 +106,27 @@ func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 	}
 
 	return len(merged), nil
+}
+
+// validateStrandOptions rejects an invalid -S argument and the illegal
+// combination of -s and -S, mirroring upstream bedtools merge.
+func validateStrandOptions(opts MergeOptions) error {
+	if opts.StrandFilter == "" {
+		return nil
+	}
+	if opts.StrandFilter != "+" && opts.StrandFilter != "-" {
+		return fmt.Errorf("invalid strand for -S: %q (must be + or -)", opts.StrandFilter)
+	}
+	if opts.StrandSpec {
+		return fmt.Errorf("-s and -S are mutually exclusive")
+	}
+	return nil
+}
+
+// strandFiltered reports whether record should be dropped under the -S
+// single-strand filter. With no filter active it always returns false.
+func strandFiltered(record *bed.Record, opts MergeOptions) bool {
+	return opts.StrandFilter != "" && record.Strand != opts.StrandFilter
 }
 
 // mergedInterval represents a merged interval with metadata.
@@ -335,6 +369,11 @@ func streamingMerge(reader io.Reader, writer io.Writer, opts MergeOptions) (int,
 			}
 		}
 
+		// -S single-strand filter: drop records on the other strand.
+		if strandFiltered(record, opts) {
+			continue
+		}
+
 		// If chromosome changed, flush previous chromosome
 		if record.Chrom != currentChrom && currentChrom != "" {
 			if err := flushChrom(); err != nil {
@@ -363,6 +402,9 @@ type Stats struct {
 
 // MergeWithStats performs merge and returns detailed statistics.
 func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Stats, error) {
+	if err := validateStrandOptions(opts); err != nil {
+		return nil, err
+	}
 	// Column-aggregation mode: report only the output count.
 	if opts.ColumnOps != nil {
 		count, err := mergeWithColumnOps(reader, writer, opts)
@@ -394,6 +436,11 @@ func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Sta
 		}
 		if err != nil {
 			return nil, fmt.Errorf("error reading BED record: %w", err)
+		}
+
+		// -S single-strand filter: drop records on the other strand.
+		if strandFiltered(record, opts) {
+			continue
 		}
 
 		// If bedGraph input mode, parse the name field as score

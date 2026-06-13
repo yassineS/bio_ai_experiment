@@ -5,9 +5,9 @@ package bedmerge
 // Cases are mirrored from reference_code/bedtools/test/merge/test-merge.sh.
 // Inputs live under tools/bedmerge/testdata/parity/<case>.bed and expected
 // outputs under <case>.expected.bed. Tests that exercise features bedmerge
-// does not implement (custom -delim, -S strand filter, VCF/GFF input, the
-// per-strand "." fan-out semantics) are wrapped in t.Skip with a one-line
-// rationale rather than being deleted.
+// does not implement (custom -delim, VCF/GFF input) are wrapped in t.Skip
+// with a one-line rationale rather than being deleted; the `-S` strand
+// filter (t16/t17) is implemented and asserted.
 
 import (
 	"bytes"
@@ -152,13 +152,23 @@ func TestParity_Merge_T15_MixedStrandsFanOut(t *testing.T) {
 	}
 }
 
-// merge.t16 / t17 — `-S +` / `-S -` filter records by strand. bedmerge does
-// not implement `-S` (single-strand filter); only `-s` (stranded).
+// merge.t16 / t17 — `-S +` / `-S -` keep only records on the given strand
+// (dropping the other strand and `.`/unknown) and merge the survivors
+// positionally, emitting BED3. bedmerge implements this via
+// MergeOptions.StrandFilter.
 func TestParity_Merge_T16_StrandFilterPlus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runMergeParity(t, "mixedStrands.bed", MergeOptions{StrandFilter: "+"})
+	want := readMergeParity(t, "t16_strand_filter_plus.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 func TestParity_Merge_T17_StrandFilterMinus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runMergeParity(t, "mixedStrands.bed", MergeOptions{StrandFilter: "-"})
+	want := readMergeParity(t, "t17_strand_filter_minus.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // merge.t20 — chromosome change handling (BED3 output, 4-col input ignored).
