@@ -38,6 +38,8 @@ Options:
                          single op applied to all. Supported: sum, min, max,
                          mean, median, count, count_distinct, distinct,
                          collapse, first, last, mode, antimode
+      --delim CHAR       Delimiter joining collapse/distinct/freq list values
+                         (default ",")
       --streaming        Use streaming mode for very large files
   -h, --help             Show this help message
   -v, --version          Show version information and exit
@@ -118,6 +120,9 @@ func main() {
 	var operations string
 	cliflag.StringVar(fs, &operations, "o", "operations", "", "Comma-separated operations, one per -c column or one applied to all")
 
+	var delim string
+	fs.StringVar(&delim, "delim", ",", "Delimiter for collapse/distinct/freq list joins")
+
 	var streaming bool
 	cliflag.BoolVar(fs, &streaming, "", "streaming", false, "Use streaming mode for very large files")
 
@@ -143,6 +148,9 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+	if columnOps != nil {
+		columnOps.Delim = delim
 	}
 
 	// Determine input file

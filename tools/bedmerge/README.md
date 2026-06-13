@@ -53,6 +53,9 @@ bedmerge input.bed > merged.bed
   merged group (`bedtools merge -c` style); requires `-o`
 - `-o, --operations LIST` - Comma-separated operations, one per `-c` column or a single
   op applied to all columns (`bedtools merge -o` style); requires `-c`
+- `--delim CHAR` - Delimiter joining the values of the list operations
+  (collapse/distinct/distinct_only/distinct_sort_num/freqasc/freqdesc);
+  default `,`. The concat/cat family always joins with no delimiter.
 - `--streaming` - Use streaming mode for very large files
 - `-h, --help` - Show help message
 

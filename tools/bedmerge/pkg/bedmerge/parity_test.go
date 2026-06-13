@@ -5,9 +5,9 @@ package bedmerge
 // Cases are mirrored from reference_code/bedtools/test/merge/test-merge.sh.
 // Inputs live under tools/bedmerge/testdata/parity/<case>.bed and expected
 // outputs under <case>.expected.bed. Tests that exercise features bedmerge
-// does not implement (custom -delim, VCF/GFF input) are wrapped in t.Skip
-// with a one-line rationale rather than being deleted; the `-S` strand
-// filter (t16/t17) is implemented and asserted.
+// does not implement (VCF/GFF input) are wrapped in t.Skip with a one-line
+// rationale rather than being deleted; the `-S` strand filter (t16/t17) and
+// the custom `-delim` list delimiter (t10) are implemented and asserted.
 
 import (
 	"bytes"
@@ -122,10 +122,15 @@ func TestParity_Merge_T9b_StrandedStrand(t *testing.T) {
 	}
 }
 
-// merge.t10 — custom delimiter via -delim "|". bedmerge always joins with ',';
-// the delim option is not yet plumbed through.
+// merge.t10 — custom delimiter via -delim "|" with -c 4 -o collapse.
 func TestParity_Merge_T10_CustomDelim(t *testing.T) {
-	t.Skip("unimplemented: -delim option; bedmerge always uses ',' for collapse/distinct joins")
+	co := mustParseOps(t, "4", "collapse")
+	co.Delim = "|"
+	got := runMergeParity(t, "a.names.bed", MergeOptions{ColumnOps: co})
+	want := readMergeParity(t, "t10_custom_delim.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // merge.t13 — VCF input. bedmerge only accepts BED.
