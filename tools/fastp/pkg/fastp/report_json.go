@@ -7,6 +7,7 @@
 package fastp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -102,9 +103,21 @@ func WriteJSONReport(path string, stats *ProcessStats) error {
 	}
 
 	report := buildJSONReport(stats)
+	if stats.MergeEnabled {
+		// Upstream renames the after-filtering block to `merged_and_filtered`
+		// and omits `read2_after_filtering` when -m/--merge is set
+		// (jsonreporter.cpp:158-167). Drop read2 here; the read1 key is
+		// renamed on the marshalled bytes below to preserve key order.
+		report.Read2AfterFilter = nil
+	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal JSON report: %w", err)
+	}
+	if stats.MergeEnabled {
+		data = bytes.Replace(data,
+			[]byte(`"read1_after_filtering":`),
+			[]byte(`"merged_and_filtered":`), 1)
 	}
 	f, err := os.Create(path)
 	if err != nil {

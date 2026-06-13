@@ -207,3 +207,39 @@ func TestWriteJSONReportDuplicationOmitsHistogramWhenEmpty(t *testing.T) {
 type discardWriter struct{}
 
 func (d *discardWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// TestWriteJSONReport_MergeRenamesBlock verifies that with -m/--merge the
+// after-filtering block is named "merged_and_filtered" and "read2_after_filtering"
+// is omitted, matching upstream jsonreporter.cpp:158-167.
+func TestWriteJSONReport_MergeRenamesBlock(t *testing.T) {
+	dir := t.TempDir()
+	for _, merge := range []bool{false, true} {
+		p := filepath.Join(dir, "r.json")
+		// TotalReadsR2 > 0 marks paired-end input, so read2_after_filtering
+		// would normally be emitted (and must be omitted under merge).
+		st := &ProcessStats{MergeEnabled: merge, TotalReads: 4, TotalReadsR2: 2, MergedReads: 2}
+		if err := WriteJSONReport(p, st); err != nil {
+			t.Fatalf("WriteJSONReport(merge=%v): %v", merge, err)
+		}
+		data, _ := os.ReadFile(p)
+		s := string(data)
+		if merge {
+			if !strings.Contains(s, `"merged_and_filtered":`) {
+				t.Errorf("merge: missing merged_and_filtered block")
+			}
+			if strings.Contains(s, `"read1_after_filtering":`) {
+				t.Errorf("merge: read1_after_filtering should be renamed")
+			}
+			if strings.Contains(s, `"read2_after_filtering":`) {
+				t.Errorf("merge: read2_after_filtering should be omitted")
+			}
+		} else {
+			if !strings.Contains(s, `"read1_after_filtering":`) {
+				t.Errorf("no-merge: missing read1_after_filtering block")
+			}
+			if strings.Contains(s, `"merged_and_filtered":`) {
+				t.Errorf("no-merge: must not emit merged_and_filtered")
+			}
+		}
+	}
+}

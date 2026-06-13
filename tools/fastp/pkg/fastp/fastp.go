@@ -230,6 +230,11 @@ type ProcessStats struct {
 	CorrectedReads      int64 // Reads with >=1 base corrected by overlap analysis (--correction).
 	OverlappingReads    int
 	MergedReads         int
+	// MergeEnabled records whether -m/--merge was active. Upstream renames the
+	// JSON `read1_after_filtering` block to `merged_and_filtered` (and omits
+	// `read2_after_filtering`) when the merge flag is set, regardless of how
+	// many pairs actually merged (jsonreporter.cpp:158).
+	MergeEnabled bool
 
 	// Duplication evaluation results, populated when DupCalcAccuracy > 0.
 	DupRate      float64
@@ -431,7 +436,7 @@ func ProcessPairedEndMerge(input1, input2 io.Reader, output1, output2, mergeOutp
 		}
 	}
 
-	stats := &ProcessStats{}
+	stats := &ProcessStats{MergeEnabled: opts.Merge}
 	dupTracker := newDupTrackerForOpts(opts)
 
 	// Process with multi-threading if enabled. UMI and duplication
@@ -848,7 +853,7 @@ func ProcessSingleEnd(input io.Reader, output io.Writer, encoding fastq.QualityE
 	reader := fastq.NewReader(input, encoding)
 	writer := fastq.NewWriter(output, encoding)
 
-	stats := &ProcessStats{}
+	stats := &ProcessStats{MergeEnabled: opts.Merge}
 	dupTracker := newDupTrackerForOpts(opts)
 
 	// Process with multi-threading if enabled. UMI and duplication
