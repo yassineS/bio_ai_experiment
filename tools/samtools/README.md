@@ -46,6 +46,7 @@ samtools fastq    [options] <in.bam|in.sam>
 samtools bam2fq   [options] <in.bam|in.sam>   # alias for fastq
 samtools markdup  [options] <in.bam> <out.bam>
 samtools stats    [options] <in.bam|in.sam>
+samtools tview    [options] <in.bam|in.cram> [ref.fasta]
 samtools help
 samtools version
 ```
@@ -316,6 +317,46 @@ the BC/CR/OX/RX aux tags are present), **RL/FRL/LRL**, **MAPQ**, **IS**,
 **IC/ID**, **COV**, **GCD** and **RFS** (with `--ref-stats`). Every
 output section is implemented; `samtools stats` is at full 1:1 section
 parity. `-x/--sparse` thins all-zero IS rows only.
+
+### `samtools tview`
+
+A pipeline-friendly alignment viewer. Only the **non-interactive** display
+modes are built: `-d T` (plain text) and `-d H` (HTML). Both render the same
+character grid upstream's `bam_tview.c` builds for a region — a ruler line, the
+reference bases, a per-position consensus, then one row per read with
+non-overlapping reads packed greedily onto shared rows. The text mode emits the
+grid as plain characters (no ANSI escapes — upstream only colourises a TTY); the
+HTML mode wraps each cell in a coloured `<span>`, a direct port of
+`bam_tview_html.c`. Both are verified **byte-for-byte** against the vendored
+upstream binary (`TestTviewLiveParity`).
+
+```bash
+samtools tview -d T -p chr1:10000 -w 160 aln.bam ref.fa   # text grid
+samtools tview -d H -p chr1:10000 aln.bam ref.fa > view.html
+```
+
+| Short | Long              | Description                                                      |
+|-------|-------------------|-----------------------------------------------------------------|
+| `-d`  | `--display T\|H\|C` | Text / HTML output. `C` (curses) is unsupported (see below).    |
+| `-p`  | `--position REG`  | Start at this region (`chr` or `chr:pos`).                       |
+| `-w`  | `--width INT`     | Display width in columns (default 80).                           |
+| `-s`  | `--sample STR`    | Show only reads from this `@RG` sample (`SM:`) or read-group ID. |
+| `-T`  | `--reference FA`  | Reference FASTA (also accepted positionally as `ref.fasta`).     |
+| `-i`  | `--hide-inserts`  | Hide insertion columns (default expands them).                  |
+
+Rendering matches upstream exactly: a base equal to the reference shows `.`
+(forward) / `,` (reverse); a mismatch shows the read base (UPPER forward / lower
+reverse); deletions show `*`; reference skips `>` (forward) / `<` (reverse).
+The consensus line uses the same bam2bcf `bcf_call_glfgen` + MAQ error-model
+call upstream uses, and the read-row packing reproduces the `bam_lpileup.c`
+level-pool algorithm (a freed row is reusable after the upstream two-column gap,
+lowest free row first). BAM and CRAM inputs are accepted; CRAM uses `-T` as the
+decode reference.
+
+**Interactive curses mode (`-d C`) is a deliberate non-goal.** It needs a TTY
+UI library, an external dependency this project avoids. Requesting `-d C` (or
+the bare default, which upstream treats as curses) prints
+`interactive curses mode not supported; use -d T or -d H` and exits non-zero.
 
 ## Deviations from upstream samtools
 

@@ -47,6 +47,7 @@ Subcommands:
   cnv       Copy-number variation caller (v1: heuristic CN-call).
   csq       Predict variant consequences against a GFF (v1: SNPs only).
   mpileup   Per-position genotype likelihoods from BAM (v1: SNPs only).
+  som       Self-Organizing Map variant classifier (train / classify).
   index     Build a CSI (or .tbi) index for a BCF / VCF.gz file.
   stats     Produce summary statistics from VCF/BCF (plot-vcfstats compatible).
   plugin    Run a user plugin (subprocess); also reachable as +<name>.
@@ -112,6 +113,8 @@ func main() {
 		os.Exit(runCSQ(os.Args[2:]))
 	case "mpileup":
 		os.Exit(runMpileup(os.Args[2:]))
+	case "som":
+		os.Exit(runSom(os.Args[2:]))
 	case "plugin":
 		os.Exit(runPlugin(os.Args[2:], ""))
 	case "help", "--help":

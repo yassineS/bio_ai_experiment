@@ -106,8 +106,10 @@ fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
 KeyListOps ops are **done** (`-c/--cluster` is a non-goal — upstream comments
 it out). The genuine tail left is heavier or blocked:
   - CRAM **v4.0** — awaits a finalised upstream spec (out of scope);
-  - the documented **non-goals** (gtcheck `-c/--cluster`, `som`/`tview` —
-    all upstream-dead or non-pipeline).
+  (gtcheck `-c/--cluster` clustering is now implemented as this port's own
+    design — upstream leaves it an error stub.)
+    (`convert` PLINK and `som` train/classify, formerly non-goals, are now
+    implemented; `samtools tview` text/HTML and CRAM v4.0 are in flight.)
 
   Recently closed (so no longer in this list): bcftools `concat --ligate`
   phased ligation; mendelian2 `sites_not_diploid` (non-diploid records are
@@ -1945,9 +1947,18 @@ either done or the cross-cutting multi-threading (`-@`) input-decode deferral.
 
 Missing subcommands (in rough priority order):
 
-- **`tview`** — terminal viewer. **Deliberate skip** (interactive
-  curses UI; near-zero pipeline usage and would require an ncurses
-  dependency). Not on the roadmap.
+- **`tview`** — alignment viewer. The non-interactive **text (`-d T`)
+  and HTML (`-d H`)** display modes are **implemented** and verified
+  byte-for-byte against the vendored upstream binary
+  (`tools/samtools/pkg/samtools/tview.go`, `TestTviewLiveParity`):
+  the ruler / reference / consensus (bam2bcf `bcf_call_glfgen` +
+  errmod) / packed read rows (the `bam_lpileup.c` level-pool greedy
+  packing), insertion-column expansion, the `-d`/`-p`/`-w`/`-s`/`-T`/`-i`
+  flags, and the strand/match/mismatch/deletion/refskip characters all
+  match. The interactive **ncurses (`-d C`) mode is a deliberate
+  non-goal** (it needs a TTY UI dependency this project avoids); the CLI
+  rejects `-d C` and the bare default with a clear message pointing at
+  `-d T` / `-d H`.
 - **`view` flag-tail**: `-X`/`--customized-index` (explicit index-file
   argument after `<in.bam>`) is implemented — the index kind (.bai or
   .csi) is auto-detected from the file's magic. `-L bed` landed as a
@@ -2520,7 +2531,9 @@ Plus:
   reference fetched via `fasta.RandomAccess`. The stderr warning
   is gone; the BAQ-adjusted qualities feed `gencns` exactly as
   upstream feeds them into the pileup.
-- **`tview`** — deliberate skip (interactive curses UI).
+- **`tview`** — non-interactive text (`-d T`) and HTML (`-d H`) modes
+  implemented (byte-for-byte parity); interactive curses (`-d C`) is a
+  deliberate non-goal (no TTY UI dependency).
 
 **`markdup` implemented features** (closed in the per-subcommand
 sub-features PR; live-validated byte-for-byte against the upstream binary
@@ -3046,13 +3059,13 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 and `mpileup` (SNP slices 1–4 + legacy `bam2bcf_indel` + `--indels-cns`).
 
 All bcftools subcommands now have a real implementation in the Go port.
-The genuinely-remaining gap is small: `gtcheck -c/--cluster` + filter
-expressions. `convert` PLINK exporters (`--plink`/`--tped`/`--plink-bed`)
-are now implemented to the PLINK1 spec (upstream comments those options
-out, so there was no upstream to diff). `csq -l/--local-csq` is now
-implemented. `som` and `tview` are deliberate **non-goals** (see
-PROJECT_STATUS.md); `query %N_ALT` / `import --skipBamQ` are **not**
-upstream flags.
+The genuinely-remaining gap is `gtcheck -c/--cluster` clustering, now
+implemented as this port's own design (upstream leaves it an error stub).
+`convert` PLINK exporters (`--plink`/`--tped`/`--plink-bed`, PLINK1 spec),
+`csq -l/--local-csq`, `concat --ligate`, and `som` train/classify (upstream
+`fwrite`-return write bug fixed) are implemented; samtools `tview` text/HTML
+(`-d T`/`-d H`) is implemented with only the interactive curses `-d C` left out.
+`query %N_ALT` / `import --skipBamQ` are **not** upstream flags.
 
 **Multi-threaded output compression** (`-@ / --threads N`) — DONE for the
 output-writer subcommands. Like upstream (which calls htslib
@@ -3436,26 +3449,34 @@ Option-tail status on `query` format tokens:
   fly. There is therefore nothing to port here; adding a `%N_ALT` format
   token would diverge from upstream.
 
-Status on `som` (self-organizing-map filtering) — **NOT SHIPPED, by
-design**:
+Status on `som` (self-organizing-map filtering) — **SHIPPED (upstream
+write bug fixed)**:
 
 - Upstream `bcftools som` (`vcfsom.c`) is a standalone train/classify
-  tool over a tab-separated annotation file (`annots.tab.gz`), not a VCF
-  filter. Crucially it is **broken in the vendored upstream**:
-  `som_write_map` (`vcfsom.c:170`) checks `fwrite("SOMv1",5,1,fp)!=5`,
-  but `fwrite` returns the element count (1), so the comparison is always
-  true and `--train` calls `error()` and exits 255 after truncating the
-  `.som` map to 5 bytes. Consequently `--classify` can never read a map
-  (it fails with "Could not parse %s.som", exit 255), and
-  `som --train` on a missing file segfaults (exit 139). The subcommand
-  is effectively dead upstream.
-- A faithful, byte-exact port would therefore reproduce a tool that
-  always crashes; a *working* SOM would diverge from upstream. Per the
-  "mirror upstream exactly / do not fake anything" rule, `som` is left
-  unported and is not registered in the dispatch. Porting it would also
-  require reproducing glibc's `random()` (TYPE_3 additive-feedback PRNG)
-  to match the weight initialisation, which only matters if the
-  upstream write bug is fixed first. See `docs/UPSTREAM_BUGS.md`.
+  tool. It is **broken in the vendored upstream**: `som_write_map`
+  (`vcfsom.c:170`) checks `fwrite("SOMv1",5,1,fp)!=5`, but `fwrite`
+  returns the element count (1), so the comparison is always true and
+  `--train` calls `error()` and exits 255 after truncating the `.som`
+  map to 5 bytes. Consequently `--classify` can never read a map and the
+  subcommand is effectively dead upstream
+  (`docs/UPSTREAM_BUGS.md#bcftools-som-write-map`).
+- The Go port **registers `som` and fixes the write bug** so the
+  `--train`→`--classify` pipeline works. `tools/bcftools/pkg/bcftools/som.go`
+  ports the SOM math (BMU search, neighbourhood update, count
+  normalisation, distance scoring) verbatim from `vcfsom.c` and writes a
+  usable map. Three deliberate divergences from a byte-exact port: (a)
+  the on-disk map format is our own clean, versioned binary format
+  (magic `SOMGO1`) because upstream's `SOMv1` layout is unusable; (b) the
+  SOM reads INFO annotations straight out of a VCF/BCF (the
+  `-t/--training-annots` set, default `QUAL,MQ,MQ0F,BQB,MQB,RPB,SGB`,
+  min/max-normalised) rather than a pre-extracted `annots.tab.gz`; and
+  (c) weight initialisation uses Go's `math/rand` (deterministic per
+  seed) instead of glibc's `random()`. No live oracle exists (upstream
+  crashes), so the port is validated by train→classify and map-file
+  round-trips plus hand-checkable BMU/update unit tests
+  (`som_test.go`). Upstream's experimental `-f/--nfold` cross-validation
+  and `-m/--merge` knobs are accepted-as-surface only (v1 trains a single
+  map). See `docs/UPSTREAM_BUGS.md`.
 
 Option-tail status on `mendelian2`:
 

@@ -70,12 +70,24 @@ warrant a closer look:_
   missing input file segfaults (exit 139). The `som` subcommand is
   therefore effectively dead upstream.
 
-  Disposition: **track-only / not ported.** A byte-exact port would
-  reproduce a tool that always crashes; a working SOM would diverge from
-  upstream. The Go port deliberately does not register `som` in the
-  dispatch. If upstream ever fixes the `fwrite` check, a port would also
-  need to reproduce glibc's `random()` (TYPE_3 additive-feedback PRNG)
-  to match the SOM weight initialisation byte-for-byte. See
+  Disposition: **fix-on-port (done).** We register `som` and fix the
+  upstream write-map bug. The Go port's write path
+  (`writeMaps` in `tools/bcftools/pkg/bcftools/som.go`) serialises the
+  full map and validates the byte count of every write, so `--train`
+  produces a usable map and the `--train`→`--classify` pipeline works
+  end to end. Because upstream's on-disk `SOMv1` format is unusable, the
+  port defines its own clean, versioned binary format (magic `SOMGO1`;
+  documented in `som.go`) rather than reproducing the broken one. Two
+  further deliberate divergences from a byte-exact port: (a) the SOM
+  reads INFO annotations straight out of a VCF/BCF rather than a
+  pre-extracted `annots.tab.gz`, and (b) weight initialisation uses Go's
+  `math/rand` (deterministic per seed) instead of glibc's `random()`
+  (TYPE_3 additive-feedback PRNG) — matching glibc's PRNG byte-for-byte
+  only mattered for reproducing a tool that crashes. Validated by a
+  train→classify round-trip, a map-file round-trip, and hand-checkable
+  BMU / SOM-update unit tests in
+  `tools/bcftools/pkg/bcftools/som_test.go` (no live oracle exists,
+  since upstream crashes before writing a map). See
   `docs/PARITY_ROADMAP.md` (the `som` status note in the bcftools
   section).
 

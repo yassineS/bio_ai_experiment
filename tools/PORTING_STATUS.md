@@ -36,9 +36,12 @@ the way.
 
 - **Tools with a working port** (counting each `bed*` subcommand tool
   separately): 8 original QC/format tools + **35 bedtools subcommands** +
-  `bgzip` + `tabix` + `htsfile` + `mosdepth` + `samtools` (24 functional
-  subcommands) + `bcftools` (24 subcommands). The htslib core landed May
-  2026; CRAM read+write and `.csi` landed across PRs #162–#189.
+  `bgzip` + `tabix` + `htsfile` + `mosdepth` + `samtools` (25 functional
+  subcommands, including `tview`'s non-interactive text/HTML modes) +
+  `bcftools` (25 subcommands — `som` was added with the upstream
+  `fwrite`-return write bug fixed so train→classify works; see
+  `docs/UPSTREAM_BUGS.md#bcftools-som-write-map`). The htslib core landed
+  May 2026; CRAM read+write and `.csi` landed across PRs #162–#189.
 - **Completion (toward 1:1 upstream parity):** see the headline table in
   [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) — it owns the per-tool
   percentages and the biggest-boulders list. In short, the QC/format set
@@ -884,7 +887,7 @@ fixtures.
 | tabix | C (htslib) | 1 | ~92% | ✓ | ✓ | ✓ |
 | htsfile | C (htslib) | 1 | ~98% | ✓ | ✓ | ✓ |
 | mosdepth | Nim | 1 | ~85% | ✓ | ✓ | ✓ |
-| samtools | C (htslib) | 24 | ~88% | ✓ | ✓ | ✓ (+CRAM, .csi) |
+| samtools | C (htslib) | 25 | ~88% | ✓ | ✓ | ✓ (+CRAM, .csi, tview -d T/H) |
 | bcftools | C (htslib) | 24 | ~70% | ✓ | ✓ | ✓ |
 
 ---
