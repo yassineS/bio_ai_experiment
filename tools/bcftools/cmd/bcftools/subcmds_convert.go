@@ -50,6 +50,13 @@ IMPUTE2 HAP/legend conversion modes (implemented):
       --haplegendsample2vcf PREFIX .hap + .legend + .samples -> VCF/BCF.
       --haploid2diploid            Emit haploid genotypes as diploid homozygotes.
 
+PLINK export modes (implemented to the PLINK1 spec; biallelic only):
+  -p, --plink PREFIX               VCF/BCF -> PLINK1 text .ped + .map.
+      --tped PREFIX                VCF/BCF -> transposed text .tped + .tfam.
+      --plink-bed PREFIX           VCF/BCF -> PLINK1 binary .bed + .bim + .fam
+                                   (SNP-major; A1=ALT, A2=REF). Multi-allelic
+                                   and no-ALT records are skipped with a warning.
+
 Accepted-and-deferred conversion modes (parse cleanly; v1 emits a
 "not implemented" error pointing at docs/PARITY_ROADMAP.md if any
 are actually set):
@@ -108,6 +115,9 @@ func runConvert(args []string) int {
 		haplegendsample2vcf string
 		tsv2vcf             string
 		columnsFlag         string
+		plinkFlag           string
+		tpedFlag            string
+		plinkBedFlag        string
 	)
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
@@ -146,6 +156,12 @@ func runConvert(args []string) int {
 	fs.StringVar(&haplegendsample2vcf, "haplegendsample2vcf", "", "")
 	fs.StringVar(&tsv2vcf, "tsv2vcf", "", "")
 	cliflag.StringVar(fs, &columnsFlag, "c", "columns", "", "")
+	// PLINK exporters (upstream leaves these commented out; implemented
+	// here to the PLINK1 spec). -p/--plink writes a PLINK1 text fileset,
+	// --tped a transposed text fileset, --plink-bed a binary fileset.
+	cliflag.StringVar(fs, &plinkFlag, "p", "plink", "", "PLINK1 text fileset prefix (.ped/.map)")
+	fs.StringVar(&tpedFlag, "tped", "", "")
+	fs.StringVar(&plinkBedFlag, "plink-bed", "", "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Worker threads for parallel BGZF compression")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level for -O z")
 	fs.BoolVar(&showHelp, "h", false, "")
@@ -243,6 +259,27 @@ func runConvert(args []string) int {
 	}); deferred != "" {
 		fmt.Fprintf(os.Stderr, "bcftools convert: %s not implemented in v1; tracked in docs/PARITY_ROADMAP.md#bcftools\n", deferred)
 		return 2
+	}
+
+	// PLINK exporters (--plink / --tped / --plink-bed). Mutually exclusive
+	// with each other and with the round-trip flow; dispatch to the
+	// dedicated entry points in convert_plink.go.
+	if plinkMode, code := runConvertPlink(convertPlinkInputs{
+		plink:        plinkFlag,
+		tped:         tpedFlag,
+		plinkBed:     plinkBedFlag,
+		samples:      samples,
+		samplesFile:  samplesFile,
+		forceSamples: forceSamples,
+		regions:      regions,
+		regionsFile:  regionsFile,
+		targets:      targets,
+		targetsFile:  targetsFile,
+		includeExpr:  includeExpr,
+		excludeExpr:  excludeExpr,
+		rest:         fs.Args(),
+	}); plinkMode {
+		return code
 	}
 
 	// GEN/sample conversion modes (Oxford .gen+.sample).
@@ -554,6 +591,88 @@ func runConvertGenSample(in convertGenInputs) int {
 		return 1
 	}
 	return 0
+}
+
+// convertPlinkInputs groups the flag values consumed by the PLINK
+// exporters (--plink / --tped / --plink-bed) of `bcftools convert`.
+type convertPlinkInputs struct {
+	plink        string
+	tped         string
+	plinkBed     string
+	samples      string
+	samplesFile  string
+	forceSamples bool
+	regions      string
+	regionsFile  string
+	targets      string
+	targetsFile  string
+	includeExpr  string
+	excludeExpr  string
+	rest         []string
+}
+
+// runConvertPlink dispatches the PLINK exporters. The first return value
+// reports whether one of these modes was actually requested; when true the
+// second value is the process exit code. When false the caller falls
+// through to the standard round-trip flow.
+func runConvertPlink(in convertPlinkInputs) (bool, int) {
+	set := 0
+	if in.plink != "" {
+		set++
+	}
+	if in.tped != "" {
+		set++
+	}
+	if in.plinkBed != "" {
+		set++
+	}
+	if set == 0 {
+		return false, 0
+	}
+	if set > 1 {
+		fmt.Fprintln(os.Stderr, "bcftools convert: only one of --plink/--tped/--plink-bed may be given")
+		return true, 2
+	}
+	if len(in.rest) == 0 {
+		fmt.Fprintln(os.Stderr, "bcftools convert: missing input file")
+		return true, 2
+	}
+
+	opts := bcftools.PlinkConvertOptions{
+		ForceSamples: in.forceSamples,
+		SamplesFile:  in.samplesFile,
+		RegionsFile:  in.regionsFile,
+		TargetsFile:  in.targetsFile,
+		IncludeExpr:  in.includeExpr,
+		ExcludeExpr:  in.excludeExpr,
+	}
+	if in.samples != "" {
+		opts.Samples = bcftools.SplitCommaList(in.samples)
+	}
+	if in.regions != "" {
+		opts.Regions = bcftools.SplitCommaList(in.regions)
+	}
+	if in.targets != "" {
+		opts.Targets = bcftools.SplitCommaList(in.targets)
+	}
+
+	var err error
+	switch {
+	case in.plink != "":
+		opts.Prefix = in.plink
+		_, err = bcftools.VCFToPlink(in.rest[0], opts, os.Stderr)
+	case in.tped != "":
+		opts.Prefix = in.tped
+		_, err = bcftools.VCFToPlinkTransposed(in.rest[0], opts, os.Stderr)
+	case in.plinkBed != "":
+		opts.Prefix = in.plinkBed
+		_, err = bcftools.VCFToPlinkBinary(in.rest[0], opts, os.Stderr)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bcftools convert: %v\n", err)
+		return true, 1
+	}
+	return true, 0
 }
 
 const mendelianUsage = `bcftools mendelian - detect Mendelian-inconsistent genotypes.

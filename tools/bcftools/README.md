@@ -15,9 +15,10 @@ subcommands. The current implementation ships:
 - `bcftools convert` — re-emit VCF/BCF in a different format (`-O v|z|b|u`)
   with optional sample / region filtering, plus the GEN/HAP/TSV conversion
   modes: `--gvcf2vcf`, `--tsv2vcf`, `--gensample`/`--gensample2vcf`,
-  `--hapsample`/`--hapsample2vcf`, `--haplegendsample`/`--haplegendsample2vcf`.
-  Only the PLINK exporters remain unported (tracked in
-  `docs/PARITY_ROADMAP.md`).
+  `--hapsample`/`--hapsample2vcf`, `--haplegendsample`/`--haplegendsample2vcf`,
+  and the PLINK exporters `-p`/`--plink` (`.ped`+`.map`), `--tped`
+  (`.tped`+`.tfam`) and `--plink-bed` (binary `.bed`+`.bim`+`.fam`).
+  See the PLINK export notes below.
 - `bcftools mendelian` — detect Mendelian-inconsistent genotypes given
   one or more `CHILD,FATHER,MOTHER` trios. Emits `INFO/MERR` per
   record (annotate mode), a TSV trio rollup (`-c`), or a filtered
@@ -557,6 +558,46 @@ with the mpileup MAQ port (the consensus `-c` path also remains
 available). See `docs/PARITY_ROADMAP.md` under the `bcftools call`
 entry for the validation detail.
 
+### `convert` PLINK export notes
+
+Upstream's `vcfconvert.c` leaves its `--plink`/`--tped`/`--bin` option
+block commented out (no `case 'p'`, no implementation), so there is no
+upstream binary to diff against. These exporters are implemented directly
+to the [PLINK1 file-format
+spec](https://www.cog-genomics.org/plink/1.9/formats):
+
+- `-p`/`--plink <prefix>` writes a PLINK1 text fileset: `<prefix>.ped`
+  (one line per sample: 6 mandatory columns `FID IID PAT MAT SEX PHENO`
+  with `FID=IID=sample`, `PAT=MAT=0`, `SEX=0`, `PHENO=-9`, then the two
+  REF/ALT allele letters per variant, `0 0` for a missing genotype) and
+  `<prefix>.map` (`CHROM SNP_ID 0 BP`).
+- `--tped <prefix>` writes the transposed text fileset: `<prefix>.tped`
+  (one line per variant: `CHROM SNP_ID 0 BP` then the two alleles of every
+  sample) and `<prefix>.tfam` (the 6 `.ped` columns, one line per sample).
+- `--plink-bed <prefix>` writes the PLINK1 **binary** fileset:
+  `<prefix>.bed` (3-byte magic `0x6c 0x1b 0x01`, SNP-major; per variant
+  `ceil(nsamples/4)` bytes, 2 bits per sample little-endian within the
+  byte), `<prefix>.bim` (`CHROM SNP_ID 0 BP A1 A2`) and `<prefix>.fam`.
+
+Conventions (chosen because upstream has none to match):
+
+- **`A1=ALT`, `A2=REF`** in the `.bim`, matching `plink --make-bed
+  --keep-allele-order` from a VCF. The on-disk `.bed` 2-bit code is the
+  ALT-allele count: `00`=hom-REF (two A2), `10`=het, `11`=hom-ALT (two A1),
+  `01`=missing.
+- **Chromosome codes**: numeric `1..22` pass through; `X→23`, `Y→24`,
+  `XY→25`, `MT`/`M→26`; an optional `chr`/`CHR` prefix is stripped first.
+  Any other contig name is written verbatim (PLINK1.9 `--allow-extra-chr`).
+- **Biallelic only**: PLINK is a biallelic format, so records with more
+  than one ALT (or no ALT) are skipped and counted, with a one-line stderr
+  warning on the first multi-allelic site. Split with `bcftools norm -m-`
+  first to retain them. The `SNP_ID` is the VCF `ID`, or `CHROM:POS` when
+  the ID is `.`.
+
+The exporters accept a bare `<prefix>` (canonical suffixes) or an explicit
+comma-separated file list (2 names for `--plink`/`--tped`, 3 for
+`--plink-bed`).
+
 ### Deviations from upstream
 
 - **BCF input edge cases.** Some htslib-produced BCF `FORMAT`-key
@@ -580,10 +621,13 @@ mpileup SNP genotype likelihoods (slices 1–4) plus both the legacy
 haplotype engine (slices 1–4), and the `roh`/`cnv`/`polysomy` HMMs are
 implemented and live-oracle validated.
 
+The `convert` PLINK exporters (`--plink`/`--tped`/`--plink-bed`) are now
+implemented (see the PLINK export notes above); the GEN/HAP/TSV/gVCF modes
+were already done.
+
 What remains **genuinely open** (see `docs/PARITY_ROADMAP.md` for the
 authoritative gap list):
 
-- `convert` PLINK exporters (the GEN/HAP/TSV/gVCF modes are done).
 - `gtcheck -c/--cluster` dendrogram (upstream itself errors "to be
   implemented") and `gtcheck` filter expressions.
 - `query %N_ALT` (**not** an upstream `query` token — non-goal).
