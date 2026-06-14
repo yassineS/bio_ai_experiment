@@ -117,9 +117,34 @@ func TestParity_Slop(t *testing.T) {
 	}
 }
 
-// TestParity_StrandedSlop documents that -ss extends only in the strand
-// direction. Currently exercised by the unit test TestStrandedSlop_Direction;
-// kept here as a doc-skip so reviewers see the upstream feature parity.
+// TestParity_StrandedSlop asserts -ss (strand-aware slop) byte-for-byte
+// against the upstream `bedtools pairtopair` binary, using a fixture chosen so
+// strand direction actually changes the result: A's second footprint is
+// identical to B's (always overlaps), while B's first footprint sits just
+// BEFORE A's start. With a "+" strand, -ss extends only the end, so the
+// leading gap is never bridged and there is NO match; plain symmetric -slop
+// extends the start too, bridging the gap and producing a match. The expected
+// outputs (ss_slop10_ss.expected.bedpe = empty, ss_slop10_sym.expected.bedpe =
+// the matched pair) were generated from the upstream binary.
 func TestParity_StrandedSlop(t *testing.T) {
-	t.Skip("Covered by TestStrandedSlop_Direction; left as a documented placeholder for upstream -ss parity.")
+	a := loadFixture(t, "ss_a.bedpe")
+	b := loadFixture(t, "ss_b.bedpe")
+
+	var ssOut bytes.Buffer
+	if _, err := Run(strings.NewReader(a), strings.NewReader(b), &ssOut,
+		Options{Type: TypeBoth, Slop: 10, StrandedSlop: true}); err != nil {
+		t.Fatalf("Run -ss: %v", err)
+	}
+	if got, want := ssOut.String(), loadFixture(t, "ss_slop10_ss.expected.bedpe"); got != want {
+		t.Errorf("-ss:\n got=%q\nwant=%q", got, want)
+	}
+
+	var symOut bytes.Buffer
+	if _, err := Run(strings.NewReader(a), strings.NewReader(b), &symOut,
+		Options{Type: TypeBoth, Slop: 10}); err != nil {
+		t.Fatalf("Run symmetric: %v", err)
+	}
+	if got, want := symOut.String(), loadFixture(t, "ss_slop10_sym.expected.bedpe"); got != want {
+		t.Errorf("symmetric:\n got=%q\nwant=%q", got, want)
+	}
 }
