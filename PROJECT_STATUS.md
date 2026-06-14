@@ -15,6 +15,27 @@ interop; `samtools` mpileup BAQ, `fastq -T '*'` + QNAME-based pairing, and
 depth `-a`/`-b` parity. Every change is parity-validated against the vendored
 upstream binaries.)
 
+Parity-skip elimination wave (2026-06-14, PRs #286–#296): every remaining
+`t.Skip` that masked a **feature-parity** gap was driven to a real
+byte-for-byte (or value-exact) assertion against the vendored upstream
+binaries, surfacing and fixing **7 genuine port bugs** along the way —
+`bedgenomecov` per-base `-dz` 0-based offset and CIGAR-`D` block splitting,
+`samtools import` `FMUNMAP` on `/1`,`/2` FASTQ suffixes, `samtools calmd`
+MD/NM aux re-append ordering, `bcftools norm -c` letter semantics
+(`s`=set/fix, `x`=exclude), and `bcftools concat -a` contig ordering. Closed
+in this wave: `bcftools stats` (all 7 sections), `concat -a/-D`, `norm -f/-c`,
+`query %N_ALT`, CSI; `mosdepth` overlap-pair detection + frag-len/`--chrom`
+validation; `seqtk` `sample`/`randbase` (glibc drand48) + Mott `trimfq`;
+`samtools` `import`/`calmd`/`mpileup -aa`/consensus/CRAM-region; `bedfisher`
+GFF input; `bedgenomecov` BAM/SAM/CRAM input; `bedreldist`/`bedsplit`/`bednuc
+-fullHeader`/`bedslop` float-precision/`bedcluster`/`bedjaccard` fixtures;
+`bedpairtopair -ss`/`bedpairtobed -slop`/`bedsample` CLI rejection; and the
+whole CRAM/htscodecs compliance + `prinseq` live-parity corpus (env guards
+converted to hard `t.Fatalf`-with-init-hint per the parity-rig policy). The
+**only** runtime skip left in the repo is the `hfile` live third-party-network
+backend test (opt-in via `HFILE_NETTEST=1`; verified passing against live
+https/s3/gcs public objects) — test hygiene, not a parity gap.
+
 Previous wave (2026-06-11, ~70 PRs): `call` modes, `convert` GEN/HAP/TSV,
 `annotate`, `consensus` chain, `mendelian2`, `csq` slices 1–4, mpileup
 `bam2bcf_indel` + `--indels-cns`, `phase`, `gtcheck`, threading, samtools
