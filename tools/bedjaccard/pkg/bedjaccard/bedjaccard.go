@@ -41,6 +41,10 @@ type Options struct {
 	FractionA float64
 	// FractionB: require at least this fraction of B to overlap A.
 	FractionB float64
+	// Split ("-split") treats BED12 records as their individual blocks
+	// (exon-aware): each record is expanded into one interval per block
+	// before merging/intersection, matching upstream bedtools jaccard -split.
+	Split bool
 }
 
 // Result is the one-line summary written by Run.
@@ -106,8 +110,14 @@ func jaccard(aReader, bReader io.Reader, opts Options) (*Result, error) {
 	// -S restricts both inputs to one strand before merging; -s merges
 	// per-strand and keeps only same-strand pairs.
 	perStrand := opts.SameStrand || opts.StrandFilter != ""
-	ra := newMergingReader(bed.NewReader(aReader), perStrand, opts.StrandFilter)
-	rb := newMergingReader(bed.NewReader(bReader), perStrand, opts.StrandFilter)
+	var aSrc, bSrc recordReader = bed.NewReader(aReader), bed.NewReader(bReader)
+	if opts.Split {
+		// -split expands each BED12 record into its blocks before the sweep.
+		aSrc = &blockSplitReader{in: aSrc}
+		bSrc = &blockSplitReader{in: bSrc}
+	}
+	ra := newMergingReader(aSrc, perStrand, opts.StrandFilter)
+	rb := newMergingReader(bSrc, perStrand, opts.StrandFilter)
 
 	var active []*bed.Record
 	var (
@@ -299,8 +309,56 @@ func fractionOK(a, b *bed.Record, overlap int, opts Options) bool {
 // and replays them in input order; it also remembers a single
 // "lookahead" record per stream so that the next Read can complete the
 // in-progress merge.
+// recordReader is the minimal record source the merging reader consumes;
+// both *bed.Reader and *blockSplitReader satisfy it.
+type recordReader interface {
+	Read() (*bed.Record, error)
+}
+
+// blockSplitReader wraps a recordReader and, when a BED12 record carries
+// block information, emits one sub-record per block (the exon-aware -split
+// behaviour). Records without blocks pass through unchanged. Blocks are
+// emitted in their input order, which is ascending by start within a record
+// (BlockStarts is non-decreasing).
+type blockSplitReader struct {
+	in     recordReader
+	queued []*bed.Record
+}
+
+// Read returns the next (possibly block-split) record.
+func (s *blockSplitReader) Read() (*bed.Record, error) {
+	for {
+		if len(s.queued) > 0 {
+			out := s.queued[0]
+			s.queued = s.queued[1:]
+			return out, nil
+		}
+		rec, err := s.in.Read()
+		if err != nil {
+			return nil, err
+		}
+		if rec.BlockCount <= 0 || len(rec.BlockSizes) == 0 {
+			return rec, nil
+		}
+		for i := 0; i < len(rec.BlockSizes); i++ {
+			start := rec.ChromStart
+			if i < len(rec.BlockStarts) {
+				start += rec.BlockStarts[i]
+			}
+			end := start + rec.BlockSizes[i]
+			block := *rec
+			block.ChromStart = start
+			block.ChromEnd = end
+			block.BlockCount = 0
+			block.BlockSizes = nil
+			block.BlockStarts = nil
+			s.queued = append(s.queued, &block)
+		}
+	}
+}
+
 type mergingReader struct {
-	in        *bed.Reader
+	in        recordReader
 	perStrand bool
 	// strandFilter, when non-empty ("+" or "-"), drops every raw record on a
 	// different strand before merging (upstream -S single-strand filter).
@@ -325,7 +383,7 @@ type mergingReader struct {
 	lastIn *bed.Record
 }
 
-func newMergingReader(r *bed.Reader, perStrand bool, strandFilter string) *mergingReader {
+func newMergingReader(r recordReader, perStrand bool, strandFilter string) *mergingReader {
 	return &mergingReader{
 		in:           r,
 		perStrand:    perStrand,

@@ -9,6 +9,7 @@ intersection, union, Jaccard index and overlap count.
 - Single streaming sweep over the inputs (memory is independent of file size)
 - Strand-aware overlap (`-s` same-strand, `-S <+|->` single-strand filter)
 - Overlap-fraction thresholds (`-f` for A, `-F` for B)
+- BED12 block-aware (exon) overlap via `--split`
 - Errors out on unsorted input rather than producing wrong answers
 - Transparent gzip support and `-` for stdin/stdout
 - Pure Go, no third-party dependencies
@@ -34,6 +35,7 @@ bedjaccard -a <fileA.bed> -b <fileB.bed> [options]
 - `-S <+|->` Restrict both inputs to the given strand before overlap
 - `-f FRACTION` Require >= FRACTION of A overlapped by B (0..1)
 - `-F FRACTION` Require >= FRACTION of B overlapped by A (0..1)
+- `--split` Treat BED12 records as their blocks (exon-aware overlap)
 - `-h, --help` Show help
 - `-v, --version` Show version
 

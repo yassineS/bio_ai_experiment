@@ -9,9 +9,9 @@ package bedjaccard
 // both A and B before computing intersection / union (mirroring upstream's
 // `setUseMergedIntervals(true)` in ContextJaccard.cpp), so cases against
 // b.bed / c.bed / mixedStrands.bed are byte-for-byte parity with upstream.
-// The `-S` single-strand filter (t12/t13) is implemented and asserted.
-// Cases still wrapped in t.Skip are unrelated to the merge step (BAM /
-// VCF / GFF input, `-split`, large fixtures).
+// The `-S` single-strand filter (t12/t13) and `-split` BED12 block-aware
+// overlap (t08) are implemented and asserted. Cases still wrapped in t.Skip
+// are unrelated to the sweep (BAM / VCF / GFF input, large fixtures).
 
 import (
 	"bytes"
@@ -103,10 +103,15 @@ func TestParity_Jaccard_T07_ThreeBlocksNoSplit(t *testing.T) {
 	}
 }
 
-// jaccard.t08 — `-split` interprets the BED12 blocks. bedjaccard does not
-// implement BED12 block-splitting.
+// jaccard.t08 — `-split` interprets the BED12 blocks: three_blocks_match.bed
+// becomes blocks [0,10)/[20,30)/[40,50) (total 30) and only the first block
+// overlaps e.bed [5,15), giving intersection 5 / union 35.
 func TestParity_Jaccard_T08_ThreeBlocksSplit(t *testing.T) {
-	t.Skip("unimplemented: -split (BED12 block-aware overlap)")
+	got := runJaccardParity(t, "three_blocks_match.bed", "e.bed", Options{Split: true})
+	want := readJaccardParity(t, "t08_three_blocks_split.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // jaccard.t09 — BAM input. bedjaccard is BED-only.
