@@ -44,6 +44,11 @@ func ensureMosdepthBinary(t *testing.T) string {
 		}
 		t.Fatalf("MOSDEPTH_BIN=%q does not exist", p)
 	}
+	// Platform guard (sanctioned skip): the upstream mosdepth release binary
+	// is only published for linux/amd64. On that platform the test runs (or
+	// falls back to the offline internal-consistency tier when the network is
+	// unreachable) and never silently passes; on every other arch there is
+	// genuinely no prebuilt binary, so a skip is the only correct disposition.
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skipf("upstream mosdepth release binary is only published for linux/amd64 (have %s/%s)", runtime.GOOS, runtime.GOARCH)
 	}

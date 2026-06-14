@@ -350,7 +350,7 @@ func TestParseGenSamplePrefix(t *testing.T) {
 func TestUpstreamParity_VCFToGen(t *testing.T) {
 	bin := upstreamBcftoolsConvertGen(t)
 	if bin == "" {
-		t.Skip("upstream bcftools submodule not checked out")
+		t.Fatalf("reference_code/bcftools submodule not checked out; run `git submodule update --init --recursive reference_code/htslib reference_code/bcftools` to enable live parity")
 	}
 	dir := t.TempDir()
 	in := writeTemp(t, dir, "in.vcf", genTestVCF)
@@ -404,7 +404,7 @@ func TestUpstreamParity_VCFToGen(t *testing.T) {
 func TestUpstreamParity_GenToVCF(t *testing.T) {
 	bin := upstreamBcftoolsConvertGen(t)
 	if bin == "" {
-		t.Skip("upstream bcftools submodule not checked out")
+		t.Fatalf("reference_code/bcftools submodule not checked out; run `git submodule update --init --recursive reference_code/htslib reference_code/bcftools` to enable live parity")
 	}
 	dir := t.TempDir()
 	in := writeTemp(t, dir, "in.vcf", genTestVCF)
@@ -450,5 +450,80 @@ func TestUpstreamParity_GenToVCF(t *testing.T) {
 				t.Fatalf("-G output mismatch:\n--- up ---\n%s\n--- go ---\n%s", upOut, goBuf.String())
 			}
 		})
+	}
+}
+
+// genTestVCFTriploid carries a single triploid genotype (ploidy 3). Both
+// upstream and the port reject it because process_gt_to_prob3 only handles
+// ploidy 1 and 2.
+const genTestVCFTriploid = `##fileformat=VCFv4.2
+##contig=<ID=20,length=63025520>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+20	100	rs1	A	C	.	.	.	GT	0/1/1
+`
+
+// TestUpstreamParity_TagRejection asserts positive parity for the --tag
+// values upstream vcfconvert.c does NOT support for the .gen file: GT/PL/GP
+// are accepted, and everything else (GL is the canonical example — listed in
+// --help but never wired up) aborts with the exact "todo: --tag" message and
+// a non-zero exit on both binaries.
+func TestUpstreamParity_TagRejection(t *testing.T) {
+	bin := upstreamBcftoolsConvertGen(t)
+	if bin == "" {
+		t.Fatalf("reference_code/bcftools submodule not checked out; run `git submodule update --init --recursive reference_code/htslib reference_code/bcftools` to enable live parity")
+	}
+	dir := t.TempDir()
+	in := writeTemp(t, dir, "in.vcf", genTestVCF)
+
+	for _, tag := range []string{"GL", "AD", "DP"} {
+		t.Run(tag, func(t *testing.T) {
+			// Upstream must reject the tag (non-zero exit, "todo: --tag").
+			upPfx := filepath.Join(dir, "up_"+tag)
+			out, err := exec.Command(bin, "convert", "-g", upPfx, "--tag", tag, in).CombinedOutput()
+			if err == nil {
+				t.Fatalf("upstream unexpectedly ACCEPTED --tag %s; the parity assumption is wrong\n%s", tag, out)
+			}
+			if !strings.Contains(string(out), "todo: --tag "+tag) {
+				t.Fatalf("upstream rejection message changed for --tag %s: %q", tag, out)
+			}
+			// Our port must reject it too, with a matching message.
+			goErr := VCFToGenSampleFile(in, filepath.Join(dir, "go_"+tag), GenSampleOptions{Tag: tag})
+			if goErr == nil {
+				t.Fatalf("our port accepted --tag %s but upstream rejects it", tag)
+			}
+			if !strings.Contains(goErr.Error(), "todo: --tag "+tag) {
+				t.Fatalf("our rejection message for --tag %s = %q, want it to contain %q", tag, goErr.Error(), "todo: --tag "+tag)
+			}
+		})
+	}
+}
+
+// TestUpstreamParity_PloidyRejection asserts positive parity for genotypes of
+// a ploidy upstream cannot convert: process_gt_to_prob3 only handles ploidy 1
+// and 2, so a triploid GT aborts with "FIXME: not ready for ploidy 3" and a
+// non-zero exit on both binaries.
+func TestUpstreamParity_PloidyRejection(t *testing.T) {
+	bin := upstreamBcftoolsConvertGen(t)
+	if bin == "" {
+		t.Fatalf("reference_code/bcftools submodule not checked out; run `git submodule update --init --recursive reference_code/htslib reference_code/bcftools` to enable live parity")
+	}
+	dir := t.TempDir()
+	in := writeTemp(t, dir, "in.vcf", genTestVCFTriploid)
+
+	out, err := exec.Command(bin, "convert", "-g", filepath.Join(dir, "up"), in).CombinedOutput()
+	if err == nil {
+		t.Fatalf("upstream unexpectedly ACCEPTED a triploid GT; the parity assumption is wrong\n%s", out)
+	}
+	if !strings.Contains(string(out), "FIXME: not ready for ploidy 3") {
+		t.Fatalf("upstream ploidy rejection message changed: %q", out)
+	}
+
+	goErr := VCFToGenSampleFile(in, filepath.Join(dir, "go"), GenSampleOptions{})
+	if goErr == nil {
+		t.Fatalf("our port accepted a triploid GT but upstream rejects it")
+	}
+	if !strings.Contains(goErr.Error(), "not ready for ploidy 3") {
+		t.Fatalf("our ploidy rejection message = %q, want it to mention ploidy 3", goErr.Error())
 	}
 }

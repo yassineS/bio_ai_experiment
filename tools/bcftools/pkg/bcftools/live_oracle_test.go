@@ -29,37 +29,32 @@ import (
 	"testing"
 )
 
-// liveBinPath returns the absolute path to the vendored upstream bcftools
-// binary, or "" when it cannot be located or is not executable. Tests
-// using it should t.Skip on empty.
+// liveBinPath returns the absolute path to the upstream bcftools binary,
+// building it from the reference_code/bcftools submodule on first use. It
+// returns "" only when the submodule is not checked out; genuine build
+// failures are surfaced via t.Fatalf by upstreamBcftoolsConvertGen.
 func liveBinPath(t *testing.T) string {
 	t.Helper()
-	abs, err := filepath.Abs(filepath.Join("..", "..", "..", "..",
-		"reference_code", "bcftools", "bcftools"))
-	if err != nil {
-		return ""
-	}
-	fi, err := os.Stat(abs)
-	if err != nil || fi.IsDir() || fi.Mode()&0111 == 0 {
-		return ""
-	}
-	return abs
+	return upstreamBcftoolsConvertGen(t)
 }
 
 // ourBinPath is set by TestMain (live_oracle_main_test.go) to the path of
 // the locally-built port binary. Empty when the build failed.
 var ourBinPath string
 
-// requireLive skips the test when either the upstream binary or our
-// built binary is unavailable.
+// requireLive returns the upstream and local port binaries. Per the
+// env-guard policy (PR #294) it t.Fatalf's with an exact init/build hint
+// when a dependency is absent, rather than silently skipping: the
+// upstream submodule can be checked out and built here, and a failure to
+// build our own port is a genuine test failure.
 func requireLive(t *testing.T) (live, ours string) {
 	t.Helper()
 	live = liveBinPath(t)
 	if live == "" {
-		t.Skip("upstream bcftools binary not found; skipping live oracle")
+		t.Fatalf("reference_code/bcftools submodule not checked out; run `git submodule update --init --recursive reference_code/htslib reference_code/bcftools` to enable the live oracle")
 	}
 	if ourBinPath == "" {
-		t.Skip("local bcftools port binary not built; skipping live oracle")
+		t.Fatalf("local bcftools port binary failed to build (see TestMain stderr `go build ../../cmd/bcftools`)")
 	}
 	return live, ourBinPath
 }
@@ -237,10 +232,10 @@ func TestLiveMpileupSmoke(t *testing.T) {
 	bam := filepath.Join(mpileupDir, "mpileup.1.bam")
 	ref := filepath.Join(mpileupDir, "mpileup.ref.fa")
 	if _, err := os.Stat(bam); err != nil {
-		t.Skip("no mpileup BAM fixture for live oracle")
+		t.Fatalf("vendored mpileup BAM fixture missing: %s: %v", bam, err)
 	}
 	if _, err := os.Stat(ref); err != nil {
-		t.Skip("no mpileup reference fixture for live oracle")
+		t.Fatalf("vendored mpileup reference fixture missing: %s: %v", ref, err)
 	}
 	// mpileup output is voluminous; we just verify both run and
 	// agree on stdout for a minimal invocation. The mpileup_golden
@@ -262,10 +257,10 @@ func TestLiveMpileupIndelsCNS(t *testing.T) {
 	bam := filepath.Join(mpileupDir, "indel-AD.1.bam")
 	ref := filepath.Join(mpileupDir, "indel-AD.1.fa")
 	if _, err := os.Stat(bam); err != nil {
-		t.Skip("no indel-AD BAM fixture for live oracle")
+		t.Fatalf("vendored indel-AD BAM fixture missing: %s: %v", bam, err)
 	}
 	if _, err := os.Stat(ref); err != nil {
-		t.Skip("no indel-AD reference fixture for live oracle")
+		t.Fatalf("vendored indel-AD reference fixture missing: %s: %v", ref, err)
 	}
 	assertEqualStdout(t, live, ours, "mpileup", "--indels-cns", "-f", ref, bam)
 }
@@ -330,7 +325,7 @@ func TestLiveCall(t *testing.T) {
 	ref := filepath.Join(mpDir, "mpileup.ref.fa")
 	bam := filepath.Join(mpDir, "mpileup.1.bam")
 	if _, err := os.Stat(bam); err != nil {
-		t.Skip("no mpileup fixtures for live oracle")
+		t.Fatalf("vendored mpileup fixture missing: %s: %v", bam, err)
 	}
 
 	// Produce the mpileup VCF with the genuine binary so the caller input

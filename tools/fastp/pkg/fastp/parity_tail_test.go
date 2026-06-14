@@ -7,9 +7,10 @@ package fastp
 //
 // These tests build and run the upstream OpenGene/fastp binary directly
 // (no checked-in goldens) and compare its output against the Go port on the
-// checked-in fixtures under tools/fastp/testdata/parity/. When the upstream
-// binary cannot be located/built they t.Skip; when it IS available they
-// t.Fatalf on any mismatch (per the project's parity methodology).
+// checked-in fixtures under tools/fastp/testdata/parity/. Per the env-guard
+// policy (PR #294) they t.Fatalf with an exact init/build hint when the
+// upstream binary cannot be located/built (the submodule is initializable
+// here), and likewise t.Fatalf on any mismatch.
 
 import (
 	"encoding/json"
@@ -92,7 +93,7 @@ func permissiveOpts() ProcessOptions {
 func TestParity_Fastp_Correction(t *testing.T) {
 	bin, err := upstreamFastp(t)
 	if err != nil {
-		t.Skipf("upstream fastp unavailable: %v", err)
+		t.Fatalf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	dir := t.TempDir()
 	r1 := parityInput(t, "corr_r1.fq")
@@ -129,7 +130,7 @@ func TestParity_Fastp_Correction(t *testing.T) {
 func TestParity_Fastp_Overrepresentation(t *testing.T) {
 	bin, err := upstreamFastp(t)
 	if err != nil {
-		t.Skipf("upstream fastp unavailable: %v", err)
+		t.Fatalf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	dir := t.TempDir()
 	in := parityInput(t, "ora.fq")
@@ -172,7 +173,7 @@ func TestParity_Fastp_Overrepresentation(t *testing.T) {
 func TestParity_Fastp_SplitByLines(t *testing.T) {
 	bin, err := upstreamFastp(t)
 	if err != nil {
-		t.Skipf("upstream fastp unavailable: %v", err)
+		t.Fatalf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	in := parityInput(t, "ora.fq")
 
@@ -195,7 +196,7 @@ func TestParity_Fastp_SplitByLines(t *testing.T) {
 func TestParity_Fastp_SplitByNumber(t *testing.T) {
 	bin, err := upstreamFastp(t)
 	if err != nil {
-		t.Skipf("upstream fastp unavailable: %v", err)
+		t.Fatalf("upstream fastp unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	in := parityInput(t, "ora.fq")
 
