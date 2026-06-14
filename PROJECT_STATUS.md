@@ -62,9 +62,9 @@ gaps in the existing tools (`docs/PARITY_ROADMAP.md`), not new ports.
 
 A tool is **done** (1:1) when every upstream subcommand and documented flag
 is present, every supported input produces the same logical result (modulo
-documented intentional deviations, fixed-on-port upstream bugs, and the
-RNG-byte-parity carve-out), and the validated-parity suite passes with an
-explicit `t.Skip()` for each documented exception. "Working subset" is a
+documented intentional deviations and fixed-on-port upstream bugs), and the
+validated-parity suite passes with an explicit `t.Skip()` only for the few
+genuinely untestable cases. "Working subset" is a
 milestone, not the finish line. The percentages below are an honest,
 evidence-based estimate of remaining surface — not a rosy reading.
 
@@ -78,7 +78,7 @@ evidence-based estimate of remaining surface — not a rosy reading.
 | **skewer** | `se` / `pe`; 14/14 parity cases | none | **100%** | done |
 | **fastp** | single cmd; sliding-window, auto-adapter, HTML+JSON, dup-eval, UMI, PE base `--correction`, overrepresentation (`-p/-P`), `--split*`, merge writer (`-m`), `--adapter_fasta`, `--poly_x_min_len`, `--disable_adapter_trimming`, `--merge` (`merged_and_filtered` JSON block); 16/16 + 9 tail parity | multi-thread `--split` file-boundary distribution (perf) | **~98%** | small |
 | **bedtools** | 37 bed* tools; no missing subcommands; 141+ parity tests; BAM **and CRAM** input (`bedintersect`/`bedmulticov`), VCF/GFF input (`bedintersect`/`bedmultiinter`), `bedclosest` direction flags, `intersect -c` | scattered option-tail polish | **~96%** | small (long tail) |
-| **vcftools** | single cmd; **146/146 upstream long flags (100%)**, incl. BCF I/O, PCA, LD, RoH, relatedness, `--freq2`/`--counts2` (schema complete) | per-output column-set polish only; `--max-indv` uses deterministic truncation not upstream RNG shuffle (RNG-policy non-goal) | **~98%** | small |
+| **vcftools** | single cmd; **146/146 upstream long flags (100%)**, incl. BCF I/O, PCA, LD, RoH, relatedness, `--freq2`/`--counts2` (schema complete) | per-output column-set polish only; `--max-indv` ports upstream's glibc `rand()` + `std::random_shuffle` and is byte-exact for `--max-indv-seed` (upstream itself is time-seeded/non-reproducible) | **~98%** | small |
 | **bcftools** | 24 subcommands (all present); mpileup MAQ SNP model (slices 1–4) + legacy `bam2bcf_indel` + `--indels-cns` (edlib realigner) + BAQ + bias tags; full multi-allelic `call` (`-m`/`-c`/`--gvcf`/`-C alleles`/`-G`/`--ploidy GRCh37/38`/`--ploidy-file`); `convert` GEN/HAP/TSV/gVCF modes + PLINK exporters (`--plink`/`--tped`/`--plink-bed`, PLINK1 spec); `gtcheck`/`mendelian2`/`consensus` (chain+iupac)/`annotate`; `filter -M`/`cnv --AF-file`/`roh -Oz`/`query %INFO/%SAMPLE`; csq slices 1–4 (FORMAT/TBCSQ, --unify-chr-names, -O b\|u\|z, --dump-gff); full HMM `roh`/`cnv`/`polysomy`; subprocess plugin system; `csq -l/--local-csq` (test_cds_local); `gtcheck` `-i`/`-e` filter expressions (qry:/gt: scope); `concat --ligate`; remote URL inputs (`view -r`/`query -r` via hfile); `som` train/classify (upstream write bug fixed); `gtcheck -c/--cluster` clustering (own design — upstream is an error stub) | `query %N_ALT` (non-goal) | **~98%** | small |
 | **samtools** | 25 functional subcommands; CRAM r/w (v2/v3/**v4.0**) + bzip2 encode; `.csi`; consensus `--het-only` + indel calling + **`-a` placeholder rows** (ref-skip/del/zero-cov, live parity); `coverage -A`; `markdup -d/-s/-S`; `calmd -C/-e/-u`; `phase`; mpileup MAQ **BCF/VCF emit (slices 1–4) + legacy indel + --indels-cns**; **`tview` text/HTML/interactive `-d C`** (byte-for-byte text/HTML, pure-Go termios for `-d C`); remote URL inputs; `-@` threading for view/sort/markdup | `-@` parallel *input* BGZF/CRAM decode for non-BAM-writing subcommands (perf only) | **~99%** | small (perf) |
 | **mosdepth** | single cmd; ALL flags wired incl. `-d/--d4`, `--fragment-mode`, `--quantize`, `-t/--threads`, `--use-median`, `--mapq` fast-path, **CRAM input** (`-f/--fasta`, via alnio); emits `.csi` | none | **~99%** | done |
@@ -150,11 +150,16 @@ These are deliberately not ported and should not be counted against parity:
   **commented out** in upstream's usage (`vcfgtcheck.c`); it is unadvertised
   dead surface, so there is nothing to port. (`gtcheck`'s `-i`/`-e` filter
   expressions, the real feature, are implemented.)
-- **RNG byte-parity** for `seqtk sample`/`randbase`, `vcftools --max-indv`,
-  `bedshuffle`/`bedsample` — policy is structural invariants + within-tool
-  reproducibility, **not** byte-identity with upstream's C RNG (see the RNG
-  policy section in `docs/PARITY_ROADMAP.md`). (`seqtk sample` and
-  `bedsample` additionally now port the upstream RNG and *are* byte-exact.)
+- **RNG byte-parity** — no longer a carve-out. `seqtk sample`/`randbase`
+  (glibc drand48 / krand MT), `bedsample` and `bedshuffle`
+  (`std::mt19937_64`), and `vcftools --max-indv` (glibc `rand()` +
+  `std::random_shuffle`, via the new `--max-indv-seed`) all port the exact
+  upstream RNG and are **byte-for-byte identical** to the upstream binary for
+  a given seed. The sole genuine exception is that `vcftools --max-indv`
+  upstream seeds from `srand(time(NULL))` with no seed flag, so a *plain*
+  upstream run is non-reproducible by construction; our seeded path matches
+  the algorithm exactly. See the RNG policy section in
+  `docs/PARITY_ROADMAP.md`.
 - **prinseq PNG report** (`prinseq-graphs.pl` graphics flow) — implemented as
   the `prinseq graph_png` subcommand. PNG byte-identity is N/A (pure-Go
   stdlib renderer, not Perl Cairo/GD); the graph set + plotted data series

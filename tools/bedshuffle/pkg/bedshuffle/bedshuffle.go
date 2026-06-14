@@ -2,24 +2,33 @@
 // mirroring `bedtools shuffle`.
 //
 // For each input interval the package draws a new (chrom, start) coordinate
-// uniformly at random and emits a record with the same length, keeping name /
-// score / strand / extras intact. Various flags constrain the draw:
+// and emits a record with the same length, keeping name / score / strand /
+// extras intact. Various flags constrain the draw:
 //
-//   - Include: restrict placements to regions listed in an "include" BED.
+//   - Include: restrict placements to regions listed in an "include" BED,
+//     weighted by interval size (upstream's -incl).
 //   - Exclude: forbid placements that overlap any region listed in an
-//     "exclude" BED.
-//   - Chrom: keep each shuffled interval on its original chromosome.
+//     "exclude" BED (upstream's -excl).
+//   - Chrom: keep each shuffled interval on its original chromosome
+//     (upstream's -chrom; implies "choose chrom, then position").
+//   - ChromFirst: pick a chromosome uniformly first, then a position within it
+//     (upstream's -chromFirst).
 //
-// Placement uses a deterministic *math/rand.Rand seeded by Seed. Each draw
-// is retried up to MaxRetries (default 1000) before the interval is reported
-// as unplaceable and an error is returned with a clear message.
+// # Byte-for-byte parity with upstream
+//
+// Placement uses a faithful Go port of std::mt19937_64 (mt19937.go) — the exact
+// 64-bit Mersenne Twister that upstream bedtools' Random.cpp uses (the default,
+// non-USE_RAND build, which the shipped bedtools binary is). The draw order,
+// the rand_range rejection bound, the genome-projection layout (chromosomes in
+// genome-file order), and the per-mode retry loops all mirror
+// reference_code/bedtools/src/shuffleBed/shuffleBed.cpp exactly, so
+// `bedshuffle -seed N` reproduces `bedtools shuffle -seed N` byte-for-byte.
 package bedshuffle
 
 import (
 	"bufio"
 	"fmt"
 	"io"
-	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,38 +42,102 @@ type Options struct {
 	// value is the chromosome length in bp.
 	Genome map[string]int
 
-	// Include limits placements to regions listed here (per chrom).
-	// nil means "place anywhere on the chromosome".
+	// GenomeOrder lists the chromosome names in genome-file order. Upstream
+	// bedtools builds its start-offset table and "project a genome-wide
+	// position onto a chromosome" logic in file order, so byte-for-byte parity
+	// requires that exact order. When nil, Shuffle falls back to the map keys
+	// sorted lexicographically (deterministic, but not parity-exact for the
+	// default genome-projection mode). ParseGenomeOrdered populates this.
+	GenomeOrder []string
+
+	// Include limits placements to regions listed here, weighted by interval
+	// size (upstream -incl). nil means "place anywhere on the chromosome".
 	Include []*bed.Record
-	// Exclude rejects placements that overlap any region here.
+	// Exclude rejects placements that overlap any region here (upstream -excl).
 	Exclude []*bed.Record
 
-	// Chrom: when true, each shuffled interval stays on its original
-	// chromosome.
+	// Chrom (`-chrom`): keep each shuffled interval on its original
+	// chromosome. Upstream sets both chooseChrom and sameChrom.
 	Chrom bool
 
-	// ChromFirst (`-chromFirst`): when an include list is supplied, choose the
-	// destination chromosome uniformly at random *first* (each chromosome with
-	// include regions weighted equally), then a position within it — instead of
-	// the default of weighting a chromosome by its total include base pairs.
-	// Mirrors upstream bedtools shuffle -chromFirst.
+	// ChromFirst (`-chromFirst`): choose the destination chromosome uniformly
+	// at random first (each chromosome weighted equally), then a position
+	// within it — instead of the default of projecting a genome-wide position
+	// (weighting a chromosome by its size). Note: upstream's -incl path ignores
+	// -chromFirst entirely (the include selection is always size-weighted), so
+	// ChromFirst only affects the no-include case.
 	ChromFirst bool
 
-	// Seed for the RNG. Same seed + same inputs ⇒ same output.
+	// AllowBeyondChromEnd (`-allowBeyondChromEnd`): permit a shuffled interval
+	// to be clamped to the chromosome end instead of being redrawn when it
+	// would exceed the end. Upstream's preventExceedingChromEnd is the negation
+	// of this; the default (false) redraws until the interval fits.
+	AllowBeyondChromEnd bool
+
+	// Seed for the RNG. Same seed + same inputs ⇒ same output. Mirrors
+	// upstream `-seed`.
 	Seed int64
 
-	// MaxRetries caps the number of placement attempts per interval. 0 ⇒
-	// default of 1000 (mirrors upstream).
+	// MaxRetries caps the number of placement attempts per interval for the
+	// exclude / include retry loops. 0 ⇒ default of 1000 (mirrors upstream
+	// -maxTries).
 	MaxRetries int
+}
+
+// orderedGenome holds the genome in upstream's file order with the cumulative
+// start-offset table used by projectOnGenome.
+type orderedGenome struct {
+	names        []string
+	startOffsets []uint64
+	sizes        map[string]uint64
+	genomeSize   uint64
+}
+
+// buildOrderedGenome constructs the file-order start-offset table that mirrors
+// GenomeFile::loadGenomeFileIntoMap. When order is empty it falls back to the
+// lexicographically sorted map keys.
+func buildOrderedGenome(g map[string]int, order []string) *orderedGenome {
+	names := order
+	if len(names) == 0 {
+		names = make([]string, 0, len(g))
+		for k := range g {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+	}
+	og := &orderedGenome{
+		names:        names,
+		startOffsets: make([]uint64, 0, len(names)),
+		sizes:        make(map[string]uint64, len(names)),
+	}
+	for _, name := range names {
+		size := uint64(g[name])
+		og.startOffsets = append(og.startOffsets, og.genomeSize)
+		og.sizes[name] = size
+		og.genomeSize += size
+	}
+	return og
+}
+
+// projectOnGenome maps a genome-wide position to a (chrom, start) pair,
+// matching GenomeFile::projectOnGenome: lower_bound(startOffsets, pos+1) then
+// chrom = names[i-1], start = pos - startOffsets[i-1].
+func (og *orderedGenome) projectOnGenome(pos uint64) (string, uint64) {
+	// lower_bound: first index whose offset >= pos+1.
+	i := sort.Search(len(og.startOffsets), func(k int) bool {
+		return og.startOffsets[k] >= pos+1
+	})
+	chrom := og.names[i-1]
+	start := pos - og.startOffsets[i-1]
+	return chrom, start
 }
 
 // Shuffle reads BED records from r, draws new coordinates for each according
 // to opts, and writes the relocated records to w. Returns the number of
-// records placed; the first interval that cannot be placed within
-// MaxRetries triggers an error after the records placed so far have been
-// flushed.
+// records placed; the first interval that cannot be placed within MaxRetries
+// triggers an error.
 func Shuffle(r io.Reader, w io.Writer, opts Options) (int, error) {
-	if opts.Genome == nil || len(opts.Genome) == 0 {
+	if len(opts.Genome) == 0 {
 		return 0, fmt.Errorf("shuffle: -g (genome file) is required")
 	}
 	maxRetries := opts.MaxRetries
@@ -72,44 +145,20 @@ func Shuffle(r io.Reader, w io.Writer, opts Options) (int, error) {
 		maxRetries = 1000
 	}
 
-	rng := rand.New(rand.NewSource(opts.Seed))
+	mt := newMT19937_64(uint64(opts.Seed))
+	genome := buildOrderedGenome(opts.Genome, opts.GenomeOrder)
 
-	// Index include/exclude into per-chrom sorted slices so we can sample.
-	include := indexByChrom(opts.Include)
-	exclude := indexByChrom(opts.Exclude)
-
-	// Precompute include offsets per chrom for uniform sampling: a list of
-	// (start, end) pairs and the cumulative bp count.
-	includeRegions := map[string][]region{}
-	includeCum := map[string]int{}
-	for chrom, recs := range include {
-		var regions []region
-		total := 0
-		for _, rec := range recs {
-			start := rec.ChromStart
-			end := rec.ChromEnd
-			if size, ok := opts.Genome[chrom]; ok && end > size {
-				end = size
-			}
-			if start < 0 {
-				start = 0
-			}
-			if end > start {
-				regions = append(regions, region{start: start, end: end, cum: total})
-				total += end - start
-			}
-		}
-		includeRegions[chrom] = regions
-		includeCum[chrom] = total
+	// Build the size-weighted include table exactly as
+	// BedFile::assignWeightsBasedOnSize does: sort the include intervals by
+	// size ascending, then assign each a cumulative weight equal to the
+	// running fraction of total include bp.
+	var inclWeighted []weightedInterval
+	if len(opts.Include) > 0 {
+		inclWeighted = buildIncludeWeights(opts.Include)
 	}
 
-	// Cached sorted chrom list for "any-chrom" weighted sampling.
-	weightedChroms, chromCum, totalGenome := genomeWeighting(opts.Genome)
-	weightedIncl, inclCum, totalIncl := includeWeighting(includeCum)
-
-	// Sort exclude records for fast overlap checks (linear scan with early
-	// break works for small lists; if perf matters we can swap in an
-	// interval tree later).
+	// Index exclude regions by chrom for the overlap check, sorted by start.
+	exclude := indexByChrom(opts.Exclude)
 	for chrom := range exclude {
 		sort.SliceStable(exclude[chrom], func(i, j int) bool {
 			return exclude[chrom][i].ChromStart < exclude[chrom][j].ChromStart
@@ -125,7 +174,8 @@ func Shuffle(r io.Reader, w io.Writer, opts Options) (int, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
 			continue
 		}
 		fields := strings.Split(line, "\t")
@@ -145,20 +195,17 @@ func Shuffle(r io.Reader, w io.Writer, opts Options) (int, error) {
 			return count, fmt.Errorf("interval %s:%d-%d has non-positive length", fields[0], start, end)
 		}
 
-		newChrom, newStart, ok := drawPlacement(rng, fields[0], length, opts,
-			includeRegions, weightedChroms, chromCum, totalGenome,
-			weightedIncl, inclCum, totalIncl,
-			exclude, maxRetries)
+		newChrom, newStart, newEnd, ok := chooseLocus(mt, genome, inclWeighted,
+			exclude, opts, fields[0], uint64(length), maxRetries)
 		if !ok {
 			return count, fmt.Errorf("Error, line %d: tried %d potential loci for entry, but could not avoid excluded regions.  Ignoring entry and moving on.",
 				count+1, maxRetries)
 		}
-		// Write the new record: replace chrom/start/end columns, keep the
-		// rest verbatim.
+
 		out := append([]string(nil), fields...)
 		out[0] = newChrom
-		out[1] = strconv.Itoa(newStart)
-		out[2] = strconv.Itoa(newStart + length)
+		out[1] = strconv.FormatUint(newStart, 10)
+		out[2] = strconv.FormatUint(newEnd, 10)
 		if _, err := fmt.Fprintln(bw, strings.Join(out, "\t")); err != nil {
 			return count, err
 		}
@@ -170,139 +217,194 @@ func Shuffle(r io.Reader, w io.Writer, opts Options) (int, error) {
 	return count, nil
 }
 
-// region holds a half-open [start, end) range and its cumulative bp offset
-// inside an include list.
-type region struct {
-	start, end, cum int
-}
-
-// drawPlacement returns a (chrom, start, ok) tuple for the next placement.
-// It honours Chrom, Include, and Exclude. Returns ok=false after maxRetries.
-func drawPlacement(
-	rng *rand.Rand,
-	origChrom string,
-	length int,
-	opts Options,
-	includeRegions map[string][]region,
-	weightedChroms []string, chromCum []int, totalGenome int,
-	weightedIncl []string, inclCum []int, totalIncl int,
+// chooseLocus dispatches to the include / exclude / plain placement loop that
+// matches the corresponding upstream BedShuffle method, returning the placed
+// (chrom, start, end). ok is false only when an exclude/include retry loop is
+// exhausted (mirrors upstream's "tried N loci" error path).
+func chooseLocus(
+	mt *mt19937_64,
+	genome *orderedGenome,
+	inclWeighted []weightedInterval,
 	exclude map[string][]*bed.Record,
-	maxRetries int,
-) (string, int, bool) {
-	for try := 0; try < maxRetries; try++ {
-		chrom, start, ok := drawOne(rng, origChrom, length, opts,
-			includeRegions, weightedChroms, chromCum, totalGenome,
-			weightedIncl, inclCum, totalIncl)
-		if !ok {
-			continue
-		}
-		// Honour Exclude.
-		if hasOverlap(exclude[chrom], start, start+length) {
-			continue
-		}
-		return chrom, start, true
-	}
-	return "", 0, false
-}
-
-// drawOne performs a single weighted draw. Returns ok=false if the chrom has
-// no room or the include list is empty for that chrom.
-func drawOne(
-	rng *rand.Rand,
-	origChrom string,
-	length int,
 	opts Options,
-	includeRegions map[string][]region,
-	weightedChroms []string, chromCum []int, totalGenome int,
-	weightedIncl []string, inclCum []int, totalIncl int,
-) (string, int, bool) {
-	if len(opts.Include) > 0 {
-		// Include mode: sample uniformly over the include intervals.
-		var chrom string
-		if opts.Chrom {
-			chrom = origChrom
-		} else if opts.ChromFirst {
-			// Pick a chromosome uniformly (equal weight per chrom), then a
-			// position within it.
-			if len(weightedIncl) == 0 {
-				return "", 0, false
-			}
-			chrom = weightedIncl[rng.Intn(len(weightedIncl))]
-		} else {
-			if totalIncl <= 0 {
-				return "", 0, false
-			}
-			chrom = pickByWeight(rng, weightedIncl, inclCum, totalIncl)
-		}
-		regs := includeRegions[chrom]
-		if len(regs) == 0 {
-			return "", 0, false
-		}
-		// Filter regions that fit the interval length.
-		var fit []region
-		for _, r := range regs {
-			if r.end-r.start >= length {
-				fit = append(fit, r)
-			}
-		}
-		if len(fit) == 0 {
-			return "", 0, false
-		}
-		// Uniform over bp inside the fitting regions.
-		totalFit := 0
-		offsets := make([]int, len(fit))
-		for i, r := range fit {
-			offsets[i] = totalFit
-			totalFit += (r.end - r.start - length + 1)
-		}
-		if totalFit <= 0 {
-			return "", 0, false
-		}
-		bp := rng.Intn(totalFit)
-		// Find which fit region this falls into via linear scan; len(fit) is
-		// small per chrom so this is fine.
-		idx := sort.Search(len(offsets), func(i int) bool { return offsets[i] > bp })
-		if idx == 0 {
-			idx = 1
-		}
-		idx--
-		r := fit[idx]
-		start := r.start + (bp - offsets[idx])
-		if start+length > r.end {
-			return "", 0, false
-		}
-		return chrom, start, true
-	}
+	origChrom string,
+	length uint64,
+	maxRetries int,
+) (string, uint64, uint64, bool) {
+	hasInclude := len(inclWeighted) > 0
+	hasExclude := len(exclude) > 0
 
-	// No include: sample uniformly across the genome (per-chrom weighted).
-	var chrom string
-	if opts.Chrom {
-		chrom = origChrom
-	} else {
-		if totalGenome <= 0 {
-			return "", 0, false
+	switch {
+	case !hasInclude && !hasExclude:
+		// BedShuffle::Shuffle → ChooseLocus.
+		return chooseLocusPlain(mt, genome, opts, origChrom, length, maxRetries)
+
+	case hasExclude && !hasInclude:
+		// BedShuffle::ShuffleWithExclusions: redraw (via ChooseLocus) while the
+		// placement overlaps an exclude region, up to maxTries.
+		for tries := 0; tries <= maxRetries; tries++ {
+			c, s, e, ok := chooseLocusPlain(mt, genome, opts, origChrom, length, maxRetries)
+			if ok && !hasOverlap(exclude[c], int(s), int(e)) {
+				return c, s, e, true
+			}
 		}
-		chrom = pickByWeight(rng, weightedChroms, chromCum, totalGenome)
+		return "", 0, 0, false
+
+	case hasInclude && !hasExclude:
+		// BedShuffle::ShuffleWithInclusions: redraw (via
+		// ChooseLocusFromInclusionFile) while end > chromSize, up to maxTries.
+		for tries := 0; tries <= maxRetries; tries++ {
+			c, s, e := chooseLocusFromInclude(mt, inclWeighted, length)
+			if e <= genome.sizes[c] {
+				return c, s, e, true
+			}
+		}
+		return "", 0, 0, false
+
+	default:
+		// BedShuffle::ShuffleWithInclusionsAndExclusions: redraw (via
+		// ChooseLocusFromInclusionFile) while the placement overlaps an exclude
+		// region, up to maxTries.
+		for tries := 0; tries <= maxRetries; tries++ {
+			c, s, e := chooseLocusFromInclude(mt, inclWeighted, length)
+			if !hasOverlap(exclude[c], int(s), int(e)) {
+				return c, s, e, true
+			}
+		}
+		return "", 0, 0, false
 	}
-	size, ok := opts.Genome[chrom]
-	if !ok || size < length {
-		return "", 0, false
-	}
-	start := rng.Intn(size - length + 1)
-	return chrom, start, true
 }
 
-// pickByWeight selects a chromosome with probability proportional to its
-// genome size. `keys` is the chrom-name list, `cum` is the cumulative-bp
-// table aligned with keys, total is the sum of all weights.
-func pickByWeight(rng *rand.Rand, keys []string, cum []int, total int) string {
-	v := rng.Intn(total)
-	// Find first cum[i] > v.
-	idx := sort.SearchInts(cum, v+1)
-	if idx >= len(keys) {
-		idx = len(keys) - 1
+// chooseLocusPlain mirrors BedShuffle::ChooseLocus for the non-include modes.
+// It honours Chrom (sameChrom), ChromFirst (chooseChrom without sameChrom), and
+// the default genome-projection mode, plus the preventExceedingChromEnd retry.
+func chooseLocusPlain(
+	mt *mt19937_64,
+	genome *orderedGenome,
+	opts Options,
+	origChrom string,
+	length uint64,
+	maxRetries int,
+) (string, uint64, uint64, bool) {
+	prevent := !opts.AllowBeyondChromEnd
+
+	if !opts.Chrom && !opts.ChromFirst {
+		// Default: project a uniform genome-wide position onto a chromosome.
+		// Mirrors ChooseLocus's bounded do-while: retry up to _maxTries while
+		// the interval exceeds the chrom end. Upstream warns and "ignores the
+		// entry" if it never fits; this port surfaces that as ok=false so the
+		// caller skips the line (fix-on-port: upstream actually drops it too).
+		for tries := 0; tries <= maxRetries; tries++ {
+			pos := mt.randRange(genome.genomeSize)
+			chrom, start := genome.projectOnGenome(pos)
+			end := start + length
+			chromSize := genome.sizes[chrom]
+			if end > chromSize && !prevent {
+				return chrom, start, chromSize, true
+			}
+			if end <= chromSize {
+				return chrom, start, end, true
+			}
+		}
+		return "", 0, 0, false
 	}
-	return keys[idx]
+
+	// chooseChrom modes: -chrom (sameChrom) keeps origChrom; -chromFirst picks
+	// a chromosome uniformly then a position within it. Upstream's else branch
+	// loops `while (end > chromSize)` with no try bound; we add the same
+	// maxTries guard the default path uses so a too-large interval cannot hang.
+	if opts.Chrom {
+		if _, ok := genome.sizes[origChrom]; !ok {
+			// Upstream's getChromSize returns -1 here, producing garbage
+			// coordinates; we treat the missing chromosome as unplaceable.
+			return "", 0, 0, false
+		}
+	}
+	for tries := 0; tries <= maxRetries; tries++ {
+		var chrom string
+		var chromSize uint64
+		if !opts.Chrom {
+			// -chromFirst: pick a chromosome uniformly by index.
+			idx := mt.randRange(uint64(len(genome.names)))
+			chrom = genome.names[idx]
+			chromSize = genome.sizes[chrom]
+		} else {
+			chrom = origChrom
+			chromSize = genome.sizes[chrom]
+		}
+		start := mt.randRange(chromSize)
+		end := start + length
+		if end > chromSize && !prevent {
+			return chrom, start, chromSize, true
+		}
+		if end <= chromSize {
+			return chrom, start, end, true
+		}
+	}
+	return "", 0, 0, false
+}
+
+// weightedInterval is an include interval with its cumulative size weight,
+// matching BED.weight after assignWeightsBasedOnSize.
+type weightedInterval struct {
+	chrom  string
+	start  uint64
+	size   uint64
+	weight float64
+}
+
+// buildIncludeWeights replicates BedFile::assignWeightsBasedOnSize: sort the
+// include intervals by size ascending (stable, matching std::sort's behaviour
+// for the parity fixtures), then assign each a cumulative weight equal to the
+// running fraction of total include bp.
+func buildIncludeWeights(include []*bed.Record) []weightedInterval {
+	ivs := make([]weightedInterval, len(include))
+	for i, r := range include {
+		size := r.ChromEnd - r.ChromStart
+		if size < 0 {
+			size = 0
+		}
+		ivs[i] = weightedInterval{chrom: r.Chrom, start: uint64(r.ChromStart), size: uint64(size)}
+	}
+	sort.SliceStable(ivs, func(i, j int) bool { return ivs[i].size < ivs[j].size })
+
+	var totalSize uint64
+	for i := range ivs {
+		totalSize += ivs[i].size
+	}
+	var totalWeight float64
+	for i := range ivs {
+		if totalSize > 0 {
+			totalWeight += float64(ivs[i].size) / float64(totalSize)
+		}
+		ivs[i].weight = totalWeight
+	}
+	return ivs
+}
+
+// chooseLocusFromInclude mirrors BedShuffle::ChooseLocusFromInclusionFile:
+// draw a proportion, size-weighted-search for the include interval, then a
+// uniform start within it.
+func chooseLocusFromInclude(
+	mt *mt19937_64,
+	inclWeighted []weightedInterval,
+	length uint64,
+) (string, uint64, uint64) {
+	runif := mt.randProportion()
+	iv := sizeWeightedSearch(inclWeighted, runif)
+	start := iv.start + mt.randRange(iv.size)
+	return iv.chrom, start, start + length
+}
+
+// sizeWeightedSearch mirrors BedFile::sizeWeightedSearch: upper_bound with
+// CompareByWeight, i.e. the first interval whose cumulative weight is strictly
+// greater than val.
+func sizeWeightedSearch(ivs []weightedInterval, val float64) weightedInterval {
+	idx := sort.Search(len(ivs), func(i int) bool { return ivs[i].weight > val })
+	if idx >= len(ivs) {
+		idx = len(ivs) - 1
+	}
+	return ivs[idx]
 }
 
 // indexByChrom buckets records by chromosome.
@@ -314,7 +416,8 @@ func indexByChrom(recs []*bed.Record) map[string][]*bed.Record {
 	return out
 }
 
-// hasOverlap reports whether [start, end) overlaps any of recs (linear scan).
+// hasOverlap reports whether [start, end) overlaps any of recs. This mirrors
+// upstream's default overlap fraction of 1E-9 (any ≥1bp overlap).
 func hasOverlap(recs []*bed.Record, start, end int) bool {
 	for _, r := range recs {
 		if r.ChromStart < end && r.ChromEnd > start {
@@ -324,47 +427,22 @@ func hasOverlap(recs []*bed.Record, start, end int) bool {
 	return false
 }
 
-// genomeWeighting returns (chrom-name list sorted, cumulative bp at each,
-// total genome size) for weighted chrom selection.
-func genomeWeighting(g map[string]int) ([]string, []int, int) {
-	keys := make([]string, 0, len(g))
-	for k := range g {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	cum := make([]int, len(keys))
-	total := 0
-	for i, k := range keys {
-		total += g[k]
-		cum[i] = total
-	}
-	return keys, cum, total
-}
-
-// includeWeighting is the analogous helper for the include list: a chrom is
-// weighted by the total bp listed for it in the include BED.
-func includeWeighting(includeCum map[string]int) ([]string, []int, int) {
-	keys := make([]string, 0, len(includeCum))
-	for k, n := range includeCum {
-		if n > 0 {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-	cum := make([]int, len(keys))
-	total := 0
-	for i, k := range keys {
-		total += includeCum[k]
-		cum[i] = total
-	}
-	return keys, cum, total
-}
-
-// ParseGenome reads a tab-separated chrom-size file ("chr\tlen\n") and
-// returns the chrom-to-size map. Comment lines starting with '#' are
-// ignored.
+// ParseGenome reads a tab-separated chrom-size file ("chrom\tsize\n") and
+// returns the chrom-to-size map. Comment lines starting with '#' are ignored.
+// For byte-for-byte upstream parity use ParseGenomeOrdered, which also returns
+// the chromosome file order.
 func ParseGenome(r io.Reader) (map[string]int, error) {
+	g, _, err := ParseGenomeOrdered(r)
+	return g, err
+}
+
+// ParseGenomeOrdered reads a tab-separated chrom-size file and returns both the
+// chrom-to-size map and the chromosome names in file order. The order is what
+// upstream bedtools uses to build its genome-projection table, so it is
+// required for byte-for-byte parity in the default placement mode.
+func ParseGenomeOrdered(r io.Reader) (map[string]int, []string, error) {
 	out := map[string]int{}
+	var order []string
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -374,18 +452,21 @@ func ParseGenome(r io.Reader) (map[string]int, error) {
 		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
-			return nil, fmt.Errorf("genome line %q: expected 'chrom\\tsize'", line)
+			return nil, nil, fmt.Errorf("genome line %q: expected 'chrom\\tsize'", line)
 		}
 		n, err := strconv.Atoi(fields[1])
 		if err != nil {
-			return nil, fmt.Errorf("invalid size %q in genome line: %v", fields[1], err)
+			return nil, nil, fmt.Errorf("invalid size %q in genome line: %v", fields[1], err)
+		}
+		if _, seen := out[fields[0]]; !seen {
+			order = append(order, fields[0])
 		}
 		out[fields[0]] = n
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return out, nil
+	return out, order, nil
 }
 
 // ParseBED is a small helper that reads BED records from r using the shared

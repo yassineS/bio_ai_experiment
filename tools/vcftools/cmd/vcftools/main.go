@@ -247,9 +247,12 @@ Sample Filtering:
   --remove-indv STRING  Remove this individual (can use multiple times)
   --keep FILE           Keep only individuals listed in file
   --remove FILE         Remove individuals listed in file
-  --max-indv INT        Cap the number of kept individuals at INT. Upstream
-                        picks randomly; this port keeps the first N in
-                        input order (see docs/PARITY_ROADMAP.md#vcftools).
+  --max-indv INT        Cap the number of kept individuals at INT, choosing
+                        a random subset. Upstream seeds from time(NULL) with
+                        no seed flag, so its choice is non-reproducible.
+  --max-indv-seed INT   Seed the --max-indv subset. Reproduces upstream's
+                        glibc rand()/random_shuffle selection byte-for-byte
+                        for the same seed (see docs/PARITY_ROADMAP.md#vcftools).
 
 Per-Genotype FT Filtering:
   --remove-filtered-geno-all
@@ -623,13 +626,30 @@ func main() {
 	// upstream-parity note about deterministic input-order truncation.
 	var maxIndv int
 	var maxIndvSet bool
-	flag.Func("max-indv", "Cap the number of kept individuals at N (input-order truncation, see ROADMAP)", func(s string) error {
+	flag.Func("max-indv", "Cap the number of kept individuals at N (random subset; use --max-indv-seed for reproducibility)", func(s string) error {
 		v, err := strconv.Atoi(strings.TrimSpace(s))
 		if err != nil {
 			return fmt.Errorf("--max-indv: %w", err)
 		}
 		maxIndv = v
 		maxIndvSet = true
+		return nil
+	})
+
+	// --max-indv-seed N seeds the random downsample so the kept subset is
+	// reproducible AND byte-for-byte identical to an upstream run seeded with
+	// the same value (upstream itself uses srand(time(NULL)) with no seed
+	// flag, so a plain upstream run is non-reproducible; this is our parity
+	// hook). Without it, --max-indv keeps the first N samples in input order.
+	var maxIndvSeed int
+	var maxIndvSeedSet bool
+	flag.Func("max-indv-seed", "Seed for --max-indv random subset (reproducible glibc rand()/random_shuffle parity)", func(s string) error {
+		v, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return fmt.Errorf("--max-indv-seed: %w", err)
+		}
+		maxIndvSeed = v
+		maxIndvSeedSet = true
 		return nil
 	})
 
@@ -879,6 +899,8 @@ func main() {
 		RemovedSites:                *removedSites,
 		MaxIndv:                     maxIndv,
 		MaxIndvSet:                  maxIndvSet,
+		MaxIndvSeed:                 maxIndvSeed,
+		MaxIndvSeedSet:              maxIndvSeedSet,
 		RemoveFilteredGenoAll:       *removeFilteredGenoAll,
 		RemoveFilteredGenoList:      removeFilteredGenoList,
 		Derived:                     *derived,

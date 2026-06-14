@@ -33,6 +33,11 @@ Options:
   -incl, --include FILE    Include-region BED
   -excl, --exclude FILE    Exclude-region BED
   -chrom,--chromOnly       Keep each interval on its original chromosome
+  -chromFirst              Pick the destination chromosome uniformly first,
+                           then a position within it (default: project a
+                           genome-wide position, weighting by chrom size)
+  -allowBeyondChromEnd     Clamp to the chromosome end instead of redrawing
+                           when a shuffled interval would exceed it
   -seed, --seed N          Deterministic seed (default: 0)
   -maxTries N              Placement retries per interval (default: 1000)
   -h,    --help            Show this help
@@ -74,7 +79,10 @@ func main() {
 	cliflag.BoolVar(fs, &keepChrom, "", "chromOnly", false, "Keep on original chrom (alias of -chrom)")
 
 	var chromFirst bool
-	cliflag.BoolVar(fs, &chromFirst, "", "chromFirst", false, "With -incl, pick the chromosome uniformly first")
+	cliflag.BoolVar(fs, &chromFirst, "", "chromFirst", false, "Pick the chromosome uniformly first, then a position within it")
+
+	var allowBeyondChromEnd bool
+	cliflag.BoolVar(fs, &allowBeyondChromEnd, "", "allowBeyondChromEnd", false, "Clamp to chrom end instead of redrawing when an interval would exceed it")
 
 	var seed int
 	cliflag.IntVar(fs, &seed, "", "seed", 0, "RNG seed")
@@ -108,18 +116,20 @@ func main() {
 		os.Exit(1)
 	}
 	defer gf.Close()
-	genome, err := bedshuffle.ParseGenome(gf)
+	genome, genomeOrder, err := bedshuffle.ParseGenomeOrdered(gf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading genome: %v\n", err)
 		os.Exit(1)
 	}
 
 	opts := bedshuffle.Options{
-		Genome:     genome,
-		Chrom:      keepChrom,
-		ChromFirst: chromFirst,
-		Seed:       int64(seed),
-		MaxRetries: maxTries,
+		Genome:              genome,
+		GenomeOrder:         genomeOrder,
+		Chrom:               keepChrom,
+		ChromFirst:          chromFirst,
+		AllowBeyondChromEnd: allowBeyondChromEnd,
+		Seed:                int64(seed),
+		MaxRetries:          maxTries,
 	}
 
 	if inclFile != "" {

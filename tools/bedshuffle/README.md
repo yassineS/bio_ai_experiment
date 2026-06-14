@@ -22,6 +22,8 @@ bedshuffle -i input.bed -g hg19.genome -chrom        # keep on original chrom
 | `-incl` | `--include` | Include-region BED: every placement must fall inside one of these regions. |
 | `-excl` | `--exclude` | Exclude-region BED: no placement may overlap one of these regions. |
 | `-chrom` | `--chromOnly` | Keep each interval on its original chromosome. |
+| `-chromFirst` | | Pick the destination chromosome uniformly first, then a position within it (default: project a genome-wide position, weighting by chrom size). |
+| `-allowBeyondChromEnd` | | Clamp to the chrom end instead of redrawing when an interval would exceed it. |
 | `-seed` | `--seed` | Deterministic RNG seed (default 0). |
 |         | `--maxTries` | Placement retries per interval (default 1000). |
 | `-h` | `--help` | Show help. |
@@ -45,24 +47,25 @@ matches upstream's wording.
 
 `-chrom` keeps the original chromosome and only randomises the start.
 
-## Determinism
+## Determinism and upstream parity
 
-The RNG is `math/rand` seeded by `-seed`. Identical inputs + identical seed
-always produce identical output. Different seeds produce different output.
+The RNG is a pure-Go port of `std::mt19937_64` — the exact 64-bit Mersenne
+Twister that upstream bedtools' `Random.cpp` uses (the default, non-`USE_RAND`
+build). Combined with the genome-file-order projection and the exact per-mode
+draw/retry order from `shuffleBed.cpp`, **`bedshuffle -seed N` reproduces
+`bedtools shuffle -seed N` byte-for-byte** for the default, `-incl`, `-excl`,
+`-chrom`, `-chromFirst`, and `-allowBeyondChromEnd` modes. This is asserted
+directly against the upstream binary in
+`pkg/bedshuffle/byte_parity_test.go`. Identical inputs + identical seed always
+produce identical output.
 
 ## Deviations from upstream
 
-- **Byte-for-byte output is not parity** with upstream's bedtools shuffle
-  for any seed: upstream uses its own Mersenne Twister implementation with
-  a specific seeding regime that we do not reproduce. We instead validate
-  the *structural* invariants the upstream tests were designed to check
-  (length preserved, include / exclude / chrom honoured, error on
-  unplaceable intervals). Tracked in `docs/PARITY_ROADMAP.md#bedtools`.
-- `-chromFirst` (the alternative sampling order) is treated as the default
-  in our port — the two are equivalent when `-incl` is present and the
-  include list covers the same chrom subset.
-- `-noOverlapping`, `-allowBeyondChromEnd`, `-f` upstream flags not yet
-  supported (low-priority; tracked in the roadmap).
+- `-noOverlapping` and `-f` (overlap fraction) upstream flags are not yet
+  supported (low-priority; tracked in the roadmap). When a chromosome named in
+  the input is absent from the genome under `-chrom`, this port reports the
+  interval as unplaceable instead of emitting upstream's garbage (negative)
+  coordinates — a fix-on-port.
 
 See [`../PARITY_VALIDATION.md`](../PARITY_VALIDATION.md) for the validated
 parity matrix.

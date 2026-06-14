@@ -87,24 +87,34 @@ For subcommands that use randomness (`bedshuffle`, `bedsample`, `seqtk sample`,
 - **Logical equivalence with upstream**: our output must satisfy the same
   invariants upstream's output does (correct sampling fraction, no
   duplicates without replacement, strand filters honoured, etc.).
-- **NOT** byte-identical with upstream's output. Upstream uses its own
-  C/C++ RNG (typically a Mersenne Twister from libstdc++); Go uses
-  `math/rand`. Porting upstream's RNG would be ~200 lines of
-  bit-twiddling per tool with no functional benefit — the user
-  explicitly opted out of that work in favour of focusing on real
-  feature parity.
+- **Byte-identical with upstream where upstream is seed-reproducible.** This
+  is now achieved by porting upstream's exact RNG in pure Go (a few dozen
+  LOC per generator), not by deviating to `math/rand`:
+  - `seqtk sample`/`randbase` — glibc `drand48` / krand MT19937-64 port.
+  - `bedsample` — `std::mt19937_64` port.
+  - `bedshuffle` — `std::mt19937_64` port (mt19937.go) plus the exact
+    genome-file-order projection and per-mode draw/retry order from
+    `shuffleBed.cpp`; `bedshuffle -seed N` matches `bedtools shuffle -seed N`
+    byte-for-byte (default/`-incl`/`-excl`/`-chrom`/`-chromFirst`/
+    `-allowBeyondChromEnd`), asserted against the upstream binary.
+  - `vcftools --max-indv` — glibc `rand()` + libstdc++ `std::random_shuffle`
+    port (glibc_rand.go). Upstream seeds with `srand(time(NULL))` and exposes
+    **no** seed flag, so a plain upstream run is genuinely non-reproducible;
+    this port adds `--max-indv-seed N` and reproduces the exact selection
+    upstream would emit for that seed (verified against a C harness that was
+    in turn checked against the real upstream binary at matching epoch
+    seconds).
 
-The parity-test infrastructure handles this by either:
+Where upstream's only entropy source is an unseeded wall-clock value with no
+user-facing seed (as in `vcftools --max-indv`), byte-matching a *given*
+upstream run is impossible by construction; the port's seeded path matches the
+algorithm byte-for-byte and is documented as such.
 
-- structural-invariant assertions (e.g. "every shuffled interval has the
-  same length as the input; every shuffled interval is on a chrom in the
-  genome"), or
-- a documented `t.Skip("RNG byte-parity, see PARITY_ROADMAP.md#rng-policy")`
-  with a pointer to this section.
-
-We're not there yet for any tool. The bedtools subset (PR #55) is the
-closest — 127 parity tests, 85 passing, 42 documented `t.Skip` — and even
-there we have ~30 subcommands not yet started.
+The parity-test infrastructure asserts byte parity directly (the `t.Skip(
+"RNG byte-parity ...")` markers are being removed as each generator is ported).
+Logical-invariant assertions (e.g. "every shuffled interval has the same
+length as the input; every shuffled interval is on a chrom in the genome")
+are kept as cheap additional checks.
 
 ---
 
@@ -1411,25 +1421,23 @@ Closed in wave 10 (this PR):
   set behaviour in upstream's `geno_filter_flags_to_exclude`). ✅
 - **`--max-indv N`** — caps the number of kept individuals at N.
   Ported from upstream `parameters.cpp:292` +
-  `variant_file_filters.cpp:105-147`
-  (`filter_individuals_randomly`). **Port deviation, documented:**
-  upstream uses `srand(time(NULL))` + `random_shuffle`, making the
-  kept-sample identity non-deterministic across runs. This port
-  instead deterministically keeps the first N kept samples in input
-  (header) order. The COUNT invariant (`|kept| =
-  min(N, |pre-cap-kept|)`) is the strongest claim we can make against
-  upstream's randomness, so parity is pinned at the COUNT level only
-  (`TestMaxIndv_Count` table-driven cases). `MaxIndvSet` gates the
-  cap so `--max-indv 0` ("drop every sample") is distinguishable from
-  the default. Pinned by `TestMaxIndv_Count` and
-  `TestMaxIndv_Unset_NoOp`. **Live-binary contract validation added**
-  (`TestVcftools_MaxIndvUpstream`): per the RNG / stochastic-output
-  policy above, it runs both the upstream binary and the Go port over
-  the same fixture for N = 1..4 and asserts the deterministic contract
-  rather than byte-parity — both tools keep `min(N, |all|)`
-  individuals (COUNT), the Go port's kept set is a subset of the input
-  samples (SUBSET), and the Go selection is the stable, documented
-  first-N-in-header-order prefix (DETERMINISM). ✅
+  `variant_file_filters.cpp:105-147` (`filter_individuals_randomly`).
+  Upstream draws the random subset with glibc `srand()/rand()` driving
+  libstdc++'s `std::random_shuffle`, but seeds with `srand(time(NULL))`
+  and exposes **no** seed flag, so a plain upstream run's chosen subset
+  changes every wall-clock second and is **not reproducible** (verified
+  by running the upstream binary in consecutive seconds). This port
+  therefore ports the exact glibc `rand()` generator (`glibc_rand.go`)
+  and the exact `random_shuffle` swap sequence, and adds a
+  **`--max-indv-seed N`** flag. With a seed the kept subset is
+  **byte-for-byte identical** to what upstream would emit if seeded with
+  the same value; without one it keeps the first N samples in header
+  order (no reproducible upstream target exists). Byte-exact parity is
+  pinned by `TestParity_MaxIndv_Seeded` (fixtures generated by a C
+  harness that replays `filter_individuals_randomly` verbatim and was
+  itself confirmed against the live upstream binary at matching epoch
+  seconds), plus `TestGlibcRand*` for the generator and
+  `TestVcftools_MaxIndvUpstream` for the live count/subset contract. ✅
 - **`--keep-INFO-all`** — upstream-deprecated synonym for
   `--recode-INFO-all`. Both `parameters.cpp:267` and `:318` write
   to the same `recode_all_INFO` parameter bit; the CLI ORs them

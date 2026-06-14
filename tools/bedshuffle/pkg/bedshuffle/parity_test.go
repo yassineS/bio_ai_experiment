@@ -1,17 +1,14 @@
 package bedshuffle
 
-// Parity tests against the upstream `bedtools shuffle` test suite.
+// Structural parity tests mirroring the upstream `bedtools shuffle` test suite.
 //
-// Upstream's expected outputs are tied to bedtools' own Mersenne Twister
-// implementation seeded with a specific algorithm. Our port uses Go's
-// math/rand, which differs on a bit level. We therefore cannot byte-match
-// the inline expected outputs — instead we assert the *structural* invariants
-// that the upstream test cases were designed to check (lengths preserved,
-// include/exclude/chrom honoured, deterministic on seed).
-//
-// The upstream test cases are mirrored as separate sub-tests so that future
-// work can wire in a Mersenne-Twister-compatible RNG if a downstream
-// consumer needs byte-for-byte parity.
+// These assert the invariants each upstream test case was designed to check
+// (lengths preserved, include/exclude/chrom honoured, deterministic on seed).
+// Byte-for-byte parity with the upstream binary is now also covered directly,
+// in byte_parity_test.go: this port ports bedtools' exact std::mt19937_64
+// engine and draw order, so `bedshuffle -seed N` reproduces
+// `bedtools shuffle -seed N` byte-for-byte. The structural tests below remain
+// as cheap, fixture-independent invariant checks.
 
 import (
 	"bytes"
@@ -77,11 +74,11 @@ func TestParity_Shuffle_T2_Include(t *testing.T) {
 	checkStructure(t, in, buf.Bytes(), g, incl, nil, false)
 }
 
-// shuffle.t3 — shuffle with -incl and -chromFirst (pick the chromosome
-// uniformly first, then a position within it). bedshuffle uses Go's math/rand
-// so exact placements differ from upstream's libc rand; like the other shuffle
-// parity tests this asserts STRUCTURAL validity — every interval keeps its
-// length and lands inside an include region.
+// shuffle.t3 — shuffle with -incl and -chromFirst. Note: upstream's -incl
+// path ignores -chromFirst (include selection is always size-weighted), so
+// this just exercises that the flag is accepted; it asserts STRUCTURAL
+// validity (every interval keeps its length and lands inside an include
+// region). Byte-exact include parity is covered in byte_parity_test.go.
 func TestParity_Shuffle_T3_IncludeChromFirst(t *testing.T) {
 	in := readParityFixture(t, "simrep.bed")
 	g := readParityGenome(t, "human.hg19.genome")
