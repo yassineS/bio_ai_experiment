@@ -51,12 +51,13 @@ func upstreamVcftools(t *testing.T) string {
 		upstreamVcftoolsPath, upstreamVcftoolsErr = buildUpstreamVcftools()
 	})
 	if upstreamVcftoolsErr != nil {
-		// When the reference_code/vcftools submodule is not checked out in
-		// this tree (e.g. an isolated worktree), there is nothing to build
-		// against — skip rather than fail. A genuine build failure (the
-		// submodule is present but won't compile) still fails hard.
+		// The reference_code/vcftools submodule is the live-parity oracle.
+		// Per the project's parity-rig policy (see PR #294), a missing
+		// submodule is a hard failure with an init hint, not a silent skip;
+		// a genuine build failure (submodule present but won't compile) also
+		// fails hard.
 		if errors.Is(upstreamVcftoolsErr, errUpstreamNotInitialised) {
-			t.Skipf("upstream vcftools submodule not initialised: %v", upstreamVcftoolsErr)
+			t.Fatalf("upstream vcftools submodule not initialised; run `git submodule update --init reference_code/vcftools` to enable live parity: %v", upstreamVcftoolsErr)
 		}
 		t.Fatalf("upstream vcftools unavailable: %v", upstreamVcftoolsErr)
 	}
