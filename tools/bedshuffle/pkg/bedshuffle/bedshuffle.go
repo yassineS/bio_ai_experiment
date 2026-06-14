@@ -43,6 +43,13 @@ type Options struct {
 	// chromosome.
 	Chrom bool
 
+	// ChromFirst (`-chromFirst`): when an include list is supplied, choose the
+	// destination chromosome uniformly at random *first* (each chromosome with
+	// include regions weighted equally), then a position within it — instead of
+	// the default of weighting a chromosome by its total include base pairs.
+	// Mirrors upstream bedtools shuffle -chromFirst.
+	ChromFirst bool
+
 	// Seed for the RNG. Same seed + same inputs ⇒ same output.
 	Seed int64
 
@@ -214,6 +221,13 @@ func drawOne(
 		var chrom string
 		if opts.Chrom {
 			chrom = origChrom
+		} else if opts.ChromFirst {
+			// Pick a chromosome uniformly (equal weight per chrom), then a
+			// position within it.
+			if len(weightedIncl) == 0 {
+				return "", 0, false
+			}
+			chrom = weightedIncl[rng.Intn(len(weightedIncl))]
 		} else {
 			if totalIncl <= 0 {
 				return "", 0, false

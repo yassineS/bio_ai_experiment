@@ -73,6 +73,9 @@ func main() {
 	cliflag.BoolVar(fs, &keepChrom, "", "chrom", false, "Keep on original chrom")
 	cliflag.BoolVar(fs, &keepChrom, "", "chromOnly", false, "Keep on original chrom (alias of -chrom)")
 
+	var chromFirst bool
+	cliflag.BoolVar(fs, &chromFirst, "", "chromFirst", false, "With -incl, pick the chromosome uniformly first")
+
 	var seed int
 	cliflag.IntVar(fs, &seed, "", "seed", 0, "RNG seed")
 
@@ -114,6 +117,7 @@ func main() {
 	opts := bedshuffle.Options{
 		Genome:     genome,
 		Chrom:      keepChrom,
+		ChromFirst: chromFirst,
 		Seed:       int64(seed),
 		MaxRetries: maxTries,
 	}
