@@ -339,20 +339,137 @@ func mergeBED(in []*bed.Record) []*bed.Record {
 	return out
 }
 
-func readAllBED(r io.Reader) ([]*bed.Record, error) {
-	br := bed.NewReader(r)
-	var out []*bed.Record
-	for {
-		rec, err := br.Read()
-		if err == io.EOF {
-			break
+// inputFormat tags the autodetected format of an input file.
+type inputFormat int
+
+const (
+	formatUnknown inputFormat = iota
+	formatBED
+	formatVCF
+	formatGFF
+)
+
+// isInteger reports whether s is a base-10 integer (optional leading sign),
+// matching upstream's isInteger used by BedFile::parseLine.
+func isInteger(s string) bool {
+	if s == "" {
+		return false
+	}
+	_, err := strconv.Atoi(s)
+	return err == nil
+}
+
+// detectFormat classifies a tokenized data line as BED, VCF, or GFF using the
+// same precedence as upstream's BedFile::parseLine: BED first (cols 2,3
+// integer), then VCF (col 2 integer and ≥8 cols), then GFF (8 or 9 cols with
+// cols 4,5 integer). Returns formatUnknown when none match.
+func detectFormat(fields []string) inputFormat {
+	n := len(fields)
+	if n < 3 {
+		return formatUnknown
+	}
+	if isInteger(fields[1]) && isInteger(fields[2]) {
+		return formatBED
+	}
+	if isInteger(fields[1]) && n >= 8 {
+		return formatVCF
+	}
+	if (n == 8 || n == 9) && isInteger(fields[3]) && isInteger(fields[4]) {
+		return formatGFF
+	}
+	return formatUnknown
+}
+
+// parseTyped converts a tokenized data line into a bed.Record according to the
+// resolved format, mirroring upstream's parseBedLine / parseVcfLine /
+// parseGffLine coordinate conventions:
+//
+//   - BED: start = col2, end = col3 (already 0-based half-open); strand col6.
+//   - VCF: start = POS-1, end = start + len(REF) (col4).
+//   - GFF: start = col4-1, end = col5 (1-based inclusive → 0-based
+//     half-open); strand col7.
+func parseTyped(fields []string, format inputFormat) (*bed.Record, error) {
+	switch format {
+	case formatBED:
+		start, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid BED start %q: %w", fields[1], err)
 		}
+		end, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return nil, fmt.Errorf("invalid BED end %q: %w", fields[2], err)
+		}
+		rec := &bed.Record{Chrom: fields[0], ChromStart: start, ChromEnd: end}
+		if len(fields) >= 6 {
+			rec.Strand = fields[5]
+		}
+		return rec, nil
+	case formatVCF:
+		pos, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid VCF POS %q: %w", fields[1], err)
+		}
+		start := pos - 1
+		end := start + len(fields[3])
+		if start < 0 || end < start {
+			return nil, fmt.Errorf("malformed VCF entry: start=%d end=%d", start, end)
+		}
+		return &bed.Record{Chrom: fields[0], ChromStart: start, ChromEnd: end}, nil
+	case formatGFF:
+		gstart, err := strconv.Atoi(fields[3])
+		if err != nil {
+			return nil, fmt.Errorf("invalid GFF start %q: %w", fields[3], err)
+		}
+		gend, err := strconv.Atoi(fields[4])
+		if err != nil {
+			return nil, fmt.Errorf("invalid GFF end %q: %w", fields[4], err)
+		}
+		start := gstart - 1
+		end := gend
+		if start < 0 || end < start {
+			return nil, fmt.Errorf("malformed GFF entry: start=%d end=%d", start, end)
+		}
+		rec := &bed.Record{Chrom: fields[0], ChromStart: start, ChromEnd: end}
+		if len(fields) >= 7 {
+			rec.Strand = fields[6]
+		}
+		return rec, nil
+	default:
+		return nil, fmt.Errorf("unknown input format")
+	}
+}
+
+// readAllBED reads every data line from r, autodetecting BED/VCF/GFF from the
+// first non-header record and applying that format to the rest of the file
+// (matching upstream, which locks the file type on the first data record).
+// Header lines (`#`, `track`, `browser`) and blanks are skipped.
+func readAllBED(r io.Reader) ([]*bed.Record, error) {
+	sc := bufio.NewScanner(r)
+	// GFF attribute columns can be very long; allow lines up to 16 MiB.
+	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	var out []*bed.Record
+	format := formatUnknown
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if format == formatUnknown {
+			format = detectFormat(fields)
+			if format == formatUnknown {
+				return nil, fmt.Errorf("could not detect input format from line: %q", line)
+			}
+		}
+		rec, err := parseTyped(fields, format)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, rec)
 	}
-	return out, nil
+	return out, sc.Err()
 }
 
 // loadGenomeSize parses a 2-column chrom-sizes file (chrom\tsize) and returns
