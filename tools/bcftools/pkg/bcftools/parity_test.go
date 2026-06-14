@@ -190,9 +190,13 @@ func TestParityView_SampleSubset(t *testing.T) {
 	equalBytes(t, got, want, "view -s sample subset")
 }
 
-// TestParityView_VTypeSnps documents the missing -v / --types selector.
+// TestParityView_VTypeSnps checks the -v/--types selector keeps only SNP/MNP
+// records (the basic.vcf indel rs3 is dropped), byte-for-byte against
+// bcftools 1.23.
 func TestParityView_VTypeSnps(t *testing.T) {
-	t.Skip("view -v/--types not implemented (see docs/PARITY_ROADMAP.md bcftools view)")
+	got := runParityViewFile(t, parityPath(t, "basic.vcf"), ViewOptions{IncludeTypes: []string{"snps"}})
+	want := readParity(t, "view_vtype_snps.expected.vcf")
+	equalBytes(t, got, want, "view -v snps")
 }
 
 // TestParityView_BCFInput documents that, even with the int64 typed

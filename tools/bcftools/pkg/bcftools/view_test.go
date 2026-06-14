@@ -638,3 +638,28 @@ func TestRecomputeACAN(t *testing.T) {
 		t.Errorf("InfoOrder = %q, want DP,AC,AN", got)
 	}
 }
+
+func TestPassesTypeFilter(t *testing.T) {
+	snp := &vcf.Variant{Ref: "A", Alt: []string{"T"}}
+	ins := &vcf.Variant{Ref: "A", Alt: []string{"AT"}}
+	mnp := &vcf.Variant{Ref: "AC", Alt: []string{"GT"}}
+
+	if !(ViewOptions{IncludeTypes: []string{"snps"}}).passesTypeFilter(snp) {
+		t.Error("-v snps should keep a SNP")
+	}
+	if (ViewOptions{IncludeTypes: []string{"snps"}}).passesTypeFilter(ins) {
+		t.Error("-v snps should drop an indel")
+	}
+	if !(ViewOptions{IncludeTypes: []string{"indels"}}).passesTypeFilter(ins) {
+		t.Error("-v indels should keep an indel")
+	}
+	if !(ViewOptions{IncludeTypes: []string{"mnps"}}).passesTypeFilter(mnp) {
+		t.Error("-v mnps should keep an MNP")
+	}
+	if (ViewOptions{ExcludeTypes: []string{"snps"}}).passesTypeFilter(snp) {
+		t.Error("-V snps should drop a SNP")
+	}
+	if !(ViewOptions{ExcludeTypes: []string{"snps"}}).passesTypeFilter(ins) {
+		t.Error("-V snps should keep an indel")
+	}
+}

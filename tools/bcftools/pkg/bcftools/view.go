@@ -81,11 +81,85 @@ type ViewOptions struct {
 	// bgzf.MultiWriter. The framed result decodes byte-identically regardless
 	// of the thread count. A value of 0 or 1 uses the single-threaded writer.
 	Threads int
+	// IncludeTypes (-v/--types) keeps only records that include at least one
+	// of the named variant types; ExcludeTypes (-V/--exclude-types) drops
+	// records that include any of the named types. Type names are the
+	// upstream lowercase set: snps, indels, mnps, ref, bnd, other.
+	IncludeTypes []string
+	ExcludeTypes []string
 	// NoUpdate (-I/--no-update) suppresses the recomputation of INFO/AC and
 	// INFO/AN after a sample subset (-s/-S). By default, like upstream
 	// bcftools view, AC and AN are recomputed from the kept genotypes (and
 	// added to the header/record when absent).
 	NoUpdate bool
+}
+
+// variantTypeMask returns the OR of the per-allele variant-type bits for v.
+// A record with no ALT (or only the missing/ref allele) has mask 0, which is
+// the "ref" type.
+func variantTypeMask(v *vcf.Variant) int {
+	mask := 0
+	for _, alt := range v.Alt {
+		mask |= variantTypeBit(v.Ref, alt)
+	}
+	return mask
+}
+
+// typeNameBits maps an upstream --types name to its variant-type bit. The
+// "ref" type is the special mask-0 case and is reported via the bool.
+func typeNameBits(name string) (bit int, isRef bool) {
+	switch strings.ToLower(name) {
+	case "snps", "snp":
+		return vtSNP, false
+	case "indels", "indel":
+		return vtINDEL, false
+	case "mnps", "mnp":
+		return vtMNP, false
+	case "bnd":
+		return vtBND, false
+	case "other":
+		return vtOTHER, false
+	case "overlap":
+		return vtOVERLAP, false
+	case "ref":
+		return 0, true
+	}
+	return 0, false
+}
+
+// matchesTypeSet reports whether v's variant types intersect the named set.
+func matchesTypeSet(v *vcf.Variant, names []string) bool {
+	mask := variantTypeMask(v)
+	for _, n := range names {
+		bit, isRef := typeNameBits(n)
+		if isRef {
+			// "ref" matches a record whose only allele classifies as the
+			// reference (alt equals ref) — not a missing/absent ALT ("."),
+			// which upstream does not treat as a ref-type record.
+			if mask == 0 && len(v.Alt) > 0 && v.Alt[0] != "." && v.Alt[0] != "" {
+				return true
+			}
+			continue
+		}
+		if bit != 0 && mask&bit != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// passesTypeFilter applies the -v/--types (include) and -V/--exclude-types
+// (exclude) selectors, mirroring upstream bcftools view: a record is kept by
+// -v when it includes at least one requested type, and dropped by -V when it
+// includes any excluded type.
+func (o ViewOptions) passesTypeFilter(v *vcf.Variant) bool {
+	if len(o.IncludeTypes) > 0 && !matchesTypeSet(v, o.IncludeTypes) {
+		return false
+	}
+	if len(o.ExcludeTypes) > 0 && matchesTypeSet(v, o.ExcludeTypes) {
+		return false
+	}
+	return true
 }
 
 // recomputeACAN recomputes INFO/AC (per-ALT, Number=A) and INFO/AN (total
@@ -785,6 +859,9 @@ func keepVariant(v *vcf.Variant, opts ViewOptions, includeF, excludeF *Filter, a
 		return false
 	}
 	if !passesPrivateFilter(v, opts) {
+		return false
+	}
+	if !opts.passesTypeFilter(v) {
 		return false
 	}
 	if includeF != nil && !includeF.Eval(v) {
