@@ -44,6 +44,19 @@ func runStats(t *testing.T, input string, opts StatsOptions) (*statsResult, stri
 	return res, out.String()
 }
 
+// substCount returns the count for a "REF>ALT" SNP key from the new ref<<2|alt
+// indexed substitution table.
+func substCount(res *statsResult, key string) int {
+	if len(key) != 3 || key[1] != '>' {
+		return 0
+	}
+	ri, ai := acgt2int(key[0]), acgt2int(key[2])
+	if ri < 0 || ai < 0 {
+		return 0
+	}
+	return res.subst[ri<<2|ai]
+}
+
 // helper that hand-counts the fixture sections.
 func TestStatsSNHandCount(t *testing.T) {
 	res, out := runStats(t, statsFixtureVCF, StatsOptions{InputFile: "test.vcf"})
@@ -72,10 +85,17 @@ func TestStatsSNHandCount(t *testing.T) {
 	if res.numMASNP != 0 {
 		t.Errorf("numMASNP = %d, want 0", res.numMASNP)
 	}
-	// Verify section headers appear in the text.
-	for _, hdr := range []string{"# SN,", "# AF,", "# QUAL,", "# IDD,", "# ST,", "# DP,", "# PSC,", "# PSI,", "# HWE,"} {
+	// Section headers always emitted (per-sample sections require -s/-S).
+	for _, hdr := range []string{"# SN,", "# AF,", "# QUAL", "# IDD,", "# ST,", "# DP,"} {
 		if !strings.Contains(out, hdr) {
 			t.Errorf("missing section header %q in:\n%s", hdr, out)
+		}
+	}
+	// PSC/PSI/HWE only appear once per-sample stats are requested.
+	_, sampledOut := runStats(t, statsFixtureVCF, StatsOptions{Samples: []string{"-"}})
+	for _, hdr := range []string{"# PSC,", "# PSI,", "# HWE"} {
+		if !strings.Contains(sampledOut, hdr) {
+			t.Errorf("missing section header %q in -s output:\n%s", hdr, sampledOut)
 		}
 	}
 	if !strings.Contains(out, "number of samples:\t3") {
@@ -116,51 +136,65 @@ func TestStatsSTSubstitutions(t *testing.T) {
 		"C>A": 1,
 	}
 	for k, expected := range want {
-		if got := res.subst[k]; got != expected {
+		if got := substCount(res, k); got != expected {
 			t.Errorf("subst[%s] = %d, want %d", k, got, expected)
 		}
 	}
 	// All others should be zero.
 	for _, k := range []string{"A>T", "C>G", "G>A", "G>C", "T>A", "T>C", "T>G"} {
-		if got := res.subst[k]; got != 0 {
+		if got := substCount(res, k); got != 0 {
 			t.Errorf("subst[%s] = %d, want 0", k, got)
 		}
 	}
 }
 
 func TestStatsAFBinning(t *testing.T) {
-	// AF values 0.05, 0.15, 0.95 must fall into bins 0, 1, and 9 respectively.
+	// AF is rebuilt from AC/AN with the upstream bin index int(af*(mAF-2))+1.
+	// With mAF=101 that is int(af*99)+1. AC==1 collapses to the singleton bin 0.
 	mini := `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=1000>
-##INFO=<ID=AF,Number=A,Type=Float,Description="AF">
+##INFO=<ID=AC,Number=A,Type=Integer,Description="AC">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="AN">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
-chr1	100	.	A	G	30	PASS	AF=0.05	GT	0/1
-chr1	200	.	C	T	30	PASS	AF=0.15	GT	0/1
-chr1	300	.	G	A	30	PASS	AF=0.95	GT	0/1
+chr1	100	.	A	G	30	PASS	AC=10;AN=100	GT	0/1
+chr1	200	.	C	T	30	PASS	AC=15;AN=100	GT	0/1
+chr1	300	.	G	A	30	PASS	AC=95;AN=100	GT	0/1
 `
 	res, _ := runStats(t, mini, StatsOptions{})
-	// Default bins: 0.0, 0.1, 0.2, ..., 0.9, 0.99, 1.0.
-	// 0.05 -> bin 0 ([0.0,0.1)); 0.15 -> bin 1 ([0.1,0.2)); 0.95 -> bin 9 ([0.9,0.99)).
+	// af=0.10 -> int(9.9)+1 = 10; af=0.15 -> int(14.85)+1 = 15; af=0.95 -> int(94.05)+1 = 95.
+	for bin, want := range map[int]int{10: 1, 15: 1, 95: 1} {
+		if res.afSNPs[bin] != want {
+			t.Errorf("AF bin %d SNPs = %d, want %d", bin, res.afSNPs[bin], want)
+		}
+	}
+}
+
+func TestStatsAFSingletonBin(t *testing.T) {
+	// A single 0/1 genotype gives AC==1, which upstream routes to the
+	// singleton bin (index 0).
+	mini := `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##INFO=<ID=AC,Number=A,Type=Integer,Description="AC">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="AN">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	100	.	A	G	30	PASS	AC=1;AN=10	GT	0/1
+`
+	res, _ := runStats(t, mini, StatsOptions{})
 	if res.afSNPs[0] != 1 {
-		t.Errorf("AF bin 0 SNPs = %d, want 1", res.afSNPs[0])
-	}
-	if res.afSNPs[1] != 1 {
-		t.Errorf("AF bin 1 SNPs = %d, want 1", res.afSNPs[1])
-	}
-	if res.afSNPs[9] != 1 {
-		t.Errorf("AF bin 9 SNPs = %d, want 1", res.afSNPs[9])
+		t.Errorf("AF singleton bin SNPs = %d, want 1", res.afSNPs[0])
 	}
 }
 
 func TestStatsQUALBinning(t *testing.T) {
 	res, _ := runStats(t, statsFixtureVCF, StatsOptions{})
-	// QUAL values in the fixture: 30, 60, 120, 250, 600, 1200, 80, 40, 75, 300.
-	// Records with SNP ALTs: 30, 60, 120, 250, 300 → bins 30, 60, 120, 250, 300.
-	wantSNP := map[int]int{30: 1, 60: 1, 120: 1, 250: 1, 300: 1}
-	for q, c := range wantSNP {
-		if got := res.qualSNPs[q]; got != c {
-			t.Errorf("qualSNPs[%d] = %d, want %d", q, got, c)
+	// QUAL ts/tv are bucketed by upstream's iqual = 1 + int(QUAL*10) and only
+	// for the 1st ALT. The fixture's SNP 1st-ALT QUALs are 30, 60, 120, 250, 300.
+	for _, q := range []int{30, 60, 120, 250, 300} {
+		iqual := 1 + q*10
+		if got := res.qualTs[iqual] + res.qualTv[iqual]; got != 1 {
+			t.Errorf("QUAL bin for QUAL=%d (iqual=%d) = %d, want 1", q, iqual, got)
 		}
 	}
 }
@@ -178,18 +212,17 @@ chr1	300	.	G	A	30	PASS	DP=30	GT:DP	1/1:8	0/0:8	0/1:8
 chr1	400	.	A	AT	30	PASS	DP=30	GT:DP	0/0:6	0/1:6	1/1:6
 chr1	500	.	C	G	30	PASS	DP=30	GT:DP	0/1:4	1/1:4	0/1:4
 `
-	res, _ := runStats(t, fx, StatsOptions{})
-	// Expected counts per sample (3 samples × 5 records):
-	//   S1: GTs = 0/0, 0/1, 1/1, 0/0, 0/1. RefHom=2, AltHom=1, Het=2.
-	//        SNP transitions at chr1@200 (C>T), chr1@300 (G>A) on S1 hits = 1ts (chr1@300 1/1 G>A=ts) + 1ts(chr1@200 0/1 C>T = ts).
-	//        Transversions: chr1@100 (A>G ts), chr1@500 (C>G tv). S1@100 0/0 no Ts/Tv contribution; S1@500 0/1 → tv. So Tv=1.
-	//        Indel: chr1@400 0/0 → 0.
-	//   S2: 0/1, 0/1, 0/0, 0/1, 1/1. RefHom=1, AltHom=1, Het=3.
-	//   S3: 1/1, 0/0, 0/1, 1/1, 0/1. RefHom=1, AltHom=2, Het=2.
+	res, _ := runStats(t, fx, StatsOptions{Samples: []string{"-"}})
+	// The ref/het/hom columns count only SNP-typed genotypes plus homozygous-ref
+	// genotypes (var_type==VCF_REF), exactly as upstream's do_sample_stats does.
+	// The indel record (chr1@400) therefore contributes only via its 0/0 calls.
+	//   S1: 0/0, 0/1, 1/1, 0/0, 0/1 -> RefHom=2 (incl. indel 0/0), AltHom=1, Het=2.
+	//   S2: 0/1, 0/1, 0/0, 0/1, 1/1 -> RefHom=1, AltHom=1, Het=2 (indel het excluded).
+	//   S3: 1/1, 0/0, 0/1, 1/1, 0/1 -> RefHom=1, AltHom=1, Het=2 (indel 1/1 excluded).
 	want := []struct{ refHom, altHom, het int }{
 		{2, 1, 2},
-		{1, 1, 3},
-		{1, 2, 2},
+		{1, 1, 2},
+		{1, 1, 2},
 	}
 	for i, w := range want {
 		if res.pscNRefHom[i] != w.refHom {
@@ -313,7 +346,6 @@ func TestStatsParseAFBins(t *testing.T) {
 func TestStatsAFBinEdges(t *testing.T) {
 	bins := []float64{0.0, 0.1, 0.5, 1.0}
 	cases := map[float64]int{
-		-0.1: 0,
 		0.0:  0,
 		0.05: 0,
 		0.1:  1,
@@ -321,11 +353,10 @@ func TestStatsAFBinEdges(t *testing.T) {
 		0.5:  2,
 		0.99: 2,
 		1.0:  2,
-		1.5:  2,
 	}
 	for af, want := range cases {
-		if got := afBinIndex(bins, af); got != want {
-			t.Errorf("afBinIndex(%f) = %d, want %d", af, got, want)
+		if got := binGetIdx(bins, af); got != want {
+			t.Errorf("binGetIdx(%f) = %d, want %d", af, got, want)
 		}
 	}
 }
@@ -364,26 +395,28 @@ func TestStatsTransitionType(t *testing.T) {
 }
 
 func TestStatsDPBin(t *testing.T) {
-	opts := StatsOptions{DepthMin: 0, DepthMax: 100, DepthStep: 10}
+	// idist layout: index 0 underflow (<min), last index overflow (>max),
+	// interior index 1+(val-min)/step.
+	r := newStatsResult(StatsOptions{DepthMin: 0, DepthMax: 100, DepthStep: 10}, nil, nil)
 	cases := map[int]int{
 		-5:  0,
-		0:   0,
-		9:   0,
-		10:  10,
-		11:  10,
-		99:  90,
-		100: 100,
-		200: 100,
+		0:   1,
+		9:   1,
+		10:  2,
+		11:  2,
+		99:  10,
+		100: 11,
+		200: len(r.dpSiteBins) - 1,
 	}
 	for in, want := range cases {
-		if got := dpBin(opts, in); got != want {
-			t.Errorf("dpBin(%d) = %d, want %d", in, got, want)
+		if got := idistIndex(r, in); got != want {
+			t.Errorf("idistIndex(%d) = %d, want %d", in, got, want)
 		}
 	}
-	// Defaults when step <= 0.
-	def := StatsOptions{}
-	if got := dpBin(def, 5); got != 5 {
-		t.Errorf("default dpBin(5) = %d, want 5", got)
+	// Default (step 1) bins put depth 5 into interior bin 6 (1+5).
+	def := newStatsResult(StatsOptions{}, nil, nil)
+	if got := idistIndex(def, 5); got != 6 {
+		t.Errorf("default idistIndex(5) = %d, want 6", got)
 	}
 }
 
@@ -398,52 +431,52 @@ func TestStatsFilterSampleSet(t *testing.T) {
 	}
 }
 
-func TestStatsParseDiploidGT(t *testing.T) {
+func TestStatsClassifyGT(t *testing.T) {
 	cases := []struct {
-		gt   string
-		a, b int8
-		ok   bool
+		gt       string
+		typ      int
+		ial, jal int
 	}{
-		{"0/0", 0, 0, true},
-		{"0|1", 0, 1, true},
-		{"1/2", 1, 2, true},
-		{"1", 1, 1, true},
-		{".", 0, 0, false},
-		{"./.", 0, 0, false},
-		{"", 0, 0, false},
-		{"x/y", 0, 0, false},
+		{"0/0", gtHomRR, 0, 0},
+		{"0|1", gtHetRA, 1, 0},
+		{"1/1", gtHomAA, 1, 0},
+		{"1/2", gtHetAA, 1, 2},
+		{"1", gtHaplA, 1, 0},
+		{"0", gtHaplR, 0, 0},
+		{".", gtUnkn, 0, 0},
+		{"./.", gtUnkn, 0, 0},
+		{"", gtUnkn, 0, 0},
+		{"x/y", gtUnkn, 0, 0},
 	}
 	for _, tt := range cases {
-		a, b, _, ok := parseDiploidGT(tt.gt)
-		if ok != tt.ok {
-			t.Errorf("parseDiploidGT(%q): ok=%v, want %v", tt.gt, ok, tt.ok)
+		typ, ial, jal := classifyGT(tt.gt)
+		if typ != tt.typ {
+			t.Errorf("classifyGT(%q) type = %d, want %d", tt.gt, typ, tt.typ)
 			continue
 		}
-		if !ok {
-			continue
-		}
-		if a != tt.a || b != tt.b {
-			t.Errorf("parseDiploidGT(%q) = (%d,%d), want (%d,%d)", tt.gt, a, b, tt.a, tt.b)
+		if typ != gtUnkn && (ial != tt.ial || jal != tt.jal) {
+			t.Errorf("classifyGT(%q) = (ial=%d,jal=%d), want (%d,%d)", tt.gt, ial, jal, tt.ial, tt.jal)
 		}
 	}
 }
 
-func TestStatsHWEChiSquare(t *testing.T) {
-	// Perfect HWE: p=0.5, n=4 → AA=1, Aa=2, aa=1. Expected: AA=1, Aa=2, aa=1. chi=0.
+func TestStatsHWEObservations(t *testing.T) {
+	// Perfect HWE: AA=1, Aa=2, aa=1 over 4 samples. AC=4, AN=8 -> af=0.5 ->
+	// bin 50. Het fraction is 2/4 = 0.5 -> het-freq bin int(0.5*99) = 49.
 	mini := `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=1000>
+##INFO=<ID=AC,Number=A,Type=Integer,Description="AC">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="AN">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4
-chr1	100	.	A	G	30	PASS	.	GT	0/0	0/1	0/1	1/1
+chr1	100	.	A	G	30	PASS	AC=4;AN=8	GT	0/0	0/1	0/1	1/1
 `
-	res, _ := runStats(t, mini, StatsOptions{})
-	// AF = 0.5; expect at least one HWE row with low chi-square.
-	bucket := 500
-	if obs := res.hweObs[bucket]; obs != 1 {
-		t.Errorf("HWE bucket 500 obs = %d, want 1", obs)
+	res, _ := runStats(t, mini, StatsOptions{Samples: []string{"-"}})
+	if res.afHWE == nil {
+		t.Fatalf("afHWE not populated with -s -")
 	}
-	if chi := res.hweChiSum[bucket]; math.Abs(chi) > 1e-6 {
-		t.Errorf("HWE chi square = %f, want ~0", chi)
+	if got := res.afHWE[50][49]; got != 1 {
+		t.Errorf("afHWE[50][49] = %d, want 1", got)
 	}
 }
 
@@ -458,9 +491,9 @@ func TestStatsAFTag(t *testing.T) {
 chr1	100	.	A	G	30	PASS	AF=0.95;MAF=0.05	GT	0/1
 `
 	res, _ := runStats(t, mini, StatsOptions{AFTag: "MAF"})
-	// MAF=0.05 → bin 0.
-	if res.afSNPs[0] != 1 {
-		t.Errorf("AF bin 0 should have 1 SNP (AFTag=MAF), got %d", res.afSNPs[0])
+	// MAF=0.05 → int(0.05*99)+1 = 5.
+	if res.afSNPs[5] != 1 {
+		t.Errorf("AF bin 5 should have 1 SNP (AFTag=MAF), got %d", res.afSNPs[5])
 	}
 }
 
@@ -490,15 +523,15 @@ chr1	100	.	A	G,C	30	PASS	.	GT	0/1
 `
 	// Without --1st-allele-only: A>G and A>C both counted.
 	resAll, _ := runStats(t, mini, StatsOptions{})
-	if resAll.subst["A>G"]+resAll.subst["A>C"] != 2 {
+	if substCount(resAll, "A>G")+substCount(resAll, "A>C") != 2 {
 		t.Errorf("multi-allelic site should produce 2 substitutions, got A>G=%d A>C=%d",
-			resAll.subst["A>G"], resAll.subst["A>C"])
+			substCount(resAll, "A>G"), substCount(resAll, "A>C"))
 	}
 	// With --1st-allele-only: only A>G.
 	resFirst, _ := runStats(t, mini, StatsOptions{FirstAlleleOnly: true})
-	if resFirst.subst["A>G"] != 1 || resFirst.subst["A>C"] != 0 {
+	if substCount(resFirst, "A>G") != 1 || substCount(resFirst, "A>C") != 0 {
 		t.Errorf("1st-allele-only: A>G=%d, A>C=%d, want 1,0",
-			resFirst.subst["A>G"], resFirst.subst["A>C"])
+			substCount(resFirst, "A>G"), substCount(resFirst, "A>C"))
 	}
 }
 
@@ -560,9 +593,10 @@ func TestStatsBadRegion(t *testing.T) {
 
 func TestStatsDepthSpecRoundtrip(t *testing.T) {
 	res, _ := runStats(t, statsFixtureVCF, StatsOptions{DepthMin: 0, DepthMax: 100, DepthStep: 10})
-	// The fixture has site-level DP from 30..60. At step 10 they should all fall into 30/40/60 buckets.
-	if got := res.dpSites[30]; got < 1 {
-		t.Errorf("expected DP bucket 30 to have sites, got %d", got)
+	// The fixture has site-level INFO/DP values 30..60. With step 10, depth 30
+	// lands in the idist interior bin 1+(30-0)/10 = 4.
+	if got := res.dpSiteBins[idistIndex(res, 30)]; got < 1 {
+		t.Errorf("expected DP bucket for depth 30 to have sites, got %d", got)
 	}
 }
 

@@ -3390,6 +3390,18 @@ Option-tail progress on `stats`:
   labels) and Integer (`%.0f` bin labels) tags — validated against the
   C binary built from `reference_code/bcftools` and committed as goldens
   under `tools/bcftools/testdata/parity/stats/`.
+- Core sections **SN, AF, QUAL, IDD, ST, DP, PSC, PSI, HWE** are now
+  byte-for-byte identical to upstream. AF is rebuilt from AC/AN (or
+  `--af-tag`) with the singleton bin folded into bin 1 and the dynamic
+  `(i-1)/(mAF-1)` labels; QUAL prints the upstream `0.1*(iqual-1)` value
+  with one decimal; IDD emits `.` for the unset mean-VAF column; ST walks
+  the `ref<<2|alt` codes; DP uses the idist `<min`/`>max` edge labels and
+  per-genotype counts under `-s/-S`; PSC counts ref/het/hom on SNP-typed
+  (or hom-ref) genotypes with `%.1f` mean depth, singletons, hap and
+  missing columns; HWE emits the het-fraction quartile distribution per AF
+  bin (only with `-s/-S`). Validated by the un-skipped
+  `TestParityStats_*` cases against `reference_code/bcftools` goldens in
+  `tools/bcftools/testdata/parity/`.
 
 Option-tail gaps on the convert/mendelian PR:
 
