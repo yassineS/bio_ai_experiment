@@ -105,11 +105,6 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 
 	// Open every configured output. Closing is in reverse order so the
 	// gzip headers/footers nest correctly.
-	type sink struct {
-		path string
-		w    io.Closer
-		bw   *bufio.Writer
-	}
 	open := func(path string) (*sink, error) {
 		if path == "" {
 			return nil, nil
@@ -161,6 +156,43 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 			}
 		}
 		return firstErr
+	}
+
+	// Name-collated paired mode: pair reads by QNAME (mates are adjacent on
+	// name-sorted input). A flag-paired read whose mate is absent from its
+	// QNAME group is a lone mate and goes to singletons (-s), matching
+	// upstream bam2fq — not to -1/-2. Each complete R1+R2 pair emits to
+	// read1/read2; non-paired reads and ambiguous (both/neither 0x40/0x80)
+	// reads keep their existing routing.
+	if pairedMode && !counts.PairedCoordinateWarn {
+		var group []*sam.Record
+		flush := func() {
+			routePairedGroup(group, read1, read2, singleton, orphan, output, &counts, opts)
+			group = group[:0]
+		}
+		for {
+			rec, rerr := rd.Read()
+			if rerr == io.EOF {
+				break
+			}
+			if rerr != nil {
+				_ = closeAll()
+				return counts, rerr
+			}
+			if !keepFastqRecord(rec, opts) {
+				counts.Dropped++
+				continue
+			}
+			if len(group) > 0 && rec.QName != group[0].QName {
+				flush()
+			}
+			group = append(group, rec)
+		}
+		flush()
+		if err := closeAll(); err != nil {
+			return counts, err
+		}
+		return counts, nil
 	}
 
 	// In coordinate-sorted paired mode we fall back to interleaved output:
@@ -247,6 +279,72 @@ func Fastq(in io.Reader, opts FastqOptions) (FastqCounts, error) {
 		return counts, err
 	}
 	return counts, nil
+}
+
+// sink is one opened fastq output: a closer (which also writes-through during
+// Close for gzip footers) and the buffered writer records are emitted into.
+type sink struct {
+	path string
+	w    io.Closer
+	bw   *bufio.Writer
+}
+
+// routePairedGroup routes one QNAME group (all records sharing a read name,
+// adjacent on name-sorted input) to the configured fastq sinks. A complete
+// pair — exactly one Read1 (0x40 only) and one Read2 (0x80 only) — emits to
+// read1/read2. Any other paired record (a lone mate whose partner is absent)
+// goes to singletons, matching upstream bam2fq; non-paired records also go to
+// singletons, and a record with both/neither of 0x40/0x80 goes to the orphan
+// sink. When a sink is nil the record falls back to output, then is dropped.
+func routePairedGroup(group []*sam.Record, read1, read2, singleton, orphan, output *sink, counts *FastqCounts, opts FastqOptions) {
+	emit := func(s *sink, fallback *sink, rec *sam.Record, n *int) {
+		seq, qual := orientReadForFastq(rec, opts)
+		line := formatFastq(buildFastqHeader(rec, opts), seq, qual)
+		switch {
+		case s != nil:
+			_, _ = s.bw.WriteString(line)
+			*n++
+		case fallback != nil:
+			_, _ = fallback.bw.WriteString(line)
+			counts.Output++
+		default:
+			counts.Dropped++
+		}
+	}
+
+	// Identify the canonical R1 and R2 (exactly-one-flag) members.
+	var r1, r2 *sam.Record
+	r1Count, r2Count := 0, 0
+	for _, rec := range group {
+		if rec.IsPaired() && rec.IsRead1() && !rec.IsRead2() {
+			r1 = rec
+			r1Count++
+		} else if rec.IsPaired() && rec.IsRead2() && !rec.IsRead1() {
+			r2 = rec
+			r2Count++
+		}
+	}
+	completePair := r1Count == 1 && r2Count == 1
+
+	for _, rec := range group {
+		switch {
+		case completePair && rec == r1:
+			emit(read1, output, rec, &counts.Read1)
+		case completePair && rec == r2:
+			emit(read2, output, rec, &counts.Read2)
+		case !rec.IsPaired():
+			emit(singleton, output, rec, &counts.Singleton)
+		case rec.IsPaired() && rec.IsRead1() && !rec.IsRead2():
+			// Lone first mate (partner absent) → singleton.
+			emit(singleton, output, rec, &counts.Singleton)
+		case rec.IsPaired() && rec.IsRead2() && !rec.IsRead1():
+			// Lone second mate (partner absent) → singleton.
+			emit(singleton, output, rec, &counts.Singleton)
+		default:
+			// Paired but 0x40/0x80 both set or both unset → orphan.
+			emit(orphan, output, rec, &counts.Orphan)
+		}
+	}
 }
 
 // fastqSink is the result of opening one output path: the closer (which

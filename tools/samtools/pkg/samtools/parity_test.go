@@ -788,9 +788,29 @@ func TestParity_Fastq_T02_PairedNoSingleton(t *testing.T) {
 // Tracking the design gap rather than masking it: this test stays skipped
 // until we add QNAME-based pairing.
 func TestParity_Fastq_T03_PairedSingletonMiddle(t *testing.T) {
-	t.Skip("not yet supported: QNAME-based pair detection in paired mode " +
-		"(upstream sends flag-paired-but-mate-missing records to -s; our port " +
-		"sends them to -1/-2). Tracked in PARITY_ROADMAP.md#samtools.")
+	dir := t.TempDir()
+	r1, r2, rs := filepath.Join(dir, "1.fq"), filepath.Join(dir, "2.fq"), filepath.Join(dir, "s.fq")
+	in := openParity(t, "bam2fq.003.sam")
+	defer in.Close()
+	if _, err := Fastq(in, FastqOptions{Read1Path: r1, Read2Path: r2, SingletonPath: rs}); err != nil {
+		t.Fatalf("Fastq: %v", err)
+	}
+	got1, _ := os.ReadFile(r1)
+	got2, _ := os.ReadFile(r2)
+	gotS, _ := os.ReadFile(rs)
+
+	upS := filepath.Join(dir, "up_s.fq")
+	want1, want2 := upstreamFastqPaired(t, "bam2fq.003.sam", upS)
+	wantS, _ := os.ReadFile(upS)
+	if !bytes.Equal(got1, want1) {
+		t.Errorf("1.fq mismatch.\nwant:\n%s\ngot:\n%s", want1, got1)
+	}
+	if !bytes.Equal(got2, want2) {
+		t.Errorf("2.fq mismatch.\nwant:\n%s\ngot:\n%s", want2, got2)
+	}
+	if !bytes.Equal(gotS, wantS) {
+		t.Errorf("singleton mismatch.\nwant:\n%s\ngot:\n%s", wantS, gotS)
+	}
 }
 
 // fastq.t04 — -N (AlwaysAddSuffix) re-adds /1 /2 even in paired mode.
