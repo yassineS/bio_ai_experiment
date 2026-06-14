@@ -121,13 +121,24 @@ func TestParity_Slop_T10_PastBoth(t *testing.T) {
 	}
 }
 
-// slop.t13 / t14 — float-point precision regression tests; require the full
-// human.hg19.genome (not vendored under reference_code/bedtools/test/genomes/).
+// slop.t13 / t14 — floating-point precision regression tests from upstream's
+// slop suite: -l 200 -r 200 against human.hg19.genome on a chr1 interval whose
+// coordinates land where a naive float round-trip would drift by 1bp. The
+// hg19 chrom-sizes table is vendored under testdata/parity/ and the expected
+// outputs are from the upstream `bedtools slop` binary.
 func TestParity_Slop_T13_FloatPrecision(t *testing.T) {
-	t.Skip("requires the full human.hg19.genome file under reference_code/bedtools/genomes/")
+	got := runSlopParity(t, "t13_floatprec_in.bed", "human.hg19.genome", Options{LeftAdd: 200, RightAdd: 200})
+	want := readSlopParity(t, "t13_floatprec.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 func TestParity_Slop_T14_FloatPrecisionB(t *testing.T) {
-	t.Skip("requires the full human.hg19.genome file under reference_code/bedtools/genomes/")
+	got := runSlopParity(t, "t14_floatprec_in.bed", "human.hg19.genome", Options{LeftAdd: 200, RightAdd: 200})
+	want := readSlopParity(t, "t14_floatprec.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // slop.t16 — negative -l (no strand): straight subtraction on the left edge.
