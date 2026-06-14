@@ -3,6 +3,7 @@ package bedpairtobed
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,9 +122,27 @@ func TestParity_Notboth(t *testing.T) {
 	}
 }
 
-// TestParity_Slop is a placeholder: upstream `pairtobed` does not currently
-// expose -slop (only `pairtopair` does). When/if it ships we'll add a parity
-// check here. Left as a documented skip so reviewers see the gap.
+// TestParity_Slop asserts the intentional parity that `pairtobed` rejects
+// -slop: upstream `bedtools pairtobed` has no -slop flag (only `pairtopair`
+// does) and errors "Unrecognized parameter: -slop", and our CLI must likewise
+// reject it rather than silently accept an unknown flag. We build the
+// bedpairtobed binary and confirm it exits non-zero, naming the offending flag.
 func TestParity_Slop(t *testing.T) {
-	t.Skip("pairtobed does not accept -slop upstream; documented intentional gap.")
+	bin := filepath.Join(t.TempDir(), "bedpairtobed")
+	build := exec.Command("go", "build", "-o", bin, "../../cmd/bedpairtobed")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building bedpairtobed: %v\n%s", err, out)
+	}
+	cmd := exec.Command(bin, "-slop", "5", "-a", "-", "-b", "-")
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected -slop to be rejected, but the command succeeded:\n%s", out)
+	}
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() == 0 {
+		t.Fatalf("expected non-zero exit for -slop, got err=%v", err)
+	}
+	if !strings.Contains(string(out), "slop") {
+		t.Errorf("rejection message should name the -slop flag, got:\n%s", out)
+	}
 }
