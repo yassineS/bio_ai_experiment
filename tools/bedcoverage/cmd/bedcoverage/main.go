@@ -80,6 +80,9 @@ func main() {
 	var reciprocal bool
 	cliflag.BoolVar(fs, &reciprocal, "r", "reciprocal", false, "Require both -f and -F")
 
+	var split bool
+	cliflag.BoolVar(fs, &split, "", "split", false, "Treat BED12 -b records as their blocks")
+
 	var help, showVersion bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Show version")
@@ -141,6 +144,7 @@ func main() {
 		FractionA:      fracA,
 		FractionB:      fracB,
 		Reciprocal:     reciprocal,
+		Split:          split,
 	}
 	if _, err := bedcoverage.Coverage(rA, rB, w, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

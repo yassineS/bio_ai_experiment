@@ -104,7 +104,30 @@ func TestParity_Coverage_T8_OppositeStrand(t *testing.T) {
 	}
 }
 
-// coverage.t10..t13 — -split and BAM input.
+// coverage.t10..t13 — -split with BAM input (BAM not yet supported here).
 func TestParity_Coverage_T10_Split(t *testing.T) {
-	t.Skip("BAM input + -split block-aware coverage not yet supported in bedcoverage")
+	t.Skip("BAM input + -split: BAM parsing not yet supported in bedcoverage")
+}
+
+// coverage -split on a BED12 database (-b): the 3 blocks (30 bp) of the B
+// record cover query [0,60), giving count 3 / covered 30 / fraction 0.5.
+// Upstream's own -split tests use BAM; this BED-input case is verified
+// byte-for-byte against bedtools v2.31.1.
+func TestParity_Coverage_SplitBED12Database(t *testing.T) {
+	got := runParity(t, "split_a.bed", "split_b12.bed", Options{Mode: ModeDefault, Split: true})
+	want := readParityFixture(t, "split_default.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// coverage -split must reject a BED12 query (-a) record (unsupported) with a
+// clear error rather than emit a wrong answer.
+func TestCoverage_SplitBED12QueryRejected(t *testing.T) {
+	a := "chr1\t0\t50\tq\t0\t+\t0\t0\t0\t2\t10,10,\t0,40,\n"
+	b := "chr1\t0\t60\tb\n"
+	var buf bytes.Buffer
+	if _, err := Coverage(bytes.NewReader([]byte(a)), bytes.NewReader([]byte(b)), &buf, Options{Split: true}); err == nil {
+		t.Fatal("expected error for BED12 query under -split")
+	}
 }

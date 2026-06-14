@@ -77,6 +77,13 @@ type Options struct {
 	// Reciprocal: when true, both FractionA and FractionB must be satisfied
 	// (default behaviour is "either satisfies if non-zero").
 	Reciprocal bool
+
+	// Split ("-split") expands BED12 database (-b) records into their blocks
+	// before indexing, so coverage is counted against each block rather than
+	// the whole record span — matching upstream bedtools coverage -split for
+	// the common "plain-BED -a, BED12 -b" pattern. (Splitting BED12 query
+	// (-a) records is not yet supported and is rejected with a clear error.)
+	Split bool
 }
 
 // Coverage runs the coverage calculation streaming records from readerA,
@@ -88,6 +95,11 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 	bRecords, err := bedReaderB.ReadAll()
 	if err != nil {
 		return 0, fmt.Errorf("error reading B intervals: %w", err)
+	}
+	// -split: expand BED12 database records into their constituent blocks
+	// so coverage is counted per block instead of per whole-record span.
+	if opts.Split {
+		bRecords = expandBlocks(bRecords)
 	}
 	trees := indexB(bRecords)
 
@@ -108,6 +120,9 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 		}
 		if err != nil {
 			return count, fmt.Errorf("error reading A intervals: %w", err)
+		}
+		if opts.Split && recA.BlockCount > 0 && len(recA.BlockSizes) > 0 {
+			return count, fmt.Errorf("coverage -split with a BED12 query (-a) record is not yet supported (record %s:%d-%d)", recA.Chrom, recA.ChromStart, recA.ChromEnd)
 		}
 		count++
 
@@ -192,6 +207,34 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 	}
 
 	return count, nil
+}
+
+// expandBlocks replaces each BED12 record carrying block information with one
+// record per block (the block interval [ChromStart+BlockStarts[i],
+// +BlockSizes[i])); records without blocks pass through unchanged. Used to
+// implement the database (-b) side of coverage -split.
+func expandBlocks(records []*bed.Record) []*bed.Record {
+	out := make([]*bed.Record, 0, len(records))
+	for _, r := range records {
+		if r.BlockCount <= 0 || len(r.BlockSizes) == 0 {
+			out = append(out, r)
+			continue
+		}
+		for i := range r.BlockSizes {
+			s := r.ChromStart
+			if i < len(r.BlockStarts) {
+				s += r.BlockStarts[i]
+			}
+			block := *r
+			block.ChromStart = s
+			block.ChromEnd = s + r.BlockSizes[i]
+			block.BlockCount = 0
+			block.BlockSizes = nil
+			block.BlockStarts = nil
+			out = append(out, &block)
+		}
+	}
+	return out
 }
 
 // indexB returns a per-chromosome interval tree for B. Records are sorted by

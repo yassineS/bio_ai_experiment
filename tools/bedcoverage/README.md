@@ -32,6 +32,7 @@ The default output appends four columns to each A line:
 | `-f` | `--fraction-a` | Min fraction of A that must overlap a B record before B contributes. |
 | `-F` | `--fraction-b` | Min fraction of B that must overlap A. |
 | `-r` | `--reciprocal` | Require both `-f` and `-F` (default behaviour is already AND). |
+|      | `--split`   | Treat BED12 `-b` records as their blocks (exon-aware). BED12 `-a` records under `--split` are rejected. |
 | `-h` | `--help`    | Show help. |
 | `-v` | `--version` | Show version. |
 
