@@ -327,7 +327,7 @@ func main() {
 	// Variant type filtering
 	keepOnlyIndels := flag.Bool("keep-only-indels", false, "Keep only indels")
 	removeIndels := flag.Bool("remove-indels", false, "Remove indels")
-	minAlleles := flag.Int("min-alleles", 2, "Minimum number of alleles")
+	minAlleles := flag.Int("min-alleles", 0, "Minimum number of alleles")
 	maxAlleles := flag.Int("max-alleles", 0, "Maximum number of alleles")
 
 	// Quality filtering
@@ -349,7 +349,7 @@ func main() {
 	maxNonRefACAny := flag.Int("max-non-ref-ac-any", 0, "Maximum non-reference allele count (any ALT passes)")
 
 	// Genotype filtering
-	maxMissing := flag.Float64("max-missing", 1, "Maximum proportion of missing data")
+	maxMissing := flag.Float64("max-missing", 0, "Minimum site call rate (1 = no missing genotypes allowed; 0 = no filter, the upstream default)")
 	// --max-missing-count: use flag.Func so we can record whether the
 	// flag was supplied at all (vs defaulted), since "0" is a meaningful
 	// user-supplied value (drop any site with any missing call).
