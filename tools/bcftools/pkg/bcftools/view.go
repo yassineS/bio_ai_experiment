@@ -81,6 +81,72 @@ type ViewOptions struct {
 	// bgzf.MultiWriter. The framed result decodes byte-identically regardless
 	// of the thread count. A value of 0 or 1 uses the single-threaded writer.
 	Threads int
+	// NoUpdate (-I/--no-update) suppresses the recomputation of INFO/AC and
+	// INFO/AN after a sample subset (-s/-S). By default, like upstream
+	// bcftools view, AC and AN are recomputed from the kept genotypes (and
+	// added to the header/record when absent).
+	NoUpdate bool
+}
+
+// recomputeACAN recomputes INFO/AC (per-ALT, Number=A) and INFO/AN (total
+// called alleles) from v's current sample genotypes and writes them back into
+// v.Info, mirroring upstream `bcftools view -s` (which updates AC/AN after a
+// sample subset). The tags are appended to the INFO order when absent. AF and
+// other INFO tags are left untouched, matching upstream.
+func recomputeACAN(v *vcf.Variant) {
+	if len(v.Alt) == 0 {
+		return
+	}
+	acByAllele := make([]int, len(v.Alt))
+	an := 0
+	for _, s := range v.Samples {
+		gt, ok := s.Data["GT"]
+		if !ok {
+			continue
+		}
+		gt = strings.ReplaceAll(gt, "|", "/")
+		for _, a := range strings.Split(gt, "/") {
+			if a == "." || a == "" {
+				continue
+			}
+			n, err := strconv.Atoi(a)
+			if err != nil {
+				continue
+			}
+			an++
+			if n >= 1 && n <= len(acByAllele) {
+				acByAllele[n-1]++
+			}
+		}
+	}
+	acParts := make([]string, len(acByAllele))
+	for i, c := range acByAllele {
+		acParts[i] = strconv.Itoa(c)
+	}
+	setInfo(v, "AC", strings.Join(acParts, ","))
+	setInfo(v, "AN", strconv.Itoa(an))
+}
+
+// ensureACANHeader appends the ##INFO header lines for AC and AN when they are
+// absent, using the exact definitions upstream bcftools emits (via
+// bcf_hdr_append, which adds new lines at the end of the meta block), so a
+// sample-subset that introduces AC/AN produces a valid, parity-matching header.
+func ensureACANHeader(hdr *vcf.Header) {
+	if hdr == nil {
+		return
+	}
+	have := map[string]bool{}
+	for _, m := range hdr.MetaInfo {
+		if k, id := structuredID(m); k == "INFO" {
+			have[id] = true
+		}
+	}
+	if !have["AC"] {
+		hdr.MetaInfo = append(hdr.MetaInfo, `##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes">`)
+	}
+	if !have["AN"] {
+		hdr.MetaInfo = append(hdr.MetaInfo, `##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">`)
+	}
 }
 
 // applyAlleleFilters returns true if the variant passes the AC/AF filters.
@@ -397,6 +463,9 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		return 0, err
 	}
 	hdr = filterHeaderSamples(hdr, opts.Samples)
+	if len(opts.Samples) > 0 && !opts.NoUpdate {
+		ensureACANHeader(hdr)
+	}
 	if opts.DropGenotypes {
 		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
@@ -430,6 +499,9 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		}
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
+			if !opts.NoUpdate {
+				recomputeACAN(v)
+			}
 		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
@@ -452,6 +524,9 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	}
 	hdr := br.Header().VCF
 	hdr = filterHeaderSamples(hdr, opts.Samples)
+	if len(opts.Samples) > 0 && !opts.NoUpdate {
+		ensureACANHeader(hdr)
+	}
 	if opts.DropGenotypes {
 		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
@@ -490,6 +565,9 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		}
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
+			if !opts.NoUpdate {
+				recomputeACAN(v)
+			}
 		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
@@ -546,6 +624,9 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 		}
 		if len(opts.Samples) > 0 {
 			restrictSamples(v, opts.Samples)
+			if !opts.NoUpdate {
+				recomputeACAN(v)
+			}
 		}
 		if opts.DropGenotypes {
 			dropGenotypes(v)
@@ -593,6 +674,9 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 	}
 	hdrIn.Close()
 	hdr = filterHeaderSamples(hdr, opts.Samples)
+	if len(opts.Samples) > 0 && !opts.NoUpdate {
+		ensureACANHeader(hdr)
+	}
 	if opts.DropGenotypes {
 		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
@@ -645,6 +729,9 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 			}
 			if len(opts.Samples) > 0 {
 				restrictSamples(v, opts.Samples)
+				if !opts.NoUpdate {
+					recomputeACAN(v)
+				}
 			}
 			if opts.DropGenotypes {
 				dropGenotypes(v)

@@ -25,7 +25,8 @@ func TestCheckGtcheckDeferred(t *testing.T) {
 		in   checkGtcheckDeferredInputs
 		want string
 	}{
-		{"cluster", checkGtcheckDeferredInputs{cluster: "2,4"}, "--cluster"},
+		// -c/--cluster is now implemented, so it is no longer deferred.
+		{"cluster", checkGtcheckDeferredInputs{cluster: "2,4"}, ""},
 		{"output-type-z", checkGtcheckDeferredInputs{outputType: "z"}, "-O z (compressed output)"},
 	}
 	for _, tc := range cases {

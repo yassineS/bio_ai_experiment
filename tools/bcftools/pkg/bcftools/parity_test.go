@@ -181,11 +181,13 @@ func TestParityView_RegionTBI(t *testing.T) {
 	equalBytes(t, got, want, "view -r tbi")
 }
 
-// TestParityView_SampleSubset documents a real gap: upstream recomputes
-// INFO/AC and INFO/AN after restricting samples; we don't. Tracked in
-// docs/PARITY_ROADMAP.md (bcftools view section).
+// TestParityView_SampleSubset checks that `view -s` recomputes INFO/AC and
+// INFO/AN from the kept genotypes (AN drops from 6 to 4, AC is recounted),
+// byte-for-byte against bcftools 1.23.
 func TestParityView_SampleSubset(t *testing.T) {
-	t.Skip("view -s does not recompute INFO/AC/AN (see docs/PARITY_ROADMAP.md bcftools view)")
+	got := runParityViewFile(t, parityPath(t, "basic.vcf"), ViewOptions{Samples: []string{"S1", "S2"}})
+	want := readParity(t, "view_sample_subset.expected.vcf")
+	equalBytes(t, got, want, "view -s sample subset")
 }
 
 // TestParityView_VTypeSnps documents the missing -v / --types selector.

@@ -614,3 +614,27 @@ func dataRecordsStripINFO(vcfText string) []string {
 	}
 	return out
 }
+
+func TestRecomputeACAN(t *testing.T) {
+	// Two kept samples, multiallelic ALT=T,G: S1=1/2 (one each), S2=0/1.
+	v := &vcf.Variant{
+		Chrom: "chr1", Pos: 100, Ref: "A", Alt: []string{"T", "G"},
+		Info:      map[string]string{"DP": "99"},
+		InfoOrder: []string{"DP"},
+		Samples: []vcf.Sample{
+			{Name: "S1", Data: map[string]string{"GT": "1/2"}},
+			{Name: "S2", Data: map[string]string{"GT": "0/1"}},
+		},
+	}
+	recomputeACAN(v)
+	if v.Info["AC"] != "2,1" {
+		t.Errorf("AC = %q, want 2,1", v.Info["AC"])
+	}
+	if v.Info["AN"] != "4" {
+		t.Errorf("AN = %q, want 4", v.Info["AN"])
+	}
+	// AC and AN appended after the pre-existing DP, in that order.
+	if got := strings.Join(v.InfoOrder, ","); got != "DP,AC,AN" {
+		t.Errorf("InfoOrder = %q, want DP,AC,AN", got)
+	}
+}
