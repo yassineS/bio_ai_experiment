@@ -1,0 +1,8 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=108>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	11	del1	AA	A	30	PASS	DP=10	GT	0/1
+chr1	5	ins1	A	AA	30	PASS	DP=12	GT	0/1
+chr1	23	snp1	T	C	40	PASS	DP=8	GT	1/1

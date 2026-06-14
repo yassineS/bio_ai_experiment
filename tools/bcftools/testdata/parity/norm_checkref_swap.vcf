@@ -1,0 +1,5 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=108>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2
+chr1	5	swap	G	A	30	PASS	.	GT	0/1	1/1

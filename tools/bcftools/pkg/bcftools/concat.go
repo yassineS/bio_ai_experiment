@@ -22,10 +22,16 @@ type ConcatOptions struct {
 	// returned in (contig-order, POS) order across all inputs. When false
 	// the inputs are concatenated in the order given.
 	AllowOverlaps bool
-	// RemoveDuplicates collapses adjacent records sharing the same
-	// (CHROM, POS, REF, ALT) tuple. Only kept records contribute to the
-	// returned count.
+	// RemoveDuplicates is the `-D/--remove-duplicates` flag: it is an alias
+	// for `-d exact`. Upstream only honours duplicate removal together with
+	// AllowOverlaps (`-a`); standalone use is rejected (see ConcatFiles).
 	RemoveDuplicates bool
+	// RmDupMode is the `-d/--rm-dup` collapse mode. The empty string means
+	// no de-duplication. Recognised modes mirror upstream vcfconcat.c:
+	// "exact"/"none" (drop only records with identical REF+ALT seen earlier
+	// across files), "snps", "indels", "both", "any"/"all". As with `-D`,
+	// dedup requires AllowOverlaps.
+	RmDupMode string
 	// FileList, when non-empty, is read line-by-line and prepended to the
 	// list of inputs supplied to ConcatFiles.
 	FileList string
@@ -58,6 +64,11 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 	if len(inputs) == 0 {
 		return 0, fmt.Errorf("bcftools concat: no input files")
 	}
+	// Upstream vcfconcat.c rejects -D/-d unless -a is in effect:
+	//   "The -D option is supported only with -a".
+	if (opts.RemoveDuplicates || opts.RmDupMode != "") && !opts.AllowOverlaps {
+		return 0, fmt.Errorf("The -D option is supported only with -a")
+	}
 	// Read each input fully into memory: bcftools concat already requires
 	// inputs to be sorted, and we operate on the in-memory variants to
 	// implement sort-merge and de-duplication cleanly. For v1 this is the
@@ -89,14 +100,23 @@ func Concat(inputs []NamedReader, out io.Writer, opts ConcatOptions) (int, error
 			return 0, fmt.Errorf("bcftools concat: %w", err)
 		}
 	case opts.AllowOverlaps:
-		records = mergeSorted(groups, contigOrder(merged))
+		// Upstream's `-a` traverses the genome through a synced reader
+		// whose contig order is the first-seen-in-data order across the
+		// inputs (the index/header seqnames of each file, appended in
+		// file order), NOT the merged-header ##contig declaration order.
+		// See vcfconcat.c (init_data builds out_hdr via bcf_hdr_merge but
+		// the synced reader region list is populated from each reader's
+		// tbx_seqnames in synced_bcf_reader.c add_reader).
+		order := dataContigOrder(groups)
+		mode := opts.RmDupMode
+		if opts.RemoveDuplicates && mode == "" {
+			mode = "exact"
+		}
+		records = mergeSortedDedup(groups, order, mode)
 	default:
 		for _, g := range groups {
 			records = append(records, g...)
 		}
-	}
-	if opts.RemoveDuplicates {
-		records = dedupAdjacent(records)
 	}
 
 	w, finish, err := openOutput(out, ViewOptions{
@@ -407,33 +427,161 @@ func contigOrder(hdr *vcf.Header) map[string]int {
 	return out
 }
 
-// mergeSorted performs an n-way merge of pre-sorted variant groups using a
-// (contig-index, POS) ordering.
-func mergeSorted(groups [][]*vcf.Variant, order map[string]int) []*vcf.Variant {
-	cursors := make([]int, len(groups))
+// dataContigOrder returns a contig name -> rank map reproducing the
+// first-seen-in-data ordering that upstream's `-a`/`--allow-overlaps`
+// synced reader uses. Contigs are ranked in the order they first appear in
+// the record stream, scanning the input groups in file order and, within a
+// file, in record order. This matches synced_bcf_reader.c, which seeds its
+// region list from each reader's index (or header) seqnames appended in
+// file order, NOT from the merged-header ##contig declaration order.
+func dataContigOrder(groups [][]*vcf.Variant) map[string]int {
+	order := make(map[string]int)
+	idx := 0
+	for _, g := range groups {
+		for _, v := range g {
+			if _, seen := order[v.Chrom]; !seen {
+				order[v.Chrom] = idx
+				idx++
+			}
+		}
+	}
+	return order
+}
+
+// mergeSortedDedup performs the stable n-way merge that `concat -a` emits.
+//
+// Records are ordered by (data-contig rank, POS). At an equal (contig, POS)
+// the file index is the tiebreaker: every record of the lower-numbered file
+// is emitted before any record of a higher-numbered file, and within a file
+// the original record order is preserved. This reproduces the synced
+// reader's reader-by-reader emission at a shared position.
+//
+// When mode is non-empty (`-D`/`-d`) duplicate removal is applied across
+// files only: at a given (contig, POS) a record from file i>0 is dropped
+// when an already-emitted record from an earlier file at the same position
+// collapses with it under the mode's rule. Records from the same file are
+// never de-duplicated against each other, matching upstream (the synced
+// reader's per-position `break` skips only the lines of later readers).
+func mergeSortedDedup(groups [][]*vcf.Variant, order map[string]int, mode string) []*vcf.Variant {
+	// rank ranks a record by (contig rank, POS) for the merge.
+	rank := func(v *vcf.Variant) (int, int) {
+		ci, ok := order[v.Chrom]
+		if !ok {
+			ci = 1<<30 + sortFallback(v.Chrom)
+		}
+		return ci, v.Pos
+	}
+
+	// Flatten all inputs, tagging each record with its source file index.
+	// Upstream's synced reader visits each file through its index in the
+	// region-traversal order, so a file whose records are not physically in
+	// coordinate order is still consumed in coordinate order. Flattening and
+	// stable-sorting reproduces that without an index.
+	type tagged struct {
+		v    *vcf.Variant
+		file int
+		ci   int
+		pos  int
+	}
 	total := 0
 	for _, g := range groups {
 		total += len(g)
 	}
+	all := make([]tagged, 0, total)
+	for fi, g := range groups {
+		for _, v := range g {
+			ci, pos := rank(v)
+			all = append(all, tagged{v: v, file: fi, ci: ci, pos: pos})
+		}
+	}
+	// Stable sort by (contig rank, POS). Stability preserves, at a shared
+	// position, the lower-numbered file's records first and each file's
+	// original record order — matching the synced reader's reader-by-reader
+	// emission.
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].ci != all[j].ci {
+			return all[i].ci < all[j].ci
+		}
+		if all[i].pos != all[j].pos {
+			return all[i].pos < all[j].pos
+		}
+		return all[i].file < all[j].file
+	})
+
 	out := make([]*vcf.Variant, 0, total)
-	for {
-		bestG := -1
-		var best *vcf.Variant
-		for i, g := range groups {
-			if cursors[i] >= len(g) {
+	for i := 0; i < len(all); {
+		// Walk one (contig, POS) group.
+		j := i
+		for j < len(all) && all[j].ci == all[i].ci && all[j].pos == all[i].pos {
+			j++
+		}
+		// Within the group, keep all records of the first file, then for
+		// each later file keep only the records that do not collapse with a
+		// record already kept by a strictly-earlier file. This mirrors the
+		// synced reader, which at a shared position writes only the lowest
+		// reader and skips matching lines of later readers. Records from the
+		// same file are never de-duplicated against each other.
+		var earlier []*vcf.Variant  // kept records from files < curFile
+		var sameFile []*vcf.Variant // kept records from curFile
+		curFile := -1
+		for k := i; k < j; k++ {
+			rec := all[k]
+			if rec.file != curFile {
+				earlier = append(earlier, sameFile...)
+				sameFile = sameFile[:0]
+				curFile = rec.file
+			}
+			if mode != "" && len(earlier) > 0 && collapsesWithAny(rec.v, earlier, mode) {
 				continue
 			}
-			v := g[cursors[i]]
-			if best == nil || lessVariant(v, best, order) {
-				best = v
-				bestG = i
-			}
+			out = append(out, rec.v)
+			sameFile = append(sameFile, rec.v)
 		}
-		if bestG < 0 {
-			return out
+		i = j
+	}
+	return out
+}
+
+// collapsesWithAny reports whether v collapses with any record in prev
+// under the given `-d`/`-D` mode.
+func collapsesWithAny(v *vcf.Variant, prev []*vcf.Variant, mode string) bool {
+	for _, p := range prev {
+		if collapses(v, p, mode) {
+			return true
 		}
-		out = append(out, best)
-		cursors[bestG]++
+	}
+	return false
+}
+
+// collapses implements the per-pair duplicate test for the `-d`/`-D`
+// collapse modes recognised by upstream vcfconcat.c, which maps them to the
+// synced reader's BCF_SR_PAIR_* logic (bcf_sr_sort.c::pairing_score). Both
+// records are assumed to share (CHROM, POS); only the allele content is
+// compared.
+//
+// In every non-exact mode an identical REF+ALT pair still collapses
+// (pairing_score returns the best score for an exact match regardless of the
+// type flags). The type-specific modes add further pairings on top:
+//
+//   - "exact"/"none": only identical REF and ALT (the `-D` default).
+//   - "snps":  identical, or both records are SNVs/MNVs.
+//   - "indels": identical, or both records are indels.
+//   - "both":  identical, or both SNV/MNV, or both indels.
+//   - "any"/"all": always collapse (any record at the position).
+func collapses(a, b *vcf.Variant, mode string) bool {
+	switch mode {
+	case "any", "all":
+		return true
+	case "snps":
+		return sameVariant(a, b) || (isSNPRecord(a) && isSNPRecord(b))
+	case "indels":
+		return sameVariant(a, b) || (isIndelRecord(a) && isIndelRecord(b))
+	case "both":
+		return sameVariant(a, b) ||
+			(isSNPRecord(a) && isSNPRecord(b)) ||
+			(isIndelRecord(a) && isIndelRecord(b))
+	default: // "exact", "none"
+		return sameVariant(a, b)
 	}
 }
 
@@ -477,24 +625,6 @@ func sortFallback(name string) int {
 		h *= prime
 	}
 	return int(h & 0x0fffffff)
-}
-
-// dedupAdjacent removes adjacent variants whose (CHROM, POS, REF, ALT) tuple
-// matches the previous record. Inputs must already be ordered for this to
-// behave like `--remove-duplicates`.
-func dedupAdjacent(in []*vcf.Variant) []*vcf.Variant {
-	if len(in) <= 1 {
-		return in
-	}
-	out := make([]*vcf.Variant, 0, len(in))
-	out = append(out, in[0])
-	for i := 1; i < len(in); i++ {
-		if sameVariant(in[i], out[len(out)-1]) {
-			continue
-		}
-		out = append(out, in[i])
-	}
-	return out
 }
 
 // sameVariant returns true if a and b share (CHROM, POS, REF, ALT).

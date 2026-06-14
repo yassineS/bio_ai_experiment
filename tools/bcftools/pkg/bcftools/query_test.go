@@ -279,10 +279,18 @@ func TestQueryBadIncludeExpression(t *testing.T) {
 }
 
 func TestQueryUnknownPlaceholder(t *testing.T) {
-	// Unknown placeholder is allowed by the tokenizer but should render as ".".
-	out := runQuery(t, queryVCF, QueryOptions{Format: `%CHROM\t%NOSUCH\n`})
-	if !strings.Contains(out, "chr1\t.\n") {
-		t.Errorf("unknown placeholder should render '.': %q", out)
+	// A bare %TAG that is neither a recognised special token nor a declared
+	// INFO tag is rejected at header-validation time, exactly as upstream
+	// bcftools query does (convert.c: "no such tag defined in the VCF
+	// header: INFO/<TAG>"). This is the parity behaviour; the port no longer
+	// silently renders ".".
+	var out bytes.Buffer
+	_, err := Query(strings.NewReader(queryVCF), &out, QueryOptions{Format: `%CHROM\t%NOSUCH\n`})
+	if err == nil {
+		t.Fatalf("expected error for undeclared bare INFO tag, got output: %q", out.String())
+	}
+	if !strings.Contains(err.Error(), "no such tag defined in the VCF header: INFO/NOSUCH") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

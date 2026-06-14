@@ -797,6 +797,7 @@ func runConcat(args []string) int {
 	var (
 		allowOverlaps    bool
 		removeDuplicates bool
+		rmDupMode        string
 		fileList         string
 		outputType       string
 		outputPath       string
@@ -810,7 +811,8 @@ func runConcat(args []string) int {
 		showVer          bool
 	)
 	cliflag.BoolVar(fs, &allowOverlaps, "a", "allow-overlaps", false, "Sort-merge across inputs")
-	cliflag.BoolVar(fs, &removeDuplicates, "D", "remove-duplicates", false, "Drop adjacent duplicate records")
+	cliflag.BoolVar(fs, &removeDuplicates, "D", "remove-duplicates", false, "Alias for -d exact (requires -a)")
+	cliflag.StringVar(fs, &rmDupMode, "d", "rm-dup", "", "Drop duplicates: exact|snps|indels|both|all|none (requires -a)")
 	cliflag.StringVar(fs, &fileList, "f", "file-list", "", "File of input paths")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
 	cliflag.StringVar(fs, &outputPath, "o", "output", "", "Output path")
@@ -865,6 +867,7 @@ func runConcat(args []string) int {
 		OutputFormat:     format,
 		AllowOverlaps:    allowOverlaps,
 		RemoveDuplicates: removeDuplicates,
+		RmDupMode:        rmDupMode,
 		FileList:         fileList,
 		MinPQ:            minPQ,
 		Ligate:           ligate,
@@ -887,7 +890,8 @@ Usage:
 
 Options:
   -f, --fasta-ref FASTA          Reference FASTA for left-alignment / REF check.
-      --check-ref {e|w|s}        Action on REF/FASTA mismatch: e=error (default), w=warn, s=skip.
+  -c, --check-ref {e|w|x|s}      Action on REF/FASTA mismatch: e=error (default, exclusive),
+                                 w=warn, x=exclude (skip), s=set/fix; w/x/s may be combined.
   -m, --multiallelics MODE       Split (-) or join (+) multiallelics. MODE = {-snps|-indels|-both|-any|+snps|+indels|+both|+any}.
   -d, --rm-dup MODE              Drop duplicates: snps|indels|both|all|none|exact.
   -a, --atomize                  Decompose complex variants into single-base events.
@@ -938,7 +942,7 @@ func runNorm(args []string) int {
 		showVersion    bool
 	)
 	cliflag.StringVar(fs, &fastaRef, "f", "fasta-ref", "", "Reference FASTA")
-	fs.StringVar(&checkRef, "check-ref", "e", "REF mismatch policy: e|w|s")
+	cliflag.StringVar(fs, &checkRef, "c", "check-ref", "e", "REF mismatch policy: any of w/x/s, or e")
 	cliflag.StringVar(fs, &multiallelics, "m", "multiallelics", "", "Split / join multiallelics")
 	cliflag.StringVar(fs, &rmDup, "d", "rm-dup", "none", "Drop duplicate records")
 	// Upstream `-D` is functional but deprecated: an alias of `-d exact`.

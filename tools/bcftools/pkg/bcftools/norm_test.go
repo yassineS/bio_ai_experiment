@@ -216,7 +216,7 @@ func TestNormCheckRefModes(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("warn n=%d", n)
 	}
-	if !strings.Contains(stderr.String(), "REF mismatch") {
+	if !strings.Contains(stderr.String(), "REF_MISMATCH") {
 		t.Fatalf("warn stderr missing message:\n%s", stderr.String())
 	}
 
@@ -365,11 +365,14 @@ func TestParseCheckRefMode(t *testing.T) {
 		want CheckRefMode
 		err  bool
 	}{
-		{"", CheckRefError, false},
-		{"e", CheckRefError, false},
+		{"", CheckRefExit, false},
+		{"e", CheckRefExit, false},
 		{"w", CheckRefWarn, false},
-		{"s", CheckRefSkip, false},
-		{"x", 0, true},
+		{"x", CheckRefSkip, false},
+		{"s", CheckRefFix, false},
+		{"ws", CheckRefWarn | CheckRefFix, false},
+		{"wx", CheckRefWarn | CheckRefSkip, false},
+		{"q", 0, true},
 	}
 	for _, c := range cases {
 		got, err := ParseCheckRefMode(c.in)
