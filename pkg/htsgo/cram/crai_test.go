@@ -191,7 +191,7 @@ func TestCRAIQueryZeroSpan(t *testing.T) {
 func TestOpenCRAIFixture(t *testing.T) {
 	path := filepath.Join(samtoolsTestDir, "mpileup/ce#5b.cram.crai")
 	if _, err := os.Stat(path); err != nil {
-		t.Skip("samtools submodule not initialised — .crai fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — .crai fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	idx, err := OpenCRAI(path)
 	if err != nil {

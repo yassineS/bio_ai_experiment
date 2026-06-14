@@ -61,10 +61,10 @@ func TestReferenceBackedDecodeViaRefPath(t *testing.T) {
 	cramPath := filepath.Join(samtoolsTestDir, referenceBackedFixture.cram)
 	faPath := filepath.Join(samtoolsTestDir, referenceBackedFixture.fasta)
 	if _, err := os.Stat(cramPath); err != nil {
-		t.Skip("samtools submodule not initialised — CRAM fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — CRAM fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	if _, err := os.Stat(faPath); err != nil {
-		t.Skip("samtools submodule not initialised — reference FASTA unavailable")
+		t.Fatalf("samtools submodule not initialised — reference FASTA unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 
 	probe, err := OpenRecords(cramPath)
@@ -74,7 +74,7 @@ func TestReferenceBackedDecodeViaRefPath(t *testing.T) {
 	m5 := probe.contigMD5(0)
 	probe.Close()
 	if m5 == "" {
-		t.Skip("the CRAM @SQ entry carries no M5 tag — REF_PATH keying not exercised")
+		t.Fatalf("the CRAM @SQ entry carries no M5 tag — REF_PATH keying not exercised; the %s fixture must carry an M5 tag", referenceBackedFixture.cram)
 	}
 
 	seq := readContigSequence(t, faPath, referenceBackedFixture.contig)

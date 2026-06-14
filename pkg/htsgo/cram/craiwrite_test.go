@@ -118,13 +118,14 @@ func TestBuildCRAIFromWrittenCRAM(t *testing.T) {
 }
 
 // TestBuildCRAIReferenceCRAM builds a .crai from the upstream samtools
-// fixture and asserts the entries are sane. The test is skipped when the
-// fixture submodule has not been checked out.
+// fixture and asserts the entries are sane. The samtools fixture is a hard
+// requirement for the CRAM index parity rig, so a missing submodule is a
+// fatal error (with an init hint), not a skip.
 func TestBuildCRAIReferenceCRAM(t *testing.T) {
 	const path = "../../../reference_code/samtools/test/dat/test_input_1_a.cram"
 	entries, err := BuildCRAIFile(path)
 	if err != nil {
-		t.Skipf("fixture %s unavailable: %v", path, err)
+		t.Fatalf("fixture %s unavailable: %v; run `git submodule update --init reference_code/samtools`", path, err)
 	}
 	if len(entries) == 0 {
 		t.Fatal("BuildCRAI returned no entries for a non-empty CRAM")

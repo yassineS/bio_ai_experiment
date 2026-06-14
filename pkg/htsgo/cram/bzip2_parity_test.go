@@ -29,7 +29,7 @@ func TestBzip2CRAMSamtoolsWritesOurDecodeAgrees(t *testing.T) {
 	samtools := upstreamSamtoolsCram(t)
 	bzip2Path, err := exec.LookPath("bzip2")
 	if err != nil {
-		t.Skip("system bzip2 (libbz2) not available")
+		t.Fatalf("system bzip2 (libbz2) not available; install the bzip2 package to run the CRAM BZIP2 cross-tool gate")
 	}
 
 	// A large, highly repetitive SAM so htslib's smallest-wins codec
@@ -134,7 +134,7 @@ func makeRepetitiveSAM(n int) string {
 func TestBzip2BlockLibbz2Parity(t *testing.T) {
 	bzip2Path, err := exec.LookPath("bzip2")
 	if err != nil {
-		t.Skip("system bzip2 (libbz2) not available")
+		t.Fatalf("system bzip2 (libbz2) not available; install the bzip2 package to run the CRAM BZIP2 cross-tool gate")
 	}
 
 	h := writerTestHeader()

@@ -109,7 +109,7 @@ func TestBzip2EncodeBadLevel(t *testing.T) {
 func TestBzip2EncodeSystemBzip2(t *testing.T) {
 	path, err := exec.LookPath("bzip2")
 	if err != nil {
-		t.Skip("system bzip2 not available")
+		t.Fatalf("system bzip2 not available; install the bzip2 package to run the bzip2 cross-tool gate")
 	}
 	for name, in := range bzPayloads() {
 		if len(in) == 0 {

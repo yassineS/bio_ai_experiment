@@ -145,7 +145,7 @@ func TestFQZComp_ComplianceVectors(t *testing.T) {
 		}
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised — fqzcomp vectors unavailable")
+		t.Fatalf("htscodecs submodule not initialised — fqzcomp vectors unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 
@@ -182,7 +182,7 @@ func TestFQZComp_EncodeMatchesHTScodecs(t *testing.T) {
 		}
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised — fqzcomp vectors unavailable")
+		t.Fatalf("htscodecs submodule not initialised — fqzcomp vectors unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 
@@ -216,7 +216,7 @@ func TestFQZComp_RoundTrip(t *testing.T) {
 		}
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised — fqzcomp corpus unavailable")
+		t.Fatalf("htscodecs submodule not initialised — fqzcomp corpus unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 

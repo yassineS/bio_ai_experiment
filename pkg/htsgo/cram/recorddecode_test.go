@@ -47,7 +47,7 @@ var wantInput1ARecords = []string{
 func TestDecodeInput1AToSAM(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised — fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	rr, err := NewRecordReader(bytes.NewReader(data))
 	if err != nil {
@@ -85,7 +85,7 @@ func TestDecodeInput1AToSAM(t *testing.T) {
 func TestWriteSAMInput1A(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised — fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	rr, err := NewRecordReader(bytes.NewReader(data))
 	if err != nil {
@@ -123,7 +123,7 @@ func TestWriteSAMInput1A(t *testing.T) {
 func TestDecodeQuickcheckStructural(t *testing.T) {
 	data, ok := loadFixture(t, "quickcheck/7.quickcheck.cram30.ok.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised — fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	rr, err := NewRecordReader(bytes.NewReader(data))
 	if err != nil {

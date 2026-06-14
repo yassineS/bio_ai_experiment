@@ -11,7 +11,7 @@ import (
 func TestRecordReaderHeaderError(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	// Truncating the stream right after the file definition leaves no
 	// first container; NewRecordReader must surface that as an error.
@@ -26,7 +26,7 @@ func TestRecordReaderHeaderError(t *testing.T) {
 func TestRecordReaderMidStreamError(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	// Flip several bytes across the body; for each variant the decoder
 	// must either error cleanly or finish without panicking.
@@ -47,7 +47,7 @@ func TestRecordReaderMidStreamError(t *testing.T) {
 func TestReadAfterEOF(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	rr, err := NewRecordReader(bytes.NewReader(data))
 	if err != nil {
@@ -68,7 +68,7 @@ func TestReadAfterEOF(t *testing.T) {
 func TestWriteSAMHeaderFirst(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	rr, err := NewRecordReader(bytes.NewReader(data))
 	if err != nil {

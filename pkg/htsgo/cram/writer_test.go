@@ -659,7 +659,7 @@ func TestWriteCRAMEmptyTagValue(t *testing.T) {
 func TestWriteCRAMFixtureRoundTrip(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised — fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	src, err := NewRecordReader(bytes.NewReader(data))
 	if err != nil {
@@ -670,7 +670,7 @@ func TestWriteCRAMFixtureRoundTrip(t *testing.T) {
 		t.Fatalf("ReadAll (fixture): %v", err)
 	}
 	if len(original) == 0 {
-		t.Skip("fixture decoded to no records")
+		t.Fatalf("fixture decoded to no records; the test_input_1_a.cram fixture must decode to records for the round-trip to be exercised")
 	}
 
 	var buf bytes.Buffer
