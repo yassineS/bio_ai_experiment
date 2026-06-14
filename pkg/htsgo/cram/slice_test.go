@@ -37,7 +37,7 @@ func TestDecodeFixtureDataSeries(t *testing.T) {
 		t.Run(fx.name, func(t *testing.T) {
 			data, ok := loadFixture(t, fx.rel)
 			if !ok {
-				t.Skip("samtools submodule not initialised — fixture unavailable")
+				t.Fatalf("samtools submodule not initialised — fixture unavailable; run `git submodule update --init reference_code/samtools`")
 			}
 			rd, err := NewReader(bytes.NewReader(data))
 			if err != nil {
@@ -178,7 +178,7 @@ func TestDecodeFixtureDataSeries(t *testing.T) {
 func TestDecodeFixtureBETASeries(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	rd, err := NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -220,7 +220,7 @@ func TestDecodeFixtureBETASeries(t *testing.T) {
 		}
 	}
 	if !foundBeta {
-		t.Skip("fixture carried no BETA-encoded AP series in this build")
+		t.Fatalf("fixture carried no BETA-encoded AP series; the test_input_1_a.cram fixture must encode AP with BETA for this decode path to be exercised")
 	}
 }
 

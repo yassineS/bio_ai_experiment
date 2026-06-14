@@ -10,9 +10,12 @@ import (
 )
 
 // htscodecsDir is the test corpus from the samtools/htscodecs submodule.
-// When the submodule isn't initialised (CI without submodules), the
-// compliance tests t.Skip cleanly and the round-trip/property tests
-// still run. See docs/CRAM_ROADMAP.md §3.
+// The compliance tests treat the corpus as a hard requirement: when the
+// submodule isn't initialised they t.Fatalf with an init hint (run `git
+// submodule update --init reference_code/htscodecs`) rather than skipping,
+// so a missing corpus can never hide a parity gap. The round-trip and
+// property tests need no external fixtures and always run. See
+// docs/CRAM_ROADMAP.md §3.
 const htscodecsDir = "../../../../reference_code/htscodecs/tests"
 
 // loadCorpus returns the expected decoded bytes for a q-file. The
@@ -76,7 +79,7 @@ func TestRANS4x8_ComplianceVectors(t *testing.T) {
 		})
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised — compliance vectors unavailable")
+		t.Fatalf("htscodecs submodule not initialised — compliance vectors unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 
@@ -112,7 +115,7 @@ func TestRANS4x8_EncodeMatchesHTScodecs(t *testing.T) {
 		}
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised")
+		t.Fatalf("htscodecs submodule not initialised; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 

@@ -127,17 +127,17 @@ func qualNoscaleFilename1Hex() string {
 // adding --qual_noscale, and returns the JSON body of the produced .gd
 // file (the two leading #-comment lines stripped). The input is copied
 // to a fixed basename so the embedded "filename1" hex is predictable. It
-// t.Skips only when the Perl interpreter or the submodule script is
-// unavailable; any other failure is fatal.
+// The Perl interpreter and the vendored prinseq-lite.pl are the parity
+// oracle, so their absence is fatal (with an init hint), not a skip.
 func runUpstreamPrinseqQualNoscale(t *testing.T, fastqPath string, noscale bool) []byte {
 	t.Helper()
 	perl, err := exec.LookPath("perl")
 	if err != nil {
-		t.Skipf("perl not available: %v", err)
+		t.Fatalf("perl not available: %v; install perl to run the prinseq live-parity oracle", err)
 	}
 	script := filepath.Join("..", "..", "..", "..", "reference_code", "prinseq", "prinseq-lite.pl")
 	if _, err := os.Stat(script); err != nil {
-		t.Skipf("upstream prinseq-lite.pl not available (submodule not initialised): %v", err)
+		t.Fatalf("upstream prinseq-lite.pl not available (submodule not initialised): %v; run `git submodule update --init reference_code/prinseq`", err)
 	}
 
 	tmp := t.TempDir()

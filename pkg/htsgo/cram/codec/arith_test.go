@@ -46,7 +46,7 @@ func TestArith_ComplianceVectors(t *testing.T) {
 		}
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised — compliance vectors unavailable")
+		t.Fatalf("htscodecs submodule not initialised — compliance vectors unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 
@@ -82,7 +82,7 @@ func TestArith_EncodeMatchesHTScodecs(t *testing.T) {
 		}
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised")
+		t.Fatalf("htscodecs submodule not initialised; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 
@@ -93,7 +93,7 @@ func TestArith_EncodeMatchesHTScodecs(t *testing.T) {
 func TestArith_U32ComplianceVectors(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(htscodecsDir, "dat", "u32"))
 	if err != nil {
-		t.Skip("htscodecs submodule not initialised — u32 corpus unavailable")
+		t.Fatalf("htscodecs submodule not initialised — u32 corpus unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 	ran := 0
 	for _, order := range []int{1, 4, 9, 65} {
@@ -115,7 +115,7 @@ func TestArith_U32ComplianceVectors(t *testing.T) {
 		})
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised — u32 vectors unavailable")
+		t.Fatalf("htscodecs submodule not initialised — u32 vectors unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 
@@ -127,7 +127,7 @@ func TestArith_U32ComplianceVectors(t *testing.T) {
 func TestArith_U32EncodeMatchesHTScodecs(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(htscodecsDir, "dat", "u32"))
 	if err != nil {
-		t.Skip("htscodecs submodule not initialised — u32 corpus unavailable")
+		t.Fatalf("htscodecs submodule not initialised — u32 corpus unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 	ran := 0
 	for _, order := range []int{1, 9, 65} {
@@ -149,7 +149,7 @@ func TestArith_U32EncodeMatchesHTScodecs(t *testing.T) {
 		})
 	}
 	if ran == 0 {
-		t.Skip("htscodecs submodule not initialised — u32 vectors unavailable")
+		t.Fatalf("htscodecs submodule not initialised — u32 vectors unavailable; run `git submodule update --init reference_code/htscodecs`")
 	}
 }
 

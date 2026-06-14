@@ -15,8 +15,10 @@ import (
 const samtoolsTestDir = "../../../reference_code/samtools/test"
 
 // loadFixture reads a CRAM fixture from the samtools submodule. It
-// returns ok=false (and the test should t.Skip) when the submodule is
-// not initialised, so CI without submodules still passes.
+// returns ok=false when the submodule is not initialised; callers then
+// t.Fatalf with an init hint, since the samtools fixtures are a hard
+// requirement for the CRAM parity rig (run `git submodule update --init
+// reference_code/samtools`).
 func loadFixture(t *testing.T, rel string) ([]byte, bool) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(samtoolsTestDir, rel))
@@ -49,7 +51,7 @@ func TestParseValidV3Fixtures(t *testing.T) {
 		t.Run(fx.name, func(t *testing.T) {
 			data, ok := loadFixture(t, fx.rel)
 			if !ok {
-				t.Skip("samtools submodule not initialised — fixture unavailable")
+				t.Fatalf("samtools submodule not initialised — fixture unavailable; run `git submodule update --init reference_code/samtools`")
 			}
 			rd, err := NewReader(bytes.NewReader(data))
 			if err != nil {
@@ -122,7 +124,7 @@ func TestParseValidV3Fixtures(t *testing.T) {
 func TestFirstContainerHoldsSAMHeader(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	rd, err := NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -158,7 +160,7 @@ func TestFirstContainerHoldsSAMHeader(t *testing.T) {
 func TestContainersConvenience(t *testing.T) {
 	data, ok := loadFixture(t, "quickcheck/7.quickcheck.cram30.ok.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	rd, err := NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -183,7 +185,7 @@ func TestContainersConvenience(t *testing.T) {
 func TestOpenFile(t *testing.T) {
 	path := filepath.Join(samtoolsTestDir, "dat/test_input_1_a.cram")
 	if _, err := os.Stat(path); err != nil {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	rd, err := Open(path)
 	if err != nil {
@@ -207,7 +209,7 @@ func TestTruncatedFixtures(t *testing.T) {
 		t.Run(filepath.Base(rel), func(t *testing.T) {
 			data, ok := loadFixture(t, rel)
 			if !ok {
-				t.Skip("samtools submodule not initialised")
+				t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 			}
 			rd, err := NewReader(bytes.NewReader(data))
 			if err != nil {
@@ -317,7 +319,7 @@ func TestGarbageAfterFileDef(t *testing.T) {
 func TestCRCMismatchDetected(t *testing.T) {
 	data, ok := loadFixture(t, "dat/test_input_1_a.cram")
 	if !ok {
-		t.Skip("samtools submodule not initialised")
+		t.Fatalf("samtools submodule not initialised; run `git submodule update --init reference_code/samtools`")
 	}
 	corrupt := make([]byte, len(data))
 	copy(corrupt, data)

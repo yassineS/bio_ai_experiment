@@ -11,8 +11,10 @@ package prinseq
 // output. These flags use only core Perl modules (Getopt::Long, File::Temp,
 // ...) and produce deterministic output, so a byte comparison is valid.
 //
-// When perl is unavailable the live tests t.Skip; when perl IS available
-// but the comparison fails they t.Fatalf (per the validation protocol).
+// The upstream prinseq-lite.pl Perl script is the parity oracle this rig
+// depends on, so a missing submodule or perl interpreter is a hard failure
+// (t.Fatalf with the exact init hint), not a silent skip — per the project
+// policy that every feature we implement is exercised against upstream.
 
 import (
 	"bytes"
@@ -45,10 +47,10 @@ func runUpstreamPrinseqTrim(t *testing.T, input []byte, isFastq bool, extraFlags
 	t.Helper()
 	pl := upstreamPrinseqPath()
 	if pl == "" {
-		t.Skip("upstream prinseq-lite.pl not checked out; skipping live parity")
+		t.Fatalf("upstream prinseq-lite.pl not checked out; run `git submodule update --init reference_code/prinseq`")
 	}
 	if _, err := exec.LookPath("perl"); err != nil {
-		t.Skip("perl not available; skipping live parity")
+		t.Fatalf("perl not available; install perl to run the prinseq live-parity oracle")
 	}
 
 	dir := t.TempDir()

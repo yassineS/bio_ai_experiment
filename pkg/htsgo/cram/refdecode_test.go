@@ -197,10 +197,10 @@ func TestReferenceBackedDecode(t *testing.T) {
 	cramPath := filepath.Join(samtoolsTestDir, referenceBackedFixture.cram)
 	faPath := filepath.Join(samtoolsTestDir, referenceBackedFixture.fasta)
 	if _, err := os.Stat(cramPath); err != nil {
-		t.Skip("samtools submodule not initialised — CRAM fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — CRAM fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	if _, err := os.Stat(faPath); err != nil {
-		t.Skip("samtools submodule not initialised — reference FASTA unavailable")
+		t.Fatalf("samtools submodule not initialised — reference FASTA unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 
 	// First decode without a reference: the C4b fallback fills bases an
@@ -268,7 +268,7 @@ func TestReferenceBackedDecode(t *testing.T) {
 func TestReferenceMD5MismatchIsHardError(t *testing.T) {
 	cramPath := filepath.Join(samtoolsTestDir, referenceBackedFixture.cram)
 	if _, err := os.Stat(cramPath); err != nil {
-		t.Skip("samtools submodule not initialised — CRAM fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — CRAM fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	// Build a wrong reference: the right contig name and a generous
 	// length, but all-'A' bases, so the slice-span MD5 cannot match.
@@ -298,10 +298,10 @@ func TestReferenceBackedDecodeViaRefCache(t *testing.T) {
 	cramPath := filepath.Join(samtoolsTestDir, referenceBackedFixture.cram)
 	faPath := filepath.Join(samtoolsTestDir, referenceBackedFixture.fasta)
 	if _, err := os.Stat(cramPath); err != nil {
-		t.Skip("samtools submodule not initialised — CRAM fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — CRAM fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	if _, err := os.Stat(faPath); err != nil {
-		t.Skip("samtools submodule not initialised — reference FASTA unavailable")
+		t.Fatalf("samtools submodule not initialised — reference FASTA unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 
 	// Open the CRAM once to read its @SQ M5 tag — the digest htslib's
@@ -313,7 +313,7 @@ func TestReferenceBackedDecodeViaRefCache(t *testing.T) {
 	m5 := probe.contigMD5(0)
 	probe.Close()
 	if m5 == "" {
-		t.Skip("the CRAM @SQ entry carries no M5 tag — REF_CACHE keying not exercised")
+		t.Fatalf("the CRAM @SQ entry carries no M5 tag — REF_CACHE keying not exercised; the %s fixture must carry an M5 tag", referenceBackedFixture.cram)
 	}
 
 	// Lay the contig bases into a REF_CACHE directory under the M5 the

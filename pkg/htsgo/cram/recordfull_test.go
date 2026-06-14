@@ -151,7 +151,7 @@ func TestDecodeTagsErrors(t *testing.T) {
 func TestOpenRecordsAndClose(t *testing.T) {
 	path := filepath.Join(samtoolsTestDir, "dat/test_input_1_a.cram")
 	if _, err := os.Stat(path); err != nil {
-		t.Skip("samtools submodule not initialised — fixture unavailable")
+		t.Fatalf("samtools submodule not initialised — fixture unavailable; run `git submodule update --init reference_code/samtools`")
 	}
 	rr, err := OpenRecords(path)
 	if err != nil {
