@@ -1,0 +1,36 @@
+# vcftools --max-indv parity fixtures.
+# Generated from a C harness that replicates upstream
+# variant_file_filters.cpp:filter_individuals_randomly exactly
+# (glibc srand/rand + libstdc++ std::random_shuffle), seeded with srand(SEED)
+# instead of srand(time(NULL)). The harness was verified to match the real
+# upstream vcftools binary when both use the same epoch-second seed.
+# Format: seed<TAB>maxN<TAB>comma-separated kept sample names (input order)
+# Sample set: S0 S1 S2 S3 S4 S5 S6 S7 (8 individuals).
+0	1	S4
+0	3	S3,S4,S7
+0	5	S0,S3,S4,S6,S7
+0	7	S0,S2,S3,S4,S5,S6,S7
+1	1	S4
+1	3	S3,S4,S7
+1	5	S0,S3,S4,S6,S7
+1	7	S0,S2,S3,S4,S5,S6,S7
+42	1	S2
+42	3	S1,S2,S6
+42	5	S0,S1,S2,S5,S6
+42	7	S0,S1,S2,S4,S5,S6,S7
+100	1	S6
+100	3	S2,S6,S7
+100	5	S2,S3,S5,S6,S7
+100	7	S1,S2,S3,S4,S5,S6,S7
+12345	1	S6
+12345	3	S2,S6,S7
+12345	5	S2,S3,S5,S6,S7
+12345	7	S0,S1,S2,S3,S5,S6,S7
+1781446457	1	S7
+1781446457	3	S1,S3,S7
+1781446457	5	S0,S1,S3,S4,S7
+1781446457	7	S0,S1,S3,S4,S5,S6,S7
+2000000000	1	S6
+2000000000	3	S2,S4,S6
+2000000000	5	S2,S3,S4,S6,S7
+2000000000	7	S1,S2,S3,S4,S5,S6,S7

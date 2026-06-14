@@ -18,6 +18,7 @@ package vcftools
 
 import (
 	"bufio"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,12 +40,24 @@ var (
 	upstreamVcftoolsErr  error
 )
 
+// errUpstreamNotInitialised signals that the reference_code/vcftools submodule
+// is not checked out, so upstream-comparison tests should skip rather than
+// fail (distinct from a genuine build failure).
+var errUpstreamNotInitialised = errors.New("reference_code/vcftools submodule not initialised")
+
 func upstreamVcftools(t *testing.T) string {
 	t.Helper()
 	upstreamVcftoolsOnce.Do(func() {
 		upstreamVcftoolsPath, upstreamVcftoolsErr = buildUpstreamVcftools()
 	})
 	if upstreamVcftoolsErr != nil {
+		// When the reference_code/vcftools submodule is not checked out in
+		// this tree (e.g. an isolated worktree), there is nothing to build
+		// against — skip rather than fail. A genuine build failure (the
+		// submodule is present but won't compile) still fails hard.
+		if errors.Is(upstreamVcftoolsErr, errUpstreamNotInitialised) {
+			t.Skipf("upstream vcftools submodule not initialised: %v", upstreamVcftoolsErr)
+		}
 		t.Fatalf("upstream vcftools unavailable: %v", upstreamVcftoolsErr)
 	}
 	return upstreamVcftoolsPath
@@ -86,7 +99,7 @@ func buildUpstreamVcftools() (string, error) {
 	// The submodule must already be initialised; the validation loop does
 	// `git submodule update --init reference_code/vcftools` before running.
 	if _, err := os.Stat(filepath.Join(submodule, "autogen.sh")); err != nil {
-		return "", err
+		return "", errUpstreamNotInitialised
 	}
 	steps := [][]string{
 		{"./autogen.sh"},

@@ -216,15 +216,32 @@ type Params struct {
 	// --max-indv N caps the number of kept individuals at N. Ported from
 	// upstream parameters.cpp:292 + variant_file_filters.cpp:105-147
 	// (filter_individuals_randomly). MaxIndvSet records whether the flag
-	// was supplied (since "0" is meaningful — drop every sample). Upstream
-	// uses srand(time(NULL)) + random_shuffle so the kept-sample identity
-	// is non-deterministic across runs; this port instead deterministically
-	// keeps the first MaxIndv samples in input order. Tests therefore pin
-	// the COUNT, not the identity (the byte-parity claim is on
-	// |kept samples| = min(MaxIndv, |kept|) rather than which N samples
-	// were chosen). Documented in docs/PARITY_ROADMAP.md (wave 10).
-	MaxIndv    int
-	MaxIndvSet bool
+	// was supplied (since "0" is meaningful — drop every sample).
+	//
+	// Upstream draws the random subset with glibc srand()/rand() driving
+	// libstdc++'s std::random_shuffle (the two-argument form,
+	// j = rand() % (i+1); swap(i, j)). Crucially upstream seeds with
+	// srand(time(NULL)) and exposes NO seed flag, so the identity of the
+	// kept samples changes every wall-clock second and a given upstream run
+	// is not reproducible (verified by running the upstream binary; see the
+	// note in docs/PARITY_ROADMAP.md). To make the selection reproducible —
+	// and byte-for-byte identical to what upstream WOULD emit if it were
+	// seeded with the same value — this port ports the exact glibc rand()
+	// generator (glibc_rand.go) and the exact random_shuffle algorithm, and
+	// adds a --max-indv-seed flag. MaxIndvSeedSet records whether a seed was
+	// supplied:
+	//
+	//   - seed supplied: run the faithful glibc rand() + random_shuffle on
+	//     the kept-individual index list, take the first N, and keep those
+	//     samples (in input/header order). This matches a glibc/libstdc++
+	//     upstream run with the same srand() value byte-for-byte.
+	//   - no seed: fall back to deterministically keeping the first N kept
+	//     samples in input order (upstream's default is unseeded/time-based
+	//     and inherently non-reproducible, so there is no byte target).
+	MaxIndv        int
+	MaxIndvSet     bool
+	MaxIndvSeed    int
+	MaxIndvSeedSet bool
 
 	// --remove-filtered-geno-all sets a per-genotype filter that drops
 	// (sets GT to ./.) any genotype whose FORMAT FT field is not "PASS"
@@ -2219,31 +2236,72 @@ func buildSampleFilter(header *vcf.Header, params *Params) (map[string]bool, err
 
 	// --max-indv N: cap the number of kept individuals at N. Ported from
 	// upstream parameters.cpp:292 + variant_file_filters.cpp:105-147
-	// (filter_individuals_randomly). Upstream uses srand(time(NULL)) +
-	// random_shuffle, so the kept-sample identity varies across runs and
-	// cannot be byte-matched. This port instead deterministically keeps
-	// the first N kept samples in input (header) order — see the comment
-	// on Params.MaxIndv for the parity claim. N < 0 is "no cap"; N == 0
-	// is a valid drop-everything request (matches upstream's behaviour
-	// when max_N_indv == 0: filter_individuals_randomly returns early
-	// only when max_N_indv < 0).
+	// (filter_individuals_randomly). N < 0 is "no cap"; N == 0 is a valid
+	// drop-everything request (matches upstream, which returns early only
+	// when max_N_indv < 0). With a seed (--max-indv-seed) this reproduces
+	// upstream's glibc rand() + random_shuffle selection exactly; without a
+	// seed it keeps the first N samples in input order (upstream's default
+	// is time-seeded and non-reproducible). See the Params.MaxIndv comment.
 	if hasMaxIndv {
-		ordered := make([]string, 0, len(keep))
-		for _, sample := range header.Samples {
-			if keep[sample] {
-				ordered = append(ordered, sample)
-			}
-		}
-		if len(ordered) > params.MaxIndv {
-			capped := make(map[string]bool, params.MaxIndv)
-			for i := 0; i < params.MaxIndv; i++ {
-				capped[ordered[i]] = true
-			}
-			keep = capped
-		}
+		keep = applyMaxIndv(header.Samples, keep, params.MaxIndv,
+			params.MaxIndvSeed, params.MaxIndvSeedSet)
 	}
 
 	return keep, nil
+}
+
+// applyMaxIndv caps the kept-sample set to maxN individuals, reproducing
+// upstream vcftools' filter_individuals_randomly (variant_file_filters.cpp).
+//
+// samples is the full header sample list (input order). keep marks which
+// samples survived the identity filters so far. maxN is the --max-indv value.
+//
+// When seedSet is true the selection is byte-for-byte identical to an upstream
+// run seeded with the same value: it builds keep_index (the input-order
+// indices of currently-kept samples), runs the exact glibc rand() +
+// std::random_shuffle on it, takes the first maxN entries, and keeps exactly
+// those samples — emitted in input order, matching upstream's final pass over
+// include_indv. When seedSet is false there is no reproducible upstream target
+// (upstream seeds from time(NULL)); the port keeps the first maxN kept samples
+// in input order instead.
+func applyMaxIndv(samples []string, keep map[string]bool, maxN, seed int, seedSet bool) map[string]bool {
+	// Index list of currently-kept samples, in input/header order — this is
+	// upstream's keep_index before the shuffle.
+	keepIdx := make([]int, 0, len(keep))
+	for i, sample := range samples {
+		if keep[sample] {
+			keepIdx = append(keepIdx, i)
+		}
+	}
+	if len(keepIdx) <= maxN {
+		return keep
+	}
+
+	if seedSet {
+		// Faithful upstream path: shuffle keep_index with glibc rand(), then
+		// resize to maxN (keep the first maxN after the shuffle).
+		g := newGlibcRand(uint32(seed))
+		g.randomShuffle(keepIdx)
+		keepIdx = keepIdx[:maxN]
+		survivors := make(map[int]bool, maxN)
+		for _, idx := range keepIdx {
+			survivors[idx] = true
+		}
+		capped := make(map[string]bool, maxN)
+		for i, sample := range samples {
+			if survivors[i] {
+				capped[sample] = true
+			}
+		}
+		return capped
+	}
+
+	// Unseeded fallback: keep the first maxN kept samples in input order.
+	capped := make(map[string]bool, maxN)
+	for i := 0; i < maxN; i++ {
+		capped[samples[keepIdx[i]]] = true
+	}
+	return capped
 }
 
 // loadSampleFile loads a file with one sample name per line
