@@ -183,8 +183,10 @@ func encodeInfoValue(entry DictEntry, raw string) []byte {
 	t := strings.ToLower(entry.Type)
 	switch t {
 	case "flag":
-		// Flag = present. htslib encodes flags as a single int8 of value 1.
-		return EncodeTypedInt8(1)
+		// Flag = present. htslib encodes a flag as a typed int8 descriptor
+		// with COUNT 0 and no payload (descriptor byte 0x01), so a reader
+		// that shows stored values renders the tag bare rather than "TAG=1".
+		return encodeTypedRaw(TypeInt8, 0, nil)
 	case "integer":
 		return encodeIntsFromText(raw)
 	case "float":
@@ -209,13 +211,13 @@ func encodeInts(vs []int32) []byte {
 	case 1:
 		payload := make([]byte, len(vs))
 		for i, v := range vs {
-			payload[i] = byte(int8(v))
+			payload[i] = narrowInt8(v)
 		}
 		return encodeTypedRaw(TypeInt8, len(vs), payload)
 	case 2:
 		payload := make([]byte, len(vs)*2)
 		for i, v := range vs {
-			binary.LittleEndian.PutUint16(payload[i*2:], uint16(int16(v)))
+			binary.LittleEndian.PutUint16(payload[i*2:], narrowInt16(v))
 		}
 		return encodeTypedRaw(TypeInt16, len(vs), payload)
 	default:
@@ -225,6 +227,30 @@ func encodeInts(vs []int32) []byte {
 		}
 		return encodeTypedRaw(TypeInt32, len(vs), payload)
 	}
+}
+
+// narrowInt8 converts an int32 value to its int8 byte encoding, mapping the
+// int32 missing / end-of-vector sentinels to the int8 sentinels rather than
+// bit-truncating them (which would turn missing 0x80000000 into 0x00).
+func narrowInt8(v int32) byte {
+	switch v {
+	case MissingInt32:
+		return 0x80 // int8 missing
+	case EndOfVectorInt32:
+		return 0x81 // int8 end-of-vector
+	}
+	return byte(int8(v))
+}
+
+// narrowInt16 is narrowInt8 for the 16-bit width.
+func narrowInt16(v int32) uint16 {
+	switch v {
+	case MissingInt32:
+		return 0x8000 // int16 missing
+	case EndOfVectorInt32:
+		return 0x8001 // int16 end-of-vector
+	}
+	return uint16(int16(v))
 }
 
 // pickIntWidth returns the smallest byte-width (1, 2, or 4) that can hold every
@@ -339,7 +365,7 @@ func encodeFormatGT(samples []vcf.Sample, nSample int) []byte {
 			gt = samples[i].Data["GT"]
 		}
 		if gt == "" {
-			parsed[i] = []int32{MissingInt32}
+			parsed[i] = []int32{0}
 			continue
 		}
 		parsed[i] = parseGT(gt)
@@ -376,13 +402,13 @@ func encodeFormatTypedInts(flat []int32, perSample int) []byte {
 	case 1:
 		payload := make([]byte, len(flat))
 		for i, v := range flat {
-			payload[i] = byte(int8(v))
+			payload[i] = narrowInt8(v)
 		}
 		return encodeTypedRaw(TypeInt8, perSample, payload)
 	case 2:
 		payload := make([]byte, len(flat)*2)
 		for i, v := range flat {
-			binary.LittleEndian.PutUint16(payload[i*2:], uint16(int16(v)))
+			binary.LittleEndian.PutUint16(payload[i*2:], narrowInt16(v))
 		}
 		return encodeTypedRaw(TypeInt16, perSample, payload)
 	default:
@@ -395,10 +421,12 @@ func encodeFormatTypedInts(flat []int32, perSample int) []byte {
 }
 
 // parseGT turns "0/1" / "1|0" / "./." into the on-wire int32 encoding.
-// The first element does not carry a phased bit (htslib convention).
+// The first element does not carry a phased bit (htslib convention). A
+// missing allele ("." ) encodes as 0 (bcf_gt_missing = (−1+1)<<1), NOT the
+// integer missing sentinel — the GT field uses its own missing convention.
 func parseGT(gt string) []int32 {
 	if gt == "" || gt == "." {
-		return []int32{MissingInt32}
+		return []int32{0}
 	}
 	// Replace pipes with slashes so we can split — and remember per-position
 	// whether the original separator was a pipe.
@@ -410,12 +438,12 @@ func parseGT(gt string) []int32 {
 			tok := gt[start:i]
 			var v int32
 			if tok == "." || tok == "" {
-				// missing genotype slot
-				v = MissingInt32
+				// missing genotype slot: bcf_gt_missing == 0
+				v = 0
 			} else {
 				n, err := strconv.Atoi(tok)
 				if err != nil || n < 0 {
-					v = MissingInt32
+					v = 0
 				} else {
 					// allele+1 << 1, low bit = phased
 					v = int32((n + 1) << 1)

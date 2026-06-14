@@ -199,12 +199,13 @@ func TestParityView_VTypeSnps(t *testing.T) {
 	equalBytes(t, got, want, "view -v snps")
 }
 
-// TestParityView_BCFInput documents that, even with the int64 typed
-// descriptor and IDX-suffix-stripping fixes in this PR, our BCF reader
-// still drops per-record FORMAT/sample data when reading an
-// htslib-produced BCF. The header now matches byte-for-byte. Tracked.
+// TestParityView_BCFInput reads an htslib-produced BCF and emits VCF text,
+// asserting full byte-for-byte parity including the per-record FORMAT/sample
+// columns (GT:DP:GQ across three samples), against bcftools 1.23.
 func TestParityView_BCFInput(t *testing.T) {
-	t.Skip("BCF reader: per-record FORMAT fields not yet reconstructed from htslib BCF input (see docs/UPSTREAM_BUGS.md bcf-fmt-keys-missing)")
+	got := runParityViewFile(t, parityPath(t, "basic.bcf"), ViewOptions{})
+	want := readParity(t, "view_bcf_input.expected.vcf")
+	equalBytes(t, got, want, "view on BCF input (full FORMAT reconstruction)")
 }
 
 // TestParityView_BCFHeader is a positive parity assertion for the header
@@ -221,11 +222,41 @@ func TestParityView_BCFHeader(t *testing.T) {
 	equalBytes(t, got, want, "view -h on BCF input (header parity)")
 }
 
-// TestParityView_RoundTrip_OurBCF documents an incomplete round-trip:
-// our BCF writer hashes INFO into a map without preserving InfoOrder,
-// so a VCF→BCF→VCF cycle loses the source key order. Tracked.
+// TestParityView_RoundTrip_OurBCF exercises a full VCF→our-BCF→VCF cycle and
+// asserts the records survive unchanged: INFO key order is preserved, missing
+// FORMAT integer values stay ".", GT missing alleles round-trip, and Flag tags
+// stay bare. (The BCF interop in the other direction — upstream reading our
+// BCF — is exercised by the developer cross-check in the commit landing this.)
 func TestParityView_RoundTrip_OurBCF(t *testing.T) {
-	t.Skip("BCF writer does not yet preserve InfoOrder on encode (see docs/UPSTREAM_BUGS.md bcf-info-order)")
+	src := readParity(t, "basic.vcf")
+	// VCF -> our (uncompressed) BCF so the in-memory reader sees the BCF magic.
+	var bcfBuf bytes.Buffer
+	if _, err := View(bytes.NewReader(src), &bcfBuf, ViewOptions{OutputFormat: OutputBCFUncompressed}); err != nil {
+		t.Fatalf("encode BCF: %v", err)
+	}
+	// our BCF -> VCF text.
+	var vcfBuf bytes.Buffer
+	if _, err := View(bytes.NewReader(bcfBuf.Bytes()), &vcfBuf, ViewOptions{}); err != nil {
+		t.Fatalf("decode BCF: %v", err)
+	}
+	// Compare the data records (header meta-line ordering can differ).
+	wantRecs := dataRecords(src)
+	gotRecs := dataRecords(vcfBuf.Bytes())
+	if wantRecs != gotRecs {
+		t.Fatalf("round-trip records differ.\nwant:\n%s\ngot:\n%s", wantRecs, gotRecs)
+	}
+}
+
+// dataRecords returns the non-header (#) lines of VCF text joined by newline.
+func dataRecords(b []byte) string {
+	var out []string
+	for _, ln := range strings.Split(string(b), "\n") {
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n")
 }
 
 // TestParityView_SamplesFile tests `-S file` (sample names from a file).
