@@ -1,0 +1,16 @@
+@read1_lowends
+ACGTACGTACGTACGTACGT
++
+###!!IIIIIIIIIIIIIII
+@read2_allhigh
+GCATGCATGCATGCATGCAT
++
+IIIIIIIIIIIIIIIIIIII
+@read3_alllow
+TTTTAAAACCCCGGGGTTTT
++
+####################
+@read4_leftbad
+AAAACCCCGGGGTTTTAAAA
++
+!!!!!!!!!!IIIIIIIIII

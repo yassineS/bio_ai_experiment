@@ -110,27 +110,20 @@ warrant a closer look:_
 
 #### mosdepth-overlap-pair-detection
 
-- **mosdepth overlap-pair detection** — RESOLVED (no longer a gap).
-  Upstream subtracts one copy of depth where the two ends of a
-  mate-paired fragment overlap on the reference, so an 80bp read pair
-  with a 100bp insert contributes depth 1 to the overlapped region (not
-  depth 2). This was previously unimplemented in the port (default-mode
-  output matched upstream's `--fast-mode` instead). It is now a faithful
-  port of upstream's default-mode `coverage()` loop: a read-name-keyed
-  `seen` table pairs mates as they stream past in coordinate order, and
-  `addOverlapCorrection` (a port of upstream's `gen_start_ends` +
-  `pair_sort` overlap walk, including the single-CIGAR-op fast path)
-  subtracts exactly one copy of every doubly-covered span. See
-  `addRecords` / `genStartEnds` / `addOverlapCorrection` in
-  `tools/mosdepth/pkg/mosdepth/coverage.go`.
+- **mosdepth overlap-pair detection** — upstream subtracts one copy of
+  depth where the two ends of a mate-paired fragment overlap on the
+  reference, so a 80bp read pair with a 100bp insert contributes depth
+  1 to the overlapped region (not depth 2). Our v1 engine doesn't
+  implement this pairing: every aligned base of every read contributes
+  to depth. The net effect is that our default-mode output matches
+  upstream's `--fast-mode` output rather than upstream's default
+  output. This is **NOT an upstream bug** — it's a feature gap in our
+  port — but it lives here because every affected parity test cites
+  this entry from a `t.Skip("known deviation, see
+  docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")`.
 
-  Disposition: **DONE**. All previously-skipped default-mode parity
-  tests (`TestParity_OverlapM_DefaultPerBase`,
-  `TestParity_OverlapM_SummaryMT`, `TestParity_ThresholdByBED`,
-  `TestParity_TrackHeader`, `TestParity_BigWindow`,
-  `TestParity_MAPQFilter`, `TestParity_FlagExclude`) now assert
-  byte-for-byte against upstream's functional-tests.sh values, with no
-  `t.Skip`.
+  Disposition: **track-only** until we add a read-name-keyed pairing
+  pass. Five mosdepth parity tests reference this anchor.
 
 - **bedtools `groupby` empty-group handling** (when we get to porting
   it) — Aaron Quinlan has acknowledged upstream emits a blank line on
@@ -811,56 +804,69 @@ stable anchor.
 
 ### seqtk-sample-rng <a id="seqtk-sample-rng"></a>
 
-- **Symptom.** Upstream `seqtk sample` uses a seeded reservoir
-  sampler (`drand48()`-based, default seed 11) and produces a
-  deterministic, fraction-correct subset for any input. Our Go port
-  implements a "deterministic every-Nth-record" sampler that does
-  not match upstream's selection regardless of seed.
+- **Symptom (historical).** Upstream `seqtk sample` uses a seeded
+  reservoir sampler (krand / MT19937-64, default seed 11) and
+  produces a deterministic, fraction-correct subset for any input.
+  Our Go port originally implemented a "deterministic every-Nth-record"
+  sampler that did not match upstream's selection regardless of seed.
 
 - **Root cause.** Upstream's algorithm is the streaming reservoir
-  pass over `n` records with `keep = (drand48() < frac)` per record
-  in one-pass mode, and a two-pass random subset in `-2` mode. Our
-  port short-circuits to `written/count < fraction` per record.
+  pass over `n` records (`y = n-1 < num ? n-1 : r*n`, replacing slot
+  `y` when `y < num`) with `keep = (kr_drand() < frac)` per record in
+  fraction mode, and a two-pass random subset in `-2` mode. The old
+  port short-circuited to `written/count < fraction` per record.
 
-- **Disposition.** Track-only — Go-port limitation, not an upstream
-  bug. The parity test for `sample` is split into a structural
-  invariants pass (`TestParity_Seqtk_Sample_StructuralInvariants`,
-  passing) and a byte-parity case
-  (`TestParity_Seqtk_Sample_UpstreamByteParity`, skipped).
-  Fixing this is straightforward (port `drand48` against the same
-  seed); deferred because no caller currently relies on the
-  byte-for-byte output.
+- **Disposition — RESOLVED (byte parity).** `SampleN` /
+  `SampleFraction` (`tools/seqtk/pkg/seqtk/sample.go`) now port
+  upstream's krand RNG and `stk_sample` exactly: streaming-reservoir
+  fixed-number mode, two-pass (`-2`) mode, and per-record fraction
+  mode, with `stk_printseq`'s no-wrap output. The CLI is wired to
+  these. `TestParity_Seqtk_Sample_UpstreamByteParity` now asserts
+  byte-for-byte against upstream-generated fixtures (fraction 0.3/0.5,
+  number 5 at seeds 11 and 42, two-pass, and a FASTA case) and passes;
+  it is no longer skipped. `TestParity_Seqtk_Sample_StructuralInvariants`
+  remains as a complementary check of the legacy `Sample` helper.
 
 ### seqtk-randbase-rng <a id="seqtk-randbase-rng"></a>
 
-- **Symptom.** Upstream `seqtk randbase` uses `drand48()` (with
-  implicit seed 0) and is therefore deterministic across runs but
-  not seed-controllable. Our Go port uses `math/rand` with a
-  caller-supplied seed.
+- **Symptom (historical).** Upstream `seqtk randbase` uses `drand48()`
+  (with the glibc default seed-0 state) and is therefore deterministic
+  across runs but not seed-controllable. Our Go port used `math/rand`
+  with a caller-supplied seed, so the output sequences differed.
 
 - **Root cause.** Different RNGs.
 
-- **Disposition.** Track-only — Go-port limitation, not an upstream
-  bug. The structural invariants
-  (`TestParity_Seqtk_Randbase_StructuralInvariants`) verify that
-  upstream's rules (only 2-base IUPAC codes are randomised; 3-base
-  and 4-base codes pass through; case is preserved) are honoured
-  on our side. Byte parity is skipped.
+- **Disposition — RESOLVED (byte parity).** `RandbaseUpstream`
+  (`tools/seqtk/pkg/seqtk/mutations.go`) reimplements glibc's
+  `drand48` (the 48-bit LCG `X = (0x5DEECE66D*X + 0xB) mod 2^48`,
+  default `X = 0`) and reproduces `stk_randbase`'s output layout
+  exactly: only 2-base IUPAC codes are drawn (`m = drand48() < 0.5`),
+  3/4-base codes and N pass through, the comment is dropped, and the
+  sequence is wrapped at 60 columns. The CLI uses this path by default
+  (no `-s`); `-s INT` selects a seeded `math/rand` extension.
+  `TestParity_Seqtk_Randbase_UpstreamByteParity` now asserts
+  byte-for-byte against upstream fixtures and passes (no longer
+  skipped); the structural-invariants test is retained for the seeded
+  helper.
 
 ### seqtk-trimfq-algorithm <a id="seqtk-trimfq-algorithm"></a>
 
-- **Symptom.** Upstream `seqtk trimfq` runs a modified Mott
-  algorithm with an error-rate threshold (default `-q 0.05`) and a
-  `-l 30` minimum-length floor. Our port's `TrimQuality` does a
-  simple Phred-quality threshold trim. The two algorithms produce
-  different cuts on every non-trivial input.
+- **Symptom (historical).** Upstream `seqtk trimfq` runs a modified
+  Mott algorithm with an error-rate threshold (default `-q 0.05`) and
+  a `-l 30` minimum-length floor. The legacy `TrimQuality` helper did
+  a simple Phred-quality threshold trim, producing different cuts.
 
-- **Disposition.** Track-only — feature-gap on our side, not an
-  upstream bug. Tracked in `docs/PARITY_ROADMAP.md#seqtk` under the
-  `trimfq` option-tail gaps; will be closed once we re-implement
-  the Mott trim. The parity test
-  (`TestParity_Seqtk_Trimfq_UpstreamByteParity`) is skipped with a
-  pointer here.
+- **Disposition — RESOLVED (byte parity).** `TrimFQ`
+  (`tools/seqtk/pkg/seqtk/trimfq.go`) ports `stk_trimfq`'s modified
+  Mott algorithm (including the `q_int2real` table, the
+  `[36,127]`-clamped per-base sum, and the window-based fallback when
+  the Mott window is shorter than `-l`) and the fixed-offset path
+  (`-b`/`-e`/`-L`). The CLI default path is now Mott.
+  `TestParity_Seqtk_Trimfq_UpstreamByteParity` asserts byte-for-byte
+  against upstream fixtures (short-read pass-through, Mott on 40 bp
+  reads, `-b/-e`, and `-L`) and passes (no longer skipped). The
+  legacy `TrimQuality` Phred-threshold helper remains available but is
+  off the default CLI path.
 
 ## prinseq
 

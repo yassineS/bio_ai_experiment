@@ -42,7 +42,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/cliflag"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
@@ -1014,32 +1013,37 @@ func randbaseCommand() {
 	var seed int64
 
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout, supports .gz)")
-	// Negative sentinel means "no -s provided"; we'll time-seed in that case.
-	cliflag.Int64Var(fs, &seed, "s", "seed", -1, "Random seed for reproducibility (default: time-seeded)")
+	// Negative sentinel means "no -s provided"; without -s we use the
+	// upstream-faithful drand48 path (default seed), matching `seqtk randbase`
+	// byte-for-byte. A non-negative -s selects the seeded math/rand extension.
+	cliflag.Int64Var(fs, &seed, "s", "seed", -1, "Random seed (extension; default: upstream drand48, no seed)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: seqtk randbase [options] <in.fa>
 
-Replace every IUPAC ambiguity base in the input FASTA with one of the
-unambiguous bases it represents, chosen uniformly at random. Case is
-preserved (e.g. 'r' becomes 'a' or 'g'). The IUPAC table used is:
+Replace every two-base IUPAC ambiguity code (R/Y/S/W/K/M) in the input
+FASTA with one of the two bases it represents, chosen at random. Case is
+preserved (e.g. 'r' becomes 'a' or 'g'). Three- and four-base codes
+(B/D/H/V/N) are left unchanged, exactly as upstream seqtk does. The
+two-base IUPAC table used is:
 
-  R -> A,G    Y -> C,T    S -> G,C    W -> A,T
-  K -> G,T    M -> A,C    B -> C,G,T  D -> A,G,T
-  H -> A,C,T  V -> A,C,G  N -> A,C,G,T
+  R -> A,G    Y -> C,T    S -> G,C    W -> A,T    K -> G,T    M -> A,C
 
-Output is FASTA written to stdout, preserving the line-width layout of
-the input.
+By default (no -s) the output is byte-for-byte identical to upstream
+`+"`seqtk randbase`"+`: it uses the same drand48 generator (the comment is
+dropped and the sequence is wrapped at 60 columns). Passing -s INT is a
+non-upstream extension that uses a seedable generator instead.
 
 Arguments:
   <in.fa>    Input FASTA file (use '-' for stdin, supports .gz)
 
 Options:
-  -s, --seed INT         Random seed for reproducibility (default: time-seeded)
+  -s, --seed INT         Seedable RNG (extension; default: upstream drand48)
   -o, --output FILE      Output file (default: stdout, supports .gz)
 
 Examples:
-  seqtk randbase -s 42 ambig.fa > resolved.fa
+  seqtk randbase ambig.fa > resolved.fa          # upstream-identical
+  seqtk randbase -s 42 ambig.fa > resolved.fa    # reproducible (extension)
   seqtk randbase ambig.fa.gz -o resolved.fa.gz
 
 `)
@@ -1073,12 +1077,16 @@ Examples:
 	}
 	defer out.Close()
 
-	effectiveSeed := seed
-	if effectiveSeed < 0 {
-		effectiveSeed = time.Now().UnixNano()
+	if seed < 0 {
+		// No -s: use the upstream-faithful drand48 path for byte parity.
+		if err := seqtk.RandbaseUpstream(input, out); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
-	if err := seqtk.Randbase(input, out, effectiveSeed); err != nil {
+	if err := seqtk.Randbase(input, out, seed); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
