@@ -1001,6 +1001,56 @@ now reproduces upstream's seeded sampler byte-for-byte via an in-tree
 parity tests (build the real `bedtools` binary, compare byte-for-byte,
 `t.Fatalf` never `t.Skip`). See the per-subcommand notes below.
 
+Vendored-fixture + CRAM/`-fullHeader` wave (this PR): a batch of parity
+cases that were `t.Skip`'d only for missing fixtures or unwired input
+paths are now real byte-for-byte assertions:
+
+- `bedgenomecov` — the BAM/SAM/CRAM `-ibam` parity cases (upstream
+  `genomecov.t1..t18`) are closed. The upstream SAM fixtures and the
+  htsutil-built BAMs (`y.bam`/`empty.bam`/`merged.bam`), plus the empty
+  CRAM and its `test_ref.fa` reference, are vendored under
+  `tools/bedgenomecov/testdata/parity/aln/`, and each case asserts against
+  a golden generated from the upstream `bedtools genomecov` binary.
+  **CRAM input is now wired**: `RunBAM` routes through
+  `pkg/htsgo/alnio.NewReaderWithReference`, which auto-detects SAM/BAM/CRAM;
+  a new `-T/--reference` CLI flag (and `Options.CRAMReference`) supplies the
+  CRAM decode FASTA, and `REF_CACHE`/`REF_PATH` are honoured. Closing these
+  cases surfaced and fixed **two real parity bugs**: (1) per-base `-dz`
+  output was 1-based but upstream emits **0-based** positions
+  (`offset = _eachBaseZeroBased ? 0 : 1`); (2) BAM coverage did not break
+  the alignment on a CIGAR `D` (deletion) op, whereas upstream's
+  `getBamBlocks(..., breakOnDeletionOps=!_ignoreD, …)` always breaks on D
+  (and on N only under `-split`). Both are now implemented and asserted.
+- `bedreldist` — `reldist.t01..t03` (the large refseq/aluY/gerp fixtures)
+  are closed. The upstream `.bed.gz` inputs are vendored under
+  `tools/bedreldist/testdata/parity/` (kept gzip-compressed; decompressed
+  at test time) and each case asserts byte-for-byte against an upstream
+  `bedtools reldist` golden.
+- `bedsplit` — `split.01..03` now assert against the upstream-script
+  goldens using the vendored `randData.bed`; the size-mode (LPT) case
+  matches upstream exactly and is a hard assertion (no longer skipped on a
+  tie-breaking caveat).
+- `bednuc` — `-fullHeader` is now a real assertion, not a skip. Empirically,
+  the htslib shipped with bedtools builds the `.fai` on the first
+  whitespace token even with `-fullHeader`, so a full multi-token header in
+  the BED chrom column resolves to nothing and is skipped with a
+  "size (0 bp)" warning, while a first-token chrom resolves exactly as in
+  the default mode. This was cross-checked against both `bedtools nuc
+  -fullHeader` and `bedtools getfasta -fullHeader` (the latter's
+  `getfasta.t06` passes only because it uses a first-token BED chrom). The
+  port reproduces this observable behaviour verbatim (no aliasing), and the
+  not-found warning text now matches upstream's "Feature (...) beyond the
+  length of ... size (0 bp).  Skipping." The dead best-effort
+  full-header alias map was removed.
+- `bedsample` — the two remaining `t.Skip`s (`sample.t01` "No input file
+  given", `sample.new.t02` "Unrecognized parameter") are **intentionally**
+  CLI-only and retained as documented cases: input defaulting/validation and
+  unknown-flag rejection live in `cmd/bedsample/main.go` (the library always
+  takes an `io.Reader`), so there is no library behaviour to assert. The
+  skip messages now state this explicitly. The genome-fixture cases were
+  already covered: `mainFile.bed` is vendored and the seeded sampler has
+  live byte-for-byte upstream parity.
+
 Resolved in the column-ops + discrepancies wave:
 
 - `bedjaccard` now pre-merges A and B before computing intersection /

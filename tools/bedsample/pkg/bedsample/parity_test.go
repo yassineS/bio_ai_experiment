@@ -122,16 +122,25 @@ func TestParity_Sample_SubsetOfInput(t *testing.T) {
 	}
 }
 
-// sample.t01 — upstream prints "No input file given" when invoked with no
-// args. That's a CLI concern, not a library concern; the library always
-// requires an io.Reader. Skipped.
+// sample.t01 — "No input file given". This is intentionally retained as a
+// CLI-only documented case, NOT a library gap: upstream emits the message from
+// its argument layer, whereas the Sample library always takes an io.Reader and
+// the bedsample CLI (cmd/bedsample/main.go) defaults a missing -i to stdin (a
+// deliberate POSIX drop-in improvement). The argument-validation/exit-code
+// behaviour therefore lives in main.go, not here.
+//
+// covered by: cmd/bedsample/main.go (-n validation + iohelper.OpenReader,
+// which surfaces open errors and exits non-zero).
 func TestParity_Sample_T01_NoArgs(t *testing.T) {
-	t.Skip("CLI-only behaviour: 'No input file given' is emitted by the bedsample binary, not the library; covered by main.go validation path")
+	t.Skip("CLI-only (intentional): input defaulting/validation lives in cmd/bedsample/main.go, not the Sample library")
 }
 
-// sample.new.t02 — upstream errors on an unrecognised flag. That's a Go
-// flag-package concern; we already exit 2 on unknown flags via the standard
-// flag.FlagSet behaviour.
+// sample.new.t02 — "Unrecognized parameter". Also a CLI-only documented case:
+// an unknown flag is rejected by the standard flag.FlagSet in
+// cmd/bedsample/main.go (fs.Parse returns an error and main exits 2), so there
+// is no library-level behaviour to assert here.
+//
+// covered by: cmd/bedsample/main.go (fs.Parse error path -> os.Exit(2)).
 func TestParity_Sample_T02_UnrecognizedFlag(t *testing.T) {
-	t.Skip("CLI-only: 'Unrecognized parameter' is emitted by main.go via flag.Parse error handling")
+	t.Skip("CLI-only (intentional): unknown-flag rejection lives in cmd/bedsample/main.go's flag.FlagSet, not the Sample library")
 }

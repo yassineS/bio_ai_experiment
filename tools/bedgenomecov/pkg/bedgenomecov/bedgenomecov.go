@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnbed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
@@ -71,6 +71,12 @@ type Options struct {
 	// fixed N-base fragment anchored at its 5' end instead of its alignment
 	// length: forward reads cover [pos, pos+N), reverse reads cover [end-N, end).
 	FragmentSize int
+	// CRAMReference names a FASTA file used to reconstruct reference-backed
+	// reads when the alignment input (-ibam) is a CRAM. It is ignored for SAM
+	// and BAM input, which carry their sequence inline. When empty a
+	// reference-backed CRAM still decodes (reference-derived bases fill with
+	// 'N'), and the REF_CACHE/REF_PATH environment variables are honoured.
+	CRAMReference string
 }
 
 // GenomeSize holds chromosome ordering and lengths parsed from a genome file.
@@ -137,16 +143,26 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 	return runCore(bed.NewReader(input), genome, writer, opts)
 }
 
-// RunBAM reads a BAM/SAM alignment stream from input, derives the genome from
-// the alignment header's @SQ entries (mirroring upstream `genomecov -ibam`,
-// where no separate genome file is supplied), and writes coverage to writer.
-// Each mapped alignment contributes its whole reference span, or — under
-// opts.Split — its CIGAR blocks (exon-aware, breaking on N ops).
+// runCore is the BED-input coverage pipeline: per-record coverage intervals
+// honour opts.Split (a BED12 record is split into its blocks only under
+// -split).
+func runCore(src recordSource, genome *GenomeSize, writer io.Writer, opts Options) error {
+	return runCoreBlocks(src, genome, writer, opts, false)
+}
+
+// RunBAM reads a SAM/BAM/CRAM alignment stream from input, derives the genome
+// from the alignment header's @SQ entries (mirroring upstream `genomecov
+// -ibam`, where no separate genome file is supplied), and writes coverage to
+// writer. Each mapped alignment contributes its reference blocks, split on a
+// deletion (D) op and — under opts.Split — also on a skip (N) op, matching
+// upstream getBamBlocks. The input format is auto-detected; for a
+// reference-backed CRAM, opts.CRAMReference names the decode FASTA (the
+// REF_CACHE/REF_PATH environment variables are also honoured).
 func RunBAM(input io.Reader, writer io.Writer, opts Options) error {
 	if opts.PairedCoverage && opts.FragmentSize > 0 {
 		return errors.New("cannot combine -pc and -fs")
 	}
-	sr, err := sam.NewReader(input)
+	sr, err := alnio.NewReaderWithReference(input, opts.CRAMReference)
 	if err != nil {
 		return fmt.Errorf("reading alignment input: %w", err)
 	}
@@ -161,7 +177,7 @@ func RunBAM(input io.Reader, writer io.Writer, opts Options) error {
 	if len(genome.Order) == 0 {
 		return errors.New("alignment header has no @SQ reference entries")
 	}
-	return runCore(&alnFragmentSource{sr: sr, opts: opts}, genome, writer, opts)
+	return runCoreBlocks(&alnFragmentSource{sr: sr, opts: opts}, genome, writer, opts, true)
 }
 
 // alnFragmentSource adapts a SAM/BAM reader to the recordSource contract,
@@ -202,9 +218,115 @@ func (s *alnFragmentSource) Read() (*bed.Record, error) {
 			}
 			return spanRecord(rec, start, start+s.opts.FragmentSize), nil
 		default:
-			return alnbed.ToBED12(rec), nil
+			// genomecov's BAM path computes coverage blocks itself rather than
+			// reusing the generic alnbed.ToBED12 BED12 conversion. Upstream calls
+			// GetBamBlocks(..., breakOnDeletionOps=!_ignoreD, obeySplits=_split):
+			// it always breaks the alignment on a D (deletion) op — _ignoreD is
+			// not exposed by genomecov's CLI, so it is always false — and breaks
+			// on an N (skip) op only under -split. The shared alnbed.ToBED12 only
+			// ever breaks on N (the common BAM-to-BED convention used by the
+			// other bed* tools), so it would merge a deletion into one span; the
+			// genomecov-specific helper below restores the upstream behaviour.
+			return genomecovAlnRecord(rec, s.opts.Split), nil
 		}
 	}
+}
+
+// genomecovAlnRecord builds the *bed.Record genomecov counts for one mapped
+// alignment, with reference-consuming CIGAR blocks split per the upstream
+// GetBamBlocks rules: always break on a D (deletion) op, and additionally
+// break on an N (skip) op when split is true. The resulting blocks are stored
+// as BED12 block columns so the coverage accumulator (which always iterates
+// the per-record blocks for alignment input) counts each block once.
+func genomecovAlnRecord(rec *sam.Record, split bool) *bed.Record {
+	start := int(rec.Pos) - 1
+	blocks := genomecovBlocks(rec, start, split)
+	end := start
+	if len(blocks) > 0 {
+		end = blocks[len(blocks)-1][1]
+	}
+	strand := "+"
+	if rec.Flag&sam.FlagReverse != 0 {
+		strand = "-"
+	}
+	sizes := make([]int, len(blocks))
+	starts := make([]int, len(blocks))
+	for i, b := range blocks {
+		sizes[i] = b[1] - b[0]
+		starts[i] = b[0] - start
+	}
+	return &bed.Record{
+		Chrom:       rec.RName,
+		ChromStart:  start,
+		ChromEnd:    end,
+		Name:        rec.QName,
+		Score:       int(rec.MapQ),
+		Strand:      strand,
+		BlockCount:  len(blocks),
+		BlockSizes:  sizes,
+		BlockStarts: starts,
+	}
+}
+
+// genomecovBlocks returns the 0-based half-open reference blocks of an
+// alignment beginning at refStart, mirroring upstream getBamBlocks. M/=/X
+// consume the reference and extend the current block; a D op always closes the
+// current block and starts a new one after the deletion (breakOnDeletionOps is
+// always true for genomecov); an N op closes the current block and, when
+// breakOnN (-split) is set, starts a new one after the gap — without -split the
+// N still advances the reference but the surrounding blocks are not separated
+// here (upstream's obeySplits=false path never reaches getBamBlocks with N
+// breaks, but N is exceedingly rare in non-split data). I/S/H/P do not consume
+// reference.
+func genomecovBlocks(rec *sam.Record, refStart int, breakOnN bool) [][2]int {
+	var blocks [][2]int
+	pos := refStart
+	blockStart := refStart
+	open := false
+	for _, op := range rec.Cigar {
+		switch op.Op() {
+		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			if !open {
+				blockStart = pos
+				open = true
+			}
+			pos += int(op.Length())
+		case sam.CigarDeletion:
+			// Always break on a deletion: close the current block (if any) and
+			// resume after the deleted reference bases.
+			if open {
+				blocks = append(blocks, [2]int{blockStart, pos})
+				open = false
+			}
+			pos += int(op.Length())
+			blockStart = pos
+		case sam.CigarSkipped:
+			if breakOnN {
+				if open {
+					blocks = append(blocks, [2]int{blockStart, pos})
+					open = false
+				}
+				pos += int(op.Length())
+				blockStart = pos
+			} else {
+				// Without -split, an N op extends the span across the gap.
+				if !open {
+					blockStart = pos
+					open = true
+				}
+				pos += int(op.Length())
+			}
+		default:
+			// I, S, H, P: no reference advance.
+		}
+	}
+	if open {
+		blocks = append(blocks, [2]int{blockStart, pos})
+	}
+	if len(blocks) == 0 {
+		blocks = append(blocks, [2]int{refStart, pos})
+	}
+	return blocks
 }
 
 // spanRecord builds a single-span (block-free) BED record on rec's chromosome
@@ -217,9 +339,13 @@ func spanRecord(rec *sam.Record, start, end int) *bed.Record {
 	return &bed.Record{Chrom: rec.RName, ChromStart: start, ChromEnd: end, Strand: strand}
 }
 
-// runCore is the shared coverage pipeline used by both the BED (Run) and the
-// alignment (RunBAM) entry points.
-func runCore(src recordSource, genome *GenomeSize, writer io.Writer, opts Options) error {
+// runCoreBlocks is the shared coverage pipeline used by both the BED (Run) and
+// the alignment (RunBAM) entry points. When alwaysBlocks is true the per-record
+// coverage intervals are taken from the record's BED12 blocks regardless of
+// opts.Split: the alignment source has already encoded genomecov's CIGAR
+// D/N-split semantics into those blocks, so the accumulator must always honour
+// them.
+func runCoreBlocks(src recordSource, genome *GenomeSize, writer io.Writer, opts Options, alwaysBlocks bool) error {
 	if opts.FivePrime && opts.ThreePrime {
 		return errors.New("cannot combine 5' and 3' end-only counting")
 	}
@@ -282,8 +408,10 @@ func runCore(src recordSource, genome *GenomeSize, writer io.Writer, opts Option
 			}
 		default:
 			// Under -split a BED12 record contributes coverage over each of
-			// its blocks; otherwise the whole [start,end) span.
-			for _, iv := range recordCoverIntervals(rec, opts.Split) {
+			// its blocks; otherwise the whole [start,end) span. For alignment
+			// input (alwaysBlocks) the blocks already encode the genomecov
+			// D/N-split semantics, so they are always honoured.
+			for _, iv := range recordCoverIntervals(rec, opts.Split || alwaysBlocks) {
 				s, e := clamp(iv[0], iv[1], len(arr))
 				for i := s; i < e; i++ {
 					arr[i]++
@@ -396,15 +524,23 @@ func writeBedGraph(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts 
 }
 
 func writePerBase(w *bufio.Writer, depth map[string][]int, g *GenomeSize, opts Options) error {
-	skipZero := opts.Mode == ModePerBaseNonZero
+	// Upstream `bedtools genomecov` reports per-base positions with an offset
+	// of 0 in zero-based mode (-dz) and 1 otherwise (-d), and only -dz skips
+	// zero-depth positions (offset = _eachBaseZeroBased ? 0 : 1; the print
+	// guard is `depth>0 || !_eachBaseZeroBased`).
+	zeroBased := opts.Mode == ModePerBaseNonZero
+	offset := 1
+	if zeroBased {
+		offset = 0
+	}
 	for _, chrom := range g.Order {
 		arr := depth[chrom]
 		for i, raw := range arr {
 			d := scaledDepth(raw, opts.Scale)
-			if skipZero && d == 0 {
+			if zeroBased && d == 0 {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "%s\t%d\t%s\n", chrom, i+1, formatDepth(d, opts.Scale)); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\t%d\t%s\n", chrom, i+offset, formatDepth(d, opts.Scale)); err != nil {
 				return err
 			}
 		}

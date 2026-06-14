@@ -222,9 +222,12 @@ func TestPerBase(t *testing.T) {
 }
 
 func TestPerBaseNonZero(t *testing.T) {
+	// Upstream `-dz` reports ZERO-based positions (offset 0), unlike `-d`
+	// (1-based, offset 1). bedtools genomecov -i ... -dz on [0,2) emits
+	// `chr1 0 1` / `chr1 1 1`.
 	out := runOf(t, "chr1\t0\t2\n", "chr1\t3\n", Options{Mode: ModePerBaseNonZero})
-	want := "chr1\t1\t1\n" +
-		"chr1\t2\t1\n"
+	want := "chr1\t0\t1\n" +
+		"chr1\t1\t1\n"
 	if out != want {
 		t.Errorf("per-base nz mismatch.\nwant:\n%s\ngot:\n%s", want, out)
 	}
@@ -276,10 +279,13 @@ func TestFivePrime(t *testing.T) {
 }
 
 func TestThreePrime(t *testing.T) {
-	// + interval contributes last base (pos 3 in 1-based for [0,3)). - interval contributes first base (pos 3 1-based for [2,5)).
+	// + interval contributes its last base (index 2 for [0,3)); - interval
+	// contributes its first base (index 2 for [2,5)); both land on the same
+	// base, depth 2. Reported with -dz, which is ZERO-based (offset 0), so the
+	// position is 2 — matching `bedtools genomecov ... -dz -3`.
 	bed := "chr1\t0\t3\ta\t0\t+\nchr1\t2\t5\tb\t0\t-\n"
 	out := runOf(t, bed, "chr1\t5\n", Options{Mode: ModePerBaseNonZero, ThreePrime: true})
-	want := "chr1\t3\t2\n"
+	want := "chr1\t2\t2\n"
 	if out != want {
 		t.Errorf("three-prime mismatch.\nwant:\n%s\ngot:\n%s", want, out)
 	}
