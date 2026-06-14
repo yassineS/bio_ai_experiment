@@ -357,17 +357,36 @@ func TestParityQuery_FormatChar(t *testing.T) {
 	t.Skip("query: FMT/<char-tag> token not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
 }
 
-// TestParityQuery_NAlleles documents that the `%N_ALT` token is not yet
-// implemented. Upstream evaluates it dynamically from len(ALT)-1.
-func TestParityQuery_NAlleles(t *testing.T) {
-	t.Skip("query %N_ALT not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+// TestParityQuery_PositionTokens exercises the %POS0/%END/%END0/%FIRST_ALT/
+// %IS_TS format tokens against upstream's convert.c semantics (including the
+// INDEL ref-span and a symbolic <DEL> with INFO/END).
+func TestParityQuery_PositionTokens(t *testing.T) {
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "query_pos_tokens.expected.tsv")
+	got := runParityQuery(t, in, QueryOptions{
+		Format: `%CHROM\t%POS0\t%END\t%END0\t%FIRST_ALT\t%IS_TS\n`,
+	})
+	equalBytes(t, got, want, "query position tokens")
 }
 
-// TestParityQuery_AllInfoLine documents that the `%INFO` (without a
-// subkey) token is not yet implemented; upstream prints the entire INFO
-// column verbatim.
+// TestParityQuery_NAlleles documents that the `%N_ALT` token is intentionally
+// unsupported: upstream's `query -f` (convert.c) has no such format token —
+// the recognised non-FORMAT tags are CHROM/POS/POS0/END/END0/ID/REF/
+// FIRST_ALT/QUAL/TYPE/FILTER/IS_TS/MASK/LINE. `N_ALT` only exists as a
+// filter-expression function (`-i 'N_ALT>1'`), which is implemented
+// separately. So there is nothing to match here.
+func TestParityQuery_NAlleles(t *testing.T) {
+	t.Skip("not an upstream query -f token: N_ALT is a filter-expression function only")
+}
+
+// TestParityQuery_AllInfoLine exercises the bare `%INFO` token (no /TAG),
+// which prints the entire INFO column verbatim (convert.c process_info with
+// a NULL key).
 func TestParityQuery_AllInfoLine(t *testing.T) {
-	t.Skip("query bare %INFO token not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "query_all_info.expected.tsv")
+	got := runParityQuery(t, in, QueryOptions{Format: `%INFO\n`})
+	equalBytes(t, got, want, "query bare %INFO")
 }
 
 // =====================================================================

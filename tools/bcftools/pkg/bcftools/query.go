@@ -45,7 +45,9 @@ func readTabixLines(path string, regs []region) ([][]byte, error) {
 // QueryOptions controls the behaviour of Query / QueryFile.
 type QueryOptions struct {
 	// Format is the bcftools-style format string. Tokens supported:
-	//   %CHROM %POS %REF %ALT %QUAL %ID %FILTER %TYPE %TGT %GT
+	//   %CHROM %POS %POS0 %END %END0 %REF %ALT %FIRST_ALT %QUAL %ID
+	//   %FILTER %TYPE %IS_TS %TGT %GT
+	//   %INFO        (bare)                      — entire INFO column
 	//   %INFO/<TAG>                              — INFO field by name
 	//   [%FIELD]                                 — sample-level field, tab-repeated
 	//   \n \t                                    — newline / tab
@@ -738,6 +740,16 @@ func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int, headerSamples
 		return v.Chrom
 	case "POS":
 		return strconv.Itoa(v.Pos)
+	case "POS0":
+		// 0-based start, mirroring convert.c process_pos0 (line->pos).
+		return strconv.Itoa(v.Pos - 1)
+	case "END":
+		// 1-based inclusive end = pos0 + rlen, where rlen follows INFO/END
+		// when present (convert.c process_end, htslib line->rlen).
+		return strconv.Itoa(queryVariantEnd(v))
+	case "END0":
+		// 0-based end (convert.c process_end0 = pos + rlen - 1).
+		return strconv.Itoa(queryVariantEnd(v) - 1)
 	case "REF":
 		return v.Ref
 	case "ALT":
@@ -745,6 +757,13 @@ func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int, headerSamples
 			return "."
 		}
 		return strings.Join(v.Alt, ",")
+	case "FIRST_ALT":
+		// First ALT allele, or "." when the site has no ALT (convert.c
+		// process_first_alt). Not publicly advertised but supported upstream.
+		if len(v.Alt) == 0 {
+			return "."
+		}
+		return v.Alt[0]
 	case "QUAL":
 		if v.Qual < 0 {
 			return "."
@@ -763,6 +782,10 @@ func formatPlaceholder(name string, v *vcf.Variant, sampleIdx int, headerSamples
 		return strings.Join(v.Filter, ";")
 	case "TYPE":
 		return variantType(v)
+	case "IS_TS":
+		// 1 for a transition (A<->G / C<->T) SNP/MNP, else 0 (convert.c
+		// process_is_ts: |acgt2int(ref[0]) - acgt2int(alt0[0])| == 2).
+		return variantIsTransition(v)
 	case "INFO":
 		// Bare %INFO (no /TAG) emits the entire INFO column, mirroring
 		// upstream convert.c's process_info with a NULL key.
@@ -943,6 +966,60 @@ func variantType(v *vcf.Variant) string {
 		return "MNP"
 	}
 	return "OTHER"
+}
+
+// queryVariantEnd returns the 1-based inclusive end position for the %END
+// query token, mirroring htslib's line->rlen accounting: the reference span
+// is len(REF) unless an integer INFO/END widens it (symbolic/long records),
+// in which case END is that value. Equivalent to convert.c's process_end
+// (line->pos + line->rlen). It differs from the annotate-side variantEnd in
+// honouring INFO/END.
+func queryVariantEnd(v *vcf.Variant) int {
+	rlen := len(v.Ref)
+	if es, ok := v.Info["END"]; ok {
+		if e, err := strconv.Atoi(strings.TrimSpace(es)); err == nil {
+			rlen = e - (v.Pos - 1)
+		}
+	}
+	return (v.Pos - 1) + rlen
+}
+
+// acgt2int maps a nucleotide byte to htslib's bcf_acgt2int encoding
+// (A=0, C=1, G=2, T=3); any other byte returns -1.
+func acgt2int(b byte) int {
+	switch b {
+	case 'A', 'a':
+		return 0
+	case 'C', 'c':
+		return 1
+	case 'G', 'g':
+		return 2
+	case 'T', 't':
+		return 3
+	}
+	return -1
+}
+
+// variantIsTransition returns "1" when the site is a SNP/MNP substitution
+// whose first REF/ALT bases form a transition (A<->G or C<->T), else "0",
+// mirroring convert.c process_is_ts.
+func variantIsTransition(v *vcf.Variant) string {
+	t := variantType(v)
+	if t != "SNP" && t != "MNP" {
+		return "0"
+	}
+	if len(v.Ref) == 0 || len(v.Alt) == 0 || len(v.Alt[0]) == 0 {
+		return "0"
+	}
+	r := acgt2int(v.Ref[0])
+	a := acgt2int(v.Alt[0][0])
+	if r < 0 || a < 0 {
+		return "0"
+	}
+	if r-a == 2 || a-r == 2 {
+		return "1"
+	}
+	return "0"
 }
 
 // translatedGenotype maps the indices in a GT field to their allele strings.
