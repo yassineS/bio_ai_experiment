@@ -2088,7 +2088,10 @@ Missing subcommands (in rough priority order):
   applied BAQ already — slice 3 below.)
 - **`mpileup` BCF / genotype-likelihood output (`-g/-u`) — DONE.** `-aa`
   zero-fill of empty contigs is implemented (see
-  `TestMpileup_AA_ZeroFillTableDriven`); the text-pileup path is complete.
+  `TestMpileup_AA_ZeroFillTableDriven` and the live byte-for-byte
+  `TestParity_Mpileup_T12_AllPositionsZeroFill`, which diffs our output
+  against the upstream `samtools mpileup -aa` binary on a small two-contig
+  fixture, with and without a reference); the text-pileup path is complete.
   `-g` (BGZF-compressed BCF) and `-u` (uncompressed BCF) now emit the
   per-site genotype-likelihood records (`FORMAT/PL`, the `<*>` unseen
   allele, `INFO/DP/I16/QS/MQ0F`, `FORMAT/AD`).
@@ -2933,11 +2936,17 @@ the six import shapes (-0, -1/-2, -s, single positional, two
 positionals, -T aux extraction, --order, -R/-r RG). The calmd BAQ
 path additionally diffs the `-r` / `-rA` output against htslib's
 vendored `realn01_exp*.sam` goldens, and `pkg/htsgo/baq` carries the
-full `realn0{1,2,3}` golden corpus. The upstream
-`bam_md.c` / `bam_import.c` regression cases are marked as
-`t.Skip(...)` parity stubs because upstream's BGZF output isn't
-byte-identical with ours (different libdeflate). Logical correctness
-is covered by hand-computed expected values in the table tests.
+full `realn0{1,2,3}` golden corpus. The upstream `bam_md.c` /
+`bam_import.c` regression cases now run as LIVE parity gates
+(`TestParity_Calmd_UpstreamCorpus`, `TestParity_Import_UpstreamCorpus`):
+both sides emit plain SAM (sidestepping the BGZF/libdeflate byte-identity
+problem) and the streams are compared byte-for-byte modulo the `@PG`
+line. Two port bugs were surfaced and fixed by these gates: (1) `import`
+of a `/1`/`/2`-suffixed FASTQ record must set `FMUNMAP` (the htslib FASTQ
+reader sets it from the suffix alone) — our `-s`/`-0` paths previously
+omitted it; and (2) `calmd` must remove a *differing* MD/NM tag and
+re-append it at the end of the aux list (leaving an *unchanged* tag in
+place), matching `bam_md.c`'s `bam_aux_del`+`bam_aux_append` ordering.
 
 **`phase` upstream-schema emit (DONE — salvaged from PR #219).** The
 byte-faithful upstream `phase` text stream (CC banner + PS / FL / M /

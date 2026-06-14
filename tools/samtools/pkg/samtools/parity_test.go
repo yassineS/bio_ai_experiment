@@ -1876,13 +1876,72 @@ r3	0	chr1	10	60	5M	*	0	0	ACGTA	IIIII
 
 // TestParity_Mpileup_T12_AllPositionsZeroFill — -aa emits every position
 // of every contig in the header, including chromosomes with no reads.
-// Behaviour parity is exercised on a hand-built multi-contig fixture by
-// TestMpileup_AA_ZeroFillTableDriven (chr1 partial, chr2 fully empty,
-// chr3 partial). Running -aa across realistic upstream test BAMs would
-// produce a million+ rows per chrom; keep this case as a documented
-// pointer rather than re-executing.
+//
+// This runs the LIVE upstream `samtools mpileup -aa` on a small purpose-
+// built two-contig fixture (c1: 20 bp, partially covered; c2: 8 bp,
+// fully empty) and asserts our MpileupFile output is BYTE-FOR-BYTE
+// identical, both without and with a reference FASTA. The fixture is
+// deliberately tiny so -aa stays tractable (28 rows total) rather than
+// the >1M rows/chrom a full-length chromosome fixture would emit; it is
+// vendored under testdata/parity/mpileup/. Per the project rules the
+// upstream binary is built on demand and a build failure is fatal,
+// never a skip.
 func TestParity_Mpileup_T12_AllPositionsZeroFill(t *testing.T) {
-	t.Skip("covered by TestMpileup_AA_ZeroFillTableDriven; full-LN upstream fixtures would emit >1M rows/chrom")
+	bin := upstreamSamtools(t)
+	samPath := parityPath(t, "mpileup/aa.sam")
+
+	cases := []struct {
+		name  string
+		ref   string // "" means no -f reference.
+		noBAQ bool   // pass -B to disable BAQ on both sides.
+	}{
+		// No reference: the ref-base column is all 'N' and BAQ never runs,
+		// so the full -aa zero-fill stream is asserted byte-for-byte.
+		{"no_ref", "", false},
+		// With a reference, -B disables BAQ so the comparison isolates the
+		// -aa zero-fill behaviour and the reference-base column (column 3).
+		// (BAQ's per-base quality filtering on a reference-backed pileup is a
+		// separate, orthogonal behaviour tracked elsewhere; enabling it here
+		// would conflate two features in one assertion.)
+		{"with_ref_noBAQ", parityPath(t, "mpileup/aa.ref.fa"), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Upstream invocation.
+			upArgs := []string{"mpileup", "-aa"}
+			if c.noBAQ {
+				upArgs = append(upArgs, "-B")
+			}
+			if c.ref != "" {
+				upArgs = append(upArgs, "-f", c.ref)
+			}
+			upArgs = append(upArgs, samPath)
+			cmd := exec.Command(bin, upArgs...)
+			var upOut, upErr bytes.Buffer
+			cmd.Stdout = &upOut
+			cmd.Stderr = &upErr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("upstream samtools %v: %v\n%s", upArgs, err, upErr.String())
+			}
+
+			// Our port.
+			var got bytes.Buffer
+			opts := MpileupOptions{
+				Inputs:                []string{samPath},
+				AllPositionsAllChroms: true,
+				FastaRef:              c.ref,
+				NoBAQ:                 c.noBAQ,
+			}
+			if err := MpileupFile(opts, &got); err != nil {
+				t.Fatalf("MpileupFile: %v", err)
+			}
+
+			if got.String() != upOut.String() {
+				t.Fatalf("mpileup -aa (%s) differs from upstream byte-for-byte:\n--- ours ---\n%s\n--- upstream ---\n%s",
+					c.name, got.String(), upOut.String())
+			}
+		})
+	}
 }
 
 // TestParity_Mpileup_T13_CountOrphansFlag — -A includes reads marked as

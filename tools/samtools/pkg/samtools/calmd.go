@@ -330,38 +330,45 @@ func binQual(rec *sam.Record) {
 	}
 }
 
-// updateNMAux sets / replaces the NM:i: aux. Mirrors upstream's "different NM"
-// stderr line on mismatch.
+// updateNMAux sets / replaces the NM:i: aux, matching upstream bam_md.c's
+// exact aux ordering: when an existing NM already equals the computed value
+// it is left in place; when it differs (or is absent) the old entry is
+// removed and the new one is appended at the END of the aux list
+// (bam_aux_del + bam_aux_append). The "different NM" stderr line fires only
+// on the mismatch path.
 func updateNMAux(rec *sam.Record, nm int, quiet bool, warnW io.Writer) {
 	for i, a := range rec.Aux {
 		if a.Tag == "NM" {
-			if old, ok := a.Int(); ok && old != int64(nm) {
-				if !quiet && warnW != nil {
-					fmt.Fprintf(warnW, "[bam_fillmd1] different NM for read '%s': %d -> %d\n", rec.QName, old, nm)
-				}
+			if old, ok := a.Int(); ok && old == int64(nm) {
+				return // unchanged: keep the existing tag in place.
 			}
-			rec.Aux[i] = sam.Aux{Tag: "NM", Type: 'i', Value: int64(nm)}
-			rebuildAuxIndex(rec)
-			return
+			if old, ok := a.Int(); ok && !quiet && warnW != nil {
+				fmt.Fprintf(warnW, "[bam_fillmd1] different NM for read '%s': %d -> %d\n", rec.QName, old, nm)
+			}
+			rec.Aux = append(rec.Aux[:i], rec.Aux[i+1:]...)
+			break
 		}
 	}
 	rec.Aux = append(rec.Aux, sam.Aux{Tag: "NM", Type: 'i', Value: int64(nm)})
 	rebuildAuxIndex(rec)
 }
 
-// updateMDAux sets / replaces the MD:Z: aux. Mirrors upstream's "different MD"
-// stderr line on mismatch.
+// updateMDAux sets / replaces the MD:Z: aux, matching upstream bam_md.c's
+// exact aux ordering: an existing MD equal to the computed value is left in
+// place; a differing (or absent) MD is removed and the new value appended at
+// the END of the aux list. The "different MD" stderr line fires only on the
+// mismatch path.
 func updateMDAux(rec *sam.Record, md string, quiet bool, warnW io.Writer) {
 	for i, a := range rec.Aux {
 		if a.Tag == "MD" {
-			if old, ok := a.String(); ok && old != md {
-				if !quiet && warnW != nil {
-					fmt.Fprintf(warnW, "[bam_fillmd1] different MD for read '%s': '%s' -> '%s'\n", rec.QName, old, md)
-				}
+			if old, ok := a.String(); ok && old == md {
+				return // unchanged: keep the existing tag in place.
 			}
-			rec.Aux[i] = sam.Aux{Tag: "MD", Type: 'Z', Value: md}
-			rebuildAuxIndex(rec)
-			return
+			if old, ok := a.String(); ok && !quiet && warnW != nil {
+				fmt.Fprintf(warnW, "[bam_fillmd1] different MD for read '%s': '%s' -> '%s'\n", rec.QName, old, md)
+			}
+			rec.Aux = append(rec.Aux[:i], rec.Aux[i+1:]...)
+			break
 		}
 	}
 	rec.Aux = append(rec.Aux, sam.Aux{Tag: "MD", Type: 'Z', Value: md})
