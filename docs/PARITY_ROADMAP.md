@@ -25,11 +25,11 @@ gaps were closed and parity-validated against the vendored upstream binaries:
 - **samtools.** mpileup text-path BAQ (`-B`/`-E`); `fastq -T '*'` all-tags and
   QNAME-based pairing (lone mates → `-s`); depth `-a`/`-b` parity.
 
-The remaining skips are environmental gates (CRAM codec scope, uninitialized
-submodules, un-vendored BAM/CRAM fixtures covered by SAM unit tests + live
-cross-checks, perl-unavailable) or documented non-goals (`query %N_ALT` is not
-an upstream token, `pairtobed -slop` upstream rejects, `coverage -mean`
-float32 noise) — not feature gaps.
+**Nothing is out of scope.** There are no "non-goals." Every remaining `t.Skip`
+is a gap to close — including CRAM input/codecs, the live-binary/fixture gates
+(vendor the fixtures or build the submodule binaries), perl-backed prinseq
+parity, and every documented edge case. The target is 100% parity with bug
+fixes, docs, and tests for all of it.
 
 The project's stated goal is to make these tools faster, better tested, and
 better documented than their originals — which requires that we actually

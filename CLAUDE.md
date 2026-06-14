@@ -12,12 +12,15 @@ tools are vendored as git submodules under `reference_code/` for reference.
 ### Project focus (current)
 
 **The project is no longer taking on new tools.** The full focus now is to
-**finish the tools already ported or started** — driving each to complete 1:1
-upstream feature parity, with robust drop-in POSIX CLIs, parity-validated
-tests, and accurate docs. Do **not** add a new `tools/<tool>` directory or
-start porting a tool that isn't already present. "New work" means closing the
-remaining parity gaps in the existing tools (see `docs/PARITY_ROADMAP.md`),
-not broadening the tool set.
+**finish the tools already ported or started** — driving each to **100%**
+upstream feature parity. There are **no "non-goals" and nothing is out of
+scope**: every upstream feature, flag, input format (BED/GFF/VCF/SAM/BAM/CRAM),
+and edge case must be matched. The only scope is: 100% feature parity, bug
+fixes (fix-on-port even where upstream is buggy), better documentation,
+unit/parity tests for everything, and drop-in POSIX CLIs. Do **not** add a new
+`tools/<tool>` directory or start porting a tool that isn't already present.
+"New work" means closing the remaining parity gaps in the existing tools (see
+`docs/PARITY_ROADMAP.md`), not broadening the tool set.
 
 ## Repository layout
 

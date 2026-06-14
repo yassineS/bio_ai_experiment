@@ -31,10 +31,11 @@ in the roadmap, and link to them from everywhere else rather than re-stating.
 
 ## Project focus (current)
 
-**No new tools.** The project's full focus is now to **finish the tools already
-ported or started** — driving each to complete 1:1 upstream parity. We are not
-broadening the tool set; remaining work is the parity gaps in the existing
-tools (`docs/PARITY_ROADMAP.md`), not new ports.
+**No new tools; 100% parity on the ones we have.** Nothing is out of scope —
+there are no "non-goals." Every upstream feature, flag, input format, and edge
+case is in scope. The only scope is 100% feature parity + bug fixes + better
+docs + unit/parity tests + drop-in POSIX CLIs. Remaining work is the parity
+gaps in the existing tools (`docs/PARITY_ROADMAP.md`), not new ports.
 
 ## What "done" means
 
