@@ -16,6 +16,7 @@ package seqtk
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,11 +280,70 @@ func TestParity_Seqtk_Sample_StructuralInvariants(t *testing.T) {
 	})
 }
 
-// TestParity_Seqtk_Sample_UpstreamByteParity is currently skipped: see
-// the comment on TestParity_Seqtk_Sample_StructuralInvariants for the
-// reasoning. Re-enable after porting upstream's drand48-style sampler.
+// TestParity_Seqtk_Sample_UpstreamByteParity verifies that SampleN /
+// SampleFraction reproduce upstream `seqtk sample` byte-for-byte. The Go port
+// ports upstream's krand (MT19937-64) RNG and stk_sample's reservoir sampler,
+// so the seeded output matches across fraction mode, fixed-number mode, the
+// two-pass (-2) mode, and FASTA inputs. Fixtures were generated from the
+// upstream binary (default seed 11 unless a -s value is named).
 func TestParity_Seqtk_Sample_UpstreamByteParity(t *testing.T) {
-	t.Skip("port limitation: Sample uses every-Nth, not upstream's seeded reservoir; see docs/UPSTREAM_BUGS.md#seqtk-sample-rng")
+	t.Run("fraction_0.5_small_fq_s11", func(t *testing.T) {
+		in := readParityFile(t, "small.fq")
+		var out bytes.Buffer
+		if err := SampleFraction(bytes.NewReader(in), &out, 0.5, 11); err != nil {
+			t.Fatalf("SampleFraction 0.5: %v", err)
+		}
+		want := readParityFile(t, "sample_default_f0.5.expected.fq")
+		mustEqualBytes(t, "sample -s11 small.fq 0.5", out.Bytes(), want)
+	})
+	t.Run("fraction_0.3_sample20_s11", func(t *testing.T) {
+		in := readParityFile(t, "sample20.fq")
+		var out bytes.Buffer
+		if err := SampleFraction(bytes.NewReader(in), &out, 0.3, 11); err != nil {
+			t.Fatalf("SampleFraction 0.3: %v", err)
+		}
+		want := readParityFile(t, "sample20_default_f0.3.expected.fq")
+		mustEqualBytes(t, "sample -s11 sample20.fq 0.3", out.Bytes(), want)
+	})
+	t.Run("number_5_sample20_s11", func(t *testing.T) {
+		in := readParityFile(t, "sample20.fq")
+		var out bytes.Buffer
+		if err := SampleN(bytes.NewReader(in), &out, 5, 11, false, nil); err != nil {
+			t.Fatalf("SampleN 5 s11: %v", err)
+		}
+		want := readParityFile(t, "sample20_num5_s11.expected.fq")
+		mustEqualBytes(t, "sample -s11 sample20.fq 5", out.Bytes(), want)
+	})
+	t.Run("number_5_sample20_s42", func(t *testing.T) {
+		in := readParityFile(t, "sample20.fq")
+		var out bytes.Buffer
+		if err := SampleN(bytes.NewReader(in), &out, 5, 42, false, nil); err != nil {
+			t.Fatalf("SampleN 5 s42: %v", err)
+		}
+		want := readParityFile(t, "sample20_num5_s42.expected.fq")
+		mustEqualBytes(t, "sample -s42 sample20.fq 5", out.Bytes(), want)
+	})
+	t.Run("number_5_sample20_s11_twopass", func(t *testing.T) {
+		in := readParityFile(t, "sample20.fq")
+		reopen := func() (io.ReadCloser, error) {
+			return os.Open(filepath.Join("..", "..", "testdata", "parity", "sample20.fq"))
+		}
+		var out bytes.Buffer
+		if err := SampleN(bytes.NewReader(in), &out, 5, 11, true, reopen); err != nil {
+			t.Fatalf("SampleN 5 s11 -2: %v", err)
+		}
+		want := readParityFile(t, "sample20_2pass_num5_s11.expected.fq")
+		mustEqualBytes(t, "sample -2 -s11 sample20.fq 5", out.Bytes(), want)
+	})
+	t.Run("number_2_small_fa_s11", func(t *testing.T) {
+		in := readParityFile(t, "small.fa")
+		var out bytes.Buffer
+		if err := SampleN(bytes.NewReader(in), &out, 2, 11, false, nil); err != nil {
+			t.Fatalf("SampleN 2 small.fa s11: %v", err)
+		}
+		want := readParityFile(t, "sample_small_fa_num2_s11.expected.fa")
+		mustEqualBytes(t, "sample -s11 small.fa 2", out.Bytes(), want)
+	})
 }
 
 // TestParity_Seqtk_Randbase_StructuralInvariants — known divergence:
@@ -353,22 +413,79 @@ func TestParity_Seqtk_Randbase_StructuralInvariants(t *testing.T) {
 	}
 }
 
-// TestParity_Seqtk_Randbase_UpstreamByteParity is skipped: upstream's
-// drand48() implicit-seed-0 RNG and our math/rand RNG produce different
-// sequences. See docs/UPSTREAM_BUGS.md#seqtk-randbase-rng for the
-// disposition.
+// TestParity_Seqtk_Randbase_UpstreamByteParity verifies that
+// RandbaseUpstream reproduces upstream `seqtk randbase` byte-for-byte. The Go
+// port reimplements glibc's drand48 (the 48-bit LCG with the default seed-0
+// state that upstream relies on) and the stk_randbase output layout (comment
+// dropped, sequence wrapped at 60 columns). Two fixtures are checked: the
+// small ambig.fa, and a longer input that crosses the 60-column wrap boundary
+// and mixes 2-base, 3/4-base, and unambiguous bases.
 func TestParity_Seqtk_Randbase_UpstreamByteParity(t *testing.T) {
-	t.Skip("port limitation: Randbase RNG differs from upstream drand48; structural invariants are checked separately")
+	cases := []struct{ in, want string }{
+		{"ambig.fa", "randbase_default.expected.fa"},
+		{"randbase_long.fa", "randbase_long.expected.fa"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			in := readParityFile(t, tc.in)
+			var out bytes.Buffer
+			if err := RandbaseUpstream(bytes.NewReader(in), &out); err != nil {
+				t.Fatalf("RandbaseUpstream(%s): %v", tc.in, err)
+			}
+			want := readParityFile(t, tc.want)
+			mustEqualBytes(t, "randbase "+tc.in, out.Bytes(), want)
+		})
+	}
 }
 
-// TestParity_Seqtk_Trimfq_UpstreamByteParity is skipped: upstream's
-// trimfq runs a modified Mott algorithm with an error-rate threshold
-// (default -q 0.05), while our Go port's TrimQuality does a simple
-// Phred-threshold trim. The two algorithms produce different cuts on
-// every non-trivial input. Tracked in
-// docs/UPSTREAM_BUGS.md#seqtk-trimfq-algorithm.
+// TestParity_Seqtk_Trimfq_UpstreamByteParity verifies that TrimFQ reproduces
+// upstream `seqtk trimfq` byte-for-byte. The Go port implements the modified
+// Mott algorithm (default path, including the window-based fallback when the
+// Mott window is shorter than -l) and the fixed-offset path (-b/-e/-L). The
+// trim_mott.fq fixture uses 40 bp reads (longer than the default -l 30) with
+// varied quality so the Mott path is genuinely exercised; trimfq_default
+// covers the short-read pass-through case (reads <= -l).
 func TestParity_Seqtk_Trimfq_UpstreamByteParity(t *testing.T) {
-	t.Skip("port limitation: TrimQuality is Phred-threshold; upstream trimfq is Mott (different algorithm)")
+	t.Run("short_reads_passthrough", func(t *testing.T) {
+		in := readParityFile(t, "small.fq")
+		var out bytes.Buffer
+		if err := TrimFQ(bytes.NewReader(in), &out, DefaultTrimFQOptions()); err != nil {
+			t.Fatalf("TrimFQ small.fq: %v", err)
+		}
+		want := readParityFile(t, "trimfq_default.expected.fq")
+		mustEqualBytes(t, "trimfq small.fq", out.Bytes(), want)
+	})
+	t.Run("mott_default", func(t *testing.T) {
+		in := readParityFile(t, "trim_mott.fq")
+		var out bytes.Buffer
+		if err := TrimFQ(bytes.NewReader(in), &out, DefaultTrimFQOptions()); err != nil {
+			t.Fatalf("TrimFQ Mott: %v", err)
+		}
+		want := readParityFile(t, "trim_mott_default.expected.fq")
+		mustEqualBytes(t, "trimfq trim_mott.fq", out.Bytes(), want)
+	})
+	t.Run("fixed_offset_b5_e3", func(t *testing.T) {
+		in := readParityFile(t, "trim_mott.fq")
+		opts := DefaultTrimFQOptions()
+		opts.Left, opts.Right = 5, 3
+		var out bytes.Buffer
+		if err := TrimFQ(bytes.NewReader(in), &out, opts); err != nil {
+			t.Fatalf("TrimFQ -b 5 -e 3: %v", err)
+		}
+		want := readParityFile(t, "trim_mott_b5e3.expected.fq")
+		mustEqualBytes(t, "trimfq -b 5 -e 3 trim_mott.fq", out.Bytes(), want)
+	})
+	t.Run("fixed_len_L20", func(t *testing.T) {
+		in := readParityFile(t, "trim_mott.fq")
+		opts := DefaultTrimFQOptions()
+		opts.FixedLen = 20
+		var out bytes.Buffer
+		if err := TrimFQ(bytes.NewReader(in), &out, opts); err != nil {
+			t.Fatalf("TrimFQ -L 20: %v", err)
+		}
+		want := readParityFile(t, "trim_mott_L20.expected.fq")
+		mustEqualBytes(t, "trimfq -L 20 trim_mott.fq", out.Bytes(), want)
+	})
 }
 
 // TestParity_Seqtk_Empty_NoCrash verifies that all subcommands tolerate

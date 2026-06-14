@@ -14,6 +14,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 )
 
 // Mutation describes a single point mutation on the forward strand.
@@ -275,6 +277,147 @@ func pickIUPAC(b byte, rng *rand.Rand) byte {
 	return out
 }
 
+// drand48 is a faithful port of the POSIX/glibc drand48 random number
+// generator used by upstream `seqtk randbase`. It is the classic 48-bit
+// linear congruential generator
+//
+//	X_{n+1} = (a * X_n + c) mod 2^48,  a = 0x5DEECE66D, c = 0xB
+//
+// with the glibc default initial state X_0 = 0 (i.e. no srand48 call). The
+// floating-point value returned by next is X / 2^48 in [0, 1), bit-for-bit
+// identical to glibc's drand48 for the default seed, which is what
+// stk_randbase relies on.
+type drand48 struct {
+	x uint64
+}
+
+const (
+	drand48A    = 0x5DEECE66D
+	drand48C    = 0xB
+	drand48Mask = (uint64(1) << 48) - 1
+)
+
+// next advances the generator and returns the next value in [0, 1), matching
+// glibc's drand48().
+func (d *drand48) next() float64 {
+	d.x = (drand48A*d.x + drand48C) & drand48Mask
+	return float64(d.x) / 281474976710656.0 // == X / 2^48
+}
+
+// iupacBits maps each IUPAC code to its 4-bit set (A=1, C=2, G=4, T=8),
+// mirroring upstream's seq_nt16_table. Codes not present here map to 15 (N),
+// which has a bit count of 4 and is therefore never randomised.
+var iupacBits = func() [256]uint8 {
+	var t [256]uint8
+	for i := range t {
+		t[i] = 15
+	}
+	set := func(b byte, v uint8) { t[b] = v; t[b|0x20] = v } // upper + lower
+	set('A', 1)
+	set('C', 2)
+	set('G', 4)
+	set('T', 8)
+	set('M', 1|2)
+	set('R', 1|4)
+	set('W', 1|8)
+	set('S', 2|4)
+	set('Y', 2|8)
+	set('K', 4|8)
+	set('V', 1|2|4)
+	set('H', 1|2|8)
+	set('D', 1|4|8)
+	set('B', 2|4|8)
+	set('N', 15)
+	return t
+}()
+
+// bitCount4 returns the number of set bits in the low nibble of c, mirroring
+// upstream's bitcnt_table.
+func bitCount4(c uint8) int {
+	n := 0
+	for j := uint(0); j < 4; j++ {
+		if c&(1<<j) != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// RandbaseUpstream is a byte-for-byte port of upstream's stk_randbase. For
+// every base whose IUPAC code has exactly two possible nucleotides
+// (R/Y/S/W/K/M), it draws one of the two using the glibc drand48 generator
+// (m = (drand48() < 0.5)) and replaces the base, preserving case; all other
+// bases — including the three-base codes (B/D/H/V), the four-base code (N) and
+// the unambiguous bases — pass through unchanged.
+//
+// Output exactly reproduces stk_randbase's layout: the header is written as
+// ">name" (the comment is dropped), the sequence is wrapped at 60 columns
+// (with a newline emitted before column 0, i.e. right after the header), and a
+// trailing newline closes each record. The drand48 stream starts from glibc's
+// default seed (state 0), so the output is deterministic and matches upstream
+// regardless of any CLI seed.
+func RandbaseUpstream(in io.Reader, w io.Writer) error {
+	br, _ := peekIsFastq(in)
+	r := fasta.NewReader(br)
+	bw := bufio.NewWriter(w)
+	d := &drand48{}
+
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(">"); err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(rec.ID); err != nil {
+			return err
+		}
+		seq := rec.Sequence
+		for i := 0; i < len(seq); i++ {
+			b := seq[i]
+			c := iupacBits[b]
+			if bitCount4(c) == 2 {
+				m := 0
+				if d.next() < 0.5 {
+					m = 1
+				}
+				// Walk the set bits in order; pick the m-th one.
+				k, j := 0, 0
+				for j = 0; j < 4; j++ {
+					if c&(1<<uint(j)) == 0 {
+						continue
+					}
+					if k == m {
+						break
+					}
+					k++
+				}
+				if b >= 'a' && b <= 'z' {
+					b = "acgt"[j]
+				} else {
+					b = "ACGT"[j]
+				}
+			}
+			if i%60 == 0 {
+				if err := bw.WriteByte('\n'); err != nil {
+					return err
+				}
+			}
+			if err := bw.WriteByte(b); err != nil {
+				return err
+			}
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	return bw.Flush()
+}
+
 // Randbase replaces every IUPAC ambiguity base (R/Y/S/W/K/M/B/D/H/V/N) in a
 // FASTA stream with a uniform random sample from its expansion, preserving
 // case. The output is written to w as FASTA, preserving the input's line
@@ -283,6 +426,10 @@ func pickIUPAC(b byte, rng *rand.Rand) byte {
 //
 // If seed != 0 the random source is seeded deterministically with seed; if
 // seed == 0 a time-based seed is used (caller's responsibility).
+//
+// This is the seeded extension used when the CLI is given -s. The default
+// (seedless) randbase path uses RandbaseUpstream, which matches upstream
+// byte-for-byte.
 func Randbase(in io.Reader, w io.Writer, seed int64) error {
 	rng := rand.New(rand.NewSource(seed))
 

@@ -117,8 +117,7 @@ A skimmable per-tool completion table lives in the top-level
 - **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp` (~97%), `htsfile`.
 - **Near done (small tails):** `prinseq` (~95%), `vcftools` (146/146
   flags, ~98%, output-column polish only), `bgzip`/`tabix` (~92%),
-  `mosdepth` (~100%; overlap-pair correction + CRAM input landed),
-  `bedtools` (37 bed* tools,
+  `mosdepth` (~98%; CRAM input now landed), `bedtools` (37 bed* tools,
   no missing subcommands, ~95%).
 - **Near done (variant-calling now landed):** `samtools` (~97%) and
   `bcftools` (~96%). The former "boulders" are closed: full multi-allelic
@@ -355,8 +354,12 @@ Option-tail gaps (per existing subcommand):
 
 - `comp` — missing `-r REGION` to restrict to a BED region.
 - `seq` — missing `-A` (force ASCII output), `-C` (mask sequence with N), `-M FILE` (mask regions), the `-T int` trim option.
-- `sample` — missing `-2` (output two paired files).
-- `trimfq` — missing `-L int` (max length cap), `-B int` (min base quality).
+- `sample` — full upstream surface ported byte-for-byte (`-s SEED`, `-2`
+  two-pass, fraction and fixed-number modes; see the option-tail closure
+  below). The byte-parity test is no longer skipped.
+- `trimfq` — full upstream surface ported byte-for-byte (Mott default,
+  `-q`/`-l`/`-b`/`-e`/`-L`; see the option-tail closure below). The
+  byte-parity test is no longer skipped. (There is no `-B` flag upstream.)
 - `subseq` — missing the regex-name mode.
 - `mutfa` — missing the inverse `--inverse` mode.
 - `gap` — full upstream surface implemented (`-l` only). Note: upstream's
@@ -430,13 +433,27 @@ never `t.Skip`):
   port of upstream's krand MT19937-64 RNG (`sample.go`). This also
   closes the previously-skipped `sample`/RNG parity gap: `SampleN`,
   `SampleFraction`, and the `-2` two-pass path now match upstream
-  exactly. (The legacy `Sample`/every-Nth helper is retained only for
-  back-compat callers and its skipped fixture test.)
+  exactly. `TestParity_Seqtk_Sample_UpstreamByteParity` now asserts
+  byte-for-byte (`t.Fatalf`, no `t.Skip`) across fraction, fixed-number,
+  two-pass, and FASTA fixtures. (The legacy `Sample`/every-Nth helper is
+  retained only for back-compat callers and its structural-invariant test.)
+- `randbase` — `RandbaseUpstream` (`mutations.go`) ports `stk_randbase`
+  (seqtk.c:525) byte-for-byte, including a 1:1 reimplementation of glibc's
+  `drand48` (the 48-bit LCG with the default seed-0 state upstream relies
+  on) and the output layout (2-base codes drawn via `m = drand48() < 0.5`,
+  3/4-base codes and N passed through, comment dropped, sequence wrapped
+  at 60 columns). The CLI default path (no `-s`) uses it; `-s INT` is a
+  seedable extension. `TestParity_Seqtk_Randbase_UpstreamByteParity` now
+  asserts byte-for-byte (no `t.Skip`), closing the previously-skipped
+  `randbase`/RNG parity gap.
 - `trimfq -L INT` (retain at most INT bp from the 5'-end) plus the full
   Mott-algorithm trimming and `-q FLOAT`/`-l INT`/`-b INT`/`-e INT`
   paths are ported byte-for-byte (`TrimFQ` in `trimfq.go`, a 1:1 port of
   `stk_trimfq`, seqtk.c:361). This closes the previously-skipped
-  `trimfq` parity gap. **There is no `-B` flag upstream** (trimfq's
+  `trimfq` parity gap; `TestParity_Seqtk_Trimfq_UpstreamByteParity` now
+  asserts byte-for-byte (no `t.Skip`) across the Mott default, the
+  window fallback, and the `-b/-e`/`-L` fixed-offset paths. **There is no
+  `-B` flag upstream** (trimfq's
   getopt is `"l:q:b:e:L:"`; the task's `-B` was a phantom, the real
   option is lowercase `-b` = trim-from-left); skipped.
 - `subseq` regex/name-pattern mode — **not an upstream feature.**
@@ -4058,13 +4075,10 @@ no committed goldens).
 
 ### `mosdepth`
 
-**Status:** 1 / 1 command, all flags, full feature parity. **`-d/--d4`,
-`-a/--fragment-mode`, `-q/--quantize`, `-t/--threads`, `-m/--use-median`,
-default-mode overlap-pair correction, and CRAM input are all DONE**
-(byte-identical to the upstream v0.3.14 binary). The `--chrom <missing>`
-and `--max-frag-len < --min-frag-len` validation failures now match upstream
-(exit 1 / exit 2 with the same stderr messages). No flags or edge cases
-remain unimplemented.
+**Status:** 1 / 1 command, all flags. **`-d/--d4`, `-a/--fragment-mode`,
+`-q/--quantize`, `-t/--threads`, `-m/--use-median`, and CRAM input are all
+DONE** (byte-identical to the upstream v0.3.14 binary). No flags remain
+unimplemented.
 
 Done:
 
@@ -4087,27 +4101,12 @@ Done:
   filter binds a MAPQ-free keep-predicate once, dropping the per-read MAPQ
   comparison from the hot loop. Verified byte-identical to the general path.
 
-Missing: *(none — the items below were the last open gaps and are now done.)*
+Missing:
 
-- **Default-mode overlap-pair correction** — DONE. Default (non-fast) mode
-  now subtracts the double-counted depth where the two mates of a pair
-  overlap, so a base covered by both mates counts once — a faithful port of
-  upstream's `coverage()` mate-pairing loop (`seen` table + `gen_start_ends`
-  / `pair_sort` overlap walk, including the single-CIGAR-op fast path). See
-  `addRecords` / `genStartEnds` / `addOverlapCorrection` in `coverage.go`.
-  All seven previously-skipped default-mode parity tests now assert
-  byte-for-byte against upstream's functional-tests.sh values
-  (`TestParity_OverlapM_DefaultPerBase`, `TestParity_OverlapM_SummaryMT`,
-  `TestParity_ThresholdByBED`, `TestParity_TrackHeader`,
-  `TestParity_BigWindow`, `TestParity_MAPQFilter`, `TestParity_FlagExclude`).
-- **`--chrom <nonexistent>` strict failure** — DONE. A `--chrom` naming a
-  reference absent from the input header now returns `*ChromNotFoundError`
-  (`[mosdepth] chromosome <name> not found`) and the CLI exits 1, matching
-  upstream's `check_chrom`. Verified by `TestParity_MissingChrom_StrictFail`.
-- **`--max-frag-len < --min-frag-len` hard error** — DONE. The combination
-  is rejected up front with `ErrBadFragLenBounds` (`[mosdepth] error
-  --max-frag-len was lower than --min-frag-len.`) and the CLI exits 2,
-  matching upstream. Verified by `TestParity_BadFragLenBounds`.
+- **Default-mode overlap-pair correction** — our default (non-fast) mode
+  does not subtract double-counted depth where mate pairs overlap; output
+  matches upstream's `--fast-mode` (see `UPSTREAM_BUGS.md`). Unchanged by
+  this wave.
 
 Implemented:
 
