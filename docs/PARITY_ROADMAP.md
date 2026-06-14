@@ -3191,30 +3191,42 @@ the per-subcommand sections below). The only bcftools item still open is
 `gtcheck`'s `-c/--cluster` dendrogram + filter expressions.
 (`csq -l/--local-csq` is now implemented.)
 
-The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
-but with a deliberate design divergence from upstream:
+The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**, and
+the bundled upstream plugins are now being **reimplemented natively in Go**
+(owner decision 2026-06-14, superseding the earlier "non-goal" framing):
 
-- **`+plugins`** — implemented as a **subprocess plugin system**.
-  Upstream loads plugins as native shared objects (`.so`) via `dlopen`
-  against a fixed C ABI. The Go port instead resolves `bcftools +<name>`
-  to an ordinary *executable* found by name in the `BCFTOOLS_PLUGINS`
-  colon-separated directory list, runs it as a child process, pipes the
-  input VCF as uncompressed text to its stdin, and reads VCF back from
-  its stdout. A plugin is therefore "a VCF-on-stdin to VCF-on-stdout
-  filter" and can be written in any language — no C ABI, no version
-  check, no rebuild against the host. `bcftools plugin -l`/`-lv` lists
-  discoverable plugins; the host applies `-o`/`-O` formatting around the
-  plugin's output; a non-zero plugin exit is surfaced as an error with
-  its stderr. The contract is specified in `docs/PLUGIN_PROTOCOL.md`.
-  The mechanism lives in `tools/bcftools/pkg/bcftools/plugin.go` with a
-  reference example plugin under `tools/bcftools/plugins/example/`.
-  **Intentionally not ported:** the ~30 bundled upstream plugins
-  (`+fill-tags`, `+split-vep`, `+setGT`, `+prune`, `+fixploidy`, ...).
-  The plugin *system* exists so users can write their own plugins;
-  re-porting upstream's plugin catalogue is explicit non-goal scope.
-  Upstream plugin sources (`plugins/*.c`) remain vendored under
-  `reference_code/bcftools/` for anyone who wants to reimplement a
-  specific one as a standalone subprocess plugin.
+- **Native plugins (in progress toward all ~40).** `bcftools +<name>` first
+  resolves against an in-process **native registry** of pure-Go plugins
+  reimplemented 1:1 from upstream's `plugins/*.c`, dispatched through a
+  worker-pool pipeline that runs each plugin's per-record `Process` in
+  parallel (`-@`/`--threads`) with **strictly ordered output** — byte-identical
+  for any thread count. The framework lives in
+  `tools/bcftools/pkg/bcftools/native_plugin.go` (`NativePlugin` interface:
+  `Init`/`Process`/`Destroy`, plus optional `parallelPlugin`/`stderrSink`/
+  `outputSuppressor`). `bcftools plugin -l`/`-lv` lists native plugins
+  alongside any discoverable executables.
+  - **Batch 1 (done, byte-validated against the live upstream binary, no
+    goldens):** `fill-tags`, `fill-AN-AC`, `setGT`, `missing2ref`, `tag2tag`,
+    `fixploidy`, `counts`. Options outside batch-1 scope (those needing the
+    filter engine / localized-allele machinery — e.g. fill-tags `-S`,
+    setGT `-i/-e/-t q`, tag2tag `LXX`/`QR-QA` modes) return a clear
+    "unsupported" error rather than silently diverging. See
+    `tools/bcftools/pkg/bcftools/native_plugin_oracle_test.go`.
+  - **Remaining batches 2–7 (~33 plugins)** are inventoried with a per-plugin
+    behavior/parallelism/external-data classification and a rollout plan in
+    the plugin agent's report; the long tail covers FASTA-backed
+    (`fill-from-fasta`, `fixref`, `vrfs`), windowed/stateful (`prune`,
+    `remove-overlaps`, `gvcfz`), sample-group/stats (`contrast`, `ad-bias`,
+    `smpl-stats`), trio/PED (`trio-stats`, `parental-origin`, `color-chrs`),
+    and multi-output/multi-input (`scatter`, `split`, `split-vep`, `isecGT`).
+- **Subprocess fallback (retained).** For plugin names not in the native
+  registry, the host still resolves an ordinary *executable* by name in the
+  `BCFTOOLS_PLUGINS` directory list and runs it as a VCF-on-stdin →
+  VCF-on-stdout child process (any language; no C ABI). The contract is in
+  `docs/PLUGIN_PROTOCOL.md`; the mechanism is in
+  `tools/bcftools/pkg/bcftools/plugin.go` with a reference example under
+  `tools/bcftools/plugins/example/`. Upstream plugin sources (`plugins/*.c`)
+  are vendored under `reference_code/bcftools/` as the port reference.
 
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier

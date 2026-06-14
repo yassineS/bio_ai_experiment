@@ -17,8 +17,8 @@ import (
 const pluginUsage = `bcftools plugin - run a user plugin over a VCF/BCF.
 
 Usage:
-  bcftools plugin <name>  [plugin-opts] [-- <input>]
-  bcftools +<name>        [plugin-opts] [-- <input>]
+  bcftools plugin <name>  [host-opts] [<input>] [-- <plugin-opts>]
+  bcftools +<name>        [host-opts] [<input>] [-- <plugin-opts>]
   bcftools plugin -l
 
 A plugin is an executable found in one of the colon-separated directories
@@ -51,45 +51,46 @@ func runPlugin(args []string, pluginName string) int {
 	// Split host options from the plugin name + plugin arguments. The first
 	// non-flag token is the plugin name (unless supplied via `+name`); a
 	// literal `--` terminates plugin args and introduces the host input.
+	// Upstream syntax is `bcftools +<name> [host-opts] [input] -- [plugin-opts]`:
+	// the host options and the input file come BEFORE a literal `--`, and the
+	// plugin's own arguments come AFTER it. Split on the first `--`, then parse
+	// the host section into host flags + the input file (the plugin name, when
+	// not supplied via `+name`, is the first bare word).
 	var hostArgs []string
 	var pluginArgs []string
 	var inputArgs []string
 	{
-		rest := args
-		if pluginName == "" {
-			// Find the plugin name: the first token that is not a host flag.
-			i := 0
-			for i < len(rest) {
-				tok := rest[i]
-				if tok == "--" {
-					break
-				}
-				if len(tok) > 0 && tok[0] == '-' {
-					hostArgs = append(hostArgs, tok)
-					// -o/-O/-r/-R/-l take a value as the next token.
-					if needsValue(tok) && i+1 < len(rest) {
-						i++
-						hostArgs = append(hostArgs, rest[i])
-					}
-					i++
-					continue
-				}
-				// First bare word is the plugin name.
-				pluginName = tok
-				rest = rest[i+1:]
-				goto haveName
-			}
-			// No plugin name found (only host flags / a `--`): keep rest as-is.
-			rest = rest[len(hostArgs):]
-		}
-	haveName:
-		// Everything up to a `--` is plugin argv; after `--` is host input.
-		for i := 0; i < len(rest); i++ {
-			if rest[i] == "--" {
-				inputArgs = rest[i+1:]
+		hostSection := args
+		for i, tok := range args {
+			if tok == "--" {
+				hostSection = args[:i]
+				pluginArgs = args[i+1:]
 				break
 			}
-			pluginArgs = append(pluginArgs, rest[i])
+		}
+		// Walk the host section, separating host flags (with their values) from
+		// the plugin name and the bare input-file argument(s).
+		i := 0
+		for i < len(hostSection) {
+			tok := hostSection[i]
+			if len(tok) > 0 && tok[0] == '-' && tok != "-" {
+				hostArgs = append(hostArgs, tok)
+				if needsValue(tok) && i+1 < len(hostSection) {
+					i++
+					hostArgs = append(hostArgs, hostSection[i])
+				}
+				i++
+				continue
+			}
+			// First bare word is the plugin name (unless `+name` supplied it).
+			if pluginName == "" {
+				pluginName = tok
+				i++
+				continue
+			}
+			// Remaining bare words are the input file (and optional regions).
+			inputArgs = append(inputArgs, tok)
+			i++
 		}
 	}
 

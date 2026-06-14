@@ -222,7 +222,20 @@ func TestListPlugins(t *testing.T) {
 	}
 	t.Setenv(pluginEnvVar, dir)
 
-	plugins := ListPlugins(false)
+	// ListPlugins now merges the in-process native plugins with the
+	// exec-discoverable ones; filter to the non-native (exec) entries to assert
+	// the directory-scanning behaviour in isolation.
+	execOnly := func(infos []PluginInfo) []PluginInfo {
+		var out []PluginInfo
+		for _, p := range infos {
+			if !p.Native {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+
+	plugins := execOnly(ListPlugins(false))
 	if len(plugins) != 1 || plugins[0].Name != "example" {
 		t.Fatalf("expected just the example plugin, got %+v", plugins)
 	}
@@ -230,12 +243,23 @@ func TestListPlugins(t *testing.T) {
 		t.Errorf("plain listing = %q, want %q", got, "example")
 	}
 
+	// The native plugins must also appear in the merged listing.
+	foundNative := false
+	for _, p := range ListPlugins(false) {
+		if p.Name == "fill-tags" && p.Native {
+			foundNative = true
+		}
+	}
+	if !foundNative {
+		t.Errorf("native plugin fill-tags missing from merged listing")
+	}
+
 	// Verbose probing must populate About via the optional --about flag.
-	verbose := ListPlugins(true)
+	verbose := execOnly(ListPlugins(true))
 	if len(verbose) != 1 || !strings.Contains(verbose[0].About, "reference plugin") {
 		t.Fatalf("verbose listing missing --about line: %+v", verbose)
 	}
-	if out := FormatPluginList(verbose, true); !strings.Contains(out, verbose[0].Path) {
+	if out := FormatPluginList(ListPlugins(true), true); !strings.Contains(out, verbose[0].Path) {
 		t.Errorf("verbose listing should include the path: %q", out)
 	}
 }

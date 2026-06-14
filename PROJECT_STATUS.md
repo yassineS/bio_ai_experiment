@@ -135,9 +135,14 @@ These are deliberately not ported and should not be counted against parity:
   `bedsample` additionally now port the upstream RNG and *are* byte-exact.)
 - **prinseq PNG report** (`prinseq-graphs.pl` graphics flow) — out of scope;
   the `graph_data`/`report` subcommands cover the equivalent surface.
-- **The ~30 bundled upstream bcftools `.so` plugins** — the plugin *system*
-  (a VCF-on-stdin/stdout subprocess protocol) is implemented; re-porting
-  upstream's plugin catalogue is explicit non-goal scope.
+- **The ~40 bundled upstream bcftools plugins** — now being **reimplemented
+  natively in pure Go** (owner decision 2026-06-14). Batch 1 (`fill-tags`,
+  `fill-AN-AC`, `setGT`, `missing2ref`, `tag2tag`, `fixploidy`, `counts`) is
+  done and byte-validated against the live upstream binary, dispatched via an
+  in-process native registry with a parallel ordered-output pipeline; the
+  remaining ~33 are inventoried into batches 2–7 (see
+  `docs/PARITY_ROADMAP.md` → bcftools plugins). The subprocess protocol
+  remains as the fallback for user-supplied executables.
 
 ## Where to look next
 
