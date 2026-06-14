@@ -124,6 +124,24 @@ type Options struct {
 // ErrByConflict is returned when both ByBED and ByWindow are set.
 var ErrByConflict = errors.New("mosdepth: -b/--by cannot specify both a BED file and an integer window")
 
+// ErrBadFragLenBounds is returned when MaxFragLen is a positive cap lower than
+// MinFragLen, which can never keep any read. Upstream mosdepth rejects this
+// combination with `[mosdepth] error --max-frag-len was lower than
+// --min-frag-len.` and exit code 2; this error carries the same message so the
+// CLI can print it verbatim.
+var ErrBadFragLenBounds = errors.New("[mosdepth] error --max-frag-len was lower than --min-frag-len.")
+
+// ChromNotFoundError reports that a --chrom restriction named a reference that
+// is absent from the input header. Upstream mosdepth prints `[mosdepth]
+// chromosome <name> not found` and exits 1; the CLI formats this error the same
+// way. The Chrom field holds the offending name.
+type ChromNotFoundError struct{ Chrom string }
+
+// Error formats the message exactly as upstream mosdepth's check_chrom does.
+func (e *ChromNotFoundError) Error() string {
+	return "[mosdepth] chromosome " + e.Chrom + " not found"
+}
+
 // Run executes a full mosdepth pipeline against the SAM/BAM bytes streaming
 // in from in. The header is read first, then records are streamed and depth
 // is accumulated per reference. When the cursor moves to a new reference
@@ -155,6 +173,13 @@ func validateOptions(opts Options) error {
 	if opts.Prefix == "" {
 		return fmt.Errorf("mosdepth: empty output prefix")
 	}
+	// Reject a max-fragment-length cap that sits below the minimum, mirroring
+	// upstream mosdepth's `max_len < min_len` guard. The port uses 0 to mean
+	// "unset" for both bounds, so the check only fires when both are positive
+	// (an actual cap below an actual floor).
+	if opts.MaxFragLen > 0 && opts.MinFragLen > 0 && opts.MaxFragLen < opts.MinFragLen {
+		return ErrBadFragLenBounds
+	}
 	return nil
 }
 
@@ -170,6 +195,21 @@ func runWithReader(rd sam.Reader, opts Options) error {
 	hdr := rd.Header()
 	if hdr == nil {
 		return fmt.Errorf("mosdepth: BAM has no header")
+	}
+
+	// A --chrom restriction that names a reference absent from the header is a
+	// hard error upstream (check_chrom → exit 1), not a silent empty run.
+	if opts.Chrom != "" {
+		found := false
+		for _, r := range hdr.Refs {
+			if r.Name == opts.Chrom {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &ChromNotFoundError{Chrom: opts.Chrom}
+		}
 	}
 
 	// Resolve regions per-chrom up front. perChromRegions[chrom] is the
@@ -287,13 +327,7 @@ func runWithReader(rd sam.Reader, opts Options) error {
 		}
 		recs := byChrom[r.Name]
 		accum := newCovAccum(int(r.Length))
-		for _, rec := range recs {
-			if opts.FragmentMode {
-				accum.addFragment(rec)
-			} else {
-				accum.addRecord(rec, opts.FastMode)
-			}
-		}
+		accum.addRecords(recs, opts.FastMode, opts.FragmentMode)
 		// Per-base emission: collapse runs of equal depth.
 		hist := accumHistogram(accum)
 		perChromHist[r.Name] = hist

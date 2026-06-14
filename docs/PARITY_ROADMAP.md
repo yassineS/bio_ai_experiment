@@ -117,7 +117,8 @@ A skimmable per-tool completion table lives in the top-level
 - **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp` (~97%), `htsfile`.
 - **Near done (small tails):** `prinseq` (~95%), `vcftools` (146/146
   flags, ~98%, output-column polish only), `bgzip`/`tabix` (~92%),
-  `mosdepth` (~98%; CRAM input now landed), `bedtools` (37 bed* tools,
+  `mosdepth` (~100%; overlap-pair correction + CRAM input landed),
+  `bedtools` (37 bed* tools,
   no missing subcommands, ~95%).
 - **Near done (variant-calling now landed):** `samtools` (~97%) and
   `bcftools` (~96%). The former "boulders" are closed: full multi-allelic
@@ -4057,10 +4058,13 @@ no committed goldens).
 
 ### `mosdepth`
 
-**Status:** 1 / 1 command, all flags. **`-d/--d4`, `-a/--fragment-mode`,
-`-q/--quantize`, `-t/--threads`, `-m/--use-median`, and CRAM input are all
-DONE** (byte-identical to the upstream v0.3.14 binary). No flags remain
-unimplemented.
+**Status:** 1 / 1 command, all flags, full feature parity. **`-d/--d4`,
+`-a/--fragment-mode`, `-q/--quantize`, `-t/--threads`, `-m/--use-median`,
+default-mode overlap-pair correction, and CRAM input are all DONE**
+(byte-identical to the upstream v0.3.14 binary). The `--chrom <missing>`
+and `--max-frag-len < --min-frag-len` validation failures now match upstream
+(exit 1 / exit 2 with the same stderr messages). No flags or edge cases
+remain unimplemented.
 
 Done:
 
@@ -4083,12 +4087,27 @@ Done:
   filter binds a MAPQ-free keep-predicate once, dropping the per-read MAPQ
   comparison from the hot loop. Verified byte-identical to the general path.
 
-Missing:
+Missing: *(none — the items below were the last open gaps and are now done.)*
 
-- **Default-mode overlap-pair correction** — our default (non-fast) mode
-  does not subtract double-counted depth where mate pairs overlap; output
-  matches upstream's `--fast-mode` (see `UPSTREAM_BUGS.md`). Unchanged by
-  this wave.
+- **Default-mode overlap-pair correction** — DONE. Default (non-fast) mode
+  now subtracts the double-counted depth where the two mates of a pair
+  overlap, so a base covered by both mates counts once — a faithful port of
+  upstream's `coverage()` mate-pairing loop (`seen` table + `gen_start_ends`
+  / `pair_sort` overlap walk, including the single-CIGAR-op fast path). See
+  `addRecords` / `genStartEnds` / `addOverlapCorrection` in `coverage.go`.
+  All seven previously-skipped default-mode parity tests now assert
+  byte-for-byte against upstream's functional-tests.sh values
+  (`TestParity_OverlapM_DefaultPerBase`, `TestParity_OverlapM_SummaryMT`,
+  `TestParity_ThresholdByBED`, `TestParity_TrackHeader`,
+  `TestParity_BigWindow`, `TestParity_MAPQFilter`, `TestParity_FlagExclude`).
+- **`--chrom <nonexistent>` strict failure** — DONE. A `--chrom` naming a
+  reference absent from the input header now returns `*ChromNotFoundError`
+  (`[mosdepth] chromosome <name> not found`) and the CLI exits 1, matching
+  upstream's `check_chrom`. Verified by `TestParity_MissingChrom_StrictFail`.
+- **`--max-frag-len < --min-frag-len` hard error** — DONE. The combination
+  is rejected up front with `ErrBadFragLenBounds` (`[mosdepth] error
+  --max-frag-len was lower than --min-frag-len.`) and the CLI exits 2,
+  matching upstream. Verified by `TestParity_BadFragLenBounds`.
 
 Implemented:
 

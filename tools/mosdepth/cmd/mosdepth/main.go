@@ -175,6 +175,12 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "mosdepth: -a/--fragment-mode and -x/--fast-mode are mutually exclusive")
 		return 2
 	}
+	// Reject a max-fragment-length cap below the minimum before doing any work,
+	// matching upstream mosdepth's early guard (exit 2 with the same message).
+	if opts.maxFragLen > 0 && opts.minFragLen > 0 && opts.maxFragLen < opts.minFragLen {
+		fmt.Fprintln(os.Stderr, mosdepth.ErrBadFragLenBounds.Error())
+		return 2
+	}
 	quant, err := mosdepth.ParseQuantize(opts.quantize)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

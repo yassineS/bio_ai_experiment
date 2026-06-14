@@ -110,20 +110,27 @@ warrant a closer look:_
 
 #### mosdepth-overlap-pair-detection
 
-- **mosdepth overlap-pair detection** — upstream subtracts one copy of
-  depth where the two ends of a mate-paired fragment overlap on the
-  reference, so a 80bp read pair with a 100bp insert contributes depth
-  1 to the overlapped region (not depth 2). Our v1 engine doesn't
-  implement this pairing: every aligned base of every read contributes
-  to depth. The net effect is that our default-mode output matches
-  upstream's `--fast-mode` output rather than upstream's default
-  output. This is **NOT an upstream bug** — it's a feature gap in our
-  port — but it lives here because every affected parity test cites
-  this entry from a `t.Skip("known deviation, see
-  docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")`.
+- **mosdepth overlap-pair detection** — RESOLVED (no longer a gap).
+  Upstream subtracts one copy of depth where the two ends of a
+  mate-paired fragment overlap on the reference, so an 80bp read pair
+  with a 100bp insert contributes depth 1 to the overlapped region (not
+  depth 2). This was previously unimplemented in the port (default-mode
+  output matched upstream's `--fast-mode` instead). It is now a faithful
+  port of upstream's default-mode `coverage()` loop: a read-name-keyed
+  `seen` table pairs mates as they stream past in coordinate order, and
+  `addOverlapCorrection` (a port of upstream's `gen_start_ends` +
+  `pair_sort` overlap walk, including the single-CIGAR-op fast path)
+  subtracts exactly one copy of every doubly-covered span. See
+  `addRecords` / `genStartEnds` / `addOverlapCorrection` in
+  `tools/mosdepth/pkg/mosdepth/coverage.go`.
 
-  Disposition: **track-only** until we add a read-name-keyed pairing
-  pass. Five mosdepth parity tests reference this anchor.
+  Disposition: **DONE**. All previously-skipped default-mode parity
+  tests (`TestParity_OverlapM_DefaultPerBase`,
+  `TestParity_OverlapM_SummaryMT`, `TestParity_ThresholdByBED`,
+  `TestParity_TrackHeader`, `TestParity_BigWindow`,
+  `TestParity_MAPQFilter`, `TestParity_FlagExclude`) now assert
+  byte-for-byte against upstream's functional-tests.sh values, with no
+  `t.Skip`.
 
 - **bedtools `groupby` empty-group handling** (when we get to porting
   it) — Aaron Quinlan has acknowledged upstream emits a blank line on
