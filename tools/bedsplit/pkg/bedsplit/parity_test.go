@@ -48,20 +48,15 @@ _tmp.00009.bed	9943539	200
 _tmp.00010.bed	9943531	200
 `
 
+// loadParityRandData reads the upstream split fixture, vendored verbatim from
+// reference_code/bedtools/test/split/randData.bed (10,000 chrX intervals).
 func loadParityRandData(t *testing.T) []byte {
 	t.Helper()
-	candidates := []string{
-		filepath.Join("..", "..", "testdata", "parity", "randData.bed"),
-		filepath.Join("..", "..", "..", "..", "reference_code", "bedtools", "test", "split", "randData.bed"),
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "parity", "randData.bed"))
+	if err != nil {
+		t.Fatalf("read vendored randData.bed: %v", err)
 	}
-	for _, p := range candidates {
-		data, err := os.ReadFile(p)
-		if err == nil {
-			return data
-		}
-	}
-	t.Skip("upstream split test data not available")
-	return nil
+	return data
 }
 
 func runSplitForParity(t *testing.T, data []byte, n int, alg Algorithm) string {
@@ -106,11 +101,9 @@ func TestParity_Size_N50(t *testing.T) {
 	headLines := strings.SplitN(out, "\n", 11)
 	got := strings.Join(headLines[:10], "\n") + "\n"
 	if got != expSizeHead {
-		// Size mode is sensitive to the exact LPT tie-breaking strategy
-		// upstream uses; we use stable-by-id, which may differ. Document
-		// any discrepancy as a known difference rather than failing hard
-		// — but only skip if every line individually has a different total
-		// (genuine algorithmic delta, not a corner case).
-		t.Skipf("size n=50 differs from upstream LPT tie-breaking; got:\n%s\nwant:\n%s", got, expSizeHead)
+		// Size mode uses the same LPT (longest-processing-time) balancing and
+		// tie-breaking as upstream, so the head must match byte-for-byte
+		// against the golden in test-split.sh (split.01.size).
+		t.Errorf("size n=50 mismatch.\ngot:\n%s\nwant:\n%s", got, expSizeHead)
 	}
 }

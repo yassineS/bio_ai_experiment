@@ -26,9 +26,10 @@ Description:
 
 Options:
   -i, --input FILE        Input BED file (default: stdin, '-' for stdin)
-      --ibam FILE         Input BAM/SAM file; the genome is taken from its header
-                          (no -g needed). Each alignment covers its reference
-                          span, or its CIGAR blocks under --split.
+      --ibam FILE         Input BAM/SAM/CRAM file; the genome is taken from its
+                          header (no -g needed). Each alignment covers its
+                          reference span, or its CIGAR blocks under --split.
+  -T, --reference FILE    Reference FASTA for decoding a CRAM --ibam input
   -g, --genome FILE       Chromosome sizes file (chrom<TAB>size per line; required
                           unless --ibam)
       --output FILE       Output file (default: stdout)
@@ -79,6 +80,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 	var (
 		inputFile  string
 		ibamFile   string
+		referenceF string
 		genomeFile string
 		outputFile string
 
@@ -103,7 +105,8 @@ func run(argv []string, stdout, stderr *os.File) error {
 	)
 
 	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input BED file (default: stdin)")
-	cliflag.StringVar(fs, &ibamFile, "ibam", "input-bam", "", "Input BAM/SAM file; genome is taken from its header")
+	cliflag.StringVar(fs, &ibamFile, "ibam", "input-bam", "", "Input BAM/SAM/CRAM file; genome is taken from its header")
+	cliflag.StringVar(fs, &referenceF, "T", "reference", "", "Reference FASTA for decoding a CRAM --ibam input")
 	cliflag.StringVar(fs, &genomeFile, "g", "genome", "", "Chromosome sizes file (required unless -ibam)")
 	cliflag.StringVar(fs, &outputFile, "", "output", "", "Output file (default: stdout)")
 
@@ -192,6 +195,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		FragmentSize:   fragSize,
 		TrackLine:      trackLine,
 		TrackOpts:      trackOpts,
+		CRAMReference:  referenceF,
 	}
 	if (pairedCov || fragSize > 0) && ibamFile == "" {
 		return fmt.Errorf("-pc and -fs require BAM input (--ibam)")

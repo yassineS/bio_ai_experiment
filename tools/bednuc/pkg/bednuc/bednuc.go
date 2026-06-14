@@ -23,18 +23,23 @@
 // orientation). The `-C` flag toggles case-insensitive pattern matching
 // (upstream default is case-sensitive — counter to the option's mnemonic).
 //
-// The `-fullHeader` flag tells the FASTA index to look up contigs by the
-// raw header (including whitespace). Our `pkg/htsgo/fasta` index
-// always uses the first whitespace-delimited token, so when `-fullHeader`
-// is set we additionally consult a "full header" name map built lazily on
-// the fly.
+// The `-fullHeader` flag tells the FASTA index to look up contigs by the raw
+// header line (including whitespace) rather than the first whitespace-delimited
+// token. Upstream wires this into htslib's FASTA index build, but the htslib
+// shipped with bedtools always names `.fai` entries by the first token — so a
+// `.fai` built with or without `-fullHeader` is byte-identical, and a BED whose
+// chrom is a full multi-token header is simply not found (upstream then reports
+// "Feature (... ) beyond the length of ... size (0 bp). Skipping." and emits no
+// row). We reproduce that observable behaviour: with `-fullHeader` set, a chrom
+// is matched verbatim against the first-token index, so single-token names work
+// exactly as in the default mode and multi-token names resolve to nothing. See
+// TestParity_Nuc_FullHeader and the discussion in bednuc's PARITY notes.
 package bednuc
 
 import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -294,17 +299,6 @@ func Run(bedR io.Reader, fastaPath string, out io.Writer, warn io.Writer, opts O
 	}
 	defer ra.Close()
 
-	// If FullHeader is requested, build a fallback map from raw-header
-	// (everything after `>`) to the canonical first-token name. This lets
-	// users pass `chr1 something` and still match a contig indexed as
-	// `chr1` (upstream's behaviour pivots on whether the FASTA index used
-	// the full header at indexing time; we deduplicate at lookup time so
-	// the common case still works).
-	var fullHeaderMap map[string]string
-	if opts.FullHeader {
-		fullHeaderMap = buildFullHeaderMap(fastaPath, ra)
-	}
-
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
 
@@ -344,17 +338,20 @@ func Run(bedR io.Reader, fastaPath string, out io.Writer, warn io.Writer, opts O
 			headerWritten = true
 		}
 
-		// Resolve contig (FullHeader fallback).
+		// Resolve the contig. Both default and -fullHeader modes key the
+		// FASTA index on the first whitespace-delimited token (matching the
+		// .fai htslib builds), so the chrom is looked up verbatim: a
+		// multi-token name under -fullHeader is simply not found, exactly as
+		// upstream (which then reports it as a zero-length feature below).
 		resolved := chrom
-		if opts.FullHeader && fullHeaderMap != nil {
-			if alias, ok := fullHeaderMap[chrom]; ok {
-				resolved = alias
-			}
-		}
 		seqLength := ra.Length(resolved)
 		if seqLength < 0 {
+			// Upstream's FastaReference::sequenceLength returns 0 for an
+			// unknown contig, so the not-found path is reported as a
+			// "beyond the length ... size (0 bp)" skip rather than a distinct
+			// "not found" message.
 			if warn != nil {
-				fmt.Fprintf(warn, "WARNING. chromosome (%s) was not found in the FASTA file. Skipping.\n", chrom)
+				fmt.Fprintf(warn, "Feature (%s:%d-%d) beyond the length of %s size (0 bp).  Skipping.\n", chrom, start, end, chrom)
 			}
 			continue
 		}
@@ -365,8 +362,10 @@ func Run(bedR io.Reader, fastaPath string, out io.Writer, warn io.Writer, opts O
 			continue
 		}
 		if int64(end) > seqLength {
+			// Matches upstream nucBed.cpp: 0-based start/end, two spaces before
+			// "Skipping.".
 			if warn != nil {
-				fmt.Fprintf(warn, "Feature (%s:%d-%d) beyond the length of %s size (%d bp). Skipping.\n", chrom, start, end, chrom, seqLength)
+				fmt.Fprintf(warn, "Feature (%s:%d-%d) beyond the length of %s size (%d bp).  Skipping.\n", chrom, start, end, chrom, seqLength)
 			}
 			continue
 		}
@@ -388,39 +387,4 @@ func Run(bedR io.Reader, fastaPath string, out io.Writer, warn io.Writer, opts O
 		return written, err
 	}
 	return written, nil
-}
-
-// buildFullHeaderMap walks the FASTA once, harvesting each `>...` header
-// and mapping the full-header text (including spaces/tabs) to the
-// first-token contig name that the index keys on. Returns nil on any I/O
-// error — `-fullHeader` is best-effort.
-func buildFullHeaderMap(path string, ra *fasta.RandomAccess) map[string]string {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	known := make(map[string]bool)
-	for _, n := range ra.Index().Names() {
-		known[n] = true
-	}
-	out := make(map[string]string)
-	br := bufio.NewScanner(f)
-	br.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for br.Scan() {
-		line := br.Text()
-		if len(line) == 0 || line[0] != '>' {
-			continue
-		}
-		full := strings.TrimSpace(line[1:])
-		first := full
-		if i := strings.IndexAny(full, " \t"); i >= 0 {
-			first = full[:i]
-		}
-		if !known[first] {
-			continue
-		}
-		out[full] = first
-	}
-	return out
 }

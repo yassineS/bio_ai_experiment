@@ -197,30 +197,58 @@ func TestRun_SkipsMissingAndOOB(t *testing.T) {
 	}
 }
 
-// TestRun_FullHeader resolves a BED whose chrom column contains spaces
-// against a FASTA whose '>' line is `>chr1 extra info`. Without
-// -fullHeader the lookup misses the contig (the FAI keys on first
-// whitespace token); with -fullHeader, our fallback map kicks in.
+// TestRun_FullHeader documents the upstream `-fullHeader` behaviour. The htslib
+// shipped with bedtools builds the `.fai` on the first whitespace token even
+// with `-fullHeader`, so a BED whose chrom is the *full* multi-token header
+// (`chr1 extra info`) is not found and produces no data row — upstream skips it
+// with a "size (0 bp)" warning. A first-token chrom (`chr1`) still resolves,
+// exactly as in the default mode.
 func TestRun_FullHeader(t *testing.T) {
 	dir := t.TempDir()
-	// Note: well-formed FASTA so BuildIndex finds the contig.
 	fasta := ">chr1 extra info\nACGT\n"
-	bed := "chr1 extra info\t0\t4\n"
 	faPath := writeTempFile(t, dir, "ref.fa", fasta)
-	bedPath := writeTempFile(t, dir, "in.bed", bed)
-	bedR, err := os.Open(bedPath)
-	if err != nil {
-		t.Fatalf("open bed: %v", err)
+
+	// Full multi-token header: not found, no data row, "size (0 bp)" skip.
+	full := runFullHeader(t, faPath, "chr1 extra info\t0\t4\n")
+	if dataRows(full.out) != 0 {
+		t.Errorf("full-token chrom should yield no data row, got:\n%s", full.out)
 	}
-	defer bedR.Close()
+	if !strings.Contains(full.warn, "beyond the length") || !strings.Contains(full.warn, "0 bp") {
+		t.Errorf("expected a size-0 skip warning, got: %q", full.warn)
+	}
+
+	// First token: resolves exactly as default mode (the .fai keys on `chr1`).
+	first := runFullHeader(t, faPath, "chr1\t0\t4\n")
+	if dataRows(first.out) != 1 {
+		t.Errorf("first-token chrom should resolve to 1 data row, got:\n%s", first.out)
+	}
+	if !strings.Contains(first.out, "\t1\t1\t1\t1\t0\t0\t4") {
+		t.Errorf("unexpected counts for chr1:\n%s", first.out)
+	}
+}
+
+type fullHeaderResult struct{ out, warn string }
+
+// runFullHeader runs bednuc with -fullHeader over an inline BED against faPath.
+func runFullHeader(t *testing.T, faPath, bed string) fullHeaderResult {
+	t.Helper()
 	var out, warn bytes.Buffer
-	if _, err := Run(bedR, faPath, &out, &warn, Options{FullHeader: true}); err != nil {
+	if _, err := Run(strings.NewReader(bed), faPath, &out, &warn, Options{FullHeader: true}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(out.String(), "ACGT\t0\t4") &&
-		!strings.Contains(out.String(), "\t1\t1\t1\t1\t0\t0\t4") {
-		t.Errorf("expected resolved fullHeader row, got:\n%s\nwarn: %s", out.String(), warn.String())
+	return fullHeaderResult{out: out.String(), warn: warn.String()}
+}
+
+// dataRows counts non-header, non-blank output lines.
+func dataRows(out string) int {
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		n++
 	}
+	return n
 }
 
 // TestFormatHeader_PrintSeqAndPattern verifies column order for combined opts.

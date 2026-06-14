@@ -80,12 +80,27 @@ func TestParity_Nuc_Case3_PatternCase(t *testing.T) {
 	}
 }
 
-// Skipped: -fullHeader — our index always keys on the first whitespace
-// token, and a best-effort fallback is built in Run. Exercising it would
-// require a FASTA with whitespace in the header AND a BED keyed by that
-// full header; upstream's `-fullHeader` semantics flip whether the index
-// is built on the full header at indexing time, which we don't expose.
-// Documented option-tail gap in PARITY_VALIDATION.md.
+// TestParity_Nuc_FullHeader asserts `-fullHeader` byte-for-byte against the
+// upstream `bedtools nuc -fullHeader` golden (fullheader.{fa,bed}). The FASTA
+// has a space in the first header (`>chr1 some description`); the BED mixes
+// first-token chroms (chr1, chr2 — which resolve) with the full multi-token
+// header (which upstream cannot find because the htslib it ships builds the
+// `.fai` on the first whitespace token regardless of -fullHeader, so it is
+// skipped with a "size (0 bp)" warning). The stdout TSV and the stderr warning
+// are both checked.
 func TestParity_Nuc_FullHeader(t *testing.T) {
-	t.Skip("-fullHeader: index-time semantics differ; tracked in PARITY_VALIDATION.md")
+	faPath := filepath.Join("..", "..", "testdata", "parity", "fullheader.fa")
+	bed := readFile(t, "fullheader.bed")
+	var out, warn bytes.Buffer
+	if _, err := Run(bytes.NewReader(bed), faPath, &out, &warn, Options{FullHeader: true}); err != nil {
+		t.Fatalf("Run failed: %v\nwarn: %s", err, warn.String())
+	}
+	want := readFile(t, "fullheader.expected.txt")
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Fatalf("stdout mismatch.\nwant:\n%s\ngot:\n%s", want, out.Bytes())
+	}
+	const wantWarn = "Feature (chr1 some description:0-4) beyond the length of chr1 some description size (0 bp).  Skipping.\n"
+	if warn.String() != wantWarn {
+		t.Fatalf("stderr mismatch.\nwant: %q\ngot:  %q", wantWarn, warn.String())
+	}
 }
