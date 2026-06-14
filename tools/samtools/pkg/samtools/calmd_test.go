@@ -203,14 +203,73 @@ r_stale	0	chr1	1	60	10M	*	0	0	ACGTACGTAC	IIIIIIIIII	MD:Z:5A4	NM:i:99
 	}
 }
 
-// TestParity_Calmd_SkipUpstream marks the upstream `samtools calmd -uAr
-// mpileup.1.sam mpileup.ref.fa` regression case as a deferred parity test:
-// upstream emits BGZF-compressed BAM. We can't byte-diff because the BGZF
-// EOF block / deflate level differs by libdeflate version. Logical parity
-// (MD + NM correctness on the same input) is exercised in the table tests
-// above with hand-computed expectations.
+// TestParity_Calmd_UpstreamCorpus is the LIVE parity gate for `samtools
+// calmd`. Upstream's default output is BGZF-compressed BAM, which cannot be
+// byte-identical to ours without upstream's libdeflate (a forbidden dep) — so
+// instead BOTH sides emit plain SAM text (upstream stays in SAM mode when
+// given no -b/-u), and the streams are compared BYTE-FOR-BYTE modulo the @PG
+// line. This is strictly stronger than a decoded-tag comparison: it pins the
+// recomputed NM:i and MD:Z values AND their exact aux-list ordering (upstream
+// bam_md.c removes a differing MD/NM and re-appends it at the end, leaving an
+// unchanged tag in place — placement our port now reproduces). Per the
+// project rules the upstream binary is built on demand; a build failure is
+// fatal, never a skip.
 func TestParity_Calmd_UpstreamCorpus(t *testing.T) {
-	t.Skip("BGZF byte-identical output requires upstream's libdeflate; logical MD/NM parity covered by TestCalmd_BasicMDNM; tracked in docs/PARITY_ROADMAP.md#samtools")
+	bin := upstreamSamtools(t)
+
+	cases := []struct {
+		name      string
+		flags     []string
+		sam, ref  string
+		goOptions CalmdOptions
+	}{
+		{
+			name: "basic_default",
+			sam:  parityPath(t, "calmd/basic.sam"), ref: parityPath(t, "calmd/ref.fa"),
+		},
+		{
+			name: "basic_useequal_-e", flags: []string{"-e"},
+			sam: parityPath(t, "calmd/basic.sam"), ref: parityPath(t, "calmd/ref.fa"),
+			goOptions: CalmdOptions{UseEqual: true},
+		},
+		{
+			name: "realn01_default",
+			sam:  parityPath(t, "calmd/realn01.sam"), ref: parityPath(t, "calmd/realn01.fa"),
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Upstream → plain SAM on stdout.
+			args := append([]string{"calmd"}, c.flags...)
+			args = append(args, c.sam, c.ref)
+			cmd := exec.Command(bin, args...)
+			var upOut, upErr bytes.Buffer
+			cmd.Stdout = &upOut
+			cmd.Stderr = &upErr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("upstream samtools %v: %v\n%s", args, err, upErr.String())
+			}
+
+			// Our port → plain SAM into a buffer.
+			f, err := os.Open(c.sam)
+			if err != nil {
+				t.Fatalf("open %s: %v", c.sam, err)
+			}
+			defer f.Close()
+			var got, warn bytes.Buffer
+			if err := Calmd(f, &got, c.ref, c.goOptions, &warn); err != nil {
+				t.Fatalf("Calmd: %v", err)
+			}
+
+			want := dropPGLines(upOut.Bytes())
+			have := dropPGLines(got.Bytes())
+			if have != want {
+				t.Fatalf("calmd %s differs from upstream (@PG excluded):\n--- ours ---\n%s\n--- upstream ---\n%s",
+					c.name, have, want)
+			}
+		})
+	}
 }
 
 // TestCalmd_BinQual verifies the -q flag bins base qualities: every value

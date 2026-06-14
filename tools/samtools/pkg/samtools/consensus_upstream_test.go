@@ -275,12 +275,11 @@ func upstreamSamtoolsConsensusIndel(t *testing.T) {
 	}
 }
 
-// TestConsensus_IndelUpstreamParity runs the live indel-parity sweep. It is
-// skipped only in -short mode (which omits the expensive upstream build).
+// TestConsensus_IndelUpstreamParity runs the live indel-parity sweep
+// unconditionally: the vendored upstream samtools binary is built on
+// demand (memoised across the package) and a build failure is fatal,
+// never a skip — per the project's testing rules.
 func TestConsensus_IndelUpstreamParity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live upstream build/parity test in -short mode")
-	}
 	upstreamSamtoolsConsensusIndel(t)
 }
 
@@ -468,12 +467,10 @@ func upstreamSamtoolsConsensusAll(t *testing.T) {
 }
 
 // TestConsensus_AllPositionsUpstreamParity runs the live -a/--all-positions
-// pileup placeholder-row parity sweep. It is skipped only in -short mode
-// (which omits the expensive upstream build).
+// pileup placeholder-row parity sweep unconditionally: the vendored upstream
+// samtools binary is built on demand (memoised across the package) and a
+// build failure is fatal, never a skip — per the project's testing rules.
 func TestConsensus_AllPositionsUpstreamParity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live upstream build/parity test in -short mode")
-	}
 	upstreamSamtoolsConsensusAll(t)
 }
 
@@ -527,9 +524,6 @@ r4	0	chr1	1	60	3M	*	0	0	CGC	III
 // produced live and compared directly. If the upstream binary cannot be
 // built, the test fails hard (it never skips), per the project rules.
 func TestConsensus_HetOnlyUpstreamBug(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live upstream build/parity test in -short mode")
-	}
 	bin := upstreamSamtoolsBinary(t)
 
 	// Write the fixture to a tmp SAM file for the upstream binary.

@@ -2,6 +2,9 @@ package samtools
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,9 +72,12 @@ func TestImport_SingleUnpaired(t *testing.T) {
 
 // TestImport_InterleavedSingleFile verifies the -s shape: a single file
 // with /1 /2 suffixes that's reinterpreted as interleaved paired data.
-// Each /1 record gets FPAIRED|FREAD1, each /2 gets FPAIRED|FREAD2; FUNMAP
-// is always set, but FMUNMAP is NOT (upstream only sets it when the actual
-// mate file is present).
+// Matching upstream (htslib's FASTQ reader, sam.c fastq_parse1), every
+// record whose name ends in /1 or /2 gets FUNMAP|FMUNMAP|FPAIRED plus
+// FREAD1 or FREAD2 — the FMUNMAP bit is set from the suffix alone, exactly
+// as the live `samtools import -s` binary does (flags 77 / 141). A prior
+// version of this test asserted FMUNMAP was absent, which diverged from
+// upstream; that was a port bug, now fixed in fastq2bam.go.
 func TestImport_InterleavedSingleFile(t *testing.T) {
 	var buf bytes.Buffer
 	if _, err := FastqImportFiles(nil, &buf, FastqImportOptions{
@@ -85,8 +91,8 @@ func TestImport_InterleavedSingleFile(t *testing.T) {
 	if len(recs) != 4 {
 		t.Fatalf("got %d records, want 4", len(recs))
 	}
-	r1Flag := uint16(sam.FlagUnmapped | sam.FlagPaired | sam.FlagRead1)
-	r2Flag := uint16(sam.FlagUnmapped | sam.FlagPaired | sam.FlagRead2)
+	r1Flag := uint16(sam.FlagUnmapped | sam.FlagMateUnmapped | sam.FlagPaired | sam.FlagRead1)
+	r2Flag := uint16(sam.FlagUnmapped | sam.FlagMateUnmapped | sam.FlagPaired | sam.FlagRead2)
 	wantFlags := []uint16{r1Flag, r2Flag, r1Flag, r2Flag}
 	for i, rec := range recs {
 		if rec.Flag != wantFlags[i] {
@@ -377,26 +383,138 @@ func TestImport_HeaderHasHDLine(t *testing.T) {
 }
 
 // TestImport_MismatchedPairLengths verifies that an unequal number of
-// records in R1 / R2 returns an error mentioning both filenames.
+// records in R1 / R2 returns an error mentioning both filenames. The
+// fixtures are written into a per-test temp dir so the geometry (R1 has
+// three records, R2 has two) is exactly controlled.
 func TestImport_MismatchedPairLengths(t *testing.T) {
-	// Construct a R1 with three records and an R2 with two records.
-	r1Path := parityPath(t, "import/r1.fq")
-	// r1.fq has 2 records; r2.fq has 2 records — pad r1 in-memory.
-	// We can't easily reach in-memory, so simulate by reusing r1.fq for
-	// both with a deliberately-truncated mate. We instead use single.fq
-	// (2 records) and a longer single via concat.
-	// Skip if the fixture geometry doesn't permit; we have a fixture-free
-	// equivalent test via a temp file.
-	t.Skip("Fixture for mismatched lengths requires temp files; covered by integration parity work in PARITY_ROADMAP.md#samtools")
-	_ = r1Path
+	dir := t.TempDir()
+	r1Path := filepath.Join(dir, "r1.fq")
+	r2Path := filepath.Join(dir, "r2.fq")
+	r1 := "@a/1\nACGT\n+\nIIII\n@b/1\nACGT\n+\nIIII\n@c/1\nACGT\n+\nIIII\n"
+	r2 := "@a/2\nACGT\n+\nIIII\n@b/2\nACGT\n+\nIIII\n"
+	if err := os.WriteFile(r1Path, []byte(r1), 0o644); err != nil {
+		t.Fatalf("write r1: %v", err)
+	}
+	if err := os.WriteFile(r2Path, []byte(r2), 0o644); err != nil {
+		t.Fatalf("write r2: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, err := FastqImportFiles(nil, &buf, FastqImportOptions{
+		Read1Path: r1Path,
+		Read2Path: r2Path,
+		OutputBAM: false,
+	})
+	if err == nil {
+		t.Fatalf("expected an error for mismatched pair lengths, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, r1Path) || !strings.Contains(msg, r2Path) {
+		t.Errorf("error %q does not mention both filenames %q and %q", msg, r1Path, r2Path)
+	}
+	if !strings.Contains(msg, "differing number of records") {
+		t.Errorf("error %q missing 'differing number of records' detail", msg)
+	}
 }
 
-// TestParity_Import_UpstreamCorpus marks the upstream `samtools import`
-// regression test as a deferred parity gate. The upstream tests
-// pipe through `samtools fastq` to round-trip, which we don't byte-diff
-// against; logical parity is covered by the table tests in this file.
+// TestParity_Import_UpstreamCorpus is the LIVE parity gate for `samtools
+// import`. For each input shape it runs the upstream binary with `-O sam`
+// (so the comparison is plain SAM text, sidestepping the BGZF byte-identity
+// problem entirely) and our FastqImportFiles with OutputBAM=false, then
+// asserts the two SAM streams are equal MODULO the @PG line. The @PG line
+// is the only legitimately non-deterministic difference: it embeds the
+// upstream version string and the verbatim argv (with absolute fixture
+// paths), which our port deliberately does not inject. Every other byte —
+// the @HD line, the @CO "Reverse with:" line, the @RG line (where present),
+// and all record fields including FLAG, SEQ, QUAL and aux tags — must match
+// the upstream binary exactly. Per the project rules the upstream binary is
+// built on demand and a build failure is fatal, never a skip.
 func TestParity_Import_UpstreamCorpus(t *testing.T) {
-	t.Skip("upstream tests round-trip through samtools fastq with BGZF outputs; logical parity covered by TestImport_PairedR1R2 / TestImport_InterleavedSingleFile / etc; tracked in docs/PARITY_ROADMAP.md#samtools")
+	bin := upstreamSamtools(t)
+
+	cases := []struct {
+		name string
+		// upArgs are the flags passed to the upstream binary, in addition
+		// to `import -O sam`. The trailing -o is appended by the runner.
+		upArgs []string
+		// opts mirrors upArgs for the Go FastqImportFiles entry point.
+		opts FastqImportOptions
+	}{
+		{
+			name:   "unpaired_-0",
+			upArgs: []string{"-0", parityPath(t, "import/single.fq")},
+			opts:   FastqImportOptions{UnpairedPath: parityPath(t, "import/single.fq"), StripPairSuffix: true},
+		},
+		{
+			name:   "paired_-1_-2",
+			upArgs: []string{"-1", parityPath(t, "import/r1.fq"), "-2", parityPath(t, "import/r2.fq")},
+			opts: FastqImportOptions{
+				Read1Path: parityPath(t, "import/r1.fq"), Read2Path: parityPath(t, "import/r2.fq"),
+				StripPairSuffix: true,
+			},
+		},
+		{
+			name:   "interleaved_-s",
+			upArgs: []string{"-s", parityPath(t, "import/interleaved.fq")},
+			opts:   FastqImportOptions{SinglePath: parityPath(t, "import/interleaved.fq"), StripPairSuffix: true},
+		},
+		{
+			name:   "aux_star_-T",
+			upArgs: []string{"-T", "*", "-0", parityPath(t, "import/aux.fq")},
+			opts: FastqImportOptions{
+				UnpairedPath: parityPath(t, "import/aux.fq"), AuxTags: "*", StripPairSuffix: true,
+			},
+		},
+		{
+			name:   "readgroup_-R",
+			upArgs: []string{"-R", "rgid", "-0", parityPath(t, "import/single.fq")},
+			opts: FastqImportOptions{
+				UnpairedPath: parityPath(t, "import/single.fq"), ReadGroup: "rgid", StripPairSuffix: true,
+			},
+		},
+		{
+			name:   "order_int_--order",
+			upArgs: []string{"--order", "oi", "-0", parityPath(t, "import/single.fq")},
+			opts: FastqImportOptions{
+				UnpairedPath: parityPath(t, "import/single.fq"), OrderTag: "oi", StripPairSuffix: true,
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Upstream → a temp .sam file (CLI infers SAM from -O sam).
+			upPath := filepath.Join(t.TempDir(), "up.sam")
+			args := append([]string{"import", "-O", "sam"}, c.upArgs...)
+			args = append(args, "-o", upPath)
+			cmd := exec.Command(bin, args...)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("upstream samtools %v: %v\n%s", args, err, stderr.String())
+			}
+			upSAM, err := os.ReadFile(upPath)
+			if err != nil {
+				t.Fatalf("read upstream SAM: %v", err)
+			}
+
+			// Our port → an in-memory SAM stream.
+			var got bytes.Buffer
+			if _, err := FastqImportFiles(nil, &got, c.opts); err != nil {
+				t.Fatalf("FastqImportFiles: %v", err)
+			}
+
+			// dropPGLines (subfeatures_live_oracle_test.go) strips the @PG
+			// header line — the only legitimately non-deterministic
+			// difference (upstream version string + verbatim argv).
+			want := dropPGLines(upSAM)
+			have := dropPGLines(got.Bytes())
+			if have != want {
+				t.Fatalf("import %s differs from upstream (@PG excluded):\n--- ours ---\n%s\n--- upstream ---\n%s",
+					c.name, have, want)
+			}
+		})
+	}
 }
 
 // readSAMRecords parses a SAM-text blob into []*sam.Record. Header lines

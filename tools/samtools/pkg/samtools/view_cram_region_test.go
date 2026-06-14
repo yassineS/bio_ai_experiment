@@ -151,9 +151,6 @@ func stripMDNM(line string) string {
 // single-container region, a region spanning multiple containers, and the
 // whole reference. Per the project rules it never skips on a build failure.
 func TestViewCRAMIndexedRegionUpstreamParity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live upstream build/parity test in -short mode")
-	}
 	bin := upstreamSamtoolsBinary(t)
 	cramPath, _, refPath := cramRegionFixture(t)
 
@@ -199,9 +196,6 @@ func TestViewCRAMIndexedRegionUpstreamParity(t *testing.T) {
 // (Upstream samtools cannot itself answer a region query on an unindexed
 // CRAM, so the indexed result is the oracle here.)
 func TestViewCRAMNoIndexFallback(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live upstream build/parity test in -short mode")
-	}
 	cramPath, craiPath, refPath := cramRegionFixture(t)
 	region := "17:1000-2000"
 
@@ -250,9 +244,6 @@ func TestViewCRAMNoIndexFallback(t *testing.T) {
 // handle, and seeks to the relevant containers — never reading the whole
 // object. The remote result must equal the local result.
 func TestViewCRAMRemoteIndexedQuery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live upstream build/parity test in -short mode")
-	}
 	cramPath, craiPath, refPath := cramRegionFixture(t)
 	cramBytes, err := os.ReadFile(cramPath)
 	if err != nil {
@@ -308,9 +299,6 @@ func TestViewCRAMRemoteIndexedQuery(t *testing.T) {
 // exercises every container; the sub-region exercises the indexed seek path.
 // Per the project rules it never skips on a build failure.
 func TestViewCRAMMDNMUpstreamParity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live upstream build/parity test in -short mode")
-	}
 	bin := upstreamSamtoolsBinary(t)
 	cramPath, _, refPath := cramRegionFixture(t)
 

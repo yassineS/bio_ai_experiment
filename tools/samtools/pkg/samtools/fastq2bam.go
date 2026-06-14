@@ -290,23 +290,32 @@ func walkSingle(path string, e *recordEmitter, mode fqSingleMode) (int, error) {
 		if ferr != nil {
 			return n, fmt.Errorf("samtools import: read %s: %w", path, ferr)
 		}
-		flag := uint16(sam.FlagUnmapped)
+		// Layer 1 — the htslib FASTQ reader flags (htslib sam.c
+		// fastq_parse1): a read name ending in `/<digit>` is treated as
+		// mate-of-a-pair, so it gets FUNMAP|FMUNMAP|FPAIRED plus FREAD1
+		// (`/1`), FREAD2 (`/2`), or both (any other digit). A name without
+		// the suffix is just FUNMAP. These flags are applied uniformly for
+		// every input shape because upstream funnels all of -0/-s/-1/-2
+		// through the same reader; the suffix is then stripped (see emit).
+		flag := pairSuffixFlag(rec.name)
+		// Layer 2 — the bam_import.c per-file-role flags
+		// (bam_import.c:349). FQ_R0 (-0) and FQ_SINGLE (-s) add nothing
+		// beyond the reader's suffix flags. FQ_R1 (-1) force-claims FREAD1
+		// (when neither read bit is set yet) and FPAIRED; FQ_R2 (-2)
+		// force-claims FREAD2 and FPAIRED. The neighbour-driven FMUNMAP that
+		// upstream sets when an R1 is immediately followed by an R2 only
+		// applies when both files are present, which is handled by
+		// walkPaired; a lone -1/-2 here never gains it.
 		switch mode {
-		case fqSingleR0:
-			// just unmapped
+		case fqSingleR0, fqSingleAuto:
+			// reader flags only.
 		case fqSingleR1:
-			flag |= sam.FlagPaired | sam.FlagRead1
+			if flag&(sam.FlagRead1|sam.FlagRead2) == 0 {
+				flag |= sam.FlagRead1
+			}
+			flag |= sam.FlagPaired
 		case fqSingleR2:
 			flag |= sam.FlagPaired | sam.FlagRead2
-		case fqSingleAuto:
-			// Inspect the trailing /1 or /2 — upstream's "single file
-			// interleaved" detection. If neither suffix is present, the
-			// record is left as a plain unpaired unmapped read.
-			if hasPairSuffix(rec.name, '1') {
-				flag |= sam.FlagPaired | sam.FlagRead1
-			} else if hasPairSuffix(rec.name, '2') {
-				flag |= sam.FlagPaired | sam.FlagRead2
-			}
 		}
 		if err := e.emit(rec.name, rec.desc, rec.seq, rec.qual, flag); err != nil {
 			return n, err
@@ -446,23 +455,43 @@ func (fr *fastqLineReader) readLine() (string, error) {
 	return line, nil
 }
 
-// stripPairSuffix drops a trailing "/1" or "/2" from a read name.
+// stripPairSuffix drops a trailing "/<digit>" from a read name, matching the
+// upstream htslib FASTQ reader which strips any `/0`–`/9` mate suffix. The
+// name must be longer than two characters (htslib requires name.l > 2) so a
+// bare "/1" is left untouched.
 func stripPairSuffix(name string) string {
-	if len(name) >= 2 && name[len(name)-2] == '/' {
+	if len(name) > 2 && name[len(name)-2] == '/' {
 		c := name[len(name)-1]
-		if c == '1' || c == '2' {
+		if c >= '0' && c <= '9' {
 			return name[:len(name)-2]
 		}
 	}
 	return name
 }
 
-// hasPairSuffix reports whether name ends in `/c`.
-func hasPairSuffix(name string, c byte) bool {
-	if len(name) >= 2 && name[len(name)-2] == '/' && name[len(name)-1] == c {
-		return true
+// pairSuffixFlag returns the SAM flag bits the upstream htslib FASTQ reader
+// (htslib sam.c fastq_parse1) assigns to a read based solely on its name
+// suffix. A name longer than two characters ending in `/<digit>` is treated
+// as one mate of a pair: it always gets FUNMAP|FMUNMAP|FPAIRED, plus FREAD1
+// for `/1`, FREAD2 for `/2`, or both for any other digit. A name without the
+// suffix gets just FUNMAP.
+func pairSuffixFlag(name string) uint16 {
+	flag := uint16(sam.FlagUnmapped)
+	if len(name) > 2 && name[len(name)-2] == '/' {
+		c := name[len(name)-1]
+		if c >= '0' && c <= '9' {
+			flag |= sam.FlagMateUnmapped | sam.FlagPaired
+			switch c {
+			case '1':
+				flag |= sam.FlagRead1
+			case '2':
+				flag |= sam.FlagRead2
+			default:
+				flag |= sam.FlagRead1 | sam.FlagRead2
+			}
+		}
 	}
-	return false
+	return flag
 }
 
 // rawQualityFromFastq converts an ASCII+33-encoded quality string to raw
