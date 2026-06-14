@@ -47,8 +47,9 @@ When there are no overlapping B records:
 
 ## Deviations from upstream
 
-- BAM/CRAM/VCF/GFF input not supported (BED only). Tracked in
-  `docs/PARITY_ROADMAP.md#bedtools`.
+- GFF input is supported on the `-b` database (auto-detected: 1-based
+  start/end in columns 4/5; `-c` extracts the literal GFF column). BAM/CRAM/VCF
+  input is not yet supported. Tracked in `docs/PARITY_ROADMAP.md#bedtools`.
 - `absmin`, `absmax`, `stdev`, `sstdev`, `cat`, `cat_uniq` not yet
   supported (same gap as `bedmerge` / `bedgroupby` — once they're added to
   `bedmerge.ApplyOp` they will be picked up here automatically).
