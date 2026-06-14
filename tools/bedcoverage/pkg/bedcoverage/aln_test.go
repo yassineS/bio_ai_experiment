@@ -64,7 +64,7 @@ func TestCoverage_BAMQuery(t *testing.T) {
 	// Two B features overlap, covering [0,10)+[20,30) = 20 bp of the 30 bp
 	// read; count 2, covered 20, len 30, fraction 0.6666667. The A columns
 	// are the BED12 echo of the read (block list without a trailing comma).
-	want := "chr1\t0\t30\tq1\t60\t+\t0\t30\t0,0,0\t1\t30\t0\t2\t20\t30\t0.6666667\n"
+	want := "chr1\t0\t30\tq1\t60\t+\t0\t30\t0,0,0\t1\t30,\t0,\t2\t20\t30\t0.6666667\n"
 	if got != want {
 		t.Errorf("BAM -a query:\nwant: %q\ngot:  %q", want, got)
 	}

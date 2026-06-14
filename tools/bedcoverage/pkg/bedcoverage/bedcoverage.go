@@ -199,9 +199,16 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 			depths := perBaseDepth(recA, bMatches)
 			val, ok := depthOp(opts.Mode, depths)
 			var s string
-			if !ok {
+			switch {
+			case !ok:
 				s = "."
-			} else {
+			case opts.Mode == ModeMean:
+				// Upstream `bedtools coverage -mean` accumulates the mean as a
+				// 32-bit float and prints it with 7 decimals, so the output
+				// carries float32 rounding noise (e.g. 1.3200001). Reproduce it
+				// by narrowing to float32 before formatting.
+				s = strconv.FormatFloat(float64(float32(val)), 'f', 7, 64)
+			default:
 				s = formatFloatLoose(val)
 			}
 			if err := writeWithExtra(bw, recA, s); err != nil {
@@ -517,8 +524,26 @@ func writeWithExtra(w io.Writer, r *bed.Record, extra ...string) error {
 // so we can append further columns cleanly.
 func recordColumns(r *bed.Record) []string {
 	out := []string{r.Chrom, strconv.Itoa(r.ChromStart), strconv.Itoa(r.ChromEnd)}
+	// A BED12 record (block information present, e.g. from a BED12 file or a
+	// BAM alignment) is echoed as the full 12 columns — including thickStart/
+	// thickEnd/itemRgb even when zero, and block lists with the trailing comma
+	// upstream emits — so a coverage echo matches `bedtools coverage` exactly.
+	if r.BlockCount != 0 || len(r.BlockSizes) > 0 {
+		rgb := r.ItemRGB
+		if rgb == "" {
+			rgb = "0"
+		}
+		out = append(out,
+			r.Name, strconv.Itoa(r.Score), r.Strand,
+			strconv.Itoa(r.ThickStart), strconv.Itoa(r.ThickEnd), rgb,
+			strconv.Itoa(r.BlockCount),
+			joinTrailingComma(r.BlockSizes), joinTrailingComma(r.BlockStarts),
+		)
+		out = append(out, r.ExtraFields...)
+		return out
+	}
 	// The Name/Score/Strand chain only fires once Name is non-empty, matching
-	// the conservative BED12-aware emit logic in pkg/htsgo/bed.
+	// the conservative BED-aware emit logic in pkg/htsgo/bed.
 	if r.Name == "" && r.Score == 0 && r.Strand == "" && len(r.ExtraFields) == 0 {
 		return out
 	}
@@ -535,27 +560,22 @@ func recordColumns(r *bed.Record) []string {
 	if r.ItemRGB != "" {
 		out = append(out, r.ItemRGB)
 	}
-	if r.BlockCount != 0 {
-		out = append(out, strconv.Itoa(r.BlockCount))
-	}
-	if len(r.BlockSizes) > 0 {
-		sizes := make([]string, len(r.BlockSizes))
-		for i, s := range r.BlockSizes {
-			sizes[i] = strconv.Itoa(s)
-		}
-		out = append(out, strings.Join(sizes, ","))
-	}
-	if len(r.BlockStarts) > 0 {
-		starts := make([]string, len(r.BlockStarts))
-		for i, s := range r.BlockStarts {
-			starts[i] = strconv.Itoa(s)
-		}
-		out = append(out, strings.Join(starts, ","))
-	}
 	if len(r.ExtraFields) > 0 {
 		out = append(out, r.ExtraFields...)
 	}
 	return out
+}
+
+// joinTrailingComma renders a block-size/block-start list as
+// "v0,v1,...,vN," — the UCSC BED12 form with a trailing comma that bedtools
+// echoes verbatim.
+func joinTrailingComma(vs []int) string {
+	var sb strings.Builder
+	for _, v := range vs {
+		sb.WriteString(strconv.Itoa(v))
+		sb.WriteByte(',')
+	}
+	return sb.String()
 }
 
 // formatFraction prints the fraction column using 7 fixed decimals, matching

@@ -56,17 +56,17 @@ upstream's `-abam` / `-b <bam>` modes.
 
 ## Deviations from upstream
 
-- BAM/SAM input is supported on both `-a` and `-b` (auto-detected); the
-  `-b <bam>` `-split` cases (upstream coverage.t10–t13) pass byte-for-byte.
-  CRAM input is not yet supported.
+- BAM/SAM input is supported on both `-a` and `-b` (auto-detected). The
+  BAM/BED12 `-a` echo is byte-for-byte with upstream (full 12 columns,
+  trailing-comma block lists — coverage.t1 passes), and the `-b <bam>`
+  `-split` cases (coverage.t10–t13) pass byte-for-byte. CRAM input is not yet
+  supported.
 - A blocked query (`-a`) under `--split` — a BED12 line or a spliced BAM
   alignment — is rejected with a clear error rather than producing a wrong
-  answer. Upstream splits the query into its blocks; that path is not yet
-  ported (upstream coverage.t1's BAM `-a` echo also differs only by a
-  cosmetic trailing comma in the BED12 block lists).
-- `-mean` prints with native float64 precision; upstream uses float32 and
-  emits noise like `1.3200001`. We emit `1.32` instead. Semantic
-  equivalence is covered by unit tests; the byte-parity test is `t.Skip`'d.
+  answer (upstream splits the query into its blocks; that path is not yet
+  ported).
+- `-mean` reproduces upstream's float32-accumulated output (7 decimals,
+  including float32 rounding noise such as `1.3200001`) — coverage.t6 passes.
 - `-sorted` (sorted-stream fast path) is accepted as a no-op since our
   default is already a single-pass interval-tree query.
 

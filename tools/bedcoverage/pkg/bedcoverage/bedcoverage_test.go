@@ -100,7 +100,8 @@ func TestCoverage_MeanMedian(t *testing.T) {
 		mode Mode
 		want string
 	}{
-		{ModeMean, "chr1\t0\t5\t0.8\n"},
+		// -mean prints float32-accumulated values with 7 decimals (upstream parity).
+		{ModeMean, "chr1\t0\t5\t0.8000000\n"},
 		{ModeMedian, "chr1\t0\t5\t1\n"},
 		{ModeMin, "chr1\t0\t5\t0\n"},
 		{ModeMax, "chr1\t0\t5\t2\n"},
@@ -234,7 +235,7 @@ func TestRecordColumns_ExtraFields(t *testing.T) {
 	a := "chr1\t0\t100\tn\t10\t+\t0\t100\t0,0,0\t1\t100,\t0,\textra\n"
 	got := runCoverage(t, a, "", Options{Mode: ModeCounts})
 	// Note: bed.Reader treats the 13th column as an ExtraField.
-	want := "chr1\t0\t100\tn\t10\t+\t0\t100\t0,0,0\t1\t100\t0\textra\t0\n"
+	want := "chr1\t0\t100\tn\t10\t+\t0\t100\t0,0,0\t1\t100,\t0,\textra\t0\n"
 	if got != want {
 		t.Errorf("13-field round-trip:\nwant: %q\ngot:  %q", want, got)
 	}
