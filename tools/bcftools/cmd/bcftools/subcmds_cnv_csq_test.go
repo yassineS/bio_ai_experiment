@@ -139,7 +139,7 @@ func TestCSQRunOutputFormatAndDumpGFF(t *testing.T) {
 	const fixtures = "../../testdata/csq"
 	for _, f := range []string{"csq.vcf", "csq.fa", "csq.gff3"} {
 		if _, err := os.Stat(filepath.Join(fixtures, f)); err != nil {
-			t.Skipf("vendored fixture %s missing: %v", f, err)
+			t.Fatalf("vendored fixture %s missing: %v", f, err)
 		}
 	}
 	dir := t.TempDir()

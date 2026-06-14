@@ -42,13 +42,18 @@ func loadParityInput(t *testing.T) []byte {
 		filepath.Join("..", "..", "testdata", "parity", "in.bed"),
 		filepath.Join("..", "..", "..", "..", "reference_code", "bedtools", "test", "cluster", "in.bed"),
 	}
+	var lastErr error
 	for _, p := range candidates {
 		data, err := os.ReadFile(p)
 		if err == nil {
 			return data
 		}
+		lastErr = err
 	}
-	t.Skip("upstream cluster test data not available")
+	// The first candidate (testdata/parity/in.bed) is a vendored fixture and
+	// must always be present; a missing one is a genuine error, not a reason
+	// to skip silently.
+	t.Fatalf("vendored cluster parity fixture %q unavailable: %v", candidates[0], lastErr)
 	return nil
 }
 

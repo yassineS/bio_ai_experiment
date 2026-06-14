@@ -90,7 +90,7 @@ func TestOpenReaderRemoteCRAM(t *testing.T) {
 	path := filepath.Join(samtoolsTestDir, "dat/test_input_1_a.cram")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Skip("samtools submodule not initialised — CRAM fixture unavailable")
+		t.Fatalf("samtools submodule not checked out; run `git submodule update --init reference_code/samtools` to provide %s: %v", path, err)
 	}
 
 	// Local decode for the expected record set.

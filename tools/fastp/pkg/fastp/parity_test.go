@@ -47,7 +47,6 @@ package fastp
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,32 +56,15 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fastq"
 )
 
-// upstreamBinary returns the absolute path to the upstream fastp binary
-// built under reference_code/fastp. If it does not exist the caller
-// should t.Skip — see ensureUpstream.
-func upstreamBinary(t *testing.T) string {
-	t.Helper()
-	abs, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "fastp", "fastp"))
-	if err != nil {
-		t.Fatalf("resolve upstream binary path: %v", err)
-	}
-	return abs
-}
-
-// ensureUpstream skips the calling test unless the upstream fastp binary
-// is present and executable.
+// ensureUpstream returns the upstream fastp binary, building it from the
+// reference_code/fastp submodule on first use. Per the env-guard policy
+// (PR #294) it t.Fatalf's with an exact init/build hint when the binary
+// cannot be located or built, rather than silently skipping.
 func ensureUpstream(t *testing.T) string {
 	t.Helper()
-	p := upstreamBinary(t)
-	info, err := os.Stat(p)
-	if errors.Is(err, os.ErrNotExist) {
-		t.Skipf("upstream fastp binary not built (%s); run `cd reference_code/fastp && make` to enable parity tests", p)
-	}
+	p, err := upstreamFastp(t)
 	if err != nil {
-		t.Fatalf("stat upstream binary: %v", err)
-	}
-	if info.Mode()&0o111 == 0 {
-		t.Skipf("upstream fastp binary %s is not executable", p)
+		t.Fatalf("upstream fastp binary unavailable; run `git submodule update --init reference_code/fastp && make -C reference_code/fastp`: %v", err)
 	}
 	return p
 }

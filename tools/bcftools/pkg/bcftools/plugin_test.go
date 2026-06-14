@@ -40,12 +40,28 @@ func buildExamplePlugin(t *testing.T, dir, name string) {
 }
 
 // writeScriptPlugin writes a tiny shell-script plugin (a plain `cat` filter)
-// and marks it executable. Skipped implicitly by callers on non-POSIX hosts.
+// and marks it executable. Callers gate on requirePOSIXShell first.
 func writeScriptPlugin(t *testing.T, dir, name, body string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("writing script plugin: %v", err)
+	}
+}
+
+// requirePOSIXShell asserts a POSIX `/bin/sh` is reachable so the
+// shell-script plugin fixtures can run. Per the env-guard policy
+// (PR #294) the absence of the dependency is a loud t.Fatalf rather than
+// a silent skip everywhere a POSIX shell legitimately exists. On Windows
+// — where there is genuinely no `/bin/sh` — this is a true platform
+// guard and is allowed to skip.
+func requirePOSIXShell(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script plugin fixture needs a POSIX shell; not available on windows")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Fatalf("POSIX shell `sh` not found on PATH; the shell-script plugin parity fixtures require it: %v", err)
 	}
 }
 
@@ -89,9 +105,7 @@ func TestRunPluginRoundTrip(t *testing.T) {
 // language (here, a POSIX shell `cat` filter) round-trips identically: this
 // is the language-agnostic guarantee of the subprocess protocol.
 func TestRunPluginScriptPlugin(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script plugin fixture needs a POSIX shell")
-	}
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	writeScriptPlugin(t, dir, "passthru", "#!/bin/sh\nexec cat\n")
 	t.Setenv(pluginEnvVar, dir)
@@ -124,9 +138,7 @@ func TestRunPluginScriptPlugin(t *testing.T) {
 // pipe buffer (64 KiB on Linux) would hang such a rewrite; this test would
 // then time out instead of silently regressing.
 func TestRunPluginLargeInput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script plugin fixture needs a POSIX shell")
-	}
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	// A plain `cat` filter: streams every byte of stdin straight to stdout.
 	writeScriptPlugin(t, dir, "passthru", "#!/bin/sh\nexec cat\n")
@@ -182,9 +194,7 @@ func TestRunPluginMissing(t *testing.T) {
 }
 
 func TestRunPluginNonZeroExit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script plugin fixture needs a POSIX shell")
-	}
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	writeScriptPlugin(t, dir, "boom", "#!/bin/sh\necho 'plugin blew up' >&2\nexit 3\n")
 	t.Setenv(pluginEnvVar, dir)

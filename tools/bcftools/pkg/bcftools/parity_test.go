@@ -174,7 +174,7 @@ func TestParityView_IncludeExpression(t *testing.T) {
 func TestParityView_RegionTBI(t *testing.T) {
 	path := parityPath(t, "basic.vcf.gz")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("fixture missing: %v", err)
+		t.Fatalf("vendored fixture missing: %v", err)
 	}
 	want := readParity(t, "view_region_chr1_100_300.expected.vcf")
 	got := runParityViewFile(t, path, ViewOptions{Regions: []string{"chr1:100-300"}})
@@ -214,7 +214,7 @@ func TestParityView_BCFInput(t *testing.T) {
 func TestParityView_BCFHeader(t *testing.T) {
 	path := parityPath(t, "basic.bcf")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("fixture missing: %v", err)
+		t.Fatalf("vendored fixture missing: %v", err)
 	}
 	got := runParityViewFile(t, path, ViewOptions{HeaderOnly: true})
 	// Drop the column header line (it's identical in both anyway).
@@ -470,7 +470,7 @@ func TestParityQuery_AllInfoLine(t *testing.T) {
 func TestParityIndex_TabixVCFGz(t *testing.T) {
 	src := parityPath(t, "basic.vcf.gz")
 	if _, err := os.Stat(src); err != nil {
-		t.Skipf("fixture missing: %v", err)
+		t.Fatalf("vendored fixture missing: %v", err)
 	}
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "basic.vcf.gz")
@@ -503,7 +503,7 @@ func TestParityIndex_TabixVCFGz(t *testing.T) {
 func TestParityIndex_BinaryMatch(t *testing.T) {
 	src := parityPath(t, "basic.vcf.gz")
 	if _, err := os.Stat(src); err != nil {
-		t.Skipf("fixture missing: %v", err)
+		t.Fatalf("vendored fixture missing: %v", err)
 	}
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "basic.vcf.gz")
@@ -537,7 +537,7 @@ func TestParityIndex_BinaryMatch(t *testing.T) {
 func TestParityIndex_CSIForBCF(t *testing.T) {
 	src := parityPath(t, "basic.bcf")
 	if _, err := os.Stat(src); err != nil {
-		t.Skipf("fixture missing: %v", err)
+		t.Fatalf("vendored fixture missing: %v", err)
 	}
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "basic.bcf")
@@ -572,7 +572,7 @@ func TestParityIndex_CSIForBCF(t *testing.T) {
 func TestParityIndex_NRecsMatchesUpstream(t *testing.T) {
 	path := parityPath(t, "basic.vcf.gz")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("fixture missing: %v", err)
+		t.Fatalf("vendored fixture missing: %v", err)
 	}
 	// Asking for chr1 should yield 4 records (POS=100,200,300,400).
 	got := runParityViewFile(t, path, ViewOptions{Regions: []string{"chr1"}, NoHeader: true})
@@ -739,7 +739,7 @@ func TestParityConcat_UpstreamFixture(t *testing.T) {
 	b := referenceFixture(t, "concat.1.b.vcf")
 	want, err := os.ReadFile(referenceFixturePath(t, "concat.1.vcf.out"))
 	if err != nil {
-		t.Skipf("upstream fixture missing (submodule not initialised): %v", err)
+		t.Fatalf("upstream fixture concat.1.vcf.out missing; run `git submodule update --init --recursive reference_code/htslib reference_code/bcftools`: %v", err)
 	}
 	got := runParityConcatFiles(t, []string{a, b}, ConcatOptions{})
 	equalBytes(t, got, want, "concat upstream concat.1")
@@ -962,9 +962,9 @@ func TestParityNorm_CheckRefError(t *testing.T) {
 // =====================================================================
 
 // referenceFixture reads a file from the bcftools submodule's test/
-// directory at test-time. The function returns the absolute path; tests
-// that depend on the submodule should call referenceFixturePath and skip
-// gracefully when the submodule isn't initialised.
+// directory at test-time. The function returns the absolute path; per the
+// env-guard policy (PR #294) referenceFixturePath t.Fatalf's with an exact
+// init hint when the submodule isn't checked out, rather than skipping.
 func referenceFixture(t *testing.T, name string) string {
 	t.Helper()
 	return referenceFixturePath(t, name)
@@ -977,7 +977,7 @@ func referenceFixturePath(t *testing.T, name string) string {
 		t.Fatalf("abs: %v", err)
 	}
 	if _, err := os.Stat(abs); err != nil {
-		t.Skipf("upstream fixture %s missing: %v", name, err)
+		t.Fatalf("upstream fixture %s missing; run `git submodule update --init --recursive reference_code/htslib reference_code/bcftools`: %v", name, err)
 	}
 	return abs
 }

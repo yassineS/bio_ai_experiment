@@ -26,6 +26,11 @@ import (
 // check so a genuinely offline machine fails with a clear message rather than
 // hanging. This test never silently skips when it can reach the network.
 func TestD4_UpstreamBinaryParity(t *testing.T) {
+	// Platform guard (sanctioned skip): the upstream mosdepth_d4 release
+	// binary is only published for linux/amd64. On that platform the test
+	// runs or t.Fatalf's loudly (see ensureMosdepthD4Binary); on every other
+	// arch there is genuinely no binary to compare against, so a skip is the
+	// only correct disposition.
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skipf("upstream mosdepth_d4 release binary is only published for linux/amd64 (have %s/%s)", runtime.GOOS, runtime.GOARCH)
 	}

@@ -213,6 +213,11 @@ func genProbsForVariant(v *vcf.Variant, tag string) (string, error) {
 	case "GP":
 		return gpToProb3(v)
 	default:
+		// Upstream (vcfconvert.c:vcf_to_gensample) supports only GT, PL and
+		// GP for the .gen file and rejects everything else — including GL,
+		// which the --help text lists but the code never wires up — with the
+		// exact message "todo: --tag %s". We mirror that rejection verbatim so
+		// the behaviour is positive parity rather than a divergent stub.
 		return "", fmt.Errorf("bcftools convert: todo: --tag %s", tag)
 	}
 }
@@ -254,6 +259,11 @@ func gtToProb3(v *vcf.Variant) (string, error) {
 				b.WriteString(" 1 0 0")
 			}
 		default:
+			// Upstream process_gt_to_prob3 (convert.c) only handles haploid
+			// (ploidy 1) and diploid (ploidy 2) genotypes; any other ploidy
+			// aborts with error("FIXME: not ready for ploidy %d\n", j). We
+			// reject the same cases with the same message text so the
+			// behaviour is positive parity, not a port-specific extension.
 			return "", fmt.Errorf("bcftools convert: FIXME: not ready for ploidy %d at %s:%d", len(alleles), v.Chrom, v.Pos)
 		}
 	}
@@ -788,6 +798,8 @@ func normalizeGenTag(tag string) (string, error) {
 	case "GP":
 		return "GP", nil
 	default:
+		// Matches upstream vcfconvert.c, which accepts only GT/PL/GP for the
+		// .gen file and otherwise aborts with "todo: --tag %s".
 		return "", fmt.Errorf("bcftools convert: todo: --tag %s", tag)
 	}
 }
