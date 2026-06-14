@@ -71,11 +71,18 @@ func TestParity_Fisher_T4(t *testing.T) {
 	}
 }
 
-// fisher.t5 — long-file-path test that just checks bedtools can open a deeply
-// nested $TMPDIR path. This is a CLI/filesystem concern, not an algorithm
-// case; skip rather than dragging in a temp-tree fixture.
-func TestParity_Fisher_T5_LongPath(t *testing.T) {
-	t.Skip("upstream t5 only verifies long-filename handling; not an algorithmic parity case")
+// fisher.t5 — GFF query (tumor.gff) vs a BED db (test.bed) over the dm6 fai
+// genome. Upstream's case wraps this in a long-$TMPDIR-path copy of test.bed to
+// exercise filename handling, but the algorithmic content is the GFF-input path
+// (col4-1/col5 coordinate conversion through the shared BedFile parser). Since
+// our port reads from an io.Reader, the long-path wrapper is a no-op; we assert
+// the GFF-vs-BED fisher output byte-for-byte against the upstream binary.
+func TestParity_Fisher_T5_GFFQuery(t *testing.T) {
+	got := runFisherParity(t, "tumor.gff", "test.bed", "dm6.fai", Options{})
+	want := readFisherParity(t, "t5.expected.txt")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // fisher.t6 — issue 954 regression: 5 query intervals across 5 chromosomes,

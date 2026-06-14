@@ -187,8 +187,11 @@ func TestParity_Jaccard_T15_A645vsB645Symmetry(t *testing.T) {
 	}
 }
 
-// jaccard.t16 — long.bed vs short.bed (the giant CSHL test fixture); too
-// large to vendor under testdata/parity for this round.
+// jaccard.t16 — long.bed vs short.bed, byte-for-byte against bedtools v2.31.1.
 func TestParity_Jaccard_T16_LongShort(t *testing.T) {
-	t.Skip("not vendored: long.bed/short.bed are large fixtures we don't ship in the parity testdata")
+	got := runJaccardParity(t, "long.bed", "short.bed", Options{})
+	want := readJaccardParity(t, "t16_long_short.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }

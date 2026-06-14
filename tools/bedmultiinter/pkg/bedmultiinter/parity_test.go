@@ -91,12 +91,8 @@ func TestParity_EmptyWithGenome(t *testing.T) {
 	}
 }
 
-// The upstream `multiinter` test directory does not exist — there's no
-// `reference_code/bedtools/test/multiinter/`. This skip documents that
-// the parity fixtures above are derived from the upstream `--examples`
-// heredoc, not from a shipped test script.
-func TestParity_Skip_NoUpstreamTestSubdir(t *testing.T) {
-	t.Skip("upstream ships no test/multiinter/ subdir; the parity fixtures " +
-		"above are derived from multiintersect_examples() in " +
-		"src/multiIntersectBed/multiIntersectBedMain.cpp.")
-}
+// Note: upstream ships no test/multiinter/ subdir, so the fixtures above are
+// derived from multiintersect_examples() in
+// src/multiIntersectBed/multiIntersectBedMain.cpp. Live byte-for-byte parity
+// against the built upstream binary (including VCF/GFF input) is covered by
+// TestUpstreamParity_* in upstream_parity_test.go.
