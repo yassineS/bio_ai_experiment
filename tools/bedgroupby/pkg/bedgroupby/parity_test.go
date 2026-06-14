@@ -144,7 +144,14 @@ func TestParity_Groupby_T17_BAM(t *testing.T) {
 	}
 }
 
-// groupby.t16 — VCF file as input. Not supported.
+// groupby.t16 — VCF input. Like upstream, bedgroupby treats the VCF as a TSV
+// with VCF columns (CHROM=1, POS=2, ...) and skips the ##/#CHROM header, so
+// grouping by CHROM and counting records yields "chr1 3", matching
+// bedtools v2.31.1.
 func TestParity_Groupby_T16_VCF(t *testing.T) {
-	t.Skip("VCF input is not supported by bedgroupby (treats lines as TSV; column semantics differ from upstream's CHROM/REF mapping)")
+	got := runParity(t, "variants.vcf", Options{GroupCols: []int{1}, AggCols: []int{2}, Ops: []string{"count"}})
+	want := readParity(t, "t16_vcf.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
