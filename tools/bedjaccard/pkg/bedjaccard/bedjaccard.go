@@ -15,12 +15,14 @@
 package bedjaccard
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strconv"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnbed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
@@ -110,7 +112,14 @@ func jaccard(aReader, bReader io.Reader, opts Options) (*Result, error) {
 	// -S restricts both inputs to one strand before merging; -s merges
 	// per-strand and keeps only same-strand pairs.
 	perStrand := opts.SameStrand || opts.StrandFilter != ""
-	var aSrc, bSrc recordReader = bed.NewReader(aReader), bed.NewReader(bReader)
+	aSrc, err := sourceReader(aReader)
+	if err != nil {
+		return nil, fmt.Errorf("reading A: %w", err)
+	}
+	bSrc, err := sourceReader(bReader)
+	if err != nil {
+		return nil, fmt.Errorf("reading B: %w", err)
+	}
 	if opts.Split {
 		// -split expands each BED12 record into its blocks before the sweep.
 		aSrc = &blockSplitReader{in: aSrc}
@@ -313,6 +322,19 @@ func fractionOK(a, b *bed.Record, overlap int, opts Options) bool {
 // both *bed.Reader and *blockSplitReader satisfy it.
 type recordReader interface {
 	Read() (*bed.Record, error)
+}
+
+// sourceReader auto-detects whether r is a SAM/BAM alignment stream or a BED
+// text stream and returns the matching record source. Upstream bedtools
+// jaccard accepts BAM on either input; a BAM record becomes a BED12 record
+// (its CIGAR blocks), so --split block-awareness composes for free.
+func sourceReader(r io.Reader) (recordReader, error) {
+	br := bufio.NewReader(r)
+	head, _ := br.Peek(16)
+	if alnbed.LooksLikeAlignment(head) {
+		return alnbed.NewReader(br)
+	}
+	return bed.NewReader(br), nil
 }
 
 // blockSplitReader wraps a recordReader and, when a BED12 record carries

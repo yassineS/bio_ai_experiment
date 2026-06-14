@@ -66,6 +66,34 @@ func (r *Reader) Read() (*bed.Record, error) {
 	}
 }
 
+// LooksLikeAlignment reports whether head (the first bytes of an input
+// stream) is a SAM or BAM alignment rather than a BED/text interval file. It
+// recognises a BGZF-wrapped BAM, a raw "BAM\1" magic, and SAM text (which
+// always begins with an '@' header line). A BED file never starts with '@'
+// or the BAM magic, so this is a safe sniff for auto-routing tool input.
+func LooksLikeAlignment(head []byte) bool {
+	if len(head) >= 4 && head[0] == 'B' && head[1] == 'A' && head[2] == 'M' && head[3] == 0x01 {
+		return true
+	}
+	if looksLikeBGZF(head) {
+		return true
+	}
+	// SAM text starts with a header line ('@HD', '@SQ', ...).
+	return len(head) >= 1 && head[0] == '@'
+}
+
+// looksLikeBGZF reports whether b begins with a BGZF gzip header (gzip magic
+// with the BC subfield), the container BAM is stored in.
+func looksLikeBGZF(b []byte) bool {
+	if len(b) < 16 || b[0] != 0x1f || b[1] != 0x8b || b[2] != 0x08 || b[3]&0x04 == 0 {
+		return false
+	}
+	if xlen := uint16(b[10]) | uint16(b[11])<<8; xlen < 6 {
+		return false
+	}
+	return b[12] == 'B' && b[13] == 'C' && b[14] == 0x02 && b[15] == 0x00
+}
+
 // block is one reference-consuming run of an alignment.
 type block struct{ start, end int }
 

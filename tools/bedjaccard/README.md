@@ -10,6 +10,7 @@ intersection, union, Jaccard index and overlap count.
 - Strand-aware overlap (`-s` same-strand, `-S <+|->` single-strand filter)
 - Overlap-fraction thresholds (`-f` for A, `-F` for B)
 - BED12 block-aware (exon) overlap via `--split`
+- BAM/SAM input on -a and -b (auto-detected; each alignment becomes its CIGAR blocks)
 - Errors out on unsorted input rather than producing wrong answers
 - Transparent gzip support and `-` for stdin/stdout
 - Pure Go, no third-party dependencies

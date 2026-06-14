@@ -9,9 +9,9 @@ package bedjaccard
 // both A and B before computing intersection / union (mirroring upstream's
 // `setUseMergedIntervals(true)` in ContextJaccard.cpp), so cases against
 // b.bed / c.bed / mixedStrands.bed are byte-for-byte parity with upstream.
-// The `-S` single-strand filter (t12/t13) and `-split` BED12 block-aware
-// overlap (t08) are implemented and asserted. Cases still wrapped in t.Skip
-// are unrelated to the sweep (BAM / VCF / GFF input, large fixtures).
+// The `-S` single-strand filter (t12/t13), `-split` BED12 block-aware overlap
+// (t08), and BAM input (t09, auto-detected) are implemented and asserted.
+// Cases still wrapped in t.Skip are unrelated (VCF/GFF input, large fixtures).
 
 import (
 	"bytes"
@@ -114,9 +114,15 @@ func TestParity_Jaccard_T08_ThreeBlocksSplit(t *testing.T) {
 	}
 }
 
-// jaccard.t09 — BAM input. bedjaccard is BED-only.
+// jaccard.t09 — BAM input on both -a and -b. bedjaccard auto-detects BAM and
+// converts each alignment to a BED12 interval (its CIGAR blocks). Expected
+// value is from the upstream binary on the vendored a.bam / three_blocks_match.bam.
 func TestParity_Jaccard_T09_BAMInput(t *testing.T) {
-	t.Skip("unimplemented: BAM input")
+	got := runJaccardParity(t, "a.bam", "three_blocks_match.bam", Options{})
+	want := readJaccardParity(t, "t09_bam.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // jaccard.t10 — mixed-strand files, no `-s`. Both A and B are pre-merged
