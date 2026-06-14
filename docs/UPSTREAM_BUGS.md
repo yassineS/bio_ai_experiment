@@ -603,6 +603,16 @@ discrepancies in our Go code (not upstream), all fixed inline:
   port can decide whether to round-trip 64-bit verbatim or downcast on
   read (we currently downcast — see `pkg/htsgo/bcf/typed.go`).
 
+  Note: an earlier `bcftools index` CSI parity test was skipped citing
+  this int64 descriptor as a blocker. That was inaccurate — the downcast
+  means our reader handles upstream BCF (including int64 FORMAT counters)
+  fine, so `TestParityIndex_CSIForBCF` now runs and asserts **functional**
+  CSI parity (region reads return identical records on an upstream-produced
+  BCF). Byte-identical `.csi` is a separate, deliberate non-target: htslib's
+  `bcf_index` adapts the CSI depth to the longest contig and stores no aux
+  block for BCF, whereas our CSI carries a small tabix-style aux so the
+  reader can self-resolve contig names to ref IDs.
+
 <a id="bcf-fmt-keys-missing"></a>
 
 - **Our BCF reader drops per-record FORMAT keys on htslib-produced

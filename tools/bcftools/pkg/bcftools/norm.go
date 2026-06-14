@@ -14,35 +14,63 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
-// CheckRefMode controls how `bcftools norm` reacts when the REF field
-// differs from the reference FASTA. It mirrors the upstream `--check-ref`
-// flag.
+// CheckRefMode is a bitmask controlling how `bcftools norm` reacts when the
+// REF field differs from the reference FASTA. It mirrors upstream
+// vcfnorm.c's CHECK_REF_* flags, where the `-c`/`--check-ref` option accepts
+// any combination of the letters w/x/s and the single letter e:
+//
+//	w  warn   (CheckRefWarn)  — print "REF_MISMATCH ..." to stderr, keep
+//	x  skip   (CheckRefSkip)  — drop records whose REF cannot be realigned
+//	s  set    (CheckRefFix)   — fix the REF (and swap/insert alleles) to match
+//	e  error  (CheckRefExit)  — abort on any mismatch (the default; exclusive)
+//
+// As upstream does, `e` overrides every other bit; `w`, `x`, and `s` may be
+// combined (e.g. `-c ws`).
 type CheckRefMode int
 
 const (
-	// CheckRefError aborts the run when any REF mismatches the FASTA. This
-	// is the upstream default and the safest behaviour for piping into a
-	// caller that assumes the reference is consistent.
-	CheckRefError CheckRefMode = iota
-	// CheckRefWarn writes one warning per mismatched record to stderr and
-	// keeps the record unchanged.
-	CheckRefWarn
-	// CheckRefSkip silently drops records whose REF does not match the
-	// FASTA. Useful when running against draft assemblies.
+	// CheckRefExit aborts the run on the first REF/FASTA mismatch. This is
+	// the upstream default. It is exclusive: combining it with any other
+	// bit is not meaningful.
+	CheckRefExit CheckRefMode = 0
+	// CheckRefWarn prints one "REF_MISMATCH" line per mismatched record to
+	// stderr and keeps the record unchanged.
+	CheckRefWarn CheckRefMode = 1 << iota
+	// CheckRefSkip drops records whose REF cannot be reconciled with the
+	// FASTA (the upstream `x` letter).
 	CheckRefSkip
+	// CheckRefFix rewrites the REF (and, when possible, swaps/inserts
+	// alleles) so it matches the FASTA (the upstream `s` letter).
+	CheckRefFix
 )
 
-// ParseCheckRefMode turns the `e|w|s` flag value into a typed enum.
+// CheckRefError is retained as a deprecated alias for CheckRefExit so that
+// older callers keep compiling. New code should use CheckRefExit.
+const CheckRefError = CheckRefExit
+
+// ParseCheckRefMode turns the `-c`/`--check-ref` flag value into the bitmask.
+// The recognised letters mirror upstream: any combination of w/x/s, or e
+// (which overrides the others). The empty string is the default (exit).
 func ParseCheckRefMode(s string) (CheckRefMode, error) {
-	switch strings.ToLower(s) {
-	case "", "e":
-		return CheckRefError, nil
-	case "w":
-		return CheckRefWarn, nil
-	case "s":
-		return CheckRefSkip, nil
+	if s == "" {
+		return CheckRefExit, nil
 	}
-	return 0, fmt.Errorf("bcftools norm: unknown --check-ref value %q (expect e, w or s)", s)
+	var mode CheckRefMode
+	for _, c := range strings.ToLower(s) {
+		switch c {
+		case 'w':
+			mode |= CheckRefWarn
+		case 'x':
+			mode |= CheckRefSkip
+		case 's':
+			mode |= CheckRefFix
+		case 'e':
+			return CheckRefExit, nil // overrides the above
+		default:
+			return 0, fmt.Errorf("bcftools norm: unknown --check-ref value %q (expect a combination of w/x/s, or e)", s)
+		}
+	}
+	return mode, nil
 }
 
 // MultiallelicMode encodes the body of the `-m` flag (`-snps`, `+indels` etc.).
@@ -745,11 +773,21 @@ func atomizeVariants(variants []*vcf.Variant) []*vcf.Variant {
 }
 
 // normalizeVariants left-aligns indels and applies the --check-ref policy.
+//
+// The order mirrors upstream vcfnorm.c::normalize_line: when the `s` (fix)
+// bit is set the REF is repaired first, then the realignment REF check runs;
+// a residual mismatch is reported per the remaining bits (error / warn /
+// skip). This is why `-c s` (or `-c ws`) emits no warning for a record it
+// could fix: by the time the check runs, the REF already matches.
 func normalizeVariants(variants []*vcf.Variant, ref *fasta.RandomAccess, opts NormOptions, stderr io.Writer) ([]*vcf.Variant, error) {
 	out := make([]*vcf.Variant, 0, len(variants))
 	for _, v := range variants {
-		// Always REF-check first so the user's policy applies before
-		// left-alignment moves coordinates.
+		if opts.CheckRef&CheckRefFix != 0 {
+			if err := fixRef(v, ref); err != nil {
+				return nil, err
+			}
+		}
+		// REF-check before left-alignment moves coordinates.
 		ok, err := checkRef(v, ref, opts.CheckRef, stderr)
 		if err != nil {
 			return nil, err
@@ -767,6 +805,100 @@ func normalizeVariants(variants []*vcf.Variant, ref *fasta.RandomAccess, opts No
 	return out, nil
 }
 
+// fixRef rewrites v.Ref (and, for a simple allele swap, the ALT list and the
+// per-sample GT) so the record agrees with the FASTA. It implements the
+// common branches of upstream vcfnorm.c::fix_ref:
+//
+//   - REF already matches the reference: no change.
+//   - REF is the missing marker ".": set it to the reference base.
+//   - exactly one ALT equals the reference span: swap REF <-> that ALT and
+//     re-index the genotypes (a REF/ALT swap).
+//   - otherwise: replace REF with the reference span verbatim.
+//
+// Symbolic ALTs (<DEL> etc.) and the N-fill / IUPAC branches are out of
+// scope here; such records are left untouched (the subsequent check-ref pass
+// still reports them per the active policy).
+func fixRef(v *vcf.Variant, ref *fasta.RandomAccess) error {
+	if len(v.Ref) == 0 {
+		return nil
+	}
+	for _, a := range v.Alt {
+		if a != "" && a[0] == '<' {
+			return nil // symbolic; leave for the check-ref pass
+		}
+	}
+	refSeq, err := ref.Fetch(v.Chrom, int64(v.Pos-1), int64(v.Pos-1+len(v.Ref)))
+	if err != nil {
+		return nil // fetch issues are surfaced by checkRef
+	}
+	want := strings.ToUpper(string(refSeq))
+	if want == strings.ToUpper(v.Ref) {
+		return nil
+	}
+	// Missing REF marker: fill in the reference base.
+	if v.Ref == "." {
+		v.Ref = want
+		return nil
+	}
+	// Simple swap: one ALT equals the reference span.
+	for i, alt := range v.Alt {
+		if strings.EqualFold(alt, want) {
+			swapRefAlt(v, i)
+			return nil
+		}
+	}
+	// Otherwise set REF to the reference span.
+	v.Ref = want
+	return nil
+}
+
+// swapRefAlt swaps v.Ref with v.Alt[idx] and re-indexes every sample GT so
+// allele 0 becomes (idx+1) and (idx+1) becomes 0, matching upstream's
+// fix_ref genotype swap for a REF/ALT inversion.
+func swapRefAlt(v *vcf.Variant, idx int) {
+	oldRef := v.Ref
+	v.Ref = v.Alt[idx]
+	v.Alt[idx] = oldRef
+	swapTo := idx + 1
+	for si := range v.Samples {
+		gt, ok := v.Samples[si].Data["GT"]
+		if !ok {
+			continue
+		}
+		v.Samples[si].Data["GT"] = swapGTAlleles(gt, swapTo)
+	}
+}
+
+// swapGTAlleles rewrites a GT string, swapping allele index 0 with index n
+// (and vice versa) while preserving phasing separators and missing alleles.
+func swapGTAlleles(gt string, n int) string {
+	var b strings.Builder
+	cur := strings.Builder{}
+	flush := func() {
+		s := cur.String()
+		cur.Reset()
+		switch s {
+		case "0":
+			b.WriteString(strconv.Itoa(n))
+		case strconv.Itoa(n):
+			b.WriteString("0")
+		default:
+			b.WriteString(s)
+		}
+	}
+	for i := 0; i < len(gt); i++ {
+		c := gt[i]
+		if c == '/' || c == '|' {
+			flush()
+			b.WriteByte(c)
+			continue
+		}
+		cur.WriteByte(c)
+	}
+	flush()
+	return b.String()
+}
+
 // needsLeftAlign returns true when the variant has at least one ALT whose
 // length differs from REF (a candidate for shifting left).
 func needsLeftAlign(v *vcf.Variant) bool {
@@ -781,43 +913,47 @@ func needsLeftAlign(v *vcf.Variant) bool {
 	return false
 }
 
-// checkRef compares v.Ref to the FASTA. Returns (true, nil) when the
-// record passes (or when policy is warn) and (false, nil) when it should
-// be silently dropped. An error is returned when policy is `error` and a
-// mismatch is observed.
+// checkRef compares v.Ref to the FASTA and applies the --check-ref policy
+// bitmask. It returns (true, nil) when the record is kept (it matches, or
+// only the warn bit is set) and (false, nil) when the skip bit drops it. An
+// error is returned for the default exit policy on a mismatch.
+//
+// The stderr warning and the fatal error reproduce upstream's wording
+// (vcfnorm.c): the warning is "REF_MISMATCH\t<chr>\t<pos>\t<vcf-ref>\t
+// <ref-seq>" and the error is "Reference allele mismatch at <chr>:<pos> ..
+// REF_SEQ:'<ref-seq>' vs VCF:'<vcf-ref>'".
 func checkRef(v *vcf.Variant, ref *fasta.RandomAccess, mode CheckRefMode, stderr io.Writer) (bool, error) {
 	refSeq, err := ref.Fetch(v.Chrom, int64(v.Pos-1), int64(v.Pos-1+len(v.Ref)))
 	if err != nil {
-		// Treat fetch errors uniformly: surface in error mode, suppress
-		// in skip mode, warn in warn mode (matches upstream behaviour
-		// for missing contigs).
-		switch mode {
-		case CheckRefError:
+		// Missing contig / out-of-range fetch: surface in exit mode,
+		// drop in skip mode, warn otherwise.
+		switch {
+		case mode == CheckRefExit:
 			return false, fmt.Errorf("bcftools norm: REF lookup %s:%d failed: %w", v.Chrom, v.Pos, err)
-		case CheckRefWarn:
-			if stderr != nil {
+		case mode&CheckRefSkip != 0:
+			return false, nil
+		default:
+			if mode&CheckRefWarn != 0 && stderr != nil {
 				fmt.Fprintf(stderr, "bcftools norm: REF lookup %s:%d failed: %v (kept)\n", v.Chrom, v.Pos, err)
 			}
 			return true, nil
-		case CheckRefSkip:
-			return false, nil
 		}
 	}
 	if strings.EqualFold(string(refSeq), v.Ref) {
 		return true, nil
 	}
-	switch mode {
-	case CheckRefError:
-		return false, fmt.Errorf("bcftools norm: REF mismatch at %s:%d (record %q vs reference %q)", v.Chrom, v.Pos, v.Ref, refSeq)
-	case CheckRefWarn:
-		if stderr != nil {
-			fmt.Fprintf(stderr, "bcftools norm: REF mismatch at %s:%d (record %q vs reference %q)\n", v.Chrom, v.Pos, v.Ref, refSeq)
-		}
-		return true, nil
-	case CheckRefSkip:
+	// Mismatch. The default (exit) is exclusive and overrides the rest.
+	if mode == CheckRefExit {
+		return false, fmt.Errorf("Reference allele mismatch at %s:%d .. REF_SEQ:'%s' vs VCF:'%s'",
+			v.Chrom, v.Pos, refSeq, v.Ref)
+	}
+	if mode&CheckRefWarn != 0 && stderr != nil {
+		fmt.Fprintf(stderr, "REF_MISMATCH\t%s\t%d\t%s\t%s\n", v.Chrom, v.Pos, v.Ref, refSeq)
+	}
+	if mode&CheckRefSkip != 0 {
 		return false, nil
 	}
-	return false, nil
+	return true, nil
 }
 
 // leftAlignInPlace shifts a variant left using the Tan-Abecasis-Durbin

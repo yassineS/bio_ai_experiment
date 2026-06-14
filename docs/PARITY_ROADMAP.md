@@ -3196,7 +3196,34 @@ implemented as this port's own design (upstream leaves it an error stub).
 `fwrite`-return write bug fixed) are implemented; samtools `tview` text/HTML
 (`-d T`/`-d H`) and the interactive `-d C` viewer (pure-Go Linux raw-mode
 termios, no ncurses) are all implemented.
-`query %N_ALT` / `import --skipBamQ` are **not** upstream flags.
+`query %N_ALT` / `import --skipBamQ` are **not** upstream flags. The port now
+rejects `%N_ALT` (and any undeclared bare tag) at header-validation time with
+upstream's exact "no such tag defined in the VCF header: INFO/<TAG>" error
+(`TestParityQuery_NAlleles`), rather than silently emitting ".".
+
+Recently closed parity gaps, now asserted byte-for-byte against the upstream
+binary (fixtures vendored under `tools/bcftools/testdata/parity/`):
+
+- `concat -a`/`--allow-overlaps` matches upstream's contig-ordering
+  heuristic exactly — the synced reader visits contigs in **first-seen-in-data
+  order across the inputs** (not the merged-header `##contig` order), with
+  ties broken reader-by-reader (`TestParityConcat_AllowOverlaps`).
+- `concat -D`/`-d` now requires `-a`, erroring with upstream's
+  "The -D option is supported only with -a" when used standalone, and the
+  `-a -D`/`-a -d {exact|snps|indels|both|all}` cross-file de-duplication
+  matches upstream's `BCF_SR_PAIR_*` collapse logic
+  (`TestParityConcat_DedupRequiresA`, `TestParityConcat_DedupAllowOverlaps`).
+- `norm -f` left-alignment and `norm -c {e|w|x|s}` (the upstream bitmask:
+  warn / exclude / set-REF, with `e` exclusive) now match byte-for-byte,
+  including the REF/ALT swap with genotype re-indexing for `-c s`
+  (`TestParityNorm_LeftAlign`, `TestParityNorm_CheckRef*`). Note the port's
+  `-c` letters were corrected: `s` is **set/fix** (not skip) and `x` is
+  exclude, matching upstream `vcfnorm.c`.
+- CSI indexing of an upstream-produced BCF is functionally parity-tested
+  (`TestParityIndex_CSIForBCF`): our reader handles htslib's optional int64
+  FORMAT descriptors, so region reads return identical records. Byte-identical
+  `.csi`/`.tbi` output remains a deliberate non-target (BGZF framing differs,
+  and our BCF CSI carries a small tabix-style aux block htslib omits for BCF).
 
 **Multi-threaded output compression** (`-@ / --threads N`) — DONE for the
 output-writer subcommands. Like upstream (which calls htslib

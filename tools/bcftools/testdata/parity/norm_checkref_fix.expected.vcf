@@ -1,0 +1,7 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##contig=<ID=chr1,length=108>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	5	good	A	G	30	PASS	.	GT	0/1
+chr1	23	bad	T	C	40	PASS	.	GT	1/1

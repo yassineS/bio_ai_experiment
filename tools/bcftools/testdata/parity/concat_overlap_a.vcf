@@ -1,0 +1,12 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##contig=<ID=chr2,length=10000>
+##contig=<ID=chr3,length=10000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FILTER=<ID=q10,Description="Quality below 10">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr2	150	.	G	A	40	PASS	DP=20	GT	1/1
+chr2	300	.	T	C	22	PASS	DP=12	GT	0/1
+chr1	100	.	A	T	30	PASS	DP=10	GT	0/1
+chr1	250	.	C	G	5	q10	DP=15	GT	0/0

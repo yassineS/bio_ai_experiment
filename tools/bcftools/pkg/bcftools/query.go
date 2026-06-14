@@ -197,6 +197,9 @@ func queryVCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 	if err != nil {
 		return 0, err
 	}
+	if err := validateFormatTokens(tokens, hdr); err != nil {
+		return 0, err
+	}
 	includeF, excludeF, err := compileQueryExpressions(opts)
 	if err != nil {
 		return 0, err
@@ -241,6 +244,9 @@ func queryBCFStream(in io.Reader, out io.Writer, opts QueryOptions, applyTargets
 	}
 	tokens, err := ParseFormatString(opts.Format)
 	if err != nil {
+		return 0, err
+	}
+	if err := validateFormatTokens(tokens, hdr.VCF); err != nil {
 		return 0, err
 	}
 	includeF, excludeF, err := compileQueryExpressions(opts)
@@ -290,6 +296,9 @@ func queryBCFRegions(path string, out io.Writer, opts QueryOptions) (int, error)
 	if err != nil {
 		return 0, err
 	}
+	if err := validateFormatTokens(tokens, hdr.VCF); err != nil {
+		return 0, err
+	}
 	includeF, excludeF, err := compileQueryExpressions(opts)
 	if err != nil {
 		return 0, err
@@ -334,6 +343,9 @@ func queryVCFRegions(path string, out io.Writer, opts QueryOptions, stderr io.Wr
 	hdrIn.Close()
 	tokens, err := ParseFormatString(opts.Format)
 	if err != nil {
+		return 0, err
+	}
+	if err := validateFormatTokens(tokens, hdr); err != nil {
 		return 0, err
 	}
 	includeF, excludeF, err := compileQueryExpressions(opts)
@@ -496,6 +508,95 @@ func ParseFormatString(s string) ([]FormatToken, error) {
 		return nil, fmt.Errorf("bcftools query: empty format string")
 	}
 	return tokenize(s, false)
+}
+
+// queryNonINFOTokens is the set of bare `%NAME` placeholders that upstream's
+// query/convert.c resolves WITHOUT looking the name up as an INFO (outer
+// scope) or FORMAT (sample scope) tag. A bare token outside this set must be
+// a tag declared in the VCF header, otherwise upstream aborts with
+// "no such tag defined in the VCF header: INFO/<TAG>" (or FORMAT/<TAG> inside
+// a `[ ... ]` group). N_ALT is deliberately NOT here: it is a
+// filter-expression function, never a query `-f` token, so referencing it as
+// `%N_ALT` is an undeclared-tag error exactly as upstream reports.
+var queryNonINFOTokens = map[string]bool{
+	"CHROM": true, "POS": true, "POS0": true, "END": true, "END0": true,
+	"REF": true, "ALT": true, "FIRST_ALT": true, "QUAL": true, "ID": true,
+	"FILTER": true, "TYPE": true, "IS_TS": true, "INFO": true, "MASK": true,
+	"LINE": true, "SAMPLE": true, "GT": true, "TGT": true, "TBCSQ": true,
+	"PBINOM": true,
+}
+
+// validateFormatTokens reproduces upstream's header-time tag check: every
+// bare `%NAME` placeholder that is not a recognised special token (see
+// queryNonINFOTokens) and is not written with an explicit INFO//FMT/FORMAT
+// group must be declared in the header — as an INFO tag in the outer scope
+// and as a FORMAT tag inside a `[ ... ]` sample group. An undeclared
+// reference produces the same fatal error as upstream so callers (e.g. the
+// CLI) exit non-zero rather than silently emitting ".".
+func validateFormatTokens(tokens []FormatToken, hdr *vcf.Header) error {
+	info, format := headerTagSets(hdr)
+	var check func(ts []FormatToken, sample bool) error
+	check = func(ts []FormatToken, sample bool) error {
+		for _, t := range ts {
+			switch t.Kind {
+			case TokenPlaceholder:
+				name := t.Text
+				if queryNonINFOTokens[name] {
+					continue
+				}
+				if strings.HasPrefix(name, "INFO/") {
+					key := name[len("INFO/"):]
+					if !info[key] {
+						return fmt.Errorf("Error: no such tag defined in the VCF header: INFO/%s", key)
+					}
+					continue
+				}
+				if strings.HasPrefix(name, "FMT/") || strings.HasPrefix(name, "FORMAT/") {
+					key := name[strings.IndexByte(name, '/')+1:]
+					if !format[key] {
+						return fmt.Errorf("Error: no such tag defined in the VCF header: FORMAT/%s", key)
+					}
+					continue
+				}
+				// Bare tag: INFO in the outer scope, FORMAT in a sample group.
+				if sample {
+					if !format[name] {
+						return fmt.Errorf("Error: no such tag defined in the VCF header: FORMAT/%s", name)
+					}
+				} else if !info[name] {
+					return fmt.Errorf("Error: no such tag defined in the VCF header: INFO/%s", name)
+				}
+			case TokenSample:
+				if err := check(t.Inner, true); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return check(tokens, false)
+}
+
+// headerTagSets returns the sets of INFO and FORMAT tag IDs declared in the
+// header's ##INFO / ##FORMAT lines.
+func headerTagSets(hdr *vcf.Header) (info, format map[string]bool) {
+	info = make(map[string]bool)
+	format = make(map[string]bool)
+	if hdr == nil {
+		return info, format
+	}
+	for _, m := range hdr.MetaInfo {
+		if strings.HasPrefix(m, "##INFO=") {
+			if _, id := structuredID(m); id != "" {
+				info[id] = true
+			}
+		} else if strings.HasPrefix(m, "##FORMAT=") {
+			if _, id := structuredID(m); id != "" {
+				format[id] = true
+			}
+		}
+	}
+	return info, format
 }
 
 // tokenize walks src; when inSample is true the `]` closing bracket terminates
