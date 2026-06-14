@@ -387,11 +387,22 @@ func TestParityQuery_ListSamples(t *testing.T) {
 	equalBytes(t, got, want, "query -l")
 }
 
-// TestParityQuery_FormatChar documents that we don't yet support
-// `[%FORMAT/<tag>]` where <tag> is a Char field. Upstream produces the
-// same output via `%STR` shortcut; our parser is conservative.
+// TestParityQuery_FormatChar exercises a per-sample Character FORMAT field
+// (`[%BB]` and the `[%FMT/BB]` long form), which extract the per-sample char
+// value — matching bcftools 1.23 ("x y").
 func TestParityQuery_FormatChar(t *testing.T) {
-	t.Skip("query: FMT/<char-tag> token not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+	in := []byte("##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+		"##FORMAT=<ID=BB,Number=1,Type=Character,Description=\"\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n" +
+		"chr1\t100\t.\tA\tT\t30\tPASS\t.\tGT:BB\t0/1:x\t1/1:y\n")
+	for _, fmtStr := range []string{`[%BB ]\n`, `[%FMT/BB ]\n`} {
+		got := runParityQuery(t, in, QueryOptions{Format: fmtStr})
+		if string(got) != "x y \n" {
+			t.Errorf("query %q = %q, want %q", fmtStr, got, "x y \n")
+		}
+	}
 }
 
 // TestParityQuery_PositionTokens exercises the %POS0/%END/%END0/%FIRST_ALT/
