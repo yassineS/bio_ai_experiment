@@ -48,8 +48,15 @@ func runParity(t *testing.T, aFile, bFile string, opts Options) []byte {
 // The numbers (count/covered/len/fraction) are byte-identical; the semantic
 // BAM -a path is exercised below in TestCoverage_BAMQuery and the SAM unit
 // test, so this case stays skipped only for the trailing-comma formatting nit.
+// coverage.t1 — BAM query (-a): each alignment is echoed as its full BED12
+// (CIGAR blocks, trailing-comma block lists) plus the coverage columns,
+// byte-for-byte against bedtools v2.31.1.
 func TestParity_Coverage_T1_BAMInput(t *testing.T) {
-	t.Skip("BAM -a supported; output differs from upstream only by trailing commas in the echoed BED12 block lists (cosmetic) — semantics covered by TestCoverage_BAMQuery")
+	got := runParity(t, "cov_a.bam", "cov_b.bed", Options{Mode: ModeDefault})
+	want := readParityFixture(t, "t1_bam_a.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // coverage.t2 — defaults: A, B BED; per-A count + bp + len + frac.
@@ -91,8 +98,14 @@ func TestParity_Coverage_T5_Depth(t *testing.T) {
 // coverage.t6 — -mean. Upstream prints with float32 precision
 // ("1.3200001", "5.5599999"); our port uses float64 so we'd emit "1.32" and
 // "5.56". Documented divergence; we still cover the mean op via unit tests.
+// coverage.t6 — `-mean` prints the per-A mean depth as a float32 with 7
+// decimals (float32 rounding noise included), byte-for-byte against upstream.
 func TestParity_Coverage_T6_Mean(t *testing.T) {
-	t.Skip("upstream -mean prints float32 noise (1.3200001) we don't reproduce; semantic equivalence covered by unit tests")
+	got := runParity(t, "a.bed", "b.bed", Options{Mode: ModeMean})
+	want := readParityFixture(t, "t6_mean.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // coverage.t7 — -s (same strand).
