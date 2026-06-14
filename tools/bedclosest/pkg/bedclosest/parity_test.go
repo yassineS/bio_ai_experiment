@@ -5,15 +5,17 @@ package bedclosest
 // Cases are mirrored from reference_code/bedtools/test/closest/test-closest.sh.
 // Inputs and expected outputs live under tools/bedclosest/testdata/parity/.
 // Tests for upstream features bedclosest does not implement (notably the
-// -k k-nearest, and multi-DB input with -names/-filenames) are wrapped in
-// t.Skip with a one-line rationale. The strand filters -s/-S (t7/t8) and the
-// -N different-names filter (t6) are implemented and asserted below.
+// -k k-nearest) are wrapped in t.Skip with a one-line rationale. The strand
+// filters -s/-S (t7/t8), the -N different-names filter (t6), and multi-DB
+// input with -names/-filenames (t13/t14/t15) are implemented and asserted
+// below.
 //
 // Note: bedclosest matches the upstream `(b.start - a.end) + 1` distance
 // formula, so two touching records report distance 1 (not 0).
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,6 +37,20 @@ func runClosestParity(t *testing.T, aFile, bFile string, opts Options) []byte {
 	var out bytes.Buffer
 	if _, err := Closest(bytes.NewReader(a), bytes.NewReader(b), &out, opts); err != nil {
 		t.Fatalf("Closest failed: %v", err)
+	}
+	return out.Bytes()
+}
+
+func runClosestMultiParity(t *testing.T, aFile string, bFiles []string, opts Options) []byte {
+	t.Helper()
+	a := readClosestParity(t, aFile)
+	readers := make([]io.Reader, len(bFiles))
+	for i, bf := range bFiles {
+		readers[i] = bytes.NewReader(readClosestParity(t, bf))
+	}
+	var out bytes.Buffer
+	if _, err := ClosestMulti(bytes.NewReader(a), readers, &out, opts); err != nil {
+		t.Fatalf("ClosestMulti failed: %v", err)
 	}
 	return out.Bytes()
 }
@@ -146,13 +162,37 @@ func TestParity_Closest_T11_TiesLast(t *testing.T) {
 }
 
 // closest.t13..t15 — multiple databases (`-b A B C`, `-names ...`,
-// `-filenames`).
+// `-filenames`). Upstream's default is `-mdb each`: the closest feature from
+// each database is reported on its own row, prefixed with a database-label
+// column (the 1-based index for t13, the `-names` labels for t14, the
+// filenames for t15). The hit selection matches the upstream binary; bedclosest
+// follows its house style of omitting the distance column unless requested
+// (these cases use Options{}), exactly like the upstream t13/t14/t15 fixtures.
 func TestParity_Closest_T13_MultipleDatabases(t *testing.T) {
-	t.Skip("unimplemented: multiple -b database support")
+	got := runClosestMultiParity(t, "mq1.bed",
+		[]string{"mdb1.bed", "mdb2.bed", "mdb3.bed"}, Options{})
+	want := readClosestParity(t, "t13_multidb.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
 func TestParity_Closest_T14_DBNames(t *testing.T) {
-	t.Skip("unimplemented: -names option (multi-DB labels)")
+	got := runClosestMultiParity(t, "mq1.bed",
+		[]string{"mdb1.bed", "mdb2.bed", "mdb3.bed"},
+		Options{DBLabels: []string{"a", "b", "c"}})
+	want := readClosestParity(t, "t14_names.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
 func TestParity_Closest_T15_DBFilenames(t *testing.T) {
-	t.Skip("unimplemented: -filenames option (multi-DB labels)")
+	got := runClosestMultiParity(t, "mq1.bed",
+		[]string{"mdb1.bed", "mdb2.bed", "mdb3.bed"},
+		Options{DBLabels: []string{"mdb1.bed", "mdb2.bed", "mdb3.bed"}})
+	want := readClosestParity(t, "t15_filenames.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }

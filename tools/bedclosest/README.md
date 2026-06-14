@@ -30,7 +30,15 @@ bedclosest -a <fileA.bed> -b <fileB.bed> [options]
 ## Options
 
 - `-a, --a FILE` - Input BED file A (sorted; use `-` for stdin)
-- `-b, --b FILE` - Input BED file B (sorted; use `-` for stdin)
+- `-b, --b FILE...` - One or more sorted BED database files (use `-` for stdin).
+  With multiple files a database-label column (the 1-based file index, or the
+  `-names`/`-filenames` label) is inserted between A's and B's columns.
+- `-names NAME...` - Labels for the `-b` databases (one per file, in order);
+  replaces the numeric file-index column. Mutually exclusive with `-filenames`.
+- `-filenames` - Use each `-b` file's name as its database-label column.
+- `-mdb each|all` - Multi-database mode: `each` (default) reports the closest
+  feature from every database on its own row; `all` reports the single overall
+  closest across all databases.
 - `-o, --output FILE` - Output BED file (`-` for stdout, default: stdout)
 - `-d, --distance` - Print signed distance column (default: `true`; pass
   `--distance=false` to suppress)
@@ -76,6 +84,19 @@ bedclosest -a a.bed -b b.bed -s > out.bed
 
 # Closest B on the opposite strand to A
 bedclosest -a a.bed -b b.bed -S > out.bed
+
+# Closest feature from each of several databases (one row per database;
+# the inserted column is the 1-based database index)
+bedclosest -a a.bed -b db1.bed db2.bed db3.bed > out.bed
+
+# Label the database column with names instead of indices
+bedclosest -a a.bed -b db1.bed db2.bed db3.bed -names a b c > out.bed
+
+# Use each database's filename as its label column
+bedclosest -a a.bed -b db1.bed db2.bed db3.bed -filenames > out.bed
+
+# Single overall closest across all databases (still labelled by source DB)
+bedclosest -a a.bed -b db1.bed db2.bed db3.bed -mdb all > out.bed
 ```
 
 ## Format
@@ -83,6 +104,8 @@ bedclosest -a a.bed -b b.bed -S > out.bed
 - Input: BED (tab-delimited, minimum 3 columns), sorted on `(chrom, start)`.
   `.gz` is supported.
 - Output: A's columns, then B's columns, then signed distance (when `-d`).
+  With multiple `-b` databases, a database-label column (1-based index, or the
+  `-names`/`-filenames` label) is inserted between A's and B's columns.
 - When A's chromosome has no B records, a sentinel B of
   `.\t-1\t-1` with distance `-1` is emitted (unless `--require-overlap` is set,
   in which case the A line is omitted).
