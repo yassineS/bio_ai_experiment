@@ -77,11 +77,43 @@ func TestParity_Shuffle_T2_Include(t *testing.T) {
 	checkStructure(t, in, buf.Bytes(), g, incl, nil, false)
 }
 
-// shuffle.t3 — basic shuffle with -incl and -chromFirst. We treat
-// -chromFirst as the default behaviour (sample chrom then position) so this
-// is the same as t2 in our port.
+// shuffle.t3 — shuffle with -incl and -chromFirst (pick the chromosome
+// uniformly first, then a position within it). bedshuffle uses Go's math/rand
+// so exact placements differ from upstream's libc rand; like the other shuffle
+// parity tests this asserts STRUCTURAL validity — every interval keeps its
+// length and lands inside an include region.
 func TestParity_Shuffle_T3_IncludeChromFirst(t *testing.T) {
-	t.Skip("upstream -chromFirst toggles between two sampling strategies; our port always weights by include-bp, which is equivalent on the include-list case")
+	in := readParityFixture(t, "simrep.bed")
+	g := readParityGenome(t, "human.hg19.genome")
+	incl := readParityBED(t, "incl.bed")
+	var buf bytes.Buffer
+	if _, err := Shuffle(bytes.NewReader(in), &buf, Options{Genome: g, Seed: 42, Include: incl, ChromFirst: true}); err != nil {
+		t.Fatalf("Shuffle: %v", err)
+	}
+	checkStructure(t, in, buf.Bytes(), g, incl, nil, false)
+}
+
+// TestShuffle_ChromFirstUniformChrom is a focused unit test: with -chromFirst
+// and an include list spanning multiple chromosomes, placements land on more
+// than one chromosome (the chromosome is drawn uniformly, not pinned).
+func TestShuffle_ChromFirstUniformChrom(t *testing.T) {
+	g := map[string]int{"chr1": 1000, "chr2": 1000}
+	incl := []*bed.Record{
+		{Chrom: "chr1", ChromStart: 0, ChromEnd: 500},
+		{Chrom: "chr2", ChromStart: 0, ChromEnd: 500},
+	}
+	in := "chr1\t10\t20\nchr1\t30\t40\nchr1\t50\t60\nchr2\t10\t20\nchr2\t30\t40\n"
+	var buf bytes.Buffer
+	if _, err := Shuffle(strings.NewReader(in), &buf, Options{Genome: g, Seed: 7, Include: incl, ChromFirst: true}); err != nil {
+		t.Fatalf("Shuffle: %v", err)
+	}
+	chroms := map[string]bool{}
+	for _, ln := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		chroms[strings.SplitN(ln, "\t", 2)[0]] = true
+	}
+	if len(chroms) < 2 {
+		t.Errorf("-chromFirst should spread placements across chromosomes, got %v", chroms)
+	}
 }
 
 // shuffle.t4 — basic shuffle with -excl. The piped intersect in the upstream
