@@ -8,6 +8,7 @@ A fast and simple tool to merge overlapping or adjacent BED intervals, implement
 - **Memory efficient**: Processes entire file in memory (suitable for typical BED files)
 - **Streaming mode**: Option for very large files that processes by chromosome
 - **Flexible merging**: Support for distance-based and strand-specific merging
+- **GFF input**: Auto-detects and merges GFF features (1-based) as well as BED
 - **Configurable output**: Control output format and fields
 - **Count tracking**: Output number of intervals merged into each region
 - **bedGraph support**: Native support for bedGraph format (4-column: chrom, start, end, score)

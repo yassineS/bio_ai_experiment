@@ -5,7 +5,7 @@ package bedmerge
 // Cases are mirrored from reference_code/bedtools/test/merge/test-merge.sh.
 // Inputs live under tools/bedmerge/testdata/parity/<case>.bed and expected
 // outputs under <case>.expected.bed. Tests that exercise features bedmerge
-// does not implement (VCF/GFF input) are wrapped in t.Skip with a one-line
+// does not implement (VCF input) are wrapped in t.Skip with a one-line
 // rationale rather than being deleted; the `-S` strand filter (t16/t17) and
 // the custom `-delim` list delimiter (t10) are implemented and asserted.
 
@@ -138,9 +138,14 @@ func TestParity_Merge_T13_VCFInput(t *testing.T) {
 	t.Skip("unimplemented: VCF input; bedmerge is BED-only")
 }
 
-// merge.t14 — GFF input.
+// merge.t14 — GFF input: features are auto-detected (1-based start/end in
+// columns 4/5) and merged into BED3, byte-for-byte against bedtools v2.31.1.
 func TestParity_Merge_T14_GFFInput(t *testing.T) {
-	t.Skip("unimplemented: GFF input; bedmerge is BED-only")
+	got := runMergeParity(t, "features.gff", MergeOptions{})
+	want := readMergeParity(t, "t14_gff.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // merge.t15 — stranded merge with mixed '.' strands. Upstream's
