@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,9 +131,24 @@ func TestParity_Sample_SubsetOfInput(t *testing.T) {
 // behaviour therefore lives in main.go, not here.
 //
 // covered by: cmd/bedsample/main.go (-n validation + iohelper.OpenReader,
-// which surfaces open errors and exits non-zero).
+// which surfaces open errors and exits non-zero). This is a CLI-layer concern
+// (the Sample library always takes an io.Reader), so we build the binary and
+// assert it rejects a no-args invocation non-zero, mirroring upstream's
+// rejection of `bedtools sample` with no usable input.
 func TestParity_Sample_T01_NoArgs(t *testing.T) {
-	t.Skip("CLI-only (intentional): input defaulting/validation lives in cmd/bedsample/main.go, not the Sample library")
+	bin := buildBedsample(t)
+	cmd := exec.Command(bin)
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit with no -n/input, got success:\n%s", out)
+	}
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() == 0 {
+		t.Fatalf("expected non-zero exit, got err=%v", err)
+	}
+	if !strings.Contains(string(out), "-n") {
+		t.Errorf("rejection message should mention the required -n flag, got:\n%s", out)
+	}
 }
 
 // sample.new.t02 — "Unrecognized parameter". Also a CLI-only documented case:
@@ -140,7 +156,33 @@ func TestParity_Sample_T01_NoArgs(t *testing.T) {
 // cmd/bedsample/main.go (fs.Parse returns an error and main exits 2), so there
 // is no library-level behaviour to assert here.
 //
-// covered by: cmd/bedsample/main.go (fs.Parse error path -> os.Exit(2)).
+// covered by: cmd/bedsample/main.go (fs.Parse error path -> os.Exit(2)). Like
+// T01 this is a CLI-layer concern, so we build the binary and assert it
+// rejects an unknown flag non-zero (upstream errors "Unrecognized parameter").
 func TestParity_Sample_T02_UnrecognizedFlag(t *testing.T) {
-	t.Skip("CLI-only (intentional): unknown-flag rejection lives in cmd/bedsample/main.go's flag.FlagSet, not the Sample library")
+	bin := buildBedsample(t)
+	cmd := exec.Command(bin, "-thisflagdoesnotexist")
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for unknown flag, got success:\n%s", out)
+	}
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() == 0 {
+		t.Fatalf("expected non-zero exit, got err=%v", err)
+	}
+	if !strings.Contains(string(out), "thisflagdoesnotexist") {
+		t.Errorf("rejection message should name the offending flag, got:\n%s", out)
+	}
+}
+
+// buildBedsample compiles the bedsample CLI binary into a temp dir and returns
+// its path, for the CLI-layer rejection tests above.
+func buildBedsample(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "bedsample")
+	build := exec.Command("go", "build", "-o", bin, "../../cmd/bedsample")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building bedsample: %v\n%s", err, out)
+	}
+	return bin
 }
