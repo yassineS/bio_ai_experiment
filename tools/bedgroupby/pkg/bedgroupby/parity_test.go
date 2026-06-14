@@ -34,14 +34,24 @@ func runParity(t *testing.T, inputFile string, opts Options) []byte {
 	return buf.Bytes()
 }
 
-// groupby.t1 — basic, default group cols (1,2,3), -c 5.
+// groupby.t1 — basic, default group cols (1,2,3), -c 5 (default op sum).
 func TestParity_Groupby_T1_Basic(t *testing.T) {
-	t.Skip("missing fixture t1_basic.expected; salvage from agent crash, see PARITY_ROADMAP.md#bedtools")
+	got := runParity(t, "values3.header.bed", Options{AggCols: []int{5}})
+	want := readParity(t, "t1_basic.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// groupby.t2 — case-insensitive grouping.
+// groupby.t2 — case-insensitive grouping (-ignorecase): records are grouped
+// comparing the group fields case-insensitively, but each emitted group keeps
+// the original case of its first record's fields. Byte-for-byte vs bedtools.
 func TestParity_Groupby_T2_IgnoreCase(t *testing.T) {
-	t.Skip("upstream -ignorecase compares only the grouping field, but expected output preserves the input's mixed-case chrom value of each record verbatim; our implementation matches that behaviour but the upstream test asserts a precise sequence we cannot exactly mirror without per-row case bookkeeping not yet implemented")
+	got := runParity(t, "values3_case.header.bed", Options{AggCols: []int{5}, IgnoreCase: true})
+	want := readParity(t, "t2_ignorecase.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // groupby.t3 — -full prints all original first-record columns + agg.
@@ -53,9 +63,13 @@ func TestParity_Groupby_T3_Full(t *testing.T) {
 	}
 }
 
-// groupby.t4 — -inheader on marked-header file (same output as t1).
+// groupby.t4 — -inheader drops the first line as a header; same output as t1.
 func TestParity_Groupby_T4_InheaderMarked(t *testing.T) {
-	t.Skip("depends on missing t1_basic.expected fixture; see PARITY_ROADMAP.md#bedtools")
+	got := runParity(t, "values3.header.bed", Options{AggCols: []int{5}, InHeader: true})
+	want := readParity(t, "t1_basic.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // groupby.t7 — -outheader emits the marked header before the data.
