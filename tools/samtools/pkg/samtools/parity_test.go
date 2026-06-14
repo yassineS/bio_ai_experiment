@@ -601,8 +601,16 @@ func TestParity_Depth_T03_Region(t *testing.T) {
 // for a single-read scan matches but the upstream "single contiguous span
 // per chromosome" form is the natural follow-up.
 func TestParity_Depth_T04_AllPositions(t *testing.T) {
-	t.Skip("not yet validated against upstream: -a zero-fill behaviour edge cases; " +
-		"tracked in PARITY_ROADMAP.md#samtools")
+	in := openParity(t, "basic.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Depth([]io.Reader{in}, &out, DepthOptions{AllPositions: true, ExcludeFlags: DefaultDepthExcludeFlags}); err != nil {
+		t.Fatalf("Depth -a: %v", err)
+	}
+	want := upstreamSamtoolsRun(t, "depth", "-a", parityPath(t, "basic.sam"))
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Errorf("depth -a mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
+	}
 }
 
 // depth.t05 — CIGAR with a deletion. Verifies refLen advances past the
@@ -669,10 +677,19 @@ func TestParity_Depth_T07_Empty(t *testing.T) {
 	}
 }
 
-// depth.t08 — BED restriction is not yet validated against upstream.
+// depth.t08 — `-b <bed>` restricts emitted positions to the BED intervals,
+// byte-for-byte against upstream samtools.
 func TestParity_Depth_T08_BedRestrict(t *testing.T) {
-	t.Skip("not yet supported: -b BED region restriction byte-parity not validated; " +
-		"tracked in PARITY_ROADMAP.md#samtools")
+	in := openParity(t, "basic.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Depth([]io.Reader{in}, &out, DepthOptions{BedPath: parityPath(t, "depth_regions.bed"), ExcludeFlags: DefaultDepthExcludeFlags}); err != nil {
+		t.Fatalf("Depth -b: %v", err)
+	}
+	want := upstreamSamtoolsRun(t, "depth", "-b", parityPath(t, "depth_regions.bed"), parityPath(t, "basic.sam"))
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Errorf("depth -b mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
+	}
 }
 
 // ---- fastq -------------------------------------------------------------
@@ -852,8 +869,23 @@ func TestParity_Fastq_T06_CRAMInput(t *testing.T) {
 // fastq.t07 — -T tag injection. Upstream supports an empty/star form to
 // expand to "every aux tag"; we only handle explicit comma lists.
 func TestParity_Fastq_T07_AllTagsExpansion(t *testing.T) {
-	t.Skip("not yet supported: -T '' / -T '*' (all-tags expansion); tracked in " +
-		"PARITY_ROADMAP.md#samtools")
+	sam := "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:100\n" +
+		"r1\t0\tchr1\t10\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tNM:i:0\tRG:Z:rg1\tBC:Z:AAA\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tags.sam")
+	if err := os.WriteFile(path, []byte(sam), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(dir, "out.fq")
+	in := strings.NewReader(sam)
+	if _, err := Fastq(in, FastqOptions{OutputPath: outPath, AddTags: []string{"*"}}); err != nil {
+		t.Fatalf("Fastq -T '*': %v", err)
+	}
+	got, _ := os.ReadFile(outPath)
+	want := upstreamSamtoolsRun(t, "fastq", "-T", "*", path)
+	if !bytes.Equal(got, want) {
+		t.Errorf("fastq -T '*' mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // ---- flagstat ----------------------------------------------------------

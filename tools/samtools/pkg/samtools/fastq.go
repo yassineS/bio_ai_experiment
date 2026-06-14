@@ -445,6 +445,14 @@ func buildFastqHeader(rec *sam.Record, opts FastqOptions) string {
 	if len(opts.AddTags) > 0 {
 		for _, t := range opts.AddTags {
 			t = strings.TrimSpace(t)
+			if t == "*" {
+				// `-T '*'` / `-T ''`: append every aux tag in record order.
+				for _, a := range rec.Aux {
+					sb.WriteByte('\t')
+					sb.WriteString(a.FormatSAM())
+				}
+				continue
+			}
 			if t == "" {
 				continue
 			}
