@@ -109,7 +109,39 @@ func TestParity_Spacing_T06_SingleRecord(t *testing.T) {
 	}
 }
 
-// Upstream allows BAM input via -bed; not implemented.
+// spacing on BAM input — parity with `bedtools spacing -i spacing.bam -bed`.
+//
+// Upstream `bedtools spacing` accepts BAM (its usage line reads
+// "-i <bed/gff/vcf/bam>"); with -bed it prints each alignment as a BED12 line
+// followed by the spacing column. The vendored spacing.bam (built from
+// spacing.sam) and spacing_bam.expected were produced by the bundled
+// reference_code/bedtools/bin/bedtools v2.31.1; this test asserts our output
+// matches it byte-for-byte. The fixture exercises ".", "0", "-1", a positive
+// gap, a spliced (N-CIGAR, multi-block) alignment, and the per-chromosome
+// reset.
 func TestParity_Spacing_T07_BAMInput(t *testing.T) {
-	t.Skip("BAM input is not supported by bedspacing (no -bed flag); upstream test corpus has no BAM spacing case")
+	in := readParity(t, "spacing.bam")
+	want := readParity(t, "spacing_bam.expected")
+	var buf bytes.Buffer
+	if _, err := Spacing(bytes.NewReader(in), &buf); err != nil {
+		t.Fatalf("Spacing on BAM: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("BAM spacing mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
+}
+
+// SAM-text input is auto-detected (leading '@' header) and routed through the
+// same alignment-to-BED12 conversion as BAM. The expected output is identical
+// to the BAM fixture because spacing.bam was built from spacing.sam.
+func TestSpacing_SAMTextInput(t *testing.T) {
+	in := readParity(t, "spacing.sam")
+	want := readParity(t, "spacing_bam.expected")
+	var buf bytes.Buffer
+	if _, err := Spacing(bytes.NewReader(in), &buf); err != nil {
+		t.Fatalf("Spacing on SAM: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("SAM spacing mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
 }

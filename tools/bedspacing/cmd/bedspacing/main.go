@@ -22,7 +22,9 @@ Usage:
   bedspacing [-i BED] [-o OUT]
 
 I/O:
-  -i, --input FILE        Input BED ('-' or empty = stdin). Transparent gzip.
+  -i, --input FILE        Input BED or SAM/BAM ('-' or empty = stdin).
+                          SAM/BAM is auto-detected and emitted as BED12.
+                          Transparent gzip.
   -o, --output FILE       Output file (default stdout). '-' = stdout.
 
 Standard:
