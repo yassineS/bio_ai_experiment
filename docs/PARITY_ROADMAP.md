@@ -3,6 +3,10 @@
 **Goal:** **1:1 feature parity** with the upstream tool for every Go port in
 this repo. This file is the authoritative gap list per tool.
 
+**Scope (current focus):** the project is **not taking on new tools**. The
+full focus is to drive the tools already ported or started to complete parity.
+Every item below is about an existing tool; do not add new ports.
+
 The project's stated goal is to make these tools faster, better tested, and
 better documented than their originals — which requires that we actually
 implement the same features. "Working subset" is a milestone, not the

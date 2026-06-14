@@ -16,6 +16,13 @@ This is the honest "distance to done" snapshot for the started tools. It is
 is the skimmable summary on top of the roadmap — keep status numbers here and
 in the roadmap, and link to them from everywhere else rather than re-stating.
 
+## Project focus (current)
+
+**No new tools.** The project's full focus is now to **finish the tools already
+ported or started** — driving each to complete 1:1 upstream parity. We are not
+broadening the tool set; remaining work is the parity gaps in the existing
+tools (`docs/PARITY_ROADMAP.md`), not new ports.
+
 ## What "done" means
 
 A tool is **done** (1:1) when every upstream subcommand and documented flag
