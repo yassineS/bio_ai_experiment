@@ -26,6 +26,21 @@ bedgroupby -g 1,2,3 -c 5 -o sum input.bed
 Reads transparent gzip / BGZF via `pkg/htsgo/iohelper`. Stdin / `-` is
 supported.
 
+### BAM / SAM input
+
+BAM and SAM alignment files are auto-detected by content (BGZF/BAM magic or a
+leading `@` SAM header) — no flag is required, matching upstream
+`bedtools groupby -i some.bam`. Each mapped alignment is rendered into the same
+tab-delimited column layout upstream groups over (bedtools' `BamRecord`
+fields): `QNAME`, `FLAG`, `RNAME`, 0-based start, `MAPQ`, CIGAR (op char before
+length, e.g. `5M` → `M5`), `RNEXT`, 0-based `PNEXT`, `TLEN`, `SEQ`, `QUAL`.
+Unmapped reads are skipped. Those column lines feed the same grouping engine as
+text input, so any `-g`/`-c`/`-o` combination works. Example:
+
+```sh
+bedgroupby -i aln.bam -g 1,3 -c 4 -o mean
+```
+
 ## Deviations from upstream
 
 - `stdev`/`sstdev`/`absmin`/`absmax`/`cat`/`cat_uniq` not yet supported

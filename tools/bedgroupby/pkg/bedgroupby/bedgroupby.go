@@ -140,12 +140,19 @@ func isHeaderLine(line string) bool {
 // Group reads records from reader, groups consecutive records sharing the
 // configured grouping-column values, and writes one TSV row per group to
 // writer. It returns the number of output rows.
+//
+// SAM/BAM input is auto-detected (BGZF/BAM magic or a leading '@' SAM header):
+// each mapped alignment is rendered into the same tab-delimited column layout
+// that upstream `bedtools groupby` groups over for a BAM (see samColumns), and
+// those lines feed the same grouping/aggregation engine as text input.
 func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 	if err := opts.Validate(); err != nil {
 		return 0, err
 	}
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	src, err := newLineSource(reader)
+	if err != nil {
+		return 0, err
+	}
 	w := bufio.NewWriter(writer)
 
 	var (
@@ -205,8 +212,15 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 	}
 
 	firstDataLine := true
-	for scanner.Scan() {
-		raw := strings.TrimRight(scanner.Text(), "\r\n")
+	for {
+		line, ok, err := src.next()
+		if err != nil {
+			return outCount, fmt.Errorf("error reading input: %w", err)
+		}
+		if !ok {
+			break
+		}
+		raw := strings.TrimRight(line, "\r\n")
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
 			continue
@@ -270,9 +284,6 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 		for i, ac := range opts.AggCols {
 			curVals[i] = append(curVals[i], fields[ac-1])
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return outCount, fmt.Errorf("error reading input: %w", err)
 	}
 	if err := flush(); err != nil {
 		return outCount, err

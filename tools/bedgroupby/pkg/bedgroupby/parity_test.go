@@ -122,9 +122,26 @@ func TestParity_Groupby_T19_Bug569(t *testing.T) {
 	}
 }
 
-// groupby.t17 — BAM file as input. Not supported.
+// groupby.t17 — BAM file as input: `groupby -i gdc.bam -g 1,3 -c 4 -o mean`.
+// Upstream renders each mapped alignment through bedtools' BamRecord column
+// layout (QNAME, FLAG, RNAME, 0-based start, MAPQ, CIGAR, ...) and groups over
+// those columns; column 1 is the read name ("None"), column 3 the chrom, and
+// column 4 the 0-based start. Expected output is generated from the vendored
+// reference_code/bedtools/bin/bedtools (v2.31.1) on testdata gdc.bam.
 func TestParity_Groupby_T17_BAM(t *testing.T) {
-	t.Skip("BAM input is not supported by bedgroupby")
+	in := readParity(t, "gdc.bam")
+	var buf bytes.Buffer
+	if _, err := Group(bytes.NewReader(in), &buf, Options{
+		GroupCols: []int{1, 3},
+		AggCols:   []int{4},
+		Ops:       []string{"mean"},
+	}); err != nil {
+		t.Fatalf("Group failed: %v", err)
+	}
+	want := readParity(t, "t17_bam.expected")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, buf.Bytes())
+	}
 }
 
 // groupby.t16 — VCF file as input. Not supported.
