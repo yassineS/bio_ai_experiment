@@ -26,7 +26,11 @@ Description:
 
 Options:
   -i, --input FILE        Input BED file (default: stdin, '-' for stdin)
-  -g, --genome FILE       Chromosome sizes file (chrom<TAB>size per line, required)
+      --ibam FILE         Input BAM/SAM file; the genome is taken from its header
+                          (no -g needed). Each alignment covers its reference
+                          span, or its CIGAR blocks under --split.
+  -g, --genome FILE       Chromosome sizes file (chrom<TAB>size per line; required
+                          unless --ibam)
       --output FILE       Output file (default: stdout)
   -bg, --bedGraph         Emit non-zero runs of constant depth as bedGraph
   -bga                    Emit every run of constant depth (includes zero)
@@ -72,6 +76,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	var (
 		inputFile  string
+		ibamFile   string
 		genomeFile string
 		outputFile string
 
@@ -94,7 +99,8 @@ func run(argv []string, stdout, stderr *os.File) error {
 	)
 
 	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input BED file (default: stdin)")
-	cliflag.StringVar(fs, &genomeFile, "g", "genome", "", "Chromosome sizes file (required)")
+	cliflag.StringVar(fs, &ibamFile, "ibam", "input-bam", "", "Input BAM/SAM file; genome is taken from its header")
+	cliflag.StringVar(fs, &genomeFile, "g", "genome", "", "Chromosome sizes file (required unless -ibam)")
 	cliflag.StringVar(fs, &outputFile, "", "output", "", "Output file (default: stdout)")
 
 	cliflag.BoolVar(fs, &bedGraph, "bg", "bedGraph", false, "Emit non-zero bedGraph runs")
@@ -130,8 +136,8 @@ func run(argv []string, stdout, stderr *os.File) error {
 		return nil
 	}
 
-	if genomeFile == "" {
-		return fmt.Errorf("missing -g/--genome (use -h for help)")
+	if genomeFile == "" && ibamFile == "" {
+		return fmt.Errorf("missing -g/--genome (or use -ibam to take the genome from a BAM header)")
 	}
 
 	// Pick output mode (mutually exclusive).
@@ -162,22 +168,6 @@ func run(argv []string, stdout, stderr *os.File) error {
 		inputFile = fs.Arg(0)
 	}
 
-	genomeR, err := iohelper.OpenReader(genomeFile)
-	if err != nil {
-		return fmt.Errorf("opening genome file: %w", err)
-	}
-	defer genomeR.Close()
-	genome, err := bedgenomecov.ReadGenome(genomeR)
-	if err != nil {
-		return err
-	}
-
-	inR, err := iohelper.OpenReader(inputFile)
-	if err != nil {
-		return fmt.Errorf("opening input: %w", err)
-	}
-	defer inR.Close()
-
 	outW, err := iohelper.OpenWriter(outputFile)
 	if err != nil {
 		return fmt.Errorf("opening output: %w", err)
@@ -195,5 +185,32 @@ func run(argv []string, stdout, stderr *os.File) error {
 		TrackLine:  trackLine,
 		TrackOpts:  trackOpts,
 	}
+
+	// -ibam: the genome comes from the BAM/SAM header; no -g needed.
+	if ibamFile != "" {
+		bamR, err := iohelper.OpenReader(ibamFile)
+		if err != nil {
+			return fmt.Errorf("opening BAM input: %w", err)
+		}
+		defer bamR.Close()
+		return bedgenomecov.RunBAM(bamR, outW, opts)
+	}
+
+	genomeR, err := iohelper.OpenReader(genomeFile)
+	if err != nil {
+		return fmt.Errorf("opening genome file: %w", err)
+	}
+	defer genomeR.Close()
+	genome, err := bedgenomecov.ReadGenome(genomeR)
+	if err != nil {
+		return err
+	}
+
+	inR, err := iohelper.OpenReader(inputFile)
+	if err != nil {
+		return fmt.Errorf("opening input: %w", err)
+	}
+	defer inR.Close()
+
 	return bedgenomecov.Run(inR, genome, outW, opts)
 }

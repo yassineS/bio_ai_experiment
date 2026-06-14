@@ -4,11 +4,12 @@ package bedgenomecov
 //
 // Cases are mirrored from reference_code/bedtools/test/genomecov/test-genomecov.sh.
 // Inputs and expected outputs live under tools/bedgenomecov/testdata/parity/.
-// bedgenomecov only consumes BED input today (no BAM/CRAM/SAM parser), so
-// most upstream tests — which use `bedtools genomecov -ibam` on a BAM built
-// from a SAM fixture by htsutil — are skipped. The BED-input tests
-// (t11/t12/t13) are exercised here, plus a BED12 `-split` case (upstream's
-// own -split tests use BAM, but the block-splitting is identical for BED12).
+// BAM/SAM input is supported (RunBAM / the `-ibam` flag), but the upstream
+// BAM/CRAM fixtures (built from SAM by htsutil) aren't vendored, so the
+// BAM-input cases stay skipped and BAM/SAM is covered instead by the
+// TestRunBAM_* unit tests plus a live `-ibam` cross-check against
+// bedtools v2.31.1. The BED-input tests (t11/t12/t13) and a BED12 `-split`
+// case are exercised directly here.
 
 import (
 	"bytes"
@@ -41,9 +42,14 @@ func runGenomecovParity(t *testing.T, bedFile, genomeFile string, opts Options) 
 	return out.Bytes()
 }
 
-// genomecov.t1..t10 — all use BAM/CRAM input. bedgenomecov is BED-only.
+// genomecov.t1..t10 — these use BAM/CRAM input. BAM/SAM input is now
+// supported via RunBAM (the `-ibam` CLI flag); the genome is taken from the
+// alignment header. These specific upstream cases need BAM fixtures built by
+// htsutil, which we don't vendor — RunBAM is instead covered by the
+// SAM-input unit tests (TestRunBAM_*) and a live `-ibam` cross-check against
+// bedtools v2.31.1. CRAM input is not yet wired.
 func TestParity_Genomecov_T1to10_BAMInputs(t *testing.T) {
-	t.Skip("unimplemented: BAM/SAM/CRAM input. bedgenomecov consumes BED only.")
+	t.Skip("BAM/CRAM upstream fixtures not vendored; BAM/SAM input covered by TestRunBAM_* + live -ibam cross-check")
 }
 
 // genomecov.t11 — histogram (default) over y.bed, including chroms in the
@@ -96,11 +102,11 @@ func TestParity_Genomecov_T15_FragmentSize(t *testing.T) {
 	t.Skip("unimplemented: -fs fragment size (BAM-only feature)")
 }
 func TestParity_Genomecov_T16_EmptyBAM(t *testing.T) {
-	t.Skip("unimplemented: BAM input")
+	t.Skip("upstream BAM fixture not vendored; BAM input supported via -ibam (see TestRunBAM_*)")
 }
 func TestParity_Genomecov_T17_EmptyCRAM(t *testing.T) {
-	t.Skip("unimplemented: CRAM input")
+	t.Skip("CRAM input not yet wired into bedgenomecov")
 }
 func TestParity_Genomecov_T18_DeepSAM(t *testing.T) {
-	t.Skip("unimplemented: SAM input")
+	t.Skip("upstream SAM fixture not vendored; SAM input supported via RunBAM (see TestRunBAM_SAMInput)")
 }

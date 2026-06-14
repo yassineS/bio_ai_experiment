@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnbed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
@@ -111,12 +112,45 @@ func ReadGenome(r io.Reader) (*GenomeSize, error) {
 	return g, nil
 }
 
+// recordSource is the minimal interface the coverage accumulator consumes;
+// both *bed.Reader (BED input) and *alnbed.Reader (BAM/SAM input) satisfy it.
+type recordSource interface {
+	Read() (*bed.Record, error)
+}
+
 // Run reads BED intervals from input, computes coverage against the genome, and
-// writes the configured output to writer. It is the only public entry point.
+// writes the configured output to writer.
 func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) error {
 	if genome == nil || len(genome.Order) == 0 {
 		return errors.New("genome size info is required")
 	}
+	return runCore(bed.NewReader(input), genome, writer, opts)
+}
+
+// RunBAM reads a BAM/SAM alignment stream from input, derives the genome from
+// the alignment header's @SQ entries (mirroring upstream `genomecov -ibam`,
+// where no separate genome file is supplied), and writes coverage to writer.
+// Each mapped alignment contributes its whole reference span, or — under
+// opts.Split — its CIGAR blocks (exon-aware, breaking on N ops).
+func RunBAM(input io.Reader, writer io.Writer, opts Options) error {
+	ar, err := alnbed.NewReader(input)
+	if err != nil {
+		return fmt.Errorf("reading alignment input: %w", err)
+	}
+	genome := &GenomeSize{Length: map[string]int{}}
+	for _, ref := range ar.References() {
+		genome.Order = append(genome.Order, ref.Name)
+		genome.Length[ref.Name] = int(ref.Length)
+	}
+	if len(genome.Order) == 0 {
+		return errors.New("alignment header has no @SQ reference entries")
+	}
+	return runCore(ar, genome, writer, opts)
+}
+
+// runCore is the shared coverage pipeline used by both the BED (Run) and the
+// alignment (RunBAM) entry points.
+func runCore(src recordSource, genome *GenomeSize, writer io.Writer, opts Options) error {
 	if opts.FivePrime && opts.ThreePrime {
 		return errors.New("cannot combine 5' and 3' end-only counting")
 	}
@@ -136,8 +170,8 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 	bw := bufio.NewWriter(writer)
 	defer bw.Flush()
 
-	// Ingest BED records and bump counts.
-	br := bed.NewReader(input)
+	// Ingest records and bump counts.
+	br := src
 	for {
 		rec, err := br.Read()
 		if err == io.EOF {

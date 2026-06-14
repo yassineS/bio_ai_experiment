@@ -78,6 +78,45 @@ func TestHistogramBasic(t *testing.T) {
 	}
 }
 
+func TestRunBAM_SAMInput(t *testing.T) {
+	// SAM text is accepted by RunBAM (sam.NewReader auto-detects SAM/BAM).
+	// Genome comes from the @SQ header. r2 is a spliced 5M10N5M read.
+	sam := "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:100\n" +
+		"r1\t0\tchr1\t11\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r2\t0\tchr1\t16\t60\t5M10N5M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n"
+
+	// Without -split: r1 covers [10,20), r2 covers [15,30) (whole span).
+	var nosplit bytes.Buffer
+	if err := RunBAM(strings.NewReader(sam), &nosplit, Options{Mode: ModeBedGraphAll}); err != nil {
+		t.Fatalf("RunBAM: %v", err)
+	}
+	ns := nosplit.String()
+	if !strings.Contains(ns, "chr1\t15\t20\t2\n") {
+		t.Errorf("no-split: expected depth-2 overlap [15,20):\n%s", ns)
+	}
+
+	// With -split: r2 contributes only its blocks [15,20) and [30,35), so the
+	// intron+gap [20,30) drops to depth 0.
+	var split bytes.Buffer
+	if err := RunBAM(strings.NewReader(sam), &split, Options{Mode: ModeBedGraphAll, Split: true}); err != nil {
+		t.Fatalf("RunBAM split: %v", err)
+	}
+	sp := split.String()
+	if !strings.Contains(sp, "chr1\t20\t30\t0\n") {
+		t.Errorf("split: expected the intron [20,30) at depth 0:\n%s", sp)
+	}
+	if !strings.Contains(sp, "chr1\t30\t35\t1\n") {
+		t.Errorf("split: expected r2 second block [30,35) at depth 1:\n%s", sp)
+	}
+}
+
+func TestRunBAM_NoSQHeader(t *testing.T) {
+	if err := RunBAM(strings.NewReader("@HD\tVN:1.6\n"), &bytes.Buffer{}, Options{}); err == nil {
+		t.Fatal("expected error when the header has no @SQ entries")
+	}
+}
+
 func TestSplitBED12Blocks(t *testing.T) {
 	// One BED12 record, 3 blocks of 10 at starts 0/20/40. Without -split the
 	// whole [0,50) span is covered; with -split only the blocks are.

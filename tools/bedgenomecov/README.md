@@ -6,6 +6,7 @@ bedGraph track, or per-base depth.
 
 ## Features
 
+- BED input or BAM/SAM input (`--ibam`, genome taken from the alignment header)
 - Histogram output (default), bedGraph (`-bg`/`-bga`) and per-base depth (`-d`/`-dz`)
 - Strand-aware counting (`--strand +|-`) and 5'/3' end-only counting (`-5`/`-3`)
 - Histogram depth cap (`--max`) and depth multiplier (`--scale`)
@@ -28,7 +29,10 @@ bedgenomecov -i <intervals.bed> -g <chrom.sizes> [options]
 ### Options
 
 - `-i, --input FILE` Input BED file (default: stdin; `-` for stdin; `.gz` ok)
-- `-g, --genome FILE` Chromosome sizes file, required (`chrom<TAB>size`)
+- `--ibam FILE` Input BAM/SAM file; the genome is taken from its `@SQ` header
+  (no `-g` needed). Each alignment covers its reference span, or its CIGAR
+  blocks under `--split`.
+- `-g, --genome FILE` Chromosome sizes file, required unless `--ibam` (`chrom<TAB>size`)
 - `--output FILE` Output file (default: stdout; `.gz` ok)
 - `-bg, --bedGraph` Emit non-zero runs of constant depth as bedGraph
 - `-bga` Emit every run of constant depth (includes zero)
