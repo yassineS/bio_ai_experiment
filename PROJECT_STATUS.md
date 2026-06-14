@@ -73,7 +73,7 @@ evidence-based estimate of remaining surface — not a rosy reading.
 | Tool | Implemented | Remaining surface | % | Effort to finish |
 |------|-------------|-------------------|---:|------------------|
 | **seqtk** | All 24 subcommands; byte-parity vs v1.5 | none | **100%** | done |
-| **prinseq** | `stats` / `filter` / `graph_data`; all in-scope flags incl. `--graph_data`, `--range_len`, `--trim_to_len`, `--seq_case`, `--line_width`, `--range_gc` (all implemented) | PNG report flow only (out of scope — needs an image renderer) | **~98%** | done (bar PNG) |
+| **prinseq** | `stats` / `filter` / `graph_data` / `graph_png`; all in-scope flags incl. `--graph_data`, `--range_len`, `--trim_to_len`, `--seq_case`, `--line_width`, `--range_gc`; the `prinseq-graphs.pl` PNG report flow is implemented (`graph_png`) | none (PNG byte-identity N/A — pure-Go renderer, not Perl Cairo/GD) | **100%** | done |
 | **sickle** | `se` / `pe`; 15/15 parity cases | none (gzip-output level untested) | **100%** | done |
 | **skewer** | `se` / `pe`; 14/14 parity cases | none | **100%** | done |
 | **fastp** | single cmd; sliding-window, auto-adapter, HTML+JSON, dup-eval, UMI, PE base `--correction`, overrepresentation (`-p/-P`), `--split*`, merge writer (`-m`), `--adapter_fasta`, `--poly_x_min_len`, `--disable_adapter_trimming`, `--merge` (`merged_and_filtered` JSON block); 16/16 + 9 tail parity | multi-thread `--split` file-boundary distribution (perf) | **~98%** | small |
@@ -155,8 +155,10 @@ These are deliberately not ported and should not be counted against parity:
   reproducibility, **not** byte-identity with upstream's C RNG (see the RNG
   policy section in `docs/PARITY_ROADMAP.md`). (`seqtk sample` and
   `bedsample` additionally now port the upstream RNG and *are* byte-exact.)
-- **prinseq PNG report** (`prinseq-graphs.pl` graphics flow) — out of scope;
-  the `graph_data`/`report` subcommands cover the equivalent surface.
+- **prinseq PNG report** (`prinseq-graphs.pl` graphics flow) — implemented as
+  the `prinseq graph_png` subcommand. PNG byte-identity is N/A (pure-Go
+  stdlib renderer, not Perl Cairo/GD); the graph set + plotted data series
+  are the asserted parity surface.
 - **The ~30 bundled upstream bcftools `.so` plugins** — the plugin *system*
   (a VCF-on-stdin/stdout subprocess protocol) is implemented; re-porting
   upstream's plugin catalogue is explicit non-goal scope.

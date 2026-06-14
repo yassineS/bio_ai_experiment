@@ -45,6 +45,8 @@ func main() {
 		runGraph(os.Args[2:])
 	case "graph_data", "graph-data", "graphdata":
 		runGraphData(os.Args[2:])
+	case "graph_png", "graph-png", "graphpng", "graphs":
+		runGraphPNG(os.Args[2:])
 	case "report":
 		runReport(os.Args[2:])
 	case "benchmark":
@@ -75,6 +77,7 @@ Commands:
   filter      Filter sequences based on quality criteria
   graph       Generate quality graphs
   graph_data  Emit upstream prinseq-lite .gd graph-data JSON
+  graph_png   Render PNG graphs from a .gd file (prinseq-graphs)
   report      Generate HTML quality report
   benchmark   Run performance benchmarks
   api         Start REST API server
@@ -1075,6 +1078,108 @@ func nowUpstreamFmt() string {
 	t := nowFunc()
 	return fmt.Sprintf("%02d/%02d/%04d %02d:%02d:%02d",
 		t.Month(), t.Day(), t.Year(), t.Hour(), t.Minute(), t.Second())
+}
+
+// runGraphPNG implements the upstream `prinseq-graphs.pl` PNG report
+// flow. It reads a `-graph_data` (.gd) file and renders the same set
+// of PNG plots (and an optional HTML index), matching upstream's
+// `-i <gd> -png_all [-html_all] -o <prefix>` invocation surface.
+//
+// PARITY NOTE: the rendered pixels are NOT byte-identical to
+// upstream's Cairo/GD output (different rasteriser/font); the
+// asserted parity is the graph *set* (filenames) and the plotted
+// data series. See tools/prinseq/pkg/prinseq/pnggraphs.go.
+func runGraphPNG(args []string) {
+	fs := flag.NewFlagSet("graph_png", flag.ExitOnError)
+	var hv subFlags
+	hv.register(fs)
+
+	var input, output string
+	var pngAll, htmlAll bool
+	cliflag.StringVar(fs, &input, "i", "input", "", "Input .gd graph-data file (use '-' for stdin)")
+	cliflag.StringVar(fs, &output, "o", "output", "", "Output filename prefix (default: derived from input)")
+	cliflag.BoolVar(fs, &pngAll, "", "png_all", false, "Generate PNG files with the graphs (default when neither flag given)")
+	cliflag.BoolVar(fs, &htmlAll, "", "html_all", false, "Generate an HTML index linking the graphs")
+
+	fs.Usage = func() {
+		fmt.Print(`Usage: prinseq graph_png -i FILE.gd [options]
+
+Render PNG graphs from a prinseq-lite .gd graph-data file, matching
+the upstream prinseq-graphs.pl report flow.
+
+Options:
+  -i, --input FILE   Input .gd graph-data file (use '-' for stdin)
+  -o, --output PREF  Output filename prefix (default: derived from input)
+  --png_all          Generate PNG files (default when neither flag is given)
+  --html_all         Also write an HTML index linking the graphs
+
+Each graph is written as "<prefix><suffix>.png" (e.g. <prefix>_ld.png
+for the length distribution), matching upstream's filenames. Note:
+the rendered pixels are not byte-identical to upstream's Cairo/GD
+output; the graph set and plotted data series are the parity surface.
+`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	hv.handle()
+
+	if input == "" {
+		fmt.Fprintln(os.Stderr, "Error: input .gd file required (-i or --input)")
+		fs.Usage()
+		os.Exit(1)
+	}
+	// Upstream default: PNG output when neither -png_all nor -html_all
+	// is given the renderer still produces PNGs (our CLI is friendlier
+	// than upstream's hard error so the common case "just give me the
+	// graphs" works).
+	if !pngAll && !htmlAll {
+		pngAll = true
+	}
+
+	reader, err := openInput(input)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening input: %v\n", err)
+		os.Exit(1)
+	}
+	defer reader.Close()
+
+	data, err := prinseq.ParseGD(reader)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing graph data: %v\n", err)
+		os.Exit(1)
+	}
+
+	prefix := output
+	if prefix == "" {
+		prefix = graphPNGPrefix(input)
+	}
+
+	written, err := prinseq.WriteGDGraphs(data, prefix, htmlAll)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error rendering graphs: %v\n", err)
+		os.Exit(1)
+	}
+	for _, p := range written {
+		fmt.Println(p)
+	}
+}
+
+// graphPNGPrefix derives an output prefix from the input .gd path,
+// stripping a trailing ".gd" extension (mirroring upstream's filename
+// stripping in prinseq-graphs.pl lines 539-543).
+func graphPNGPrefix(input string) string {
+	if input == "-" {
+		return "stdin"
+	}
+	prefix := input
+	if strings.HasSuffix(prefix, ".gd") {
+		prefix = prefix[:len(prefix)-len(".gd")]
+	}
+	return prefix
 }
 
 func runReport(args []string) {
