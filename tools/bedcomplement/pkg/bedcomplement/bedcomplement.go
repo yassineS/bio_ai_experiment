@@ -116,7 +116,8 @@ func Complement(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, c
 			return 0, fmt.Errorf("invalid interval %s\t%d\t%d: end < start", fields[0], start, end)
 		}
 		chrom := fields[0]
-		if _, ok := sizes[chrom]; !ok {
+		chromSize, ok := sizes[chrom]
+		if !ok {
 			if !missing[chrom] {
 				missing[chrom] = true
 				if warn != nil {
@@ -124,6 +125,15 @@ func Complement(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, c
 				}
 			}
 			continue
+		}
+		// An interval extending past the chromosome end is warned about (to
+		// stderr) and clamped to the chromosome length, matching upstream
+		// bedtools complement (which does not reject it).
+		if end > chromSize {
+			if warn != nil {
+				fmt.Fprintf(warn, "***** WARNING: %s:%d-%d exceeds the length of chromosome (%s)\n", chrom, start, end, chrom)
+			}
+			end = chromSize
 		}
 		if chrom != prevChrom {
 			// Starting a new chromosome. Verify this chromosome wasn't seen

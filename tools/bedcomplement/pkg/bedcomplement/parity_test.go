@@ -5,9 +5,8 @@ package bedcomplement
 // Cases are mirrored from reference_code/bedtools/test/complement/test-complement.sh.
 // Each case has a small `.in.bed` and corresponding `.genome` plus an
 // `.expected.bed`. The `-L` flag (restrict output to chromosomes seen in the
-// input) is implemented and asserted (t9b). The one remaining skip is the
-// out-of-range-record warning case (t9), where only the upstream stderr
-// wording differs.
+// input, t9b) and the out-of-range-record warning + clamp case (t9) are both
+// implemented and asserted byte-for-byte.
 
 import (
 	"bytes"
@@ -117,12 +116,25 @@ func TestParity_Complement_T8_OneFullyCovered(t *testing.T) {
 	}
 }
 
-// complement.t9 — input interval exceeds chrom length; bedtools emits a stderr
-// warning and still produces output. bedcomplement currently rejects intervals
-// past the chromosome end via the underlying merge step; the exact upstream
-// warning string is also not reproduced.
+// complement.t9 — an input interval that exceeds the chromosome length: a
+// warning is emitted to stderr and the interval is clamped, then the complement
+// is computed. Combined stderr+stdout matches bedtools v2.31.1 byte-for-byte.
 func TestParity_Complement_T9_RecordExceedsChrom(t *testing.T) {
-	t.Skip("known discrepancy: warning message format and out-of-range handling differ from upstream")
+	sizes, order, err := ReadChromSizes(bytes.NewReader([]byte("chr1\t100\n")))
+	if err != nil {
+		t.Fatalf("ReadChromSizes: %v", err)
+	}
+	// Upstream's `&> obs` captures stderr then stdout; our warn writes during
+	// ingestion and out flushes afterward, so a shared buffer preserves that
+	// order.
+	var combined bytes.Buffer
+	if _, err := Complement(bytes.NewReader([]byte("chr1\t90\t110\n")), &combined, &combined, sizes, order, false); err != nil {
+		t.Fatalf("Complement: %v", err)
+	}
+	want := "***** WARNING: chr1:90-110 exceeds the length of chromosome (chr1)\nchr1\t0\t90\n"
+	if combined.String() != want {
+		t.Fatalf("mismatch.\nwant:\n%q\ngot:\n%q", want, combined.String())
+	}
 }
 
 // complement.t9b / t10 (script duplicates 'complement.t9' label) — issue #503,
