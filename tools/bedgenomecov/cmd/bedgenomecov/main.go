@@ -37,6 +37,7 @@ Options:
       --scale FLOAT       Multiply every depth by FLOAT (default 1.0)
   -5,  --five-prime       Count only the 5'-most base of each interval
   -3,  --three-prime      Count only the 3'-most base of each interval
+       --split            Treat BED12 records as their blocks (exon-aware)
       --trackline         Prepend a UCSC trackline to -bg/-bga output
       --trackopts STR     Extra trackline options appended after "track"
   -h,  --help             Show this help message
@@ -84,6 +85,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		scale     float64
 		fivePrime bool
 		threePrm  bool
+		split     bool
 		trackLine bool
 		trackOpts string
 
@@ -107,6 +109,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	cliflag.BoolVar(fs, &fivePrime, "5", "five-prime", false, "Count only 5' end")
 	cliflag.BoolVar(fs, &threePrm, "3", "three-prime", false, "Count only 3' end")
+	cliflag.BoolVar(fs, &split, "", "split", false, "Treat BED12 records as their blocks")
 	cliflag.BoolVar(fs, &trackLine, "", "trackline", false, "Emit UCSC trackline header")
 	cliflag.StringVar(fs, &trackOpts, "", "trackopts", "", "Extra trackline options")
 
@@ -188,6 +191,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		Scale:      scale,
 		FivePrime:  fivePrime,
 		ThreePrime: threePrm,
+		Split:      split,
 		TrackLine:  trackLine,
 		TrackOpts:  trackOpts,
 	}

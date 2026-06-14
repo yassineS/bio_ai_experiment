@@ -56,6 +56,10 @@ type Options struct {
 	ThreePrime bool    // count only the 3'-most base of each interval
 	TrackLine  bool    // emit a UCSC trackline header in bedGraph modes
 	TrackOpts  string  // optional `key=value` string appended after `track`
+	// Split ("-split") treats a BED12 record as its blocks: coverage is
+	// counted over each block interval rather than the whole record span,
+	// matching upstream bedtools genomecov -split.
+	Split bool
 }
 
 // GenomeSize holds chromosome ordering and lengths parsed from a genome file.
@@ -156,6 +160,8 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 		}
 		switch {
 		case opts.FivePrime:
+			// End-only counting works on the whole-record extent, not the
+			// per-block split (upstream applies -5/-3 to the read, not blocks).
 			pos := start
 			if rec.Strand == "-" {
 				pos = end - 1
@@ -172,8 +178,13 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 				arr[pos]++
 			}
 		default:
-			for i := start; i < end; i++ {
-				arr[i]++
+			// Under -split a BED12 record contributes coverage over each of
+			// its blocks; otherwise the whole [start,end) span.
+			for _, iv := range recordCoverIntervals(rec, opts.Split) {
+				s, e := clamp(iv[0], iv[1], len(arr))
+				for i := s; i < e; i++ {
+					arr[i]++
+				}
 			}
 		}
 	}
@@ -208,6 +219,26 @@ func clamp(start, end, length int) (int, int) {
 		end = length
 	}
 	return start, end
+}
+
+// recordCoverIntervals returns the 0-based half-open intervals a record
+// contributes coverage over. With split=true and a BED12 record carrying
+// blocks, that is one interval per block (block start = ChromStart +
+// BlockStarts[i], length BlockSizes[i]); otherwise the single [ChromStart,
+// ChromEnd) span.
+func recordCoverIntervals(rec *bed.Record, split bool) [][2]int {
+	if split && rec.BlockCount > 0 && len(rec.BlockSizes) > 0 {
+		out := make([][2]int, 0, len(rec.BlockSizes))
+		for i := range rec.BlockSizes {
+			s := rec.ChromStart
+			if i < len(rec.BlockStarts) {
+				s += rec.BlockStarts[i]
+			}
+			out = append(out, [2]int{s, s + rec.BlockSizes[i]})
+		}
+		return out
+	}
+	return [][2]int{{rec.ChromStart, rec.ChromEnd}}
 }
 
 // scaledDepth applies the scale factor.

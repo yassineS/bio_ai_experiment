@@ -78,6 +78,29 @@ func TestHistogramBasic(t *testing.T) {
 	}
 }
 
+func TestSplitBED12Blocks(t *testing.T) {
+	// One BED12 record, 3 blocks of 10 at starts 0/20/40. Without -split the
+	// whole [0,50) span is covered; with -split only the blocks are.
+	rec := "chr1\t0\t50\tx\t0\t+\t0\t0\t0\t3\t10,10,10,\t0,20,40,\n"
+	genome := "chr1\t60\n"
+
+	whole := runOf(t, rec, genome, Options{Mode: ModeBedGraphAll})
+	if !strings.Contains(whole, "chr1\t0\t50\t1\n") {
+		t.Errorf("no-split should cover the whole span:\n%s", whole)
+	}
+
+	split := runOf(t, rec, genome, Options{Mode: ModeBedGraphAll, Split: true})
+	for _, blk := range []string{"chr1\t0\t10\t1\n", "chr1\t20\t30\t1\n", "chr1\t40\t50\t1\n"} {
+		if !strings.Contains(split, blk) {
+			t.Errorf("split missing block %q in:\n%s", blk, split)
+		}
+	}
+	// The inter-block gaps must be depth 0 under -split.
+	if !strings.Contains(split, "chr1\t10\t20\t0\n") {
+		t.Errorf("split should leave the inter-block gap at depth 0:\n%s", split)
+	}
+}
+
 func TestHistogramMaxDepth(t *testing.T) {
 	// depth 5 covered at pos 0 (5 intervals); cap to 2.
 	bed := "chr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\n"

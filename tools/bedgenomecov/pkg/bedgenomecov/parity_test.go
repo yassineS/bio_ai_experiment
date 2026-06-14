@@ -6,8 +6,9 @@ package bedgenomecov
 // Inputs and expected outputs live under tools/bedgenomecov/testdata/parity/.
 // bedgenomecov only consumes BED input today (no BAM/CRAM/SAM parser), so
 // most upstream tests — which use `bedtools genomecov -ibam` on a BAM built
-// from a SAM fixture by htsutil — are skipped. The three BED-input tests
-// (t11/t12/t13) are exercised here.
+// from a SAM fixture by htsutil — are skipped. The BED-input tests
+// (t11/t12/t13) are exercised here, plus a BED12 `-split` case (upstream's
+// own -split tests use BAM, but the block-splitting is identical for BED12).
 
 import (
 	"bytes"
@@ -68,6 +69,19 @@ func TestParity_Genomecov_T12_BedGraph(t *testing.T) {
 func TestParity_Genomecov_T13_BedGraphAll(t *testing.T) {
 	got := runGenomecovParity(t, "y.bed", "genome.txt", Options{Mode: ModeBedGraphAll, Scale: 1.0})
 	want := readGenomecovParity(t, "t13_bga.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// genomecov -split on BED12 input: a 3-block record contributes coverage
+// over each block ([0,10)/[20,30)/[40,50)) rather than the whole [0,50)
+// span. Upstream's -split tests use BAM, but -split is equally valid for
+// BED12 input; the expected output is generated from bedtools v2.31.1.
+func TestParity_Genomecov_SplitBED12(t *testing.T) {
+	got := runGenomecovParity(t, "split_blocks.bed", "split.genome",
+		Options{Mode: ModeBedGraphAll, Scale: 1.0, Split: true})
+	want := readGenomecovParity(t, "split_bga.expected.bed")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
 	}

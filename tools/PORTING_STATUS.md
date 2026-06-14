@@ -713,7 +713,7 @@ and reuses `pkg/htsgo/bed` + `pkg/htsgo/iohelper`.
 | `bedsubtract` | `bedtools subtract` | 93.7% | A − B with `-A`, `-f` (per-B fraction), `-N` (union-coverage drop), `-s` / `-S`; splits A around B; full `test-subtract.sh` parity incl. t9/t10/t21 |
 | `bedflank` | `bedtools flank` | 92.2% | Flank-only `slop` variant |
 | `bedclosest` | `bedtools closest` | 92.8% | Sweep on sorted input; `-D ref/a/b`, `-N` (different-names), `--require-overlap`, `-t all/first/last`, `-s`/`-S` strand filters |
-| `bedgenomecov` | `bedtools genomecov` | 94.0% | histogram / `-bg` / `-bga` / `-d` / `-dz`; `-strand`, `-max`, `-scale`, `-5`/`-3` |
+| `bedgenomecov` | `bedtools genomecov` | 94.0% | histogram / `-bg` / `-bga` / `-d` / `-dz`; `-strand`, `-max`, `-scale`, `-5`/`-3`, `--split` (BED12 blocks) |
 | `bedjaccard` | `bedtools jaccard` | 96.3% | Streaming sweep; `-s` same-strand, `-S <+\|->` single-strand filter, `-f`/`-F`, `--split` (BED12 blocks); full `test-jaccard.sh` strand + split parity (t08/t11/t12/t13) |
 
 Smoke tests for each are hand-verified against expected output (see the

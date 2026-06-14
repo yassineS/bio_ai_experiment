@@ -39,6 +39,7 @@ bedgenomecov -i <intervals.bed> -g <chrom.sizes> [options]
 - `--scale FLOAT` Multiply every depth by FLOAT (default 1.0)
 - `-5, --five-prime` Count only the 5'-most base of each interval
 - `-3, --three-prime` Count only the 3'-most base of each interval
+- `--split` Treat BED12 records as their blocks (exon-aware coverage)
 - `--trackline` Prepend a UCSC `track` line to `-bg`/`-bga` output
 - `--trackopts STR` Extra trackline attributes appended after `track`
 - `-h, --help` Show help
