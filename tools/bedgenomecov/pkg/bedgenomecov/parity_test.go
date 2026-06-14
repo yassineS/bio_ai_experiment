@@ -93,13 +93,16 @@ func TestParity_Genomecov_SplitBED12(t *testing.T) {
 	}
 }
 
-// genomecov.t14..t18 — `-pc` paired-end coverage, `-fs` fragment size, BAM
-// empty fixtures, deep SAM. All BAM-only.
+// genomecov.t14 — `-pc` paired-end coverage and t15 `-fs` fragment size are
+// BAM-only. Both are implemented (RunBAM via -pc / -fs) and covered by the
+// SAM-input unit tests TestRunBAM_PairedCoverage / TestRunBAM_FragmentSize
+// plus a live cross-check against bedtools v2.31.1; the upstream BAM fixtures
+// (built by htsutil) are not vendored.
 func TestParity_Genomecov_T14_PairedEnd(t *testing.T) {
-	t.Skip("unimplemented: -pc paired-end coverage (BAM-only feature)")
+	t.Skip("BAM fixture not vendored; -pc covered by TestRunBAM_PairedCoverage + live cross-check")
 }
 func TestParity_Genomecov_T15_FragmentSize(t *testing.T) {
-	t.Skip("unimplemented: -fs fragment size (BAM-only feature)")
+	t.Skip("BAM fixture not vendored; -fs covered by TestRunBAM_FragmentSize + live cross-check")
 }
 func TestParity_Genomecov_T16_EmptyBAM(t *testing.T) {
 	t.Skip("upstream BAM fixture not vendored; BAM input supported via -ibam (see TestRunBAM_*)")

@@ -29,6 +29,7 @@ import (
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnbed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // Mode selects the output style for Run.
@@ -61,6 +62,15 @@ type Options struct {
 	// counted over each block interval rather than the whole record span,
 	// matching upstream bedtools genomecov -split.
 	Split bool
+	// PairedCoverage ("-pc", BAM only) counts coverage of paired-end
+	// fragments: each properly-paired read with a positive insert size (TLEN)
+	// contributes the fragment span [pos, pos+TLEN); the negative-TLEN mate is
+	// skipped so each fragment is counted once.
+	PairedCoverage bool
+	// FragmentSize ("-fs N", BAM only), when > 0, forces every read to cover a
+	// fixed N-base fragment anchored at its 5' end instead of its alignment
+	// length: forward reads cover [pos, pos+N), reverse reads cover [end-N, end).
+	FragmentSize int
 }
 
 // GenomeSize holds chromosome ordering and lengths parsed from a genome file.
@@ -133,19 +143,78 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 // Each mapped alignment contributes its whole reference span, or — under
 // opts.Split — its CIGAR blocks (exon-aware, breaking on N ops).
 func RunBAM(input io.Reader, writer io.Writer, opts Options) error {
-	ar, err := alnbed.NewReader(input)
+	if opts.PairedCoverage && opts.FragmentSize > 0 {
+		return errors.New("cannot combine -pc and -fs")
+	}
+	sr, err := sam.NewReader(input)
 	if err != nil {
 		return fmt.Errorf("reading alignment input: %w", err)
 	}
+	hdr := sr.Header()
 	genome := &GenomeSize{Length: map[string]int{}}
-	for _, ref := range ar.References() {
-		genome.Order = append(genome.Order, ref.Name)
-		genome.Length[ref.Name] = int(ref.Length)
+	if hdr != nil {
+		for _, ref := range hdr.Refs {
+			genome.Order = append(genome.Order, ref.Name)
+			genome.Length[ref.Name] = int(ref.Length)
+		}
 	}
 	if len(genome.Order) == 0 {
 		return errors.New("alignment header has no @SQ reference entries")
 	}
-	return runCore(ar, genome, writer, opts)
+	return runCore(&alnFragmentSource{sr: sr, opts: opts}, genome, writer, opts)
+}
+
+// alnFragmentSource adapts a SAM/BAM reader to the recordSource contract,
+// converting each mapped alignment into the *bed.Record genomecov should
+// count. The shape depends on opts: by default the BED12 block record
+// (alnbed.ToBED12, so -split works); under -pc the paired-fragment span; and
+// under -fs the strand-anchored fixed-size span.
+type alnFragmentSource struct {
+	sr   sam.Reader
+	opts Options
+}
+
+// Read returns the next alignment-derived record, skipping unmapped reads and
+// (under -pc) reads that do not start a counted fragment.
+func (s *alnFragmentSource) Read() (*bed.Record, error) {
+	for {
+		rec, err := s.sr.Read()
+		if err != nil {
+			return nil, err
+		}
+		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" || rec.Pos <= 0 {
+			continue
+		}
+		switch {
+		case s.opts.PairedCoverage:
+			// Count each proper pair once, from the read carrying the positive
+			// insert size: fragment = [pos, pos+TLEN).
+			if !rec.IsProperPair() || rec.TLen <= 0 {
+				continue
+			}
+			start := int(rec.Pos) - 1
+			return spanRecord(rec, start, start+int(rec.TLen)), nil
+		case s.opts.FragmentSize > 0:
+			start := int(rec.Pos) - 1
+			end := int(rec.EndPosition())
+			if rec.Flag&sam.FlagReverse != 0 {
+				return spanRecord(rec, end-s.opts.FragmentSize, end), nil
+			}
+			return spanRecord(rec, start, start+s.opts.FragmentSize), nil
+		default:
+			return alnbed.ToBED12(rec), nil
+		}
+	}
+}
+
+// spanRecord builds a single-span (block-free) BED record on rec's chromosome
+// and strand covering [start, end). Used for the -pc and -fs fragment spans.
+func spanRecord(rec *sam.Record, start, end int) *bed.Record {
+	strand := "+"
+	if rec.Flag&sam.FlagReverse != 0 {
+		strand = "-"
+	}
+	return &bed.Record{Chrom: rec.RName, ChromStart: start, ChromEnd: end, Strand: strand}
 }
 
 // runCore is the shared coverage pipeline used by both the BED (Run) and the

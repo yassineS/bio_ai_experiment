@@ -32,6 +32,10 @@ bedgenomecov -i <intervals.bed> -g <chrom.sizes> [options]
 - `--ibam FILE` Input BAM/SAM file; the genome is taken from its `@SQ` header
   (no `-g` needed). Each alignment covers its reference span, or its CIGAR
   blocks under `--split`.
+- `-pc, --pair-coverage` Coverage of paired-end fragments (BAM only): each
+  proper pair contributes one fragment `[pos, pos+TLEN)`.
+- `-fs, --fragment-size N` Force an N-base fragment per read instead of its
+  alignment length (BAM only), anchored at the read's 5' end.
 - `-g, --genome FILE` Chromosome sizes file, required unless `--ibam` (`chrom<TAB>size`)
 - `--output FILE` Output file (default: stdout; `.gz` ok)
 - `-bg, --bedGraph` Emit non-zero runs of constant depth as bedGraph

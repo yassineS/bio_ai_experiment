@@ -111,6 +111,45 @@ func TestRunBAM_SAMInput(t *testing.T) {
 	}
 }
 
+// pairedSAM is a single proper pair: the +strand mate at pos 11 with TLEN 30,
+// and its -strand mate at pos 31 with TLEN -30.
+const pairedSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+	"@SQ\tSN:chr1\tLN:100\n" +
+	"p1\t99\tchr1\t11\t60\t10M\t=\t31\t30\tACGTACGTAC\tIIIIIIIIII\n" +
+	"p1\t147\tchr1\t31\t60\t10M\t=\t11\t-30\tACGTACGTAC\tIIIIIIIIII\n"
+
+func TestRunBAM_PairedCoverage(t *testing.T) {
+	// -pc: the fragment spans [10,40) (pos0 10 + TLEN 30), counted once.
+	var buf bytes.Buffer
+	if err := RunBAM(strings.NewReader(pairedSAM), &buf, Options{Mode: ModeBedGraphAll, PairedCoverage: true}); err != nil {
+		t.Fatalf("RunBAM -pc: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "chr1\t10\t40\t1\n") {
+		t.Errorf("-pc: expected single fragment [10,40) at depth 1:\n%s", out)
+	}
+}
+
+func TestRunBAM_FragmentSize(t *testing.T) {
+	// -fs 20: the +read covers [10,30), the -read covers [20,40) (anchored at
+	// its 3' end), so [20,30) is depth 2.
+	var buf bytes.Buffer
+	if err := RunBAM(strings.NewReader(pairedSAM), &buf, Options{Mode: ModeBedGraphAll, FragmentSize: 20}); err != nil {
+		t.Fatalf("RunBAM -fs: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "chr1\t20\t30\t2\n") {
+		t.Errorf("-fs 20: expected the fragment overlap [20,30) at depth 2:\n%s", out)
+	}
+}
+
+func TestRunBAM_PCandFSExclusive(t *testing.T) {
+	if err := RunBAM(strings.NewReader(pairedSAM), &bytes.Buffer{},
+		Options{PairedCoverage: true, FragmentSize: 20}); err == nil {
+		t.Fatal("expected error combining -pc and -fs")
+	}
+}
+
 func TestRunBAM_NoSQHeader(t *testing.T) {
 	if err := RunBAM(strings.NewReader("@HD\tVN:1.6\n"), &bytes.Buffer{}, Options{}); err == nil {
 		t.Fatal("expected error when the header has no @SQ entries")
