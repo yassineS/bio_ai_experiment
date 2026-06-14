@@ -34,9 +34,10 @@ Options:
   -b, --b FILE          Second sorted BED file (required)
       --output FILE     Output file (default: stdout)
   -s, --strand          Same-strand overlaps only (BED6 strand column)
-  -S, --opposite-strand Opposite-strand overlaps only (BED6 strand column)
+  -S <+|->              Restrict both inputs to the given strand only
   -f FRACTION           Require >= FRACTION of A overlapped by B (0..1)
   -F FRACTION           Require >= FRACTION of B overlapped by A (0..1)
+      --split           Treat BED12 records as their blocks (exon-aware)
   -h, --help            Show this help message
   -v, --version         Show version information
 
@@ -65,7 +66,9 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	var (
 		fileA, fileB, output string
-		same, opposite       bool
+		same                 bool
+		strandFilter         string
+		split                bool
 		fractionA, fractionB float64
 		help, showVer        bool
 	)
@@ -77,9 +80,10 @@ func run(argv []string, stdout, stderr *os.File) error {
 	cliflag.StringVar(fs, &output, "", "output", "", "Output file (default: stdout)")
 
 	cliflag.BoolVar(fs, &same, "s", "strand", false, "Same-strand overlaps only")
-	cliflag.BoolVar(fs, &opposite, "S", "opposite-strand", false, "Opposite-strand overlaps only")
+	fs.StringVar(&strandFilter, "S", "", "Restrict both inputs to the given strand (+ or -)")
 	cliflag.Float64Var(fs, &fractionA, "f", "fraction-a", 0.0, "Fraction of A overlapped (0..1)")
 	cliflag.Float64Var(fs, &fractionB, "F", "fraction-b", 0.0, "Fraction of B overlapped (0..1)")
+	cliflag.BoolVar(fs, &split, "", "split", false, "Treat BED12 records as their blocks (exon-aware)")
 
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVer, "v", "version", false, "Show version")
@@ -119,10 +123,11 @@ func run(argv []string, stdout, stderr *os.File) error {
 	defer w.Close()
 
 	opts := bedjaccard.Options{
-		SameStrand:     same,
-		OppositeStrand: opposite,
-		FractionA:      fractionA,
-		FractionB:      fractionB,
+		SameStrand:   same,
+		StrandFilter: strandFilter,
+		Split:        split,
+		FractionA:    fractionA,
+		FractionB:    fractionB,
 	}
 	if _, err := bedjaccard.Run(rA, rB, w, opts); err != nil {
 		return err

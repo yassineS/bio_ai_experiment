@@ -15,10 +15,16 @@ type Options struct {
 	// MinFraction ("-f", 0..1). When > 0, an overlap with an individual B
 	// interval is only subtracted if it covers at least this fraction of A.
 	//
-	// Note: upstream bedtools also has `-N` which sums coverage across ALL B
-	// overlaps and drops the entire A if the union coverage exceeds the
-	// fraction. That is a separate, unimplemented option here.
+	// With RemoveSum ("-N") set, MinFraction instead becomes the union
+	// coverage threshold above which the whole A feature is dropped.
 	MinFraction float64
+	// RemoveSum ("-N") sums coverage across ALL overlapping B intervals
+	// (their union with A) and, if that union covers strictly more than
+	// MinFraction of A, drops the entire A feature; otherwise A is emitted
+	// unchanged (never split into partial segments). This mirrors
+	// upstream bedtools subtract -N (subtractFile.cpp): -f is reused as the
+	// union-coverage threshold and per-B fraction filtering is disabled.
+	RemoveSum bool
 	// SameStrand ("-s"): only consider B intervals on the same strand as A.
 	SameStrand bool
 	// OppositeStrand ("-S"): only consider B intervals on the opposite
@@ -33,6 +39,12 @@ func (o Options) Validate() error {
 	}
 	if o.MinFraction < 0 || o.MinFraction > 1 {
 		return fmt.Errorf("min-fraction must be between 0 and 1, got %v", o.MinFraction)
+	}
+	// Upstream bedtools subtract -N folds the -f value into the union
+	// coverage threshold and then validates it, so -N requires an explicit
+	// -f in the open-low/closed-high range (0.0, 1.0].
+	if o.RemoveSum && (o.MinFraction <= 0 || o.MinFraction > 1) {
+		return fmt.Errorf("-f must be in the range (0.0, 1.0].")
 	}
 	return nil
 }
@@ -111,7 +123,10 @@ func subtractOne(a *row, bs []*row, opts Options) (segs []*row, drop bool) {
 		if ovLen <= 0 {
 			continue
 		}
-		if opts.MinFraction > 0 && aLen > 0 {
+		// In -N (RemoveSum) mode every overlap is collected for the union
+		// coverage calculation; the per-B fraction filter does not apply
+		// (upstream sets the per-B overlap fraction to 1E-9).
+		if !opts.RemoveSum && opts.MinFraction > 0 && aLen > 0 {
 			if float64(ovLen)/float64(aLen) < opts.MinFraction {
 				continue
 			}
@@ -122,6 +137,17 @@ func subtractOne(a *row, bs []*row, opts Options) (segs []*row, drop bool) {
 	if len(eligible) == 0 {
 		return []*row{a}, false
 	}
+
+	// -N / RemoveSum: drop A entirely iff the union of all B overlaps covers
+	// strictly more than MinFraction of A; otherwise emit A unchanged.
+	if opts.RemoveSum {
+		covered := unionCoverage(a, eligible)
+		if aLen > 0 && float64(covered)/float64(aLen) > opts.MinFraction {
+			return nil, true
+		}
+		return []*row{a}, false
+	}
+
 	if opts.RemoveEntire {
 		return nil, true
 	}
@@ -153,6 +179,46 @@ func subtractOne(a *row, bs []*row, opts Options) (segs []*row, drop bool) {
 		segs = append(segs, a.withSpan(cur, a.end))
 	}
 	return segs, false
+}
+
+// unionCoverage returns the number of bases of a covered by the union of
+// the eligible B intervals (each clamped to a's span). It mirrors upstream
+// bedtools subtract -N, which paints a per-base covered/uncovered bitmap of
+// the query and counts the covered bases.
+func unionCoverage(a *row, eligible []*row) int {
+	type span struct{ start, end int }
+	spans := make([]span, 0, len(eligible))
+	for _, b := range eligible {
+		s := b.start
+		if s < a.start {
+			s = a.start
+		}
+		e := b.end
+		if e > a.end {
+			e = a.end
+		}
+		if e > s {
+			spans = append(spans, span{s, e})
+		}
+	}
+	if len(spans) == 0 {
+		return 0
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	covered := 0
+	curStart, curEnd := spans[0].start, spans[0].end
+	for _, sp := range spans[1:] {
+		if sp.start > curEnd {
+			covered += curEnd - curStart
+			curStart, curEnd = sp.start, sp.end
+			continue
+		}
+		if sp.end > curEnd {
+			curEnd = sp.end
+		}
+	}
+	covered += curEnd - curStart
+	return covered
 }
 
 // strandMatch returns true if b should be considered for subtraction from a

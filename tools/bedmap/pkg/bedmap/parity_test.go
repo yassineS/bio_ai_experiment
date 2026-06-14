@@ -142,7 +142,38 @@ func TestParity_Map_T13_AbsMax(t *testing.T) {
 	}
 }
 
-// map.t14..t29 — GFF / VCF / BAM input not supported in BED-only port.
+// map.t14 — GFF database (-b test.gff): GFF features are auto-detected
+// (1-based start/end in columns 4/5) and the -c column extracts the literal
+// GFF column. Byte-for-byte against bedtools v2.31.1.
 func TestParity_Map_T14_GFF(t *testing.T) {
-	t.Skip("GFF input not yet supported in bedmap")
+	got := runParity(t, "ivls.bed", "test.gff", Options{Columns: []int{1}, Ops: []string{"collapse"}})
+	want := readParityFixture(t, "t14_gff_c1.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// map.t18 — GFF column 5 (end) with -o max.
+func TestParity_Map_T18_GFFMax(t *testing.T) {
+	got := runParity(t, "ivls.bed", "test.gff", Options{Columns: []int{5}, Ops: []string{"max"}})
+	want := readParityFixture(t, "t14_gff_c5max.expected")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParseIntervalLine_GFFvsBED checks the per-record BED/GFF auto-detection.
+func TestParseIntervalLine_GFFvsBED(t *testing.T) {
+	bedRR, err := parseIntervalLine([]string{"chr1", "10", "20", "n"})
+	if err != nil || bedRR.rec.ChromStart != 10 || bedRR.rec.ChromEnd != 20 {
+		t.Fatalf("BED parse: %+v err=%v", bedRR.rec, err)
+	}
+	// GFF: 1-based start 4 -> 0-based 3; end 9.
+	gffRR, err := parseIntervalLine([]string{"chr1", "src", "exon", "4", "9", "0.0", "+", ".", "attrs"})
+	if err != nil {
+		t.Fatalf("GFF parse err: %v", err)
+	}
+	if gffRR.rec.ChromStart != 3 || gffRR.rec.ChromEnd != 9 || gffRR.rec.Strand != "+" {
+		t.Errorf("GFF parse = %+v, want start 3 end 9 strand +", gffRR.rec)
+	}
 }

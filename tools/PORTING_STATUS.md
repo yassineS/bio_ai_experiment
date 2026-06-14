@@ -710,11 +710,11 @@ and reuses `pkg/htsgo/bed` + `pkg/htsgo/iohelper`.
 | `bedsort` | `bedtools sort` | 91.6% | Lex / size / score sort modes; `-g`/`--faidx` for chrom order |
 | `bedslop` | `bedtools slop` | 95.2% | `-b N` / `-l N -r N` (+ `--pct`), `-s` strand swap, clip to chrom |
 | `bedcomplement` | `bedtools complement` | 94.6% | Gaps over chroms in `-g`; errors if input not sorted |
-| `bedsubtract` | `bedtools subtract` | 93.7% | A − B with `-A` / `-N` / `-s` / `-S`; splits A around B |
+| `bedsubtract` | `bedtools subtract` | 93.7% | A − B with `-A`, `-f` (per-B fraction), `-N` (union-coverage drop), `-s` / `-S`; splits A around B; full `test-subtract.sh` parity incl. t9/t10/t21 |
 | `bedflank` | `bedtools flank` | 92.2% | Flank-only `slop` variant |
-| `bedclosest` | `bedtools closest` | 92.8% | Sweep on sorted input; `-D ref/a/b`, `-N`, `-t all/first/last` |
-| `bedgenomecov` | `bedtools genomecov` | 94.0% | histogram / `-bg` / `-bga` / `-d` / `-dz`; `-strand`, `-max`, `-scale`, `-5`/`-3` |
-| `bedjaccard` | `bedtools jaccard` | 96.3% | Streaming sweep; `-s`/`-S`, `-f`/`-F` |
+| `bedclosest` | `bedtools closest` | 92.8% | Sweep on sorted input; `-D ref/a/b`, `-N` (different-names), `--require-overlap`, `-t all/first/last`, `-s`/`-S` strand filters, multi-DB `-b ...`/`-names`/`-filenames`/`-mdb each\|all` |
+| `bedgenomecov` | `bedtools genomecov` | 94.0% | histogram / `-bg` / `-bga` / `-d` / `-dz`; `-strand`, `-max`, `-scale`, `-5`/`-3`, `--split` (BED12 blocks) |
+| `bedjaccard` | `bedtools jaccard` | 96.3% | Streaming sweep; `-s` same-strand, `-S <+\|->` single-strand filter, `-f`/`-F`, `--split` (BED12 blocks); full `test-jaccard.sh` strand + split parity (t08/t11/t12/t13) |
 
 Smoke tests for each are hand-verified against expected output (see the
 respective PRs and READMEs). **Validated parity against the upstream `bedtools`

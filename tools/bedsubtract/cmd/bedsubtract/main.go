@@ -33,8 +33,11 @@ Options:
   -o, --output FILE        Output BED file ('-' for stdout, default: stdout)
   -A                       If any part of A overlaps B, drop the entire A
                            interval (do not split it).
-  -N, --min-fraction NUM   Only subtract B from A when the overlap covers at
-                           least NUM (0..1) of A.
+  -f, --min-fraction NUM   Only subtract an individual B interval from A when
+                           that overlap covers at least NUM (0..1) of A.
+  -N, --removeSum          Drop A entirely when the union of all overlapping B
+                           intervals covers more than -f of A (per-B fraction
+                           filtering disabled); otherwise emit A unchanged.
   -s, --strand             Only subtract B intervals on the same strand as A
                            (BED6+).
   -S                       Only subtract B intervals on the opposite strand
@@ -78,7 +81,10 @@ func main() {
 	fs.BoolVar(&oppositeStrand, "S", false, "Opposite-strand only")
 
 	var minFraction float64
-	cliflag.Float64Var(fs, &minFraction, "N", "min-fraction", 0, "Min overlap fraction of A")
+	cliflag.Float64Var(fs, &minFraction, "f", "min-fraction", 0, "Min overlap fraction of A")
+
+	var removeSum bool
+	cliflag.BoolVar(fs, &removeSum, "N", "removeSum", false, "Drop A when the union of B overlaps covers more than -f of A")
 
 	var help, showVersion bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help message")
@@ -128,6 +134,7 @@ func main() {
 	opts := bedsubtract.Options{
 		RemoveEntire:   removeEntire,
 		MinFraction:    minFraction,
+		RemoveSum:      removeSum,
 		SameStrand:     sameStrand,
 		OppositeStrand: oppositeStrand,
 	}

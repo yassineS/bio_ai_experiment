@@ -1149,8 +1149,8 @@ Options:
   -d, --max-depth INT        Max reads per position (default 8000).
   -A, --count-orphans        Include reads with unmapped mates / anomalous pairs.
   -x, --ignore-overlaps      Discard overlapping mate-pair bases.
-  -E, --redo-baq             Re-compute BAQ (NOT IMPLEMENTED; deferred).
-  -B, --no-BAQ               Disable BAQ application (no-op in v1; we don't apply BAQ).
+  -E, --redo-baq             Recompute BAQ on the fly, ignoring any existing BQ tag.
+  -B, --no-BAQ               Disable BAQ (per-Base Alignment Quality) realignment.
   -a, --all-positions        Emit zero-depth positions inside covered regions.
       --all-positions-all-chroms
                              Emit every reference position (-aa). Pass -a twice or this flag.
@@ -1214,8 +1214,8 @@ func runMpileup(args []string) int {
 	cliflag.IntVar(fs, &maxDepth, "d", "max-depth", samtools.DefaultMpileupMaxDepth, "Max depth")
 	cliflag.BoolVar(fs, &orphans, "A", "count-orphans", false, "Include orphan reads")
 	cliflag.BoolVar(fs, &ignoreOvl, "x", "ignore-overlaps", false, "Discard overlapping mates")
-	cliflag.BoolVar(fs, &redoBAQ, "E", "redo-baq", false, "Re-compute BAQ (not implemented)")
-	cliflag.BoolVar(fs, &noBAQ, "B", "no-BAQ", false, "Disable BAQ (no-op in v1)")
+	cliflag.BoolVar(fs, &redoBAQ, "E", "redo-baq", false, "Recompute BAQ, ignoring existing BQ tags")
+	cliflag.BoolVar(fs, &noBAQ, "B", "no-BAQ", false, "Disable BAQ realignment")
 	// -a is repeatable upstream (mplp.all++): one -a emits zero-depth
 	// positions inside covered regions; a second (-aa, or -a -a) extends to
 	// every reference position. A count flag lets cliflag.Parse expand the
@@ -1343,11 +1343,6 @@ func runMpileup(args []string) int {
 		}
 		return 0
 	}
-	if redoBAQ {
-		fmt.Fprintln(os.Stderr, "samtools mpileup: -E/--redo-baq not yet implemented; tracked in docs/PARITY_ROADMAP.md#samtools")
-		return 2
-	}
-
 	opts := samtools.MpileupOptions{
 		Inputs:                fs.Args(),
 		FastaRef:              fastaRef,

@@ -26,7 +26,11 @@ Description:
 
 Options:
   -i, --input FILE        Input BED file (default: stdin, '-' for stdin)
-  -g, --genome FILE       Chromosome sizes file (chrom<TAB>size per line, required)
+      --ibam FILE         Input BAM/SAM file; the genome is taken from its header
+                          (no -g needed). Each alignment covers its reference
+                          span, or its CIGAR blocks under --split.
+  -g, --genome FILE       Chromosome sizes file (chrom<TAB>size per line; required
+                          unless --ibam)
       --output FILE       Output file (default: stdout)
   -bg, --bedGraph         Emit non-zero runs of constant depth as bedGraph
   -bga                    Emit every run of constant depth (includes zero)
@@ -37,6 +41,9 @@ Options:
       --scale FLOAT       Multiply every depth by FLOAT (default 1.0)
   -5,  --five-prime       Count only the 5'-most base of each interval
   -3,  --three-prime      Count only the 3'-most base of each interval
+       --split            Treat BED12 records as their blocks (exon-aware)
+  -pc, --pair-coverage    Coverage of paired-end fragments (BAM input only)
+  -fs, --fragment-size N  Force an N-base fragment per read (BAM input only)
       --trackline         Prepend a UCSC trackline to -bg/-bga output
       --trackopts STR     Extra trackline options appended after "track"
   -h,  --help             Show this help message
@@ -71,6 +78,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	var (
 		inputFile  string
+		ibamFile   string
 		genomeFile string
 		outputFile string
 
@@ -84,6 +92,9 @@ func run(argv []string, stdout, stderr *os.File) error {
 		scale     float64
 		fivePrime bool
 		threePrm  bool
+		split     bool
+		pairedCov bool
+		fragSize  int
 		trackLine bool
 		trackOpts string
 
@@ -92,7 +103,8 @@ func run(argv []string, stdout, stderr *os.File) error {
 	)
 
 	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input BED file (default: stdin)")
-	cliflag.StringVar(fs, &genomeFile, "g", "genome", "", "Chromosome sizes file (required)")
+	cliflag.StringVar(fs, &ibamFile, "ibam", "input-bam", "", "Input BAM/SAM file; genome is taken from its header")
+	cliflag.StringVar(fs, &genomeFile, "g", "genome", "", "Chromosome sizes file (required unless -ibam)")
 	cliflag.StringVar(fs, &outputFile, "", "output", "", "Output file (default: stdout)")
 
 	cliflag.BoolVar(fs, &bedGraph, "bg", "bedGraph", false, "Emit non-zero bedGraph runs")
@@ -107,6 +119,9 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	cliflag.BoolVar(fs, &fivePrime, "5", "five-prime", false, "Count only 5' end")
 	cliflag.BoolVar(fs, &threePrm, "3", "three-prime", false, "Count only 3' end")
+	cliflag.BoolVar(fs, &split, "", "split", false, "Treat BED12 records as their blocks")
+	cliflag.BoolVar(fs, &pairedCov, "pc", "pair-coverage", false, "Coverage of paired-end fragments (BAM only)")
+	cliflag.IntVar(fs, &fragSize, "fs", "fragment-size", 0, "Force fragment size instead of read length (BAM only)")
 	cliflag.BoolVar(fs, &trackLine, "", "trackline", false, "Emit UCSC trackline header")
 	cliflag.StringVar(fs, &trackOpts, "", "trackopts", "", "Extra trackline options")
 
@@ -127,8 +142,8 @@ func run(argv []string, stdout, stderr *os.File) error {
 		return nil
 	}
 
-	if genomeFile == "" {
-		return fmt.Errorf("missing -g/--genome (use -h for help)")
+	if genomeFile == "" && ibamFile == "" {
+		return fmt.Errorf("missing -g/--genome (or use -ibam to take the genome from a BAM header)")
 	}
 
 	// Pick output mode (mutually exclusive).
@@ -159,6 +174,39 @@ func run(argv []string, stdout, stderr *os.File) error {
 		inputFile = fs.Arg(0)
 	}
 
+	outW, err := iohelper.OpenWriter(outputFile)
+	if err != nil {
+		return fmt.Errorf("opening output: %w", err)
+	}
+	defer outW.Close()
+
+	opts := bedgenomecov.Options{
+		Mode:           mode,
+		Strand:         strand,
+		MaxDepth:       maxDepth,
+		Scale:          scale,
+		FivePrime:      fivePrime,
+		ThreePrime:     threePrm,
+		Split:          split,
+		PairedCoverage: pairedCov,
+		FragmentSize:   fragSize,
+		TrackLine:      trackLine,
+		TrackOpts:      trackOpts,
+	}
+	if (pairedCov || fragSize > 0) && ibamFile == "" {
+		return fmt.Errorf("-pc and -fs require BAM input (--ibam)")
+	}
+
+	// -ibam: the genome comes from the BAM/SAM header; no -g needed.
+	if ibamFile != "" {
+		bamR, err := iohelper.OpenReader(ibamFile)
+		if err != nil {
+			return fmt.Errorf("opening BAM input: %w", err)
+		}
+		defer bamR.Close()
+		return bedgenomecov.RunBAM(bamR, outW, opts)
+	}
+
 	genomeR, err := iohelper.OpenReader(genomeFile)
 	if err != nil {
 		return fmt.Errorf("opening genome file: %w", err)
@@ -175,21 +223,5 @@ func run(argv []string, stdout, stderr *os.File) error {
 	}
 	defer inR.Close()
 
-	outW, err := iohelper.OpenWriter(outputFile)
-	if err != nil {
-		return fmt.Errorf("opening output: %w", err)
-	}
-	defer outW.Close()
-
-	opts := bedgenomecov.Options{
-		Mode:       mode,
-		Strand:     strand,
-		MaxDepth:   maxDepth,
-		Scale:      scale,
-		FivePrime:  fivePrime,
-		ThreePrime: threePrm,
-		TrackLine:  trackLine,
-		TrackOpts:  trackOpts,
-	}
 	return bedgenomecov.Run(inR, genome, outW, opts)
 }

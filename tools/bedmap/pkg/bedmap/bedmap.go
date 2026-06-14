@@ -264,24 +264,52 @@ func readRawRecords(r io.Reader) ([]rawRecord, error) {
 		if len(fields) < 3 {
 			return nil, fmt.Errorf("BED record must have at least 3 fields, got %d", len(fields))
 		}
-		start, err := strconv.Atoi(fields[1])
+		rr, err := parseIntervalLine(fields)
 		if err != nil {
-			return nil, fmt.Errorf("invalid chromStart %q: %v", fields[1], err)
+			return nil, err
 		}
-		end, err := strconv.Atoi(fields[2])
-		if err != nil {
-			return nil, fmt.Errorf("invalid chromEnd %q: %v", fields[2], err)
-		}
-		rec := &bed.Record{Chrom: fields[0], ChromStart: start, ChromEnd: end}
-		if len(fields) > 5 {
-			rec.Strand = fields[5]
-		}
-		out = append(out, rawRecord{rec: rec, fields: fields})
+		out = append(out, rr)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// parseIntervalLine parses one B record, auto-detecting BED vs GFF. A BED
+// record has a numeric chromStart in column 2; a GFF record (9 columns, 1-based)
+// has a textual source in column 2 and numeric start/end in columns 4/5. The
+// original fields are preserved verbatim so the -c column extraction reads the
+// literal source columns (for GFF these are the 1-based GFF columns, matching
+// upstream bedtools map -b <gff>).
+func parseIntervalLine(fields []string) (rawRecord, error) {
+	// BED: columns 2 and 3 are the 0-based half-open coordinates.
+	if start, err := strconv.Atoi(fields[1]); err == nil {
+		end, err2 := strconv.Atoi(fields[2])
+		if err2 != nil {
+			return rawRecord{}, fmt.Errorf("invalid chromEnd %q: %v", fields[2], err2)
+		}
+		rec := &bed.Record{Chrom: fields[0], ChromStart: start, ChromEnd: end}
+		if len(fields) > 5 {
+			rec.Strand = fields[5]
+		}
+		return rawRecord{rec: rec, fields: fields}, nil
+	}
+	// GFF: column 2 (source) is non-numeric; columns 4/5 are 1-based start/end.
+	if len(fields) >= 8 {
+		gstart, err := strconv.Atoi(fields[3])
+		if err == nil {
+			gend, err2 := strconv.Atoi(fields[4])
+			if err2 == nil {
+				rec := &bed.Record{Chrom: fields[0], ChromStart: gstart - 1, ChromEnd: gend}
+				if len(fields) > 6 {
+					rec.Strand = fields[6]
+				}
+				return rawRecord{rec: rec, fields: fields}, nil
+			}
+		}
+	}
+	return rawRecord{}, fmt.Errorf("invalid record: column 2 %q is not a numeric BED start and the line is not a GFF feature", fields[1])
 }
 
 // strandPass: same as bedcoverage; duplicated here to avoid a cross-tool

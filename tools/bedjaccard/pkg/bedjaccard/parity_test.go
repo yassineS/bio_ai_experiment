@@ -9,8 +9,9 @@ package bedjaccard
 // both A and B before computing intersection / union (mirroring upstream's
 // `setUseMergedIntervals(true)` in ContextJaccard.cpp), so cases against
 // b.bed / c.bed / mixedStrands.bed are byte-for-byte parity with upstream.
-// Cases still wrapped in t.Skip are unrelated to the merge step (BAM /
-// VCF / GFF input, `-split`, `-S` single-strand filter, large fixtures).
+// The `-S` single-strand filter (t12/t13), `-split` BED12 block-aware overlap
+// (t08), and BAM input (t09, auto-detected) are implemented and asserted.
+// Cases still wrapped in t.Skip are unrelated (VCF/GFF input, large fixtures).
 
 import (
 	"bytes"
@@ -102,15 +103,26 @@ func TestParity_Jaccard_T07_ThreeBlocksNoSplit(t *testing.T) {
 	}
 }
 
-// jaccard.t08 — `-split` interprets the BED12 blocks. bedjaccard does not
-// implement BED12 block-splitting.
+// jaccard.t08 — `-split` interprets the BED12 blocks: three_blocks_match.bed
+// becomes blocks [0,10)/[20,30)/[40,50) (total 30) and only the first block
+// overlaps e.bed [5,15), giving intersection 5 / union 35.
 func TestParity_Jaccard_T08_ThreeBlocksSplit(t *testing.T) {
-	t.Skip("unimplemented: -split (BED12 block-aware overlap)")
+	got := runJaccardParity(t, "three_blocks_match.bed", "e.bed", Options{Split: true})
+	want := readJaccardParity(t, "t08_three_blocks_split.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// jaccard.t09 — BAM input. bedjaccard is BED-only.
+// jaccard.t09 — BAM input on both -a and -b. bedjaccard auto-detects BAM and
+// converts each alignment to a BED12 interval (its CIGAR blocks). Expected
+// value is from the upstream binary on the vendored a.bam / three_blocks_match.bam.
 func TestParity_Jaccard_T09_BAMInput(t *testing.T) {
-	t.Skip("unimplemented: BAM input")
+	got := runJaccardParity(t, "a.bam", "three_blocks_match.bam", Options{})
+	want := readJaccardParity(t, "t09_bam.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // jaccard.t10 — mixed-strand files, no `-s`. Both A and B are pre-merged
@@ -133,11 +145,25 @@ func TestParity_Jaccard_T11_MixedStrandsS(t *testing.T) {
 		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
+
+// jaccard.t12 — `-S +` restricts both inputs to the forward strand.
 func TestParity_Jaccard_T12_MixedStrandsSPlus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runJaccardParity(t, "aMixedStrands.bed", "bMixedStrands.bed",
+		Options{StrandFilter: "+"})
+	want := readJaccardParity(t, "t12_mixed_s_plus.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
+
+// jaccard.t13 — `-S -` restricts both inputs to the reverse strand.
 func TestParity_Jaccard_T13_MixedStrandsSMinus(t *testing.T) {
-	t.Skip("unimplemented: -S <strand> single-strand filter")
+	got := runJaccardParity(t, "aMixedStrands.bed", "bMixedStrands.bed",
+		Options{StrandFilter: "-"})
+	want := readJaccardParity(t, "t13_mixed_s_minus.expected.tsv")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // jaccard.t14 — a645.bed vs b645.bed: each side has disjoint records, no

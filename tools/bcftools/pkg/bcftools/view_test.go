@@ -614,3 +614,52 @@ func dataRecordsStripINFO(vcfText string) []string {
 	}
 	return out
 }
+
+func TestRecomputeACAN(t *testing.T) {
+	// Two kept samples, multiallelic ALT=T,G: S1=1/2 (one each), S2=0/1.
+	v := &vcf.Variant{
+		Chrom: "chr1", Pos: 100, Ref: "A", Alt: []string{"T", "G"},
+		Info:      map[string]string{"DP": "99"},
+		InfoOrder: []string{"DP"},
+		Samples: []vcf.Sample{
+			{Name: "S1", Data: map[string]string{"GT": "1/2"}},
+			{Name: "S2", Data: map[string]string{"GT": "0/1"}},
+		},
+	}
+	recomputeACAN(v)
+	if v.Info["AC"] != "2,1" {
+		t.Errorf("AC = %q, want 2,1", v.Info["AC"])
+	}
+	if v.Info["AN"] != "4" {
+		t.Errorf("AN = %q, want 4", v.Info["AN"])
+	}
+	// AC and AN appended after the pre-existing DP, in that order.
+	if got := strings.Join(v.InfoOrder, ","); got != "DP,AC,AN" {
+		t.Errorf("InfoOrder = %q, want DP,AC,AN", got)
+	}
+}
+
+func TestPassesTypeFilter(t *testing.T) {
+	snp := &vcf.Variant{Ref: "A", Alt: []string{"T"}}
+	ins := &vcf.Variant{Ref: "A", Alt: []string{"AT"}}
+	mnp := &vcf.Variant{Ref: "AC", Alt: []string{"GT"}}
+
+	if !(ViewOptions{IncludeTypes: []string{"snps"}}).passesTypeFilter(snp) {
+		t.Error("-v snps should keep a SNP")
+	}
+	if (ViewOptions{IncludeTypes: []string{"snps"}}).passesTypeFilter(ins) {
+		t.Error("-v snps should drop an indel")
+	}
+	if !(ViewOptions{IncludeTypes: []string{"indels"}}).passesTypeFilter(ins) {
+		t.Error("-v indels should keep an indel")
+	}
+	if !(ViewOptions{IncludeTypes: []string{"mnps"}}).passesTypeFilter(mnp) {
+		t.Error("-v mnps should keep an MNP")
+	}
+	if (ViewOptions{ExcludeTypes: []string{"snps"}}).passesTypeFilter(snp) {
+		t.Error("-V snps should drop a SNP")
+	}
+	if !(ViewOptions{ExcludeTypes: []string{"snps"}}).passesTypeFilter(ins) {
+		t.Error("-V snps should keep an indel")
+	}
+}

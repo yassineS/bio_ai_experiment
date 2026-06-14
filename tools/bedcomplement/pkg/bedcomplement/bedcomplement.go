@@ -70,8 +70,13 @@ func ReadChromSizes(r io.Reader) (ChromSizes, []string, error) {
 // warning per chromosome is emitted to warn). The function returns an error
 // if the input is not sorted by (chrom, start) or if a record is malformed.
 //
+// When limitToInput is true (upstream `bedtools complement -L`), only
+// chromosomes that had at least one input record are emitted; otherwise every
+// chromosome in sizes is emitted (a chromosome with no input records yields a
+// single full-length gap).
+//
 // Complement returns the number of complementary intervals written.
-func Complement(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, chromOrder []string) (int, error) {
+func Complement(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, chromOrder []string, limitToInput bool) (int, error) {
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
@@ -151,6 +156,16 @@ func Complement(in io.Reader, out io.Writer, warn io.Writer, sizes ChromSizes, c
 	// chromosomes from sizes in lexicographic order. This makes the output
 	// deterministic regardless of how chromOrder was supplied.
 	emitOrder := buildEmitOrder(sizes, chromOrder)
+	// Under -L only emit chromosomes that actually had input records.
+	if limitToInput {
+		filtered := emitOrder[:0:0]
+		for _, chrom := range emitOrder {
+			if _, ok := grouped[chrom]; ok {
+				filtered = append(filtered, chrom)
+			}
+		}
+		emitOrder = filtered
+	}
 
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()

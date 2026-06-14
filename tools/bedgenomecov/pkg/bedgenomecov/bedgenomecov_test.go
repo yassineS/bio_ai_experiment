@@ -78,6 +78,107 @@ func TestHistogramBasic(t *testing.T) {
 	}
 }
 
+func TestRunBAM_SAMInput(t *testing.T) {
+	// SAM text is accepted by RunBAM (sam.NewReader auto-detects SAM/BAM).
+	// Genome comes from the @SQ header. r2 is a spliced 5M10N5M read.
+	sam := "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:100\n" +
+		"r1\t0\tchr1\t11\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+		"r2\t0\tchr1\t16\t60\t5M10N5M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n"
+
+	// Without -split: r1 covers [10,20), r2 covers [15,30) (whole span).
+	var nosplit bytes.Buffer
+	if err := RunBAM(strings.NewReader(sam), &nosplit, Options{Mode: ModeBedGraphAll}); err != nil {
+		t.Fatalf("RunBAM: %v", err)
+	}
+	ns := nosplit.String()
+	if !strings.Contains(ns, "chr1\t15\t20\t2\n") {
+		t.Errorf("no-split: expected depth-2 overlap [15,20):\n%s", ns)
+	}
+
+	// With -split: r2 contributes only its blocks [15,20) and [30,35), so the
+	// intron+gap [20,30) drops to depth 0.
+	var split bytes.Buffer
+	if err := RunBAM(strings.NewReader(sam), &split, Options{Mode: ModeBedGraphAll, Split: true}); err != nil {
+		t.Fatalf("RunBAM split: %v", err)
+	}
+	sp := split.String()
+	if !strings.Contains(sp, "chr1\t20\t30\t0\n") {
+		t.Errorf("split: expected the intron [20,30) at depth 0:\n%s", sp)
+	}
+	if !strings.Contains(sp, "chr1\t30\t35\t1\n") {
+		t.Errorf("split: expected r2 second block [30,35) at depth 1:\n%s", sp)
+	}
+}
+
+// pairedSAM is a single proper pair: the +strand mate at pos 11 with TLEN 30,
+// and its -strand mate at pos 31 with TLEN -30.
+const pairedSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+	"@SQ\tSN:chr1\tLN:100\n" +
+	"p1\t99\tchr1\t11\t60\t10M\t=\t31\t30\tACGTACGTAC\tIIIIIIIIII\n" +
+	"p1\t147\tchr1\t31\t60\t10M\t=\t11\t-30\tACGTACGTAC\tIIIIIIIIII\n"
+
+func TestRunBAM_PairedCoverage(t *testing.T) {
+	// -pc: the fragment spans [10,40) (pos0 10 + TLEN 30), counted once.
+	var buf bytes.Buffer
+	if err := RunBAM(strings.NewReader(pairedSAM), &buf, Options{Mode: ModeBedGraphAll, PairedCoverage: true}); err != nil {
+		t.Fatalf("RunBAM -pc: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "chr1\t10\t40\t1\n") {
+		t.Errorf("-pc: expected single fragment [10,40) at depth 1:\n%s", out)
+	}
+}
+
+func TestRunBAM_FragmentSize(t *testing.T) {
+	// -fs 20: the +read covers [10,30), the -read covers [20,40) (anchored at
+	// its 3' end), so [20,30) is depth 2.
+	var buf bytes.Buffer
+	if err := RunBAM(strings.NewReader(pairedSAM), &buf, Options{Mode: ModeBedGraphAll, FragmentSize: 20}); err != nil {
+		t.Fatalf("RunBAM -fs: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "chr1\t20\t30\t2\n") {
+		t.Errorf("-fs 20: expected the fragment overlap [20,30) at depth 2:\n%s", out)
+	}
+}
+
+func TestRunBAM_PCandFSExclusive(t *testing.T) {
+	if err := RunBAM(strings.NewReader(pairedSAM), &bytes.Buffer{},
+		Options{PairedCoverage: true, FragmentSize: 20}); err == nil {
+		t.Fatal("expected error combining -pc and -fs")
+	}
+}
+
+func TestRunBAM_NoSQHeader(t *testing.T) {
+	if err := RunBAM(strings.NewReader("@HD\tVN:1.6\n"), &bytes.Buffer{}, Options{}); err == nil {
+		t.Fatal("expected error when the header has no @SQ entries")
+	}
+}
+
+func TestSplitBED12Blocks(t *testing.T) {
+	// One BED12 record, 3 blocks of 10 at starts 0/20/40. Without -split the
+	// whole [0,50) span is covered; with -split only the blocks are.
+	rec := "chr1\t0\t50\tx\t0\t+\t0\t0\t0\t3\t10,10,10,\t0,20,40,\n"
+	genome := "chr1\t60\n"
+
+	whole := runOf(t, rec, genome, Options{Mode: ModeBedGraphAll})
+	if !strings.Contains(whole, "chr1\t0\t50\t1\n") {
+		t.Errorf("no-split should cover the whole span:\n%s", whole)
+	}
+
+	split := runOf(t, rec, genome, Options{Mode: ModeBedGraphAll, Split: true})
+	for _, blk := range []string{"chr1\t0\t10\t1\n", "chr1\t20\t30\t1\n", "chr1\t40\t50\t1\n"} {
+		if !strings.Contains(split, blk) {
+			t.Errorf("split missing block %q in:\n%s", blk, split)
+		}
+	}
+	// The inter-block gaps must be depth 0 under -split.
+	if !strings.Contains(split, "chr1\t10\t20\t0\n") {
+		t.Errorf("split should leave the inter-block gap at depth 0:\n%s", split)
+	}
+}
+
 func TestHistogramMaxDepth(t *testing.T) {
 	// depth 5 covered at pos 0 (5 intervals); cap to 2.
 	bed := "chr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\nchr1\t0\t1\n"

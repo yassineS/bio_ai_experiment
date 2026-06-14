@@ -135,6 +135,58 @@ func TestSubtractMinFraction(t *testing.T) {
 	}
 }
 
+func TestSubtractRemoveSum(t *testing.T) {
+	// A spans 0..100. Two B intervals cover 0..30 and 40..50: union = 40
+	// bases = 40% of A. -N drops A iff that union strictly exceeds -f.
+	a := "chr1\t0\t100\n"
+	b := "chr1\t0\t30\nchr1\t40\t50\n"
+
+	// f=0.3: 0.40 > 0.30 -> drop A entirely (no output).
+	got, n, err := runSubtract(t, a, b, Options{RemoveSum: true, MinFraction: 0.3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" || n != 0 {
+		t.Errorf("f=0.3 should drop A, got %q (n=%d)", got, n)
+	}
+
+	// f=0.4: 0.40 is NOT > 0.40 -> keep A unchanged (never split).
+	got, _, err = runSubtract(t, a, b, Options{RemoveSum: true, MinFraction: 0.4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "chr1\t0\t100\n" {
+		t.Errorf("f=0.4 should keep A intact, got %q", got)
+	}
+
+	// Per-B fraction filtering is disabled under -N: an individual B
+	// covering only 10% still counts toward the union. Here a single B
+	// covers 50/100 = 50% > 45% -> drop.
+	got, _, err = runSubtract(t, a, "chr1\t0\t50\n", Options{RemoveSum: true, MinFraction: 0.45})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("single 50%% B should drop A at f=0.45, got %q", got)
+	}
+}
+
+func TestSubtractRemoveSumRequiresFraction(t *testing.T) {
+	// Upstream requires -f in (0.0, 1.0] when -N is used.
+	for _, o := range []Options{
+		{RemoveSum: true},                   // no -f
+		{RemoveSum: true, MinFraction: 0},   // -f 0
+		{RemoveSum: true, MinFraction: 1.5}, // out of range (also caught by range check)
+	} {
+		if err := o.Validate(); err == nil {
+			t.Errorf("expected validation error for %+v", o)
+		}
+	}
+	if err := (Options{RemoveSum: true, MinFraction: 1.0}).Validate(); err != nil {
+		t.Errorf("-N -f 1.0 should validate, got %v", err)
+	}
+}
+
 func TestSubtractStrandSame(t *testing.T) {
 	a := "chr1\t10\t30\ta1\t0\t+\n"
 	b := "chr1\t15\t20\tb1\t0\t-\nchr1\t22\t25\tb2\t0\t+\n"

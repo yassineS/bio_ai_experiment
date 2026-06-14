@@ -27,7 +27,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnbed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
 // Mode selects the output style for Run.
@@ -56,6 +58,19 @@ type Options struct {
 	ThreePrime bool    // count only the 3'-most base of each interval
 	TrackLine  bool    // emit a UCSC trackline header in bedGraph modes
 	TrackOpts  string  // optional `key=value` string appended after `track`
+	// Split ("-split") treats a BED12 record as its blocks: coverage is
+	// counted over each block interval rather than the whole record span,
+	// matching upstream bedtools genomecov -split.
+	Split bool
+	// PairedCoverage ("-pc", BAM only) counts coverage of paired-end
+	// fragments: each properly-paired read with a positive insert size (TLEN)
+	// contributes the fragment span [pos, pos+TLEN); the negative-TLEN mate is
+	// skipped so each fragment is counted once.
+	PairedCoverage bool
+	// FragmentSize ("-fs N", BAM only), when > 0, forces every read to cover a
+	// fixed N-base fragment anchored at its 5' end instead of its alignment
+	// length: forward reads cover [pos, pos+N), reverse reads cover [end-N, end).
+	FragmentSize int
 }
 
 // GenomeSize holds chromosome ordering and lengths parsed from a genome file.
@@ -107,12 +122,104 @@ func ReadGenome(r io.Reader) (*GenomeSize, error) {
 	return g, nil
 }
 
+// recordSource is the minimal interface the coverage accumulator consumes;
+// both *bed.Reader (BED input) and *alnbed.Reader (BAM/SAM input) satisfy it.
+type recordSource interface {
+	Read() (*bed.Record, error)
+}
+
 // Run reads BED intervals from input, computes coverage against the genome, and
-// writes the configured output to writer. It is the only public entry point.
+// writes the configured output to writer.
 func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) error {
 	if genome == nil || len(genome.Order) == 0 {
 		return errors.New("genome size info is required")
 	}
+	return runCore(bed.NewReader(input), genome, writer, opts)
+}
+
+// RunBAM reads a BAM/SAM alignment stream from input, derives the genome from
+// the alignment header's @SQ entries (mirroring upstream `genomecov -ibam`,
+// where no separate genome file is supplied), and writes coverage to writer.
+// Each mapped alignment contributes its whole reference span, or — under
+// opts.Split — its CIGAR blocks (exon-aware, breaking on N ops).
+func RunBAM(input io.Reader, writer io.Writer, opts Options) error {
+	if opts.PairedCoverage && opts.FragmentSize > 0 {
+		return errors.New("cannot combine -pc and -fs")
+	}
+	sr, err := sam.NewReader(input)
+	if err != nil {
+		return fmt.Errorf("reading alignment input: %w", err)
+	}
+	hdr := sr.Header()
+	genome := &GenomeSize{Length: map[string]int{}}
+	if hdr != nil {
+		for _, ref := range hdr.Refs {
+			genome.Order = append(genome.Order, ref.Name)
+			genome.Length[ref.Name] = int(ref.Length)
+		}
+	}
+	if len(genome.Order) == 0 {
+		return errors.New("alignment header has no @SQ reference entries")
+	}
+	return runCore(&alnFragmentSource{sr: sr, opts: opts}, genome, writer, opts)
+}
+
+// alnFragmentSource adapts a SAM/BAM reader to the recordSource contract,
+// converting each mapped alignment into the *bed.Record genomecov should
+// count. The shape depends on opts: by default the BED12 block record
+// (alnbed.ToBED12, so -split works); under -pc the paired-fragment span; and
+// under -fs the strand-anchored fixed-size span.
+type alnFragmentSource struct {
+	sr   sam.Reader
+	opts Options
+}
+
+// Read returns the next alignment-derived record, skipping unmapped reads and
+// (under -pc) reads that do not start a counted fragment.
+func (s *alnFragmentSource) Read() (*bed.Record, error) {
+	for {
+		rec, err := s.sr.Read()
+		if err != nil {
+			return nil, err
+		}
+		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" || rec.Pos <= 0 {
+			continue
+		}
+		switch {
+		case s.opts.PairedCoverage:
+			// Count each proper pair once, from the read carrying the positive
+			// insert size: fragment = [pos, pos+TLEN).
+			if !rec.IsProperPair() || rec.TLen <= 0 {
+				continue
+			}
+			start := int(rec.Pos) - 1
+			return spanRecord(rec, start, start+int(rec.TLen)), nil
+		case s.opts.FragmentSize > 0:
+			start := int(rec.Pos) - 1
+			end := int(rec.EndPosition())
+			if rec.Flag&sam.FlagReverse != 0 {
+				return spanRecord(rec, end-s.opts.FragmentSize, end), nil
+			}
+			return spanRecord(rec, start, start+s.opts.FragmentSize), nil
+		default:
+			return alnbed.ToBED12(rec), nil
+		}
+	}
+}
+
+// spanRecord builds a single-span (block-free) BED record on rec's chromosome
+// and strand covering [start, end). Used for the -pc and -fs fragment spans.
+func spanRecord(rec *sam.Record, start, end int) *bed.Record {
+	strand := "+"
+	if rec.Flag&sam.FlagReverse != 0 {
+		strand = "-"
+	}
+	return &bed.Record{Chrom: rec.RName, ChromStart: start, ChromEnd: end, Strand: strand}
+}
+
+// runCore is the shared coverage pipeline used by both the BED (Run) and the
+// alignment (RunBAM) entry points.
+func runCore(src recordSource, genome *GenomeSize, writer io.Writer, opts Options) error {
 	if opts.FivePrime && opts.ThreePrime {
 		return errors.New("cannot combine 5' and 3' end-only counting")
 	}
@@ -132,8 +239,8 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 	bw := bufio.NewWriter(writer)
 	defer bw.Flush()
 
-	// Ingest BED records and bump counts.
-	br := bed.NewReader(input)
+	// Ingest records and bump counts.
+	br := src
 	for {
 		rec, err := br.Read()
 		if err == io.EOF {
@@ -156,6 +263,8 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 		}
 		switch {
 		case opts.FivePrime:
+			// End-only counting works on the whole-record extent, not the
+			// per-block split (upstream applies -5/-3 to the read, not blocks).
 			pos := start
 			if rec.Strand == "-" {
 				pos = end - 1
@@ -172,8 +281,13 @@ func Run(input io.Reader, genome *GenomeSize, writer io.Writer, opts Options) er
 				arr[pos]++
 			}
 		default:
-			for i := start; i < end; i++ {
-				arr[i]++
+			// Under -split a BED12 record contributes coverage over each of
+			// its blocks; otherwise the whole [start,end) span.
+			for _, iv := range recordCoverIntervals(rec, opts.Split) {
+				s, e := clamp(iv[0], iv[1], len(arr))
+				for i := s; i < e; i++ {
+					arr[i]++
+				}
 			}
 		}
 	}
@@ -208,6 +322,26 @@ func clamp(start, end, length int) (int, int) {
 		end = length
 	}
 	return start, end
+}
+
+// recordCoverIntervals returns the 0-based half-open intervals a record
+// contributes coverage over. With split=true and a BED12 record carrying
+// blocks, that is one interval per block (block start = ChromStart +
+// BlockStarts[i], length BlockSizes[i]); otherwise the single [ChromStart,
+// ChromEnd) span.
+func recordCoverIntervals(rec *bed.Record, split bool) [][2]int {
+	if split && rec.BlockCount > 0 && len(rec.BlockSizes) > 0 {
+		out := make([][2]int, 0, len(rec.BlockSizes))
+		for i := range rec.BlockSizes {
+			s := rec.ChromStart
+			if i < len(rec.BlockStarts) {
+				s += rec.BlockStarts[i]
+			}
+			out = append(out, [2]int{s, s + rec.BlockSizes[i]})
+		}
+		return out
+	}
+	return [][2]int{{rec.ChromStart, rec.ChromEnd}}
 }
 
 // scaledDepth applies the scale factor.

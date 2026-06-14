@@ -601,8 +601,16 @@ func TestParity_Depth_T03_Region(t *testing.T) {
 // for a single-read scan matches but the upstream "single contiguous span
 // per chromosome" form is the natural follow-up.
 func TestParity_Depth_T04_AllPositions(t *testing.T) {
-	t.Skip("not yet validated against upstream: -a zero-fill behaviour edge cases; " +
-		"tracked in PARITY_ROADMAP.md#samtools")
+	in := openParity(t, "basic.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Depth([]io.Reader{in}, &out, DepthOptions{AllPositions: true, ExcludeFlags: DefaultDepthExcludeFlags}); err != nil {
+		t.Fatalf("Depth -a: %v", err)
+	}
+	want := upstreamSamtoolsRun(t, "depth", "-a", parityPath(t, "basic.sam"))
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Errorf("depth -a mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
+	}
 }
 
 // depth.t05 — CIGAR with a deletion. Verifies refLen advances past the
@@ -669,10 +677,19 @@ func TestParity_Depth_T07_Empty(t *testing.T) {
 	}
 }
 
-// depth.t08 — BED restriction is not yet validated against upstream.
+// depth.t08 — `-b <bed>` restricts emitted positions to the BED intervals,
+// byte-for-byte against upstream samtools.
 func TestParity_Depth_T08_BedRestrict(t *testing.T) {
-	t.Skip("not yet supported: -b BED region restriction byte-parity not validated; " +
-		"tracked in PARITY_ROADMAP.md#samtools")
+	in := openParity(t, "basic.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Depth([]io.Reader{in}, &out, DepthOptions{BedPath: parityPath(t, "depth_regions.bed"), ExcludeFlags: DefaultDepthExcludeFlags}); err != nil {
+		t.Fatalf("Depth -b: %v", err)
+	}
+	want := upstreamSamtoolsRun(t, "depth", "-b", parityPath(t, "depth_regions.bed"), parityPath(t, "basic.sam"))
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Errorf("depth -b mismatch.\nwant:\n%s\ngot:\n%s", want, out.String())
+	}
 }
 
 // ---- fastq -------------------------------------------------------------
@@ -771,9 +788,29 @@ func TestParity_Fastq_T02_PairedNoSingleton(t *testing.T) {
 // Tracking the design gap rather than masking it: this test stays skipped
 // until we add QNAME-based pairing.
 func TestParity_Fastq_T03_PairedSingletonMiddle(t *testing.T) {
-	t.Skip("not yet supported: QNAME-based pair detection in paired mode " +
-		"(upstream sends flag-paired-but-mate-missing records to -s; our port " +
-		"sends them to -1/-2). Tracked in PARITY_ROADMAP.md#samtools.")
+	dir := t.TempDir()
+	r1, r2, rs := filepath.Join(dir, "1.fq"), filepath.Join(dir, "2.fq"), filepath.Join(dir, "s.fq")
+	in := openParity(t, "bam2fq.003.sam")
+	defer in.Close()
+	if _, err := Fastq(in, FastqOptions{Read1Path: r1, Read2Path: r2, SingletonPath: rs}); err != nil {
+		t.Fatalf("Fastq: %v", err)
+	}
+	got1, _ := os.ReadFile(r1)
+	got2, _ := os.ReadFile(r2)
+	gotS, _ := os.ReadFile(rs)
+
+	upS := filepath.Join(dir, "up_s.fq")
+	want1, want2 := upstreamFastqPaired(t, "bam2fq.003.sam", upS)
+	wantS, _ := os.ReadFile(upS)
+	if !bytes.Equal(got1, want1) {
+		t.Errorf("1.fq mismatch.\nwant:\n%s\ngot:\n%s", want1, got1)
+	}
+	if !bytes.Equal(got2, want2) {
+		t.Errorf("2.fq mismatch.\nwant:\n%s\ngot:\n%s", want2, got2)
+	}
+	if !bytes.Equal(gotS, wantS) {
+		t.Errorf("singleton mismatch.\nwant:\n%s\ngot:\n%s", wantS, gotS)
+	}
 }
 
 // fastq.t04 — -N (AlwaysAddSuffix) re-adds /1 /2 even in paired mode.
@@ -852,8 +889,23 @@ func TestParity_Fastq_T06_CRAMInput(t *testing.T) {
 // fastq.t07 — -T tag injection. Upstream supports an empty/star form to
 // expand to "every aux tag"; we only handle explicit comma lists.
 func TestParity_Fastq_T07_AllTagsExpansion(t *testing.T) {
-	t.Skip("not yet supported: -T '' / -T '*' (all-tags expansion); tracked in " +
-		"PARITY_ROADMAP.md#samtools")
+	sam := "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:100\n" +
+		"r1\t0\tchr1\t10\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tNM:i:0\tRG:Z:rg1\tBC:Z:AAA\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tags.sam")
+	if err := os.WriteFile(path, []byte(sam), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(dir, "out.fq")
+	in := strings.NewReader(sam)
+	if _, err := Fastq(in, FastqOptions{OutputPath: outPath, AddTags: []string{"*"}}); err != nil {
+		t.Fatalf("Fastq -T '*': %v", err)
+	}
+	got, _ := os.ReadFile(outPath)
+	want := upstreamSamtoolsRun(t, "fastq", "-T", "*", path)
+	if !bytes.Equal(got, want) {
+		t.Errorf("fastq -T '*' mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // ---- flagstat ----------------------------------------------------------

@@ -26,9 +26,10 @@ Description:
 Options:
   -d, --distance INT     Maximum distance between intervals to merge (default: 0)
   -s, --strand           Merge only intervals on the same strand
+  -S <+|->               Merge only intervals on the given strand
   -i, --input FILE       Input BED file (default: stdin)
       --output FILE      Output BED file (default: stdout)
-  -S, --stats            Print merge statistics to stderr
+      --stats            Print merge statistics to stderr
       --count            Output count of merged intervals as name field
   -g, --bedgraph         Input/output in bedGraph format (chrom, start, end, score)
   -c, --columns LIST     Comma-separated 1-based input columns to aggregate
@@ -37,6 +38,8 @@ Options:
                          single op applied to all. Supported: sum, min, max,
                          mean, median, count, count_distinct, distinct,
                          collapse, first, last, mode, antimode
+      --delim CHAR       Delimiter joining collapse/distinct/freq list values
+                         (default ",")
       --streaming        Use streaming mode for very large files
   -h, --help             Show this help message
   -v, --version          Show version information and exit
@@ -93,6 +96,9 @@ func main() {
 	var strandSpec bool
 	cliflag.BoolVar(fs, &strandSpec, "s", "strand", false, "Merge only intervals on the same strand")
 
+	var strandFilter string
+	fs.StringVar(&strandFilter, "S", "", "Merge only intervals on the given strand (+ or -)")
+
 	var inputFile string
 	cliflag.StringVar(fs, &inputFile, "i", "input", "", "Input BED file (default: stdin)")
 
@@ -100,7 +106,7 @@ func main() {
 	cliflag.StringVar(fs, &outputFile, "", "output", "", "Output BED file (default: stdout)")
 
 	var showStats bool
-	cliflag.BoolVar(fs, &showStats, "S", "stats", false, "Print merge statistics to stderr")
+	cliflag.BoolVar(fs, &showStats, "", "stats", false, "Print merge statistics to stderr")
 
 	var showCount bool
 	cliflag.BoolVar(fs, &showCount, "", "count", false, "Output count of merged intervals as name field")
@@ -113,6 +119,9 @@ func main() {
 
 	var operations string
 	cliflag.StringVar(fs, &operations, "o", "operations", "", "Comma-separated operations, one per -c column or one applied to all")
+
+	var delim string
+	fs.StringVar(&delim, "delim", ",", "Delimiter for collapse/distinct/freq list joins")
 
 	var streaming bool
 	cliflag.BoolVar(fs, &streaming, "", "streaming", false, "Use streaming mode for very large files")
@@ -140,6 +149,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	if columnOps != nil {
+		columnOps.Delim = delim
+	}
 
 	// Determine input file
 	input := inputFile
@@ -165,10 +177,11 @@ func main() {
 
 	// Set merge options
 	opts := bedmerge.MergeOptions{
-		MaxDistance: distance,
-		StrandSpec:  strandSpec,
-		Streaming:   streaming,
-		ColumnOps:   columnOps,
+		MaxDistance:  distance,
+		StrandSpec:   strandSpec,
+		StrandFilter: strandFilter,
+		Streaming:    streaming,
+		ColumnOps:    columnOps,
 		OutputFields: bedmerge.OutputFields{
 			Count:    showCount,
 			BedGraph: bedGraph,

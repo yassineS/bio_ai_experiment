@@ -17,6 +17,12 @@ type ColumnOps struct {
 	Columns []int
 	// Ops holds the operation name for each column in Columns.
 	Ops []string
+	// Delim is the delimiter joining the values produced by the list-style
+	// operations (collapse, distinct, distinct_only, distinct_sort_num[_desc],
+	// freqasc, freqdesc) — upstream `bedtools merge -delim`. An empty value is
+	// treated as the default ",". The concat/cat family always joins with no
+	// delimiter regardless of this setting, matching upstream getConcat.
+	Delim string
 }
 
 // validOps is the set of supported aggregation operations. Matches the
@@ -171,6 +177,10 @@ func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (
 		strand := ""
 		if len(fields) > 5 {
 			strand = fields[5]
+		}
+		// -S single-strand filter: drop records on the other strand.
+		if opts.StrandFilter != "" && strand != opts.StrandFilter {
+			continue
 		}
 		// Verify the requested columns exist.
 		for _, c := range co.Columns {
@@ -360,7 +370,7 @@ func flushColumnGroup(w io.Writer, co *ColumnOps, group []colInterval) (int, err
 		for j, iv := range group {
 			vals[j] = iv.fields[col-1]
 		}
-		res, err := applyOp(op, col, vals)
+		res, err := applyOpDelim(op, col, vals, co.delim())
 		if err != nil {
 			return 0, err
 		}
@@ -383,7 +393,21 @@ func ApplyOp(op string, col int, vals []string) (string, error) {
 	return applyOp(op, col, vals)
 }
 
+// delim returns the effective list-join delimiter, defaulting to "," when
+// unset.
+func (co *ColumnOps) delim() string {
+	if co == nil || co.Delim == "" {
+		return ","
+	}
+	return co.Delim
+}
+
+// applyOp applies op with the default "," list delimiter.
 func applyOp(op string, col int, vals []string) (string, error) {
+	return applyOpDelim(op, col, vals, ",")
+}
+
+func applyOpDelim(op string, col int, vals []string, delim string) (string, error) {
 	if numericOps[op] {
 		nums := make([]float64, len(vals))
 		for i, v := range vals {
@@ -515,7 +539,7 @@ func applyOp(op string, col int, vals []string) (string, error) {
 				}
 				out = append(out, formatNum(n))
 			}
-			return strings.Join(out, ","), nil
+			return strings.Join(out, delim), nil
 		case "mode":
 			return modeOrAntimode(vals, true), nil
 		case "antimode":
@@ -540,9 +564,9 @@ func applyOp(op string, col int, vals []string) (string, error) {
 		// Upstream getDistinct iterates its std::map<string,int> freqMap, so
 		// the unique values come out in ascending value-string order (verified
 		// against the live bedtools binary).
-		return strings.Join(sortedKeys(freqCounts(vals)), ","), nil
+		return strings.Join(sortedKeys(freqCounts(vals)), delim), nil
 	case "collapse":
-		return strings.Join(vals, ","), nil
+		return strings.Join(vals, delim), nil
 	case "cat":
 		// Concatenate all values with no separator. Mirrors upstream's
 		// CONCAT op (`getConcat` in KeyListOpsMethods.cpp), which is the
@@ -576,7 +600,7 @@ func applyOp(op string, col int, vals []string) (string, error) {
 				out = append(out, k)
 			}
 		}
-		return strings.Join(out, ","), nil
+		return strings.Join(out, delim), nil
 	case "freqasc", "freqdesc":
 		// Upstream getFreqAsc/getFreqDesc: "value:count" pairs ordered by
 		// count (ascending or descending). Upstream inserts the value-string-
@@ -595,7 +619,7 @@ func applyOp(op string, col int, vals []string) (string, error) {
 		for _, k := range keys {
 			out = append(out, fmt.Sprintf("%s:%d", k, counts[k]))
 		}
-		return strings.Join(out, ","), nil
+		return strings.Join(out, delim), nil
 	case "first":
 		return vals[0], nil
 	case "last":

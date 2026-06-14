@@ -181,24 +181,31 @@ func TestParityView_RegionTBI(t *testing.T) {
 	equalBytes(t, got, want, "view -r tbi")
 }
 
-// TestParityView_SampleSubset documents a real gap: upstream recomputes
-// INFO/AC and INFO/AN after restricting samples; we don't. Tracked in
-// docs/PARITY_ROADMAP.md (bcftools view section).
+// TestParityView_SampleSubset checks that `view -s` recomputes INFO/AC and
+// INFO/AN from the kept genotypes (AN drops from 6 to 4, AC is recounted),
+// byte-for-byte against bcftools 1.23.
 func TestParityView_SampleSubset(t *testing.T) {
-	t.Skip("view -s does not recompute INFO/AC/AN (see docs/PARITY_ROADMAP.md bcftools view)")
+	got := runParityViewFile(t, parityPath(t, "basic.vcf"), ViewOptions{Samples: []string{"S1", "S2"}})
+	want := readParity(t, "view_sample_subset.expected.vcf")
+	equalBytes(t, got, want, "view -s sample subset")
 }
 
-// TestParityView_VTypeSnps documents the missing -v / --types selector.
+// TestParityView_VTypeSnps checks the -v/--types selector keeps only SNP/MNP
+// records (the basic.vcf indel rs3 is dropped), byte-for-byte against
+// bcftools 1.23.
 func TestParityView_VTypeSnps(t *testing.T) {
-	t.Skip("view -v/--types not implemented (see docs/PARITY_ROADMAP.md bcftools view)")
+	got := runParityViewFile(t, parityPath(t, "basic.vcf"), ViewOptions{IncludeTypes: []string{"snps"}})
+	want := readParity(t, "view_vtype_snps.expected.vcf")
+	equalBytes(t, got, want, "view -v snps")
 }
 
-// TestParityView_BCFInput documents that, even with the int64 typed
-// descriptor and IDX-suffix-stripping fixes in this PR, our BCF reader
-// still drops per-record FORMAT/sample data when reading an
-// htslib-produced BCF. The header now matches byte-for-byte. Tracked.
+// TestParityView_BCFInput reads an htslib-produced BCF and emits VCF text,
+// asserting full byte-for-byte parity including the per-record FORMAT/sample
+// columns (GT:DP:GQ across three samples), against bcftools 1.23.
 func TestParityView_BCFInput(t *testing.T) {
-	t.Skip("BCF reader: per-record FORMAT fields not yet reconstructed from htslib BCF input (see docs/UPSTREAM_BUGS.md bcf-fmt-keys-missing)")
+	got := runParityViewFile(t, parityPath(t, "basic.bcf"), ViewOptions{})
+	want := readParity(t, "view_bcf_input.expected.vcf")
+	equalBytes(t, got, want, "view on BCF input (full FORMAT reconstruction)")
 }
 
 // TestParityView_BCFHeader is a positive parity assertion for the header
@@ -215,11 +222,41 @@ func TestParityView_BCFHeader(t *testing.T) {
 	equalBytes(t, got, want, "view -h on BCF input (header parity)")
 }
 
-// TestParityView_RoundTrip_OurBCF documents an incomplete round-trip:
-// our BCF writer hashes INFO into a map without preserving InfoOrder,
-// so a VCF→BCF→VCF cycle loses the source key order. Tracked.
+// TestParityView_RoundTrip_OurBCF exercises a full VCF→our-BCF→VCF cycle and
+// asserts the records survive unchanged: INFO key order is preserved, missing
+// FORMAT integer values stay ".", GT missing alleles round-trip, and Flag tags
+// stay bare. (The BCF interop in the other direction — upstream reading our
+// BCF — is exercised by the developer cross-check in the commit landing this.)
 func TestParityView_RoundTrip_OurBCF(t *testing.T) {
-	t.Skip("BCF writer does not yet preserve InfoOrder on encode (see docs/UPSTREAM_BUGS.md bcf-info-order)")
+	src := readParity(t, "basic.vcf")
+	// VCF -> our (uncompressed) BCF so the in-memory reader sees the BCF magic.
+	var bcfBuf bytes.Buffer
+	if _, err := View(bytes.NewReader(src), &bcfBuf, ViewOptions{OutputFormat: OutputBCFUncompressed}); err != nil {
+		t.Fatalf("encode BCF: %v", err)
+	}
+	// our BCF -> VCF text.
+	var vcfBuf bytes.Buffer
+	if _, err := View(bytes.NewReader(bcfBuf.Bytes()), &vcfBuf, ViewOptions{}); err != nil {
+		t.Fatalf("decode BCF: %v", err)
+	}
+	// Compare the data records (header meta-line ordering can differ).
+	wantRecs := dataRecords(src)
+	gotRecs := dataRecords(vcfBuf.Bytes())
+	if wantRecs != gotRecs {
+		t.Fatalf("round-trip records differ.\nwant:\n%s\ngot:\n%s", wantRecs, gotRecs)
+	}
+}
+
+// dataRecords returns the non-header (#) lines of VCF text joined by newline.
+func dataRecords(b []byte) string {
+	var out []string
+	for _, ln := range strings.Split(string(b), "\n") {
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n")
 }
 
 // TestParityView_SamplesFile tests `-S file` (sample names from a file).
@@ -350,24 +387,54 @@ func TestParityQuery_ListSamples(t *testing.T) {
 	equalBytes(t, got, want, "query -l")
 }
 
-// TestParityQuery_FormatChar documents that we don't yet support
-// `[%FORMAT/<tag>]` where <tag> is a Char field. Upstream produces the
-// same output via `%STR` shortcut; our parser is conservative.
+// TestParityQuery_FormatChar exercises a per-sample Character FORMAT field
+// (`[%BB]` and the `[%FMT/BB]` long form), which extract the per-sample char
+// value — matching bcftools 1.23 ("x y").
 func TestParityQuery_FormatChar(t *testing.T) {
-	t.Skip("query: FMT/<char-tag> token not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+	in := []byte("##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"\">\n" +
+		"##FORMAT=<ID=BB,Number=1,Type=Character,Description=\"\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n" +
+		"chr1\t100\t.\tA\tT\t30\tPASS\t.\tGT:BB\t0/1:x\t1/1:y\n")
+	for _, fmtStr := range []string{`[%BB ]\n`, `[%FMT/BB ]\n`} {
+		got := runParityQuery(t, in, QueryOptions{Format: fmtStr})
+		if string(got) != "x y \n" {
+			t.Errorf("query %q = %q, want %q", fmtStr, got, "x y \n")
+		}
+	}
 }
 
-// TestParityQuery_NAlleles documents that the `%N_ALT` token is not yet
-// implemented. Upstream evaluates it dynamically from len(ALT)-1.
+// TestParityQuery_PositionTokens exercises the %POS0/%END/%END0/%FIRST_ALT/
+// %IS_TS format tokens against upstream's convert.c semantics (including the
+// INDEL ref-span and a symbolic <DEL> with INFO/END).
+func TestParityQuery_PositionTokens(t *testing.T) {
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "query_pos_tokens.expected.tsv")
+	got := runParityQuery(t, in, QueryOptions{
+		Format: `%CHROM\t%POS0\t%END\t%END0\t%FIRST_ALT\t%IS_TS\n`,
+	})
+	equalBytes(t, got, want, "query position tokens")
+}
+
+// TestParityQuery_NAlleles documents that the `%N_ALT` token is intentionally
+// unsupported: upstream's `query -f` (convert.c) has no such format token —
+// the recognised non-FORMAT tags are CHROM/POS/POS0/END/END0/ID/REF/
+// FIRST_ALT/QUAL/TYPE/FILTER/IS_TS/MASK/LINE. `N_ALT` only exists as a
+// filter-expression function (`-i 'N_ALT>1'`), which is implemented
+// separately. So there is nothing to match here.
 func TestParityQuery_NAlleles(t *testing.T) {
-	t.Skip("query %N_ALT not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+	t.Skip("not an upstream query -f token: N_ALT is a filter-expression function only")
 }
 
-// TestParityQuery_AllInfoLine documents that the `%INFO` (without a
-// subkey) token is not yet implemented; upstream prints the entire INFO
-// column verbatim.
+// TestParityQuery_AllInfoLine exercises the bare `%INFO` token (no /TAG),
+// which prints the entire INFO column verbatim (convert.c process_info with
+// a NULL key).
 func TestParityQuery_AllInfoLine(t *testing.T) {
-	t.Skip("query bare %INFO token not yet implemented (see docs/PARITY_ROADMAP.md bcftools query)")
+	in := readParity(t, "basic.vcf")
+	want := readParity(t, "query_all_info.expected.tsv")
+	got := runParityQuery(t, in, QueryOptions{Format: `%INFO\n`})
+	equalBytes(t, got, want, "query bare %INFO")
 }
 
 // =====================================================================

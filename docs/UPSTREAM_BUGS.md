@@ -632,6 +632,20 @@ discrepancies in our Go code (not upstream), all fixed inline:
   order. Pinned by `TestWriterInfoOrderDeterministic`
   (pkg/htsgo/bcf/writer_test.go).
 
+- **Our BCF writer mis-encoded three value cases** — RESOLVED. (1) A
+  missing INFO/FORMAT *integer* (`.`) was bit-truncated to `0` when the
+  column narrowed to int8/int16 (`byte(int8(MissingInt32))` == 0) instead
+  of the width's missing sentinel (`0x80`/`0x8000`); `narrowInt8`/
+  `narrowInt16` now map the sentinels. (2) A missing GT allele was stored
+  as the integer missing sentinel and only round-tripped because of that
+  same truncation bug; `parseGT` now emits `bcf_gt_missing == 0` directly.
+  (3) A Flag was encoded as a count-1 int8 of value 1, so htslib rendered
+  it `TAG=1`; it is now the count-0 typed-int8 descriptor (`0x01`) htslib
+  uses, rendering bare. A full VCF→our-BCF→VCF cycle now preserves
+  records, and **upstream `bcftools` reads our BCF byte-equivalently**
+  (developer cross-check). Pinned by `TestParityView_RoundTrip_OurBCF`
+  and the updated `parseGT`/`encodeInfoValue` unit tests.
+
 ### Non-bugs we considered (closed)
 
 The sickle audit found three behaviours that looked like upstream bugs

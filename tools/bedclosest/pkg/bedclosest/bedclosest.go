@@ -52,6 +52,21 @@ const (
 	TieLast
 )
 
+// MultiDBMode selects how multiple -b databases are combined when more than one
+// is supplied, mirroring upstream `bedtools closest -mdb each|all`.
+type MultiDBMode int
+
+const (
+	// MultiDBEach reports the closest B from each database independently, one
+	// output row per database (upstream's default `-mdb each`). Each row is
+	// prefixed with that database's label column.
+	MultiDBEach MultiDBMode = iota
+	// MultiDBAll treats every database as one combined set and reports the
+	// single overall closest B, prefixed with the label of the database it came
+	// from (upstream `-mdb all`).
+	MultiDBAll
+)
+
 // Options configures Closest.
 type Options struct {
 	// PrintDistance controls whether the trailing signed-distance column is
@@ -82,6 +97,74 @@ type Options struct {
 	// explicit `-D`.
 	ForceUpstream   bool
 	ForceDownstream bool
+
+	// SameStrand (`-s`) restricts the candidate B intervals to those on the
+	// same strand as A; SameStrand and OppositeStrand are mutually exclusive.
+	SameStrand bool
+	// OppositeStrand (`-S`) restricts the candidate B intervals to those on
+	// the opposite strand to A.
+	OppositeStrand bool
+
+	// DifferentNames (`-N`) requires the reported closest B to have a
+	// different name (BED column 4) than A; a B sharing A's name is excluded
+	// from candidate consideration. Matches upstream bedtools closest -N.
+	DifferentNames bool
+
+	// MultiDBMode controls how multiple -b databases are combined; it only has
+	// an effect when ClosestMulti is given more than one database reader.
+	// Defaults to MultiDBEach (upstream's default `-mdb each`).
+	MultiDBMode MultiDBMode
+
+	// DBLabels, when non-nil, supplies the label to print in the database-index
+	// column for each database, in -b order (set from `-names` or `-filenames`).
+	// When nil, ClosestMulti prints the 1-based database index instead. Its
+	// length, when non-nil, must equal the number of database readers.
+	DBLabels []string
+}
+
+// Validate reports configuration errors that cannot be captured by the type
+// system, mirroring upstream's mutually-exclusive flag checks.
+func (o Options) Validate() error {
+	if o.SameStrand && o.OppositeStrand {
+		return fmt.Errorf("-s and -S are mutually exclusive")
+	}
+	return nil
+}
+
+// strandMatch reports whether B is an eligible candidate for A under the strand
+// filters. With neither -s nor -S set every B is eligible. With -s, only B's on
+// the same strand as A qualify; with -S, only B's on the opposite strand. A
+// missing or unknown strand (empty or ".") on either side cannot be classified
+// as same or opposite, so such a B is excluded, matching upstream bedtools.
+func strandMatch(a, b *Row, opts Options) bool {
+	if !opts.SameStrand && !opts.OppositeStrand {
+		return true
+	}
+	if a.Strand == "" || a.Strand == "." || b.Strand == "" || b.Strand == "." {
+		return false
+	}
+	if opts.SameStrand {
+		return a.Strand == b.Strand
+	}
+	return a.Strand != b.Strand
+}
+
+// nameOf returns a row's BED name (column 4) or "" when absent.
+func nameOf(r *Row) string {
+	if len(r.Fields) >= 4 {
+		return r.Fields[3]
+	}
+	return ""
+}
+
+// nameEligible reports whether B is an eligible candidate for A under the
+// -N (different-names) filter. With -N off every B qualifies; with -N on a B
+// sharing A's name (column 4) is excluded, matching upstream bedtools closest.
+func nameEligible(a, b *Row, opts Options) bool {
+	if !opts.DifferentNames {
+		return true
+	}
+	return nameOf(a) != nameOf(b)
 }
 
 // streamDir classifies a non-overlapping B hit as upstream or downstream of A
@@ -191,35 +274,16 @@ func CheckSorted(rows []*Row, label string) error {
 	return nil
 }
 
-// Closest reads BED records from readerA and readerB, finds the closest B for
-// each A, and writes the result to writer. Both inputs MUST be sorted on
-// (chrom, start); otherwise it returns an error. Returns the number of output
-// rows.
-func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error) {
-	aRows, err := ReadAll(readerA)
-	if err != nil {
-		return 0, fmt.Errorf("error reading A: %w", err)
-	}
-	bRows, err := ReadAll(readerB)
-	if err != nil {
-		return 0, fmt.Errorf("error reading B: %w", err)
-	}
-	if err := CheckSorted(aRows, "A"); err != nil {
-		return 0, err
-	}
-	if err := CheckSorted(bRows, "B"); err != nil {
-		return 0, err
-	}
+// chromB holds one database's rows for a single chromosome, sorted by start,
+// plus a prefix-max of End so the left walk in closestFor can prune safely.
+type chromB struct {
+	rows       []*Row
+	maxEndPref []int // maxEndPref[i] = max(rows[0..i].End)
+}
 
-	// Bucket B by chromosome; within each chromosome B is already sorted by
-	// start (CheckSorted guarantees that, and we keep original ordering). We
-	// also precompute the running max .End for each chrom slice so closestFor
-	// can prune its left walk safely even when a long interval upstream might
-	// still reach back to A.
-	type chromB struct {
-		rows       []*Row
-		maxEndPref []int // maxEndPref[i] = max(rows[0..i].End)
-	}
+// indexByChrom buckets a database's rows by chromosome (preserving input order
+// within each chromosome) and precomputes the running max .End per chromosome.
+func indexByChrom(bRows []*Row) map[string]*chromB {
 	bByChrom := make(map[string]*chromB, 16)
 	for _, b := range bRows {
 		c := bByChrom[b.Chrom]
@@ -239,19 +303,56 @@ func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, e
 			c.maxEndPref[i] = max
 		}
 	}
+	return bByChrom
+}
+
+// hitsForA returns the closest hits in a single database (already bucketed by
+// chromosome) for one A interval.
+func hitsForA(a *Row, bByChrom map[string]*chromB, opts Options) []hit {
+	var bs []*Row
+	var maxEnd []int
+	if c := bByChrom[a.Chrom]; c != nil {
+		bs = c.rows
+		maxEnd = c.maxEndPref
+	}
+	return closestFor(a, bs, maxEnd, opts)
+}
+
+// Closest reads BED records from readerA and readerB, finds the closest B for
+// each A, and writes the result to writer. Both inputs MUST be sorted on
+// (chrom, start); otherwise it returns an error. Returns the number of output
+// rows.
+//
+// Closest is the single-database entry point and is preserved for callers that
+// only have one B; it delegates to the shared closest machinery with no
+// database-label column. For multiple databases use ClosestMulti.
+func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error) {
+	if err := opts.Validate(); err != nil {
+		return 0, err
+	}
+	aRows, err := ReadAll(readerA)
+	if err != nil {
+		return 0, fmt.Errorf("error reading A: %w", err)
+	}
+	bRows, err := ReadAll(readerB)
+	if err != nil {
+		return 0, fmt.Errorf("error reading B: %w", err)
+	}
+	if err := CheckSorted(aRows, "A"); err != nil {
+		return 0, err
+	}
+	if err := CheckSorted(bRows, "B"); err != nil {
+		return 0, err
+	}
+
+	bByChrom := indexByChrom(bRows)
 
 	bw := bufio.NewWriter(writer)
 	defer bw.Flush()
 
 	count := 0
 	for _, a := range aRows {
-		var bs []*Row
-		var maxEnd []int
-		if c := bByChrom[a.Chrom]; c != nil {
-			bs = c.rows
-			maxEnd = c.maxEndPref
-		}
-		hits := closestFor(a, bs, maxEnd, opts)
+		hits := hitsForA(a, bByChrom, opts)
 		for _, h := range hits {
 			if err := writeRow(bw, a, h.b, h.dist, opts); err != nil {
 				return count, fmt.Errorf("error writing output: %w", err)
@@ -260,6 +361,175 @@ func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, e
 		}
 	}
 	return count, nil
+}
+
+// ClosestMulti reads BED records from readerA and one or more B databases,
+// finds the closest B for each A across the supplied databases, and writes the
+// result to writer. Every input MUST be sorted on (chrom, start).
+//
+// Output mirrors upstream `bedtools closest -b B1 B2 ...`: each emitted row is
+// A's columns, then a database-label column, then the chosen B's columns, then
+// (when opts.PrintDistance) the trailing signed distance. The label is the
+// 1-based database index by default, or opts.DBLabels[i] when DBLabels is set
+// (from `-names` / `-filenames`).
+//
+// opts.MultiDBMode selects the combination strategy: MultiDBEach (the upstream
+// default) reports the closest B from each database independently, yielding one
+// row per database per A; MultiDBAll treats all databases as a single combined
+// set and reports the single overall closest, labelled with its source
+// database. Ties within a database follow opts.TieBreak.
+//
+// House-style note: as with the single-database path, the distance column is
+// rendered in bedclosest's signed `-D ref` convention (left-of-A is negative),
+// not upstream's absolute `-d`, and the no-hit sentinel is bedclosest's fixed
+// `. -1 -1` MissingRow. Only the hit *selection* matches upstream.
+//
+// With exactly one database, ClosestMulti still prints the label column; the
+// label-free output is produced by Closest.
+func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opts Options) (int, error) {
+	if err := opts.Validate(); err != nil {
+		return 0, err
+	}
+	if len(readersB) == 0 {
+		return 0, fmt.Errorf("at least one -b database is required")
+	}
+	if opts.DBLabels != nil && len(opts.DBLabels) != len(readersB) {
+		return 0, fmt.Errorf("number of labels (%d) must match the number of -b files (%d)", len(opts.DBLabels), len(readersB))
+	}
+
+	aRows, err := ReadAll(readerA)
+	if err != nil {
+		return 0, fmt.Errorf("error reading A: %w", err)
+	}
+	if err := CheckSorted(aRows, "A"); err != nil {
+		return 0, err
+	}
+
+	dbs := make([]map[string]*chromB, len(readersB))
+	for i, rb := range readersB {
+		bRows, err := ReadAll(rb)
+		if err != nil {
+			return 0, fmt.Errorf("error reading B[%d]: %w", i, err)
+		}
+		if err := CheckSorted(bRows, fmt.Sprintf("B[%d]", i)); err != nil {
+			return 0, err
+		}
+		dbs[i] = indexByChrom(bRows)
+	}
+
+	// label returns the database-label column for the i-th database.
+	label := func(i int) string {
+		if opts.DBLabels != nil {
+			return opts.DBLabels[i]
+		}
+		return strconv.Itoa(i + 1)
+	}
+
+	bw := bufio.NewWriter(writer)
+	defer bw.Flush()
+
+	count := 0
+	emit := func(a *Row, dbIdx int, h hit) error {
+		if err := writeRowMulti(bw, a, label(dbIdx), h.b, h.dist, opts); err != nil {
+			return fmt.Errorf("error writing output: %w", err)
+		}
+		count++
+		return nil
+	}
+
+	for _, a := range aRows {
+		switch opts.MultiDBMode {
+		case MultiDBAll:
+			// Combined: pick the overall closest across all databases, keeping
+			// each surviving hit's source database for the label column. Ties at
+			// the best absolute distance are kept across databases and then
+			// resolved per opts.TieBreak in -b/database order.
+			bestAbs := int64(math.MaxInt64)
+			var bestHits []hit
+			var bestDBs []int
+			for dbIdx, bByChrom := range dbs {
+				for _, h := range hitsForA(a, bByChrom, opts) {
+					if h.b == MissingRow {
+						continue
+					}
+					abs := h.dist
+					if abs < 0 {
+						abs = -abs
+					}
+					if abs < bestAbs {
+						bestAbs = abs
+						bestHits = []hit{h}
+						bestDBs = []int{dbIdx}
+					} else if abs == bestAbs {
+						bestHits = append(bestHits, h)
+						bestDBs = append(bestDBs, dbIdx)
+					}
+				}
+			}
+			if len(bestHits) == 0 {
+				if opts.RequireOverlap {
+					continue
+				}
+				if err := emit(a, 0, hit{b: MissingRow, dist: -1}); err != nil {
+					return count, err
+				}
+				continue
+			}
+			// Upstream's combined sweep reports tied hits in genomic order of B
+			// (start, then end), regardless of which database they came from, so
+			// order the tie group that way before applying the tie-break rule.
+			order := make([]int, len(bestHits))
+			for i := range order {
+				order[i] = i
+			}
+			sort.SliceStable(order, func(i, j int) bool {
+				bi, bj := bestHits[order[i]].b, bestHits[order[j]].b
+				if bi.Start != bj.Start {
+					return bi.Start < bj.Start
+				}
+				if bi.End != bj.End {
+					return bi.End < bj.End
+				}
+				return bestDBs[order[i]] < bestDBs[order[j]]
+			})
+			selected := selectTie(len(order), opts.TieBreak)
+			for _, s := range selected {
+				k := order[s]
+				if err := emit(a, bestDBs[k], bestHits[k]); err != nil {
+					return count, err
+				}
+			}
+		default: // MultiDBEach
+			for dbIdx, bByChrom := range dbs {
+				for _, h := range hitsForA(a, bByChrom, opts) {
+					if err := emit(a, dbIdx, h); err != nil {
+						return count, err
+					}
+				}
+			}
+		}
+	}
+	return count, nil
+}
+
+// selectTie returns the indices (into a tie group of length n, already in
+// database/input order) to emit under the given tie-break mode.
+func selectTie(n int, tb TieBreak) []int {
+	if n == 0 {
+		return nil
+	}
+	switch tb {
+	case TieFirst:
+		return []int{0}
+	case TieLast:
+		return []int{n - 1}
+	default:
+		out := make([]int, n)
+		for i := range out {
+			out[i] = i
+		}
+		return out
+	}
 }
 
 // hit holds a candidate B together with its signed distance to A.
@@ -304,6 +574,12 @@ func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
 	}
 	var cands []cand
 	consider := func(i int) {
+		// Strand- and name-ineligible B's are skipped before they can influence
+		// bestAbs or the candidate set, so the closest is chosen purely among the
+		// eligible subset (upstream bug281 cache-purge semantics).
+		if !strandMatch(a, bs[i], opts) || !nameEligible(a, bs[i], opts) {
+			return
+		}
 		signed := signedDistance(a, bs[i], opts)
 		if opts.RequireOverlap && signed != 0 {
 			return
@@ -412,6 +688,11 @@ func closestForDirectional(a *Row, bs []*Row, opts Options) []hit {
 	var overlaps, ups, downs []dcand
 	for i, b := range bs {
 		if a.Chrom != b.Chrom {
+			continue
+		}
+		// Skip strand- and name-ineligible B's entirely so they never enter the
+		// candidate pools (overlaps/ups/downs), matching the non-directional path.
+		if !strandMatch(a, b, opts) || !nameEligible(a, b, opts) {
 			continue
 		}
 		stream := classifyStream(a, b, opts)
@@ -546,6 +827,38 @@ func signedDistance(a, b *Row, opts Options) int64 {
 // signed distance.
 func writeRow(bw *bufio.Writer, a, b *Row, dist int64, opts Options) error {
 	if _, err := bw.WriteString(strings.Join(a.Fields, "\t")); err != nil {
+		return err
+	}
+	if err := bw.WriteByte('\t'); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(strings.Join(b.Fields, "\t")); err != nil {
+		return err
+	}
+	if opts.PrintDistance {
+		if err := bw.WriteByte('\t'); err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(strconv.FormatInt(dist, 10)); err != nil {
+			return err
+		}
+	}
+	return bw.WriteByte('\n')
+}
+
+// writeRowMulti writes one multi-database output row: A's columns, then the
+// database-label column (a 1-based index or a `-names`/`-filenames` label),
+// then B's columns, then the signed distance (when opts.PrintDistance). This is
+// the multi-DB analogue of writeRow and matches upstream's column layout for
+// `bedtools closest -b B1 B2 ...`.
+func writeRowMulti(bw *bufio.Writer, a *Row, label string, b *Row, dist int64, opts Options) error {
+	if _, err := bw.WriteString(strings.Join(a.Fields, "\t")); err != nil {
+		return err
+	}
+	if err := bw.WriteByte('\t'); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString(label); err != nil {
 		return err
 	}
 	if err := bw.WriteByte('\t'); err != nil {

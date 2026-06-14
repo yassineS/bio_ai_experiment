@@ -31,8 +31,30 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnbed"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
+
+// recordSource is the minimal record-stream interface Coverage consumes.
+// Both *bed.Reader (BED text input) and *alnbed.Reader (BAM/SAM input)
+// satisfy it.
+type recordSource interface {
+	Read() (*bed.Record, error)
+}
+
+// sourceReader auto-detects whether r is a SAM/BAM alignment stream or a BED
+// text stream and returns the matching record source. Upstream
+// `bedtools coverage` accepts BAM on both -a (-abam) and -b; a BAM alignment
+// becomes a BED12 record (its CIGAR blocks as BED12 blocks), so the -split
+// block-awareness already in Coverage composes for free on the -b side.
+func sourceReader(r io.Reader) (recordSource, error) {
+	br := bufio.NewReader(r)
+	head, _ := br.Peek(16)
+	if alnbed.LooksLikeAlignment(head) {
+		return alnbed.NewReader(br)
+	}
+	return bed.NewReader(br), nil
+}
 
 // Mode selects which output shape is emitted.
 type Mode int
@@ -77,22 +99,43 @@ type Options struct {
 	// Reciprocal: when true, both FractionA and FractionB must be satisfied
 	// (default behaviour is "either satisfies if non-zero").
 	Reciprocal bool
+
+	// Split ("-split") expands BED12 database (-b) records into their blocks
+	// before indexing, so coverage is counted against each block rather than
+	// the whole record span — matching upstream bedtools coverage -split for
+	// the common "plain-BED -a, BED12 -b" pattern. (Splitting a blocked
+	// query (-a) record — a BED12 line or a spliced BAM alignment — is not
+	// yet supported and is rejected with a clear error.)
+	Split bool
 }
 
 // Coverage runs the coverage calculation streaming records from readerA,
 // indexing readerB into an interval tree first, and writing the result to
 // writer. It returns the number of A records processed.
 func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error) {
-	// Read and index B.
-	bedReaderB := bed.NewReader(readerB)
-	bRecords, err := bedReaderB.ReadAll()
+	// Read and index B. The B side auto-detects BAM/SAM vs BED; a BAM
+	// alignment arrives as a BED12 record, so -split's block expansion below
+	// works for BAM input too.
+	srcB, err := sourceReader(readerB)
 	if err != nil {
 		return 0, fmt.Errorf("error reading B intervals: %w", err)
 	}
+	bRecords, err := readAll(srcB)
+	if err != nil {
+		return 0, fmt.Errorf("error reading B intervals: %w", err)
+	}
+	// -split: expand BED12 database records into their constituent blocks
+	// so coverage is counted per block instead of per whole-record span.
+	if opts.Split {
+		bRecords = expandBlocks(bRecords)
+	}
 	trees := indexB(bRecords)
 
-	// Stream A.
-	bedReaderA := bed.NewReader(readerA)
+	// Stream A (also auto-detecting BAM/SAM vs BED).
+	bedReaderA, err := sourceReader(readerA)
+	if err != nil {
+		return 0, fmt.Errorf("error reading A intervals: %w", err)
+	}
 	bw := bufio.NewWriter(writer)
 	defer bw.Flush()
 
@@ -108,6 +151,9 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 		}
 		if err != nil {
 			return count, fmt.Errorf("error reading A intervals: %w", err)
+		}
+		if opts.Split && recA.BlockCount > 0 && len(recA.BlockSizes) > 0 {
+			return count, fmt.Errorf("coverage -split with a blocked query (-a) record (BED12 or a spliced BAM alignment) is not yet supported (record %s:%d-%d)", recA.Chrom, recA.ChromStart, recA.ChromEnd)
 		}
 		count++
 
@@ -192,6 +238,52 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 	}
 
 	return count, nil
+}
+
+// readAll drains every record from src into a slice, returning io.EOF as a
+// clean end (not an error). It is the recordSource equivalent of
+// bed.Reader.ReadAll, used so the B side can be either a BED or a BAM/SAM
+// stream.
+func readAll(src recordSource) ([]*bed.Record, error) {
+	var out []*bed.Record
+	for {
+		rec, err := src.Read()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return out, err
+		}
+		out = append(out, rec)
+	}
+}
+
+// expandBlocks replaces each BED12 record carrying block information with one
+// record per block (the block interval [ChromStart+BlockStarts[i],
+// +BlockSizes[i])); records without blocks pass through unchanged. Used to
+// implement the database (-b) side of coverage -split.
+func expandBlocks(records []*bed.Record) []*bed.Record {
+	out := make([]*bed.Record, 0, len(records))
+	for _, r := range records {
+		if r.BlockCount <= 0 || len(r.BlockSizes) == 0 {
+			out = append(out, r)
+			continue
+		}
+		for i := range r.BlockSizes {
+			s := r.ChromStart
+			if i < len(r.BlockStarts) {
+				s += r.BlockStarts[i]
+			}
+			block := *r
+			block.ChromStart = s
+			block.ChromEnd = s + r.BlockSizes[i]
+			block.BlockCount = 0
+			block.BlockSizes = nil
+			block.BlockStarts = nil
+			out = append(out, &block)
+		}
+	}
+	return out
 }
 
 // indexB returns a per-chromosome interval tree for B. Records are sorted by

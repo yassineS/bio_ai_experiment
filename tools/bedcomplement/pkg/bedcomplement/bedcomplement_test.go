@@ -9,7 +9,7 @@ import (
 func runComplement(t *testing.T, input string, sizes ChromSizes, order []string) (string, string) {
 	t.Helper()
 	var out, warn bytes.Buffer
-	if _, err := Complement(strings.NewReader(input), &out, &warn, sizes, order); err != nil {
+	if _, err := Complement(strings.NewReader(input), &out, &warn, sizes, order, false); err != nil {
 		t.Fatalf("Complement returned error: %v", err)
 	}
 	return out.String(), warn.String()
@@ -91,7 +91,7 @@ func TestComplementUnsortedDifferentChromError(t *testing.T) {
 	sizes := ChromSizes{"chr1": 1000, "chr2": 1000}
 	input := "chr1\t100\t200\nchr2\t100\t200\nchr1\t300\t400\n"
 	var out, warn bytes.Buffer
-	_, err := Complement(strings.NewReader(input), &out, &warn, sizes, nil)
+	_, err := Complement(strings.NewReader(input), &out, &warn, sizes, nil, false)
 	if err == nil {
 		t.Errorf("expected sort error")
 	}
@@ -101,7 +101,7 @@ func TestComplementUnsortedSameChromError(t *testing.T) {
 	sizes := ChromSizes{"chr1": 1000}
 	input := "chr1\t300\t400\nchr1\t100\t200\n"
 	var out, warn bytes.Buffer
-	_, err := Complement(strings.NewReader(input), &out, &warn, sizes, nil)
+	_, err := Complement(strings.NewReader(input), &out, &warn, sizes, nil, false)
 	if err == nil {
 		t.Errorf("expected sort error")
 	}
@@ -140,7 +140,7 @@ func TestComplementEmptyInput(t *testing.T) {
 func TestComplementInvalidStart(t *testing.T) {
 	sizes := ChromSizes{"chr1": 100}
 	var out, warn bytes.Buffer
-	_, err := Complement(strings.NewReader("chr1\tNOPE\t10\n"), &out, &warn, sizes, nil)
+	_, err := Complement(strings.NewReader("chr1\tNOPE\t10\n"), &out, &warn, sizes, nil, false)
 	if err == nil {
 		t.Errorf("expected error on bad start")
 	}
@@ -149,7 +149,7 @@ func TestComplementInvalidStart(t *testing.T) {
 func TestComplementInvalidEnd(t *testing.T) {
 	sizes := ChromSizes{"chr1": 100}
 	var out, warn bytes.Buffer
-	_, err := Complement(strings.NewReader("chr1\t10\tNOPE\n"), &out, &warn, sizes, nil)
+	_, err := Complement(strings.NewReader("chr1\t10\tNOPE\n"), &out, &warn, sizes, nil, false)
 	if err == nil {
 		t.Errorf("expected error on bad end")
 	}
@@ -158,7 +158,7 @@ func TestComplementInvalidEnd(t *testing.T) {
 func TestComplementTooFewFields(t *testing.T) {
 	sizes := ChromSizes{"chr1": 100}
 	var out, warn bytes.Buffer
-	_, err := Complement(strings.NewReader("chr1\t10\n"), &out, &warn, sizes, nil)
+	_, err := Complement(strings.NewReader("chr1\t10\n"), &out, &warn, sizes, nil, false)
 	if err == nil {
 		t.Errorf("expected error on too few fields")
 	}
@@ -167,7 +167,7 @@ func TestComplementTooFewFields(t *testing.T) {
 func TestComplementInvalidEndBeforeStart(t *testing.T) {
 	sizes := ChromSizes{"chr1": 100}
 	var out, warn bytes.Buffer
-	_, err := Complement(strings.NewReader("chr1\t50\t10\n"), &out, &warn, sizes, nil)
+	_, err := Complement(strings.NewReader("chr1\t50\t10\n"), &out, &warn, sizes, nil, false)
 	if err == nil {
 		t.Errorf("expected error on end<start")
 	}

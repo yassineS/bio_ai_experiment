@@ -3,6 +3,34 @@
 **Goal:** **1:1 feature parity** with the upstream tool for every Go port in
 this repo. This file is the authoritative gap list per tool.
 
+**Scope (current focus):** the project is **not taking on new tools**. The
+full focus is to drive the tools already ported or started to complete parity.
+Every item below is about an existing tool; do not add new ports.
+
+**Recently closed (2026-06-14 parity wave).** The remaining tractable feature
+gaps were closed and parity-validated against the vendored upstream binaries:
+
+- **bedtools family — input formats & block-awareness.** A shared
+  `pkg/htsgo/alnbed` (SAM/BAM→BED12, CIGAR blocks→BED12 blocks) gives **BAM/SAM
+  input** to `bedgenomecov` (`-ibam`, `-pc`, `-fs`), `bedjaccard`,
+  `bedcoverage`, `bedspacing`, `bedgroupby`; **`--split`** to
+  `bedjaccard`/`bedgenomecov`/`bedcoverage`; **GFF/VCF input** to `bedmerge`
+  and **GFF** to `bedmap`. `bedclosest` gained multi-database
+  `-b … -names/-filenames/-mdb` and `-s`/`-S`/`-N`. Flag-mapping bugs fixed:
+  `bedsubtract -N`, `bedmerge -S`/`--delim`, `bedjaccard -S`, `bedcomplement -L`.
+- **bcftools.** `view -s` recomputes INFO/AC/AN (`-I` to suppress); `view -v/-V`
+  type selectors; `query` position tokens (`%POS0/%END/%END0/%FIRST_ALT/%IS_TS`);
+  three **BCF writer** encoding fixes (missing-value sentinels, GT-missing,
+  Flag) — `bcftools` now reads our BCF byte-equivalently.
+- **samtools.** mpileup text-path BAQ (`-B`/`-E`); `fastq -T '*'` all-tags and
+  QNAME-based pairing (lone mates → `-s`); depth `-a`/`-b` parity.
+
+The remaining skips are environmental gates (CRAM codec scope, uninitialized
+submodules, un-vendored BAM/CRAM fixtures covered by SAM unit tests + live
+cross-checks, perl-unavailable) or documented non-goals (`query %N_ALT` is not
+an upstream token, `pairtobed -slop` upstream rejects, `coverage -mean`
+float32 noise) — not feature gaps.
+
 The project's stated goal is to make these tools faster, better tested, and
 better documented than their originals — which requires that we actually
 implement the same features. "Working subset" is a milestone, not the
@@ -1976,6 +2004,20 @@ Missing subcommands (in rough priority order):
   accepted but treated as a no-op since we always run the full
   intersection. `-d/-D` (tag-value filter) and `-N` (qname file) landed
   in the view-d-D-N PR.
+- **`mpileup` text BAQ (`-B`/`-E`) — DONE.** The text-pileup path now
+  applies BAQ realignment by default whenever a reference (`-f`) is
+  supplied, matching upstream `bam_plcmd.c:442`
+  (`sam_prob_realn(b, ref, ref_len, (MPLP_REDO_BAQ) ? 7 : 3)`):
+  `applyTextMpileupBAQ` in `mpileup.go` fetches each contig once and runs
+  `baq.SamProbRealn` in apply+extend mode on every bucketed read, lowering
+  the per-base qualities in place before they feed the quality column and
+  the `-Q` depth filter. `-B/--no-BAQ` disables it; `-E/--redo-BAQ` adds
+  `baq.FlagRedo` (flag 7), recomputing BAQ and ignoring any pre-existing
+  `BQ` tag. Previously `-B` was a silent no-op and `-E` was rejected.
+  Byte-for-byte parity with `samtools mpileup` is confirmed for the
+  default, `-B`, and `-E` modes (`TestMpileup_BAQ_LowersQualities` plus a
+  live cross-check). (The `bcftools mpileup` genotype-likelihood path
+  applied BAQ already — slice 3 below.)
 - **`mpileup` BCF / genotype-likelihood output (`-g/-u`) — DONE.** `-aa`
   zero-fill of empty contigs is implemented (see
   `TestMpileup_AA_ZeroFillTableDriven`); the text-pileup path is complete.

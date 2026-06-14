@@ -237,6 +237,9 @@ Options:
   -T, --targets-file PATH         BED-like targets file (post-filter).
   -s, --samples LIST              Restrict to these samples (comma list).
   -S, --samples-file PATH         File with sample IDs (one per line).
+  -I, --no-update                 Do not recompute INFO/AC and INFO/AN on subset.
+  -v, --types LIST                Keep only snps,indels,mnps,ref,bnd,other.
+  -V, --exclude-types LIST        Drop snps,indels,mnps,ref,bnd,other.
   -x, --private                   Print only sites private to the subset.
   -X, --exclude-private           Exclude sites private to the subset.
   -l, --compression-level N       gzip level for z output.
@@ -275,6 +278,9 @@ func runView(args []string) int {
 		samplesFile   string
 		privateVars   bool
 		excludePriv   bool
+		noUpdate      bool
+		types         string
+		excludeTypes  string
 		compressLevel int
 		threads       int
 		showHelp      bool
@@ -300,6 +306,9 @@ func runView(args []string) int {
 	cliflag.StringVar(fs, &samplesFile, "S", "samples-file", "", "Samples file")
 	cliflag.BoolVar(fs, &privateVars, "x", "private", false, "Print only sites private to the subset samples")
 	cliflag.BoolVar(fs, &excludePriv, "X", "exclude-private", false, "Exclude sites private to the subset samples")
+	cliflag.BoolVar(fs, &noUpdate, "I", "no-update", false, "Do not recompute INFO/AC and INFO/AN on sample subset")
+	cliflag.StringVar(fs, &types, "v", "types", "", "Keep only these variant types (snps,indels,mnps,ref,bnd,other)")
+	cliflag.StringVar(fs, &excludeTypes, "V", "exclude-types", "", "Exclude these variant types")
 	cliflag.IntVar(fs, &compressLevel, "l", "compression-level", -1, "gzip level")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "Threads (accepted, ignored)")
 	fs.BoolVar(&showHelp, "?", false, "")
@@ -340,6 +349,7 @@ func runView(args []string) int {
 		HeaderOnly:     headerOnly,
 		NoHeader:       noHeader,
 		DropGenotypes:  dropGT,
+		NoUpdate:       noUpdate,
 		MinAlleleCount: minAC,
 		MaxAlleleCount: maxAC,
 		MinAlleleFreq:  minAF,
@@ -355,6 +365,12 @@ func runView(args []string) int {
 	if privateVars && excludePriv {
 		fmt.Fprintln(os.Stderr, "bcftools view: only one of -x or -X can be given")
 		return 2
+	}
+	if types != "" {
+		opts.IncludeTypes = bcftools.SplitCommaList(types)
+	}
+	if excludeTypes != "" {
+		opts.ExcludeTypes = bcftools.SplitCommaList(excludeTypes)
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)

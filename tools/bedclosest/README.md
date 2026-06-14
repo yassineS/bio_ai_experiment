@@ -30,7 +30,15 @@ bedclosest -a <fileA.bed> -b <fileB.bed> [options]
 ## Options
 
 - `-a, --a FILE` - Input BED file A (sorted; use `-` for stdin)
-- `-b, --b FILE` - Input BED file B (sorted; use `-` for stdin)
+- `-b, --b FILE...` - One or more sorted BED database files (use `-` for stdin).
+  With multiple files a database-label column (the 1-based file index, or the
+  `-names`/`-filenames` label) is inserted between A's and B's columns.
+- `-names NAME...` - Labels for the `-b` databases (one per file, in order);
+  replaces the numeric file-index column. Mutually exclusive with `-filenames`.
+- `-filenames` - Use each `-b` file's name as its database-label column.
+- `-mdb each|all` - Multi-database mode: `each` (default) reports the closest
+  feature from every database on its own row; `all` reports the single overall
+  closest across all databases.
 - `-o, --output FILE` - Output BED file (`-` for stdout, default: stdout)
 - `-d, --distance` - Print signed distance column (default: `true`; pass
   `--distance=false` to suppress)
@@ -38,8 +46,14 @@ bedclosest -a <fileA.bed> -b <fileB.bed> [options]
   - `ref` (default): downstream is positive on the reference
   - `a`: relative to A's strand (BED6 col 6); flips on `-`-strand A
   - `b`: relative to B's strand
-- `-N` - Require strict overlap; non-overlapping B intervals are treated as
-  infinite (skipped)
+- `-N` - Require the closest B to have a different name (BED column 4) than A;
+  a B sharing A's name is skipped from candidate consideration
+- `--require-overlap` - Require strict overlap; non-overlapping B intervals are
+  treated as infinite (skipped)
+- `-s` - Require the closest B to be on the SAME strand as A (BED6 col 6).
+  Non-matching B intervals are skipped from candidate consideration.
+- `-S` - Require the closest B to be on the OPPOSITE strand to A. Mutually
+  exclusive with `-s`.
 - `-t MODE` - Tie-break among equally-close B's:
   - `all` (default) - emit one row per tied B in B's input order
   - `first` - emit only the first tied B
@@ -56,11 +70,33 @@ bedclosest -a genes.sorted.bed -b peaks.sorted.bed > out.bed
 # Suppress the distance column
 bedclosest -a a.bed -b b.bed --distance=false > out.bed
 
-# Only report when A overlaps a B
+# Only report a B with a different name than A
 bedclosest -a a.bed -b b.bed -N > out.bed
+
+# Only report when A overlaps a B
+bedclosest -a a.bed -b b.bed --require-overlap > out.bed
 
 # Single hit per A (first in B input order on ties)
 bedclosest -a a.bed -b b.bed -t first > out.bed
+
+# Closest B on the same strand as A (skips opposite-strand B's)
+bedclosest -a a.bed -b b.bed -s > out.bed
+
+# Closest B on the opposite strand to A
+bedclosest -a a.bed -b b.bed -S > out.bed
+
+# Closest feature from each of several databases (one row per database;
+# the inserted column is the 1-based database index)
+bedclosest -a a.bed -b db1.bed db2.bed db3.bed > out.bed
+
+# Label the database column with names instead of indices
+bedclosest -a a.bed -b db1.bed db2.bed db3.bed -names a b c > out.bed
+
+# Use each database's filename as its label column
+bedclosest -a a.bed -b db1.bed db2.bed db3.bed -filenames > out.bed
+
+# Single overall closest across all databases (still labelled by source DB)
+bedclosest -a a.bed -b db1.bed db2.bed db3.bed -mdb all > out.bed
 ```
 
 ## Format
@@ -68,9 +104,11 @@ bedclosest -a a.bed -b b.bed -t first > out.bed
 - Input: BED (tab-delimited, minimum 3 columns), sorted on `(chrom, start)`.
   `.gz` is supported.
 - Output: A's columns, then B's columns, then signed distance (when `-d`).
+  With multiple `-b` databases, a database-label column (1-based index, or the
+  `-names`/`-filenames` label) is inserted between A's and B's columns.
 - When A's chromosome has no B records, a sentinel B of
-  `.\t-1\t-1` with distance `-1` is emitted (unless `-N` is set, in which case
-  the A line is omitted).
+  `.\t-1\t-1` with distance `-1` is emitted (unless `--require-overlap` is set,
+  in which case the A line is omitted).
 
 ## Algorithm
 

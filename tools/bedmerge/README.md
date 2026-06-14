@@ -8,6 +8,8 @@ A fast and simple tool to merge overlapping or adjacent BED intervals, implement
 - **Memory efficient**: Processes entire file in memory (suitable for typical BED files)
 - **Streaming mode**: Option for very large files that processes by chromosome
 - **Flexible merging**: Support for distance-based and strand-specific merging
+- **GFF/VCF input**: Auto-detects and merges GFF features (1-based) and VCF
+  records ([POS-1, POS-1+len(REF))) as well as BED
 - **Configurable output**: Control output format and fields
 - **Count tracking**: Output number of intervals merged into each region
 - **bedGraph support**: Native support for bedGraph format (4-column: chrom, start, end, score)
@@ -42,15 +44,20 @@ bedmerge input.bed > merged.bed
 
 - `-d, --distance INT` - Maximum distance between intervals to merge (default: 0)
 - `-s, --strand` - Merge only intervals on the same strand
+- `-S <+|->` - Merge only intervals on the given strand (mutually exclusive
+  with `-s`)
 - `-i, --input FILE` - Input BED file (default: stdin)
 - `--output FILE` - Output BED file (default: stdout)
-- `-S, --stats` - Print merge statistics to stderr
+- `--stats` - Print merge statistics to stderr
 - `--count` - Output count of merged intervals as name field
 - `-g, --bedgraph` - Input/output in bedGraph format (chrom, start, end, score)
 - `-c, --columns LIST` - Comma-separated 1-based input columns to aggregate over each
   merged group (`bedtools merge -c` style); requires `-o`
 - `-o, --operations LIST` - Comma-separated operations, one per `-c` column or a single
   op applied to all columns (`bedtools merge -o` style); requires `-c`
+- `--delim CHAR` - Delimiter joining the values of the list operations
+  (collapse/distinct/distinct_only/distinct_sort_num/freqasc/freqdesc);
+  default `,`. The concat/cat family always joins with no delimiter.
 - `--streaming` - Use streaming mode for very large files
 - `-h, --help` - Show help message
 
@@ -78,10 +85,17 @@ bedmerge -s input.bed > merged.bed
 
 Only merges intervals on the same strand (respects strand column if present).
 
+To merge only one strand (dropping the other strand and unknown `.` records),
+use `-S +` or `-S -`:
+
+```bash
+bedmerge -S + input.bed > plus_merged.bed
+```
+
 #### Show merge statistics
 
 ```bash
-bedmerge -S input.bed > merged.bed
+bedmerge --stats input.bed > merged.bed
 ```
 
 Outputs statistics to stderr:
