@@ -7,6 +7,30 @@ this repo. This file is the authoritative gap list per tool.
 full focus is to drive the tools already ported or started to complete parity.
 Every item below is about an existing tool; do not add new ports.
 
+**Recently closed (2026-06-14 parity wave).** The remaining tractable feature
+gaps were closed and parity-validated against the vendored upstream binaries:
+
+- **bedtools family — input formats & block-awareness.** A shared
+  `pkg/htsgo/alnbed` (SAM/BAM→BED12, CIGAR blocks→BED12 blocks) gives **BAM/SAM
+  input** to `bedgenomecov` (`-ibam`, `-pc`, `-fs`), `bedjaccard`,
+  `bedcoverage`, `bedspacing`, `bedgroupby`; **`--split`** to
+  `bedjaccard`/`bedgenomecov`/`bedcoverage`; **GFF/VCF input** to `bedmerge`
+  and **GFF** to `bedmap`. `bedclosest` gained multi-database
+  `-b … -names/-filenames/-mdb` and `-s`/`-S`/`-N`. Flag-mapping bugs fixed:
+  `bedsubtract -N`, `bedmerge -S`/`--delim`, `bedjaccard -S`, `bedcomplement -L`.
+- **bcftools.** `view -s` recomputes INFO/AC/AN (`-I` to suppress); `view -v/-V`
+  type selectors; `query` position tokens (`%POS0/%END/%END0/%FIRST_ALT/%IS_TS`);
+  three **BCF writer** encoding fixes (missing-value sentinels, GT-missing,
+  Flag) — `bcftools` now reads our BCF byte-equivalently.
+- **samtools.** mpileup text-path BAQ (`-B`/`-E`); `fastq -T '*'` all-tags and
+  QNAME-based pairing (lone mates → `-s`); depth `-a`/`-b` parity.
+
+The remaining skips are environmental gates (CRAM codec scope, uninitialized
+submodules, un-vendored BAM/CRAM fixtures covered by SAM unit tests + live
+cross-checks, perl-unavailable) or documented non-goals (`query %N_ALT` is not
+an upstream token, `pairtobed -slop` upstream rejects, `coverage -mean`
+float32 noise) — not feature gaps.
+
 The project's stated goal is to make these tools faster, better tested, and
 better documented than their originals — which requires that we actually
 implement the same features. "Working subset" is a milestone, not the

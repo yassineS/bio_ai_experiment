@@ -1,13 +1,26 @@
 # Project status
 
-**Last refreshed:** 2026-06-11 (post the ~70-PR wave: `call` modes,
-`convert` GEN/HAP/TSV modes, `annotate`, `consensus` chain, `mendelian2`
-rules, `csq` slices 1–4, mpileup legacy `bam2bcf_indel` + `--indels-cns`,
-`phase`, `gtcheck`, view/sort/markdup threading, samtools `coverage -A` /
-`markdup -d/-s/-S` / `calmd -C/-e/-u` / consensus indel calling, bcftools
-`query %INFO/%SAMPLE` / `roh -Oz` / `filter -M` / `cnv --AF-file`,
-mosdepth `--fragment-mode/--quantize/-t/--use-median`, bedtools BAM/VCF/GFF
-input + `bedclosest` direction flags + `intersect -c`, CRAM bzip2 encode)
+**Last refreshed:** 2026-06-14 (post the parity-completion wave: a shared
+`pkg/htsgo/alnbed` BAM/SAM→BED12 layer brought **BAM/SAM input** to
+`bedgenomecov` (`-ibam`, plus `-pc`/`-fs`), `bedjaccard`, `bedcoverage`,
+`bedspacing`, and `bedgroupby`; **`--split`** (BED12 block-aware) to
+`bedjaccard`/`bedgenomecov`/`bedcoverage`; **GFF/VCF input** to `bedmerge` and
+**GFF** to `bedmap`; `bedclosest` multi-database (`-b … -names/-filenames/-mdb`)
+and `-s`/`-S`/`-N`; corrected flag bugs in `bedsubtract -N`, `bedmerge -S`,
+`bedjaccard -S`, `bedcomplement -L`, `bedmerge --delim`; `bcftools view -s`
+AC/AN recompute (`-I`) and `-v/-V` type selectors, `query` position tokens
+(`%POS0/%END/%END0/%FIRST_ALT/%IS_TS`), and three **BCF writer** encoding
+fixes (missing-value sentinels, GT-missing, Flag) giving full upstream BCF
+interop; `samtools` mpileup BAQ, `fastq -T '*'` + QNAME-based pairing, and
+depth `-a`/`-b` parity. Every change is parity-validated against the vendored
+upstream binaries.)
+
+Previous wave (2026-06-11, ~70 PRs): `call` modes, `convert` GEN/HAP/TSV,
+`annotate`, `consensus` chain, `mendelian2`, `csq` slices 1–4, mpileup
+`bam2bcf_indel` + `--indels-cns`, `phase`, `gtcheck`, threading, samtools
+`coverage -A`/`markdup`/`calmd`/consensus, bcftools `query %INFO/%SAMPLE`/
+`roh -Oz`/`filter -M`/`cnv --AF-file`, mosdepth flags, bedtools input formats,
+CRAM bzip2 encode.
 
 This is the honest "distance to done" snapshot for the started tools. It is
 **the summary source of truth**; the authoritative gap list per tool is
