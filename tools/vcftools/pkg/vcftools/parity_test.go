@@ -21,20 +21,21 @@ package vcftools
 //     upstream and our port have a known format / formula gap, asserts
 //     the file shape and skips byte parity).
 //
-// Two notable deviations from upstream documented elsewhere:
+// Former deviations, now closed:
 //
-//   1. `--site-pi` formula. Upstream emits a per-genotype pairwise
-//      quantity; our port uses the textbook
-//      `(n^2 - sum(c_a^2)) / (n*(n-1))`. See
-//      docs/UPSTREAM_BUGS.md#vcftools-site-pi. Affected tests skip byte
-//      parity against upstream and instead diff against the textbook
-//      golden file.
+//   1. `--site-pi`, `--TsTv-by-count`, and `--TsTv <bin>` are all
+//      byte-for-byte against upstream vcftools 0.1.18 (goldens under
+//      tools/vcftools/testdata/parity/). The `--site-pi` "formula gap"
+//      turned out to be a non-bug: upstream's per-allele mismatch loop
+//      equals the textbook `(n^2 - sum(c_a^2)) / (n*(n-1))`; only the
+//      output formatting and the diploid-site filter differed, and both
+//      are now matched. See docs/UPSTREAM_BUGS.md#vcftools-site-pi and
+//      docs/PARITY_ROADMAP.md#vcftools.
 //
-//   2. Many small format gaps where our port emits a subset of upstream's
-//      columns (e.g. .ldepth missing SUMSQ_DEPTH, .hwe missing the
-//      directional P-values). These are documented in
-//      docs/PARITY_ROADMAP.md#vcftools and tracked with t.Skip rather
-//      than masked.
+//   2. A few small format gaps remain where our port emits a subset of
+//      upstream's columns (e.g. .ldepth missing SUMSQ_DEPTH, .hwe missing
+//      the directional P-values). These are documented in
+//      docs/PARITY_ROADMAP.md#vcftools.
 
 import (
 	"bytes"
@@ -718,21 +719,45 @@ func TestParity_Counts(t *testing.T) {
 	}
 }
 
-// TestParity_SitePi — `--site-pi` is skipped because upstream and our port
-// use different formulas. See docs/UPSTREAM_BUGS.md#vcftools-site-pi.
+// TestParity_SitePi — `--site-pi` byte-for-byte against the upstream
+// vcftools (0.1.18) golden file, produced by running
+// `vcftools --vcf sample.vcf --site-pi` against
+// reference_code/vcftools/src/cpp/vcftools.
+//
+// Resolution of the former "known deviation": upstream's per-allele
+// pairwise-mismatch loop (output_per_site_nucleotide_diversity,
+// variant_file_output.cpp:3870) computes
+// `mismatches = sum_a c_a*(n-c_a)` and `pi = mismatches/(n*(n-1))`, which
+// is algebraically identical to our textbook
+// `(n^2 - sum_a c_a^2)/(n*(n-1))`. The only real differences were
+// (1) output formatting (upstream prints "0.6"/"0" via a default
+// ostream, not "%.6f"), now matched via formatFreq, and
+// (2) site selection: upstream emits exactly the diploid sites
+// (entry::is_diploid), so it KEEPS the fully-missing diploid
+// 20:1235237 (pi=0) and DROPS the haploid chrX sites (X:9, X:10, X:12).
+// Our port now applies the same `is_diploid` gate. See
+// docs/UPSTREAM_BUGS.md#vcftools-site-pi.
 func TestParity_SitePi(t *testing.T) {
-	t.Skip("known deviation, see docs/UPSTREAM_BUGS.md#vcftools-site-pi")
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{SitePi: true})
+	got := readFileBytes(t, prefix+".sites.pi")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "site_pi.expected.sites.pi"))
+	if !bytes.Equal(got, want) {
+		t.Fatalf(".sites.pi mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
-// TestParity_SitePi_TextbookFormula — sanity-check the textbook formula.
-// For 20:14370 (G:3/A:3, n=6), pi = (36 - 9 - 9) / (6*5) = 18/30 = 0.6.
-func TestParity_SitePi_TextbookFormula(t *testing.T) {
+// TestParity_SitePi_Formula — unit-level sanity check of the closed-form
+// value for a handful of sites, independent of the golden file.
+// For 20:14370 (G:3/A:3, n=6): pi = (36 - 9 - 9) / (6*5) = 18/30 = 0.6.
+// For 20:1110696 (A:0,G:2,T:4, n=6): pi = (36 - 0 - 4 - 16)/30 = 0.533333.
+func TestParity_SitePi_Formula(t *testing.T) {
 	prefix := runVcftoolsParity(t, "sample.vcf", &Params{SitePi: true})
 	lines := readFileLines(t, prefix+".sites.pi")
 	wanted := map[string]string{
-		"20\t14370": "0.600000",
-		"19\t111":   "0.333333",
-		"X\t9":      "0.600000",
+		"20\t14370":   "0.6",
+		"19\t111":     "0.333333",
+		"20\t1110696": "0.533333",
+		"20\t1230237": "0",
 	}
 	for _, ln := range lines[1:] {
 		fields := strings.SplitN(ln, "\t", 3)
@@ -741,7 +766,7 @@ func TestParity_SitePi_TextbookFormula(t *testing.T) {
 		}
 		key := fields[0] + "\t" + fields[1]
 		if want, ok := wanted[key]; ok && fields[2] != want {
-			t.Errorf("pi at %s: got %s, want %s", key, fields[2], want)
+			t.Fatalf("pi at %s: got %s, want %s", key, fields[2], want)
 		}
 	}
 }
@@ -890,10 +915,7 @@ func TestParity_TsTvSummary(t *testing.T) {
 	}
 }
 
-// TestParity_TsTvByCount_Header — header byte-for-byte. Row content is
-// NOT diffed because upstream emits every count from 0 to 2*N_indv
-// (including empty bins with NaN ratios) — we emit only bins with
-// at least one count. Tracked at docs/PARITY_ROADMAP.md#vcftools.
+// TestParity_TsTvByCount_Header — header byte-for-byte.
 func TestParity_TsTvByCount_Header(t *testing.T) {
 	prefix := runVcftoolsParity(t, "sample.vcf", &Params{TsTvByCount: true})
 	lines := readFileLines(t, prefix+".TsTv.count")
@@ -906,9 +928,21 @@ func TestParity_TsTvByCount_Header(t *testing.T) {
 	}
 }
 
-// TestParity_TsTvByCount_FullRows is skipped — bin enumeration deviates.
+// TestParity_TsTvByCount_FullRows — `--TsTv-by-count` byte-for-byte against
+// the upstream vcftools (0.1.18) golden file. Upstream sizes the Ts/Tv
+// arrays at 2*N_kept_individuals (= 6 for the 3-sample fixture) and emits
+// every bin in [0, 2*N), so empty bins appear with the C++ indeterminate
+// ratio "-nan" (0.0/0.0). Our port now enumerates the same bins and formats
+// the ratio column with the same C++ ostream semantics (cppRatio):
+// "-nan" for 0/0, "0"/"0.5"/"1" for finite values. See
+// docs/PARITY_ROADMAP.md#vcftools.
 func TestParity_TsTvByCount_FullRows(t *testing.T) {
-	t.Skip("known gap: upstream enumerates every 0..2*N bin (incl NaN ratios); see docs/PARITY_ROADMAP.md#vcftools")
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{TsTvByCount: true})
+	got := readFileBytes(t, prefix+".TsTv.count")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "tstv_by_count.expected.TsTv.count"))
+	if !bytes.Equal(got, want) {
+		t.Fatalf(".TsTv.count mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // TestParity_TsTvByQual_Header — `--TsTv-by-qual` header byte-for-byte.
@@ -924,11 +958,24 @@ func TestParity_TsTvByQual_Header(t *testing.T) {
 	}
 }
 
-// TestParity_TsTv_Binned — `--TsTv N` (binned). Upstream emits
-// CHROM/BinStart/SNP_count/Ts/Tv (4 cols); ours emits 5 cols. Skip byte
-// parity.
+// TestParity_TsTv_Binned — `--TsTv 1000000` (binned) byte-for-byte against the
+// upstream vcftools (0.1.18) golden file. Upstream output_TsTv
+// (variant_file_output.cpp:2962) emits four columns
+// CHROM/BinStart/SNP_count/Ts/Tv, keyed per-chromosome in first-seen order,
+// with BinStart = bin_index * bin_size, SNP_count = Ts+Tv, and Ts/Tv = 0 when
+// the bin has no transversions. With a 1 Mbp bin every chromosome in
+// sample.vcf collapses to bin 0: chr19 (G>A Ts + A>C/T>A Tv... actually two
+// SNPs, 1 Ts + 1 Tv) → ratio 1, chr20 (1 Ts + 1 Tv) → ratio 1, chrX (2 Tv,
+// 0 Ts) → ratio 0. Monomorphic (ALT ".") sites are excluded, matching
+// upstream (their "." ALT parses to an empty ALT list, so is_biallelic_SNP
+// is false and no bin is registered).
 func TestParity_TsTv_Binned(t *testing.T) {
-	t.Skip("known gap: --TsTv binned output diverges in column layout; see docs/PARITY_ROADMAP.md#vcftools")
+	prefix := runVcftoolsParity(t, "sample.vcf", &Params{TsTvBinSize: 1000000})
+	got := readFileBytes(t, prefix+".TsTv")
+	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "tstv_binned_1m.expected.TsTv"))
+	if !bytes.Equal(got, want) {
+		t.Fatalf(".TsTv mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // -----------------------------------------------------------------------------

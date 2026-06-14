@@ -387,10 +387,16 @@ func TestNucleotideDiversity(t *testing.T) {
 		{"monomorphic", []string{"0/0", "0/0", "0/0"}, 0.0, true},
 		// 5 ref + 1 alt out of 6: (36 - 25 - 1) / 30 = 10/30
 		{"singleton", []string{"0/0", "0/0", "0/1"}, 10.0 / 30.0, true},
-		// Missing data is excluded; only two chromosomes (one ref, one alt)
-		// remain: (4 - 1 - 1) / (2*1) = 1.0
-		{"with missing", []string{"./.", "1", "0"}, 1.0, true},
-		// Fewer than two non-missing chromosomes => not defined.
+		// A fully-missing diploid call ("./.") still counts as diploid; the
+		// remaining two diploid samples give 2 ref + 2 alt out of 4:
+		// (16 - 4 - 4) / (4*3) = 8/12 = 0.6666...
+		{"with missing diploid", []string{"./.", "0/1", "1/0"}, 8.0 / 12.0, true},
+		// A haploid included sample ("1", "0") makes the site non-diploid;
+		// upstream's entry::is_diploid skips it, so we return ok=false even
+		// though non-missing alleles exist.
+		{"haploid sample", []string{"./.", "1", "0"}, 0.0, false},
+		// Fewer than two non-missing chromosomes => not defined (also
+		// non-diploid because of the haploid "0").
 		{"insufficient data", []string{"./.", "./.", "0"}, 0.0, false},
 	}
 
