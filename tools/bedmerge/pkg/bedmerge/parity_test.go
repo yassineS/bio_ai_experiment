@@ -5,7 +5,7 @@ package bedmerge
 // Cases are mirrored from reference_code/bedtools/test/merge/test-merge.sh.
 // Inputs live under tools/bedmerge/testdata/parity/<case>.bed and expected
 // outputs under <case>.expected.bed. Tests that exercise features bedmerge
-// does not implement (VCF input) are wrapped in t.Skip with a one-line
+// does not implement are wrapped in t.Skip with a one-line
 // rationale rather than being deleted; the `-S` strand filter (t16/t17) and
 // the custom `-delim` list delimiter (t10) are implemented and asserted.
 
@@ -133,9 +133,14 @@ func TestParity_Merge_T10_CustomDelim(t *testing.T) {
 	}
 }
 
-// merge.t13 — VCF input. bedmerge only accepts BED.
+// merge.t13 — VCF input: each record is the interval [POS-1, POS-1+len(REF)),
+// merged into BED3, byte-for-byte against bedtools v2.31.1.
 func TestParity_Merge_T13_VCFInput(t *testing.T) {
-	t.Skip("unimplemented: VCF input; bedmerge is BED-only")
+	got := runMergeParity(t, "variants.vcf", MergeOptions{})
+	want := readMergeParity(t, "t13_vcf.expected.bed")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // merge.t14 — GFF input: features are auto-detected (1-based start/end in

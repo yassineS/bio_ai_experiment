@@ -115,35 +115,73 @@ func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 	return len(merged), nil
 }
 
-// gffAwareReader auto-detects GFF input and, when found, returns a reader
-// whose lines have been transformed into BED6 (chrom, 0-based start, end,
-// type, score, strand) — so the rest of the merge pipeline (which is BED-only)
-// merges GFF features just like upstream bedtools merge -i <gff>. A BED input
-// is returned unchanged (the peeked bytes are preserved). Detection mirrors
-// the per-record BED/GFF heuristic: a GFF feature has a non-numeric source in
-// column 2 and numeric 1-based start/end in columns 4/5.
+// gffAwareReader auto-detects GFF or VCF input and, when found, returns a
+// reader whose lines have been transformed into BED — so the rest of the merge
+// pipeline (which is BED-only) merges those features just like upstream
+// bedtools merge -i <gff|vcf>. A BED input is returned unchanged (the peeked
+// header/first-data bytes are preserved). GFF is detected by the per-record
+// heuristic (non-numeric source in column 2, numeric 1-based start/end in
+// columns 4/5); VCF is detected by a `##fileformat=VCF` or `#CHROM` header.
 func gffAwareReader(r io.Reader) (io.Reader, error) {
 	br := bufio.NewReader(r)
-	// Find the first data line to sniff the format.
-	var first string
+	var header strings.Builder // consumed comment/header lines, replayed for BED
+	isVCF := false
 	for {
 		line, err := br.ReadString('\n')
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") &&
-			!strings.HasPrefix(trimmed, "track") && !strings.HasPrefix(trimmed, "browser") {
-			first = strings.TrimRight(line, "\r\n")
-			// Put the consumed bytes back by prepending below.
-			rest := io.MultiReader(strings.NewReader(line), br)
-			if !looksLikeGFF(first) {
-				return rest, nil
+		if strings.HasPrefix(trimmed, "##fileformat=VCF") ||
+			strings.HasPrefix(trimmed, "#CHROM\tPOS") {
+			isVCF = true
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+			header.WriteString(line)
+			if err != nil {
+				// EOF before any data line: replay what we consumed.
+				return strings.NewReader(header.String()), nil
 			}
+			continue
+		}
+		// First data line. Replay the consumed header + this line + the rest.
+		rest := io.MultiReader(strings.NewReader(header.String()), strings.NewReader(line), br)
+		if isVCF {
+			return transformVCF(rest)
+		}
+		if looksLikeGFF(strings.TrimRight(line, "\r\n")) {
 			return transformGFF(rest)
 		}
-		if err != nil {
-			// EOF or error before any data line: nothing to transform.
-			return io.MultiReader(strings.NewReader(line), br), nil
-		}
+		return rest, nil
 	}
+}
+
+// transformVCF rewrites every VCF data line into a BED3 line: the interval is
+// [POS-1, POS-1+len(REF)), matching upstream bedtools merge -i <vcf>. Header
+// lines ('#') are skipped.
+func transformVCF(r io.Reader) (io.Reader, error) {
+	var out strings.Builder
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if len(f) < 4 {
+			return nil, fmt.Errorf("invalid VCF line: %q", line)
+		}
+		pos, err := strconv.Atoi(f[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid VCF POS %q: %w", f[1], err)
+		}
+		start := pos - 1
+		end := start + len(f[3]) // len(REF)
+		fmt.Fprintf(&out, "%s\t%d\t%d\n", f[0], start, end)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return strings.NewReader(out.String()), nil
 }
 
 // looksLikeGFF reports whether a data line is a GFF feature: at least 8
