@@ -119,6 +119,80 @@ func (a *covAccum) addFragment(rec *sam.Record) {
 	a.add(start, start+isize)
 }
 
+// addRecords feeds every record for one reference into the accumulator,
+// applying mosdepth's mode-specific coverage rule:
+//
+//   - fragmentMode: only read1 of a proper, non-supplementary pair contributes,
+//     covering the whole template (see addFragment). Callers have already
+//     filtered to those reads, so addFragment is called unconditionally.
+//   - fastMode: each read covers POS..POS+ReferenceLength with no CIGAR walk and
+//     no overlap correction (upstream's --fast-mode skips both).
+//   - default mode: each read contributes its CIGAR-aware coverage AND
+//     overlapping mate pairs are de-duplicated so a base covered by both mates
+//     of a template counts once, exactly as upstream mosdepth does.
+//
+// recs must be in the BAM's stream (coordinate) order for the overlap detector
+// to pair mates correctly, which matches how upstream consumes the file.
+func (a *covAccum) addRecords(recs []*sam.Record, fastMode, fragmentMode bool) {
+	if fragmentMode {
+		for _, rec := range recs {
+			a.addFragment(rec)
+		}
+		return
+	}
+	if fastMode {
+		for _, rec := range recs {
+			a.addRecord(rec, true)
+		}
+		return
+	}
+	// Default mode: CIGAR-aware coverage plus overlap-pair de-duplication.
+	// seen holds the lower-coordinate mate of a still-open overlapping pair,
+	// keyed by QName, mirroring upstream's `seen` table.
+	seen := map[string]*sam.Record{}
+	for _, rec := range recs {
+		a.addRecord(rec, false)
+		// Overlap handling applies only to proper, non-supplementary pairs whose
+		// mate is on the same reference. We approximate upstream's
+		// `rec.b.core.tid == rec.b.core.mtid` test with RNext in {"=", RName}.
+		if rec.Flag&sam.FlagProperPair == 0 || rec.Flag&sam.FlagSupplementary != 0 {
+			continue
+		}
+		if !mateOnSameRef(rec) {
+			continue
+		}
+		recStart := int(rec.Pos) - 1                      // 0-based start.
+		recStop := recStart + rec.Cigar.ReferenceLength() // 0-based exclusive end.
+		matePos := int(rec.PNext) - 1                     // 0-based mate start.
+		// Mirror upstream's single if/else exactly. The "store the lower mate"
+		// branch requires that rec extends past the mate start AND that rec is
+		// the lower (or first-seen equal-start) read of the pair.
+		_, alreadySeen := seen[rec.QName]
+		store := recStop > matePos &&
+			(recStart < matePos || (recStart == matePos && !alreadySeen))
+		if store {
+			cp := *rec
+			seen[rec.QName] = &cp
+			continue
+		}
+		// else: this is the higher-coordinate mate (or a non-overlapping read).
+		// If its partner was stored, apply the overlap correction and discard it
+		// — exactly upstream's `seen.take(rec.qname, mate)`.
+		if mate, ok := seen[rec.QName]; ok {
+			delete(seen, rec.QName)
+			mateStart := int(mate.Pos) - 1
+			a.addOverlapCorrection(rec, mate, recStart, mateStart)
+		}
+	}
+}
+
+// mateOnSameRef reports whether rec's mate maps to the same reference, matching
+// upstream mosdepth's `rec.b.core.tid == rec.b.core.mtid` test. RNext == "="
+// means "same as RName" in SAM/BAM; an explicit RNext equal to RName counts too.
+func mateOnSameRef(rec *sam.Record) bool {
+	return rec.RNext == "=" || (rec.RNext != "" && rec.RNext == rec.RName)
+}
+
 // sortEvents sorts events by position ascending. Equal positions keep their
 // relative order so emit() applies all deltas at a position atomically; a
 // stable sort isn't required because emit() collapses ties.
@@ -348,6 +422,120 @@ func (a *covAccum) regionMedian(beg0, end0 int) float64 {
 	var h medianHist
 	a.regionStats(beg0, end0, nil, h.addRun)
 	return h.median()
+}
+
+// startEnd is a signed depth event used by the overlap-pair detector: pos is
+// the 0-based reference coordinate and value is +1 (a covered run begins) or
+// -1 (a covered run ends). It mirrors upstream mosdepth's `pair` tuple emitted
+// by gen_start_ends.
+type startEnd struct {
+	pos   int
+	value int32
+}
+
+// genStartEnds returns the +1/-1 depth events for one alignment's CIGAR,
+// anchored at the 0-based reference start ipos. It is a faithful port of
+// upstream mosdepth's gen_start_ends iterator: contiguous reference- AND
+// query-consuming ops (M/=/X) are fused into a single covered run, while ops
+// that consume reference but not query (D/N) break the run so the gap is not
+// counted. Soft/hard clips, insertions, and padding advance neither.
+//
+// The returned slice always pairs each +1 with a later -1, so the cumulative
+// value over the slice is zero. It is the exact event geometry the overlap
+// subtractor needs to find the doubly-counted region between two mates.
+func genStartEnds(c sam.Cigar, ipos int) []startEnd {
+	// Single-M fast path, matching upstream's `c.len == 1 and c[0].op == match`.
+	if len(c) == 1 && c[0].Op() == sam.CigarMatch {
+		l := int(c[0].Length())
+		return []startEnd{{ipos, 1}, {ipos + l, -1}}
+	}
+	var out []startEnd
+	pos := ipos
+	lastStop := -1
+	for _, op := range c {
+		o := op.Op()
+		consumesRef := o == sam.CigarMatch || o == sam.CigarEqual || o == sam.CigarMismatch ||
+			o == sam.CigarDeletion || o == sam.CigarSkipped
+		if !consumesRef {
+			continue
+		}
+		olen := int(op.Length())
+		consumesQuery := o == sam.CigarMatch || o == sam.CigarEqual || o == sam.CigarMismatch
+		if consumesQuery {
+			if pos != lastStop {
+				out = append(out, startEnd{pos, 1})
+				if lastStop != -1 {
+					out = append(out, startEnd{lastStop, -1})
+				}
+			}
+			lastStop = pos + olen
+		}
+		pos += olen
+	}
+	if lastStop != -1 {
+		out = append(out, startEnd{lastStop, -1})
+	}
+	return out
+}
+
+// addOverlapCorrection removes the depth double-counted where the two mates of
+// a read pair overlap, mirroring upstream mosdepth's default-mode overlap
+// handling. mate is the lower-coordinate read (already seen) and rec is the
+// higher-coordinate read of the same template; both have already contributed
+// their full per-base coverage via addRecord. This inserts the compensating
+// -1/+1 events so the overlapping bases are counted once, not twice.
+//
+// recStart and mateStart are the 0-based reference starts of rec and mate.
+// When both reads have a single CIGAR op (the common gapless case) upstream
+// takes a shortcut: subtract one copy across [recStart, mateStop). Otherwise it
+// merges both reads' gen_start_ends events, sorts them, and subtracts one copy
+// of every span where the combined pair depth reaches 2.
+func (a *covAccum) addOverlapCorrection(rec, mate *sam.Record, recStart, mateStart int) {
+	if len(rec.Cigar) == 1 && len(mate.Cigar) == 1 {
+		// mate:   --------------
+		// rec:             ------------
+		// decrement:       -----  (from rec.start to mate.stop). Upstream does
+		// dec(arr[rec.start]); inc(arr[mate.stop]); i.e. a -1 run over the
+		// overlap span.
+		mateStop := mateStart + mate.Cigar.ReferenceLength()
+		a.events = append(a.events,
+			covEvent{pos: recStart, delta: -1},
+			covEvent{pos: mateStop, delta: 1})
+		return
+	}
+	ses := genStartEnds(rec.Cigar, recStart)
+	ses = append(ses, genStartEnds(mate.Cigar, mateStart)...)
+	sortStartEnds(ses)
+	var pairDepth int32
+	lastPos := 0
+	for _, p := range ses {
+		// When pair depth is 2 and a run closes, [lastPos, p.pos) is the
+		// doubly-covered span: subtract exactly one copy of it.
+		if p.value == -1 && pairDepth == 2 {
+			a.events = append(a.events,
+				covEvent{pos: lastPos, delta: -1},
+				covEvent{pos: p.pos, delta: 1})
+		}
+		pairDepth += p.value
+		lastPos = p.pos
+	}
+}
+
+// sortStartEnds sorts a slice of startEnd by ascending position, matching
+// upstream's pair_sort (which orders solely on pos). Ties keep input order,
+// which is sufficient because the overlap walk only reacts to -1 events while
+// pair depth is already 2.
+func sortStartEnds(s []startEnd) {
+	if len(s) < 2 {
+		return
+	}
+	// Simple insertion sort: these slices have at most a handful of events
+	// (one per CIGAR block across two reads).
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1].pos > s[j].pos; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }
 
 // sortEventSlice sorts a slice of covEvent by ascending position.
