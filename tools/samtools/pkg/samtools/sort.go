@@ -303,15 +303,43 @@ func recordSize(r *sam.Record) int64 {
 func makeRecordLess(opts SortOptions, refIndex map[string]int) func(a, b *sam.Record) bool {
 	switch opts.Order {
 	case SortByName:
-		return func(a, b *sam.Record) bool { return a.QName < b.QName }
+		// Plain lexicographic QNAME (upstream `-N`, natural_sort=0), tie-broken
+		// by the FLAG-derived key just like upstream's heap_lt/bam1_cmp_core.
+		return func(a, b *sam.Record) bool { return nameLess(a, b, false) }
 	case SortByNameNatural:
-		return func(a, b *sam.Record) bool { return naturalLess(a.QName, b.QName) }
+		// Natural-numeric QNAME (upstream `-n`, natural_sort=1), same FLAG
+		// secondary key.
+		return func(a, b *sam.Record) bool { return nameLess(a, b, true) }
 	case SortByTag:
 		tag := opts.Tag
-		return func(a, b *sam.Record) bool { return tagLess(a, b, tag) }
+		return func(a, b *sam.Record) bool { return tagLess(a, b, tag, refIndex) }
 	default:
 		return func(a, b *sam.Record) bool { return coordLess(a, b, refIndex) }
 	}
+}
+
+// flagSortKey maps a record's FLAG to the integer upstream samtools uses as
+// the secondary key for name sorts. It reorders the READ1/READ2, SECONDARY
+// and SUPPLEMENTARY bits so that a plain numeric subtraction yields the
+// order READ1, READ2, (PRIMARY), SUPPLEMENTARY, SECONDARY. This is a direct
+// port of the bit shuffle in bam_sort.c's heap_lt and bam1_cmp_core:
+//
+//	f = ((flag&0xc0)<<8) | ((flag&0x100)<<3) | ((flag&0x800)>>3)
+func flagSortKey(flag uint16) int {
+	f := int(flag)
+	return ((f & 0xc0) << 8) | ((f & 0x100) << 3) | ((f & 0x800) >> 3)
+}
+
+// nameLess orders two records the way upstream samtools sort does for a name
+// sort: first by QNAME (natural-numeric when natural is true, else a plain
+// byte compare) and then, on a QNAME tie, by the FLAG-derived secondary key.
+// This matches bam1_cmp_core's QueryName branch byte-for-byte.
+func nameLess(a, b *sam.Record, natural bool) bool {
+	c := strnumCmp(a.QName, b.QName, natural)
+	if c != 0 {
+		return c < 0
+	}
+	return flagSortKey(a.Flag) < flagSortKey(b.Flag)
 }
 
 // coordLess sorts records by (refID, 0-based pos). Unmapped records (refID
@@ -349,96 +377,253 @@ func coordLess(a, b *sam.Record, refIndex map[string]int) bool {
 
 // naturalLess implements numeric-aware string comparison: runs of digits in
 // both strings are compared as integers, everything else byte-by-byte. So
-// "r10" sorts after "r2" but before "r20".
-func naturalLess(a, b string) bool {
-	ia, ib := 0, 0
-	for ia < len(a) && ib < len(b) {
-		ca, cb := a[ia], b[ib]
-		if isDigit(ca) && isDigit(cb) {
-			// Find numeric run extents.
-			ja := ia
-			for ja < len(a) && isDigit(a[ja]) {
-				ja++
+// "r10" sorts after "r2" but before "r20". It is a thin wrapper over
+// strnumCmp's natural mode, retained for callers that only need a bool.
+func naturalLess(a, b string) bool { return strnumCmp(a, b, true) < 0 }
+
+// strnumCmp is a byte-for-byte port of upstream samtools' strnum_cmp
+// (bam_sort.c). It returns a negative, zero, or positive value if a sorts
+// before, equal to, or after b respectively. When natural is false it
+// degrades to a plain byte compare (the `samtools sort -N` path, where
+// upstream sets natural_sort=0 and calls strcmp). When natural is true it
+// compares maximal digit runs numerically: leading zeros are skipped, then
+// matching digits are skipped, and whichever number keeps producing digits
+// the longest is the larger; equal-length runs fall back to the first
+// differing digit.
+func strnumCmp(a, b string, natural bool) int {
+	if !natural {
+		if a < b {
+			return -1
+		}
+		if a > b {
+			return 1
+		}
+		return 0
+	}
+	pa, pb := 0, 0
+	for pa < len(a) && pb < len(b) {
+		if !isDigit(a[pa]) || !isDigit(b[pb]) {
+			if a[pa] != b[pb] {
+				return int(a[pa]) - int(b[pb])
 			}
-			jb := ib
-			for jb < len(b) && isDigit(b[jb]) {
-				jb++
-			}
-			// Strip leading zeros for value comparison; preserve full
-			// length for the tie-break.
-			na := stripLeadingZeros(a[ia:ja])
-			nb := stripLeadingZeros(b[ib:jb])
-			if len(na) != len(nb) {
-				return len(na) < len(nb)
-			}
-			if na != nb {
-				return na < nb
-			}
-			// Same numeric value — fall back to literal length compare.
-			if ja-ia != jb-ib {
-				return ja-ia < jb-ib
-			}
-			ia = ja
-			ib = jb
+			pa++
+			pb++
 			continue
 		}
-		if ca != cb {
-			return ca < cb
+		// Both positions are digits: compare the two numeric runs.
+		// Skip leading zeros.
+		for pa < len(a) && a[pa] == '0' {
+			pa++
 		}
-		ia++
-		ib++
+		for pb < len(b) && b[pb] == '0' {
+			pb++
+		}
+		// Skip matching digits.
+		for pa < len(a) && pb < len(b) && isDigit(a[pa]) && a[pa] == b[pb] {
+			pa++
+			pb++
+		}
+		// Capture the byte difference at the current cursor, exactly as
+		// upstream does ((int)*pa - (int)*pb). Past the end of either string
+		// the C code reads the NUL terminator, i.e. 0.
+		var ca, cb int
+		if pa < len(a) {
+			ca = int(a[pa])
+		}
+		if pb < len(b) {
+			cb = int(b[pb])
+		}
+		diff := ca - cb
+		// Whichever number is still emitting digits is the larger one.
+		for pa < len(a) && pb < len(b) && isDigit(a[pa]) && isDigit(b[pb]) {
+			pa++
+			pb++
+		}
+		if pa < len(a) && isDigit(a[pa]) {
+			return 1 // a still going, so larger
+		}
+		if pb < len(b) && isDigit(b[pb]) {
+			return -1 // b still going, so larger
+		}
+		if diff != 0 {
+			return diff // same length, so earlier diff decides
+		}
 	}
-	return len(a) < len(b)
+	if pa < len(a) {
+		return 1
+	}
+	if pb < len(b) {
+		return -1
+	}
+	return 0
 }
 
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
-func stripLeadingZeros(s string) string {
-	i := 0
-	for i < len(s)-1 && s[i] == '0' {
-		i++
-	}
-	return s[i:]
+// tagLess reports whether record a sorts before record b under `samtools
+// sort -t TAG` (the TagCoordinate order). It is a direct port of upstream's
+// bam1_cmp_by_tag (bam_sort.c): records lacking the tag sort *first*; present
+// tags are compared first by their normalised aux type, then by value
+// (integers numerically, floats as floats — including the int-vs-float
+// coercion upstream performs — single chars by code point, strings/hex
+// byte-wise); on a full tie it falls back to the coordinate secondary key
+// (refID, 1-based pos, reverse-strand flag) via tagCoordCmp.
+func tagLess(a, b *sam.Record, tag string, refIndex map[string]int) bool {
+	return tagCmp(a, b, tag, refIndex) < 0
 }
 
-// tagLess compares two records by an aux tag value. Missing tags sort last;
-// integer tags compare numerically; float tags compare as floats; string
-// tags compare lexicographically.
-func tagLess(a, b *sam.Record, tag string) bool {
+// tagCmp returns a negative, zero, or positive value mirroring upstream's
+// bam1_cmp_by_tag three-way result.
+func tagCmp(a, b *sam.Record, tag string, refIndex map[string]int) int {
 	av, aok := a.GetAux(tag)
 	bv, bok := b.GetAux(tag)
-	if !aok && !bok {
-		return a.QName < b.QName
+	// Reads not carrying the tag sort first (return -1 means a < b).
+	switch {
+	case !aok && bok:
+		return -1
+	case aok && !bok:
+		return 1
+	case !aok && !bok:
+		return tagCoordCmp(a, b, refIndex)
 	}
-	if !aok {
-		return false
+
+	atype := normalizeAuxType(av.Type)
+	btype := normalizeAuxType(bv.Type)
+	if atype != btype {
+		// Upstream coerces int↔float so the numeric ordering is total;
+		// any other type mismatch falls back to comparing the type bytes.
+		if atype == 'c' && btype == 'f' {
+			atype = 'f'
+		} else if atype == 'f' && btype == 'c' {
+			btype = 'f'
+		} else {
+			if atype < btype {
+				return -1
+			}
+			return 1
+		}
 	}
-	if !bok {
-		return true
-	}
-	// Integer comparison (works for c/C/s/S/i/I).
-	ai, aint := av.Int()
-	bi, bint := bv.Int()
-	if aint && bint {
+
+	switch atype {
+	case 'c': // any integer width, normalised
+		ai, _ := av.Int()
+		bi, _ := bv.Int()
 		if ai != bi {
-			return ai < bi
+			if ai < bi {
+				return -1
+			}
+			return 1
 		}
-		return a.QName < b.QName
-	}
-	if av.Type == 'f' && bv.Type == 'f' {
-		af, _ := av.Value.(float64)
-		bf, _ := bv.Value.(float64)
+	case 'f':
+		af := auxFloat(av)
+		bf := auxFloat(bv)
 		if af != bf {
-			return af < bf
+			if af < bf {
+				return -1
+			}
+			return 1
 		}
-		return a.QName < b.QName
+	case 'A':
+		as, _ := av.Value.(string)
+		bs, _ := bv.Value.(string)
+		ac, bc := byte(0), byte(0)
+		if len(as) > 0 {
+			ac = as[0]
+		}
+		if len(bs) > 0 {
+			bc = bs[0]
+		}
+		if ac != bc {
+			if ac < bc {
+				return -1
+			}
+			return 1
+		}
+	case 'H': // Z and H both normalise to 'H'; compare byte-wise like strcmp
+		as, _ := av.Value.(string)
+		bs, _ := bv.Value.(string)
+		if as != bs {
+			if as < bs {
+				return -1
+			}
+			return 1
+		}
 	}
-	as, _ := av.Value.(string)
-	bs, _ := bv.Value.(string)
-	if as != bs {
-		return as < bs
+	// Tags are equal — fall back to the coordinate secondary key.
+	return tagCoordCmp(a, b, refIndex)
+}
+
+// normalizeAuxType folds a SAM aux type byte to the canonical letter upstream
+// uses for total-ordering tag comparisons (bam_sort.c normalize_type): all
+// integer widths become 'c', float/double become 'f', printable string and
+// hex become 'H', and any other type keeps its own byte.
+func normalizeAuxType(t byte) byte {
+	switch t {
+	case 'c', 'C', 's', 'S', 'i', 'I':
+		return 'c'
+	case 'f', 'd':
+		return 'f'
+	case 'H', 'Z':
+		return 'H'
+	default:
+		return t
 	}
-	return a.QName < b.QName
+}
+
+// auxFloat returns an aux value as a float64, accepting either a stored
+// float or an integer (matching upstream's bam_aux2f int-to-float read).
+func auxFloat(a sam.Aux) float64 {
+	if f, ok := a.Value.(float64); ok {
+		return f
+	}
+	if i, ok := a.Int(); ok {
+		return float64(i)
+	}
+	return 0
+}
+
+// tagCoordCmp is the secondary key used by `samtools sort -t TAG` when two
+// records' tag values are equal: it orders by reference ID, then 1-based
+// position, then the reverse-strand flag, exactly as upstream's
+// bam1_cmp_core does for the (non-QueryName) coordinate path. Returns -1, 0,
+// or 1.
+func tagCoordCmp(a, b *sam.Record, refIndex map[string]int) int {
+	ra := refID(a.RName, refIndex)
+	rb := refID(b.RName, refIndex)
+	if ra != rb {
+		if ra < rb {
+			return -1
+		}
+		return 1
+	}
+	if a.Pos != b.Pos {
+		if a.Pos < b.Pos {
+			return -1
+		}
+		return 1
+	}
+	arev := a.Flag&sam.FlagReverse != 0
+	brev := b.Flag&sam.FlagReverse != 0
+	if arev != brev {
+		if !arev { // false (0) sorts before true (1)
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// refID resolves a reference name to its 0-based header index, mapping the
+// unmapped sentinel ("*"/empty/unknown) to a value that sorts after every
+// real reference — matching the unsigned tid ordering upstream relies on
+// (tid == -1 becomes UINT32_MAX).
+func refID(name string, refIndex map[string]int) int {
+	if name != "" && name != "*" {
+		if id, ok := refIndex[name]; ok {
+			return id
+		}
+	}
+	return 1 << 30
 }
 
 // writeShard creates a tmp BAM file and writes the given (already sorted)

@@ -131,9 +131,10 @@ func TestSortByTag(t *testing.T) {
 		t.Fatalf("Sort: %v", err)
 	}
 	recs := readBAMRecords(t, out.Bytes())
-	// NM values: r10=3, r2=1, r1=2, r20=9, u1=missing → u1 sorts last.
-	// Sorted by NM: r2(1), r1(2), r10(3), r20(9), u1(missing).
-	want := []string{"r2", "r1", "r10", "r20", "u1"}
+	// NM values: r10=3, r2=1, r1=2, r20=9, u1=missing. Upstream sorts the
+	// tagless record first, then by NM value: u1, r2(1), r1(2), r10(3),
+	// r20(9). Verified against `samtools sort -t NM`.
+	want := []string{"u1", "r2", "r1", "r10", "r20"}
 	for i, w := range want {
 		if recs[i].QName != w {
 			t.Errorf("position %d: got %q, want %q", i, recs[i].QName, w)
@@ -142,14 +143,19 @@ func TestSortByTag(t *testing.T) {
 }
 
 func TestSortByTagMissing(t *testing.T) {
-	// Sorting by a tag absent on every record falls back to QName order.
+	// Sorting by a tag absent on every record falls back to the coordinate
+	// secondary key (refID, pos), matching upstream `samtools sort -t ZZ`:
+	// r1(chr1:100), r20(chr1:150), r2(chr1:200), r10(chr2:50), u1(unmapped).
 	var out bytes.Buffer
 	if err := Sort(strings.NewReader(unsortedSAM), &out, SortOptions{Order: SortByTag, Tag: "ZZ", OutputBAM: true}); err != nil {
 		t.Fatalf("Sort: %v", err)
 	}
 	recs := readBAMRecords(t, out.Bytes())
-	if recs[0].QName != "r1" {
-		t.Errorf("first record on missing tag: got %q, want %q", recs[0].QName, "r1")
+	want := []string{"r1", "r20", "r2", "r10", "u1"}
+	for i, w := range want {
+		if recs[i].QName != w {
+			t.Errorf("position %d on missing tag: got %q, want %q", i, recs[i].QName, w)
+		}
 	}
 }
 
@@ -252,46 +258,55 @@ func TestParseMemBudget(t *testing.T) {
 	}
 }
 
-// TestTagLessFloatAndString exercises the float and string branches of
-// tagLess that the SortByTag tests don't hit.
+// emptyRefIndex is the reference map used by the tagLess unit tests; the
+// records they build are unmapped, so the coordinate secondary key resolves
+// every one to the same unmapped sentinel.
+var emptyRefIndex = map[string]int{"chr1": 0}
+
+// TestTagLessFloat exercises the float branch of tagLess: floats compare
+// numerically and equal floats fall through to the coordinate secondary key.
 func TestTagLessFloat(t *testing.T) {
-	a := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
-	b := &sam.Record{QName: "b", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 2.0}}}
-	if !tagLess(a, b, "XF") {
+	a := &sam.Record{QName: "a", RName: "chr1", Pos: 10, Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
+	b := &sam.Record{QName: "b", RName: "chr1", Pos: 20, Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 2.0}}}
+	if !tagLess(a, b, "XF", emptyRefIndex) {
 		t.Error("XF=1.0 should be less than XF=2.0")
 	}
-	if tagLess(b, a, "XF") {
+	if tagLess(b, a, "XF", emptyRefIndex) {
 		t.Error("XF=2.0 should NOT be less than XF=1.0")
 	}
-	// Equal floats fall back to QName.
-	c := &sam.Record{QName: "z", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
-	if !tagLess(a, c, "XF") {
-		t.Error("tie on XF=1.0 should defer to QName (a < z)")
+	// Equal floats fall back to the coordinate key (pos 10 < pos 30).
+	c := &sam.Record{QName: "z", RName: "chr1", Pos: 30, Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
+	if !tagLess(a, c, "XF", emptyRefIndex) {
+		t.Error("tie on XF=1.0 should defer to coordinate (pos 10 < 30)")
 	}
 }
 
+// TestTagLessString exercises the string branch of tagLess.
 func TestTagLessString(t *testing.T) {
-	a := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
-	b := &sam.Record{QName: "b", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-bb"}}}
-	if !tagLess(a, b, "RG") {
+	a := &sam.Record{QName: "a", RName: "chr1", Pos: 10, Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
+	b := &sam.Record{QName: "b", RName: "chr1", Pos: 20, Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-bb"}}}
+	if !tagLess(a, b, "RG", emptyRefIndex) {
 		t.Error("rg-aa < rg-bb expected")
 	}
-	// Equal strings fall back to QName.
-	c := &sam.Record{QName: "z", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
-	if !tagLess(a, c, "RG") {
-		t.Error("tie on rg-aa should defer to QName")
+	// Equal strings fall back to the coordinate key (pos 10 < pos 30).
+	c := &sam.Record{QName: "z", RName: "chr1", Pos: 30, Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
+	if !tagLess(a, c, "RG", emptyRefIndex) {
+		t.Error("tie on rg-aa should defer to coordinate (pos 10 < 30)")
 	}
 }
 
+// TestTagLessMissingOneSide verifies upstream's rule that records lacking the
+// sort tag sort *before* records that carry it (bam1_cmp_by_tag returns -1
+// when only the left record's tag is NULL).
 func TestTagLessMissingOneSide(t *testing.T) {
 	withTag := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "NM", Type: 'i', Value: int64(1)}}}
 	without := &sam.Record{QName: "b"}
-	// withTag has the field → it should sort first.
-	if !tagLess(withTag, without, "NM") {
-		t.Error("record with tag should sort before record without")
+	// The tagless record sorts first.
+	if !tagLess(without, withTag, "NM", emptyRefIndex) {
+		t.Error("record without tag should sort before record with tag")
 	}
-	if tagLess(without, withTag, "NM") {
-		t.Error("record without tag should NOT sort before record with tag")
+	if tagLess(withTag, without, "NM", emptyRefIndex) {
+		t.Error("record with tag should NOT sort before record without tag")
 	}
 }
 
@@ -338,5 +353,112 @@ func TestNaturalLess(t *testing.T) {
 		if got := naturalLess(c.a, c.b); got != c.want {
 			t.Errorf("naturalLess(%q, %q): got %v, want %v", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// TestStrnumCmp checks the three-way strnum_cmp port in both natural and
+// plain modes, including symmetry and the equal-value/equal-string cases.
+func TestStrnumCmp(t *testing.T) {
+	sign := func(n int) int {
+		switch {
+		case n < 0:
+			return -1
+		case n > 0:
+			return 1
+		default:
+			return 0
+		}
+	}
+	cases := []struct {
+		a, b    string
+		natural bool
+		want    int
+	}{
+		// Natural mode: numeric runs compare by value.
+		{"r1", "r2", true, -1},
+		{"r2", "r10", true, -1},
+		{"r10", "r2", true, 1},
+		{"r10", "r10", true, 0},
+		{"a01", "a1", true, 0}, // equal numeric value
+		{"abc", "abd", true, -1},
+		{"", "x", true, -1},
+		{"x", "", true, 1},
+		// Plain (lexicographic) mode: q10 sorts before q2.
+		{"q10", "q2", false, -1},
+		{"q2", "q10", false, 1},
+		{"q2", "q2", false, 0},
+	}
+	for _, c := range cases {
+		got := sign(strnumCmp(c.a, c.b, c.natural))
+		if got != c.want {
+			t.Errorf("strnumCmp(%q, %q, natural=%v): got %d, want %d", c.a, c.b, c.natural, got, c.want)
+		}
+		// The comparator must be antisymmetric.
+		rev := sign(strnumCmp(c.b, c.a, c.natural))
+		if rev != -c.want {
+			t.Errorf("strnumCmp(%q, %q, natural=%v) not antisymmetric: got %d, want %d", c.b, c.a, c.natural, rev, -c.want)
+		}
+	}
+}
+
+// TestFlagSortKey pins the exact integer keys the FLAG-to-key transform
+// produces (a direct port of upstream's bit shuffle). The resulting numeric
+// ordering across the canonical FLAG categories is
+// primary < supplementary < secondary < read1 < read2, which is what the
+// name-sort secondary key relies on.
+func TestFlagSortKey(t *testing.T) {
+	cases := []struct {
+		flag uint16
+		want int
+	}{
+		{0, 0},                         // primary, neither read1 nor read2
+		{sam.FlagSupplementary, 0x100}, // 0x800 >> 3
+		{sam.FlagSecondary, 0x800},     // 0x100 << 3
+		{sam.FlagRead1, 0x4000},        // 0x40 << 8
+		{sam.FlagRead2, 0x8000},        // 0x80 << 8
+		{sam.FlagRead1 | sam.FlagRead2, 0xc000},
+	}
+	for _, c := range cases {
+		if got := flagSortKey(c.flag); got != c.want {
+			t.Errorf("flagSortKey(0x%x): got 0x%x, want 0x%x", c.flag, got, c.want)
+		}
+	}
+	// The numeric ordering must be primary < supp < sec < read1 < read2.
+	order := []uint16{0, sam.FlagSupplementary, sam.FlagSecondary, sam.FlagRead1, sam.FlagRead2}
+	for i := 1; i < len(order); i++ {
+		if !(flagSortKey(order[i-1]) < flagSortKey(order[i])) {
+			t.Errorf("FLAG key order broken at index %d", i)
+		}
+	}
+	// Strand and other non-category bits must not perturb the key.
+	if flagSortKey(sam.FlagRead1) != flagSortKey(sam.FlagRead1|sam.FlagReverse|sam.FlagPaired) {
+		t.Error("non-category flag bits must not affect the name-sort key")
+	}
+}
+
+// TestNameLessFlagTiebreak exercises nameLess's FLAG secondary key on a
+// QNAME tie. The numeric key ordering means a primary read sorts before a
+// supplementary, which sorts before a secondary, and read1 sorts before
+// read2.
+func TestNameLessFlagTiebreak(t *testing.T) {
+	primary := &sam.Record{QName: "q", Flag: 0}
+	supp := &sam.Record{QName: "q", Flag: sam.FlagSupplementary}
+	sec := &sam.Record{QName: "q", Flag: sam.FlagSecondary}
+	read1 := &sam.Record{QName: "q", Flag: sam.FlagPaired | sam.FlagRead1}
+	read2 := &sam.Record{QName: "q", Flag: sam.FlagPaired | sam.FlagRead2}
+	chain := []*sam.Record{primary, supp, sec, read1, read2}
+	for i := 1; i < len(chain); i++ {
+		if !nameLess(chain[i-1], chain[i], true) {
+			t.Errorf("nameLess: record %d (flag 0x%x) should sort before record %d (flag 0x%x)",
+				i-1, chain[i-1].Flag, i, chain[i].Flag)
+		}
+		if nameLess(chain[i], chain[i-1], true) {
+			t.Errorf("nameLess not antisymmetric at index %d", i)
+		}
+	}
+	// Distinct QNAMEs ignore the FLAG key entirely.
+	other := &sam.Record{QName: "p", Flag: sam.FlagSecondary}
+	if !nameLess(other, read1, true) {
+		t.Error("QNAME p should sort before q regardless of FLAG")
 	}
 }

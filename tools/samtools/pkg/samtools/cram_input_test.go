@@ -14,17 +14,20 @@ import (
 )
 
 // cramFixturePath is the upstream samtools reference-free v3.0 CRAM test
-// file, vendored as a git submodule under reference_code/. Its expected
-// decoded SAM is the sibling test_input_1_a.sam.
-var cramFixturePath = filepath.Join("..", "..", "..", "..", "reference_code",
-	"samtools", "test", "dat", "test_input_1_a.cram")
+// file, vendored byte-for-byte into tools/samtools/testdata/parity/ (a copy
+// of reference_code/samtools/test/dat/test_input_1_a.cram). Vendoring the
+// fixture bytes keeps the parity suite self-contained — it does not depend on
+// the samtools submodule being initialised. Its decoded SAM is the sibling
+// test_input_1_a.sam.
+var cramFixturePath = filepath.Join("..", "..", "testdata", "parity", "test_input_1_a.cram")
 
-// openCRAMFixture returns the path to the CRAM fixture, skipping the test
-// when the samtools submodule is not initialised.
+// openCRAMFixture returns the path to the vendored CRAM fixture. The fixture
+// is committed under testdata, so a missing file is a hard failure rather
+// than a skip.
 func openCRAMFixture(t *testing.T) string {
 	t.Helper()
 	if _, err := os.Stat(cramFixturePath); err != nil {
-		t.Skip("samtools submodule not initialised — CRAM fixture unavailable")
+		t.Fatalf("vendored CRAM fixture missing at %s: %v", cramFixturePath, err)
 	}
 	return cramFixturePath
 }
@@ -107,6 +110,35 @@ func TestViewAcceptsCRAM(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("record %d: got %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// TestParity_View_CRAM_VsUpstream is the byte-for-byte CRAM-input parity
+// test: it runs the Go port's CRAM-decoding View path and the live upstream
+// `samtools view` on the same vendored reference-free CRAM file and asserts
+// the emitted record bodies are identical. The fixture decodes without an
+// external reference, so no `-T` reference is needed; the record stream
+// (including the full aux column, which the Go CRAM decoder emits in the same
+// order upstream does) must match exactly. Header @PG injection differs
+// between the two (the Go port deliberately omits @PG), so the comparison is
+// over the record bodies that `view` without `-h` produces.
+func TestParity_View_CRAM_VsUpstream(t *testing.T) {
+	path := openCRAMFixture(t)
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open CRAM fixture: %v", err)
+	}
+	defer f.Close()
+
+	var out bytes.Buffer
+	if _, err := View(f, &out, ViewOptions{}); err != nil {
+		t.Fatalf("View on CRAM: %v", err)
+	}
+
+	want := upstreamSamtoolsRun(t, "view", path)
+	if !bytes.Equal(out.Bytes(), want) {
+		t.Errorf("CRAM view mismatch vs upstream samtools view.\nwant:\n%s\ngot:\n%s", want, out.String())
 	}
 }
 
