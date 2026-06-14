@@ -626,12 +626,27 @@ Sequence/header transforms + misc knobs (PR
   dinucleotide/repeat complexity rules. Rules are `<bases> <count>`
   (`%` count = percentage); evaluated against the upper-cased sequence.
 
-Still missing (all niche knobs, not in scope):
+Closed gaps:
 
-- The PNG report generation flow (`prinseq-graphs.pl`). Out of
-  scope — the Go `graph` and `report` subcommands cover the
-  equivalent visualisation surface without depending on a Perl
-  graphics stack.
+- The PNG report generation flow (`prinseq-graphs.pl`) is
+  **implemented** as the `prinseq graph_png` subcommand (matching the
+  upstream `-i <gd> -png_all [-html_all] -o <prefix>` surface). It
+  reads a `--graph_data` `.gd` file and renders the full upstream
+  graph set — length (`_ld`), poly-A/T tail (`_td5`/`_td3`), N% (`_ns`),
+  GC (`_gc`), DUST/entropy complexity (`_cd`/`_ce`), dinucleotide-odds
+  PCA (`_pm`/`_pv`) + odds-ratio (`_or`), base-quality boxplots
+  (`_qd`/`_qd2`), per-read mean-quality bar (`_qd3`), and the three
+  duplication-level stacks (`_df`/`_dl`/`_dm`) — plus the optional
+  HTML index, all in pure Go (stdlib `image`/`image/png` + a
+  hand-rolled 5x7 bitmap font; gonum drives the PCA eigendecomposition
+  per its sanctioned linalg scope). **PNG byte-identity is N/A** — the
+  renderer is stdlib raster, not Perl Cairo/GD, so pixels differ by
+  design; the asserted parity is the graph *set* (filenames) and the
+  plotted *data series*, both unit-tested in `pnggraphs_test.go`. (The
+  upstream `prinseq-graphs.pl` could not be run as a live oracle here
+  because its `Cairo`/`Statistics::PCA` CPAN deps are not installable;
+  the graph set was therefore derived from the Perl `generateGraphs`
+  source.)
 
 **Validation:** the transform/misc knobs are validated **live** against the
 upstream Perl `prinseq-lite.pl` — `TestParityTransforms` in

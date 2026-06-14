@@ -217,6 +217,45 @@ JSON-normalised semantic diff (see
 across runs (lexicographic key order), unlike upstream which
 inherits Perl 5.18+ random hash iteration.
 
+#### 3c. Render Upstream PNG Graphs (`graph_png`)
+
+Ports the upstream `prinseq-graphs.pl` graphical-report flow: reads a
+`.gd` file (produced by `graph_data` or upstream) and renders the
+same set of PNG plots, plus an optional HTML index. Matches the
+upstream `-i <gd> -png_all [-html_all] -o <prefix>` invocation:
+
+```bash
+# Render all graphs as PNGs (prefix derived from the .gd name)
+prinseq graph_png -i report.gd
+
+# Custom prefix + HTML index linking the graphs
+prinseq graph_png -i report.gd -o myrun --png_all --html_all
+```
+
+Each graph is written as `<prefix><suffix>.png`, using upstream's
+exact filename suffixes:
+
+| Suffix | Graph |
+|--------|-------|
+| `_ld` | Length distribution (with mean ± SD band) |
+| `_td5` / `_td3` | Poly-A/T tail length (5' / 3') |
+| `_ns` | Percentage of N's per read |
+| `_gc` | GC-content distribution (with mean ± SD band) |
+| `_cd` / `_ce` | Sequence complexity (DUST / entropy) |
+| `_pm` / `_pv` | Dinucleotide-odds PCA (microbial / viral) |
+| `_or` | Dinucleotide odds-ratio scatter |
+| `_qd` / `_qd2` | Per-position base-quality boxplots (relative % / binned bp) |
+| `_qd3` | Per-read mean-quality bar plot |
+| `_df` / `_dl` / `_dm` | Sequence-duplication-level stacked bars |
+
+**Parity note:** the renderer is pure Go (stdlib `image`/`image/png`
+plus a hand-rolled 5x7 bitmap font; gonum drives the PCA
+eigendecomposition). Pixels are **not** byte-identical to upstream's
+Perl Cairo/GD output — different rasteriser, font, and antialiasing —
+so PNG byte-identity is N/A by design. The asserted parity is the
+graph *set* (filenames) and the plotted *data series* extracted from
+the `.gd`, both unit-tested.
+
 #### 4. Generate HTML Reports (`report`)
 
 Create comprehensive HTML quality reports with embedded graphs:
