@@ -957,12 +957,25 @@ func writeStats(out io.Writer, r *statsResult) error {
 	// File header.
 	fmt.Fprintln(bw, "# This file was produced by bcftools stats (pure-Go).")
 	fmt.Fprintln(bw, "# The command line was:\tbcftools stats", r.opts.InputFile)
+	fmt.Fprintln(bw, "#")
 
 	// ID block — upstream lists each input file's ID; we only use one (0).
-	fmt.Fprintln(bw, "# ID, Definition of sets:")
-	fmt.Fprintf(bw, "ID\t0\t%s\n", r.opts.InputFile)
+	// The input filename "-" is rendered as <STDIN>, matching upstream.
+	fmt.Fprintln(bw, "# Definition of sets:")
+	fmt.Fprintln(bw, "# ID\t[2]id\t[3]tab-separated file names")
+	fname := r.opts.InputFile
+	if fname == "-" {
+		fname = "<STDIN>"
+	}
+	fmt.Fprintf(bw, "ID\t0\t%s\n", fname)
 
 	if err := writeSN(bw, r); err != nil {
+		return err
+	}
+	if err := writeTSTV(bw, r); err != nil {
+		return err
+	}
+	if err := writeSiS(bw, r); err != nil {
 		return err
 	}
 	if err := writeAF(bw, r); err != nil {
@@ -1001,6 +1014,20 @@ func writeStats(out io.Writer, r *statsResult) error {
 
 func writeSN(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# SN, Summary numbers:")
+	fmt.Fprintln(bw, "#   number of records   .. number of data rows in the VCF")
+	fmt.Fprintln(bw, "#   number of no-ALTs   .. reference-only sites, ALT is either \".\" or identical to REF")
+	fmt.Fprintln(bw, "#   number of SNPs      .. number of rows with a SNP")
+	fmt.Fprintln(bw, "#   number of MNPs      .. number of rows with a MNP, such as CC>TT")
+	fmt.Fprintln(bw, "#   number of indels    .. number of rows with an indel")
+	fmt.Fprintln(bw, "#   number of others    .. number of rows with other type, for example a symbolic allele or")
+	fmt.Fprintln(bw, "#                          a complex substitution, such as ACT>TCGA")
+	fmt.Fprintln(bw, "#   number of multiallelic sites     .. number of rows with multiple alternate alleles")
+	fmt.Fprintln(bw, "#   number of multiallelic SNP sites .. number of rows with multiple alternate alleles, all SNPs")
+	fmt.Fprintln(bw, "# ")
+	fmt.Fprintln(bw, "#   Note that rows containing multiple types will be counted multiple times, in each")
+	fmt.Fprintln(bw, "#   counter. For example, a row with a SNP and an indel increments both the SNP and")
+	fmt.Fprintln(bw, "#   the indel counter.")
+	fmt.Fprintln(bw, "# ")
 	fmt.Fprintln(bw, "# SN\t[2]id\t[3]key\t[4]value")
 	fmt.Fprintf(bw, "SN\t0\tnumber of samples:\t%d\n", len(r.headerSamples))
 	fmt.Fprintf(bw, "SN\t0\tnumber of records:\t%d\n", r.numRecords)
@@ -1011,6 +1038,62 @@ func writeSN(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintf(bw, "SN\t0\tnumber of others:\t%d\n", r.numOthers)
 	fmt.Fprintf(bw, "SN\t0\tnumber of multiallelic sites:\t%d\n", r.numMA)
 	fmt.Fprintf(bw, "SN\t0\tnumber of multiallelic SNP sites:\t%d\n", r.numMASNP)
+	return nil
+}
+
+// writeTSTV emits the TSTV (transitions/transversions) section. The ts and tv
+// totals are the sums of the AF-binned per-allele tallies over every bin
+// (including the singleton bin 0), exactly as upstream's print_stats does
+// before folding bin 0 into bin 1. The "1st ALT" columns are the first-ALT-only
+// tallies — the same counters that drive the QUAL section — summed across all
+// quality buckets. This must run before writeSiS/writeAF, which mutate the AF
+// bins via the singleton fold.
+func writeTSTV(bw *bufio.Writer, r *statsResult) error {
+	fmt.Fprintln(bw, "# TSTV, transitions/transversions")
+	fmt.Fprintln(bw, "#   - transitions, see https://en.wikipedia.org/wiki/Transition_(genetics)")
+	fmt.Fprintln(bw, "#   - transversions, see https://en.wikipedia.org/wiki/Transversion")
+	fmt.Fprintln(bw, "# TSTV\t[2]id\t[3]ts\t[4]tv\t[5]ts/tv\t[6]ts (1st ALT)\t[7]tv (1st ALT)\t[8]ts/tv (1st ALT)")
+	ts, tv := 0, 0
+	for i := 0; i < r.mAF; i++ {
+		ts += r.afTs[i]
+		tv += r.afTv[i]
+	}
+	tsAlt1, tvAlt1 := 0, 0
+	for _, n := range r.qualTs {
+		tsAlt1 += n
+	}
+	for _, n := range r.qualTv {
+		tvAlt1 += n
+	}
+	var ratio, ratio1 float64
+	if tv != 0 {
+		ratio = float64(ts) / float64(tv)
+	}
+	if tvAlt1 != 0 {
+		ratio1 = float64(tsAlt1) / float64(tvAlt1)
+	}
+	fmt.Fprintf(bw, "TSTV\t0\t%d\t%d\t%.2f\t%d\t%d\t%.2f\n", ts, tv, ratio, tsAlt1, tvAlt1, ratio1)
+	return nil
+}
+
+// writeSiS emits the SiS (singleton stats) section. It reports the contents of
+// the AF singleton bucket (bin 0) BEFORE that bucket is folded into bin 1 by
+// writeAF. The allele count column is always 1 (the singleton AC). The repeat
+// columns are emitted as zero: this port does not compute the experimental,
+// deprecated indel-context repeat tallies, so the not-applicable bucket carries
+// every singleton indel — matching upstream when --indel-context is off.
+func writeSiS(bw *bufio.Writer, r *statsResult) error {
+	fmt.Fprintln(bw, "# SiS, Singleton stats:")
+	fmt.Fprintln(bw, "#   - allele count, i.e. the number of singleton genotypes (AC=1)")
+	fmt.Fprintln(bw, "#   - number of transitions, see above")
+	fmt.Fprintln(bw, "#   - number of transversions, see above")
+	fmt.Fprintln(bw, "#   - repeat-consistent, inconsistent and n/a: experimental and useless stats [DEPRECATED]")
+	fmt.Fprintln(bw, "# SiS\t[2]id\t[3]allele count\t[4]number of SNPs\t[5]number of transitions\t[6]number of transversions\t[7]number of indels\t[8]repeat-consistent\t[9]repeat-inconsistent\t[10]not applicable")
+	// af_repeats[0][0]+af_repeats[1][0]+af_repeats[2][0] == total singleton
+	// indels; here that total is r.afNA[0] and the consistent/inconsistent
+	// buckets are zero, so the "not applicable" column equals r.afNA[0].
+	fmt.Fprintf(bw, "SiS\t0\t1\t%d\t%d\t%d\t%d\t0\t0\t%d\n",
+		r.afSNPs[0], r.afTs[0], r.afTv[0], r.afNA[0], r.afNA[0])
 	return nil
 }
 
@@ -1046,7 +1129,7 @@ func (r *statsResult) afValue(i int) float64 {
 }
 
 func writeQUAL(bw *bufio.Writer, r *statsResult) error {
-	fmt.Fprintln(bw, "# QUAL, Stats by quality:")
+	fmt.Fprintln(bw, "# QUAL, Stats by quality")
 	fmt.Fprintln(bw, "# QUAL\t[2]id\t[3]Quality\t[4]number of SNPs\t[5]number of transitions (1st ALT)\t[6]number of transversions (1st ALT)\t[7]number of indels")
 	keys := unionMapKeys(r.qualTs, r.qualTv, r.qualIndels)
 	sort.Ints(keys)
@@ -1126,7 +1209,14 @@ func writeUSR(bw *bufio.Writer, r *statsResult) error {
 }
 
 func writeDP(bw *bufio.Writer, r *statsResult) error {
-	fmt.Fprintln(bw, "# DP, Depth distribution:")
+	fmt.Fprintln(bw, "# DP, depth:")
+	fmt.Fprintln(bw, "#   - set id, see above")
+	fmt.Fprintln(bw, "#   - the depth bin, corresponds to the depth (unless --depth was given)")
+	fmt.Fprintln(bw, "#   - number of genotypes with this depth (zero unless -s/-S was given)")
+	fmt.Fprintln(bw, "#   - fraction of genotypes with this depth (zero unless -s/-S was given)")
+	fmt.Fprintln(bw, "#   - number of sites with this depth")
+	fmt.Fprintln(bw, "#   - fraction of sites with this depth")
+	fmt.Fprintln(bw, "# DP, Depth distribution")
 	fmt.Fprintln(bw, "# DP\t[2]id\t[3]bin\t[4]number of genotypes\t[5]fraction of genotypes (%)\t[6]number of sites\t[7]fraction of sites (%)")
 	var sumGT, sumSite uint64
 	for i := range r.dpGTBins {
