@@ -196,6 +196,119 @@ func TestParse(t *testing.T) {
 	})
 }
 
+// TestPermute checks that already-Normalize-d argv is reordered to
+// options-then-positionals, that value-taking flags keep their option-argument
+// (including negative-number values), that the "--" terminator is honoured, and
+// that a bare "-" and the relative order of positionals are preserved.
+func TestPermute(t *testing.T) {
+	tests := []struct {
+		name string
+		// args is already in Normalize output form (clusters expanded).
+		args []string
+		want []string
+	}{
+		{name: "empty", args: []string{}, want: []string{}},
+		{name: "already flags-first no-op", args: []string{"-b", "-q", "20", "in.bam"}, want: []string{"-b", "-q", "20", "in.bam"}},
+		{name: "trailing bool", args: []string{"in.bam", "-b"}, want: []string{"-b", "in.bam"}},
+		{name: "trailing value flag", args: []string{"in.bam", "-q", "20"}, want: []string{"-q", "20", "in.bam"}},
+		{name: "value flag among positionals", args: []string{"p", "-q", "20", "in.bam"}, want: []string{"-q", "20", "p", "in.bam"}},
+		{name: "long value flag trailing", args: []string{"in.bam", "--min-mapq", "5"}, want: []string{"--min-mapq", "5", "in.bam"}},
+		{name: "long inline equals trailing", args: []string{"in.bam", "--min-mapq=5"}, want: []string{"--min-mapq=5", "in.bam"}},
+		{name: "negative number value stays with flag", args: []string{"p", "in.bam", "-q", "-5"}, want: []string{"-q", "-5", "p", "in.bam"}},
+		{name: "multiple positionals keep relative order", args: []string{"a.fa", "reg.bed", "-b"}, want: []string{"-b", "a.fa", "reg.bed"}},
+		{name: "bare dash is positional", args: []string{"-b", "-", "-q", "20"}, want: []string{"-b", "-q", "20", "-"}},
+		{name: "terminator keeps rest positional verbatim", args: []string{"-b", "--", "-q20", "in.bam"}, want: []string{"-b", "--", "-q20", "in.bam"}},
+		{name: "terminator after positional", args: []string{"p", "-q", "20", "--", "-weird"}, want: []string{"-q", "20", "--", "p", "-weird"}},
+		{name: "value flag at very end with no value token", args: []string{"in.bam", "-q"}, want: []string{"-q", "in.bam"}},
+		{name: "two value flags interspersed", args: []string{"p", "-q", "20", "in.bam", "-o", "out.bam"}, want: []string{"-q", "20", "-o", "out.bam", "p", "in.bam"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs, _ := newPosixFS()
+			got := Permute(fs, tt.args)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Permute(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseInterspersed exercises the full Normalize+Permute+fs.Parse path for
+// the interspersed forms upstream getopt/docopt accept, and asserts they parse
+// identically to the canonical flags-first invocation.
+func TestParseInterspersed(t *testing.T) {
+	cases := []struct {
+		name         string
+		interspersed []string
+		flagsFirst   []string
+	}{
+		{"value-flag-trailing", []string{"in.bam", "-q", "20"}, []string{"-q", "20", "in.bam"}},
+		{"value-concat-trailing", []string{"in.bam", "-q20"}, []string{"-q", "20", "in.bam"}},
+		{"bool-trailing", []string{"in.bam", "-b"}, []string{"-b", "in.bam"}},
+		{"bundled-bools-trailing", []string{"in.bam", "-bS"}, []string{"-b", "-S", "in.bam"}},
+		{"long-eq-trailing", []string{"in.bam", "--min-mapq=20"}, []string{"--min-mapq=20", "in.bam"}},
+		{"value-among", []string{"p", "-q", "20", "in.bam"}, []string{"-q", "20", "p", "in.bam"}},
+		{"negative-value-trailing", []string{"p", "in.bam", "-q", "-5"}, []string{"-q", "-5", "p", "in.bam"}},
+		{"mixed-pre-and-post", []string{"-b", "p", "in.bam", "-q", "20"}, []string{"-b", "-q", "20", "p", "in.bam"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fsA, dstA := newPosixFS()
+			if err := Parse(fsA, tc.interspersed); err != nil {
+				t.Fatalf("Parse(%v): %v", tc.interspersed, err)
+			}
+			fsB, dstB := newPosixFS()
+			if err := Parse(fsB, tc.flagsFirst); err != nil {
+				t.Fatalf("Parse(%v): %v", tc.flagsFirst, err)
+			}
+			if *dstA != *dstB {
+				t.Errorf("interspersed %v -> %+v, flags-first %v -> %+v", tc.interspersed, *dstA, tc.flagsFirst, *dstB)
+			}
+			if !reflect.DeepEqual(fsA.Args(), fsB.Args()) {
+				t.Errorf("positionals: interspersed %v -> %v, flags-first %v -> %v",
+					tc.interspersed, fsA.Args(), tc.flagsFirst, fsB.Args())
+			}
+		})
+	}
+}
+
+// TestParsePreservesPositionalOrder confirms that for a subcommand whose
+// positional order matters (e.g. "subseq <in.fa> <reg.bed>") only options move;
+// the positionals keep their relative order.
+func TestParsePreservesPositionalOrder(t *testing.T) {
+	fs, dst := newPosixFS()
+	if err := Parse(fs, []string{"in.fa", "-b", "reg.bed"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !dst.b {
+		t.Fatalf("want b set")
+	}
+	if got := fs.Args(); !reflect.DeepEqual(got, []string{"in.fa", "reg.bed"}) {
+		t.Fatalf("positional order not preserved: got %v, want [in.fa reg.bed]", got)
+	}
+}
+
+// TestFlagName covers the inline-value detection used by Permute.
+func TestFlagName(t *testing.T) {
+	tests := []struct {
+		arg        string
+		wantName   string
+		wantInline bool
+	}{
+		{"-c", "c", false},
+		{"--chrom", "chrom", false},
+		{"--chrom=MT", "chrom", true},
+		{"-o=out.bam", "o", true},
+		{"--", "", false},
+	}
+	for _, tt := range tests {
+		name, inline := flagName(tt.arg)
+		if name != tt.wantName || inline != tt.wantInline {
+			t.Errorf("flagName(%q) = (%q,%v), want (%q,%v)", tt.arg, name, inline, tt.wantName, tt.wantInline)
+		}
+	}
+}
+
 // TestIsBoolFlag exercises the helper directly, including the unknown-flag
 // and value-flag branches.
 func TestIsBoolFlag(t *testing.T) {
