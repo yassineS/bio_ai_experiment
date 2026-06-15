@@ -32,6 +32,7 @@ package mosdepth
 
 import (
 	"compress/gzip"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -411,16 +412,48 @@ func TestParity_ReadGroupFilter_Missing(t *testing.T) {
 }
 
 // TestParity_MissingChrom_StrictFail mirrors
-// `run missing_chrom $exe -c nonexistent ...`. Upstream exits 1; we
-// silently emit empty outputs — gap.
+// `run missing_chrom $exe -c nonexistent ...`. Upstream writes
+// "[mosdepth] chromosome <name> not found" and exits 1; the port surfaces the
+// same condition as a ChromNotFoundError (wrapping ErrChromNotFound) so the CLI
+// exits non-zero rather than emitting empty output.
 func TestParity_MissingChrom_StrictFail(t *testing.T) {
-	t.Skip("known gap: --chrom nonexistent should error like upstream; see docs/PARITY_ROADMAP.md#mosdepth")
+	tmp := t.TempDir()
+	err := OpenAndRun(filepath.Join(fixtureDir(t), "ovl.bam"), Options{
+		Prefix:      filepath.Join(tmp, "t"),
+		Chrom:       "NONEXISTENT",
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	if err == nil {
+		t.Fatal("expected an error for a missing --chrom, got nil")
+	}
+	if !errors.Is(err, ErrChromNotFound) {
+		t.Fatalf("expected ErrChromNotFound, got %v", err)
+	}
+	var cnf *ChromNotFoundError
+	if !errors.As(err, &cnf) || cnf.Chrom != "NONEXISTENT" {
+		t.Fatalf("expected ChromNotFoundError{Chrom:NONEXISTENT}, got %#v", err)
+	}
+	// No summary/dist should be produced for the failed run.
+	if _, statErr := os.Stat(filepath.Join(tmp, "t.mosdepth.summary.txt")); statErr == nil {
+		t.Error("summary file should not exist after a missing-chrom failure")
+	}
 }
 
-// TestParity_BadFragLenBounds — upstream exits 2 with a clear error when
-// --max-frag-len < --min-frag-len; we don't. Gap.
+// TestParity_BadFragLenBounds — upstream writes
+// "[mosdepth] error --max-frag-len was lower than --min-frag-len." and exits 2.
+// The port rejects the impossible bound with ErrFragLenBounds before opening
+// the input.
 func TestParity_BadFragLenBounds(t *testing.T) {
-	t.Skip("known gap: --max-frag-len < --min-frag-len should be a hard error; see docs/PARITY_ROADMAP.md#mosdepth")
+	tmp := t.TempDir()
+	err := OpenAndRun(filepath.Join(fixtureDir(t), "ovl.bam"), Options{
+		Prefix:      filepath.Join(tmp, "t"),
+		MinFragLen:  200,
+		MaxFragLen:  100,
+		ExcludeFlag: DefaultExcludeFlag,
+	})
+	if !errors.Is(err, ErrFragLenBounds) {
+		t.Fatalf("expected ErrFragLenBounds, got %v", err)
+	}
 }
 
 // TestParity_NoPerBase — `-n` / `--no-per-base` suppresses the per-base

@@ -3,6 +3,7 @@ package mosdepth
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -364,6 +365,207 @@ func TestUpstream_OverlapDefault_Regions_Parity(t *testing.T) {
 	}
 
 	t.Log("VALIDATION TIER: byte-identical to upstream mosdepth (default-mode regions + thresholds)")
+}
+
+// TestUpstream_Summary_ZeroReadContigs_Parity proves the summary and
+// global-distribution files are byte-identical to upstream mosdepth on inputs
+// whose header declares contigs that received no reads. Upstream lists a contig
+// in those two files iff at least one alignment record referenced it (regardless
+// of read-level filtering); per-base output still lists every header contig. The
+// fixtures exercise all three cases:
+//
+//   - ovl.bam: ~85 header contigs, reads only on MT.
+//   - multi-contig.bam: reads on chrA/chrC, a duplicate-only chrD and an
+//     unmapped-only chrE (both observed-but-filtered, so they appear with zero
+//     bases), and a read-free chrB (omitted from summary/dist).
+func TestUpstream_Summary_ZeroReadContigs_Parity(t *testing.T) {
+	bin := ensureMosdepthBinary(t)
+	if bin == "" {
+		t.Skip("upstream mosdepth binary unavailable offline; skipping live oracle")
+	}
+	for _, bam := range []string{"ovl.bam", "multi-contig.bam"} {
+		t.Run(bam, func(t *testing.T) {
+			bamPath := filepath.Join(fixtureDir(t), bam)
+
+			upDir := t.TempDir()
+			upPrefix := filepath.Join(upDir, "up")
+			cmd := exec.Command(bin, upPrefix, bamPath)
+			cmd.Dir = upDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("upstream mosdepth failed: %v\n%s", err, out)
+			}
+
+			ourDir := t.TempDir()
+			ourPrefix := filepath.Join(ourDir, "our")
+			if err := OpenAndRun(bamPath, Options{Prefix: ourPrefix, ExcludeFlag: DefaultExcludeFlag}); err != nil {
+				t.Fatalf("OpenAndRun: %v", err)
+			}
+
+			assertFilesEqual(t, ourPrefix+".mosdepth.summary.txt", upPrefix+".mosdepth.summary.txt", "summary")
+			assertFilesEqual(t, ourPrefix+".mosdepth.global.dist.txt", upPrefix+".mosdepth.global.dist.txt", "global.dist")
+			// Per-base must still list every header contig in both tools.
+			ourPB := gunzipBytes(t, ourPrefix+".per-base.bed.gz")
+			upPB := gunzipBytes(t, upPrefix+".per-base.bed.gz")
+			if !bytes.Equal(ourPB, upPB) {
+				t.Fatalf("per-base mismatch for %s", bam)
+			}
+			t.Logf("VALIDATION TIER: byte-identical to upstream mosdepth (summary + global.dist + per-base, %s)", bam)
+		})
+	}
+}
+
+// TestUpstream_Summary_RealBam_Parity proves the summary and global-distribution
+// files match upstream on a real-world BAM drawn from the samtools test corpus
+// (mpileup.1.bam): one read-bearing contig (17) inside an 86-contig header. The
+// fixture is sorted and indexed on the fly via the in-tree samtools reference
+// binary; the test skips when that binary is unavailable. This contig's depth
+// is sparse enough that the global.dist `cum < 8e-5` row-suppression rule fires,
+// so it also pins that behaviour against the oracle.
+func TestUpstream_Summary_RealBam_Parity(t *testing.T) {
+	bin := ensureMosdepthBinary(t)
+	if bin == "" {
+		t.Skip("upstream mosdepth binary unavailable offline; skipping live oracle")
+	}
+	st := filepath.Join("..", "..", "..", "..", "reference_code", "samtools", "samtools")
+	stAbs, err := filepath.Abs(st)
+	if err != nil {
+		t.Fatalf("abs samtools: %v", err)
+	}
+	if _, err := os.Stat(stAbs); err != nil {
+		t.Skipf("reference samtools binary unavailable (%v); skipping real-BAM oracle", err)
+	}
+	src := filepath.Join("..", "..", "..", "..", "reference_code", "samtools", "test", "mpileup", "mpileup.1.bam")
+	srcAbs, err := filepath.Abs(src)
+	if err != nil {
+		t.Fatalf("abs mpileup bam: %v", err)
+	}
+	if _, err := os.Stat(srcAbs); err != nil {
+		t.Skipf("mpileup.1.bam unavailable (%v); skipping real-BAM oracle", err)
+	}
+
+	dir := t.TempDir()
+	sorted := filepath.Join(dir, "mp.sorted.bam")
+	if out, err := exec.Command(stAbs, "sort", "-o", sorted, srcAbs).CombinedOutput(); err != nil {
+		t.Skipf("samtools sort failed (%v): %s", err, out)
+	}
+	if out, err := exec.Command(stAbs, "index", sorted).CombinedOutput(); err != nil {
+		t.Fatalf("samtools index failed: %v\n%s", err, out)
+	}
+
+	upDir := t.TempDir()
+	upPrefix := filepath.Join(upDir, "up")
+	cmd := exec.Command(bin, upPrefix, sorted)
+	cmd.Dir = upDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("upstream mosdepth failed: %v\n%s", err, out)
+	}
+
+	ourDir := t.TempDir()
+	ourPrefix := filepath.Join(ourDir, "our")
+	if err := OpenAndRun(sorted, Options{Prefix: ourPrefix, ExcludeFlag: DefaultExcludeFlag}); err != nil {
+		t.Fatalf("OpenAndRun: %v", err)
+	}
+
+	assertFilesEqual(t, ourPrefix+".mosdepth.summary.txt", upPrefix+".mosdepth.summary.txt", "summary")
+	assertFilesEqual(t, ourPrefix+".mosdepth.global.dist.txt", upPrefix+".mosdepth.global.dist.txt", "global.dist")
+	ourPB := gunzipBytes(t, ourPrefix+".per-base.bed.gz")
+	upPB := gunzipBytes(t, upPrefix+".per-base.bed.gz")
+	if !bytes.Equal(ourPB, upPB) {
+		t.Fatal("per-base mismatch on mpileup.1.bam")
+	}
+	t.Log("VALIDATION TIER: byte-identical to upstream mosdepth (summary + global.dist + per-base, mpileup.1.bam)")
+}
+
+// TestUpstream_ErrorSemantics_Parity proves our CLI exit codes match upstream
+// mosdepth for the two "should error" gaps: a --chrom that names a contig absent
+// from the header (upstream exits 1) and --max-frag-len < --min-frag-len
+// (upstream exits 2). It cross-checks the live oracle's exit codes and then runs
+// our CLI (via `go run`) and asserts the same codes. The exact stderr text is
+// not byte-matched (the prefixes differ: "[mosdepth]" vs "mosdepth:"), only the
+// error/exit behaviour, which is what upstream guarantees.
+func TestUpstream_ErrorSemantics_Parity(t *testing.T) {
+	bin := ensureMosdepthBinary(t)
+	bam := filepath.Join(fixtureDir(t), "ovl.bam")
+
+	// Build our CLI once; `go run` masks the child exit code (it always exits
+	// 1 on any non-zero child), so the exact 1-vs-2 distinction needs a real
+	// binary invoked directly.
+	ourBin := filepath.Join(t.TempDir(), "mosdepth")
+	build := exec.Command("go", "build", "-o", ourBin, "./cmd/mosdepth")
+	build.Dir = filepath.Join("..", "..") // tools/mosdepth (module-relative)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build our mosdepth CLI: %v\n%s", err, out)
+	}
+
+	cases := []struct {
+		name string
+		args []string // flags placed before <prefix>; the BAM is always last
+		code int
+	}{
+		{"missing-chrom", []string{"-c", "NONEXISTENT"}, 1},
+		{"bad-frag-bounds", []string{"--min-frag-len", "200", "--max-frag-len", "100"}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Our stdlib flag parser stops at the first positional, so flags
+			// must precede the <prefix> argument.
+			ourDir := t.TempDir()
+			ourArgs := append([]string{}, tc.args...)
+			ourArgs = append(ourArgs, filepath.Join(ourDir, "our"), bam)
+			ourCmd := exec.Command(ourBin, ourArgs...)
+			out, err := ourCmd.CombinedOutput()
+			gotCode := exitCode(err)
+			if gotCode != tc.code {
+				t.Fatalf("our CLI exit code = %d, want %d\n%s", gotCode, tc.code, out)
+			}
+
+			if bin == "" {
+				t.Logf("VALIDATION TIER: our exit code %d (upstream binary unavailable for cross-check)", gotCode)
+				return
+			}
+			upDir := t.TempDir()
+			upArgs := append([]string{}, tc.args...)
+			upArgs = append(upArgs, filepath.Join(upDir, "up"), bam)
+			upCmd := exec.Command(bin, upArgs...)
+			upCmd.Dir = upDir
+			upOut, upErr := upCmd.CombinedOutput()
+			upCode := exitCode(upErr)
+			if upCode != tc.code {
+				t.Fatalf("upstream exit code = %d, want %d\n%s", upCode, tc.code, upOut)
+			}
+			t.Logf("VALIDATION TIER: exit code %d matches upstream mosdepth", gotCode)
+		})
+	}
+}
+
+// exitCode extracts the process exit status from an *exec.ExitError, returning
+// 0 when err is nil and -1 when err is some other (non-exit) failure.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
+// assertFilesEqual fails the test when the two plain-text files differ
+// byte-for-byte, printing both contents for diagnosis.
+func assertFilesEqual(t *testing.T, gotPath, wantPath, label string) {
+	t.Helper()
+	got, err := os.ReadFile(gotPath)
+	if err != nil {
+		t.Fatalf("read our %s: %v", label, err)
+	}
+	want, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read upstream %s: %v", label, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s mismatch.\nours:\n%s\nupstream:\n%s", label, got, want)
+	}
 }
 
 // mtLines returns the subset of BED lines (from raw decompressed bytes) whose

@@ -100,6 +100,12 @@ func buildBedCsi(path string) error {
 	return idx.WriteFile(path + ".csi")
 }
 
+// distMinProportion is the cumulative-proportion floor below which upstream
+// mosdepth suppresses a global.dist.txt row (its `cum < 8e-5` guard). A handful
+// of deeply but sparsely covered bases on a large contig stay below this floor
+// and therefore never emit a row that would round to 0.00.
+const distMinProportion = 8e-5
+
 // writeDistribution emits the cumulative depth-distribution file at path.
 // histogram[d] is the number of bases observed at exactly depth d
 // (length = max depth observed + 1).
@@ -144,17 +150,23 @@ func writeDistribution(path string, perChromHist map[string][]int64, chromOrder 
 		if totalBases == 0 {
 			return nil
 		}
-		// Cumulative-from-top: bases at depth >= d.
-		var cum int64
-		// Walk descending so each step adds hist[d] before printing the
-		// row for d.
-		props := make([]float64, len(hist))
+		// Walk descending so each step adds hist[d] before printing the row
+		// for d, matching upstream mosdepth's write_distribution. Two upstream
+		// rules govern which rows are emitted: a depth above 300 with a zero
+		// count is skipped entirely (it cannot raise the cumulative
+		// proportion), and a row whose cumulative proportion is still below
+		// 8e-5 is suppressed — this is why a few deeply-but-sparsely covered
+		// bases on a large contig never produce 0.00-rounded rows.
+		var cum float64
 		for d := len(hist) - 1; d >= 0; d-- {
-			cum += hist[d]
-			props[d] = float64(cum) / float64(totalBases)
-		}
-		for d := len(hist) - 1; d >= 0; d-- {
-			if _, err := fmt.Fprintf(bw, "%s\t%d\t%s\n", label, d, formatProportion(props[d])); err != nil {
+			if d > 300 && hist[d] == 0 {
+				continue
+			}
+			cum += float64(hist[d]) / float64(totalBases)
+			if cum < distMinProportion {
+				continue
+			}
+			if _, err := fmt.Fprintf(bw, "%s\t%d\t%s\n", label, d, formatProportion(cum)); err != nil {
 				return err
 			}
 		}

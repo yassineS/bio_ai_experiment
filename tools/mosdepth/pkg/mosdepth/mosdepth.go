@@ -125,6 +125,35 @@ type Options struct {
 // ErrByConflict is returned when both ByBED and ByWindow are set.
 var ErrByConflict = errors.New("mosdepth: -b/--by cannot specify both a BED file and an integer window")
 
+// ErrFragLenBounds is returned when MaxFragLen is set below MinFragLen, which
+// can never keep any read. Upstream mosdepth treats this as a hard error
+// (exit 2) rather than silently emitting empty output.
+var ErrFragLenBounds = errors.New("mosdepth: --max-frag-len was lower than --min-frag-len")
+
+// ErrChromNotFound is returned when the --chrom restriction names a contig that
+// is absent from the input's @SQ header. Upstream mosdepth exits with status 1
+// and the message "[mosdepth] chromosome <name> not found"; this port surfaces
+// the same condition as an error so the CLI can exit non-zero rather than
+// writing empty output. Use ChromNotFoundError to recover the offending name.
+var ErrChromNotFound = errors.New("mosdepth: chromosome not found")
+
+// ChromNotFoundError reports a --chrom value that is absent from the input
+// header. It wraps ErrChromNotFound so callers can match with errors.Is while
+// still recovering the missing chromosome name for the diagnostic.
+type ChromNotFoundError struct {
+	// Chrom is the --chrom value that could not be found in the @SQ header.
+	Chrom string
+}
+
+// Error implements the error interface, matching upstream mosdepth's wording.
+func (e *ChromNotFoundError) Error() string {
+	return fmt.Sprintf("mosdepth: chromosome %s not found", e.Chrom)
+}
+
+// Unwrap reports the sentinel ErrChromNotFound so errors.Is(err,
+// ErrChromNotFound) succeeds.
+func (e *ChromNotFoundError) Unwrap() error { return ErrChromNotFound }
+
 // Run executes a full mosdepth pipeline against the SAM/BAM bytes streaming
 // in from in. The header is read first, then records are streamed and depth
 // is accumulated per reference. When the cursor moves to a new reference
@@ -156,6 +185,12 @@ func validateOptions(opts Options) error {
 	if opts.Prefix == "" {
 		return fmt.Errorf("mosdepth: empty output prefix")
 	}
+	// A maximum fragment length below the minimum can never keep any read;
+	// upstream mosdepth rejects it outright (exit 2). Both bounds use 0 to mean
+	// "unbounded", so the check only applies when both are positive.
+	if opts.MinFragLen > 0 && opts.MaxFragLen > 0 && opts.MaxFragLen < opts.MinFragLen {
+		return ErrFragLenBounds
+	}
 	return nil
 }
 
@@ -171,6 +206,23 @@ func runWithReader(rd sam.Reader, opts Options) error {
 	hdr := rd.Header()
 	if hdr == nil {
 		return fmt.Errorf("mosdepth: BAM has no header")
+	}
+
+	// A --chrom restriction that names a contig absent from the header is a
+	// hard error upstream (exit 1), not a silent empty run. Validate it here —
+	// after the header is available — so BAM, SAM, and CRAM inputs all report
+	// it identically.
+	if opts.Chrom != "" {
+		found := false
+		for _, r := range hdr.Refs {
+			if r.Name == opts.Chrom {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &ChromNotFoundError{Chrom: opts.Chrom}
+		}
 	}
 
 	// Resolve regions per-chrom up front. perChromRegions[chrom] is the
@@ -269,14 +321,22 @@ func runWithReader(rd sam.Reader, opts Options) error {
 	// is sorted — buffering per-chrom slices keeps the algorithm correct
 	// even on a name-sorted input. Memory is O(records that match
 	// filters) which is acceptable for the typical mosdepth workload.
-	byChrom, err := groupRecords(rd, opts)
+	byChrom, observed, err := groupRecords(rd, opts)
 	if err != nil {
 		return err
 	}
 
+	// chromOrder is the contig set for the summary and global-distribution
+	// files: header order, restricted to contigs that were referenced by at
+	// least one alignment record (see groupRecords). Per-base, quantized, and
+	// region outputs use the full header set and are emitted from the main
+	// loop below regardless of this filter, matching upstream mosdepth.
 	chromOrder := make([]string, 0, len(hdr.Refs))
 	for _, r := range hdr.Refs {
 		if opts.Chrom != "" && r.Name != opts.Chrom {
+			continue
+		}
+		if _, ok := observed[r.Name]; !ok {
 			continue
 		}
 		chromOrder = append(chromOrder, r.Name)
@@ -311,22 +371,32 @@ func runWithReader(rd sam.Reader, opts Options) error {
 		}
 		// Per-base emission: collapse runs of equal depth.
 		hist := accumHistogram(accum)
-		perChromHist[r.Name] = hist
 
-		// Compute mean/min/max across the whole chromosome — also used in
-		// the summary file.
-		sum, _, minD, maxD := accum.regionStats(0, int(r.Length), nil, nil)
-		row := summaryRow{
-			chrom:  r.Name,
-			length: int64(r.Length),
-			bases:  sum,
-			minD:   minD,
-			maxD:   maxD,
+		// The summary and global-distribution files list a contig only when it
+		// was referenced by at least one alignment record (see groupRecords);
+		// contigs with no records (e.g. ovl.bam's ~80 read-free refs) are
+		// omitted from both, and the "total" rows aggregate over exactly the
+		// listed set. Per-base/quantized/region outputs below are unaffected and
+		// still cover every header contig.
+		_, listed := observed[r.Name]
+		if listed {
+			perChromHist[r.Name] = hist
+
+			// Compute mean/min/max across the whole chromosome — also used in
+			// the summary file.
+			sum, _, minD, maxD := accum.regionStats(0, int(r.Length), nil, nil)
+			row := summaryRow{
+				chrom:  r.Name,
+				length: int64(r.Length),
+				bases:  sum,
+				minD:   minD,
+				maxD:   maxD,
+			}
+			if r.Length > 0 {
+				row.mean = float64(sum) / float64(r.Length)
+			}
+			summaryRows = append(summaryRows, row)
 		}
-		if r.Length > 0 {
-			row.mean = float64(sum) / float64(r.Length)
-		}
-		summaryRows = append(summaryRows, row)
 
 		if perBaseW != nil {
 			if err := emitPerBase(perBaseW, r.Name, accum); err != nil {
@@ -522,23 +592,42 @@ func mapqFastPath(opts Options) bool { return opts.MinMAPQ == 0 && !disableMapqF
 // configured read-level filters. Reads with unknown / "*" RNAME are
 // dropped silently — they cannot contribute to depth on any reference.
 //
+// The returned observed set records every reference name that was named by at
+// least one record with a concrete RNAME (RNAME != "" and != "*"), BEFORE any
+// flag/MAPQ/fragment-length/read-group filtering is applied. Upstream mosdepth
+// lists a contig in the summary and global-distribution files iff it was
+// referenced by at least one alignment record — even when every such record is
+// later excluded by a filter (e.g. a duplicate- or unmapped-only contig still
+// appears with zero bases). Per-base, quantized, and region outputs, by
+// contrast, list every header contig; that wider set is handled by the caller.
+//
 // When no MAPQ filter is in effect (opts.MinMAPQ == 0, see mapqFastPath) the
 // per-read keep predicate is bound once to keepRecordNoMapq, which omits the
 // MAPQ comparison from the hot loop. This mirrors upstream mosdepth's
 // `--mapq 0` fast path and is byte-for-byte equivalent to the general path.
-func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, error) {
+func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, map[string]struct{}, error) {
 	keep := keepRecord
 	if mapqFastPath(opts) {
 		keep = keepRecordNoMapq
 	}
 	out := map[string][]*sam.Record{}
+	observed := map[string]struct{}{}
 	for {
 		rec, err := rd.Read()
 		if err == io.EOF {
-			return out, nil
+			return out, observed, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("mosdepth: read record: %w", err)
+			return nil, nil, fmt.Errorf("mosdepth: read record: %w", err)
+		}
+		// Record the contig as observed before applying read-level filters,
+		// matching upstream's contig-listing rule for the summary/dist files.
+		// A "*" or empty RNAME names no reference and is ignored; the --chrom
+		// restriction still applies so a scoped run only observes its target.
+		if rec.RName != "" && rec.RName != "*" {
+			if opts.Chrom == "" || rec.RName == opts.Chrom {
+				observed[rec.RName] = struct{}{}
+			}
 		}
 		if !keep(rec, opts) {
 			continue
