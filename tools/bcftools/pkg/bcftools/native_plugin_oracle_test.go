@@ -199,6 +199,17 @@ func TestNativePluginSetGT(t *testing.T) {
 		{"-t", "a", "-n", "c:0/0"},
 		{"-t", ".", "-n", "c:0/0"},
 		{"-t", "./x", "-n", "c:m/M"},
+		// Filter-query mode (-t q with -i/-e): per-sample genotype setting.
+		{"-t", "q", "-n", "0", "-i", `GT="het"`},
+		{"-t", "q", "-n", ".", "-e", "FMT/DP>10"},
+		{"-t", "q", "-n", "0", "-i", "FMT/GQ>30"},
+		{"-t", "q", "-n", "M", "-i", `GT="alt"`},
+		{"-t", "q", "-n", "0", "-e", `GT="mis"`},
+		{"-t", "q", "-n", ".", "-i", "INFO/AC>1"},
+		{"-t", "q", "-n", "0", "-i", `GT="het" && FMT/DP>15`},
+		{"-t", "q", "-n", "0", "-e", `GT="het" && FMT/DP>15`},
+		{"-t", "q", "-n", "c:0/0", "-i", `GT="alt"`},
+		{"-t", "q", "-n", "0", "-e", "INFO/AC>1"},
 	}
 	for _, args := range cases {
 		args := args
