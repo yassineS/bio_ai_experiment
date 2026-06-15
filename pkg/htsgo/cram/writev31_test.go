@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -278,5 +281,63 @@ func TestChooseBlockCompression(t *testing.T) {
 	// smaller that is still acceptable, but method 5 must be reachable.
 	if m31 != CompRANS4x16 && m31 != CompGzip {
 		t.Errorf("v3.1 method = %s, want rans4x16 or gzip", m31)
+	}
+}
+
+// TestWriteCRAMV31SamtoolsCrossCheck is the v3.1 live oracle. It mirrors
+// TestWriteCRAMV30SamtoolsCrossCheck (in writev40_test.go) but targets CRAM
+// v3.1, whose distinguishing feature is the rANS 4x16 (method 5) codec. It
+// writes the shared cross-check corpus with our Go writer, first proves the
+// file is genuinely v3.1 and genuinely reaches the rANS 4x16 encode path,
+// then has the vendored upstream `samtools view` decode it and asserts every
+// record matches field-by-field. The rANS 4x16 codec itself is already pinned
+// byte-exact against the htscodecs vectors at the codec layer; this test
+// closes the remaining gap by proving a writer-produced v3.1 file — container
+// framing, slice layout, and rANS 4x16 blocks together — round-trips through
+// the real upstream decoder. A missing or un-buildable upstream is a hard
+// failure, never a skip.
+func TestWriteCRAMV31SamtoolsCrossCheck(t *testing.T) {
+	samtools := upstreamSamtoolsCram(t)
+	h := writerTestHeader()
+	records := v40CrossCheckRecords()
+	dir := t.TempDir()
+
+	v31Path := filepath.Join(dir, "ours.v31.cram")
+	if err := writeRecordsToFile(v31Path, h, records, VersionV31); err != nil {
+		t.Fatalf("writing v3.1 CRAM: %v", err)
+	}
+
+	// Prove the file is genuinely CRAM 3.1 and genuinely exercises the
+	// v3.1-only rANS 4x16 codec, so this is a real v3.1 oracle and not a
+	// silently-degraded v3.0 path.
+	raw, err := os.ReadFile(v31Path)
+	if err != nil {
+		t.Fatalf("reading back our v3.1 CRAM: %v", err)
+	}
+	fd, methods := blockMethodStats(t, raw)
+	if fd.Major != 3 || fd.Minor != 1 {
+		t.Fatalf("our file reports CRAM %d.%d, want 3.1", fd.Major, fd.Minor)
+	}
+	if methods[CompRANS4x16] == 0 {
+		t.Fatalf("our v3.1 file used no rANS 4x16 block; method counts = %v", methods)
+	}
+
+	got := map[string][]string{}
+	for _, line := range samtoolsView(t, samtools, v31Path) {
+		f := strings.Split(line, "\t")
+		if len(f) < 11 {
+			t.Fatalf("samtools emitted a short SAM line: %q", line)
+		}
+		got[f[0]+"/"+f[1]] = f
+	}
+	if len(got) != len(records) {
+		t.Fatalf("samtools decoded %d records from our v3.1 file, want %d", len(got), len(records))
+	}
+	for i, rec := range records {
+		f, ok := got[rec.QName+"/"+flagString(rec.Flag)]
+		if !ok {
+			t.Fatalf("record %d (%s) absent from samtools' v3.1 decode", i, rec.QName)
+		}
+		assertSAMFieldsMatch(t, i, f, rec)
 	}
 }
