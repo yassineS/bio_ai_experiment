@@ -1,0 +1,12 @@
+##fileformat=VCFv4.2
+##contig=<ID=X,length=200000000>
+##INFO=<ID=AF,Number=A,Type=Float,Description="Allele frequency">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred likelihoods">
+##FORMAT=<ID=GL,Number=G,Type=Float,Description="Genotype likelihoods">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	male1	male2	female1	female2
+X	2700000	.	A	G	30	PASS	AF=0.3	GT:PL:GL	0/0:0,30,200:0,-3,-20	1/1:255,30,0:-25.5,-3,0	0/1:120,0,130:-12,0,-13	0/1:90,0,40:-9,0,-4
+X	2700100	.	C	T	40	PASS	AF=0.5	GT:PL:GL	1/1:255,40,0:-25.5,-4,0	0/0:0,40,210:0,-4,-21	0/1:90,0,40:-9,0,-4	0/1:80,0,55:-8,0,-5.5
+X	2700200	.	G	A	50	PASS	AF=0.2	GT:PL:GL	0/0:0,57,255:0,-5.7,-25.5	0/0:0,50,240:0,-5,-24	1/1:230,48,0:-23,-4.8,0	0/1:70,0,66:-7,0,-6.6
+X	2700300	.	T	C	45	PASS	AF=0.4	GT:PL:GL	1/1:240,35,0:-24,-3.5,0	1/1:255,45,0:-25.5,-4.5,0	0/1:60,0,70:-6,0,-7	0/0:0,30,180:0,-3,-18
+X	2700400	.	A	C	55	PASS	.	GT:PL:GL	0/0:0,42,230:0,-4.2,-23	1/1:250,38,0:-25,-3.8,0	0/1:85,0,48:-8.5,0,-4.8	0/1:95,0,52:-9.5,0,-5.2

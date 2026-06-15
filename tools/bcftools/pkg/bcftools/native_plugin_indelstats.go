@@ -1,0 +1,422 @@
+// Native port of the upstream `indel-stats` plugin (plugins/indel-stats.c) for
+// its default (no filtering expression, no PED) mode. It computes indel summary
+// numbers, a per-length distribution (DLEN), a variant-allele-frequency
+// distribution (DVAF) and the mean minor-allele fraction at het indels (DFRAC,
+// with its support counts NFRAC) from FORMAT/AD, and prints a tab-separated
+// report. The VCF/BCF output is suppressed.
+//
+// Filtering expressions (-i/-e and the curly-brace threshold expansion) and the
+// PED-restricted de-novo mode (-p) require htslib machinery the native pipeline
+// does not provide and are reported as unsupported; the default single "all"
+// filter, the common case, is implemented.
+package bcftools
+
+import (
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
+)
+
+func init() { registerNativePlugin("indel-stats", func() NativePlugin { return &indelStatsPlugin{} }) }
+
+// indelStatsPlugin implements the `indel-stats` plugin in its default mode.
+type indelStatsPlugin struct {
+	hdr    *vcf.Header
+	csqTag string
+	maxLen int
+	nvaf   int
+
+	nvafBins              []uint32
+	nlen                  []uint32
+	nfrac                 []uint32
+	dfrac                 []float64
+	npassGT               uint32
+	npass                 uint32
+	nsites                uint32
+	nins, ndel            uint32
+	nframeshift, ninframe uint32
+
+	out  io.Writer
+	argv []string
+}
+
+// SuppressVCF reports true: indel-stats emits only its textual report.
+func (p *indelStatsPlugin) SuppressVCF() bool { return true }
+
+// SetStdout wires the host stdout writer the report is printed to.
+func (p *indelStatsPlugin) SetStdout(w io.Writer) { p.out = w }
+
+// SetArgv records the upstream-equivalent argv for the CMD report line.
+func (p *indelStatsPlugin) SetArgv(argv []string) { p.argv = argv }
+
+// RunStyle reports that indel-stats is a run()-style plugin.
+func (p *indelStatsPlugin) RunStyle() bool { return true }
+
+// FlagTakesValue reports whether one of indel-stats' value-taking flags consumes
+// the following token, used by the host to split the input-file positional.
+func (p *indelStatsPlugin) FlagTakesValue(flag string) bool {
+	switch flag {
+	case "-c", "--csq-tag", "-i", "--include", "-e", "--exclude", "-o", "--output",
+		"-p", "--ped", "-r", "--regions", "-R", "--regions-file", "-t", "--targets",
+		"-T", "--targets-file", "-v", "--verbosity", "--max-len", "--nvaf":
+		return true
+	}
+	return false
+}
+
+// Name returns the plugin name.
+func (p *indelStatsPlugin) Name() string { return "indel-stats" }
+
+// About returns the one-line description, matching indel-stats.c about().
+func (p *indelStatsPlugin) About() string {
+	return "Calculate indel stats scanning over a range of thresholds simultaneously.\n"
+}
+
+// Parallel reports false: the accumulators are updated serially.
+func (p *indelStatsPlugin) Parallel() bool { return false }
+
+// Init parses the supported options and rejects the filter/PED/region modes.
+func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
+	p.csqTag = "CSQ"
+	p.maxLen = 20
+	p.nvaf = 20
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, error) {
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("indel-stats: %s requires an argument", a)
+			}
+			i++
+			return args[i], nil
+		}
+		switch a {
+		case "-i", "--include", "-e", "--exclude":
+			return nil, fmt.Errorf("indel-stats: filtering expressions (-i/-e) are not supported by the native plugin (require the htslib filter engine)")
+		case "-p", "--ped":
+			return nil, fmt.Errorf("indel-stats: the PED de-novo mode (-p) is not supported by the native plugin")
+		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
+			return nil, fmt.Errorf("indel-stats: region/target selection (%s) is not supported by the native plugin", a)
+		case "-o", "--output":
+			return nil, fmt.Errorf("indel-stats: writing to a file (-o) is not supported by the native plugin; use stdout")
+		case "--alt2ref-DNM":
+			return nil, fmt.Errorf("indel-stats: --alt2ref-DNM is only meaningful with -p, which is unsupported")
+		case "-c", "--csq-tag":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			p.csqTag = v
+		case "--max-len":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("indel-stats: could not parse: --max-len %s", v)
+			}
+			p.maxLen = n
+		case "--nvaf":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, fmt.Errorf("indel-stats: could not parse: --nvaf %s", v)
+			}
+			// Mirror upstream's (buggy) validation: it rejects any explicit
+			// --nvaf outside the [0,1] interval even though the value is used as
+			// a bin count, so only --nvaf 0 or 1 are accepted.
+			if n < 0 || n > 1 {
+				return nil, fmt.Errorf("indel-stats: expected value from the interval [0,1] with --nvaf")
+			}
+			p.nvaf = n
+		case "-v", "--verbosity":
+			if _, err := next(); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("indel-stats: unsupported option %q", a)
+		}
+	}
+	p.hdr = hdr
+	p.nvafBins = make([]uint32, p.nvaf)
+	p.nlen = make([]uint32, p.maxLen*2+1)
+	p.nfrac = make([]uint32, p.maxLen*2+1)
+	p.dfrac = make([]float64, p.maxLen*2+1)
+	return hdr, nil
+}
+
+// len2bin maps a net indel length to a DLEN bin index, clamping to the extremes.
+func (p *indelStatsPlugin) len2bin(l int) int {
+	if l < -p.maxLen {
+		return 0
+	}
+	if l > p.maxLen {
+		return 2 * p.maxLen
+	}
+	return p.maxLen + l
+}
+
+// vaf2bin maps a variant allele fraction in [0,1] to a DVAF bin index.
+func (p *indelStatsPlugin) vaf2bin(vaf float64) int {
+	b := int(vaf * float64(p.nvaf-1))
+	if b < 0 {
+		b = 0
+	}
+	if b >= p.nvaf {
+		b = p.nvaf - 1
+	}
+	return b
+}
+
+// Process accumulates indel statistics for one record, mirroring
+// indel-stats.c process_record() in the default (no filter, no PED) path. Sites
+// without any indel allele are skipped (matching the run-loop pre-filter), but
+// nsites counts every indel-bearing record reaching the accumulator.
+func (p *indelStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
+	if variantTypeMask(v)&vtINDEL == 0 {
+		return nil, nil
+	}
+	p.nsites++
+	nAllele := len(v.Alt) + 1
+
+	haveGT := len(v.Samples) > 0 && formatHasTag(v, "GT")
+	var adVals [][]int
+	nad1 := 0
+	if haveGT {
+		if formatHasTag(v, "AD") {
+			adVals = parseADAll(v, nAllele)
+			nad1 = nAllele
+		}
+	}
+
+	starAllele := starAlleleIndex(v)
+
+	if haveGT && nad1 > 0 {
+		for i := range v.Samples {
+			als, kind := parseGenotypeAlleles(v, i)
+			if kind == gtMissing {
+				continue
+			}
+			if altVariantType(v, als[0])&vtINDEL == 0 && altVariantType(v, als[1])&vtINDEL == 0 {
+				continue
+			}
+			p.updateIndelStats(v, i, als, adVals, starAllele)
+			p.npassGT++
+		}
+	}
+
+	if csq, ok := v.Info[p.csqTag]; ok {
+		if strings.Contains(csq, "inframe") {
+			p.ninframe++
+		}
+		if strings.Contains(csq, "frameshift") {
+			p.nframeshift++
+		}
+	}
+
+	for i := 1; i < nAllele; i++ {
+		if altVariantType(v, i)&vtINDEL == 0 {
+			continue
+		}
+		n := indelAlleleLen(v, i)
+		if n < 0 {
+			p.ndel++
+		} else if n > 0 {
+			p.nins++
+		}
+		if !haveGT || nad1 == 0 {
+			bin := p.len2bin(n)
+			if bin >= 0 {
+				p.nlen[bin]++
+			}
+		}
+	}
+	p.npass++
+	return nil, nil
+}
+
+// updateIndelStats records the VAF bin, length bins and DFRAC contribution for a
+// single sample's indel genotype, mirroring indel-stats.c update_indel_stats().
+func (p *indelStatsPlugin) updateIndelStats(v *vcf.Variant, ismpl int, als [2]int, adVals [][]int, starAllele int) {
+	ad := adVals[ismpl]
+	ntot := 0
+	for _, x := range ad {
+		if x < 0 {
+			continue // missing
+		}
+		ntot += x
+	}
+	if ntot == 0 {
+		return
+	}
+	al0, al1 := als[0], als[1]
+	if altVariantType(v, al0)&vtINDEL == 0 {
+		if altVariantType(v, al1)&vtINDEL == 0 {
+			return
+		}
+		al0, al1 = als[1], als[0]
+	} else if altVariantType(v, al1)&vtINDEL != 0 && al0 != al1 {
+		// Both alleles are indels: select the more frequent one as al0.
+		if ad[al0] < ad[al1] {
+			al0, al1 = als[1], als[0]
+		}
+		// Record the length of the less-frequent indel allele too.
+		bin := p.len2bin(indelAlleleLen(v, al1))
+		if bin >= 0 {
+			p.nlen[bin]++
+		}
+	}
+
+	vaf := float64(ad[al0]) / float64(ntot)
+	p.nvafBins[p.vaf2bin(vaf)]++
+
+	lenBin := p.len2bin(indelAlleleLen(v, al0))
+	if lenBin < 0 {
+		return
+	}
+	p.nlen[lenBin]++
+
+	if al0 != al1 {
+		tot := ad[al0] + ad[al1]
+		if tot != 0 {
+			p.nfrac[lenBin]++
+			p.dfrac[lenBin] += float64(ad[al0]) / float64(tot)
+		}
+	}
+}
+
+// Destroy prints the report, mirroring indel-stats.c report_stats().
+func (p *indelStatsPlugin) Destroy() error {
+	if p.out == nil {
+		return nil
+	}
+	fp := p.out
+	fmt.Fprint(fp, indelStatsHeaderFor(p.nvaf, p.maxLen))
+	fmt.Fprintf(fp, "CMD\t%s\n", strings.Join(p.argv, " "))
+	fmt.Fprint(fp, "DEF\tFLT0\tall\n")
+
+	nsmp := len(p.hdr.Samples)
+	fmt.Fprintf(fp, "SN0\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+		nsmp, p.nsites, p.npass, p.npassGT, p.nins, p.ndel, p.nframeshift, p.ninframe)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("DVAF0\t%d", p.nvaf))
+	for _, x := range p.nvafBins {
+		b.WriteString(fmt.Sprintf("\t%d", x))
+	}
+	b.WriteByte('\n')
+
+	b.WriteString(fmt.Sprintf("DLEN0\t%d", p.maxLen))
+	for _, x := range p.nlen {
+		b.WriteString(fmt.Sprintf("\t%d", x))
+	}
+	b.WriteByte('\n')
+
+	b.WriteString(fmt.Sprintf("DFRAC0\t%d", p.maxLen))
+	for j := range p.dfrac {
+		if p.nfrac[j] != 0 {
+			b.WriteString(fmt.Sprintf("\t%.2f", p.dfrac[j]/float64(p.nfrac[j])))
+		} else {
+			b.WriteString("\t.")
+		}
+	}
+	b.WriteByte('\n')
+
+	b.WriteString(fmt.Sprintf("NFRAC0\t%d", p.maxLen))
+	for _, x := range p.nfrac {
+		b.WriteString(fmt.Sprintf("\t%d", x))
+	}
+	b.WriteByte('\n')
+	fp.Write([]byte(b.String()))
+	return nil
+}
+
+// indelStatsHeaderFor renders the report header, which embeds the NVAF/MAX_LEN
+// column ranges, matching indel-stats.c report_stats().
+func indelStatsHeaderFor(nvaf, maxLen int) string {
+	var b strings.Builder
+	b.WriteString("# CMD line shows the command line used to generate this output\n")
+	b.WriteString("# DEF lines define expressions for all tested thresholds\n")
+	b.WriteString("# SN* summary number for every threshold:\n")
+	i := 0
+	w := func(s string) { i++; b.WriteString(fmt.Sprintf("#   %d) %s\n", i, s)) }
+	w("SN*, filter id")
+	w("number of samples (or trios with -p)")
+	w("number of indel sites total")
+	w("number of indel sites that pass the filter (and, with -p, have a de novo indel)")
+	w("number of indel genotypes that pass the filter (and, with -p, are de novo)")
+	w("number of insertions (site-wise, not genotype-wise)")
+	w("number of deletions (site-wise, not genotype-wise)")
+	w("number of frameshifts (site-wise, not genotype-wise)")
+	w("number of inframe indels (site-wise, not genotype-wise)")
+	b.WriteString("#\n")
+	i = 0
+	b.WriteString("# DVAF* lines report indel variant allele frequency (VAF) distribution for every threshold,\n")
+	b.WriteString("#   k-th bin corresponds to the frequency k/(nVAF-1):\n")
+	w("DVAF*, filter id")
+	w("nVAF, number of bins which split the [0,1] VAF interval.")
+	b.WriteString(fmt.Sprintf("#   %d-%d) counts of indel genotypes in the VAF bin. For non-reference hets, the VAF of the less supported allele is recorded\n", i+1, i+nvaf))
+	b.WriteString("#\n")
+	i = 0
+	b.WriteString("# DLEN* lines report indel length distribution for every threshold. When genotype fields are available,\n")
+	b.WriteString("#   the counts correspond to the number of genotypes, otherwise the number of sites are given.\n")
+	b.WriteString("#   The k-th bin corresponds to the indel size k-MAX_LEN, negative for deletions, positive for insertions.\n")
+	b.WriteString("#   The first/last bin contains also all deletions/insertions larger than MAX_LEN:\n")
+	w("DLEN*, filter id")
+	w("maximum indel length")
+	b.WriteString(fmt.Sprintf("#   %d-%d) counts of indel lengths (-max,..,0,..,max), all unique alleles in a genotype are recorded (alt hets increase the counters 2x, alt homs 1x)\n", i+1, i+maxLen*2+1))
+	b.WriteString("#\n")
+	i = 0
+	b.WriteString("# DFRAC* lines report the mean minor allele fraction at HET indel genotypes as a function of indel size.\n")
+	b.WriteString("#   The format is the same as for DLEN:\n")
+	w("DFRAC*, filter id")
+	w("maximum indel length")
+	b.WriteString(fmt.Sprintf("#   %d-%d) mean fraction at indel lengths (-max,..,0,..,max)\n", i+1, i+maxLen*2+1))
+	b.WriteString("#\n")
+	i = 0
+	b.WriteString("# NFRAC* lines report the number of indels informing the DFRAC distribution.\n")
+	w("NFRAC*, filter id")
+	w("maximum indel length")
+	b.WriteString(fmt.Sprintf("#   %d-%d) counts at indel lengths (-max,..,0,..,max)\n", i+1, i+maxLen*2+1))
+	b.WriteString("#\n")
+	return b.String()
+}
+
+// parseADAll returns per-sample FORMAT/AD as integer slices of length nAllele.
+// Missing values (".") become -1. A sample missing the AD field yields a slice
+// of -1s.
+func parseADAll(v *vcf.Variant, nAllele int) [][]int {
+	out := make([][]int, len(v.Samples))
+	for i := range v.Samples {
+		row := make([]int, nAllele)
+		for k := range row {
+			row[k] = -1
+		}
+		s, ok := v.Samples[i].Data["AD"]
+		if ok && s != "" && s != "." {
+			for k, tok := range strings.Split(s, ",") {
+				if k >= nAllele {
+					break
+				}
+				if tok == "." || tok == "" {
+					row[k] = -1
+					continue
+				}
+				n, err := strconv.Atoi(tok)
+				if err != nil {
+					row[k] = -1
+					continue
+				}
+				row[k] = n
+			}
+		}
+		out[i] = row
+	}
+	return out
+}

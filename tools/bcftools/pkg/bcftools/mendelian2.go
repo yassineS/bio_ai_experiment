@@ -317,7 +317,7 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 	needWriter := opts.Mode&^Mendelian2Count != 0
 	annotatedHdr := hdr
 	if needWriter && opts.Mode&Mendelian2Annotate != 0 {
-		annotatedHdr = withMERRHeader(hdr)
+		annotatedHdr = withMendelian2AnnotateHeader(hdr)
 	}
 
 	var writer variantWriter
@@ -399,7 +399,7 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 		if eval.hasNoRule {
 			summary.SitesNoRule++
 		}
-		hasGood, hasErr, hasMiss, totalErr := eval.hasGood, eval.hasErr, eval.hasMiss, eval.totalErr
+		hasGood, hasErr, hasMiss := eval.hasGood, eval.hasErr, eval.hasMiss
 
 		// Drop precedences (E,M,S) take effect first.
 		if opts.Mode&Mendelian2DropErr != 0 && hasErr {
@@ -418,15 +418,17 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 			rewriteTrioGTs(v, indices, rules)
 		}
 
-		// `-m a` annotates INFO/MERR with the per-site error count.
+		// `-m a` annotates INFO/MERR, MGOOD, MMISS and MNORULE with the per-site
+		// trio counts, in that order, mirroring the four bcf_update_info_int32
+		// calls in mendelian2.c process_record().
 		if opts.Mode&Mendelian2Annotate != 0 {
 			if v.Info == nil {
 				v.Info = make(map[string]string)
 			}
-			if _, exists := v.Info["MERR"]; !exists {
-				v.InfoOrder = append(v.InfoOrder, "MERR")
-			}
-			v.Info["MERR"] = strconv.Itoa(totalErr)
+			setMendelian2Info(v, "MERR", eval.totalErr)
+			setMendelian2Info(v, "MGOOD", eval.totalGood)
+			setMendelian2Info(v, "MMISS", eval.totalMiss)
+			setMendelian2Info(v, "MNORULE", eval.totalNoRule)
 		}
 
 		// LIST_MODES — emit only if matches one of the selectors.
@@ -646,6 +648,50 @@ func maxGTPloidy(v *vcf.Variant) int {
 	return maxP
 }
 
+// setMendelian2Info sets an integer INFO field on v, appending it to the
+// InfoOrder only if it is new, mirroring bcf_update_info_int32.
+func setMendelian2Info(v *vcf.Variant, key string, val int) {
+	if _, exists := v.Info[key]; !exists {
+		v.InfoOrder = append(v.InfoOrder, key)
+	}
+	v.Info[key] = strconv.Itoa(val)
+}
+
+// withMendelian2AnnotateHeader returns a copy of hdr carrying the four
+// ##INFO lines emitted by the `-m a` annotate mode (MERR, MGOOD, MMISS,
+// MNORULE), in the order and with the descriptions used by mendelian2.c
+// init_data(). It is distinct from the legacy mendelian withMERRHeader so the
+// older single-MERR annotation of `bcftools mendelian` is left unchanged.
+// Each line is added only if an INFO of that ID is not already present.
+func withMendelian2AnnotateHeader(hdr *vcf.Header) *vcf.Header {
+	if hdr == nil {
+		return hdr
+	}
+	present := func(id string) bool {
+		prefix := "##INFO=<ID=" + id + ","
+		for _, m := range hdr.MetaInfo {
+			if strings.HasPrefix(m, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	lines := []struct{ id, line string }{
+		{"MERR", `##INFO=<ID=MERR,Number=1,Type=Integer,Description="Number of trios with Mendelian errors">`},
+		{"MGOOD", `##INFO=<ID=MGOOD,Number=1,Type=Integer,Description="Number of trios that are evaluable and Mendelian-consistent">`},
+		{"MMISS", `##INFO=<ID=MMISS,Number=1,Type=Integer,Description="Number of trios with missing or unusable genotype information">`},
+		{"MNORULE", `##INFO=<ID=MNORULE,Number=1,Type=Integer,Description="Number of trios with no applicable inheritance rule">`},
+	}
+	out := &vcf.Header{Samples: hdr.Samples}
+	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
+	for _, l := range lines {
+		if !present(l.id) {
+			out.MetaInfo = append(out.MetaInfo, l.line)
+		}
+	}
+	return out
+}
+
 // mendelian2Eval is the per-site rollup returned by evaluateTrios.
 type mendelian2Eval struct {
 	hasGood   bool
@@ -653,6 +699,11 @@ type mendelian2Eval struct {
 	hasMiss   bool
 	hasNoRule bool
 	totalErr  int
+	// Per-site trio counts for the `-m a` annotation (MERR/MGOOD/MMISS/MNORULE).
+	// totalErr already counts the trios with a Mendelian error at this site.
+	totalGood   int
+	totalMiss   int
+	totalNoRule int
 }
 
 // siteRuleSpan returns the 0-based inclusive [beg,end] coordinates of v
@@ -686,9 +737,11 @@ func evaluateTrios(v *vcf.Variant, indices []mendelian2TrioIndex, rules *Mendeli
 		switch {
 		case outcome.norule:
 			res.hasNoRule = true
+			res.totalNoRule++
 			stats[i].NNoRule++
 		case outcome.good:
 			res.hasGood = true
+			res.totalGood++
 			stats[i].NGood++
 			if outcome.goodAlt {
 				stats[i].NGoodAlt++
@@ -696,6 +749,7 @@ func evaluateTrios(v *vcf.Variant, indices []mendelian2TrioIndex, rules *Mendeli
 		}
 		if outcome.miss {
 			res.hasMiss = true
+			res.totalMiss++
 			stats[i].NMissing++
 		}
 		if outcome.merr {

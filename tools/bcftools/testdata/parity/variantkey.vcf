@@ -1,0 +1,11 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##contig=<ID=1>
+##contig=<ID=X>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	100	rs123	A	G	.	PASS	.
+1	200	rs6054257	C	T,A	.	PASS	.
+1	250	rs7	G	GA	.	PASS	.
+X	300	rs55	AC	A	.	PASS	.
+1	400	rs9999	ACGTACGTACGT	A	.	PASS	.
+X	500	rs42	T	C	.	PASS	.

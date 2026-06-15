@@ -150,8 +150,12 @@ type PluginInfo struct {
 	Path string
 	// About is the first line of the plugin's `--about` output, populated
 	// only by ListPlugins when verbose probing is requested. It is empty
-	// when the plugin does not support the optional `--about` flag.
+	// when the plugin does not support the optional `--about` flag. For
+	// native plugins it is always populated from the plugin's About() method.
 	About string
+	// Native reports whether this is an in-process native plugin (dispatched
+	// by the native registry) rather than an external executable.
+	Native bool
 }
 
 // ListPlugins scans the BCFTOOLS_PLUGINS directories and returns the
@@ -162,6 +166,13 @@ type PluginInfo struct {
 func ListPlugins(verbose bool) []PluginInfo {
 	seen := make(map[string]bool)
 	var plugins []PluginInfo
+	// Native plugins are always listed first; an exec-discoverable plugin of
+	// the same name does not shadow the native one (the native dispatch wins
+	// in RunPlugin).
+	for _, info := range nativePluginInfos() {
+		seen[info.Name] = true
+		plugins = append(plugins, info)
+	}
 	for _, dir := range PluginDirs() {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -219,7 +230,13 @@ func FormatPluginList(plugins []PluginInfo, verbose bool) string {
 	var b strings.Builder
 	for _, p := range plugins {
 		if verbose {
-			b.WriteString(p.Path)
+			// Native plugins have no on-disk path; show the name in its place
+			// so the verbose listing still has a stable first column.
+			if p.Native {
+				b.WriteString(p.Name)
+			} else {
+				b.WriteString(p.Path)
+			}
 			if p.About != "" {
 				b.WriteString("\t")
 				b.WriteString(p.About)
@@ -240,6 +257,14 @@ func FormatPluginList(plugins []PluginInfo, verbose bool) string {
 // The plugin's stderr is forwarded to stderr verbatim. A non-zero plugin
 // exit is reported as a *PluginExecError.
 func RunPlugin(opts PluginOptions, out io.Writer, stderr io.Writer) error {
+	// Native dispatch takes precedence: if the requested name resolves to a
+	// registered in-process plugin, run the native pipeline. Otherwise fall
+	// back to the unchanged exec path below for user-supplied executables.
+	nativeName := strings.TrimPrefix(opts.Name, "+")
+	if ctor, ok := nativeRegistry[nativeName]; ok {
+		return runNativePlugin(ctor, opts, out, stderr)
+	}
+
 	path, err := ResolvePlugin(opts.Name)
 	if err != nil {
 		return err

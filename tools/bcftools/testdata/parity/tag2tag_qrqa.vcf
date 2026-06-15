@@ -1,0 +1,9 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=QR,Number=1,Type=Integer,Description="Ref qual sum">
+##FORMAT=<ID=QA,Number=A,Type=Integer,Description="Alt qual sum">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2
+chr1	100	.	A	T	.	PASS	.	GT:QR:QA	0/0:30:5	0/1:20:25
+chr1	200	.	C	G,T	.	PASS	.	GT:QR:QA	0/1:40:10,3	1/2:5:30,28
+chr1	300	.	G	A	.	PASS	.	GT:QR:QA	1/1:0:50	0/0:60:1

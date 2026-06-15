@@ -19,9 +19,16 @@ ABI version check, and no rebuild when the host changes. The trade-off is the
 serialization cost of piping VCF text; for the experiment's goals (let users
 write their own plugins) that is the right call.
 
-The host intentionally does **not** bundle a library of plugins. Upstream's
-~30 in-tree plugins (`+fill-tags`, `+split`, `+setGT`, ...) are *not* ported.
-Only the mechanism exists; a single reference plugin ships as an example and
+In addition to this subprocess protocol, the host now bundles **native
+(pure-Go) reimplementations of all 41 upstream in-tree plugins**, dispatched by
+`+<name>` ahead of the subprocess lookup. The subprocess protocol described in
+this document is the **fallback** for any name not in the native registry — so
+user-supplied executables in any language keep working unchanged. Native
+plugins implement the `NativePlugin` interface in
+`tools/bcftools/pkg/bcftools/native_plugin.go` (an in-process `Init`/`Process`/
+`Destroy` contract mirroring upstream's plugin lifecycle, with optional
+parallel/buffered/run-style/multi-output extensions), not this stdin/stdout
+contract; a single reference subprocess plugin still ships as an example and
 test fixture (`tools/bcftools/plugins/example`).
 
 ## Discovery
