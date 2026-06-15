@@ -1,0 +1,15 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=100000>
+##contig=<ID=chr2,length=100000>
+##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Total alleles">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred likelihoods">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	K1	F1	M1	K2	F2	M2
+chr1	100	.	A	T	50	PASS	AC=6;AN=12	GT:AD:PL:GQ	0|1:10,10:120,0,130:40	0|0:18,0:0,40,200:40	1|1:0,20:255,40,0:40	0|1:9,11:118,0,122:40	1|1:0,19:250,42,0:40	0|0:20,0:0,48,240:40
+chr1	200	.	C	G	50	PASS	AC=4;AN=12	GT:AD:PL:GQ	1|0:9,11:130,0,120:40	1|1:0,20:255,40,0:40	0|0:19,0:0,42,210:40	0|0:21,0:0,50,250:40	0|1:10,10:120,0,120:40	0|0:20,0:0,46,235:40
+chr1	300	.	G	A	50	PASS	AC=3;AN=12	GT:AD:PL:GQ	0|1:11,9:115,0,120:40	0|0:20,0:0,45,230:40	0|1:10,10:120,0,125:40	1|0:9,10:118,0,121:40	0|1:10,9:120,0,124:40	0|0:19,0:0,44,222:40
+chr1	400	.	T	C	50	PASS	AC=2;AN=12	GT:AD:PL:GQ	1|0:9,10:120,0,130:40	0|0:19,0:0,44,220:40	0|0:18,0:0,40,205:40	0|0:20,0:0,49,245:40	0|0:21,0:0,52,255:40	0|1:10,9:115,0,121:40
+chr2	100	.	A	C	50	PASS	AC=5;AN=12	GT:AD:PL:GQ	1|1:0,20:255,42,0:40	0|1:10,11:118,0,120:40	0|1:9,9:121,0,119:40	0|1:9,11:125,0,120:40	0|0:18,0:0,41,208:40	1|0:11,8:118,0,126:40

@@ -1,0 +1,4 @@
+S1	-	g1
+S2	-	g1,g2
+S3	rename3	g2
+S4	-	g3
