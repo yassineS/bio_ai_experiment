@@ -2,9 +2,12 @@ package bgzf
 
 import (
 	"bytes"
+	stdflate "compress/flate"
 	"crypto/rand"
 	"io"
 	"testing"
+
+	kflate "github.com/klauspost/compress/flate"
 )
 
 // multiRoundTrip compresses payload with a MultiWriter using the given thread
@@ -311,6 +314,97 @@ func BenchmarkMultiWriter(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// benchDeflateData returns a block-sized, semi-compressible payload that
+// resembles real BGZF block contents (mixed structure and entropy) so the
+// stdlib-vs-klauspost comparison reflects realistic ratios rather than the
+// extremes of pure-random or pure-repetitive data.
+func benchDeflateData() []byte {
+	// One MaxBlockSize block of genomic-ish text with embedded pseudo-random
+	// runs, so neither backend trivially wins on degenerate input.
+	out := make([]byte, 0, MaxBlockSize)
+	line := []byte("chr1\t10000\t10100\tfeature\t.\t+\tACGTACGTNNNNACGTACGT\n")
+	var x uint64 = 0x243F6A8885A308D3
+	for len(out) < MaxBlockSize {
+		out = append(out, line...)
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		out = append(out, byte(x), byte(x>>8), byte(x>>16))
+	}
+	return out[:MaxBlockSize]
+}
+
+// deflateOnce compresses payload with the given flate writer factory and
+// returns the compressed length.
+func deflateOnce(w interface {
+	Reset(io.Writer)
+	io.WriteCloser
+}, payload []byte, dst *bytes.Buffer) int {
+	dst.Reset()
+	w.Reset(dst)
+	_, _ = w.Write(payload)
+	_ = w.Close()
+	return dst.Len()
+}
+
+// BenchmarkDeflateBackend compares the standard library's compress/flate
+// against the klauspost/compress flate backend (the new BGZF compression
+// engine) at representative levels on one BGZF-block-sized payload. It reports
+// ns/op (speed) via the framework and the achieved compression ratio via a
+// custom metric ("ratio", compressed/original — lower is better). Run with:
+//
+//	go test -run=^$ -bench=BenchmarkDeflateBackend -benchmem ./pkg/htsgo/bgzf/
+func BenchmarkDeflateBackend(b *testing.B) {
+	payload := benchDeflateData()
+	levels := []int{1, DefaultCompression, 9}
+	for _, level := range levels {
+		level := level
+		b.Run(levelName("stdlib", level), func(b *testing.B) {
+			fw, err := stdflate.NewWriter(io.Discard, level)
+			if err != nil {
+				b.Fatal(err)
+			}
+			var dst bytes.Buffer
+			dst.Grow(MaxCompressedBlockSize)
+			b.SetBytes(int64(len(payload)))
+			var compressed int
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				compressed = deflateOnce(fw, payload, &dst)
+			}
+			b.ReportMetric(float64(compressed)/float64(len(payload)), "ratio")
+		})
+		b.Run(levelName("klauspost", level), func(b *testing.B) {
+			fw, err := kflate.NewWriter(io.Discard, level)
+			if err != nil {
+				b.Fatal(err)
+			}
+			var dst bytes.Buffer
+			dst.Grow(MaxCompressedBlockSize)
+			b.SetBytes(int64(len(payload)))
+			var compressed int
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				compressed = deflateOnce(fw, payload, &dst)
+			}
+			b.ReportMetric(float64(compressed)/float64(len(payload)), "ratio")
+		})
+	}
+}
+
+func levelName(backend string, level int) string {
+	switch level {
+	case 1:
+		return backend + "/level=1"
+	case DefaultCompression:
+		return backend + "/level=6(default)"
+	case 9:
+		return backend + "/level=9"
+	default:
+		return backend + "/level=N"
 	}
 }
 

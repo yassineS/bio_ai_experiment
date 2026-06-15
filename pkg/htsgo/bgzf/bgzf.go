@@ -8,7 +8,19 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+
+	kflate "github.com/klauspost/compress/flate"
 )
+
+// The BGZF compression (writer) side uses klauspost/compress's pure-Go flate
+// implementation (imported as kflate), which is faster and produces a slightly
+// better compression ratio than the standard library's compress/flate while
+// emitting standard DEFLATE bit streams. The decompression (reader) side stays
+// on the standard library's compress/flate: klauspost output is ordinary
+// DEFLATE and decodes with any conformant inflater, so there is no need to take
+// on the dependency for reads. The klauspost writer API mirrors the stdlib's
+// (NewWriter + Reset + Close) and uses the same level constants, so the BGZF
+// framing, block-size bounds, and level mapping are unchanged.
 
 // MaxBlockSize is the maximum number of uncompressed bytes a single BGZF block
 // may carry. htslib uses 64 KiB minus a 256-byte safety margin so that the
@@ -80,7 +92,7 @@ type Writer struct {
 	// slightly more than the input size on incompressible data, so size this
 	// generously.
 	deflated bytes.Buffer
-	fw       *flate.Writer
+	fw       *kflate.Writer
 
 	err    error
 	closed bool
@@ -95,9 +107,9 @@ func NewWriter(w io.Writer) *Writer {
 // NewWriterLevel returns a Writer that compresses to w at the given level.
 // Valid levels are flate.HuffmanOnly, flate.NoCompression (0),
 // flate.BestSpeed (1) through flate.BestCompression (9), and
-// flate.DefaultCompression (-1).
+// flate.DefaultCompression (-1); klauspost/compress accepts the same constants.
 func NewWriterLevel(w io.Writer, level int) (*Writer, error) {
-	fw, err := flate.NewWriter(io.Discard, level)
+	fw, err := kflate.NewWriter(io.Discard, level)
 	if err != nil {
 		return nil, err
 	}

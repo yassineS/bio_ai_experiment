@@ -3,6 +3,7 @@ package bgzf
 import (
 	"bytes"
 	"compress/flate"
+	"compress/gzip"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -564,4 +565,77 @@ func TestFixtureMatchesWriter(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("got %q, want %q", got, payload)
 	}
+}
+
+// TestWriterReadableByStdlibGzip confirms that the BGZF blocks emitted by our
+// writers — whose deflate bodies are produced by the klauspost/compress backend
+// — are valid gzip members that round-trip through the standard library's
+// independent compress/gzip inflater. Because BGZF is a sequence of concatenated
+// gzip members, a multistream gzip.Reader decodes the whole stream (including the
+// empty EOF member) back to the original bytes. This guards against the backend
+// ever emitting non-standard DEFLATE.
+func TestWriterReadableByStdlibGzip(t *testing.T) {
+	payloads := map[string][]byte{
+		"tiny":       []byte("hello bgzf via klauspost"),
+		"repetitive": bytes.Repeat([]byte("ACGTACGTNNNN\n"), 50000),
+	}
+	big := make([]byte, MaxBlockSize*3+99)
+	if _, err := rand.Read(big); err != nil {
+		t.Fatal(err)
+	}
+	payloads["random-multiblock"] = big
+
+	for name, payload := range payloads {
+		payload := payload
+		t.Run(name, func(t *testing.T) {
+			// Single-threaded Writer.
+			var single bytes.Buffer
+			sw := NewWriter(&single)
+			if _, err := sw.Write(payload); err != nil {
+				t.Fatalf("single Write: %v", err)
+			}
+			if err := sw.Close(); err != nil {
+				t.Fatalf("single Close: %v", err)
+			}
+			if got := stdlibGunzip(t, single.Bytes()); !bytes.Equal(got, payload) {
+				t.Fatalf("single-threaded: stdlib gzip decode != original (%d vs %d bytes)", len(got), len(payload))
+			}
+
+			// Multi-threaded MultiWriter.
+			var multi bytes.Buffer
+			mw, err := NewMultiWriter(&multi, DefaultCompression, 4)
+			if err != nil {
+				t.Fatalf("NewMultiWriter: %v", err)
+			}
+			if _, err := mw.Write(payload); err != nil {
+				t.Fatalf("multi Write: %v", err)
+			}
+			if err := mw.Close(); err != nil {
+				t.Fatalf("multi Close: %v", err)
+			}
+			if got := stdlibGunzip(t, multi.Bytes()); !bytes.Equal(got, payload) {
+				t.Fatalf("multi-threaded: stdlib gzip decode != original (%d vs %d bytes)", len(got), len(payload))
+			}
+		})
+	}
+}
+
+// stdlibGunzip decodes a concatenated-gzip-member (BGZF) stream using the
+// standard library's compress/gzip reader in multistream mode and returns the
+// recovered plaintext.
+func stdlibGunzip(t *testing.T, data []byte) []byte {
+	t.Helper()
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	gr.Multistream(true)
+	out, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatalf("gzip ReadAll: %v", err)
+	}
+	if err := gr.Close(); err != nil {
+		t.Fatalf("gzip Close: %v", err)
+	}
+	return out
 }

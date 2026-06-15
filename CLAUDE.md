@@ -92,14 +92,29 @@ owner approval.
    repo can still claim "stdlib + gonum only" for non-CRAM
    workflows. See `docs/CRAM_ROADMAP.md` §1.2 (the actionable
    decision) and `docs/CRAM_DESIGN.md` (the rationale).
+3. **`github.com/klauspost/compress`** (BSD-3) — used as the DEFLATE
+   *compression* backend for BGZF (and gzip-framed) output. It is a
+   pure-Go, no-cgo flate implementation that is faster and produces a
+   slightly better ratio than the stdlib `compress/flate` while
+   emitting standard DEFLATE bit streams. **Scope:** the BGZF/gzip
+   deflate *writer* backend only, confined to the compression calls in
+   `pkg/htsgo/bgzf/` (imported there as `kflate`). The decompression
+   (reader) path stays on stdlib `compress/flate` — klauspost output is
+   ordinary DEFLATE and decodes with any conformant inflater, so the
+   dep is not needed for reads. Round-trip is validated against our own
+   reader, the stdlib `compress/gzip` reader, and (in the live parity
+   test) upstream htslib `bgzip`. At the default level 6 it is ~2x
+   faster at an essentially identical ratio. Reuse beyond the BGZF/gzip
+   deflate path (e.g. its zstd/s2/snappy packages, or as a general
+   compression utility) still needs its own conversation.
 
 Preference order:
 
 1. Standard library.
 2. In-tree implementation (the bgzip / tabix / sam / bcf packages all
    went this route).
-3. Sanctioned third-party dep (gonum for linalg, future CRAM codec
-   libraries).
+3. Sanctioned third-party dep (gonum for linalg, klauspost/compress
+   for the BGZF deflate backend, CRAM codec libraries).
 
 ## Common commands (run from repo root)
 
