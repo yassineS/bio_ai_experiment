@@ -2,10 +2,11 @@ package bgzf
 
 import (
 	"bytes"
-	"compress/flate"
 	"errors"
 	"io"
 	"sync"
+
+	kflate "github.com/klauspost/compress/flate"
 )
 
 // MultiWriter is a BGZF writer that compresses blocks concurrently across a
@@ -35,7 +36,7 @@ type MultiWriter struct {
 
 	jobs    chan *blockJob
 	results chan *blockJob
-	pool    sync.Pool // *flate.Writer
+	pool    sync.Pool // *kflate.Writer
 
 	// nextSeq is the sequence number assigned to the next dispatched block.
 	nextSeq int64
@@ -77,7 +78,7 @@ func NewMultiWriter(w io.Writer, level, threads int) (*MultiWriter, error) {
 	}
 	// Validate the level eagerly so callers fail fast rather than on first
 	// block.
-	if _, err := flate.NewWriter(io.Discard, level); err != nil {
+	if _, err := kflate.NewWriter(io.Discard, level); err != nil {
 		return nil, err
 	}
 	mw := &MultiWriter{
@@ -87,7 +88,7 @@ func NewMultiWriter(w io.Writer, level, threads int) (*MultiWriter, error) {
 		buf:       make([]byte, 0, MaxBlockSize),
 	}
 	mw.pool.New = func() any {
-		fw, _ := flate.NewWriter(io.Discard, level)
+		fw, _ := kflate.NewWriter(io.Discard, level)
 		return fw
 	}
 	mw.startWorkers(threads)
@@ -123,7 +124,7 @@ func (mw *MultiWriter) startWorkers(threads int) {
 func (mw *MultiWriter) worker() {
 	defer mw.wg.Done()
 	for job := range mw.jobs {
-		fw := mw.pool.Get().(*flate.Writer)
+		fw := mw.pool.Get().(*kflate.Writer)
 		var deflated bytes.Buffer
 		// A block payload is at most MaxBlockSize; its deflate output is
 		// bounded by MaxCompressedBlockSize, so preallocate to avoid growth.
