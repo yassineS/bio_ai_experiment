@@ -35,6 +35,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -531,6 +532,44 @@ func runParityStats(t *testing.T, in []byte) []byte {
 	return out.Bytes()
 }
 
+// portStatsSection runs the Go port over fixture and returns the requested
+// section's data lines (those beginning "<prefix>\t").
+func portStatsSection(t *testing.T, fixture, prefix string, opts StatsOptions) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	if _, err := StatsFile(parityPath(t, fixture), &out, opts); err != nil {
+		t.Fatalf("StatsFile(%s): %v", fixture, err)
+	}
+	return statsSection(out.Bytes(), prefix)
+}
+
+// upstreamStatsSection runs the live upstream `bcftools stats` binary over
+// fixture with extraArgs and returns the requested section's data lines. The
+// binary is built once from the vendored submodule (see upstreamBcftools); a
+// build failure is a hard error, never a skip.
+func upstreamStatsSection(t *testing.T, fixture, prefix string, extraArgs ...string) []byte {
+	t.Helper()
+	bin := upstreamBcftools(t)
+	args := append([]string{"stats"}, extraArgs...)
+	args = append(args, parityPath(t, fixture))
+	out, err := exec.Command(bin, args...).Output()
+	if err != nil {
+		t.Fatalf("upstream bcftools %v: %v", args, err)
+	}
+	return statsSection(out, prefix)
+}
+
+// assertStatsSectionParity diffs the Go port's section output against the live
+// upstream binary's for the same fixture and options, failing on any byte
+// mismatch. opts configures the port; upstreamArgs configures the binary so the
+// two invocations are equivalent.
+func assertStatsSectionParity(t *testing.T, fixture, prefix string, opts StatsOptions, upstreamArgs ...string) {
+	t.Helper()
+	got := portStatsSection(t, fixture, prefix, opts)
+	want := upstreamStatsSection(t, fixture, prefix, upstreamArgs...)
+	equalBytes(t, got, want, "stats "+prefix)
+}
+
 // TestParityStats_SN compares the Summary Numbers section line-by-line.
 // This is the most commonly consumed section.
 func TestParityStats_SN(t *testing.T) {
@@ -540,48 +579,53 @@ func TestParityStats_SN(t *testing.T) {
 	equalBytes(t, got, want, "stats SN")
 }
 
-// TestParityStats_PSC documents PSC column-count and rounding differences:
-// upstream emits per-sample mean DP with one decimal and a different
-// counting basis for nRef/nAlt/nHet. We emit %.2f and count from raw GT.
+// TestParityStats_PSC validates the per-sample-counts section byte-for-byte
+// against the live upstream binary with -s - (all samples), covering the
+// mean-DP %.1f rounding and the nRefHom/nNonRefHom/nHets/ts/tv/nIndels/
+// nSingletons/nHapRef/nHapAlt/nMissing accounting.
 func TestParityStats_PSC(t *testing.T) {
-	t.Skip("stats PSC section: mean-DP rounding and reference-count accounting diverge (see docs/PARITY_ROADMAP.md bcftools stats)")
+	assertStatsSectionParity(t, "basic.vcf", "PSC",
+		StatsOptions{EnableSamples: true, Samples: []string{"-"}}, "-s", "-")
 }
 
-// TestParityStats_AF documents a divergence: upstream re-derives AF from
-// genotypes and uses dynamic bin labels; our port reads INFO/AF directly
-// and uses fixed bins. The two outputs are not byte-comparable.
+// TestParityStats_AF validates the allele-frequency section: upstream rebuilds
+// AF from the allele counts (bcf_calc_ac), routes singletons into the AF=0
+// bucket, and prints dynamic bucket frequencies. We reproduce that exactly.
 func TestParityStats_AF(t *testing.T) {
-	t.Skip("stats AF section: upstream rebuilds AF from GTs, we read INFO/AF (see docs/PARITY_ROADMAP.md bcftools stats)")
+	assertStatsSectionParity(t, "basic.vcf", "AF", StatsOptions{})
 }
 
-// TestParityStats_QUAL documents that our port emits integer QUAL bins
-// without the `.0` decimal suffix that upstream produces. Tracked.
+// TestParityStats_QUAL validates the quality section, including the trailing
+// `.0` upstream emits on integer QUAL bins via its 0.1*(iqual-1) formatting.
 func TestParityStats_QUAL(t *testing.T) {
-	t.Skip("stats QUAL section: upstream emits trailing .0 on integer bins (see docs/PARITY_ROADMAP.md bcftools stats)")
+	assertStatsSectionParity(t, "basic.vcf", "QUAL", StatsOptions{})
 }
 
-// TestParityStats_IDD documents the indel-length distribution; our
-// indel-length bucketing is correct but the trailing "frame-shift" column
-// emits 0.00 where upstream emits `.` for unset.
+// TestParityStats_IDD validates the indel-length distribution, including the
+// `0\t.` trailing glyph upstream uses for the unset genotype-count / mean-VAF.
 func TestParityStats_IDD(t *testing.T) {
-	t.Skip("stats IDD section: trailing-column missing-value glyph diverges (see docs/PARITY_ROADMAP.md bcftools stats)")
+	assertStatsSectionParity(t, "basic.vcf", "IDD", StatsOptions{})
 }
 
-// TestParityStats_ST documents the substitution-types section; we emit
-// the same 12 rows but format zero-counts as `0` while upstream omits
-// some rows entirely under certain inputs.
+// TestParityStats_ST validates the substitution-types section (all 12 canonical
+// rows, including zero-count rows).
 func TestParityStats_ST(t *testing.T) {
-	t.Skip("stats ST section: zero-count row handling diverges (see docs/PARITY_ROADMAP.md bcftools stats)")
+	assertStatsSectionParity(t, "basic.vcf", "ST", StatsOptions{})
 }
 
-// TestParityStats_DP documents the depth distribution section.
+// TestParityStats_DP validates the depth distribution, including the dynamic
+// "<min"/">max" bucket labels and the genotype/site fraction columns under
+// -s -.
 func TestParityStats_DP(t *testing.T) {
-	t.Skip("stats DP section: dynamic bin labels diverge (see docs/PARITY_ROADMAP.md bcftools stats)")
+	assertStatsSectionParity(t, "basic.vcf", "DP",
+		StatsOptions{EnableSamples: true, Samples: []string{"-"}}, "-s", "-")
 }
 
-// TestParityStats_HWE documents the Hardy-Weinberg section.
+// TestParityStats_HWE validates the Hardy-Weinberg section, which is emitted
+// only with samples (-s -): the per-AF-bucket het-fraction percentiles.
 func TestParityStats_HWE(t *testing.T) {
-	t.Skip("stats HWE section: needs additional input shape (see docs/PARITY_ROADMAP.md bcftools stats)")
+	assertStatsSectionParity(t, "basic.vcf", "HWE",
+		StatsOptions{EnableSamples: true, Samples: []string{"-"}}, "-s", "-")
 }
 
 // =====================================================================

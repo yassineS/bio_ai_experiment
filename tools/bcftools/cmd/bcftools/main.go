@@ -543,9 +543,13 @@ func runStatsCmd(args []string) int {
 		InputFile:       input,
 	}
 	if samples != "" {
-		opts.Samples = bcftools.SplitCommaList(samples)
+		opts.EnableSamples = true
+		if samples != "-" {
+			opts.Samples = bcftools.SplitCommaList(samples)
+		}
 	}
 	if samplesFile != "" {
+		opts.EnableSamples = true
 		names, err := bcftools.LoadSamplesFile(samplesFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bcftools stats: %v\n", err)

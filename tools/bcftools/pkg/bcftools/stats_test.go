@@ -72,10 +72,24 @@ func TestStatsSNHandCount(t *testing.T) {
 	if res.numMASNP != 0 {
 		t.Errorf("numMASNP = %d, want 0", res.numMASNP)
 	}
-	// Verify section headers appear in the text.
-	for _, hdr := range []string{"# SN,", "# AF,", "# QUAL,", "# IDD,", "# ST,", "# DP,", "# PSC,", "# PSI,", "# HWE,"} {
+	// Verify the always-present section headers appear in the text. The
+	// per-sample sections (PSC/PSI/HWE) are emitted only with -s/-S, mirroring
+	// upstream, so they are absent here.
+	for _, hdr := range []string{"# SN,", "# AF,", "# QUAL,", "# IDD,", "# ST,", "# DP,"} {
 		if !strings.Contains(out, hdr) {
 			t.Errorf("missing section header %q in:\n%s", hdr, out)
+		}
+	}
+	for _, hdr := range []string{"# PSC,", "# PSI,", "# HWE,"} {
+		if strings.Contains(out, hdr) {
+			t.Errorf("unexpected per-sample section %q without -s:\n%s", hdr, out)
+		}
+	}
+	// With -s -, the per-sample sections should appear.
+	_, outS := runStats(t, statsFixtureVCF, StatsOptions{InputFile: "test.vcf", EnableSamples: true, Samples: []string{"-"}})
+	for _, hdr := range []string{"# PSC,", "# PSI,", "# HWE,"} {
+		if !strings.Contains(outS, hdr) {
+			t.Errorf("missing per-sample section %q with -s -:\n%s", hdr, outS)
 		}
 	}
 	if !strings.Contains(out, "number of samples:\t3") {
@@ -129,7 +143,10 @@ func TestStatsSTSubstitutions(t *testing.T) {
 }
 
 func TestStatsAFBinning(t *testing.T) {
-	// AF values 0.05, 0.15, 0.95 must fall into bins 0, 1, and 9 respectively.
+	// AF is derived from the allele counts (bcf_calc_ac), not INFO/AF.
+	// Each single-sample 0/1 site has AC=1, AN=2; an AC==1 allele is a
+	// singleton and lands in bucket 0 (the singleton bin), regardless of the
+	// INFO/AF tag value.
 	mini := `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=1000>
 ##INFO=<ID=AF,Number=A,Type=Float,Description="AF">
@@ -140,27 +157,38 @@ chr1	200	.	C	T	30	PASS	AF=0.15	GT	0/1
 chr1	300	.	G	A	30	PASS	AF=0.95	GT	0/1
 `
 	res, _ := runStats(t, mini, StatsOptions{})
-	// Default bins: 0.0, 0.1, 0.2, ..., 0.9, 0.99, 1.0.
-	// 0.05 -> bin 0 ([0.0,0.1)); 0.15 -> bin 1 ([0.1,0.2)); 0.95 -> bin 9 ([0.9,0.99)).
-	if res.afSNPs[0] != 1 {
-		t.Errorf("AF bin 0 SNPs = %d, want 1", res.afSNPs[0])
+	if res.afSNPs[0] != 3 {
+		t.Errorf("AF singleton bucket SNPs = %d, want 3", res.afSNPs[0])
 	}
-	if res.afSNPs[1] != 1 {
-		t.Errorf("AF bin 1 SNPs = %d, want 1", res.afSNPs[1])
-	}
-	if res.afSNPs[9] != 1 {
-		t.Errorf("AF bin 9 SNPs = %d, want 1", res.afSNPs[9])
+	// A non-singleton, non-INFO/AF example: AC=2 over AN=4 → af=0.5.
+	mini2 := `##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2
+chr1	100	.	A	G	30	PASS	.	GT	0/1	0/1
+`
+	res2, _ := runStats(t, mini2, StatsOptions{})
+	// af=0.5 → bucket int(0.5*99)+1 = 50.
+	if res2.afSNPs[50] != 1 {
+		t.Errorf("AF bucket 50 SNPs = %d, want 1", res2.afSNPs[50])
 	}
 }
 
 func TestStatsQUALBinning(t *testing.T) {
 	res, _ := runStats(t, statsFixtureVCF, StatsOptions{})
-	// QUAL values in the fixture: 30, 60, 120, 250, 600, 1200, 80, 40, 75, 300.
-	// Records with SNP ALTs: 30, 60, 120, 250, 300 → bins 30, 60, 120, 250, 300.
-	wantSNP := map[int]int{30: 1, 60: 1, 120: 1, 250: 1, 300: 1}
-	for q, c := range wantSNP {
-		if got := res.qualSNPs[q]; got != c {
-			t.Errorf("qualSNPs[%d] = %d, want %d", q, got, c)
+	// QUAL is bucketed as 1 + int(qual*10). The first-ALT ts/tv split is what
+	// the QUAL section reports. SNP records and their first-ALT QUAL buckets:
+	//   30 (A>G ts), 60 (C>T ts), 120 (A>C tv), 250 (G>T tv), 300 (C>A tv).
+	wantTs := map[int]int{1 + 30*10: 1, 1 + 60*10: 1}
+	wantTv := map[int]int{1 + 120*10: 1, 1 + 250*10: 1, 1 + 300*10: 1}
+	for q, c := range wantTs {
+		if got := res.qualTs[q]; got != c {
+			t.Errorf("qualTs[%d] = %d, want %d", q, got, c)
+		}
+	}
+	for q, c := range wantTv {
+		if got := res.qualTv[q]; got != c {
+			t.Errorf("qualTv[%d] = %d, want %d", q, got, c)
 		}
 	}
 }
@@ -178,18 +206,15 @@ chr1	300	.	G	A	30	PASS	DP=30	GT:DP	1/1:8	0/0:8	0/1:8
 chr1	400	.	A	AT	30	PASS	DP=30	GT:DP	0/0:6	0/1:6	1/1:6
 chr1	500	.	C	G	30	PASS	DP=30	GT:DP	0/1:4	1/1:4	0/1:4
 `
-	res, _ := runStats(t, fx, StatsOptions{})
-	// Expected counts per sample (3 samples × 5 records):
-	//   S1: GTs = 0/0, 0/1, 1/1, 0/0, 0/1. RefHom=2, AltHom=1, Het=2.
-	//        SNP transitions at chr1@200 (C>T), chr1@300 (G>A) on S1 hits = 1ts (chr1@300 1/1 G>A=ts) + 1ts(chr1@200 0/1 C>T = ts).
-	//        Transversions: chr1@100 (A>G ts), chr1@500 (C>G tv). S1@100 0/0 no Ts/Tv contribution; S1@500 0/1 → tv. So Tv=1.
-	//        Indel: chr1@400 0/0 → 0.
-	//   S2: 0/1, 0/1, 0/0, 0/1, 1/1. RefHom=1, AltHom=1, Het=3.
-	//   S3: 1/1, 0/0, 0/1, 1/1, 0/1. RefHom=1, AltHom=2, Het=2.
+	res, _ := runStats(t, fx, StatsOptions{EnableSamples: true, Samples: []string{"-"}})
+	// nRefHom/nNonRefHom/nHets count SNP genotypes only; the chr1@400 A>AT
+	// indel genotype is excluded from these (it feeds nIndels / PSI instead).
+	// The expectations below match the live upstream `bcftools stats -s -`
+	// output for this fixture.
 	want := []struct{ refHom, altHom, het int }{
 		{2, 1, 2},
-		{1, 1, 3},
-		{1, 2, 2},
+		{1, 1, 2},
+		{1, 1, 2},
 	}
 	for i, w := range want {
 		if res.pscNRefHom[i] != w.refHom {
@@ -205,7 +230,7 @@ chr1	500	.	C	G	30	PASS	DP=30	GT:DP	0/1:4	1/1:4	0/1:4
 }
 
 func TestStatsSampleRestriction(t *testing.T) {
-	res, _ := runStats(t, statsFixtureVCF, StatsOptions{Samples: []string{"S1", "S3"}})
+	res, _ := runStats(t, statsFixtureVCF, StatsOptions{EnableSamples: true, Samples: []string{"S1", "S3"}})
 	if len(res.samples) != 2 || res.samples[0] != "S1" || res.samples[1] != "S3" {
 		t.Errorf("samples = %v, want [S1 S3]", res.samples)
 	}
@@ -428,27 +453,27 @@ func TestStatsParseDiploidGT(t *testing.T) {
 	}
 }
 
-func TestStatsHWEChiSquare(t *testing.T) {
-	// Perfect HWE: p=0.5, n=4 → AA=1, Aa=2, aa=1. Expected: AA=1, Aa=2, aa=1. chi=0.
+func TestStatsHWE(t *testing.T) {
+	// Perfect HWE: p=0.5, n=4 → AA=1, Aa=2, aa=1. The het fraction is 2/4 =
+	// 0.5; with AC=2/AN=8... here AN=8, AC=4 → af=0.5 → first-ALT AF bucket
+	// 50. The het-fraction histogram bin is int(0.5*(nafHWE-1)) = 49.
 	mini := `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=1000>
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="GT">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4
 chr1	100	.	A	G	30	PASS	.	GT	0/0	0/1	0/1	1/1
 `
-	res, _ := runStats(t, mini, StatsOptions{})
-	// AF = 0.5; expect at least one HWE row with low chi-square.
-	bucket := 500
-	if obs := res.hweObs[bucket]; obs != 1 {
-		t.Errorf("HWE bucket 500 obs = %d, want 1", obs)
-	}
-	if chi := res.hweChiSum[bucket]; math.Abs(chi) > 1e-6 {
-		t.Errorf("HWE chi square = %f, want ~0", chi)
+	res, _ := runStats(t, mini, StatsOptions{EnableSamples: true, Samples: []string{"-"}})
+	bucket := 50 // int(0.5*99)+1
+	ihet := int(0.5 * float32(res.nafHWE-1))
+	if got := res.afHWE[bucket*res.nafHWE+ihet]; got != 1 {
+		t.Errorf("afHWE[bucket=%d,ihet=%d] = %d, want 1", bucket, ihet, got)
 	}
 }
 
 func TestStatsAFTag(t *testing.T) {
-	// With --af-tag we should ignore the AF info tag and read MAF instead.
+	// With --af-tag we read the named INFO tag instead of deriving AF from the
+	// genotypes. The singleton rule does not apply to --af-tag values.
 	mini := `##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=1000>
 ##INFO=<ID=AF,Number=A,Type=Float,Description="AF">
@@ -458,9 +483,9 @@ func TestStatsAFTag(t *testing.T) {
 chr1	100	.	A	G	30	PASS	AF=0.95;MAF=0.05	GT	0/1
 `
 	res, _ := runStats(t, mini, StatsOptions{AFTag: "MAF"})
-	// MAF=0.05 → bin 0.
-	if res.afSNPs[0] != 1 {
-		t.Errorf("AF bin 0 should have 1 SNP (AFTag=MAF), got %d", res.afSNPs[0])
+	// MAF=0.05 → bucket int(0.05*99)+1 = 5.
+	if res.afSNPs[5] != 1 {
+		t.Errorf("AF bucket 5 should have 1 SNP (AFTag=MAF), got %d", res.afSNPs[5])
 	}
 }
 
@@ -560,9 +585,15 @@ func TestStatsBadRegion(t *testing.T) {
 
 func TestStatsDepthSpecRoundtrip(t *testing.T) {
 	res, _ := runStats(t, statsFixtureVCF, StatsOptions{DepthMin: 0, DepthMax: 100, DepthStep: 10})
-	// The fixture has site-level DP from 30..60. At step 10 they should all fall into 30/40/60 buckets.
-	if got := res.dpSites[30]; got < 1 {
-		t.Errorf("expected DP bucket 30 to have sites, got %d", got)
+	// dpSites is keyed by the idist bucket index. Site DP=30 with min=0,
+	// step=10 maps to bucket 1+(30-0)/10 = 4 (label "30").
+	if got := res.dpSites[res.dpIdx(30)]; got < 1 {
+		t.Errorf("expected DP bucket for depth 30 to have sites, got %d", got)
+	}
+	// With step=10 the idist label is the bucket index (i-1+min), matching
+	// upstream: depth 30 → bucket index 4 → label "3".
+	if lbl := res.dpLabel(res.dpIdx(30)); lbl != "3" {
+		t.Errorf("dpLabel for depth 30 (step 10) = %q, want \"3\"", lbl)
 	}
 }
 

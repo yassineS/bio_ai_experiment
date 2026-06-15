@@ -35,6 +35,12 @@ type StatsOptions struct {
 	AFTag           string         // --af-tag
 	UserTSTV        []UserTSTVSpec // -u/--user-tstv
 	InputFile       string         // for the header line
+
+	// EnableSamples reports whether -s/-S was supplied. Upstream only
+	// produces the per-sample sections (PSC, PSI, HWE, DP genotype counts)
+	// when samples are explicitly requested; without it the per-sample
+	// accumulators stay empty and those sections are suppressed.
+	EnableSamples bool
 }
 
 // UserTSTVSpec describes a single `-u/--user-tstv TAG[:min:max:n]` request:
@@ -84,14 +90,25 @@ type statsResult struct {
 	numMA      int
 	numMASNP   int
 
-	// AF accumulators (one entry per AF bin)
-	afBins []float64
+	// AF accumulators. Upstream bins each ALT allele by its frequency into
+	// one of afM buckets (the first bucket, index 0, is reserved for
+	// singletons, i.e. AC==1). With the default binning afM = max(101,
+	// nsamples+1) and the bin index for a non-singleton allele is
+	// int(af32*(afM-2))+1; with --af-bins it is bin_get_idx(af)+1.
+	afBins []float64 // user-supplied bin edges (nil => default linear binning)
+	afM    int       // number of AF buckets (m_af in vcfstats.c)
 	afSNPs []int
 	afTs   []int
 	afTv   []int
-	afNonS []int
+	// afIndel mirrors upstream's af_repeats[2] (the "not applicable" repeat
+	// class): without -E exons every indel allele lands here, and it feeds
+	// both the "number of indels" (column [7]) and "not applicable" (column
+	// [10]) fields of the AF report.
+	afIndel []int
 
-	// QUAL accumulators keyed by integer bucket index (floor(QUAL)).
+	// QUAL accumulators keyed by upstream's iqual = 1 + int(qual*10); the
+	// special value 0 denotes a missing/negative QUAL. qualSNPs counts only
+	// the first ALT (matching upstream's ts/tv-by-quality semantics).
 	qualSNPs map[int]int
 	qualTs   map[int]int
 	qualTv   map[int]int
@@ -103,11 +120,14 @@ type statsResult struct {
 	// ST: substitution-type counts (REF>ALT for SNPs).
 	subst map[string]int
 
-	// DP: depth distribution.
-	dpSites     map[int]int // bin -> sites
-	dpGTs       map[int]int // bin -> per-sample GTs at that depth bucket
-	dpTotalSite int         // total sites that contributed
-	dpTotalGT   int
+	// DP: depth distribution, binned with the idist scheme. dpMin/Max/Step
+	// and dpM (= 4 + (max-min)/step) define the bucket layout; bucket 0 is
+	// the underflow (<min) bin and bucket dpM-1 the overflow (>max) bin.
+	dpMin, dpMax, dpStep, dpM int
+	dpSites                   map[int]int // idist bin -> sites
+	dpGTs                     map[int]int // idist bin -> per-sample GTs
+	dpTotalSite               int         // total sites that contributed
+	dpTotalGT                 int
 
 	// PSC / PSI: per-sample counters indexed by sampleIndex.
 	pscNRefHom    []int
@@ -116,17 +136,23 @@ type statsResult struct {
 	pscNTs        []int
 	pscNTv        []int
 	pscNIndels    []int
+	pscNSingleton []int // sites where this sample is the lone non-ref sample
+	pscNHapRef    []int
+	pscNHapAlt    []int
+	pscNMissing   []int
 	pscDepthSum   []int
 	pscDepthN     []int
 
-	psiNIns []int
-	psiNDel []int
-	psiNHet []int
-	psiNAA  []int
+	psiNInsHet []int
+	psiNDelHet []int
+	psiNInsHom []int
+	psiNDelHom []int
 
-	// HWE: AF -> (n_obs, accumulated chi-square sum).
-	hweObs    map[int]int
-	hweChiSum map[int]float64
+	// HWE: a 2-D histogram af_hwe[iaf*nafHWE + ihet] counting, per first-ALT
+	// AF bucket, how many sites had a given observed heterozygous-genotype
+	// fraction. nafHWE is the number of het-fraction bins (100 upstream).
+	nafHWE int
+	afHWE  []int
 
 	// USR: per-spec Ts/Tv-by-tag accumulators (-u/--user-tstv).
 	userTSTV []*userTSTVAcc
@@ -149,22 +175,35 @@ func newStatsResult(opts StatsOptions, headerSamples []string, metaInfo []string
 		subst:         make(map[string]int),
 		dpSites:       make(map[int]int),
 		dpGTs:         make(map[int]int),
-		hweObs:        make(map[int]int),
-		hweChiSum:     make(map[int]float64),
+		nafHWE:        100,
 	}
-	if len(r.afBins) == 0 {
-		r.afBins = append([]float64{}, defaultAFBins...)
+	// Determine the number of AF buckets, mirroring init_stats() in
+	// vcfstats.c. With --af-bins the bucket count equals the number of bin
+	// boundaries (the last is unused, leaving room for the singleton bin);
+	// otherwise it is max(101, nsamples+1).
+	if len(r.afBins) >= 2 {
+		r.afM = len(r.afBins)
+	} else {
+		r.afBins = nil
+		r.afM = 101
+		if len(headerSamples)+1 > r.afM {
+			r.afM = len(headerSamples) + 1
+		}
 	}
-	nBins := len(r.afBins) - 1
-	if nBins < 1 {
-		nBins = 1
-	}
-	r.afSNPs = make([]int, nBins)
-	r.afTs = make([]int, nBins)
-	r.afTv = make([]int, nBins)
-	r.afNonS = make([]int, nBins)
+	r.afSNPs = make([]int, r.afM)
+	r.afTs = make([]int, r.afM)
+	r.afTv = make([]int, r.afM)
+	r.afIndel = make([]int, r.afM)
 
-	r.samples = filterSampleSet(headerSamples, opts.Samples)
+	// Per-sample sections are produced only when -s/-S was requested. A bare
+	// "-" sample request (or no explicit list) selects every header sample.
+	if opts.EnableSamples {
+		want := opts.Samples
+		if len(want) == 0 || (len(want) == 1 && want[0] == "-") {
+			want = nil
+		}
+		r.samples = filterSampleSet(headerSamples, want)
+	}
 	r.sampleIndex = make(map[string]int, len(r.samples))
 	for i, name := range r.samples {
 		r.sampleIndex[name] = i
@@ -175,12 +214,27 @@ func newStatsResult(opts StatsOptions, headerSamples []string, metaInfo []string
 	r.pscNTs = make([]int, len(r.samples))
 	r.pscNTv = make([]int, len(r.samples))
 	r.pscNIndels = make([]int, len(r.samples))
+	r.pscNSingleton = make([]int, len(r.samples))
+	r.pscNHapRef = make([]int, len(r.samples))
+	r.pscNHapAlt = make([]int, len(r.samples))
+	r.pscNMissing = make([]int, len(r.samples))
 	r.pscDepthSum = make([]int, len(r.samples))
 	r.pscDepthN = make([]int, len(r.samples))
-	r.psiNIns = make([]int, len(r.samples))
-	r.psiNDel = make([]int, len(r.samples))
-	r.psiNHet = make([]int, len(r.samples))
-	r.psiNAA = make([]int, len(r.samples))
+	r.psiNInsHet = make([]int, len(r.samples))
+	r.psiNDelHet = make([]int, len(r.samples))
+	r.psiNInsHom = make([]int, len(r.samples))
+	r.psiNDelHom = make([]int, len(r.samples))
+	r.afHWE = make([]int, r.afM*r.nafHWE)
+
+	// Depth-distribution bucket layout (idist), defaulting to 0..500 step 1.
+	r.dpMin, r.dpMax, r.dpStep = opts.DepthMin, opts.DepthMax, opts.DepthStep
+	if r.dpStep <= 0 {
+		r.dpStep = 1
+	}
+	if r.dpMax <= 0 {
+		r.dpMax = 500
+	}
+	r.dpM = 4 + (r.dpMax-r.dpMin)/r.dpStep
 
 	for _, spec := range opts.UserTSTV {
 		acc := &userTSTVAcc{
@@ -427,159 +481,236 @@ func keepStatsVariant(v *vcf.Variant, opts StatsOptions, includeF, excludeF *Fil
 	return true
 }
 
-// accumulate folds one variant into the result. Multi-allelic sites are
-// counted once for the SN section; individual ALTs each contribute to AF,
-// QUAL, ST, IDD bookkeeping unless --1st-allele-only restricts us.
+// accumulate folds one variant into the result, mirroring do_vcf_stats() in
+// vcfstats.c. The record's combined variant-type bitmask (the OR of every
+// ALT's type) drives the SN counters — a row that contains both a SNP and an
+// indel increments both — and each section uses the per-allele AF bucket
+// array computed by computeIAF.
 func accumulate(r *statsResult, v *vcf.Variant) {
 	r.numRecords++
 
-	// Detect no-ALT records (gVCF-style spanning blocks, "." or no ALT).
-	hasALT := false
-	for _, a := range v.Alt {
-		if a != "" && a != "." {
-			hasALT = true
-			break
-		}
+	// nAllele includes the reference, matching line->n_allele.
+	nAllele := len(v.Alt) + 1
+	iaf := computeIAF(r, v, nAllele)
+
+	// Combined line type: OR of every ALT's variant-type bit (upstream's
+	// bcf_get_variant_types). An empty mask means a reference-only row.
+	lineType := 0
+	for _, alt := range v.Alt {
+		lineType |= variantTypeBit(v.Ref, alt)
 	}
-	if !hasALT {
+
+	if lineType == 0 {
 		r.numNoALTs++
-		return
+	}
+	if lineType&vtSNP != 0 {
+		r.doSNPStats(v, iaf)
+	}
+	if lineType&vtINDEL != 0 {
+		r.doIndelStats(v, iaf)
+	}
+	if lineType&vtMNP != 0 {
+		r.numMNPs++
+	}
+	if lineType&(vtOTHER|vtBND|vtOVERLAP) != 0 {
+		r.numOthers++
 	}
 
-	alts := v.Alt
-	if r.opts.FirstAlleleOnly && len(alts) > 1 {
-		alts = alts[:1]
-	}
-	if len(v.Alt) > 1 {
+	if nAllele > 2 {
 		r.numMA++
-	}
-
-	// SN / per-allele classification.
-	sawSNP := false
-	sawNonSNP := false
-	for _, alt := range alts {
-		if alt == "" || alt == "." || alt == "*" {
-			continue
-		}
-		kind := classifyVariant(v.Ref, alt)
-		switch kind {
-		case "snp":
-			sawSNP = true
-		case "mnp":
-			sawNonSNP = true
-		case "indel":
-			sawNonSNP = true
-		default:
-			sawNonSNP = true
-		}
-	}
-	if sawSNP {
-		r.numSNPs++
-	}
-	if len(v.Alt) > 1 && countSNPAlts(v) > 1 {
-		r.numMASNP++
-	}
-	// Classify into MNP / indel / other for SN counters (per-record).
-	if !sawSNP && sawNonSNP {
-		nonSNPKind := dominantKind(v.Ref, alts)
-		switch nonSNPKind {
-		case "mnp":
-			r.numMNPs++
-		case "indel":
-			r.numIndels++
-		default:
-			r.numOthers++
-		}
-	} else if sawSNP && sawNonSNP {
-		// Mixed sites count as indel in upstream when an indel is present,
-		// else MNP — but for SN-numbers upstream just bumps SNP and the
-		// "indel" counter independently. We approximate that here.
-		nonSNPKind := dominantKind(v.Ref, alts)
-		switch nonSNPKind {
-		case "indel":
-			r.numIndels++
-		case "mnp":
-			r.numMNPs++
-		default:
-			r.numOthers++
-		}
-	}
-
-	// QUAL binning. Upstream rounds DOWN to the nearest integer.
-	qualBin := int(math.Floor(v.Qual))
-	if v.Qual < 0 {
-		qualBin = 0
-	}
-
-	// AF binning. If --af-tag is set we look it up in INFO; otherwise we
-	// compute AF from genotypes.
-	af := computeAF(r, v)
-	afIdx := afBinIndex(r.afBins, af)
-
-	for _, alt := range alts {
-		if alt == "" || alt == "." || alt == "*" {
-			continue
-		}
-		switch classifyVariant(v.Ref, alt) {
-		case "snp":
-			r.afSNPs[afIdx]++
-			r.qualSNPs[qualBin]++
-			tsType := transitionType(v.Ref, alt)
-			if tsType == "ts" {
-				r.afTs[afIdx]++
-				r.qualTs[qualBin]++
-			} else {
-				r.afTv[afIdx]++
-				r.qualTv[qualBin]++
-			}
-			key := strings.ToUpper(v.Ref) + ">" + strings.ToUpper(alt)
-			r.subst[key]++
-		case "indel":
-			r.afNonS[afIdx]++
-			r.qualNonS[qualBin]++
-			delta := len(alt) - len(v.Ref)
-			r.indelLen[delta]++
-		case "mnp":
-			r.afNonS[afIdx]++
-			r.qualNonS[qualBin]++
-		default:
-			r.afNonS[afIdx]++
-			r.qualNonS[qualBin]++
-		}
-	}
-
-	// USR (-u/--user-tstv): stratify the 1st-ALT Ts/Tv by a numeric INFO
-	// tag. Upstream only counts the first ALT allele and only when it is a
-	// SNP whose REF differs from ALT.
-	if len(r.userTSTV) > 0 && len(alts) > 0 {
-		first := alts[0]
-		if classifyVariant(v.Ref, first) == "snp" &&
-			strings.ToUpper(v.Ref) != strings.ToUpper(first) {
-			isTs := transitionType(v.Ref, first) == "ts"
-			accumulateUserTSTV(r, v, isTs)
+		if onlySNPAlts(v) {
+			r.numMASNP++
 		}
 	}
 
 	// DP binning — INFO/DP first, falling back to per-sample DP sum.
 	if dp, ok := siteDepth(v); ok {
-		bin := dpBin(r.opts, dp)
-		r.dpSites[bin]++
+		r.dpSites[r.dpIdx(dp)]++
 		r.dpTotalSite++
 	}
 
 	// Per-sample counters (PSC/PSI/HWE).
-	accumulateSamples(r, v, alts)
+	accumulateSamples(r, v, iaf)
+}
 
-	// HWE: 1st-ALT AF -> (obs, chi^2). We aggregate by AF bucket only for
-	// records where both REF and ALT are SNPs (the upstream default).
-	if sawSNP {
-		chi, ok := hweChiSquare(v)
-		if ok {
-			bucket := int(math.Round(af * 1000)) // bucket by AF * 1000
-			r.hweObs[bucket]++
-			r.hweChiSum[bucket] += chi
+// doSNPStats mirrors do_snp_stats(): it bumps n_snps once, then for every SNP
+// ALT (subject to --1st-allele-only) records the substitution, the AF-binned
+// ts/tv split, and — for the first ALT only — the quality-binned ts/tv split
+// and the user-tstv accumulators.
+func (r *statsResult) doSNPStats(v *vcf.Variant, iaf []int) {
+	r.numSNPs++
+	ref := strings.ToUpper(v.Ref)
+	if len(ref) == 0 || !isACGT(ref[0]) {
+		return
+	}
+	iqual := qualIndex(v.Qual)
+	for i := 1; i < len(iaf); i++ {
+		if r.opts.FirstAlleleOnly && i > 1 {
+			break
+		}
+		alt := v.Alt[i-1]
+		if variantTypeBit(v.Ref, alt)&vtSNP == 0 {
+			continue
+		}
+		altU := strings.ToUpper(alt)
+		if len(altU) == 0 || !isACGT(altU[0]) || ref[0] == altU[0] {
+			continue
+		}
+		r.subst[string(ref[0])+">"+string(altU[0])]++
+		bin := iaf[i]
+		r.afSNPs[bin]++
+		if transitionType(v.Ref, alt) == "ts" {
+			if i == 1 {
+				r.qualTs[iqual]++
+				accumulateUserTSTV(r, v, true)
+			}
+			r.afTs[bin]++
+		} else {
+			if i == 1 {
+				r.qualTv[iqual]++
+				accumulateUserTSTV(r, v, false)
+			}
+			r.afTv[bin]++
 		}
 	}
+}
+
+// doIndelStats mirrors do_indel_stats(): it bumps n_indels once, records the
+// first-ALT quality bin, and for every indel ALT (subject to
+// --1st-allele-only) records the length distribution and the AF-binned indel
+// count (af_repeats[2], the "not applicable" repeat class without -E exons).
+func (r *statsResult) doIndelStats(v *vcf.Variant, iaf []int) {
+	r.numIndels++
+	r.qualNonS[qualIndex(v.Qual)]++
+	for i := 1; i < len(iaf); i++ {
+		if r.opts.FirstAlleleOnly && i > 1 {
+			break
+		}
+		alt := v.Alt[i-1]
+		if variantTypeBit(v.Ref, alt)&vtINDEL == 0 {
+			continue
+		}
+		r.indelLen[len(alt)-len(v.Ref)]++
+		r.afIndel[iaf[i]]++
+	}
+}
+
+// qualIndex maps a QUAL value to upstream's iqual bucket: 0 for missing or
+// negative quality, otherwise 1 + int(qual*10) so the bucket width is 0.1.
+func qualIndex(qual float64) int {
+	if math.IsNaN(qual) || qual < 0 {
+		return 0
+	}
+	return 1 + int(qual*10)
+}
+
+// onlySNPAlts reports whether every ALT of a multi-allelic record is a SNP,
+// matching upstream's "multiallelic SNP sites" criterion.
+func onlySNPAlts(v *vcf.Variant) bool {
+	for _, alt := range v.Alt {
+		if variantTypeBit(v.Ref, alt)&vtSNP == 0 {
+			return false
+		}
+	}
+	return len(v.Alt) > 0
+}
+
+// computeIAF mirrors init_iaf(): it returns the per-allele AF bucket index
+// (length nAllele; element 0 is the reference and is always bucket 0). With
+// --af-tag the frequency is read from the named INFO tag; otherwise it is
+// derived from the allele counts (INFO/AC+AN or the genotypes, exactly like
+// bcf_calc_ac). Singletons (AC==1) fall into bucket 0, the bin reserved for
+// them; a non-singleton allele frequency af maps to bucket
+// int(float32(af)*(afM-2))+1 (or bin_get_idx(af)+1 with --af-bins).
+func computeIAF(r *statsResult, v *vcf.Variant, nAllele int) []int {
+	iaf := make([]int, nAllele)
+	if r.opts.AFTag != "" {
+		if af, ok := infoFloatArray(v, r.opts.AFTag); ok && len(af) == nAllele-1 {
+			for i := 1; i < nAllele; i++ {
+				iaf[i] = r.afBucket(clamp01(af[i-1])) + 1
+			}
+		}
+		return iaf
+	}
+	ac := computeACWithRef(v, nAllele)
+	an := 0
+	for _, c := range ac {
+		an += c
+	}
+	if an == 0 {
+		return iaf
+	}
+	for i := 1; i < nAllele; i++ {
+		switch {
+		case ac[i] == 1:
+			iaf[i] = 0 // singletons into the first bucket
+		default:
+			af := clamp01(float64(float32(ac[i]) / float32(an)))
+			iaf[i] = r.afBucket(af) + 1
+		}
+	}
+	return iaf
+}
+
+// afBucket maps a clamped allele frequency to its zero-based bucket (before
+// the +1 singleton offset). With user-supplied --af-bins it is the
+// half-open-interval index; otherwise int(float32(af)*(afM-2)), matching
+// vcfstats.c's `af*(m_af-2)` truncation in float32 arithmetic.
+func (r *statsResult) afBucket(af float64) int {
+	if len(r.afBins) >= 2 {
+		return binGetIdx(r.afBins, af)
+	}
+	return int(float32(af) * float32(r.afM-2))
+}
+
+// clamp01 clamps x to the closed unit interval.
+func clamp01(x float64) float64 {
+	if x < 0 {
+		return 0
+	}
+	if x > 1 {
+		return 1
+	}
+	return x
+}
+
+// binGetIdx returns the index of the half-open [bins[i],bins[i+1]) interval
+// containing af, mirroring htslib's bin_get_idx. Values at or below the first
+// edge land in bin 0; values at or above the last edge land in the last bin.
+func binGetIdx(bins []float64, af float64) int {
+	if len(bins) < 2 {
+		return 0
+	}
+	if af <= bins[0] {
+		return 0
+	}
+	if af >= bins[len(bins)-1] {
+		return len(bins) - 2
+	}
+	for i := 0; i+1 < len(bins); i++ {
+		if af >= bins[i] && af < bins[i+1] {
+			return i
+		}
+	}
+	return len(bins) - 2
+}
+
+// infoFloatArray parses INFO tag as a comma-separated float array.
+func infoFloatArray(v *vcf.Variant, tag string) ([]float64, bool) {
+	raw, ok := v.Info[tag]
+	if !ok || raw == "" || raw == "." {
+		return nil, false
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]float64, len(parts))
+	for i, p := range parts {
+		f, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			return nil, false
+		}
+		out[i] = f
+	}
+	return out, true
 }
 
 // dominantKind returns whether a non-SNP record is MNP, indel, or "other".
@@ -815,90 +946,206 @@ func dpBin(opts StatsOptions, dp int) int {
 	return min + ((dp-min)/step)*step
 }
 
-// accumulateSamples updates the PSC / PSI / HWE per-sample counters for v.
-func accumulateSamples(r *statsResult, v *vcf.Variant, alts []string) {
-	if len(r.samples) == 0 {
-		return
+// dpIdx returns the idist bucket index for depth dp: 0 for dp<min (the
+// underflow bin), dpM-1 for dp>max (the overflow bin), and 1+(dp-min)/step
+// otherwise. It mirrors htslib's idist().
+func (r *statsResult) dpIdx(dp int) int {
+	if dp < r.dpMin {
+		return 0
 	}
-	// Quick lookup of REF/ALT kinds for this site.
-	altKinds := make([]string, len(alts))
-	for i, alt := range alts {
-		altKinds[i] = classifyVariant(v.Ref, alt)
+	if dp > r.dpMax {
+		return r.dpM - 1
 	}
-	for _, s := range v.Samples {
-		idx, ok := r.sampleIndex[s.Name]
-		if !ok {
-			continue
+	return 1 + (dp-r.dpMin)/r.dpStep
+}
+
+// dpLabel renders the idist bucket label for index i: "<min", ">max", or the
+// bucket's depth value (i-1+min), mirroring print_stats() / idist_i2bin().
+func (r *statsResult) dpLabel(i int) string {
+	if i == 0 {
+		return fmt.Sprintf("<%d", r.dpMin)
+	}
+	if i == r.dpM-1 {
+		return fmt.Sprintf(">%d", r.dpMax)
+	}
+	return strconv.Itoa(i - 1 + r.dpMin)
+}
+
+// Genotype-type codes mirroring htslib's bcf_gt_type return values, as used
+// by do_sample_stats() in vcfstats.c.
+const (
+	gtHomRR = iota // 0/0
+	gtHetRA        // 0/x
+	gtHetAA        // x/y, x!=y, both non-ref
+	gtHomAA        // x/x, x non-ref
+	gtHaplR        // single ref allele
+	gtHaplA        // single non-ref allele
+	gtUnkn         // missing
+)
+
+// gtType classifies a parsed genotype into one of the gt* codes and returns
+// the two allele indices ial/jal (for a haploid genotype jal==ial). It mirrors
+// bcf_gt_type: a missing allele in either position yields gtUnkn.
+func gtType(als [2]int, kind genotypeKind) (typ, ial, jal int) {
+	if kind == gtMissing {
+		return gtUnkn, 0, 0
+	}
+	ial, jal = als[0], als[1]
+	if kind == gtHemi {
+		if ial == 0 {
+			return gtHaplR, ial, jal
 		}
-		gt, ok := s.Data["GT"]
-		if !ok {
-			continue
-		}
-		a, b, sep, ok := parseDiploidGT(gt)
-		if !ok {
-			continue
-		}
-		// Track depth contributions.
-		if raw, ok := s.Data["DP"]; ok && raw != "" && raw != "." {
-			if n, err := strconv.Atoi(raw); err == nil {
-				r.pscDepthSum[idx] += n
-				r.pscDepthN[idx]++
-				bin := dpBin(r.opts, n)
-				r.dpGTs[bin]++
-				r.dpTotalGT++
-			}
-		}
-		_ = sep
-		switch {
-		case a == 0 && b == 0:
-			r.pscNRefHom[idx]++
-		case a == b && a > 0:
-			r.pscNNonRefHom[idx]++
-			if int(a) <= len(altKinds) {
-				kind := altKinds[a-1]
-				if kind == "snp" {
-					if transitionType(v.Ref, alts[a-1]) == "ts" {
-						r.pscNTs[idx]++
-					} else {
-						r.pscNTv[idx]++
-					}
-				} else if kind == "indel" {
-					r.pscNIndels[idx]++
-					psiBumpIndel(r, idx, v.Ref, alts[a-1])
-					r.psiNAA[idx]++
-				}
-			}
-		case a != b:
-			r.pscNHets[idx]++
-			// For hets we attribute SNP/indel using the non-zero allele.
-			nonZero := a
-			if a == 0 {
-				nonZero = b
-			}
-			if int(nonZero) >= 1 && int(nonZero) <= len(altKinds) {
-				kind := altKinds[nonZero-1]
-				if kind == "snp" {
-					if transitionType(v.Ref, alts[nonZero-1]) == "ts" {
-						r.pscNTs[idx]++
-					} else {
-						r.pscNTv[idx]++
-					}
-				} else if kind == "indel" {
-					r.pscNIndels[idx]++
-					psiBumpIndel(r, idx, v.Ref, alts[nonZero-1])
-					r.psiNHet[idx]++
-				}
-			}
-		}
+		return gtHaplA, ial, jal
+	}
+	switch {
+	case ial == 0 && jal == 0:
+		return gtHomRR, ial, jal
+	case ial == 0 || jal == 0:
+		return gtHetRA, ial, jal
+	case ial == jal:
+		return gtHomAA, ial, jal
+	default:
+		return gtHetAA, ial, jal
 	}
 }
 
-// psiBumpIndel updates the PSI insertion/deletion totals for sample idx.
-func psiBumpIndel(r *statsResult, idx int, ref, alt string) {
-	if len(alt) > len(ref) {
-		r.psiNIns[idx]++
-	} else if len(alt) < len(ref) {
-		r.psiNDel[idx]++
+// accumulateSamples updates the PSC / PSI / DP-by-genotype / HWE per-sample
+// counters for v, mirroring do_sample_stats() and sample_gt_stats().
+func accumulateSamples(r *statsResult, v *vcf.Variant, iaf []int) {
+	if len(r.samples) == 0 {
+		return
+	}
+	var nrefTot, nhetTot, naltTot int
+	nNonRef := 0
+	iNonRef := 0
+	for i := range v.Samples {
+		idx, ok := r.sampleIndex[v.Samples[i].Name]
+		if !ok {
+			continue
+		}
+		// Track depth contributions (DP-by-genotype + PSC average depth).
+		if raw, ok := v.Samples[i].Data["DP"]; ok && raw != "" && raw != "." {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				r.pscDepthSum[idx] += n
+				r.pscDepthN[idx]++
+				r.dpGTs[r.dpIdx(n)]++
+				r.dpTotalGT++
+			}
+		}
+
+		als, kind := parseGenotypeAlleles(v, i)
+		typ, ial, jal := gtType(als, kind)
+		if typ == gtUnkn {
+			r.pscNMissing[idx]++
+			continue
+		}
+
+		varType := 0
+		if ial > 0 {
+			varType |= altVariantType(v, ial)
+		}
+		if jal > 0 {
+			varType |= altVariantType(v, jal)
+		}
+
+		if typ == gtHaplR || typ == gtHaplA {
+			if varType&vtINDEL != 0 {
+				// frame-shift stats require -E exons; not tracked here.
+			}
+			if typ == gtHaplR {
+				r.pscNHapRef[idx]++
+			} else {
+				r.pscNHapAlt[idx]++
+			}
+			continue
+		}
+
+		if typ != gtHomRR {
+			nNonRef++
+			iNonRef = idx
+		}
+		switch typ {
+		case gtHomRR:
+			nrefTot++
+		case gtHetRA:
+			nhetTot++
+		case gtHetAA, gtHomAA:
+			naltTot++
+		}
+
+		if varType&vtSNP != 0 || varType == 0 { // count ALT=. as SNP
+			switch typ {
+			case gtHetRA, gtHetAA:
+				r.pscNHets[idx]++
+			case gtHomRR:
+				r.pscNRefHom[idx]++
+			case gtHomAA:
+				r.pscNNonRefHom[idx]++
+			}
+			if typ != gtHomRR && altVariantType(v, ial)&vtSNP != 0 {
+				r.pscBumpTsTv(idx, v, ial)
+			}
+			if typ != gtHomRR && ial != jal && altVariantType(v, jal)&vtSNP != 0 {
+				r.pscBumpTsTv(idx, v, jal)
+			}
+		}
+		if varType&vtINDEL != 0 && typ != gtHomRR {
+			r.pscNIndels[idx]++
+			switch typ {
+			case gtHetRA, gtHetAA:
+				isIns, isDel := false, false
+				if altVariantType(v, ial)&vtINDEL != 0 {
+					if indelAlleleLen(v, ial) < 0 {
+						isDel = true
+					} else {
+						isIns = true
+					}
+				}
+				if altVariantType(v, jal)&vtINDEL != 0 {
+					if indelAlleleLen(v, jal) < 0 {
+						isDel = true
+					} else {
+						isIns = true
+					}
+				}
+				if isDel {
+					r.psiNDelHet[idx]++
+				}
+				if isIns {
+					r.psiNInsHet[idx]++
+				}
+			case gtHomAA:
+				if indelAlleleLen(v, ial) < 0 {
+					r.psiNDelHom[idx]++
+				} else {
+					r.psiNInsHom[idx]++
+				}
+			}
+		}
+	}
+	if nNonRef == 1 {
+		r.pscNSingleton[iNonRef]++
+	}
+
+	// HWE het-fraction histogram, keyed by the first-ALT AF bucket.
+	if len(v.Alt) > 0 && (nrefTot != 0 || nhetTot != 0 || naltTot != 0) {
+		hetFrac := float32(nhetTot) / float32(nrefTot+nhetTot+naltTot)
+		ihet := int(hetFrac * float32(r.nafHWE-1))
+		bucket := 0
+		if len(iaf) > 1 {
+			bucket = iaf[1]
+		}
+		r.afHWE[ihet+bucket*r.nafHWE]++
+	}
+}
+
+// pscBumpTsTv increments the per-sample transition or transversion counter for
+// SNP allele a (1-based) at site v.
+func (r *statsResult) pscBumpTsTv(idx int, v *vcf.Variant, a int) {
+	if transitionType(v.Ref, v.Alt[a-1]) == "ts" {
+		r.pscNTs[idx]++
+	} else {
+		r.pscNTv[idx]++
 	}
 }
 
@@ -1008,14 +1255,18 @@ func writeStats(out io.Writer, r *statsResult) error {
 	if err := writeDP(bw, r); err != nil {
 		return err
 	}
-	if err := writePSC(bw, r); err != nil {
-		return err
-	}
-	if err := writePSI(bw, r); err != nil {
-		return err
-	}
-	if err := writeHWE(bw, r); err != nil {
-		return err
+	// The per-sample sections are emitted only when samples were requested,
+	// matching upstream's `if (n_smpl)` guard.
+	if len(r.samples) > 0 {
+		if err := writePSC(bw, r); err != nil {
+			return err
+		}
+		if err := writePSI(bw, r); err != nil {
+			return err
+		}
+		if err := writeHWE(bw, r); err != nil {
+			return err
+		}
 	}
 	return bw.Flush()
 }
@@ -1035,30 +1286,85 @@ func writeSN(bw *bufio.Writer, r *statsResult) error {
 	return nil
 }
 
+// writeAF emits the per-AF-bucket statistics. Upstream folds the singleton
+// bucket (index 0) into bucket 1, prints only non-empty buckets, and renders
+// the bucket frequency as (i-1)/(afM-1) — or the midpoint of the user bin with
+// --af-bins. The "number of indels" and "not applicable" columns both read the
+// af_repeats[2] count (afIndel) because without -E exons every indel lands in
+// the repeat-n/a class.
 func writeAF(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# AF, Stats by non-reference allele frequency:")
 	fmt.Fprintln(bw, "# AF\t[2]id\t[3]allele frequency\t[4]number of SNPs\t[5]number of transitions\t[6]number of transversions\t[7]number of indels\t[8]repeat-consistent\t[9]repeat-inconsistent\t[10]not applicable")
-	for i := 0; i < len(r.afBins)-1; i++ {
-		lo := r.afBins[i]
-		// Upstream prints the LOWER bin edge with 6 decimals.
-		fmt.Fprintf(bw, "AF\t0\t%.6f\t%d\t%d\t%d\t%d\t0\t0\t0\n",
-			lo, r.afSNPs[i], r.afTs[i], r.afTv[i], r.afNonS[i])
+	// Fold the singleton bucket into bucket 1, mirroring print_stats().
+	if r.afM > 1 {
+		r.afSNPs[1] += r.afSNPs[0]
+		r.afTs[1] += r.afTs[0]
+		r.afTv[1] += r.afTv[0]
+		r.afIndel[1] += r.afIndel[0]
+	}
+	for i := 1; i < r.afM; i++ {
+		if r.afSNPs[i]+r.afTs[i]+r.afTv[i]+r.afIndel[i] == 0 {
+			continue
+		}
+		af := r.afFrequency(i)
+		fmt.Fprintf(bw, "AF\t0\t%f\t%d\t%d\t%d\t%d\t0\t0\t%d\n",
+			af, r.afSNPs[i], r.afTs[i], r.afTv[i], r.afIndel[i], r.afIndel[i])
 	}
 	return nil
 }
 
+// afFrequency returns the printed frequency for AF bucket i, matching
+// print_stats(): the bin midpoint with --af-bins, else (i-1)/(afM-1).
+func (r *statsResult) afFrequency(i int) float64 {
+	if len(r.afBins) >= 2 {
+		hi := binGetValue(r.afBins, i)
+		lo := binGetValue(r.afBins, i-1)
+		return (hi + lo) * 0.5
+	}
+	return float64(i-1) / float64(r.afM-1)
+}
+
+// binGetValue returns the i-th bin boundary, clamped to the available edges,
+// mirroring htslib's bin_get_value.
+func binGetValue(bins []float64, i int) float64 {
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(bins) {
+		i = len(bins) - 1
+	}
+	return bins[i]
+}
+
+// writeQUAL emits the quality distribution. Each bucket's quality is rendered
+// as 0.1*(iqual-1) with one decimal — so integer QUAL=30 prints as "30.0" —
+// and a missing/negative QUAL (iqual 0) prints as ".". The SNP column is the
+// sum of first-ALT transitions and transversions; indels add their own column.
 func writeQUAL(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# QUAL, Stats by quality:")
 	fmt.Fprintln(bw, "# QUAL\t[2]id\t[3]Quality\t[4]number of SNPs\t[5]number of transitions (1st ALT)\t[6]number of transversions (1st ALT)\t[7]number of indels")
-	keys := unionMapKeys(r.qualSNPs, r.qualTs, r.qualTv, r.qualNonS)
+	keys := unionMapKeys(r.qualTs, r.qualTv, r.qualNonS)
 	sort.Ints(keys)
 	for _, k := range keys {
-		fmt.Fprintf(bw, "QUAL\t0\t%d\t%d\t%d\t%d\t%d\n",
-			k, r.qualSNPs[k], r.qualTs[k], r.qualTv[k], r.qualNonS[k])
+		nts, ntv, nin := r.qualTs[k], r.qualTv[k], r.qualNonS[k]
+		if nts+ntv+nin == 0 {
+			continue
+		}
+		fmt.Fprint(bw, "QUAL\t0\t")
+		if k == 0 {
+			fmt.Fprint(bw, ".")
+		} else {
+			fmt.Fprintf(bw, "%.1f", 0.1*float64(k-1))
+		}
+		fmt.Fprintf(bw, "\t%d\t%d\t%d\t%d\n", nts+ntv, nts, ntv, nin)
 	}
 	return nil
 }
 
+// writeIDD emits the indel-length distribution. Upstream prints deletions
+// (negative lengths) first in descending magnitude, then insertions, and emits
+// "0\t." for the unset genotype-count and mean-VAF trailing columns when no
+// FORMAT/AD VAF data was collected.
 func writeIDD(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# IDD, InDel distribution:")
 	fmt.Fprintln(bw, "# IDD\t[2]id\t[3]length (deletions negative)\t[4]number of sites\t[5]number of genotypes\t[6]mean VAF")
@@ -1068,7 +1374,7 @@ func writeIDD(bw *bufio.Writer, r *statsResult) error {
 	}
 	sort.Ints(keys)
 	for _, k := range keys {
-		fmt.Fprintf(bw, "IDD\t0\t%d\t%d\t0\t0.00\n", k, r.indelLen[k])
+		fmt.Fprintf(bw, "IDD\t0\t%d\t%d\t0\t.\n", k, r.indelLen[k])
 	}
 	return nil
 }
@@ -1117,69 +1423,139 @@ func writeUSR(bw *bufio.Writer, r *statsResult) error {
 	return nil
 }
 
+// writeDP emits the depth distribution over the idist buckets in bucket
+// order, skipping buckets where both the genotype and site counts are zero.
+// The first/last buckets carry the dynamic "<min"/">max" labels; fractions are
+// percentages of the respective genotype and site totals.
 func writeDP(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# DP, Depth distribution:")
 	fmt.Fprintln(bw, "# DP\t[2]id\t[3]bin\t[4]number of genotypes\t[5]fraction of genotypes (%)\t[6]number of sites\t[7]fraction of sites (%)")
-	bins := unionMapKeys(r.dpSites, r.dpGTs)
-	sort.Ints(bins)
-	for _, b := range bins {
+	for i := 0; i < r.dpM; i++ {
+		gt, site := r.dpGTs[i], r.dpSites[i]
+		if gt == 0 && site == 0 {
+			continue
+		}
 		var fracGT, fracSite float64
 		if r.dpTotalGT > 0 {
-			fracGT = 100.0 * float64(r.dpGTs[b]) / float64(r.dpTotalGT)
+			fracGT = 100.0 * float64(gt) / float64(r.dpTotalGT)
 		}
 		if r.dpTotalSite > 0 {
-			fracSite = 100.0 * float64(r.dpSites[b]) / float64(r.dpTotalSite)
+			fracSite = 100.0 * float64(site) / float64(r.dpTotalSite)
 		}
-		fmt.Fprintf(bw, "DP\t0\t%d\t%d\t%.6f\t%d\t%.6f\n",
-			b, r.dpGTs[b], fracGT, r.dpSites[b], fracSite)
+		fmt.Fprintf(bw, "DP\t0\t%s\t%d\t%f\t%d\t%f\n",
+			r.dpLabel(i), gt, fracGT, site, fracSite)
 	}
 	return nil
 }
 
+// writePSC emits the per-sample counts. The average depth uses upstream's
+// %.1f formatting (float32 accumulation of the mean), and the trailing
+// singleton/haploid/missing columns are now tracked rather than stubbed.
 func writePSC(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# PSC, Per-sample counts:")
 	fmt.Fprintln(bw, "# PSC\t[2]id\t[3]sample\t[4]nRefHom\t[5]nNonRefHom\t[6]nHets\t[7]nTransitions\t[8]nTransversions\t[9]nIndels\t[10]average depth\t[11]nSingletons\t[12]nHapRef\t[13]nHapAlt\t[14]nMissing")
 	for i, name := range r.samples {
-		var avg float64
+		var avg float32
 		if r.pscDepthN[i] > 0 {
-			avg = float64(r.pscDepthSum[i]) / float64(r.pscDepthN[i])
+			avg = float32(r.pscDepthSum[i]) / float32(r.pscDepthN[i])
 		}
-		fmt.Fprintf(bw, "PSC\t0\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t0\t0\t0\t0\n",
+		fmt.Fprintf(bw, "PSC\t0\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f\t%d\t%d\t%d\t%d\n",
 			name,
 			r.pscNRefHom[i], r.pscNNonRefHom[i], r.pscNHets[i],
-			r.pscNTs[i], r.pscNTv[i], r.pscNIndels[i], avg)
+			r.pscNTs[i], r.pscNTv[i], r.pscNIndels[i], avg,
+			r.pscNSingleton[i], r.pscNHapRef[i], r.pscNHapAlt[i], r.pscNMissing[i])
 	}
 	return nil
 }
 
+// writePSI emits the per-sample indel statistics. The in-frame/out-frame
+// frame-shift columns require -E exons (not supported here) and so stay zero;
+// the nInsHets/nDelHets/nInsAltHoms/nDelAltHoms counts are tracked.
 func writePSI(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# PSI, Per-Sample Indels:")
 	fmt.Fprintln(bw, "# PSI\t[2]id\t[3]sample\t[4]in-frame\t[5]out-frame\t[6]not applicable\t[7]out/(in+out) ratio\t[8]nInsHets\t[9]nDelHets\t[10]nInsAltHoms\t[11]nDelAltHoms")
 	for i, name := range r.samples {
 		fmt.Fprintf(bw, "PSI\t0\t%s\t0\t0\t0\t0.00\t%d\t%d\t%d\t%d\n",
-			name, r.psiNIns[i], r.psiNDel[i], r.psiNHet[i], r.psiNAA[i])
+			name, r.psiNInsHet[i], r.psiNDelHet[i], r.psiNInsHom[i], r.psiNDelHom[i])
 	}
 	return nil
 }
 
+// writeHWE emits the Hardy-Weinberg section: for each first-ALT AF bucket with
+// observations it reports the count and the 25th/median/75th percentiles of
+// the observed heterozygous-genotype fraction, computed from the afHWE
+// histogram exactly as print_stats() does. The singleton bucket is folded into
+// bucket 1 first.
 func writeHWE(bw *bufio.Writer, r *statsResult) error {
 	fmt.Fprintln(bw, "# HWE, Hardy-Weinberg equilibrium:")
 	fmt.Fprintln(bw, "# HWE\t[2]id\t[3]1st ALT allele frequency\t[4]Number of observations\t[5]25th percentile\t[6]median\t[7]75th percentile")
-	keys := make([]int, 0, len(r.hweObs))
-	for k := range r.hweObs {
-		keys = append(keys, k)
+	// Fold singletons (bucket 0) into bucket 1.
+	for j := 0; j < r.nafHWE; j++ {
+		r.afHWE[j+r.nafHWE] += r.afHWE[j]
 	}
-	sort.Ints(keys)
-	for _, k := range keys {
-		af := float64(k) / 1000.0
-		obs := r.hweObs[k]
-		avg := 0.0
-		if obs > 0 {
-			avg = r.hweChiSum[k] / float64(obs)
+	for i := 1; i < r.afM; i++ {
+		ptr := r.afHWE[i*r.nafHWE : (i+1)*r.nafHWE]
+		sumTot := 0
+		for _, c := range ptr {
+			sumTot += c
 		}
-		fmt.Fprintf(bw, "HWE\t0\t%.6f\t%d\t%.6f\t%.6f\t%.6f\n", af, obs, avg, avg, avg)
+		if sumTot == 0 {
+			continue
+		}
+		af := r.afFrequency(i)
+		p25, p50, p75 := hwePercentiles(ptr, sumTot, r.nafHWE)
+		fmt.Fprintf(bw, "HWE\t0\t%f\t%d\t%f\t%f\t%f\n", af, sumTot, p25, p50, p75)
 	}
 	return nil
+}
+
+// hwePercentiles walks the cumulative het-fraction histogram and returns the
+// 25th, 50th and 75th percentile fractions (j/nafHWE at the first bin whose
+// cumulative share crosses each threshold), mirroring the percentile loop in
+// print_stats().
+func hwePercentiles(ptr []int, sumTot, nafHWE int) (p25, p50, p75 float64) {
+	nprn := 3
+	sumTmp := 0
+	for j := 0; j < nafHWE; j++ {
+		sumTmp += ptr[j]
+		frac := float32(sumTmp) / float32(sumTot)
+		val := float64(j) / float64(nafHWE)
+		if frac >= 0.75 {
+			for nprn > 0 {
+				assignPercentile(&p25, &p50, &p75, nprn, val)
+				nprn--
+			}
+			break
+		}
+		if frac >= 0.5 {
+			for nprn > 1 {
+				assignPercentile(&p25, &p50, &p75, nprn, val)
+				nprn--
+			}
+			continue
+		}
+		if frac >= 0.25 {
+			for nprn > 2 {
+				assignPercentile(&p25, &p50, &p75, nprn, val)
+				nprn--
+			}
+		}
+	}
+	return p25, p50, p75
+}
+
+// assignPercentile writes val into the percentile slot selected by the
+// remaining-fields counter nprn (3 => 25th, 2 => median, 1 => 75th), matching
+// the order in which print_stats() fills the three columns.
+func assignPercentile(p25, p50, p75 *float64, nprn int, val float64) {
+	switch nprn {
+	case 3:
+		*p25 = val
+	case 2:
+		*p50 = val
+	case 1:
+		*p75 = val
+	}
 }
 
 // unionMapKeys returns the sorted set of int keys present in any of the maps.
