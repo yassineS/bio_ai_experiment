@@ -247,22 +247,32 @@ the first comma-separated element (matching the upstream default).
 
 ## `bcftools stats`
 
-`bcftools stats` emits the same nine tab-prefixed sections that the upstream
-binary produces. Each section starts with a `# <ID>, <description>` comment,
-the column-header comment, and then data rows whose first column is the
-section short name:
+`bcftools stats` emits the same tab-prefixed sections that the upstream
+binary produces, in the upstream order, with byte-identical comment blocks
+(verbose `# <SECTION>, <description>:` headers and the multi-line `#  …`
+legends). Each section starts with its comment block, the column-header
+comment, and then data rows whose first column is the section short name:
 
 | Section | Meaning |
 | ------- | ------- |
 | `SN`    | Summary numbers — record / SNP / MNP / indel / multi-allele totals. |
+| `TSTV`  | Overall and 1st-ALT transition/transversion counts and ratios. |
+| `SiS`   | Singleton stats (deprecated): the AC=1 bucket's SNP/Ts/Tv/indel counts. |
 | `AF`    | Counts binned by non-reference allele frequency. |
 | `QUAL`  | Counts binned by `QUAL`. |
-| `IDD`   | Indel-length distribution. |
+| `IDD`   | Indel-length distribution (with per-length mean VAF when FORMAT/AD is present). |
 | `ST`    | Substitution-type counts (A>C, A>G, …). |
-| `DP`    | Depth distribution (sites and per-sample GTs). |
+| `DP`    | Depth distribution (sites from INFO/DP, per-sample GTs from FORMAT/DP or AD). |
 | `PSC`   | Per-sample counts (RefHom / NonRefHom / Hets / Ts / Tv / Indels / avgDP). |
 | `PSI`   | Per-sample indel counts. |
 | `HWE`   | Hardy-Weinberg-equilibrium statistic per AF bucket. |
+| `VAF`   | Per-sample SNV/indel VAF distributions (only with `-s/-S` and FORMAT/AD). |
+
+The whole-output report is validated byte-for-byte against the live upstream
+1.23.1 binary (`stats_full_parity_test.go`). The single known divergence is
+an upstream stale-buffer bug that mis-bins SNP VAF observations into the
+indel-length mean-VAF columns of `IDD`; see
+`docs/UPSTREAM_BUGS.md#bcftools-stats-idd-mean-vaf-reads-a-stale-indel-length-buffer-for-snps`.
 
 Supported flags (all accept POSIX short + GNU long forms):
 

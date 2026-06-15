@@ -127,16 +127,15 @@ warrant a closer look:_
 
 #### mosdepth-summary-zero-read-contigs
 
-- **mosdepth summary lists zero-read contigs** — pre-existing parity gap
-  (independent of the overlap work). Upstream's `*.mosdepth.summary.txt` emits
-  a row only for contigs that received reads (and the `total` row sums only
-  those), whereas our port lists every `@SQ` contig in the header and sums all
-  their lengths into `total`. Surfaces only on a BAM whose header carries many
-  contigs but whose reads hit a few (e.g. a whole-genome header with reads only
-  on MT); single-contig real data is already byte-identical. Disposition: **fix
-  pending** — filter `summaryRows` to read-bearing contigs and recompute
-  `total` over the listed set, with a real multi-contig parity test. Tracked
-  here; not a regression.
+- **mosdepth summary lists zero-read contigs** — **RESOLVED (2026-06-15).**
+  Upstream's `*.mosdepth.summary.txt` emits a row only for contigs that
+  received reads (and the `total` row sums only those); our port had listed
+  every `@SQ` contig and summed all their lengths into `total`. The port now
+  filters `summaryRows` to read-bearing contigs and recomputes `total` over the
+  listed set. Validated byte-for-byte against the upstream v0.3.14 binary on
+  `ovl.bam`, a constructed multi-contig fixture (some contigs covered, some
+  not), and the real `mpileup.1.bam`; per-base output (which lists every contig)
+  is unchanged.
 
 - **bedtools `groupby` empty-group handling** (when we get to porting
   it) — Aaron Quinlan has acknowledged upstream emits a blank line on
@@ -984,3 +983,54 @@ values `3,1,10,3,1` (counts 1→2, 3→2, 10→1) upstream prints `,10` instead 
 above. This is the documented, intentional deviation; all other KeyListOps
 operations (`distinct`, `concat`, `distinct_sort_num[_desc]`, `freqasc`,
 `freqdesc`, …) match the live upstream binary byte-for-byte.
+
+## bcftools stats: IDD "mean VAF" reads a stale indel-length buffer for SNPs
+
+`do_sample_stats()` (reference_code/bcftools/vcfstats.c ~1132-1153) calls
+`update_dvaf(stats,line,ial,vaf)` for *every* allele that has a non-zero
+FORMAT/AD value, including pure SNP alleles. `update_dvaf` bins the
+observation by `line->d.var[ial].n` — the htslib per-allele indel-length
+field — into the `nvaf`/`dvaf` arrays that back the IDD section's
+`[5]number of genotypes` and `[6]mean VAF` columns:
+
+```c
+static inline void update_dvaf(stats_t *stats, bcf1_t *line, int ial, float vaf)
+{
+    int len = line->d.var[ial].n;        // <-- meaningful only for indels
+    ...
+    int bin = stats->m_indel + len;
+    stats->nvaf[bin]++;
+    stats->dvaf[bin] += vaf;
+}
+```
+
+For a SNP allele `d.var[ial].n` is conceptually 0, but htslib's `d.var`
+buffer is reused across records and is only refreshed for the variant
+classes a record actually contains. When a SNP record is processed after an
+indel record whose allele occupied the same `d.var` slot, the SNP allele's
+`.n` is **stale** — it still carries the previous indel's length. The SNP's
+VAF observation is then mis-binned into that indel-length bucket.
+
+**Reproduction** (`tools/bcftools/testdata/parity/indels.vcf`): the pure SNP
+at `chr1:300 C>G` (S1 `0/1:10,11`, S2 `1/1:0,20`) contributes two phantom
+observations to the insertion-length-1 (`IDD ... 1`) row. The site/length
+counts (columns 3-4) are correct, but the genotype count and mean VAF differ:
+
+```
+IDD	0	1	1	4	0.74   # upstream (2 real + 2 phantom SNP obs)
+IDD	0	1	1	2	0.73   # our port (2 real obs only)
+```
+
+It is order-dependent: `chr1:300` alone produces no IDD rows; only when an
+indel record of length +1 has previously primed the `d.var` buffer does the
+SNP leak into the +1 bin. The exact phantom contribution depends on htslib's
+internal buffer-allocation order and is therefore not reproducible from a
+clean reimplementation.
+
+**Disposition: Track-only (fix-on-port).** Our port computes the indel
+length per allele directly and only feeds genuine indel alleles into the
+mean-VAF accumulators, so SNP VAF observations never pollute the IDD
+distribution. Every other field of `bcftools stats` (SN, TSTV, SiS, AF,
+QUAL, IDD site/length counts, ST, DP, PSC, PSI, HWE, VAF) is byte-identical
+to the live upstream 1.23.1 binary on the parity fixtures; the IDD
+columns 5-6 diverge only on inputs that trigger this stale-buffer leak.

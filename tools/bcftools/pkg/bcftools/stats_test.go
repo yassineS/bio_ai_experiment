@@ -80,14 +80,16 @@ func TestStatsSNHandCount(t *testing.T) {
 			t.Errorf("missing section header %q in:\n%s", hdr, out)
 		}
 	}
-	for _, hdr := range []string{"# PSC,", "# PSI,", "# HWE,"} {
+	// Match the per-section header text exactly as upstream emits it: PSC and
+	// PSI carry verbose comma-prefixed comments, while HWE is the bare "# HWE".
+	for _, hdr := range []string{"# PSC, Per-sample counts", "# PSI, Per-Sample Indels", "# HWE\n"} {
 		if strings.Contains(out, hdr) {
 			t.Errorf("unexpected per-sample section %q without -s:\n%s", hdr, out)
 		}
 	}
 	// With -s -, the per-sample sections should appear.
 	_, outS := runStats(t, statsFixtureVCF, StatsOptions{InputFile: "test.vcf", EnableSamples: true, Samples: []string{"-"}})
-	for _, hdr := range []string{"# PSC,", "# PSI,", "# HWE,"} {
+	for _, hdr := range []string{"# PSC, Per-sample counts", "# PSI, Per-Sample Indels", "# HWE\n"} {
 		if !strings.Contains(outS, hdr) {
 			t.Errorf("missing per-sample section %q with -s -:\n%s", hdr, outS)
 		}
