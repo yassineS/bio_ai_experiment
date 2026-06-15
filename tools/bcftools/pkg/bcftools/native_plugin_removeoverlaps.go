@@ -25,6 +25,12 @@ const (
 	markExpr
 )
 
+// remove-overlaps filter-logic values, mirroring FLT_INCLUDE / FLT_EXCLUDE.
+const (
+	roFilterInclude = 1 // -i
+	roFilterExclude = 2 // -e
+)
+
 // removeOverlapsPlugin implements the `remove-overlaps` plugin.
 type removeOverlapsPlugin struct {
 	hdr      *vcf.Header
@@ -35,6 +41,10 @@ type removeOverlapsPlugin struct {
 	ntot     int
 	nrm      int
 	stderr   io.Writer
+
+	filter      *Filter // compiled -i/-e expression (nil if none)
+	filterLogic int     // roFilterInclude / roFilterExclude
+	filterExpr  string  // raw expression text
 }
 
 // Name returns the plugin name.
@@ -103,7 +113,19 @@ func (p *removeOverlapsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header
 		case "--no-version":
 			// no-op for the native path (provenance is handled elsewhere)
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("remove-overlaps: filter expressions (-i/-e) are not supported by the native plugin")
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if p.filterExpr != "" {
+				return nil, fmt.Errorf("remove-overlaps: only one of -i or -e can be given")
+			}
+			p.filterExpr = v
+			if a == "-e" || a == "--exclude" {
+				p.filterLogic = roFilterExclude
+			} else {
+				p.filterLogic = roFilterInclude
+			}
 		case "--missing":
 			return nil, fmt.Errorf("remove-overlaps: the --missing DP heuristic is not supported by the native plugin")
 		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
@@ -137,6 +159,14 @@ func (p *removeOverlapsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header
 		return nil, fmt.Errorf("remove-overlaps: the --mark expression %q is not supported by the native plugin", p.markExpr)
 	}
 
+	if p.filterExpr != "" {
+		f, err := CompileFilter(p.filterExpr)
+		if err != nil {
+			return nil, fmt.Errorf("remove-overlaps: %w", err)
+		}
+		p.filter = f
+	}
+
 	out := &vcf.Header{Samples: hdr.Samples}
 	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
 	if p.markTag != "" {
@@ -151,6 +181,26 @@ func (p *removeOverlapsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header
 // does. The "Processed/Removed" summary is recorded for Destroy.
 func (p *removeOverlapsPlugin) ProcessAll(variants []*vcf.Variant) ([]*vcf.Variant, error) {
 	p.ntot = len(variants)
+
+	// A -i/-e expression pre-filters the stream: upstream process() counts every
+	// input record in ntot but only pushes records that pass into the overlap
+	// buffer (remove-overlaps.c:199-211). Filtered-out records never reach the
+	// window and are not emitted.
+	if p.filter != nil {
+		kept := make([]*vcf.Variant, 0, len(variants))
+		for _, v := range variants {
+			pass := p.filter.Eval(v)
+			if p.filterLogic == roFilterInclude {
+				if !pass {
+					continue
+				}
+			} else if pass {
+				continue
+			}
+			kept = append(kept, v)
+		}
+		variants = kept
+	}
 
 	var marked []bool
 	switch p.markMode {

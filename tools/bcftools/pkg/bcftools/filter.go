@@ -40,15 +40,6 @@ func CompileFilter(expr string) (*Filter, error) {
 	return &Filter{root: root}, nil
 }
 
-// Eval returns true if v matches the compiled expression.
-func (f *Filter) Eval(v *vcf.Variant) bool {
-	if f == nil || f.root == nil {
-		return true
-	}
-	res := f.root.eval(v)
-	return truthy(res)
-}
-
 // node is one AST node of a compiled expression.
 type node interface {
 	eval(v *vcf.Variant) any
@@ -279,9 +270,9 @@ func (p *parser) parseAnd() (node, error) {
 func (p *parser) parseUnary() (node, error) {
 	p.skipSpace()
 	if p.match("!") {
-		// "!=" is a comparison operator, not unary negation. We just consumed
-		// the '!' though, so peek the next char.
-		if p.peek() == '=' {
+		// "!=" and "!~" are comparison operators, not unary negation. We just
+		// consumed the '!' though, so peek the next char.
+		if p.peek() == '=' || p.peek() == '~' {
 			// rewind one char so the comparison parser sees the full token.
 			p.pos--
 		} else {
@@ -324,6 +315,19 @@ func (p *parser) parsePrimary() (node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// FORMAT/GT compared against a literal string becomes a dedicated GT
+	// comparison node that classifies the genotype per sample (het/hom/alt/...)
+	// or matches the genotype text exactly.
+	if _, isGT := left.(*gtNode); isGT {
+		if lit, ok := right.(*literalNode); ok {
+			return &gtCompareNode{op: op, rhs: asString(lit.value)}, nil
+		}
+	}
+	if _, isGT := right.(*gtNode); isGT {
+		if lit, ok := left.(*literalNode); ok {
+			return &gtCompareNode{op: op, rhs: asString(lit.value)}, nil
+		}
+	}
 	return &binOpNode{op: op, lhs: left, rhs: right}, nil
 }
 
@@ -337,6 +341,8 @@ func (p *parser) matchCompareOp() string {
 		return "=="
 	case p.match("!="):
 		return "!="
+	case p.match("!~"):
+		return "!~"
 	case p.match("<="):
 		return "<="
 	case p.match(">="):
@@ -348,6 +354,8 @@ func (p *parser) matchCompareOp() string {
 		return "<"
 	case p.match(">"):
 		return ">"
+	case p.match("~"):
+		return "~"
 	}
 	return ""
 }
@@ -416,6 +424,12 @@ func (p *parser) parseIdent() (node, error) {
 	switch {
 	case strings.HasPrefix(tok, "INFO/"):
 		return &infoNode{key: tok[len("INFO/"):]}, nil
+	case strings.HasPrefix(tok, "FMT/"):
+		return p.formatIdent(tok[len("FMT/"):]), nil
+	case strings.HasPrefix(tok, "FORMAT/"):
+		return p.formatIdent(tok[len("FORMAT/"):]), nil
+	case tok == "GT":
+		return &gtNode{}, nil
 	case tok == "FILTER":
 		return &filterNode{}, nil
 	case tok == "true":
@@ -429,6 +443,17 @@ func (p *parser) parseIdent() (node, error) {
 	// mirrors upstream bcftools, which lets `AC>3` mean `INFO/AC>3` without
 	// the explicit prefix.
 	return &fieldNode{name: tok}, nil
+}
+
+// formatIdent builds the per-sample node for a FMT/ or FORMAT/ prefixed tag.
+// FORMAT/GT is special-cased to the genotype node so genotype-class and
+// exact-string comparisons work; every other tag becomes a per-sample
+// numeric/string formatNode.
+func (p *parser) formatIdent(tag string) node {
+	if tag == "GT" {
+		return &gtNode{}
+	}
+	return &formatNode{key: tag}
 }
 
 // fieldNode resolves a bare identifier at evaluation time. It first matches the

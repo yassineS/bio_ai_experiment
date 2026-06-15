@@ -37,7 +37,17 @@ type prunePlugin struct {
 	afTag      string
 	maxCluster int // -m count=N (0 = off)
 	clusterSet bool
+
+	filter      *Filter // compiled -i/-e expression (nil if none)
+	filterLogic int     // pruneFilterInclude / pruneFilterExclude
+	filterExpr  string  // raw expression text
 }
+
+// prune filter-logic values, mirroring FLT_INCLUDE / FLT_EXCLUDE.
+const (
+	pruneFilterInclude = 1 // -i
+	pruneFilterExclude = 2 // -e
+)
 
 // Name returns the plugin name.
 func (p *prunePlugin) Name() string { return "prune" }
@@ -144,7 +154,19 @@ func (p *prunePlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 		case "-f", "--set-filter":
 			return nil, fmt.Errorf("prune: soft-filter pruning (-f) is not supported by the native plugin")
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("prune: filter expressions (-i/-e) are not supported by the native plugin")
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if p.filterExpr != "" {
+				return nil, fmt.Errorf("prune: only one of -i or -e can be given")
+			}
+			p.filterExpr = v
+			if a == "-e" || a == "--exclude" {
+				p.filterLogic = pruneFilterExclude
+			} else {
+				p.filterLogic = pruneFilterInclude
+			}
 		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
 			return nil, fmt.Errorf("prune: index/stream region selection is not supported by the native plugin")
 		case "--random-seed", "--randomize-missing":
@@ -184,6 +206,14 @@ func (p *prunePlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 			return nil, fmt.Errorf("prune: -w must be bigger than -m")
 		}
 	}
+
+	if p.filterExpr != "" {
+		f, err := CompileFilter(p.filterExpr)
+		if err != nil {
+			return nil, fmt.Errorf("prune: %w", err)
+		}
+		p.filter = f
+	}
 	return hdr, nil
 }
 
@@ -222,6 +252,25 @@ func (p *prunePlugin) parseWindow(s string) error {
 // returns the surviving records, faithfully simulating the vcfbuf window/cluster
 // flush cycle (push + flush(0) per record, then flush(1)).
 func (p *prunePlugin) ProcessAll(variants []*vcf.Variant) ([]*vcf.Variant, error) {
+	// A -i/-e expression drops non-matching records before they enter the
+	// window/cluster buffer (prune.c process(): with !keep_sites a filtered
+	// record returns early and is never pushed). --keep-sites is unsupported,
+	// so the pre-filter is an unconditional drop.
+	if p.filter != nil {
+		kept := make([]*vcf.Variant, 0, len(variants))
+		for _, v := range variants {
+			pass := p.filter.Eval(v)
+			if p.filterLogic == pruneFilterInclude {
+				if !pass {
+					continue
+				}
+			} else if pass {
+				continue
+			}
+			kept = append(kept, v)
+		}
+		variants = kept
+	}
 	if p.clusterSet {
 		return p.runCluster(variants), nil
 	}

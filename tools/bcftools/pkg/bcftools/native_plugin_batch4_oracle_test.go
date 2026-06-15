@@ -180,14 +180,13 @@ func TestNativePluginBatch4Unsupported(t *testing.T) {
 		{"prune", []string{"-m", "LD=0.4"}},             // LD thresholding
 		{"prune", []string{"-a", "r2", "-w", "1"}},      // LD annotation
 		{"prune", []string{"-n", "1", "-N", "rand"}},    // RNG-based selection
-		{"prune", []string{"-n", "1", "-i", "QUAL>10"}}, // filter expression
+		{"prune", []string{"-n", "1", "-i", "QUAL>10"}}, // default maxAF (no --AF-tag) is unsupported
 		{"prune", []string{"-m", "count=2", "-k"}},      // keep-sites
 		// check-sparsity: index region modes are unsupported.
 		{"check-sparsity", []string{"-r", "chr1"}},
 		{"check-sparsity", []string{"-R", "regions.txt"}},
-		// remove-overlaps: filter/region/text-output modes are unsupported.
-		{"remove-overlaps", []string{"-i", "QUAL>10"}},
-		{"remove-overlaps", []string{"-e", "QUAL<10"}},
+		// remove-overlaps: region/text-output/--missing modes are unsupported.
+		// (-i/-e filter expressions are now supported by the native engine.)
 		{"remove-overlaps", []string{"-m", "min(QUAL)", "--missing", "DP"}},
 		{"remove-overlaps", []string{"-O", "t"}},
 		{"remove-overlaps", []string{"-r", "chr1"}},

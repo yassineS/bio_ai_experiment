@@ -229,7 +229,7 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 		filterName = uniqueFilterName(hdr)
 	}
 	if filterName != "" {
-		ensureSoftFilterHeader(hdr, filterName)
+		ensureSoftFilterHeader(hdr, filterName, softFilterDescription(opts))
 	}
 
 	if !opts.NoVersion {
@@ -270,6 +270,14 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 		}
 
 		applyFilterDecision(v, fails, filterName, opts)
+
+		// Upstream vcffilter.c:710 only emits a record when a soft-filter
+		// name is configured, genotypes are being set (-S/--set-GTs), or the
+		// record passes. With none of those, a failing record is dropped
+		// rather than soft-flagged.
+		if filterName == "" && opts.SetGTs == SetGTsOff && fails {
+			continue
+		}
 		if err := w.Write(v); err != nil {
 			return count, err
 		}
@@ -560,9 +568,32 @@ func violatesGap(v *vcf.Variant, indels map[string][]int, snpGap, indelGap int) 
 	return false
 }
 
+// softFilterDescription builds the FILTER header Description string that
+// upstream vcffilter.c (line 137) writes: "Set if not true: <expr>" for an
+// include (-i) expression and "Set if true: <expr>" for an exclude (-e) one.
+// The raw expression text is reproduced verbatim (with embedded double quotes
+// escaped for the VCF header field).
+func softFilterDescription(opts VCFFilterOptions) string {
+	if opts.IncludeExpr != "" {
+		return "Set if not true: " + escapeHeaderQuotes(opts.IncludeExpr)
+	}
+	if opts.ExcludeExpr != "" {
+		return "Set if true: " + escapeHeaderQuotes(opts.ExcludeExpr)
+	}
+	// Mask-only / gap-only soft filters carry no expression; fall back to the
+	// generic phrasing rather than an empty description.
+	return "Set if not true: see bcftools filter expression"
+}
+
+// escapeHeaderQuotes escapes embedded double quotes so the description text is
+// safe inside a quoted ##FILTER=<...,Description="..."> field.
+func escapeHeaderQuotes(s string) string {
+	return strings.ReplaceAll(s, `"`, `\"`)
+}
+
 // ensureSoftFilterHeader injects a ##FILTER=<ID=name,Description=...>
 // header line if one with the same ID isn't present yet.
-func ensureSoftFilterHeader(hdr *vcf.Header, name string) {
+func ensureSoftFilterHeader(hdr *vcf.Header, name, description string) {
 	if hdr == nil || name == "" {
 		return
 	}
@@ -572,7 +603,7 @@ func ensureSoftFilterHeader(hdr *vcf.Header, name string) {
 			return
 		}
 	}
-	line := fmt.Sprintf(`##FILTER=<ID=%s,Description="Set if not true: see bcftools filter expression">`, name)
+	line := fmt.Sprintf(`##FILTER=<ID=%s,Description="%s">`, name, description)
 	hdr.MetaInfo = append(hdr.MetaInfo, line)
 }
 

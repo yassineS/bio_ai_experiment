@@ -7,9 +7,12 @@
 // allele), "m" (minor allele), "p" (phase), "u" (unphase + sort), "i" (invert
 // phase), "c:GT" (custom genotype), and the "0p"/"Mp" phased combinations.
 //
-// The filter-expression (-t q with -i/-e), binomial (-t b:...), random
-// (-t r:FLOAT), and read-depth ("X" / FMT/AD) modes require the bcftools filter
-// engine and are reported as unsupported in batch 1.
+// The filter-expression mode (-t q with -i/-e) is supported via the native
+// filter engine: -i sets matching genotypes, -e sets the complement (matching
+// setGT.c's FLT_INCLUDE / FLT_EXCLUDE per-sample handling). The binomial
+// (-t b:...), random (-t r:FLOAT), and read-depth ("X" / FMT/AD) modes still
+// require machinery the native pipeline does not provide and are reported as
+// unsupported.
 package bcftools
 
 import (
@@ -29,6 +32,13 @@ const (
 	sgtMissing = 1 << iota // ./.
 	sgtPartial             // ./x
 	sgtAll                 // a
+	sgtQuery               // q: select genotypes via -i/-e filter expression
+)
+
+// setGT filter-logic values, mirroring setGT.c's FLT_INCLUDE / FLT_EXCLUDE.
+const (
+	sgtFilterInclude = 1 // -i
+	sgtFilterExclude = 2 // -e
 )
 
 // setGT new-genotype bits (subset of setGT.c's GT_* masks).
@@ -46,10 +56,13 @@ const (
 // setGTPlugin implements setGT. It is per-record and parallel; the major/minor
 // allele is computed from each record's own FORMAT/GT.
 type setGTPlugin struct {
-	tgtMask int
-	newMask int
-	custom  customGT
-	stderr  io.Writer
+	tgtMask     int
+	newMask     int
+	custom      customGT
+	stderr      io.Writer
+	filter      *Filter // compiled -i/-e expression (nil unless -t q)
+	filterLogic int     // sgtFilterInclude / sgtFilterExclude
+	filterExpr  string  // raw expression text (for error messages)
 }
 
 // customGT holds a parsed `c:GT` new-genotype template.
@@ -99,7 +112,19 @@ func (p *setGTPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 			i++
 			ngt = args[i]
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("setGT: -i/-e filter expressions are not supported in the native plugin")
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("setGT: %s requires an argument", a)
+			}
+			if p.filterExpr != "" {
+				return nil, fmt.Errorf("setGT: only one -i or -e expression can be given, and they cannot be combined")
+			}
+			i++
+			p.filterExpr = args[i]
+			if a == "-e" || a == "--exclude" {
+				p.filterLogic = sgtFilterExclude
+			} else {
+				p.filterLogic = sgtFilterInclude
+			}
 		case "-s", "--seed":
 			return nil, fmt.Errorf("setGT: -s (random seed / -t r) is not supported in the native plugin")
 		default:
@@ -127,6 +152,21 @@ func (p *setGTPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 		return nil, err
 	}
 
+	// -t q must pair with exactly one -i/-e and vice versa (setGT.c:314-316).
+	if p.filterExpr != "" && p.tgtMask&sgtQuery == 0 {
+		return nil, fmt.Errorf("setGT: expected -t q with -i/-e")
+	}
+	if p.filterExpr == "" && p.tgtMask&sgtQuery != 0 {
+		return nil, fmt.Errorf("setGT: expected -i/-e with -t q")
+	}
+	if p.filterExpr != "" {
+		f, err := CompileFilter(p.filterExpr)
+		if err != nil {
+			return nil, fmt.Errorf("setGT: %w", err)
+		}
+		p.filter = f
+	}
+
 	// Add FORMAT/GT to the header if missing (matches setGT.c init()).
 	out := &vcf.Header{Samples: hdr.Samples}
 	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
@@ -149,7 +189,7 @@ func (p *setGTPlugin) parseTarget(s string) error {
 	case "a":
 		p.tgtMask = sgtAll
 	case "q", "?":
-		return fmt.Errorf("setGT: -t q (filter query) is not supported in the native plugin")
+		p.tgtMask = sgtQuery
 	default:
 		if strings.HasPrefix(s, "r:") {
 			return fmt.Errorf("setGT: -t r:FLOAT (random) is not supported in the native plugin")
@@ -265,6 +305,15 @@ func (p *setGTPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 		minorAllele = secondArgmax(ac)
 	}
 
+	// Filter-query mode (-t q): the samples to set are chosen by the per-sample
+	// mask of the -i/-e expression rather than by missingness.
+	smplPass, ok := p.querySampleMask(v)
+	if p.tgtMask&sgtQuery != 0 && !ok {
+		// The whole site was filtered out: emit it unchanged (setGT.c returns
+		// the record without modifying any genotype).
+		return []*vcf.Variant{v}, nil
+	}
+
 	for i := range v.Samples {
 		gt, ok := sampleGT(v, i)
 		if !ok {
@@ -275,6 +324,8 @@ func (p *setGTPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 
 		doSet := false
 		switch {
+		case p.tgtMask&sgtQuery != 0:
+			doSet = smplPass == nil || smplPass[i]
 		case p.tgtMask&sgtAll != 0:
 			doSet = true
 		case p.tgtMask&sgtPartial != 0 && nmiss > 0:
@@ -292,6 +343,55 @@ func (p *setGTPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 		}
 	}
 	return []*vcf.Variant{v}, nil
+}
+
+// querySampleMask evaluates the -i/-e filter for the record and returns the
+// per-sample mask of genotypes to set, together with whether the site is
+// processed at all. It reproduces setGT.c's FLT_INCLUDE / FLT_EXCLUDE handling
+// (setGT.c:570-590):
+//
+//   - With no filter (non-query mode) it returns (nil, true).
+//   - With -i: the site is skipped entirely unless it passes; a passing site
+//     with a per-sample mask sets only the matching samples (mask returned),
+//     and a passing site-level expression with no per-sample component sets
+//     every sample (nil mask).
+//   - With -e: a site that does NOT pass sets every sample; a site that passes
+//     has its per-sample mask inverted (samples that matched are left alone,
+//     the rest are set), and if no sample remains after inversion the site is
+//     skipped. A passing site-level expression with no per-sample component
+//     skips the whole site.
+func (p *setGTPlugin) querySampleMask(v *vcf.Variant) (mask []bool, process bool) {
+	if p.filter == nil {
+		return nil, true
+	}
+	passSite, smpl := p.filter.EvalSamples(v)
+	if p.filterLogic == sgtFilterExclude {
+		if !passSite {
+			// Site excluded => set all samples.
+			return nil, true
+		}
+		if smpl == nil {
+			// Site-level expression passed: nothing to set.
+			return nil, false
+		}
+		inv := make([]bool, len(smpl))
+		anyLeft := false
+		for i, b := range smpl {
+			inv[i] = !b
+			if inv[i] {
+				anyLeft = true
+			}
+		}
+		if !anyLeft {
+			return nil, false
+		}
+		return inv, true
+	}
+	// Include logic.
+	if !passSite {
+		return nil, false
+	}
+	return smpl, true
 }
 
 // Destroy releases resources (none held).
