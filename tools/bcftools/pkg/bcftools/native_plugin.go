@@ -143,6 +143,24 @@ type fullPlugin interface {
 	RunFull(opts PluginOptions, out io.Writer, stderr io.Writer) error
 }
 
+// multiOutputPlugin is implemented by native plugins that write multiple output
+// files themselves (e.g. +split writes one VCF/BCF per sample, +scatter writes
+// one per chunk/region, +variantkey-hex writes its index files). Unlike the
+// single-output pipeline, such a plugin owns ALL of its writers: it creates the
+// output directory and every per-file handle, choosing filenames to match
+// upstream exactly. The host's single `out` writer is used only for any textual
+// end-of-run report (variantkey-hex prints its counts to stdout); plugins that
+// produce no stdout text leave it untouched. RunMulti receives the full
+// PluginOptions (it reads opts.InputFile and parses its own -o/-O directory and
+// container options from opts.Args) so the plugin can reproduce upstream's
+// file-naming and per-file contents byte-for-byte.
+type multiOutputPlugin interface {
+	// RunMulti executes the plugin end to end, reading opts.InputFile and writing
+	// its own set of output files. Any textual report goes to out; diagnostics go
+	// to stderr.
+	RunMulti(opts PluginOptions, out io.Writer, stderr io.Writer) error
+}
+
 // stderrSink is implemented by plugins that emit end-of-run diagnostics
 // (e.g. "Filled N alleles") to stderr. The pipeline wires the host stderr in
 // before Destroy is called.
@@ -231,6 +249,11 @@ func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer
 	// writing), bypassing the read/process/re-emit stages below.
 	if fp, ok := plugin.(fullPlugin); ok {
 		return fp.RunFull(opts, out, stderr)
+	}
+	// A multiOutputPlugin owns its own per-file writers (one output file per
+	// sample / chunk / region), so it too bypasses the single-output pipeline.
+	if mp, ok := plugin.(multiOutputPlugin); ok {
+		return mp.RunMulti(opts, out, stderr)
 	}
 	if s, ok := plugin.(stderrSink); ok {
 		s.SetStderr(stderr)
