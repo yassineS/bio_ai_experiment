@@ -50,6 +50,18 @@ func TestNativePluginTrioStats(t *testing.T) {
 		{trio, []string{"-p", ped, "-v", "2"}}, // verbosity passthrough, no effect
 		{multi, []string{"-p", multiPed}},      // two trios, reverse-listed -> sort
 		{multi, []string{"-p", multiPed, "-d", "mendel-errors,transmitted"}},
+		// -i/-e site and FORMAT pre-filter parity. A FORMAT expression is folded to
+		// a per-trio verdict (include: all three members match; exclude: none of
+		// the three match), matching trio-stats.c. The trio fixture carries GQ.
+		{trio, []string{"-p", ped, "-i", "QUAL>10"}},
+		{trio, []string{"-p", ped, "-e", "QUAL<10"}},
+		{trio, []string{"-p", ped, "-i", `GT="het"`}},
+		{trio, []string{"-p", ped, "-e", `GT="het"`}},
+		{trio, []string{"-p", ped, "-i", "FMT/GQ>30"}},
+		{trio, []string{"-p", ped, "-e", "FMT/GQ>30"}},
+		{trio, []string{"-P", "CHILD,FATHER,MOTHER", "-i", `GT="het"`}},
+		{multi, []string{"-p", multiPed, "-i", `GT="het"`}},
+		{multi, []string{"-p", multiPed, "-e", "FMT/GQ>30"}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -147,9 +159,10 @@ func TestNativePluginBatch6Unsupported(t *testing.T) {
 		{"parental-origin", []string{"-p", "CHILD,FATHER,MOTHER", "-t", "dup"}},
 		{"color-chrs", []string{"-p", "/tmp/cc", "-t", "MOTHER,FATHER,CHILD"}},
 		{"trio-dnm3", []string{"-p", "CHILD,FATHER,MOTHER"}},
-		// trio-stats: filters, alt-trios, streaming targets and file output.
-		{"trio-stats", []string{"-p", "x.ped", "-i", "GQ>30"}},
-		{"trio-stats", []string{"-p", "x.ped", "-e", "GQ<30"}},
+		// trio-stats: alt-trios, streaming targets and file output remain
+		// unsupported (the -i/-e filter modes are now supported and parity-checked
+		// in TestNativePluginTrioStats); the curly-brace expansion is still rejected.
+		{"trio-stats", []string{"-p", "x.ped", "-i", "GQ>{10,20}"}},
 		{"trio-stats", []string{"-p", "x.ped", "-a", "1"}},
 		{"trio-stats", []string{"-p", "x.ped", "-t", "chr1"}},
 		{"trio-stats", nil}, // missing -p/-P

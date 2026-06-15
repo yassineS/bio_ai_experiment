@@ -19,7 +19,17 @@
 // reproduced byte-for-byte and are reported as a clean unsupported Init error
 // rather than emitting silently divergent output: -i/-e expressions, -g/--gene-list,
 // the EXPRESSION / primary / pick / mane transcript selectors, --columns-types FILE,
-// and -S FILE severity overrides. The query format engine supports the common
+// and -S FILE severity overrides.
+//
+// Unlike the stats/contrast/split plugins (whose -i/-e are now wired to the
+// shared filter engine as a plain VCF site/sample pre-filter), split-vep's -i/-e
+// cannot be a simple pre-filter: upstream registers the expanded per-transcript
+// CSQ subfields as synthetic INFO tags in the OUTPUT header (filter_init runs on
+// args->hdr_out) so an expression like -i 'gnomAD_AF<0.1' or -e 'IMPACT="LOW"'
+// resolves names that exist only after split-vep's per-transcript expansion, not
+// in the input VCF columns. Re-enabling it would require teaching the filter
+// engine about those derived columns, which is out of scope here, so it stays a
+// clean unsupported error. The query format engine supports the common
 // %CHROM/%POS/%ID/%REF/%ALT/%QUAL/%FILTER/%INFO-tag and %CSQ-subfield tokens with
 // literal text, \t and \n; other convert directives are rejected.
 package bcftools
@@ -194,7 +204,7 @@ func (p *splitVepPlugin) parseArgs(args []string) error {
 		case "-X", "--keep-sites":
 			p.dropSites = 0
 		case "-i", "--include", "-e", "--exclude":
-			return fmt.Errorf("split-vep: the -i/-e filter expressions require the bcftools filter engine and are not supported in the native plugin; run upstream bcftools for that")
+			return fmt.Errorf("split-vep: the -i/-e filter expressions filter over split-vep's expanded per-transcript CSQ subfields (registered on the output header by filter_init), not just the input VCF columns, and so are not supported in the native plugin; run upstream bcftools for that")
 		case "-g", "--gene-list", "--gene-list-fields":
 			return fmt.Errorf("split-vep: the -g/--gene-list gene-restriction machinery is not supported in the native plugin; run upstream bcftools for that")
 		case "-S", "--severity":

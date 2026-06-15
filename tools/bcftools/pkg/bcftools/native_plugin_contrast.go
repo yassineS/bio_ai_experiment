@@ -5,9 +5,12 @@
 // output is emitted unchanged except for the added INFO fields; a one-line
 // summary is written to stderr at the end.
 //
-// The rare-allele enrichment mode (-f/--max-allele-freq), the filter expressions
-// (-i/-e) and the index/region jump options require htslib machinery the native
-// pipeline does not provide and are reported as unsupported.
+// A single -i/--include or -e/--exclude filter expression is supported as a
+// site-level pre-filter (upstream's contrast.c calls filter_test with a NULL
+// sample mask and drops the record entirely before annotating or writing it).
+// The rare-allele enrichment mode (-f/--max-allele-freq) and the index/region
+// jump options require htslib machinery the native pipeline does not provide
+// and remain unsupported.
 package bcftools
 
 import (
@@ -39,6 +42,8 @@ type contrastPlugin struct {
 	forceSample bool
 
 	ntotal, nskipped, ntested, ncaseAl, ncaseGt int
+
+	filter *pluginFilter // compiled -i/-e site-level pre-filter, nil if none
 
 	stderr io.Writer
 }
@@ -80,6 +85,8 @@ func (p *contrastPlugin) SetStderr(w io.Writer) { p.stderr = w }
 func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
 	annotsStr := "PASSOC,FASSOC"
 	var controlStr, caseStr string
+	var filterExpr string
+	var filterExclude, haveFilter bool
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() (string, error) {
@@ -111,7 +118,16 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 		case "--force-samples":
 			p.forceSample = true
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("contrast: filtering expressions (-i/-e) are not supported by the native plugin (require the htslib filter engine)")
+			if haveFilter {
+				return nil, fmt.Errorf("contrast: only one -i/--include or -e/--exclude expression can be given, and they cannot be combined")
+			}
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			filterExpr = v
+			filterExclude = a == "-e" || a == "--exclude"
+			haveFilter = true
 		case "-f", "--max-allele-freq":
 			return nil, fmt.Errorf("contrast: the rare-allele enrichment mode (-f) is not supported by the native plugin")
 		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
@@ -169,6 +185,14 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 		return nil, err
 	}
 
+	if haveFilter {
+		f, ferr := newPluginFilter(filterExpr, filterExclude)
+		if ferr != nil {
+			return nil, fmt.Errorf("contrast: %w", ferr)
+		}
+		p.filter = f
+	}
+
 	out := &vcf.Header{Samples: hdr.Samples}
 	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
 	if p.annots&contrastPASSOC != 0 {
@@ -193,6 +217,12 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 // contrast.c process_record(). The record is always emitted (the upstream
 // run-loop writes every record); skipped records carry no new INFO.
 func (p *contrastPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
+	// Upstream applies the -i/-e site-level filter before process_record and
+	// before writing, so a filtered-out record is dropped from the output and
+	// excluded from every summary counter (including ntotal).
+	if !p.filter.testSite(v) {
+		return nil, nil
+	}
 	p.ntotal++
 
 	// Control group: gather the union of alleles, the per-genotype bitmask set

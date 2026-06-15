@@ -8,10 +8,12 @@
 // This is a multiOutputPlugin: it owns all of its per-file writers. The default
 // per-sample split, the -S samples-file and -G groups-file modes, the -k keep
 // tags selection and the -O container/level options are supported byte-for-byte.
-// The -i/-e per-output filter expressions need the bcftools filter engine and
-// the index-jump -r/-R/-t/-T/-W options are not part of the streaming pipeline;
-// these are reported as a clean unsupported Init error rather than producing
-// divergent output.
+// A single -i/--include or -e/--exclude filter is applied per output file as a
+// site-level pre-filter, matching split.c, which compiles the expression against
+// each subset's own header and calls filter_test(set->filter, out, NULL) on the
+// already-subsetted record before writing it (so a FORMAT expression sees only
+// that file's samples). The index-jump -r/-R/-t/-T/-W options are not part of
+// the streaming pipeline and are reported as a clean unsupported Init error.
 package bcftools
 
 import (
@@ -46,6 +48,8 @@ type splitPlugin struct {
 	format      OutputFormat
 	clevel      int
 	args        []string
+
+	filter *pluginFilter // compiled -i/-e per-output site-level pre-filter, nil if none
 }
 
 // Name returns the plugin name.
@@ -69,7 +73,8 @@ func (p *splitPlugin) FlagTakesValue(flag string) bool {
 	switch flag {
 	case "-o", "--output", "-O", "--output-type",
 		"-S", "--samples-file", "-G", "--groups-file",
-		"-k", "--keep-tags", "-v", "--verbosity", "--hts-opts":
+		"-k", "--keep-tags", "-i", "--include", "-e", "--exclude",
+		"-v", "--verbosity", "--hts-opts":
 		return true
 	}
 	return false
@@ -124,7 +129,18 @@ func (p *splitPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 			}
 			p.keepTags = v
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("split: the -i/-e per-output filter expressions require the bcftools filter engine and are not supported in the native plugin; run upstream bcftools for that")
+			if p.filter != nil {
+				return nil, fmt.Errorf("split: only one of -i/--include or -e/--exclude can be given")
+			}
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			f, ferr := newPluginFilter(v, a == "-e" || a == "--exclude")
+			if ferr != nil {
+				return nil, fmt.Errorf("split: %w", ferr)
+			}
+			p.filter = f
 		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
 			return nil, fmt.Errorf("split: region/target selection is not supported in the native split plugin; pre-filter with bcftools view")
 		case "-W", "--write-index":
@@ -388,6 +404,11 @@ func (p *splitPlugin) writeSubset(hdr *vcf.Header, variants []*vcf.Variant, set 
 	}
 	for _, v := range variants {
 		rec := p.subsetRecord(v, set, keep)
+		// Upstream applies the -i/-e filter to the already-subsetted record, so a
+		// FORMAT expression evaluates against this file's samples only.
+		if !p.filter.testSite(rec) {
+			continue
+		}
 		if err := w.Write(rec); err != nil {
 			cleanup()
 			return err
