@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -287,11 +288,25 @@ func runWithReader(rd sam.Reader, opts Options) error {
 		}
 		recs := byChrom[r.Name]
 		accum := newCovAccum(int(r.Length))
+		// Default mode applies overlapping mate-pair correction, which requires
+		// the left mate of each fragment to be processed before the right.
+		// mosdepth requires coordinate-sorted input; we sort defensively by
+		// ascending start so correctness does not depend on the input order.
+		// Fast mode and fragment mode never apply the correction and are left
+		// in file order so their output stays byte-identical.
+		defaultMode := !opts.FastMode && !opts.FragmentMode
+		if defaultMode {
+			sortRecordsByPos(recs)
+		}
+		seen := map[string]*sam.Record{}
 		for _, rec := range recs {
 			if opts.FragmentMode {
 				accum.addFragment(rec)
 			} else {
 				accum.addRecord(rec, opts.FastMode)
+				if defaultMode {
+					accum.applyOverlap(rec, seen)
+				}
 			}
 		}
 		// Per-base emission: collapse runs of equal depth.
@@ -530,6 +545,18 @@ func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, error)
 		}
 		out[rec.RName] = append(out[rec.RName], rec)
 	}
+}
+
+// sortRecordsByPos stably sorts recs by ascending 1-based start position. It is
+// used in default mode so that overlapping mate-pair correction always sees the
+// left mate of a fragment before the right, regardless of the order records
+// arrived in. A stable sort keeps reads at the same position in their original
+// (file) order, matching upstream mosdepth's processing of coordinate-sorted
+// input.
+func sortRecordsByPos(recs []*sam.Record) {
+	sort.SliceStable(recs, func(i, j int) bool {
+		return recs[i].Pos < recs[j].Pos
+	})
 }
 
 // keepRecord applies every per-read filter configured on opts — including the

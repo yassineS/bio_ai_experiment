@@ -1,6 +1,8 @@
 package mosdepth
 
 import (
+	"sort"
+
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -56,6 +58,62 @@ func (a *covAccum) add(start, end int) {
 	a.events = append(a.events, covEvent{pos: end, delta: -1})
 }
 
+// sub inserts a single (-/+1) event pair at [start, end) on the reference,
+// half-open 0-based, subtracting one copy of depth over the interval. It uses
+// the same clamping as add, so out-of-range coordinates are clamped to
+// [0, refLen] and an empty interval after clamping adds no events. The
+// prefix-sum in emit / emitRuns / regionStats accumulates the resulting
+// negative deltas naturally; depth never actually goes below 0 because sub is
+// only ever applied where two copies were previously added (overlapping mate
+// pairs).
+func (a *covAccum) sub(start, end int) {
+	if a.refLen > 0 {
+		if start < 0 {
+			start = 0
+		}
+		if end > a.refLen {
+			end = a.refLen
+		}
+	} else {
+		if start < 0 {
+			start = 0
+		}
+	}
+	if end <= start {
+		return
+	}
+	a.events = append(a.events, covEvent{pos: start, delta: -1})
+	a.events = append(a.events, covEvent{pos: end, delta: 1})
+}
+
+// refBlocks returns the maximal runs of reference-consuming, depth-contributing
+// CIGAR ops (M/=/X) as 0-based half-open [start, end) intervals, splitting on
+// both deletions (D) and reference-skips (N). This is mosdepth's depth model:
+// deleted reference bases get depth 0 (a run breaks on D and N alike), which
+// deliberately differs from bedtools' block model (where only N breaks). It is
+// the single source of truth for both addRecord and applyOverlap so the two
+// stay consistent. Returns nil for an empty / unmapped record.
+func refBlocks(rec *sam.Record) [][2]int {
+	if rec.Pos <= 0 {
+		return nil
+	}
+	var blocks [][2]int
+	refPos := int(rec.Pos) - 1
+	for _, op := range rec.Cigar {
+		l := int(op.Length())
+		switch op.Op() {
+		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
+			blocks = append(blocks, [2]int{refPos, refPos + l})
+			refPos += l
+		case sam.CigarDeletion, sam.CigarSkipped:
+			refPos += l
+		case sam.CigarInsertion, sam.CigarSoftClip, sam.CigarHardClip, sam.CigarPadding:
+			// No reference advance.
+		}
+	}
+	return blocks
+}
+
 // addRecord walks rec's CIGAR and inserts one event pair per contiguous
 // reference-consuming run (M/=/X). Deletions and reference-skips break a
 // run because they do not increment depth. In fast mode the whole read
@@ -79,18 +137,82 @@ func (a *covAccum) addRecord(rec *sam.Record, fast bool) {
 		a.add(start, start+refLen)
 		return
 	}
-	refPos := int(rec.Pos) - 1
-	for _, op := range rec.Cigar {
-		l := int(op.Length())
-		switch op.Op() {
-		case sam.CigarMatch, sam.CigarEqual, sam.CigarMismatch:
-			a.add(refPos, refPos+l)
-			refPos += l
-		case sam.CigarDeletion, sam.CigarSkipped:
-			refPos += l
-		case sam.CigarInsertion, sam.CigarSoftClip, sam.CigarHardClip, sam.CigarPadding:
-			// No reference advance.
+	for _, b := range refBlocks(rec) {
+		a.add(b[0], b[1])
+	}
+}
+
+// applyOverlap implements mosdepth's default-mode overlapping mate-pair
+// coverage correction: where the two mates of a properly-paired, same-chromosome
+// fragment overlap on the reference, the overlapped bases must contribute depth
+// 1 rather than 2, so one copy is subtracted. It is a faithful port of upstream
+// mosdepth's seen-cache algorithm (gen_start_ends in mosdepth.nim).
+//
+// seen caches the left mate of each fragment by QNAME; it must be reset per
+// chromosome by the caller. applyOverlap is gated to default mode only — the
+// caller must not invoke it in fast mode or fragment mode. Records must arrive
+// in ascending start coordinate (coordinate-sorted), so the left mate is always
+// seen before the right.
+func (a *covAccum) applyOverlap(rec *sam.Record, seen map[string]*sam.Record) {
+	if !rec.IsProperPair() || rec.IsSupplementary() {
+		return
+	}
+	// The per-chrom loop already restricts rec to one chromosome, so the mate
+	// is on the same chromosome iff RNEXT is "=" (the BAM reader sets RNEXT to
+	// "=" when nextRefID == refID).
+	if rec.RNext != "=" {
+		return
+	}
+	start := int(rec.Pos) - 1                   // 0-based read start.
+	stop := start + rec.Cigar.ReferenceLength() // 0-based exclusive read stop.
+	matePos := int(rec.PNext) - 1               // 0-based mate start.
+	// Left/cache condition: this is the left (cached) mate when it starts at or
+	// before its mate and the pair overlaps (stop > matePos). The equal-start
+	// tie is broken by which mate was seen first.
+	if stop > matePos &&
+		(start < matePos || (start == matePos && seen[rec.QName] == nil)) {
+		cp := *rec
+		seen[rec.QName] = &cp
+		return
+	}
+	mate, ok := seen[rec.QName]
+	if !ok {
+		return
+	}
+	delete(seen, rec.QName)
+	mateStart := int(mate.Pos) - 1
+	mateStop := mateStart + mate.Cigar.ReferenceLength()
+	if len(rec.Cigar) == 1 && len(mate.Cigar) == 1 {
+		// Single-op fast path: the overlap is exactly [rec.start, mate.stop).
+		a.sub(start, mateStop)
+		return
+	}
+	// General path: merge both mates' M/=/X blocks, sweep them, and subtract one
+	// copy wherever the pair depth is 2.
+	type ovlEvent struct {
+		pos   int
+		delta int
+	}
+	blocks := append(refBlocks(rec), refBlocks(mate)...)
+	ses := make([]ovlEvent, 0, len(blocks)*2)
+	for _, b := range blocks {
+		ses = append(ses, ovlEvent{pos: b[0], delta: 1})
+		ses = append(ses, ovlEvent{pos: b[1], delta: -1})
+	}
+	sort.SliceStable(ses, func(i, j int) bool {
+		if ses[i].pos != ses[j].pos {
+			return ses[i].pos < ses[j].pos
 		}
+		return ses[i].delta < ses[j].delta
+	})
+	pairDepth := 0
+	lastPos := 0
+	for _, ev := range ses {
+		if ev.delta == -1 && pairDepth == 2 {
+			a.sub(lastPos, ev.pos)
+		}
+		pairDepth += ev.delta
+		lastPos = ev.pos
 	}
 }
 

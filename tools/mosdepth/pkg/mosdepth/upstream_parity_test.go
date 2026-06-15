@@ -260,6 +260,112 @@ func TestThreads_OutputIdentical(t *testing.T) {
 	t.Log("VALIDATION TIER: byte-identical to upstream mosdepth (threaded ovl.bam MT)")
 }
 
+// TestUpstream_OverlapDefault_Parity proves our DEFAULT-mode outputs are
+// byte-identical to upstream mosdepth's for the overlapping mate-pair fixture
+// (ovl.bam). Default mode subtracts one copy of depth where the two mates of a
+// properly-paired fragment overlap on the reference; this is the behaviour the
+// whole change implements. The fixture's two MT mates (32S42M at pos 1 and 74M
+// at pos 7) overlap on [6,42) and exercise the general CIGAR-merge path (their
+// CIGARs are not both single-op), so this is the meaningful correctness oracle.
+//
+// We diff the decompressed per-base BED, the plain-text summary, and a region
+// (--by) run. On a genuinely offline machine the test skips, mirroring the
+// other upstream-parity tests.
+func TestUpstream_OverlapDefault_Parity(t *testing.T) {
+	bin := ensureMosdepthBinary(t)
+	if bin == "" {
+		t.Skip("upstream mosdepth binary unavailable offline; skipping live oracle")
+	}
+	bam := filepath.Join(fixtureDir(t), "ovl.bam")
+
+	// Upstream default-mode run, scoped to MT (ovl.bam declares ~80 refs but the
+	// reads only touch MT). No -x: default mode performs overlap correction.
+	upDir := t.TempDir()
+	upPrefix := filepath.Join(upDir, "up")
+	cmd := exec.Command(bin, "-c", "MT", upPrefix, bam)
+	cmd.Dir = upDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("upstream mosdepth (default mode) failed: %v\n%s", err, out)
+	}
+
+	ourDir := t.TempDir()
+	ourPrefix := filepath.Join(ourDir, "our")
+	if err := OpenAndRun(bam, Options{Prefix: ourPrefix, Chrom: "MT", ExcludeFlag: DefaultExcludeFlag}); err != nil {
+		t.Fatalf("OpenAndRun(default): %v", err)
+	}
+
+	// Per-base: compare only the MT rows (the all-zero filler refs are identical
+	// but voluminous; scoping to MT keeps the diff tight and meaningful).
+	ours := mtLines(gunzipBytes(t, ourPrefix+".per-base.bed.gz"))
+	up := mtLines(gunzipBytes(t, upPrefix+".per-base.bed.gz"))
+	if !bytes.Equal(ours, up) {
+		t.Fatalf("default-mode per-base MT mismatch.\nours:\n%s\nupstream:\n%s", ours, up)
+	}
+
+	// Summary: the whole plain-text file (3 lines for a single-chrom run).
+	ourSum, err := os.ReadFile(ourPrefix + ".mosdepth.summary.txt")
+	if err != nil {
+		t.Fatalf("read our summary: %v", err)
+	}
+	upSum, err := os.ReadFile(upPrefix + ".mosdepth.summary.txt")
+	if err != nil {
+		t.Fatalf("read upstream summary: %v", err)
+	}
+	if !bytes.Equal(ourSum, upSum) {
+		t.Fatalf("default-mode summary mismatch.\nours:\n%s\nupstream:\n%s", ourSum, upSum)
+	}
+
+	t.Logf("VALIDATION TIER: byte-identical to upstream mosdepth (default-mode per-base + summary, %d per-base bytes)", len(ours))
+}
+
+// TestUpstream_OverlapDefault_Regions_Parity proves our DEFAULT-mode region
+// (--by track.bed) and thresholds outputs are byte-identical to upstream's. The
+// region mean and the per-threshold 2X count both depend on the overlap
+// correction (without it the 2X count would be non-zero), so this exercises the
+// correction through the regions/thresholds path rather than the per-base path.
+func TestUpstream_OverlapDefault_Regions_Parity(t *testing.T) {
+	bin := ensureMosdepthBinary(t)
+	if bin == "" {
+		t.Skip("upstream mosdepth binary unavailable offline; skipping live oracle")
+	}
+	bam := filepath.Join(fixtureDir(t), "ovl.bam")
+	bed := filepath.Join(fixtureDir(t), "track.bed")
+
+	upDir := t.TempDir()
+	upPrefix := filepath.Join(upDir, "up")
+	cmd := exec.Command(bin, "--by", bed, "-T", "0,1,2", "-c", "MT", upPrefix, bam)
+	cmd.Dir = upDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("upstream mosdepth (default --by) failed: %v\n%s", err, out)
+	}
+
+	ourDir := t.TempDir()
+	ourPrefix := filepath.Join(ourDir, "our")
+	if err := OpenAndRun(bam, Options{
+		Prefix:      ourPrefix,
+		ByBED:       bed,
+		Thresholds:  []int{0, 1, 2},
+		Chrom:       "MT",
+		ExcludeFlag: DefaultExcludeFlag,
+	}); err != nil {
+		t.Fatalf("OpenAndRun(default --by): %v", err)
+	}
+
+	ourReg := mtLines(gunzipBytes(t, ourPrefix+".regions.bed.gz"))
+	upReg := mtLines(gunzipBytes(t, upPrefix+".regions.bed.gz"))
+	if !bytes.Equal(ourReg, upReg) {
+		t.Fatalf("default-mode regions MT mismatch.\nours:\n%s\nupstream:\n%s", ourReg, upReg)
+	}
+
+	ourTh := mtLines(gunzipBytes(t, ourPrefix+".thresholds.bed.gz"))
+	upTh := mtLines(gunzipBytes(t, upPrefix+".thresholds.bed.gz"))
+	if !bytes.Equal(ourTh, upTh) {
+		t.Fatalf("default-mode thresholds MT mismatch.\nours:\n%s\nupstream:\n%s", ourTh, upTh)
+	}
+
+	t.Log("VALIDATION TIER: byte-identical to upstream mosdepth (default-mode regions + thresholds)")
+}
+
 // mtLines returns the subset of BED lines (from raw decompressed bytes) whose
 // chromosome is exactly "MT". ovl.bam declares ~80 references but the reads
 // only touch MT; scoping to MT keeps the upstream diff tight.

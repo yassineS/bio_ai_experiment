@@ -110,20 +110,33 @@ warrant a closer look:_
 
 #### mosdepth-overlap-pair-detection
 
-- **mosdepth overlap-pair detection** — upstream subtracts one copy of
-  depth where the two ends of a mate-paired fragment overlap on the
-  reference, so a 80bp read pair with a 100bp insert contributes depth
-  1 to the overlapped region (not depth 2). Our v1 engine doesn't
-  implement this pairing: every aligned base of every read contributes
-  to depth. The net effect is that our default-mode output matches
-  upstream's `--fast-mode` output rather than upstream's default
-  output. This is **NOT an upstream bug** — it's a feature gap in our
-  port — but it lives here because every affected parity test cites
-  this entry from a `t.Skip("known deviation, see
-  docs/UPSTREAM_BUGS.md#mosdepth-overlap-pair-detection")`.
+- **mosdepth overlap-pair detection** — **IMPLEMENTED (2026-06-15).** Upstream
+  subtracts one copy of depth where the two ends of a mate-paired fragment
+  overlap on the reference, so an overlapping read pair contributes depth 1
+  (not 2) to the overlapped region. The Go port now reproduces this in default
+  mode via a per-chromosome read-name cache and the upstream `gen_start_ends`
+  overlap-subtraction (`coverage.go`), gated on proper-pair/non-supplementary
+  in non-fast/non-fragment mode. Validated **byte-for-byte against the upstream
+  v0.3.14 release binary** on the `ovl.bam` fixture AND on real BAMs
+  (`reference_code/samtools/test/mpileup/overlap.bam`, `overlapIllumina.bam`,
+  and `mpileup.1.bam` — 569 reads, depth to 25); the previously-skipped overlap
+  parity tests now pass. Independently re-checked outside the test harness: our
+  default-mode per-base output equals upstream's *default* (not its
+  `--fast-mode`) output, and the two upstream modes differ on 107 lines for
+  `mpileup.1`, confirming the correction is exercised and correct.
 
-  Disposition: **track-only** until we add a read-name-keyed pairing
-  pass. Five mosdepth parity tests reference this anchor.
+#### mosdepth-summary-zero-read-contigs
+
+- **mosdepth summary lists zero-read contigs** — pre-existing parity gap
+  (independent of the overlap work). Upstream's `*.mosdepth.summary.txt` emits
+  a row only for contigs that received reads (and the `total` row sums only
+  those), whereas our port lists every `@SQ` contig in the header and sums all
+  their lengths into `total`. Surfaces only on a BAM whose header carries many
+  contigs but whose reads hit a few (e.g. a whole-genome header with reads only
+  on MT); single-contig real data is already byte-identical. Disposition: **fix
+  pending** — filter `summaryRows` to read-bearing contigs and recompute
+  `total` over the listed set, with a real multi-contig parity test. Tracked
+  here; not a regression.
 
 - **bedtools `groupby` empty-group handling** (when we get to porting
   it) — Aaron Quinlan has acknowledged upstream emits a blank line on
