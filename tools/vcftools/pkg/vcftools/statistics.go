@@ -36,9 +36,13 @@ type statistics struct {
 	// output_TsTv_summary() in variant_file_output.cpp. AG and CT are
 	// transitions, the rest are transversions.
 	tsTvModelCounts [6]int
-	tsTvByBin       map[int]*tsTvBinStat
-	tsTvByCount     map[int]*tsTvCountStat
-	tsTvByQual      []tsTvQualStat
+	// tsTvByBin holds per-chromosome, per-bin Ts/Tv counts for the
+	// `--TsTv <bin>` report. tsTvChromOrder preserves the first-seen
+	// chromosome order upstream uses when emitting the .TsTv file.
+	tsTvByBin      map[string]map[int]*tsTvBinStat
+	tsTvChromOrder []string
+	tsTvByCount    map[int]*tsTvCountStat
+	tsTvByQual     []tsTvQualStat
 
 	// Phase 2: Population genetics statistics
 	windowPiValues []windowPiStat
@@ -233,7 +237,7 @@ func newStatistics(header *vcf.Header) *statistics {
 		indvMissing:    make(map[string]*indvMissingStat),
 		indvHet:        make(map[string]*indvHetStat),
 		indvDepth:      make(map[string]*indvDepthStat),
-		tsTvByBin:      make(map[int]*tsTvBinStat),
+		tsTvByBin:      make(map[string]map[int]*tsTvBinStat),
 		tsTvByCount:    make(map[int]*tsTvCountStat),
 		snpDensityBins: make(map[int]*snpDensityStat),
 		filterCounts:   make(map[string]int),
@@ -630,17 +634,13 @@ func (s *statistics) addHWEStat(v *vcf.Variant) {
 
 // addTsTvStat adds transition/transversion statistics
 func (s *statistics) addTsTvStat(v *vcf.Variant, binSize int) {
-	// Only for biallelic SNPs
-	if len(v.Alt) != 1 || isIndelVariant(v) {
+	// Only for biallelic SNPs (upstream is_biallelic_SNP).
+	if !isBiallelicSNP(v) {
 		return
 	}
 
 	ref := strings.ToUpper(v.Ref)
 	alt := strings.ToUpper(v.Alt[0])
-
-	if len(ref) != 1 || len(alt) != 1 {
-		return
-	}
 
 	isTransition := isTransitionSNP(ref, alt)
 	if isTransition {
@@ -652,29 +652,46 @@ func (s *statistics) addTsTvStat(v *vcf.Variant, binSize int) {
 	// Tally the substitution-model class (alphabetised pair) for the
 	// --TsTv-summary output. Unrecognised pairs (e.g. N alleles) are
 	// silently skipped.
-	if idx, ok := tstvModelIndex(ref, alt); ok {
-		s.tsTvModelCounts[idx]++
+	modelIdx, modelOK := tstvModelIndex(ref, alt)
+	if modelOK {
+		s.tsTvModelCounts[modelIdx]++
 	}
 
-	// Add to bin if needed
-	if binSize > 0 {
+	// Add to bin if needed. Upstream's output_TsTv classifies the SNP by
+	// its alphabetised substitution model and skips unknown models (no bin
+	// contribution); bins are keyed per chromosome. We mirror that here.
+	if binSize > 0 && modelOK {
 		binIdx := v.Pos / binSize
-		if s.tsTvByBin[binIdx] == nil {
-			s.tsTvByBin[binIdx] = &tsTvBinStat{
+		chromBins := s.tsTvByBin[v.Chrom]
+		if chromBins == nil {
+			chromBins = make(map[int]*tsTvBinStat)
+			s.tsTvByBin[v.Chrom] = chromBins
+			s.tsTvChromOrder = append(s.tsTvChromOrder, v.Chrom)
+		}
+		bin := chromBins[binIdx]
+		if bin == nil {
+			bin = &tsTvBinStat{
 				binStart: binIdx * binSize,
 				binEnd:   (binIdx + 1) * binSize,
 			}
+			chromBins[binIdx] = bin
 		}
 		if isTransition {
-			s.tsTvByBin[binIdx].ts++
+			bin.ts++
 		} else {
-			s.tsTvByBin[binIdx].tv++
+			bin.tv++
 		}
 	}
 }
 
-// addSitePiStat records per-site nucleotide diversity.
+// addSitePiStat records per-site nucleotide diversity. Mirroring upstream's
+// output_per_site_nucleotide_diversity (variant_file_output.cpp:3912), only
+// fully-diploid sites contribute: a site with any haploid kept genotype is
+// skipped ("Only using fully diploid sites").
 func (s *statistics) addSitePiStat(v *vcf.Variant) {
+	if !isFullyDiploid(v) {
+		return
+	}
 	pi, ok := nucleotideDiversity(v)
 	if !ok {
 		return
@@ -762,17 +779,33 @@ func tstvModelIndex(ref, alt string) (int, bool) {
 	return 0, false
 }
 
+// isBiallelicSNP mirrors upstream's entry::is_biallelic_SNP
+// (entry_getters.cpp:78): a single-base REF, exactly one ALT allele, and a
+// single-base ALT. The monomorphic "." ALT placeholder (and any structural
+// or multi-base allele) is rejected, so monomorphic sites do not feed the
+// Ts/Tv reports.
+func isBiallelicSNP(v *vcf.Variant) bool {
+	if len(v.Ref) != 1 {
+		return false
+	}
+	if len(v.Alt) != 1 {
+		return false
+	}
+	alt := v.Alt[0]
+	if len(alt) != 1 || alt == "." {
+		return false
+	}
+	return true
+}
+
 // addTsTvByCountStat bins a biallelic SNP by its alternate-allele count and
 // records whether it is a transition or transversion.
 func (s *statistics) addTsTvByCountStat(v *vcf.Variant) {
-	if len(v.Alt) != 1 || isIndelVariant(v) {
+	if !isBiallelicSNP(v) {
 		return
 	}
 	ref := strings.ToUpper(v.Ref)
 	alt := strings.ToUpper(v.Alt[0])
-	if len(ref) != 1 || len(alt) != 1 {
-		return
-	}
 	counts, _ := siteAlleleCounts(v)
 	ac := counts["1"]
 	stat := s.tsTvByCount[ac]
@@ -791,7 +824,7 @@ func (s *statistics) addTsTvByCountStat(v *vcf.Variant) {
 // whether it is a transition, for the --TsTv-by-qual report. SNPs with a
 // missing QUAL (v.Qual < 0) are skipped.
 func (s *statistics) addTsTvByQualStat(v *vcf.Variant) {
-	if len(v.Alt) != 1 || isIndelVariant(v) {
+	if !isBiallelicSNP(v) {
 		return
 	}
 	if v.Qual < 0 {
@@ -799,9 +832,6 @@ func (s *statistics) addTsTvByQualStat(v *vcf.Variant) {
 	}
 	ref := strings.ToUpper(v.Ref)
 	alt := strings.ToUpper(v.Alt[0])
-	if len(ref) != 1 || len(alt) != 1 {
-		return
-	}
 	s.tsTvByQual = append(s.tsTvByQual, tsTvQualStat{qual: v.Qual, isTs: isTransitionSNP(ref, alt)})
 }
 
@@ -1276,7 +1306,13 @@ func (s *statistics) outputTsTvSummary(prefix string) error {
 	return nil
 }
 
-// outputTsTvByBin outputs Ts/Tv by genomic bins
+// outputTsTvByBin writes the `--TsTv <bin>` report (.TsTv), matching
+// upstream's output_TsTv (variant_file_output.cpp:3057). The columns are
+// CHROM, BinStart (bin index * bin size), SNP_count (Ts+Tv in the bin) and
+// the Ts/Tv ratio. Chromosomes appear in first-seen order, and every bin
+// from 0 up to the highest occupied bin index on each chromosome is emitted
+// (including empty interior bins). The ratio is 0 when the bin has no
+// transversions.
 func (s *statistics) outputTsTvByBin(prefix string, binSize int) error {
 	f, err := iohelper.OpenWriter(prefix + ".TsTv")
 	if err != nil {
@@ -1284,26 +1320,38 @@ func (s *statistics) outputTsTvByBin(prefix string, binSize int) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "BIN_START\tBIN_END\tTs\tTv\tTs/Tv")
+	fmt.Fprintln(f, "CHROM\tBinStart\tSNP_count\tTs/Tv")
 
-	// Sort bins
-	var bins []int
-	for binIdx := range s.tsTvByBin {
-		bins = append(bins, binIdx)
-	}
-	sort.Ints(bins)
-
-	for _, binIdx := range bins {
-		stat := s.tsTvByBin[binIdx]
-		ratio := 0.0
-		if stat.tv > 0 {
-			ratio = float64(stat.ts) / float64(stat.tv)
+	for _, chrom := range s.tsTvChromOrder {
+		chromBins := s.tsTvByBin[chrom]
+		maxBin := 0
+		for binIdx := range chromBins {
+			if binIdx > maxBin {
+				maxBin = binIdx
+			}
 		}
-		fmt.Fprintf(f, "%d\t%d\t%d\t%d\t%.4f\n",
-			stat.binStart, stat.binEnd, stat.ts, stat.tv, ratio)
+		for binIdx := 0; binIdx <= maxBin; binIdx++ {
+			ts, tv := 0, 0
+			if bin := chromBins[binIdx]; bin != nil {
+				ts, tv = bin.ts, bin.tv
+			}
+			ratio := 0.0
+			if tv != 0 {
+				ratio = float64(ts) / float64(tv)
+			}
+			fmt.Fprintf(f, "%s\t%d\t%d\t%s\n",
+				chrom, binIdx*binSize, ts+tv, formatG6(ratio))
+		}
 	}
 
 	return nil
+}
+
+// formatG6 renders a float using the same rules as the default C++ ostream
+// (`out << v`), i.e. %g with 6 significant digits and trailing zeros trimmed.
+// This is the formatting upstream vcftools uses for the .sites.pi PI column.
+func formatG6(v float64) string {
+	return strconv.FormatFloat(v, 'g', 6, 64)
 }
 
 // outputSitePi outputs nucleotide diversity per site
@@ -1317,7 +1365,10 @@ func (s *statistics) outputSitePi(prefix string) error {
 	fmt.Fprintln(f, "CHROM\tPOS\tPI")
 
 	for _, stat := range s.sitePiValues {
-		fmt.Fprintf(f, "%s\t%d\t%.6f\n", stat.chrom, stat.pos, stat.pi)
+		// Upstream streams the value with the default C++ ostream
+		// formatting (`out << pi`), i.e. %g with 6 significant digits:
+		// 0.6, 0.333333, 0 — not the fixed-precision 0.600000.
+		fmt.Fprintf(f, "%s\t%d\t%s\n", stat.chrom, stat.pos, formatG6(stat.pi))
 	}
 
 	return nil
@@ -1457,22 +1508,35 @@ func (s *statistics) outputTsTvByCount(prefix string) error {
 
 	fmt.Fprintln(f, "ALT_ALLELE_COUNT\tN_Ts\tN_Tv\tTs/Tv")
 
-	var counts []int
-	for ac := range s.tsTvByCount {
-		counts = append(counts, ac)
-	}
-	sort.Ints(counts)
-
-	for _, ac := range counts {
-		stat := s.tsTvByCount[ac]
-		ratio := 0.0
-		if stat.tv > 0 {
-			ratio = float64(stat.ts) / float64(stat.tv)
+	// Upstream enumerates every bin from 0 to 2*N_kept_indv-1 (the
+	// `for ui=0; ui<2*N_kept_indv; ui++` loop at
+	// variant_file_output.cpp:3221), including empty bins. The ratio is a
+	// plain floating-point Ts/Tv division, so a 0/0 bin prints `-nan` and
+	// the value is %g-formatted.
+	nIndv := len(s.header.Samples)
+	for ui := 0; ui < 2*nIndv; ui++ {
+		ts, tv := 0, 0
+		if stat := s.tsTvByCount[ui]; stat != nil {
+			ts, tv = stat.ts, stat.tv
 		}
-		fmt.Fprintf(f, "%d\t%d\t%d\t%.4f\n", stat.altCount, stat.ts, stat.tv, ratio)
+		fmt.Fprintf(f, "%d\t%d\t%d\t%s\n", ui, ts, tv, formatTsTvRatio(ts, tv))
 	}
 
 	return nil
+}
+
+// formatTsTvRatio renders the Ts/Tv ratio the way upstream does: a raw
+// floating-point division `double(ts)/tv` streamed with default %g
+// formatting. A 0/0 bin yields the platform NaN spelling (`-nan` on the
+// glibc/x86 build of upstream vcftools), and ts/0 with ts>0 yields `inf`.
+func formatTsTvRatio(ts, tv int) string {
+	if tv == 0 {
+		if ts == 0 {
+			return "-nan"
+		}
+		return "inf"
+	}
+	return formatG6(float64(ts) / float64(tv))
 }
 
 // outputTsTvByQual writes transition/transversion counts and ratios bucketed by

@@ -718,30 +718,59 @@ func TestParity_Counts(t *testing.T) {
 	}
 }
 
-// TestParity_SitePi — `--site-pi` is skipped because upstream and our port
-// use different formulas. See docs/UPSTREAM_BUGS.md#vcftools-site-pi.
+// TestParity_SitePi — `--site-pi` (.sites.pi) byte-for-byte against the live
+// upstream binary. The port now mirrors upstream exactly: only fully-diploid
+// sites contribute (haploid sites are skipped), monomorphic sites are
+// emitted with PI 0, and the PI column uses default %g formatting (0.6, not
+// 0.600000). Earlier docs claimed a formula divergence; in fact the textbook
+// formula (n^2 - sum c_a^2)/(n(n-1)) is algebraically identical to upstream's
+// pairwise-mismatch sum, so no real divergence exists.
 func TestParity_SitePi(t *testing.T) {
-	t.Skip("known deviation, see docs/UPSTREAM_BUGS.md#vcftools-site-pi")
+	vcf := fixtureVCF(t, "sample.vcf")
+	upPrefix := runUpstream(t, vcf, "--site-pi")
+	goPrefix := runGo(t, vcf, &Params{SitePi: true})
+	want := readLinesTrim(t, upPrefix+".sites.pi")
+	got := readLinesTrim(t, goPrefix+".sites.pi")
+	if len(want) != len(got) {
+		t.Fatalf(".sites.pi line count: want %d, got %d\nwant=%q\ngot=%q",
+			len(want), len(got), want, got)
+	}
+	for i := range want {
+		if want[i] != got[i] {
+			t.Errorf(".sites.pi line %d mismatch:\nwant: %q\ngot:  %q", i, want[i], got[i])
+		}
+	}
 }
 
-// TestParity_SitePi_TextbookFormula — sanity-check the textbook formula.
-// For 20:14370 (G:3/A:3, n=6), pi = (36 - 9 - 9) / (6*5) = 18/30 = 0.6.
-func TestParity_SitePi_TextbookFormula(t *testing.T) {
+// TestParity_SitePi_Values — sanity-check the per-site nucleotide diversity
+// values and their upstream-matching %g formatting. For 20:14370 (G:3/A:3,
+// n=6), pi = (36 - 9 - 9) / (6*5) = 18/30 = 0.6 (printed as "0.6", not
+// "0.600000"). Haploid sites such as X:9 are not fully diploid and so must
+// be absent from the output entirely.
+func TestParity_SitePi_Values(t *testing.T) {
 	prefix := runVcftoolsParity(t, "sample.vcf", &Params{SitePi: true})
 	lines := readFileLines(t, prefix+".sites.pi")
 	wanted := map[string]string{
-		"20\t14370": "0.600000",
-		"19\t111":   "0.333333",
-		"X\t9":      "0.600000",
+		"20\t14370":   "0.6",
+		"19\t111":     "0.333333",
+		"20\t1230237": "0", // monomorphic site emitted with PI 0
 	}
+	seen := map[string]bool{}
 	for _, ln := range lines[1:] {
 		fields := strings.SplitN(ln, "\t", 3)
 		if len(fields) != 3 {
 			continue
 		}
 		key := fields[0] + "\t" + fields[1]
+		seen[key] = true
 		if want, ok := wanted[key]; ok && fields[2] != want {
 			t.Errorf("pi at %s: got %s, want %s", key, fields[2], want)
+		}
+	}
+	// Haploid X sites must be excluded (not fully diploid).
+	for _, k := range []string{"X\t9", "X\t10", "X\t11", "X\t12"} {
+		if seen[k] {
+			t.Errorf("haploid site %q should be excluded from --site-pi output", k)
 		}
 	}
 }
@@ -906,9 +935,27 @@ func TestParity_TsTvByCount_Header(t *testing.T) {
 	}
 }
 
-// TestParity_TsTvByCount_FullRows is skipped — bin enumeration deviates.
+// TestParity_TsTvByCount_FullRows — `--TsTv-by-count` (.TsTv.count)
+// byte-for-byte against the live upstream binary, including the empty bins.
+// Upstream enumerates every alternate-allele-count bin from 0 to
+// 2*N_kept_indv-1 and prints the raw Ts/Tv floating-point division, so
+// empty (0/0) bins appear with the platform NaN spelling (-nan on the
+// glibc/x86 upstream build). The port now reproduces this exactly.
 func TestParity_TsTvByCount_FullRows(t *testing.T) {
-	t.Skip("known gap: upstream enumerates every 0..2*N bin (incl NaN ratios); see docs/PARITY_ROADMAP.md#vcftools")
+	vcf := fixtureVCF(t, "sample.vcf")
+	upPrefix := runUpstream(t, vcf, "--TsTv-by-count")
+	goPrefix := runGo(t, vcf, &Params{TsTvByCount: true})
+	want := readLinesTrim(t, upPrefix+".TsTv.count")
+	got := readLinesTrim(t, goPrefix+".TsTv.count")
+	if len(want) != len(got) {
+		t.Fatalf(".TsTv.count line count: want %d, got %d\nwant=%q\ngot=%q",
+			len(want), len(got), want, got)
+	}
+	for i := range want {
+		if want[i] != got[i] {
+			t.Errorf(".TsTv.count line %d mismatch:\nwant: %q\ngot:  %q", i, want[i], got[i])
+		}
+	}
 }
 
 // TestParity_TsTvByQual_Header — `--TsTv-by-qual` header byte-for-byte.
@@ -924,11 +971,27 @@ func TestParity_TsTvByQual_Header(t *testing.T) {
 	}
 }
 
-// TestParity_TsTv_Binned — `--TsTv N` (binned). Upstream emits
-// CHROM/BinStart/SNP_count/Ts/Tv (4 cols); ours emits 5 cols. Skip byte
-// parity.
+// TestParity_TsTv_Binned — `--TsTv N` (.TsTv) byte-for-byte against the live
+// upstream binary. Upstream emits four columns
+// (CHROM, BinStart, SNP_count, Ts/Tv), iterates chromosomes in first-seen
+// order, and enumerates every bin from 0 to the highest occupied bin index
+// per chromosome (including empty interior bins). The port now matches that
+// layout exactly.
 func TestParity_TsTv_Binned(t *testing.T) {
-	t.Skip("known gap: --TsTv binned output diverges in column layout; see docs/PARITY_ROADMAP.md#vcftools")
+	vcf := fixtureVCF(t, "sample.vcf")
+	upPrefix := runUpstream(t, vcf, "--TsTv", "1000000")
+	goPrefix := runGo(t, vcf, &Params{TsTvBinSize: 1000000})
+	want := readLinesTrim(t, upPrefix+".TsTv")
+	got := readLinesTrim(t, goPrefix+".TsTv")
+	if len(want) != len(got) {
+		t.Fatalf(".TsTv line count: want %d, got %d\nwant=%q\ngot=%q",
+			len(want), len(got), want, got)
+	}
+	for i := range want {
+		if want[i] != got[i] {
+			t.Errorf(".TsTv line %d mismatch:\nwant: %q\ngot:  %q", i, want[i], got[i])
+		}
+	}
 }
 
 // -----------------------------------------------------------------------------

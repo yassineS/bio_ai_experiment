@@ -329,7 +329,8 @@ func TestIntegration_NewStatistics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(sitesPi), "chr1\t100\t0.600000") {
+	// The PI column uses upstream's default %g formatting: 0.6, not 0.600000.
+	if !strings.Contains(string(sitesPi), "chr1\t100\t0.6\n") {
 		t.Errorf(".sites.pi should report 0.6 for chr1:100, got:\n%s", string(sitesPi))
 	}
 }
