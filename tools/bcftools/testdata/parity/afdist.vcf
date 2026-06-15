@@ -1,0 +1,17 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##contig=<ID=chr2,length=10000>
+##INFO=<ID=AF,Number=A,Type=Float,Description="Allele frequency">
+##INFO=<ID=EUR_AF,Number=A,Type=Float,Description="EUR allele frequency">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Total alleles">
+##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4
+chr1	100	.	A	T	30	PASS	AF=0.25;EUR_AF=0.3;AN=8;AC=2	GT:DP	0/0:10	0/1:20	1/1:5	0/0:15
+chr1	200	.	C	G	40	PASS	AF=0.5;EUR_AF=0.45;AN=8;AC=4	GT:DP	0/1:8	0/1:12	1/1:14	0/0:6
+chr1	300	.	G	A	50	PASS	AF=0.75;EUR_AF=0.8;AN=8;AC=6	GT:DP	1/1:18	0/1:22	1/1:16	0/1:4
+chr1	400	.	T	C	60	PASS	AF=0.1;EUR_AF=0.12;AN=8;AC=1	GT:DP	0/0:18	0/0:22	0/1:16	0/0:4
+chr1	500	.	G	A	60	PASS	AF=0.9;EUR_AF=0.88;AN=8;AC=7	GT:DP	1/1:18	1/1:22	0/1:16	1/1:4
+chr2	100	.	A	G	70	PASS	AF=0.05;AN=8;AC=0	GT:DP	0/0:18	0/0:22	./.:16	0/0:4
+chr2	200	.	C	T	80	PASS	AN=8;AC=3	GT:DP	0/1:18	0/1:22	0/1:16	0/0:4

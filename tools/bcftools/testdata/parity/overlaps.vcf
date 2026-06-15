@@ -1,0 +1,19 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=10000>
+##contig=<ID=chr2,length=10000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	100	.	A	T	30	PASS	DP=10	GT	0/1
+chr1	100	.	A	G	25	PASS	DP=12	GT	0/1
+chr1	150	.	CGT	C	40	PASS	DP=20	GT	0/1
+chr1	152	.	T	A	15	PASS	DP=8	GT	0/1
+chr1	200	.	G	A	50	PASS	DP=14	GT	1/1
+chr1	300	.	ACGTA	A	45	PASS	DP=30	GT	0/1
+chr1	302	.	T	C	35	PASS	DP=9	GT	0/1
+chr1	305	.	A	G	60	PASS	DP=11	GT	0/1
+chr1	500	.	C	T	20	PASS	DP=5	GT	0/1
+chr2	100	.	A	T	30	PASS	DP=10	GT	0/1
+chr2	100	.	A	G	30	PASS	DP=10	GT	0/1
+chr2	400	.	G	GAAA	55	PASS	DP=18	GT	0/1
+chr2	405	.	C	T	22	PASS	DP=7	GT	0/1
