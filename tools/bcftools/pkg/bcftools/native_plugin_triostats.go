@@ -11,12 +11,15 @@
 // `--` separator) and is inherently stateful, so it runs through the serial
 // pipeline and accumulates per-trio counters across the whole record stream.
 //
-// Filtering expressions (-i/-e, including the curly-brace "{10,20,30}" threshold
-// expansion), the -a/--alt-trios accounting, region/target index-jumping and the
-// -o file output require htslib machinery the native pipeline does not expose
-// and are reported as a clean unsupported Init error, exactly like the batch-5
-// smpl-stats / indel-stats filter modes. The default single "all" filter — the
-// common case — is implemented faithfully, including the -d/--debug MERR and
+// A single -i/--include or -e/--exclude filter expression is supported as a
+// site/per-trio pre-filter via the shared filter engine, matching trio-stats.c's
+// filter_init/filter_test usage: a site expression gates whole records, while a
+// FORMAT expression is resolved per sample and then folded into a per-trio
+// verdict (include keeps a trio only when all three members match; exclude keeps
+// a trio only when none of the three match). The curly-brace multi-threshold
+// expansion, the -a/--alt-trios accounting, region/target index-jumping and the
+// -o file output remain unsupported. The default single filter — the common
+// case — is implemented faithfully, including the -d/--debug MERR and
 // TRANSMITTED line emission and the -v/--verbosity passthrough.
 package bcftools
 
@@ -58,7 +61,14 @@ type trioStatsPlugin struct {
 	verbose int // VERBOSE_MENDEL (1) | VERBOSE_TRANSMITTED (2)
 	out     io.Writer
 	argv    []string
+
+	filter    *pluginFilter // compiled -i/-e pre-filter, nil for the default "all"
+	exprLabel string        // DEF-line label: "all" by default, else the expression
+	stderr    io.Writer
 }
+
+// SetStderr wires the host stderr writer the "Collecting data ..." note uses.
+func (p *trioStatsPlugin) SetStderr(w io.Writer) { p.stderr = w }
 
 const (
 	trioVerboseMendel      = 1
@@ -105,12 +115,27 @@ func (p *trioStatsPlugin) Parallel() bool { return false }
 // the header and rejects the modes that need htslib machinery (filters,
 // alt-trios accounting, region jumps, file output).
 func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
+	p.exprLabel = "all"
 	var pedFile, pfm string
+	var filterExpr string
+	var filterExclude, haveFilter bool
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("trio-stats: filtering expressions (-i/-e) are not supported by the native plugin (require the htslib filter engine)")
+			if haveFilter {
+				return nil, fmt.Errorf("trio-stats: only one of -i/--include or -e/--exclude can be given")
+			}
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("trio-stats: %s requires a value", a)
+			}
+			i++
+			if strings.ContainsRune(args[i], '{') {
+				return nil, fmt.Errorf("trio-stats: the curly-brace multi-threshold filter expansion is not supported by the native plugin")
+			}
+			filterExpr = args[i]
+			filterExclude = a == "-e" || a == "--exclude"
+			haveFilter = true
 		case "-a", "--alt-trios":
 			return nil, fmt.Errorf("trio-stats: the --alt-trios accounting (-a) is not supported by the native plugin")
 		case "-t", "--targets", "-T", "--targets-file":
@@ -158,6 +183,17 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 	if pedFile == "" && pfm == "" {
 		return nil, fmt.Errorf("trio-stats: missing the -p or -P option")
 	}
+	if haveFilter {
+		f, err := newPluginFilter(filterExpr, filterExclude)
+		if err != nil {
+			return nil, fmt.Errorf("trio-stats: %w", err)
+		}
+		p.filter = f
+		p.exprLabel = filterExpr
+		if p.stderr != nil {
+			fmt.Fprint(p.stderr, "Collecting data for 1 filtering expressions\n")
+		}
+	}
 	p.hdr = hdr
 
 	idx := sampleIndex(hdr)
@@ -187,10 +223,67 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 	return hdr, nil
 }
 
+// trioFilterPass evaluates the -i/-e filter for one record and returns the
+// per-trio pass mask (nil when no per-trio filtering applies, i.e. every trio is
+// processed) and the site-level verdict (false ⇒ skip the whole record). It
+// reproduces, verbatim, the FLT_INCLUDE / FLT_EXCLUDE bookkeeping in
+// trio-stats.c process_record(): an INCLUDE trio passes only when all three
+// members match; an EXCLUDE trio passes only when none of the three match; and
+// the site is skipped when no trio passes.
+func (p *trioStatsPlugin) trioFilterPass(v *vcf.Variant) (trioPass []bool, passSite bool) {
+	siteMatch, mask, exclude := p.filter.rawSamples(v)
+	if exclude {
+		if !siteMatch {
+			return nil, true // nothing matched: every trio passes
+		}
+		if mask == nil {
+			return nil, false // site-only exclude matched: drop the record
+		}
+		pass := make([]bool, len(p.trios))
+		any := false
+		for ti, trio := range p.trios {
+			ok := !(mask[trio.child] || mask[trio.father] || mask[trio.mother])
+			pass[ti] = ok
+			if ok {
+				any = true
+			}
+		}
+		if !any {
+			return nil, false
+		}
+		return pass, true
+	}
+	// FLT_INCLUDE.
+	if !siteMatch {
+		return nil, false
+	}
+	if mask == nil {
+		return nil, true // site-only include passed: every trio processed
+	}
+	pass := make([]bool, len(p.trios))
+	any := false
+	for ti, trio := range p.trios {
+		ok := mask[trio.child] && mask[trio.father] && mask[trio.mother]
+		pass[ti] = ok
+		if ok {
+			any = true
+		}
+	}
+	if !any {
+		return nil, false
+	}
+	return pass, true
+}
+
 // Process accumulates per-trio statistics for one record, mirroring
 // process_record() in trio-stats.c with the default "all" filter and no
 // --alt-trios accounting.
 func (p *trioStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
+	trioPass, passSite := p.trioFilterPass(v)
+	if !passSite {
+		return nil, nil
+	}
+
 	nAllele := len(v.Alt) + 1
 	ac := computeACWithRef(v, nAllele)
 
@@ -204,6 +297,9 @@ func (p *trioStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 
 	acTrio := make([]int, nAllele)
 	for ti := range p.trios {
+		if trioPass != nil && !trioPass[ti] {
+			continue
+		}
 		trio := p.trios[ti]
 		stats := &p.stats[ti]
 
@@ -373,7 +469,7 @@ func (p *trioStatsPlugin) Destroy() error {
 	// The comment block and CMD line were already printed in Init (matching
 	// upstream's init_data); Destroy emits only the DEF / FLT report, after any
 	// streamed MERR / TRANSMITTED debug lines.
-	fmt.Fprint(fp, "DEF\tFLT0\tall\n")
+	fmt.Fprintf(fp, "DEF\tFLT0\t%s\n", p.exprLabel)
 	for j := range p.trios {
 		trio := p.trios[j]
 		s := &p.stats[j]

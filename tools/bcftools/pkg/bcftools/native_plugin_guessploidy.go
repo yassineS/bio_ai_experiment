@@ -5,11 +5,13 @@
 // across the streamed sites — intended for the non-PAR region of chrX. The
 // VCF/BCF output is suppressed; a per-sample table is printed.
 //
-// The region/genome shortcuts (-g/-r/-R) require indexed region jumping and the
-// filter expressions (--include/--exclude) require the htslib filter engine;
-// both are reported as unsupported. The default whole-file scan, the common
-// case when piping `bcftools view -r chrX:... | bcftools +guess-ploidy`, is
-// implemented.
+// The region/genome shortcuts (-g/-r/-R) require indexed region jumping and are
+// reported as unsupported. The filter expressions (--include/--exclude; note
+// guess-ploidy maps -i to --include-indels and -e to --error-rate, so the
+// filter is long-form only) are supported as a site/per-sample pre-filter via
+// the shared filter engine, matching guess-ploidy.c's filter_init/filter_test
+// usage. The default whole-file scan, the common case when piping
+// `bcftools view -r chrX:... | bcftools +guess-ploidy`, is implemented.
 package bcftools
 
 import (
@@ -52,6 +54,8 @@ type guessPloidyPlugin struct {
 
 	pl2p   []float64
 	counts []guessPloidyCount
+
+	filter *pluginFilter // compiled --include/--exclude pre-filter, nil if none
 
 	out    io.Writer
 	stderr io.Writer
@@ -105,6 +109,8 @@ func (p *guessPloidyPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, e
 	p.tag = guessPL
 	p.gtErrProb = 1e-3
 	p.afDflt = 0.5
+	var filterExpr string
+	var filterExclude, haveFilter bool
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() (string, error) {
@@ -132,7 +138,16 @@ func (p *guessPloidyPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, e
 			}
 			p.afDflt = f
 		case "--exclude", "--include":
-			return nil, fmt.Errorf("guess-ploidy: filter expressions (%s) are not supported by the native plugin (require the htslib filter engine)", a)
+			if haveFilter {
+				return nil, fmt.Errorf("guess-ploidy: only one --include or --exclude expression can be given, and they cannot be combined")
+			}
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			filterExpr = v
+			filterExclude = a == "--exclude"
+			haveFilter = true
 		case "-e", "--error-rate":
 			v, err := next()
 			if err != nil {
@@ -178,6 +193,13 @@ func (p *guessPloidyPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, e
 			}
 			return nil, fmt.Errorf("guess-ploidy: unsupported option %q", a)
 		}
+	}
+	if haveFilter {
+		f, err := newPluginFilter(filterExpr, filterExclude)
+		if err != nil {
+			return nil, fmt.Errorf("guess-ploidy: %w", err)
+		}
+		p.filter = f
 	}
 	p.hdr = hdr
 
@@ -229,6 +251,14 @@ func (p *guessPloidyPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 	if !p.indels && variantTypeMask(v)&vtSNP == 0 {
 		return nil, nil
 	}
+	// Apply the -i/-e filter as a site/per-sample gate. A nil mask means the
+	// expression is site-level (all samples accumulate when the site passes);
+	// a non-nil mask drops the non-matching samples, mirroring guess-ploidy.c's
+	// smpl_pass() guard in every per-sample loop.
+	passSite, smplPass := p.filter.testSamples(v)
+	if !passSite {
+		return nil, nil
+	}
 	nsmp := len(v.Samples)
 	freq := [2]float64{0, 0}
 	tmp := make([][3]float64, nsmp)
@@ -239,6 +269,10 @@ func (p *guessPloidyPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 			return nil, nil
 		}
 		for s := 0; s < nsmp; s++ {
+			if smplPass != nil && !smplPass[s] {
+				tmp[s][0] = -1
+				continue
+			}
 			gt, ok := sampleGT(v, s)
 			if !ok || len(gt.alleles) == 0 || gt.alleles[0] == missingAllele {
 				tmp[s][0] = -1
@@ -270,11 +304,11 @@ func (p *guessPloidyPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 			freq[1] += tmp[s][1] + 2*tmp[s][2]
 		}
 	case p.tag&guessPL != 0:
-		if !p.accumulatePL(v, nAllele, nsmp, tmp, &freq) {
+		if !p.accumulatePL(v, nAllele, nsmp, tmp, &freq, smplPass) {
 			return nil, nil
 		}
 	default: // GL
-		if !p.accumulateGL(v, nAllele, nsmp, tmp, &freq) {
+		if !p.accumulateGL(v, nAllele, nsmp, tmp, &freq, smplPass) {
 			return nil, nil
 		}
 	}
@@ -294,6 +328,9 @@ func (p *guessPloidyPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 	freq[1] /= sum
 
 	for s := 0; s < nsmp; s++ {
+		if smplPass != nil && !smplPass[s] {
+			continue
+		}
 		if tmp[s][0] < 0 {
 			continue
 		}
@@ -312,7 +349,7 @@ func (p *guessPloidyPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 
 // accumulatePL fills tmp and freq from FORMAT/PL, mirroring the PL branch of
 // process_region_guess(). It returns false when the record has no usable PL.
-func (p *guessPloidyPlugin) accumulatePL(v *vcf.Variant, nAllele, nsmp int, tmp [][3]float64, freq *[2]float64) bool {
+func (p *guessPloidyPlugin) accumulatePL(v *vcf.Variant, nAllele, nsmp int, tmp [][3]float64, freq *[2]float64, smplPass []bool) bool {
 	pls, npl := parseFormatIntAll(v, "PL")
 	if pls == nil || npl <= 0 {
 		return false
@@ -321,6 +358,10 @@ func (p *guessPloidyPlugin) accumulatePL(v *vcf.Variant, nAllele, nsmp int, tmp 
 	switch npl {
 	case ndipGT: // diploid
 		for s := 0; s < nsmp; s++ {
+			if smplPass != nil && !smplPass[s] {
+				tmp[s][0] = -1
+				continue
+			}
 			ptr := pls[s]
 			if len(ptr) < 3 || ptr[0] == intMissing || ptr[1] == intMissing || ptr[2] == intMissing {
 				tmp[s][0] = -1
@@ -342,6 +383,10 @@ func (p *guessPloidyPlugin) accumulatePL(v *vcf.Variant, nAllele, nsmp int, tmp 
 		}
 	case nAllele: // all haploid
 		for s := 0; s < nsmp; s++ {
+			if smplPass != nil && !smplPass[s] {
+				tmp[s][0] = -1
+				continue
+			}
 			ptr := pls[s]
 			if len(ptr) < 2 || ptr[0] == intMissing || ptr[1] == intMissing {
 				tmp[s][0] = -1
@@ -365,7 +410,7 @@ func (p *guessPloidyPlugin) accumulatePL(v *vcf.Variant, nAllele, nsmp int, tmp 
 
 // accumulateGL fills tmp and freq from FORMAT/GL, mirroring the GL branch of
 // process_region_guess(). It returns false when the record has no usable GL.
-func (p *guessPloidyPlugin) accumulateGL(v *vcf.Variant, nAllele, nsmp int, tmp [][3]float64, freq *[2]float64) bool {
+func (p *guessPloidyPlugin) accumulateGL(v *vcf.Variant, nAllele, nsmp int, tmp [][3]float64, freq *[2]float64, smplPass []bool) bool {
 	gls, ngl := parseFormatFloatAll(v, "GL")
 	if gls == nil || ngl <= 0 {
 		return false
@@ -374,6 +419,10 @@ func (p *guessPloidyPlugin) accumulateGL(v *vcf.Variant, nAllele, nsmp int, tmp 
 	switch ngl {
 	case ndipGT: // diploid
 		for s := 0; s < nsmp; s++ {
+			if smplPass != nil && !smplPass[s] {
+				tmp[s][0] = -1
+				continue
+			}
 			ptr := gls[s]
 			if len(ptr) < 3 || isFloatMissing(ptr[0]) || isFloatMissing(ptr[1]) || isFloatMissing(ptr[2]) {
 				tmp[s][0] = -1
@@ -395,6 +444,10 @@ func (p *guessPloidyPlugin) accumulateGL(v *vcf.Variant, nAllele, nsmp int, tmp 
 		}
 	case nAllele: // all haploid
 		for s := 0; s < nsmp; s++ {
+			if smplPass != nil && !smplPass[s] {
+				tmp[s][0] = -1
+				continue
+			}
 			ptr := gls[s]
 			if len(ptr) < 2 || isFloatMissing(ptr[0]) || isFloatMissing(ptr[1]) {
 				tmp[s][0] = -1

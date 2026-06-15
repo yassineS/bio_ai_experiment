@@ -218,6 +218,14 @@ func TestNativePluginSplit(t *testing.T) {
 		{"keep_fmt_gt_dp", gt, []string{"-k", "FMT/GT,DP"}},
 		{"keep_info_all", gt, []string{"-k", "INFO"}},
 		{"keep_fmt_all", gt, []string{"-k", "FMT"}},
+		// Per-output -i/-e filter: upstream compiles the expression against each
+		// subset header and tests the already-subsetted record, so a FORMAT
+		// expression sees only that file's samples.
+		{"filter_site_include", gt, []string{"-i", "QUAL>10"}},
+		{"filter_site_exclude", gt, []string{"-e", "QUAL<30"}},
+		{"filter_fmt_include", gt, []string{"-i", `GT="het"`}},
+		{"filter_fmt_dp", gt, []string{"-i", "FMT/DP>10"}},
+		{"filter_groups", gt, []string{"-G", groups, "-i", `GT="het"`}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -260,6 +268,12 @@ func TestNativePluginScatter(t *testing.T) {
 		{"regions_extra", gt, []string{"-s", "chr1", "-x", "other"}},
 		{"regions_file", gt, []string{"-S", regions}},
 		{"regions_prefix", gt, []string{"-s", "chr1,chr2", "-p", "shard_"}},
+		// -i/-e are accepted but applied to nothing, exactly as upstream scatter.c
+		// (which never calls filter_init/filter_test). The output must be identical
+		// to the same run without the filter.
+		{"filter_noop_include", gt, []string{"-n", "2", "-i", "QUAL>10"}},
+		{"filter_noop_exclude", gt, []string{"-n", "2", "-e", "QUAL<30"}},
+		{"filter_noop_fmt", gt, []string{"-n", "2", "-i", `GT="het"`}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -347,13 +361,16 @@ func TestNativePluginBatch7Unsupported(t *testing.T) {
 		{"split-vep", []string{"-c", "Consequence", "-s", "CANONICAL=YES"}, csq},
 		{"split-vep", []string{"-S", "-"}, csq},
 		{"split-vep", []string{"--columns-types", "-"}, csq},
-		// split: filter expressions, region selection, write-index.
-		{"split", []string{"-o", "/tmp/x", "-i", "GT=\"alt\""}, gt},
+		// split: region selection and write-index remain unsupported (the per-output
+		// -i/-e filter is now supported and parity-checked in TestNativePluginSplit).
 		{"split", []string{"-o", "/tmp/x", "-r", "chr1"}, gt},
 		{"split", []string{"-o", "/tmp/x", "-W"}, gt},
 		{"split", nil, gt}, // missing -o
-		// scatter: filter expressions, region pre-selection, missing -n/-s.
-		{"scatter", []string{"-o", "/tmp/x", "-n", "1", "-i", "GT=\"alt\""}, gt},
+		// scatter: region pre-selection and missing -n/-s remain unsupported. (-i/-e
+		// are accepted but applied to nothing, matching upstream's dead option; the
+		// "only one of -i or -e" guard and the no-op behaviour are covered by
+		// TestNativePluginScatter. Giving both -i and -e is still an error.)
+		{"scatter", []string{"-o", "/tmp/x", "-n", "1", "-i", "QUAL>1", "-e", "QUAL<1"}, gt},
 		{"scatter", []string{"-o", "/tmp/x"}, gt}, // missing -n/-s
 		{"scatter", []string{"-n", "1"}, gt},      // missing -o
 		// isecGT: missing the second file, region selection.

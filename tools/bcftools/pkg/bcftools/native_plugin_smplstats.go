@@ -4,10 +4,13 @@
 // a per-site summary, and prints a tab-separated report. The VCF/BCF output is
 // suppressed.
 //
-// Filtering expressions (-i/-e, including the curly-brace "{10,20,30}" threshold
-// expansion) require htslib's filter engine and are reported as unsupported, as
-// are the index/region jump options; only the default single "all" filter is
-// implemented, which is the common case.
+// A single -i/--include or -e/--exclude filter expression is supported as a
+// site/per-sample pre-filter via the shared filter engine, matching upstream's
+// filter_init/filter_test usage in smpl-stats.c (a FORMAT expression filters
+// per-sample, a site expression filters whole records). The curly-brace
+// "{10,20,30}" multi-threshold expansion (which defines several FLT* filters at
+// once) and the index/region jump options remain unsupported; the single
+// default-or-explicit filter is the common case.
 package bcftools
 
 import (
@@ -33,8 +36,15 @@ type smplStatsPlugin struct {
 	stats     []smplStats // per-sample
 	siteStats smplStats
 	out       io.Writer
+	stderr    io.Writer
 	argv      []string
+
+	filter    *pluginFilter // compiled -i/-e pre-filter, nil for the default "all"
+	exprLabel string        // DEF-line label: "all" by default, else the expression
 }
+
+// SetStderr wires the host stderr writer the "Collecting data ..." note uses.
+func (p *smplStatsPlugin) SetStderr(w io.Writer) { p.stderr = w }
 
 // SuppressVCF reports true: smpl-stats emits only its textual report.
 func (p *smplStatsPlugin) SuppressVCF() bool { return true }
@@ -75,11 +85,33 @@ func (p *smplStatsPlugin) Parallel() bool { return false }
 // Init parses the supported options and rejects the filter/region modes that
 // require htslib machinery the native pipeline does not provide.
 func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
+	p.exprLabel = "all"
+	var filterExpr string
+	var filterExclude, haveFilter bool
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		next := func() (string, error) {
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("smpl-stats: %s requires an argument", a)
+			}
+			i++
+			return args[i], nil
+		}
 		switch a {
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("smpl-stats: filtering expressions (-i/-e) are not supported by the native plugin (require the htslib filter engine)")
+			if haveFilter {
+				return nil, fmt.Errorf("smpl-stats: only one of -i/--include or -e/--exclude can be given")
+			}
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if strings.ContainsRune(v, '{') {
+				return nil, fmt.Errorf("smpl-stats: the curly-brace multi-threshold filter expansion is not supported by the native plugin")
+			}
+			filterExpr = v
+			filterExclude = a == "-e" || a == "--exclude"
+			haveFilter = true
 		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
 			return nil, fmt.Errorf("smpl-stats: region/target selection (%s) is not supported by the native plugin", a)
 		case "-o", "--output":
@@ -92,6 +124,17 @@ func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 			return nil, fmt.Errorf("smpl-stats: unsupported option %q", a)
 		}
 	}
+	if haveFilter {
+		f, err := newPluginFilter(filterExpr, filterExclude)
+		if err != nil {
+			return nil, fmt.Errorf("smpl-stats: %w", err)
+		}
+		p.filter = f
+		p.exprLabel = filterExpr
+		if p.stderr != nil {
+			fmt.Fprint(p.stderr, "Collecting data for 1 filtering expressions\n")
+		}
+	}
 	p.hdr = hdr
 	p.stats = make([]smplStats, len(hdr.Samples))
 	return hdr, nil
@@ -100,6 +143,11 @@ func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 // Process accumulates per-sample and per-site statistics for one record,
 // mirroring smpl-stats.c process_record() with the default "all" filter.
 func (p *smplStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
+	passSite, smplPass := p.filter.testSamples(v)
+	if !passSite {
+		return nil, nil
+	}
+
 	nAllele := len(v.Alt) + 1
 	ac := computeACWithRef(v, nAllele)
 
@@ -111,6 +159,9 @@ func (p *smplStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 
 	var sitePass, siteSNV, siteIndel, siteHasTs, siteHasTv, siteSingleton int
 	for i := range v.Samples {
+		if smplPass != nil && !smplPass[i] {
+			continue
+		}
 		stats := &p.stats[i]
 		als, kind := parseGenotypeAlleles(v, i)
 		if kind == gtMissing {
@@ -211,7 +262,7 @@ func (p *smplStatsPlugin) Destroy() error {
 	fp := p.out
 	fmt.Fprint(fp, smplStatsHeader)
 	fmt.Fprintf(fp, "CMD\t%s\n", strings.Join(p.argv, " "))
-	fmt.Fprint(fp, "DEF\tFLT0\tall\n")
+	fmt.Fprintf(fp, "DEF\tFLT0\t%s\n", p.exprLabel)
 	for j := range p.stats {
 		s := &p.stats[j]
 		fmt.Fprintf(fp, "FLT0\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",

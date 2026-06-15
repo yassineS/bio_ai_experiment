@@ -5,10 +5,13 @@
 // with its support counts NFRAC) from FORMAT/AD, and prints a tab-separated
 // report. The VCF/BCF output is suppressed.
 //
-// Filtering expressions (-i/-e and the curly-brace threshold expansion) and the
-// PED-restricted de-novo mode (-p) require htslib machinery the native pipeline
-// does not provide and are reported as unsupported; the default single "all"
-// filter, the common case, is implemented.
+// A single -i/--include or -e/--exclude filter expression is supported as a
+// site/per-sample pre-filter via the shared filter engine, matching upstream's
+// filter_init/filter_test usage in indel-stats.c (a FORMAT expression filters
+// per-sample, a site expression filters whole records). The curly-brace
+// multi-threshold expansion and the PED-restricted de-novo mode (-p, with its
+// per-trio filter semantics) remain unsupported; the default single filter is
+// the common case.
 package bcftools
 
 import (
@@ -39,9 +42,16 @@ type indelStatsPlugin struct {
 	nins, ndel            uint32
 	nframeshift, ninframe uint32
 
-	out  io.Writer
-	argv []string
+	filter    *pluginFilter // compiled -i/-e pre-filter, nil for the default "all"
+	exprLabel string        // DEF-line label: "all" by default, else the expression
+
+	out    io.Writer
+	stderr io.Writer
+	argv   []string
 }
+
+// SetStderr wires the host stderr writer the "Collecting data ..." note uses.
+func (p *indelStatsPlugin) SetStderr(w io.Writer) { p.stderr = w }
 
 // SuppressVCF reports true: indel-stats emits only its textual report.
 func (p *indelStatsPlugin) SuppressVCF() bool { return true }
@@ -83,6 +93,9 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 	p.csqTag = "CSQ"
 	p.maxLen = 20
 	p.nvaf = 20
+	p.exprLabel = "all"
+	var filterExpr string
+	var filterExclude, haveFilter bool
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() (string, error) {
@@ -94,7 +107,19 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 		}
 		switch a {
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("indel-stats: filtering expressions (-i/-e) are not supported by the native plugin (require the htslib filter engine)")
+			if haveFilter {
+				return nil, fmt.Errorf("indel-stats: only one of -i/--include or -e/--exclude can be given")
+			}
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if strings.ContainsRune(v, '{') {
+				return nil, fmt.Errorf("indel-stats: the curly-brace multi-threshold filter expansion is not supported by the native plugin")
+			}
+			filterExpr = v
+			filterExclude = a == "-e" || a == "--exclude"
+			haveFilter = true
 		case "-p", "--ped":
 			return nil, fmt.Errorf("indel-stats: the PED de-novo mode (-p) is not supported by the native plugin")
 		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
@@ -143,6 +168,17 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 			return nil, fmt.Errorf("indel-stats: unsupported option %q", a)
 		}
 	}
+	if haveFilter {
+		f, err := newPluginFilter(filterExpr, filterExclude)
+		if err != nil {
+			return nil, fmt.Errorf("indel-stats: %w", err)
+		}
+		p.filter = f
+		p.exprLabel = filterExpr
+		if p.stderr != nil {
+			fmt.Fprint(p.stderr, "Collecting data for 1 filtering expressions\n")
+		}
+	}
 	p.hdr = hdr
 	p.nvafBins = make([]uint32, p.nvaf)
 	p.nlen = make([]uint32, p.maxLen*2+1)
@@ -183,6 +219,13 @@ func (p *indelStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 		return nil, nil
 	}
 	p.nsites++
+	// Upstream increments nsites for every indel site (the run-loop pre-filter)
+	// and only then applies the -i/-e filter; a site that fails the filter is
+	// counted in nsites but contributes nothing else.
+	passSite, smplPass := p.filter.testSamples(v)
+	if !passSite {
+		return nil, nil
+	}
 	nAllele := len(v.Alt) + 1
 
 	haveGT := len(v.Samples) > 0 && formatHasTag(v, "GT")
@@ -199,6 +242,9 @@ func (p *indelStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 
 	if haveGT && nad1 > 0 {
 		for i := range v.Samples {
+			if smplPass != nil && !smplPass[i] {
+				continue
+			}
 			als, kind := parseGenotypeAlleles(v, i)
 			if kind == gtMissing {
 				continue
@@ -299,7 +345,7 @@ func (p *indelStatsPlugin) Destroy() error {
 	fp := p.out
 	fmt.Fprint(fp, indelStatsHeaderFor(p.nvaf, p.maxLen))
 	fmt.Fprintf(fp, "CMD\t%s\n", strings.Join(p.argv, " "))
-	fmt.Fprint(fp, "DEF\tFLT0\tall\n")
+	fmt.Fprintf(fp, "DEF\tFLT0\t%s\n", p.exprLabel)
 
 	nsmp := len(p.hdr.Samples)
 	fmt.Fprintf(fp, "SN0\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",

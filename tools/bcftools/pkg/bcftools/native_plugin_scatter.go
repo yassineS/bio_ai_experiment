@@ -9,7 +9,11 @@
 // This is a multiOutputPlugin owning all writers. The -n chunk mode, the -s
 // region list and -S region file modes (with the optional second naming column),
 // the -x extra file, the -p prefix and the -O container/level options are
-// supported. The -i/-e filter expressions, index-jump -r/-R/-t/-T and -W index
+// supported. The -i/-e options are accepted and validated but, exactly as in
+// upstream scatter.c, applied to NOTHING: scatter.c parses filter_str/filter_logic
+// (and errors if both -i and -e are given) yet never calls filter_init or
+// filter_test, so the expression has no effect on the scattered output. We
+// reproduce that no-op faithfully. The index-jump -r/-R/-t/-T and -W index
 // options are reported as a clean unsupported Init error.
 package bcftools
 
@@ -47,6 +51,9 @@ type scatterPlugin struct {
 	nsites    int
 	format    OutputFormat
 	clevel    int
+
+	filterStr string // -i/-e expression; accepted and validated for "only one",
+	filterSet bool   // but applied to nothing — upstream scatter.c never filters.
 }
 
 // Name returns the plugin name.
@@ -71,6 +78,7 @@ func (p *scatterPlugin) FlagTakesValue(flag string) bool {
 	case "-o", "--output", "-O", "--output-type",
 		"-s", "--scatter", "-S", "--scatter-file",
 		"-n", "--nsites-per-chunk", "-x", "--extra",
+		"-i", "--include", "-e", "--exclude",
 		"-p", "--prefix", "--threads", "-v", "--verbosity", "--hts-opts":
 		return true
 	}
@@ -146,7 +154,18 @@ func (p *scatterPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 				return nil, err
 			}
 		case "-i", "--include", "-e", "--exclude":
-			return nil, fmt.Errorf("scatter: the -i/-e filter expressions require the bcftools filter engine and are not supported in the native plugin")
+			// Upstream scatter.c parses -i/-e but never applies them (no
+			// filter_init/filter_test), so the only behaviour to reproduce is the
+			// "only one of -i or -e" guard. The expression itself is a no-op.
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if p.filterSet {
+				return nil, fmt.Errorf("scatter: only one -i or -e expression can be given, and they cannot be combined")
+			}
+			p.filterStr = v
+			p.filterSet = true
 		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
 			return nil, fmt.Errorf("scatter: region/target pre-selection is not supported in the native scatter plugin; pre-filter with bcftools view")
 		case "-W", "--write-index":

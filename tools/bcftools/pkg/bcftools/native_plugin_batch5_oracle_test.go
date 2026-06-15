@@ -52,6 +52,16 @@ func TestNativePluginGuessPloidy(t *testing.T) {
 		{"--AF-dflt", "0.3"},        // custom default AF
 		{"-i"},                      // include indels (none here)
 		{"-t", "GT", "-e", "0.001"}, // default error rate explicit
+		// --include/--exclude site and FORMAT pre-filter parity. guess-ploidy maps
+		// -i to --include-indels and -e to --error-rate, so the filter is long-form
+		// only. Its filter_test path handles a NULL sample mask, so a site-level
+		// EXCLUDE is safe to oracle here (unlike smpl-stats / indel-stats).
+		{"-t", "GT", "--include", "QUAL>10"},
+		{"-t", "GT", "--exclude", "QUAL<10"},
+		{"-t", "GT", "--include", `GT="het"`},
+		{"-t", "GT", "--exclude", `GT="het"`},
+		{"-t", "PL", "--include", `GT="het"`},
+		{"--include", "QUAL>10"},
 	}
 	for _, args := range cases {
 		args := args
@@ -75,6 +85,26 @@ func TestNativePluginSmplStats(t *testing.T) {
 			assertPluginParity(t, bin, parityFixture(t, fx), "smpl-stats")
 		})
 	}
+
+	// -i/-e site and FORMAT pre-filter parity. A site-level EXCLUDE expression is
+	// deliberately omitted: upstream smpl-stats.c segfaults on it (it indexes a
+	// NULL smpl_pass in the "!pass_site" branch); our port handles it correctly,
+	// so there is no upstream oracle to compare against.
+	gt := parityFixture(t, "gt_plugins.vcf")
+	for _, args := range [][]string{
+		{"-i", `GT="het"`},
+		{"-e", `GT="het"`},
+		{"-i", "FMT/DP>10"},
+		{"-e", "FMT/DP<10"},
+		{"-i", "FMT/GQ>30"},
+		{"-i", "QUAL>=50"},
+		{"-i", `GT="hom"`},
+	} {
+		args := args
+		t.Run("filter_"+joinArgs(args), func(t *testing.T) {
+			assertPluginParity(t, bin, gt, "smpl-stats", args...)
+		})
+	}
 }
 
 // TestNativePluginIndelStats checks the indel summary, length, VAF and DFRAC
@@ -96,6 +126,13 @@ func TestNativePluginIndelStats(t *testing.T) {
 		{indels, []string{"--nvaf", "1"}},
 		{indels, []string{"-c", "ANN"}}, // alternate (absent) CSQ tag
 		{parityFixture(t, "gt_plugins.vcf"), nil},
+		// -i/-e site and FORMAT pre-filter parity (the indels fixture carries
+		// GT/AD; a site-level EXCLUDE is omitted because upstream indel-stats.c
+		// segfaults on it, the same NULL-smpl_pass bug as smpl-stats).
+		{indels, []string{"-i", `GT="het"`}},
+		{indels, []string{"-e", `GT="het"`}},
+		{indels, []string{"-i", "QUAL>=45"}},
+		{indels, []string{"-i", `GT="alt"`}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -122,6 +159,14 @@ func TestNativePluginContrast(t *testing.T) {
 		{"-a", "NOVELGT", "-0", "S1", "-1", "S2,S3,S4"},
 		{"-0", "S1,S3", "-1", "S2,S4"},
 		{"-a", "PASSOC", "-0", "S1,S2,S3", "-1", "S4"},
+		// -i/-e site-level pre-filter parity (contrast calls filter_test with a
+		// NULL mask and drops the record before annotating/writing/counting). A
+		// FORMAT expression is folded to a site verdict (ANY sample matches),
+		// matching upstream; site-level EXCLUDE is safe here (NULL mask, no crash).
+		{"-0", "S1,S2", "-1", "S3,S4", "-i", "QUAL>10"},
+		{"-0", "S1,S2", "-1", "S3,S4", "-e", "QUAL<30"},
+		{"-0", "S1,S2", "-1", "S3,S4", "-i", `GT="het"`},
+		{"-0", "S1,S2", "-1", "S3,S4", "-i", "FMT/DP>10"},
 	}
 	for _, args := range cases {
 		args := args
@@ -231,25 +276,25 @@ func TestNativePluginBatch5Unsupported(t *testing.T) {
 		name string
 		args []string
 	}{
-		// guess-ploidy: region/genome jumps and filter expressions are unsupported.
+		// guess-ploidy: region/genome jumps are unsupported (the --include/--exclude
+		// filter modes are now supported and covered by TestNativePluginGuessPloidy).
 		{"guess-ploidy", []string{"-g", "b37"}},
 		{"guess-ploidy", []string{"-r", "X:2699521-154931043"}},
 		{"guess-ploidy", []string{"-R", "regions.txt"}},
-		{"guess-ploidy", []string{"--include", "QUAL>10"}},
-		{"guess-ploidy", []string{"--exclude", "QUAL<10"}},
-		// smpl-stats: filter, region and -o file modes are unsupported.
-		{"smpl-stats", []string{"-i", "GQ>30"}},
-		{"smpl-stats", []string{"-e", "GQ<30"}},
+		// smpl-stats: region, -o file and the curly-brace multi-threshold filter
+		// expansion are unsupported (-i/-e are now supported, see the parity test).
+		{"smpl-stats", []string{"-i", "GQ>{10,20}"}},
 		{"smpl-stats", []string{"-r", "chr1"}},
 		{"smpl-stats", []string{"-o", "out.txt"}},
-		// indel-stats: filter, PED, region and -o file modes are unsupported.
-		{"indel-stats", []string{"-i", "GQ>30"}},
+		// indel-stats: PED, region, -o file and the curly-brace filter expansion are
+		// unsupported (-i/-e are now supported, see the parity test).
+		{"indel-stats", []string{"-i", "GQ>{10,20}"}},
 		{"indel-stats", []string{"-p", "trios.ped"}},
 		{"indel-stats", []string{"-r", "chr1"}},
 		{"indel-stats", []string{"--nvaf", "10"}}, // upstream's [0,1] validation rejects it too
-		// contrast: filter, rare-allele enrichment and region modes are unsupported.
+		// contrast: rare-allele enrichment and region modes are unsupported (-i/-e
+		// are now supported, see the parity test).
 		{"contrast", []string{"-0", "S1", "-1", "S2", "-f", "0.001"}},
-		{"contrast", []string{"-0", "S1", "-1", "S2", "-i", "QUAL>10"}},
 		{"contrast", []string{"-0", "S1", "-1", "S2", "-r", "chr1"}},
 		{"contrast", nil}, // missing -0/-1
 		// ad-bias: clean-vcf and convert-format modes are unsupported.
