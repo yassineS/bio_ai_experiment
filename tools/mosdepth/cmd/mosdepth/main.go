@@ -97,104 +97,6 @@ type runOptions struct {
 	showVersion bool
 }
 
-// reorderArgs permutes an argv so that all option tokens (and the values they
-// consume) precede the positional arguments, mirroring the GNU getopt /
-// docopt permutation that upstream mosdepth relies on. Go's flag package stops
-// parsing options at the first non-flag argument, so without this pre-pass an
-// interspersed command line like "mosdepth PREFIX in.bam --chrom MT" would
-// treat "--chrom" and "MT" as a (rejected) third and fourth positional. After
-// reordering, the existing parser sees the canonical flags-first form.
-//
-// The fs argument is introspected (via cliflag.Normalize for short-flag
-// clusters and the per-flag value/bool classification below) so a value-taking
-// flag's argument — even one that begins with '-', such as "-q -5" — is moved
-// alongside its flag rather than mistaken for a positional. Everything after a
-// "--" terminator is treated as positional verbatim. When the argv is already
-// in flags-first order the output is identical to the input, so the function
-// is a no-op for non-interspersed command lines.
-func reorderArgs(fs *flag.FlagSet, args []string) ([]string, error) {
-	// First expand any short-flag clusters ("-nx", "-Q20") into canonical
-	// one-token-per-flag form and split out inline values. Normalize also
-	// honours the "--" terminator and leaves long options untouched.
-	norm, err := cliflag.Normalize(fs, args)
-	if err != nil {
-		return nil, err
-	}
-	options := make([]string, 0, len(norm))
-	positionals := make([]string, 0, len(norm))
-	for i := 0; i < len(norm); i++ {
-		arg := norm[i]
-		if arg == "--" {
-			// End of options: the terminator itself and every remaining
-			// token are positional. Keep the terminator with the options so
-			// flag.Parse still stops option scanning at the right place.
-			options = append(options, arg)
-			positionals = append(positionals, norm[i+1:]...)
-			break
-		}
-		if len(arg) >= 2 && arg[0] == '-' && arg != "-" {
-			// An option token. Determine whether it carries an inline value
-			// ("--chrom=MT" or, post-Normalize, "-c" "MT") or consumes the
-			// following argument as its value.
-			options = append(options, arg)
-			name, hasInline := flagName(arg)
-			if !hasInline && !isBoolFlag(fs, name) && i+1 < len(norm) {
-				// Value-taking flag with no inline value: the next token is
-				// its option-argument and must travel with it, even if it
-				// begins with '-'.
-				options = append(options, norm[i+1])
-				i++
-			}
-			continue
-		}
-		// A bare "-" or any other token is a positional argument.
-		positionals = append(positionals, arg)
-	}
-	return append(options, positionals...), nil
-}
-
-// flagName extracts the registered flag name from an option token and reports
-// whether the token already carries an inline value. For "--chrom=MT" it
-// returns ("chrom", true); for "--chrom" or "-c" it returns the bare name and
-// false. Both single-dash short flags and double-dash long flags are handled.
-func flagName(arg string) (name string, hasInline bool) {
-	s := arg
-	if len(s) >= 2 && s[0] == '-' && s[1] == '-' {
-		s = s[2:]
-	} else if len(s) >= 1 && s[0] == '-' {
-		s = s[1:]
-	}
-	if eq := indexByte(s, '='); eq >= 0 {
-		return s[:eq], true
-	}
-	return s, false
-}
-
-// isBoolFlag reports whether the flag registered under name on fs is a boolean
-// switch (one that takes no value). It returns false for unknown or
-// value-taking flags so reorderArgs treats their following argument as a
-// consumed option-value rather than a positional.
-func isBoolFlag(fs *flag.FlagSet, name string) bool {
-	f := fs.Lookup(name)
-	if f == nil {
-		return false
-	}
-	if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok {
-		return bf.IsBoolFlag()
-	}
-	return false
-}
-
-// indexByte returns the index of the first occurrence of b in s, or -1.
-func indexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
-}
-
 func parseFlags(args []string) (*runOptions, []string, error) {
 	fs := flag.NewFlagSet("mosdepth", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -235,16 +137,12 @@ func parseFlags(args []string) (*runOptions, []string, error) {
 	cliflag.BoolVar(fs, &opts.useMedian, "m", "use-median", false, "report per-region median depth instead of mean")
 	cliflag.BoolVar(fs, &opts.showHelp, "h", "help", false, "help")
 	cliflag.BoolVar(fs, &opts.showVersion, "v", "version", false, "version")
-	// Permute options ahead of the two positionals so flags interspersed among
-	// or after the positionals (the natural docopt order upstream accepts, e.g.
-	// "mosdepth PREFIX in.bam --chrom MT") parse identically to the flags-first
-	// form. reorderArgs already performs the short-flag cluster expansion that
-	// cliflag.Parse would, so the FlagSet is parsed directly afterwards.
-	reordered, err := reorderArgs(fs, args)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := fs.Parse(reordered); err != nil {
+	// cliflag.Parse expands short-flag clusters (the docopt-parity "-nx",
+	// "-Q20" forms) and permutes options ahead of the two positionals, so flags
+	// interspersed among or after the positionals (the natural docopt order
+	// upstream accepts, e.g. "mosdepth PREFIX in.bam --chrom MT") parse
+	// identically to the flags-first form.
+	if err := cliflag.Parse(fs, args); err != nil {
 		return nil, nil, err
 	}
 	// Resolve the -r / -R read-group aliases: -R (upstream) wins when both
