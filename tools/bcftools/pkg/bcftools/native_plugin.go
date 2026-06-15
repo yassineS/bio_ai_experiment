@@ -148,6 +148,19 @@ type outputSuppressor interface {
 	SetStdout(w io.Writer)
 }
 
+// cmdLineSink is implemented by plugins (such as smpl-stats, indel-stats and
+// guess-ploidy) whose upstream report embeds a verbatim command-line line
+// ("CMD\t<name> <opts...> <file>", or the "# The command line was:" banner).
+// The pipeline hands the plugin the upstream-equivalent argv so it can
+// reproduce that line byte-for-byte. The argv mirrors upstream's run()-style
+// dispatch: argv[0] is the plugin name, followed by the plugin options, with
+// the input file as the trailing positional.
+type cmdLineSink interface {
+	// SetArgv provides the upstream-equivalent argv (name, plugin options,
+	// then the input file).
+	SetArgv(argv []string)
+}
+
 // nativeRegistry maps a plugin name to a constructor that returns a fresh
 // instance. It is populated by init() functions in each native plugin file.
 var nativeRegistry = map[string]func() NativePlugin{}
@@ -205,6 +218,20 @@ func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer
 	}
 	if s, ok := plugin.(outputSuppressor); ok {
 		s.SetStdout(out)
+	}
+	if s, ok := plugin.(cmdLineSink); ok {
+		// Reconstruct the upstream run()-style argv: name, plugin options, then
+		// the input file as the trailing positional (matching pluginCLIArgs and
+		// how upstream's run() observes its own argv).
+		name := opts.Name
+		if name == "" {
+			name = plugin.Name()
+		}
+		argv := append([]string{name}, opts.Args...)
+		if opts.InputFile != "" && opts.InputFile != "-" {
+			argv = append(argv, opts.InputFile)
+		}
+		s.SetArgv(argv)
 	}
 
 	regions := append([]string{}, opts.Regions...)

@@ -1,0 +1,577 @@
+// Native port of the upstream `guess-ploidy` plugin (plugins/guess-ploidy.c) for
+// its whole-file (no region/genome jump) mode. It guesses each sample's sex by
+// comparing, under Hardy-Weinberg equilibrium, the haploid and diploid
+// likelihoods of the observed genotype likelihoods (PL/GL) or genotypes (GT)
+// across the streamed sites — intended for the non-PAR region of chrX. The
+// VCF/BCF output is suppressed; a per-sample table is printed.
+//
+// The region/genome shortcuts (-g/-r/-R) require indexed region jumping and the
+// filter expressions (--include/--exclude) require the htslib filter engine;
+// both are reported as unsupported. The default whole-file scan, the common
+// case when piping `bcftools view -r chrX:... | bcftools +guess-ploidy`, is
+// implemented.
+package bcftools
+
+import (
+	"fmt"
+	"io"
+	"math"
+	"strconv"
+	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
+)
+
+func init() {
+	registerNativePlugin("guess-ploidy", func() NativePlugin { return &guessPloidyPlugin{} })
+}
+
+// guess-ploidy tag-source selectors, matching GUESS_* in guess-ploidy.c.
+const (
+	guessGT = 1
+	guessPL = 2
+	guessGL = 4
+)
+
+// guessPloidyCount accumulates one sample's running log-likelihoods, mirroring
+// count_t in guess-ploidy.c.
+type guessPloidyCount struct {
+	ncount     uint64
+	phap, pdip float64
+}
+
+// guessPloidyPlugin implements the `guess-ploidy` plugin in whole-file mode.
+type guessPloidyPlugin struct {
+	hdr       *vcf.Header
+	tag       int
+	afTag     string
+	afDflt    float64
+	gtErrProb float64
+	verbose   int
+	indels    bool
+
+	pl2p   []float64
+	counts []guessPloidyCount
+
+	out    io.Writer
+	stderr io.Writer
+	argv   []string
+}
+
+// SuppressVCF reports true: guess-ploidy emits only its textual report.
+func (p *guessPloidyPlugin) SuppressVCF() bool { return true }
+
+// SetStdout wires the host stdout writer the report is printed to.
+func (p *guessPloidyPlugin) SetStdout(w io.Writer) { p.out = w }
+
+// SetStderr wires the host stderr writer the PL/GL fallback warnings use.
+func (p *guessPloidyPlugin) SetStderr(w io.Writer) { p.stderr = w }
+
+// SetArgv records the upstream-equivalent argv for the verbose command-line
+// header line.
+func (p *guessPloidyPlugin) SetArgv(argv []string) { p.argv = argv }
+
+// RunStyle reports that guess-ploidy is a run()-style plugin.
+func (p *guessPloidyPlugin) RunStyle() bool { return true }
+
+// FlagTakesValue reports whether one of guess-ploidy's value-taking flags
+// consumes the following token.
+func (p *guessPloidyPlugin) FlagTakesValue(flag string) bool {
+	switch flag {
+	case "--AF-tag", "--AF-dflt", "--exclude", "--include", "-e", "--error-rate",
+		"-t", "--tag", "-g", "--genome", "-r", "--regions", "-R", "--regions-file":
+		return true
+	case "-v", "--verbosity", "--verbose":
+		// Optional argument: do not unconditionally consume the next token.
+		return false
+	}
+	return false
+}
+
+// Name returns the plugin name.
+func (p *guessPloidyPlugin) Name() string { return "guess-ploidy" }
+
+// About returns the one-line description, matching guess-ploidy.c about().
+func (p *guessPloidyPlugin) About() string {
+	return "Determine sample sex by checking genotype likelihoods in haploid regions.\n"
+}
+
+// Parallel reports false: per-sample likelihoods accumulate serially.
+func (p *guessPloidyPlugin) Parallel() bool { return false }
+
+// Init parses the options and rejects the region/filter modes, then validates
+// the requested tag against the header (with the PL->GL->GT fallback warnings).
+func (p *guessPloidyPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
+	p.tag = guessPL
+	p.gtErrProb = 1e-3
+	p.afDflt = 0.5
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, error) {
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("guess-ploidy: %s requires an argument", a)
+			}
+			i++
+			return args[i], nil
+		}
+		switch a {
+		case "--AF-tag":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			p.afTag = v
+		case "--AF-dflt":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return nil, fmt.Errorf("guess-ploidy: could not parse: --AF-dflt %s", v)
+			}
+			p.afDflt = f
+		case "--exclude", "--include":
+			return nil, fmt.Errorf("guess-ploidy: filter expressions (%s) are not supported by the native plugin (require the htslib filter engine)", a)
+		case "-e", "--error-rate":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil || f < 0 || f > 1 {
+				return nil, fmt.Errorf("guess-ploidy: expected value from the interval [0,1]: -e %s", v)
+			}
+			p.gtErrProb = f
+		case "-i", "--include-indels":
+			p.indels = true
+		case "-g", "--genome", "-r", "--regions", "-R", "--regions-file":
+			return nil, fmt.Errorf("guess-ploidy: region/genome selection (%s) is not supported by the native plugin (requires indexed region jumping); pre-slice with `bcftools view -r ... | bcftools +guess-ploidy`", a)
+		case "-t", "--tag":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			switch strings.ToUpper(v) {
+			case "GT":
+				p.tag = guessGT
+			case "PL":
+				p.tag = guessPL
+			case "GL":
+				p.tag = guessGL
+			default:
+				return nil, fmt.Errorf("guess-ploidy: expected --tag GT, PL or GL: %s", v)
+			}
+		case "-v", "--verbosity", "--verbose":
+			// Optional argument: a bare -v increments the level (getopt's
+			// optional-argument handling). A separate following token is NOT
+			// consumed by upstream (it stays a positional); the attached forms
+			// (-v2, --verbosity=2) are handled in the default branch below.
+			p.verbose++
+		default:
+			if lvl, ok := parseAttachedVerbosity(a); ok {
+				if lvl < 0 {
+					return nil, fmt.Errorf("guess-ploidy: could not parse argument: %s", a)
+				}
+				p.verbose = lvl
+				continue
+			}
+			return nil, fmt.Errorf("guess-ploidy: unsupported option %q", a)
+		}
+	}
+	p.hdr = hdr
+
+	if p.afTag != "" && !hasInfoHeaderMeta(hdr.MetaInfo, p.afTag) {
+		return nil, fmt.Errorf("guess-ploidy: no such INFO tag: %s", p.afTag)
+	}
+	if p.tag&guessPL != 0 && !hasFormatHeader(hdr.MetaInfo, "PL") {
+		if p.stderr != nil {
+			fmt.Fprint(p.stderr, "Warning: PL tag not found in header, switching to GL\n")
+		}
+		p.tag = guessGL
+	}
+	if p.tag&guessGL != 0 && !hasFormatHeader(hdr.MetaInfo, "GL") {
+		if p.stderr != nil {
+			fmt.Fprint(p.stderr, "Warning: GL tag not found in header, switching to GT\n")
+		}
+		p.tag = guessGT
+	}
+	if p.tag&guessGT != 0 && !hasFormatHeader(hdr.MetaInfo, "GT") {
+		return nil, fmt.Errorf("guess-ploidy: GT tag not found in header")
+	}
+
+	if p.tag&guessPL != 0 {
+		p.pl2p = make([]float64, 256)
+		for i := 0; i < 256; i++ {
+			p.pl2p[i] = math.Pow(10, -float64(i)/10)
+		}
+	}
+	p.counts = make([]guessPloidyCount, len(hdr.Samples))
+
+	if p.verbose > 0 && p.out != nil {
+		fmt.Fprint(p.out, "# This file was produced by: bcftools +guess-ploidy(bio_ai_experiment+htslib-bio_ai_experiment)\n")
+		fmt.Fprintf(p.out, "# The command line was:\tbcftools +%s\n", strings.Join(p.argv, " "))
+		fmt.Fprint(p.out, "# [1]SEX\t[2]Sample\t[3]Predicted sex\t[4]log P(Haploid)/nSites\t[5]log P(Diploid)/nSites\t[6]nSites\t[7]Score: F < 0 < M ($4-$5)\n")
+		if p.verbose > 1 {
+			fmt.Fprint(p.out, "# [1]DBG\t[2]Chr\t[3]Pos\t[4]Sample\t[5]AF\t[6]pRR\t[7]pRA\t[8]pAA\t[9]P(Haploid)\t[10]P(Diploid)\n")
+		}
+	}
+	return hdr, nil
+}
+
+// Process accumulates the per-sample haploid/diploid log-likelihoods for one
+// record, mirroring process_region_guess() in guess-ploidy.c.
+func (p *guessPloidyPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
+	nAllele := len(v.Alt) + 1
+	if nAllele == 1 {
+		return nil, nil
+	}
+	if !p.indels && variantTypeMask(v)&vtSNP == 0 {
+		return nil, nil
+	}
+	nsmp := len(v.Samples)
+	freq := [2]float64{0, 0}
+	tmp := make([][3]float64, nsmp)
+
+	switch {
+	case p.tag&guessGT != 0:
+		if !formatHasTag(v, "GT") {
+			return nil, nil
+		}
+		for s := 0; s < nsmp; s++ {
+			gt, ok := sampleGT(v, s)
+			if !ok || len(gt.alleles) == 0 || gt.alleles[0] == missingAllele {
+				tmp[s][0] = -1
+				continue
+			}
+			e := p.gtErrProb
+			if len(gt.alleles) == 1 { // haploid
+				if gt.alleles[0] == 0 {
+					tmp[s][0] = 1 - 2*e
+					tmp[s][1], tmp[s][2] = e, e
+				} else {
+					tmp[s][0], tmp[s][1] = e, e
+					tmp[s][2] = 1 - 2*e
+				}
+				continue
+			}
+			a0, a1 := gt.alleles[0], gt.alleles[1]
+			if a0 == 0 && a1 == 0 {
+				tmp[s][0] = 1 - 2*e
+				tmp[s][1], tmp[s][2] = e, e
+			} else if a0 == a1 {
+				tmp[s][0], tmp[s][1] = e, e
+				tmp[s][2] = 1 - 2*e
+			} else {
+				tmp[s][1] = 1 - 2*e
+				tmp[s][0], tmp[s][2] = e, e
+			}
+			freq[0] += 2*tmp[s][0] + tmp[s][1]
+			freq[1] += tmp[s][1] + 2*tmp[s][2]
+		}
+	case p.tag&guessPL != 0:
+		if !p.accumulatePL(v, nAllele, nsmp, tmp, &freq) {
+			return nil, nil
+		}
+	default: // GL
+		if !p.accumulateGL(v, nAllele, nsmp, tmp, &freq) {
+			return nil, nil
+		}
+	}
+
+	if p.afTag != "" {
+		if af, ok := infoFloat0(v, p.afTag); ok {
+			freq[0] = 1 - af
+			freq[1] = af
+		}
+	}
+	if freq[0] == 0 && freq[1] == 0 {
+		freq[0] = 1 - p.afDflt
+		freq[1] = p.afDflt
+	}
+	sum := freq[0] + freq[1]
+	freq[0] /= sum
+	freq[1] /= sum
+
+	for s := 0; s < nsmp; s++ {
+		if tmp[s][0] < 0 {
+			continue
+		}
+		phap := freq[0]*tmp[s][0] + freq[1]*tmp[s][2]
+		pdip := freq[0]*freq[0]*tmp[s][0] + 2*freq[0]*freq[1]*tmp[s][1] + freq[1]*freq[1]*tmp[s][2]
+		p.counts[s].phap += math.Log(phap)
+		p.counts[s].pdip += math.Log(pdip)
+		p.counts[s].ncount++
+		if p.verbose > 1 && p.out != nil {
+			fmt.Fprintf(p.out, "DBG\t%s\t%d\t%s\t%e\t%e\t%e\t%e\t%e\t%e\n",
+				v.Chrom, v.Pos, p.hdr.Samples[s], freq[1], tmp[s][0], tmp[s][1], tmp[s][2], phap, pdip)
+		}
+	}
+	return nil, nil
+}
+
+// accumulatePL fills tmp and freq from FORMAT/PL, mirroring the PL branch of
+// process_region_guess(). It returns false when the record has no usable PL.
+func (p *guessPloidyPlugin) accumulatePL(v *vcf.Variant, nAllele, nsmp int, tmp [][3]float64, freq *[2]float64) bool {
+	pls, npl := parseFormatIntAll(v, "PL")
+	if pls == nil || npl <= 0 {
+		return false
+	}
+	ndipGT := nAllele * (nAllele + 1) / 2
+	switch npl {
+	case ndipGT: // diploid
+		for s := 0; s < nsmp; s++ {
+			ptr := pls[s]
+			if len(ptr) < 3 || ptr[0] == intMissing || ptr[1] == intMissing || ptr[2] == intMissing {
+				tmp[s][0] = -1
+				continue
+			}
+			if ptr[0] == ptr[1] && ptr[0] == ptr[2] {
+				tmp[s][0] = -1
+				continue
+			}
+			for i := 0; i < 3; i++ {
+				tmp[s][i] = guessPLToProb(p.pl2p, ptr[i])
+			}
+			sum := tmp[s][0] + tmp[s][1] + tmp[s][2]
+			for i := 0; i < 3; i++ {
+				tmp[s][i] /= sum
+			}
+			freq[0] += 2*tmp[s][0] + tmp[s][1]
+			freq[1] += tmp[s][1] + 2*tmp[s][2]
+		}
+	case nAllele: // all haploid
+		for s := 0; s < nsmp; s++ {
+			ptr := pls[s]
+			if len(ptr) < 2 || ptr[0] == intMissing || ptr[1] == intMissing {
+				tmp[s][0] = -1
+				continue
+			}
+			tmp[s][0] = guessPLToProb(p.pl2p, ptr[0])
+			tmp[s][1] = p.pl2p[255]
+			tmp[s][2] = guessPLToProb(p.pl2p, ptr[1])
+			sum := tmp[s][0] + tmp[s][1] + tmp[s][2]
+			for i := 0; i < 3; i++ {
+				tmp[s][i] /= sum
+			}
+			freq[0] += tmp[s][0]
+			freq[1] += tmp[s][2]
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// accumulateGL fills tmp and freq from FORMAT/GL, mirroring the GL branch of
+// process_region_guess(). It returns false when the record has no usable GL.
+func (p *guessPloidyPlugin) accumulateGL(v *vcf.Variant, nAllele, nsmp int, tmp [][3]float64, freq *[2]float64) bool {
+	gls, ngl := parseFormatFloatAll(v, "GL")
+	if gls == nil || ngl <= 0 {
+		return false
+	}
+	ndipGT := nAllele * (nAllele + 1) / 2
+	switch ngl {
+	case ndipGT: // diploid
+		for s := 0; s < nsmp; s++ {
+			ptr := gls[s]
+			if len(ptr) < 3 || isFloatMissing(ptr[0]) || isFloatMissing(ptr[1]) || isFloatMissing(ptr[2]) {
+				tmp[s][0] = -1
+				continue
+			}
+			if ptr[0] == ptr[1] && ptr[0] == ptr[2] {
+				tmp[s][0] = -1
+				continue
+			}
+			for i := 0; i < 3; i++ {
+				tmp[s][i] = math.Pow(10, ptr[i])
+			}
+			sum := tmp[s][0] + tmp[s][1] + tmp[s][2]
+			for i := 0; i < 3; i++ {
+				tmp[s][i] /= sum
+			}
+			freq[0] += 2*tmp[s][0] + tmp[s][1]
+			freq[1] += tmp[s][1] + 2*tmp[s][2]
+		}
+	case nAllele: // all haploid
+		for s := 0; s < nsmp; s++ {
+			ptr := gls[s]
+			if len(ptr) < 2 || isFloatMissing(ptr[0]) || isFloatMissing(ptr[1]) {
+				tmp[s][0] = -1
+				continue
+			}
+			tmp[s][0] = math.Pow(10, ptr[0])
+			tmp[s][1] = 1e-26
+			tmp[s][2] = math.Pow(10, ptr[1])
+			sum := tmp[s][0] + tmp[s][1] + tmp[s][2]
+			for i := 0; i < 3; i++ {
+				tmp[s][i] /= sum
+			}
+			freq[0] += tmp[s][0]
+			freq[1] += tmp[s][2]
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// Destroy prints the per-sample sex predictions, mirroring guess-ploidy.c run().
+func (p *guessPloidyPlugin) Destroy() error {
+	if p.out == nil {
+		return nil
+	}
+	for i := range p.counts {
+		var phap, pdip float64 = 0.5, 0.5
+		if p.counts[i].ncount != 0 {
+			phap = p.counts[i].phap / float64(p.counts[i].ncount)
+			pdip = p.counts[i].pdip / float64(p.counts[i].ncount)
+		}
+		sex := 'U'
+		if phap > pdip {
+			sex = 'M'
+		} else if phap < pdip {
+			sex = 'F'
+		}
+		if p.verbose > 0 {
+			fmt.Fprintf(p.out, "SEX\t%s\t%c\t%f\t%f\t%d\t%f\n",
+				p.hdr.Samples[i], sex, phap, pdip, p.counts[i].ncount, phap-pdip)
+		} else {
+			fmt.Fprintf(p.out, "%s\t%c\n", p.hdr.Samples[i], sex)
+		}
+	}
+	return nil
+}
+
+// plToProb maps a PL value to a probability via the pl2p table, clamping out-of
+// range values to pl2p[255], matching the (ptr<0||ptr>=256)?pl2p[255] guard.
+func guessPLToProb(pl2p []float64, x int) float64 {
+	if x < 0 || x >= 256 {
+		return pl2p[255]
+	}
+	return pl2p[x]
+}
+
+// intMissing is the sentinel for a missing FORMAT integer value (".").
+const intMissing = math.MinInt32
+
+// parseFormatIntAll returns per-sample integer vectors for a FORMAT tag and the
+// per-sample value count (the first sample's length), mirroring how
+// bcf_get_format_int32 reports n/nsmpl. Missing entries become intMissing.
+func parseFormatIntAll(v *vcf.Variant, tag string) ([][]int, int) {
+	if !formatHasTag(v, tag) {
+		return nil, 0
+	}
+	out := make([][]int, len(v.Samples))
+	per := 0
+	for i := range v.Samples {
+		s := v.Samples[i].Data[tag]
+		var row []int
+		if s != "" && s != "." {
+			for _, tok := range strings.Split(s, ",") {
+				if tok == "." || tok == "" {
+					row = append(row, intMissing)
+					continue
+				}
+				n, err := strconv.Atoi(tok)
+				if err != nil {
+					row = append(row, intMissing)
+					continue
+				}
+				row = append(row, n)
+			}
+		}
+		out[i] = row
+		if i == 0 {
+			per = len(row)
+		}
+	}
+	return out, per
+}
+
+// parseFormatFloatAll is the float counterpart of parseFormatIntAll for GL.
+func parseFormatFloatAll(v *vcf.Variant, tag string) ([][]float64, int) {
+	if !formatHasTag(v, tag) {
+		return nil, 0
+	}
+	out := make([][]float64, len(v.Samples))
+	per := 0
+	for i := range v.Samples {
+		s := v.Samples[i].Data[tag]
+		var row []float64
+		if s != "" && s != "." {
+			for _, tok := range strings.Split(s, ",") {
+				if tok == "." || tok == "" {
+					row = append(row, math.NaN())
+					continue
+				}
+				f, err := strconv.ParseFloat(tok, 64)
+				if err != nil {
+					row = append(row, math.NaN())
+					continue
+				}
+				row = append(row, f)
+			}
+		}
+		out[i] = row
+		if i == 0 {
+			per = len(row)
+		}
+	}
+	return out, per
+}
+
+// isFloatMissing reports whether a parsed GL value is missing (NaN sentinel).
+func isFloatMissing(f float64) bool { return math.IsNaN(f) }
+
+// infoFloat0 returns the first float of an INFO tag, mirroring the
+// bcf_get_info_float(...)>0 use of args->af[0].
+func infoFloat0(v *vcf.Variant, tag string) (float64, bool) {
+	s, ok := v.Info[tag]
+	if !ok || s == "" || s == "." {
+		return 0, false
+	}
+	first := s
+	if idx := strings.IndexByte(s, ','); idx >= 0 {
+		first = s[:idx]
+	}
+	f, err := strconv.ParseFloat(first, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// parseAttachedVerbosity recognises getopt's attached optional-argument forms
+// for the verbosity flag: -v<N>, --verbosity=<N> and --verbose=<N>. It returns
+// the level and true when the token is one of those forms; a non-numeric value
+// yields level -1 (a parse error for the caller to report).
+func parseAttachedVerbosity(tok string) (int, bool) {
+	var val string
+	switch {
+	case strings.HasPrefix(tok, "-v") && len(tok) > 2 && tok[2] != '-':
+		val = tok[2:]
+	case strings.HasPrefix(tok, "--verbosity="):
+		val = tok[len("--verbosity="):]
+	case strings.HasPrefix(tok, "--verbose="):
+		val = tok[len("--verbose="):]
+	default:
+		return 0, false
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 0 {
+		return -1, true
+	}
+	return n, true
+}
+
+// hasInfoHeaderMeta reports whether the header declares an INFO tag with the
+// given ID.
+func hasInfoHeaderMeta(meta []string, id string) bool {
+	for _, m := range meta {
+		if headerKind(m) == "##INFO" && headerID(m) == id {
+			return true
+		}
+	}
+	return false
+}
