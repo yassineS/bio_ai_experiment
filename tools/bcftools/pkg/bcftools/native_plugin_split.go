@@ -56,6 +56,25 @@ func (p *splitPlugin) About() string {
 	return "Split VCF by sample, creating single- or multi-sample VCFs\n"
 }
 
+// RunStyle reports that split is a run()-style plugin: upstream's split.c
+// exports a `run` symbol, so it owns its entire argv (including -o/-O) before
+// the trailing input-file positional, with no `--` separator
+// (e.g. `bcftools +split -o DIR FILE`).
+func (p *splitPlugin) RunStyle() bool { return true }
+
+// FlagTakesValue reports whether one of split's flags consumes the following
+// CLI token as its value, so the host can separate the lone input-file
+// positional from the plugin options.
+func (p *splitPlugin) FlagTakesValue(flag string) bool {
+	switch flag {
+	case "-o", "--output", "-O", "--output-type",
+		"-S", "--samples-file", "-G", "--groups-file",
+		"-k", "--keep-tags", "-v", "--verbosity", "--hts-opts":
+		return true
+	}
+	return false
+}
+
 // Init parses and validates the plugin arguments. It rejects the modes that need
 // the filter engine or index-jump machinery.
 func (p *splitPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {

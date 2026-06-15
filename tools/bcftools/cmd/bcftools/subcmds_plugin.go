@@ -87,14 +87,20 @@ func runPlugin(args []string, pluginName string) int {
 			}
 		}
 
-		// A run()-style native plugin invoked without an explicit `--` accepts
-		// its own options before the trailing input-file positional, mirroring
-		// upstream (e.g. `+variant-distance -d nearest FILE`). In that mode a
-		// flag the host does not recognise is forwarded to the plugin rather
-		// than rejected, and the lone bare token (other than the plugin name)
-		// is the input file. The generic init/process plugins keep the strict
-		// `[host-opts] [FILE] -- [plugin-opts]` split, because options before
-		// the file are parsed as host options upstream.
+		// A run()-style native plugin owns its ENTIRE argv, exactly as upstream's
+		// run() symbol receives it: upstream's bcftools main hands such a plugin
+		// everything after `+name` and lets the plugin's own getopt parse it,
+		// pulling only the trailing input-file positional(s) out itself. We
+		// mirror that here: when the plugin is run()-style and no explicit `--`
+		// was given, the host consumes NO options of its own (not even the ones
+		// it would otherwise recognise, such as -o/-O/-r/-R/-@), forwarding every
+		// flag to the plugin so the plugin parses its own output, region and
+		// container options (e.g. `+split -o DIR FILE`, `+scatter -o DIR -n 2
+		// FILE`, `+variant-distance -d nearest FILE`). The lone bare token(s)
+		// other than the plugin name are the input file (and, for two-file
+		// plugins like isecGT, the second positional). The generic init/process
+		// plugins keep the strict `[host-opts] [FILE] -- [plugin-opts]` split,
+		// because options before the file are parsed as host options upstream.
 		runStyle := !explicitSep && resolvedName != "" && bcftools.IsRunStyleNativePlugin(resolvedName)
 
 		// Walk the host section, separating host flags (with their values) from
@@ -104,22 +110,28 @@ func runPlugin(args []string, pluginName string) int {
 		for i < len(hostSection) {
 			tok := hostSection[i]
 			if len(tok) > 0 && tok[0] == '-' && tok != "-" {
+				if runStyle {
+					// Forward the flag (and, when it takes one, its value) to the
+					// plugin. The host consumes nothing for run()-style plugins.
+					// A flag's value is identified via the plugin's own
+					// FlagTakesValue (so the trailing bare input file is not
+					// mistaken for a flag value); the standard option-with-value
+					// host flags (-o/-O/-r/-R/-@/--compression-level) are also
+					// treated as value-taking, since every run()-style upstream
+					// plugin parses those with getopt's `:` (value-taking) form.
+					pluginArgs = append(pluginArgs, tok)
+					if (needsValue(tok) || bcftools.NativePluginFlagTakesValue(resolvedName, tok)) && i+1 < len(hostSection) {
+						i++
+						pluginArgs = append(pluginArgs, hostSection[i])
+					}
+					i++
+					continue
+				}
 				if needsValue(tok) {
 					hostArgs = append(hostArgs, tok)
 					if i+1 < len(hostSection) {
 						i++
 						hostArgs = append(hostArgs, hostSection[i])
-					}
-					i++
-					continue
-				}
-				if runStyle {
-					// Forward an unrecognised flag (and, when it takes one, its
-					// value) to the plugin instead of the host.
-					pluginArgs = append(pluginArgs, tok)
-					if bcftools.NativePluginFlagTakesValue(resolvedName, tok) && i+1 < len(hostSection) {
-						i++
-						pluginArgs = append(pluginArgs, hostSection[i])
 					}
 					i++
 					continue

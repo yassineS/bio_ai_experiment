@@ -44,6 +44,26 @@ func (p *isecGTPlugin) About() string {
 	return "Compare two files and set non-identical genotypes to missing.\n"
 }
 
+// RunStyle reports that isecGT is a run()-style plugin: upstream's isecGT.c
+// exports a `run` symbol, so it owns its entire argv before the two trailing
+// input-file positionals (A and B), with no `--` separator
+// (e.g. `bcftools +isecGT A.bcf B.bcf`).
+func (p *isecGTPlugin) RunStyle() bool { return true }
+
+// FlagTakesValue reports whether one of isecGT's flags consumes the following
+// CLI token as its value, so the host can separate the input-file positionals
+// from the plugin options.
+func (p *isecGTPlugin) FlagTakesValue(flag string) bool {
+	switch flag {
+	case "-o", "--output", "-O", "--output-type",
+		"-r", "--regions", "-R", "--regions-file",
+		"-t", "--targets", "-T", "--targets-file",
+		"-v", "--verbosity":
+		return true
+	}
+	return false
+}
+
 // Init parses the plugin arguments. The second positional file is supplied via
 // opts.Regions (see RunFull); only options that the native streaming path can
 // honour are accepted.

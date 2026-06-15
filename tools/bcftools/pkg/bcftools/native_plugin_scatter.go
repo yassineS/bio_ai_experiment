@@ -57,6 +57,26 @@ func (p *scatterPlugin) About() string {
 	return "Scatter VCF by chunks or regions, creating multiple VCFs.\n"
 }
 
+// RunStyle reports that scatter is a run()-style plugin: upstream's scatter.c
+// exports a `run` symbol, so it owns its entire argv (including -o/-O/-n/-s)
+// before the trailing input-file positional, with no `--` separator
+// (e.g. `bcftools +scatter -o DIR -n 2 FILE`).
+func (p *scatterPlugin) RunStyle() bool { return true }
+
+// FlagTakesValue reports whether one of scatter's flags consumes the following
+// CLI token as its value, so the host can separate the lone input-file
+// positional from the plugin options.
+func (p *scatterPlugin) FlagTakesValue(flag string) bool {
+	switch flag {
+	case "-o", "--output", "-O", "--output-type",
+		"-s", "--scatter", "-S", "--scatter-file",
+		"-n", "--nsites-per-chunk", "-x", "--extra",
+		"-p", "--prefix", "--threads", "-v", "--verbosity", "--hts-opts":
+		return true
+	}
+	return false
+}
+
 // Init parses and validates the plugin arguments.
 func (p *scatterPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
 	p.format = OutputVCF

@@ -17,12 +17,13 @@ import (
 // provenance (stripProvenanceBytes). For the multi-output plugins every produced
 // file is diffed (sorted by name).
 //
-// The two CLI forms differ only in how the input file and plugin options are
-// arranged, because OUR host CLI consumes the run()-style -o/-O host options for
-// itself; the multi-output plugins are therefore invoked through the `--` form
-// (`+name FILE -- <plugin opts>`) for OUR port, while upstream uses its native
-// run()-style form (`+name <plugin opts> FILE`). The produced files and their
-// contents are identical regardless of the surface argv.
+// The run()-style multi-output plugins split and scatter are now driven with the
+// SAME upstream form on BOTH binaries (`+name -o DIR <plugin opts> FILE`): OUR
+// host forwards -o/-O and every other option to the plugin, which parses them
+// itself, so the earlier `--`-rewritten asymmetry is gone. variantkey-hex is a
+// generic init/process plugin upstream (its run() is an init() reading argv[1]),
+// so it keeps the `+name FILE -- DIR/` form on both sides. The produced files and
+// their contents are identical regardless of the surface argv.
 
 // runUpstreamInDir runs the upstream binary with argv (cwd irrelevant) and the
 // vendored plugins directory, failing the test on a non-zero exit.
@@ -227,7 +228,9 @@ func TestNativePluginSplit(t *testing.T) {
 					return runUpstreamPluginCmd(t, bin, argv)
 				},
 				func(dir string) []byte {
-					argv := append([]string{"+split", tc.fix, "--", "-o", dir}, tc.args...)
+					// Same upstream run()-style form for OUR port: the host
+					// forwards -o/-O and split parses them itself.
+					argv := append([]string{"+split", "-o", dir}, append(append([]string{}, tc.args...), tc.fix)...)
 					return runOursPluginCmd(t, argv)
 				})
 		})
@@ -267,7 +270,9 @@ func TestNativePluginScatter(t *testing.T) {
 					return runUpstreamPluginCmd(t, bin, argv)
 				},
 				func(dir string) []byte {
-					argv := append([]string{"+scatter", tc.fix, "--", "-o", dir}, tc.args...)
+					// Same upstream run()-style form for OUR port: the host
+					// forwards -o/-O/-n/-s and scatter parses them itself.
+					argv := append([]string{"+scatter", "-o", dir}, append(append([]string{}, tc.args...), tc.fix)...)
 					return runOursPluginCmd(t, argv)
 				})
 		})
