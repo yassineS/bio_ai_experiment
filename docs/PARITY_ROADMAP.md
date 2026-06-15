@@ -7,6 +7,38 @@ this repo. This file is the authoritative gap list per tool.
 full focus is to drive the tools already ported or started to complete parity.
 Every item below is about an existing tool; do not add new ports.
 
+**Recently closed (2026-06-15 parity wave).** A large real-gap wave, every
+change byte-validated against the real upstream binary (downloaded release or
+built from the vendored submodule), no committed goldens:
+
+- **bcftools — complete native plugin catalogue.** All 41 upstream in-tree
+  plugins are now reimplemented natively in pure Go (batches 1–7), dispatched by
+  `+<name>` with a parallel/serial pipeline, validated CLI-to-CLI against
+  upstream 1.23.1. ~38 are byte-parity implementations; `color-chrs`,
+  `parental-origin`, `trio-dnm3` and a documented set of per-plugin option modes
+  are clean "unsupported" errors (libm-precision / synced-reader / filter-engine
+  dependencies), never silent divergence. Run-style plugins receive the full
+  argv so upstream command forms (`+split -o DIR FILE`, `+variant-distance -d
+  nearest FILE`) work verbatim. The exec subprocess protocol remains the
+  fallback for user executables.
+- **bcftools `stats` — full-output byte parity.** AF/QUAL/IDD/ST/DP/PSC/HWE
+  sections plus TSTV, SiS, the VAF section, and the verbose comment blocks now
+  match upstream byte-for-byte (whole-output diff test). One documented upstream
+  bug (IDD `update_dvaf` stale-buffer read for pure-SNP alleles).
+- **mosdepth.** Overlapping mate-pair coverage correction (default mode now
+  counts overlaps once, matching upstream's default not `--fast-mode`); summary
+  lists only read-bearing contigs; CLI accepts docopt-style interspersed flags.
+- **samtools `sort`.** Upstream `bam_sort.c` tie-break keys for `-n`/`-N` (FLAG
+  remap) and `-t` (tag, then core compare).
+- **Compression.** klauspost/compress is the BGZF deflate backend (~2.1x faster
+  at default level, identical ratio, still read by upstream htslib); CRAM
+  encode-parity verified end-to-end (codec compliance vectors, whole-CRAM
+  round-trip vs samtools at v2.1/3.0/3.1/4.0, ~1–2% smaller than upstream).
+- **Repo-wide CLI.** `cliflag.Parse` now permutes argv, so every tool accepts
+  flags interspersed with positionals (getopt/docopt parity).
+- **vcftools.** `--site-pi`, `--TsTv-by-count`, and `--TsTv` binned output now
+  byte-match upstream 0.1.18.
+
 **Recently closed (2026-06-14 parity wave).** The remaining tractable feature
 gaps were closed and parity-validated against the vendored upstream binaries:
 
