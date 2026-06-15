@@ -129,6 +129,20 @@ func NativePluginFlagTakesValue(name, flag string) bool {
 	return rs.FlagTakesValue(flag)
 }
 
+// fullPlugin is implemented by native plugins that take over the entire run
+// rather than fitting the read-input / per-record / re-emit pipeline. Such a
+// plugin reuses an existing engine that owns both input parsing and output
+// writing (for example +mendelian2, which calls the shared Mendelian2 engine
+// that can emit a text count summary and/or the filtered VCF/BCF itself). When
+// a registered plugin implements fullPlugin, runNativePlugin delegates the
+// whole invocation to RunFull and does nothing else.
+type fullPlugin interface {
+	// RunFull executes the plugin end to end, reading opts.InputFile and
+	// writing the result to out (stderr receives any diagnostics). It is
+	// responsible for option parsing, input reading and output formatting.
+	RunFull(opts PluginOptions, out io.Writer, stderr io.Writer) error
+}
+
 // stderrSink is implemented by plugins that emit end-of-run diagnostics
 // (e.g. "Filled N alleles") to stderr. The pipeline wires the host stderr in
 // before Destroy is called.
@@ -213,6 +227,11 @@ func nativePluginInfos() []PluginInfo {
 // stripped by the caller, but TrimPrefix is applied again defensively.
 func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer, stderr io.Writer) error {
 	plugin := ctor()
+	// A fullPlugin owns its entire invocation (input reading and output
+	// writing), bypassing the read/process/re-emit stages below.
+	if fp, ok := plugin.(fullPlugin); ok {
+		return fp.RunFull(opts, out, stderr)
+	}
 	if s, ok := plugin.(stderrSink); ok {
 		s.SetStderr(stderr)
 	}
