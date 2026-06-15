@@ -131,9 +131,10 @@ func TestSortByTag(t *testing.T) {
 		t.Fatalf("Sort: %v", err)
 	}
 	recs := readBAMRecords(t, out.Bytes())
-	// NM values: r10=3, r2=1, r1=2, r20=9, u1=missing → u1 sorts last.
-	// Sorted by NM: r2(1), r1(2), r10(3), r20(9), u1(missing).
-	want := []string{"r2", "r1", "r10", "r20", "u1"}
+	// NM values: r10=3, r2=1, r1=2, r20=9, u1=missing. Upstream samtools
+	// (bam1_cmp_by_tag) sorts records that lack the tag FIRST, then by tag
+	// value: u1(missing), r2(1), r1(2), r10(3), r20(9).
+	want := []string{"u1", "r2", "r1", "r10", "r20"}
 	for i, w := range want {
 		if recs[i].QName != w {
 			t.Errorf("position %d: got %q, want %q", i, recs[i].QName, w)
@@ -253,45 +254,51 @@ func TestParseMemBudget(t *testing.T) {
 }
 
 // TestTagLessFloatAndString exercises the float and string branches of
-// tagLess that the SortByTag tests don't hit.
+// tagLess that the SortByTag tests don't hit. The core tie-break is the
+// coordinate comparator (upstream `-t` selects TagCoordinate), so equal-tag
+// records ordered here carry distinct positions to exercise that fallback.
 func TestTagLessFloat(t *testing.T) {
-	a := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
-	b := &sam.Record{QName: "b", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 2.0}}}
-	if !tagLess(a, b, "XF") {
+	refIndex := map[string]int{"chr1": 0}
+	a := &sam.Record{QName: "a", RName: "chr1", Pos: 10, Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
+	b := &sam.Record{QName: "b", RName: "chr1", Pos: 20, Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 2.0}}}
+	if !tagLess(a, b, "XF", refIndex) {
 		t.Error("XF=1.0 should be less than XF=2.0")
 	}
-	if tagLess(b, a, "XF") {
+	if tagLess(b, a, "XF", refIndex) {
 		t.Error("XF=2.0 should NOT be less than XF=1.0")
 	}
-	// Equal floats fall back to QName.
-	c := &sam.Record{QName: "z", Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
-	if !tagLess(a, c, "XF") {
-		t.Error("tie on XF=1.0 should defer to QName (a < z)")
+	// Equal floats fall back to the coordinate compare (pos 10 < pos 30).
+	c := &sam.Record{QName: "z", RName: "chr1", Pos: 30, Aux: []sam.Aux{{Tag: "XF", Type: 'f', Value: 1.0}}}
+	if !tagLess(a, c, "XF", refIndex) {
+		t.Error("tie on XF=1.0 should defer to coordinate (pos 10 < 30)")
 	}
 }
 
 func TestTagLessString(t *testing.T) {
-	a := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
-	b := &sam.Record{QName: "b", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-bb"}}}
-	if !tagLess(a, b, "RG") {
+	refIndex := map[string]int{"chr1": 0}
+	a := &sam.Record{QName: "a", RName: "chr1", Pos: 10, Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
+	b := &sam.Record{QName: "b", RName: "chr1", Pos: 20, Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-bb"}}}
+	if !tagLess(a, b, "RG", refIndex) {
 		t.Error("rg-aa < rg-bb expected")
 	}
-	// Equal strings fall back to QName.
-	c := &sam.Record{QName: "z", Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
-	if !tagLess(a, c, "RG") {
-		t.Error("tie on rg-aa should defer to QName")
+	// Equal strings fall back to the coordinate compare (pos 10 < pos 30).
+	c := &sam.Record{QName: "z", RName: "chr1", Pos: 30, Aux: []sam.Aux{{Tag: "RG", Type: 'Z', Value: "rg-aa"}}}
+	if !tagLess(a, c, "RG", refIndex) {
+		t.Error("tie on rg-aa should defer to coordinate (pos 10 < 30)")
 	}
 }
 
 func TestTagLessMissingOneSide(t *testing.T) {
+	refIndex := map[string]int{}
 	withTag := &sam.Record{QName: "a", Aux: []sam.Aux{{Tag: "NM", Type: 'i', Value: int64(1)}}}
 	without := &sam.Record{QName: "b"}
-	// withTag has the field → it should sort first.
-	if !tagLess(withTag, without, "NM") {
-		t.Error("record with tag should sort before record without")
+	// Upstream (bam1_cmp_by_tag) sorts reads NOT carrying the tag first, so
+	// the record without the tag is the lesser one.
+	if !tagLess(without, withTag, "NM", refIndex) {
+		t.Error("record without tag should sort before record with tag")
 	}
-	if tagLess(without, withTag, "NM") {
-		t.Error("record without tag should NOT sort before record with tag")
+	if tagLess(withTag, without, "NM", refIndex) {
+		t.Error("record with tag should NOT sort before record without tag")
 	}
 }
 

@@ -329,9 +329,17 @@ func TestParity_Sort_T01_Coordinate(t *testing.T) {
 // a stable name-only sort. Affects a single pair (`r001` 83/163), so we
 // document the difference rather than diverging from upstream silently.
 func TestParity_Sort_T02_ByNameNatural(t *testing.T) {
-	t.Skip("known discrepancy: upstream samtools sort -n tie-breaks on FLAG; " +
-		"our port preserves input order. Tracked in PARITY_ROADMAP.md#samtools as " +
-		"the missing FLAG secondary key for name sorts.")
+	in := openParity(t, "test_input_1_a.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Sort(in, &out, SortOptions{Order: SortByNameNatural, OutputSAM: true}); err != nil {
+		t.Fatalf("Sort: %v", err)
+	}
+	got := stripPGAndCO(out.Bytes())
+	want := stripPGAndCO(upstreamSamtoolsRun(t, "sort", "-n", "-O", "sam", parityPath(t, "test_input_1_a.sam")))
+	if !bytes.Equal(got, want) {
+		t.Errorf("natural-name sort mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // sort.t03 — natural-name sort on a self-contained input with no same-qname
@@ -372,16 +380,33 @@ u1	4	*	0	0	*	*	0	0	*	*
 // sort.t04 — `-N` plain lexicographic name sort. Same FLAG tie-break gap
 // as sort.t02 surfaces on `test_input_1_b.sam`.
 func TestParity_Sort_T04_ByNameLex(t *testing.T) {
-	t.Skip("known discrepancy: upstream samtools sort -N tie-breaks on FLAG; " +
-		"our port preserves input order. Tracked in PARITY_ROADMAP.md#samtools.")
+	in := openParity(t, "test_input_1_b.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Sort(in, &out, SortOptions{Order: SortByName, OutputSAM: true}); err != nil {
+		t.Fatalf("Sort: %v", err)
+	}
+	got := stripPGAndCO(out.Bytes())
+	want := stripPGAndCO(upstreamSamtoolsRun(t, "sort", "-N", "-O", "sam", parityPath(t, "test_input_1_b.sam")))
+	if !bytes.Equal(got, want) {
+		t.Errorf("lexicographic-name sort mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // sort.t05 — `-t RG` tag sort. Skipped pending unify of upstream's
 // secondary tag-sort key (it falls back to position, then name).
 func TestParity_Sort_T05_TagSort(t *testing.T) {
-	t.Skip("known discrepancy: upstream samtools sort -t RG uses a 3-key compare " +
-		"(tag, pos, qname); our port uses (tag, qname). Tracked in " +
-		"PARITY_ROADMAP.md#samtools.")
+	in := openParity(t, "test_input_1_a.sam")
+	defer in.Close()
+	var out bytes.Buffer
+	if err := Sort(in, &out, SortOptions{Order: SortByTag, Tag: "RG", OutputSAM: true}); err != nil {
+		t.Fatalf("Sort: %v", err)
+	}
+	got := stripPGAndCO(out.Bytes())
+	want := stripPGAndCO(upstreamSamtoolsRun(t, "sort", "-t", "RG", "-O", "sam", parityPath(t, "test_input_1_a.sam")))
+	if !bytes.Equal(got, want) {
+		t.Errorf("tag sort mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // sort.t06 — empty input emits the header alone (and the SO/SS stamps).

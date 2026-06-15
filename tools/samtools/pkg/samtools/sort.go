@@ -303,48 +303,88 @@ func recordSize(r *sam.Record) int64 {
 func makeRecordLess(opts SortOptions, refIndex map[string]int) func(a, b *sam.Record) bool {
 	switch opts.Order {
 	case SortByName:
-		return func(a, b *sam.Record) bool { return a.QName < b.QName }
+		// Upstream `samtools sort -N`: bam1_cmp_core (bam_sort.c) compares
+		// QNames with strcmp (natural_sort disabled) and tie-breaks on the
+		// remapped FLAG key.
+		return func(a, b *sam.Record) bool { return nameLess(a, b, false) }
 	case SortByNameNatural:
-		return func(a, b *sam.Record) bool { return naturalLess(a.QName, b.QName) }
+		// Upstream `samtools sort -n`: same as above but QNames are compared
+		// with strnum_cmp (natural_sort enabled).
+		return func(a, b *sam.Record) bool { return nameLess(a, b, true) }
 	case SortByTag:
 		tag := opts.Tag
-		return func(a, b *sam.Record) bool { return tagLess(a, b, tag) }
+		return func(a, b *sam.Record) bool { return tagLess(a, b, tag, refIndex) }
 	default:
 		return func(a, b *sam.Record) bool { return coordLess(a, b, refIndex) }
 	}
 }
 
-// coordLess sorts records by (refID, 0-based pos). Unmapped records (refID
-// == -1) sort after every mapped record. Within a reference, ties on pos
-// fall back to lexicographic QName so the order is fully deterministic.
-func coordLess(a, b *sam.Record, refIndex map[string]int) bool {
-	ra := -1
-	if a.RName != "" && a.RName != "*" {
-		if id, ok := refIndex[a.RName]; ok {
-			ra = id
-		}
-	}
-	rb := -1
-	if b.RName != "" && b.RName != "*" {
-		if id, ok := refIndex[b.RName]; ok {
-			rb = id
-		}
-	}
-	// Convert -1 to a sentinel that sorts last.
+// refID resolves a record's reference name to its 0-based @SQ index, returning
+// a sentinel that sorts after every mapped reference when the name is unset
+// ("*") or absent from the header, matching upstream's tid == -1 handling.
+func refID(rname string, refIndex map[string]int) int {
 	const last = 1 << 30
-	if ra < 0 {
-		ra = last
+	if rname == "" || rname == "*" {
+		return last
 	}
-	if rb < 0 {
-		rb = last
+	if id, ok := refIndex[rname]; ok {
+		return id
 	}
+	return last
+}
+
+// flagSortKey remaps a record FLAG to the ordering key upstream samtools uses
+// to tie-break name sorts. Per bam_sort.c (bam1_cmp_core):
+//
+//	af = ((af&0xc0)<<8)|((af&0x100)<<3)|((af&0x800)>>3);
+//
+// This packs READ1/READ2 (0xc0) above SECONDARY (0x100) above SUPPLEMENTARY
+// (0x800), yielding the order READ1, READ2, (PRIMARY), SUPPLEMENTARY,
+// SECONDARY when compared ascending.
+func flagSortKey(flag uint16) int {
+	f := int(flag)
+	return ((f & 0xc0) << 8) | ((f & 0x100) << 3) | ((f & 0x800) >> 3)
+}
+
+// coordLess sorts records the way upstream samtools' bam1_cmp_core does for
+// coordinate order: by reference index (tid), then 0-based pos, then the
+// reverse-strand bit (forward before reverse). Unmapped records (tid == -1)
+// sort after every mapped record. Remaining ties fall to input order via the
+// stable sort / merge, exactly as upstream relies on KSORT/heap stability.
+func coordLess(a, b *sam.Record, refIndex map[string]int) bool {
+	ra := refID(a.RName, refIndex)
+	rb := refID(b.RName, refIndex)
 	if ra != rb {
 		return ra < rb
 	}
 	if a.Pos != b.Pos {
 		return a.Pos < b.Pos
 	}
-	return a.QName < b.QName
+	arev := a.Flag&sam.FlagReverse != 0
+	brev := b.Flag&sam.FlagReverse != 0
+	if arev != brev {
+		return !arev // forward (false) sorts before reverse (true)
+	}
+	return false
+}
+
+// nameLess sorts records the way upstream samtools' bam1_cmp_core does for
+// QueryName order: by QName (natural compare when natural is true, plain byte
+// compare otherwise), then by the remapped FLAG key. Remaining ties fall to
+// input order via the stable sort / merge.
+func nameLess(a, b *sam.Record, natural bool) bool {
+	if a.QName != b.QName {
+		if natural {
+			return naturalLess(a.QName, b.QName)
+		}
+		return a.QName < b.QName
+	}
+	ka := flagSortKey(a.Flag)
+	kb := flagSortKey(b.Flag)
+	if ka != kb {
+		return ka < kb
+	}
+	return false
 }
 
 // naturalLess implements numeric-aware string comparison: runs of digits in
@@ -401,44 +441,110 @@ func stripLeadingZeros(s string) string {
 	return s[i:]
 }
 
-// tagLess compares two records by an aux tag value. Missing tags sort last;
-// integer tags compare numerically; float tags compare as floats; string
-// tags compare lexicographically.
-func tagLess(a, b *sam.Record, tag string) bool {
+// normalizeTagType folds an aux type letter to the canonical class upstream's
+// normalize_type (bam_sort.c) uses so that comparisons across the integer,
+// float, and string families form a total order: all signed/unsigned ints map
+// to 'c', float/double to 'f', H/Z to 'H', everything else (e.g. 'A') to
+// itself.
+func normalizeTagType(t byte) byte {
+	switch t {
+	case 'c', 'C', 's', 'S', 'i', 'I':
+		return 'c'
+	case 'f', 'd':
+		return 'f'
+	case 'H', 'Z':
+		return 'H'
+	default:
+		return t
+	}
+}
+
+// tagFloat returns the aux value as a float64, accepting both integer and
+// float aux types (mirroring upstream's bam_aux2f, which reads an int as a
+// float when comparing an int tag against a float tag).
+func tagFloat(a sam.Aux) float64 {
+	if v, ok := a.Int(); ok {
+		return float64(v)
+	}
+	if f, ok := a.Value.(float64); ok {
+		return f
+	}
+	if f, ok := a.Value.(float32); ok {
+		return float64(f)
+	}
+	return 0
+}
+
+// tagLess compares two records the way upstream samtools' bam1_cmp_by_tag
+// (bam_sort.c) does. A record missing the tag sorts before one that carries
+// it. When both carry it the types are normalised; mismatched normalised
+// types order by the type letter (except int-vs-float, which compares
+// numerically). Equal types compare by value (integers as int64, floats as
+// double, single chars and strings lexically). Any remaining tie falls back
+// to the core comparator — here the coordinate order, because bare `-t`
+// selects TagCoordinate upstream.
+func tagLess(a, b *sam.Record, tag string, refIndex map[string]int) bool {
 	av, aok := a.GetAux(tag)
 	bv, bok := b.GetAux(tag)
+	// Reads not carrying the tag sort first (upstream returns -1 for the
+	// missing side, i.e. it is the lesser record).
 	if !aok && !bok {
-		return a.QName < b.QName
+		return coordLess(a, b, refIndex)
 	}
 	if !aok {
-		return false
-	}
-	if !bok {
 		return true
 	}
-	// Integer comparison (works for c/C/s/S/i/I).
-	ai, aint := av.Int()
-	bi, bint := bv.Int()
-	if aint && bint {
+	if !bok {
+		return false
+	}
+
+	at := normalizeTagType(av.Type)
+	bt := normalizeTagType(bv.Type)
+	if at != bt {
+		// Fix int-vs-float by comparing both as floats; otherwise order by
+		// the normalised type letter.
+		if at == 'c' && bt == 'f' {
+			at, bt = 'f', 'f'
+		} else if at == 'f' && bt == 'c' {
+			at, bt = 'f', 'f'
+		} else {
+			return at < bt
+		}
+	}
+
+	switch at {
+	case 'c':
+		ai, _ := av.Int()
+		bi, _ := bv.Int()
 		if ai != bi {
 			return ai < bi
 		}
-		return a.QName < b.QName
-	}
-	if av.Type == 'f' && bv.Type == 'f' {
-		af, _ := av.Value.(float64)
-		bf, _ := bv.Value.(float64)
+	case 'f':
+		af := tagFloat(av)
+		bf := tagFloat(bv)
 		if af != bf {
 			return af < bf
 		}
-		return a.QName < b.QName
+	case 'A':
+		as, _ := av.Value.(string)
+		bs, _ := bv.Value.(string)
+		if as != bs {
+			return as < bs
+		}
+	case 'H':
+		as, _ := av.Value.(string)
+		bs, _ := bv.Value.(string)
+		if as != bs {
+			return as < bs
+		}
+	default:
+		as, _ := av.Value.(string)
+		bs, _ := bv.Value.(string)
+		if as != bs {
+			return as < bs
+		}
 	}
-	as, _ := av.Value.(string)
-	bs, _ := bv.Value.(string)
-	if as != bs {
-		return as < bs
-	}
-	return a.QName < b.QName
+	return coordLess(a, b, refIndex)
 }
 
 // writeShard creates a tmp BAM file and writes the given (already sorted)
