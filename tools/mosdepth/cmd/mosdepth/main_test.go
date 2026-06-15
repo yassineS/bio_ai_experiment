@@ -265,3 +265,105 @@ func TestParseFlags_FastaAccepted(t *testing.T) {
 		t.Errorf("fasta=%q, want %q", opts.fasta, "ref.fa")
 	}
 }
+
+// TestParseFlags_Interspersed proves the docopt-parity permutation: flags
+// placed after or among the two positionals parse identically to the canonical
+// flags-first form. Each case pairs an interspersed argv with the equivalent
+// flags-first argv; the parsed runOptions and positionals must match
+// field-by-field. This is the gap upstream's docopt parser fills that Go's
+// flag package (which stops at the first positional) otherwise would not.
+func TestParseFlags_Interspersed(t *testing.T) {
+	cases := []struct {
+		name         string
+		interspersed []string
+		flagsFirst   []string
+	}{
+		{"value-flag-trailing", []string{"p", "b.bam", "--chrom", "MT"}, []string{"--chrom", "MT", "p", "b.bam"}},
+		{"value-flag-among", []string{"p", "--chrom", "MT", "b.bam"}, []string{"--chrom", "MT", "p", "b.bam"}},
+		{"short-value-among", []string{"p", "-Q", "20", "b.bam"}, []string{"-Q", "20", "p", "b.bam"}},
+		{"short-value-concat-trailing", []string{"p", "b.bam", "-Q20"}, []string{"-Q", "20", "p", "b.bam"}},
+		{"bool-trailing", []string{"p", "b.bam", "-x"}, []string{"-x", "p", "b.bam"}},
+		{"two-bools-trailing", []string{"p", "b.bam", "-n", "-x"}, []string{"-n", "-x", "p", "b.bam"}},
+		{"bundled-bools-trailing", []string{"p", "b.bam", "-nx"}, []string{"-n", "-x", "p", "b.bam"}},
+		{"long-eq-trailing", []string{"p", "b.bam", "--chrom=MT"}, []string{"--chrom=MT", "p", "b.bam"}},
+		{"value-then-bool-among", []string{"p", "--chrom", "MT", "b.bam", "-x"}, []string{"--chrom", "MT", "-x", "p", "b.bam"}},
+		{"value-dash-value-trailing", []string{"p", "b.bam", "-c", "-5"}, []string{"-c", "-5", "p", "b.bam"}},
+		{"mixed-pre-and-post", []string{"-x", "p", "b.bam", "--chrom", "MT"}, []string{"-x", "--chrom", "MT", "p", "b.bam"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotOpts, gotPos, err := parseFlags(tc.interspersed)
+			if err != nil {
+				t.Fatalf("interspersed parse %v: %v", tc.interspersed, err)
+			}
+			wantOpts, wantPos, err := parseFlags(tc.flagsFirst)
+			if err != nil {
+				t.Fatalf("flags-first parse %v: %v", tc.flagsFirst, err)
+			}
+			if *gotOpts != *wantOpts {
+				t.Errorf("interspersed %v parsed to %+v, flags-first %v parsed to %+v",
+					tc.interspersed, *gotOpts, tc.flagsFirst, *wantOpts)
+			}
+			if strings.Join(gotPos, ",") != strings.Join(wantPos, ",") {
+				t.Errorf("positionals: interspersed %v -> %v, flags-first %v -> %v",
+					tc.interspersed, gotPos, tc.flagsFirst, wantPos)
+			}
+		})
+	}
+}
+
+// TestParseFlags_EndOfOptions confirms that a "--" terminator still forces the
+// tokens after it to be positional, so a prefix that begins with '-' can be
+// passed and interspersing does not break the terminator semantics.
+func TestParseFlags_EndOfOptions(t *testing.T) {
+	opts, pos, err := parseFlags([]string{"--chrom", "MT", "--", "-weird", "b.bam"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if opts.chrom != "MT" {
+		t.Errorf("chrom=%q, want MT", opts.chrom)
+	}
+	if strings.Join(pos, ",") != "-weird,b.bam" {
+		t.Errorf("positionals=%v, want [-weird b.bam]", pos)
+	}
+}
+
+// TestRun_InterspersedMatchesFlagsFirst runs mosdepth end-to-end with flags
+// after the positionals and asserts the produced per-base output is identical
+// to the canonical flags-first invocation, exercising the full CLI path rather
+// than just parseFlags.
+func TestRun_InterspersedMatchesFlagsFirst(t *testing.T) {
+	dir := t.TempDir()
+	cigar, err := sam.ParseCigar("5M")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bam := makeBAM(t, []sam.Reference{{Name: "chr1", Length: 20}}, []*sam.Record{
+		{QName: "r1", RName: "chr1", Pos: 1, Cigar: cigar, MapQ: 60, Seq: "AAAAA"},
+	})
+	bamPath := filepath.Join(dir, "in.bam")
+	if err := os.WriteFile(bamPath, bam, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ffPrefix := filepath.Join(dir, "ff")
+	ixPrefix := filepath.Join(dir, "ix")
+	if rc := run([]string{"-n", ffPrefix, bamPath}); rc != 0 {
+		t.Fatalf("flags-first rc: %d", rc)
+	}
+	if rc := run([]string{ixPrefix, bamPath, "-n"}); rc != 0 {
+		t.Fatalf("interspersed rc: %d", rc)
+	}
+	for _, suffix := range []string{".mosdepth.summary.txt", ".mosdepth.global.dist.txt"} {
+		ff, err := os.ReadFile(ffPrefix + suffix)
+		if err != nil {
+			t.Fatalf("read %s: %v", suffix, err)
+		}
+		ix, err := os.ReadFile(ixPrefix + suffix)
+		if err != nil {
+			t.Fatalf("read %s: %v", suffix, err)
+		}
+		if !bytes.Equal(ff, ix) {
+			t.Errorf("%s differs between flags-first and interspersed", suffix)
+		}
+	}
+}
