@@ -1,0 +1,13 @@
+##fileformat=VCFv4.2
+##contig=<ID=c1,length=120>
+##contig=<ID=c2,length=60>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##INFO=<ID=AA,Number=1,Type=String,Description="Ancestral allele">
+##INFO=<ID=RN,Number=1,Type=Integer,Description="Ref numeric">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+c1	10	.	N	G	.	.	DP=5	GT	0/1
+c1	20	.	N	C	.	.	DP=9	GT	1/1
+c1	30	.	G	C	.	.	DP=2	GT	0/0
+c2	5	.	A	C	.	.	DP=7	GT	0/1
+c2	15	.	T	G	.	.	DP=3	GT	1/1
