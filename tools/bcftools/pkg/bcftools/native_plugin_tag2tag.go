@@ -8,9 +8,13 @@
 //	GT  : hard-called genotype (String, Number=1)
 //
 // Options -r/--replace (drop the source tag) and -t/--threshold (GP->GT
-// hard-call threshold) are supported. The localized-allele family
-// (--XX-to-LXX, --LXX-to-XX) and the QR,QA->QS conversion require the htslib
-// localized-allele machinery and are reported as unsupported in batch 1.
+// hard-call threshold) are supported, plus the FORMAT/QR,QA -> FORMAT/QS
+// conversion (--QR-QA-to-QS), which concatenates the per-sample reference
+// quality (QR, Number=1) and alternate quality sums (QA, Number=A) into the
+// Number=R QS tag. The localized-allele family (--XX-to-LXX, --LXX-to-XX)
+// requires the htslib localized-allele (LAA/LPL/LAD) machinery and remains
+// unsupported; --XX-to-LXX is unimplemented upstream as well (process_XX is a
+// stub that errors "todo").
 package bcftools
 
 import (
@@ -30,6 +34,7 @@ type tag2tagPlugin struct {
 	src, dst string
 	dropSrc  bool
 	gpThresh float64
+	qrqa     bool // --QR-QA-to-QS mode
 }
 
 // Name returns the plugin name.
@@ -74,6 +79,22 @@ func (p *tag2tagPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 			return nil, fmt.Errorf("tag2tag: unsupported option %q", a)
 		}
 	}
+	if p.qrqa {
+		for _, t := range []string{"QR", "QA"} {
+			if !hasFormatHeader(hdr.MetaInfo, t) {
+				return nil, fmt.Errorf("tag2tag: the source tag does not exist: %s", t)
+			}
+		}
+		out := &vcf.Header{Samples: hdr.Samples}
+		out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
+		if p.dropSrc {
+			out.MetaInfo = removeFormatHeader(out.MetaInfo, "QR")
+			out.MetaInfo = removeFormatHeader(out.MetaInfo, "QA")
+		}
+		out.MetaInfo = appendInfoHeader(out.MetaInfo, `##FORMAT=<ID=QS,Number=R,Type=Integer,Description="Phred-score allele quality sum">`)
+		return out, nil
+	}
+
 	if p.src == "" {
 		return nil, fmt.Errorf("tag2tag: a conversion such as --PL-to-GT must be given")
 	}
@@ -94,10 +115,14 @@ func (p *tag2tagPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 // localized-allele and QR/QA selectors.
 func (p *tag2tagPlugin) parseSelector(opt string) error {
 	up := strings.ToUpper(opt[2:]) // strip leading --
+	if up == "QR-QA-TO-QS" {
+		p.qrqa = true
+		return nil
+	}
 	switch up {
 	case "XX-TO-LXX", "LXX-TO-XX", "LPL-TO-PL", "LAD-TO-AD",
-		"PL-TO-LPL", "AD-TO-LAD", "QR-QA-TO-QS":
-		return fmt.Errorf("tag2tag: conversion %s (localized alleles / QR,QA) is not supported in the native plugin", opt)
+		"PL-TO-LPL", "AD-TO-LAD":
+		return fmt.Errorf("tag2tag: conversion %s (localized alleles) is not supported in the native plugin", opt)
 	}
 	parts := strings.Split(up, "-TO-")
 	if len(parts) != 2 {
@@ -117,6 +142,9 @@ func (p *tag2tagPlugin) parseSelector(opt string) error {
 
 // Process converts the source tag to the destination tag for one record.
 func (p *tag2tagPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
+	if p.qrqa {
+		return p.processQRQA(v)
+	}
 	if !formatHasTag(v, p.src) {
 		return []*vcf.Variant{v}, nil
 	}
@@ -151,6 +179,38 @@ func (p *tag2tagPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 	}
 	if p.dropSrc {
 		removeFormatTag(v, p.src)
+	}
+	return []*vcf.Variant{v}, nil
+}
+
+// processQRQA implements --QR-QA-to-QS: it concatenates FORMAT/QR (Number=1)
+// and FORMAT/QA (Number=A) into FORMAT/QS (Number=R) per sample. The record is
+// left unchanged if QR is absent, or (for multiallelic sites) if QA is absent.
+func (p *tag2tagPlugin) processQRQA(v *vcf.Variant) ([]*vcf.Variant, error) {
+	if !formatHasTag(v, "QR") {
+		return []*vcf.Variant{v}, nil
+	}
+	nals := 1 + len(v.Alt)
+	if nals > 1 && !formatHasTag(v, "QA") {
+		return []*vcf.Variant{v}, nil
+	}
+	qs := make([]string, len(v.Samples))
+	for i := range v.Samples {
+		qr := v.Samples[i].Data["QR"]
+		if nals == 1 {
+			qs[i] = qr
+			continue
+		}
+		qa := v.Samples[i].Data["QA"]
+		qs[i] = qr + "," + qa
+	}
+	ensureFormatTag(v, "QS")
+	for i := range v.Samples {
+		v.Samples[i].Data["QS"] = qs[i]
+	}
+	if p.dropSrc {
+		removeFormatTag(v, "QR")
+		removeFormatTag(v, "QA")
 	}
 	return []*vcf.Variant{v}, nil
 }

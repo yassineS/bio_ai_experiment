@@ -61,24 +61,71 @@ func runPlugin(args []string, pluginName string) int {
 	var inputArgs []string
 	{
 		hostSection := args
+		explicitSep := false
 		for i, tok := range args {
 			if tok == "--" {
 				hostSection = args[:i]
 				pluginArgs = args[i+1:]
+				explicitSep = true
 				break
 			}
 		}
+
+		// Determine the plugin name up front so we can pick the right
+		// argument-splitting rule. For the `plugin <name>` form the name is the
+		// first bare (non-flag) token; for the `+name` shorthand it is already
+		// known. Knowing the name lets us special-case run()-style plugins,
+		// whose options precede the input file with no `--` separator.
+		resolvedName := pluginName
+		if resolvedName == "" {
+			for _, tok := range hostSection {
+				if len(tok) > 0 && tok[0] == '-' && tok != "-" {
+					continue
+				}
+				resolvedName = tok
+				break
+			}
+		}
+
+		// A run()-style native plugin invoked without an explicit `--` accepts
+		// its own options before the trailing input-file positional, mirroring
+		// upstream (e.g. `+variant-distance -d nearest FILE`). In that mode a
+		// flag the host does not recognise is forwarded to the plugin rather
+		// than rejected, and the lone bare token (other than the plugin name)
+		// is the input file. The generic init/process plugins keep the strict
+		// `[host-opts] [FILE] -- [plugin-opts]` split, because options before
+		// the file are parsed as host options upstream.
+		runStyle := !explicitSep && resolvedName != "" && bcftools.IsRunStyleNativePlugin(resolvedName)
+
 		// Walk the host section, separating host flags (with their values) from
-		// the plugin name and the bare input-file argument(s).
+		// the plugin name, the plugin options, and the bare input-file
+		// argument(s).
 		i := 0
 		for i < len(hostSection) {
 			tok := hostSection[i]
 			if len(tok) > 0 && tok[0] == '-' && tok != "-" {
-				hostArgs = append(hostArgs, tok)
-				if needsValue(tok) && i+1 < len(hostSection) {
+				if needsValue(tok) {
+					hostArgs = append(hostArgs, tok)
+					if i+1 < len(hostSection) {
+						i++
+						hostArgs = append(hostArgs, hostSection[i])
+					}
 					i++
-					hostArgs = append(hostArgs, hostSection[i])
+					continue
 				}
+				if runStyle {
+					// Forward an unrecognised flag (and, when it takes one, its
+					// value) to the plugin instead of the host.
+					pluginArgs = append(pluginArgs, tok)
+					if bcftools.NativePluginFlagTakesValue(resolvedName, tok) && i+1 < len(hostSection) {
+						i++
+						pluginArgs = append(pluginArgs, hostSection[i])
+					}
+					i++
+					continue
+				}
+				// Generic plugin: a bare boolean host flag (e.g. -l, -?).
+				hostArgs = append(hostArgs, tok)
 				i++
 				continue
 			}
@@ -197,7 +244,7 @@ func needsValue(flagTok string) bool {
 	switch flagTok {
 	case "-o", "--output", "-O", "--output-type",
 		"-r", "--regions", "-R", "--regions-file",
-		"--compression-level":
+		"--compression-level", "-@", "--threads":
 		return true
 	}
 	// `-l` is the boolean --list-plugins here, so it takes no value.

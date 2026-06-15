@@ -19,16 +19,50 @@ import (
 // lines (##bcftools_*, version banners) that legitimately differ between the
 // two — reusing stripProvenanceBytes from the existing live-oracle suite.
 
+// pluginDirAbs returns the absolute path of the vendored compiled-plugin
+// directory that the upstream binary dlopen's via BCFTOOLS_PLUGINS.
+func pluginDirAbs(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "bcftools", "plugins"))
+	if err != nil {
+		t.Fatalf("plugin dir abs: %v", err)
+	}
+	return dir
+}
+
+// pluginCLIArgs builds the argv for a `+name` plugin invocation in the form
+// that the REAL upstream bcftools accepts, so the very same argv can be handed
+// to both the upstream binary and our port. There are two upstream forms:
+//
+//   - run()-style plugins (those whose upstream .so exports a `run` symbol,
+//     e.g. variant-distance) take their own options BEFORE the input file with
+//     no `--` separator: `+name <opts...> <file>`.
+//   - the generic init/process plugins take host options before the file and
+//     the plugin's own options after a `--`: `+name <file> -- <opts...>`.
+//
+// Mirroring upstream here is what makes the oracle a genuine CLI-to-CLI test:
+// if our port rejects a form upstream accepts, the subprocess fails and the
+// test fails (which is exactly how the variant-distance bug would have been
+// caught before the fix).
+func pluginCLIArgs(name, fixture string, args []string) []string {
+	if IsRunStyleNativePlugin(name) {
+		argv := append([]string{"+" + name}, args...)
+		return append(argv, fixture)
+	}
+	argv := []string{"+" + name, fixture}
+	if len(args) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, args...)
+	}
+	return argv
+}
+
 // runUpstreamPlugin runs the upstream bcftools binary with the vendored
 // plugins directory on PATH and returns its stdout.
 func runUpstreamPlugin(t *testing.T, bin string, args ...string) []byte {
 	t.Helper()
-	pluginDir, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "reference_code", "bcftools", "plugins"))
-	if err != nil {
-		t.Fatalf("plugin dir abs: %v", err)
-	}
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(os.Environ(), "BCFTOOLS_PLUGINS="+pluginDir)
+	cmd.Env = append(os.Environ(), "BCFTOOLS_PLUGINS="+pluginDirAbs(t))
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = nil
@@ -38,33 +72,39 @@ func runUpstreamPlugin(t *testing.T, bin string, args ...string) []byte {
 	return out.Bytes()
 }
 
-// runNativePluginText runs the native plugin pipeline (RunPlugin) over a
-// fixture with the given plugin arguments and returns the VCF stdout.
-func runNativePluginText(t *testing.T, fixture, name string, pluginArgs ...string) []byte {
+// runOursPlugin runs OUR built bcftools binary (ourBinPath, produced by
+// TestMain) through its actual CLI with the given argv, returning stdout. It
+// drives the port the same way a user would, so CLI argument-routing bugs are
+// visible to the oracle. A non-zero exit is a hard failure — e.g. our port
+// rejecting an upstream-accepted command form.
+func runOursPlugin(t *testing.T, args ...string) []byte {
 	t.Helper()
+	if ourBinPath == "" {
+		t.Fatalf("local bcftools port binary not built; cannot run CLI oracle")
+	}
+	cmd := exec.Command(ourBinPath, args...)
+	cmd.Env = append(os.Environ(), "BCFTOOLS_PLUGINS="+pluginDirAbs(t))
 	var out, errBuf bytes.Buffer
-	err := RunPlugin(PluginOptions{
-		Name:         name,
-		Args:         pluginArgs,
-		InputFile:    fixture,
-		OutputFormat: OutputVCF,
-	}, &out, &errBuf)
-	if err != nil {
-		t.Fatalf("native +%s %v: %v\nstderr: %s", name, pluginArgs, err, errBuf.String())
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ours %v: %v\nstderr: %s", args, err, errBuf.String())
 	}
 	return out.Bytes()
 }
 
-// assertPluginParity asserts that the native pipeline and upstream produce
-// byte-identical stdout (modulo provenance) for `+name fixture -- args`.
+// assertPluginParity asserts that OUR port and upstream produce byte-identical
+// stdout (modulo provenance) when BOTH are driven through their CLIs with the
+// SAME upstream-accepted command form for `+name`. This is a true CLI-to-CLI
+// oracle: it fails if our port rejects (or mis-routes) a form upstream accepts.
 func assertPluginParity(t *testing.T, bin, fixture, name string, args ...string) {
 	t.Helper()
-	upArgs := append([]string{"+" + name, fixture, "--"}, args...)
-	up := runUpstreamPlugin(t, bin, upArgs...)
-	ours := runNativePluginText(t, fixture, name, args...)
+	argv := pluginCLIArgs(name, fixture, args)
+	up := runUpstreamPlugin(t, bin, argv...)
+	ours := runOursPlugin(t, argv...)
 	if !bytes.Equal(stripProvenanceBytes(up), stripProvenanceBytes(ours)) {
-		t.Fatalf("native +%s %v diverges from upstream\n--- upstream (%d bytes) ---\n%s\n--- native (%d bytes) ---\n%s",
-			name, args, len(up), snippet(up, 1200), len(ours), snippet(ours, 1200))
+		t.Fatalf("+%s %v diverges from upstream (argv=%v)\n--- upstream (%d bytes) ---\n%s\n--- ours (%d bytes) ---\n%s",
+			name, args, argv, len(up), snippet(up, 1200), len(ours), snippet(ours, 1200))
 	}
 }
 
@@ -256,10 +296,12 @@ func TestNativePluginCounts(t *testing.T) {
 		fx := fx
 		t.Run(fx, func(t *testing.T) {
 			fixture := parityFixture(t, fx)
-			up := runUpstreamPlugin(t, bin, "+counts", fixture)
-			ours := runNativePluginText(t, fixture, "counts")
+			// counts is a generic plugin taking no plugin options: `+counts FILE`.
+			argv := pluginCLIArgs("counts", fixture, nil)
+			up := runUpstreamPlugin(t, bin, argv...)
+			ours := runOursPlugin(t, argv...)
 			if !bytes.Equal(up, ours) {
-				t.Fatalf("native +counts diverges from upstream\n--- upstream ---\n%s\n--- native ---\n%s", up, ours)
+				t.Fatalf("+counts diverges from upstream (argv=%v)\n--- upstream ---\n%s\n--- ours ---\n%s", argv, up, ours)
 			}
 		})
 	}

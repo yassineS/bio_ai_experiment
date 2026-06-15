@@ -64,6 +64,71 @@ type parallelPlugin interface {
 	Parallel() bool
 }
 
+// bufferedPlugin is implemented by stateful plugins that need to see the whole
+// record stream at once — for example to annotate each site with the distance
+// to its neighbours (look-ahead and look-back). When a plugin implements it,
+// the pipeline hands the complete, in-order variant slice to ProcessAll
+// instead of calling Process per record, and emits the returned slice. Such a
+// plugin is inherently serial; it must not also report Parallel()==true.
+type bufferedPlugin interface {
+	// ProcessAll transforms the entire ordered record stream in one pass and
+	// returns the records to emit, in order. Init has already run and Destroy
+	// runs afterwards, exactly as for the per-record path.
+	ProcessAll(variants []*vcf.Variant) ([]*vcf.Variant, error)
+}
+
+// runStylePlugin is implemented by native plugins whose upstream counterpart
+// exports a `run` symbol rather than the init/process/destroy lifecycle.
+// Upstream dispatches such plugins by handing the plugin its full argv and
+// letting the plugin's own getopt parse it; the plugin options therefore
+// precede the trailing input-file positional and there is no `--` separator
+// (e.g. `bcftools +variant-distance -d nearest FILE`). The generic
+// init/process plugins, by contrast, require the `+name [host-opts] [FILE] --
+// [plugin-opts]` form, because options before the file are parsed as host
+// options. The host CLI uses RunStyle to pick the matching argument-splitting
+// rule, and FlagTakesValue to know which of the plugin's own flags consume the
+// following token while splitting the input file out of the plugin options.
+type runStylePlugin interface {
+	// RunStyle reports whether the plugin uses the upstream run() dispatch,
+	// accepting its options before the input file with no `--` separator.
+	RunStyle() bool
+	// FlagTakesValue reports whether the given plugin flag (e.g. "-d" or
+	// "--direction") consumes the following CLI token as its value. It is used
+	// by the host only to separate the lone input-file positional from the
+	// plugin options in the run-style form.
+	FlagTakesValue(flag string) bool
+}
+
+// IsRunStyleNativePlugin reports whether name resolves to a native plugin that
+// uses the upstream run() dispatch (plugin options before the input file, no
+// `--` separator). The leading "+" of the `+name` shorthand must be stripped
+// by the caller. It returns false for non-native names and for generic
+// init/process plugins.
+func IsRunStyleNativePlugin(name string) bool {
+	ctor, ok := nativeRegistry[name]
+	if !ok {
+		return false
+	}
+	rs, ok := ctor().(runStylePlugin)
+	return ok && rs.RunStyle()
+}
+
+// NativePluginFlagTakesValue reports whether the named run-style native
+// plugin's flag consumes the following CLI token as its value. It returns
+// false for non-run-style or unknown plugins. The host uses it to split the
+// input-file positional out of a run-style plugin's options.
+func NativePluginFlagTakesValue(name, flag string) bool {
+	ctor, ok := nativeRegistry[name]
+	if !ok {
+		return false
+	}
+	rs, ok := ctor().(runStylePlugin)
+	if !ok || !rs.RunStyle() {
+		return false
+	}
+	return rs.FlagTakesValue(flag)
+}
+
 // stderrSink is implemented by plugins that emit end-of-run diagnostics
 // (e.g. "Filled N alleles") to stderr. The pipeline wires the host stderr in
 // before Destroy is called.
@@ -182,8 +247,15 @@ func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer
 		outHdr = hdr
 	}
 
-	// Stage 2: run Process over every record, preserving input order.
-	results, err := processRecords(plugin, variants, opts.Threads)
+	// Stage 2: transform the records. A bufferedPlugin sees the whole ordered
+	// stream at once (for cross-record look-ahead/look-back); every other
+	// plugin runs through the per-record worker pool, preserving input order.
+	var results []*vcf.Variant
+	if bp, ok := plugin.(bufferedPlugin); ok {
+		results, err = bp.ProcessAll(variants)
+	} else {
+		results, err = processRecords(plugin, variants, opts.Threads)
+	}
 	if err != nil {
 		_ = plugin.Destroy()
 		return &PluginExecError{Name: opts.Name, Err: err}
