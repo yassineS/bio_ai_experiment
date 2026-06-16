@@ -994,3 +994,44 @@ values `3,1,10,3,1` (counts 1→2, 3→2, 10→1) upstream prints `,10` instead 
 above. This is the documented, intentional deviation; all other KeyListOps
 operations (`distinct`, `concat`, `distinct_sort_num[_desc]`, `freqasc`,
 `freqdesc`, …) match the live upstream binary byte-for-byte.
+
+## bedtools bamtobed `-tag` + `-split`: malformed extra column
+
+`bamToBed.cpp` `PrintBed()` has two split-mode branches. When no `-tag` is
+given it correctly prints `chrom start end name mapq strand` (6 columns, one
+per block). But the `-tag` branch prints an extra `bam.Position` column and
+streams the block start/end after it:
+
+```cpp
+cout << chrom << "\t"
+     << bam.Position << "\t"   // <- spurious extra column
+     << curr.start << "\t"
+     << curr.end << "\t"
+     << name << "\t"
+     << PrintTag(bam, bamTag) << "\t"
+     << strand << endl;
+```
+
+So `bamtobed -tag NM -split` emits a 7-column line `chrom pos start end name
+tag strand` instead of the intended BED6 `chrom start end name tag strand`.
+
+**Our behaviour:** reproduced exactly for byte-for-byte parity — pipelines
+that already consume this 7-column shape keep working. `bedbamtobed` only
+emits the spurious column in the `-tag`+`-split` combination, matching the
+live upstream binary; the plain `-split` and non-split `-tag` paths are clean
+BED6.
+
+## bedtools bedtobam: out-of-genome chromosome silently maps to ref id 0
+
+`bedToBam.cpp` `ConvertBedToBam()` resolves the reference id with
+`bam.RefID = chromToId[bed.chrom];`. Because `chromToId` is a `std::map`,
+`operator[]` on a missing key inserts a default-constructed value of `0` — so a
+BED record whose chromosome is absent from the `-g` genome file is written
+against the FIRST `@SQ` reference rather than being rejected or skipped. For
+example, with a genome listing only `1`, an input on `chrX` produces a record
+on `1` (ref id 0), not an error.
+
+**Our behaviour:** reproduced for byte-for-byte parity — an unknown chromosome
+is emitted against the first reference in the genome file (requires a non-empty
+genome). `bedtobam` matches the live upstream binary here; an empty genome file
+is an explicit error rather than a crash.
