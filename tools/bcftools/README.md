@@ -29,7 +29,13 @@ subcommands. The current implementation ships:
   richer mode bitmask `-m c|[adeEgmMS]` (a=annotate, d=set offending
   trio GTs to ./., e=list err sites, E=drop err sites, g=list good
   sites, m=list missing sites, M=drop missing sites, S=drop skipped
-  sites). Multiple letters can be combined.
+  sites). Multiple letters can be combined. The annotate mode (`-m a`)
+  adds the full per-site INFO quartet upstream emits — `MERR` (trios
+  with a Mendelian error), `MGOOD` (evaluable, consistent trios),
+  `MMISS` (trios with missing/unusable genotypes), and `MNORULE`
+  (trios with no applicable inheritance rule) — with the verbatim
+  `##INFO` definitions and values, byte-validated against upstream
+  1.23.1. The `+mendelian2` plugin form shares this engine.
 - `bcftools gtcheck` — sample-identity check by hard-GT Hamming
   concordance (with `-g panel`). Emits the upstream `tsv`-format
   `DC` / `INFO` tables.
@@ -59,12 +65,18 @@ subcommands. The current implementation ships:
   in `docs/PARITY_ROADMAP.md`. Output is a TSV with columns
   `sample, chrom, n_sites, median_baf, mean_lrr, cn_call`.
 - `bcftools csq` — predict variant consequences against a GFF3
-  annotation. v1 ships only the protein-coding SNP classifier
-  (missense / synonymous / stop\_gained / stop\_lost / start\_lost);
-  indels, splice-site, compound-het, and haplotype-aware phasing
-  are tracked in `docs/PARITY_ROADMAP.md`. Output is a VCF with an
-  `INFO/BCSQ` tag of the form
-  `consequence|gene|transcript|biotype|strand|aa_change|dna_change`.
+  annotation, via the full haplotype-aware engine. Output is a VCF
+  with an `INFO/BCSQ` tag of the form
+  `consequence|gene|transcript|biotype|strand|aa_change|dna_change`
+  (and a per-sample `FORMAT/BCSQ` bitmask). All upstream output
+  containers are supported: `-O v|z|b|u` (VCF / BGZF-VCF / BCF /
+  uncompressed-BCF) plus `-O t`, the streaming tab-delimited text
+  form (upstream `FT_TAB_TEXT`) that emits one
+  `CSQ<TAB>sample<TAB>haplotype<TAB>chrom<TAB>pos<TAB>consequence`
+  row per (sample, haplotype) consequence, byte-for-byte with
+  upstream `text_print_vcsq` (the leading `#`-comment version/command
+  provenance lines aside). Remaining gaps (e.g. `-s -` sample
+  dropping) are tracked in `docs/PARITY_ROADMAP.md`.
 - `bcftools mpileup` — per-position genotype likelihoods from BAM
   input, the upstream input to `bcftools call`. v1 ships the
   SNP-only, uniform-error binomial likelihood model: each base

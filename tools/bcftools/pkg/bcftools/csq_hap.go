@@ -298,6 +298,16 @@ type vcsq struct {
 	hasVstr bool
 }
 
+// txtCsq mirrors txt_csq_t: one staged (consequence-index, sample,
+// haplotype) tuple for the -O t streaming-text output. ismpl is -1 when
+// genotypes are dropped (the no-GT, sample-agnostic path); ihap is the
+// 1-based haplotype number, or 0 when no haplotype applies.
+type txtCsq struct {
+	idx   int
+	ismpl int
+	ihap  int
+}
+
 // vrecBuf mirrors vrec_t: a single VCF record plus the consequences
 // staged against it.
 type vrecBuf struct {
@@ -311,6 +321,10 @@ type vrecBuf struct {
 	// nfmt tracks the highest int32 index touched by any bit, so the
 	// emitted FORMAT/BCSQ can be trimmed to the minimum width.
 	nfmt int
+	// txt holds the staged (idx, ismpl, ihap) tuples for -O t text
+	// output, in staging order. Mirrors vrec_t.txt. Only populated when
+	// the engine runs in textMode.
+	txt []txtCsq
 }
 
 // vbuf mirrors vbuf_t: VCF records sharing a position.
@@ -347,6 +361,15 @@ type hapEngine struct {
 	rid      string           // current contig
 
 	out []*vcf.Variant // finalised, ready-to-write records in order
+
+	// textMode selects upstream's -O t streaming-text output
+	// (FT_TAB_TEXT). When set, the engine stages per-(sample,haplotype)
+	// consequence tuples (vrecBuf.txt) instead of FORMAT/BCSQ bitmasks
+	// and renders them into outText at flush time.
+	textMode bool
+	// outText accumulates the finalised "CSQ\t..." text lines (no
+	// header), in emission order. Only populated when textMode is set.
+	outText []string
 }
 
 // newHapEngine constructs an engine for the given index and options.
@@ -389,6 +412,7 @@ func newHapEngine(idx *CSQIndex, opts CSQOptions, hdr *vcf.Header) *hapEngine {
 	}
 	e.ncsq2 *= 2
 	e.nfmtBcsq = ncsq2ToNfmt(e.ncsq2)
+	e.textMode = opts.TextOutput
 	return e
 }
 

@@ -80,8 +80,7 @@ func (e *hapEngine) cdsLocalAllele(ht *hapTranscript, icds int, rec *hapRecord, 
 	// codon prediction. Stage it as-is.
 	if node.typ == hapSSS {
 		entry.typ.typ = csqType
-		e.csqPush(entry, rec.v)
-		e.stageSimpleFmtBits(entry, rec.v)
+		e.pushSimple(entry, rec.v)
 		return
 	}
 
@@ -146,8 +145,7 @@ func (e *hapEngine) cdsLocalAllele(ht *hapTranscript, icds int, rec *hapRecord, 
 			// SSS consequence (csq.c #1475227917-adjacent comment).
 			csqType &^= csqFrameshift
 			entry.typ.typ = csqType
-			e.csqPush(entry, rec.v)
-			e.stageSimpleFmtBits(entry, rec.v)
+			e.pushSimple(entry, rec.v)
 			return
 		}
 	} else {
@@ -198,8 +196,7 @@ func (e *hapEngine) cdsLocalAllele(ht *hapTranscript, icds int, rec *hapRecord, 
 		entry.typ.vstr = str.String()
 		entry.typ.hasVstr = true
 		entry.typ.typ = csqType & csqCompoundFull
-		e.csqPush(entry, rec.v)
-		e.stageSimpleFmtBits(entry, rec.v)
+		e.pushSimple(entry, rec.v)
 	}
 
 	if csqType&^csqCompoundFull != 0 {
@@ -210,8 +207,7 @@ func (e *hapEngine) cdsLocalAllele(ht *hapTranscript, icds int, rec *hapRecord, 
 		simple.typ.vcfIal = ial
 		simple.typ.gene = tr.Gene
 		simple.typ.typ = csqType &^ csqCompoundFull
-		e.csqPush(simple, rec.v)
-		e.stageSimpleFmtBits(simple, rec.v)
+		e.pushSimple(simple, rec.v)
 	}
 }
 

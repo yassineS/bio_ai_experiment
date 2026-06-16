@@ -26,8 +26,9 @@ func TestCheckCSQDeferred(t *testing.T) {
 		want string
 	}{
 		// Unknown -O type must still be rejected with the format hint.
-		{"-O t", checkCSQDeferredInputs{outputType: "t"}, "-O t (expect v|z|b|u)"},
+		{"-O x", checkCSQDeferredInputs{outputType: "x"}, "-O x (expect v|z|b|u|t)"},
 		// Now-implemented flags must NOT be rejected:
+		{"-O t", checkCSQDeferredInputs{outputType: "t"}, ""},
 		{"-O z", checkCSQDeferredInputs{outputType: "z"}, ""},
 		{"-O b", checkCSQDeferredInputs{outputType: "b"}, ""},
 		{"-O u", checkCSQDeferredInputs{outputType: "u"}, ""},
