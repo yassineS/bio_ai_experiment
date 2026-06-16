@@ -177,6 +177,35 @@ outputs are non-indexable and error exactly as upstream does. Honoured by
 plugins index every file). The produced index is byte-validated against
 `bcftools index` over the same data.
 
+### `+prune` — prune/annotate by LD or window density (native)
+
+`prune` is implemented natively (pure Go, no subprocess) with **all** upstream
+modes, byte-validated against bcftools 1.23.1:
+
+- `-n/--nsites-per-win N` keeps at most `N` sites per `-w` window, selecting by
+  `-N maxAF` (default — biggest allele frequency from `--AF-tag` or, without it,
+  from INFO/AC+AN or the genotypes), `-N 1st` (first encountered), or `-N rand`
+  (random; `--random-seed INT` makes it reproducible).
+- `-m count=N` removes clusters of more than `N` sites within the window;
+  `-m R2=/LD=/RD=FLOAT` (or a bare number == r2) discards sites whose linkage
+  disequilibrium with a kept upstream site exceeds the threshold. The three LD
+  measures (correlation r², Lewontin's D', Ragsdale's RD) are computed exactly
+  as upstream's `calc_ld` (`+ - * /` and `sqrt` only, so byte-identical after
+  htslib's float32 narrowing).
+- `-f LABEL` soft-filters instead of discarding (sets the FILTER column,
+  requires `-m`); `-a count|r2|LD|RD` annotates each site with the cluster size
+  or the maximum LD value and the partner site's position (`R2`/`POS_R2`, …).
+- `-w INT[bp|kb|Mb]` sets a bp window (suffix) or a site-count window (bare
+  integer); `-k/--keep-sites` leaves `-i`/`-e`-filtered sites in place;
+  `--randomize-missing` fills missing genotypes from the site allele frequency
+  via the same deterministic drand48 stream.
+
+Two upstream quirks are reproduced for parity: `maxAF` ranks by alt/ref (so a
+monomorphic-ALT site sorts *lowest*) and the soft-filter header renders a bp
+window as "within 0kb"; see
+`docs/UPSTREAM_BUGS.md#bcftools-prune-maxaf-ranks-by-altref-not-allele-frequency`.
+The oracle lives in `native_plugin_prune_oracle_test.go`.
+
 ### `+trio-dnm3` — de-novo mutation screening (native)
 
 `trio-dnm3` is implemented natively (pure Go, no subprocess). It screens

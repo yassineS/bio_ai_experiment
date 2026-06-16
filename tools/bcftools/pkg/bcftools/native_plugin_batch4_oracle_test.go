@@ -174,14 +174,11 @@ func TestNativePluginBatch4Unsupported(t *testing.T) {
 		// gvcfz: needs the htslib FORMAT/GT filter expression engine.
 		{"gvcfz", []string{"-g", "PASS:GQ>30 & DP<20"}},
 		{"gvcfz", nil},
-		// prune: LD/annotation/rand/keep-sites/default-maxAF are unsupported.
-		{"prune", []string{"-n", "1"}},                  // default maxAF without --AF-tag
-		{"prune", []string{"-m", "R2=0.5"}},             // LD thresholding
-		{"prune", []string{"-m", "LD=0.4"}},             // LD thresholding
-		{"prune", []string{"-a", "r2", "-w", "1"}},      // LD annotation
-		{"prune", []string{"-n", "1", "-N", "rand"}},    // RNG-based selection
-		{"prune", []string{"-n", "1", "-i", "QUAL>10"}}, // default maxAF (no --AF-tag) is unsupported
-		{"prune", []string{"-m", "count=2", "-k"}},      // keep-sites
+		// prune: every mode (LD/annotation/rand/keep-sites/default-maxAF) is now
+		// supported and validated against upstream in
+		// native_plugin_prune_oracle_test.go; the only remaining hard error is a
+		// genuinely-invalid combination (--keep-sites with --nsites-per-win).
+		{"prune", []string{"-n", "1", "-k"}}, // upstream: -k cannot combine with -n
 		// remove-overlaps: text-output/--missing modes are unsupported.
 		// (-i/-e filter expressions and -r/-R/-t/-T region/target selection are
 		// now supported; see TestNativePluginRegionTarget.)

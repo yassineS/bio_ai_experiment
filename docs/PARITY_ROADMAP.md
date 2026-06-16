@@ -3374,6 +3374,25 @@ but with a deliberate design divergence from upstream:
   while keeping colon region-list lines byte-identical to upstream. Byte-validated
   vs the upstream binary in `native_plugin_region_target_oracle_test.go`.
 
+- **Native `+prune` — all modes** — **done**. The native port
+  (`native_plugin_prune.go` + `native_plugin_prune_ld.go`) now covers every
+  upstream mode, byte-validated vs 1.23.1 in `native_plugin_prune_oracle_test.go`:
+  - `-n/--nsites-per-win` in `1st`, `maxAF` (incl. the default maxAF without
+    `--AF-tag`) and `rand` selection (`--random-seed` pins the in-tree drand48
+    draw order — `native_drand48.go` reused);
+  - `-m count=N` cluster removal and `-m R2=/LD=/RD=` (and bare-number r2)
+    linkage-disequilibrium thresholding (hard drop), the LD math a byte-exact
+    port of `_calc_r2_ld`/`vcfbuf_ld` (`+ - * /` and `sqrt` only);
+  - `-f LABEL` soft-filtering (sets FILTER instead of dropping) and
+    `-a count|r2|LD|RD` annotation (POS_* + value INFO tags, header lines);
+  - `--keep-sites` (-k), `-i/-e` filtering, `--randomize-missing`, and the
+    `-w` window in bp and site-count forms.
+  Two surprising upstream behaviours are reproduced for parity (maxAF ranks by
+  alt/ref, and the soft-filter header renders "within 0kb" via integer
+  division); the pre-port code's claims that the `rand`/default-maxAF modes
+  "cannot be matched byte-for-byte" were false and are corrected — see
+  `docs/UPSTREAM_BUGS.md#bcftools-prune-maxaf-ranks-by-altref-not-allele-frequency`.
+
 - **Native plugin output auto-indexing (`-W/--write-index[=FMT]`)** — **done**.
   A shared helper (`tools/bcftools/pkg/bcftools/native_plugin_writeindex.go`)
   parses `-W`/`--write-index` (bare or `=csi`/`=tbi`) and writes a CSI (default)
