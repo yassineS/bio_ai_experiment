@@ -210,6 +210,33 @@ warrant a closer look:_
 
 ### Fix-on-port (resolved)
 
+#### bcftools +setGT: `-n X` without FORMAT/AD prints a NULL `--new-gt` in its error <a id="bcftools-setgt-newgt-x-null-error"></a>
+
+`plugins/setGT.c` `init()` validates that FORMAT/AD exists whenever `-n X`
+(GT_X_VAF) is requested:
+
+```c
+if ( (args->new_mask & GT_X_VAF) && !bcf_hdr_idinfo_exists(...,"AD") )
+    error("Error: the FORMAT/AD annotation does exist, cannot run with --new-gt %s\n",
+          args->custom.gt_str);
+```
+
+The format argument is `args->custom.gt_str`, which is only set for a `c:`
+custom template — for a bare `-n X` it is NULL, so upstream 1.23.1 prints
+`...cannot run with --new-gt (null)` (glibc renders the NULL pointer as
+`(null)`; on other libcs this is undefined behaviour). The message text
+("the FORMAT/AD annotation *does* exist") is itself the inverted-wording
+upstream uses and is preserved.
+
+**Our behaviour:** fixed-on-port. The native plugin prints the actual `-n`
+value (`...cannot run with --new-gt X`) instead of a NULL/`(null)`. Reproduce
+with a GT-only VCF (no `##FORMAT=<ID=AD,...>`):
+`bcftools +setGT in.vcf -- -t a -n X`. Because this is an error-exit path with
+no stdout to diff, it is validated by asserting our port errors (rather than
+crashing) with the corrected, value-bearing message; the success paths are
+byte-validated against the live upstream binary in
+`TestNativePluginSetGTReadDepth`.
+
 #### BCF writer correctness fixes (wave 21)
 
 While wiring `--recode-bcf` (the wave-21 vcftools flag) we discovered
