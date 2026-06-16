@@ -772,14 +772,16 @@ func TestParity_SitePi_Formula(t *testing.T) {
 	}
 }
 
-// TestParity_Hardy — byte-for-byte against an upstream-format golden file.
-// The directional P-values are placeholders (see PARITY_ROADMAP.md).
+// TestParity_Hardy — byte-for-byte against LIVE upstream. The port now
+// implements the exact SNPHWE test (P_HWE / P_HET_DEFICIT / P_HET_EXCESS),
+// the PLINK chi-square, the biallelic+diploid site gate, and the
+// scientific-notation formatting upstream uses.
 func TestParity_Hardy(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Hardy: true})
-	got := readFileBytes(t, prefix+".hwe")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "hardy.expected.hwe"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".hwe mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--hardy")+".hwe")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Hardy: true})+".hwe")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".hwe mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
@@ -902,13 +904,16 @@ func TestParity_Het(t *testing.T) {
 	}
 }
 
-// TestParity_Singletons — byte-for-byte.
+// TestParity_Singletons — byte-for-byte against LIVE upstream. The port now
+// prints the ALLELE column as the allele string (not its index), iterates
+// allele indices including REF, and resolves the carrying/homozygous
+// individual exactly as upstream does.
 func TestParity_Singletons(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Singletons: true})
-	got := readFileBytes(t, prefix+".singletons")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "singletons.expected.singletons"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".singletons mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--singletons")+".singletons")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Singletons: true})+".singletons")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".singletons mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 

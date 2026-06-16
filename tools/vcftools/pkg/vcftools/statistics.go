@@ -135,7 +135,12 @@ type siteHWEStat struct {
 	expHet  float64
 	expHom2 float64
 	chiSq   float64
-	pValue  float64
+	// pHWE is the two-sided exact-test p-value; pLo / pHi are the one-sided
+	// het-deficit / het-excess p-values (upstream P_HET_DEFICIT /
+	// P_HET_EXCESS).
+	pHWE float64
+	pLo  float64
+	pHi  float64
 }
 
 type sitePiStat struct {
@@ -572,71 +577,45 @@ func genotypeIsMissing(gt string) bool {
 	return first == "" || first == "."
 }
 
-// addHWEStat adds Hardy-Weinberg equilibrium statistics
+// addHWEStat adds Hardy-Weinberg equilibrium statistics for a biallelic,
+// fully-diploid SNP. It mirrors upstream output_hwe
+// (variant_file_output.cpp:278-365): the REF-allele frequency is taken over
+// non-missing chromosomes, the expected genotype counts and chi-square follow
+// the PLINK formulae, and the three p-values come from the exact SNPHWE test.
 func (s *statistics) addHWEStat(v *vcf.Variant) {
-	// Only for biallelic sites
-	if len(v.Alt) != 1 {
+	// Biallelic only (exactly one non-"." ALT).
+	if len(siteAlleles(v)) != 2 {
+		return
+	}
+	// Fully diploid only.
+	if !siteIsDiploid(v) {
 		return
 	}
 
-	// Count genotypes
-	hom1 := 0 // 0/0
-	het := 0  // 0/1 or 1/0
-	hom2 := 0 // 1/1
-
-	for _, sample := range v.Samples {
-		gt, ok := sample.Data["GT"]
-		if !ok || strings.Contains(gt, ".") {
-			continue
-		}
-
-		alleles := strings.FieldsFunc(gt, func(r rune) bool {
-			return r == '/' || r == '|'
-		})
-
-		if len(alleles) != 2 {
-			continue
-		}
-
-		if alleles[0] == "0" && alleles[1] == "0" {
-			hom1++
-		} else if alleles[0] == "1" && alleles[1] == "1" {
-			hom2++
-		} else if (alleles[0] == "0" && alleles[1] == "1") || (alleles[0] == "1" && alleles[1] == "0") {
-			het++
-		}
+	counts, nChr := siteAlleleCountsIndexed(v)
+	if nChr == 0 {
+		return
 	}
-
+	hom1, het, hom2, _ := countDiploidGenotypes(v)
 	n := hom1 + het + hom2
 	if n == 0 {
 		return
 	}
 
-	// Calculate allele frequencies
-	p := (float64(2*hom1) + float64(het)) / float64(2*n)
-	q := 1 - p
+	// REF-allele frequency over non-missing chromosomes (allele_counts[0]).
+	freq := float64(counts[0]) / float64(nChr)
+	tot := float64(n)
+	expHom1 := freq * freq * tot
+	expHet := 2.0 * freq * (1.0 - freq) * tot
+	expHom2 := (1.0 - freq) * (1.0 - freq) * tot
 
-	// Expected genotype counts under HWE
-	expHom1 := p * p * float64(n)
-	expHet := 2 * p * q * float64(n)
-	expHom2 := q * q * float64(n)
+	chiSq := math.Pow(float64(hom1)-expHom1, 2)/expHom1 +
+		math.Pow(float64(het)-expHet, 2)/expHet +
+		math.Pow(float64(hom2)-expHom2, 2)/expHom2
 
-	// Chi-square test
-	chiSq := 0.0
-	if expHom1 > 0 {
-		chiSq += math.Pow(float64(hom1)-expHom1, 2) / expHom1
-	}
-	if expHet > 0 {
-		chiSq += math.Pow(float64(het)-expHet, 2) / expHet
-	}
-	if expHom2 > 0 {
-		chiSq += math.Pow(float64(hom2)-expHom2, 2) / expHom2
-	}
+	pHWE, pLo, pHi := snpHWEFull(het, hom1, hom2)
 
-	// P-value (1 degree of freedom)
-	pValue := 1 - chiSquareCDF(chiSq, 1)
-
-	stat := siteHWEStat{
+	s.siteHWE = append(s.siteHWE, siteHWEStat{
 		chrom:   v.Chrom,
 		pos:     v.Pos,
 		obsHom1: hom1,
@@ -646,10 +625,10 @@ func (s *statistics) addHWEStat(v *vcf.Variant) {
 		expHet:  expHet,
 		expHom2: expHom2,
 		chiSq:   chiSq,
-		pValue:  pValue,
-	}
-
-	s.siteHWE = append(s.siteHWE, stat)
+		pHWE:    pHWE,
+		pLo:     pLo,
+		pHi:     pHi,
+	})
 }
 
 // addTsTvStat adds transition/transversion statistics
@@ -1087,69 +1066,50 @@ func (s *statistics) addSingletonStat(v *vcf.Variant) {
 	}
 
 	sampleNames := s.header.Samples
+	alleles := siteAlleles(v)
+	counts, _ := siteAlleleCountsIndexed(v)
 
-	// Per-allele totals + which sample(s) carry the allele.
-	alleleCount := make(map[string]int)
-	alleleSample := make(map[string]string)
-	alleleDoubleton := make(map[string]bool)
-
+	// Pre-parse each sample's diploid allele-id pair once.
+	type genoPair struct{ first, second int }
+	genos := make([]genoPair, len(v.Samples))
 	for i, sample := range v.Samples {
-		gt, ok := sample.Data["GT"]
-		if !ok || strings.Contains(gt, ".") {
-			continue
-		}
-		alleles := strings.FieldsFunc(gt, func(r rune) bool {
-			return r == '/' || r == '|'
-		})
-		perSample := make(map[string]int)
-		for _, a := range alleles {
-			perSample[a]++
-		}
-		for a, n := range perSample {
-			alleleCount[a] += n
-			if i < len(sampleNames) {
-				if alleleSample[a] == "" {
-					alleleSample[a] = sampleNames[i]
-				} else if alleleSample[a] != sampleNames[i] {
-					// More than one sample carries the allele —
-					// disqualifies it from being a private doubleton.
-					alleleSample[a] = ""
+		first, second, _ := parseGTAlleles(sample.Data["GT"])
+		genos[i] = genoPair{first, second}
+	}
+
+	// Iterate allele index 0..N_alleles-1 in order (upstream a-loop). For a
+	// singleton (count==1) emit the first individual carrying allele a in
+	// either slot; for a private doubleton (count==2) emit the first
+	// individual HOMOZYGOUS for a. The ALLELE column is the allele string.
+	for a := 0; a < len(alleles); a++ {
+		switch counts[a] {
+		case 1:
+			for i := range v.Samples {
+				if genos[i].first == a || genos[i].second == a {
+					name := ""
+					if i < len(sampleNames) {
+						name = sampleNames[i]
+					}
+					s.singletonSites = append(s.singletonSites, singletonStat{
+						chrom: v.Chrom, pos: v.Pos, kind: "S", allele: alleles[a], indv: name,
+					})
+					break
 				}
 			}
-			if n == 2 {
-				alleleDoubleton[a] = true
+		case 2:
+			for i := range v.Samples {
+				if genos[i].first == a && genos[i].second == a {
+					name := ""
+					if i < len(sampleNames) {
+						name = sampleNames[i]
+					}
+					s.singletonSites = append(s.singletonSites, singletonStat{
+						chrom: v.Chrom, pos: v.Pos, kind: "D", allele: alleles[a], indv: name,
+					})
+					break
+				}
 			}
 		}
-	}
-
-	// Stable iteration order: sort the allele keys.
-	keys := make([]string, 0, len(alleleCount))
-	for a := range alleleCount {
-		keys = append(keys, a)
-	}
-	sort.Strings(keys)
-
-	for _, allele := range keys {
-		count := alleleCount[allele]
-		if allele == "0" {
-			continue
-		}
-		var kind string
-		switch {
-		case count == 1:
-			kind = "S"
-		case count == 2 && alleleDoubleton[allele] && alleleSample[allele] != "":
-			kind = "D"
-		default:
-			continue
-		}
-		s.singletonSites = append(s.singletonSites, singletonStat{
-			chrom:  v.Chrom,
-			pos:    v.Pos,
-			kind:   kind,
-			allele: allele,
-			indv:   alleleSample[allele],
-		})
 	}
 }
 
@@ -1424,20 +1384,17 @@ func (s *statistics) outputHWE(prefix string) error {
 	}
 	defer f.Close()
 
-	// Upstream uses "CHR" (not "CHROM") and emits two additional
-	// one-sided P-value columns: P_HET_DEFICIT (excess of homozygotes)
-	// and P_HET_EXCESS (excess of heterozygotes). We don't track those
-	// directional P-values yet; emit the two-sided p_hwe in both columns
-	// so the column count and header match upstream byte-for-byte. See
-	// docs/PARITY_ROADMAP.md#vcftools for the gap.
+	// Upstream uses "CHR" (not "CHROM"). The E(HOM1/HET/HOM2) triple is
+	// fixed-notation precision 2; ChiSq_HWE and the three p-values are
+	// scientific-notation precision 6 (variant_file_output.cpp:355-363).
 	fmt.Fprintln(f, "CHR\tPOS\tOBS(HOM1/HET/HOM2)\tE(HOM1/HET/HOM2)\tChiSq_HWE\tP_HWE\tP_HET_DEFICIT\tP_HET_EXCESS")
 
 	for _, stat := range s.siteHWE {
-		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.4f\t%.6g\t%.6g\t%.6g\n",
+		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.6e\t%.6e\t%.6e\t%.6e\n",
 			stat.chrom, stat.pos,
 			stat.obsHom1, stat.obsHet, stat.obsHom2,
 			stat.expHom1, stat.expHet, stat.expHom2,
-			stat.chiSq, stat.pValue, stat.pValue, stat.pValue)
+			stat.chiSq, stat.pHWE, stat.pLo, stat.pHi)
 	}
 
 	return nil
@@ -2000,15 +1957,4 @@ func tajimasD(piSum float64, S, n int) (d float64, ok bool) {
 		return 0, false
 	}
 	return (piSum - thetaW) / math.Sqrt(variance), true
-}
-
-// chiSquareCDF approximates the chi-square CDF using gamma function
-func chiSquareCDF(x, df float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	// For df=1, use a simple approximation
-	// This is a simplified implementation
-	// For production, use a proper statistical library
-	return 1 - math.Exp(-x/2)
 }

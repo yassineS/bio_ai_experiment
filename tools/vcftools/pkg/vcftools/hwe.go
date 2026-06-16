@@ -22,11 +22,21 @@ import (
 //	Wigginton, Cao & Abecasis (2005) "A note on exact tests of Hardy-Weinberg
 //	equilibrium" Am. J. Hum. Genet. 76:887-883.
 func snpHWE(obsHets, obsHom1, obsHom2 int) float64 {
+	pHWE, _, _ := snpHWEFull(obsHets, obsHom1, obsHom2)
+	return pHWE
+}
+
+// snpHWEFull is the full Wigginton/Cao/Abecasis (2005) exact test, returning
+// the two-sided p-value pHWE plus the one-sided het-deficit (pLo) and
+// het-excess (pHi) p-values. It mirrors upstream entry::SNPHWE
+// (entry.cpp:18) including the p_lo/p_hi accumulation, so `--hardy` emits
+// byte-identical P_HWE / P_HET_DEFICIT / P_HET_EXCESS columns.
+func snpHWEFull(obsHets, obsHom1, obsHom2 int) (pHWE, pLo, pHi float64) {
 	if obsHom1+obsHom2+obsHets == 0 {
-		return 1.0
+		return 1.0, 1.0, 1.0
 	}
 	if obsHom1 < 0 || obsHom2 < 0 || obsHets < 0 {
-		return 1.0
+		return 1.0, 1.0, 1.0
 	}
 
 	// homc = the more common homozygote count, homr = the rarer.
@@ -40,7 +50,7 @@ func snpHWE(obsHets, obsHom1, obsHom2 int) float64 {
 	rareCopies := 2*obsHomR + obsHets
 	genotypes := obsHets + obsHomC + obsHomR
 	if genotypes == 0 || rareCopies == 0 {
-		return 1.0
+		return 1.0, 1.0, 1.0
 	}
 
 	hetProbs := make([]float64, rareCopies+1)
@@ -92,22 +102,31 @@ func snpHWE(obsHets, obsHom1, obsHom2 int) float64 {
 	}
 
 	if sum <= 0 {
-		return 1.0
+		return 1.0, 1.0, 1.0
 	}
 	for i := range hetProbs {
 		hetProbs[i] /= sum
 	}
 
-	// Two-sided p_hwe: sum probabilities of het counts whose probability
-	// is no larger than the observed count's probability. Upstream guards
-	// against the observed-index being out of range by relying on the
-	// caller; we replicate that — `obs_hets` must be in [0, rare_copies]
-	// for any sensible call.
 	if obsHets < 0 || obsHets > rareCopies {
-		return 1.0
+		return 1.0, 1.0, 1.0
 	}
+
+	// One-sided het-excess (p_hi): probability mass at or above the observed
+	// heterozygote count. One-sided het-deficit (p_lo): mass at or below.
+	pHi = hetProbs[obsHets]
+	for i := obsHets + 1; i <= rareCopies; i++ {
+		pHi += hetProbs[i]
+	}
+	pLo = hetProbs[obsHets]
+	for i := obsHets - 1; i >= 0; i-- {
+		pLo += hetProbs[i]
+	}
+
+	// Two-sided p_hwe: sum probabilities of het counts whose probability
+	// is no larger than the observed count's probability.
 	obsP := hetProbs[obsHets]
-	pHWE := 0.0
+	pHWE = 0.0
 	for _, p := range hetProbs {
 		if p > obsP {
 			continue
@@ -117,7 +136,7 @@ func snpHWE(obsHets, obsHom1, obsHom2 int) float64 {
 	if pHWE > 1.0 {
 		pHWE = 1.0
 	}
-	return pHWE
+	return pHWE, pLo, pHi
 }
 
 // countDiploidGenotypes counts the diploid hom1/het/hom2 categories at a
