@@ -6,52 +6,74 @@ package bcftools
 import (
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
-// svDefaultScale is the upstream default consequence severity scale, ascending
-// (tier 0 = least severe). Tokens on the same line share a tier; they are
-// matched as case-insensitive substrings of a consequence term. This mirrors
-// default_severity() in split-vep.c byte-for-byte.
-var svDefaultScale = [][]string{
-	{"intergenic"},
-	{"feature_truncation", "feature_elongation"},
-	{"regulatory"},
-	{"tf_binding_site", "tfbs"},
-	{"downstream", "upstream"},
-	{"non_coding_transcript", "non_coding"},
-	{"intron", "nmd_transcript"},
-	{"non_coding_transcript_exon"},
-	{"5_prime_utr", "3_prime_utr"},
-	{"coding_sequence", "mature_mirna"},
-	{"stop_retained", "start_retained", "synonymous"},
-	{"incomplete_terminal_codon"},
-	{"splice_region"},
-	{"missense", "inframe", "protein_altering"},
-	{"transcript_amplification"},
-	{"exon_loss"},
-	{"disruptive"},
-	{"start_lost", "stop_lost", "stop_gained", "frameshift"},
-	{"splice_acceptor", "splice_donor"},
-	{"transcript_ablation"},
-}
-
-// initSeverityScale loads the default scale into the substring list and the
-// token->tier map, mirroring init_severity().
-func (p *splitVepPlugin) initSeverityScale() {
-	p.csq2sev = map[string]int{}
-	p.scale = nil
-	for tier, tokens := range svDefaultScale {
-		for _, tok := range tokens {
-			p.scale = append(p.scale, tok)
-			if _, ok := p.csq2sev[tok]; !ok {
-				p.csq2sev[tok] = tier
-			}
+// initSeverityScale loads the consequence severity scale into the substring list
+// (p.scale) and the token->tier map (p.csq2sev), mirroring the severity-scale
+// block of init_data. The source is the -S FILE when given, otherwise the
+// built-in default_severity() text (svDefaultSeverityText). Each line is a tier
+// (tokens on the same line, in arbitrary order, share that tier); '#' comment
+// lines are skipped; tokens are lowercased. The walk is a faithful port of
+// upstream's token loop, where the tier advances on the '\n' that terminates a
+// token, so the tier counts newlines rather than lines.
+func (p *splitVepPlugin) initSeverityScale() error {
+	text := svDefaultSeverityText
+	if p.severity != "" && p.severity != "-" && p.severity != "?" {
+		data, err := os.ReadFile(p.severity)
+		if err != nil {
+			return fmt.Errorf("Cannot read %s", p.severity)
+		}
+		// Upstream re-joins each read line with a trailing '\n', so a file lacking a
+		// final newline still gets one. Normalise to that form.
+		text = string(data)
+		if text != "" && !strings.HasSuffix(text, "\n") {
+			text += "\n"
 		}
 	}
+	p.csq2sev = map[string]int{}
+	p.scale = nil
+	severity := 0
+	i := 0
+	for i < len(text) {
+		c := text[i]
+		if c == '#' {
+			for i < len(text) && text[i] != '\n' {
+				i++
+			}
+			if i < len(text) {
+				i++ // consume the '\n'
+			}
+			continue
+		}
+		// Read one token (a maximal run of non-space characters), lowercased.
+		start := i
+		for i < len(text) && !isSpaceByte(text[i]) {
+			i++
+		}
+		tok := strings.ToLower(text[start:i])
+		p.scale = append(p.scale, tok)
+		if _, ok := p.csq2sev[tok]; !ok {
+			p.csq2sev[tok] = severity
+		}
+		if i >= len(text) {
+			break
+		}
+		if text[i] == '\n' {
+			severity++
+		}
+		i++
+		// Skip any whitespace before the next token (spaces between same-tier
+		// tokens, and blank lines, which do not further bump the tier).
+		for i < len(text) && isSpaceByte(text[i]) {
+			i++
+		}
+	}
+	return nil
 }
 
 // csqToSeverity returns the (min,max) severity tiers spanned by a consequence
@@ -133,6 +155,31 @@ func (p *splitVepPlugin) worstTranscript(transcripts [][]string) int {
 	return imax
 }
 
+// csqRewriteWorst returns the single most-severe term of a '&'-joined
+// consequence string, porting csq_rewrite_worst. The per-term severity is an
+// EXACT lookup into csq2severity (no substring fallback and no lazy insertion,
+// unlike csqToSeverity); a term absent from the scale therefore scores -1, and on
+// a tie the first term wins. When the string has only one term it is returned
+// unchanged.
+func (p *splitVepPlugin) csqRewriteWorst(s string) string {
+	terms := strings.Split(s, "&")
+	if len(terms) <= 1 {
+		return s
+	}
+	imax, smax := 0, -1
+	for i, t := range terms {
+		sev := -1
+		if v, ok := p.csq2sev[t]; ok {
+			sev = v
+		}
+		if smax < sev {
+			smax = sev
+			imax = i
+		}
+	}
+	return terms[imax]
+}
+
 // splitCsq splits a record's CSQ INFO value into per-transcript subfield slices
 // (comma-separated transcripts, each pipe-separated). It returns nil when the
 // tag is absent.
@@ -148,21 +195,28 @@ func (p *splitVepPlugin) splitCsq(v *vcf.Variant) [][]string {
 	return out
 }
 
-// selectTranscripts returns the indices of the transcripts selected by the
-// transcript-selection mode.
-func (p *splitVepPlugin) selectTranscripts(transcripts [][]string) []int {
-	if len(transcripts) == 0 {
-		return nil
+// selectTranscripts returns the indices (into transcripts) selected by the
+// transcript-selection mode, porting the select-transcripts block of
+// process_record. n is the retained transcript count after -g restriction (so
+// only transcripts[:n] are considered). The EXPRESSION mode returns the matching
+// transcripts; worst returns the single most-severe; all returns every retained
+// transcript.
+func (p *splitVepPlugin) selectTranscripts(transcripts [][]string, n int) ([]int, error) {
+	if n <= 0 {
+		return nil, nil
 	}
+	retained := transcripts[:n]
 	switch p.selTr {
+	case svTrExpr:
+		return p.matchingTranscripts(retained)
 	case svTrWorst:
-		return []int{p.worstTranscript(transcripts)}
+		return []int{p.worstTranscript(retained)}, nil
 	default: // svTrAll
-		idx := make([]int, len(transcripts))
-		for i := range transcripts {
+		idx := make([]int, n)
+		for i := range retained {
 			idx[i] = i
 		}
-		return idx
+		return idx, nil
 	}
 }
 
@@ -258,7 +312,15 @@ func (p *splitVepPlugin) processVariant(v *vcf.Variant, filter *pluginFilter, em
 		p.resetAnnots()
 		return p.filterAndOutput(v, filter, true, true, nil, emit)
 	}
-	selected := p.selectTranscripts(transcripts)
+	// -g gene restriction reorders/truncates the transcript list before selection.
+	ntr := len(transcripts)
+	if p.genes != nil {
+		transcripts, ntr = p.restrictCsqsToGenes(transcripts)
+	}
+	selected, err := p.selectTranscripts(transcripts, ntr)
+	if err != nil {
+		return err
+	}
 	p.resetAnnots()
 	severityPass := false
 	allMissing := true
@@ -280,6 +342,11 @@ func (p *splitVepPlugin) processVariant(v *vcf.Variant, filter *pluginFilter, em
 				val = strings.Join(tr, "|")
 				allMissing = false
 			} else if s := trField(tr, a.idx); s != "" {
+				// PRN :worst rewrites the Consequence subfield to its single worst
+				// term (split on '&', exact severity lookup), matching csq_rewrite_worst.
+				if a.idx == p.csqIdx && p.prnCsq == svPrnWorst {
+					s = p.csqRewriteWorst(s)
+				}
 				val = s
 				allMissing = false
 			}

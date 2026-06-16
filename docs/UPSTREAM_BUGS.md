@@ -701,6 +701,41 @@ discrepancies in our Go code (not upstream), all fixed inline:
 
 ### Track-only (parity skipped, fix later)
 
+<a id="bcftools-split-vep-prn-worst-exact-match"></a>
+
+- **bcftools +split-vep `-s ...:worst` (PRN) ranks `&`-joined terms by an
+  EXACT severity lookup, not the substring scale.** `csq_rewrite_worst`
+  (plugins/split-vep.c) picks the "worst" consequence term inside a single
+  transcript's `&`-joined `Consequence` (e.g. `start_lost&splice_region`)
+  using `khash_str2int_get(args->csq2severity, term, ...)` — a *direct* hash
+  lookup of the whole term. That hash is keyed by the **scale tokens**
+  (`splice_region`, `missense`, …) plus any *full* terms lazily inserted by
+  earlier `csq_to_severity` calls; it is **not** the substring matcher
+  `csq_to_severity` uses. So a compound term whose parts are not themselves
+  exact keys — e.g. `intron_variant&splice_region_variant`, where neither
+  `intron_variant` nor `splice_region_variant` is an exact scale token —
+  scores every part at the not-found sentinel (−1) and the **first** part
+  wins by the tie-break, regardless of true severity. Reproducer (real
+  binary, 1.23.1):
+
+  ```
+  printf '##fileformat=VCFv4.2\n##contig=<ID=1>\n##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence|IMPACT">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n1\t1\t.\tA\tG\t.\t.\tCSQ=G|splice_region_variant&intron_variant|LOW\n' > t.vcf
+  bcftools +split-vep -c Consequence -s all:any:worst t.vcf   # => Consequence=splice_region_variant (the FIRST term, not by severity)
+  ```
+
+  Swapping the two terms flips the output to `intron_variant`, proving the
+  choice is positional, not severity-based. By contrast `start_lost&...`
+  *does* pick `start_lost` because `start_lost`/`stop_gained` *are* exact
+  scale tokens. This is surprising (most users expect `:worst` to use the
+  same substring severity ordering as `-s worst` / `:term+`) and is arguably
+  an upstream bug, but the native port replicates it **byte-for-byte**
+  (`csqRewriteWorst` in `native_plugin_splitvep_proc.go` uses the same exact
+  csq2severity lookup with first-term tie-break) so that `assertStdoutParity`
+  against the real binary holds. Tracked here rather than fixed-on-port:
+  changing it would diverge from upstream and break the parity oracle. The
+  oracle cases in `TestNativePluginSplitVepSelectors` (the `:worst` rows) and
+  `TestNativePluginSplitVepSeverity` pin the replicated behaviour.
+
 - **skewer adapter matcher: Hamming vs Smith-Waterman.** Upstream's
   matcher rejects a 1-mismatch alignment whose mismatch is in the last 4
   bases of the adapter, even when the overall error rate is within `-r`.

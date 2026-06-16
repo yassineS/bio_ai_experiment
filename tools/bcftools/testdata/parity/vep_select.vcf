@@ -1,0 +1,9 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##contig=<ID=1>
+##INFO=<ID=CSQ,Number=.,Type=String,Description="Consequence annotations from Ensembl VEP. Format: Allele|Consequence|IMPACT|SYMBOL|Gene|Feature|BIOTYPE|CANONICAL|MANE_SELECT|PICK|gnomAD_AF|DISTANCE">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	100	.	A	G	.	PASS	CSQ=G|missense_variant|MODERATE|BRCA2|ENSG1|ENST1|protein_coding|YES|NM_001|1|0.001|5,G|intron_variant&splice_region_variant|MODIFIER|BRCA2|ENSG1|ENST2|protein_coding|||||10,G|stop_gained|HIGH|EGFR|ENSG3|ENST5|protein_coding||NM_005|||50
+1	200	.	C	T	.	PASS	CSQ=T|synonymous_variant|LOW|TP53|ENSG2|ENST3|protein_coding|YES|NM_002|1|0.5|0
+1	300	.	A	T	.	PASS	CSQ=T|stop_gained|HIGH|EGFR|ENSG3|ENST4|protein_coding|||1|0.0015|100,T|missense_variant|MODERATE|EGFR|ENSG3|ENST6|protein_coding|YES|NM_006||0.02|20
+1	400	.	G	C	.	PASS	.
