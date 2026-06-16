@@ -3,6 +3,7 @@ package cram
 import (
 	"encoding/binary"
 	"io"
+	"sync"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/mdnm"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -41,6 +42,16 @@ type RecordReader struct {
 	// SetReference / SetRefCache; nil means decode in the C4b fallback
 	// mode where reference-derived bases are filled with 'N'.
 	refResolver *referenceResolver
+
+	// threads is the requested worker count for parallel CRAM decode, set
+	// by SetThreads. A value below 2 (the default) keeps the reader on its
+	// single-threaded path. par is the lazily-started parallel decode driver
+	// when threads >= 2; it is nil on the single-threaded path. refMu guards
+	// the shared referenceResolver memo and stateful reference handles while
+	// the parallel workers resolve slice reference spans concurrently.
+	threads int
+	par     *parallelDriver
+	refMu   sync.Mutex
 }
 
 // NewRecordReader reads the CRAM file definition and the embedded SAM
@@ -78,6 +89,11 @@ func OpenRecords(path string) (*RecordReader, error) {
 // reference FASTA was opened via SetReferenceFASTA, its file handle is
 // released too.
 func (rr *RecordReader) Close() error {
+	if rr.par != nil {
+		// Unblock the feeder/workers/collector if the consumer abandoned the
+		// stream before EOF so no decode goroutine is left running.
+		rr.par.stop()
+	}
 	if rr.refResolver != nil && rr.refResolver.fasta != nil {
 		rr.refResolver.fasta.Close()
 	}
@@ -221,7 +237,11 @@ func (rr *RecordReader) Read() (*sam.Record, error) {
 		if rr.done {
 			return nil, io.EOF
 		}
-		if err := rr.fillNextSlice(); err != nil {
+		if rr.threads >= 2 {
+			if err := rr.fillNextSliceParallel(); err != nil {
+				return nil, err
+			}
+		} else if err := rr.fillNextSlice(); err != nil {
 			return nil, err
 		}
 	}
