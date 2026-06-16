@@ -52,7 +52,12 @@ Input / sorting options:
   -abam FILE     Alias for -a with a BAM file.
   -ibam FILE     Alias for -a with a BAM file.
   -bed           With BAM/CRAM input, write output as BED instead of the default
-                 BAM (a BAM/CRAM query writes BAM alignments by default).
+                 binary alignments (a BAM/CRAM query writes BAM, or CRAM when a
+                 reference is given, by default).
+  -ubam          Request uncompressed BAM output (accepted; the format choice
+                 still follows the CRAM reference, matching upstream).
+  --cram-ref FA  CRAM reference FASTA. A CRAM query writes CRAM output (rather
+                 than BAM) only when this (or CRAM_REFERENCE) is set.
   -names ...     Aliases for each B file (printed instead of a numeric file id).
   -filenames     Print each B file's name instead of a numeric file id.
   -sortout       Sort the per-A DB hits by position across all B files.
@@ -119,6 +124,20 @@ type options struct {
 	// "emit BED" for a BAM/CRAM query file.
 	bedOutput bool
 
+	// uncompressedBAM records the -ubam flag. Upstream sets it to select an
+	// uncompressed BAM writer, but its SaveAlignment compression-mode hook is a
+	// no-op and the BAM/CRAM format choice is driven solely by the CRAM
+	// reference, so -ubam does NOT turn a CRAM query into BAM (a CRAM query with
+	// a reference still writes CRAM under -ubam). We accept the flag for
+	// compatibility; our BAM writer is always BGZF-compressed (the sam package
+	// has no uncompressed-BAM mode), so it is effectively a no-op here too.
+	uncompressedBAM bool
+
+	// cramRef names the CRAM reference FASTA. Upstream takes it from the global
+	// `--cram-ref <fa>` flag or the CRAM_REFERENCE environment variable, and
+	// emits CRAM (rather than BAM) output for a CRAM query only when it is set.
+	cramRef string
+
 	help        bool
 	showVersion bool
 }
@@ -169,18 +188,32 @@ func main() {
 	defer readerACloser.Close()
 
 	// Classify the query file. Upstream determines the output type from the
-	// query (-a) file: a BAM/CRAM query writes BAM by default (unless -bed), and
-	// some flags are gated accordingly. The sniffed reader replaces readerA so
-	// the bytes consumed while probing are not lost.
-	queryIsBAM, readerA, err := bedintersect.IsBAMOrCRAMInput(readerACloser)
+	// query (-a) file: a BAM/CRAM query writes binary alignments by default
+	// (unless -bed), and some flags are gated accordingly. The sniffed reader
+	// replaces readerA so the bytes consumed while probing are not lost.
+	queryFormat, readerA, err := bedintersect.ClassifyQueryInput(readerACloser)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Unable to open file %s. Exiting.\n", opts.inputA)
 		os.Exit(1)
 	}
-	// bamOutput is true when the surviving alignments must be written back out as
-	// BAM: the query is BAM/CRAM and the user did not force BED text with -bed.
-	bamOutput := queryIsBAM && !opts.bedOutput
-	if bamOutput {
+	// CRAM_REFERENCE supplements --cram-ref (upstream reads both; the flag wins).
+	if opts.cramRef == "" {
+		opts.cramRef = os.Getenv("CRAM_REFERENCE")
+	}
+	// binaryOutput is true when the surviving alignments must be written back out
+	// as binary (BAM or CRAM): the query is BAM/CRAM and the user did not force
+	// BED text with -bed. outputFormat selects CRAM vs BAM, mirroring upstream
+	// (RecordOutputMgr + BamWriter::Open): a CRAM query writes CRAM only when a
+	// CRAM reference is available, otherwise BAM. Upstream gates the format purely
+	// on the reference — -ubam controls only the BAM compression mode (a no-op in
+	// upstream's writer) and does NOT force BAM when a reference is set, so we do
+	// not let it override the format either.
+	binaryOutput := queryFormat != bedintersect.QueryText && !opts.bedOutput
+	outputFormat := bedintersect.OutputBAM
+	if queryFormat == bedintersect.QueryCRAM && opts.cramRef != "" {
+		outputFormat = bedintersect.OutputCRAM
+	}
+	if binaryOutput {
 		if err := validateBAMOutputFlags(opts); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -265,12 +298,14 @@ func main() {
 		return
 	}
 
-	if bamOutput {
+	if binaryOutput {
 		// BAM/CRAM query without -bed: write the surviving alignments back out as
-		// BAM, matching upstream's default behaviour. -header is ignored here
-		// (BAM carries its own header); the emitBAMOutputWarnings call above has
-		// already issued the upstream warning when -header/-wb/-loj were given.
-		if _, err := bedintersect.IntersectBAMOutput(readerA, readersB, writer, iopts); err != nil {
+		// binary (BAM, or CRAM when a reference is available), matching upstream's
+		// default behaviour. -header is ignored here (the alignment file carries
+		// its own header); the emitBAMOutputWarnings call above has already issued
+		// the upstream warning when -header/-wb/-loj were given.
+		alnOut := bedintersect.AlnOutputOptions{Format: outputFormat, ReferenceFASTA: opts.cramRef}
+		if _, err := bedintersect.IntersectBinaryOutput(readerA, readersB, writer, iopts, alnOut); err != nil {
 			fmt.Fprintf(os.Stderr, "Error finding intersections: %v\n", err)
 			os.Exit(1)
 		}
@@ -345,9 +380,9 @@ func boolFlags(o *options) map[string]*bool {
 		"header":      &o.header,
 		"sorted":      &o.sorted,
 		"nonamecheck": &o.noNameCheck,
-		"bed":         &o.bedOutput, // with BAM/CRAM query input, force BED text output
-		"nobuf":       new(bool),    // accepted; output is buffered regardless
-		"ubam":        new(bool),    // accepted; uncompressed BAM is not emitted (output is BGZF-compressed BAM)
+		"bed":         &o.bedOutput,       // with BAM/CRAM query input, force BED text output
+		"nobuf":       new(bool),          // accepted; output is buffered regardless
+		"ubam":        &o.uncompressedBAM, // accepted; format follows the CRAM reference, BAM stays BGZF-compressed
 		"d":           &o.distance, "distance": &o.distance,
 		"k": &o.closest, "closest": &o.closest,
 		"t": &o.useTree, "tree": &o.useTree,
@@ -494,6 +529,7 @@ func stringTargets(o *options) map[string]*string {
 		"abam": &o.inputA, "ibam": &o.inputA,
 		"o": &o.output, "output": &o.output,
 		"g": &o.genome, "genome": &o.genome,
+		"cram-ref": &o.cramRef, // CRAM reference FASTA (upstream's global --cram-ref)
 	}
 }
 
