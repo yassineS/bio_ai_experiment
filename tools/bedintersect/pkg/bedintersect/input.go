@@ -56,6 +56,12 @@ type inRecord struct {
 	// non-overlapping A records (-v/-loj/-wao/-c), exactly like upstream's
 	// printUnmapped path.
 	unmapped bool
+	// bam holds the original SAM/BAM alignment when this record was decoded from
+	// a BAM stream. It lets the BAM-output path re-emit the surviving alignment
+	// verbatim (upstream `bedtools intersect` writes the intersecting alignments
+	// back out as BAM by default), rather than the BED12 projection kept in
+	// line/fields. It is nil for text (BED/VCF/GFF) records.
+	bam *sam.Record
 }
 
 // clippedLine renders this record clipped to the overlap span [s,e) (0-based),
@@ -568,6 +574,7 @@ func unmappedBAMRecord(rec *sam.Record) *inRecord {
 		fields:   strings.Split(line, "\t"),
 		format:   fmtBAM,
 		unmapped: true,
+		bam:      rec,
 	}
 }
 
@@ -619,6 +626,7 @@ func bamToBED12(rec *sam.Record) *inRecord {
 		line:   line,
 		fields: fields,
 		format: fmtBAM,
+		bam:    rec,
 	}
 }
 
