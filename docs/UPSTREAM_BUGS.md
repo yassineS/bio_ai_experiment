@@ -1478,3 +1478,37 @@ oracle fixtures (`tools/bcftools/testdata/parity/filltags_groups.txt`) use
 multi-character sample names so the upstream binary can run for byte-parity
 comparison; the short-name acceptance is covered by the binary-free
 `TestUnitFillTagsParseSamples` unit test.
+
+## bcftools +fixref `id` mode: refuses a plain (un-bgzipped) dbSNP VCF <a id="bcftools-fixref-id-plain-vcf"></a>
+
+`plugins/fixref.c` `dbsnp_init()` consults the `-i/--use-id` dbSNP file through
+a region-restricted synced BCF reader (`bcf_sr_set_regions(sr, chr, 0)` then
+`bcf_sr_add_reader`). The synced reader needs random access, so it demands the
+file be **bgzip-compressed and tabix/CSI-indexed**; handed a plain `.vcf` it
+aborts before processing a single record:
+
+```
+$ bcftools +fixref in.vcf -- -f ref.fa -i dbsnp.vcf
+Failed to open dbsnp.vcf: not compressed with bgzip      # exit 1
+```
+
+This is arguably a usability wart rather than a wrong-output bug: a sorted plain
+VCF carries enough information to build the same per-chromosome ID→{pos,ref}
+map, but upstream refuses it outright.
+
+**Fix-on-port (robustness superset):** our native `id` mode
+(`dbsnpBuildMap` in `native_plugin_fixref_id.go`) streams the dbSNP file once
+per input chromosome through `iohelper.OpenReader`, which transparently decodes
+BGZF, plain gzip, or plain text. We therefore accept everything upstream accepts
+**and** a plain `.vcf`/`.vcf.gz`, with no `.tbi`/`.csi` index required. The
+per-chromosome map (skip non-SNPs / non-[ACGT] REF / missing `.` IDs, first-wins
+on duplicate IDs) and the orientation decision (REF match → `none`, ALT match →
+`swap`+GT flip, otherwise → unresolved/`skip`) are reproduced exactly, so on the
+inputs upstream *does* accept the corrected VCF and the stderr stats summary are
+byte-for-byte identical. Because this is a one-directional superset (we never
+reject an upstream-accepted input, and never change output for one), the live
+oracle fixture `tools/bcftools/testdata/parity/fixref_dbsnp.vcf.gz` is bgzipped
++ tabix-indexed so the upstream binary can run for the byte-parity comparison
+(`TestNativePluginFixrefUseID`); the plain-file acceptance and the pure
+map/orientation logic are covered by the binary-free `TestUnitFixref*` unit
+tests.

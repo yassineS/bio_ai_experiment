@@ -3657,6 +3657,32 @@ but with a deliberate design divergence from upstream:
     coverage of the grouping, the variant classification, the exon cursor, and
     the OOF computation.
 
+- **Native `+fixref` `id`/`--use-id` mode** — **done** (previously rejected
+  from Init). `native_plugin_fixref_id.go` ports MODE_USE_ID: the REF allele is
+  determined from a separate dbSNP VCF/BCF keyed by the **ID (rsID) column**
+  rather than from strand convention. Upstream consults the dbSNP file through a
+  per-input-chromosome region-restricted synced reader
+  (`bcf_sr_set_regions(sr, chr, 0)`) and builds an rsID→{pos,ref} hash map
+  rebuilt on every chromosome change (skip non-SNPs / non-[ACGT] REF / missing
+  `.` IDs; first-wins on duplicate IDs). We reproduce that map exactly by
+  streaming the dbSNP VCF once per chromosome through `iohelper.OpenReader`
+  (transparent BGZF/gzip), keeping only same-chromosome records. The orientation
+  decision mirrors `dbsnp_check`: input REF already equals the dbSNP REF →
+  `none`; input ALT equals the dbSNP REF → `swap` REF/ALT **and** flip every
+  sample GT (0↔1, phase preserved); a missing/unknown ID or neither-allele match
+  → unresolved (annotated `skip`, dropped under `-d/--discard`). The
+  position-correction path (move `rec->pos`, re-fetch the forward REF, count a
+  `fixed pos`, fatal on a dbSNP-vs-FASTA REF mismatch) and the one-shot
+  "corrected position(s) results in unsorted VCF" warning are reproduced.
+  Byte-validated vs 1.23.1 on BOTH the corrected VCF (stdout) and the stderr
+  stats summary in `native_plugin_fixref_id_oracle_test.go` (match / swap+GT /
+  unknown-ID / ID="." / `-d` discard / `-t` custom tag), with binary-free
+  `TestUnitFixref*` coverage of the map builder and the orientation decision.
+  **Fix-on-port:** upstream's synced reader refuses a plain (un-bgzipped /
+  un-indexed) dbSNP VCF; our streaming reader accepts it too (a one-directional
+  superset that never changes output on upstream-accepted inputs) — see
+  `docs/UPSTREAM_BUGS.md#bcftools-fixref-id-plain-vcf`.
+
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
 roadmap text in this section was written when bcftools internals were
