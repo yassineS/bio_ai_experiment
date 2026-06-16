@@ -3386,6 +3386,27 @@ but with a deliberate design divergence from upstream:
   upstream binary (decoded index content == `bcftools index` over our data file)
   in `native_plugin_writeindex_oracle_test.go`.
 
+- **Native stats-plugin curly-brace multi-threshold `-i/-e` expansion** —
+  **done**. `smpl-stats`, `indel-stats` and `trio-stats` now support upstream's
+  `-i 'EXPR{a,b,c}'` syntax: a shared helper
+  (`tools/bcftools/pkg/bcftools/native_plugin_filter_expand.go`,
+  `expandPluginFilterExpr`) replicates the C `parse_filters()` routine
+  byte-for-byte — expanding each `{a,b,c}` list into one filter expression per
+  element (braces replaced by the element), combining multiple `{...}` groups as
+  a cartesian product in upstream's exact order, treating an empty `{}` as a
+  collapse to the single default "all" filter, and erroring on an unmatched `{`.
+  Each expanded threshold becomes its own `FLT*`/`SITE*` (and, for indel-stats,
+  `SN*`/`DVAF*`/`DLEN*`/`DFRAC*`/`NFRAC*`) report section labelled by the
+  expanded expression, with the per-filter `MERR`/`TRANSMITTED` debug lines (for
+  trio-stats `-d`) streamed interleaved per record, and the stderr "Collecting
+  data for N filtering expressions" note reporting the expanded count. The
+  single-filter (no-brace) and no-filter paths stay byte-identical. Byte-validated
+  vs the upstream binary in `TestNativePluginSmplStats`, `TestNativePluginIndelStats`
+  and `TestNativePluginTrioStats`. (Note: a site-level `-e` brace expression hits
+  the same pre-existing upstream NULL-`smpl_pass` segfault as a site-level `-e`
+  without braces in smpl-stats/indel-stats; our port handles it robustly, so it is
+  oracled only with FORMAT-level `-e` or site-level `-i`.)
+
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
 roadmap text in this section was written when bcftools internals were

@@ -9,9 +9,11 @@
 // site/per-sample pre-filter via the shared filter engine, matching upstream's
 // filter_init/filter_test usage in indel-stats.c (a FORMAT expression filters
 // per-sample, a site expression filters whole records). The curly-brace
-// multi-threshold expansion and the PED-restricted de-novo mode (-p, with its
-// per-trio filter semantics) remain unsupported; the default single filter is
-// the common case.
+// multi-threshold expansion is supported too: such an expression is expanded
+// into one filter per element (and a cartesian product across multiple groups),
+// each tallied into its own SN* / DVAF* / DLEN* / DFRAC* / NFRAC* report
+// section, matching upstream's parse_filters(). The PED-restricted de-novo mode
+// (-p, with its per-trio filter semantics) remains unsupported.
 package bcftools
 
 import (
@@ -25,13 +27,9 @@ import (
 
 func init() { registerNativePlugin("indel-stats", func() NativePlugin { return &indelStatsPlugin{} }) }
 
-// indelStatsPlugin implements the `indel-stats` plugin in its default mode.
-type indelStatsPlugin struct {
-	hdr    *vcf.Header
-	csqTag string
-	maxLen int
-	nvaf   int
-
+// indelStatsCounters holds one filter's accumulators, mirroring stats_t/
+// flt_stats_t in indel-stats.c.
+type indelStatsCounters struct {
 	nvafBins              []uint32
 	nlen                  []uint32
 	nfrac                 []uint32
@@ -41,13 +39,41 @@ type indelStatsPlugin struct {
 	nsites                uint32
 	nins, ndel            uint32
 	nframeshift, ninframe uint32
+}
 
-	filter    *pluginFilter // compiled -i/-e pre-filter, nil for the default "all"
-	exprLabel string        // DEF-line label: "all" by default, else the expression
+// indelStatsFilter is one expanded -i/-e threshold: its compiled filter, the
+// DEF-line label and the accumulators.
+type indelStatsFilter struct {
+	filter   *pluginFilter // compiled filter; nil for the default "all"
+	label    string        // DEF-line label: "all" or the expanded expression
+	counters indelStatsCounters
+}
+
+// indelStatsPlugin implements the `indel-stats` plugin in its default mode.
+type indelStatsPlugin struct {
+	hdr    *vcf.Header
+	csqTag string
+	maxLen int
+	nvaf   int
+
+	// filters holds one entry per expanded threshold (one for the default "all"
+	// or a single -i/-e expression, N for a curly-brace expansion).
+	filters []*indelStatsFilter
 
 	out    io.Writer
 	stderr io.Writer
 	argv   []string
+}
+
+// newCounters allocates the per-filter accumulators sized to the plugin's
+// nvaf/maxLen bin counts.
+func (p *indelStatsPlugin) newCounters() indelStatsCounters {
+	return indelStatsCounters{
+		nvafBins: make([]uint32, p.nvaf),
+		nlen:     make([]uint32, p.maxLen*2+1),
+		nfrac:    make([]uint32, p.maxLen*2+1),
+		dfrac:    make([]float64, p.maxLen*2+1),
+	}
 }
 
 // SetStderr wires the host stderr writer the "Collecting data ..." note uses.
@@ -97,7 +123,6 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 	p.csqTag = "CSQ"
 	p.maxLen = 20
 	p.nvaf = 20
-	p.exprLabel = "all"
 	var filterExpr string
 	var filterExclude, haveFilter bool
 	for i := 0; i < len(args); i++ {
@@ -117,9 +142,6 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 			v, err := next()
 			if err != nil {
 				return nil, err
-			}
-			if strings.ContainsRune(v, '{') {
-				return nil, fmt.Errorf("indel-stats: the curly-brace multi-threshold filter expansion is not supported by the native plugin")
 			}
 			filterExpr = v
 			filterExclude = a == "-e" || a == "--exclude"
@@ -170,22 +192,38 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 			return nil, fmt.Errorf("indel-stats: unsupported option %q", a)
 		}
 	}
+	p.hdr = hdr
+
+	// Expand any curly-brace multi-threshold list into N concrete expressions,
+	// matching upstream parse_filters(). When a filter is given, upstream always
+	// prints the "Collecting data for N filtering expressions" note (N may be 0
+	// when the braces collapse, e.g. "GQ>{}").
+	var exprs []string
 	if haveFilter {
-		f, err := newPluginFilterWithHeader(filterExpr, filterExclude, hdr)
+		var err error
+		exprs, err = expandPluginFilterExpr(filterExpr)
+		if err != nil {
+			return nil, fmt.Errorf("indel-stats: %s", err)
+		}
+		if p.stderr != nil {
+			fmt.Fprintf(p.stderr, "Collecting data for %d filtering expressions\n", len(exprs))
+		}
+	}
+
+	if len(exprs) == 0 {
+		// No filter, or a brace list that collapsed to nothing: the single
+		// default "all" filter.
+		p.filters = []*indelStatsFilter{{label: "all", counters: p.newCounters()}}
+		return hdr, nil
+	}
+	p.filters = make([]*indelStatsFilter, len(exprs))
+	for i, expr := range exprs {
+		f, err := newPluginFilterWithHeader(expr, filterExclude, hdr)
 		if err != nil {
 			return nil, fmt.Errorf("indel-stats: %w", err)
 		}
-		p.filter = f
-		p.exprLabel = filterExpr
-		if p.stderr != nil {
-			fmt.Fprint(p.stderr, "Collecting data for 1 filtering expressions\n")
-		}
+		p.filters[i] = &indelStatsFilter{filter: f, label: pluginExprLabel(expr), counters: p.newCounters()}
 	}
-	p.hdr = hdr
-	p.nvafBins = make([]uint32, p.nvaf)
-	p.nlen = make([]uint32, p.maxLen*2+1)
-	p.nfrac = make([]uint32, p.maxLen*2+1)
-	p.dfrac = make([]float64, p.maxLen*2+1)
 	return hdr, nil
 }
 
@@ -212,21 +250,32 @@ func (p *indelStatsPlugin) vaf2bin(vaf float64) int {
 	return b
 }
 
-// Process accumulates indel statistics for one record, mirroring
-// indel-stats.c process_record() in the default (no filter, no PED) path. Sites
-// without any indel allele are skipped (matching the run-loop pre-filter), but
-// nsites counts every indel-bearing record reaching the accumulator.
+// Process accumulates indel statistics for one record across every expanded
+// filter, mirroring indel-stats.c run()'s loop over filters which calls
+// process_record() once per filter.
 func (p *indelStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
-	if variantTypeMask(v)&vtINDEL == 0 {
-		return nil, nil
+	for _, flt := range p.filters {
+		p.processOne(v, flt)
 	}
-	p.nsites++
+	return nil, nil
+}
+
+// processOne tallies one record into one filter's accumulators, mirroring
+// indel-stats.c process_record() in the default (no PED) path. Sites without any
+// indel allele are skipped (matching the run-loop pre-filter), but nsites counts
+// every indel-bearing record reaching the accumulator.
+func (p *indelStatsPlugin) processOne(v *vcf.Variant, flt *indelStatsFilter) {
+	c := &flt.counters
+	if variantTypeMask(v)&vtINDEL == 0 {
+		return
+	}
+	c.nsites++
 	// Upstream increments nsites for every indel site (the run-loop pre-filter)
 	// and only then applies the -i/-e filter; a site that fails the filter is
 	// counted in nsites but contributes nothing else.
-	passSite, smplPass := p.filter.testSamples(v)
+	passSite, smplPass := flt.filter.testSamples(v)
 	if !passSite {
-		return nil, nil
+		return
 	}
 	nAllele := len(v.Alt) + 1
 
@@ -254,17 +303,17 @@ func (p *indelStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 			if altVariantType(v, als[0])&vtINDEL == 0 && altVariantType(v, als[1])&vtINDEL == 0 {
 				continue
 			}
-			p.updateIndelStats(v, i, als, adVals, starAllele)
-			p.npassGT++
+			p.updateIndelStats(c, v, i, als, adVals, starAllele)
+			c.npassGT++
 		}
 	}
 
 	if csq, ok := v.Info[p.csqTag]; ok {
 		if strings.Contains(csq, "inframe") {
-			p.ninframe++
+			c.ninframe++
 		}
 		if strings.Contains(csq, "frameshift") {
-			p.nframeshift++
+			c.nframeshift++
 		}
 	}
 
@@ -274,24 +323,24 @@ func (p *indelStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 		}
 		n := indelAlleleLen(v, i)
 		if n < 0 {
-			p.ndel++
+			c.ndel++
 		} else if n > 0 {
-			p.nins++
+			c.nins++
 		}
 		if !haveGT || nad1 == 0 {
 			bin := p.len2bin(n)
 			if bin >= 0 {
-				p.nlen[bin]++
+				c.nlen[bin]++
 			}
 		}
 	}
-	p.npass++
-	return nil, nil
+	c.npass++
 }
 
 // updateIndelStats records the VAF bin, length bins and DFRAC contribution for a
-// single sample's indel genotype, mirroring indel-stats.c update_indel_stats().
-func (p *indelStatsPlugin) updateIndelStats(v *vcf.Variant, ismpl int, als [2]int, adVals [][]int, starAllele int) {
+// single sample's indel genotype into the given filter's counters, mirroring
+// indel-stats.c update_indel_stats().
+func (p *indelStatsPlugin) updateIndelStats(c *indelStatsCounters, v *vcf.Variant, ismpl int, als [2]int, adVals [][]int, starAllele int) {
 	ad := adVals[ismpl]
 	ntot := 0
 	for _, x := range ad {
@@ -317,24 +366,24 @@ func (p *indelStatsPlugin) updateIndelStats(v *vcf.Variant, ismpl int, als [2]in
 		// Record the length of the less-frequent indel allele too.
 		bin := p.len2bin(indelAlleleLen(v, al1))
 		if bin >= 0 {
-			p.nlen[bin]++
+			c.nlen[bin]++
 		}
 	}
 
 	vaf := float64(ad[al0]) / float64(ntot)
-	p.nvafBins[p.vaf2bin(vaf)]++
+	c.nvafBins[p.vaf2bin(vaf)]++
 
 	lenBin := p.len2bin(indelAlleleLen(v, al0))
 	if lenBin < 0 {
 		return
 	}
-	p.nlen[lenBin]++
+	c.nlen[lenBin]++
 
 	if al0 != al1 {
 		tot := ad[al0] + ad[al1]
 		if tot != 0 {
-			p.nfrac[lenBin]++
-			p.dfrac[lenBin] += float64(ad[al0]) / float64(tot)
+			c.nfrac[lenBin]++
+			c.dfrac[lenBin] += float64(ad[al0]) / float64(tot)
 		}
 	}
 }
@@ -347,40 +396,45 @@ func (p *indelStatsPlugin) Destroy() error {
 	fp := p.out
 	fmt.Fprint(fp, indelStatsHeaderFor(p.nvaf, p.maxLen))
 	fmt.Fprintf(fp, "CMD\t%s\n", strings.Join(p.argv, " "))
-	fmt.Fprintf(fp, "DEF\tFLT0\t%s\n", p.exprLabel)
+	for i, flt := range p.filters {
+		fmt.Fprintf(fp, "DEF\tFLT%d\t%s\n", i, flt.label)
+	}
 
 	nsmp := len(p.hdr.Samples)
-	fmt.Fprintf(fp, "SN0\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
-		nsmp, p.nsites, p.npass, p.npassGT, p.nins, p.ndel, p.nframeshift, p.ninframe)
-
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("DVAF0\t%d", p.nvaf))
-	for _, x := range p.nvafBins {
-		b.WriteString(fmt.Sprintf("\t%d", x))
-	}
-	b.WriteByte('\n')
+	for i, flt := range p.filters {
+		c := &flt.counters
+		b.WriteString(fmt.Sprintf("SN%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+			i, nsmp, c.nsites, c.npass, c.npassGT, c.nins, c.ndel, c.nframeshift, c.ninframe))
 
-	b.WriteString(fmt.Sprintf("DLEN0\t%d", p.maxLen))
-	for _, x := range p.nlen {
-		b.WriteString(fmt.Sprintf("\t%d", x))
-	}
-	b.WriteByte('\n')
-
-	b.WriteString(fmt.Sprintf("DFRAC0\t%d", p.maxLen))
-	for j := range p.dfrac {
-		if p.nfrac[j] != 0 {
-			b.WriteString(fmt.Sprintf("\t%.2f", p.dfrac[j]/float64(p.nfrac[j])))
-		} else {
-			b.WriteString("\t.")
+		b.WriteString(fmt.Sprintf("DVAF%d\t%d", i, p.nvaf))
+		for _, x := range c.nvafBins {
+			b.WriteString(fmt.Sprintf("\t%d", x))
 		}
-	}
-	b.WriteByte('\n')
+		b.WriteByte('\n')
 
-	b.WriteString(fmt.Sprintf("NFRAC0\t%d", p.maxLen))
-	for _, x := range p.nfrac {
-		b.WriteString(fmt.Sprintf("\t%d", x))
+		b.WriteString(fmt.Sprintf("DLEN%d\t%d", i, p.maxLen))
+		for _, x := range c.nlen {
+			b.WriteString(fmt.Sprintf("\t%d", x))
+		}
+		b.WriteByte('\n')
+
+		b.WriteString(fmt.Sprintf("DFRAC%d\t%d", i, p.maxLen))
+		for j := range c.dfrac {
+			if c.nfrac[j] != 0 {
+				b.WriteString(fmt.Sprintf("\t%.2f", c.dfrac[j]/float64(c.nfrac[j])))
+			} else {
+				b.WriteString("\t.")
+			}
+		}
+		b.WriteByte('\n')
+
+		b.WriteString(fmt.Sprintf("NFRAC%d\t%d", i, p.maxLen))
+		for _, x := range c.nfrac {
+			b.WriteString(fmt.Sprintf("\t%d", x))
+		}
+		b.WriteByte('\n')
 	}
-	b.WriteByte('\n')
 	fp.Write([]byte(b.String()))
 	return nil
 }

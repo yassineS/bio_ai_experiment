@@ -8,9 +8,10 @@
 // site/per-sample pre-filter via the shared filter engine, matching upstream's
 // filter_init/filter_test usage in smpl-stats.c (a FORMAT expression filters
 // per-sample, a site expression filters whole records). The curly-brace
-// "{10,20,30}" multi-threshold expansion (which defines several FLT* filters at
-// once) and the index/region jump options remain unsupported; the single
-// default-or-explicit filter is the common case.
+// "{10,20,30}" multi-threshold expansion is supported too: such an expression is
+// expanded into one filter per element (and a cartesian product across multiple
+// groups), each tallied into its own FLT* / SITE* report section, matching
+// upstream's parse_filters().
 package bcftools
 
 import (
@@ -30,17 +31,26 @@ type smplStats struct {
 	nSNV, nIndel, nmissing, nsingleton, nts, ntv int
 }
 
+// smplStatsFilter is one expanded -i/-e threshold: its compiled filter, the
+// DEF-line label, the per-sample accumulators and the per-site summary. It
+// mirrors flt_stats_t in smpl-stats.c.
+type smplStatsFilter struct {
+	filter    *pluginFilter // compiled filter; nil for the default "all"
+	label     string        // DEF-line label: "all" or the expanded expression
+	stats     []smplStats   // per-sample
+	siteStats smplStats
+}
+
 // smplStatsPlugin implements the `smpl-stats` plugin in its default mode.
 type smplStatsPlugin struct {
-	hdr       *vcf.Header
-	stats     []smplStats // per-sample
-	siteStats smplStats
-	out       io.Writer
-	stderr    io.Writer
-	argv      []string
+	hdr    *vcf.Header
+	out    io.Writer
+	stderr io.Writer
+	argv   []string
 
-	filter    *pluginFilter // compiled -i/-e pre-filter, nil for the default "all"
-	exprLabel string        // DEF-line label: "all" by default, else the expression
+	// filters holds one entry per expanded threshold (one for the default "all"
+	// or a single -i/-e expression, N for a curly-brace expansion).
+	filters []*smplStatsFilter
 }
 
 // SetStderr wires the host stderr writer the "Collecting data ..." note uses.
@@ -89,7 +99,6 @@ func (p *smplStatsPlugin) Parallel() bool { return false }
 // Init parses the supported options and rejects the filter/region modes that
 // require htslib machinery the native pipeline does not provide.
 func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
-	p.exprLabel = "all"
 	var filterExpr string
 	var filterExclude, haveFilter bool
 	for i := 0; i < len(args); i++ {
@@ -110,9 +119,6 @@ func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 			if err != nil {
 				return nil, err
 			}
-			if strings.ContainsRune(v, '{') {
-				return nil, fmt.Errorf("smpl-stats: the curly-brace multi-threshold filter expansion is not supported by the native plugin")
-			}
 			filterExpr = v
 			filterExclude = a == "-e" || a == "--exclude"
 			haveFilter = true
@@ -126,28 +132,63 @@ func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 			return nil, fmt.Errorf("smpl-stats: unsupported option %q", a)
 		}
 	}
+	p.hdr = hdr
+
+	// Expand any curly-brace multi-threshold list into N concrete expressions,
+	// matching upstream parse_filters(). When a filter is given, upstream always
+	// prints the "Collecting data for N filtering expressions" note (N may be 0
+	// when the braces collapse, e.g. "GQ>{}").
+	var exprs []string
 	if haveFilter {
-		f, err := newPluginFilterWithHeader(filterExpr, filterExclude, hdr)
+		var err error
+		exprs, err = expandPluginFilterExpr(filterExpr)
+		if err != nil {
+			return nil, fmt.Errorf("smpl-stats: %s", err)
+		}
+		if p.stderr != nil {
+			fmt.Fprintf(p.stderr, "Collecting data for %d filtering expressions\n", len(exprs))
+		}
+	}
+
+	if len(exprs) == 0 {
+		// No filter, or a brace list that collapsed to nothing: the single
+		// default "all" filter.
+		p.filters = []*smplStatsFilter{{label: "all", stats: make([]smplStats, len(hdr.Samples))}}
+		return hdr, nil
+	}
+	p.filters = make([]*smplStatsFilter, len(exprs))
+	for i, expr := range exprs {
+		f, err := newPluginFilterWithHeader(expr, filterExclude, hdr)
 		if err != nil {
 			return nil, fmt.Errorf("smpl-stats: %w", err)
 		}
-		p.filter = f
-		p.exprLabel = filterExpr
-		if p.stderr != nil {
-			fmt.Fprint(p.stderr, "Collecting data for 1 filtering expressions\n")
+		p.filters[i] = &smplStatsFilter{
+			filter: f,
+			label:  pluginExprLabel(expr),
+			stats:  make([]smplStats, len(hdr.Samples)),
 		}
 	}
-	p.hdr = hdr
-	p.stats = make([]smplStats, len(hdr.Samples))
 	return hdr, nil
 }
 
-// Process accumulates per-sample and per-site statistics for one record,
-// mirroring smpl-stats.c process_record() with the default "all" filter.
+// Process accumulates per-sample and per-site statistics for one record across
+// every expanded filter, mirroring smpl-stats.c run()'s loop over filters which
+// calls process_record() once per filter.
 func (p *smplStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
-	passSite, smplPass := p.filter.testSamples(v)
+	for _, flt := range p.filters {
+		if err := p.processOne(v, flt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// processOne tallies one record into one filter's accumulators, mirroring
+// smpl-stats.c process_record().
+func (p *smplStatsPlugin) processOne(v *vcf.Variant, flt *smplStatsFilter) error {
+	passSite, smplPass := flt.filter.testSamples(v)
 	if !passSite {
-		return nil, nil
+		return nil
 	}
 
 	nAllele := len(v.Alt) + 1
@@ -164,7 +205,7 @@ func (p *smplStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 		if smplPass != nil && !smplPass[i] {
 			continue
 		}
-		stats := &p.stats[i]
+		stats := &flt.stats[i]
 		als, kind := parseGenotypeAlleles(v, i)
 		if kind == gtMissing {
 			stats.nmissing++
@@ -201,7 +242,7 @@ func (p *smplStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 				continue
 			}
 			if a >= nAllele {
-				return nil, fmt.Errorf("smpl-stats: GT index out of range at %s:%d", v.Chrom, v.Pos)
+				return fmt.Errorf("smpl-stats: GT index out of range at %s:%d", v.Chrom, v.Pos)
 			}
 			if a-1 < len(ac) && ac[a] == 1 {
 				stats.nsingleton++
@@ -247,13 +288,13 @@ func (p *smplStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 			siteIndel = 1
 		}
 	}
-	p.siteStats.npass += sitePass
-	p.siteStats.nSNV += siteSNV
-	p.siteStats.nIndel += siteIndel
-	p.siteStats.nts += siteHasTs
-	p.siteStats.ntv += siteHasTv
-	p.siteStats.nsingleton += siteSingleton
-	return nil, nil
+	flt.siteStats.npass += sitePass
+	flt.siteStats.nSNV += siteSNV
+	flt.siteStats.nIndel += siteIndel
+	flt.siteStats.nts += siteHasTs
+	flt.siteStats.ntv += siteHasTv
+	flt.siteStats.nsingleton += siteSingleton
+	return nil
 }
 
 // Destroy prints the report, mirroring smpl-stats.c report_stats().
@@ -264,16 +305,20 @@ func (p *smplStatsPlugin) Destroy() error {
 	fp := p.out
 	fmt.Fprint(fp, smplStatsHeader)
 	fmt.Fprintf(fp, "CMD\t%s\n", strings.Join(p.argv, " "))
-	fmt.Fprintf(fp, "DEF\tFLT0\t%s\n", p.exprLabel)
-	for j := range p.stats {
-		s := &p.stats[j]
-		fmt.Fprintf(fp, "FLT0\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
-			p.hdr.Samples[j], s.npass, s.nnonRef, s.nhomRR, s.nhomAA, s.nhet, s.nhemi,
-			s.nSNV, s.nIndel, s.nsingleton, s.nmissing, s.nts, s.ntv, tstvStr(s.nts, s.ntv))
+	for i, flt := range p.filters {
+		fmt.Fprintf(fp, "DEF\tFLT%d\t%s\n", i, flt.label)
 	}
-	s := &p.siteStats
-	fmt.Fprintf(fp, "SITE0\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
-		s.npass, s.nSNV, s.nIndel, s.nsingleton, s.nts, s.ntv, tstvStr(s.nts, s.ntv))
+	for i, flt := range p.filters {
+		for j := range flt.stats {
+			s := &flt.stats[j]
+			fmt.Fprintf(fp, "FLT%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+				i, p.hdr.Samples[j], s.npass, s.nnonRef, s.nhomRR, s.nhomAA, s.nhet, s.nhemi,
+				s.nSNV, s.nIndel, s.nsingleton, s.nmissing, s.nts, s.ntv, tstvStr(s.nts, s.ntv))
+		}
+		s := &flt.siteStats
+		fmt.Fprintf(fp, "SITE%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+			i, s.npass, s.nSNV, s.nIndel, s.nsingleton, s.nts, s.ntv, tstvStr(s.nts, s.ntv))
+	}
 	return nil
 }
 

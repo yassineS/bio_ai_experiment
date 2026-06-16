@@ -99,6 +99,18 @@ func TestNativePluginSmplStats(t *testing.T) {
 		{"-i", "FMT/GQ>30"},
 		{"-i", "QUAL>=50"},
 		{"-i", `GT="hom"`},
+		// Curly-brace multi-threshold expansion: each {a,b,c} element becomes its
+		// own FLT*/SITE* section (and multiple groups combine as a cartesian
+		// product), matching upstream's parse_filters(). A FORMAT field is used so
+		// the per-sample mask path is exercised; a site EXCLUDE is omitted (it hits
+		// the same NULL-smpl_pass upstream segfault as the non-brace case above).
+		{"-i", "FMT/GQ>{10,20,30}"},               // single three-element list
+		{"-i", "FMT/DP>{10,15}"},                  // single two-element list
+		{"-e", "FMT/GQ>{10,30}"},                  // per-sample EXCLUDE, expanded
+		{"-i", "FMT/GQ>{10,20} && FMT/DP>5"},      // brace group plus a fixed term
+		{"-i", "FMT/GQ>{10,20} && FMT/DP>{5,15}"}, // two groups: cartesian product
+		{"-i", "FMT/GQ>{30}"},                     // single-element list
+		{"-i", "FMT/GQ>{}"},                       // empty list collapses to "all"
 	} {
 		args := args
 		t.Run("filter_"+joinArgs(args), func(t *testing.T) {
@@ -133,6 +145,17 @@ func TestNativePluginIndelStats(t *testing.T) {
 		{indels, []string{"-e", `GT="het"`}},
 		{indels, []string{"-i", "QUAL>=45"}},
 		{indels, []string{"-i", `GT="alt"`}},
+		// Curly-brace multi-threshold expansion: one SN*/DVAF*/DLEN*/DFRAC*/NFRAC*
+		// section per expanded element, matching upstream's parse_filters(). A
+		// QUAL (site) INCLUDE is safe here (no NULL-smpl_pass segfault); a site
+		// EXCLUDE is omitted because upstream indel-stats.c segfaults on it. The
+		// indels fixture carries GT/AD but no FORMAT/GQ, so the brace cases use
+		// QUAL.
+		{indels, []string{"-i", "QUAL>{40,45}"}},                      // single two-element list
+		{indels, []string{"-i", "QUAL>{40,45,50}"}},                   // three elements
+		{indels, []string{"-i", "QUAL>{40,45,50}", "--max-len", "5"}}, // braces + --max-len
+		{indels, []string{"-i", "QUAL>{45}"}},                         // single-element list
+		{indels, []string{"-i", "QUAL>{}"}},                           // empty list collapses to "all"
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -282,15 +305,13 @@ func TestNativePluginBatch5Unsupported(t *testing.T) {
 		// TestNativePluginRegionTarget). Note guess-ploidy's -t is --tag, not
 		// targets, so it is NOT a region/target case.
 		{"guess-ploidy", []string{"-g", "b37"}},
-		// smpl-stats: -o file and the curly-brace multi-threshold filter
-		// expansion are unsupported (-i/-e and -r/-R/-t/-T are now supported, see
-		// the parity tests).
-		{"smpl-stats", []string{"-i", "GQ>{10,20}"}},
+		// smpl-stats: -o file output is unsupported (-i/-e, the curly-brace
+		// multi-threshold expansion and -r/-R/-t/-T are now supported, see the
+		// parity tests).
 		{"smpl-stats", []string{"-o", "out.txt"}},
-		// indel-stats: PED, -o file and the curly-brace filter expansion are
-		// unsupported (-i/-e and -r/-R/-t/-T are now supported, see the parity
+		// indel-stats: PED and -o file output are unsupported (-i/-e, the
+		// curly-brace expansion and -r/-R/-t/-T are now supported, see the parity
 		// tests).
-		{"indel-stats", []string{"-i", "GQ>{10,20}"}},
 		{"indel-stats", []string{"-p", "trios.ped"}},
 		{"indel-stats", []string{"--nvaf", "10"}}, // upstream's [0,1] validation rejects it too
 		// contrast: rare-allele enrichment is unsupported (-i/-e and -r/-R/-t/-T
