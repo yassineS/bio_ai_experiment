@@ -13,15 +13,16 @@
 //
 // BWA-style quality trimming (-q/--trim-quality) feeds the "bases trimmed"
 // SN counter and --target-regions restricts every counter to a target file.
-// The -x/--sparse flag thins all-zero rows of the IS section only, matching
-// upstream (it does not suppress whole sections).
+// Command-line positional region arguments (`samtools stats in.bam chr1:100-200
+// chr2 ...`) restrict the statistics the same way, routed through the same
+// isInRegions filter (StatsOptions.Regions); they require an indexed input at
+// the CLI, mirroring upstream stats.c's sam_itr_regarray path. The -x/--sparse
+// flag thins all-zero rows of the IS section only, matching upstream (it does
+// not suppress whole sections).
 //
 // Skipped intentionally for v1 (documented):
 //   - --remove-overlaps (single-record stats are unaffected by overlap
 //     removal for the counters we emit).
-//   - Command-line positional region arguments (so the RFS-with-region
-//     path of upstream stats test 18 is not reproducible; --ref-stats
-//     with --target-regions covers the equivalent functionality).
 package samtools
 
 import (
@@ -36,6 +37,7 @@ import (
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -183,6 +185,87 @@ func isSpaceByte(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == '\v' || b == '\f'
 }
 
+// regionsFromSpecs converts command-line positional region specifiers
+// ("chr", "chr:beg-end", "chr:beg-", "chr:beg") into a targetRegions struct
+// equivalent to the one --target-regions builds, so the same isInRegions
+// filter and the same "bases inside the target" / "percentage of target
+// genome" SN lines apply.
+//
+// It mirrors upstream stats.c's `sam_itr_regarray` + `replicate_regions`
+// path: each spec is parsed via region.ParseRegion (1-based inclusive on the
+// CLI), a bare chromosome or an open-ended range extends to the contig length
+// from the BAM header (replicate_regions clamps target_count to
+// sam_hdr_tid2len when the interval end is HTS_POS_MAX), and the covered-base
+// total is accumulated for the target_count SN lines. Specifiers referencing
+// a reference name absent from the header are an error, matching upstream's
+// multi-region iterator which refuses to create an iterator for an unknown
+// reference. Intervals on the same reference are sorted and merged exactly as
+// the --target-regions loader does (mirroring the multi-region iterator's own
+// coalescing), so target_count counts each reference base once.
+func regionsFromSpecs(specs []string, hdr *sam.Header) (*targetRegions, error) {
+	refLen := make(map[string]int32)
+	if hdr != nil {
+		for _, ref := range hdr.Refs {
+			refLen[ref.Name] = int32(ref.Length)
+		}
+	}
+	tr := &targetRegions{byRef: make(map[string][]regionInterval)}
+	for _, spec := range specs {
+		reg, err := region.ParseRegion(spec)
+		if err != nil {
+			return nil, err
+		}
+		ln, ok := refLen[reg.Chrom]
+		if !ok {
+			return nil, fmt.Errorf("could not parse region %q: reference %q not found in the header", spec, reg.Chrom)
+		}
+		beg := int32(reg.Beg)
+		if beg < 1 {
+			beg = 1
+		}
+		end := int32(reg.End)
+		// An absent or trailing-dash end (region.End == 0) means "to the end
+		// of the chromosome"; clamp to the contig length so target_count
+		// matches replicate_regions' HTS_POS_MAX -> sam_hdr_tid2len clamp.
+		if end <= 0 || end > ln {
+			end = ln
+		}
+		if end < beg {
+			continue
+		}
+		tr.byRef[reg.Chrom] = append(tr.byRef[reg.Chrom], regionInterval{Beg: beg, End: end})
+	}
+	if len(tr.byRef) == 0 {
+		return nil, fmt.Errorf("no usable regions among %v", specs)
+	}
+	// Sort and merge overlapping/adjacent-touching intervals per reference,
+	// then sum covered bases — mirroring the --target-regions loader (which in
+	// turn mirrors upstream init_regions' qsort + dedup loop and the
+	// multi-region iterator's coalescing).
+	for name, ivs := range tr.byRef {
+		sort.Slice(ivs, func(a, b int) bool {
+			if ivs[a].Beg != ivs[b].Beg {
+				return ivs[a].Beg < ivs[b].Beg
+			}
+			return ivs[a].End < ivs[b].End
+		})
+		merged := ivs[:1]
+		for _, iv := range ivs[1:] {
+			last := &merged[len(merged)-1]
+			if last.End < iv.Beg {
+				merged = append(merged, iv)
+			} else if last.End < iv.End {
+				last.End = iv.End
+			}
+		}
+		tr.byRef[name] = merged
+		for _, iv := range merged {
+			tr.count += int64(iv.End - iv.Beg + 1)
+		}
+	}
+	return tr, nil
+}
+
 // StatsOptions configures the Stats run.
 type StatsOptions struct {
 	// RefSeq is the path to an indexed reference FASTA (-r/--ref-seq). When
@@ -216,6 +299,18 @@ type StatsOptions struct {
 	// restricted to reads overlapping a listed interval. The file format is
 	// "seq-name beg end" with 1-based inclusive coordinates (NOT BED).
 	TargetBED string
+	// Regions holds command-line positional region specifiers
+	// ("chr", "chr:beg-end", "chr:beg-", "chr:beg") passed after the input
+	// file (e.g. `samtools stats in.bam chr1:100-200 chr2`). Each restricts
+	// the statistics to reads overlapping the region, mirroring upstream
+	// stats.c's `sam_itr_regarray` + `replicate_regions` path. Positional
+	// regions combine the same way --target-regions does (every counter is
+	// gated through isInRegions) and likewise drive the "bases inside the
+	// target" / "percentage of target genome" SN lines. They are mutually
+	// exclusive with TargetBED at the upstream CLI (upstream's `if (!targets)`
+	// guard around replicate_regions); when both are set TargetBED wins, just
+	// as upstream keeps the -t regions and ignores the positional ones.
+	Regions []string
 	// TrimQuality is the BWA-style 3'-end quality-trim threshold passed via
 	// -q/--trim-quality. Zero (the default) disables trimming.
 	TrimQuality int
@@ -550,6 +645,18 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 		tr, terr := loadTargetRegions(opts.TargetBED, hdr)
 		if terr != nil {
 			return terr
+		}
+		c.regions = tr
+		c.regCursor = make(map[string]int)
+	} else if len(opts.Regions) > 0 {
+		// Command-line positional region arguments. Upstream's `if (!targets)`
+		// guard makes -t and positional regions mutually exclusive; -t wins,
+		// hence the else-branch here. The specs are converted to the same
+		// targetRegions structure as -t so the identical isInRegions filter
+		// and target_count SN lines apply (stats.c replicate_regions).
+		tr, rerr := regionsFromSpecs(opts.Regions, hdr)
+		if rerr != nil {
+			return rerr
 		}
 		c.regions = tr
 		c.regCursor = make(map[string]int)

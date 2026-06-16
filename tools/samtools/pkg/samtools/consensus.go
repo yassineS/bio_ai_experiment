@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/region"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
@@ -156,6 +157,23 @@ type ConsensusOptions struct {
 	Output string
 	// Threads is accepted but ignored in v1.
 	Threads int
+
+	// Reference is the path to an indexed reference FASTA (-T/--reference).
+	// When set, every no-coverage / gap position that would otherwise be
+	// emitted as 'N' is filled from the reference instead, mirroring upstream
+	// bam_consensus.c (update_ref + empty_pileup2 + the basic_fasta /
+	// ref_or_Ns gap fills). The substitution applies ONLY to positions with
+	// no usable coverage; genuinely-called columns (including low-depth 'N'
+	// calls) keep their computed call. The .fai index must exist alongside the
+	// FASTA (or be buildable). When empty, no reference is loaded and gaps
+	// stay 'N'.
+	Reference string
+	// RefQual is the phred quality (0-93) assigned to reference-filled
+	// positions in FASTQ output (--ref-qual, default 0). It is the offset
+	// added to '!' for every gap base substituted from the reference; it has
+	// no effect on FASTA output or on covered positions. Mirrors upstream
+	// opts->ref_qual.
+	RefQual int
 
 	// --- Bayesian-mode knobs (only meaningful when Mode is
 	// ConsensusModeBayesian). Zero values are filled in by
@@ -319,6 +337,17 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 		}
 	}
 
+	// -T/--reference: load the reference FASTA so no-coverage / gap positions
+	// substitute the reference base for 'N' (bam_consensus.c update_ref).
+	var ref *consensusRef
+	if opts.Reference != "" {
+		ref, err = loadConsensusRef(opts.Reference)
+		if err != nil {
+			return fmt.Errorf("samtools consensus: %w", err)
+		}
+		defer ref.close()
+	}
+
 	bw := bufio.NewWriter(out)
 	defer bw.Flush()
 
@@ -336,7 +365,7 @@ func Consensus(in io.Reader, out io.Writer, opts ConsensusOptions) error {
 			windows = [][2]int{{0, refLen}}
 		}
 
-		if err := emitConsensusContig(bw, chrom, refLen, windows, recs, posFilter, opts); err != nil {
+		if err := emitConsensusContig(bw, chrom, refLen, windows, recs, posFilter, ref, opts); err != nil {
 			return err
 		}
 	}
@@ -471,10 +500,153 @@ type consensusCall struct {
 	isHet bool
 }
 
+// consensusRef provides per-contig reference bases for the -T/--reference
+// substitution. It mirrors upstream bam_consensus.c's update_ref: the full
+// contig sequence is fetched once and cached (upstream caches one contig at a
+// time; we keep them all since the walk is contig-major). Bases are returned
+// 0-based, preserving the FASTA's original case (so soft-masked lowercase
+// bases are emitted verbatim, exactly as upstream's c->ref[pos] does).
+//
+// For a plain FASTA the contig is read raw via the .fai line geometry so byte
+// case is preserved. For a BGZF-compressed FASTA we fall back to the shared
+// fasta.RandomAccess.Fetch path, which canonicalises to uppercase — a rare
+// case for -T and one upstream itself does not soft-mask differently.
+type consensusRef struct {
+	ra    *fasta.RandomAccess
+	idx   *fasta.Index
+	path  string
+	plain bool // true when path is a non-BGZF FASTA we can read raw
+	cache map[string][]byte
+}
+
+// loadConsensusRef opens path (an indexed FASTA; the .fai is built on demand
+// when absent) for reference-base substitution.
+func loadConsensusRef(path string) (*consensusRef, error) {
+	ra, err := fasta.OpenRandomAccess(path)
+	if err != nil {
+		return nil, fmt.Errorf("could not load reference %q: %w", path, err)
+	}
+	return &consensusRef{
+		ra:    ra,
+		idx:   ra.Index(),
+		path:  path,
+		plain: !fastaIsGzip(path),
+		cache: make(map[string][]byte),
+	}, nil
+}
+
+// fastaIsGzip reports whether path begins with the gzip/BGZF magic (0x1f 0x8b),
+// in which case raw byte-offset reads are not possible and the consensus
+// reference falls back to the (uppercasing) random-access fetch.
+func fastaIsGzip(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [2]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return magic[0] == 0x1f && magic[1] == 0x8b
+}
+
+// close releases the underlying FASTA handle.
+func (r *consensusRef) close() {
+	if r != nil && r.ra != nil {
+		r.ra.Close()
+	}
+}
+
+// contig returns the full reference sequence for name, preserving the FASTA's
+// original byte case for plain FASTAs. It returns nil when the contig is not
+// in the reference (upstream's update_ref returns <0 and the caller falls back
+// to 'N').
+func (r *consensusRef) contig(name string) []byte {
+	if r == nil {
+		return nil
+	}
+	if seq, ok := r.cache[name]; ok {
+		return seq
+	}
+	entry, ok := r.idx.Get(name)
+	if !ok {
+		r.cache[name] = nil
+		return nil
+	}
+	var seq []byte
+	if r.plain {
+		var err error
+		if seq, err = readRawContig(r.path, entry); err != nil {
+			seq = nil
+		}
+	}
+	if seq == nil {
+		// BGZF input or a raw-read failure: fall back to the uppercasing
+		// random-access fetch.
+		if b, err := r.ra.Fetch(name, 0, entry.Length); err == nil {
+			seq = b
+		}
+	}
+	r.cache[name] = seq
+	return seq
+}
+
+// base returns the 0-based reference base at pos on name, or 'N' when the
+// reference does not cover it. The substitution table is otherwise verbatim.
+func (r *consensusRef) base(name string, pos0 int) byte {
+	seq := r.contig(name)
+	if pos0 < 0 || pos0 >= len(seq) {
+		return 'N'
+	}
+	return seq[pos0]
+}
+
+// readRawContig reads the whole contig from a plain FASTA preserving byte
+// case. fasta.RandomAccess.Fetch uppercases its output (it is built for
+// case-insensitive left-alignment), but upstream consensus copies the
+// reference bytes verbatim, so we re-read the raw bytes here using the .fai
+// line geometry to keep soft-masked lowercase bases byte-faithful.
+func readRawContig(path string, entry fasta.IndexEntry) ([]byte, error) {
+	if entry.Length == 0 {
+		return []byte{}, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	// Total raw byte span of the contig including line terminators, derived
+	// from the .fai line geometry (LineBases bases per LineWidth bytes).
+	fullLines := entry.Length / entry.LineBases
+	rem := entry.Length % entry.LineBases
+	rawLen := fullLines * entry.LineWidth
+	if rem > 0 {
+		rawLen += (entry.LineWidth - entry.LineBases) + rem
+	}
+	buf := make([]byte, rawLen)
+	if _, err := f.ReadAt(buf, entry.Offset); err != nil && err != io.EOF {
+		return nil, err
+	}
+	out := make([]byte, 0, entry.Length)
+	for _, b := range buf {
+		if b == '\n' || b == '\r' {
+			continue
+		}
+		out = append(out, b)
+	}
+	if int64(len(out)) != entry.Length {
+		return nil, fmt.Errorf("reference %s: read %d bases, expected %d", entry.Name, len(out), entry.Length)
+	}
+	return out, nil
+}
+
 // emitConsensusContig walks every window on chrom and emits per-format
-// records (FASTA/FASTQ/Pileup).
+// records (FASTA/FASTQ/Pileup). ref is non-nil when -T/--reference is in
+// effect, in which case no-coverage / gap positions substitute the reference
+// base for 'N'.
 func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][2]int,
-	recs []*sam.Record, posFilter *positionFilter, opts ConsensusOptions) error {
+	recs []*sam.Record, posFilter *positionFilter, ref *consensusRef, opts ConsensusOptions) error {
 
 	// For FASTA/FASTQ we accumulate one buffer per contig and emit at
 	// the end. For pileup we stream line-by-line. firstCovIdx/lastCovIdx
@@ -617,7 +789,7 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 					// the next nth — reproduced here by gap-filling inside the
 					// nth loop rather than once before it.
 					if pileupAll && pos1 > pileupLastPos+1 {
-						if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, pos1-1, posFilter); err != nil {
+						if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, pos1-1, posFilter, ref); err != nil {
 							return err
 						}
 					}
@@ -660,12 +832,20 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 				}
 			default:
 				// FASTA / FASTQ accumulate. Every position is appended
-				// (uncovered ones as 'N') so internal gaps fill; the
-				// covered span is bracketed by firstCovIdx/lastCovIdx
-				// and leading/trailing N is trimmed unless -a.
+				// (uncovered ones as 'N', or the reference base under
+				// -T/--reference) so internal gaps fill; the covered span is
+				// bracketed by firstCovIdx/lastCovIdx and leading/trailing N is
+				// trimmed unless -a. Upstream's basic_fasta gap fill
+				// (bam_consensus.c:2423-2436) copies c->ref[pos] for the gap
+				// bytes and sets their qual to ref_qual+'!' (else 'N'/'!').
 				if call.base == 0 {
-					seqBuf = append(seqBuf, 'N')
-					qualBuf = append(qualBuf, '!')
+					if ref != nil {
+						seqBuf = append(seqBuf, ref.base(chrom, pos0))
+						qualBuf = append(qualBuf, byte(opts.RefQual)+'!')
+					} else {
+						seqBuf = append(seqBuf, 'N')
+						qualBuf = append(qualBuf, '!')
+					}
 					continue
 				}
 				// --het-only: render every non-heterozygous position as
@@ -736,7 +916,7 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 		// the final genuine row, and the window's leading gap when it has no
 		// coverage at all.
 		if pileupAll && pileupLastPos < end0 {
-			if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, end0, posFilter); err != nil {
+			if err := writeEmptyPileupRows(bw, chrom, pileupLastPos+1, end0, posFilter, ref); err != nil {
 				return err
 			}
 		}
@@ -758,15 +938,21 @@ func emitConsensusContig(bw *bufio.Writer, chrom string, refLen int, windows [][
 		if len(seqBuf) == 0 && !opts.AllContigs {
 			return nil
 		}
-		// -aa on an untouched contig: emit a record full of N's.
+		// -aa on an untouched contig: emit a record full of N's, or of the
+		// reference bases under -T/--reference (upstream's empty-chr branch
+		// fills the whole contig via append_cons -> ref_or_Ns,
+		// bam_consensus.c:2636-2658).
 		if len(seqBuf) == 0 && opts.AllContigs {
 			seqBuf = make([]byte, refLen)
-			for i := range seqBuf {
-				seqBuf[i] = 'N'
-			}
 			qualBuf = make([]byte, refLen)
-			for i := range qualBuf {
-				qualBuf[i] = '!'
+			for i := range seqBuf {
+				if ref != nil {
+					seqBuf[i] = ref.base(chrom, i)
+					qualBuf[i] = byte(opts.RefQual) + '!'
+				} else {
+					seqBuf[i] = 'N'
+					qualBuf[i] = '!'
+				}
 			}
 		}
 		writeFastaFastqRecord(bw, chrom, seqBuf, qualBuf, opts)
@@ -1333,16 +1519,17 @@ func hasPileupColumn(evs []pileupEvent) bool {
 // writeEmptyPileupRows emits one placeholder pileup row per reference position
 // in the inclusive 1-based range [start1, end1], reproducing upstream's
 // empty_pileup2 (bam_consensus.c:2101). Each row is
-// "<chrom>\t<pos>\t0\t0\tN\t0\t*\t*\n": nth 0, depth 0, an 'N' call with
-// quality 0, and '*' for both the seq and qual columns. Upstream substitutes
-// reference bases for the 'N' call only when a -T/--reference FASTA is loaded,
-// which the Go port does not yet support, so the call is always 'N'.
+// "<chrom>\t<pos>\t0\t0\t<C>\t0\t*\t*\n": nth 0, depth 0, the call <C>, quality
+// 0, and '*' for both the seq and qual columns. The call is 'N' unless a
+// -T/--reference FASTA is loaded (ref != nil), in which case it is the
+// reference base at that position (upstream's `rseq ? rseq[i] : 'N'`). A
+// reference position outside the loaded contig falls back to 'N'.
 //
 // When posFilter is non-nil (the -l/--positions convenience), positions it
 // excludes are skipped, so the placeholder fill never emits rows for
 // coordinates the caller restricted out — matching the inline row path, which
 // also honours the filter.
-func writeEmptyPileupRows(bw *bufio.Writer, chrom string, start1, end1 int, posFilter *positionFilter) error {
+func writeEmptyPileupRows(bw *bufio.Writer, chrom string, start1, end1 int, posFilter *positionFilter, ref *consensusRef) error {
 	for pos1 := start1; pos1 <= end1; pos1++ {
 		if posFilter != nil && !posFilter.contains(chrom, pos1) {
 			continue
@@ -1352,7 +1539,13 @@ func writeEmptyPileupRows(bw *bufio.Writer, chrom string, start1, end1 int, posF
 		}
 		bw.WriteByte('\t')
 		bw.WriteString(strconv.Itoa(pos1))
-		bw.WriteString("\t0\t0\tN\t0\t*\t*\n")
+		bw.WriteString("\t0\t0\t")
+		cb := byte('N')
+		if ref != nil {
+			cb = ref.base(chrom, pos1-1)
+		}
+		bw.WriteByte(cb)
+		bw.WriteString("\t0\t*\t*\n")
 	}
 	return nil
 }

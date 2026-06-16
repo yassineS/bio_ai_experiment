@@ -538,29 +538,39 @@ func TestParseConsensusMode(t *testing.T) {
 // golden-file comparison. The upstream binary is built on demand and a
 // build failure is fatal, never skipped. Each case's `args` is the exact
 // invocation from reference_code/samtools/test/consensus/consensus.reg.
-// Fixtures requiring a reference FASTA (-T, the *T.out goldens) are out of
-// scope for v1 and are not exercised here; see docs/PARITY_ROADMAP.md.
+// The reference-FASTA (-T) cases (the *T.out goldens) ARE now exercised: the
+// no-coverage / gap ref-base substitution is implemented and byte-validated.
 func TestConsensus_BayesianUpstreamParity(t *testing.T) {
 	bin := upstreamSamtools(t)
 	const fixDir = "../../../../reference_code/samtools/test/consensus"
+	// refFixture is the per-case -T reference FASTA (empty when no -T).
 	cases := []struct {
 		name  string
 		input string
+		ref   string   // reference FASTA basename for -T, or "" for none
 		args  []string // upstream `samtools consensus` args (sans input file)
 		opts  ConsensusOptions
 	}{
-		{"18q", "consen1.sam", []string{"-f", "fastq", "--no-use-MQ", "-C", "0", "-m", "bayesian"}, consBayes(ConsensusFASTQ, 0, false, false, "", "")},
-		{"19q", "consen1.sam", []string{"-f", "fastq", "--no-use-MQ", "-C", "19", "-m", "bayesian"}, consBayes(ConsensusFASTQ, 19, false, false, "", "")},
-		{"18p", "consen1.sam", []string{"-f", "pileup", "--no-use-MQ", "-C", "0", "-m", "bayesian"}, consBayes(ConsensusPileup, 0, false, false, "", "")},
-		{"19p", "consen1.sam", []string{"-f", "pileup", "--no-use-MQ", "-C", "19", "-m", "bayesian"}, consBayes(ConsensusPileup, 19, false, false, "", "")},
-		{"20p", "consen1.sam", []string{"-f", "pileup", "--no-use-MQ", "-C", "30", "-A", "-m", "bayesian"}, consBayes(ConsensusPileup, 30, false, true, "", "")},
-		{"21p", "consen1.sam", []string{"-f", "pileup", "--no-use-MQ", "-C", "31", "-A", "-m", "bayesian"}, consBayes(ConsensusPileup, 31, false, true, "", "")},
-		{"30", "consen1c.sam", []string{"-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayes(ConsensusFASTQ, 0, true, false, "yes", "no")},
-		{"31", "consen1c.sam", []string{"-a", "-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 1)},
-		{"32", "consen1c.sam", []string{"-aa", "-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 2)},
-		{"40", "consen1c.sam", []string{"-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayes(ConsensusPileup, 0, true, false, "yes", "no")},
-		{"41", "consen1c.sam", []string{"-a", "-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 1)},
-		{"42", "consen1c.sam", []string{"-aa", "-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 2)},
+		{"18q", "consen1.sam", "", []string{"-f", "fastq", "--no-use-MQ", "-C", "0", "-m", "bayesian"}, consBayes(ConsensusFASTQ, 0, false, false, "", "")},
+		{"19q", "consen1.sam", "", []string{"-f", "fastq", "--no-use-MQ", "-C", "19", "-m", "bayesian"}, consBayes(ConsensusFASTQ, 19, false, false, "", "")},
+		{"18p", "consen1.sam", "", []string{"-f", "pileup", "--no-use-MQ", "-C", "0", "-m", "bayesian"}, consBayes(ConsensusPileup, 0, false, false, "", "")},
+		{"19p", "consen1.sam", "", []string{"-f", "pileup", "--no-use-MQ", "-C", "19", "-m", "bayesian"}, consBayes(ConsensusPileup, 19, false, false, "", "")},
+		{"20p", "consen1.sam", "", []string{"-f", "pileup", "--no-use-MQ", "-C", "30", "-A", "-m", "bayesian"}, consBayes(ConsensusPileup, 30, false, true, "", "")},
+		{"21p", "consen1.sam", "", []string{"-f", "pileup", "--no-use-MQ", "-C", "31", "-A", "-m", "bayesian"}, consBayes(ConsensusPileup, 31, false, true, "", "")},
+		{"30", "consen1c.sam", "", []string{"-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayes(ConsensusFASTQ, 0, true, false, "yes", "no")},
+		{"31", "consen1c.sam", "", []string{"-a", "-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 1)},
+		{"32", "consen1c.sam", "", []string{"-aa", "-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusFASTQ, 0, true, false, "yes", "no", 2)},
+		{"40", "consen1c.sam", "", []string{"-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayes(ConsensusPileup, 0, true, false, "yes", "no")},
+		{"41", "consen1c.sam", "", []string{"-a", "-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 1)},
+		{"42", "consen1c.sam", "", []string{"-aa", "-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0"}, consBayesA(ConsensusPileup, 0, true, false, "yes", "no", 2)},
+		// -T/--reference cases (consensus.reg 30T..42T): the no-coverage / gap
+		// positions substitute consen1c.fa reference bases at --ref-qual 20.
+		{"30T", "consen1c.sam", "consen1c.fa", []string{"-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0", "--ref-qual", "20"}, consBayesRef(ConsensusFASTQ, 0, true, false, "yes", "no", 0, 20)},
+		{"31T", "consen1c.sam", "consen1c.fa", []string{"-a", "-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0", "--ref-qual", "20"}, consBayesRef(ConsensusFASTQ, 0, true, false, "yes", "no", 1, 20)},
+		{"32T", "consen1c.sam", "consen1c.fa", []string{"-aa", "-f", "fastq", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0", "--ref-qual", "20"}, consBayesRef(ConsensusFASTQ, 0, true, false, "yes", "no", 2, 20)},
+		{"40T", "consen1c.sam", "consen1c.fa", []string{"-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0", "--ref-qual", "20"}, consBayesRef(ConsensusPileup, 0, true, false, "yes", "no", 0, 20)},
+		{"41T", "consen1c.sam", "consen1c.fa", []string{"-a", "-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0", "--ref-qual", "20"}, consBayesRef(ConsensusPileup, 0, true, false, "yes", "no", 1, 20)},
+		{"42T", "consen1c.sam", "consen1c.fa", []string{"-aa", "-f", "pileup", "--show-del", "yes", "--show-ins", "no", "-m", "bayesian", "-C0", "--ref-qual", "20"}, consBayesRef(ConsensusPileup, 0, true, false, "yes", "no", 2, 20)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -570,8 +580,13 @@ func TestConsensus_BayesianUpstreamParity(t *testing.T) {
 				t.Fatalf("read input %s: %v", c.input, err)
 			}
 
-			// Live upstream invocation.
-			cmd := exec.Command(bin, append(append([]string{"consensus"}, c.args...), input)...)
+			// Live upstream invocation. -T cases append "-T <ref>".
+			upArgs := append([]string{"consensus"}, c.args...)
+			if c.ref != "" {
+				upArgs = append(upArgs, "-T", filepath.Join(fixDir, c.ref))
+			}
+			upArgs = append(upArgs, input)
+			cmd := exec.Command(bin, upArgs...)
 			var upOut, upErr bytes.Buffer
 			cmd.Stdout = &upOut
 			cmd.Stderr = &upErr
@@ -580,7 +595,11 @@ func TestConsensus_BayesianUpstreamParity(t *testing.T) {
 			}
 
 			// Go port.
-			got := runConsensusOnSAM(t, string(samBytes), c.opts)
+			opts := c.opts
+			if c.ref != "" {
+				opts.Reference = filepath.Join(fixDir, c.ref)
+			}
+			got := runConsensusOnSAM(t, string(samBytes), opts)
 			if got != upOut.String() {
 				t.Errorf("%s mismatch:\n--- got (go) ---\n%s\n--- want (upstream) ---\n%s", c.name, got, upOut.String())
 			}
@@ -591,6 +610,14 @@ func TestConsensus_BayesianUpstreamParity(t *testing.T) {
 // consBayes builds a bayesian-mode ConsensusOptions for the parity test.
 func consBayes(f ConsensusFormat, cutoff int, useMQ, ambig bool, showDel, showIns string) ConsensusOptions {
 	return consBayesA(f, cutoff, useMQ, ambig, showDel, showIns, 0)
+}
+
+// consBayesRef is consBayesA plus a --ref-qual setting for the -T cases. The
+// Reference path itself is filled in by the test runner from the fixture dir.
+func consBayesRef(f ConsensusFormat, cutoff int, useMQ, ambig bool, showDel, showIns string, allLevel, refQual int) ConsensusOptions {
+	o := consBayesA(f, cutoff, useMQ, ambig, showDel, showIns, allLevel)
+	o.RefQual = refQual
+	return o
 }
 
 // consBayesA is consBayes with an explicit -a level (0/1/2).

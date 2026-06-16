@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -1255,11 +1256,15 @@ Options:
   -t, --target-regions F   Restrict stats to a target-regions file. Each line
                            is "seq-name beg end", 1-based inclusive (NOT BED).
   -g, --cov-threshold N    Coverage threshold for the target-genome coverage
-                           SN line (default 0; requires -t).
+                           SN line (default 0; requires -t or a region).
   -@, --threads N          Accepted; v1 is single-threaded.
   -o, --output FILE        Output path (default stdout).
   -h, --help               Show this help.
   -v, --version            Show version.
+
+Positional region arguments (chr, chr:beg-end) after the input restrict the
+statistics to reads overlapping those regions, like -t. They require an
+indexed input (.bai/.csi). -t and positional regions are mutually exclusive.
 `
 
 // openStatsInput opens the stats input file. With threads >= 2 it opens the raw
@@ -1271,6 +1276,27 @@ func openStatsInput(path string, threads int) (io.ReadCloser, error) {
 		return iohelper.OpenRaw(path)
 	}
 	return iohelper.OpenReader(path)
+}
+
+// statsInputHasIndex reports whether a coordinate index (.bai or .csi) sits
+// alongside the stats input file. It mirrors htslib's sam_index_load search
+// order: "<file>.bai"/"<file>.csi" and the extension-replaced "<base>.bai"/
+// "<base>.csi". Stats only needs to know an index exists to satisfy upstream's
+// "Random alignment retrieval only works for indexed files" precondition for
+// command-line region arguments; the actual restriction is a streaming
+// isInRegions overlap filter, so we never read the index bytes.
+func statsInputHasIndex(path string) bool {
+	candidates := []string{path + ".bai", path + ".csi"}
+	if ext := filepath.Ext(path); ext != "" {
+		base := path[:len(path)-len(ext)]
+		candidates = append(candidates, base+".bai", base+".csi")
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func runStats(args []string) int {
@@ -1360,7 +1386,6 @@ func runStats(args []string) int {
 		removeOvl = true
 	}
 	_ = stDeprecS
-	_ = stCustomIdx
 	_ = stIsizeBulk
 	_ = stGroupID
 	_ = stSplitTag
@@ -1377,9 +1402,29 @@ func runStats(args []string) int {
 		fmt.Fprint(os.Stderr, statsUsage)
 		return 2
 	}
-	if covThresh > 0 && targetBED == "" {
+	// Positional region arguments after the input file (e.g.
+	// `samtools stats in.bam chr1:100-200 chr2`) restrict the statistics to
+	// reads overlapping those regions. With -X (customized-index-file) the
+	// first positional after the input is the index path (consumed here as a
+	// no-op locator) and the regions begin one slot later, mirroring upstream
+	// stats.c's `if (has_index_file) bam_idx_fname = argv[optind++]`.
+	statsArgs := fs.Args()[1:]
+	if stCustomIdx && len(statsArgs) > 0 {
+		statsArgs = statsArgs[1:]
+	}
+	statsRegions := statsArgs
+	if covThresh > 0 && targetBED == "" && len(statsRegions) == 0 {
 		fmt.Fprintln(os.Stderr, "samtools stats: coverage percentage calculation requires a list of target regions")
 		return 2
+	}
+	if len(statsRegions) > 0 {
+		// Upstream requires an index for command-line regions
+		// (sam_itr_regarray): "Random alignment retrieval only works for
+		// indexed files." Mirror that precondition.
+		if !stCustomIdx && !statsInputHasIndex(fs.Arg(0)) {
+			fmt.Fprintln(os.Stderr, "samtools stats: random alignment retrieval only works for indexed files")
+			return 1
+		}
 	}
 	// With -@ >= 2 open the file raw (undecompressed) so samtools.Stats can run
 	// the BGZF decode in parallel; otherwise use the standard decompressing
@@ -1410,6 +1455,7 @@ func runStats(args []string) int {
 		MaxInsertSize:  insertSize,
 		Sparse:         sparse,
 		TargetBED:      targetBED,
+		Regions:        statsRegions,
 		RefStats:       refStats,
 		RefStatsChunk:  refStatsChk,
 		TrimQuality:    trimQuality,
@@ -2001,7 +2047,8 @@ Options:
                             FASTQ) or are omitted (pileup). NOTE: this fixes an
                             upstream dead-option bug — samtools parses
                             --het-only but never acts on it.
-      --ref-qual INT        QUAL for reference bases (accepted; not used in v1).
+      --ref-qual INT        QUAL for reference-filled bases in FASTQ output
+                            (default 0; used with -T/--reference).
       --default-qual INT    Default qual when a base has none (accepted; v1
                             uses the per-base qual unchanged).
   -Z, --block-size INT      Chromosome block size (accepted; v1 is single-pass).
@@ -2043,8 +2090,9 @@ For the bayesian mode (the default):
   -X, --config STR          Predefined config (accepted; not applied).
 
 Global options:
-  -T, --reference FILE      Reference FASTA (accepted; not used to fill
-                            uncovered bases in v1).
+  -T, --reference FILE      Reference FASTA. No-coverage / gap positions are
+                            filled from the reference instead of 'N' (pileup,
+                            FASTA and FASTQ; FASTQ gap quality is --ref-qual).
   -@, --threads INT         Threads (accepted; v1 is single-threaded).
       --ignore-overlaps     Accepted; v1 does not deduplicate mate overlaps.
   -h, --help                Show this help.
@@ -2057,8 +2105,9 @@ Notes:
   - Frequency-only counting is the default for simple mode (upstream
     use_qual=0). Pass -q/--use-qual to weight by per-base quality.
   - -t/--qual-calibration and -X/--config are accepted but apply the
-    FLAT identity calibration only; -T reference fill of uncovered bases
-    is not yet implemented. Tracked in docs/PARITY_ROADMAP.md#samtools.
+    FLAT identity calibration only. -T/--reference no-coverage fill is
+    implemented (pileup/FASTA/FASTQ, byte-validated vs upstream).
+    Tracked in docs/PARITY_ROADMAP.md#samtools.
 `
 
 // consensusBayesianFlags collects the bayesian-only flag values so the
@@ -2341,15 +2390,13 @@ func runConsensus(args []string) int {
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 
 	// The accepted-but-not-implemented knobs (incl-flags, excl-flags,
-	// reference, ref-qual, block-size, input-fmt-option, verbosity, and
-	// the -t/-X bayesian config knobs) live in the symbol table because
-	// cliflag took their address; we deliberately don't route them into
-	// ConsensusOptions yet. They're listed in consensusUsage and tracked
-	// in docs/PARITY_ROADMAP.md.
+	// block-size, input-fmt-option, verbosity, and the -t/-X bayesian config
+	// knobs) live in the symbol table because cliflag took their address; we
+	// deliberately don't route them into ConsensusOptions yet. They're listed
+	// in consensusUsage and tracked in docs/PARITY_ROADMAP.md. -T/--reference
+	// and --ref-qual ARE routed (see opts.Reference / opts.RefQual below).
 	_ = inclFlags
 	_ = exclFlags
-	_ = refFasta
-	_ = refQual
 	_ = blockSize
 	_ = inFmtOpt
 	_ = verbosity
@@ -2393,6 +2440,8 @@ func runConsensus(args []string) int {
 		IgnoreOverlaps:  ignoreOvl,
 		Output:          outPath,
 		Threads:         threads,
+		Reference:       refFasta,
+		RefQual:         refQual,
 	}
 	opts.ShowDel = parseYesNo(showDel, false)
 	opts.NoShowIns = !parseYesNo(showIns, true)

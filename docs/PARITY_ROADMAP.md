@@ -2892,9 +2892,21 @@ per-pair logic produced on multi-pair inputs).
 
 **`stats` remaining tail** (also documented in `PARITY_VALIDATION.md`):
 
-- Command-line positional region arguments are not yet accepted, so the
-  RFS-with-command-line-region path (upstream stats test 18) is not
-  reproducible; RFS-with-`-t` covers the equivalent functionality.
+- Command-line positional region arguments **are now accepted**
+  (`samtools stats in.bam chr1:100-200 chr2 ...`). They restrict every
+  counter the same way `-t/--target-regions` does — routed through the
+  same `isInRegions` overlap filter and driving the same "bases inside the
+  target" / "percentage of target genome" SN lines (upstream's
+  `sam_itr_regarray` + `replicate_regions` path). The CLI requires an
+  indexed input (`.bai`/`.csi`) for positional regions, mirroring upstream's
+  "Random alignment retrieval only works for indexed files" error; the
+  restriction itself is a streaming overlap filter, so the full report is
+  byte-identical to upstream across all sections. `-t` and positional
+  regions are mutually exclusive (upstream's `if (!targets)` guard); `-t`
+  wins when both are given. Validated live against the upstream binary in
+  `stats_regions_upstream_test.go` (all sections compared, header `#`
+  comment lines aside), with binary-free `TestUnitRegionsFromSpecs` /
+  `TestUnitStatsIsInRegions` coverage of the parser + overlap predicate.
 - `--remove-overlaps` is accepted as a no-op; single-record stats are
   unaffected by overlap removal for the counters emitted.
 
@@ -3163,11 +3175,29 @@ Genuinely deferred sub-knobs (precisely scoped):
   calibration tables (HiFi/HiSeq/ONT/Ultima) and the QUAL-file parser
   (`load_qcal`, `bam_consensus.c:672-736`) are a separable ~300-line
   table/parser block that does not affect the default invocation.
-- **`-T/--reference` uncovered-base fill.** Accepted but the reference
-  is not used to fill uncovered positions; the `*T.out` golden files
-  (30T/31T/.../42T) which substitute reference bases at zero-coverage
-  positions are therefore out of scope. The non-`-T` path — the
-  default — is fully byte-faithful.
+- **`-T/--reference` uncovered-base fill — DONE.** The reference FASTA is
+  now loaded and used to fill every no-coverage / gap position that would
+  otherwise be 'N', mirroring upstream `bam_consensus.c` (`update_ref` +
+  `empty_pileup2` + the `basic_fasta` / `ref_or_Ns` gap fills). Scope of the
+  substitution, byte-validated against the upstream binary
+  (`consensus_reference_upstream_test.go`):
+  - **pileup** (`--format pileup`): the no-coverage placeholder rows emit
+    the reference base in the call column (`rseq ? rseq[i] : 'N'`); depth
+    (0), quality (0) and the seq/qual (`* *`) columns are unchanged.
+  - **FASTA**: internal gaps, and — under `-a` — leading/trailing gaps, are
+    filled from the reference; the covered span keeps its computed call
+    (a low-depth 'N' call stays 'N'). The default (no `-a`) still emits only
+    the covered span.
+  - **FASTQ**: as FASTA, plus the gap quality is `--ref-qual + '!'`
+    (`opts->ref_qual`, default 0); covered positions keep their computed
+    quality. `--ref-qual` is now honoured.
+  - **`-aa` empty contigs**: the whole contig is filled from the reference
+    (pileup rows and FASTA/FASTQ records alike).
+  - A reference missing a contig, or a position past the contig end, falls
+    back to 'N' exactly like upstream's `update_ref` <0 path. The substituted
+    bytes preserve the FASTA's original case (soft-masked lowercase verbatim).
+  Binary-free `TestUnitConsensusRefBase` /
+  `TestUnitWriteEmptyPileupRowsRefSubstitution` cover the pure helpers.
 - **Mate-overlap dedup.** `--ignore-overlaps` is accepted but is a
   no-op; v1 counts each mate independently in the pileup walker.
 - **Threading.** `-@/--threads`, `-Z/--block-size`, and
