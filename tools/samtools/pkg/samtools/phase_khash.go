@@ -87,49 +87,92 @@ func khFlagSetIsBothFalse(flags []uint32, i uint32) {
 	flags[i>>4] &^= 3 << ((i & 0xf) << 1)
 }
 
-// resize grows the table to at least new_n_buckets (rounded up to a
-// power of two). Matches kh_resize_##name in khash.h.
+// khFlagSetIsEmptyFalse clears the "empty" bit (bit 2) for bucket i,
+// matching khash.h's __ac_set_isempty_false. Used by the in-place
+// kick-out rehash to claim a slot in the new flag array.
+func khFlagSetIsEmptyFalse(flags []uint32, i uint32) {
+	flags[i>>4] &^= 2 << ((i & 0xf) << 1)
+}
+
+// khFlagSetIsDelTrue sets the "deleted" bit (bit 1) for bucket i,
+// matching khash.h's __ac_set_isdel_true. The kick-out rehash uses it
+// to mark an old-table slot vacated during relocation.
+func khFlagSetIsDelTrue(flags []uint32, i uint32) {
+	flags[i>>4] |= 1 << ((i & 0xf) << 1)
+}
+
+// resize grows (or shrinks) the table to at least new_n_buckets
+// (rounded up to a power of two). This is a faithful port of
+// kh_resize_##name in khash.h, including the in-place Cuckoo-style
+// "kick-out" rehash. Reproducing that exact relocation order — rather
+// than a clean rehash into a fresh array — is what makes the resulting
+// bucket layout (and therefore the EV-line emit order, which is the
+// unstable ks_introsort_rseq permutation of equal-vpos frags) match
+// upstream samtools byte-for-byte even after the table grows.
 func (h *fragKhash) resize(newBuckets uint32) {
 	const hashUpper = 0.77
+	// kroundup32 first, then clamp to >=4 — matches khash.h order.
+	newBuckets = kroundup32(newBuckets)
 	if newBuckets < 4 {
 		newBuckets = 4
 	}
-	newBuckets = kroundup32(newBuckets)
-	// If "requested size is too small", reject (j = 0 in khash.h).
+	// "requested size is too small" → do nothing (j = 0 in khash.h).
 	if float64(h.size) >= float64(newBuckets)*hashUpper+0.5 {
 		return
 	}
 	newFlags := make([]uint32, khFsize(newBuckets))
 	for i := range newFlags {
-		newFlags[i] = 0xaaaaaaaa // all-empty
+		newFlags[i] = 0xaaaaaaaa // memset 0xaa → all-empty
 	}
-	newKeys := make([]uint64, newBuckets)
-	newVals := make([]frag, newBuckets)
-	mask := newBuckets - 1
-	// Rehash. For each occupied slot in the old table, place the entry
-	// into the new table via linear probing.
+	// Expand: keep existing keys/vals in place, grow the backing arrays.
+	// (Shrink reuses the same arrays and truncates at the end.)
+	if h.nBuckets < newBuckets {
+		newKeys := make([]uint64, newBuckets)
+		copy(newKeys, h.keys)
+		h.keys = newKeys
+		newVals := make([]frag, newBuckets)
+		copy(newVals, h.vals)
+		h.vals = newVals
+	}
+	newMask := newBuckets - 1
+	// Kick-out rehash over the OLD buckets (h.nBuckets), reading the OLD
+	// flags (h.flags) and writing occupancy into newFlags. h.keys/h.vals
+	// are the combined (extended) arrays; relocations swap through them.
 	for j := uint32(0); j < h.nBuckets; j++ {
 		if khFlagIsEither(h.flags, j) {
 			continue
 		}
 		key := h.keys[j]
 		val := h.vals[j]
-		// Linear-probe (quadratic-step) in the new table.
-		i := uint32(key) & mask
-		step := uint32(0)
-		for !khFlagIsEmpty(newFlags, i) {
-			step++
-			i = (i + step) & mask
+		khFlagSetIsDelTrue(h.flags, j) // vacate old slot
+		for {
+			i := uint32(key) & newMask
+			step := uint32(0)
+			for !khFlagIsEmpty(newFlags, i) {
+				step++
+				i = (i + step) & newMask
+			}
+			khFlagSetIsEmptyFalse(newFlags, i)
+			if i < h.nBuckets && khFlagIsEither(h.flags, i) == false {
+				// Kick out the element currently occupying slot i.
+				key, h.keys[i] = h.keys[i], key
+				val, h.vals[i] = h.vals[i], val
+				khFlagSetIsDelTrue(h.flags, i) // mark old slot deleted
+			} else {
+				// Empty (or beyond old range): write and stop.
+				h.keys[i] = key
+				h.vals[i] = val
+				break
+			}
 		}
-		// Mark as occupied.
-		newFlags[i>>4] &^= 3 << ((i & 0xf) << 1)
-		newKeys[i] = key
-		newVals[i] = val
 	}
-	h.nBuckets = newBuckets
+	// Shrink: truncate the backing arrays to newBuckets.
+	if h.nBuckets > newBuckets {
+		h.keys = h.keys[:newBuckets]
+		h.vals = h.vals[:newBuckets]
+	}
 	h.flags = newFlags
-	h.keys = newKeys
-	h.vals = newVals
+	h.nBuckets = newBuckets
 	h.nOccupied = h.size
 	h.upperBound = uint32(float64(newBuckets)*hashUpper + 0.5)
 }
