@@ -1,17 +1,19 @@
-// Native port of the upstream `trio-dnm3` plugin (plugins/trio-dnm3.c) for its
-// NAIVE scoring model (`--use-NAIVE`, or any `--dnm-tag TAG:flag`). The NAIVE
-// model determines de-novo mutations purely from FORMAT/GT by checking
-// Mendelian inheritance: a site/trio is flagged when the child's genotype is
-// incompatible with the parents'. It is the only trio-dnm3 mode with no
-// floating-point dependence — the per-trio verdict is an integer table lookup
-// (priors.denovo[fi][mi][ci]) over genotype indices, so the FORMAT/DNM=1 and
-// FORMAT/VA (de-novo allele) annotations are byte-reproducible against upstream.
+// Native port of the upstream `trio-dnm3` plugin (plugins/trio-dnm3.c). This
+// file owns option parsing, trio resolution (PED/PFM), the chrX/PAR handling,
+// the -i/-e per-trio filter, and the NAIVE scoring model (`--use-NAIVE`, or any
+// `--dnm-tag TAG:flag`). The NAIVE model determines de-novo mutations purely
+// from FORMAT/GT by checking Mendelian inheritance: a site/trio is flagged when
+// the child's genotype is incompatible with the parents'. Its per-trio verdict
+// is an integer table lookup (priors.denovo[fi][mi][ci]) over genotype indices,
+// so the FORMAT/DNM=1 and FORMAT/VA annotations are byte-reproducible.
 //
-// The other models (DMM, ALM, DNG; the default is DMM) compute a phred/log
-// de-novo score from a Dirichlet-multinomial / DeNovoGear likelihood over
-// AD/PL/QS with libm pow/log/exp and kf_lgamma. Those primary outputs are
-// libm-precision-dependent and are reported as a clean unsupported Init error
-// rather than emitting a silently-divergent score.
+// The float models — DMM (Dirichlet-multinomial, the default), ALM (allele-
+// likelihood) and DNG (DeNovoGear) — are ported in
+// native_plugin_trio_dnm3_models.go / _score.go / _record.go; RunFull dispatches
+// to runFloatModels for them. They compute a phred/log de-novo score from
+// AD/PL/QS/QM with the bit-stable in-tree kfBetai/kfLgamma plus Go's math, and
+// are validated with the tolerance-aware proximity comparison (the libm
+// last-ULP boundary; see numeric_parity_test.go and the package README).
 //
 // trio-dnm3 is a run()-style plugin (options precede the input file, no `--`).
 // It is registered as a fullPlugin so runNativePlugin hands it the whole

@@ -131,6 +131,43 @@ bcftools +example   -- input.vcf.gz
 bcftools plugin example -O z -o out.vcf.gz -- input.vcf.gz chr1:1-1000
 ```
 
+### `+trio-dnm3` — de-novo mutation screening (native)
+
+`trio-dnm3` is implemented natively (pure Go, no subprocess). It screens
+trios for de-novo mutations and writes `FORMAT/DNM` (the score),
+`FORMAT/VA` (the de-novo allele) and `FORMAT/VAF` (percent ALT reads).
+All four upstream models are supported:
+
+- `--use-NAIVE` — GT-only Mendelian-incompatibility flag. Pure integer
+  table lookup; **byte-exact** vs upstream (`DNM`/`VA` are integers).
+- `--use-DNG` — the original DeNovoGear likelihood over `FORMAT/PL`
+  (implies `--dng-priors`).
+- `--use-ALM` — the allele-likelihood model over `FORMAT/QS` (or `PL`
+  with `--with-pPL`, or fake-QS-from-AD with `--with-pAD`).
+- `--use-DMM` — the default Dirichlet-multinomial model over
+  `FORMAT/AD`+`QM` (and `PL`, unless `--with-cAD`).
+
+The supported knobs match upstream: `--dnm-tag TAG[:log|phred|prob|flag]`,
+`--va`, `--vaf`, `-n/--strictly-novel`, `--mrate`, `--pn`/`--pns`,
+`--phi`, `--max-QM`, `--min-vaf`, `--noise-prior`/`--np`, `--strand-bias`/`--sb`,
+`--allelic-dropout`/`--ad`, `-X/--chrX` (GRCh37/GRCh38 PAR presets), `-m/--min-score`,
+the `-i`/`-e` per-trio filters, and `>4`-allele trimming.
+
+**libm-tolerance boundary.** The NAIVE verdict is integer-exact. The
+DMM/ALM/DNG **scores** are long `log`/`exp`/`pow`/`lgamma` reductions; the
+incomplete-beta and log-gamma kernels go through the bit-stable in-tree
+`kfBetai`/`kfLgamma` port (the same AS245 code upstream's `kfunc.c` uses),
+while the remaining transcendentals use Go's `math`. Because libm
+transcendentals are only guaranteed to the last ULP, the de-novo score may
+differ from the C build in the last printed digit (e.g. `-46.0521` vs
+`-46.0522`) after htslib narrows it to a 32-bit float and prints it with
+`%g`. That is the floating-point reproducibility boundary, not a bug:
+byte parity is **not** the contract for the float scores. Parity is
+asserted with a field-aware, tolerance-aware comparison (string fields
+exact; numeric `DNM`/`VA`/`VAF` fields equal within ~6 significant figures
+or a small relative/absolute epsilon — see `numeric_parity_test.go`). On
+linux/amd64 the scores in fact land byte-for-byte.
+
 ## Quick start
 
 ```bash
