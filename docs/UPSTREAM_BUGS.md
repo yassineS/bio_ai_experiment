@@ -823,6 +823,45 @@ discrepancies in our Go code (not upstream), all fixed inline:
   drop-in parity. If upstream ever fixes the guard, the default can flip to
   the `fix=true` path.
 
+<a id="bcftools-vrfs-legacy-mode-no-realign"></a>
+
+- **bcftools +vrfs: the `LEGACY_MODE` pileup performs NO BAQ / realignment
+  (documented parity boundary, not a bug).** `vrfs` (plugins/vrfs.c) drives the
+  mpileup2 engine with `mpileup_set(mplp, LEGACY_MODE, 1)`. In legacy mode the
+  per-read fetch function `legacy_mplp_func` (`mpileup2/mpileup.c`) is the ONLY
+  place a read could be realigned, and the realignment is **stubbed out** — the
+  function body contains the literal comments `// fai .. get_ref` and
+  `// realign` with no code, applying only the flag filters and the `min_mq`
+  floor. Consequently:
+
+  - There is **no BAQ** and **no base-quality adjustment** of any kind; the
+    `MAX_BQ`, `DELTA_BQ`, `MIN_REALN_FRAC`, `MIN_REALN_DP`, `MAX_REALN_DP` and
+    `MAX_REALN_LEN` knobs that `vrfs` sets via `mpileup_set` affect only the
+    unfinished new-mode path and are **no-ops** for the legacy count.
+  - The vrfs count loop reads bases with `bam_seqi(bam_get_seq(b), qpos)` and
+    **never consults base quality**, so `MIN_BQ` is irrelevant too.
+  - With `MIN_MQ 0` and `SKIP_ANY_SET {UNMAP,SECONDARY,QCFAIL,DUP}` the only
+    read-level filtering is those four flags plus `tid<0` — no MAPQ floor, no
+    supplementary drop (`BAM_FSUPPLEMENTARY` is **not** in the set), no
+    orphan/proper-pair filtering.
+
+  **Why this matters for the port:** the per-site ref/alt count therefore
+  reduces to read-flag filtering plus a direct, *unrealigned* CIGAR walk, which
+  the classic pileup path reproduces exactly. The native port
+  (`native_plugin_vrfs.go`) is consequently **byte-for-byte** vs upstream
+  1.23.1 on BOTH pure-SNV and indel sites — there is **no** proximity tolerance
+  in play anywhere. (Had legacy mode actually realigned, indel-adjacent VAF
+  counts could have diverged in the last digits and a proximity comparison
+  would have been required; it is not.) The CIGAR walk replicates htslib
+  `bam_pileup1_t` semantics: a deleted (`is_del`) column reads the
+  post-deletion query base, and the last aligned base immediately before an I/D
+  op is classified as a generic indel alt. The empty-profile `MEAN` line is the
+  glibc-`printf` `-nan` (`0.0/0`), reproduced by a NaN special-case in the
+  formatter. Validated end-to-end in `native_plugin_vrfs_oracle_test.go`
+  (streaming/index, recalc hc|data, nbins rescaling, batch I/N + k=N, the
+  is_del/indel classification, and the merge paths), all asserting exact stdout
+  equality.
+
 <a id="bcftools-split-vep-prn-worst-exact-match"></a>
 
 - **bcftools +split-vep `-s ...:worst` (PRN) ranks `&`-joined terms by an

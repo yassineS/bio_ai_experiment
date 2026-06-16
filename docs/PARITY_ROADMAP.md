@@ -3683,6 +3683,33 @@ but with a deliberate design divergence from upstream:
   superset that never changes output on upstream-accepted inputs) — see
   `docs/UPSTREAM_BUGS.md#bcftools-fixref-id-plain-vcf`.
 
+- **Native `+vrfs` (variant read frequency score)** — **done** (previously
+  rejected from Init as "requires mpileup2 + BAM/CRAM + regidx"). The native
+  port (`native_plugin_vrfs.go`) reads the alignment list, the sites file and
+  the FASTA reference, piles up each BAM/CRAM (via `pkg/htsgo` `alnio`/`sam`/
+  `fasta`), counts per-sample ref/alt supporting reads at each indexed site,
+  bins the VAF (`nn2bin`), and emits the `SITE`/`MEAN`/`VAR2` profile
+  **byte-for-byte** vs 1.23.1. The key parity enabler is that vrfs runs the
+  mpileup2 engine in `LEGACY_MODE 1`, whose realignment step is a **stub** in
+  upstream (`mpileup2/mpileup.c` `legacy_mplp_func` has `// realign` commented
+  out): there is **no BAQ and no base-quality adjustment**, and the vrfs count
+  loop never consults base quality, so the `MAX_BQ`/`DELTA_BQ`/`MIN_REALN_*`/
+  `MAX_DP_PER_SAMPLE` knobs vrfs sets are no-ops for the count. The pileup
+  therefore reduces to read-level flag filtering (drop unmapped/secondary/
+  qcfail/dup; **no** MAPQ floor, **no** supplementary drop, **no** orphan/proper-
+  pair filtering) plus a direct CIGAR walk, which the classic engine
+  reproduces exactly — including htslib `bam_pileup1_t` `is_del`/`indel`
+  semantics (a deleted column reads the post-deletion base; the last M base
+  before an I/D op classifies as a generic indel). Supported: streaming and
+  `-i/--use-index` modes (identical output), `-d/--min-depth`, `-n/--nbins`
+  with hard-coded-profile rescaling, `-r/--recalc hc|data|file:PATH`,
+  `-b/--batch I/N` and `k=N`, `-m/--merge-batches`/`-M/--merge-files`, and
+  `-o`/`-O t|z[0-9]` output. The empty-profile `MEAN` line emits `-nan`
+  (glibc `printf` of `0.0/0`), matched by a NaN special-case in the formatter.
+  Byte-validated in `native_plugin_vrfs_oracle_test.go` (10 profiling cases +
+  2 merge cases over upstream-samtools-built BAM fixtures); binary-free
+  `TestUnitVrfs*` cover every pure helper.
+
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
 roadmap text in this section was written when bcftools internals were
