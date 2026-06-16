@@ -276,26 +276,26 @@ func TestNativePluginBatch5Unsupported(t *testing.T) {
 		name string
 		args []string
 	}{
-		// guess-ploidy: region/genome jumps are unsupported (the --include/--exclude
-		// filter modes are now supported and covered by TestNativePluginGuessPloidy).
+		// guess-ploidy: the -g/--genome per-genome ploidy preset is unsupported
+		// (the --include/--exclude filter modes are covered by
+		// TestNativePluginGuessPloidy; -r/-R region selection by
+		// TestNativePluginRegionTarget). Note guess-ploidy's -t is --tag, not
+		// targets, so it is NOT a region/target case.
 		{"guess-ploidy", []string{"-g", "b37"}},
-		{"guess-ploidy", []string{"-r", "X:2699521-154931043"}},
-		{"guess-ploidy", []string{"-R", "regions.txt"}},
-		// smpl-stats: region, -o file and the curly-brace multi-threshold filter
-		// expansion are unsupported (-i/-e are now supported, see the parity test).
+		// smpl-stats: -o file and the curly-brace multi-threshold filter
+		// expansion are unsupported (-i/-e and -r/-R/-t/-T are now supported, see
+		// the parity tests).
 		{"smpl-stats", []string{"-i", "GQ>{10,20}"}},
-		{"smpl-stats", []string{"-r", "chr1"}},
 		{"smpl-stats", []string{"-o", "out.txt"}},
-		// indel-stats: PED, region, -o file and the curly-brace filter expansion are
-		// unsupported (-i/-e are now supported, see the parity test).
+		// indel-stats: PED, -o file and the curly-brace filter expansion are
+		// unsupported (-i/-e and -r/-R/-t/-T are now supported, see the parity
+		// tests).
 		{"indel-stats", []string{"-i", "GQ>{10,20}"}},
 		{"indel-stats", []string{"-p", "trios.ped"}},
-		{"indel-stats", []string{"-r", "chr1"}},
 		{"indel-stats", []string{"--nvaf", "10"}}, // upstream's [0,1] validation rejects it too
-		// contrast: rare-allele enrichment and region modes are unsupported (-i/-e
-		// are now supported, see the parity test).
+		// contrast: rare-allele enrichment is unsupported (-i/-e and -r/-R/-t/-T
+		// are now supported, see the parity tests).
 		{"contrast", []string{"-0", "S1", "-1", "S2", "-f", "0.001"}},
-		{"contrast", []string{"-0", "S1", "-1", "S2", "-r", "chr1"}},
 		{"contrast", nil}, // missing -0/-1
 		// ad-bias: clean-vcf and convert-format modes are unsupported.
 		{"ad-bias", []string{"-s", pairs, "-c"}},

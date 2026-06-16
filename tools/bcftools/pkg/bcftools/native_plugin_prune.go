@@ -52,6 +52,10 @@ const (
 // Name returns the plugin name.
 func (p *prunePlugin) Name() string { return "prune" }
 
+// RegionTargetCaps opts prune into the shared -r/-R/-t/-T region/target filter,
+// applied to the records before the window pruning.
+func (p *prunePlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+
 // About returns the one-line description, matching prune.c about().
 func (p *prunePlugin) About() string {
 	return "Annotate sites with or prune sites by linkage disequilibrium or number of sites within a window"
@@ -167,8 +171,6 @@ func (p *prunePlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 			} else {
 				p.filterLogic = pruneFilterInclude
 			}
-		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
-			return nil, fmt.Errorf("prune: index/stream region selection is not supported by the native plugin")
 		case "--random-seed", "--randomize-missing":
 			return nil, fmt.Errorf("prune: randomization options are not supported by the native plugin")
 		case "-k", "--keep-sites":

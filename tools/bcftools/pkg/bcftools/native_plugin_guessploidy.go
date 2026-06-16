@@ -92,6 +92,13 @@ func (p *guessPloidyPlugin) FlagTakesValue(flag string) bool {
 	return false
 }
 
+// RegionTargetCaps opts guess-ploidy into -r/-R region selection only. Its -t is
+// --tag (the INFO field to read genotype likelihoods from), NOT targets, so the
+// shared filter must leave -t/-T to guess-ploidy's own parser.
+func (p *guessPloidyPlugin) RegionTargetCaps() regionTargetCaps {
+	return regionsOnlyCaps
+}
+
 // Name returns the plugin name.
 func (p *guessPloidyPlugin) Name() string { return "guess-ploidy" }
 
@@ -160,8 +167,8 @@ func (p *guessPloidyPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, e
 			p.gtErrProb = f
 		case "-i", "--include-indels":
 			p.indels = true
-		case "-g", "--genome", "-r", "--regions", "-R", "--regions-file":
-			return nil, fmt.Errorf("guess-ploidy: region/genome selection (%s) is not supported by the native plugin (requires indexed region jumping); pre-slice with `bcftools view -r ... | bcftools +guess-ploidy`", a)
+		case "-g", "--genome":
+			return nil, fmt.Errorf("guess-ploidy: -g/--genome (per-genome ploidy presets) is not supported by the native plugin (%s)", a)
 		case "-t", "--tag":
 			v, err := next()
 			if err != nil {

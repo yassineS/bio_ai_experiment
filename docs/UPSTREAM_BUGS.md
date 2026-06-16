@@ -55,6 +55,38 @@ warrant a closer look:_
 
 ### To investigate
 
+#### bcftools +check-sparsity: `-R FILE` silently drops BED/TSV lines <a id="bcftools-check-sparsity-regions-file"></a>
+
+- **Disposition:** Fix-on-port (ours reproduces the verbatim region-list parse
+  and the silent-drop; documented here for the quirk).
+- **What happens:** Unlike every other in-tree plugin (which loads `-R`/`-T`
+  files through htslib's synced reader `bcf_sr_regions_init`, a TSV/BED parser),
+  `check-sparsity` reads its `-R` file with `hts_readlist()` and hands each line
+  verbatim to `tbx_itr_querys()`. `tbx_itr_querys` only understands the colon
+  region-list syntax (`chr`, `chr:beg-end`). A tab-separated / BED line such as
+  `chr1<TAB>0<TAB>10000` therefore fails to parse and the region is **silently
+  skipped — no error, no output** — even though a normal BED file is exactly what
+  a user would reach for.
+- **Reproducer** (upstream 1.23.1, `BCFTOOLS_PLUGINS` pointed at the vendored
+  `.so` dir; the input must be bgzipped + tabix-indexed because `-R` uses the
+  index):
+
+  ```sh
+  printf 'chr1\t0\t10000\nchr2\t0\t10000\n' > all.bed
+  bcftools +check-sparsity -n 1 -R all.bed gt_plugins.vcf.gz   # prints NOTHING
+  printf 'chr2:1-10000\n' > colon.txt
+  bcftools +check-sparsity -n 1 -R colon.txt gt_plugins.vcf.gz # prints "chr2:1-10000\tS3"
+  ```
+
+  The BED form produces no output; the colon-syntax line works. Compare with the
+  synced-reader plugins (e.g. `+smpl-stats -R all.bed`) which accept the BED.
+- **Our port:** `loadCheckSparsityRegionFile` reproduces upstream's verbatim
+  region-list parse: single-token lines (`chr`, `chr:beg-end`) are used as region
+  tokens, and tab/space lines are dropped exactly as upstream silently does.
+  `check-sparsity` also (uniquely) labels its per-region report by the verbatim
+  region token, which the native port matches. Parity is asserted in
+  `TestNativePluginCheckSparsityRegion` (case `R_bed_silent_empty`).
+
 #### bcftools-som-write-map
 
 - **bcftools `som --train` always fails / `--classify` is unusable.**

@@ -80,6 +80,10 @@ func (p *indelStatsPlugin) FlagTakesValue(flag string) bool {
 // Name returns the plugin name.
 func (p *indelStatsPlugin) Name() string { return "indel-stats" }
 
+// RegionTargetCaps opts indel-stats into the shared -r/-R/-t/-T region/target
+// filter, applied to the records before the indel statistics are tallied.
+func (p *indelStatsPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+
 // About returns the one-line description, matching indel-stats.c about().
 func (p *indelStatsPlugin) About() string {
 	return "Calculate indel stats scanning over a range of thresholds simultaneously.\n"
@@ -122,8 +126,6 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 			haveFilter = true
 		case "-p", "--ped":
 			return nil, fmt.Errorf("indel-stats: the PED de-novo mode (-p) is not supported by the native plugin")
-		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
-			return nil, fmt.Errorf("indel-stats: region/target selection (%s) is not supported by the native plugin", a)
 		case "-o", "--output":
 			return nil, fmt.Errorf("indel-stats: writing to a file (-o) is not supported by the native plugin; use stdout")
 		case "--alt2ref-DNM":

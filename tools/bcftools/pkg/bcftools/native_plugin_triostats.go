@@ -103,6 +103,10 @@ func (p *trioStatsPlugin) FlagTakesValue(flag string) bool {
 // Name returns the plugin name.
 func (p *trioStatsPlugin) Name() string { return "trio-stats" }
 
+// RegionTargetCaps opts trio-stats into the shared -r/-R/-t/-T region/target
+// filter, applied to the records before the per-trio statistics are tallied.
+func (p *trioStatsPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+
 // About returns the one-line description, matching trio-stats.c about().
 func (p *trioStatsPlugin) About() string {
 	return "Calculate transmission rate and other stats in trio children.\n"
@@ -138,11 +142,6 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 			haveFilter = true
 		case "-a", "--alt-trios":
 			return nil, fmt.Errorf("trio-stats: the --alt-trios accounting (-a) is not supported by the native plugin")
-		case "-t", "--targets", "-T", "--targets-file":
-			// Streaming targets are not applied by the host (only -r/-R index
-			// regions are); reject rather than silently ignore. (-r/-R are
-			// consumed by the host and never reach Init.)
-			return nil, fmt.Errorf("trio-stats: streaming targets (%s) are not supported by the native plugin; use -r/-R for region selection", a)
 		case "-o", "--output":
 			return nil, fmt.Errorf("trio-stats: writing to a file (-o) is not supported by the native plugin; use stdout")
 		case "-p", "--ped":

@@ -54,10 +54,21 @@ type scatterPlugin struct {
 
 	filterStr string // -i/-e expression; accepted and validated for "only one",
 	filterSet bool   // but applied to nothing — upstream scatter.c never filters.
+
+	rt regionTargetFilter // shared -r/-R/-t/-T selection applied before scattering.
 }
+
+// SetRegionTarget records the shared -r/-R/-t/-T selection the framework parsed
+// out of scatter's argv; it is applied to the input records before they are
+// routed into chunk/region output files.
+func (p *scatterPlugin) SetRegionTarget(f regionTargetFilter) { p.rt = f }
 
 // Name returns the plugin name.
 func (p *scatterPlugin) Name() string { return "scatter" }
+
+// RegionTargetCaps opts scatter into the shared -r/-R/-t/-T region/target filter,
+// applied (via SetRegionTarget) to the records before they are scattered.
+func (p *scatterPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
 
 // About returns the one-line description, matching scatter.c about().
 func (p *scatterPlugin) About() string {
@@ -79,6 +90,8 @@ func (p *scatterPlugin) FlagTakesValue(flag string) bool {
 		"-s", "--scatter", "-S", "--scatter-file",
 		"-n", "--nsites-per-chunk", "-x", "--extra",
 		"-i", "--include", "-e", "--exclude",
+		"-r", "--regions", "-R", "--regions-file",
+		"-t", "--targets", "-T", "--targets-file",
 		"-p", "--prefix", "--threads", "-v", "--verbosity", "--hts-opts":
 		return true
 	}
@@ -166,8 +179,6 @@ func (p *scatterPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 			}
 			p.filterStr = v
 			p.filterSet = true
-		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
-			return nil, fmt.Errorf("scatter: region/target pre-selection is not supported in the native scatter plugin; pre-filter with bcftools view")
 		case "-W", "--write-index":
 			return nil, fmt.Errorf("scatter: -W/--write-index is not supported in the native plugin")
 		default:
@@ -263,6 +274,7 @@ func (p *scatterPlugin) RunMulti(opts PluginOptions, out io.Writer, stderr io.Wr
 	if err != nil {
 		return err
 	}
+	variants = p.rt.apply(variants)
 	if err := os.MkdirAll(p.outputDir, 0o777); err != nil {
 		return err
 	}

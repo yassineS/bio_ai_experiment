@@ -8,9 +8,12 @@
 package bcftools
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
 
@@ -18,14 +21,22 @@ func init() {
 	registerNativePlugin("check-sparsity", func() NativePlugin { return &checkSparsityPlugin{} })
 }
 
-// checkSparsityPlugin implements the `check-sparsity` plugin in its default
-// per-chromosome mode. The index-based -r/-R region modes are reported as
-// unsupported because they depend on htslib's tabix/BCF index region jumping,
-// which the native pipeline does not expose to plugins.
+// checkSparsityPlugin implements the `check-sparsity` plugin. In its default
+// mode it groups the stream by chromosome and reports the samples that did not
+// reach -n genotyped markers per chromosome. With -r/-R it instead processes
+// each region independently — overlapping records only — and reports the still
+// sparse samples once, labelled by the verbatim region token, exactly as
+// upstream's indexed test_region() does (no intra-region chromosome grouping,
+// because the index query is per-region). check-sparsity therefore self-applies
+// the shared region selection (it is a regionTargetSink) rather than letting the
+// framework pre-filter and collapse the per-region labels.
 type checkSparsityPlugin struct {
 	hdr      *vcf.Header
 	minSites int
 	out      io.Writer
+	// regionSpecs holds the -r/-R region tokens (verbatim label + parsed window)
+	// in order. Empty means the default per-chromosome mode.
+	regionSpecs []regionSpec
 }
 
 // SuppressVCF reports true: `+check-sparsity` emits no VCF/BCF output, only its
@@ -59,6 +70,17 @@ func (p *checkSparsityPlugin) FlagTakesValue(flag string) bool {
 	return false
 }
 
+// RegionTargetCaps reports that check-sparsity exposes NEITHER family to the
+// shared region/target filter. Its -r/-R are region/chromosome SELECTORS that
+// also group and label the report by region, and — unlike every other plugin —
+// upstream's check-sparsity reads its -R file with hts_readlist + tbx_itr_querys
+// (verbatim region-list strings, colon syntax), NOT the synced reader's TSV
+// format. check-sparsity therefore parses -r/-R itself in Init (it has no -t/-T
+// option), so the shared filter must leave both families alone.
+func (p *checkSparsityPlugin) RegionTargetCaps() regionTargetCaps {
+	return regionTargetCaps{regions: false, targets: false}
+}
+
 // Init parses -n/--n-markers and rejects the index-based region modes (-r/-R),
 // which require tabix/BCF index jumping not available in the native pipeline.
 func (p *checkSparsityPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
@@ -88,8 +110,35 @@ func (p *checkSparsityPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header,
 			if _, err := next(); err != nil {
 				return nil, err
 			}
-		case "-r", "--regions", "-R", "--regions-file":
-			return nil, fmt.Errorf("check-sparsity: the index-based region modes (-r/-R) are not supported by the native plugin; run upstream for indexed region jumping")
+		case "-r", "--regions":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			specs, perr := parseRegionSpecs(SplitCommaList(v))
+			if perr != nil {
+				return nil, fmt.Errorf("check-sparsity: %w", perr)
+			}
+			p.regionSpecs = append(p.regionSpecs, specs...)
+		case "-R", "--regions-file":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			// Upstream reads -R via hts_readlist + tbx_itr_querys: each line is a
+			// verbatim region-list string (colon syntax), NOT the synced reader's
+			// TSV. A tab-separated / BED line therefore fails tbx_itr_querys and
+			// upstream silently produces no output for it. We reproduce the
+			// region-list parse and document the BED quirk in docs/UPSTREAM_BUGS.md.
+			lines, perr := loadCheckSparsityRegionFile(v)
+			if perr != nil {
+				return nil, fmt.Errorf("check-sparsity: %w", perr)
+			}
+			specs, perr := parseRegionSpecs(lines)
+			if perr != nil {
+				return nil, fmt.Errorf("check-sparsity: %w", perr)
+			}
+			p.regionSpecs = append(p.regionSpecs, specs...)
 		default:
 			return nil, fmt.Errorf("check-sparsity: unsupported option %q", a)
 		}
@@ -100,17 +149,43 @@ func (p *checkSparsityPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header,
 	return hdr, nil
 }
 
-// ProcessAll streams the records grouped by chromosome and prints, at each
-// chromosome boundary (and at EOF), the samples that did not accumulate
-// min_sites genotyped markers, mirroring test_region(reg==NULL) and report().
+// ProcessAll reports the sparse samples. With -r/-R it processes each region
+// independently (records overlapping it) and reports once per region labelled by
+// the verbatim region token, mirroring upstream's indexed test_region(). Without
+// regions it groups the whole stream by chromosome, mirroring
+// test_region(reg==NULL).
 func (p *checkSparsityPlugin) ProcessAll(variants []*vcf.Variant) ([]*vcf.Variant, error) {
-	nsmpl := len(p.hdr.Samples)
-	if nsmpl == 0 {
+	if len(p.hdr.Samples) == 0 {
+		return nil, nil
+	}
+	if len(p.regionSpecs) > 0 {
+		// Per-region: each region token is its own group, labelled by the token,
+		// with no intra-region chromosome boundary (the index query never sees a
+		// chromosome change). Regions are processed in the order they were given.
+		for _, spec := range p.regionSpecs {
+			region := []region{spec.region}
+			sub := variants[:0:0]
+			for _, v := range variants {
+				if overlapsAny(v, region) {
+					sub = append(sub, v)
+				}
+			}
+			// Upstream's indexed test_region() returns without reporting when the
+			// region query yields no records (the itr is empty), so an empty
+			// region prints nothing rather than "all samples sparse".
+			if len(sub) == 0 {
+				continue
+			}
+			p.scanGroup(sub, spec.label, false)
+		}
 		return nil, nil
 	}
 
-	// smpl holds the indices still being tracked (not yet reaching min_sites),
-	// nsites their genotyped-marker counts; both are reset per chromosome.
+	// Default per-chromosome grouping over the whole stream. This mirrors
+	// upstream's single non-indexed test_region(reg==NULL): report at each
+	// chromosome boundary, reset per chromosome, and break the ENTIRE scan once
+	// every sample has reached min_sites (so later chromosomes are not reported).
+	nsmpl := len(p.hdr.Samples)
 	reset := func() ([]int, []int) {
 		smpl := make([]int, nsmpl)
 		for i := range smpl {
@@ -119,7 +194,6 @@ func (p *checkSparsityPlugin) ProcessAll(variants []*vcf.Variant) ([]*vcf.Varian
 		return smpl, make([]int, nsmpl)
 	}
 	smpl, nsites := reset()
-
 	report := func(reg string) {
 		if p.out != nil {
 			for _, s := range smpl {
@@ -128,10 +202,6 @@ func (p *checkSparsityPlugin) ProcessAll(variants []*vcf.Variant) ([]*vcf.Varian
 		}
 		smpl, nsites = reset()
 	}
-
-	// rid==-1 mirrors upstream's "no record seen yet"; nread tracks whether at
-	// least one GT-bearing record was processed since the last report, which
-	// gates the final report().
 	curChrom := ""
 	haveChrom := false
 	nread := false
@@ -142,22 +212,14 @@ func (p *checkSparsityPlugin) ProcessAll(variants []*vcf.Variant) ([]*vcf.Varian
 		}
 		curChrom = v.Chrom
 		haveChrom = true
-
-		// Skip records with no GT data (upstream `continue` on missing fmt_gt),
-		// which leaves nread unchanged for those sites.
 		if !formatHasTag(v, "GT") {
 			continue
 		}
-
-		// Update the tracked samples: a sample with a present (non-missing)
-		// genotype at this site advances its counter; once it reaches min_sites
-		// it is dropped from tracking. Samples whose GT is missing are skipped.
 		for i := 0; i < len(smpl); i++ {
 			gt, ok := sampleGT(v, smpl[i])
 			if !ok {
 				continue
 			}
-			// ial==0 means the first allele is missing/end => treated as missing.
 			if len(gt.alleles) == 0 || gt.alleles[0] == missingAllele {
 				continue
 			}
@@ -165,15 +227,12 @@ func (p *checkSparsityPlugin) ProcessAll(variants []*vcf.Variant) ([]*vcf.Varian
 			if nsites[i] < p.minSites {
 				continue
 			}
-			// Remove sample i from the tracking lists.
 			smpl = append(smpl[:i], smpl[i+1:]...)
 			nsites = append(nsites[:i], nsites[i+1:]...)
 			i--
 		}
 		nread = true
 		if len(smpl) == 0 {
-			// Upstream breaks the entire read loop once every sample reached
-			// min_sites; no further chromosomes are processed or reported.
 			break
 		}
 	}
@@ -183,6 +242,48 @@ func (p *checkSparsityPlugin) ProcessAll(variants []*vcf.Variant) ([]*vcf.Varian
 	return nil, nil
 }
 
+// scanGroup runs the sparsity scan over one region's records and reports the
+// still-sparse samples labelled by the region token, mirroring the final
+// report() of upstream's indexed test_region() (rid stays -1, so the label is
+// the verbatim region string and there is no intra-region chromosome grouping).
+func (p *checkSparsityPlugin) scanGroup(variants []*vcf.Variant, label string, _ bool) {
+	nsmpl := len(p.hdr.Samples)
+	smpl := make([]int, nsmpl)
+	for i := range smpl {
+		smpl[i] = i
+	}
+	nsites := make([]int, nsmpl)
+	for _, v := range variants {
+		if !formatHasTag(v, "GT") {
+			continue
+		}
+		for i := 0; i < len(smpl); i++ {
+			gt, ok := sampleGT(v, smpl[i])
+			if !ok {
+				continue
+			}
+			if len(gt.alleles) == 0 || gt.alleles[0] == missingAllele {
+				continue
+			}
+			nsites[i]++
+			if nsites[i] < p.minSites {
+				continue
+			}
+			smpl = append(smpl[:i], smpl[i+1:]...)
+			nsites = append(nsites[:i], nsites[i+1:]...)
+			i--
+		}
+		if len(smpl) == 0 {
+			break
+		}
+	}
+	if p.out != nil {
+		for _, s := range smpl {
+			fmt.Fprintf(p.out, "%s\t%s\n", label, p.hdr.Samples[s])
+		}
+	}
+}
+
 // Process is never called for a bufferedPlugin but satisfies NativePlugin.
 func (p *checkSparsityPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 	return nil, nil
@@ -190,3 +291,34 @@ func (p *checkSparsityPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 
 // Destroy releases resources (none held).
 func (p *checkSparsityPlugin) Destroy() error { return nil }
+
+// loadCheckSparsityRegionFile reads a -R file the way upstream check-sparsity
+// does: hts_readlist returns each non-comment line verbatim, and that string is
+// handed to tbx_itr_querys. Only the colon region-list syntax ("chr",
+// "chr:beg-end") parses there; a tab-separated / BED line fails to parse and
+// upstream silently produces no output for it. We reproduce that by keeping only
+// the single-column lines (a verbatim region token) and dropping multi-column
+// (TSV/BED) lines — see docs/UPSTREAM_BUGS.md for the reproducer.
+func loadCheckSparsityRegionFile(path string) ([]string, error) {
+	f, err := iohelper.OpenReader(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	var out []string
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r\n")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// A line with whitespace/tabs is a TSV/BED line that upstream's
+		// tbx_itr_querys cannot parse: silently drop it (upstream prints nothing).
+		if strings.IndexFunc(line, func(r rune) bool { return r == ' ' || r == '\t' }) >= 0 {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out, sc.Err()
+}

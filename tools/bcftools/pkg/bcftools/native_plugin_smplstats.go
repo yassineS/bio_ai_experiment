@@ -74,6 +74,10 @@ func (p *smplStatsPlugin) FlagTakesValue(flag string) bool {
 // Name returns the plugin name.
 func (p *smplStatsPlugin) Name() string { return "smpl-stats" }
 
+// RegionTargetCaps opts smpl-stats into the shared -r/-R/-t/-T region/target
+// filter, applied to the records before the per-sample statistics are tallied.
+func (p *smplStatsPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+
 // About returns the one-line description, matching smpl-stats.c about().
 func (p *smplStatsPlugin) About() string {
 	return "Calculate basic per-sample stats scanning over a range of thresholds simultaneously.\n"
@@ -112,8 +116,6 @@ func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 			filterExpr = v
 			filterExclude = a == "-e" || a == "--exclude"
 			haveFilter = true
-		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
-			return nil, fmt.Errorf("smpl-stats: region/target selection (%s) is not supported by the native plugin", a)
 		case "-o", "--output":
 			return nil, fmt.Errorf("smpl-stats: writing to a file (-o) is not supported by the native plugin; use stdout")
 		case "-v", "--verbosity":

@@ -131,6 +131,31 @@ bcftools +example   -- input.vcf.gz
 bcftools plugin example -O z -o out.vcf.gz -- input.vcf.gz chr1:1-1000
 ```
 
+### Region / target selection for native plugins (`-r/-R/-t/-T`)
+
+The native (pure-Go) plugins honour the same `-r/--regions`,
+`-R/--regions-file`, `-t/--targets` and `-T/--targets-file` options upstream
+does, applied by a shared host-side filter before any record reaches the
+plugin:
+
+- `-r`/`-R` is **span-overlap** based — a record is kept if `[POS,
+  POS+len(REF)-1]` overlaps the region.
+- `-t`/`-T` is **record-start** based — a record is kept if `POS` falls in the
+  target window; a leading `^` negates (exclude matches). This is upstream's
+  exact `-r` vs `-t` difference: an indel at `POS=100` spanning `100..104` is
+  kept by `-r chr:102-102` but dropped by `-t chr:102-102`.
+- `-R`/`-T` files follow the htslib synced-reader format: a `.bed` path is
+  0-based half-open; any other file is 1-based (`chr<TAB>pos` or
+  `chr<TAB>beg<TAB>end`). Inline `-r`/`-t` strings keep the `chr:beg-end` colon
+  syntax.
+
+Honoured by `+check-sparsity`, `+remove-overlaps`, `+prune`, `+smpl-stats`,
+`+indel-stats`, `+contrast`, `+guess-ploidy` (only `-r/-R`; its `-t` is
+`--tag`), `+mendelian2`, `+trio-stats`, `+isecGT` (applied to both inputs),
+`+split` and `+scatter`. `+check-sparsity` additionally groups and labels its
+report per region and reproduces upstream's quirk that a BED/TSV `-R` line is
+silently dropped (see `docs/UPSTREAM_BUGS.md`).
+
 ### `+trio-dnm3` — de-novo mutation screening (native)
 
 `trio-dnm3` is implemented natively (pure Go, no subprocess). It screens

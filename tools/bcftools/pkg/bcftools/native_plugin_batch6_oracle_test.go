@@ -161,19 +161,18 @@ func TestNativePluginBatch6Unsupported(t *testing.T) {
 		// trio-dnm3 error path is the missing -p/-P option, plus the AD+PL-only DMM
 		// site that has no FORMAT/AD/QM (asserted in the float-model test).
 		{"trio-dnm3", nil}, // missing -p/-P
-		// trio-stats: alt-trios, streaming targets and file output remain
-		// unsupported (the -i/-e filter modes are now supported and parity-checked
-		// in TestNativePluginTrioStats); the curly-brace expansion is still rejected.
+		// trio-stats: alt-trios and file output remain unsupported (the -i/-e
+		// filter modes are parity-checked in TestNativePluginTrioStats and -t/-T
+		// streaming targets in TestNativePluginRegionTarget); the curly-brace
+		// expansion is still rejected.
 		{"trio-stats", []string{"-p", "x.ped", "-i", "GQ>{10,20}"}},
 		{"trio-stats", []string{"-p", "x.ped", "-a", "1"}},
-		{"trio-stats", []string{"-p", "x.ped", "-t", "chr1"}},
 		{"trio-stats", nil}, // missing -p/-P
 		// trio-switch-rate: only -p is supported.
 		{"trio-switch-rate", nil}, // missing -p
 		{"trio-switch-rate", []string{"-x"}},
-		// mendelian2: region/target selection and -W.
-		{"mendelian2", []string{"-p", "CHILD,FATHER,MOTHER", "-t", "chr1"}},
-		{"mendelian2", []string{"-p", "CHILD,FATHER,MOTHER", "-T", "chr1"}},
+		// mendelian2: -W remains unsupported; -r/-R/-t/-T region/target selection
+		// is now supported (see TestNativePluginRegionTarget).
 		{"mendelian2", nil}, // missing -p/-P
 	}
 	for _, tc := range cases {

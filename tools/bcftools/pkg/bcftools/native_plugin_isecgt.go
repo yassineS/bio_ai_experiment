@@ -14,9 +14,11 @@
 // sample's entire GT in A is set to missing (with A's ploidy preserved).
 //
 // The second input file arrives as the second positional argument, which the
-// host CLI routes into opts.Regions; the plugin reads it from there. Only the
-// default whole-file comparison is supported. The -r/-R/-t/-T region selection
-// and -W index options of the upstream plugin are not reproduced.
+// host CLI routes into opts.Regions; the plugin reads it from there. Region and
+// target selection (-r/-R/-t/-T) is supported and applied to BOTH input streams
+// before the lockstep comparison, mirroring upstream's synced reader (which
+// applies the same regions/targets to every reader). The -W index option of the
+// upstream plugin is not reproduced.
 package bcftools
 
 import (
@@ -34,10 +36,20 @@ func init() {
 // isecGTPlugin implements isecGT.
 type isecGTPlugin struct {
 	fileB string
+	rt    regionTargetFilter
 }
+
+// SetRegionTarget records the shared -r/-R/-t/-T selection the framework parsed
+// out of isecGT's argv, to be applied to both input streams in RunFull.
+func (p *isecGTPlugin) SetRegionTarget(f regionTargetFilter) { p.rt = f }
 
 // Name returns the plugin name.
 func (p *isecGTPlugin) Name() string { return "isecGT" }
+
+// RegionTargetCaps opts isecGT into the shared -r/-R/-t/-T region/target filter.
+// The selection is applied to BOTH input streams in RunFull (via SetRegionTarget),
+// matching upstream's synced reader.
+func (p *isecGTPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
 
 // About returns the one-line description, matching isecGT.c about().
 func (p *isecGTPlugin) About() string {
@@ -74,8 +86,6 @@ func (p *isecGTPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error)
 		case "-O", "--output-type", "-o", "--output":
 			// Output container/handle is supplied by the host pipeline.
 			i++
-		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
-			return nil, fmt.Errorf("isecGT: region/target selection is not supported in the native plugin; pre-filter both inputs with bcftools view")
 		case "-W", "--write-index":
 			return nil, fmt.Errorf("isecGT: -W/--write-index is not supported in the native plugin")
 		case "-v", "--verbosity":
@@ -114,6 +124,11 @@ func (p *isecGTPlugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Writ
 	if err != nil {
 		return fmt.Errorf("isecGT: reading second file: %w", err)
 	}
+
+	// Apply the shared region/target selection to BOTH streams, exactly as
+	// upstream's synced reader applies the same regions/targets to every reader.
+	varsA = p.rt.apply(varsA)
+	varsB = p.rt.apply(varsB)
 
 	// Map every A sample to its column in B (strict: all must be present).
 	bIdx := map[string]int{}

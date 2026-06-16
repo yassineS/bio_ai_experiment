@@ -19,8 +19,10 @@
 //	--rules ASSEMBLY / --rules-file FILE   inheritance rules
 //	-v/--verbosity / --no-version          accepted, no effect on parity
 //
-// Region/target index-jumping (-r/-R/-t/-T) and -W/--write-index require htslib
-// machinery the native pipeline does not expose and are reported as a clean
+// Region/target selection (-r/-R/-t/-T) is supported: the shared
+// regionTargetFilter is parsed by the framework and applied to the input
+// records before the Mendelian accounting. -W/--write-index and the
+// --regions-overlap/--targets-overlap tuning knobs are still reported as a clean
 // unsupported Init error.
 package bcftools
 
@@ -35,12 +37,22 @@ import (
 func init() { registerNativePlugin("mendelian2", func() NativePlugin { return &mendelian2Plugin{} }) }
 
 // mendelian2Plugin adapts the `+mendelian2` plugin form onto the shared
-// Mendelian2 engine. It carries no per-record state of its own; RunFull does
+// Mendelian2 engine. It carries the shared region/target selection; RunFull does
 // all the work.
-type mendelian2Plugin struct{}
+type mendelian2Plugin struct {
+	rt regionTargetFilter
+}
+
+// SetRegionTarget records the shared -r/-R/-t/-T selection the framework parsed
+// out of mendelian2's argv; it is forwarded to the Mendelian2 engine.
+func (p *mendelian2Plugin) SetRegionTarget(f regionTargetFilter) { p.rt = f }
 
 // Name returns the plugin name.
 func (p *mendelian2Plugin) Name() string { return "mendelian2" }
+
+// RegionTargetCaps opts mendelian2 into the shared -r/-R/-t/-T region/target
+// filter, forwarded to the Mendelian2 engine via SetRegionTarget.
+func (p *mendelian2Plugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
 
 // About returns the one-line description, matching mendelian2.c about().
 func (p *mendelian2Plugin) About() string {
@@ -87,13 +99,6 @@ func (p *mendelian2Plugin) Destroy() error { return nil }
 // and/or filtered VCF/BCF). This is the faithful reuse path: no Mendelian logic
 // is duplicated here.
 func (p *mendelian2Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Writer) error {
-	// Region/target selection is applied by upstream's +mendelian2 at the
-	// plugin level (index-jumping). The host may also route -r/-R into
-	// opts.Regions; the engine here streams the whole input, so accepting a
-	// region restriction would silently produce wrong counts. Reject it.
-	if len(opts.Regions) != 0 || opts.RegionsFile != "" {
-		return fmt.Errorf("mendelian2: region/target selection is not supported by the native plugin")
-	}
 	var (
 		pfm, ped    string
 		modeStr     = "c"
@@ -138,10 +143,8 @@ func (p *mendelian2Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.
 			_, err = val() // accepted, no effect on parity
 		case "--no-version":
 			// accepted, no effect
-		case "-r", "--regions", "-R", "--regions-file",
-			"-t", "--targets", "-T", "--targets-file",
-			"--regions-overlap", "--targets-overlap":
-			return fmt.Errorf("mendelian2: region/target selection (%s) is not supported by the native plugin", a)
+		case "--regions-overlap", "--targets-overlap":
+			return fmt.Errorf("mendelian2: %s is not supported by the native plugin", a)
 		case "-W", "--write-index":
 			return fmt.Errorf("mendelian2: -W/--write-index is not supported by the native plugin")
 		default:
@@ -199,6 +202,7 @@ func (p *mendelian2Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.
 		CompressLevel: opts.CompressLevel,
 		Threads:       opts.Threads,
 		Rules:         ruleSet,
+		RegionTarget:  p.rt,
 	}
 	if pfm != "" {
 		parsed, perr := ParseMendelian2PFM(pfm)
