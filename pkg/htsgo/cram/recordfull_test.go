@@ -118,17 +118,41 @@ func TestDecodeRecordUnmapped(t *testing.T) {
 }
 
 // TestDecodeReadNameSynthesised checks that a CRAM file that did not
-// preserve read names synthesises numeric names from the record counter.
+// preserve read names leaves the name unset at the read-name position
+// (deferred) and that reconstructDroppedNames later synthesises it from
+// the record counter, matching htslib's "<prefix>:<record_number>" scheme.
 func TestDecodeReadNameSynthesised(t *testing.T) {
 	h := refFreeHeader()
 	h.Preservation.ReadNamesIncluded = false
 	rd := &recordDecoder{h: h, slice: &SliceHeader{RecordCounter: 1000}}
-	rec := &sam.Record{}
-	if err := rd.decodeReadName(rec, 0, 5); err != nil {
+
+	// decodeReadName defers when names are not preserved.
+	dr := &decodedRecord{rec: &sam.Record{}, mateIndex: -1}
+	if err := rd.decodeReadName(dr, 0, 5); err != nil {
 		t.Fatalf("decodeReadName: %v", err)
 	}
-	if rec.QName != "1005" {
-		t.Errorf("synthesised name = %q, want 1005", rec.QName)
+	if dr.rec.QName != "" || dr.nameStored {
+		t.Errorf("deferred name = %q (stored=%v), want empty/false", dr.rec.QName, dr.nameStored)
+	}
+
+	// Without a file prefix the synthesised name is the bare record number
+	// (slice counter + index + 1).
+	slice := make([]*decodedRecord, 6)
+	for i := range slice {
+		slice[i] = &decodedRecord{rec: &sam.Record{}, mateIndex: -1}
+	}
+	slice[5] = dr // index 5 → 1006
+	rd.reconstructDroppedNames(slice)
+	if dr.rec.QName != "1006" {
+		t.Errorf("synthesised name = %q, want 1006", dr.rec.QName)
+	}
+
+	// With a file prefix the name is "<prefix>:<number>".
+	rd.namePrefix = "sample.cram"
+	dr2 := &decodedRecord{rec: &sam.Record{}, mateIndex: -1}
+	rd.reconstructDroppedNames([]*decodedRecord{dr2})
+	if dr2.rec.QName != "sample.cram:1001" {
+		t.Errorf("synthesised prefixed name = %q, want sample.cram:1001", dr2.rec.QName)
 	}
 }
 

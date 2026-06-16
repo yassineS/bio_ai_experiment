@@ -24,6 +24,26 @@ import (
 // This mirrors reconstructMapped exactly: the base-carrying features
 // cover every read position so no reference-derived 'N' fill is needed,
 // and the CIGAR is rebuilt from the features' implied operations.
+//
+// M, = and X are encoded identically — each becomes a base-stretch
+// feature carrying the literal read bases. This matches htslib's CRAM
+// encoder, whose cigar loop (cram_encode.c) folds BAM_CMATCH,
+// BAM_CBASE_MATCH ('=') and BAM_CBASE_MISMATCH ('X') into a single case
+// and deliberately "doesn't trust = and X to be correct", comparing every
+// base against the reference instead. In the reference-free encoding this
+// writer produces that per-base comparison reduces to "carry the bases
+// verbatim", so an aligner run with --eqx (which emits =/X instead of M)
+// round-trips to the same SAM record samtools decodes from its own
+// reference-based CRAM (where =/X collapse to M plus MD/NM tags).
+//
+// The CIGAR back-step op (B, sam.CigarBack, op 9) is deliberately not
+// supported: htslib's own CRAM encoder rejects it with "Unknown CIGAR op
+// code" (the cigar switch in cram_encode.c has no BAM_CBACK case, and the
+// consensus builder lists BACK in its cig_skip table), and htslib's SAM
+// parser will not even construct a record carrying B without a
+// length-mismatch error. Matching upstream, the writer returns a clear
+// error rather than inventing a feature encoding htslib could never read
+// back. See docs/UPSTREAM_BUGS.md.
 func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	b := e.buffers
 	seq := seqBytes(rec.Seq)
@@ -78,6 +98,12 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 			feats = append(feats, feature{code: featPadding, pos: readPos + 1, length: n})
 		case sam.CigarHardClip:
 			feats = append(feats, feature{code: featHardClip, pos: readPos + 1, length: n})
+		case sam.CigarBack:
+			// htslib's CRAM encoder has no back-step case and rejects B with
+			// "Unknown CIGAR op code"; its SAM parser cannot even build such a
+			// record. We match that and reject B rather than emit a feature
+			// stream upstream could never decode. See docs/UPSTREAM_BUGS.md.
+			return fmt.Errorf("CIGAR back-step op B is not supported (htslib's CRAM encoder rejects it as well)")
 		default:
 			return fmt.Errorf("CIGAR operation %c is not supported by the simple CRAM writer", op.Char())
 		}
