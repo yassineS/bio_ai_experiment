@@ -17,13 +17,17 @@
 // host CLI routes into opts.Regions; the plugin reads it from there. Region and
 // target selection (-r/-R/-t/-T) is supported and applied to BOTH input streams
 // before the lockstep comparison, mirroring upstream's synced reader (which
-// applies the same regions/targets to every reader). The -W index option of the
-// upstream plugin is not reproduced.
+// applies the same regions/targets to every reader). -o/-O select the output
+// file and container, and -W/--write-index indexes that file (CSI by default,
+// TBI for -W=tbi on VCF.gz) exactly as upstream does; -W on a stdout output is
+// rejected with upstream's "failed to initialise index for -" error.
 package bcftools
 
 import (
 	"fmt"
 	"io"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -37,6 +41,11 @@ func init() {
 type isecGTPlugin struct {
 	fileB string
 	rt    regionTargetFilter
+
+	outputFile string        // -o/--output FILE; "" or "-" means stdout
+	format     OutputFormat  // -O/--output-type; defaults to VCF
+	clevel     int           // -O z/b level; -1 for the package default
+	writeIndex writeIndexFmt // -W/--write-index[=FMT]; writeIndexOff when unset
 }
 
 // SetRegionTarget records the shared -r/-R/-t/-T selection the framework parsed
@@ -80,21 +89,87 @@ func (p *isecGTPlugin) FlagTakesValue(flag string) bool {
 // opts.Regions (see RunFull); only options that the native streaming path can
 // honour are accepted.
 func (p *isecGTPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
+	p.clevel = -1
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		switch a {
-		case "-O", "--output-type", "-o", "--output":
-			// Output container/handle is supplied by the host pipeline.
+		next := func() (string, error) {
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("isecGT: option %q requires an argument", a)
+			}
 			i++
-		case "-W", "--write-index":
-			return nil, fmt.Errorf("isecGT: -W/--write-index is not supported in the native plugin")
+			return args[i], nil
+		}
+		switch a {
+		case "-O", "--output-type":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.parseOutputType(v); err != nil {
+				return nil, err
+			}
+		case "-o", "--output":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			p.outputFile = v
 		case "-v", "--verbosity":
 			i++
 		default:
+			if sel, handled, werr := parseWriteIndexArg(a); handled {
+				if werr != nil {
+					return nil, fmt.Errorf("isecGT: %w", werr)
+				}
+				p.writeIndex = sel
+				continue
+			}
+			if strings.HasPrefix(a, "-O") && len(a) > 2 {
+				if err := p.parseOutputType(a[2:]); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if strings.HasPrefix(a, "-o") && len(a) > 2 {
+				p.outputFile = a[2:]
+				continue
+			}
 			return nil, fmt.Errorf("isecGT: unsupported option %q", a)
 		}
 	}
 	return hdr, nil
+}
+
+// parseOutputType parses upstream's -O u|b|v|z[0-9] spelling.
+func (p *isecGTPlugin) parseOutputType(s string) error {
+	if s == "" {
+		return fmt.Errorf("isecGT: empty -O argument")
+	}
+	switch s[0] {
+	case 'b':
+		p.format = OutputBCF
+	case 'u':
+		p.format = OutputBCFUncompressed
+	case 'z':
+		p.format = OutputVCFGz
+	case 'v':
+		p.format = OutputVCF
+	default:
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 || n > 9 {
+			return fmt.Errorf("isecGT: the output type %q not recognised", s)
+		}
+		p.clevel = n
+		return nil
+	}
+	if len(s) > 1 {
+		n, err := strconv.Atoi(s[1:])
+		if err != nil || n < 0 || n > 9 {
+			return fmt.Errorf("isecGT: could not parse compression level %q", s[1:])
+		}
+		p.clevel = n
+	}
+	return nil
 }
 
 // Process is unused: isecGT is a fullPlugin.
@@ -155,16 +230,44 @@ func (p *isecGTPlugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Writ
 	}
 	_ = contigOrder
 
-	w, cleanup, err := openOutput(out, ViewOptions{
-		OutputFormat:  opts.OutputFormat,
-		CompressLevel: opts.CompressLevel,
+	// When -o names a file, isecGT writes (and indexes) it directly; otherwise
+	// it streams to the host stdout. -O selects the container; the host's
+	// forwarded OutputFormat is used only for the stdout fallback.
+	dst := out
+	format := opts.OutputFormat
+	clevel := opts.CompressLevel
+	var outFile *os.File
+	toFile := p.outputFile != "" && p.outputFile != "-"
+	if toFile {
+		var ferr error
+		outFile, ferr = os.Create(p.outputFile)
+		if ferr != nil {
+			return fmt.Errorf("isecGT: cannot write to %q: %w", p.outputFile, ferr)
+		}
+		dst = outFile
+		format = p.format
+		clevel = p.clevel
+	} else if p.writeIndex != writeIndexOff {
+		// Indexing stdout is impossible — reproduce upstream's error.
+		return fmt.Errorf("isecGT: failed to initialise index for -")
+	}
+
+	w, cleanup, err := openOutput(dst, ViewOptions{
+		OutputFormat:  format,
+		CompressLevel: clevel,
 		Threads:       opts.Threads,
 	}, hdrA)
 	if err != nil {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
 		return err
 	}
 	if err := w.WriteHeader(); err != nil {
 		cleanup()
+		if outFile != nil {
+			_ = outFile.Close()
+		}
 		return err
 	}
 	for _, a := range varsA {
@@ -173,14 +276,28 @@ func (p *isecGTPlugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Writ
 		}
 		if err := w.Write(a); err != nil {
 			cleanup()
+			if outFile != nil {
+				_ = outFile.Close()
+			}
 			return err
 		}
 	}
 	if err := w.Flush(); err != nil {
 		cleanup()
+		if outFile != nil {
+			_ = outFile.Close()
+		}
 		return err
 	}
 	cleanup()
+	if outFile != nil {
+		if err := outFile.Close(); err != nil {
+			return err
+		}
+		if err := writeIndexFor(p.outputFile, format, p.writeIndex); err != nil {
+			return fmt.Errorf("isecGT: %w", err)
+		}
+	}
 	return nil
 }
 

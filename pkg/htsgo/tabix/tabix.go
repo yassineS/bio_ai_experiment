@@ -106,6 +106,15 @@ type Bin struct {
 type RefIndex struct {
 	Bins   []Bin
 	Linear []VOffset
+
+	// metaOffBeg/metaOffEnd and nMapped accumulate the per-reference
+	// statistics htslib stores in the metadata pseudo-bin (bin MaxBin+1):
+	// the virtual-offset span of the reference's records and the mapped
+	// record count. metaSet records whether any record was observed.
+	metaOffBeg VOffset
+	metaOffEnd VOffset
+	nMapped    uint64
+	metaSet    bool
 }
 
 // Index is the in-memory representation of a `.tbi` file plus the
@@ -116,7 +125,29 @@ type Index struct {
 	Refs   []RefIndex
 	// NoCoor counts records without coordinates (optional trailing field).
 	NoCoor uint64
+
+	// eof / lastRef / lastBin record the finishing state captured by Build
+	// (the BGZF EOF virtual offset and the last pushed record's reference and
+	// bin) so Write can emit htslib's metadata pseudo-bin. They are zero / -1
+	// for an index built other than via Build (e.g. parsed from disk), in
+	// which case the metadata bin is preserved verbatim from the input bins.
+	eof     VOffset
+	lastRef int
+	lastBin int64
+	// synthMeta is set by Build to request that Write append htslib's
+	// per-reference metadata pseudo-bin (bin MaxBin+1). Indexes parsed from
+	// disk already carry that bin in Refs[].Bins and leave this false.
+	synthMeta bool
+	// noCoorPresent records that a parsed index carried the trailing n_no_coor
+	// field, so a round-trip re-write reproduces it byte-for-byte even when the
+	// count is zero.
+	noCoorPresent bool
 }
+
+// MetaBinID is the synthetic metadata pseudo-bin number htslib stores per
+// reference in a TBI/BAI index: the maximum real bin plus one. It carries the
+// reference's virtual-offset span and the (n_mapped, n_unmapped) record counts.
+const MetaBinID = MaxBin + 1
 
 // Errors returned by the tabix parser.
 var (
@@ -129,7 +160,7 @@ var (
 
 // NewIndex returns a freshly-initialised Index with the given Config.
 func NewIndex(cfg Config) *Index {
-	return &Index{Config: cfg}
+	return &Index{Config: cfg, lastRef: -1, lastBin: -1}
 }
 
 // ChromID returns the index of chrom in Names, or -1 if not present.
@@ -300,6 +331,7 @@ func Build(path string, cfg Config) (*Index, error) {
 	var pos int64
 	var lineNo int
 	var fieldBuf [64][]byte
+	lastRef, lastBin := -1, int64(-1)
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		lineStart := pos
@@ -331,20 +363,69 @@ func Build(path string, cfg Config) (*Index, error) {
 		refID := idx.ensureRef(chrom)
 		v := uoffToV(lineStart)
 		vEnd := uoffToV(pos) // virtual offset just past this line
-		idx.addRecord(refID, beg, end, v, vEnd)
+		binID := idx.addRecord(refID, beg, end, v, vEnd)
+		lastRef, lastBin = refID, int64(binID)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
 
 	idx.finalize()
+	// Mirror htslib's hts_idx_finish: extend the last record's chunk and the
+	// last reference's metadata span to the file's final virtual offset (the
+	// virtual offset of the BGZF EOF block), then leave the metadata pseudo-bin
+	// to be emitted by Write.
+	idx.synthMeta = true
+	idx.eof = eofVOffsetTBI(offsets)
+	idx.lastRef = lastRef
+	idx.lastBin = lastBin
+	if lastRef >= 0 && lastRef < len(idx.Refs) {
+		ref := &idx.Refs[lastRef]
+		for i := range ref.Bins {
+			if int64(ref.Bins[i].ID) == lastBin {
+				ch := ref.Bins[i].Chunks
+				if n := len(ch); n > 0 && ch[n-1].End < idx.eof {
+					ch[n-1].End = idx.eof
+				}
+				break
+			}
+		}
+		if idx.eof > ref.metaOffEnd {
+			ref.metaOffEnd = idx.eof
+		}
+	}
 	return idx, nil
 }
 
-// addRecord registers one record with bin and linear-index slots.
-func (idx *Index) addRecord(refID, beg, end int, v, vEnd VOffset) {
+// eofVOffsetTBI returns the virtual offset of the BGZF EOF block: the
+// compressed offset just past the last data block, with a zero in-block
+// offset. This is bgzf_tell at end-of-file, the value htslib's hts_idx_finish
+// uses as the final offset.
+func eofVOffsetTBI(offsets []bgzip.BlockOffset) VOffset {
+	if len(offsets) == 0 {
+		return 0
+	}
+	last := offsets[len(offsets)-1]
+	return MakeVOffset(last.CompressedOffset+int64(last.CompressedSize), 0)
+}
+
+// addRecord registers one record with bin and linear-index slots. It returns
+// the bin the record landed in so the caller can track the last-pushed bin for
+// the EOF chunk-end extension htslib applies in hts_idx_finish.
+func (idx *Index) addRecord(refID, beg, end int, v, vEnd VOffset) uint32 {
 	ref := &idx.Refs[refID]
 	binID := uint32(Reg2bin(beg, end))
+
+	// Accumulate the per-reference metadata-bin statistics (record span and
+	// mapped count), mirroring htslib's idx->z.off_beg/off_end/n_mapped.
+	if !ref.metaSet || v < ref.metaOffBeg {
+		ref.metaOffBeg = v
+		ref.metaSet = true
+	}
+	if vEnd > ref.metaOffEnd {
+		ref.metaOffEnd = vEnd
+	}
+	ref.nMapped++
 
 	// Find or create the bin entry.
 	var bin *Bin
@@ -384,6 +465,7 @@ func (idx *Index) addRecord(refID, beg, end int, v, vEnd VOffset) {
 			ref.Linear[t] = v
 		}
 	}
+	return binID
 }
 
 // finalize fills any "no record" sentinel slots in the linear index using
@@ -457,12 +539,26 @@ func (idx *Index) Write(w io.Writer) error {
 	}
 	for i := range idx.Refs {
 		ref := idx.Refs[i]
+		// htslib emits a per-reference metadata pseudo-bin (bin MaxBin+1) with
+		// two chunks: the reference's virtual-offset span and the
+		// (n_mapped, n_unmapped) record counts. Append it for Build-produced
+		// indexes (parsed indexes already carry it in Bins).
+		bins := ref.Bins
+		if idx.synthMeta && ref.metaSet {
+			bins = append(append([]Bin(nil), bins...), Bin{
+				ID: MetaBinID,
+				Chunks: []Chunk{
+					{Beg: ref.metaOffBeg, End: ref.metaOffEnd},
+					{Beg: VOffset(ref.nMapped), End: VOffset(0)},
+				},
+			})
+		}
 		// Sort bins by ID for stable output.
-		sort.Slice(ref.Bins, func(a, b int) bool { return ref.Bins[a].ID < ref.Bins[b].ID })
-		if err := binary.Write(bw, binary.LittleEndian, int32(len(ref.Bins))); err != nil {
+		sort.Slice(bins, func(a, b int) bool { return bins[a].ID < bins[b].ID })
+		if err := binary.Write(bw, binary.LittleEndian, int32(len(bins))); err != nil {
 			return err
 		}
-		for _, bin := range ref.Bins {
+		for _, bin := range bins {
 			if err := binary.Write(bw, binary.LittleEndian, bin.ID); err != nil {
 				return err
 			}
@@ -487,7 +583,12 @@ func (idx *Index) Write(w io.Writer) error {
 			}
 		}
 	}
-	if idx.NoCoor > 0 {
+	// htslib always emits the trailing n_no_coor field (8 bytes), even when it
+	// is zero, for Build-produced indexes. Match that so the on-disk TBI is
+	// byte-identical to `tabix` / `bcftools index`. Indexes parsed from disk
+	// (synthMeta == false) preserve the original presence/absence of the field
+	// via NoCoor, which the reader sets only when the field was present.
+	if idx.synthMeta || idx.noCoorPresent || idx.NoCoor > 0 {
 		if err := binary.Write(bw, binary.LittleEndian, idx.NoCoor); err != nil {
 			return err
 		}
@@ -612,6 +713,7 @@ func Read(r io.Reader) (*Index, error) {
 	var trailer uint64
 	if err := binary.Read(br, binary.LittleEndian, &trailer); err == nil {
 		idx.NoCoor = trailer
+		idx.noCoorPresent = true
 	}
 	return idx, nil
 }

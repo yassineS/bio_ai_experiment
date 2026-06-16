@@ -13,8 +13,9 @@
 // upstream scatter.c, applied to NOTHING: scatter.c parses filter_str/filter_logic
 // (and errors if both -i and -e are given) yet never calls filter_init or
 // filter_test, so the expression has no effect on the scattered output. We
-// reproduce that no-op faithfully. The index-jump -r/-R/-t/-T and -W index
-// options are reported as a clean unsupported Init error.
+// reproduce that no-op faithfully. -W/--write-index indexes every scattered
+// output file (a CSI by default, a TBI for -W=tbi on VCF.gz) exactly as upstream
+// does; the -r/-R/-t/-T region selection is applied before the scatter.
 package bcftools
 
 import (
@@ -54,6 +55,8 @@ type scatterPlugin struct {
 
 	filterStr string // -i/-e expression; accepted and validated for "only one",
 	filterSet bool   // but applied to nothing — upstream scatter.c never filters.
+
+	writeIndex writeIndexFmt // -W/--write-index[=FMT]; writeIndexOff when unset
 
 	rt regionTargetFilter // shared -r/-R/-t/-T selection applied before scattering.
 }
@@ -179,9 +182,14 @@ func (p *scatterPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 			}
 			p.filterStr = v
 			p.filterSet = true
-		case "-W", "--write-index":
-			return nil, fmt.Errorf("scatter: -W/--write-index is not supported in the native plugin")
 		default:
+			if sel, handled, werr := parseWriteIndexArg(a); handled {
+				if werr != nil {
+					return nil, fmt.Errorf("scatter: %w", werr)
+				}
+				p.writeIndex = sel
+				continue
+			}
 			if strings.HasPrefix(a, "-O") && len(a) > 2 {
 				if err := p.parseOutputType(a[2:]); err != nil {
 					return nil, err
@@ -203,9 +211,6 @@ func (p *scatterPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 				}
 				p.nsites = n
 				continue
-			}
-			if strings.HasPrefix(a, "-W") {
-				return nil, fmt.Errorf("scatter: -W/--write-index is not supported in the native plugin")
 			}
 			return nil, fmt.Errorf("scatter: unsupported option %q", a)
 		}
@@ -462,6 +467,13 @@ func (p *scatterPlugin) writeFile(label string, hdr *vcf.Header, variants []*vcf
 		return err
 	}
 	cleanup()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// -W/--write-index: index each scattered output file as upstream does.
+	if err := writeIndexFor(path, p.format, p.writeIndex); err != nil {
+		return fmt.Errorf("scatter: %w", err)
+	}
 	return nil
 }
 

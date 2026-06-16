@@ -153,8 +153,16 @@ Honoured by `+check-sparsity`, `+remove-overlaps`, `+prune`, `+smpl-stats`,
 `+indel-stats`, `+contrast`, `+guess-ploidy` (only `-r/-R`; its `-t` is
 `--tag`), `+mendelian2`, `+trio-stats`, `+isecGT` (applied to both inputs),
 `+split` and `+scatter`. `+check-sparsity` additionally groups and labels its
-report per region and reproduces upstream's quirk that a BED/TSV `-R` line is
-silently dropped (see `docs/UPSTREAM_BUGS.md`).
+report per region and — unlike upstream, which silently drops a BED/TSV `-R`
+line (see `docs/UPSTREAM_BUGS.md`) — accepts BED/TSV `-R` files as a fix-on-port
+while keeping colon region-list lines byte-identical to upstream.
+
+`-W`/`--write-index` (bare, or `=csi`/`=tbi`) writes a CSI (default) or TBI
+index next to each indexable (`.vcf.gz`/`.bcf`) output; plain-VCF and stdout
+outputs are non-indexable and error exactly as upstream does. Honoured by
+`+contrast`, `+isecGT`, `+mendelian2`, `+split` and `+scatter` (multi-output
+plugins index every file). The produced index is byte-validated against
+`bcftools index` over the same data.
 
 ### `+trio-dnm3` — de-novo mutation screening (native)
 

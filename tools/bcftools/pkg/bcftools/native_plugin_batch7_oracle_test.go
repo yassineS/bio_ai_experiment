@@ -416,10 +416,10 @@ func TestNativePluginBatch7Unsupported(t *testing.T) {
 		{"split-vep", []string{"-c", "Consequence", "-s", "CANONICAL=YES"}, csq},
 		{"split-vep", []string{"-S", "-"}, csq},
 		{"split-vep", []string{"--columns-types", "-"}, csq},
-		// split: write-index remains unsupported (the per-output -i/-e filter is
+		// split: -W/--write-index is now supported and parity-checked in
+		// TestNativePluginSplitWriteIndex (the per-output -i/-e filter is
 		// parity-checked in TestNativePluginSplit; -r/-R/-t/-T region/target
 		// selection in TestNativePluginRegionTarget).
-		{"split", []string{"-o", "/tmp/x", "-W"}, gt},
 		{"split", nil, gt}, // missing -o
 		// scatter: region pre-selection and missing -n/-s remain unsupported. (-i/-e
 		// are accepted but applied to nothing, matching upstream's dead option; the

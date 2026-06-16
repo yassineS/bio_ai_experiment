@@ -12,11 +12,123 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/tabix"
 )
+
+// tbxMaxShift mirrors htslib's TBX_MAX_SHIFT (tbx.h). CSI for VCF/BCF derives
+// its starting number of bin levels from this and the requested min-shift.
+const tbxMaxShift = 31
+
+// htsBinMaxPos returns the (0-based, exclusive) maximum position a binning
+// index addresses for the given (minShift, nLvls), matching htslib's
+// hts_bin_maxpos (hts.h): 1 << (min_shift + n_lvls*3).
+func htsBinMaxPos(minShift, nLvls int32) int64 {
+	return int64(1) << uint32(minShift+nLvls*3)
+}
+
+// htsAdjustCSISettings ports htslib's hts_adjust_csi_settings (hts.c). Given
+// the longest reference length, it grows the number of bin levels (and, only
+// when the level ceiling is hit, the min-shift) so the index addresses every
+// coordinate. It returns the adjusted (minShift, nLvls). The +256 slack and
+// the max_n_lvls=9 ceiling match htslib exactly.
+func htsAdjustCSISettings(maxLenIn int64, minShift, nLvls int32) (int32, int32) {
+	const maxNLvls = 9
+	maxLen := maxLenIn + 256
+	if maxLen <= htsBinMaxPos(minShift, maxNLvls) {
+		maxpos := htsBinMaxPos(minShift, nLvls)
+		for maxLen > maxpos {
+			nLvls++
+			maxpos *= 8
+		}
+		return minShift, nLvls
+	}
+	nLvls = maxNLvls
+	maxpos := htsBinMaxPos(minShift, nLvls)
+	for maxLen > maxpos {
+		minShift++
+		maxpos *= 2
+	}
+	return minShift, nLvls
+}
+
+// maxContigLenFromMeta returns the largest `##contig=<...,length=N>` value in a
+// VCF-style header's meta lines, mirroring htslib's idx_calc_n_lvls_ids, which
+// scans the contig dictionary's stored length (info[0]). When no contig length
+// is found it returns 0 so callers can apply htslib's broken-header fallback of
+// 2^31-1.
+func maxContigLenFromMeta(meta []string) int64 {
+	var max int64
+	for _, m := range meta {
+		if !strings.HasPrefix(m, "##contig=") {
+			continue
+		}
+		idx := strings.Index(m, "length")
+		if idx < 0 {
+			continue
+		}
+		rest := m[idx+len("length"):]
+		// Skip the run of spaces / '=' that separates the key from the value.
+		i := 0
+		for i < len(rest) && (rest[i] == ' ' || rest[i] == '=') {
+			i++
+		}
+		j := i
+		for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+			j++
+		}
+		if j == i {
+			continue
+		}
+		if n, err := strconv.ParseInt(rest[i:j], 10, 64); err == nil && n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// countContigsInMeta returns the number of `##contig=` lines in a VCF-style
+// header. htslib's BCF CSI emits one (possibly empty) reference slot per
+// header contig, so the on-disk n_ref equals this count.
+func countContigsInMeta(meta []string) int {
+	n := 0
+	for _, m := range meta {
+		if strings.HasPrefix(m, "##contig=") {
+			n++
+		}
+	}
+	return n
+}
+
+// csiNLvlsBCF returns the (minShift, nLvls) htslib uses for a BCF CSI: a
+// starting level count of 0 grown by the longest header contig
+// (idx_calc_n_lvls_ids with starting_n_lvls==0 in bcf_idx_init / bcf_index).
+func csiNLvlsBCF(minShift int32, meta []string) (int32, int32) {
+	maxLen := maxContigLenFromMeta(meta)
+	if maxLen == 0 {
+		maxLen = (int64(1) << 31) - 1 // broken-header fallback, matching htslib
+	}
+	return htsAdjustCSISettings(maxLen, minShift, 0)
+}
+
+// csiNLvlsVCF returns the (minShift, nLvls) htslib uses for a VCF.gz CSI: a
+// starting level count of (TBX_MAX_SHIFT-min_shift+2)/3 grown by the longest
+// header contig (vcf_idx_init / idx_calc_n_lvls_ids).
+func csiNLvlsVCF(minShift int32, meta []string) (int32, int32) {
+	starting := (int32(tbxMaxShift) - minShift + 2) / 3
+	if starting < 0 {
+		starting = 0
+	}
+	maxLen := maxContigLenFromMeta(meta)
+	if maxLen == 0 {
+		maxLen = (int64(1) << 31) - 1
+	}
+	return htsAdjustCSISettings(maxLen, minShift, starting)
+}
 
 // IndexFormat selects the on-disk index flavour.
 type IndexFormat int
@@ -124,6 +236,85 @@ func isBGZF(b []byte) bool {
 	return b[12] == 'B' && b[13] == 'C'
 }
 
+// csiRefMeta accumulates the per-reference statistics htslib stores in the
+// CSI metadata pseudo-bin: the virtual-offset span of the reference's records
+// and the mapped/unmapped record counts.
+type csiRefMeta struct {
+	offBeg   tabix.VOffset
+	offEnd   tabix.VOffset
+	nMapped  uint64
+	hasBeg   bool
+	nUnmappd uint64
+}
+
+// observe folds one record's virtual-offset span into the per-ref meta.
+func (m *csiRefMeta) observe(vBeg, vEnd tabix.VOffset) {
+	if !m.hasBeg || vBeg < m.offBeg {
+		m.offBeg = vBeg
+		m.hasBeg = true
+	}
+	if vEnd > m.offEnd {
+		m.offEnd = vEnd
+	}
+	m.nMapped++
+}
+
+// finishCSI mirrors htslib's hts_idx_finish: it (1) extends the very last
+// record's data-bin chunk to the file's final virtual offset, (2) appends the
+// per-reference metadata pseudo-bin (id BinLimit()+1, htslib's idx->n_bins+1)
+// carrying the reference's virtual-offset span and the (n_mapped, n_unmapped)
+// record counts, with the last reference's span likewise extended to the final
+// offset. lastRef/lastBin identify the last pushed record's reference and bin;
+// they are <0 for an empty index. final is bgzf_tell at EOF — the virtual
+// offset of the BGZF EOF block. Matching this makes the emitted CSI
+// byte-identical to `bcftools index` and the -W writer.
+func finishCSI(csi *tabix.CSI, metas []csiRefMeta, lastRef, lastBin int, final tabix.VOffset) {
+	// (1) The last record's chunk end is bumped to the final offset.
+	if lastRef >= 0 && lastRef < len(csi.Refs) {
+		for i := range csi.Refs[lastRef].Bins {
+			if int(csi.Refs[lastRef].Bins[i].ID) == lastBin {
+				ch := csi.Refs[lastRef].Bins[i].Chunks
+				if n := len(ch); n > 0 && ch[n-1].End < final {
+					ch[n-1].End = final
+				}
+				break
+			}
+		}
+	}
+	// (2) The metadata pseudo-bin, one per reference that has records.
+	metaBinID := csi.BinLimit() + 1
+	for r := range metas {
+		m := metas[r]
+		if !m.hasBeg || r >= len(csi.Refs) {
+			continue
+		}
+		offEnd := m.offEnd
+		if r == lastRef && final > offEnd {
+			offEnd = final
+		}
+		csi.Refs[r].Bins = append(csi.Refs[r].Bins, tabix.CSIBin{
+			ID:      metaBinID,
+			LOffset: 0,
+			Chunks: []tabix.CSIChunk{
+				{Beg: m.offBeg, End: offEnd},
+				{Beg: tabix.VOffset(m.nMapped), End: tabix.VOffset(m.nUnmappd)},
+			},
+		})
+	}
+}
+
+// eofVOffset returns the virtual offset of the BGZF EOF block (bgzf_tell at
+// end-of-file): the compressed offset just past the final data block, with a
+// zero in-block offset. offsets is the block list from bgzip.Scan (which omits
+// the EOF marker itself but lets us derive where it begins).
+func eofVOffset(offsets []bgzip.BlockOffset) tabix.VOffset {
+	if len(offsets) == 0 {
+		return 0
+	}
+	last := offsets[len(offsets)-1]
+	return tabix.MakeVOffset(last.CompressedOffset+int64(last.CompressedSize), 0)
+}
+
 // buildCSIForBCF traverses a BGZF-wrapped BCF file, recording per-record
 // (chrom, pos, rlen, virtual offset) tuples and folding them into a CSI.
 func buildCSIForBCF(path string, minShift int32) (*tabix.CSI, error) {
@@ -172,23 +363,47 @@ func buildCSIForBCF(path string, minShift int32) (*tabix.CSI, error) {
 		return tabix.MakeVOffset(blk.CompressedOffset, uoff)
 	}
 
-	// Parse the BCF header so we know where records start.
+	// Parse the BCF header so we know where records start. We must NOT derive
+	// the body start from the reader's remaining length: bcf.ReadHeader buffers
+	// ahead via an internal bufio, draining the bytes.Reader past the header and
+	// into the record stream. Instead compute the on-wire header length directly
+	// from the BCF framing — magic(5) + l_text(4) + l_text — which is exactly
+	// where the first record begins (htslib flushes a BGZF block boundary there,
+	// so this start coincides with a block boundary and matches the virtual
+	// offsets `bcftools index` records).
 	rdr := bytes.NewReader(data)
 	hdr, err := bcf.ReadHeader(rdr)
 	if err != nil {
 		return nil, err
 	}
-	bodyStart := int64(len(data)) - int64(rdr.Len())
+	if len(data) < 9 {
+		return nil, errors.New("bcftools index: BCF too short for header")
+	}
+	lText := binary.LittleEndian.Uint32(data[5:9])
+	bodyStart := int64(9) + int64(lText)
 	pos := bodyStart
 
-	csi := tabix.NewCSI(minShift, 5)
-	// Encode the contig names + tabix-style preset block so consumers can
-	// look up refIDs by name (mirrors htslib's CSI-for-BCF auxiliary block).
-	names := make([]string, len(hdr.Contigs))
-	for i, c := range hdr.Contigs {
-		names[i] = c.ID
+	// Derive the bin-level count the way htslib's bcf_idx_init does: start at 0
+	// and grow by the longest header contig. BCF CSI carries NO tabix-style
+	// auxiliary block (l_aux == 0), unlike the VCF.gz CSI; chrom→refID lookups
+	// for BCF go through the BCF header dictionary, not the index.
+	effMinShift := minShift
+	if effMinShift <= 0 {
+		effMinShift = 14
 	}
-	csi.SetAuxFromTabix(tabix.Config{Format: tabix.FormatVCF, ColSeq: 1, ColBeg: 2, ColEnd: 0, Meta: '#', Skip: 0}, names)
+	ms, depth := csiNLvlsBCF(effMinShift, hdr.VCF.MetaInfo)
+	// Construct directly rather than via NewCSI: a BCF CSI legitimately has
+	// depth 0 (short contigs), which NewCSI would clamp up to the BAI default 5.
+	csi := &tabix.CSI{MinShift: ms, Depth: depth}
+	// htslib writes one (possibly empty) reference slot per header contig, so
+	// pre-size the reference list to the full contig count; contigs without any
+	// records are serialised as empty refs (n_bin == 0).
+	nContigs := countContigsInMeta(hdr.VCF.MetaInfo)
+	if nContigs > len(csi.Refs) {
+		csi.Refs = make([]tabix.CSIRef, nContigs)
+	}
+	metas := make([]csiRefMeta, nContigs)
+	lastRef, lastBin := -1, -1
 
 	br2 := bcf.NewReaderWithHeader(hdr)
 	for {
@@ -223,7 +438,13 @@ func buildCSIForBCF(path string, minShift int32) (*tabix.CSI, error) {
 		v := uoffToV(recStart)
 		vEnd := uoffToV(pos)
 		csi.AddRecord(int(rec.ChromID), beg, end, v, vEnd)
+		if rid := int(rec.ChromID); rid >= 0 && rid < len(metas) {
+			metas[rid].observe(v, vEnd)
+			lastRef = rid
+			lastBin = int(csi.Reg2bin(beg, end))
+		}
 	}
+	finishCSI(csi, metas, lastRef, lastBin, eofVOffset(offsets))
 	return csi, nil
 }
 
@@ -305,10 +526,33 @@ func buildCSIForVCFGz(path string, minShift int32) (*tabix.CSI, error) {
 		return tabix.MakeVOffset(blk.CompressedOffset, uoff)
 	}
 
-	csi := tabix.NewCSI(minShift, 5)
+	// First pass: collect the ##contig header lines so the bin-level count can
+	// be derived from the longest contig (vcf_idx_init -> idx_calc_n_lvls_ids).
+	var contigMeta []string
+	{
+		hsc := bufio.NewScanner(bytes.NewReader(data))
+		hsc.Buffer(make([]byte, 0, 1<<16), 1<<24)
+		for hsc.Scan() {
+			line := hsc.Text()
+			if len(line) == 0 || line[0] != '#' {
+				break
+			}
+			if strings.HasPrefix(line, "##contig=") {
+				contigMeta = append(contigMeta, line)
+			}
+		}
+	}
+	effMinShift := minShift
+	if effMinShift <= 0 {
+		effMinShift = 14
+	}
+	ms, depth := csiNLvlsVCF(effMinShift, contigMeta)
+	csi := &tabix.CSI{MinShift: ms, Depth: depth}
 	csi.SetAuxFromTabix(tabix.Config{Format: tabix.FormatVCF, ColSeq: 1, ColBeg: 2, ColEnd: 0, Meta: '#', Skip: 0}, nil)
 	// Build the name list as we encounter chroms.
 	nameID := map[string]int{}
+	var metas []csiRefMeta
+	lastRef, lastBin := -1, -1
 
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 1<<16), 1<<24)
@@ -352,10 +596,17 @@ func buildCSIForVCFGz(path string, minShift int32) (*tabix.CSI, error) {
 		v := uoffToV(lineStart)
 		vEnd := uoffToV(pos)
 		csi.AddRecord(id, beg, end, v, vEnd)
+		for id >= len(metas) {
+			metas = append(metas, csiRefMeta{})
+		}
+		metas[id].observe(v, vEnd)
+		lastRef = id
+		lastBin = int(csi.Reg2bin(beg, end))
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
+	finishCSI(csi, metas, lastRef, lastBin, eofVOffset(offsets))
 	// Rebuild the name slice in name-id order.
 	names := make([]string, len(nameID))
 	for n, i := range nameID {

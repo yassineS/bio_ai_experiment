@@ -56,7 +56,11 @@ chr2	50	c	G	A	30	PASS	DP=30
 	if err != nil {
 		t.Fatalf("tabix.ReadCSIFile: %v", err)
 	}
-	if csi.MinShift != 14 || csi.Depth != 5 {
+	// BCF CSI derives its depth from the longest header contig (htslib's
+	// idx_calc_n_lvls_ids, starting at 0). Both contigs are length 1000, which
+	// fits in a single bin level, so the depth is 0 — matching `bcftools index`
+	// byte-for-byte. (The former hard-coded depth 5 was a parity bug.)
+	if csi.MinShift != 14 || csi.Depth != 0 {
 		t.Errorf("unexpected params: %+v", csi)
 	}
 	// Should have at least 2 refs (chr1, chr2).

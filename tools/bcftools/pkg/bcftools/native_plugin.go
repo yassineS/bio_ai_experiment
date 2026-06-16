@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"sort"
 	"sync"
@@ -159,6 +160,23 @@ type multiOutputPlugin interface {
 	// its own set of output files. Any textual report goes to out; diagnostics go
 	// to stderr.
 	RunMulti(opts PluginOptions, out io.Writer, stderr io.Writer) error
+}
+
+// pluginOutputControl is implemented by standard (init/process) native plugins
+// that parse their own -o/-O/-W options and therefore want the framework's
+// stage-3 writer to target a specific file and container rather than the host
+// stdout, and to index that file afterwards. When OutputControl reports ok with
+// a non-empty, non-"-" file, runNativePlugin writes the records there in the
+// returned format and then builds the requested index (a CSI by default, a TBI
+// for -W=tbi on VCF.gz). A -W request with no file (stdout) is rejected with
+// upstream's "failed to initialise index for -" error. Plugins that do not
+// implement this keep writing to the host stdout via opts.OutputFormat.
+type pluginOutputControl interface {
+	// OutputControl returns the output file path (""/"-" for stdout), the
+	// container format and compression level to use, the requested index
+	// flavour, and ok=true when the plugin parsed any of -o/-O/-W. clevel < 0
+	// selects the package default compression level.
+	OutputControl() (file string, format OutputFormat, clevel int, sel writeIndexFmt, ok bool)
 }
 
 // stderrSink is implemented by plugins that emit end-of-run diagnostics
@@ -397,18 +415,64 @@ func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer
 		return plugin.Destroy()
 	}
 
-	// Stage 3: re-emit in the requested -O container.
-	w, cleanup, err := openOutput(out, ViewOptions{
-		OutputFormat:  opts.OutputFormat,
-		CompressLevel: opts.CompressLevel,
+	// Stage 3: re-emit in the requested -O container. A plugin may take over the
+	// output destination and container (and request post-write indexing) via
+	// pluginOutputControl; otherwise the records stream to the host stdout in
+	// opts.OutputFormat.
+	dst := out
+	outFormat := opts.OutputFormat
+	outClevel := opts.CompressLevel
+	var (
+		outFile    *os.File
+		idxPath    string
+		idxFormat  OutputFormat
+		idxSel     = writeIndexOff
+		toPlugFile bool
+	)
+	if oc, ok := plugin.(pluginOutputControl); ok {
+		file, format, clevel, sel, on := oc.OutputControl()
+		if on {
+			if file != "" && file != "-" {
+				f, ferr := os.Create(file)
+				if ferr != nil {
+					_ = plugin.Destroy()
+					return &PluginExecError{Name: opts.Name, Err: fmt.Errorf("cannot write to %q: %w", file, ferr)}
+				}
+				outFile = f
+				dst = f
+				outFormat = format
+				outClevel = clevel
+				idxPath = file
+				idxFormat = format
+				idxSel = sel
+				toPlugFile = true
+			} else if sel != writeIndexOff {
+				_ = plugin.Destroy()
+				return &PluginExecError{Name: opts.Name, Err: fmt.Errorf("%s: failed to initialise index for -", plugin.Name())}
+			}
+		}
+	}
+
+	closeOutFile := func() {
+		if outFile != nil {
+			_ = outFile.Close()
+			outFile = nil
+		}
+	}
+
+	w, cleanup, err := openOutput(dst, ViewOptions{
+		OutputFormat:  outFormat,
+		CompressLevel: outClevel,
 		Threads:       opts.Threads,
 	}, outHdr)
 	if err != nil {
+		closeOutFile()
 		_ = plugin.Destroy()
 		return err
 	}
 	if err := w.WriteHeader(); err != nil {
 		cleanup()
+		closeOutFile()
 		_ = plugin.Destroy()
 		return err
 	}
@@ -418,16 +482,30 @@ func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer
 		}
 		if err := w.Write(v); err != nil {
 			cleanup()
+			closeOutFile()
 			_ = plugin.Destroy()
 			return err
 		}
 	}
 	if err := w.Flush(); err != nil {
 		cleanup()
+		closeOutFile()
 		_ = plugin.Destroy()
 		return err
 	}
 	cleanup()
+	if toPlugFile {
+		if err := outFile.Close(); err != nil {
+			outFile = nil
+			_ = plugin.Destroy()
+			return err
+		}
+		outFile = nil
+		if err := writeIndexFor(idxPath, idxFormat, idxSel); err != nil {
+			_ = plugin.Destroy()
+			return &PluginExecError{Name: opts.Name, Err: fmt.Errorf("%s: %w", plugin.Name(), err)}
+		}
+	}
 
 	// Destroy runs after the output is fully flushed so its stderr summary
 	// (e.g. counts totals) appears after all records were emitted.

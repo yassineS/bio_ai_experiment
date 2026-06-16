@@ -3368,10 +3368,23 @@ but with a deliberate design divergence from upstream:
   `--tag`), mendelian2, trio-stats, isecGT (applied to both input streams),
   split and scatter. Plugins opt in via a `RegionTargetCaps` capability so the
   letters that other plugins repurpose (tag2tag's `-r`=`--replace`/`-t`=`--tags`)
-  are left untouched. check-sparsity keeps its own per-region report grouping and
-  reproduces upstream's BED-`-R` silent-drop quirk
-  (`docs/UPSTREAM_BUGS.md#bcftools-check-sparsity-regions-file`). Byte-validated
+  are left untouched. check-sparsity keeps its own per-region report grouping and,
+  per the fix-on-port policy, now accepts BED/TSV `-R` files (which upstream
+  silently drops — `docs/UPSTREAM_BUGS.md#bcftools-check-sparsity-regions-file`)
+  while keeping colon region-list lines byte-identical to upstream. Byte-validated
   vs the upstream binary in `native_plugin_region_target_oracle_test.go`.
+
+- **Native plugin output auto-indexing (`-W/--write-index[=FMT]`)** — **done**.
+  A shared helper (`tools/bcftools/pkg/bcftools/native_plugin_writeindex.go`)
+  parses `-W`/`--write-index` (bare or `=csi`/`=tbi`) and writes a CSI (default)
+  or TBI index next to each indexable output, reusing the in-tree
+  `pkg/htsgo/tabix` CSI/TBI writers. Plain-VCF/stdout outputs are non-indexable
+  and reproduce upstream's exact error. Supported by contrast, isecGT,
+  mendelian2, split and scatter (the multi-output plugins index every emitted
+  file). The CSI writer now always emits the trailing `n_no_coor` field even when
+  zero, matching htslib `hts_idx_save_core` byte-for-byte. Byte-validated vs the
+  upstream binary (decoded index content == `bcftools index` over our data file)
+  in `native_plugin_writeindex_oracle_test.go`.
 
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
