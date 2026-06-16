@@ -1,0 +1,17 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##INFO=<ID=END,Number=1,Type=Integer,Description="Stop position of the interval">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
+##FORMAT=<ID=MIN_DP,Number=1,Type=Integer,Description="Minimum DP over the block">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred-scaled likelihoods">
+##contig=<ID=chr1,length=100000>
+##contig=<ID=chr2,length=100000>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	100	.	A	<NON_REF>	.	.	END=110	GT:DP:GQ:MIN_DP:PL	0/0:30:70:25:0,30,300
+chr1	111	.	C	<NON_REF>	.	.	END=120	GT:DP:GQ:MIN_DP:PL	0/0:18:45:15:0,20,200
+chr1	121	.	G	<NON_REF>	.	.	END=130	GT:DP:GQ:MIN_DP:PL	0/0:12:50:10:0,15,150
+chr1	131	.	T	A	50	PASS	.	GT:DP:GQ:PL	0/1:40:99:50,0,80
+chr1	132	.	A	<NON_REF>	.	.	END=140	GT:DP:GQ:MIN_DP:PL	0/0:35:65:30:0,33,330
+chr2	200	.	A	<NON_REF>	.	.	END=210	GT:DP:GQ:MIN_DP:PL	0/0:22:55:20:0,22,220

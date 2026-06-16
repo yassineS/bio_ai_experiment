@@ -3626,6 +3626,36 @@ but with a deliberate design divergence from upstream:
     line, gzip-transparent) in addition to the inline comma-separated form,
     matching `bin_init`/`hts_readlist`'s "a comma indicates a list, otherwise a
     file" decision.
+  - **`+gvcfz` and `+frameshifts`** — **done** (previously registration stubs
+    that errored cleanly from `Init`, deferred for needing the FORMAT/GT filter
+    engine and the synced-reader region cursor respectively; both now exist
+    in-tree). **`+gvcfz`** ports the gVCF block state machine: the `-g
+    FILTER:EXPR[;…]` clauses each compile to a full bcftools filter expression
+    (now with the FORMAT/GT predicates upstream's `filter_init`/`filter_test`
+    cover; the filter lexer accepts single `&`/`|` alongside `&&`/`||`), the
+    first matching group selects each record's block, consecutive same-group
+    reference blocks (ALT `<NON_REF>`/`<*>`) merge into the first record with
+    INFO/END extended to the block end, FORMAT/DP set to the min MIN_DP/DP,
+    FORMAT/GQ\|RGQ to the min, and FORMAT/PL to the element-wise min; a real
+    variant flushes the block; non-PASS group labels add a `##FILTER` line whose
+    Description is the verbatim `-g` string (`"`→`'`). `-i/-e` pre-filter and
+    `-a` are supported; `-o/-O/-W` are handled by the host pipeline.
+    **`+frameshifts`** annotates INFO/OOF over an exon BED / region-list,
+    porting htslib's `bcf_sr_regions_overlap` monotonic forward cursor
+    (`exonCursor`: per-chromosome sorted+merged 0-based regions, re-seek on a
+    backwards or new-chromosome query) plus the per-allele
+    `bcf_set_variant_type` classification (the signed `var->n` and the
+    `VCF_INDEL` bit). The default reproduces upstream's **dead-code** behaviour
+    byte-for-byte — the per-allele guard `var[i].type != VCF_INDEL` is always
+    true under modern htslib (`VCF_INDEL|VCF_INS`/`|VCF_DEL`), so every
+    exon-overlapping indel allele gets `OOF=-1` and the mod-3 result is never
+    produced (see `docs/UPSTREAM_BUGS.md#bcftools-frameshifts-oof-dead-code`).
+    The corrected exon-trim + length-mod-3 computation is implemented as a pure
+    helper and exposed via the opt-in `--fix-oof` flag. Both are byte-validated
+    vs 1.23.1 across the multi-group/RGQ/-i/-e gvcfz cases and the
+    plain-BED/tabixed-BED frameshifts cursor paths, with binary-free `TestUnit*`
+    coverage of the grouping, the variant classification, the exon cursor, and
+    the OOF computation.
 
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier

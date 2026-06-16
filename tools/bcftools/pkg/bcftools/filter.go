@@ -261,7 +261,8 @@ func (p *parser) parseOr() (node, error) {
 	}
 	for {
 		p.skipSpace()
-		if !p.match("||") {
+		// bcftools filter.c accepts both "||" and a single "|" for logical OR.
+		if !p.match("||") && !p.match("|") {
 			return left, nil
 		}
 		right, err := p.parseAnd()
@@ -279,7 +280,8 @@ func (p *parser) parseAnd() (node, error) {
 	}
 	for {
 		p.skipSpace()
-		if !p.match("&&") {
+		// bcftools filter.c accepts both "&&" and a single "&" for logical AND.
+		if !p.match("&&") && !p.match("&") {
 			return left, nil
 		}
 		right, err := p.parseUnary()

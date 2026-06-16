@@ -194,8 +194,9 @@ func TestNativePluginUnsupportedModes(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"frameshifts", []string{"-e", "exons.bed.gz"}},
-		{"frameshifts", nil},
+		// frameshifts is now natively supported (see
+		// native_plugin_gvcfz_frameshifts_oracle_test.go); only its missing-option
+		// error remains a clean failure, exercised elsewhere.
 		{"tag2tag", []string{"--LXX-to-XX"}},
 		{"tag2tag", []string{"--XX-to-LXX"}},
 		{"tag2tag", []string{"--PL-to-LPL"}},
