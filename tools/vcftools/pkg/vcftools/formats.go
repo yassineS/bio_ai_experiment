@@ -42,12 +42,13 @@ func output012Matrix(variants []*vcf.Variant, header *vcf.Header, prefix string)
 		fmt.Fprintln(fIndv, sample)
 	}
 
-	// Restrict to biallelic sites — upstream emits a one-off warning then
-	// drops multi-allelic loci because the 0/1/2 encoding has no room for
-	// alt2/alt3.
+	// Upstream skips loci with get_N_alleles() > 2 (a one-off warning),
+	// i.e. it KEEPS biallelic AND monomorphic (ALT=".", N_alleles==1)
+	// sites because the 0/1/2 encoding has no room for alt2/alt3. N_alleles
+	// counts REF plus every non-"." ALT, so siteAlleles(v) <= 2 is the gate.
 	biallelic := make([]*vcf.Variant, 0, len(variants))
 	for _, v := range variants {
-		if len(v.Alt) == 1 {
+		if len(siteAlleles(v)) <= 2 {
 			biallelic = append(biallelic, v)
 		}
 	}
@@ -65,30 +66,24 @@ func output012Matrix(variants []*vcf.Variant, header *vcf.Header, prefix string)
 		fmt.Fprintf(f012, "%d", sampleIdx)
 
 		for _, v := range biallelic {
-			genotype := -1 // missing by default
-
+			// Upstream encoding (output_as_012_matrix): -1 iff BOTH allele
+			// ids are < 0 (missing); 0 iff 0/0; 2 iff 1/1; 1 otherwise (any
+			// het, including partial-missing like 0/.). Mirror that exactly
+			// using the (first, second) allele-id pair.
+			genotype := -1
 			if sampleIdx < len(v.Samples) {
-				sampleData := v.Samples[sampleIdx]
-				gt, ok := sampleData.Data["GT"]
-
-				if ok && !strings.Contains(gt, ".") {
-					alleles := strings.FieldsFunc(gt, func(r rune) bool {
-						return r == '/' || r == '|'
-					})
-
-					if len(alleles) == 2 {
-						a1, a2 := alleles[0], alleles[1]
-						if a1 == "0" && a2 == "0" {
-							genotype = 0 // homozygous reference
-						} else if a1 != a2 {
-							genotype = 1 // heterozygous
-						} else {
-							genotype = 2 // homozygous alternate
-						}
-					}
+				first, second, _ := parseGTAlleles(v.Samples[sampleIdx].Data["GT"])
+				switch {
+				case first < 0 && second < 0:
+					genotype = -1
+				case first == 0 && second == 0:
+					genotype = 0
+				case first == 1 && second == 1:
+					genotype = 2
+				default:
+					genotype = 1
 				}
 			}
-
 			fmt.Fprintf(f012, "\t%d", genotype)
 		}
 		fmt.Fprintln(f012)

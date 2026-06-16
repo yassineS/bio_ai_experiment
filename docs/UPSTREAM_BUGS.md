@@ -385,15 +385,17 @@ is documented in `tools/vcftools/pkg/vcftools/pca.go` and pinned by
 Parity tests use no-missing-data fixtures so the divergence is
 invisible to the byte-level comparison.
 
-#### vcftools LD outputs: 1-byte stack buffer overflow aborts the binary
+#### vcftools spill-file outputs: 1-byte stack buffer overflow aborts the binary
 
-Every LD / chi-square output path that spills to a temporary file —
-`output_haplotype_r2` (`--hap-r2`), `output_genotype_r2` (`--geno-r2`),
-`output_genotype_chisq` (`--geno-chisq`),
+Every output path that spills to a temporary file — the LD / chi-square
+family `output_haplotype_r2` (`--hap-r2`), `output_genotype_r2`
+(`--geno-r2`), `output_genotype_chisq` (`--geno-chisq`),
 `output_interchromosomal_genotype_r2` (`--interchrom-geno-r2`),
-`output_interchromosomal_haplotype_r2` (`--interchrom-hap-r2`), and the
-SNP-list-vs-all variants — builds its temp-file name like this
-(`variant_file_output.cpp:1441-1443` and the six sibling sites):
+`output_interchromosomal_haplotype_r2` (`--interchrom-hap-r2`), the
+SNP-list-vs-all variants, AND the `--012` matrix writer
+`output_as_012_matrix` (`variant_file_format_convert.cpp:377-405`) —
+builds its temp-file name like this (`variant_file_output.cpp:1441-1443`
+and the seven-plus sibling sites):
 
 ```cpp
 string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
@@ -414,17 +416,20 @@ detects the 1-byte overflow and aborts:
 
 **Severity:** the upstream 0.1.18 binary, built with its own autotools
 config, **cannot run any `--hap-r2` / `--geno-r2` / `--geno-chisq` /
-`--interchrom-*` analysis at all** — it crashes before writing a single
-data row (only the header is flushed). Reproduce:
-`vcftools --vcf any.vcf --hap-r2 --ld-window-bp 1000000` → exit 134.
+`--interchrom-*` / `--012` analysis at all** — it crashes before writing
+a single data row (only the header / `.012.indv` prefix is flushed).
+Reproduce: `vcftools --vcf any.vcf --hap-r2 --ld-window-bp 1000000` or
+`vcftools --vcf any.vcf --012` → exit 134.
 
-**Fixed in port** (this PR). The Go port computes LD in-memory (no temp
-file, so no VLA/`strcpy` hazard) and emits the same column layout
-upstream's writer would have produced, with the same C++ `defaultfloat`
-precision-6 formatting for the R²/D/Dprime/chi-square columns. Because
-the upstream binary aborts, these modes cannot be byte-validated against
-it; the port's LD outputs are pinned by the existing in-package LD unit
-tests (`ld_test.go`, `ld_interchrom_test.go`) instead of a live oracle.
+**Fixed in port** (this PR). The Go port computes these outputs in-memory
+(no temp file, so no VLA/`strcpy` hazard) and emits the same column
+layout upstream's writer would have produced, with the same C++
+`defaultfloat` precision-6 formatting for the R²/D/Dprime/chi-square
+columns. Because the upstream binary aborts, these modes cannot be
+byte-validated against it; the port's LD and `--012` outputs are pinned
+by the existing in-package unit tests (`ld_test.go`,
+`ld_interchrom_test.go`, and the format-conversion tests) instead of a
+live oracle.
 
 #### vcftools `.ifreqburden` INDV label-index bug
 
