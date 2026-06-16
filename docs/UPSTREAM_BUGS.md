@@ -57,8 +57,9 @@ warrant a closer look:_
 
 #### bcftools +check-sparsity: `-R FILE` silently drops BED/TSV lines <a id="bcftools-check-sparsity-regions-file"></a>
 
-- **Disposition:** Fix-on-port (ours reproduces the verbatim region-list parse
-  and the silent-drop; documented here for the quirk).
+- **Disposition:** Fix-on-port. Ours keeps the verbatim colon region-list parse
+  byte-identical to upstream, but no longer silently drops BED/TSV lines — it
+  parses them the synced-reader way (a strict superset).
 - **What happens:** Unlike every other in-tree plugin (which loads `-R`/`-T`
   files through htslib's synced reader `bcf_sr_regions_init`, a TSV/BED parser),
   `check-sparsity` reads its `-R` file with `hts_readlist()` and hands each line
@@ -80,12 +81,16 @@ warrant a closer look:_
 
   The BED form produces no output; the colon-syntax line works. Compare with the
   synced-reader plugins (e.g. `+smpl-stats -R all.bed`) which accept the BED.
-- **Our port:** `loadCheckSparsityRegionFile` reproduces upstream's verbatim
-  region-list parse: single-token lines (`chr`, `chr:beg-end`) are used as region
-  tokens, and tab/space lines are dropped exactly as upstream silently does.
-  `check-sparsity` also (uniquely) labels its per-region report by the verbatim
-  region token, which the native port matches. Parity is asserted in
-  `TestNativePluginCheckSparsityRegion` (case `R_bed_silent_empty`).
+- **Our port:** `loadCheckSparsityRegionFile` keeps single-token lines (`chr`,
+  `chr:beg-end`) verbatim — byte-identical to upstream, label and all — but
+  instead of silently dropping a multi-column TSV/BED line it parses it the way
+  htslib's synced reader / regidx does (`.bed`/`.bed.gz` => 0-based half-open;
+  otherwise 1-based, two columns = a single position, three+ = `beg..end`),
+  converting it to the equivalent 1-based `chr:beg-end` token (which also becomes
+  the report label). The colon cases stay byte-parity with upstream
+  (`TestNativePluginCheckSparsityRegion`); the BED/TSV fix is validated against
+  the real upstream binary by feeding upstream the colon-equivalent region-list
+  it can parse (`TestNativePluginCheckSparsityRegionBEDFixOnPort`).
 
 #### bcftools-som-write-map
 

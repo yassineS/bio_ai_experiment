@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
@@ -127,9 +128,11 @@ func (p *checkSparsityPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header,
 			}
 			// Upstream reads -R via hts_readlist + tbx_itr_querys: each line is a
 			// verbatim region-list string (colon syntax), NOT the synced reader's
-			// TSV. A tab-separated / BED line therefore fails tbx_itr_querys and
-			// upstream silently produces no output for it. We reproduce the
-			// region-list parse and document the BED quirk in docs/UPSTREAM_BUGS.md.
+			// TSV, so a tab-separated / BED line fails tbx_itr_querys and upstream
+			// silently produces no output for it. loadCheckSparsityRegionFile keeps
+			// the colon lines byte-identical to upstream but FIXES the BED/TSV lines
+			// (parses them the synced-reader way) — see
+			// docs/UPSTREAM_BUGS.md#bcftools-check-sparsity-regions-file.
 			lines, perr := loadCheckSparsityRegionFile(v)
 			if perr != nil {
 				return nil, fmt.Errorf("check-sparsity: %w", perr)
@@ -292,14 +295,26 @@ func (p *checkSparsityPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 // Destroy releases resources (none held).
 func (p *checkSparsityPlugin) Destroy() error { return nil }
 
-// loadCheckSparsityRegionFile reads a -R file the way upstream check-sparsity
-// does: hts_readlist returns each non-comment line verbatim, and that string is
-// handed to tbx_itr_querys. Only the colon region-list syntax ("chr",
-// "chr:beg-end") parses there; a tab-separated / BED line fails to parse and
-// upstream silently produces no output for it. We reproduce that by keeping only
-// the single-column lines (a verbatim region token) and dropping multi-column
-// (TSV/BED) lines — see docs/UPSTREAM_BUGS.md for the reproducer.
+// loadCheckSparsityRegionFile reads a -R file into a slice of region tokens.
+//
+// Upstream check-sparsity reads its -R file with hts_readlist + tbx_itr_querys,
+// handing each line verbatim to the tabix iterator. tbx_itr_querys only
+// understands the colon region-list syntax ("chr", "chr:beg-end"); a
+// tab-separated / BED line such as "chr1<TAB>0<TAB>10000" fails to parse and
+// upstream silently produces NO output for it — even though a normal BED file is
+// exactly what a user would reach for, and every other in-tree plugin accepts it
+// (see docs/UPSTREAM_BUGS.md#bcftools-check-sparsity-regions-file).
+//
+// This port FIXES that on the way over: a single-column line (a verbatim "chr"
+// or "chr:beg-end" token) is kept as-is — byte-identical to upstream, label and
+// all — while a multi-column TSV/BED line is parsed the way htslib's synced
+// reader / regidx does (.bed/.bed.gz => 0-based half-open; otherwise 1-based,
+// two columns = a single position, three+ = beg..end) and converted to the
+// equivalent 1-based "chr:beg-end" token. The result is a strict superset:
+// inputs where upstream emits output are unchanged, and BED/TSV inputs that
+// upstream silently drops now produce the useful per-region report.
 func loadCheckSparsityRegionFile(path string) ([]string, error) {
+	isBED := strings.HasSuffix(path, ".bed") || strings.HasSuffix(path, ".bed.gz")
 	f, err := iohelper.OpenReader(path)
 	if err != nil {
 		return nil, err
@@ -313,12 +328,36 @@ func loadCheckSparsityRegionFile(path string) ([]string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// A line with whitespace/tabs is a TSV/BED line that upstream's
-		// tbx_itr_querys cannot parse: silently drop it (upstream prints nothing).
-		if strings.IndexFunc(line, func(r rune) bool { return r == ' ' || r == '\t' }) >= 0 {
+		fields := strings.Fields(line)
+		if len(fields) == 1 {
+			// A bare contig or a "chr:beg-end" region string: upstream's
+			// tbx_itr_querys parses this verbatim, so we keep it unchanged.
+			out = append(out, fields[0])
 			continue
 		}
-		out = append(out, line)
+		// Multi-column TSV/BED: fix-on-port — parse it the synced-reader way
+		// instead of silently dropping it as upstream does.
+		if len(fields) == 2 {
+			pos, perr := strconv.Atoi(fields[1])
+			if perr != nil {
+				return nil, fmt.Errorf("bad position in %q: %q", path, line)
+			}
+			out = append(out, fmt.Sprintf("%s:%d-%d", fields[0], pos, pos))
+			continue
+		}
+		beg, perr := strconv.Atoi(fields[1])
+		if perr != nil {
+			return nil, fmt.Errorf("bad start in %q: %q", path, line)
+		}
+		end, perr := strconv.Atoi(fields[2])
+		if perr != nil {
+			return nil, fmt.Errorf("bad end in %q: %q", path, line)
+		}
+		if isBED {
+			// BED is 0-based half-open [beg,end); convert to 1-based inclusive.
+			beg++
+		}
+		out = append(out, fmt.Sprintf("%s:%d-%d", fields[0], beg, end))
 	}
 	return out, sc.Err()
 }

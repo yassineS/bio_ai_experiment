@@ -1,6 +1,7 @@
 package bcftools
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -133,11 +134,11 @@ func TestNativePluginRegionSelection(t *testing.T) {
 
 // TestNativePluginCheckSparsityRegion checks check-sparsity's -r/-R selection,
 // which (uniquely) groups and LABELS its per-region report by the verbatim
-// region token. Its -R file is a verbatim region-list (colon syntax), NOT the
-// synced-reader TSV; a TSV/BED -R line silently yields nothing upstream (an
-// upstream quirk documented in docs/UPSTREAM_BUGS.md), which the
-// bed_silent_empty case pins down. Upstream needs the indexed input; ours reads
-// the same .vcf.gz.
+// region token. Its -R file is a verbatim region-list (colon syntax) upstream,
+// NOT the synced-reader TSV. A colon line is matched byte-for-byte against
+// upstream; a TSV/BED line is the fix-on-port case (see
+// TestNativePluginCheckSparsityRegionBEDFixOnPort below). Upstream needs the
+// indexed input; ours reads the same .vcf.gz.
 func TestNativePluginCheckSparsityRegion(t *testing.T) {
 	bin, err := buildBcftools()
 	if err != nil {
@@ -149,9 +150,6 @@ func TestNativePluginCheckSparsityRegion(t *testing.T) {
 	// Verbatim region-list file (colon syntax — what check-sparsity's
 	// hts_readlist + tbx_itr_querys accepts).
 	regionList := rtRegionFile(t, dir, "cs_regions.txt", "chr1:200-405", "chr2")
-	// A TSV/BED file: upstream's tbx_itr_querys cannot parse these lines, so it
-	// silently produces no output. Ours drops them too.
-	bedFile := rtRegionFile(t, dir, "cs.bed", "chr1\t0\t10000", "chr2\t0\t10000")
 
 	cases := []struct {
 		name string
@@ -163,7 +161,6 @@ func TestNativePluginCheckSparsityRegion(t *testing.T) {
 		{"r_nothing", []string{"-n", "1", "-r", "chr9"}},
 		{"r_n2", []string{"-n", "2", "-r", "chr1"}},
 		{"R_regionlist", []string{"-n", "1", "-R", regionList}},
-		{"R_bed_silent_empty", []string{"-n", "1", "-R", bedFile}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -171,6 +168,43 @@ func TestNativePluginCheckSparsityRegion(t *testing.T) {
 			argv := pluginCLIArgs("check-sparsity", gtGz, tc.args)
 			assertStdoutParity(t, bin, argv, argv)
 		})
+	}
+}
+
+// TestNativePluginCheckSparsityRegionBEDFixOnPort pins the fix-on-port for the
+// documented upstream bug (docs/UPSTREAM_BUGS.md#bcftools-check-sparsity-regions-file):
+// upstream reads -R with hts_readlist + tbx_itr_querys, so a BED/TSV line fails
+// to parse and upstream emits NOTHING. Our port parses BED/TSV the synced-reader
+// way. We validate against the REAL upstream binary by feeding upstream the
+// equivalent colon region-list it DOES parse (a BED "chr 0 10000" line is
+// 0-based half-open => 1-based "chr:1-10000"); ours given the BED file must match
+// upstream given that colon-equivalent, label and all.
+func TestNativePluginCheckSparsityRegionBEDFixOnPort(t *testing.T) {
+	bin, err := buildBcftools()
+	if err != nil {
+		t.Fatalf("build upstream bcftools: %v", err)
+	}
+	gt := parityFixture(t, "gt_plugins.vcf")
+	dir := t.TempDir()
+	gtGz := bgzipAndIndex(t, bin, gt, filepath.Join(dir, "gt_plugins.vcf.gz"))
+	bedFile := rtRegionFile(t, dir, "cs.bed", "chr1\t0\t10000", "chr2\t0\t10000")
+	// The colon region-list upstream parses correctly; equivalent 1-based windows.
+	colonEquiv := rtRegionFile(t, dir, "cs_bed_equiv.txt", "chr1:1-10000", "chr2:1-10000")
+
+	// 1) Document the bug: upstream with the BED -R file produces no output.
+	upBED := runUpstreamPluginCmd(t, bin, pluginCLIArgs("check-sparsity", gtGz, []string{"-n", "1", "-R", bedFile}))
+	if len(bytes.TrimSpace(stripProvenanceBytes(upBED))) != 0 {
+		t.Fatalf("expected upstream to silently emit nothing for a BED -R file, got:\n%s", upBED)
+	}
+	// 2) Fix-on-port: ours given the BED file equals upstream given the
+	//    colon-equivalent region-list it can actually parse.
+	oursArgv := pluginCLIArgs("check-sparsity", gtGz, []string{"-n", "1", "-R", bedFile})
+	upArgv := pluginCLIArgs("check-sparsity", gtGz, []string{"-n", "1", "-R", colonEquiv})
+	assertStdoutParity(t, bin, upArgv, oursArgv)
+	// Sanity: the fixed output is actually non-empty (otherwise the equality is
+	// trivially the empty string and would not prove the fix).
+	if len(bytes.TrimSpace(stripProvenanceBytes(runOursPluginCmd(t, oursArgv)))) == 0 {
+		t.Fatalf("fix-on-port produced empty output; expected a per-region sparse report")
 	}
 }
 
