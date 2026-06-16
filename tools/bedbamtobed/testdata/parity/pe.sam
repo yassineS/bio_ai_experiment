@@ -1,0 +1,7 @@
+@HD	VN:1.0	SO:queryname
+@SQ	SN:chr1	LN:1000
+@SQ	SN:chr2	LN:1000
+pairA	99	chr1	100	40	30M	=	300	230	*	*	NM:i:1
+pairA	147	chr1	300	30	30M	=	100	-230	*	*	NM:i:2
+pairB	83	chr2	500	20	20M	=	200	-320	*	*	NM:i:3
+pairB	163	chr2	200	25	20M	=	500	320	*	*	NM:i:4
