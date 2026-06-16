@@ -219,7 +219,6 @@ Usage:
 
 Options:
   -O, --output-type {v|z|u|b}     v=VCF (default), z=VCF.gz, u=uncompressed BCF, b=compressed BCF.
-                                  (u and b are NOT YET IMPLEMENTED in this slice.)
   -o, --output PATH               Output file (default stdout).
   -h, --header-only               Emit only the header.
   -H, --no-header                 Drop the header.
