@@ -8,15 +8,19 @@
 // A single -i/--include or -e/--exclude filter expression is supported as a
 // site-level pre-filter (upstream's contrast.c calls filter_test with a NULL
 // sample mask and drops the record entirely before annotating or writing it).
-// The rare-allele enrichment mode (-f/--max-allele-freq) and the index/region
-// jump options require htslib machinery the native pipeline does not provide
-// and remain unsupported.
+// The -o/-O options select the output file and container, and -W/--write-index
+// indexes that file (a CSI by default, a TBI for -W=tbi on VCF.gz) exactly as
+// upstream does; -W to stdout is rejected with upstream's "failed to initialise
+// index for -" error. The rare-allele enrichment mode (-f/--max-allele-freq)
+// still requires htslib machinery the native pipeline does not provide and
+// remains unsupported.
 package bcftools
 
 import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -45,7 +49,20 @@ type contrastPlugin struct {
 
 	filter *pluginFilter // compiled -i/-e site-level pre-filter, nil if none
 
+	outputFile string        // -o/--output FILE; "" or "-" means stdout
+	format     OutputFormat  // -O/--output-type; defaults to VCF
+	clevel     int           // -O z/b level; -1 for the package default
+	writeIndex writeIndexFmt // -W/--write-index[=FMT]; writeIndexOff when unset
+	outputSet  bool          // whether any of -o/-O/-W was given
+
 	stderr io.Writer
+}
+
+// OutputControl reports the -o/-O/-W selection contrast parsed from its argv so
+// the framework's stage-3 writer targets the chosen file and container and
+// indexes it. It implements pluginOutputControl.
+func (p *contrastPlugin) OutputControl() (string, OutputFormat, int, writeIndexFmt, bool) {
+	return p.outputFile, p.format, p.clevel, p.writeIndex, p.outputSet
 }
 
 // Name returns the plugin name.
@@ -91,6 +108,8 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 	var controlStr, caseStr string
 	var filterExpr string
 	var filterExclude, haveFilter bool
+	p.format = OutputVCF
+	p.clevel = -1
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() (string, error) {
@@ -99,6 +118,14 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 			}
 			i++
 			return args[i], nil
+		}
+		if sel, handled, werr := parseWriteIndexArg(a); handled {
+			if werr != nil {
+				return nil, fmt.Errorf("contrast: %w", werr)
+			}
+			p.writeIndex = sel
+			p.outputSet = true
+			continue
 		}
 		switch a {
 		case "-a", "--annots":
@@ -137,19 +164,39 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 		case "--regions-overlap", "--targets-overlap":
 			return nil, fmt.Errorf("contrast: %s is not supported by the native plugin", a)
 		case "-o", "--output":
-			return nil, fmt.Errorf("contrast: writing to a file (-o) is not supported by the native plugin; use stdout")
-		case "-O", "--output-type":
-			if _, err := next(); err != nil {
+			v, err := next()
+			if err != nil {
 				return nil, err
 			}
-			return nil, fmt.Errorf("contrast: -O is handled by the host -O; not a plugin option here")
-		case "-W", "--write-index":
-			return nil, fmt.Errorf("contrast: --write-index is not supported by the native plugin")
+			p.outputFile = v
+			p.outputSet = true
+		case "-O", "--output-type":
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.parseOutputType(v); err != nil {
+				return nil, err
+			}
+			p.outputSet = true
 		case "-v", "--verbosity":
 			if _, err := next(); err != nil {
 				return nil, err
 			}
 		default:
+			// Attached -O<x> / -o<path> getopt forms (e.g. `-Oz`, `-oout.vcf`).
+			if strings.HasPrefix(a, "-O") && len(a) > 2 {
+				if err := p.parseOutputType(a[2:]); err != nil {
+					return nil, err
+				}
+				p.outputSet = true
+				continue
+			}
+			if strings.HasPrefix(a, "-o") && len(a) > 2 {
+				p.outputFile = a[2:]
+				p.outputSet = true
+				continue
+			}
 			return nil, fmt.Errorf("contrast: unsupported option %q", a)
 		}
 	}
@@ -213,6 +260,39 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 		out.MetaInfo = append(out.MetaInfo, `##INFO=<ID=NOVELGT,Number=.,Type=String,Description="List of samples with novel genotypes">`)
 	}
 	return out, nil
+}
+
+// parseOutputType parses upstream's -O u|b|v|z[0-9] spelling into the contrast
+// plugin's container/level selection.
+func (p *contrastPlugin) parseOutputType(s string) error {
+	if s == "" {
+		return fmt.Errorf("contrast: empty -O argument")
+	}
+	switch s[0] {
+	case 'b':
+		p.format = OutputBCF
+	case 'u':
+		p.format = OutputBCFUncompressed
+	case 'z':
+		p.format = OutputVCFGz
+	case 'v':
+		p.format = OutputVCF
+	default:
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 || n > 9 {
+			return fmt.Errorf("contrast: the output type %q not recognised", s)
+		}
+		p.clevel = n
+		return nil
+	}
+	if len(s) > 1 {
+		n, err := strconv.Atoi(s[1:])
+		if err != nil || n < 0 || n > 9 {
+			return fmt.Errorf("contrast: could not parse compression level %q", s[1:])
+		}
+		p.clevel = n
+	}
+	return nil
 }
 
 // Process annotates one record with the requested INFO fields, mirroring

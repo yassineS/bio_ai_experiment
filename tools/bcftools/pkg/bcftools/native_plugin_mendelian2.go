@@ -21,7 +21,10 @@
 //
 // Region/target selection (-r/-R/-t/-T) is supported: the shared
 // regionTargetFilter is parsed by the framework and applied to the input
-// records before the Mendelian accounting. -W/--write-index and the
+// records before the Mendelian accounting. -o writes the result to a file, and
+// -W/--write-index indexes it (a CSI by default, a TBI for -W=tbi on VCF.gz)
+// when the chosen mode emits VCF/BCF output; the text-counts mode (-m c) emits
+// no VCF and is left unindexed, matching upstream. The
 // --regions-overlap/--targets-overlap tuning knobs are still reported as a clean
 // unsupported Init error.
 package bcftools
@@ -29,6 +32,7 @@ package bcftools
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -108,6 +112,7 @@ func (p *mendelian2Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.
 		outputFile  string
 		rules       string
 		rulesFile   string
+		writeIndex  = writeIndexOff
 	)
 	args := opts.Args
 	for i := 0; i < len(args); i++ {
@@ -145,11 +150,22 @@ func (p *mendelian2Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.
 			// accepted, no effect
 		case "--regions-overlap", "--targets-overlap":
 			return fmt.Errorf("mendelian2: %s is not supported by the native plugin", a)
-		case "-W", "--write-index":
-			return fmt.Errorf("mendelian2: -W/--write-index is not supported by the native plugin")
 		default:
-			if strings.HasPrefix(a, "-W=") || strings.HasPrefix(a, "--write-index=") {
-				return fmt.Errorf("mendelian2: -W/--write-index is not supported by the native plugin")
+			if sel, handled, werr := parseWriteIndexArg(a); handled {
+				if werr != nil {
+					return fmt.Errorf("mendelian2: %w", werr)
+				}
+				writeIndex = sel
+				continue
+			}
+			// Attached -O<x> / -o<path> getopt forms (e.g. `-Oz`, `-oout.vcf`).
+			if strings.HasPrefix(a, "-O") && len(a) > 2 {
+				outputType = a[2:]
+				continue
+			}
+			if strings.HasPrefix(a, "-o") && len(a) > 2 {
+				outputFile = a[2:]
+				continue
 			}
 			return fmt.Errorf("mendelian2: unsupported option %q", a)
 		}
@@ -212,15 +228,45 @@ func (p *mendelian2Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.
 		m2.PFM = &parsed
 	}
 
+	// When -o names a file, write there directly; otherwise stream to the host
+	// stdout. -W indexes the file, but only when the chosen mode actually
+	// produces VCF/BCF output (any non-count mode); the text-counts mode
+	// (-m c) writes no VCF and is left unindexed, matching upstream.
 	dst := out
-	if outputFile != "" && outputFile != "-" {
-		return fmt.Errorf("mendelian2: writing to a file (-o) is not supported by the native plugin; use stdout")
+	var outFile *os.File
+	toFile := outputFile != "" && outputFile != "-"
+	producesVCF := modeBits&^Mendelian2Count != 0
+	if toFile {
+		f, ferr := os.Create(outputFile)
+		if ferr != nil {
+			return fmt.Errorf("mendelian2: cannot write to %q: %w", outputFile, ferr)
+		}
+		outFile = f
+		dst = f
+	} else if writeIndex != writeIndexOff && producesVCF {
+		// Indexing stdout is impossible — reproduce upstream's error.
+		return fmt.Errorf("mendelian2: failed to initialise index for -")
 	}
 
 	input := opts.InputFile
 	if input == "" {
 		input = "-"
 	}
-	_, err = Mendelian2File(input, dst, m2)
-	return err
+	if _, err = Mendelian2File(input, dst, m2); err != nil {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+		return err
+	}
+	if outFile != nil {
+		if err := outFile.Close(); err != nil {
+			return err
+		}
+		if producesVCF {
+			if err := writeIndexFor(outputFile, format, writeIndex); err != nil {
+				return fmt.Errorf("mendelian2: %w", err)
+			}
+		}
+	}
+	return nil
 }

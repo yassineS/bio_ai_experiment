@@ -198,10 +198,12 @@ func (c *CSI) Write(w io.Writer) error {
 			}
 		}
 	}
-	if c.NoCoor > 0 {
-		if err := binary.Write(bw, binary.LittleEndian, c.NoCoor); err != nil {
-			return err
-		}
+	// htslib always emits the trailing n_no_coor field (8 bytes), even when it
+	// is zero (hts_idx_save_core writes idx->n_no_coor unconditionally). Match
+	// that so the on-disk CSI is byte-identical to `bcftools index` / the -W
+	// writer; our reader tolerates the field being absent for older inputs.
+	if err := binary.Write(bw, binary.LittleEndian, c.NoCoor); err != nil {
+		return err
 	}
 	return bw.Flush()
 }

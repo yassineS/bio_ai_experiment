@@ -12,8 +12,9 @@
 // site-level pre-filter, matching split.c, which compiles the expression against
 // each subset's own header and calls filter_test(set->filter, out, NULL) on the
 // already-subsetted record before writing it (so a FORMAT expression sees only
-// that file's samples). The index-jump -r/-R/-t/-T/-W options are not part of
-// the streaming pipeline and are reported as a clean unsupported Init error.
+// that file's samples). -W/--write-index indexes every output file (a CSI by
+// default, a TBI for -W=tbi on VCF.gz) exactly as upstream does. The -r/-R/-t/-T
+// region selection is applied before the split.
 package bcftools
 
 import (
@@ -48,6 +49,7 @@ type splitPlugin struct {
 	format      OutputFormat
 	clevel      int
 	args        []string
+	writeIndex  writeIndexFmt // -W/--write-index[=FMT]; writeIndexOff when unset
 
 	filter *pluginFilter // compiled -i/-e per-output site-level pre-filter, nil if none
 
@@ -154,8 +156,6 @@ func (p *splitPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 				return nil, fmt.Errorf("split: %w", ferr)
 			}
 			p.filter = f
-		case "-W", "--write-index":
-			return nil, fmt.Errorf("split: -W/--write-index is not supported in the native plugin")
 		case "-v", "--verbosity":
 			if _, err := next(); err != nil {
 				return nil, err
@@ -165,6 +165,13 @@ func (p *splitPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 				return nil, err
 			}
 		default:
+			if sel, handled, werr := parseWriteIndexArg(a); handled {
+				if werr != nil {
+					return nil, fmt.Errorf("split: %w", werr)
+				}
+				p.writeIndex = sel
+				continue
+			}
 			if strings.HasPrefix(a, "-O") && len(a) > 2 {
 				if err := p.parseOutputType(a[2:]); err != nil {
 					return nil, err
@@ -174,9 +181,6 @@ func (p *splitPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 			if strings.HasPrefix(a, "-o") && len(a) > 2 {
 				p.outputDir = a[2:]
 				continue
-			}
-			if strings.HasPrefix(a, "-W") {
-				return nil, fmt.Errorf("split: -W/--write-index is not supported in the native plugin")
 			}
 			return nil, fmt.Errorf("split: unsupported option %q", a)
 		}
@@ -431,6 +435,16 @@ func (p *splitPlugin) writeSubset(hdr *vcf.Header, variants []*vcf.Variant, set 
 		return err
 	}
 	cleanup()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// -W/--write-index: index this output file before moving on, matching
+	// upstream's per-output indexing. A non-indexable container reproduces
+	// upstream's error and aborts (so the partially produced directory matches
+	// upstream, which stops after the first such file).
+	if err := writeIndexFor(path, p.format, p.writeIndex); err != nil {
+		return fmt.Errorf("split: %w", err)
+	}
 	return nil
 }
 
