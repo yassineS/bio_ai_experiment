@@ -1,14 +1,11 @@
-// Join output modes for bedintersect (-loj, -wo, -wao, -wa+-wb), plus the
-// -split block-aware variants. These modes echo the original input columns of
-// A and B verbatim, in the original B-file order, exactly like upstream
-// `bedtools intersect`. They therefore operate on raw, line-preserving records
-// rather than the typed bed.Record used by the default code path.
+// Shared block, fraction and null-placeholder helpers for the upstream-parity
+// intersect output modes. The -split block math, the B-file record-type
+// classification used to shape -loj/-wao null placeholders, and the
+// usesJoinMode dispatch all live here; the per-A emission lives in
+// rawintersect.go (the emitter type).
 package bedintersect
 
 import (
-	"bufio"
-	"fmt"
-	"io"
 	"strconv"
 	"strings"
 )
@@ -37,8 +34,7 @@ func blocksOf(rec *inRecord, split bool) []block {
 		return wholeSpan()
 	}
 	// Only BED12 and BAM records carry block columns; VCF/GFF are always a
-	// single span (matching the raw path's inBlocks so -split agrees across the
-	// join and default output modes for the same input).
+	// single span.
 	if rec.format != fmtBED && rec.format != fmtBAM {
 		return wholeSpan()
 	}
@@ -47,6 +43,38 @@ func blocksOf(rec *inRecord, split bool) []block {
 		return wholeSpan()
 	}
 	return blks
+}
+
+// bed12BlocksFromFields expands a BED12 record's blocks into absolute
+// [start,end) ranges from its raw fields, returning ok=false when the record is
+// not parseable as BED12 (fewer than 12 columns or malformed block columns).
+func bed12BlocksFromFields(fields []string, recStart int) ([]block, bool) {
+	if len(fields) < 12 {
+		return nil, false
+	}
+	blockCount, err := strconv.Atoi(fields[9])
+	if err != nil || blockCount <= 0 {
+		return nil, false
+	}
+	sizes := splitCSV(fields[10])
+	starts := splitCSV(fields[11])
+	if len(sizes) != blockCount || len(starts) != blockCount {
+		return nil, false
+	}
+	blks := make([]block, 0, blockCount)
+	for i := 0; i < blockCount; i++ {
+		off, err := strconv.Atoi(starts[i])
+		if err != nil {
+			return nil, false
+		}
+		size, err := strconv.Atoi(sizes[i])
+		if err != nil {
+			return nil, false
+		}
+		s := recStart + off
+		blks = append(blks, block{s, s + size})
+	}
+	return blks, true
 }
 
 // splitCSV splits a comma-separated list, dropping a single trailing comma
@@ -66,137 +94,6 @@ func blockSum(blks []block) int {
 		total += b.end - b.start
 	}
 	return total
-}
-
-// joinHit records a B record that passed all overlap filters for a given A,
-// together with the total overlapping bases used by -wo/-wao.
-type joinHit struct {
-	b            *inRecord
-	overlapBases int
-}
-
-// findJoinHits returns the B records overlapping A (in B-file order) and the
-// per-hit overlap-base counts, applying the -s strand filter and the -f/-F/-r
-// fraction filters with split-aware block math when opts.Split is set. The
-// candidate scan uses full-record spans (as upstream's bin index does); block
-// refinement only affects hit determination and overlap counts.
-func findJoinHits(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []joinHit {
-	if opts.Split {
-		return findJoinHitsSplit(a, bRecords, opts)
-	}
-	var hits []joinHit
-	aLen := a.end - a.start
-	aStart, aEnd, aZero := effectiveBounds(a.start, a.end)
-	for _, b := range bRecords {
-		if a.chrom != b.chrom {
-			continue
-		}
-		if opts.StrandSpec && !sameStrandMatch(a.strand, b.strand) {
-			continue
-		}
-		bStart, bEnd, bZero := effectiveBounds(b.start, b.end)
-		overlapStart := max(aStart, bStart)
-		overlapEnd := min(aEnd, bEnd)
-		overlapBases := overlapEnd - overlapStart
-		if overlapBases <= 0 {
-			continue
-		}
-		// MinOverlap is a bedintersect-specific knob (upstream intersect has no
-		// -m); honour it here so the join modes match the default rawOverlaps
-		// path, which also filters on the detected overlap length. This is
-		// tested before the zero-length correction so a zero-length hit (which
-		// reports 0 overlapping bases but is still a valid intersection under
-		// the default -m 1) is not dropped.
-		if overlapBases < opts.MinOverlap {
-			continue
-		}
-		// Zero-length records were expanded by 1bp on each side for detection;
-		// undo that when reporting the overlap base count (upstream
-		// RecordOutputMgr::reportOverlapDetail does maxStart++ / minEnd--).
-		if aZero || bZero {
-			overlapBases = (overlapEnd - 1) - (overlapStart + 1)
-			if overlapBases < 0 {
-				overlapBases = 0
-			}
-		}
-		// Per-record fraction tests over whole spans, mirroring
-		// Record::sameChromIntersects (default !eitherFraction: both must hold).
-		if opts.FractionA > 0 {
-			if fraction(overlapBases, aLen) < opts.FractionA {
-				continue
-			}
-		}
-		if opts.FractionB > 0 || opts.Reciprocal {
-			bLen := b.end - b.start
-			fracB := fraction(overlapBases, bLen)
-			if opts.FractionB > 0 && fracB < opts.FractionB {
-				continue
-			}
-			if opts.Reciprocal && fracB < opts.FractionA {
-				continue
-			}
-		}
-		hits = append(hits, joinHit{b: b, overlapBases: overlapBases})
-	}
-	return hits
-}
-
-// findJoinHitsSplit implements the -split hit selection, mirroring
-// BlockMgr::findBlockedOverlaps: a B record is a candidate if any of its blocks
-// overlaps any A block; the per-hit overlap count is the total block overlap for
-// that B; and the -f/-F/-r fraction tests are applied ONCE across all hits
-// combined (non-redundant overlap over the A block-sum and the summed B block
-// lengths). If a combined test fails, every hit for this A is dropped.
-func findJoinHitsSplit(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []joinHit {
-	aBlocks := blocksOf(a, true)
-	aBlockSum := blockSum(aBlocks)
-	var hits []joinHit
-	var allOverlaps []block
-	hitBlockSum := 0
-	for _, b := range bRecords {
-		if a.chrom != b.chrom {
-			continue
-		}
-		if opts.StrandSpec && !sameStrandMatch(a.strand, b.strand) {
-			continue
-		}
-		// Hit determination is purely block-vs-block below (blocksOf already
-		// applies the zero-length expansion), so no whole-span pre-filter here:
-		// a raw-span check would wrongly reject zero-length records.
-		bBlocks := blocksOf(b, true)
-		overlapBases := 0
-		hadOverlap := false
-		for _, hb := range bBlocks {
-			for _, kb := range aBlocks {
-				s := max(kb.start, hb.start)
-				e := min(kb.end, hb.end)
-				if e > s {
-					overlapBases += e - s
-					allOverlaps = append(allOverlaps, block{s, e})
-					hadOverlap = true
-				}
-			}
-		}
-		if !hadOverlap {
-			continue
-		}
-		hitBlockSum += blockSum(bBlocks)
-		hits = append(hits, joinHit{b: b, overlapBases: overlapBases})
-	}
-
-	if len(hits) > 0 && (opts.FractionA > 0 || opts.FractionB > 0 || opts.Reciprocal) {
-		uniq := nonRedundantOverlap(allOverlaps)
-		if opts.FractionA > 0 && fraction(uniq, aBlockSum) < opts.FractionA {
-			return nil
-		}
-		if opts.FractionB > 0 && fraction(uniq, hitBlockSum) < opts.FractionB {
-			return nil
-		}
-		if opts.Reciprocal && fraction(uniq, hitBlockSum) < opts.FractionA {
-			return nil
-		}
-	}
-	return hits
 }
 
 // effectiveBounds returns the [start,end) used for overlap detection, expanding
@@ -370,90 +267,9 @@ func isNumericField(s string) bool {
 	return hasDigit
 }
 
-// intersectJoin implements the -loj / -wo / -wao / (-wa -wb) output modes,
-// echoing A and B columns verbatim in B-file order. It returns the number of
-// output lines written.
-func intersectJoin(readerA, readerB io.Reader, w io.Writer, opts IntersectOptions) (int, error) {
-	bRecords, err := readInRecords(readerB)
-	if err != nil {
-		return 0, fmt.Errorf("error reading B intervals: %w", err)
-	}
-	dbType, dbFields := classifyDB(bRecords)
-	nullB := nullDBString(dbType, dbFields)
-
-	// Index B by chromosome, preserving file order within each chromosome.
-	byChrom := make(map[string][]*inRecord)
-	for _, b := range bRecords {
-		byChrom[b.chrom] = append(byChrom[b.chrom], b)
-	}
-
-	out := bufio.NewWriter(w)
-	bw := &bufWriter{w: out}
-	count := 0
-
-	aRecords, err := readInRecords(readerA)
-	if err != nil {
-		return 0, fmt.Errorf("error reading A intervals: %w", err)
-	}
-	for _, a := range aRecords {
-		hits := findJoinHits(a, byChrom[a.chrom], opts)
-
-		if len(hits) == 0 {
-			// -wao and -loj still emit the A record (with a null B) when there
-			// are no hits; -wo and (-wa -wb) emit nothing.
-			switch {
-			case opts.WriteAllOverlap:
-				bw.writeString(a.line)
-				bw.writeString("\t")
-				bw.writeString(nullB)
-				bw.writeString("\t0\n")
-				count++
-			case opts.LeftJoin:
-				bw.writeString(a.line)
-				bw.writeString("\t")
-				bw.writeString(nullB)
-				bw.writeString("\n")
-				count++
-			}
-			continue
-		}
-
-		for _, h := range hits {
-			bw.writeString(a.line)
-			bw.writeString("\t")
-			bw.writeString(h.b.line)
-			if opts.WriteOverlap || opts.WriteAllOverlap {
-				bw.writeString("\t")
-				bw.writeString(strconv.Itoa(h.overlapBases))
-			}
-			bw.writeString("\n")
-			count++
-		}
-	}
-	if bw.err != nil {
-		return 0, bw.err
-	}
-	if err := out.Flush(); err != nil {
-		return 0, fmt.Errorf("error flushing output: %w", err)
-	}
-	return count, nil
-}
-
-// bufWriter accumulates the first write error so the hot loop stays branch-light.
-type bufWriter struct {
-	w   *bufio.Writer
-	err error
-}
-
-func (b *bufWriter) writeString(s string) {
-	if b.err != nil {
-		return
-	}
-	_, b.err = b.w.WriteString(s)
-}
-
-// usesJoinMode reports whether any option requires the raw, B-ordered join
-// output path (rather than the default typed path).
+// usesJoinMode reports whether any option requires the join output path (which
+// echoes both A and B columns), namely -loj, -wo, -wao, or -wa together with
+// -wb.
 func (opts IntersectOptions) usesJoinMode() bool {
 	return opts.LeftJoin || opts.WriteOverlap || opts.WriteAllOverlap || (opts.WriteA && opts.WriteB)
 }

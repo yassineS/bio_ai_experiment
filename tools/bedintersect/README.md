@@ -1,18 +1,21 @@
 # bedintersect - BED Interval Intersection Finder
 
-A fast tool to find intersecting intervals between two BED files, implemented in Go.
+A fast, drop-in re-implementation of `bedtools intersect`, written in Go.
 
 ## Features
 
-- **Fast performance**: Efficient interval searching with chromosome indexing and optional interval tree
-- **Flexible output**: Report intersections, original entries, counts, distance, or closest feature
-- **Multiple filter options**: Minimum overlap, fraction overlap, reciprocal overlap, strand-specific
-- **Advanced modes**: Distance to nearest feature, closest feature reporting
-- **Interval tree**: Optional interval tree data structure for very large B files
-- **Standard BED format**: Compatible with bedtools intersect
-- **Built-in gzip support**: Automatic handling of .gz files
-- **Statistics**: Optional intersection statistics output
-- **Streaming**: File A is processed in streaming fashion (memory-efficient)
+- **Full `bedtools intersect` flag parity**: `-wa/-wb/-wo/-wao/-loj/-u/-c/-C/-v`,
+  `-f/-F/-r/-e`, `-s/-S`, `-split`, multiple `-b` databases
+  (`-names`/`-filenames`/`-sortout`), `-sorted`/`-g`, `-header`, `-nonamecheck` —
+  validated byte-for-byte against the live upstream binary.
+- **Multiple input formats**: BED, GFF, VCF (incl. structural-variant spans),
+  BAM and CRAM, with gzip/BGZF auto-decompression (including on stdin).
+- **Fast performance**: Chromosome indexing with an optional interval tree for
+  very large B files.
+- **bedintersect extensions**: distance to nearest feature (`-d`), closest
+  feature (`-k`), and a `--stats` summary.
+- **Built-in gzip support**: Automatic handling of `.gz` files.
+- **Streaming**: File A is processed in streaming fashion (memory-efficient).
 
 ## Installation
 
@@ -39,30 +42,58 @@ bedintersect -a genes.bed -b peaks.bed > overlaps.bed
 
 ### Options
 
-- `-a, --input-a FILE` - Input BED file A (required)
-- `-b, --input-b FILE` - Input BED file B (required)
+- `-a FILE` - Input file A (BED/GFF/VCF/BAM; `-` for stdin). Required.
+- `-b FILE [FILE ...]` - Input file(s) B. `-b` may be followed by multiple
+  database files (each B record is then prefixed with a DB-id column in
+  `-wb`/`-loj`/`-wao` output). Required.
+- `-abam FILE` / `-ibam FILE` - Aliases for `-a` with a BAM file.
 - `-o, --output FILE` - Output file (default: stdout)
-- `-m, --min-overlap INT` - Minimum overlap required (default: 1)
-- `-f, --fraction-a NUM` - Minimum fraction of A that must overlap (0.0-1.0)
-- `-F, --fraction-b NUM` - Minimum fraction of B that must overlap (0.0-1.0)
-- `-r, --reciprocal` - Require reciprocal overlap (both -f and -F must be satisfied)
-- `-s, --strand` - Only report hits on same strand
-- `-v, --invert` - Report A entries with NO overlap with B
-- `-wa, --write-a` - Write original A entry (default: write intersection)
-- `-wb, --write-b` - Write B entry instead of A (with `-wa`: write A and B
-  side-by-side per overlap)
-- `-loj` - Left outer join: report every A; B is null when there is no overlap
-- `-wo` - Write A, B and the number of overlapping bases per overlap
+- `-f, --fraction-a NUM` - Minimum overlap as a fraction of A, in `(0.0, 1.0]`
+  (default ~1bp).
+- `-F, --fraction-b NUM` - Minimum overlap as a fraction of B, in `(0.0, 1.0]`
+  (default ~1bp).
+- `-r, --reciprocal` - Require the fraction overlap be reciprocal for A AND B.
+- `-e` - Require the minimum fraction be satisfied for A OR B (rather than both).
+- `-s, --strand` - Only report hits on the same strand.
+- `-S` - Only report hits on the opposite strand. (Matches `bedtools intersect`;
+  note this differs from older versions of this tool, where `-S` meant
+  "statistics" — that is now the long flag `--stats` only.)
+- `-v, --invert` - Report A entries with NO overlap with B.
+- `-wa, --write-a` - Write the original A entry for each overlap.
+- `-wb, --write-b` - Write the original B entry for each overlap (with `-wa`:
+  write A and B side-by-side per overlap).
+- `-u` - Write each original A entry once if any overlap is found.
+- `-c, --count` - Report the total count of B overlaps for each A.
+- `-C` - Report the overlap count with each B file separately (one line per B
+  file; with multiple B files a DB-id column is included).
+- `-loj` - Left outer join: report every A; B is null when there is no overlap.
+- `-wo` - Write A, B and the number of overlapping bases per overlap.
 - `-wao` - Like `-wo`, but also report A (with null B and overlap `0`) when there
-  is no overlap
-- `-split` - Treat split BED12 entries as distinct intervals (block-aware
-  overlap and overlap-base counting)
-- `-c, --count` - Report count of B overlaps for each A
-- `-d, --distance` - Report distance to nearest B feature
-- `-k, --closest` - Output closest B feature for each A
-- `-t, --tree` - Use interval tree for large B files (better performance)
-- `-S, --stats` - Print statistics to stderr
-- `-h, --help` - Show help message
+  is no overlap.
+- `-split` - Treat split BAM/BED12 entries as distinct intervals (block-aware
+  overlap and overlap-base counting).
+- `-names NAME [NAME ...]` - Aliases for each B file (printed instead of a
+  numeric file id in the DB-id column).
+- `-filenames` - Print each B file's name instead of a numeric file id.
+- `-sortout` - Sort each A record's DB hits by position across all B files.
+- `-header` - Print the A file's header lines verbatim before the results.
+- `-sorted` - Validate that the inputs are coordinate-sorted (errors otherwise),
+  mirroring upstream. The output order is unchanged (it already matches
+  upstream's bin order whether or not `-sorted` is given).
+- `-g FILE` - Genome file fixing the chromosome order for `-sorted` validation.
+- `-nonamecheck` - Suppress the chromosome naming-convention warning.
+- `-bed` - With BAM input, write output as BED. This port always emits BED text
+  for BAM input, so `-bed` is effectively the default (see Limitations).
+- `-m, --min-overlap INT` - Minimum overlap in bp (bedintersect extension,
+  default 1).
+- `-d, --distance` - Report distance to nearest B feature (bedintersect
+  extension).
+- `-k, --closest` - Output closest B feature for each A (bedintersect extension).
+- `-t, --tree` - Use an interval tree for large B files (bedintersect extension).
+- `--stats` - Print summary statistics to stderr (bedintersect extension; single
+  B file only).
+- `-h, --help` - Show help message.
+- `--version` - Show version information.
 
 ### Examples
 
@@ -184,8 +215,11 @@ Uses an interval tree data structure for improved performance with very large B 
 #### Show statistics
 
 ```bash
-bedintersect -a genes.bed -b peaks.bed -S > overlaps.bed
+bedintersect -a genes.bed -b peaks.bed --stats > overlaps.bed
 ```
+
+(`--stats` is a bedintersect extension; in older versions this was `-S`, but
+`-S` now matches `bedtools intersect`'s opposite-strand meaning.)
 
 Outputs to stderr:
 
@@ -349,27 +383,27 @@ bedintersect -a queries.bed -b large_database.bed -t > results.bed
 | Speed | Comparable | Comparable |
 | Built-in gzip | Yes | No |
 | Interval tree | Yes (optional) | No |
-| Reciprocal mode | Yes | Yes |
-| Distance mode | Yes | No |
-| Closest feature | Yes | Via separate tool |
-| Advanced options | Growing | Extensive |
-| Sorted requirement | No | No |
+| Output modes (`-wa/-wb/-wo/-wao/-loj/-u/-c/-C/-v`) | Yes | Yes |
+| Fractions (`-f/-F/-r/-e`) | Yes | Yes |
+| Strand (`-s/-S`) | Yes | Yes |
+| `-split` block-aware overlap | Yes | Yes |
+| Multiple `-b` (`-names/-filenames/-sortout`) | Yes | Yes |
+| `-sorted`/`-g` order validation | Yes | Yes |
+| BED/GFF/VCF/BAM/CRAM input | Yes | Yes |
+| BAM/CRAM **output** | No (always BED text) | Yes |
+| Distance mode (`-d`) | Yes (extension) | No |
+| Closest feature (`-k`) | Yes (extension) | Via separate tool |
 
-**Use bedintersect when:**
-
-- You need a simple, standalone tool
-- You want built-in gzip support
-- You prefer Go tools
-- You use common intersection operations
-- You need distance or closest feature functionality
-- You're working with very large B files (use -t flag)
-- You need reciprocal overlap filtering
+The output of every shared option is validated byte-for-byte against the live
+upstream `bedtools intersect` binary over the upstream test fixtures (see the
+`*_parity_test.go` files), so it is a drop-in replacement for text (BED/GFF/VCF)
+workflows.
 
 **Use bedtools intersect when:**
 
-- You need advanced options (wao, sorted optimization, etc.)
-- You're already using bedtools suite
-- You need perfect output compatibility with existing pipelines
+- You need **BAM/CRAM binary output** from BAM/CRAM input (this port always
+  emits BED text — see Limitations).
+- You're already using the bedtools suite end-to-end.
 
 ## Testing
 
@@ -395,8 +429,20 @@ go test -cover ./pkg/bedintersect
 
 ## Limitations
 
-- Loads B file completely into memory (necessary for random access)
-- No sorted file optimization for memory-constrained environments
+- **BAM/CRAM output.** When A is a BAM/CRAM file, upstream `bedtools intersect`
+  writes the overlapping alignments back out as BAM (or CRAM) by default; this
+  port always converts BAM/CRAM input to BED12 and writes BED text (i.e. it
+  behaves as if `-bed` is always set). `-abam …`, `-ibam …` and explicit `-bed`
+  all work and match upstream's BED output byte-for-byte; only the binary
+  BAM/CRAM *output* path (and the `-ubam` flag, accepted but a no-op) is not
+  reproduced. Consequently, the upstream error that forbids `-wao`/`-wo`/etc.
+  with bare BAM input "unless `-bed` is specified" is not raised — the BED output
+  is simply produced.
+- Loads the B file(s) completely into memory (necessary for random access).
+- The chromosome naming-convention warning is emitted before the data rather
+  than interleaved into it; when stdout and stderr are captured separately the
+  content matches upstream exactly, but a combined `2>&1` stream orders the
+  warning differently.
 
 ## Recent Enhancements
 
@@ -410,6 +456,17 @@ go test -cover ./pkg/bedintersect
   byte-for-byte against the upstream `bedtools intersect` binary (BED3–BED12
   null shapes, zero-length intervals, B-file order, and `-s` UNKNOWN-strand
   handling).
+- ✅ Full upstream flag parity: `-u` (unique), `-C` (per-B-file counts),
+  `-S` (opposite strand), `-e` (either-fraction), multiple `-b` databases with
+  `-names`/`-filenames`/`-sortout`, `-header`, `-sorted`/`-g` order validation,
+  and `-nonamecheck` — each validated byte-for-byte against the live upstream
+  binary over the upstream fixtures.
+- ✅ Bin-order output: default (non-sorted) hit ordering reproduces upstream's
+  UCSC-bin traversal order, so nested/overlapping B records print in the same
+  order as `bedtools intersect`.
+- ✅ Input-format parity: BED/GFF/VCF (including structural-variant END/SVLEN
+  spans), BAM/CRAM (with `/1`,`/2` mate suffixes and unmapped-read placeholders),
+  and gzip/BGZF-compressed text on stdin.
 
 These join/overlap modes echo the original A and B input columns verbatim,
 in the original B-file order, matching upstream. BAM/VCF/GFF inputs and the

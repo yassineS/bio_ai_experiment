@@ -8,6 +8,8 @@ package bedintersect
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"strconv"
@@ -43,6 +45,17 @@ type inRecord struct {
 	// the interval-tree path restore B-file order (upstream echoes overlapping
 	// B records in input order) after an out-of-order tree query.
 	order int
+	// dbID is the 0-based index of the B file this record came from. It is 0
+	// for A records and for the single-B-file case; with multiple B files it
+	// drives the DB-id column (-names/-filenames/numeric) and per-file -C
+	// counts. A records ignore it.
+	dbID int
+	// unmapped marks an unmapped BAM alignment. Such a record is printed with
+	// its stored RNAME (which may name the mate's chromosome) but never
+	// participates in an overlap, so it is reported only by the modes that emit
+	// non-overlapping A records (-v/-loj/-wao/-c), exactly like upstream's
+	// printUnmapped path.
+	unmapped bool
 }
 
 // clippedLine renders this record clipped to the overlap span [s,e) (0-based),
@@ -70,6 +83,89 @@ func (r *inRecord) clippedLine(s, e int) string {
 		f[2] = strconv.Itoa(e)
 		return strings.Join(f, "\t")
 	}
+}
+
+// vcfEnd computes the 0-based half-open end of a VCF record, mirroring upstream
+// VcfRecord::initFromFile. A structural-variant ALT (one beginning with "<")
+// derives its length from the INFO SVLEN/END tags (vcfSVlen), except a "<INS...>"
+// insertion which is treated as zero-length (end == start). A non-SV record's
+// end is the start plus the REF allele length.
+func vcfEnd(start int, fields []string) int {
+	alt := ""
+	if len(fields) > 4 {
+		alt = fields[4]
+	}
+	ref := ""
+	if len(fields) > 3 {
+		ref = fields[3]
+	}
+	if len(alt) > 0 && alt[0] == '<' {
+		if strings.HasPrefix(alt, "<INS") {
+			return start // insertions are zero-length
+		}
+		svlen := vcfSVlen(start, fields)
+		if svlen == intMin {
+			// No SVLEN/END found; fall back to the REF length like a plain record.
+			return start + len(ref)
+		}
+		return start + svlen
+	}
+	return start + len(ref)
+}
+
+// intMin sentinels "SVLEN/END not found", matching upstream getVcfSVlen's
+// INT_MIN return.
+const intMin = -1 << 31
+
+// vcfSVlen parses the INFO field (column 8) for a structural-variant length,
+// mirroring upstream SingleLineDelimTextFileReader::getVcfSVlen: an SVLEN tag
+// wins (the absolute value, or the absolute-max when comma-separated); otherwise
+// an END tag yields END-POS+1. Returns intMin when neither is present. POS here
+// is the 0-based start, so END-(start+1)+1 == END-start matches upstream's
+// END-POS+1 on the 1-based POS.
+func vcfSVlen(start int, fields []string) int {
+	if len(fields) <= 7 {
+		return intMin
+	}
+	for _, f := range strings.Split(fields[7], ";") {
+		if f == "." {
+			continue
+		}
+		eq := strings.IndexByte(f, '=')
+		if eq < 0 {
+			continue
+		}
+		key, val := f[:eq], f[eq+1:]
+		switch key {
+		case "SVLEN":
+			best := 0
+			found := false
+			for _, part := range strings.Split(val, ",") {
+				n, err := strconv.Atoi(strings.TrimSpace(part))
+				if err != nil {
+					continue
+				}
+				if n < 0 {
+					n = -n
+				}
+				if !found || n > best {
+					best = n
+					found = true
+				}
+			}
+			if found {
+				return best
+			}
+		case "END":
+			end, err := strconv.Atoi(strings.TrimSpace(val))
+			if err != nil {
+				continue
+			}
+			// Upstream: END - POS + 1, with POS the 1-based start (start+1).
+			return end - (start + 1) + 1
+		}
+	}
+	return intMin
 }
 
 // isInteger reports whether s is a base-10 integer (optionally signed),
@@ -147,7 +243,7 @@ func parseTextRecord(line string, fields []string, format recordFormat) (*inReco
 			return nil, fmt.Errorf("invalid VCF POS %q: %w", fields[1], err)
 		}
 		start := pos - 1
-		end := start + len(fields[3])
+		end := vcfEnd(start, fields)
 		if start < 0 || end < start {
 			return nil, fmt.Errorf("malformed VCF entry: start=%d end=%d", start, end)
 		}
@@ -178,26 +274,33 @@ func parseTextRecord(line string, fields []string, format recordFormat) (*inReco
 }
 
 // readInRecords reads every interval from r. It autodetects whether the stream
-// is BAM (by sniffing the leading bytes) or a text format (BED/VCF/GFF). The
-// text format is locked on the first non-header data line, mirroring upstream's
-// BedFile::parseLine. Header, track, browser and blank lines are skipped.
+// is BAM/CRAM (by sniffing the leading bytes) or a text format (BED/VCF/GFF).
+// gzip/BGZF-compressed text (e.g. a piped `.bed.gz` on stdin, which iohelper
+// does not transparently decompress) is gunzipped first. The text format is
+// locked on the first non-header data line, mirroring upstream's
+// BedFile::parseLine. Header, track, browser and blank lines are skipped;
 // `##fileformat=VCF` forces VCF detection.
 func readInRecords(r io.Reader) ([]*inRecord, error) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	magic, _ := br.Peek(4)
 	if len(magic) >= 4 && magic[0] == 0x1f && magic[1] == 0x8b {
-		// Gzip/BGZF magic: could be a BGZF-wrapped BAM. Probe the BAM reader.
-		recs, ok, err := readBAMRecords(br)
+		// Gzip/BGZF magic. BAM is BGZF-wrapped, so gunzip the leading block and
+		// check for the BAM magic; a BAM stream is decoded by the BAM reader,
+		// otherwise the decompressed bytes are (BGZF/gzip-compressed) text.
+		buf, err := io.ReadAll(br)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			return recs, nil
+		if isGzippedBAM(buf) {
+			recs, _, berr := readBAMRecords(bufio.NewReader(bytes.NewReader(buf)))
+			return recs, berr
 		}
-		// Not BAM (a plain-gzip text file would already have been
-		// decompressed by iohelper.OpenReader before reaching here, so a
-		// stream that still has gzip magic and is not BAM is unexpected).
-		return nil, fmt.Errorf("gzip-compressed non-BAM input is not supported on -a/-b; decompress first")
+		gz, err := gzip.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return nil, fmt.Errorf("error opening gzip input: %w", err)
+		}
+		gz.Multistream(true)
+		return readTextRecords(bufio.NewReaderSize(gz, 64*1024))
 	}
 	if len(magic) >= 4 && string(magic) == "BAM\x01" {
 		recs, ok, err := readBAMRecords(br)
@@ -212,6 +315,44 @@ func readInRecords(r io.Reader) ([]*inRecord, error) {
 		return readCRAMRecords(br)
 	}
 	return readTextRecords(br)
+}
+
+// isGzippedBAM reports whether a gzip/BGZF-compressed buffer decompresses to a
+// BAM stream (its decompressed prefix is the "BAM\x01" magic). It reads only the
+// first decompressed bytes, so a plain gzipped/BGZF text file is cheaply
+// distinguished from a BAM without parsing the whole stream.
+func isGzippedBAM(buf []byte) bool {
+	gz, err := gzip.NewReader(bytes.NewReader(buf))
+	if err != nil {
+		return false
+	}
+	defer gz.Close()
+	head := make([]byte, 4)
+	n, _ := io.ReadFull(gz, head)
+	return n == 4 && string(head) == "BAM\x01"
+}
+
+// readAllB reads every B file in order, tagging each record with its 0-based
+// file id (dbID) so multi-database output can render the DB-id column and
+// per-file -C counts. It also returns the first file's classification (record
+// type + field count), which upstream uses to shape the null-B placeholder
+// under -loj/-wao; the placeholder is determined by the first B file alone.
+func readAllB(readersB []io.Reader) (recs []*inRecord, dbType dbRecordType, dbFields int, err error) {
+	dbType, dbFields = dbBed3, 3
+	for i, rb := range readersB {
+		fileRecs, rerr := readInRecords(rb)
+		if rerr != nil {
+			return nil, dbType, dbFields, fmt.Errorf("error reading B intervals: %w", rerr)
+		}
+		if i == 0 {
+			dbType, dbFields = classifyDB(fileRecs)
+		}
+		for _, r := range fileRecs {
+			r.dbID = i
+		}
+		recs = append(recs, fileRecs...)
+	}
+	return recs, dbType, dbFields, nil
 }
 
 // readCRAMRecords decodes a CRAM stream into inRecords. Like the BAM path it
@@ -242,14 +383,65 @@ func readCRAMRecords(br *bufio.Reader) ([]*inRecord, error) {
 	return out, nil
 }
 
+// readInRecordsWithHeader reads every interval from r and, when wantHeader is
+// set, also returns the file's leading header text (the comment/track/browser
+// lines before the first data record) so -header can echo it verbatim. The
+// returned header string already ends with a newline when non-empty. Header
+// capture applies to text inputs, including gzip/BGZF-compressed text;
+// BAM/CRAM return an empty header.
+func readInRecordsWithHeader(r io.Reader, wantHeader bool) ([]*inRecord, string, error) {
+	br := bufio.NewReaderSize(r, 64*1024)
+	magic, _ := br.Peek(4)
+	isGzip := len(magic) >= 4 && magic[0] == 0x1f && magic[1] == 0x8b
+	isBAMorCRAM := len(magic) >= 4 && (string(magic) == "BAM\x01" || string(magic) == "CRAM")
+	if !wantHeader || isBAMorCRAM {
+		recs, err := readInRecords(br)
+		return recs, "", err
+	}
+	if isGzip {
+		// Buffer, probe for BAM; if not BAM, gunzip and header-scan the text.
+		buf, err := io.ReadAll(br)
+		if err != nil {
+			return nil, "", err
+		}
+		if isGzippedBAM(buf) {
+			recs, _, berr := readBAMRecords(bufio.NewReader(bytes.NewReader(buf)))
+			return recs, "", berr // BAM carries no text header to echo here
+		}
+		gz, err := gzip.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return nil, "", fmt.Errorf("error opening gzip input: %w", err)
+		}
+		gz.Multistream(true)
+		return readTextRecordsHeader(bufio.NewReaderSize(gz, 64*1024))
+	}
+	return readTextRecordsHeader(br)
+}
+
 // readTextRecords reads BED/VCF/GFF records from an already-peeked reader.
 func readTextRecords(br *bufio.Reader) ([]*inRecord, error) {
+	recs, _, err := scanTextRecords(br, false)
+	return recs, err
+}
+
+// readTextRecordsHeader is readTextRecords but also captures the leading header
+// text (for -header).
+func readTextRecordsHeader(br *bufio.Reader) ([]*inRecord, string, error) {
+	return scanTextRecords(br, true)
+}
+
+// scanTextRecords parses BED/VCF/GFF records and, when wantHeader is set,
+// collects the leading header lines (everything before the first data record)
+// into the returned header string, newline-terminated.
+func scanTextRecords(br *bufio.Reader, wantHeader bool) ([]*inRecord, string, error) {
 	sc := bufio.NewScanner(br)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	var out []*inRecord
+	var header strings.Builder
 	var format recordFormat
 	formatSet := false
 	headerForcedVCF := false
+	expectedFields := 0
 	for sc.Scan() {
 		line := strings.TrimRight(sc.Text(), "\r")
 		trimmed := strings.TrimSpace(line)
@@ -261,6 +453,10 @@ func readTextRecords(br *bufio.Reader) ([]*inRecord, error) {
 			if strings.HasPrefix(line, "##fileformat=VCF") {
 				headerForcedVCF = true
 			}
+			if wantHeader && !formatSet {
+				header.WriteString(line)
+				header.WriteByte('\n')
+			}
 			continue
 		}
 		fields := strings.Split(line, "\t")
@@ -270,37 +466,39 @@ func readTextRecords(br *bufio.Reader) ([]*inRecord, error) {
 			} else {
 				f, ok := detectTextFormat(fields)
 				if !ok {
-					return nil, fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", line)
+					return nil, "", fmt.Errorf("unexpected file format: please use tab-delimited BED, GFF, or VCF (line: %q)", line)
 				}
 				format = f
 			}
 			formatSet = true
+			expectedFields = len(fields)
 		}
-		// Validate the field count against the locked format on EVERY line, not
-		// just the first: upstream's type checker errors on a data line with the
-		// wrong number of fields rather than indexing past the end.
-		if !hasEnoughFields(fields, format) {
-			return nil, fmt.Errorf("type checker found wrong number of fields while tokenizing data line (line: %q)", line)
+		// Upstream's type checker locks the column count on the first data line
+		// and errors on any later line with a different count (e.g. a stray
+		// trailing tab adds an empty field). It also needs enough columns for the
+		// locked format's coordinate fields.
+		if len(fields) != expectedFields || !hasEnoughFields(fields, format) {
+			return nil, "", &fieldCountError{}
 		}
 		rec, err := parseTextRecord(line, fields, format)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out = append(out, rec)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return out, nil
+	return out, header.String(), nil
 }
 
-// readBAMRecords decodes a BAM stream into inRecords, converting each primary,
-// mapped alignment into a BED12 line exactly as upstream's BamRecord print path
-// does (chrom start end name MAPQ strand thickStart thickEnd 0,0,0 numBlocks
-// blockSizes, blockStarts; blocks derived from the CIGAR splitting on N ops).
-// It returns ok=false (without consuming the reader past the header probe) when
-// the stream is not BAM. Unmapped reads are skipped, matching `bedtools
-// intersect -abam ... -bed` which only emits mapped alignments.
+// readBAMRecords decodes a BAM stream into inRecords. Each mapped alignment
+// becomes a BED12 line exactly as upstream's BamRecord print path does (chrom
+// start end name MAPQ strand thickStart thickEnd 0,0,0 numBlocks blockSizes,
+// blockStarts; blocks derived from the CIGAR splitting on N ops). Unmapped reads
+// are kept as null-placeholder records (chrom ".", start/end -1) so they flow
+// through -v/-loj/-wao/-c exactly as upstream's printUnmapped does, rather than
+// being silently dropped. It returns ok=false when the stream is not BAM.
 func readBAMRecords(br *bufio.Reader) ([]*inRecord, bool, error) {
 	reader, err := sam.NewReader(br)
 	if err != nil {
@@ -319,12 +517,58 @@ func readBAMRecords(br *bufio.Reader) ([]*inRecord, bool, error) {
 			return nil, true, fmt.Errorf("error reading BAM: %w", err)
 		}
 		if rec.IsUnmapped() || rec.RName == "" || rec.RName == "*" {
+			out = append(out, unmappedBAMRecord(rec))
 			continue
 		}
-		in := bamToBED12(rec)
-		out = append(out, in)
+		out = append(out, bamToBED12(rec))
 	}
 	return out, true, nil
+}
+
+// bamReadName returns the alignment's query name with the upstream "/1" (first
+// mate) or "/2" (second mate) suffix appended for paired reads, mirroring
+// BamFileReader::getName.
+func bamReadName(rec *sam.Record) string {
+	name := rec.QName
+	switch {
+	case rec.Flag&sam.FlagRead1 != 0:
+		name += "/1"
+	case rec.Flag&sam.FlagRead2 != 0:
+		name += "/2"
+	}
+	return name
+}
+
+// unmappedBAMRecord builds the null-placeholder inRecord upstream emits for an
+// unmapped alignment (BamRecord::printUnmapped): chrom ".", start/end -1, the
+// read name (with /1 or /2), MAPQ as the score, and a fixed empty BED12 tail.
+// Its chrom is "." so it never overlaps any B record, which is exactly how an
+// unmapped read behaves: absent in default mode, count 0 under -c, reported
+// under -v, and paired with a null B under -loj/-wao.
+func unmappedBAMRecord(rec *sam.Record) *inRecord {
+	name := bamReadName(rec)
+	if name == "" {
+		name = "."
+	}
+	// Upstream prints the record's RNAME: "." when truly unaligned, or the
+	// (mate's) chromosome htslib propagated onto the read. The record is still
+	// flagged unmapped below so it never overlaps regardless of this name.
+	chrom := rec.RName
+	if chrom == "" || chrom == "*" {
+		chrom = "."
+	}
+	line := chrom + "\t-1\t-1\t" + name + "\t" + strconv.Itoa(int(rec.MapQ)) +
+		"\t.\t-1\t-1\t-1\t0,0,0\t0\t.\t."
+	return &inRecord{
+		chrom:    chrom,
+		start:    -1,
+		end:      -1,
+		strand:   ".",
+		line:     line,
+		fields:   strings.Split(line, "\t"),
+		format:   fmtBAM,
+		unmapped: true,
+	}
 }
 
 // bamToBED12 converts a single mapped SAM/BAM alignment into a BED12 inRecord,
@@ -356,7 +600,7 @@ func bamToBED12(rec *sam.Record) *inRecord {
 		rec.RName,
 		strconv.Itoa(start),
 		strconv.Itoa(end),
-		rec.QName,
+		bamReadName(rec),
 		strconv.Itoa(int(rec.MapQ)),
 		strand,
 		strconv.Itoa(start),
