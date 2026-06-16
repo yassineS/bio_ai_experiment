@@ -1,9 +1,9 @@
-// Raw, column-preserving implementation of the upstream-parity intersect
-// output modes (default intersection, -wa, -wb, -c, -v). Unlike the legacy
-// typed bed.Record path, this echoes A's (and B's, for -wb) original input
-// columns verbatim and re-encodes clipped coordinates per the source format,
-// matching `bedtools intersect` byte-for-byte. It also supports BED/VCF/GFF/BAM
-// inputs via readInRecords.
+// Raw, column-preserving implementation of every upstream-parity intersect
+// output mode (default intersection, -wa, -wb, -wo, -wao, -loj, -c, -C, -u, -v).
+// Unlike the legacy typed bed.Record path it echoes A's (and B's, where the mode
+// prints it) original input columns verbatim and re-encodes clipped coordinates
+// per the source format, matching `bedtools intersect` byte-for-byte. It also
+// supports BED/VCF/GFF/BAM/CRAM inputs and multiple B files via readAllB.
 package bedintersect
 
 import (
@@ -58,8 +58,10 @@ func (f treeFinder) overlaps(a *inRecord, opts IntersectOptions) []rawHit {
 }
 
 // newFinder picks the tree- or linear-scan B index based on opts.UseTree, and
-// stamps each B record with its in-chromosome order so the tree path can
-// restore file order.
+// stamps each B record with its in-chromosome order so the tree path can restore
+// file order. The records are kept in their readAllB order — grouped by B file,
+// then by position within file — so multi-database hits print exactly as
+// upstream does.
 func newFinder(bRecords []*inRecord, opts IntersectOptions) inFinder {
 	byChrom := make(map[string][]*inRecord)
 	for _, b := range bRecords {
@@ -139,111 +141,86 @@ func queryInNode(node *inIntervalNode, a *inRecord, out *[]*inRecord) {
 	}
 }
 
-// intersectRaw runs the default / -wa / -wb / -c / -v output modes over the
-// raw inRecord model. Returns the number of output lines written.
-func intersectRaw(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptions) (int, error) {
-	bRecords, err := readInRecords(readerB)
+// intersectRaw runs every upstream-parity output mode over the raw inRecord
+// model, across one or more B files. Returns the number of output lines written.
+func intersectRaw(readerA io.Reader, readersB []io.Reader, writer io.Writer, opts IntersectOptions) (int, error) {
+	bRecords, dbType, dbFields, err := readAllB(readersB)
 	if err != nil {
-		return 0, fmt.Errorf("error reading B intervals: %w", err)
+		return 0, err
 	}
-	// Index B by chromosome. Either path preserves upstream's B-file output
-	// order: the linear scan walks the slice in file order, and the tree path
-	// re-sorts each query's candidates back into it.
 	finder := newFinder(bRecords, opts)
 
-	aRecords, err := readInRecords(readerA)
+	aRecords, hdr, err := readInRecordsWithHeader(readerA, opts.Header)
 	if err != nil {
 		return 0, fmt.Errorf("error reading A intervals: %w", err)
 	}
+	if err := checkSorted(opts, aRecords, bRecords); err != nil {
+		return 0, err
+	}
+	emitNameWarning(opts, aRecords, bRecords)
 
 	bw := bufio.NewWriter(writer)
-	count := 0
+	if hdr != "" {
+		if _, err := bw.WriteString(hdr); err != nil {
+			return 0, fmt.Errorf("error writing header: %w", err)
+		}
+	}
+	em := &emitter{bw: bw, dbType: dbType, dbFields: dbFields, opts: opts}
 	for _, a := range aRecords {
 		hits := finder.overlaps(a, opts)
-		if err := emitRawOutput(bw, a, hits, opts, &count); err != nil {
-			return count, err
+		if !opts.SortOut {
+			orderHitsByBin(hits)
+		}
+		if err := em.emit(a, hits); err != nil {
+			return em.count, err
 		}
 	}
 	if err := bw.Flush(); err != nil {
-		return count, fmt.Errorf("error flushing output: %w", err)
+		return em.count, fmt.Errorf("error flushing output: %w", err)
 	}
-	return count, nil
+	return em.count, nil
 }
 
-// emitRawOutput writes the output line(s) for one A record and its B hits under
-// the default / -wa / -wb / -c / -v output modes, exactly as upstream `bedtools
-// intersect` prints them, and bumps *count once per emitted line. It is shared
-// by intersectRaw and intersectRawWithStats so the two stay byte-for-byte
-// identical, and writes straight to the buffer (no per-record slice).
-func emitRawOutput(bw *bufio.Writer, a *inRecord, hits []rawHit, opts IntersectOptions, count *int) error {
-	emit := func(s string) error {
-		if _, err := bw.WriteString(s); err != nil {
-			return fmt.Errorf("error writing result: %w", err)
-		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return fmt.Errorf("error writing result: %w", err)
-		}
-		*count++
-		return nil
-	}
-	switch {
-	case opts.NoOverlap: // -v: emit A (verbatim) only when there are no hits
-		if len(hits) == 0 {
-			return emit(a.line)
-		}
-		return nil
-	case opts.Count: // -c: A (verbatim) + the overlap count as a trailing column
-		return emit(a.line + "\t" + strconv.Itoa(len(hits)))
-	default:
-		for _, h := range hits {
-			var line string
-			switch {
-			case opts.WriteA && opts.WriteB:
-				line = a.line + "\t" + h.b.line
-			case opts.WriteB:
-				// -wb alone: A clipped to the overlap, then full original B.
-				line = a.clippedLine(h.start, h.end) + "\t" + h.b.line
-			case opts.WriteA:
-				line = a.line
-			default:
-				// Default: A clipped to the overlap span, columns verbatim.
-				line = a.clippedLine(h.start, h.end)
-			}
-			if err := emit(line); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-}
-
-// intersectRawWithStats is intersectRaw plus per-A hit accounting for the -S
-// stats summary. It supports the same output modes (default / -wa / -wb / -c /
-// -v) over the raw inRecord model.
-func intersectRawWithStats(readerA, readerB io.Reader, writer io.Writer, opts IntersectOptions) (*Stats, error) {
-	bRecords, err := readInRecords(readerB)
+// intersectRawWithStats is intersectRaw plus per-A hit accounting for the
+// bedintersect-only --stats summary. It supports the same output modes over the
+// raw inRecord model and one or more B files.
+func intersectRawWithStats(readerA io.Reader, readersB []io.Reader, writer io.Writer, opts IntersectOptions) (*Stats, error) {
+	bRecords, dbType, dbFields, err := readAllB(readersB)
 	if err != nil {
-		return nil, fmt.Errorf("error reading B intervals: %w", err)
+		return nil, err
 	}
 	finder := newFinder(bRecords, opts)
-	aRecords, err := readInRecords(readerA)
+	aRecords, hdr, err := readInRecordsWithHeader(readerA, opts.Header)
 	if err != nil {
 		return nil, fmt.Errorf("error reading A intervals: %w", err)
 	}
 
+	if err := checkSorted(opts, aRecords, bRecords); err != nil {
+		return nil, err
+	}
+	emitNameWarning(opts, aRecords, bRecords)
+
 	stats := &Stats{IntervalsB: len(bRecords)}
 	bw := bufio.NewWriter(writer)
-	discard := 0
+	if hdr != "" {
+		if _, err := bw.WriteString(hdr); err != nil {
+			return stats, fmt.Errorf("error writing header: %w", err)
+		}
+	}
+	em := &emitter{bw: bw, dbType: dbType, dbFields: dbFields, opts: opts}
 	for _, a := range aRecords {
 		stats.IntervalsA++
 		hits := finder.overlaps(a, opts)
+		if !opts.SortOut {
+			orderHitsByBin(hits)
+		}
 		if len(hits) > 0 {
 			stats.IntervalsAHit++
 			stats.Overlaps += len(hits)
 		} else {
 			stats.IntervalsAMiss++
 		}
-		if err := emitRawOutput(bw, a, hits, opts, &discard); err != nil {
+		if err := em.emit(a, hits); err != nil {
 			return stats, err
 		}
 	}
@@ -253,32 +230,193 @@ func intersectRawWithStats(readerA, readerB io.Reader, writer io.Writer, opts In
 	return stats, nil
 }
 
-// rawHit records a B record overlapping A, with the 0-based overlap span used
-// for the default-mode clip.
-type rawHit struct {
-	b     *inRecord
-	start int
-	end   int
+// emitter renders the output line(s) for each A record and its B hits, holding
+// the buffered writer, the B-file classification (for null-B placeholders) and
+// the resolved options. It is shared by intersectRaw and the stats path so the
+// two stay byte-for-byte identical.
+type emitter struct {
+	bw       *bufio.Writer
+	dbType   dbRecordType
+	dbFields int
+	opts     IntersectOptions
+	count    int
 }
 
-// rawOverlaps returns the B records overlapping A (in B position order),
-// applying the -s strand filter and the -f/-F/-r fraction tests with
-// split-aware block math when opts.Split is set. The overlap span carried back
-// is the whole-record intersection (used to clip A in default mode); under
-// -split the fraction tests use the non-redundant block overlap but the clip
-// span is still the whole-span intersection, matching upstream.
+func (e *emitter) line(s string) error {
+	if _, err := e.bw.WriteString(s); err != nil {
+		return fmt.Errorf("error writing result: %w", err)
+	}
+	if err := e.bw.WriteByte('\n'); err != nil {
+		return fmt.Errorf("error writing result: %w", err)
+	}
+	e.count++
+	return nil
+}
+
+// emit writes the output for one A record under the active output mode.
+func (e *emitter) emit(a *inRecord, hits []rawHit) error {
+	opts := e.opts
+	switch {
+	case opts.CountEach:
+		return e.emitCountEach(a, hits)
+	case opts.Count:
+		return e.line(a.line + "\t" + strconv.Itoa(len(hits)))
+	case opts.NoOverlap:
+		if len(hits) == 0 {
+			return e.line(a.line)
+		}
+		return nil
+	case opts.Unique:
+		if len(hits) > 0 {
+			return e.line(a.line)
+		}
+		return nil
+	case opts.usesJoinMode():
+		return e.emitJoin(a, hits)
+	default:
+		// Default / -wa / -wb (without -wa).
+		for _, h := range hits {
+			var s string
+			switch {
+			case opts.WriteB:
+				// -wb alone: A clipped to the overlap, then the DB-id column (if
+				// multiple B files) and the full original B.
+				s = a.clippedLine(h.start, h.end) + "\t" + e.bWithLabel(h.b)
+			case opts.WriteA:
+				s = a.line
+			default:
+				s = a.clippedLine(h.start, h.end)
+			}
+			if err := e.line(s); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// emitCountEach implements -C: one line per B file reporting that file's overlap
+// count with A (0 included), in file order. With a single B file the DB-id
+// column is omitted, matching upstream.
+func (e *emitter) emitCountEach(a *inRecord, hits []rawHit) error {
+	opts := e.opts
+	nFiles := len(opts.FilePaths)
+	if nFiles < 1 {
+		nFiles = 1
+	}
+	counts := make([]int, nFiles)
+	for _, h := range hits {
+		if h.b.dbID < nFiles {
+			counts[h.b.dbID]++
+		}
+	}
+	if !opts.multiDB() {
+		return e.line(a.line + "\t" + strconv.Itoa(counts[0]))
+	}
+	for i := 0; i < nFiles; i++ {
+		if err := e.line(a.line + "\t" + opts.dbLabel(i) + "\t" + strconv.Itoa(counts[i])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// emitJoin implements the -loj / -wo / -wao / (-wa -wb) output modes, echoing A
+// and B columns verbatim. Hits are grouped by B file (or sorted by position
+// under -sortout) and each is prefixed with the DB-id column when multiple B
+// files are present.
+func (e *emitter) emitJoin(a *inRecord, hits []rawHit) error {
+	opts := e.opts
+	if len(hits) == 0 {
+		nullB := e.bWithNullLabel()
+		switch {
+		case opts.WriteAllOverlap:
+			return e.line(a.line + "\t" + nullB + "\t0")
+		case opts.LeftJoin:
+			return e.line(a.line + "\t" + nullB)
+		}
+		return nil
+	}
+	if opts.SortOut {
+		hits = append([]rawHit(nil), hits...)
+		sort.SliceStable(hits, func(i, j int) bool {
+			if hits[i].b.chrom != hits[j].b.chrom {
+				return hits[i].b.chrom < hits[j].b.chrom
+			}
+			if hits[i].b.start != hits[j].b.start {
+				return hits[i].b.start < hits[j].b.start
+			}
+			return hits[i].b.end < hits[j].b.end
+		})
+	}
+	for _, h := range hits {
+		s := a.line + "\t" + e.bWithLabel(h.b)
+		if opts.WriteOverlap || opts.WriteAllOverlap {
+			s += "\t" + strconv.Itoa(h.overlapBases)
+		}
+		if err := e.line(s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// bWithLabel renders a B record's columns, prefixing the DB-id column when more
+// than one B file is present (matching upstream's fileId/name prefix).
+func (e *emitter) bWithLabel(b *inRecord) string {
+	if e.opts.multiDB() {
+		return e.opts.dbLabel(b.dbID) + "\t" + b.line
+	}
+	return b.line
+}
+
+// bWithNullLabel renders the null-B placeholder, prefixed with the DB-id column
+// when multiple B files are present. Upstream prints the null record once for an
+// A with no hits in any database, using the FIRST B file's classification for
+// the placeholder shape and "." for the DB-id column.
+func (e *emitter) bWithNullLabel() string {
+	null := nullDBString(e.dbType, e.dbFields)
+	if e.opts.multiDB() {
+		return ".\t" + null
+	}
+	return null
+}
+
+// rawHit records a B record overlapping A, with the 0-based overlap span (used
+// for the default-mode clip) and the overlapping base count (used by -wo/-wao).
+type rawHit struct {
+	b            *inRecord
+	start        int
+	end          int
+	overlapBases int
+}
+
+// rawOverlaps returns the B records overlapping A (in B order), applying the
+// strand filter and the -f/-F/-r/-e fraction tests with split-aware block math
+// when opts.Split is set. The overlap span carried back is the whole-record
+// intersection (used to clip A in default mode); the overlapping base count is
+// the split-aware non-redundant count under -split, else the whole-span overlap,
+// with the zero-length correction undone so -wo/-wao report upstream's value.
 func rawOverlaps(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []rawHit {
+	if a.unmapped {
+		return nil // an unmapped alignment never overlaps anything
+	}
+	if opts.Split {
+		return rawOverlapsSplit(a, bRecords, opts)
+	}
 	var hits []rawHit
 	aLen := a.end - a.start
+	aStart, aEnd, aZero := effectiveBounds(a.start, a.end)
 	for _, b := range bRecords {
-		if a.chrom != b.chrom {
+		if b.unmapped || a.chrom != b.chrom {
 			continue
 		}
-		if opts.StrandSpec && !sameStrandMatch(a.strand, b.strand) {
+		if !strandOK(opts, a.strand, b.strand) {
 			continue
 		}
-		overlapStart := max(a.start, b.start)
-		overlapEnd := min(a.end, b.end)
+		bStart, bEnd, bZero := effectiveBounds(b.start, b.end)
+		overlapStart := max(aStart, bStart)
+		overlapEnd := min(aEnd, bEnd)
 		overlapLen := overlapEnd - overlapStart
 		if overlapLen <= 0 {
 			continue
@@ -286,96 +424,115 @@ func rawOverlaps(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []raw
 		if overlapLen < opts.MinOverlap {
 			continue
 		}
-
-		fracOverlap := overlapLen
-		lenA := aLen
-		lenB := b.end - b.start
-		if opts.Split {
-			blockOverlap, aSum, bSum := splitBlockOverlapIn(a, b)
-			if blockOverlap <= 0 {
-				continue
+		// The clip span printed in default mode uses the ORIGINAL (unexpanded)
+		// coordinates: a zero-length A inside B clips to A's own [p,p] span, not
+		// the [p-1,p+1] detection window. Mirrors upstream RecordOutputMgr.
+		clipStart := max(a.start, b.start)
+		clipEnd := min(a.end, b.end)
+		// Undo the 1bp zero-length expansion when reporting overlap bases
+		// (upstream RecordOutputMgr::reportOverlapDetail does maxStart++/minEnd--).
+		overlapBases := overlapLen
+		if aZero || bZero {
+			overlapBases = (overlapEnd - 1) - (overlapStart + 1)
+			if overlapBases < 0 {
+				overlapBases = 0
 			}
-			fracOverlap = blockOverlap
-			lenA = aSum
-			lenB = bSum
 		}
-		if opts.FractionA > 0 && fraction(fracOverlap, lenA) < opts.FractionA {
+		if !fractionOK(overlapBases, aLen, b.end-b.start, opts) {
 			continue
 		}
-		if opts.FractionB > 0 && fraction(fracOverlap, lenB) < opts.FractionB {
-			continue
-		}
-		hits = append(hits, rawHit{b: b, start: overlapStart, end: overlapEnd})
+		hits = append(hits, rawHit{
+			b:            b,
+			start:        clipStart,
+			end:          clipEnd,
+			overlapBases: overlapBases,
+		})
 	}
 	return hits
 }
 
-// splitBlockOverlapIn mirrors splitBlockOverlap (the typed-record version) but
-// operates on inRecords, expanding BED12 / BAM block columns into absolute
-// intervals and returning the non-redundant block overlap and the summed block
-// lengths used by the fraction tests.
-func splitBlockOverlapIn(a, b *inRecord) (overlap, aSum, bSum int) {
-	aBlocks := inBlocks(a)
-	bBlocks := inBlocks(b)
-	var ovs []block
-	for _, hb := range bBlocks {
-		for _, kb := range aBlocks {
-			s := max(kb.start, hb.start)
-			e := min(kb.end, hb.end)
-			if e > s {
-				ovs = append(ovs, block{s, e})
+// rawOverlapsSplit is rawOverlaps with -split block math, mirroring
+// BlockMgr::findBlockedOverlaps. A B record is a candidate if any of its blocks
+// overlaps any A block; the per-hit overlap count is the total block overlap for
+// that B. The -f/-F/-r fraction tests are applied ONCE across ALL hits combined
+// (non-redundant overlap over A's block-sum and the summed block lengths of the
+// hit B records), so either every hit for this A passes or all are dropped.
+func rawOverlapsSplit(a *inRecord, bRecords []*inRecord, opts IntersectOptions) []rawHit {
+	aBlocks := blocksOf(a, true)
+	aBlockSum := blockSum(aBlocks)
+	var hits []rawHit
+	var allOverlaps []block
+	hitBlockSum := 0
+	for _, b := range bRecords {
+		if b.unmapped || a.chrom != b.chrom {
+			continue
+		}
+		if !strandOK(opts, a.strand, b.strand) {
+			continue
+		}
+		bBlocks := blocksOf(b, true)
+		overlapBases := 0
+		var clipStart, clipEnd int
+		first := true
+		for _, hb := range bBlocks {
+			for _, kb := range aBlocks {
+				s := max(kb.start, hb.start)
+				e := min(kb.end, hb.end)
+				if e > s {
+					overlapBases += e - s
+					allOverlaps = append(allOverlaps, block{s, e})
+					if first || s < clipStart {
+						clipStart = s
+					}
+					if first || e > clipEnd {
+						clipEnd = e
+					}
+					first = false
+				}
 			}
 		}
+		if overlapBases <= 0 {
+			continue
+		}
+		hitBlockSum += blockSum(bBlocks)
+		hits = append(hits, rawHit{
+			b:            b,
+			start:        clipStart,
+			end:          clipEnd,
+			overlapBases: overlapBases,
+		})
 	}
-	return nonRedundantOverlap(ovs), blockSum(aBlocks), blockSum(bBlocks)
+	// Apply the fraction tests once across the combined overlap, exactly as
+	// BlockMgr::findBlockedOverlaps does with its totalUniqueOverlap.
+	if len(hits) > 0 && (opts.FractionA > 0 || opts.FractionB > 0 || opts.Reciprocal) {
+		uniq := nonRedundantOverlap(allOverlaps)
+		if !fractionOK(uniq, aBlockSum, hitBlockSum, opts) {
+			return nil
+		}
+	}
+	return hits
 }
 
-// inBlocks expands an inRecord into absolute block intervals. BED12 and BAM
-// records carry blockCount / blockSizes / blockStarts columns (fields 9..11);
-// any other record (or a malformed BED12) is treated as a single whole-span
-// block.
-func inBlocks(r *inRecord) []block {
-	switch r.format {
-	case fmtBED, fmtBAM:
-		if blks, ok := bed12BlocksFromFields(r.fields, r.start); ok {
-			return blks
-		}
+// fractionOK applies the -f/-F/-r/-e fraction tests for one overlap, mirroring
+// Record::sameChromIntersects. By default both the -f (fraction of A) and -F
+// (fraction of B) thresholds must hold; -e requires only one of them; -r forces
+// the B threshold up to the -f value (reciprocal). With no fraction requested at
+// all, any positive overlap passes.
+func fractionOK(overlap, lenA, lenB int, opts IntersectOptions) bool {
+	fA := opts.FractionA
+	fB := opts.FractionB
+	if opts.Reciprocal && fB <= 0 {
+		// -r without an explicit -F mirrors -F equal to -f.
+		fB = fA
 	}
-	// Single whole-span block, with the zero-length [p,p] -> [p-1,p+1] expansion
-	// so a zero-length record can still intersect under -split (matching
-	// blocksOf in the join path and upstream's adjustZeroLength).
-	s, e, _ := effectiveBounds(r.start, r.end)
-	return []block{{s, e}}
-}
-
-// bed12BlocksFromFields expands a BED12 record's blocks into absolute
-// [start,end) ranges from its raw fields, returning ok=false when the record is
-// not parseable as BED12 (fewer than 12 columns or malformed block columns).
-func bed12BlocksFromFields(fields []string, recStart int) ([]block, bool) {
-	if len(fields) < 12 {
-		return nil, false
+	if fA <= 0 && fB <= 0 {
+		return true
 	}
-	blockCount, err := strconv.Atoi(fields[9])
-	if err != nil || blockCount <= 0 {
-		return nil, false
+	aPass := fA <= 0 || fraction(overlap, lenA) >= fA
+	bPass := fB <= 0 || fraction(overlap, lenB) >= fB
+	if opts.EitherFraction && fA > 0 && fB > 0 {
+		// -e: either threshold suffices (only meaningful when both are set).
+		return aPass || bPass
 	}
-	sizes := splitCSV(fields[10])
-	starts := splitCSV(fields[11])
-	if len(sizes) != blockCount || len(starts) != blockCount {
-		return nil, false
-	}
-	blks := make([]block, 0, blockCount)
-	for i := 0; i < blockCount; i++ {
-		off, err := strconv.Atoi(starts[i])
-		if err != nil {
-			return nil, false
-		}
-		size, err := strconv.Atoi(sizes[i])
-		if err != nil {
-			return nil, false
-		}
-		s := recStart + off
-		blks = append(blks, block{s, s + size})
-	}
-	return blks, true
+	return aPass && bPass
 }
