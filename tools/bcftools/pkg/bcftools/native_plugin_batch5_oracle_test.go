@@ -311,10 +311,10 @@ func TestNativePluginBatch5Unsupported(t *testing.T) {
 		// (TestNativePluginIndelStatsPED / TestNativePluginStatsOutputFile). Only
 		// upstream's buggy --nvaf [0,1] validation rejects an out-of-range value.
 		{"indel-stats", []string{"--nvaf", "10"}}, // upstream's [0,1] validation rejects it too
-		// contrast: rare-allele enrichment (-f) is now supported (parity-checked
-		// in TestNativePluginContrastEnrichment). The missing -0/-1 error and the
-		// unsupported region-overlap matching modes remain.
-		{"contrast", []string{"-0", "S1", "-1", "S2", "--regions-overlap", "2"}},
+		// contrast: rare-allele enrichment (-f) and --regions-overlap/--targets-overlap
+		// are now supported (parity-checked in TestNativePluginContrastEnrichment and
+		// TestNativePluginMendelian2OverlapMode/the overlap-mode suite). Only the
+		// missing -0/-1 error remains.
 		{"contrast", nil}, // missing -0/-1
 		// ad-bias: clean-vcf and convert-format modes are now supported
 		// (parity-checked in TestNativePluginAdBiasCleanVCF). The remaining hard
