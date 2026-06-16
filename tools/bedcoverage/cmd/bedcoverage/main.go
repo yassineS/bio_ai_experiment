@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -57,6 +58,25 @@ func main() {
 	cliflag.StringVar(fs, &inputB, "b", "input-b", "", "B intervals")
 	cliflag.StringVar(fs, &output, "", "output", "", "Output file (default stdout)")
 
+	// Legacy upstream aliases for supplying BAM input. `bedtools coverage`
+	// historically used -abam/-ibam for the query (A) and -bbam for the
+	// database (B); the modern -a/-b already auto-detect BAM, so these alias
+	// straight onto inputA/inputB.
+	var abam, ibam, bbam string
+	fs.StringVar(&abam, "abam", "", "BAM query alias for -a")
+	fs.StringVar(&ibam, "ibam", "", "BAM query alias for -a")
+	fs.StringVar(&bbam, "bbam", "", "BAM database alias for -b")
+
+	// -sorted selects upstream's chromsweep (linear-merge) algorithm. Our
+	// interval-tree path produces identical output, so we accept the flag for
+	// drop-in compatibility and otherwise treat it as a no-op.
+	var sorted bool
+	cliflag.BoolVar(fs, &sorted, "", "sorted", false, "Inputs are position-sorted (accepted; no-op)")
+	// -g supplies a genome file in upstream's -sorted mode (chrom ordering).
+	// We don't need it, but accept it so sorted-mode command lines parse.
+	var genome string
+	cliflag.StringVar(fs, &genome, "g", "genome", "", "Genome file for -sorted (accepted; unused)")
+
 	var counts, depth, hist bool
 	cliflag.BoolVar(fs, &counts, "", "counts", false, "Just append the count")
 	cliflag.BoolVar(fs, &depth, "d", "depth", false, "Per-base depth")
@@ -89,6 +109,19 @@ func main() {
 
 	flag.Parse()
 
+	// Fold the legacy BAM aliases onto -a / -b. A given -abam/-ibam/-bbam
+	// supplies the corresponding input when the modern flag was not used.
+	if inputA == "" {
+		if abam != "" {
+			inputA = abam
+		} else if ibam != "" {
+			inputA = ibam
+		}
+	}
+	if inputB == "" && bbam != "" {
+		inputB = bbam
+	}
+
 	if help {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(0)
@@ -109,7 +142,10 @@ func main() {
 	// combinations explicitly.
 	mode, err := resolveMode(counts, depth, hist, doMean, doMedian, doMin, doMax, doSum)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		// Match upstream bedtools' exact stderr text for this error so the
+		// message is drop-in compatible (the upstream coverage tool prints a
+		// single fixed line regardless of which pair was combined).
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
@@ -152,6 +188,12 @@ func main() {
 	}
 }
 
+// errMutuallyExclusiveModes is the fixed error upstream `bedtools coverage`
+// prints (verbatim, including the surrounding asterisks) when more than one of
+// -counts / -d / -mean / -hist is requested. It is reproduced byte-for-byte so
+// the CLI is drop-in compatible with scripts that match upstream's stderr.
+var errMutuallyExclusiveModes = errors.New("***** ERROR: -counts, -d, -mean, and -hist are all mutually exclusive options. *****")
+
 // resolveMode picks at most one output mode from the mutually exclusive set.
 func resolveMode(counts, depth, hist, mean, median, mn, mx, sum bool) (bedcoverage.Mode, error) {
 	flags := []struct {
@@ -177,7 +219,7 @@ func resolveMode(counts, depth, hist, mean, median, mn, mx, sum bool) (bedcovera
 		}
 	}
 	if len(chosen) > 1 {
-		return 0, fmt.Errorf("mutually exclusive output modes given: %v", chosen)
+		return 0, errMutuallyExclusiveModes
 	}
 	return mode, nil
 }

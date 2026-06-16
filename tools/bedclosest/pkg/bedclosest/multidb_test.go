@@ -52,8 +52,8 @@ func TestClosestMultiSelection(t *testing.T) {
 				"chr1\t80\t100\tq1\t1\t+\tc\tchr1\t70\t90\td3.1\t3\t-\n",
 		},
 		{
-			name: "each with distance column (signed -D ref house style)",
-			opts: Options{PrintDistance: true},
+			name: "each with signed -D ref distance column",
+			opts: Options{ReportDistance: true, DistanceMode: DistanceSignedRef},
 			want: "chr1\t80\t100\tq1\t1\t+\t1\tchr1\t20\t60\td1.2\t2\t-\t-21\n" +
 				"chr1\t80\t100\tq1\t1\t+\t2\tchr1\t120\t170\tdb2.2\t2\t-\t21\n" +
 				"chr1\t80\t100\tq1\t1\t+\t3\tchr1\t70\t90\td3.1\t3\t-\t0\n",
@@ -64,8 +64,8 @@ func TestClosestMultiSelection(t *testing.T) {
 			want: "chr1\t80\t100\tq1\t1\t+\t3\tchr1\t70\t90\td3.1\t3\t-\n",
 		},
 		{
-			name: "all with distance column",
-			opts: Options{MultiDBMode: MultiDBAll, PrintDistance: true},
+			name: "all with signed -D ref distance column",
+			opts: Options{MultiDBMode: MultiDBAll, ReportDistance: true, DistanceMode: DistanceSignedRef},
 			want: "chr1\t80\t100\tq1\t1\t+\t3\tchr1\t70\t90\td3.1\t3\t-\t0\n",
 		},
 	}
@@ -132,21 +132,21 @@ func TestClosestMultiAllTie(t *testing.T) {
 	}
 }
 
-// TestClosestMultiNoHit verifies the MissingRow sentinel is emitted (per
-// database in -mdb each mode, once overall in -mdb all mode) when a query's
-// chromosome is absent from a database.
+// TestClosestMultiNoHit verifies the no-hit handling: a database that lacks the
+// query's chromosome contributes nothing (it does NOT emit its own null row),
+// and only when NO database yields any hit is a single null row emitted with a
+// "." database column, matching upstream's RecordOutputMgr behaviour.
 func TestClosestMultiNoHit(t *testing.T) {
 	a := "chr2\t10\t20\n"
 	db1 := "chr1\t0\t10\n"
 	db2 := "chr2\t100\t110\n"
 
-	// each: DB1 has no chr2 -> MissingRow; DB2 has a hit.
+	// each: DB1 has no chr2 (contributes nothing); DB2 has a hit.
 	gotEach, _, err := runMulti(t, a, []string{db1, db2}, Options{})
 	if err != nil {
 		t.Fatalf("ClosestMulti each: %v", err)
 	}
-	wantEach := "chr2\t10\t20\t1\t.\t-1\t-1\n" +
-		"chr2\t10\t20\t2\tchr2\t100\t110\n"
+	wantEach := "chr2\t10\t20\t2\tchr2\t100\t110\n"
 	if gotEach != wantEach {
 		t.Fatalf("each mismatch.\nwant:\n%s\ngot:\n%s", wantEach, gotEach)
 	}
@@ -161,12 +161,22 @@ func TestClosestMultiNoHit(t *testing.T) {
 		t.Fatalf("all mismatch.\nwant:\n%s\ngot:\n%s", wantAll, gotAll)
 	}
 
-	// all with no hit at all -> single MissingRow row labelled with index 1.
+	// each with no hit at all -> single null row, labelled ".".
+	gotNoneEach, _, err := runMulti(t, "chr9\t1\t2\n", []string{db1, db2}, Options{})
+	if err != nil {
+		t.Fatalf("ClosestMulti each none: %v", err)
+	}
+	wantNoneEach := "chr9\t1\t2\t.\t.\t-1\t-1\n"
+	if gotNoneEach != wantNoneEach {
+		t.Fatalf("each none mismatch.\nwant:\n%s\ngot:\n%s", wantNoneEach, gotNoneEach)
+	}
+
+	// all with no hit at all -> single null row, labelled ".".
 	gotNone, _, err := runMulti(t, "chr9\t1\t2\n", []string{db1, db2}, Options{MultiDBMode: MultiDBAll})
 	if err != nil {
 		t.Fatalf("ClosestMulti all none: %v", err)
 	}
-	wantNone := "chr9\t1\t2\t1\t.\t-1\t-1\n"
+	wantNone := "chr9\t1\t2\t.\t.\t-1\t-1\n"
 	if gotNone != wantNone {
 		t.Fatalf("all none mismatch.\nwant:\n%s\ngot:\n%s", wantNone, gotNone)
 	}

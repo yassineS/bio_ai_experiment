@@ -56,6 +56,12 @@ Examples:
 
   # Multiple ops on one column:
   bedmap -a A.bed -b B.bed -c 5 -o min,max
+
+Additional options:
+  -g, --genome FILE     Genome file giving chromosome order (sort-order hint)
+      --header          Echo A's leading header lines to the output
+      --split           Treat BED12/BAM blocks as separate intervals
+      --prec INT        Significant digits for numeric output (default 10)
 `
 
 const version = "bedmap 0.1.0"
@@ -84,6 +90,16 @@ func main() {
 
 	var reciprocal bool
 	cliflag.BoolVar(fs, &reciprocal, "r", "reciprocal", false, "Require both -f and -F")
+
+	var genome string
+	cliflag.StringVar(fs, &genome, "g", "genome", "", "Genome file (sort-order hint)")
+
+	var header, split bool
+	cliflag.BoolVar(fs, &header, "", "header", false, "Echo A's header lines")
+	cliflag.BoolVar(fs, &split, "", "split", false, "Treat BED12/BAM blocks as intervals")
+
+	var precision int
+	cliflag.IntVar(fs, &precision, "", "prec", 10, "Significant digits for numeric output")
 
 	var help, showVersion bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help")
@@ -136,15 +152,37 @@ func main() {
 		Ops:            opList,
 		Null:           null,
 		Delim:          delim,
+		Precision:      precision,
 		SameStrand:     sameStrand,
 		OppositeStrand: oppStrand,
 		FractionA:      fracA,
 		FractionB:      fracB,
 		Reciprocal:     reciprocal,
+		Split:          split,
+		Header:         header,
+		BFileName:      bFileLabel(inputB),
+		WarnWriter:     os.Stderr,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		// Upstream emits its column-range and ops/columns errors as a raw
+		// "\n*****\n***** ERROR: ..." block with no "Error:" prefix; pass
+		// those through byte-for-byte. Wrap everything else.
+		msg := err.Error()
+		if i := strings.Index(msg, "\n*****"); i >= 0 {
+			fmt.Fprintln(os.Stderr, msg[i:])
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(1)
 	}
+}
+
+// bFileLabel returns the label used for B in upstream-style error messages.
+// "-" (stdin) is reported as "B" since there is no filename to show.
+func bFileLabel(name string) string {
+	if name == "" || name == "-" {
+		return "B"
+	}
+	return name
 }
 
 // parseCols parses a comma-separated 1-based column-number list.

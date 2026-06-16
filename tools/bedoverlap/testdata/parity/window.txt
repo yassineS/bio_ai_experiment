@@ -1,0 +1,2 @@
+chr1	10	20	A	chr1	15	25	B
+chr1	10	20	C	chr1	25	35	D

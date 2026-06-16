@@ -580,8 +580,15 @@ func joinTrailingComma(vs []int) string {
 
 // formatFraction prints the fraction column using 7 fixed decimals, matching
 // upstream `bedtools coverage` (e.g. "1.0000000", "0.7600000").
+//
+// Upstream computes the covered-fraction as a 32-bit float (the
+// numerator/denominator division happens in float arithmetic in
+// coverageFile.cpp / RecordOutputMgr) and prints it with 7 decimals, so the
+// last digit carries float32 rounding. For example 7/19 prints as
+// "0.3684210", not the float64-rounded "0.3684211". Narrow to float32 before
+// formatting to reproduce upstream byte-for-byte.
 func formatFraction(v float64) string {
-	return strconv.FormatFloat(v, 'f', 7, 64)
+	return strconv.FormatFloat(float64(float32(v)), 'f', 7, 64)
 }
 
 // formatFloatLoose prints a number with up to 7 significant digits, trimming

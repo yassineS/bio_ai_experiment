@@ -9,9 +9,12 @@ package bedcoverage
 //
 // BAM/SAM input is supported (auto-detected) on both -a and -b; the BAM
 // database (-b) cases t10..t13 run against a vendored copy of the upstream
-// three_blocks_match.bam fixture. Tests for things we still don't reproduce
-// (a blocked BAM/BED12 query under -split, the `-sorted` fast path, the
-// mean-as-float32 precision) carry a t.Skip with a one-line rationale.
+// three_blocks_match.bam fixture. The library-level snapshot tests here cover
+// the output shapes; the end-to-end CLI cases that exercise the flag surface
+// (legacy -abam input, the -sorted no-op, the float32 covered-fraction column,
+// and the exact mutually-exclusive-modes stderr text) live in
+// upstream_parity_test.go, which diffs this port's binary against a freshly
+// built upstream `bedtools` byte-for-byte.
 
 import (
 	"bytes"

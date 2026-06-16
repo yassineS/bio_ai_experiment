@@ -22,15 +22,13 @@ Usage:
 
 Description:
   For each interval in A (sorted), find the closest interval in B (also
-  sorted) on the same chromosome and report A's columns + B's columns +
-  the signed distance. Distance is 0 when A and B overlap. For tied
-  distances the default is to emit one row per tied B (-t all).
+  sorted) on the same chromosome and report A's columns + B's columns.
+  With -d the unsigned distance is appended; with -D the signed distance
+  is appended. Distance is 0 when A and B overlap. For tied distances the
+  default is to emit one row per tied B (-t all).
 
   Both inputs MUST be sorted on (chrom, start). bedclosest errors out
-  clearly when they are not.
-
-  Note: unlike bedtools closest, the distance column is printed BY DEFAULT.
-  Use -d=false to suppress it.
+  clearly when they are not. Output matches bedtools closest byte-for-byte.
 
 Options:
   -a, --a FILE             Input BED file A (sorted; use '-' for stdin)
@@ -47,13 +45,14 @@ Options:
                            'all' reports the single overall closest across all
                            databases.
   -o, --output FILE        Output BED file ('-' for stdout, default: stdout)
-  -d, --distance           Print signed distance column (default: true)
-  -D MODE                  Strandedness of the distance sign: ref (default),
-                           a (relative to A's strand), or b (relative to B's).
+  -d                       Append the (unsigned) distance to the closest B.
+  -D MODE                  Append the signed distance, with the sign convention:
+                           ref (downstream of A positive), a (relative to A's
+                           strand), or b (relative to B's strand).
+  -k N                     Report the N closest hits per A interval (default 1).
   -N                       Require the closest B to have a different name
                            (BED column 4) than A.
-      --require-overlap    Require strict overlap; non-overlapping B intervals
-                           are treated as infinitely far away.
+  -io                      Ignore B features that overlap A.
   -iu                      Ignore B features upstream of A (requires -D).
   -id                      Ignore B features downstream of A (requires -D).
   -fu                      Force the closest upstream B feature (requires -D).
@@ -65,6 +64,7 @@ Options:
                              all   - emit one row per tied B (default)
                              first - emit only the first (in B's input order)
                              last  - emit only the last
+  -header                  Print A's header lines before the results.
   -h, --help               Show this help message and exit
   -v, --version            Show version information and exit
 
@@ -72,11 +72,11 @@ Examples:
   # Closest peak for each gene (both sorted)
   bedclosest -a genes.sorted.bed -b peaks.sorted.bed > out.bed
 
-  # Suppress the distance column
-  bedclosest -a a.bed -b b.bed --distance=false > out.bed
+  # Append the distance column
+  bedclosest -a a.bed -b b.bed -d > out.bed
 
-  # Only report when A overlaps a B
-  bedclosest -a a.bed -b b.bed -N > out.bed
+  # Report the 5 closest features
+  bedclosest -a a.bed -b b.bed -k 5 > out.bed
 
   # Single hit per A (first in B input order on ties)
   bedclosest -a a.bed -b b.bed -t first > out.bed
@@ -84,7 +84,7 @@ Examples:
 Format:
   Input: BED format (tab-delimited, minimum 3 columns), sorted on
          (chrom, start).
-  Output: A's columns, then B's columns, then signed distance (if -d).
+  Output: A's columns, then B's columns, then distance (if -d or -D).
 `
 
 func main() {
@@ -110,23 +110,22 @@ func main() {
 	var mdbMode string
 	fs.StringVar(&mdbMode, "mdb", "each", "Multi-database mode: each|all")
 
-	// Distance: default true. Use BoolVar so users can write --distance=false.
-	var printDist bool
-	fs.BoolVar(&printDist, "d", true, "")
-	fs.BoolVar(&printDist, "distance", true, "Print signed distance column (default true)")
+	// -d appends the unsigned distance; -D appends the signed distance with a
+	// chosen sign convention. They are independent of each other.
+	var printAbsDist bool
+	fs.BoolVar(&printAbsDist, "d", false, "Append the unsigned distance to the closest B")
 
 	var distMode string
-	fs.StringVar(&distMode, "D", "ref", "Distance sign mode: ref|a|b")
+	fs.StringVar(&distMode, "D", "", "Append the signed distance: ref|a|b")
 
-	// -N is the upstream "force different names" filter; the bedclosest
-	// strict-overlap extension keeps the long-only --require-overlap form.
+	var kClosest int
+	fs.IntVar(&kClosest, "k", 1, "Report the N closest hits per A interval")
+
 	var differentNames bool
 	fs.BoolVar(&differentNames, "N", false, "Require the closest B to have a different name (column 4) than A")
 
-	var requireOverlap bool
-	cliflag.BoolVar(fs, &requireOverlap, "", "require-overlap", false, "Require strict overlap (non-overlapping B treated as infinitely far)")
-
-	var ignoreUp, ignoreDown, forceUp, forceDown bool
+	var ignoreOverlaps, ignoreUp, ignoreDown, forceUp, forceDown bool
+	fs.BoolVar(&ignoreOverlaps, "io", false, "Ignore features in B that overlap A")
 	fs.BoolVar(&ignoreUp, "iu", false, "Ignore features in B that are upstream of A (requires -D)")
 	fs.BoolVar(&ignoreDown, "id", false, "Ignore features in B that are downstream of A (requires -D)")
 	fs.BoolVar(&forceUp, "fu", false, "Force the closest upstream feature in B (requires -D)")
@@ -139,6 +138,9 @@ func main() {
 	var sameStrand, oppositeStrand bool
 	fs.BoolVar(&sameStrand, "s", false, "Require the closest B to be on the same strand as A")
 	fs.BoolVar(&oppositeStrand, "S", false, "Require the closest B to be on the opposite strand to A")
+
+	var printHeader bool
+	fs.BoolVar(&printHeader, "header", false, "Print A's header lines before the results")
 
 	var help, showVersion bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help message")
@@ -175,11 +177,33 @@ func main() {
 		os.Exit(2)
 	}
 
-	dm, err := parseDistanceMode(distMode)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	// -d and -D are mutually exclusive (matching upstream). The distance mode
+	// is DistanceRef (unsigned) for -d, or the parsed signed mode for -D.
+	dGiven := false
+	dDGiven := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "d":
+			dGiven = true
+		case "D":
+			dDGiven = true
+		}
+	})
+	if dGiven && dDGiven {
+		fmt.Fprintln(os.Stderr, "Error: Request either -d OR -D, not both.")
 		os.Exit(2)
 	}
+	reportDistance := dGiven || dDGiven
+	dm := bedclosest.DistanceRef
+	if dDGiven {
+		parsed, err := parseDistanceMode(distMode)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(2)
+		}
+		dm = parsed
+	}
+
 	tb, err := parseTieBreak(tieMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -228,13 +252,7 @@ func main() {
 		os.Exit(2)
 	}
 	// -iu/-id/-fu/-fd require an explicit stranded distance mode (-D).
-	dGiven := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "D" {
-			dGiven = true
-		}
-	})
-	if (ignoreUp || ignoreDown || forceUp || forceDown) && !dGiven {
+	if (ignoreUp || ignoreDown || forceUp || forceDown) && !dDGiven {
 		fmt.Fprintln(os.Stderr, "Error: When requesting -iu, -id, -fu, or -fd, you also need to specify -D.")
 		os.Exit(2)
 	}
@@ -275,10 +293,11 @@ func main() {
 	defer writer.Close()
 
 	opts := bedclosest.Options{
-		PrintDistance:    printDist,
+		ReportDistance:   reportDistance,
 		DistanceMode:     dm,
-		RequireOverlap:   requireOverlap,
+		KClosest:         kClosest,
 		TieBreak:         tb,
+		IgnoreOverlaps:   ignoreOverlaps,
 		IgnoreUpstream:   ignoreUp,
 		IgnoreDownstream: ignoreDown,
 		ForceUpstream:    forceUp,
@@ -288,19 +307,9 @@ func main() {
 		DifferentNames:   differentNames,
 		MultiDBMode:      mm,
 		DBLabels:         dbLabels,
+		PrintHeader:      printHeader,
 	}
 
-	// A single -b with no explicit labels uses the label-free single-database
-	// path (Closest), matching upstream's column layout for one database.
-	// Anything else (multiple -b, or -names/-filenames on one) goes through
-	// ClosestMulti, which inserts the database-label column.
-	if len(bFiles) == 1 && dbLabels == nil {
-		if _, err := bedclosest.Closest(readerA, readersB[0], writer, opts); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
 	if _, err := bedclosest.ClosestMulti(readerA, readersB, writer, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -351,11 +360,12 @@ func parseMultiDBMode(s string) (bedclosest.MultiDBMode, error) {
 	}
 }
 
-// parseDistanceMode converts the -D flag string into a bedclosest.DistanceMode.
+// parseDistanceMode converts the -D flag string into a signed bedclosest
+// DistanceMode.
 func parseDistanceMode(s string) (bedclosest.DistanceMode, error) {
 	switch s {
 	case "ref":
-		return bedclosest.DistanceRef, nil
+		return bedclosest.DistanceSignedRef, nil
 	case "a":
 		return bedclosest.DistanceA, nil
 	case "b":

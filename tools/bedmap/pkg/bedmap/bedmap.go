@@ -7,15 +7,19 @@
 // appended to A's columns. When no B records overlap, the configured Null
 // string is emitted instead (default ".").
 //
-// Column-op semantics come from bedmerge.ApplyOp, so the same vocabulary
-// (sum, min, max, mean, median, count, count_distinct, distinct, collapse,
-// first, last, mode, antimode) is supported.
+// B may be BED, VCF, GFF, or BAM; the format is auto-detected exactly as
+// upstream's BedFile::parseLine (see input.go). Column-op semantics for the
+// list/count family come from bedmerge.ApplyOp; the numeric family (sum, mean,
+// min, max, absmin, absmax, median, stdev, sstdev) is computed locally so that
+// non-numeric values produce upstream's WARNING + null behaviour and results
+// are formatted with upstream's precision (default 10 significant digits).
 package bedmap
 
 import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,12 +37,15 @@ type Options struct {
 	// {"sum"} matches upstream.
 	Ops []string
 
-	// Null is the placeholder emitted when A has no overlapping B record.
-	// Default ".".
+	// Null is the placeholder emitted when A has no overlapping B record (and
+	// when a numeric op produces NaN). Default ".".
 	Null string
 	// Delim is the separator used by collapse / distinct (and other
 	// "concatenate" ops). Default ",".
 	Delim string
+	// Precision is the number of significant digits used to format numeric
+	// op results, matching upstream's -prec (default 10).
+	Precision int
 
 	// SameStrand: only consider B records on the same strand as A.
 	SameStrand bool
@@ -52,6 +59,25 @@ type Options struct {
 	FractionB float64
 	// Reciprocal: when true with -f and -F, both thresholds must hold.
 	Reciprocal bool
+
+	// Split: when true, treat BED12/BAM A and B records as their constituent
+	// blocks for overlap detection (only blocks overlap blocks), matching
+	// upstream `bedtools map -split`.
+	Split bool
+
+	// Header: when true, echo A's leading comment/track/browser header lines
+	// to the output verbatim, matching upstream `bedtools map -header`.
+	Header bool
+
+	// BFileName is the name of the B file as the user supplied it. It is used
+	// only to reproduce upstream's column-range error text
+	// ("... database file <name> only has fields 1 - N."). When empty, "B"
+	// is used.
+	BFileName string
+
+	// WarnWriter receives the per-row "WARNING: Non numeric value ..." lines
+	// upstream prints to stderr. When nil, warnings are discarded.
+	WarnWriter io.Writer
 }
 
 // Validate fills in defaults and rejects obviously bad combinations. It
@@ -60,11 +86,9 @@ func (opts *Options) Validate() error {
 	if len(opts.Columns) == 0 {
 		opts.Columns = []int{5}
 	}
-	for _, c := range opts.Columns {
-		if c < 1 {
-			return fmt.Errorf("column numbers must be >= 1, got %d", c)
-		}
-	}
+	// Out-of-range columns (including <= 0) are reported by Map against the
+	// database's field count, matching upstream's column-range error text, so
+	// they are intentionally not rejected here.
 	if len(opts.Ops) == 0 {
 		opts.Ops = []string{"sum"}
 	}
@@ -85,13 +109,22 @@ func (opts *Options) Validate() error {
 			opts.Columns[i] = col
 		}
 	default:
-		return fmt.Errorf("number of ops (%d) must be 1 or equal to number of columns (%d)", len(opts.Ops), len(opts.Columns))
+		// Match upstream's exact stderr text for the columns/operations
+		// mismatch (KeyListOps context validation), including its three-line
+		// guidance suffix.
+		return fmt.Errorf("\n*****\n***** ERROR: There are %d columns given, but there are %d operations.\n"+
+			"\tPlease provide either a single operation that will be applied to all listed columns, \n"+
+			"\ta single column to which all operations will be applied,\n"+
+			"\tor an operation for each column.", len(opts.Columns), len(opts.Ops))
 	}
 	if opts.Null == "" {
 		opts.Null = "."
 	}
 	if opts.Delim == "" {
 		opts.Delim = ","
+	}
+	if opts.Precision == 0 {
+		opts.Precision = 10
 	}
 	if opts.SameStrand && opts.OppositeStrand {
 		return fmt.Errorf("-s and -S are mutually exclusive")
@@ -106,6 +139,22 @@ type rawRecord struct {
 	fields []string
 }
 
+// numericOps lists the operations that convert their column values to numbers,
+// warn on non-numeric input, and print the null value on a NaN result, matching
+// upstream KeyListOps. mode / antimode operate on string frequency maps and are
+// therefore excluded here (delegated to bedmerge.ApplyOp).
+var numericOps = map[string]bool{
+	"sum":    true,
+	"mean":   true,
+	"min":    true,
+	"max":    true,
+	"absmin": true,
+	"absmax": true,
+	"median": true,
+	"stdev":  true,
+	"sstdev": true,
+}
+
 // Map runs the per-A column aggregation against B and writes the results to
 // writer. Returns the number of A records processed.
 func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error) {
@@ -113,23 +162,27 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 		return 0, err
 	}
 
-	// Read B into per-chromosome sorted slices, then build per-chromosome
-	// interval trees. We need both the parsed record (for the tree) and the
-	// raw fields (for arbitrary column extraction), so we read B as plain
-	// text and parse a Record per line ourselves.
-	bRaw, err := readRawRecords(readerB)
+	// Read B with format auto-detection (BED/VCF/GFF/BAM).
+	bRaw, maxFields, err := readBRecords(readerB)
 	if err != nil {
 		return 0, fmt.Errorf("error reading B: %w", err)
 	}
+
+	// Validate the requested columns against the database's field count,
+	// reproducing upstream's exact error text. Upstream reports the maximum
+	// number of fields it saw across the file.
+	bName := opts.BFileName
+	if bName == "" {
+		bName = "B"
+	}
+	for _, c := range opts.Columns {
+		if c < 1 || c > maxFields {
+			return 0, fmt.Errorf("\n*****\n***** ERROR: Requested column %d, but database file %s only has fields 1 - %d.", c, bName, maxFields)
+		}
+	}
+
 	bByChrom := map[string][]rawRecord{}
 	for _, rr := range bRaw {
-		// Validate the requested columns exist on every B record.
-		for _, c := range opts.Columns {
-			if c > len(rr.fields) {
-				return 0, fmt.Errorf("B record at %s:%d-%d has %d columns but column %d requested",
-					rr.rec.Chrom, rr.rec.ChromStart, rr.rec.ChromEnd, len(rr.fields), c)
-			}
-		}
 		bByChrom[rr.rec.Chrom] = append(bByChrom[rr.rec.Chrom], rr)
 	}
 	for chrom := range bByChrom {
@@ -148,24 +201,33 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 	rawIndex := map[*bed.Record]rawRecord{}
 	for chrom, recs := range bByChrom {
 		recPtrs := make([]*bed.Record, len(recs))
-		for i, rr := range recs {
-			recPtrs[i] = rr.rec
-			rawIndex[rr.rec] = rr
+		for i := range recs {
+			recPtrs[i] = recs[i].rec
+			rawIndex[recs[i].rec] = recs[i]
 		}
 		trees[chrom] = bed.NewIntervalTree(recPtrs)
 	}
 
 	// Stream A line-by-line: we want to preserve A's original text columns
-	// verbatim too (`bedtools map` echoes A's full record then appends).
+	// verbatim (`bedtools map` echoes A's full record then appends).
 	bw := bufio.NewWriter(writer)
 	defer bw.Flush()
 	scanner := bufio.NewScanner(readerA)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	count := 0
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimRight(scanner.Text(), "\r")
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+			// Under -header, echo A's leading header lines verbatim.
+			if opts.Header {
+				if _, err := fmt.Fprintln(bw, line); err != nil {
+					return count, err
+				}
+			}
 			continue
 		}
 		fields := strings.Split(line, "\t")
@@ -184,6 +246,10 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 		if len(fields) > 5 {
 			recA.Strand = fields[5]
 		}
+		var aBlocks []block
+		if opts.Split {
+			aBlocks = bed12Blocks(fields, start)
+		}
 
 		// Query B.
 		var matches []rawRecord
@@ -193,23 +259,51 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 				if !strandPass(recA, c, opts) {
 					continue
 				}
+				rr, ok := rawIndex[c]
+				if !ok {
+					continue
+				}
+				if opts.Split && !splitOverlap(aBlocks, rr) {
+					continue
+				}
 				if !fractionPass(recA, c, opts) {
 					continue
 				}
-				if rr, ok := rawIndex[c]; ok {
-					matches = append(matches, rr)
-				}
+				matches = append(matches, rr)
 			}
+			// Restore B-file (sorted) order; the tree query may return
+			// candidates out of order.
+			sort.SliceStable(matches, func(i, j int) bool {
+				if matches[i].rec.ChromStart != matches[j].rec.ChromStart {
+					return matches[i].rec.ChromStart < matches[j].rec.ChromStart
+				}
+				return matches[i].rec.ChromEnd < matches[j].rec.ChromEnd
+			})
 		}
 
 		// Compute aggregated columns.
 		extras := make([]string, len(opts.Columns))
+		var nonNumVal string // last non-numeric value seen, for the per-row warning
+		var nonNumCol int
+		nonNum := false
 		for i, col := range opts.Columns {
 			op := opts.Ops[i]
+			vals := make([]string, len(matches))
+			for j := range matches {
+				vals[j] = matches[j].fields[col-1]
+			}
+			if numericOps[op] {
+				res, lastBad, badCol, sawBad := applyNumericOp(op, col, vals, opts)
+				if sawBad {
+					nonNum = true
+					nonNumVal = lastBad
+					nonNumCol = badCol
+				}
+				extras[i] = res
+				continue
+			}
 			if len(matches) == 0 {
-				// `count` and `count_distinct` always produce a number
-				// (zero) when there are no matches; everything else gets
-				// the null placeholder. Matches upstream `bedtools map`.
+				// count / count_distinct produce 0; everything else is null.
 				if op == "count" || op == "count_distinct" {
 					extras[i] = "0"
 				} else {
@@ -217,16 +311,10 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 				}
 				continue
 			}
-			vals := make([]string, len(matches))
-			for j, m := range matches {
-				vals[j] = m.fields[col-1]
-			}
 			res, err := bedmerge.ApplyOp(op, col, vals)
 			if err != nil {
 				return count, err
 			}
-			// Apply the configured delimiter to collapse/distinct outputs
-			// (ApplyOp uses "," by default). Swap only if user asked.
 			if (op == "collapse" || op == "distinct") && opts.Delim != "," {
 				res = strings.ReplaceAll(res, ",", opts.Delim)
 			}
@@ -239,6 +327,11 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 		if _, err := fmt.Fprintln(bw, strings.Join(out, "\t")); err != nil {
 			return count, err
 		}
+		// After all columns of this row, emit the single non-numeric WARNING
+		// upstream prints when a numeric op encountered a non-numeric value.
+		if nonNum && opts.WarnWriter != nil {
+			fmt.Fprintf(opts.WarnWriter, " ***** WARNING: Non numeric value %s in %d.\n", nonNumVal, nonNumCol)
+		}
 		count++
 	}
 	if err := scanner.Err(); err != nil {
@@ -247,73 +340,211 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 	return count, nil
 }
 
-// readRawRecords reads a BED-like stream as (parsed Record, raw fields)
-// pairs. The parsed Record is needed for interval-tree queries; the raw
-// fields are needed so any column can be extracted by index.
-func readRawRecords(r io.Reader) ([]rawRecord, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	var out []rawRecord
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+// applyNumericOp computes a numeric aggregation over vals, mirroring upstream
+// KeyListOps: non-numeric values become NaN and are still included in the
+// running computation (so e.g. sum over any non-numeric value is NaN), the
+// last non-numeric value + column are returned so the caller can warn, and a
+// NaN result (including the empty-group case) is rendered as the null value.
+func applyNumericOp(op string, col int, vals []string, opts Options) (result, lastBad string, badCol int, sawBad bool) {
+	nums := make([]float64, len(vals))
+	for i, v := range vals {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			nums[i] = math.NaN()
+			lastBad = v
+			badCol = col
+			sawBad = true
 			continue
 		}
-		fields := strings.Split(line, "\t")
-		if len(fields) < 3 {
-			return nil, fmt.Errorf("BED record must have at least 3 fields, got %d", len(fields))
-		}
-		rr, err := parseIntervalLine(fields)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, rr)
+		nums[i] = f
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+	val := computeNumeric(op, nums)
+	if math.IsNaN(val) {
+		return opts.Null, lastBad, badCol, sawBad
 	}
-	return out, nil
+	return formatPrec(val, opts.Precision), lastBad, badCol, sawBad
 }
 
-// parseIntervalLine parses one B record, auto-detecting BED vs GFF. A BED
-// record has a numeric chromStart in column 2; a GFF record (9 columns, 1-based)
-// has a textual source in column 2 and numeric start/end in columns 4/5. The
-// original fields are preserved verbatim so the -c column extraction reads the
-// literal source columns (for GFF these are the 1-based GFF columns, matching
-// upstream bedtools map -b <gff>).
-func parseIntervalLine(fields []string) (rawRecord, error) {
-	// BED: columns 2 and 3 are the 0-based half-open coordinates.
-	if start, err := strconv.Atoi(fields[1]); err == nil {
-		end, err2 := strconv.Atoi(fields[2])
-		if err2 != nil {
-			return rawRecord{}, fmt.Errorf("invalid chromEnd %q: %v", fields[2], err2)
-		}
-		rec := &bed.Record{Chrom: fields[0], ChromStart: start, ChromEnd: end}
-		if len(fields) > 5 {
-			rec.Strand = fields[5]
-		}
-		return rawRecord{rec: rec, fields: fields}, nil
+// computeNumeric returns the numeric op's value, or NaN for the empty group
+// (upstream returns NaN when the value list is empty). NaN values in nums
+// propagate through sum/mean/stdev (any NaN ⇒ NaN), matching upstream's
+// behaviour of summing atof()'d-to-NaN non-numeric values.
+func computeNumeric(op string, nums []float64) float64 {
+	if len(nums) == 0 {
+		return math.NaN()
 	}
-	// GFF: column 2 (source) is non-numeric; columns 4/5 are 1-based start/end.
-	if len(fields) >= 8 {
-		gstart, err := strconv.Atoi(fields[3])
-		if err == nil {
-			gend, err2 := strconv.Atoi(fields[4])
-			if err2 == nil {
-				rec := &bed.Record{Chrom: fields[0], ChromStart: gstart - 1, ChromEnd: gend}
-				if len(fields) > 6 {
-					rec.Strand = fields[6]
-				}
-				return rawRecord{rec: rec, fields: fields}, nil
+	switch op {
+	case "sum":
+		s := 0.0
+		for _, n := range nums {
+			s += n
+		}
+		return s
+	case "mean":
+		s := 0.0
+		for _, n := range nums {
+			s += n
+		}
+		return s / float64(len(nums))
+	case "min":
+		m := nums[0]
+		for _, n := range nums[1:] {
+			if n < m {
+				m = n
+			}
+		}
+		return m
+	case "max":
+		m := nums[0]
+		for _, n := range nums[1:] {
+			if n > m {
+				m = n
+			}
+		}
+		return m
+	case "absmin":
+		m := math.Abs(nums[0])
+		for _, n := range nums[1:] {
+			if a := math.Abs(n); a < m {
+				m = a
+			}
+		}
+		return m
+	case "absmax":
+		m := math.Abs(nums[0])
+		for _, n := range nums[1:] {
+			if a := math.Abs(n); a > m {
+				m = a
+			}
+		}
+		return m
+	case "median":
+		sorted := append([]float64(nil), nums...)
+		sort.Float64s(sorted)
+		n := len(sorted)
+		if n%2 == 1 {
+			return sorted[n/2]
+		}
+		return (sorted[n/2-1] + sorted[n/2]) / 2
+	case "stdev":
+		mean := 0.0
+		for _, n := range nums {
+			mean += n
+		}
+		mean /= float64(len(nums))
+		sq := 0.0
+		for _, n := range nums {
+			d := n - mean
+			sq += d * d
+		}
+		return math.Sqrt(sq / float64(len(nums)))
+	case "sstdev":
+		if len(nums) == 1 {
+			return math.NaN()
+		}
+		mean := 0.0
+		for _, n := range nums {
+			mean += n
+		}
+		mean /= float64(len(nums))
+		sq := 0.0
+		for _, n := range nums {
+			d := n - mean
+			sq += d * d
+		}
+		return math.Sqrt(sq / float64(len(nums)-1))
+	}
+	return math.NaN()
+}
+
+// formatPrec formats v with prec significant digits, matching upstream's C++
+// `std::setprecision(prec) << val` (the default float format, equivalent to
+// Go's 'g' verb): integer-valued results print with no decimal point and other
+// values carry up to prec significant digits with no trailing-zero noise.
+func formatPrec(v float64, prec int) string {
+	return strconv.FormatFloat(v, 'g', prec, 64)
+}
+
+// splitOverlap reports whether any of A's blocks overlaps any of B's blocks,
+// the overlap rule upstream `bedtools map -split` uses. B's block list is
+// derived on demand from its BED12 columns (or its whole span when not BED12).
+func splitOverlap(aBlocks []block, b rawRecord) bool {
+	bBlocks := bed12Blocks(b.fields, b.rec.ChromStart)
+	for _, ab := range aBlocks {
+		for _, bb := range bBlocks {
+			s := ab.start
+			if bb.start > s {
+				s = bb.start
+			}
+			e := ab.end
+			if bb.end < e {
+				e = bb.end
+			}
+			if e > s {
+				return true
 			}
 		}
 	}
-	return rawRecord{}, fmt.Errorf("invalid record: column 2 %q is not a numeric BED start and the line is not a GFF feature", fields[1])
+	return false
 }
 
-// strandPass: same as bedcoverage; duplicated here to avoid a cross-tool
-// import (the two ports stay independent at the package layer).
+// bed12Blocks derives the sub-block intervals (0-based, absolute) of a BED12
+// line whose chromStart is start. Columns 10/11/12 hold blockCount, the
+// comma-separated blockSizes, and the comma-separated blockStarts (relative to
+// chromStart). For non-BED12 lines it falls back to the whole [start,end) span.
+func bed12Blocks(fields []string, start int) []block {
+	if len(fields) < 12 {
+		return []block{{start: start, end: spanEnd(fields, start)}}
+	}
+	sizes := strings.Split(strings.TrimRight(fields[10], ","), ",")
+	starts := strings.Split(strings.TrimRight(fields[11], ","), ",")
+	n := len(sizes)
+	if len(starts) < n {
+		n = len(starts)
+	}
+	var out []block
+	for i := 0; i < n; i++ {
+		sz, e1 := strconv.Atoi(strings.TrimSpace(sizes[i]))
+		bs, e2 := strconv.Atoi(strings.TrimSpace(starts[i]))
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		out = append(out, block{start: start + bs, end: start + bs + sz})
+	}
+	if len(out) == 0 {
+		out = append(out, block{start: start, end: spanEnd(fields, start)})
+	}
+	return out
+}
+
+// spanEnd returns the chromEnd from column 3, or start when it cannot be parsed.
+func spanEnd(fields []string, start int) int {
+	if len(fields) >= 3 {
+		if e, err := strconv.Atoi(fields[2]); err == nil {
+			return e
+		}
+	}
+	return start
+}
+
+// parseIntervalLine parses one B record, auto-detecting BED vs GFF (and VCF).
+// Retained for unit tests; the streaming reader uses readBRecords (input.go)
+// which also handles BAM. A BED record has a numeric chromStart in column 2; a
+// GFF record (8 or 9 columns) has a textual source in column 2 and numeric
+// start/end in columns 4/5.
+func parseIntervalLine(fields []string) (rawRecord, error) {
+	f, ok := detectTextFormat(fields)
+	if !ok {
+		second := ""
+		if len(fields) > 1 {
+			second = fields[1]
+		}
+		return rawRecord{}, fmt.Errorf("invalid record: column 2 %q is not a numeric BED start and the line is not a GFF feature", second)
+	}
+	return parseTextRecord(fields, f)
+}
+
+// strandPass enforces -s / -S.
 func strandPass(a, b *bed.Record, opts Options) bool {
 	if opts.SameStrand {
 		if a.Strand == "" || b.Strand == "" {
@@ -356,8 +587,5 @@ func fractionPass(a, b *bed.Record, opts Options) bool {
 	lenB := b.ChromEnd - b.ChromStart
 	passA := opts.FractionA == 0 || (lenA > 0 && float64(ov)/float64(lenA) >= opts.FractionA)
 	passB := opts.FractionB == 0 || (lenB > 0 && float64(ov)/float64(lenB) >= opts.FractionB)
-	if opts.Reciprocal {
-		return passA && passB
-	}
 	return passA && passB
 }

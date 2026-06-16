@@ -38,6 +38,7 @@ Options:
   -f FRACTION           Require >= FRACTION of A overlapped by B (0..1)
   -F FRACTION           Require >= FRACTION of B overlapped by A (0..1)
       --split           Treat BED12 records as their blocks (exon-aware)
+      --bed             For BAM input, convert each alignment to BED12 first
   -h, --help            Show this help message
   -v, --version         Show version information
 
@@ -69,6 +70,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		same                 bool
 		strandFilter         string
 		split                bool
+		bamToBed             bool
 		fractionA, fractionB float64
 		help, showVer        bool
 	)
@@ -84,6 +86,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 	cliflag.Float64Var(fs, &fractionA, "f", "fraction-a", 0.0, "Fraction of A overlapped (0..1)")
 	cliflag.Float64Var(fs, &fractionB, "F", "fraction-b", 0.0, "Fraction of B overlapped (0..1)")
 	cliflag.BoolVar(fs, &split, "", "split", false, "Treat BED12 records as their blocks (exon-aware)")
+	cliflag.BoolVar(fs, &bamToBed, "", "bed", false, "Treat BAM input as BED12 (each block becomes an interval)")
 
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVer, "v", "version", false, "Show version")
@@ -126,6 +129,7 @@ func run(argv []string, stdout, stderr *os.File) error {
 		SameStrand:   same,
 		StrandFilter: strandFilter,
 		Split:        split,
+		BAMToBED:     bamToBed,
 		FractionA:    fractionA,
 		FractionB:    fractionB,
 	}
