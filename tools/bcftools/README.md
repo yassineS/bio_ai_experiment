@@ -260,6 +260,33 @@ deliberately: `PRN :worst` ranks `&`-joined terms by an *exact* scale lookup
 scale tokens keeps its first term — see
 `docs/UPSTREAM_BUGS.md#bcftools-split-vep-prn-worst-exact-match`.
 
+### `+setGT` — set genotypes (native)
+
+The native `+setGT` port now covers the **full** upstream target/new-gt grammar,
+including the modes that used to be rejected:
+
+- **`-t b:TAG CMP VAL`** — set diploid heterozygous genotypes whose two-tailed
+  binomial test over a FORMAT integer tag (typically `AD`) satisfies the
+  comparison. `CMP` is one of `<`, `<=`, `>`, `>=`, `==`/`=`; the p-value is
+  `binom.test(nAlt, nRef+nAlt, 0.5)` computed via the same regularized
+  incomplete-beta function htslib uses, so it is bit-exact. Example:
+  `bcftools +setGT in.vcf -- -t 'b:AD<1e-3' -n 0`.
+- **`-t r:FLOAT` with `-s/--seed INT`** — act on a random proportion `FLOAT`
+  (0<FLOAT<1) of the targeted genotypes. Upstream seeds htslib's *deterministic*
+  drand48 PRNG from `-s` (default 0) and nothing else, so the result is fully
+  reproducible; the port reimplements the same 48-bit LCG and is byte-identical
+  to upstream for any fixed seed (and across thread counts). Used alone, `-t r`
+  implicitly targets all genotypes.
+- **`-n X`** — set every allele of the genotype to the allele with the largest
+  FORMAT/AD value for that sample (also usable inside a `c:` template, e.g.
+  `-n c:0/X`). Requires a FORMAT/AD header.
+
+All three modes — plus every operator and several new-gt targets — are
+byte-validated against the upstream binary 1.23.1 via the CLI-to-CLI oracle
+(`TestNativePluginSetGTBinom`, `TestNativePluginSetGTRandom`,
+`TestNativePluginSetGTReadDepth`), and the drand48 port is pinned to the
+canonical POSIX sequence by `TestDrand48KnownVectors`.
+
 ## Quick start
 
 ```bash

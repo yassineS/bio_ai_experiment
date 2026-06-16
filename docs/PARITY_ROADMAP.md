@@ -3442,6 +3442,40 @@ but with a deliberate design divergence from upstream:
   `TestNativePluginSplitVepSeverity` and `TestNativePluginSplitVepColumnsTypes`
   (fixture `tools/bcftools/testdata/parity/vep_select.vcf`).
 
+- **Native `+setGT` binomial / random / read-depth modes** — **done**. The
+  native setGT port (`tools/bcftools/pkg/bcftools/native_plugin_setgt.go`) now
+  closes the last three target/new-gt modes it previously rejected, all
+  byte-validated vs the upstream binary 1.23.1:
+  - **`-t b:TAG CMP VAL`** — the two-tailed binomial selector over a FORMAT
+    integer tag (typically `AD`) for each diploid heterozygous genotype. The
+    p-value is `calc_binom_two_sided(AD[ia], AD[ib], 0.5)` indexed by the two GT
+    alleles, computed through the in-tree `kfBetai` (htslib's `kf_betai`), so it
+    is bit-exact — no libm `pow`/`lgamma` in the tail. `CMP` parsing mirrors
+    `parse_binom_expr` exactly (`<`, `<=`, `>`, `>=`, `==`/`=`); the tag must be
+    declared in the header.
+  - **`-t r:FLOAT` + `-s/--seed INT`** — random selection of a `FLOAT` proportion
+    of the targeted genotypes. **RNG finding:** setGT seeds htslib's
+    `hts_srand48(rand_seed)` from `-s` (default 0) and *nothing else* — no
+    `time()`/`getpid()`. `hts_drand48` is the deterministic POSIX/FreeBSD 48-bit
+    LCG (`a=0x5DEECE66D, c=0xB`, seed low bits `0x330E`), so the stream is fully
+    reproducible. The earlier code comment claiming the RNG "cannot be matched
+    byte-for-byte" was **wrong**; the port reimplements the LCG
+    (`native_drand48.go`, pinned to the canonical sequence by
+    `TestDrand48KnownVectors`, cross-checked against glibc `drand48`) and is
+    byte-identical to upstream for any fixed seed and across thread counts
+    (random mode forces serial execution so the shared stream advances in input
+    order). Used alone, `-t r` implicitly targets all genotypes (setGT.c:271).
+  - **`-n X`** — set every allele of the genotype to the allele with the largest
+    FORMAT/AD value for that sample (also usable inside a `c:` template, e.g.
+    `-n c:0/X`); requires a FORMAT/AD header.
+
+  Note: setGT has **no** `b:e`/`b:f` binomial subtype — `b:` is followed
+  directly by `TAG CMP VAL` (a leading `e:`/`f:` is parsed as a tag name and
+  errors as "tag not present"). Byte-validated in `TestNativePluginSetGTBinom`,
+  `TestNativePluginSetGTRandom` and `TestNativePluginSetGTReadDepth` (fixture
+  `tools/bcftools/testdata/parity/gt_plugins.vcf` plus an in-test skewed-AD
+  fixture that exercises the genotype-changing binomial path).
+
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
 roadmap text in this section was written when bcftools internals were
