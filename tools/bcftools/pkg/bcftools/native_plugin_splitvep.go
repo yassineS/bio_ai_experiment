@@ -14,22 +14,27 @@
 // expansion (-A), duplicate (-d), drop/keep-sites (-x/-X) and allow-undef (-u)
 // options are honoured.
 //
-// Parts of upstream that require the bcftools filter and convert engines, the
-// gene-list machinery, or canonical-transcript expression selection are not
-// reproduced byte-for-byte and are reported as a clean unsupported Init error
-// rather than emitting silently divergent output: -i/-e expressions, -g/--gene-list,
-// the EXPRESSION / primary / pick / mane transcript selectors, --columns-types FILE,
+// The -i/-e filter expressions are supported: they evaluate against the
+// expanded per-transcript CSQ subfields. Upstream registers those subfields as
+// synthetic INFO tags on the OUTPUT header and runs filter_init(args->hdr_out)
+// after parse_column_str, so an expression like -i 'gnomAD_AF<0.1' or
+// -e 'IMPACT="LOW"' resolves names that exist only after split-vep's
+// per-transcript expansion. The native port mirrors this (see
+// native_plugin_splitvep_filter.go): it auto-registers any CSQ subfield the
+// expression references as an extra column, compiles the filter against the
+// augmented header via the shared filter engine, and applies it where upstream's
+// filter_and_output does — per collapsed record, or per transcript with -d. The
+// expression sees the same aggregated INFO tags upstream produces, including the
+// array-OR ("any element matches") semantics for the non -d case.
+//
+// Parts of upstream that require the gene-list machinery, canonical-transcript
+// expression selection, or the file-based scale/type tables are not reproduced
+// byte-for-byte and are reported as a clean unsupported Init error rather than
+// emitting silently divergent output: -g/--gene-list, the
+// EXPRESSION / primary / pick / mane transcript selectors, --columns-types FILE,
 // and -S FILE severity overrides.
 //
-// Unlike the stats/contrast/split plugins (whose -i/-e are now wired to the
-// shared filter engine as a plain VCF site/sample pre-filter), split-vep's -i/-e
-// cannot be a simple pre-filter: upstream registers the expanded per-transcript
-// CSQ subfields as synthetic INFO tags in the OUTPUT header (filter_init runs on
-// args->hdr_out) so an expression like -i 'gnomAD_AF<0.1' or -e 'IMPACT="LOW"'
-// resolves names that exist only after split-vep's per-transcript expansion, not
-// in the input VCF columns. Re-enabling it would require teaching the filter
-// engine about those derived columns, which is out of scope here, so it stays a
-// clean unsupported error. The query format engine supports the common
+// The query format engine supports the common
 // %CHROM/%POS/%ID/%REF/%ALT/%QUAL/%FILTER/%INFO-tag and %CSQ-subfield tokens with
 // literal text, \t and \n; other convert directives are rejected.
 package bcftools
@@ -91,6 +96,7 @@ type splitVepPlugin struct {
 	dropSites   int    // -1 unset, 0 keep, 1 drop
 
 	// Resolved state (filled by resolve()).
+	inHdr     *vcf.Header // the input header (for filter undef-tag resolution)
 	vepTag    string
 	fields    []string       // subfield names in header order
 	field2idx map[string]int // first index wins
@@ -106,12 +112,19 @@ type splitVepPlugin struct {
 	csq2sev     map[string]int
 	formatItems []svFmtItem
 
+	// annotVals is the per-record value accumulator (one slice of transcript
+	// values per annot), reused across records to mirror upstream's annot_t.str.
+	annotVals [][]string
+
 	// Filter (-i/-e). filterStr is the raw expression text, filterExclude is
-	// true for -e/--exclude. The compiled filter is built in runAnnotate against
-	// the split-vep-augmented output header so it can reference the per-transcript
-	// CSQ subfield columns, matching upstream filter_init(args->hdr_out).
+	// true for -e/--exclude, filterSet records that a -i/-e was given (so an
+	// empty expression is distinguished from "no filter"). The compiled filter
+	// is built against the split-vep-augmented output header so it can reference
+	// the per-transcript CSQ subfield columns, matching upstream
+	// filter_init(args->hdr_out).
 	filterStr     string
 	filterExclude bool
+	filterSet     bool
 }
 
 // Name returns the plugin name.
@@ -210,14 +223,28 @@ func (p *splitVepPlugin) parseArgs(args []string) error {
 			p.dropSites = 1
 		case "-X", "--keep-sites":
 			p.dropSites = 0
-		case "-i", "--include", "-e", "--exclude":
-			// Upstream split-vep runs filter_init on hdr_out AFTER registering the
-			// expanded per-transcript CSQ subfields as synthetic INFO tags, so the
-			// expression filters on those derived columns — not plain VCF fields.
-			// Reproducing that needs the filter engine wired against the split-vep
-			// output header; until then this is a clean unsupported error rather
-			// than silently divergent (unfiltered) output.
-			return fmt.Errorf("split-vep: the -i/-e filter expressions filter on split-vep's expanded per-transcript CSQ subfields (registered on the output header) and are not supported in the native plugin; run upstream bcftools for that")
+		case "-i", "--include":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if p.filterSet {
+				return fmt.Errorf("Error: only one -i or -e expression can be given, and they cannot be combined")
+			}
+			p.filterStr = v
+			p.filterExclude = false
+			p.filterSet = true
+		case "-e", "--exclude":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if p.filterSet {
+				return fmt.Errorf("Error: only one -i or -e expression can be given, and they cannot be combined")
+			}
+			p.filterStr = v
+			p.filterExclude = true
+			p.filterSet = true
 		case "-g", "--gene-list", "--gene-list-fields":
 			return fmt.Errorf("split-vep: the -g/--gene-list gene-restriction machinery is not supported in the native plugin; run upstream bcftools for that")
 		case "-S", "--severity":
@@ -233,15 +260,6 @@ func (p *splitVepPlugin) parseArgs(args []string) error {
 	}
 	if p.allFields != "" && p.formatStr == "" {
 		return fmt.Errorf("split-vep: -A/--all-fields requires -f/--format")
-	}
-	if p.filterStr != "" && p.formatStr != "" {
-		// The -i/-e filter engine is wired for the default VCF/BCF (annotate)
-		// output mode, where it can be applied per record after the derived CSQ
-		// subfield columns are written as INFO tags (mirroring upstream's
-		// filter_and_output). Combining -i/-e with -f/--format additionally needs
-		// the filter and the query-convert engine to share the same augmented
-		// record, which the native -f path does not yet support.
-		return fmt.Errorf("split-vep: combining -i/-e with -f/--format is not supported in the native plugin; the filter works in the default VCF/BCF output mode")
 	}
 	return nil
 }
@@ -305,6 +323,7 @@ func (p *splitVepPlugin) resolveHeader(hdr *vcf.Header) error {
 			return fmt.Errorf("split-vep: expected INFO/CSQ or INFO/BCSQ annotation")
 		}
 	}
+	p.inHdr = hdr
 	desc := infoHeaderDescription(hdr, tag)
 	if desc == "" {
 		return fmt.Errorf("split-vep: could not find INFO/%s in the header", tag)
@@ -437,8 +456,17 @@ func (p *splitVepPlugin) resolveSelect() error {
 		if err := p.resolveFormat(); err != nil {
 			return err
 		}
+		// Auto-add CSQ subfields referenced by the -i/-e expression as columns so
+		// they are registered on the output header and populated as INFO tags
+		// before the filter is evaluated, mirroring parse_filter_str.
+		if err := p.addFilterColumns(); err != nil {
+			return err
+		}
 	} else {
 		if err := p.resolveColumns(); err != nil {
+			return err
+		}
+		if err := p.addFilterColumns(); err != nil {
 			return err
 		}
 		if len(p.annots) == 0 && p.minSev == svSelectAny {

@@ -289,8 +289,22 @@ func splitMultiValue(v any) ([]any, bool) {
 
 // cmpScalarOne performs a single scalar comparison on already-singular
 // operands, dispatching the regex operators (~ / !~) and otherwise delegating
-// to compare().
+// to compare(). A missing operand — a nil value (absent INFO tag) or the VCF
+// missing sentinel "." — never satisfies a relational or regex comparison;
+// only an explicit equality/inequality involving "." is meaningful, mirroring
+// upstream filter.c's missing-value handling (and cmpMissing for the per-sample
+// path).
 func cmpScalarOne(op string, a, b any) bool {
+	if isMissingOperand(a) || isMissingOperand(b) {
+		switch op {
+		case "==":
+			return asString(a) == "." && asString(b) == "."
+		case "!=":
+			// "." != value is true when exactly one side is the missing sentinel.
+			return asString(a) != asString(b)
+		}
+		return false
+	}
 	switch op {
 	case "~", "!~":
 		matched := regexMatch(asString(a), asString(b))
@@ -300,6 +314,17 @@ func cmpScalarOne(op string, a, b any) bool {
 		return matched
 	}
 	return compare(op, a, b)
+}
+
+// isMissingOperand reports whether v represents a missing VCF value: a nil
+// (absent tag) or the "." sentinel. Numeric and boolean values are never
+// missing.
+func isMissingOperand(v any) bool {
+	if v == nil {
+		return true
+	}
+	s, ok := v.(string)
+	return ok && s == "."
 }
 
 // regexMatch reports whether s matches the POSIX extended regular expression
