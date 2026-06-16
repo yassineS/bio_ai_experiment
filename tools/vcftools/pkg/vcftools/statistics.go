@@ -23,6 +23,7 @@ type statistics struct {
 	siteMissing     []siteMissingStat
 	siteHWE         []siteHWEStat
 	sitePiValues    []sitePiStat
+	windowPiSites   []windowPiSite
 
 	// Per-individual statistics
 	indvMissing map[string]*indvMissingStat
@@ -49,10 +50,17 @@ type statistics struct {
 	// Phase 2: Population genetics statistics
 	windowPiValues []windowPiStat
 	tajimaDValues  []tajimaDStat
-	snpDensityBins map[int]*snpDensityStat
-	fstValues      []fstStat
-	filterCounts   map[string]int
-	singletonSites []singletonStat
+	// SNP-density bins per chromosome (variant counts indexed by bin). The
+	// chromosome iteration order matches first-seen order. snpDenPrevPos /
+	// snpDenPrevChrom dedup adjacent records at the same (CHROM, POS), as
+	// upstream does.
+	snpDensityBins  map[string][]int
+	snpDensityChrs  []string
+	snpDenPrevPos   int
+	snpDenPrevChrom string
+	fstValues       []fstStat
+	filterCounts    map[string]int
+	singletonSites  []singletonStat
 
 	// Misc
 	indelLenHist  map[int]int
@@ -149,6 +157,20 @@ type sitePiStat struct {
 	pi    float64
 }
 
+// windowPiSite holds the per-site quantities --window-pi needs to bin: the
+// number of actual pairwise mismatches at the site, the number of non-missing
+// chromosomes (for the per-site pairwise-comparison count), and whether the
+// site is polymorphic w.r.t. the reference (allele_counts[0] < N_chr). Only
+// fully-diploid, non-fixed sites are recorded, mirroring upstream
+// output_windowed_nucleotide_diversity (variant_file_output.cpp:4122-4178).
+type windowPiSite struct {
+	chrom         string
+	pos           int
+	nMismatches   uint64
+	nChr          int
+	isPolymorphic bool
+}
+
 type indvMissingStat struct {
 	name string
 	// nMissing counts genotypes whose call is missing (first allele "."),
@@ -219,13 +241,6 @@ type tajimaDStat struct {
 	tajimaD  float64
 }
 
-type snpDensityStat struct {
-	binStart int
-	binEnd   int
-	nSNPs    int
-	density  float64
-}
-
 type fstStat struct {
 	chrom string
 	pos   int
@@ -254,7 +269,8 @@ func newStatistics(header *vcf.Header) *statistics {
 		indvDepth:      make(map[string]*indvDepthStat),
 		tsTvBins:       make(map[string]map[int]*tsTvBinStat),
 		tsTvByCount:    make(map[int]*tsTvCountStat),
-		snpDensityBins: make(map[int]*snpDensityStat),
+		snpDensityBins: make(map[string][]int),
+		snpDenPrevPos:  -1,
 		filterCounts:   make(map[string]int),
 		indelLenHist:   make(map[int]int),
 	}
@@ -325,9 +341,14 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params, genoFiltered map
 		s.addIndelLenStat(v)
 	}
 
-	// Site pi (nucleotide diversity) - also required to build windowed pi
-	if params.SitePi || params.WindowPi > 0 {
+	// Site pi (nucleotide diversity)
+	if params.SitePi {
 		s.addSitePiStat(v)
+	}
+	// Windowed pi uses a distinct accumulation (mismatches/comparisons per
+	// site, binned over windows) — see output_windowed_nucleotide_diversity.
+	if params.WindowPi > 0 {
+		s.addWindowPiSite(v)
 	}
 
 	// Tajima's D (collect per-SNP data; computed at output time)
@@ -697,6 +718,33 @@ func (s *statistics) addSitePiStat(v *vcf.Variant) {
 		return
 	}
 	s.sitePiValues = append(s.sitePiValues, sitePiStat{chrom: v.Chrom, pos: v.Pos, pi: pi})
+}
+
+// addWindowPiSite records the per-site mismatch/comparison quantities used by
+// --window-pi. Only fully-diploid, non-fixed sites are recorded (upstream
+// skips non-diploid sites and sites with zero pairwise mismatches).
+func (s *statistics) addWindowPiSite(v *vcf.Variant) {
+	if !siteIsDiploid(v) {
+		return
+	}
+	counts, nChr := siteAlleleCountsIndexed(v)
+	if nChr == 0 {
+		return
+	}
+	var mismatches uint64
+	for _, ac := range counts {
+		mismatches += uint64(ac) * uint64(nChr-ac)
+	}
+	if mismatches == 0 {
+		return // Site is fixed.
+	}
+	s.windowPiSites = append(s.windowPiSites, windowPiSite{
+		chrom:         v.Chrom,
+		pos:           v.Pos,
+		nMismatches:   mismatches,
+		nChr:          nChr,
+		isPolymorphic: counts[0] < nChr,
+	})
 }
 
 // siteAlleleCounts returns the count of each allele index ("0", "1", ...) across
@@ -1124,21 +1172,35 @@ func (s *statistics) addFilterCount(v *vcf.Variant) {
 	}
 }
 
-// addSNPDensityStat adds SNP density in bins
+// addSNPDensityStat bins a variant for --SNPdensity, mirroring upstream
+// output_SNP_density (variant_file_output.cpp): a record is counted only when
+// its ALT is not "." (i.e. it is a real variant) and it is not a duplicate of
+// the immediately preceding (CHROM, POS). Bins are per chromosome, indexed by
+// POS/bin_size. Indels are counted (upstream counts all non-monomorphic
+// variants here, despite the "SNP" name).
 func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
-	// Only count SNPs, not indels
-	if isIndelVariant(v) {
-		return
+	chrom := v.Chrom
+	// Track first-seen chromosome order (recorded for every record, even
+	// monomorphic ones, matching upstream's chrs.push_back placement).
+	if _, seen := s.snpDensityBins[chrom]; !seen {
+		s.snpDensityChrs = append(s.snpDensityChrs, chrom)
+		s.snpDensityBins[chrom] = nil
 	}
 
-	binIdx := v.Pos / binSize
-	if s.snpDensityBins[binIdx] == nil {
-		s.snpDensityBins[binIdx] = &snpDensityStat{
-			binStart: binIdx * binSize,
-			binEnd:   (binIdx + 1) * binSize,
+	altMonomorphic := len(v.Alt) == 0 || (len(v.Alt) == 1 && v.Alt[0] == ".")
+	if !altMonomorphic && (v.Pos != s.snpDenPrevPos || chrom != s.snpDenPrevChrom) {
+		idx := v.Pos / binSize
+		bins := s.snpDensityBins[chrom]
+		if idx >= len(bins) {
+			grown := make([]int, idx+1)
+			copy(grown, bins)
+			bins = grown
+			s.snpDensityBins[chrom] = bins
 		}
+		bins[idx]++
 	}
-	s.snpDensityBins[binIdx].nSNPs++
+	s.snpDenPrevPos = v.Pos
+	s.snpDenPrevChrom = chrom
 }
 
 // Output functions
@@ -1571,23 +1633,26 @@ func (s *statistics) outputSNPDensity(prefix string, binSize int) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_SNPs\tDENSITY")
+	// Header and column layout match upstream output_SNP_density. Within a
+	// chromosome, emission starts at the first non-empty bin and then prints
+	// every bin (including empty interior bins) to the highest occupied bin.
+	// BIN_START = bin_index*bin_size; VARIANTS/KB = count * 1000/bin_size
+	// printed via a default ostream.
+	fmt.Fprintln(f, "CHROM\tBIN_START\tSNP_COUNT\tVARIANTS/KB")
 
-	// Sort bins
-	var bins []int
-	for binIdx := range s.snpDensityBins {
-		bins = append(bins, binIdx)
-	}
-	sort.Ints(bins)
-
-	for _, binIdx := range bins {
-		stat := s.snpDensityBins[binIdx]
-		windowSize := float64(stat.binEnd - stat.binStart)
-		if windowSize > 0 {
-			stat.density = float64(stat.nSNPs) / windowSize
+	perKb := 1000.0 / float64(binSize)
+	for _, chrom := range s.snpDensityChrs {
+		bins := s.snpDensityBins[chrom]
+		output := false
+		for sIdx, count := range bins {
+			if count > 0 {
+				output = true
+			}
+			if output {
+				fmt.Fprintf(f, "%s\t%d\t%d\t%s\n",
+					chrom, sIdx*binSize, count, formatCppDefault(float64(count)*perKb))
+			}
 		}
-		fmt.Fprintf(f, ".\t%d\t%d\t%d\t%.6f\n",
-			stat.binStart, stat.binEnd, stat.nSNPs, stat.density)
 	}
 
 	return nil
@@ -1728,17 +1793,21 @@ func (s *statistics) outputDepth(prefix string) error {
 	return nil
 }
 
-// windowPiAcc accumulates per-site nucleotide diversity within one window.
-type windowPiAcc struct {
-	winStart int
-	nSites   int
-	piSum    float64
+// windowPiBin accumulates the four per-window quantities upstream tracks.
+type windowPiBin struct {
+	nVariantSites uint64 // sites with a VCF entry in the window
+	nVariantPairs uint64 // pairwise comparisons at polymorphic sites
+	nMismatches   uint64 // actual pairwise mismatches at polymorphic sites
+	nPolymorphic  uint64 // sites polymorphic w.r.t. the reference
 }
 
-// outputWindowedPi outputs nucleotide diversity summed over fixed-size windows
-// (.windowed.pi). The PI column is the sum of per-site nucleotide diversity for
-// variants falling in the window. If stepSize is zero or larger than windowSize
-// the windows are non-overlapping.
+// outputWindowedPi writes nucleotide diversity in windows (.windowed.pi),
+// mirroring upstream output_windowed_nucleotide_diversity
+// (variant_file_output.cpp:4065-4283). Each site contributes to bins
+// [first, last) where first = ceil((pos-window)/step) (clamped to 0) and
+// last = ceil(pos/step). For each emitted bin, PI = N_mismatches / N_pairs,
+// where N_pairs = polymorphic-site pairs + monomorphic-site pairs, and the
+// reported N_VARIANTS column is the polymorphic-site count.
 func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) error {
 	if windowSize <= 0 {
 		return nil
@@ -1753,50 +1822,53 @@ func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) e
 	}
 	defer f.Close()
 
-	// Upstream emits an additional N_MONOMORPHIC column counting bases
-	// inside the window that are monomorphic in the kept-individuals
-	// subset. We don't track that yet — emit a literal 0 column so the
-	// header and column count match upstream byte-for-byte. See
-	// docs/PARITY_ROADMAP.md#vcftools.
 	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_VARIANTS\tN_MONOMORPHIC\tPI")
 
 	var chromOrder []string
-	windows := make(map[string]map[int]*windowPiAcc)
+	bins := make(map[string][]windowPiBin)
 
-	for _, st := range s.sitePiValues {
-		if _, seen := windows[st.chrom]; !seen {
-			windows[st.chrom] = make(map[int]*windowPiAcc)
+	for _, st := range s.windowPiSites {
+		if _, seen := bins[st.chrom]; !seen {
 			chromOrder = append(chromOrder, st.chrom)
+			bins[st.chrom] = make([]windowPiBin, 1)
 		}
-		// Window starts are 1, 1+step, 1+2*step, ...; a variant at 1-based
-		// position p belongs to every window [ws, ws+windowSize-1] containing p.
-		p := st.pos
-		kMax := (p - 1) / stepSize
-		kMin := 0
-		if p > windowSize {
-			kMin = (p - windowSize + stepSize - 1) / stepSize
+		first := int(math.Ceil(float64(st.pos-windowSize) / float64(stepSize)))
+		if first < 0 {
+			first = 0
 		}
-		for k := kMin; k <= kMax; k++ {
-			ws := 1 + k*stepSize
-			acc := windows[st.chrom][ws]
-			if acc == nil {
-				acc = &windowPiAcc{winStart: ws}
-				windows[st.chrom][ws] = acc
+		last := int(math.Ceil(float64(st.pos) / float64(stepSize)))
+		if last >= len(bins[st.chrom]) {
+			grown := make([]windowPiBin, last+1)
+			copy(grown, bins[st.chrom])
+			bins[st.chrom] = grown
+		}
+		comparisons := uint64(st.nChr) * uint64(st.nChr-1)
+		for idx := first; idx < last; idx++ {
+			b := &bins[st.chrom][idx]
+			b.nVariantSites++
+			b.nVariantPairs += comparisons
+			b.nMismatches += st.nMismatches
+			if st.isPolymorphic {
+				b.nPolymorphic++
 			}
-			acc.nSites++
-			acc.piSum += st.pi
 		}
 	}
 
+	nKeptChr := 2 * len(s.header.Samples)
+	monoComparisons := uint64(nKeptChr) * uint64(nKeptChr-1)
+
 	for _, chrom := range chromOrder {
-		var starts []int
-		for ws := range windows[chrom] {
-			starts = append(starts, ws)
-		}
-		sort.Ints(starts)
-		for _, ws := range starts {
-			acc := windows[chrom][ws]
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t0\t%.6f\n", chrom, ws, ws+windowSize-1, acc.nSites, acc.piSum)
+		for sIdx, b := range bins[chrom] {
+			if b.nPolymorphic == 0 && b.nMismatches == 0 {
+				continue
+			}
+			// N_monomorphic = window_size - N_variant_sites (no mask).
+			nMono := uint64(windowSize) - b.nVariantSites
+			nPairs := b.nVariantPairs + nMono*monoComparisons
+			pi := float64(b.nMismatches) / float64(nPairs)
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\t%s\n",
+				chrom, sIdx*stepSize+1, sIdx*stepSize+windowSize,
+				b.nPolymorphic, nMono, formatCppDefault(pi))
 		}
 	}
 
