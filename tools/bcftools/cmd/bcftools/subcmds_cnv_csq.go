@@ -286,8 +286,9 @@ General options:
   -i, --include EXPR             Accepted; v1 ignores.
       --no-version               Accepted; v1 never appends a version line.
   -o, --output FILE              Output file (default stdout).
-  -O, --output-type b|u|z|v      Output format: b (BCF), u (uncompressed BCF),
-                                 z (BGZF VCF), v (VCF text). 't' is unsupported.
+  -O, --output-type b|u|z|v|t    Output format: b (BCF), u (uncompressed BCF),
+                                 z (BGZF VCF), v (VCF text),
+                                 t (plain tab-delimited text).
   -r, --regions LIST             Region list (post-filter in v1).
   -R, --regions-file FILE        BED-like regions file.
       --regions-overlap 0|1|2    Accepted; v1 ignores.
@@ -484,7 +485,13 @@ func runCSQ(args []string) int {
 	if ph, err := bcftools.ParseCSQPhase(phase); err == nil {
 		opts.Phase = ph
 	}
-	if of, err := bcftools.ParseOutputFormat(outputType); err == nil {
+	if outputType == "t" {
+		// -O t selects upstream's FT_TAB_TEXT streaming-text output; it
+		// is handled by the text path, not the VCF/BCF writer, so leave
+		// OutputFormat at its default and flag TextOutput instead.
+		opts.TextOutput = true
+		opts.TextArgv = args
+	} else if of, err := bcftools.ParseOutputFormat(outputType); err == nil {
 		opts.OutputFormat = of
 	} else {
 		fmt.Fprintf(os.Stderr, "bcftools csq: %v\n", err)
@@ -547,9 +554,11 @@ type checkCSQDeferredInputs struct {
 func checkCSQDeferred(in checkCSQDeferredInputs) string {
 	switch in.outputType {
 	case "", "v", "z", "b", "u":
-		// All four output formats are supported via openCSQOutput.
+		// All four VCF/BCF formats are supported via openCSQOutput.
+	case "t":
+		// -O t streaming-text output is supported via the text path.
 	default:
-		return "-O " + in.outputType + " (expect v|z|b|u)"
+		return "-O " + in.outputType + " (expect v|z|b|u|t)"
 	}
 	// --unify-chr-names is honoured by the CSQ engine; no deferral needed.
 	_ = in.unifyChrNames

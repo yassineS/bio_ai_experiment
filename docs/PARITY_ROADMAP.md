@@ -3347,10 +3347,13 @@ legacy `bam2bcf_indel` path and `--indels-cns`), the `convert` GEN/HAP/TSV/
 gVCF modes plus the PLINK exporters (`--plink`/`--tped`/`--plink-bed`,
 implemented to the PLINK1 spec since upstream comments those options out),
 and csq slice 4 (FORMAT/TBCSQ, `--unify-chr-names`, `--dump-gff`,
-`-O b|u|z` non-text output) all landed and are live-oracle validated (see
-the per-subcommand sections below). The only bcftools item still open is
-`gtcheck`'s `-c/--cluster` dendrogram + filter expressions.
-(`csq -l/--local-csq` is now implemented.)
+`-O b|u|z` non-text output **and `-O t` streaming-text output**) all
+landed and are live-oracle validated (see the per-subcommand sections
+below). The only bcftools item still open is `gtcheck`'s `-c/--cluster`
+dendrogram + filter expressions. (`csq -l/--local-csq` is now
+implemented; `csq -O t` is now implemented, matching upstream
+`text_print_vcsq` byte-for-byte — the residual `csq -s -` /
+sample-subsetting gap is unaffected.)
 
 The plugin system (`bcftools plugin` / `bcftools +<name>`) is **done**,
 but with a deliberate design divergence from upstream:
@@ -4094,11 +4097,14 @@ Option-tail status on `mendelian2`:
   parser stops at the first positional, so flags must precede the
   input file — a pre-existing limitation shared by every bcftools
   subcommand here.)
-- `-m a` VCF output annotates INFO/MERR (per-site error count) like
-  upstream but does not yet add the companion MGOOD/MMISS/MNORULE
-  INFO fields; `-m d` sets offending GTs to `./.` regardless of the
-  site ploidy. Count-mode parity is exact; these VCF-output deltas
-  remain.
+- `-m a` VCF output — **DONE.** Annotates the full upstream per-site
+  INFO quartet `MERR` (trios with a Mendelian error), `MGOOD`
+  (evaluable + consistent trios), `MMISS` (trios with missing/unusable
+  genotypes) and `MNORULE` (trios with no applicable inheritance rule),
+  with the verbatim `##INFO` definitions and values — byte-validated
+  vs upstream 1.23.1 (`TestNativePluginMendelian2Plugin`). `-m d` sets
+  offending GTs to `./.` regardless of the site ploidy. Count-mode
+  parity is exact.
 - `--regions-overlap 0|1|2`, `--targets-overlap 0|1|2` — accepted;
   v1 always uses POS-in-region semantics.
 - `-v/--verbosity INT`, `--no-version` — accepted; v1 ignores both.
@@ -4283,9 +4289,19 @@ Option-tail status on `csq` (slices 1-4 done, plus `-l/--local-csq`):
 - `FORMAT/TBCSQ` — **done (slice 4)**: per-haplotype text expansion of
   the `FORMAT/BCSQ` bitmask (`query -f'[%TBCSQ\n]'`, `expandTBCSQ`),
   byte-for-byte vs upstream.
-- `-O b|u|z|v` — **done (slice 4)**: VCF text (`v`), BGZF VCF (`z`)
-  and BCF (`b`/`u`) via the in-tree writers (`openCSQOutput`);
-  the streaming-text `t` form remains unsupported.
+- `-O b|u|z|v|t` — **done**: VCF text (`v`), BGZF VCF (`z`) and BCF
+  (`b`/`u`) via the in-tree writers (`openCSQOutput`); and the
+  streaming tab-delimited text form (`t`, upstream `FT_TAB_TEXT`),
+  which emits one `CSQ<TAB>sample<TAB>haplotype<TAB>chrom<TAB>pos<TAB>consequence`
+  row per (sample, haplotype) consequence. It ports upstream's
+  `text_stage`/`hap_stage_text`/`text_print_vcsq` path (the intron /
+  non_coding tscript-level consequences are pushed to INFO/BCSQ but
+  never text-staged, exactly as upstream, because their staged
+  `vcf_ial` is 0), byte-validated vs 1.23.1 in `csq_text_test.go`
+  (`TestCSQTextOracleParity`) plus binary-free `TestUnitCSQText*`
+  coverage. The leading `#`-comment version/command provenance lines
+  carry our build identity and are stripped before comparison.
+  (Sample subsetting / `-s -` GT dropping is a separate open item.)
 - `--threads`, `-v/--verbosity`, `-W/--write-index`, `--force`,
   `--no-version`, `-q/--quiet` — accepted; v1 ignores.
 - The minimal GFF3 parser (`pkg/htsgo/gff`) understands `gene`,

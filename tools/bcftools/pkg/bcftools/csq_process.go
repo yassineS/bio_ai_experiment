@@ -153,7 +153,21 @@ func (e *hapEngine) hapFlush(pos int) {
 		}
 		if ht.root != nil && len(ht.root.child) > 0 {
 			e.hapFinalize(ht)
-			if e.phase != phaseDropGT {
+			if e.textMode {
+				// -O t (FT_TAB_TEXT): stage per-(sample,haplotype)
+				// consequence tuples, mirroring upstream hap_flush's
+				// FT_TAB_TEXT branch. The no-GT case stages once with
+				// ismpl=-1; otherwise per sample × haplotype (ihap=j+1).
+				if e.phase == phaseDropGT {
+					e.hapStageText(ht.hap[0], -1, 0)
+				} else {
+					for i, hdrIdx := range e.samples {
+						for j := 0; j < 2; j++ {
+							e.hapStageText(ht.hap[i*2+j], hdrIdx, j+1)
+						}
+					}
+				}
+			} else if e.phase != phaseDropGT {
 				for i, hdrIdx := range e.samples {
 					for j := 0; j < 2; j++ {
 						e.hapStageVCF(ht.hap[i*2+j], hdrIdx, j)
@@ -163,6 +177,39 @@ func (e *hapEngine) hapFlush(pos int) {
 		}
 	}
 	e.activeTr = remaining
+}
+
+// hapStageText walks a leaf hapNode's csqList and stages each consequence
+// as a (idx, ismpl, ihap) text tuple, mirroring upstream's
+// hap_stage_text. Unlike the VCF path it does not apply the ncsq2 cap
+// (text output is not packed into a fixed-width FORMAT field).
+func (e *hapEngine) hapStageText(node *hapNode, ismpl, ihap int) {
+	if node == nil || len(node.csqList) == 0 {
+		return
+	}
+	for _, csq := range node.csqList {
+		e.textStage(csq, ismpl, ihap)
+	}
+}
+
+// textStage records one (idx, ismpl, ihap) tuple against the
+// consequence's buffered record, deduplicating exact repeats. Ports
+// upstream text_stage. csq.vrec/csq.idx must already be resolved by
+// csqPush.
+func (e *hapEngine) textStage(csq *csqEntry, ismpl, ihap int) {
+	if csq == nil || csq.vrec == nil {
+		return
+	}
+	vrec := csq.vrec
+	if csq.idx < 0 || csq.idx >= len(vrec.vcsq) {
+		return
+	}
+	for _, t := range vrec.txt {
+		if t.idx == csq.idx && t.ismpl == ismpl && t.ihap == ihap {
+			return
+		}
+	}
+	vrec.txt = append(vrec.txt, txtCsq{idx: csq.idx, ismpl: ismpl, ihap: ihap})
 }
 
 // hapStageVCF walks a leaf hapNode's csqList and sets the FORMAT/BCSQ
@@ -219,6 +266,17 @@ func (e *hapEngine) vbufFlush(pos int) {
 			vbPos = vb.vrec[0].rec.Pos - 1
 		}
 		for _, vr := range vb.vrec {
+			if e.textMode {
+				// -O t: render the staged text tuples into "CSQ\t..."
+				// lines instead of writing a VCF record. Mirrors the
+				// FT_TAB_TEXT branch of upstream vbuf_flush.
+				for i := range vr.txt {
+					if line, ok := e.textPrintVcsq(vr, &vr.txt[i]); ok {
+						e.outText = append(e.outText, line)
+					}
+				}
+				continue
+			}
 			if len(vr.vcsq) > 0 {
 				var parts []string
 				for i := range vr.vcsq {
@@ -233,6 +291,50 @@ func (e *hapEngine) vbufFlush(pos int) {
 			delete(e.pos2vbuf, vbPos)
 		}
 	}
+}
+
+// textPrintVcsq renders one staged text tuple into a complete output
+// line, mirroring upstream's text_print_vcsq:
+//
+//	CSQ\t<sample>\t<haplotype>\t<chrom>\t<pos>\t<consequence>\n
+//
+// The sample is "-" when ismpl<0 (genotypes dropped); the haplotype is
+// the 1-based number, or "-" when ihap<=0. Consequences flagged
+// CSQ_PRINTED_UPSTREAM (the @pos back-references) are skipped — tab text
+// output is consequence-centric and prints only the canonical record.
+// ok is false when the tuple references a flagged or out-of-range entry.
+func (e *hapEngine) textPrintVcsq(vr *vrecBuf, txt *txtCsq) (string, bool) {
+	if txt.idx < 0 || txt.idx >= len(vr.vcsq) {
+		return "", false
+	}
+	vc := &vr.vcsq[txt.idx]
+	if vc.typ&csqPrintedUpstream != 0 {
+		return "", false
+	}
+	smpl := "-"
+	if txt.ismpl >= 0 && txt.ismpl < len(e.hdr.Samples) {
+		smpl = e.hdr.Samples[txt.ismpl]
+	}
+	hap := "-"
+	if txt.ihap > 0 {
+		hap = strconv.Itoa(txt.ihap)
+	}
+	chrom := vr.rec.Chrom
+	pos := vr.rec.Pos // already 1-based in vcf.Variant
+	csqStr := kputVcsq(vc)
+	var sb strings.Builder
+	sb.WriteString("CSQ\t")
+	sb.WriteString(smpl)
+	sb.WriteByte('\t')
+	sb.WriteString(hap)
+	sb.WriteByte('\t')
+	sb.WriteString(chrom)
+	sb.WriteByte('\t')
+	sb.WriteString(strconv.Itoa(pos))
+	sb.WriteByte('\t')
+	sb.WriteString(csqStr)
+	sb.WriteByte('\n')
+	return sb.String(), true
 }
 
 // emitFmtBCSQ serialises the per-record FORMAT/BCSQ bitmask into the
@@ -315,8 +417,69 @@ func (e *hapEngine) stageOneCsq(rec *hapRecord, typ uint32, t *CSQTranscript, ia
 	entry.typ.trid = t.ID
 	entry.typ.vcfIal = ial
 	entry.typ.gene = t.Gene
-	e.csqPush(entry, rec.v)
-	e.stageSimpleFmtBits(entry, rec.v)
+	e.pushSimple(entry, rec.v)
+}
+
+// pushSimple stages a simple (non-haplotype-tree) consequence: it runs
+// csqPush, then dispatches to the FORMAT/BCSQ bit path or, in -O t text
+// mode, to text staging. It mirrors upstream csq_stage's branching,
+// including the PHASE_DROP_GT skip when the consequence already existed.
+// It is the shared entry point for both the haplotype-aware simple
+// consequences (stageOneCsq) and the local-csq path (csq_local.go).
+func (e *hapEngine) pushSimple(entry *csqEntry, rec *vcf.Variant) {
+	existed := e.csqPush(entry, rec)
+	if e.textMode {
+		if existed && e.phase == phaseDropGT {
+			return
+		}
+		e.stageSimpleText(entry, rec)
+		return
+	}
+	e.stageSimpleFmtBits(entry, rec)
+}
+
+// stageSimpleText stages text tuples for a simple (non-haplotype-tree)
+// consequence, mirroring the FT_TAB_TEXT path of upstream csq_stage:
+// the no-GT case stages once with ismpl=-1, ihap=0; otherwise it stages
+// (ismpl, j+1) for every sample/haplotype whose GT carries the ALT.
+func (e *hapEngine) stageSimpleText(entry *csqEntry, rec *vcf.Variant) {
+	if entry.vrec == nil {
+		return
+	}
+	if e.phase == phaseDropGT || len(e.samples) == 0 || !recordHasGT(rec) {
+		// No genotypes to attribute the consequence to (ngt<=0 upstream):
+		// stage a single sample-agnostic tuple.
+		e.textStage(entry, -1, 0)
+		return
+	}
+	for _, hdrIdx := range e.samples {
+		if hdrIdx >= len(rec.Samples) {
+			continue
+		}
+		gt := rec.Samples[hdrIdx].Data["GT"]
+		alleles, _ := csqGTAlleles(gt)
+		for j, ial := range alleles {
+			if j >= 2 {
+				break
+			}
+			if ial <= 0 || ial != entry.typ.vcfIal {
+				continue
+			}
+			e.textStage(entry, hdrIdx, j+1)
+		}
+	}
+}
+
+// recordHasGT reports whether the record declares a GT FORMAT field,
+// approximating upstream's bcf_get_genotypes(...) > 0 test used to decide
+// whether a consequence can be attributed to specific haplotypes.
+func recordHasGT(rec *vcf.Variant) bool {
+	for _, f := range rec.Format {
+		if f == "GT" {
+			return true
+		}
+	}
+	return false
 }
 
 // stageSimpleFmtBits sets FORMAT/BCSQ bits for a simple consequence
@@ -592,7 +755,15 @@ func (e *hapEngine) testTscript(rec *hapRecord) bool {
 			if t.Coding {
 				typ = csqIntron
 			}
-			e.stageOneCsq(rec, typ, t, ial)
+			// Upstream test_tscript leaves csq.type.vcf_ial = 0 for
+			// intron / non_coding consequences (it never assigns the
+			// allele index to the staged csq). That zero matters for -O t
+			// text output: csq_stage's per-sample loop skips entries
+			// whose vcf_ial does not match the carried allele, so these
+			// tscript-level consequences are pushed to INFO/BCSQ but
+			// never staged as a per-sample text line. Pass ial=0 to
+			// reproduce that.
+			e.stageOneCsq(rec, typ, t, 0)
 			hit = true
 		}
 	}

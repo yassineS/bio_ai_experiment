@@ -687,11 +687,15 @@ func (e *hapEngine) hapAddCsq(w *hapWalk, node *hapNode, tlen, ibeg, iend, dlen 
 
 // csqPush ports csq.c's csq_push: it inserts a consequence into the
 // matching buffered VCF record, applying the upstream deduplication and
-// merge rules.
-func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) {
+// merge rules. It returns existed == true when the consequence merged
+// into (or matched) an already-present entry, and false when a new entry
+// was appended — mirroring upstream's non-zero/zero return. When the
+// target buffer or record cannot be found, existed is reported true so
+// callers treat it as a no-op skip (upstream's -1 path).
+func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) (existed bool) {
 	vb := e.pos2vbuf[csq.pos]
 	if vb == nil {
-		return
+		return true
 	}
 	if csq.typ.typ&csqInframeIns != 0 && csq.typ.typ&csqElongation != 0 {
 		csq.typ.typ &^= csqInframeIns
@@ -707,7 +711,7 @@ func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) {
 		}
 	}
 	if vrec == nil {
-		return
+		return true
 	}
 	if csq.typ.typ&csqSpliceRegion != 0 && csq.typ.typ&(csqSpliceDonor|csqSpliceAcceptor) != 0 {
 		csq.typ.typ &^= csqSpliceRegion
@@ -720,7 +724,7 @@ func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) {
 			if csq.typ.typ&csqStartStop != 0 && vrec.vcsq[i].typ&csqStartStop != 0 {
 				vrec.vcsq[i] = csq.typ
 				csq.vrec, csq.idx = vrec, i
-				return
+				return true
 			}
 			if vrec.vcsq[i].typ&csqPrintedUpstream == 0 {
 				continue
@@ -729,7 +733,7 @@ func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) {
 				continue
 			}
 			csq.vrec, csq.idx = vrec, i
-			return
+			return true
 		}
 	} else if csq.typ.typ&csqCompoundFull != 0 {
 		for i := range vrec.vcsq {
@@ -764,7 +768,7 @@ func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) {
 							vc.hasVstr = csq.typ.hasVstr
 						}
 						csq.vrec, csq.idx = vrec, i
-						return
+						return true
 					}
 					continue
 				}
@@ -774,7 +778,7 @@ func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) {
 			}
 			vc.typ |= csq.typ.typ
 			csq.vrec, csq.idx = vrec, i
-			return
+			return true
 		}
 	} else {
 		for i := range vrec.vcsq {
@@ -788,17 +792,18 @@ func (e *hapEngine) csqPush(csq *csqEntry, rec *vcf.Variant) {
 			if vc.typ&csqCompoundFull == 0 {
 				vc.typ |= csq.typ.typ
 				csq.vrec, csq.idx = vrec, i
-				return
+				return true
 			}
 			if vc.typ == (vc.typ | csq.typ.typ) {
 				csq.vrec, csq.idx = vrec, i
-				return
+				return true
 			}
 		}
 	}
 	csq.vrec = vrec
 	csq.idx = len(vrec.vcsq)
 	vrec.vcsq = append(vrec.vcsq, csq.typ)
+	return false
 }
 
 // kprintAAPrediction ports csq.c's kprint_aa_prediction: it appends an

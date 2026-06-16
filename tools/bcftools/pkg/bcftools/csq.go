@@ -35,6 +35,7 @@
 package bcftools
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"sort"
@@ -113,8 +114,20 @@ type CSQOptions struct {
 
 	// OutputFormat — upstream supports v/z/u/b/t. This port emits v
 	// (VCF text), z (BGZF VCF), b (BCF) and u (uncompressed BCF) via the
-	// in-tree writers; the streaming-text `t` form is not supported.
+	// in-tree writers. The streaming-text `t` form (FT_TAB_TEXT) is
+	// selected by TextOutput instead, and ignores OutputFormat.
 	OutputFormat OutputFormat
+	// TextOutput selects upstream's `-O t` streaming-text output
+	// (FT_TAB_TEXT): instead of a VCF/BCF stream, csq emits a per-
+	// consequence "CSQ\t<sample>\t<haplotype>\t<chrom>\t<pos>\t<csq>"
+	// text stream (with a leading provenance/column-header block),
+	// matching upstream csq.c's text_print_vcsq path byte-for-byte.
+	TextOutput bool
+	// TextArgv is the original CLI argv (e.g. ["-f", "ref.fa", "-g",
+	// "ann.gff", "-O", "t", "in.vcf"]) used to reproduce upstream's
+	// "# The command line was:" provenance line in text mode. It is
+	// ignored unless TextOutput is set.
+	TextArgv []string
 	// CompressLevel is the gzip level for -O z output (negative selects
 	// the package default).
 	CompressLevel int
@@ -179,11 +192,27 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 		return 0, fmt.Errorf("read VCF header: %w", err)
 	}
 
-	// Inject INFO meta-line for the consequence tag.
+	// Inject INFO meta-line for the consequence tag. In streaming-text
+	// mode (-O t) upstream never writes a VCF header, but the INFO/FORMAT
+	// description text is still required so the engine's consequence
+	// rendering matches; the lines are simply not emitted.
 	tag := opts.CustomTag
 	hdr.MetaInfo = ensureCSQInfoLine(hdr.MetaInfo, tag)
 	if len(hdr.Samples) > 0 {
 		hdr.MetaInfo = ensureCSQFormatLine(hdr.MetaInfo, tag)
+	}
+
+	regionSpecs := append([]string(nil), opts.Regions...)
+	regionSpecs = append(regionSpecs, opts.Targets...)
+
+	// The haplotype-aware engine buffers variants until the enclosing
+	// transcript boundary is crossed, so compound consequences across
+	// several records can be called jointly. Records are emitted in
+	// input order once their annotations are final.
+	opts.CustomTag = tag
+
+	if opts.TextOutput {
+		return csqText(w, vr, idx, opts, hdr, regionSpecs)
 	}
 
 	out, cleanup, err := openCSQOutput(w, opts.OutputFormat, opts.CompressLevel, opts.Threads, hdr)
@@ -195,14 +224,6 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 		return 0, fmt.Errorf("write VCF header: %w", err)
 	}
 
-	regionSpecs := append([]string(nil), opts.Regions...)
-	regionSpecs = append(regionSpecs, opts.Targets...)
-
-	// The haplotype-aware engine buffers variants until the enclosing
-	// transcript boundary is crossed, so compound consequences across
-	// several records can be called jointly. Records are emitted in
-	// input order once their annotations are final.
-	opts.CustomTag = tag
 	eng := newHapEngine(idx, opts, hdr)
 	written := 0
 	emit := func() error {
@@ -242,6 +263,90 @@ func CSQ(r io.Reader, w io.Writer, idx *CSQIndex, opts CSQOptions) (int, error) 
 	}
 	return written, nil
 }
+
+// csqText drives the engine in -O t streaming-text mode. It writes the
+// upstream provenance/column-header block, then emits each finalised
+// "CSQ\t..." text line as records flush. It returns the number of text
+// lines written (the CSQ rows, excluding the header block).
+func csqText(w io.Writer, vr *vcf.Reader, idx *CSQIndex, opts CSQOptions, hdr *vcf.Header, regionSpecs []string) (int, error) {
+	bw := bufio.NewWriter(w)
+	if err := writeCSQTextHeader(bw, opts.TextArgv); err != nil {
+		return 0, err
+	}
+
+	eng := newHapEngine(idx, opts, hdr)
+	written := 0
+	emit := func() error {
+		for _, line := range eng.outText {
+			if _, err := bw.WriteString(line); err != nil {
+				return err
+			}
+			written++
+		}
+		eng.outText = eng.outText[:0]
+		return nil
+	}
+	for {
+		v, err := vr.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return written, fmt.Errorf("read variant: %w", err)
+		}
+		if len(regionSpecs) > 0 && !regionMatches(v, regionSpecs) {
+			continue
+		}
+		if err := eng.process(v); err != nil {
+			return written, err
+		}
+		if err := emit(); err != nil {
+			return written, err
+		}
+	}
+	eng.finish()
+	if err := emit(); err != nil {
+		return written, err
+	}
+	return written, bw.Flush()
+}
+
+// writeCSQTextHeader writes the four-line header block upstream emits at
+// the top of -O t output: a version provenance line, the command line,
+// a "# LOG" line, and the "# CSQ" column header. The first two lines are
+// version/command provenance (parity tests strip them); the latter two
+// are stable.
+func writeCSQTextHeader(w io.Writer, argv []string) error {
+	if _, err := fmt.Fprintf(w, "# This file was produced by: bcftools +csq(%s+htslib-%s)\n",
+		csqProducedVersion(), csqHtslibVersion()); err != nil {
+		return err
+	}
+	var sb strings.Builder
+	sb.WriteString("# The command line was:\tbcftools +csq")
+	for _, a := range argv {
+		sb.WriteByte(' ')
+		sb.WriteString(a)
+	}
+	sb.WriteByte('\n')
+	if _, err := io.WriteString(w, sb.String()); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "# LOG\t[2]Message\n"); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w,
+		"# CSQ\t[2]Sample\t[3]Haplotype\t[4]Chromosome\t[5]Position\t[6]Consequence\n")
+	return err
+}
+
+// csqProducedVersion / csqHtslibVersion return the version strings
+// embedded in the -O t provenance line. They are placeholders for
+// parity: upstream emits its own build version here, which always
+// differs, so the parity tests strip this line. Keeping a stable,
+// non-empty value documents the format without claiming byte parity on
+// the version itself.
+func csqProducedVersion() string { return "bio_ai_experiment" }
+func csqHtslibVersion() string   { return "bio_ai_experiment" }
 
 // openCSQOutput wraps the destination writer in a variantWriter for the
 // requested -O format. Supports VCF text, VCF.gz, compressed BCF and
