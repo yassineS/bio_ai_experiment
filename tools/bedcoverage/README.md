@@ -61,10 +61,18 @@ upstream's `-abam` / `-b <bam>` modes.
   trailing-comma block lists — coverage.t1 passes), and the `-b <bam>`
   `-split` cases (coverage.t10–t13) pass byte-for-byte. CRAM input is not yet
   supported.
-- A blocked query (`-a`) under `--split` — a BED12 line or a spliced BAM
-  alignment — is rejected with a clear error rather than producing a wrong
-  answer (upstream splits the query into its blocks; that path is not yet
-  ported).
+- A blocked query (`-a`) under `--split` — a BED12 line or a spliced (`N`-CIGAR)
+  BAM alignment — is fully supported and byte-validated against upstream across
+  every mode (default / `--counts` / `--depth` / `--hist` / `--mean`, plus
+  `-s`/`-S`). With `--split`, coverage is computed only over the query's
+  sub-blocks (introns/gaps are excluded), while the reported length-of-A and the
+  per-base depth vector still span the record's full `[start,end)` — intronic
+  bases sit at depth 0 — matching upstream `coverageFile.cpp`
+  (`_queryLen = endPos - startPos`). A single B feature that straddles an intron
+  and overlaps two query blocks is counted once per block it touches, mirroring
+  upstream's `findBlockedOverlaps`/`_hitCount`. See
+  `TestUpstreamParity_SplitBlockedQuery{BED12,BAM}` (live upstream oracle) and
+  `split_unit_test.go` (binary-free).
 - `-mean` reproduces upstream's float32-accumulated output (7 decimals,
   including float32 rounding noise such as `1.3200001`) — coverage.t6 passes.
 - `-sorted` (sorted-stream fast path) is accepted as a no-op since our

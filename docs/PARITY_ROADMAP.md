@@ -35,7 +35,15 @@ gaps were closed and parity-validated against the vendored upstream binaries:
   `pkg/htsgo/alnbed` (SAM/BAM→BED12, CIGAR blocks→BED12 blocks) gives **BAM/SAM
   input** to `bedgenomecov` (`-ibam`, `-pc`, `-fs`), `bedjaccard`,
   `bedcoverage`, `bedspacing`, `bedgroupby`; **`--split`** to
-  `bedjaccard`/`bedgenomecov`/`bedcoverage`; **GFF/VCF input** to `bedmerge`
+  `bedjaccard`/`bedgenomecov`/`bedcoverage` — including **`bedcoverage --split`
+  over a *blocked query* (`-a`)**: a BED12 record or a spliced (`N`-CIGAR) BAM
+  alignment is split into its sub-blocks, overlap is counted only within those
+  blocks (introns excluded) while the reported length-of-A and per-base depth
+  vector still span the full `[start,end)`, and a B feature straddling an intron
+  is counted once per overlapped query block — byte-validated vs upstream 2.31.1
+  across default/`--counts`/`--depth`/`--hist`/`--mean` and `-s`/`-S`
+  (`TestUpstreamParity_SplitBlockedQuery{BED12,BAM}`, plus binary-free
+  `split_unit_test.go`); **GFF/VCF input** to `bedmerge`
   and **GFF** to `bedmap`. `bedclosest` gained multi-database
   `-b … -names/-filenames/-mdb` and `-s`/`-S`/`-N`. Flag-mapping bugs fixed:
   `bedsubtract -N`, `bedmerge -S`/`--delim`, `bedjaccard -S`, `bedcomplement -L`.
