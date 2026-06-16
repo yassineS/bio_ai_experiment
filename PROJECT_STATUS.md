@@ -167,9 +167,15 @@ These are deliberately not ported and should not be counted against parity:
   the `prinseq graph_png` subcommand. PNG byte-identity is N/A (pure-Go
   stdlib renderer, not Perl Cairo/GD); the graph set + plotted data series
   are the asserted parity surface.
-- **The ~30 bundled upstream bcftools `.so` plugins** — the plugin *system*
-  (a VCF-on-stdin/stdout subprocess protocol) is implemented; re-porting
-  upstream's plugin catalogue is explicit non-goal scope.
+- **The bundled upstream bcftools `.so` plugins** — **done.** All 41 in-tree
+  plugins are reimplemented in pure Go (`+<name>` dispatch ahead of the
+  subprocess fallback), each driven to CLI-to-CLI byte-parity against the real
+  upstream `bcftools` 1.23.1 binary, with every previously-"unsupported" mode
+  closed (region/target + overlap modes, write-index, multi-threshold filters,
+  split-vep, setGT/prune RNG & LD, fill-tags, the stats/format tails, gvcfz,
+  frameshifts, trio-dnm3 float models, gtisec polyploid, fixref `--use-id`, and
+  the `vrfs` pileup plugin). The VCF-on-stdin/stdout subprocess protocol is
+  retained as the fallback for user-supplied executables in any language.
 
 ## Where to look next
 

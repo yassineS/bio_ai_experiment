@@ -7,6 +7,27 @@ this repo. This file is the authoritative gap list per tool.
 full focus is to drive the tools already ported or started to complete parity.
 Every item below is about an existing tool; do not add new ports.
 
+**bcftools native-plugin tail — FULLY CLOSED (2026-06-16 wave).** Every
+remaining "not supported by the native framework" rejection across all 41
+in-tree plugins is gone, each closed and validated against the real upstream
+`bcftools` 1.23.1 binary (CLI-to-CLI oracle), with a binary-free `TestUnit*`
+layer added so the pure logic is verifiable on a clean/offline checkout:
+host-level `-r/-R/-t/-T` region/target selection **and** the
+`--regions-overlap`/`--targets-overlap` pos/record/variant modes; `-W/--write-index`;
+curly-brace `{t1,t2,t3}` multi-threshold filter expansion; the full `split-vep`
+machinery (gene-list/severity/columns-types/all transcript selectors); `setGT`
+binomial/random/read-depth (byte-exact via an in-tree `drand48` port); `prune`
+LD/r2/RD thresholding + annotation + soft-filter + rand + keep-sites; the full
+`fill-tags` surface (`-S` pops, custom `TAG=func(EXPR)`, `-l`, every built-in
+tag); the stats-plugin extras (`-o`, indel-stats `-p` PED, trio-stats `-a`,
+contrast `-f`); the format/output tails (ad-bias, remove-overlaps, tag2tag
+localized-allele, guess-ploidy `-g`, bin file-input); `gvcfz` and `frameshifts`;
+trio-dnm3 float DMM/ALM/DNG models (+ a tolerance-aware proximity harness),
+streaming targets and `-o`; gtisec arbitrary ploidy; fixref `--use-id`; and
+`vrfs` (the pileup/VAF-profile plugin, byte-exact — `mpileup2 LEGACY_MODE`
+realignment is a stub upstream). Several upstream bugs were fixed-on-port and
+documented in `docs/UPSTREAM_BUGS.md`.
+
 **Recently closed (2026-06-14 parity wave).** The remaining tractable feature
 gaps were closed and parity-validated against the vendored upstream binaries:
 
@@ -3346,13 +3367,15 @@ but with a deliberate design divergence from upstream:
   its stderr. The contract is specified in `docs/PLUGIN_PROTOCOL.md`.
   The mechanism lives in `tools/bcftools/pkg/bcftools/plugin.go` with a
   reference example plugin under `tools/bcftools/plugins/example/`.
-  **Intentionally not ported:** the ~30 bundled upstream plugins
-  (`+fill-tags`, `+split-vep`, `+setGT`, `+prune`, `+fixploidy`, ...).
-  The plugin *system* exists so users can write their own plugins;
-  re-porting upstream's plugin catalogue is explicit non-goal scope.
-  Upstream plugin sources (`plugins/*.c`) remain vendored under
-  `reference_code/bcftools/` for anyone who wants to reimplement a
-  specific one as a standalone subprocess plugin.
+  **Now fully ported:** all 41 bundled upstream plugins (`+fill-tags`,
+  `+split-vep`, `+setGT`, `+prune`, `+fixploidy`, `+vrfs`, ...) are
+  reimplemented in pure Go and dispatched by `+<name>` ahead of the
+  subprocess lookup, each driven to CLI-to-CLI byte-parity against the
+  real upstream `bcftools` 1.23.1 binary (see the "FULLY CLOSED" summary
+  at the top of this file). The subprocess protocol is retained as the
+  **fallback** for user-supplied executables in any language. Upstream
+  plugin sources (`plugins/*.c`) remain vendored under
+  `reference_code/bcftools/` as the parity reference.
 
 - **Native plugin region/target selection (`-r/-R/-t/-T`)** — **done**.
   A shared host-side filter (`tools/bcftools/pkg/bcftools/region_target.go`)
@@ -3463,8 +3486,11 @@ but with a deliberate design divergence from upstream:
     threshold; a float in `[0,1]` is scaled by the total sample count (floored,
     min 1). Byte-validated in `TestNativePluginContrastEnrichment` (both stdout
     and the full stderr summary). The `--regions-overlap`/`--targets-overlap`
-    region-matching modes remain the only unsupported contrast options (the
-    native region/target filter does not replicate htslib's overlap semantics).
+    region-matching modes are now **supported** too (pos/record/variant overlap
+    semantics implemented once in the shared `region_target.go` filter and
+    honoured across contrast/mendelian2/scatter/split/trio-dnm3; byte-validated
+    in the overlap-mode oracle suite). Contrast has no remaining unsupported
+    options.
   - Binary-free `TestUnit*` tests cover the pure helpers: `parseIndelStatsPED`,
     `parseContrastMaxAC`, the contrast enrichment folding, the trio-stats
     deferred alt-trio accounting and the shared `statsReportWriter`.
