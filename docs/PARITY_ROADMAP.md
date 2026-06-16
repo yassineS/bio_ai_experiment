@@ -2696,10 +2696,15 @@ Plus:
   byte-for-byte, so the C-`float`-vs-Go-`float64` width concern did not
   materialise on the upstream fixtures. The note is kept for awareness
   on future high-coverage inputs.
-- **`phase` MCMC chimera repair.** The v1 port uses a greedy
-  adjacent-het vote in place of upstream `phase.c`'s MCMC
-  `phase_core` loop; `-b` per-haplotype BAM split is also deferred.
-  Detail in the `phase` subsection below.
+- **`phase` deterministic-DP phasing (DONE — byte parity).**
+  Upstream `phase.c` has **no MCMC** (there is no `phase_core`): the
+  CLI default path computes an `int8 path` via the `dynaprog`
+  Viterbi recurrence and repairs chimeras in `fragphase`, fully
+  deterministically. The Go port replicates that DP, `fragphase`,
+  `genmask` and the khash/ksort emit order; the full `samtools
+  phase` stream (PS/FL/M/EV) is byte-identical to upstream on the
+  default LOD. `-b`/`-F`/`-A`/`-l`/`-e` all landed. Detail in the
+  `phase` subsection below.
 - **`targetcut` BAQ realignment with `-f` reference (DONE).** The
   HMM consensus mode is implemented (faithful port of
   `cut_target.c`, including the MAQ errmod port; see below). The
@@ -3017,43 +3022,59 @@ omitted it; and (2) `calmd` must remove a *differing* MD/NM tag and
 re-append it at the end of the aux list (leaving an *unchanged* tag in
 place), matching `bam_md.c`'s `bam_aux_del`+`bam_aux_append` ordering.
 
-**`phase` upstream-schema emit (DONE — salvaged from PR #219).** The
-byte-faithful upstream `phase` text stream (CC banner + PS / FL / M /
-EV / `//`) is ported across `phase_algo.go`, `phase_emit.go`,
+**`phase` upstream-schema emit (DONE — byte parity, deterministic DP).**
+The byte-faithful upstream `phase` text stream (CC banner + PS / FL /
+M / EV / `//`) is ported across `phase_algo.go`, `phase_emit.go`,
 `phase_frag.go`, `phase_khash.go`, `phase_ksort.go`, and
-`phase_pileup.go`. The port reproduces upstream's khash bucket
-iteration and ksort introsort orderings on identical insertion
-sequences, so EV-line ordering matches upstream exactly. The CLI sets
-`UpstreamSchema` by default. The `-l FILE` site list and `-e`
-exclusive mode (upstream `loadpos`) are implemented
-(`SiteListPath` / `ListExclusive`). Live-oracle byte-parity of the
-whole stream is asserted against the upstream binary in
-`TestLivePhase` (`tools/samtools/pkg/samtools/phase_live_oracle_test.go`).
+`phase_pileup.go`.
 
-**`phase` deferred features** (accepted on the CLI, behaviour partial):
+**There is no MCMC in upstream `phase.c`** — earlier roadmap notes
+that referred to a "Markov-chain-Monte-Carlo `phase_core` loop" and a
+"greedy same-vs-opposite vote / tied junctions emit label 0" were
+inaccurate. Upstream's actual phasing is fully deterministic:
 
-- **MCMC chimera repair**. Upstream's `phase.c` runs a
-  Markov-chain-Monte-Carlo loop (`phase_core`) that flips read-cluster
-  assignments to maximise haplotype consistency and resolve chimeric
-  reads at junctions. The v1 Go port replaces this with a greedy
-  same-vs-opposite vote between adjacent het sites. Tied junctions
-  emit label `0` (ambiguous) rather than being repaired by MCMC.
-  Tracked here; the upstream `FLAG_FIX_CHIMERA` flag is implicitly
-  disabled in v1.
-- **`-b STR` per-haplotype BAM split.** v1 emits the phased TSV
-  stream to `-o`/stdout but does not yet split the input BAM into
-  per-haplotype output BAMs (`<prefix>.0.bam` / `<prefix>.1.bam`
-  / `<prefix>.chimera.bam` in upstream). The flag is accepted on the
-  CLI and stored in `PhaseOptions.OutputPrefix` for a follow-up
-  wiring pass.
-- **`-F` use-full-read** is accepted on the CLI but is a no-op in v1
-  (we always walk the aligned slice as decoded from the CIGAR).
-- **`-A` mark-drop-in-chimera-output** is also a no-op pending the
-  `-b` split landing.
-- **`-e`/`-l` site-list mode** (only-phase-listed-sites) — **DONE
-  (salvaged from PR #219).** `-l FILE` loads a `CHROM<tab>POS` site
-  list (`loadPhaseSites`) and `-e` makes it exclusive, matching
-  upstream's `loadpos` / `FLAG_LIST_EXCL`.
+1. `phase()` (phase.c:401) builds the consensus `cns[]`, then calls
+   `count_all` → `dynaprog` (phase.c:163) — a **Viterbi-style dynamic
+   program** over `k`-bit local-haplotype states — to fill an
+   `int8_t *path` giving each het's hap0 assignment.
+2. `fragphase()` (phase.c:211) assigns each fragment to a haplotype
+   vs. `path`, and (when `FLAG_FIX_CHIMERA`, the default) finds the
+   best per-read flip point (`FLIP_PENALTY`/`FLIP_THRES`) to repair
+   chimeric reads, emitting `YF:i:1` for flipped frags.
+3. `genmask()` (phase.c:302) emits `FL` masked regions; the per-site
+   `M0/M1/M2` lines and `EV` evidence reads follow.
+
+The Go port replicates each step line-for-line, including the
+**in-place Cuckoo-style khash kick-out rehash** (`phase_khash.go`,
+`kh_resize` semantics) and the unstable `ks_introsort_rseq` so the
+EV-line tie order over equal-`vpos` fragments matches upstream
+byte-for-byte even after the fragment table grows past 16 buckets.
+`UpstreamSchema` is the CLI default; `-b`/`-F`/`-A` route through
+`dump_aln` with the in-tree `drand48` port; `-l FILE`/`-e` implement
+`loadpos`/`FLAG_LIST_EXCL`.
+
+**Empirical parity (default LOD):** byte-identical full-stream output
+vs. the upstream binary across 300 randomized complex fixtures
+(varied lengths, 4–12 hets, dense piles, chimeras, MAPQ=0 reads) and
+the `-F`/`-A`/`-k`/`-Q`/`-D` flag matrix. Pinned by `TestLivePhase`
+(simple) and `TestLivePhaseComplex` (chimera + FL + table-grow) in
+`tools/samtools/pkg/samtools/`, plus binary-free
+`TestUnitFragKhashKickoutLayout` / `TestUnitFragKhashLookupAfterGrow`.
+
+> Note: a separate `phaseLegacyTSV` / `phaseHets` path (a greedy
+> adjacent-het chainer emitting a simplified PS-label TSV) still exists
+> behind `UpstreamSchema=false`, used only by the in-process v1 unit
+> tests. It is NOT the CLI path and is not the upstream emit.
+
+**`phase` remaining gap (het CALLING at low LOD, not phasing).** When
+`-q` is lowered well below the default 37 (e.g. `-q 20`), the *set* of
+het sites called diverges from upstream: the `errmod`/`gl2cns`
+genotype-likelihood LOD differs at the margin, so a few low-confidence
+sites are included by one side and not the other. This is an
+errmod-precision matter in het *discovery*, independent of the
+phasing DP — once the het set matches (default LOD) the phasing output
+is identical. Tracked as a `bam2bcf`/`errmod`-style numeric-precision
+item, not a `phase`-algorithm gap.
 
 **`targetcut` HMM consensus mode** (implemented). The Go port is now
 a faithful translation of upstream `cut_target.c`: per-position

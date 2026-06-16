@@ -447,6 +447,24 @@ binary in `TestLivePhaseBamSplit` (clean, symmetric/repaired chimera, and the
 flip` chimera bucket can never fire, so a read that the default routes to
 `PREFIX.chimera.bam` instead lands in a haplotype bucket.
 
+**Phasing is deterministic (no MCMC).** Upstream `phase.c` has no
+Markov-chain-Monte-Carlo step. The per-site haplotype assignment comes
+from a Viterbi-style dynamic program (`dynaprog`, phase.c:163) over `k`-bit
+local-haplotype states, followed by the deterministic `fragphase`
+chimera-repair scan. The Go port replicates that DP, `fragphase`, `genmask`
+(the `FL` masked regions) and the khash/ksort emit order — including the
+in-place Cuckoo-style khash kick-out rehash that keeps the `EV` tie order
+over equal-`vpos` fragments byte-identical to upstream after the fragment
+table grows. The full stream (`PS`/`FL`/`M`/`EV`) is verified byte-for-byte
+against the upstream binary on simple (`TestLivePhase`) and complex
+chimera+`FL`+table-grow (`TestLivePhaseComplex`) fixtures, and the khash
+rehash has binary-free unit tests (`TestUnitFragKhash*`).
+
+> Known gap: lowering `-q` far below the default 37 (e.g. `-q 20`) can make
+> the *set* of het sites called diverge from upstream — an `errmod`/`gl2cns`
+> genotype-likelihood-LOD precision difference in het *discovery*, not in
+> the phasing DP. At the default LOD the het set and the phasing match.
+
 ## Deviations from upstream samtools
 
 The following are intentionally out of scope or deferred and will land in
