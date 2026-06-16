@@ -236,28 +236,75 @@ func (h *Header) WriteTo(w io.Writer) (int64, error) {
 	return total, bw.Flush()
 }
 
-// Text returns the SAM-encoded header as a string.
+// Text returns the SAM-encoded header as a string, preserving the verbatim
+// input order of the lines. Use TextCanonical for htslib's grouped emission
+// order.
 func (h *Header) Text() string {
 	var sb strings.Builder
 	for _, line := range h.Lines {
-		sb.WriteByte('@')
-		sb.WriteString(line.Tag)
-		if line.Tag == "CO" {
-			if len(line.Fields) > 0 {
-				sb.WriteByte('\t')
-				sb.WriteString(line.Fields[0].Value)
-			}
-		} else {
-			for _, f := range line.Fields {
-				sb.WriteByte('\t')
-				sb.WriteString(f.Tag)
-				sb.WriteByte(':')
-				sb.WriteString(f.Value)
-			}
-		}
-		sb.WriteByte('\n')
+		writeHeaderLine(&sb, line)
 	}
 	return sb.String()
+}
+
+// TextCanonical returns the SAM-encoded header with @-lines grouped into
+// htslib's canonical emission order rather than verbatim input order: the @HD
+// line(s) first, then @CO comment lines, then @PG lines, then @RG lines, and
+// finally @SQ lines, with every other (user-defined) line type appended last.
+// Within each group the original input order is preserved, so @SQ reference
+// order and @PG / @RG order are unchanged.
+//
+// This mirrors htslib's header rebuild (sam_hrecs_rebuild_text), which is the
+// order samtools emits into BAM and CRAM headers. Text() keeps the verbatim
+// input order for byte-faithful SAM round-tripping; TextCanonical() is used
+// where a container format (CRAM) needs to byte-match upstream's reordered
+// header.
+func (h *Header) TextCanonical() string {
+	// htslib's canonical grouping order. Any line type not listed here is
+	// emitted after these groups, in input order, so nothing is dropped.
+	order := []string{"HD", "CO", "PG", "RG", "SQ"}
+	rank := make(map[string]int, len(order))
+	for i, t := range order {
+		rank[t] = i
+	}
+	// Stable-bucket the lines by type while preserving per-group input order.
+	groups := make([][]HeaderLine, len(order)+1)
+	for _, line := range h.Lines {
+		if r, ok := rank[line.Tag]; ok {
+			groups[r] = append(groups[r], line)
+		} else {
+			groups[len(order)] = append(groups[len(order)], line)
+		}
+	}
+	var sb strings.Builder
+	for _, group := range groups {
+		for _, line := range group {
+			writeHeaderLine(&sb, line)
+		}
+	}
+	return sb.String()
+}
+
+// writeHeaderLine appends one serialised header line (including the trailing
+// newline) to sb. It is shared by Text and TextCanonical so the two stay in
+// lock-step on the per-line encoding and differ only in line ordering.
+func writeHeaderLine(sb *strings.Builder, line HeaderLine) {
+	sb.WriteByte('@')
+	sb.WriteString(line.Tag)
+	if line.Tag == "CO" {
+		if len(line.Fields) > 0 {
+			sb.WriteByte('\t')
+			sb.WriteString(line.Fields[0].Value)
+		}
+	} else {
+		for _, f := range line.Fields {
+			sb.WriteByte('\t')
+			sb.WriteString(f.Tag)
+			sb.WriteByte(':')
+			sb.WriteString(f.Value)
+		}
+	}
+	sb.WriteByte('\n')
 }
 
 // RefIndex returns the position of the named reference in h.Refs, or -1 if

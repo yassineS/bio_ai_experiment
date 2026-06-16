@@ -100,7 +100,11 @@ func Calmd(in io.Reader, out io.Writer, refPath string, opts CalmdOptions, warnW
 
 	var w sam.Writer
 	if opts.OutputBAM || opts.Uncompressed {
-		w = sam.NewBAMWriter(out)
+		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{Uncompressed: opts.Uncompressed})
+		if err != nil {
+			return err
+		}
+		w = bw
 	} else {
 		w = sam.NewSAMWriter(out)
 	}

@@ -90,9 +90,10 @@ bedintersect -a genes.bed -b peaks.bed > overlaps.bed
 - `--cram-ref FILE` - CRAM reference FASTA. A CRAM query writes **CRAM** output
   (rather than BAM) only when this flag, or the `CRAM_REFERENCE` environment
   variable, names a reference, matching upstream.
-- `-ubam` - Accepted for compatibility (requests uncompressed BAM). Upstream's
-  format choice still follows the CRAM reference, so a CRAM query with a
-  reference stays CRAM under `-ubam`; our BAM output is always BGZF-compressed.
+- `-ubam` - Write uncompressed (level-0) BAM output. The BAM is still
+  BGZF-framed, just with stored DEFLATE blocks. Upstream's format choice still
+  follows the CRAM reference, so a CRAM query with a reference stays CRAM under
+  `-ubam`; `-ubam` then affects only the BAM compression mode.
 - `-m, --min-overlap INT` - Minimum overlap in bp (bedintersect extension,
   default 1).
 - `-d, --distance` - Report distance to nearest B feature (bedintersect
@@ -450,8 +451,10 @@ gating exactly:
   the `--cram-ref FILE` flag or the `CRAM_REFERENCE` environment variable.
   Without a reference a CRAM query writes **BAM**, exactly like upstream (whose
   writer opens htslib mode `wc` when a reference is set and `wb` otherwise). The
-  `-ubam` flag does not change this — upstream selects the format from the
-  reference alone — so a CRAM query with a reference stays CRAM under `-ubam`.
+  `-ubam` flag does not change the format choice — upstream selects the format
+  from the reference alone — so a CRAM query with a reference stays CRAM under
+  `-ubam`; `-ubam` then only switches the BAM path to uncompressed (level-0)
+  BGZF blocks.
 
 The BAM output is decoded and validated byte-for-byte (as SAM) against the live
 upstream binary over the upstream BAM fixtures
@@ -479,19 +482,15 @@ without `-bed`:
   columns to add in BAM mode).
 
 `-bed` forces BED12 text output for a BAM/CRAM query instead (matching upstream's
-`-bed` BED output byte-for-byte). The output BAM is BGZF-compressed; `-ubam`
-(uncompressed BAM) is accepted but always emits compressed BAM (the `sam` writer
-has no uncompressed-BAM mode). CRAM output is reference-free CRAM v3.0 (a
+`-bed` BED output byte-for-byte). The output BAM is BGZF-compressed by default;
+`-ubam` switches it to uncompressed (level-0) BAM — still BGZF-framed, with
+stored DEFLATE blocks. CRAM output is reference-free CRAM v3.0 (a
 self-contained file that decodes without an external reference); its SEQ/QUAL is
 carried verbatim from the records read out of the query, so a decode of our CRAM
 matches a decode of upstream's record-for-record.
 
 ## Limitations
 
-- **Uncompressed BAM (`-ubam`).** Accepted but always emits BGZF-compressed BAM;
-  the `pkg/htsgo/sam` writer has no uncompressed-BAM mode. Upstream's `-ubam`
-  compression hook is itself a no-op, and the decoded records are identical
-  either way, so this does not affect record-level parity.
 - Loads the B file(s) completely into memory (necessary for random access).
 - The chromosome naming-convention warning is emitted before the data rather
   than interleaved into it; when stdout and stderr are captured separately the

@@ -313,6 +313,43 @@ func TestLiveCalmdKnobs(t *testing.T) {
 	}
 }
 
+// TestLiveViewUncompressedBAM verifies `view -u` produces a BAM that upstream
+// samtools decodes to exactly the same records as our compressed `view -b`,
+// and whose first BGZF data block is a stored (level-0) DEFLATE block — the
+// defining property of uncompressed BAM.
+func TestLiveViewUncompressedBAM(t *testing.T) {
+	live := upstreamSamtools(t)
+	ours := ourSamtoolsBinary(t)
+	dir := t.TempDir()
+
+	samPath := filepath.Join(dir, "in.sam")
+	if err := os.WriteFile(samPath, []byte(coverageHistFixtureSAM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Our uncompressed BAM (view -u) and our compressed BAM (view -b).
+	unc, _ := runSamtoolsSubfeatures(t, ours, "view", "-u", samPath)
+	comp, _ := runSamtoolsSubfeatures(t, ours, "view", "-b", samPath)
+
+	if len(unc) < 19 {
+		t.Fatalf("uncompressed BAM too short: %d bytes", len(unc))
+	}
+	// The deflate payload starts at offset 18 of the first BGZF block; BTYPE
+	// (bits 1-2 of that byte) == 0 means a stored, level-0 block.
+	if btype := (unc[18] >> 1) & 0x3; btype != 0 {
+		t.Errorf("view -u first data block BTYPE = %d, want 0 (stored)", btype)
+	}
+	if btype := (comp[18] >> 1) & 0x3; btype == 0 {
+		t.Errorf("view -b first data block is stored (BTYPE 0); the -u check is not discriminating")
+	}
+
+	// Upstream samtools must decode our uncompressed BAM to the same records
+	// as our compressed BAM.
+	if got, want := viewSAMRecords(t, live, unc), viewSAMRecords(t, live, comp); got != want {
+		t.Fatalf("view -u records differ from view -b after upstream decode:\n-u:\n%s\n-b:\n%s", got, want)
+	}
+}
+
 // dropPGLines removes @PG header lines so the Go port's intentional omission
 // of @PG provenance does not perturb a text comparison.
 func dropPGLines(b []byte) string {

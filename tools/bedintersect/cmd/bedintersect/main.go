@@ -54,8 +54,9 @@ Input / sorting options:
   -bed           With BAM/CRAM input, write output as BED instead of the default
                  binary alignments (a BAM/CRAM query writes BAM, or CRAM when a
                  reference is given, by default).
-  -ubam          Request uncompressed BAM output (accepted; the format choice
-                 still follows the CRAM reference, matching upstream).
+  -ubam          Write uncompressed (level-0) BAM output. The format choice
+                 still follows the CRAM reference, matching upstream; -ubam
+                 affects only the BAM compression mode.
   --cram-ref FA  CRAM reference FASTA. A CRAM query writes CRAM output (rather
                  than BAM) only when this (or CRAM_REFERENCE) is set.
   -names ...     Aliases for each B file (printed instead of a numeric file id).
@@ -124,13 +125,12 @@ type options struct {
 	// "emit BED" for a BAM/CRAM query file.
 	bedOutput bool
 
-	// uncompressedBAM records the -ubam flag. Upstream sets it to select an
-	// uncompressed BAM writer, but its SaveAlignment compression-mode hook is a
-	// no-op and the BAM/CRAM format choice is driven solely by the CRAM
-	// reference, so -ubam does NOT turn a CRAM query into BAM (a CRAM query with
-	// a reference still writes CRAM under -ubam). We accept the flag for
-	// compatibility; our BAM writer is always BGZF-compressed (the sam package
-	// has no uncompressed-BAM mode), so it is effectively a no-op here too.
+	// uncompressedBAM records the -ubam flag. It selects an uncompressed
+	// (level-0) BAM writer for the binary-output path: the BAM is still
+	// BGZF-framed, just with stored DEFLATE blocks. As upstream, -ubam does NOT
+	// turn a CRAM query into BAM — the BAM/CRAM format choice is driven solely
+	// by the CRAM reference, so a CRAM query with a reference still writes CRAM
+	// under -ubam, and -ubam then only affects the (BAM) compression mode.
 	uncompressedBAM bool
 
 	// cramRef names the CRAM reference FASTA. Upstream takes it from the global
@@ -304,7 +304,7 @@ func main() {
 		// default behaviour. -header is ignored here (the alignment file carries
 		// its own header); the emitBAMOutputWarnings call above has already issued
 		// the upstream warning when -header/-wb/-loj were given.
-		alnOut := bedintersect.AlnOutputOptions{Format: outputFormat, ReferenceFASTA: opts.cramRef}
+		alnOut := bedintersect.AlnOutputOptions{Format: outputFormat, ReferenceFASTA: opts.cramRef, Uncompressed: opts.uncompressedBAM}
 		if _, err := bedintersect.IntersectBinaryOutput(readerA, readersB, writer, iopts, alnOut); err != nil {
 			fmt.Fprintf(os.Stderr, "Error finding intersections: %v\n", err)
 			os.Exit(1)

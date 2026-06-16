@@ -130,6 +130,7 @@ Usage:
 
 Options:
   -b, --bam                   Output BAM (default text SAM).
+  -u, --uncompressed          Output uncompressed (level-0) BAM (implies -b).
   -C, --cram                  Output CRAM (reference-free, v3.0).
   -O, --output-fmt FMT        Force output format ('sam', 'bam' or 'cram').
       --output-fmt-option OPT CRAM output tuning, KEY=VALUE form. Repeatable.
@@ -207,6 +208,8 @@ func runView(args []string) int {
 	)
 	cliflag.BoolVar(fs, &outBAM, "b", "bam", false, "Output BAM")
 	cliflag.BoolVar(fs, &outCRAM, "C", "cram", false, "Output CRAM")
+	var outUncomp bool
+	cliflag.BoolVar(fs, &outUncomp, "u", "uncompressed", false, "Uncompressed BAM output (implies -b)")
 	// -S is upstream samtools' legacy "input is SAM" switch (sam_view.c:999
 	// `case 'S': break;`). Modern samtools auto-detects the input format, so
 	// the flag is a no-op kept for backward compatibility — and so the common
@@ -301,6 +304,12 @@ func runView(args []string) int {
 	if outCRAM {
 		outBAM = false
 	}
+	// -u (uncompressed) implies BAM output, matching upstream samtools view,
+	// where -u sets the output format to BAM at compression level 0. An
+	// explicit CRAM request still wins; -u then only affects the (BAM) path.
+	if outUncomp && !outCRAM {
+		outBAM = true
+	}
 
 	// --output-fmt-option carries KEY=VALUE CRAM tuning knobs. Only qbin
 	// (lossy quality-score binning) is recognised today; an unknown key is
@@ -314,6 +323,7 @@ func runView(args []string) int {
 	opts := samtools.ViewOptions{
 		OutputBAM:          outBAM,
 		OutputCRAM:         outCRAM,
+		Uncompressed:       outUncomp,
 		WithHeader:         withHdr,
 		HeaderOnly:         hdrOnly,
 		Count:              countOnly,

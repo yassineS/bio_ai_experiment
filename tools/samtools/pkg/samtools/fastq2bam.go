@@ -140,7 +140,11 @@ func FastqImport(out io.Writer, opts FastqImportOptions) (int, error) {
 
 	var w sam.Writer
 	if opts.OutputBAM || opts.Uncompressed {
-		w = sam.NewBAMWriter(out)
+		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{Uncompressed: opts.Uncompressed})
+		if err != nil {
+			return 0, err
+		}
+		w = bw
 	} else {
 		w = sam.NewSAMWriter(out)
 	}

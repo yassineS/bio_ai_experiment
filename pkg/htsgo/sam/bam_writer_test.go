@@ -2,9 +2,182 @@ package sam
 
 import (
 	"bytes"
+	"compress/gzip"
 	"io"
 	"testing"
 )
+
+// bamWriterTestHeader and bamWriterTestRecords build a tiny but non-empty BAM
+// payload for the uncompressed-mode tests.
+func bamWriterTestHeader() *Header {
+	h := &Header{Refs: []Reference{{Name: "chr1", Length: 1000}}}
+	h.Lines = []HeaderLine{
+		{Tag: "HD", Fields: []HeaderField{{Tag: "VN", Value: "1.6"}}},
+		{Tag: "SQ", Fields: []HeaderField{{Tag: "SN", Value: "chr1"}, {Tag: "LN", Value: "1000"}}},
+	}
+	return h
+}
+
+func bamWriterTestRecords() []*Record {
+	return []*Record{
+		{QName: "r1", RName: "chr1", Pos: 10, MapQ: 60, Seq: "ACGTA", Qual: []byte{30, 31, 32, 33, 34}, Cigar: mustCigar("5M")},
+		{QName: "r2", RName: "chr1", Pos: 20, MapQ: 40, Seq: "TTGGC", Qual: []byte{20, 21, 22, 23, 24}, Cigar: mustCigar("5M")},
+	}
+}
+
+// firstDeflateBlockIsStored decodes the first BGZF data block out of a BAM
+// stream and reports whether its first DEFLATE block is a stored (BTYPE=00,
+// level-0) block. The BGZF gzip framing is a fixed 18-byte header (12-byte
+// gzip header + 6-byte BC subfield) followed by the raw DEFLATE payload, so the
+// deflate bytes start at offset 18 of each block. A DEFLATE block header is
+// BFINAL (1 bit) then BTYPE (2 bits); BTYPE==00 means a stored block.
+func firstDeflateBlockIsStored(t *testing.T, bam []byte) bool {
+	t.Helper()
+	if len(bam) < 18 {
+		t.Fatalf("BAM stream too short: %d bytes", len(bam))
+	}
+	// The first byte of the deflate payload carries BFINAL (bit 0) and BTYPE
+	// (bits 1-2). Stored blocks have BTYPE == 0.
+	deflateByte := bam[18]
+	btype := (deflateByte >> 1) & 0x3
+	return btype == 0
+}
+
+// TestBAMWriterUncompressedRoundTrip verifies the uncompressed-BAM mode
+// (BAMWriterOptions.Uncompressed) produces a valid BAM that round-trips through
+// our reader and the stdlib gzip reader, and whose BGZF data blocks are stored
+// (level-0) DEFLATE blocks rather than compressed ones.
+func TestBAMWriterUncompressedRoundTrip(t *testing.T) {
+	h := bamWriterTestHeader()
+	recs := bamWriterTestRecords()
+
+	var unc bytes.Buffer
+	bw, err := NewBAMWriterOptions(&unc, BAMWriterOptions{Uncompressed: true})
+	if err != nil {
+		t.Fatalf("NewBAMWriterOptions: %v", err)
+	}
+	if err := bw.WriteHeader(h); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	for _, r := range recs {
+		if err := bw.Write(r); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if err := bw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Round-trip through our BAM reader.
+	br, err := NewBAMReader(bytes.NewReader(unc.Bytes()))
+	if err != nil {
+		t.Fatalf("NewBAMReader: %v", err)
+	}
+	if got := br.Header(); len(got.Refs) != 1 || got.Refs[0].Name != "chr1" {
+		t.Fatalf("header refs after round-trip: %+v", got.Refs)
+	}
+	var gotRecs []*Record
+	for {
+		r, err := br.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		gotRecs = append(gotRecs, r)
+	}
+	if len(gotRecs) != len(recs) {
+		t.Fatalf("record count = %d, want %d", len(gotRecs), len(recs))
+	}
+	for i := range recs {
+		if gotRecs[i].QName != recs[i].QName || gotRecs[i].Pos != recs[i].Pos {
+			t.Errorf("record %d = %q@%d, want %q@%d", i, gotRecs[i].QName, gotRecs[i].Pos, recs[i].QName, recs[i].Pos)
+		}
+	}
+
+	// The BGZF blocks are ordinary gzip members and must decode with the
+	// stdlib gzip reader to the same plaintext as a compressed BAM would.
+	gz, err := gzip.NewReader(bytes.NewReader(unc.Bytes()))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	gz.Multistream(true)
+	plain, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatalf("gzip ReadAll: %v", err)
+	}
+	if !bytes.HasPrefix(plain, BAMMagic) {
+		t.Errorf("decoded plaintext does not start with BAM magic: % x", plain[:min(4, len(plain))])
+	}
+
+	// The defining property of uncompressed BAM: the data blocks are stored
+	// (level-0) DEFLATE blocks.
+	if !firstDeflateBlockIsStored(t, unc.Bytes()) {
+		t.Errorf("uncompressed BAM first data block is not a stored DEFLATE block")
+	}
+
+	// Cross-check: a default (compressed) BAM of the same input must NOT be a
+	// stored block, so the test above is actually discriminating.
+	var comp bytes.Buffer
+	cw := NewBAMWriter(&comp)
+	if err := cw.WriteHeader(h); err != nil {
+		t.Fatalf("compressed WriteHeader: %v", err)
+	}
+	for _, r := range recs {
+		if err := cw.Write(r); err != nil {
+			t.Fatalf("compressed Write: %v", err)
+		}
+	}
+	if err := cw.Close(); err != nil {
+		t.Fatalf("compressed Close: %v", err)
+	}
+	if firstDeflateBlockIsStored(t, comp.Bytes()) {
+		t.Errorf("default compressed BAM unexpectedly used a stored DEFLATE block")
+	}
+}
+
+// TestBAMWriterOptionsThreadsUncompressed verifies the threaded uncompressed
+// path also produces stored, round-trippable BGZF blocks.
+func TestBAMWriterOptionsThreadsUncompressed(t *testing.T) {
+	h := bamWriterTestHeader()
+	recs := bamWriterTestRecords()
+	var buf bytes.Buffer
+	bw, err := NewBAMWriterOptions(&buf, BAMWriterOptions{Uncompressed: true, Threads: 2})
+	if err != nil {
+		t.Fatalf("NewBAMWriterOptions: %v", err)
+	}
+	if err := bw.WriteHeader(h); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	for _, r := range recs {
+		if err := bw.Write(r); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if err := bw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	br, err := NewBAMReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("NewBAMReader: %v", err)
+	}
+	n := 0
+	for {
+		if _, err := br.Read(); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		n++
+	}
+	if n != len(recs) {
+		t.Fatalf("threaded uncompressed record count = %d, want %d", n, len(recs))
+	}
+	if !firstDeflateBlockIsStored(t, buf.Bytes()) {
+		t.Errorf("threaded uncompressed BAM first data block is not stored")
+	}
+}
 
 // TestBAMWriteAllAuxSubtypes exercises every aux subtype on the writer
 // (including the fixed-width 'I'/'C'/'s'/'S' types and every B subtype)
