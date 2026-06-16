@@ -20,15 +20,22 @@
 // expansion is supported too: such an expression is expanded into one filter per
 // element (and a cartesian product across multiple groups), each tallied into
 // its own FLT* report section and streaming its own MERR / TRANSMITTED debug
-// lines interleaved per record. The -a/--alt-trios accounting, region/target
-// index-jumping and the -o file output remain unsupported. The -d/--debug MERR
-// and TRANSMITTED line emission and the -v/--verbosity passthrough are
-// implemented faithfully.
+// lines interleaved per record.
+//
+// The -a/--alt-trios accounting is supported: with a non-zero -a INT the
+// singleton/doubleton (transmission-rate) tally counts an allele only when it
+// appears in at most that many alternate trios at the site, replicating
+// trio-stats.c's deferred alt_trios bookkeeping (the increments, and any -d
+// transmitted debug lines, are applied after the per-trio loop). The report can
+// also be written to a file with -o/--output FILE; the bytes are identical to
+// the stdout form. The -d/--debug MERR and TRANSMITTED line emission and the
+// -v/--verbosity passthrough are implemented faithfully.
 package bcftools
 
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -73,10 +80,28 @@ type trioStatsPlugin struct {
 	out     io.Writer
 	argv    []string
 
+	// maxAltTrios is -a/--alt-trios: when non-zero, the singleton/doubleton
+	// (transmission-rate) tally counts an allele only if it appears in at most
+	// this many alternate trios at the site, mirroring trio-stats.c's deferred
+	// alt_trios accounting. Zero (the default) means unlimited: every alternate
+	// trio is counted immediately.
+	maxAltTrios int
+
+	outputFile string // -o/--output FILE; "" or "-" means stdout
+	closeOut   func() error
+
 	// filters holds one entry per expanded threshold (one for the default "all"
 	// or a single -i/-e expression, N for a curly-brace expansion).
 	filters []*trioStatsFilter
 	stderr  io.Writer
+}
+
+// altTrio is one (trio index, is-singleton) record deferred for an allele while
+// -a/--alt-trios accounting is active, mirroring the alt_trios_t.idx/sd_bset
+// pair in trio-stats.c.
+type altTrio struct {
+	itrio       int
+	isSingleton bool
 }
 
 // SetStderr wires the host stderr writer the "Collecting data ..." note uses.
@@ -127,9 +152,9 @@ func (p *trioStatsPlugin) About() string {
 // Parallel reports false: the per-trio accumulators are updated serially.
 func (p *trioStatsPlugin) Parallel() bool { return false }
 
-// Init parses the supported options (-p/-P, -d, -v), resolves the trios against
-// the header and rejects the modes that need htslib machinery (filters,
-// alt-trios accounting, region jumps, file output).
+// Init parses the supported options (-p/-P, -a, -d, -o, -v), resolves the trios
+// against the header, opens the -o report file when one is given, and prints the
+// comment block + CMD line ahead of the streamed debug lines.
 func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
 	var pedFile, pfm string
 	var filterExpr string
@@ -149,9 +174,20 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 			filterExclude = a == "-e" || a == "--exclude"
 			haveFilter = true
 		case "-a", "--alt-trios":
-			return nil, fmt.Errorf("trio-stats: the --alt-trios accounting (-a) is not supported by the native plugin")
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("trio-stats: %s requires a value", a)
+			}
+			i++
+			// Upstream parses -a with atoi(), which yields 0 for unparsable input
+			// (silently treated as the unlimited default); mirror that leniency.
+			n, _ := strconv.Atoi(args[i])
+			p.maxAltTrios = n
 		case "-o", "--output":
-			return nil, fmt.Errorf("trio-stats: writing to a file (-o) is not supported by the native plugin; use stdout")
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("trio-stats: %s requires a value", a)
+			}
+			i++
+			p.outputFile = args[i]
 		case "-p", "--ped":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("trio-stats: %s requires a value", a)
@@ -239,6 +275,18 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 			}
 		}
 	}
+
+	// Resolve the report destination. Upstream opens fp_out in init_data() and
+	// uses it for the header, the streamed MERR / TRANSMITTED lines and the final
+	// report alike; with -o/--output everything therefore goes to the file. The
+	// bytes are identical to the stdout form (the CMD line echoes the verbatim
+	// argv, including -o, in both cases).
+	w, closeFn, err := statsReportWriter(p.outputFile, p.out)
+	if err != nil {
+		return nil, fmt.Errorf("trio-stats: %w", err)
+	}
+	p.out = w
+	p.closeOut = closeFn
 
 	// Upstream prints the comment block and the CMD line in init_data(), before
 	// any record is processed, so the streamed MERR / TRANSMITTED debug lines
@@ -334,6 +382,19 @@ func (p *trioStatsPlugin) processOne(v *vcf.Variant, flt *trioStatsFilter) error
 		ref = acgt2int(v.Ref[0])
 	}
 	starAllele := starAlleleIndex(v)
+
+	// -a/--alt-trios deferred accounting (per record). When active, the
+	// singleton/doubleton increments are not applied immediately; instead each
+	// allele records which trios contributed (and whether as a singleton), plus
+	// the total number of trios carrying it (altNalt). After the per-trio loop,
+	// only alleles present in at most maxAltTrios trios are tallied — mirroring
+	// trio-stats.c's alt_trios_reset / alt_trios_add / final deferred loop.
+	var altTrios [][]altTrio
+	var altNalt []int
+	if p.maxAltTrios != 0 {
+		altTrios = make([][]altTrio, nAllele)
+		altNalt = make([]int, nAllele)
+	}
 
 	acTrio := make([]int, nAllele)
 	for ti := range p.trios {
@@ -470,16 +531,21 @@ func (p *trioStatsPlugin) processOne(v *vcf.Variant, flt *trioStatsFilter) error
 			if acTrio[j] == 0 {
 				continue
 			}
+			if p.maxAltTrios != 0 {
+				altNalt[j]++ // this trio carries allele j
+			}
 			if acTrio[j] == 1 { // singleton (in parent) or novel (in child)
 				if alsChild[0] == j || alsChild[1] == j {
 					stats.nnovel++
-				} else {
+				} else if p.maxAltTrios == 0 {
 					stats.nsingleton++
 					if p.verbose&trioVerboseTransmitted != 0 {
 						fmt.Fprintf(p.out, "TRANSMITTED\t%s\t%d\t%s\t%s\t%s\tNO\n",
 							v.Chrom, v.Pos,
 							p.hdr.Samples[trio.child], p.hdr.Samples[trio.father], p.hdr.Samples[trio.mother])
 					}
+				} else {
+					altTrios[j] = append(altTrios[j], altTrio{itrio: ti, isSingleton: true})
 				}
 			} else if acTrio[j] == 2 { // possibly a doubleton
 				if (alsChild[0] != j && alsChild[1] != j) || (alsChild[0] == j && alsChild[1] == j) {
@@ -488,11 +554,46 @@ func (p *trioStatsPlugin) processOne(v *vcf.Variant, flt *trioStatsFilter) error
 				if (alsFather[0] == j && alsFather[1] == j) || (alsMother[0] == j && alsMother[1] == j) {
 					continue
 				}
-				stats.ndoubleton++
-				if p.verbose&trioVerboseTransmitted != 0 {
-					fmt.Fprintf(p.out, "TRANSMITTED\t%s\t%d\t%s\t%s\t%s\tYES\n",
-						v.Chrom, v.Pos,
-						p.hdr.Samples[trio.child], p.hdr.Samples[trio.father], p.hdr.Samples[trio.mother])
+				if p.maxAltTrios == 0 {
+					stats.ndoubleton++
+					if p.verbose&trioVerboseTransmitted != 0 {
+						fmt.Fprintf(p.out, "TRANSMITTED\t%s\t%d\t%s\t%s\t%s\tYES\n",
+							v.Chrom, v.Pos,
+							p.hdr.Samples[trio.child], p.hdr.Samples[trio.father], p.hdr.Samples[trio.mother])
+					}
+				} else {
+					altTrios[j] = append(altTrios[j], altTrio{itrio: ti, isSingleton: false})
+				}
+			}
+		}
+	}
+
+	// Apply the deferred -a/--alt-trios singleton/doubleton tally: only alleles
+	// present in at most maxAltTrios trios at this site are counted, mirroring
+	// trio-stats.c's final `for (j...) { if (!nsd || nalt>max_alt_trios) continue; ... }`.
+	if p.maxAltTrios != 0 {
+		for j := 0; j < nAllele; j++ {
+			sd := altTrios[j]
+			if len(sd) == 0 || altNalt[j] > p.maxAltTrios {
+				continue
+			}
+			for _, e := range sd {
+				trio := p.trios[e.itrio]
+				stats := &flt.stats[e.itrio]
+				if e.isSingleton {
+					stats.nsingleton++
+					if p.verbose&trioVerboseTransmitted != 0 {
+						fmt.Fprintf(p.out, "TRANSMITTED\t%s\t%d\t%s\t%s\t%s\tNO\n",
+							v.Chrom, v.Pos,
+							p.hdr.Samples[trio.child], p.hdr.Samples[trio.father], p.hdr.Samples[trio.mother])
+					}
+				} else {
+					stats.ndoubleton++
+					if p.verbose&trioVerboseTransmitted != 0 {
+						fmt.Fprintf(p.out, "TRANSMITTED\t%s\t%d\t%s\t%s\t%s\tYES\n",
+							v.Chrom, v.Pos,
+							p.hdr.Samples[trio.child], p.hdr.Samples[trio.father], p.hdr.Samples[trio.mother])
+					}
 				}
 			}
 		}
@@ -500,8 +601,12 @@ func (p *trioStatsPlugin) processOne(v *vcf.Variant, flt *trioStatsFilter) error
 	return nil
 }
 
-// Destroy prints the report, mirroring report_stats() in trio-stats.c.
+// Destroy prints the report, mirroring report_stats() in trio-stats.c, then
+// closes the -o/--output file when one was opened.
 func (p *trioStatsPlugin) Destroy() error {
+	if p.closeOut != nil {
+		defer p.closeOut()
+	}
 	if p.out == nil {
 		return nil
 	}

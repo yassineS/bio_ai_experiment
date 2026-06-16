@@ -11,9 +11,20 @@
 // The -o/-O options select the output file and container, and -W/--write-index
 // indexes that file (a CSI by default, a TBI for -W=tbi on VCF.gz) exactly as
 // upstream does; -W to stdout is rejected with upstream's "failed to initialise
-// index for -" error. The rare-allele enrichment mode (-f/--max-allele-freq)
-// still requires htslib machinery the native pipeline does not provide and
-// remains unsupported.
+// index for -" error.
+//
+// The rare-allele enrichment mode (-f/--max-allele-freq) is supported: the
+// per-site VCF output and PASSOC/FASSOC/NASSOC/NOVEL* annotations are unchanged,
+// and in addition the region-wide pooled minor-allele counts (folded over the
+// records whose minor allele is at or below the -f threshold, exactly as
+// contrast.c does) feed a second stderr summary line "max_AC/PASSOC/FASSOC/
+// NASSOC:" with the Fisher's exact probability and control/case non-REF
+// fractions. An integer -f argument is a raw allele-count threshold; a float in
+// [0,1] is an allele-frequency threshold scaled by the total sample count.
+//
+// The --regions-overlap / --targets-overlap region-matching modes remain
+// unsupported (the native region/target filter does not replicate htslib's
+// overlap semantics).
 package bcftools
 
 import (
@@ -46,6 +57,18 @@ type contrastPlugin struct {
 	forceSample bool
 
 	ntotal, nskipped, ntested, ncaseAl, ncaseGt int
+
+	// Rare-allele enrichment mode (-f/--max-allele-freq). maxAC is the resolved
+	// minor-allele-count threshold (an integer argument is taken verbatim; a
+	// float in [0,1] is multiplied by the total sample count, floored, min 1).
+	// maxACSet records that -f was given. enrichNals accumulates, region-wide,
+	// the control-ref/control-alt/case-ref/case-alt allele counts of the records
+	// whose minor allele is at or below the threshold, mirroring contrast.c's
+	// args->nals folding. The accumulated counts feed the extra stderr summary
+	// line printed at end of run.
+	maxAC      int
+	maxACSet   bool
+	enrichNals [4]int
 
 	filter *pluginFilter // compiled -i/-e site-level pre-filter, nil if none
 
@@ -108,6 +131,7 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 	var controlStr, caseStr string
 	var filterExpr string
 	var filterExclude, haveFilter bool
+	var maxACStr string
 	p.format = OutputVCF
 	p.clevel = -1
 	for i := 0; i < len(args); i++ {
@@ -160,7 +184,11 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 			filterExclude = a == "-e" || a == "--exclude"
 			haveFilter = true
 		case "-f", "--max-allele-freq":
-			return nil, fmt.Errorf("contrast: the rare-allele enrichment mode (-f) is not supported by the native plugin")
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			maxACStr = v
 		case "--regions-overlap", "--targets-overlap":
 			return nil, fmt.Errorf("contrast: %s is not supported by the native plugin", a)
 		case "-o", "--output":
@@ -242,6 +270,15 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 		p.filter = f
 	}
 
+	if maxACStr != "" {
+		ac, err := parseContrastMaxAC(maxACStr, len(hdr.Samples))
+		if err != nil {
+			return nil, err
+		}
+		p.maxAC = ac
+		p.maxACSet = true
+	}
+
 	out := &vcf.Header{Samples: hdr.Samples}
 	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
 	if p.annots&contrastPASSOC != 0 {
@@ -260,6 +297,31 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 		out.MetaInfo = append(out.MetaInfo, `##INFO=<ID=NOVELGT,Number=.,Type=String,Description="List of samples with novel genotypes">`)
 	}
 	return out, nil
+}
+
+// parseContrastMaxAC resolves the -f/--max-allele-freq argument into a
+// minor-allele-count threshold, mirroring contrast.c init_data(): a clean
+// integer is taken verbatim; otherwise a float in [0,1] is multiplied by the
+// total sample count and floored, with a floor of 1 when the product rounds to
+// zero. A value that is neither a clean integer nor a float in [0,1] is an
+// error.
+func parseContrastMaxAC(s string, nsamples int) (int, error) {
+	// strtol-style: accept a clean base-10 integer (the whole string).
+	if n, err := strconv.Atoi(s); err == nil {
+		return n, nil
+	}
+	val, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("contrast: could not parse the argument: -f, --max-allele-freq %s", s)
+	}
+	if val < 0 || val > 1 {
+		return 0, fmt.Errorf("contrast: expected integer or float from the range [0,1]: -f, --max-allele-freq %s", s)
+	}
+	ac := int(val * float64(nsamples))
+	if ac == 0 {
+		ac = 1
+	}
+	return ac, nil
 }
 
 // parseOutputType parses upstream's -O u|b|v|z[0-9] spelling into the contrast
@@ -388,6 +450,29 @@ func (p *contrastPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 		return []*vcf.Variant{v}, nil
 	}
 
+	// Rare-allele enrichment (-f) folding, mirroring contrast.c. The minor allele
+	// (the rarer of REF / non-REF across the trio of control+case counts) is
+	// pooled into the region-wide enrichNals only when its count is at or below
+	// the threshold. When the non-REF allele is the minor one the counts are
+	// added verbatim; when REF is the minor one the ref/alt columns are swapped
+	// so enrichNals always tracks "minor=alt".
+	if p.maxACSet {
+		if nals[0]+nals[2] > nals[1]+nals[3] {
+			if nals[1]+nals[3] <= p.maxAC {
+				for i := 0; i < 4; i++ {
+					p.enrichNals[i] += nals[i]
+				}
+			}
+		} else {
+			if nals[0]+nals[2] <= p.maxAC {
+				p.enrichNals[0] += nals[1]
+				p.enrichNals[1] += nals[0]
+				p.enrichNals[2] += nals[3]
+				p.enrichNals[3] += nals[2]
+			}
+		}
+	}
+
 	if p.annots&contrastPASSOC != 0 && len(p.controlIdx) > 0 && len(p.caseIdx) > 0 {
 		_, _, fisher := mpileupFisherExact(int64(nals[0]), int64(nals[1]), int64(nals[2]), int64(nals[3]))
 		setInfo(v, "PASSOC", formatVCFFloat(fisher))
@@ -422,10 +507,26 @@ func (p *contrastPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 }
 
 // Destroy writes the one-line summary to stderr, mirroring contrast.c run().
+// With -f/--max-allele-freq it also writes the rare-allele enrichment line: the
+// region-wide Fisher's exact probability over the pooled minor-allele counts and
+// the control/case non-REF fractions.
 func (p *contrastPlugin) Destroy() error {
 	if p.stderr != nil {
 		fmt.Fprintf(p.stderr, "Total/processed/skipped/case_allele/case_gt:\t%d\t%d\t%d\t%d\t%d\n",
 			p.ntotal, p.ntested, p.nskipped, p.ncaseAl, p.ncaseGt)
+		if p.maxACSet {
+			n := &p.enrichNals
+			_, _, fisher := mpileupFisherExact(int64(n[0]), int64(n[1]), int64(n[2]), int64(n[3]))
+			val1, val2 := 0.0, 0.0
+			if n[0]+n[1] != 0 {
+				val1 = float64(float32(n[1]) / float32(n[0]+n[1]))
+			}
+			if n[2]+n[3] != 0 {
+				val2 = float64(float32(n[3]) / float32(n[2]+n[3]))
+			}
+			fmt.Fprintf(p.stderr, "max_AC/PASSOC/FASSOC/NASSOC:\t%d\t%e\t%f,%f\t%d,%d,%d,%d\n",
+				p.maxAC, fisher, val1, val2, n[0], n[1], n[2], n[3])
+		}
 	}
 	return nil
 }

@@ -12,8 +12,17 @@
 // multi-threshold expansion is supported too: such an expression is expanded
 // into one filter per element (and a cartesian product across multiple groups),
 // each tallied into its own SN* / DVAF* / DLEN* / DFRAC* / NFRAC* report
-// section, matching upstream's parse_filters(). The PED-restricted de-novo mode
-// (-p, with its per-trio filter semantics) remains unsupported.
+// section, matching upstream's parse_filters().
+//
+// The PED-restricted de-novo mode (-p/--ped FILE) is supported: the trios
+// resolved from the PED file restrict the stats to de-novo indels in each
+// trio's child (Mendelian-error genotypes that introduce an indel allele not
+// inherited from either parent), exactly as indel-stats.c's process_record()
+// does in its PED branch. With -p the SN* "number of samples" column reports
+// the trio count, npass counts sites carrying a DNM, and npass_gt counts the
+// de-novo indel genotypes. The --alt2ref-DNM toggle (accept 0/1 + 1/1 -> 0/0 as
+// a valid DNM) is honoured. The report can be written to a file with
+// -o/--output FILE; the bytes are identical to the stdout form.
 package bcftools
 
 import (
@@ -56,13 +65,21 @@ type indelStatsPlugin struct {
 	maxLen int
 	nvaf   int
 
+	// PED de-novo mode (-p): when trios is non-nil the stats are restricted to
+	// de-novo indels in the child of each resolved trio, and the SN* "number of
+	// samples" column reports the trio count instead. allowAlt2RefDNM mirrors
+	// upstream's --alt2ref-DNM (accept 0/1 + 1/1 -> 0/0 as a valid DNM).
+	trios           []trioStatsTrio
+	allowAlt2RefDNM bool
+
 	// filters holds one entry per expanded threshold (one for the default "all"
 	// or a single -i/-e expression, N for a curly-brace expansion).
 	filters []*indelStatsFilter
 
-	out    io.Writer
-	stderr io.Writer
-	argv   []string
+	out        io.Writer
+	stderr     io.Writer
+	argv       []string
+	outputFile string // -o/--output FILE; "" or "-" means stdout
 }
 
 // newCounters allocates the per-filter accumulators sized to the plugin's
@@ -118,13 +135,15 @@ func (p *indelStatsPlugin) About() string {
 // Parallel reports false: the accumulators are updated serially.
 func (p *indelStatsPlugin) Parallel() bool { return false }
 
-// Init parses the supported options and rejects the filter/PED/region modes.
+// Init parses the supported options (-i/-e, -p, --alt2ref-DNM, -c, --max-len,
+// --nvaf, -o, -v), resolving the PED trios for the de-novo mode when -p is given.
 func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
 	p.csqTag = "CSQ"
 	p.maxLen = 20
 	p.nvaf = 20
 	var filterExpr string
 	var filterExclude, haveFilter bool
+	var pedFile string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() (string, error) {
@@ -147,11 +166,19 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 			filterExclude = a == "-e" || a == "--exclude"
 			haveFilter = true
 		case "-p", "--ped":
-			return nil, fmt.Errorf("indel-stats: the PED de-novo mode (-p) is not supported by the native plugin")
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			pedFile = v
 		case "-o", "--output":
-			return nil, fmt.Errorf("indel-stats: writing to a file (-o) is not supported by the native plugin; use stdout")
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			p.outputFile = v
 		case "--alt2ref-DNM":
-			return nil, fmt.Errorf("indel-stats: --alt2ref-DNM is only meaningful with -p, which is unsupported")
+			p.allowAlt2RefDNM = true
 		case "-c", "--csq-tag":
 			v, err := next()
 			if err != nil {
@@ -193,6 +220,23 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 		}
 	}
 	p.hdr = hdr
+
+	// Resolve the PED trios before the filters, matching indel-stats.c
+	// init_data() which calls parse_ped() (and prints its stderr note) ahead of
+	// parse_filters(). Unlike trio-stats.c, indel-stats.c's parse_ped does NOT
+	// deduplicate trios or reject a child listed twice; it simply appends every
+	// resolvable row (father, mother AND child all present in the header) and
+	// sorts by minimum sample index.
+	if pedFile != "" {
+		trios, err := parseIndelStatsPED(pedFile, sampleIndex(hdr))
+		if err != nil {
+			return nil, err
+		}
+		if p.stderr != nil {
+			fmt.Fprintf(p.stderr, "Identified %d complete trios in the VCF file\n", len(trios))
+		}
+		p.trios = trios
+	}
 
 	// Expand any curly-brace multi-threshold list into N concrete expressions,
 	// matching upstream parse_filters(). When a filter is given, upstream always
@@ -291,7 +335,82 @@ func (p *indelStatsPlugin) processOne(v *vcf.Variant, flt *indelStatsFilter) {
 
 	starAllele := starAlleleIndex(v)
 
-	if haveGT && nad1 > 0 {
+	// PED de-novo mode: restrict the stats to de-novo indels in each trio's
+	// child, mirroring indel-stats.c process_record()'s `args->ngt>0 && ntrio`
+	// branch. A site with no DNM contributes only nsites (already counted) — the
+	// CSQ / nins / ndel / npass tallies below are skipped via the early return.
+	if haveGT && len(p.trios) > 0 {
+		isDNM := false
+		for ti := range p.trios {
+			// In PED mode a trio is processed only when all three members pass the
+			// per-sample filter mask. testSamples has already folded the
+			// INCLUDE/EXCLUDE inversion into smplPass (true == member retained), so
+			// a trio passes iff its three mask bits are all true — matching
+			// indel-stats.c's per-trio pass bookkeeping for both logics.
+			trio := p.trios[ti]
+			if smplPass != nil {
+				if !(smplPass[trio.child] && smplPass[trio.father] && smplPass[trio.mother]) {
+					continue
+				}
+			}
+			alsChild, kc := parseGenotypeAlleles(v, trio.child)
+			if kc == gtMissing {
+				continue
+			}
+			alsFather, kf := parseGenotypeAlleles(v, trio.father)
+			if kf == gtMissing {
+				continue
+			}
+			alsMother, km := parseGenotypeAlleles(v, trio.mother)
+			if km == gtMissing {
+				continue
+			}
+
+			// Is it a DNM? Same Mendelian logic as indel-stats.c.
+			if !p.allowAlt2RefDNM && alsChild[0] == 0 && alsChild[1] == 0 {
+				continue
+			}
+			if (alsChild[0] == alsFather[0] || alsChild[0] == alsFather[1]) &&
+				(alsChild[1] == alsMother[0] || alsChild[1] == alsMother[1]) {
+				continue
+			}
+			if (alsChild[1] == alsFather[0] || alsChild[1] == alsFather[1]) &&
+				(alsChild[0] == alsMother[0] || alsChild[0] == alsMother[1]) {
+				continue
+			}
+			if alsChild[0] == starAllele || alsChild[1] == starAllele {
+				continue
+			}
+			if alsFather[0] == starAllele || alsFather[1] == starAllele {
+				continue
+			}
+			if alsMother[0] == starAllele || alsMother[1] == starAllele {
+				continue
+			}
+
+			childIsIndel := altVariantType(v, alsChild[0])&vtINDEL != 0 || altVariantType(v, alsChild[1])&vtINDEL != 0
+			if !p.allowAlt2RefDNM {
+				if !childIsIndel {
+					continue
+				}
+			} else if !childIsIndel &&
+				altVariantType(v, alsFather[0])&vtINDEL == 0 &&
+				altVariantType(v, alsFather[1])&vtINDEL == 0 &&
+				altVariantType(v, alsMother[0])&vtINDEL == 0 &&
+				altVariantType(v, alsMother[1])&vtINDEL == 0 {
+				continue // not an indel, in any sample
+			}
+
+			if childIsIndel && nad1 > 0 {
+				p.updateIndelStats(c, v, trio.child, alsChild, adVals, starAllele)
+			}
+			c.npassGT++
+			isDNM = true
+		}
+		if !isDNM {
+			return
+		}
+	} else if haveGT && nad1 > 0 {
 		for i := range v.Samples {
 			if smplPass != nil && !smplPass[i] {
 				continue
@@ -388,19 +507,30 @@ func (p *indelStatsPlugin) updateIndelStats(c *indelStatsCounters, v *vcf.Varian
 	}
 }
 
-// Destroy prints the report, mirroring indel-stats.c report_stats().
+// Destroy prints the report, mirroring indel-stats.c report_stats(). With
+// -o/--output the report is written to that file instead of stdout (the bytes
+// are identical; the CMD line echoes the verbatim argv in both cases).
 func (p *indelStatsPlugin) Destroy() error {
-	if p.out == nil {
+	if p.out == nil && (p.outputFile == "" || p.outputFile == "-") {
 		return nil
 	}
-	fp := p.out
+	fp, closeFn, err := statsReportWriter(p.outputFile, p.out)
+	if err != nil {
+		return fmt.Errorf("indel-stats: %w", err)
+	}
+	defer closeFn()
 	fmt.Fprint(fp, indelStatsHeaderFor(p.nvaf, p.maxLen))
 	fmt.Fprintf(fp, "CMD\t%s\n", strings.Join(p.argv, " "))
 	for i, flt := range p.filters {
 		fmt.Fprintf(fp, "DEF\tFLT%d\t%s\n", i, flt.label)
 	}
 
+	// Upstream's SN* "number of samples" column reports the trio count in PED
+	// mode (`args->ntrio ? args->ntrio : args->nsmpl`).
 	nsmp := len(p.hdr.Samples)
+	if len(p.trios) > 0 {
+		nsmp = len(p.trios)
+	}
 	var b strings.Builder
 	for i, flt := range p.filters {
 		c := &flt.counters

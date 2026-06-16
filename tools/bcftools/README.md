@@ -170,6 +170,32 @@ groups combine as a cartesian product, in upstream's exact ordering; an empty
 list (`{}`) collapses to the single default "all" filter, and an unmatched `{`
 is a hard parse error — all byte-validated against upstream 1.23.1.
 
+### Stats / contrast plugin remaining flags (`-o`, `-p`, `-a`, `-f`)
+
+The four stats/contrast plugins now match upstream on every flag:
+
+- **`-o`/`--output FILE`** (`+smpl-stats`, `+indel-stats`, `+trio-stats`) writes
+  the report to FILE instead of stdout; the bytes are identical to the stdout
+  form (the `CMD` line echoes the verbatim argv in both).
+- **`+indel-stats -p`/`--ped FILE`** restricts the stats to de-novo indels in
+  each PED trio's child (with `--alt2ref-DNM` widening the DNM definition); the
+  SN* "number of samples" column then reports the trio count. (Fix-on-port:
+  upstream aborts on a PED indel VCF without FORMAT/AD; our port reports the
+  AD-independent counts anyway — see `docs/UPSTREAM_BUGS.md`.)
+- **`+trio-stats -a`/`--alt-trios INT`** applies the deferred singleton/doubleton
+  transmission-rate accounting: an allele counts only when present in at most
+  `INT` alternate trios at the site (`0` = unlimited, the default).
+- **`+contrast -f`/`--max-allele-freq NUM`** adds rare-allele enrichment: the
+  per-site VCF output is unchanged, and a second stderr summary line
+  `max_AC/PASSOC/FASSOC/NASSOC:` reports the region-wide Fisher's exact
+  probability and control/case non-REF fractions over the pooled minor alleles
+  (an integer `NUM` is an allele-count threshold; a float in `[0,1]` is an
+  allele-frequency threshold scaled by the sample count). The
+  `--regions-overlap`/`--targets-overlap` region-matching modes remain
+  unsupported.
+
+All byte-validated against upstream 1.23.1.
+
 `-W`/`--write-index` (bare, or `=csi`/`=tbi`) writes a CSI (default) or TBI
 index next to each indexable (`.vcf.gz`/`.bcf`) output; plain-VCF and stdout
 outputs are non-indexable and error exactly as upstream does. Honoured by

@@ -11,7 +11,8 @@
 // "{10,20,30}" multi-threshold expansion is supported too: such an expression is
 // expanded into one filter per element (and a cartesian product across multiple
 // groups), each tallied into its own FLT* / SITE* report section, matching
-// upstream's parse_filters().
+// upstream's parse_filters(). The report can be written to a file with
+// -o/--output FILE; the bytes are identical to the stdout form.
 package bcftools
 
 import (
@@ -43,10 +44,11 @@ type smplStatsFilter struct {
 
 // smplStatsPlugin implements the `smpl-stats` plugin in its default mode.
 type smplStatsPlugin struct {
-	hdr    *vcf.Header
-	out    io.Writer
-	stderr io.Writer
-	argv   []string
+	hdr        *vcf.Header
+	out        io.Writer
+	stderr     io.Writer
+	argv       []string
+	outputFile string // -o/--output FILE; "" or "-" means stdout
 
 	// filters holds one entry per expanded threshold (one for the default "all"
 	// or a single -i/-e expression, N for a curly-brace expansion).
@@ -96,8 +98,8 @@ func (p *smplStatsPlugin) About() string {
 // Parallel reports false: the accumulators are updated serially.
 func (p *smplStatsPlugin) Parallel() bool { return false }
 
-// Init parses the supported options and rejects the filter/region modes that
-// require htslib machinery the native pipeline does not provide.
+// Init parses the supported options (-i/-e, -o, -v); -o selects the report
+// output file.
 func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
 	var filterExpr string
 	var filterExclude, haveFilter bool
@@ -123,7 +125,11 @@ func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 			filterExclude = a == "-e" || a == "--exclude"
 			haveFilter = true
 		case "-o", "--output":
-			return nil, fmt.Errorf("smpl-stats: writing to a file (-o) is not supported by the native plugin; use stdout")
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			p.outputFile = v
 		case "-v", "--verbosity":
 			if i+1 < len(args) {
 				i++
@@ -297,12 +303,19 @@ func (p *smplStatsPlugin) processOne(v *vcf.Variant, flt *smplStatsFilter) error
 	return nil
 }
 
-// Destroy prints the report, mirroring smpl-stats.c report_stats().
+// Destroy prints the report, mirroring smpl-stats.c report_stats(). With
+// -o/--output the report is written to that file instead of stdout; the bytes
+// are identical to the stdout form (the CMD line echoes the verbatim argv,
+// including -o, in both cases).
 func (p *smplStatsPlugin) Destroy() error {
-	if p.out == nil {
+	if p.out == nil && (p.outputFile == "" || p.outputFile == "-") {
 		return nil
 	}
-	fp := p.out
+	fp, closeFn, err := statsReportWriter(p.outputFile, p.out)
+	if err != nil {
+		return fmt.Errorf("smpl-stats: %w", err)
+	}
+	defer closeFn()
 	fmt.Fprint(fp, smplStatsHeader)
 	fmt.Fprintf(fp, "CMD\t%s\n", strings.Join(p.argv, " "))
 	for i, flt := range p.filters {

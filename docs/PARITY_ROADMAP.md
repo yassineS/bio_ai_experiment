@@ -3426,6 +3426,49 @@ but with a deliberate design divergence from upstream:
   without braces in smpl-stats/indel-stats; our port handles it robustly, so it is
   oracled only with FORMAT-level `-e` or site-level `-i`.)
 
+- **Native stats-plugin remaining flags (`-o`, indel-stats `-p`, trio-stats
+  `-a`, contrast `-f`)** — **done**. The four stats/contrast plugins now close
+  every "not supported" mode, byte-validated vs the upstream binary 1.23.1:
+  - **`-o/--output FILE`** for `smpl-stats`, `indel-stats` and `trio-stats`: the
+    report is written to FILE instead of stdout via a shared
+    `statsReportWriter` (`native_plugin_stats_common.go`), mirroring
+    report_stats()'s `!output_fname||!strcmp("-") ? stdout : fopen(...)`. The
+    bytes are byte-identical to the stdout form (the `CMD` line echoes the
+    verbatim argv, including `-o`, in both). `TestNativePluginStatsOutputFile`
+    drives both binaries with the SAME `-o` path and compares the FILE contents.
+  - **indel-stats `-p/--ped FILE`** de-novo mode: the PED-resolved trios restrict
+    the stats to de-novo indels in each child (the same Mendelian/`--alt2ref-DNM`
+    DNM test as indel-stats.c), the SN* "number of samples" column reports the
+    trio count, `npass`/`npass_gt` count DNM sites/genotypes, and the per-trio
+    FORMAT/site filter is folded exactly as upstream. indel-stats.c's `parse_ped`
+    is replicated including its *lack* of dedup (a trio listed twice is kept,
+    unlike trio-stats.c). Byte-validated in `TestNativePluginIndelStatsPED` on a
+    two-trio AD-bearing indel fixture (`trio_indels.vcf`/`.ped`). Fix-on-port:
+    upstream aborts (`Incorrect GT allele`, exit 255) on a PED indel VCF lacking
+    FORMAT/AD; our port skips the AD-derived DVAF/DFRAC/NFRAC contributions and
+    still reports — see `docs/UPSTREAM_BUGS.md` and `TestUnitIndelStatsPEDNoADRobust`.
+  - **trio-stats `-a/--alt-trios INT`**: the deferred singleton/doubleton
+    (transmission-rate) accounting — a singleton/doubleton is counted only when
+    its allele appears in at most `-a` alternate trios at the site, replicating
+    alt_trios_reset/alt_trios_add and the final deferred loop (including the
+    `-d transmitted` debug lines emitted from it). Byte-validated in
+    `TestNativePluginTrioStatsAltTrios` on the two-trio `trio_multi.vcf`.
+  - **contrast `-f/--max-allele-freq NUM`** rare-allele enrichment: the per-site
+    VCF + PASSOC/FASSOC/NASSOC/NOVEL* output is unchanged, and the region-wide
+    pooled minor-allele counts (folded over the records whose minor allele is at
+    or below the `-f` threshold, ref/alt columns swapped when REF is the minor
+    allele, exactly as contrast.c) feed the extra stderr
+    `max_AC/PASSOC/FASSOC/NASSOC:` summary line (`%e` Fisher probability + `%f,%f`
+    control/case non-REF fractions). An integer `-f` is a raw allele-count
+    threshold; a float in `[0,1]` is scaled by the total sample count (floored,
+    min 1). Byte-validated in `TestNativePluginContrastEnrichment` (both stdout
+    and the full stderr summary). The `--regions-overlap`/`--targets-overlap`
+    region-matching modes remain the only unsupported contrast options (the
+    native region/target filter does not replicate htslib's overlap semantics).
+  - Binary-free `TestUnit*` tests cover the pure helpers: `parseIndelStatsPED`,
+    `parseContrastMaxAC`, the contrast enrichment folding, the trio-stats
+    deferred alt-trio accounting and the shared `statsReportWriter`.
+
 - **Native `+split-vep` full selection/override surface** — **done**. The
   native split-vep port (`tools/bcftools/pkg/bcftools/native_plugin_splitvep*.go`)
   now closes the last five modes it previously rejected, byte-validated vs the
