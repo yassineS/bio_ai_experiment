@@ -32,17 +32,19 @@ const (
 	chrXXPriors
 )
 
-// dnmPriors holds the per-genotype-configuration de-novo verdict and the
-// de-novo allele, mirroring the denovo / denovo_allele fields of priors_t.
+// dnmPriors holds the per-genotype-configuration de-novo verdict, the de-novo
+// allele, and (for the float models) the log prior probability, mirroring the
+// denovo / denovo_allele / pprob fields of priors_t.
 type dnmPriors struct {
 	denovo       [10][10][10]int
 	denovoAllele [10][10][10]int
+	pprob        [10][10][10]float64 // log(gt_prior * mprob * tprob); float-model only
 }
 
 // newDNMPriors builds the denovo/denovo_allele tables for the given rule set,
 // mirroring init_priors() restricted to the NAIVE-relevant fields. The mutation
 // rate does not affect these (it only scales the unused mprob/pprob), so it is
-// omitted entirely.
+// omitted entirely. The float models build the full table via newDNMPriorsFull.
 func newDNMPriors(strictlyNovel bool, typ dnmPriorsType) *dnmPriors {
 	p := &dnmPriors{}
 	for fi := 0; fi < 10; fi++ {

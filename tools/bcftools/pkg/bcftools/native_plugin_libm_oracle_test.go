@@ -2,9 +2,11 @@ package bcftools
 
 import (
 	"bytes"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,11 +25,16 @@ import (
 //     exactly. Because it writes a file rather than stdout, this test drives the
 //     two binaries into separate prefixes and diffs the produced .dat files.
 //
-//   - trio-dnm3 (NAIVE model only): byte parity on the FORMAT/DNM and FORMAT/VA
+//   - trio-dnm3 NAIVE model: byte parity on the FORMAT/DNM and FORMAT/VA
 //     annotations. The NAIVE verdict is a pure integer Mendelian-consistency
-//     table lookup (no floating point), so it is bit-reproducible. The DMM/ALM/
-//     DNG float models remain unsupported (asserted in
-//     TestNativePluginBatch6Unsupported).
+//     table lookup (no floating point), so it is bit-reproducible.
+//
+//   - trio-dnm3 DMM/ALM/DNG float models: proximity parity (string fields exact,
+//     DNM/VA/VAF numbers within the documented libm tolerance) in
+//     TestNativePluginTrioDNM3FloatModels. The de-novo log score is a long
+//     log/exp/pow/lgamma reduction; on linux/amd64 these inputs land byte-for-byte
+//     because the incomplete-beta / lgamma kernels go through the bit-stable
+//     in-tree kfunc port, but the proximity bar is the contract on any platform.
 //
 // All comparisons are CLI-to-CLI against the live upstream binary with
 // provenance stripped; no committed goldens.
@@ -197,6 +204,135 @@ func TestNativePluginTrioDNM3Naive(t *testing.T) {
 		tc := tc
 		t.Run(shortName(tc.fixture)+"_"+joinArgs(tc.args), func(t *testing.T) {
 			assertPluginParity(t, bin, tc.fixture, "trio-dnm3", tc.args...)
+		})
+	}
+}
+
+// TestNativePluginTrioDNM3FloatModels checks the DMM/ALM/DNG float models'
+// FORMAT/DNM (phred/log/prob), FORMAT/VA and FORMAT/VAF against upstream using
+// the tolerance-aware proximity comparison (numeric_parity_test.go): string
+// fields must match exactly, while the de-novo score is allowed the last-ULP
+// libm slack documented there. The de-novo log score is a long log/exp/pow/
+// lgamma reduction; on linux/amd64 these inputs actually land byte-for-byte (the
+// incomplete-beta / lgamma kernels go through the bit-stable in-tree kfunc port),
+// but the proximity bar is the correct contract for the float models on any
+// platform. The test reports the maximum observed per-model deviation.
+func TestNativePluginTrioDNM3FloatModels(t *testing.T) {
+	bin, err := buildBcftools()
+	if err != nil {
+		t.Fatalf("build upstream bcftools: %v", err)
+	}
+	trio := parityFixture(t, "trio.vcf")         // AD+PL only
+	fl := parityFixture(t, "trio_dnm_float.vcf") // AD+PL+QS+QM+SP, incl. a 5-allele site
+	multi := parityFixture(t, "trio_multi.vcf")  // multi-trio AD+PL
+	cases := []struct {
+		model   string
+		fixture string
+		args    []string
+	}{
+		// DNG (PL only) works on every fixture.
+		{"DNG", trio, []string{"--use-DNG", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DNG", trio, []string{"--use-DNG", "-n", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DNG", trio, []string{"--use-DNG", "--dnm-tag", "DNM:phred", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DNG", trio, []string{"--use-DNG", "--dnm-tag", "DNM:prob", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DNG", trio, []string{"--use-DNG", "--dng-priors", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DNG", trio, []string{"--use-DNG", "--va", "DA", "--vaf", "MYVAF", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DNG", multi, []string{"--use-DNG", "-p", "K1,F1,M1"}},
+		{"DNG", fl, []string{"--use-DNG", "--strand-bias", "0.05", "-p", "CHILD,FATHER,MOTHER"}},
+		// ALM over fake-QS-from-AD (--with-pAD) and over PL (--with-pPL) on trio.vcf,
+		// and over real FORMAT/QS on the rich fixture.
+		{"ALM", trio, []string{"--use-ALM", "--with-pAD", "-p", "CHILD,FATHER,MOTHER"}},
+		{"ALM", trio, []string{"--use-ALM", "--with-pPL", "-p", "CHILD,FATHER,MOTHER"}},
+		{"ALM", trio, []string{"--use-ALM", "--with-pAD", "-n", "-p", "CHILD,FATHER,MOTHER"}},
+		{"ALM", trio, []string{"--use-ALM", "--with-pAD", "--ad", "0.5", "-p", "CHILD,FATHER,MOTHER"}},
+		{"ALM", fl, []string{"--use-ALM", "-p", "CHILD,FATHER,MOTHER"}},
+		{"ALM", fl, []string{"--use-ALM", "--strand-bias", "0.05", "-p", "CHILD,FATHER,MOTHER"}},
+		// DMM needs FORMAT/AD+QM (the rich fixture) or --max-QM negative on AD+PL.
+		{"DMM", trio, []string{"--use-DMM", "--max-QM", "-1", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DMM", fl, []string{"--use-DMM", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DMM", fl, []string{"--use-DMM", "--with-cAD", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DMM", fl, []string{"--use-DMM", "--min-vaf", "0.3", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DMM", fl, []string{"--use-DMM", "--strand-bias", "0.05", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DMM", fl, []string{"--use-DMM", "--pn", "0.02,1:snv", "--pns", "0.05,2:snv", "-p", "CHILD,FATHER,MOTHER"}},
+		{"DMM", fl, []string{"--use-DMM", "--dnm-tag", "DNM:phred", "-p", "CHILD,FATHER,MOTHER"}},
+	}
+	maxDev := map[string]float64{"DNG": 0, "ALM": 0, "DMM": 0}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.model+"_"+shortName(tc.fixture)+"_"+joinArgs(tc.args), func(t *testing.T) {
+			argv := pluginCLIArgs("trio-dnm3", tc.fixture, tc.args)
+			up := string(stripProvenanceBytes(runUpstreamPlugin(t, bin, argv...)))
+			ours := string(stripProvenanceBytes(runOursPlugin(t, argv...)))
+			if diffs := compareProximityDefault(up, ours); diffs != nil {
+				var b strings.Builder
+				for _, d := range diffs {
+					b.WriteString("  " + d.String() + "\n")
+				}
+				t.Fatalf("+trio-dnm3 %v diverges beyond tolerance:\n%s", tc.args, b.String())
+			}
+			if d := maxFieldDeviation(up, ours); d > maxDev[tc.model] {
+				maxDev[tc.model] = d
+			}
+		})
+	}
+	t.Logf("max observed per-model DNM/VA/VAF field deviation (within tolerance): DNG=%g ALM=%g DMM=%g",
+		maxDev["DNG"], maxDev["ALM"], maxDev["DMM"])
+}
+
+// maxFieldDeviation returns the largest absolute difference between any pair of
+// numeric fields in two proximity-equal texts, for reporting how close the
+// libm-bound scores actually land.
+func maxFieldDeviation(want, got string) float64 {
+	wl := strings.Split(want, "\n")
+	gl := strings.Split(got, "\n")
+	maxd := 0.0
+	n := len(wl)
+	if len(gl) < n {
+		n = len(gl)
+	}
+	for i := 0; i < n; i++ {
+		wf := strings.FieldsFunc(wl[i], func(r rune) bool { return r == '\t' || r == ' ' || r == ':' || r == ',' })
+		gf := strings.FieldsFunc(gl[i], func(r rune) bool { return r == '\t' || r == ' ' || r == ':' || r == ',' })
+		m := len(wf)
+		if len(gf) < m {
+			m = len(gf)
+		}
+		for j := 0; j < m; j++ {
+			a, aok := parseNumericField(wf[j])
+			b, bok := parseNumericField(gf[j])
+			if aok && bok && !math.IsInf(a, 0) && !math.IsInf(b, 0) && !math.IsNaN(a) && !math.IsNaN(b) {
+				if d := math.Abs(a - b); d > maxd {
+					maxd = d
+				}
+			}
+		}
+	}
+	return maxd
+}
+
+// TestNativePluginTrioDNM3FloatErrors asserts the float models still report the
+// clean fatal-data errors upstream does: DMM on an AD/QM-less input, and a
+// non-positive --phi.
+func TestNativePluginTrioDNM3FloatErrors(t *testing.T) {
+	gtOnly := parityFixture(t, "trio_dnm_x.vcf") // GT only, no PL/AD
+	cases := [][]string{
+		{"--use-DMM", "-p", "CHILD,FATHER,MOTHER"}, // no FORMAT/AD/QM/PL
+		{"--use-DNG", "-p", "CHILD,FATHER,MOTHER"}, // no FORMAT/PL
+		{"--use-DMM", "--phi", "0", "-p", "CHILD,FATHER,MOTHER"},
+	}
+	for _, args := range cases {
+		args := args
+		t.Run(joinArgs(args), func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			err := RunPlugin(PluginOptions{
+				Name:         "trio-dnm3",
+				Args:         args,
+				InputFile:    gtOnly,
+				OutputFormat: OutputVCF,
+			}, &out, &errBuf)
+			if err == nil {
+				t.Fatalf("expected a clean error for +trio-dnm3 %v, got nil", args)
+			}
 		})
 	}
 }
