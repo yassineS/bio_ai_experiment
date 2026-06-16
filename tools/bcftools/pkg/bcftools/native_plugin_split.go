@@ -50,10 +50,21 @@ type splitPlugin struct {
 	args        []string
 
 	filter *pluginFilter // compiled -i/-e per-output site-level pre-filter, nil if none
+
+	rt regionTargetFilter // shared -r/-R/-t/-T selection applied before splitting.
 }
+
+// SetRegionTarget records the shared -r/-R/-t/-T selection the framework parsed
+// out of split's argv; it is applied to the input records before they are split
+// into per-sample/per-group output files.
+func (p *splitPlugin) SetRegionTarget(f regionTargetFilter) { p.rt = f }
 
 // Name returns the plugin name.
 func (p *splitPlugin) Name() string { return "split" }
+
+// RegionTargetCaps opts split into the shared -r/-R/-t/-T region/target filter,
+// applied (via SetRegionTarget) to the records before they are split per sample.
+func (p *splitPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
 
 // About returns the one-line description, matching split.c about().
 func (p *splitPlugin) About() string {
@@ -74,6 +85,8 @@ func (p *splitPlugin) FlagTakesValue(flag string) bool {
 	case "-o", "--output", "-O", "--output-type",
 		"-S", "--samples-file", "-G", "--groups-file",
 		"-k", "--keep-tags", "-i", "--include", "-e", "--exclude",
+		"-r", "--regions", "-R", "--regions-file",
+		"-t", "--targets", "-T", "--targets-file",
 		"-v", "--verbosity", "--hts-opts":
 		return true
 	}
@@ -141,8 +154,6 @@ func (p *splitPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 				return nil, fmt.Errorf("split: %w", ferr)
 			}
 			p.filter = f
-		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
-			return nil, fmt.Errorf("split: region/target selection is not supported in the native split plugin; pre-filter with bcftools view")
 		case "-W", "--write-index":
 			return nil, fmt.Errorf("split: -W/--write-index is not supported in the native plugin")
 		case "-v", "--verbosity":
@@ -229,6 +240,7 @@ func (p *splitPlugin) RunMulti(opts PluginOptions, out io.Writer, stderr io.Writ
 	if err != nil {
 		return err
 	}
+	variants = p.rt.apply(variants)
 	if len(hdr.Samples) == 0 {
 		return fmt.Errorf("split: no samples to split")
 	}

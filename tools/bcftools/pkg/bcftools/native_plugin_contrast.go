@@ -51,6 +51,10 @@ type contrastPlugin struct {
 // Name returns the plugin name.
 func (p *contrastPlugin) Name() string { return "contrast" }
 
+// RegionTargetCaps opts contrast into the shared -r/-R/-t/-T region/target
+// filter, applied to the records before the case/control contrast accounting.
+func (p *contrastPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+
 // About returns the one-line description, matching contrast.c about().
 func (p *contrastPlugin) About() string {
 	return "Find novel alleles and genotypes in two groups of samples.\n"
@@ -130,8 +134,6 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 			haveFilter = true
 		case "-f", "--max-allele-freq":
 			return nil, fmt.Errorf("contrast: the rare-allele enrichment mode (-f) is not supported by the native plugin")
-		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
-			return nil, fmt.Errorf("contrast: region/target selection (%s) is not supported by the native plugin", a)
 		case "--regions-overlap", "--targets-overlap":
 			return nil, fmt.Errorf("contrast: %s is not supported by the native plugin", a)
 		case "-o", "--output":

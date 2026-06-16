@@ -232,6 +232,10 @@ type Mendelian2Options struct {
 	// rather than plain gzip, so it can be indexed for -W/--write-index.
 	// It only affects OutputVCFGz output.
 	BGZF bool
+	// RegionTarget is the shared -r/-R/-t/-T selection applied to the input
+	// records before any Mendelian accounting. The zero value is a no-op. Used
+	// by the +mendelian2 plugin form to honour region/target selection.
+	RegionTarget regionTargetFilter
 }
 
 // Mendelian2Summary is the rollup returned by Mendelian2. Mirrors
@@ -293,6 +297,7 @@ func Mendelian2(in io.Reader, out io.Writer, opts Mendelian2Options) (Mendelian2
 	if err != nil {
 		return Mendelian2Summary{}, fmt.Errorf("bcftools mendelian2: %w", err)
 	}
+	variants = opts.RegionTarget.apply(variants)
 
 	trios, err := loadMendelian2Trios(opts, hdr)
 	if err != nil {

@@ -55,6 +55,43 @@ warrant a closer look:_
 
 ### To investigate
 
+#### bcftools +check-sparsity: `-R FILE` silently drops BED/TSV lines <a id="bcftools-check-sparsity-regions-file"></a>
+
+- **Disposition:** Fix-on-port. Ours keeps the verbatim colon region-list parse
+  byte-identical to upstream, but no longer silently drops BED/TSV lines — it
+  parses them the synced-reader way (a strict superset).
+- **What happens:** Unlike every other in-tree plugin (which loads `-R`/`-T`
+  files through htslib's synced reader `bcf_sr_regions_init`, a TSV/BED parser),
+  `check-sparsity` reads its `-R` file with `hts_readlist()` and hands each line
+  verbatim to `tbx_itr_querys()`. `tbx_itr_querys` only understands the colon
+  region-list syntax (`chr`, `chr:beg-end`). A tab-separated / BED line such as
+  `chr1<TAB>0<TAB>10000` therefore fails to parse and the region is **silently
+  skipped — no error, no output** — even though a normal BED file is exactly what
+  a user would reach for.
+- **Reproducer** (upstream 1.23.1, `BCFTOOLS_PLUGINS` pointed at the vendored
+  `.so` dir; the input must be bgzipped + tabix-indexed because `-R` uses the
+  index):
+
+  ```sh
+  printf 'chr1\t0\t10000\nchr2\t0\t10000\n' > all.bed
+  bcftools +check-sparsity -n 1 -R all.bed gt_plugins.vcf.gz   # prints NOTHING
+  printf 'chr2:1-10000\n' > colon.txt
+  bcftools +check-sparsity -n 1 -R colon.txt gt_plugins.vcf.gz # prints "chr2:1-10000\tS3"
+  ```
+
+  The BED form produces no output; the colon-syntax line works. Compare with the
+  synced-reader plugins (e.g. `+smpl-stats -R all.bed`) which accept the BED.
+- **Our port:** `loadCheckSparsityRegionFile` keeps single-token lines (`chr`,
+  `chr:beg-end`) verbatim — byte-identical to upstream, label and all — but
+  instead of silently dropping a multi-column TSV/BED line it parses it the way
+  htslib's synced reader / regidx does (`.bed`/`.bed.gz` => 0-based half-open;
+  otherwise 1-based, two columns = a single position, three+ = `beg..end`),
+  converting it to the equivalent 1-based `chr:beg-end` token (which also becomes
+  the report label). The colon cases stay byte-parity with upstream
+  (`TestNativePluginCheckSparsityRegion`); the BED/TSV fix is validated against
+  the real upstream binary by feeding upstream the colon-equivalent region-list
+  it can parse (`TestNativePluginCheckSparsityRegionBEDFixOnPort`).
+
 #### bcftools-som-write-map
 
 - **bcftools `som --train` always fails / `--classify` is unusable.**

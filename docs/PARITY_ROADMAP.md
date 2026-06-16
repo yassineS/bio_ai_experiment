@@ -3354,6 +3354,25 @@ but with a deliberate design divergence from upstream:
   `reference_code/bcftools/` for anyone who wants to reimplement a
   specific one as a standalone subprocess plugin.
 
+- **Native plugin region/target selection (`-r/-R/-t/-T`)** — **done**.
+  A shared host-side filter (`tools/bcftools/pkg/bcftools/region_target.go`)
+  consumes the region/target options out of each native plugin's argv and
+  applies them before any record reaches the plugin's `Process`, so no plugin
+  re-implements (or rejects) the flags. `-r`/`-R` is span-OVERLAP based, `-t`/`-T`
+  is record-START based with `^` negation — replicating upstream 1.23.1's exact
+  `-r` vs `-t` difference (an indel at POS=100 spanning 100..104 is included by
+  `-r chr:102-102` but excluded by `-t chr:102-102`). `-R`/`-T` files use the
+  synced-reader TSV format (`.bed` = 0-based; otherwise 1-based `chr,pos` or
+  `chr,beg,end`). Supported by check-sparsity, remove-overlaps, prune,
+  smpl-stats, indel-stats, contrast, guess-ploidy (only `-r/-R`; its `-t` is
+  `--tag`), mendelian2, trio-stats, isecGT (applied to both input streams),
+  split and scatter. Plugins opt in via a `RegionTargetCaps` capability so the
+  letters that other plugins repurpose (tag2tag's `-r`=`--replace`/`-t`=`--tags`)
+  are left untouched. check-sparsity keeps its own per-region report grouping and
+  reproduces upstream's BED-`-R` silent-drop quirk
+  (`docs/UPSTREAM_BUGS.md#bcftools-check-sparsity-regions-file`). Byte-validated
+  vs the upstream binary in `native_plugin_region_target_oracle_test.go`.
+
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
 roadmap text in this section was written when bcftools internals were

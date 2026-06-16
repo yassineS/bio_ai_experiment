@@ -182,14 +182,11 @@ func TestNativePluginBatch4Unsupported(t *testing.T) {
 		{"prune", []string{"-n", "1", "-N", "rand"}},    // RNG-based selection
 		{"prune", []string{"-n", "1", "-i", "QUAL>10"}}, // default maxAF (no --AF-tag) is unsupported
 		{"prune", []string{"-m", "count=2", "-k"}},      // keep-sites
-		// check-sparsity: index region modes are unsupported.
-		{"check-sparsity", []string{"-r", "chr1"}},
-		{"check-sparsity", []string{"-R", "regions.txt"}},
-		// remove-overlaps: region/text-output/--missing modes are unsupported.
-		// (-i/-e filter expressions are now supported by the native engine.)
+		// remove-overlaps: text-output/--missing modes are unsupported.
+		// (-i/-e filter expressions and -r/-R/-t/-T region/target selection are
+		// now supported; see TestNativePluginRegionTarget.)
 		{"remove-overlaps", []string{"-m", "min(QUAL)", "--missing", "DP"}},
 		{"remove-overlaps", []string{"-O", "t"}},
-		{"remove-overlaps", []string{"-r", "chr1"}},
 	}
 	fixtureFor := func(name string) string {
 		switch name {

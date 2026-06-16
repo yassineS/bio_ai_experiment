@@ -180,6 +180,20 @@ type outputSuppressor interface {
 	SetStdout(w io.Writer)
 }
 
+// regionTargetSink is implemented by the fullPlugin / multiOutputPlugin native
+// plugins that own their own input reading (and therefore bypass the central
+// record-filtering done in runNativePlugin's standard pipeline). The framework
+// parses -r/-R/-t/-T out of the plugin's argv into a shared regionTargetFilter
+// and hands it to such a plugin via SetRegionTarget; the plugin must apply it to
+// the records it reads before processing them. Standard init/process plugins do
+// not implement this — the framework applies the filter to their record stream
+// directly.
+type regionTargetSink interface {
+	// SetRegionTarget provides the parsed region/target selection the plugin
+	// must apply to the records it reads.
+	SetRegionTarget(f regionTargetFilter)
+}
+
 // cmdLineSink is implemented by plugins (such as smpl-stats, indel-stats and
 // guess-ploidy) whose upstream report embeds a verbatim command-line line
 // ("CMD\t<name> <opts...> <file>", or the "# The command line was:" banner).
@@ -245,6 +259,43 @@ func nativePluginInfos() []PluginInfo {
 // stripped by the caller, but TrimPrefix is applied again defensively.
 func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer, stderr io.Writer) error {
 	plugin := ctor()
+
+	// Centrally consume -r/-R/-t/-T out of the plugin's own argv into a shared
+	// filter, so no plugin needs to re-implement (or reject) region/target
+	// selection. Upstream applies these uniformly across every in-tree plugin
+	// via htslib's synced reader; we mirror that here. The cleaned args (with
+	// the region/target options removed) are what the plugin's own parser sees.
+	// Default to the empty caps (consume nothing): a plugin opts into the shared
+	// region/target filter by implementing regionTargetCapabler.
+	var rtCaps regionTargetCaps
+	if c, ok := plugin.(regionTargetCapabler); ok {
+		rtCaps = c.RegionTargetCaps()
+	}
+	// origArgs keeps the full argv (region/target options included) for the
+	// cmdLineSink, whose "CMD" report line must echo the command line verbatim
+	// — including -r/-R/-t/-T — exactly as upstream does.
+	origArgs := append([]string{}, opts.Args...)
+	rtArgs, rtFilter, rtErr := parseRegionTargetArgs(opts.Args, rtCaps)
+	if rtErr != nil {
+		return &PluginExecError{Name: opts.Name, Err: rtErr}
+	}
+	opts.Args = rtArgs
+
+	// A fullPlugin owns its entire invocation (input reading and output
+	// writing), bypassing the read/process/re-emit stages below. A
+	// multiOutputPlugin likewise owns its per-file writers. Both read their own
+	// records, so they must apply the region/target filter themselves; the
+	// framework hands it to them via the regionTargetSink setter.
+	if rts, ok := plugin.(regionTargetSink); ok {
+		rts.SetRegionTarget(rtFilter)
+	} else if rtFilter.active() {
+		if _, full := plugin.(fullPlugin); full {
+			return &PluginExecError{Name: opts.Name, Err: fmt.Errorf("%s: region/target selection is not supported", opts.Name)}
+		}
+		if _, multi := plugin.(multiOutputPlugin); multi {
+			return &PluginExecError{Name: opts.Name, Err: fmt.Errorf("%s: region/target selection is not supported", opts.Name)}
+		}
+	}
 	// A fullPlugin owns its entire invocation (input reading and output
 	// writing), bypassing the read/process/re-emit stages below.
 	if fp, ok := plugin.(fullPlugin); ok {
@@ -269,7 +320,7 @@ func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer
 		if name == "" {
 			name = plugin.Name()
 		}
-		argv := append([]string{name}, opts.Args...)
+		argv := append([]string{name}, origArgs...)
 		if opts.InputFile != "" && opts.InputFile != "-" {
 			argv = append(argv, opts.InputFile)
 		}
@@ -305,6 +356,16 @@ func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer
 	variants, err := r.ReadAll()
 	if err != nil {
 		return fmt.Errorf("plugin %q: malformed VCF input: %w", opts.Name, err)
+	}
+
+	// Apply the shared region/target selection before the plugin sees any
+	// record. This is the single place region/target filtering happens for the
+	// standard init/process pipeline, matching upstream's "the plugin only sees
+	// records inside the selection". A plugin that implements regionTargetSink
+	// handles the selection itself (e.g. check-sparsity, whose report is grouped
+	// and labelled per region) and must see the unfiltered stream.
+	if _, selfFilters := plugin.(regionTargetSink); !selfFilters {
+		variants = rtFilter.apply(variants)
 	}
 
 	// Lifecycle: Init runs once on the header before any record.

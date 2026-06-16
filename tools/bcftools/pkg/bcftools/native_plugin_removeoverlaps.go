@@ -50,6 +50,10 @@ type removeOverlapsPlugin struct {
 // Name returns the plugin name.
 func (p *removeOverlapsPlugin) Name() string { return "remove-overlaps" }
 
+// RegionTargetCaps opts remove-overlaps into the shared -r/-R/-t/-T
+// region/target filter, applied to the records before the overlap/dup removal.
+func (p *removeOverlapsPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+
 // About returns the one-line description, matching remove-overlaps.c about().
 func (p *removeOverlapsPlugin) About() string {
 	return "Remove, list or mark overlapping variants"
@@ -128,8 +132,6 @@ func (p *removeOverlapsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header
 			}
 		case "--missing":
 			return nil, fmt.Errorf("remove-overlaps: the --missing DP heuristic is not supported by the native plugin")
-		case "-r", "--regions", "-R", "--regions-file", "-t", "--targets", "-T", "--targets-file":
-			return nil, fmt.Errorf("remove-overlaps: index/stream region selection (-r/-R/-t/-T) is not supported by the native plugin")
 		case "-O", "--output-type":
 			v, err := next()
 			if err != nil {

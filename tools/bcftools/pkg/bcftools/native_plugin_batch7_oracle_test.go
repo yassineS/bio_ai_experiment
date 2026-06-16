@@ -416,9 +416,9 @@ func TestNativePluginBatch7Unsupported(t *testing.T) {
 		{"split-vep", []string{"-c", "Consequence", "-s", "CANONICAL=YES"}, csq},
 		{"split-vep", []string{"-S", "-"}, csq},
 		{"split-vep", []string{"--columns-types", "-"}, csq},
-		// split: region selection and write-index remain unsupported (the per-output
-		// -i/-e filter is now supported and parity-checked in TestNativePluginSplit).
-		{"split", []string{"-o", "/tmp/x", "-r", "chr1"}, gt},
+		// split: write-index remains unsupported (the per-output -i/-e filter is
+		// parity-checked in TestNativePluginSplit; -r/-R/-t/-T region/target
+		// selection in TestNativePluginRegionTarget).
 		{"split", []string{"-o", "/tmp/x", "-W"}, gt},
 		{"split", nil, gt}, // missing -o
 		// scatter: region pre-selection and missing -n/-s remain unsupported. (-i/-e
@@ -428,9 +428,9 @@ func TestNativePluginBatch7Unsupported(t *testing.T) {
 		{"scatter", []string{"-o", "/tmp/x", "-n", "1", "-i", "QUAL>1", "-e", "QUAL<1"}, gt},
 		{"scatter", []string{"-o", "/tmp/x"}, gt}, // missing -n/-s
 		{"scatter", []string{"-n", "1"}, gt},      // missing -o
-		// isecGT: missing the second file, region selection.
+		// isecGT: missing the second file. (-r/-R/-t/-T region/target selection is
+		// now supported and parity-checked in TestNativePluginRegionTarget.)
 		{"isecGT", nil, gt},
-		{"isecGT", []string{"-r", "chr1"}, gt},
 	}
 	for _, tc := range cases {
 		tc := tc
