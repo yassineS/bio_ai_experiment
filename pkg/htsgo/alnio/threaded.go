@@ -9,12 +9,14 @@ import (
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
-// NewReaderThreaded is NewReader with block-parallel BGZF input decode wired to
+// NewReaderThreaded is NewReader with block/slice-parallel input decode wired to
 // a thread count. When threads >= 2 and the input is a BGZF-wrapped BAM (the
 // common on-disk case), the BGZF blocks are inflated concurrently across up to
 // threads worker goroutines via bgzf.NewMultiReader, and the decoded BAM body is
-// handed to the sam reader. The decoded byte stream — and therefore every record
-// and every downstream output — is byte-for-byte identical to the
+// handed to the sam reader. CRAM input is likewise decoded in parallel: its data
+// containers are reconstructed across the worker pool while records stay in
+// strict file order (see below). The decoded byte stream — and therefore every
+// record and every downstream output — is byte-for-byte identical to the
 // single-threaded path for any thread count; threading only changes decode
 // throughput, never the data. This mirrors the parallel WRITER already wired to
 // -@ on the output side.
@@ -22,9 +24,10 @@ import (
 // threads < 2 (or input that is not BGZF) behaves exactly like NewReader: a
 // plain SAM, a raw BAM body, or a plain-gzip SAM is read through the existing
 // single-threaded path. CRAM carries its own container framing (slices, not BGZF
-// blocks) and is decoded single-threaded here; parallel CRAM slice decode is a
-// separate, larger piece of work (see the package docs) and is intentionally out
-// of scope for the BGZF read-threading path.
+// blocks); when threads >= 2 its data containers are decoded across the worker
+// pool via cram.RecordReader.SetThreads, with records still emitted in strict
+// file order, so the record stream is byte-for-byte identical to the
+// single-threaded path for any thread count.
 //
 // The returned sam.Reader does NOT own r. When the parallel reader is engaged
 // its worker goroutines are torn down when the surrounding stream is fully read;
@@ -53,6 +56,10 @@ func NewReaderThreaded(r io.Reader, referenceFASTA string, threads int) (sam.Rea
 		}
 		rr.UseRefCacheFromEnv()
 		rr.UseRefPathFromEnv()
+		// CRAM containers are decoded across the worker pool while records are
+		// still emitted in strict file order, so the record stream is identical
+		// for any thread count; -@ only changes decode throughput.
+		rr.SetThreads(threads)
 		return rr, nil
 	}
 	if !looksLikeBGZF(head) {
@@ -98,9 +105,10 @@ func (m *mrCloseReader) Close() error { return m.mr.Close() }
 // "-" or "" reads standard input.
 //
 // The decoded record stream is identical for any thread count; -@ only affects
-// throughput. CRAM is decoded single-threaded (see NewReaderThreaded). The
-// returned Reader's Close releases the underlying handle and, for the parallel
-// BGZF path, tears down the decode worker goroutines.
+// throughput. CRAM data containers are likewise decoded across the worker pool
+// (see NewReaderThreaded), in strict file order. The returned Reader's Close
+// releases the underlying handle and, for the parallel BGZF or CRAM path, tears
+// down the decode worker goroutines.
 func OpenReaderThreaded(path, referenceFASTA string, threads int) (Reader, error) {
 	if threads < 2 {
 		return OpenReader(path, referenceFASTA)
@@ -129,8 +137,10 @@ func newThreadedReaderFromStream(rc io.ReadCloser, referenceFASTA string, thread
 	br := bufio.NewReader(rc)
 	head, _ := br.Peek(16)
 	if looksLikeCRAM(head) {
-		// CRAM: single-threaded decode through the reference-aware reader, reusing
-		// the buffered bytes already peeked.
+		// CRAM: container/slice-parallel decode through the reference-aware
+		// reader, reusing the buffered bytes already peeked. The record stream is
+		// emitted in strict file order, so it is identical for any thread count;
+		// -@ only changes decode throughput.
 		rr, err := cram.NewRecordReader(br)
 		if err != nil {
 			return nil, err
@@ -143,6 +153,7 @@ func newThreadedReaderFromStream(rc io.ReadCloser, referenceFASTA string, thread
 		}
 		rr.UseRefCacheFromEnv()
 		rr.UseRefPathFromEnv()
+		rr.SetThreads(threads)
 		return &cramReader{rr: rr, src: rc}, nil
 	}
 	if !looksLikeBGZF(head) {
