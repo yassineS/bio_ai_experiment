@@ -316,6 +316,41 @@ byte-validated against the upstream binary 1.23.1 via the CLI-to-CLI oracle
 `TestNativePluginSetGTReadDepth`), and the drand48 port is pinned to the
 canonical POSIX sequence by `TestDrand48KnownVectors`.
 
+### `+fill-tags` — recompute INFO/FORMAT annotations (native)
+
+The native `+fill-tags` port covers the **full** upstream surface:
+
+- **Every built-in tag.** `AN`, `AC`, `AC_Hom`, `AC_Het`, `AC_Hemi`, `AF`,
+  `MAF`, `NS`, `HWE`, `ExcHet`, `END`, `TYPE`, `FORMAT/VAF`, `FORMAT/VAF1`, and
+  the `F_MISSING` expression. Counts follow upstream's exact het/hom/hemi/half
+  classification (including `-d/--drop-missing`); `HWE`/`ExcHet` use the in-tree
+  Wigginton (PMID:15789306) exact test, and `AF` falls back to `INFO/AN,AC` for
+  sites-only records.
+- **`-t LIST`** selection with `INFO/`/`FORMAT/` qualifiers and the `all`
+  keyword (which excludes `END`/`TYPE`, as upstream).
+- **`-S/--samples-file FILE`** population grouping. The file lists
+  `SAMPLE  GROUP[,GROUP2,...]` per line; each distinct group gets its own
+  `_GROUP`-suffixed tags (and `## ... in GROUP` headers), alongside the summary
+  `ALL` population. Example:
+  `bcftools +fill-tags in.vcf -- -S groups.txt -t AN,AC,AF,HWE`.
+- **Custom expression `TAG[:Number]=[int|integer|float](EXPR)`.** An in-tree
+  evaluator supports INFO/FORMAT tag references, the aggregations
+  `sum`/`avg`(`mean`)/`max`/`min`/`median`/`stdev` and their per-sample
+  `smpl_*` (`sSUM`, `sMEAN`, ...) variants, arithmetic `+ - * /`, unary minus,
+  `abs`, `phred`, and the genotype reductions `F_MISSING`/`N_MISSING`/
+  `F_PASS(COND)`/`N_PASS(COND)`. `int()`/`integer()` produces an Integer field
+  (C `round()` half-away), `float()`/bare produces Float; `:Number` fixes the
+  count, otherwise `Number=.`. Examples:
+  `-t 'DP:1=int(sum(FORMAT/DP))'`, `-t 'FORMAT/VD:1=int(smpl_sum(FORMAT/AD))'`,
+  `-t 'good=N_PASS(GT="het")'`.
+- **`-l/--list-tags`** prints the available-tag table to stderr and exits.
+
+Byte-validated against the upstream binary 1.23.1 via the CLI-to-CLI oracle
+(`TestNativePluginFillTagsPops`, `TestNativePluginFillTagsListTags`,
+`TestNativePluginFillTags`), with binary-free `TestUnitFillTags*` unit tests for
+the pure helpers (formula calculators, tag-list/samples-file parsers, expression
+evaluators).
+
 ## Quick start
 
 ```bash
