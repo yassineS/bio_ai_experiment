@@ -59,8 +59,12 @@ type statistics struct {
 	snpDenPrevPos   int
 	snpDenPrevChrom string
 	fstValues       []fstStat
-	filterCounts    map[string]int
-	singletonSites  []singletonStat
+	// FILTER-summary accumulators keyed by the full FILTER-field string
+	// (e.g. "PASS", ".", "q10;s50"): per-FILTER site count and Ts/Tv tallies.
+	filterCounts   map[string]int
+	filterTs       map[string]int
+	filterTv       map[string]int
+	singletonSites []singletonStat
 
 	// Misc
 	indelLenHist  map[int]int
@@ -272,6 +276,8 @@ func newStatistics(header *vcf.Header) *statistics {
 		snpDensityBins: make(map[string][]int),
 		snpDenPrevPos:  -1,
 		filterCounts:   make(map[string]int),
+		filterTs:       make(map[string]int),
+		filterTv:       make(map[string]int),
 		indelLenHist:   make(map[int]int),
 	}
 }
@@ -1161,15 +1167,35 @@ func (s *statistics) addSingletonStat(v *vcf.Variant) {
 	}
 }
 
-// addFilterCount tracks FILTER tag occurrences
+// addFilterCount accumulates the --FILTER-summary tallies. The key is the
+// WHOLE FILTER-field string (e.g. "PASS", ".", "q10;s50"), not individual
+// tags, mirroring upstream output_FILTER_summary which keys on get_FILTER().
+// Ts/Tv is derived from the REF+ALT[0] substitution model: A<->G / C<->T are
+// transitions, the other four ordered pairs are transversions.
 func (s *statistics) addFilterCount(v *vcf.Variant) {
-	if len(v.Filter) == 0 {
-		s.filterCounts["PASS"]++
-	} else {
-		for _, filter := range v.Filter {
-			s.filterCounts[filter]++
+	filter := filterFieldString(v)
+	s.filterCounts[filter]++
+
+	if len(v.Alt) == 0 {
+		return
+	}
+	if idx, ok := tstvModelIndex(v.Ref, v.Alt[0]); ok {
+		switch idx {
+		case 1, 4: // AG, CT
+			s.filterTs[filter]++
+		case 0, 2, 3, 5: // AC, AT, CG, GT
+			s.filterTv[filter]++
 		}
 	}
+}
+
+// filterFieldString reconstructs the original FILTER column string from the
+// parsed slice (parseFilter joins on ';' and keeps "." / "PASS" as singletons).
+func filterFieldString(v *vcf.Variant) string {
+	if len(v.Filter) == 0 {
+		return "."
+	}
+	return strings.Join(v.Filter, ";")
 }
 
 // addSNPDensityStat bins a variant for --SNPdensity, mirroring upstream
@@ -1600,7 +1626,12 @@ func (s *statistics) outputSingletons(prefix string) error {
 	return nil
 }
 
-// outputFilterSummary outputs FILTER tag summary
+// outputFilterSummary writes the --FILTER-summary table
+// (variant_file_output.cpp:output_FILTER_summary). Columns are
+// FILTER/N_VARIANTS/N_Ts/N_Tv/Ts/Tv. Rows are sorted by ascending
+// (N_VARIANTS, FILTER) and emitted in reverse, so the most frequent FILTER
+// comes first (ties broken by descending FILTER string). Ts/Tv is the
+// double ratio Ts/Tv via a default ostream (inf when Tv == 0).
 func (s *statistics) outputFilterSummary(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".FILTER.summary")
 	if err != nil {
@@ -1608,18 +1639,31 @@ func (s *statistics) outputFilterSummary(prefix string) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "FILTER\tN_SITES")
+	fmt.Fprintln(f, "FILTER\tN_VARIANTS\tN_Ts\tN_Tv\tTs/Tv")
 
-	// Sort by filter name
-	var filters []string
-	for filter := range s.filterCounts {
-		filters = append(filters, filter)
+	type filterRow struct {
+		filter string
+		nsites int
 	}
-	sort.Strings(filters)
+	rows := make([]filterRow, 0, len(s.filterCounts))
+	for filter, n := range s.filterCounts {
+		rows = append(rows, filterRow{filter, n})
+	}
+	// Ascending (nsites, filter); emitted in reverse below.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].nsites != rows[j].nsites {
+			return rows[i].nsites < rows[j].nsites
+		}
+		return rows[i].filter < rows[j].filter
+	})
 
-	for _, filter := range filters {
-		count := s.filterCounts[filter]
-		fmt.Fprintf(f, "%s\t%d\n", filter, count)
+	for i := len(rows) - 1; i >= 0; i-- {
+		filter := rows[i].filter
+		ts := s.filterTs[filter]
+		tv := s.filterTv[filter]
+		fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s\n",
+			filter, rows[i].nsites, ts, tv,
+			formatCppDefault(float64(ts)/float64(tv)))
 	}
 
 	return nil
