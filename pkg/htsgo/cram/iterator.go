@@ -27,6 +27,11 @@ type RecordReader struct {
 	refNames   []string
 	readGroups []string
 
+	// namePrefix is the basename of the opened file, used to synthesise
+	// read names for records dropped by a lossy-names CRAM. It is set from
+	// the underlying Reader (empty for a bare io.Reader with no path).
+	namePrefix string
+
 	// pending holds records decoded from the current slice that have not
 	// yet been returned by Read; a slice is decoded in one shot so that
 	// its interleaved data series are read in a single consistent pass.
@@ -63,7 +68,7 @@ func NewRecordReader(r io.Reader) (*RecordReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	rr := &RecordReader{rd: rd}
+	rr := &RecordReader{rd: rd, namePrefix: rd.namePrefix}
 	if err := rr.readSAMHeader(); err != nil {
 		return nil, err
 	}
@@ -77,7 +82,7 @@ func OpenRecords(path string) (*RecordReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	rr := &RecordReader{rd: rd}
+	rr := &RecordReader{rd: rd, namePrefix: rd.namePrefix}
 	if err := rr.readSAMHeader(); err != nil {
 		rd.Close()
 		return nil, err
@@ -342,6 +347,7 @@ func (rr *RecordReader) decodeSlice(h *CompressionHeader, sl *Slice, containerId
 	if err != nil {
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
+	dec.namePrefix = rr.namePrefix
 	recs, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
 		return nil, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)

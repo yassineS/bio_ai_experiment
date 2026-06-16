@@ -85,7 +85,7 @@ evidence-based estimate of remaining surface — not a rosy reading.
 | **bgzip** | 1/1 cmd, all flags incl. parallel block compression (`-@`/`-t`) + `--test` integrity check | none | **~99%** | done |
 | **tabix** | 1/1 cmd, all flags incl. `--reheader`, strict `--targets` post-filter, remote URL region queries | none | **~99%** | done |
 | **htsfile** | 1/1 cmd | none (intentional `-c` omission) | **~98%** | done |
-| **CRAM / htsgo formats** | CRAM read+write **v2/v3 + v4.0** (uint7-varint + 64-bit pos; v4 transform codecs XPACK/XRLE/XDELTA decode; rANS 4x8/4x16 in-tree, LZMA via ulikunitz/xz); writer output (v3 **and** v4) decodes through upstream samtools (live cross-checks); BGZF, BAI/CSI, SAM/BAM, BCF v2.2, tabix index | partial-decompress seek via `.gzi` (perf only) | **~95%** | small |
+| **CRAM / htsgo formats** | CRAM read+write **v2/v3 + v4.0** (uint7-varint + 64-bit pos; v4 transform codecs XPACK/XRLE/XDELTA decode; rANS 4x8/4x16 in-tree, LZMA via ulikunitz/xz); writer output (v3 **and** v4) decodes through upstream samtools (live cross-checks); **lossy read names (`lossy_names=1`) decode — detached mate name read from the mate block + dropped duplicate names reconstructed as `<prefix>:<n>` per htslib `cram_to_bam`**; **writer `=`/`X` CIGAR (`--eqx`) folded to per-base features like M (live `samtools` parity); `B` back-step rejected to match htslib**; BGZF, BAI/CSI, SAM/BAM, BCF v2.2, tabix index | partial-decompress seek via `.gzi` (perf only) | **~95%** | small |
 
 Percentages weight *remaining feature surface and effort*, not flag counts
 alone — e.g. vcftools is 100% on flags but ~98% because a few outputs still

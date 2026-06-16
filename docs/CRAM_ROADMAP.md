@@ -511,3 +511,42 @@ limitation here.
   candidate. Its output decodes byte-for-byte under Go `compress/bzip2`,
   the system `bzip2 -d` (libbz2), and upstream samtools; no new
   dependency was added.
+- **Lossy read names + =/X/B CIGAR** — landed. Two CRAM codec edge
+  cases closed.
+  - *Read: lossy_names (read-names-NOT-preserved) detached mates.* A
+    CRAM written with `--output-fmt-option lossy_names=1` clears the
+    preservation map's RN flag and drops the names of records whose name
+    can be reconstructed (within-slice duplicates), keeping the real
+    name of every **detached** record — stored in the mate block, after
+    MF and before NS, rather than at the normal read-name position. The
+    decoder previously errored ("detached mate with read names not
+    preserved is not yet supported"); it now reads the name there
+    (`record.go` `decodeMate`, matching `cram_decode.c`'s
+    `!read_names_included` RN read) and reconstructs every dropped name
+    after the slice decodes (`reconstructDroppedNames`): a within-slice
+    pair shares the upstream record's name, an orphan synthesises
+    `<prefix>:<record_number>` where the prefix is the file's basename
+    (threaded from `Open`) and the number is `slice_record_counter +
+    index + 1` — byte-for-byte htslib's `cram_to_bam` scheme. Validated
+    against live `samtools view` of a lossy-names CRAM
+    (`TestLossyNamesReadParity`, both kept and synthesised names) plus
+    binary-free `TestUnitReconstructDroppedNames` /
+    `TestUnitDecodeReadNameDeferred`.
+  - *Write: =/X CIGAR ops (`--eqx` aligner output).* The simple CRAM
+    writer already folds M, `=` and X into one per-base base-stretch
+    feature, mirroring htslib's encoder (whose cigar loop merges
+    `BAM_CMATCH`/`CEQUAL`/`CDIFF` and deliberately "doesn't trust = and X
+    to be correct"). This is now documented and tested: a `=`/`X` SAM,
+    written to CRAM by our writer, decodes under `samtools view` to the
+    same core SAM fields as the input (=/X collapse to M, as samtools'
+    own reference-based CRAM does) and as samtools' `-C` of the same
+    alignment (`TestEqXWriteParity`); the per-op equivalence is proven
+    binary-free in `TestUnitEqX*`.
+  - *Write: B (CIGAR back-step) — deliberately rejected, matching
+    upstream.* htslib's CRAM encoder has no `BAM_CBACK` case and rejects
+    B with "Unknown CIGAR op code" (and its SAM parser cannot even build
+    a B-bearing record without a length-mismatch error). Our writer
+    therefore returns a precise B-specific error rather than inventing a
+    feature stream upstream could never read back; covered by
+    `TestUnitCigarBackRejected`. This is upstream behaviour matched, not
+    a bug, so it is recorded here rather than in `docs/UPSTREAM_BUGS.md`.

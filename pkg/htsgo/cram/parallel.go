@@ -312,6 +312,7 @@ func (rr *RecordReader) decodeSliceParallel(h *CompressionHeader, sl *Slice, con
 	if err != nil {
 		return nil, false, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)
 	}
+	dec.namePrefix = rr.namePrefix
 	recs, err := dec.decodeSliceRecords(sl.Header.NumRecords)
 	if err != nil {
 		return nil, false, wrapf(err, "container %d slice %d", containerIdx, sliceIdx)

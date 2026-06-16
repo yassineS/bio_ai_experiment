@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 )
 
 // Container is one fully-parsed CRAM container: its header and the
@@ -43,6 +44,15 @@ type Reader struct {
 	done    bool
 	sawEOF  bool
 	lastErr error
+
+	// namePrefix is the basename of the opened file, used to synthesise
+	// read names for records whose names were dropped by a lossy-names
+	// (read-names-not-preserved) CRAM. htslib derives this prefix from the
+	// filename (cram_io.c sets fd->prefix to the path's basename) and emits
+	// "<prefix>:<record_number>" for any record without a stored name. A
+	// Reader created from a bare io.Reader (no path) leaves this empty, in
+	// which case the synthesised name carries no prefix.
+	namePrefix string
 }
 
 // NewReader reads and validates the CRAM file definition from r and
@@ -70,6 +80,10 @@ func Open(path string) (*Reader, error) {
 		return nil, err
 	}
 	rd.closer = f
+	// htslib's fd->prefix is the path's basename (cram_io.c:
+	// strrchr(filename, '/') ? cp+1 : filename); the lossy-names decoder
+	// builds synthesised read names from it.
+	rd.namePrefix = filepath.Base(path)
 	return rd, nil
 }
 

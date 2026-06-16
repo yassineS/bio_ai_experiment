@@ -84,6 +84,13 @@ type recordDecoder struct {
 	// substMatrix decodes a substitution feature's BS code into a read
 	// base relative to the reference base at that position.
 	substMatrix substMatrix
+
+	// namePrefix is the basename of the opened file. When a lossy-names
+	// (read-names-not-preserved) CRAM drops a record's name, the decoder
+	// synthesises "<namePrefix>:<record_number>", matching htslib's
+	// cram_to_bam name generation. Empty when the file was opened from a
+	// bare io.Reader with no path (htslib likewise has no prefix then).
+	namePrefix string
 }
 
 // newRecordDecoder builds a recordDecoder for one slice. It parses the
@@ -240,6 +247,20 @@ type decodedRecord struct {
 	// nextFragment is the records-to-skip distance to the downstream
 	// mate, valid only when mateDownstream is true.
 	nextFragment int32
+	// nameStored is true when an explicit read name was decoded for this
+	// record (from the RN series, whether at the normal read-name position
+	// or, for a lossy-names detached record, inside the mate block). When
+	// it is false the name was dropped by a lossy-names CRAM and must be
+	// reconstructed after the slice is decoded — copied from a mate if one
+	// carries a name, otherwise synthesised as "<prefix>:<record_number>",
+	// mirroring htslib's cram_to_bam name generation.
+	nameStored bool
+	// mateIndex is the in-slice index of this record's mate when the pair
+	// is stored within the slice (set by resolveMates for both directions
+	// of a downstream-mate pair), or -1 when unknown. It is used to pick
+	// the record number htslib's cram_to_bam uses when synthesising a
+	// dropped name: the mate's index when the mate is an earlier record.
+	mateIndex int
 }
 
 // decodeRecord decodes one CRAM alignment record into a decodedRecord.
@@ -251,7 +272,7 @@ type decodedRecord struct {
 // bases (unmapped).
 func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 	rec := &sam.Record{}
-	dr := &decodedRecord{rec: rec}
+	dr := &decodedRecord{rec: rec, mateIndex: -1}
 
 	bf, err := rd.intSeries("BF")
 	if err != nil {
@@ -314,7 +335,7 @@ func (rd *recordDecoder) decodeRecord(index int) (*decodedRecord, error) {
 		return nil, wrapf(err, "record %d read group", index)
 	}
 
-	if err := rd.decodeReadName(rec, cf, index); err != nil {
+	if err := rd.decodeReadName(dr, cf, index); err != nil {
 		return nil, err
 	}
 	if err := rd.decodeMate(dr, cf, index); err != nil {
@@ -442,11 +463,47 @@ func (rd *recordDecoder) decodeSliceRecords(nRecords int32) ([]*sam.Record, erro
 	if err := resolveMates(decoded); err != nil {
 		return nil, err
 	}
+	rd.reconstructDroppedNames(decoded)
 	out := make([]*sam.Record, len(decoded))
 	for i, dr := range decoded {
 		out[i] = dr.rec
 	}
 	return out, nil
+}
+
+// reconstructDroppedNames assigns a QNAME to every record of a lossy-names
+// slice whose name was dropped at encode time (nameStored == false). It
+// runs after resolveMates, so a downstream-mate pair has already had the
+// upstream record's name copied to its mate (linkMates). For any record
+// still without a name, it synthesises "<prefix>:<record_number>", exactly
+// as htslib's cram_to_bam does: the record number is the slice's running
+// record counter plus the in-slice index (or the mate's index when the
+// mate is an earlier record in the same slice), plus one. With names
+// preserved every record's name was stored, so this is a no-op.
+func (rd *recordDecoder) reconstructDroppedNames(decoded []*decodedRecord) {
+	if rd.h.Preservation.ReadNamesIncluded {
+		return
+	}
+	for i, dr := range decoded {
+		if dr.nameStored || dr.rec.QName != "" {
+			// A name was stored, or resolveMates copied one from the mate.
+			continue
+		}
+		// htslib synthesises from the mate's index when the mate is an
+		// earlier record in this slice, otherwise from this record's index.
+		// Both members of a within-slice pair therefore resolve to the same
+		// number — the upstream record's — so a dropped pair shares a name.
+		recNo := int64(i)
+		if dr.mateIndex >= 0 && dr.mateIndex < i {
+			recNo = int64(dr.mateIndex)
+		}
+		num := rd.slice.RecordCounter + recNo + 1
+		if rd.namePrefix != "" {
+			dr.rec.QName = fmt.Sprintf("%s:%d", rd.namePrefix, num)
+		} else {
+			dr.rec.QName = fmt.Sprintf("%d", num)
+		}
+	}
 }
 
 // NeedsReference reports whether decoding has so far reached a record
@@ -473,6 +530,11 @@ func resolveMates(decoded []*decodedRecord) error {
 			return errFormat("record %d names a downstream mate at index %d, outside the slice (%d records)",
 				i, mateIdx, len(decoded))
 		}
+		// Record the link in both directions so a lossy-names slice can
+		// synthesise a dropped name from the mate's index, as htslib does
+		// (it sets the downstream record's mate_line back to the upstream).
+		dr.mateIndex = mateIdx
+		decoded[mateIdx].mateIndex = i
 		linkMates(dr.rec, decoded[mateIdx].rec)
 	}
 	return nil
@@ -537,22 +599,43 @@ func setMateFields(rec, mate *sam.Record) {
 }
 
 // decodeReadName reconstructs the record's QNAME. When the preservation
-// map's RN flag is set the name comes from the RN data series; otherwise
-// the writer dropped the name and the decoder synthesises a numeric one
-// from the slice's record counter, matching htslib's convention.
-func (rd *recordDecoder) decodeReadName(rec *sam.Record, cf int32, index int) error {
+// map's RN flag is set, the name is read from the RN data series at this
+// (the normal read-name) position in the record layout.
+//
+// When read names are NOT preserved (a lossy-names CRAM), htslib reads no
+// RN value here: a detached record's name is read later, inside the mate
+// block (decodeMate), and a non-detached record's name was dropped and is
+// reconstructed once the whole slice is decoded (reconstructDroppedNames).
+// This mirrors cram_decode.c, which only reads the RN series at the
+// read-name position when comp_hdr->read_names_included is set.
+func (rd *recordDecoder) decodeReadName(dr *decodedRecord, cf int32, index int) error {
 	if rd.h.Preservation.ReadNamesIncluded {
 		name, err := rd.byteArraySeries("RN")
 		if err != nil {
 			return wrapf(err, "record %d read name", index)
 		}
-		rec.QName = string(name)
+		dr.rec.QName = string(name)
+		dr.nameStored = true
 		return nil
 	}
-	// Names were not preserved: htslib generates a name from the running
-	// record number (slice record counter plus the in-slice index).
-	rec.QName = fmt.Sprintf("%d", rd.slice.RecordCounter+int64(index))
+	// Names not preserved: defer. decodeMate fills a detached record's name
+	// from the mate block; reconstructDroppedNames handles the rest.
 	return nil
+}
+
+// optByteArraySeries decodes one variable-length byte-array value of the
+// named data series, or returns ok=false when the series is absent from
+// the encoding map.
+func (rd *recordDecoder) optByteArraySeries(key string) ([]byte, bool, error) {
+	enc := rd.h.Encoding(key)
+	if enc == nil {
+		return nil, false, nil
+	}
+	b, err := enc.decodeByteArray(rd.src.s)
+	if err != nil {
+		return nil, false, wrapf(err, "data series %q", key)
+	}
+	return b, true, nil
 }
 
 // decodeMate reconstructs the mate-related fields (RNEXT, PNEXT, TLEN
@@ -574,14 +657,24 @@ func (rd *recordDecoder) decodeMate(dr *decodedRecord, cf int32, index int) erro
 		if mf&mfMateUnmapped != 0 {
 			rec.Flag |= sam.FlagMateUnmapped
 		}
-		// A detached record whose read names are not preserved stores
-		// its name inside the mate block (after MF, before NS). That
-		// layout is not yet handled; reject it explicitly rather than
-		// silently desync every following series. Names-preserved — the
-		// samtools default — is the common case, handled in
-		// decodeReadName, and needs nothing extra here.
+		// A detached record whose read names are not preserved carries its
+		// name inside the mate block — after the MF series, before NS —
+		// rather than at the normal read-name position. htslib's
+		// cram_decode.c reads the RN series here when
+		// !read_names_included, so a lossy-names CRAM keeps the real names
+		// of its detached records (only fully-reconstructable non-detached
+		// duplicates are dropped). When the RN series is present in the
+		// encoding map, read it; when it is absent the name was dropped and
+		// reconstructDroppedNames synthesises it after the slice decodes.
 		if !rd.h.Preservation.ReadNamesIncluded {
-			return errFormat("record %d: detached mate with read names not preserved is not yet supported", index)
+			name, ok, nerr := rd.optByteArraySeries("RN")
+			if nerr != nil {
+				return wrapf(nerr, "record %d detached read name", index)
+			}
+			if ok {
+				rec.QName = string(name)
+				dr.nameStored = true
+			}
 		}
 		nsID, err := rd.intSeries("NS")
 		if err != nil {
