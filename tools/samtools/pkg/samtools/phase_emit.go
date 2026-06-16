@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"math"
-	"math/rand"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/errmod"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -48,7 +47,7 @@ type upstreamPhaseRunner struct {
 // (FLAG_DROP_AMBI).
 //
 // Returns the number of het sites emitted on this reference.
-func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, bw *bufio.Writer, bs *bamSplitWriter, rng *rand.Rand, opts PhaseOptions) (int, error) {
+func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, bw *bufio.Writer, bs *bamSplitWriter, rng phaseRNG, opts PhaseOptions) (int, error) {
 	pp := newPhaseStreamPileup(recs, rname)
 	em := errmod.Init(1.0 - 0.83)
 	bases := make([]uint16, 0, g.maxDepth)

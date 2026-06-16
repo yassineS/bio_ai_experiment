@@ -24,12 +24,14 @@
 // — this is the Go port of upstream's `fragphase` chimera-repair
 // scoring loop. The scoring is conceptually a small MCMC-like search
 // over per-read flip assignments, implemented deterministically as
-// the same forward/backward sum scan upstream uses; the only random
-// source is the `math/rand` seeded RNG that routes truly-ambiguous
-// reads into the 0/1 output buckets in `-b` mode (mirroring upstream's
-// `drand48()`). The seed is fixed (1) so test assertions on the `-b`
-// BAM split are deterministic; RNG byte-parity with upstream is not a
-// goal of this project (see docs/PARITY_ROADMAP.md).
+// the same forward/backward sum scan upstream uses. The only random
+// source is the RNG that routes evidence-less reads (and applies the
+// per-call is_flip shuffle) into the 0/1/chimera output buckets in
+// `-b` mode. On the upstream-schema path (the CLI default) that RNG is
+// an in-tree byte-exact port of glibc's default-seeded `drand48()`
+// (phase_drand48.go), so the `-b` split agrees with upstream
+// record-for-record — not merely up to a 0<->1 relabelling. The legacy
+// v1 path retains a `math/rand` source seeded by RNGSeed.
 //
 // Output format is the tab-separated stream documented in the user
 // spec:
@@ -193,9 +195,17 @@ func loadPhaseSites(path string) (map[string]map[int]struct{}, error) {
 // banner + PS / FL / M / EV / //). The implementation is a faithful
 // port of reference_code/samtools/phase.c, including the bit-exact
 // khash/ksort iteration order so EV-line ordering matches upstream on
-// the canonical fixtures. The greedy v1 -b BAM split is preserved for
-// the in-process test fixtures; upstream's dump_aln routing using the
-// new dynaprog phase is not yet wired into the BAM split path.
+// the canonical fixtures.
+//
+// The -b BAM split is wired through upstream's dump_aln routing on this
+// path: after each block's phaseEmit, the per-read frag flags
+// (phase/phased/flip/ambig) computed by the dynaprog+fragphase pass
+// drive dispatch into <prefix>.{0,1,chimera}.bam exactly as phase.c
+// does, including the drand48()-seeded is_flip shuffle and the
+// evidence-less 50/50 routing (reproduced bit-for-bit by the in-tree
+// drand48 port — see phase_drand48.go). The -A (DropAmbiguous) and -F
+// (NoFixChimera) flags feed straight into that routing. The split is
+// byte-validated against the upstream binary in TestLivePhaseBamSplit.
 func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 	if opts.BlockWindow == 0 {
 		opts.BlockWindow = DefaultPhaseBlockWindow
@@ -258,11 +268,14 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 		bamSplit = bs
 	}
 
-	seed := opts.RNGSeed
-	if seed == 0 {
-		seed = 1
-	}
-	rng := rand.New(rand.NewSource(seed))
+	// Upstream samtools phase routes -b reads via drand48() and never
+	// calls srand48(), so it runs from glibc's default seed state
+	// (Xi = 0). Our drand48 port reproduces that exact sequence, which
+	// is what makes the .0/.1/.chimera split agree with upstream
+	// record-for-record (not merely up to a 0<->1 relabelling). The
+	// opts.RNGSeed knob is therefore ignored on the upstream-schema
+	// path — it only influences the legacy math/rand path below.
+	rng := newDrand48()
 
 	// CC banner emitted once at the start.
 	emitPhaseBanner(bw)
