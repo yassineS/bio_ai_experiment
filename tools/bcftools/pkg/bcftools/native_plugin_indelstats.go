@@ -169,7 +169,7 @@ func (p *indelStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, er
 		}
 	}
 	if haveFilter {
-		f, err := newPluginFilter(filterExpr, filterExclude)
+		f, err := newPluginFilterWithHeader(filterExpr, filterExclude, hdr)
 		if err != nil {
 			return nil, fmt.Errorf("indel-stats: %w", err)
 		}

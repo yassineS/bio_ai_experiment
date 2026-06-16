@@ -116,7 +116,7 @@ func VCFToGenSample(in io.Reader, prefix string, opts GenSampleOptions) error {
 	include, exclude, err := compileExpressions(ViewOptions{
 		IncludeExpr: opts.IncludeExpr,
 		ExcludeExpr: opts.ExcludeExpr,
-	})
+	}, hdr)
 	if err != nil {
 		return fmt.Errorf("bcftools convert: %w", err)
 	}

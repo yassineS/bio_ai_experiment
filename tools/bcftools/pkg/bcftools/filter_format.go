@@ -246,10 +246,51 @@ func cmpMissing(op string, lv any, lpres bool, rv any, rpres bool) bool {
 	return false
 }
 
-// cmpTokScalar performs a single scalar comparison, supporting the regex
-// operators (~ / !~) in addition to the arithmetic/relational operators
-// handled by compare().
+// cmpTokScalar performs a single comparison, supporting the regex operators
+// (~ / !~) in addition to the arithmetic/relational operators handled by
+// compare(). Multi-valued fields (comma-separated, e.g. an INFO Number=A tag
+// such as AC=2,1) are matched element-wise with ANY semantics: the comparison
+// passes if any element of one side compares true against any element of the
+// other, mirroring upstream filter.c's vector comparison (a Number=A/G/. tag
+// passes the site when any of its values satisfies the operator). This applies
+// uniformly to every operator, including != and the regex operators.
 func cmpTokScalar(op string, a, b any) bool {
+	as, aMulti := splitMultiValue(a)
+	bs, bMulti := splitMultiValue(b)
+	if !aMulti && !bMulti {
+		return cmpScalarOne(op, a, b)
+	}
+	for _, ae := range as {
+		for _, be := range bs {
+			if cmpScalarOne(op, ae, be) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// splitMultiValue splits v into its comma-separated elements when v is a
+// multi-valued string (contains a comma). It returns the element slice and
+// whether v was multi-valued. A scalar value yields a single-element slice and
+// false. Only string values are split; numeric/boolean values are scalar.
+func splitMultiValue(v any) ([]any, bool) {
+	s, ok := v.(string)
+	if !ok || !strings.Contains(s, ",") {
+		return []any{v}, false
+	}
+	parts := strings.Split(s, ",")
+	out := make([]any, len(parts))
+	for i, p := range parts {
+		out[i] = p
+	}
+	return out, true
+}
+
+// cmpScalarOne performs a single scalar comparison on already-singular
+// operands, dispatching the regex operators (~ / !~) and otherwise delegating
+// to compare().
+func cmpScalarOne(op string, a, b any) bool {
 	switch op {
 	case "~", "!~":
 		matched := regexMatch(asString(a), asString(b))

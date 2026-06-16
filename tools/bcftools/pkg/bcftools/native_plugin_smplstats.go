@@ -125,7 +125,7 @@ func (p *smplStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 		}
 	}
 	if haveFilter {
-		f, err := newPluginFilter(filterExpr, filterExclude)
+		f, err := newPluginFilterWithHeader(filterExpr, filterExclude, hdr)
 		if err != nil {
 			return nil, fmt.Errorf("smpl-stats: %w", err)
 		}

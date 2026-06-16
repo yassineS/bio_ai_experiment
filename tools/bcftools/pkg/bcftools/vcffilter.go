@@ -200,7 +200,7 @@ func writeFiltered(hdr *vcf.Header, variants []*vcf.Variant, out io.Writer, opts
 	include, exclude, err := compileExpressions(ViewOptions{
 		IncludeExpr: opts.IncludeExpr,
 		ExcludeExpr: opts.ExcludeExpr,
-	})
+	}, hdr)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools filter: %w", err)
 	}

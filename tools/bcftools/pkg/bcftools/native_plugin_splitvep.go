@@ -105,6 +105,13 @@ type splitVepPlugin struct {
 	scale       []string
 	csq2sev     map[string]int
 	formatItems []svFmtItem
+
+	// Filter (-i/-e). filterStr is the raw expression text, filterExclude is
+	// true for -e/--exclude. The compiled filter is built in runAnnotate against
+	// the split-vep-augmented output header so it can reference the per-transcript
+	// CSQ subfield columns, matching upstream filter_init(args->hdr_out).
+	filterStr     string
+	filterExclude bool
 }
 
 // Name returns the plugin name.
@@ -204,7 +211,13 @@ func (p *splitVepPlugin) parseArgs(args []string) error {
 		case "-X", "--keep-sites":
 			p.dropSites = 0
 		case "-i", "--include", "-e", "--exclude":
-			return fmt.Errorf("split-vep: the -i/-e filter expressions filter over split-vep's expanded per-transcript CSQ subfields (registered on the output header by filter_init), not just the input VCF columns, and so are not supported in the native plugin; run upstream bcftools for that")
+			// Upstream split-vep runs filter_init on hdr_out AFTER registering the
+			// expanded per-transcript CSQ subfields as synthetic INFO tags, so the
+			// expression filters on those derived columns — not plain VCF fields.
+			// Reproducing that needs the filter engine wired against the split-vep
+			// output header; until then this is a clean unsupported error rather
+			// than silently divergent (unfiltered) output.
+			return fmt.Errorf("split-vep: the -i/-e filter expressions filter on split-vep's expanded per-transcript CSQ subfields (registered on the output header) and are not supported in the native plugin; run upstream bcftools for that")
 		case "-g", "--gene-list", "--gene-list-fields":
 			return fmt.Errorf("split-vep: the -g/--gene-list gene-restriction machinery is not supported in the native plugin; run upstream bcftools for that")
 		case "-S", "--severity":
@@ -220,6 +233,15 @@ func (p *splitVepPlugin) parseArgs(args []string) error {
 	}
 	if p.allFields != "" && p.formatStr == "" {
 		return fmt.Errorf("split-vep: -A/--all-fields requires -f/--format")
+	}
+	if p.filterStr != "" && p.formatStr != "" {
+		// The -i/-e filter engine is wired for the default VCF/BCF (annotate)
+		// output mode, where it can be applied per record after the derived CSQ
+		// subfield columns are written as INFO tags (mirroring upstream's
+		// filter_and_output). Combining -i/-e with -f/--format additionally needs
+		// the filter and the query-convert engine to share the same augmented
+		// record, which the native -f path does not yet support.
+		return fmt.Errorf("split-vep: combining -i/-e with -f/--format is not supported in the native plugin; the filter works in the default VCF/BCF output mode")
 	}
 	return nil
 }

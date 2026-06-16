@@ -181,6 +181,20 @@ func trField(tr []string, idx int) string {
 // container.
 func (p *splitVepPlugin) runAnnotate(opts PluginOptions, hdr *vcf.Header, variants []*vcf.Variant, out io.Writer) error {
 	outHdr := p.annotateHeader(hdr)
+
+	// Compile the -i/-e expression against the augmented output header so it can
+	// reference the per-transcript CSQ subfield columns that annotateHeader just
+	// registered as synthetic INFO tags, mirroring upstream split-vep.c, which
+	// calls filter_init(args->hdr_out) after registering those columns.
+	var filter *pluginFilter
+	if p.filterStr != "" {
+		f, ferr := newPluginFilterWithHeader(p.filterStr, p.filterExclude, outHdr)
+		if ferr != nil {
+			return fmt.Errorf("split-vep: -i/-e expression: %w", ferr)
+		}
+		filter = f
+	}
+
 	w, cleanup, err := openOutput(out, ViewOptions{
 		OutputFormat:  opts.OutputFormat,
 		CompressLevel: opts.CompressLevel,
@@ -196,6 +210,11 @@ func (p *splitVepPlugin) runAnnotate(opts PluginOptions, hdr *vcf.Header, varian
 	for _, v := range variants {
 		emit := p.annotateRecord(v)
 		if !emit {
+			continue
+		}
+		// Apply the -i/-e filter after the derived columns have been written as
+		// INFO tags, exactly where upstream's filter_and_output evaluates it.
+		if !filter.testSite(v) {
 			continue
 		}
 		if err := w.Write(v); err != nil {

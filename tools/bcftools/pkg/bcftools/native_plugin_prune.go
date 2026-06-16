@@ -208,7 +208,7 @@ func (p *prunePlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 	}
 
 	if p.filterExpr != "" {
-		f, err := CompileFilter(p.filterExpr)
+		f, err := CompileFilterWithHeader(p.filterExpr, p.hdr)
 		if err != nil {
 			return nil, fmt.Errorf("prune: %w", err)
 		}

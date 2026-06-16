@@ -596,7 +596,7 @@ func loadFilteredVCF(path string, opts *HapConvertOptions) (*vcf.Header, []*vcf.
 	include, exclude, err := compileExpressions(ViewOptions{
 		IncludeExpr: opts.IncludeExpr,
 		ExcludeExpr: opts.ExcludeExpr,
-	})
+	}, hdr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("bcftools convert: %w", err)
 	}

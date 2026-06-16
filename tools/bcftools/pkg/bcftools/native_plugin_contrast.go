@@ -186,7 +186,7 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 	}
 
 	if haveFilter {
-		f, ferr := newPluginFilter(filterExpr, filterExclude)
+		f, ferr := newPluginFilterWithHeader(filterExpr, filterExclude, hdr)
 		if ferr != nil {
 			return nil, fmt.Errorf("contrast: %w", ferr)
 		}

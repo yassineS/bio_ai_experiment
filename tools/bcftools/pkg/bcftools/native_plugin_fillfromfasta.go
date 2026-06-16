@@ -159,7 +159,7 @@ func (p *fillFromFastaPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header,
 	p.fai = fai
 
 	if filterStr != "" {
-		f, err := CompileFilter(filterStr)
+		f, err := CompileFilterWithHeader(filterStr, hdr)
 		if err != nil {
 			return nil, fmt.Errorf("fill-from-fasta: -i/-e expression: %w", err)
 		}
