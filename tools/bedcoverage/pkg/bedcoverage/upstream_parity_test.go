@@ -254,6 +254,61 @@ func TestUpstreamParity_MutuallyExclusiveError(t *testing.T) {
 	}
 }
 
+// TestUpstreamParity_SplitBlockedQueryBED12 covers `-split` over a BLOCKED
+// query (-a) record: a BED12 line with multiple blocks. With -split, coverage
+// is computed only over the query's sub-blocks (introns/gaps excluded), while
+// the reported length-of-A and the per-base depth vector still span the full
+// record. A B record straddling an intron is counted once per query block it
+// touches, mirroring upstream findBlockedOverlaps/_hitCount. Every output mode
+// must match upstream byte-for-byte.
+func TestUpstreamParity_SplitBlockedQueryBED12(t *testing.T) {
+	a := fixtureAbs(t, "split_query_a.bed12")
+	b := fixtureAbs(t, "split_query_b.bed")
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"default", []string{"-split", "-a", a, "-b", b}},
+		{"counts", []string{"-split", "-counts", "-a", a, "-b", b}},
+		{"depth", []string{"-split", "-d", "-a", a, "-b", b}},
+		{"hist", []string{"-split", "-hist", "-a", a, "-b", b}},
+		{"mean", []string{"-split", "-mean", "-a", a, "-b", b}},
+		{"sameStrand", []string{"-split", "-s", "-a", a, "-b", b}},
+		{"oppStrand", []string{"-split", "-S", "-a", a, "-b", b}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assertStdoutParity(t, tc.args, tc.args)
+		})
+	}
+}
+
+// TestUpstreamParity_SplitBlockedQueryBAM covers `-split` over a BLOCKED query
+// supplied as a spliced (N-CIGAR) BAM alignment via -abam. The N skips become
+// BED12 introns, so coverage must be computed only over the M blocks. Every
+// output mode must match upstream byte-for-byte.
+func TestUpstreamParity_SplitBlockedQueryBAM(t *testing.T) {
+	a := fixtureAbs(t, "split_query_a.bam")
+	b := fixtureAbs(t, "split_query_b.bed")
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"default", []string{"-split", "-abam", a, "-b", b}},
+		{"counts", []string{"-split", "-counts", "-abam", a, "-b", b}},
+		{"depth", []string{"-split", "-d", "-abam", a, "-b", b}},
+		{"hist", []string{"-split", "-hist", "-abam", a, "-b", b}},
+		{"mean", []string{"-split", "-mean", "-abam", a, "-b", b}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assertStdoutParity(t, tc.args, tc.args)
+		})
+	}
+}
+
 // lastNonEmptyLine returns the final non-empty line of b without its newline,
 // matching the upstream test harness's `tail -1` on the captured stderr.
 func lastNonEmptyLine(b []byte) []byte {

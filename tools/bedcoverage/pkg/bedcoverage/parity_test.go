@@ -181,13 +181,20 @@ func TestParity_Coverage_SplitBED12Database(t *testing.T) {
 	}
 }
 
-// coverage -split must reject a BED12 query (-a) record (unsupported) with a
-// clear error rather than emit a wrong answer.
-func TestCoverage_SplitBED12QueryRejected(t *testing.T) {
+// coverage -split over a BED12 query (-a) record: the two 10 bp blocks (0-10,
+// 40-50) of the query are covered by B [0,60); the gap 10-40 is excluded but
+// still counts toward the reported length-of-A (50). count 2 / covered 20 /
+// fraction 0.4. Verified byte-for-byte against bedtools v2.31.1.
+func TestCoverage_SplitBED12Query(t *testing.T) {
 	a := "chr1\t0\t50\tq\t0\t+\t0\t0\t0\t2\t10,10,\t0,40,\n"
 	b := "chr1\t0\t60\tb\n"
 	var buf bytes.Buffer
-	if _, err := Coverage(bytes.NewReader([]byte(a)), bytes.NewReader([]byte(b)), &buf, Options{Split: true}); err == nil {
-		t.Fatal("expected error for BED12 query under -split")
+	if _, err := Coverage(bytes.NewReader([]byte(a)), bytes.NewReader([]byte(b)), &buf, Options{Split: true}); err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	got := buf.String()
+	want := "chr1\t0\t50\tq\t0\t+\t0\t0\t0\t2\t10,10,\t0,40,\t2\t20\t50\t0.4000000\n"
+	if got != want {
+		t.Errorf("BED12 query under -split:\nwant: %q\ngot:  %q", want, got)
 	}
 }

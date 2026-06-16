@@ -100,12 +100,14 @@ type Options struct {
 	// (default behaviour is "either satisfies if non-zero").
 	Reciprocal bool
 
-	// Split ("-split") expands BED12 database (-b) records into their blocks
-	// before indexing, so coverage is counted against each block rather than
-	// the whole record span — matching upstream bedtools coverage -split for
-	// the common "plain-BED -a, BED12 -b" pattern. (Splitting a blocked
-	// query (-a) record — a BED12 line or a spliced BAM alignment — is not
-	// yet supported and is rejected with a clear error.)
+	// Split ("-split") makes coverage block-aware. On the database (-b) side it
+	// expands BED12 records into their blocks before indexing, so coverage is
+	// counted against each block rather than the whole record span. On the
+	// query (-a) side a blocked record (a BED12 line or a spliced/N-CIGAR BAM
+	// alignment) is split into its sub-blocks: overlap is computed only against
+	// those blocks (introns/gaps are excluded), while the reported length-of-A
+	// and the per-base depth vector still span the record's full [start,end) —
+	// matching upstream bedtools coverage -split (coverageFile.cpp).
 	Split bool
 }
 
@@ -152,26 +154,38 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 		if err != nil {
 			return count, fmt.Errorf("error reading A intervals: %w", err)
 		}
-		if opts.Split && recA.BlockCount > 0 && len(recA.BlockSizes) > 0 {
-			return count, fmt.Errorf("coverage -split with a blocked query (-a) record (BED12 or a spliced BAM alignment) is not yet supported (record %s:%d-%d)", recA.Chrom, recA.ChromStart, recA.ChromEnd)
-		}
 		count++
 
 		bMatches := selectOverlapping(recA, trees[recA.Chrom], opts)
+
+		// hitCount is the number of contributing B records; depths is the
+		// per-base depth vector spanning A's full [start,end). With -split over
+		// a blocked query (a BED12 record or a spliced/N-CIGAR BAM alignment),
+		// overlap is restricted to A's sub-blocks (introns stay depth 0) and
+		// only B records overlapping a block contribute — but the depth vector
+		// (and the reported length-of-A) still spans the full record, matching
+		// upstream coverageFile.cpp where _queryLen = endPos - startPos.
+		var hitCount int
+		var depths []int
+		if opts.Split && recA.BlockCount > 0 && len(recA.BlockSizes) > 0 {
+			hitCount, depths = splitDepth(recA, bMatches)
+		} else {
+			hitCount = len(bMatches)
+			depths = perBaseDepth(recA, bMatches)
+		}
+
 		switch opts.Mode {
 		case ModeCounts:
-			if err := writeWithExtra(bw, recA, strconv.Itoa(len(bMatches))); err != nil {
+			if err := writeWithExtra(bw, recA, strconv.Itoa(hitCount)); err != nil {
 				return count, err
 			}
 		case ModeDepth:
-			depths := perBaseDepth(recA, bMatches)
 			for i, d := range depths {
 				if err := writeWithExtra(bw, recA, strconv.Itoa(i+1), strconv.Itoa(d)); err != nil {
 					return count, err
 				}
 			}
 		case ModeHist:
-			depths := perBaseDepth(recA, bMatches)
 			counts := map[int]int{}
 			for _, d := range depths {
 				counts[d]++
@@ -196,7 +210,6 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 				}
 			}
 		case ModeMean, ModeMedian, ModeMin, ModeMax, ModeSum:
-			depths := perBaseDepth(recA, bMatches)
 			val, ok := depthOp(opts.Mode, depths)
 			var s string
 			switch {
@@ -215,14 +228,14 @@ func Coverage(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, 
 				return count, err
 			}
 		default: // ModeDefault
-			covered := coveredBases(recA, bMatches)
+			covered := coveredFromDepths(depths)
 			lenA := recA.ChromEnd - recA.ChromStart
 			frac := 0.0
 			if lenA > 0 {
 				frac = float64(covered) / float64(lenA)
 			}
 			if err := writeWithExtra(bw, recA,
-				strconv.Itoa(len(bMatches)),
+				strconv.Itoa(hitCount),
 				strconv.Itoa(covered),
 				strconv.Itoa(lenA),
 				formatFraction(frac),
@@ -396,30 +409,12 @@ func fractionPass(a, b *bed.Record, opts Options) bool {
 	return passA && passB
 }
 
-// coveredBases returns the number of bases in A covered by at least one of
-// the matching B records (depth >= 1).
-func coveredBases(a *bed.Record, bs []*bed.Record) int {
-	lenA := a.ChromEnd - a.ChromStart
-	if lenA <= 0 || len(bs) == 0 {
-		return 0
-	}
-	covered := make([]bool, lenA)
-	for _, b := range bs {
-		start := b.ChromStart - a.ChromStart
-		end := b.ChromEnd - a.ChromStart
-		if start < 0 {
-			start = 0
-		}
-		if end > lenA {
-			end = lenA
-		}
-		for i := start; i < end; i++ {
-			covered[i] = true
-		}
-	}
+// coveredFromDepths returns the number of bases with depth >= 1 in a per-base
+// depth vector (the covered-bp column shared by the default mode).
+func coveredFromDepths(depths []int) int {
 	n := 0
-	for _, c := range covered {
-		if c {
+	for _, d := range depths {
+		if d > 0 {
 			n++
 		}
 	}
@@ -448,6 +443,84 @@ func perBaseDepth(a *bed.Record, bs []*bed.Record) []int {
 		}
 	}
 	return d
+}
+
+// block is a half-open sub-interval [start,end) of a blocked query record, in
+// absolute (chromosome) coordinates.
+type block struct {
+	start int
+	end   int
+}
+
+// queryBlocks expands a blocked (BED12 or spliced-BAM-derived) record into its
+// constituent sub-blocks in absolute coordinates. Each block is
+// [ChromStart+BlockStarts[i], +BlockSizes[i]). Records without block info yield
+// a single block spanning the whole record. Mirrors upstream GetBedBlocks /
+// GetBamBlocks (BlockedIntervals.cpp): M/=/X consume and N skips have already
+// been resolved into BlockStarts/BlockSizes by the BED12 parser and by
+// pkg/htsgo/alnbed for spliced BAM.
+func queryBlocks(a *bed.Record) []block {
+	if a.BlockCount <= 0 || len(a.BlockSizes) == 0 {
+		return []block{{start: a.ChromStart, end: a.ChromEnd}}
+	}
+	blocks := make([]block, 0, len(a.BlockSizes))
+	for i := range a.BlockSizes {
+		s := a.ChromStart
+		if i < len(a.BlockStarts) {
+			s += a.BlockStarts[i]
+		}
+		blocks = append(blocks, block{start: s, end: s + a.BlockSizes[i]})
+	}
+	return blocks
+}
+
+// splitDepth computes coverage for a blocked query record under -split. It
+// returns (hitCount, depths) where:
+//
+//   - depths spans A's full [ChromStart,ChromEnd) — intronic bases between
+//     blocks stay at depth 0 and still count toward the reported length-of-A,
+//     matching upstream coverageFile.cpp (_queryLen = endPos - startPos).
+//   - per-base depth is only incremented over the intersection of each B record
+//     with A's sub-blocks (gaps/introns are never counted).
+//   - hitCount is the number of distinct B records overlapping at least one
+//     block, matching upstream's _hitCount after findBlockedOverlaps swaps the
+//     hit set for the blocked-overlap set.
+func splitDepth(a *bed.Record, bs []*bed.Record) (int, []int) {
+	lenA := a.ChromEnd - a.ChromStart
+	if lenA <= 0 {
+		return 0, nil
+	}
+	blocks := queryBlocks(a)
+	d := make([]int, lenA)
+	hitCount := 0
+	for _, b := range bs {
+		for _, blk := range blocks {
+			start := b.ChromStart
+			if blk.start > start {
+				start = blk.start
+			}
+			end := b.ChromEnd
+			if blk.end < end {
+				end = blk.end
+			}
+			if end <= start {
+				continue
+			}
+			// Upstream findBlockedOverlaps pushes one overlap sub-interval per
+			// (query-block x hit-block) intersection, and makeDepthCount counts
+			// _hitCount over those swapped entries. So a single B record that
+			// straddles an intron and overlaps two query blocks is counted
+			// twice — once per block it touches. Match that by incrementing
+			// hitCount per overlapping block, not per B record. (The B side is
+			// already expanded to one record per block by expandBlocks under
+			// -split, so each b here is a single block.)
+			hitCount++
+			for i := start - a.ChromStart; i < end-a.ChromStart; i++ {
+				d[i]++
+			}
+		}
+	}
+	return hitCount, d
 }
 
 // depthOp applies a numeric op to the per-base depth vector. Returns

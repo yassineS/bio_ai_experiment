@@ -1,7 +1,6 @@
 package bedcoverage
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"testing"
@@ -70,16 +69,18 @@ func TestCoverage_BAMQuery(t *testing.T) {
 	}
 }
 
-// TestCoverage_SAMQuerySplitRejected confirms a spliced (blocked) alignment on
-// the -a side under -split is rejected with a clear error rather than silently
-// producing a wrong answer (upstream splits the query into blocks; we do not
-// yet support that path).
-func TestCoverage_SAMQuerySplitRejected(t *testing.T) {
+// TestCoverage_SAMQuerySplit verifies a spliced (blocked) alignment on the -a
+// side under -split is split into its CIGAR blocks: a 10M10N10M read at chr1:1
+// becomes BED12 blocks [0,10) and [20,30); the intron [10,20) is excluded. A B
+// feature spanning [0,30) covers both 10 bp blocks (20 bp) while the reported
+// length-of-A stays the full 30 bp span. Mirrors upstream coverageFile.cpp.
+func TestCoverage_SAMQuerySplit(t *testing.T) {
 	a := samHeader + samRead("q1", 0, 1, "10M10N10M")
 	b := "chr1\t0\t30\n"
-	var buf bytes.Buffer
-	if _, err := Coverage(strings.NewReader(a), strings.NewReader(b), &buf, Options{Split: true}); err == nil {
-		t.Fatal("expected error for spliced BAM/SAM query under -split")
+	got := runCoverage(t, a, b, Options{Split: true})
+	want := "chr1\t0\t30\tq1\t60\t+\t0\t30\t0,0,0\t2\t10,10,\t0,20,\t2\t20\t30\t0.6666667\n"
+	if got != want {
+		t.Errorf("spliced BAM -a query under -split:\nwant: %q\ngot:  %q", want, got)
 	}
 }
 
