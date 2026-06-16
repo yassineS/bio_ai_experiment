@@ -51,7 +51,8 @@ Input / sorting options:
   -b FILE...     Input file(s) B. Required.
   -abam FILE     Alias for -a with a BAM file.
   -ibam FILE     Alias for -a with a BAM file.
-  -bed           With BAM input, write output as BED (default for this port).
+  -bed           With BAM/CRAM input, write output as BED instead of the default
+                 BAM (a BAM/CRAM query writes BAM alignments by default).
   -names ...     Aliases for each B file (printed instead of a numeric file id).
   -filenames     Print each B file's name instead of a numeric file id.
   -sortout       Sort the per-A DB hits by position across all B files.
@@ -112,6 +113,12 @@ type options struct {
 	useTree  bool
 	stats    bool
 
+	// bedOutput records the -bed flag. With BAM/CRAM query input it forces BED
+	// text output (the upstream default for BAM-A would be BAM); with text input
+	// it has no effect. It is the switch that distinguishes "emit BAM" from
+	// "emit BED" for a BAM/CRAM query file.
+	bedOutput bool
+
 	help        bool
 	showVersion bool
 }
@@ -153,13 +160,33 @@ func main() {
 		opts.inputB[i] = normalizeStdin(opts.inputB[i])
 	}
 
-	readerA, err := iohelper.OpenReader(opts.inputA)
+	readerACloser, err := iohelper.OpenReader(opts.inputA)
 	if err != nil {
 		// Match upstream's exact "Unable to open file" message for file errors.
 		fmt.Fprintf(os.Stderr, "Error: Unable to open file %s. Exiting.\n", opts.inputA)
 		os.Exit(1)
 	}
-	defer readerA.Close()
+	defer readerACloser.Close()
+
+	// Classify the query file. Upstream determines the output type from the
+	// query (-a) file: a BAM/CRAM query writes BAM by default (unless -bed), and
+	// some flags are gated accordingly. The sniffed reader replaces readerA so
+	// the bytes consumed while probing are not lost.
+	queryIsBAM, readerA, err := bedintersect.IsBAMOrCRAMInput(readerACloser)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Unable to open file %s. Exiting.\n", opts.inputA)
+		os.Exit(1)
+	}
+	// bamOutput is true when the surviving alignments must be written back out as
+	// BAM: the query is BAM/CRAM and the user did not force BED text with -bed.
+	bamOutput := queryIsBAM && !opts.bedOutput
+	if bamOutput {
+		if err := validateBAMOutputFlags(opts); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		emitBAMOutputWarnings(opts)
+	}
 
 	readersB := make([]io.Reader, 0, len(opts.inputB))
 	for _, path := range opts.inputB {
@@ -238,6 +265,18 @@ func main() {
 		return
 	}
 
+	if bamOutput {
+		// BAM/CRAM query without -bed: write the surviving alignments back out as
+		// BAM, matching upstream's default behaviour. -header is ignored here
+		// (BAM carries its own header); the emitBAMOutputWarnings call above has
+		// already issued the upstream warning when -header/-wb/-loj were given.
+		if _, err := bedintersect.IntersectBAMOutput(readerA, readersB, writer, iopts); err != nil {
+			fmt.Fprintf(os.Stderr, "Error finding intersections: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if _, err := bedintersect.IntersectMulti(readerA, readersB, writer, iopts); err != nil {
 		if bedintersect.IsVerbatimError(err) {
 			// Upstream prints these verbatim (sort/field-count messages) and exits 1.
@@ -246,6 +285,38 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "Error finding intersections: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// validateBAMOutputFlags reproduces upstream ContextIntersect::isValidState's
+// gating for a BAM/CRAM query without -bed: the flags whose output is only
+// meaningful as BED text are rejected, with the same ERROR banner upstream
+// prints (and exit 1). Only -c (writeCount) and -wo/-wao (writeOverlap /
+// writeAllOverlap) fall into this group. Notably -C (per-database counts) is
+// NOT gated by upstream: with a BAM query it stays "printable" and so falls
+// through to the default BAM-output rule (each A alignment with >=1 overlap),
+// not a count. Everything else (-u/-v/-wa, default, and the warn-and-ignore
+// -wb/-loj/-header) is allowed and produces BAM output.
+func validateBAMOutputFlags(o *options) error {
+	if o.count {
+		return fmt.Errorf("***** ERROR: writeCount option is not valid with BAM query input, unless bed output is specified with -bed option. *****")
+	}
+	if o.writeOverlap || o.writeAllOverlap {
+		return fmt.Errorf("***** ERROR: writeAllOverlap option is not valid with BAM query input, unless bed output is specified with -bed option. *****")
+	}
+	return nil
+}
+
+// emitBAMOutputWarnings reproduces upstream's warn-and-ignore diagnostics for a
+// BAM/CRAM query without -bed: -wb/-loj and -header are ignored (output is BAM),
+// but upstream prints a stderr warning for each. The warnings are emitted
+// verbatim so a `2>&1` capture matches upstream byte-for-byte.
+func emitBAMOutputWarnings(o *options) {
+	if o.writeB || o.leftJoin {
+		fmt.Fprintln(os.Stderr, "\n*****\n*****WARNING: -wb and -loj are ignored with bam input, unless bed output is specified with -bed option.\n*****")
+	}
+	if o.header {
+		fmt.Fprintln(os.Stderr, "\n*****\n*****WARNING: -header option is not valid for BAM input.\n*****")
 	}
 }
 
@@ -274,9 +345,9 @@ func boolFlags(o *options) map[string]*bool {
 		"header":      &o.header,
 		"sorted":      &o.sorted,
 		"nonamecheck": &o.noNameCheck,
-		"bed":         new(bool), // accepted; this port always emits BED text
-		"nobuf":       new(bool), // accepted; output is buffered regardless
-		"ubam":        new(bool), // accepted; this port emits BED text, not BAM
+		"bed":         &o.bedOutput, // with BAM/CRAM query input, force BED text output
+		"nobuf":       new(bool),    // accepted; output is buffered regardless
+		"ubam":        new(bool),    // accepted; uncompressed BAM is not emitted (output is BGZF-compressed BAM)
 		"d":           &o.distance, "distance": &o.distance,
 		"k": &o.closest, "closest": &o.closest,
 		"t": &o.useTree, "tree": &o.useTree,

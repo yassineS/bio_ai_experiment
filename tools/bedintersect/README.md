@@ -82,8 +82,10 @@ bedintersect -a genes.bed -b peaks.bed > overlaps.bed
   upstream's bin order whether or not `-sorted` is given).
 - `-g FILE` - Genome file fixing the chromosome order for `-sorted` validation.
 - `-nonamecheck` - Suppress the chromosome naming-convention warning.
-- `-bed` - With BAM input, write output as BED. This port always emits BED text
-  for BAM input, so `-bed` is effectively the default (see Limitations).
+- `-bed` - With BAM/CRAM input, write output as BED instead of the default BAM.
+  By default a BAM/CRAM query (`-a`/`-abam`/`-ibam`) writes the intersecting
+  alignments back out as BAM; `-bed` forces BED12 text output instead (see
+  BAM/CRAM output below).
 - `-m, --min-overlap INT` - Minimum overlap in bp (bedintersect extension,
   default 1).
 - `-d, --distance` - Report distance to nearest B feature (bedintersect
@@ -390,7 +392,8 @@ bedintersect -a queries.bed -b large_database.bed -t > results.bed
 | Multiple `-b` (`-names/-filenames/-sortout`) | Yes | Yes |
 | `-sorted`/`-g` order validation | Yes | Yes |
 | BED/GFF/VCF/BAM/CRAM input | Yes | Yes |
-| BAM/CRAM **output** | No (always BED text) | Yes |
+| BAM output (BAM/CRAM query, default) | Yes | Yes |
+| CRAM binary output | No (writes BAM) | Yes |
 | Distance mode (`-d`) | Yes (extension) | No |
 | Closest feature (`-k`) | Yes (extension) | Via separate tool |
 
@@ -401,8 +404,10 @@ workflows.
 
 **Use bedtools intersect when:**
 
-- You need **BAM/CRAM binary output** from BAM/CRAM input (this port always
-  emits BED text — see Limitations).
+- You need **CRAM binary output** specifically: a CRAM query writes its
+  surviving alignments as BAM here (upstream can re-emit CRAM). BAM output from a
+  BAM **or** CRAM query is supported and matches upstream (see BAM/CRAM output
+  below).
 - You're already using the bedtools suite end-to-end.
 
 ## Testing
@@ -427,17 +432,42 @@ go test -cover ./pkg/bedintersect
 - Chromosome-based indexing for efficiency
 - Linear search within chromosome (fast for typical datasets)
 
+## BAM/CRAM output
+
+When the query (`-a`/`-abam`/`-ibam`) is a BAM or CRAM file and `-bed` is **not**
+given, the surviving alignments are written back out as **BAM** (the original
+header plus the original alignment records, in input order), matching upstream
+`bedtools intersect`'s default behaviour. The BAM output is decoded and validated
+byte-for-byte (as SAM) against the live upstream binary over the upstream BAM
+fixtures — see `cmd/bedintersect/bam_output_parity_test.go`.
+
+The alignment-level flags behave exactly as upstream gates them for a BAM query
+without `-bed`:
+
+- **Produce BAM:** default, `-wa`, `-u` (each A alignment with ≥1 overlap, once)
+  and `-v` (each A alignment with no overlap). `-C` is *not* an error: it falls
+  through to the default BAM-output selection (upstream keeps it "printable").
+  Unmapped reads never overlap, so they are absent under the default mode and
+  reported under `-v`, exactly as upstream's `printUnmapped` path.
+- **Error (require `-bed`):** `-c` (`writeCount`) and `-wo`/`-wao`
+  (`writeOverlap`/`writeAllOverlap`) print the same `***** ERROR: … is not valid
+  with BAM query input, unless bed output is specified with -bed option. *****`
+  banner and exit 1.
+- **Warn and ignore:** `-wb`/`-loj` and `-header` print the same stderr warning
+  upstream does and then proceed as default BAM output (the flags have no BED
+  columns to add in BAM mode).
+
+`-bed` forces BED12 text output for a BAM/CRAM query instead (matching upstream's
+`-bed` BED output byte-for-byte). The output BAM is BGZF-compressed; `-ubam`
+(uncompressed BAM) is accepted but currently always emits compressed BAM.
+
 ## Limitations
 
-- **BAM/CRAM output.** When A is a BAM/CRAM file, upstream `bedtools intersect`
-  writes the overlapping alignments back out as BAM (or CRAM) by default; this
-  port always converts BAM/CRAM input to BED12 and writes BED text (i.e. it
-  behaves as if `-bed` is always set). `-abam …`, `-ibam …` and explicit `-bed`
-  all work and match upstream's BED output byte-for-byte; only the binary
-  BAM/CRAM *output* path (and the `-ubam` flag, accepted but a no-op) is not
-  reproduced. Consequently, the upstream error that forbids `-wao`/`-wo`/etc.
-  with bare BAM input "unless `-bed` is specified" is not raised — the BED output
-  is simply produced.
+- **CRAM binary output.** A CRAM query writes its surviving alignments as **BAM**
+  (the coordinate-bearing fields — RNAME/POS/CIGAR/flags/MAPQ/aux — match
+  upstream exactly; SEQ/QUAL reconstruction follows the CRAM decode-reference
+  rules of `pkg/htsgo/cram`). Re-emitting CRAM-framed binary output is not yet
+  reproduced.
 - Loads the B file(s) completely into memory (necessary for random access).
 - The chromosome naming-convention warning is emitted before the data rather
   than interleaved into it; when stdout and stderr are captured separately the
@@ -467,6 +497,12 @@ go test -cover ./pkg/bedintersect
 - ✅ Input-format parity: BED/GFF/VCF (including structural-variant END/SVLEN
   spans), BAM/CRAM (with `/1`,`/2` mate suffixes and unmapped-read placeholders),
   and gzip/BGZF-compressed text on stdin.
+- ✅ BAM binary output: a BAM/CRAM query without `-bed` writes the intersecting
+  alignments back out as BAM (original header + records, in input order),
+  matching upstream's default and its `-u`/`-v`/`-wa` selection, its
+  `-c`/`-wo`/`-wao` "requires `-bed`" errors, and its `-wb`/`-loj`/`-header`
+  warn-and-ignore behaviour — validated byte-for-byte (decoded to SAM) against
+  the live upstream binary.
 
 These join/overlap modes echo the original A and B input columns verbatim,
 in the original B-file order, matching upstream. BAM/VCF/GFF inputs and the
