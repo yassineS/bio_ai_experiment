@@ -66,7 +66,7 @@ func (p *splitPlugin) Name() string { return "split" }
 
 // RegionTargetCaps opts split into the shared -r/-R/-t/-T region/target filter,
 // applied (via SetRegionTarget) to the records before they are split per sample.
-func (p *splitPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+func (p *splitPlugin) RegionTargetCaps() regionTargetCaps { return overlapRegionTargetCaps }
 
 // About returns the one-line description, matching split.c about().
 func (p *splitPlugin) About() string {
@@ -89,6 +89,7 @@ func (p *splitPlugin) FlagTakesValue(flag string) bool {
 		"-k", "--keep-tags", "-i", "--include", "-e", "--exclude",
 		"-r", "--regions", "-R", "--regions-file",
 		"-t", "--targets", "-T", "--targets-file",
+		"--regions-overlap", "--targets-overlap",
 		"-v", "--verbosity", "--hts-opts":
 		return true
 	}

@@ -9,6 +9,8 @@ package bcftools
 import (
 	"fmt"
 	"io"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -218,8 +220,11 @@ func (p *gtisecPlugin) computeBankers(a uint64) uint32 {
 // and that subset's counter is incremented (one increment per distinct genotype
 // observed). Missing genotypes are skipped (and optionally tallied with -m).
 func (p *gtisecPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
-	// Map genotype-key -> sample bitmask.
-	gts := map[int64]uint32{}
+	// Map genotype-key -> sample bitmask. The key is a canonical encoding of the
+	// sample's genotype: samples that carry the same genotype map to the same
+	// key, and that key's accumulated sample bitmask is incremented once per
+	// distinct genotype seen at the site (mirroring GTisec.c's gts2smps hash).
+	gts := map[string]uint32{}
 	for i := 0; i < p.nsmp; i++ {
 		gt, ok := sampleGT(v, i)
 		if !ok || len(gt.alleles) == 0 {
@@ -228,29 +233,61 @@ func (p *gtisecPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 			}
 			continue
 		}
-		if len(gt.alleles) > 2 {
-			return nil, fmt.Errorf("GTisec: does not support ploidy higher than 2")
-		}
-		a := gt.alleles[0]
-		b := int64(vectorEndAllele) // haploid: second slot is vector-end
-		if len(gt.alleles) >= 2 {
-			b = int64(gt.alleles[1])
-		}
-		// Missing first allele (or, for diploids, missing second allele) skips
-		// the sample, matching upstream's bcf_gt_is_missing checks.
-		if a == missingAllele || (len(gt.alleles) >= 2 && gt.alleles[1] == missingAllele) {
+		key, missing := gtisecGTKey(gt)
+		if missing {
+			// Any missing allele makes the genotype uninformative for sharing,
+			// matching upstream's bcf_gt_is_missing checks (generalised here to
+			// arbitrary ploidy: upstream only inspects the first two slots
+			// because it rejects ploidy>2 outright — see UPSTREAM_BUGS.md).
 			if p.flag&gtisecMissing != 0 {
 				p.missingGTs[i]++
 			}
 			continue
 		}
-		key := bcfAlleles2gt(int64(a), b)
 		gts[key] |= 1 << uint(i)
 	}
 	for _, mask := range gts {
 		p.smpIs[mask]++
 	}
 	return nil, nil
+}
+
+// gtisecGTKey returns a canonical key identifying a sample's genotype for the
+// purpose of GTisec's intersection counting, plus whether the genotype is
+// missing (and so should be skipped). Two genotypes share a key iff they are the
+// same UNORDERED multiset of alleles at the same ploidy — generalising upstream
+// GTisec's bcf_alleles2gt(a,b) (an unordered diploid pair) to arbitrary ploidy.
+// A genotype is treated as missing if any of its (non vector-end) alleles is
+// missing. For ploidy 1 and 2 the resulting partition is byte-identical to
+// upstream's bcf_alleles2gt keys; for higher ploidy it is the natural extension
+// (sort the alleles, then join), which upstream rejects outright.
+func gtisecGTKey(gt genotype) (key string, missing bool) {
+	alleles := make([]int, 0, len(gt.alleles))
+	for _, a := range gt.alleles {
+		if int64(a) == vectorEndAllele {
+			// Defensive: a decoded vector-end pad is not a real allele.
+			continue
+		}
+		if a == missingAllele {
+			return "", true
+		}
+		alleles = append(alleles, a)
+	}
+	if len(alleles) == 0 {
+		return "", true
+	}
+	// Canonicalise as an unordered multiset: sort ascending, then join. The
+	// ploidy is implied by the element count, so [1] (haploid) and [1,1]
+	// (diploid homozygous) stay distinct.
+	sort.Ints(alleles)
+	var b strings.Builder
+	for j, a := range alleles {
+		if j > 0 {
+			b.WriteByte('/')
+		}
+		b.WriteString(strconv.Itoa(a))
+	}
+	return b.String(), false
 }
 
 // Destroy prints the accumulated subset counts in the requested ordering,
@@ -316,20 +353,8 @@ func (p *gtisecPlugin) Destroy() error {
 	return nil
 }
 
-// vectorEndAllele is the decoded second allele of a haploid genotype, mirroring
-// bcf_gt_allele(bcf_int32_vector_end) in htslib (= (0x80000001>>1)-1). Using the
-// same value keeps the bcf_alleles2gt key for a haploid genotype identical to
-// upstream and distinct from every diploid key.
+// vectorEndAllele is the decoded value of bcf_int32_vector_end after
+// bcf_gt_allele in htslib (= (0x80000001>>1)-1). It marks an unused (padded)
+// genotype slot for samples of below-maximum ploidy; gtisecGTKey drops such
+// slots so a haploid sample is not conflated with a padded diploid one.
 const vectorEndAllele = int64(0x40000000 - 1)
-
-// bcfAlleles2gt maps an unordered allele pair to a genotype index, matching
-// htslib's bcf_alleles2gt (the lower-triangular packing of the GT matrix). The
-// inputs are allele indices; for a haploid second slot the caller passes
-// vectorEndAllele so the haploid key is distinct from any diploid key. int64
-// arithmetic avoids overflow for the very large haploid sentinel.
-func bcfAlleles2gt(a, b int64) int64 {
-	if a > b {
-		a, b = b, a
-	}
-	return b*(b+1)/2 + a
-}

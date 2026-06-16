@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 
@@ -49,10 +50,27 @@ const dnmTypeFlag = 1
 
 // trioDNM3Plugin implements the `trio-dnm3` plugin (NAIVE mode end to end; the
 // float models are reported unsupported by RunFull).
-type trioDNM3Plugin struct{}
+type trioDNM3Plugin struct {
+	// rt is the shared -r/-R/-t/-T (and --regions-overlap/--targets-overlap)
+	// selection the host parses out of the argv and hands over via
+	// SetRegionTarget. trio-dnm3 reads its own input (it is a fullPlugin), so it
+	// applies the filter to the records it reads before scoring them.
+	rt regionTargetFilter
+}
 
 // Name returns the plugin name.
 func (p *trioDNM3Plugin) Name() string { return "trio-dnm3" }
+
+// SetRegionTarget receives the shared region/target selection parsed by the
+// host out of trio-dnm3's argv. trio-dnm3 owns its input reading, so it applies
+// the filter itself before scoring.
+func (p *trioDNM3Plugin) SetRegionTarget(f regionTargetFilter) { p.rt = f }
+
+// RegionTargetCaps opts trio-dnm3 into the shared -r/-R/-t/-T region/target
+// filter (and the --regions-overlap/--targets-overlap modes), so the host
+// strips and resolves those options uniformly, exactly as upstream's synced
+// reader does for every in-tree plugin.
+func (p *trioDNM3Plugin) RegionTargetCaps() regionTargetCaps { return overlapRegionTargetCaps }
 
 // About returns the one-line description, matching trio-dnm3.c about().
 func (p *trioDNM3Plugin) About() string {
@@ -114,8 +132,6 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 		filterExclude, haveFilter bool
 		outputFile                string
 		outputType                = OutputVCF
-		regions                   []string
-		regionsFile               string
 
 		// Float-model knobs, defaults from run() in trio-dnm3.c.
 		useDNGPriors bool
@@ -297,18 +313,6 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 				return oerr
 			}
 			outputType = ot
-		case "-r", "--regions":
-			v, err := next()
-			if err != nil {
-				return err
-			}
-			regions = append(regions, v)
-		case "-R", "--regions-file":
-			v, err := next()
-			if err != nil {
-				return err
-			}
-			regionsFile = v
 		case "--vaf":
 			v, err := next()
 			if err != nil {
@@ -429,13 +433,14 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 			if minScore, err = parseDNMFloat(a, v); err != nil {
 				return err
 			}
-		case "--regions-overlap", "--targets-overlap", "-v", "--verbosity":
-			// Value-taking options that do not affect the score; consume and ignore.
+		case "-v", "--verbosity":
+			// Value-taking option that does not affect the score; consume and
+			// ignore. (-r/-R/-t/-T and --regions-overlap/--targets-overlap are
+			// stripped by the host's shared region/target parser before RunFull
+			// sees the argv, and applied via SetRegionTarget.)
 			if _, err := next(); err != nil {
 				return err
 			}
-		case "-t", "--targets", "-T", "--targets-file":
-			return fmt.Errorf("trio-dnm3: streaming targets (%s) are not supported by the native plugin; pre-slice with `bcftools view -t ... | bcftools +trio-dnm3`", a)
 		default:
 			// Attached getopt forms: -O<type>, --output-type=<type>, -o<file>.
 			switch {
@@ -541,26 +546,32 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 		pnIndel = pnoise{} // default --pns 0:indel --pn 0:indel
 	}
 
+	// -o/--output FILE: write the result to a file rather than stdout. The bytes
+	// are identical to what would go to stdout (mirroring the stats plugins'
+	// -o). "-"/"" mean stdout. The file is opened here and substituted for out;
+	// both the NAIVE and float-model output stages write through it.
 	if outputFile != "" && outputFile != "-" {
-		return fmt.Errorf("trio-dnm3: writing to a file (-o) is not supported by the native plugin; use stdout")
+		f, ferr := os.Create(outputFile)
+		if ferr != nil {
+			return fmt.Errorf("trio-dnm3: %w", ferr)
+		}
+		defer f.Close()
+		out = f
 	}
 
-	// Read input.
-	if regionsFile != "" {
-		regs, rerr := LoadRegionsFile(regionsFile)
-		if rerr != nil {
-			return rerr
-		}
-		regions = append(regions, regs...)
-	}
+	// Read input. -r/-R/-t/-T (and --regions-overlap/--targets-overlap) were
+	// stripped by the host's shared region/target parser and handed to us via
+	// SetRegionTarget; we apply them below, after reading, exactly as the synced
+	// reader would have restricted the stream.
 	input := opts.InputFile
 	if input == "" {
 		input = "-"
 	}
-	hdr, variants, err := readPluginInput(PluginOptions{InputFile: input, Regions: regions}, stderr)
+	hdr, variants, err := readPluginInput(PluginOptions{InputFile: input}, stderr)
 	if err != nil {
 		return fmt.Errorf("trio-dnm3: %w", err)
 	}
+	variants = p.rt.apply(variants)
 
 	// Header-level tag requirements, mirroring init_data().
 	hasAD := hasFormatHeader(hdr.MetaInfo, "AD")

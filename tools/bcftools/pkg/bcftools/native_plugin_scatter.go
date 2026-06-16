@@ -71,7 +71,7 @@ func (p *scatterPlugin) Name() string { return "scatter" }
 
 // RegionTargetCaps opts scatter into the shared -r/-R/-t/-T region/target filter,
 // applied (via SetRegionTarget) to the records before they are scattered.
-func (p *scatterPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+func (p *scatterPlugin) RegionTargetCaps() regionTargetCaps { return overlapRegionTargetCaps }
 
 // About returns the one-line description, matching scatter.c about().
 func (p *scatterPlugin) About() string {
@@ -95,6 +95,7 @@ func (p *scatterPlugin) FlagTakesValue(flag string) bool {
 		"-i", "--include", "-e", "--exclude",
 		"-r", "--regions", "-R", "--regions-file",
 		"-t", "--targets", "-T", "--targets-file",
+		"--regions-overlap", "--targets-overlap",
 		"-p", "--prefix", "--threads", "-v", "--verbosity", "--hts-opts":
 		return true
 	}

@@ -57,8 +57,9 @@ func TestUnitRegionTargetKeep(t *testing.T) {
 
 	t.Run("region overlap keeps the indel", func(t *testing.T) {
 		f := regionTargetFilter{
-			regions:    []region{{chrom: "chr1", beg: 102, end: 102}},
-			hasRegions: true,
+			regions:        []region{{chrom: "chr1", beg: 102, end: 102}},
+			hasRegions:     true,
+			regionsOverlap: overlapRecord, // the upstream -r default
 		}
 		if !f.keep(indel) {
 			t.Fatal("expected -r chr1:102-102 to keep the overlapping indel")
