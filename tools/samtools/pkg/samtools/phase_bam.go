@@ -2,7 +2,6 @@ package samtools
 
 import (
 	"fmt"
-	"math/rand"
 	"os"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -104,7 +103,7 @@ func (w *bamSplitWriter) assignAndWrite(
 	hets []het,
 	hap0AtHet hetHapMapping,
 	opts PhaseOptions,
-	rng *rand.Rand,
+	rng phaseRNG,
 ) error {
 	nReads := len(recs)
 	nHets := len(hets)
@@ -228,7 +227,7 @@ func dumpAln(
 	minPos int32,
 	hash *fragKhash,
 	w *bamSplitWriter,
-	rng *rand.Rand,
+	rng phaseRNG,
 	dropAmbi bool,
 ) (int, error) {
 	if w == nil {
@@ -267,7 +266,7 @@ func classifyDumpAln(
 	hash *fragKhash,
 	isFlip bool,
 	dropAmbi bool,
-	rng *rand.Rand,
+	rng phaseRNG,
 ) (int, bool) {
 	bucket := 3
 	addZP := false
