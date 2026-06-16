@@ -184,7 +184,7 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 		return nil, fmt.Errorf("trio-stats: missing the -p or -P option")
 	}
 	if haveFilter {
-		f, err := newPluginFilter(filterExpr, filterExclude)
+		f, err := newPluginFilterWithHeader(filterExpr, filterExclude, hdr)
 		if err != nil {
 			return nil, fmt.Errorf("trio-stats: %w", err)
 		}

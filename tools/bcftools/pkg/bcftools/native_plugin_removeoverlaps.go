@@ -160,7 +160,7 @@ func (p *removeOverlapsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header
 	}
 
 	if p.filterExpr != "" {
-		f, err := CompileFilter(p.filterExpr)
+		f, err := CompileFilterWithHeader(p.filterExpr, p.hdr)
 		if err != nil {
 			return nil, fmt.Errorf("remove-overlaps: %w", err)
 		}

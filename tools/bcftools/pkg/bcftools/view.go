@@ -532,7 +532,7 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		return 0, err
 	}
 
-	includeF, excludeF, err := compileExpressions(opts)
+	includeF, excludeF, err := compileExpressions(opts, hdr)
 	if err != nil {
 		return 0, err
 	}
@@ -596,8 +596,8 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	if err != nil {
 		return 0, err
 	}
-	hdr := br.Header().VCF
-	hdr = filterHeaderSamples(hdr, opts.Samples)
+	inputHdr := br.Header().VCF
+	hdr := filterHeaderSamples(inputHdr, opts.Samples)
 	if len(opts.Samples) > 0 && !opts.NoUpdate {
 		ensureACANHeader(hdr)
 	}
@@ -605,7 +605,7 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		hdr = stripFormatLines(hdr)
 		hdr.Samples = nil
 	}
-	includeF, excludeF, err := compileExpressions(opts)
+	includeF, excludeF, err := compileExpressions(opts, inputHdr)
 	if err != nil {
 		return 0, err
 	}
@@ -664,14 +664,14 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 	if err != nil {
 		return 0, err
 	}
-	vhdr := hdr.VCF
-	vhdr = filterHeaderSamples(vhdr, opts.Samples)
+	inputHdr := hdr.VCF
+	vhdr := filterHeaderSamples(inputHdr, opts.Samples)
 	if opts.DropGenotypes {
 		vhdr = stripFormatLines(vhdr)
 		vhdr.Samples = nil
 	}
 
-	includeF, excludeF, err := compileExpressions(opts)
+	includeF, excludeF, err := compileExpressions(opts, inputHdr)
 	if err != nil {
 		return 0, err
 	}
@@ -747,6 +747,7 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 		return 0, err
 	}
 	hdrIn.Close()
+	inputHdr := hdr
 	hdr = filterHeaderSamples(hdr, opts.Samples)
 	if len(opts.Samples) > 0 && !opts.NoUpdate {
 		ensureACANHeader(hdr)
@@ -756,7 +757,7 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 		hdr.Samples = nil
 	}
 
-	includeF, excludeF, err := compileExpressions(opts)
+	includeF, excludeF, err := compileExpressions(opts, inputHdr)
 	if err != nil {
 		return 0, err
 	}
@@ -873,16 +874,20 @@ func keepVariant(v *vcf.Variant, opts ViewOptions, includeF, excludeF *Filter, a
 	return true
 }
 
-// compileExpressions parses the -i / -e flags into Filter trees.
-func compileExpressions(opts ViewOptions) (include, exclude *Filter, err error) {
+// compileExpressions parses the -i / -e flags into Filter trees, resolving
+// bare identifiers against hdr so a FORMAT-only tag (e.g. `GQ>30`) is treated
+// as FORMAT and a tag declared as both INFO and FORMAT is rejected as
+// ambiguous, matching upstream filter.c. hdr should be the input header (before
+// any sample restriction), as upstream resolves against the input header.
+func compileExpressions(opts ViewOptions, hdr *vcf.Header) (include, exclude *Filter, err error) {
 	if opts.IncludeExpr != "" {
-		include, err = CompileFilter(opts.IncludeExpr)
+		include, err = CompileFilterWithHeader(opts.IncludeExpr, hdr)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 	if opts.ExcludeExpr != "" {
-		exclude, err = CompileFilter(opts.ExcludeExpr)
+		exclude, err = CompileFilterWithHeader(opts.ExcludeExpr, hdr)
 		if err != nil {
 			return nil, nil, err
 		}

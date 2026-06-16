@@ -518,7 +518,7 @@ func GVCFToVCF(in io.Reader, out io.Writer, opts GVCFToVCFOptions) (int, error) 
 	include, exclude, err := compileExpressions(ViewOptions{
 		IncludeExpr: opts.IncludeExpr,
 		ExcludeExpr: opts.ExcludeExpr,
-	})
+	}, hdr)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools convert: %w", err)
 	}

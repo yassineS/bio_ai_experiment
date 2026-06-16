@@ -19,15 +19,25 @@ type pluginFilter struct {
 	exclude bool // true for -e/--exclude, false for -i/--include
 }
 
-// newPluginFilter compiles expr into a pluginFilter. exclude selects the
-// FLT_EXCLUDE logic (-e/--exclude); otherwise FLT_INCLUDE (-i/--include) is
-// used. An empty expression yields a nil filter (no-op). It returns an error if
-// the expression does not compile.
+// newPluginFilter compiles expr into a pluginFilter without header knowledge.
+// exclude selects the FLT_EXCLUDE logic (-e/--exclude); otherwise FLT_INCLUDE
+// (-i/--include) is used. An empty expression yields a nil filter (no-op). It
+// returns an error if the expression does not compile. Prefer
+// newPluginFilterWithHeader when the plugin's header is available so bare
+// FORMAT-only tags resolve to FORMAT exactly as upstream does.
 func newPluginFilter(expr string, exclude bool) (*pluginFilter, error) {
+	return newPluginFilterWithHeader(expr, exclude, nil)
+}
+
+// newPluginFilterWithHeader is newPluginFilter with header-aware bare-name
+// resolution: a bare tag declared only as FORMAT becomes a per-sample FORMAT
+// term and a tag declared as both INFO and FORMAT is rejected as ambiguous,
+// matching upstream filter.c. A nil header behaves like newPluginFilter.
+func newPluginFilterWithHeader(expr string, exclude bool, hdr *vcf.Header) (*pluginFilter, error) {
 	if expr == "" {
 		return nil, nil
 	}
-	f, err := CompileFilter(expr)
+	f, err := CompileFilterWithHeader(expr, hdr)
 	if err != nil {
 		return nil, err
 	}

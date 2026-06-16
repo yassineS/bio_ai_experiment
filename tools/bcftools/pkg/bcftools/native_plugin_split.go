@@ -136,7 +136,7 @@ func (p *splitPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 			if err != nil {
 				return nil, err
 			}
-			f, ferr := newPluginFilter(v, a == "-e" || a == "--exclude")
+			f, ferr := newPluginFilterWithHeader(v, a == "-e" || a == "--exclude", hdr)
 			if ferr != nil {
 				return nil, fmt.Errorf("split: %w", ferr)
 			}

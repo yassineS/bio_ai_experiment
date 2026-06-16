@@ -26,9 +26,31 @@ type Filter struct {
 	root node
 }
 
-// CompileFilter parses an expression string into a reusable Filter.
+// CompileFilter parses an expression string into a reusable Filter. Bare
+// identifiers are resolved without header knowledge: they fall back to INFO
+// lookup at evaluation time and then to a string constant. For header-aware
+// resolution (so a bare FORMAT-only tag such as `GQ` becomes FORMAT/GQ, and a
+// tag declared as both INFO and FORMAT is rejected as ambiguous, matching
+// upstream filter.c), use CompileFilterWithHeader.
 func CompileFilter(expr string) (*Filter, error) {
-	p := &parser{src: expr}
+	return compileFilter(expr, nil)
+}
+
+// CompileFilterWithHeader parses an expression string into a reusable Filter,
+// resolving bare identifiers against the supplied VCF header exactly as
+// upstream bcftools does: a bare tag declared only as FORMAT becomes a
+// per-sample FORMAT term, a tag declared as both INFO and FORMAT is rejected
+// as ambiguous, and everything else (builtin columns, INFO-only tags, or
+// undeclared names) keeps the header-less behaviour. A nil header behaves like
+// CompileFilter.
+func CompileFilterWithHeader(expr string, hdr *vcf.Header) (*Filter, error) {
+	return compileFilter(expr, newHeaderTags(hdr))
+}
+
+// compileFilter is the shared implementation behind CompileFilter and
+// CompileFilterWithHeader.
+func compileFilter(expr string, tags *headerTags) (*Filter, error) {
+	p := &parser{src: expr, tags: tags}
 	root, err := p.parseExpr()
 	if err != nil {
 		return nil, err
@@ -202,8 +224,9 @@ func asString(v any) string {
 
 // parser is the recursive-descent parser for filter expressions.
 type parser struct {
-	src string
-	pos int
+	src  string
+	pos  int
+	tags *headerTags // header tag inventory for bare-name resolution; may be nil
 }
 
 func (p *parser) skipSpace() {
@@ -437,12 +460,49 @@ func (p *parser) parseIdent() (node, error) {
 	case tok == "false":
 		return &literalNode{value: false}, nil
 	}
-	// A bare identifier resolves, in order, to a builtin column, an INFO tag
-	// present on the record, or — failing both — a string constant (so
+	// Header-aware bare-name resolution (upstream filter.c::filters_init1,
+	// reference_code/bcftools/filter.c:3429-3440). Builtin columns and the
+	// AC/AN/AF-family pseudo-tags are matched by name BEFORE the header is
+	// consulted (filter.c checks them first, at lines 3313-3416 and
+	// 3518-3581), so they are resolved by fieldNode regardless of any
+	// coincidental header declaration. For every other bare identifier we
+	// classify it against the header: a FORMAT-only tag becomes a per-sample
+	// FORMAT term (FORMAT/GT folds to the genotype node), and a tag declared as
+	// both INFO and FORMAT is the ambiguous case upstream rejects outright.
+	if !isBuiltinColumn(tok) {
+		switch p.tags.classify(tok) {
+		case tagBoth:
+			return nil, ambiguousTagError(tok)
+		case tagFormat:
+			return p.formatIdent(tok), nil
+		case tagInfo:
+			// A header-declared INFO tag resolves to INFO. An absent value is
+			// missing (nil) rather than the bare-name string fallback, so a
+			// comparison such as `gnomAD_AF>0.4` correctly fails at sites where
+			// the tag is not present — matching upstream's missing-value logic.
+			return &infoNode{key: tok}, nil
+		}
+	}
+	// A bare identifier otherwise resolves, in order, to a builtin column, an
+	// INFO tag present on the record, or — failing both — a string constant (so
 	// `FILTER="PASS"` and other bare-string comparands still work). This
 	// mirrors upstream bcftools, which lets `AC>3` mean `INFO/AC>3` without
 	// the explicit prefix.
 	return &fieldNode{name: tok}, nil
+}
+
+// isBuiltinColumn reports whether tok names a builtin VCF column or one of the
+// AC/AN/AF-family pseudo-tags that upstream filter.c resolves by name before
+// consulting the header. Such names are never reinterpreted as FORMAT tags
+// even when the header happens to declare a FORMAT field of the same name.
+func isBuiltinColumn(tok string) bool {
+	switch tok {
+	case "QUAL", "TYPE", "FILTER", "ID", "CHROM", "POS", "REF", "ALT",
+		"N_ALT", "N_SAMPLES", "N_MISSING", "F_MISSING",
+		"AC", "AN", "MAC", "AF", "MAF", "ILEN":
+		return true
+	}
+	return false
 }
 
 // formatIdent builds the per-sample node for a FMT/ or FORMAT/ prefixed tag.

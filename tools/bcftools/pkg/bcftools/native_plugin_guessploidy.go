@@ -195,7 +195,7 @@ func (p *guessPloidyPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, e
 		}
 	}
 	if haveFilter {
-		f, err := newPluginFilter(filterExpr, filterExclude)
+		f, err := newPluginFilterWithHeader(filterExpr, filterExclude, hdr)
 		if err != nil {
 			return nil, fmt.Errorf("guess-ploidy: %w", err)
 		}

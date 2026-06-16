@@ -346,7 +346,7 @@ func statsFromVCF(in io.Reader, out io.Writer, opts StatsOptions) (*statsResult,
 		return nil, err
 	}
 	res := newStatsResult(opts, hdr.Samples, hdr.MetaInfo)
-	includeF, excludeF, err := compileStatsExpressions(opts)
+	includeF, excludeF, err := compileStatsExpressions(opts, hdr)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +381,7 @@ func statsFromBCF(in io.Reader, out io.Writer, opts StatsOptions) (*statsResult,
 	}
 	hdr := br.Header().VCF
 	res := newStatsResult(opts, hdr.Samples, hdr.MetaInfo)
-	includeF, excludeF, err := compileStatsExpressions(opts)
+	includeF, excludeF, err := compileStatsExpressions(opts, hdr)
 	if err != nil {
 		return nil, err
 	}
@@ -409,16 +409,18 @@ func statsFromBCF(in io.Reader, out io.Writer, opts StatsOptions) (*statsResult,
 	return res, nil
 }
 
-// compileStatsExpressions reuses the view-side expression compiler.
-func compileStatsExpressions(opts StatsOptions) (include, exclude *Filter, err error) {
+// compileStatsExpressions reuses the view-side expression compiler, resolving
+// bare identifiers against hdr (FORMAT-only tags become FORMAT; a tag declared
+// as both INFO and FORMAT is rejected as ambiguous) exactly as upstream does.
+func compileStatsExpressions(opts StatsOptions, hdr *vcf.Header) (include, exclude *Filter, err error) {
 	if opts.IncludeExpr != "" {
-		include, err = CompileFilter(opts.IncludeExpr)
+		include, err = CompileFilterWithHeader(opts.IncludeExpr, hdr)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 	if opts.ExcludeExpr != "" {
-		exclude, err = CompileFilter(opts.ExcludeExpr)
+		exclude, err = CompileFilterWithHeader(opts.ExcludeExpr, hdr)
 		if err != nil {
 			return nil, nil, err
 		}

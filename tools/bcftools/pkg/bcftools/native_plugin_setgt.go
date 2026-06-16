@@ -160,7 +160,7 @@ func (p *setGTPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) 
 		return nil, fmt.Errorf("setGT: expected -i/-e with -t q")
 	}
 	if p.filterExpr != "" {
-		f, err := CompileFilter(p.filterExpr)
+		f, err := CompileFilterWithHeader(p.filterExpr, hdr)
 		if err != nil {
 			return nil, fmt.Errorf("setGT: %w", err)
 		}
