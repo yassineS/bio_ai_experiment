@@ -178,21 +178,16 @@ func trField(tr []string, idx int) string {
 // runAnnotate implements the default (VCF/BCF) output mode: each record's CSQ is
 // split, transcripts are selected and severity-filtered, and the requested
 // columns are written as INFO tags. Records are then re-emitted in the requested
-// container.
+// container. With -d/--duplicate one record is emitted per passing transcript;
+// otherwise the transcripts' values are collapsed into one record. The -i/-e
+// filter, when present, gates each emitted record after its INFO tags are set,
+// exactly where upstream's filter_and_output evaluates it.
 func (p *splitVepPlugin) runAnnotate(opts PluginOptions, hdr *vcf.Header, variants []*vcf.Variant, out io.Writer) error {
 	outHdr := p.annotateHeader(hdr)
 
-	// Compile the -i/-e expression against the augmented output header so it can
-	// reference the per-transcript CSQ subfield columns that annotateHeader just
-	// registered as synthetic INFO tags, mirroring upstream split-vep.c, which
-	// calls filter_init(args->hdr_out) after registering those columns.
-	var filter *pluginFilter
-	if p.filterStr != "" {
-		f, ferr := newPluginFilterWithHeader(p.filterStr, p.filterExclude, outHdr)
-		if ferr != nil {
-			return fmt.Errorf("split-vep: -i/-e expression: %w", ferr)
-		}
-		filter = f
+	filter, err := p.buildFilter(outHdr)
+	if err != nil {
+		return err
 	}
 
 	w, cleanup, err := openOutput(out, ViewOptions{
@@ -208,18 +203,12 @@ func (p *splitVepPlugin) runAnnotate(opts PluginOptions, hdr *vcf.Header, varian
 		return err
 	}
 	for _, v := range variants {
-		emit := p.annotateRecord(v)
-		if !emit {
-			continue
-		}
-		// Apply the -i/-e filter after the derived columns have been written as
-		// INFO tags, exactly where upstream's filter_and_output evaluates it.
-		if !filter.testSite(v) {
-			continue
-		}
-		if err := w.Write(v); err != nil {
+		writeErr := p.processVariant(v, filter, func(rec *vcf.Variant, _ [][]string) error {
+			return w.Write(rec)
+		})
+		if writeErr != nil {
 			cleanup()
-			return err
+			return writeErr
 		}
 	}
 	if err := w.Flush(); err != nil {
@@ -250,52 +239,110 @@ func (p *splitVepPlugin) annotateHeader(hdr *vcf.Header) *vcf.Header {
 	return out
 }
 
-// annotateRecord splits and annotates a single record in place. It returns
-// whether the record should be emitted (drop_sites controls dropping of records
-// with no passing consequence).
-func (p *splitVepPlugin) annotateRecord(v *vcf.Variant) bool {
+// processVariant runs the per-record logic shared by the annotate (-c) and text
+// (-f) modes, mirroring upstream's process_record + filter_and_output: it splits
+// the CSQ, selects and severity-filters transcripts, sets the requested columns
+// as INFO tags (collapsed across transcripts, or one record per transcript with
+// -d), applies the -i/-e filter, honours drop_sites, and invokes emit for each
+// record that survives. emit receives the annotated *vcf.Variant and the slice
+// of transcripts that produced it (a single transcript with -d, all passing
+// transcripts otherwise) so the text renderer can format the same view the
+// filter saw.
+func (p *splitVepPlugin) processVariant(v *vcf.Variant, filter *pluginFilter, emit func(*vcf.Variant, [][]string) error) error {
 	transcripts := p.splitCsq(v)
 	if len(transcripts) == 0 {
 		// No CSQ: pass through unannotated unless drop_sites.
-		return p.dropSites == 0
+		if p.dropSites != 0 {
+			return nil
+		}
+		p.resetAnnots()
+		return p.filterAndOutput(v, filter, true, true, nil, emit)
 	}
 	selected := p.selectTranscripts(transcripts)
-	values := make([][]string, len(p.annots))
+	p.resetAnnots()
 	severityPass := false
+	allMissing := true
+	var current [][]string
 	for _, ti := range selected {
 		tr := transcripts[ti]
 		if p.csqIdx >= 0 && p.csqIdx < len(tr) {
-			if !p.csqSeverityPass(tr[p.csqIdx]) {
+			if !p.csqSeverityPass(trField(tr, p.csqIdx)) {
 				continue
 			}
 		} else if p.minSev != svSelectAny {
 			continue
 		}
 		severityPass = true
+		current = append(current, tr)
 		for ai, a := range p.annots {
-			var val string
+			val := "."
 			if a.idx == -1 {
 				val = strings.Join(tr, "|")
-			} else {
-				val = trField(tr, a.idx)
+				allMissing = false
+			} else if s := trField(tr, a.idx); s != "" {
+				val = s
+				allMissing = false
 			}
-			values[ai] = append(values[ai], val)
+			p.annotVals[ai] = append(p.annotVals[ai], val)
+		}
+		if p.duplicate {
+			if err := p.filterAndOutput(v, filter, severityPass, allMissing, current, emit); err != nil {
+				return err
+			}
+			p.resetAnnots()
+			current = current[:0]
+			allMissing = true
+			severityPass = false
 		}
 	}
+	if !severityPass && p.dropSites != 0 {
+		return nil
+	}
+	if !p.duplicate {
+		return p.filterAndOutput(v, filter, severityPass, allMissing, current, emit)
+	}
+	return nil
+}
+
+// resetAnnots clears the per-transcript value accumulator, mirroring
+// annot_reset.
+func (p *splitVepPlugin) resetAnnots() {
+	if p.annotVals == nil {
+		p.annotVals = make([][]string, len(p.annots))
+	}
+	for i := range p.annotVals {
+		p.annotVals[i] = p.annotVals[i][:0]
+	}
+}
+
+// filterAndOutput sets the accumulated annot values as INFO tags on v, applies
+// the -i/-e filter, and emits the record when it passes. It mirrors upstream's
+// filter_and_output for the VCF (annotate) output mode: tags with at least one
+// accumulated value are written; the filter then gates the record. drop_sites
+// suppresses sites that did not update any tag (all_missing). v is annotated in
+// place; with -d the caller resets between transcripts so each emitted record
+// carries only that transcript's values.
+func (p *splitVepPlugin) filterAndOutput(v *vcf.Variant, filter *pluginFilter, severityPass, allMissing bool, current [][]string, emit func(*vcf.Variant, [][]string) error) error {
 	updated := false
 	for ai, a := range p.annots {
-		if len(values[ai]) == 0 {
+		if len(p.annotVals[ai]) == 0 {
 			continue
 		}
-		joined := strings.Join(values[ai], ",")
-		out := p.renderTyped(a.typ, joined)
-		setInfo(v, a.tag, out)
+		joined := strings.Join(p.annotVals[ai], ",")
+		setInfo(v, a.tag, p.renderTyped(a.typ, joined))
 		updated = true
 	}
-	if p.dropSites == 1 && (!updated || !severityPass) {
-		return false
+	if !filter.testSite(v) {
+		return nil
 	}
-	return true
+	if len(p.annots) > 0 {
+		if p.dropSites != 0 && (!updated || allMissing) {
+			return nil
+		}
+	} else if !severityPass {
+		return nil
+	}
+	return emit(v, current)
 }
 
 // renderTyped reformats a comma-separated value list according to the column

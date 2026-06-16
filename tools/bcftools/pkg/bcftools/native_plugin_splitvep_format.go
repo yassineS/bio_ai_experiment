@@ -51,6 +51,33 @@ func (p *splitVepPlugin) resolveFormat() error {
 		return err
 	}
 	p.formatItems = items
+	// Register the CSQ subfields referenced by the format string as columns, in
+	// subfield (header) order, mirroring parse_format_str's append-to-column_str.
+	// In text mode the INFO tags are not printed, but they make filterAndOutput's
+	// "nannot" branch (and any -i/-e filter) see the same set upstream does.
+	referenced := make([]bool, len(p.fields))
+	for _, it := range items {
+		if it.kind == svFmtCsqField && it.csqIdx >= 0 && it.csqIdx < len(referenced) {
+			referenced[it.csqIdx] = true
+		}
+	}
+	seen := map[string]bool{}
+	for idx, ref := range referenced {
+		if !ref {
+			continue
+		}
+		field := p.fields[idx]
+		if seen[field] {
+			continue
+		}
+		seen[field] = true
+		p.annots = append(p.annots, svAnnot{
+			field: field,
+			idx:   idx,
+			tag:   field,
+			typ:   p.defaultColumnType(field),
+		})
+	}
 	return nil
 }
 
@@ -200,46 +227,28 @@ func (p *splitVepPlugin) resolveFormatDirective(name string, infoPrefix bool) (s
 // runFormat implements the text (-f) output mode. For each record it splits the
 // CSQ, selects and severity-filters transcripts, and emits one line per
 // transcript (-d) or one collapsed line per record. Records with no passing
-// consequence are dropped when drop_sites is set.
+// consequence are dropped when drop_sites is set. When -i/-e is given the
+// expression's CSQ subfields are populated as INFO tags and the filter gates
+// each emitted line, exactly where upstream's filter_and_output evaluates it for
+// the text writer.
 func (p *splitVepPlugin) runFormat(variants []*vcf.Variant, out io.Writer) error {
+	filter, err := p.buildFilter(p.annotateHeader(p.inHdr))
+	if err != nil {
+		return err
+	}
 	var b strings.Builder
+	emit := func(rec *vcf.Variant, current [][]string) error {
+		// drop_sites==0 with no passing consequence renders a bare line; upstream
+		// reaches writeFormatLine with an empty transcript set in that case.
+		p.writeFormatLine(&b, rec, current)
+		return nil
+	}
 	for _, v := range variants {
-		transcripts := p.splitCsq(v)
-		if len(transcripts) == 0 {
-			if p.dropSites == 0 {
-				p.writeFormatLine(&b, v, nil)
-			}
-			continue
-		}
-		selected := p.selectTranscripts(transcripts)
-		// Gather passing transcripts.
-		var passing [][]string
-		for _, ti := range selected {
-			tr := transcripts[ti]
-			if p.csqIdx >= 0 && p.csqIdx < len(tr) {
-				if !p.csqSeverityPass(tr[p.csqIdx]) {
-					continue
-				}
-			} else if p.minSev != svSelectAny {
-				continue
-			}
-			passing = append(passing, tr)
-		}
-		if len(passing) == 0 {
-			if p.dropSites == 0 {
-				p.writeFormatLine(&b, v, nil)
-			}
-			continue
-		}
-		if p.duplicate {
-			for _, tr := range passing {
-				p.writeFormatLine(&b, v, [][]string{tr})
-			}
-		} else {
-			p.writeFormatLine(&b, v, passing)
+		if err := p.processVariant(v, filter, emit); err != nil {
+			return err
 		}
 	}
-	_, err := io.WriteString(out, b.String())
+	_, err = io.WriteString(out, b.String())
 	return err
 }
 

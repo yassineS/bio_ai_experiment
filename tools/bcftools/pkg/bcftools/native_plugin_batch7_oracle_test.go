@@ -190,6 +190,57 @@ func TestNativePluginSplitVep(t *testing.T) {
 	}
 }
 
+// TestNativePluginSplitVepFilter checks the -i/-e filter expressions, which
+// upstream evaluates against the expanded per-transcript CSQ subfields it
+// registers as INFO tags on the output header (filter_init on hdr_out). It
+// covers regex (~), string equality, a numeric subfield, the -d per-transcript
+// vs collapsed semantics, the auto-registration of a filter-only subfield (no
+// -c), the -f text mode, and combination with -s/-c/-p.
+func TestNativePluginSplitVepFilter(t *testing.T) {
+	bin, err := buildBcftools()
+	if err != nil {
+		t.Fatalf("build upstream bcftools: %v", err)
+	}
+	fix := parityFixture(t, "vep_csq.vcf")
+	cases := [][]string{
+		// Regex / string equality on a CSQ subfield, include and exclude.
+		{"-c", "Consequence", "-i", `Consequence~"missense"`},
+		{"-c", "IMPACT", "-e", `IMPACT="LOW"`},
+		// Numeric subfield, with and without an explicit -c (auto-registration).
+		{"-c", "gnomAD_AF", "-i", "gnomAD_AF<0.01"},
+		{"-i", "gnomAD_AF<0.01"},
+		{"-i", "gnomAD_AF>0.4"},
+		// -d per-transcript: the filter selects which CSQ entries survive.
+		{"-c", "Consequence", "-d", "-i", `Consequence~"missense"`},
+		{"-c", "gnomAD_AF", "-d", "-i", "gnomAD_AF<0.01"},
+		{"-c", "Consequence", "-d", "-e", `IMPACT="MODIFIER"`},
+		// Array-OR semantics on the collapsed (non -d) record: IMPACT=MODERATE,MODIFIER.
+		{"-c", "IMPACT", "-i", `IMPACT="MODIFIER"`},
+		// Combine with severity / multiple columns / prefix.
+		{"-c", "Consequence,IMPACT", "-s", "worst", "-i", `IMPACT="HIGH"`},
+		{"-c", "Consequence,IMPACT", "-s", "worst", "-p", "vep", "-i", `vepIMPACT="HIGH"`},
+		{"-c", "Consequence,IMPACT", "-e", "gnomAD_AF>0.4"},
+		// Conjunction across two subfields.
+		{"-i", `Consequence~"missense"&&gnomAD_AF<0.01`},
+		// drop-sites (-x) / keep-sites (-X) interplay with the filter.
+		{"-c", "Consequence", "-i", `Consequence~"missense"`, "-x"},
+		{"-c", "Consequence", "-i", `Consequence~"missense"`, "-X"},
+		{"-c", "IMPACT", "-e", `IMPACT="LOW"`, "-x"},
+		// Text (-f) mode with the filter.
+		{"-f", `%CHROM:%POS %Consequence %gnomAD_AF\n`, "-i", "gnomAD_AF<0.01"},
+		{"-f", `%CHROM:%POS %Consequence\n`, "-d", "-i", `Consequence~"missense"`},
+		{"-f", `%CHROM:%POS %Consequence %IMPACT\n`, "-e", `IMPACT="LOW"`},
+	}
+	for _, args := range cases {
+		args := args
+		t.Run(joinArgs(args), func(t *testing.T) {
+			upArgv := append(append([]string{"+split-vep"}, args...), fix)
+			ourArgv := append(append([]string{"+split-vep"}, args...), fix)
+			assertStdoutParity(t, bin, upArgv, ourArgv)
+		})
+	}
+}
+
 // TestNativePluginSplit checks the +split multi-output modes: default per-sample,
 // -O containers, -S samples-file, -G groups-file and FORMAT-subset -k.
 func TestNativePluginSplit(t *testing.T) {
@@ -352,11 +403,15 @@ func TestNativePluginBatch7Unsupported(t *testing.T) {
 		args []string
 		in   string
 	}{
-		// split-vep: filter expressions, gene list, EXPRESSION/canonical selectors,
-		// severity/columns-types overrides need the upstream filter/convert engines.
-		{"split-vep", []string{"-c", "Consequence", "-i", "gnomAD_AF<0.1"}, csq},
-		{"split-vep", []string{"-c", "Consequence", "-e", "IMPACT=\"LOW\""}, csq},
+		// split-vep: the -i/-e filter expressions are now supported and parity-checked
+		// in TestNativePluginSplitVepFilter. The gene list, EXPRESSION/canonical
+		// transcript selectors, and severity/columns-types overrides still need the
+		// upstream gene/convert engines or the file-based scale/type tables.
 		{"split-vep", []string{"-c", "Consequence", "-g", "/tmp/genes"}, csq},
+		// A -i/-e expression that references a tag which is neither a CSQ subfield
+		// nor declared in the header is a clean error, matching upstream's
+		// "the tag ... is not defined in the VCF header or in INFO/CSQ".
+		{"split-vep", []string{"-i", "NoSuchField>1"}, csq},
 		{"split-vep", []string{"-c", "Consequence", "-s", "mane"}, csq},
 		{"split-vep", []string{"-c", "Consequence", "-s", "CANONICAL=YES"}, csq},
 		{"split-vep", []string{"-S", "-"}, csq},
