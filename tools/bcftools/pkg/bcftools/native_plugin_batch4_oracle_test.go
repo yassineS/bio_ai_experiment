@@ -21,7 +21,7 @@ import (
 //   - check-sparsity run()-style          => `+check-sparsity <opts> FILE`
 //   - remove-overlaps run()-style         => `+remove-overlaps <opts> FILE`
 //   - prune          run()-style          => `+prune <opts> FILE`
-//   - gvcfz          run()-style (stub, Init fails cleanly)
+//   - gvcfz          run()-style (natively supported; errors only on missing -g)
 // pluginCLIArgs builds the matching form automatically from IsRunStyleNativePlugin.
 
 // TestNativePluginAfDist checks the AF/GT probability-distribution tables, which
@@ -171,8 +171,9 @@ func TestNativePluginBatch4Unsupported(t *testing.T) {
 		name string
 		args []string
 	}{
-		// gvcfz: needs the htslib FORMAT/GT filter expression engine.
-		{"gvcfz", []string{"-g", "PASS:GQ>30 & DP<20"}},
+		// gvcfz: now natively supported (the FORMAT/GT filter engine is wired in;
+		// see native_plugin_gvcfz_frameshifts_oracle_test.go). The only remaining
+		// hard error is the missing-required -g option.
 		{"gvcfz", nil},
 		// prune: every mode (LD/annotation/rand/keep-sites/default-maxAF) is now
 		// supported and validated against upstream in

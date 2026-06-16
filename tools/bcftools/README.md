@@ -238,6 +238,54 @@ outputs are non-indexable and error exactly as upstream does. Honoured by
 plugins index every file). The produced index is byte-validated against
 `bcftools index` over the same data.
 
+### `+gvcfz` — resize gVCF blocks (native)
+
+`gvcfz` is implemented natively (pure Go). It groups consecutive gVCF reference
+blocks (records whose only ALT is `<NON_REF>`/`<*>`) by the
+`-g/--group-by FILTER:EXPR[; FILTER:EXPR …]` clauses, where each `EXPR` is a full
+bcftools filter expression evaluated per record (FORMAT/GT predicates included,
+e.g. `GQ>60 & DP<20`, `GT!="alt"`; a `-` expression is the catch-all). The first
+matching group selects the block a record belongs to; consecutive same-group
+records merge into the first (representative) record, with INFO/END extended to
+the block end, FORMAT/DP set to the minimum MIN_DP (or DP), FORMAT/GQ (or RGQ) to
+the minimum, and FORMAT/PL to the element-wise minimum. A real variant flushes the
+current block and passes through verbatim. A non-PASS group label adds a
+`##FILTER` line whose Description is the verbatim `-g` string (with `"` rewritten
+to `'`). `-i/-e` apply a record-level pre-filter; `-a/--trim-alt-alleles` is
+accepted; `-o/-O/-W` are handled by the host pipeline.
+
+```bash
+# Resize blocks by GQ and DP; non-PASS labels mark the block FILTER.
+bcftools +gvcfz input.bcf -g'PASS:GQ>60 & DP<20; PASS:GQ>40 & DP<15; Flt1:GQ>20; Flt2:-'
+# Collapse all non-variant sites into one block, removing unused ALTs.
+bcftools +gvcfz input.bcf -a -g'PASS:GT!="alt"'
+```
+
+### `+frameshifts` — annotate frameshift indels (native)
+
+`frameshifts` is implemented natively (pure Go). It reads exons from
+`-e/--exons FILE` (a BED or region-list, optionally bgzipped+tabixed) into an
+in-tree port of htslib's `bcf_sr_regions_overlap` cursor and adds INFO/OOF (one
+Integer per ALT allele) to every indel record that overlaps an exon.
+
+By default it reproduces the **shipped upstream behaviour byte-for-byte**: the
+plugin's per-allele in-frame/out-of-frame computation is dead code in the real
+binary (the `var[i].type != VCF_INDEL` guard is always true under modern htslib),
+so every exon-overlapping indel allele is annotated `OOF=-1` ("not applicable")
+and the intended length-mod-3 result is never produced — see
+`docs/UPSTREAM_BUGS.md#bcftools-frameshifts-oof-dead-code`. The **corrected**
+computation (trim the inserted/deleted length against the exon, then take it
+mod 3: out-of-frame ⇒ 1, in-frame ⇒ 0) is available via the opt-in `--fix-oof`
+flag, which deviates from drop-in parity on purpose.
+
+```bash
+bcftools +frameshifts in.vcf -- -e exons.bed.gz          # upstream-exact OOF=-1
+bcftools +frameshifts in.vcf -- -e exons.bed.gz --fix-oof # corrected in/out-of-frame
+```
+
+Both are byte-validated against upstream 1.23.1 (plain-BED and tabixed-BED cursor
+paths), with binary-free `TestUnit*` coverage of the pure helpers.
+
 ### `+prune` — prune/annotate by LD or window density (native)
 
 `prune` is implemented natively (pure Go, no subprocess) with **all** upstream

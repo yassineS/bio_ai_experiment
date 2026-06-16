@@ -784,6 +784,45 @@ discrepancies in our Go code (not upstream), all fixed inline:
 
 ### Track-only (parity skipped, fix later)
 
+<a id="bcftools-frameshifts-oof-dead-code"></a>
+
+- **bcftools +frameshifts: the in-frame/out-of-frame computation is dead
+  code; every overlapping indel is annotated `OOF=-1`.** `process()`
+  (plugins/frameshifts.c) classifies each ALT allele and, for true indels,
+  trims the inserted/deleted length against the overlapping exon and takes it
+  mod 3 (out-of-frame ⇒ 1, in-frame ⇒ 0). But the per-allele guard is
+  `if ( rec->d.var[i].type != VCF_INDEL ) { frm[i-1] = -1; continue; }`.
+  When frameshifts was written (2014) htslib set the per-allele variant type
+  to the bare `VCF_INDEL` bit. Modern htslib (and the vendored 1.23.1) sets
+  `VCF_INDEL|VCF_INS` (= 68) for insertions and `VCF_INDEL|VCF_DEL` (= 132)
+  for deletions — never the bare `VCF_INDEL` (= 4). So the guard
+  `type != VCF_INDEL` is **always true** and every indel allele that reaches
+  the loop takes the `frm[i-1] = -1` branch. The net shipped behaviour is:
+  a record that is a variant, is an indel (`bcf_get_variant_types & VCF_INDEL`),
+  and overlaps an exon gets `OOF=` with `-1` for each ALT allele; everything
+  else gets no `OOF` tag. The intended mod-3 result is never produced.
+  Reproducer (real binary, 1.23.1):
+
+  ```
+  printf 'chr1\t100\t200\n' > exons.bed
+  printf '##fileformat=VCFv4.2\n##contig=<ID=chr1>\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchr1\t150\t.\tA\tATTT\t.\t.\t.\n' > t.vcf
+  bcftools +frameshifts t.vcf -- -e exons.bed   # => OOF=-1, NOT OOF=0 (a 3bp insertion is in-frame)
+  ```
+
+  The native port replicates the shipped behaviour **byte-for-byte** by
+  default (`oofForAllele(..., fix=false)` in
+  `native_plugin_frameshifts.go` short-circuits to `-1` exactly as the dead
+  guard does) so `assertPluginParity` against the real binary holds
+  (`TestNativePluginFrameshifts`, both the plain-BED and tabixed-BED cursor
+  paths). The **corrected** exon-trim + length-mod-3 computation the source
+  intended is implemented in the same `oofForAllele(..., fix=true)` and
+  exposed via the non-default `--fix-oof` flag (covered by the binary-free
+  `TestUnitOofForAllele/fixed-computation`). Tracked here rather than
+  fixed-on-port-by-default: making the default compute the real value would
+  diverge from the only available oracle (the real 1.23.1 binary) and break
+  drop-in parity. If upstream ever fixes the guard, the default can flip to
+  the `fix=true` path.
+
 <a id="bcftools-split-vep-prn-worst-exact-match"></a>
 
 - **bcftools +split-vep `-s ...:worst` (PRN) ranks `&`-joined terms by an
