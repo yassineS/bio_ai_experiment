@@ -127,6 +127,11 @@ const (
 type AlnOutputOptions struct {
 	// Format selects BAM or CRAM framing for the surviving alignments.
 	Format AlnOutputFormat
+	// Uncompressed selects uncompressed (level-0) BAM output, the effect of
+	// upstream `bedtools intersect`'s -ubam flag. The BAM is still BGZF-framed,
+	// just with stored DEFLATE blocks. It is a no-op for CRAM output (whose
+	// framing -ubam does not affect upstream either).
+	Uncompressed bool
 	// ReferenceFASTA names the CRAM decode reference (from --cram-ref or the
 	// CRAM_REFERENCE environment variable). It reconstructs reference-backed
 	// bases when reading a reference-compressed CRAM query; an empty value
@@ -162,7 +167,10 @@ func IntersectBinaryOutput(readerA io.Reader, readersB []io.Reader, writer io.Wr
 	}
 
 	hdr := aReader.Header()
-	w := newAlnWriter(writer, out.Format)
+	w, err := newAlnWriter(writer, out.Format, out.Uncompressed)
+	if err != nil {
+		return 0, fmt.Errorf("error opening %s output: %w", out.Format, err)
+	}
 	if err := w.WriteHeader(hdr); err != nil {
 		return 0, fmt.Errorf("error writing %s header: %w", out.Format, err)
 	}
@@ -196,13 +204,15 @@ func IntersectBinaryOutput(readerA io.Reader, readersB []io.Reader, writer io.Wr
 }
 
 // newAlnWriter constructs the sam.Writer matching format: a BGZF BAM writer for
-// OutputBAM, or alnio's CRAM v3.0 writer for OutputCRAM. Both satisfy the
-// WriteHeader/Write/Close shape this path drives.
-func newAlnWriter(w io.Writer, format AlnOutputFormat) sam.Writer {
+// OutputBAM (level-0 stored blocks when uncompressed is set, matching upstream
+// -ubam), or alnio's CRAM v3.0 writer for OutputCRAM. Both satisfy the
+// WriteHeader/Write/Close shape this path drives. It returns an error only if
+// the BAM writer cannot be constructed.
+func newAlnWriter(w io.Writer, format AlnOutputFormat, uncompressed bool) (sam.Writer, error) {
 	if format == OutputCRAM {
-		return alnio.NewCRAMWriter(w)
+		return alnio.NewCRAMWriter(w), nil
 	}
-	return sam.NewBAMWriter(w)
+	return sam.NewBAMWriterOptions(w, sam.BAMWriterOptions{Uncompressed: uncompressed})
 }
 
 // String renders the output format for diagnostics.

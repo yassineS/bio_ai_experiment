@@ -36,6 +36,65 @@ func NewBAMWriter(w io.Writer) *BAMWriter {
 	return &BAMWriter{bw: bgzip.NewWriter(w)}
 }
 
+// NewBAMWriterLevel constructs a single-threaded BAMWriter whose BGZF blocks
+// are deflated at the given compression level. The level uses the flate
+// conventions: flate.NoCompression (0) emits stored (level-0) DEFLATE blocks —
+// the on-disk shape of an "uncompressed BAM" (samtools view -u / -0) — while
+// still wrapping each block in the standard BGZF gzip framing, so the output
+// is a valid, indexable BAM that any conformant reader (our reader, stdlib
+// gzip, upstream samtools) decodes. flate.BestSpeed (1) through
+// flate.BestCompression (9) and flate.DefaultCompression (-1) select the usual
+// compressed levels. Close must be called to finalise the BGZF EOF block. It
+// returns an error only if the level is invalid.
+func NewBAMWriterLevel(w io.Writer, level int) (*BAMWriter, error) {
+	bw, err := bgzip.NewWriterLevel(w, level)
+	if err != nil {
+		return nil, err
+	}
+	return &BAMWriter{bw: bw}, nil
+}
+
+// NewBAMWriterOptions constructs a BAMWriter configured by opts. It is the most
+// general BAM-writer constructor: it selects the BGZF compression level
+// (including the uncompressed, level-0 mode used by samtools view -u/-0) and
+// the number of compression threads in one call. The other constructors are
+// thin wrappers over it. Close must be called to finalise the BGZF EOF block.
+func NewBAMWriterOptions(w io.Writer, opts BAMWriterOptions) (*BAMWriter, error) {
+	level := bgzip.DefaultCompression
+	if opts.Uncompressed {
+		level = 0 // flate.NoCompression: stored (level-0) DEFLATE blocks.
+	} else if opts.Level != 0 {
+		level = opts.Level
+	}
+	if opts.Threads > 1 {
+		mw, err := bgzip.NewMultiWriter(w, level, opts.Threads)
+		if err != nil {
+			return nil, err
+		}
+		return &BAMWriter{bw: mw}, nil
+	}
+	return NewBAMWriterLevel(w, level)
+}
+
+// BAMWriterOptions configures a BAMWriter at construction time. Its zero value
+// is the default writer: single-threaded BGZF at the historical default
+// compression level, exactly what NewBAMWriter produces.
+type BAMWriterOptions struct {
+	// Uncompressed selects samtools' uncompressed-BAM mode (the -u / -0 / -ubam
+	// flags). The BAM is still BGZF-framed, but every block is a stored
+	// (level-0) DEFLATE block, so writing is fast and the bytes are barely
+	// larger than the raw BAM. It takes precedence over Level when set.
+	Uncompressed bool
+	// Level overrides the BGZF compression level when Uncompressed is false. It
+	// uses the flate conventions (BestSpeed=1 … BestCompression=9,
+	// DefaultCompression=-1). The zero value means "use the default level".
+	Level int
+	// Threads spreads BGZF compression across up to this many goroutines; a
+	// value of 1 or below stays single-threaded. Block-parallel BGZF decodes
+	// identically regardless of the thread count.
+	Threads int
+}
+
 // NewBAMWriterThreads constructs a BAMWriter whose BGZF compression is spread
 // across up to threads concurrent goroutines. A threads value of 1 or below is
 // equivalent to NewBAMWriter (no goroutines are spawned). Because BGZF is

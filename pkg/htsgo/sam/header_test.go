@@ -7,6 +7,54 @@ import (
 	"testing"
 )
 
+// TestTextCanonicalOrder verifies TextCanonical regroups @-lines into
+// htslib's emission order (@HD, @CO, @PG, @RG, @SQ, then any other type),
+// preserving the input order within each group, while Text keeps the verbatim
+// input order.
+func TestTextCanonicalOrder(t *testing.T) {
+	in := "@CO\tfirst comment\n" +
+		"@PG\tID:p1\tPN:p1\n" +
+		"@RG\tID:rg1\tSM:s1\n" +
+		"@SQ\tSN:chr2\tLN:50\n" +
+		"@HD\tVN:1.6\tSO:coordinate\n" +
+		"@SQ\tSN:chr1\tLN:100\n" +
+		"@CO\tsecond comment\n"
+	h, err := ParseHeaderText(in)
+	if err != nil {
+		t.Fatalf("ParseHeaderText: %v", err)
+	}
+
+	// Text preserves the verbatim input order.
+	if got := h.Text(); got != in {
+		t.Errorf("Text() did not preserve input order:\n got=%q\nwant=%q", got, in)
+	}
+
+	want := "@HD\tVN:1.6\tSO:coordinate\n" +
+		"@CO\tfirst comment\n" +
+		"@CO\tsecond comment\n" +
+		"@PG\tID:p1\tPN:p1\n" +
+		"@RG\tID:rg1\tSM:s1\n" +
+		"@SQ\tSN:chr2\tLN:50\n" +
+		"@SQ\tSN:chr1\tLN:100\n"
+	if got := h.TextCanonical(); got != want {
+		t.Errorf("TextCanonical() order wrong:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+// TestTextCanonicalUnknownLineType verifies a user-defined header line type
+// is preserved and emitted after the known groups.
+func TestTextCanonicalUnknownLineType(t *testing.T) {
+	in := "@XY\tZZ:custom\n@HD\tVN:1.6\n@SQ\tSN:c\tLN:1\n"
+	h, err := ParseHeaderText(in)
+	if err != nil {
+		t.Fatalf("ParseHeaderText: %v", err)
+	}
+	want := "@HD\tVN:1.6\n@SQ\tSN:c\tLN:1\n@XY\tZZ:custom\n"
+	if got := h.TextCanonical(); got != want {
+		t.Errorf("TextCanonical() with unknown type:\n got=%q\nwant=%q", got, want)
+	}
+}
+
 func TestParseHeader(t *testing.T) {
 	in := "@HD\tVN:1.6\tSO:coordinate\n" +
 		"@SQ\tSN:chr1\tLN:248956422\n" +

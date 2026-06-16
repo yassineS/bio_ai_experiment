@@ -439,8 +439,11 @@ func (rw *RecordWriter) writeFileHeader() error {
 	}
 
 	// The SAM header block payload is a 4-byte little-endian text length
-	// followed by the header text, matching what readSAMHeader expects.
-	text := []byte(rw.header.Text())
+	// followed by the header text, matching what readSAMHeader expects. The
+	// header is serialised in htslib's canonical @-line order (@HD, @CO, @PG,
+	// @RG, @SQ) so the embedded SAM header byte-matches what upstream samtools
+	// writes into a CRAM, regardless of the order the lines arrived in.
+	text := []byte(rw.header.TextCanonical())
 	payload := make([]byte, 4+len(text))
 	binary.LittleEndian.PutUint32(payload[:4], uint32(len(text)))
 	copy(payload[4:], text)

@@ -38,6 +38,11 @@ type ViewOptions struct {
 	// OutputBAM forces BAM output. When false, output is text SAM unless the
 	// caller pre-wraps the output writer in a BAM writer.
 	OutputBAM bool
+	// Uncompressed selects uncompressed (level-0) BAM output — samtools view's
+	// `-u` flag. It implies BAM output (upstream's `-u` sets the output format
+	// to BAM with compression level 0). The BAM is still BGZF-framed, just with
+	// stored DEFLATE blocks. It has no effect on SAM or CRAM output.
+	Uncompressed bool
 	// OutputCRAM forces CRAM output (samtools view -C / --output-fmt cram).
 	// When set it takes precedence over OutputBAM. The CRAM the writer
 	// emits is reference-free, so it decodes without an external FASTA.
@@ -665,7 +670,14 @@ func openViewWriter(out io.Writer, hdr *sam.Header, opts ViewOptions) (sam.Write
 		}
 		w = alnio.NewCRAMWriterOpts(out, alnio.CRAMWriteOptions{QualityBinning: binning})
 	case opts.OutputBAM:
-		w = sam.NewBAMWriterThreads(out, opts.Threads)
+		bw, err := sam.NewBAMWriterOptions(out, sam.BAMWriterOptions{
+			Uncompressed: opts.Uncompressed,
+			Threads:      opts.Threads,
+		})
+		if err != nil {
+			return nil, err
+		}
+		w = bw
 	default:
 		w = sam.NewSAMWriter(out)
 	}
