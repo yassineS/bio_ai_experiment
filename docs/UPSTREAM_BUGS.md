@@ -385,6 +385,47 @@ is documented in `tools/vcftools/pkg/vcftools/pca.go` and pinned by
 Parity tests use no-missing-data fixtures so the divergence is
 invisible to the byte-level comparison.
 
+#### vcftools LD outputs: 1-byte stack buffer overflow aborts the binary
+
+Every LD / chi-square output path that spills to a temporary file —
+`output_haplotype_r2` (`--hap-r2`), `output_genotype_r2` (`--geno-r2`),
+`output_genotype_chisq` (`--geno-chisq`),
+`output_interchromosomal_genotype_r2` (`--interchrom-geno-r2`),
+`output_interchromosomal_haplotype_r2` (`--interchrom-hap-r2`), and the
+SNP-list-vs-all variants — builds its temp-file name like this
+(`variant_file_output.cpp:1441-1443` and the six sibling sites):
+
+```cpp
+string new_tmp = params.temp_dir+"/vcftools.XXXXXX";
+char tmpname[new_tmp.size()];          // size N, NO room for the NUL
+strcpy(tmpname, new_tmp.c_str());      // copies N+1 bytes → overflow
+```
+
+`char tmpname[new_tmp.size()]` is a variable-length array sized to the
+string length, but `strcpy` writes `new_tmp.size() + 1` bytes (the
+terminating NUL goes one past the end). On any toolchain that compiles
+with `_FORTIFY_SOURCE` (the default for modern GCC/glibc, including the
+build produced by the repo's own `./configure && make`), `__strcpy_chk`
+detects the 1-byte overflow and aborts:
+
+```
+*** buffer overflow detected ***: terminated
+```
+
+**Severity:** the upstream 0.1.18 binary, built with its own autotools
+config, **cannot run any `--hap-r2` / `--geno-r2` / `--geno-chisq` /
+`--interchrom-*` analysis at all** — it crashes before writing a single
+data row (only the header is flushed). Reproduce:
+`vcftools --vcf any.vcf --hap-r2 --ld-window-bp 1000000` → exit 134.
+
+**Fixed in port** (this PR). The Go port computes LD in-memory (no temp
+file, so no VLA/`strcpy` hazard) and emits the same column layout
+upstream's writer would have produced, with the same C++ `defaultfloat`
+precision-6 formatting for the R²/D/Dprime/chi-square columns. Because
+the upstream binary aborts, these modes cannot be byte-validated against
+it; the port's LD outputs are pinned by the existing in-package LD unit
+tests (`ld_test.go`, `ld_interchrom_test.go`) instead of a live oracle.
+
 #### vcftools `.ifreqburden` INDV label-index bug
 
 Upstream `variant_file_output.cpp:621` emits
