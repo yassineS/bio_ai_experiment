@@ -1246,3 +1246,53 @@ crashing. The byte-parity tests therefore exercise the *non-crashing* filter
 forms (`-i QUAL>10`, per-sample `FMT/GQ` expressions) against the live
 upstream binary; the crashing form is asserted only to *not* crash in our
 port, since upstream produces no output to compare against.
+
+## bcftools +prune: maxAF ranks by alt/ref, not allele frequency
+
+`plugins/prune.c` `_prune_sites()` (in `vcfbuf.c`) computes the per-site value
+it sorts on for the default `-N maxAF` selection as
+
+```c
+int ntot = buf->prune.ac[0], nalt = 0;          // ac[0] is the REFERENCE count
+for (k=1; k<line->n_allele; k++) nalt += buf->prune.ac[k];
+buf->vcf[i].af = ntot ? (float)nalt/ntot : 0;   // alt/ref, capped to 0 when ref==0
+```
+
+`bcf_calc_ac()` fills `ac[0]` with the **reference** allele count and `ac[1..]`
+with the ALT counts, so `af = nalt/nref` — the alt-to-ref ratio, **not** a true
+allele frequency `nalt/(nref+nalt)`. A monomorphic-ALT site (`nref==0`) gets
+`af = 0` and is therefore pruned *first*, even though its real frequency is the
+highest possible (1.0).
+
+**Reproducer** (`-w 100bp` keeps both chr2 sites in one window; `-n 1` keeps the
+one with the larger `af`):
+
+```
+chr2  100  A G  AC=7;AN=8   # nref=1, nalt=7 -> af=7.0   (kept)
+chr2  150  C T  AC=8;AN=8   # nref=0, nalt=8 -> af=0     (pruned)
+$ bcftools +prune -n 1 -w 100bp in.vcf      # emits chr2:100, drops chr2:150
+```
+
+A naive `nalt/(nref+nalt)` would keep chr2:150 (af 1.0) instead.
+
+**Our behaviour:** faithfully reproduced for byte-parity (`computeAF` /
+`calcAC` in `native_plugin_prune_ld.go` return the reference count as the
+denominator). This is a surprising-but-consistent upstream quirk, not a
+crash/spec violation, so it is reproduced rather than fixed; the
+`TestNativePluginPruneDefaultMaxAF` oracle pins it against upstream 1.23.1.
+
+Two related header quirks are reproduced the same way: the soft-filter
+`##FILTER` description renders a negative bp window via integer division
+(`-ld_win/1000`), so `-f LABEL -w 100bp` yields *"within 0kb"*; and the
+`-a count` `CLUSTER_SIZE` header line is emitted with the *pre*-conversion
+window value (printed before prune.c converts a positive `-w N` to `-N` bp).
+
+**Corrected false claims:** the pre-port native plugin rejected the `rand`
+selection mode and `--randomize-missing` claiming "the RNG cannot be matched
+byte-for-byte", and rejected the default `maxAF` (no `--AF-tag`) selection
+claiming the qsort tie order was "implementation-defined". Both claims were
+**false**: upstream seeds `hts_srand48(rseed)` deterministically (default seed
+0, or `--random-seed INT`), so reusing the in-tree `native_drand48.go` LCG
+reproduces every draw byte-for-byte; and glibc `qsort` is effectively stable
+for the tiny per-window arrays, so a stable sort matches the tie order. Both
+are now supported and oracle-validated.
