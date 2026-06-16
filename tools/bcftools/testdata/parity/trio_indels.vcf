@@ -1,0 +1,16 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=100000>
+##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Total alleles">
+##INFO=<ID=CSQ,Number=.,Type=String,Description="Consequence">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	CHILD1	FATHER1	MOTHER1	CHILD2	FATHER2	MOTHER2
+chr1	100	.	A	AT	50	PASS	AC=1;AN=12;CSQ=frameshift_variant	GT:AD:GQ	0/1:10,11:40	0/0:20,0:40	0/0:19,0:40	0/0:18,0:40	0/0:21,0:40	0/0:20,0:40
+chr1	200	.	GCC	G	50	PASS	AC=3;AN=12;CSQ=inframe_deletion	GT:AD:GQ	0/1:9,9:40	0/1:10,10:40	0/0:20,0:40	0/1:8,12:40	0/0:19,0:40	0/0:18,0:40
+chr1	300	.	C	CAA	50	PASS	AC=2;AN=12	GT:AD:GQ	0/0:20,0:40	0/0:19,0:40	0/0:18,0:40	1/1:0,22:40	0/0:21,0:40	0/0:20,0:40
+chr1	400	.	T	TGGG	50	PASS	AC=2;AN=12	GT:AD:GQ	0/1:10,8:40	0/1:9,9:40	0/1:11,10:40	0/0:20,0:40	0/0:19,0:40	0/0:18,0:40
+chr1	500	.	A	G	50	PASS	AC=2;AN=12	GT:AD:GQ	0/1:10,9:40	0/0:20,0:40	0/0:19,0:40	0/0:18,0:40	0/0:21,0:40	0/0:20,0:40
+chr1	600	.	CT	C,CTT	50	PASS	AC=2,1;AN=12	GT:AD:GQ	1/2:0,9,8:40	0/1:10,9,0:40	0/0:20,0,0:40	0/0:20,0,0:40	0/0:19,0,0:40	0/0:18,0,0:40
+chr1	700	.	G	GA	50	PASS	AC=1;AN=12	GT:AD:GQ	0/1:9,10:20	0/0:20,0:40	0/0:19,0:40	0/0:18,0:40	0/0:21,0:40	0/0:20,0:40

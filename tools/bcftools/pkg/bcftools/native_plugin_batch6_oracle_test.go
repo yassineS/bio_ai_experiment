@@ -171,11 +171,11 @@ func TestNativePluginBatch6Unsupported(t *testing.T) {
 		// trio-dnm3 error path is the missing -p/-P option, plus the AD+PL-only DMM
 		// site that has no FORMAT/AD/QM (asserted in the float-model test).
 		{"trio-dnm3", nil}, // missing -p/-P
-		// trio-stats: alt-trios and file output remain unsupported (the -i/-e
-		// filter modes, including the curly-brace multi-threshold expansion, are
-		// parity-checked in TestNativePluginTrioStats, and -t/-T streaming targets
-		// in TestNativePluginRegionTarget).
-		{"trio-stats", []string{"-p", "x.ped", "-a", "1"}},
+		// trio-stats: the -a/--alt-trios accounting and -o file output are now
+		// supported (parity-checked in TestNativePluginTrioStatsAltTrios and
+		// TestNativePluginTrioStatsOutputFile); the -i/-e filter modes, the
+		// curly-brace multi-threshold expansion and -t/-T streaming targets are
+		// parity-checked elsewhere. Only the missing-trio-source error remains.
 		{"trio-stats", nil}, // missing -p/-P
 		// trio-switch-rate: only -p is supported.
 		{"trio-switch-rate", nil}, // missing -p

@@ -84,6 +84,29 @@ func parseTrioStatsPED(path string, idx map[string]int) ([]trioStatsTrio, error)
 	return trios, nil
 }
 
+// parseIndelStatsPED reads a PED file for indel-stats' -p de-novo mode and
+// returns the trios whose father, mother AND child are all present in the
+// header, sorted by the minimum sample index. It mirrors indel-stats.c's
+// parse_ped() + cmp_trios(), which — unlike trio-stats.c — does NOT deduplicate
+// trios and does NOT reject a child listed in two trios: every resolvable row is
+// appended in file order before the stable sort. At least one complete trio must
+// resolve.
+func parseIndelStatsPED(path string, idx map[string]int) ([]trioStatsTrio, error) {
+	rows, err := parsePEDRows(path, idx)
+	if err != nil {
+		return nil, fmt.Errorf("indel-stats: %w", err)
+	}
+	var trios []trioStatsTrio
+	for _, r := range rows {
+		trios = append(trios, trioStatsTrio{child: r.child, father: r.father, mother: r.mother})
+	}
+	if len(trios) == 0 {
+		return nil, fmt.Errorf("indel-stats: no complete trio identified")
+	}
+	sortTriosByMinIndex(trios)
+	return trios, nil
+}
+
 // pedRow is one resolved PED line (indices plus names) used while de-duplicating
 // trios.
 type pedRow struct {

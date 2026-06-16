@@ -305,18 +305,17 @@ func TestNativePluginBatch5Unsupported(t *testing.T) {
 		// TestNativePluginRegionTarget). Note guess-ploidy's -t is --tag, not
 		// targets, so it is NOT a region/target case.
 		{"guess-ploidy", []string{"-g", "b37"}},
-		// smpl-stats: -o file output is unsupported (-i/-e, the curly-brace
-		// multi-threshold expansion and -r/-R/-t/-T are now supported, see the
-		// parity tests).
-		{"smpl-stats", []string{"-o", "out.txt"}},
-		// indel-stats: PED and -o file output are unsupported (-i/-e, the
-		// curly-brace expansion and -r/-R/-t/-T are now supported, see the parity
-		// tests).
-		{"indel-stats", []string{"-p", "trios.ped"}},
+		// smpl-stats: -o file output is now supported (parity-checked in
+		// TestNativePluginStatsOutputFile); -i/-e, the curly-brace expansion and
+		// -r/-R/-t/-T are covered by the parity tests. No smpl-stats error remains.
+		// indel-stats: the -p PED de-novo mode and -o file output are now supported
+		// (TestNativePluginIndelStatsPED / TestNativePluginStatsOutputFile). Only
+		// upstream's buggy --nvaf [0,1] validation rejects an out-of-range value.
 		{"indel-stats", []string{"--nvaf", "10"}}, // upstream's [0,1] validation rejects it too
-		// contrast: rare-allele enrichment is unsupported (-i/-e and -r/-R/-t/-T
-		// are now supported, see the parity tests).
-		{"contrast", []string{"-0", "S1", "-1", "S2", "-f", "0.001"}},
+		// contrast: rare-allele enrichment (-f) is now supported (parity-checked
+		// in TestNativePluginContrastEnrichment). The missing -0/-1 error and the
+		// unsupported region-overlap matching modes remain.
+		{"contrast", []string{"-0", "S1", "-1", "S2", "--regions-overlap", "2"}},
 		{"contrast", nil}, // missing -0/-1
 		// ad-bias: clean-vcf and convert-format modes are unsupported.
 		{"ad-bias", []string{"-s", pairs, "-c"}},

@@ -1247,6 +1247,48 @@ forms (`-i QUAL>10`, per-sample `FMT/GQ` expressions) against the live
 upstream binary; the crashing form is asserted only to *not* crash in our
 port, since upstream produces no output to compare against.
 
+## bcftools +indel-stats: `-p` PED de-novo mode aborts on an indel site without FORMAT/AD
+
+`plugins/indel-stats.c` `process_record()`'s PED branch calls
+`update_indel_stats()` for every de-novo indel genotype it finds in a trio's
+child. That helper opens with
+
+```c
+if ( als[0] >= args->nad1 || als[1] >= args->nad1 )
+    error("Incorrect GT allele at %s:%"PRId64" .. %d/%d\n", ...);
+```
+
+`args->nad1` is the per-sample width of FORMAT/AD, set from
+`bcf_get_format_int32(...,"AD",...)`. When the record carries genotypes but no
+FORMAT/AD, `nad` is negative and `nad1` is left at **0**, so the very first
+in-trio indel allele (`als[0] >= 0`) trips the `>= 0` test and the whole run is
+**aborted** with `Incorrect GT allele at chr1:100 .. 0/1` (exit 255). In other
+words `bcftools +indel-stats -p trios.ped file.vcf` dies on any indel-bearing
+trio VCF that lacks FORMAT/AD — even though the length / insertion / deletion /
+de-novo-genotype tallies need no AD at all. (The non-PED path is unaffected: it
+guards the per-sample loop with `if ( args->ngt>0 ) { ... nad ... }` and only
+calls `update_indel_stats` when `nad1>0`.)
+
+**Reproducer** (strip FORMAT/AD from a trio indel VCF, then run the PED mode):
+
+```
+# file.vcf carries GT:GQ only (no AD); trios.ped lists CHILD1 FATHER1 MOTHER1
+chr1  100  A AT  GT:GQ  0/1:40  0/0:40  0/0:40 ...
+$ bcftools +indel-stats -p trios.ped file.vcf
+Identified 1 complete trios in the VCF file
+Incorrect GT allele at chr1:100 .. 0/1      # <- aborts, exit 255
+```
+
+**Our behaviour:** fixed-on-port. The de-novo indel stats that do not require
+AD (the SN* de-novo-genotype count, the DLEN length distribution, and the
+site-wise insertion/deletion/frameshift/inframe counters) are still tallied;
+the AD-derived DVAF / DFRAC / NFRAC contributions are simply skipped for that
+genotype (guarded by `nad1 > 0` before the `update_indel_stats` call) instead
+of aborting the run. The byte-parity oracle therefore uses an AD-bearing trio
+fixture (where upstream does not crash) and the crashing AD-less form is
+asserted only to *not* crash in our port, since upstream produces no output to
+compare against.
+
 ## bcftools +prune: maxAF ranks by alt/ref, not allele frequency
 
 `plugins/prune.c` `_prune_sites()` (in `vcfbuf.c`) computes the per-site value

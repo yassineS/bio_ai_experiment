@@ -6,11 +6,33 @@
 package bcftools
 
 import (
+	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
+
+// statsReportWriter resolves the destination for a stats plugin's textual report
+// given the -o/--output FILE selection and the host stdout writer. When
+// outputFile is empty or "-", the report goes to the host stdout (out) and the
+// returned closer is a no-op. Otherwise the file is created (truncated) and the
+// returned closer closes it. This mirrors upstream's report_stats() open logic
+// (`!output_fname || !strcmp("-",output_fname) ? stdout : fopen(...)`), so the
+// report bytes are identical whether written to stdout or a file — the CMD line
+// echoes the verbatim argv (including -o) in both cases, exactly as upstream.
+func statsReportWriter(outputFile string, out io.Writer) (io.Writer, func() error, error) {
+	if outputFile == "" || outputFile == "-" {
+		return out, func() error { return nil }, nil
+	}
+	f, err := os.Create(outputFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not open the file for writing: %s", outputFile)
+	}
+	return f, f.Close, nil
+}
 
 // genotypeKind classifies a parsed sample genotype, mirroring the return codes
 // of the plugins' parse_genotype helper.
