@@ -214,6 +214,52 @@ exact; numeric `DNM`/`VA`/`VAF` fields equal within ~6 significant figures
 or a small relative/absolute epsilon — see `numeric_parity_test.go`). On
 linux/amd64 the scores in fact land byte-for-byte.
 
+### `+split-vep` — query VEP/CSQ subfields (native)
+
+`split-vep` is implemented natively (pure Go, no subprocess). It splits a
+structured `INFO/CSQ` (Ensembl VEP) or `INFO/BCSQ` (`bcftools csq`)
+annotation into its pipe-delimited subfields and supports the **full**
+upstream surface:
+
+- **`-c/--columns`** extracts named/indexed subfields (ranges, `:TYPE`
+  suffixes, `-` for all) into new `INFO` tags; **`-f/--format`** prints a
+  `bcftools query`-style line; `-A/--all-fields` expands `%CSQ`; `-d`
+  duplicates per transcript; `-p/--annot-prefix`, `-x/-X`, `-u`.
+- **`-s/--select TR:CSQ:PRN`** transcript and consequence selection:
+  - `TR` — `all`, `worst` (most severe, see `-S`), `primary`
+    (`CANONICAL=YES`), `pick` (`PICK=1`), `mane` (`MANE_SELECT!=""`), or an
+    arbitrary `<FIELD><OP><VALUE>` EXPRESSION with the `=`, `!=`, `~`, `!~`
+    operators (the value may be double-quoted).
+  - `CSQ` — `any` or a severity term with the `+` (this-or-more-severe) / `-`
+    (this-or-less-severe) modifiers. Terms are matched case-sensitively
+    against the lowercased scale (so `:MISSENSE` is rejected, exactly as
+    upstream).
+  - `PRN` — `all` (print every consequence term) or `worst` (rewrite the
+    printed Consequence to its single worst `&`-joined term).
+- **`-g/--gene-list [+]FILE`** restricts to transcripts whose gene appears in
+  `FILE` (one gene per line); a leading `+` *prioritises* instead — all
+  transcripts are kept but the listed-gene ones are moved to the front.
+  `--gene-list-fields LIST` chooses which subfields are matched (default
+  `SYMBOL,Gene,gene`).
+- **`-S/--severity -|FILE`** overrides the built-in consequence severity
+  scale from a file (one tier per line, whitespace-separated synonyms);
+  `-S -`/`-S ?` print the default scale.
+- **`--columns-types -|FILE`** overrides the auto-detected column types via a
+  regex→type table (each pattern is anchored `^…$`); `-` prints the default
+  table. It drives both the emitted `##INFO` `Type` and the numeric
+  re-parsing of values.
+- **`-i/--include` / `-e/--exclude`** evaluate over the derived
+  per-transcript CSQ subfields (auto-registered as `INFO` tags), not plain
+  VCF fields.
+
+Every mode is byte-validated against the upstream binary 1.23.1 via the
+CLI-to-CLI oracle (`TestNativePluginSplitVep*` in
+`native_plugin_batch7_oracle_test.go`). One upstream quirk is preserved
+deliberately: `PRN :worst` ranks `&`-joined terms by an *exact* scale lookup
+(not the substring matcher), so a compound term whose parts aren't exact
+scale tokens keeps its first term — see
+`docs/UPSTREAM_BUGS.md#bcftools-split-vep-prn-worst-exact-match`.
+
 ## Quick start
 
 ```bash

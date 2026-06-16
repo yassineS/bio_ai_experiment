@@ -241,6 +241,166 @@ func TestNativePluginSplitVepFilter(t *testing.T) {
 	}
 }
 
+// TestNativePluginSplitVepSelectors checks the transcript-selection surface that
+// the native port previously rejected: the EXPRESSION selectors (primary => CANONICAL=YES,
+// pick => PICK=1, mane => MANE_SELECT!=""), the arbitrary <FIELD><OP><VALUE> forms
+// (=, !=, ~, !~), and the PRN qualifier (:worst rewrites the printed Consequence
+// to its single worst term). It drives both binaries with a VEP fixture that
+// carries CANONICAL/MANE_SELECT/PICK subfields and diffs byte-for-byte.
+func TestNativePluginSplitVepSelectors(t *testing.T) {
+	bin, err := buildBcftools()
+	if err != nil {
+		t.Fatalf("build upstream bcftools: %v", err)
+	}
+	fix := parityFixture(t, "vep_select.vcf")
+	cases := [][]string{
+		// primary / pick / mane keyword selectors, text and annotate.
+		{"-f", `%CHROM:%POS %Consequence %Feature\n`, "-s", "primary"},
+		{"-f", `%CHROM:%POS %Consequence %Feature\n`, "-s", "pick"},
+		{"-f", `%CHROM:%POS %Consequence %Feature\n`, "-s", "mane"},
+		{"-c", "Consequence,SYMBOL", "-s", "primary", "-p", "vep"},
+		{"-c", "Consequence,Feature", "-s", "pick"},
+		// EXPRESSION selectors with each operator, per-transcript (-d) text.
+		{"-f", `%CHROM:%POS %Consequence %Feature\n`, "-s", `CANONICAL=YES`, "-d"},
+		{"-f", `%CHROM:%POS %Consequence %Feature\n`, "-s", `CANONICAL!=YES`, "-d"},
+		{"-f", `%CHROM:%POS %Consequence %Feature\n`, "-s", `Feature~"ENST[13]"`, "-d"},
+		{"-f", `%CHROM:%POS %Consequence %Feature\n`, "-s", `Feature!~"ENST[13]"`, "-d"},
+		// EXPRESSION with -p prefix: the FIELD is prefix-resolved.
+		{"-c", "Consequence", "-s", `CANONICAL=YES`, "-p", "vep"},
+		// EXPRESSION-only with no -c/-f: drop_sites defaults to 1 (keep matching sites).
+		{"-s", "mane"},
+		{"-s", "pick"},
+		// PRN :worst rewrites the worst Consequence term, in -c, -f and -d.
+		{"-c", "Consequence", "-s", "all:any:worst"},
+		{"-f", `%CHROM:%POS %Consequence\n`, "-s", "all:any:worst", "-d"},
+		{"-c", "Consequence,IMPACT", "-s", "worst:any:worst"},
+		// PRN :worst combined with a severity filter.
+		{"-c", "Consequence", "-s", "all:missense+:worst"},
+	}
+	for _, args := range cases {
+		args := args
+		t.Run(joinArgs(args), func(t *testing.T) {
+			upArgv := append(append([]string{"+split-vep"}, args...), fix)
+			ourArgv := append(append([]string{"+split-vep"}, args...), fix)
+			assertStdoutParity(t, bin, upArgv, ourArgv)
+		})
+	}
+}
+
+// TestNativePluginSplitVepGeneList checks the -g/--gene-list restriction and
+// prioritisation machinery: restrict mode (only listed-gene transcripts survive),
+// prioritise mode (the leading "+" keeps all but moves listed genes first), the
+// --gene-list-fields override, and the no-match case. Both binaries read the same
+// gene-list file written into a temp dir.
+func TestNativePluginSplitVepGeneList(t *testing.T) {
+	bin, err := buildBcftools()
+	if err != nil {
+		t.Fatalf("build upstream bcftools: %v", err)
+	}
+	fix := parityFixture(t, "vep_select.vcf")
+	dir := t.TempDir()
+	genes := filepath.Join(dir, "genes.txt")
+	if err := os.WriteFile(genes, []byte("BRCA2\nEGFR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	geneGene := filepath.Join(dir, "genes_gene.txt")
+	if err := os.WriteFile(geneGene, []byte("ENSG2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	geneNone := filepath.Join(dir, "genes_none.txt")
+	if err := os.WriteFile(geneNone, []byte("NONEXISTENT\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := [][]string{
+		// Restrict: only BRCA2/EGFR transcripts survive (per-transcript text).
+		{"-f", `%CHROM:%POS %SYMBOL %Consequence\n`, "-g", genes, "-d"},
+		// Prioritise: all kept, BRCA2/EGFR moved to the front.
+		{"-f", `%CHROM:%POS %SYMBOL %Consequence\n`, "-g", "+" + genes, "-d"},
+		// Restrict, annotate (-c): sites kept, annotations limited to listed genes.
+		{"-c", "SYMBOL,Consequence", "-g", genes},
+		// --gene-list-fields override: match the Gene subfield instead of SYMBOL.
+		{"-f", `%CHROM:%POS %Gene %Consequence\n`, "-g", geneGene, "--gene-list-fields", "Gene", "-d"},
+		// No gene matches: restrict mode yields empty annotations.
+		{"-c", "SYMBOL", "-g", geneNone},
+		{"-f", `%CHROM:%POS %SYMBOL\n`, "-g", geneNone, "-d"},
+		// Gene list combined with worst-transcript selection.
+		{"-c", "SYMBOL,Consequence", "-s", "worst", "-g", genes},
+	}
+	for _, args := range cases {
+		args := args
+		t.Run(joinArgs(args), func(t *testing.T) {
+			upArgv := append(append([]string{"+split-vep"}, args...), fix)
+			ourArgv := append(append([]string{"+split-vep"}, args...), fix)
+			assertStdoutParity(t, bin, upArgv, ourArgv)
+		})
+	}
+}
+
+// TestNativePluginSplitVepSeverity checks the -S/--severity file override: a
+// custom scale re-orders the worst-transcript selection and the severity-range
+// filter (term[+|-]). Both binaries read the same scale file.
+func TestNativePluginSplitVepSeverity(t *testing.T) {
+	bin, err := buildBcftools()
+	if err != nil {
+		t.Fatalf("build upstream bcftools: %v", err)
+	}
+	fix := parityFixture(t, "vep_select.vcf")
+	dir := t.TempDir()
+	// Custom scale making synonymous the most severe, missense the least.
+	scale := filepath.Join(dir, "severity.txt")
+	if err := os.WriteFile(scale, []byte("# custom\nmissense\nstop_gained\nsynonymous\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := [][]string{
+		{"-c", "Consequence", "-s", "worst", "-S", scale},
+		{"-f", `%CHROM:%POS %Consequence\n`, "-s", "worst", "-S", scale, "-d"},
+		{"-f", `%CHROM:%POS %Consequence\n`, "-s", ":synonymous+", "-S", scale, "-d"},
+		{"-c", "Consequence", "-s", ":missense-", "-S", scale},
+		// PRN :worst rewrite under the custom scale.
+		{"-c", "Consequence", "-s", "all:any:worst", "-S", scale},
+	}
+	for _, args := range cases {
+		args := args
+		t.Run(joinArgs(args), func(t *testing.T) {
+			upArgv := append(append([]string{"+split-vep"}, args...), fix)
+			ourArgv := append(append([]string{"+split-vep"}, args...), fix)
+			assertStdoutParity(t, bin, upArgv, ourArgv)
+		})
+	}
+}
+
+// TestNativePluginSplitVepColumnsTypes checks the --columns-types FILE override:
+// the regex-matched type table replaces the built-in presets and drives both the
+// emitted ##INFO header Type and the numeric re-parsing of the column values.
+// Both binaries read the same types file.
+func TestNativePluginSplitVepColumnsTypes(t *testing.T) {
+	bin, err := buildBcftools()
+	if err != nil {
+		t.Fatalf("build upstream bcftools: %v", err)
+	}
+	fix := parityFixture(t, "vep_select.vcf")
+	dir := t.TempDir()
+	// Override DISTANCE to Float and gnomAD_AF to Integer (both flip from the
+	// presets), plus a regex rule.
+	ct := filepath.Join(dir, "ctypes.txt")
+	if err := os.WriteFile(ct, []byte("# custom\nDISTANCE Float\ngnomAD_AF Integer\n.*_AF Integer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := [][]string{
+		{"-c", "DISTANCE,gnomAD_AF", "--columns-types", ct},
+		{"-c", "DISTANCE", "--columns-types", ct, "-f", `%CHROM:%POS %DISTANCE\n`},
+		{"-c", "gnomAD_AF", "--columns-types", ct, "-i", "gnomAD_AF<1"},
+	}
+	for _, args := range cases {
+		args := args
+		t.Run(joinArgs(args), func(t *testing.T) {
+			upArgv := append(append([]string{"+split-vep"}, args...), fix)
+			ourArgv := append(append([]string{"+split-vep"}, args...), fix)
+			assertStdoutParity(t, bin, upArgv, ourArgv)
+		})
+	}
+}
+
 // TestNativePluginSplit checks the +split multi-output modes: default per-sample,
 // -O containers, -S samples-file, -G groups-file and FORMAT-subset -k.
 func TestNativePluginSplit(t *testing.T) {
@@ -403,19 +563,30 @@ func TestNativePluginBatch7Unsupported(t *testing.T) {
 		args []string
 		in   string
 	}{
-		// split-vep: the -i/-e filter expressions are now supported and parity-checked
-		// in TestNativePluginSplitVepFilter. The gene list, EXPRESSION/canonical
-		// transcript selectors, and severity/columns-types overrides still need the
-		// upstream gene/convert engines or the file-based scale/type tables.
-		{"split-vep", []string{"-c", "Consequence", "-g", "/tmp/genes"}, csq},
+		// split-vep: the -i/-e filter expressions, the gene list, the
+		// EXPRESSION/primary/pick/mane transcript selectors, the PRN :worst
+		// qualifier, and the -S/--columns-types file overrides are all now
+		// supported and parity-checked in the dedicated TestNativePluginSplitVep*
+		// tests. The cases below remain genuine clean errors.
+		//
+		// A -g/--gene-list file that cannot be read is a clean error.
+		{"split-vep", []string{"-c", "Consequence", "-g", "/tmp/no_such_gene_list_file"}, csq},
 		// A -i/-e expression that references a tag which is neither a CSQ subfield
 		// nor declared in the header is a clean error, matching upstream's
 		// "the tag ... is not defined in the VCF header or in INFO/CSQ".
 		{"split-vep", []string{"-i", "NoSuchField>1"}, csq},
+		// An EXPRESSION/mane selector whose FIELD is absent from INFO/CSQ errors
+		// (this fixture has no CANONICAL/MANE_SELECT subfields).
 		{"split-vep", []string{"-c", "Consequence", "-s", "mane"}, csq},
 		{"split-vep", []string{"-c", "Consequence", "-s", "CANONICAL=YES"}, csq},
+		// -S - and --columns-types - print the default table to stderr and exit
+		// non-zero, exactly as upstream's pre-init checks do.
 		{"split-vep", []string{"-S", "-"}, csq},
 		{"split-vep", []string{"--columns-types", "-"}, csq},
+		// An unknown consequence term in the severity filter is a clean error.
+		{"split-vep", []string{"-c", "Consequence", "-s", ":nosuchterm"}, csq},
+		// A PRN qualifier other than all/worst is a clean error.
+		{"split-vep", []string{"-c", "Consequence", "-s", "all:any:bogus"}, csq},
 		// split: -W/--write-index is now supported and parity-checked in
 		// TestNativePluginSplitWriteIndex (the per-output -i/-e filter is
 		// parity-checked in TestNativePluginSplit; -r/-R/-t/-T region/target

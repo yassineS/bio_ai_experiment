@@ -8,11 +8,18 @@
 //   - text mode: -f/--format prints a `bcftools query`-style line per record (or
 //     per transcript with -d), dropping records without a passing consequence.
 //
-// Transcript and consequence selection (-s/--select) supports the all/worst
-// transcript modes and the any / term[+|-] severity filter using upstream's
-// default severity scale (overridable subset). The annot-prefix (-p), all-fields
-// expansion (-A), duplicate (-d), drop/keep-sites (-x/-X) and allow-undef (-u)
-// options are honoured.
+// Transcript and consequence selection (-s/--select) supports the full upstream
+// surface: the all/worst transcript modes, the EXPRESSION selectors
+// (primary => CANONICAL=YES, pick => PICK=1, mane => MANE_SELECT!="", or an
+// arbitrary <FIELD><OP><VALUE> with the =, !=, ~, !~ operators), the
+// any / term[+|-] severity filter using the default severity scale (overridable
+// via -S FILE), and the PRN qualifier (:all / :worst, where :worst rewrites the
+// printed Consequence to its single worst term). Gene restriction
+// (-g/--gene-list with the optional leading "+" prioritise mode and
+// --gene-list-fields) and the file-based column-type overrides
+// (--columns-types -|FILE) are also reproduced. The annot-prefix (-p),
+// all-fields expansion (-A), duplicate (-d), drop/keep-sites (-x/-X) and
+// allow-undef (-u) options are honoured.
 //
 // The -i/-e filter expressions are supported: they evaluate against the
 // expanded per-transcript CSQ subfields. Upstream registers those subfields as
@@ -27,13 +34,6 @@
 // expression sees the same aggregated INFO tags upstream produces, including the
 // array-OR ("any element matches") semantics for the non -d case.
 //
-// Parts of upstream that require the gene-list machinery, canonical-transcript
-// expression selection, or the file-based scale/type tables are not reproduced
-// byte-for-byte and are reported as a clean unsupported Init error rather than
-// emitting silently divergent output: -g/--gene-list, the
-// EXPRESSION / primary / pick / mane transcript selectors, --columns-types FILE,
-// and -S FILE severity overrides.
-//
 // The query format engine supports the common
 // %CHROM/%POS/%ID/%REF/%ALT/%QUAL/%FILTER/%INFO-tag and %CSQ-subfield tokens with
 // literal text, \t and \n; other convert directives are rejected.
@@ -42,6 +42,7 @@ package bcftools
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -59,10 +60,31 @@ const (
 	svTypeReal
 )
 
-// split-vep transcript-selection modes (the supported subset of SELECT_TR_*).
+// split-vep transcript-selection modes, mirroring SELECT_TR_* upstream.
 const (
-	svTrAll = iota
-	svTrWorst
+	svTrAll   = iota // SELECT_TR_ALL: list every transcript
+	svTrWorst        // SELECT_TR_WORST: only the worst-consequence transcript
+	svTrExpr         // SELECT_TR_EXPR: transcripts matching a <FIELD><OP><VALUE> rule
+)
+
+// split-vep PRN (print-consequence) modes, mirroring PRN_CSQ_* upstream.
+const (
+	svPrnAll   = iota // PRN_CSQ_ALL: print all consequence terms per transcript
+	svPrnWorst        // PRN_CSQ_WORST: print only the worst term per transcript
+)
+
+// split-vep --select EXPRESSION operators, mirroring TR_OP_* upstream.
+const (
+	svTrOpEq = iota // =  string equality
+	svTrOpNe        // != string inequality
+	svTrOpRe        // ~  regex match
+	svTrOpNr        // !~ regex non-match
+)
+
+// split-vep -g/--gene-list modes, mirroring GENES_* upstream.
+const (
+	svGenesRestrict   = iota // restrict to transcripts whose gene is listed
+	svGenesPrioritize        // keep all, but move listed-gene transcripts first
 )
 
 // svSelectAny is the sentinel min/max severity meaning "any consequence",
@@ -79,6 +101,25 @@ type svAnnot struct {
 	typ   int
 }
 
+// svTrExprSpec is a parsed --select EXPRESSION (<FIELD><OP><VALUE>), mirroring
+// select_tr_t upstream: the CSQ subfield index to consult, the operator, the
+// literal comparison value (for =/!=) and the compiled regex (for ~/!~).
+type svTrExprSpec struct {
+	field string
+	idx   int
+	op    int
+	value string
+	regex *regexp.Regexp
+}
+
+// svCol2Type is one --columns-types override rule: a regex matched against the
+// (unprefixed) VEP subfield name and the value type it maps to. Mirrors
+// col2type_t upstream.
+type svCol2Type struct {
+	regex *regexp.Regexp
+	typ   int
+}
+
 // splitVepPlugin implements split-vep. It is a fullPlugin: it owns input reading
 // and either text or VCF/BCF output, because the text (-f) mode does not fit the
 // per-record re-emit pipeline.
@@ -89,6 +130,10 @@ type splitVepPlugin struct {
 	formatStr   string // -f format string
 	allFields   string // -A delimiter (expands %CSQ)
 	selectStr   string // -s raw select spec
+	severity    string // -S severity scale (- or FILE; "" => default)
+	columnTypes string // --columns-types (- or FILE; "" => default presets)
+	genesFname  string // -g/--gene-list spec (may have a leading '+')
+	geneFields  string // --gene-list-fields LIST (default SYMBOL,Gene,gene)
 	duplicate   bool   // -d
 	listFields  bool   // -l
 	printHeader int    // -H count (1 => header, 2 => omit indices)
@@ -103,8 +148,23 @@ type splitVepPlugin struct {
 	csqIdx    int
 	annots    []svAnnot
 	selTr     int
+	prnCsq    int
+	trExpr    svTrExprSpec // valid when selTr == svTrExpr
 	minSev    int
 	maxSev    int
+
+	// Gene restriction state (filled by initGeneList when -g is given).
+	genesMode    int             // svGenesRestrict or svGenesPrioritize
+	genes        map[string]bool // the hashed --gene-list gene names
+	geneFieldIdx []int           // resolved CSQ subfield indices to match against
+
+	// Column-type overrides (--columns-types FILE). When non-nil these regex
+	// rules replace the built-in default_column_types presets. column2typeErr
+	// records a deferred parse/read failure surfaced by the first untyped-column
+	// lookup, matching upstream where init_column2type errors fatally the first
+	// time get_column_type is reached.
+	column2type    []svCol2Type
+	column2typeErr error
 
 	// Severity scale: scale entries are substrings, csq2severity maps a token to
 	// its tier. Both grow lazily as new consequence tokens are seen.
@@ -245,12 +305,30 @@ func (p *splitVepPlugin) parseArgs(args []string) error {
 			p.filterStr = v
 			p.filterExclude = true
 			p.filterSet = true
-		case "-g", "--gene-list", "--gene-list-fields":
-			return fmt.Errorf("split-vep: the -g/--gene-list gene-restriction machinery is not supported in the native plugin; run upstream bcftools for that")
+		case "-g", "--gene-list":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			p.genesFname = v
+		case "--gene-list-fields":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			p.geneFields = v
 		case "-S", "--severity":
-			return fmt.Errorf("split-vep: -S/--severity scale overrides are not supported in the native plugin; the built-in default scale is used")
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			p.severity = v
 		case "--columns-types":
-			return fmt.Errorf("split-vep: --columns-types overrides are not supported in the native plugin")
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			p.columnTypes = v
 		default:
 			return fmt.Errorf("split-vep: unsupported option %q", a)
 		}
@@ -260,6 +338,28 @@ func (p *splitVepPlugin) parseArgs(args []string) error {
 	}
 	if p.allFields != "" && p.formatStr == "" {
 		return fmt.Errorf("split-vep: -A/--all-fields requires -f/--format")
+	}
+	return nil
+}
+
+// svScaleDumpError carries the default severity-scale or column-types dump that
+// upstream prints to stderr when invoked with -S - / -S ? / --columns-types -.
+// Upstream emits the text via error() and exits non-zero; the host renders the
+// Message to stderr and returns a non-zero exit, matching that behaviour.
+type svScaleDumpError struct{ msg string }
+
+func (e *svScaleDumpError) Error() string { return e.msg }
+
+// dumpRequest returns a non-nil error carrying the default severity scale or the
+// default column-types table when -S -|? or --columns-types - was requested,
+// mirroring upstream's pre-init_data checks in run(). The caller renders it to
+// stderr and exits non-zero.
+func (p *splitVepPlugin) dumpRequest() error {
+	if p.severity == "-" || p.severity == "?" {
+		return &svScaleDumpError{msg: svDefaultSeverityText}
+	}
+	if p.columnTypes == "-" {
+		return &svScaleDumpError{msg: svDefaultColumnTypesText}
 	}
 	return nil
 }
@@ -279,6 +379,12 @@ func (p *splitVepPlugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 	p.csqIdx = -1
 	if err := p.parseArgs(opts.Args); err != nil {
 		return err
+	}
+	// -S -|? and --columns-types - print the default tables to stderr and exit
+	// non-zero, before any input is read, exactly as upstream's run() does.
+	if dump := p.dumpRequest(); dump != nil {
+		io.WriteString(stderr, dump.Error())
+		return dump
 	}
 	hdr, variants, err := readPluginInput(opts, stderr)
 	if err != nil {
@@ -404,8 +510,11 @@ func (p *splitVepPlugin) sanitizeField(name string) string {
 // resolves the column spec and the format string (whichever applies). It also
 // finalises drop_sites.
 func (p *splitVepPlugin) resolveSelect() error {
-	p.initSeverityScale()
+	if err := p.initSeverityScale(); err != nil {
+		return err
+	}
 	p.selTr = svTrAll
+	p.prnCsq = svPrnAll
 	p.minSev, p.maxSev = svSelectAny, svSelectAny
 
 	sel := p.selectStr
@@ -413,23 +522,45 @@ func (p *splitVepPlugin) resolveSelect() error {
 		sel = "all:any"
 	}
 	parts := strings.Split(sel, ":")
-	selTr, selCsq := "all", "any"
+	selTr, selCsq, prnCsq := "all", "any", "all"
 	if len(parts) > 0 && parts[0] != "" {
 		selTr = parts[0]
 	}
 	if len(parts) > 1 && parts[1] != "" {
 		selCsq = parts[1]
 	}
-	if len(parts) > 2 && parts[2] != "" && parts[2] != "all" {
-		return fmt.Errorf("split-vep: the PRN selection %q is not supported in the native plugin (only :all)", parts[2])
+	if len(parts) > 2 && parts[2] != "" {
+		prnCsq = parts[2]
 	}
-	switch selTr {
+	switch strings.ToLower(selTr) {
 	case "all":
 		p.selTr = svTrAll
 	case "worst":
 		p.selTr = svTrWorst
+	case "primary":
+		if err := p.initSelectTrExpr("CANONICAL=YES"); err != nil {
+			return err
+		}
+	case "pick":
+		if err := p.initSelectTrExpr("PICK=1"); err != nil {
+			return err
+		}
+	case "mane":
+		if err := p.initSelectTrExpr(`MANE_SELECT!=""`); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("split-vep: the transcript selector %q (primary/pick/mane/EXPRESSION) is not supported in the native plugin", selTr)
+		if err := p.initSelectTrExpr(selTr); err != nil {
+			return err
+		}
+	}
+	switch strings.ToLower(prnCsq) {
+	case "all":
+		p.prnCsq = svPrnAll
+	case "worst":
+		p.prnCsq = svPrnWorst
+	default:
+		return fmt.Errorf("Error: could not parse \"%s\" in the expression \"%s\"", prnCsq, sel)
 	}
 	if selCsq != "any" {
 		modifier := byte('=')
@@ -438,9 +569,11 @@ func (p *splitVepPlugin) resolveSelect() error {
 			modifier = term[n-1]
 			term = term[:n-1]
 		}
-		sev, ok := p.csq2sev[strings.ToLower(term)]
+		// Upstream looks the term up case-sensitively against the lowercased
+		// severity-scale keys, so an upper-case term like ":MISSENSE" is rejected.
+		sev, ok := p.csq2sev[term]
 		if !ok {
-			return fmt.Errorf("split-vep: unknown consequence %q (see bcftools +split-vep -S -)", term)
+			return fmt.Errorf("Error: the consequence \"%s\" is not recognised. Run \"bcftools +split-vep -S ?\" to see the default list.", term)
 		}
 		switch modifier {
 		case '=':
@@ -469,8 +602,35 @@ func (p *splitVepPlugin) resolveSelect() error {
 		if err := p.addFilterColumns(); err != nil {
 			return err
 		}
-		if len(p.annots) == 0 && p.minSev == svSelectAny {
-			return fmt.Errorf("split-vep: nothing selected to do; use -c, -f or -s")
+	}
+	// Surface a deferred --columns-types FILE read/parse failure, which upstream
+	// reports fatally the first time a column needs its type resolved.
+	if p.column2typeErr != nil {
+		return p.column2typeErr
+	}
+
+	// init_gene_list runs after the column/filter parsing upstream.
+	if p.genesFname != "" {
+		if err := p.initGeneList(); err != nil {
+			return err
+		}
+	}
+
+	// The "why not use bcftools view" guard, ported from run() lines 1684-1703.
+	// When none of -c/-f selected a column and no severity range is active, the
+	// invocation does nothing unless an EXPRESSION transcript selector is given,
+	// in which case upstream defaults to drop_sites=1 (keep only sites hitting a
+	// matching transcript). -X is then a no-op error.
+	if p.formatStr == "" && len(p.annots) == 0 {
+		if p.minSev == svSelectAny && p.maxSev == svSelectAny {
+			if p.selTr != svTrExpr {
+				return fmt.Errorf("Error: none of the -c,-f,-s options was given, why not use \"bcftools view\" instead?")
+			}
+			if p.dropSites == -1 {
+				p.dropSites = 1
+			} else if p.dropSites == 0 {
+				return fmt.Errorf("Error: the option -X has no effect without -c,-f, why not use \"bcftools view\" instead?")
+			}
 		}
 	}
 	if p.dropSites == -1 {
@@ -587,34 +747,29 @@ func parseIndexRange(s string) (int, int, bool) {
 	return 0, 0, false
 }
 
-// defaultColumnType returns the default value type for a subfield name, porting
-// the default_column_types presets (first matching pattern wins, else String).
+// defaultColumnType returns the value type for a subfield name. It mirrors
+// upstream's get_column_type: the column-type regex table (built lazily from the
+// --columns-types FILE, or from the built-in default_column_types presets when no
+// override is given) is matched in order against the raw (unprefixed) VEP field
+// name; the first match wins, and an unmatched name is String. Each pattern is
+// anchored with ^...$ exactly as upstream does.
 func (p *splitVepPlugin) defaultColumnType(field string) int {
 	// Strip the annot-prefix when matching, as upstream matches the raw VEP
 	// field name against the presets.
 	name := strings.TrimPrefix(field, p.annotPrefix)
-	switch name {
-	case "DISTANCE", "STRAND", "TSL", "GENE_PHENO", "HGVS_OFFSET",
-		"MOTIF_POS", "existing_InFrame_oORFs", "existing_OutOfFrame_oORFs",
-		"existing_uORFs":
-		return svTypeInt
-	case "AF", "MAX_AF", "MOTIF_SCORE_CHANGE":
-		return svTypeReal
+	if p.column2type == nil && p.column2typeErr == nil {
+		// Build the regex table on first use, exactly when upstream's
+		// get_column_type triggers init_column2type. A read/parse failure is
+		// recorded and surfaced by the caller (resolveColumns/resolveFormat).
+		if err := p.initColumn2Type(); err != nil {
+			p.column2typeErr = err
+			return svTypeStr
+		}
 	}
-	if strings.HasSuffix(name, "_POPS") {
-		return svTypeStr
-	}
-	if strings.HasSuffix(name, "_AF") {
-		return svTypeReal
-	}
-	if strings.HasPrefix(name, "MAX_AF_") {
-		return svTypeReal
-	}
-	if strings.HasPrefix(name, "SpliceAI_pred_DP_") {
-		return svTypeInt
-	}
-	if strings.HasPrefix(name, "SpliceAI_pred_DS_") {
-		return svTypeReal
+	for _, ct := range p.column2type {
+		if ct.regex.MatchString(name) {
+			return ct.typ
+		}
 	}
 	return svTypeStr
 }

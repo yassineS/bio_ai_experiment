@@ -3407,6 +3407,41 @@ but with a deliberate design divergence from upstream:
   without braces in smpl-stats/indel-stats; our port handles it robustly, so it is
   oracled only with FORMAT-level `-e` or site-level `-i`.)
 
+- **Native `+split-vep` full selection/override surface** — **done**. The
+  native split-vep port (`tools/bcftools/pkg/bcftools/native_plugin_splitvep*.go`)
+  now closes the last five modes it previously rejected, byte-validated vs the
+  upstream binary 1.23.1:
+  - **`-s` transcript selectors** beyond all/worst: `primary` (CANONICAL=YES),
+    `pick` (PICK=1), `mane` (MANE_SELECT!=""), and an arbitrary
+    `<FIELD><OP><VALUE>` EXPRESSION with the `=`, `!=`, `~`, `!~` operators
+    (`initSelectTrExpr`/`matchingTranscripts`, porting init_select_tr_expr /
+    get_matching_transcript). The EXPRESSION-only/no-`-c` case defaults to
+    `drop_sites=1` and reproduces the `-X` "no effect" error.
+  - **PRN qualifier** (`:all`/`:worst`): `:worst` rewrites the printed
+    Consequence to its single worst `&`-joined term (`csqRewriteWorst`, porting
+    csq_rewrite_worst — including upstream's surprising exact-match ranking,
+    documented at
+    `docs/UPSTREAM_BUGS.md#bcftools-split-vep-prn-worst-exact-match`).
+  - **`-g/--gene-list [+]FILE`** restrict vs prioritise modes and
+    `--gene-list-fields` (`initGeneList`/`restrictCsqsToGenes`, porting
+    init_gene_list / restrict_csqs_to_genes, including the two-pointer partition
+    order).
+  - **`-S/--severity -|FILE`** custom severity-scale override (the file-based
+    scale re-orders worst-transcript selection and the `:term[+|-]` filter);
+    `-S -`/`-S ?` print the default scale to stderr and exit non-zero.
+  - **`--columns-types -|FILE`** regex type table replacing the built-in
+    presets (drives both the `##INFO` Type and numeric re-parsing); `-`
+    prints the default table to stderr and exits non-zero. A bad FILE errors
+    only when an untyped column actually needs it, matching upstream's lazy
+    `get_column_type`/`init_column2type`.
+
+  Fix-on-port note: the `:csq` severity term lookup is case-sensitive against
+  the lowercased scale keys, so `-s :MISSENSE` is rejected exactly as upstream
+  (the earlier port lower-cased it and wrongly accepted it). Byte-validated in
+  `TestNativePluginSplitVepSelectors`, `TestNativePluginSplitVepGeneList`,
+  `TestNativePluginSplitVepSeverity` and `TestNativePluginSplitVepColumnsTypes`
+  (fixture `tools/bcftools/testdata/parity/vep_select.vcf`).
+
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
 roadmap text in this section was written when bcftools internals were

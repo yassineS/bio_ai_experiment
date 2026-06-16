@@ -292,6 +292,11 @@ func (p *splitVepPlugin) writeFormatLine(b *strings.Builder, v *vcf.Variant, tra
 				if raw == "" {
 					vals = append(vals, ".")
 				} else {
+					// PRN :worst rewrites the printed Consequence to its worst term,
+					// matching the rewritten INFO tag upstream's convert engine reads.
+					if item.csqIdx == p.csqIdx && p.prnCsq == svPrnWorst {
+						raw = p.csqRewriteWorst(raw)
+					}
 					vals = append(vals, p.renderTyped(item.csqType, raw))
 				}
 			}
