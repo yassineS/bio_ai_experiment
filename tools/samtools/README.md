@@ -386,6 +386,58 @@ unit-tested without a TTY. **Piped `-d C` exits with a clear message** (use
 platforms** `-d C` reports that interactive mode requires Linux (the rest of the
 tool still builds and runs).
 
+### `samtools phase`
+
+Phases heterozygous SNPs from a coordinate-sorted BAM and emits the upstream
+`phase.c` text stream (CC banner + `PS`/`FL`/`M`/`EV`/`//` records) to stdout
+(or `-o`). With `-b PREFIX` it **additionally splits the input reads into three
+per-haplotype BAMs**, exactly as upstream `phase.c::dump_aln`:
+
+```bash
+samtools phase -b out aln.bam          # writes out.0.bam, out.1.bam, out.chimera.bam
+samtools phase -b out -A aln.bam       # drop ambiguous reads into the chimera bucket
+samtools phase -b out -F aln.bam       # do not attempt to fix chimeras
+```
+
+| Short | Long              | Description                                                  |
+|-------|-------------------|-------------------------------------------------------------|
+| `-b`  | —                 | Prefix of per-haplotype BAMs to write (`PREFIX.{0,1,chimera}.bam`). |
+| `-A`  | —                 | Drop reads with ambiguous phase into the chimera bucket.    |
+| `-F`  | `--no-fix-chimera`| Do not attempt to fix chimeras (disables the flip repair).  |
+| `-k`  | —                 | Block length (default 13).                                  |
+| `-q`  | —                 | Min het phred-LOD (default 37).                             |
+| `-Q`  | `--min-BQ`        | Min base quality in het calling (default 13).               |
+| `-D`  | —                 | Max read depth (default 256).                               |
+| `-l`  | —                 | List of sites to phase.                                     |
+| `-e`  | —                 | Restrict phasing to the `-l` site list.                     |
+|       | `--no-PG`         | Do not add a `@PG` line (we never inject one).              |
+
+**Read routing (`-b`).** Each read is classified by the per-read phase flags
+that the dynamic-programming + `fragphase` pass computes, mirroring
+`dump_aln` (phase.c:374-388) bucket-for-bucket:
+
+- A confidently phased read goes to `PREFIX.0.bam` or `PREFIX.1.bam` by its
+  haplotype, and is annotated with `ZP:A:Y`.
+- A read that the chimera-repair pass both flips **and** still finds
+  haplotype-consistent (`phased && flip`) goes to `PREFIX.chimera.bam`.
+- An ambiguous read (`f.ambig`) goes to `PREFIX.chimera.bam` when `-A` is set,
+  otherwise it is routed 50/50 between the two haplotype buckets.
+- A read with no usable phase evidence is routed 50/50.
+
+The 50/50 routing and the per-call `is_flip` shuffle consume upstream's
+`drand48()`. Because upstream never calls `srand48()`, that stream runs from
+glibc's default seed (`Xi = 0`) and is fully deterministic; the port reproduces
+it **bit-for-bit** with an in-tree `drand48` (`phase_drand48.go`), so the split
+agrees with upstream **record-for-record** — not merely up to a 0↔1 relabelling.
+The three split BAMs are validated byte-for-byte against the vendored upstream
+binary in `TestLivePhaseBamSplit` (clean, symmetric/repaired chimera, and the
+`-A`/`-F` cases). The split BAMs carry a verbatim copy of the input header (no
+`@PG`).
+
+`-F` **does** change the `-b` output: with chimera repair off, the `phased &&
+flip` chimera bucket can never fire, so a read that the default routes to
+`PREFIX.chimera.bam` instead lands in a haplotype bucket.
+
 ## Deviations from upstream samtools
 
 The following are intentionally out of scope or deferred and will land in

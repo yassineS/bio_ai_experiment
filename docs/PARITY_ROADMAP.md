@@ -214,7 +214,9 @@ Recently closed (this wave, treat as merged):
 - **samtools**: `coverage -A` ASCII histogram; `markdup -d` (optical-dup),
   `-s`/`-S` (stats / supplementary marking); `calmd -C` (cap MAPQ, gated on
   `>10`), `-e` (`=` for match), `-u` (uncompressed BAM); `consensus`
-  per-position indel calling + `--het-only`; `phase` `-l/-e` site lists;
+  per-position indel calling + `--het-only`; `phase` `-l/-e` site lists +
+  `-b` per-haplotype BAM split with `-A`/`-F` (byte-exact `dump_aln`
+  routing via an in-tree glibc-`drand48` port; live-oracle validated);
   mpileup `-g/-u` BCF/genotype-likelihood emit (delegates to the bcftools
   engine); CRAM r/w + X_EXT bzip2 encode; `-@` view/sort/markdup threading.
 - **mosdepth**: `-d/--d4`, `-a/--fragment-mode`, `-q/--quantize`,
