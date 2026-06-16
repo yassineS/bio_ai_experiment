@@ -6,12 +6,20 @@
 // line reports the pair/site/comparison counts. The VCF/BCF output is
 // suppressed (upstream init() returns 1 in this mode).
 //
-// The --clean-vcf allele-subsetting mode and the -f convert-format mode require
-// htslib machinery the native pipeline does not provide and are reported as
-// unsupported.
+// Two further modes are supported:
+//
+//   - --clean-vcf (-c): instead of the textual report, emit the VCF subset to
+//     only those ALT alleles whose Fisher p-value passes the -t threshold,
+//     dropping sites where no comparison passes. Allele subsetting reuses a
+//     faithful port of htslib's bcf_remove_allele_set (Number=A/R/G INFO and
+//     FORMAT fields remapped, GT alleles reindexed).
+//   - -f, --format: append a `bcftools query`-style format string, evaluated
+//     once per record, to every printed FT report line (and "[N-]User data" to
+//     the header).
 package bcftools
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -29,21 +37,28 @@ type adBiasPair struct {
 	smplName, ctrlName string
 }
 
-// adBiasPlugin implements the `ad-bias` plugin in its default reporting mode.
+// adBiasPlugin implements the `ad-bias` plugin in its default reporting mode
+// and the --clean-vcf allele-subsetting mode.
 type adBiasPlugin struct {
 	hdr         *vcf.Header
 	pairs       []adBiasPair
 	minDP       int
 	minAltDP    int
 	th          float64
-	variantType int // 0 = any, vtSNP, or vtINDEL
+	variantType int  // 0 = any, vtSNP, or vtINDEL
+	cleanVCF    bool // -c/--clean-vcf: emit the allele-subset VCF, not the report
 	nsite       uint64
 	ncmp        uint64
 	out         io.Writer
+
+	formatStr    string        // -f: raw query-format string ("" if unused)
+	formatTokens []FormatToken // parsed -f format tokens
 }
 
-// SuppressVCF reports true: ad-bias emits only its textual report.
-func (p *adBiasPlugin) SuppressVCF() bool { return true }
+// SuppressVCF reports whether the VCF/BCF output should be suppressed. ad-bias
+// suppresses it in report mode (upstream init() returns 1) but emits the
+// allele-subset VCF in --clean-vcf mode (init() returns 0).
+func (p *adBiasPlugin) SuppressVCF() bool { return !p.cleanVCF }
 
 // SetStdout wires the host stdout writer the report is printed to.
 func (p *adBiasPlugin) SetStdout(w io.Writer) { p.out = w }
@@ -75,10 +90,24 @@ func (p *adBiasPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error)
 			return args[i], nil
 		}
 		switch a {
-		case "-c", "--clean-vcf":
-			return nil, fmt.Errorf("ad-bias: the --clean-vcf allele-subsetting mode is not supported by the native plugin")
+		case "-c":
+			// Upstream's optstring spells -c without a colon, so the SHORT form
+			// takes no argument.
+			p.cleanVCF = true
+		case "--clean-vcf":
+			// getopt_long marks --clean-vcf as required_argument (a long-option
+			// quirk in ad-bias.c), so the LONG form consumes — and ignores — the
+			// next token. Reproduce that to stay byte-identical with upstream.
+			if _, err := next(); err != nil {
+				return nil, err
+			}
+			p.cleanVCF = true
 		case "-f", "--format":
-			return nil, fmt.Errorf("ad-bias: the -f convert-format mode is not supported by the native plugin")
+			v, err := next()
+			if err != nil {
+				return nil, err
+			}
+			p.formatStr = v
 		case "-a", "--min-alt-dp":
 			v, err := next()
 			if err != nil {
@@ -140,6 +169,28 @@ func (p *adBiasPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error)
 		return nil, err
 	}
 
+	// -f cannot be combined with -c (upstream init() errors), and the format
+	// string is parsed/validated against the header up front.
+	if p.formatStr != "" {
+		if p.cleanVCF {
+			return nil, fmt.Errorf("ad-bias: the option -f cannot be used together with -c")
+		}
+		toks, err := ParseFormatString(p.formatStr)
+		if err != nil {
+			return nil, fmt.Errorf("ad-bias: %w", err)
+		}
+		if err := validateFormatTokens(toks, hdr); err != nil {
+			return nil, err
+		}
+		p.formatTokens = toks
+	}
+
+	// In --clean-vcf mode upstream init() returns 0 (no report header is
+	// printed); the VCF subset flows through the framework's writer instead.
+	if p.cleanVCF {
+		return hdr, nil
+	}
+
 	if p.out != nil {
 		fp := p.out
 		// Provenance lines (stripped by the oracle) keep the surrounding
@@ -160,6 +211,12 @@ func (p *adBiasPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error)
 		col("ctrl.nREF")
 		col("ctrl.nALT")
 		col("P-value")
+		if p.formatStr != "" {
+			// Upstream prints "[N-]User data: <format>" as the trailing header
+			// column when -f is given.
+			i++
+			fmt.Fprintf(fp, "\t[%d-]User data: %s", i, p.formatStr)
+		}
 		fmt.Fprintln(fp)
 	}
 	return hdr, nil
@@ -201,7 +258,9 @@ func (p *adBiasPlugin) parsePairs(hdr *vcf.Header, fname string) error {
 
 // Process runs the per-pair Fisher test for one record, mirroring
 // ad-bias.c process(). Records without two alleles or without FORMAT/AD are
-// skipped.
+// skipped. In --clean-vcf mode it returns the allele-subset record (or nil to
+// drop a site where no comparison passes); otherwise it prints FT report lines
+// and returns nil.
 func (p *adBiasPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 	nAllele := len(v.Alt) + 1
 	if nAllele < 2 {
@@ -212,6 +271,29 @@ func (p *adBiasPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 	}
 	ad := parseADAll(v, nAllele)
 	p.nsite++
+
+	// Optional -f convert: evaluate the query format once per record (report
+	// mode only; -f and -c are mutually exclusive).
+	var userData string
+	if p.formatStr != "" {
+		var buf bytes.Buffer
+		if err := emitRecord(&buf, p.formatTokens, v, nil, p.hdr.Samples); err != nil {
+			return nil, fmt.Errorf("ad-bias: %w", err)
+		}
+		userData = buf.String()
+	}
+
+	// --clean-vcf bookkeeping: start by marking every ALT allele for removal;
+	// a passing comparison keeps its ALT (kbs_delete). keepAls records whether
+	// any comparison passed (so the site survives at all).
+	var rmAlt []bool
+	keepAls := false
+	if p.cleanVCF {
+		rmAlt = make([]bool, nAllele)
+		for i := 1; i < nAllele; i++ {
+			rmAlt[i] = true
+		}
+	}
 
 	for i := range p.pairs {
 		pair := &p.pairs[i]
@@ -258,19 +340,46 @@ func (p *adBiasPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 		if fisher >= p.th {
 			continue
 		}
+
+		if p.cleanVCF {
+			// This comparison passes the threshold: keep the ALT allele.
+			keepAls = true
+			if ialt >= 0 && ialt < len(rmAlt) {
+				rmAlt[ialt] = false
+			}
+			continue
+		}
+
 		if p.out != nil {
-			fmt.Fprintf(p.out, "FT\t%s\t%s\t%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+			line := fmt.Sprintf("FT\t%s\t%s\t%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%s",
 				pair.smplName, pair.ctrlName, v.Chrom, v.Pos,
 				adAlleleString(v, iref), adAlleleString(v, ialt),
 				n11, n12, n21, n22, formatExp(fisher))
+			if p.formatStr != "" {
+				line += "\t" + userData
+			}
+			fmt.Fprintln(p.out, line)
 		}
+	}
+
+	if p.cleanVCF {
+		if !keepAls {
+			return nil, nil // no comparison passed: drop the site
+		}
+		// REF (allele 0) is always kept.
+		rmAlt[0] = false
+		if err := removeAlleleSet(p.hdr, v, rmAlt); err != nil {
+			return nil, fmt.Errorf("ad-bias: %w", err)
+		}
+		return []*vcf.Variant{v}, nil
 	}
 	return nil, nil
 }
 
-// Destroy prints the summary line, mirroring ad-bias.c destroy().
+// Destroy prints the summary line, mirroring ad-bias.c destroy(). In
+// --clean-vcf mode upstream prints no summary (the VCF is the only output).
 func (p *adBiasPlugin) Destroy() error {
-	if p.out == nil {
+	if p.cleanVCF || p.out == nil {
 		return nil
 	}
 	fmt.Fprint(p.out, "# SN, Summary Numbers\t[2]Number of Pairs\t[3]Number of Sites\t[4]Number of comparisons\t[5]P-value output threshold\n")

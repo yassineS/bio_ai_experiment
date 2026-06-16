@@ -179,11 +179,14 @@ func TestNativePluginBatch4Unsupported(t *testing.T) {
 		// native_plugin_prune_oracle_test.go; the only remaining hard error is a
 		// genuinely-invalid combination (--keep-sites with --nsites-per-win).
 		{"prune", []string{"-n", "1", "-k"}}, // upstream: -k cannot combine with -n
-		// remove-overlaps: text-output/--missing modes are unsupported.
-		// (-i/-e filter expressions and -r/-R/-t/-T region/target selection are
-		// now supported; see TestNativePluginRegionTarget.)
-		{"remove-overlaps", []string{"-m", "min(QUAL)", "--missing", "DP"}},
-		{"remove-overlaps", []string{"-O", "t"}},
+		// remove-overlaps: the --missing DP heuristic and the -Ot/-Otz text-list
+		// output are now supported (parity-checked in
+		// TestNativePluginRemoveOverlapsMissing); -i/-e filters and -r/-R/-t/-T
+		// region/target selection are covered elsewhere. The only remaining hard
+		// errors are a bad --mark expression and the --missing DP + non-min(QUAL)
+		// combination upstream rejects.
+		{"remove-overlaps", []string{"-m", "frobnicate"}},
+		{"remove-overlaps", []string{"-m", "dup", "--missing", "DP"}},
 	}
 	fixtureFor := func(name string) string {
 		switch name {

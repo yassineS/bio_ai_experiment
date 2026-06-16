@@ -3579,6 +3579,54 @@ but with a deliberate design divergence from upstream:
   evaluator; an expression using an unsupported function returns a clear
   evaluation error rather than the former blanket "not supported".
 
+- **Native plugin format / output-mode tails** — **done**. The last
+  per-plugin format and output-container modes are closed, byte-validated vs the
+  upstream binary 1.23.1 in `native_plugin_format_tails_oracle_test.go` with
+  binary-free `TestUnit*` coverage of the pure helpers
+  (`native_plugin_format_tails_unit_test.go`):
+  - **`+ad-bias --clean-vcf`/`-c`** emits the VCF subset to only the ALT alleles
+    whose Fisher p-value passes `-t` (and drops sites where no comparison
+    passes). The allele subsetting is an in-tree text-model port of htslib's
+    `bcf_remove_allele_set` (`remove_allele_set.go`): the ALT list, the
+    `Number=A`/`R`/`G` INFO and FORMAT fields, and `FORMAT/GT` allele indices are
+    all remapped/reindexed (removed alleles → missing, phasing preserved).
+    **`+ad-bias -f`/`--format`** appends a `bcftools query`-style column
+    (evaluated once per record via the shared `ParseFormatString`/`emitRecord`
+    engine) to every `FT` report line, with the `[N-]User data:` header column;
+    `-f`+`-c` errors as upstream. The `-c` short form takes no argument while the
+    `--clean-vcf` long form consumes and ignores one (an upstream `getopt_long`
+    quirk reproduced exactly).
+  - **`+remove-overlaps -m 'min(QUAL)' --missing`** now supports both the scalar
+    `0` default and the **`DP`** coverage heuristic (a missing-QUAL record is
+    valued at `maxQUAL*INFO/DP/maxQUAL_DP` over its overlap window, in `float32`
+    to match htslib), and **`-Ot`/`-Otz`** emit a plain / bgzip-framed
+    `chr<TAB>pos` list instead of the VCF. The min(QUAL) resolution is a faithful
+    port of the vcfbuf MARK_EXPR push/flush state machine (`minQualBuf`). One
+    upstream ring-index off-by-one (a stale overlap mark leaking across windows
+    at a deletion-window boundary) is corrected on port — see
+    `docs/UPSTREAM_BUGS.md#bcftools-remove-overlaps-minqual-stale-mark`; the
+    oracle fixture deliberately avoids that corner so the upstream comparison is
+    self-consistent.
+  - **`+tag2tag --LXX-to-XX`** (and the partial `--LPL-to-PL`, `--LAD-to-AD`)
+    expand the localized FORMAT tags back to the standard `Number=G` `PL` and
+    `Number=R` `AD`, porting `process_LXX`: per sample, `FORMAT/LAA` maps the
+    localized indices to global allele indices, `dst[0]=src[0]` with the rest
+    defaulting to `-d`/`--defaults` (`AD:.`/`PL:.` by default), and the LPL→PL
+    expansion uses the `tmp_laa[j]*(tmp_laa[j]+1)/2 + tmp_laa[k]` genotype-index
+    layout. `-r`/`--replace` drops the consumed source tags (LAA only when it is
+    the last remaining one) and `-s`/`--skip-nalt` skips sites above the
+    threshold (suppressing header removal). The reverse `--XX-to-LXX` direction
+    is a `todo` upstream too and is rejected with the same restriction.
+  - **`+guess-ploidy -g`/`--genome`** expands the `b37`/`b38`/`hg19`/`hg38`
+    non-PAR-chrX presets (`X:2699521-154931043`, `X:2781480-155701381`, and the
+    `chr`-prefixed variants) into the equivalent `-r CHR:BEG-END` before the
+    shared host region filter runs (a new `argvRewriter` hook in
+    `native_plugin.go`), matching upstream's `case 'g'` region shortcut.
+  - **`+af-dist -p`/`-d`** bin lists may be read from a file (one boundary per
+    line, gzip-transparent) in addition to the inline comma-separated form,
+    matching `bin_init`/`hts_readlist`'s "a comma indicates a list, otherwise a
+    file" decision.
+
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
 roadmap text in this section was written when bcftools internals were

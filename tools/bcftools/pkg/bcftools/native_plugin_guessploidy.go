@@ -5,13 +5,17 @@
 // across the streamed sites — intended for the non-PAR region of chrX. The
 // VCF/BCF output is suppressed; a per-sample table is printed.
 //
-// The region/genome shortcuts (-g/-r/-R) require indexed region jumping and are
-// reported as unsupported. The filter expressions (--include/--exclude; note
-// guess-ploidy maps -i to --include-indels and -e to --error-rate, so the
-// filter is long-form only) are supported as a site/per-sample pre-filter via
-// the shared filter engine, matching guess-ploidy.c's filter_init/filter_test
-// usage. The default whole-file scan, the common case when piping
-// `bcftools view -r chrX:... | bcftools +guess-ploidy`, is implemented.
+// The -r/-R region selection is handled by the shared host region filter, and
+// the -g/--genome shortcut expands to the equivalent -r CHR:BEG-END region for
+// the four built-in genome presets (b37, b38, hg19, hg38) via RewriteArgs,
+// mirroring guess-ploidy.c's `case 'g'` which simply sets `region` to the
+// hardcoded non-PAR span of chrX for that genome. The filter expressions
+// (--include/--exclude; note guess-ploidy maps -i to --include-indels and -e to
+// --error-rate, so the filter is long-form only) are supported as a
+// site/per-sample pre-filter via the shared filter engine, matching
+// guess-ploidy.c's filter_init/filter_test usage. The default whole-file scan,
+// the common case when piping `bcftools view -r chrX:... | bcftools
+// +guess-ploidy`, is implemented.
 package bcftools
 
 import (
@@ -92,6 +96,58 @@ func (p *guessPloidyPlugin) FlagTakesValue(flag string) bool {
 	return false
 }
 
+// guessPloidyGenomePresets maps the -g/--genome shortcut values to the
+// hardcoded non-PAR chrX region upstream selects (guess-ploidy.c `case 'g'`).
+// The coordinates are the GRCh37/GRCh38 chrX non-PAR boundaries; hg19/hg38 use
+// the same coordinates with the "chr" contig prefix.
+var guessPloidyGenomePresets = map[string]string{
+	"b37":  "X:2699521-154931043",
+	"b38":  "X:2781480-155701381",
+	"hg19": "chrX:2699521-154931043",
+	"hg38": "chrX:2781480-155701381",
+}
+
+// guessPloidyGenomeRegion returns the non-PAR chrX region for a -g/--genome
+// preset value (case-insensitive, matching upstream's strcasecmp), or ok=false
+// when the value is not one of b37/b38/hg19/hg38.
+func guessPloidyGenomeRegion(value string) (region string, ok bool) {
+	region, ok = guessPloidyGenomePresets[strings.ToLower(value)]
+	return region, ok
+}
+
+// RewriteArgs expands -g/--genome PRESET into -r REGION before the host's
+// region/target extraction runs, so the shared region filter restricts the
+// stream to the genome's non-PAR chrX span exactly as upstream's `-g` shortcut
+// does. An unrecognised preset is rejected with upstream's message.
+func (p *guessPloidyPlugin) RewriteArgs(args []string) ([]string, error) {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		var value string
+		switch {
+		case a == "-g" || a == "--genome":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("guess-ploidy: %s requires an argument", a)
+			}
+			i++
+			value = args[i]
+		case strings.HasPrefix(a, "-g") && len(a) > 2:
+			value = a[2:]
+		case strings.HasPrefix(a, "--genome="):
+			value = a[len("--genome="):]
+		default:
+			out = append(out, a)
+			continue
+		}
+		region, ok := guessPloidyGenomeRegion(value)
+		if !ok {
+			return nil, fmt.Errorf("guess-ploidy: the argument not recognised, expected --genome b37, b38, hg19 or hg38: %s", value)
+		}
+		out = append(out, "-r", region)
+	}
+	return out, nil
+}
+
 // RegionTargetCaps opts guess-ploidy into -r/-R region selection only. Its -t is
 // --tag (the INFO field to read genotype likelihoods from), NOT targets, so the
 // shared filter must leave -t/-T to guess-ploidy's own parser.
@@ -168,7 +224,14 @@ func (p *guessPloidyPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, e
 		case "-i", "--include-indels":
 			p.indels = true
 		case "-g", "--genome":
-			return nil, fmt.Errorf("guess-ploidy: -g/--genome (per-genome ploidy presets) is not supported by the native plugin (%s)", a)
+			// -g/--genome is rewritten to -r REGION by RewriteArgs before the
+			// host's region extraction runs, so by the time Init sees the argv
+			// the token is gone. Reaching it here means the rewrite consumed the
+			// value but left the flag (it cannot happen); reject defensively.
+			if _, err := next(); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("guess-ploidy: internal: -g/--genome was not rewritten to -r")
 		case "-t", "--tag":
 			v, err := next()
 			if err != nil {

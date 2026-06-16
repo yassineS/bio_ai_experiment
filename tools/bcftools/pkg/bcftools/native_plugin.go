@@ -225,6 +225,20 @@ type cmdLineSink interface {
 	SetArgv(argv []string)
 }
 
+// argvRewriter is implemented by native plugins that expand a convenience flag
+// into the canonical options the shared host machinery understands before any
+// other parsing happens. guess-ploidy's -g/--genome is the sole user: upstream
+// rewrites `-g b37` to `-r X:2699521-154931043` (a region shortcut) inside its
+// own getopt loop, so the rewrite must run before the host's region/target
+// extraction sees the argv. RewriteArgs returns the rewritten argv (or an error
+// for an unrecognised value); a plugin that does not implement it is left
+// untouched.
+type argvRewriter interface {
+	// RewriteArgs expands convenience flags in args into their canonical form
+	// (e.g. -g b37 -> -r X:2699521-154931043). It returns the rewritten argv.
+	RewriteArgs(args []string) ([]string, error)
+}
+
 // nativeRegistry maps a plugin name to a constructor that returns a fresh
 // instance. It is populated by init() functions in each native plugin file.
 var nativeRegistry = map[string]func() NativePlugin{}
@@ -291,8 +305,22 @@ func runNativePlugin(ctor func() NativePlugin, opts PluginOptions, out io.Writer
 	}
 	// origArgs keeps the full argv (region/target options included) for the
 	// cmdLineSink, whose "CMD" report line must echo the command line verbatim
-	// — including -r/-R/-t/-T — exactly as upstream does.
+	// — including -r/-R/-t/-T and any convenience flag such as -g/--genome —
+	// exactly as upstream does (upstream's args->argv is the original).
 	origArgs := append([]string{}, opts.Args...)
+
+	// A plugin may rewrite convenience flags into canonical options before the
+	// shared region/target extraction runs (guess-ploidy's -g/--genome ->
+	// -r REGION). This mirrors upstream rewriting the shortcut inside its own
+	// getopt loop, before the region is handed to the synced reader.
+	if rw, ok := plugin.(argvRewriter); ok {
+		rewritten, rerr := rw.RewriteArgs(opts.Args)
+		if rerr != nil {
+			return &PluginExecError{Name: opts.Name, Err: rerr}
+		}
+		opts.Args = rewritten
+	}
+
 	rtArgs, rtFilter, rtErr := parseRegionTargetArgs(opts.Args, rtCaps)
 	if rtErr != nil {
 		return &PluginExecError{Name: opts.Name, Err: rtErr}
