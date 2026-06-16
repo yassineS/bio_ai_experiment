@@ -492,6 +492,57 @@ Byte-validated against the upstream binary 1.23.1 via the CLI-to-CLI oracle
 the pure helpers (formula calculators, tag-list/samples-file parsers, expression
 evaluators).
 
+### `+vrfs` — variant read frequency score (native)
+
+`vrfs` is implemented natively (pure Go). It assesses site noisiness from a
+large set of unaffected alignments: given an alignment list (`-a/--alns`, one
+BAM/CRAM path per line), a FASTA reference (`-f/--fasta-ref`) and a
+tab-delimited sites file (`-s/--sites`, `chr pos ref alt`), it piles up every
+alignment at each indexed site, counts the per-sample ref/alt supporting reads,
+bins the variant-allele fraction into a per-site histogram, and emits the
+`SITE`/`MEAN`/`VAR2` profile.
+
+```bash
+# Typical run (streaming the BAMs)
+bcftools +vrfs -f ref.fa -a bams.txt -s sites.txt -o scores.txt
+
+# Use the BAM index to jump to the sites (faster with few sites)
+bcftools +vrfs -f ref.fa -a bams.txt -s sites.txt -i -o scores.txt
+
+# Batch a large list, then merge
+bcftools +vrfs -a bams.txt --batch k=3                       # prints the batch count
+bcftools +vrfs -f ref.fa -a bams.txt -s sites.txt --batch 1/2 -o s1.txt
+bcftools +vrfs -f ref.fa -a bams.txt -s sites.txt --batch 2/2 -o s2.txt
+bcftools +vrfs --merge-batches list.txt                       # list.txt holds s1.txt, s2.txt
+```
+
+Supported options: `-d/--min-depth`, `-n/--nbins` (with hard-coded-profile
+rescaling), `-r/--recalc hc|data|file:PATH`, `-i/--use-index`, `-b/--batch
+I/N` and `k=N`, `-m/--merge-batches`/`-M/--merge-files`, and
+`-o`/`-O t|z[0-9]` output.
+
+**Parity boundary (byte-for-byte).** vrfs runs the htslib mpileup2 engine in
+`LEGACY_MODE`, whose realignment step is **stubbed out** upstream
+(`mpileup2/mpileup.c`): there is **no BAQ and no base-quality adjustment**, and
+the vrfs count loop never reads base quality. The pileup therefore reduces to
+read-level flag filtering (drop unmapped/secondary/qcfail/dup; no MAPQ floor, no
+supplementary drop, no orphan filtering) plus a direct CIGAR walk. Because no
+ambiguous indel realignment is ever performed, the output is **byte-exact** vs
+upstream 1.23.1 across SNV *and* indel sites — there is no proximity tolerance
+in play. The CIGAR walk reproduces htslib `bam_pileup1_t` `is_del`/`indel`
+column semantics (a deletion column reads the post-deletion base; the last
+aligned base before an I/D op is classified as a generic indel). The
+empty-profile `MEAN` line is emitted as `-nan` to match glibc `printf` of
+`0.0/0`. See `docs/UPSTREAM_BUGS.md#bcftools-vrfs-legacy-mode-no-realign` for
+the boundary detail.
+
+Byte-validated against the upstream binary 1.23.1 via the CLI-to-CLI oracle
+(`native_plugin_vrfs_oracle_test.go`: 10 profiling cases + 2 merge cases over
+upstream-samtools-built BAM fixtures), with binary-free `TestUnitVrfs*` unit
+tests covering the VAF binning, the sites/aln-list parsers, the per-(sample,
+site) accumulator, the profile mean/var aggregation, the variance rescaling, the
+C-style float formatting and the CIGAR→column walk.
+
 ## Quick start
 
 ```bash
