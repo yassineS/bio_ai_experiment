@@ -796,7 +796,6 @@ later PR (recorded against
 | fastq      | Index extraction (`--index-format`) | PARITY_ROADMAP.md#samtools |
 | markdup    | Barcode regex / barcode-tag keying | PARITY_ROADMAP.md#samtools |
 | markdup    | `dt:Z:` "duplicate-type" aux tag (SQ/LB/OQ) — fixture 18 diffs only here | PARITY_ROADMAP.md#samtools |
-| stats      | Command-line positional region args (RFS test 18 only) | PARITY_ROADMAP.md#samtools |
 
 ### samtools: bugs found in upstream
 

@@ -45,7 +45,7 @@ samtools depth    [options] <in1.bam> [<in2.bam> ...]
 samtools fastq    [options] <in.bam|in.sam>
 samtools bam2fq   [options] <in.bam|in.sam>   # alias for fastq
 samtools markdup  [options] <in.bam> <out.bam>
-samtools stats    [options] <in.bam|in.sam>
+samtools stats    [options] <in.bam|in.sam> [region ...]
 samtools tview    [options] <in.bam|in.cram> [ref.fasta]
 samtools help
 samtools version
@@ -317,6 +317,15 @@ the BC/CR/OX/RX aux tags are present), **RL/FRL/LRL**, **MAPQ**, **IS**,
 **IC/ID**, **COV**, **GCD** and **RFS** (with `--ref-stats`). Every
 output section is implemented; `samtools stats` is at full 1:1 section
 parity. `-x/--sparse` thins all-zero IS rows only.
+
+**Positional region arguments** (`samtools stats in.bam chr1:100-200 chr2 ...`)
+restrict the statistics to reads overlapping the listed regions, exactly like
+`-t/--target-regions` (same overlap filter, same "bases inside the target" /
+"percentage of target genome" SN lines). They require an indexed input
+(`.bai`/`.csi`) — without one the tool errors "Random alignment retrieval only
+works for indexed files", matching upstream. `-t` and positional regions are
+mutually exclusive; `-t` wins when both are given. The full report is
+byte-identical to upstream across every section.
 
 ### `samtools tview`
 
