@@ -6,15 +6,25 @@ A fast and simple tool to merge overlapping or adjacent BED intervals, implement
 
 - **Fast performance**: Efficient sorting and merging algorithm
 - **Memory efficient**: Processes entire file in memory (suitable for typical BED files)
-- **Streaming mode**: Option for very large files that processes by chromosome
 - **Flexible merging**: Support for distance-based and strand-specific merging
-- **GFF/VCF input**: Auto-detects and merges GFF features (1-based) and VCF
-  records ([POS-1, POS-1+len(REF))) as well as BED
-- **Configurable output**: Control output format and fields
+- **BED/GFF/VCF/BAM input**: Auto-detects the input format and merges
+  - BED intervals (0-based half-open)
+  - GFF features (1-based inclusive -> 0-based half-open)
+  - VCF records, including symbolic structural variants: the interval length
+    comes from the INFO `SVLEN` (abs of the largest-magnitude value) or `END`
+    tag for `<DEL>`/`<DUP>` etc., zero for `<INS...>`, and `len(REF)` otherwise
+  - BAM alignments, whose SAM fields (1=QNAME, 3=RNAME, 4=POS, 5=MAPQ,
+    6=CIGAR, 7=RNEXT, 8=PNEXT, 9=TLEN, 10=SEQ, 11=QUAL) are addressable by
+    `-c` exactly as upstream `bedtools merge` exposes them
+- **Column operations**: the full `bedtools merge -c/-o` KeyListOps vocabulary
+- **Precision control**: `-prec` sets the significant digits of float output
+  (default 10, matching upstream's KeyListOps default)
+- **Header echo**: `-header` prints the input file's header before the results
 - **Count tracking**: Output number of intervals merged into each region
 - **bedGraph support**: Native support for bedGraph format (4-column: chrom, start, end, score)
-- **Standard BED format**: Compatible with standard BED files
-- **Built-in gzip support**: Automatic handling of .gz files
+- **Scientific-notation coordinates**: e.g. `8e02` is parsed as 800, matching
+  upstream `str2chrPos`
+- **Built-in gzip / chained-gzip support**: Automatic handling of `.gz` files
 - **Statistics**: Optional merge statistics output
 
 ## Installation
@@ -46,11 +56,11 @@ bedmerge input.bed > merged.bed
 - `-s, --strand` - Merge only intervals on the same strand
 - `-S <+|->` - Merge only intervals on the given strand (mutually exclusive
   with `-s`)
-- `-i, --input FILE` - Input BED file (default: stdin)
+- `-i, --input FILE` - Input file (BED/GFF/VCF/BAM; default: stdin)
 - `--output FILE` - Output BED file (default: stdout)
 - `--stats` - Print merge statistics to stderr
 - `--count` - Output count of merged intervals as name field
-- `-g, --bedgraph` - Input/output in bedGraph format (chrom, start, end, score)
+- `-g, --bedgraph` - Treat input column 4 as a bedGraph score (chrom, start, end, score)
 - `-c, --columns LIST` - Comma-separated 1-based input columns to aggregate over each
   merged group (`bedtools merge -c` style); requires `-o`
 - `-o, --operations LIST` - Comma-separated operations, one per `-c` column or a single
@@ -58,8 +68,16 @@ bedmerge input.bed > merged.bed
 - `--delim CHAR` - Delimiter joining the values of the list operations
   (collapse/distinct/distinct_only/distinct_sort_num/freqasc/freqdesc);
   default `,`. The concat/cat family always joins with no delimiter.
-- `--streaming` - Use streaming mode for very large files
+- `--prec INT` - Decimal precision (significant digits) for float column-op output
+  (default 10, matching upstream's KeyListOps default)
+- `--header` - Print the input file's header (comment/track/browser lines) before
+  the merged output
+- `--bed` - Accepted for compatibility; output is always BED
+- `--nobuf` - Accepted for compatibility (disable output buffering)
+- `--iobuf SIZE` - Input buffer size with optional K/M/G suffix (validated like
+  upstream; currently advisory)
 - `-h, --help` - Show help message
+- `-v, --version` - Show version and exit
 
 ### Examples
 
@@ -192,13 +210,14 @@ bedmerge -g input.bedgraph > merged.bedgraph
 
 bedGraph format is a 4-column format: chrom, start, end, score. The first score is preserved when merging.
 
-#### Use streaming mode for very large files
+#### Unsorted input
 
-```bash
-bedmerge --streaming huge.bed > merged.bed
-```
-
-Streaming mode processes intervals by chromosome, reducing memory usage for very large files.
+Unlike upstream `bedtools merge`, which requires its `-i` input to be
+pre-sorted and aborts on an out-of-order record, bedmerge sorts the input
+internally before merging. The merged output for any input is therefore
+identical to running upstream on the same data after `sort -k1,1 -k2,2n`. This
+is a deliberate fix-on-port convenience; the `--streaming` flag is accepted for
+backward compatibility but produces the same result.
 
 ## Input Format
 
@@ -307,33 +326,23 @@ bedmerge input.bed | bedtools intersect -a - -b targets.bed
 
 ### Differences
 
+bedmerge is a drop-in, byte-for-byte-compatible re-implementation of `bedtools
+merge` (validated against bedtools v2.31.1 across its entire `test/merge` suite
+and `-c`/`-o`/`-d`/`-s`/`-S`/`-delim`/`-prec`/`-header`/`-iobuf` flag surface).
+The only intentional behavioural differences are:
+
 | Feature | bedmerge | bedtools merge |
 |---------|----------|----------------|
 | Language | Go | C++ |
 | Installation | Single binary | External dependency |
-| Memory usage | Lower | Higher |
-| Streaming mode | Yes | No |
-| Speed | Comparable | Comparable |
-| Built-in gzip | Yes | No |
-| Output fields | Configurable | Configurable |
-| Count merged | Yes | Yes |
-| bedGraph support | Yes | Limited |
-| Column aggregation (`-c`/`-o`) | Yes | Yes |
-| Advanced options | Basic | Extensive |
+| Unsorted `-i` input | Sorted internally, then merged | Requires pre-sorted input; errors otherwise |
+| `distinct_only` column op | Correct (no leading delimiter) | Emits a spurious leading delimiter (upstream bug) |
+| Built-in gzip / chained gzip | Yes | Yes |
+| `-c`/`-o` KeyListOps vocabulary | Full | Full |
+| BED/GFF/VCF/BAM input | Yes | Yes |
 
-**Use bedmerge when:**
-
-- You need a simple, standalone tool
-- You want built-in gzip support
-- You prefer Go tools
-- You need streaming mode for very large files
-- You're working with bedGraph format
-
-**Use bedtools merge when:**
-
-- You need options beyond what bedmerge implements
-- You're already using bedtools suite
-- You need complex custom operations
+The `distinct_only` divergence is a fix-on-port for a genuine upstream output
+bug (documented in `docs/UPSTREAM_BUGS.md`).
 
 ## Testing
 
@@ -352,25 +361,24 @@ go test -cover ./pkg/bedmerge
 
 ## Implementation Details
 
-- Written in pure Go using standard library
-- Uses existing `pkg/htsgo/bed` parser
-- In-memory sorting and merging
-- Efficient interval merging with single pass
+- Written in pure Go using the standard library and the shared `pkg/htsgo/*`
+  format libraries (`sam` for BAM, `iohelper` for transparent gzip / stdin)
+- In-memory sorting and merging in a single pass per (chrom, start, end) order
+- Strand-aware merge (`-s`) buckets `+`/`-` independently and re-merges the two
+  streams in coordinate order, matching upstream `FileRecordMergeMgr`
 
 ## Limitations
 
-- Streaming mode requires input roughly sorted by chromosome for optimal performance
 - For bedGraph format, only the first score is preserved when merging
-- Column aggregation always uses `,` as the delimiter (no `-delim` option)
-- `-c`/`-o` aggregation is not currently available in `--streaming` mode
+- `-iobuf`/`-nobuf` are accepted and validated for compatibility but do not
+  change output (they are advisory)
 
-## New Features (Added)
+## New Features (Added for parity)
 
-- Streaming mode for very large files
-- Configurable output fields
-- Count merged intervals per region
-- Support for bedGraph format
-- Column aggregation with `-c`/`-o` (bedtools merge style)
+- BED/GFF/VCF/BAM auto-detected input (VCF structural-variant lengths included)
+- Full `-c`/`-o` KeyListOps column-operation vocabulary with `-delim` and `-prec`
+- `-header`, `-S`, scientific-notation coordinates, chained-gzip input
+- Count merged intervals per region; bedGraph output
 
 ## Contributing
 
