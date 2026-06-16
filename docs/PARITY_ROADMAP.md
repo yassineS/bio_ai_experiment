@@ -2196,14 +2196,25 @@ Plus:
   differ from upstream's (block boundaries depend on buffering timing);
   the contract is decode-equality, exactly as for the `bgzip` MultiWriter.
 
+  **Parallel *input* BGZF decode** now lands too: `bgzf.MultiReader`
+  inflates BGZF blocks across `-@` worker goroutines and reorders them so
+  the decoded byte stream is byte-identical for any thread count. It is
+  wired into `view`, `flagstat`, `idxstats` (no-index scan), `stats`, and
+  `depth` (and mosdepth `-t`), via `alnio.NewReaderThreaded` /
+  `OpenReaderThreaded`. Isolated decode throughput roughly doubles at
+  `-@ 2` and ~2.3x at `-@ 4` on a 4-core box (see
+  `BenchmarkMultiReader`); record-bound subcommands gain less when parsing,
+  not inflate, dominates.
+
   **Remaining single-threaded under `-@`** (the flag is accepted but
-  currently a no-op for these): `markdup` pass-1 scan, `view`/`sort`
-  *input* BGZF decode (a parallel BGZF *reader* is future work), CRAM
-  encode/decode, and the non-BAM-writing subcommands (`flagstat`,
-  `idxstats`, `depth`, `stats`, `mpileup`, `fastq`, `index`, `merge`,
-  `cat`, `fixmate`, `reheader`, `addreplacerg`, `split`, `calmd`,
-  `consensus`, `coverage`, `phase`, `targetcut`). The dominant
-  IO-bound win — parallel BGZF compression of BAM output — is covered.
+  currently a no-op for these): `markdup` pass-1 scan, CRAM *input* slice
+  decode (CRAM uses its own container framing, not BGZF blocks — a parallel
+  CRAM slice reader is future work) and CRAM encode, and the other
+  non-BAM-writing subcommands not listed above (`mpileup`, `fastq`,
+  `index`, `merge`, `cat`, `fixmate`, `reheader`, `addreplacerg`, `split`,
+  `calmd`, `consensus`, `coverage`, `phase`, `targetcut`). The dominant
+  IO-bound wins — parallel BGZF compression of BAM output and parallel BGZF
+  decompression of BAM input — are covered.
 
 **Genuine remaining samtools gaps** (everything else is done):
 

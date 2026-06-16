@@ -80,7 +80,7 @@ evidence-based estimate of remaining surface — not a rosy reading.
 | **bedtools** | 37 bed* tools; no missing subcommands; 141+ parity tests; BAM **and CRAM** input (`bedintersect`/`bedmulticov`), VCF/GFF input (`bedintersect`/`bedmultiinter`), `bedclosest` direction flags, `intersect -c` | scattered option-tail polish | **~96%** | small (long tail) |
 | **vcftools** | single cmd; **146/146 upstream long flags (100%)**, incl. BCF I/O, PCA, LD, RoH, relatedness, `--freq2`/`--counts2` (schema complete) | per-output column-set polish only; `--max-indv` ports upstream's glibc `rand()` + `std::random_shuffle` and is byte-exact for `--max-indv-seed` (upstream itself is time-seeded/non-reproducible) | **~98%** | small |
 | **bcftools** | 24 subcommands (all present); mpileup MAQ SNP model (slices 1–4) + legacy `bam2bcf_indel` + `--indels-cns` (edlib realigner) + BAQ + bias tags; full multi-allelic `call` (`-m`/`-c`/`--gvcf`/`-C alleles`/`-G`/`--ploidy GRCh37/38`/`--ploidy-file`); `convert` GEN/HAP/TSV/gVCF modes + PLINK exporters (`--plink`/`--tped`/`--plink-bed`, PLINK1 spec); `gtcheck`/`mendelian2`/`consensus` (chain+iupac)/`annotate`; `filter -M`/`cnv --AF-file`/`roh -Oz`/`query %INFO/%SAMPLE`; csq slices 1–4 (FORMAT/TBCSQ, --unify-chr-names, -O b\|u\|z, --dump-gff); full HMM `roh`/`cnv`/`polysomy`; subprocess plugin system; `csq -l/--local-csq` (test_cds_local); `gtcheck` `-i`/`-e` filter expressions (qry:/gt: scope); FORMAT/GT/sample-level filter engine (`view`/`filter` `-i`/`-e`, e.g. `GT="het"`, `FMT/DP>10`, with per-sample masks); `concat --ligate`; remote URL inputs (`view -r`/`query -r` via hfile); `som` train/classify (upstream write bug fixed); `gtcheck -c/--cluster` clustering (own design — upstream is an error stub); **complete native plugin catalogue — all 41 upstream `+<name>` plugins reimplemented in pure Go (CLI-to-CLI byte-parity vs 1.23.1), exec subprocess fallback retained**, including the native-plugin `-i`/`-e` site/sample pre-filter modes (guess-ploidy, smpl-stats, indel-stats, contrast, trio-stats; split per-output; scatter accepts-and-ignores, matching upstream's no-op) | `query %N_ALT`; a documented set of plugin option-modes needing libm/synced-reader (color-chrs, parental-origin, trio-dnm3, etc. — clean "unsupported" errors); split-vep `-i`/`-e` (filters over split-vep's derived per-transcript CSQ columns, not plain VCF fields) | **~99%** | small |
-| **samtools** | 25 functional subcommands; CRAM r/w (v2/v3/**v4.0**) + bzip2 encode; `.csi`; consensus `--het-only` + indel calling + **`-a` placeholder rows** (ref-skip/del/zero-cov, live parity); `coverage -A`; `markdup -d/-s/-S`; `calmd -C/-e/-u`; `phase`; mpileup MAQ **BCF/VCF emit (slices 1–4) + legacy indel + --indels-cns**; **`tview` text/HTML/interactive `-d C`** (byte-for-byte text/HTML, pure-Go termios for `-d C`); remote URL inputs; `-@` threading for view/sort/markdup | `-@` parallel *input* BGZF/CRAM decode for non-BAM-writing subcommands (perf only) | **~99%** | small (perf) |
+| **samtools** | 25 functional subcommands; CRAM r/w (v2/v3/**v4.0**) + bzip2 encode; `.csi`; consensus `--het-only` + indel calling + **`-a` placeholder rows** (ref-skip/del/zero-cov, live parity); `coverage -A`; `markdup -d/-s/-S`; `calmd -C/-e/-u`; `phase`; mpileup MAQ **BCF/VCF emit (slices 1–4) + legacy indel + --indels-cns**; **`tview` text/HTML/interactive `-d C`** (byte-for-byte text/HTML, pure-Go termios for `-d C`); remote URL inputs; `-@` threading for view/sort/markdup; **`-@` parallel *input* BGZF decode for view/flagstat/idxstats/stats/depth** | `-@` parallel *input* **CRAM** slice decode (perf only; BGZF input decode now threaded) | **~99%** | small (perf) |
 | **mosdepth** | single cmd; ALL flags wired incl. `-d/--d4`, `--fragment-mode`, `--quantize`, `-t/--threads`, `--use-median`, `--mapq` fast-path, **CRAM input** (`-f/--fasta`, via alnio); emits `.csi` | none | **~99%** | done |
 | **bgzip** | 1/1 cmd, all flags incl. parallel block compression (`-@`/`-t`) + `--test` integrity check | none | **~99%** | done |
 | **tabix** | 1/1 cmd, all flags incl. `--reheader`, strict `--targets` post-filter, remote URL region queries | none | **~99%** | done |
@@ -132,10 +132,13 @@ documented **non-goal** (see "Non-goals" below).
 
 Cross-cutting: **multi-threading (`-@`/`-t`)** has landed for the dominant
 BAM-output path — `samtools view`/`sort`/`markdup` and mosdepth `-t` drive a
-parallel BGZF compressor / decompressor (decode-equal across thread counts)
-— and remains a deferred no-op for parallel *input* BGZF/CRAM decode in
-several non-BAM-writing subcommands and bgzip. It's a single deferred
-parallel-read pass, not per-tool feature gaps.
+parallel BGZF compressor — and for the **input** path: `samtools`
+`view`/`flagstat`/`idxstats`/`stats`/`depth` and mosdepth now route BGZF-wrapped
+BAM input through `bgzf.MultiReader`, inflating blocks across `-@` worker
+goroutines with output that is byte-identical across thread counts. The only
+remaining deferral is parallel *input* **CRAM** slice decode (CRAM carries its
+own container framing, not BGZF blocks) and bgzip's read path — perf-only, not
+per-tool feature gaps.
 
 ## Non-goals (not gaps)
 

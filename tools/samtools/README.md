@@ -404,10 +404,16 @@ follow-up PRs.
   byte-for-byte against live `samtools`; the only residuals are the network
   REF_PATH/EBI fetch and CRAM v4.0 (spec not final).
 - **Multi-threading.** `-@/--threads` drives a genuine parallel BGZF
-  compressor for the BAM-writing subcommands (`view`, `sort`, `markdup`);
-  decoded output is byte-identical across thread counts. It is still a
-  no-op for parallel *input* BGZF/CRAM decode and the non-BAM-writing
-  subcommands (one shared deferred parallel-read pass, not per-tool gaps).
+  compressor for the BAM-writing subcommands (`view`, `sort`, `markdup`)
+  **and a parallel BGZF decompressor on the input path** for `view`,
+  `flagstat`, `idxstats` (no-index scan), `stats`, and `depth`: a
+  BGZF-wrapped BAM input is inflated block-by-block across `-@` worker
+  goroutines via `bgzf.MultiReader`, which reorders the decoded blocks so the
+  byte stream — and every record and output line — is byte-identical for any
+  thread count; only decode throughput changes. The remaining deferral is
+  parallel *input* **CRAM** slice decode (CRAM uses its own container framing,
+  not BGZF blocks, so it is decoded single-threaded) — perf-only, not a
+  feature gap.
 - **`--no-PG`** is accepted but has no observable effect — none of our
   subcommands inject a `@PG` line into the header.
 - `samtools sort` produces deterministic output (stable sort + QName

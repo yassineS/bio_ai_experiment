@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
@@ -508,9 +509,12 @@ func Stats(in io.Reader, out io.Writer, opts StatsOptions) error {
 	if opts.MaxInsertSize <= 0 {
 		opts.MaxInsertSize = 8000
 	}
-	br, err := sam.NewReader(in)
+	br, err := alnio.NewReaderThreaded(in, "", opts.Threads)
 	if err != nil {
 		return err
+	}
+	if rc, ok := br.(io.Closer); ok {
+		defer rc.Close()
 	}
 	hdr := br.Header()
 	c := newStatsCounters()
