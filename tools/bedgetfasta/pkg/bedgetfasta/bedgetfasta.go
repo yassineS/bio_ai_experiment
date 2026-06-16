@@ -6,21 +6,34 @@
 //
 // Supported options (mirror the upstream flags of the same name):
 //
-//   - Name   — use the BED name column as the FASTA header. Default
-//     header is `chrom:start-end`; with Name the header becomes
-//     `<name>::<chrom>:<start>-<end>` (matches upstream's modern
-//     `-name` / `-name+` rendering).
+//   - Name     — use the BED name column for the FASTA header. The header
+//     becomes `<name>::<chrom>:<start>-<end>`. Matching upstream, a BED row
+//     with no name column emits an empty name (`>::chrom:start-end`); it does
+//     NOT fall back to the coordinate-only header.
+//   - NamePlus — deprecated upstream alias of Name; identical header.
 //   - NameOnly — like Name but emits only `<name>` (no `::chrom:start-end`).
-//   - Tab    — emit a TSV ("name<TAB>seq") instead of FASTA.
+//     With an empty name column the header is empty (`>`).
+//   - Tab    — emit a TSV ("header<TAB>seq") instead of FASTA.
+//   - BedOut — re-emit the BED record (original tab-delimited columns)
+//     followed by a trailing sequence column, instead of FASTA. The
+//     sequence honours Strand, Split and RNA. Columns beyond 6 are
+//     preserved verbatim, mirroring upstream's reportBedTab.
 //   - Strand — when set and the BED record has a `-` strand, the emitted
 //     sequence is reverse-complemented (case-preserving IUPAC,
 //     same as upstream).
 //   - Split  — if the BED record is BED12 with block columns, emit the
-//     concatenation of its blocks (per-block stranded when both
-//     Strand and Split are on, mirroring upstream).
+//     concatenation of its blocks. With Strand on a `-` record, the
+//     blocks are concatenated in genomic order and the whole sequence is
+//     then reverse-complemented (matching upstream's ReportSeq).
 //   - RNA    — emit the sequence with `T → U` (uppercase) / `t → u`
 //     (lowercase). For -s on reverse strand, the complement is
 //     computed first and then T→U applied.
+//
+// Per-record diagnostics on the warn writer match upstream byte-for-byte:
+// a missing chromosome, an out-of-range feature, and a zero-length feature
+// each emit the corresponding "Skipping." line and produce no output. When a
+// sibling `.fai` exists but predates the FASTA, the htslib-style
+// "Warning: the index file is older than the FASTA file." line is emitted.
 //
 // Implementation note: the package implements its own case-preserving
 // Fetch on top of the FASTA index because the shared
@@ -43,9 +56,14 @@ import (
 
 // Options configures Run.
 type Options struct {
-	Name       bool // -name / -name+ — header is `<name>::chrom:start-end`
-	NameOnly   bool // -nameOnly      — header is just `<name>`
-	Tab        bool // -tab           — TSV output
+	Name     bool // -name          — header is `<name>::chrom:start-end`
+	NamePlus bool // -name+         — (deprecated) same header as -name
+	NameOnly bool // -nameOnly      — header is just `<name>`
+	Tab      bool // -tab           — TSV output ("header<TAB>seq")
+	BedOut   bool // -bedOut        — re-emit the BED record with a trailing
+	//                                sequence column (tab-delimited) instead
+	//                                of FASTA. Upstream also disables FASTA
+	//                                output (`useFasta=false`) for this mode.
 	Strand     bool // -s             — reverse-complement '-' strand intervals
 	Split      bool // -split         — concatenate BED12 blocks
 	RNA        bool // -rna           — emit U instead of T (case-preserved)
@@ -58,7 +76,10 @@ type Options struct {
 // at fastaPath, and writes the result to out. warn receives non-fatal
 // warnings (e.g. unknown chrom). Returns the number of records emitted.
 func Run(bedR io.Reader, fastaPath string, out io.Writer, warn io.Writer, opts Options) (int, error) {
-	ra, err := openFasta(fastaPath, opts.FullHeader)
+	if warn == nil {
+		warn = io.Discard
+	}
+	ra, err := openFasta(fastaPath, opts.FullHeader, warn)
 	if err != nil {
 		return 0, err
 	}
@@ -101,6 +122,34 @@ func Run(bedR io.Reader, fastaPath string, out io.Writer, warn io.Writer, opts O
 			strand = fields[5]
 		}
 
+		// Upstream rejects start > end with a hard error; mirror it.
+		if end < start {
+			return written, fmt.Errorf("line %d: chromEnd %d < chromStart %d", lineNo, end, start)
+		}
+
+		// Zero-length feature (start == end). Upstream artificially expands
+		// the record by one base on each side, marks it zeroLength, and
+		// then reports it with the ORIGINAL coordinates. We just skip with
+		// the same message and never emit output.
+		if start == end {
+			fmt.Fprintf(warn, "Feature (%s:%d-%d) has length = 0, Skipping.\n", chrom, start, end)
+			continue
+		}
+
+		// sequenceLength mirrors upstream's fr->sequenceLength: 0 means the
+		// contig was not found in the index, otherwise it is the contig length.
+		seqLength, ok := ra.sequenceLength(chrom)
+		if !ok {
+			fmt.Fprintf(warn, "WARNING. chromosome (%s) was not found in the FASTA file. Skipping.\n", chrom)
+			continue
+		}
+		// Upstream bounds check: both start and end must be <= seqLength.
+		if int64(start) > seqLength || int64(end) > seqLength {
+			fmt.Fprintf(warn, "Feature (%s:%d-%d) beyond the length of %s size (%d bp).  Skipping.\n",
+				chrom, start, end, chrom, seqLength)
+			continue
+		}
+
 		// Fetch the sequence(s).
 		var seq []byte
 		if opts.Split && len(fields) >= 12 {
@@ -112,47 +161,49 @@ func Run(bedR io.Reader, fastaPath string, out io.Writer, warn io.Writer, opts O
 			for _, b := range blocks {
 				s, err := ra.FetchPreserveCase(chrom, int64(b[0]), int64(b[1]))
 				if err != nil {
-					if isMissingChrom(err) {
-						warnMissingChrom(warn, chrom)
-						s = nil
-						break
-					}
 					return written, fmt.Errorf("line %d: %v", lineNo, err)
 				}
-				if opts.Strand && strand == "-" {
-					s = reverseComplement(s)
-				}
 				parts = append(parts, s)
-			}
-			if len(parts) == 0 && !isAllPresent(parts, blocks) {
-				// chrom missing; skip
-				continue
-			}
-			if opts.Strand && strand == "-" {
-				// Upstream emits blocks in reverse order on negative strand
-				// so the concatenation reads 5'->3' on the transcript.
-				for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
-					parts[i], parts[j] = parts[j], parts[i]
-				}
 			}
 			seq = bytesJoin(parts)
 		} else {
 			s, err := ra.FetchPreserveCase(chrom, int64(start), int64(end))
 			if err != nil {
-				if isMissingChrom(err) {
-					warnMissingChrom(warn, chrom)
-					continue
-				}
 				return written, fmt.Errorf("line %d: %v", lineNo, err)
-			}
-			if opts.Strand && strand == "-" {
-				s = reverseComplement(s)
 			}
 			seq = s
 		}
 
+		// Upstream ReportSeq reverse-complements the whole (already
+		// concatenated) sequence after extraction, then applies RNA via the
+		// reverseComplement helper's isRNA flag. We keep the two steps split:
+		// revcomp first (matching the block order upstream produces), then T->U.
+		if opts.Strand && strand == "-" {
+			seq = reverseComplement(seq)
+		}
 		if opts.RNA {
 			seq = dnaToRNA(seq)
+		}
+
+		if opts.BedOut {
+			// Re-emit the BED record (original tab-delimited fields) followed
+			// by a trailing sequence column. Upstream re-serializes BED3-BED6
+			// and appends any columns beyond 6 verbatim; joining the parsed
+			// fields by TAB reproduces that for every BED flavour we accept.
+			if _, err := bw.WriteString(strings.Join(fields, "\t")); err != nil {
+				return written, err
+			}
+			if err := bw.WriteByte('\t'); err != nil {
+				return written, err
+			}
+			if _, err := bw.Write(seq); err != nil {
+				return written, err
+			}
+			if err := bw.WriteByte('\n'); err != nil {
+				return written, err
+			}
+			written++
+			continue
 		}
 
 		header := formatHeader(chrom, start, end, name, strand, opts)
@@ -238,16 +289,15 @@ func formatHeader(chrom string, start, end int, name, strand string, opts Option
 		}
 		strandSuffix = "(" + s + ")"
 	}
+	// Upstream renders the name-bearing header whenever -name, -name+, OR
+	// -nameOnly is set, using the empty string for a missing name column
+	// (it does NOT fall back to chrom:start-end). -name and -name+ produce
+	// the identical `name::chrom:start-end` form; -name+ is a deprecated
+	// alias retained for backwards compatibility.
 	switch {
 	case opts.NameOnly:
-		if name == "" {
-			return coord + strandSuffix
-		}
 		return name + strandSuffix
-	case opts.Name:
-		if name == "" {
-			return coord + strandSuffix
-		}
+	case opts.Name || opts.NamePlus:
 		return name + "::" + coord + strandSuffix
 	default:
 		return coord + strandSuffix
@@ -267,7 +317,7 @@ type readerAtCloser interface {
 	io.ReaderAt
 }
 
-func openFasta(path string, fullHeader bool) (*RandomAccess, error) {
+func openFasta(path string, fullHeader bool, warn io.Writer) (*RandomAccess, error) {
 	// BGZF (`.fa.gz`) inputs are detected by sniffing the BGZF magic on
 	// the first four bytes. When detected, we fully decompress the
 	// payload into memory and back the case-preserving Fetch with a
@@ -307,9 +357,34 @@ func openFasta(path string, fullHeader bool) (*RandomAccess, error) {
 				f.Close()
 				return nil, err
 			}
+		} else {
+			// A sibling .fai exists. Upstream (htslib) warns when the FASTA
+			// is newer than its index, since a stale index may not match.
+			warnIfStaleIndex(path, warn)
 		}
 	}
 	return &RandomAccess{idx: idx, r: f, closeFn: f.Close}, nil
+}
+
+// warnIfStaleIndex emits upstream's warning when path's sibling `.fai` index
+// is older (by mtime) than the FASTA itself, mirroring htslib's check in
+// FastaIndex::readIndexFile. Any stat error is treated as "not stale" and
+// silently ignored, matching upstream's best-effort behaviour.
+func warnIfStaleIndex(path string, warn io.Writer) {
+	if warn == nil {
+		return
+	}
+	faStat, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	idxStat, err := os.Stat(path + ".fai")
+	if err != nil {
+		return
+	}
+	if faStat.ModTime().After(idxStat.ModTime()) {
+		fmt.Fprintln(warn, "Warning: the index file is older than the FASTA file.")
+	}
 }
 
 // isBGZF reports whether path starts with the BGZF magic (gzip 1f 8b 08
@@ -383,12 +458,23 @@ func (ra *RandomAccess) Close() error {
 	return nil
 }
 
+// sequenceLength returns the length of contig name and whether it exists in
+// the index. It mirrors upstream's FastaReference::sequenceLength, which
+// returns 0 (here: ok=false) when the contig is absent.
+func (ra *RandomAccess) sequenceLength(name string) (int64, bool) {
+	entry, ok := ra.idx.Get(name)
+	if !ok {
+		return 0, false
+	}
+	return entry.Length, true
+}
+
 // FetchPreserveCase reads [start,end) on contig name, returning the raw
 // bases (preserving case) with embedded newlines stripped.
 func (ra *RandomAccess) FetchPreserveCase(name string, start, end int64) ([]byte, error) {
 	entry, ok := ra.idx.Get(name)
 	if !ok {
-		return nil, errMissingChrom{name: name}
+		return nil, fmt.Errorf("chromosome %q not in index", name)
 	}
 	if start < 0 || end < start || end > entry.Length {
 		return nil, fmt.Errorf("range %s:%d-%d out of bounds (length %d)", name, start, end, entry.Length)
@@ -420,32 +506,6 @@ func (ra *RandomAccess) FetchPreserveCase(name string, start, end int64) ([]byte
 		return nil, fmt.Errorf("requested %d bases but read %d on %s", end-start, len(out), name)
 	}
 	return out, nil
-}
-
-// errMissingChrom signals an unknown contig in a typed way so the loop can
-// emit the upstream-style warning and continue rather than aborting.
-type errMissingChrom struct{ name string }
-
-func (e errMissingChrom) Error() string {
-	return fmt.Sprintf("chromosome %q not in index", e.name)
-}
-
-func isMissingChrom(err error) bool {
-	_, ok := err.(errMissingChrom)
-	return ok
-}
-
-func warnMissingChrom(w io.Writer, name string) {
-	if w == nil {
-		return
-	}
-	fmt.Fprintf(w, "WARNING. chromosome (%s) was not found in the FASTA file. Skipping.\n", name)
-}
-
-// isAllPresent returns true when parts has the same length as blocks. (Used
-// to detect a partially-filled set of blocks after a missing-chrom warning.)
-func isAllPresent(parts [][]byte, blocks [][2]int) bool {
-	return len(parts) == len(blocks)
 }
 
 // bytesJoin concatenates parts without a separator.

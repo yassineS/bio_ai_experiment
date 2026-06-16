@@ -20,7 +20,7 @@ const version = "0.1.0"
 const usage = `bedgetfasta - extract FASTA subsequences for BED intervals.
 
 Usage:
-  bedgetfasta -fi FASTA -bed BED [-fo OUT] [-name|-nameOnly] [-tab] [-s] [-split] [-rna]
+  bedgetfasta -fi FASTA -bed BED [-fo OUT] [-name|-name+|-nameOnly] [-tab|-bedOut] [-s] [-split] [-rna]
 
 Required:
   -fi, --fasta FILE       FASTA reference. Must have a sibling .fai index
@@ -30,8 +30,11 @@ Required:
 Optional:
   -fo, --output FILE      Output (default stdout). '-' = stdout.
   -name, --name           Header is '<name>::<chrom>:<start>-<end>'.
+  -name+                  Deprecated alias of -name (identical header).
   -nameOnly, --nameOnly   Header is just '<name>'.
   -tab, --tab             Emit TSV ('header<TAB>seq') instead of FASTA.
+  -bedOut, --bedOut       Re-emit the BED record with a trailing sequence
+                          column (tab-delimited) instead of FASTA.
   -s, --strand            Reverse-complement '-' strand intervals
                           (case-preserving, IUPAC-aware).
   -split, --split         Concatenate the blocks of BED12 records before
@@ -58,8 +61,10 @@ func main() {
 		bedPath     string
 		outPath     string
 		nameFlag    bool
+		namePlus    bool
 		nameOnly    bool
 		tab         bool
+		bedOut      bool
 		strand      bool
 		split       bool
 		rna         bool
@@ -67,15 +72,24 @@ func main() {
 		showHelp    bool
 		showVersion bool
 	)
+	// NOTE: cliflag registers a short name and a long name separately on the
+	// FlagSet, so a name must not be supplied as BOTH short and long (that
+	// would register the same flag twice and panic). For upstream-only flag
+	// names (-bed, -name, -tab, ...) we register the single canonical name;
+	// Go's flag package accepts it under either one or two leading dashes.
 	cliflag.StringVar(fs, &fastaPath, "fi", "fasta", "", "FASTA reference")
-	cliflag.StringVar(fs, &bedPath, "bed", "bed", "", "BED file")
+	cliflag.StringVar(fs, &bedPath, "bed", "", "", "BED file")
 	cliflag.StringVar(fs, &outPath, "fo", "output", "", "Output file")
-	cliflag.BoolVar(fs, &nameFlag, "name", "name", false, "Use BED name as header")
-	cliflag.BoolVar(fs, &nameOnly, "nameOnly", "nameOnly", false, "Header is just <name>")
-	cliflag.BoolVar(fs, &tab, "tab", "tab", false, "TSV output")
+	cliflag.BoolVar(fs, &nameFlag, "name", "", false, "Use BED name as header")
+	// -name+ is upstream's deprecated alias of -name. The literal '+' is a
+	// valid Go flag name, so register it directly on the FlagSet.
+	fs.BoolVar(&namePlus, "name+", false, "(deprecated) same as -name")
+	cliflag.BoolVar(fs, &nameOnly, "nameOnly", "", false, "Header is just <name>")
+	cliflag.BoolVar(fs, &tab, "tab", "", false, "TSV output")
+	cliflag.BoolVar(fs, &bedOut, "bedOut", "", false, "Emit BED record + trailing seq column")
 	cliflag.BoolVar(fs, &strand, "s", "strand", false, "Reverse-complement '-' strand")
-	cliflag.BoolVar(fs, &split, "split", "split", false, "Concatenate BED12 blocks")
-	cliflag.BoolVar(fs, &rna, "rna", "rna", false, "Emit U in place of T")
+	cliflag.BoolVar(fs, &split, "split", "", false, "Concatenate BED12 blocks")
+	cliflag.BoolVar(fs, &rna, "rna", "", false, "Emit U in place of T")
 	cliflag.BoolVar(fs, &fullHeader, "fullHeader", "full-header", false, "Index by full FASTA header line")
 	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Help")
 	cliflag.BoolVar(fs, &showVersion, "v", "version", false, "Version")
@@ -120,8 +134,10 @@ func main() {
 
 	if _, err := bedgetfasta.Run(bed, fastaPath, out, os.Stderr, bedgetfasta.Options{
 		Name:       nameFlag,
+		NamePlus:   namePlus,
 		NameOnly:   nameOnly,
 		Tab:        tab,
+		BedOut:     bedOut,
 		Strand:     strand,
 		Split:      split,
 		RNA:        rna,

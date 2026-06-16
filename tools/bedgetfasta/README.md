@@ -28,11 +28,14 @@ bedgetfasta -fi genome.fa -bed transcripts.bed12 -split -s > transcripts.fa
 | `-bed` | `--bed` | BED file. Required. `-` = stdin. Transparent gzip. |
 | `-fo` | `--output` | Output file (default stdout). `-` = stdout. |
 | `-name` | `--name` | Header is `<name>::<chrom>:<start>-<end>`. |
+| `-name+` | | Deprecated alias of `-name` (identical header). |
 | `-nameOnly` | `--nameOnly` | Header is just `<name>`. |
 | `-tab` | `--tab` | TSV output (`<header>\t<seq>`). |
+| `-bedOut` | `--bedOut` | Re-emit the BED record with a trailing sequence column (tab-delimited) instead of FASTA. |
 | `-s` | `--strand` | Reverse-complement `-` strand intervals (IUPAC + case preserved). |
 | `-split` | `--split` | Split BED12 records into their constituent blocks. |
 | `-rna` | `--rna` | Emit `U/u` in place of `T/t` (applied after `-s`). |
+| `-fullHeader` | `--full-header` | Index FASTA contigs by the full header line (whitespace included). |
 | `-h` | `--help` | |
 | `-v` | `--version` | |
 
@@ -44,12 +47,29 @@ bedgetfasta -fi genome.fa -bed transcripts.bed12 -split -s > transcripts.fa
   `FetchPreserveCase` so IUPAC codes round-trip exactly.
 - **Strand suffix.** `-s` toggles the `(+)`/`(-)` suffix in the header (the
   default behaviour without `-s` omits it).
+- **Name headers with no name column.** Matching upstream, `-name` on a BED
+  row without a name column emits `>::chrom:start-end` (empty name, *not* a
+  fall-back to `chrom:start-end`); `-nameOnly` emits an empty header (`>`).
+- **`-bedOut`.** Re-emits the original BED columns followed by a trailing
+  sequence column. The sequence still honours `-s`, `-split` and `-rna`.
+  Columns beyond 6 are preserved verbatim (matches upstream's
+  `reportBedTab`).
 - **Missing chromosome.** A BED interval whose chromosome is not in the FAI
   produces a warning on stderr (`WARNING. chromosome (X) was not found in
   the FASTA file. Skipping.`) and the record is dropped, matching upstream.
-- **`-split` + `-s`.** Per-block reverse-complement, blocks emitted in
-  reverse order so the concatenation reads 5'→3' on the transcript.
-  Matches upstream `getfasta.t05`.
+- **Out-of-range coordinates.** A feature extending past the contig length is
+  skipped with `Feature (chrom:start-end) beyond the length of chrom size
+  (N bp).  Skipping.` (note the two spaces before `Skipping`, matching
+  upstream) rather than aborting.
+- **Zero-length features.** A record with `start == end` is skipped with
+  `Feature (chrom:start-end) has length = 0, Skipping.` and produces no
+  output, matching upstream.
+- **Stale index warning.** When a sibling `.fai` exists but is older than the
+  FASTA file, `Warning: the index file is older than the FASTA file.` is
+  emitted on stderr (matches upstream/htslib `getfasta.t10`).
+- **`-split` + `-s`.** Blocks are extracted in genomic order, concatenated,
+  and the whole sequence is then reverse-complemented — exactly as upstream
+  `ReportSeq` does. Matches upstream `getfasta.t05`.
 - **`-rna`.** Applied after any reverse-complement: T→U and t→u (case
   preserved). Other bases pass through.
 

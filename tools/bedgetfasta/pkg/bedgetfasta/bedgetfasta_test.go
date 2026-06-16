@@ -2,11 +2,12 @@ package bedgetfasta
 
 import (
 	"bytes"
-	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	bgzip "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 )
@@ -109,7 +110,11 @@ func TestRun_NameOnlyHeader(t *testing.T) {
 	}
 }
 
-func TestRun_NameMissingFallsBackToCoord(t *testing.T) {
+// TestRun_NameMissingEmitsEmptyName — upstream does NOT fall back to the
+// coord header when -name is set but the BED row has no name column; it
+// emits `>::chrom:start-end` with an empty name (verified against
+// `bedtools getfasta -name` on a 3-column BED).
+func TestRun_NameMissingEmitsEmptyName(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFasta(t, dir, "t", tFasta)
 	bed := "chr1\t0\t10\n" // no name column
@@ -117,8 +122,8 @@ func TestRun_NameMissingFallsBackToCoord(t *testing.T) {
 	if _, err := Run(strings.NewReader(bed), path, &buf, &warn, Options{Name: true}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !strings.HasPrefix(buf.String(), ">chr1:0-10\n") {
-		t.Errorf("expected fallback to coord header; got %q", buf.String())
+	if !strings.HasPrefix(buf.String(), ">::chr1:0-10\n") {
+		t.Errorf("expected empty-name header; got %q", buf.String())
 	}
 }
 
@@ -225,6 +230,104 @@ func TestRun_RNA(t *testing.T) {
 	}
 }
 
+func TestRun_BedOut(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFasta(t, dir, "t", tFasta)
+	bed := "chr1\t1\t10\tfoo\t99\t-\textra\n"
+	var buf, warn bytes.Buffer
+	if _, err := Run(strings.NewReader(bed), path, &buf, &warn, Options{BedOut: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := "chr1\t1\t10\tfoo\t99\t-\textra\tggggggggg\n"
+	if buf.String() != want {
+		t.Errorf("bedOut mismatch:\n got %q\nwant %q", buf.String(), want)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("unexpected warning: %q", warn.String())
+	}
+}
+
+func TestRun_BedOutStrandSplit(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFasta(t, dir, "t", tFasta)
+	// Minus-strand BED12 with three single-base blocks -> revcomp -> "tag".
+	bed := "chr1\t0\t40\trec\t0\t-\t0\t0\t0\t3\t1,1,1,\t10,20,30,\n"
+	var buf, warn bytes.Buffer
+	if _, err := Run(strings.NewReader(bed), path, &buf, &warn, Options{BedOut: true, Strand: true, Split: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.HasSuffix(strings.TrimRight(buf.String(), "\n"), "\ttag") {
+		t.Errorf("expected trailing seq column \"tag\"; got %q", buf.String())
+	}
+}
+
+func TestRun_ZeroLengthFeature(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFasta(t, dir, "t", tFasta)
+	bed := "chr1\t5\t5\nchr1\t0\t5\n"
+	var buf, warn bytes.Buffer
+	n, err := Run(strings.NewReader(bed), path, &buf, &warn, Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 emitted record, got %d", n)
+	}
+	wantWarn := "Feature (chr1:5-5) has length = 0, Skipping.\n"
+	if warn.String() != wantWarn {
+		t.Errorf("warn mismatch: got %q want %q", warn.String(), wantWarn)
+	}
+	if !strings.HasPrefix(buf.String(), ">chr1:0-5\n") {
+		t.Errorf("expected second record emitted; got %q", buf.String())
+	}
+}
+
+func TestRun_StaleIndexWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFasta(t, dir, "t", tFasta)
+	// Write a sibling .fai, then make the FASTA newer than it.
+	faiBody := "chr1\t50\t6\t10\t11\n"
+	if err := os.WriteFile(path+".fai", []byte(faiBody), 0o644); err != nil {
+		t.Fatalf("write .fai: %v", err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path+".fai", old, old); err != nil {
+		t.Fatalf("chtimes fai: %v", err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatalf("chtimes fasta: %v", err)
+	}
+	var buf, warn bytes.Buffer
+	if _, err := Run(strings.NewReader("chr1\t0\t5\n"), path, &buf, &warn, Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := "Warning: the index file is older than the FASTA file.\n"
+	if warn.String() != want {
+		t.Errorf("stale-index warn mismatch: got %q want %q", warn.String(), want)
+	}
+}
+
+func TestRun_FreshIndexNoStaleWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFasta(t, dir, "t", tFasta)
+	if err := os.WriteFile(path+".fai", []byte("chr1\t50\t6\t10\t11\n"), 0o644); err != nil {
+		t.Fatalf("write .fai: %v", err)
+	}
+	// Make the index newer than the FASTA.
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes fasta: %v", err)
+	}
+	var buf, warn bytes.Buffer
+	if _, err := Run(strings.NewReader("chr1\t0\t5\n"), path, &buf, &warn, Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("expected no stale warning; got %q", warn.String())
+	}
+}
+
 func TestRun_MissingChromWarn(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFasta(t, dir, "t", tFasta)
@@ -289,14 +392,23 @@ func TestRun_FastaMissing(t *testing.T) {
 	}
 }
 
+// TestRun_OutOfBoundsRange — like upstream, a feature beyond the contig
+// length is skipped with a "beyond the length of" warning (not an error),
+// and no FASTA is emitted.
 func TestRun_OutOfBoundsRange(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFasta(t, dir, "t", tFasta)
 	// chr1 is 50bp long. Ask for bases 100-110.
 	var buf, warn bytes.Buffer
-	_, err := Run(strings.NewReader("chr1\t100\t110\n"), path, &buf, &warn, Options{})
-	if err == nil {
-		t.Errorf("expected error for out-of-bounds range")
+	if _, err := Run(strings.NewReader("chr1\t100\t110\n"), path, &buf, &warn, Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no FASTA output for out-of-bounds; got %q", buf.String())
+	}
+	want := "Feature (chr1:100-110) beyond the length of chr1 size (50 bp).  Skipping.\n"
+	if warn.String() != want {
+		t.Errorf("warn mismatch: got %q want %q", warn.String(), want)
 	}
 }
 
@@ -315,7 +427,13 @@ func TestFormatHeader(t *testing.T) {
 		{"foo", "chrZ", 5, 7, "-", Options{Name: true, Strand: true}, "foo::chrZ:5-7(-)"},
 		{"foo", "chrZ", 5, 7, "-", Options{NameOnly: true}, "foo"},
 		{"foo", "chrZ", 5, 7, "-", Options{NameOnly: true, Strand: true}, "foo(-)"},
-		{"", "chrZ", 5, 7, "+", Options{NameOnly: true}, "chrZ:5-7"},
+		// Empty name with -nameOnly: upstream emits an empty header (">"),
+		// it does NOT fall back to chrom:start-end.
+		{"", "chrZ", 5, 7, "+", Options{NameOnly: true}, ""},
+		// Empty name with -name: upstream emits "::chrom:start-end".
+		{"", "chrZ", 5, 7, "+", Options{Name: true}, "::chrZ:5-7"},
+		// -name+ behaves identically to -name.
+		{"foo", "chrZ", 5, 7, "+", Options{NamePlus: true}, "foo::chrZ:5-7"},
 	}
 	for i, tc := range cases {
 		got := formatHeader(tc.chrom, tc.start, tc.end, tc.name, tc.strand, tc.opts)
@@ -356,16 +474,21 @@ func TestDnaToRNA(t *testing.T) {
 	}
 }
 
-func TestErrMissingChrom(t *testing.T) {
-	e := errMissingChrom{name: "chrZ"}
-	if e.Error() == "" {
-		t.Errorf("Error() empty")
+// TestRun_MissingChromWarning — a BED row naming a contig absent from the
+// FASTA index emits upstream's WARNING line and produces no FASTA output.
+func TestRun_MissingChromWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFasta(t, dir, "t", tFasta)
+	var out, warn bytes.Buffer
+	if _, err := Run(strings.NewReader("chrZ\t1\t10\n"), path, &out, &warn, Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if !isMissingChrom(e) {
-		t.Errorf("isMissingChrom() false on errMissingChrom")
+	if out.Len() != 0 {
+		t.Errorf("expected no FASTA output, got %q", out.String())
 	}
-	if isMissingChrom(errors.New("other")) {
-		t.Errorf("isMissingChrom() true on plain error")
+	want := "WARNING. chromosome (chrZ) was not found in the FASTA file. Skipping.\n"
+	if warn.String() != want {
+		t.Errorf("warn mismatch: got %q want %q", warn.String(), want)
 	}
 }
 
@@ -376,7 +499,7 @@ func TestRandomAccess_BuildOnMissingFai(t *testing.T) {
 	if _, err := os.Stat(path + ".fai"); err == nil {
 		t.Fatalf("unexpected pre-existing .fai")
 	}
-	ra, err := openFasta(path, false)
+	ra, err := openFasta(path, false, io.Discard)
 	if err != nil {
 		t.Fatalf("openFasta: %v", err)
 	}
@@ -393,7 +516,7 @@ func TestRandomAccess_BuildOnMissingFai(t *testing.T) {
 func TestRandomAccess_RangeErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFasta(t, dir, "t", tFasta)
-	ra, err := openFasta(path, false)
+	ra, err := openFasta(path, false, io.Discard)
 	if err != nil {
 		t.Fatalf("openFasta: %v", err)
 	}
@@ -504,7 +627,7 @@ func TestOpenFastaBGZF_BadFai(t *testing.T) {
 	if err := os.WriteFile(path+".fai", []byte("not\tactually\tfive\tcolumns\n"), 0o644); err != nil {
 		t.Fatalf("write bad .fai: %v", err)
 	}
-	if _, err := openFasta(path, false); err == nil {
+	if _, err := openFasta(path, false, io.Discard); err == nil {
 		// Note: LoadIndex on a 4-column line errors → the openFastaBGZF
 		// fallback path treats that as a hard failure (not IsNotExist),
 		// so we expect an explicit error here.
@@ -512,25 +635,17 @@ func TestOpenFastaBGZF_BadFai(t *testing.T) {
 	}
 }
 
-// TestIsAllPresent — direct unit test for the helper.
-func TestIsAllPresent(t *testing.T) {
-	if !isAllPresent([][]byte{{}, {}}, [][2]int{{0, 1}, {1, 2}}) {
-		t.Error("expected true for equal lengths")
-	}
-	if isAllPresent([][]byte{{}}, [][2]int{{0, 1}, {1, 2}}) {
-		t.Error("expected false for short parts")
-	}
-}
-
-// TestWarnMissingChrom — nil writer is a no-op; explicit writer gets the
-// standard upstream warning line.
-func TestWarnMissingChrom(t *testing.T) {
-	warnMissingChrom(nil, "chrZ") // must not panic
+// TestRun_NilWarnWriter — a nil warn writer must be tolerated (defaulted to
+// io.Discard) even when a warning would otherwise be emitted.
+func TestRun_NilWarnWriter(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFasta(t, dir, "t", tFasta)
 	var buf bytes.Buffer
-	warnMissingChrom(&buf, "chrZ")
-	want := "WARNING. chromosome (chrZ) was not found in the FASTA file. Skipping.\n"
-	if buf.String() != want {
-		t.Errorf("warn output mismatch: got %q want %q", buf.String(), want)
+	if _, err := Run(strings.NewReader("chrZ\t1\t10\n"), path, &buf, nil, Options{}); err != nil {
+		t.Fatalf("Run with nil warn: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for missing chrom; got %q", buf.String())
 	}
 }
 
