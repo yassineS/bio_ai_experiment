@@ -244,6 +244,11 @@ func runPlugin(args []string, pluginName string) int {
 	defer out.Close()
 
 	if err := bcftools.RunPlugin(opts, out, os.Stderr); err != nil {
+		// fill-tags -l/--list-tags prints its table to stderr from Init and
+		// returns a sentinel; upstream exits non-zero with no extra message.
+		if bcftools.IsListTagsError(err) {
+			return 1
+		}
 		fmt.Fprintf(os.Stderr, "bcftools plugin: %v\n", err)
 		return 1
 	}

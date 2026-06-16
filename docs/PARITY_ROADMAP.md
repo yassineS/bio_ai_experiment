@@ -3495,6 +3495,47 @@ but with a deliberate design divergence from upstream:
   `tools/bcftools/testdata/parity/gt_plugins.vcf` plus an in-test skewed-AD
   fixture that exercises the genotype-changing binomial path).
 
+- **Native `+fill-tags` — all modes** — **done**. The native fill-tags port
+  (`tools/bcftools/pkg/bcftools/native_plugin_filltags*.go`) now closes the four
+  modes it previously rejected, all byte-validated vs the upstream binary
+  1.23.1:
+  - **Every built-in tag.** `AN`, `AC`, `AC_Hom`, `AC_Het`, `AC_Hemi`, `AF`,
+    `MAF`, `NS`, `HWE`, `ExcHet`, `END`, `TYPE`, `FORMAT/VAF`, `FORMAT/VAF1` and
+    the `F_MISSING` expression — counted by the exact `process_fmt` BRANCH_INT
+    het/hom/hemi/half classification (incl. `-d/--drop-missing`). `HWE`/`ExcHet`
+    use the in-tree Wigginton 2005 exact test (`calcHWE`), and the sites-only
+    `AF`-from-`AN,AC` path (`process_info_af`) is supported. `-t LIST` selection,
+    `INFO/`/`FORMAT/` qualifiers and the `all` keyword match upstream; unknown
+    tags error with the exact upstream message.
+  - **`-S/--samples-file FILE` population grouping.** The file is
+    `SAMPLE  GRP1[,GRP2,...]` per line (porting `parse_samples`): each distinct
+    group becomes a population whose tags are suffixed `_GROUP`, plus the summary
+    `ALL` population (empty suffix, appended last as `init_pops` does). Per-pop
+    `##INFO` headers ("... in GROUP") and the per-pop tag values match upstream
+    byte-for-byte; missing/duplicate samples warn as upstream does.
+  - **Custom expression `TAG[:Number]=[int|integer|float](EXPR)`.** A
+    self-contained evaluator (`native_plugin_filltags_expr.go`) ports the slice
+    of filter.c that fill-tags exercises: INFO/FORMAT tag references, the
+    aggregations `SUM`/`AVG`|`MEAN`/`MAX`/`MIN`/`MEDIAN`/`STDEV` and their
+    per-sample `SMPL_*`/`sXXX` variants, arithmetic `+ - * /`, unary minus,
+    `ABS`, `PHRED`, and the genotype reductions `F_MISSING`/`N_MISSING`/
+    `F_PASS(COND)`/`N_PASS(COND)` (the condition compiled with the shared native
+    filter engine; `-S` restricts the active-sample set). `int()`/`integer()`
+    yields Integer with C `round()` (half-away) rounding, `float()`/bare yields
+    Float; `:Number` sets a fixed count, else `Number=.`. The "Added by
+    +fill-tags expression ..." header is reproduced verbatim (quotes escaped),
+    one per population.
+  - **`-l/--list-tags`.** Prints the exact upstream available-tag table to
+    stderr and exits non-zero with no stdout (matching upstream's `error()`).
+  Byte-validated in `TestNativePluginFillTagsPops` and
+  `TestNativePluginFillTagsListTags` (fixtures
+  `tools/bcftools/testdata/parity/filltags_pops.vcf`, `filltags_groups.txt`,
+  `filltags_sites.vcf`), plus binary-free `TestUnitFillTags*` unit tests for the
+  pure helpers. Scope note: the rarer filter.c statistical functions over GT
+  index/subscript forms (`binom`/`fisher` on `FMT/AD`) are not part of this
+  evaluator; an expression using an unsupported function returns a clear
+  evaluation error rather than the former blanket "not supported".
+
 Note on vendored reference source: `reference_code/bcftools` and
 `reference_code/htslib` are now both vendored as submodules. Earlier
 roadmap text in this section was written when bcftools internals were

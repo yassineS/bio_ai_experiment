@@ -1296,3 +1296,48 @@ claiming the qsort tie order was "implementation-defined". Both claims were
 reproduces every draw byte-for-byte; and glibc `qsort` is effectively stable
 for the tiny per-window arrays, so a stable sort matches the tie order. Both
 are now supported and oracle-validated.
+
+## bcftools +fill-tags: `-S` samples-file rejects sample names ≤ 2 characters <a id="bcftools-fill-tags-samples-short-names"></a>
+
+`plugins/fill-tags.c` `parse_samples()` parses each `SAMPLE  GROUP` line by
+scanning **backwards** from the end of the line, and its bounds checks are
+off-by-one for short sample names:
+
+```c
+char *smpl = pop_names++;                 // smpl points at the space before GROUP
+while ( smpl >= str.s && isspace_c(*smpl) ) smpl--;
+if ( smpl <= str.s+1 ) error("Could not parse the file: %s\n", str.s);   // <-- bug
+```
+
+The guard `smpl <= str.s+1` aborts whenever the sample name occupies only the
+first one or two characters of the line. So a perfectly valid grouping file
+such as
+
+```
+S1 GRP1
+S2 GRP1,GRP2
+```
+
+makes upstream die with `Could not parse the file: S1 GRP1` (and `exit 1`),
+even though `S1`/`S2` are real samples. Any sample name of length ≤ 2 in the
+first column triggers it; names of length ≥ 3 are fine, which is why the
+upstream documentation examples all use long IDs like `NA12400`.
+
+**Reproducer:**
+
+```
+$ printf 'S1 GRP1\nS2 GRP1,GRP2\n' > grp.txt
+$ bcftools +fill-tags two_sample.vcf -- -S grp.txt -t AN
+Could not parse the file: S1 GRP1        # exit 1
+```
+
+**Fix-on-port:** our native parser (`parseFillTagsSamples` in
+`native_plugin_filltags_samples.go`) splits each line with `strings.Fields`
+(sample = first field, group list = last field), so it accepts sample names of
+any length while keeping every other documented behaviour (comma-separated
+groups, the `_GROUP` suffixing, the summary `ALL` population, and the
+missing/duplicate-sample warnings). Because this is a divergence, the `-S`
+oracle fixtures (`tools/bcftools/testdata/parity/filltags_groups.txt`) use
+multi-character sample names so the upstream binary can run for byte-parity
+comparison; the short-name acceptance is covered by the binary-free
+`TestUnitFillTagsParseSamples` unit test.

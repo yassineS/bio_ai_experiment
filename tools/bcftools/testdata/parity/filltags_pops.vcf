@@ -1,0 +1,14 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=100000>
+##contig=<ID=chr2,length=100000>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Total depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Per-sample depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred likelihoods">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE1	SAMPLE2	SAMPLE3	SAMPLE4	SAMPLE5	SAMPLE6
+chr1	100	rs1	A	T	30	PASS	DP=60	GT:DP:GQ:AD:PL	0/0:10:30:9,1:0,30,200	0/1:12:35:6,6:90,0,95	1/1:14:38:1,18:240,30,0	0/0:9:33:8,1:0,27,180	0/1:11:31:5,7:85,0,90	./.:5:10:0,0:0,0,0
+chr1	200	rs2	C	G,T	45	PASS	DP=72	GT:DP:GQ:AD:PL	0/1:15:40:7,8,0:120,0,130,200,210,255	1/2:18:42:0,9,10:255,150,80,90,0,70	0/2:13:36:6,0,7:110,140,180,0,80,120	0/0:10:30:10,0,0:0,30,60,200,210,255	1/1:16:44:0,15,0:240,30,0,255,30,255	2/2:12:38:0,0,12:255,255,255,255,30,0
+chr1	300	rs3	G	A	50	PASS	DP=66	GT:DP:GQ:AD:PL	1|1:14:40:0,20:255,40,0	0|1:13:36:6,7:95,0,100	0|0:11:34:11,0:0,33,180	./1:8:20:3,5:90,0,40	1/1:15:42:0,16:230,48,0	0/1:12:35:5,6:88,0,92
+chr2	50	rs4	A	G	60	PASS	DP=80	GT:DP:GQ:AD:PL	0/0:20:50:19,1:0,57,255	0/1:25:55:13,12:150,0,160	1/1:17:42:0,16:230,48,0	0/0:18:48:17,1:0,54,255	0/1:22:52:11,11:140,0,150	.|.:7:18:0,0:0,0,0
