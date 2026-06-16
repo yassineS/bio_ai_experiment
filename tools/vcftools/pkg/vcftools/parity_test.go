@@ -2166,3 +2166,62 @@ func TestParity_KeepAndRemoveINFO_Compose(t *testing.T) {
 		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
+
+// TestParity_OutputModes_Upstream is a table of per-output-mode byte-for-byte
+// comparisons against the LIVE upstream binary on the multi-sample sample.vcf
+// fixture. Each case runs upstream and the Go port with the same flags and
+// diffs the named output file. These do NOT rely on checked-in goldens — the
+// expected output IS upstream's output — so they pin the column set, header,
+// precision, and ordering of every mode against the real GPL VCFtools 0.1.18.
+//
+// Modes that crash the upstream binary on a fortified build (the LD /
+// chi-square spill-file paths — see docs/UPSTREAM_BUGS.md) are deliberately
+// excluded; they are pinned by the in-package LD unit tests instead.
+func TestParity_OutputModes_Upstream(t *testing.T) {
+	cases := []struct {
+		name   string
+		suffix string
+		upArgs []string
+		params *Params
+	}{
+		{"freq", ".frq", []string{"--freq"}, &Params{Freq: true}},
+		{"freq2", ".frq", []string{"--freq2"}, &Params{Freq2: true}},
+		{"counts", ".frq.count", []string{"--counts"}, &Params{Counts: true}},
+		{"counts2", ".frq.count", []string{"--counts2"}, &Params{Counts2: true}},
+		{"depth", ".idepth", []string{"--depth"}, &Params{Depth: true}},
+		{"site_depth", ".ldepth", []string{"--site-depth"}, &Params{SiteDepth: true}},
+		{"site_mean_depth", ".ldepth.mean", []string{"--site-mean-depth"}, &Params{SiteMeanDepth: true}},
+		{"geno_depth", ".gdepth", []string{"--geno-depth"}, &Params{GenoDepth: true}},
+		{"site_quality", ".lqual", []string{"--site-quality"}, &Params{SiteQuality: true}},
+		{"het", ".het", []string{"--het"}, &Params{Het: true}},
+		{"hardy", ".hwe", []string{"--hardy"}, &Params{Hardy: true}},
+		{"missing_indv", ".imiss", []string{"--missing-indv"}, &Params{MissingIndv: true}},
+		{"missing_site", ".lmiss", []string{"--missing-site"}, &Params{MissingSite: true}},
+		{"snpdensity", ".snpden", []string{"--SNPdensity", "1000"}, &Params{SNPDensity: 1000}},
+		{"kept_sites", ".kept.sites", []string{"--kept-sites"}, &Params{KeptSites: true}},
+		{"removed_sites", ".removed.sites", []string{"--removed-sites"}, &Params{RemovedSites: true}},
+		{"singletons", ".singletons", []string{"--singletons"}, &Params{Singletons: true}},
+		{"site_pi", ".sites.pi", []string{"--site-pi"}, &Params{SitePi: true}},
+		{"window_pi", ".windowed.pi", []string{"--window-pi", "100000"}, &Params{WindowPi: 100000}},
+		{"window_pi_step", ".windowed.pi", []string{"--window-pi", "50000", "--window-pi-step", "25000"}, &Params{WindowPi: 50000, WindowPiStep: 25000}},
+		{"relatedness", ".relatedness", []string{"--relatedness"}, &Params{Relatedness: true}},
+		{"relatedness2", ".relatedness2", []string{"--relatedness2"}, &Params{Relatedness2: true}},
+		{"tstv_summary", ".TsTv.summary", []string{"--TsTv-summary"}, &Params{TsTvSummary: true}},
+		{"filter_summary", ".FILTER.summary", []string{"--FILTER-summary"}, &Params{FilterSummary: true}},
+		{"indv_freq_burden", ".ifreqburden", []string{"--indv-freq-burden"}, &Params{IndvFreqBurden: true}},
+		{"extract_format_gq", ".GQ.FORMAT", []string{"--extract-FORMAT-info", "GQ"}, &Params{ExtractFormatInfo: "GQ"}},
+		{"extract_format_dp", ".DP.FORMAT", []string{"--extract-FORMAT-info", "DP"}, &Params{ExtractFormatInfo: "DP"}},
+	}
+
+	vcf := fixtureVCF(t, "sample.vcf")
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			up := readFileBytes(t, runUpstream(t, vcf, tc.upArgs...)+tc.suffix)
+			got := readFileBytes(t, runGo(t, vcf, tc.params)+tc.suffix)
+			if !bytes.Equal(got, up) {
+				t.Errorf("%s%s mismatch\nupstream:\n%s\ngot:\n%s", tc.name, tc.suffix, up, got)
+			}
+		})
+	}
+}

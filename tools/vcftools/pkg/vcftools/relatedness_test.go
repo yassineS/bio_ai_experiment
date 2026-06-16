@@ -84,15 +84,19 @@ func TestRelatedness_HandComputed(t *testing.T) {
 			t.Errorf("missing pair %v", k)
 			continue
 		}
-		if math.Abs(g-v) > 1e-9 {
+		// Output is C++ defaultfloat (6 significant digits), so compare
+		// with a 6-sig-fig tolerance rather than full double precision.
+		if math.Abs(g-v) > 1e-5 {
 			t.Errorf("pair %v: got %g, want %g", k, g, v)
 		}
 	}
 }
 
 // TestRelatedness_SkipsMonomorphic ensures a SNP that is monomorphic across
-// the kept individuals (p=0 or p=1) does NOT contribute to the average; we
-// just emit zeros if no informative SNPs exist.
+// the kept individuals (p=0 or p=1) does NOT contribute to the average. With
+// no informative SNPs, every pair has N_sites == 0, so upstream emits "-nan"
+// (0.0/0.0 for the off-diagonal, 1.0 + nan for the diagonal). We assert that
+// the output is all "-nan" rather than numeric values, matching upstream.
 func TestRelatedness_SkipsMonomorphic(t *testing.T) {
 	vcfText := buildMinimalVCFRel(t, []string{"s1", "s2"},
 		[]relRow{
@@ -106,10 +110,13 @@ func TestRelatedness_SkipsMonomorphic(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	data, _ := os.ReadFile(prefix + ".relatedness")
-	got := parseRelatedness(t, string(data))
-	for k, v := range got {
-		if v != 0 {
-			t.Errorf("expected 0 for monomorphic-only data, got %g for %v", v, k)
+	for _, ln := range strings.Split(strings.TrimSpace(string(data)), "\n")[1:] {
+		fields := strings.Split(ln, "\t")
+		if len(fields) != 3 {
+			continue
+		}
+		if fields[2] != "-nan" {
+			t.Errorf("expected -nan for monomorphic-only data, got %q in line %q", fields[2], ln)
 		}
 	}
 }
@@ -194,17 +201,18 @@ func TestLROH_Basic(t *testing.T) {
 //	SNP3: 1/1  1/1  0/1
 //	SNP4: 0/1  0/1  1/1
 //
+// Upstream's KING-robust estimator is
+// phi = (N_AaAa - 2*N_AAaa) / (N_Aa[i] + N_Aa[j]).
+//
 // Pair (s1,s2) = identical at every site: N_AaAa=2 (SNPs 2,4),
-// N_AAaa=0, N1_Aa=2, N2_Aa=2, N_Aa_min=2. phi = (2*2 - 4*0 - 2 - 2 + 2*2)/(4*2) = 4/8 = 0.5.
+// N_AAaa=0, N_Aa[s1]=2, N_Aa[s2]=2. phi = (2 - 0)/(2 + 2) = 0.5.
 //
 // Pair (s1,s3): genotypes (0/0,1/1), (0/1,0/0), (1/1,0/1), (0/1,1/1).
 //
 //	N_AaAa = 0 (no site where both are het)
 //	N_AAaa = 1 (SNP1: 0/0 vs 1/1)
-//	N1_Aa = 2 (SNPs 2 and 4)
-//	N2_Aa = 1 (SNP3)
-//	N_Aa_min = 1.
-//	phi = (2*0 - 4*1 - 2 - 1 + 2*1)/(4*1) = (-5)/4 = -1.25
+//	N_Aa[s1] = 2 (SNPs 2 and 4), N_Aa[s3] = 1 (SNP3)
+//	phi = (0 - 2*1)/(2 + 1) = -2/3 = -0.666667
 func TestRelatedness2_KingFormula(t *testing.T) {
 	rows := []relRow{
 		{"1", 100, []string{"0/0", "0/0", "1/1"}},
@@ -241,11 +249,11 @@ func TestRelatedness2_KingFormula(t *testing.T) {
 	if math.Abs(phi-0.5) > 1e-9 {
 		t.Errorf("(s1,s2) phi=%g, want 0.5", phi)
 	}
-	// (s1,s3): phi=-1.25
+	// (s1,s3): phi=-2/3
 	g = got[[2]string{"s1", "s3"}]
 	phi, _ = strconv.ParseFloat(g[4], 64)
-	if math.Abs(phi-(-1.25)) > 1e-9 {
-		t.Errorf("(s1,s3) phi=%g, want -1.25", phi)
+	if math.Abs(phi-(-2.0/3.0)) > 1e-5 {
+		t.Errorf("(s1,s3) phi=%g, want -0.666667", phi)
 	}
 	// Self phi = 0.5.
 	g = got[[2]string{"s1", "s1"}]
