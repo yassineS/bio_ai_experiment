@@ -209,6 +209,17 @@ cross-referenced to `docs/PARITY_ROADMAP.md`. The 31 bug fixes were real
 divergences between our ports and upstream surfaced by the audits and
 corrected on the way (see each PR for details).
 
+> **Note — these are the original audit snapshots (PRs #55–#76).** The tool
+> surface and parity have since expanded well beyond them: `bcftools` now ships
+> 24 subcommands plus native (pure-Go) reimplementations of all 41 in-tree
+> plugins, and the remaining parity tail — host-level region/target selection
+> (`-r/-R/-t/-T`), `-W/--write-index`, multi-threshold `{…}` filter expansion,
+> the full `split-vep` machinery, the `setGT`/`prune` RNG & LD modes (byte-exact
+> via an in-tree `drand48` port), the `trio-dnm3` float de-novo models, and the
+> htsgo uncompressed-BAM / canonical-CRAM-header writer paths — was closed in a
+> later wave. For the current per-tool/per-feature state always trust
+> `PROJECT_STATUS.md` and `docs/PARITY_ROADMAP.md`, not this historical table.
+
 `prinseq`, `seqtk`, and `fastp` have **not yet** been parity-validated; the
 common-path tests pass but 1:1 byte-equivalence with upstream is untested.
 
