@@ -25,8 +25,11 @@
 // -W/--write-index indexes it (a CSI by default, a TBI for -W=tbi on VCF.gz)
 // when the chosen mode emits VCF/BCF output; the text-counts mode (-m c) emits
 // no VCF and is left unindexed, matching upstream. The
-// --regions-overlap/--targets-overlap tuning knobs are still reported as a clean
-// unsupported Init error.
+// --regions-overlap/--targets-overlap tuning knobs (pos|0, record|1, variant|2)
+// are honoured via the shared filter — a fix-on-port over upstream mendelian2,
+// which advertises the options but has a getopt bug that drops them (it
+// registers the long options but has no case in the switch, so passing either
+// prints usage and exits; see docs/UPSTREAM_BUGS.md).
 package bcftools
 
 import (
@@ -56,7 +59,7 @@ func (p *mendelian2Plugin) Name() string { return "mendelian2" }
 
 // RegionTargetCaps opts mendelian2 into the shared -r/-R/-t/-T region/target
 // filter, forwarded to the Mendelian2 engine via SetRegionTarget.
-func (p *mendelian2Plugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+func (p *mendelian2Plugin) RegionTargetCaps() regionTargetCaps { return overlapRegionTargetCaps }
 
 // About returns the one-line description, matching mendelian2.c about().
 func (p *mendelian2Plugin) About() string {
@@ -148,8 +151,6 @@ func (p *mendelian2Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.
 			_, err = val() // accepted, no effect on parity
 		case "--no-version":
 			// accepted, no effect
-		case "--regions-overlap", "--targets-overlap":
-			return fmt.Errorf("mendelian2: %s is not supported by the native plugin", a)
 		default:
 			if sel, handled, werr := parseWriteIndexArg(a); handled {
 				if werr != nil {

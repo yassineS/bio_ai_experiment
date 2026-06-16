@@ -54,9 +54,34 @@ type regionSpec struct {
 	region region
 }
 
+// Overlap modes for --regions-overlap / --targets-overlap. They mirror
+// htslib's BCF_SR_REGIONS_OVERLAP / BCF_SR_TARGETS_OVERLAP integer codes and
+// bcftools' parse_overlap_option spellings ("pos"/0, "record"/1, "variant"/2).
+// The mode selects the record interval [beg,end] used for the region/target
+// overlap test:
+//
+//   - overlapPos     (0): beg = end = POS                       (POS-in-region)
+//   - overlapRecord  (1): beg = POS, end = POS + rlen - 1       (VCF line span)
+//   - overlapVariant (2): beg = POS + off, end = POS + rlen - 1 (true variant
+//     span, where off is the longest leading run of bases common to REF and
+//     every ALT, capped at rlen — so a left-anchored indel's shared first base
+//     is excluded from the span). See htslib _set_variant_boundaries.
+//
+// Upstream's synced reader defaults are regions=1 (record) and targets=0 (pos),
+// set in bcf_sr_init: BCF_SR_REGIONS_OVERLAP=1, BCF_SR_TARGETS_OVERLAP=0.
+const (
+	overlapPos     = 0
+	overlapRecord  = 1
+	overlapVariant = 2
+)
+
 // regionTargetFilter captures the parsed -r/-R/-t/-T selection. The zero value
 // is a no-op filter (active() reports false), so plugins that received no
-// region/target option pay nothing.
+// region/target option pay nothing. Note the zero value also encodes the
+// upstream overlap defaults (regionsOverlap == overlapRecord == 1 only after
+// parseRegionTargetArgs initialises it; the targets default overlapPos == 0
+// coincides with the zero value). parseRegionTargetArgs always sets both modes,
+// so any filter produced there carries the correct defaults.
 type regionTargetFilter struct {
 	// regions are -r/-R windows, matched by span overlap.
 	regions []region
@@ -72,6 +97,12 @@ type regionTargetFilter struct {
 	// every record, distinct from "option absent").
 	hasRegions bool
 	hasTargets bool
+	// regionsOverlap / targetsOverlap are the --regions-overlap /
+	// --targets-overlap modes (overlapPos/Record/Variant). parseRegionTargetArgs
+	// initialises them to the upstream defaults (record for regions, pos for
+	// targets) and overrides them when the option is supplied.
+	regionsOverlap int
+	targetsOverlap int
 }
 
 // active reports whether any region/target selection was requested.
@@ -82,17 +113,90 @@ func (f *regionTargetFilter) active() bool {
 // keep reports whether the variant passes the region AND target selection.
 // When both -r/-R and -t/-T are given they are ANDed, matching upstream
 // (regions restrict the index scan, targets then post-filter the survivors).
+// The region and target match each use the variant interval implied by their
+// overlap mode (regionsOverlap / targetsOverlap), tested against the windows.
 func (f *regionTargetFilter) keep(v *vcf.Variant) bool {
-	if f.hasRegions && !overlapsAny(v, f.regions) {
-		return false
+	if f.hasRegions {
+		beg, end := overlapBoundaries(v, f.regionsOverlap)
+		if !intervalOverlapsAny(v.Chrom, beg, end, f.regions) {
+			return false
+		}
 	}
 	if f.hasTargets {
-		match := startInAny(v, f.targets)
+		beg, end := overlapBoundaries(v, f.targetsOverlap)
+		match := intervalOverlapsAny(v.Chrom, beg, end, f.targets)
 		if match == f.targetsNegated {
 			return false
 		}
 	}
 	return true
+}
+
+// overlapBoundaries returns the 1-based inclusive interval [beg,end] of the
+// variant under the given overlap mode, replicating htslib's per-mode interval
+// selection (synced_bcf_reader.c). rlen is len(REF): for concrete (non-symbolic)
+// alleles this equals htslib's rec->rlen exactly.
+//
+//   - overlapPos:     beg = end = POS.
+//   - overlapRecord:  beg = POS, end = POS + rlen - 1.
+//   - overlapVariant: beg = POS + off, end = POS + rlen - 1, where off is the
+//     longest run of leading bases common to REF and EVERY ALT allele, capped at
+//     rlen (htslib _set_variant_boundaries). With no ALT alleles off is 0.
+func overlapBoundaries(v *vcf.Variant, mode int) (beg, end int) {
+	rlen := len(v.Ref)
+	if rlen < 1 {
+		rlen = 1
+	}
+	switch mode {
+	case overlapPos:
+		return v.Pos, v.Pos
+	case overlapVariant:
+		off := variantLeadingOffset(v.Ref, v.Alt, rlen)
+		return v.Pos + off, v.Pos + rlen - 1
+	default: // overlapRecord
+		return v.Pos, v.Pos + rlen - 1
+	}
+}
+
+// variantLeadingOffset returns the length of the longest prefix shared by ref
+// and every alt allele, capped at rlen. It mirrors the loop in htslib's
+// _set_variant_boundaries: off starts at rlen and is reduced to the shortest
+// common-prefix length across all ALT alleles (stopping early at 0). A symbolic
+// or empty ALT (one starting with '<' or '*', or REF mismatch at position 0)
+// yields off 0, leaving the full record span.
+func variantLeadingOffset(ref string, alts []string, rlen int) int {
+	off := rlen
+	for _, alt := range alts {
+		j := 0
+		for j < len(ref) && j < len(alt) && ref[j] == alt[j] {
+			j++
+		}
+		if off > j {
+			off = j
+		}
+		if off == 0 {
+			break
+		}
+	}
+	if off > rlen {
+		off = rlen
+	}
+	return off
+}
+
+// intervalOverlapsAny reports whether the 1-based inclusive interval [beg,end]
+// on chrom overlaps any of the windows, the same predicate htslib uses
+// (region.start <= end && region.end >= beg).
+func intervalOverlapsAny(chrom string, beg, end int, regions []region) bool {
+	for _, r := range regions {
+		if r.chrom != chrom {
+			continue
+		}
+		if r.beg <= end && r.end >= beg {
+			return true
+		}
+	}
+	return false
 }
 
 // apply returns the subset of variants that pass the filter, preserving order.
@@ -135,11 +239,30 @@ func startInAny(v *vcf.Variant, regions []region) bool {
 type regionTargetCaps struct {
 	regions bool // plugin exposes -r/-R (region overlap)
 	targets bool // plugin exposes -t/-T (target start-position)
+	// overlapOption reports whether the plugin exposes --regions-overlap /
+	// --targets-overlap. Only the plugins that upstream genuinely wires to
+	// bcf_sr_set_opt(BCF_SR_*_OVERLAP) accept these flags (contrast, split,
+	// scatter), plus mendelian2 (which advertises them — upstream has a getopt
+	// bug that drops them, fixed-on-port) and trio-dnm3 (which upstream
+	// consumes-and-ignores — honoured here). For every other plugin the option is
+	// passed through to the plugin's own parser, which rejects it just as upstream
+	// does for an unknown option. The overlap MODES still default to the upstream
+	// synced-reader values (record for regions, pos for targets) regardless, so a
+	// plugin that opts out still applies the correct default predicate.
+	overlapOption bool
 }
 
 // allRegionTargetCaps is the common opt-in: both -r/-R and -t/-T are
-// region/target selection (the htslib synced-reader convention).
+// region/target selection (the htslib synced-reader convention). It does NOT
+// claim the --regions-overlap/--targets-overlap flags, since most plugins do not
+// accept them upstream; a plugin that does opts in with overlapRegionTargetCaps.
 var allRegionTargetCaps = regionTargetCaps{regions: true, targets: true}
+
+// overlapRegionTargetCaps opts a plugin into -r/-R/-t/-T AND the
+// --regions-overlap/--targets-overlap mode flags. Used by the plugins that
+// genuinely honour the overlap option (contrast, split, scatter, mendelian2,
+// trio-dnm3).
+var overlapRegionTargetCaps = regionTargetCaps{regions: true, targets: true, overlapOption: true}
 
 // regionsOnlyCaps opts a plugin into -r/-R region selection while leaving -t/-T
 // to the plugin's own parser (guess-ploidy, whose -t is --tag).
@@ -164,6 +287,11 @@ type regionTargetCapabler interface {
 // family the plugin does not expose (e.g. -t on guess-ploidy, where it means
 // --tag) is passed through untouched.
 func parseRegionTargetArgs(args []string, caps regionTargetCaps) (remaining []string, filter regionTargetFilter, err error) {
+	// Seed the upstream synced-reader overlap defaults (regions=record,
+	// targets=pos). They are honoured whether or not the explicit option is
+	// supplied.
+	filter.regionsOverlap = overlapRecord
+	filter.targetsOverlap = overlapPos
 	i := 0
 	value := func(flag, joined string) (string, error) {
 		if joined != "" {
@@ -203,6 +331,14 @@ func parseRegionTargetArgs(args []string, caps regionTargetCaps) (remaining []st
 			flag, joined = "-t", a[len("--targets="):]
 		case strings.HasPrefix(a, "--targets-file="):
 			flag, joined = "-T", a[len("--targets-file="):]
+		case a == "--regions-overlap":
+			flag = "--regions-overlap"
+		case a == "--targets-overlap":
+			flag = "--targets-overlap"
+		case strings.HasPrefix(a, "--regions-overlap="):
+			flag, joined = "--regions-overlap", a[len("--regions-overlap="):]
+		case strings.HasPrefix(a, "--targets-overlap="):
+			flag, joined = "--targets-overlap", a[len("--targets-overlap="):]
 		default:
 			remaining = append(remaining, a)
 			continue
@@ -210,12 +346,26 @@ func parseRegionTargetArgs(args []string, caps regionTargetCaps) (remaining []st
 
 		// Respect the plugin's declared capabilities: a flag for a family the
 		// plugin does not expose (e.g. -t on guess-ploidy = --tag) is left for
-		// the plugin's own parser.
+		// the plugin's own parser. The overlap options ride along with the family
+		// they configure: --regions-overlap with the region family, and
+		// --targets-overlap with the target family.
 		if (flag == "-r" || flag == "-R") && !caps.regions {
 			remaining = append(remaining, a)
 			continue
 		}
 		if (flag == "-t" || flag == "-T") && !caps.targets {
+			remaining = append(remaining, a)
+			continue
+		}
+		// The overlap-mode flags are only consumed by plugins that genuinely
+		// expose them (caps.overlapOption); otherwise they pass through to the
+		// plugin's parser, which rejects them exactly as upstream rejects an
+		// unknown option.
+		if flag == "--regions-overlap" && (!caps.regions || !caps.overlapOption) {
+			remaining = append(remaining, a)
+			continue
+		}
+		if flag == "--targets-overlap" && (!caps.targets || !caps.overlapOption) {
 			remaining = append(remaining, a)
 			continue
 		}
@@ -268,9 +418,38 @@ func parseRegionTargetArgs(args []string, caps regionTargetCaps) (remaining []st
 			if neg {
 				filter.targetsNegated = true
 			}
+		case "--regions-overlap":
+			mode, perr := parseOverlapOption(val)
+			if perr != nil {
+				return nil, regionTargetFilter{}, perr
+			}
+			filter.regionsOverlap = mode
+		case "--targets-overlap":
+			mode, perr := parseOverlapOption(val)
+			if perr != nil {
+				return nil, regionTargetFilter{}, perr
+			}
+			filter.targetsOverlap = mode
 		}
 	}
 	return remaining, filter, nil
+}
+
+// parseOverlapOption maps a --regions-overlap/--targets-overlap MODE string to
+// its integer code, replicating bcftools' parse_overlap_option (version.c):
+// "pos"/0, "record"/1, "variant"/2, case-insensitive on the words. An
+// unrecognised value is an error.
+func parseOverlapOption(arg string) (int, error) {
+	switch {
+	case strings.EqualFold(arg, "pos") || arg == "0":
+		return overlapPos, nil
+	case strings.EqualFold(arg, "record") || arg == "1":
+		return overlapRecord, nil
+	case strings.EqualFold(arg, "variant") || arg == "2":
+		return overlapVariant, nil
+	default:
+		return -1, fmt.Errorf("could not parse the overlap option: %q", arg)
+	}
 }
 
 // parseRegionSpecs turns region tokens ("chr1", "chr1:200-405", ...) into

@@ -22,9 +22,11 @@
 // fractions. An integer -f argument is a raw allele-count threshold; a float in
 // [0,1] is an allele-frequency threshold scaled by the total sample count.
 //
-// The --regions-overlap / --targets-overlap region-matching modes remain
-// unsupported (the native region/target filter does not replicate htslib's
-// overlap semantics).
+// The --regions-overlap / --targets-overlap region-matching modes (pos|0,
+// record|1, variant|2) are honoured: they are parsed by the shared region/target
+// filter and select the record interval used for the -r/-R/-t/-T overlap test,
+// matching htslib's synced-reader semantics byte-for-byte (default record for
+// -r/-R, pos for -t/-T).
 package bcftools
 
 import (
@@ -93,7 +95,7 @@ func (p *contrastPlugin) Name() string { return "contrast" }
 
 // RegionTargetCaps opts contrast into the shared -r/-R/-t/-T region/target
 // filter, applied to the records before the case/control contrast accounting.
-func (p *contrastPlugin) RegionTargetCaps() regionTargetCaps { return allRegionTargetCaps }
+func (p *contrastPlugin) RegionTargetCaps() regionTargetCaps { return overlapRegionTargetCaps }
 
 // About returns the one-line description, matching contrast.c about().
 func (p *contrastPlugin) About() string {
@@ -189,8 +191,6 @@ func (p *contrastPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, erro
 				return nil, err
 			}
 			maxACStr = v
-		case "--regions-overlap", "--targets-overlap":
-			return nil, fmt.Errorf("contrast: %s is not supported by the native plugin", a)
 		case "-o", "--output":
 			v, err := next()
 			if err != nil {
