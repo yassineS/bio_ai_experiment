@@ -5,10 +5,10 @@
 // ambiguous-pair sequence walking). Each converted record is annotated with an
 // INFO/FIXREF (or -t named) string recording the change (none/flip/swap/GT/...).
 //
-// The `id`/`--use-id` mode is deliberately unsupported: it requires a synced
-// BCF reader over a separate dbSNP VCF keyed by the ID column, machinery the
-// native plugin framework does not expose; Init returns a clean error rather
-// than diverging.
+// The `id`/`--use-id` mode (MODE_USE_ID) is implemented in the companion file
+// native_plugin_fixref_id.go: it determines the REF allele from a separate
+// dbSNP VCF keyed by the ID column and swaps REF/ALT (and the genotypes)
+// accordingly.
 package bcftools
 
 import (
@@ -29,7 +29,7 @@ const (
 	fixrefModeStats      = iota + 1 // collect and print stats, no VCF output
 	fixrefModeTop2Fwd               // Illumina TOP strand -> fwd
 	fixrefModeFlip2Fwd              // flip/swap non-ambiguous SNPs
-	fixrefModeUseID                 // unsupported (needs dbSNP synced reader)
+	fixrefModeUseID                 // determine REF from a dbSNP VCF keyed by ID
 	fixrefModeRefAlt                // swap/flip to match REF, leave GTs
 	fixrefModeFlipAll               // flip/swap all SNPs including ambiguous
 	fixrefModeSwapRefAlt            // only swap to match REF, leave GTs
@@ -61,6 +61,16 @@ type fixrefPlugin struct {
 	stderr  io.Writer
 
 	skipRID string // sequence name to skip after a faidx miss
+
+	// --use-id (MODE_USE_ID) state. dbsnpFname is the dbSNP VCF; dbsnpMap is the
+	// per-chromosome rsID -> {pos, ref} map rebuilt on a chromosome change
+	// (dbsnpRID tracks the chromosome the map was built for). dbsnpPrevPos and
+	// dbsnpUnsorted reproduce the one-shot "unsorted VCF" warning.
+	dbsnpFname    string
+	dbsnpMap      map[string]fixrefMarker
+	dbsnpRID      string
+	dbsnpPrevPos  int
+	dbsnpUnsorted bool
 
 	// statistics (mirrors the args_t counters)
 	nsite, nok, nflip, nunresolved, nswap, nflipSwap    uint32
@@ -131,9 +141,11 @@ func (p *fixrefPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error)
 				return nil, fmt.Errorf("fixref: the source strand convention not recognised: %s", v)
 			}
 		case "-i", "--use-id":
-			if _, err := needVal(); err != nil {
+			v, err := needVal()
+			if err != nil {
 				return nil, err
 			}
+			p.dbsnpFname = v
 			p.mode = fixrefModeUseID
 		case "-d", "--discard":
 			p.discard = true
@@ -154,8 +166,8 @@ func (p *fixrefPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error)
 		}
 	}
 
-	if p.mode == fixrefModeUseID {
-		return nil, fmt.Errorf("fixref: the `id`/--use-id mode is not supported; it requires a synced BCF reader over a separate dbSNP VCF keyed by the ID column, which is not available in the native plugin framework")
+	if p.mode == fixrefModeUseID && p.dbsnpFname == "" {
+		return nil, fmt.Errorf("fixref: No ID file specified, use -i/--use-id")
 	}
 	if refFname == "" {
 		return nil, fmt.Errorf("fixref: expected the -f option")
@@ -339,6 +351,8 @@ func (p *fixrefPlugin) processRecord(v *vcf.Variant) (bool, error) {
 	}
 
 	switch p.mode {
+	case fixrefModeUseID:
+		return p.applyUseID(v, ir, ia, ib)
 	case fixrefModeRefAlt:
 		return p.applyRefAlt(v, ir, ia, ib), nil
 	case fixrefModeSwapRefAlt:

@@ -90,8 +90,10 @@ func TestNativePluginFixref(t *testing.T) {
 	}
 }
 
-// TestNativePluginBatch3Unsupported asserts the deliberately unsupported paths
-// (fixref id mode, vrfs) fail cleanly from Init rather than diverging.
+// TestNativePluginBatch3Unsupported asserts the deliberately unsupported path
+// (vrfs) and the fixref id-mode misuse (-m id with no -i file) fail cleanly from
+// Init rather than diverging. The fixref id mode itself is supported and is
+// parity-checked by TestNativePluginFixrefUseID.
 func TestNativePluginBatch3Unsupported(t *testing.T) {
 	fixture := parityFixture(t, "fixref.vcf")
 	fa := fastaRefFixture(t)
@@ -99,8 +101,7 @@ func TestNativePluginBatch3Unsupported(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"fixref", []string{"-f", fa, "-m", "id"}},
-		{"fixref", []string{"-f", fa, "-i", "dbsnp.vcf.gz"}},
+		{"fixref", []string{"-f", fa, "-m", "id"}}, // -m id without -i is an error
 		{"vrfs", []string{"-f", fa, "-a", "bams.txt", "-s", "sites.txt"}},
 	}
 	for _, tc := range cases {

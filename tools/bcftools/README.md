@@ -261,6 +261,38 @@ bcftools +gvcfz input.bcf -g'PASS:GQ>60 & DP<20; PASS:GQ>40 & DP<15; Flt1:GQ>20;
 bcftools +gvcfz input.bcf -a -g'PASS:GT!="alt"'
 ```
 
+### `+fixref` — fix REF strand orientation (native)
+
+`+fixref` determines and fixes REF/ALT strand orientation against a FASTA
+reference. All upstream modes are ported: `stats` (default; collect+print the
+strand-convention stats, no VCF output), `ref-alt`, `swap`, `flip`, `flip-all`,
+`top` (Illumina TOP → fwd with ambiguous-pair sequence walking), and **`id` /
+`--use-id`** — which determines the correct REF allele from a separate dbSNP
+VCF keyed by the **ID (rsID) column** instead of from strand convention. Each
+converted record is annotated with `INFO/FIXREF` (`-t` renames the tag)
+recording the change (`none`/`swap`/`flip`/`GT`/`skip`/`err`).
+
+```bash
+# Match REF/ALT to a dbSNP VCF by rsID; discard sites with no dbSNP match.
+bcftools +fixref input.vcf -- -f ref.fa -i dbsnp.vcf.gz -d
+# Equivalent: -m id with an explicit dbSNP file.
+bcftools +fixref input.vcf -- -f ref.fa -m id -i dbsnp.vcf.gz
+```
+
+In `id` mode each input record's ID is looked up in a per-chromosome
+rsID→{position, ref-base} map built from the dbSNP file (skipping non-SNPs,
+non-`[ACGT]` REF and missing `.` IDs; the first record wins on a duplicate ID).
+If the input REF already equals the dbSNP REF the site is left unchanged
+(`none`); if the input ALT equals the dbSNP REF, REF/ALT are swapped and every
+sample genotype is flipped (`swap`); a missing/unknown ID or neither-allele
+match is left unresolved (`skip`, or dropped with `-d/--discard`). When the
+dbSNP record sits at a different position the input position is corrected (and a
+`fixed pos` is counted). Both the corrected VCF and the end-of-run stats summary
+match upstream 1.23.1 byte-for-byte. Upstream requires the dbSNP file to be
+bgzip-compressed and tabix/CSI-indexed; this port additionally accepts a plain
+(un-indexed) `.vcf`/`.vcf.gz` as a fix-on-port robustness superset (see
+`docs/UPSTREAM_BUGS.md#bcftools-fixref-id-plain-vcf`).
+
 ### `+frameshifts` — annotate frameshift indels (native)
 
 `frameshifts` is implemented natively (pure Go). It reads exons from
