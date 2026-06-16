@@ -696,26 +696,27 @@ func TestParity_Keep(t *testing.T) {
 // --singletons, --TsTv-summary, --TsTv-by-count, --TsTv-by-qual
 // -----------------------------------------------------------------------------
 
-// TestParity_Freq — `--freq` byte-for-byte against an upstream-format
-// golden file. Only biallelic SNPs appear because our port restricts
-// --freq to biallelic loci (PARITY_ROADMAP.md#vcftools tracks the
-// multi-allelic gap).
+// TestParity_Freq — `--freq` byte-for-byte against the LIVE upstream
+// binary. The port now emits every site upstream does, including
+// multi-allelic and monomorphic (ALT=".") loci, so the comparison is a
+// full file diff against the oracle rather than the (now superseded)
+// biallelic-only golden.
 func TestParity_Freq(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Freq: true})
-	got := readFileBytes(t, prefix+".frq")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "freq.expected.frq"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".frq mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--freq")+".frq")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Freq: true})+".frq")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".frq mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_Counts — `--counts` byte-for-byte.
+// TestParity_Counts — `--counts` byte-for-byte against LIVE upstream.
 func TestParity_Counts(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Counts: true})
-	got := readFileBytes(t, prefix+".frq.count")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "counts.expected.frq.count"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".frq.count mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--counts")+".frq.count")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Counts: true})+".frq.count")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".frq.count mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
@@ -782,13 +783,16 @@ func TestParity_Hardy(t *testing.T) {
 	}
 }
 
-// TestParity_MissingSite — byte-for-byte.
+// TestParity_MissingSite — byte-for-byte against LIVE upstream. The port
+// now counts missingness per chromosome (2 per diploid call), matching
+// upstream's output_site_missingness, so the comparison is against the
+// oracle rather than the (now superseded) per-sample golden.
 func TestParity_MissingSite(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{MissingSite: true})
-	got := readFileBytes(t, prefix+".lmiss")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "missing_site.expected.lmiss"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".lmiss mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--missing-site")+".lmiss")
+	got := readFileBytes(t, runGo(t, vcf, &Params{MissingSite: true})+".lmiss")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".lmiss mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
@@ -854,44 +858,47 @@ func TestGenotypeIsMissing(t *testing.T) {
 	}
 }
 
-// TestParity_Depth — byte-for-byte.
+// TestParity_Depth — byte-for-byte against LIVE upstream (mean depth printed
+// with C++ defaultfloat precision 6).
 func TestParity_Depth(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Depth: true})
-	got := readFileBytes(t, prefix+".idepth")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "depth.expected.idepth"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".idepth mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--depth")+".idepth")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Depth: true})+".idepth")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".idepth mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_SiteDepth — byte-for-byte. SUMSQ_DEPTH is a literal 0 — see
-// docs/PARITY_ROADMAP.md#vcftools.
+// TestParity_SiteDepth — byte-for-byte against LIVE upstream. The port now
+// emits every passed site and the real SUMSQ_DEPTH column.
 func TestParity_SiteDepth(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{SiteDepth: true})
-	got := readFileBytes(t, prefix+".ldepth")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "site_depth.expected.ldepth"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".ldepth mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--site-depth")+".ldepth")
+	got := readFileBytes(t, runGo(t, vcf, &Params{SiteDepth: true})+".ldepth")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".ldepth mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_SiteMeanDepth — byte-for-byte. VAR_DEPTH is a literal 0.
+// TestParity_SiteMeanDepth — byte-for-byte against LIVE upstream, including
+// the VAR_DEPTH column and "-nan" rows for sites with no depth data.
 func TestParity_SiteMeanDepth(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{SiteMeanDepth: true})
-	got := readFileBytes(t, prefix+".ldepth.mean")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "site_mean_depth.expected.ldepth.mean"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".ldepth.mean mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--site-mean-depth")+".ldepth.mean")
+	got := readFileBytes(t, runGo(t, vcf, &Params{SiteMeanDepth: true})+".ldepth.mean")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".ldepth.mean mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_Het — byte-for-byte.
+// TestParity_Het — byte-for-byte against LIVE upstream. The port now
+// implements the PLINK-style F (inbreeding) calculation upstream uses.
 func TestParity_Het(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Het: true})
-	got := readFileBytes(t, prefix+".het")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "het.expected.het"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".het mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--het")+".het")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Het: true})+".het")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".het mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
