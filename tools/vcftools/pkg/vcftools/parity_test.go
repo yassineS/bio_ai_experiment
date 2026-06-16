@@ -720,30 +720,35 @@ func TestParity_Counts(t *testing.T) {
 	}
 }
 
-// TestParity_SitePi — `--site-pi` byte-for-byte against the upstream
-// vcftools (0.1.18) golden file, produced by running
-// `vcftools --vcf sample.vcf --site-pi` against
-// reference_code/vcftools/src/cpp/vcftools.
+// TestParity_SitePi — `--site-pi` byte-for-byte against the LIVE upstream
+// vcftools (0.1.18) binary built from the reference_code submodule. The
+// expected output IS upstream's output (no checked-in golden): this test
+// builds the oracle and runs both binaries over the same multi-sample
+// fixture, which covers monomorphic (ALT="."), multi-allelic, haploid-X
+// and missing-GT sites.
 //
 // Resolution of the former "known deviation": upstream's per-allele
 // pairwise-mismatch loop (output_per_site_nucleotide_diversity,
 // variant_file_output.cpp:3870) computes
-// `mismatches = sum_a c_a*(n-c_a)` and `pi = mismatches/(n*(n-1))`, which
-// is algebraically identical to our textbook
-// `(n^2 - sum_a c_a^2)/(n*(n-1))`. The only real differences were
-// (1) output formatting (upstream prints "0.6"/"0" via a default
-// ostream, not "%.6f"), now matched via formatFreq, and
+// `mismatches = sum_a c_a*(total-c_a)` over the N_alleles allele indices,
+// with `pi = mismatches/(total*(total-1))` and total == N_non_missing_chr.
+// Because get_allele_counts only ever reads the two diploid slots
+// (entry_getters.cpp:395), `total == n` and the sum equals the textbook
+// `(n^2 - sum_a c_a^2)`, so upstream's pi is exactly the textbook
+// `(n^2 - sum_a c_a^2)/(n*(n-1))` — NOT a bug. The only real differences
+// from a naive port were (1) output formatting (upstream prints "0.6"/"0"
+// via a default C++ ostream, not "%.6f"), matched via formatFreq, and
 // (2) site selection: upstream emits exactly the diploid sites
-// (entry::is_diploid), so it KEEPS the fully-missing diploid
-// 20:1235237 (pi=0) and DROPS the haploid chrX sites (X:9, X:10, X:12).
-// Our port now applies the same `is_diploid` gate. See
+// (entry::is_diploid), so it KEEPS the fully-missing diploid 20:1235237
+// (pi=0) and DROPS any site with a haploid included sample (chrX). Our
+// port applies the same `is_diploid` gate. See
 // docs/UPSTREAM_BUGS.md#vcftools-site-pi.
 func TestParity_SitePi(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{SitePi: true})
-	got := readFileBytes(t, prefix+".sites.pi")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "site_pi.expected.sites.pi"))
-	if !bytes.Equal(got, want) {
-		t.Fatalf(".sites.pi mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--site-pi")+".sites.pi")
+	got := readFileBytes(t, runGo(t, vcf, &Params{SitePi: true})+".sites.pi")
+	if !bytes.Equal(got, up) {
+		t.Fatalf(".sites.pi mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
@@ -769,6 +774,38 @@ func TestParity_SitePi_Formula(t *testing.T) {
 		if want, ok := wanted[key]; ok && fields[2] != want {
 			t.Fatalf("pi at %s: got %s, want %s", key, fields[2], want)
 		}
+	}
+}
+
+// TestParity_SitePi_EdgeCases — `--site-pi` byte-for-byte against the LIVE
+// upstream binary on a synthetic VCF that exercises the corner cases the
+// committed sample.vcf only partly covers: a four-allele site, a site
+// where every included sample is fully missing except one, a site mixing
+// diploid and haploid calls (must be dropped wholesale by is_diploid), an
+// all-homozygous (pi=0) site, a phased multi-allelic site, and an
+// indel/ALT="." monomorphic site. The expected output IS upstream's.
+func TestParity_SitePi_EdgeCases(t *testing.T) {
+	const vcf = `##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4
+1	100	.	A	T	.	.	.	GT	0/0	0/0	0/0	0/0
+1	200	.	A	T	.	.	.	GT	0/1	1/1	0/0	./.
+1	300	.	A	C,G	.	.	.	GT	0/1	1/2	2/2	0/0
+1	400	.	A	.	.	.	.	GT	0/0	0/0	0/0	0/0
+1	500	.	A	T	.	.	.	GT	0/0	0/1	1	1/1
+1	600	.	A	T	.	.	.	GT	./.	./.	./.	0/1
+1	700	.	A	T,C,G	.	.	.	GT	0/1	2/3	1/2	0/3
+1	800	.	AT	A	.	.	.	GT	0|1	1|1	0|0	0/1
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edge.vcf")
+	if err := os.WriteFile(path, []byte(vcf), 0o644); err != nil {
+		t.Fatalf("write edge.vcf: %v", err)
+	}
+	up := readFileBytes(t, runUpstream(t, path, "--site-pi")+".sites.pi")
+	got := readFileBytes(t, runGo(t, path, &Params{SitePi: true})+".sites.pi")
+	if !bytes.Equal(got, up) {
+		t.Fatalf(".sites.pi mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
