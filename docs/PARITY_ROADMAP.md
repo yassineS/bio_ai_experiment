@@ -240,7 +240,14 @@ Recently closed (this wave, treat as merged):
   byte-parity (std::mt19937_64 port).
 - **vcftools**: 0 unsupported flags; `--freq2`/`--counts2` schema complete.
 - **CRAM**: X_EXT bzip2 *encode* (in-tree pure-Go); v2.1 decode + v3.0/3.1
-  read+write validated byte-for-byte against live `samtools`.
+  read+write validated byte-for-byte against live `samtools`. Lossy read
+  names (`lossy_names=1`) now decode: a detached record's real name is read
+  from the mate block, and dropped duplicate names are reconstructed as
+  `<prefix>:<n>` exactly as htslib's `cram_to_bam`
+  (`TestLossyNamesReadParity`). The writer's `=`/`X` CIGAR handling
+  (`--eqx` aligner output, folded to per-base features like M, matching
+  htslib) is validated against live `samtools` (`TestEqXWriteParity`); the
+  `B` (CIGAR back-step) op is rejected to match htslib's own CRAM encoder.
 
 ## Per-tool gap list
 

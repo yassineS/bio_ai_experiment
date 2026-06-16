@@ -43,7 +43,7 @@ import (
 // parser will not even construct a record carrying B without a
 // length-mismatch error. Matching upstream, the writer returns a clear
 // error rather than inventing a feature encoding htslib could never read
-// back. See docs/UPSTREAM_BUGS.md.
+// back. See docs/CRAM_ROADMAP.md §6 (the lossy-names + =/X/B entry).
 func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 	b := e.buffers
 	seq := seqBytes(rec.Seq)
@@ -102,7 +102,7 @@ func (e *recordEncoder) encodeFeatures(rec *sam.Record, readLen int) error {
 			// htslib's CRAM encoder has no back-step case and rejects B with
 			// "Unknown CIGAR op code"; its SAM parser cannot even build such a
 			// record. We match that and reject B rather than emit a feature
-			// stream upstream could never decode. See docs/UPSTREAM_BUGS.md.
+			// stream upstream could never decode. See docs/CRAM_ROADMAP.md §6.
 			return fmt.Errorf("CIGAR back-step op B is not supported (htslib's CRAM encoder rejects it as well)")
 		default:
 			return fmt.Errorf("CIGAR operation %c is not supported by the simple CRAM writer", op.Char())
