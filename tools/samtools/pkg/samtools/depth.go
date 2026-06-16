@@ -83,9 +83,12 @@ func Depth(inputs []io.Reader, out io.Writer, opts DepthOptions) error {
 	}
 	readers := make([]sam.Reader, len(inputs))
 	for i, r := range inputs {
-		rd, err := alnio.NewReader(r)
+		rd, err := alnio.NewReaderThreaded(r, "", opts.Threads)
 		if err != nil {
 			return fmt.Errorf("samtools depth: input %d: %w", i, err)
+		}
+		if rc, ok := rd.(io.Closer); ok {
+			defer rc.Close()
 		}
 		readers[i] = rd
 	}

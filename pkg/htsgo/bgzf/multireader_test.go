@@ -3,6 +3,7 @@ package bgzf
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -79,6 +80,33 @@ func TestMultiReader_Truncated(t *testing.T) {
 	}
 }
 
+// TestMultiReader_EarlyClose closes a MultiReader after reading only a prefix of
+// a multi-block stream, then confirms the goroutines unwind (no leak/hang). Run
+// under -race to also assert there is no data race on the teardown path.
+func TestMultiReader_EarlyClose(t *testing.T) {
+	payload := make([]byte, 8*MaxBlockSize)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	compressed := makeBGZF(t, payload)
+	mr, err := NewMultiReader(bytes.NewReader(compressed), 4)
+	if err != nil {
+		t.Fatalf("NewMultiReader: %v", err)
+	}
+	// Read only a small prefix, then abandon the stream.
+	prefix := make([]byte, 100)
+	if _, err := io.ReadFull(mr, prefix); err != nil {
+		t.Fatalf("ReadFull prefix: %v", err)
+	}
+	if err := mr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Close is idempotent.
+	if err := mr.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
 // TestMultiReader_Empty decodes an empty (EOF-only) BGZF stream to zero bytes.
 func TestMultiReader_Empty(t *testing.T) {
 	compressed := makeBGZF(t, nil)
@@ -92,5 +120,39 @@ func TestMultiReader_Empty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("want 0 bytes, got %d", len(got))
+	}
+}
+
+// BenchmarkMultiReader measures pure BGZF block-decode throughput at 1 vs
+// several worker goroutines, isolating the inflate work (the part `-@` input
+// threading parallelises) from any downstream record parsing. The payload is
+// compressible (so deflate does real work per block) and spans many blocks. Run
+// with `go test -run=^$ -bench=BenchmarkMultiReader ./pkg/htsgo/bgzf/...`.
+func BenchmarkMultiReader(b *testing.B) {
+	// ~64 MiB of moderately compressible data => hundreds of BGZF blocks.
+	payload := bytes.Repeat([]byte("ACGTACGTNNNNacgtACGTTTTTGGGGCCCCAAAA\n"), 1800000)
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if _, err := w.Write(payload); err != nil {
+		b.Fatalf("write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		b.Fatalf("close: %v", err)
+	}
+	compressed := buf.Bytes()
+	for _, threads := range []int{1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("threads=%d", threads), func(b *testing.B) {
+			b.SetBytes(int64(len(payload)))
+			for i := 0; i < b.N; i++ {
+				mr, err := NewMultiReader(bytes.NewReader(compressed), threads)
+				if err != nil {
+					b.Fatalf("NewMultiReader: %v", err)
+				}
+				if _, err := io.Copy(io.Discard, mr); err != nil {
+					b.Fatalf("Copy: %v", err)
+				}
+				mr.Close()
+			}
+		})
 	}
 }

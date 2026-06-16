@@ -166,6 +166,19 @@ func OpenReader(filename string) (io.ReadCloser, error) {
 	}
 }
 
+// OpenRaw opens filename and returns its bytes WITHOUT any decompression: a
+// BGZF or gzip file is returned still-compressed. It is the opener for callers
+// that want to perform their own (e.g. block-parallel) decompression downstream
+// — passing an already-decompressed stream would defeat that. A filename of "-"
+// or "" reads standard input; a remote URL (http(s)://, s3://, gs://) is opened
+// through the hfile package. The caller closes the returned ReadCloser.
+func OpenRaw(filename string) (io.ReadCloser, error) {
+	if filename == "-" || filename == "" {
+		return &noCloseReader{os.Stdin}, nil
+	}
+	return openSource(filename)
+}
+
 // openSource opens filename and returns a raw (undecoded) ReadCloser. Remote
 // URLs are routed through the hfile package; everything else is opened as a
 // local file. Stdin ("-"/"") is handled by the caller and never reaches here.
