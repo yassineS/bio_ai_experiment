@@ -154,11 +154,16 @@ func TestNativePluginBatch6Unsupported(t *testing.T) {
 		name string
 		args []string
 	}{
-		// Numeric output is libm-precision-dependent / file-output / heavy model.
-		{"parental-origin", []string{"-p", "CHILD,FATHER,MOTHER", "-t", "del"}},
-		{"parental-origin", []string{"-p", "CHILD,FATHER,MOTHER", "-t", "dup"}},
-		{"color-chrs", []string{"-p", "/tmp/cc", "-t", "MOTHER,FATHER,CHILD"}},
-		{"trio-dnm3", []string{"-p", "CHILD,FATHER,MOTHER"}},
+		// trio-dnm3: the default (and explicit DMM/ALM/DNG) float models compute a
+		// libm-precision-dependent de-novo score and remain unsupported. The NAIVE
+		// (GT-only) model IS now ported and parity-checked in TestNativePluginTrioDNM3Naive.
+		// parental-origin and color-chrs are now fully ported (byte parity) and are
+		// parity-checked in TestNativePluginParentalOrigin / TestNativePluginColorChrs.
+		{"trio-dnm3", []string{"-p", "CHILD,FATHER,MOTHER"}},              // default DMM
+		{"trio-dnm3", []string{"--use-DMM", "-p", "CHILD,FATHER,MOTHER"}}, // explicit DMM
+		{"trio-dnm3", []string{"--use-DNG", "-p", "CHILD,FATHER,MOTHER"}}, // DeNovoGear
+		{"trio-dnm3", []string{"--use-ALM", "-p", "CHILD,FATHER,MOTHER"}}, // allele-likelihood
+		{"trio-dnm3", nil}, // missing -p/-P
 		// trio-stats: alt-trios, streaming targets and file output remain
 		// unsupported (the -i/-e filter modes are now supported and parity-checked
 		// in TestNativePluginTrioStats); the curly-brace expansion is still rejected.
