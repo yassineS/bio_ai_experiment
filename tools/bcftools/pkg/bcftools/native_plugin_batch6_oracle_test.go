@@ -154,15 +154,12 @@ func TestNativePluginBatch6Unsupported(t *testing.T) {
 		name string
 		args []string
 	}{
-		// trio-dnm3: the default (and explicit DMM/ALM/DNG) float models compute a
-		// libm-precision-dependent de-novo score and remain unsupported. The NAIVE
-		// (GT-only) model IS now ported and parity-checked in TestNativePluginTrioDNM3Naive.
-		// parental-origin and color-chrs are now fully ported (byte parity) and are
-		// parity-checked in TestNativePluginParentalOrigin / TestNativePluginColorChrs.
-		{"trio-dnm3", []string{"-p", "CHILD,FATHER,MOTHER"}},              // default DMM
-		{"trio-dnm3", []string{"--use-DMM", "-p", "CHILD,FATHER,MOTHER"}}, // explicit DMM
-		{"trio-dnm3", []string{"--use-DNG", "-p", "CHILD,FATHER,MOTHER"}}, // DeNovoGear
-		{"trio-dnm3", []string{"--use-ALM", "-p", "CHILD,FATHER,MOTHER"}}, // allele-likelihood
+		// trio-dnm3: the NAIVE model is parity-checked in TestNativePluginTrioDNM3Naive
+		// and the DMM/ALM/DNG float models in TestNativePluginTrioDNM3FloatModels (with
+		// the tolerance-aware proximity helper). parental-origin and color-chrs are
+		// fully ported and parity-checked in their own tests. The only remaining
+		// trio-dnm3 error path is the missing -p/-P option, plus the AD+PL-only DMM
+		// site that has no FORMAT/AD/QM (asserted in the float-model test).
 		{"trio-dnm3", nil}, // missing -p/-P
 		// trio-stats: alt-trios, streaming targets and file output remain
 		// unsupported (the -i/-e filter modes are now supported and parity-checked

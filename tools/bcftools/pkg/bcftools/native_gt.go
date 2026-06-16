@@ -131,6 +131,14 @@ func formatVCFFloat(v float64) string {
 		return "nan"
 	}
 	f := float64(f32)
+	// htslib's kputd prints infinities as "inf"/"-inf" (lowercase, no sign for
+	// +inf), e.g. the trio-dnm3 DNM:log score can be -inf at a fully de-novo site.
+	if math.IsInf(f, 1) {
+		return "inf"
+	}
+	if math.IsInf(f, -1) {
+		return "-inf"
+	}
 	if f == math.Trunc(f) && !math.IsInf(f, 0) && math.Abs(f) < 1e15 {
 		// Preserve negative zero, which htslib's %g prints as "-0" (e.g. GL
 		// derived from PL=0 via -0.1*0 == -0.0).

@@ -1,17 +1,19 @@
-// Native port of the upstream `trio-dnm3` plugin (plugins/trio-dnm3.c) for its
-// NAIVE scoring model (`--use-NAIVE`, or any `--dnm-tag TAG:flag`). The NAIVE
-// model determines de-novo mutations purely from FORMAT/GT by checking
-// Mendelian inheritance: a site/trio is flagged when the child's genotype is
-// incompatible with the parents'. It is the only trio-dnm3 mode with no
-// floating-point dependence — the per-trio verdict is an integer table lookup
-// (priors.denovo[fi][mi][ci]) over genotype indices, so the FORMAT/DNM=1 and
-// FORMAT/VA (de-novo allele) annotations are byte-reproducible against upstream.
+// Native port of the upstream `trio-dnm3` plugin (plugins/trio-dnm3.c). This
+// file owns option parsing, trio resolution (PED/PFM), the chrX/PAR handling,
+// the -i/-e per-trio filter, and the NAIVE scoring model (`--use-NAIVE`, or any
+// `--dnm-tag TAG:flag`). The NAIVE model determines de-novo mutations purely
+// from FORMAT/GT by checking Mendelian inheritance: a site/trio is flagged when
+// the child's genotype is incompatible with the parents'. Its per-trio verdict
+// is an integer table lookup (priors.denovo[fi][mi][ci]) over genotype indices,
+// so the FORMAT/DNM=1 and FORMAT/VA annotations are byte-reproducible.
 //
-// The other models (DMM, ALM, DNG; the default is DMM) compute a phred/log
-// de-novo score from a Dirichlet-multinomial / DeNovoGear likelihood over
-// AD/PL/QS with libm pow/log/exp and kf_lgamma. Those primary outputs are
-// libm-precision-dependent and are reported as a clean unsupported Init error
-// rather than emitting a silently-divergent score.
+// The float models — DMM (Dirichlet-multinomial, the default), ALM (allele-
+// likelihood) and DNG (DeNovoGear) — are ported in
+// native_plugin_trio_dnm3_models.go / _score.go / _record.go; RunFull dispatches
+// to runFloatModels for them. They compute a phred/log de-novo score from
+// AD/PL/QS/QM with the bit-stable in-tree kfBetai/kfLgamma plus Go's math, and
+// are validated with the tolerance-aware proximity comparison (the libm
+// last-ULP boundary; see numeric_parity_test.go and the package README).
 //
 // trio-dnm3 is a run()-style plugin (options precede the input file, no `--`).
 // It is registered as a fullPlugin so runNativePlugin hands it the whole
@@ -22,6 +24,7 @@ package bcftools
 import (
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 
@@ -102,6 +105,7 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 		pfm, pedFname             string
 		dnmScoreTag               = ""
 		dnmAlleleTag              = "VA"
+		dnmVAFTag                 = "VAF"
 		useModel                  = 0
 		scoreType                 = 0
 		strictlyNovel             bool
@@ -112,7 +116,76 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 		outputType                = OutputVCF
 		regions                   []string
 		regionsFile               string
+
+		// Float-model knobs, defaults from run() in trio-dnm3.c.
+		useDNGPriors bool
+		withPPL      bool
+		withPAD      bool
+		withCAD      bool
+		forceAD      bool
+		mrate        = 1e-8
+		phi          = 1e3
+		noisePrior   = 1e-3
+		minVAF       = -1.0
+		allelicDrop  = 0.0
+		sbCoeff      = -1.0
+		minScore     = math.Inf(-1)
+		minQM        = phred2num(30)
+		pnSNV        = pnoise{frac: 0.011, frac1: 0.045}
+		pnIndel      pnoise
+		pnIndelSet   bool
 	)
+	parsePN := func(s string, into *pnoise, isPNS bool) error {
+		// FRAC[,NUM][:TYPE]
+		typ := ""
+		if c := strings.LastIndexByte(s, ':'); c >= 0 {
+			typ = strings.ToLower(s[c+1:])
+			s = s[:c]
+		}
+		frac, absv := 0.0, 0.0
+		if c := strings.IndexByte(s, ','); c >= 0 {
+			f, err := strconv.ParseFloat(s[:c], 64)
+			if err != nil {
+				return fmt.Errorf("trio-dnm3: could not parse --pn/--pns %q", s)
+			}
+			a, err := strconv.ParseFloat(s[c+1:], 64)
+			if err != nil {
+				return fmt.Errorf("trio-dnm3: could not parse --pn/--pns %q", s)
+			}
+			frac, absv = f, a
+		} else {
+			f, err := strconv.ParseFloat(s, 64)
+			if err != nil {
+				return fmt.Errorf("trio-dnm3: could not parse --pn/--pns %q", s)
+			}
+			frac = f
+		}
+		if frac < 0 || frac > 1 {
+			return fmt.Errorf("trio-dnm3: expected value from the interval [0,1] for --pn/--pns")
+		}
+		set := func(p *pnoise) {
+			if isPNS {
+				p.frac1, p.abs1 = frac, absv
+			} else {
+				p.frac, p.abs = frac, absv
+			}
+		}
+		switch typ {
+		case "snv":
+			set(&pnSNV)
+		case "indel":
+			set(&pnIndel)
+			pnIndelSet = true
+		case "":
+			set(&pnSNV)
+			set(&pnIndel)
+			pnIndelSet = true
+		default:
+			return fmt.Errorf("trio-dnm3: could not parse --pn/--pns %q", typ)
+		}
+		_ = into
+		return nil
+	}
 
 	args := opts.Args
 	for i := 0; i < len(args); i++ {
@@ -154,15 +227,29 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 			if err != nil {
 				return err
 			}
-			switch strings.ToLower(v) {
-			case "naive":
+			// -u/--use accepts model names and the -u key=value knobs handled by
+			// set_option() upstream; we support the model selectors and dng-priors.
+			low := strings.ToLower(v)
+			switch {
+			case low == "naive":
 				useModel = dnmUseNaive
-			case "dmm":
+			case low == "dmm":
 				useModel = dnmUseDMM
-			case "alm":
+			case low == "alm":
 				useModel = dnmUseALM
-			case "dng":
+			case low == "dng":
 				useModel = dnmUseDNG
+				useDNGPriors = true
+			case low == "dng-priors":
+				useDNGPriors = true
+			case low == "ppl":
+				withPPL = true
+			case strings.HasPrefix(low, "mrate="):
+				f, err := parseDNMFloat("-u mrate", v[len("mrate="):])
+				if err != nil {
+					return err
+				}
+				mrate = f
 			default:
 				return fmt.Errorf("trio-dnm3: the option \"-u %s\" is not recognised", v)
 			}
@@ -174,6 +261,7 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 			useModel = dnmUseALM
 		case "--use-DNG":
 			useModel = dnmUseDNG
+			useDNGPriors = true
 		case "-n", "--strictly-novel":
 			strictlyNovel = true
 		case "-X", "--chrX":
@@ -221,15 +309,128 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 				return err
 			}
 			regionsFile = v
-		case "--dng-priors", "--ppl", "--with-pPL", "--with-ppl", "--with-pAD",
-			"--with-pad", "--with-cAD", "--with-cad", "--force-AD", "--no-version":
-			// Accepted but only meaningful to the float models; for NAIVE they have
-			// no effect (and the float models are unsupported below).
-		case "--mrate", "--pn", "--pns", "--max-QM", "--phi", "--noise-prior", "--np",
-			"--ad", "--allelic-dropout", "--strand-bias", "--sb", "--min-vaf", "--vaf",
-			"-m", "--min-score", "--regions-overlap", "--targets-overlap", "-v", "--verbosity":
-			// Value-taking options that do not affect the NAIVE verdict. Consume the
-			// value and ignore (the float-model knobs are irrelevant to NAIVE).
+		case "--vaf":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			dnmVAFTag = v
+		case "--dng-priors":
+			useDNGPriors = true
+		case "--ppl", "--with-pPL", "--with-ppl":
+			withPPL = true
+		case "--with-pAD", "--with-pad":
+			withPAD = true
+		case "--with-cAD", "--with-cad":
+			withCAD = true
+		case "--force-AD":
+			forceAD = true
+		case "--no-version":
+			// Provenance is stripped in tests; nothing to do here.
+		case "--mrate":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if mrate, err = parseDNMFloat(a, v); err != nil {
+				return err
+			}
+		case "--pn":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if err := parsePN(v, nil, false); err != nil {
+				return err
+			}
+		case "--pns":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if err := parsePN(v, nil, true); err != nil {
+				return err
+			}
+		case "--max-QM":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			q, perr := parseDNMFloat(a, v)
+			if perr != nil {
+				return perr
+			}
+			if q < 0 {
+				minQM = -phred2num(-q)
+			} else {
+				minQM = phred2num(q)
+			}
+			if math.Abs(minQM) > 1 {
+				if minQM < 0 {
+					minQM = -1
+				} else {
+					minQM = 1
+				}
+			}
+		case "--phi":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if phi, err = parseDNMFloat(a, v); err != nil {
+				return err
+			}
+			if phi <= 0 {
+				return fmt.Errorf("trio-dnm3: expected positive values: --phi %s", v)
+			}
+		case "--noise-prior", "--np":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if noisePrior, err = parseDNMFloat(a, v); err != nil {
+				return err
+			}
+			if math.Abs(noisePrior) > 1 {
+				return fmt.Errorf("trio-dnm3: expected value [1,1] --noise-prior %s", v)
+			}
+		case "--ad", "--allelic-dropout":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if allelicDrop, err = parseDNMFloat(a, v); err != nil {
+				return err
+			}
+		case "--strand-bias", "--sb":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if sbCoeff, err = parseDNMFloat(a, v); err != nil {
+				return err
+			}
+		case "--min-vaf":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if minVAF, err = parseDNMFloat(a, v); err != nil {
+				return err
+			}
+			if minVAF < 0 || minVAF > 0.5 {
+				return fmt.Errorf("trio-dnm3: expected value [0,0.5]: --min-vaf %s", v)
+			}
+		case "-m", "--min-score":
+			v, err := next()
+			if err != nil {
+				return err
+			}
+			if minScore, err = parseDNMFloat(a, v); err != nil {
+				return err
+			}
+		case "--regions-overlap", "--targets-overlap", "-v", "--verbosity":
+			// Value-taking options that do not affect the score; consume and ignore.
 			if _, err := next(); err != nil {
 				return err
 			}
@@ -263,6 +464,7 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 	// Resolve the dnm score tag and type (mirrors init_data()): a bare "DNM"
 	// defaults to :log (float); ":flag" implies NAIVE; NAIVE requires :flag.
 	scoreTag := "DNM"
+	floatScoreType := dnmScoreLog
 	if dnmScoreTag != "" {
 		if idx := strings.IndexByte(dnmScoreTag, ':'); idx >= 0 {
 			if idx == 0 {
@@ -272,8 +474,15 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 			switch strings.ToLower(dnmScoreTag[idx+1:]) {
 			case "flag":
 				scoreType = dnmTypeFlag
-			case "log", "phred", "prob":
-				scoreType = 0 // a float type
+			case "log":
+				scoreType = 0
+				floatScoreType = dnmScoreLog
+			case "phred":
+				scoreType = 0
+				floatScoreType = dnmScorePhred
+			case "prob":
+				scoreType = 0
+				floatScoreType = dnmScoreProb
 			default:
 				return fmt.Errorf("trio-dnm3: the type \"%s\" is not supported", dnmScoreTag[idx+1:])
 			}
@@ -309,9 +518,29 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 		return fmt.Errorf("trio-dnm3: expected only -p or -P option, not both")
 	}
 
-	if useModel != dnmUseNaive {
-		return fmt.Errorf("trio-dnm3: only the --use-NAIVE (GT-only) model is supported by the native plugin; the DMM/ALM/DNG models compute a phred/log de-novo score from a Dirichlet-multinomial / DeNovoGear likelihood over AD/PL/QS using libm pow/log/exp/lgamma that is not bit-identical to Go's math, so byte parity cannot be guaranteed; run upstream bcftools for those models")
+	// Default-value resolution that depends on the model, mirroring init_data().
+	if minVAF < 0 {
+		if useModel == dnmUseDMM {
+			minVAF = 0.2
+		} else {
+			minVAF = 0
+		}
 	}
+	if sbCoeff < 0 {
+		if useModel == dnmUseDMM {
+			sbCoeff = 1e-2
+		} else {
+			sbCoeff = 0
+		}
+	}
+	if useModel == dnmUseDNG && sbCoeff < 0 {
+		sbCoeff = 0
+	}
+	sbCoeff = math.Abs(sbCoeff)
+	if !pnIndelSet {
+		pnIndel = pnoise{} // default --pns 0:indel --pn 0:indel
+	}
+
 	if outputFile != "" && outputFile != "-" {
 		return fmt.Errorf("trio-dnm3: writing to a file (-o) is not supported by the native plugin; use stdout")
 	}
@@ -332,8 +561,49 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 	if err != nil {
 		return fmt.Errorf("trio-dnm3: %w", err)
 	}
-	if !hasFormatHeader(hdr.MetaInfo, "GT") {
-		return fmt.Errorf("trio-dnm3: the tag FORMAT/GT is not present in %s", input)
+
+	// Header-level tag requirements, mirroring init_data().
+	hasAD := hasFormatHeader(hdr.MetaInfo, "AD")
+	hasSP := hasFormatHeader(hdr.MetaInfo, "SP")
+	needPL := false
+	needQS := false
+	if useModel == dnmUseNaive {
+		if !hasFormatHeader(hdr.MetaInfo, "GT") {
+			return fmt.Errorf("trio-dnm3: the tag FORMAT/GT is not present in %s", input)
+		}
+	} else {
+		needPL = true
+		if withCAD && useModel == dnmUseDMM {
+			needPL = false
+		}
+		if needPL && !hasFormatHeader(hdr.MetaInfo, "PL") {
+			return fmt.Errorf("trio-dnm3: the tag FORMAT/PL is not present in %s", input)
+		}
+		if !hasAD && stderr != nil {
+			fmt.Fprintf(stderr, "Warning: the tag FORMAT/AD is not present in %s, the output tag FORMAT/VAF will not be added\n", input)
+		}
+		if withPAD && !hasAD {
+			return fmt.Errorf("trio-dnm3: no FORMAT/AD is present in %s, cannot run with --with-pAD", input)
+		}
+		if useModel == dnmUseALM && !withPPL && !withPAD {
+			needQS = true
+			if !hasFormatHeader(hdr.MetaInfo, "QS") {
+				return fmt.Errorf("trio-dnm3: the FORMAT/QS tag is not present; add --with-pAD or --with-pPL, or generate QS with `bcftools mpileup -a AD,QS`")
+			}
+		}
+		if useModel == dnmUseDMM {
+			needQS = hasFormatHeader(hdr.MetaInfo, "QS")
+			okData := true
+			if !needQS && !hasAD {
+				okData = false
+			}
+			if minQM >= 0 && !hasFormatHeader(hdr.MetaInfo, "QM") {
+				okData = false
+			}
+			if !okData {
+				return fmt.Errorf("trio-dnm3: the DMM method requires FORMAT/AD, QM and optionally FORMAT/SP; use --max-QM with a negative value to run without QM")
+			}
+		}
 	}
 
 	// Resolve trios.
@@ -372,6 +642,21 @@ func (p *trioDNM3Plugin) RunFull(opts PluginOptions, out io.Writer, stderr io.Wr
 
 	// Build the chrX region matcher (default GRCh37 PAR-exclusion list).
 	chrX := buildChrXMatcher(chrXListStr)
+
+	// Float models (DMM/ALM/DNG): full pprob priors + the per-record float
+	// pipeline. Scores are libm-tolerance-matched, not byte-exact (see the
+	// proximity helper in numeric_parity_test.go).
+	if useModel != dnmUseNaive {
+		return p.runFloatModels(opts, out, hdr, variants, trios, filter, chrX, runFloatConfig{
+			useModel: useModel, scoreType: floatScoreType, scoreTag: scoreTag,
+			alleleTag: dnmAlleleTag, vafTag: dnmVAFTag, strictlyNovel: strictlyNovel,
+			useDNGPriors: useDNGPriors, withPPL: withPPL, withPAD: withPAD, withCAD: withCAD,
+			forceAD: forceAD, hasAD: hasAD, hasSP: hasSP, needPL: needPL, needQS: needQS,
+			mrate: mrate, phi: phi, noisePrior: noisePrior, minVAF: minVAF, allelicDrop: allelicDrop,
+			sbCoeff: sbCoeff, minScore: minScore, minQM: minQM, pnSNV: pnSNV, pnIndel: pnIndel,
+			outputType: outputType,
+		})
+	}
 
 	// Build the Mendelian priors tables.
 	pa := newDNMPriors(strictlyNovel, autosomalPriors)
@@ -544,24 +829,30 @@ type dnmNaiveState struct {
 }
 
 // testFilters applies the -i/-e expression with trio-dnm3's per-trio
-// bookkeeping, mirroring test_filters() in trio-dnm3.c. It returns whether the
-// site has at least one passing trio and fills st.trioPass. A nil filter passes
-// every trio.
+// bookkeeping for the NAIVE model; see dnmRunFilters.
 func (st *dnmNaiveState) testFilters(v *vcf.Variant) bool {
-	if st.filter == nil {
-		for i := range st.trioPass {
-			st.trioPass[i] = true
+	return dnmRunFilters(st.filter, st.trios, st.trioPass, v)
+}
+
+// dnmRunFilters applies the -i/-e expression with trio-dnm3's per-trio
+// bookkeeping, mirroring test_filters() in trio-dnm3.c. It returns whether the
+// site has at least one passing trio and fills trioPass. A nil filter passes
+// every trio. Shared by the NAIVE and float model states.
+func dnmRunFilters(filter *pluginFilter, trios []dnmTrio, trioPass []bool, v *vcf.Variant) bool {
+	if filter == nil {
+		for i := range trioPass {
+			trioPass[i] = true
 		}
 		return true
 	}
-	siteMatch, raw, exclude := st.filter.rawSamples(v)
+	siteMatch, raw, exclude := filter.rawSamples(v)
 	if exclude {
 		if siteMatch {
 			if raw == nil {
 				return false // -e mode, the expression failed at site level
 			}
 			passSite := false
-			for i, tr := range st.trios {
+			for i, tr := range trios {
 				passTrio := true
 				for _, idx := range [3]int{tr.child, tr.father, tr.mother} {
 					if raw[idx] { // with -e one sample passing the expr fails the trio
@@ -569,15 +860,15 @@ func (st *dnmNaiveState) testFilters(v *vcf.Variant) bool {
 						break
 					}
 				}
-				st.trioPass[i] = passTrio
+				trioPass[i] = passTrio
 				if passTrio {
 					passSite = true
 				}
 			}
 			return passSite
 		}
-		for i := range st.trioPass {
-			st.trioPass[i] = true
+		for i := range trioPass {
+			trioPass[i] = true
 		}
 		return true
 	}
@@ -586,7 +877,7 @@ func (st *dnmNaiveState) testFilters(v *vcf.Variant) bool {
 	}
 	if raw != nil {
 		passSite := false
-		for i, tr := range st.trios {
+		for i, tr := range trios {
 			passTrio := true
 			for _, idx := range [3]int{tr.child, tr.father, tr.mother} {
 				if !raw[idx] {
@@ -594,15 +885,15 @@ func (st *dnmNaiveState) testFilters(v *vcf.Variant) bool {
 					break
 				}
 			}
-			st.trioPass[i] = passTrio
+			trioPass[i] = passTrio
 			if passTrio {
 				passSite = true
 			}
 		}
 		return passSite
 	}
-	for i := range st.trioPass {
-		st.trioPass[i] = true
+	for i := range trioPass {
+		trioPass[i] = true
 	}
 	return true
 }
