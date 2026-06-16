@@ -42,6 +42,37 @@ type Options struct {
 	// synthetic positional header, matching `-header` upstream which is
 	// stronger than `-outheader` for unmarked inputs.
 	Header bool
+	// Precision is the number of significant digits used to format the result
+	// of scalar numeric operations (sum, min, max, mean, ...), mirroring
+	// upstream `groupby -prec` (default 10, via std::setprecision in
+	// KeyListOps::format). A value <= 0 selects the default. String-preserving
+	// ops (collapse, concat, distinct, first, last, freq*, mode, ...) are
+	// unaffected: their original tokens are emitted verbatim.
+	Precision int
+}
+
+// DefaultPrecision matches upstream's KeyListOps::DEFAULT_PRECISION (10): the
+// number of significant digits std::setprecision uses when rendering scalar
+// numeric op results. (The upstream `-prec` help text says 5, but the code
+// default is 10; we follow the code.)
+const DefaultPrecision = 10
+
+// scalarNumericOps lists the operations whose result is a single number that
+// upstream renders through std::setprecision(prec). For these we re-format the
+// value with the configured precision so large integer-valued results collapse
+// to scientific notation exactly as upstream does (e.g. 7777788888899999 ->
+// 7.777788889e+15). List-valued numeric ops (distinct_sort_num*, mode,
+// antimode, ...) and all string-preserving ops keep their tokens verbatim.
+var scalarNumericOps = map[string]bool{
+	"sum":    true,
+	"min":    true,
+	"max":    true,
+	"absmin": true,
+	"absmax": true,
+	"mean":   true,
+	"median": true,
+	"stdev":  true,
+	"sstdev": true,
 }
 
 // ParseGroupSpec parses a comma-separated -g column list (with ranges like
@@ -90,6 +121,9 @@ func ParseGroupSpec(spec string) ([]int, error) {
 
 // Validate fills in defaults and sanity-checks the options. Mutates opts.
 func (opts *Options) Validate() error {
+	if opts.Precision <= 0 {
+		opts.Precision = DefaultPrecision
+	}
 	if len(opts.GroupCols) == 0 {
 		opts.GroupCols = []int{1, 2, 3}
 	}
@@ -202,6 +236,7 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 			if err != nil {
 				return err
 			}
+			res = formatScalarNumeric(opts.Ops[i], res, opts.Precision)
 			out = append(out, res)
 		}
 		if _, err := fmt.Fprintln(w, strings.Join(out, "\t")); err != nil {
@@ -292,6 +327,31 @@ func Group(reader io.Reader, writer io.Writer, opts Options) (int, error) {
 		return outCount, fmt.Errorf("error flushing output: %w", err)
 	}
 	return outCount, nil
+}
+
+// formatScalarNumeric re-renders the result of a scalar numeric operation with
+// the given significant-digit precision, matching upstream KeyListOps::format
+// (std::stringstream << std::setprecision(prec)). This is required for
+// integer-valued results that exceed `prec` significant digits: upstream prints
+// them in scientific notation (e.g. min(7777788888899999) -> 7.777788889e+15),
+// whereas the shared bedmerge formatter keeps an exact integer string. Results
+// for non-scalar or string-preserving ops, and the null token ".", pass through
+// untouched so collapse/concat/distinct/first/last/freq* keep their raw tokens.
+func formatScalarNumeric(op, res string, precision int) string {
+	if !scalarNumericOps[op] || res == "." || res == "" {
+		return res
+	}
+	if precision <= 0 {
+		precision = DefaultPrecision
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(res), 64)
+	if err != nil {
+		// bedmerge already guarantees scalar numeric ops yield a parseable
+		// float; if that ever changes, fall back to the original token rather
+		// than corrupting output.
+		return res
+	}
+	return strconv.FormatFloat(f, 'g', precision, 64)
 }
 
 func fieldOr(fields []string, col int) string {

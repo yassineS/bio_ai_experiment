@@ -132,11 +132,13 @@ func TestMap_PreservesAColumns(t *testing.T) {
 }
 
 func TestMap_ValidateErrors(t *testing.T) {
-	opts := Options{Columns: []int{0}}
-	if err := opts.Validate(); err == nil {
+	// Column 0 / negative columns are now validated by Map against the
+	// database field count (matching upstream's column-range error), not by
+	// Validate; verify Map rejects them.
+	if _, err := Map(strings.NewReader("chr1\t0\t100\n"), strings.NewReader("chr1\t10\t20\tn\t5\n"), io.Discard, Options{Columns: []int{0}}); err == nil {
 		t.Errorf("expected error for col 0")
 	}
-	opts = Options{Columns: []int{4, 5}, Ops: []string{"sum", "min", "max"}}
+	opts := Options{Columns: []int{4, 5}, Ops: []string{"sum", "min", "max"}}
 	if err := opts.Validate(); err == nil {
 		t.Errorf("expected mismatched ops/cols error")
 	}
@@ -192,10 +194,28 @@ func TestMap_Reciprocal(t *testing.T) {
 	}
 }
 
-func TestMap_DoesntPanicOnEmptyB(t *testing.T) {
+func TestMap_EmptyBColumnRangeError(t *testing.T) {
+	// An empty B has zero fields, so the default -c 5 is out of range. Upstream
+	// `bedtools map` errors here ("... only has fields 1 - 0."); we match it
+	// rather than emitting a null row.
 	a := "chr1\t0\t100\n"
-	got := runMap(t, a, "", Options{})
+	var buf bytes.Buffer
+	_, err := Map(strings.NewReader(a), strings.NewReader(""), &buf, Options{})
+	if err == nil {
+		t.Fatalf("empty B: expected column-range error, got output %q", buf.String())
+	}
+	if !strings.Contains(err.Error(), "only has fields 1 - 0") {
+		t.Errorf("empty B: unexpected error %q", err.Error())
+	}
+}
+
+func TestMap_EmptyBWithValidColumn(t *testing.T) {
+	// When B is empty but A itself supplies enough columns to satisfy -c via a
+	// B that does have fields, a no-overlap row still yields the null value.
+	a := "chr1\t0\t100\n"
+	b := "chr2\t10\t20\tn\t5\n"
+	got := runMap(t, a, b, Options{})
 	if got != "chr1\t0\t100\t.\n" {
-		t.Errorf("empty B: got %q", got)
+		t.Errorf("no-overlap null: got %q", got)
 	}
 }

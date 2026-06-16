@@ -77,6 +77,20 @@ func upstreamBedtoolsGaps(t *testing.T) string {
 	return upstreamBedtoolsGapsPath
 }
 
+// runUpstreamArgs runs the upstream `bedtools` binary with the given argv and
+// returns its stdout, failing the test on a non-zero exit.
+func runUpstreamArgs(t *testing.T, bt string, args []string) []byte {
+	t.Helper()
+	cmd := exec.Command(bt, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("upstream %v failed: %v\nstderr:\n%s", args, err, stderr.String())
+	}
+	return stdout.Bytes()
+}
+
 // runUpstreamClosest writes A/B to temp files and captures the upstream
 // `bedtools closest` stdout for the given flags.
 func runUpstreamClosest(t *testing.T, bt, aData, bData string, flags ...string) []byte {
@@ -126,7 +140,7 @@ func TestGapsParity_ClosestSignedDistance(t *testing.T) {
 		case "b":
 			return DistanceB
 		default:
-			return DistanceRef
+			return DistanceSignedRef
 		}
 	}
 
@@ -148,7 +162,7 @@ func TestGapsParity_ClosestSignedDistance(t *testing.T) {
 						aData := "chr1\t100\t200\ta\t.\t" + as + "\n"
 						bData := fmt.Sprintf(bTmpl, bs)
 						want := runUpstreamClosest(t, bt, aData, bData, "-D", dmode)
-						opts := Options{PrintDistance: true, DistanceMode: modeFor(dmode)}
+						opts := Options{ReportDistance: true, DistanceMode: modeFor(dmode)}
 						got := runOurClosest(t, aData, bData, opts)
 						if !bytes.Equal(got, want) {
 							t.Fatalf("mismatch %s\nupstream:\n%s\nours:\n%s", name, want, got)
@@ -189,7 +203,7 @@ func TestGapsParity_ClosestDirectional(t *testing.T) {
 		case "b":
 			return DistanceB
 		default:
-			return DistanceRef
+			return DistanceSignedRef
 		}
 	}
 
@@ -249,7 +263,7 @@ func TestGapsParity_ClosestDirectional(t *testing.T) {
 			want := runUpstreamClosest(t, bt, c.a, c.b, flags...)
 
 			opts := Options{
-				PrintDistance:    true,
+				ReportDistance:   true,
 				DistanceMode:     modeFor(c.dmode),
 				TieBreak:         c.tie,
 				IgnoreUpstream:   c.iu,

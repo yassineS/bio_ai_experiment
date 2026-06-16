@@ -1,43 +1,49 @@
-// Package bedclosest finds, for each interval in A, the closest interval in B
-// (mirrors `bedtools closest`).
+// Package bedclosest finds, for each interval in A, the closest interval(s) in
+// B (mirrors `bedtools closest`).
 //
-// Both inputs MUST be sorted on (chrom, start). For each A interval the
-// closest B on the same chromosome (lowest signed distance; 0 if they overlap)
-// is reported. The output line is A's columns + B's columns + the signed
-// distance. For tied distances, one row per tied B is emitted by default
-// (in B's input order); this is configurable via Options.TieBreak. The sign
-// of the distance is controlled by Options.DistanceMode.
+// Both inputs MUST be sorted on (chrom, start). For each A interval the closest
+// B on the same chromosome is reported. The output line is A's columns + the
+// chosen B's columns, optionally followed by a distance column (only when `-d`
+// or `-D` is requested). The selection, ordering, tie handling, k-closest, and
+// directional behaviours mirror upstream bedtools' CloseSweep precisely, and
+// the no-hit placeholder ("null") matches the per-record-type shape that
+// upstream's RecordOutputMgr::printNull emits.
 package bedclosest
 
 import (
 	"bufio"
 	"fmt"
 	"io"
-	"math"
 	"sort"
 	"strconv"
 	"strings"
 )
 
 // DistanceMode selects how the distance between A and B is computed and
-// reported.
+// reported. It only takes effect when ReportDistance is set.
 type DistanceMode int
 
 const (
-	// DistanceRef computes the sign on the reference: downstream is positive
-	// (B.start > A.end -> positive distance, B.end < A.start -> negative).
+	// DistanceRef reports an unsigned absolute distance (upstream `-d`). The
+	// sign is never applied in this mode.
 	DistanceRef DistanceMode = iota
+	// DistanceSignedRef computes the sign on the reference: downstream of A
+	// (to the right) is positive, upstream (to the left) is negative
+	// (upstream `-D ref`).
+	DistanceSignedRef
 	// DistanceA computes the sign relative to A's strand (BED6 col 6). On a
 	// '-' strand A, what was "downstream on the reference" becomes "upstream"
-	// and the sign is flipped.
+	// and the sign is flipped (upstream `-D a`).
 	DistanceA
-	// DistanceB computes the sign relative to B's strand.
+	// DistanceB computes the sign relative to B's strand (upstream `-D b`).
 	DistanceB
-	// DistanceAbsolute reports the unsigned distance only. This matches
-	// upstream `bedtools closest -d`, which omits the sign; `-D <mode>` is
-	// the upstream flag for signed distance.
-	DistanceAbsolute
 )
+
+// signDistance reports whether the active distance mode applies a sign to the
+// distance (i.e. one of the `-D` modes).
+func (d DistanceMode) signDistance() bool {
+	return d == DistanceSignedRef || d == DistanceA || d == DistanceB
+}
 
 // TieBreak controls how ties among multiple equally-close B intervals are
 // handled.
@@ -52,74 +58,70 @@ const (
 	TieLast
 )
 
-// MultiDBMode selects how multiple -b databases are combined when more than one
-// is supplied, mirroring upstream `bedtools closest -mdb each|all`.
+// MultiDBMode selects how multiple -b databases are combined.
 type MultiDBMode int
 
 const (
-	// MultiDBEach reports the closest B from each database independently, one
-	// output row per database (upstream's default `-mdb each`). Each row is
-	// prefixed with that database's label column.
+	// MultiDBEach reports the closest B from each database independently
+	// (upstream's default `-mdb each`).
 	MultiDBEach MultiDBMode = iota
 	// MultiDBAll treats every database as one combined set and reports the
-	// single overall closest B, prefixed with the label of the database it came
-	// from (upstream `-mdb all`).
+	// single overall closest (upstream `-mdb all`).
 	MultiDBAll
 )
 
 // Options configures Closest.
 type Options struct {
-	// PrintDistance controls whether the trailing signed-distance column is
-	// emitted. Default true (bedclosest deviates from upstream bedtools here,
-	// where the distance column is opt-in).
-	PrintDistance bool
-	// DistanceMode controls the sign convention for the distance column.
+	// ReportDistance controls whether a trailing distance column is emitted.
+	// It is set when the user passes `-d` or `-D`. Upstream omits the column
+	// otherwise.
+	ReportDistance bool
+	// DistanceMode controls the distance column's sign convention. Ignored
+	// unless ReportDistance is set.
 	DistanceMode DistanceMode
-	// RequireOverlap (`-N`) only emits rows where A and B overlap. All
-	// non-overlapping B intervals are treated as infinity (skipped).
-	RequireOverlap bool
+
+	// KClosest is the number of closest hits to report per A interval
+	// (upstream `-k`). It defaults to 1 when zero.
+	KClosest int
+
 	// TieBreak controls how ties (multiple equally-close B intervals) are
 	// resolved. Default TieAll.
 	TieBreak TieBreak
 
-	// IgnoreUpstream (`-iu`) drops B features that are upstream of A; the
-	// closest B is selected only among downstream and overlapping features.
-	// IgnoreDownstream (`-id`) is the symmetric flag. Upstream/downstream is
-	// determined relative to the active stranded distance mode (`-D`), so both
-	// require DistanceMode != DistanceRef-by-default — the CLI enforces that
-	// they are only set together with an explicit `-D`.
+	// IgnoreUpstream (`-iu`) drops B features upstream of A; IgnoreDownstream
+	// (`-id`) is the symmetric flag; IgnoreOverlaps (`-io`) drops overlapping
+	// B features. Upstream/downstream are determined relative to the active
+	// `-D` mode.
 	IgnoreUpstream   bool
 	IgnoreDownstream bool
+	IgnoreOverlaps   bool
 
-	// ForceUpstream (`-fu`) reports the closest upstream B in preference to any
-	// equally-or-closer downstream/overlapping B; ForceDownstream (`-fd`) is the
-	// symmetric flag. Like the ignore flags, these are meaningful only with an
-	// explicit `-D`.
+	// ForceUpstream (`-fu`) reports the closest upstream B before any
+	// equally-or-closer downstream/overlapping B; ForceDownstream (`-fd`) is
+	// the symmetric flag.
 	ForceUpstream   bool
 	ForceDownstream bool
 
-	// SameStrand (`-s`) restricts the candidate B intervals to those on the
-	// same strand as A; SameStrand and OppositeStrand are mutually exclusive.
-	SameStrand bool
-	// OppositeStrand (`-S`) restricts the candidate B intervals to those on
-	// the opposite strand to A.
+	// SameStrand (`-s`) restricts candidate B intervals to those on the same
+	// strand as A; OppositeStrand (`-S`) restricts to the opposite strand.
+	SameStrand     bool
 	OppositeStrand bool
 
 	// DifferentNames (`-N`) requires the reported closest B to have a
-	// different name (BED column 4) than A; a B sharing A's name is excluded
-	// from candidate consideration. Matches upstream bedtools closest -N.
+	// different name (BED column 4) than A.
 	DifferentNames bool
 
-	// MultiDBMode controls how multiple -b databases are combined; it only has
-	// an effect when ClosestMulti is given more than one database reader.
-	// Defaults to MultiDBEach (upstream's default `-mdb each`).
+	// MultiDBMode controls how multiple -b databases are combined.
 	MultiDBMode MultiDBMode
 
-	// DBLabels, when non-nil, supplies the label to print in the database-index
-	// column for each database, in -b order (set from `-names` or `-filenames`).
-	// When nil, ClosestMulti prints the 1-based database index instead. Its
-	// length, when non-nil, must equal the number of database readers.
+	// DBLabels, when non-nil, supplies the label printed in the database
+	// column for each database, in -b order (from `-names`/`-filenames`).
+	// When nil, ClosestMulti prints the 1-based database index instead.
 	DBLabels []string
+
+	// PrintHeader (`-header`) echoes A's leading header/comment lines to the
+	// output before the result rows.
+	PrintHeader bool
 }
 
 // Validate reports configuration errors that cannot be captured by the type
@@ -131,22 +133,29 @@ func (o Options) Validate() error {
 	return nil
 }
 
-// strandMatch reports whether B is an eligible candidate for A under the strand
-// filters. With neither -s nor -S set every B is eligible. With -s, only B's on
-// the same strand as A qualify; with -S, only B's on the opposite strand. A
-// missing or unknown strand (empty or ".") on either side cannot be classified
-// as same or opposite, so such a B is excluded, matching upstream bedtools.
-func strandMatch(a, b *Row, opts Options) bool {
-	if !opts.SameStrand && !opts.OppositeStrand {
-		return true
+// kVal returns the effective number of closest hits to report.
+func (o Options) kVal() int {
+	if o.KClosest <= 0 {
+		return 1
 	}
-	if a.Strand == "" || a.Strand == "." || b.Strand == "" || b.Strand == "." {
-		return false
-	}
-	if opts.SameStrand {
-		return a.Strand == b.Strand
-	}
-	return a.Strand != b.Strand
+	return o.KClosest
+}
+
+// Strand value classification mirroring upstream Record::strandType.
+const (
+	strandForward = iota
+	strandReverse
+	strandUnknown
+)
+
+// Row is the parsed representation of a BED line. The original fields are
+// preserved so the full input column count round-trips to the output.
+type Row struct {
+	Fields  []string
+	Chrom   string
+	Start   int
+	End     int
+	StrandV int // strandForward / strandReverse / strandUnknown
 }
 
 // nameOf returns a row's BED name (column 4) or "" when absent.
@@ -157,110 +166,72 @@ func nameOf(r *Row) string {
 	return ""
 }
 
-// nameEligible reports whether B is an eligible candidate for A under the
-// -N (different-names) filter. With -N off every B qualifies; with -N on a B
-// sharing A's name (column 4) is excluded, matching upstream bedtools closest.
-func nameEligible(a, b *Row, opts Options) bool {
-	if !opts.DifferentNames {
-		return true
-	}
-	return nameOf(a) != nameOf(b)
-}
-
-// streamDir classifies a non-overlapping B hit as upstream or downstream of A
-// under the active distance mode, mirroring upstream CloseSweep::considerRecord.
-type streamDir int
-
-const (
-	streamOverlap streamDir = iota
-	streamUpstream
-	streamDownstream
-)
-
-// classifyStream returns whether B is upstream, downstream, or overlapping A,
-// mirroring the UPSTREAM/DOWNSTREAM assignment in CloseSweep::considerRecord.
-// A B to the right of A (b.Start >= a.End) is normally DOWNSTREAM, but becomes
-// UPSTREAM when (A_dist && A is reverse-strand) or (B_dist && B is
-// forward-strand); a B to the left is the mirror image. Overlaps are neither.
-func classifyStream(a, b *Row, opts Options) streamDir {
-	if a.Start < b.End && b.Start < a.End {
-		return streamOverlap
-	}
-	flip := (opts.DistanceMode == DistanceA && a.Strand == "-") ||
-		(opts.DistanceMode == DistanceB && b.Strand == "+")
-	if b.Start >= a.End {
-		// B is to the right of A.
-		if flip {
-			return streamUpstream
+// strandValOf maps a BED strand field to upstream's strand classification.
+// Records with fewer than 6 columns have no strand and are treated as forward,
+// matching upstream's default for unstranded intervals.
+func strandValOf(fields []string) int {
+	if len(fields) >= 6 {
+		switch fields[5] {
+		case "+":
+			return strandForward
+		case "-":
+			return strandReverse
+		default:
+			return strandUnknown
 		}
-		return streamDownstream
 	}
-	// B is to the left of A.
-	if flip {
-		return streamDownstream
-	}
-	return streamUpstream
+	return strandForward
 }
-
-// Row is the parsed representation of a BED line. The original fields are
-// preserved so the full input column count round-trips to the output.
-type Row struct {
-	Fields []string
-	Chrom  string
-	Start  int
-	End    int
-	Strand string // fields[5] if len(fields) >= 6, else "+"
-}
-
-// MissingRow is a sentinel "no closest B" row used when A's chromosome doesn't
-// exist in B. It contains "." for chrom and -1 for the coordinates, matching
-// bedtools convention.
-var MissingRow = &Row{Fields: []string{".", "-1", "-1"}, Chrom: ".", Start: -1, End: -1, Strand: "+"}
 
 // ReadAll parses every BED record from r into Row values. Lines that begin
-// with '#', "track", or "browser" are skipped, as are blank lines.
-func ReadAll(r io.Reader) ([]*Row, error) {
+// with '#', "track", or "browser" are skipped (collected separately as header
+// lines), as are blank lines. The returned header slice holds the leading
+// header lines (before the first record) for `-header` support.
+func ReadAll(r io.Reader) (rows []*Row, header []string, err error) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	var rows []*Row
+	sc.Buffer(make([]byte, 64*1024), 64*1024*1024)
 	lineNum := 0
+	seenRecord := false
 	for sc.Scan() {
 		lineNum++
 		raw := sc.Text()
 		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") ||
 			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+			if !seenRecord {
+				header = append(header, raw)
+			}
 			continue
 		}
 		fields := strings.Split(raw, "\t")
 		if len(fields) < 3 {
-			return nil, fmt.Errorf("line %d: BED record must have at least 3 fields", lineNum)
+			return nil, nil, fmt.Errorf("line %d: BED record must have at least 3 fields", lineNum)
 		}
-		start, err := strconv.Atoi(strings.TrimSpace(fields[1]))
-		if err != nil {
-			return nil, fmt.Errorf("line %d: invalid start %q: %v", lineNum, fields[1], err)
+		start, e := strconv.Atoi(strings.TrimSpace(fields[1]))
+		if e != nil {
+			return nil, nil, fmt.Errorf("line %d: invalid start %q: %v", lineNum, fields[1], e)
 		}
-		end, err := strconv.Atoi(strings.TrimSpace(fields[2]))
-		if err != nil {
-			return nil, fmt.Errorf("line %d: invalid end %q: %v", lineNum, fields[2], err)
+		end, e := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if e != nil {
+			return nil, nil, fmt.Errorf("line %d: invalid end %q: %v", lineNum, fields[2], e)
 		}
 		if end < start {
-			return nil, fmt.Errorf("line %d: end < start (%d < %d)", lineNum, end, start)
+			return nil, nil, fmt.Errorf("line %d: end < start (%d < %d)", lineNum, end, start)
 		}
-		row := &Row{Fields: fields, Chrom: fields[0], Start: start, End: end, Strand: "+"}
-		if len(fields) >= 6 {
-			row.Strand = fields[5]
-		}
-		rows = append(rows, row)
+		rows = append(rows, &Row{Fields: fields, Chrom: fields[0], Start: start, End: end, StrandV: strandValOf(fields)})
+		seenRecord = true
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+	if e := sc.Err(); e != nil {
+		return nil, nil, e
 	}
-	return rows, nil
+	return rows, header, nil
 }
 
-// CheckSorted returns an error naming the offending line if rows are not
-// sorted on (chrom, start). Equal chromosomes must have non-decreasing starts.
+// CheckSorted returns an error naming the offending line if rows are not sorted
+// on (chrom, start). Equal chromosomes must have non-decreasing starts.
 func CheckSorted(rows []*Row, label string) error {
 	for i := 1; i < len(rows); i++ {
 		prev, cur := rows[i-1], rows[i]
@@ -274,118 +245,385 @@ func CheckSorted(rows []*Row, label string) error {
 	return nil
 }
 
-// chromB holds one database's rows for a single chromosome, sorted by start,
-// plus a prefix-max of End so the left walk in closestFor can prune safely.
-type chromB struct {
-	rows       []*Row
-	maxEndPref []int // maxEndPref[i] = max(rows[0..i].End)
+// RecordType classifies a database's BED record type, mirroring upstream's
+// FileRecordTypeChecker. It determines the null placeholder shape.
+type RecordType int
+
+const (
+	recBed3 RecordType = iota
+	recBed4
+	recBed5
+	recBed6
+	recBed12
+	recBedGraph
+	recBedPlus
+)
+
+// isNumericField mirrors upstream isNumeric: digits with optional sign,
+// decimal point, and exponent markers; at least one digit required.
+func isNumericField(s string) bool {
+	hasDigit := false
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		case c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E':
+		default:
+			return false
+		}
+	}
+	return hasDigit
 }
 
-// indexByChrom buckets a database's rows by chromosome (preserving input order
-// within each chromosome) and precomputes the running max .End per chromosome.
-func indexByChrom(bRows []*Row) map[string]*chromB {
-	bByChrom := make(map[string]*chromB, 16)
+// isStrandField mirrors upstream isStrandField.
+func isStrandField(s string) bool {
+	return s == "+" || s == "-" || s == "." || s == "*"
+}
+
+// detectRecordType determines the BED record type from the first record,
+// mirroring FileRecordTypeChecker::handleBed. nFields is the column count.
+func detectRecordType(first *Row) (RecordType, int) {
+	if first == nil {
+		return recBed3, 3
+	}
+	f := first.Fields
+	n := len(f)
+	switch {
+	case n == 3:
+		return recBed3, 3
+	case n == 4:
+		if isNumericField(f[3]) {
+			return recBedGraph, 4
+		}
+		return recBed4, 4
+	case n == 5 && isNumericField(f[4]):
+		return recBed5, 5
+	case n == 6 && isStrandField(f[5]):
+		return recBed6, 6
+	case n == 12 && isStrandField(f[5]) && isNumericField(f[6]) && isNumericField(f[7]) && isNumericField(f[9]):
+		return recBed12, 12
+	case n > 3:
+		// BED6_PLUS / BED_PLUS: Bed3 null + dots for every extra field.
+		return recBedPlus, n
+	default:
+		return recBed3, 3
+	}
+}
+
+// nullFields returns the per-record-type null placeholder fields, matching
+// upstream's printNull for each BED record type.
+func nullFields(rt RecordType, n int) []string {
+	switch rt {
+	case recBed3:
+		return []string{".", "-1", "-1"}
+	case recBed4:
+		return []string{".", "-1", "-1", "."}
+	case recBed5:
+		return []string{".", "-1", "-1", ".", "-1"}
+	case recBed6:
+		return []string{".", "-1", "-1", ".", "-1", "."}
+	case recBed12:
+		return []string{".", "-1", "-1", ".", "-1", ".", ".", ".", ".", ".", ".", "."}
+	case recBedGraph:
+		return []string{".", "-1", "-1", "."}
+	default: // recBedPlus: ". -1 -1" then a dot per extra column.
+		out := []string{".", "-1", "-1"}
+		for i := 3; i < n; i++ {
+			out = append(out, ".")
+		}
+		return out
+	}
+}
+
+// streamDir classifies a non-overlapping B hit relative to A.
+type streamDir int
+
+const (
+	streamOverlap streamDir = iota
+	streamUpstream
+	streamDownstream
+)
+
+// chromB holds one database's rows for a single chromosome, in input order.
+type chromB struct {
+	rows []*Row
+}
+
+// db is a single database: rows bucketed by chromosome plus its null shape.
+type db struct {
+	byChrom  map[string]*chromB
+	nullFlds []string
+}
+
+// indexDB buckets a database's rows by chromosome (preserving input order) and
+// records the null placeholder shape from the first record.
+func indexDB(bRows []*Row) *db {
+	byChrom := make(map[string]*chromB, 16)
 	for _, b := range bRows {
-		c := bByChrom[b.Chrom]
+		c := byChrom[b.Chrom]
 		if c == nil {
 			c = &chromB{}
-			bByChrom[b.Chrom] = c
+			byChrom[b.Chrom] = c
 		}
 		c.rows = append(c.rows, b)
 	}
-	for _, c := range bByChrom {
-		c.maxEndPref = make([]int, len(c.rows))
-		max := 0
-		for i, r := range c.rows {
-			if r.End > max {
-				max = r.End
-			}
-			c.maxEndPref[i] = max
-		}
+	var first *Row
+	if len(bRows) > 0 {
+		first = bRows[0]
 	}
-	return bByChrom
+	rt, n := detectRecordType(first)
+	return &db{byChrom: byChrom, nullFlds: nullFields(rt, n)}
 }
 
-// hitsForA returns the closest hits in a single database (already bucketed by
-// chromosome) for one A interval.
-func hitsForA(a *Row, bByChrom map[string]*chromB, opts Options) []hit {
-	var bs []*Row
-	var maxEnd []int
-	if c := bByChrom[a.Chrom]; c != nil {
-		bs = c.rows
-		maxEnd = c.maxEndPref
+// hit holds a chosen B together with its (possibly signed) reported distance.
+type hit struct {
+	b    *Row
+	dist int64
+}
+
+// classify returns the stream direction of B relative to A and the absolute
+// distance, mirroring CloseSweep::considerRecord. Overlap returns dist 0.
+func classify(a, b *Row, opts Options) (streamDir, int64) {
+	if intersects(a, b) {
+		return streamOverlap, 0
 	}
-	return closestFor(a, bs, maxEnd, opts)
+	if b.Start >= a.End {
+		// HIT IS TO THE RIGHT OF THE QUERY.
+		dist := int64(b.Start-a.End) + 1
+		if opts.DistanceMode.signDistance() {
+			if (opts.DistanceMode == DistanceA && a.StrandV == strandReverse) ||
+				(opts.DistanceMode == DistanceB && b.StrandV == strandForward) {
+				return streamUpstream, dist
+			}
+		}
+		return streamDownstream, dist
+	}
+	// HIT IS TO THE LEFT OF THE QUERY.
+	dist := int64(a.Start-b.End) + 1
+	if opts.DistanceMode.signDistance() {
+		if (opts.DistanceMode == DistanceA && a.StrandV == strandReverse) ||
+			(opts.DistanceMode == DistanceB && b.StrandV == strandForward) {
+			return streamDownstream, dist
+		}
+	}
+	return streamUpstream, dist
+}
+
+// intersects mirrors Record::sameChromIntersects for the no-fraction case,
+// including the zero-length and touching-interval edge cases.
+func intersects(a, b *Row) bool {
+	maxStart := a.Start
+	if b.Start > maxStart {
+		maxStart = b.Start
+	}
+	minEnd := a.End
+	if b.End < minEnd {
+		minEnd = b.End
+	}
+	if minEnd < maxStart {
+		return false
+	}
+	otherZeroLen := b.Start == b.End
+	localZeroLen := a.Start == a.End
+	if minEnd == maxStart && !otherZeroLen && !localZeroLen {
+		return false
+	}
+	return true
+}
+
+// strandBad reports whether B should be excluded for A under -s/-S, mirroring
+// the badStrand test in CloseSweep::tryToAddRecord.
+func strandBad(a, b *Row, opts Options) bool {
+	if !opts.SameStrand && !opts.OppositeStrand {
+		return false
+	}
+	hasUnknown := a.StrandV == strandUnknown || b.StrandV == strandUnknown
+	if opts.SameStrand {
+		return hasUnknown || a.StrandV != b.StrandV
+	}
+	// OppositeStrand
+	return hasUnknown || a.StrandV == b.StrandV
+}
+
+// distGroup holds all candidate B's tied at one absolute distance, in B input
+// order (push_back order in upstream's RecDistList).
+type distGroup struct {
+	dist  int64
+	elems []*Row
+}
+
+// recDistList accumulates candidate B's bucketed and sorted by absolute
+// distance, capped at the k closest distinct distances, mirroring upstream's
+// RecDistList.
+type recDistList struct {
+	k      int
+	groups []distGroup // sorted ascending by dist
+}
+
+func newRecDistList(k int) *recDistList { return &recDistList{k: k} }
+
+// addRec inserts a B at the given absolute distance, keeping at most k distinct
+// distances, mirroring RecDistList::addRec. A new distance larger than all kept
+// is dropped once k distinct distances are already held.
+func (l *recDistList) addRec(dist int64, rec *Row) {
+	// Find existing group or insertion point (groups sorted ascending).
+	idx := sort.Search(len(l.groups), func(i int) bool { return l.groups[i].dist >= dist })
+	if idx < len(l.groups) && l.groups[idx].dist == dist {
+		l.groups[idx].elems = append(l.groups[idx].elems, rec)
+		return
+	}
+	if len(l.groups) >= l.k {
+		// Already have k distinct distances. Only insert if smaller than max.
+		if idx >= len(l.groups) {
+			return
+		}
+		// Insert and drop the largest.
+		l.groups = append(l.groups, distGroup{})
+		copy(l.groups[idx+1:], l.groups[idx:])
+		l.groups[idx] = distGroup{dist: dist, elems: []*Row{rec}}
+		l.groups = l.groups[:l.k]
+		return
+	}
+	// Room to add a new distinct distance.
+	l.groups = append(l.groups, distGroup{})
+	copy(l.groups[idx+1:], l.groups[idx:])
+	l.groups[idx] = distGroup{dist: dist, elems: []*Row{rec}}
+}
+
+// hitsForA returns the closest hits for A in one database, applying the full
+// selection/ordering/k/tie/directional logic of CloseSweep.
+func hitsForA(a *Row, d *db, opts Options) []hit {
+	k := opts.kVal()
+	up := newRecDistList(k)
+	down := newRecDistList(k)
+	over := newRecDistList(k)
+
+	if c := d.byChrom[a.Chrom]; c != nil {
+		for _, b := range c.rows {
+			stream, dist := classify(a, b, opts)
+			// Exclusion (badStrand / badNames / badStream).
+			bad := strandBad(a, b, opts) ||
+				(opts.DifferentNames && nameOf(a) == nameOf(b))
+			switch stream {
+			case streamOverlap:
+				if opts.IgnoreOverlaps || bad {
+					continue
+				}
+				over.addRec(0, b)
+			case streamUpstream:
+				if opts.IgnoreUpstream || bad {
+					continue
+				}
+				up.addRec(dist, b)
+			case streamDownstream:
+				if opts.IgnoreDownstream || bad {
+					continue
+				}
+				down.addRec(dist, b)
+			}
+		}
+	}
+
+	return finalize(up, down, over, opts)
+}
+
+// finalize merges the upstream/downstream/overlap candidate lists into the
+// ordered output hit list, mirroring CloseSweep::finalizeSelections.
+func finalize(up, down, over *recDistList, opts Options) []hit {
+	k := opts.kVal()
+	var out []hit
+	used := 0
+
+	emitGroup := func(g distGroup, signed int64) {
+		elems := g.elems
+		switch opts.TieBreak {
+		case TieFirst:
+			out = append(out, hit{b: elems[0], dist: signed})
+			used++
+		case TieLast:
+			out = append(out, hit{b: elems[len(elems)-1], dist: signed})
+			used++
+		default:
+			for _, e := range elems {
+				out = append(out, hit{b: e, dist: signed})
+				used++
+			}
+		}
+	}
+
+	upI, downI := 0, 0
+
+	if opts.ForceUpstream {
+		for upI < len(up.groups) && used < k {
+			emitGroup(up.groups[upI], 0-up.groups[upI].dist)
+			upI++
+		}
+	}
+	if opts.ForceDownstream {
+		for downI < len(down.groups) && used < k {
+			emitGroup(down.groups[downI], down.groups[downI].dist)
+			downI++
+		}
+	}
+
+	// Overlaps (distance 0) next.
+	if used < k && len(over.groups) > 0 {
+		emitGroup(over.groups[0], 0)
+	}
+
+	// Merge upstream/downstream by increasing distance until k reached.
+	const maxDist = int64(1) << 62
+	for used < k {
+		upDist := maxDist
+		downDist := maxDist
+		if upI < len(up.groups) {
+			upDist = up.groups[upI].dist
+		}
+		if downI < len(down.groups) {
+			downDist = down.groups[downI].dist
+		}
+		if upDist == maxDist && downDist == maxDist {
+			break
+		}
+		tie := upDist == downDist
+		usedUp, usedDown := false, false
+		if upDist < downDist || (tie && opts.TieBreak != TieLast) {
+			emitGroup(up.groups[upI], 0-upDist)
+			upI++
+			usedUp = true
+		}
+		if downDist < upDist || (tie && opts.TieBreak != TieFirst) {
+			emitGroup(down.groups[downI], downDist)
+			downI++
+			usedDown = true
+		}
+		if tie {
+			if usedUp && !usedDown {
+				downI++
+			} else if usedDown && !usedUp {
+				upI++
+			}
+		}
+	}
+
+	return out
 }
 
 // Closest reads BED records from readerA and readerB, finds the closest B for
 // each A, and writes the result to writer. Both inputs MUST be sorted on
-// (chrom, start); otherwise it returns an error. Returns the number of output
-// rows.
-//
-// Closest is the single-database entry point and is preserved for callers that
-// only have one B; it delegates to the shared closest machinery with no
-// database-label column. For multiple databases use ClosestMulti.
+// (chrom, start). Returns the number of output rows. Closest is the
+// single-database entry point with no database-label column.
 func Closest(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error) {
-	if err := opts.Validate(); err != nil {
-		return 0, err
-	}
-	aRows, err := ReadAll(readerA)
-	if err != nil {
-		return 0, fmt.Errorf("error reading A: %w", err)
-	}
-	bRows, err := ReadAll(readerB)
-	if err != nil {
-		return 0, fmt.Errorf("error reading B: %w", err)
-	}
-	if err := CheckSorted(aRows, "A"); err != nil {
-		return 0, err
-	}
-	if err := CheckSorted(bRows, "B"); err != nil {
-		return 0, err
-	}
-
-	bByChrom := indexByChrom(bRows)
-
-	bw := bufio.NewWriter(writer)
-	defer bw.Flush()
-
-	count := 0
-	for _, a := range aRows {
-		hits := hitsForA(a, bByChrom, opts)
-		for _, h := range hits {
-			if err := writeRow(bw, a, h.b, h.dist, opts); err != nil {
-				return count, fmt.Errorf("error writing output: %w", err)
-			}
-			count++
-		}
-	}
-	return count, nil
+	return ClosestMulti(readerA, []io.Reader{readerB}, writer, opts)
 }
 
 // ClosestMulti reads BED records from readerA and one or more B databases,
-// finds the closest B for each A across the supplied databases, and writes the
-// result to writer. Every input MUST be sorted on (chrom, start).
+// finds the closest B(s) for each A, and writes the result to writer. Every
+// input MUST be sorted on (chrom, start).
 //
-// Output mirrors upstream `bedtools closest -b B1 B2 ...`: each emitted row is
-// A's columns, then a database-label column, then the chosen B's columns, then
-// (when opts.PrintDistance) the trailing signed distance. The label is the
-// 1-based database index by default, or opts.DBLabels[i] when DBLabels is set
-// (from `-names` / `-filenames`).
-//
-// opts.MultiDBMode selects the combination strategy: MultiDBEach (the upstream
-// default) reports the closest B from each database independently, yielding one
-// row per database per A; MultiDBAll treats all databases as a single combined
-// set and reports the single overall closest, labelled with its source
-// database. Ties within a database follow opts.TieBreak.
-//
-// House-style note: as with the single-database path, the distance column is
-// rendered in bedclosest's signed `-D ref` convention (left-of-A is negative),
-// not upstream's absolute `-d`, and the no-hit sentinel is bedclosest's fixed
-// `. -1 -1` MissingRow. Only the hit *selection* matches upstream.
-//
-// With exactly one database, ClosestMulti still prints the label column; the
-// label-free output is produced by Closest.
+// With a single database and no labels, the output omits the database column
+// (matching upstream). With multiple databases or with -names/-filenames, a
+// database-label column is inserted between A's and B's columns.
 func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opts Options) (int, error) {
 	if err := opts.Validate(); err != nil {
 		return 0, err
@@ -397,7 +635,7 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 		return 0, fmt.Errorf("number of labels (%d) must match the number of -b files (%d)", len(opts.DBLabels), len(readersB))
 	}
 
-	aRows, err := ReadAll(readerA)
+	aRows, header, err := ReadAll(readerA)
 	if err != nil {
 		return 0, fmt.Errorf("error reading A: %w", err)
 	}
@@ -405,19 +643,22 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 		return 0, err
 	}
 
-	dbs := make([]map[string]*chromB, len(readersB))
+	dbs := make([]*db, len(readersB))
 	for i, rb := range readersB {
-		bRows, err := ReadAll(rb)
+		bRows, _, err := ReadAll(rb)
 		if err != nil {
 			return 0, fmt.Errorf("error reading B[%d]: %w", i, err)
 		}
 		if err := CheckSorted(bRows, fmt.Sprintf("B[%d]", i)); err != nil {
 			return 0, err
 		}
-		dbs[i] = indexByChrom(bRows)
+		dbs[i] = indexDB(bRows)
 	}
 
-	// label returns the database-label column for the i-th database.
+	// Whether to print the database-label column. Upstream prints it whenever
+	// there is more than one database or a -names/-filenames label is set.
+	printDBCol := len(readersB) > 1 || opts.DBLabels != nil
+
 	label := func(i int) string {
 		if opts.DBLabels != nil {
 			return opts.DBLabels[i]
@@ -428,446 +669,198 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 	bw := bufio.NewWriter(writer)
 	defer bw.Flush()
 
+	if opts.PrintHeader {
+		for _, h := range header {
+			if _, err := bw.WriteString(h); err != nil {
+				return 0, err
+			}
+			if err := bw.WriteByte('\n'); err != nil {
+				return 0, err
+			}
+		}
+	}
+
+	// signedForOutput renders the reported distance: signed for `-D` modes,
+	// absolute for `-d`, mirroring RecordOutputMgr's
+	// `dist = signDistance() ? dist : abs(dist)`.
+	signedForOutput := func(dist int64) int64 {
+		if opts.DistanceMode.signDistance() {
+			return dist
+		}
+		if dist < 0 {
+			return -dist
+		}
+		return dist
+	}
+
 	count := 0
-	emit := func(a *Row, dbIdx int, h hit) error {
-		if err := writeRowMulti(bw, a, label(dbIdx), h.b, h.dist, opts); err != nil {
+	emit := func(a *Row, lbl string, bFields []string, dist int64, hasDist bool) error {
+		if err := writeRow(bw, a, printDBCol, lbl, bFields, dist, hasDist); err != nil {
 			return fmt.Errorf("error writing output: %w", err)
 		}
 		count++
 		return nil
 	}
 
+	// emitNull writes the single no-hit placeholder row for A. With multiple
+	// databases (or labels) the database column is a literal ".", and the null
+	// shape comes from database 0, matching upstream's null(false, true).
+	emitNull := func(a *Row) error {
+		return emit(a, ".", dbs[0].nullFlds, -1, opts.ReportDistance)
+	}
+
 	for _, a := range aRows {
-		switch opts.MultiDBMode {
-		case MultiDBAll:
-			// Combined: pick the overall closest across all databases, keeping
-			// each surviving hit's source database for the label column. Ties at
-			// the best absolute distance are kept across databases and then
-			// resolved per opts.TieBreak in -b/database order.
-			bestAbs := int64(math.MaxInt64)
-			var bestHits []hit
-			var bestDBs []int
-			for dbIdx, bByChrom := range dbs {
-				for _, h := range hitsForA(a, bByChrom, opts) {
-					if h.b == MissingRow {
-						continue
-					}
-					abs := h.dist
-					if abs < 0 {
-						abs = -abs
-					}
-					if abs < bestAbs {
-						bestAbs = abs
-						bestHits = []hit{h}
-						bestDBs = []int{dbIdx}
-					} else if abs == bestAbs {
-						bestHits = append(bestHits, h)
-						bestDBs = append(bestDBs, dbIdx)
-					}
-				}
+		if opts.MultiDBMode == MultiDBAll && len(dbs) > 1 {
+			if err := emitAllMode(a, dbs, opts, signedForOutput, emit, emitNull); err != nil {
+				return count, err
 			}
-			if len(bestHits) == 0 {
-				if opts.RequireOverlap {
-					continue
-				}
-				if err := emit(a, 0, hit{b: MissingRow, dist: -1}); err != nil {
-					return count, err
-				}
-				continue
-			}
-			// Upstream's combined sweep reports tied hits in genomic order of B
-			// (start, then end), regardless of which database they came from, so
-			// order the tie group that way before applying the tie-break rule.
-			order := make([]int, len(bestHits))
-			for i := range order {
-				order[i] = i
-			}
-			sort.SliceStable(order, func(i, j int) bool {
-				bi, bj := bestHits[order[i]].b, bestHits[order[j]].b
-				if bi.Start != bj.Start {
-					return bi.Start < bj.Start
-				}
-				if bi.End != bj.End {
-					return bi.End < bj.End
-				}
-				return bestDBs[order[i]] < bestDBs[order[j]]
-			})
-			selected := selectTie(len(order), opts.TieBreak)
-			for _, s := range selected {
-				k := order[s]
-				if err := emit(a, bestDBs[k], bestHits[k]); err != nil {
+			continue
+		}
+		// MultiDBEach (or single db): accumulate hits across all databases.
+		// Only when no database yields any hit do we emit a single null row.
+		any := false
+		for dbIdx, d := range dbs {
+			for _, h := range hitsForA(a, d, opts) {
+				any = true
+				if err := emit(a, label(dbIdx), h.b.Fields, signedForOutput(h.dist), opts.ReportDistance); err != nil {
 					return count, err
 				}
 			}
-		default: // MultiDBEach
-			for dbIdx, bByChrom := range dbs {
-				for _, h := range hitsForA(a, bByChrom, opts) {
-					if err := emit(a, dbIdx, h); err != nil {
-						return count, err
-					}
-				}
+		}
+		if !any {
+			if err := emitNull(a); err != nil {
+				return count, err
 			}
 		}
 	}
 	return count, nil
 }
 
-// selectTie returns the indices (into a tie group of length n, already in
-// database/input order) to emit under the given tie-break mode.
-func selectTie(n int, tb TieBreak) []int {
-	if n == 0 {
-		return nil
-	}
-	switch tb {
-	case TieFirst:
-		return []int{0}
-	case TieLast:
-		return []int{n - 1}
-	default:
-		out := make([]int, n)
-		for i := range out {
-			out[i] = i
-		}
-		return out
-	}
+// allCand carries an -mdb all candidate hit with its source database index.
+type allCand struct {
+	dbIdx int
+	b     *Row
+	abs   int64
+	neg   bool
 }
 
-// hit holds a candidate B together with its signed distance to A.
-type hit struct {
-	b    *Row
-	dist int64
-}
-
-// closestFor returns the closest hits for A on its chromosome, taking
-// Options.TieBreak into account.
-//
-// The implementation does a binary search to locate the first B with
-// Start >= a.Start, then walks outward (left then right) collecting
-// candidates. Once the gap on the corresponding side exceeds the best
-// absolute distance seen so far, that side's walk can stop because
-// monotonically increasing |B.Start - a.Start| (left) / B.Start - a.End
-// (right) is then a strict lower bound on the gap for all remaining B's on
-// that side. To handle the case where a B further left has a long End that
-// could overlap A, we widen the left walk: any B that overlaps a.Start (i.e.
-// B.End > a.Start) is also considered.
-func closestFor(a *Row, bs []*Row, maxEndPref []int, opts Options) []hit {
-	if len(bs) == 0 {
-		if opts.RequireOverlap {
-			return nil
-		}
-		return []hit{{b: MissingRow, dist: -1}}
-	}
-
-	// The directional flags (-iu/-id/-fu/-fd) change which candidates are
-	// eligible and the selection priority, so they take a dedicated stream-aware
-	// path rather than the plain closest-by-absolute-distance scan below.
-	if opts.IgnoreUpstream || opts.IgnoreDownstream || opts.ForceUpstream || opts.ForceDownstream {
-		return closestForDirectional(a, bs, opts)
-	}
-
-	idx := sort.Search(len(bs), func(i int) bool { return bs[i].Start >= a.Start })
-
-	bestAbs := int64(math.MaxInt64)
-	type cand struct {
-		idx    int
-		signed int64
-	}
-	var cands []cand
-	consider := func(i int) {
-		// Strand- and name-ineligible B's are skipped before they can influence
-		// bestAbs or the candidate set, so the closest is chosen purely among the
-		// eligible subset (upstream bug281 cache-purge semantics).
-		if !strandMatch(a, bs[i], opts) || !nameEligible(a, bs[i], opts) {
-			return
-		}
-		signed := signedDistance(a, bs[i], opts)
-		if opts.RequireOverlap && signed != 0 {
-			return
-		}
-		abs := signed
-		if abs < 0 {
-			abs = -abs
-		}
-		if abs < bestAbs {
-			bestAbs = abs
-			cands = cands[:0]
-			cands = append(cands, cand{idx: i, signed: signed})
-		} else if abs == bestAbs {
-			cands = append(cands, cand{idx: i, signed: signed})
-		}
-	}
-
-	// Walk left from idx-1. maxEndPref[i] is the largest End of bs[0..i]; the
-	// minimum possible reference gap from any B in bs[0..i] is
-	//   max(0, a.Start - maxEndPref[i])
-	// so once that strictly exceeds bestAbs we can stop walking left. We use
-	// '>' (not '>=') so that we still walk through ties at the same distance.
-	for i := idx - 1; i >= 0; i-- {
-		consider(i)
-		if i > 0 {
-			minPossibleGap := int64(a.Start - maxEndPref[i-1])
-			if minPossibleGap < 0 {
-				minPossibleGap = 0
+// emitAllMode implements `-mdb all`: gather every database's hits, sort by
+// absolute distance (ties broken by B's lessThan order), then take the k
+// closest, honouring the tie mode, mirroring CloseSweep::checkMultiDbs.
+func emitAllMode(
+	a *Row, dbs []*db, opts Options,
+	signedForOutput func(int64) int64,
+	emit func(a *Row, lbl string, bFields []string, dist int64, hasDist bool) error,
+	emitNull func(a *Row) error,
+) error {
+	var cands []allCand
+	for dbIdx, d := range dbs {
+		for _, h := range hitsForA(a, d, opts) {
+			abs := h.dist
+			neg := abs < 0
+			if abs < 0 {
+				abs = -abs
 			}
-			if minPossibleGap > bestAbs {
-				break
-			}
+			cands = append(cands, allCand{dbIdx: dbIdx, b: h.b, abs: abs, neg: neg})
 		}
 	}
-	// Walk right from idx. bs[i].Start is monotonically non-decreasing; once
-	// bs[i].Start - a.End > bestAbs we can stop. Again use '>' to keep ties.
-	for i := idx; i < len(bs); i++ {
-		consider(i)
-		gap := int64(bs[i].Start - a.End)
-		if gap < 0 {
-			gap = 0
-		}
-		if gap > bestAbs {
-			break
-		}
-	}
-
 	if len(cands) == 0 {
-		if opts.RequireOverlap {
-			return nil
-		}
-		return []hit{{b: MissingRow, dist: -1}}
+		// No databases had any chromosome match: emit a single null row.
+		return emitNull(a)
 	}
 
-	// Sort candidates by their index in B (input order) for deterministic output.
-	sort.Slice(cands, func(i, j int) bool { return cands[i].idx < cands[j].idx })
-
-	switch opts.TieBreak {
-	case TieFirst:
-		first := cands[0]
-		return []hit{{b: bs[first.idx], dist: first.signed}}
-	case TieLast:
-		last := cands[len(cands)-1]
-		return []hit{{b: bs[last.idx], dist: last.signed}}
-	default: // TieAll
-		out := make([]hit, 0, len(cands))
-		for _, c := range cands {
-			out = append(out, hit{b: bs[c.idx], dist: c.signed})
+	// Sort by absolute distance, then by B's (chrom, start, end) order
+	// (Record::lessThan). Upstream uses std::sort (not stable); the lessThan
+	// tiebreak makes the order deterministic.
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].abs != cands[j].abs {
+			return cands[i].abs < cands[j].abs
 		}
-		return out
+		return lessThan(cands[i].b, cands[j].b)
+	})
+
+	signed := func(c allCand) int64 {
+		if c.neg {
+			return signedForOutput(-c.abs)
+		}
+		return signedForOutput(c.abs)
 	}
+	label := func(dbIdx int) string {
+		if opts.DBLabels != nil {
+			return opts.DBLabels[dbIdx]
+		}
+		return strconv.Itoa(dbIdx + 1)
+	}
+
+	// Walk distinct absolute distances, applying the tie mode.
+	k := opts.kVal()
+	used := 0
+	for i := 0; i < len(cands) && used < k; {
+		dist := cands[i].abs
+		numTies := 1
+		for i+numTies < len(cands) && cands[i+numTies].abs == dist {
+			numTies++
+		}
+		switch opts.TieBreak {
+		case TieFirst:
+			c := cands[i]
+			if err := emit(a, label(c.dbIdx), c.b.Fields, signed(c), opts.ReportDistance); err != nil {
+				return err
+			}
+			used++
+		case TieLast:
+			c := cands[i+numTies-1]
+			if err := emit(a, label(c.dbIdx), c.b.Fields, signed(c), opts.ReportDistance); err != nil {
+				return err
+			}
+			used++
+		default:
+			for j := i; j < i+numTies; j++ {
+				c := cands[j]
+				if err := emit(a, label(c.dbIdx), c.b.Fields, signed(c), opts.ReportDistance); err != nil {
+					return err
+				}
+				used++
+			}
+		}
+		i += numTies
+	}
+	return nil
 }
 
-// refGap returns the absolute reference gap between non-overlapping A and B,
-// using upstream's (gap + 1) convention so touching intervals report 1. It
-// assumes A and B do not overlap (the caller classifies overlaps separately).
-func refGap(a, b *Row) int64 {
-	if b.Start >= a.End {
-		return int64(b.Start-a.End) + 1
+// lessThan mirrors Record::lessThan for same-chromosome ordering. For -mdb all
+// all candidates share A's chromosome, so the chromosome comparison is omitted.
+func lessThan(a, b *Row) bool {
+	if a.Chrom != b.Chrom {
+		return a.Chrom < b.Chrom
 	}
-	return int64(a.Start-b.End) + 1
+	if a.Start != b.Start {
+		return a.Start < b.Start
+	}
+	return a.End < b.End
 }
 
-// dcand is a directional-path candidate: its index in B, signed distance,
-// absolute distance, and stream classification relative to A.
-type dcand struct {
-	idx    int
-	signed int64
-	abs    int64
-	stream streamDir
-}
-
-// closestForDirectional selects the closest B for A honouring the directional
-// flags, mirroring CloseSweep::finalizeSelections for the single-closest
-// (k=1) case this tool reports:
-//
-//   - Each B on A's chromosome is classified as overlap/upstream/downstream
-//     (classifyStream), and -iu/-id drop the corresponding stream entirely.
-//   - -fu (forceUpstream) consumes the closest upstream feature(s) first, even
-//     ahead of overlaps; -fd does the same for downstream. Only if the forced
-//     stream is empty does selection fall through to overlaps, then to the
-//     closest of the remaining upstream/downstream features.
-//   - Without a force flag, overlaps win (distance 0), then the closest of the
-//     surviving upstream/downstream features, with ties resolved per TieBreak.
-func closestForDirectional(a *Row, bs []*Row, opts Options) []hit {
-	var overlaps, ups, downs []dcand
-	for i, b := range bs {
-		if a.Chrom != b.Chrom {
-			continue
-		}
-		// Skip strand- and name-ineligible B's entirely so they never enter the
-		// candidate pools (overlaps/ups/downs), matching the non-directional path.
-		if !strandMatch(a, b, opts) || !nameEligible(a, b, opts) {
-			continue
-		}
-		stream := classifyStream(a, b, opts)
-		abs := refGap(a, b)
-		// Mirror CloseSweep::finalizeSelections, where the reported distance sign
-		// is derived from the stream classification: upstream features are
-		// negative, downstream positive, overlaps zero. signedDistance reuses the
-		// same classifyStream decision, so the directional and non-directional
-		// paths agree on the sign (including the -D b mode).
-		switch stream {
-		case streamOverlap:
-			overlaps = append(overlaps, dcand{i, 0, 0, streamOverlap})
-		case streamUpstream:
-			if !opts.IgnoreUpstream && !opts.RequireOverlap {
-				ups = append(ups, dcand{i, -abs, abs, streamUpstream})
-			}
-		case streamDownstream:
-			if !opts.IgnoreDownstream && !opts.RequireOverlap {
-				downs = append(downs, dcand{i, abs, abs, streamDownstream})
-			}
-		}
-	}
-
-	// closestOf returns the minimum-abs-distance candidates from a stream group
-	// (all ties at that distance), in B input order.
-	closestOf := func(group []dcand) []dcand {
-		if len(group) == 0 {
-			return nil
-		}
-		best := int64(math.MaxInt64)
-		for _, c := range group {
-			if c.abs < best {
-				best = c.abs
-			}
-		}
-		var out []dcand
-		for _, c := range group {
-			if c.abs == best {
-				out = append(out, c)
-			}
-		}
-		return out
-	}
-
-	var chosen []dcand
-	switch {
-	case opts.ForceUpstream:
-		if chosen = closestOf(ups); chosen == nil {
-			if chosen = overlaps; len(chosen) == 0 {
-				chosen = closestOf(downs)
-			} else {
-				chosen = closestOf(overlaps)
-			}
-		}
-	case opts.ForceDownstream:
-		if chosen = closestOf(downs); chosen == nil {
-			if chosen = overlaps; len(chosen) == 0 {
-				chosen = closestOf(ups)
-			} else {
-				chosen = closestOf(overlaps)
-			}
-		}
-	default:
-		// No force flag (-iu / -id only): overlaps win, then the closest of the
-		// surviving upstream/downstream features.
-		if len(overlaps) > 0 {
-			chosen = closestOf(overlaps)
-		} else {
-			rest := append(append([]dcand(nil), ups...), downs...)
-			chosen = closestOf(rest)
-		}
-	}
-
-	if len(chosen) == 0 {
-		if opts.RequireOverlap {
-			return nil
-		}
-		return []hit{{b: MissingRow, dist: -1}}
-	}
-
-	sort.Slice(chosen, func(i, j int) bool { return chosen[i].idx < chosen[j].idx })
-	switch opts.TieBreak {
-	case TieFirst:
-		return []hit{{b: bs[chosen[0].idx], dist: chosen[0].signed}}
-	case TieLast:
-		last := chosen[len(chosen)-1]
-		return []hit{{b: bs[last.idx], dist: last.signed}}
-	default:
-		out := make([]hit, 0, len(chosen))
-		for _, c := range chosen {
-			out = append(out, hit{b: bs[c.idx], dist: c.signed})
-		}
-		return out
-	}
-}
-
-// signedDistance returns the signed distance between A and B according to
-// opts.DistanceMode. 0 means they overlap (truly share at least one base on a
-// 0-based half-open interval); touching records (b.start == a.end or
-// a.start == b.end) report distance 1, matching `bedtools closest -d`'s
-// (b.start - a.end) + 1 formula. The sign indicates whether B is downstream
-// (positive) or upstream (negative) of A under the chosen DistanceMode.
-func signedDistance(a, b *Row, opts Options) int64 {
-	// Overlap on a 0-based half-open interval requires a.Start < b.End AND
-	// b.Start < a.End.
-	if a.Start < b.End && b.Start < a.End {
-		return 0
-	}
-	// Magnitude of the gap: (b.start - a.end) + 1 to the right, or
-	// (a.start - b.end) + 1 to the left, matching upstream's currDist.
-	var magnitude int64
-	if b.Start >= a.End {
-		magnitude = int64(b.Start-a.End) + 1
-	} else {
-		magnitude = int64(a.Start-b.End) + 1
-	}
-	if opts.DistanceMode == DistanceAbsolute {
-		return magnitude
-	}
-	// The sign is negative when the hit is classified UPSTREAM of A and
-	// positive when DOWNSTREAM, exactly as upstream CloseSweep applies
-	// `0 - dist` to upstream records and `+dist` to downstream ones. Reuse
-	// classifyStream so the non-directional and directional paths agree on
-	// the convention (-D a flips on A reverse-strand, -D b on B forward-strand).
-	if classifyStream(a, b, opts) == streamUpstream {
-		return -magnitude
-	}
-	return magnitude
-}
-
-// writeRow writes one output row: A's columns, then B's columns, then the
-// signed distance.
-func writeRow(bw *bufio.Writer, a, b *Row, dist int64, opts Options) error {
+// writeRow writes one output row: A's columns, an optional database-label
+// column, the chosen B's columns, and (when hasDist) the distance column.
+func writeRow(bw *bufio.Writer, a *Row, printDBCol bool, label string, bFields []string, dist int64, hasDist bool) error {
 	if _, err := bw.WriteString(strings.Join(a.Fields, "\t")); err != nil {
 		return err
 	}
-	if err := bw.WriteByte('\t'); err != nil {
-		return err
-	}
-	if _, err := bw.WriteString(strings.Join(b.Fields, "\t")); err != nil {
-		return err
-	}
-	if opts.PrintDistance {
+	if printDBCol {
 		if err := bw.WriteByte('\t'); err != nil {
 			return err
 		}
-		if _, err := bw.WriteString(strconv.FormatInt(dist, 10)); err != nil {
+		if _, err := bw.WriteString(label); err != nil {
 			return err
 		}
 	}
-	return bw.WriteByte('\n')
-}
-
-// writeRowMulti writes one multi-database output row: A's columns, then the
-// database-label column (a 1-based index or a `-names`/`-filenames` label),
-// then B's columns, then the signed distance (when opts.PrintDistance). This is
-// the multi-DB analogue of writeRow and matches upstream's column layout for
-// `bedtools closest -b B1 B2 ...`.
-func writeRowMulti(bw *bufio.Writer, a *Row, label string, b *Row, dist int64, opts Options) error {
-	if _, err := bw.WriteString(strings.Join(a.Fields, "\t")); err != nil {
-		return err
-	}
 	if err := bw.WriteByte('\t'); err != nil {
 		return err
 	}
-	if _, err := bw.WriteString(label); err != nil {
+	if _, err := bw.WriteString(strings.Join(bFields, "\t")); err != nil {
 		return err
 	}
-	if err := bw.WriteByte('\t'); err != nil {
-		return err
-	}
-	if _, err := bw.WriteString(strings.Join(b.Fields, "\t")); err != nil {
-		return err
-	}
-	if opts.PrintDistance {
+	if hasDist {
 		if err := bw.WriteByte('\t'); err != nil {
 			return err
 		}

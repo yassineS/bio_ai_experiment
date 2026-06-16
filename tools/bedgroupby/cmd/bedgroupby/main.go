@@ -44,6 +44,8 @@ Options:
                          prefixes (#, track, browser, @).
       --outheader        Print the detected/synthesised header on output.
       --header           Combination of --inheader and --outheader.
+      --prec N           Significant digits for scalar numeric op output
+                         (default: 10).
   -h, --help             Show this help message.
   -v, --version          Show version and exit.
 
@@ -95,6 +97,9 @@ func main() {
 
 	var header bool
 	cliflag.BoolVar(fs, &header, "", "header", false, "Equivalent to --inheader --outheader")
+
+	var precision int
+	cliflag.IntVar(fs, &precision, "", "prec", bedgroupby.DefaultPrecision, "Significant digits for numeric op output")
 
 	var help bool
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help message")
@@ -171,6 +176,7 @@ func main() {
 		InHeader:   inHeader,
 		OutHeader:  outHeader,
 		Header:     header,
+		Precision:  precision,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

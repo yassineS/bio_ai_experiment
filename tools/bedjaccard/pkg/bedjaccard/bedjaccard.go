@@ -47,6 +47,13 @@ type Options struct {
 	// (exon-aware): each record is expanded into one interval per block
 	// before merging/intersection, matching upstream bedtools jaccard -split.
 	Split bool
+	// BAMToBED ("-bed") tells upstream `bedtools jaccard` to convert BAM
+	// alignments to BED12 before computing the metric. This port always
+	// auto-detects BAM/SAM input and renders each alignment as a BED12
+	// record (its CIGAR blocks) regardless, so the flag is accepted for
+	// drop-in compatibility and recorded here for documentation; the
+	// resulting counts are identical to upstream's BAM-to-BED rendering.
+	BAMToBED bool
 }
 
 // Result is the one-line summary written by Run.
