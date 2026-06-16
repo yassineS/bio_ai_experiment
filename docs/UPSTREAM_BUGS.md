@@ -93,20 +93,56 @@ warrant a closer look:_
 
 #### vcftools-site-pi
 
-- **vcftools `--site-pi` formula** — upstream computes a per-genotype
-  pairwise-distance quantity rather than the textbook
-  `(n² − Σ cₐ²) / (n(n-1))`. Our Go port uses the textbook formula (#24
-  flagged this as a likely bug; we then fixed it on our side). Open
-  question: is upstream's behaviour a real bug, or a deliberate
-  per-genotype variant of nucleotide diversity? Need to read the
-  vcftools paper and compare to PopGenome / scikit-allel. If it's a
-  bug, this entry is **fix-on-port (done)**; if intentional, we should
-  add a `--site-pi-vcftools-compat` flag.
+- **vcftools `--site-pi` formula — RESOLVED: not a bug; byte-for-byte
+  parity achieved.** Earlier notes (and issue #24) suspected upstream
+  computed some per-genotype pairwise quantity that diverged from the
+  textbook nucleotide diversity `(n² − Σ cₐ²) / (n(n-1))`. Reading the
+  actual source settles it.
 
-  Parity test status: `TestParity_SitePi` is `t.Skip("known deviation,
-  see docs/UPSTREAM_BUGS.md#vcftools-site-pi")`. A separate
-  `TestParity_SitePi_TextbookFormula` spot-checks three hand-computed
-  values against our textbook implementation.
+  Upstream `output_per_site_nucleotide_diversity`
+  (`reference_code/vcftools/src/cpp/variant_file_output.cpp:3870`) does:
+
+  ```cpp
+  e->get_allele_counts(allele_counts, N_non_missing_chr);
+  unsigned int total_alleles = accumulate(allele_counts...);   // == N_non_missing_chr
+  unsigned int N_alleles = e->get_N_alleles();                 // ALT.size()+1
+  int mismatches = 0;
+  for (allele = 0; allele < N_alleles; allele++)
+      mismatches += allele_counts[allele] * (total_alleles - allele_counts[allele]);
+  int    pairs = total_alleles * (total_alleles - 1);
+  double pi    = mismatches / (double) pairs;
+  ```
+
+  `get_allele_counts` (`entry_getters.cpp:395`) only ever reads the two
+  diploid slots per sample, so `total_alleles == N_non_missing_chr == n`
+  and `Σₐ cₐ·(n − cₐ) = n² − Σₐ cₐ²`. Therefore upstream's `pi` is
+  **exactly** the textbook `(n² − Σ cₐ²) / (n(n-1))` — there is no
+  per-genotype variant and **no bug**. The only things a naive port can
+  get wrong are formatting and site selection:
+
+  1. **Formatting.** Upstream writes `pi` straight to a default C++
+     `ostream` (`out << pi`), i.e. `std::defaultfloat` precision 6 — so
+     `0.6` not `0.600000`, and `0` not `0.000000`. Our port reproduces
+     this with `formatFreq` (`%g`, 6 significant digits).
+  2. **Site selection.** Upstream emits exactly the sites for which
+     `entry::is_diploid()` is true (`entry_getters.cpp:94`), warning once
+     "sitePi: Only using fully diploid sites." It therefore KEEPS a
+     fully-missing diploid site (e.g. `20:1235237`, pi=0) and DROPS any
+     site that has even one haploid included sample (e.g. chrX male
+     calls). Our port applies the identical `siteIsDiploid` gate, and
+     `n < 2` sites are dropped (division by zero / no pairs).
+
+  Disposition: **fix-on-port complete, parity verified.** The default
+  output matches the upstream 0.1.18 binary byte-for-byte. No
+  `--site-pi-vcftools-compat` flag is needed because the default already
+  equals both the upstream value and the published textbook definition.
+
+  Parity test status: `TestParity_SitePi` (and the synthetic
+  `TestParity_SitePi_EdgeCases`) build the upstream binary from the
+  `reference_code/vcftools` submodule and assert byte-for-byte equality
+  against it — a hard `t.Fatalf`, never `t.Skip`. A separate
+  `TestParity_SitePi_Formula` spot-checks four hand-computed values
+  offline.
 
 #### mosdepth-overlap-pair-detection
 
