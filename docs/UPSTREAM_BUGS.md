@@ -1081,3 +1081,33 @@ on `1` (ref id 0), not an error.
 is emitted against the first reference in the genome file (requires a non-empty
 genome). `bedtobam` matches the live upstream binary here; an empty genome file
 is an explicit error rather than a crash.
+
+## bcftools +parental-origin: NULL deref (segfault) on a site-only `-e`/`-i` whose expression matches no site
+
+`plugins/parental-origin.c` `process_record()` requests the per-sample mask
+from `filter_test(args->filter, rec, &smpl_pass)`. For a *site-only*
+expression (e.g. `QUAL<10`, no FORMAT term) htslib leaves `smpl_pass == NULL`.
+In the `FLT_EXCLUDE` branch, when the site does **not** pass the expression
+(`pass_site == 0`) the code falls into
+
+```c
+else
+    for (i=0; i<3; i++) smpl_pass[args->trio.idx[i]] = 1;
+```
+
+which dereferences the NULL `smpl_pass` and crashes. So
+`bcftools +parental-origin -p P,F,M -t dup -e 'QUAL<10' file.vcf` (where every
+site has `QUAL>=10`, so nothing matches the exclude expression) **segfaults**
+in upstream 1.23.1. The symmetric `-i` site-only case where everything matches
+is fine; only the exclude-with-no-match (and include-with-no-match, which hits
+the same NULL write through a different path) crashes.
+
+**Our behaviour:** fixed-on-port. A site-only expression that selects no
+per-sample mask is treated as a whole-site verdict: under `-e`, a site that
+does not match the expression is *kept* with all three trio members included
+(the intended semantics), and under `-i` a non-matching site is dropped. No
+NULL write occurs, so the run completes and prints its summary instead of
+crashing. The byte-parity tests therefore exercise the *non-crashing* filter
+forms (`-i QUAL>10`, per-sample `FMT/GQ` expressions) against the live
+upstream binary; the crashing form is asserted only to *not* crash in our
+port, since upstream produces no output to compare against.
