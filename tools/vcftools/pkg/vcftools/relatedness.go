@@ -50,61 +50,54 @@ func (r *relatednessRunner) addVariant(v *vcf.Variant) {
 	if r == nil || len(r.samples) == 0 {
 		return
 	}
-	if len(v.Alt) != 1 {
+	// Biallelic only (REF + exactly one non-"." ALT) and fully diploid.
+	if len(siteAlleles(v)) != 2 {
 		return
 	}
-	if len(v.Ref) != 1 || len(v.Alt[0]) != 1 {
+	if !siteIsDiploid(v) {
 		return
 	}
-	counts := make([]int, len(r.samples))
-	var sumX, nIndv int
+
+	alleleCounts, nChr := siteAlleleCountsIndexed(v)
+	if nChr == 0 {
+		return
+	}
+	// ALT-allele frequency, exactly as upstream (allele_counts[1]/N_chr).
+	freq := float64(alleleCounts[1]) / float64(nChr)
+	const eps = 2.220446049250313e-16
+	if freq <= eps || freq >= 1.0-eps {
+		return
+	}
+
+	// x[i] = sum of the two allele ids (0,1,2) for individual i, or -1 if
+	// the genotype is missing (upstream initialises x to -1).
+	x := make([]int, len(r.samples))
 	for i := range r.samples {
+		x[i] = -1
 		if i >= len(v.Samples) {
-			counts[i] = -1
 			continue
 		}
-		gt, ok := v.Samples[i].Data["GT"]
-		if !ok {
-			counts[i] = -1
+		first, second, _ := parseGTAlleles(v.Samples[i].Data["GT"])
+		if first < 0 || second < 0 {
 			continue
 		}
-		gc, _, _ := parseGTForLD(gt)
-		counts[i] = gc
-		if gc < 0 {
-			continue
-		}
-		sumX += gc
-		nIndv++
+		x[i] = first + second
 	}
-	if nIndv < 2 {
-		return
-	}
-	// ALT-allele frequency p_alt; reference-allele frequency p = 1 - p_alt.
-	// The Yang estimator is symmetric in the choice of reference allele
-	// (the (x-2p)(x-2p) / (2p(1-p)) form is invariant under p -> 1-p with
-	// x -> 2-x), but vcftools uses the ALT count and ALT freq; we follow
-	// the same convention.
-	p := float64(sumX) / float64(2*nIndv)
-	if p <= 0 || p >= 1 {
-		return
-	}
-	denom := 2 * p * (1 - p)
+
+	div := 1.0 / (2.0 * freq * (1.0 - freq))
 	for i := range r.samples {
-		ci := counts[i]
-		if ci < 0 {
+		if x[i] < 0 {
 			continue
 		}
-		ai := (float64(ci) - 2*p) * (float64(ci) - 2*p) / denom
-		// Diagonal: A_jj contribution.
-		r.sumA[i][i] += ai
+		xi := float64(x[i])
+		// Diagonal term (Yang 2010 eq. 6 self-relatedness numerator).
+		r.sumA[i][i] += (xi*xi - (1.0+2.0*freq)*xi + 2.0*freq*freq) * div
 		r.nSites[i][i]++
 		for j := i + 1; j < len(r.samples); j++ {
-			cj := counts[j]
-			if cj < 0 {
+			if x[j] < 0 {
 				continue
 			}
-			a := (float64(ci) - 2*p) * (float64(cj) - 2*p) / denom
-			r.sumA[i][j] += a
+			r.sumA[i][j] += (xi - 2.0*freq) * (float64(x[j]) - 2.0*freq) * div
 			r.nSites[i][j]++
 		}
 	}
@@ -138,14 +131,9 @@ func (r *relatednessRunner) addVariant(v *vcf.Variant) {
 type relatedness2Runner struct {
 	samples []string
 	n       int
-	nAaAa   [][]int // both het
-	nAAaa   [][]int // one hom-ref, other hom-alt (or vice versa)
-	nAa     []int   // per-individual count of het SNPs (only over SNPs where
-	// the partner was also non-missing -- but for the diagonal terms in the
-	// KING formula we use the per-pair-shared count, recorded separately).
-	// Per-pair shared N_Aa_i and N_Aa_j:
-	nAaI [][]int
-	nAaJ [][]int
+	nAaAa   [][]int // both heterozygous
+	nAAaa   [][]int // both homozygous, for different alleles
+	nAa     []int   // per-individual count of heterozygous sites
 }
 
 func newRelatedness2Runner(samples []string) *relatedness2Runner {
@@ -156,65 +144,57 @@ func newRelatedness2Runner(samples []string) *relatedness2Runner {
 		nAaAa:   make([][]int, n),
 		nAAaa:   make([][]int, n),
 		nAa:     make([]int, n),
-		nAaI:    make([][]int, n),
-		nAaJ:    make([][]int, n),
 	}
 	for i := range samples {
 		r.nAaAa[i] = make([]int, n)
 		r.nAAaa[i] = make([]int, n)
-		r.nAaI[i] = make([]int, n)
-		r.nAaJ[i] = make([]int, n)
 	}
 	return r
 }
 
+// addVariant accumulates the Manichaikul (2010) KING-robust tallies over a
+// biallelic, fully-diploid site, mirroring upstream
+// output_indv_relatedness_Manichaikul (variant_file_output.cpp:4706-4741):
+// N_Aa per individual, and the full (ordered) N_AaAa / N_AAaa matrices.
 func (r *relatedness2Runner) addVariant(v *vcf.Variant) {
 	if r == nil || r.n == 0 {
 		return
 	}
-	if len(v.Alt) != 1 {
+	if len(siteAlleles(v)) != 2 {
 		return
 	}
-	// Extract diploid ALT counts per sample (0/1/2 or -1 missing).
-	counts := make([]int, r.n)
-	for i := range r.samples {
-		if i >= len(v.Samples) {
-			counts[i] = -1
-			continue
-		}
-		gt, ok := v.Samples[i].Data["GT"]
-		if !ok {
-			counts[i] = -1
-			continue
-		}
-		gc, _, _ := parseGTForLD(gt)
-		counts[i] = gc
+	if !siteIsDiploid(v) {
+		return
 	}
-	// Update per-pair counters for every unordered pair (i,j) where both
-	// non-missing.
-	for i := 0; i < r.n; i++ {
-		if counts[i] < 0 {
+
+	// Parse each individual's (first, second) allele ids once.
+	type gp struct{ a, b int }
+	g := make([]gp, r.n)
+	for i := range r.samples {
+		g[i] = gp{-1, -1}
+		if i >= len(v.Samples) {
 			continue
 		}
-		for j := i + 1; j < r.n; j++ {
-			if counts[j] < 0 {
-				continue
-			}
-			if counts[i] == 1 {
-				r.nAaI[i][j]++
-			}
-			if counts[j] == 1 {
-				r.nAaJ[i][j]++
-			}
-			if counts[i] == 1 && counts[j] == 1 {
-				r.nAaAa[i][j]++
-			}
-			if (counts[i] == 0 && counts[j] == 2) || (counts[i] == 2 && counts[j] == 0) {
-				r.nAAaa[i][j]++
-			}
+		first, second, _ := parseGTAlleles(v.Samples[i].Data["GT"])
+		g[i] = gp{first, second}
+	}
+
+	het := func(p gp) bool { return p.a != p.b && p.a >= 0 && p.b >= 0 }
+	hom := func(p gp) bool { return p.a == p.b && p.a >= 0 && p.b >= 0 }
+
+	for ui := 0; ui < r.n; ui++ {
+		gi := g[ui]
+		if het(gi) {
+			r.nAa[ui]++
 		}
-		if counts[i] == 1 {
-			r.nAa[i]++
+		for uj := 0; uj < r.n; uj++ {
+			gj := g[uj]
+			if het(gi) && het(gj) {
+				r.nAaAa[ui][uj]++
+			}
+			if hom(gi) && hom(gj) && gi.a != gj.a {
+				r.nAAaa[ui][uj]++
+			}
 		}
 	}
 }
@@ -233,27 +213,17 @@ func (r *relatedness2Runner) writeOutput(prefix string) error {
 	if _, err := w.WriteString("INDV1\tINDV2\tN_AaAa\tN_AAaa\tN1_Aa\tN2_Aa\tRELATEDNESS_PHI\n"); err != nil {
 		return err
 	}
-	for i := 0; i < r.n; i++ {
-		// Self pair: phi = 0.5 by definition (a perfect twin).
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%g\n",
-			r.samples[i], r.samples[i], 0, 0, r.nAa[i], r.nAa[i], 0.5); err != nil {
-			return err
-		}
-		for j := i + 1; j < r.n; j++ {
-			nAa1 := r.nAaI[i][j]
-			nAa2 := r.nAaJ[i][j]
-			nAaMin := nAa1
-			if nAa2 < nAaMin {
-				nAaMin = nAa2
-			}
-			phi := 0.0
-			if nAaMin > 0 {
-				phi = (float64(2*r.nAaAa[i][j]-4*r.nAAaa[i][j]-nAa1-nAa2) +
-					2*float64(nAaMin)) / (4 * float64(nAaMin))
-			}
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%g\n",
-				r.samples[i], r.samples[j], r.nAaAa[i][j], r.nAAaa[i][j],
-				nAa1, nAa2, phi); err != nil {
+	// Upstream emits the FULL ordered N×N matrix (every (ui, uj) pair,
+	// including ui==uj and both orderings). phi = (N_AaAa - 2*N_AAaa) /
+	// (N_Aa[ui] + N_Aa[uj]); a zero denominator yields "-nan".
+	for ui := 0; ui < r.n; ui++ {
+		for uj := 0; uj < r.n; uj++ {
+			phi := (float64(r.nAaAa[ui][uj]) - 2.0*float64(r.nAAaa[ui][uj])) /
+				float64(r.nAa[ui]+r.nAa[uj])
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+				r.samples[ui], r.samples[uj],
+				r.nAaAa[ui][uj], r.nAAaa[ui][uj], r.nAa[ui], r.nAa[uj],
+				formatCppDefault(phi)); err != nil {
 				return err
 			}
 		}
@@ -413,11 +383,13 @@ func (r *relatednessRunner) writeOutput(prefix string) error {
 	}
 	for i := range r.samples {
 		for j := i; j < len(r.samples); j++ {
-			var ajk float64
-			if r.nSites[i][j] > 0 {
-				ajk = r.sumA[i][j] / float64(r.nSites[i][j])
+			ajk := r.sumA[i][j] / float64(r.nSites[i][j])
+			if i == j {
+				// Upstream: Ajk[ui][ui] = 1.0 + (sum / N_sites).
+				ajk = 1.0 + ajk
 			}
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%g\n", r.samples[i], r.samples[j], ajk); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n",
+				r.samples[i], r.samples[j], formatCppDefault(ajk)); err != nil {
 				return err
 			}
 		}

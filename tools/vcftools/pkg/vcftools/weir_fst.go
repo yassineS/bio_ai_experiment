@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"sort"
-	"strings"
+	"strconv"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
@@ -169,22 +168,31 @@ func newWeirFstAccumulator(pops [][]string) *weirFstAccumulator {
 }
 
 // addVariant computes the per-site Weir & Cockerham Fst for v and appends it
-// to the accumulator. SNPs that are not biallelic single-base substitutions
-// are silently skipped (matching upstream vcftools, which only computes Fst
-// for biallelic SNPs).
+// to the accumulator. It mirrors upstream output_weir_and_cockerham_fst
+// (variant_file_output.cpp:3466-3637): all fully-diploid sites contribute
+// (multi-allelic and monomorphic included); the Fst is the per-allele sum
+// sum_a / sum_all, and per-allele a/b/c terms that are NaN are excluded from
+// those sums. site.a / site.b / site.c carry the per-allele sums so the
+// weighted Fst and windowed aggregation reuse the exact upstream numerators.
 func (acc *weirFstAccumulator) addVariant(v *vcf.Variant) {
-	// Biallelic single-base SNPs only.
-	if len(v.Alt) != 1 {
-		return
-	}
-	if isIndelVariant(v) {
-		return
-	}
-	if len(v.Ref) != 1 || len(v.Alt[0]) != 1 {
+	// Diploid sites only.
+	if !siteIsDiploid(v) {
 		return
 	}
 
-	pops := make([]popGenotypeCounts, len(acc.popNames))
+	nPops := len(acc.popNames)
+	nAlleles := len(siteAlleles(v))
+	if nAlleles == 0 {
+		return
+	}
+
+	// Per-population, per-allele homozygote / heterozygote counts.
+	nHom := make([][]int, nPops)
+	nHet := make([][]int, nPops)
+	for i := range nHom {
+		nHom[i] = make([]int, nAlleles)
+		nHet[i] = make([]int, nAlleles)
+	}
 	for _, s := range v.Samples {
 		popIdx := -1
 		for i, set := range acc.popNames {
@@ -196,56 +204,77 @@ func (acc *weirFstAccumulator) addVariant(v *vcf.Variant) {
 		if popIdx < 0 {
 			continue
 		}
-		gt, ok := s.Data["GT"]
-		if !ok {
-			continue
-		}
-		alleles := strings.FieldsFunc(gt, func(r rune) bool { return r == '/' || r == '|' })
-		if len(alleles) != 2 {
-			continue
-		}
-		if alleles[0] == "" || alleles[0] == "." || alleles[1] == "" || alleles[1] == "." {
-			continue
-		}
-		// Only the reference (0) and the single alt (1) alleles count.
-		if (alleles[0] != "0" && alleles[0] != "1") || (alleles[1] != "0" && alleles[1] != "1") {
-			continue
-		}
-		pc := &pops[popIdx]
-		pc.n++
-		if alleles[0] == "1" {
-			pc.altCount++
-		}
-		if alleles[1] == "1" {
-			pc.altCount++
-		}
-		if alleles[0] != alleles[1] {
-			pc.hetCount++
+		first, second, _ := parseGTAlleles(s.Data["GT"])
+		for j := 0; j < nAlleles; j++ {
+			if first == j && second == j {
+				nHom[popIdx][j]++
+			} else if (first == j || second == j) && first != -1 && second != -1 {
+				nHet[popIdx][j]++
+			}
 		}
 	}
 
-	// Skip the SNP entirely if any population has < 2 individuals.
-	for _, p := range pops {
-		if p.n < 2 {
-			return
+	r := float64(nPops)
+	n := make([]float64, nPops)
+	pMat := make([][]float64, nPops)
+	pbar := make([]float64, nAlleles)
+	hbar := make([]float64, nAlleles)
+	var nbar, sumNsqr, nSum float64
+
+	for i := 0; i < nPops; i++ {
+		pMat[i] = make([]float64, nAlleles)
+		for j := 0; j < nAlleles; j++ {
+			n[i] += float64(nHom[i][j]) + 0.5*float64(nHet[i][j])
+			pMat[i][j] = float64(nHet[i][j]) + 2.0*float64(nHom[i][j])
+			nbar += n[i]
+			pbar[j] += pMat[i][j]
+			hbar[j] += float64(nHet[i][j])
 		}
+		for j := 0; j < nAlleles; j++ {
+			pMat[i][j] /= 2.0 * n[i]
+		}
+		sumNsqr += n[i] * n[i]
+	}
+	for i := 0; i < nPops; i++ {
+		nSum += n[i]
+	}
+	nbar = nSum / r
+	for j := 0; j < nAlleles; j++ {
+		pbar[j] /= nSum * 2.0
+		hbar[j] /= nSum
 	}
 
-	a, b, c, fst, ok := weirCockerhamFst(pops)
+	ssqr := make([]float64, nAlleles)
+	for j := 0; j < nAlleles; j++ {
+		for i := 0; i < nPops; i++ {
+			d := pMat[i][j] - pbar[j]
+			ssqr[j] += n[i] * d * d
+		}
+		ssqr[j] /= (r - 1.0) * nbar
+	}
+	nc := (nSum - (sumNsqr / nSum)) / (r - 1.0)
+
+	var sumA, sumAll float64
+	for j := 0; j < nAlleles; j++ {
+		a := (ssqr[j] - (pbar[j]*(1.0-pbar[j])-(((r-1.0)*ssqr[j])/r)-(hbar[j]/4.0))/(nbar-1.0)) * nbar / nc
+		b := (pbar[j]*(1.0-pbar[j]) - (ssqr[j] * (r - 1.0) / r) - hbar[j]*(((2.0*nbar)-1.0)/(4.0*nbar))) * nbar / (nbar - 1.0)
+		c := hbar[j] / 2.0
+		if !math.IsNaN(a) && !math.IsNaN(b) && !math.IsNaN(c) {
+			sumA += a
+			sumAll += a + b + c
+		}
+	}
+	fst := sumA / sumAll
+
 	site := weirFstSite{
 		chrom: v.Chrom,
 		pos:   v.Pos,
-		a:     a,
-		b:     b,
-		c:     c,
+		a:     sumA,
+		b:     sumAll - sumA, // so a+b+c == sumAll
+		c:     0,
+		fst:   fst,
 	}
-	if ok {
-		site.fst = fst
-		site.defined = true
-	} else {
-		site.fst = math.NaN()
-		site.defined = false
-	}
+	site.defined = !math.IsNaN(fst)
 	acc.sites = append(acc.sites, site)
 }
 
@@ -266,16 +295,15 @@ func (acc *weirFstAccumulator) outputWeirFst(prefix string) error {
 	var sumA, sumABC float64
 
 	for _, site := range acc.sites {
+		// Upstream writes the per-site Fst straight to a default ostream
+		// (precision 6); a NaN value (monomorphic / undefined) prints "-nan".
+		fmt.Fprintf(f, "%s\t%d\t%s\n", site.chrom, site.pos, formatCppDefault(site.fst))
 		if site.defined {
-			fmt.Fprintf(f, "%s\t%d\t%.6f\n", site.chrom, site.pos, site.fst)
 			fstSum += site.fst
 			fstCount++
-		} else {
-			fmt.Fprintf(f, "%s\t%d\tnan\n", site.chrom, site.pos)
 		}
-		// Weighted Fst uses every processed SNP regardless of whether the
-		// per-site ratio is defined; an undefined ratio just means a + b + c
-		// is zero and contributes nothing to either sum.
+		// Weighted Fst uses every processed site; upstream accumulates the
+		// per-allele a/b/c sums (here a == sumA, a+b+c == sumABC).
 		sumA += site.a
 		sumABC += site.a + site.b + site.c
 	}
@@ -289,10 +317,26 @@ func (acc *weirFstAccumulator) outputWeirFst(prefix string) error {
 		weightedFst = sumA / sumABC
 	}
 
-	fmt.Fprintf(os.Stderr, "Weir and Cockerham mean Fst estimate: %s\n", formatFloat(meanFst))
-	fmt.Fprintf(os.Stderr, "Weir and Cockerham weighted Fst estimate: %s\n", formatFloat(weightedFst))
+	// Upstream prints these summary lines via dbl2str(_, 5) — defaultfloat,
+	// precision 5 — to the log, not the .weir.fst file.
+	fmt.Fprintf(os.Stderr, "Weir and Cockerham mean Fst estimate: %s\n", dbl2strPrec5(meanFst))
+	fmt.Fprintf(os.Stderr, "Weir and Cockerham weighted Fst estimate: %s\n", dbl2strPrec5(weightedFst))
 
 	return nil
+}
+
+// dbl2strPrec5 mirrors upstream output_log::dbl2str(n, 5): a default-format
+// ostream with precision 5.
+func dbl2strPrec5(x float64) string {
+	switch {
+	case math.IsNaN(x):
+		return "-nan"
+	case math.IsInf(x, 1):
+		return "inf"
+	case math.IsInf(x, -1):
+		return "-inf"
+	}
+	return strconv.FormatFloat(x, 'g', 5, 64)
 }
 
 // outputWindowedWeirFst writes the windowed Weir & Cockerham Fst table to
@@ -316,85 +360,63 @@ func (acc *weirFstAccumulator) outputWindowedWeirFst(prefix string, windowSize, 
 
 	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_VARIANTS\tWEIGHTED_FST\tMEAN_FST")
 
+	// Bins are indexed by 0-based window index per chromosome, matching
+	// upstream output_windowed_weir_and_cockerham_fst: only non-NaN sites
+	// contribute, and a site at pos lands in bins [first, last) where
+	// first = ceil((pos-win)/step) (clamped) and last = ceil(pos/step).
 	type winAcc struct {
-		winStart  int
-		nVariants int
-		sumA      float64
-		sumABC    float64
-		fstSum    float64
-		fstCount  int
+		sumA   float64 // sum of per-site sum_a
+		sumABC float64 // sum of per-site sum_all
+		fstSum float64
+		count  int
 	}
 
 	var chromOrder []string
-	windows := make(map[string]map[int]*winAcc)
+	bins := make(map[string][]*winAcc)
 
 	for _, site := range acc.sites {
-		if _, seen := windows[site.chrom]; !seen {
-			windows[site.chrom] = make(map[int]*winAcc)
+		if !site.defined {
+			continue // upstream skips NaN-fst sites entirely
+		}
+		if _, seen := bins[site.chrom]; !seen {
 			chromOrder = append(chromOrder, site.chrom)
 		}
-		p := site.pos
-		kMax := (p - 1) / stepSize
-		kMin := 0
-		if p > windowSize {
-			kMin = (p - windowSize + stepSize - 1) / stepSize
+		first := int(math.Ceil(float64(site.pos-windowSize) / float64(stepSize)))
+		if first < 0 {
+			first = 0
 		}
-		for k := kMin; k <= kMax; k++ {
-			ws := 1 + k*stepSize
-			acc := windows[site.chrom][ws]
-			if acc == nil {
-				acc = &winAcc{winStart: ws}
-				windows[site.chrom][ws] = acc
+		last := int(math.Ceil(float64(site.pos) / float64(stepSize)))
+		if last >= len(bins[site.chrom]) {
+			grown := make([]*winAcc, last+1)
+			copy(grown, bins[site.chrom])
+			bins[site.chrom] = grown
+		}
+		for idx := first; idx < last; idx++ {
+			if bins[site.chrom][idx] == nil {
+				bins[site.chrom][idx] = &winAcc{}
 			}
-			acc.nVariants++
-			acc.sumA += site.a
-			acc.sumABC += site.a + site.b + site.c
-			if site.defined {
-				acc.fstSum += site.fst
-				acc.fstCount++
-			}
+			w := bins[site.chrom][idx]
+			w.sumA += site.a
+			w.sumABC += site.a + site.b + site.c
+			w.fstSum += site.fst
+			w.count++
 		}
 	}
 
 	for _, chrom := range chromOrder {
-		var starts []int
-		for ws := range windows[chrom] {
-			starts = append(starts, ws)
-		}
-		sort.Ints(starts)
-		for _, ws := range starts {
-			w := windows[chrom][ws]
-			weighted := math.NaN()
-			if w.sumABC != 0 {
-				weighted = w.sumA / w.sumABC
+		for sIdx, w := range bins[chrom] {
+			// Emit only bins with non-zero sum_all and at least one site.
+			if w == nil || w.sumABC == 0 || w.count == 0 ||
+				math.IsNaN(w.sumA) || math.IsNaN(w.sumABC) {
+				continue
 			}
-			mean := math.NaN()
-			if w.fstCount > 0 {
-				mean = w.fstSum / float64(w.fstCount)
-			}
+			weighted := w.sumA / w.sumABC
+			mean := w.fstSum / float64(w.count)
 			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s\t%s\n",
-				chrom, ws, ws+windowSize-1, w.nVariants,
-				formatFloat6(weighted), formatFloat6(mean))
+				chrom, sIdx*stepSize+1, sIdx*stepSize+windowSize, w.count,
+				formatCppDefault(weighted), formatCppDefault(mean))
 		}
 	}
 
 	return nil
-}
-
-// formatFloat formats a float for the stderr summary lines, emitting "nan"
-// when the value is NaN to match the per-site output.
-func formatFloat(x float64) string {
-	if math.IsNaN(x) {
-		return "nan"
-	}
-	return fmt.Sprintf("%f", x)
-}
-
-// formatFloat6 is the %.6f counterpart of formatFloat used in the per-site /
-// windowed table columns.
-func formatFloat6(x float64) string {
-	if math.IsNaN(x) {
-		return "nan"
-	}
-	return fmt.Sprintf("%.6f", x)
 }

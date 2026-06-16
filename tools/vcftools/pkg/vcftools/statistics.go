@@ -2,6 +2,7 @@ package vcftools
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -22,6 +23,7 @@ type statistics struct {
 	siteMissing     []siteMissingStat
 	siteHWE         []siteHWEStat
 	sitePiValues    []sitePiStat
+	windowPiSites   []windowPiSite
 
 	// Per-individual statistics
 	indvMissing map[string]*indvMissingStat
@@ -48,9 +50,20 @@ type statistics struct {
 	// Phase 2: Population genetics statistics
 	windowPiValues []windowPiStat
 	tajimaDValues  []tajimaDStat
-	snpDensityBins map[int]*snpDensityStat
-	fstValues      []fstStat
+	// SNP-density bins per chromosome (variant counts indexed by bin). The
+	// chromosome iteration order matches first-seen order. snpDenPrevPos /
+	// snpDenPrevChrom dedup adjacent records at the same (CHROM, POS), as
+	// upstream does.
+	snpDensityBins  map[string][]int
+	snpDensityChrs  []string
+	snpDenPrevPos   int
+	snpDenPrevChrom string
+	fstValues       []fstStat
+	// FILTER-summary accumulators keyed by the full FILTER-field string
+	// (e.g. "PASS", ".", "q10;s50"): per-FILTER site count and Ts/Tv tallies.
 	filterCounts   map[string]int
+	filterTs       map[string]int
+	filterTv       map[string]int
 	singletonSites []singletonStat
 
 	// Misc
@@ -80,29 +93,31 @@ type tajimaDSite struct {
 }
 
 type siteFreqStat struct {
-	chrom     string
-	pos       int
-	nAlleles  int
-	nChr      int
-	refAllele string
-	altAllele string
-	refFreq   float64
-	altFreq   float64
-	refCount  int
-	altCount  int
-	// derivedSwap is set when --derived was requested AND the site's
-	// ancestral allele (INFO/AA, case-insensitive) matched the ALT
-	// allele. In that case the output puts ALT before REF so that the
-	// first column is always the ancestral allele. Mirrors upstream
-	// variant_file_output.cpp:67-101 (the `aa_idx` reorder loop).
-	derivedSwap bool
+	chrom    string
+	pos      int
+	nAlleles int
+	nChr     int
+	// alleles holds every allele in upstream index order (REF=0,
+	// ALT[0]=1, ...). counts is the parallel per-allele chromosome count.
+	// Multi-allelic and monomorphic (ALT=".") sites are represented here
+	// in full, matching upstream's get_allele_counts over all N_alleles.
+	alleles []string
+	counts  []int
+	// aaIdx is the ancestral-allele index when --derived was requested
+	// (the matched allele is emitted first). 0 otherwise.
+	aaIdx int
 }
 
 type siteDepthStat struct {
-	chrom     string
-	pos       int
-	sumDepth  int
-	meanDepth float64
+	chrom string
+	pos   int
+	// sum and sumsq are the sum and sum-of-squares of per-individual
+	// read depths at the site; n is the number of non-missing depths.
+	// Upstream computes MEAN_DEPTH = sum/n and VAR_DEPTH =
+	// ((sumsq/n) - mean^2) * n/(n-1) (variant_file_output.cpp:3454-3458).
+	sum   int
+	sumsq int
+	n     int
 }
 
 type siteQualityStat struct {
@@ -114,7 +129,12 @@ type siteQualityStat struct {
 type siteMissingStat struct {
 	chrom string
 	pos   int
-	fMiss float64
+	// nData is N_DATA (total non-filtered chromosomes at the site, 2 per
+	// diploid call, 1 per haploid), nMiss is the number of missing
+	// chromosomes. F_MISS = nMiss/nData. Mirrors upstream
+	// output_site_missingness (variant_file_output.cpp:847-918).
+	nData int
+	nMiss int
 }
 
 type siteHWEStat struct {
@@ -127,13 +147,32 @@ type siteHWEStat struct {
 	expHet  float64
 	expHom2 float64
 	chiSq   float64
-	pValue  float64
+	// pHWE is the two-sided exact-test p-value; pLo / pHi are the one-sided
+	// het-deficit / het-excess p-values (upstream P_HET_DEFICIT /
+	// P_HET_EXCESS).
+	pHWE float64
+	pLo  float64
+	pHi  float64
 }
 
 type sitePiStat struct {
 	chrom string
 	pos   int
 	pi    float64
+}
+
+// windowPiSite holds the per-site quantities --window-pi needs to bin: the
+// number of actual pairwise mismatches at the site, the number of non-missing
+// chromosomes (for the per-site pairwise-comparison count), and whether the
+// site is polymorphic w.r.t. the reference (allele_counts[0] < N_chr). Only
+// fully-diploid, non-fixed sites are recorded, mirroring upstream
+// output_windowed_nucleotide_diversity (variant_file_output.cpp:4122-4178).
+type windowPiSite struct {
+	chrom         string
+	pos           int
+	nMismatches   uint64
+	nChr          int
+	isPolymorphic bool
 }
 
 type indvMissingStat struct {
@@ -177,13 +216,17 @@ type indvDepthStat struct {
 	nSites int
 }
 
+// indvHetStat accumulates the PLINK-style per-individual inbreeding
+// coefficient (--het) statistics over biallelic-SNP, fully-diploid sites
+// where the non-reference allele is polymorphic. obsHom is the observed
+// number of homozygous diploid genotypes; expHom is the expected number by
+// chance (1 - 2pq * n/(n-1) per site); nSites is the count of included
+// diploid genotypes. See variant_file_output.cpp:165-279.
 type indvHetStat struct {
-	name    string
-	nHet    int
-	nHomAlt int
-	nHomRef int
-	nTotal  int
-	hetRate float64
+	name   string
+	obsHom int
+	expHom float64
+	nSites int
 }
 
 type windowPiStat struct {
@@ -200,13 +243,6 @@ type tajimaDStat struct {
 	binEnd   int
 	nSites   int
 	tajimaD  float64
-}
-
-type snpDensityStat struct {
-	binStart int
-	binEnd   int
-	nSNPs    int
-	density  float64
 }
 
 type fstStat struct {
@@ -237,8 +273,11 @@ func newStatistics(header *vcf.Header) *statistics {
 		indvDepth:      make(map[string]*indvDepthStat),
 		tsTvBins:       make(map[string]map[int]*tsTvBinStat),
 		tsTvByCount:    make(map[int]*tsTvCountStat),
-		snpDensityBins: make(map[int]*snpDensityStat),
+		snpDensityBins: make(map[string][]int),
+		snpDenPrevPos:  -1,
 		filterCounts:   make(map[string]int),
+		filterTs:       make(map[string]int),
+		filterTv:       make(map[string]int),
 		indelLenHist:   make(map[int]int),
 	}
 }
@@ -308,9 +347,14 @@ func (s *statistics) addVariant(v *vcf.Variant, params *Params, genoFiltered map
 		s.addIndelLenStat(v)
 	}
 
-	// Site pi (nucleotide diversity) - also required to build windowed pi
-	if params.SitePi || params.WindowPi > 0 {
+	// Site pi (nucleotide diversity)
+	if params.SitePi {
 		s.addSitePiStat(v)
+	}
+	// Windowed pi uses a distinct accumulation (mismatches/comparisons per
+	// site, binned over windows) — see output_windowed_nucleotide_diversity.
+	if params.WindowPi > 0 {
+		s.addWindowPiSite(v)
 	}
 
 	// Tajima's D (collect per-SNP data; computed at output time)
@@ -358,77 +402,45 @@ func (s *statistics) addFrequencyStat(v *vcf.Variant, derived bool) {
 		return
 	}
 
-	// Count alleles (only for biallelic sites)
-	if len(v.Alt) != 1 {
-		return
-	}
-
-	refCount := 0
-	altCount := 0
-	totalAlleles := 0
-
-	for _, sample := range v.Samples {
-		gt, ok := sample.Data["GT"]
-		if !ok || gt == "." || gt == "./." || gt == ".|." {
-			continue
-		}
-
-		alleles := strings.FieldsFunc(gt, func(r rune) bool {
-			return r == '/' || r == '|'
-		})
-
-		for _, allele := range alleles {
-			if allele == "0" {
-				refCount++
-				totalAlleles++
-			} else if allele == "1" {
-				altCount++
-				totalAlleles++
-			}
-		}
-	}
-
-	if totalAlleles == 0 {
-		return
-	}
+	// Upstream emits one row per passed site over ALL alleles (REF +
+	// every ALT), including multi-allelic and monomorphic (ALT=".") sites.
+	// See output_frequency (variant_file_output.cpp:10-163).
+	alleles := siteAlleles(v)
+	counts, nChr := siteAlleleCountsIndexed(v)
 
 	stat := siteFreqStat{
-		chrom:     v.Chrom,
-		pos:       v.Pos,
-		nAlleles:  2,
-		nChr:      totalAlleles,
-		refAllele: v.Ref,
-		altAllele: v.Alt[0],
-		refCount:  refCount,
-		altCount:  altCount,
-		refFreq:   float64(refCount) / float64(totalAlleles),
-		altFreq:   float64(altCount) / float64(totalAlleles),
+		chrom:    v.Chrom,
+		pos:      v.Pos,
+		nAlleles: len(alleles),
+		nChr:     nChr,
+		alleles:  alleles,
+		counts:   counts,
 	}
 
 	if derived {
 		// Upstream uppercases INFO/AA before comparing
 		// (variant_file_output.cpp:78). Sites with AA missing, ".",
 		// "?", or AA that does not match any allele are skipped (the
-		// `continue` branches at lines 81 and 97). For our biallelic
-		// fast path that means REF or ALT (upper-cased), otherwise
-		// drop the row.
+		// `continue` branches at lines 81 and 97). The matched allele
+		// is emitted first.
 		aa, ok := v.Info["AA"]
 		if !ok || aa == "" || aa == "." || aa == "?" {
 			return
 		}
 		aaUp := strings.ToUpper(aa)
-		refUp := strings.ToUpper(v.Ref)
-		altUp := strings.ToUpper(v.Alt[0])
-		switch aaUp {
-		case refUp:
-			// AA == REF: no reorder.
-		case altUp:
-			stat.derivedSwap = true
-		default:
+		found := -1
+		for i, a := range alleles {
+			if strings.ToUpper(a) == aaUp {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
 			// AA does not match any allele: upstream emits a
 			// one-off warning and drops the site.
 			return
 		}
+		stat.aaIdx = found
 	}
 
 	s.siteFrequencies = append(s.siteFrequencies, stat)
@@ -440,37 +452,33 @@ func (s *statistics) addSiteDepthStat(v *vcf.Variant) {
 		return
 	}
 
-	sumDepth := 0
-	count := 0
-
+	// Upstream emits one row per passed site (no skip when no sample has
+	// depth). It sums each individual's FORMAT/DP, ignoring missing/absent
+	// depths (get_indv_DEPTH returns -1 for "." or a missing field).
+	sum := 0
+	sumsq := 0
+	n := 0
 	for _, sample := range v.Samples {
 		dpStr, ok := sample.Data["DP"]
-		if !ok {
+		if !ok || dpStr == "" || dpStr == "." {
 			continue
 		}
-
-		var dp int
-		_, err := fmt.Sscanf(dpStr, "%d", &dp)
-		if err != nil {
+		dp, err := strconv.Atoi(dpStr)
+		if err != nil || dp < 0 {
 			continue
 		}
-
-		sumDepth += dp
-		count++
+		sum += dp
+		sumsq += dp * dp
+		n++
 	}
 
-	if count == 0 {
-		return
-	}
-
-	stat := siteDepthStat{
-		chrom:     v.Chrom,
-		pos:       v.Pos,
-		sumDepth:  sumDepth,
-		meanDepth: float64(sumDepth) / float64(count),
-	}
-
-	s.siteDepths = append(s.siteDepths, stat)
+	s.siteDepths = append(s.siteDepths, siteDepthStat{
+		chrom: v.Chrom,
+		pos:   v.Pos,
+		sum:   sum,
+		sumsq: sumsq,
+		n:     n,
+	})
 }
 
 // addSiteQualityStat adds site quality statistics
@@ -483,27 +491,73 @@ func (s *statistics) addSiteQualityStat(v *vcf.Variant) {
 	s.siteQualities = append(s.siteQualities, stat)
 }
 
-// addSiteMissingStat adds site missingness statistics
+// addSiteMissingStat accumulates per-site missingness over chromosomes
+// (alleles), mirroring upstream output_site_missingness
+// (variant_file_output.cpp:847-918): each diploid genotype contributes 2 to
+// N_DATA, each missing allele 1 to N_MISS, with phased-missing and haploid
+// genotypes counting as a single chromosome.
 func (s *statistics) addSiteMissingStat(v *vcf.Variant) {
-	if len(v.Samples) == 0 {
-		return
-	}
-
-	missing := 0
+	nMiss := 0
+	nTot := 0
 	for _, sample := range v.Samples {
-		gt, ok := sample.Data["GT"]
-		if !ok || gt == "." || gt == "./." || gt == ".|." {
-			missing++
+		first, second, phased := parseGTAlleles(sample.Data["GT"])
+		if first == -1 {
+			nMiss++
+		}
+		if second == -1 {
+			nMiss++
+		}
+		nTot += 2
+		if second == -1 && phased {
+			// Phased missing second slot ⇒ haploid genome: count one
+			// chromosome (matches upstream's site_N_tot--/missing-- pair).
+			nTot--
+			nMiss--
 		}
 	}
 
-	stat := siteMissingStat{
+	s.siteMissing = append(s.siteMissing, siteMissingStat{
 		chrom: v.Chrom,
 		pos:   v.Pos,
-		fMiss: float64(missing) / float64(len(v.Samples)),
-	}
+		nData: nTot,
+		nMiss: nMiss,
+	})
+}
 
-	s.siteMissing = append(s.siteMissing, stat)
+// parseGTAlleles parses a GT string into upstream's (first, second)
+// allele-id pair plus whether the genotype is phased, mirroring
+// vcf_entry::set_indv_GENOTYPE_and_PHASE (vcf_entry_setters.cpp). A missing
+// allele "." maps to -1. A haploid genotype (a single allele slot, e.g. "0"
+// or "." on male chrX) is stored exactly as upstream stores it: second = -1
+// and phase = '|' (phased=true). An absent/empty GT is treated as a missing
+// diploid so it contributes two missing chromosomes. Non-numeric tokens map
+// to -1.
+func parseGTAlleles(gt string) (first, second int, phased bool) {
+	if gt == "" {
+		return -1, -1, false
+	}
+	phased = strings.Contains(gt, "|")
+	toks := strings.FieldsFunc(gt, func(r rune) bool { return r == '/' || r == '|' })
+	parse := func(tok string) int {
+		if tok == "." || tok == "" {
+			return -1
+		}
+		n, err := strconv.Atoi(tok)
+		if err != nil {
+			return -1
+		}
+		return n
+	}
+	switch len(toks) {
+	case 0:
+		return -1, -1, false
+	case 1:
+		// Haploid: upstream sets the second allele to "." (-1) and the
+		// phase to '|'.
+		return parse(toks[0]), -1, true
+	default:
+		return parse(toks[0]), parse(toks[1]), phased
+	}
 }
 
 // addIndvMissingStat adds individual missingness statistics. The
@@ -550,71 +604,45 @@ func genotypeIsMissing(gt string) bool {
 	return first == "" || first == "."
 }
 
-// addHWEStat adds Hardy-Weinberg equilibrium statistics
+// addHWEStat adds Hardy-Weinberg equilibrium statistics for a biallelic,
+// fully-diploid SNP. It mirrors upstream output_hwe
+// (variant_file_output.cpp:278-365): the REF-allele frequency is taken over
+// non-missing chromosomes, the expected genotype counts and chi-square follow
+// the PLINK formulae, and the three p-values come from the exact SNPHWE test.
 func (s *statistics) addHWEStat(v *vcf.Variant) {
-	// Only for biallelic sites
-	if len(v.Alt) != 1 {
+	// Biallelic only (exactly one non-"." ALT).
+	if len(siteAlleles(v)) != 2 {
+		return
+	}
+	// Fully diploid only.
+	if !siteIsDiploid(v) {
 		return
 	}
 
-	// Count genotypes
-	hom1 := 0 // 0/0
-	het := 0  // 0/1 or 1/0
-	hom2 := 0 // 1/1
-
-	for _, sample := range v.Samples {
-		gt, ok := sample.Data["GT"]
-		if !ok || strings.Contains(gt, ".") {
-			continue
-		}
-
-		alleles := strings.FieldsFunc(gt, func(r rune) bool {
-			return r == '/' || r == '|'
-		})
-
-		if len(alleles) != 2 {
-			continue
-		}
-
-		if alleles[0] == "0" && alleles[1] == "0" {
-			hom1++
-		} else if alleles[0] == "1" && alleles[1] == "1" {
-			hom2++
-		} else if (alleles[0] == "0" && alleles[1] == "1") || (alleles[0] == "1" && alleles[1] == "0") {
-			het++
-		}
+	counts, nChr := siteAlleleCountsIndexed(v)
+	if nChr == 0 {
+		return
 	}
-
+	hom1, het, hom2, _ := countDiploidGenotypes(v)
 	n := hom1 + het + hom2
 	if n == 0 {
 		return
 	}
 
-	// Calculate allele frequencies
-	p := (float64(2*hom1) + float64(het)) / float64(2*n)
-	q := 1 - p
+	// REF-allele frequency over non-missing chromosomes (allele_counts[0]).
+	freq := float64(counts[0]) / float64(nChr)
+	tot := float64(n)
+	expHom1 := freq * freq * tot
+	expHet := 2.0 * freq * (1.0 - freq) * tot
+	expHom2 := (1.0 - freq) * (1.0 - freq) * tot
 
-	// Expected genotype counts under HWE
-	expHom1 := p * p * float64(n)
-	expHet := 2 * p * q * float64(n)
-	expHom2 := q * q * float64(n)
+	chiSq := math.Pow(float64(hom1)-expHom1, 2)/expHom1 +
+		math.Pow(float64(het)-expHet, 2)/expHet +
+		math.Pow(float64(hom2)-expHom2, 2)/expHom2
 
-	// Chi-square test
-	chiSq := 0.0
-	if expHom1 > 0 {
-		chiSq += math.Pow(float64(hom1)-expHom1, 2) / expHom1
-	}
-	if expHet > 0 {
-		chiSq += math.Pow(float64(het)-expHet, 2) / expHet
-	}
-	if expHom2 > 0 {
-		chiSq += math.Pow(float64(hom2)-expHom2, 2) / expHom2
-	}
+	pHWE, pLo, pHi := snpHWEFull(het, hom1, hom2)
 
-	// P-value (1 degree of freedom)
-	pValue := 1 - chiSquareCDF(chiSq, 1)
-
-	stat := siteHWEStat{
+	s.siteHWE = append(s.siteHWE, siteHWEStat{
 		chrom:   v.Chrom,
 		pos:     v.Pos,
 		obsHom1: hom1,
@@ -624,10 +652,10 @@ func (s *statistics) addHWEStat(v *vcf.Variant) {
 		expHet:  expHet,
 		expHom2: expHom2,
 		chiSq:   chiSq,
-		pValue:  pValue,
-	}
-
-	s.siteHWE = append(s.siteHWE, stat)
+		pHWE:    pHWE,
+		pLo:     pLo,
+		pHi:     pHi,
+	})
 }
 
 // addTsTvStat adds transition/transversion statistics
@@ -698,6 +726,33 @@ func (s *statistics) addSitePiStat(v *vcf.Variant) {
 	s.sitePiValues = append(s.sitePiValues, sitePiStat{chrom: v.Chrom, pos: v.Pos, pi: pi})
 }
 
+// addWindowPiSite records the per-site mismatch/comparison quantities used by
+// --window-pi. Only fully-diploid, non-fixed sites are recorded (upstream
+// skips non-diploid sites and sites with zero pairwise mismatches).
+func (s *statistics) addWindowPiSite(v *vcf.Variant) {
+	if !siteIsDiploid(v) {
+		return
+	}
+	counts, nChr := siteAlleleCountsIndexed(v)
+	if nChr == 0 {
+		return
+	}
+	var mismatches uint64
+	for _, ac := range counts {
+		mismatches += uint64(ac) * uint64(nChr-ac)
+	}
+	if mismatches == 0 {
+		return // Site is fixed.
+	}
+	s.windowPiSites = append(s.windowPiSites, windowPiSite{
+		chrom:         v.Chrom,
+		pos:           v.Pos,
+		nMismatches:   mismatches,
+		nChr:          nChr,
+		isPolymorphic: counts[0] < nChr,
+	})
+}
+
 // siteAlleleCounts returns the count of each allele index ("0", "1", ...) across
 // all non-missing chromosomes at the site, together with the total number of
 // non-missing chromosomes.
@@ -718,6 +773,52 @@ func siteAlleleCounts(v *vcf.Variant) (map[string]int, int) {
 		}
 	}
 	return counts, total
+}
+
+// siteAlleles returns the per-site allele list in upstream index order:
+// REF is index 0, then each ALT in declaration order. Upstream's
+// entry::add_ALT_allele drops the literal "." (monomorphic) ALT entirely, so
+// a record with ALT="." yields just [REF] (N_alleles == 1). This mirrors
+// entry::get_N_alleles == ALT.size()+1.
+func siteAlleles(v *vcf.Variant) []string {
+	alleles := make([]string, 0, len(v.Alt)+1)
+	alleles = append(alleles, v.Ref)
+	for _, a := range v.Alt {
+		if a == "." {
+			continue
+		}
+		alleles = append(alleles, a)
+	}
+	return alleles
+}
+
+// siteAlleleCountsIndexed counts alleles per allele-index (0=REF, 1=ALT[0],
+// ...) the way upstream's entry::get_allele_counts does: a genotype slot is
+// parsed as an integer allele index, slots outside the valid range or "."
+// are skipped, and only valid slots contribute to N_non_missing_chr. The
+// returned slice is parallel to siteAlleles(v). This faithfully reproduces
+// upstream over multi-allelic and monomorphic sites alike.
+func siteAlleleCountsIndexed(v *vcf.Variant) (counts []int, nChr int) {
+	alleles := siteAlleles(v)
+	counts = make([]int, len(alleles))
+	for _, sample := range v.Samples {
+		gt, ok := sample.Data["GT"]
+		if !ok {
+			continue
+		}
+		for _, a := range strings.FieldsFunc(gt, func(r rune) bool { return r == '/' || r == '|' }) {
+			if a == "" || a == "." {
+				continue
+			}
+			idx, err := strconv.Atoi(a)
+			if err != nil || idx < 0 || idx >= len(counts) {
+				continue
+			}
+			counts[idx]++
+			nChr++
+		}
+	}
+	return counts, nChr
 }
 
 // siteIsDiploid reports whether every non-empty-GT sample at the site is
@@ -950,38 +1051,65 @@ func (s *statistics) addTajimaDStat(v *vcf.Variant) {
 
 // Phase 2 statistics methods
 
-// addHetStat adds heterozygosity statistics per individual
+// addHetStat accumulates the PLINK-style per-individual inbreeding
+// coefficient inputs (--het). It mirrors upstream output_het
+// (variant_file_output.cpp:165-279): only biallelic SNPs that are fully
+// diploid and polymorphic (the non-ref frequency strictly between 0 and 1)
+// contribute. For each included diploid genotype it counts observed
+// homozygotes and accumulates the per-site expected-homozygote term.
 func (s *statistics) addHetStat(v *vcf.Variant) {
+	// Ensure a stat slot exists for every sample (so an individual with no
+	// included sites still has an entry — upstream tracks all N_indv).
 	for _, sample := range v.Samples {
 		if s.indvHet[sample.Name] == nil {
-			s.indvHet[sample.Name] = &indvHetStat{
-				name: sample.Name,
-			}
+			s.indvHet[sample.Name] = &indvHetStat{name: sample.Name}
 		}
+	}
 
-		stat := s.indvHet[sample.Name]
+	// Biallelic only (N_alleles == 2, i.e. exactly one non-"." ALT).
+	alleles := siteAlleles(v)
+	if len(alleles) != 2 {
+		return
+	}
+	// Fully diploid only.
+	if !siteIsDiploid(v) {
+		return
+	}
 
+	counts, nChr := siteAlleleCountsIndexed(v)
+	if nChr == 0 {
+		return
+	}
+	freq := float64(counts[1]) / float64(nChr)
+	// Skip monomorphic sites (freq == 0 or 1, to within machine epsilon).
+	const eps = 2.220446049250313e-16
+	if freq <= eps || 1.0-freq <= eps {
+		return
+	}
+
+	expTerm := 1.0 - (2.0 * freq * (1.0 - freq) * (float64(nChr) / (float64(nChr) - 1.0)))
+
+	for _, sample := range v.Samples {
 		gt, ok := sample.Data["GT"]
-		if !ok || strings.Contains(gt, ".") {
+		if !ok || gt == "" {
 			continue
 		}
-
-		alleles := strings.FieldsFunc(gt, func(r rune) bool {
-			return r == '/' || r == '|'
-		})
-
-		if len(alleles) != 2 {
+		gtAlleles := strings.FieldsFunc(gt, func(r rune) bool { return r == '/' || r == '|' })
+		if len(gtAlleles) != 2 {
 			continue
 		}
-
-		stat.nTotal++
-		if alleles[0] != alleles[1] {
-			stat.nHet++
-		} else if alleles[0] == "0" {
-			stat.nHomRef++
-		} else {
-			stat.nHomAlt++
+		a0, a1 := gtAlleles[0], gtAlleles[1]
+		// Both alleles must be non-missing (upstream: alleles.first > -1
+		// && alleles.second > -1).
+		if a0 == "." || a0 == "" || a1 == "." || a1 == "" {
+			continue
 		}
+		stat := s.indvHet[sample.Name]
+		stat.nSites++
+		if a0 == a1 {
+			stat.obsHom++
+		}
+		stat.expHom += expTerm
 	}
 }
 
@@ -992,98 +1120,113 @@ func (s *statistics) addSingletonStat(v *vcf.Variant) {
 	}
 
 	sampleNames := s.header.Samples
+	alleles := siteAlleles(v)
+	counts, _ := siteAlleleCountsIndexed(v)
 
-	// Per-allele totals + which sample(s) carry the allele.
-	alleleCount := make(map[string]int)
-	alleleSample := make(map[string]string)
-	alleleDoubleton := make(map[string]bool)
-
+	// Pre-parse each sample's diploid allele-id pair once.
+	type genoPair struct{ first, second int }
+	genos := make([]genoPair, len(v.Samples))
 	for i, sample := range v.Samples {
-		gt, ok := sample.Data["GT"]
-		if !ok || strings.Contains(gt, ".") {
-			continue
-		}
-		alleles := strings.FieldsFunc(gt, func(r rune) bool {
-			return r == '/' || r == '|'
-		})
-		perSample := make(map[string]int)
-		for _, a := range alleles {
-			perSample[a]++
-		}
-		for a, n := range perSample {
-			alleleCount[a] += n
-			if i < len(sampleNames) {
-				if alleleSample[a] == "" {
-					alleleSample[a] = sampleNames[i]
-				} else if alleleSample[a] != sampleNames[i] {
-					// More than one sample carries the allele —
-					// disqualifies it from being a private doubleton.
-					alleleSample[a] = ""
+		first, second, _ := parseGTAlleles(sample.Data["GT"])
+		genos[i] = genoPair{first, second}
+	}
+
+	// Iterate allele index 0..N_alleles-1 in order (upstream a-loop). For a
+	// singleton (count==1) emit the first individual carrying allele a in
+	// either slot; for a private doubleton (count==2) emit the first
+	// individual HOMOZYGOUS for a. The ALLELE column is the allele string.
+	for a := 0; a < len(alleles); a++ {
+		switch counts[a] {
+		case 1:
+			for i := range v.Samples {
+				if genos[i].first == a || genos[i].second == a {
+					name := ""
+					if i < len(sampleNames) {
+						name = sampleNames[i]
+					}
+					s.singletonSites = append(s.singletonSites, singletonStat{
+						chrom: v.Chrom, pos: v.Pos, kind: "S", allele: alleles[a], indv: name,
+					})
+					break
 				}
 			}
-			if n == 2 {
-				alleleDoubleton[a] = true
+		case 2:
+			for i := range v.Samples {
+				if genos[i].first == a && genos[i].second == a {
+					name := ""
+					if i < len(sampleNames) {
+						name = sampleNames[i]
+					}
+					s.singletonSites = append(s.singletonSites, singletonStat{
+						chrom: v.Chrom, pos: v.Pos, kind: "D", allele: alleles[a], indv: name,
+					})
+					break
+				}
 			}
 		}
 	}
-
-	// Stable iteration order: sort the allele keys.
-	keys := make([]string, 0, len(alleleCount))
-	for a := range alleleCount {
-		keys = append(keys, a)
-	}
-	sort.Strings(keys)
-
-	for _, allele := range keys {
-		count := alleleCount[allele]
-		if allele == "0" {
-			continue
-		}
-		var kind string
-		switch {
-		case count == 1:
-			kind = "S"
-		case count == 2 && alleleDoubleton[allele] && alleleSample[allele] != "":
-			kind = "D"
-		default:
-			continue
-		}
-		s.singletonSites = append(s.singletonSites, singletonStat{
-			chrom:  v.Chrom,
-			pos:    v.Pos,
-			kind:   kind,
-			allele: allele,
-			indv:   alleleSample[allele],
-		})
-	}
 }
 
-// addFilterCount tracks FILTER tag occurrences
+// addFilterCount accumulates the --FILTER-summary tallies. The key is the
+// WHOLE FILTER-field string (e.g. "PASS", ".", "q10;s50"), not individual
+// tags, mirroring upstream output_FILTER_summary which keys on get_FILTER().
+// Ts/Tv is derived from the REF+ALT[0] substitution model: A<->G / C<->T are
+// transitions, the other four ordered pairs are transversions.
 func (s *statistics) addFilterCount(v *vcf.Variant) {
-	if len(v.Filter) == 0 {
-		s.filterCounts["PASS"]++
-	} else {
-		for _, filter := range v.Filter {
-			s.filterCounts[filter]++
-		}
-	}
-}
+	filter := filterFieldString(v)
+	s.filterCounts[filter]++
 
-// addSNPDensityStat adds SNP density in bins
-func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
-	// Only count SNPs, not indels
-	if isIndelVariant(v) {
+	if len(v.Alt) == 0 {
 		return
 	}
-
-	binIdx := v.Pos / binSize
-	if s.snpDensityBins[binIdx] == nil {
-		s.snpDensityBins[binIdx] = &snpDensityStat{
-			binStart: binIdx * binSize,
-			binEnd:   (binIdx + 1) * binSize,
+	if idx, ok := tstvModelIndex(v.Ref, v.Alt[0]); ok {
+		switch idx {
+		case 1, 4: // AG, CT
+			s.filterTs[filter]++
+		case 0, 2, 3, 5: // AC, AT, CG, GT
+			s.filterTv[filter]++
 		}
 	}
-	s.snpDensityBins[binIdx].nSNPs++
+}
+
+// filterFieldString reconstructs the original FILTER column string from the
+// parsed slice (parseFilter joins on ';' and keeps "." / "PASS" as singletons).
+func filterFieldString(v *vcf.Variant) string {
+	if len(v.Filter) == 0 {
+		return "."
+	}
+	return strings.Join(v.Filter, ";")
+}
+
+// addSNPDensityStat bins a variant for --SNPdensity, mirroring upstream
+// output_SNP_density (variant_file_output.cpp): a record is counted only when
+// its ALT is not "." (i.e. it is a real variant) and it is not a duplicate of
+// the immediately preceding (CHROM, POS). Bins are per chromosome, indexed by
+// POS/bin_size. Indels are counted (upstream counts all non-monomorphic
+// variants here, despite the "SNP" name).
+func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
+	chrom := v.Chrom
+	// Track first-seen chromosome order (recorded for every record, even
+	// monomorphic ones, matching upstream's chrs.push_back placement).
+	if _, seen := s.snpDensityBins[chrom]; !seen {
+		s.snpDensityChrs = append(s.snpDensityChrs, chrom)
+		s.snpDensityBins[chrom] = nil
+	}
+
+	altMonomorphic := len(v.Alt) == 0 || (len(v.Alt) == 1 && v.Alt[0] == ".")
+	if !altMonomorphic && (v.Pos != s.snpDenPrevPos || chrom != s.snpDenPrevChrom) {
+		idx := v.Pos / binSize
+		bins := s.snpDensityBins[chrom]
+		if idx >= len(bins) {
+			grown := make([]int, idx+1)
+			copy(grown, bins)
+			bins = grown
+			s.snpDensityBins[chrom] = bins
+		}
+		bins[idx]++
+	}
+	s.snpDenPrevPos = v.Pos
+	s.snpDenPrevChrom = chrom
 }
 
 // Output functions
@@ -1097,6 +1240,25 @@ func (s *statistics) addSNPDensityStat(v *vcf.Variant, binSize int) {
 // that byte-for-byte. Allele frequencies lie in [0, 1], so we never reach the
 // exponent-notation threshold for ordinary inputs.
 func formatFreq(v float64) string {
+	return formatCppDefault(v)
+}
+
+// formatCppDefault renders a float the way a default-configured C++ ostream
+// (defaultfloat, precision 6) would: up to 6 significant digits, trailing
+// zeros stripped, switching to scientific notation only outside the
+// [1e-4, 1e6) magnitude band. NaN prints as "-nan" and infinities as
+// "inf"/"-inf", matching glibc's printf used by libstdc++. This is the
+// formatting upstream relies on for nearly every floating-point statistic
+// it writes straight to an ostream.
+func formatCppDefault(v float64) string {
+	switch {
+	case math.IsNaN(v):
+		return "-nan"
+	case math.IsInf(v, 1):
+		return "inf"
+	case math.IsInf(v, -1):
+		return "-inf"
+	}
 	return strconv.FormatFloat(v, 'g', 6, 64)
 }
 
@@ -1137,43 +1299,50 @@ func (s *statistics) outputFrequency(prefix string, counts bool, suppressAlleles
 		fmt.Fprintln(f, "CHROM\tPOS\tN_ALLELES\tN_CHR\t{ALLELE:FREQ}")
 	}
 
-	// Data. When --derived was supplied and the site's ancestral allele
-	// matched ALT (derivedSwap=true), the row prints ALT first so that
-	// the leading column is always the ancestral (derived columns
-	// follow), matching upstream's `aa_idx`-keyed loop in
-	// variant_file_output.cpp:107-159.
+	// Data. Each site prints every allele (REF + all ALTs) in index order,
+	// but the ancestral allele (aaIdx, set only under --derived) is emitted
+	// first. This mirrors upstream's `aa_idx`-keyed loop in
+	// variant_file_output.cpp:107-159: print allele[aaIdx] first, then the
+	// remaining alleles ui != aaIdx in index order. Frequencies are
+	// count/N_CHR with C++ defaultfloat formatting (6 significant digits).
 	for _, stat := range s.siteFrequencies {
-		firstAllele, secondAllele := stat.refAllele, stat.altAllele
-		firstCount, secondCount := stat.refCount, stat.altCount
-		firstFreq, secondFreq := stat.refFreq, stat.altFreq
-		if stat.derivedSwap {
-			firstAllele, secondAllele = stat.altAllele, stat.refAllele
-			firstCount, secondCount = stat.altCount, stat.refCount
-			firstFreq, secondFreq = stat.altFreq, stat.refFreq
+		// Build the emission order: aaIdx first, then the rest in order.
+		order := make([]int, 0, len(stat.alleles))
+		order = append(order, stat.aaIdx)
+		for ui := range stat.alleles {
+			if ui != stat.aaIdx {
+				order = append(order, ui)
+			}
 		}
-		switch {
-		case counts && suppressAlleles:
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\t%d\n",
-				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
-				firstCount, secondCount)
-		case counts:
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%d\t%s:%d\n",
-				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
-				firstAllele, firstCount,
-				secondAllele, secondCount)
-		case suppressAlleles:
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s\t%s\n",
-				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
-				formatFreq(firstFreq), formatFreq(secondFreq))
-		default:
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s:%s\t%s:%s\n",
-				stat.chrom, stat.pos, stat.nAlleles, stat.nChr,
-				firstAllele, formatFreq(firstFreq),
-				secondAllele, formatFreq(secondFreq))
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "%s\t%d\t%d\t%d", stat.chrom, stat.pos, stat.nAlleles, stat.nChr)
+		for _, ui := range order {
+			switch {
+			case counts && suppressAlleles:
+				fmt.Fprintf(&sb, "\t%d", stat.counts[ui])
+			case counts:
+				fmt.Fprintf(&sb, "\t%s:%d", stat.alleles[ui], stat.counts[ui])
+			case suppressAlleles:
+				fmt.Fprintf(&sb, "\t%s", formatFreq(siteFreq(stat.counts[ui], stat.nChr)))
+			default:
+				fmt.Fprintf(&sb, "\t%s:%s", stat.alleles[ui], formatFreq(siteFreq(stat.counts[ui], stat.nChr)))
+			}
+		}
+		sb.WriteByte('\n')
+		if _, err := io.WriteString(f, sb.String()); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// siteFreq returns count/nChr, matching upstream's division (which yields a
+// NaN/Inf for nChr==0 sites; formatFreq renders those as upstream's C++
+// ostream would).
+func siteFreq(count, nChr int) float64 {
+	return float64(count) / float64(nChr)
 }
 
 // outputSiteMeanDepth outputs mean depth per site
@@ -1187,8 +1356,14 @@ func (s *statistics) outputSiteMeanDepth(prefix string) error {
 	fmt.Fprintln(f, "CHROM\tPOS\tMEAN_DEPTH\tVAR_DEPTH")
 
 	for _, stat := range s.siteDepths {
-		// We don't calculate variance, so output 0
-		fmt.Fprintf(f, "%s\t%d\t%.4f\t0\n", stat.chrom, stat.pos, stat.meanDepth)
+		// Upstream: mean = sum/n, var = ((sumsq/n) - mean^2)*n/(n-1),
+		// both written to a default ostream. For n==0 the division
+		// yields NaN ("-nan"); for n==1 the variance denominator is 0
+		// (also "-nan"). formatCppDefault renders those like upstream.
+		mean := float64(stat.sum) / float64(stat.n)
+		variance := ((float64(stat.sumsq) / float64(stat.n)) - mean*mean) * float64(stat.n) / float64(stat.n-1)
+		fmt.Fprintf(f, "%s\t%d\t%s\t%s\n", stat.chrom, stat.pos,
+			formatCppDefault(mean), formatCppDefault(variance))
 	}
 
 	return nil
@@ -1202,15 +1377,12 @@ func (s *statistics) outputSiteDepth(prefix string) error {
 	}
 	defer f.Close()
 
-	// Upstream emits both SUM_DEPTH and SUMSQ_DEPTH (sum of squared
-	// per-individual depths at the site). We don't carry the squared sum
-	// through the accumulator yet; emit a literal 0 column so the column
-	// count and header text match upstream byte-for-byte. See
-	// docs/PARITY_ROADMAP.md#vcftools for the gap.
+	// SUM_DEPTH is the summed per-individual depth; SUMSQ_DEPTH is the sum
+	// of squared per-individual depths (variant_file_output.cpp:3460-3461).
 	fmt.Fprintln(f, "CHROM\tPOS\tSUM_DEPTH\tSUMSQ_DEPTH")
 
 	for _, stat := range s.siteDepths {
-		fmt.Fprintf(f, "%s\t%d\t%d\t0\n", stat.chrom, stat.pos, stat.sumDepth)
+		fmt.Fprintf(f, "%s\t%d\t%d\t%d\n", stat.chrom, stat.pos, stat.sum, stat.sumsq)
 	}
 
 	return nil
@@ -1227,11 +1399,11 @@ func (s *statistics) outputSiteQuality(prefix string) error {
 	fmt.Fprintln(f, "CHROM\tPOS\tQUAL")
 
 	for _, stat := range s.siteQualities {
-		if stat.qual < 0 {
-			fmt.Fprintf(f, "%s\t%d\t.\n", stat.chrom, stat.pos)
-		} else {
-			fmt.Fprintf(f, "%s\t%d\t%.4f\n", stat.chrom, stat.pos, stat.qual)
-		}
+		// Upstream writes get_QUAL() straight to a default ostream
+		// (variant_file_output.cpp:32). Missing QUAL ("." in the VCF) is
+		// stored as the sentinel -1 and prints literally as "-1". Present
+		// values use C++ defaultfloat precision 6.
+		fmt.Fprintf(f, "%s\t%d\t%s\n", stat.chrom, stat.pos, formatCppDefault(stat.qual))
 	}
 
 	return nil
@@ -1251,10 +1423,11 @@ func (s *statistics) outputMissingSite(prefix string) error {
 	fmt.Fprintln(f, "CHR\tPOS\tN_DATA\tN_GENOTYPE_FILTERED\tN_MISS\tF_MISS")
 
 	for _, stat := range s.siteMissing {
-		nData := len(s.header.Samples)
-		nMiss := int(stat.fMiss * float64(nData))
-		fmt.Fprintf(f, "%s\t%d\t%d\t0\t%d\t%.6f\n",
-			stat.chrom, stat.pos, nData, nMiss, stat.fMiss)
+		// N_GENOTYPE_FILTERED stays 0 (genotype-level filtering not wired
+		// into this accumulator). F_MISS uses C++ defaultfloat precision 6.
+		fMiss := float64(stat.nMiss) / float64(stat.nData)
+		fmt.Fprintf(f, "%s\t%d\t%d\t0\t%d\t%s\n",
+			stat.chrom, stat.pos, stat.nData, stat.nMiss, formatCppDefault(fMiss))
 	}
 
 	return nil
@@ -1299,20 +1472,17 @@ func (s *statistics) outputHWE(prefix string) error {
 	}
 	defer f.Close()
 
-	// Upstream uses "CHR" (not "CHROM") and emits two additional
-	// one-sided P-value columns: P_HET_DEFICIT (excess of homozygotes)
-	// and P_HET_EXCESS (excess of heterozygotes). We don't track those
-	// directional P-values yet; emit the two-sided p_hwe in both columns
-	// so the column count and header match upstream byte-for-byte. See
-	// docs/PARITY_ROADMAP.md#vcftools for the gap.
+	// Upstream uses "CHR" (not "CHROM"). The E(HOM1/HET/HOM2) triple is
+	// fixed-notation precision 2; ChiSq_HWE and the three p-values are
+	// scientific-notation precision 6 (variant_file_output.cpp:355-363).
 	fmt.Fprintln(f, "CHR\tPOS\tOBS(HOM1/HET/HOM2)\tE(HOM1/HET/HOM2)\tChiSq_HWE\tP_HWE\tP_HET_DEFICIT\tP_HET_EXCESS")
 
 	for _, stat := range s.siteHWE {
-		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.4f\t%.6g\t%.6g\t%.6g\n",
+		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.6e\t%.6e\t%.6e\t%.6e\n",
 			stat.chrom, stat.pos,
 			stat.obsHom1, stat.obsHet, stat.obsHom2,
 			stat.expHom1, stat.expHet, stat.expHom2,
-			stat.chiSq, stat.pValue, stat.pValue, stat.pValue)
+			stat.chiSq, stat.pHWE, stat.pLo, stat.pHi)
 	}
 
 	return nil
@@ -1418,37 +1588,18 @@ func (s *statistics) outputHet(prefix string) error {
 
 	fmt.Fprintln(f, "INDV\tO(HOM)\tE(HOM)\tN_SITES\tF")
 
-	// Sort by individual name
-	var names []string
-	for name := range s.indvHet {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
+	// Upstream iterates individuals in header order (variant_file_output.cpp
+	// :263). Only those with N_SITES > 0 are emitted. E(HOM) is printed with
+	// precision 1 (defaultfloat) and F with fixed precision 5; both follow
+	// `out.setf(ios::fixed)` so all floats use fixed notation here.
+	for _, name := range s.header.Samples {
 		stat := s.indvHet[name]
-		if stat.nTotal == 0 {
+		if stat == nil || stat.nSites == 0 {
 			continue
 		}
-
-		stat.hetRate = float64(stat.nHet) / float64(stat.nTotal)
-		obsHom := stat.nHomRef + stat.nHomAlt
-
-		// Expected homozygosity assuming HWE
-		// This is a simplified calculation
-		expHom := float64(stat.nTotal) * (1 - stat.hetRate)
-
-		// Inbreeding coefficient F
-		// F = (ExpectedHet - ObservedHet) / ExpectedHet
-		expHet := float64(stat.nTotal) - expHom
-		obsHet := float64(stat.nHet)
-		f_coef := 0.0
-		if expHet > 0 {
-			f_coef = (expHet - obsHet) / expHet
-		}
-
-		fmt.Fprintf(f, "%s\t%d\t%.2f\t%d\t%.5f\n",
-			stat.name, obsHom, expHom, stat.nTotal, f_coef)
+		fCoef := (float64(stat.obsHom) - stat.expHom) / (float64(stat.nSites) - stat.expHom)
+		fmt.Fprintf(f, "%s\t%d\t%.1f\t%d\t%.5f\n",
+			stat.name, stat.obsHom, stat.expHom, stat.nSites, fCoef)
 	}
 
 	return nil
@@ -1475,7 +1626,12 @@ func (s *statistics) outputSingletons(prefix string) error {
 	return nil
 }
 
-// outputFilterSummary outputs FILTER tag summary
+// outputFilterSummary writes the --FILTER-summary table
+// (variant_file_output.cpp:output_FILTER_summary). Columns are
+// FILTER/N_VARIANTS/N_Ts/N_Tv/Ts/Tv. Rows are sorted by ascending
+// (N_VARIANTS, FILTER) and emitted in reverse, so the most frequent FILTER
+// comes first (ties broken by descending FILTER string). Ts/Tv is the
+// double ratio Ts/Tv via a default ostream (inf when Tv == 0).
 func (s *statistics) outputFilterSummary(prefix string) error {
 	f, err := iohelper.OpenWriter(prefix + ".FILTER.summary")
 	if err != nil {
@@ -1483,18 +1639,31 @@ func (s *statistics) outputFilterSummary(prefix string) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "FILTER\tN_SITES")
+	fmt.Fprintln(f, "FILTER\tN_VARIANTS\tN_Ts\tN_Tv\tTs/Tv")
 
-	// Sort by filter name
-	var filters []string
-	for filter := range s.filterCounts {
-		filters = append(filters, filter)
+	type filterRow struct {
+		filter string
+		nsites int
 	}
-	sort.Strings(filters)
+	rows := make([]filterRow, 0, len(s.filterCounts))
+	for filter, n := range s.filterCounts {
+		rows = append(rows, filterRow{filter, n})
+	}
+	// Ascending (nsites, filter); emitted in reverse below.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].nsites != rows[j].nsites {
+			return rows[i].nsites < rows[j].nsites
+		}
+		return rows[i].filter < rows[j].filter
+	})
 
-	for _, filter := range filters {
-		count := s.filterCounts[filter]
-		fmt.Fprintf(f, "%s\t%d\n", filter, count)
+	for i := len(rows) - 1; i >= 0; i-- {
+		filter := rows[i].filter
+		ts := s.filterTs[filter]
+		tv := s.filterTv[filter]
+		fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%s\n",
+			filter, rows[i].nsites, ts, tv,
+			formatCppDefault(float64(ts)/float64(tv)))
 	}
 
 	return nil
@@ -1508,23 +1677,26 @@ func (s *statistics) outputSNPDensity(prefix string, binSize int) error {
 	}
 	defer f.Close()
 
-	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_SNPs\tDENSITY")
+	// Header and column layout match upstream output_SNP_density. Within a
+	// chromosome, emission starts at the first non-empty bin and then prints
+	// every bin (including empty interior bins) to the highest occupied bin.
+	// BIN_START = bin_index*bin_size; VARIANTS/KB = count * 1000/bin_size
+	// printed via a default ostream.
+	fmt.Fprintln(f, "CHROM\tBIN_START\tSNP_COUNT\tVARIANTS/KB")
 
-	// Sort bins
-	var bins []int
-	for binIdx := range s.snpDensityBins {
-		bins = append(bins, binIdx)
-	}
-	sort.Ints(bins)
-
-	for _, binIdx := range bins {
-		stat := s.snpDensityBins[binIdx]
-		windowSize := float64(stat.binEnd - stat.binStart)
-		if windowSize > 0 {
-			stat.density = float64(stat.nSNPs) / windowSize
+	perKb := 1000.0 / float64(binSize)
+	for _, chrom := range s.snpDensityChrs {
+		bins := s.snpDensityBins[chrom]
+		output := false
+		for sIdx, count := range bins {
+			if count > 0 {
+				output = true
+			}
+			if output {
+				fmt.Fprintf(f, "%s\t%d\t%d\t%s\n",
+					chrom, sIdx*binSize, count, formatCppDefault(float64(count)*perKb))
+			}
 		}
-		fmt.Fprintf(f, ".\t%d\t%d\t%d\t%.6f\n",
-			stat.binStart, stat.binEnd, stat.nSNPs, stat.density)
 	}
 
 	return nil
@@ -1657,23 +1829,29 @@ func (s *statistics) outputDepth(prefix string) error {
 		if stat.nSites > 0 {
 			mean = float64(stat.sum) / float64(stat.nSites)
 		}
-		fmt.Fprintf(f, "%s\t%d\t%.5f\n", stat.name, stat.nSites, mean)
+		// Upstream writes mean_depth straight to a default ostream
+		// (variant_file_output.cpp:690), i.e. defaultfloat precision 6.
+		fmt.Fprintf(f, "%s\t%d\t%s\n", stat.name, stat.nSites, formatCppDefault(mean))
 	}
 
 	return nil
 }
 
-// windowPiAcc accumulates per-site nucleotide diversity within one window.
-type windowPiAcc struct {
-	winStart int
-	nSites   int
-	piSum    float64
+// windowPiBin accumulates the four per-window quantities upstream tracks.
+type windowPiBin struct {
+	nVariantSites uint64 // sites with a VCF entry in the window
+	nVariantPairs uint64 // pairwise comparisons at polymorphic sites
+	nMismatches   uint64 // actual pairwise mismatches at polymorphic sites
+	nPolymorphic  uint64 // sites polymorphic w.r.t. the reference
 }
 
-// outputWindowedPi outputs nucleotide diversity summed over fixed-size windows
-// (.windowed.pi). The PI column is the sum of per-site nucleotide diversity for
-// variants falling in the window. If stepSize is zero or larger than windowSize
-// the windows are non-overlapping.
+// outputWindowedPi writes nucleotide diversity in windows (.windowed.pi),
+// mirroring upstream output_windowed_nucleotide_diversity
+// (variant_file_output.cpp:4065-4283). Each site contributes to bins
+// [first, last) where first = ceil((pos-window)/step) (clamped to 0) and
+// last = ceil(pos/step). For each emitted bin, PI = N_mismatches / N_pairs,
+// where N_pairs = polymorphic-site pairs + monomorphic-site pairs, and the
+// reported N_VARIANTS column is the polymorphic-site count.
 func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) error {
 	if windowSize <= 0 {
 		return nil
@@ -1688,50 +1866,53 @@ func (s *statistics) outputWindowedPi(prefix string, windowSize, stepSize int) e
 	}
 	defer f.Close()
 
-	// Upstream emits an additional N_MONOMORPHIC column counting bases
-	// inside the window that are monomorphic in the kept-individuals
-	// subset. We don't track that yet — emit a literal 0 column so the
-	// header and column count match upstream byte-for-byte. See
-	// docs/PARITY_ROADMAP.md#vcftools.
 	fmt.Fprintln(f, "CHROM\tBIN_START\tBIN_END\tN_VARIANTS\tN_MONOMORPHIC\tPI")
 
 	var chromOrder []string
-	windows := make(map[string]map[int]*windowPiAcc)
+	bins := make(map[string][]windowPiBin)
 
-	for _, st := range s.sitePiValues {
-		if _, seen := windows[st.chrom]; !seen {
-			windows[st.chrom] = make(map[int]*windowPiAcc)
+	for _, st := range s.windowPiSites {
+		if _, seen := bins[st.chrom]; !seen {
 			chromOrder = append(chromOrder, st.chrom)
+			bins[st.chrom] = make([]windowPiBin, 1)
 		}
-		// Window starts are 1, 1+step, 1+2*step, ...; a variant at 1-based
-		// position p belongs to every window [ws, ws+windowSize-1] containing p.
-		p := st.pos
-		kMax := (p - 1) / stepSize
-		kMin := 0
-		if p > windowSize {
-			kMin = (p - windowSize + stepSize - 1) / stepSize
+		first := int(math.Ceil(float64(st.pos-windowSize) / float64(stepSize)))
+		if first < 0 {
+			first = 0
 		}
-		for k := kMin; k <= kMax; k++ {
-			ws := 1 + k*stepSize
-			acc := windows[st.chrom][ws]
-			if acc == nil {
-				acc = &windowPiAcc{winStart: ws}
-				windows[st.chrom][ws] = acc
+		last := int(math.Ceil(float64(st.pos) / float64(stepSize)))
+		if last >= len(bins[st.chrom]) {
+			grown := make([]windowPiBin, last+1)
+			copy(grown, bins[st.chrom])
+			bins[st.chrom] = grown
+		}
+		comparisons := uint64(st.nChr) * uint64(st.nChr-1)
+		for idx := first; idx < last; idx++ {
+			b := &bins[st.chrom][idx]
+			b.nVariantSites++
+			b.nVariantPairs += comparisons
+			b.nMismatches += st.nMismatches
+			if st.isPolymorphic {
+				b.nPolymorphic++
 			}
-			acc.nSites++
-			acc.piSum += st.pi
 		}
 	}
 
+	nKeptChr := 2 * len(s.header.Samples)
+	monoComparisons := uint64(nKeptChr) * uint64(nKeptChr-1)
+
 	for _, chrom := range chromOrder {
-		var starts []int
-		for ws := range windows[chrom] {
-			starts = append(starts, ws)
-		}
-		sort.Ints(starts)
-		for _, ws := range starts {
-			acc := windows[chrom][ws]
-			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t0\t%.6f\n", chrom, ws, ws+windowSize-1, acc.nSites, acc.piSum)
+		for sIdx, b := range bins[chrom] {
+			if b.nPolymorphic == 0 && b.nMismatches == 0 {
+				continue
+			}
+			// N_monomorphic = window_size - N_variant_sites (no mask).
+			nMono := uint64(windowSize) - b.nVariantSites
+			nPairs := b.nVariantPairs + nMono*monoComparisons
+			pi := float64(b.nMismatches) / float64(nPairs)
+			fmt.Fprintf(f, "%s\t%d\t%d\t%d\t%d\t%s\n",
+				chrom, sIdx*stepSize+1, sIdx*stepSize+windowSize,
+				b.nPolymorphic, nMono, formatCppDefault(pi))
 		}
 	}
 
@@ -1892,15 +2073,4 @@ func tajimasD(piSum float64, S, n int) (d float64, ok bool) {
 		return 0, false
 	}
 	return (piSum - thetaW) / math.Sqrt(variance), true
-}
-
-// chiSquareCDF approximates the chi-square CDF using gamma function
-func chiSquareCDF(x, df float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	// For df=1, use a simple approximation
-	// This is a simplified implementation
-	// For production, use a proper statistical library
-	return 1 - math.Exp(-x/2)
 }

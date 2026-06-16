@@ -433,8 +433,8 @@ func (r *ldRunner) addVariant(v *vcf.Variant) {
 			if ldPositionAllowed(prev, site, r.genoPos, r.params.GenoR2Positions != "") {
 				n, r2, ok := computeGenoR2(prev, site)
 				if ok && r2 >= r.params.MinR2 {
-					r.genoW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%g\n",
-						prev.chrom, prev.pos, site.pos, n, r2))
+					r.genoW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%s\n",
+						prev.chrom, prev.pos, site.pos, n, formatCppDefault(r2)))
 				}
 			}
 		}
@@ -442,8 +442,9 @@ func (r *ldRunner) addVariant(v *vcf.Variant) {
 			if ldPositionAllowed(prev, site, r.hapPos, r.params.HapR2Positions != "") {
 				n, r2, D, Dp, ok := computeHapR2(prev, site)
 				if ok && r2 >= r.params.MinR2 {
-					r.hapW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%g\t%g\t%g\n",
-						prev.chrom, prev.pos, site.pos, n, r2, D, Dp))
+					r.hapW.writeLine(fmt.Sprintf("%s\t%d\t%d\t%d\t%s\t%s\t%s\n",
+						prev.chrom, prev.pos, site.pos, n,
+						formatCppDefault(r2), formatCppDefault(D), formatCppDefault(Dp)))
 				}
 			}
 		}
@@ -780,15 +781,16 @@ func (r *interchromLDRunner) emitPair(a, b *ldSite) {
 	if r.wantGeno {
 		n, r2, ok := computeGenoR2(a, b)
 		if ok && r2 >= r.params.MinR2 {
-			r.genoW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%g\n",
-				a.chrom, a.pos, b.chrom, b.pos, n, r2))
+			r.genoW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%s\n",
+				a.chrom, a.pos, b.chrom, b.pos, n, formatCppDefault(r2)))
 		}
 	}
 	if r.wantHap {
 		n, r2, D, Dp, ok := computeHapR2(a, b)
 		if ok && r2 >= r.params.MinR2 {
-			r.hapW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%g\t%g\t%g\n",
-				a.chrom, a.pos, b.chrom, b.pos, n, r2, D, Dp))
+			r.hapW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%s\t%s\t%s\n",
+				a.chrom, a.pos, b.chrom, b.pos, n,
+				formatCppDefault(r2), formatCppDefault(D), formatCppDefault(Dp)))
 		}
 	}
 	if r.wantChiSq {
@@ -801,8 +803,9 @@ func (r *interchromLDRunner) emitChiSqPair(a, b *ldSite) {
 	if !ok {
 		return
 	}
-	r.chiSqW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%g\t%d\t%g\n",
-		a.chrom, a.pos, b.chrom, b.pos, n, chi2, df, p))
+	r.chiSqW.writeLine(fmt.Sprintf("%s\t%d\t%s\t%d\t%d\t%s\t%d\t%s\n",
+		a.chrom, a.pos, b.chrom, b.pos, n,
+		formatCppDefault(chi2), df, formatCppDefault(p)))
 }
 
 func (r *interchromLDRunner) close() error {

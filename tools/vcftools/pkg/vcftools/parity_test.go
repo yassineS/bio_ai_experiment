@@ -696,26 +696,27 @@ func TestParity_Keep(t *testing.T) {
 // --singletons, --TsTv-summary, --TsTv-by-count, --TsTv-by-qual
 // -----------------------------------------------------------------------------
 
-// TestParity_Freq — `--freq` byte-for-byte against an upstream-format
-// golden file. Only biallelic SNPs appear because our port restricts
-// --freq to biallelic loci (PARITY_ROADMAP.md#vcftools tracks the
-// multi-allelic gap).
+// TestParity_Freq — `--freq` byte-for-byte against the LIVE upstream
+// binary. The port now emits every site upstream does, including
+// multi-allelic and monomorphic (ALT=".") loci, so the comparison is a
+// full file diff against the oracle rather than the (now superseded)
+// biallelic-only golden.
 func TestParity_Freq(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Freq: true})
-	got := readFileBytes(t, prefix+".frq")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "freq.expected.frq"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".frq mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--freq")+".frq")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Freq: true})+".frq")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".frq mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_Counts — `--counts` byte-for-byte.
+// TestParity_Counts — `--counts` byte-for-byte against LIVE upstream.
 func TestParity_Counts(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Counts: true})
-	got := readFileBytes(t, prefix+".frq.count")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "counts.expected.frq.count"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".frq.count mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--counts")+".frq.count")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Counts: true})+".frq.count")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".frq.count mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
@@ -771,24 +772,29 @@ func TestParity_SitePi_Formula(t *testing.T) {
 	}
 }
 
-// TestParity_Hardy — byte-for-byte against an upstream-format golden file.
-// The directional P-values are placeholders (see PARITY_ROADMAP.md).
+// TestParity_Hardy — byte-for-byte against LIVE upstream. The port now
+// implements the exact SNPHWE test (P_HWE / P_HET_DEFICIT / P_HET_EXCESS),
+// the PLINK chi-square, the biallelic+diploid site gate, and the
+// scientific-notation formatting upstream uses.
 func TestParity_Hardy(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Hardy: true})
-	got := readFileBytes(t, prefix+".hwe")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "hardy.expected.hwe"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".hwe mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--hardy")+".hwe")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Hardy: true})+".hwe")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".hwe mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_MissingSite — byte-for-byte.
+// TestParity_MissingSite — byte-for-byte against LIVE upstream. The port
+// now counts missingness per chromosome (2 per diploid call), matching
+// upstream's output_site_missingness, so the comparison is against the
+// oracle rather than the (now superseded) per-sample golden.
 func TestParity_MissingSite(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{MissingSite: true})
-	got := readFileBytes(t, prefix+".lmiss")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "missing_site.expected.lmiss"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".lmiss mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--missing-site")+".lmiss")
+	got := readFileBytes(t, runGo(t, vcf, &Params{MissingSite: true})+".lmiss")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".lmiss mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
@@ -854,54 +860,60 @@ func TestGenotypeIsMissing(t *testing.T) {
 	}
 }
 
-// TestParity_Depth — byte-for-byte.
+// TestParity_Depth — byte-for-byte against LIVE upstream (mean depth printed
+// with C++ defaultfloat precision 6).
 func TestParity_Depth(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Depth: true})
-	got := readFileBytes(t, prefix+".idepth")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "depth.expected.idepth"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".idepth mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--depth")+".idepth")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Depth: true})+".idepth")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".idepth mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_SiteDepth — byte-for-byte. SUMSQ_DEPTH is a literal 0 — see
-// docs/PARITY_ROADMAP.md#vcftools.
+// TestParity_SiteDepth — byte-for-byte against LIVE upstream. The port now
+// emits every passed site and the real SUMSQ_DEPTH column.
 func TestParity_SiteDepth(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{SiteDepth: true})
-	got := readFileBytes(t, prefix+".ldepth")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "site_depth.expected.ldepth"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".ldepth mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--site-depth")+".ldepth")
+	got := readFileBytes(t, runGo(t, vcf, &Params{SiteDepth: true})+".ldepth")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".ldepth mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_SiteMeanDepth — byte-for-byte. VAR_DEPTH is a literal 0.
+// TestParity_SiteMeanDepth — byte-for-byte against LIVE upstream, including
+// the VAR_DEPTH column and "-nan" rows for sites with no depth data.
 func TestParity_SiteMeanDepth(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{SiteMeanDepth: true})
-	got := readFileBytes(t, prefix+".ldepth.mean")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "site_mean_depth.expected.ldepth.mean"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".ldepth.mean mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--site-mean-depth")+".ldepth.mean")
+	got := readFileBytes(t, runGo(t, vcf, &Params{SiteMeanDepth: true})+".ldepth.mean")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".ldepth.mean mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_Het — byte-for-byte.
+// TestParity_Het — byte-for-byte against LIVE upstream. The port now
+// implements the PLINK-style F (inbreeding) calculation upstream uses.
 func TestParity_Het(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Het: true})
-	got := readFileBytes(t, prefix+".het")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "het.expected.het"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".het mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--het")+".het")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Het: true})+".het")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".het mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
-// TestParity_Singletons — byte-for-byte.
+// TestParity_Singletons — byte-for-byte against LIVE upstream. The port now
+// prints the ALLELE column as the allele string (not its index), iterates
+// allele indices including REF, and resolves the carrying/homozygous
+// individual exactly as upstream does.
 func TestParity_Singletons(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{Singletons: true})
-	got := readFileBytes(t, prefix+".singletons")
-	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "singletons.expected.singletons"))
-	if !bytes.Equal(got, want) {
-		t.Errorf(".singletons mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--singletons")+".singletons")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Singletons: true})+".singletons")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".singletons mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }
 
@@ -2152,5 +2164,109 @@ func TestParity_KeepAndRemoveINFO_Compose(t *testing.T) {
 	want := readFileBytes(t, filepath.Join(vcftoolsFixtureDir(t), "keep_remove_info_compose.expected.recode.vcf"))
 	if !bytes.Equal(got, want) {
 		t.Errorf(".recode.vcf mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestParity_OutputModes_Upstream is a table of per-output-mode byte-for-byte
+// comparisons against the LIVE upstream binary on the multi-sample sample.vcf
+// fixture. Each case runs upstream and the Go port with the same flags and
+// diffs the named output file. These do NOT rely on checked-in goldens — the
+// expected output IS upstream's output — so they pin the column set, header,
+// precision, and ordering of every mode against the real GPL VCFtools 0.1.18.
+//
+// Modes that crash the upstream binary on a fortified build (the LD /
+// chi-square spill-file paths — see docs/UPSTREAM_BUGS.md) are deliberately
+// excluded; they are pinned by the in-package LD unit tests instead.
+func TestParity_OutputModes_Upstream(t *testing.T) {
+	cases := []struct {
+		name   string
+		suffix string
+		upArgs []string
+		params *Params
+	}{
+		{"freq", ".frq", []string{"--freq"}, &Params{Freq: true}},
+		{"freq2", ".frq", []string{"--freq2"}, &Params{Freq2: true}},
+		{"counts", ".frq.count", []string{"--counts"}, &Params{Counts: true}},
+		{"counts2", ".frq.count", []string{"--counts2"}, &Params{Counts2: true}},
+		{"depth", ".idepth", []string{"--depth"}, &Params{Depth: true}},
+		{"site_depth", ".ldepth", []string{"--site-depth"}, &Params{SiteDepth: true}},
+		{"site_mean_depth", ".ldepth.mean", []string{"--site-mean-depth"}, &Params{SiteMeanDepth: true}},
+		{"geno_depth", ".gdepth", []string{"--geno-depth"}, &Params{GenoDepth: true}},
+		{"site_quality", ".lqual", []string{"--site-quality"}, &Params{SiteQuality: true}},
+		{"het", ".het", []string{"--het"}, &Params{Het: true}},
+		{"hardy", ".hwe", []string{"--hardy"}, &Params{Hardy: true}},
+		{"missing_indv", ".imiss", []string{"--missing-indv"}, &Params{MissingIndv: true}},
+		{"missing_site", ".lmiss", []string{"--missing-site"}, &Params{MissingSite: true}},
+		{"snpdensity", ".snpden", []string{"--SNPdensity", "1000"}, &Params{SNPDensity: 1000}},
+		{"kept_sites", ".kept.sites", []string{"--kept-sites"}, &Params{KeptSites: true}},
+		{"removed_sites", ".removed.sites", []string{"--removed-sites"}, &Params{RemovedSites: true}},
+		{"singletons", ".singletons", []string{"--singletons"}, &Params{Singletons: true}},
+		{"site_pi", ".sites.pi", []string{"--site-pi"}, &Params{SitePi: true}},
+		{"window_pi", ".windowed.pi", []string{"--window-pi", "100000"}, &Params{WindowPi: 100000}},
+		{"window_pi_step", ".windowed.pi", []string{"--window-pi", "50000", "--window-pi-step", "25000"}, &Params{WindowPi: 50000, WindowPiStep: 25000}},
+		{"relatedness", ".relatedness", []string{"--relatedness"}, &Params{Relatedness: true}},
+		{"relatedness2", ".relatedness2", []string{"--relatedness2"}, &Params{Relatedness2: true}},
+		{"tstv_summary", ".TsTv.summary", []string{"--TsTv-summary"}, &Params{TsTvSummary: true}},
+		{"filter_summary", ".FILTER.summary", []string{"--FILTER-summary"}, &Params{FilterSummary: true}},
+		{"indv_freq_burden", ".ifreqburden", []string{"--indv-freq-burden"}, &Params{IndvFreqBurden: true}},
+		{"extract_format_gq", ".GQ.FORMAT", []string{"--extract-FORMAT-info", "GQ"}, &Params{ExtractFormatInfo: "GQ"}},
+		{"extract_format_dp", ".DP.FORMAT", []string{"--extract-FORMAT-info", "DP"}, &Params{ExtractFormatInfo: "DP"}},
+	}
+
+	vcf := fixtureVCF(t, "sample.vcf")
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			up := readFileBytes(t, runUpstream(t, vcf, tc.upArgs...)+tc.suffix)
+			got := readFileBytes(t, runGo(t, vcf, tc.params)+tc.suffix)
+			if !bytes.Equal(got, up) {
+				t.Errorf("%s%s mismatch\nupstream:\n%s\ngot:\n%s", tc.name, tc.suffix, up, got)
+			}
+		})
+	}
+}
+
+// TestParity_WeirFst_Upstream compares the per-site and windowed
+// Weir & Cockerham Fst outputs against the LIVE upstream binary. Two
+// populations are written to temp files (NA00001+NA00002 vs NA00003), and
+// the .weir.fst / .windowed.weir.fst files are diffed byte-for-byte. The
+// port now emits every diploid site (multi-allelic and monomorphic, the
+// latter as "-nan") with C++ defaultfloat formatting and the same window
+// binning upstream uses.
+func TestParity_WeirFst_Upstream(t *testing.T) {
+	vcf := fixtureVCF(t, "sample.vcf")
+	dir := t.TempDir()
+	pop1 := filepath.Join(dir, "pop1.txt")
+	pop2 := filepath.Join(dir, "pop2.txt")
+	if err := os.WriteFile(pop1, []byte("NA00001\nNA00002\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pop2, []byte("NA00003\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		upExtra []string
+		params  *Params
+		suffix  string
+	}{
+		{"per_site", nil, &Params{WeirFstPop: []string{pop1, pop2}}, ".weir.fst"},
+		{"windowed", []string{"--fst-window-size", "100000"},
+			&Params{WeirFstPop: []string{pop1, pop2}, FstWindowSize: 100000}, ".windowed.weir.fst"},
+		{"windowed_step", []string{"--fst-window-size", "50000", "--fst-window-step", "25000"},
+			&Params{WeirFstPop: []string{pop1, pop2}, FstWindowSize: 50000, FstWindowStep: 25000}, ".windowed.weir.fst"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			upArgs := append([]string{"--weir-fst-pop", pop1, "--weir-fst-pop", pop2}, tc.upExtra...)
+			up := readFileBytes(t, runUpstream(t, vcf, upArgs...)+tc.suffix)
+			got := readFileBytes(t, runGo(t, vcf, tc.params)+tc.suffix)
+			if !bytes.Equal(got, up) {
+				t.Errorf("%s%s mismatch\nupstream:\n%s\ngot:\n%s", tc.name, tc.suffix, up, got)
+			}
+		})
 	}
 }
