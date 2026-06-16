@@ -1,16 +1,21 @@
-// Package bedmerge provides functionality to merge overlapping or adjacent BED intervals.
+// Package bedmerge provides functionality to merge overlapping or adjacent BED
+// intervals, mirroring `bedtools merge`. It accepts BED, GFF, VCF, and BAM
+// input (auto-detected), supports the -c/-o column-operation family, strand
+// modes (-s/-S), the merge distance (-d), a custom list delimiter (-delim) and
+// numeric output precision (-prec).
 package bedmerge
 
 import (
 	"bufio"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
-	"strings"
-
-	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
+
+// DefaultPrecision is the number of significant digits used when formatting
+// floating-point column-operation results, matching upstream bedtools'
+// KeyListOps DEFAULT_PRECISION (10). The -prec/--precision flag overrides it.
+const DefaultPrecision = 10
 
 // OutputFields specifies which fields to include in the output.
 type OutputFields struct {
@@ -24,367 +29,198 @@ type OutputFields struct {
 // MergeOptions contains options for merging BED intervals.
 type MergeOptions struct {
 	MaxDistance  int          // Maximum distance between intervals to merge (default: 0)
-	StrandSpec   bool         // Merge only intervals on the same strand
-	OutputFields OutputFields // Fields to include in output
+	StrandSpec   bool         // Merge only intervals on the same strand (-s)
+	OutputFields OutputFields // Fields to include in output (legacy convenience flags)
 	// StrandFilter ("-S <strand>"), when non-empty, must be "+" or "-": only
-	// records on that strand are kept, and the survivors are merged
-	// positionally (NOT per-strand), matching upstream bedtools merge -S.
-	// It is mutually exclusive with StrandSpec ("-s").
+	// records on that strand are kept, and the survivors are merged positionally
+	// (NOT per-strand), matching upstream bedtools merge -S. It is mutually
+	// exclusive with StrandSpec ("-s").
 	StrandFilter string
-	Streaming    bool // Use streaming mode for large files
-	// ColumnOps, when non-nil, requests bedtools-merge-style aggregation of
-	// input columns (the -c/-o options). When set, output columns are
-	// chrom, start, end followed by one aggregated value per requested column.
+	Streaming    bool // Use streaming mode for large files (reserved; see note below)
+	// ColumnOps, when non-nil, requests bedtools-merge-style aggregation of input
+	// columns (the -c/-o options). When set, output columns are chrom, start, end
+	// followed by one aggregated value per requested column.
 	ColumnOps *ColumnOps
+	// Precision is the number of significant digits for floating-point
+	// column-op output (-prec). Zero means DefaultPrecision.
+	Precision int
+	// Warn, when set, receives upstream-style stderr warnings (e.g. the
+	// "Non numeric value" message). When nil, warnings are discarded.
+	Warn io.Writer
 }
 
-// Merge reads BED intervals, sorts them, and merges overlapping/adjacent intervals.
-// Returns the number of merged intervals.
+// precision returns the effective output precision (DefaultPrecision when 0).
+func (o MergeOptions) precision() int {
+	if o.Precision <= 0 {
+		return DefaultPrecision
+	}
+	return o.Precision
+}
+
+// Merge reads intervals (BED/GFF/VCF/BAM, auto-detected), sorts them, merges
+// overlapping/adjacent intervals, and writes the result. Returns the number of
+// merged intervals written.
 func Merge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
 	if err := validateStrandOptions(opts); err != nil {
 		return 0, err
 	}
-	reader, err := gffAwareReader(reader)
+	recs, format, err := readInput(reader, opts)
 	if err != nil {
 		return 0, err
 	}
-	// Column-aggregation mode (bedtools merge -c/-o style).
-	if opts.ColumnOps != nil {
-		return mergeWithColumnOps(reader, writer, opts)
-	}
-
-	// Use streaming mode if requested
-	if opts.Streaming {
-		return streamingMerge(reader, writer, opts)
-	}
-
-	// Read all intervals
-	bedReader := bed.NewReader(reader)
-	var intervals []*bed.Record
-
-	for {
-		record, err := bedReader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return 0, fmt.Errorf("error reading BED record: %w", err)
-		}
-
-		// -S single-strand filter: drop records on the other strand.
-		if strandFiltered(record, opts) {
-			continue
-		}
-
-		// If bedGraph input mode, parse the name field as score
-		if opts.OutputFields.BedGraph && record.Name != "" && record.Score == 0 {
-			// Try to parse name as score
-			var score int
-			if _, err := fmt.Sscanf(record.Name, "%d", &score); err == nil {
-				record.Score = score
-				record.Name = ""
-			}
-		}
-
-		intervals = append(intervals, record)
-	}
-
-	if len(intervals) == 0 {
-		return 0, nil
-	}
-
-	// Sort intervals by chromosome, then start position
-	sort.Slice(intervals, func(i, j int) bool {
-		if intervals[i].Chrom != intervals[j].Chrom {
-			return intervals[i].Chrom < intervals[j].Chrom
-		}
-		if intervals[i].ChromStart != intervals[j].ChromStart {
-			return intervals[i].ChromStart < intervals[j].ChromStart
-		}
-		return intervals[i].ChromEnd < intervals[j].ChromEnd
-	})
-
-	// Merge overlapping/adjacent intervals
-	merged := mergeIntervals(intervals, opts)
-
-	// Write merged intervals
-	if err := writeIntervals(writer, merged, opts); err != nil {
+	if err := validateBAMColumns(format, opts.ColumnOps); err != nil {
 		return 0, err
 	}
-
-	return len(merged), nil
+	return mergeRecords(recs, writer, opts)
 }
 
-// gffAwareReader auto-detects GFF or VCF input and, when found, returns a
-// reader whose lines have been transformed into BED — so the rest of the merge
-// pipeline (which is BED-only) merges those features just like upstream
-// bedtools merge -i <gff|vcf>. A BED input is returned unchanged (the peeked
-// header/first-data bytes are preserved). GFF is detected by the per-record
-// heuristic (non-numeric source in column 2, numeric 1-based start/end in
-// columns 4/5); VCF is detected by a `##fileformat=VCF` or `#CHROM` header.
-func gffAwareReader(r io.Reader) (io.Reader, error) {
-	br := bufio.NewReader(r)
-	var header strings.Builder // consumed comment/header lines, replayed for BED
-	isVCF := false
-	for {
-		line, err := br.ReadString('\n')
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "##fileformat=VCF") ||
-			strings.HasPrefix(trimmed, "#CHROM\tPOS") {
-			isVCF = true
-		}
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
-			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
-			header.WriteString(line)
-			if err != nil {
-				// EOF before any data line: replay what we consumed.
-				return strings.NewReader(header.String()), nil
-			}
-			continue
-		}
-		// First data line. Replay the consumed header + this line + the rest.
-		rest := io.MultiReader(strings.NewReader(header.String()), strings.NewReader(line), br)
-		if isVCF {
-			return transformVCF(rest)
-		}
-		if looksLikeGFF(strings.TrimRight(line, "\r\n")) {
-			return transformGFF(rest)
-		}
-		return rest, nil
-	}
+// bamNumFields is the number of SAM fields a BAM record exposes to -c column
+// operations (QNAME..QUAL), matching upstream BamFileReader::getNumFields.
+const bamNumFields = 11
+
+// BAMColumnError reports a -c column request that is invalid for BAM input: a
+// column outside 1..11, or column 2 (the unsupported Flags field). The CLI
+// formats the matching upstream message, which includes the input file name.
+type BAMColumnError struct {
+	Column int
+	Flags  bool // true when the column is 2 (the Flags field)
 }
 
-// transformVCF rewrites every VCF data line into a BED3 line: the interval is
-// [POS-1, POS-1+len(REF)), matching upstream bedtools merge -i <vcf>. Header
-// lines ('#') are skipped.
-func transformVCF(r io.Reader) (io.Reader, error) {
-	var out strings.Builder
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		f := strings.Split(line, "\t")
-		if len(f) < 4 {
-			return nil, fmt.Errorf("invalid VCF line: %q", line)
-		}
-		pos, err := strconv.Atoi(f[1])
-		if err != nil {
-			return nil, fmt.Errorf("invalid VCF POS %q: %w", f[1], err)
-		}
-		start := pos - 1
-		end := start + len(f[3]) // len(REF)
-		fmt.Fprintf(&out, "%s\t%d\t%d\n", f[0], start, end)
+func (e *BAMColumnError) Error() string {
+	if e.Flags {
+		return "requested column 2 of a BAM file, which is the Flags field"
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return strings.NewReader(out.String()), nil
+	return fmt.Sprintf("requested column %d, but BAM input only has fields 1 - %d", e.Column, bamNumFields)
 }
 
-// looksLikeGFF reports whether a data line is a GFF feature: at least 8
-// tab-separated fields, a non-numeric column 2 (source), and numeric 1-based
-// start/end in columns 4 and 5.
-func looksLikeGFF(line string) bool {
-	f := strings.Split(line, "\t")
-	if len(f) < 8 {
-		return false
-	}
-	if _, err := strconv.Atoi(f[1]); err == nil {
-		return false // column 2 numeric -> BED start, not GFF
-	}
-	if _, err := strconv.Atoi(f[3]); err != nil {
-		return false
-	}
-	if _, err := strconv.Atoi(f[4]); err != nil {
-		return false
-	}
-	return true
-}
-
-// transformGFF rewrites every GFF data line into a BED6 line (comments and
-// blank lines pass through). GFF is 1-based inclusive; BED is 0-based
-// half-open, so start becomes col4-1 and end stays col5.
-func transformGFF(r io.Reader) (io.Reader, error) {
-	var out strings.Builder
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
-			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
-			continue
-		}
-		f := strings.Split(line, "\t")
-		if len(f) < 8 {
-			return nil, fmt.Errorf("invalid GFF line: %q", line)
-		}
-		start, err := strconv.Atoi(f[3])
-		if err != nil {
-			return nil, fmt.Errorf("invalid GFF start %q: %w", f[3], err)
-		}
-		end, err := strconv.Atoi(f[4])
-		if err != nil {
-			return nil, fmt.Errorf("invalid GFF end %q: %w", f[4], err)
-		}
-		name := f[2]   // feature type
-		strand := f[6] // GFF strand column
-		// The BED reader requires a numeric score; GFF scores are often "."
-		// (and merge ignores the score anyway), so normalise to 0.
-		score := "0"
-		if _, err := strconv.Atoi(f[5]); err == nil {
-			score = f[5]
-		}
-		fmt.Fprintf(&out, "%s\t%d\t%d\t%s\t%s\t%s\n", f[0], start-1, end, name, score, strand)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return strings.NewReader(out.String()), nil
-}
-
-// validateStrandOptions rejects an invalid -S argument and the illegal
-// combination of -s and -S, mirroring upstream bedtools merge.
-func validateStrandOptions(opts MergeOptions) error {
-	if opts.StrandFilter == "" {
+// validateBAMColumns enforces the BAM-specific -c column constraints (upstream
+// KeyListOps::init): a column must be within 1..11 and column 2 (Flags) is
+// unsupported. It is a no-op for non-BAM input or when no column ops are set.
+func validateBAMColumns(format inputFormat, co *ColumnOps) error {
+	if format != fmtBAM || co == nil {
 		return nil
 	}
-	if opts.StrandFilter != "+" && opts.StrandFilter != "-" {
-		return fmt.Errorf("invalid strand for -S: %q (must be + or -)", opts.StrandFilter)
+	for _, col := range co.Columns {
+		if col < 1 || col > bamNumFields {
+			return &BAMColumnError{Column: col}
+		}
 	}
-	if opts.StrandSpec {
-		return fmt.Errorf("-s and -S are mutually exclusive")
+	for _, col := range co.Columns {
+		if col == 2 {
+			return &BAMColumnError{Column: 2, Flags: true}
+		}
 	}
 	return nil
 }
 
-// strandFiltered reports whether record should be dropped under the -S
-// single-strand filter. With no filter active it always returns false.
-func strandFiltered(record *bed.Record, opts MergeOptions) bool {
-	return opts.StrandFilter != "" && record.Strand != opts.StrandFilter
+// mergeRecords runs the strand bucketing, position merge, and output for an
+// already-parsed record slice. It is shared by Merge and MergeWithStats.
+func mergeRecords(recs []record, writer io.Writer, opts MergeOptions) (int, error) {
+	groups := buildGroups(recs, opts)
+	bw := bufio.NewWriter(writer)
+	count := 0
+	for _, g := range groups {
+		if err := writeGroup(bw, g, opts); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	if err := bw.Flush(); err != nil {
+		return 0, fmt.Errorf("error flushing output: %w", err)
+	}
+	return count, nil
 }
 
-// mergedInterval represents a merged interval with metadata.
-type mergedInterval struct {
-	*bed.Record
-	count int // Number of original intervals merged into this one
-}
-
-// mergeIntervals performs the actual merging of sorted intervals.
-//
-// When opts.StrandSpec is true ("bedtools merge -s"), the merge runs
-// strictly per-strand: records with `.` or empty strand are DROPPED
-// (matching upstream's FileRecordMergeMgr behaviour, which deletes
-// UNKNOWN-strand records in stranded mode — see
-// reference_code/bedtools/src/utils/FileRecordTools/FileRecordMergeMgr.cpp
-// lines 47-58 and 96-129). The `+` and `-` groups are merged
-// independently and then re-merged into a single (chrom, start, end)
-// sorted output stream — which is what upstream `bedtools merge -s`
-// emits and what `merge.t15` asserts.
-func mergeIntervals(intervals []*bed.Record, opts MergeOptions) []mergedInterval {
-	if len(intervals) == 0 {
-		return nil
+// buildGroups filters by strand, sorts, and merges into groups of records that
+// collapse into one output interval. Under -s, '+' and '-' are merged
+// independently and the two streams re-merged by (chrom, start, end);
+// unknown-strand ('.'/”) records are dropped. Under -S <strand>, only that
+// strand survives and is merged positionally.
+func buildGroups(recs []record, opts MergeOptions) [][]record {
+	if opts.StrandFilter != "" {
+		kept := recs[:0:0]
+		for _, r := range recs {
+			if r.strand == opts.StrandFilter {
+				kept = append(kept, r)
+			}
+		}
+		recs = kept
 	}
 
 	if opts.StrandSpec {
-		// Split into per-strand buckets, merge each, then merge-sort the
-		// two outputs back into one sorted stream.
-		var plus, minus []*bed.Record
-		for _, iv := range intervals {
-			switch iv.Strand {
+		var plus, minus []record
+		for _, r := range recs {
+			switch r.strand {
 			case "+":
-				plus = append(plus, iv)
+				plus = append(plus, r)
 			case "-":
-				minus = append(minus, iv)
-				// "." and "" are intentionally dropped (see doc comment).
+				minus = append(minus, r)
+				// "." and "" are dropped (upstream FileRecordMergeMgr behaviour).
 			}
 		}
-		// Disable StrandSpec on the recursive calls — within each bucket
-		// all records share the same strand and the simple single-pass
-		// merge below is the right thing.
-		inner := opts
-		inner.StrandSpec = false
-		mp := mergeIntervals(plus, inner)
-		mm := mergeIntervals(minus, inner)
-		return mergeSortedMergedByPos(mp, mm)
+		sortRecords(plus)
+		sortRecords(minus)
+		pg := positionGroups(plus, opts)
+		mg := positionGroups(minus, opts)
+		return mergeSortedGroups(pg, mg)
 	}
 
-	merged := []mergedInterval{}
-	current := mergedInterval{
-		Record: &bed.Record{
-			Chrom:      intervals[0].Chrom,
-			ChromStart: intervals[0].ChromStart,
-			ChromEnd:   intervals[0].ChromEnd,
-			Strand:     intervals[0].Strand,
-			Name:       intervals[0].Name,
-			Score:      intervals[0].Score,
-		},
-		count: 1,
-	}
-
-	for i := 1; i < len(intervals); i++ {
-		interval := intervals[i]
-
-		// Check if we can merge with current
-		canMerge := false
-
-		// Same chromosome?
-		if interval.Chrom == current.Chrom {
-			// Check if overlapping or within max distance
-			if interval.ChromStart <= current.ChromEnd+opts.MaxDistance {
-				canMerge = true
-			}
-		}
-
-		if canMerge {
-			// Extend current interval
-			if interval.ChromEnd > current.ChromEnd {
-				current.ChromEnd = interval.ChromEnd
-			}
-			current.count++
-
-			// For bedGraph, we might want to average or sum scores
-			// For now, we keep the first score
-		} else {
-			// Save current and start new interval
-			merged = append(merged, current)
-			current = mergedInterval{
-				Record: &bed.Record{
-					Chrom:      interval.Chrom,
-					ChromStart: interval.ChromStart,
-					ChromEnd:   interval.ChromEnd,
-					Strand:     interval.Strand,
-					Name:       interval.Name,
-					Score:      interval.Score,
-				},
-				count: 1,
-			}
-		}
-	}
-
-	// Add the last interval
-	merged = append(merged, current)
-
-	return merged
+	sortRecords(recs)
+	return positionGroups(recs, opts)
 }
 
-// mergeSortedMergedByPos two-way-merges two already-sorted slices of
-// merged intervals by (chrom, start, end). Used to recombine the `+` and
-// `-` outputs of strand-aware merge into a single sorted stream.
-func mergeSortedMergedByPos(a, b []mergedInterval) []mergedInterval {
-	out := make([]mergedInterval, 0, len(a)+len(b))
+// positionGroups runs a single-pass position-only merge over sorted records
+// (strand is ignored; the caller handles any strand bucketing). Each output
+// group is the slice of input records that merge together.
+func positionGroups(recs []record, opts MergeOptions) [][]record {
+	if len(recs) == 0 {
+		return nil
+	}
+	var out [][]record
+	group := []record{recs[0]}
+	curChrom := recs[0].chrom
+	curEnd := recs[0].end
+	for i := 1; i < len(recs); i++ {
+		r := recs[i]
+		if r.chrom == curChrom && r.start <= curEnd+opts.MaxDistance {
+			if r.end > curEnd {
+				curEnd = r.end
+			}
+			group = append(group, r)
+			continue
+		}
+		out = append(out, group)
+		group = []record{r}
+		curChrom = r.chrom
+		curEnd = r.end
+	}
+	out = append(out, group)
+	return out
+}
+
+// mergeSortedGroups two-way-merges two slices of already-sorted groups into a
+// single stream ordered by (chrom, start, end). Used to recombine the '+' and
+// '-' outputs of a stranded merge.
+func mergeSortedGroups(a, b [][]record) [][]record {
+	out := make([][]record, 0, len(a)+len(b))
 	i, j := 0, 0
-	less := func(x, y mergedInterval) bool {
-		if x.Chrom != y.Chrom {
-			return x.Chrom < y.Chrom
+	groupEnd := func(g []record) int {
+		e := g[0].end
+		for _, r := range g[1:] {
+			if r.end > e {
+				e = r.end
+			}
 		}
-		if x.ChromStart != y.ChromStart {
-			return x.ChromStart < y.ChromStart
+		return e
+	}
+	less := func(x, y []record) bool {
+		if x[0].chrom != y[0].chrom {
+			return x[0].chrom < y[0].chrom
 		}
-		return x.ChromEnd < y.ChromEnd
+		if x[0].start != y[0].start {
+			return x[0].start < y[0].start
+		}
+		return groupEnd(x) < groupEnd(y)
 	}
 	for i < len(a) && j < len(b) {
 		if less(a[i], b[j]) {
@@ -400,136 +236,120 @@ func mergeSortedMergedByPos(a, b []mergedInterval) []mergedInterval {
 	return out
 }
 
-// writeIntervals writes merged intervals according to output options.
-func writeIntervals(writer io.Writer, merged []mergedInterval, opts MergeOptions) error {
-	// Handle bedGraph format separately (requires score without name)
+// writeGroup writes one merged output line for a group of records. With
+// ColumnOps it emits chrom/start/end plus one aggregated value per column;
+// otherwise it honours the legacy OutputFields convenience flags (count,
+// bedGraph) and defaults to BED3.
+func writeGroup(w *bufio.Writer, group []record, opts MergeOptions) error {
+	chrom := group[0].chrom
+	start := group[0].start
+	end := group[0].end
+	for _, r := range group {
+		if r.end > end {
+			end = r.end
+		}
+	}
+
+	if opts.ColumnOps != nil {
+		out := []string{chrom, strconv.Itoa(start), strconv.Itoa(end)}
+		vals, warn := applyColumnOps(opts.ColumnOps, group, opts.precision())
+		out = append(out, vals...)
+		if warn != "" && opts.Warn != nil {
+			fmt.Fprintln(opts.Warn, warn)
+		}
+		_, err := fmt.Fprintln(w, joinTab(out))
+		return err
+	}
+
+	first := group[0].fields
+
+	// Legacy bedmerge convenience modes (not part of upstream bedtools merge,
+	// but retained as bedmerge extras). bedGraph emits the 4-col score (column
+	// 4); the Name/Score/Strand flags echo those columns from the first record.
 	if opts.OutputFields.BedGraph {
-		return writeBedGraph(writer, merged)
+		score := "0"
+		if len(first) > 3 {
+			score = first[3]
+		}
+		_, err := fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", chrom, start, end, score)
+		return err
 	}
 
-	bedWriter := bed.NewWriter(writer)
-
-	for _, m := range merged {
-		record := m.Record
-
-		// Handle count field
-		if opts.OutputFields.Count {
-			record.Name = fmt.Sprintf("%d", m.count)
-		} else if !opts.OutputFields.Name {
-			record.Name = ""
+	if opts.OutputFields.Name || opts.OutputFields.Score || opts.OutputFields.Strand {
+		out := []string{chrom, strconv.Itoa(start), strconv.Itoa(end)}
+		if opts.OutputFields.Name {
+			out = append(out, fieldOr(first, 3, ""))
 		}
-
-		if !opts.OutputFields.Score {
-			record.Score = 0
+		if opts.OutputFields.Score {
+			out = append(out, fieldOr(first, 4, "0"))
 		}
-
-		if !opts.OutputFields.Strand {
-			record.Strand = ""
+		if opts.OutputFields.Strand {
+			out = append(out, fieldOr(first, 5, "."))
 		}
-
-		if err := bedWriter.Write(record); err != nil {
-			return fmt.Errorf("error writing BED record: %w", err)
-		}
+		_, err := fmt.Fprintln(w, joinTab(out))
+		return err
 	}
 
-	if err := bedWriter.Flush(); err != nil {
-		return fmt.Errorf("error flushing output: %w", err)
+	if opts.OutputFields.Count {
+		_, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\n", chrom, start, end, len(group))
+		return err
 	}
 
-	return nil
+	_, err := fmt.Fprintf(w, "%s\t%d\t%d\n", chrom, start, end)
+	return err
 }
 
-// writeBedGraph writes intervals in bedGraph format (chrom, start, end, score).
-func writeBedGraph(writer io.Writer, merged []mergedInterval) error {
-	for _, m := range merged {
-		line := fmt.Sprintf("%s\t%d\t%d\t%d\n",
-			m.Chrom, m.ChromStart, m.ChromEnd, m.Score)
-		if _, err := writer.Write([]byte(line)); err != nil {
-			return fmt.Errorf("error writing bedGraph record: %w", err)
-		}
+// fieldOr returns the value at 0-based index i of fields, or def when absent.
+func fieldOr(fields []string, i int, def string) string {
+	if i < len(fields) {
+		return fields[i]
 	}
-	return nil
+	return def
 }
 
-// streamingMerge performs streaming merge for very large files.
-// This uses a sliding window approach to avoid loading all intervals into memory.
-func streamingMerge(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
-	bedReader := bed.NewReader(reader)
-
-	// For streaming mode, we need to read intervals in chunks per chromosome
-	// We'll collect all intervals for one chromosome, merge them, write output,
-	// then move to the next chromosome. This assumes input is roughly sorted by chromosome.
-
-	var currentChrom string
-	var chromIntervals []*bed.Record
-	outputCount := 0
-
-	flushChrom := func() error {
-		if len(chromIntervals) == 0 {
-			return nil
+// joinTab joins fields with a tab. Inline helper for the column-op hot path.
+func joinTab(fields []string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	n := len(fields) - 1
+	for _, f := range fields {
+		n += len(f)
+	}
+	b := make([]byte, 0, n)
+	for i, f := range fields {
+		if i > 0 {
+			b = append(b, '\t')
 		}
+		b = append(b, f...)
+	}
+	return string(b)
+}
 
-		// Sort intervals for this chromosome
-		sort.Slice(chromIntervals, func(i, j int) bool {
-			if chromIntervals[i].ChromStart != chromIntervals[j].ChromStart {
-				return chromIntervals[i].ChromStart < chromIntervals[j].ChromStart
-			}
-			return chromIntervals[i].ChromEnd < chromIntervals[j].ChromEnd
-		})
-
-		// Merge and write
-		merged := mergeIntervals(chromIntervals, opts)
-		if err := writeIntervals(writer, merged, opts); err != nil {
-			return err
-		}
-
-		outputCount += len(merged)
-		chromIntervals = nil
+// validateStrandOptions rejects an invalid -S argument and the illegal
+// combination of -s and -S, mirroring upstream bedtools merge.
+func validateStrandOptions(opts MergeOptions) error {
+	if opts.StrandFilter == "" {
 		return nil
 	}
-
-	for {
-		record, err := bedReader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return 0, fmt.Errorf("error reading BED record: %w", err)
-		}
-
-		// If bedGraph input mode, parse the name field as score
-		if opts.OutputFields.BedGraph && record.Name != "" && record.Score == 0 {
-			// Try to parse name as score
-			var score int
-			if _, err := fmt.Sscanf(record.Name, "%d", &score); err == nil {
-				record.Score = score
-				record.Name = ""
-			}
-		}
-
-		// -S single-strand filter: drop records on the other strand.
-		if strandFiltered(record, opts) {
-			continue
-		}
-
-		// If chromosome changed, flush previous chromosome
-		if record.Chrom != currentChrom && currentChrom != "" {
-			if err := flushChrom(); err != nil {
-				return 0, err
-			}
-		}
-
-		currentChrom = record.Chrom
-		chromIntervals = append(chromIntervals, record)
+	if opts.StrandFilter != "+" && opts.StrandFilter != "-" {
+		return errBadStrandArg
 	}
-
-	// Flush last chromosome
-	if err := flushChrom(); err != nil {
-		return 0, err
+	if opts.StrandSpec {
+		return fmt.Errorf("-s and -S are mutually exclusive")
 	}
-
-	return outputCount, nil
+	return nil
 }
+
+// ErrBadStrandArg is the sentinel for an invalid -S argument; the CLI prints the
+// upstream-formatted message ("-S option must be followed by + or -").
+var ErrBadStrandArg = errBadStrandArg
+
+var errBadStrandArg = fmt.Errorf("-S option must be followed by + or -")
+
+// ErrStrandedVCF is the sentinel for the unsupported "-s with VCF" combination;
+// the CLI prints the upstream-formatted message including the file name.
+var ErrStrandedVCF = errStrandedVCF
 
 // Stats contains statistics about the merge operation.
 type Stats struct {
@@ -538,94 +358,24 @@ type Stats struct {
 	MergedCount     int
 }
 
-// MergeWithStats performs merge and returns detailed statistics.
+// MergeWithStats performs a merge and returns detailed statistics.
 func MergeWithStats(reader io.Reader, writer io.Writer, opts MergeOptions) (*Stats, error) {
 	if err := validateStrandOptions(opts); err != nil {
 		return nil, err
 	}
-	reader, err := gffAwareReader(reader)
+	recs, format, err := readInput(reader, opts)
 	if err != nil {
 		return nil, err
 	}
-	// Column-aggregation mode: report only the output count.
-	if opts.ColumnOps != nil {
-		count, err := mergeWithColumnOps(reader, writer, opts)
-		if err != nil {
-			return nil, err
-		}
-		return &Stats{OutputIntervals: count}, nil
-	}
-
-	// Streaming mode doesn't support detailed stats tracking currently
-	if opts.Streaming {
-		count, err := streamingMerge(reader, writer, opts)
-		if err != nil {
-			return nil, err
-		}
-		return &Stats{
-			OutputIntervals: count,
-		}, nil
-	}
-
-	// Read all intervals
-	bedReader := bed.NewReader(reader)
-	var intervals []*bed.Record
-
-	for {
-		record, err := bedReader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("error reading BED record: %w", err)
-		}
-
-		// -S single-strand filter: drop records on the other strand.
-		if strandFiltered(record, opts) {
-			continue
-		}
-
-		// If bedGraph input mode, parse the name field as score
-		if opts.OutputFields.BedGraph && record.Name != "" && record.Score == 0 {
-			// Try to parse name as score
-			var score int
-			if _, err := fmt.Sscanf(record.Name, "%d", &score); err == nil {
-				record.Score = score
-				record.Name = ""
-			}
-		}
-
-		intervals = append(intervals, record)
-	}
-
-	stats := &Stats{
-		InputIntervals: len(intervals),
-	}
-
-	if len(intervals) == 0 {
-		return stats, nil
-	}
-
-	// Sort intervals
-	sort.Slice(intervals, func(i, j int) bool {
-		if intervals[i].Chrom != intervals[j].Chrom {
-			return intervals[i].Chrom < intervals[j].Chrom
-		}
-		if intervals[i].ChromStart != intervals[j].ChromStart {
-			return intervals[i].ChromStart < intervals[j].ChromStart
-		}
-		return intervals[i].ChromEnd < intervals[j].ChromEnd
-	})
-
-	// Merge overlapping/adjacent intervals
-	merged := mergeIntervals(intervals, opts)
-	stats.OutputIntervals = len(merged)
-	stats.MergedCount = stats.InputIntervals - stats.OutputIntervals
-
-	// Write merged intervals
-	if err := writeIntervals(writer, merged, opts); err != nil {
+	if err := validateBAMColumns(format, opts.ColumnOps); err != nil {
 		return nil, err
 	}
-
+	stats := &Stats{InputIntervals: len(recs)}
+	out, err := mergeRecords(recs, writer, opts)
+	if err != nil {
+		return nil, err
+	}
+	stats.OutputIntervals = out
+	stats.MergedCount = stats.InputIntervals - stats.OutputIntervals
 	return stats, nil
 }

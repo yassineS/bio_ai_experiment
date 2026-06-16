@@ -422,11 +422,13 @@ func TestMergeColumnOps(t *testing.T) {
 				"chr2\t5\t15\t9\t9\n",
 		},
 		{
+			// Upstream formats with 10 significant digits (KeyListOps default
+			// precision), so 19/3 prints as 6.333333333, not full float64 width.
 			name:  "mean produces float",
 			cols:  "5",
 			ops:   "mean",
 			input: columnOpsInput,
-			expected: "chr1\t10\t30\t6.333333333333333\n" +
+			expected: "chr1\t10\t30\t6.333333333\n" +
 				"chr1\t40\t50\t3\n" +
 				"chr2\t5\t15\t9\n",
 		},
@@ -585,19 +587,24 @@ func TestParseColumnOpsNeitherGiven(t *testing.T) {
 	}
 }
 
-func TestMergeColumnOpsNonNumericError(t *testing.T) {
+// TestMergeColumnOpsNonNumericWarns confirms a non-numeric value under a numeric
+// op produces the null value "." and an upstream-formatted warning (parity with
+// bedtools merge.t23a/t23b) rather than aborting.
+func TestMergeColumnOpsNonNumericWarns(t *testing.T) {
 	input := "chr1\t10\t20\ta\tx\nchr1\t15\t30\tb\t7\n"
 	co, err := ParseColumnOps("5", "sum")
 	if err != nil {
 		t.Fatalf("ParseColumnOps failed: %v", err)
 	}
-	var buf bytes.Buffer
-	_, err = Merge(strings.NewReader(input), &buf, MergeOptions{ColumnOps: co})
-	if err == nil {
-		t.Fatalf("expected error for non-numeric value with sum op, got nil")
+	var buf, warn bytes.Buffer
+	if _, err := Merge(strings.NewReader(input), &buf, MergeOptions{ColumnOps: co, Warn: &warn}); err != nil {
+		t.Fatalf("Merge errored on non-numeric value: %v", err)
 	}
-	if !strings.Contains(err.Error(), "column 5") {
-		t.Errorf("error should name the offending column, got: %v", err)
+	if got := buf.String(); got != "chr1\t10\t30\t.\n" {
+		t.Errorf("expected null-value output, got %q", got)
+	}
+	if !strings.Contains(warn.String(), "Non numeric value x in 5") {
+		t.Errorf("warning should name the offending value+column, got: %q", warn.String())
 	}
 }
 

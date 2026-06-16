@@ -1,9 +1,7 @@
 package bedmerge
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -56,8 +54,9 @@ var validOps = map[string]bool{
 	"freqdesc":               true,
 }
 
-// numericOps is the set of operations that require their column values to
-// parse as numbers.
+// numericOps is the set of operations that consume their column values as
+// numbers. A non-numeric value contributes NaN (and triggers a warning) rather
+// than aborting, matching upstream KeyListOpsMethods::getColValNum.
 var numericOps = map[string]bool{
 	"sum":                    true,
 	"min":                    true,
@@ -138,261 +137,6 @@ func ParseColumnOps(colsStr, opsStr string) (*ColumnOps, error) {
 	return &ColumnOps{Columns: cols, Ops: ops}, nil
 }
 
-// colInterval is an interval kept with all of its raw input columns so that
-// arbitrary columns can be aggregated after merging.
-type colInterval struct {
-	chrom  string
-	start  int
-	end    int
-	strand string
-	fields []string // all raw columns of the original line
-}
-
-// mergeWithColumnOps performs a merge while aggregating the requested input
-// columns over each merged group, mirroring `bedtools merge -c ... -o ...`.
-func mergeWithColumnOps(reader io.Reader, writer io.Writer, opts MergeOptions) (int, error) {
-	co := opts.ColumnOps
-
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	var intervals []colInterval
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r\n")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		if len(fields) < 3 {
-			return 0, fmt.Errorf("BED record must have at least 3 fields, got %d", len(fields))
-		}
-		start, err := strconv.Atoi(strings.TrimSpace(fields[1]))
-		if err != nil {
-			return 0, fmt.Errorf("invalid chromStart %q: %v", fields[1], err)
-		}
-		end, err := strconv.Atoi(strings.TrimSpace(fields[2]))
-		if err != nil {
-			return 0, fmt.Errorf("invalid chromEnd %q: %v", fields[2], err)
-		}
-		strand := ""
-		if len(fields) > 5 {
-			strand = fields[5]
-		}
-		// -S single-strand filter: drop records on the other strand.
-		if opts.StrandFilter != "" && strand != opts.StrandFilter {
-			continue
-		}
-		// Verify the requested columns exist.
-		for _, c := range co.Columns {
-			if c > len(fields) {
-				return 0, fmt.Errorf("requested column %d but input line has only %d columns", c, len(fields))
-			}
-		}
-		intervals = append(intervals, colInterval{
-			chrom:  fields[0],
-			start:  start,
-			end:    end,
-			strand: strand,
-			fields: fields,
-		})
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, fmt.Errorf("error reading BED input: %w", err)
-	}
-
-	if len(intervals) == 0 {
-		return 0, nil
-	}
-
-	sortColIntervals(intervals)
-
-	w := bufio.NewWriter(writer)
-
-	// Under -s, upstream `bedtools merge -s` drops UNKNOWN-strand ("."
-	// or "") records entirely and merges `+` / `-` independently, then
-	// outputs both streams in (chrom, start, end) order. See
-	// reference_code/bedtools/src/utils/FileRecordTools/FileRecordMergeMgr.cpp
-	// lines 47-58 + 96-129. Replicate that here so that `merge.t15`
-	// matches upstream byte-for-byte.
-	if opts.StrandSpec {
-		var plus, minus []colInterval
-		for _, iv := range intervals {
-			switch iv.strand {
-			case "+":
-				plus = append(plus, iv)
-			case "-":
-				minus = append(minus, iv)
-				// "" and "." dropped.
-			}
-		}
-		// Collect merged groups (don't write yet) so we can merge-sort
-		// the two strand outputs by (chrom, start, end) before writing.
-		pg := groupMergedColIntervals(plus, opts)
-		mg := groupMergedColIntervals(minus, opts)
-		all := mergeSortedColGroupsByPos(pg, mg)
-		outCount := 0
-		for _, g := range all {
-			wrote, err := flushColumnGroup(w, co, g)
-			if err != nil {
-				return 0, err
-			}
-			outCount += wrote
-		}
-		if err := w.Flush(); err != nil {
-			return 0, fmt.Errorf("error flushing output: %w", err)
-		}
-		return outCount, nil
-	}
-
-	groups := groupMergedColIntervals(intervals, opts)
-	outCount := 0
-	for _, g := range groups {
-		wrote, err := flushColumnGroup(w, co, g)
-		if err != nil {
-			return 0, err
-		}
-		outCount += wrote
-	}
-
-	if err := w.Flush(); err != nil {
-		return 0, fmt.Errorf("error flushing output: %w", err)
-	}
-
-	return outCount, nil
-}
-
-// sortColIntervals sorts colIntervals by (chrom, start, end) — used as a
-// shared prerequisite for both the strand-aware and strand-agnostic
-// merge paths.
-func sortColIntervals(intervals []colInterval) {
-	sort.SliceStable(intervals, func(i, j int) bool {
-		if intervals[i].chrom != intervals[j].chrom {
-			return intervals[i].chrom < intervals[j].chrom
-		}
-		if intervals[i].start != intervals[j].start {
-			return intervals[i].start < intervals[j].start
-		}
-		return intervals[i].end < intervals[j].end
-	})
-}
-
-// groupMergedColIntervals runs a single-pass position-only merge over
-// sorted intervals (strand is ignored — the caller is responsible for
-// any strand bucketing). The output is a list of groups, each of which
-// is a slice of all the input intervals that merged together.
-func groupMergedColIntervals(intervals []colInterval, opts MergeOptions) [][]colInterval {
-	if len(intervals) == 0 {
-		return nil
-	}
-	var out [][]colInterval
-	group := []colInterval{intervals[0]}
-	curChrom := intervals[0].chrom
-	curEnd := intervals[0].end
-	for i := 1; i < len(intervals); i++ {
-		iv := intervals[i]
-		if iv.chrom == curChrom && iv.start <= curEnd+opts.MaxDistance {
-			if iv.end > curEnd {
-				curEnd = iv.end
-			}
-			group = append(group, iv)
-			continue
-		}
-		out = append(out, group)
-		group = []colInterval{iv}
-		curChrom = iv.chrom
-		curEnd = iv.end
-	}
-	out = append(out, group)
-	return out
-}
-
-// mergeSortedColGroupsByPos two-way-merges two slices of column-merged
-// groups (each one already sorted by chrom+start) into a single stream,
-// preserving (chrom, start, end) order.
-func mergeSortedColGroupsByPos(a, b [][]colInterval) [][]colInterval {
-	out := make([][]colInterval, 0, len(a)+len(b))
-	i, j := 0, 0
-	less := func(x, y []colInterval) bool {
-		if x[0].chrom != y[0].chrom {
-			return x[0].chrom < y[0].chrom
-		}
-		if x[0].start != y[0].start {
-			return x[0].start < y[0].start
-		}
-		// Compute end of each group to break ties.
-		xe := x[0].end
-		for _, iv := range x[1:] {
-			if iv.end > xe {
-				xe = iv.end
-			}
-		}
-		ye := y[0].end
-		for _, iv := range y[1:] {
-			if iv.end > ye {
-				ye = iv.end
-			}
-		}
-		return xe < ye
-	}
-	for i < len(a) && j < len(b) {
-		if less(a[i], b[j]) {
-			out = append(out, a[i])
-			i++
-		} else {
-			out = append(out, b[j])
-			j++
-		}
-	}
-	out = append(out, a[i:]...)
-	out = append(out, b[j:]...)
-	return out
-}
-
-// flushColumnGroup writes one merged output line aggregating the requested
-// columns over the given group of intervals. An empty group is a no-op and
-// returns 0 written rows; otherwise it returns 1 on success.
-func flushColumnGroup(w io.Writer, co *ColumnOps, group []colInterval) (int, error) {
-	if len(group) == 0 {
-		return 0, nil
-	}
-	chrom := group[0].chrom
-	start := group[0].start
-	end := group[0].end
-	for _, iv := range group {
-		if iv.end > end {
-			end = iv.end
-		}
-	}
-	out := []string{chrom, strconv.Itoa(start), strconv.Itoa(end)}
-	for i, col := range co.Columns {
-		op := co.Ops[i]
-		vals := make([]string, len(group))
-		for j, iv := range group {
-			vals[j] = iv.fields[col-1]
-		}
-		res, err := applyOpDelim(op, col, vals, co.delim())
-		if err != nil {
-			return 0, err
-		}
-		out = append(out, res)
-	}
-	if _, err := fmt.Fprintln(w, strings.Join(out, "\t")); err != nil {
-		return 0, err
-	}
-	return 1, nil
-}
-
-// applyOp applies a single aggregation operation to the slice of column values
-// taken from a merged group (in input/sorted order). col is the 1-based column
-// number, used only for error messages.
-// ApplyOp applies a column op (see validOps) to a slice of string values
-// originating from column col (1-based, used only for error messages).
-// Exported so other tools (bedgroupby, bedmap, bedcoverage) can reuse the
-// same op vocabulary as bedmerge.
-func ApplyOp(op string, col int, vals []string) (string, error) {
-	return applyOp(op, col, vals)
-}
-
 // delim returns the effective list-join delimiter, defaulting to "," when
 // unset.
 func (co *ColumnOps) delim() string {
@@ -402,154 +146,83 @@ func (co *ColumnOps) delim() string {
 	return co.Delim
 }
 
-// applyOp applies op with the default "," list delimiter.
-func applyOp(op string, col int, vals []string) (string, error) {
-	return applyOpDelim(op, col, vals, ",")
+// applyColumnOps aggregates each requested column over a merged group of
+// records, returning one output string per column op. It mirrors upstream's
+// KeyListOps::getOpVals: a single warning string is returned holding the LAST
+// "Non numeric value" message seen across all columns/ops in this group (the
+// upstream _errMsg is overwritten per value and printed once per record).
+func applyColumnOps(co *ColumnOps, group []record, precision int) ([]string, string) {
+	out := make([]string, len(co.Columns))
+	warn := ""
+	for i, col := range co.Columns {
+		op := co.Ops[i]
+		vals := make([]string, len(group))
+		for j, r := range group {
+			vals[j] = bamSafeField(r, col)
+		}
+		res, w := applyOpDelim(op, col, vals, co.delim(), precision)
+		if w != "" {
+			warn = w
+		}
+		out[i] = res
+	}
+	return out, warn
 }
 
-func applyOpDelim(op string, col int, vals []string, delim string) (string, error) {
+// bamSafeField returns the value of 1-based column col from a record's fields.
+// For BAM records an empty or absent field becomes the null value "." (upstream
+// KeyListOpsMethods::getColVal returns _nullVal for an empty BAM field), so
+// list ops like collapse render missing mate info as ".". For text records the
+// raw value is returned (a column past the width yields "").
+func bamSafeField(r record, col int) string {
+	v := ""
+	if col-1 < len(r.fields) {
+		v = r.fields[col-1]
+	}
+	if r.isBAM && v == "" {
+		return "."
+	}
+	return v
+}
+
+// ApplyOp applies a column op (see validOps) to a slice of string values
+// originating from column col (1-based, used only for error messages).
+// Exported so other tools (bedgroupby, bedmap, bedcoverage) can reuse the same
+// op vocabulary as bedmerge. It uses the "," list delimiter and the default
+// output precision, and returns an error when a numeric op meets a non-numeric
+// value (the standalone-helper contract, distinct from the merge path which
+// warns and emits the null value).
+func ApplyOp(op string, col int, vals []string) (string, error) {
+	res, warn := applyOpDelim(op, col, vals, ",", DefaultPrecision)
+	if warn != "" {
+		return "", fmt.Errorf("operation %q requires numeric values, but column %d contains a non-numeric value", op, col)
+	}
+	return res, nil
+}
+
+// applyOpDelim applies op to vals, joining list results with delim and
+// formatting floats to precision significant digits. For numeric ops a
+// non-numeric value contributes NaN and sets the returned warning to the
+// upstream-formatted message for that value; a NaN aggregate result prints as
+// the null value ".".
+func applyOpDelim(op string, col int, vals []string, delim string, precision int) (result, warn string) {
 	if numericOps[op] {
 		nums := make([]float64, len(vals))
 		for i, v := range vals {
-			f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-			if err != nil {
-				return "", fmt.Errorf("operation %q requires numeric values, but column %d contains non-numeric value %q", op, col, v)
-			}
-			nums[i] = f
-		}
-		switch op {
-		case "sum":
-			s := 0.0
-			for _, n := range nums {
-				s += n
-			}
-			return formatNum(s), nil
-		case "min":
-			m := nums[0]
-			for _, n := range nums[1:] {
-				if n < m {
-					m = n
-				}
-			}
-			return formatNum(m), nil
-		case "max":
-			m := nums[0]
-			for _, n := range nums[1:] {
-				if n > m {
-					m = n
-				}
-			}
-			return formatNum(m), nil
-		case "absmin":
-			// Upstream's `getAbsMin` (KeyListOpsMethods.cpp) returns the
-			// minimum of `|x|` over the group — the sign of the original
-			// value is intentionally dropped.
-			m := math.Abs(nums[0])
-			for _, n := range nums[1:] {
-				if a := math.Abs(n); a < m {
-					m = a
-				}
-			}
-			return formatNum(m), nil
-		case "absmax":
-			// Upstream's `getAbsMax`: max of `|x|`; sign is dropped.
-			m := math.Abs(nums[0])
-			for _, n := range nums[1:] {
-				if a := math.Abs(n); a > m {
-					m = a
-				}
-			}
-			return formatNum(m), nil
-		case "mean":
-			s := 0.0
-			for _, n := range nums {
-				s += n
-			}
-			return formatNum(s / float64(len(nums))), nil
-		case "median":
-			sorted := append([]float64(nil), nums...)
-			sort.Float64s(sorted)
-			n := len(sorted)
-			var med float64
-			if n%2 == 1 {
-				med = sorted[n/2]
+			if isNumericUpstream(v) {
+				f, _ := strconv.ParseFloat(strings.TrimSpace(v), 64)
+				nums[i] = f
 			} else {
-				med = (sorted[n/2-1] + sorted[n/2]) / 2
+				nums[i] = math.NaN()
+				warn = fmt.Sprintf(" ***** WARNING: Non numeric value %s in %d.", v, col)
 			}
-			return formatNum(med), nil
-		case "stdev":
-			// Population standard deviation: sqrt(Σ(x-μ)² / n).
-			// Matches upstream `getStddev` in
-			// reference_code/bedtools/src/utils/KeyListOps/KeyListOpsMethods.cpp.
-			mean := 0.0
-			for _, n := range nums {
-				mean += n
-			}
-			mean /= float64(len(nums))
-			sq := 0.0
-			for _, n := range nums {
-				d := n - mean
-				sq += d * d
-			}
-			v := math.Sqrt(sq / float64(len(nums)))
-			if math.IsNaN(v) {
-				return ".", nil
-			}
-			return formatNum(v), nil
-		case "sstdev":
-			// Sample standard deviation: sqrt(Σ(x-μ)² / (n-1)).
-			// Upstream returns NaN (printed as "." via getNullValue) when
-			// n == 1; we replicate that.
-			if len(nums) == 1 {
-				return ".", nil
-			}
-			mean := 0.0
-			for _, n := range nums {
-				mean += n
-			}
-			mean /= float64(len(nums))
-			sq := 0.0
-			for _, n := range nums {
-				d := n - mean
-				sq += d * d
-			}
-			v := math.Sqrt(sq / float64(len(nums)-1))
-			if math.IsNaN(v) {
-				return ".", nil
-			}
-			return formatNum(v), nil
-		case "distinct_sort_num", "distinct_sort_num_desc":
-			// Upstream getDistinctSortNum: sort numerically (asc or desc),
-			// then emit the run-length-unique values delimiter-joined
-			// (KeyListOpsMethods.cpp). std::unique collapses only adjacent
-			// equal values, which after a full sort is the set of distinct
-			// values.
-			sorted := make([]float64, len(nums))
-			copy(sorted, nums)
-			sort.Float64s(sorted)
-			if op == "distinct_sort_num_desc" {
-				for i, j := 0, len(sorted)-1; i < j; i, j = i+1, j-1 {
-					sorted[i], sorted[j] = sorted[j], sorted[i]
-				}
-			}
-			var out []string
-			for i, n := range sorted {
-				if i > 0 && n == sorted[i-1] {
-					continue
-				}
-				out = append(out, formatNum(n))
-			}
-			return strings.Join(out, delim), nil
-		case "mode":
-			return modeOrAntimode(vals, true), nil
-		case "antimode":
-			return modeOrAntimode(vals, false), nil
 		}
+		return numericResult(op, nums, delim, precision), warn
 	}
 
 	switch op {
 	case "count":
-		return strconv.Itoa(len(vals)), nil
+		return strconv.Itoa(len(vals)), ""
 	case "count_distinct":
 		seen := map[string]bool{}
 		n := 0
@@ -559,23 +232,17 @@ func applyOpDelim(op string, col int, vals []string, delim string) (string, erro
 				n++
 			}
 		}
-		return strconv.Itoa(n), nil
+		return strconv.Itoa(n), ""
 	case "distinct":
-		// Upstream getDistinct iterates its std::map<string,int> freqMap, so
-		// the unique values come out in ascending value-string order (verified
-		// against the live bedtools binary).
-		return strings.Join(sortedKeys(freqCounts(vals)), delim), nil
+		// Upstream getDistinct iterates its std::map<string,int> freqMap, so the
+		// unique values come out in ascending value-string order.
+		return strings.Join(sortedKeys(freqCounts(vals)), delim), ""
 	case "collapse":
-		return strings.Join(vals, delim), nil
-	case "cat":
-		// Concatenate all values with no separator. Mirrors upstream's
-		// CONCAT op (`getConcat` in KeyListOpsMethods.cpp), which is the
-		// `concat` operation in bedtools merge/groupby; the `cat` /
-		// `cat_uniq` names are the friendlier aliases used by bedmap.
-		return strings.Join(vals, ""), nil
+		return strings.Join(vals, delim), ""
+	case "cat", "concat":
+		// Concatenate all values with no separator (upstream getConcat).
+		return strings.Join(vals, ""), ""
 	case "cat_uniq":
-		// Concatenate unique values (first-appearance order) with no
-		// separator.
 		seen := map[string]bool{}
 		var out []string
 		for _, v := range vals {
@@ -584,15 +251,8 @@ func applyOpDelim(op string, col int, vals []string, delim string) (string, erro
 				out = append(out, v)
 			}
 		}
-		return strings.Join(out, ""), nil
-	case "concat":
-		// Upstream getConcat: collapse with an empty delimiter — every value,
-		// in order, run together. Identical to the bedmap-friendly "cat" alias.
-		return strings.Join(vals, ""), nil
+		return strings.Join(out, ""), ""
 	case "distinct_only":
-		// Upstream getDistinctOnly: the values that occur exactly once, in
-		// value-string-sorted order (the order of upstream's freqMap, a
-		// std::map<string,int>).
 		counts := freqCounts(vals)
 		var out []string
 		for _, k := range sortedKeys(counts) {
@@ -600,13 +260,8 @@ func applyOpDelim(op string, col int, vals []string, delim string) (string, erro
 				out = append(out, k)
 			}
 		}
-		return strings.Join(out, delim), nil
+		return strings.Join(out, delim), ""
 	case "freqasc", "freqdesc":
-		// Upstream getFreqAsc/getFreqDesc: "value:count" pairs ordered by
-		// count (ascending or descending). Upstream inserts the value-string-
-		// sorted freqMap into a multimap keyed by count, so ties within a
-		// count are broken by value-string ascending; we reproduce that with a
-		// stable sort over value-string-sorted keys.
 		counts := freqCounts(vals)
 		keys := sortedKeys(counts)
 		sort.SliceStable(keys, func(i, j int) bool {
@@ -619,13 +274,133 @@ func applyOpDelim(op string, col int, vals []string, delim string) (string, erro
 		for _, k := range keys {
 			out = append(out, fmt.Sprintf("%s:%d", k, counts[k]))
 		}
-		return strings.Join(out, delim), nil
+		return strings.Join(out, delim), ""
 	case "first":
-		return vals[0], nil
+		if len(vals) == 0 {
+			return ".", ""
+		}
+		return vals[0], ""
 	case "last":
-		return vals[len(vals)-1], nil
+		if len(vals) == 0 {
+			return ".", ""
+		}
+		return vals[len(vals)-1], ""
 	}
-	return "", fmt.Errorf("unsupported operation %q", op)
+	return "", ""
+}
+
+// numericResult computes the value of a numeric op over nums, returning the
+// null value "." when the aggregate is NaN (e.g. a non-numeric value was
+// present, or sstdev with a single element).
+func numericResult(op string, nums []float64, delim string, precision int) string {
+	switch op {
+	case "sum":
+		s := 0.0
+		for _, n := range nums {
+			s += n
+		}
+		return formatNum(s, precision)
+	case "min":
+		m := nums[0]
+		for _, n := range nums[1:] {
+			if n < m {
+				m = n
+			}
+		}
+		return formatNum(m, precision)
+	case "max":
+		m := nums[0]
+		for _, n := range nums[1:] {
+			if n > m {
+				m = n
+			}
+		}
+		return formatNum(m, precision)
+	case "absmin":
+		m := math.Abs(nums[0])
+		for _, n := range nums[1:] {
+			if a := math.Abs(n); a < m {
+				m = a
+			}
+		}
+		return formatNum(m, precision)
+	case "absmax":
+		m := math.Abs(nums[0])
+		for _, n := range nums[1:] {
+			if a := math.Abs(n); a > m {
+				m = a
+			}
+		}
+		return formatNum(m, precision)
+	case "mean":
+		s := 0.0
+		for _, n := range nums {
+			s += n
+		}
+		return formatNum(s/float64(len(nums)), precision)
+	case "median":
+		sorted := append([]float64(nil), nums...)
+		sort.Float64s(sorted)
+		n := len(sorted)
+		var med float64
+		if n%2 == 1 {
+			med = sorted[n/2]
+		} else {
+			med = (sorted[n/2-1] + sorted[n/2]) / 2
+		}
+		return formatNum(med, precision)
+	case "stdev":
+		// Population standard deviation: sqrt(Σ(x-μ)² / n).
+		mean := 0.0
+		for _, n := range nums {
+			mean += n
+		}
+		mean /= float64(len(nums))
+		sq := 0.0
+		for _, n := range nums {
+			d := n - mean
+			sq += d * d
+		}
+		return formatNum(math.Sqrt(sq/float64(len(nums))), precision)
+	case "sstdev":
+		// Sample standard deviation: sqrt(Σ(x-μ)² / (n-1)); NaN -> "." when n==1.
+		if len(nums) == 1 {
+			return "."
+		}
+		mean := 0.0
+		for _, n := range nums {
+			mean += n
+		}
+		mean /= float64(len(nums))
+		sq := 0.0
+		for _, n := range nums {
+			d := n - mean
+			sq += d * d
+		}
+		return formatNum(math.Sqrt(sq/float64(len(nums)-1)), precision)
+	case "distinct_sort_num", "distinct_sort_num_desc":
+		sorted := make([]float64, len(nums))
+		copy(sorted, nums)
+		sort.Float64s(sorted)
+		if op == "distinct_sort_num_desc" {
+			for i, j := 0, len(sorted)-1; i < j; i, j = i+1, j-1 {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+		var out []string
+		for i, n := range sorted {
+			if i > 0 && n == sorted[i-1] {
+				continue
+			}
+			out = append(out, formatNum(n, precision))
+		}
+		return strings.Join(out, delim)
+	case "mode":
+		return modeOrAntimodeNum(nums, true, precision)
+	case "antimode":
+		return modeOrAntimodeNum(nums, false, precision)
+	}
+	return "."
 }
 
 // freqCounts tallies how many times each value appears.
@@ -637,8 +412,8 @@ func freqCounts(vals []string) map[string]int {
 	return counts
 }
 
-// sortedKeys returns the keys of counts in ascending string order, matching
-// the iteration order of upstream bedtools' std::map<string,int> freqMap.
+// sortedKeys returns the keys of counts in ascending string order, matching the
+// iteration order of upstream bedtools' std::map<string,int> freqMap.
 func sortedKeys(counts map[string]int) []string {
 	keys := make([]string, 0, len(counts))
 	for k := range counts {
@@ -648,16 +423,20 @@ func sortedKeys(counts map[string]int) []string {
 	return keys
 }
 
-// modeOrAntimode returns the most (mode=true) or least (mode=false) frequent
-// value; ties are broken by first-seen order.
-func modeOrAntimode(vals []string, mode bool) string {
-	counts := map[string]int{}
-	var order []string
-	for _, v := range vals {
+// modeOrAntimodeNum returns the most (mode) or least (antimode) frequent numeric
+// value, formatting it to the requested precision. Ties are broken by first-seen
+// order, matching upstream.
+func modeOrAntimodeNum(nums []float64, mode bool, precision int) string {
+	counts := map[float64]int{}
+	var order []float64
+	for _, v := range nums {
 		if _, ok := counts[v]; !ok {
 			order = append(order, v)
 		}
 		counts[v]++
+	}
+	if len(order) == 0 {
+		return "."
 	}
 	best := order[0]
 	bestCount := counts[best]
@@ -673,15 +452,37 @@ func modeOrAntimode(vals []string, mode bool) string {
 			}
 		}
 	}
-	return best
+	return formatNum(best, precision)
 }
 
-// formatNum formats a float so that integer-valued results print without a
-// decimal point and other values print with up to ~10 significant digits and no
-// trailing-zero noise, matching bedtools' %g-ish output.
-func formatNum(v float64) string {
-	if v == float64(int64(v)) {
-		return strconv.FormatInt(int64(v), 10)
+// isNumericUpstream replicates upstream ParseTools::isNumeric: a string is
+// numeric if every character is a digit, '+', '-', '.', 'e', or 'E', and it
+// contains at least one digit.
+func isNumericUpstream(s string) bool {
+	hasDigit := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		case c == '+' || c == '-' || c == '.' || c == 'e' || c == 'E':
+		default:
+			return false
+		}
 	}
-	return strconv.FormatFloat(v, 'g', -1, 64)
+	return hasDigit
+}
+
+// formatNum formats a float to `precision` significant digits using Go's 'g'
+// verb, which matches C++ std::ostream << setprecision(precision) << val (the
+// default float format upstream uses). A NaN result prints as the null value
+// ".".
+func formatNum(v float64, precision int) string {
+	if math.IsNaN(v) {
+		return "."
+	}
+	if precision <= 0 {
+		precision = DefaultPrecision
+	}
+	return strconv.FormatFloat(v, 'g', precision, 64)
 }
