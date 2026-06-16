@@ -418,7 +418,10 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ **Overrepresentation analysis** (`-p`/`--overrepresentation_analysis`,
   `-P`/`--overrepresentation_sampling`)
 - ✅ **Output splitting** (`-s`/`--split`, `-S`/`--split_by_lines`,
-  `-d`/`--split_prefix_digits`)
+  `-d`/`--split_prefix_digits`) — the per-file boundaries reproduce upstream's
+  multi-threaded pack/thread distribution (pack i -> thread i%`-w`, each thread
+  owning a strided set of split files), so every split file is byte-for-byte
+  identical to upstream for any `-w`, not just `-w 1`.
 - ✅ **Multi-threading support**
 - ✅ **Duplication evaluation** (`--dup_calc_accuracy`) and dedup
   (`--dedup`)
@@ -435,9 +438,6 @@ This is a simplified Go implementation focusing on core preprocessing functional
 
 ### Documented residuals (not 1:1)
 
-- Under multi-threading, **`--split`** file boundaries differ from upstream's
-  byte-extrapolated estimate; single-thread (`-w 1`) is byte-for-byte
-  identical (total content/order always match).
 - The **`merged_and_filtered`** JSON summary block (and a couple of minor
   JSON sub-fields) are not yet emitted; the merged FASTQ output *bytes* are
   byte-identical to upstream.

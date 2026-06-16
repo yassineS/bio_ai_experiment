@@ -790,6 +790,11 @@ func ProcessPairedEndSplit(input1, input2 io.Reader, outputBase1, outputBase2 st
 	sw2 := newSplitWriter(outputBase2, cfg, encoding)
 
 	for i := range records1 {
+		// Announce the input read index so the split writers can attribute the
+		// surviving mates to the upstream worker thread (pack i/256 % threads)
+		// that owns them, matching upstream's multi-threaded file boundaries.
+		sw1.SetInputPos(i)
+		sw2.SetInputPos(i)
 		if err := processPairOnce(records1[i], records2[i], sw1, sw2, nil, encoding, opts, stats, dupTracker); err != nil {
 			return stats, err
 		}
@@ -910,7 +915,11 @@ func ProcessSingleEndSplit(input io.Reader, outputBase string, encoding fastq.Qu
 	cfg := resolveSplitConfig(opts, len(records))
 	sw := newSplitWriter(outputBase, cfg, encoding)
 
-	for _, rec := range records {
+	for i, rec := range records {
+		// Announce the input read index so the split writer can attribute the
+		// surviving read to the upstream worker thread (pack i/256 % threads)
+		// that owns it, matching upstream's multi-threaded file boundaries.
+		sw.SetInputPos(i)
 		if err := processOneSE(rec, sw, encoding, opts, stats, dupTracker); err != nil {
 			return stats, err
 		}
