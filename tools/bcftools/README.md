@@ -157,6 +157,19 @@ report per region and — unlike upstream, which silently drops a BED/TSV `-R`
 line (see `docs/UPSTREAM_BUGS.md`) — accepts BED/TSV `-R` files as a fix-on-port
 while keeping colon region-list lines byte-identical to upstream.
 
+### Curly-brace multi-threshold `-i/-e` expansion (stats plugins)
+
+`+smpl-stats`, `+indel-stats` and `+trio-stats` support upstream's curly-brace
+multi-threshold filter syntax: an `-i`/`-e` expression may contain a
+`{a,b,c}` list, which is expanded into one concrete filter per element (the
+braces replaced by that element), each tallied into its own `FLT*`/`SITE*`
+(and, for indel-stats, `SN*`/`DVAF*`/`DLEN*`/`DFRAC*`/`NFRAC*`) report section.
+For example `bcftools +smpl-stats -i 'FMT/GQ>{10,20,30}' file.bcf` reports the
+per-sample stats three times, once at each GQ threshold. Multiple `{...}`
+groups combine as a cartesian product, in upstream's exact ordering; an empty
+list (`{}`) collapses to the single default "all" filter, and an unmatched `{`
+is a hard parse error — all byte-validated against upstream 1.23.1.
+
 `-W`/`--write-index` (bare, or `=csi`/`=tbi`) writes a CSI (default) or TBI
 index next to each indexable (`.vcf.gz`/`.bcf`) output; plain-VCF and stdout
 outputs are non-indexable and error exactly as upstream does. Honoured by

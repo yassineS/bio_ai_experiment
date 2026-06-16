@@ -17,10 +17,13 @@
 // FORMAT expression is resolved per sample and then folded into a per-trio
 // verdict (include keeps a trio only when all three members match; exclude keeps
 // a trio only when none of the three match). The curly-brace multi-threshold
-// expansion, the -a/--alt-trios accounting, region/target index-jumping and the
-// -o file output remain unsupported. The default single filter — the common
-// case — is implemented faithfully, including the -d/--debug MERR and
-// TRANSMITTED line emission and the -v/--verbosity passthrough.
+// expansion is supported too: such an expression is expanded into one filter per
+// element (and a cartesian product across multiple groups), each tallied into
+// its own FLT* report section and streaming its own MERR / TRANSMITTED debug
+// lines interleaved per record. The -a/--alt-trios accounting, region/target
+// index-jumping and the -o file output remain unsupported. The -d/--debug MERR
+// and TRANSMITTED line emission and the -v/--verbosity passthrough are
+// implemented faithfully.
 package bcftools
 
 import (
@@ -53,18 +56,27 @@ type trioStatsCounters struct {
 	ndnmHom    uint32 // homozygous DNMs / Mendelian errors
 }
 
+// trioStatsFilter is one expanded -i/-e threshold: its compiled filter, the
+// DEF-line label and the per-trio accumulators. It mirrors flt_stats_t in
+// trio-stats.c.
+type trioStatsFilter struct {
+	filter *pluginFilter       // compiled filter; nil for the default "all"
+	label  string              // DEF-line label: "all" or the expanded expression
+	stats  []trioStatsCounters // per-trio
+}
+
 // trioStatsPlugin implements the `trio-stats` plugin in its default mode.
 type trioStatsPlugin struct {
 	hdr     *vcf.Header
 	trios   []trioStatsTrio
-	stats   []trioStatsCounters
 	verbose int // VERBOSE_MENDEL (1) | VERBOSE_TRANSMITTED (2)
 	out     io.Writer
 	argv    []string
 
-	filter    *pluginFilter // compiled -i/-e pre-filter, nil for the default "all"
-	exprLabel string        // DEF-line label: "all" by default, else the expression
-	stderr    io.Writer
+	// filters holds one entry per expanded threshold (one for the default "all"
+	// or a single -i/-e expression, N for a curly-brace expansion).
+	filters []*trioStatsFilter
+	stderr  io.Writer
 }
 
 // SetStderr wires the host stderr writer the "Collecting data ..." note uses.
@@ -119,7 +131,6 @@ func (p *trioStatsPlugin) Parallel() bool { return false }
 // the header and rejects the modes that need htslib machinery (filters,
 // alt-trios accounting, region jumps, file output).
 func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
-	p.exprLabel = "all"
 	var pedFile, pfm string
 	var filterExpr string
 	var filterExclude, haveFilter bool
@@ -134,9 +145,6 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 				return nil, fmt.Errorf("trio-stats: %s requires a value", a)
 			}
 			i++
-			if strings.ContainsRune(args[i], '{') {
-				return nil, fmt.Errorf("trio-stats: the curly-brace multi-threshold filter expansion is not supported by the native plugin")
-			}
 			filterExpr = args[i]
 			filterExclude = a == "-e" || a == "--exclude"
 			haveFilter = true
@@ -182,15 +190,20 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 	if pedFile == "" && pfm == "" {
 		return nil, fmt.Errorf("trio-stats: missing the -p or -P option")
 	}
+
+	// Expand any curly-brace multi-threshold list, matching upstream
+	// parse_filters() (which runs, and prints its stderr note, before the trios
+	// are resolved and the header is written). N may be 0 when the braces
+	// collapse (e.g. "GQ>{}"), in which case the single "all" filter is used.
+	var exprs []string
 	if haveFilter {
-		f, err := newPluginFilterWithHeader(filterExpr, filterExclude, hdr)
+		var err error
+		exprs, err = expandPluginFilterExpr(filterExpr)
 		if err != nil {
-			return nil, fmt.Errorf("trio-stats: %w", err)
+			return nil, fmt.Errorf("trio-stats: %s", err)
 		}
-		p.filter = f
-		p.exprLabel = filterExpr
 		if p.stderr != nil {
-			fmt.Fprint(p.stderr, "Collecting data for 1 filtering expressions\n")
+			fmt.Fprintf(p.stderr, "Collecting data for %d filtering expressions\n", len(exprs))
 		}
 	}
 	p.hdr = hdr
@@ -209,7 +222,23 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 		}
 		p.trios = []trioStatsTrio{t}
 	}
-	p.stats = make([]trioStatsCounters, len(p.trios))
+
+	if len(exprs) == 0 {
+		p.filters = []*trioStatsFilter{{label: "all", stats: make([]trioStatsCounters, len(p.trios))}}
+	} else {
+		p.filters = make([]*trioStatsFilter, len(exprs))
+		for i, expr := range exprs {
+			f, err := newPluginFilterWithHeader(expr, filterExclude, hdr)
+			if err != nil {
+				return nil, fmt.Errorf("trio-stats: %w", err)
+			}
+			p.filters[i] = &trioStatsFilter{
+				filter: f,
+				label:  pluginExprLabel(expr),
+				stats:  make([]trioStatsCounters, len(p.trios)),
+			}
+		}
+	}
 
 	// Upstream prints the comment block and the CMD line in init_data(), before
 	// any record is processed, so the streamed MERR / TRANSMITTED debug lines
@@ -229,8 +258,8 @@ func (p *trioStatsPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, err
 // trio-stats.c process_record(): an INCLUDE trio passes only when all three
 // members match; an EXCLUDE trio passes only when none of the three match; and
 // the site is skipped when no trio passes.
-func (p *trioStatsPlugin) trioFilterPass(v *vcf.Variant) (trioPass []bool, passSite bool) {
-	siteMatch, mask, exclude := p.filter.rawSamples(v)
+func (p *trioStatsPlugin) trioFilterPass(flt *trioStatsFilter, v *vcf.Variant) (trioPass []bool, passSite bool) {
+	siteMatch, mask, exclude := flt.filter.rawSamples(v)
 	if exclude {
 		if !siteMatch {
 			return nil, true // nothing matched: every trio passes
@@ -274,13 +303,25 @@ func (p *trioStatsPlugin) trioFilterPass(v *vcf.Variant) (trioPass []bool, passS
 	return pass, true
 }
 
-// Process accumulates per-trio statistics for one record, mirroring
-// process_record() in trio-stats.c with the default "all" filter and no
-// --alt-trios accounting.
+// Process accumulates per-trio statistics for one record across every expanded
+// filter, mirroring trio-stats.c run()'s loop over filters which calls
+// process_record() once per filter; the per-filter MERR / TRANSMITTED debug
+// lines are therefore streamed interleaved per record, filter 0 first.
 func (p *trioStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
-	trioPass, passSite := p.trioFilterPass(v)
+	for _, flt := range p.filters {
+		if err := p.processOne(v, flt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// processOne tallies one record into one filter's per-trio accumulators,
+// mirroring process_record() in trio-stats.c with no --alt-trios accounting.
+func (p *trioStatsPlugin) processOne(v *vcf.Variant, flt *trioStatsFilter) error {
+	trioPass, passSite := p.trioFilterPass(flt, v)
 	if !passSite {
-		return nil, nil
+		return nil
 	}
 
 	nAllele := len(v.Alt) + 1
@@ -300,7 +341,7 @@ func (p *trioStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 			continue
 		}
 		trio := p.trios[ti]
-		stats := &p.stats[ti]
+		stats := &flt.stats[ti]
 
 		alsChild, kc := parseGenotypeAlleles(v, trio.child)
 		if kc == gtMissing {
@@ -348,7 +389,7 @@ func (p *trioStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 					continue
 				}
 				if a >= nAllele {
-					return nil, fmt.Errorf("trio-stats: the GT index is out of range at %s:%d", v.Chrom, v.Pos)
+					return fmt.Errorf("trio-stats: the GT index is out of range at %s:%d", v.Chrom, v.Pos)
 				}
 				// Only single-base ALT alleles contribute (rec->d.allele[a][1]==0).
 				if a-1 >= len(v.Alt) || len(v.Alt[a-1]) != 1 {
@@ -456,7 +497,7 @@ func (p *trioStatsPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 			}
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // Destroy prints the report, mirroring report_stats() in trio-stats.c.
@@ -468,14 +509,18 @@ func (p *trioStatsPlugin) Destroy() error {
 	// The comment block and CMD line were already printed in Init (matching
 	// upstream's init_data); Destroy emits only the DEF / FLT report, after any
 	// streamed MERR / TRANSMITTED debug lines.
-	fmt.Fprintf(fp, "DEF\tFLT0\t%s\n", p.exprLabel)
-	for j := range p.trios {
-		trio := p.trios[j]
-		s := &p.stats[j]
-		fmt.Fprintf(fp, "FLT0\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\n",
-			p.hdr.Samples[trio.child], p.hdr.Samples[trio.father], p.hdr.Samples[trio.mother],
-			s.npass, s.nnonRef, s.nmendelErr, s.nnovel, s.nsingleton, s.ndoubleton,
-			s.nts, s.ntv, tstvStr(int(s.nts), int(s.ntv)), s.ndnmHom, s.ndnmRecur)
+	for i, flt := range p.filters {
+		fmt.Fprintf(fp, "DEF\tFLT%d\t%s\n", i, flt.label)
+	}
+	for i, flt := range p.filters {
+		for j := range p.trios {
+			trio := p.trios[j]
+			s := &flt.stats[j]
+			fmt.Fprintf(fp, "FLT%d\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\n",
+				i, p.hdr.Samples[trio.child], p.hdr.Samples[trio.father], p.hdr.Samples[trio.mother],
+				s.npass, s.nnonRef, s.nmendelErr, s.nnovel, s.nsingleton, s.ndoubleton,
+				s.nts, s.ntv, tstvStr(int(s.nts), int(s.ntv)), s.ndnmHom, s.ndnmRecur)
+		}
 	}
 	return nil
 }

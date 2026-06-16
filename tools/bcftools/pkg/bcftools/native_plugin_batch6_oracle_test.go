@@ -62,6 +62,16 @@ func TestNativePluginTrioStats(t *testing.T) {
 		{trio, []string{"-P", "CHILD,FATHER,MOTHER", "-i", `GT="het"`}},
 		{multi, []string{"-p", multiPed, "-i", `GT="het"`}},
 		{multi, []string{"-p", multiPed, "-e", "FMT/GQ>30"}},
+		// Curly-brace multi-threshold expansion: each {a,b,c} element becomes its
+		// own FLT* section (and multiple groups combine as a cartesian product),
+		// with the per-filter MERR / TRANSMITTED debug lines streamed interleaved
+		// per record, matching upstream's parse_filters() + run() loop.
+		{trio, []string{"-p", ped, "-i", "FMT/GQ>{10,30}"}},                                    // single list
+		{trio, []string{"-p", ped, "-e", "FMT/GQ>{10,30}"}},                                    // EXCLUDE, expanded
+		{trio, []string{"-p", ped, "-i", "FMT/GQ>{10,30}", "-d", "mendel-errors,transmitted"}}, // braces + debug
+		{trio, []string{"-p", ped, "-i", "QUAL>{10,30} && FMT/GQ>{20,40}"}},                    // two groups: cartesian
+		{trio, []string{"-p", ped, "-i", "FMT/GQ>{}"}},                                         // empty list -> "all"
+		{multi, []string{"-p", multiPed, "-i", "FMT/GQ>{20,40}"}},                              // two trios, expanded
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -162,10 +172,9 @@ func TestNativePluginBatch6Unsupported(t *testing.T) {
 		// site that has no FORMAT/AD/QM (asserted in the float-model test).
 		{"trio-dnm3", nil}, // missing -p/-P
 		// trio-stats: alt-trios and file output remain unsupported (the -i/-e
-		// filter modes are parity-checked in TestNativePluginTrioStats and -t/-T
-		// streaming targets in TestNativePluginRegionTarget); the curly-brace
-		// expansion is still rejected.
-		{"trio-stats", []string{"-p", "x.ped", "-i", "GQ>{10,20}"}},
+		// filter modes, including the curly-brace multi-threshold expansion, are
+		// parity-checked in TestNativePluginTrioStats, and -t/-T streaming targets
+		// in TestNativePluginRegionTarget).
 		{"trio-stats", []string{"-p", "x.ped", "-a", "1"}},
 		{"trio-stats", nil}, // missing -p/-P
 		// trio-switch-rate: only -p is supported.
