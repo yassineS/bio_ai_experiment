@@ -196,6 +196,41 @@ The four stats/contrast plugins now match upstream on every flag:
 
 All byte-validated against upstream 1.23.1.
 
+### Format / output-mode tails (`+ad-bias`, `+remove-overlaps`, `+tag2tag`, `+guess-ploidy`, `+af-dist`)
+
+The remaining per-plugin format/output modes now match upstream 1.23.1:
+
+- **`+ad-bias --clean-vcf`/`-c`** emits the VCF subset to only the ALT alleles
+  whose Fisher p-value passes `-t` (dropping sites where nothing passes), with
+  `AC`/`AD`/`PL`/`GT` and other Number=A/R/G fields remapped via a faithful port
+  of htslib's `bcf_remove_allele_set`. **`+ad-bias -f`/`--format`** appends a
+  `bcftools query`-style format column (evaluated once per record) to every `FT`
+  report line; `-f` and `-c` are mutually exclusive, as upstream. (The `-c`
+  short form takes no argument; the `--clean-vcf` long form consumes and ignores
+  one, reproducing an upstream `getopt_long` quirk.)
+- **`+remove-overlaps -m 'min(QUAL)' --missing DP`** resolves overlaps using a
+  coverage heuristic for missing-QUAL records (scale the window's maximum QUAL by
+  `INFO/DP`: `maxQUAL*DP/maxQUAL_DP`); `--missing 0` is the explicit scalar
+  default. **`-Ot`/`-Otz`** emits a plain (or bgzip-framed) `chr<TAB>pos` list
+  instead of the VCF. (Fix-on-port: a deletion-window-boundary + ring-wrap corner
+  where upstream leaks a stale overlap mark across windows is corrected — see
+  `docs/UPSTREAM_BUGS.md#bcftools-remove-overlaps-minqual-stale-mark`.)
+- **`+tag2tag --LXX-to-XX`** (and the partial `--LPL-to-PL` / `--LAD-to-AD`)
+  expand the localized FORMAT tags (`LAA` + `LPL`/`LAD`) back into the standard
+  Number=G `PL` and Number=R `AD`, mapping each sample's localized indices via
+  `FORMAT/LAA`. `-d`/`--defaults` supplies the value for untouched cells and
+  `-s`/`--skip-nalt` skips sites above an allele threshold. The reverse
+  direction (`--XX-to-LXX`) is a `todo` upstream too and is rejected with the
+  same restriction.
+- **`+guess-ploidy -g`/`--genome`** is the `b37`/`b38`/`hg19`/`hg38` shortcut for
+  the non-PAR chrX region, expanded to the equivalent `-r CHR:BEG-END`
+  (`X:2699521-154931043` etc.) before the shared region filter runs.
+- **`+af-dist -p`/`-d`** bin lists may be read from a file (one boundary per
+  line) as well as inline (a comma-separated list), exactly as upstream's
+  `bin_init`/`hts_readlist` decides.
+
+All byte-validated against upstream 1.23.1.
+
 `-W`/`--write-index` (bare, or `=csi`/`=tbi`) writes a CSI (default) or TBI
 index next to each indexable (`.vcf.gz`/`.bcf`) output; plain-VCF and stdout
 outputs are non-indexable and error exactly as upstream does. Honoured by

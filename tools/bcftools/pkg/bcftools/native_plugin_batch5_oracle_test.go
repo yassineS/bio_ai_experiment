@@ -299,12 +299,11 @@ func TestNativePluginBatch5Unsupported(t *testing.T) {
 		name string
 		args []string
 	}{
-		// guess-ploidy: the -g/--genome per-genome ploidy preset is unsupported
-		// (the --include/--exclude filter modes are covered by
-		// TestNativePluginGuessPloidy; -r/-R region selection by
-		// TestNativePluginRegionTarget). Note guess-ploidy's -t is --tag, not
-		// targets, so it is NOT a region/target case.
-		{"guess-ploidy", []string{"-g", "b37"}},
+		// guess-ploidy: the -g/--genome per-genome ploidy preset is now supported
+		// (it rewrites to -r REGION; parity-checked in
+		// TestNativePluginGuessPloidyGenome). An unrecognised preset value is the
+		// only remaining -g error.
+		{"guess-ploidy", []string{"-g", "notagenome"}},
 		// smpl-stats: -o file output is now supported (parity-checked in
 		// TestNativePluginStatsOutputFile); -i/-e, the curly-brace expansion and
 		// -r/-R/-t/-T are covered by the parity tests. No smpl-stats error remains.
@@ -317,9 +316,10 @@ func TestNativePluginBatch5Unsupported(t *testing.T) {
 		// unsupported region-overlap matching modes remain.
 		{"contrast", []string{"-0", "S1", "-1", "S2", "--regions-overlap", "2"}},
 		{"contrast", nil}, // missing -0/-1
-		// ad-bias: clean-vcf and convert-format modes are unsupported.
-		{"ad-bias", []string{"-s", pairs, "-c"}},
-		{"ad-bias", []string{"-s", pairs, "-f", "%CHROM"}},
+		// ad-bias: clean-vcf and convert-format modes are now supported
+		// (parity-checked in TestNativePluginAdBiasCleanVCF). The remaining hard
+		// errors are -f combined with -c (mutually exclusive) and a missing -s.
+		{"ad-bias", []string{"-s", pairs, "-c", "-f", "%CHROM"}},
 		{"ad-bias", nil}, // missing -s
 	}
 	fixtureFor := func(name string) string {

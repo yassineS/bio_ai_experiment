@@ -210,6 +210,62 @@ warrant a closer look:_
 
 ### Fix-on-port (resolved)
 
+#### bcftools +remove-overlaps `-m 'min(QUAL)'`: stale overlap mark leaks across windows (ring-index mismatch) <a id="bcftools-remove-overlaps-minqual-stale-mark"></a>
+
+`vcfbuf.c` `mark_expr_can_flush_()` (the `-m 'min(QUAL)'` resolution)
+indexes the per-record mark array inconsistently. When it clears a
+record's mark before recomputing the overlap graph it uses the
+0-based buffer position directly:
+
+```c
+mark->mark[oi->idx] = 0;              // line ~625: raw 0-based index
+```
+
+but when it later sets a mark it translates the position through the
+mark ring buffer:
+
+```c
+j = rbuf_kth(&mark->rbuf, oi->idx);   // line ~661: ring-slot index
+mark->mark[j] = 1;
+```
+
+Once the underlying ring buffer has wrapped (its `f` offset is
+non-zero — which happens after several push/flush cycles), `oi->idx`
+and `rbuf_kth(&mark->rbuf, oi->idx)` denote **different** physical
+slots, so a mark set in one flush window is not reliably cleared in
+the next. The visible effect is that a record left buffered after one
+overlap window can carry a stale "remove" mark into a later,
+unrelated window and be dropped even though it overlaps nothing.
+
+**Reproducer** (a 2-base deletion window immediately followed by two
+adjacent — non-overlapping — SNPs, then a far record, with the
+`--missing DP` heuristic so the values force the stale-mark path):
+
+```vcf
+chr1 100 . AC A 50 . DP=40   # deletion, spans 100-101
+chr1 101 . C  T .  . DP=80   # overlaps the deletion
+chr1 102 . G  A .  . DP=5    # does NOT overlap (span 102 only)
+chr1 900 . A  C 60 . DP=20
+```
+
+`bcftools +remove-overlaps -m 'min(QUAL)' --missing DP in.vcf` drops
+`chr1:102` upstream even though, by `records_overlap()`, 102 overlaps
+nothing (confirmed: `-m overlap` marks only 100 and 101). The `-m
+overlap` and `-m dup` modes, which do not go through
+`mark_expr_can_flush_`, are unaffected.
+
+**Our behaviour:** fixed-on-port. The native port keeps a single,
+consistently-indexed mark slice in lockstep with its record FIFO
+(`minQualBuf` in `native_plugin_removeoverlaps.go`), so a record's
+mark is always cleared and recomputed against the same window it
+belongs to; `chr1:102` above is correctly retained. For records that
+genuinely overlap (co-located or deletion-spanned), our `--missing
+DP`/`--missing 0`/default resolution is byte-identical to upstream and
+is oracle-validated against the live 1.23.1 binary in
+`TestNativePluginRemoveOverlapsMissing` (fixture
+`testdata/parity/overlaps_dp.vcf`, which deliberately avoids the
+ring-wrap corner so the upstream oracle is itself self-consistent).
+
 #### bcftools +setGT: `-n X` without FORMAT/AD prints a NULL `--new-gt` in its error <a id="bcftools-setgt-newgt-x-null-error"></a>
 
 `plugins/setGT.c` `init()` validates that FORMAT/AD exists whenever `-n X`

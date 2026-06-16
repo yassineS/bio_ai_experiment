@@ -11,10 +11,17 @@
 // hard-call threshold) are supported, plus the FORMAT/QR,QA -> FORMAT/QS
 // conversion (--QR-QA-to-QS), which concatenates the per-sample reference
 // quality (QR, Number=1) and alternate quality sums (QA, Number=A) into the
-// Number=R QS tag. The localized-allele family (--XX-to-LXX, --LXX-to-XX)
-// requires the htslib localized-allele (LAA/LPL/LAD) machinery and remains
-// unsupported; --XX-to-LXX is unimplemented upstream as well (process_XX is a
-// stub that errors "todo").
+// Number=R QS tag.
+//
+// The localized-allele expansion family (--LXX-to-XX, --LPL-to-PL, --LAD-to-AD)
+// is supported: it expands the localized FORMAT tags (LAA + LPL/LAD) back into
+// the standard Number=G PL and Number=R AD tags, using FORMAT/LAA to map each
+// sample's localized indices to global allele indices, with -d/--defaults
+// supplying the value placed in untouched cells and -s/--skip-nalt skipping
+// sites above an allele threshold. This ports process_LXX() from tag2tag.c. The
+// reverse direction (--XX-to-LXX, --PL-to-LPL, --AD-to-LAD) is unimplemented
+// upstream too (process_XX is a stub that errors "todo"), so it is rejected with
+// that same restriction.
 package bcftools
 
 import (
@@ -28,13 +35,35 @@ import (
 
 func init() { registerNativePlugin("tag2tag", func() NativePlugin { return &tag2tagPlugin{} }) }
 
-// tag2tagPlugin implements the GL/PL/GP/GT conversions. It is per-record and
-// parallel.
+// Localized-tag bitmask values, mirroring the enum tag in tag2tag.c (only the
+// bits used by the supported LXX-to-XX conversions are needed).
+const (
+	t2tBitLAA = 1 << iota
+	t2tBitLPL
+	t2tBitLAD
+	t2tBitPL
+	t2tBitAD
+)
+
+// tag2tagPlugin implements the GL/PL/GP/GT conversions and the localized-allele
+// expansion (LXX-to-XX). It is per-record and parallel.
 type tag2tagPlugin struct {
 	src, dst string
 	dropSrc  bool
 	gpThresh float64
 	qrqa     bool // --QR-QA-to-QS mode
+
+	// Localized-allele expansion state (--LXX-to-XX and friends). locExpand is
+	// set when one of the supported localized-to-standard conversions was
+	// selected; locSrc/locDst are bitmasks of the localized source tags consumed
+	// and the standard destination tags produced. skipNalt and the dflt* values
+	// mirror -s/--skip-nalt and -d/--defaults.
+	locExpand bool
+	locSrc    int
+	locDst    int
+	skipNalt  int
+	dfltAD    string // "." (missing) by default, else the integer text
+	dfltPL    string
 }
 
 // Name returns the plugin name.
@@ -48,12 +77,16 @@ func (p *tag2tagPlugin) About() string {
 // Parallel reports true.
 func (p *tag2tagPlugin) Parallel() bool { return true }
 
-// Init parses the --SRC-to-DST selector and -r/-t options.
+// Init parses the --SRC-to-DST selector and -r/-t/-s/-d options.
 func (p *tag2tagPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error) {
 	// Upstream tag2tag.c leaves gp_th calloc'd to 0 by default (unlike the
 	// usage text's "[0.1]"), so the GP->GT hard call requires GP==1 unless -t
 	// is given explicitly.
 	p.gpThresh = 0
+	// Defaults for --LXX-to-XX cells, mirroring args->dflt_AD/dflt_PL =
+	// bcf_int32_missing (rendered "." in the VCF text model).
+	p.dfltAD = "."
+	p.dfltPL = "."
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -69,8 +102,24 @@ func (p *tag2tagPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 				return nil, fmt.Errorf("tag2tag: expected value between 0 and 1 for -t, got %q", args[i])
 			}
 			p.gpThresh = v
-		case a == "-s" || a == "--skip-nalt" || a == "-d" || a == "--defaults":
-			return nil, fmt.Errorf("tag2tag: option %q applies only to the localized-allele modes, which are not supported in the native plugin", a)
+		case a == "-s" || a == "--skip-nalt":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("tag2tag: -s requires an argument")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("tag2tag: could not parse: --skip-nalt %s", args[i])
+			}
+			p.skipNalt = n
+		case a == "-d" || a == "--defaults":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("tag2tag: -d requires an argument")
+			}
+			i++
+			if err := p.parseDefaults(args[i]); err != nil {
+				return nil, err
+			}
 		case strings.HasPrefix(a, "--") && strings.Contains(strings.ToUpper(a), "-TO-"):
 			if err := p.parseSelector(a); err != nil {
 				return nil, err
@@ -78,6 +127,9 @@ func (p *tag2tagPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 		default:
 			return nil, fmt.Errorf("tag2tag: unsupported option %q", a)
 		}
+	}
+	if p.locExpand {
+		return p.initLocalized(hdr)
 	}
 	if p.qrqa {
 		for _, t := range []string{"QR", "QA"} {
@@ -111,18 +163,36 @@ func (p *tag2tagPlugin) Init(args []string, hdr *vcf.Header) (*vcf.Header, error
 	return out, nil
 }
 
-// parseSelector parses a --SRC-to-DST option into src/dst, rejecting the
-// localized-allele and QR/QA selectors.
+// parseSelector parses a --SRC-to-DST option into src/dst (or the localized /
+// QR-QA modes), mirroring parse_ori2new_option() in tag2tag.c.
 func (p *tag2tagPlugin) parseSelector(opt string) error {
 	up := strings.ToUpper(opt[2:]) // strip leading --
 	if up == "QR-QA-TO-QS" {
 		p.qrqa = true
 		return nil
 	}
+	// Localized-to-standard expansions (the supported direction): set the
+	// loc_src/loc_dst masks exactly as parse_ori2new_option does.
 	switch up {
-	case "XX-TO-LXX", "LXX-TO-XX", "LPL-TO-PL", "LAD-TO-AD",
-		"PL-TO-LPL", "AD-TO-LAD":
-		return fmt.Errorf("tag2tag: conversion %s (localized alleles) is not supported in the native plugin", opt)
+	case "LXX-TO-XX":
+		p.locExpand = true
+		p.locSrc = t2tBitLPL | t2tBitLAD | t2tBitLAA
+		p.locDst = t2tBitPL | t2tBitAD
+		return nil
+	case "LPL-TO-PL":
+		p.locExpand = true
+		p.locSrc = t2tBitLPL | t2tBitLAA
+		p.locDst = t2tBitPL
+		return nil
+	case "LAD-TO-AD":
+		p.locExpand = true
+		p.locSrc = t2tBitLAD | t2tBitLAA
+		p.locDst = t2tBitAD
+		return nil
+	case "XX-TO-LXX", "PL-TO-LPL", "AD-TO-LAD":
+		// Upstream's process_XX is a stub: error("todo: --XX-to-LXX\n"). Reject
+		// with the same restriction rather than silently diverging.
+		return fmt.Errorf("tag2tag: todo: --XX-to-LXX")
 	}
 	parts := strings.Split(up, "-TO-")
 	if len(parts) != 2 {
@@ -142,6 +212,9 @@ func (p *tag2tagPlugin) parseSelector(opt string) error {
 
 // Process converts the source tag to the destination tag for one record.
 func (p *tag2tagPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
+	if p.locExpand {
+		return p.processLocalized(v)
+	}
 	if p.qrqa {
 		return p.processQRQA(v)
 	}
@@ -181,6 +254,228 @@ func (p *tag2tagPlugin) Process(v *vcf.Variant) ([]*vcf.Variant, error) {
 		removeFormatTag(v, p.src)
 	}
 	return []*vcf.Variant{v}, nil
+}
+
+// parseDefaults parses the -d/--defaults LIST, e.g. "AD:0,PL:.", setting the
+// per-tag placeholder used by --LXX-to-XX for cells with no localized source
+// value. A "." selects the missing value. It ports parse_defaults() in
+// tag2tag.c (which scans for "AD:"/"PL:" prefixes).
+func (p *tag2tagPlugin) parseDefaults(opt string) error {
+	ptr := opt
+	for ptr != "" {
+		var dst *string
+		switch {
+		case strings.HasPrefix(strings.ToUpper(ptr), "AD:"):
+			dst = &p.dfltAD
+		case strings.HasPrefix(strings.ToUpper(ptr), "PL:"):
+			dst = &p.dfltPL
+		default:
+			// Upstream's while loop only advances on a recognised prefix; an
+			// unrecognised character would loop forever. Treat it as a parse
+			// error to fail fast instead.
+			return fmt.Errorf("tag2tag: could not parse: --defaults %s", opt)
+		}
+		ptr = ptr[3:]
+		// Read up to the next comma.
+		end := strings.IndexByte(ptr, ',')
+		var tok string
+		if end < 0 {
+			tok, ptr = ptr, ""
+		} else {
+			tok, ptr = ptr[:end], ptr[end+1:]
+		}
+		if tok == "." || tok == "" {
+			*dst = "."
+		} else {
+			if _, err := strconv.Atoi(tok); err != nil {
+				return fmt.Errorf("tag2tag: could not parse: --defaults %s", opt)
+			}
+			*dst = tok
+		}
+	}
+	return nil
+}
+
+// initLocalized validates the localized source tags and builds the output
+// header for the --LXX-to-XX family, mirroring the LXX branch of init().
+func (p *tag2tagPlugin) initLocalized(hdr *vcf.Header) (*vcf.Header, error) {
+	// All requested localized source tags must be declared FORMAT fields.
+	for _, t := range []struct {
+		bit  int
+		name string
+	}{{t2tBitLPL, "LPL"}, {t2tBitLAD, "LAD"}, {t2tBitLAA, "LAA"}} {
+		if p.locSrc&t.bit != 0 && !hasFormatHeader(hdr.MetaInfo, t.name) {
+			return nil, fmt.Errorf("tag2tag: the source tag does not exist: %s", t.name)
+		}
+	}
+
+	out := &vcf.Header{Samples: hdr.Samples}
+	out.MetaInfo = append(out.MetaInfo, hdr.MetaInfo...)
+
+	// With -r/--replace remove the consumed source headers, but NOT when
+	// -s/--skip-nalt is set (some records may retain the tags). LAA is removed
+	// only when it is the sole remaining loc_src bit (drop_laa == 1<<LAA).
+	if p.dropSrc && p.skipNalt == 0 {
+		dropLAA := p.locSrc
+		if p.locSrc&t2tBitLAD != 0 {
+			out.MetaInfo = removeFormatHeader(out.MetaInfo, "LAD")
+			dropLAA &^= t2tBitLAD
+		}
+		if p.locSrc&t2tBitLPL != 0 {
+			out.MetaInfo = removeFormatHeader(out.MetaInfo, "LPL")
+			dropLAA &^= t2tBitLPL
+		}
+		if dropLAA == t2tBitLAA {
+			out.MetaInfo = removeFormatHeader(out.MetaInfo, "LAA")
+		}
+	}
+
+	// Append the destination headers (AD before PL, matching tags_XX = {PL,AD}
+	// header order is PL then AD, but the per-record update order is AD then PL;
+	// htslib appends PL header first, then AD — reproduce that header order).
+	if p.locDst&t2tBitPL != 0 {
+		out.MetaInfo = appendInfoHeader(out.MetaInfo, `##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred-scaled genotype likelihoods">`)
+	}
+	if p.locDst&t2tBitAD != 0 {
+		out.MetaInfo = appendInfoHeader(out.MetaInfo, `##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">`)
+	}
+	return out, nil
+}
+
+// processLocalized expands the localized tags into AD (Number=R) and/or PL
+// (Number=G) for one record, porting process_LXX() in tag2tag.c. It is skipped
+// for sites above the -s/--skip-nalt allele threshold, and for records without
+// FORMAT/LAA.
+func (p *tag2tagPlugin) processLocalized(v *vcf.Variant) ([]*vcf.Variant, error) {
+	nals := 1 + len(v.Alt)
+	if p.skipNalt != 0 && nals > p.skipNalt {
+		return []*vcf.Variant{v}, nil
+	}
+	if !formatHasTag(v, "LAA") {
+		return []*vcf.Variant{v}, nil
+	}
+
+	// Per-sample localized allele lists. A missing LAA ("." or empty) yields an
+	// empty list (only REF is localized).
+	laa := make([][]int, len(v.Samples))
+	for i := range v.Samples {
+		laa[i] = parseLAAList(v.Samples[i].Data["LAA"])
+	}
+
+	dropLAA := p.locSrc
+
+	if p.locSrc&t2tBitLAD != 0 && formatHasTag(v, "LAD") {
+		for i := range v.Samples {
+			src := splitCSV(v.Samples[i].Data["LAD"])
+			v.Samples[i].Data["AD"] = ladToAD(src, laa[i], nals, p.dfltAD)
+		}
+		ensureFormatTag(v, "AD")
+		if p.dropSrc {
+			removeFormatTag(v, "LAD")
+			dropLAA &^= t2tBitLAD
+		}
+	}
+
+	if p.locSrc&t2tBitLPL != 0 && formatHasTag(v, "LPL") {
+		for i := range v.Samples {
+			src := splitCSV(v.Samples[i].Data["LPL"])
+			v.Samples[i].Data["PL"] = lplToPL(src, laa[i], nals, p.dfltPL)
+		}
+		ensureFormatTag(v, "PL")
+		if p.dropSrc {
+			removeFormatTag(v, "LPL")
+			dropLAA &^= t2tBitLPL
+		}
+	}
+
+	if p.dropSrc && dropLAA == t2tBitLAA {
+		removeFormatTag(v, "LAA")
+	}
+	return []*vcf.Variant{v}, nil
+}
+
+// ladToAD expands a localized allelic-depth list into a Number=R AD vector,
+// porting the LAD->AD block of process_LXX. dst[0] is the REF depth (src[0]);
+// dst[1..nals-1] default to dflt; for each localized allele laa[j-1], dst at
+// that global index takes src[j].
+func ladToAD(src []string, laa []int, nals int, dflt string) string {
+	dst := make([]string, nals)
+	for j := range dst {
+		dst[j] = dflt
+	}
+	if len(src) > 0 {
+		dst[0] = src[0]
+	}
+	for j := 1; j < len(src); j++ {
+		if j-1 >= len(laa) {
+			break
+		}
+		a := laa[j-1]
+		if a >= 0 && a < nals {
+			dst[a] = src[j]
+		}
+	}
+	return strings.Join(dst, ",")
+}
+
+// lplToPL expands a localized phred-likelihood list into a Number=G PL vector,
+// porting the LPL->PL block of process_LXX. tmp_laa = [0, laa...]; dst has
+// nals*(nals+1)/2 cells defaulting to dflt; for each pair (j>=k) over tmp_laa
+// with tmp_laa[j] in [0,nals), dst[ tmp_laa[j]*(tmp_laa[j]+1)/2 + tmp_laa[k] ]
+// consumes the next src value in order.
+func lplToPL(src []string, laa []int, nals int, dflt string) string {
+	ndst := nals * (nals + 1) / 2
+	dst := make([]string, ndst)
+	for j := range dst {
+		dst[j] = dflt
+	}
+	tmpLAA := make([]int, 0, len(laa)+1)
+	tmpLAA = append(tmpLAA, 0)
+	tmpLAA = append(tmpLAA, laa...)
+	si := 0
+	for j := 0; j < len(tmpLAA); j++ {
+		if !(tmpLAA[j] >= 0 && tmpLAA[j] < nals) {
+			break
+		}
+		for k := 0; k <= j; k++ {
+			idx := tmpLAA[j]*(tmpLAA[j]+1)/2 + tmpLAA[k]
+			if idx >= 0 && idx < ndst && si < len(src) {
+				dst[idx] = src[si]
+			}
+			si++
+		}
+	}
+	return strings.Join(dst, ",")
+}
+
+// parseLAAList parses a FORMAT/LAA value into the per-sample list of localized
+// allele indices, dropping a missing ("." / "") field to an empty list and
+// stopping at the first missing element (htslib's vector-end semantics).
+func parseLAAList(s string) []int {
+	if s == "" || s == "." {
+		return nil
+	}
+	out := make([]int, 0, 4)
+	for _, tok := range strings.Split(s, ",") {
+		if tok == "." || tok == "" {
+			break
+		}
+		n, err := strconv.Atoi(tok)
+		if err != nil {
+			break
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// splitCSV splits a per-sample value into its comma-separated tokens, returning
+// an empty slice for a missing ("." / "") field.
+func splitCSV(s string) []string {
+	if s == "" || s == "." {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 // processQRQA implements --QR-QA-to-QS: it concatenates FORMAT/QR (Number=1)
