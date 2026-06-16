@@ -2225,3 +2225,48 @@ func TestParity_OutputModes_Upstream(t *testing.T) {
 		})
 	}
 }
+
+// TestParity_WeirFst_Upstream compares the per-site and windowed
+// Weir & Cockerham Fst outputs against the LIVE upstream binary. Two
+// populations are written to temp files (NA00001+NA00002 vs NA00003), and
+// the .weir.fst / .windowed.weir.fst files are diffed byte-for-byte. The
+// port now emits every diploid site (multi-allelic and monomorphic, the
+// latter as "-nan") with C++ defaultfloat formatting and the same window
+// binning upstream uses.
+func TestParity_WeirFst_Upstream(t *testing.T) {
+	vcf := fixtureVCF(t, "sample.vcf")
+	dir := t.TempDir()
+	pop1 := filepath.Join(dir, "pop1.txt")
+	pop2 := filepath.Join(dir, "pop2.txt")
+	if err := os.WriteFile(pop1, []byte("NA00001\nNA00002\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pop2, []byte("NA00003\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		upExtra []string
+		params  *Params
+		suffix  string
+	}{
+		{"per_site", nil, &Params{WeirFstPop: []string{pop1, pop2}}, ".weir.fst"},
+		{"windowed", []string{"--fst-window-size", "100000"},
+			&Params{WeirFstPop: []string{pop1, pop2}, FstWindowSize: 100000}, ".windowed.weir.fst"},
+		{"windowed_step", []string{"--fst-window-size", "50000", "--fst-window-step", "25000"},
+			&Params{WeirFstPop: []string{pop1, pop2}, FstWindowSize: 50000, FstWindowStep: 25000}, ".windowed.weir.fst"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			upArgs := append([]string{"--weir-fst-pop", pop1, "--weir-fst-pop", pop2}, tc.upExtra...)
+			up := readFileBytes(t, runUpstream(t, vcf, upArgs...)+tc.suffix)
+			got := readFileBytes(t, runGo(t, vcf, tc.params)+tc.suffix)
+			if !bytes.Equal(got, up) {
+				t.Errorf("%s%s mismatch\nupstream:\n%s\ngot:\n%s", tc.name, tc.suffix, up, got)
+			}
+		})
+	}
+}
