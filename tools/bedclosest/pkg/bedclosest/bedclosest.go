@@ -122,6 +122,20 @@ type Options struct {
 	// PrintHeader (`-header`) echoes A's leading header/comment lines to the
 	// output before the result rows.
 	PrintHeader bool
+
+	// WarnWriter, when non-nil, enables upstream's cross-file chromosome
+	// sort-order and naming-convention validation (the closest sortAndNaming
+	// checks). WARNING and ERROR text is written here (upstream's stderr). When
+	// nil the validation is skipped entirely and only the legacy per-file
+	// (chrom,start) sort check applies. The CLI always sets this to os.Stderr.
+	WarnWriter io.Writer
+
+	// QueryName and DBNames provide the file-name labels printed in the
+	// validation WARNING/ERROR messages (the query file and each -b database,
+	// in -b order). They are only consulted when WarnWriter is non-nil. When a
+	// name is empty a generic placeholder is used.
+	QueryName string
+	DBNames   []string
 }
 
 // Validate reports configuration errors that cannot be captured by the type
@@ -639,20 +653,44 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 	if err != nil {
 		return 0, fmt.Errorf("error reading A: %w", err)
 	}
-	if err := CheckSorted(aRows, "A"); err != nil {
-		return 0, err
-	}
 
 	dbs := make([]*db, len(readersB))
+	bRowsList := make([][]*Row, len(readersB))
 	for i, rb := range readersB {
 		bRows, _, err := ReadAll(rb)
 		if err != nil {
 			return 0, fmt.Errorf("error reading B[%d]: %w", i, err)
 		}
-		if err := CheckSorted(bRows, fmt.Sprintf("B[%d]", i)); err != nil {
+		bRowsList[i] = bRows
+		dbs[i] = indexDB(bRows)
+	}
+
+	// Validation strategy. With WarnWriter set (the CLI path) we run upstream's
+	// cross-file chromosome sort-order / naming-convention checks, which decide
+	// how many query records get emitted and whether the run aborts (matching
+	// upstream's WARNING/ERROR text and exit code). Without it we fall back to
+	// the legacy per-file (chrom,start) sort check.
+	emitLimit := len(aRows)
+	var validateErr error
+	// dbReachable gates a database's hits to the chromosomes the upstream sweep
+	// could actually reach. When validation is off it is nil (no gating).
+	var dbReachable func(dbIdx int, chrom string) bool
+	if opts.WarnWriter != nil {
+		v := newSweepValidator(aRows, bRowsList, validationFileNames(opts, len(readersB)), opts.WarnWriter)
+		validateErr = v.runSweep()
+		if validateErr != nil {
+			emitLimit = v.emitted
+		}
+		dbReachable = v.dbReachable
+	} else {
+		if err := CheckSorted(aRows, "A"); err != nil {
 			return 0, err
 		}
-		dbs[i] = indexDB(bRows)
+		for i, bRows := range bRowsList {
+			if err := CheckSorted(bRows, fmt.Sprintf("B[%d]", i)); err != nil {
+				return 0, err
+			}
+		}
 	}
 
 	// Whether to print the database-label column. Upstream prints it whenever
@@ -666,17 +704,16 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 		return strconv.Itoa(i + 1)
 	}
 
-	bw := bufio.NewWriter(writer)
-	defer bw.Flush()
+	// out collects output through a flush-boundary model mirroring upstream's
+	// RecordOutputMgr 16K buffer: a mid-stream ERROR loses the unflushed
+	// remainder, so only the committed prefix reaches stdout, whereas a clean
+	// run or a destructor-time ERROR flushes everything.
+	out := newFlushBuffer()
 
 	if opts.PrintHeader {
 		for _, h := range header {
-			if _, err := bw.WriteString(h); err != nil {
-				return 0, err
-			}
-			if err := bw.WriteByte('\n'); err != nil {
-				return 0, err
-			}
+			out.writeString(h)
+			out.writeByte('\n')
 		}
 	}
 
@@ -695,9 +732,7 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 
 	count := 0
 	emit := func(a *Row, lbl string, bFields []string, dist int64, hasDist bool) error {
-		if err := writeRow(bw, a, printDBCol, lbl, bFields, dist, hasDist); err != nil {
-			return fmt.Errorf("error writing output: %w", err)
-		}
+		writeRowBuf(out, a, printDBCol, lbl, bFields, dist, hasDist)
 		count++
 		return nil
 	}
@@ -709,9 +744,20 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 		return emit(a, ".", dbs[0].nullFlds, -1, opts.ReportDistance)
 	}
 
-	for _, a := range aRows {
+	// emitLimit caps how many query records are written. It is len(aRows) for a
+	// clean run or a destructor-time abort (all output produced, then exit 1),
+	// and the pre-abort processed count for a mid-stream abort.
+	// reachable reports whether database dbIdx may serve hits for A's chrom. It
+	// is true when validation is off (no gating), and otherwise reflects the
+	// sweep's chromosome reachability so a database stuck on a later chromosome
+	// yields null exactly as upstream does.
+	reachable := func(dbIdx int, chrom string) bool {
+		return dbReachable == nil || dbReachable(dbIdx, chrom)
+	}
+
+	for _, a := range aRows[:emitLimit] {
 		if opts.MultiDBMode == MultiDBAll && len(dbs) > 1 {
-			if err := emitAllMode(a, dbs, opts, signedForOutput, emit, emitNull); err != nil {
+			if err := emitAllMode(a, dbs, opts, reachable, signedForOutput, emit, emitNull); err != nil {
 				return count, err
 			}
 			continue
@@ -720,6 +766,9 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 		// Only when no database yields any hit do we emit a single null row.
 		any := false
 		for dbIdx, d := range dbs {
+			if !reachable(dbIdx, a.Chrom) {
+				continue
+			}
 			for _, h := range hitsForA(a, d, opts) {
 				any = true
 				if err := emit(a, label(dbIdx), h.b.Fields, signedForOutput(h.dist), opts.ReportDistance); err != nil {
@@ -733,7 +782,49 @@ func ClosestMulti(readerA io.Reader, readersB []io.Reader, writer io.Writer, opt
 			}
 		}
 	}
+
+	// midStreamAbort means upstream's exit(1) fired inside the sweep before the
+	// output buffer's destructor flush, so only the already-committed prefix is
+	// visible on stdout.
+	midStreamAbort := false
+	if validateErr != nil {
+		if ve, ok := validateErr.(*validationError); ok {
+			midStreamAbort = ve.midStream
+		}
+	}
+	var payload []byte
+	if midStreamAbort {
+		payload = out.committed()
+	} else {
+		payload = out.all()
+	}
+	if _, err := writer.Write(payload); err != nil {
+		return count, fmt.Errorf("error writing output: %w", err)
+	}
+	if validateErr != nil {
+		return count, validateErr
+	}
 	return count, nil
+}
+
+// validationFileNames assembles the file-name labels for the validator: the
+// query name at index 0, then each database name in -b order. Missing names
+// fall back to generic placeholders so the validator never panics.
+func validationFileNames(opts Options, numDBs int) []string {
+	names := make([]string, 0, numDBs+1)
+	if opts.QueryName != "" {
+		names = append(names, opts.QueryName)
+	} else {
+		names = append(names, "A")
+	}
+	for i := 0; i < numDBs; i++ {
+		if i < len(opts.DBNames) && opts.DBNames[i] != "" {
+			names = append(names, opts.DBNames[i])
+		} else {
+			names = append(names, fmt.Sprintf("B[%d]", i))
+		}
+	}
+	return names
 }
 
 // allCand carries an -mdb all candidate hit with its source database index.
@@ -749,12 +840,16 @@ type allCand struct {
 // closest, honouring the tie mode, mirroring CloseSweep::checkMultiDbs.
 func emitAllMode(
 	a *Row, dbs []*db, opts Options,
+	reachable func(dbIdx int, chrom string) bool,
 	signedForOutput func(int64) int64,
 	emit func(a *Row, lbl string, bFields []string, dist int64, hasDist bool) error,
 	emitNull func(a *Row) error,
 ) error {
 	var cands []allCand
 	for dbIdx, d := range dbs {
+		if !reachable(dbIdx, a.Chrom) {
+			continue
+		}
 		for _, h := range hitsForA(a, d, opts) {
 			abs := h.dist
 			neg := abs < 0
@@ -840,33 +935,64 @@ func lessThan(a, b *Row) bool {
 	return a.End < b.End
 }
 
-// writeRow writes one output row: A's columns, an optional database-label
-// column, the chosen B's columns, and (when hasDist) the distance column.
-func writeRow(bw *bufio.Writer, a *Row, printDBCol bool, label string, bFields []string, dist int64, hasDist bool) error {
-	if _, err := bw.WriteString(strings.Join(a.Fields, "\t")); err != nil {
-		return err
+// flushBufThreshold mirrors RecordOutputMgr's flush trigger: with buffered
+// output (the default) the 16 KiB buffer is flushed once it reaches 90% full
+// (16384 * 0.9 = 14745.6, i.e. >= 14746 bytes). On a mid-stream exit(1) the
+// unflushed remainder is lost, so only the committed prefix reaches stdout.
+const flushBufThreshold = 14746
+
+// flushBuffer models upstream's RecordOutputMgr output buffer: bytes are
+// appended to a pending buffer and committed in whole-buffer chunks once the
+// pending size crosses flushBufThreshold (checked after each emitted record,
+// matching upstream's `if (needsFlush()) flush()` at every newline). committed
+// returns only the flushed prefix (what survives a mid-stream abort); all
+// returns the full output (a clean run or a destructor-time abort flushes the
+// remainder).
+type flushBuffer struct {
+	out     []byte // committed (flushed) bytes.
+	pending []byte // buffered, not yet flushed.
+}
+
+func newFlushBuffer() *flushBuffer { return &flushBuffer{} }
+
+func (b *flushBuffer) writeString(s string) { b.pending = append(b.pending, s...) }
+func (b *flushBuffer) writeByte(c byte)     { b.pending = append(b.pending, c) }
+
+// endRecord mirrors the per-record flush check: commit the pending buffer when
+// it has reached the flush threshold.
+func (b *flushBuffer) endRecord() {
+	if len(b.pending) >= flushBufThreshold {
+		b.out = append(b.out, b.pending...)
+		b.pending = b.pending[:0]
 	}
+}
+
+// committed returns the flushed prefix only.
+func (b *flushBuffer) committed() []byte { return b.out }
+
+// all returns every emitted byte (committed plus pending).
+func (b *flushBuffer) all() []byte {
+	res := make([]byte, 0, len(b.out)+len(b.pending))
+	res = append(res, b.out...)
+	res = append(res, b.pending...)
+	return res
+}
+
+// writeRowBuf writes one output row into the flush buffer: A's columns, an
+// optional database-label column, the chosen B's columns, and (when hasDist)
+// the distance column, then runs the per-record flush check.
+func writeRowBuf(b *flushBuffer, a *Row, printDBCol bool, label string, bFields []string, dist int64, hasDist bool) {
+	b.writeString(strings.Join(a.Fields, "\t"))
 	if printDBCol {
-		if err := bw.WriteByte('\t'); err != nil {
-			return err
-		}
-		if _, err := bw.WriteString(label); err != nil {
-			return err
-		}
+		b.writeByte('\t')
+		b.writeString(label)
 	}
-	if err := bw.WriteByte('\t'); err != nil {
-		return err
-	}
-	if _, err := bw.WriteString(strings.Join(bFields, "\t")); err != nil {
-		return err
-	}
+	b.writeByte('\t')
+	b.writeString(strings.Join(bFields, "\t"))
 	if hasDist {
-		if err := bw.WriteByte('\t'); err != nil {
-			return err
-		}
-		if _, err := bw.WriteString(strconv.FormatInt(dist, 10)); err != nil {
-			return err
-		}
+		b.writeByte('\t')
+		b.writeString(strconv.FormatInt(dist, 10))
 	}
-	return bw.WriteByte('\n')
+	b.writeByte('\n')
+	b.endRecord()
 }

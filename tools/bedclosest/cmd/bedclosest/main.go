@@ -308,10 +308,22 @@ func main() {
 		MultiDBMode:      mm,
 		DBLabels:         dbLabels,
 		PrintHeader:      printHeader,
+		// Enable upstream's cross-file chromosome sort-order / naming-convention
+		// validation, writing its WARNING/ERROR text to stderr. The file-name
+		// labels are the names exactly as given on the command line, matching
+		// upstream's getInputFileName.
+		WarnWriter: os.Stderr,
+		QueryName:  aFile,
+		DBNames:    bFiles,
 	}
 
 	if _, err := bedclosest.ClosestMulti(readerA, readersB, writer, opts); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		// A validation ERROR has already written its exact upstream text to
+		// stderr; just propagate the non-zero exit. Other errors get the
+		// generic prefix.
+		if !bedclosest.IsValidationError(err) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }

@@ -126,15 +126,47 @@ bedclosest -a a.bed -b db1.bed db2.bed db3.bed -mdb all > out.bed
   the database column for the null row is a literal `.`, and exactly one null
   row is emitted only when *no* database yields any hit.
 
+## Cross-file sort-order / naming-convention validation
+
+bedclosest reproduces upstream's cross-file chromosome **sort-order** and
+**naming-convention** validation (upstream's `NewChromSweep::testChromOrder` /
+`testThatAllDbChromsExistInQuery` / `testLexicoQueryAfterDb` plus
+`ContextBase::testNameConventions`, exercised by the `closest` `sortAndNaming`
+sub-suite, ids `closest.t01`-`t23`). Because the port loads each file and
+buckets it by chromosome, `pkg/bedclosest/validate.go` re-simulates the
+upstream streaming sweep purely to reproduce the exact sequence of those checks
+and therefore the exact messages, exit codes, and (byte-for-byte) stdout. It
+covers:
+
+- The streaming `_lexicoAssumed` / `_lexicoDisproven` state machine, emitting
+  `ERROR: chromosome sort ordering for file ... is inconsistent with other
+  files.` and `ERROR: Sort order was unspecified, and file ... is not sorted
+  lexicographically.` for out-of-order / mixed lexicographic-vs-numeric inputs.
+- The post-output `ERROR: Database file ... contains chromosome X, but the
+  query file does not.` raised once lexicographic order has been disproven.
+- The `***** WARNING: File ... has inconsistent naming convention` (mixed
+  `chr`/non-`chr`) and `... (leading zero) is inconsistent` messages.
+- Upstream's output buffering: a mid-stream `exit(1)` discards the unflushed
+  16 KiB output buffer, so the affected runs produce the same (often empty)
+  partial stdout, while a destructor-time ERROR flushes all output first.
+- The sweep's chromosome **reachability**: once a database is "stuck" on a
+  chromosome that sorts after the query's, later query chromosomes report
+  `null` exactly as upstream does, instead of the naive bucket match.
+
+These checks run when the CLI is used (it sets the validation writer to stderr
+and passes the command-line file names for the messages). The library API
+(`ClosestMulti`) only performs them when `Options.WarnWriter` is non-nil;
+otherwise it falls back to the basic per-file `(chrom, start)` sort check.
+
+The `TestParity_Closest_SortAndNaming` test asserts byte-for-byte parity of
+stdout, stderr, and exit code against the live upstream `bedtools closest`
+binary across the entire `sortAndNaming` matrix.
+
 ## Known parity gaps
 
-The cross-file chromosome sort-order / naming-convention validation engine
-(upstream's `testChromOrder` / `testNameConventions`, exercised by the
-`sortAndNaming` sub-suite) is not implemented. bedclosest enforces only the
-basic per-file `(chrom, start)` sort check. The exact lexicographic-vs-numeric
-ordering detection, `chr`-prefix and leading-zero naming WARNINGs, and the
-"contains chromosome X but query does not" ERROR messages are a distinct
-subsystem tied to upstream's interleaved streaming merge.
+None remaining for the `closest` parity suites: the core/`kclosest`
+(`test-closest.sh`, `kclosest/test-kclosest.sh`) and `sortAndNaming`
+(`test-sort-and-naming.sh`) cases all pass against the live upstream binary.
 
 ## Algorithm
 
