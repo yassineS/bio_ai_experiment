@@ -160,9 +160,12 @@ var ErrRegionsUnsupported = errors.New("samtools view: region-query support requ
 // out. When opts.Regions is non-empty View does a linear scan and filters
 // records to those overlapping any region — for indexed seek use ViewFile.
 func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
-	r, err := alnio.NewReaderWithReference(in, opts.Reference)
+	r, err := alnio.NewReaderThreaded(in, opts.Reference, opts.Threads)
 	if err != nil {
 		return 0, err
+	}
+	if rc, ok := r.(io.Closer); ok {
+		defer rc.Close()
 	}
 	hdr := r.Header()
 

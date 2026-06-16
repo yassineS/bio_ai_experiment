@@ -45,21 +45,20 @@ func runIdxstats(args []string) int {
 	fs.BoolVar(&showVer, "v", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 	// Upstream idxstats (bam_index.c getopt "@:X") accepts -@ (threads) and
-	// -X (explicit index-file argument). This port reads the sibling .bai
-	// single-threaded, so both are accepted no-ops kept for compatibility —
-	// and so bundled clusters that include them parse.
+	// -X (explicit index-file argument). The index path is read single-threaded
+	// (it does not decode the BAM body); -@ drives block-parallel BGZF decode for
+	// the no-index fallback scan. -X is accepted for compatibility.
 	var (
 		idxThreads   int
 		idxCustomIdx bool
 	)
-	cliflag.IntVar(fs, &idxThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &idxThreads, "@", "threads", 0, "BGZF input decode worker count (no-index scan)")
 	fs.BoolVar(&idxCustomIdx, "X", false, "")
 	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, idxstatsUsage)
 		return 2
 	}
-	_ = idxThreads
 	_ = idxCustomIdx
 	if showHelp {
 		fmt.Print(idxstatsUsage)
@@ -73,7 +72,7 @@ func runIdxstats(args []string) int {
 		fmt.Fprint(os.Stderr, idxstatsUsage)
 		return 2
 	}
-	if err := samtools.IdxstatsFile(fs.Arg(0), os.Stdout); err != nil {
+	if err := samtools.IdxstatsFile(fs.Arg(0), os.Stdout, idxThreads); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools idxstats: %v\n", err)
 		return 1
 	}
@@ -1263,6 +1262,17 @@ Options:
   -v, --version            Show version.
 `
 
+// openStatsInput opens the stats input file. With threads >= 2 it opens the raw
+// (still-compressed) bytes so samtools.Stats can decode BGZF in parallel;
+// otherwise it uses the standard decompressing opener. The decoded records are
+// identical for both paths.
+func openStatsInput(path string, threads int) (io.ReadCloser, error) {
+	if threads >= 2 {
+		return iohelper.OpenRaw(path)
+	}
+	return iohelper.OpenReader(path)
+}
+
 func runStats(args []string) int {
 	fs := flag.NewFlagSet("samtools stats", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -1371,7 +1381,11 @@ func runStats(args []string) int {
 		fmt.Fprintln(os.Stderr, "samtools stats: coverage percentage calculation requires a list of target regions")
 		return 2
 	}
-	in, err := iohelper.OpenReader(fs.Arg(0))
+	// With -@ >= 2 open the file raw (undecompressed) so samtools.Stats can run
+	// the BGZF decode in parallel; otherwise use the standard decompressing
+	// opener. The decoded records — and thus the report — are identical either
+	// way; only decode throughput changes.
+	in, err := openStatsInput(fs.Arg(0), threads)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "samtools stats: %v\n", err)
 		return 1

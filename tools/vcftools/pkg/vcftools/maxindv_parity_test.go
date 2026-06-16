@@ -24,7 +24,9 @@ package vcftools
 import (
 	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -124,5 +126,65 @@ func TestParity_MaxIndv_Seed0Equals1(t *testing.T) {
 	got1 := recodedSamples(t, 3, 1)
 	if strings.Join(got0, ",") != strings.Join(got1, ",") {
 		t.Fatalf("srand(0) must equal srand(1): got0=%v got1=%v", got0, got1)
+	}
+}
+
+// TestParity_MaxIndv_LiveUpstreamSeeded validates --max-indv --max-indv-seed
+// byte-for-byte against the LIVE upstream binary by neutralising upstream's
+// srand(time(NULL)) with an LD_PRELOAD shim that pins time() to a fixed value.
+// Both tools then shuffle with the same glibc seed, so the recoded #CHROM
+// sample list must match exactly. This is the strongest possible check of the
+// glibc rand() + std::random_shuffle port; it requires a working C compiler
+// and a Linux dynamic loader, and is skipped where those are unavailable.
+func TestParity_MaxIndv_LiveUpstreamSeeded(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("LD_PRELOAD time() shim requires Linux")
+	}
+	cc, err := exec.LookPath("gcc")
+	if err != nil {
+		if cc, err = exec.LookPath("cc"); err != nil {
+			t.Skip("no C compiler available to build the time() shim")
+		}
+	}
+
+	const seed = 1234567
+	dir := t.TempDir()
+	src := filepath.Join(dir, "faketime.c")
+	so := filepath.Join(dir, "faketime.so")
+	shim := "#include <time.h>\n" +
+		"time_t time(time_t *t){time_t v=" + strconv.Itoa(seed) + ";if(t)*t=v;return v;}\n"
+	if err := os.WriteFile(src, []byte(shim), 0o644); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	if out, err := exec.Command(cc, "-shared", "-fPIC", "-o", so, src).CombinedOutput(); err != nil {
+		t.Skipf("could not build time() shim (%v): %s", err, out)
+	}
+
+	bin := upstreamVcftools(t)
+	vcf := fixtureVCF(t, "maxindv.vcf")
+
+	for _, n := range []int{1, 2, 3} {
+		n := n
+		t.Run("max="+strconv.Itoa(n), func(t *testing.T) {
+			// Upstream with srand(time()) pinned to the seed.
+			upPrefix := filepath.Join(t.TempDir(), "up")
+			cmd := exec.Command(bin, "--vcf", vcf, "--out", upPrefix, "--recode", "--max-indv", strconv.Itoa(n))
+			cmd.Env = append(os.Environ(), "LD_PRELOAD="+so)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("upstream run failed (%v):\n%s", err, out)
+			}
+
+			goPrefix := runGo(t, vcf, &Params{
+				MaxIndv: n, MaxIndvSet: true,
+				MaxIndvSeed: seed, MaxIndvSeedSet: true,
+				Recode: true,
+			})
+
+			up := recodeSampleNames(t, upPrefix+".recode.vcf")
+			got := recodeSampleNames(t, goPrefix+".recode.vcf")
+			if strings.Join(got, ",") != strings.Join(up, ",") {
+				t.Fatalf("--max-indv %d (seed %d): upstream kept %v, port kept %v", n, seed, up, got)
+			}
+		})
 	}
 }

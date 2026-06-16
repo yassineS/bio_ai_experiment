@@ -459,21 +459,20 @@ func runFlagstat(args []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "version", false, "")
 	// Upstream flagstat (bam_stat.c getopt "@:O:") accepts -@ (threads) and
-	// -O (output format). This port emits the default text report and is
-	// single-threaded, so both are accepted no-ops kept for compatibility —
-	// and so bundled clusters that include them parse.
+	// -O (output format). -@ now drives block-parallel BGZF *input* decode for
+	// BAM (the report is identical for any thread count); -O is accepted but the
+	// default text report is the only format this port emits.
 	var (
 		fsThreads int
 		fsOutFmt  string
 	)
-	cliflag.IntVar(fs, &fsThreads, "@", "threads", 0, "Threads (accepted, ignored)")
+	cliflag.IntVar(fs, &fsThreads, "@", "threads", 0, "BGZF input decode worker count")
 	cliflag.StringVar(fs, &fsOutFmt, "O", "output-fmt", "", "Output format (accepted; default text)")
 	if err := cliflag.Parse(fs, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, flagstatUsage)
 		return 2
 	}
-	_ = fsThreads
 	_ = fsOutFmt
 	if showHelp {
 		fmt.Print(flagstatUsage)
@@ -487,13 +486,7 @@ func runFlagstat(args []string) int {
 		fmt.Fprint(os.Stderr, flagstatUsage)
 		return 2
 	}
-	in, err := iohelper.OpenReader(fs.Arg(0))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "samtools flagstat: %v\n", err)
-		return 1
-	}
-	defer in.Close()
-	if err := samtools.Flagstat(in, os.Stdout); err != nil {
+	if err := samtools.FlagstatFile(fs.Arg(0), os.Stdout, fsThreads); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools flagstat: %v\n", err)
 		return 1
 	}
@@ -915,7 +908,18 @@ func runDepth(args []string) int {
 	readers := make([]io.Reader, 0, fs.NArg())
 	closers := make([]io.Closer, 0, fs.NArg())
 	for _, path := range fs.Args() {
-		r, err := iohelper.OpenReader(path)
+		// With -@ >= 2 open the file raw so samtools.Depth can run the BGZF
+		// decode in parallel; otherwise use the decompressing opener. The
+		// per-position depth output is identical for both paths.
+		var (
+			r   io.ReadCloser
+			err error
+		)
+		if threads >= 2 {
+			r, err = iohelper.OpenRaw(path)
+		} else {
+			r, err = iohelper.OpenReader(path)
+		}
 		if err != nil {
 			for _, c := range closers {
 				_ = c.Close()

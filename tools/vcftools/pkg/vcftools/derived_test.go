@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -74,37 +73,16 @@ func TestDerived_NoFreqIsNoOp(t *testing.T) {
 
 // TestDerived_DropsSitesWithoutMatchingAA pins that when --derived is
 // supplied, sites where INFO/AA is absent, ".", "?", or does not match
-// any REF/ALT are dropped from --counts output. sample.vcf has only
-// two biallelic-with-AA sites:
-//
-//   - 20:1230237 REF=T ALT=. AA=T → AA matches REF, kept, no swap.
-//   - 1230237 is technically degenerate ("biallelic" with ALT=".") but
-//     the port emits it under plain --counts; under --derived it must
-//     also be emitted (AA matches REF) with the leading column REF=T.
-//
-// Every other biallelic SNP in sample.vcf has no AA and must be
-// dropped under --derived.
+// any allele are dropped, and the surviving rows (including multi-allelic
+// ones) are emitted with the ancestral allele first — byte-for-byte
+// against LIVE upstream. On sample.vcf the survivors are 20:1110696
+// (AA=T, multi-allelic), 20:1230237 (AA=T, monomorphic), and 20:1234567
+// (AA=G, multi-allelic).
 func TestDerived_DropsSitesWithoutMatchingAA(t *testing.T) {
-	prefix := runVcftoolsParity(t, "sample.vcf", &Params{
-		Counts:  true,
-		Derived: true,
-	})
-	lines := readFileLines(t, prefix+".frq.count")
-	if len(lines) < 1 || !strings.HasPrefix(lines[0], "CHROM\tPOS\t") {
-		t.Fatalf("missing header row: %q", lines)
-	}
-	// Expect exactly one data row: 20:1230237.
-	var dataRows []string
-	for _, ln := range lines[1:] {
-		if strings.TrimSpace(ln) == "" {
-			continue
-		}
-		dataRows = append(dataRows, ln)
-	}
-	if len(dataRows) != 1 {
-		t.Fatalf("expected 1 derived-kept biallelic site on sample.vcf, got %d: %v", len(dataRows), dataRows)
-	}
-	if !strings.HasPrefix(dataRows[0], "20\t1230237\t") {
-		t.Errorf("expected derived row at 20:1230237, got %q", dataRows[0])
+	vcf := fixtureVCF(t, "sample.vcf")
+	up := readFileBytes(t, runUpstream(t, vcf, "--counts", "--derived")+".frq.count")
+	got := readFileBytes(t, runGo(t, vcf, &Params{Counts: true, Derived: true})+".frq.count")
+	if !bytes.Equal(got, up) {
+		t.Errorf(".frq.count mismatch\nupstream:\n%s\ngot:\n%s", up, got)
 	}
 }

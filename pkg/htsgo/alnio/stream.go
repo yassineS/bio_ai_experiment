@@ -70,6 +70,14 @@ func isPlainGzip(head []byte) bool {
 	return !looksLikeBGZF(head)
 }
 
+// looksLikeCRAM reports whether head begins with the four-byte "CRAM" file
+// magic. CRAM has its own container framing (it is never BGZF-wrapped at the
+// file level), so this sniff routes the input to the reference-aware CRAM
+// decoder instead of the BGZF/SAM path.
+func looksLikeCRAM(head []byte) bool {
+	return len(head) >= 4 && head[0] == 'C' && head[1] == 'R' && head[2] == 'A' && head[3] == 'M'
+}
+
 // looksLikeBGZF reports whether head is the start of a BGZF gzip member —
 // a deflate gzip member carrying a `BC` extra subfield. It mirrors the
 // detection in pkg/htsgo/iohelper and pkg/htsgo/sam.

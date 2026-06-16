@@ -320,7 +320,9 @@ func TestIntegration_NewStatistics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(idepth), "22.00000") {
+	// Upstream prints mean depth via a default ostream (defaultfloat,
+	// precision 6), so a whole number renders as "22" (no trailing zeros).
+	if !strings.Contains(string(idepth), "\t22\n") {
 		t.Errorf(".idepth should report mean depth 22, got:\n%s", string(idepth))
 	}
 

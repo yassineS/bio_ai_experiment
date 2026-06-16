@@ -139,7 +139,7 @@ func TestIdxstats_ScanFallback(t *testing.T) {
 func TestParity_Idxstats_P01_BasicShape(t *testing.T) {
 	bam := makeIndexedBAM(t, parityPath(t, "basic.sam"))
 	var buf bytes.Buffer
-	if err := IdxstatsFile(bam, &buf); err != nil {
+	if err := IdxstatsFile(bam, &buf, 0); err != nil {
 		t.Fatalf("IdxstatsFile: %v", err)
 	}
 	got := buf.String()
@@ -187,7 +187,7 @@ func TestParity_Idxstats_P02_RowOrderMatchesSQ(t *testing.T) {
 func TestParity_Idxstats_P03_EmptyOK(t *testing.T) {
 	bam := makeIndexedBAM(t, parityPath(t, "empty.sam"))
 	var buf bytes.Buffer
-	if err := IdxstatsFile(bam, &buf); err != nil {
+	if err := IdxstatsFile(bam, &buf, 0); err != nil {
 		t.Fatalf("IdxstatsFile: %v", err)
 	}
 	out := buf.String()

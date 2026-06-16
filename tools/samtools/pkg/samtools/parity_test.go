@@ -1312,7 +1312,7 @@ func TestParity_Idxstats_T03_UpstreamParity(t *testing.T) {
 
 	// Go port.
 	var got bytes.Buffer
-	if err := IdxstatsFile(bamPath, &got); err != nil {
+	if err := IdxstatsFile(bamPath, &got, 0); err != nil {
 		t.Fatalf("IdxstatsFile: %v", err)
 	}
 	if !bytes.Equal(got.Bytes(), want) {

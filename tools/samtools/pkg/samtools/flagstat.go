@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
 
@@ -32,9 +33,20 @@ type FlagstatCounts struct {
 // CountFlagstat consumes a SAM/BAM stream from r and returns the flagstat
 // tallies. The header is parsed first via sam.NewReader.
 func CountFlagstat(r io.Reader) (*FlagstatCounts, error) {
-	rd, err := sam.NewReader(r)
+	return CountFlagstatThreaded(r, 0)
+}
+
+// CountFlagstatThreaded is CountFlagstat with block-parallel BGZF input decode
+// wired to a thread count (`-@/--threads`). When threads >= 2 and the input is
+// a BGZF-wrapped BAM, its blocks are inflated concurrently; the tallies are
+// identical for any thread count because the decoded record stream is identical.
+func CountFlagstatThreaded(r io.Reader, threads int) (*FlagstatCounts, error) {
+	rd, err := alnio.NewReaderThreaded(r, "", threads)
 	if err != nil {
 		return nil, err
+	}
+	if rc, ok := rd.(io.Closer); ok {
+		defer rc.Close()
 	}
 	c := &FlagstatCounts{}
 	for {
@@ -152,9 +164,42 @@ func (c *FlagstatCounts) Format(w io.Writer) error {
 // Flagstat is the high-level entry point used by the CLI: reads from r,
 // writes the report to w.
 func Flagstat(r io.Reader, w io.Writer) error {
-	c, err := CountFlagstat(r)
+	return FlagstatThreaded(r, w, 0)
+}
+
+// FlagstatThreaded is Flagstat with block-parallel BGZF input decode wired to a
+// thread count (`-@/--threads`). The report is byte-identical for any thread
+// count; threading only changes decode throughput.
+func FlagstatThreaded(r io.Reader, w io.Writer, threads int) error {
+	c, err := CountFlagstatThreaded(r, threads)
 	if err != nil {
 		return err
+	}
+	return c.Format(w)
+}
+
+// FlagstatFile opens the alignment file at path (SAM, BAM, or CRAM; "-" is
+// stdin) and writes its flagstat report to w. When threads >= 2 and the input
+// is a BGZF-wrapped BAM, the BGZF blocks are inflated concurrently across up to
+// threads worker goroutines; the report is identical to the single-threaded
+// path. Opening the raw file here (rather than a pre-decompressed stream) is
+// what lets the parallel BGZF reader engage.
+func FlagstatFile(path string, w io.Writer, threads int) error {
+	rd, err := alnio.OpenReaderThreaded(path, "", threads)
+	if err != nil {
+		return err
+	}
+	defer rd.Close()
+	c := &FlagstatCounts{}
+	for {
+		rec, err := rd.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		c.add(rec)
 	}
 	return c.Format(w)
 }
