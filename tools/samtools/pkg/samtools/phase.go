@@ -6,29 +6,30 @@
 // chains those clusters across overlapping reads to produce phased
 // blocks.
 //
-// The chaining pass is greedy: for each pair of adjacent het sites we
-// count the number of reads that span both. If the same-allele count
-// outweighs the opposite-allele count we keep the labels aligned; if
-// opposite outweighs same we flip the labels; if neither dominates we
-// emit `0` (ambiguous) for the current het. Upstream samtools drives
-// the analogous step with a Viterbi-style dynamic program over k-block
-// haplotype states; the greedy decomposition produces the same result
-// on the clean inputs `phase` is designed for and the differences on
-// noisy inputs are localised to the per-junction label rather than
-// the global block.
+// The CLI default path (PhaseOptions.UpstreamSchema, set by the
+// `samtools phase` command) is a faithful, fully DETERMINISTIC port of
+// upstream phase.c — there is no MCMC anywhere in upstream. The
+// per-site haplotype assignment comes from `dynaprog` (phase_algo.go),
+// a Viterbi-style dynamic program over k-bit local-haplotype states
+// that fills an int8 `path[]`; `fragphase` then assigns each fragment
+// to a haplotype vs. `path` and, when chimera repair is enabled (the
+// default; upstream's `FLAG_FIX_CHIMERA`, cleared by
+// `-F`/`--no-fix-chimera`), finds the best per-read flip point via a
+// forward/backward sum scan (FLIP_PENALTY/FLIP_THRES). `genmask` emits
+// the FL masked regions. The whole text stream (PS/FL/M/EV) is
+// byte-identical to upstream; see phase_emit.go and the live oracles.
 //
-// After the chaining pass, when chimera-repair is enabled (the default;
-// upstream's `FLAG_FIX_CHIMERA`, cleared by `-F`/`--no-fix-chimera`),
-// each read with support on both haplotypes is examined for a
-// per-read flip point that maximises the haplotype-consistency score
-// — this is the Go port of upstream's `fragphase` chimera-repair
-// scoring loop. The scoring is conceptually a small MCMC-like search
-// over per-read flip assignments, implemented deterministically as
-// the same forward/backward sum scan upstream uses. The only random
-// source is the RNG that routes evidence-less reads (and applies the
-// per-call is_flip shuffle) into the 0/1/chimera output buckets in
-// `-b` mode. On the upstream-schema path (the CLI default) that RNG is
-// an in-tree byte-exact port of glibc's default-seeded `drand48()`
+// A separate LEGACY path (UpstreamSchema=false) drives a simpler greedy
+// adjacent-het chainer (phaseHets, below) that emits a v1 PS-label TSV.
+// For each pair of adjacent het sites it counts the reads spanning both
+// and keeps/flips/ambiguates the label by majority vote. It is NOT the
+// CLI emit; it survives only for the in-process v1 unit tests.
+//
+// The only random source in upstream phase is the `drand48()` that
+// routes evidence-less reads (and applies the per-call is_flip shuffle)
+// into the 0/1/chimera output buckets in `-b` mode — phasing itself is
+// RNG-free. On the upstream-schema path that RNG is an in-tree
+// byte-exact port of glibc's default-seeded `drand48()`
 // (phase_drand48.go), so the `-b` split agrees with upstream
 // record-for-record — not merely up to a 0<->1 relabelling. The legacy
 // v1 path retains a `math/rand` source seeded by RNGSeed.
@@ -88,7 +89,8 @@ type PhaseOptions struct {
 	// upstream default is 256.
 	MaxDepth int
 	// FullRead, when set, mirrors upstream's -F flag: when CLEARED it
-	// disables MCMC/chimera repair (upstream's FLAG_FIX_CHIMERA). The
+	// disables the deterministic chimera repair (upstream's
+	// FLAG_FIX_CHIMERA — there is no MCMC). The
 	// historical name FullRead is retained for backwards compatibility
 	// with the v1 API; semantically the field now means "skip chimera
 	// repair when true". See NoFixChimera for the canonical accessor.
