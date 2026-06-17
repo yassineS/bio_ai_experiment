@@ -2,6 +2,7 @@ package bcftools
 
 import (
 	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,67 @@ func TestReheaderFile(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "X1") || !strings.Contains(out.String(), "X2") {
 		t.Errorf("ReheaderFile names not applied:\n%s", out.String())
+	}
+}
+
+// TestReheaderMirrorsInputCompression verifies that ReheaderFile re-emits a
+// compressed (.gz) input as compressed output and a plain input as plain
+// output, mirroring upstream `bcftools reheader` (which has no -O flag), and
+// that an explicit OutputFormat overrides that auto-detection.
+func TestReheaderMirrorsInputCompression(t *testing.T) {
+	dir := t.TempDir()
+	srename := filepath.Join(dir, "names.txt")
+	if err := os.WriteFile(srename, []byte("X1\nX2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	isGzip := func(b []byte) bool { return len(b) >= 2 && b[0] == 0x1f && b[1] == 0x8b }
+
+	// Plain input -> plain output.
+	plain := filepath.Join(dir, "in.vcf")
+	if err := os.WriteFile(plain, []byte(reheaderVCF), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := ReheaderFile(plain, &out, ReheaderOptions{SamplesFile: srename}); err != nil {
+		t.Fatal(err)
+	}
+	if isGzip(out.Bytes()) {
+		t.Error("plain input produced compressed output; want plain")
+	}
+	if !strings.Contains(out.String(), "X1") {
+		t.Errorf("rename not applied:\n%s", out.String())
+	}
+
+	// Gzip input -> compressed output (magic 0x1f 0x8b).
+	gzPath := filepath.Join(dir, "in.vcf.gz")
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	if _, err := gw.Write([]byte(reheaderVCF)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gzPath, gzBuf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if _, err := ReheaderFile(gzPath, &out, ReheaderOptions{SamplesFile: srename}); err != nil {
+		t.Fatal(err)
+	}
+	if !isGzip(out.Bytes()) {
+		t.Error("gzip input produced plain output; want compressed")
+	}
+
+	// Explicit OutputFormat wins over the input-compression mirror.
+	out.Reset()
+	if _, err := ReheaderFile(gzPath, &out, ReheaderOptions{
+		SamplesFile: srename, OutputFormat: OutputVCF, OutputFormatExplicit: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if isGzip(out.Bytes()) {
+		t.Error("explicit -O v on gzip input produced compressed output; want plain")
 	}
 }
 

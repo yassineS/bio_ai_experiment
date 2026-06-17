@@ -214,6 +214,13 @@ func Generate(opt Options) (*Manifest, error) {
 	_ = m.recordFile("vcf_multi", vcfMultiGz, false)
 	_ = m.recordFile("vcf_multi_tbi", vcfMultiGz+".tbi", false)
 
+	// --- Samples rename file (one new name per line) for bcftools reheader -s ---
+	samplesPath := filepath.Join(dir, "samples.txt")
+	if err := writeSamplesRename(samplesPath, p.MultiSamples); err != nil {
+		return nil, err
+	}
+	_ = m.recordFile("vcf_samples", samplesPath, true)
+
 	// --- BED (plain + BED12) ---
 	bedPath := filepath.Join(dir, "intervals.bed")
 	bed12Path := filepath.Join(dir, "intervals12.bed")

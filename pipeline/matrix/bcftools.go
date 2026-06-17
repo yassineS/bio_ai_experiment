@@ -29,9 +29,11 @@ import (
 // Subcommands compared byte-exact (text): view (-O v, -v/-V, -i/-e, -r/-R/-t,
 // -s, -c/-C/-q/-Q, -G, -I), query (-f formats, -i/-e, -l), norm (-m/-f/-d),
 // stats, filter, sort, head, annotate (-x), concat (-a), gtcheck, mpileup,
-// roh, consensus (default IUPAC), and fill-tags / split-vep plugin smoke.
-// Documented Skips: call, csq, isec, convert, reheader, and the residual
-// norm -m+ ID-merge / merge INFO-combine gaps (spelled out per entry).
+// roh, consensus (default IUPAC), reheader (-s sample rename, BGZF-decoded),
+// and fill-tags / split-vep plugin smoke.
+// Documented Skips: call, csq, isec, merge — the residual deep-internals gaps
+// (QUAL precision, csq haplotype engine, isec shared-file directory layout,
+// merge maux/INFO-combine), spelled out per entry.
 
 func init() {
 	Register(bcftoolsViewMatrix()...)
@@ -308,14 +310,11 @@ func bcftoolsSkips() []Entry {
 		// convert --gvcf2vcf writes a full VCF to stdout and is byte-exact
 		// (provenance-stripped) against upstream — re-activated.
 		mkBcf("convert", "convert", InputVCFPlain, ByteExact, "--gvcf2vcf", "-f", "{fasta}", "{vcf_plain}"),
-		// reheader requires one of -h/-s/-f (it exits with usage otherwise), and
-		// emits a bgzipped VCF. A parity case needs a dedicated header- or
-		// samples-file fixture (one sample name per line); the BGZFDecoded
-		// comparison is ready for it once that fixture exists.
-		skip("reheader", "reheader",
-			"bcftools reheader needs a -h header file or -s samples file (one name per line) to do anything (it exits with usage "+
-				"otherwise); the corpus has no such fixture. The .vcf.gz output is BGZFDecodable once a samples/header fixture is added.",
-			"-s", "{vcf}", "{vcf}"),
+		// reheader -s renames samples using the samples.txt fixture (one new
+		// name per line, positional). Upstream mirrors the input's compression,
+		// so a .vcf.gz input yields BGZF output; the runner decodes both sides
+		// (BGZFDecoded) and compares the renamed VCF text.
+		mkBcf("reheader", "reheader", InputVCFMulti, BGZFDecoded, "-s", "{vcf_samples}", "{vcf_multi}"),
 	}
 }
 
