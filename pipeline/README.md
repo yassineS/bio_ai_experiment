@@ -54,7 +54,7 @@ The pipeline locates the **vendored upstream binaries** under `reference_code/`:
 |-----|------|
 | `samtools` | `reference_code/samtools/samtools` |
 | `bcftools` | `reference_code/bcftools/bcftools` |
-| `bgzip` / `tabix` | `reference_code/htslib/{bgzip,tabix}` |
+| `bgzip` / `tabix` / `htsfile` | `reference_code/htslib/{bgzip,tabix,htsfile}` |
 | `bedtools` | `reference_code/bedtools/bin/bedtools` |
 | `seqtk` | `reference_code/seqtk/seqtk` |
 | `sickle` | `reference_code/sickle/sickle` |
@@ -74,6 +74,10 @@ ln -sf /path/to/main/reference_code/samtools/samtools reference_code/samtools/sa
 ln -sf /path/to/main/reference_code/bcftools/bcftools reference_code/bcftools/bcftools
 ln -sf /path/to/main/reference_code/htslib/bgzip       reference_code/htslib/bgzip
 ln -sf /path/to/main/reference_code/htslib/tabix       reference_code/htslib/tabix
+ln -sf /path/to/main/reference_code/htslib/htsfile     reference_code/htslib/htsfile
+# bcftools +plugins (the +fill-tags matrix entries Skip unless this is set):
+ln -sf /path/to/main/reference_code/bcftools/plugins   reference_code/bcftools/plugins
+export BCFTOOLS_PLUGINS=$PWD/reference_code/bcftools/plugins
 mkdir -p reference_code/bedtools/bin
 ln -sf /path/to/main/reference_code/bedtools/bin/bedtools reference_code/bedtools/bin/bedtools
 ln -sf /path/to/main/reference_code/seqtk/seqtk           reference_code/seqtk/seqtk
@@ -170,7 +174,10 @@ The driver consumes `matrix.Default()`.
 
 | family | file | tools | how compared |
 |--------|------|-------|--------------|
-| htslib core | `smoke.go` | `samtools view`, `bcftools view`/`query` | byte-exact stdout |
+| htslib core (smoke) | `smoke.go` | `samtools view`, `bcftools view`/`query` | byte-exact stdout |
+| samtools (full) | `samtools.go` | the 24 subcommands (view BAM/CRAM/region/`-f`/`-F`/`-q`/`-c`/`-h`/`-L`, sort, flagstat, idxstats, stats, depth `-a`/`-b`/`-r`, coverage, calmd, consensus, fastq, dict, quickcheck, tview, …) | byte-exact **decoded text** (SAM via `-O sam`/`view`, pileup/tab text); binary BAM/CRAM never byte-compared |
+| bcftools (full) | `bcftools.go` | the 24 subcommands (view `-O v`/`-v`/`-V`/`-i`/`-e`/`-r`/`-R`/`-t`/`-s`/`-c`/`-C`/`-q`/`-Q`/`-G`/`-I`, query format strings/`-i`/`-e`/`-l`, norm `-m`/`-f`/`-d`, stats, filter, sort, head, annotate, gtcheck, mpileup, `+fill-tags`, …) | byte-exact **VCF/text** (`-Ov`; `-H` body where header line-ordering would otherwise differ) |
+| htslib utils | `htslib_misc.go` | `bgzip` (decode round-trip), `tabix` (region/`-l`/`-h`), `htsfile` | byte-exact **decoded** text; BGZF compress + binary indexes documented Skips |
 | bedtools | `smoke.go` + `bedtools.go` | all 41 bed\* tools (each maps to one `bedtools <sub>`) | byte-exact stdout (text tools) / byte-exact **output files** (`bedsplit`) |
 | QC / format | `qc.go` | `seqtk` (23 subcommands), `prinseq`, `sickle`, `skewer`, `fastp` | seqtk byte-exact stdout; prinseq/sickle byte-exact **output files**; skewer byte-exact stdout (per-side args); fastp documented Skips + one Similarity |
 | vcftools | `vcftools.go` | `vcftools` (freq/counts/depth/pi/TsTv/het/relatedness/recode/…) | byte-exact **output files** (the `<prefix>.<ext>` the mode writes) |
@@ -238,6 +245,38 @@ concrete root cause + owner) flagged for follow-up by the bedtools agent:
 - **bedoverlap / bedunionbedg / bedpairtobed / bedpairtopair** — need a
   pre-joined stream or BEDPE/BedGraph input the fixture corpus does not generate;
   all match out-of-band on crafted inputs and are owned by the per-tool suites.
+
+The **htslib-core** matrices (`samtools.go`, `bcftools.go`, `htslib_misc.go`)
+likewise compare the **decoded** stream wherever a side would emit binary BGZF
+(BAM/CRAM/BGZF blocks frame differently between our klauspost deflate backend
+and htslib though both decode identically — see [Comparison modes](#comparison-modes)).
+Subcommands driven to text are byte-exact; the rest are **documented `Skip`s**
+recording a *real* divergence the matrix surfaced (each owned by the relevant
+agent), not a paper-over:
+
+- **samtools** — `sort` (coordinate) orders equal-`(rname,pos)` records
+  differently from htslib (name sort, fully ordered, is byte-exact and is the
+  parity check); `mpileup` matches on every non-zero-depth row but omits the
+  interior zero-depth rows upstream emits; `depth -q`/`-Q` are **swapped** vs
+  upstream (`-q`=base-qual, `-Q`=map-qual upstream) *and* the base-qual counts
+  diverge; `view -s` subsample selects a different read subset (different RNG);
+  `markdup`/`fixmate`/`addreplacerg`/`merge`/`reheader`/`split`/`import`/`phase`
+  ignore `-O sam` (always emit BGZF BAM) so no decodable single-command text
+  form exists (markdup's *data* is byte-identical when decoded out of band;
+  `addreplacerg -r` does not replace the existing RG).
+- **bcftools** — `view -c`/`-q` (without `-I`) appends `AC`/`AN` upstream but
+  not in our port (the `-I` no-update variants are byte-exact and run);
+  `norm -m+` over-joins biallelics into a multiallelic; `annotate -x FILTER`
+  diverges only on header line-ordering; `csq`/`roh`/`consensus` annotations
+  diverge; `call` needs a likelihood (PL) fixture; `isec`/`convert` write
+  directory/multi-file output not expressible as one stdout; `merge` lacks
+  `--force-samples` for the same-sample fixtures; `concat -a` overlap-merge tie
+  order differs. `+plugin` entries Skip unless `BCFTOOLS_PLUGINS` is set.
+- **bgzip / tabix / htsfile** — `bgzip` compression is verified via a `-d`
+  decode round-trip (compressed bytes are intentionally not byte-compared) and
+  its `-r`/`-i` binary `.gzi` index is Skipped; `tabix -R` over overlapping
+  BED returns the same record *set* in a different order; `htsfile`'s
+  identification strings and `-c`/`-h` flag semantics differ from upstream.
 
 ### Combinatorics expander (curated, NOT power set)
 

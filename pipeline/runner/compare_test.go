@@ -29,6 +29,40 @@ func TestStripProvenanceVCF(t *testing.T) {
 	}
 }
 
+// TestStripProvenanceStatsBlock checks the samtools/bcftools stats-style
+// provenance comment block ("# This file was produced by ...", the command-line
+// echo, the working-directory block, the bare "#" separator, and the gtcheck
+// timing line) is removed while the data-describing comment rows survive.
+func TestStripProvenanceStatsBlock(t *testing.T) {
+	in := "# This file was produced by bcftools stats (1.23+htslib-1.23)\n" +
+		"# The command line was:\tbcftools stats a.vcf\n" +
+		"#\n" +
+		"# ID\t[2]id\t[3]file names\n" +
+		"SN\t0\tnumber of records:\t400\n" +
+		"INFO\tTime required to process one record .. 0.000003 seconds\n"
+	want := "# ID\t[2]id\t[3]file names\n" +
+		"SN\t0\tnumber of records:\t400\n"
+	if got := string(stripProvenance([]byte(in))); got != want {
+		t.Errorf("stripProvenance stats block:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+// TestStripProvenanceFilterPass checks the auto-inserted ##FILTER=PASS
+// boilerplate is dropped (its position differs between ours/upstream) while a
+// real ##FILTER definition is preserved.
+func TestStripProvenanceFilterPass(t *testing.T) {
+	in := "##fileformat=VCFv4.2\n" +
+		"##FILTER=<ID=PASS,Description=\"All filters passed\">\n" +
+		"##FILTER=<ID=q10,Description=\"Quality below 10\">\n" +
+		"chr1\t1\t.\tA\tG\t60\tPASS\t.\n"
+	want := "##fileformat=VCFv4.2\n" +
+		"##FILTER=<ID=q10,Description=\"Quality below 10\">\n" +
+		"chr1\t1\t.\tA\tG\t60\tPASS\t.\n"
+	if got := string(stripProvenance([]byte(in))); got != want {
+		t.Errorf("stripProvenance FILTER=PASS:\n got=%q\nwant=%q", got, want)
+	}
+}
+
 // TestCompareByteExact covers match and mismatch.
 func TestCompareByteExact(t *testing.T) {
 	a := []byte("@PG\tID:x\nchr1\t1\n")

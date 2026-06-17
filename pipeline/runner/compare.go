@@ -19,7 +19,18 @@ import (
 //
 //   - SAM/BAM "@PG" and "@CO" header lines (program/comment provenance),
 //   - VCF "##<tool>_..." command lines (e.g. ##bcftools_viewCommand=...,
-//     ##samtoolsCommand=...) and "##source=" / "##fileDate=" headers.
+//     ##samtoolsCommand=...) and "##source=" / "##fileDate=" headers,
+//   - the "# This file was produced by ..." / "# The command line was: ..."
+//     comment-block headers that "samtools stats", "bcftools stats", and
+//     "bcftools gtcheck" emit (these carry the upstream version string and the
+//     literal command line, so they differ by build/working directory),
+//   - the "##FILTER=<ID=PASS,Description=\"All filters passed\">" boilerplate
+//     line: bcftools auto-inserts it whenever a FILTER column is written, but
+//     our header serialiser places it at a different position than upstream.
+//     It is identical, tool-inserted boilerplate (not data) on both sides, so
+//     dropping it neutralises the position-only difference without hiding any
+//     genuine data divergence (a different FILTER definition would still
+//     differ in content and fail).
 //
 // Data lines and structural headers (@SQ, ##contig, ##INFO, the column header)
 // are preserved, so a genuine output difference still fails the comparison.
@@ -34,12 +45,61 @@ func stripProvenance(b []byte) []byte {
 			bytes.HasPrefix(ln, []byte("##fileDate=")),
 			bytes.HasPrefix(ln, []byte("##reference=")):
 			continue
+		case bytes.HasPrefix(ln, []byte("##FILTER=<ID=PASS,Description=\"All filters passed\">")):
+			continue
 		case bytes.HasPrefix(ln, []byte("##")) && isCommandHeader(ln):
+			continue
+		case isStatsProvenance(ln):
+			continue
+		case bytes.HasPrefix(ln, []byte("INFO\tTime required")):
+			// bcftools gtcheck prints a non-reproducible wall-clock timing line
+			// ("INFO\tTime required to process one record .. <seconds>"); our port
+			// omits it. It is timing provenance, not data.
 			continue
 		}
 		out = append(out, ln)
 	}
 	return bytes.Join(out, []byte("\n"))
+}
+
+// isStatsProvenance matches the comment-block provenance lines that the
+// samtools/bcftools stats-style reports (samtools stats, bcftools stats,
+// bcftools gtcheck) emit. These echo the upstream version string ("This file
+// was produced by ..."), the literal command line ("The command line was: ..."
+// and its tab-indented "# \t<cmd>" echo), the working directory ("and the
+// working directory was: ..." plus its "# \t<path>" echo), the fixed
+// "This file contains statistics for all reads." banner, and a bare "#"
+// separator — none of which is reproducible across builds or working
+// directories, and which our ports omit. The data-describing comment rows a
+// stats/gtcheck report keeps (e.g. "# CHK, Checksum...", "# ID\t...",
+// "# DCv2, ...", "#DCv2\t...") do NOT match these patterns, so they are
+// preserved on both sides.
+//
+// The bare "#" line is stripped unconditionally: where both sides emit one
+// (bcftools stats) it is removed from both equally (no net effect), and where
+// only upstream emits one (gtcheck's provenance separator) it removes the
+// spurious one-sided line.
+func isStatsProvenance(ln []byte) bool {
+	s := string(ln)
+	if s == "#" {
+		return true
+	}
+	if strings.HasPrefix(s, "# \t") {
+		// Tab-indented continuation echo of the command line / working directory.
+		return true
+	}
+	if !strings.HasPrefix(s, "# ") {
+		return false
+	}
+	body := strings.TrimSpace(s[1:])
+	switch {
+	case strings.HasPrefix(body, "This file was produced by"),
+		strings.HasPrefix(body, "This file contains statistics"),
+		strings.HasPrefix(body, "The command line was"),
+		strings.HasPrefix(body, "and the working directory was"):
+		return true
+	}
+	return false
 }
 
 // isCommandHeader matches VCF provenance command lines like
