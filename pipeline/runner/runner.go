@@ -134,6 +134,27 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 		return res
 	}
 
+	// CopyToOut: stage fixture copies into each side's output dir so tools that
+	// write alongside their input (e.g. bgzip -r → <file>.gzi) operate on an
+	// isolated per-side copy.
+	if len(e.CopyToOut) > 0 {
+		for tok, suffix := range e.CopyToOut {
+			src := cfg.Manifest.Path(tok)
+			if src == "" {
+				res.Status = StatusError
+				res.Detail = fmt.Sprintf("CopyToOut: fixture %q not in manifest", tok)
+				return res
+			}
+			for _, dir := range []string{ourDir, upDir} {
+				if err := copyFile(src, filepath.Join(dir, "out"+suffix)); err != nil {
+					res.Status = StatusError
+					res.Detail = fmt.Sprintf("CopyToOut %s: %v", tok, err)
+					return res
+				}
+			}
+		}
+	}
+
 	// Our invocation: prepend subcommand only when our binary uses it.
 	if e.UsesSubcommand && e.Subcommand != "" {
 		ourArgs = append([]string{e.Subcommand}, ourArgs...)
@@ -267,6 +288,27 @@ func timedRun(bin string, args []string) (stdout, stderr []byte, dur time.Durati
 	err = cmd.Run()
 	dur = time.Since(start)
 	return out.Bytes(), errb.Bytes(), dur, err
+}
+
+// copyFile copies src to dst, creating dst's parent directory if needed.
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // gunzipAll decompresses a (possibly multi-member, e.g. BGZF) gzip stream in
