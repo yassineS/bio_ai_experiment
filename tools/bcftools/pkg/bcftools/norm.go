@@ -738,7 +738,27 @@ func joinWindow(window []*vcf.Variant, m MultiallelicMode) []*vcf.Variant {
 			result[b.anchor] = mergeBiallelicsToMultiallelic(b.records, m)
 		}
 	}
+	// Upstream emits the records at a position ordered by variant-type bit
+	// ascending (VCF_SNP=1 < VCF_MNP=2 < VCF_INDEL=4 < VCF_OTHER=8), not in
+	// input order — e.g. a SNP and an indel sharing a POS come out SNP-first
+	// regardless of which appeared first in the input (vcfnorm.c mrows_flush).
+	// A stable sort by the (first-ALT) type bit reproduces that while keeping
+	// the within-type order the bucketing already fixed.
+	sort.SliceStable(result, func(i, j int) bool {
+		return joinSortBit(result[i]) < joinSortBit(result[j])
+	})
 	return result
+}
+
+// joinSortBit returns the variant-type bit used to order a record within a
+// CHROM+POS group on norm-join output, mirroring upstream's type ordering. For
+// a merged multiallelic record the first ALT's type is representative (every
+// ALT in a bucket shares the type category).
+func joinSortBit(v *vcf.Variant) int {
+	if len(v.Alt) == 0 {
+		return vtSNP
+	}
+	return variantTypeBit(v.Ref, v.Alt[0])
 }
 
 // mergeBiallelicsToMultiallelic merges a run of biallelic records (already
@@ -752,6 +772,27 @@ func mergeBiallelicsToMultiallelic(records []*vcf.Variant, m MultiallelicMode) *
 		return records[0]
 	}
 	dst := cloneVariant(records[0])
+
+	// ID: upstream concatenates the records' IDs with ';', preserving first-seen
+	// order and skipping missing ("." / empty) and duplicate IDs (vcfnorm.c
+	// merge_lines). If every record is missing an ID the result stays ".".
+	var ids []string
+	seenID := map[string]bool{}
+	for _, rec := range records {
+		if rec.ID == "" || rec.ID == "." {
+			continue
+		}
+		for _, part := range strings.Split(rec.ID, ";") {
+			if part == "" || part == "." || seenID[part] {
+				continue
+			}
+			seenID[part] = true
+			ids = append(ids, part)
+		}
+	}
+	if len(ids) > 0 {
+		dst.ID = strings.Join(ids, ";")
+	}
 
 	// Build the merged allele list and per-record allele-index maps.
 	als := []string{records[0].Ref}

@@ -252,22 +252,28 @@ func bcftoolsSkips() []Entry {
 				"'Wrong number of PL fields'. A call-from-mpileup parity case needs a likelihood fixture (owned by the bcftools agent).",
 			"-m", "{vcf_multi}"),
 		skip("csq", "csq",
-			"bcftools csq --force: the pipeline's annotations.gff3 has invalid GFF3 phase columns (CDS phase != len%3, '.'-phase exons); "+
-				"upstream's GFF reader detects this and skips/truncates those transcripts while our port keeps them, so the BCSQ strings "+
-				"diverge. On valid-phase GFFs csq is byte-exact (per-tool suite). Remaining narrow gap: GFF phase-column validation. Owned by the bcftools agent.",
+			"bcftools csq --force: the GFF fixture is now valid (all 800 transcripts index on both sides) and the BCSQ consequence "+
+				"strings match — the residual is the COMPOUND-variant linkage: the '@<pos>' reference marking a variant whose consequence "+
+				"depends on a neighbouring variant points at a different position (ours @12677 vs upstream @16827) and the packed FORMAT/BCSQ "+
+				"index differs. A deep csq haplotype-engine divergence; the per-tool suite covers the single-variant cases byte-exact.",
 			"--force", "-f", "{fasta}", "-g", "{gff}", "-p", "a", "{vcf_plain}"),
 		skip("isec", "isec",
-			"bcftools isec writes a directory of 000N.vcf files via -p; the file SET differs (ours writes 2, upstream 4 for two identical "+
-				"inputs) and the -p directory model is not the runner's {out}-prefix comparison. Owned by the bcftools agent.",
+			"bcftools isec -p writes a DIRECTORY of 000N.vcf files (plus README/sites.txt), not a stdout stream the single-command runner "+
+				"can diff. Two real gaps remain: our port writes 0000/0001 (private) but not the 0002/0003 shared-record files upstream emits, "+
+				"and the -p directory layout is outside the runner's {out}-prefix OutputFiles model. Needs a directory-aware comparison.",
 			"-p", "{out}", "{vcf}", "{vcf}"),
-		// --force-samples now prefixes a duplicate sample from input i with
-		// "<i+1>:" so the merge is expressible, but a residual gap remains: the
-		// INFO combine rules are not applied — upstream sums INFO/DP across the
-		// merged records (DP=106) while our port keeps the first input's value
-		// (DP=53). Owned by the bcftools agent.
+		// --force-samples sample renaming works, but two deeper merge-maux gaps
+		// remain on this fixture (which has intra-position duplicate records,
+		// e.g. rs795 AND rs796 both G>A at chr1:101511): (1) our bucketize
+		// collapses all same-type records at a position into one, whereas
+		// upstream's maux pairs the k-th record across files and keeps them as
+		// distinct output lines (so upstream emits 8000 records, we emit 7966);
+		// and (2) the INFO combine rules are not applied (INFO/DP should be
+		// summed). Both are substantial bcftools merge-internals work.
 		skip("merge", "merge",
-			"bcftools merge --force-samples: sample renaming now works, but the INFO combine rules are not applied — upstream sums "+
-				"INFO/DP across merged records (DP=106) where our port keeps the first value (DP=53). Residual INFO-merge gap. Owned by the bcftools agent.",
+			"bcftools merge --force-samples: sample renaming works, but the maux record-matching (intra-position duplicate records are "+
+				"paired line-by-line across files, not collapsed) and the INFO combine rules (e.g. INFO/DP summed) are not yet ported — "+
+				"upstream emits 8000 records here, we emit 7966. Deep merge-internals gap.",
 			"--force-samples", "{vcf}", "{vcf}"),
 		// convert --gvcf2vcf writes a full VCF to stdout and is byte-exact
 		// (provenance-stripped) against upstream — re-activated.
