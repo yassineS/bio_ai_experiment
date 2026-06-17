@@ -52,16 +52,26 @@ const (
 )
 
 // ParseNaming parses the bedtools `-i` argument.
+//
+// Upstream `bedtools makewindows` accepts only "src", "winnum", and
+// "srcwinnum"; when -i is omitted entirely the ID method defaults to
+// ID_NONE (no name column, BED3 output). We map the empty string to that
+// same default so the CLI's "-i" default sentinel produces BED3, and we
+// additionally accept the literal "none" as an explicit spelling of the
+// default. Accepting "none" is a documented fix-on-port superset: upstream
+// errors on "-i none", whereas we treat it as the no-name default.
 func ParseNaming(s string) (Naming, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "winnum":
+	case "", "none":
+		return NoName, nil
+	case "winnum":
 		return NameWinNum, nil
 	case "srcwinnum":
 		return NameSrcWinNum, nil
 	case "src":
 		return NameSrc, nil
 	}
-	return NoName, fmt.Errorf("unknown -i mode %q (want winnum, srcwinnum, or src)", s)
+	return NoName, fmt.Errorf("unknown -i mode %q (want src, winnum, or srcwinnum)", s)
 }
 
 // Options bundles the configuration for MakeWindows.
@@ -105,7 +115,7 @@ type Interval struct {
 	Chrom string
 	Start int
 	End   int
-	Name  string // empty when coming from a genome file
+	Name  string // source name; the chromosome name for genome-file intervals
 }
 
 // FromGenome reads a chrom-sizes file ("chrom<TAB>size" lines) and returns one
@@ -130,7 +140,10 @@ func FromGenome(r io.Reader) ([]Interval, error) {
 		if size <= 0 {
 			continue
 		}
-		out = append(out, Interval{Chrom: fields[0], Start: 0, End: size})
+		// Upstream constructs each genome interval as BED(chrom,0,size,chrom,...)
+		// — the source name is the chromosome name, so `-i src` / `-i srcwinnum`
+		// over a genome file annotate with the chrom (windowMaker.cpp:56).
+		out = append(out, Interval{Chrom: fields[0], Start: 0, End: size, Name: fields[0]})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err

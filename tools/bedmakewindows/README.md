@@ -42,5 +42,22 @@ Two partition strategies (mutually exclusive):
   length as possible. Intervals shorter than `-n` bases are skipped with the
   upstream warning to stderr.
 
+`-i` naming (matching upstream `windowMaker.cpp`):
+
+- default (no `-i`, internally `none`): emit **BED3** — no name column.
+- `src`: append the source interval's name. For genome-file input the name
+  is the chromosome (upstream builds each genome interval with `name ==
+  chrom`).
+- `winnum`: append the per-interval 1-based window number (reversed by
+  `--reverse`).
+- `srcwinnum`: append `<src_name>_<window_number>`.
+
+Upstream accepts only `src`/`winnum`/`srcwinnum` and defaults to no name
+column when `-i` is omitted; we additionally accept the explicit spelling
+`-i none` as an alias for that default (a one-directional superset — see
+[`../../docs/UPSTREAM_BUGS.md`](../../docs/UPSTREAM_BUGS.md#bedtools-makewindows-i-none)).
+
 See [`../PARITY_VALIDATION.md`](../PARITY_VALIDATION.md) for the validated
-parity matrix.
+parity matrix. `pkg/bedmakewindows/live_parity_test.go` asserts byte-for-byte
+parity against the upstream `bedtools makewindows` binary for the default and
+every `-i` value over both BED and genome input.
