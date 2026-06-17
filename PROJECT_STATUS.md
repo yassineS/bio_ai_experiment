@@ -113,7 +113,12 @@ documented **non-goal** (see "Non-goals" below).
    GCS (`gs://gcp-public-data--broad-references`) backends; a `tabix` region
    query over the 214 MB 1000 Genomes chr22 VCF on S3; and a `samtools view`
    region count over a 188 MB exome BAM on S3 (both fetch only the index + the
-   chunk). Remote URLs flow through the streaming opens (`iohelper`/`alnio` —
+   chunk). **Azure Blob Storage** is additionally supported as a Go-port
+   extension (htslib has no native Azure backend): `az://account/container/blob`
+   (and recognised `*.blob.core.windows.net` HTTPS URLs) with SAS, Shared Key
+   (hand-rolled HMAC-SHA256, signed per ranged GET so the signature covers the
+   `Range` header; pinned to an Azurite-dev-key known-answer vector), Azure-AD
+   bearer and anonymous auth, plus an `AZURE_STORAGE_BLOB_ENDPOINT` override. Remote URLs flow through the streaming opens (`iohelper`/`alnio` —
    whole-file ops, incl. live CRAM decode) and **every** indexed region-query
    path: `samtools view`/`idxstats`/`mpileup`, `tabix`, `bcftools view -r` /
    `query -r`, and `.crai`-indexed CRAM `samtools view` (seek-based container

@@ -6,10 +6,16 @@ objects addressed by HTTP(S), Amazon S3 (`s3://`) and Google Cloud Storage
 (`gs://`) URLs, mirroring the behaviour of htslib's `hfile_libcurl.c`,
 `hfile_s3.c` and `hfile_gcs.c`.
 
+As a **Go-port extension beyond htslib** (which has **no native Azure
+backend**), it additionally reads from **Azure Blob Storage** via `az://` URLs
+(or recognised `*.blob.core.windows.net` HTTPS URLs) with SAS, Shared Key,
+Azure-AD bearer and anonymous authentication — see the Azure section below.
+
 The package depends only on the Go standard library. AWS Signature Version 4
 is hand-implemented with `crypto/hmac` + `crypto/sha256`, and AWS Signature
-Version 2 with `crypto/hmac` + `crypto/sha1` + `encoding/base64`; there is no
-AWS SDK and no OAuth library.
+Version 2 with `crypto/hmac` + `crypto/sha1` + `encoding/base64`, and the Azure
+Blob Shared Key scheme with `crypto/hmac` + `crypto/sha256` + `encoding/base64`;
+there is no AWS SDK, no Azure SDK and no OAuth library.
 
 ## API
 
@@ -36,7 +42,7 @@ so it is safe for the concurrent index-read path.
 
 Helpers:
 
-- `hfile.IsRemote(name) bool` — true for `http`/`https`/`s3`/`gs` URLs.
+- `hfile.IsRemote(name) bool` — true for `http`/`https`/`s3`/`gs`/`az` URLs.
 - `hfile.SchemeOf(name) string` — the lower-cased URL scheme, or `""` for a
   bare filesystem path.
 
@@ -47,6 +53,7 @@ Helpers:
 | `http://` `https://`| HTTP    | the URL as given                                                   |
 | `s3://bucket/key`   | S3      | `https://<bucket>.s3.<region>.amazonaws.com/<key>` (virtual-hosted)|
 | `gs://bucket/object`| GCS     | `https://storage.googleapis.com/<bucket>/<object>` (XML API)       |
+| `az://account/container/blob` | Azure | `https://<account>.blob.core.windows.net/<container>/<blob>` (Go-port extension) |
 | `file://` / bare path | local | `*os.File` (`-` means stdin)                                      |
 
 A bucket name containing a dot forces S3 **path-style**
@@ -79,8 +86,55 @@ still places a region in the credential scope; for non-AWS endpoints any literal
 (default `us-east-1`, or `auto` for GCS) is fine because the server validates
 the HMAC, not the region string. SigV2 ignores the region entirely.
 
-> **Azure Blob Storage** (`az://` / `https://<account>.blob.core.windows.net`)
-> is **not yet supported** — it is a separate follow-up.
+### Azure Blob Storage (Go-port extension — htslib has no native Azure backend)
+
+Azure Blob Storage is **not** S3-protocol: it uses Shared Key / SAS / Azure-AD
+bearer auth, and htslib ships no Azure backend. This support is therefore an
+**additive Go-port extension**, not an htslib parity feature. Reads are served by
+ranged GETs over `https://<account>.blob.core.windows.net/<container>/<blob>`.
+Address blobs as `az://<account>/<container>/<blob>`, or pass a direct
+`https://<account>.blob.core.windows.net/...` URL (recognised as Azure so the
+env-driven auth applies). Authentication is chosen by environment in this
+priority order: inline/SAS → Shared Key → bearer → anonymous.
+
+| Auth path                | URL / endpoint                                                              | Signing                                  | Required env vars |
+| ------------------------ | -------------------------------------------------------------------------- | ---------------------------------------- | ----------------- |
+| **SAS URL** (simplest)   | `https://<account>.blob.core.windows.net/<container>/<blob>?<sas>`         | none (signature is in the URL)           | *(none — the SAS travels in the URL; flows through the plain HTTPS backend)* |
+| **`az://` + SAS token**  | `az://<account>/<container>/<blob>`                                        | none (SAS appended to the query)         | `AZURE_STORAGE_SAS_TOKEN` (the `?sv=...&sig=...` token) |
+| **`az://` + Shared Key** | `az://<account>/<container>/<blob>`                                        | Azure Blob **SharedKey** (HMAC-SHA256), signed **per ranged GET** | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` (base64 account key) |
+| **`az://` + bearer (AAD)** | `az://<account>/<container>/<blob>`                                      | `Authorization: Bearer <token>`          | `AZURE_STORAGE_TOKEN` (an Azure-AD access token) |
+| **Anonymous** (public)   | `az://<account>/<container>/<blob>` or the HTTPS URL                       | unsigned (still sends `x-ms-version`)    | *(none)* |
+
+Every request carries `x-ms-version: 2021-08-06`. The endpoint can be overridden
+with `AZURE_STORAGE_BLOB_ENDPOINT` (e.g. to target Azurite or an httptest
+server), analogous to S3's `HTS_S3_HOST` and GCS's base-URL override.
+
+**Shared Key string-to-sign.** Because the canonical string includes the
+request's `Range` header — which differs for every ranged GET — the SharedKey
+`Authorization` is computed afresh per request via the `sign` hook. The
+string-to-sign (Blob service, SharedKey) is:
+
+```
+GET\n          (VERB)
+\n             Content-Encoding
+\n             Content-Language
+\n             Content-Length   (empty, NOT 0, for a GET)
+\n             Content-MD5
+\n             Content-Type
+\n             Date             (empty: x-ms-date carries the timestamp)
+\n             If-Modified-Since
+\n             If-Match
+\n             If-None-Match
+\n             If-Unmodified-Since
+<Range>\n      Range            (the request's exact Range header value)
+x-ms-date:<RFC1123 GMT>\n      } CanonicalizedHeaders: all x-ms-* headers,
+x-ms-version:2021-08-06\n      }   lowercased, sorted, "name:value\n"
+/<account>/<container>/<blob>  CanonicalizedResource (no query params for a plain GET)
+```
+
+The signature is `base64(HMAC-SHA256(base64decode(AccountKey), StringToSign))`
+and the header is `Authorization: SharedKey <account>:<signature>` (the account
+key is base64 and is decoded before the HMAC).
 
 ## Environment variables
 
@@ -138,6 +192,16 @@ addressing), and `x-amz-security-token` is folded into the
 | `GCS_OAUTH_TOKEN`            | Adds `Authorization: Bearer <token>`. Public buckets work without it. |
 | `GCS_REQUESTER_PAYS_PROJECT` | Adds the `X-Goog-User-Project` header.                  |
 
+### Azure Blob backend (Go-port extension; no htslib equivalent)
+
+| Variable                       | Effect                                                            |
+| ------------------------------ | ---------------------------------------------------------------- |
+| `AZURE_STORAGE_SAS_TOKEN`      | SAS token appended to the query string of `az://` / host URLs that lack an inline SAS. |
+| `AZURE_STORAGE_ACCOUNT`        | Storage account name for Shared Key signing.                     |
+| `AZURE_STORAGE_KEY`            | Base64 account key for Shared Key signing (decoded before HMAC). |
+| `AZURE_STORAGE_TOKEN`          | Azure-AD access token; sent as `Authorization: Bearer <token>`.  |
+| `AZURE_STORAGE_BLOB_ENDPOINT`  | Overrides the scheme+host (Azurite / custom endpoint / tests).   |
+
 ## Testing
 
 Tests are fully self-contained: every backend is exercised against an
@@ -149,6 +213,15 @@ signer against the canonical AWS S3 REST worked example
 (`GET /johnsmith/photos/puppy.jpg` → `bWq2s1WEIj+Ydj0vQ697zp+IXMU=`). The
 SigV2, GCS S3-interop (V2 and V4) and forced-address-style paths each have
 httptest round-trips under a pinned clock.
+
+The Azure Blob Shared Key signer is verified by a **known-answer vector**: a
+fixed account/key/date/`Range`/resource is pinned to an exact string-to-sign and
+`Authorization` value (using the public Azurite dev key for
+`devstoreaccount1`, `Range: bytes=128-191` →
+`SharedKey devstoreaccount1:rFiLV/YExacX7hHP2msLtGRi89EnNIol3Xvi0s5Vn/k=`). The
+SAS URL, `az://`+Shared Key (asserting two different ranges yield two different
+signatures), bearer-token and anonymous paths each have httptest round-trips
+under a pinned clock and `AZURE_STORAGE_BLOB_ENDPOINT`.
 
 ```bash
 go test ./pkg/htsgo/hfile/... -count=1 -cover

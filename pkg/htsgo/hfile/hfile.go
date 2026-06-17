@@ -4,9 +4,14 @@
 // (gs://) URLs, mirroring the behaviour of htslib's hfile_libcurl.c,
 // hfile_s3.c and hfile_gcs.c.
 //
+// As a Go-port extension beyond htslib (which has no native Azure backend), it
+// also reads from Azure Blob Storage via az:// URLs (or recognised
+// *.blob.core.windows.net HTTPS URLs), supporting SAS, Shared Key, Azure-AD
+// bearer and anonymous authentication.
+//
 // The package depends only on the Go standard library. AWS Signature
-// Version 4 is implemented by hand using crypto/hmac and crypto/sha256, so
-// no third-party SDKs are required.
+// Version 4 and the Azure Blob Shared Key scheme are implemented by hand using
+// crypto/hmac and crypto/sha256, so no third-party SDKs are required.
 //
 // All handles expose io.ReaderAt for ranged random access, which is the
 // access pattern used by the BGZF/BAM/CRAM index path. ReadAt is safe for
@@ -43,20 +48,31 @@ type Handle interface {
 // Open opens name for reading and returns a Handle. The backend is chosen
 // by URL scheme:
 //
-//	http://  https://   -> HTTP(S) backend
+//	http://  https://   -> HTTP(S) backend (Azure Blob hosts route to Azure)
 //	s3://bucket/key      -> Amazon S3 backend
 //	gs://bucket/object   -> Google Cloud Storage backend
+//	az://account/container/blob -> Azure Blob Storage backend (Go-port extension)
 //	file:// or bare path -> local file backed by *os.File
+//
+// A direct https://<account>.blob.core.windows.net/... URL is recognised as
+// Azure and routed through the Azure backend so the env-driven SAS / Shared Key
+// / bearer authentication applies; a fully-inline SAS URL still works without
+// any Azure environment because the SAS travels in the URL.
 //
 // Write access is not implemented; remote handles are read-only.
 func Open(name string) (Handle, error) {
 	switch SchemeOf(name) {
 	case "http", "https":
+		if isAzureHTTPSURL(name) {
+			return openAzure(name)
+		}
 		return openHTTP(name)
 	case "s3":
 		return openS3(name)
 	case "gs":
 		return openGCS(name)
+	case "az":
+		return openAzure(name)
 	case "file":
 		return openLocal(strings.TrimPrefix(name, "file://"))
 	case "":
@@ -91,11 +107,11 @@ func ReadFile(name string) ([]byte, error) {
 }
 
 // IsRemote reports whether name refers to a remote resource handled by one
-// of the network backends (http, https, s3 or gs). Local paths and file://
+// of the network backends (http, https, s3, gs or az). Local paths and file://
 // URLs return false.
 func IsRemote(name string) bool {
 	switch SchemeOf(name) {
-	case "http", "https", "s3", "gs":
+	case "http", "https", "s3", "gs", "az":
 		return true
 	default:
 		return false
