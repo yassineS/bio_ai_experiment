@@ -152,7 +152,12 @@ func writeVCF(path string, contigs []contig, p Params, rng *rand.Rand) error {
 		return recs[i].pos < recs[j].pos
 	})
 
-	gts := []string{"0/1", "1/1", "0/0", "1/2"}
+	// All generated sites are biallelic (one REF, one ALT), so only genotypes
+	// that index allele 0 or 1 are valid. A "1/2" genotype would reference a
+	// non-existent second ALT allele and is undefined behaviour in downstream
+	// tools (vcftools mis-counts N_CHR / emits -nan), so it is deliberately
+	// excluded.
+	gts := []string{"0/1", "1/1", "0/0"}
 	for i, r := range recs {
 		c := contigs[r.ci]
 		ref := string(c.Seq[r.pos-1])

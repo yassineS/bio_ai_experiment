@@ -7,7 +7,9 @@ package runner
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -87,7 +89,40 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 		return res
 	}
 
-	args, err := resolvePlaceholders(e.Args, cfg.Manifest)
+	// When the entry writes to an output prefix (vcftools/mosdepth), each side
+	// gets its own temp dir and {out} resolves to "<dir>/out". Otherwise both
+	// sides share the resolved args and the runner compares stdout.
+	usesOutPrefix := len(e.OutputFiles) > 0
+	var ourDir, upDir string
+	if usesOutPrefix {
+		ourDir, upDir, err = mkOutDirs(cfg.CacheDir)
+		if err != nil {
+			res.Status = StatusError
+			res.Detail = err.Error()
+			return res
+		}
+		defer os.RemoveAll(ourDir)
+		defer os.RemoveAll(upDir)
+	}
+
+	// Per-side argument templates: OurArgs / UpstreamArgs override the shared
+	// Args for tools whose CLI shape differs from upstream's.
+	ourTemplate := e.Args
+	if e.OurArgs != nil {
+		ourTemplate = e.OurArgs
+	}
+	upTemplate := e.Args
+	if e.UpstreamArgs != nil {
+		upTemplate = e.UpstreamArgs
+	}
+
+	ourArgs, err := resolvePlaceholders(ourTemplate, cfg.Manifest, filepath.Join(ourDir, "out"))
+	if err != nil {
+		res.Status = StatusError
+		res.Detail = err.Error()
+		return res
+	}
+	upArgs, err := resolvePlaceholders(upTemplate, cfg.Manifest, filepath.Join(upDir, "out"))
 	if err != nil {
 		res.Status = StatusError
 		res.Detail = err.Error()
@@ -95,14 +130,12 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 	}
 
 	// Our invocation: prepend subcommand only when our binary uses it.
-	ourArgs := args
 	if e.UsesSubcommand && e.Subcommand != "" {
-		ourArgs = append([]string{e.Subcommand}, args...)
+		ourArgs = append([]string{e.Subcommand}, ourArgs...)
 	}
 	// Upstream invocation: prepend the subcommand if present.
-	upArgs := args
 	if e.Subcommand != "" {
-		upArgs = append([]string{e.Subcommand}, args...)
+		upArgs = append([]string{e.Subcommand}, upArgs...)
 	}
 
 	ourOut, ourErr, ourDur, ourRunErr := timedRun(oursBin, ourArgs)
@@ -124,15 +157,30 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 	}
 
 	var cmp CompareResult
-	switch e.CompareModeOrDefault() {
-	case matrix.Similarity:
+	switch {
+	case usesOutPrefix:
+		// Compare the named output files between the two prefixes (decompressing
+		// .gz, stripping provenance). The compare mode still selects byte-exact
+		// vs similarity for the file contents.
+		cmp = CompareOutputFiles(filepath.Join(ourDir, "out"), filepath.Join(upDir, "out"),
+			e.OutputFiles, e.CompareModeOrDefault())
+		if cmp.Equal {
+			if e.CompareModeOrDefault() == matrix.Similarity {
+				res.Status = StatusSimilar
+			} else {
+				res.Status = StatusPass
+			}
+		} else {
+			res.Status = StatusDiverge
+		}
+	case e.CompareModeOrDefault() == matrix.Similarity:
 		cmp = CompareSimilarity(ourOut, upOut)
 		if cmp.Equal {
 			res.Status = StatusSimilar
 		} else {
 			res.Status = StatusDiverge
 		}
-	default: // ByteExact, DirContents (DirContents falls back to byte-exact of stdout for now)
+	default: // ByteExact on stdout
 		cmp = CompareByteExact(ourOut, upOut)
 		if cmp.Equal {
 			res.Status = StatusPass
@@ -147,10 +195,34 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 	return res
 }
 
+// mkOutDirs creates a fresh pair of per-entry output directories (one for our
+// tool, one for upstream) under the cache dir and returns their absolute paths.
+func mkOutDirs(cacheDir string) (ourDir, upDir string, err error) {
+	base, err := os.MkdirTemp(cacheDir, "out-")
+	if err != nil {
+		return "", "", err
+	}
+	ourDir = filepath.Join(base, "ours")
+	upDir = filepath.Join(base, "up")
+	if err := os.MkdirAll(ourDir, 0o755); err != nil {
+		return "", "", err
+	}
+	if err := os.MkdirAll(upDir, 0o755); err != nil {
+		return "", "", err
+	}
+	return ourDir, upDir, nil
+}
+
 // timedRun runs a binary with args, returning stdout, stderr, wall-clock, and a
-// run error (non-zero exit).
+// run error (non-zero exit). A binary path ending in ".pl" is invoked through
+// `perl` (prinseq ships as a Perl script, not a compiled binary).
 func timedRun(bin string, args []string) (stdout, stderr []byte, dur time.Duration, err error) {
-	cmd := exec.Command(bin, args...)
+	var cmd *exec.Cmd
+	if strings.HasSuffix(bin, ".pl") {
+		cmd = exec.Command("perl", append([]string{bin}, args...)...)
+	} else {
+		cmd = exec.Command(bin, args...)
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -160,9 +232,18 @@ func timedRun(bin string, args []string) (stdout, stderr []byte, dur time.Durati
 	return out.Bytes(), errb.Bytes(), dur, err
 }
 
-// resolvePlaceholders substitutes {bam}, {cram}, {vcf}, ... tokens in args with
-// the corresponding fixture path from the manifest.
-func resolvePlaceholders(args []string, m *fixtures.Manifest) ([]string, error) {
+// placeholderKeys are the manifest-backed fixture tokens resolvePlaceholders
+// substitutes. {out} is handled separately because it is per-invocation.
+var placeholderKeys = []string{
+	"bam", "cram", "vcf", "vcf_plain", "vcf_multi", "bed", "bed12", "fasta", "genome",
+	"fastq", "fastq_gz", "fastq1", "fastq2", "gff",
+}
+
+// resolvePlaceholders substitutes {bam}, {cram}, {vcf}, {fastq}, {gff}, ...
+// tokens in args with the corresponding fixture path from the manifest, and the
+// {out} token with outPrefix (the per-invocation output prefix; "" when the
+// entry does not use one).
+func resolvePlaceholders(args []string, m *fixtures.Manifest, outPrefix string) ([]string, error) {
 	out := make([]string, len(args))
 	for i, a := range args {
 		if !strings.Contains(a, "{") {
@@ -170,7 +251,13 @@ func resolvePlaceholders(args []string, m *fixtures.Manifest) ([]string, error) 
 			continue
 		}
 		r := a
-		for _, key := range []string{"bam", "cram", "vcf", "vcf_plain", "bed", "bed12", "fasta", "genome"} {
+		if strings.Contains(r, "{out}") {
+			if outPrefix == "" {
+				return nil, fmt.Errorf("arg %q uses {out} but the entry declares no OutputFiles", a)
+			}
+			r = strings.ReplaceAll(r, "{out}", outPrefix)
+		}
+		for _, key := range placeholderKeys {
 			tok := "{" + key + "}"
 			if strings.Contains(r, tok) {
 				p := m.Path(key)

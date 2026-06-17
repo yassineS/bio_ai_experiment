@@ -40,14 +40,30 @@ type Params struct {
 	ReadLen    int // bases per read
 	Variants   int // VCF records
 	Intervals  int // BED records
+
+	// FastqReads is the number of records in the single-end FASTQ fixture and
+	// the number of pairs in the paired-end fixtures. The QC/adapter-trimming
+	// tools (seqtk, prinseq, sickle, skewer, fastp) consume these.
+	FastqReads int
+	// FastqReadLen is the (mean) read length of the FASTQ fixtures; the
+	// generator varies the actual length per read around this so length-filter
+	// flags have something to do.
+	FastqReadLen int
+	// Genes is the number of gene loci in the GFF3 fixture (each gene expands
+	// into an mRNA plus a few exon/CDS rows over the shared coordinate space).
+	Genes int
+	// MultiSamples is the number of samples in the multi-sample VCF fixture
+	// (used by vcftools relatedness / LD / per-sample modes that need >1
+	// sample). The single-sample VCF keeps one sample for the simpler modes.
+	MultiSamples int
 }
 
 // paramsByScale maps each tier to its dimensions.
 var paramsByScale = map[Scale]Params{
-	Smoke:  {NumContigs: 2, ContigLen: 20_000, Reads: 2_000, ReadLen: 100, Variants: 400, Intervals: 500},
-	Small:  {NumContigs: 4, ContigLen: 250_000, Reads: 40_000, ReadLen: 150, Variants: 8_000, Intervals: 6_000},
-	Medium: {NumContigs: 8, ContigLen: 2_000_000, Reads: 300_000, ReadLen: 150, Variants: 60_000, Intervals: 40_000},
-	Large:  {NumContigs: 16, ContigLen: 12_000_000, Reads: 2_500_000, ReadLen: 150, Variants: 400_000, Intervals: 250_000},
+	Smoke:  {NumContigs: 2, ContigLen: 20_000, Reads: 2_000, ReadLen: 100, Variants: 400, Intervals: 500, FastqReads: 2_000, FastqReadLen: 100, Genes: 60, MultiSamples: 8},
+	Small:  {NumContigs: 4, ContigLen: 250_000, Reads: 40_000, ReadLen: 150, Variants: 8_000, Intervals: 6_000, FastqReads: 40_000, FastqReadLen: 150, Genes: 800, MultiSamples: 12},
+	Medium: {NumContigs: 8, ContigLen: 2_000_000, Reads: 300_000, ReadLen: 150, Variants: 60_000, Intervals: 40_000, FastqReads: 300_000, FastqReadLen: 150, Genes: 6_000, MultiSamples: 16},
+	Large:  {NumContigs: 16, ContigLen: 12_000_000, Reads: 2_500_000, ReadLen: 150, Variants: 400_000, Intervals: 250_000, FastqReads: 2_000_000, FastqReadLen: 150, Genes: 40_000, MultiSamples: 24},
 }
 
 // AllScales lists the tiers in increasing size order.

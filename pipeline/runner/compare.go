@@ -2,10 +2,15 @@ package runner
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"math"
+	"os"
 	"strconv"
 	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pipeline/matrix"
 )
 
 // stripProvenance removes non-reproducible provenance lines from a text output
@@ -165,4 +170,67 @@ func trunc(s string) string {
 		return s[:200] + "..."
 	}
 	return s
+}
+
+// CompareOutputFiles compares the named output files written under two prefixes
+// (e.g. "<ourdir>/out" vs "<updir>/out"). suffixes are the per-file extensions
+// relative to the prefix (e.g. ".frq", ".mosdepth.summary.txt"); each pair is
+// read (decompressing transparently when the suffix ends in ".gz") and compared
+// with the chosen mode. The first mismatching file fails the whole entry; a
+// missing-on-exactly-one-side file is a divergence. This is how the vcftools
+// and mosdepth matrices verify multi-file output.
+func CompareOutputFiles(ourPrefix, upPrefix string, suffixes []string, mode matrix.CompareMode) CompareResult {
+	var maxDev float64
+	for _, sfx := range suffixes {
+		ourPath := ourPrefix + sfx
+		upPath := upPrefix + sfx
+		ourBytes, ourErr := readMaybeGzip(ourPath)
+		upBytes, upErr := readMaybeGzip(upPath)
+		// Presence mismatch is a real divergence (one side wrote a file the
+		// other did not).
+		if (ourErr == nil) != (upErr == nil) {
+			return CompareResult{Equal: false, MaxDeviation: maxDev,
+				Detail: fmt.Sprintf("output file %q presence differs: ours_err=%v upstream_err=%v", sfx, ourErr, upErr)}
+		}
+		if ourErr != nil && upErr != nil {
+			// Neither side produced the file: nothing to compare for this suffix.
+			continue
+		}
+		var cmp CompareResult
+		if mode == matrix.Similarity {
+			cmp = CompareSimilarity(ourBytes, upBytes)
+		} else {
+			cmp = CompareByteExact(ourBytes, upBytes)
+		}
+		if cmp.MaxDeviation > maxDev {
+			maxDev = cmp.MaxDeviation
+		}
+		if !cmp.Equal {
+			return CompareResult{Equal: false, MaxDeviation: maxDev,
+				Detail: fmt.Sprintf("output file %q: %s", sfx, cmp.Detail)}
+		}
+	}
+	return CompareResult{Equal: true, MaxDeviation: maxDev}
+}
+
+// readMaybeGzip reads a file, transparently decompressing it when the path ends
+// in ".gz" (BGZF is gzip-compatible). Comparing decompressed payloads isolates
+// the data content from BGZF block-framing differences between our deflate
+// backend and upstream's.
+func readMaybeGzip(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if !strings.HasSuffix(path, ".gz") {
+		return io.ReadAll(f)
+	}
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	defer gr.Close()
+	gr.Multistream(true)
+	return io.ReadAll(gr)
 }
