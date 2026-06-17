@@ -1773,18 +1773,22 @@ Options:
                BAM files are written: <prefix>.0.bam, <prefix>.1.bam,
                and <prefix>.chimera.bam, alongside the TSV stream on
                stdout/-o.
-  -q INT       Min MAPQ. (Default 13.)
-  -Q INT       Min base quality. (Default 13.)
+  -q INT       Min het Phred-LOD: a pileup column is treated as a
+               variant (het) site only when its gl2cns LOD reaches
+               this. (Default 37.)
+  -Q, --min-BQ INT
+               Min base quality in het calling. (Default 13.)
   -D INT       Max depth observed per position. (Default 256.)
-  -F           Do not attempt to fix chimeras (disable the per-read
+  -F, --no-fix-chimera
+               Do not attempt to fix chimeras (disable the per-read
                chimera-repair pass; the read goes to its majority
                haplotype bucket regardless of split evidence).
-  -A           In -b mode, route ambiguous reads (weak support on
-               both haplotypes) to <prefix>.chimera.bam rather than
-               keeping them in their majority bucket.
-  -e           Use empirical-Bayes prior. Accepted-and-ignored
-               (upstream's variant-calling glue is not ported).
-  -l INT       Block-merge length cap. Accepted-and-ignored.
+  -A           In -b mode, drop reads with ambiguous phase: route them
+               to <prefix>.chimera.bam rather than keeping them in
+               their majority bucket.
+  -l FILE      List of sites to phase (CHROM<TAB>POS, 1-based).
+  -e           With -l, phase ONLY the listed sites (exclusive): sites
+               outside the list are dropped even when their LOD passes.
   -o, --output PATH  Output TSV path (default stdout).
   -h, --help   Show this help.
       --version  Show version.
@@ -1801,7 +1805,7 @@ func runPhase(args []string) int {
 	var (
 		blockK       int
 		outPrefix    string
-		minMAPQ      int
+		minVarLOD    int
 		minBaseQ     int
 		maxDepth     int
 		noFixChimera bool
@@ -1812,7 +1816,12 @@ func runPhase(args []string) int {
 	)
 	fs.IntVar(&blockK, "k", samtools.DefaultPhaseBlockWindow, "")
 	fs.StringVar(&outPrefix, "b", "", "")
-	fs.IntVar(&minMAPQ, "q", samtools.DefaultPhaseMinMAPQ, "")
+	// Upstream phase.c getopt string is "Q:eFq:k:b:l:D:A": -q is the
+	// minimum het Phred-LOD (g.min_varLOD, default 37) and -Q is the
+	// minimum base quality (g.min_baseQ, default 13). phase has NO
+	// MAPQ CLI flag — MAPQ only enters via min(baseQ, mapq) during het
+	// detection and the per-read core.qual==0 skip in fragment build.
+	fs.IntVar(&minVarLOD, "q", samtools.DefaultPhaseMinVarLOD, "")
 	fs.IntVar(&minBaseQ, "Q", samtools.DefaultPhaseMinBaseQ, "")
 	fs.IntVar(&maxDepth, "D", samtools.DefaultPhaseMaxDepth, "")
 	cliflag.BoolVar(fs, &noFixChimera, "F", "no-fix-chimera", false, "")
@@ -1876,7 +1885,7 @@ func runPhase(args []string) int {
 	defer out.Close()
 	if _, err := samtools.Phase(in, out, samtools.PhaseOptions{
 		BlockWindow:    blockK,
-		MinMAPQ:        uint8(minMAPQ),
+		MinVarLOD:      minVarLOD,
 		MinBaseQ:       uint8(minBaseQ),
 		MaxDepth:       maxDepth,
 		NoFixChimera:   noFixChimera,

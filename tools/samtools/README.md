@@ -460,10 +460,23 @@ against the upstream binary on simple (`TestLivePhase`) and complex
 chimera+`FL`+table-grow (`TestLivePhaseComplex`) fixtures, and the khash
 rehash has binary-free unit tests (`TestUnitFragKhash*`).
 
-> Known gap: lowering `-q` far below the default 37 (e.g. `-q 20`) can make
-> the *set* of het sites called diverge from upstream — an `errmod`/`gl2cns`
-> genotype-likelihood-LOD precision difference in het *discovery*, not in
-> the phasing DP. At the default LOD the het set and the phasing match.
+**Low-`-q` het discovery is byte-parity.** `-q` is the minimum het
+Phred-LOD (`g.min_varLOD`, default 37) — a pileup column is treated as a
+variant only when its `gl2cns` LOD reaches it. Lowering `-q` admits
+lower-confidence (e.g. marginal-base-quality) het sites; the het *set* and
+the whole `PS`/`FL`/`M`/`EV` stream match upstream byte-for-byte across a
+`-Q`×`-q` sweep that straddles the LOD boundary (`TestLivePhaseLowQ`,
+`TestLivePhaseMarginalQ`), and the base-admission / variant-column rule has
+binary-free unit tests (`TestUnitAdmitPhaseBase`,
+`TestUnitIsPhaseVariantColumn`).
+>
+> A former divergence here — a missing het block at low `-q` with
+> marginal-quality bases — was a **CLI flag-wiring bug**: `-q` had been
+> bound to an unused min-MAPQ field while the het-LOD threshold was
+> hardcoded at 37, so it dropped every below-37-LOD het regardless of `-q`.
+> `samtools phase` has **no** MAPQ CLI flag (MAPQ only enters via
+> `min(baseQ, mapQ)` in het detection and the per-read `core.qual==0` skip
+> in fragment build). Fixed by routing `-q` to `PhaseOptions.MinVarLOD`.
 
 ## Deviations from upstream samtools
 

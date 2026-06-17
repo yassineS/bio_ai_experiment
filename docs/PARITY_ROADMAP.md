@@ -3117,18 +3117,29 @@ half right, and the errmod half is now resolved:
   goldens in `pkg/htsgo/errmod`). `samtools phase` now matches upstream
   byte-for-byte across a `-q` sweep from 1 to 37 on Phred-40 fixtures
   (`TestLivePhaseLowQ`).
-- **Residual `phase`-specific gap (separate, NOT errmod).** A divergence
-  still exists, but *only* when reads carry MARGINAL base qualities at the
-  variant column AND a low `--min-BQ`/`-q` admits them: upstream calls het
-  sites that our `phase` pileup misses (it emits a singleton `M0` instead
-  of the expected phased `M1` block). This is **not** an errmod/gl2cns
-  precision issue — for those exact marginal columns the errmod+gl2cns LOD
-  is byte-identical to upstream (e.g. a 6-read G/T column at Q14-16 gives
-  `c=0006005b`, LOD 22, on both sides). The defect is upstream in the
-  phase block/fragment construction (`phase_emit.go` / `phase_pileup.go`):
-  which bases/reads reach errmod, and how vpos/cns blocks are formed for
-  low-depth marginal columns. Tracked as a `phase`-algorithm gap, not a
-  numeric-precision item.
+- **Residual `phase`-specific gap (CLOSED 2026-06).** The low-`-q`
+  marginal-base divergence is fixed. Root cause was a **flag-wiring
+  bug**, not a pileup/errmod issue: upstream phase's getopt string is
+  `"Q:eFq:k:b:l:D:A"`, where `-q` is the **min het Phred-LOD**
+  (`g.min_varLOD`, default 37) and `-Q` is the min base quality
+  (`g.min_baseQ`, default 13). Our CLI had bound `-q` to a spurious
+  `minMAPQ` field (phase has **no** MAPQ CLI flag — MAPQ only enters via
+  `min(baseQ, mapQ)` during het detection and the per-read
+  `core.qual==0` skip in fragment build), and `runUpstreamPhase`
+  **hardcoded** `minVarLOD: 37`. So `-q` never reached the variant-column
+  test `(c&0xffff)>>2 >= g.min_varLOD` (phase.c:758); the het-LOD
+  threshold was pinned at 37. With marginal Q15 bases a het column's
+  errmod/gl2cns LOD is 21 (byte-identical to upstream, `c=00060057`),
+  which is `< 37`, so every marginal het was dropped at *every* `-q` —
+  emitting no `M` block at all (the doc's reported `M0` singleton was the
+  pre-investigation symptom). Fix: added `PhaseOptions.MinVarLOD`
+  (negative = upstream default 37; `>= 0` used verbatim so `-q 0` works),
+  wired it through `runUpstreamPhase`, and bound the CLI `-q` to it. Now
+  byte-parity across a full `-Q`×`-q` sweep straddling the LOD boundary
+  (`TestLivePhaseMarginalQ`, plus binary-free `TestUnitAdmitPhaseBase` /
+  `TestUnitIsPhaseVariantColumn`); the default-LOD oracles
+  (`TestLivePhase`, `TestLivePhaseLowQ`, `TestLivePhaseComplex`) still
+  pass unchanged.
 - **libm boundary note (informational).** At the *double* level the beta
   table's interior entries use `exp`/`log1p`, and Go's `math.Exp` differs
   from glibc's `exp` by at most 1 ULP for a handful of arguments. That

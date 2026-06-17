@@ -78,34 +78,16 @@ func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, 
 			if p.isDel || p.isRefSkip {
 				continue
 			}
-			if int(p.qpos) >= len(p.b.Qual) {
+			if int(p.qpos) >= len(p.b.Qual) || int(p.qpos) >= len(p.b.Seq) {
 				continue
 			}
-			baseQ := p.b.Qual[p.qpos]
-			if baseQ < g.minBaseQ {
+			packed, ok := admitPhaseBase(
+				p.b.Seq[p.qpos], p.b.Qual[p.qpos], p.b.MapQ,
+				p.b.Flag&sam.FlagReverse != 0, g.minBaseQ)
+			if !ok {
 				continue
 			}
-			if int(p.qpos) >= len(p.b.Seq) {
-				continue
-			}
-			b, ok := nt16ToInt(p.b.Seq[p.qpos])
-			if !ok || b > 3 {
-				continue
-			}
-			qq := int(baseQ)
-			if int(p.b.MapQ) < qq {
-				qq = int(p.b.MapQ)
-			}
-			if qq < 4 {
-				qq = 4
-			} else if qq > 63 {
-				qq = 63
-			}
-			rev := uint16(0)
-			if p.b.Flag&sam.FlagReverse != 0 {
-				rev = 1
-			}
-			bases = append(bases, uint16(qq)<<5|rev<<4|uint16(b))
+			bases = append(bases, packed)
 		}
 		if len(bases) == 0 {
 			continue
@@ -132,8 +114,8 @@ func runUpstreamPhase(g *upstreamPhaseRunner, recs []*sam.Record, rname string, 
 				continue
 			}
 		}
-		// Not a variant?
-		if !inSet && int((c&0xffff)>>2) < g.minVarLOD {
+		// Not a variant? (phase.c:758)
+		if !isPhaseVariantColumn(c, g.minVarLOD, inSet) {
 			continue
 		}
 		// Push variant to cns.
@@ -264,6 +246,61 @@ func hashHasFragSpanning(vpos int, hash *fragKhash) bool {
 		}
 	}
 	return false
+}
+
+// admitPhaseBase decides whether a single pileup base is admitted into
+// the het-detection consensus, and if so returns its packed errmod
+// observation word. It is the pure, byte-faithful port of the per-base
+// body of phase.c's het-detection loop (phase.c:738-751), factored out
+// so the admission rule can be unit-tested without an upstream binary.
+//
+// seqChar is the ASCII nucleotide at the column (A/C/G/T/N/...), baseQ
+// the Phred base quality, mapQ the read's MAPQ, rev whether the read is
+// on the reverse strand, and minBaseQ the -Q/--min-BQ threshold.
+//
+// A base is dropped (ok=false) when its quality is below minBaseQ or it
+// is not one of A/C/G/T (seq_nt16_int code > 3 upstream — N and other
+// IUPAC codes never reach errmod). The packed word is
+// q<<5 | rev<<4 | base, where q = clamp(min(baseQ, mapQ), 4, 63) and
+// base is the 0..3 code, exactly as phase.c builds bases[k].
+func admitPhaseBase(seqChar, baseQ, mapQ byte, rev bool, minBaseQ uint8) (uint16, bool) {
+	if baseQ < minBaseQ {
+		return 0, false
+	}
+	b, ok := nt16ToInt(seqChar)
+	if !ok || b > 3 {
+		return 0, false
+	}
+	qq := int(baseQ)
+	if int(mapQ) < qq {
+		qq = int(mapQ)
+	}
+	if qq < 4 {
+		qq = 4
+	} else if qq > 63 {
+		qq = 63
+	}
+	r := uint16(0)
+	if rev {
+		r = 1
+	}
+	return uint16(qq)<<5 | r<<4 | uint16(b), true
+}
+
+// phaseHetLOD extracts the heterozygous Phred-scaled LOD from a gl2cns
+// result word. It mirrors phase.c's variant-column test expression
+// `(c&0xffff)>>2` (phase.c:758). A column is a variant (het) site iff
+// this LOD is >= the -q/min_varLOD threshold (or the site is in the
+// forced -l list).
+func phaseHetLOD(c uint32) int { return int((c & 0xffff) >> 2) }
+
+// isPhaseVariantColumn reports whether a column with gl2cns result c is
+// admitted as a variant (het) site given the -q minVarLOD threshold and
+// whether the position is forced by the -l site list (inSet). This is
+// the exact upstream gate at phase.c:758: forced sites always pass; all
+// others must reach the LOD threshold.
+func isPhaseVariantColumn(c uint32, minVarLOD int, inSet bool) bool {
+	return inSet || phaseHetLOD(c) >= minVarLOD
 }
 
 // nt16ToInt converts a single ACGT/N character to a 0..4 code (A=0,

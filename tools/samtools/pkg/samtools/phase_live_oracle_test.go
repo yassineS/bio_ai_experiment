@@ -183,3 +183,62 @@ func TestLivePhaseLowQ(t *testing.T) {
 		})
 	}
 }
+
+// phaseMarginalQFixtureSAM has two adjacent het sites at chr1:3 (G/T)
+// and chr1:7 (G/C), each backed by three G-carrying and three
+// alt-carrying reads, but with MARGINAL base qualities at every column:
+// Phred 15 ('0' = chr(15+33)). At Q15 the errmod+gl2cns LOD for each
+// het column is 21 — well below the default min het LOD of 37, so the
+// hets surface only when `-q` is lowered to admit them. This is the
+// fixture that exercises the residual low-`-q` marginal-base gap: it
+// requires that the `-q` flag actually reaches `g.min_varLOD` (it had
+// been misrouted to an unused min-MAPQ field, pinning the LOD threshold
+// at 37 and dropping every marginal het).
+const phaseMarginalQFixtureSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+	"@SQ\tSN:chr1\tLN:100\n" +
+	"r_a\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\t0000000000\n" +
+	"r_b\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\t0000000000\n" +
+	"r_c\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\t0000000000\n" +
+	"r_d\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\t0000000000\n" +
+	"r_e\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\t0000000000\n" +
+	"r_f\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\t0000000000\n"
+
+// TestLivePhaseMarginalQ is the parity gate for the residual low-`-q`
+// marginal-base gap. With Phred-15 bases the per-column het LOD is 21:
+// at the default min het LOD (37) upstream emits nothing, but as soon
+// as `-q` drops to 21 or below upstream calls a phased two-site M1
+// block. The pre-fix port misrouted `-q` to an unused min-MAPQ field
+// and hardcoded the het-LOD threshold at 37, so it dropped the het at
+// EVERY `-q` and emitted no M block at all. This test asserts
+// byte-for-byte parity of the whole phase stream (CC/PS/FL/M/EV///)
+// across a `-q` sweep that straddles the LOD-21 boundary, and across a
+// `-Q` (min base quality) sweep, against the genuine upstream binary.
+func TestLivePhaseMarginalQ(t *testing.T) {
+	live := upstreamSamtools(t)
+	ours := ourSamtoolsBinary(t)
+
+	dir := t.TempDir()
+	samPath := filepath.Join(dir, "phase_marginal.sam")
+	if err := os.WriteFile(samPath, []byte(phaseMarginalQFixtureSAM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bamPath := filepath.Join(dir, "phase_marginal.bam")
+	if err := os.WriteFile(bamPath, runSamtools(t, ours, "view", "-b", "--no-PG", samPath), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, minBQ := range []string{"1", "13"} {
+		for _, q := range []string{"0", "1", "5", "13", "20", "21", "22", "37"} {
+			minBQ, q := minBQ, q
+			t.Run("Q"+minBQ+"_q"+q, func(t *testing.T) {
+				args := []string{"phase", "--no-PG", "-Q", minBQ, "-q", q, bamPath}
+				up := runSamtools(t, live, args...)
+				gp := runSamtools(t, ours, args...)
+				if !bytes.Equal(up, gp) {
+					t.Errorf("DIVERGENCE at -Q %s -q %s: phase byte-stream differs\nupstream (%d bytes):\n%s\nours (%d bytes):\n%s",
+						minBQ, q, len(up), up, len(gp), gp)
+				}
+			})
+		}
+	}
+}
