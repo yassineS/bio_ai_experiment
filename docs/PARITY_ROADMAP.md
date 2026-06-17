@@ -164,9 +164,11 @@ A skimmable per-tool completion table lives in the top-level
 [`PROJECT_STATUS.md`](../PROJECT_STATUS.md), which also carries the
 **definitive remaining-gap list** and the **non-goals** list. Quick state:
 
-- **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp` (~99%; poly-G/poly-X
-  and sliding-window trimming byte-exact, SE adapter auto-detect
-  similarity-bounded and observed byte-identical), `htsfile`.
+- **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp` (100%; poly-G/poly-X
+  and sliding-window trimming byte-exact, multi-thread `--split` byte-exact
+  vs upstream per thread count, JSON report sub-fields — curves, kmer_count,
+  q40, sequencing, PE insert_size — byte/structurally-exact, SE adapter
+  auto-detect similarity-bounded and observed byte-identical), `htsfile`.
 - **Near done (small tails):** `prinseq` (~95%), `vcftools` (146/146
   flags, ~98%, output-column polish only), `bgzip`/`tabix` (~92%),
   `mosdepth` (~98%; CRAM input now landed), `bedtools` (37 bed* tools,
@@ -821,9 +823,27 @@ Done in the `claude/festive-planck-n9o2lm-fastp-tail` PR:
   matching upstream sequence set + counts exactly on the test fixture.
 - **Splitting output** (`-s`/`--split`, `-S`/`--split_by_lines`,
   `-d`/`--split_prefix_digits`): `tools/fastp/pkg/fastp/split.go`. File
-  naming and per-file boundaries match upstream byte-for-byte in
-  single-thread mode, including the PACK_SIZE=256 rollover quantization
-  (upstream's `markProcessed` is per-pack).
+  naming and per-file boundaries match upstream byte-for-byte in BOTH
+  single- and multi-thread mode (`-w 1` and `-w 4`), including the
+  PACK_SIZE=256 rollover quantization. The port reproduces upstream's exact
+  pack/thread assignment: the reader hands pack `i` to thread `i % thread`
+  and each thread owns a strided, disjoint set of split files (start index
+  = threadId, stride = thread), rolling its current file at a pack boundary
+  once its accumulated count reaches the per-file size (input-read count
+  capped at `N-1` for `--split N`; uncapped passed-read count for
+  `--split_by_lines`). Because the pack→thread counter is deterministic and
+  each thread consumes its packs in FIFO order, the per-file contents are
+  fully determined by the thread count — so we match upstream for any `-w`.
+  IMPORTANT: upstream is **not** thread-count-invariant (the task's earlier
+  "preserves input order regardless of thread count" premise was incorrect):
+  for the same input, `-w 1` and `-w 4` send different reads to a given
+  numbered file (e.g. `-S 4000` over 6000 reads yields 6 files at `-w 1`, 7
+  at `-w 2` with a trailing empty, 8 at `-w 4`). The contract is byte-parity
+  with upstream **per thread count**, validated in
+  `parity_split_mt_test.go` against the upstream binary for `-w 2/3/4`
+  (SE byNumber, SE byLines, SE byLines+filter, PE) plus the `-w 1` cases in
+  `parity_tail_test.go`. Binary-free `TestUnitSplit*` pin the assignment,
+  the zero-padded numbering, and the (intended) thread-dependence.
 
 Done in the `claude/festive-planck-n9o2lm-fastp-merge` PR (merge writer +
 adapter-fasta + poly-X knob + disable-adapter flag):
@@ -852,22 +872,44 @@ adapter-fasta + poly-X knob + disable-adapter flag):
   entire adapter block (matching upstream `adapter.enabled =
   !disable_adapter_trimming`).
 
-Remaining (documented):
+Both formerly-remaining residuals are now **closed** (multi-thread split
+file-boundary distribution; unemitted JSON sub-fields):
 
-- **`--split` read-count estimation under multi-threading**: the Go split is
-  single-threaded and sizes files from the exact buffered read count;
-  upstream's multi-threaded byte-extrapolated estimate produces a different
-  (non-deterministic) per-file distribution. Total content + order are
-  identical; only the multi-thread file boundaries differ. Single-thread
-  (`-w 1`) is byte-for-byte identical.
-- **JSON schema completeness**: `corrected_reads`/`corrected_bases` and
-  `overrepresented_sequences` are now emitted; a `kmer_count` block, the
-  `merged_and_filtered` summary block (emitted by upstream in merge mode),
-  and a couple of minor summary sub-fields upstream emits remain absent.
-  Merge-mode parity is asserted on the **merged FASTQ output bytes** (which
-  are byte-for-byte identical), not yet on the `merged_and_filtered` JSON
-  block — the `MergedReads` top-line counter is tracked in `ProcessStats`
-  but not surfaced in the JSON report.
+- **Multi-thread `--split` file-boundary distribution** — closed. See the
+  splitting bullet above: byte-parity with upstream for both `-w 1` and `-w 4`
+  (and `-w 2/3`), for `--split N` and `--split_by_lines`, SE and PE.
+- **JSON report sub-fields** — closed. The per-read blocks now emit, for BOTH
+  the before- and after-filtering streams, the full upstream
+  `Stats::reportJson` shape: `q40_bases`; `quality_curves` with per-base
+  `A`/`T`/`C`/`G` + `mean` (previously only `mean`); `content_curves` with
+  `A`/`T`/`C`/`G`/`N`/`GC` in upstream order (previously a 5-key subset in the
+  wrong order, before-only); the 1024-entry `kmer_count` 5-mer histogram
+  (previously absent); and the real per-read `q20_bases`/`q30_bases` totals
+  (previously hard-coded to 0, before-only). The top-level report also now
+  emits `summary.sequencing` (the deterministic "single/paired end (N
+  cycles[ + N cycles])" descriptor) and, for paired-end, the `insert_size`
+  block (`peak`, `unknown`, full 512-bin `histogram`) reproduced from
+  upstream's overlap-analysis insert-size binning
+  (`PairEndProcessor::statInsertSize`). All of these are validated
+  byte/structurally-exact against the upstream binary in
+  `parity_json_fields_test.go` (the curves are deterministic but compared
+  within a 1e-4 absolute tolerance because upstream emits them through C++
+  6-significant-digit float formatting; integer counts and the histogram are
+  compared exactly), with binary-free `TestUnit*` for the curve/kmer/insert
+  builders.
+
+  **Intentionally excluded (non-reproducible):** `summary.fastp_version` (the
+  upstream version string vs our `tool.version`), the top-level `command`
+  string, and our `tool.time` wall-clock field — these are not deterministic
+  across runs/builds and are excluded from the parity comparison, consistent
+  with the existing JSON parity policy.
+
+Schema note: our per-read blocks additionally carry a `length_distribution`
+object that upstream's JSON omits (upstream surfaces that data only in the HTML
+report). It is a documented Go extension, `omitempty`, and does not affect the
+upstream-field comparison. The merge-mode `merged_and_filtered` block rename is
+emitted (the after-filtering block is renamed and `read2_after_filtering`
+dropped when `-m`/`--merge` is set).
 
 #### Validated-parity audit
 

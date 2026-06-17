@@ -420,8 +420,14 @@ This is a simplified Go implementation focusing on core preprocessing functional
 - ✅ **Output splitting** (`-s`/`--split`, `-S`/`--split_by_lines`,
   `-d`/`--split_prefix_digits`) — the per-file boundaries reproduce upstream's
   multi-threaded pack/thread distribution (pack i -> thread i%`-w`, each thread
-  owning a strided set of split files), so every split file is byte-for-byte
-  identical to upstream for any `-w`, not just `-w 1`.
+  owning a strided set of split files, rolling its file at a pack boundary once
+  its accumulated count reaches the per-file size), so every split file is
+  byte-for-byte identical to upstream for any `-w` (validated for `-w 1` and
+  `-w 2/3/4`, SE and PE, `--split N` and `--split_by_lines`). Note: upstream's
+  split is **not** thread-count-invariant — `-w 1` and `-w 4` send different
+  reads to a given numbered file (and `--split_by_lines` even yields a
+  different file *count* per `-w`); the contract is byte-parity with upstream
+  **per thread count**, which the port meets exactly.
 - ✅ **Multi-threading support**
 - ✅ **Duplication evaluation** (`--dup_calc_accuracy`) and dedup
   (`--dedup`)
@@ -460,11 +466,41 @@ appropriate to each:
   `TestUnitDetectAdapterSE`). In practice the recovered adapter and the
   trimmed output are byte-identical to upstream.
 
-### Documented residuals (not 1:1)
+### JSON report parity
 
-- The **`merged_and_filtered`** JSON summary block (and a couple of minor
-  JSON sub-fields) are not yet emitted; the merged FASTQ output *bytes* are
-  byte-identical to upstream.
+The `--json` report reproduces upstream's `fastp.json` structure
+field-for-field (`jsonreporter.cpp` + `Stats::reportJson`), validated against
+the upstream binary in `parity_json_fields_test.go`:
+
+- Per-read blocks (`read{1,2}_{before,after}_filtering`) emit, for **both** the
+  before- and after-filtering streams: `q20_bases`/`q30_bases`/`q40_bases`,
+  `total_cycles`, `quality_curves` (per-base `A`/`T`/`C`/`G` + `mean`),
+  `content_curves` (`A`/`T`/`C`/`G`/`N`/`GC`), and the 1024-entry `kmer_count`
+  5-mer histogram. Integer counts and `kmer_count` are **exact**; the curves
+  are deterministic but compared within a `1e-4` tolerance because upstream
+  emits them through C++ 6-significant-digit float formatting.
+- `summary.sequencing` (the deterministic "single/paired end (N cycles[ + N
+  cycles])" descriptor) — exact.
+- Paired-end `insert_size` block (`peak`, `unknown`, full 512-bin `histogram`),
+  reproduced from upstream's overlap-analysis insert-size binning — exact.
+- The **`merged_and_filtered`** block rename in merge mode (`-m`/`--merge`) is
+  emitted (the after-filtering block is renamed and `read2_after_filtering`
+  dropped, matching upstream).
+
+**Intentionally excluded from the parity comparison (non-reproducible):**
+`summary.fastp_version` (upstream's version string vs our `tool.version`), the
+top-level `command` string, and our `tool.time` wall-clock field — none are
+deterministic across runs/builds.
+
+**Go extension:** the per-read blocks also carry a `length_distribution`
+object that upstream's JSON omits (upstream surfaces that data only in the HTML
+report); it is `omitempty` and does not affect the upstream-field comparison.
+
+### Documented residuals
+
+None. Both formerly-open residuals — the multi-thread `--split` file-boundary
+distribution and the unemitted JSON report sub-fields — are now closed and
+validated against the upstream binary (see above).
 
 ## Testing
 

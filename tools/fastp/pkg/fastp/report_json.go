@@ -19,6 +19,7 @@ type reportJSON struct {
 	Summary           jsonSummary        `json:"summary"`
 	FilteringResult   jsonFiltering      `json:"filtering_result"`
 	Duplication       jsonDuplication    `json:"duplication"`
+	InsertSize        *jsonInsertSize    `json:"insert_size,omitempty"`
 	AdapterCutting    jsonAdapterCutting `json:"adapter_cutting"`
 	Read1BeforeFilter jsonReadStats      `json:"read1_before_filtering"`
 	Read2BeforeFilter *jsonReadStats     `json:"read2_before_filtering,omitempty"`
@@ -28,8 +29,21 @@ type reportJSON struct {
 }
 
 type jsonSummary struct {
-	Before jsonSummarySection `json:"before_filtering"`
-	After  jsonSummarySection `json:"after_filtering"`
+	// Sequencing describes the layout and cycle counts, e.g.
+	// "single end (100 cycles)" or "paired end (100 cycles + 100 cycles)".
+	// It is deterministic given the input, matching upstream's
+	// summary.sequencing (jsonreporter.cpp:28-33).
+	Sequencing string             `json:"sequencing"`
+	Before     jsonSummarySection `json:"before_filtering"`
+	After      jsonSummarySection `json:"after_filtering"`
+}
+
+// jsonInsertSize mirrors upstream's insert_size block (jsonreporter.cpp:121-134),
+// emitted only for paired-end input.
+type jsonInsertSize struct {
+	Peak      int     `json:"peak"`
+	Unknown   int64   `json:"unknown"`
+	Histogram []int64 `json:"histogram"`
 }
 
 type jsonSummarySection struct {
@@ -69,15 +83,23 @@ type jsonAdapterCutting struct {
 }
 
 type jsonReadStats struct {
-	TotalReads               int64                `json:"total_reads"`
-	TotalBases               int64                `json:"total_bases"`
-	Q20Bases                 int64                `json:"q20_bases"`
-	Q30Bases                 int64                `json:"q30_bases"`
-	TotalCycles              int                  `json:"total_cycles"`
-	QualityCurves            map[string][]float64 `json:"quality_curves,omitempty"`
-	ContentCurves            map[string][]float64 `json:"content_curves,omitempty"`
-	LengthDistribution       map[string]int64     `json:"length_distribution,omitempty"`
-	OverrepresentedSequences map[string]int64     `json:"overrepresented_sequences,omitempty"`
+	TotalReads    int64                `json:"total_reads"`
+	TotalBases    int64                `json:"total_bases"`
+	Q20Bases      int64                `json:"q20_bases"`
+	Q30Bases      int64                `json:"q30_bases"`
+	Q40Bases      int64                `json:"q40_bases"`
+	TotalCycles   int                  `json:"total_cycles"`
+	QualityCurves map[string][]float64 `json:"quality_curves,omitempty"`
+	ContentCurves map[string][]float64 `json:"content_curves,omitempty"`
+	// KmerCount is the 5-mer histogram (1024 entries) matching upstream's
+	// kmer_count block. It is computed for both the before and after streams.
+	KmerCount map[string]int64 `json:"kmer_count,omitempty"`
+	// OverrepresentedSequences is emitted for both streams when -p/-P is on.
+	OverrepresentedSequences map[string]int64 `json:"overrepresented_sequences,omitempty"`
+	// LengthDistribution is a Go extension (upstream's JSON does not include
+	// it; the data is carried in the HTML report there). Kept for downstream
+	// consumers; omitted when empty.
+	LengthDistribution map[string]int64 `json:"length_distribution,omitempty"`
 }
 
 type jsonTool struct {
@@ -151,6 +173,7 @@ func buildJSONReport(stats *ProcessStats) reportJSON {
 
 	r := reportJSON{
 		Summary: jsonSummary{
+			Sequencing: sequencingInfo(stats, pe),
 			Before: jsonSummarySection{
 				TotalReads:      int64(stats.TotalReads),
 				TotalBases:      totalBefore,
@@ -208,30 +231,84 @@ func buildJSONReport(stats *ProcessStats) reportJSON {
 		r2a := buildReadStats(stats, 1, false)
 		r.Read2BeforeFilter = &r2b
 		r.Read2AfterFilter = &r2a
+		if is := buildInsertSize(stats); is != nil {
+			r.InsertSize = is
+		}
 	}
 	return r
 }
 
+// sequencingInfo builds the summary.sequencing descriptor, deterministic given
+// the input cycle counts, matching jsonreporter.cpp:28-33. For PE it reports
+// both read1 and read2 cycle counts.
+func sequencingInfo(s *ProcessStats, pe bool) string {
+	c1 := 0
+	if s.curvesBefore[0] != nil {
+		c1 = s.curvesBefore[0].cycles()
+	}
+	if pe {
+		c2 := 0
+		if s.curvesBefore[1] != nil {
+			c2 = s.curvesBefore[1].cycles()
+		}
+		return fmt.Sprintf("paired end (%d cycles + %d cycles)", c1, c2)
+	}
+	return fmt.Sprintf("single end (%d cycles)", c1)
+}
+
+// buildInsertSize emits upstream's insert_size block from the accumulated
+// insert-size histogram. Returns nil when no histogram was collected.
+func buildInsertSize(s *ProcessStats) *jsonInsertSize {
+	if len(s.InsertHist) == 0 {
+		return nil
+	}
+	max := len(s.InsertHist) - 1 // last bucket is "unknown"
+	peak := 0
+	peakCount := int64(-1)
+	for d := 0; d < max; d++ {
+		if s.InsertHist[d] > peakCount {
+			peakCount = s.InsertHist[d]
+			peak = d
+		}
+	}
+	hist := make([]int64, max)
+	copy(hist, s.InsertHist[:max])
+	return &jsonInsertSize{
+		Peak:      peak,
+		Unknown:   s.InsertHist[max],
+		Histogram: hist,
+	}
+}
+
 // buildReadStats fills jsonReadStats for the given read index. before
-// selects the BEFORE-filtering histograms; otherwise AFTER.
+// selects the BEFORE-filtering stream; otherwise AFTER. The per-cycle
+// quality_curves / content_curves, the kmer_count histogram, the q40 total
+// and (before) the overrepresented sequences are taken from the readCurves
+// accumulator, reproducing upstream Stats::reportJson for BOTH streams.
 func buildReadStats(s *ProcessStats, readIdx int, before bool) jsonReadStats {
 	hist := s.LengthHistBefore[readIdx]
+	curves := s.curvesBefore[readIdx]
+	streamIdx := 0
 	if !before {
 		hist = s.LengthHistAfter[readIdx]
+		curves = s.curvesAfter[readIdx]
+		streamIdx = 1
 	}
 	out := jsonReadStats{
 		TotalReads:         readTotalReads(s, readIdx, before),
 		TotalBases:         readTotalBases(s, readIdx, before),
-		Q20Bases:           0, // approximate per-read Q20/Q30 not tracked
-		Q30Bases:           0,
-		TotalCycles:        len(s.QualSumByCycle[readIdx]),
+		Q20Bases:           s.Q20ByRead[streamIdx][readIdx],
+		Q30Bases:           s.Q30ByRead[streamIdx][readIdx],
 		LengthDistribution: lengthHistToJSON(hist),
 	}
+	if curves != nil {
+		out.Q40Bases = curves.q40
+		out.TotalCycles = curves.cycles()
+		out.QualityCurves = curves.qualityCurves()
+		out.ContentCurves = curves.contentCurves()
+		out.KmerCount = curves.kmerCounts()
+	}
 	if before {
-		// Per-cycle quality + composition only captured BEFORE filtering.
-		qc, cc := cycleCurves(s, readIdx)
-		out.QualityCurves = qc
-		out.ContentCurves = cc
 		// Overrepresented sequences are sampled on the before-filtering
 		// stream (upstream emits them under read{1,2}_before_filtering).
 		if s.overrep[readIdx] != nil {
@@ -265,36 +342,6 @@ func readTotalBases(s *ProcessStats, readIdx int, before bool) int64 {
 		return s.CleanBasesR1
 	}
 	return s.CleanBasesR2
-}
-
-// cycleCurves returns the per-cycle mean quality and per-cycle base
-// fraction curves, keyed by metric name.
-func cycleCurves(s *ProcessStats, readIdx int) (quality map[string][]float64, content map[string][]float64) {
-	n := len(s.QualSumByCycle[readIdx])
-	if n == 0 {
-		return nil, nil
-	}
-	mean := make([]float64, n)
-	for i := 0; i < n; i++ {
-		c := s.QualCountByCycle[readIdx][i]
-		if c > 0 {
-			mean[i] = float64(s.QualSumByCycle[readIdx][i]) / float64(c)
-		}
-	}
-	quality = map[string][]float64{"mean": mean}
-
-	content = make(map[string][]float64, 5)
-	for b, name := range []string{"A", "C", "G", "T", "N"} {
-		row := make([]float64, n)
-		for i := 0; i < n; i++ {
-			c := s.QualCountByCycle[readIdx][i]
-			if c > 0 {
-				row[i] = float64(s.BaseCountByCycle[readIdx][b][i]) / float64(c)
-			}
-		}
-		content[name] = row
-	}
-	return quality, content
 }
 
 // dupHistToJSON converts a duplication count -> reads-at-that-count map

@@ -52,6 +52,19 @@ func genSplitFASTQ(t *testing.T, path string, n int) {
 	}
 }
 
+// Cross-thread determinism: upstream fastp does NOT preserve a single
+// read->file assignment across worker-thread counts. It assigns pack i to
+// thread i%threads and gives each thread a strided, disjoint set of split
+// files, so both --split N and --split_by_lines produce a thread-count-
+// dependent distribution of reads to files (e.g. -S 4000 over 6000 reads:
+// -w 1 -> 6 files, -w 2 -> 7 files with a trailing empty, -w 4 -> 8 files of
+// ~512 reads; and even -s 4 sends different reads to 0001.out.fq for -w 1 vs
+// -w 4). The Go port reproduces this exactly. The contract is therefore
+// byte-parity with upstream PER thread count (asserted by the MultiThread
+// parity tests below and the single-thread cases in parity_tail_test.go), not
+// a non-existent cross-thread invariant; the binary-free
+// TestUnitSplitThreadAssignmentDiffers pins the thread-dependence directly.
+
 // TestParity_Fastp_SplitByNumber_MultiThread compares the upstream and Go
 // per-file split output for -s N across several worker-thread counts. With all
 // reads passing, byFileNumber rollover is keyed on input pack counts, so this

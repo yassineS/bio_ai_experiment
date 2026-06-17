@@ -100,6 +100,7 @@ type ProcessOptions struct {
 	OverlapRequire          int // Minimum overlap length (default 30).
 	OverlapDiffLimit        int // Maximum mismatched bases in overlap (default 5).
 	OverlapDiffPercentLimit int // Maximum mismatch percentage in overlap (default 20).
+	InsertSizeMax           int // Insert-size histogram cap / unknown bucket (upstream --insert_size_max, default 512).
 
 	// Overlap analysis (paired-end)
 	MergeOverlap bool
@@ -177,6 +178,7 @@ func DefaultProcessOptions() ProcessOptions {
 		OverlapRequire:          30,
 		OverlapDiffLimit:        5,
 		OverlapDiffPercentLimit: 20,
+		InsertSizeMax:           defaultInsertSizeMax,
 		MergeOverlap:            false,
 		MinOverlap:              30,
 		MaxMismatch:             5,
@@ -255,6 +257,26 @@ type ProcessStats struct {
 	// Length histograms BEFORE and AFTER filtering, indexed by read (0/1).
 	LengthHistBefore [2]map[int]int64
 	LengthHistAfter  [2]map[int]int64
+
+	// Base-resolved per-cycle curves + 5-mer histograms, indexed by read
+	// (0/1), for the BEFORE and AFTER streams. These drive the JSON report's
+	// quality_curves / content_curves / kmer_count / q40_bases sub-fields and
+	// the per-read q20/q30 totals (reproducing upstream Stats; see
+	// report_curves.go). Allocated lazily by recordBefore/recordAfter.
+	curvesBefore [2]*readCurves
+	curvesAfter  [2]*readCurves
+
+	// Per-read aggregate quality buckets, split by stream and read index, so
+	// the per-read JSON blocks report the real q20/q30 totals upstream emits
+	// (rather than the previous 0 placeholders). Index [0]=before, [1]=after.
+	Q20ByRead [2][2]int64
+	Q30ByRead [2][2]int64
+
+	// Insert-size histogram for paired-end overlap analysis, reproducing
+	// upstream's mInsertHist (peprocessor.cpp). Index d in [0, insertSizeMax)
+	// counts pairs whose inferred insert size is d; index insertSizeMax is the
+	// "unknown" bucket (no detectable overlap). Populated only in PE mode.
+	InsertHist []int64
 
 	// Overrepresented-sequence analyzers, indexed by read (0/1), populated
 	// when OverrepAnalysis is enabled. Tracks the before-filtering stream.
@@ -351,11 +373,17 @@ func (s *ProcessStats) recordBefore(record *fastq.Record, readIdx int, encoding 
 		s.QualCountByCycle[readIdx][i]++
 		if q >= 20 {
 			s.Q20BasesBefore++
+			s.Q20ByRead[0][readIdx]++
 		}
 		if q >= 30 {
 			s.Q30BasesBefore++
+			s.Q30ByRead[0][readIdx]++
 		}
 	}
+	if s.curvesBefore[readIdx] == nil {
+		s.curvesBefore[readIdx] = &readCurves{}
+	}
+	s.curvesBefore[readIdx].stat(record, offset)
 	if s.overrep[readIdx] != nil {
 		s.overrep[readIdx].sampleRead(string(record.Sequence))
 	}
@@ -388,11 +416,56 @@ func (s *ProcessStats) recordAfter(record *fastq.Record, readIdx int, encoding f
 		q := int(record.Quality[i]) - offset
 		if q >= 20 {
 			s.Q20BasesAfter++
+			s.Q20ByRead[1][readIdx]++
 		}
 		if q >= 30 {
 			s.Q30BasesAfter++
+			s.Q30ByRead[1][readIdx]++
 		}
 	}
+	if s.curvesAfter[readIdx] == nil {
+		s.curvesAfter[readIdx] = &readCurves{}
+	}
+	s.curvesAfter[readIdx].stat(record, offset)
+}
+
+// defaultInsertSizeMax is upstream fastp's default --insert_size_max (512):
+// the histogram length and the cap/"unknown" bucket index.
+const defaultInsertSizeMax = 512
+
+// statInsertSize reproduces upstream PairEndProcessor::statInsertSize
+// (peprocessor.cpp:698-711): it runs the overlap analysis on the pair and
+// bins the inferred insert size into InsertHist. frontTrimmed1/2 account for
+// bases removed by UMI/front trimming before this point (0 in the common
+// case). A pair with no detectable overlap is binned at insertSizeMax (the
+// "unknown" bucket); any computed size above insertSizeMax is clamped there.
+func (s *ProcessStats) statInsertSize(record1, record2 *fastq.Record, opts ProcessOptions, frontTrimmed1, frontTrimmed2 int) {
+	if record1 == nil || record2 == nil {
+		return
+	}
+	max := opts.InsertSizeMax
+	if max <= 0 {
+		max = defaultInsertSizeMax
+	}
+	if s.InsertHist == nil {
+		s.InsertHist = make([]int64, max+1)
+	}
+	rcSeq2 := reverseComplement(string(record2.Sequence))
+	ov := analyzeOverlapPair(string(record1.Sequence), rcSeq2,
+		opts.OverlapDiffLimit, opts.OverlapRequire,
+		float64(opts.OverlapDiffPercentLimit)/100.0)
+	isize := max
+	if ov.Overlapped {
+		if ov.Offset > 0 {
+			isize = len(record1.Sequence) + len(record2.Sequence) - ov.OverlapLen + frontTrimmed1 + frontTrimmed2
+		} else {
+			isize = ov.OverlapLen + frontTrimmed1 + frontTrimmed2
+		}
+	}
+	if isize > max {
+		isize = max
+	}
+	s.InsertHist[isize]++
 }
 
 // OverlapResult represents the result of paired-end overlap analysis
@@ -574,6 +647,14 @@ func processPairOnce(record1, record2 *fastq.Record, writer1, writer2, mergeWrit
 	stats.TotalBases += int64(len(record1.Sequence) + len(record2.Sequence))
 	stats.recordBefore(record1, 0, encoding)
 	stats.recordBefore(record2, 1, encoding)
+
+	// Insert-size histogram (upstream's mInsertSizeHist). Upstream runs the
+	// overlap analysis once per pair (after poly-G trimming, before adapter
+	// trimming / poly-X) and bins the inferred insert size. We reproduce the
+	// same overlap analysis and binning here on the pre-trim reads; the common
+	// case (no poly-G, no front trim) matches upstream byte-for-byte. See
+	// statInsertSize and peprocessor.cpp:698-711.
+	stats.statInsertSize(record1, record2, opts, 0, 0)
 
 	// Duplication evaluation: hash the R1 sequence (matches upstream
 	// fastp). When --dedup is on and the read is a duplicate, drop
