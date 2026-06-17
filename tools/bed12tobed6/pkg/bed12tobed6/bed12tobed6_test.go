@@ -80,6 +80,36 @@ func TestConvert_NumberBlocksReverseStrand(t *testing.T) {
 	}
 }
 
+// TestUnit_ScorePropagation checks (binary-free) that the parent record's
+// score column is carried unchanged onto each emitted BED6 block, not zeroed.
+func TestUnit_ScorePropagation(t *testing.T) {
+	in := "chr1\t100\t300\tfeatA\t500\t+\t100\t300\t0,0,0\t2\t50,50\t0,150\n"
+	want := "chr1\t100\t150\tfeatA\t500\t+\n" +
+		"chr1\t250\t300\tfeatA\t500\t+\n"
+	var out bytes.Buffer
+	if _, err := Convert(strings.NewReader(in), &out, Options{}); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got := out.String(); got != want {
+		t.Fatalf("score not propagated:\nwant=%q\ngot =%q", want, got)
+	}
+}
+
+// TestUnit_NumberBlocksDotStrand checks that -n reverses numbering for any
+// non-"+" strand, including ".", matching upstream's `strand == "+"` test.
+func TestUnit_NumberBlocksDotStrand(t *testing.T) {
+	in := "chr3\t0\t120\tfeatC\t42\t.\t0\t120\t0,0,0\t2\t20,30\t0,90\n"
+	want := "chr3\t0\t20\tfeatC\t2\t.\n" +
+		"chr3\t90\t120\tfeatC\t1\t.\n"
+	var out bytes.Buffer
+	if _, err := Convert(strings.NewReader(in), &out, Options{NumberBlocks: true}); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got := out.String(); got != want {
+		t.Fatalf("dot-strand numbering mismatch:\nwant=%q\ngot =%q", want, got)
+	}
+}
+
 func TestConvert_EmptyInput(t *testing.T) {
 	var out bytes.Buffer
 	n, err := Convert(strings.NewReader(""), &out, Options{})
