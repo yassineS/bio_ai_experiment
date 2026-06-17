@@ -1,3 +1,7 @@
+# Parity-pipeline generated fixtures, built binaries, and reports (never commit
+# these multi-MB artifacts; only the generators/matrix/runner/docs are tracked).
+pipeline/.fixtures/
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
