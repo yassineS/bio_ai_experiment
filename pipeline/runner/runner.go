@@ -70,7 +70,10 @@ func RunEntry(cfg Config, e matrix.Entry) Result {
 		Compare: string(e.CompareModeOrDefault()),
 		Heavy:   e.Heavy,
 	}
-	if e.Skip != "" {
+	// PIPELINE_NO_SKIP=1 force-runs entries that carry a documented Skip, so a
+	// maintainer can re-triage whether a skip is still warranted (e.g. after a
+	// tool fix lands) without editing the matrix. Off by default.
+	if e.Skip != "" && os.Getenv("PIPELINE_NO_SKIP") == "" {
 		res.Status = StatusSkip
 		res.Detail = e.Skip
 		return res

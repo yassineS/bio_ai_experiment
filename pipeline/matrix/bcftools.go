@@ -269,10 +269,9 @@ func bcftoolsSkips() []Entry {
 			"bcftools merge --force-samples: sample renaming now works, but the INFO combine rules are not applied — upstream sums "+
 				"INFO/DP across merged records (DP=106) where our port keeps the first value (DP=53). Residual INFO-merge gap. Owned by the bcftools agent.",
 			"--force-samples", "{vcf}", "{vcf}"),
-		skip("convert", "convert",
-			"bcftools convert's interchange formats (GEN/SAMPLE, HAP/LEGEND, tsv) write multiple prefixed files and the round-trips "+
-				"diverge on header/field ordering; not expressible as a single byte-exact stdout. Owned by the bcftools agent.",
-			"--gvcf2vcf", "-f", "{fasta}", "{vcf_plain}"),
+		// convert --gvcf2vcf writes a full VCF to stdout and is byte-exact
+		// (provenance-stripped) against upstream — re-activated.
+		mkBcf("convert", "convert", InputVCFPlain, ByteExact, "--gvcf2vcf", "-f", "{fasta}", "{vcf_plain}"),
 		skip("reheader", "reheader",
 			"bcftools reheader rewrites a VCF/BCF header in place and (for BCF) emits binary; it has no single-command text-output parity "+
 				"form distinct from the per-tool suite's checks. Owned by the bcftools agent.",

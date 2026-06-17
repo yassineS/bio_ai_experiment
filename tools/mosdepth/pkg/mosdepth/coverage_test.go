@@ -1,6 +1,7 @@
 package mosdepth
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
@@ -125,7 +126,7 @@ func TestCovAccumRegionStats(t *testing.T) {
 	//   0..2 -> 1, 2..5 -> 2, 5..7 -> 1, 7..20 -> 0
 	a.addRecord(&sam.Record{Pos: 1, Cigar: mustCigar(t, "5M")}, false)
 	a.addRecord(&sam.Record{Pos: 3, Cigar: mustCigar(t, "5M")}, false)
-	sum, perTh, minD, maxD := a.regionStats(0, 7, []int{1, 2}, nil)
+	sum, perTh, minD, maxD, _ := a.regionStats(0, 7, []int{1, 2}, nil, 0)
 	// Bases at depth >= 1: positions 0..6 (7 bases). At >= 2: positions 2..4 (3 bases).
 	if perTh[0] != 7 {
 		t.Errorf(">=1 threshold: got %d, want 7", perTh[0])
@@ -142,11 +143,39 @@ func TestCovAccumRegionStats(t *testing.T) {
 	}
 }
 
+// TestCovAccumRegionStats_IMean verifies the regions mean is the per-base
+// divide-then-accumulate Σ(depth_i/L) that upstream mosdepth's imean computes,
+// NOT (Σ depth_i)/L. The two differ by float rounding on boundary values: a
+// region summing to 945 over width 280 has exact quotient 3.375, but the
+// per-base accumulation lands just below 3.375 (so %.2f prints 3.37, matching
+// upstream, where sum/width would print 3.38). We reconstruct that exact case.
+func TestCovAccumRegionStats_IMean(t *testing.T) {
+	const width = 280
+	a := newCovAccum(width)
+	// Lay down coverage summing to 945 over [0,280): 105 bases at depth 4
+	// (420) + 175 bases at depth 3 (525) = 945; 945/280 = 3.375 exactly.
+	a.addRecord(&sam.Record{Pos: 1, Cigar: mustCigar(t, "280M")}, false) // depth 1 over all
+	a.addRecord(&sam.Record{Pos: 1, Cigar: mustCigar(t, "280M")}, false) // depth 2
+	a.addRecord(&sam.Record{Pos: 1, Cigar: mustCigar(t, "280M")}, false) // depth 3
+	a.addRecord(&sam.Record{Pos: 1, Cigar: mustCigar(t, "105M")}, false) // +1 over first 105 -> depth 4
+	sum, _, _, _, fmean := a.regionStats(0, width, nil, nil, float64(width))
+	if sum != 945 {
+		t.Fatalf("sum: got %d, want 945", sum)
+	}
+	// sum/width is exactly 3.375; the per-base imean must be strictly below it.
+	if fmean >= float64(sum)/float64(width) {
+		t.Errorf("imean fmean=%.17g must be < sum/width=%.17g (per-base accumulation)", fmean, float64(sum)/float64(width))
+	}
+	if got := strconv.FormatFloat(fmean, 'f', 2, 64); got != "3.37" {
+		t.Errorf("formatted imean = %s, want 3.37 (sum/width would give 3.38)", got)
+	}
+}
+
 // TestCovAccumRegionStats_Empty handles the degenerate case where end <= beg.
 func TestCovAccumRegionStats_Empty(t *testing.T) {
 	a := newCovAccum(20)
 	a.addRecord(&sam.Record{Pos: 1, Cigar: mustCigar(t, "5M")}, false)
-	sum, perTh, _, _ := a.regionStats(5, 5, []int{1}, nil)
+	sum, perTh, _, _, _ := a.regionStats(5, 5, []int{1}, nil, 0)
 	if sum != 0 {
 		t.Errorf("empty sum: got %d", sum)
 	}

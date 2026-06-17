@@ -1478,11 +1478,20 @@ func (s *statistics) outputHWE(prefix string) error {
 	fmt.Fprintln(f, "CHR\tPOS\tOBS(HOM1/HET/HOM2)\tE(HOM1/HET/HOM2)\tChiSq_HWE\tP_HWE\tP_HET_DEFICIT\tP_HET_EXCESS")
 
 	for _, stat := range s.siteHWE {
-		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%.6e\t%.6e\t%.6e\t%.6e\n",
+		// A monomorphic site has zero expected homozygotes, so the ChiSq sum is
+		// 0/0 = NaN. Upstream is C++ and printf renders that NaN as glibc's
+		// "-nan" (the quiet-NaN sign bit is set); Go's %e renders it as "NaN".
+		// Emit "-nan" to match byte-for-byte. The p-values are computed by the
+		// exact test and never go NaN here, so only ChiSq needs the guard.
+		chiSqStr := fmt.Sprintf("%.6e", stat.chiSq)
+		if math.IsNaN(stat.chiSq) {
+			chiSqStr = "-nan"
+		}
+		fmt.Fprintf(f, "%s\t%d\t%d/%d/%d\t%.2f/%.2f/%.2f\t%s\t%.6e\t%.6e\t%.6e\n",
 			stat.chrom, stat.pos,
 			stat.obsHom1, stat.obsHet, stat.obsHom2,
 			stat.expHom1, stat.expHet, stat.expHom2,
-			stat.chiSq, stat.pHWE, stat.pLo, stat.pHi)
+			chiSqStr, stat.pHWE, stat.pLo, stat.pHi)
 	}
 
 	return nil
