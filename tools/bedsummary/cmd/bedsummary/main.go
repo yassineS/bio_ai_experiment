@@ -1,5 +1,5 @@
-// bedsummary computes per-chromosome interval-length summary statistics for
-// a BED file (Go port of `bedtools summary`).
+// bedsummary reports per-chromosome interval summary statistics for a
+// BED/GFF/VCF file against a genome (Go port of `bedtools summary`).
 package main
 
 import (
@@ -12,29 +12,30 @@ import (
 	"github.com/yassineS/bio_ai_experiment/tools/bedsummary/pkg/bedsummary"
 )
 
-const usage = `bedsummary - Per-chromosome interval-length summary stats
+const usage = `bedsummary - Per-chromosome interval summary statistics
 
 Usage:
-  bedsummary -i FILE.bed [options]
+  bedsummary -i FILE.bed -g GENOME [options]
 
 Options:
-  -i, --input FILE        Input BED file (required, '-' for stdin)
+  -i, --input FILE        Input BED/GFF/VCF file (required, '-' for stdin)
+  -g, --genome FILE       Genome (chrom-sizes) file (required)
   -o, --output FILE       Output file (default: stdout)
   --no-header             Suppress the column-header line
-  --skip-all              Suppress the trailing "all" aggregate row
   -h, --help              Show this help
   -v, --version           Show version and exit
 
 Output (TSV):
-  chrom  num_ivls  total_ivl_bp  min_ivl_bp  max_ivl_bp  mean_ivl_bp  median_ivl_bp
+  chrom  chrom_length  num_ivls  total_ivl_bp  chrom_frac_genome
+  frac_all_ivls  frac_all_bp  min  max  mean
 
 Notes:
-  - Chromosomes are emitted in the order they first appear in input.
-  - Mean / median are emitted as integers when integer-valued, otherwise
-    formatted with 3-decimal precision.
+  - Chromosomes are reported in the order they appear in the genome file.
+  - Chromosomes with no intervals are reported with -1 min/max/mean.
+  - A final "all" row aggregates over the whole input.
 `
 
-const version = "0.1.0"
+const version = "1.0.0"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -50,16 +51,16 @@ func run(args []string, stdout, stderr *os.File) error {
 
 	var (
 		input    string
+		genome   string
 		output   string
 		noHeader bool
-		skipAll  bool
 		showHelp bool
 		showVer  bool
 	)
 	cliflag.StringVar(fs, &input, "i", "input", "", "Input BED file")
+	cliflag.StringVar(fs, &genome, "g", "genome", "", "Genome (chrom-sizes) file")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file")
 	fs.BoolVar(&noHeader, "no-header", false, "Suppress header row")
-	fs.BoolVar(&skipAll, "skip-all", false, "Suppress aggregate 'all' row")
 	cliflag.BoolVar(fs, &showHelp, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVer, "v", "version", false, "Show version")
 
@@ -78,6 +79,20 @@ func run(args []string, stdout, stderr *os.File) error {
 		fmt.Fprint(stderr, usage)
 		return fmt.Errorf("error: -i/--input is required")
 	}
+	if genome == "" {
+		fmt.Fprint(stderr, usage)
+		return fmt.Errorf("error: -g/--genome is required")
+	}
+
+	gr, err := iohelper.OpenReader(genome)
+	if err != nil {
+		return fmt.Errorf("opening genome: %w", err)
+	}
+	defer gr.Close()
+	g, err := bedsummary.ParseGenome(gr)
+	if err != nil {
+		return err
+	}
 
 	r, err := iohelper.OpenReader(input)
 	if err != nil {
@@ -91,5 +106,5 @@ func run(args []string, stdout, stderr *os.File) error {
 	}
 	defer w.Close()
 
-	return bedsummary.Run(r, w, bedsummary.Options{NoHeader: noHeader, SkipAll: skipAll})
+	return bedsummary.Run(r, g, w, bedsummary.Options{NoHeader: noHeader})
 }
