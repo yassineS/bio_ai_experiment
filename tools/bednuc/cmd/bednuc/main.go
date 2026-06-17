@@ -70,14 +70,9 @@ func run(argv []string, stdout, stderr *os.File) error {
 	cliflag.StringVar(fs, &bedPath, "", "bed", "", "BED file (required, '-' for stdin)")
 	cliflag.BoolVar(fs, &forceStrand, "s", "strand", false, "Reverse-complement '-' strand intervals")
 	cliflag.BoolVar(fs, &printSeq, "", "seq", false, "Emit extracted sequence")
-	// -seq is a single-dash multi-letter flag in upstream; register it
-	// directly so `-seq` works (Go's flag package accepts `--seq` too).
-	fs.BoolVar(&printSeq, "seq", false, "")
 	cliflag.StringVar(fs, &pattern, "", "pattern", "", "Substring to count per interval")
-	fs.StringVar(&pattern, "pattern", "", "")
 	cliflag.BoolVar(fs, &ignoreCase, "C", "ignorecase", false, "Ignore case for -pattern")
 	cliflag.BoolVar(fs, &fullHeader, "", "fullHeader", false, "Match contigs by full FASTA header")
-	fs.BoolVar(&fullHeader, "fullHeader", false, "")
 	cliflag.StringVar(fs, &output, "o", "output", "", "Output file (default: stdout)")
 	cliflag.BoolVar(fs, &help, "h", "help", false, "Show help")
 	cliflag.BoolVar(fs, &showVer, "v", "version", false, "Show version")

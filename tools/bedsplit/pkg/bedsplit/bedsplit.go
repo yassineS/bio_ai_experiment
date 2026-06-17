@@ -171,8 +171,11 @@ func simpleBins(total, n int) [][]int {
 //  3. For each record, pick the bin where placing it would yield the
 //     lowest sum-of-absolute-deviations from the current expected mean.
 //     The first bin to achieve that minimum wins (no further tie-breaker).
-//  4. Within a bin, records are emitted in input order (we sort the bin's
-//     stored indices ascending before writing).
+//  4. Within a bin, records are emitted in the order they were added —
+//     i.e. size-descending order, since records are processed largest-first.
+//     Upstream stores each BED* in the split's items vector as it is added
+//     and writes them in that same vector order (splitBed.cpp saveBedItems),
+//     so we must NOT re-sort the bin back into input order.
 //
 // This is O(records * n^2) but n is small in practice (number of shards).
 func sizeBins(records []record, n int) [][]int {
@@ -231,9 +234,6 @@ func sizeBins(records []record, n int) [][]int {
 		bins[bestIdx] = append(bins[bestIdx], li.idx)
 		binTotals[bestIdx] += li.length
 		totalBases += li.length
-	}
-	for i := range bins {
-		sort.Ints(bins[i])
 	}
 	return bins
 }

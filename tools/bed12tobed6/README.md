@@ -17,7 +17,7 @@ bed12tobed6 [options] [< input.bed]
 | ----- | ---------- | ---------------------------------------------------------------------------------------------------- |
 | `-i`  | `--input`  | Input BED12 file (`-` for stdin, default: stdin).                                                    |
 | `-o`  | `--output` | Output BED6 file (`-` for stdout, default: stdout).                                                  |
-| `-n`  | `--number` | Number the blocks (1-based) into the score column. Reverses the numbering on `-` strand records.    |
+| `-n`  | `--number` | Number the blocks (1-based) into the score column. Reverses the numbering for any non-`+` strand.   |
 | `-h`  | `--help`   | Show help.                                                                                           |
 | `-v`  | `--version`| Show version.                                                                                        |
 
@@ -38,12 +38,19 @@ bed12tobed6 -i blocks.bed -n > out.bed
 
 - BED12 input must have at least 12 columns. Records with fewer columns are
   passed through unchanged (matches upstream behaviour when given BED6/BED4).
-- The output is always tab-separated. Score defaults to `0` (matches upstream)
-  unless `-n` is set.
-- On `-` strand records `-n` numbers blocks in reverse order so the first
-  emitted block carries the highest index (this matches upstream's `t5`).
+- The output is always tab-separated. Each emitted BED6 block carries the
+  parent record's score (column 5) unchanged, exactly like upstream
+  (`GetBedBlocks` copies `bed.score` onto every block). When `-n` is set the
+  score column is replaced by the 1-based block number instead.
+- Under `-n`, blocks are numbered in reverse order for **any** strand that is
+  not exactly `+` (i.e. `-`, `.`, or empty), so the first emitted block carries
+  the highest index. This matches upstream's `strand == "+"` check in
+  `bed12ToBed6.cpp` (covered by `t5` for the `-` strand).
 
 ## Parity
 
 Validated against upstream's `test-bed12tobed6.sh` (cases `t1`-`t5`); see
-[`PARITY_VALIDATION.md`](../PARITY_VALIDATION.md#bed12tobed6).
+[`PARITY_VALIDATION.md`](../PARITY_VALIDATION.md#bed12tobed6). A live-binary
+parity test (`pkg/bed12tobed6/live_parity_test.go`) additionally proves
+score propagation and `-n` numbering — including a `.`-strand record —
+byte-for-byte against the upstream `bedtools bed12tobed6` binary.

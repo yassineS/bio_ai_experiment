@@ -12,7 +12,9 @@ func TestParseNaming(t *testing.T) {
 		want Naming
 		ok   bool
 	}{
-		{"", NameWinNum, true},
+		{"", NoName, true},     // upstream default: ID_NONE (BED3, no name column)
+		{"none", NoName, true}, // explicit spelling of the default (fix-on-port superset)
+		{"NONE", NoName, true},
 		{"winnum", NameWinNum, true},
 		{"WINNUM", NameWinNum, true},
 		{"srcwinnum", NameSrcWinNum, true},

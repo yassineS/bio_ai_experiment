@@ -1633,3 +1633,37 @@ oracle fixture `tools/bcftools/testdata/parity/fixref_dbsnp.vcf.gz` is bgzipped
 (`TestNativePluginFixrefUseID`); the plain-file acceptance and the pure
 map/orientation logic are covered by the binary-free `TestUnitFixref*` unit
 tests.
+
+## bedtools makewindows `-i none`: rejected by upstream, accepted by us <a id="bedtools-makewindows-i-none"></a>
+
+`windowMakerMain.cpp` parses `-i` with three accepted values only —
+`src`, `winnum`, `srcwinnum` — and defaults the ID method to `ID_NONE`
+(emit BED3, no name column) when `-i` is **omitted entirely**. There is no
+literal `-i none` spelling; passing `-i none` hits the `else` branch and
+errors out ("Invalid ID method (none)").
+
+**Fix-on-port (one-directional superset):** our CLI carries an internal
+`-i` default sentinel of `"none"`, and `ParseNaming` maps both the empty
+string and the literal `"none"` (case-insensitively) to the no-name
+(BED3) default. We therefore accept everything upstream accepts plus the
+explicit `-i none` spelling, and never change output for an input upstream
+accepts. The default and every accepted `-i` value (`src`, `winnum`,
+`srcwinnum`) are byte-validated against the live upstream binary in
+`tools/bedmakewindows/pkg/bedmakewindows/live_parity_test.go`.
+
+## bedtools bed12tobed6 `-n`: block numbering reverses for every non-`+` strand <a id="bedtools-bed12tobed6-n-strand"></a>
+
+`bed12ToBed6.cpp` `ProcessBed()` numbers blocks under `-n` with `i+1`
+**only** when `bedBlocks[i].strand == "+"`; for every other strand value
+(`-`, `.`, or empty) it uses `blockCount - i`, i.e. reverse numbering.
+This is documented here because it is easy to mistake for "reverse on the
+`-` strand" — the upstream test suite only exercises the `+` and `-`
+cases (t4/t5), so the `.`/empty-strand reversal is undocumented and
+surprising but consistent and intentional in the source.
+
+**Our behaviour:** reproduced exactly — `-n` reverses numbering whenever
+the strand is not exactly `"+"`. Byte-validated against the live upstream
+binary including a `.`-strand record in
+`tools/bed12tobed6/pkg/bed12tobed6/live_parity_test.go`
+(`TestLiveParity_ScoredNumbered`) and unit-covered binary-free by
+`TestUnit_NumberBlocksDotStrand`.

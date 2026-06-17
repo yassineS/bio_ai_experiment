@@ -82,7 +82,11 @@ The parity fixtures under `testdata/parity/` are hand-computed: upstream
 ships no `nuc/` test directory, so the expected outputs were derived
 against the upstream output format and counting rules in
 `reference_code/bedtools/src/utils/sequenceUtilities/sequenceUtils.cpp`
-and `src/nucBed/nucBed.cpp`.
+and `src/nucBed/nucBed.cpp`. In addition, `pkg/bednuc/live_parity_test.go`
+runs the upstream `bedtools nuc` binary and asserts byte-for-byte parity
+(default, `-seq`, `-s`); it also runs the `bednuc` CLI end-to-end to guard
+against the historical `flag redefined: seq` panic (a duplicate `--seq`
+registration that aborted the tool on every run — now fixed).
 
 ## Performance
 

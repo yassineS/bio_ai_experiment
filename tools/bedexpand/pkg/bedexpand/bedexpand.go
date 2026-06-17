@@ -56,6 +56,31 @@ func ParseColumns(s string) ([]int, error) {
 	return out, nil
 }
 
+// tokenizeCSV splits a comma-separated cell exactly the way upstream
+// `bedtools expand` does. Upstream tokenizes with C++'s
+// std::getline(ss, item, ','), which reads each delimiter-terminated chunk
+// and stops once the stream is exhausted. A trailing comma therefore does
+// NOT yield a spurious empty final element ("10,20,30," -> ["10","20","30"]),
+// while interior and leading empties are preserved (",10,,20" ->
+// ["","10","","20"]). An empty cell yields zero elements, matching getline
+// returning false immediately on an empty stream.
+//
+// Go's strings.Split differs (it would append a trailing "" for a trailing
+// delimiter), so we drop exactly one trailing empty produced by a terminating
+// comma to match getline.
+func tokenizeCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	// getline does not emit a final empty token when the string ends with the
+	// delimiter; strings.Split does, so strip that single trailing element.
+	if strings.HasSuffix(s, ",") {
+		parts = parts[:len(parts)-1]
+	}
+	return parts
+}
+
 // Expand reads tab-delimited records from r and writes the expanded rows to
 // w. Returns the number of output records (data rows) written. Each input
 // row must contain enough columns to cover every requested column index,
@@ -127,7 +152,7 @@ func Expand(r io.Reader, w io.Writer, opts Options) (int, error) {
 		lists := make([][]string, len(opts.Columns))
 		n := -1
 		for i, c := range opts.Columns {
-			lists[i] = strings.Split(fields[c-1], ",")
+			lists[i] = tokenizeCSV(fields[c-1])
 			if n == -1 {
 				n = len(lists[i])
 			} else if len(lists[i]) != n {
