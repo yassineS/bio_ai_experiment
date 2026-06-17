@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/cppsort"
 )
 
 // Options configures Cluster.
@@ -57,18 +59,16 @@ func Cluster(r io.Reader, w io.Writer, opts Options) (int, error) {
 		return 0, nil
 	}
 
-	// Stable sort by (chrom [, strand], start) only. Equal-start records
-	// keep their input order — matches upstream's behaviour, which only
-	// requires that input be sorted by chrom+start (not end).
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].chrom != rows[j].chrom {
-			return rows[i].chrom < rows[j].chrom
-		}
-		if opts.StrandSpec && rows[i].strand != rows[j].strand {
-			return rows[i].strand < rows[j].strand
-		}
-		return rows[i].start < rows[j].start
-	})
+	// Reproduce upstream clusterBed exactly (clusterBed.cpp): records are
+	// bucketed by chromosome (std::map, lexicographic) and each bucket is
+	// std::sort'd by start ALONE (introsort — equal-start records land in its
+	// artifact order, not input order), via loadBedFileIntoMapNoBin. Then, with
+	// -s, two passes emit the "+" then the "-" records of each chromosome in
+	// that introsorted order (other strands, e.g. ".", are dropped — upstream's
+	// strands vector is exactly {"+","-"}). Without -s the introsorted bucket is
+	// emitted as-is. assignClusters then sweeps; it already opens a new cluster
+	// on a strand change, matching upstream's per-strand `end = -1` reset.
+	rows = clusterOrder(rows, opts.StrandSpec)
 
 	clusterIDs := assignClusters(rows, opts)
 
@@ -85,6 +85,55 @@ func Cluster(r io.Reader, w io.Writer, opts Options) (int, error) {
 
 // assignClusters returns a slice (parallel to the sorted `rows`) of cluster
 // IDs. Cluster IDs are 1-based and assigned in walk order.
+// clusterOrder reproduces upstream clusterBed's record ordering: per-chromosome
+// (lexicographic) introsort by start, then — when strandSpec is set — a stable
+// "+"-then-"-" partition within each chromosome, dropping records on any other
+// strand (matching upstream's two fixed strand passes).
+func clusterOrder(rows []row, strandSpec bool) []row {
+	// Without -s, upstream uses the streaming GetNextBed(force_sorted) path,
+	// which processes records in (chrom, start) order. We sort STABLY by
+	// (chrom, start) — equal-start records keep input order, matching the
+	// stream — which is a lenient fix-on-port (upstream errors on unsorted input
+	// rather than sorting it). Only the -s path goes through
+	// loadBedFileIntoMapNoBin's per-chromosome introsort, whose unstable
+	// equal-start order we must reproduce.
+	if !strandSpec {
+		sort.SliceStable(rows, func(i, j int) bool {
+			if rows[i].chrom != rows[j].chrom {
+				return rows[i].chrom < rows[j].chrom
+			}
+			return rows[i].start < rows[j].start
+		})
+		return rows
+	}
+	buckets := map[string][]row{}
+	var chroms []string
+	for _, r := range rows {
+		if _, ok := buckets[r.chrom]; !ok {
+			chroms = append(chroms, r.chrom)
+		}
+		buckets[r.chrom] = append(buckets[r.chrom], r)
+	}
+	sort.Strings(chroms)
+	out := make([]row, 0, len(rows))
+	for _, chrom := range chroms {
+		b := buckets[chrom]
+		cppsort.Sort(b, func(x, y row) bool { return x.start < y.start })
+		if strandSpec {
+			for _, want := range [2]string{"+", "-"} {
+				for _, r := range b {
+					if r.strand == want {
+						out = append(out, r)
+					}
+				}
+			}
+		} else {
+			out = append(out, b...)
+		}
+	}
+	return out
+}
+
 func assignClusters(rows []row, opts Options) []int {
 	ids := make([]int, len(rows))
 	if len(rows) == 0 {

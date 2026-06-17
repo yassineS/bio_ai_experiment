@@ -18,19 +18,16 @@ package matrix
 // the 2^N power set.
 //
 // ------------------------------------------------------------------------
-// Documented Skips. The bednuc / bedmakewindows / bedexpand / bedsummary /
-// bedfisher / bedsubtract / bed12tobed6 cases and the bedmap/bedmerge/bedwindow
-// collapse-order cases that were once listed here are FIXED and re-activated as
-// byte-exact entries. What remains:
+// Documented Skips. Most of the divergences the matrix once surfaced are FIXED
+// and re-activated as byte-exact entries: bednuc / bedmakewindows / bedexpand /
+// bedsummary / bedfisher / bedsubtract / bed12tobed6; the bedmap/bedmerge/
+// bedwindow collapse-order cases; the bedsort (default/-sizeD/-chrThenScore*)
+// and bedcluster (-s) std::sort tie-break order (via the pkg/cppsort libstdc++
+// introsort port); bedjaccard -s (per-strand merged stream re-sorted before the
+// sweep); bedsplit -a size (introsort + stddev-min greedy); and bedannotate
+// (the matrix now passes upstream's -files flag form). What remains are
+// harness/fixture limitations, not tool bugs:
 //
-//   - tie-break order   — bedsort (default and -sizeD) and bedcluster (-s) emit
-//                         equal-key records in a different order than upstream's
-//                         stable sort. Order-independent ops are byte-exact.
-//   - bedjaccard (-s)   — the is-sorted check runs over the strand-concatenated
-//                         B stream and false-errors "input B is not sorted".
-//   - bedannotate       — default-output record ordering differs from upstream.
-//   - bedsplit (size)   — the "size" heuristic bin-packs records into files
-//                         differently from upstream ("-a simple" is byte-exact).
 //   - bedtobam          — raw BGZF BAM to stdout; framing differs (klauspost vs
 //                         htslib) though decoded records match. Not byte-compared.
 //   - bedtag            — different model: upstream tags+writes BAM; our bedtag
@@ -221,11 +218,9 @@ func bedSingleFileTools() []Entry {
 	out = append(out,
 		bt("bedsort", "sort", "sizeA", InputBED, "-i", "{bed}", "-sizeA"),
 		bt("bedsort", "sort", "chrThenSizeA", InputBED, "-i", "{bed}", "-chrThenSizeA"),
-		btSkip("bedsort", "sort", "default_tiebreak", InputBED,
-			"default bedsort agrees on the (chrom,start) ordering but tie-breaks equal-start records by end ascending; upstream uses a stable sort preserving input order. Same multiset, different order. The -sizeA / -chrThenSizeA sorts above are byte-exact. Real divergence, owned by the bedtools agent.",
+		bt("bedsort", "sort", "default_tiebreak", InputBED,
 			"-i", "{bed}"),
-		btSkip("bedsort", "sort", "sizeD_tiebreak", InputBED,
-			"-sizeD / -chrThenSizeD / -chrThenScoreA / -chrThenScoreD order equal-key records differently from upstream (same tie-break gap as the default sort); same multiset, different order. Real divergence, owned by the bedtools agent.",
+		bt("bedsort", "sort", "sizeD_tiebreak", InputBED,
 			"-i", "{bed}", "-sizeD"),
 	)
 
@@ -243,11 +238,11 @@ func bedSingleFileTools() []Entry {
 		},
 	}.Expand()
 	out = append(out, cluster...)
-	clusterStrandSkip := "bedcluster -s: same-strand records sharing an identical chromStart are emitted in the input order by our " +
-		"port, but upstream uses a different tie order (e.g. feat337 before feat336, both chr1:56110 on '-'). Real strand-mode tie-break divergence."
+	// -s clustering now matches upstream's per-chromosome introsort + two-pass
+	// (+ then -) emission byte-for-byte (cppsort port).
 	out = append(out,
-		btSkip("bedcluster", "cluster", "s", InputBED, clusterStrandSkip, "-i", "{bed}", "-s"),
-		btSkip("bedcluster", "cluster", "d50_s", InputBED, clusterStrandSkip, "-i", "{bed}", "-d", "50", "-s"),
+		bt("bedcluster", "cluster", "s", InputBED, "-i", "{bed}", "-s"),
+		bt("bedcluster", "cluster", "d50_s", InputBED, "-i", "{bed}", "-d", "50", "-s"),
 	)
 
 	// --- spacing ---
@@ -364,10 +359,7 @@ func bedStatTools() []Entry {
 	// --- jaccard ---
 	out = append(out,
 		bt("bedjaccard", "jaccard", "base", InputBED, "-a", "{bed}", "-b", "{bed}"),
-		btSkip("bedjaccard", "jaccard", "s", InputBED,
-			"bedjaccard -s: our port partitions B by strand and then runs its is-sorted check over the concatenated per-strand "+
-				"stream, which is not globally start-sorted, so it errors ('input B is not sorted'); upstream computes the strand-aware "+
-				"jaccard without that false positive. Real -s sortedness-check bug.",
+		bt("bedjaccard", "jaccard", "s", InputBED,
 			"-a", "{bed}", "-b", "{bed}", "-s"),
 		bt("bedjaccard", "jaccard", "f50", InputBED, "-a", "{bed}", "-b", "{bed}", "-f", "0.5"),
 	)
@@ -523,9 +515,8 @@ func bedMultiFileTools() []Entry {
 
 	// --- annotate (default output diverges: header + order; see header) ---
 	out = append(out,
-		btSkip("bedannotate", "annotate", "default_header_order", InputBED,
-			"bedannotate prepends a '# <file>' header line upstream does not emit and orders records differently from upstream. Real divergence, owned by the bedtools agent.",
-			"-i", "{bed}", "--files", "{bed}"),
+		bt("bedannotate", "annotate", "default_header_order", InputBED,
+			"-i", "{bed}", "-files", "{bed}"),
 	)
 
 	// --- tag (different model: upstream tags a BAM/writes BAM; ours is BED in/out) ---
@@ -543,20 +534,17 @@ func bedMultiFileTools() []Entry {
 			OutputFiles: []string{".00001.bed", ".00002.bed", ".00003.bed"},
 			Args:        []string{"-i", "{bed}", "-p", "{out}", "-n", "3", "-a", "simple"},
 		},
-		// The default 'size' algorithm bin-packs records into files to balance
-		// total size; on a real-sized fixture our per-file assignment differs
-		// from upstream (same total record SET, different records per file —
-		// e.g. file 1 starts chr2:27938 for us vs chr3:224760 upstream). '-a
-		// simple' (above) is byte-exact. Real bin-packing divergence — a
-		// documented Skip until the heuristic is matched.
+		// The default 'size' algorithm now matches upstream byte-for-byte: it
+		// sorts records by length-descending with the libstdc++ introsort
+		// (cppsort, so equal-length ties match upstream's std::sort artifact
+		// order) and greedily assigns each to the bin minimising the
+		// sum-of-absolute-deviations from the running mean (splitBed.cpp
+		// doEuristicSplitOnTotalSize).
 		Entry{
 			Tool: "bedsplit", Subcommand: "split", UpstreamTool: "bedtools", UsesSubcommand: false,
 			Name: "bedsplit_size_n3", Input: InputBED, Compare: ByteExact,
 			OutputFiles: []string{".00001.bed", ".00002.bed", ".00003.bed"},
 			Args:        []string{"-i", "{bed}", "-p", "{out}", "-n", "3", "-a", "size"},
-			Skip: "bedsplit -a size: the size-balancing bin-packer assigns records to files differently from upstream (same total " +
-				"record SET, different per-file split — file 1 starts chr2:27938 for us vs chr3:224760 upstream). '-a simple' is byte-exact. " +
-				"Real bin-packing divergence.",
 		},
 	)
 
