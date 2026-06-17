@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -142,6 +143,53 @@ func TestUpstreamCompat_Merge_MultiCharSingleDash(t *testing.T) {
 			got := runCapture(t, ours, append([]string{"-i", tc.in}, tc.args...)...)
 			if !bytes.Equal(got, want) {
 				t.Fatalf("merge mismatch for %v\nupstream:\n%s\nours:\n%s", tc.args, want, got)
+			}
+		})
+	}
+}
+
+// TestUpstreamCompat_Merge_TieBreakCollapseOrder asserts byte-for-byte parity
+// with the live upstream binary for the order-sensitive -o operations when the
+// input has many equal-(chrom, start) records whose ends are NOT in ascending
+// order. The collapsed/distinct values must follow upstream's emit order: input
+// order on the default path, and the per-strand priority-queue order under -s
+// (where deferred opposite-strand records come back out (chrom,start,end)-sorted).
+func TestUpstreamCompat_Merge_TieBreakCollapseOrder(t *testing.T) {
+	bt := upstreamBedtools(t)
+	ours := buildOurs(t)
+	dir := t.TempDir()
+
+	// Equal (chrom,start)=(chr1,10) records, ends out of order, mixed strands,
+	// plus a second chromosome and an unknown-strand record.
+	in := writeFile(t, dir, "ties.bed",
+		"chr1\t10\t100\ta\t1\t+\n"+
+			"chr1\t10\t50\tb\t2\t+\n"+
+			"chr1\t10\t75\tc\t3\t-\n"+
+			"chr1\t10\t60\td\t4\t-\n"+
+			"chr1\t20\t30\te\t5\t+\n"+
+			"chr2\t0\t10\tg\t7\t+\n"+
+			"chr2\t0\t5\th\t8\t-\n"+
+			"chr2\t0\t8\ti\t9\t.\n")
+
+	argSets := [][]string{
+		{"-c", "4", "-o", "collapse"},
+		{"-c", "4", "-o", "distinct"},
+		{"-c", "5", "-o", "collapse"},
+		{"-c", "4,5", "-o", "collapse,collapse"},
+		{"-s", "-c", "4", "-o", "collapse"},
+		{"-s", "-c", "6", "-o", "distinct"},
+		{"-s", "-c", "4,6", "-o", "collapse,distinct"},
+		{"-S", "+", "-c", "4", "-o", "collapse"},
+		{"-S", "-", "-c", "4", "-o", "collapse"},
+		{"-d", "20", "-c", "4", "-o", "collapse"},
+	}
+	for _, args := range argSets {
+		args := args
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			want := runCapture(t, bt, append([]string{"merge", "-i", in}, args...)...)
+			got := runCapture(t, ours, append([]string{"-i", in}, args...)...)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("collapse-order mismatch for %v\nupstream:\n%s\nours:\n%s", args, want, got)
 			}
 		})
 	}

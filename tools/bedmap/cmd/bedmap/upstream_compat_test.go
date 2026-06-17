@@ -145,6 +145,64 @@ func TestUpstreamCompat_Map_MultiCharSingleDash(t *testing.T) {
 	}
 }
 
+// TestUpstreamCompat_Map_TieBreakCollapseOrder asserts byte-for-byte parity
+// with the live upstream binary for the order-sensitive ops when B has many
+// equal-(chrom, start) records whose ends are NOT in ascending order. The
+// collapsed/distinct values must follow upstream's stream (input) order, not
+// chromEnd order. Order-independent ops (sum/count) are included as a guard
+// against regressing the already-matching paths.
+func TestUpstreamCompat_Map_TieBreakCollapseOrder(t *testing.T) {
+	bt := upstreamBedtools(t)
+	ours := buildOurs(t)
+	dir := t.TempDir()
+
+	a := writeFile(t, dir, "a.bed",
+		"chr1\t0\t200\tA1\t0\t+\n"+
+			"chr2\t0\t100\tA2\t0\t-\n")
+	// Equal (chr1,10) B records, ends out of order, mixed strands; plus a second
+	// chromosome with equal-start records.
+	b := writeFile(t, dir, "b.bed",
+		"chr1\t10\t100\ta\t1\t+\n"+
+			"chr1\t10\t50\tb\t2\t-\n"+
+			"chr1\t10\t75\tc\t3\t+\n"+
+			"chr1\t10\t60\td\t4\t-\n"+
+			"chr1\t20\t30\te\t5\t+\n"+
+			"chr2\t0\t50\tf\t6\t+\n"+
+			"chr2\t0\t40\tg\t7\t-\n")
+
+	argSets := [][]string{
+		{"-c", "4", "-o", "collapse"},
+		{"-c", "4", "-o", "distinct"},
+		{"-c", "5", "-o", "collapse"},
+		{"-c", "4,5", "-o", "collapse,collapse"},
+		{"-s", "-c", "4", "-o", "collapse"},
+		{"-S", "-c", "4", "-o", "collapse"},
+		{"-c", "5", "-o", "sum"},   // order-independent: must stay matching
+		{"-c", "4", "-o", "count"}, // order-independent: must stay matching
+	}
+	for _, args := range argSets {
+		args := args
+		t.Run(joinArgs(args), func(t *testing.T) {
+			want := runCapture(t, bt, append([]string{"map", "-a", a, "-b", b}, args...)...)
+			got := runCapture(t, ours, append([]string{"-a", a, "-b", b}, args...)...)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("map collapse-order mismatch for %v\nupstream:\n%s\nours:\n%s", args, want, got)
+			}
+		})
+	}
+}
+
+func joinArgs(args []string) string {
+	out := ""
+	for i, a := range args {
+		if i > 0 {
+			out += "_"
+		}
+		out += a
+	}
+	return out
+}
+
 // TestUpstreamCompat_Map_CustomDelim verifies the multi-char `-delim` flag is
 // accepted (single dash) and applied identically to upstream.
 func TestUpstreamCompat_Map_CustomDelim(t *testing.T) {

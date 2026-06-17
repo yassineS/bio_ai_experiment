@@ -133,10 +133,14 @@ func (opts *Options) Validate() error {
 }
 
 // rawRecord pairs a parsed BED record with its raw whitespace-split columns,
-// so column-value extraction by 1-based index works on the original text.
+// so column-value extraction by 1-based index works on the original text. order
+// is the record's 0-based position in B-file load order, used to break ties on
+// equal (chrom, start) so the order-sensitive ops (collapse, distinct) emit
+// values in upstream's input order rather than by chromEnd.
 type rawRecord struct {
 	rec    *bed.Record
 	fields []string
+	order  int
 }
 
 // numericOps lists the operations that convert their column values to numbers,
@@ -182,16 +186,20 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 	}
 
 	bByChrom := map[string][]rawRecord{}
-	for _, rr := range bRaw {
+	for i := range bRaw {
+		// Stamp B-file load order so the per-chrom and per-A match sorts can
+		// preserve input order on equal (chrom, start) keys.
+		bRaw[i].order = i
+		rr := bRaw[i]
 		bByChrom[rr.rec.Chrom] = append(bByChrom[rr.rec.Chrom], rr)
 	}
 	for chrom := range bByChrom {
 		recs := bByChrom[chrom]
+		// Sort by chromStart only, preserving input order on ties. Upstream
+		// `bedtools map` consumes a (chrom, start)-sorted stream and never uses
+		// chromEnd as a tie-break, so equal-start records keep input order.
 		sort.SliceStable(recs, func(i, j int) bool {
-			if recs[i].rec.ChromStart != recs[j].rec.ChromStart {
-				return recs[i].rec.ChromStart < recs[j].rec.ChromStart
-			}
-			return recs[i].rec.ChromEnd < recs[j].rec.ChromEnd
+			return recs[i].rec.ChromStart < recs[j].rec.ChromStart
 		})
 		bByChrom[chrom] = recs
 	}
@@ -271,13 +279,15 @@ func Map(readerA, readerB io.Reader, writer io.Writer, opts Options) (int, error
 				}
 				matches = append(matches, rr)
 			}
-			// Restore B-file (sorted) order; the tree query may return
-			// candidates out of order.
+			// Restore upstream's stream order; the tree query may return
+			// candidates out of order. The key is (chromStart, B-file order) —
+			// NOT chromEnd — so equal-start records keep input order, matching
+			// upstream's collapse/distinct value order.
 			sort.SliceStable(matches, func(i, j int) bool {
 				if matches[i].rec.ChromStart != matches[j].rec.ChromStart {
 					return matches[i].rec.ChromStart < matches[j].rec.ChromStart
 				}
-				return matches[i].rec.ChromEnd < matches[j].rec.ChromEnd
+				return matches[i].order < matches[j].order
 			})
 		}
 

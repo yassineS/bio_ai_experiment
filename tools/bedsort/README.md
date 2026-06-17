@@ -6,7 +6,8 @@ back out. The full input is preserved column-for-column.
 
 ## Features
 
-- Default sort by `(chrom, start, end)` (lexicographic chromosome order).
+- Default sort by `(chrom, start)` with input order preserved on ties
+  (lexicographic chromosome order).
 - Alternative sort modes: by interval size, by chromosome-then-size, by
   chromosome-then-score.
 - Optional chromosome ordering from a `.fai` or chrom-sizes file
@@ -81,6 +82,15 @@ bedsort --faidx hg38.fa.fai input.bed > sorted.bed
 - The default ordering matches upstream `bedtools sort`: chromosomes sort
   lexicographically as strings (so `chr10` precedes `chr2`). Use `--faidx` to
   get a natural / genome-ordered chromosome sort instead.
+- **Tie-break (input order on equal `(chrom, start)`):** upstream sorts each
+  chromosome by `chromStart` alone and never uses `chromEnd` as a tie-break, so
+  records with the same `(chrom, start)` come out in their original input
+  order. The size-descending and score (`--chrThenScoreA/D`) modes likewise
+  keep input order on equal keys. bedsort reproduces this byte-for-byte (it
+  previously diverged by ordering ties on `chromEnd` ascending). The
+  size-/score-ascending paths were already byte-exact because upstream's
+  ascending size comparator carries a `(chrom, start)` tie-break that equals
+  the input order.
 - Comment lines (`#...`), `track` lines, and `browser` lines are stripped from
   the output, matching upstream behaviour.
 - All input columns round-trip through the sort, including any extra columns

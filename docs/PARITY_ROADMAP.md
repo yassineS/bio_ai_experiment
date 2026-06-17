@@ -1336,6 +1336,55 @@ Option-tail gaps on the wave-2 additions:
   `#`-prefixed comment, `track`, and `browser` directive lines are
   buffered and emitted verbatim ahead of the sorted body. Upstream
   `sort.t09` now passes byte-for-byte.
+- `bedsort` — **tie-break fixed to match upstream input order on equal
+  `(chrom, start)`** (this wave). Upstream `sortBed`
+  (`loadBedFileIntoMapNoBin` → `sortByStart`) sorts each chromosome by
+  `chromStart` alone, so equal-`(chrom, start)` records keep input order;
+  it never uses `chromEnd` as a tie-break. The size-descending and
+  `-chrThenScore{A,D}` comparators carry no secondary key and so likewise
+  preserve that input order on key ties. The previous port broke ties on
+  `chromEnd` ascending, diverging from upstream for the default, `-sizeD`,
+  `-chrThenSizeD`, `-chrThenScoreA`, and `-chrThenScoreD` modes whenever the
+  input was not already end-ordered. `Sort` now mirrors upstream's two-stage
+  arrangement (stable `(chrom, start)`-only pass, then a stable mode-key pass)
+  and is asserted byte-for-byte against the live `bedtools sort` binary across
+  all seven modes plus `-faidx`, on an input rich in equal-key records.
+- `bedwindow` — **three parity bugs fixed** (this wave):
+  (1) the window is now added to **A**, not B (upstream `AddWindow` operates on
+  the A feature and queries the B database), correcting the asymmetric `-l`/`-r`
+  and strand `-sw` direction; (2) the **default window is 1000 bp** (the port
+  defaulted to 0); (3) per-A **B-hit order now follows upstream's UCSC bin
+  traversal** — B is binned by its original coordinates and hits are emitted
+  finest-level-first, bin-number ascending, then B-file order (the same
+  `binorder` logic bedintersect uses), instead of B-start order; and (4) records
+  are kept as raw text so **BED12 (and wide) B records round-trip verbatim**
+  rather than being truncated to 6 columns. `-sm`/`-Sm`/`-u`/`-c`/`-v` are
+  matched; the `-c`/`-v` A-only paths are unchanged. New parity tests assert
+  byte-for-byte equality against the live `bedtools window` binary for the bin
+  hit-order, default-window, BED12-B, and strand cases.
+- `bedmerge` — **order-sensitive column-op tie-break fixed** (this wave). The
+  internal pre-sort now keys on `(chrom, start)` with input order preserved on
+  ties (chromEnd is no longer a tie-break), matching the `bedtools sort`-ed
+  stream upstream `merge` consumes — so `-o collapse|distinct` emit equal-start
+  groups' values in input order. The merge itself was reimplemented as a faithful
+  port of upstream's `FileRecordMergeMgr` state machine, including the per-strand
+  `StrandQueue` priority queue: under `-s`, deferred opposite-strand records are
+  pulled back out in `(chrom, start, end)` order, reproducing upstream's `-s`
+  collapse/distinct ordering byte-for-byte (the previous +/- re-merge approach
+  diverged on both group order and within-group value order). Order-independent
+  ops (sum/mean/min/max/count) were already correct and are unchanged. New
+  live-binary parity tests cover the equal-key collapse/distinct ordering across
+  default, `-s`, `-S`, and `-d` paths.
+- `bedmap` — **order-sensitive op tie-break fixed** (this wave). For each A
+  interval the overlapping B values are now emitted in upstream's stream order —
+  `(chrom, start)` with B-file order preserved on ties (chromEnd is no longer a
+  tie-break) — so `-o collapse|distinct` match `bedtools map` byte-for-byte. Both
+  the B-load sort and the per-A match re-sort were corrected; each B record
+  carries its load-order index so the tree-query candidates can be restored to
+  input order on equal starts. Order-independent ops (sum/mean/min/max/count)
+  were already correct and are unchanged. New live-binary parity tests cover the
+  equal-key collapse/distinct ordering (incl. `-s`/`-S` strand subsets) with
+  sum/count guards against regressing the matching paths.
 - `bedsample` — **byte-for-byte parity with upstream's seeded sampler is
   now achieved** (this wave). The reservoir replacement uses an in-tree,
   stdlib-only Go port of `std::mt19937_64` (`mt19937.go`) — the exact

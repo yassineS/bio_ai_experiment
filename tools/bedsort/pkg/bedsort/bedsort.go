@@ -142,24 +142,49 @@ func readAll(r io.Reader, keepHeader bool) (recs []record, headers []string, err
 
 // Sort sorts records in place according to opts.
 //
-// Sort is stable, and size/score modes additionally break ties on the default
-// (chrom, start, end) ordering so the output matches upstream bedtools sort
-// deterministically rather than depending on input order.
+// Sort faithfully reproduces upstream bedtools sort (the legacy sortBed tool),
+// which works in two stages:
+//
+//  1. Records are bucketed by chromosome (a std::map, so chromosomes come out
+//     in lexicographic order, or in opts.ChromOrder order when a faidx/genome
+//     is supplied) and each bucket is sorted by chromStart ALONE. That sort
+//     (upstream's sortByStart) compares only the start coordinate, so records
+//     with an equal (chrom, start) key retain their original input order. It
+//     does NOT use chromEnd as a tie-break.
+//
+//  2. For the size/score modes a second sort is applied on top of that
+//     start-ordered arrangement. Upstream's size-descending and score
+//     comparators compare only the size (or score) with no secondary key, so
+//     equal-keyed records keep the order established in stage 1 (i.e. input
+//     order on equal (chrom, start)). The ascending size comparator adds a
+//     (chrom, start) tie-break, which is already the stage-1 order, so the two
+//     are equivalent here.
+//
+// Both stages use a stable sort so the input-order tie-break that upstream
+// gets from its start-only ordering is reproduced byte-for-byte. The previous
+// implementation incorrectly used chromEnd as a tie-break, which diverged from
+// upstream for the default, -sizeD, -chrThenSizeD, -chrThenScoreA and
+// -chrThenScoreD modes whenever the input was not already ordered by end.
 func Sort(records []record, opts Options) {
 	chromRank := buildChromRank(opts.ChromOrder)
+	// cmpChrom compares two records by chromosome, honouring an explicit
+	// ChromOrder (faidx/genome) when present and falling back to lexicographic
+	// order. Chromosomes absent from ChromOrder sort after the listed ones, in
+	// lexicographic order amongst themselves.
 	cmpChrom := func(a, b record) int {
 		if chromRank != nil {
 			ra, oka := chromRank[a.chrom]
 			rb, okb := chromRank[b.chrom]
 			switch {
 			case oka && okb:
-				if ra != rb {
-					if ra < rb {
-						return -1
-					}
+				switch {
+				case ra < rb:
+					return -1
+				case ra > rb:
 					return 1
+				default:
+					return 0
 				}
-				return 0
 			case oka && !okb:
 				return -1
 			case !oka && okb:
@@ -174,88 +199,60 @@ func Sort(records []record, opts Options) {
 		}
 		return 1
 	}
-	// tieBreak compares two records on the default (chrom asc, start asc, end
-	// asc) ordering. It is used to break ties for size/score sorts so the
-	// output matches upstream bedtools sort, which secondary-sorts ties
-	// deterministically rather than relying on input order.
-	tieBreak := func(a, b record) int {
+
+	// Stage 1: stable sort by (chrom, start) only. This mirrors upstream's
+	// per-chromosome std::map bucketing followed by a start-only sort, and is
+	// the common prerequisite for every mode. Because the sort is stable and
+	// carries no chromEnd key, records with an equal (chrom, start) key stay in
+	// input order.
+	sort.SliceStable(records, func(i, j int) bool {
+		a, b := records[i], records[j]
 		if c := cmpChrom(a, b); c != 0 {
-			return c
+			return c < 0
 		}
-		if a.start != b.start {
-			if a.start < b.start {
-				return -1
-			}
-			return 1
-		}
-		if a.end != b.end {
-			if a.end < b.end {
-				return -1
-			}
-			return 1
-		}
-		return 0
+		return a.start < b.start
+	})
+
+	if opts.Mode == ModeChrom {
+		return
 	}
-	less := func(i, j int) bool {
+
+	// Stage 2: apply the mode key as a stable sort on top of the stage-1
+	// arrangement. Stability preserves the stage-1 (and hence input) order for
+	// records whose mode key is equal, matching upstream's comparators which
+	// carry no secondary key beyond (at most) the start ordering already done.
+	size := func(r record) int { return r.end - r.start }
+	sort.SliceStable(records, func(i, j int) bool {
 		a, b := records[i], records[j]
 		switch opts.Mode {
 		case ModeSizeA:
-			la, lb := a.end-a.start, b.end-b.start
-			if la != lb {
-				return la < lb
-			}
-			return tieBreak(a, b) < 0
+			return size(a) < size(b)
 		case ModeSizeD:
-			la, lb := a.end-a.start, b.end-b.start
-			if la != lb {
-				return la > lb
-			}
-			return tieBreak(a, b) < 0
+			return size(a) > size(b)
 		case ModeChrThenSizeA:
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0
 			}
-			la, lb := a.end-a.start, b.end-b.start
-			if la != lb {
-				return la < lb
-			}
-			return tieBreak(a, b) < 0
+			return size(a) < size(b)
 		case ModeChrThenSizeD:
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0
 			}
-			la, lb := a.end-a.start, b.end-b.start
-			if la != lb {
-				return la > lb
-			}
-			return tieBreak(a, b) < 0
+			return size(a) > size(b)
 		case ModeChrThenScoreA:
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0
 			}
-			if a.score != b.score {
-				return a.score < b.score
-			}
-			return tieBreak(a, b) < 0
+			return a.score < b.score
 		case ModeChrThenScoreD:
 			if c := cmpChrom(a, b); c != 0 {
 				return c < 0
 			}
-			if a.score != b.score {
-				return a.score > b.score
-			}
-			return tieBreak(a, b) < 0
-		default: // ModeChrom
-			if c := cmpChrom(a, b); c != 0 {
-				return c < 0
-			}
-			if a.start != b.start {
-				return a.start < b.start
-			}
-			return a.end < b.end
+			return a.score > b.score
+		default:
+			return false
 		}
-	}
-	sort.SliceStable(records, less)
+	})
 }
 
 // Write writes records to w as their original input lines, one per line.

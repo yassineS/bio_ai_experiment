@@ -92,10 +92,14 @@ func TestMergeFlushError(t *testing.T) {
 	}
 }
 
-// TestPositionGroupsEmpty exercises the empty-slice early return.
-func TestPositionGroupsEmpty(t *testing.T) {
-	if got := positionGroups(nil, MergeOptions{}); got != nil {
-		t.Errorf("positionGroups(nil) = %v, want nil", got)
+// TestMergeStreamEmpty exercises the empty-input early return of the merge
+// state machine.
+func TestMergeStreamEmpty(t *testing.T) {
+	if got := mergeStream(nil, MergeOptions{}); got != nil {
+		t.Errorf("mergeStream(nil) = %v, want nil", got)
+	}
+	if got := buildGroups(nil, MergeOptions{}); got != nil {
+		t.Errorf("buildGroups(nil) = %v, want nil", got)
 	}
 }
 

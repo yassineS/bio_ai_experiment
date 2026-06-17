@@ -436,15 +436,23 @@ func WriteHeader(r io.Reader, w io.Writer) error {
 	return sc.Err()
 }
 
-// sortRecords sorts records by (chrom, start, end), the order merging requires.
+// sortRecords sorts records by (chrom, start) only, the order merging requires,
+// and preserves input order on equal (chrom, start) keys.
+//
+// Upstream `bedtools merge` consumes an already-sorted stream and collects the
+// records of each merged interval in the order it reads them. Its sort key is
+// (chrom, start); chromEnd is NOT a tie-break. So for records with an equal
+// (chrom, start), the order-sensitive aggregations (-o collapse, distinct, …)
+// emit values in INPUT order. Using a stable start-only sort here reproduces
+// that — an earlier end-ascending tie-break reordered the collapsed/distinct
+// values relative to upstream. The merge itself only needs ascending starts;
+// each group's end is taken as the max over the group, so dropping the end
+// tie-break does not affect the merged coordinates.
 func sortRecords(recs []record) {
 	sort.SliceStable(recs, func(i, j int) bool {
 		if recs[i].chrom != recs[j].chrom {
 			return recs[i].chrom < recs[j].chrom
 		}
-		if recs[i].start != recs[j].start {
-			return recs[i].start < recs[j].start
-		}
-		return recs[i].end < recs[j].end
+		return recs[i].start < recs[j].start
 	})
 }

@@ -23,9 +23,25 @@ func TestWindow_BasicNoExpansion(t *testing.T) {
 	}
 }
 
-func TestWindow_ExpandsB(t *testing.T) {
-	// A=[100,110), B=[200,210). Without expansion, no overlap. With -l 100,
-	// B becomes [100,210), which overlaps A.
+func TestWindow_ExpandsAWindow(t *testing.T) {
+	// A=[100,110), B=[200,210). Upstream adds the window to A, not B. With
+	// -r 100 the A window becomes [100,210), which now reaches B at [200,210).
+	// (A -l 100 -r 0 would NOT hit, because only the upstream side grows.)
+	a := strings.NewReader("chr1\t100\t110\n")
+	b := strings.NewReader("chr1\t200\t210\n")
+	var out bytes.Buffer
+	n, err := Window(a, b, &out, Options{Left: 0, Right: 100})
+	if err != nil {
+		t.Fatalf("Window: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1 with right=100", n)
+	}
+}
+
+func TestWindow_LeftSlopIsUpstreamOnly(t *testing.T) {
+	// A=[100,110), B=[200,210). -l 100 -r 0 grows only the upstream side, so a
+	// downstream B is NOT pulled in — matching upstream's expand-A semantics.
 	a := strings.NewReader("chr1\t100\t110\n")
 	b := strings.NewReader("chr1\t200\t210\n")
 	var out bytes.Buffer
@@ -33,8 +49,8 @@ func TestWindow_ExpandsB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Window: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("n = %d, want 1 with left=100", n)
+	if n != 0 {
+		t.Errorf("n = %d, want 0 (left-only slop must not reach downstream B)", n)
 	}
 }
 
@@ -153,6 +169,6 @@ func TestWindow_ClipsLeftAtZero(t *testing.T) {
 func TestWindow_StrandAndInverse_Error(t *testing.T) {
 	if _, err := Window(strings.NewReader(""), strings.NewReader(""),
 		&bytes.Buffer{}, Options{StrandSpec: true, InverseStrand: true}); err == nil {
-		t.Error("expected error: -sm and -sw are mutually exclusive")
+		t.Error("expected error: -sm and -Sm are mutually exclusive")
 	}
 }
