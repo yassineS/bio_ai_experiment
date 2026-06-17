@@ -102,14 +102,10 @@ func seqtkMatrix() []Entry {
 		Args: []string{"-A", fq}, Heavy: true,
 	})
 
-	// cutN: upstream emits the sequence UNWRAPPED while our seq writer wraps at
-	// the line width; that is a formatting divergence, not a data one, and is
-	// owned by the seqtk agent. Documented Skip rather than a spurious DIVERGE.
-	entries = append(entries, Entry{
-		Tool: "seqtk", Subcommand: "cutN", UsesSubcommand: true,
-		Name: "seqtk_cutN", Input: InputFASTA, Args: []string{"-n", "100", fa},
-		Skip: "upstream seqtk cutN emits the sequence unwrapped; our cutN re-wraps at the line width (formatting-only divergence, owned by the seqtk agent)",
-	})
+	// cutN: byte-exact. Our cutN now wraps each emitted fragment at 60 bases,
+	// matching upstream print_seq's `(i-begin)%60` rule (previously our writer
+	// emitted the fragment unwrapped on a single line).
+	add("cutN", "cutN", InputFASTA, ByteExact, "-n", "100", fa)
 
 	return entries
 }

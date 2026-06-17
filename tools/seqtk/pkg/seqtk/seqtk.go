@@ -741,6 +741,12 @@ func mergePEFasta(in1, in2 io.Reader, w io.Writer) error {
 	return wr.Flush()
 }
 
+// cutNLineWidth is the FASTA line-wrap width for cutN output. Upstream seqtk's
+// print_seq() wraps each emitted fragment at 60 bases (the `(i-begin)%60==0`
+// rule in seqtk.c), resetting the column count at each fragment start. Our
+// per-fragment writeFastaRecord call reproduces that exactly.
+const cutNLineWidth = 60
+
 // CutNOptions holds parameters for CutN.
 type CutNOptions struct {
 	// MinN is the minimum length of a run of Ns required to trigger a cut.
@@ -795,14 +801,14 @@ func CutN(in io.Reader, w io.Writer, opts CutNOptions) error {
 				return nil
 			}
 			header := fmt.Sprintf("%s:1-%d", name, len(seq))
-			return writeFastaRecord(bw, header, seq, 0)
+			return writeFastaRecord(bw, header, seq, cutNLineWidth)
 		}
 		// Build fragment intervals between runs and emit non-empty ones.
 		prev := 0
 		for _, r := range runs {
 			if r[0] > prev {
 				header := fmt.Sprintf("%s:%d-%d", name, prev+1, r[0])
-				if err := writeFastaRecord(bw, header, seq[prev:r[0]], 0); err != nil {
+				if err := writeFastaRecord(bw, header, seq[prev:r[0]], cutNLineWidth); err != nil {
 					return err
 				}
 			}
@@ -810,7 +816,7 @@ func CutN(in io.Reader, w io.Writer, opts CutNOptions) error {
 		}
 		if prev < len(seq) {
 			header := fmt.Sprintf("%s:%d-%d", name, prev+1, len(seq))
-			if err := writeFastaRecord(bw, header, seq[prev:], 0); err != nil {
+			if err := writeFastaRecord(bw, header, seq[prev:], cutNLineWidth); err != nil {
 				return err
 			}
 		}

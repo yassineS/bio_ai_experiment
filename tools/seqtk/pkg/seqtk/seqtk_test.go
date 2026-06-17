@@ -3,6 +3,7 @@ package seqtk
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -725,6 +726,42 @@ func TestCutN_BasicSplit(t *testing.T) {
 	}
 	if got := buf.String(); got != want {
 		t.Errorf("CutN output = %q, want %q", got, want)
+	}
+}
+
+func TestCutN_WrapsAt60(t *testing.T) {
+	// A fragment longer than 60 bases must be wrapped at 60, with the column
+	// counter resetting at each fragment start (upstream print_seq's
+	// (i-begin)%60 rule). Build a 130-base fragment, then an N-run, then a
+	// second 70-base fragment so both the no-trailing-cut and post-cut fragment
+	// paths exercise the wrap.
+	frag1 := strings.Repeat("ACGT", 32) + "AA" // 130 bases
+	frag2 := strings.Repeat("TGCA", 17) + "GG" // 70 bases
+	in := ">chr1\n" + frag1 + strings.Repeat("N", 5) + frag2 + "\n"
+
+	wrap60 := func(s string) string {
+		var b strings.Builder
+		for i := 0; i < len(s); i += 60 {
+			end := i + 60
+			if end > len(s) {
+				end = len(s)
+			}
+			b.WriteString(s[i:end])
+			b.WriteByte('\n')
+		}
+		return b.String()
+	}
+	// frag1 occupies 1..130; the 5 Ns are 131..135; frag2 is 136..205.
+	want := fmt.Sprintf(">chr1:1-%d\n%s>chr1:%d-%d\n%s",
+		len(frag1), wrap60(frag1),
+		len(frag1)+5+1, len(frag1)+5+len(frag2), wrap60(frag2))
+
+	var buf bytes.Buffer
+	if err := CutN(strings.NewReader(in), &buf, CutNOptions{MinN: 3}); err != nil {
+		t.Fatalf("CutN failed: %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("CutN wrap mismatch\nwant: %q\ngot:  %q", want, got)
 	}
 }
 
