@@ -32,8 +32,16 @@ type AddReplaceRGOptions struct {
 	// RGID is the RG ID to apply when adopting an existing line from
 	// the header. Mirrors `-R/--rg-id`.
 	RGID string
-	// Mode selects orphan-only vs overwrite-all behaviour.
+	// Mode selects orphan-only vs overwrite-all behaviour. Upstream's
+	// default is overwrite_all (bam_addrprg.c sets retval->mode =
+	// overwrite_all), so callers wanting parity should leave this at the
+	// zero value only when they intend orphan_only.
 	Mode AddReplaceRGMode
+	// OverwriteHeaderRG mirrors upstream `-w`: when an @RG line with the
+	// same ID already exists in the input header, replace it (remove the
+	// old one and add the supplied -r line). Without it, an ID collision is
+	// an error, matching upstream.
+	OverwriteHeaderRG bool
 	// NoPG is accepted; v1 never emits @PG lines so this is a no-op.
 	NoPG bool
 }
@@ -58,11 +66,23 @@ func AddReplaceRG(in io.Reader, out io.Writer, opts AddReplaceRGOptions) error {
 			return err
 		}
 		id = newRG.ID
-		// Append to header if not already present.
-		if findRG(hdr, id) < 0 {
-			hl := sam.HeaderLine{Tag: "RG", Fields: append([]sam.HeaderField{{Tag: "ID", Value: id}}, newRG.Extra...)}
-			hdr.Lines = append(hdr.Lines, hl)
-			hdr.ReadGroups = append(hdr.ReadGroups, newRG)
+		// Upstream (bam_addrprg.c init_state): if an @RG with this ID is
+		// already present, it is an error unless -w (OverwriteHeaderRG) was
+		// given, in which case the existing line is removed first.
+		if findRG(hdr, id) >= 0 {
+			if !opts.OverwriteHeaderRG {
+				return fmt.Errorf("samtools addreplacerg: @RG line with ID:%s already present in the header; use -w to overwrite", id)
+			}
+			removeRG(hdr, id)
+		}
+		// Add the new @RG line.
+		hl := sam.HeaderLine{Tag: "RG", Fields: append([]sam.HeaderField{{Tag: "ID", Value: id}}, newRG.Extra...)}
+		hdr.Lines = append(hdr.Lines, hl)
+		hdr.ReadGroups = append(hdr.ReadGroups, newRG)
+		// In overwrite_all mode upstream removes every other @RG line
+		// (sam_hdr_remove_except keeps only the new ID).
+		if opts.Mode == AddReplaceRGOverwriteAll {
+			keepOnlyRG(hdr, id)
 		}
 	} else {
 		if findRG(hdr, id) < 0 {
@@ -155,4 +175,56 @@ func findRG(h *sam.Header, id string) int {
 		}
 	}
 	return -1
+}
+
+// rgLineID returns the ID: field of an @RG header line, or "" if absent.
+func rgLineID(hl sam.HeaderLine) string {
+	for _, f := range hl.Fields {
+		if f.Tag == "ID" {
+			return f.Value
+		}
+	}
+	return ""
+}
+
+// removeRG deletes the @RG line(s) with the given ID from both the ordered
+// Lines slice (which drives header serialisation) and the typed ReadGroups
+// slice, mirroring htslib's sam_hdr_remove_line_id.
+func removeRG(h *sam.Header, id string) {
+	lines := h.Lines[:0]
+	for _, hl := range h.Lines {
+		if hl.Tag == "RG" && rgLineID(hl) == id {
+			continue
+		}
+		lines = append(lines, hl)
+	}
+	h.Lines = lines
+	rgs := h.ReadGroups[:0]
+	for _, rg := range h.ReadGroups {
+		if rg.ID == id {
+			continue
+		}
+		rgs = append(rgs, rg)
+	}
+	h.ReadGroups = rgs
+}
+
+// keepOnlyRG removes every @RG line whose ID is not id, mirroring htslib's
+// sam_hdr_remove_except used by addreplacerg's overwrite_all mode.
+func keepOnlyRG(h *sam.Header, id string) {
+	lines := h.Lines[:0]
+	for _, hl := range h.Lines {
+		if hl.Tag == "RG" && rgLineID(hl) != id {
+			continue
+		}
+		lines = append(lines, hl)
+	}
+	h.Lines = lines
+	rgs := h.ReadGroups[:0]
+	for _, rg := range h.ReadGroups {
+		if rg.ID == id {
+			rgs = append(rgs, rg)
+		}
+	}
+	h.ReadGroups = rgs
 }

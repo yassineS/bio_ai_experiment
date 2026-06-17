@@ -441,9 +441,10 @@ Usage:
 Options:
   -r, --rg-line STRING   Full @RG line (e.g. "ID:rgX\tSM:s1").
   -R, --rg-id ID         Existing RG ID from the header to apply.
-  -m, --mode MODE        "orphan_only" (default) or "overwrite_all".
+  -m, --mode MODE        "overwrite_all" (default) or "orphan_only".
   -o, --output PATH      Output BAM (default stdout).
-  -w, --no-PG            Accepted; v1 never injects @PG.
+  -w                     Overwrite an existing @RG line with the same ID.
+      --no-PG            Accepted; v1 never injects @PG.
   -h, --help             Show this help.
   -v, --version          Show version.
 `
@@ -452,19 +453,24 @@ func runAddReplaceRG(args []string) int {
 	fs := flag.NewFlagSet("samtools addreplacerg", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		rgLine   string
-		rgID     string
-		mode     string
-		outPath  string
-		noPG     bool
-		showHelp bool
-		showVer  bool
+		rgLine     string
+		rgID       string
+		mode       string
+		outPath    string
+		overwriteW bool
+		noPG       bool
+		showHelp   bool
+		showVer    bool
 	)
 	cliflag.StringVar(fs, &rgLine, "r", "rg-line", "", "")
 	cliflag.StringVar(fs, &rgID, "R", "rg-id", "", "")
-	cliflag.StringVar(fs, &mode, "m", "mode", "orphan_only", "")
+	// Upstream default is overwrite_all (bam_addrprg.c retval->mode =
+	// overwrite_all), not orphan_only.
+	cliflag.StringVar(fs, &mode, "m", "mode", "overwrite_all", "")
 	cliflag.StringVar(fs, &outPath, "o", "output", "", "")
-	cliflag.BoolVar(fs, &noPG, "w", "no-PG", false, "")
+	// -w (overwrite existing header @RG) is short-only; --no-PG is long-only.
+	fs.BoolVar(&overwriteW, "w", false, "")
+	fs.BoolVar(&noPG, "no-PG", false, "")
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	fs.BoolVar(&showVer, "v", false, "")
@@ -504,10 +510,10 @@ func runAddReplaceRG(args []string) int {
 	}
 	var rgMode samtools.AddReplaceRGMode
 	switch strings.ToLower(mode) {
-	case "orphan_only", "":
-		rgMode = samtools.AddReplaceRGOrphanOnly
-	case "overwrite_all":
+	case "overwrite_all", "":
 		rgMode = samtools.AddReplaceRGOverwriteAll
+	case "orphan_only":
+		rgMode = samtools.AddReplaceRGOrphanOnly
 	default:
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: bad -m %q (orphan_only|overwrite_all)\n", mode)
 		return 2
@@ -525,10 +531,11 @@ func runAddReplaceRG(args []string) int {
 	}
 	defer out.Close()
 	if err := samtools.AddReplaceRG(in, out, samtools.AddReplaceRGOptions{
-		RGLine: rgLine,
-		RGID:   rgID,
-		Mode:   rgMode,
-		NoPG:   noPG,
+		RGLine:            rgLine,
+		RGID:              rgID,
+		Mode:              rgMode,
+		OverwriteHeaderRG: overwriteW,
+		NoPG:              noPG,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools addreplacerg: %v\n", err)
 		return 1

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -174,4 +175,62 @@ func TestLiveViewSubsample(t *testing.T) {
 			t.Fatalf("view -s %s kept a different subset:\nupstream:\n%s\nours:\n%s", sf, upstream, mine)
 		}
 	}
+}
+
+// bugfixAddReplaceRGSAM has a pre-existing @RG and a mix of records that
+// carry / lack an RG:Z: tag, so addreplacerg's header pruning (overwrite_all
+// default) and per-record tagging are both exercised.
+const bugfixAddReplaceRGSAM = "@HD\tVN:1.6\n" +
+	"@SQ\tSN:chr1\tLN:100\n" +
+	"@RG\tID:old\tSM:s1\n" +
+	"r1\t0\tchr1\t10\t60\t5M\t*\t0\t0\tACGTA\tIIIII\tRG:Z:old\n" +
+	"r2\t0\tchr1\t20\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n"
+
+// TestLiveAddReplaceRG is the parity case for bug #5: `addreplacerg -r`
+// (default overwrite_all) must add/replace the @RG line — pruning the old one
+// — and set every record's RG:Z: tag to the new ID, byte-for-byte vs
+// upstream. We also check orphan_only mode and the -R (existing ID) path.
+// Output is decoded to SAM via OUR view (both sides) so the comparison is on
+// addreplacerg's content, not upstream view's @PG injection, and never on
+// BGZF bytes.
+func TestLiveAddReplaceRG(t *testing.T) {
+	live := upstreamSamtools(t)
+	ours := ourSamtoolsBinary(t)
+	dir := t.TempDir()
+	sam := filepath.Join(dir, "rg.sam")
+	if err := os.WriteFile(sam, []byte(bugfixAddReplaceRGSAM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := [][]string{
+		{"addreplacerg", "--no-PG", "-r", `ID:new\tSM:s2`, sam},                      // default overwrite_all
+		{"addreplacerg", "--no-PG", "-m", "orphan_only", "-r", `ID:new\tSM:s2`, sam}, // orphan_only
+		{"addreplacerg", "--no-PG", "-R", "old", sam},                                // adopt existing id
+		{"addreplacerg", "--no-PG", "-w", "-r", `ID:old\tSM:redone`, sam},            // -w replaces existing header @RG
+	}
+	for _, args := range cases {
+		upBAM := runSamtools(t, live, args...)
+		ourBAM := runSamtools(t, ours, args...)
+		// Decode both with our view -h so only addreplacerg's effect is compared.
+		upSAM := runSamtoolsStdin(t, ours, upBAM, "view", "-h", "-")
+		ourSAM := runSamtoolsStdin(t, ours, ourBAM, "view", "-h", "-")
+		if !bytes.Equal(upSAM, ourSAM) {
+			t.Fatalf("addreplacerg %v mismatch:\nupstream:\n%s\nours:\n%s", args[1:], upSAM, ourSAM)
+		}
+	}
+}
+
+// runSamtoolsStdin runs bin with args, feeding stdin from in, returning
+// stdout. It fails the test on a non-zero exit.
+func runSamtoolsStdin(t *testing.T, bin string, in []byte, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Stdin = bytes.NewReader(in)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%s %v failed: %v\nstderr: %s", bin, args, err, errb.String())
+	}
+	return out.Bytes()
 }
