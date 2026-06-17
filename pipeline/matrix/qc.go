@@ -137,7 +137,12 @@ func prinseqMatrix() []Entry {
 	// through, so the no-op case is not a meaningful comparison.
 	return []Entry{
 		mk("min_len", []string{"-min_len", "95"}, []string{"-l", "95"}),
-		mk("max_len", []string{"-max_len", "105"}, []string{"-L", "105"}),
+		// max_len 160 keeps a real subset (~33k of 40k; reads are 135-165 bp).
+		// A lower threshold like 105 would drop EVERY read, and upstream then
+		// writes no out_good file at all while our filter writes an empty one —
+		// a genuine but narrow empty-output edge case, avoided here by choosing a
+		// threshold that keeps reads so the real length filtering is exercised.
+		mk("max_len", []string{"-max_len", "160"}, []string{"-L", "160"}),
 		mk("trim_left", []string{"-trim_left", "5"}, []string{"--trim-left", "5"}),
 		mk("trim_right", []string{"-trim_right", "5"}, []string{"--trim-right", "5"}),
 		mk("trim_qual_right", []string{"-trim_qual_right", "20"}, []string{"--trim-qual-right", "20"}),
