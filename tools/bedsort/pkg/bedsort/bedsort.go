@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/cppsort"
 )
 
 // SortMode selects the ordering applied to records.
@@ -65,6 +67,11 @@ type record struct {
 	start int
 	end   int
 	score int
+	// scoreStr is the raw column-5 text. Upstream bedtools stores BED.score as a
+	// std::string and sortByScore{Asc,Desc} compares those strings directly, so
+	// the score sort is LEXICOGRAPHIC ("10" < "100" < "101" < "2"), not numeric.
+	// We keep the raw string to reproduce that ordering byte-for-byte.
+	scoreStr string
 	// hasScore is false when the line has fewer than 5 columns (or the score
 	// column did not parse as an integer). Records without a score sort as if
 	// they had score 0 in the ChrThenScore* modes but we still try to keep the
@@ -126,6 +133,7 @@ func readAll(r io.Reader, keepHeader bool) (recs []record, headers []string, err
 			end:   end,
 		}
 		if len(fields) >= 5 {
+			rec.scoreStr = fields[4]
 			if s, errScore := strconv.Atoi(strings.TrimSpace(fields[4])); errScore == nil {
 				rec.score = s
 				rec.hasScore = true
@@ -200,59 +208,109 @@ func Sort(records []record, opts Options) {
 		return 1
 	}
 
-	// Stage 1: stable sort by (chrom, start) only. This mirrors upstream's
-	// per-chromosome std::map bucketing followed by a start-only sort, and is
-	// the common prerequisite for every mode. Because the sort is stable and
-	// carries no chromEnd key, records with an equal (chrom, start) key stay in
-	// input order.
-	sort.SliceStable(records, func(i, j int) bool {
-		a, b := records[i], records[j]
-		if c := cmpChrom(a, b); c != 0 {
-			return c < 0
+	// Stage 1: bucket records by chromosome (preserving input order within each
+	// bucket via a stable group), then run libstdc++'s std::sort on each bucket
+	// with a start-ONLY comparator. This reproduces upstream sortBed exactly:
+	// loadBedFileIntoMapNoBin pushes records into a std::map<chrom, vector<BED>>
+	// (so the per-chrom vector is in input order) and then calls
+	// `std::sort(vec, sortByStart)`. std::sort is NOT stable, so records that
+	// tie on start come out in introsort's order — neither input order nor any
+	// secondary key — which Go's sort.Slice does not reproduce. cppsort.Sort is
+	// a byte-faithful port of that introsort, and startCorrected mirrors
+	// sortByStart's zeroLength (start==end) +1 adjustment.
+	startCorrected := func(r record) int {
+		if r.start == r.end {
+			return r.start + 1
 		}
-		return a.start < b.start
-	})
+		return r.start
+	}
+	startLess := func(a, b record) bool { return startCorrected(a) < startCorrected(b) }
+
+	// Stable group by chromosome to recover each chrom's input-order vector,
+	// then emit chromosomes in cmpChrom order with each bucket introsorted.
+	sortByChromBucketsStart := func() {
+		buckets := map[string][]record{}
+		var order []record // one representative per chrom, in first-seen order
+		for _, r := range records {
+			if _, ok := buckets[r.chrom]; !ok {
+				order = append(order, r)
+			}
+			buckets[r.chrom] = append(buckets[r.chrom], r)
+		}
+		// Order the chromosome keys exactly as upstream's std::map iteration
+		// (or the genome/faidx order) does, via cmpChrom.
+		sort.SliceStable(order, func(i, j int) bool { return cmpChrom(order[i], order[j]) < 0 })
+		out := records[:0]
+		for _, rep := range order {
+			b := buckets[rep.chrom]
+			cppsort.Sort(b, startLess)
+			out = append(out, b...)
+		}
+	}
+	sortByChromBucketsStart()
 
 	if opts.Mode == ModeChrom {
 		return
 	}
 
-	// Stage 2: apply the mode key as a stable sort on top of the stage-1
-	// arrangement. Stability preserves the stage-1 (and hence input) order for
-	// records whose mode key is equal, matching upstream's comparators which
-	// carry no secondary key beyond (at most) the start ordering already done.
+	// Stage 2: apply the mode key with libstdc++ std::sort, using upstream's
+	// exact comparators (utils/bedFile/bedFile.cpp). Each is a partial order:
+	//   - sortBySizeAsc: by length asc, ties broken by byChromThenStart (chrom
+	//     then start, lexicographic — NOT genome order).
+	//   - sortBySizeDesc / sortByScore{Asc,Desc}: length / score only, no
+	//     secondary key (so equal-key records land in introsort's order).
+	// -sizeA/-sizeD sort the GLOBAL masterList (stage-1 output concatenated
+	// across chromosomes); -chrThenSize*/-chrThenScore* sort EACH chromosome's
+	// contiguous run in place. cppsort reproduces std::sort byte-for-byte.
 	size := func(r record) int { return r.end - r.start }
-	sort.SliceStable(records, func(i, j int) bool {
-		a, b := records[i], records[j]
-		switch opts.Mode {
-		case ModeSizeA:
-			return size(a) < size(b)
-		case ModeSizeD:
-			return size(a) > size(b)
-		case ModeChrThenSizeA:
-			if c := cmpChrom(a, b); c != 0 {
-				return c < 0
-			}
-			return size(a) < size(b)
-		case ModeChrThenSizeD:
-			if c := cmpChrom(a, b); c != 0 {
-				return c < 0
-			}
-			return size(a) > size(b)
-		case ModeChrThenScoreA:
-			if c := cmpChrom(a, b); c != 0 {
-				return c < 0
-			}
-			return a.score < b.score
-		case ModeChrThenScoreD:
-			if c := cmpChrom(a, b); c != 0 {
-				return c < 0
-			}
-			return a.score > b.score
-		default:
+	byChromThenStart := func(a, b record) bool {
+		if a.chrom != b.chrom {
+			return a.chrom < b.chrom
+		}
+		return a.start < b.start
+	}
+	sizeAsc := func(a, b record) bool {
+		la, lb := size(a), size(b)
+		if la < lb {
+			return true
+		}
+		if la > lb {
 			return false
 		}
-	})
+		return byChromThenStart(a, b)
+	}
+	sizeDesc := func(a, b record) bool { return size(a) > size(b) }
+	scoreAsc := func(a, b record) bool { return a.scoreStr < b.scoreStr }
+	scoreDesc := func(a, b record) bool { return a.scoreStr > b.scoreStr }
+
+	// perChrom runs less over each maximal contiguous same-chromosome run of
+	// records (stage 1 already left them grouped in chromosome order).
+	perChrom := func(less func(a, b record) bool) {
+		i := 0
+		for i < len(records) {
+			j := i + 1
+			for j < len(records) && records[j].chrom == records[i].chrom {
+				j++
+			}
+			cppsort.Sort(records[i:j], less)
+			i = j
+		}
+	}
+
+	switch opts.Mode {
+	case ModeSizeA:
+		cppsort.Sort(records, sizeAsc)
+	case ModeSizeD:
+		cppsort.Sort(records, sizeDesc)
+	case ModeChrThenSizeA:
+		perChrom(sizeAsc)
+	case ModeChrThenSizeD:
+		perChrom(sizeDesc)
+	case ModeChrThenScoreA:
+		perChrom(scoreAsc)
+	case ModeChrThenScoreD:
+		perChrom(scoreDesc)
+	}
 }
 
 // Write writes records to w as their original input lines, one per line.

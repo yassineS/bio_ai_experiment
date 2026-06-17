@@ -18,9 +18,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yassineS/bio_ai_experiment/pkg/cppsort"
 )
 
 // Algorithm selects the partitioning strategy.
@@ -187,9 +188,13 @@ func sizeBins(records []record, n int) [][]int {
 	for i, r := range records {
 		byLen[i] = lenIdx{length: r.length, idx: i}
 	}
-	sort.SliceStable(byLen, func(i, j int) bool {
-		return byLen[i].length > byLen[j].length
-	})
+	// Upstream sorts with std::sort(items, sortBySizeDesc) — a length-ONLY
+	// comparator (aLen > bLen), so equal-length records come out in introsort's
+	// artifact order, which determines the greedy bin assignment below. Use the
+	// libstdc++ introsort port so the per-file record assignment matches
+	// byte-for-byte (a stable sort would tie equal-length records in input order
+	// and diverge).
+	cppsort.Sort(byLen, func(a, b lenIdx) bool { return a.length > b.length })
 
 	bins := make([][]int, 0, n)
 	binTotals := make([]int, 0, n)

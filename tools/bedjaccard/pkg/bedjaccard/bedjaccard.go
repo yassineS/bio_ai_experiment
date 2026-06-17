@@ -132,8 +132,28 @@ func jaccard(aReader, bReader io.Reader, opts Options) (*Result, error) {
 		aSrc = &blockSplitReader{in: aSrc}
 		bSrc = &blockSplitReader{in: bSrc}
 	}
-	ra := newMergingReader(aSrc, perStrand, opts.StrandFilter)
-	rb := newMergingReader(bSrc, perStrand, opts.StrandFilter)
+	var ra, rb recordReader = newMergingReader(aSrc, perStrand, opts.StrandFilter),
+		newMergingReader(bSrc, perStrand, opts.StrandFilter)
+	if perStrand {
+		// Per-strand merging completes each strand's runs independently, so the
+		// merged records come out grouped by strand rather than in global
+		// (chrom, start) order (e.g. a "+" run ending at 1135 emitted before a
+		// "-" run starting at 13). The downstream sweep — and its sortedness
+		// guard — needs a globally sorted stream, and it already filters pairs to
+		// the same strand via strandOK, so re-sort the merged records by
+		// (chrom, start, end) before sweeping. The result (intersection / union /
+		// n) is order-independent across equal-coordinate records, so a stable
+		// sort suffices.
+		var err1, err2 error
+		ra, err1 = newSortedBufferReader(ra)
+		rb, err2 = newSortedBufferReader(rb)
+		if err1 != nil {
+			return nil, fmt.Errorf("reading A: %w", err1)
+		}
+		if err2 != nil {
+			return nil, fmt.Errorf("reading B: %w", err2)
+		}
+	}
 
 	var active []*bed.Record
 	var (
@@ -384,6 +404,48 @@ func (s *blockSplitReader) Read() (*bed.Record, error) {
 			s.queued = append(s.queued, &block)
 		}
 	}
+}
+
+// sortedBufferReader drains an underlying recordReader, stable-sorts the
+// records by (chrom, start, end), and replays them. It is used for the
+// per-strand jaccard path, where the merged stream is grouped by strand rather
+// than globally coordinate-sorted.
+type sortedBufferReader struct {
+	recs []*bed.Record
+	i    int
+}
+
+func newSortedBufferReader(r recordReader) (*sortedBufferReader, error) {
+	var recs []*bed.Record
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		recs = append(recs, rec)
+	}
+	sort.SliceStable(recs, func(i, j int) bool {
+		if recs[i].Chrom != recs[j].Chrom {
+			return recs[i].Chrom < recs[j].Chrom
+		}
+		if recs[i].ChromStart != recs[j].ChromStart {
+			return recs[i].ChromStart < recs[j].ChromStart
+		}
+		return recs[i].ChromEnd < recs[j].ChromEnd
+	})
+	return &sortedBufferReader{recs: recs}, nil
+}
+
+func (s *sortedBufferReader) Read() (*bed.Record, error) {
+	if s.i >= len(s.recs) {
+		return nil, io.EOF
+	}
+	out := s.recs[s.i]
+	s.i++
+	return out, nil
 }
 
 type mergingReader struct {
