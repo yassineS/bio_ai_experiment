@@ -24,7 +24,8 @@ Usage:
 Options:
   -i,  --input FILE        A intervals (required, '-' for stdin)
        --files FILE..      One or more B files to compute coverage against
-       --names N1,N2,..    Comma-separated header labels (defaults: file basenames)
+       --names N1 N2 ..    Header labels (variadic; a single comma-separated
+                           token is also accepted). Triggers a header line.
        --counts            Emit per-B count of overlapping records
        --both              Emit count and coverage fraction per B (interleaved)
   -s,  --strand            Restrict overlaps to same-strand pairs
@@ -37,12 +38,12 @@ Notes:
   - Default appends one fraction (in [0,1], %f-formatted) per B file.
   - -counts replaces fractions with integer overlap counts.
   - -both interleaves count + fraction per B (2N columns total).
-  - When -names is supplied (or files are supplied via --files), a header
-    row prefixed with '#' is emitted before the data.
+  - A '#' header line is emitted ONLY when -names is given (matching upstream).
+  - Records are reported grouped by chromosome then by UCSC bin.
 
 Examples:
   bedannotate -i a.bed --files b1.bed b2.bed
-  bedannotate -i a.bed --files b1.bed b2.bed --names exons,introns --both
+  bedannotate -i a.bed --files b1.bed b2.bed --names exons introns --both
 `
 
 func main() {
@@ -58,14 +59,12 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	var (
 		aPath, output      string
-		names              string
 		counts, both       bool
 		sameStrand, oppStr bool
 		help, showVer      bool
 	)
 
 	cliflag.StringVar(fs, &aPath, "i", "input", "", "A BED file (required)")
-	cliflag.StringVar(fs, &names, "", "names", "", "Comma-separated header labels")
 	cliflag.BoolVar(fs, &counts, "", "counts", false, "Emit overlap counts")
 	cliflag.BoolVar(fs, &both, "", "both", false, "Emit count + fraction per B")
 	cliflag.BoolVar(fs, &sameStrand, "s", "strand", false, "Same-strand overlaps only")
@@ -76,11 +75,13 @@ func run(argv []string, stdout, stderr *os.File) error {
 
 	fs.Usage = func() { fmt.Fprintf(stderr, "%s", usage) }
 
-	// Pre-extract --files / -files <FILE...> from argv: it's variadic,
-	// which Go's flag package can't model directly. Everything between
-	// `-files` (or `--files`) and the next `-`-prefixed token (or EOF)
-	// is a B-file path.
+	// Pre-extract the variadic `-files <FILE...>` and `-names <NAME...>` args,
+	// which Go's flag package cannot model: everything between the trigger flag
+	// and the next `-`-prefixed token (or EOF) is a value. `namesGiven` records
+	// whether -names was present at all, since an empty -names still differs
+	// from omitting it (a header is emitted only when -names is given).
 	filesPaths, argvRest := extractVarArg(argv, []string{"-files", "--files"})
+	nameValues, namesGiven, argvRest := extractVarArgFlagged(argvRest, []string{"-names", "--names"})
 
 	if err := fs.Parse(argvRest); err != nil {
 		return err
@@ -108,16 +109,23 @@ func run(argv []string, stdout, stderr *os.File) error {
 		mode = bedannotate.ModeCounts
 	}
 
-	// Names: explicit -names overrides; otherwise derive from basenames.
+	// Names: a header line is emitted ONLY when -names is explicitly given
+	// (matching upstream — file basenames do NOT trigger a header). Leave the
+	// slice nil otherwise so no header is printed. Accept both the upstream
+	// space-separated form (-names b1 b2) and a single comma-separated token
+	// (--names b1,b2) for convenience.
 	var nameSlice []string
-	if names != "" {
-		nameSlice = strings.Split(names, ",")
-	} else {
-		nameSlice = bedannotate.DefaultNames(filesPaths)
-	}
-	if len(nameSlice) != len(filesPaths) {
-		return fmt.Errorf("--names supplies %d labels but --files has %d entries",
-			len(nameSlice), len(filesPaths))
+	if namesGiven {
+		if len(nameValues) == 1 && strings.Contains(nameValues[0], ",") {
+			nameSlice = strings.Split(nameValues[0], ",")
+		} else {
+			nameSlice = nameValues
+		}
+		if len(nameSlice) == 0 {
+			// -names given with no values: emit a header with empty labels,
+			// one per file (matching upstream's empty-title behaviour).
+			nameSlice = make([]string, len(filesPaths))
+		}
 	}
 
 	aR, err := iohelper.OpenReader(aPath)
@@ -158,6 +166,38 @@ func run(argv []string, stdout, stderr *os.File) error {
 		return err
 	}
 	return nil
+}
+
+// extractVarArgFlagged is like extractVarArg but also reports whether any of
+// the trigger flags appeared at all (so an empty value list can be
+// distinguished from the flag being absent).
+func extractVarArgFlagged(argv, triggers []string) (values []string, found bool, rest []string) {
+	rest = make([]string, 0, len(argv))
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		matched := false
+		for _, t := range triggers {
+			if a == t {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			rest = append(rest, a)
+			continue
+		}
+		found = true
+		i++
+		for ; i < len(argv); i++ {
+			v := argv[i]
+			if len(v) > 0 && v[0] == '-' {
+				i--
+				break
+			}
+			values = append(values, v)
+		}
+	}
+	return values, found, rest
 }
 
 // extractVarArg pulls the values that follow any of the given trigger

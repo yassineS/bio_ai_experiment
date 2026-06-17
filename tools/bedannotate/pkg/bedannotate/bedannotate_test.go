@@ -62,19 +62,62 @@ func TestRun_BothMode(t *testing.T) {
 	}
 }
 
-// TestRun_HeaderEmittedWhenNamesSet checks the leading '#' line.
+// TestRun_HeaderEmittedWhenNamesSet checks the leading '#' line. For a BED3
+// main file (bedType=3) upstream pads the hash with bedType-1 = 2 tabs, then
+// one tab plus the label, so the header is "#\t\t\texons".
 func TestRun_HeaderEmittedWhenNamesSet(t *testing.T) {
 	a := "chr1\t0\t10\n"
 	b1 := "chr1\t2\t5\n"
 	got := run(t, a, []string{b1}, Options{Names: []string{"exons"}})
 	lines := strings.SplitN(got, "\n", 2)
-	if lines[0] != "#\texons" {
+	if lines[0] != "#\t\t\texons" {
 		t.Errorf("header line mismatch: %q", lines[0])
 	}
-	// Both mode header format.
+	// Both mode header format (same bedType-1 leading padding).
 	got2 := run(t, a, []string{b1}, Options{Names: []string{"exons"}, Mode: ModeBoth})
-	if !strings.HasPrefix(got2, "#\texons_cnt\texons_pct\n") {
+	if !strings.HasPrefix(got2, "#\t\t\texons_cnt\texons_pct\n") {
 		t.Errorf("both header mismatch: %q", got2)
+	}
+}
+
+// TestRun_NoHeaderWithoutNames proves no header is emitted when Names is nil
+// (the regression: the port used to always emit a "#..." header).
+func TestRun_NoHeaderWithoutNames(t *testing.T) {
+	got := run(t, "chr1\t0\t10\n", []string{"chr1\t2\t5\n"}, Options{})
+	if strings.HasPrefix(got, "#") {
+		t.Errorf("expected no header when Names is nil, got: %q", got)
+	}
+}
+
+// TestUnit_RecordOrderFollowsBins proves output is grouped by chromosome
+// (lexicographic) then by UCSC bin then input order — NOT input order and NOT
+// coordinate order. Here three chr1 records share the smallest bin, so they
+// keep input order (100-200, then 0-50, then 5000-6000), and chr2 sorts last.
+func TestUnit_RecordOrderFollowsBins(t *testing.T) {
+	a := "chr1\t100\t200\nchr2\t500\t600\nchr1\t0\t50\nchr1\t5000\t6000\n"
+	b := "chr1\t0\t10\n"
+	got := run(t, a, []string{b}, Options{Mode: ModeCounts})
+	want := "chr1\t100\t200\t0\n" +
+		"chr1\t0\t50\t1\n" +
+		"chr1\t5000\t6000\t0\n" +
+		"chr2\t500\t600\t0\n"
+	if got != want {
+		t.Fatalf("record order mismatch.\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestUnit_UcscBin checks the bin function against hand-computed values.
+func TestUnit_UcscBin(t *testing.T) {
+	// Small features (< 16kb span) all land in the finest level: offset 4681
+	// (= 585+512+64+8+1 ... = sum of finer offsets) + (start >> 14).
+	if b := ucscBin(0, 50); b != ucscBin(100, 200) {
+		t.Errorf("0-50 and 100-200 should share a bin, got %d and %d", ucscBin(0, 50), ucscBin(100, 200))
+	}
+	// A feature spanning a 16kb boundary moves to a coarser bin.
+	small := ucscBin(0, 100)
+	big := ucscBin(0, 1<<20) // 1Mb span
+	if small == big {
+		t.Errorf("a 1Mb feature should occupy a coarser bin than a 100bp one (got %d == %d)", small, big)
 	}
 }
 
@@ -120,17 +163,6 @@ func TestRun_NoMatchAndEmptyB(t *testing.T) {
 	got2 := run(t, a, []string{""}, Options{})
 	if !strings.Contains(got2, "chr1\t0\t10\t0.000000") {
 		t.Errorf("empty B should yield 0.000000, got:\n%s", got2)
-	}
-}
-
-// TestDefaultNames extracts basenames from paths with various separators.
-func TestDefaultNames(t *testing.T) {
-	got := DefaultNames([]string{"b1.bed", "dir/b2.bed", "a/b/c/long.bed"})
-	want := []string{"b1.bed", "b2.bed", "long.bed"}
-	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("DefaultNames[%d]=%q, want %q", i, got[i], w)
-		}
 	}
 }
 
