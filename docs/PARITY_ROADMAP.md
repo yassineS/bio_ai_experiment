@@ -232,10 +232,12 @@ README for the conventions.
 Recently closed (this wave, treat as merged):
 
 - **bcftools**: full multi-allelic `-m` `call`; `--ploidy GRCh37/38` +
-  `--ploidy-file`; `convert` `--gvcf2vcf`/`--tsv2vcf`/`--gensample(2vcf)`/
+  `--ploidy-file`; `convert` `--gvcf2vcf` (and its upstream prefix
+  abbreviation `--gvcf`)/`--tsv2vcf`/`--gensample(2vcf)`/
   `--hapsample(2vcf)`/`--haplegendsample(2vcf)`; `annotate`; `consensus`
   chain + iupac; `mendelian2` rule engine; `gtcheck` (PL/cluster minus the
-  dendrogram); `filter -M/--mask-file`; `cnv --AF-file`; `roh -O z`;
+  dendrogram, plus `-O t|z[N]` text/BGZF output and `--n-matches` /
+  `--distinctive-sites`); `filter -M/--mask-file`; `cnv --AF-file`; `roh -O z`;
   `query %INFO/<tag>` + `%SAMPLE`; csq **slice 4** (FORMAT/TBCSQ,
   `--unify-chr-names`, `--dump-gff`, `-O b|u|z`); mpileup legacy
   `bam2bcf_indel` **and** `--indels-cns`; BCF `-O u|b` output throughout;
@@ -3383,9 +3385,14 @@ Coverage of the `pkg/samtools` package after this PR is ~80%.
 and `mpileup` (SNP slices 1–4 + legacy `bam2bcf_indel` + `--indels-cns`).
 
 All bcftools subcommands now have a real implementation in the Go port.
-The genuinely-remaining gap is `gtcheck -c/--cluster` clustering, now
-implemented as this port's own design (upstream leaves it an error stub).
-`convert` PLINK exporters (`--plink`/`--tped`/`--plink-bed`, PLINK1 spec),
+`gtcheck` is feature-complete: `-c/--cluster` clustering (this port's own
+design — upstream leaves it an error stub), `--n-matches`,
+`--distinctive-sites`, `-i/-e` filter expressions, and both `-O` output
+containers (`t` text and `z` BGZF with an optional `z<N>` level) are all
+implemented and live-oracle validated. `convert` covers the full upstream
+mode set, including `--gvcf2vcf` (and its prefix-abbreviation `--gvcf`;
+upstream `convert` has no separate VCF→gVCF blocking mode — that lives in
+the `+gvcfz` plugin). `convert` PLINK exporters (`--plink`/`--tped`/`--plink-bed`, PLINK1 spec),
 `csq -l/--local-csq`, `concat --ligate`, and `som` train/classify (upstream
 `fwrite`-return write bug fixed) are implemented; samtools `tview` text/HTML
 (`-d T`/`-d H`) and the interactive `-d C` viewer (pure-Go Linux raw-mode

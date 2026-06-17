@@ -53,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 
+	bgzf "github.com/yassineS/bio_ai_experiment/pkg/htsgo/bgzf"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/iohelper"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
@@ -134,8 +135,14 @@ type GtcheckOptions struct {
 	// sorts by HWE probability instead. 0 means unlimited.
 	NMatches int
 
-	// OutputType: "t" (default) or "z". Only "t" is supported.
+	// OutputType: "t" (default tab-delimited text) or "z" (BGZF-compressed
+	// text), mirroring upstream vcfgtcheck.c's -O t|z. The same report
+	// bytes are written either way; "z" wraps them in a BGZF stream.
 	OutputType string
+
+	// CompressLevel is the BGZF deflate level for OutputType "z" (the
+	// optional digit suffix in -O z<N>). -1 selects the default level.
+	CompressLevel int
 
 	// Cluster enables `-c/--cluster MIN,MAX`: group the (cross-check) query
 	// samples into clusters of putatively-identical individuals by their
@@ -664,20 +671,58 @@ func runGtcheck(
 		}
 	}
 
-	if err := writeGtcheckReport(out, result, stats, st, opts, crossCheck, qSamples, gSamples); err != nil {
+	// -O z wraps the identical report bytes in a BGZF stream, exactly as
+	// upstream opens its single output handle via bgzf_open(.., "wg")
+	// (vcfgtcheck.c:445) and writes the same text through it. -O t writes
+	// plain bytes (upstream's "wu" handle, an uncompressed passthrough).
+	// The framed result decodes byte-identically to the text output.
+	if opts.OutputType == "z" {
+		level := opts.CompressLevel
+		if level < 0 {
+			level = bgzf.DefaultCompression
+		}
+		bz, berr := bgzf.NewWriterLevel(out, level)
+		if berr != nil {
+			return result, berr
+		}
+		if werr := writeGtcheckBody(bz, result, stats, st, opts, crossCheck, qSamples, gSamples, ds); werr != nil {
+			bz.Close()
+			return result, werr
+		}
+		if cerr := bz.Close(); cerr != nil {
+			return result, cerr
+		}
+		return result, nil
+	}
+
+	if err := writeGtcheckBody(out, result, stats, st, opts, crossCheck, qSamples, gSamples, ds); err != nil {
 		return result, err
+	}
+	return result, nil
+}
+
+// writeGtcheckBody writes the gtcheck report, the optional distinctive-sites
+// block, and the optional cluster block to out, in upstream's order. It is
+// shared by the plain-text (-O t) and BGZF (-O z) output paths so both emit
+// byte-identical content.
+func writeGtcheckBody(
+	out io.Writer, result GtcheckResult, stats *gtcheckStats, st *gtcheckState,
+	opts GtcheckOptions, crossCheck bool, qSamples, gSamples []string, ds *distinctiveCollector,
+) error {
+	if err := writeGtcheckReport(out, result, stats, st, opts, crossCheck, qSamples, gSamples); err != nil {
+		return err
 	}
 	if opts.HasDistinctiveSites {
 		if err := ds.report(out); err != nil {
-			return result, err
+			return err
 		}
 	}
 	if opts.Cluster && crossCheck {
 		if err := writeGtcheckClusters(out, result, opts); err != nil {
-			return result, err
+			return err
 		}
 	}
-	return result, nil
+	return nil
 }
 
 // pairAvgError returns the per-pair average discordance (an error rate in

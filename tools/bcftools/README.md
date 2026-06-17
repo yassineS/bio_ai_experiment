@@ -14,7 +14,8 @@ subcommands. The current implementation ships:
   `plot-vcfstats`.
 - `bcftools convert` — re-emit VCF/BCF in a different format (`-O v|z|b|u`)
   with optional sample / region filtering, plus the GEN/HAP/TSV conversion
-  modes: `--gvcf2vcf`, `--tsv2vcf`, `--gensample`/`--gensample2vcf`,
+  modes: `--gvcf2vcf` (and its upstream prefix abbreviation `--gvcf`),
+  `--tsv2vcf`, `--gensample`/`--gensample2vcf`,
   `--hapsample`/`--hapsample2vcf`, `--haplegendsample`/`--haplegendsample2vcf`,
   and the PLINK exporters `-p`/`--plink` (`.ped`+`.map`), `--tped`
   (`.tped`+`.tfam`) and `--plink-bed` (binary `.bed`+`.bim`+`.fam`).
@@ -43,7 +44,9 @@ subcommands. The current implementation ships:
   no rule to express for triploid+; this is not a gap.
 - `bcftools gtcheck` — sample-identity check by hard-GT Hamming
   concordance (with `-g panel`). Emits the upstream `tsv`-format
-  `DC` / `INFO` tables.
+  `DC` / `INFO` tables as plain text (`-O t`, default) or BGZF-compressed
+  (`-O z`, with an optional `-O z<N>` compression level). Supports
+  `--n-matches` (top-N per sample) and `--distinctive-sites`.
 - `bcftools roh` — runs-of-autozygosity detection via a 2-state HMM
   (`HW` / `AZ`) over hard-GT input (`-G/--GTs-only`).
 - `bcftools filter` — soft-filter records by include / exclude
@@ -1070,11 +1073,16 @@ The `convert` PLINK exporters (`--plink`/`--tped`/`--plink-bed`) are now
 implemented (see the PLINK export notes above); the GEN/HAP/TSV/gVCF modes
 were already done.
 
+`gtcheck` is now feature-complete against upstream: GT and PL scoring,
+the probability/integer discordance paths, the HWE column, `--n-matches`,
+`--distinctive-sites`, `-i/-e` filter expressions (with the `qry:`/`gt:`
+scope prefix), the `-c/--cluster` clustering (this port's own design;
+upstream leaves it an error stub), and both `-O` output containers
+(`t` text and `z` BGZF, with an optional `z<N>` compression level).
+
 What remains **genuinely open** (see `docs/PARITY_ROADMAP.md` for the
 authoritative gap list):
 
-- `gtcheck -c/--cluster` dendrogram (upstream itself errors "to be
-  implemented") and `gtcheck` filter expressions.
 - `query %N_ALT` (**not** an upstream `query` token — non-goal).
 - `bcftools tview` is a deliberate skip (interactive ncurses; no pipeline
   use).

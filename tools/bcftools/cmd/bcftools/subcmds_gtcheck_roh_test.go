@@ -6,33 +6,47 @@ import (
 	"testing"
 )
 
-// TestCheckGtcheckDeferred locks in the upstream-flag-name surface
-// that runGtcheck hard-rejects rather than silently accepting. Per
-// the project parity rule (docs/PARITY_ROADMAP.md "Definition of 1:1")
-// every documented upstream flag must be recognised — either
-// implemented or gracefully rejected with a roadmap pointer. A
-// regression that drops any of these from the rejection set without
-// implementing the underlying behaviour is a parity bug.
-func TestCheckGtcheckDeferred(t *testing.T) {
-	if got := checkGtcheckDeferred(checkGtcheckDeferredInputs{outputType: "t"}); got != "" {
-		t.Fatalf("default outputType=t: got deferred=%q, want \"\"", got)
-	}
-	// PL scoring, --n-matches and --distinctive-sites are now
-	// implemented; only the -c/--cluster dendrogram (which upstream
-	// itself rejects) and -O z compressed output remain deferred.
+// TestUnitParseGtcheckOutputType locks in the gtcheck -O parsing, a
+// faithful port of vcfgtcheck.c's `case 'O'`: t/z select the container,
+// a trailing digit sets the BGZF level, a bare digit sets the level on
+// the default text container, and u/b (and other unknown types) are
+// rejected with upstream's literal diagnostics. Runs with no upstream
+// binary.
+func TestUnitParseGtcheckOutputType(t *testing.T) {
 	cases := []struct {
-		name string
-		in   checkGtcheckDeferredInputs
-		want string
+		arg       string
+		container string
+		level     int
+		wantErr   string
 	}{
-		// -c/--cluster is now implemented, so it is no longer deferred.
-		{"cluster", checkGtcheckDeferredInputs{cluster: "2,4"}, ""},
-		{"output-type-z", checkGtcheckDeferredInputs{outputType: "z"}, "-O z (compressed output)"},
+		{"", "t", -1, ""},
+		{"t", "t", -1, ""},
+		{"z", "z", -1, ""},
+		{"z3", "z", 3, ""},
+		{"z0", "z", 0, ""},
+		{"z9", "z", 9, ""},
+		{"t5", "t", 5, ""},
+		{"3", "t", 3, ""},
+		{"u", "", 0, `The output type "u" not recognised`},
+		{"b", "", 0, `The output type "b" not recognised`},
+		{"x", "", 0, `The output type "x" not recognised`},
+		{"z10", "", 0, "Could not parse argument: --output-type 10"},
+		{"za", "", 0, "Could not parse argument: --output-type a"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := checkGtcheckDeferred(tc.in); got != tc.want {
-				t.Errorf("deferred(%s): got %q, want %q", tc.name, got, tc.want)
+		t.Run(tc.arg, func(t *testing.T) {
+			c, lv, err := parseGtcheckOutputType(tc.arg)
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("arg %q: err=%v, want %q", tc.arg, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("arg %q: unexpected err %v", tc.arg, err)
+			}
+			if c != tc.container || lv != tc.level {
+				t.Errorf("arg %q: got (%q,%d), want (%q,%d)", tc.arg, c, lv, tc.container, tc.level)
 			}
 		})
 	}

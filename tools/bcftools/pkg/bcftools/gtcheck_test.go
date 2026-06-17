@@ -2,6 +2,8 @@ package bcftools
 
 import (
 	"bytes"
+	"compress/gzip"
+	"io"
 	"math"
 	"strings"
 	"testing"
@@ -61,6 +63,40 @@ func TestGtcheck_HeaderIsDCv2(t *testing.T) {
 	// The INFO stats block must precede the table.
 	if !strings.Contains(out.String(), "INFO\tsites-compared\t4") {
 		t.Errorf("output missing 'INFO\\tsites-compared\\t4':\n%s", out.String())
+	}
+}
+
+// TestUnitGtcheckOutputTypeZ checks the -O z container selection at the
+// library level with no upstream binary: OutputType "z" must produce a
+// gzip/BGZF stream whose decompressed bytes are identical to the OutputType
+// "t" text output, and the gzip magic must be present. This is the
+// binary-free counterpart to the live BGZF parity test.
+func TestUnitGtcheckOutputTypeZ(t *testing.T) {
+	var textBuf bytes.Buffer
+	if _, err := Gtcheck(strings.NewReader(fixtureGtcheck), &textBuf, GtcheckOptions{OutputType: "t"}); err != nil {
+		t.Fatalf("Gtcheck -O t: %v", err)
+	}
+	for _, level := range []int{-1, 0, 6, 9} {
+		var zBuf bytes.Buffer
+		if _, err := Gtcheck(strings.NewReader(fixtureGtcheck), &zBuf, GtcheckOptions{OutputType: "z", CompressLevel: level}); err != nil {
+			t.Fatalf("Gtcheck -O z (level %d): %v", level, err)
+		}
+		raw := zBuf.Bytes()
+		if len(raw) < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
+			t.Fatalf("level %d: output is not gzip-framed: % x", level, raw[:min(2, len(raw))])
+		}
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("level %d: gzip.NewReader: %v", level, err)
+		}
+		zr.Multistream(true)
+		got, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("level %d: gzip read: %v", level, err)
+		}
+		if string(got) != textBuf.String() {
+			t.Fatalf("level %d: -O z decompressed != -O t\n--- z ---\n%s\n--- t ---\n%s", level, got, textBuf.String())
+		}
 	}
 }
 
