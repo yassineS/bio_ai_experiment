@@ -1364,6 +1364,17 @@ Closed in wave 1:
 - **FILTER tag include/exclude**: `--remove-filtered`, `--keep-filtered` ✅
 - **INFO selection in recode**: `--keep-INFO TAG`, `--remove-INFO TAG` ✅
 - **INFO extraction**: `--get-INFO TAG[,TAG]` → `.INFO` ✅
+- **INFO key order in recode**: the recoded `.recode.vcf` INFO column now
+  preserves the SOURCE order of INFO keys (e.g. `DP;AF`, not the formerly
+  emitted alphabetical `AF;DP`). Upstream prints raw `INFO_str` verbatim for
+  `--recode-INFO-all` (`vcf_entry.cpp:311`) and walks the parsed INFO vector
+  in source order for `--recode-INFO TAG` (`get_INFO`, `entry_getters.cpp:182`).
+  Note the two paths render a bare flag differently: `--recode-INFO-all` keeps
+  it bare; `--recode-INFO TAG` emits `KEY=1` because `set_INFO`
+  (`vcf_entry_setters.cpp:253`) materialises a flag's value as `"1"`. Pinned
+  byte-for-byte vs live upstream by `TestVcftools_RecodeINFOOrderUpstreamParity`
+  (fixture `info_order.vcf`, non-alphabetical source order + flag keys) and the
+  binary-free `TestUnitFilterRecodeInfoOrder`. ✅
 
 Closed in wave 2:
 

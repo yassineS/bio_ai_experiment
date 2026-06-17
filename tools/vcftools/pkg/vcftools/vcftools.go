@@ -1418,28 +1418,36 @@ func Run(input io.Reader, params *Params) error {
 		// the outVariant body is shared.
 		if params.Recode || params.RecodeBCF {
 			var outInfo map[string]string
+			var outInfoOrder []string
 			switch {
 			case len(recodeInfoSet) > 0:
 				// --recode-INFO TAG (recode-column selector): restrict
 				// the INFO column to the listed tags. Composes with
-				// --recode-INFO-all by overriding it.
-				outInfo = filterRecodeInfo(filteredVariant.Info, recodeInfoSet)
+				// --recode-INFO-all by overriding it. Upstream
+				// (entry_getters.cpp:182 get_INFO) iterates the parsed
+				// INFO vector in SOURCE order and emits the kept subset
+				// in that order, so we filter InfoOrder rather than sort.
+				outInfo, outInfoOrder = filterRecodeInfo(filteredVariant.Info, filteredVariant.InfoOrder, recodeInfoSet)
 			case params.RecodeInfoAll:
+				// --recode-INFO-all: upstream prints the raw INFO_str
+				// verbatim (vcf_entry.cpp:311), i.e. exact source order.
 				outInfo = filteredVariant.Info
+				outInfoOrder = filteredVariant.InfoOrder
 			default:
 				outInfo = make(map[string]string)
 			}
 			outVariant := &vcf.Variant{
-				Chrom:   filteredVariant.Chrom,
-				Pos:     filteredVariant.Pos,
-				ID:      filteredVariant.ID,
-				Ref:     filteredVariant.Ref,
-				Alt:     filteredVariant.Alt,
-				Qual:    filteredVariant.Qual,
-				Filter:  filteredVariant.Filter,
-				Info:    outInfo,
-				Format:  filteredVariant.Format,
-				Samples: filteredVariant.Samples,
+				Chrom:     filteredVariant.Chrom,
+				Pos:       filteredVariant.Pos,
+				ID:        filteredVariant.ID,
+				Ref:       filteredVariant.Ref,
+				Alt:       filteredVariant.Alt,
+				Qual:      filteredVariant.Qual,
+				Filter:    filteredVariant.Filter,
+				Info:      outInfo,
+				InfoOrder: outInfoOrder,
+				Format:    filteredVariant.Format,
+				Samples:   filteredVariant.Samples,
 			}
 			if params.Recode {
 				if err := recodeWriter.Write(outVariant); err != nil {
@@ -2352,15 +2360,16 @@ func filterVariantSamples(v *vcf.Variant, keepSamples map[string]bool) *vcf.Vari
 	}
 
 	filtered := &vcf.Variant{
-		Chrom:  v.Chrom,
-		Pos:    v.Pos,
-		ID:     v.ID,
-		Ref:    v.Ref,
-		Alt:    v.Alt,
-		Qual:   v.Qual,
-		Filter: v.Filter,
-		Info:   v.Info,
-		Format: v.Format,
+		Chrom:     v.Chrom,
+		Pos:       v.Pos,
+		ID:        v.ID,
+		Ref:       v.Ref,
+		Alt:       v.Alt,
+		Qual:      v.Qual,
+		Filter:    v.Filter,
+		Info:      v.Info,
+		InfoOrder: v.InfoOrder,
+		Format:    v.Format,
 	}
 
 	for _, sample := range v.Samples {
@@ -2409,15 +2418,16 @@ func filterGenotypes(v *vcf.Variant, params *Params) (*vcf.Variant, map[string]b
 
 	// Create a copy to avoid modifying original
 	filtered := &vcf.Variant{
-		Chrom:  v.Chrom,
-		Pos:    v.Pos,
-		ID:     v.ID,
-		Ref:    v.Ref,
-		Alt:    v.Alt,
-		Qual:   v.Qual,
-		Filter: v.Filter,
-		Info:   v.Info,
-		Format: v.Format,
+		Chrom:     v.Chrom,
+		Pos:       v.Pos,
+		ID:        v.ID,
+		Ref:       v.Ref,
+		Alt:       v.Alt,
+		Qual:      v.Qual,
+		Filter:    v.Filter,
+		Info:      v.Info,
+		InfoOrder: v.InfoOrder,
+		Format:    v.Format,
 	}
 
 	// Upstream gates DP/GQ genotype filters on the SITE FORMAT carrying the

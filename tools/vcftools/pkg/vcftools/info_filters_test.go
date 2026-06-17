@@ -79,14 +79,14 @@ func TestFilterRecodeInfo(t *testing.T) {
 	in := map[string]string{"AF": "0.5", "DP": "10", "AA": "T"}
 
 	// Empty set -> unchanged.
-	out := filterRecodeInfo(in, nil)
+	out, _ := filterRecodeInfo(in, nil, nil)
 	if len(out) != 3 {
 		t.Errorf("empty set: got %d, want 3", len(out))
 	}
 
 	// recode-INFO restricts to listed tags.
 	keep := parseInfoTagList("AF,DP")
-	out = filterRecodeInfo(in, keep)
+	out, _ = filterRecodeInfo(in, []string{"AF", "DP", "AA"}, keep)
 	if len(out) != 2 || out["AF"] != "0.5" || out["DP"] != "10" {
 		t.Errorf("recode-INFO AF,DP: got %v", out)
 	}
@@ -95,10 +95,69 @@ func TestFilterRecodeInfo(t *testing.T) {
 	// dropped — mirrors upstream's `recode_INFO_to_keep` behaviour (the
 	// recoded INFO column lists only tags that exist on the variant).
 	miss := parseInfoTagList("MISSING")
-	out = filterRecodeInfo(in, miss)
+	out, _ = filterRecodeInfo(in, []string{"AF", "DP", "AA"}, miss)
 	if len(out) != 0 {
 		t.Errorf("MISSING keep-set: got %v, want empty", out)
 	}
+}
+
+// TestUnitFilterRecodeInfoOrder pins the binary-free INFO-rebuild ordering
+// contract: the recode INFO path must preserve the SOURCE order of the INFO
+// keys (upstream entry_getters.cpp:182 walks the parsed INFO vector in order)
+// rather than sorting them alphabetically. It exercises plain recode
+// (empty keep-set => keep all), --recode-INFO-all-equivalent passthrough, and
+// the --recode-INFO TAG subset, including a flag-style (no =value) key.
+func TestUnitFilterRecodeInfoOrder(t *testing.T) {
+	// Deliberately NON-alphabetical source order (DP before AF), plus a
+	// flag-style key (SOMATIC, empty value) interleaved between value keys.
+	info := map[string]string{"DP": "30", "SOMATIC": "", "AF": "0.25", "NS": "3"}
+	order := []string{"DP", "SOMATIC", "AF", "NS"}
+
+	// Plain recode keeps every key but MUST preserve source order.
+	_, gotOrder := filterRecodeInfo(info, order, nil)
+	wantAll := []string{"DP", "SOMATIC", "AF", "NS"}
+	if !equalStrSlice(gotOrder, wantAll) {
+		t.Errorf("keep-all order: got %v, want %v (source order, not sorted)", gotOrder, wantAll)
+	}
+
+	// --recode-INFO subset keeps the listed tags in source order. Choosing
+	// AF and DP (which would alphabetize to AF;DP) must yield DP;AF because
+	// DP precedes AF in the source.
+	keep := parseInfoTagList("AF,DP")
+	gotMap, gotOrder := filterRecodeInfo(info, order, keep)
+	wantSub := []string{"DP", "AF"}
+	if !equalStrSlice(gotOrder, wantSub) {
+		t.Errorf("subset order: got %v, want %v (source order)", gotOrder, wantSub)
+	}
+	if gotMap["DP"] != "30" || gotMap["AF"] != "0.25" {
+		t.Errorf("subset values: got %v", gotMap)
+	}
+
+	// A flag-style key kept on its own keeps its source position relative to
+	// the other kept keys. On the --recode-INFO (get_INFO) path upstream
+	// materialises a bare flag's value as "1" (set_INFO), so it must render
+	// as SOMATIC=1, NOT bare.
+	keepFlag := parseInfoTagList("SOMATIC,NS")
+	gotMap, gotOrder = filterRecodeInfo(info, order, keepFlag)
+	wantFlag := []string{"SOMATIC", "NS"}
+	if !equalStrSlice(gotOrder, wantFlag) {
+		t.Errorf("flag-subset order: got %v, want %v", gotOrder, wantFlag)
+	}
+	if v, ok := gotMap["SOMATIC"]; !ok || v != "1" {
+		t.Errorf("flag-style key SOMATIC: got %q, ok=%v, want \"1\" (upstream set_INFO promotes bare flag)", v, ok)
+	}
+}
+
+func equalStrSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestPassKeepINFOSite covers the new upstream-aligned `--keep-INFO TAG`

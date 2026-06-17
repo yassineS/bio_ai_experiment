@@ -214,7 +214,12 @@ issue in `ROADMAP.md`.
   `entry_filters.cpp:1033`.
 - `--recode-INFO TAG` — recode-column selector. Restrict the INFO
   column in `.recode.vcf` output to the listed tag(s). Repeatable.
-  Mirrors upstream `parameters.cpp:319`.
+  Mirrors upstream `parameters.cpp:319`. The kept tags are emitted in
+  the SOURCE order they appeared on the input record (not sorted), and a
+  flag-style tag (e.g. `SOMATIC`) is rendered as `SOMATIC=1` on this path
+  — matching upstream's `get_INFO`/`set_INFO` (`entry_getters.cpp:182`,
+  `vcf_entry_setters.cpp:253`). `--recode-INFO-all` instead preserves the
+  full INFO column verbatim, so bare flags stay bare.
 - `--remove-INFO TAG` — SITE FILTER. Drop sites where the named
   Flag-type INFO tag IS present (the polarity-inverted complement of
   `--keep-INFO`). Errors at runtime if the tag is not declared

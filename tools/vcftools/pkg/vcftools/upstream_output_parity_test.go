@@ -18,6 +18,7 @@ package vcftools
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -368,6 +369,72 @@ func TestVcftools_FreqUpstreamParity(t *testing.T) {
 					t.Errorf("%s line %d mismatch:\nwant: %q\ngot:  %q",
 						tc.suffix, i, want[i], got[i])
 				}
+			}
+		})
+	}
+}
+
+// TestVcftools_RecodeINFOOrderUpstreamParity pins byte-for-byte parity of the
+// recoded .recode.vcf INFO column against the live upstream binary for a
+// fixture whose records carry multiple INFO keys in a NON-alphabetical source
+// order (e.g. DP;AF;NS, NS;DP;DB;AF) plus a flag-style key (SOMATIC, DB).
+//
+// Regression guard: a prior port bug rebuilt the recoded INFO column in
+// ALPHABETICAL order (e.g. AF;DP), diverging from upstream, which preserves
+// the SOURCE order of INFO keys. Upstream's two recode paths differ:
+//
+//   - --recode-INFO-all prints the raw INFO_str verbatim (vcf_entry.cpp:311),
+//     so the bare flag SOMATIC stays bare.
+//   - --recode-INFO TAG routes through get_INFO (entry_getters.cpp:182) and,
+//     because set_INFO stores a bare flag's value as "1", renders it KEY=1.
+//
+// Both are exercised here. Plain --recode drops INFO entirely (emits "."),
+// which is the default (keep_all_INFO=false, empty INFO_to_keep) path.
+func TestVcftools_RecodeINFOOrderUpstreamParity(t *testing.T) {
+	vcf := fixtureVCF(t, "info_order.vcf")
+
+	cases := []struct {
+		name   string
+		upArgs []string
+		params *Params
+	}{
+		{
+			name:   "plain recode (INFO dropped)",
+			upArgs: []string{"--recode"},
+			params: &Params{Recode: true},
+		},
+		{
+			name:   "recode-INFO-all (verbatim source order)",
+			upArgs: []string{"--recode", "--recode-INFO-all"},
+			params: &Params{Recode: true, RecodeInfoAll: true},
+		},
+		{
+			name:   "recode-INFO DP,AF (kept subset in source order)",
+			upArgs: []string{"--recode", "--recode-INFO", "DP", "--recode-INFO", "AF"},
+			params: &Params{Recode: true, RecodeINFO: "DP,AF"},
+		},
+		{
+			name:   "recode-INFO SOMATIC,NS (flag-style kept key => KEY=1)",
+			upArgs: []string{"--recode", "--recode-INFO", "SOMATIC", "--recode-INFO", "NS"},
+			params: &Params{Recode: true, RecodeINFO: "SOMATIC,NS"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upPrefix := runUpstream(t, vcf, tc.upArgs...)
+			goPrefix := runGo(t, vcf, tc.params)
+
+			want, err := os.ReadFile(upPrefix + ".recode.vcf")
+			if err != nil {
+				t.Fatalf("read upstream recode: %v", err)
+			}
+			got, err := os.ReadFile(goPrefix + ".recode.vcf")
+			if err != nil {
+				t.Fatalf("read port recode: %v", err)
+			}
+			if !bytes.Equal(want, got) {
+				t.Errorf(".recode.vcf NOT byte-identical to upstream\n--- upstream ---\n%s\n--- port ---\n%s", want, got)
 			}
 		})
 	}
