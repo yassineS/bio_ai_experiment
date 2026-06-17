@@ -462,3 +462,53 @@ func TestNameLessFlagTiebreak(t *testing.T) {
 		t.Error("QNAME p should sort before q regardless of FLAG")
 	}
 }
+
+// TestUnitCoordSortKeyTieBreak pins bug #3's fix: the coordinate sort key is
+// (refID, pos, reverse-strand-flag) — NOT a QNAME tie-break. It mirrors
+// upstream bam_sort.c bam1_cmp_core's non-QueryName branch: forward-strand
+// reads sort before reverse-strand reads at the same (rname, pos), and
+// records identical in all three keys compare equal (the stable sort then
+// preserves input order, matching htslib's observed output). This is a pure
+// helper test with no external binary.
+func TestUnitCoordSortKeyTieBreak(t *testing.T) {
+	refIndex := map[string]int{"chr1": 0, "chr2": 1}
+
+	fwd := &sam.Record{QName: "z", RName: "chr1", Pos: 100, Flag: 0}
+	rev := &sam.Record{QName: "a", RName: "chr1", Pos: 100, Flag: sam.FlagReverse}
+
+	// Same (rname, pos): forward sorts before reverse, regardless of QNAME
+	// (here the reverse read's QNAME "a" sorts lexically *before* "z", which
+	// would have won under the old buggy QNAME tie-break).
+	if !coordLess(fwd, rev, refIndex) {
+		t.Error("forward read should sort before reverse read at equal (rname,pos)")
+	}
+	if coordLess(rev, fwd, refIndex) {
+		t.Error("coordLess not antisymmetric on the reverse-strand tie-break")
+	}
+
+	// QNAME must NOT influence ordering when (rname, pos, strand) are equal.
+	x := &sam.Record{QName: "zzz", RName: "chr1", Pos: 100, Flag: 0}
+	y := &sam.Record{QName: "aaa", RName: "chr1", Pos: 100, Flag: 0}
+	if coordLess(x, y, refIndex) || coordLess(y, x, refIndex) {
+		t.Error("records equal in (rname,pos,strand) must compare equal regardless of QNAME")
+	}
+	if coordCmp(x, y, refIndex) != 0 {
+		t.Errorf("coordCmp of two equal-key records = %d, want 0", coordCmp(x, y, refIndex))
+	}
+
+	// Primary key ordering: refID then pos.
+	earlierPos := &sam.Record{QName: "p", RName: "chr1", Pos: 50, Flag: sam.FlagReverse}
+	if !coordLess(earlierPos, fwd, refIndex) {
+		t.Error("smaller pos must sort first even if it is reverse-strand")
+	}
+	chr2 := &sam.Record{QName: "p", RName: "chr2", Pos: 1, Flag: 0}
+	if !coordLess(fwd, chr2, refIndex) {
+		t.Error("chr1 must sort before chr2")
+	}
+
+	// Unmapped (no RNAME) sorts after every mapped record.
+	unmapped := &sam.Record{QName: "u", RName: "*", Pos: 0, Flag: sam.FlagUnmapped}
+	if !coordLess(chr2, unmapped, refIndex) {
+		t.Error("mapped record must sort before unmapped")
+	}
+}

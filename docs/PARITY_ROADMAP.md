@@ -28,6 +28,33 @@ streaming targets and `-o`; gtisec arbitrary ploidy; fixref `--use-id`; and
 realignment is a stub upstream). Several upstream bugs were fixed-on-port and
 documented in `docs/UPSTREAM_BUGS.md`.
 
+**Recently closed (2026-06-17 samtools bugfix wave).** Five
+parity-pipeline-found `samtools` bugs were fixed and each byte-validated
+against the live upstream binary (live-oracle parity tests in
+`tools/samtools/pkg/samtools/parity_bugfixes_live_oracle_test.go`, plus
+binary-free `TestUnit*` for every helper):
+
+- **`depth -q`/`-Q` were swapped.** Upstream `-q`/`--min-BQ` is the per-base
+  quality floor and `-Q`/`--min-MQ` is the read MAPQ floor (bam2depth.c
+  `min_qual`/`min_mqual`); the CLI mapping is now correct (legacy
+  `--min-baseq`/`--min-mapq` retained as aliases), and the per-base count is
+  byte-identical to upstream including with `-a`/`-aa`/`-r`/`-b`.
+- **`mpileup -a` omitted positions.** Upstream `-a` emits every position
+  (1..LN) of every read-bearing contig (leading/interior/trailing fill to
+  `sam_hdr_tid2len`), not just the covered extent; `-aa` adds read-free
+  contigs. Both now match (the old "covered extent" clamp was the bug — this
+  was a genuine bug, not intended behaviour).
+- **`sort` coordinate tie-break.** The key is `(refID, pos, reverse-strand)`
+  (bam_sort.c `bam1_cmp_core`), with equal records preserving input order via
+  the stable sort — not the previous QNAME tie-break.
+- **`view -s` subsample.** Now uses upstream's deterministic per-read-name
+  hash `Wang(X31(qname) ^ seed) & 0xffffff < frac` with the glibc
+  `srand()`/`rand()` seed transform, so the kept set is identical and mates
+  stay paired (was a per-record Go RNG draw).
+- **`addreplacerg -r`.** Default mode is now `overwrite_all` (matching
+  upstream), the `-r` path prunes other `@RG` header lines and replaces an
+  existing ID under `-w`, and every record's `RG:Z:` tag is set accordingly.
+
 **Recently closed (2026-06-14 parity wave).** The remaining tractable feature
 gaps were closed and parity-validated against the vendored upstream binaries:
 
@@ -63,7 +90,9 @@ gaps were closed and parity-validated against the vendored upstream binaries:
   three **BCF writer** encoding fixes (missing-value sentinels, GT-missing,
   Flag) — `bcftools` now reads our BCF byte-equivalently.
 - **samtools.** mpileup text-path BAQ (`-B`/`-E`); `fastq -T '*'` all-tags and
-  QNAME-based pairing (lone mates → `-s`); depth `-a`/`-b` parity.
+  QNAME-based pairing (lone mates → `-s`). (depth `-a`/`-b`/`-q`/`-Q`,
+  mpileup `-a`, sort tie-break, view `-s`, and addreplacerg `-r` parity were
+  closed in the 2026-06-17 bugfix wave above.)
 
 **Nothing is out of scope.** There are no "non-goals." Every remaining `t.Skip`
 is a gap to close — including CRAM input/codecs, the live-binary/fixture gates

@@ -256,7 +256,7 @@ pair	147	chr1	10	60	3M	=	10	-5	ACG	III
 	}
 }
 
-func TestMpileup_AllPositions_InCoveredRange(t *testing.T) {
+func TestMpileup_AllPositions_FullContig(t *testing.T) {
 	sam := `@HD	VN:1.6
 @SQ	SN:chr1	LN:30
 r1	0	chr1	10	60	3M	*	0	0	ACG	III
@@ -264,19 +264,21 @@ r2	0	chr1	15	60	3M	*	0	0	ACG	III
 `
 	out := runMpileupOnSAM(t, []string{sam}, MpileupOptions{AllPositions: true}, nil, nil)
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	// Positions 10..17 inclusive (covered range), with 13,14 zero-depth.
-	if len(lines) != 8 {
-		t.Fatalf("want 8 lines (positions 10..17), got %d:\n%s", len(lines), out)
+	// Upstream `-a` emits EVERY position of any read-bearing contig, i.e. the
+	// full 1..LN (30 rows here, not just the covered extent 10..17). Leading
+	// (1..9), interior gap (13..14), and trailing (18..30) are all zero-depth.
+	if len(lines) != 30 {
+		t.Fatalf("want 30 lines (full contig 1..30), got %d:\n%s", len(lines), out)
 	}
-	// Find the position 13 line: depth must be 0 and bases column '*'.
-	found := false
-	for _, l := range lines {
-		if strings.HasPrefix(l, "chr1\t13\tN\t0\t*\t*") {
-			found = true
+	for _, want := range []string{
+		"chr1\t1\tN\t0\t*\t*",  // leading gap
+		"chr1\t13\tN\t0\t*\t*", // interior gap
+		"chr1\t30\tN\t0\t*\t*", // trailing gap
+		"chr1\t10\tN\t1\t^]A\tI",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
 		}
-	}
-	if !found {
-		t.Errorf("missing zero-depth row at chr1:13:\n%s", out)
 	}
 }
 
@@ -572,8 +574,8 @@ r2	0	chr3	2	60	2M	*	0	0	AC	II
 // TestMpileup_AA_ZeroFillTableDriven asserts the exact set of rows emitted
 // for -aa across multi-contig input with both covered and entirely-empty
 // contigs. The default (no -a, no -aa) emits only covered positions; -a
-// extends to the covered range per chrom; -aa extends to every position of
-// every contig.
+// extends to EVERY position (1..LN) of every read-bearing contig (skipping
+// entirely-empty contigs); -aa extends to every position of every contig.
 func TestMpileup_AA_ZeroFillTableDriven(t *testing.T) {
 	// Build expected output for the -aa case explicitly so we catch any
 	// drift in row formatting.
@@ -615,17 +617,28 @@ func TestMpileup_AA_ZeroFillTableDriven(t *testing.T) {
 			}, "\n") + "\n",
 		},
 		{
-			name: "a emits zero-depth inside covered range, skips empty chr2",
+			name: "a emits every position of read-bearing contigs, skips empty chr2",
 			opts: MpileupOptions{AllPositions: true},
-			// chr1 covered range = [3,6), chr3 covered = [2,4).
-			// -a does NOT extend to chr2 or to positions outside the
-			// per-chrom covered range.
+			// -a emits the FULL contig (1..LN) for chr1 and chr3 (both carry
+			// reads) but does NOT touch chr2 (entirely empty). This matches
+			// upstream bam_plcmd.c: conf->all==1 fills leading/interior/
+			// trailing gaps to sam_hdr_tid2len but breaks before iterating
+			// into a read-free contig.
 			want: strings.Join([]string{
+				"chr1\t1\tN\t0\t*\t*",
+				"chr1\t2\tN\t0\t*\t*",
 				"chr1\t3\tN\t1\t^]A\tI",
 				"chr1\t4\tN\t1\tC\tI",
 				"chr1\t5\tN\t1\tG$\tI",
+				"chr1\t6\tN\t0\t*\t*",
+				"chr1\t7\tN\t0\t*\t*",
+				"chr1\t8\tN\t0\t*\t*",
+				"chr3\t1\tN\t0\t*\t*",
 				"chr3\t2\tN\t1\t^]A\tI",
 				"chr3\t3\tN\t1\tC$\tI",
+				"chr3\t4\tN\t0\t*\t*",
+				"chr3\t5\tN\t0\t*\t*",
+				"chr3\t6\tN\t0\t*\t*",
 			}, "\n") + "\n",
 		},
 		{

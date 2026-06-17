@@ -70,7 +70,7 @@ detected; pass `-` to read from stdin.
 | `-R`  | `--read-groups-file F`    | File of RG IDs (one per line).                |
 | `-L`  | `--regions-file F`        | Keep records overlapping any BED interval.    |
 | `-M`  | `--use-multi-region-iterator` | Accepted (we always run the full intersection). |
-| `-s`  | `--subsample F`           | Keep fraction `F`, or `<seed>.<frac>`.        |
+| `-s`  | `--subsample F`           | Keep fraction `F`, or `<seed>.<frac>`. Selects the same reads as upstream (per-read-name hash; mates stay paired). |
 | `-o`  | `--output PATH`           | Output file (default stdout).                 |
 | `-T`  | `--reference FASTA`       | Reference FASTA (used for CRAM resolution).   |
 | `-@`  | `--threads N`             | Parallel BGZF compression of the BAM output.  |
@@ -158,12 +158,12 @@ same `@SQ` ordering.
 
 | Short | Long                 | Description                                  |
 |-------|----------------------|----------------------------------------------|
-| `-a`  | `--all`              | Emit zero-depth positions inside covered regions. |
+| `-a`  | `--all`              | Emit every position (1..LN) of every read-bearing reference. |
 | `-A`  | `--all-trans`        | Emit every position of every reference.      |
 | `-r`  | `--region chr[:S-E]` | Limit to region (repeatable).                |
 | `-b`  | `--bed FILE`         | Limit to BED regions.                        |
-| `-q`  | `--min-mapq N`       | Skip reads with MAPQ below N.                |
-| `-Q`  | `--min-baseq N`      | Skip bases with quality below N.             |
+| `-q`  | `--min-BQ N`         | Skip bases with base quality below N. (Upstream `-q`/`--min-BQ`.) |
+| `-Q`  | `--min-MQ N`         | Skip reads with mapping quality below N. (Upstream `-Q`/`--min-MQ`.) |
 | `-l`  | `--min-readlen N`    | Skip reads shorter than N query bases.       |
 | `-f`  | `--include-flags N`  | Require ALL flag bits in N to be set.        |
 | `-F`  | `--exclude-flags N`  | Drop reads with ANY of these flag bits (default `0x4`). |
@@ -174,6 +174,12 @@ same `@SQ` ordering.
 Depth is incremented for every reference base covered by a `M`, `=`, or
 `X` CIGAR operation; `I`/`S`/`H`/`N`/`P` ops do not contribute. The
 default `-F 0x4` filters out unmapped reads, matching upstream.
+
+Note the upstream flag convention (matched here): `-q`/`--min-BQ` is the
+per-**base** quality floor (applied per base) and `-Q`/`--min-MQ` is the
+read **mapping**-quality floor (drops whole reads). `-a` emits every
+position from 1 to the contig length for each reference that carries at
+least one read (read-free references are emitted only under `-aa`/`-A`).
 
 ```bash
 samtools depth -a -r chr1:1000-2000 sorted.bam

@@ -342,37 +342,50 @@ func nameLess(a, b *sam.Record, natural bool) bool {
 	return flagSortKey(a.Flag) < flagSortKey(b.Flag)
 }
 
-// coordLess sorts records by (refID, 0-based pos). Unmapped records (refID
-// == -1) sort after every mapped record. Within a reference, ties on pos
-// fall back to lexicographic QName so the order is fully deterministic.
+// coordLess sorts records by the exact key upstream samtools uses for a
+// coordinate sort (bam_sort.c bam1_cmp_core, non-QueryName branch):
+// reference ID, then 1-based position, then the reverse-strand flag (forward
+// before reverse). Unmapped records (tid == -1, mapped to UINT32_MAX as an
+// unsigned compare) sort after every mapped record. Records identical in all
+// three keys compare equal — their relative order is then fixed by the
+// stable sort, reproducing htslib's "equal records keep input order" result
+// (samtools sort spills/merges deterministically and our stable sort + heap
+// tie-break on source index give the same record order on decode).
+//
+// NOTE: upstream tie-breaks on the reverse-strand flag, NOT on QNAME. An
+// earlier port used a lexicographic QNAME tie-break here, which reordered
+// equal-(rname,pos) records relative to htslib.
 func coordLess(a, b *sam.Record, refIndex map[string]int) bool {
-	ra := -1
-	if a.RName != "" && a.RName != "*" {
-		if id, ok := refIndex[a.RName]; ok {
-			ra = id
-		}
-	}
-	rb := -1
-	if b.RName != "" && b.RName != "*" {
-		if id, ok := refIndex[b.RName]; ok {
-			rb = id
-		}
-	}
-	// Convert -1 to a sentinel that sorts last.
-	const last = 1 << 30
-	if ra < 0 {
-		ra = last
-	}
-	if rb < 0 {
-		rb = last
-	}
+	return coordCmp(a, b, refIndex) < 0
+}
+
+// coordCmp is the three-way coordinate comparator (refID, 1-based pos,
+// reverse-strand flag) shared with the stable-sort path. It returns -1, 0, or
+// 1, mirroring bam1_cmp_core.
+func coordCmp(a, b *sam.Record, refIndex map[string]int) int {
+	ra := refID(a.RName, refIndex)
+	rb := refID(b.RName, refIndex)
 	if ra != rb {
-		return ra < rb
+		if ra < rb {
+			return -1
+		}
+		return 1
 	}
 	if a.Pos != b.Pos {
-		return a.Pos < b.Pos
+		if a.Pos < b.Pos {
+			return -1
+		}
+		return 1
 	}
-	return a.QName < b.QName
+	arev := a.Flag&sam.FlagReverse != 0
+	brev := b.Flag&sam.FlagReverse != 0
+	if arev != brev {
+		if !arev { // forward (0) sorts before reverse (1)
+			return -1
+		}
+		return 1
+	}
+	return 0
 }
 
 // naturalLess implements numeric-aware string comparison: runs of digits in
@@ -588,29 +601,7 @@ func auxFloat(a sam.Aux) float64 {
 // bam1_cmp_core does for the (non-QueryName) coordinate path. Returns -1, 0,
 // or 1.
 func tagCoordCmp(a, b *sam.Record, refIndex map[string]int) int {
-	ra := refID(a.RName, refIndex)
-	rb := refID(b.RName, refIndex)
-	if ra != rb {
-		if ra < rb {
-			return -1
-		}
-		return 1
-	}
-	if a.Pos != b.Pos {
-		if a.Pos < b.Pos {
-			return -1
-		}
-		return 1
-	}
-	arev := a.Flag&sam.FlagReverse != 0
-	brev := b.Flag&sam.FlagReverse != 0
-	if arev != brev {
-		if !arev { // false (0) sorts before true (1)
-			return -1
-		}
-		return 1
-	}
-	return 0
+	return coordCmp(a, b, refIndex)
 }
 
 // refID resolves a reference name to its 0-based header index, mapping the
