@@ -661,8 +661,10 @@ Options:
   -b FILE-LIST      File of input BAM paths, one per line.
   -h FILE           Header override (SAM text).
   -r RG             Force every record's RG tag to this RG-line's ID.
-  -c                Collapse identical @PG chains.
-  -p                Preserve every @PG line.
+  -c                Combine @RG headers with colliding IDs (default: rename
+                    a colliding ID to a distinct "<id>-<8 hex>" form).
+  -p                Combine @PG headers with colliding IDs.
+  -s SEED           Seed for the @RG-collision rename PRNG (default: wall clock).
   -l N              Output BGZF deflate level (0..9).
   -@, --threads N   Accepted; ignored.
   -h, --help        Show this help.
@@ -673,16 +675,16 @@ func runMerge(args []string) int {
 	fs := flag.NewFlagSet("samtools merge", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var (
-		byName     bool
-		fofn       string
-		hdrPath    string
-		forceRG    string
-		collapsePG bool
-		preservePG bool
-		compLevel  int
-		threads    int
-		showHelp   bool
-		showVer    bool
+		byName    bool
+		fofn      string
+		hdrPath   string
+		forceRG   string
+		combineRG bool
+		combinePG bool
+		compLevel int
+		threads   int
+		showHelp  bool
+		showVer   bool
 	)
 	fs.BoolVar(&byName, "n", false, "")
 	fs.StringVar(&fofn, "b", "", "")
@@ -695,8 +697,8 @@ func runMerge(args []string) int {
 	fs.StringVar(&hdrPath, "h", "", "")
 	fs.StringVar(&hdrPath, "header", "", "")
 	fs.StringVar(&forceRG, "r", "", "")
-	fs.BoolVar(&collapsePG, "c", false, "")
-	fs.BoolVar(&preservePG, "p", false, "")
+	fs.BoolVar(&combineRG, "c", false, "")
+	fs.BoolVar(&combinePG, "p", false, "")
 	fs.IntVar(&compLevel, "l", -1, "")
 	cliflag.IntVar(fs, &threads, "@", "threads", 0, "")
 	fs.BoolVar(&showHelp, "help", false, "")
@@ -753,11 +755,19 @@ func runMerge(args []string) int {
 	_ = mgLevel1
 	_ = mgForce
 	_ = mgRegion
-	_ = mgSeed
 	_ = mgOutFmt
 	_ = mgTag
 	_ = mgCustom
 	_ = mgBed
+	// -s SEED seeds the @RG-collision disambiguation PRNG. Track whether it was
+	// given so the merge can match upstream's seeded rename (and otherwise fall
+	// back to a wall-clock seed, as upstream does).
+	seedSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "s" {
+			seedSet = true
+		}
+	})
 	if showHelp {
 		fmt.Print(mergeUsage)
 		return 0
@@ -808,8 +818,10 @@ func runMerge(args []string) int {
 		HeaderOverride: hdrPath,
 		ForceRGLine:    forceRG,
 		CompressLevel:  compLevel,
-		CollapsePG:     collapsePG,
-		PreservePG:     preservePG,
+		CombineRG:      combineRG,
+		CombinePG:      combinePG,
+		RandomSeed:     int64(mgSeed),
+		SeedSet:        seedSet,
 		Threads:        threads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "samtools merge: %v\n", err)

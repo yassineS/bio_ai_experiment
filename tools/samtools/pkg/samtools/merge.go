@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/sam"
 )
@@ -28,14 +29,59 @@ type MergeOptions struct {
 	// CompressLevel picks the BGZF deflate level for the output. -1 keeps
 	// the bgzip default.
 	CompressLevel int
-	// CollapsePG (-c) collapses identical @PG chains to a single line.
-	CollapsePG bool
-	// PreservePG (-p) keeps every @PG even when collapsable; note that v1
-	// never injects @PG so the PG handling here only affects what's
-	// preserved from inputs.
-	PreservePG bool
+	// CombineRG (-c) combines @RG records with colliding IDs into one. When
+	// false (the upstream default) a colliding @RG ID is renamed to a distinct
+	// "<id>-<8 hex>" form and the records carrying it are retagged. Mirrors
+	// samtools merge -c.
+	CombineRG bool
+	// CombinePG (-p) combines @PG records with colliding IDs. When false (the
+	// upstream default) colliding @PG IDs are kept distinct. Mirrors -p.
+	CombinePG bool
+	// RandomSeed seeds the drand48-compatible PRNG used to disambiguate
+	// colliding @RG IDs (samtools merge -s SEED). Used only when SeedSet is
+	// true; otherwise the PRNG is seeded from the wall clock, matching
+	// upstream's time(NULL) default (and so non-reproducible by design).
+	RandomSeed int64
+	// SeedSet reports whether RandomSeed was given explicitly (-s).
+	SeedSet bool
 	// Threads is accepted for upstream-CLI compatibility; ignored.
 	Threads int
+}
+
+// rand48 is a drand48-compatible 48-bit linear congruential generator,
+// byte-identical to glibc's lrand48 (and thus htslib's hts_lrand48). samtools
+// merge uses it to append a random suffix to colliding @RG IDs, so reproducing
+// its stream lets the renamed IDs match upstream exactly under a fixed -s seed.
+type rand48 struct{ state uint64 }
+
+const (
+	rand48Mult = 0x5DEECE66D
+	rand48Add  = 0xB
+	rand48Mask = (uint64(1) << 48) - 1
+)
+
+// newRand48 seeds the generator as POSIX srand48 does: the 48-bit state is
+// (seed<<16) | 0x330E.
+func newRand48(seed int64) *rand48 {
+	return &rand48{state: ((uint64(seed) << 16) | 0x330E) & rand48Mask}
+}
+
+// lrand48 returns the next non-negative 31-bit value, mirroring lrand48().
+func (r *rand48) lrand48() uint64 {
+	r.state = (rand48Mult*r.state + rand48Add) & rand48Mask
+	return r.state >> 17
+}
+
+// genUniqueID appends a random "-%08X" suffix to prefix until the result is not
+// already in existing, mirroring samtools' gen_unique_id with
+// always_add_suffix=true (the colliding-ID path).
+func genUniqueID(prefix string, existing map[string]bool, rng *rand48) string {
+	for {
+		id := fmt.Sprintf("%s-%08X", prefix, rng.lrand48())
+		if !existing[id] {
+			return id
+		}
+	}
 }
 
 // Merge does a streaming k-way merge of inputs into out. Inputs must
@@ -55,6 +101,13 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 			return fmt.Errorf("samtools merge: input %d: %w", i, err)
 		}
 		readers = append(readers, br)
+	}
+
+	// rgTrans[i] maps input i's original @RG IDs to the (possibly renamed) ID
+	// in the merged header, so records from that input can be retagged.
+	rgTrans := make([]map[string]string, len(readers))
+	for i := range rgTrans {
+		rgTrans[i] = map[string]string{}
 	}
 
 	// Header construction.
@@ -81,32 +134,57 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 				return fmt.Errorf("samtools merge: input %d has a different @SQ table", i)
 			}
 		}
-		// Union @RG entries.
+		// Union @RG entries. rgTrans[i] maps input i's original @RG IDs to the
+		// ID used in the merged header: identity unless a collision forced a
+		// rename. The PRNG is seeded so a fixed -s SEED reproduces upstream's
+		// renamed suffixes exactly.
+		seedVal := opts.RandomSeed
+		if !opts.SeedSet {
+			seedVal = time.Now().UnixNano()
+		}
+		rng := newRand48(seedVal)
 		seenRG := make(map[string]bool, len(hdr.ReadGroups))
 		for _, rg := range hdr.ReadGroups {
 			seenRG[rg.ID] = true
 		}
+		// Input 0's groups are already in hdr (identity); inputs 1.. may rename.
 		for i := 1; i < len(readers); i++ {
 			for _, rg := range readers[i].Header().ReadGroups {
+				newID := rg.ID
 				if seenRG[rg.ID] {
-					continue
+					if opts.CombineRG {
+						// Combine: reuse the existing ID, add nothing.
+						continue
+					}
+					// Rename to a distinct "<id>-<8 hex>" form (upstream's
+					// gen_unique_id, always_add_suffix). This is the only RG
+					// PRNG draw, and it precedes the @PG processing below, so
+					// the suffix matches upstream for a given seed.
+					newID = genUniqueID(rg.ID, seenRG, rng)
+					rgTrans[i][rg.ID] = newID
 				}
-				seenRG[rg.ID] = true
-				hdr.ReadGroups = append(hdr.ReadGroups, rg)
+				seenRG[newID] = true
+				hdr.ReadGroups = append(hdr.ReadGroups, sam.ReadGroup{ID: newID, Extra: rg.Extra})
 				hdr.Lines = append(hdr.Lines, sam.HeaderLine{
 					Tag:    "RG",
-					Fields: append([]sam.HeaderField{{Tag: "ID", Value: rg.ID}}, rg.Extra...),
+					Fields: append([]sam.HeaderField{{Tag: "ID", Value: newID}}, rg.Extra...),
 				})
 			}
 		}
-		// Union @PG entries.
+		// Union @PG entries. With -p (CombinePG) colliding IDs are combined;
+		// otherwise duplicates are kept distinct. @PG provenance is dropped by
+		// downstream decoded comparisons, so the exact renumbering is not
+		// reproduced here.
 		seenPG := make(map[string]bool, len(hdr.Programs))
 		for _, pg := range hdr.Programs {
 			seenPG[pg.ID] = true
 		}
 		for i := 1; i < len(readers); i++ {
 			for _, pg := range readers[i].Header().Programs {
-				if seenPG[pg.ID] && (opts.CollapsePG || !opts.PreservePG) {
+				if seenPG[pg.ID] && opts.CombinePG {
+					continue
+				}
+				if seenPG[pg.ID] {
 					continue
 				}
 				seenPG[pg.ID] = true
@@ -155,14 +233,37 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 	if err := bw.WriteHeader(hdr); err != nil {
 		return err
 	}
+	// Whether any input had an @RG collision that forced a rename.
+	anyRGTrans := false
+	for _, m := range rgTrans {
+		if len(m) > 0 {
+			anyRGTrans = true
+			break
+		}
+	}
+
 	it := newMergeIterator(readers, less)
+	mi, _ := it.(*mergeIterator)
 	for {
-		rec, err := it.Next()
+		var rec *sam.Record
+		var src int
+		var err error
+		if mi != nil {
+			rec, src, err = mi.nextWithSrc()
+		} else {
+			rec, err = it.Next()
+		}
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return err
+		}
+		// Retag records whose input's @RG ID was renamed on collision.
+		if anyRGTrans && src >= 0 {
+			if newID, ok := rgTrans[src][recordRGID(rec)]; ok {
+				setRecordRG(rec, newID, AddReplaceRGOverwriteAll)
+			}
 		}
 		if forcedRGID != "" {
 			setRecordRG(rec, forcedRGID, AddReplaceRGOverwriteAll)
@@ -172,6 +273,18 @@ func Merge(inputs []io.Reader, out io.Writer, opts MergeOptions) error {
 		}
 	}
 	return bw.Close()
+}
+
+// recordRGID returns the record's RG:Z aux value, or "" when absent.
+func recordRGID(rec *sam.Record) string {
+	for _, a := range rec.Aux {
+		if a.Tag == "RG" {
+			if s, ok := a.Value.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // MergeFiles is the high-level CLI entry: opens each input path, runs
