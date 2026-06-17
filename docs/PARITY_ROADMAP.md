@@ -1336,6 +1336,19 @@ Option-tail gaps on the wave-2 additions:
   `#`-prefixed comment, `track`, and `browser` directive lines are
   buffered and emitted verbatim ahead of the sorted body. Upstream
   `sort.t09` now passes byte-for-byte.
+- `bedsort` — **tie-break fixed to match upstream input order on equal
+  `(chrom, start)`** (this wave). Upstream `sortBed`
+  (`loadBedFileIntoMapNoBin` → `sortByStart`) sorts each chromosome by
+  `chromStart` alone, so equal-`(chrom, start)` records keep input order;
+  it never uses `chromEnd` as a tie-break. The size-descending and
+  `-chrThenScore{A,D}` comparators carry no secondary key and so likewise
+  preserve that input order on key ties. The previous port broke ties on
+  `chromEnd` ascending, diverging from upstream for the default, `-sizeD`,
+  `-chrThenSizeD`, `-chrThenScoreA`, and `-chrThenScoreD` modes whenever the
+  input was not already end-ordered. `Sort` now mirrors upstream's two-stage
+  arrangement (stable `(chrom, start)`-only pass, then a stable mode-key pass)
+  and is asserted byte-for-byte against the live `bedtools sort` binary across
+  all seven modes plus `-faidx`, on an input rich in equal-key records.
 - `bedsample` — **byte-for-byte parity with upstream's seeded sampler is
   now achieved** (this wave). The reservoir replacement uses an in-tree,
   stdlib-only Go port of `std::mt19937_64` (`mt19937.go`) — the exact

@@ -16,12 +16,17 @@ func runString(t *testing.T, input string, opts Options) string {
 }
 
 func TestSortDefault(t *testing.T) {
+	// Records with equal (chrom, start) must keep their INPUT order, not be
+	// reordered by chromEnd. Here chr1:100-200 precedes chr1:100-150 in the
+	// input, so it must precede it in the output too — matching upstream
+	// bedtools sort, whose start-only stable sort preserves input order on
+	// (chrom, start) ties.
 	input := "chr2\t100\t200\n" +
 		"chr1\t300\t400\n" +
 		"chr1\t100\t200\n" +
 		"chr1\t100\t150\n"
-	want := "chr1\t100\t150\n" +
-		"chr1\t100\t200\n" +
+	want := "chr1\t100\t200\n" +
+		"chr1\t100\t150\n" +
 		"chr1\t300\t400\n" +
 		"chr2\t100\t200\n"
 	if got := runString(t, input, Options{}); got != want {
