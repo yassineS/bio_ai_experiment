@@ -998,7 +998,15 @@ but turned out to be documented features:
 
 - **`int(0.1 * read_length)` window sizing.** Looks like a quirky
   default; turns out to be the only window sizing rule upstream supports
-  (sickle has no `-w` flag) and is described in the project README.
+  (sickle has no `-w` flag) and is described in the project README. Note:
+  this rule is genuinely upstream behaviour, but our *port* had a defaulting
+  bug here — the CLI hardcoded `-w` to `10` instead of leaving it dynamic, so
+  reads other than 100 bp were trimmed with the wrong window (one window short
+  on ~1% of reads). Fixed by defaulting `-w` to `0` (dynamic per-read
+  `int(0.1*length)`, falling back to the full length when that rounds to 0),
+  with live varying-length parity tests (`TestParityDynamicWindow*`) and a
+  binary-free `TestUnitResolveWindowSize` pinning the length→window rule. A
+  positive `-w N` remains a Go-port extension that pins a fixed window.
 
 - **Discarding reads when no window reaches threshold.** Looks like an
   off-by-one in the discard path. Reading `src/sliding.c` confirms it
