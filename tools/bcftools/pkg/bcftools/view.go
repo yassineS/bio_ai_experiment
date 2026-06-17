@@ -92,6 +92,25 @@ type ViewOptions struct {
 	// bcftools view, AC and AN are recomputed from the kept genotypes (and
 	// added to the header/record when absent).
 	NoUpdate bool
+	// CalcAC mirrors upstream vcfview.c's calc_ac flag. It is set by the CLI
+	// when any of -c/-C/-q/-Q (allele count/frequency selectors) or -x/-X
+	// (private) is requested. When CalcAC is true and NoUpdate is false,
+	// INFO/AC and INFO/AN are (re)computed and appended to every output
+	// record exactly as upstream does — even when no records are dropped and
+	// no sample subset is applied. A sample subset (-s/-S) without -I also
+	// triggers recomputation; that is handled directly by the Samples path.
+	CalcAC bool
+}
+
+// recalcAC reports whether INFO/AC and INFO/AN should be (re)computed and
+// written to output records. It mirrors upstream vcfview.c, where
+// calc_ac (set by -c/-C/-q/-Q/-x/-X) OR a sample subset (-s/-S) enables the
+// update, and -I/--no-update suppresses it.
+func (o ViewOptions) recalcAC() bool {
+	if o.NoUpdate {
+		return false
+	}
+	return o.CalcAC || len(o.Samples) > 0
 }
 
 // variantTypeMask returns the OR of the per-allele variant-type bits for v.
@@ -167,15 +186,75 @@ func (o ViewOptions) passesTypeFilter(v *vcf.Variant) bool {
 // v.Info, mirroring upstream `bcftools view -s` (which updates AC/AN after a
 // sample subset). The tags are appended to the INFO order when absent. AF and
 // other INFO tags are left untouched, matching upstream.
+//
+// It always computes from the per-sample GT data, which is the upstream
+// behaviour for the sample-subset path (bcf_calc_ac with BCF_UN_FMT only).
 func recomputeACAN(v *vcf.Variant) {
-	if len(v.Alt) == 0 {
+	ac, an, ok := acanFromGT(v)
+	if !ok {
 		return
 	}
-	acByAllele := make([]int, len(v.Alt))
-	an := 0
+	writeACAN(v, ac, an)
+}
+
+// updateACAN mirrors upstream vcfview.c's non-subset calc_ac path. Upstream
+// calls bcf_calc_ac(hdr,line,ac,BCF_UN_INFO|BCF_UN_FMT), which prefers the
+// pre-existing INFO/AC and INFO/AN when both are present and the AC arity
+// matches the number of ALT alleles, and otherwise computes them from the GT
+// FORMAT field. The resulting values are then written back to INFO/AC and
+// INFO/AN whenever update_info is set. updateACAN reproduces that exactly:
+// existing INFO/AC and INFO/AN are preserved when consistent, otherwise they
+// are recomputed from GT.
+func updateACAN(v *vcf.Variant) {
+	if ac, an, ok := acanFromINFO(v); ok {
+		writeACAN(v, ac, an)
+		return
+	}
+	if ac, an, ok := acanFromGT(v); ok {
+		writeACAN(v, ac, an)
+	}
+}
+
+// acanFromINFO reads per-ALT allele counts and the total allele number from
+// the pre-existing INFO/AC and INFO/AN tags. It returns ok=false (mirroring
+// upstream bcf_calc_ac) when either tag is absent, AN cannot be parsed, or the
+// number of AC entries does not equal the number of ALT alleles.
+func acanFromINFO(v *vcf.Variant) (ac []int, an int, ok bool) {
+	acStr := v.Info["AC"]
+	anStr := v.Info["AN"]
+	if acStr == "" || anStr == "" {
+		return nil, 0, false
+	}
+	an, err := strconv.Atoi(anStr)
+	if err != nil || an < 0 {
+		return nil, 0, false
+	}
+	parts := strings.Split(acStr, ",")
+	if len(parts) != len(v.Alt) {
+		return nil, 0, false
+	}
+	ac = make([]int, len(parts))
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, 0, false
+		}
+		ac[i] = n
+	}
+	return ac, an, true
+}
+
+// acanFromGT computes per-ALT allele counts and the total called-allele number
+// (AN) from v's per-sample GT data. It returns ok=false when the record has no
+// ALT alleles, leaving the caller to skip the update as upstream does.
+func acanFromGT(v *vcf.Variant) (ac []int, an int, ok bool) {
+	if len(v.Alt) == 0 {
+		return nil, 0, false
+	}
+	ac = make([]int, len(v.Alt))
 	for _, s := range v.Samples {
-		gt, ok := s.Data["GT"]
-		if !ok {
+		gt, has := s.Data["GT"]
+		if !has {
 			continue
 		}
 		gt = strings.ReplaceAll(gt, "|", "/")
@@ -188,13 +267,37 @@ func recomputeACAN(v *vcf.Variant) {
 				continue
 			}
 			an++
-			if n >= 1 && n <= len(acByAllele) {
-				acByAllele[n-1]++
+			if n >= 1 && n <= len(ac) {
+				ac[n-1]++
 			}
 		}
 	}
-	acParts := make([]string, len(acByAllele))
-	for i, c := range acByAllele {
+	return ac, an, true
+}
+
+// applyACAN performs the per-record AC/AN handling for a kept variant,
+// restricting samples first when a subset is requested and then (re)computing
+// INFO/AC and INFO/AN as upstream vcfview.c does: from the kept genotypes after
+// a subset, or from INFO-preferred-then-GT otherwise. It is a no-op when
+// recomputation is disabled (NoUpdate, or neither calc_ac nor a subset).
+func applyACAN(v *vcf.Variant, opts ViewOptions) {
+	if len(opts.Samples) > 0 {
+		restrictSamples(v, opts.Samples)
+		if !opts.NoUpdate {
+			recomputeACAN(v)
+		}
+		return
+	}
+	if opts.recalcAC() {
+		updateACAN(v)
+	}
+}
+
+// writeACAN stores per-ALT allele counts in INFO/AC and the total allele
+// number in INFO/AN, appending the tags to the INFO order when absent.
+func writeACAN(v *vcf.Variant, ac []int, an int) {
+	acParts := make([]string, len(ac))
+	for i, c := range ac {
 		acParts[i] = strconv.Itoa(c)
 	}
 	setInfo(v, "AC", strings.Join(acParts, ","))
@@ -537,7 +640,7 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		return 0, err
 	}
 	hdr = filterHeaderSamples(hdr, opts.Samples)
-	if len(opts.Samples) > 0 && !opts.NoUpdate {
+	if opts.recalcAC() {
 		ensureACANHeader(hdr)
 	}
 	if opts.DropGenotypes {
@@ -571,12 +674,7 @@ func viewVCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		if !keepVariant(v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if len(opts.Samples) > 0 {
-			restrictSamples(v, opts.Samples)
-			if !opts.NoUpdate {
-				recomputeACAN(v)
-			}
-		}
+		applyACAN(v, opts)
 		if opts.DropGenotypes {
 			dropGenotypes(v)
 		}
@@ -598,7 +696,7 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 	}
 	inputHdr := br.Header().VCF
 	hdr := filterHeaderSamples(inputHdr, opts.Samples)
-	if len(opts.Samples) > 0 && !opts.NoUpdate {
+	if opts.recalcAC() {
 		ensureACANHeader(hdr)
 	}
 	if opts.DropGenotypes {
@@ -637,12 +735,7 @@ func viewBCFStream(in io.Reader, out io.Writer, opts ViewOptions, applyTargets b
 		if !keepVariant(v, opts, includeF, excludeF, applyTargets, targets) {
 			continue
 		}
-		if len(opts.Samples) > 0 {
-			restrictSamples(v, opts.Samples)
-			if !opts.NoUpdate {
-				recomputeACAN(v)
-			}
-		}
+		applyACAN(v, opts)
 		if opts.DropGenotypes {
 			dropGenotypes(v)
 		}
@@ -666,6 +759,9 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 	}
 	inputHdr := hdr.VCF
 	vhdr := filterHeaderSamples(inputHdr, opts.Samples)
+	if opts.recalcAC() {
+		ensureACANHeader(vhdr)
+	}
 	if opts.DropGenotypes {
 		vhdr = stripFormatLines(vhdr)
 		vhdr.Samples = nil
@@ -696,12 +792,7 @@ func viewBCFRegions(path string, out io.Writer, opts ViewOptions, _ io.Writer) (
 		if !keepVariant(v, opts, includeF, excludeF, true, regions) {
 			continue
 		}
-		if len(opts.Samples) > 0 {
-			restrictSamples(v, opts.Samples)
-			if !opts.NoUpdate {
-				recomputeACAN(v)
-			}
-		}
+		applyACAN(v, opts)
 		if opts.DropGenotypes {
 			dropGenotypes(v)
 		}
@@ -749,7 +840,7 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 	hdrIn.Close()
 	inputHdr := hdr
 	hdr = filterHeaderSamples(hdr, opts.Samples)
-	if len(opts.Samples) > 0 && !opts.NoUpdate {
+	if opts.recalcAC() {
 		ensureACANHeader(hdr)
 	}
 	if opts.DropGenotypes {
@@ -802,12 +893,7 @@ func viewRegions(path string, out io.Writer, opts ViewOptions, stderr io.Writer)
 			if !keepVariant(v, opts, includeF, excludeF, true, []region{reg}) {
 				continue
 			}
-			if len(opts.Samples) > 0 {
-				restrictSamples(v, opts.Samples)
-				if !opts.NoUpdate {
-					recomputeACAN(v)
-				}
-			}
+			applyACAN(v, opts)
 			if opts.DropGenotypes {
 				dropGenotypes(v)
 			}

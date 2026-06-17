@@ -361,6 +361,20 @@ func runView(args []string) int {
 		CompressLevel:  compressLevel,
 		Threads:        threads,
 	}
+	// Detect which allele-count/frequency selectors were explicitly set on the
+	// command line. Upstream vcfview.c enables AC/AN recomputation (calc_ac)
+	// whenever -c/-C/-q/-Q/-x/-X (or a sample subset without -I) is requested,
+	// independently of the filter value. We mirror that via fs.Visit so that a
+	// passing -c/-q filter still appends recomputed INFO/AC and INFO/AN.
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "c", "min-ac", "C", "max-ac", "q", "min-af", "Q", "max-af":
+			opts.CalcAC = true
+		}
+	})
+	if privateVars || excludePriv {
+		opts.CalcAC = true
+	}
 	if privateVars && excludePriv {
 		fmt.Fprintln(os.Stderr, "bcftools view: only one of -x or -X can be given")
 		return 2
