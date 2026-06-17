@@ -1,7 +1,6 @@
 package hfile
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,19 +19,45 @@ var s3HostOverride = os.Getenv("HTS_S3_HOST")
 // pin the clock when asserting on signatures.
 var nowFunc = time.Now
 
+// s3AddressStyle is one of "auto", "virtual" or "path", mirroring htslib's
+// HTS_S3_ADDRESS_STYLE env knob (and the addressing_style / host_bucket
+// config-file settings). "auto" picks virtual-hosted style for DNS-safe
+// buckets and path-style otherwise; "virtual" and "path" force the choice.
+type s3AddressStyle int
+
+const (
+	s3StyleAuto s3AddressStyle = iota
+	s3StyleVirtual
+	s3StylePath
+)
+
+// resolveS3AddressStyle reads HTS_S3_ADDRESS_STYLE. Unset or unrecognised
+// values mean "auto". The comparison is case-insensitive, matching htslib's
+// strcasecmp.
+func resolveS3AddressStyle() s3AddressStyle {
+	switch strings.ToLower(os.Getenv("HTS_S3_ADDRESS_STYLE")) {
+	case "virtual":
+		return s3StyleVirtual
+	case "path":
+		return s3StylePath
+	default:
+		return s3StyleAuto
+	}
+}
+
 // s3Handle is a read-only Handle for objects addressed by an s3:// URL. It
 // delegates the actual HTTP transport to an httpHandle, installing a signer
-// that adds AWS Signature Version 4 headers to every request.
+// that adds AWS Signature Version 4 (default) or Version 2 (HTS_S3_V2) headers
+// to every request.
 type s3Handle struct {
 	*httpHandle
 }
 
-// openS3 opens an s3://bucket/key URL for reading.
+// openS3 opens an s3://bucket/key URL for reading. By default requests are
+// signed with AWS Signature Version 4; setting HTS_S3_V2 selects Signature
+// Version 2 instead, as required by some older or self-hosted S3-compatible
+// endpoints (and matching htslib's hfile_s3.c).
 func openS3(rawurl string) (Handle, error) {
-	if os.Getenv("HTS_S3_V2") != "" {
-		return nil, errors.New("hfile: AWS SigV2 is not supported; unset HTS_S3_V2 to use SigV4")
-	}
-
 	bucket, key, err := parseS3URL(rawurl)
 	if err != nil {
 		return nil, err
@@ -44,28 +69,40 @@ func openS3(rawurl string) (Handle, error) {
 		region = "us-east-1"
 	}
 
-	_, host, canonicalURI, fullURL := s3Endpoint(bucket, key, region)
+	ep := s3Endpoint(bucket, key, region)
 
 	client, err := newHTTPClient()
 	if err != nil {
 		return nil, err
 	}
 	hh := &httpHandle{
-		url:     fullURL,
+		url:     ep.fullURL,
 		client:  client,
 		retry:   loadRetryConfig(),
 		headers: http.Header{},
 	}
 
-	hh.sign = func(req *http.Request) error {
-		// Anonymous access: send the request unsigned (public buckets).
+	if os.Getenv("HTS_S3_V2") != "" {
+		hh.sign = s3SignerV2(ep, creds)
+	} else {
+		hh.sign = s3SignerV4(ep, creds, region)
+	}
+
+	return &s3Handle{httpHandle: hh}, nil
+}
+
+// s3SignerV4 returns a request signer that adds AWS Signature Version 4
+// headers. Anonymous access (missing credentials) is sent unsigned so that
+// public buckets remain readable.
+func s3SignerV4(ep s3EndpointInfo, creds awsCredentials, region string) requestSigner {
+	return func(req *http.Request) error {
 		if creds.AccessKey == "" || creds.SecretKey == "" {
 			return nil
 		}
 		res := signSigV4(sigV4Input{
 			Method:       req.Method,
-			Host:         host,
-			CanonicalURI: canonicalURI,
+			Host:         ep.host,
+			CanonicalURI: ep.canonicalURI,
 			Query:        "",
 			PayloadHash:  unsignedPayload,
 			Region:       region,
@@ -83,8 +120,35 @@ func openS3(rawurl string) (Handle, error) {
 		req.Header.Set("Authorization", res.Authorization)
 		return nil
 	}
+}
 
-	return &s3Handle{httpHandle: hh}, nil
+// s3SignerV2 returns a request signer that adds AWS Signature Version 2
+// headers. The Date header it sets is part of the signed string-to-sign and so
+// must be transmitted verbatim. Anonymous access is sent unsigned (but still
+// carries a Date header, matching htslib).
+func s3SignerV2(ep s3EndpointInfo, creds awsCredentials) requestSigner {
+	return func(req *http.Request) error {
+		if creds.AccessKey == "" || creds.SecretKey == "" {
+			// Anonymous: still send a Date header as htslib does, but no
+			// Authorization.
+			req.Header.Set("Date", nowFunc().UTC().Format(sigV2DateFormat))
+			return nil
+		}
+		res := signSigV2(sigV2Input{
+			Method:       req.Method,
+			Resource:     ep.canonicalResource,
+			AccessKey:    creds.AccessKey,
+			SecretKey:    creds.SecretKey,
+			SessionToken: creds.SessionToken,
+			Time:         nowFunc(),
+		})
+		req.Header.Set("Date", res.Date)
+		if res.SecurityToken != "" {
+			req.Header.Set("x-amz-security-token", res.SecurityToken)
+		}
+		req.Header.Set("Authorization", res.Authorization)
+		return nil
+	}
 }
 
 // parseS3URL splits an s3://bucket/key URL into its bucket and key components.
@@ -105,17 +169,42 @@ func parseS3URL(rawurl string) (bucket, key string, err error) {
 	return bucket, key, nil
 }
 
-// s3Endpoint computes the request scheme, signing host, canonical URI and full
-// request URL for a bucket/key pair. It mirrors hfile_s3.c: virtual-hosted
-// style is used by default, but a bucket name containing dots (not DNS-safe
-// for TLS virtual hosting) forces path-style, and HTS_S3_HOST overrides the
-// host entirely (always path-style, as is conventional for custom endpoints).
-func s3Endpoint(bucket, key, region string) (scheme, host, canonicalURI, fullURL string) {
+// s3EndpointInfo describes how a bucket/key pair is addressed: the wire URL
+// and signing host plus both the SigV4 canonical URI (the request path) and
+// the SigV2 canonical resource. For virtual-hosted addressing these differ:
+// the request path omits the bucket while the SigV2 resource always includes
+// it ("/bucket/key").
+type s3EndpointInfo struct {
+	// scheme is "http" or "https".
+	scheme string
+	// host is the value of the Host header used for signing, e.g.
+	// "bucket.s3.us-east-1.amazonaws.com" or a custom endpoint.
+	host string
+	// canonicalURI is the request path, already percent-encoded. Under
+	// virtual-hosted addressing this is "/key"; under path-style it is
+	// "/bucket/key".
+	canonicalURI string
+	// canonicalResource is the SigV2 CanonicalizedResource, always
+	// "/bucket/key" regardless of addressing style.
+	canonicalResource string
+	// fullURL is the complete request URL.
+	fullURL string
+}
+
+// s3Endpoint computes addressing details for a bucket/key pair. It mirrors
+// hfile_s3.c: virtual-hosted style is used by default, but a bucket name
+// containing dots (not DNS-safe for TLS virtual hosting) forces path-style,
+// HTS_S3_ADDRESS_STYLE may force "virtual" or "path" explicitly, and
+// HTS_S3_HOST overrides the host entirely (always path-style, as is
+// conventional for custom S3-compatible endpoints such as MinIO, Ceph,
+// Wasabi, Backblaze and Google Cloud Storage's S3 interop endpoint).
+func s3Endpoint(bucket, key, region string) s3EndpointInfo {
 	encodedKey := encodeS3Path(key)
+	resource := "/" + bucket + "/" + encodedKey
 
 	if s3HostOverride != "" {
-		scheme = "https"
-		host = s3HostOverride
+		scheme := "https"
+		host := s3HostOverride
 		if strings.HasPrefix(host, "http://") {
 			scheme = "http"
 			host = strings.TrimPrefix(host, "http://")
@@ -124,23 +213,40 @@ func s3Endpoint(bucket, key, region string) (scheme, host, canonicalURI, fullURL
 		}
 		host = strings.TrimSuffix(host, "/")
 		// Custom endpoints use path-style: host/bucket/key.
-		canonicalURI = "/" + bucket + "/" + encodedKey
-		fullURL = scheme + "://" + host + canonicalURI
-		return scheme, host, canonicalURI, fullURL
+		uri := "/" + bucket + "/" + encodedKey
+		return s3EndpointInfo{
+			scheme:            scheme,
+			host:              host,
+			canonicalURI:      uri,
+			canonicalResource: resource,
+			fullURL:           scheme + "://" + host + uri,
+		}
 	}
 
-	scheme = "https"
-	if strings.Contains(bucket, ".") {
-		// Path-style: dotted bucket names break TLS virtual-hosted certs.
-		host = "s3." + region + ".amazonaws.com"
-		canonicalURI = "/" + bucket + "/" + encodedKey
-	} else {
-		// Virtual-hosted style.
-		host = bucket + ".s3." + region + ".amazonaws.com"
-		canonicalURI = "/" + encodedKey
+	style := resolveS3AddressStyle()
+	virtual := style == s3StyleVirtual
+	if style == s3StyleAuto {
+		// Dotted bucket names break TLS virtual-hosted certs, so use
+		// path-style for them; everything else is virtual-hosted.
+		virtual = !strings.Contains(bucket, ".")
 	}
-	fullURL = scheme + "://" + host + canonicalURI
-	return scheme, host, canonicalURI, fullURL
+
+	scheme := "https"
+	var host, uri string
+	if virtual {
+		host = bucket + ".s3." + region + ".amazonaws.com"
+		uri = "/" + encodedKey
+	} else {
+		host = "s3." + region + ".amazonaws.com"
+		uri = "/" + bucket + "/" + encodedKey
+	}
+	return s3EndpointInfo{
+		scheme:            scheme,
+		host:              host,
+		canonicalURI:      uri,
+		canonicalResource: resource,
+		fullURL:           scheme + "://" + host + uri,
+	}
 }
 
 // encodeS3Path percent-encodes an S3 object key for use in a URI path,

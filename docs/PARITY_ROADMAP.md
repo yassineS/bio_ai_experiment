@@ -179,7 +179,14 @@ A skimmable per-tool completion table lives in the top-level
 Genuinely-remaining real gaps (the deliverable — see PROJECT_STATUS.md for
 the canonical version with effort sizing). Cloud I/O is **complete**
 (streaming + every indexed region path, incl. `.crai` CRAM, live-validated
-against S3/GCS/HTTPS); CRAM `MD`/`NM` regeneration and the network REF_PATH
+against S3/GCS/HTTPS). This now includes **AWS Signature Version 2**
+(`HTS_S3_V2`, HMAC-SHA1; previously a deliberate non-closure that simply
+errored — now implemented and pinned to the canonical AWS worked example)
+and full **S3-compatible interop** — custom endpoints (`HTS_S3_HOST`),
+`HTS_S3_ADDRESS_STYLE` path/virtual, and the GCS S3-interop XML+HMAC path
+(`s3://` against `storage.googleapis.com`, V2 and V4) — so MinIO/Ceph/Wasabi/
+Backblaze/GCS all work (Azure Blob is a separate follow-up). CRAM `MD`/`NM`
+regeneration and the network REF_PATH
 fetch are **done**; `gtcheck` `-i/-e` filter expressions and the bedtools
 KeyListOps ops are **done**. The former "non-goals" are now all implemented:
   - **CRAM v4.0 decode** — uint7-varint + 64-bit positions, version-threaded,

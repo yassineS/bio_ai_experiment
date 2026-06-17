@@ -2,6 +2,7 @@ package hfile
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -347,33 +348,53 @@ func TestS3SessionToken(t *testing.T) {
 	}
 }
 
-func TestS3V2Rejected(t *testing.T) {
-	t.Setenv("HTS_S3_V2", "1")
-	if _, err := Open("s3://bucket/key"); err == nil {
-		t.Fatal("expected error for HTS_S3_V2")
+func TestS3Endpoint(t *testing.T) {
+	s3HostOverride = ""
+	t.Setenv("HTS_S3_ADDRESS_STYLE", "")
+	// Virtual-hosted for a simple bucket.
+	ep := s3Endpoint("genomics", "a/b.bam", "eu-west-1")
+	if ep.host != "genomics.s3.eu-west-1.amazonaws.com" {
+		t.Fatalf("host=%q", ep.host)
+	}
+	if ep.canonicalURI != "/a/b.bam" {
+		t.Fatalf("uri=%q", ep.canonicalURI)
+	}
+	// The SigV2 canonical resource always includes the bucket.
+	if ep.canonicalResource != "/genomics/a/b.bam" {
+		t.Fatalf("resource=%q", ep.canonicalResource)
+	}
+	if ep.fullURL != "https://genomics.s3.eu-west-1.amazonaws.com/a/b.bam" {
+		t.Fatalf("full=%q", ep.fullURL)
+	}
+	// Path-style for a dotted bucket.
+	ep = s3Endpoint("my.dotted.bucket", "key", "us-east-1")
+	if ep.host != "s3.us-east-1.amazonaws.com" {
+		t.Fatalf("dotted host=%q", ep.host)
+	}
+	if ep.canonicalURI != "/my.dotted.bucket/key" {
+		t.Fatalf("dotted uri=%q", ep.canonicalURI)
+	}
+	if ep.canonicalResource != "/my.dotted.bucket/key" {
+		t.Fatalf("dotted resource=%q", ep.canonicalResource)
 	}
 }
 
-func TestS3Endpoint(t *testing.T) {
+// TestS3AddressStyleForced verifies HTS_S3_ADDRESS_STYLE overrides the
+// auto-detected addressing: "path" forces path-style for a DNS-safe bucket and
+// "virtual" forces virtual-hosted style.
+func TestS3AddressStyleForced(t *testing.T) {
 	s3HostOverride = ""
-	// Virtual-hosted for a simple bucket.
-	_, host, uri, full := s3Endpoint("genomics", "a/b.bam", "eu-west-1")
-	if host != "genomics.s3.eu-west-1.amazonaws.com" {
-		t.Fatalf("host=%q", host)
+
+	t.Setenv("HTS_S3_ADDRESS_STYLE", "path")
+	ep := s3Endpoint("simple", "k", "us-east-1")
+	if ep.host != "s3.us-east-1.amazonaws.com" || ep.canonicalURI != "/simple/k" {
+		t.Fatalf("forced path: host=%q uri=%q", ep.host, ep.canonicalURI)
 	}
-	if uri != "/a/b.bam" {
-		t.Fatalf("uri=%q", uri)
-	}
-	if full != "https://genomics.s3.eu-west-1.amazonaws.com/a/b.bam" {
-		t.Fatalf("full=%q", full)
-	}
-	// Path-style for a dotted bucket.
-	_, host, uri, _ = s3Endpoint("my.dotted.bucket", "key", "us-east-1")
-	if host != "s3.us-east-1.amazonaws.com" {
-		t.Fatalf("dotted host=%q", host)
-	}
-	if uri != "/my.dotted.bucket/key" {
-		t.Fatalf("dotted uri=%q", uri)
+
+	t.Setenv("HTS_S3_ADDRESS_STYLE", "virtual")
+	ep = s3Endpoint("simple", "k", "us-east-1")
+	if ep.host != "simple.s3.us-east-1.amazonaws.com" || ep.canonicalURI != "/k" {
+		t.Fatalf("forced virtual: host=%q uri=%q", ep.host, ep.canonicalURI)
 	}
 }
 
@@ -506,6 +527,216 @@ func TestSigV4AWSVector(t *testing.T) {
 	}
 	if !strings.Contains(res.Authorization, "Credential="+accessKey+"/"+scope) {
 		t.Fatalf("Authorization=%q", res.Authorization)
+	}
+}
+
+// --- SigV2 AWS known-answer vector -----------------------------------------
+
+// TestSigV2AWSVector pins signSigV2's string-to-sign and signature to the
+// canonical worked example from the AWS S3 REST authentication documentation:
+// GET /johnsmith/photos/puppy.jpg, Date "Tue, 27 Mar 2007 19:36:42 +0000",
+// key AKIAIOSFODNN7EXAMPLE / secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY,
+// whose documented signature is "bWq2s1WEIj+Ydj0vQ697zp+IXMU=".
+func TestSigV2AWSVector(t *testing.T) {
+	const (
+		accessKey = "AKIAIOSFODNN7EXAMPLE"
+		secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		date      = "Tue, 27 Mar 2007 19:36:42 +0000"
+		resource  = "/johnsmith/photos/puppy.jpg"
+		wantSig   = "bWq2s1WEIj+Ydj0vQ697zp+IXMU="
+	)
+
+	in := sigV2Input{Method: "GET", Resource: resource, AccessKey: accessKey, SecretKey: secretKey}
+
+	// The string-to-sign uses the example's literal Date (two blank lines for
+	// the empty Content-MD5 and Content-Type, no x-amz headers).
+	sts := sigV2StringToSign(in, date)
+	wantSTS := "GET\n\n\n" + date + "\n" + resource
+	if sts != wantSTS {
+		t.Fatalf("string-to-sign mismatch:\n got %q\nwant %q", sts, wantSTS)
+	}
+
+	gotSig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey), []byte(sts)))
+	if gotSig != wantSig {
+		t.Fatalf("signature = %q, want %q", gotSig, wantSig)
+	}
+
+	wantAuth := "AWS " + accessKey + ":" + wantSig
+	if got := "AWS " + accessKey + ":" + gotSig; got != wantAuth {
+		t.Fatalf("authorization = %q, want %q", got, wantAuth)
+	}
+
+	// Drive signSigV2 end-to-end with a pinned clock matching the example
+	// instant; its GMT-form Date differs from the example's +0000 spelling, so
+	// the signature is recomputed against that Date (round-trip self-check).
+	res := signSigV2(sigV2Input{
+		Method:    "GET",
+		Resource:  resource,
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+		Time:      time.Date(2007, 3, 27, 19, 36, 42, 0, time.UTC),
+	})
+	if res.Date != "Tue, 27 Mar 2007 19:36:42 GMT" {
+		t.Fatalf("Date=%q", res.Date)
+	}
+	wantGMTSig := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(secretKey),
+		[]byte(sigV2StringToSign(in, res.Date))))
+	if res.Authorization != "AWS "+accessKey+":"+wantGMTSig {
+		t.Fatalf("Authorization=%q", res.Authorization)
+	}
+}
+
+// TestSigV2SessionToken verifies a session token is folded into the
+// CanonicalizedAmzHeaders as x-amz-security-token (and surfaced for sending as
+// a request header).
+func TestSigV2SessionToken(t *testing.T) {
+	const (
+		secretKey = "secret"
+		date      = "Tue, 27 Mar 2007 19:36:42 GMT"
+		resource  = "/bucket/key"
+		token     = "FQoGZXIvtoken"
+	)
+	in := sigV2Input{Method: "GET", Resource: resource, AccessKey: "AKID", SecretKey: secretKey, SessionToken: token}
+	sts := sigV2StringToSign(in, date)
+	want := "GET\n\n\n" + date + "\n" + "x-amz-security-token:" + token + "\n" + resource
+	if sts != want {
+		t.Fatalf("string-to-sign with token:\n got %q\nwant %q", sts, want)
+	}
+	res := signSigV2(sigV2Input{Method: "GET", Resource: resource, AccessKey: "AKID", SecretKey: secretKey, SessionToken: token, Time: time.Unix(0, 0)})
+	if res.SecurityToken != token {
+		t.Fatalf("SecurityToken=%q", res.SecurityToken)
+	}
+}
+
+// TestS3ReadAndSignV2 is the httptest round-trip for SigV2: it confirms the
+// request carries "Authorization: AWS <key>:<sig>" and a Date header, and that
+// the signature matches what signSigV2 computes for the pinned clock.
+func TestS3ReadAndSignV2(t *testing.T) {
+	rs, srv := newRangeServer(payload)
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	t.Setenv("HTS_S3_V2", "1")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	s3HostOverride = "http://" + host
+	defer func() { s3HostOverride = "" }()
+
+	pinned := time.Date(2007, 3, 27, 19, 36, 42, 0, time.UTC)
+	nowFunc = func() time.Time { return pinned }
+	defer func() { nowFunc = time.Now }()
+
+	h, err := Open("s3://johnsmith/photos/puppy.jpg")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	if _, err := h.ReadAt(make([]byte, 16), 0); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+
+	r := rs.lastReq
+	wantSig := base64.StdEncoding.EncodeToString(hmacSHA1(
+		[]byte("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+		[]byte(sigV2StringToSign(sigV2Input{Method: "GET", Resource: "/johnsmith/photos/puppy.jpg", AccessKey: "AKIAIOSFODNN7EXAMPLE", SecretKey: "x"},
+			"Tue, 27 Mar 2007 19:36:42 GMT"))))
+	wantAuth := "AWS AKIAIOSFODNN7EXAMPLE:" + wantSig
+	if got := r.Header.Get("Authorization"); got != wantAuth {
+		t.Fatalf("Authorization=%q want %q", got, wantAuth)
+	}
+	if got := r.Header.Get("Date"); got != "Tue, 27 Mar 2007 19:36:42 GMT" {
+		t.Fatalf("Date=%q", got)
+	}
+	// Path-style URL carries the bucket.
+	if !strings.Contains(r.URL.Path, "johnsmith/photos/puppy.jpg") {
+		t.Fatalf("path=%q", r.URL.Path)
+	}
+}
+
+// --- GCS S3-interop tests ---------------------------------------------------
+
+// TestS3AgainstGCSV4 simulates an s3://bucket/key request routed to the Google
+// Cloud Storage S3-interop endpoint with HMAC keys, signed with SigV4. It
+// asserts path-style addressing ("/bucket/key") and a SigV4 Authorization.
+func TestS3AgainstGCSV4(t *testing.T) {
+	rs, srv := newRangeServer(payload)
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	// Stand in for storage.googleapis.com; path-style is forced by HTS_S3_HOST.
+	t.Setenv("HTS_S3_V2", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "GOOG1EXAMPLEHMACKEY")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "gcs-hmac-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_DEFAULT_REGION", "auto")
+	s3HostOverride = "http://" + host
+	defer func() { s3HostOverride = "" }()
+
+	pinned := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	nowFunc = func() time.Time { return pinned }
+	defer func() { nowFunc = time.Now }()
+
+	h, err := Open("s3://gcs-bucket/data/file.cram")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	if _, err := h.ReadAt(make([]byte, 16), 0); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	r := rs.lastReq
+	if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 ") {
+		t.Fatalf("Authorization=%q", r.Header.Get("Authorization"))
+	}
+	if !strings.Contains(r.Header.Get("Authorization"), "Credential=GOOG1EXAMPLEHMACKEY/") {
+		t.Fatalf("missing credential: %q", r.Header.Get("Authorization"))
+	}
+	if r.Header.Get("x-amz-date") == "" {
+		t.Fatal("missing x-amz-date")
+	}
+	if r.URL.Path != "/gcs-bucket/data/file.cram" {
+		t.Fatalf("path=%q (expected path-style /bucket/key)", r.URL.Path)
+	}
+}
+
+// TestS3AgainstGCSV2 is the SigV2 (legacy HMAC) variant of the GCS S3-interop
+// path: same endpoint, signed with AWS Signature Version 2.
+func TestS3AgainstGCSV2(t *testing.T) {
+	rs, srv := newRangeServer(payload)
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	t.Setenv("HTS_S3_V2", "1")
+	t.Setenv("AWS_ACCESS_KEY_ID", "GOOG1EXAMPLEHMACKEY")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "gcs-hmac-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	s3HostOverride = "http://" + host
+	defer func() { s3HostOverride = "" }()
+
+	pinned := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	nowFunc = func() time.Time { return pinned }
+	defer func() { nowFunc = time.Now }()
+
+	h, err := Open("s3://gcs-bucket/data/file.cram")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	if _, err := h.ReadAt(make([]byte, 16), 0); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	r := rs.lastReq
+	wantSig := base64.StdEncoding.EncodeToString(hmacSHA1(
+		[]byte("gcs-hmac-secret"),
+		[]byte(sigV2StringToSign(sigV2Input{Method: "GET", Resource: "/gcs-bucket/data/file.cram"},
+			pinned.UTC().Format(sigV2DateFormat)))))
+	wantAuth := "AWS GOOG1EXAMPLEHMACKEY:" + wantSig
+	if got := r.Header.Get("Authorization"); got != wantAuth {
+		t.Fatalf("Authorization=%q want %q", got, wantAuth)
+	}
+	if r.Header.Get("Date") == "" {
+		t.Fatal("missing Date header")
+	}
+	if r.URL.Path != "/gcs-bucket/data/file.cram" {
+		t.Fatalf("path=%q (expected path-style /bucket/key)", r.URL.Path)
 	}
 }
 
