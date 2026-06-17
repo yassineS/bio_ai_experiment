@@ -18,6 +18,11 @@ type Options struct {
 	// With RemoveSum ("-N") set, MinFraction instead becomes the union
 	// coverage threshold above which the whole A feature is dropped.
 	MinFraction float64
+	// Reciprocal ("-r"): require the per-B overlap to cover at least
+	// MinFraction of BOTH A and B (upstream sets overlapFractionB =
+	// overlapFractionA when -f and -r are given). Must be used solely with -f
+	// (upstream rejects -r combined with -F).
+	Reciprocal bool
 	// RemoveSum ("-N") sums coverage across ALL overlapping B intervals
 	// (their union with A) and, if that union covers strictly more than
 	// MinFraction of A, drops the entire A feature; otherwise A is emitted
@@ -126,9 +131,19 @@ func subtractOne(a *row, bs []*row, opts Options) (segs []*row, drop bool) {
 		// In -N (RemoveSum) mode every overlap is collected for the union
 		// coverage calculation; the per-B fraction filter does not apply
 		// (upstream sets the per-B overlap fraction to 1E-9).
-		if !opts.RemoveSum && opts.MinFraction > 0 && aLen > 0 {
-			if float64(ovLen)/float64(aLen) < opts.MinFraction {
+		if !opts.RemoveSum && opts.MinFraction > 0 {
+			if aLen > 0 && float64(ovLen)/float64(aLen) < opts.MinFraction {
 				continue
+			}
+			// -r (reciprocal): the overlap must additionally cover at least
+			// MinFraction of B. Upstream sets overlapFractionB =
+			// overlapFractionA when -f and -r are both given, so the same
+			// threshold applies to the B side.
+			if opts.Reciprocal {
+				bLen := b.length()
+				if bLen > 0 && float64(ovLen)/float64(bLen) < opts.MinFraction {
+					continue
+				}
 			}
 		}
 		eligible = append(eligible, b)

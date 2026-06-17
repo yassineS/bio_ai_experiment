@@ -135,6 +135,37 @@ func TestSubtractMinFraction(t *testing.T) {
 	}
 }
 
+// TestUnitSubtractReciprocal is a binary-free check of the -r predicate. With
+// -f 0.1 alone, a B record (90-1000) covering 10% of A (0-100) triggers
+// subtraction. With -r the overlap must ALSO cover 10% of B; the 10/910 (~1.1%)
+// B-side fraction fails, so A is emitted unchanged. A second B (200-300 vs
+// 210-230) covers enough of both sides and is still subtracted under -r.
+func TestUnitSubtractReciprocal(t *testing.T) {
+	a := "chr1\t0\t100\nchr1\t200\t300\n"
+	b := "chr1\t90\t1000\nchr1\t210\t230\n"
+
+	// Plain -f 0.1: B1 overlaps A1 (10% of A) -> subtract; B1 also covers A2
+	// fully (and B2 partially) -> A2 fully consumed.
+	gotF, _, err := runSubtract(t, a, b, Options{MinFraction: 0.1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotF != "chr1\t0\t90\n" {
+		t.Errorf("-f 0.1: got %q, want A1 trimmed and A2 consumed", gotF)
+	}
+
+	// -f 0.1 -r: B1's B-side fraction over A1 (1.1%) fails, so A1 survives
+	// intact. B1 vs A2: overlap 100 bases / 910 = 11% of B passes, so A2 is
+	// fully subtracted. Net output: A1 unchanged only.
+	gotR, _, err := runSubtract(t, a, b, Options{MinFraction: 0.1, Reciprocal: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotR != "chr1\t0\t100\n" {
+		t.Errorf("-f 0.1 -r: got %q, want A1 intact (B-side fraction fails) and A2 consumed", gotR)
+	}
+}
+
 func TestSubtractRemoveSum(t *testing.T) {
 	// A spans 0..100. Two B intervals cover 0..30 and 40..50: union = 40
 	// bases = 40% of A. -N drops A iff that union strictly exceeds -f.
