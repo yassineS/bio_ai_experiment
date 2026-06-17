@@ -130,6 +130,34 @@ func TestExpand_SingleElement(t *testing.T) {
 	}
 }
 
+// TestUnit_tokenizeCSV checks the comma tokenizer matches C++ getline
+// semantics: a single terminating empty (trailing comma) is dropped, while
+// leading and interior empties are preserved, and an empty cell yields no
+// elements.
+func TestUnit_tokenizeCSV(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"a", []string{"a"}},
+		{"a,b,c", []string{"a", "b", "c"}},
+		{"a,b,c,", []string{"a", "b", "c"}}, // trailing comma dropped
+		{"10,20,30,", []string{"10", "20", "30"}},
+		{",a", []string{"", "a"}},             // leading empty kept
+		{"a,,b", []string{"a", "", "b"}},      // interior empty kept
+		{",a,,b", []string{"", "a", "", "b"}}, // leading + interior kept
+		{"a,,", []string{"a", ""}},            // only the final empty dropped
+		{",", []string{""}},                   // single delimiter: one empty token
+	}
+	for _, c := range cases {
+		got := tokenizeCSV(c.in)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("tokenizeCSV(%q) = %#v, want %#v", c.in, got, c.want)
+		}
+	}
+}
+
 func TestExpand_EmptyInput(t *testing.T) {
 	var buf bytes.Buffer
 	n, err := Expand(strings.NewReader(""), &buf, Options{Columns: []int{4}})
