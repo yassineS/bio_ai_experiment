@@ -3,6 +3,7 @@ package samtools
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"os/exec"
@@ -384,6 +385,31 @@ func TestStatsGCDParity(t *testing.T) {
 				t.Errorf("unsorted input must omit GCD section, got header %q", gotHdr)
 			}
 		})
+	}
+}
+
+// TestStatsGCDFloat32Precision guards the float32 width of the GCD percentile
+// scaling against a regression back to float64. Upstream's gcd_percentile is a
+// `float` and the caller scales it by a `float avg_read_length` and the integer
+// bin size in float, widening to double only at the printf. Computing this in
+// float64 instead lands ~1 ULP off and flips the %.3f rounding on boundary
+// values (the same class of bug as the errmod float-vs-double port). The
+// depths/total/reads below were found by search to be exactly such a boundary:
+// the float32 chain prints 0.122 (matching upstream) while a float64 chain
+// would print 0.121. The multi-bin pipeline fixture surfaced the original miss;
+// the in-tree GCD fixtures all fit one bin so they could not.
+func TestStatsGCDFloat32Precision(t *testing.T) {
+	grp := []gcDepth{{depth: 299}, {depth: 375}, {depth: 470}, {depth: 673},
+		{depth: 854}, {depth: 859}, {depth: 916}}
+	nbins := len(grp)
+	// avg_read_length = (float)total_len / nreads, in float32 (stats.c:1586).
+	avg := float32(482611) / float32(59383)
+	binSize := float32(20000)
+	got := fmt.Sprintf("%.3f", float64(gcdPercentile(grp, nbins, 10)*avg/binSize))
+	if got != "0.122" {
+		t.Errorf("GCD 10th-percentile scaled value = %s, want 0.122 "+
+			"(float32 chain); a float64 chain would print 0.121 — the precision "+
+			"width must match upstream", got)
 	}
 }
 

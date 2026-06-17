@@ -89,17 +89,14 @@ func samtoolsViewMatrix() []Entry {
 		}(),
 	}
 
-	// Subsample with a fixed seed: documented Skip — our subsample hashes read
-	// names with a different RNG than htslib, so even at a fixed seed the
-	// selected read SET differs (verified: the records returned are not the same
-	// subset). Byte parity is not achievable; the per-tool suite owns the
-	// fraction-correctness check.
+	// Subsample with a fixed seed: our subsample now ports htslib's exact
+	// name-hash RNG (Wang/X31 hash + glibc rand), so at a fixed seed the
+	// selected read SET — and the headerless-SAM stdout — is byte-identical to
+	// upstream (fixed by the samtools agent; previously a documented Skip).
 	subsample := []Entry{{
 		Tool: "samtools", Subcommand: "view", UsesSubcommand: true,
 		Name: "view_subsample_seed", Input: InputBAM, Compare: ByteExact,
 		Args: []string{"-s", "11.5", "{bam}"},
-		Skip: "samtools view -s SEED.FRAC: our subsample selects a different read subset than htslib even at a fixed seed " +
-			"(different name-hash RNG), so byte parity is not achievable. Fraction-correctness is owned by the samtools agent / per-tool suite.",
 	}}
 
 	out := append(bam, region...)
@@ -122,14 +119,11 @@ func samtoolsSortMatrix() []Entry {
 			e.Heavy = true
 			return e
 		}(),
-		{
-			Tool: "samtools", Subcommand: "sort", UsesSubcommand: true,
-			Name: "sort_coord_sam", Input: InputBAM, Compare: ByteExact,
-			Args: []string{"-O", "sam", "{bam}"},
-			Skip: "samtools sort (coordinate): records sharing an identical (rname,pos) are emitted in a different order than htslib " +
-				"(equal-key tie-break differs). The record SET is identical; only the tie order differs, so the decoded SAM is not byte-exact. " +
-				"Name sort (-n/-N), which fully orders by read name, is byte-exact and is the parity check here. Owned by the samtools agent.",
-		},
+		// Coordinate sort: our coordCmp now matches htslib's tie-break exactly
+		// (refID, pos, then reverse-flag), so records at an identical (rname,pos)
+		// are emitted in upstream order and the decoded SAM is byte-exact (fixed
+		// by the samtools agent; previously a documented Skip).
+		mkSam("sort", "sort_coord_sam", InputBAM, ByteExact, "-O", "sam", "{bam}"),
 	}
 }
 
@@ -172,18 +166,22 @@ func samtoolsDepthFamily() []Entry {
 	depth = append(depth,
 		mkSam("coverage", "coverage", InputBAM, ByteExact, "{bam}"),
 		mkSam("coverage", "coverage_region", InputBAM, ByteExact, "-r", "chr1", "{bam}"),
-		// depth -q/-Q: documented Skip. Upstream samtools depth uses -q for the
-		// minimum BASE quality and -Q for the minimum MAPPING quality; our port
-		// has these two letters SWAPPED (-q = min-mapq, -Q = min-baseq). Worse,
-		// even after accounting for the swap the base-quality-filtered counts
-		// still differ from upstream (the per-base quality filtering itself
-		// diverges). Two real port bugs owned by the samtools agent.
+		// depth -Q (min mapping quality) now matches upstream's letter assignment
+		// and filtering exactly and is byte-exact (the old -q/-Q swap is fixed).
+		mkSam("depth", "depth_mapq_filter", InputBAM, ByteExact, "-Q", "20", "{bam}"),
+		// depth -q (min BASE quality): documented Skip. The -q/-Q letter swap is
+		// fixed, but a residual gap remains — when a covered interior position's
+		// only base is filtered out by -q, upstream emits that position with
+		// depth 0 (e.g. `chr1 8 0`) whereas our port omits the row entirely.
+		// Same root cause as mpileup_pileup below (interior zero-depth emission
+		// after per-base quality filtering). Owned by the samtools agent.
 		Entry{
 			Tool: "samtools", Subcommand: "depth", UsesSubcommand: true,
 			Name: "depth_baseq_filter", Input: InputBAM, Compare: ByteExact,
 			Args: []string{"-q", "10", "{bam}"},
-			Skip: "samtools depth -q/-Q are SWAPPED in our port vs upstream (upstream: -q=min-baseq, -Q=min-mapq; ours: -q=min-mapq, " +
-				"-Q=min-baseq), and the base-quality filtering counts diverge even after correcting for the swap. Real port bugs owned by the samtools agent.",
+			Skip: "samtools depth -q (min base quality): the -q/-Q swap is fixed and -Q is byte-exact, but when an interior covered " +
+				"position's only base is filtered out by -q, upstream emits it with depth 0 (`chr1 8 0`) while our port omits the row. " +
+				"Same interior-zero-depth root cause as mpileup. Owned by the samtools agent.",
 		},
 	)
 	return depth
@@ -210,15 +208,19 @@ func samtoolsDecodeText() []Entry {
 		mkSam("tview", "tview_text", InputBAM, ByteExact, "-d", "T", "{bam}", "{fasta}"),
 
 		// mpileup: documented Skip. The non-zero-depth pileup rows are byte-exact
-		// (verified), but upstream additionally emits interior zero-depth rows
-		// (positions inside the covered span with no covering base); our port
-		// omits them. A real port gap owned by the samtools agent.
+		// (verified), but upstream additionally emits interior zero-depth rows —
+		// positions inside the covered span whose only base is filtered out (or
+		// genuinely uncovered), e.g. `chr1 8 A 0 * *` — which our port omits.
+		// Same interior-zero-depth root cause as depth_baseq_filter; the -a
+		// full-contig zero-row work did not cover this implicit interior case.
+		// A real port gap owned by the samtools agent.
 		{
 			Tool: "samtools", Subcommand: "mpileup", UsesSubcommand: true,
 			Name: "mpileup_pileup", Input: InputBAM, Compare: ByteExact,
 			Args: []string{"-f", "{fasta}", "{bam}"},
 			Skip: "samtools mpileup: our non-zero-depth pileup rows match upstream byte-for-byte, but upstream also emits interior " +
-				"zero-depth positions (covered span, no covering base) that our port omits. Real port gap owned by the samtools agent.",
+				"zero-depth positions (covered span, only base filtered out or uncovered) such as `chr1 8 A 0 * *` that our port omits. " +
+				"Same interior-zero-depth root cause as depth -q. Real port gap owned by the samtools agent.",
 		},
 
 		// cat: documented Skip. cat concatenates BAMs into a BAM; our cat ignores

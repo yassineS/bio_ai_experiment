@@ -568,12 +568,14 @@ func bedMultiFileTools() []Entry {
 			OutputFiles: []string{".00001.bed", ".00002.bed", ".00003.bed"},
 			Args:        []string{"-i", "{bed}", "-p", "{out}", "-n", "3", "-a", "simple"},
 		},
+		// The default 'size' algorithm now bin-packs records into files in the
+		// same insertion order as upstream, so each per-file split is byte-exact
+		// (fixed by the bedtools agent; previously a documented Skip).
 		Entry{
 			Tool: "bedsplit", Subcommand: "split", UpstreamTool: "bedtools", UsesSubcommand: false,
 			Name: "bedsplit_size_n3", Input: InputBED, Compare: ByteExact,
 			OutputFiles: []string{".00001.bed", ".00002.bed", ".00003.bed"},
 			Args:        []string{"-i", "{bed}", "-p", "{out}", "-n", "3", "-a", "size"},
-			Skip:        "the default 'size' heuristic bin-packs records into files differently from upstream (same total records, different per-file assignment). '-a simple' is byte-exact. Real divergence, owned by the bedtools agent.",
 		},
 	)
 
