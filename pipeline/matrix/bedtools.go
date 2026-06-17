@@ -449,11 +449,11 @@ func bedFormatTools() []Entry {
 	}.Expand()
 	out = append(out, getfasta...)
 
-	// --- nuc: PANICS (duplicate "seq" flag registration); whole tool unrunnable. ---
+	// --- nuc: the duplicate-flag panic is fixed and the %AT/%GC percentages are
+	//     now computed in float32 like upstream nucBed.cpp ((float)(a+t)/len),
+	//     so the output is byte-exact. ---
 	out = append(out,
-		btSkip("bednuc", "nuc", "panics_dup_seq_flag", InputFASTA,
-			"bednuc PANICS on every invocation: tools/bednuc/cmd/bednuc/main.go registers the \"seq\" long flag twice (cliflag.BoolVar then fs.BoolVar), which flag.Var rejects with \"flag redefined: seq\". Total breakage. Real bug, owned by the bedtools agent.",
-			"-fi", "{fasta}", "-bed", "{bed}"),
+		bt("bednuc", "nuc", "base", InputFASTA, "-fi", "{fasta}", "-bed", "{bed}"),
 	)
 
 	// --- expand: numeric/single-value columns PASS; trailing-comma column buggy. ---

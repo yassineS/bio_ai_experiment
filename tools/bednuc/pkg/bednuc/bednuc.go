@@ -267,14 +267,18 @@ func FormatHeader(bedType int, printSeq, hasPattern bool) string {
 func FormatRow(cols []string, c Counts, printSeq bool, printedSeq []byte, hasPattern bool) string {
 	var b strings.Builder
 	b.WriteString(strings.Join(cols, "\t"))
-	pctAT := 0.0
-	pctGC := 0.0
+	// Upstream nucBed.cpp computes the percentages in float32 — `(float)(a+t)/
+	// seqLength` — then prints them with printf %f. Computing in float64 lands
+	// ~1 ULP off and flips the 6th decimal on boundary values (e.g. 439/854
+	// prints 0.514051 in float32 but 0.514052 in float64). Match the float32
+	// width, widening to double only for the %f format.
+	var pctAT, pctGC float32
 	if c.SeqLen > 0 {
-		pctAT = float64(c.A+c.T) / float64(c.SeqLen)
-		pctGC = float64(c.C+c.G) / float64(c.SeqLen)
+		pctAT = float32(c.A+c.T) / float32(c.SeqLen)
+		pctGC = float32(c.C+c.G) / float32(c.SeqLen)
 	}
 	// Upstream uses `%f` which is 6-decimal-digit fixed format.
-	fmt.Fprintf(&b, "\t%f\t%f", pctAT, pctGC)
+	fmt.Fprintf(&b, "\t%f\t%f", float64(pctAT), float64(pctGC))
 	fmt.Fprintf(&b, "\t%d\t%d\t%d\t%d\t%d\t%d\t%d",
 		c.A, c.C, c.G, c.T, c.N, c.Other, c.SeqLen)
 	if printSeq {
