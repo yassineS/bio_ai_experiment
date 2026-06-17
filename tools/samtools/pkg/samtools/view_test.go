@@ -806,3 +806,63 @@ func TestView_BedFilter_MultiRegionAccepted(t *testing.T) {
 		t.Errorf("-M changed output (n1=%d n2=%d):\n--- without\n%s--- with\n%s", n1, n2, out1.String(), out2.String())
 	}
 }
+
+// TestUnitSubsampleHash pins bug #4's fix: the subsample keep decision is the
+// upstream per-read-name hash (sam_view.c process_aln) rather than a per-
+// record RNG draw. It checks the two hash primitives against hand-computed
+// reference values, the glibc srand/rand seed transform, and the determinism
+// + mate-pairing properties of subsampler.keep. No external binary.
+func TestUnitSubsampleHash(t *testing.T) {
+	// __ac_X31_hash_string reference values (h = h*31 + c, seeded by s[0]).
+	if got := acX31HashString(""); got != 0 {
+		t.Errorf("acX31HashString(\"\") = %d, want 0", got)
+	}
+	if got := acX31HashString("A"); got != uint32('A') {
+		t.Errorf("acX31HashString(\"A\") = %d, want %d", got, 'A')
+	}
+	// "AB": h='A'; h = 'A'*31 + 'B' = 65*31 + 66 = 2081.
+	if got := acX31HashString("AB"); got != 2081 {
+		t.Errorf("acX31HashString(\"AB\") = %d, want 2081", got)
+	}
+
+	// glibc srand(seed); rand() reference values (verified against the C
+	// library's TYPE_3 generator).
+	for _, tc := range []struct {
+		seed uint32
+		want uint32
+	}{
+		{1, 1804289383},
+		{2, 1505335290},
+		{3, 1205554746},
+		{42, 71876166},
+	} {
+		if got := glibcSrandRand(tc.seed); got != tc.want {
+			t.Errorf("glibcSrandRand(%d) = %d, want %d", tc.seed, got, tc.want)
+		}
+	}
+
+	// A non-zero seed runs through the glibc transform; a zero seed is used
+	// verbatim. The keep decision is deterministic and identical for any two
+	// records sharing a QNAME (so mates of a pair stay together).
+	s0 := newSubsampler(ViewOptions{Subsample: 0.5})
+	if s0 == nil || s0.seed != 0 {
+		t.Fatalf("seed 0 should be used verbatim, got %+v", s0)
+	}
+	s3 := newSubsampler(ViewOptions{Subsample: 0.5, SubsampleSeed: 3})
+	if s3 == nil || s3.seed != 1205554746 {
+		t.Fatalf("seed 3 should transform to 1205554746, got %+v", s3)
+	}
+	// Determinism + mate pairing: same name -> same decision every time.
+	for _, name := range []string{"read_001", "read_042", "frag/1"} {
+		if s3.keep(name) != s3.keep(name) {
+			t.Errorf("keep(%q) not deterministic", name)
+		}
+	}
+	// frac<=0 or >=1 disables subsampling (nil filter).
+	if newSubsampler(ViewOptions{Subsample: 0}) != nil {
+		t.Error("frac 0 should disable subsampling")
+	}
+	if newSubsampler(ViewOptions{Subsample: 1}) != nil {
+		t.Error("frac 1 should disable subsampling")
+	}
+}

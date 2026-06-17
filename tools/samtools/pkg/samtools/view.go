@@ -6,12 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/alnio"
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bam"
@@ -201,7 +199,7 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 		return 0, closeViewWriter(w)
 	}
 
-	rng := newSubsampleRNG(opts)
+	sub := newSubsampler(opts)
 	matched := 0
 	for {
 		rec, err := r.Read()
@@ -211,7 +209,7 @@ func View(in io.Reader, out io.Writer, opts ViewOptions) (int, error) {
 		if err != nil {
 			return matched, err
 		}
-		if !keepRecord(rec, &opts, rng) {
+		if !keepRecord(rec, &opts, sub) {
 			continue
 		}
 		if regionFilter != nil && !regionFilter(rec) {
@@ -435,7 +433,7 @@ func viewCRAMIndexed(inPath string, out io.Writer, opts ViewOptions, warnW io.Wr
 		return 0, closeViewWriter(w)
 	}
 
-	rng := newSubsampleRNG(opts)
+	sub := newSubsampler(opts)
 	matched := 0
 	// QueryRegion already restricts each query's records to its reference and
 	// coordinate range; iterate the resolved regions in order and emit each
@@ -450,7 +448,7 @@ func viewCRAMIndexed(inPath string, out io.Writer, opts ViewOptions, warnW io.Wr
 			return matched, qerr
 		}
 		for _, rec := range recs {
-			if !keepRecord(rec, &opts, rng) {
+			if !keepRecord(rec, &opts, sub) {
 				continue
 			}
 			if bedFilter != nil && !bedFilter(rec) {
@@ -536,7 +534,7 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 		return 0, closeViewWriter(w)
 	}
 
-	rng := newSubsampleRNG(opts)
+	sub := newSubsampler(opts)
 	matched := 0
 	for _, c := range chunks {
 		if c.Beg >= c.End {
@@ -570,7 +568,7 @@ func viewIndexedChunks(f io.ReadSeeker, out io.Writer, opts ViewOptions, unionFn
 			if err != nil {
 				return matched, err
 			}
-			if !keepRecord(rec, &opts, rng) {
+			if !keepRecord(rec, &opts, sub) {
 				continue
 			}
 			if regionFilter != nil && !regionFilter(rec) {
@@ -708,7 +706,7 @@ func closeViewWriter(w sam.Writer) error {
 
 // keepRecord applies the per-record filters and returns true if the record
 // passes them all.
-func keepRecord(rec *sam.Record, opts *ViewOptions, rng *rand.Rand) bool {
+func keepRecord(rec *sam.Record, opts *ViewOptions, sub *subsampler) bool {
 	if opts.IncludeFlags != 0 && rec.Flag&opts.IncludeFlags != opts.IncludeFlags {
 		return false
 	}
@@ -751,8 +749,8 @@ func keepRecord(rec *sam.Record, opts *ViewOptions, rng *rand.Rand) bool {
 			return false
 		}
 	}
-	if rng != nil && opts.Subsample > 0 && opts.Subsample < 1 {
-		if rng.Float64() >= opts.Subsample {
+	if sub != nil {
+		if !sub.keep(rec.QName) {
 			return false
 		}
 	}
@@ -894,18 +892,99 @@ func MergeTagFilter(dst []TagFilter, add TagFilter) ([]TagFilter, error) {
 	return append(dst, add), nil
 }
 
-// newSubsampleRNG seeds a *rand.Rand for the subsample filter. Returns nil
-// when no subsampling is requested.
-func newSubsampleRNG(opts ViewOptions) *rand.Rand {
+// subsampler reproduces upstream samtools view's deterministic per-read-name
+// subsample decision (sam_view.c process_aln): a read is kept when
+//
+//	k = Wang(X31(qname) ^ seed); (k & 0xffffff) / 0x1000000 < frac
+//
+// where Wang is khash.h's __ac_Wang_hash, X31 is __ac_X31_hash_string, and
+// seed is the user seed run through glibc's srand()/rand() transform when
+// non-zero (sam_view.c:1307). Because the decision is a pure function of the
+// read name, every alignment of a template/read-pair makes the same keep/drop
+// choice — so mates stay together — and the kept set is independent of input
+// order, exactly matching upstream (and replacing the old, non-portable
+// *rand.Rand approach that drew a fresh random number per record).
+type subsampler struct {
+	frac float64
+	seed uint32
+}
+
+// newSubsampler builds the subsample filter for the requested fraction/seed,
+// or returns nil when no subsampling is requested (frac <= 0 or >= 1). The
+// seed is the SEED component of `-s SEED.FRAC`; a non-zero seed is passed
+// through glibcSrandRand to match upstream's entropy-spreading step.
+func newSubsampler(opts ViewOptions) *subsampler {
 	if opts.Subsample <= 0 || opts.Subsample >= 1 {
 		return nil
 	}
-	seed := opts.SubsampleSeed
-	if seed == 0 {
-		seed = time.Now().UnixNano()
+	seed := uint32(opts.SubsampleSeed)
+	if seed != 0 {
+		seed = glibcSrandRand(seed)
 	}
-	// #nosec G404 — non-cryptographic subsample by design.
-	return rand.New(rand.NewSource(seed))
+	return &subsampler{frac: opts.Subsample, seed: seed}
+}
+
+// keep reports whether the named read survives subsampling.
+func (s *subsampler) keep(qname string) bool {
+	k := acWangHash(acX31HashString(qname) ^ s.seed)
+	return float64(k&0xffffff)/0x1000000 < s.frac
+}
+
+// acX31HashString is a byte-for-byte port of htslib khash.h's
+// __ac_X31_hash_string (h = h*31 + c, seeded with the first byte).
+func acX31HashString(s string) uint32 {
+	if len(s) == 0 {
+		return 0
+	}
+	h := uint32(s[0])
+	for i := 1; i < len(s); i++ {
+		h = (h << 5) - h + uint32(s[i])
+	}
+	return h
+}
+
+// acWangHash is a byte-for-byte port of htslib khash.h's __ac_Wang_hash
+// integer mixing function.
+func acWangHash(key uint32) uint32 {
+	key += ^(key << 15)
+	key ^= key >> 10
+	key += key << 3
+	key ^= key >> 6
+	key += ^(key << 11)
+	key ^= key >> 16
+	return key
+}
+
+// glibcSrandRand reproduces the result of `srand(seed); return rand();` under
+// glibc's default TYPE_3 additive-feedback generator. samtools view runs the
+// user seed through this transform (sam_view.c:1307-1311) to spread the
+// entropy of small integer seeds before XOR-ing it into the name hash, so we
+// must reproduce it exactly for byte-identical subsampling.
+func glibcSrandRand(seed uint32) uint32 {
+	if seed == 0 {
+		seed = 1
+	}
+	var r [344]int32
+	r[0] = int32(seed)
+	for i := 1; i < 31; i++ {
+		// r[i] = (16807 * r[i-1]) % 2147483647, via Schrage's method to
+		// avoid 32-bit signed overflow (matches glibc's int arithmetic).
+		hi := r[i-1] / 127773
+		lo := r[i-1] % 127773
+		w := 16807*lo - 2836*hi
+		if w < 0 {
+			w += 2147483647
+		}
+		r[i] = w
+	}
+	for i := 31; i < 34; i++ {
+		r[i] = r[i-31]
+	}
+	for i := 34; i < 344; i++ {
+		r[i] = r[i-31] + r[i-3]
+	}
+	val := r[344-31] + r[344-3]
+	return (uint32(val) >> 1) & 0x7fffffff
 }
 
 // LoadReadGroupsFile reads a file of read group IDs (one per line) and

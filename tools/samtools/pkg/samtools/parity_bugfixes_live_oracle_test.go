@@ -18,6 +18,7 @@ package samtools
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -135,6 +136,42 @@ func TestLiveSortCoordinateTieBreak(t *testing.T) {
 	for i := range upstream {
 		if upstream[i] != mine[i] {
 			t.Errorf("sort tie record %d differs:\nupstream=%+v\nours=%+v", i, upstream[i], mine[i])
+		}
+	}
+}
+
+// makeSubsampleSAM builds a coordinate-sorted SAM with n distinct-named
+// single reads spread along chr1, suitable for exercising `view -s`.
+func makeSubsampleSAM(n int) string {
+	var b []byte
+	b = append(b, "@HD\tVN:1.6\tSO:coordinate\n"...)
+	b = append(b, "@SQ\tSN:chr1\tLN:100000\n"...)
+	for i := 1; i <= n; i++ {
+		line := fmt.Sprintf("read_%03d\t0\tchr1\t%d\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n", i, i*10)
+		b = append(b, line...)
+	}
+	return string(b)
+}
+
+// TestLiveViewSubsample is the parity case for bug #4: `view -s SEED.FRAC`
+// must keep the IDENTICAL read subset as upstream samtools. We compare the
+// kept records (decoded SAM) across several fixed seed.fraction values,
+// including the seed=0 (no glibc transform) and non-zero (glibc srand/rand
+// transform) cases.
+func TestLiveViewSubsample(t *testing.T) {
+	live := upstreamSamtools(t)
+	ours := ourSamtoolsBinary(t)
+	dir := t.TempDir()
+	sam := filepath.Join(dir, "sub.sam")
+	if err := os.WriteFile(sam, []byte(makeSubsampleSAM(200)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, sf := range []string{"0.5", "3.5", "42.3", "7.75"} {
+		upstream := runSamtools(t, live, "view", "-s", sf, sam)
+		mine := runSamtools(t, ours, "view", "-s", sf, sam)
+		if !bytes.Equal(upstream, mine) {
+			t.Fatalf("view -s %s kept a different subset:\nupstream:\n%s\nours:\n%s", sf, upstream, mine)
 		}
 	}
 }
