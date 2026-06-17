@@ -272,3 +272,64 @@ func writeBED(bedPath, bed12Path, genomePath string, contigs []contig, p Params,
 	b12.Close()
 	return nil
 }
+
+// writeBEDPE writes a BEDPE fixture (10 columns: chrom1 start1 end1 chrom2
+// start2 end2 name score strand1 strand2) for the paired-end tools
+// (bedpairtobed / bedpairtopair). Each end is an interval inside the contigs;
+// the two ends of a pair are on the same chromosome (a local read-pair / SV
+// span) so the records are coordinate-meaningful. Records are sorted by
+// (chrom1, start1) so bedpairtopair's sweep is satisfied.
+func writeBEDPE(path string, contigs []contig, p Params, rng *rand.Rand) error {
+	type pair struct {
+		ci             int
+		s1, e1, s2, e2 int
+		st1, st2       byte
+	}
+	n := p.Intervals / 4
+	if n < 4 {
+		n = 4
+	}
+	pairs := make([]pair, 0, n)
+	strandOf := func() byte {
+		if rng.Intn(2) == 0 {
+			return '-'
+		}
+		return '+'
+	}
+	for i := 0; i < n; i++ {
+		ci := rng.Intn(len(contigs))
+		c := contigs[ci]
+		span1 := 100 + rng.Intn(500)
+		span2 := 100 + rng.Intn(500)
+		// Keep both ends within the contig with room for the gap.
+		maxStart := c.Len - span1 - span2 - 1000
+		if maxStart < 1 {
+			continue
+		}
+		s1 := rng.Intn(maxStart)
+		gap := rng.Intn(1000)
+		s2 := s1 + span1 + gap
+		pairs = append(pairs, pair{ci, s1, s1 + span1, s2, s2 + span2, strandOf(), strandOf()})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].ci != pairs[j].ci {
+			return pairs[i].ci < pairs[j].ci
+		}
+		return pairs[i].s1 < pairs[j].s1
+	})
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	for i, pr := range pairs {
+		c := contigs[pr.ci]
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%d\t%d\tpair%d\t%d\t%c\t%c\n",
+			c.Name, pr.s1, pr.e1, c.Name, pr.s2, pr.e2, i, rng.Intn(1000), pr.st1, pr.st2)
+	}
+	if err := w.Flush(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}

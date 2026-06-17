@@ -16,7 +16,10 @@ import (
 // v2: dropped the invalid biallelic "1/2" genotype from the single-sample VCF;
 // added FASTQ (single-end plain + .gz), paired-end FASTQ, a GFF3 annotation,
 // and a multi-sample VCF (plain + bgzipped + tabixed).
-const manifestVersion = 2
+// v3: GFF3 now emits valid CDS phases (whole-codon CDS, phase 0) so bcftools
+// csq does not drop transcripts; added a BEDPE fixture (pairs.bedpe) for the
+// paired-end bed tools.
+const manifestVersion = 3
 
 // Manifest records what was generated for one scale tier so the runner can
 // resolve fixture paths and decide whether a cached set is still valid.

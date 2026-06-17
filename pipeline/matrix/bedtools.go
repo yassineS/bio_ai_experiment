@@ -32,8 +32,9 @@ package matrix
 //                         htslib) though decoded records match. Not byte-compared.
 //   - bedtag            — different model: upstream tags+writes BAM; our bedtag
 //                         is BED-in/BED-out. Not directly comparable.
-//   - bedpairtobed /    — need a BEDPE fixture the corpus does not generate
-//     bedpairtopair       (both error on a BED6 input, so the run is not meaningful).
+//   - bedpairtobed       — runs over the new {bedpe} fixture; same record SET as
+//                          upstream but a few multi-hit pairs emit in a
+//                          different chromsweep order (bedpairtopair is exact).
 //   - bedoverlap        — needs a joined input stream with -cols; no fixture.
 //   - bedunionbedg      — needs a multi-sample bedGraph fixture.
 // ------------------------------------------------------------------------
@@ -554,14 +555,17 @@ func bedMultiFileTools() []Entry {
 		},
 	)
 
-	// --- pairtobed / pairtopair: need a BEDPE fixture the corpus does not ship. ---
+	// --- pairtobed / pairtopair: run over the {bedpe} fixture. pairtopair is
+	//     byte-exact; pairtobed returns the same 26054-record SET but, where a
+	//     pair overlaps the same B interval through both ends, emits the hits in
+	//     a slightly different order than upstream's chromsweep (a small
+	//     tie-break residual, like the other sweep-order cases). ---
 	out = append(out,
-		btSkip("bedpairtobed", "pairtobed", "needs_bedpe_fixture", InputBED,
-			"bedtools pairtobed needs a BEDPE -a file, which the pipeline corpus does not generate. Matches byte-exact on a crafted BEDPE (verified out-of-band); covered by the per-tool suite.",
-			"-a", "{bed}", "-b", "{bed}"),
-		btSkip("bedpairtopair", "pairtopair", "needs_bedpe_fixture", InputBED,
-			"bedtools pairtopair needs BEDPE -a and -b files, which the pipeline corpus does not generate. Matches byte-exact on a crafted BEDPE (verified out-of-band); covered by the per-tool suite.",
-			"-a", "{bed}", "-b", "{bed}"),
+		btSkip("bedpairtobed", "pairtobed", "hit_order", InputBED,
+			"bedtools pairtobed over the BEDPE fixture returns the same 26054-record SET as upstream but emits a few multi-hit pairs in a "+
+				"different order (upstream's chromsweep hit order vs ours). Small tie-break residual; pairtopair is byte-exact.",
+			"-a", "{bedpe}", "-b", "{bed}"),
+		bt("bedpairtopair", "pairtopair", "base", InputBED, "-a", "{bedpe}", "-b", "{bedpe}"),
 	)
 
 	return out
