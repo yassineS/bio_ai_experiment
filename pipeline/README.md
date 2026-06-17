@@ -352,9 +352,53 @@ PIPELINE_SCALE=medium go test -bench=. ./pipeline/bench
 PIPELINE_SCALE=large  go test -bench=. -benchtime=3x ./pipeline/bench
 ```
 
-Each benchmark reports custom metrics `ours_ms/op`, `upstream_ms/op`, and
-`ratio_ours/up`. Three representative benches ship as the pattern
-(`samtools view` BAM→BAM, `bcftools view` filter, `bedtools intersect`).
+Each benchmark reports three custom metrics:
+
+| metric | meaning |
+|--------|---------|
+| `ours_ms/op` | mean wall-clock of **our** binary, ms per run |
+| `upstream_ms/op` | mean wall-clock of the **upstream** binary, ms per run |
+| `ratio_ours/up` | `ours_ms / upstream_ms` — **< 1.0 means we are faster**, > 1.0 slower |
+
+The benches **measure**; they never assert parity. A bench fails only on a hard
+error (a non-zero exit / setup failure) — never on a performance delta — and each
+our-side command still produces real output, so the timing is meaningful.
+
+### Scale tiers
+
+Benchmarks default to the **`medium`** fixture (heavier than the `small` parity
+default); set `PIPELINE_SCALE` to override:
+
+```bash
+go test -bench=. ./pipeline/bench                      # medium (default)
+PIPELINE_SCALE=large go test -bench=. ./pipeline/bench # heavy + threaded variants
+PIPELINE_SCALE=small go test -bench=. -benchtime=1x ./pipeline/bench  # quick smoke
+```
+
+The heaviest **threaded re-encode** variants (`samtools view -@` BAM→BAM and
+BAM→CRAM) are **gated to the `large` tier** — they `b.Skip` at any smaller scale
+so a routine `medium` run finishes in reasonable time.
+
+### What is benchmarked
+
+Grouped by tool (the genuinely heavy operations across the toolset):
+
+- **samtools** — `view` BAM→BAM and BAM→CRAM (plus `-@` threaded, large-only),
+  `sort`, `index`, `flagstat`, `stats`, `depth`, `mpileup`, `markdup`.
+- **bcftools** — `view` (filter), `query` (filter), `norm`, `stats`, `concat`,
+  `call`, `mpileup`, `+fill-tags`.
+- **bedtools** — `intersect`, `coverage`, `merge`, `sort`, `genomecov`, `map`,
+  `closest`, `makewindows`.
+- **vcftools** — heavy stat passes: `--freq`, `--site-pi`, `--relatedness2`.
+- **htslib** — `bgzip` compress + decompress, `tabix` index build.
+- **QC throughput** — `fastp` and `seqtk seq` on the FASTQ fixture.
+
+Binary/indexed outputs (BAM, CRAM, BCF, BGZF, `.bai`/`.tbi`) are written to a
+per-side temp file (never stdout); commands that write or index alongside their
+input get a private copy so the two sides never collide. A few benches need an
+untimed setup step (e.g. `bcftools call` consumes an mpileup VCF prepared once),
+and `+fill-tags` sets `BCFTOOLS_PLUGINS` so upstream can `dlopen` the plugin
+(our port has it built in and ignores the variable).
 
 ## Extending
 
@@ -365,7 +409,10 @@ placeholders for fixture paths.
 
 **Add a benchmark** — in `pipeline/bench`, add a `BenchmarkXxx` that calls
 `benchPair(b, ourTool, upstreamKey, ourArgs, upstreamArgs)`; reuse `benchManifest`
-for the fixture.
+for the fixture and resolve fixture paths via `m.Path("bam")` etc. Send binary
+output to `b.TempDir()`, not stdout; use `copyFixture` when a command writes
+alongside its input, `prep` for an untimed setup step, and `requireLarge(b)` to
+gate a heavy variant to the `large` tier.
 
 **Add a fixture** — extend the writers in `pipeline/fixtures` and record the new
 file in the manifest; bump `manifestVersion` so caches invalidate.
