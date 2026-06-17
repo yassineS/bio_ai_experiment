@@ -1349,6 +1349,19 @@ Option-tail gaps on the wave-2 additions:
   arrangement (stable `(chrom, start)`-only pass, then a stable mode-key pass)
   and is asserted byte-for-byte against the live `bedtools sort` binary across
   all seven modes plus `-faidx`, on an input rich in equal-key records.
+- `bedwindow` — **three parity bugs fixed** (this wave):
+  (1) the window is now added to **A**, not B (upstream `AddWindow` operates on
+  the A feature and queries the B database), correcting the asymmetric `-l`/`-r`
+  and strand `-sw` direction; (2) the **default window is 1000 bp** (the port
+  defaulted to 0); (3) per-A **B-hit order now follows upstream's UCSC bin
+  traversal** — B is binned by its original coordinates and hits are emitted
+  finest-level-first, bin-number ascending, then B-file order (the same
+  `binorder` logic bedintersect uses), instead of B-start order; and (4) records
+  are kept as raw text so **BED12 (and wide) B records round-trip verbatim**
+  rather than being truncated to 6 columns. `-sm`/`-Sm`/`-u`/`-c`/`-v` are
+  matched; the `-c`/`-v` A-only paths are unchanged. New parity tests assert
+  byte-for-byte equality against the live `bedtools window` binary for the bin
+  hit-order, default-window, BED12-B, and strand cases.
 - `bedsample` — **byte-for-byte parity with upstream's seeded sampler is
   now achieved** (this wave). The reservoir replacement uses an in-tree,
   stdlib-only Go port of `std::mt19937_64` (`mt19937.go`) — the exact

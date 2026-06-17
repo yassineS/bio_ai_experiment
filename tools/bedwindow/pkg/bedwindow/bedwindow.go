@@ -1,71 +1,97 @@
-// Package bedwindow ports `bedtools window`: it computes the overlap of A
-// against B after expanding each B interval by a window (-w, -l, -r). It
-// otherwise behaves like bedintersect with the same set of writer modes
-// (default = intersection coords, -wa = original A, -wb = original B,
-// -c = count of B overlaps for each A, -v = invert).
+// Package bedwindow ports `bedtools window` (aka windowBed): for each feature
+// in A it examines a "window" — A's interval expanded by -w (or -l/-r) base
+// pairs on each side — and reports every feature in B that overlaps that
+// window. For each overlap the entire A and B records are reported (default
+// mode), or one of the alternate writer modes (-u, -c, -v) is applied.
 //
-// This implementation expands B intervals at load time (clipping at 0 on
-// the low end) and then runs the same overlap finding logic as
-// bedintersect via per-chromosome interval trees from the shared
-// pkg/htsgo/bed package.
+// Faithful-port notes:
+//
+//   - The window is added to A, not B (upstream AddWindow operates on the A
+//     feature, then queries the B database with the fudged coordinates). This
+//     matters for the asymmetric -l/-r and strand (-sw) cases: -l extends the
+//     window upstream (lower coordinates) of A and -r downstream.
+//
+//   - B records are indexed in upstream's UCSC binning tree using their
+//     ORIGINAL coordinates, and the per-A hit order is the bin-traversal order
+//     (finest bin level first, then bin number ascending, then file order),
+//     NOT plain file order and NOT B-start order. See binorder.go.
+//
+//   - Records are kept as their raw input text so every column (BED3..BED12 and
+//     beyond) round-trips verbatim. The earlier implementation re-rendered B
+//     from a typed record and truncated BED12 block columns; this preserves
+//     them byte-for-byte.
 package bedwindow
 
 import (
 	"bufio"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bed"
 )
 
 // Options configures Window.
 type Options struct {
-	// Left is the bp to extend each B interval to the left (lower coordinates).
-	// Negative values shrink. Result is clipped at 0.
+	// Left is the bp added upstream (to lower coordinates) of each A feature
+	// when searching for overlaps in B (upstream -l, or -w which sets both).
 	Left int
-	// Right is the bp to extend each B interval to the right.
+	// Right is the bp added downstream (to higher coordinates) of each A
+	// feature (upstream -r, or -w which sets both).
 	Right int
 
-	// StrandSpec, when true, requires same-strand overlap (matches `-sm`).
+	// StrandWindows mirrors upstream -sw: define -l/-r relative to A's strand,
+	// so for a negative-strand A the left/right slops swap. Disabled by default.
+	StrandWindows bool
+
+	// StrandSpec mirrors upstream -sm: only report B hits on the SAME strand as
+	// A. Mutually exclusive with InverseStrand.
 	StrandSpec bool
-	// InverseStrand, when true, requires opposite-strand overlap (matches `-sw`
-	// in the upstream sense of "different strand" — naming follows our
-	// project convention).
+	// InverseStrand mirrors upstream -Sm: only report B hits on the OPPOSITE
+	// strand to A. Mutually exclusive with StrandSpec.
 	InverseStrand bool
 
-	// WriteA — emit the original A record.
+	// WriteA emits the original A record only (upstream has no -wa for window;
+	// retained for the CLI's -wa convenience alias).
 	WriteA bool
-	// WriteB — emit the original B record (overrides WriteA).
+	// WriteB emits the original B record only.
 	WriteB bool
-	// WriteAB — emit `A<TAB>B` for each overlap (matches `bedtools window` default
-	// when neither -u/-c/-v is set: in upstream, the default emits A and B
-	// concatenated for each overlap).
+	// WriteAB emits `A<TAB>B` for each overlap. This is also the default when no
+	// writer flag is set, matching upstream `bedtools window`.
 	WriteAB bool
-	// Count — emit `A<TAB>count` instead of one row per overlap.
+	// Count mirrors upstream -c: emit `A<TAB>count` (one row per A, count of B
+	// overlaps within the window, 0 included).
 	Count bool
-	// Invert — emit only A records with no B overlap.
+	// AnyHit mirrors upstream -u: emit the original A record once if it has at
+	// least one B overlap.
+	AnyHit bool
+	// Invert mirrors upstream -v: emit only A records with NO B overlap.
 	Invert bool
-	// MinOverlap — minimum bp overlap required (default 1).
+
+	// MinOverlap is the minimum bp of overlap required. Upstream requires any
+	// positive overlap (>0) regardless; this is retained for callers that want
+	// a stricter threshold and defaults to 1.
 	MinOverlap int
 }
 
-// ExpandedB is a B record with its expanded coordinates, kept alongside its
-// original coordinates for the -wb writer mode.
-type ExpandedB struct {
-	Orig     *bed.Record
-	Expanded *bed.Record
+// rec is a parsed view of one raw BED line: the verbatim text plus the fields
+// needed for window/overlap logic.
+type rec struct {
+	line   string
+	chrom  string
+	start  int
+	end    int
+	strand string
+	order  int // in-chromosome insertion (file) order, for bin tie-breaks
 }
 
-// Window reads A from aR, B from bR, and writes results to w.
+// Window reads A from aR, B from bR, and writes results to w. It returns the
+// number of output lines written.
 func Window(aR, bR io.Reader, w io.Writer, opts Options) (int, error) {
 	if opts.MinOverlap < 1 {
 		opts.MinOverlap = 1
 	}
 	if opts.StrandSpec && opts.InverseStrand {
-		return 0, fmt.Errorf("StrandSpec (-sm) and InverseStrand (-sw) are mutually exclusive")
+		return 0, fmt.Errorf("StrandSpec (-sm) and InverseStrand (-Sm) are mutually exclusive")
 	}
 
 	bRecs, err := readAll(bR)
@@ -73,184 +99,204 @@ func Window(aR, bR io.Reader, w io.Writer, opts Options) (int, error) {
 		return 0, fmt.Errorf("reading B: %w", err)
 	}
 
-	// Expand each B record by [-Left, +Right].
-	expanded := make([]*ExpandedB, 0, len(bRecs))
+	// Index B by chromosome in file order, stamping each record's in-chromosome
+	// order so the bin tie-break can restore it. Upstream bins B by its
+	// ORIGINAL coordinates.
+	byChrom := make(map[string][]*rec)
 	for _, b := range bRecs {
-		exStart := b.ChromStart - opts.Left
-		if exStart < 0 {
-			exStart = 0
-		}
-		exEnd := b.ChromEnd + opts.Right
-		if exEnd <= exStart {
-			// Window collapsed the interval to nothing; skip.
-			continue
-		}
-		ex := &bed.Record{
-			Chrom:      b.Chrom,
-			ChromStart: exStart,
-			ChromEnd:   exEnd,
-			Strand:     b.Strand,
-		}
-		expanded = append(expanded, &ExpandedB{Orig: b, Expanded: ex})
-	}
-
-	// Sort and tree-index by chrom/start of the expanded coordinates.
-	sort.SliceStable(expanded, func(i, j int) bool {
-		if expanded[i].Expanded.Chrom != expanded[j].Expanded.Chrom {
-			return expanded[i].Expanded.Chrom < expanded[j].Expanded.Chrom
-		}
-		return expanded[i].Expanded.ChromStart < expanded[j].Expanded.ChromStart
-	})
-	byChrom := map[string][]*bed.Record{}
-	exToOrig := map[*bed.Record]*bed.Record{}
-	for _, ex := range expanded {
-		byChrom[ex.Expanded.Chrom] = append(byChrom[ex.Expanded.Chrom], ex.Expanded)
-		exToOrig[ex.Expanded] = ex.Orig
-	}
-	trees := map[string]*bed.IntervalTree{}
-	for chrom, list := range byChrom {
-		trees[chrom] = bed.NewIntervalTree(list)
+		b.order = len(byChrom[b.chrom])
+		byChrom[b.chrom] = append(byChrom[b.chrom], b)
 	}
 
 	bw := bufio.NewWriter(w)
 	defer bw.Flush()
 
-	aReader := bed.NewReader(aR)
+	aReader := bufio.NewScanner(aR)
+	aReader.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	written := 0
-	for {
-		recA, err := aReader.Read()
-		if err == io.EOF {
-			break
+	for aReader.Scan() {
+		raw := aReader.Text()
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+			continue
 		}
-		if err != nil {
-			return written, fmt.Errorf("reading A: %w", err)
-		}
-
-		var hits []*bed.Record
-		if tree, ok := trees[recA.Chrom]; ok {
-			candidates := tree.Query(recA)
-			for _, ex := range candidates {
-				orig := exToOrig[ex]
-				if !overlapPasses(recA, ex, orig, opts) {
-					continue
-				}
-				hits = append(hits, orig)
-			}
+		a, perr := parseRec(raw)
+		if perr != nil {
+			return written, fmt.Errorf("reading A: %w", perr)
 		}
 
-		if opts.Invert {
+		// Expand A's interval by the requested window to form the search range.
+		winStart, winEnd := addWindow(a, opts)
+
+		hits := findHits(a, winStart, winEnd, byChrom[a.chrom], opts)
+
+		switch {
+		case opts.Invert:
 			if len(hits) == 0 {
-				if _, err := fmt.Fprintln(bw, formatRecord(recA)); err != nil {
+				if err := writeLine(bw, a.line); err != nil {
 					return written, err
 				}
 				written++
 			}
-			continue
-		}
-		if opts.Count {
-			out := formatRecord(recA) + "\t" + strconv.Itoa(len(hits))
-			if _, err := fmt.Fprintln(bw, out); err != nil {
+		case opts.Count:
+			if err := writeLine(bw, a.line+"\t"+strconv.Itoa(len(hits))); err != nil {
 				return written, err
 			}
 			written++
-			continue
-		}
-		if len(hits) == 0 {
-			continue
-		}
-		for _, hit := range hits {
-			var out string
-			switch {
-			case opts.WriteAB:
-				out = formatRecord(recA) + "\t" + formatRecord(hit)
-			case opts.WriteB:
-				out = formatRecord(hit)
-			case opts.WriteA:
-				out = formatRecord(recA)
-			default:
-				// Default for `bedtools window` (no writer flag) is A<TAB>B
-				// (matches upstream behaviour). We adopt the same default.
-				out = formatRecord(recA) + "\t" + formatRecord(hit)
+		case opts.AnyHit:
+			if len(hits) > 0 {
+				if err := writeLine(bw, a.line); err != nil {
+					return written, err
+				}
+				written++
 			}
-			if _, err := fmt.Fprintln(bw, out); err != nil {
-				return written, err
+		default:
+			for _, h := range hits {
+				var out string
+				switch {
+				case opts.WriteB:
+					out = h.line
+				case opts.WriteA:
+					out = a.line
+				default:
+					// Default and -wa+-wb both emit A<TAB>B.
+					out = a.line + "\t" + h.line
+				}
+				if err := writeLine(bw, out); err != nil {
+					return written, err
+				}
+				written++
 			}
-			written++
 		}
+	}
+	if err := aReader.Err(); err != nil {
+		return written, fmt.Errorf("reading A: %w", err)
 	}
 	return written, nil
 }
 
-func overlapPasses(a, ex, _ *bed.Record, opts Options) bool {
-	overlap := overlapBP(a, ex)
-	if overlap < opts.MinOverlap {
-		return false
+// addWindow expands A's interval by the requested slop, mirroring upstream
+// BedWindow::AddWindow. The low end is clipped at 0. With StrandWindows the
+// left/right slops swap for negative-strand A features.
+func addWindow(a *rec, opts Options) (start, end int) {
+	left, right := opts.Left, opts.Right
+	if opts.StrandWindows && a.strand == "-" {
+		left, right = right, left
 	}
+	// Upstream uses (int)(a.start - leftSlop) > 0 to decide; otherwise clamps to
+	// 0. That clamps a result of exactly 0 to 0 too, which is the same value.
+	start = a.start - left
+	if start < 0 {
+		start = 0
+	}
+	end = a.end + right
+	return start, end
+}
+
+// findHits returns the B records overlapping A's window [winStart, winEnd),
+// applying the strand filter, in upstream's bin-traversal order. The overlap
+// test matches upstream FindWindowOverlaps: a positive intersection of the B
+// record with the window, and a positive overlap fraction relative to A's
+// original length.
+func findHits(a *rec, winStart, winEnd int, bRecs []*rec, opts Options) []*rec {
+	aLen := a.end - a.start
+	var hits []*rec
+	for _, b := range bRecs {
+		s := winStart
+		if b.start > s {
+			s = b.start
+		}
+		e := winEnd
+		if b.end < e {
+			e = b.end
+		}
+		if s >= e {
+			continue
+		}
+		overlapBases := e - s
+		// Upstream requires (overlapBases / aLength) > 0, i.e. any positive
+		// overlap. aLength == 0 would divide by zero in C++ float math
+		// (yielding inf/nan, treated as >0); guard so any overlap counts.
+		if aLen > 0 && overlapBases <= 0 {
+			continue
+		}
+		if overlapBases < opts.MinOverlap {
+			continue
+		}
+		if !strandOK(a.strand, b.strand, opts) {
+			continue
+		}
+		hits = append(hits, b)
+	}
+	orderHitsByBin(hits)
+	return hits
+}
+
+// strandOK applies the -sm/-Sm strand filter. With neither set, every overlap
+// passes regardless of strand.
+func strandOK(aStrand, bStrand string, opts Options) bool {
+	if !opts.StrandSpec && !opts.InverseStrand {
+		return true
+	}
+	same := aStrand == bStrand
 	if opts.StrandSpec {
-		if a.Strand == "" || ex.Strand == "" || a.Strand != ex.Strand {
-			return false
-		}
+		return same
 	}
-	if opts.InverseStrand {
-		if a.Strand == "" || ex.Strand == "" || a.Strand == ex.Strand {
-			return false
-		}
-	}
-	return true
+	// InverseStrand (-Sm): opposite strand required.
+	return !same
 }
 
-func overlapBP(a, b *bed.Record) int {
-	s := a.ChromStart
-	if b.ChromStart > s {
-		s = b.ChromStart
-	}
-	e := a.ChromEnd
-	if b.ChromEnd < e {
-		e = b.ChromEnd
-	}
-	if e <= s {
-		return 0
-	}
-	return e - s
-}
-
-// readAll loads BED records from r using the shared bed.Reader.
-func readAll(r io.Reader) ([]*bed.Record, error) {
-	br := bed.NewReader(r)
-	var out []*bed.Record
-	for {
-		rec, err := br.Read()
-		if err == io.EOF {
-			break
+// readAll loads every BED record from r into raw recs, preserving the verbatim
+// line text.
+func readAll(r io.Reader) ([]*rec, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	var out []*rec
+	for sc.Scan() {
+		raw := sc.Text()
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "track") || strings.HasPrefix(trimmed, "browser") {
+			continue
 		}
+		rc, err := parseRec(raw)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, rec)
+		out = append(out, rc)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
-// formatRecord re-renders a *bed.Record back to a tab-separated line. The
-// number of columns matches what was originally read (we infer that from
-// which fields are populated; ExtraFields are appended verbatim).
-func formatRecord(r *bed.Record) string {
-	cols := []string{r.Chrom, strconv.Itoa(r.ChromStart), strconv.Itoa(r.ChromEnd)}
-	if r.Name != "" {
-		cols = append(cols, r.Name)
+// parseRec parses the chrom/start/end (and strand, if present at column 6) from
+// a raw BED line while retaining the full text for verbatim output.
+func parseRec(raw string) (*rec, error) {
+	fields := strings.Split(raw, "\t")
+	if len(fields) < 3 {
+		return nil, fmt.Errorf("BED record must have at least 3 fields, got %d: %q", len(fields), raw)
 	}
-	if r.Score != 0 || r.Strand != "" {
-		// Score may be the literal 0; emit "." for empty name slot.
-		if r.Name == "" {
-			cols = append(cols, ".")
-		}
-		cols = append(cols, strconv.Itoa(r.Score))
+	start, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+	if err != nil {
+		return nil, fmt.Errorf("invalid chromStart %q: %w", fields[1], err)
 	}
-	if r.Strand != "" {
-		cols = append(cols, r.Strand)
+	end, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+	if err != nil {
+		return nil, fmt.Errorf("invalid chromEnd %q: %w", fields[2], err)
 	}
-	if len(r.ExtraFields) > 0 {
-		cols = append(cols, r.ExtraFields...)
+	rc := &rec{line: raw, chrom: fields[0], start: start, end: end}
+	if len(fields) >= 6 {
+		rc.strand = strings.TrimSpace(fields[5])
 	}
-	return strings.Join(cols, "\t")
+	return rc, nil
+}
+
+func writeLine(bw *bufio.Writer, s string) error {
+	if _, err := bw.WriteString(s); err != nil {
+		return err
+	}
+	return bw.WriteByte('\n')
 }
