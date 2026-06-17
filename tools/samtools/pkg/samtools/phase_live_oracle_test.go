@@ -122,3 +122,64 @@ func TestLivePhase(t *testing.T) {
 			len(up), up, len(gp), gp)
 	}
 }
+
+// phaseLowQFixtureSAM places two candidate het sites (chr1:3 G/T and
+// chr1:7 G/C), each covered by three G-carrying and three alt-carrying
+// reads, all at Phred 40 base quality. Lowering `-q` below the default
+// 37 admits these het sites; this exercises the errmod genotype-
+// likelihood LOD (errmod_cal m=4 + gl2cns) in the het-discovery path that
+// surfaced the original "LOD precision" divergence. With the upstream-
+// faithful float32 `tmp1` accumulation the het set — and hence the whole
+// phase text stream — matches upstream byte-for-byte at every `-q`.
+//
+// NOTE on quality: the bases are kept at the default minimum base quality
+// or above. A *separate*, pre-existing phase-pileup gap (unrelated to
+// errmod precision) causes a het-set divergence only when reads carry
+// MARGINAL base qualities at the variant column; that gap is documented in
+// docs/PARITY_ROADMAP.md and is not exercised here because it is outside
+// the errmod/gl2cns scope. The errmod/gl2cns LOD itself is byte-exact for
+// those marginal columns (verified by the errmod oracle goldens) — the
+// divergence is purely in which bases the phase pileup feeds to errmod.
+const phaseLowQFixtureSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+	"@SQ\tSN:chr1\tLN:100\n" +
+	"r_a\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+	"r_b\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+	"r_c\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII\n" +
+	"r_d\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII\n" +
+	"r_e\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII\n" +
+	"r_f\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACTTACCTAC\tIIIIIIIIII\n"
+
+// TestLivePhaseLowQ asserts byte-equality of `samtools phase` between
+// upstream and our port across a sweep of LOW `-q` het-LOD thresholds,
+// the regime that surfaced the original errmod/gl2cns "LOD precision"
+// divergence. With the upstream-faithful float32 `tmp1` accumulation the
+// het set, and therefore the entire phase text stream, matches upstream
+// byte-for-byte at every threshold from 1 up to the default 37. This is
+// the end-to-end gate for the errmod accumulation-width fix.
+func TestLivePhaseLowQ(t *testing.T) {
+	live := upstreamSamtools(t)
+	ours := ourSamtoolsBinary(t)
+
+	dir := t.TempDir()
+	samPath := filepath.Join(dir, "phase_lowq.sam")
+	if err := os.WriteFile(samPath, []byte(phaseLowQFixtureSAM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bamPath := filepath.Join(dir, "phase_lowq.bam")
+	if err := os.WriteFile(bamPath, runSamtools(t, ours, "view", "-b", "--no-PG", samPath), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, q := range []string{"1", "5", "13", "20", "37"} {
+		q := q
+		t.Run("q"+q, func(t *testing.T) {
+			args := []string{"phase", "--no-PG", "-q", q, bamPath}
+			up := runSamtools(t, live, args...)
+			gp := runSamtools(t, ours, args...)
+			if !bytes.Equal(up, gp) {
+				t.Errorf("DIVERGENCE at -q %s: phase byte-stream differs\nupstream (%d bytes):\n%s\nours (%d bytes):\n%s",
+					q, len(up), up, len(gp), gp)
+			}
+		})
+	}
+}
