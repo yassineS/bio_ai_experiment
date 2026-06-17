@@ -646,8 +646,11 @@ func TestParity_Depth_T04_AllPositions(t *testing.T) {
 // depth.t05 — CIGAR with a deletion. Verifies refLen advances past the
 // deletion and depth drops to zero on the deleted bases.
 func TestParity_Depth_T05_CIGARDeletion(t *testing.T) {
-	// One read with 3M2D3M starting at chr1:10. The 2D bases (pos 13, 14) are
-	// gaps and should not contribute to depth; pos 15-17 should be covered.
+	// One read with 3M2D3M starting at chr1:10. The 2D bases (pos 13, 14) add
+	// no depth, but they are INSIDE the read's covered span [10, 18), so
+	// upstream emits a depth-0 row for each of them (skip_del defaults to 1,
+	// so deletions advance bam_endpos but do not increment the histogram —
+	// reference_code/samtools/bam2depth.c:385-395). pos 15..17 are covered.
 	sam := `@HD	VN:1.6	SO:coordinate
 @SQ	SN:chr1	LN:1000
 r1	0	chr1	10	60	3M2D3M	*	0	0	ACGTAT	IIIIII
@@ -656,18 +659,21 @@ r1	0	chr1	10	60	3M2D3M	*	0	0	ACGTAT	IIIIII
 	if err := Depth([]io.Reader{strings.NewReader(sam)}, &out, DepthOptions{ExcludeFlags: DefaultDepthExcludeFlags}); err != nil {
 		t.Fatalf("Depth: %v", err)
 	}
-	// chr1 pos 10..12 → 1; pos 13,14 → 0 (deletion); pos 15..17 → 1.
-	// Upstream `depth` only emits non-zero positions by default.
+	// chr1 pos 10..12 → 1; pos 13,14 → 0 (deletion, in span); pos 15..17 → 1.
 	got := out.String()
 	for _, pos := range []string{"10", "11", "12", "15", "16", "17"} {
-		if !strings.Contains(got, "chr1\t"+pos+"\t1") {
-			t.Errorf("expected coverage at chr1:%s, got:\n%s", pos, got)
+		if !strings.Contains(got, "chr1\t"+pos+"\t1\n") {
+			t.Errorf("expected coverage 1 at chr1:%s, got:\n%s", pos, got)
 		}
 	}
 	for _, pos := range []string{"13", "14"} {
-		if strings.Contains(got, "chr1\t"+pos+"\t") {
-			t.Errorf("unexpected coverage at chr1:%s (deletion), got:\n%s", pos, got)
+		if !strings.Contains(got, "chr1\t"+pos+"\t0\n") {
+			t.Errorf("expected in-span depth 0 at chr1:%s (deletion), got:\n%s", pos, got)
 		}
+	}
+	// pos 9 (before the read) and pos 18 (one past the span) must NOT appear.
+	if strings.Contains(got, "chr1\t9\t") || strings.Contains(got, "chr1\t18\t") {
+		t.Errorf("unexpected coverage outside the read span [10,17]:\n%s", got)
 	}
 }
 
