@@ -96,9 +96,16 @@ type Options struct {
 	FractionA float64
 	// FractionB: minimum fraction of B that must overlap A.
 	FractionB float64
-	// Reciprocal: when true, both FractionA and FractionB must be satisfied
-	// (default behaviour is "either satisfies if non-zero").
+	// Reciprocal ("-r"): require the overlap fraction be reciprocal for A AND
+	// B — B must overlap FractionA of A and A must also overlap FractionA of B
+	// (FractionB is taken to equal FractionA). Mirrors `bedtools coverage -r`.
 	Reciprocal bool
+
+	// Either ("-e"): require the minimum fraction be satisfied for A OR B,
+	// rather than the default AND across the supplied -f/-F thresholds. Mirrors
+	// `bedtools coverage -e` (e.g. with -f 0.9 -F 0.1, count when 90% of A OR
+	// 10% of B is covered).
+	Either bool
 
 	// Split ("-split") makes coverage block-aware. On the database (-b) side it
 	// expands BED12 records into their blocks before indexing, so coverage is
@@ -348,7 +355,16 @@ func selectOverlapping(recA *bed.Record, tree *bed.IntervalTree, opts Options) [
 		if !strandPass(recA, b, opts) {
 			continue
 		}
-		if !fractionPass(recA, b, opts) {
+		// Under -split, upstream `bedtools coverage` does NOT apply the -f / -F
+		// (and hence -r / -e) overlap-fraction thresholds at all: its blocked
+		// path (coverageFile.cpp::checkSplits) keeps the BlockMgr *overlapSet*,
+		// which is populated for every block intersection regardless of the
+		// fraction tests, instead of the fraction-filtered *resultSet* that the
+		// plain intersect path uses. So any B that overlaps any A block is
+		// counted, whatever -f / -F were given. We therefore skip fractionPass
+		// when Split is set (verified empirically against bedtools 2.31.1: even
+		// `-f 1.0` / `-F 1.0` / `-r` leave the count unchanged under -split).
+		if !opts.Split && !fractionPass(recA, b, opts) {
 			continue
 		}
 		out = append(out, b)
@@ -400,12 +416,22 @@ func fractionPass(a, b *bed.Record, opts Options) bool {
 	passA := opts.FractionA == 0 || (lenA > 0 && float64(ov)/float64(lenA) >= opts.FractionA)
 	passB := opts.FractionB == 0 || (lenB > 0 && float64(ov)/float64(lenB) >= opts.FractionB)
 	if opts.Reciprocal {
+		// -r: the A fraction must also hold on the B side (FractionB == FractionA).
+		passB = lenB > 0 && float64(ov)/float64(lenB) >= opts.FractionA
 		return passA && passB
 	}
-	// Match `bedtools coverage` semantics: when both -f and -F are given
-	// without -r, BOTH must still hold (the default is AND across the
-	// supplied thresholds). This matches upstream too — `-r` only matters
-	// when one of -f/-F is supplied by itself.
+	if opts.Either {
+		// -e: satisfy A OR B (only the thresholds actually supplied count; a
+		// 0 threshold means "no constraint", so it must not make OR trivially
+		// true). When neither is supplied, fall through to the default.
+		if opts.FractionA > 0 || opts.FractionB > 0 {
+			eitherA := opts.FractionA > 0 && passA
+			eitherB := opts.FractionB > 0 && passB
+			return eitherA || eitherB
+		}
+	}
+	// Default `bedtools coverage` semantics: when both -f and -F are given,
+	// BOTH must hold (AND across the supplied thresholds).
 	return passA && passB
 }
 
@@ -599,8 +625,12 @@ func recordColumns(r *bed.Record) []string {
 	out := []string{r.Chrom, strconv.Itoa(r.ChromStart), strconv.Itoa(r.ChromEnd)}
 	// A BED12 record (block information present, e.g. from a BED12 file or a
 	// BAM alignment) is echoed as the full 12 columns — including thickStart/
-	// thickEnd/itemRgb even when zero, and block lists with the trailing comma
-	// upstream emits — so a coverage echo matches `bedtools coverage` exactly.
+	// thickEnd/itemRgb even when zero. The block lists are echoed VERBATIM:
+	// upstream bedtools preserves whatever text was read for the blockSizes /
+	// blockStarts columns (a trailing comma is kept if present, omitted if
+	// absent), so a record read from BED text round-trips exactly. BAM-derived
+	// records carry no raw block text, so they fall back to the trailing-comma
+	// form upstream emits for `-abam` (e.g. "50,50,").
 	if r.BlockCount != 0 || len(r.BlockSizes) > 0 {
 		rgb := r.ItemRGB
 		if rgb == "" {
@@ -610,7 +640,8 @@ func recordColumns(r *bed.Record) []string {
 			r.Name, strconv.Itoa(r.Score), r.Strand,
 			strconv.Itoa(r.ThickStart), strconv.Itoa(r.ThickEnd), rgb,
 			strconv.Itoa(r.BlockCount),
-			joinTrailingComma(r.BlockSizes), joinTrailingComma(r.BlockStarts),
+			blockField(r.RawBlockSizes, r.BlockSizes),
+			blockField(r.RawBlockStarts, r.BlockStarts),
 		)
 		out = append(out, r.ExtraFields...)
 		return out
@@ -637,6 +668,20 @@ func recordColumns(r *bed.Record) []string {
 		out = append(out, r.ExtraFields...)
 	}
 	return out
+}
+
+// blockField renders one BED12 block column (blockSizes or blockStarts) for
+// echo. When raw is non-empty — i.e. the record came from BED text and the
+// reader retained the exact column text — it is returned verbatim, so a
+// trailing comma is preserved if (and only if) the input had one, matching
+// upstream bedtools which echoes the block columns unchanged. When raw is empty
+// (e.g. a BAM-derived record, which has no source text), it falls back to the
+// trailing-comma form upstream emits for synthesized BED12 records.
+func blockField(raw string, vs []int) string {
+	if raw != "" {
+		return raw
+	}
+	return joinTrailingComma(vs)
 }
 
 // joinTrailingComma renders a block-size/block-start list as

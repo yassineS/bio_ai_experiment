@@ -784,6 +784,26 @@ discrepancies in our Go code (not upstream), all fixed inline:
 
 ### Track-only (parity skipped, fix later)
 
+<a id="bedtools-coverage-split-ignores-f-F"></a>
+
+- **bedtools `coverage -split` silently ignores `-f`/`-F` (and `-r`/`-e`).**
+  The `--help` text documents `-f`/`-F` as "minimum overlap required as a
+  fraction of A/B", with no carve-out for `-split`. But under `-split`,
+  `coverage` applies no fraction filter at all: any B feature overlapping any A
+  block is counted, even with `-f 1.0` / `-F 1.0` / `-r` / `-e`. Cause:
+  `CoverageFile::checkSplits` (src/coverageFile/coverageFile.cpp) calls
+  `BlockMgr::findBlockedOverlaps(..., &overlapSet)` and swaps in the
+  **overlapSet**, which is populated for every block intersection regardless of
+  the `-f`/`-F` tests; the fraction-filtered **resultSet** (which `clearAll()`s
+  when the thresholds fail in BlockMgr.cpp lines 285–303) is used only by the
+  plain `intersect` path, not by coverage. So the documented `-f`/`-F` contract
+  is violated specifically for `coverage -split`. **Disposition: track-only —
+  matched, NOT fixed-on-port.** Byte-for-byte parity is the goal, so the Go port
+  deliberately reproduces the quirk (skipping `fractionPass` when `Split` is
+  set). The non-`-split` path filters correctly. Verified against bedtools
+  2.31.1; covered by `TestUpstreamParity_FractionUnderSplitIgnored` and
+  `TestUnitSplitSuppressesFractionFilter`.
+
 <a id="bcftools-frameshifts-oof-dead-code"></a>
 
 - **bcftools +frameshifts: the in-frame/out-of-frame computation is dead

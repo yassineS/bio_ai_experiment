@@ -309,6 +309,91 @@ func TestUpstreamParity_SplitBlockedQueryBAM(t *testing.T) {
 	}
 }
 
+// TestUpstreamParity_FractionUnderSplitIgnored covers the first confirmed
+// divergence: under -split, `bedtools coverage` does NOT apply the -f / -F
+// (and hence -r / -e) overlap-fraction thresholds at all — its blocked path
+// keeps the always-populated BlockMgr overlapSet rather than the
+// fraction-filtered resultSet, so every B overlapping any A block is counted
+// regardless of the requested fractions (verified: even -f 1.0 / -F 1.0 / -r /
+// -e leave the count unchanged). The query is a BED12 record with two 50bp
+// blocks; the B set has a 1bp, a 25bp (half-block) and a 200bp feature, so a
+// fraction filter would change the count if it were (wrongly) applied.
+func TestUpstreamParity_FractionUnderSplitIgnored(t *testing.T) {
+	a := fixtureAbs(t, "frac_split_a_nocomma.bed12")
+	b := fixtureAbs(t, "frac_split_b.bed")
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"f_default", []string{"-split", "-f", "0.5", "-a", a, "-b", b}},
+		{"f_counts", []string{"-split", "-f", "0.5", "-counts", "-a", a, "-b", b}},
+		{"f_one_counts", []string{"-split", "-f", "1.0", "-counts", "-a", a, "-b", b}},
+		{"F_counts", []string{"-split", "-F", "0.9", "-counts", "-a", a, "-b", b}},
+		{"fF_counts", []string{"-split", "-f", "0.5", "-F", "0.5", "-counts", "-a", a, "-b", b}},
+		{"fr_counts", []string{"-split", "-f", "1.0", "-r", "-counts", "-a", a, "-b", b}},
+		{"e_fF_counts", []string{"-split", "-e", "-f", "1.0", "-F", "1.0", "-counts", "-a", a, "-b", b}},
+		{"f_default_default", []string{"-split", "-f", "0.5", "-a", a, "-b", b}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assertStdoutParity(t, tc.args, tc.args)
+		})
+	}
+}
+
+// TestUpstreamParity_NonSplitFractionUnchanged guards against regressing the
+// NON-split -f / -F / -r / -e path while fixing the split case: with no -split,
+// the overlap-fraction thresholds must still filter B exactly as upstream does.
+func TestUpstreamParity_NonSplitFractionUnchanged(t *testing.T) {
+	a := fixtureAbs(t, "frac_split_a_nocomma.bed12")
+	b := fixtureAbs(t, "frac_split_b.bed")
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"f_counts", []string{"-f", "0.5", "-counts", "-a", a, "-b", b}},
+		{"F_counts", []string{"-F", "0.9", "-counts", "-a", a, "-b", b}},
+		{"fF_counts", []string{"-f", "0.1", "-F", "0.5", "-counts", "-a", a, "-b", b}},
+		{"e_fF_counts", []string{"-e", "-f", "0.9", "-F", "0.1", "-counts", "-a", a, "-b", b}},
+		{"r_counts", []string{"-f", "0.5", "-r", "-counts", "-a", a, "-b", b}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assertStdoutParity(t, tc.args, tc.args)
+		})
+	}
+}
+
+// TestUpstreamParity_VerbatimBED12BlockEcho covers the second confirmed
+// divergence: a BED12 -a record's blockSizes/blockStarts columns are echoed
+// verbatim — a trailing comma is preserved iff the input had one. The no-comma
+// fixture (50,50 / 0,250) and the comma fixture (50,50, / 0,250,) must each
+// round-trip exactly as upstream does, in the default and -counts modes.
+func TestUpstreamParity_VerbatimBED12BlockEcho(t *testing.T) {
+	nc := fixtureAbs(t, "frac_split_a_nocomma.bed12")
+	tc := fixtureAbs(t, "frac_split_a_comma.bed12")
+	b := fixtureAbs(t, "frac_split_b.bed")
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"nocomma_default", []string{"-a", nc, "-b", b}},
+		{"nocomma_counts", []string{"-counts", "-a", nc, "-b", b}},
+		{"comma_default", []string{"-a", tc, "-b", b}},
+		{"comma_counts", []string{"-counts", "-a", tc, "-b", b}},
+		{"nocomma_split_default", []string{"-split", "-a", nc, "-b", b}},
+		{"comma_split_counts", []string{"-split", "-counts", "-a", tc, "-b", b}},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			assertStdoutParity(t, c.args, c.args)
+		})
+	}
+}
+
 // lastNonEmptyLine returns the final non-empty line of b without its newline,
 // matching the upstream test harness's `tail -1` on the captured stderr.
 func lastNonEmptyLine(b []byte) []byte {

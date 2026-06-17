@@ -29,10 +29,11 @@ The default output appends four columns to each A line:
 |      | `--mean` / `--median` / `--min` / `--max` / `--sum` | Collapse the per-base depth vector with the requested op; append a single value. |
 | `-s` | `--strand`  | Same-strand only. |
 | `-S` | `--opposite`| Opposite-strand only. |
-| `-f` | `--fraction-a` | Min fraction of A that must overlap a B record before B contributes. |
-| `-F` | `--fraction-b` | Min fraction of B that must overlap A. |
-| `-r` | `--reciprocal` | Require both `-f` and `-F` (default behaviour is already AND). |
-|      | `--split`   | Treat blocked `-b` records (BED12 lines or spliced BAM alignments) as their blocks (exon-aware). A blocked `-a` record under `--split` is rejected. |
+| `-f` | `--fraction-a` | Min fraction of A that must overlap a B record before B contributes. Ignored under `--split` (see below). |
+| `-F` | `--fraction-b` | Min fraction of B that must overlap A. Ignored under `--split`. |
+| `-r` | `--reciprocal` | Require the `-f` fraction reciprocally (A AND B; the B threshold equals `-f`). Ignored under `--split`. |
+| `-e` | `--either`  | Require the minimum fraction for A **OR** B instead of the default AND across `-f`/`-F`. Ignored under `--split`. |
+|      | `--split`   | Treat blocked records (BED12 lines or spliced BAM alignments) as their blocks (exon-aware), on both the `-b` database side and a blocked `-a` query. |
 | `-h` | `--help`    | Show help. |
 | `-v` | `--version` | Show version. |
 
@@ -73,6 +74,24 @@ upstream's `-abam` / `-b <bam>` modes.
   upstream's `findBlockedOverlaps`/`_hitCount`. See
   `TestUpstreamParity_SplitBlockedQuery{BED12,BAM}` (live upstream oracle) and
   `split_unit_test.go` (binary-free).
+- Under `--split`, the overlap-fraction thresholds `-f` / `-F` (and therefore
+  `-r` / `-e`) are **not applied** — every B feature overlapping any A block is
+  counted, whatever the requested fractions. This matches upstream exactly: its
+  blocked path (`coverageFile.cpp::checkSplits`) keeps the always-populated
+  `BlockMgr` *overlapSet* rather than the fraction-filtered *resultSet* that the
+  plain `intersect` path uses, so `-f`/`-F` have no effect on the count under
+  `-split`. Verified against bedtools 2.31.1 (even `-f 1.0` / `-F 1.0` / `-r` /
+  `-e` leave the count unchanged). The non-`--split` `-f`/`-F`/`-r`/`-e`
+  behaviour is unaffected and still filters per record. See
+  `TestUpstreamParity_FractionUnderSplitIgnored` and
+  `TestUnitSplitSuppressesFractionFilter`.
+- The BED12 `blockSizes` / `blockStarts` columns of an `-a` record are echoed
+  **verbatim** — the optional trailing comma is preserved if present and omitted
+  if absent, exactly as upstream re-emits them. (Earlier the port normalised the
+  lists by always appending a trailing comma.) The `bed.Reader` now retains the
+  raw column text (`RawBlockSizes`/`RawBlockStarts`); BAM-derived records carry
+  no raw text and fall back to upstream's trailing-comma form (`50,50,`). See
+  `TestUpstreamParity_VerbatimBED12BlockEcho` and `TestUnitVerbatimBlockEcho`.
 - `-mean` reproduces upstream's float32-accumulated output (7 decimals,
   including float32 rounding noise such as `1.3200001`) — coverage.t6 passes.
 - `-sorted` (sorted-stream fast path) is accepted as a no-op since our
