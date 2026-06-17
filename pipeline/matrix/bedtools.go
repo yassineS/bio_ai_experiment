@@ -35,7 +35,7 @@ package matrix
 //   - bedpairtobed       — runs over the new {bedpe} fixture; same record SET as
 //                          upstream but a few multi-hit pairs emit in a
 //                          different chromsweep order (bedpairtopair is exact).
-//   - bedoverlap        — needs a joined input stream with -cols; no fixture.
+//   - (bedoverlap now runs over the {bedpe} fixture with -cols 2,3,5,6.)
 //   - (bedunionbedg now runs over the {bedgraph1}/{bedgraph2} fixtures.)
 // ------------------------------------------------------------------------
 
@@ -384,10 +384,11 @@ func bedStatTools() []Entry {
 	// --- overlap: consumes a pre-joined stream; the runner only feeds files, so
 	//     there is no joined fixture to pipe. The per-tool suite validates it;
 	//     here it is Skipped with the reason (it has no standalone fixture). ---
+	// overlap computes the bp overlap between two interval column-pairs in each
+	// row; the {bedpe} fixture (chrom1 start1 end1 chrom2 start2 end2 ...) is
+	// exactly such a joined stream, so `-cols 2,3,5,6` runs it byte-exact.
 	out = append(out,
-		btSkip("bedoverlap", "overlap", "needs_joined_stream", InputBED,
-			"bedtools overlap reads a pre-joined stream (e.g. `bedtools window ... | overlap -i stdin -cols ...`) on stdin; the pipeline runner only substitutes file placeholders and cannot build the upstream-of-pipe input, so there is no standalone fixture. overlap matches byte-exact on a joined stream (verified out-of-band) and is covered by the per-tool suite.",
-			"-i", "{bed}", "-cols", "2,3,2,3"),
+		bt("bedoverlap", "overlap", "base", InputBED, "-i", "{bedpe}", "-cols", "2,3,5,6"),
 	)
 
 	return out

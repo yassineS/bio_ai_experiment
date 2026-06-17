@@ -19,7 +19,10 @@ import (
 // v3: GFF3 now emits valid CDS phases (whole-codon CDS, phase 0) so bcftools
 // csq does not drop transcripts; added a BEDPE fixture (pairs.bedpe) for the
 // paired-end bed tools.
-const manifestVersion = 4
+// v4: added bedGraph fixtures (cov1/cov2.bedgraph) for bedunionbedg.
+// v5: added a bcftools-mpileup PL-likelihood VCF (mpileup.pl.vcf) for bcftools call.
+// v6: added a name-collated BAM (reads.namesorted.bam) for samtools fixmate.
+const manifestVersion = 6
 
 // Manifest records what was generated for one scale tier so the runner can
 // resolve fixture paths and decide whether a cached set is still valid.

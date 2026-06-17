@@ -244,9 +244,9 @@ func samtoolsBinaryOutputSkips() []Entry {
 	return []Entry{
 		// markdup: duplicate marking is byte-identical once decoded.
 		bamOut("markdup", "{bam}", "-"),
-		skip("fixmate", "", "samtools fixmate ignores -O sam (writes BGZF BAM) and needs name-collated input, which cannot be produced "+
-			"in a single command. Owned by the samtools agent.",
-			"-O", "sam", "{bam}", "-"),
+		// fixmate needs name-collated input; the {bam_namesorted} fixture is a
+		// `samtools sort -n` of the reads. Output BAM is decoded and compared.
+		bamOut("fixmate", "{bam_namesorted}", "-"),
 		bamOut("addreplacerg", "-r", `ID:x\tSM:y`, "{bam}", "-"),
 		skip("merge", "", "samtools merge of the fixture with itself collides on read-group ID 'rg1': upstream disambiguates by renaming "+
 			"the duplicate RG (rg1 -> rg1-<hash>) in the merged header, which our port does not. A real RG-ID-collision gap, exposed only by "+

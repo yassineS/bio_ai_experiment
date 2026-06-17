@@ -94,6 +94,10 @@ func Generate(opt Options) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	bcftools, err := upstream.Binary("bcftools")
+	if err != nil {
+		return nil, err
+	}
 
 	if err := os.RemoveAll(dir); err != nil {
 		return nil, err
@@ -146,6 +150,23 @@ func Generate(opt Options) (*Manifest, error) {
 	_ = m.recordFile("bam", bamPath, false)
 	_ = m.recordFile("bai", bamPath+".bai", false)
 	_ = m.recordFile("csi", bamPath+".csi", false)
+
+	// --- Name-collated BAM (samtools sort -n) for samtools fixmate ---
+	nsBamPath := filepath.Join(dir, "reads.namesorted.bam")
+	if err := run(samtools, "sort", "-n", "-o", nsBamPath, bamPath); err != nil {
+		return nil, fmt.Errorf("samtools sort -n: %w", err)
+	}
+	_ = m.recordFile("bam_namesorted", nsBamPath, false)
+
+	// --- PL-likelihood VCF (bcftools mpileup) for bcftools call ---
+	// `bcftools call` needs FORMAT/PL genotype likelihoods, which the synthetic
+	// VCF writer does not produce; generate a real one by piling up the BAM
+	// against the reference. The provenance header is stripped at compare time.
+	plVCFPath := filepath.Join(dir, "mpileup.pl.vcf")
+	if err := run(bcftools, "mpileup", "-f", fastaPath, "-O", "v", "-o", plVCFPath, bamPath); err != nil {
+		return nil, fmt.Errorf("bcftools mpileup: %w", err)
+	}
+	_ = m.recordFile("vcf_pl", plVCFPath, true)
 
 	// --- CRAM (+ reference) ---
 	cramPath := filepath.Join(dir, "reads.cram")

@@ -242,10 +242,16 @@ func bcftoolsSkips() []Entry {
 		// map, distinct IDs are concatenated (rs45;rs46), and same-position
 		// records are emitted in variant-type-bit order.
 		mkBcf("norm", "norm_join", InputVCFPlain, ByteExact, "-m+", "-f", "{fasta}", "{vcf_plain}"),
+		// call -m now runs over the bcftools-mpileup PL fixture (the old "Wrong
+		// number of PL fields" blocker is gone). Every INFO/GT/AD field matches;
+		// the only residual is the QUAL column's last decimal (e.g. 15.6999 vs
+		// 15.6998) — a sub-ULP float-precision difference in the call model's
+		// likelihood arithmetic (same class as the errmod float-vs-double work,
+		// a deep-internals item).
 		skip("call", "call",
-			"bcftools call needs a proper mpileup-style PL/likelihood input; the variant fixture lacks PL, so upstream errors with "+
-				"'Wrong number of PL fields'. A call-from-mpileup parity case needs a likelihood fixture (owned by the bcftools agent).",
-			"-m", "{vcf_multi}"),
+			"bcftools call -m over the PL fixture: every INFO/GT/AD field matches upstream; the only divergence is the QUAL column's "+
+				"last decimal (15.6999 vs 15.6998) — a sub-ULP float-precision difference in the call genotype-likelihood model. Deep-internals.",
+			"-m", "{vcf_pl}"),
 		skip("csq", "csq",
 			"bcftools csq --force: the GFF fixture is now valid (all 800 transcripts index on both sides) and the BCSQ consequence "+
 				"strings match — the residual is the COMPOUND-variant linkage: the '@<pos>' reference marking a variant whose consequence "+
