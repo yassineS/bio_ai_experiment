@@ -461,6 +461,15 @@ func runReheader(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	// Upstream reheader has no -O flag: the output compression mirrors the
+	// input. Track whether the user set -O/--output-type explicitly so the
+	// package can auto-mirror the input compression when they did not.
+	outputTypeSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "O" || f.Name == "output-type" {
+			outputTypeSet = true
+		}
+	})
 	out, err := openOutFile(outputPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools reheader: %v\n", err)
@@ -468,12 +477,13 @@ func runReheader(args []string) int {
 	}
 	defer out.Close()
 	if _, err := bcftools.ReheaderFile(rest[0], out, bcftools.ReheaderOptions{
-		HeaderFile:    headerFile,
-		SamplesFile:   samplesFile,
-		FaiFile:       faiFile,
-		OutputFormat:  format,
-		CompressLevel: compressLevel,
-		Threads:       threads,
+		HeaderFile:           headerFile,
+		SamplesFile:          samplesFile,
+		FaiFile:              faiFile,
+		OutputFormat:         format,
+		OutputFormatExplicit: outputTypeSet,
+		CompressLevel:        compressLevel,
+		Threads:              threads,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "bcftools reheader: %v\n", err)
 		return 1

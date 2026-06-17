@@ -46,6 +46,13 @@ type ReheaderOptions struct {
 	FaiFile string
 	// OutputFormat selects the output encoding. Defaults to OutputVCF.
 	OutputFormat OutputFormat
+	// OutputFormatExplicit reports whether the caller set OutputFormat
+	// deliberately (our -O/--output-type extension). When false, ReheaderFile
+	// mirrors the input's compression: upstream `bcftools reheader` has no -O
+	// flag and emits BGZF for a BGZF (.vcf.gz) input and plain text for a plain
+	// input (reheader.c main: bgzf input -> reheader_vcf_gz, plain ->
+	// reheader_vcf).
+	OutputFormatExplicit bool
 	// CompressLevel is the gzip level for -O z output (negative means
 	// gzip's default).
 	CompressLevel int
@@ -59,12 +66,50 @@ type ReheaderOptions struct {
 // opens path through iohelper, applies the requested header edits, and
 // writes the records (with the new header) to out.
 func ReheaderFile(path string, out io.Writer, opts ReheaderOptions) (int, error) {
+	// Mirror the input's compression unless the caller forced a format via -O:
+	// upstream reheader re-emits a BGZF (.vcf.gz) input as BGZF and a plain
+	// input as plain text. We default OutputFormat to plain VCF, so only the
+	// compressed case needs an upgrade.
+	if !opts.OutputFormatExplicit && opts.OutputFormat == OutputVCF {
+		gz, err := pathIsGzip(path)
+		if err != nil {
+			return 0, fmt.Errorf("bcftools reheader: open %s: %w", path, err)
+		}
+		if gz {
+			opts.OutputFormat = OutputVCFGz
+		}
+	}
 	in, err := iohelper.OpenReader(path)
 	if err != nil {
 		return 0, fmt.Errorf("bcftools reheader: open %s: %w", path, err)
 	}
 	defer in.Close()
 	return Reheader(in, out, opts)
+}
+
+// pathIsGzip reports whether path begins with the gzip/BGZF magic bytes
+// (0x1f 0x8b). A "-" (stdin) path is treated as not compressed: upstream
+// detects stdin's format via hts_open, but the reheader matrix and CLI use a
+// real file path, and a plain stdin stays plain. Errors other than a short
+// read are returned.
+func pathIsGzip(path string) (bool, error) {
+	if path == "" || path == "-" {
+		return false, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	var magic [2]byte
+	n, err := io.ReadFull(f, magic[:])
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return false, nil // too short to be gzip
+	}
+	if err != nil {
+		return false, err
+	}
+	return n == 2 && magic[0] == 0x1f && magic[1] == 0x8b, nil
 }
 
 // Reheader reads every record from in, edits the header per opts, and writes

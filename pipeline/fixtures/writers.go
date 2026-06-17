@@ -306,6 +306,19 @@ func writeBedGraph(path string, contigs []contig, rng *rand.Rand) error {
 	return f.Close()
 }
 
+// writeSamplesRename writes a samples rename file for `bcftools reheader -s`:
+// one new sample name per line, positionally renaming the multi-sample VCF's
+// sampleN columns to renamedN. n must match the VCF's sample count.
+func writeSamplesRename(path string, n int) error {
+	var sb strings.Builder
+	for i := 1; i <= n; i++ {
+		sb.WriteString("renamed")
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteByte('\n')
+	}
+	return os.WriteFile(path, []byte(sb.String()), 0o644)
+}
+
 // writeBEDPE writes a BEDPE fixture (10 columns: chrom1 start1 end1 chrom2
 // start2 end2 name score strand1 strand2) for the paired-end tools
 // (bedpairtobed / bedpairtopair). Each end is an interval inside the contigs;
