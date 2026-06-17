@@ -83,8 +83,17 @@ type PhaseOptions struct {
 	// MinMAPQ drops records whose MAPQ is strictly less than this.
 	MinMAPQ uint8
 	// MinBaseQ drops query bases whose Phred quality is strictly less
-	// than this.
+	// than this. Mirrors upstream samtools phase -Q/--min-BQ.
 	MinBaseQ uint8
+	// MinVarLOD is the minimum heterozygous Phred-scaled LOD a pileup
+	// column must reach to be treated as a variant (het) site. Mirrors
+	// upstream samtools phase -q (g.min_varLOD; default 37). Columns
+	// whose gl2cns LOD is below this are skipped — they emit neither an
+	// M line nor a phase block. A NEGATIVE value selects the upstream
+	// default (37) so existing library callers keep upstream behaviour;
+	// a zero or positive value is used verbatim (e.g. -q 0 accepts any
+	// LOD, exactly like upstream).
+	MinVarLOD int
 	// MaxDepth caps the number of reads observed at any one het. The
 	// upstream default is 256.
 	MaxDepth int
@@ -138,6 +147,7 @@ const (
 	DefaultPhaseBlockWindow  = 13
 	DefaultPhaseMinMAPQ      = 13
 	DefaultPhaseMinBaseQ     = 13
+	DefaultPhaseMinVarLOD    = 37
 	DefaultPhaseMaxDepth     = 256
 	DefaultPhaseOutputPrefix = ""
 
@@ -285,12 +295,15 @@ func Phase(in io.Reader, out io.Writer, opts PhaseOptions) (int, error) {
 	runner := &upstreamPhaseRunner{
 		k:          DefaultPhaseBlockWindow,
 		minBaseQ:   DefaultPhaseMinBaseQ,
-		minVarLOD:  37,
+		minVarLOD:  DefaultPhaseMinVarLOD,
 		maxDepth:   opts.MaxDepth,
 		fixChimera: !(opts.NoFixChimera || opts.FullRead),
 	}
 	if opts.MinBaseQ != 0 {
 		runner.minBaseQ = opts.MinBaseQ
+	}
+	if opts.MinVarLOD >= 0 {
+		runner.minVarLOD = opts.MinVarLOD
 	}
 	if opts.BlockWindow != 0 {
 		runner.k = opts.BlockWindow
