@@ -6,7 +6,39 @@ import (
 	"testing"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/fasta"
+	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/vcf"
 )
+
+// TestUnitIUPACAlleleAcrossSamples checks the default iupac_GTs allele folding
+// without invoking any binary: alleles present across the given samples are
+// OR-ed into one IUPAC ambiguity code (C+A->M, A+G->R), and a site with no set
+// allele is skipped.
+func TestUnitIUPACAlleleAcrossSamples(t *testing.T) {
+	mkVar := func(ref, alt string, gts ...string) *vcf.Variant {
+		v := &vcf.Variant{Ref: ref, Alt: []string{alt}}
+		for i, g := range gts {
+			v.Samples = append(v.Samples, vcf.Sample{
+				Name: "S" + string(rune('1'+i)),
+				Data: map[string]string{"GT": g},
+			})
+		}
+		return v
+	}
+	// C ref + A alt, samples 0/0 and 1/1 -> alleles {C,A} -> M.
+	got, ok := iupacAlleleAcrossSamples(mkVar("C", "A", "0/0", "1/1"), []int{0, 1}, ConsensusOptions{})
+	if !ok || got != "M" {
+		t.Errorf("C/A across samples: got %q ok=%v, want M", got, ok)
+	}
+	// A ref + G alt, one het sample -> {A,G} -> R.
+	got, ok = iupacAlleleAcrossSamples(mkVar("A", "G", "0/0", "0/1"), []int{0, 1}, ConsensusOptions{})
+	if !ok || got != "R" {
+		t.Errorf("A/G across samples: got %q ok=%v, want R", got, ok)
+	}
+	// All-missing genotypes -> skip (ok=false) without -M.
+	if _, ok := iupacAlleleAcrossSamples(mkVar("A", "G", "./.", "./."), []int{0, 1}, ConsensusOptions{}); ok {
+		t.Errorf("all-missing should be skipped")
+	}
+}
 
 // TestConsensusSNPApplyAllAlts verifies the "no -s" default of applying
 // the first ALT at each record's position.
