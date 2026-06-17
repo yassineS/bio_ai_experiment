@@ -164,7 +164,9 @@ A skimmable per-tool completion table lives in the top-level
 [`PROJECT_STATUS.md`](../PROJECT_STATUS.md), which also carries the
 **definitive remaining-gap list** and the **non-goals** list. Quick state:
 
-- **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp` (~97%), `htsfile`.
+- **Done (1:1):** `seqtk`, `sickle`, `skewer`, `fastp` (~99%; poly-G/poly-X
+  and sliding-window trimming byte-exact, SE adapter auto-detect
+  similarity-bounded and observed byte-identical), `htsfile`.
 - **Near done (small tails):** `prinseq` (~95%), `vcftools` (146/146
   flags, ~98%, output-column polish only), `bgzip`/`tabix` (~92%),
   `mosdepth` (~98%; CRAM input now landed), `bedtools` (37 bed* tools,
@@ -869,9 +871,11 @@ Remaining (documented):
 
 #### Validated-parity audit
 
-16-case test corpus at `tools/fastp/pkg/fastp/parity_test.go` against
-upstream fastp 1.0.1. **16 PASS, 0 SKIP** (post the SE adapter
-auto-detect port in `claude/fastp-adapter-autodetect`). See
+17-case test corpus at `tools/fastp/pkg/fastp/parity_test.go` against
+upstream fastp 1.0.1. **17 PASS, 0 SKIP** (post the SE adapter
+auto-detect similarity-bound case in `claude/fastp-adapter-similarity`;
+deterministic transforms validated byte-exact, the heuristic SE
+adapter-detect validated by a documented similarity bound). See
 [tools/PARITY_VALIDATION.md#fastp-parity-validation](../tools/PARITY_VALIDATION.md#fastp-parity-validation)
 for the case list.
 
@@ -916,6 +920,30 @@ Bugs fixed inline by the `claude/fastp-adapter-autodetect` follow-up PR:
   and no adapter trimming is applied — same as upstream's "No adapter
   detected for read1" path). `TestParity_Fastp_Case15_SEAutoDetect` is
   no longer skipped.
+
+  Follow-up (`claude/fastp-adapter-similarity`): the SE auto-detect path
+  is genuinely heuristic / sampling-dependent, so it is now validated by
+  a documented SIMILARITY BOUND against the upstream binary on a fixture
+  that actually fires detection — `se_detect.fq` (12000 reads, above the
+  gate). `TestParity_Fastp_Case16_SEAutoDetectFires` asserts: detected
+  adapter equals upstream's (prefix within 3bp); per-read trimmed-length
+  agreement >= 99% with no read off by > 2bp and >= 99.9% base identity;
+  and adapter-trimmed reads/bases + passed-filter reads within 1%
+  relative tolerance. Building that case surfaced a real bug: the single
+  configured/detected 3' adapter was trimmed with a plain
+  `strings.Index` substring search, which cannot match a partial adapter
+  prefix at the 3' read end (the common read-through case) and tolerates
+  no mismatch. It now routes through the verbatim
+  `AdapterTrimmer::trimBySequence` (`adaptertrimmer.cpp:71-170`,
+  `matchReq=4`, as `seprocessor.cpp:245` does), which matches partial 3'
+  prefixes (`cmplen = min(rlen-pos, alen)`), tolerates 1 mismatch per 8
+  overlapping bases, and applies the A-tailing negative start. With that
+  fix the observed Case 16 agreement is in fact byte-identical
+  (lenAgreement 1.0, maxLenDelta 0, baseIdentity 1.0); the heuristic
+  CONTRACT remains the similarity bound. Binary-free `TestUnitTrimPolyG`,
+  `TestUnitTrimPolyX`, `TestUnitSlidingWindowCut`,
+  `TestUnitDetectAdapterSE` and `TestUnitFastqSimilarityHelper` pin all
+  four helpers with the reference_code submodule unpopulated.
 
 Features added by the `claude/festive-planck-n9o2lm-fastp-tail` PR
 (`--correction` + overlap analysis, overrepresentation analysis, output

@@ -1084,11 +1084,26 @@ func trimRecord(record *fastq.Record, opts ProcessOptions, stats *ProcessStats, 
 		}
 
 		if opts.Adapter3 != "" {
-			pos := findAdapter(seq[start:], opts.Adapter3)
-			if pos >= 0 {
-				end = start + pos
+			// Route the single configured/auto-detected 3' adapter through
+			// the verbatim upstream AdapterTrimmer::trimBySequence algorithm
+			// (adaptertrimmer.cpp:71-170) rather than a plain substring
+			// search. This matters for parity: trimBySequence tolerates one
+			// mismatch per 8 overlapping bases, matches a PARTIAL adapter
+			// prefix at the 3' end (cmplen = min(rlen-pos, alen)), and uses
+			// the negative "A-tailing" start offset. A plain strings.Index
+			// missed read-through cases where only the adapter prefix fits
+			// inside the read. Upstream calls this with the default
+			// matchReq = 4 (seprocessor.cpp:245).
+			window := &fastq.Record{
+				Sequence: []byte(seq[start:end]),
+				Quality:  qual[start:end],
+			}
+			before := len(window.Sequence)
+			if trimBySequenceUpstream(window, opts.Adapter3, false, 4) {
+				removed := before - len(window.Sequence)
+				end -= removed
 				stats.AdapterTrimmedReads++
-				stats.AdapterTrimmedBases += int64(len(seq) - end)
+				stats.AdapterTrimmedBases += int64(removed)
 				explicitTrimmed = true
 			}
 		}

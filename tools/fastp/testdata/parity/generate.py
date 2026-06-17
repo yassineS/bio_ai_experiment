@@ -179,6 +179,37 @@ def main():
         ora.append((f"o_{i}", seq, "I" * 100))
     write("ora.fq", ora)
 
+    # 13) SE adapter auto-detection fixture: 12000 reads of 100bp, above
+    # upstream's evaluator gate (>= 10000 records, evaluator.cpp:344), so the
+    # kmer/nucleotide-tree SE auto-detect path actually fires. Most reads are
+    # read-through: a random insert followed by the canonical TruSeq adapter
+    # AGATCGGAAGAGC and a short fixed adapter continuation, padded with random
+    # bases. A minority are adapter-free so detection has to discriminate.
+    #
+    # Detection is a sampling-dependent heuristic, so the matching parity test
+    # validates a SIMILARITY bound (per-read trimmed-length agreement +
+    # base-identity) against the upstream binary, not strict byte-equality.
+    random.seed(303)
+    # The full Illumina TruSeq Read1 adapter; the leading 13bp
+    # (AGATCGGAAGAGC) is the canonical known-adapter prefix fastp ships.
+    full_adapter = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+    detect = []
+    for i in range(12000):
+        if i % 10 == 0:
+            # 10% adapter-free, full-length random reads.
+            seq = "".join(random.choice("ACGT") for _ in range(100))
+        else:
+            insert_len = random.randint(20, 70)
+            insert = "".join(random.choice("ACGT") for _ in range(insert_len))
+            seq = (insert + full_adapter)
+            if len(seq) < 100:
+                seq = seq + "".join(
+                    random.choice("ACGT") for _ in range(100 - len(seq))
+                )
+            seq = seq[:100]
+        detect.append((f"det_{i}", seq, hi_q(100)))
+    write("se_detect.fq", detect)
+
 
 if __name__ == "__main__":
     main()
