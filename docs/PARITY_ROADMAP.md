@@ -756,10 +756,23 @@ byte-for-byte by `TestParity_Sickle_*` in
 for the per-case description and the audit's "discrepancies found and
 fixed" log.
 
+The **default sliding window** now matches upstream exactly: upstream
+sickle has no `-w` flag and always uses a dynamic per-read window of
+`int(0.1 * read_length)` (falling back to the full read length when that
+rounds to 0). A previous bug defaulted our `-w` to a hardcoded `10`, which
+trimmed ~1% of reads one window short on reads ≠ 100 bp. The default is now
+`0` (dynamic); a positive `-w` is a Go-port extension that pins a fixed
+window. This is validated live against the upstream binary on
+varying-length reads (SE+PE) by `TestParityDynamicWindow*` in
+`tools/sickle/cmd/sickle/dynamic_window_parity_test.go`, and the
+length→window rule is pinned binary-free by `TestUnitResolveWindowSize`.
+
 Outstanding items (Go-port extensions, not parity gaps):
 
 - Auto-detect heuristic (PR #33) is a Go-port extension with no upstream
   equivalent; exercised by `encoding_test.go`.
+- The fixed `-w N` window (used only when `N > 0`) is a Go-port extension;
+  upstream has no `-w` flag.
 - Gzip *output* level was not part of the audit (parity is asserted on
   the trimmed FASTQ records, not on the gzip container bytes).
 

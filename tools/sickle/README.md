@@ -60,7 +60,7 @@ Options:
 - `-t, --qual-type TYPE` - Quality type: `auto`, `sanger`, `illumina`, `solexa` (default: `auto` — see [Quality encoding auto-detection](#quality-encoding-auto-detection))
 - `-q, --qual-threshold INT` - Threshold for trimming (default: 20)
 - `-l, --length-threshold INT` - Minimum length to keep (default: 20)
-- `-w, --window-size INT` - Window size for quality assessment (default: 10)
+- `-w, --window-size INT` - Window size for quality assessment (default: dynamic — `int(0.1 * read_length)` per read, matching upstream sickle, which has no `-w` flag; a positive value pins a fixed window for every read as a Go-port extension)
 - `-x, --no-fiveprime` - Don't trim 5' end
 - `-n, --trunc-n` - Truncate sequences at position of first N
 - `-z, --quiet` - Don't print statistics (also suppresses the auto-detect notice)
@@ -90,7 +90,7 @@ Options:
 - `-t, --qual-type TYPE` - Quality type: `auto`, `sanger`, `illumina`, `solexa` (default: `auto` — detected from R1 only and applied to both files)
 - `-q, --qual-threshold INT` - Threshold for trimming (default: 20)
 - `-l, --length-threshold INT` - Minimum length to keep (default: 20)
-- `-w, --window-size INT` - Window size for quality assessment (default: 10)
+- `-w, --window-size INT` - Window size for quality assessment (default: dynamic — `int(0.1 * read_length)` per read, matching upstream sickle, which has no `-w` flag; a positive value pins a fixed window for every read as a Go-port extension)
 - `-x, --no-fiveprime` - Don't trim 5' end
 - `-n, --trunc-n` - Truncate sequences at position of first N
 - `-z, --quiet` - Don't print statistics (also suppresses the auto-detect notice)
@@ -245,11 +245,23 @@ sickle se -f large_file.fastq -o output.fastq --progress
 
 #### Custom Window Size
 
+By default (when `-w` is omitted) sickle uses a **dynamic per-read window** of
+`int(0.1 * read_length)` — exactly like upstream sickle, which has no `-w` flag
+at all and always computes the window this way. For a 100 bp read the window is
+10; for a 250 bp read it is 25; for reads shorter than 10 bp (where
+`int(0.1*length)` rounds to 0) the window falls back to the full read length.
+
+Passing `-w N` (a Go-port extension) pins a fixed window of `N` bases for every
+read instead of the dynamic default:
+
 ```bash
-# Use smaller window for more sensitive trimming
+# Default: dynamic per-read window, int(0.1 * read_length)
+sickle se -f input.fastq -o output.fastq
+
+# Pin a smaller fixed window for more sensitive trimming
 sickle se -f input.fastq -o output.fastq -w 5
 
-# Use larger window for more conservative trimming
+# Pin a larger fixed window for more conservative trimming
 sickle se -f input.fastq -o output.fastq -w 15
 ```
 
@@ -326,7 +338,7 @@ sickle se -f raw.fastq.gz -o - -q 25 | seqtk fq2fa - > trimmed.fasta
 
 Sickle uses a sliding window approach for quality-based trimming:
 
-1. **Window-Based Quality Assessment**: A sliding window of configurable size (default: 10 bases) calculates average quality scores
+1. **Window-Based Quality Assessment**: A sliding window calculates average quality scores. By default the window size is computed per read as `int(0.1 * read_length)` (falling back to the full read length when that rounds to 0, i.e. reads under 10 bp), matching upstream sickle exactly. `-w N` overrides this with a fixed window for every read (a Go-port extension).
 2. **5' End Trimming**: Slides window from left to right to find where quality exceeds threshold
 3. **3' End Trimming**: Slides window from right to left to find where quality drops below threshold
 4. **Length Filtering**: After trimming, reads shorter than length threshold are discarded
@@ -394,7 +406,7 @@ the test list and a per-case description. The parity tests live in
 ✅ **JSON statistics output** - Use `--json FILE` to save statistics in JSON format
 ✅ **HTML report generation** - Use `--html FILE` to generate a visual HTML report
 ✅ **Progress reporting** - Use `--progress` to show real-time progress for large files
-✅ **Custom window size** - Use `-w/--window-size INT` to configure the sliding window size
+✅ **Custom window size** - Use `-w/--window-size INT` to pin a fixed sliding window (the default is upstream's dynamic per-read `int(0.1 * read_length)`)
 ✅ **Quality score recalibration** - Use `--recalibrate` to apply empirical base quality recalibration
 ✅ **Parallel batch processing** - Use `sickle batch` to process multiple files in parallel
 

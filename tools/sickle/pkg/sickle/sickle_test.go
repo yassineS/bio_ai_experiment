@@ -325,8 +325,12 @@ func TestTrimOptionsDefault(t *testing.T) {
 		t.Errorf("Expected default length threshold 20, got %d", opts.LengthThreshold)
 	}
 
-	if opts.WindowSize != 10 {
-		t.Errorf("Expected default window size 10, got %d", opts.WindowSize)
+	// WindowSize defaults to 0, which selects upstream sickle's dynamic
+	// per-read window of int(0.1*read_length). Upstream has no -w flag and
+	// always uses this dynamic window; a positive WindowSize is a Go-port
+	// extension that pins a fixed window.
+	if opts.WindowSize != 0 {
+		t.Errorf("Expected default window size 0 (dynamic), got %d", opts.WindowSize)
 	}
 
 	if opts.NoFivePrime {
@@ -335,6 +339,61 @@ func TestTrimOptionsDefault(t *testing.T) {
 
 	if opts.TruncateN {
 		t.Error("Expected TruncateN to be false by default")
+	}
+}
+
+// TestUnitResolveWindowSize pins the sliding-window-size computation
+// (read length -> window) against upstream sickle's rule in sliding.c:
+//
+//	window_size = (int)(0.1 * seq.l);
+//	if (window_size == 0) window_size = seq.l;
+//
+// This is a pure unit test — it needs no upstream binary. The "want" column is
+// derived by hand from the exact C expression so a regression in the truncation
+// or the zero-fallback is caught immediately. It also covers the Go-port
+// fixed-window extension (optWindow > 0), including the clamp to the read length.
+func TestUnitResolveWindowSize(t *testing.T) {
+	tests := []struct {
+		name      string
+		seqLen    int
+		optWindow int // 0 = dynamic default
+		want      int
+	}{
+		// Dynamic default: int(0.1*L) with fallback to L when that is 0.
+		{"len0_dynamic", 0, 0, 0},      // 0.1*0 = 0 -> fallback to L (0)
+		{"len1_dynamic", 1, 0, 1},      // 0.1*1 = 0 -> fallback to L (1)
+		{"len9_dynamic", 9, 0, 9},      // int(0.9) = 0 -> fallback to L (9)
+		{"len10_dynamic", 10, 0, 1},    // int(1.0) = 1
+		{"len19_dynamic", 19, 0, 1},    // int(1.9) = 1
+		{"len20_dynamic", 20, 0, 2},    // int(2.0) = 2
+		{"len25_dynamic", 25, 0, 2},    // int(2.5) = 2 (truncate, not round)
+		{"len29_dynamic", 29, 0, 2},    // int(2.9) = 2
+		{"len30_dynamic", 30, 0, 3},    // int(3.0) = 3
+		{"len35_dynamic", 35, 0, 3},    // int(3.5) = 3
+		{"len55_dynamic", 55, 0, 5},    // int(5.5) = 5
+		{"len100_dynamic", 100, 0, 10}, // int(10.0) = 10
+		{"len101_dynamic", 101, 0, 10}, // int(10.1) = 10
+		{"len150_dynamic", 150, 0, 15}, // int(15.0) = 15
+
+		// Negative optWindow is treated the same as the dynamic default.
+		{"negative_treated_as_dynamic", 50, -7, 5},
+
+		// Fixed-window Go-port extension: optWindow > 0 used verbatim.
+		{"fixed_10_on_50", 50, 10, 10},
+		{"fixed_1_on_50", 50, 1, 1},
+		// ...clamped down when it exceeds the read length.
+		{"fixed_100_on_50_clamped", 50, 100, 50},
+		{"fixed_equals_len", 30, 30, 30},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveWindowSize(tt.seqLen, tt.optWindow)
+			if got != tt.want {
+				t.Errorf("resolveWindowSize(seqLen=%d, optWindow=%d) = %d, want %d",
+					tt.seqLen, tt.optWindow, got, tt.want)
+			}
+		})
 	}
 }
 

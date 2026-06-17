@@ -15,19 +15,27 @@ type TrimOptions struct {
 	LengthThreshold int  // Minimum length threshold after trimming
 	NoFivePrime     bool // Don't trim 5' end
 	TruncateN       bool // Truncate at first N
-	WindowSize      int  // Size of sliding window for quality assessment
-	Progress        bool // Show progress reporting
-	Recalibrate     bool // Recalibrate quality scores
+	// WindowSize is the size of the sliding window used for quality
+	// assessment. A value <= 0 selects upstream sickle's dynamic per-read
+	// window of int(0.1*read_length) (falling back to the full read length
+	// when that rounds to 0). A positive value is a Go-port extension that
+	// pins a fixed window for every read; upstream sickle has no -w flag.
+	WindowSize  int
+	Progress    bool // Show progress reporting
+	Recalibrate bool // Recalibrate quality scores
 }
 
-// DefaultTrimOptions returns default trimming options.
+// DefaultTrimOptions returns default trimming options. WindowSize defaults to 0
+// (dynamic), so the sliding window is computed per read as int(0.1*read_length),
+// matching upstream sickle exactly. Upstream has no -w flag and always uses this
+// dynamic window; the fixed-window override (WindowSize > 0) is a Go extension.
 func DefaultTrimOptions() TrimOptions {
 	return TrimOptions{
 		QualThreshold:   20,
 		LengthThreshold: 20,
 		NoFivePrime:     false,
 		TruncateN:       false,
-		WindowSize:      10,
+		WindowSize:      0,
 	}
 }
 
@@ -243,12 +251,44 @@ func qualityOffset(enc fastq.QualityEncoding) int {
 	return 33
 }
 
+// resolveWindowSize returns the sliding-window length to use for a read of
+// seqLen bases, given the user-requested optWindow.
+//
+// When optWindow <= 0 (the default), it reproduces upstream sickle's dynamic
+// per-read rule from reference_code/sickle/src/sliding.c exactly:
+//
+//	window_size = (int)(0.1 * seq.l);
+//	if (window_size == 0) window_size = seq.l;
+//
+// i.e. the window is one tenth of the read length truncated toward zero, and
+// falls back to the full read length when that truncates to 0 (reads < 10 bp).
+// Upstream never clamps this dynamic value, because int(0.1*L) can never exceed
+// L. Upstream has no -w flag, so this dynamic window is upstream's only mode.
+//
+// When optWindow > 0 (a Go-port extension), that fixed window is used for every
+// read, clamped down to seqLen so a window longer than the read still works.
+func resolveWindowSize(seqLen, optWindow int) int {
+	if optWindow > 0 {
+		if optWindow > seqLen {
+			return seqLen
+		}
+		return optWindow
+	}
+	w := int(0.1 * float64(seqLen))
+	if w == 0 {
+		w = seqLen
+	}
+	return w
+}
+
 // trimRecord applies upstream-sickle-faithful sliding-window quality trimming
 // to a FASTQ record. The algorithm mirrors reference_code/sickle/src/sliding.c:
 //
-//  1. Window size = int(0.1 * len(seq)); if that's 0 (read < 10 bp) use the
-//     full read length. Callers may override by setting opts.WindowSize > 0
-//     (this is a Go-port extension — upstream has no -w flag).
+//  1. Window size is resolved by resolveWindowSize: by default (opts.WindowSize
+//     <= 0) it is the per-read dynamic int(0.1*len(seq)), falling back to the
+//     full read length when that rounds to 0 (read < 10 bp). Callers may pin a
+//     fixed window by setting opts.WindowSize > 0 (a Go-port extension —
+//     upstream has no -w flag and always uses the dynamic window).
 //  2. Walk the window left-to-right. Per position:
 //     a. If no 5' cut yet and the window's *average* decoded quality is
 //     >= QualThreshold, set five_prime_cut to the first index within the
@@ -292,19 +332,8 @@ func trimRecord(record *fastq.Record, opts TrimOptions, qualityEnc fastq.Quality
 
 	offset := qualityOffset(qualityEnc)
 
-	// Resolve the sliding-window size. Upstream uses int(0.1*L), falling
-	// back to L when that would be 0. A positive opts.WindowSize overrides
-	// (Go-port extension).
-	windowSize := opts.WindowSize
-	if windowSize <= 0 {
-		windowSize = int(0.1 * float64(len(seq)))
-		if windowSize == 0 {
-			windowSize = len(seq)
-		}
-	}
-	if windowSize > len(seq) {
-		windowSize = len(seq)
-	}
+	// Resolve the sliding-window size for this read.
+	windowSize := resolveWindowSize(len(seq), opts.WindowSize)
 
 	threshold := opts.QualThreshold
 	threePrimeCut := len(seq)
