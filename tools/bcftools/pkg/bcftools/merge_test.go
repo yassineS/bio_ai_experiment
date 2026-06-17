@@ -238,3 +238,40 @@ func sameStringSliceTest(a, b []string) bool {
 	}
 	return true
 }
+
+// TestUnitMergeHeadersForceSamples checks the duplicate-sample resolution in
+// mergeMergeHeaders without invoking any binary: clashing names from input i
+// are prefixed with "<i+1>:", repeatedly if needed, mirroring upstream.
+func TestUnitMergeHeadersForceSamples(t *testing.T) {
+	mk := func(samples ...string) *vcf.Header {
+		return &vcf.Header{
+			MetaInfo: []string{"##fileformat=VCFv4.2"},
+			Samples:  samples,
+		}
+	}
+	// Without --force-samples a clash is an error.
+	if _, _, err := mergeMergeHeaders([]*vcf.Header{mk("A", "B"), mk("A", "C")}, false); err == nil {
+		t.Fatalf("expected duplicate-sample error without --force-samples")
+	}
+	// With --force-samples: A + A -> A, 2:A.
+	hdr, renames, err := mergeMergeHeaders([]*vcf.Header{mk("A", "B"), mk("A", "C")}, true)
+	if err != nil {
+		t.Fatalf("force-samples merge: %v", err)
+	}
+	want := []string{"A", "B", "2:A", "C"}
+	if strings.Join(hdr.Samples, ",") != strings.Join(want, ",") {
+		t.Errorf("samples=%v want %v", hdr.Samples, want)
+	}
+	if renames[1]["A"] != "2:A" {
+		t.Errorf("renames[1][A]=%q want 2:A", renames[1]["A"])
+	}
+	// Three-way clash: A + A + A -> A, 2:A, 3:A.
+	hdr3, _, err := mergeMergeHeaders([]*vcf.Header{mk("A"), mk("A"), mk("A")}, true)
+	if err != nil {
+		t.Fatalf("three-way force-samples merge: %v", err)
+	}
+	want3 := []string{"A", "2:A", "3:A"}
+	if strings.Join(hdr3.Samples, ",") != strings.Join(want3, ",") {
+		t.Errorf("three-way samples=%v want %v", hdr3.Samples, want3)
+	}
+}

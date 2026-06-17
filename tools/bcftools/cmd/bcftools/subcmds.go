@@ -45,6 +45,9 @@ Usage:
 Options:
   -l, --file-list PATH       File of input paths (one per line, # comments).
   -m, --merge MODE           Collapse rule (none|snps|indels|both|all|id, default both).
+      --force-samples        Resolve duplicate sample names across inputs by
+                             prefixing the clashing name with "<i>:" instead of
+                             erroring (e.g. A + A -> A, 2:A).
   -r, --regions LIST         Region list chr[:beg-end[,...]]; v1 post-filter only.
   -R, --regions-file PATH    BED-like regions file.
   -O, --output-type {v|z|u|b}  Output format.
@@ -68,11 +71,13 @@ func runMerge(args []string) int {
 		outputPath    string
 		compressLevel int
 		threads       int
+		forceSamples  bool
 		showHelp      bool
 		showVer       bool
 	)
 	cliflag.StringVar(fs, &fileList, "L", "file-list", "", "File of input paths")
 	cliflag.StringVar(fs, &mergeFlag, "m", "merge", "both", "Collapse rule")
+	fs.BoolVar(&forceSamples, "force-samples", false, "Resolve duplicate sample names")
 	cliflag.StringVar(fs, &regions, "r", "regions", "", "Region(s)")
 	cliflag.StringVar(fs, &regionsFile, "R", "regions-file", "", "Regions file")
 	cliflag.StringVar(fs, &outputType, "O", "output-type", "v", "Output type")
@@ -119,6 +124,7 @@ func runMerge(args []string) int {
 		CompressLevel: compressLevel,
 		Threads:       threads,
 		RegionsFile:   regionsFile,
+		ForceSamples:  forceSamples,
 	}
 	if regions != "" {
 		opts.Regions = bcftools.SplitCommaList(regions)

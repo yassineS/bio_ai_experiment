@@ -94,6 +94,11 @@ type MergeOptions struct {
 	// Threads is the -@/--threads value; >1 enables parallel BGZF compression
 	// of -O z and -O b output via bgzf.MultiWriter (see ViewOptions.Threads).
 	Threads int
+	// ForceSamples (--force-samples) resolves duplicate sample names across
+	// inputs by prefixing the clashing name from input i (0-based) with
+	// "<i+1>:" instead of erroring out, matching upstream vcfmerge.c
+	// merge_headers (e.g. A + A -> A, 2:A).
+	ForceSamples bool
 }
 
 // MergeFiles is the file-aware entry point. It opens each path through
@@ -140,9 +145,24 @@ func Merge(headers []*vcf.Header, groups [][]*vcf.Variant, out io.Writer, opts M
 		return 0, fmt.Errorf("bcftools merge: no inputs")
 	}
 
-	mergedHdr, err := mergeMergeHeaders(headers)
+	mergedHdr, renames, err := mergeMergeHeaders(headers, opts.ForceSamples)
 	if err != nil {
 		return 0, err
+	}
+	// Apply --force-samples renames to each input's per-record sample names so
+	// the bucket fan-out (which keys by sample name) lines up with the de-duped
+	// merged sample list.
+	for gi, rn := range renames {
+		if len(rn) == 0 {
+			continue
+		}
+		for _, v := range groups[gi] {
+			for si := range v.Samples {
+				if nn, ok := rn[v.Samples[si].Name]; ok {
+					v.Samples[si].Name = nn
+				}
+			}
+		}
 	}
 	order := contigOrder(mergedHdr)
 	regions, err := parseRegions(append(opts.Regions, []string{}...))
@@ -685,9 +705,9 @@ func remapGTByMap(gt string, alleleMap map[int]int) string {
 // mergeMergeHeaders returns a *vcf.Header that's the union across the inputs,
 // with the sample list being the *concatenation* of each input's samples in
 // input order. Conflicting structured definitions are an error.
-func mergeMergeHeaders(heads []*vcf.Header) (*vcf.Header, error) {
+func mergeMergeHeaders(heads []*vcf.Header, forceSamples bool) (*vcf.Header, []map[string]string, error) {
 	if len(heads) == 0 {
-		return nil, fmt.Errorf("bcftools merge: no headers")
+		return nil, nil, fmt.Errorf("bcftools merge: no headers")
 	}
 	out := &vcf.Header{}
 	seenLine := map[string]bool{}
@@ -716,7 +736,7 @@ func mergeMergeHeaders(heads []*vcf.Header) (*vcf.Header, error) {
 				dkey := key + "/" + structID
 				if prev, ok := definitions[dkey]; ok {
 					if prev != m {
-						return nil, fmt.Errorf("bcftools merge: conflicting %s ID %q definitions:\n  %s\n  %s", key, structID, prev, m)
+						return nil, nil, fmt.Errorf("bcftools merge: conflicting %s ID %q definitions:\n  %s\n  %s", key, structID, prev, m)
 					}
 					continue
 				}
@@ -732,16 +752,31 @@ func mergeMergeHeaders(heads []*vcf.Header) (*vcf.Header, error) {
 		}
 	}
 
-	// Concatenate sample lists; samples must be disjoint across inputs.
+	// Concatenate sample lists. Samples must normally be disjoint across
+	// inputs; with --force-samples a clashing name from input i (0-based) is
+	// prefixed with "<i+1>:" (repeatedly, if the prefixed form also clashes),
+	// mirroring upstream vcfmerge.c merge_headers. renames[i] maps an original
+	// sample name in input i to its de-duped output name (only entries that
+	// actually changed are recorded).
 	seenSample := map[string]bool{}
-	for _, h := range heads {
+	renames := make([]map[string]string, len(heads))
+	for i, h := range heads {
+		renames[i] = map[string]string{}
+		prefix := strconv.Itoa(i + 1)
 		for _, s := range h.Samples {
-			if seenSample[s] {
-				return nil, fmt.Errorf("bcftools merge: sample %q appears in more than one input", s)
+			name := s
+			if seenSample[name] {
+				if !forceSamples {
+					return nil, nil, fmt.Errorf("Duplicate sample names (%s), use --force-samples to proceed anyway", s)
+				}
+				for seenSample[name] {
+					name = prefix + ":" + name
+				}
+				renames[i][s] = name
 			}
-			seenSample[s] = true
-			out.Samples = append(out.Samples, s)
+			seenSample[name] = true
+			out.Samples = append(out.Samples, name)
 		}
 	}
-	return out, nil
+	return out, renames, nil
 }
