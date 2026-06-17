@@ -103,6 +103,13 @@ func Run(a, b io.Reader, w io.Writer, opts Options) (*Stats, error) {
 		return nil, fmt.Errorf("read B: %w", err)
 	}
 	stats := &Stats{BRecords: len(bAll)}
+	// Record each B record's original file-read order. bedtools' BedFile bins
+	// store records in read order, and BedFile::allHits emits within-bin records
+	// in that order, so the file index is the within-bin tie-break.
+	fileIdx := make(map[*bed.Record]int, len(bAll))
+	for i, r := range bAll {
+		fileIdx[r] = i
+	}
 	byChrom := make(map[string][]*bed.Record)
 	for _, r := range bAll {
 		byChrom[r.Chrom] = append(byChrom[r.Chrom], r)
@@ -127,8 +134,8 @@ func Run(a, b io.Reader, w io.Writer, opts Options) (*Stats, error) {
 		}
 		stats.APairs++
 
-		hits1 := findEndHits(pair.Chrom1, pair.Start1, pair.End1, pair.Strand1, trees, &opts)
-		hits2 := findEndHits(pair.Chrom2, pair.Start2, pair.End2, pair.Strand2, trees, &opts)
+		hits1 := findEndHits(pair.Chrom1, pair.Start1, pair.End1, pair.Strand1, trees, fileIdx, &opts)
+		hits2 := findEndHits(pair.Chrom2, pair.Start2, pair.End2, pair.Strand2, trees, fileIdx, &opts)
 
 		emitted, lines, err := emit(out, pair, hits1, hits2, opts.Type)
 		if err != nil {
@@ -154,7 +161,7 @@ func isValidType(t Type) bool {
 // findEndHits returns the B records overlapping (chrom, start, end) by at
 // least opts.MinFractionA of the end length. An unaligned end (chrom == "."
 // or any of start/end < 0) returns no hits.
-func findEndHits(chrom string, start, end int, strand string, trees map[string]*bed.IntervalTree, opts *Options) []*bed.Record {
+func findEndHits(chrom string, start, end int, strand string, trees map[string]*bed.IntervalTree, fileIdx map[*bed.Record]int, opts *Options) []*bed.Record {
 	if chrom == "" || chrom == "." || start < 0 || end < 0 || end <= start {
 		return nil
 	}
@@ -182,8 +189,52 @@ func findEndHits(chrom string, start, end int, strand string, trees map[string]*
 		}
 		out = append(out, c)
 	}
+	// Order the hits exactly as upstream bedtools' BedFile::allHits does: it
+	// scans the UCSC bin levels finest-first, then bin number within a level,
+	// then the records' original file-read order within a bin — so for two
+	// overlapping B records the one in the FINER bin (the shorter span) is
+	// reported first, regardless of start, and two records in the SAME bin keep
+	// their file order. The interval tree returns candidates in a different
+	// order, so re-sort by (bin level, bin-within-level, file index).
+	sort.SliceStable(out, func(i, j int) bool {
+		li, bi := binLevelIdx(out[i].ChromStart, out[i].ChromEnd)
+		lj, bj := binLevelIdx(out[j].ChromStart, out[j].ChromEnd)
+		switch {
+		case li != lj:
+			return li < lj
+		case bi != bj:
+			return bi < bj
+		default:
+			return fileIdx[out[i]] < fileIdx[out[j]]
+		}
+	})
 	return out
 }
+
+// binLevelIdx returns the UCSC bin LEVEL (0 = finest) and the bin index within
+// that level for an interval, mirroring bedtools' getBin (bedFile.h): the end
+// is made inclusive (--end), coordinates are shifted right by 14 to reach the
+// finest level and by 3 per coarser level, and the first level at which the
+// shifted start and end coincide is the interval's level. allHits visits the
+// levels finest-first, so a smaller-level interval is reported first.
+func binLevelIdx(start, end int) (level, idx int) {
+	s := start >> binFirstShift
+	e := (end - 1) >> binFirstShift
+	for i := 0; i < binLevels; i++ {
+		if s == e {
+			return i, s
+		}
+		s >>= binNextShift
+		e >>= binNextShift
+	}
+	return binLevels - 1, s
+}
+
+const (
+	binFirstShift = 14
+	binNextShift  = 3
+	binLevels     = 8
+)
 
 func strandOK(aStrand, bStrand string, opts *Options) bool {
 	if opts.IgnoreStrand {

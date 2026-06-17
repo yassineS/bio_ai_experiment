@@ -554,16 +554,12 @@ func bedMultiFileTools() []Entry {
 		},
 	)
 
-	// --- pairtobed / pairtopair: run over the {bedpe} fixture. pairtopair is
-	//     byte-exact; pairtobed returns the same 26054-record SET but, where a
-	//     pair overlaps the same B interval through both ends, emits the hits in
-	//     a slightly different order than upstream's chromsweep (a small
-	//     tie-break residual, like the other sweep-order cases). ---
+	// --- pairtobed / pairtopair: run over the {bedpe} fixture, both byte-exact.
+	//     pairtobed emits per-end B hits in upstream's BedFile::allHits order:
+	//     UCSC bin levels finest-first, then bin number within a level, then the
+	//     B record's original file order within a bin. ---
 	out = append(out,
-		btSkip("bedpairtobed", "pairtobed", "hit_order", InputBED,
-			"bedtools pairtobed over the BEDPE fixture returns the same 26054-record SET as upstream but emits a few multi-hit pairs in a "+
-				"different order (upstream's chromsweep hit order vs ours). Small tie-break residual; pairtopair is byte-exact.",
-			"-a", "{bedpe}", "-b", "{bed}"),
+		bt("bedpairtobed", "pairtobed", "base", InputBED, "-a", "{bedpe}", "-b", "{bed}"),
 		bt("bedpairtopair", "pairtopair", "base", InputBED, "-a", "{bedpe}", "-b", "{bedpe}"),
 	)
 
