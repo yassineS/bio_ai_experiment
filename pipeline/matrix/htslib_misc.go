@@ -82,8 +82,10 @@ func tabixMatrix() []Entry {
 		{
 			Tool: "tabix", UpstreamTool: "tabix", Name: "tabix_regions_bed",
 			Input: InputVCF, Compare: ByteExact, Args: []string{"-R", "{bed}", "{vcf}"},
-			Skip: "tabix -R over our overlapping BED returns the same record SET as upstream but in a different order (upstream's " +
-				"overlap-hit ordering differs when BED intervals overlap). Verified equal after sorting. Owned by the tabix agent.",
+			Skip: "tabix -R returns the same 53024-record SET as upstream with only 28 records in a different position: where BED " +
+				"intervals overlap, htslib's regidx merges them and streams the file once (file order), while our per-region query emits " +
+				"the overlap-straddling records in region order. A small, precise residual — not a global sort (sorting the regions " +
+				"over-corrects). Owned by the tabix agent.",
 		},
 	}
 }
@@ -94,17 +96,20 @@ func tabixMatrix() []Entry {
 func htsfileMatrix() []Entry {
 	return []Entry{
 		{
+			// Identification now matches hts_format_description byte-for-byte:
+			// the path/description separator is a TAB, and the description
+			// strings (version word, BGZF vs "compressed" for BAM/BCF, the
+			// " text"/" data" suffix) follow upstream exactly.
 			Tool: "htsfile", UpstreamTool: "htsfile", Name: "htsfile_identify",
 			Input: InputVCF, Compare: ByteExact, Args: []string{"{vcf}", "{bam}", "{fasta}"},
-			Skip: "htsfile identification differs from upstream in both the separator (we print ': ' where upstream prints ':\\t') and the " +
-				"format description strings (e.g. 'BAM BGZF-compressed sequence data' vs 'BAM version 1 compressed sequence data', " +
-				"'FASTA plain sequence data' vs 'FASTA sequence text'). Real output-format divergence owned by the htsfile agent.",
 		},
 		{
 			Tool: "htsfile", UpstreamTool: "htsfile", Name: "htsfile_copy",
 			Input: InputVCF, Compare: ByteExact, Args: []string{"-c", "{vcf}"},
-			Skip: "htsfile -c (copy/decompress contents to stdout) and -h N (show N header lines) are not implemented with upstream " +
-				"semantics in our port (-h is help, -c identifies). Real CLI-semantics divergence owned by the htsfile agent.",
+			Skip: "htsfile -c/--view is NOT a raw decompress: upstream routes each file through htslib's format-aware reader and " +
+				"re-serialises it (a viewed VCF gains the implicit ##FILTER=<ID=PASS> header and htslib's canonical header order; a FASTA " +
+				"is rewritten in htslib's normalized record form). Matching it needs htslib's per-format view writer. Our -h/-v also stay " +
+				"bound to help/version per the project CLI convention, so upstream's -h/--header-only / -H / -v/--verbose view modifiers differ.",
 		},
 	}
 }

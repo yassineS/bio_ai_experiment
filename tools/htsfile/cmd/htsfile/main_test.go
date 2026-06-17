@@ -41,8 +41,8 @@ func TestCLI_IdentifiesMultipleFiles(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		vcfPath + ": VCF version 4.2 plain variant calling data",
-		faPath + ": FASTA plain sequence data",
+		vcfPath + ":\tVCF version 4.2 variant calling text",
+		faPath + ":\tFASTA sequence text",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)

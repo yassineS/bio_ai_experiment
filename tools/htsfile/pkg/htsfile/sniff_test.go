@@ -18,7 +18,7 @@ func TestClassifyPayload(t *testing.T) {
 		want    Payload
 		version string
 	}{
-		{"bam-magic", []byte("BAM\x01... rest"), PayloadBAM, ""},
+		{"bam-magic", []byte("BAM\x01... rest"), PayloadBAM, "1"},
 		{"bcf-2.2", []byte("BCF\x02\x02 ... rest"), PayloadBCF, "2.2"},
 		{"bcf-2.1", []byte("BCF\x02\x01 ... rest"), PayloadBCF, "2.1"},
 		{"cram-3.0", []byte("CRAM\x03\x00 ..."), PayloadCRAM, "3.0"},
@@ -114,8 +114,8 @@ func TestDescribe(t *testing.T) {
 		want string
 	}{
 		{
-			Format{Compression: CompressionBGZF, Payload: PayloadBAM},
-			"BAM BGZF-compressed sequence data",
+			Format{Compression: CompressionBGZF, Payload: PayloadBAM, Version: "1"},
+			"BAM version 1 compressed sequence data",
 		},
 		{
 			Format{Compression: CompressionGzip, Payload: PayloadVCF, Version: "4.2"},
@@ -123,11 +123,11 @@ func TestDescribe(t *testing.T) {
 		},
 		{
 			Format{Compression: CompressionPlain, Payload: PayloadFASTA},
-			"FASTA plain sequence data",
+			"FASTA sequence text",
 		},
 		{
 			Format{Compression: CompressionPlain, Payload: PayloadBED},
-			"BED plain genomic interval data",
+			"BED genomic region text",
 		},
 	}
 	for _, tt := range cases {
