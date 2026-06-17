@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yassineS/bio_ai_experiment/pipeline/internal/upstream"
 	"github.com/yassineS/bio_ai_experiment/pipeline/matrix"
 )
 
@@ -241,11 +242,22 @@ func trunc(s string) string {
 // and mosdepth matrices verify multi-file output.
 func CompareOutputFiles(ourPrefix, upPrefix string, suffixes []string, mode matrix.CompareMode) CompareResult {
 	var maxDev float64
+	// BAMDecoded output files (e.g. the per-read-group BAMs samtools split
+	// writes) are decoded through the upstream samtools so only their records
+	// are compared, bypassing the BGZF framing difference.
+	var samBin string
+	if mode == matrix.BAMDecoded {
+		b, err := upstream.Binary("samtools")
+		if err != nil {
+			return CompareResult{Equal: false, Detail: "BAM decode needs the upstream samtools binary: " + err.Error()}
+		}
+		samBin = b
+	}
 	for _, sfx := range suffixes {
 		ourPath := ourPrefix + sfx
 		upPath := upPrefix + sfx
-		ourBytes, ourErr := readMaybeGzip(ourPath)
-		upBytes, upErr := readMaybeGzip(upPath)
+		ourBytes, ourErr := readOutputFile(ourPath, mode, samBin)
+		upBytes, upErr := readOutputFile(upPath, mode, samBin)
 		// Presence mismatch is a real divergence (one side wrote a file the
 		// other did not).
 		if (ourErr == nil) != (upErr == nil) {
@@ -271,6 +283,21 @@ func CompareOutputFiles(ourPrefix, upPrefix string, suffixes []string, mode matr
 		}
 	}
 	return CompareResult{Equal: true, MaxDeviation: maxDev}
+}
+
+// readOutputFile reads one named output file for comparison. In BAMDecoded mode
+// it pipes the file's bytes through `samtools view -h` so two BAMs with
+// different BGZF framing are compared by their decoded records (provenance is
+// stripped by CompareByteExact); otherwise it falls back to readMaybeGzip.
+func readOutputFile(path string, mode matrix.CompareMode, samBin string) ([]byte, error) {
+	if mode != matrix.BAMDecoded {
+		return readMaybeGzip(path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return decodeBAM(samBin, raw)
 }
 
 // readMaybeGzip reads a file, transparently decompressing it when the path ends
