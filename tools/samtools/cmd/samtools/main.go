@@ -789,8 +789,8 @@ Options:
   -A, --all-trans           Emit every position of every reference.
   -r, --region chr[:S-E]    Limit to region (chr name only or range).
   -b, --bed FILE            Limit to BED regions.
-  -q, --min-mapq N          Skip reads with MAPQ below N (default 0).
-  -Q, --min-baseq N         Skip bases with quality below N (default 0).
+  -q, --min-BQ N            Skip bases with base quality below N (default 0).
+  -Q, --min-MQ N            Skip reads with mapping quality below N (default 0).
   -l, --min-readlen N       Skip reads shorter than N query bases (default 0).
   -f, --include-flags N     Require ALL these flag bits set (default 0).
   -F, --exclude-flags N     Drop reads with ANY of these flag bits set (default 0x4).
@@ -833,8 +833,16 @@ func runDepth(args []string) int {
 	cliflag.BoolVar(fs, &allTrans, "A", "all-trans", false, "Emit every reference position")
 	cliflag.Var(fs, &regions, "r", "region", "")
 	cliflag.StringVar(fs, &bedPath, "b", "bed", "", "BED of regions")
-	cliflag.IntVar(fs, &minMAPQ, "q", "min-mapq", 0, "Min MAPQ")
-	cliflag.IntVar(fs, &minBaseQ, "Q", "min-baseq", 0, "Min BaseQ")
+	// Upstream depth maps -q/--min-BQ to the BASE-quality threshold and
+	// -Q/--min-MQ to the MAPPING-quality threshold (bam2depth.c: case 'q' ->
+	// opt.min_qual, the per-base floor; case 'Q' -> opt.min_mqual, the read
+	// MAPQ floor). An earlier port had these reversed. Register the upstream
+	// long spellings (--min-BQ / --min-MQ) plus the legacy --min-baseq /
+	// --min-mapq aliases so older command lines still parse to the right knob.
+	cliflag.IntVar(fs, &minBaseQ, "q", "min-BQ", 0, "Min base quality")
+	cliflag.IntVar(fs, &minMAPQ, "Q", "min-MQ", 0, "Min MAPQ")
+	cliflag.IntVar(fs, &minBaseQ, "", "min-baseq", 0, "Min base quality (alias of --min-BQ)")
+	cliflag.IntVar(fs, &minMAPQ, "", "min-mapq", 0, "Min MAPQ (alias of --min-MQ)")
 	cliflag.IntVar(fs, &minReadL, "l", "min-readlen", 0, "Min read length")
 	cliflag.IntVar(fs, &incFlags, "f", "include-flags", 0, "Required flags")
 	cliflag.IntVar(fs, &excFlags, "F", "exclude-flags", int(samtools.DefaultDepthExcludeFlags), "Excluded flags")

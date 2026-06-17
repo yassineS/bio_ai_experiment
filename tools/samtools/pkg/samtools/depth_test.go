@@ -185,7 +185,7 @@ func TestDepthAllTrans(t *testing.T) {
 }
 
 func TestDepthMinMAPQ(t *testing.T) {
-	// r6 has MAPQ=0; filter it out with `-q 1`.
+	// r6 has MAPQ=0; filter it out with `-Q 1` (the mapping-quality knob).
 	got := runDepth(t, []string{depthSAM}, DepthOptions{
 		ExcludeFlags: 0x4,
 		MinMAPQ:      1,
@@ -202,7 +202,7 @@ func TestDepthMinMAPQ(t *testing.T) {
 
 func TestDepthMinBaseQ(t *testing.T) {
 	// r8 has Phred 0 quality everywhere (ASCII '!') — should be entirely
-	// filtered out with `-Q 1`.
+	// filtered out with `-q 1` (the base-quality knob).
 	got := runDepth(t, []string{depthSAM}, DepthOptions{
 		ExcludeFlags: 0x4,
 		MinBaseQ:     1,

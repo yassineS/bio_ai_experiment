@@ -34,9 +34,11 @@ type DepthOptions struct {
 	// BedPath, when non-empty, restricts emitted positions to the union of
 	// these BED intervals (CLI `-b`).
 	BedPath string
-	// MinMAPQ skips reads with MAPQ < this value (CLI `-q`).
+	// MinMAPQ skips reads with MAPQ < this value. Upstream exposes this as
+	// `-Q`/`--min-MQ` (bam2depth.c opt.min_mqual).
 	MinMAPQ uint8
-	// MinBaseQ skips bases with quality < this value (CLI `-Q`).
+	// MinBaseQ skips bases with quality < this value. Upstream exposes this
+	// as `-q`/`--min-BQ` (bam2depth.c opt.min_qual).
 	MinBaseQ uint8
 	// MinReadLen skips reads shorter than this (after CIGAR query-length)
 	// (CLI `-l`).
