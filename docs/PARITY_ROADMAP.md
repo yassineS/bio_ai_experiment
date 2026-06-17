@@ -4869,11 +4869,25 @@ no committed goldens).
 ### `mosdepth`
 
 **Status:** 1 / 1 command, all flags. **`-d/--d4`, `-a/--fragment-mode`,
-`-q/--quantize`, `-t/--threads`, `-m/--use-median`, and CRAM input are all
-DONE** (byte-identical to the upstream v0.3.14 binary). No flags remain
-unimplemented.
+`-q/--quantize`, `-t/--threads`, `-m/--use-median`, CRAM input, and full
+region (`--by`) output are all DONE** (byte-identical to the upstream v0.3.14
+binary). No flags remain unimplemented.
 
 Done:
+
+- **Region (`--by`) mode — all output files byte-identical.** In `--by` mode
+  we now emit `<prefix>.mosdepth.region.dist.txt` (cumulative region
+  distribution; per-base for a BED `--by`, one rounded-mean entry per window
+  for an integer `--by`), the `<chrom>_region` + `total_region`
+  `summary.txt` rows (per-base aggregate over region-covered bases, in
+  upstream's row order), and `per-base.bed.gz` (upstream keeps per-base in
+  `--by` mode; suppressed only by `-n`). Zero-coverage references are omitted
+  from `summary.txt` / `*.dist.txt` (upstream's BAM-index gate) but retained
+  in `per-base.bed.gz` / `regions.bed.gz`; the thresholds region name for
+  unnamed/window regions is the literal `unknown`. Validated byte-for-byte
+  (BED + fixed window, every produced file) by `TestUpstream_By_AllFiles_Parity`,
+  with binary-free unit coverage of the aggregation/cumulation. See
+  `UPSTREAM_BUGS.md#mosdepth-region-mode`.
 
 - **CRAM input** — `.cram` inputs are auto-detected (by the `CRAM` file
   magic) and decoded through `pkg/htsgo/alnio.NewReaderWithReference`, which

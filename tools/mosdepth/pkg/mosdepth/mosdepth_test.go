@@ -210,8 +210,10 @@ func TestRunRegionsBED(t *testing.T) {
 	if err := Run(bytes.NewReader(bam), opts); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if _, err := os.Stat(prefix + ".per-base.bed.gz"); !os.IsNotExist(err) {
-		t.Errorf("per-base.bed.gz should NOT exist when --by is set (err=%v)", err)
+	// Upstream mosdepth still emits per-base.bed.gz in --by mode (it is
+	// suppressed only by -n/--no-per-base), so the file must exist here.
+	if _, err := os.Stat(prefix + ".per-base.bed.gz"); err != nil {
+		t.Errorf("per-base.bed.gz should exist when --by is set (err=%v)", err)
 	}
 	lines := readGz(t, prefix+".regions.bed.gz")
 	// ROI1 = chr1:9..16, depths per pos: 1,1,2,2,2,1,1 → sum=10, mean=10/7≈1.43.
@@ -278,6 +280,67 @@ func TestRunRegionsWindow(t *testing.T) {
 	}
 	if len(want) > 0 {
 		t.Errorf("missing window rows: %v\ngot:\n%s", want, strings.Join(lines, "\n"))
+	}
+}
+
+// TestUnitRegionSummaryAndDist drives Run end-to-end (no upstream binary) over
+// a synthetic single-chrom window-mode layout and asserts the *_region summary
+// rows and the region.dist.txt cumulation, including upstream's rounding of the
+// window mean for the region distribution bucket.
+func TestUnitRegionSummaryAndDist(t *testing.T) {
+	dir := t.TempDir()
+	refs := []sam.Reference{{Name: "chr1", Length: 30}}
+	recs := []*sam.Record{
+		{QName: "r1", RName: "chr1", Pos: 1, Cigar: mustParseCigar(t, "10M"), MapQ: 60},
+		{QName: "r2", RName: "chr1", Pos: 5, Cigar: mustParseCigar(t, "10M"), MapQ: 60},
+	}
+	bam := makeBAM(t, refs, recs)
+	prefix := filepath.Join(dir, "out")
+	if err := Run(bytes.NewReader(bam), Options{Prefix: prefix, ByWindow: 10, ExcludeFlag: DefaultExcludeFlag}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Per-base depths: 0..3 depth 1, 4..9 depth 2, 10..13 depth 1, 14..29 0.
+	// Windows tile the whole chrom, so the *_region aggregate equals the whole
+	// chromosome: length 30, bases = 4*1 + 6*2 + 4*1 = 20, mean 0.67, min 0,
+	// max 2.
+	summary := readLines(t, prefix+".mosdepth.summary.txt")
+	wantSummary := []string{
+		"chrom\tlength\tbases\tmean\tmin\tmax",
+		"chr1\t30\t20\t0.67\t0\t2",
+		"chr1_region\t30\t20\t0.67\t0\t2",
+		"total\t30\t20\t0.67\t0\t2",
+		"total_region\t30\t20\t0.67\t0\t2",
+	}
+	if len(summary) != len(wantSummary) {
+		t.Fatalf("summary lines: got %d, want %d:\n%s", len(summary), len(wantSummary), strings.Join(summary, "\n"))
+	}
+	for i := range wantSummary {
+		if summary[i] != wantSummary[i] {
+			t.Errorf("summary line %d:\n got %q\nwant %q", i, summary[i], wantSummary[i])
+		}
+	}
+
+	// Window means: [0,10)=1.60, [10,20)=0.40, [20,30)=0.00. The region
+	// distribution counts one entry per window at the ROUNDED mean:
+	// 1.60->2, 0.40->0, 0.00->0. So hist[0]=2, hist[2]=1 (total 3).
+	//   >=2 -> 1/3 = 0.33; >=1 -> 1/3 = 0.33; >=0 -> 3/3 = 1.00.
+	dist := readLines(t, prefix+".mosdepth.region.dist.txt")
+	wantDist := []string{
+		"chr1\t2\t0.33",
+		"chr1\t1\t0.33",
+		"chr1\t0\t1.00",
+		"total\t2\t0.33",
+		"total\t1\t0.33",
+		"total\t0\t1.00",
+	}
+	if len(dist) != len(wantDist) {
+		t.Fatalf("region.dist lines: got %d, want %d:\n%s", len(dist), len(wantDist), strings.Join(dist, "\n"))
+	}
+	for i := range wantDist {
+		if dist[i] != wantDist[i] {
+			t.Errorf("region.dist line %d:\n got %q\nwant %q", i, dist[i], wantDist[i])
+		}
 	}
 }
 

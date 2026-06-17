@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -221,16 +222,20 @@ func runWithReader(rd sam.Reader, opts Options) error {
 		return err
 	}
 
-	// Per-base output is emitted only when --by isn't set (matches
-	// upstream). When --by IS set, upstream skips per-base unless
-	// explicitly requested; we follow the same rule. When --d4 is set the
-	// per-base track is written to <prefix>.per-base.d4 in the dense D4
+	// Per-base output is emitted by default and suppressed only by
+	// -n/--no-per-base — exactly as upstream mosdepth does. In particular it is
+	// still written in region (--by) mode: upstream emits per-base.bed.gz
+	// alongside regions.bed.gz unless --no-per-base is given. When --d4 is set
+	// the per-base track is written to <prefix>.per-base.d4 in the dense D4
 	// binary format instead of the bgzipped BED.
-	wantPerBase := !opts.NoPerBase && len(perChromRegions) == 0
+	wantPerBase := !opts.NoPerBase
 
 	var perBaseW *bedGzWriter
 	var d4W *d4Writer
-	if wantPerBase && opts.D4Output {
+	// The D4 per-base track is only produced in non-region mode (upstream's
+	// --d4 is incompatible with --by); in region mode the per-base output
+	// falls through to the bgzipped BED branch below, matching upstream.
+	if wantPerBase && opts.D4Output && len(perChromRegions) == 0 {
 		chroms := make([]d4Chrom, 0, len(hdr.Refs))
 		for _, r := range hdr.Refs {
 			if opts.Chrom != "" && r.Name != opts.Chrom {
@@ -303,49 +308,68 @@ func runWithReader(rd sam.Reader, opts Options) error {
 	// drop the accum.
 	perChromHist := map[string][]int64{}
 	summaryRows := make([]summaryRow, 0, len(hdr.Refs))
+	// regionMode is true when --by selected any regions; it gates the
+	// region-distribution file and the *_region summary rows.
+	regionMode := len(perChromRegions) > 0
+	// perChromRegionHist[chrom] is the region depth histogram for a single
+	// chromosome (BED: per-base depths inside regions; fixed window: one
+	// count per region at int(region-mean)). regionSummaryRows holds the
+	// per-chrom *_region summary aggregate, keyed by chrom name.
+	perChromRegionHist := map[string][]int64{}
+	regionSummaryRows := map[string]summaryRow{}
 
 	// Pull records once, grouping by chrom. We don't trust that the BAM
 	// is sorted — buffering per-chrom slices keeps the algorithm correct
 	// even on a name-sorted input. Memory is O(records that match
 	// filters) which is acceptable for the typical mosdepth workload.
-	byChrom, err := groupRecords(rd, opts)
+	byChrom, presentChroms, err := groupRecords(rd, opts)
 	if err != nil {
 		return err
 	}
 
-	chromOrder := make([]string, 0, len(hdr.Refs))
-	for _, r := range hdr.Refs {
-		if opts.Chrom != "" && r.Name != opts.Chrom {
-			continue
-		}
-		chromOrder = append(chromOrder, r.Name)
-	}
+	// summaryChroms is the subset of references that get a summary row and a
+	// distribution entry. Upstream mosdepth resolves each target's tid from
+	// the BAM index and skips references with no alignments before
+	// write_summary / write_distribution, so zero-coverage references are
+	// omitted from summary.txt, global.dist.txt and region.dist.txt — but they
+	// STILL appear (as depth-0 per-base runs / zero-mean windows) in
+	// per-base.bed.gz and regions.bed.gz, which iterate every reference. We
+	// therefore keep two orderings: the full @SQ order for emission (the main
+	// loop below) and summaryChroms for the text summary/distribution files.
+	// See docs/UPSTREAM_BUGS.md ("mosdepth — zero-coverage chromosomes ...").
+	summaryChroms := make([]string, 0, len(hdr.Refs))
 
 	for _, r := range hdr.Refs {
 		if opts.Chrom != "" && r.Name != opts.Chrom {
 			continue
+		}
+		hasReads := presentChroms[r.Name]
+		if hasReads {
+			summaryChroms = append(summaryChroms, r.Name)
 		}
 		recs := byChrom[r.Name]
 		accum := newCovAccum(int(r.Length))
 		accum.addRecords(recs, opts.FastMode, opts.FragmentMode)
-		// Per-base emission: collapse runs of equal depth.
-		hist := accumHistogram(accum)
-		perChromHist[r.Name] = hist
 
-		// Compute mean/min/max across the whole chromosome — also used in
-		// the summary file.
-		sum, _, minD, maxD := accum.regionStats(0, int(r.Length), nil, nil)
-		row := summaryRow{
-			chrom:  r.Name,
-			length: int64(r.Length),
-			bases:  sum,
-			minD:   minD,
-			maxD:   maxD,
+		// The global distribution and summary row are recorded only for
+		// references with reads (the tid gate above); per-base/regions
+		// emission below runs for every reference regardless.
+		if hasReads {
+			perChromHist[r.Name] = accumHistogram(accum)
+			// Compute mean/min/max across the whole chromosome for the summary.
+			sum, _, minD, maxD := accum.regionStats(0, int(r.Length), nil, nil)
+			row := summaryRow{
+				chrom:  r.Name,
+				length: int64(r.Length),
+				bases:  sum,
+				minD:   minD,
+				maxD:   maxD,
+			}
+			if r.Length > 0 {
+				row.mean = float64(sum) / float64(r.Length)
+			}
+			summaryRows = append(summaryRows, row)
 		}
-		if r.Length > 0 {
-			row.mean = float64(sum) / float64(r.Length)
-		}
-		summaryRows = append(summaryRows, row)
 
 		if perBaseW != nil {
 			if err := emitPerBase(perBaseW, r.Name, accum); err != nil {
@@ -365,19 +389,69 @@ func runWithReader(rd sam.Reader, opts Options) error {
 
 		if regionsW != nil {
 			ivs := perChromRegions[r.Name]
+			// regHist accumulates this chromosome's region distribution and
+			// regAgg its *_region summary aggregate (per-base over the
+			// region-covered bases), both fed during the same regionStats sweep
+			// already done for the regions.bed.gz depth column.
+			var regHist []int64
+			var regAgg summaryRow
+			regAggInit := false
+			// byWindow mirrors upstream's `region.isdigit` test: for a fixed
+			// integer window the region distribution counts one entry per
+			// window at int(region-mean); for a BED file it counts per-base
+			// depths inside each region.
+			byWindow := opts.ByWindow > 0
 			for _, iv := range ivs {
-				// When --use-median is set, build the depth histogram in the
-				// same regionStats sweep that computes the thresholds, so the
-				// median and mean share a single pass over the event list and
-				// an identical per-base depth profile (see medianHist).
+				// regionStats clamps [beg,end) to the reference and reports the
+				// per-base sum/min/max over the clamped span; the emit callback
+				// receives one constant-depth run at a time. We always attach a
+				// callback so we can build the *_region summary (always per-base)
+				// and, for BED mode, the region distribution (also per-base).
+				// --use-median additionally folds the runs into a median
+				// histogram for the regions depth column.
 				var mh medianHist
-				var emit func(start, end int, depth int32)
-				if opts.UseMedian {
-					emit = mh.addRun
+				emit := func(start, end int, depth int32) {
+					if opts.UseMedian {
+						mh.addRun(start, end, depth)
+					}
+					// *_region summary aggregate: per-base depths over the
+					// region span (sum, min, max). length is tracked from the
+					// clamped span below.
+					n := int64(end - start)
+					regAgg.bases += int64(depth) * n
+					if !regAggInit {
+						regAgg.minD = depth
+						regAgg.maxD = depth
+						regAggInit = true
+					} else {
+						if depth < regAgg.minD {
+							regAgg.minD = depth
+						}
+						if depth > regAgg.maxD {
+							regAgg.maxD = depth
+						}
+					}
+					if !byWindow {
+						regHist = histInc(regHist, depth, n)
+					}
 				}
-				bsum, perTh, mn, mx := accum.regionStats(iv.beg, iv.end, opts.Thresholds, emit)
-				_ = mn
-				_ = mx
+				// Clamp the region span the same way regionStats and upstream's
+				// newDepthStat(arr[min(start,L)..<min(L,stop)]) do, so the
+				// *_region length counts only the in-bounds bases.
+				cb, ce := iv.beg, iv.end
+				if cb < 0 {
+					cb = 0
+				}
+				if r.Length > 0 && ce > int(r.Length) {
+					ce = int(r.Length)
+				}
+				if cb > int(r.Length) {
+					cb = int(r.Length)
+				}
+				if ce > cb {
+					regAgg.length += int64(ce - cb)
+				}
+				bsum, perTh, _, _ := accum.regionStats(iv.beg, iv.end, opts.Thresholds, emit)
 				width := iv.end - iv.beg
 				var stat float64
 				if opts.UseMedian {
@@ -387,6 +461,16 @@ func runWithReader(rd sam.Reader, opts Options) error {
 					stat = mh.median()
 				} else if width > 0 {
 					stat = float64(bsum) / float64(width)
+				}
+				if byWindow {
+					// Fixed-window distribution: one count per region at the
+					// ROUNDED region mean, matching upstream's
+					// chrom_region_distribution[min(me.toInt, ...)] += 1. Nim's
+					// toInt rounds to the nearest integer (ties away from zero),
+					// not truncates, so a window whose mean is 0.6 lands in the
+					// depth-1 bucket. Region means are non-negative here, so
+					// math.Round reproduces toInt exactly.
+					regHist = histInc(regHist, int32(math.Round(stat)), 1)
 				}
 				extras := []string{}
 				if iv.name != "" {
@@ -398,10 +482,14 @@ func runWithReader(rd sam.Reader, opts Options) error {
 				}
 				if thresholdsW != nil {
 					th := []string{}
+					// Upstream mosdepth labels each thresholds row with the BED
+					// region name when present, and the literal "unknown"
+					// otherwise (including every fixed-window region) — not a
+					// "chrom:start-end" synthesised name.
 					if iv.name != "" {
 						th = append(th, iv.name)
 					} else {
-						th = append(th, fmt.Sprintf("%s:%d-%d", r.Name, iv.beg, iv.end))
+						th = append(th, "unknown")
 					}
 					for i := range opts.Thresholds {
 						th = append(th, strconv.FormatInt(perTh[i], 10))
@@ -411,6 +499,15 @@ func runWithReader(rd sam.Reader, opts Options) error {
 					}
 				}
 			}
+			// Finalise this chromosome's *_region summary aggregate (mean over
+			// the region-covered length) and stash its region distribution for
+			// the region.dist.txt + total_region rows below.
+			regAgg.chrom = r.Name + "_region"
+			if regAgg.length > 0 {
+				regAgg.mean = float64(regAgg.bases) / float64(regAgg.length)
+			}
+			regionSummaryRows[r.Name] = regAgg
+			perChromRegionHist[r.Name] = regHist
 		}
 		// Free the accumulator's events explicitly to keep memory bounded.
 		accum.events = nil
@@ -456,14 +553,51 @@ func runWithReader(rd sam.Reader, opts Options) error {
 		}
 	}
 
-	if err := writeDistribution(opts.Prefix+".mosdepth.global.dist.txt", perChromHist, chromOrder); err != nil {
+	if err := writeDistribution(opts.Prefix+".mosdepth.global.dist.txt", perChromHist, summaryChroms); err != nil {
 		return err
 	}
-	if err := writeSummary(opts.Prefix+".mosdepth.summary.txt", summaryRows); err != nil {
+	// In region mode upstream also writes the cumulative region distribution
+	// (computed over the region depths, per the BED/window rule applied above)
+	// to <prefix>.mosdepth.region.dist.txt, in the same format as the global
+	// distribution and over the same read-bearing references.
+	if regionMode {
+		if err := writeDistribution(opts.Prefix+".mosdepth.region.dist.txt", perChromRegionHist, summaryChroms); err != nil {
+			return err
+		}
+	}
+	// Build the ordered *_region summary rows (one per read-bearing chrom, in
+	// summaryChroms order) so writeSummary can interleave each chrom's region
+	// row immediately after its non-region row and emit total_region after
+	// total, matching upstream.
+	var regionRows []summaryRow
+	if regionMode {
+		regionRows = make([]summaryRow, 0, len(summaryChroms))
+		for _, name := range summaryChroms {
+			regionRows = append(regionRows, regionSummaryRows[name])
+		}
+	}
+	if err := writeSummary(opts.Prefix+".mosdepth.summary.txt", summaryRows, regionRows); err != nil {
 		return err
 	}
 	_ = regionNames // silence linter; used implicitly via perChromRegions ordering above.
 	return nil
+}
+
+// histInc adds n to hist[depth], growing hist as needed, and returns the
+// (possibly reallocated) slice. Negative depths are dropped, matching
+// upstream mosdepth's `if v < 0: continue` in its distribution accumulator.
+func histInc(hist []int64, depth int32, n int64) []int64 {
+	if depth < 0 {
+		return hist
+	}
+	d := int(depth)
+	if d >= len(hist) {
+		grown := make([]int64, d+1)
+		copy(grown, hist)
+		hist = grown
+	}
+	hist[d] += n
+	return hist
 }
 
 // region is a single (chrom, beg0, end0[, name]) interval.
@@ -541,23 +675,42 @@ func mapqFastPath(opts Options) bool { return opts.MinMAPQ == 0 && !disableMapqF
 // configured read-level filters. Reads with unknown / "*" RNAME are
 // dropped silently — they cannot contribute to depth on any reference.
 //
+// It also returns a `present` set of reference names that carried at least one
+// mapped record in the input, regardless of whether that record survived the
+// MAPQ / flag / read-group / fragment-length filters. This mirrors upstream
+// mosdepth's BAM-index gate: a reference gets a summary row and distribution
+// entry iff the index has data for it (≥1 alignment placed on it), even when
+// every read is later filtered out — so e.g. `-R MISSING` still emits a
+// zero-depth row for a chromosome that had reads. (A --chrom restriction is
+// applied by keepRecordCommon, so present only ever contains the selected
+// chrom in that mode.)
+//
 // When no MAPQ filter is in effect (opts.MinMAPQ == 0, see mapqFastPath) the
 // per-read keep predicate is bound once to keepRecordNoMapq, which omits the
 // MAPQ comparison from the hot loop. This mirrors upstream mosdepth's
 // `--mapq 0` fast path and is byte-for-byte equivalent to the general path.
-func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, error) {
+func groupRecords(rd sam.Reader, opts Options) (map[string][]*sam.Record, map[string]bool, error) {
 	keep := keepRecord
 	if mapqFastPath(opts) {
 		keep = keepRecordNoMapq
 	}
 	out := map[string][]*sam.Record{}
+	present := map[string]bool{}
 	for {
 		rec, err := rd.Read()
 		if err == io.EOF {
-			return out, nil
+			return out, present, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("mosdepth: read record: %w", err)
+			return nil, nil, fmt.Errorf("mosdepth: read record: %w", err)
+		}
+		// Index-presence: a mapped record (valid RNAME, POS>0) on a chromosome
+		// selected by --chrom marks that chromosome present even if the read is
+		// subsequently dropped by a filter.
+		if rec.Pos > 0 && rec.RName != "" && rec.RName != "*" {
+			if opts.Chrom == "" || rec.RName == opts.Chrom {
+				present[rec.RName] = true
+			}
 		}
 		if !keep(rec, opts) {
 			continue
