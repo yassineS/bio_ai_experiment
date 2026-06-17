@@ -102,8 +102,13 @@ individually scoped). Everything not on this list is either done or a
 documented **non-goal** (see "Non-goals" below).
 
 1. **htsgo `hfile` cloud I/O — DONE.** The `pkg/htsgo/hfile` backend
-   (HTTP(S)/S3/GCS, stdlib-only, hand-rolled AWS SigV4 + GCS bearer token,
-   read-ahead-buffered `OpenSeekable`) is complete and **validated against
+   (HTTP(S)/S3/GCS, stdlib-only, hand-rolled AWS SigV4 **and SigV2**
+   (`HTS_S3_V2`, HMAC-SHA1; pinned to the canonical AWS worked example) +
+   GCS bearer token, read-ahead-buffered `OpenSeekable`) is complete and
+   works against AWS, S3-compatible stores (MinIO/Ceph/Wasabi/Backblaze via
+   `HTS_S3_HOST` + V4 or V2; `HTS_S3_ADDRESS_STYLE` path/virtual), and GCS
+   (native `gs://` OAuth or `s3://` + HMAC keys against `storage.googleapis.com`,
+   V2 and V4). It is **validated against
    live infrastructure**: HTTPS, anonymous S3 (`s3://1000genomes`), and public
    GCS (`gs://gcp-public-data--broad-references`) backends; a `tabix` region
    query over the 214 MB 1000 Genomes chr22 VCF on S3; and a `samtools view`
