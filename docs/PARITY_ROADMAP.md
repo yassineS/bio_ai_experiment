@@ -1362,6 +1362,19 @@ Option-tail gaps on the wave-2 additions:
   matched; the `-c`/`-v` A-only paths are unchanged. New parity tests assert
   byte-for-byte equality against the live `bedtools window` binary for the bin
   hit-order, default-window, BED12-B, and strand cases.
+- `bedmerge` — **order-sensitive column-op tie-break fixed** (this wave). The
+  internal pre-sort now keys on `(chrom, start)` with input order preserved on
+  ties (chromEnd is no longer a tie-break), matching the `bedtools sort`-ed
+  stream upstream `merge` consumes — so `-o collapse|distinct` emit equal-start
+  groups' values in input order. The merge itself was reimplemented as a faithful
+  port of upstream's `FileRecordMergeMgr` state machine, including the per-strand
+  `StrandQueue` priority queue: under `-s`, deferred opposite-strand records are
+  pulled back out in `(chrom, start, end)` order, reproducing upstream's `-s`
+  collapse/distinct ordering byte-for-byte (the previous +/- re-merge approach
+  diverged on both group order and within-group value order). Order-independent
+  ops (sum/mean/min/max/count) were already correct and are unchanged. New
+  live-binary parity tests cover the equal-key collapse/distinct ordering across
+  default, `-s`, `-S`, and `-d` paths.
 - `bedsample` — **byte-for-byte parity with upstream's seeded sampler is
   now achieved** (this wave). The reservoir replacement uses an in-tree,
   stdlib-only Go port of `std::mt19937_64` (`mt19937.go`) — the exact

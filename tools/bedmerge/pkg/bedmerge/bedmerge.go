@@ -131,11 +131,17 @@ func mergeRecords(recs []record, writer io.Writer, opts MergeOptions) (int, erro
 	return count, nil
 }
 
-// buildGroups filters by strand, sorts, and merges into groups of records that
-// collapse into one output interval. Under -s, '+' and '-' are merged
-// independently and the two streams re-merged by (chrom, start, end);
-// unknown-strand ('.'/”) records are dropped. Under -S <strand>, only that
-// strand survives and is merged positionally.
+// buildGroups filters by strand, sorts into the stream order upstream expects,
+// and runs the merge state machine. Each returned group is the slice of input
+// records that collapse into one output interval, in the exact order upstream's
+// FileRecordMergeMgr would emit them — which is what the order-sensitive -o
+// operations (collapse, distinct, …) depend on.
+//
+// Under -S <strand> only that strand survives and is merged positionally. Under
+// -s ('same strand, either' in upstream terms) records are merged only with
+// like-strand neighbours, with opposite-strand records deferred via a per-strand
+// priority queue exactly as upstream does. With no strand option every record
+// merges positionally and the group order is pure stream (input-on-ties) order.
 func buildGroups(recs []record, opts MergeOptions) [][]record {
 	if opts.StrandFilter != "" {
 		kept := recs[:0:0]
@@ -146,95 +152,121 @@ func buildGroups(recs []record, opts MergeOptions) [][]record {
 		}
 		recs = kept
 	}
-
-	if opts.StrandSpec {
-		var plus, minus []record
-		for _, r := range recs {
-			switch r.strand {
-			case "+":
-				plus = append(plus, r)
-			case "-":
-				minus = append(minus, r)
-				// "." and "" are dropped (upstream FileRecordMergeMgr behaviour).
-			}
-		}
-		sortRecords(plus)
-		sortRecords(minus)
-		pg := positionGroups(plus, opts)
-		mg := positionGroups(minus, opts)
-		return mergeSortedGroups(pg, mg)
-	}
-
+	// Establish the stream order upstream consumes: (chrom, start) with input
+	// order preserved on ties (chromEnd is not a tie-break). This matches a
+	// `bedtools sort`-ed input, which is what `bedtools merge` requires.
 	sortRecords(recs)
-	return positionGroups(recs, opts)
+	return mergeStream(recs, opts)
 }
 
-// positionGroups runs a single-pass position-only merge over sorted records
-// (strand is ignored; the caller handles any strand bucketing). Each output
-// group is the slice of input records that merge together.
-func positionGroups(recs []record, opts MergeOptions) [][]record {
-	if len(recs) == 0 {
-		return nil
-	}
-	var out [][]record
-	group := []record{recs[0]}
-	curChrom := recs[0].chrom
-	curEnd := recs[0].end
-	for i := 1; i < len(recs); i++ {
-		r := recs[i]
-		if r.chrom == curChrom && r.start <= curEnd+opts.MaxDistance {
-			if r.end > curEnd {
-				curEnd = r.end
+// mergeStream reproduces upstream FileRecordMergeMgr::getNextRecord over the
+// already stream-sorted records. It walks the records in order, and for the -s
+// (same-strand-either) mode defers opposite-strand records into a per-strand
+// priority queue (StrandQueue) keyed on (chrom, start, end), pulling them back
+// out to seed or extend later groups. With no strand requirement the queue is
+// never used and the result is a straightforward positional merge in stream
+// order. Unknown-strand records are dropped under any strand requirement.
+func mergeStream(recs []record, opts MergeOptions) [][]record {
+	mustMatchStrand := opts.StrandSpec
+	st := &strandQueue{}
+	idx := 0
+	// next returns the next record to consider, preferring storage (which is
+	// ordered by (chrom, start, end)) over the file stream, mirroring the
+	// tryToTakeFromStorage()/getNextRecord() precedence. When restrictStrand is
+	// set, only storage records of that strand are eligible to be pulled.
+	nextStart := func() (record, bool) {
+		if r, ok := st.top(); ok {
+			st.pop()
+			return r, true
+		}
+		for idx < len(recs) {
+			r := recs[idx]
+			idx++
+			if mustMatchStrand && strandUnknown(r.strand) {
+				continue // drop unknown-strand records under -s
 			}
-			group = append(group, r)
-			continue
+			return r, true
+		}
+		return record{}, false
+	}
+
+	var out [][]record
+	for {
+		start, ok := nextStart()
+		if !ok {
+			break
+		}
+		group := []record{start}
+		curChrom := start.chrom
+		curEnd := start.end
+		curStrand := start.strand
+
+		for {
+			var nextRec record
+			var have bool
+			takenFromStorage := false
+			if mustMatchStrand {
+				if r, okS := st.topStrand(curStrand); okS {
+					st.popStrand(curStrand)
+					nextRec = r
+					have = true
+					takenFromStorage = true
+				}
+			} else {
+				if r, okS := st.top(); okS {
+					st.pop()
+					nextRec = r
+					have = true
+					takenFromStorage = true
+				}
+			}
+			if !have {
+				if idx < len(recs) {
+					nextRec = recs[idx]
+					idx++
+					have = true
+				}
+			}
+			if !have {
+				break // EOF
+			}
+
+			mustDelete := mustMatchStrand && strandUnknown(nextRec.strand)
+
+			if nextRec.chrom != curChrom {
+				if !mustDelete {
+					st.push(nextRec)
+				}
+				break
+			}
+			if nextRec.start > curEnd+opts.MaxDistance {
+				if !mustDelete {
+					st.push(nextRec)
+				}
+				break
+			}
+			if mustDelete {
+				continue // drop unknown-strand, keep scanning
+			}
+			// Wrong-strand record taken from the file under -s: defer it.
+			if !takenFromStorage && mustMatchStrand && nextRec.strand != curStrand {
+				st.push(nextRec)
+				continue
+			}
+			// Same chrom, in range, strand OK: merge it.
+			group = append(group, nextRec)
+			if nextRec.end > curEnd {
+				curEnd = nextRec.end
+			}
 		}
 		out = append(out, group)
-		group = []record{r}
-		curChrom = r.chrom
-		curEnd = r.end
 	}
-	out = append(out, group)
 	return out
 }
 
-// mergeSortedGroups two-way-merges two slices of already-sorted groups into a
-// single stream ordered by (chrom, start, end). Used to recombine the '+' and
-// '-' outputs of a stranded merge.
-func mergeSortedGroups(a, b [][]record) [][]record {
-	out := make([][]record, 0, len(a)+len(b))
-	i, j := 0, 0
-	groupEnd := func(g []record) int {
-		e := g[0].end
-		for _, r := range g[1:] {
-			if r.end > e {
-				e = r.end
-			}
-		}
-		return e
-	}
-	less := func(x, y []record) bool {
-		if x[0].chrom != y[0].chrom {
-			return x[0].chrom < y[0].chrom
-		}
-		if x[0].start != y[0].start {
-			return x[0].start < y[0].start
-		}
-		return groupEnd(x) < groupEnd(y)
-	}
-	for i < len(a) && j < len(b) {
-		if less(a[i], b[j]) {
-			out = append(out, a[i])
-			i++
-		} else {
-			out = append(out, b[j])
-			j++
-		}
-	}
-	out = append(out, a[i:]...)
-	out = append(out, b[j:]...)
-	return out
-}
+// strandUnknown reports whether a strand value is neither '+' nor '-' (i.e. '.'
+// or empty), matching upstream's Record::UNKNOWN classification.
+func strandUnknown(s string) bool { return s != "+" && s != "-" }
 
 // writeGroup writes one merged output line for a group of records. With
 // ColumnOps it emits chrom/start/end plus one aggregated value per column;

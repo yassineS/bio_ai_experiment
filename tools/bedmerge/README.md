@@ -344,6 +344,25 @@ The only intentional behavioural differences are:
 The `distinct_only` divergence is a fix-on-port for a genuine upstream output
 bug (documented in `docs/UPSTREAM_BUGS.md`).
 
+### Merged-value order on equal `(chrom, start)`
+
+The order-sensitive column ops (`collapse`, `distinct`, …) emit the merged
+group's values in the exact order upstream's `FileRecordMergeMgr` does:
+
+- The internal pre-sort is `(chrom, start)` with input order preserved on ties
+  (chromEnd is **not** a tie-break), matching a `bedtools sort`-ed stream — the
+  input upstream `merge` requires. So for equal-`(chrom, start)` records the
+  collapsed/distinct values come out in input order. (An earlier port broke
+  these ties on chromEnd ascending, reordering the values.)
+- Under `-s`, opposite-strand records that cannot join the current group are
+  deferred into a per-strand priority queue (the upstream `StrandQueue`) and
+  pulled back out in `(chrom, start, end)` order to seed/extend later groups —
+  so a `-s` group's values can differ from plain input order. bedmerge
+  reproduces this storage-queue mechanism, so `-s`/`-S` collapse/distinct output
+  is byte-identical to upstream.
+
+Order-independent ops (`sum`, `mean`, `min`, `max`, `count`, …) were unaffected.
+
 ## Testing
 
 Run unit tests:
