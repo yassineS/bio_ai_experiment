@@ -234,8 +234,15 @@ func newMergeIterator(readers []*sam.BAMReader, less func(a, b *sam.Record) bool
 }
 
 func (m *mergeIterator) Next() (*sam.Record, error) {
+	rec, _, err := m.nextWithSrc()
+	return rec, err
+}
+
+// nextWithSrc behaves like Next but also reports the input index the record
+// came from, which `merge` needs to apply its per-input @RG ID translation.
+func (m *mergeIterator) nextWithSrc() (*sam.Record, int, error) {
 	if m.h.Len() == 0 {
-		return nil, io.EOF
+		return nil, -1, io.EOF
 	}
 	top := heap.Pop(m.h).(mergeEntry)
 	// Pull the next record from that source.
@@ -243,9 +250,9 @@ func (m *mergeIterator) Next() (*sam.Record, error) {
 	if err == nil {
 		heap.Push(m.h, mergeEntry{rec: next, src: top.src, reader: top.reader})
 	} else if err != io.EOF {
-		return top.rec, err
+		return top.rec, top.src, err
 	}
-	return top.rec, nil
+	return top.rec, top.src, nil
 }
 
 type errIter struct{ err error }

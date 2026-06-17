@@ -25,8 +25,9 @@ package matrix
 // -f/-F/-q/-c/-b/-h/-L bed), sort (name + coord via count), flagstat, idxstats,
 // stats, depth (-a/-b/-r), coverage, mpileup (documented Skip on a 0-depth
 // gap), calmd, consensus, dict, quickcheck, fastq/fasta, cat (count round-trip),
-// tview (text). Documented Skips: subsample -s (RNG differs), markdup / fixmate
-// / addreplacerg / merge / reheader / split / import / phase (output-format /
+// tview (text), and markdup / fixmate / addreplacerg / reheader / split /
+// import / merge (BAMDecoded; merge renames colliding @RG IDs under a fixed -s
+// seed). Documented Skips: subsample -s (RNG differs) and phase (output-format /
 // behaviour gaps spelled out per entry).
 
 func init() {
@@ -248,10 +249,12 @@ func samtoolsBinaryOutputSkips() []Entry {
 		// `samtools sort -n` of the reads. Output BAM is decoded and compared.
 		bamOut("fixmate", "{bam_namesorted}", "-"),
 		bamOut("addreplacerg", "-r", `ID:x\tSM:y`, "{bam}", "-"),
-		skip("merge", "", "samtools merge of the fixture with itself collides on read-group ID 'rg1': upstream disambiguates by renaming "+
-			"the duplicate RG (rg1 -> rg1-<hash>) in the merged header, which our port does not. A real RG-ID-collision gap, exposed only by "+
-			"the degenerate self-merge (distinct-input merge is byte-exact when decoded). Owned by the samtools agent.",
-			"-f", "-", "{bam}", "{bam}"),
+		// merge of the fixture with itself collides on read-group ID 'rg1';
+		// upstream disambiguates by renaming the duplicate (rg1 -> rg1-<8 hex>)
+		// via a seeded drand48 draw and retagging that input's records. With a
+		// fixed -s seed our port reproduces the suffix byte-for-byte (the @PG
+		// provenance, which upstream also renumbers, is dropped by BAMDecoded).
+		bamOut("merge", "-s", "1", "-f", "-", "{bam}", "{bam}"),
 		bamOut("reheader", "-c", "cat", "{bam}"),
 		// split writes one BGZF BAM per read group. The fixture carries a single
 		// read group (rg1), so split emits out_rg1.bam under each side's out dir;
