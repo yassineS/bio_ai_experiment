@@ -291,10 +291,6 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 			perInputChromRecs = append(perInputChromRecs, recs[chrom])
 		}
 
-		// Determine the covered range so -a (per upstream) can emit zero
-		// positions only inside the read-touched extent.
-		minPos0, maxEnd0 := coveredExtent(perInputChromRecs)
-
 		for _, w := range windows {
 			beg0 := w[0]
 			end0 := w[1]
@@ -308,8 +304,7 @@ func runMpileup(readers []sam.Reader, out io.Writer, opts MpileupOptions, refFA 
 				continue
 			}
 			if err := emitMpileupWindow(bw, chrom, beg0, end0, refLen,
-				perInputChromRecs, refFA, posFilter,
-				opts, minPos0, maxEnd0); err != nil {
+				perInputChromRecs, refFA, posFilter, opts); err != nil {
 				return err
 			}
 		}
@@ -425,35 +420,6 @@ func keepMpileupRecord(rec *sam.Record, opts MpileupOptions, hdr0 *sam.Header) b
 		return false
 	}
 	return true
-}
-
-// coveredExtent returns the smallest 0-based start and largest 0-based end
-// of any record across the inputs. When no record is present, both return
-// zero, which keeps the `-a` branch from emitting anything.
-func coveredExtent(perInputRecs [][]*sam.Record) (int, int) {
-	first := true
-	var lo, hi int
-	for _, recs := range perInputRecs {
-		for _, r := range recs {
-			start := int(r.Pos) - 1
-			end := start + r.Cigar.ReferenceLength()
-			if first {
-				lo, hi = start, end
-				first = false
-				continue
-			}
-			if start < lo {
-				lo = start
-			}
-			if end > hi {
-				hi = end
-			}
-		}
-	}
-	if first {
-		return 0, 0
-	}
-	return lo, hi
 }
 
 // refLengthForName looks up a contig length on hdr; we kept the existing

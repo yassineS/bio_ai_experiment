@@ -94,13 +94,9 @@ type pileupEvent struct {
 // per-input pileup events, and emits one text mpileup line per position
 // that has at least one read (or every position when opts.AllPositions /
 // AllPositionsAllChroms is set, or the position is in posFilter).
-//
-// minPos0 / maxEnd0 bracket the per-chrom read-touched extent; -a uses
-// them as the lower/upper bound for the "zero-depth inside covered range"
-// rule, matching upstream samtools mpileup.
 func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 	perInputChromRecs [][]*sam.Record, refFA *fasta.RandomAccess, posFilter *positionFilter,
-	opts MpileupOptions, minPos0, maxEnd0 int) error {
+	opts MpileupOptions) error {
 
 	nIn := len(perInputChromRecs)
 
@@ -163,18 +159,14 @@ func emitMpileupWindow(bw *bufio.Writer, chrom string, beg0, end0, refLen int,
 			case opts.AllPositionsAllChroms:
 				// emit zero-depth row
 			case opts.AllPositions:
-				// Upstream `-a` emits every position **inside the covered
-				// range** of each chrom: from the first 0-based start
-				// (`minPos0`) to the last 0-based end (`maxEnd0`, exclusive).
-				// minPos0/maxEnd0 are sentinel 0/0 when nothing was seen on
-				// this chrom — drop the row in that case so we don't emit
-				// positions on empty chroms.
-				if minPos0 == 0 && maxEnd0 == 0 {
-					continue
-				}
-				if pos0 < minPos0 || pos0 >= maxEnd0 {
-					continue
-				}
+				// Upstream `-a` emits EVERY position (1..LN) of every chrom
+				// that carries at least one read — not merely the covered
+				// extent (bam_plcmd.c: with conf->all==1 the missing-portion
+				// loops at lines 603-631 fill the leading/interior gaps and
+				// the post-loop flush at 845-857 fills the trailing gap up to
+				// sam_hdr_tid2len, i.e. the full contig). Chroms with no reads
+				// are excluded from chromsToWalk, so reaching this branch
+				// already implies the contig is read-bearing; emit the row.
 				// emit zero-depth row
 			case posFilter != nil:
 				// In positions-file mode, emit zero-depth rows so the

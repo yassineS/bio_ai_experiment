@@ -62,3 +62,40 @@ func TestLiveDepthQQBaseVsMapping(t *testing.T) {
 		}
 	}
 }
+
+// bugfixMpileupGapSAM has two reads on chr1 separated by a gap, plus a
+// second read-free contig, so -a must fill chr1's leading (1..4), interior
+// (10..19) and trailing (25..40) zero-depth rows up to LN, and -aa must
+// additionally emit all of chr2.
+const bugfixMpileupGapSAM = "@HD\tVN:1.6\tSO:coordinate\n" +
+	"@SQ\tSN:chr1\tLN:40\n" +
+	"@SQ\tSN:chr2\tLN:6\n" +
+	"r1\t0\tchr1\t5\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n" +
+	"r2\t0\tchr1\t20\t60\t5M\t*\t0\t0\tACGTA\tIIIII\n"
+
+// TestLiveMpileupZeroDepthRows is the parity case for bug #2: upstream
+// mpileup -a fills every position of a read-bearing contig (leading,
+// interior and trailing zero-depth rows up to the contig length), and -aa
+// additionally emits read-free contigs. The default (no -a) emits only
+// covered positions. All three are asserted byte-for-byte vs upstream.
+func TestLiveMpileupZeroDepthRows(t *testing.T) {
+	live := upstreamSamtools(t)
+	ours := ourSamtoolsBinary(t)
+	dir := t.TempDir()
+	sam := filepath.Join(dir, "mpgap.sam")
+	if err := os.WriteFile(sam, []byte(bugfixMpileupGapSAM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"mpileup", sam},
+		{"mpileup", "-a", sam},
+		{"mpileup", "-aa", sam},
+	} {
+		upstream := runSamtools(t, live, args...)
+		mine := runSamtools(t, ours, args...)
+		if !bytes.Equal(upstream, mine) {
+			t.Fatalf("mpileup %v mismatch:\nupstream:\n%s\nours:\n%s", args[1:], upstream, mine)
+		}
+	}
+}
