@@ -817,7 +817,9 @@ detection, HTML+JSON reports, duplication evaluation, UMI processing,
 **overlap-based PE base correction (`--correction`), overrepresentation
 analysis (`-p`/`-P`), output splitting (`-s`/`-S`/`-d`), the overlap-driven
 merge writer (`-m`/`--merge`/`--merged_out`/`--include_unmerged`),
-`--adapter_fasta`, `--poly_x_min_len`, and `--disable_adapter_trimming`**.
+`--adapter_fasta`, `--poly_x_min_len`, and the full set of `--disable_*`
+toggles (`--disable_adapter_trimming` `-A`, `--disable_quality_filtering`
+`-Q`, `--disable_length_filtering` `-L`, `--disable_trim_poly_g` `-G`)**.
 
 Done in the `claude/festive-planck-n9o2lm-fastp-tail` PR:
 
@@ -885,6 +887,35 @@ adapter-fasta + poly-X knob + disable-adapter flag):
   entire adapter block (matching upstream `adapter.enabled =
   !disable_adapter_trimming`).
 
+Done in the cut_tail / disable-flags parity follow-up:
+
+- **`--disable_quality_filtering` (`-Q`) / `--disable_length_filtering`
+  (`-L`) / `--disable_trim_poly_g` (`-G`)**: the remaining upstream
+  `--disable_*` toggles, wired in `cmd/fastp/main.go` and gated in
+  `fastp.go::filterRecord` / `trimRecord`. Quality filtering gates the
+  low-quality-percent check **and the N-base limit** (upstream keeps the N
+  check inside the quality block, `filter.cpp:43-50`); length filtering gates
+  both the too-short (`length_required`) and too-long (`length_limit`) checks
+  (`filter.cpp:52-57`); `-G` force-disables poly-G even when `--trim_poly_g`
+  was requested. Validated byte-exact in parity Case 20 (alone + combined) and
+  the binary-free `TestUnitDisableQualityFiltering` /
+  `TestUnitDisableLengthFiltering` / `TestUnitDisableTrimPolyG`.
+- **cut_tail window-boundary at scale** — closed. The parity pipeline found
+  `--cut_tail` diverging from upstream on ~1% of reads by ~1bp; the small
+  per-tool fixtures never triggered it. Root cause: the Go port applied the
+  sliding-window cut **after** adapter/poly-G trimming, whereas upstream runs
+  `Filter::trimAndCut` **first** (`seprocessor.cpp:235`, before the poly-G and
+  adapter blocks). Cutting an already-shortened read shifts the window math
+  (the `s+w<l-tail` bound and the `t = t-w+1` rewind on the passing window),
+  so any read where adapter/poly trimming fired drifted by ~1bp. Fixed by
+  reordering `trimRecord` to upstream's `cut → poly-G → adapter → poly-X`
+  order. The `slidingWindowCut` algorithm itself was already byte-exact
+  (confirmed by Case 18, cut_tail with adapter disabled). Validated
+  byte-exact at scale on the new 5000-read varying-length/low-Q-tail fixture
+  `se_cuttail_scale.fq` in parity Case 17 (with adapter) and Case 18 (without);
+  cut_front/cut_right confirmed unregressed at scale in Case 19; the boundary
+  rule pinned binary-free in `TestUnitCutTailBoundary`.
+
 Both formerly-remaining residuals are now **closed** (multi-thread split
 file-boundary distribution; unemitted JSON sub-fields):
 
@@ -926,10 +957,11 @@ dropped when `-m`/`--merge` is set).
 
 #### Validated-parity audit
 
-17-case test corpus at `tools/fastp/pkg/fastp/parity_test.go` against
-upstream fastp 1.0.1. **17 PASS, 0 SKIP** (post the SE adapter
-auto-detect similarity-bound case in `claude/fastp-adapter-similarity`;
-deterministic transforms validated byte-exact, the heuristic SE
+21-case test corpus at `tools/fastp/pkg/fastp/parity_test.go` against
+upstream fastp 1.0.1. **21 PASS, 0 SKIP** (Cases 17-20 added by the
+cut_tail / disable-flags follow-up: cut_tail-at-scale with and without
+adapter, cut_front/cut_right unregressed at scale, and the new `--disable_*`
+toggles; deterministic transforms validated byte-exact, the heuristic SE
 adapter-detect validated by a documented similarity bound). See
 [tools/PARITY_VALIDATION.md#fastp-parity-validation](../tools/PARITY_VALIDATION.md#fastp-parity-validation)
 for the case list.
@@ -955,11 +987,14 @@ Bugs fixed inline by the `claude/fastp-algorithmic-fixes` follow-up PR:
   `slidingWindowCut` is now a verbatim port of upstream's
   `filter.cpp:83-222`. Specifically: (a) cut_right walks the high-Q
   prefix inside the offending bad window, (b) cut_front and cut_tail
-  truncate at the START of the qualifying window (then skip N's at the
-  boundary), (c) the loop bound stays strictly `s + w < l` so the
-  trailing w bases are never scanned.
+  rewind to the START of the qualifying window (`s+w-1` for front, `t-w+1`
+  for tail) and then skip N's at the boundary, (c) the loop bound stays
+  strictly `s + w < l` so the trailing w bases are never scanned.
   `TestParity_Fastp_Case13_SECutRight` and
-  `TestParity_Fastp_Case14_SECutFrontTail` are no longer skipped.
+  `TestParity_Fastp_Case14_SECutFrontTail` are no longer skipped. (The
+  cut_tail / disable-flags follow-up later corrected the step **order** so
+  the cut runs before adapter/poly trimming, fixing a ~1bp at-scale drift;
+  see below.)
 
 Bugs fixed inline by the `claude/fastp-adapter-autodetect` follow-up PR:
 

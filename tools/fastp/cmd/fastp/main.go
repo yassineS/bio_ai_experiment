@@ -40,17 +40,20 @@ Options:
   Quality Filtering:
     -q, --qual-threshold INT  Quality threshold (default: 15)
     --qual-percent INT        Percent of bases meeting quality (default: 40)
-  
+    -Q, --disable_quality_filtering  Disable quality filtering (N-base, low-quality-percent)
+
   Length Filtering:
     -l, --min-length INT      Minimum read length (default: 15)
     --max-length INT          Maximum read length (0 = no limit)
-  
+    -L, --disable_length_filtering   Disable length filtering (length_required / length_limit)
+
   Content Filtering:
     --max-n-count INT         Maximum N count (default: 5)
     --max-n-percent FLOAT     Maximum N percentage (default: 20.0)
-  
+
   Poly-tail Trimming:
-    --trim-poly-g             Enable poly-G tail trimming
+    -g, --trim_poly_g         Enable poly-G tail trimming
+    -G, --disable_trim_poly_g Disable poly-G tail trimming (overrides --trim_poly_g)
     --trim-poly-x             Enable poly-X tail trimming
     --poly-g-min-len INT      Minimum poly-G length (default: 10)
     --poly_x_min_len INT      Minimum poly-X length (default: 10)
@@ -173,6 +176,9 @@ func main() {
 		adapter5            string
 		detectAdapter       bool
 		disableAdapter      bool
+		disableQualityFilt  bool
+		disableLengthFilt   bool
+		disablePolyG        bool
 		adapterFasta        string
 		qualType            string
 		qualThreshold       int
@@ -251,10 +257,12 @@ func main() {
 	// Quality filtering
 	cliflag.IntVar(fs, &qualThreshold, "q", "qual-threshold", 15, "Quality threshold (default: 15)")
 	cliflag.IntVar(fs, &qualPercent, "", "qual-percent", 40, "Percent of bases meeting quality (default: 40)")
+	cliflag.BoolVar(fs, &disableQualityFilt, "Q", "disable_quality_filtering", false, "Disable quality filtering (N-base, low-quality-percent, avg-quality)")
 
 	// Length filtering
 	cliflag.IntVar(fs, &minLength, "l", "min-length", 15, "Minimum read length (default: 15)")
 	cliflag.IntVar(fs, &maxLength, "", "max-length", 0, "Maximum read length (0 = no limit)")
+	cliflag.BoolVar(fs, &disableLengthFilt, "L", "disable_length_filtering", false, "Disable length filtering (length_required / length_limit discard)")
 
 	// Content filtering
 	cliflag.IntVar(fs, &maxNCount, "", "max-n-count", 5, "Maximum N count (default: 5)")
@@ -262,6 +270,8 @@ func main() {
 
 	// Poly-tail trimming
 	cliflag.BoolVar(fs, &trimPolyG, "", "trim-poly-g", false, "Enable poly-G tail trimming")
+	cliflag.BoolVar(fs, &trimPolyG, "g", "trim_poly_g", false, "Enable poly-G tail trimming (upstream spelling)")
+	cliflag.BoolVar(fs, &disablePolyG, "G", "disable_trim_poly_g", false, "Disable poly-G tail trimming (overrides --trim_poly_g)")
 	cliflag.BoolVar(fs, &trimPolyX, "", "trim-poly-x", false, "Enable poly-X tail trimming")
 	cliflag.IntVar(fs, &polyGMinLen, "", "poly-g-min-len", 10, "Minimum poly-G length (default: 10)")
 	cliflag.IntVar(fs, &polyGMinLen, "", "poly_g_min_len", 10, "Minimum poly-G length (alias of --poly-g-min-len)")
@@ -412,6 +422,9 @@ func main() {
 		Adapter5:                adapter5,
 		DetectAdapter:           detectAdapter,
 		DisableAdapterTrimming:  disableAdapter,
+		DisableQualityFiltering: disableQualityFilt,
+		DisableLengthFiltering:  disableLengthFilt,
+		DisableTrimPolyG:        disablePolyG,
 		AdapterFasta:            adapterFastaSeqs,
 		PolyXMinLen:             polyXMinLen,
 		Merge:                   merge,

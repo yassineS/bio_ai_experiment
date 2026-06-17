@@ -210,6 +210,65 @@ def main():
         detect.append((f"det_{i}", seq, hi_q(100)))
     write("se_detect.fq", detect)
 
+    # 14) Cut-tail-at-scale fixture: 5000 SE reads of VARYING length (30-150bp)
+    # each carrying a low-quality 3' tail of a random length (0-15bp). About
+    # 40% additionally carry a 3' adapter read-through. This combination is the
+    # one that surfaced the cut_tail window-boundary divergence at scale in the
+    # parity pipeline: with adapter trimming enabled, upstream runs the
+    # sliding-window cut FIRST (seprocessor.cpp:235) and only then trims the
+    # adapter, so any read where adapter/poly trimming fires shifts the window
+    # math unless the Go port applies the cut in the same (cut-first) order.
+    # 5000 varying reads reliably hit the ~1% boundary edge that the tiny
+    # se_lqtail.fq (15 fixed-length reads) never triggered.
+    random.seed(404)
+    full_adapter = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+    cuttail = []
+    for i in range(5000):
+        ln = random.randint(30, 150)
+        seq = "".join(random.choice("ACGT") for _ in range(ln))
+        # high-ish body + low-quality tail of random length.
+        tail = random.randint(0, 15)
+        body = ln - tail
+        qual = (
+            "".join(chr(33 + random.randint(25, 37)) for _ in range(body))
+            + "".join(chr(33 + random.randint(2, 19)) for _ in range(tail))
+        )
+        if random.random() < 0.4:
+            # Insert a 3' adapter read-through occupying a clean contiguous
+            # suffix (unambiguous adapter trimming, so the test isolates the
+            # cut/adapter ordering rather than adapter-match heuristics).
+            pos = random.randint(20, ln - 1)
+            suffix = full_adapter[: max(0, ln - pos)]
+            seq = seq[:pos] + suffix + seq[pos + len(suffix):]
+        cuttail.append((f"ct_{i}", seq, qual))
+    write("se_cuttail_scale.fq", cuttail)
+
+    # 15) Disable-filter fixture: ALL reads are uniformly HIGH quality so the
+    # (non-upstream) quality end-trim never fires and surviving reads are
+    # byte-identical to their input. The reads are chosen so the length filter
+    # and the quality filter (via the N-base limit) each drop a distinct subset:
+    #   - 10 clean 80bp reads (always pass)
+    #   - 10 short 8bp reads (< length_required=15 -> dropped by length filter)
+    #   - 10 N-heavy 80bp reads (> n_base_limit=5 Ns -> dropped by quality
+    #     filter; N-base check lives in the quality block, filter.cpp:48)
+    # With --disable_length_filtering the short reads survive (full bytes);
+    # with --disable_quality_filtering the N-heavy reads survive (full bytes).
+    random.seed(505)
+    df = []
+    for i in range(10):
+        seq = "".join(random.choice("ACGT") for _ in range(80))
+        df.append((f"df_clean_{i}", seq, hi_q(80)))
+    for i in range(10):
+        seq = "".join(random.choice("ACGT") for _ in range(8))
+        df.append((f"df_short_{i}", seq, hi_q(8)))
+    for i in range(10):
+        # 20 N's scattered (well above the default n_base_limit of 5).
+        chars = list("".join(random.choice("ACGT") for _ in range(80)))
+        for p in random.sample(range(80), 20):
+            chars[p] = "N"
+        df.append((f"df_n_{i}", "".join(chars), hi_q(80)))
+    write("se_disablefilt.fq", df)
+
 
 if __name__ == "__main__":
     main()
