@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/yassineS/bio_ai_experiment/pkg/htsgo/bcf"
@@ -477,21 +478,15 @@ func mergeSortedDedup(groups [][]*vcf.Variant, order map[string]int, mode string
 	// region-traversal order, so a file whose records are not physically in
 	// coordinate order is still consumed in coordinate order. Flattening and
 	// stable-sorting reproduces that without an index.
-	type tagged struct {
-		v    *vcf.Variant
-		file int
-		ci   int
-		pos  int
-	}
 	total := 0
 	for _, g := range groups {
 		total += len(g)
 	}
-	all := make([]tagged, 0, total)
+	all := make([]taggedRec, 0, total)
 	for fi, g := range groups {
 		for _, v := range g {
 			ci, pos := rank(v)
-			all = append(all, tagged{v: v, file: fi, ci: ci, pos: pos})
+			all = append(all, taggedRec{v: v, file: fi, ci: ci, pos: pos})
 		}
 	}
 	// Stable sort by (contig rank, POS). Stability preserves, at a shared
@@ -523,6 +518,7 @@ func mergeSortedDedup(groups [][]*vcf.Variant, order map[string]int, mode string
 		// same file are never de-duplicated against each other.
 		var earlier []*vcf.Variant  // kept records from files < curFile
 		var sameFile []*vcf.Variant // kept records from curFile
+		var kept []*vcf.Variant     // kept records in file order
 		curFile := -1
 		for k := i; k < j; k++ {
 			rec := all[k]
@@ -534,12 +530,113 @@ func mergeSortedDedup(groups [][]*vcf.Variant, order map[string]int, mode string
 			if mode != "" && len(earlier) > 0 && collapsesWithAny(rec.v, earlier, mode) {
 				continue
 			}
-			out = append(out, rec.v)
+			kept = append(kept, rec.v)
 			sameFile = append(sameFile, rec.v)
 		}
+		// Reorder the kept records into the synced-reader emission order: the
+		// records are grouped by their unique REF>ALT variant string and the
+		// groups are emitted by descending pre-dedup record count, ties broken
+		// by first-appearance order. See orderPositionGroup.
+		out = append(out, orderPositionGroup(all[i:j], kept)...)
 		i = j
 	}
 	return out
+}
+
+// orderPositionGroup reorders the kept records at a single (contig, POS) into
+// the order htslib's synced reader (bcf_sr_sort.c) emits them under
+// concat -a. The reader buckets the records of every active file by their
+// variant string ("REF>ALT,REF>ALT,…", with per-file duplicate disambiguation)
+// and emits the buckets by descending count of records that share the variant
+// (var->nvcf, computed across all files BEFORE de-duplication), breaking ties
+// by the order in which the variant was first encountered (files in order,
+// records within a file in order). Within a bucket the kept records keep their
+// file/record order. The `all` slice is the full (pre-dedup) set of tagged
+// records at this position, in (file, record) order; `kept` is the subset that
+// survived de-duplication, also in (file, record) order.
+func orderPositionGroup(all []taggedRec, kept []*vcf.Variant) []*vcf.Variant {
+	if len(kept) <= 1 {
+		return kept
+	}
+	// Build variant groups over ALL records (pre-dedup) to get first-appearance
+	// order and the count used for ordering. Duplicate variant strings within
+	// the same file are disambiguated with a trailing counter, matching
+	// upstream's var_str2int handling.
+	type vgroup struct {
+		key   string
+		order int // first-appearance index
+		count int // pre-dedup record count (var->nvcf)
+	}
+	groupByKey := map[string]*vgroup{}
+	var order []*vgroup
+	perFileSeen := map[string]int{} // (file:key) -> times seen, for disambiguation
+	keyOf := func(rec taggedRec) string {
+		base := concatVariantKey(rec.v)
+		fk := strconv.Itoa(rec.file) + "\x00" + base
+		n := perFileSeen[fk]
+		perFileSeen[fk] = n + 1
+		if n > 0 {
+			return base + "\x01" + strconv.Itoa(n)
+		}
+		return base
+	}
+	keyByRecPtr := map[*vcf.Variant]string{}
+	for _, rec := range all {
+		k := keyOf(rec)
+		keyByRecPtr[rec.v] = k
+		g := groupByKey[k]
+		if g == nil {
+			g = &vgroup{key: k, order: len(order)}
+			groupByKey[k] = g
+			order = append(order, g)
+		}
+		g.count++
+	}
+	// Bucket the kept records by their variant key, preserving file/record
+	// order within a bucket.
+	bucket := map[string][]*vcf.Variant{}
+	for _, v := range kept {
+		k := keyByRecPtr[v]
+		bucket[k] = append(bucket[k], v)
+	}
+	// Emit buckets by descending count, ties broken by first-appearance order
+	// — a stable sort over the first-appearance-ordered group list.
+	sort.SliceStable(order, func(i, j int) bool {
+		return order[i].count > order[j].count
+	})
+	out := make([]*vcf.Variant, 0, len(kept))
+	for _, g := range order {
+		out = append(out, bucket[g.key]...)
+	}
+	return out
+}
+
+// taggedRec is one record tagged with its source file index, used by
+// mergeSortedDedup and orderPositionGroup.
+type taggedRec struct {
+	v    *vcf.Variant
+	file int
+	ci   int
+	pos  int
+}
+
+// concatVariantKey builds the "REF>ALT,REF>ALT,…" string htslib's synced reader uses
+// to group records at a shared position (bcf_sr_sort.c). A no-ALT record is
+// keyed as "REF>.".
+func concatVariantKey(v *vcf.Variant) string {
+	if len(v.Alt) == 0 {
+		return v.Ref + ">."
+	}
+	var b strings.Builder
+	for i, a := range v.Alt {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(v.Ref)
+		b.WriteByte('>')
+		b.WriteString(a)
+	}
+	return b.String()
 }
 
 // collapsesWithAny reports whether v collapses with any record in prev
