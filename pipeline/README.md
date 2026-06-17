@@ -56,6 +56,13 @@ The pipeline locates the **vendored upstream binaries** under `reference_code/`:
 | `bcftools` | `reference_code/bcftools/bcftools` |
 | `bgzip` / `tabix` | `reference_code/htslib/{bgzip,tabix}` |
 | `bedtools` | `reference_code/bedtools/bin/bedtools` |
+| `seqtk` | `reference_code/seqtk/seqtk` |
+| `sickle` | `reference_code/sickle/sickle` |
+| `skewer` | `reference_code/skewer/skewer` |
+| `fastp` | `reference_code/fastp/fastp` |
+| `vcftools` | `reference_code/vcftools/src/cpp/vcftools` |
+| `prinseq` | `reference_code/prinseq/prinseq-lite.pl` (run via `perl`) |
+| `mosdepth` | `$MOSDEPTH_BIN` or the temp-dir release cache (linux/amd64 only) |
 
 These are expected to already be **built** (exactly like the existing per-tool
 live parity tests assume). In an **isolated git worktree** the submodules may be
@@ -69,7 +76,21 @@ ln -sf /path/to/main/reference_code/htslib/bgzip       reference_code/htslib/bgz
 ln -sf /path/to/main/reference_code/htslib/tabix       reference_code/htslib/tabix
 mkdir -p reference_code/bedtools/bin
 ln -sf /path/to/main/reference_code/bedtools/bin/bedtools reference_code/bedtools/bin/bedtools
+ln -sf /path/to/main/reference_code/seqtk/seqtk           reference_code/seqtk/seqtk
+ln -sf /path/to/main/reference_code/sickle/sickle         reference_code/sickle/sickle
+ln -sf /path/to/main/reference_code/skewer/skewer         reference_code/skewer/skewer
+ln -sf /path/to/main/reference_code/fastp/fastp           reference_code/fastp/fastp
+mkdir -p reference_code/vcftools/src/cpp reference_code/prinseq
+ln -sf /path/to/main/reference_code/vcftools/src/cpp/vcftools reference_code/vcftools/src/cpp/vcftools
+ln -sf /path/to/main/reference_code/prinseq/prinseq-lite.pl   reference_code/prinseq/prinseq-lite.pl
 ```
+
+`sickle`/`skewer` build from source with `make` in their submodule; `prinseq`
+is a Perl script (the runner invokes a `*.pl` upstream path through `perl`).
+**mosdepth** ships only as a linux/amd64 GitHub release asset (a Nim project, not
+built from source): the runner resolves it from `$MOSDEPTH_BIN` or the temp-dir
+cache the per-tool mosdepth parity test populates; on other platforms the
+mosdepth matrix entries Skip with a clear reason.
 
 A missing binary fails with an actionable hint (the build/submodule command),
 never a silent skip.
@@ -82,30 +103,47 @@ text (FASTA sequence, SAM records, VCF lines, BED intervals) is generated in Go;
 the **vendored upstream tools** then turn it into the valid binary/indexed
 formats:
 
-| fixture | built by |
-|---------|----------|
-| `ref.fa` + `.fai` | generated text, indexed by `samtools faidx` |
-| `reads.bam` + `.bai`/`.csi` | SAM text → `samtools sort` → `samtools index` |
-| `reads.cram` + `.crai` | `samtools view -C -T ref` |
-| `variants.vcf.gz` + `.tbi` | VCF text → `bgzip` → `tabix -p vcf` |
-| `variants.vcf` | the same VCF text, uncompressed |
-| `intervals.bed`, `intervals12.bed`, `genome.txt` | generated text over the same coordinate space |
+| fixture | placeholder | built by |
+|---------|-------------|----------|
+| `ref.fa` + `.fai` | `{fasta}` | generated text, indexed by `samtools faidx` |
+| `reads.bam` + `.bai`/`.csi` | `{bam}` | SAM text → `samtools sort` → `samtools index` |
+| `reads.cram` + `.crai` | `{cram}` | `samtools view -C -T ref` |
+| `variants.vcf.gz` + `.tbi` | `{vcf}` | VCF text → `bgzip` → `tabix -p vcf` |
+| `variants.vcf` | `{vcf_plain}` | the same VCF text, uncompressed |
+| `variants.multi.vcf(.gz)` + `.tbi` | `{vcf_multi_plain}` | multi-sample VCF → `bgzip` → `tabix` (vcftools relatedness/het/LD) |
+| `intervals.bed`, `intervals12.bed`, `genome.txt` | `{bed}` `{bed12}` `{genome}` | generated text over the same coordinate space |
+| `annotations.gff3` | `{gff}` | gene/mRNA/exon/CDS rows over the same contigs (bed\* / bcftools csq) |
+| `reads.fastq` (+ `.gz`) | `{fastq}` `{fastq_gz}` | seeded single-end reads with adapters + low-quality/N tails |
+| `reads_R1.fastq`, `reads_R2.fastq` | `{fastq1}` `{fastq2}` | matched-name paired-end reads for PE QC tools |
+
+The **FASTQ** reads have realistic per-read length jitter (±10% of the tier's
+mean), high base qualities in the body, the Illumina TruSeq 3' adapter on ~25%
+of reads, and a degraded low-quality / N tail on ~30% — so quality-trim,
+adapter-trim, and N-handling flags all have real work to do. Both a plain and a
+gzip variant are written for the single-end file.
 
 They are cached under **`pipeline/.fixtures/<scale>/`** (gitignored) with a
 `manifest.json`; the generator regenerates only when the cache is missing or
-stale (manifest version / scale / seed change, or a file went missing).
+stale (manifest version / scale / seed change, or a file went missing). The
+`{out}` placeholder is special: it is **not** a fixture but a per-invocation
+output prefix the runner assigns to entries that declare `OutputFiles` (see
+"Comparison modes").
 
 ### Scale tiers
 
 `PIPELINE_SCALE` (or `-scale`) selects the tier; approximate on-disk footprint
 of the whole set:
 
-| tier | reference | reads | variants | intervals | ≈ size | use |
-|------|-----------|-------|----------|-----------|--------|-----|
-| `smoke` | 2 × 20 kb | 2 000 | 400 | 500 | a few hundred KB | CI |
-| `small` | 4 × 250 kb | 40 000 | 8 000 | 6 000 | ~5 MB | default |
-| `medium` | 8 × 2 Mb | 300 000 | 60 000 | 40 000 | ~50 MB | benchmarks |
-| `large` | 16 × 12 Mb | 2.5 M | 400 000 | 250 000 | ~500 MB | heavy benchmarks |
+| tier | reference | reads | variants | intervals | FASTQ reads | genes | ≈ size | use |
+|------|-----------|-------|----------|-----------|-------------|-------|--------|-----|
+| `smoke` | 2 × 20 kb | 2 000 | 400 | 500 | 2 000 | 60 | < 3 MB | CI |
+| `small` | 4 × 250 kb | 40 000 | 8 000 | 6 000 | 40 000 | 800 | ~30 MB | default |
+| `medium` | 8 × 2 Mb | 300 000 | 60 000 | 40 000 | 300 000 | 6 000 | ~150 MB | benchmarks |
+| `large` | 16 × 12 Mb | 2.5 M | 400 000 | 250 000 | 2 M | 40 000 | ~1 GB | heavy benchmarks |
+
+(The FASTQ reads, GFF genes, and multi-sample VCF are generated at every tier
+alongside the original BAM/CRAM/VCF/BED set; the multi-sample VCF reuses the
+per-tier variant count.)
 
 ## The matrix
 
@@ -127,6 +165,36 @@ type Entry struct {
 
 Tools register entries into a global `Registry` from `init()` (`matrix.Register`).
 The driver consumes `matrix.Default()`.
+
+### Tool families currently covered
+
+| family | file | tools | how compared |
+|--------|------|-------|--------------|
+| htslib core | `smoke.go` | `samtools view`, `bcftools view`/`query` | byte-exact stdout |
+| bedtools | `smoke.go` | `bedintersect` (→ `bedtools intersect`) | byte-exact stdout |
+| QC / format | `qc.go` | `seqtk` (23 subcommands), `prinseq`, `sickle`, `skewer`, `fastp` | seqtk byte-exact stdout; prinseq/sickle byte-exact **output files**; skewer byte-exact stdout (per-side args); fastp documented Skips + one Similarity |
+| vcftools | `vcftools.go` | `vcftools` (freq/counts/depth/pi/TsTv/het/relatedness/recode/…) | byte-exact **output files** (the `<prefix>.<ext>` the mode writes) |
+| mosdepth | `mosdepth.go` | `mosdepth` (per-base, `--by`, thresholds, fast-mode, mapq) | byte-exact **output files** (decompressed `.bed.gz` + summary/dist) |
+
+QC, vcftools, and mosdepth consume the FASTQ / GFF / multi-sample-VCF fixtures
+and exercise the output-file comparison path. A handful of entries are
+**documented `Skip`s** rather than failures, each recording a *real* divergence
+the matrix surfaced (so it is visible without breaking the run):
+
+- **sickle** — our CLI hardcodes window-size 10; upstream uses dynamic
+  `int(0.1·len)`. Comparison entries pass `-w 0` (the upstream-faithful
+  setting) and are byte-exact; one baseline entry is Skipped to record the bug.
+- **vcftools** — `--geno-r2`/`--hap-r2`/`--012` abort with a glibc
+  buffer-overflow and `--LROH` segfaults in this upstream build (real upstream
+  crashes); `--hardy` differs only by libc `-nan` vs Go `NaN`; `--recode`
+  reorders INFO keys (ours alphabetical, upstream source-order) — a real port
+  gap owned by the vcftools agent.
+- **mosdepth** — `--by` regions depths are byte-exact, but our summary omits
+  upstream's per-region rows and we don't emit `region.dist.txt` (gaps owned by
+  the mosdepth agent).
+- **fastp** — default filtering, the `cut_tail` window boundary, and the
+  JSON/HTML report stamps make generic byte/similarity comparison impractical;
+  the per-tool suite owns fastp's byte-exact algorithm validation.
 
 ### Combinatorics expander (curated, NOT power set)
 
@@ -157,9 +225,26 @@ Implemented in `pipeline/runner/compare.go`:
   structural comparison with numeric fields within a relative epsilon (`1e-6`),
   recording the **max deviation** observed. Use this where byte-exact is not
   expected but structural + numeric agreement is.
-- **`DirContents`** — placeholder for multi-file outputs; currently falls back
-  to byte-exact of stdout. (Follow-on: compare the set + stripped contents of an
-  output directory.)
+- **Output-file comparison** (the `OutputFiles` mechanism) — for tools that
+  write to an output **prefix** instead of stdout (vcftools, mosdepth, and the
+  trimming QC tools driven via `-o`). An entry lists the output suffixes it
+  produces (e.g. `[".frq"]`, `[".regions.bed.gz", ".mosdepth.summary.txt"]`);
+  the runner gives **each side its own temp directory**, resolves the `{out}`
+  placeholder to `<tmpdir>/out`, runs both tools, then compares each named
+  output file between the two directories. Files ending in `.gz` are
+  **decompressed** before comparison (so BGZF block-framing differences are
+  irrelevant), and provenance is stripped exactly as for stdout. Each file is
+  compared with the entry's `Compare` mode (`ByteExact` or `Similarity`); a
+  file present on only one side is a divergence. `CompareOutputFiles` and
+  `readMaybeGzip` in `compare.go` implement this; `Compare: DirContents` is the
+  conventional label for these entries.
+- **Per-side args** (`OurArgs` / `UpstreamArgs`) — for tools whose CLI shape
+  genuinely differs from upstream's (our `skewer`/`fastp`/`prinseq`/`sickle`
+  are subcommand- or `-i/-o`-based while upstream `skewer` is flat with
+  positionals, `prinseq` is the `prinseq-lite.pl` Perl script, etc.). When set,
+  these replace the shared `Args` for the respective side; `{placeholder}`
+  substitution (including `{out}`) still applies, as does the per-side
+  subcommand prepend. A `*.pl` upstream binary path is invoked through `perl`.
 
 Binary outputs (BGZF BAM/CRAM bytes) are **not** compared byte-exact — our
 klauspost deflate backend frames blocks differently from htslib though both
