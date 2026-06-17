@@ -49,3 +49,13 @@ across the upstream `test/bamtobed` fixtures and the documented flag set
 `-ed`). Two upstream quirks are reproduced for parity and documented in
 `docs/UPSTREAM_BUGS.md`: the spurious extra column emitted by `-tag` combined
 with `-split`.
+
+### Deliberate divergences (faithful upstream matches, not gaps)
+
+- **`-cigar` together with `-splits`** is rejected with upstream's exact
+  message ("Cannot use -cigar with -splits.  Not yet supported.").
+  Upstream `bamToBed.cpp` itself errors on this combination — there is no
+  per-block CIGAR to attach once a spliced alignment is split into blocks —
+  so reproducing the error is byte-parity. Implementing it would emit output
+  where upstream errors, i.e. a divergence, not a fix. (The guard mirrors
+  upstream's `useEditDistance && useCigar` condition, message and all.)

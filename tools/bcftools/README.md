@@ -36,6 +36,11 @@ subcommands. The current implementation ships:
   (trios with no applicable inheritance rule) — with the verbatim
   `##INFO` definitions and values, byte-validated against upstream
   1.23.1. The `+mendelian2` plugin form shares this engine.
+  *Deliberate divergence (faithful upstream match):* the inheritance-rule
+  grammar (`--rules`/`-r`) rejects a per-parent ploidy greater than 2
+  ("ploidy > 2 is not supported"), exactly as upstream does — Mendelian
+  inheritance is defined only for haploid/diploid genotypes, so there is
+  no rule to express for triploid+; this is not a gap.
 - `bcftools gtcheck` — sample-identity check by hard-GT Hamming
   concordance (with `-g panel`). Emits the upstream `tsv`-format
   `DC` / `INFO` tables.
