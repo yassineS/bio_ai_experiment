@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -382,6 +383,19 @@ func runQuery(dataPath string, regions []string, o opts, _ tabix.Config, stdout,
 		}
 	}
 
+	// For -R (a regions FILE), upstream tabix loads the regions into an htslib
+	// regidx and queries them in regidx's iteration order. Empirically (and
+	// confirmed against the live binary) that order is: chromosomes in
+	// first-appearance order, and within a chromosome by start ASCENDING then by
+	// end DESCENDING — for two regions sharing a start, the LONGER one (larger
+	// end) is queried first. Records are emitted once per overlapping region (no
+	// merge/dedup), so this region order is what determines the output order.
+	// Our raw BED order keeps same-start regions end-ascending, which flips a
+	// handful of records; reproduce regidx's (start asc, end desc) order here.
+	if o.regionsFile != "" && len(rs) > 1 {
+		rs = sortRegionsRegidx(rs)
+	}
+
 	// Open the bgzipped data file once for the whole batch of region queries.
 	// openSeekable returns a *os.File for local paths and a ranged remote
 	// handle (http(s)/s3/gs) wrapped in an io.SectionReader for URLs, so the
@@ -408,6 +422,33 @@ func runQuery(dataPath string, regions []string, o opts, _ tabix.Config, stdout,
 		}
 	}
 	return 0
+}
+
+// sortRegionsRegidx reproduces htslib regidx's region iteration order for
+// tabix -R: chromosomes in first-appearance (file) order, and within each
+// chromosome by start ascending then end DESCENDING (a stable sort, so regions
+// identical in start+end keep their input order). No merging of overlaps.
+func sortRegionsRegidx(rs []region) []region {
+	groups := map[string][]region{}
+	var order []string
+	for _, r := range rs {
+		if _, ok := groups[r.chrom]; !ok {
+			order = append(order, r.chrom)
+		}
+		groups[r.chrom] = append(groups[r.chrom], r)
+	}
+	out := make([]region, 0, len(rs))
+	for _, chrom := range order {
+		g := groups[chrom]
+		sort.SliceStable(g, func(i, j int) bool {
+			if g[i].beg != g[j].beg {
+				return g[i].beg < g[j].beg
+			}
+			return g[i].end > g[j].end
+		})
+		out = append(out, g...)
+	}
+	return out
 }
 
 // emitHeader streams every line at the top of dataPath that begins with the

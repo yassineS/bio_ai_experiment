@@ -139,3 +139,36 @@ func TestRunMissingDataFileArg(t *testing.T) {
 		t.Fatalf("expected error when no data file is given")
 	}
 }
+
+// TestSortRegionsRegidx pins the htslib regidx region-iteration order used by
+// tabix -R: chromosomes in first-appearance order, and within a chromosome by
+// start ascending then end DESCENDING (a stable sort). The end-descending
+// tie-break — two regions sharing a start emit the longer one first — is the
+// non-obvious part that makes -R byte-exact against the upstream binary.
+func TestSortRegionsRegidx(t *testing.T) {
+	in := []region{
+		{"chr1", 100, 200},
+		{"chr1", 100, 500}, // same start, larger end -> must come BEFORE the 100-200 region
+		{"chr1", 50, 60},
+		{"chr2", 10, 20},
+		{"chr1", 100, 500}, // exact duplicate -> stable, keeps input order after the first
+		{"chr2", 5, 9},
+	}
+	got := sortRegionsRegidx(in)
+	want := []region{
+		{"chr1", 50, 60},
+		{"chr1", 100, 500},
+		{"chr1", 100, 500},
+		{"chr1", 100, 200},
+		{"chr2", 5, 9}, // chr2 in first-appearance order (after chr1), start asc
+		{"chr2", 10, 20},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("region %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

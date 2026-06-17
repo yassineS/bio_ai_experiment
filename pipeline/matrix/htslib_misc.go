@@ -84,12 +84,12 @@ func tabixMatrix() []Entry {
 			return e
 		}(),
 		{
+			// tabix -R now orders the regions exactly as htslib's regidx does —
+			// chromosomes in first-appearance order, then by (start asc, end
+			// DESC), so two regions sharing a start emit the longer one first.
+			// Byte-exact against upstream over the overlapping-interval fixture.
 			Tool: "tabix", UpstreamTool: "tabix", Name: "tabix_regions_bed",
 			Input: InputVCF, Compare: ByteExact, Args: []string{"-R", "{bed}", "{vcf}"},
-			Skip: "tabix -R returns the same 53024-record SET as upstream with only 28 records in a different position: where BED " +
-				"intervals overlap, htslib's regidx merges them and streams the file once (file order), while our per-region query emits " +
-				"the overlap-straddling records in region order. A small, precise residual — not a global sort (sorting the regions " +
-				"over-corrects). Owned by the tabix agent.",
 		},
 	}
 }
