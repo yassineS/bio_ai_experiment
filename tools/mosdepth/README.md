@@ -41,20 +41,36 @@ Outputs (always emitted unless a flag below suppresses one):
 
 - `<prefix>.mosdepth.global.dist.txt` — cumulative coverage distribution
   per chromosome plus a `total` row. Format: `chrom\tdepth\tproportion`
-  where `proportion` is the fraction of bases at depth ≥ `depth`.
+  where `proportion` is the fraction of bases at depth ≥ `depth`. Only
+  chromosomes that carried at least one read are listed (matching upstream's
+  BAM-index gate); zero-coverage references are omitted.
+- `<prefix>.mosdepth.region.dist.txt` — only when `--by` is set. The same
+  cumulative-distribution format as `global.dist.txt`, but computed over the
+  region depths. For a BED file (`--by regions.bed`) it accumulates the
+  per-base depths inside each region; for a fixed window (`--by 500`) it counts
+  one entry per window at the **rounded** window mean (upstream's `me.toInt`,
+  which rounds to the nearest integer). Same chrom-omission rule as above.
 - `<prefix>.mosdepth.summary.txt` — per-chromosome summary
-  (`chrom\tlength\tbases\tmean\tmin\tmax`) plus a `total` row.
+  (`chrom\tlength\tbases\tmean\tmin\tmax`) plus a `total` row. In `--by` mode
+  each chrom additionally gets a `<chrom>_region` row immediately after its
+  non-region row, and a `total_region` row after `total`; the `_region` row
+  aggregates the per-base depths over only the region-covered bases. Same
+  chrom-omission rule as the distribution files.
 - `<prefix>.per-base.bed.gz` (with `.csi`) — per-base depth as
-  collapsed equal-depth BED runs. Omitted when `--by` is set or
-  `--no-per-base` is passed.
+  collapsed equal-depth BED runs. Emitted by default (including in `--by`
+  mode, matching upstream); suppressed only by `--no-per-base`. Every
+  reference is listed, including zero-coverage ones (as a single depth-0 run).
 - `<prefix>.regions.bed.gz` (with `.csi`) — only when `--by` is set.
-  Columns: `chrom\tstart\tend\t[region-name\t]mean-depth`.
+  Columns: `chrom\tstart\tend\t[region-name\t]mean-depth`. Every reference is
+  listed (windows are emitted even for zero-coverage references).
 - `<prefix>.quantized.bed.gz` (with `.csi`) — only when `-q/--quantize`
   is set. Columns: `chrom\tstart\tend\tlabel`, one collapsed run per
   contiguous quantize bin.
 - `<prefix>.thresholds.bed.gz` (with `.csi`) — only when `-T/--thresholds`
   is set. Columns: `chrom\tstart\tend\tregion\tNXcount\t...` listing the
-  number of bases at or above each integer threshold inside the region.
+  number of bases at or above each integer threshold inside the region. The
+  `region` column is the BED region name when present, else the literal
+  `unknown` (including for every fixed-window region) — matching upstream.
 
 ## Flags
 
@@ -201,6 +217,17 @@ Coverage targets ≥85% on `pkg/mosdepth`. Tests cover:
   `TestUpstream_UseMedian_Parity`); set `MOSDEPTH_BIN` to point at a local
   copy. Offline they fall back to internal-consistency checks and log the
   tier rather than skipping silently.
+- Region (`--by`) mode is validated byte-for-byte against the upstream
+  v0.3.14 binary for **every** produced file —
+  `summary.txt` (incl. the `<chrom>_region` / `total_region` rows),
+  `region.dist.txt`, `global.dist.txt`, and the decompressed
+  `per-base.bed.gz` and `regions.bed.gz` — for both a named BED file and a
+  fixed window (`TestUpstream_By_AllFiles_Parity`). A binary-free
+  `TestUnitRegionSummaryAndDist` plus `TestWriteSummary_RegionRows` /
+  `TestWriteDistribution_RegionCumulation` / `TestWriteDistribution_SkipRules`
+  cover the region-summary aggregation and region-distribution cumulation
+  (including upstream's window-mean rounding and the `cum < 8e-5` / `depth>300`
+  emission trims) on synthetic depths.
 
 ## Status
 

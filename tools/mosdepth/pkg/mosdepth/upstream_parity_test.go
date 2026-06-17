@@ -265,6 +265,97 @@ func TestThreads_OutputIdentical(t *testing.T) {
 	t.Log("VALIDATION TIER: byte-identical to upstream mosdepth (threaded ovl.bam MT)")
 }
 
+// TestUpstream_By_AllFiles_Parity proves that in region (--by) mode every file
+// mosdepth produces is byte-identical to the upstream release binary's: the
+// plain-text summary.txt (including the <chrom>_region / total_region rows),
+// region.dist.txt and global.dist.txt, plus the decompressed per-base.bed.gz
+// and regions.bed.gz payloads. It covers both a named BED file and a fixed
+// integer window on the ovl.bam fixture (scoped to the MT contig, the only one
+// with reads, which still exercises the zero-coverage-chrom omission in the
+// text files).
+func TestUpstream_By_AllFiles_Parity(t *testing.T) {
+	bin := ensureMosdepthBinary(t)
+	bam := filepath.Join(fixtureDir(t), "ovl.bam")
+	bed := filepath.Join(fixtureDir(t), "track.bed")
+
+	cases := []struct {
+		name    string
+		byArg   string // value passed to upstream --by
+		options Options
+	}{
+		{"bed", bed, Options{ByBED: bed}},
+		{"window-500", "500", Options{ByWindow: 500}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.options
+			opts.FastMode = true
+			opts.Chrom = "MT"
+			opts.ExcludeFlag = DefaultExcludeFlag
+			ourDir := t.TempDir()
+			ourPrefix := filepath.Join(ourDir, "our")
+			opts.Prefix = ourPrefix
+			if err := OpenAndRun(bam, opts); err != nil {
+				t.Fatalf("OpenAndRun(--by %s): %v", tc.byArg, err)
+			}
+
+			if bin == "" {
+				// Offline tier: the *_region summary rows and region.dist.txt
+				// must at least be present and well-formed.
+				sum, err := os.ReadFile(ourPrefix + ".mosdepth.summary.txt")
+				if err != nil {
+					t.Fatalf("read summary: %v", err)
+				}
+				if !bytes.Contains(sum, []byte("MT_region\t")) || !bytes.Contains(sum, []byte("total_region\t")) {
+					t.Fatalf("offline tier: summary missing _region rows:\n%s", sum)
+				}
+				if _, err := os.Stat(ourPrefix + ".mosdepth.region.dist.txt"); err != nil {
+					t.Fatalf("offline tier: region.dist.txt not written: %v", err)
+				}
+				t.Log("VALIDATION TIER: internal-consistency only (upstream mosdepth binary unavailable offline)")
+				return
+			}
+
+			upDir := t.TempDir()
+			upPrefix := filepath.Join(upDir, "up")
+			cmd := exec.Command(bin, "-x", "-c", "MT", "--by", tc.byArg, upPrefix, bam)
+			cmd.Dir = upDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("upstream mosdepth --by failed: %v\n%s", err, out)
+			}
+
+			// Plain-text files are compared verbatim; the bgzipped BED outputs
+			// are compared after decompression to isolate content from BGZF
+			// block-size differences (see gunzipBytes).
+			for _, suffix := range []string{
+				".mosdepth.summary.txt",
+				".mosdepth.region.dist.txt",
+				".mosdepth.global.dist.txt",
+			} {
+				ours, err := os.ReadFile(ourPrefix + suffix)
+				if err != nil {
+					t.Fatalf("read ours %s: %v", suffix, err)
+				}
+				up, err := os.ReadFile(upPrefix + suffix)
+				if err != nil {
+					t.Fatalf("read upstream %s: %v", suffix, err)
+				}
+				if !bytes.Equal(ours, up) {
+					t.Fatalf("%s mismatch.\nours:\n%s\nupstream:\n%s", suffix, ours, up)
+				}
+			}
+			for _, suffix := range []string{".per-base.bed.gz", ".regions.bed.gz"} {
+				ours := gunzipBytes(t, ourPrefix+suffix)
+				up := gunzipBytes(t, upPrefix+suffix)
+				if !bytes.Equal(ours, up) {
+					t.Fatalf("%s (decompressed) mismatch.\nours:\n%s\nupstream:\n%s", suffix, ours, up)
+				}
+			}
+			t.Logf("VALIDATION TIER: byte-identical to upstream mosdepth for --by %s (all files)", tc.byArg)
+		})
+	}
+}
+
 // mtLines returns the subset of BED lines (from raw decompressed bytes) whose
 // chromosome is exactly "MT". ovl.bam declares ~80 references but the reads
 // only touch MT; scoping to MT keeps the upstream diff tight.

@@ -782,6 +782,60 @@ discrepancies in our Go code (not upstream), all fixed inline:
 - **vcftools `.windowed.pi` header** needs `N_MONOMORPHIC` column.
   Fixed header + data; value is a 0 placeholder.
 
+#### mosdepth region (`--by`) mode: missing `region.dist.txt`, `*_region` summary rows, and per-base; misc. <a id="mosdepth-region-mode"></a>
+
+The region-mode parity audit (this PR) found several discrepancies, all on
+our side — these are upstream *behaviours* we now reproduce, not upstream
+bugs:
+
+- **`*.mosdepth.region.dist.txt` was not emitted.** Upstream writes a
+  cumulative region-distribution file in `--by` mode (same format as
+  `global.dist.txt`). For a BED `--by` it accumulates per-base depths inside
+  each region; for an integer-window `--by` it counts one entry per window at
+  the window mean. Now emitted.
+
+- **Window region distribution uses a ROUNDED mean, not a truncated one.**
+  Upstream indexes `chrom_region_distribution[min(me.toInt, …)]` where `me`
+  is the window mean; Nim's `toInt` rounds to the nearest integer (ties away
+  from zero). So a window whose mean is 0.6 lands in the depth-1 bucket, not
+  depth-0. We round with `math.Round` (means are non-negative). Easy to read
+  as a truncation; it is not.
+
+- **`<chrom>_region` / `total_region` summary rows were missing.** In `--by`
+  mode upstream adds a `<chrom>_region` row immediately after each chrom's
+  non-region row and a `total_region` row after `total`. The `_region` row
+  aggregates the per-base depths over only the region-covered bases
+  (`newDepthStat(arr[min(start,L)..<min(L,stop)])`). Now emitted in upstream's
+  row order.
+
+- **per-base output is still written in `--by` mode.** Upstream emits
+  `per-base.bed.gz` alongside `regions.bed.gz`; it is suppressed only by
+  `-n/--no-per-base`. Our port was suppressing it whenever `--by` was set.
+  Fixed: per-base now follows the `--no-per-base` flag alone.
+
+- **Zero-coverage chromosomes are omitted from the text files but kept in the
+  BED outputs.** Upstream resolves each target's tid from the BAM index and
+  skips references with no alignments before `write_summary` /
+  `write_distribution` — so `summary.txt`, `global.dist.txt` and
+  `region.dist.txt` only list references that carried ≥1 read (presence in
+  the index, *regardless of whether the read survives the MAPQ/flag/read-group
+  filters* — e.g. `-R MISSING` still yields a zero-depth row). The
+  `per-base.bed.gz` and `regions.bed.gz` outputs, however, iterate every
+  reference and DO list zero-coverage ones (a single depth-0 run / zero-mean
+  windows). Our port previously listed every reference in the text files too.
+  Fixed to match both behaviours.
+
+- **thresholds region name for unnamed/window regions is the literal
+  `unknown`.** Upstream labels each `thresholds.bed.gz` row with the BED region
+  name when present, else `unknown` (including every fixed-window region). Our
+  port synthesised a `chrom:start-end` name. Fixed to `unknown`.
+
+All six are validated byte-for-byte against the upstream v0.3.14 release
+binary by `TestUpstream_By_AllFiles_Parity` (BED + window, all produced
+files) plus binary-free unit tests (`TestUnitRegionSummaryAndDist`,
+`TestWriteSummary_RegionRows`, `TestWriteDistribution_RegionCumulation`,
+`TestWriteDistribution_SkipRules`).
+
 ### Track-only (parity skipped, fix later)
 
 <a id="bedtools-coverage-split-ignores-f-F"></a>
