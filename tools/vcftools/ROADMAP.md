@@ -2,9 +2,21 @@
 
 This document outlines planned features and enhancements for the vcftools Go implementation.
 
+> **HISTORICAL planning doc — superseded.** The figures below ("~48%", the
+> "not implemented" list, the "v1.1 planned" checklists) are from an early
+> phase and are **out of date**. The port now implements **all 146 upstream
+> long options (100%)**, including `--pca`, `--mendel`, `--IMPUTE`,
+> `--ldhat`/`--ldhat-geno`/`--ldhelmet`, and the full `--diff-*` family — none
+> return a "not implemented" error at runtime. For the authoritative, current
+> status see [`PROJECT_STATUS.md`](../../PROJECT_STATUS.md),
+> [`FEATURE_COMPARISON.md`](FEATURE_COMPARISON.md), and
+> [`docs/PARITY_ROADMAP.md`](../../docs/PARITY_ROADMAP.md).
+
 ## Current state
 
-**Status:** Partial — roughly 70 of vcftools' ~147 options (~48%).
+**Status:** Complete — all 146 upstream long options implemented (100%);
+byte/precision-validated against the vendored upstream binary. (The text below
+is retained for history only.)
 
 ### Implemented
 
@@ -34,11 +46,14 @@ This document outlines planned features and enhancements for the vcftools Go imp
 - VCF comparison: `--diff` with `--diff-site`, `--diff-indv`,
   `--diff-site-discordance`, `--diff-indv-discordance`
 
-### Recognised but **not implemented** (return an error)
+### ~~Recognised but not implemented~~ — NOW IMPLEMENTED (historical)
 
-- `--mendel`, `--ldhat`, `--ldhat-geno`, `--ldhelmet`, `--IMPUTE`,
-  `--diff-discordance-matrix`, `--diff-switch-error`, `--diff-indv-map`,
-  `--pca`, and a long tail of less-used options
+The options once listed here — `--mendel`, `--ldhat`, `--ldhat-geno`,
+`--ldhelmet`, `--IMPUTE`, `--diff-discordance-matrix`, `--diff-switch-error`,
+`--diff-indv-map`, `--pca`, and the rest of the tail — are **all implemented**
+now (`mendel.go`, `burden.go`, `impute.go`, `diff.go`, `pca.go`, …). No vcftools
+option returns a "not implemented" error at runtime; the only fast-fail is the
+faithful upstream check that LDhat output requires a single `--chr`.
 
 Test coverage of the `vcftools` package is ~81% of statements; the `cmd/`
 entry point has no tests.
