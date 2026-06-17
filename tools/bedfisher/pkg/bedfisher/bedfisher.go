@@ -44,8 +44,10 @@ type Options struct {
 	SameStrand bool
 	// OppositeStrand limits overlaps to opposite-strand pairs (-S).
 	OppositeStrand bool
-	// MergeA pre-merges overlapping records in A before the sweep (-m).
-	MergeA bool
+	// MergeInputs pre-merges overlapping records before the sweep (-m). Upstream
+	// applies this to BOTH the query (A) and database (B) files — its
+	// FileRecordMergeMgr merges every input file when -m is given, not just A.
+	MergeInputs bool
 }
 
 // Result holds the contingency table and p-values.
@@ -90,8 +92,11 @@ func Run(a, b, g io.Reader, w io.Writer, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading B: %w", err)
 	}
-	if opts.MergeA {
+	if opts.MergeInputs {
+		// -m merges every input file (both A and B), matching upstream's
+		// FileRecordMergeMgr which is enabled for all files when -m is set.
 		aRecs = mergeBED(aRecs)
+		bRecs = mergeBED(bRecs)
 	}
 
 	// Sum raw counts and total lengths.
@@ -224,20 +229,27 @@ func countOverlapPairs(aRecs, bRecs []*bed.Record, opts Options) int {
 		})
 	}
 
+	// B records are sorted by ChromStart. A naive binary search on ChromEnd is
+	// INVALID here because ChromEnd is not monotonic over a start-sorted slice —
+	// a long B can begin before A yet extend well past A.Start and must still be
+	// counted. (That bug under-counted overlaps, skewing the contingency table.)
+	// Instead we binary-search the exact, monotonic upper bound on ChromStart
+	// (the first B that starts at or beyond A.End cannot overlap, nor can any
+	// later B) and test the end coordinate per record, exactly matching
+	// upstream chromsweep's intersects() predicate.
 	total := 0
 	for _, a := range aRecs {
 		bs := byChrom[a.Chrom]
 		if len(bs) == 0 {
 			continue
 		}
-		// Binary search to the first B that could overlap A.
-		// Find smallest idx where B.End > A.Start (i.e. first B not strictly
-		// to the left of A).
-		lo := sort.Search(len(bs), func(i int) bool { return bs[i].ChromEnd > a.ChromStart })
-		for j := lo; j < len(bs); j++ {
+		hi := sort.Search(len(bs), func(i int) bool { return bs[i].ChromStart >= a.ChromEnd })
+		for j := 0; j < hi; j++ {
 			b := bs[j]
-			if b.ChromStart >= a.ChromEnd {
-				break
+			// Guaranteed b.ChromStart < a.ChromEnd by hi; reject the records
+			// whose end is at or before A.Start (no positive-length overlap).
+			if b.ChromEnd <= a.ChromStart {
+				continue
 			}
 			if !strandOK(a, b, opts) {
 				continue
