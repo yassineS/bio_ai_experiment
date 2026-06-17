@@ -273,6 +273,39 @@ func writeBED(bedPath, bed12Path, genomePath string, contigs []contig, p Params,
 	return nil
 }
 
+// writeBedGraph writes a 4-column BedGraph (chrom start end value), sorted by
+// chrom/start with non-overlapping intervals tiling each contig in
+// variable-width windows with seeded integer values. Used by bedunionbedg,
+// which needs >=2 such files; callers pass distinct rng streams so the files
+// have different breakpoints/values and the union is meaningful.
+func writeBedGraph(path string, contigs []contig, rng *rand.Rand) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	for _, c := range contigs {
+		pos := 0
+		for pos < c.Len {
+			win := 200 + rng.Intn(800)
+			end := pos + win
+			if end > c.Len {
+				end = c.Len
+			}
+			// Leave occasional gaps so the union has empty stretches.
+			if rng.Intn(5) != 0 {
+				fmt.Fprintf(w, "%s\t%d\t%d\t%d\n", c.Name, pos, end, rng.Intn(100))
+			}
+			pos = end
+		}
+	}
+	if err := w.Flush(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // writeBEDPE writes a BEDPE fixture (10 columns: chrom1 start1 end1 chrom2
 // start2 end2 name score strand1 strand2) for the paired-end tools
 // (bedpairtobed / bedpairtopair). Each end is an interval inside the contigs;
